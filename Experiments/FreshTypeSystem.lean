@@ -178,9 +178,15 @@ inductive Expr
 
 
 /-- Build `[.bvar start, .bvar (start+1), ..., .bvar (start+count-1)]`. -/
-def Ty.bvarRange (start : Nat) : Nat → List Ty
+def Ty.bvarRangeFrom (start : Nat) : Nat → List Ty
   | 0     => []
-  | n + 1 => .bvar start :: bvarRange (start + 1) n
+  | n + 1 => .bvar start :: bvarRangeFrom (start + 1) n
+
+
+/-- Build `[.bvar 0, .bvar 1, ..., .bvar (count-1)]`. -/
+def Ty.bvarRange : Nat → List Ty :=
+  Ty.bvarRangeFrom 0
+
 
 /-- Wrap a list of argument types in right-nested arrows ending at a result type:
 
@@ -201,7 +207,7 @@ def Ty.wrapArrows (result : Ty) : List Ty → Ty
                             (.customTy Result [.bvar 0, .bvar 1]) }`. -/
 def Ctor.toTy (ctor : Ctor) : PolyTy :=
   let resultTy :=
-    .customTy ctor.tyName (Ty.bvarRange 0 ctor.paramCount)
+    .customTy ctor.tyName (Ty.bvarRange ctor.paramCount)
 
   let body := Ty.wrapArrows resultTy ctor.contents
   { paramCount := ctor.paramCount, body }
@@ -263,11 +269,12 @@ def Ty.closeOver (vars : List Nat) : Ty → Ty
   | .pair a b        => .pair (a.closeOver vars) (b.closeOver vars)
   | .arrow a b       => .arrow (a.closeOver vars) (b.closeOver vars)
   | .bvar i          => .bvar i
+  | .customTy nm tys => .customTy nm (TyList.closeOver vars tys)
   | .fvar n          =>
       match vars.idxOf? n with
       | some i => .bvar i
       | none   => .fvar n
-  | .customTy nm tys => .customTy nm (TyList.closeOver vars tys)
+
 
 def TyList.closeOver (vars : List Nat) : List Ty → List Ty
   | []        => []
@@ -275,13 +282,16 @@ def TyList.closeOver (vars : List Nat) : List Ty → List Ty
 
 end
 
--- def generalise (env : Env) (ty : Ty) : PolyTy :=
+
+
 
 /-- Under env, ty generalises to this polyty -/
 inductive Generalise : Env → Ty → PolyTy → Prop
-  | mk {env : Env} {ty : Ty} :
-    ftvs = ty.freeVars \ env.freeVars →
-    Generalise env ty ⟨ftvs.length, ty.closeOver ftvs⟩
+  | mk {env : Env} {ty : Ty} {ftvs : List Nat} :
+    ftvs.Nodup →
+    (∀ tv, tv ∈ ftvs ↔ tv ∈ ty.freeVars ∧ tv ∉ env.freeVars) →
+    polyTy = ⟨ftvs.length, ty.closeOver ftvs⟩ →
+    Generalise env ty polyTy
 
 
 mutual
@@ -302,7 +312,41 @@ def TyList.instantiate (subst : Nat → Ty) : List Ty → List Ty
 end
 
 
+/-- Get the `i`th item from the `tyArgs` list. Otherwise return a `.bvar i` -/
+def Ty.instSubst (tyArgs : List Ty) (i : Nat) : Ty :=
+  tyArgs[i]?.getD (.bvar i)
 
+mutual
+
+-- /-- The match pattern under ctx has type ty and returns an expr of type ty -/
+-- inductive TypeOfMatchBranch : Ctx → MatchPattern → Ty → Expr → Ty → Prop
+--   | mk :
+--     LookupList.get? ctx.ctors pattern.ctor = some ctor →
+--     Ty.instantiate subst ctor.toTy.body = ty →
+--     TypeOfMatchBranch ctx pattern patternTy expr ty
+
+
+/-- The match pattern under ctx has type ty and returns an expr of type ty -/
+inductive TypeOfMatchBranch :
+  (ctx : Ctx) → (MatchPattern × Expr) → (tyName : TyName) → (tyArgs : List Ty) → (resultTy : Ty) → Prop
+  | mk {ctor : Ctor} {ctx : Ctx} {pattern : MatchPattern} :
+    LookupList.get? ctx.ctors pattern.ctor = some ctor →
+    ctor.tyName = tyName →
+    ctor.paramCount = tyArgs.length →
+    pattern.contents.length = ctor.contents.length →
+    instContents =
+      ctor.contents.map
+        (λ binding ↦ (Ty.instantiate (Ty.instSubst tyArgs) binding)) →
+    patternBindings = (pattern.contents.zip instContents |>.map λ (name,ty) ↦ (name, PolyTy.mkTrivial ty)) →
+    bodyCtx = {ctx with env := patternBindings ++ ctx.env } →
+    TypeOfHM bodyCtx bodyExpr resultTy →
+    TypeOfMatchBranch ctx (pattern, bodyExpr) tyName tyArgs resultTy
+
+
+
+
+
+/-- Syntax-directed typing relation -/
 inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | primLitUnit :
     TypeOfHM ctx (.primLit .unit) (.prim .unit)
@@ -361,3 +405,10 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     LookupList.get? ctx.ctors name = some ctor →
     Ty.instantiate subst ctor.toTy.body = ty →
     TypeOfHM ctx (.ctor name) ty
+
+  | match_ :
+    TypeOfHM ctx scrutinee (.customTy tyName tyArgs) →
+    (∀ branch ∈ branches, TypeOfMatchBranch ctx branch tyName tyArgs resultTy) →
+    TypeOfHM ctx (.match_ scrutinee branches) resultTy
+
+end
