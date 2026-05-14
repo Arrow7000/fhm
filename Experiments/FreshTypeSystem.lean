@@ -28,7 +28,7 @@ abbrev LookupList (key : Type) (value : Type) := List (key × value)
 
 namespace LookupList
 
-def get? [DecidableEq k] (l : LookupList k v) (key : k) :=
+def get? {k v} [DecidableEq k] (l : LookupList k v) (key : k) :=
   match l with
   | [] => none
   | ⟨key', val⟩ :: rest =>
@@ -48,10 +48,8 @@ end LookupList
 
 
 
--- /-- Type constructor – is either simple or arrow to another one -/
--- inductive Ctor (t : Type)
---   | done
---   | param : (ty : t) → Ctor t → Ctor t
+-- inductive List.Rel
+-- def asdfa := List.Forall₂
 
 
 
@@ -72,8 +70,9 @@ inductive Ty
   | prim : PrimTy → Ty
   | pair : (fst snd : Ty) → Ty
   | arrow : (from_ to_ : Ty) → Ty
-  -- | typeVar : (debruijnIndex : Nat) → Ty
+  /-- Bound var – only makes sense within the context of a polytype -/
   | bvar : Nat → Ty
+  /-- Free var – unbound var. In spec-land this signifies an unconstrained variable. In algorithm-land this is a unification variable. -/
   | fvar : Nat → Ty
   /-- A custom type with its type params -/
   | customTy : TyName → List Ty → Ty
@@ -86,7 +85,8 @@ structure Ctor where
   paramCount : Nat
   /-- The name of the type this is a constructor for -/
   tyName : TyName
-  /-- What this constructor actually contains. Can reference `.typeVar`s in range of `paramCount` -/
+  /-- What this constructor actually contains.
+      Can reference `.bvar`s in range of `paramCount` -/
   contents : List Ty
 
 /-- Which type constructors exist -/
@@ -95,7 +95,7 @@ abbrev CtorEnv := LookupList CtorName Ctor
 
 structure PolyTy where
   paramCount : Nat
-  /-- May reference params by `.typeVar`s in range of `paramCount`  -/
+  /-- May reference params by `.bvar`s in range of `paramCount`  -/
   body : Ty
 
 /-- Make a polytype with no type vars -/
@@ -246,9 +246,7 @@ def Ty.freeVars : Ty → List Nat
   | .bvar _ => []
   | .customTy _ tys => TyList.freeVars tys
 
-
-
-def TyList.freeVars : List Ty → List Nat
+private def TyList.freeVars : List Ty → List Nat
   | [] => []
   | head :: tail => (head.freeVars ++ TyList.freeVars tail).dedup
 
@@ -276,7 +274,7 @@ def Ty.closeOver (vars : List Nat) : Ty → Ty
       | none   => .fvar n
 
 
-def TyList.closeOver (vars : List Nat) : List Ty → List Ty
+private def TyList.closeOver (vars : List Nat) : List Ty → List Ty
   | []        => []
   | hd :: tl  => hd.closeOver vars :: TyList.closeOver vars tl
 
@@ -316,14 +314,139 @@ end
 def Ty.instSubst (tyArgs : List Ty) (i : Nat) : Ty :=
   tyArgs[i]?.getD (.bvar i)
 
+
+
+/-- Resulting type is the input type with the `.bvar i`s swapped out for the `i`th item in `tyArgs`.
+
+Cannot be produced for a `bvar` whose index is out of range of `tyArgs`. Thus if tyArgs doesn't contain any `bvar`s, neither does the output. -/
+inductive InstantiatesBy (tyArgs : List Ty) : Ty → Ty → Prop
+  | prim :
+    InstantiatesBy tyArgs (.prim p) (.prim p)
+
+  | pair :
+    InstantiatesBy tyArgs fst instFst →
+    InstantiatesBy tyArgs snd instSnd →
+    InstantiatesBy tyArgs (.pair fst snd) (.pair instFst instSnd)
+
+  | arrow :
+    InstantiatesBy tyArgs fst instFst →
+    InstantiatesBy tyArgs snd instSnd →
+    InstantiatesBy tyArgs (.arrow fst snd) (.arrow instFst instSnd)
+
+  | fvar :
+    InstantiatesBy tyArgs (.fvar n) (.fvar n)
+
+  | customTy :
+    List.Forall₂ (InstantiatesBy tyArgs) tys instTys →
+    InstantiatesBy tyArgs (.customTy name tys) (.customTy name instTys)
+
+  | bvar :
+    tyArgs[i]? = some ty →
+    InstantiatesBy tyArgs (.bvar i) ty
+
+
+/-- Can only contain `bvar`s that are in `vars`. If `vars` is empty, ty contains no `bvar`s at all. -/
+inductive OnlyContainsBvars (vars : List Nat) : (ty : Ty) → Prop
+  | prim :
+    OnlyContainsBvars vars (.prim p)
+
+  | pair :
+    OnlyContainsBvars vars fst →
+    OnlyContainsBvars vars snd →
+    OnlyContainsBvars vars (.pair fst snd)
+
+  | arrow :
+    OnlyContainsBvars vars fst →
+    OnlyContainsBvars vars snd →
+    OnlyContainsBvars vars (.arrow fst snd)
+
+  | fvar :
+    OnlyContainsBvars vars (.fvar n)
+
+  | customTy :
+    (∀ ty ∈ tys, OnlyContainsBvars vars ty) →
+    OnlyContainsBvars vars (.customTy name tys)
+
+  | bvar :
+    i ∈ vars →
+    OnlyContainsBvars vars (.bvar i)
+
+
+
+-- theorem InstantiatesBy.no_bvars_if_nin_tyArgs : (∀ ty' ∈ tyArgs, OnlyContainsBvars [] ty') → InstantiatesBy tyArgs ty instTy → OnlyContainsBvars [] instTy := by
+  -- -- intro nobvargs prem
+  -- -- cases prem with
+  -- -- | prim => exact .prim
+  -- -- | pair a b
+  -- -- | arrow a b =>
+  -- --   expose_names
+  -- --   constructor
+  -- --   · exact no_bvars_if_nin_tyArgs nobvargs a
+  -- --   · exact no_bvars_if_nin_tyArgs nobvargs b
+  -- -- | fvar => constructor
+  -- -- | bvar h =>
+  -- --   have : instTy ∈ tyArgs := List.mem_of_getElem? h
+  -- --   exact nobvargs _ this
+  -- -- | customTy h =>
+  -- --   expose_names
+  -- --   refine OnlyContainsBvars.customTy ?_
+  -- --   induction h
+  -- --   · simp
+  -- --   · expose_names
+  -- --     simp
+  -- --     constructor
+  -- --     ·
+  -- --       -- exact no_bvars_if_nin_tyArgs nobvargs h
+  -- --     · grind
+  -- sorry
+
+
+
+mutual
+/-- If there are no `bvar`s in `tyArgs`, `instTy` won't contain any `bvar`s -/
+theorem InstantiatesBy.no_bvars_if_nin_tyArgs
+    (h_args : ∀ ty' ∈ tyArgs, OnlyContainsBvars [] ty')
+    (h_inst : InstantiatesBy tyArgs ty instTy) :
+    OnlyContainsBvars [] instTy := by
+  cases h_inst
+  case prim => exact .prim
+  case pair _ _ a b => exact .pair (no_bvars_if_nin_tyArgs h_args a) (no_bvars_if_nin_tyArgs h_args b)
+  case arrow _ _ a b => exact .arrow (no_bvars_if_nin_tyArgs h_args a) (no_bvars_if_nin_tyArgs h_args b)
+  case fvar => exact .fvar
+  case bvar h => exact h_args _ (List.mem_of_getElem? h)
+  case customTy h_forall =>
+    apply OnlyContainsBvars.customTy
+    exact list_no_bvars_if_nin_tyArgs h_args h_forall
+
+theorem InstantiatesBy.list_no_bvars_if_nin_tyArgs
+    (h_args : ∀ ty' ∈ tyArgs, OnlyContainsBvars [] ty')
+    (h_forall : List.Forall₂ (InstantiatesBy tyArgs) tys instTys) :
+    ∀ ty ∈ instTys, OnlyContainsBvars [] ty := by
+  intro ty mem
+  induction h_forall with
+  | nil => exact absurd mem List.not_mem_nil
+  | cons hd tl ih =>
+    cases mem with
+    | head _ => exact no_bvars_if_nin_tyArgs h_args hd
+    | tail _ h => exact ih h
+end
+
+
+
+/-- The zipping of two lists. Lists must be equal in length. -/
+inductive Zipped : List α → List β → List (α × β) → Prop
+  | nil :
+    Zipped [] [] []
+
+  | cons {as bs abs} :
+    Zipped as bs abs →
+    Zipped (a :: as) (b :: bs) ((a,b) :: abs)
+
+
+
 mutual
 
--- /-- The match pattern under ctx has type ty and returns an expr of type ty -/
--- inductive TypeOfMatchBranch : Ctx → MatchPattern → Ty → Expr → Ty → Prop
---   | mk :
---     LookupList.get? ctx.ctors pattern.ctor = some ctor →
---     Ty.instantiate subst ctor.toTy.body = ty →
---     TypeOfMatchBranch ctx pattern patternTy expr ty
+
 
 
 /-- The match pattern under ctx has type ty and returns an expr of type ty -/
@@ -334,11 +457,21 @@ inductive TypeOfMatchBranch :
     ctor.tyName = tyName →
     ctor.paramCount = tyArgs.length →
     pattern.contents.length = ctor.contents.length →
-    instContents =
-      ctor.contents.map
-        (λ binding ↦ (Ty.instantiate (Ty.instSubst tyArgs) binding)) →
-    patternBindings = (pattern.contents.zip instContents |>.map λ (name,ty) ↦ (name, PolyTy.mkTrivial ty)) →
+
+    -- instantiates the ctor polytype (assigns fvars to its bvars)
+    -- instContents =
+    --   ctor.contents.map
+    --     (λ binding ↦ (Ty.instantiate (Ty.instSubst tyArgs) binding)) →
+    List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents →
+
+    -- zips together the names of the pattern match vars to their corresponding (instantiated) types in the constructor's content slots
+    -- btw we convert them to polytypes but only because that's what the env contains. none of them actually have any type vars. because that would require separate slots to be individually polymorphic, which is not allowed under rank-1 polymorphism.
+    -- patternBindings = (pattern.contents.zip instContents |>.map λ (name,ty) ↦ (name, PolyTy.mkTrivial ty)) →
+    Zipped pattern.contents (instContents.map PolyTy.mkTrivial) patternBindings →
+
+    -- just sticks the new patterns and their
     bodyCtx = {ctx with env := patternBindings ++ ctx.env } →
+
     TypeOfHM bodyCtx bodyExpr resultTy →
     TypeOfMatchBranch ctx (pattern, bodyExpr) tyName tyArgs resultTy
 
@@ -346,7 +479,7 @@ inductive TypeOfMatchBranch :
 
 
 
-/-- Syntax-directed typing relation -/
+/-- Syntax-directed declarative typing relation -/
 inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | primLitUnit :
     TypeOfHM ctx (.primLit .unit) (.prim .unit)
@@ -396,19 +529,21 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     TypeOfHM bodyCtx body bodyTy →
     TypeOfHM ctx (.letPairIn fstName sndName boundExpr body) bodyTy
 
-  | var {subst : Nat → Ty} :
+  | var :
     LookupList.get? ctx.env name = some polyTy →
-    Ty.instantiate subst polyTy.body = ty →
+    -- Ty.instantiate subst polyTy.body = ty →
+    InstantiatesBy tyArgs polyTy.body ty →
     TypeOfHM ctx (.var name) ty
 
   | ctor {subst : Nat → Ty} :
     LookupList.get? ctx.ctors name = some ctor →
-    Ty.instantiate subst ctor.toTy.body = ty →
+    -- Ty.instantiate subst ctor.toTy.body = ty →
+    InstantiatesBy tyArgs ctor.toTy.body ty →
     TypeOfHM ctx (.ctor name) ty
 
   | match_ :
     TypeOfHM ctx scrutinee (.customTy tyName tyArgs) →
-    (∀ branch ∈ branches, TypeOfMatchBranch ctx branch tyName tyArgs resultTy) →
+    ∀ branch ∈ branches, TypeOfMatchBranch ctx branch tyName tyArgs resultTy →
     TypeOfHM ctx (.match_ scrutinee branches) resultTy
 
 end
