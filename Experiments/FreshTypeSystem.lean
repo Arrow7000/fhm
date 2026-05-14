@@ -104,8 +104,8 @@ def PolyTy.mkTrivial (bodyTy : Ty) : PolyTy :=
 
 
 
-/-- Which value bindings exist -/
-abbrev Env := LookupList ValName PolyTy
+/-- Which value bindings exist. Uses de Bruijn levels – i.e. new bindings appended to the end -/
+abbrev Env := List PolyTy
 
 
 
@@ -146,7 +146,7 @@ inductive PrimLitExpr
 /-- Only supporting type constructor name matches for now -/
 structure MatchPattern where
   ctor : CtorName
-  contents : List ValName
+  contents : Nat -- this is basically just a binding range. i.e. if 2 this means we've bound 2 new "names" to the context
 
 
 inductive Expr
@@ -158,7 +158,7 @@ inductive Expr
   | letIn (name : ValName) (bindingExpr body : Expr)
   /-- Destructuring a pair `let (a,b) = pairExpr in body` -/
   | letPairIn (fstName sndName : ValName) (pairExpr body : Expr)
-  | var (name : ValName)
+  | var (deBruijnLevel : Nat)
   /-- A type constructor -/
   | ctor (name : CtorName)
   | match_ (scrutinee : Expr) (branches : List (MatchPattern × Expr))
@@ -238,6 +238,7 @@ structure Ctx where
 
 mutual
 
+/-- Get all the `.fvar`s from the `Ty`, deduped -/
 def Ty.freeVars : Ty → List Nat
   | .prim _ => []
   | .pair a b => (a.freeVars ++ b.freeVars).dedup
@@ -256,12 +257,15 @@ end
 
 def Env.freeVars : Env → List Nat
   | [] => []
-  | (_, polyTy) :: tail =>
+  | polyTy :: tail =>
     (polyTy.body.freeVars ++ freeVars tail).dedup
 
 
 mutual
 
+/-- For every `.fvar i`, if `i < vars.length`, replace the `.fvar` with `.bvar vars[i]`.
+
+In other words, remove the given free vars and bind them back up. I.e. close them up, to make a polytype with `vars.length` binders ✨ -/
 def Ty.closeOver (vars : List Nat) : Ty → Ty
   | .prim p          => .prim p
   | .pair a b        => .pair (a.closeOver vars) (b.closeOver vars)
@@ -279,6 +283,56 @@ private def TyList.closeOver (vars : List Nat) : List Ty → List Ty
   | hd :: tl  => hd.closeOver vars :: TyList.closeOver vars tl
 
 end
+
+
+
+/--
+Strong induction principle for `Ty` that gives a useful IH for the `customTy`
+case: `(∀ t ∈ tys, motive t)`, rather than the bare `motive tys` you'd get from
+the auto-generated recursor (which doesn't recurse into the embedded `List Ty`).
+
+Usage:
+```
+theorem some_property : ∀ ty : Ty, P ty := by
+  intro ty
+  induction ty using Ty.rec_strong
+  case prim p           => ...
+  case pair a b iha ihb => ...
+  case arrow a b iha ihb => ...
+  case bvar n           => ...
+  case fvar n           => ...
+  case customTy nm tys ih => ...   -- ih : ∀ t ∈ tys, P t
+```
+-/
+@[elab_as_elim]
+def Ty.rec_strong.{u} {motive : Ty → Sort u}
+    (prim     : ∀ p, motive (.prim p))
+    (pair     : ∀ a b, motive a → motive b → motive (.pair a b))
+    (arrow    : ∀ a b, motive a → motive b → motive (.arrow a b))
+    (bvar     : ∀ n, motive (.bvar n))
+    (fvar     : ∀ n, motive (.fvar n))
+    (customTy : ∀ nm tys, (∀ t ∈ tys, motive t) → motive (.customTy nm tys)) :
+    (ty : Ty) → motive ty
+  | .prim p          => prim p
+  | .pair a b        =>
+      pair a b
+        (Ty.rec_strong prim pair arrow bvar fvar customTy a)
+        (Ty.rec_strong prim pair arrow bvar fvar customTy b)
+  | .arrow a b       =>
+      arrow a b
+        (Ty.rec_strong prim pair arrow bvar fvar customTy a)
+        (Ty.rec_strong prim pair arrow bvar fvar customTy b)
+  | .bvar n          => bvar n
+  | .fvar n          => fvar n
+  | .customTy nm tys =>
+      customTy nm tys
+        (fun t _ht => Ty.rec_strong prim pair arrow bvar fvar customTy t)
+termination_by ty => sizeOf ty
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | omega
+    | (have := List.sizeOf_lt_of_mem _ht; omega)
 
 
 
@@ -345,7 +399,7 @@ inductive InstantiatesBy (tyArgs : List Ty) : Ty → Ty → Prop
     InstantiatesBy tyArgs (.bvar i) ty
 
 
-/-- Can only contain `bvar`s that are in `vars`. If `vars` is empty, ty contains no `bvar`s at all. -/
+/-- `ty` can only contain `bvar`s that are in `vars`. If `vars` is empty, `ty` contains no `bvar`s at all. -/
 inductive OnlyContainsBvars (vars : List Nat) : (ty : Ty) → Prop
   | prim :
     OnlyContainsBvars vars (.prim p)
@@ -372,33 +426,6 @@ inductive OnlyContainsBvars (vars : List Nat) : (ty : Ty) → Prop
     OnlyContainsBvars vars (.bvar i)
 
 
-
--- theorem InstantiatesBy.no_bvars_if_nin_tyArgs : (∀ ty' ∈ tyArgs, OnlyContainsBvars [] ty') → InstantiatesBy tyArgs ty instTy → OnlyContainsBvars [] instTy := by
-  -- -- intro nobvargs prem
-  -- -- cases prem with
-  -- -- | prim => exact .prim
-  -- -- | pair a b
-  -- -- | arrow a b =>
-  -- --   expose_names
-  -- --   constructor
-  -- --   · exact no_bvars_if_nin_tyArgs nobvargs a
-  -- --   · exact no_bvars_if_nin_tyArgs nobvargs b
-  -- -- | fvar => constructor
-  -- -- | bvar h =>
-  -- --   have : instTy ∈ tyArgs := List.mem_of_getElem? h
-  -- --   exact nobvargs _ this
-  -- -- | customTy h =>
-  -- --   expose_names
-  -- --   refine OnlyContainsBvars.customTy ?_
-  -- --   induction h
-  -- --   · simp
-  -- --   · expose_names
-  -- --     simp
-  -- --     constructor
-  -- --     ·
-  -- --       -- exact no_bvars_if_nin_tyArgs nobvargs h
-  -- --     · grind
-  -- sorry
 
 
 
@@ -456,21 +483,16 @@ inductive TypeOfMatchBranch :
     LookupList.get? ctx.ctors pattern.ctor = some ctor →
     ctor.tyName = tyName →
     ctor.paramCount = tyArgs.length →
-    pattern.contents.length = ctor.contents.length →
+    pattern.contents = ctor.contents.length →
 
     -- instantiates the ctor polytype (assigns fvars to its bvars)
-    -- instContents =
-    --   ctor.contents.map
-    --     (λ binding ↦ (Ty.instantiate (Ty.instSubst tyArgs) binding)) →
     List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents →
 
     -- zips together the names of the pattern match vars to their corresponding (instantiated) types in the constructor's content slots
     -- btw we convert them to polytypes but only because that's what the env contains. none of them actually have any type vars. because that would require separate slots to be individually polymorphic, which is not allowed under rank-1 polymorphism.
-    -- patternBindings = (pattern.contents.zip instContents |>.map λ (name,ty) ↦ (name, PolyTy.mkTrivial ty)) →
-    Zipped pattern.contents (instContents.map PolyTy.mkTrivial) patternBindings →
+    patternBindings = instContents.map PolyTy.mkTrivial →
 
-    -- just sticks the new patterns and their
-    bodyCtx = {ctx with env := patternBindings ++ ctx.env } →
+    bodyCtx = {ctx with env := ctx.env ++ patternBindings } →
 
     TypeOfHM bodyCtx bodyExpr resultTy →
     TypeOfMatchBranch ctx (pattern, bodyExpr) tyName tyArgs resultTy
@@ -503,7 +525,7 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
 
   /-- We just posit the existence of a paramTy -/
   | lambda :
-    bodyCtx = { ctx with env := (paramName, .mkTrivial paramTy) :: ctx.env } →
+    bodyCtx = { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } →
     TypeOfHM bodyCtx body sndTy →
     TypeOfHM ctx (.lambda paramName body) (.arrow paramTy sndTy)
 
@@ -515,7 +537,7 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | letIn :
     TypeOfHM ctx boundExpr boundExprTy →
     Generalise ctx.env boundExprTy generalisedExprTy →
-    bodyCtx = {ctx with env := (name, generalisedExprTy) :: ctx.env} →
+    bodyCtx = {ctx with env := generalisedExprTy :: ctx.env} →
     TypeOfHM bodyCtx body bodyTy →
     TypeOfHM ctx (.letIn name boundExpr body) bodyTy
 
@@ -525,19 +547,17 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     Generalise ctx.env sndTy genSndTy →
     bodyCtx =
       {ctx with
-        env := (fstName, genFstTy) :: (sndName, genSndTy) :: ctx.env} →
+        env := genFstTy :: genSndTy :: ctx.env} →
     TypeOfHM bodyCtx body bodyTy →
     TypeOfHM ctx (.letPairIn fstName sndName boundExpr body) bodyTy
 
   | var :
-    LookupList.get? ctx.env name = some polyTy →
-    -- Ty.instantiate subst polyTy.body = ty →
+    ctx.env[dbl]? = some polyTy →
     InstantiatesBy tyArgs polyTy.body ty →
-    TypeOfHM ctx (.var name) ty
+    TypeOfHM ctx (.var dbl) ty
 
   | ctor {subst : Nat → Ty} :
     LookupList.get? ctx.ctors name = some ctor →
-    -- Ty.instantiate subst ctor.toTy.body = ty →
     InstantiatesBy tyArgs ctor.toTy.body ty →
     TypeOfHM ctx (.ctor name) ty
 
