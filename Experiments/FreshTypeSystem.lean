@@ -149,20 +149,33 @@ structure MatchPattern where
   contents : Nat -- this is basically just a binding range. i.e. if 2 this means we've bound 2 new "names" to the context
 
 
+-- inductive Expr
+--   | primLit (prim : PrimLitExpr)
+--   | pair (a b : Expr)
+--   -- | lambda (param : ValName) (paramTy : Ty) (body : Expr)
+--   | lambda (param : ValName) (body : Expr)
+--   | app (f input : Expr)
+--   | letIn (name : ValName) (bindingExpr body : Expr)
+--   /-- Destructuring a pair `let (a,b) = pairExpr in body` -/
+--   | letPairIn (fstName sndName : ValName) (pairExpr body : Expr)
+--   | var (deBruijnLevel : Nat)
+--   /-- A type constructor -/
+--   | ctor (name : CtorName)
+--   | match_ (scrutinee : Expr) (branches : List (MatchPattern × Expr))
+
+
 inductive Expr
   | primLit (prim : PrimLitExpr)
   | pair (a b : Expr)
-  -- | lambda (param : ValName) (paramTy : Ty) (body : Expr)
-  | lambda (param : ValName) (body : Expr)
+  | lambda (body : Expr)
   | app (f input : Expr)
-  | letIn (name : ValName) (bindingExpr body : Expr)
+  | letIn (bindingExpr body : Expr)
   /-- Destructuring a pair `let (a,b) = pairExpr in body` -/
-  | letPairIn (fstName sndName : ValName) (pairExpr body : Expr)
+  | letPairIn (pairExpr body : Expr)
   | var (deBruijnLevel : Nat)
   /-- A type constructor -/
   | ctor (name : CtorName)
   | match_ (scrutinee : Expr) (branches : List (MatchPattern × Expr))
-
 
 
 
@@ -335,6 +348,85 @@ decreasing_by
     | (have := List.sizeOf_lt_of_mem _ht; omega)
 
 
+/--
+Strong induction principle for `Expr` that gives a useful IH for the `match_`
+case: `(∀ pat e, (pat, e) ∈ branches → motive e)`, rather than the bare
+`motive branches` you'd get from the auto-generated recursor (which doesn't
+recurse into the embedded `List (MatchPattern × Expr)`).
+
+Usage:
+```
+theorem some_property : ∀ e : Expr, P e := by
+  intro e
+  induction e using Expr.rec_strong
+  case primLit p                       => ...
+  case pair a b iha ihb                => ...
+  case lambda body ih                  => ...
+  case app f input ihf ihi             => ...
+  case letIn be body ihbe ihbo         => ...
+  case letPairIn pe body ihpe ihbo     => ...
+  case var n                           => ...
+  case ctor nm                         => ...
+  case match_ scrutinee branches ihs ihbs => ...
+    -- ihbs : ∀ pat e, (pat, e) ∈ branches → P e
+```
+-/
+@[elab_as_elim]
+def Expr.rec_strong.{u} {motive : Expr → Sort u}
+    (primLit    : ∀ p, motive (.primLit p))
+    (pair       : ∀ a b, motive a → motive b → motive (.pair a b))
+    (lambda     : ∀ body, motive body → motive (.lambda body))
+    (app        : ∀ f input, motive f → motive input → motive (.app f input))
+    (letIn      : ∀ bindingExpr body,
+                    motive bindingExpr → motive body →
+                    motive (.letIn bindingExpr body))
+    (letPairIn  : ∀ pairExpr body,
+                    motive pairExpr → motive body →
+                    motive (.letPairIn pairExpr body))
+    (var        : ∀ n, motive (.var n))
+    (ctor       : ∀ nm, motive (.ctor nm))
+    (match_     : ∀ scrutinee branches,
+                    motive scrutinee →
+                    (∀ pat e, (pat, e) ∈ branches → motive e) →
+                    motive (.match_ scrutinee branches)) :
+    (e : Expr) → motive e
+  | .primLit p          => primLit p
+  | .pair a b           =>
+      pair a b
+        (Expr.rec_strong primLit pair lambda app letIn letPairIn var ctor match_ a)
+        (Expr.rec_strong primLit pair lambda app letIn letPairIn var ctor match_ b)
+  | .lambda body        =>
+      lambda body
+        (Expr.rec_strong primLit pair lambda app letIn letPairIn var ctor match_ body)
+  | .app f input        =>
+      app f input
+        (Expr.rec_strong primLit pair lambda app letIn letPairIn var ctor match_ f)
+        (Expr.rec_strong primLit pair lambda app letIn letPairIn var ctor match_ input)
+  | .letIn be body      =>
+      letIn be body
+        (Expr.rec_strong primLit pair lambda app letIn letPairIn var ctor match_ be)
+        (Expr.rec_strong primLit pair lambda app letIn letPairIn var ctor match_ body)
+  | .letPairIn pe body  =>
+      letPairIn pe body
+        (Expr.rec_strong primLit pair lambda app letIn letPairIn var ctor match_ pe)
+        (Expr.rec_strong primLit pair lambda app letIn letPairIn var ctor match_ body)
+  | .var n              => var n
+  | .ctor nm            => ctor nm
+  | .match_ scrutinee branches =>
+      match_ scrutinee branches
+        (Expr.rec_strong primLit pair lambda app letIn letPairIn var ctor match_ scrutinee)
+        (fun _pat e _hb =>
+          Expr.rec_strong primLit pair lambda app letIn letPairIn var ctor match_ e)
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | omega
+    | (have h := List.sizeOf_lt_of_mem _hb
+       simp only [Prod.mk.sizeOf_spec] at h
+       omega)
+
+
 
 
 /-- Under env, ty generalises to this polyty -/
@@ -473,34 +565,6 @@ inductive Zipped : List α → List β → List (α × β) → Prop
 
 mutual
 
-
-
-
-/-- The match pattern under ctx has type ty and returns an expr of type ty -/
-inductive TypeOfMatchBranch :
-  (ctx : Ctx) → (MatchPattern × Expr) → (tyName : TyName) → (tyArgs : List Ty) → (resultTy : Ty) → Prop
-  | mk {ctor : Ctor} {ctx : Ctx} {pattern : MatchPattern} :
-    LookupList.get? ctx.ctors pattern.ctor = some ctor →
-    ctor.tyName = tyName →
-    ctor.paramCount = tyArgs.length →
-    pattern.contents = ctor.contents.length →
-
-    -- instantiates the ctor polytype (assigns fvars to its bvars)
-    List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents →
-
-    -- zips together the names of the pattern match vars to their corresponding (instantiated) types in the constructor's content slots
-    -- btw we convert them to polytypes but only because that's what the env contains. none of them actually have any type vars. because that would require separate slots to be individually polymorphic, which is not allowed under rank-1 polymorphism.
-    patternBindings = instContents.map PolyTy.mkTrivial →
-
-    bodyCtx = {ctx with env := ctx.env ++ patternBindings } →
-
-    TypeOfHM bodyCtx bodyExpr resultTy →
-    TypeOfMatchBranch ctx (pattern, bodyExpr) tyName tyArgs resultTy
-
-
-
-
-
 /-- Syntax-directed declarative typing relation -/
 inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | primLitUnit :
@@ -523,11 +587,13 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     TypeOfHM ctx snd sndTy →
     TypeOfHM ctx (.pair fst snd) (.pair fstTy sndTy)
 
-  /-- We just posit the existence of a paramTy -/
+  /-- We just posit the existence of a paramTy. Under de Bruijn levels,
+      new binders are appended to env: the lambda's param sits at level
+      `ctx.env.length`. -/
   | lambda :
-    bodyCtx = { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } →
+    bodyCtx = { ctx with env := ctx.env ++ [PolyTy.mkTrivial paramTy] } →
     TypeOfHM bodyCtx body sndTy →
-    TypeOfHM ctx (.lambda paramName body) (.arrow paramTy sndTy)
+    TypeOfHM ctx (.lambda body) (.arrow paramTy sndTy)
 
   | app :
     TypeOfHM ctx f (.arrow argTy retTy) →
@@ -537,33 +603,586 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | letIn :
     TypeOfHM ctx boundExpr boundExprTy →
     Generalise ctx.env boundExprTy generalisedExprTy →
-    bodyCtx = {ctx with env := generalisedExprTy :: ctx.env} →
+    bodyCtx = { ctx with env := ctx.env ++ [generalisedExprTy] } →
     TypeOfHM bodyCtx body bodyTy →
-    TypeOfHM ctx (.letIn name boundExpr body) bodyTy
+    TypeOfHM ctx (.letIn boundExpr body) bodyTy
 
   | letPairIn :
     TypeOfHM ctx boundExpr (.pair fstTy sndTy) →
     Generalise ctx.env fstTy genFstTy →
     Generalise ctx.env sndTy genSndTy →
     bodyCtx =
-      {ctx with
-        env := genFstTy :: genSndTy :: ctx.env} →
+      { ctx with
+        env := ctx.env ++ [genFstTy, genSndTy] } →
     TypeOfHM bodyCtx body bodyTy →
-    TypeOfHM ctx (.letPairIn fstName sndName boundExpr body) bodyTy
+    TypeOfHM ctx (.letPairIn boundExpr body) bodyTy
 
   | var :
     ctx.env[dbl]? = some polyTy →
     InstantiatesBy tyArgs polyTy.body ty →
     TypeOfHM ctx (.var dbl) ty
 
-  | ctor {subst : Nat → Ty} :
+  | ctor :
     LookupList.get? ctx.ctors name = some ctor →
     InstantiatesBy tyArgs ctor.toTy.body ty →
     TypeOfHM ctx (.ctor name) ty
 
   | match_ :
     TypeOfHM ctx scrutinee (.customTy tyName tyArgs) →
-    ∀ branch ∈ branches, TypeOfMatchBranch ctx branch tyName tyArgs resultTy →
+    -- NOTE: parens around the `∀` are needed; otherwise `∀ x ∈ xs, P → Q`
+    -- parses as `∀ x ∈ xs, (P → Q)`, letting you type the whole match by
+    -- supplying only ONE branch's typing.
+    (∀ branch ∈ branches, TypeOfMatchBranch ctx branch tyName tyArgs resultTy) →
     TypeOfHM ctx (.match_ scrutinee branches) resultTy
 
+
+/-- The match pattern under ctx has type ty and returns an expr of type ty -/
+inductive TypeOfMatchBranch :
+  (ctx : Ctx) → (MatchPattern × Expr) → (tyName : TyName) → (tyArgs : List Ty) → (resultTy : Ty) → Prop
+  | mk {ctor : Ctor} {ctx : Ctx} {pattern : MatchPattern} :
+    LookupList.get? ctx.ctors pattern.ctor = some ctor →
+    ctor.tyName = tyName →
+    ctor.paramCount = tyArgs.length →
+    pattern.contents = ctor.contents.length →
+
+    -- instantiates the ctor polytype (assigns fvars to its bvars)
+    List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents →
+
+    -- zips together the names of the pattern match vars to their corresponding (instantiated) types in the constructor's content slots
+    -- btw we convert them to polytypes but only because that's what the env contains. none of them actually have any type vars. because that would require separate slots to be individually polymorphic, which is not allowed under rank-1 polymorphism.
+    patternBindings = instContents.map PolyTy.mkTrivial →
+
+    -- Append (levels semantics): the first pattern var sits at level
+    -- ctx.env.length, the second at level ctx.env.length + 1, etc.
+    bodyCtx = {ctx with env := ctx.env ++ patternBindings } →
+
+    TypeOfHM bodyCtx bodyExpr resultTy →
+    TypeOfMatchBranch ctx (pattern, bodyExpr) tyName tyArgs resultTy
+
 end
+
+
+
+
+/-! ## Small-step operational semantics
+
+Call-by-value reduction on closed terms. Uses de Bruijn *indices* for term-level
+variables: `var 0` is the innermost binder. Substitution is the standard
+"substitute-and-eliminate" variant that shifts other vars to account for the
+disappearing binder.
+
+The machine here is independent of type checking — it would run on any
+syntactically well-formed `Expr`. Type soundness (progress + preservation) is
+the bridge between this and `TypeOfHM`. -/
+
+mutual
+
+/--
+Simultaneously substitute `vs[j]` for `.var (k + j)` (for `j ∈ [0, vs.length)`),
+and shift all higher de Bruijn levels down by `vs.length`.
+
+Uses de Bruijn *levels*: when traversing into a binder, `k` stays the same
+(because levels are stable, unlike indices). When substituting the matched
+level, no shift of the value is needed (again because levels are stable). The
+only shift is the "shift down by `vs.length`" at the substituted position,
+which accounts for the `vs.length` binders disappearing from the level space.
+
+Used to implement beta, let-reduction, letPair-reduction, and match-reduction
+in one uniform operation.
+-/
+def Expr.substN (k : Nat) (vs : List Expr) : Expr → Expr
+  | .var i =>
+      if i < k then .var i
+      else if h : i - k < vs.length then vs[i - k]
+      else .var (i - vs.length)
+  | .primLit p         => .primLit p
+  | .pair a b          => .pair (a.substN k vs) (b.substN k vs)
+  | .lambda body     => .lambda (body.substN k vs)
+  | .app f arg         => .app (f.substN k vs) (arg.substN k vs)
+  | .letIn rhs body  =>
+      .letIn (rhs.substN k vs) (body.substN k vs)
+  | .letPairIn rhs body =>
+      .letPairIn (rhs.substN k vs) (body.substN k vs)
+  | .ctor n            => .ctor n
+  | .match_ scrut branches =>
+      .match_ (scrut.substN k vs) (BranchList.substN k vs branches)
+
+private def BranchList.substN (k : Nat) (vs : List Expr) :
+    List (MatchPattern × Expr) → List (MatchPattern × Expr)
+  | []                  => []
+  | (pat, body) :: rest =>
+      (pat, body.substN k vs)
+        :: BranchList.substN k vs rest
+
+end
+
+/-- Single-var substitution. Beta-reduces `(λ. body) v` to `body.subst1 0 v`. -/
+def Expr.subst1 (k : Nat) (v : Expr) : Expr → Expr :=
+  Expr.substN k [v]
+
+
+
+
+namespace SmallStep
+
+mutual
+
+/-- A fully-reduced expression: a value of one of the built-in or user-defined types. -/
+inductive IsValue : Expr → Prop
+  | primLit (p) :
+      IsValue (.primLit p)
+  | lambda body :
+      IsValue (.lambda body)
+  | pair {v₁ v₂} :
+      IsValue v₁ → IsValue v₂ →
+      IsValue (.pair v₁ v₂)
+  | ctor (name) :
+      IsValue (.ctor name)
+  | ctorApp {f v} :
+      IsCtorChain f → IsValue v →
+      IsValue (.app f v)
+
+/-- A constructor optionally applied to zero or more *values*. Both `.ctor c`
+    (zero args) and `.app (.app (.ctor c) v₁) v₂` (multiple args) qualify. -/
+inductive IsCtorChain : Expr → Prop
+  | ctor (name) :
+      IsCtorChain (.ctor name)
+  | app {f v} :
+      IsCtorChain f → IsValue v →
+      IsCtorChain (.app f v)
+
+end
+
+/-- Decompose a ctor chain into its ctor name and the list of applied args
+    in *application order* (first applied arg first). -/
+inductive CtorAppliedTo : Expr → CtorName → List Expr → Prop
+  | base (name) :
+      CtorAppliedTo (.ctor name) name []
+  | step {f arg name args} :
+      CtorAppliedTo f name args →
+      CtorAppliedTo (.app f arg) name (args ++ [arg])
+
+
+
+
+/-- Call-by-value small-step reduction. Left-to-right evaluation order. -/
+inductive Step : Expr → Expr → Prop
+
+  -- ─── reduction rules ────────────────────────────────────────────────
+
+  /-- Beta. -/
+  | beta {body v} :
+      IsValue v →
+      Step (.app (.lambda body) v) (body.subst1 0 v)
+
+  /-- Let reduction (after rhs has been reduced to a value). -/
+  | letReduce {v body} :
+      IsValue v →
+      Step (.letIn v body) (body.subst1 0 v)
+
+  /-- Let-pair destructure on a fully-reduced pair. -/
+  | letPairReduce {v₁ v₂ body} :
+      IsValue v₁ → IsValue v₂ →
+      Step (.letPairIn (.pair v₁ v₂) body) (body.substN 0 [v₁, v₂])
+
+  /-- Match reduction. The scrutinee must be a saturated ctor chain whose
+      ctor name matches some branch's pattern, with the right arity. -/
+  | matchReduce {scrut branches name args pat body} :
+      CtorAppliedTo scrut name args →
+      (pat, body) ∈ branches →
+      pat.ctor = name →
+      pat.contents = args.length →
+      Step (.match_ scrut branches) (body.substN 0 args)
+
+  -- ─── congruence rules (enforce left-to-right CBV) ─────────────────
+
+  /-- Reduce the first component of a pair. -/
+  | pairFst {a a' b} :
+      Step a a' →
+      Step (.pair a b) (.pair a' b)
+
+  /-- Once the first component is a value, reduce the second. -/
+  | pairSnd {v b b'} :
+      IsValue v → Step b b' →
+      Step (.pair v b) (.pair v b')
+
+  /-- Reduce the function position of an application. -/
+  | appFn {f f' arg} :
+      Step f f' →
+      Step (.app f arg) (.app f' arg)
+
+  /-- Once the function is a value, reduce the argument. -/
+  | appArg {v arg arg'} :
+      IsValue v → Step arg arg' →
+      Step (.app v arg) (.app v arg')
+
+  /-- Reduce the rhs of a let-binding. -/
+  | letInRhs {rhs rhs' body} :
+      Step rhs rhs' →
+      Step (.letIn rhs body) (.letIn rhs' body)
+
+  /-- Reduce the rhs of a let-pair-binding. -/
+  | letPairRhs {rhs rhs' body} :
+      Step rhs rhs' →
+      Step (.letPairIn rhs body) (.letPairIn rhs' body)
+
+  /-- Reduce the scrutinee of a match. -/
+  | matchScrut {scrut scrut' branches} :
+      Step scrut scrut' →
+      Step (.match_ scrut branches) (.match_ scrut' branches)
+
+end SmallStep
+
+
+
+
+/-! ## Well-scopedness
+
+`WellScopedUnder n e` means every `.var i` in `e` satisfies `i < n`. Under de
+Bruijn levels with the append-on-binder convention, the typing relation maintains
+the invariant that any well-typed expression is well-scoped under
+`ctx.env.length`.
+
+Lambda/let/letPair/match introduce 1, 1, 2, or `pat.contents` new levels
+respectively, raising the scope bound inside their body. -/
+
+mutual
+
+inductive Expr.WellScopedUnder : Nat → Expr → Prop
+  | primLit {n p}            : Expr.WellScopedUnder n (.primLit p)
+  | ctor    {n c}            : Expr.WellScopedUnder n (.ctor c)
+  | var     {n i}            : i < n → Expr.WellScopedUnder n (.var i)
+  | pair    {n a b}          :
+      Expr.WellScopedUnder n a → Expr.WellScopedUnder n b →
+      Expr.WellScopedUnder n (.pair a b)
+  | lambda  {n body}       :
+      Expr.WellScopedUnder (n + 1) body →
+      Expr.WellScopedUnder n (.lambda body)
+  | app     {n f arg}        :
+      Expr.WellScopedUnder n f → Expr.WellScopedUnder n arg →
+      Expr.WellScopedUnder n (.app f arg)
+  | letIn   {n rhs body}   :
+      Expr.WellScopedUnder n rhs →
+      Expr.WellScopedUnder (n + 1) body →
+      Expr.WellScopedUnder n (.letIn rhs body)
+  | letPairIn {n rhs body} :
+      Expr.WellScopedUnder n rhs →
+      Expr.WellScopedUnder (n + 2) body →
+      Expr.WellScopedUnder n (.letPairIn rhs body)
+  | match_  {n scrut branches} :
+      Expr.WellScopedUnder n scrut →
+      Expr.BranchListWellScoped n branches →
+      Expr.WellScopedUnder n (.match_ scrut branches)
+
+inductive Expr.BranchListWellScoped : Nat → List (MatchPattern × Expr) → Prop
+  | nil  {n}          : Expr.BranchListWellScoped n []
+  | cons {n pat body rest} :
+      Expr.WellScopedUnder (n + pat.contents) body →
+      Expr.BranchListWellScoped n rest →
+      Expr.BranchListWellScoped n ((pat, body) :: rest)
+
+end
+
+
+/-- Every well-typed expression is well-scoped under its context's env length.
+    This is the structural invariant: the lambda/let/letPair/match rules
+    correctly extend the env by 1, 1, 2, or `pat.contents` entries respectively.
+
+    Proof strategy: induct on the syntactic structure of `e` via `Expr.rec_strong`,
+    generalising over both `ctx` and `τ` (binding-extending constructors type
+    their bodies under an extended context, so the IH must work for any `ctx`).
+    For each case, invert the typing derivation and apply the IH(s). The
+    `match_` case requires an inner induction over the branches list. -/
+theorem TypeOfHM.well_scoped {ctx e τ} :
+    TypeOfHM ctx e τ → Expr.WellScopedUnder ctx.env.length e := by
+  induction e using Expr.rec_strong generalizing ctx τ with
+  | primLit p =>
+    intro _
+    exact .primLit
+  | pair a b aih bih =>
+    intro h
+    cases h with
+    | pair ha hb => exact .pair (aih ha) (bih hb)
+  | lambda body ih =>
+    intro h
+    cases h with
+    | lambda h_eq h_body =>
+      subst h_eq
+      exact .lambda (by simpa using ih h_body)
+  | app f input ihf ihi =>
+    intro h
+    cases h with
+    | app hf hi => exact .app (ihf hf) (ihi hi)
+  | letIn be body ihbe ihb =>
+    intro h
+    cases h with
+    | letIn h_be _ h_eq h_body =>
+      subst h_eq
+      exact .letIn (ihbe h_be) (by simpa using ihb h_body)
+  | letPairIn pe body ihpe ihb =>
+    intro h
+    cases h with
+    | letPairIn h_pe _ _ h_eq h_body =>
+      subst h_eq
+      exact .letPairIn (ihpe h_pe) (by simpa using ihb h_body)
+  | var n =>
+    intro h
+    cases h with
+    | var h_get _ =>
+      exact .var (List.getElem?_eq_some_iff.mp h_get).fst
+  | ctor nm =>
+    intro _
+    exact .ctor
+  | match_ scrutinee branches ihs ihbs =>
+    intro h
+    cases h with
+    | match_ h_scrut h_brs =>
+      refine .match_ (ihs h_scrut) ?_
+      clear ihs h_scrut
+      revert h_brs ihbs
+      induction branches with
+      | nil =>
+        intros
+        exact .nil
+      | cons hd tl ih_tl =>
+        intro ihbs h_brs
+        obtain ⟨pat, body⟩ := hd
+        have h_branch := h_brs (pat, body) List.mem_cons_self
+        cases h_branch with
+        | mk h_lookup h_tyName h_paramCount h_contents h_inst h_pb h_ctx h_body =>
+          subst h_ctx
+          subst h_pb
+          have h_body_ws := ihbs pat body List.mem_cons_self h_body
+          simp only [List.length_append, List.length_map,
+                     ← h_inst.length_eq, ← h_contents] at h_body_ws
+          refine .cons h_body_ws ?_
+          exact ih_tl
+            (fun pat' e' hmem => ihbs pat' e' (List.mem_cons_of_mem _ hmem))
+            (fun branch hmem => h_brs branch (List.mem_cons_of_mem _ hmem))
+
+
+
+
+/-! ## Canonical forms
+
+Inversion lemmas that say "if a value has such-and-such a type, it has such-and-
+such a syntactic form". Used in progress to conclude that the next step exists
+when we see a value in a particular type position.
+
+Note the asymmetry vs. simpler languages: a value of arrow type can be either
+a `lambda` *or* a partial ctor application (since constructors are curried). -/
+
+/-- Instantiation preserves the `wrapArrows ... (customTy ...)` shape: if you
+    instantiate a type of that shape, you get back a type of the same shape with
+    the same `customTy` name and the same number of arrow wrappers. -/
+private lemma InstantiatesBy.wrapArrows_customTy_form
+    {tyArgs : List Ty} {name : TyName} {args tys : List Ty} {τ : Ty}
+    (h : InstantiatesBy tyArgs (Ty.wrapArrows (.customTy name args) tys) τ) :
+    ∃ instArgs instTys, τ = Ty.wrapArrows (.customTy name instArgs) instTys := by
+  induction tys generalizing τ with
+  | nil =>
+    cases h with
+    | customTy _ => exact ⟨_, [], rfl⟩
+  | cons _ rest ih =>
+    cases h with
+    | arrow _ h_rest =>
+      expose_names
+      obtain ⟨instArgs, instRest, h_eq⟩ := ih h_rest
+      refine ⟨instArgs, instFst :: instRest, ?_⟩
+      simp [Ty.wrapArrows, h_eq]
+
+/-- Every ctor chain has a type of the form `wrapArrows (customTy n args) tys`,
+    i.e. some prefix of arrows ending in a `customTy`.
+
+    Inducts syntactically on `e` (rather than on `h_chain`) because `IsCtorChain`
+    is mutually defined with `IsValue`, so the `induction` tactic refuses it. -/
+private lemma TypeOfHM.ctor_chain_has_customTy_form
+    {ctx e τ}
+    (h_chain : SmallStep.IsCtorChain e) (h_ty : TypeOfHM ctx e τ) :
+    ∃ name args tys, τ = Ty.wrapArrows (.customTy name args) tys := by
+  induction e using Expr.rec_strong generalizing ctx τ with
+  | ctor _ =>
+    cases h_ty with
+    | ctor _ h_inst =>
+      have ⟨instArgs, instTys, h_eq⟩ :=
+        InstantiatesBy.wrapArrows_customTy_form h_inst
+      exact ⟨_, instArgs, instTys, h_eq⟩
+  | app _ _ ihf _ =>
+    cases h_chain with
+    | app h_chain' _ =>
+      cases h_ty with
+      | app h_f_ty _ =>
+        obtain ⟨name, args, tys, h_eq⟩ := ihf h_chain' h_f_ty
+        cases tys with
+        | nil => simp [Ty.wrapArrows] at h_eq
+        | cons _ rest =>
+          simp only [Ty.wrapArrows] at h_eq
+          injection h_eq with _ h_ret
+          exact ⟨name, args, rest, h_ret⟩
+  | primLit _      => cases h_chain
+  | pair _ _ _ _   => cases h_chain
+  | lambda _ _     => cases h_chain
+  | letIn _ _ _ _  => cases h_chain
+  | letPairIn _ _ _ _ => cases h_chain
+  | var _          => cases h_chain
+  | match_ _ _ _ _ => cases h_chain
+
+theorem TypeOfHM.canonical_prim {ctx e p}
+    (h_ty : TypeOfHM ctx e (.prim p))
+    (h_val : SmallStep.IsValue e) :
+    ∃ pl, e = .primLit pl := by
+  cases h_val with
+  | primLit p' => exact ⟨p', rfl⟩
+  | lambda _ => cases h_ty
+  | pair _ _ => cases h_ty
+  | ctor name =>
+    exfalso
+    have ⟨_, _, tys, h_eq⟩ :=
+      TypeOfHM.ctor_chain_has_customTy_form (.ctor name) h_ty
+    cases tys with
+    | nil => simp [Ty.wrapArrows] at h_eq
+    | cons _ _ => simp [Ty.wrapArrows] at h_eq
+  | ctorApp h_chain h_v =>
+    exfalso
+    have ⟨_, _, tys, h_eq⟩ :=
+      TypeOfHM.ctor_chain_has_customTy_form (.app h_chain h_v) h_ty
+    cases tys with
+    | nil => simp [Ty.wrapArrows] at h_eq
+    | cons _ _ => simp [Ty.wrapArrows] at h_eq
+
+theorem TypeOfHM.canonical_pair {ctx e fstTy sndTy}
+    (h_ty : TypeOfHM ctx e (.pair fstTy sndTy))
+    (h_val : SmallStep.IsValue e) :
+    ∃ a b, e = .pair a b ∧ SmallStep.IsValue a ∧ SmallStep.IsValue b := by
+  cases h_val with
+  | primLit _ => cases h_ty
+  | lambda _ => cases h_ty
+  | pair h_a h_b => exact ⟨_, _, rfl, h_a, h_b⟩
+  | ctor name =>
+    exfalso
+    have ⟨_, _, tys, h_eq⟩ :=
+      TypeOfHM.ctor_chain_has_customTy_form (.ctor name) h_ty
+    cases tys with
+    | nil => simp [Ty.wrapArrows] at h_eq
+    | cons _ _ => simp [Ty.wrapArrows] at h_eq
+  | ctorApp h_chain h_v =>
+    exfalso
+    have ⟨_, _, tys, h_eq⟩ :=
+      TypeOfHM.ctor_chain_has_customTy_form (.app h_chain h_v) h_ty
+    cases tys with
+    | nil => simp [Ty.wrapArrows] at h_eq
+    | cons _ _ => simp [Ty.wrapArrows] at h_eq
+
+theorem TypeOfHM.canonical_arrow {ctx e argTy retTy}
+    (h_ty : TypeOfHM ctx e (.arrow argTy retTy))
+    (h_val : SmallStep.IsValue e) :
+    (∃ body, e = .lambda body) ∨ SmallStep.IsCtorChain e := by
+  cases h_val with
+  | primLit _ => cases h_ty
+  | lambda body => exact .inl ⟨body, rfl⟩
+  | pair _ _ => cases h_ty
+  | ctor name => exact .inr (.ctor name)
+  | ctorApp h_chain h_v => exact .inr (.app h_chain h_v)
+
+theorem TypeOfHM.canonical_customTy {ctx e tyName tyArgs}
+    (h_ty : TypeOfHM ctx e (.customTy tyName tyArgs))
+    (h_val : SmallStep.IsValue e) :
+    SmallStep.IsCtorChain e := by
+  cases h_val with
+  | primLit _ => cases h_ty
+  | lambda _ => cases h_ty
+  | pair _ _ => cases h_ty
+  | ctor name => exact .ctor name
+  | ctorApp h_chain h_v => exact .app h_chain h_v
+
+
+
+
+/-! ## Substitution lemma & preservation
+
+The substitution lemma is the gateway: it says that replacing a free variable
+with a well-typed value of the right type preserves typing. Preservation then
+follows by case analysis on the Step rule, using the substitution lemma in the
+binder-eliminating cases (beta, let-reduce, letPair-reduce, match-reduce).
+
+Note: the general version below "substitutes anywhere in env" — this is
+necessary to push the induction through binders. Under levels, the level being
+substituted is `env_pre.length`, with `env_pre` the env-prefix before the
+binding being eliminated. -/
+
+theorem TypeOfHM.subst_lemma {ctx env_post e τ paramTy v}
+    (h_body : TypeOfHM
+                { ctx with env := ctx.env ++ [PolyTy.mkTrivial paramTy] ++ env_post }
+                e τ)
+    (h_v : TypeOfHM ctx v paramTy) :
+    TypeOfHM { ctx with env := ctx.env ++ env_post } (e.substN ctx.env.length [v]) τ := by
+  induction e using Expr.rec_strong generalizing ctx env_post τ with
+  | primLit _ =>
+    cases h_body with
+    | primLitUnit => exact .primLitUnit
+    | primLitInt  => exact .primLitInt
+    | primLitNat  => exact .primLitNat
+    | primLitBool => exact .primLitBool
+    | primLitStr  => exact .primLitStr
+  | ctor _ =>
+    cases h_body with
+    | ctor h_lookup h_inst => exact .ctor h_lookup h_inst
+  | pair _ _ ih_a ih_b =>
+    cases h_body with
+    | pair h_a h_b => exact .pair (ih_a h_a h_v) (ih_b h_b h_v)
+  | app _ _ ih_f ih_in =>
+    cases h_body with
+    | app h_f h_in => exact .app (ih_f h_f h_v) (ih_in h_in h_v)
+  | lambda body ih =>
+    cases h_body with
+    | lambda h_eq h_body_lam =>
+      rename_i bodyCtx_inner sndTy paramTy_lam
+      subst h_eq
+      have h_body_lam' : TypeOfHM
+          { ctx with env := ctx.env ++ [PolyTy.mkTrivial paramTy] ++
+                            (env_post ++ [PolyTy.mkTrivial paramTy_lam]) } body sndTy := by
+        simpa [List.append_assoc] using h_body_lam
+      refine .lambda ?_ (by simpa [List.append_assoc] using ih h_body_lam' h_v)
+      simp [List.append_assoc]
+  | letPairIn _ body _ ih_body =>
+    cases h_body with
+    | letPairIn _ _ _ _ _ =>
+      -- The letPairIn case uses `Generalise ctx.env fstTy genFstTy` (and snd).
+      -- After substitution we'd need `Generalise (ctx.env ++ env_post) ...`,
+      -- but generalising over a larger env generalises FEWER variables, so
+      -- the original Generalise doesn't transfer. Same blocker as `letIn`.
+      sorry
+  | match_ _ _ _ _ =>
+    cases h_body with
+    | match_ _ _ =>
+      -- For each branch, body is typed under env extended by patternBindings.
+      -- The same env_post extension trick as in lambda would handle the body,
+      -- but we'd need an inner induction over branches (like in
+      -- TypeOfHM.well_scoped). Leaving for a subsequent pass.
+      sorry
+  | letIn _ _ _ _ =>
+    -- The letIn case uses `Generalise ctx.env be_ty generalisedTy`. After
+    -- substitution the env grows from `ctx.env` to `ctx.env ++ env_post`, and
+    -- `Generalise` is sensitive to the env's free vars. So in general the
+    -- original Generalise doesn't transfer to the substituted env. Likely needs
+    -- either strengthening the typing rule or a side-condition that `v`'s free
+    -- type vars are disjoint from the ones generalised here.
+    sorry
+  | var i =>
+    cases h_body with
+    | var _ _ =>
+      -- Three sub-cases on `i` vs `ctx.env.length`:
+      --  (1) i < ctx.env.length: substN keeps `.var i`; lookup is in ctx.env, unchanged.
+      --  (2) i = ctx.env.length: substN returns `v`; we need `TypeOfHM ... v τ`.
+      --      This requires a weakening lemma for `h_v` AND a closedness lemma:
+      --      `InstantiatesBy tyArgs paramTy τ → τ = paramTy` (only holds when
+      --      paramTy has no `bvar`s). The current lemma signature has no
+      --      closedness assumption on paramTy.
+      --  (3) i > ctx.env.length: substN returns `.var (i-1)`; lookup shifts down.
+      sorry
+
+theorem TypeOfHM.preservation {ctx e τ e'}
+    (h_ty : TypeOfHM ctx e τ)
+    (h_step : SmallStep.Step e e') :
+    TypeOfHM ctx e' τ := by
+  sorry
