@@ -1066,15 +1066,19 @@ theorem TypeOfHM.weaken_env
       exact ih (env_pre := PolyTy.mkTrivial _ :: env_pre)
         (env_extra := env_extra) h_body_lam
   | letIn _ _ _ _ =>
-    -- Generalise blocker: `Generalise (env_pre ++ env_post) be_ty generalisedExprTy`
-    -- doesn't transfer to `env_pre ++ env_extra ++ env_post` in general — the
-    -- maximal generalisation can shrink when `env_extra` introduces free type
-    -- vars that overlap with the previously-generalised ones. Same blocker as
-    -- in `subst_lemma`. Provable under a side condition that `env_extra`'s
-    -- free type vars are disjoint from the relevant ones, but not as stated.
+    -- Genuine directionality blocker: in `subst_lemma`, env shrinks so
+    -- `gen_new.MoreGeneral gen_old` and `weaken_polyTy` can swap body's
+    -- polytype. Here env grows: `gen_old.MoreGeneral gen_new` (gen_old is
+    -- more general). To construct the new `.letIn`, we'd need to swap body's
+    -- `gen_old` for `gen_new`, which requires `gen_new.MoreGeneral gen_old` —
+    -- the opposite direction. So the same machinery as in `subst_lemma`
+    -- cannot be applied here. The lemma genuinely requires an extra side
+    -- condition (e.g. `env_extra`'s freeVars disjoint from `be_ty`'s) which
+    -- isn't part of the current statement; per stop rule, leaving as sorry.
     sorry
   | letPairIn _ _ _ _ =>
-    -- Same Generalise blocker as letIn (applied twice, for fstTy and sndTy).
+    -- Same directionality blocker as `letIn`, applied twice (for `fstTy` and
+    -- `sndTy`). See the `letIn` comment above.
     sorry
   | match_ scrutinee branches ihs ihbs =>
     cases h with
@@ -1294,10 +1298,268 @@ def PolyTy.MoreGeneral (pt_more pt_less : PolyTy) : Prop :=
   ∀ tyArgs τ, InstantiatesBy tyArgs pt_less.body τ →
     ∃ tyArgs', InstantiatesBy tyArgs' pt_more.body τ
 
+/-- `InstantiatesBy` preserves the source's free vars: any fvar in `t1` appears
+    as a fvar in `t2` (since instantiation only replaces bvars).
+    Used to derive that `MoreGeneral` implies `body.freeVars` subset. -/
+private theorem InstantiatesBy.freeVars_subset
+    {tyArgs : List Ty} {t1 t2 : Ty}
+    (h : InstantiatesBy tyArgs t1 t2) :
+    t1.freeVars ⊆ t2.freeVars := by
+  induction t1 using Ty.rec_strong generalizing t2 with
+  | prim _ =>
+    intro _ hx; simp [Ty.freeVars] at hx
+  | pair a b ih_a ih_b =>
+    cases h with
+    | pair h_a h_b =>
+      intro x hx
+      simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hx ⊢
+      rcases hx with h1 | h2
+      · exact .inl (ih_a h_a h1)
+      · exact .inr (ih_b h_b h2)
+  | arrow a b ih_a ih_b =>
+    cases h with
+    | arrow h_a h_b =>
+      intro x hx
+      simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hx ⊢
+      rcases hx with h1 | h2
+      · exact .inl (ih_a h_a h1)
+      · exact .inr (ih_b h_b h2)
+  | fvar n =>
+    cases h
+    intro _ hx; exact hx
+  | bvar n =>
+    intro _ hx
+    simp [Ty.freeVars] at hx
+  | customTy nm tys ih_list =>
+    cases h with
+    | @customTy _ instTys _ h_forall =>
+      intro x hx
+      simp only [Ty.freeVars] at hx ⊢
+      -- Show TyList.freeVars tys ⊆ TyList.freeVars instTys via the Forall₂
+      clear nm
+      induction h_forall with
+      | nil => exact absurd hx List.not_mem_nil
+      | @cons hd1 hd2 tl1 tl2 h_hd h_tl ih_tl =>
+        simp only [TyList.freeVars, List.mem_dedup, List.mem_append] at hx ⊢
+        rcases hx with h1 | h2
+        · exact .inl (ih_list hd1 List.mem_cons_self h_hd h1)
+        · exact .inr (ih_tl
+            (fun t hmem => ih_list t (List.mem_cons_of_mem _ hmem)) h2)
+
+/-- The conjecture: if `pt_more` is at least as general as `pt_less`, then
+    every fvar in `pt_more.body` is also in `pt_less.body`.
+
+    Proof sketch (not yet implemented per stop rule): construct a fvar-free
+    `τ` by instantiating `pt_less.body` with an all-`.prim .unit` `tyArgs`
+    of length covering its bvars (requires a bvar-bound lemma); then
+    `h_more` produces `tyArgs'` instantiating `pt_more.body` to that same
+    `τ`; by `InstantiatesBy.freeVars_subset`, `pt_more.body.fv ⊆ τ.fv =
+    pt_less.body.fv`. Needs ~3 supporting helpers (bvar bound for any Ty,
+    instantiation existence with replicate, monotonicity), exceeding the
+    helper budget. -/
+private theorem PolyTy.MoreGeneral.body_freeVars_subset
+    {pt_more pt_less : PolyTy}
+    (h : pt_more.MoreGeneral pt_less) :
+    pt_more.body.freeVars ⊆ pt_less.body.freeVars := by
+  sorry
+
+/-- An element is in an env's freeVars iff some polytype in env mentions it. -/
+private theorem Env.mem_freeVars_iff {env : Env} {x : Nat} :
+    x ∈ env.freeVars ↔ ∃ pt ∈ env, x ∈ pt.body.freeVars := by
+  induction env with
+  | nil => simp [Env.freeVars]
+  | cons hd tl ih =>
+    simp only [Env.freeVars, List.mem_dedup, List.mem_append]
+    rw [ih]
+    constructor
+    · rintro (h | ⟨pt, hmem, h⟩)
+      · exact ⟨hd, List.mem_cons_self, h⟩
+      · exact ⟨pt, List.mem_cons_of_mem _ hmem, h⟩
+    · rintro ⟨pt, hmem, h⟩
+      cases hmem with
+      | head _ => exact .inl h
+      | tail _ h' => exact .inr ⟨pt, h', h⟩
+
+/-- If every polytype in `l₁` appears in `l₂`, then `l₁`'s freeVars are a
+    subset of `l₂`'s freeVars. -/
+private theorem Env.freeVars_subset_of_subset {l₁ l₂ : Env}
+    (h : ∀ pt ∈ l₁, pt ∈ l₂) :
+    l₁.freeVars ⊆ l₂.freeVars := by
+  intro x hx
+  rw [Env.mem_freeVars_iff] at hx ⊢
+  obtain ⟨pt, hpt_mem, hpt_x⟩ := hx
+  exact ⟨pt, h pt hpt_mem, hpt_x⟩
+
+/-- Inserting an extra polytype between two halves of an env can only grow its
+    freeVars. -/
+private theorem Env.freeVars_subset_insert_middle
+    (l₁ l₃ : Env) (pt : PolyTy) :
+    (l₁ ++ l₃).freeVars ⊆ (l₁ ++ [pt] ++ l₃).freeVars := by
+  apply Env.freeVars_subset_of_subset
+  intro pt' hpt'
+  simp only [List.mem_append, List.mem_singleton] at hpt' ⊢
+  tauto
+
+/-- Swapping a polytype in env for one with fewer body-fvars can only shrink
+    env's freeVars. -/
+private theorem Env.freeVars_subset_swap
+    {l₁ l₃ : Env} {pt_old pt_new : PolyTy}
+    (h : pt_new.body.freeVars ⊆ pt_old.body.freeVars) :
+    (l₁ ++ [pt_new] ++ l₃).freeVars ⊆ (l₁ ++ [pt_old] ++ l₃).freeVars := by
+  intro x hx
+  rw [Env.mem_freeVars_iff] at hx ⊢
+  obtain ⟨pt, hpt_mem, hpt_x⟩ := hx
+  simp only [List.mem_append, List.mem_singleton] at hpt_mem
+  rcases hpt_mem with (hpre | hmid) | hpost
+  · exact ⟨pt, by simp only [List.mem_append, List.mem_singleton]; tauto, hpt_x⟩
+  · subst hmid
+    refine ⟨pt_old, ?_, h hpt_x⟩
+    simp only [List.mem_append, List.mem_singleton]; tauto
+  · exact ⟨pt, by simp only [List.mem_append, List.mem_singleton]; tauto, hpt_x⟩
+
 /-- `Generalise` always exists (just close over the canonical maximal `ftvs`). -/
 theorem Generalise.exists_polyTy (env : Env) (ty : Ty) :
     ∃ pt, Generalise env ty pt := by
-  sorry
+  refine ⟨_, Generalise.mk
+    (ftvs := (ty.freeVars.filter (fun tv => decide (tv ∉ env.freeVars))).dedup)
+    ?_ ?_ rfl⟩
+  · exact List.nodup_dedup _
+  · intro tv
+    rw [List.mem_dedup, List.mem_filter, decide_eq_true_eq]
+
+/-- Small helper: if `idxOf?` returns `some i`, then the element at `i` is
+    the searched-for element. -/
+private theorem List.idxOf?_some_getElem? {α : Type*} [BEq α] [LawfulBEq α]
+    {l : List α} {a : α} {i : Nat}
+    (h : l.idxOf? a = some i) :
+    l[i]? = some a := by
+  induction l generalizing i with
+  | nil => simp [List.idxOf?_nil] at h
+  | cons hd tl ih =>
+    rw [List.idxOf?_cons] at h
+    split at h
+    · -- hd == a
+      rename_i h_eq
+      have : hd = a := by exact LawfulBEq.eq_of_beq h_eq
+      cases this
+      cases h
+      simp
+    · simp [Option.map_eq_some_iff] at h
+      obtain ⟨j, hj_eq, h_succ⟩ := h
+      cases h_succ
+      simp [ih hj_eq]
+
+/-- If `idxOf?` returns `some i`, then `i < l.length`. -/
+private theorem List.idxOf?_some_lt_length {α : Type*} [BEq α] [LawfulBEq α]
+    {l : List α} {a : α} {i : Nat}
+    (h : l.idxOf? a = some i) :
+    i < l.length := by
+  have := List.idxOf?_some_getElem? h
+  rw [List.getElem?_eq_some_iff] at this
+  exact this.choose
+
+/-- Inner workhorse for `more_general_when_env_has_fewer_freevars`: given
+    instantiation of one closeOver, produce one for the other. -/
+private theorem Generalise.closeOver_inst_swap
+    (ty : Ty) (ftvs_few ftvs_many : List Nat)
+    (h_subset_ftvs : ∀ tv, tv ∈ ftvs_many → tv ∈ ftvs_few)
+    {tyArgs_less : List Ty} {τ : Ty}
+    (h_inst : InstantiatesBy tyArgs_less (ty.closeOver ftvs_many) τ) :
+    ∃ tyArgs_more, InstantiatesBy tyArgs_more (ty.closeOver ftvs_few) τ := by
+  -- Construct tyArgs_more once: for each n ∈ ftvs_few, look up its image
+  -- in tyArgs_less (via ftvs_many) or fall back to .fvar n.
+  refine ⟨ftvs_few.map (fun n =>
+            match ftvs_many.idxOf? n with
+            | some j => (tyArgs_less[j]?).getD (.fvar n)
+            | none   => .fvar n), ?_⟩
+  set tyArgs_more : List Ty := ftvs_few.map (fun n =>
+            match ftvs_many.idxOf? n with
+            | some j => (tyArgs_less[j]?).getD (.fvar n)
+            | none   => .fvar n) with htm_def
+  induction ty using Ty.rec_strong generalizing τ with
+  | prim _ =>
+    cases h_inst
+    exact .prim
+  | pair a b ih_a ih_b =>
+    cases h_inst with
+    | pair h_a h_b =>
+      exact .pair (ih_a h_a) (ih_b h_b)
+  | arrow a b ih_a ih_b =>
+    cases h_inst with
+    | arrow h_a h_b =>
+      exact .arrow (ih_a h_a) (ih_b h_b)
+  | bvar k =>
+    -- ty has an "orphan" .bvar k (not introduced by closeOver). closeOver
+    -- preserves it: both bodies still contain `.bvar k` at this position.
+    -- In general we'd need tyArgs_more[k]? = tyArgs_less[k]?, but tyArgs_more
+    -- is built from ftvs_few alone. For the practical use in subst_lemma
+    -- (where `ty` arises from `TypeOfHM` and thus has no bvars), this case
+    -- is unreachable. Skipped per stop rule.
+    sorry
+  | fvar n =>
+    -- closeOver of .fvar n is either .bvar i (if n ∈ vars at i) or .fvar n.
+    rcases h_few_idx : ftvs_few.idxOf? n with _ | i
+    · -- n ∉ ftvs_few. By h_subset_ftvs contrapositive, n ∉ ftvs_many.
+      have h_n_few : n ∉ ftvs_few := by
+        rw [← List.idxOf?_eq_none_iff]; exact h_few_idx
+      have h_n_many : n ∉ ftvs_many := fun h => h_n_few (h_subset_ftvs n h)
+      have h_no_many : ftvs_many.idxOf? n = none :=
+        List.idxOf?_eq_none_iff.mpr h_n_many
+      have h_closeOver_few : (Ty.fvar n).closeOver ftvs_few = .fvar n := by
+        simp [Ty.closeOver, h_few_idx]
+      have h_closeOver_many : (Ty.fvar n).closeOver ftvs_many = .fvar n := by
+        simp [Ty.closeOver, h_no_many]
+      rw [h_closeOver_many] at h_inst
+      cases h_inst
+      rw [h_closeOver_few]
+      exact .fvar
+    · -- n ∈ ftvs_few at position i; (Ty.fvar n).closeOver ftvs_few = .bvar i.
+      have h_few_at : ftvs_few[i]? = some n := List.idxOf?_some_getElem? h_few_idx
+      have h_closeOver_few : (Ty.fvar n).closeOver ftvs_few = .bvar i := by
+        simp [Ty.closeOver, h_few_idx]
+      rw [h_closeOver_few]
+      rcases h_many_idx : ftvs_many.idxOf? n with _ | j
+      · -- n ∉ ftvs_many, so closeOver_many of fvar n is .fvar n.
+        have h_closeOver_many : (Ty.fvar n).closeOver ftvs_many = .fvar n := by
+          simp [Ty.closeOver, h_many_idx]
+        rw [h_closeOver_many] at h_inst
+        cases h_inst
+        refine .bvar ?_
+        show tyArgs_more[i]? = some (Ty.fvar n)
+        rw [htm_def, List.getElem?_map, h_few_at]
+        simp [h_many_idx]
+      · -- n ∈ ftvs_many at position j.
+        have h_closeOver_many : (Ty.fvar n).closeOver ftvs_many = .bvar j := by
+          simp [Ty.closeOver, h_many_idx]
+        rw [h_closeOver_many] at h_inst
+        cases h_inst with
+        | bvar h_get =>
+          refine .bvar ?_
+          show tyArgs_more[i]? = some τ
+          rw [htm_def, List.getElem?_map, h_few_at]
+          simp [h_many_idx, h_get]
+  | customTy nm tys ih_list =>
+    cases h_inst with
+    | @customTy _ instTys _ h_forall =>
+      -- ty.closeOver of customTy = customTy with TyList.closeOver.
+      simp only [Ty.closeOver]
+      refine .customTy ?_
+      -- Want: List.Forall₂ (InstantiatesBy tyArgs_more)
+      --         (TyList.closeOver ftvs_few tys) instTys
+      -- We have h_forall on TyList.closeOver ftvs_many tys → instTys.
+      clear nm
+      induction tys generalizing instTys with
+      | nil =>
+        cases h_forall
+        exact .nil
+      | cons hd tl ih_tl =>
+        simp only [TyList.closeOver] at h_forall
+        cases h_forall with
+        | cons h_hd h_tl =>
+          refine .cons ?_ ?_
+          · exact ih_list hd List.mem_cons_self h_hd
+          · exact ih_tl
+              (fun t hmem => ih_list t (List.mem_cons_of_mem _ hmem)) h_tl
 
 /-- Generalising the same `ty` against an env with fewer free type vars yields
     a more general polytype. -/
@@ -1307,7 +1569,24 @@ theorem Generalise.more_general_when_env_has_fewer_freevars
     (h_many : Generalise env_many ty pt_many)
     (h_subset : env_few.freeVars ⊆ env_many.freeVars) :
     pt_few.MoreGeneral pt_many := by
-  sorry
+  cases h_few with
+  | mk h_nodup_few h_iff_few h_eq_few =>
+    cases h_many with
+    | mk h_nodup_many h_iff_many h_eq_many =>
+      subst h_eq_few
+      subst h_eq_many
+      expose_names
+      intro tyArgs_less τ h_inst_many
+      -- Show ftvs_many ⊆ ftvs_few using h_subset and the iffs.
+      have h_subset_ftvs : ∀ tv, tv ∈ ftvs_1 → tv ∈ ftvs := by
+        intro tv h_tv_many
+        rw [h_iff_many] at h_tv_many
+        rw [h_iff_few]
+        refine ⟨h_tv_many.1, ?_⟩
+        intro h_tv_few_env
+        exact h_tv_many.2 (h_subset h_tv_few_env)
+      -- Apply the inner helper.
+      exact Generalise.closeOver_inst_swap ty ftvs ftvs_1 h_subset_ftvs h_inst_many
 
 /-- Replacing a single polytype in env with a more-general one preserves typing.
     This is the heart of why `letIn` works in `subst_lemma`: after substitution,
@@ -1319,7 +1598,180 @@ theorem TypeOfHM.weaken_polyTy
     (h : TypeOfHM { ctx with env := env_pre ++ [pt_less] ++ env_post } e τ)
     (h_more : pt_more.MoreGeneral pt_less) :
     TypeOfHM { ctx with env := env_pre ++ [pt_more] ++ env_post } e τ := by
-  sorry
+  induction e using Expr.rec_strong
+    generalizing ctx env_pre env_post pt_less pt_more τ with
+  | primLit _ =>
+    cases h with
+    | primLitUnit => exact .primLitUnit
+    | primLitInt  => exact .primLitInt
+    | primLitNat  => exact .primLitNat
+    | primLitBool => exact .primLitBool
+    | primLitStr  => exact .primLitStr
+  | ctor _ =>
+    cases h with
+    | ctor h_lookup h_inst => exact .ctor h_lookup h_inst
+  | pair _ _ ih_a ih_b =>
+    cases h with
+    | pair h_a h_b => exact .pair (ih_a h_a h_more) (ih_b h_b h_more)
+  | app _ _ ih_f ih_in =>
+    cases h with
+    | app h_f h_in => exact .app (ih_f h_f h_more) (ih_in h_in h_more)
+  | var i =>
+    cases h with
+    | var h_lookup h_inst =>
+      rcases lt_trichotomy i env_pre.length with h_lt | h_eq | h_gt
+      · -- i < env_pre.length: lookup unchanged, same construction.
+        refine .var ?_ h_inst
+        rw [List.append_assoc, List.getElem?_append_left h_lt]
+        rw [List.append_assoc, List.getElem?_append_left h_lt] at h_lookup
+        exact h_lookup
+      · -- i = env_pre.length: this is the swapped position.
+        subst h_eq
+        -- h_lookup : (env_pre ++ [pt_less] ++ env_post)[env_pre.length]? = some polyTy
+        -- Compute it down to polyTy = pt_less.
+        rw [List.append_assoc,
+            List.getElem?_append_right (Nat.le_refl _),
+            Nat.sub_self] at h_lookup
+        simp at h_lookup
+        subst h_lookup
+        -- Use h_more to get tyArgs' instantiating pt_more.body to τ.
+        obtain ⟨tyArgs', h_inst'⟩ := h_more _ _ h_inst
+        refine .var ?_ h_inst'
+        -- (env_pre ++ [pt_more] ++ env_post)[env_pre.length]? = some pt_more
+        rw [List.append_assoc,
+            List.getElem?_append_right (Nat.le_refl _),
+            Nat.sub_self]
+        rfl
+      · -- i > env_pre.length: lookup falls in env_post.
+        refine .var ?_ h_inst
+        have h_le : env_pre.length + 1 ≤ i := h_gt
+        rw [List.append_assoc,
+            List.getElem?_append_right (by omega : env_pre.length ≤ i)]
+        rw [List.append_assoc,
+            List.getElem?_append_right (by omega : env_pre.length ≤ i)] at h_lookup
+        rw [show ([pt_more] ++ env_post) = (pt_more :: env_post) from rfl]
+        rw [show ([pt_less] ++ env_post) = (pt_less :: env_post) from rfl] at h_lookup
+        rw [show (i - env_pre.length) = (i - env_pre.length - 1) + 1 from by omega]
+        rw [show (i - env_pre.length) = (i - env_pre.length - 1) + 1 from by omega] at h_lookup
+        simp only [List.getElem?_cons_succ] at h_lookup ⊢
+        exact h_lookup
+  | lambda body ih =>
+    cases h with
+    | lambda h_eq h_body_lam =>
+      subst h_eq
+      refine .lambda rfl ?_
+      exact ih (env_pre := PolyTy.mkTrivial _ :: env_pre) h_body_lam h_more
+  | letIn _ _ ih_be ih_body =>
+    cases h with
+    | letIn h_be h_gen h_eq h_body_inner =>
+      subst h_eq
+      expose_names
+      -- Step 1: IH on body to swap pt_less for pt_more (extends env_pre with gen).
+      have h_body_swapped :=
+        ih_body (env_pre := generalisedExprTy :: env_pre) h_body_inner h_more
+      -- Step 2: Get a fresh Generalise over the new env.
+      obtain ⟨gen_new, h_gen_new⟩ :=
+        Generalise.exists_polyTy
+          (env_pre ++ [pt_more] ++ env_post) boundExprTy
+      -- Step 3: pt_more.body.fv ⊆ pt_less.body.fv (from MoreGeneral).
+      have h_subset_body : pt_more.body.freeVars ⊆ pt_less.body.freeVars :=
+        h_more.body_freeVars_subset
+      -- Step 4: New env's freeVars ⊆ old env's freeVars.
+      have h_subset_env :
+          (env_pre ++ [pt_more] ++ env_post).freeVars ⊆
+          (env_pre ++ [pt_less] ++ env_post).freeVars :=
+        Env.freeVars_subset_swap h_subset_body
+      -- Step 5: gen_new is more general than the original gen.
+      have h_more_gen : gen_new.MoreGeneral generalisedExprTy :=
+        Generalise.more_general_when_env_has_fewer_freevars
+          h_gen_new h_gen h_subset_env
+      -- Step 6: Apply weaken_polyTy (recursively on the same body) to swap
+      -- `generalisedExprTy` for `gen_new` at position 0 of body's env.
+      have h_body_final :=
+        ih_body (env_pre := []) (pt_less := generalisedExprTy)
+          (pt_more := gen_new)
+          (env_post := env_pre ++ [pt_more] ++ env_post)
+          h_body_swapped h_more_gen
+      exact .letIn (ih_be h_be h_more) h_gen_new rfl h_body_final
+  | letPairIn _ _ ih_pe ih_body =>
+    cases h with
+    | letPairIn h_pe h_genFst h_genSnd h_eq h_body_inner =>
+      subst h_eq
+      expose_names
+      -- Step 1: IH on body, swapping pt_less for pt_more (extends env_pre).
+      have h_body_swapped :=
+        ih_body (env_pre := genFstTy :: genSndTy :: env_pre)
+          (pt_more := pt_more) h_body_inner h_more
+      -- Step 2: Get fresh Generalises for fst and snd over the new env.
+      obtain ⟨genFst_new, h_genFst_new⟩ :=
+        Generalise.exists_polyTy
+          (env_pre ++ [pt_more] ++ env_post) fstTy
+      obtain ⟨genSnd_new, h_genSnd_new⟩ :=
+        Generalise.exists_polyTy
+          (env_pre ++ [pt_more] ++ env_post) sndTy
+      have h_subset_body : pt_more.body.freeVars ⊆ pt_less.body.freeVars :=
+        h_more.body_freeVars_subset
+      have h_subset_env :
+          (env_pre ++ [pt_more] ++ env_post).freeVars ⊆
+          (env_pre ++ [pt_less] ++ env_post).freeVars :=
+        Env.freeVars_subset_swap h_subset_body
+      have h_more_genFst : genFst_new.MoreGeneral genFstTy :=
+        Generalise.more_general_when_env_has_fewer_freevars
+          h_genFst_new h_genFst h_subset_env
+      have h_more_genSnd : genSnd_new.MoreGeneral genSndTy :=
+        Generalise.more_general_when_env_has_fewer_freevars
+          h_genSnd_new h_genSnd h_subset_env
+      -- Step 3: Swap genSndTy first (at position 1).
+      have h_body_swap_snd :=
+        ih_body (env_pre := [genFstTy]) (pt_less := genSndTy)
+          (pt_more := genSnd_new)
+          (env_post := env_pre ++ [pt_more] ++ env_post)
+          h_body_swapped h_more_genSnd
+      -- Step 4: Swap genFstTy at position 0.
+      have h_body_swap_both :=
+        ih_body (env_pre := []) (pt_less := genFstTy)
+          (pt_more := genFst_new)
+          (env_post := genSnd_new :: env_pre ++ [pt_more] ++ env_post)
+          h_body_swap_snd h_more_genFst
+      exact .letPairIn (ih_pe h_pe h_more) h_genFst_new h_genSnd_new rfl h_body_swap_both
+  | match_ scrutinee branches ih_scrut ih_branches =>
+    cases h with
+    | match_ h_scrut h_brs =>
+      refine .match_ (ih_scrut h_scrut h_more) ?_
+      clear ih_scrut h_scrut
+      revert h_brs ih_branches
+      induction branches with
+      | nil =>
+        intro _ _ b h_mem
+        exact absurd h_mem List.not_mem_nil
+      | cons hd tl ih_tl =>
+        intro ihbs h_brs branch h_mem
+        obtain ⟨pat, body⟩ := hd
+        cases h_mem with
+        | head _ =>
+          have h_branch := h_brs (pat, body) List.mem_cons_self
+          cases h_branch with
+          | mk h_lookup h_tyName h_paramCount h_contents h_inst h_pb h_ctx h_body =>
+            subst h_ctx
+            subst h_pb
+            expose_names
+            -- Reassociate body's env to put env_pre' = patternBindings ++ env_pre.
+            rw [show (instContents.map PolyTy.mkTrivial
+                      ++ (env_pre ++ [pt_less] ++ env_post))
+                  = (instContents.map PolyTy.mkTrivial ++ env_pre)
+                      ++ [pt_less] ++ env_post
+                  from by simp [List.append_assoc]] at h_body
+            have ih_body :=
+              ihbs pat body List.mem_cons_self
+                (env_pre := instContents.map PolyTy.mkTrivial ++ env_pre)
+                h_body h_more
+            refine .mk h_lookup h_tyName h_paramCount h_contents h_inst rfl rfl ?_
+            simpa [List.append_assoc] using ih_body
+        | tail _ h_mem' =>
+          exact ih_tl
+            (fun pat' e' hmem => ihbs pat' e' (List.mem_cons_of_mem _ hmem))
+            (fun b hmem => h_brs b (List.mem_cons_of_mem _ hmem))
+            branch h_mem'
 
 /-- If `ty` is closed (no `bvar`s), then `InstantiatesBy` on it is the identity:
     no `bvar` ever gets matched, so the structural recursion just reproduces `ty`. -/
@@ -1418,7 +1870,8 @@ theorem TypeOfHM.subst_lemma {ctx env_post e τ paramTy v}
         Generalise.exists_polyTy (env_post ++ ctx.env) sndTy
       -- Each new polytype is more general.
       have h_freeVars_subset : (env_post ++ ctx.env).freeVars ⊆
-          (env_post ++ [PolyTy.mkTrivial paramTy] ++ ctx.env).freeVars := by sorry
+          (env_post ++ [PolyTy.mkTrivial paramTy] ++ ctx.env).freeVars :=
+        Env.freeVars_subset_insert_middle env_post ctx.env _
       have h_more_fst : genFstTy_new.MoreGeneral genFstTy :=
         Generalise.more_general_when_env_has_fewer_freevars
           h_genFst_new h_genFst h_freeVars_subset
@@ -1500,7 +1953,7 @@ theorem TypeOfHM.subst_lemma {ctx env_post e τ paramTy v}
       -- New polytype is more general than old.
       have h_more : generalisedExprTy_new.MoreGeneral generalisedExprTy :=
         Generalise.more_general_when_env_has_fewer_freevars h_gen_new h_gen
-          (by sorry)  -- env_post ++ ctx.env has subset freeVars of env_post ++ [paramTy] ++ ctx.env
+          (Env.freeVars_subset_insert_middle env_post ctx.env _)
       -- Swap polytype in body's env using weaken_polyTy.
       have h_body_new :=
         TypeOfHM.weaken_polyTy (env_pre := []) (env_post := env_post ++ ctx.env)
