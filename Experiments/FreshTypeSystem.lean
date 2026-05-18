@@ -1370,7 +1370,8 @@ theorem TypeOfHM.weaken_env
     | primLitStr  => exact .primLitStr
   | ctor _ =>
     cases h with
-    | ctor h_lookup h_inst => exact .ctor h_lookup h_inst
+    | ctor h_lookup h_tyArgs_closed h_inst =>
+      exact .ctor h_lookup h_tyArgs_closed h_inst
   | pair _ _ ih_a ih_b =>
     cases h with
     | pair h_a h_b =>
@@ -1381,11 +1382,11 @@ theorem TypeOfHM.weaken_env
       exact .app (ih_f h_f h_env_extra_closed) (ih_in h_in h_env_extra_closed)
   | var i =>
     cases h with
-    | var h_lookup h_inst =>
+    | var h_lookup h_tyArgs_closed h_inst =>
       simp only [Expr.shiftFrom]
       by_cases h_lt : i < env_pre.length
       · rw [if_pos h_lt]
-        refine .var ?_ h_inst
+        refine .var ?_ h_tyArgs_closed h_inst
         show (env_pre ++ env_extra ++ env_post)[i]? = _
         rw [List.getElem?_append_left
               (by simp only [List.length_append]; omega :
@@ -1396,7 +1397,7 @@ theorem TypeOfHM.weaken_env
         exact h_lookup'
       · push_neg at h_lt
         rw [if_neg (Nat.not_lt.mpr h_lt)]
-        refine .var ?_ h_inst
+        refine .var ?_ h_tyArgs_closed h_inst
         show (env_pre ++ env_extra ++ env_post)[i + env_extra.length]? = _
         have h_left : (env_pre ++ env_extra).length ≤ i + env_extra.length := by
           simp only [List.length_append]; omega
@@ -1411,10 +1412,10 @@ theorem TypeOfHM.weaken_env
         exact h_lookup'
   | lambda body ih =>
     cases h with
-    | lambda h_eq h_body_lam =>
+    | lambda h_paramTy_closed h_eq h_body_lam =>
       subst h_eq
       simp only [Expr.shiftFrom]
-      refine .lambda rfl ?_
+      refine .lambda h_paramTy_closed rfl ?_
       exact ih (env_pre := PolyTy.mkTrivial _ :: env_pre)
         (env_extra := env_extra) h_body_lam h_env_extra_closed
   | letIn _ body ih_be ih_body =>
@@ -1472,10 +1473,16 @@ theorem TypeOfHM.weaken_env
         h_body_inner h_env_extra_closed
   | match_ scrutinee branches ihs ihbs =>
     cases h with
-    | match_ h_scrut h_brs =>
+    | match_ h_scrut h_branches_nonempty h_brs =>
       simp only [Expr.shiftFrom]
-      refine .match_ (ihs h_scrut h_env_extra_closed) ?_
-      clear ihs h_scrut
+      have h_shift_nonempty :
+          BranchList.shiftFrom env_pre.length env_extra.length branches ≠ [] := by
+        intro h_eq
+        cases branches with
+        | nil => exact h_branches_nonempty rfl
+        | cons _ _ => simp [BranchList.shiftFrom] at h_eq
+      refine .match_ (ihs h_scrut h_env_extra_closed) h_shift_nonempty ?_
+      clear ihs h_scrut h_branches_nonempty h_shift_nonempty
       revert h_brs ihbs
       induction branches with
       | nil =>
@@ -1566,7 +1573,7 @@ private lemma TypeOfHM.ctor_chain_has_customTy_form
   induction e using Expr.rec_strong generalizing ctx τ with
   | ctor _ =>
     cases h_ty with
-    | ctor _ h_inst =>
+    | ctor _ _ h_inst =>
       have ⟨instArgs, instTys, h_eq⟩ :=
         InstantiatesBy.wrapArrows_customTy_form h_inst
       exact ⟨_, instArgs, instTys, h_eq⟩
@@ -1717,6 +1724,11 @@ private theorem InstantiatesBy.eq_of_closed
               (fun ty h => h_all ty (List.mem_cons_of_mem _ h))
           rw [h_hd_eq, h_tl_eq]
 
+
+
+
+
+
 theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
     (h_body : TypeOfHM
                 { ctors, env := env_post ++ [PolyTy.mkTrivial paramTy] ++ env }
@@ -1736,7 +1748,8 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
     | primLitStr  => exact .primLitStr
   | ctor _ =>
     cases h_body with
-    | ctor h_lookup h_inst => exact .ctor h_lookup h_inst
+    | ctor h_lookup h_tyArgs_closed h_inst =>
+      exact .ctor h_lookup h_tyArgs_closed h_inst
   | pair _ _ ih_a ih_b =>
     cases h_body with
     | pair h_a h_b =>
@@ -1747,21 +1760,21 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
       exact .app (ih_f h_f h_v h_env_post_closed) (ih_in h_in h_v h_env_post_closed)
   | lambda body ih =>
     cases h_body with
-    | lambda h_eq h_body_lam =>
-      rename_i bodyCtx_inner sndTy paramTy_lam
+    | lambda h_paramTy_lam_closed h_eq h_body_lam =>
       subst h_eq
-      -- bodyCtx_inner.env was set to `paramTy_lam :: (env_post ++ [paramTy] ++ ctx.env)`,
+      -- bodyCtx.env was set to `paramTy_lam :: (env_post ++ [paramTy] ++ ctx.env)`,
       -- which is definitionally `(paramTy_lam :: env_post) ++ [paramTy] ++ ctx.env`.
       -- We recurse with env_post' := paramTy_lam :: env_post; substitution position
       -- becomes (env_post.length + 1), which is exactly what `Expr.substN` produces
       -- for `.lambda body`.
-      exact .lambda rfl
-        (ih (env_post := PolyTy.mkTrivial paramTy_lam :: env_post) h_body_lam h_v
+      exact .lambda h_paramTy_lam_closed rfl
+        (ih (env_post := PolyTy.mkTrivial _ :: env_post) h_body_lam h_v
           (by
             -- Need (paramTy_lam :: env_post).freeVars = [].
             -- = paramTy_lam.freeVars ∪ env_post.freeVars (after dedup).
             -- We have env_post.freeVars = [] but not paramTy_lam.freeVars = [].
             -- Would need a closed-paramTy invariant on the typing of `e`.
+
             sorry))
   | letPairIn _ body ih_pe ih_body =>
     cases h_body with
@@ -1805,9 +1818,15 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
         h_genFst_new h_genSnd_new rfl h_body_subst
   | match_ scrutinee branches ih_scrut ih_branches =>
     cases h_body with
-    | match_ h_scrut h_brs =>
-      refine .match_ (ih_scrut h_scrut h_v h_env_post_closed) ?_
-      clear ih_scrut h_scrut
+    | match_ h_scrut h_branches_nonempty h_brs =>
+      have h_subst_nonempty :
+          BranchList.substN env_post.length [v] branches ≠ [] := by
+        intro h_eq
+        cases branches with
+        | nil => exact h_branches_nonempty rfl
+        | cons _ _ => simp [BranchList.substN] at h_eq
+      refine .match_ (ih_scrut h_scrut h_v h_env_post_closed) h_subst_nonempty ?_
+      clear ih_scrut h_scrut h_branches_nonempty h_subst_nonempty
       -- Goal: ∀ branch ∈ BranchList.substN env_post.length [v] branches,
       --   TypeOfMatchBranch { env := env_post ++ ctx.env, ... } branch ...
       revert h_brs ih_branches
@@ -1886,13 +1905,13 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
       exact .letIn (ih_be h_be h_v h_env_post_closed) h_gen_new rfl h_body_subst
   | var i =>
     cases h_body with
-    | var h_lookup h_inst =>
+    | var h_lookup h_tyArgs_closed h_inst =>
       rcases lt_trichotomy i env_post.length with h_lt | h_eq | h_gt
       · -- Sub-case (1): i < env_post.length. substN keeps `.var i`.
         have h_subst : (Expr.var i).substN env_post.length [v] = .var i := by
           simp [Expr.substN, h_lt]
         rw [h_subst]
-        refine .var ?_ h_inst
+        refine .var ?_ h_tyArgs_closed h_inst
         -- Lookup at i is in env_post in both envs since i < env_post.length.
         rw [List.getElem?_append_left h_lt]
         rw [List.append_assoc, List.getElem?_append_left h_lt] at h_lookup
@@ -1912,8 +1931,8 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
         -- h_lookup : polyTy = PolyTy.mkTrivial paramTy (after simp)
         subst h_lookup
         -- h_inst : InstantiatesBy tyArgs (PolyTy.mkTrivial paramTy).body τ
-        --        = InstantiatesBy tyArgs paramTy τ (after unfolding mkTrivial)
-        simp [PolyTy.mkTrivial] at h_inst
+        --        = InstantiatesBy tyArgs paramTy τ (definitionally, since
+        --        (PolyTy.mkTrivial paramTy).body = paramTy by `rfl`).
         -- By closedness, τ = paramTy.
         have h_τ_eq := InstantiatesBy.eq_of_closed h_paramTy_closed h_inst
         subst h_τ_eq
@@ -1929,7 +1948,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
         have h_subst : (Expr.var i).substN env_post.length [v] = .var (i - 1) := by
           simp [Expr.substN, h_not_lt, h_not_lt']
         rw [h_subst]
-        refine .var ?_ h_inst
+        refine .var ?_ h_tyArgs_closed h_inst
         -- Lookup at i in (env_post ++ [paramTy] ++ ctx.env) falls in ctx.env at
         -- offset (i - env_post.length - 1). Lookup at (i - 1) in (env_post ++ ctx.env)
         -- falls in ctx.env at offset (i - 1 - env_post.length). Equal by arith.
