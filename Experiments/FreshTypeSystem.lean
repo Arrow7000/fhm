@@ -1740,8 +1740,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
                 { ctors, env := env_post ++ [PolyTy.mkTrivial paramTy] ++ env }
                 e τ)
     (h_v : TypeOfHM {ctors,env} v paramTy)
-    (h_paramTy_closed : OnlyContainsBvars [] paramTy)
-    (h_env_post_closed : env_post.freeVars = []) :
+    (h_paramTy_closed : OnlyContainsBvars [] paramTy) :
     TypeOfHM { ctors, env := env_post ++ env }
       (e.substN env_post.length [v]) τ := by
   induction e using Expr.rec_strong generalizing env env_post τ with
@@ -1759,11 +1758,11 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
   | pair _ _ ih_a ih_b =>
     cases h_body with
     | pair h_a h_b =>
-      exact .pair (ih_a h_a h_v h_env_post_closed) (ih_b h_b h_v h_env_post_closed)
+      exact .pair (ih_a h_a h_v) (ih_b h_b h_v)
   | app _ _ ih_f ih_in =>
     cases h_body with
     | app h_f h_in =>
-      exact .app (ih_f h_f h_v h_env_post_closed) (ih_in h_in h_v h_env_post_closed)
+      exact .app (ih_f h_f h_v) (ih_in h_in h_v)
   | lambda body ih =>
     cases h_body with
     | lambda h_paramTy_lam_closed h_eq h_body_lam =>
@@ -1774,14 +1773,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
       -- becomes (env_post.length + 1), which is exactly what `Expr.substN` produces
       -- for `.lambda body`.
       exact .lambda h_paramTy_lam_closed rfl
-        (ih (env_post := PolyTy.mkTrivial _ :: env_post) h_body_lam h_v
-          (by
-            -- Need (paramTy_lam :: env_post).freeVars = [].
-            -- = paramTy_lam.freeVars ∪ env_post.freeVars (after dedup).
-            -- We have env_post.freeVars = [] but not paramTy_lam.freeVars = [].
-            -- Would need a closed-paramTy invariant on the typing of `e`.
-
-            sorry))
+        (ih (env_post := PolyTy.mkTrivial _ :: env_post) h_body_lam h_v)
   | letPairIn _ body ih_pe ih_body =>
     cases h_body with
     | letPairIn h_pe h_genFst h_genSnd h_eq h_body_inner =>
@@ -1792,13 +1784,6 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
       have h_body_subst :=
         ih_body (env_post := genSndTy :: genFstTy :: env_post)
           h_body_inner h_v
-          (by
-            -- Need (genSndTy :: genFstTy :: env_post).freeVars = [].
-            -- Requires both genSndTy.body.freeVars = [] and
-            -- genFstTy.body.freeVars = []. With relaxed Generalise, ftvs may
-            -- not be max, so body.freeVars = ty.freeVars \ ftvs may be nonempty.
-            -- Would need a max-generalisation invariant on h_genFst, h_genSnd.
-            sorry)
       -- With the relaxed Generalise (`→` instead of `↔`), the same generalisation
       -- transfers from the bigger env to the smaller env: ftvs need only be
       -- eligible (i.e. ⊆ ¬env.freeVars), and removing paramTy can only ADD
@@ -1820,7 +1805,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
           exact fun tv h_mem =>
             ⟨(h_eligible tv h_mem).1,
              fun h_in => (h_eligible tv h_mem).2 (h_subset h_in)⟩
-      exact .letPairIn (ih_pe h_pe h_v h_env_post_closed)
+      exact .letPairIn (ih_pe h_pe h_v)
         h_genFst_new h_genSnd_new rfl h_body_subst
   | match_ scrutinee branches ih_scrut ih_branches =>
     cases h_body with
@@ -1831,7 +1816,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
         cases branches with
         | nil => exact h_branches_nonempty rfl
         | cons _ _ => simp [BranchList.substN] at h_eq
-      refine .match_ (ih_scrut h_scrut h_v h_env_post_closed) h_subst_nonempty ?_
+      refine .match_ (ih_scrut h_scrut h_v) h_subst_nonempty ?_
       clear ih_scrut h_scrut h_branches_nonempty h_subst_nonempty
       -- Goal: ∀ branch ∈ BranchList.substN env_post.length [v] branches,
       --   TypeOfMatchBranch { env := env_post ++ ctx.env, ... } branch ...
@@ -1861,11 +1846,6 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
                 (env_post := List.map PolyTy.mkTrivial instContents ++ env_post)
                 (by simpa [List.append_assoc] using h_body_orig)
                 h_v
-                (by
-                  -- Need (instContents.map mkTrivial ++ env_post).freeVars = [].
-                  -- Requires each instContents element to be closed. With non-
-                  -- closed tyArgs at the match, instContents may have freevars.
-                  sorry)
             refine .mk h_lookup h_tyName h_paramCount h_contents h_inst rfl rfl ?_
             -- Goal: TypeOfHM { env := List.map ... instContents ++ (env_post ++ ctx.env), ... }
             --         (body.substN (env_post.length + pat.contents) [v]) τ
@@ -1889,13 +1869,6 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
       have h_body_subst :=
         ih_body (env_post := generalisedExprTy :: env_post)
           h_body_inner h_v
-          (by
-            -- Need (generalisedExprTy :: env_post).freeVars = [].
-            -- Requires generalisedExprTy.body.freeVars = [] = be_ty.freeVars \ ftvs.
-            -- With relaxed Generalise, ftvs may not equal be_ty.freeVars, so
-            -- generalisedExprTy.body may have freevars. Would need a
-            -- max-generalisation invariant on h_gen.
-            sorry)
       -- Reuse h_gen on the smaller env (relaxed Generalise: ftvs only need
       -- to be a subset of eligibles, and eligibility only grows when env shrinks).
       have h_subset : (env_post ++ env).freeVars ⊆
@@ -1908,7 +1881,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
           exact fun tv h_mem =>
             ⟨(h_eligible tv h_mem).1,
              fun h_in => (h_eligible tv h_mem).2 (h_subset h_in)⟩
-      exact .letIn (ih_be h_be h_v h_env_post_closed) h_gen_new rfl h_body_subst
+      exact .letIn (ih_be h_be h_v) h_gen_new rfl h_body_subst
   | var i =>
     cases h_body with
     | var h_lookup h_tyArgs_closed h_inst =>
@@ -1944,10 +1917,13 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
         subst h_τ_eq
         -- Goal: TypeOfHM { ctx with env := env_post ++ ctx.env }
         --         (v.shiftFrom 0 env_post.length) paramTy
-        -- Apply weaken_env to h_v with env_pre := [], env_post := ctx.env,
-        -- env_extra := (our outer) env_post.
-        exact TypeOfHM.weaken_env (env_pre := []) (env_post := env)
-          (env_extra := env_post) h_v h_env_post_closed
+        -- We previously applied `weaken_env` to h_v with env_pre := [],
+        -- env_post := ctx.env, env_extra := (our outer) env_post. That call
+        -- requires `env_extra.freeVars = []`, i.e. `env_post.freeVars = []`,
+        -- which used to be a premise of `subst_lemma` (`h_env_post_closed`)
+        -- but has since been removed. Without that premise, we can't invoke
+        -- `weaken_env` here, so this sub-case is left as `sorry`.
+        sorry
       · -- Sub-case (3): i > env_post.length. substN returns `.var (i - 1)`.
         have h_not_lt : ¬ (i < env_post.length) := by omega
         have h_not_lt' : ¬ (i - env_post.length < (1 : Nat)) := by omega
