@@ -1322,8 +1322,15 @@ private theorem Env.freeVars_subset_insert_middle
 /-- Inserting an env-block with no freeVars between two halves doesn't change
     the freeVars (set-wise): they're equal subsets of each other. We only need
     one direction here. -/
+private theorem Env.freeVars_subset_append_left (l₁ l₂ : Env) :
+    l₂.freeVars ⊆ (l₁ ++ l₂).freeVars := by
+  intro x hx
+  rw [Env.mem_freeVars_iff] at hx ⊢
+  obtain ⟨pt, hpt_mem, hpt_x⟩ := hx
+  exact ⟨pt, List.mem_append_right _ hpt_mem, hpt_x⟩
+
 private theorem Env.freeVars_subset_insert_closed_middle
-    {l₁ l₂ l₃ : Env} (h_l₂ : l₂.freeVars = []) :
+    {l₁ l₂ l₃ : Env} (h_l₂ : l₂.freeVars ⊆ (l₁ ++ l₃).freeVars) :
     (l₁ ++ l₂ ++ l₃).freeVars ⊆ (l₁ ++ l₃).freeVars := by
   intro x hx
   rw [Env.mem_freeVars_iff] at hx ⊢
@@ -1331,11 +1338,9 @@ private theorem Env.freeVars_subset_insert_closed_middle
   simp only [List.mem_append] at hpt_mem
   rcases hpt_mem with (hpre | hmid) | hpost
   · exact ⟨pt, by simp only [List.mem_append]; tauto, hpt_x⟩
-  · exfalso
-    have h_in_l₂ : x ∈ l₂.freeVars := by
+  · have h_in_l₂ : x ∈ l₂.freeVars := by
       rw [Env.mem_freeVars_iff]; exact ⟨pt, hmid, hpt_x⟩
-    rw [h_l₂] at h_in_l₂
-    exact absurd h_in_l₂ List.not_mem_nil
+    exact Env.mem_freeVars_iff.mp (h_l₂ h_in_l₂)
   · exact ⟨pt, by simp only [List.mem_append]; tauto, hpt_x⟩
 
 
@@ -1343,11 +1348,10 @@ private theorem Env.freeVars_subset_insert_closed_middle
     `env_post` (and shifting the expression's free vars to skip over the
     inserted bindings) preserves typing.
 
-    Requires `env_extra.freeVars = []` (env_extra introduces no free type
-    variables): otherwise the `letIn`/`letPairIn` cases would face a
-    `Generalise`-direction problem (the inserted bindings could intersect
-    with the let-bound polytype's eligible vars, requiring a less polymorphic
-    polytype that body might not type under).
+    Requires `env_extra.freeVars ⊆ (env_pre ++ env_post).freeVars`: the inserted
+    bindings introduce no *new* free type variables beyond those already present.
+    This ensures the `Generalise` steps in `letIn`/`letPairIn` remain valid
+    (the eligible-var criterion doesn't become more restrictive).
 
     Proof strategy: induct on the syntactic structure of `e` via `Expr.rec_strong`,
     generalising over `env_pre`, `env_post`, `env_extra`, and `τ`. The
@@ -1357,7 +1361,8 @@ private theorem Env.freeVars_subset_insert_closed_middle
 theorem TypeOfHM.weaken_env
     {ctors} {env_pre env_post env_extra : Env} {e : Expr} {τ : Ty}
     (h : TypeOfHM { ctors, env := env_pre ++ env_post } e τ)
-    (h_env_extra_closed : env_extra.freeVars = []) :
+    (h_env_extra_sub : env_extra.freeVars ⊆ (env_pre ++ env_post).freeVars)
+    :
     TypeOfHM { ctors, env := env_pre ++ env_extra ++ env_post }
       (e.shiftFrom env_pre.length env_extra.length) τ := by
   induction e using Expr.rec_strong generalizing env_pre env_post env_extra τ with
@@ -1375,11 +1380,11 @@ theorem TypeOfHM.weaken_env
   | pair _ _ ih_a ih_b =>
     cases h with
     | pair h_a h_b =>
-      exact .pair (ih_a h_a h_env_extra_closed) (ih_b h_b h_env_extra_closed)
+      exact .pair (ih_a h_a h_env_extra_sub) (ih_b h_b h_env_extra_sub)
   | app _ _ ih_f ih_in =>
     cases h with
     | app h_f h_in =>
-      exact .app (ih_f h_f h_env_extra_closed) (ih_in h_in h_env_extra_closed)
+      exact .app (ih_f h_f h_env_extra_sub) (ih_in h_in h_env_extra_sub)
   | var i =>
     cases h with
     | var h_lookup h_tyArgs_closed h_inst =>
@@ -1417,19 +1422,18 @@ theorem TypeOfHM.weaken_env
       simp only [Expr.shiftFrom]
       refine .lambda h_paramTy_closed rfl ?_
       exact ih (env_pre := PolyTy.mkTrivial _ :: env_pre)
-        (env_extra := env_extra) h_body_lam h_env_extra_closed
+        (env_extra := env_extra) h_body_lam
+        (h_env_extra_sub.trans (Env.freeVars_subset_append_left [_] _))
   | letIn _ body ih_be ih_body =>
     cases h with
     | letIn h_be h_gen h_eq h_body_inner =>
       expose_names
       subst h_eq
       simp only [Expr.shiftFrom]
-      -- Reuse h_gen on the bigger env: with env_extra.freeVars = [], inserting
-      -- env_extra adds no freevars, so the original ftvs are still eligible.
       have h_subset :
           (env_pre ++ env_extra ++ env_post).freeVars ⊆
           (env_pre ++ env_post).freeVars :=
-        Env.freeVars_subset_insert_closed_middle h_env_extra_closed
+        Env.freeVars_subset_insert_closed_middle h_env_extra_sub
       have h_gen_new :
           Generalise (env_pre ++ env_extra ++ env_post) boundExprTy
             generalisedExprTy := by
@@ -1439,9 +1443,9 @@ theorem TypeOfHM.weaken_env
           exact fun tv h_mem =>
             ⟨(h_eligible tv h_mem).1,
              fun h_in => (h_eligible tv h_mem).2 (h_subset h_in)⟩
-      refine .letIn (ih_be h_be h_env_extra_closed) h_gen_new rfl ?_
+      refine .letIn (ih_be h_be h_env_extra_sub) h_gen_new rfl ?_
       exact ih_body (env_pre := generalisedExprTy :: env_pre)
-        h_body_inner h_env_extra_closed
+        h_body_inner (h_env_extra_sub.trans (Env.freeVars_subset_append_left [_] _))
   | letPairIn _ body ih_pe ih_body =>
     cases h with
     | letPairIn h_pe h_genFst h_genSnd h_eq h_body_inner =>
@@ -1451,7 +1455,7 @@ theorem TypeOfHM.weaken_env
       have h_subset :
           (env_pre ++ env_extra ++ env_post).freeVars ⊆
           (env_pre ++ env_post).freeVars :=
-        Env.freeVars_subset_insert_closed_middle h_env_extra_closed
+        Env.freeVars_subset_insert_closed_middle h_env_extra_sub
       have h_genFst_new :
           Generalise (env_pre ++ env_extra ++ env_post) fstTy genFstTy := by
         cases h_genFst with
@@ -1468,9 +1472,9 @@ theorem TypeOfHM.weaken_env
           exact fun tv h_mem =>
             ⟨(h_eligible tv h_mem).1,
              fun h_in => (h_eligible tv h_mem).2 (h_subset h_in)⟩
-      refine .letPairIn (ih_pe h_pe h_env_extra_closed) h_genFst_new h_genSnd_new rfl ?_
+      refine .letPairIn (ih_pe h_pe h_env_extra_sub) h_genFst_new h_genSnd_new rfl ?_
       exact ih_body (env_pre := genSndTy :: genFstTy :: env_pre)
-        h_body_inner h_env_extra_closed
+        h_body_inner (h_env_extra_sub.trans (Env.freeVars_subset_append_left [_, _] _))
   | match_ scrutinee branches ihs ihbs =>
     cases h with
     | match_ h_scrut h_branches_nonempty h_brs =>
@@ -1481,7 +1485,7 @@ theorem TypeOfHM.weaken_env
         cases branches with
         | nil => exact h_branches_nonempty rfl
         | cons _ _ => simp [BranchList.shiftFrom] at h_eq
-      refine .match_ (ihs h_scrut h_env_extra_closed) h_shift_nonempty ?_
+      refine .match_ (ihs h_scrut h_env_extra_sub) h_shift_nonempty ?_
       clear ihs h_scrut h_branches_nonempty h_shift_nonempty
       revert h_brs ihbs
       induction branches with
@@ -1510,7 +1514,9 @@ theorem TypeOfHM.weaken_env
               ihbs pat body List.mem_cons_self
                 (env_pre := instContents.map PolyTy.mkTrivial ++ env_pre)
                 (env_extra := env_extra)
-                h_body h_env_extra_closed
+                h_body (h_env_extra_sub.trans (by
+                  simp only [List.append_assoc]
+                  exact Env.freeVars_subset_append_left _ _))
             -- Normalise ih_body's threshold: it has length of
             -- `instContents.map ... ++ env_pre`, we want `env_pre.length + pat.contents`.
             simp only [List.length_append, List.length_map] at ih_body
