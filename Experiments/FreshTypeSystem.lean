@@ -953,6 +953,20 @@ inductive CtorAppliedTo : Expr → CtorName → List Expr → Prop
 
 
 
+/-- `(pat, body)` is the *first* branch in `branches` whose pattern matches the
+    given constructor name and arity. Mirrors `findMatchingBranch`. -/
+inductive FirstMatchingBranch (name : CtorName) (arity : Nat) :
+    List (MatchPattern × Expr) → MatchPattern → Expr → Prop
+  | here :
+    pat.ctor = name →
+    pat.contents = arity →
+    FirstMatchingBranch name arity ((pat, body) :: rest) pat body
+  | there :
+    ¬(pat'.ctor = name ∧ pat'.contents = arity) →
+    FirstMatchingBranch name arity rest pat body →
+    FirstMatchingBranch name arity ((pat', body') :: rest) pat body
+
+
 /-- Call-by-value small-step reduction. Left-to-right evaluation order. -/
 inductive Step : Expr → Expr → Prop
 
@@ -973,13 +987,12 @@ inductive Step : Expr → Expr → Prop
       IsValue v₁ → IsValue v₂ →
       Step (.letPairIn (.pair v₁ v₂) body) (body.substN 0 [v₂, v₁])
 
-  /-- Match reduction. The scrutinee must be a saturated ctor chain whose
-      ctor name matches some branch's pattern, with the right arity. -/
+  /-- Match reduction. The scrutinee must be a fully-evaluated ctor chain
+      whose ctor name matches the *first* applicable branch pattern. -/
   | matchReduce {scrut branches name args pat body} :
+      IsValue scrut →
       CtorAppliedTo scrut name args →
-      (pat, body) ∈ branches →
-      pat.ctor = name →
-      pat.contents = args.length →
+      FirstMatchingBranch name args.length branches pat body →
       Step (.match_ scrut branches) (body.substN 0 args)
 
   -- ─── congruence rules (enforce left-to-right CBV) ─────────────────
@@ -1160,9 +1173,15 @@ private theorem CtorAppliedTo_of_getCtorArgs {e name args}
       exact .step (ih hf)
   | _ => simp [getCtorArgs] at h
 
-private theorem findMatchingBranch_sound {name args branches e'}
+private theorem getCtorArgs_of_CtorAppliedTo {e name args}
+    (h : CtorAppliedTo e name args) : getCtorArgs e = some (name, args) := by
+  induction h with
+  | base => simp [getCtorArgs]
+  | step _ ih => simp [getCtorArgs, ih]
+
+private theorem findMatchingBranch_to_FirstMatch {name args branches e'}
     (h : findMatchingBranch name args branches = some e') :
-    ∃ pat body, (pat, body) ∈ branches ∧ pat.ctor = name ∧ pat.contents = args.length ∧
+    ∃ pat body, FirstMatchingBranch name args.length branches pat body ∧
       e' = body.substN 0 args := by
   induction branches with
   | nil => simp [findMatchingBranch] at h
@@ -1172,9 +1191,47 @@ private theorem findMatchingBranch_sound {name args branches e'}
     split at h
     · rename_i hm
       simp at h
-      exact ⟨pat, body, .head _, hm.1, hm.2, h.symm⟩
-    · obtain ⟨p, b, hmem, h1, h2, h3⟩ := ih h
-      exact ⟨p, b, .tail _ hmem, h1, h2, h3⟩
+      exact ⟨pat, body, .here hm.1 hm.2, h.symm⟩
+    · rename_i hnm
+      obtain ⟨p, b, hfirst, heq⟩ := ih h
+      exact ⟨p, b, .there hnm hfirst, heq⟩
+
+private theorem FirstMatch_to_findMatchingBranch {name : CtorName} {arity : Nat}
+    {branches : List (MatchPattern × Expr)} {pat : MatchPattern} {body : Expr}
+    (h : FirstMatchingBranch name arity branches pat body)
+    {args : List Expr} (hlen : arity = args.length) :
+    findMatchingBranch name args branches = some (body.substN 0 args) := by
+  induction h with
+  | here hctor harity =>
+    subst hlen
+    simp [findMatchingBranch, hctor, harity]
+  | there hnot _ ih =>
+    subst hlen
+    simp only [findMatchingBranch, if_neg hnot]
+    exact ih
+
+private theorem isCtorChain_imp_isValue {e : Expr}
+    (h : isCtorChain e = true) : isValue e = true := by
+  cases e <;> simp_all [isValue, isCtorChain]
+
+private theorem isValue_step_none {e : Expr} (hv : isValue e = true) :
+    step e = none := by
+  match e with
+  | .primLit _ | .lambda _ | .ctor _ => rfl
+  | .pair a b =>
+    simp only [isValue, Bool.and_eq_true] at hv
+    simp [step, hv.1, hv.2]
+  | .app f arg =>
+    simp only [isValue, Bool.and_eq_true] at hv
+    simp only [step, isCtorChain_imp_isValue hv.1, hv.2, ite_true]
+    cases f <;> (first | rfl | simp [isCtorChain] at hv)
+  | .var _ | .letIn _ _ | .letPairIn _ _ | .match_ _ _ => simp [isValue] at hv
+
+private theorem step_some_not_isValue {e e' : Expr}
+    (h : step e = some e') : isValue e = false := by
+  cases hv : isValue e with
+  | false => rfl
+  | true => exact absurd h (by rw [isValue_step_none hv]; nofun)
 
 /-! ### Soundness of `step` w.r.t. the `Step` relation -/
 
@@ -1242,20 +1299,56 @@ theorem step_sound {e e' : Expr} (h : step e = some e') : Step e e' := by
       | some p =>
         obtain ⟨name, args⟩ := p
         intro h
-        obtain ⟨pat, body, hmem, hname, harity, rfl⟩ := findMatchingBranch_sound h
-        exact .matchReduce (CtorAppliedTo_of_getCtorArgs hga) hmem hname harity
+        obtain ⟨pat, body, hfirst, rfl⟩ := findMatchingBranch_to_FirstMatch h
+        exact .matchReduce (isValue_iff_IsValue.mp hvscrut)
+          (CtorAppliedTo_of_getCtorArgs hga) hfirst
     · match hscrut : step scrut with
       | .none => simp [hscrut] at h
       | .some scrut' =>
         simp [hscrut] at h; subst h; exact .matchScrut (ihscrut hscrut)
 
--- Note: `step_complete` as literally stated is too strong because `Step` is
--- non-deterministic: (1) `matchReduce` doesn't require `IsValue scrut`, so it
--- can fire even when `matchScrut` also applies, and (2) when multiple branches
--- match, `Step` can pick any of them while `step` picks the first.
--- The sound relationship is the reverse direction (`step_sound`).
+/-! ### Completeness of `step` w.r.t. the `Step` relation -/
+
 theorem step_complete {e e' : Expr} (h : Step e e') : step e = some e' := by
-  sorry
+  induction h with
+  | beta hval =>
+    have := isValue_iff_IsValue.mpr hval
+    unfold step; simp [isValue, this]
+  | letReduce hval =>
+    have := isValue_iff_IsValue.mpr hval
+    unfold step; simp [this]
+  | letPairReduce hv1 hv2 =>
+    have := isValue_iff_IsValue.mpr hv1
+    have := isValue_iff_IsValue.mpr hv2
+    unfold step; simp [isValue, *]
+  | matchReduce hval hctor hfirst =>
+    have := isValue_iff_IsValue.mpr hval
+    have := getCtorArgs_of_CtorAppliedTo hctor
+    have := FirstMatch_to_findMatchingBranch hfirst rfl
+    unfold step; simp [*]
+  | pairFst _ ih =>
+    have := step_some_not_isValue ih
+    unfold step; simp [this, ih]
+  | pairSnd hval _ ih =>
+    have := isValue_iff_IsValue.mpr hval
+    have := step_some_not_isValue ih
+    unfold step; simp [*]
+  | appFn _ ih =>
+    have := step_some_not_isValue ih
+    unfold step; simp [this, ih]
+  | appArg hval _ ih =>
+    have hvf := isValue_iff_IsValue.mpr hval
+    have hva := step_some_not_isValue ih
+    unfold step; simp [hvf, hva, ih]
+  | letInRhs _ ih =>
+    have := step_some_not_isValue ih
+    unfold step; simp [this, ih]
+  | letPairRhs _ ih =>
+    have := step_some_not_isValue ih
+    unfold step; simp [this, ih]
+  | matchScrut _ ih =>
+    have := step_some_not_isValue ih
+    unfold step; simp [this, ih]
 
 /-! ### Evaluation -/
 
