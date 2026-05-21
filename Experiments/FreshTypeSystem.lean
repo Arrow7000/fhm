@@ -121,6 +121,36 @@ inductive ContainsBvarsUpTo (n : Nat) : (ty : Ty) → Prop
 
 
 
+/-- ty contains no `fvar`s at all -/
+inductive NoFreeVars : (ty : Ty) → Prop
+  | prim :
+    NoFreeVars (.prim p)
+
+  | pair :
+    NoFreeVars fst →
+    NoFreeVars snd →
+    NoFreeVars (.pair fst snd)
+
+  | arrow :
+    NoFreeVars fst →
+    NoFreeVars snd →
+    NoFreeVars (.arrow fst snd)
+
+  | customTy :
+    (∀ ty ∈ tys, NoFreeVars ty) →
+    NoFreeVars (.customTy name tys)
+
+  | bvar :
+    NoFreeVars (.bvar i)
+
+
+
+
+-- @TODO: make a prop here about a Ty being closed, no fvars!
+-- and i think then maybe we can insert a thing about how when a new binding's type contains/inserts a new fvar that it always gets generalised away, so nothing can ever stick an fvar in and keep it around for even after it has generalised itself away!
+-- so maybe actually the thing that the initial version of the cursor agent wanted is indeed true: that newer additions to the thing are always fvar-closed – relative to the new binding's thing... so that maybe we can indeed avail ourselves of that starting premise? because we can prove that the TypeOfHM relation doesn't add new fvars into the environment? cuz like, there's not even a modified context it returns. so maybe... this was self-farshtendlich? but then you still need a starting premise on the initial thing saying that all the vars in the lower (prepended) env are closed – with relation to the var's binding? and that if you have that starting premise, you can also transport it quite easily through the things. maybe with the caveat that a) tyArgs you create don't also contain... uh wait. don't also contain new fvars? or existing fvars? bc neither of those are true, rite? ok so maybe that... a.1) yes they indeed may contain either existing *or* new fvars, but that any new fvars *will* be guaranteed to be generalised out. nothing new-fvar-shaped makes it out of the current scope! and then a.2) that therefore tyArgs cannot add... ungeneralisable things in? and thus tyArgs won't cause Generalisation discrepancies compared to with or without the binding? and b) lambda params indeed also either create new fvars, but if they do, they will always be generalised out when we close out the lambda typing!
+-- ok so with the above in mind, and vaguely understood, i think maybe it makes sense to a) define a locally closed prop – indeed as our erstwhile agent proposed RIP – b) prove that it is maintained for all things, as in that no fvars stick around after closing off? c) in which case, we can easily use that as a starting premise for the subst_lemma about... the pre_env i think? and d) we can easily feed that through to each inductive hypothesis. ok. yes. yes! (i think).
+
 
 
 /-- A constructor for a type. E.g. `Result.Ok`, `Maybe.Some`, `Maybe.None` -/
@@ -132,9 +162,10 @@ structure Ctor where
   /-- What this constructor actually contains.
       Can reference `.bvar`s in range of `paramCount` -/
   contents : List Ty
-
   /-- Proof that all tys are appropriately bound -/
-  closed : ∀ ty ∈ contents, ContainsBvarsUpTo paramCount ty
+  bound : ∀ ty ∈ contents, ContainsBvarsUpTo paramCount ty
+  /-- Contains no free vars -/
+  closed : ∀ ty ∈ contents, NoFreeVars ty
 
 /-- Which type constructors exist -/
 abbrev CtorEnv := LookupList CtorName Ctor
@@ -143,7 +174,7 @@ abbrev CtorEnv := LookupList CtorName Ctor
 
 
 
-/-- Which value bindings exist. Uses de Bruijn levels – i.e. new bindings appended to the end -/
+/-- Maps from de Bruijn index of value bindings to their types -/
 abbrev Env := List PolyTy
 
 
@@ -185,7 +216,8 @@ inductive PrimLitExpr
 /-- Only supporting type constructor name matches for now -/
 structure MatchPattern where
   ctor : CtorName
-  contents : Nat -- this is basically just a binding range. i.e. if 2 this means we've bound 2 new "names" to the context
+  /-- this is basically just a binding range. i.e. if 2 this means we've bound 2 new "names" to the context -/
+  contents : Nat
 
 
 -- inductive Expr
@@ -700,6 +732,7 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
   /-- Under de Bruijn *indices*, new binders are prepended to env: the lambda's
       param sits at index 0 (innermost). -/
   | lambda :
+    -- (paramTy : Ty) → -- we declare that a type exists that fits its usage in the lambda body. If it has to be a concrete type, then it's a concrete type. if it's an fvar then it's an fvar. also, crucially, it's not one or the other, either a brand new fvar or a concrete type only containing previously introduced fvars. it can be a concrete type that contains a newly introduced fvar.
     ContainsBvarsUpTo 0 paramTy →
     bodyCtx = { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } →
     TypeOfHM bodyCtx body bodyTy →
@@ -712,6 +745,10 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
 
   | letIn :
     TypeOfHM ctx boundExpr boundExprTy →
+    -- NOTE: uhhhh don't we need to generalise ocurrences of whichever fvars we're generalising in the type in the env too????????
+    -- hmm ok maybe not actually because we are davka only generalising things that *don't* appear in the env 👍👎👍👎
+    -- ok so the question is how do fvars not end up staying in the env forever? well, because we only stick things in the env at the point where they are introduced. so at the point where we generalise they are not "still" in the env. because it's a one-way street: we only put polytypes in the env with fvars that are already in scope – so at the point where we take a step back out of the scope, those polytypes don't exist in the env at all. they are only scoped inside where the fvar was introduced.
+    -- this `letIn` node is actually a perfect example of this: yes generalisedExprTy can contain fvars. but only if they have already been introduced somewhere.
     Generalise ctx.env boundExprTy generalisedExprTy →
     bodyCtx = { ctx with env := generalisedExprTy :: ctx.env } →
     TypeOfHM bodyCtx body bodyTy →
@@ -765,7 +802,7 @@ inductive TypeOfMatchBranch :
 
     -- Prepend (indices semantics): the first pattern var sits at index 0,
     -- matching `body.substN 0 args` in `matchReduce`.
-    bodyCtx = {ctx with env := patternBindings ++ ctx.env } →
+    bodyCtx = {ctx with env := patternBindings ++ ctx.env} →
 
     TypeOfHM bodyCtx bodyExpr resultTy →
     TypeOfMatchBranch ctx (pattern, bodyExpr) tyName tyArgs resultTy
@@ -1330,8 +1367,8 @@ private theorem Env.freeVars_subset_append_left (l₁ l₂ : Env) :
   exact ⟨pt, List.mem_append_right _ hpt_mem, hpt_x⟩
 
 private theorem Env.freeVars_subset_insert_closed_middle
-    {l₁ l₂ l₃ : Env} (h_l₂ : l₂.freeVars ⊆ (l₁ ++ l₃).freeVars) :
-    (l₁ ++ l₂ ++ l₃).freeVars ⊆ (l₁ ++ l₃).freeVars := by
+    {env l₂ l₃ : Env} (h_l₂ : l₂.freeVars ⊆ (env ++ l₃).freeVars) :
+    (env ++ l₂ ++ l₃).freeVars ⊆ (env ++ l₃).freeVars := by
   intro x hx
   rw [Env.mem_freeVars_iff] at hx ⊢
   obtain ⟨pt, hpt_mem, hpt_x⟩ := hx
@@ -1359,13 +1396,12 @@ private theorem Env.freeVars_subset_insert_closed_middle
     extend `env_pre` when descending into bodies (e.g. lambda extends `env_pre`
     by `[paramTy_lam]`). The threshold of `shiftFrom` tracks `env_pre.length`. -/
 theorem TypeOfHM.weaken_env
-    {ctors} {env_pre env_post env_extra : Env} {e : Expr} {τ : Ty}
-    (h : TypeOfHM { ctors, env := env_pre ++ env_post } e τ)
-    (h_env_extra_sub : env_extra.freeVars ⊆ (env_pre ++ env_post).freeVars)
-    :
-    TypeOfHM { ctors, env := env_pre ++ env_extra ++ env_post }
+    {ctors : CtorEnv} {env_pre env_extra : Env} {e : Expr} {τ : Ty}
+    (h : TypeOfHM { ctors, env := env_pre ++ env } e τ)
+    (h_env_extra_sub : env_extra.freeVars ⊆ (env_pre ++ env).freeVars) :
+    TypeOfHM { ctors, env := env_pre ++ env_extra ++ env }
       (e.shiftFrom env_pre.length env_extra.length) τ := by
-  induction e using Expr.rec_strong generalizing env_pre env_post env_extra τ with
+  induction e using Expr.rec_strong generalizing env_pre env env_extra τ with
   | primLit _ =>
     cases h with
     | primLitUnit => exact .primLitUnit
@@ -1392,18 +1428,18 @@ theorem TypeOfHM.weaken_env
       by_cases h_lt : i < env_pre.length
       · rw [if_pos h_lt]
         refine .var ?_ h_tyArgs_closed h_inst
-        show (env_pre ++ env_extra ++ env_post)[i]? = _
+        show (env_pre ++ env_extra ++ env)[i]? = _
         rw [List.getElem?_append_left
               (by simp only [List.length_append]; omega :
                   i < (env_pre ++ env_extra).length)]
         rw [List.getElem?_append_left h_lt]
-        have h_lookup' : (env_pre ++ env_post)[i]? = _ := h_lookup
+        have h_lookup' : (env_pre ++ env)[i]? = _ := h_lookup
         rw [List.getElem?_append_left h_lt] at h_lookup'
         exact h_lookup'
       · push_neg at h_lt
         rw [if_neg (Nat.not_lt.mpr h_lt)]
         refine .var ?_ h_tyArgs_closed h_inst
-        show (env_pre ++ env_extra ++ env_post)[i + env_extra.length]? = _
+        show (env_pre ++ env_extra ++ env)[i + env_extra.length]? = _
         have h_left : (env_pre ++ env_extra).length ≤ i + env_extra.length := by
           simp only [List.length_append]; omega
         rw [List.getElem?_append_right h_left]
@@ -1412,7 +1448,7 @@ theorem TypeOfHM.weaken_env
             = i - env_pre.length := by
           simp only [List.length_append]; omega
         rw [h_eq_idx]
-        have h_lookup' : (env_pre ++ env_post)[i]? = _ := h_lookup
+        have h_lookup' : (env_pre ++ env)[i]? = _ := h_lookup
         rw [List.getElem?_append_right h_lt] at h_lookup'
         exact h_lookup'
   | lambda body ih =>
@@ -1431,11 +1467,11 @@ theorem TypeOfHM.weaken_env
       subst h_eq
       simp only [Expr.shiftFrom]
       have h_subset :
-          (env_pre ++ env_extra ++ env_post).freeVars ⊆
-          (env_pre ++ env_post).freeVars :=
+          (env_pre ++ env_extra ++ env).freeVars ⊆
+          (env_pre ++ env).freeVars :=
         Env.freeVars_subset_insert_closed_middle h_env_extra_sub
       have h_gen_new :
-          Generalise (env_pre ++ env_extra ++ env_post) boundExprTy
+          Generalise (env_pre ++ env_extra ++ env) boundExprTy
             generalisedExprTy := by
         cases h_gen with
         | mk h_nodup h_eligible h_pt =>
@@ -1453,11 +1489,11 @@ theorem TypeOfHM.weaken_env
       subst h_eq
       simp only [Expr.shiftFrom]
       have h_subset :
-          (env_pre ++ env_extra ++ env_post).freeVars ⊆
-          (env_pre ++ env_post).freeVars :=
+          (env_pre ++ env_extra ++ env).freeVars ⊆
+          (env_pre ++ env).freeVars :=
         Env.freeVars_subset_insert_closed_middle h_env_extra_sub
       have h_genFst_new :
-          Generalise (env_pre ++ env_extra ++ env_post) fstTy genFstTy := by
+          Generalise (env_pre ++ env_extra ++ env) fstTy genFstTy := by
         cases h_genFst with
         | mk h_nodup h_eligible h_pt =>
           refine .mk h_nodup ?_ h_pt
@@ -1465,7 +1501,7 @@ theorem TypeOfHM.weaken_env
             ⟨(h_eligible tv h_mem).1,
              fun h_in => (h_eligible tv h_mem).2 (h_subset h_in)⟩
       have h_genSnd_new :
-          Generalise (env_pre ++ env_extra ++ env_post) sndTy genSndTy := by
+          Generalise (env_pre ++ env_extra ++ env) sndTy genSndTy := by
         cases h_genSnd with
         | mk h_nodup h_eligible h_pt =>
           refine .mk h_nodup ?_ h_pt
@@ -1507,8 +1543,8 @@ theorem TypeOfHM.weaken_env
             expose_names
             -- Reassociate h_body's env so we can apply IH with
             -- env_pre' := instContents.map PolyTy.mkTrivial ++ env_pre.
-            rw [show (instContents.map PolyTy.mkTrivial ++ (env_pre ++ env_post))
-                  = (instContents.map PolyTy.mkTrivial ++ env_pre) ++ env_post
+            rw [show (instContents.map PolyTy.mkTrivial ++ (env_pre ++ env))
+                  = (instContents.map PolyTy.mkTrivial ++ env_pre) ++ env
                   from (List.append_assoc _ _ _).symm] at h_body
             have ih_body :=
               ihbs pat body List.mem_cons_self
@@ -1527,7 +1563,7 @@ theorem TypeOfHM.weaken_env
               h_inst rfl rfl ?_
             -- Reassociate ih_body's env to match goal's bodyCtx.
             rw [List.append_assoc, List.append_assoc] at ih_body
-            rw [show env_pre ++ env_extra ++ env_post = env_pre ++ (env_extra ++ env_post)
+            rw [show env_pre ++ env_extra ++ env = env_pre ++ (env_extra ++ env)
                   from List.append_assoc _ _ _]
             exact ih_body
         | inr h_mem' =>
@@ -1537,6 +1573,19 @@ theorem TypeOfHM.weaken_env
             branch h_mem'
 
 
+
+
+
+
+
+
+theorem TypeOfHM.weaken_env'
+    {ctors : CtorEnv} {env env_extra : Env} {e : Expr} {τ : Ty}
+    (h : TypeOfHM { ctors, env } e τ)
+    (h_sub : env_extra.freeVars ⊆ env.freeVars) :
+    TypeOfHM { ctors, env := env_extra ++ env }
+      (e.shiftFrom 0 env_extra.length) τ :=
+  weaken_env (env_pre := []) h h_sub
 
 
 /-! ## Canonical forms
@@ -1552,8 +1601,8 @@ a `lambda` *or* a partial ctor application (since constructors are curried). -/
     instantiate a type of that shape, you get back a type of the same shape with
     the same `customTy` name and the same number of arrow wrappers. -/
 private lemma InstantiatesBy.wrapArrows_customTy_form
-    {tyArgs : List Ty} {name : TyName} {args tys : List Ty} {τ : Ty}
-    (h : InstantiatesBy tyArgs (Ty.wrapArrows (.customTy name args) tys) τ) :
+    {name : TyName} {args tys : List Ty} {τ : Ty}
+    (h : InstantiatesBy env (Ty.wrapArrows (.customTy name args) tys) τ) :
     ∃ instArgs instTys, τ = Ty.wrapArrows (.customTy name instArgs) instTys := by
   induction tys generalizing τ with
   | nil =>
@@ -1740,7 +1789,8 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
                 { ctors, env := env_post ++ [PolyTy.mkTrivial paramTy] ++ env }
                 e τ)
     (h_v : TypeOfHM {ctors,env} v paramTy)
-    (h_paramTy_closed : OnlyContainsBvars [] paramTy) :
+    (h_paramTy_closed : OnlyContainsBvars [] paramTy)
+    (h_env_post_sub : env_post.freeVars ⊆ env.freeVars) :
     TypeOfHM { ctors, env := env_post ++ env }
       (e.substN env_post.length [v]) τ := by
   induction e using Expr.rec_strong generalizing env env_post τ with
@@ -1758,11 +1808,11 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
   | pair _ _ ih_a ih_b =>
     cases h_body with
     | pair h_a h_b =>
-      exact .pair (ih_a h_a h_v) (ih_b h_b h_v)
+      exact .pair (ih_a h_a h_v h_env_post_sub) (ih_b h_b h_v h_env_post_sub)
   | app _ _ ih_f ih_in =>
     cases h_body with
     | app h_f h_in =>
-      exact .app (ih_f h_f h_v) (ih_in h_in h_v)
+      exact .app (ih_f h_f h_v h_env_post_sub) (ih_in h_in h_v h_env_post_sub)
   | lambda body ih =>
     cases h_body with
     | lambda h_paramTy_lam_closed h_eq h_body_lam =>
@@ -1773,7 +1823,8 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
       -- becomes (env_post.length + 1), which is exactly what `Expr.substN` produces
       -- for `.lambda body`.
       exact .lambda h_paramTy_lam_closed rfl
-        (ih (env_post := PolyTy.mkTrivial _ :: env_post) h_body_lam h_v)
+        (ih (env_post := PolyTy.mkTrivial _ :: env_post) h_body_lam h_v
+          (sorry /- need: (PolyTy.mkTrivial paramTy_lam :: env_post).freeVars ⊆ env.freeVars -/))
   | letPairIn _ body ih_pe ih_body =>
     cases h_body with
     | letPairIn h_pe h_genFst h_genSnd h_eq h_body_inner =>
@@ -1784,6 +1835,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
       have h_body_subst :=
         ih_body (env_post := genSndTy :: genFstTy :: env_post)
           h_body_inner h_v
+          (sorry /- need: (genSndTy :: genFstTy :: env_post).freeVars ⊆ env.freeVars -/)
       -- With the relaxed Generalise (`→` instead of `↔`), the same generalisation
       -- transfers from the bigger env to the smaller env: ftvs need only be
       -- eligible (i.e. ⊆ ¬env.freeVars), and removing paramTy can only ADD
@@ -1805,18 +1857,18 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
           exact fun tv h_mem =>
             ⟨(h_eligible tv h_mem).1,
              fun h_in => (h_eligible tv h_mem).2 (h_subset h_in)⟩
-      exact .letPairIn (ih_pe h_pe h_v)
+      exact .letPairIn (ih_pe h_pe h_v h_env_post_sub)
         h_genFst_new h_genSnd_new rfl h_body_subst
   | match_ scrutinee branches ih_scrut ih_branches =>
     cases h_body with
     | match_ h_scrut h_branches_nonempty h_brs =>
       have h_subst_nonempty :
-          BranchList.substN env_post.length [v] branches ≠ [] := by
+          (BranchList.substN env_post.length [v] branches) ≠ [] := by
         intro h_eq
         cases branches with
         | nil => exact h_branches_nonempty rfl
         | cons _ _ => simp [BranchList.substN] at h_eq
-      refine .match_ (ih_scrut h_scrut h_v) h_subst_nonempty ?_
+      refine .match_ (ih_scrut h_scrut h_v h_env_post_sub) h_subst_nonempty ?_
       clear ih_scrut h_scrut h_branches_nonempty h_subst_nonempty
       -- Goal: ∀ branch ∈ BranchList.substN env_post.length [v] branches,
       --   TypeOfMatchBranch { env := env_post ++ ctx.env, ... } branch ...
@@ -1830,9 +1882,10 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
         intro ihbs h_brs
         obtain ⟨pat, body⟩ := hd
         intro branch h_mem
-        simp only [BranchList.substN] at h_mem
+        simp only [BranchList.substN, List.mem_cons] at h_mem
         cases h_mem with
-        | head _ =>
+        | inl h_eq =>
+          subst h_eq
           -- branch = (pat, body.substN (env_post.length + pat.contents) [v])
           have h_branch_orig := h_brs (pat, body) List.mem_cons_self
           cases h_branch_orig with
@@ -1846,6 +1899,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
                 (env_post := List.map PolyTy.mkTrivial instContents ++ env_post)
                 (by simpa [List.append_assoc] using h_body_orig)
                 h_v
+                (sorry /- need: (instContents.map PolyTy.mkTrivial ++ env_post).freeVars ⊆ env.freeVars -/)
             refine .mk h_lookup h_tyName h_paramCount h_contents h_inst rfl rfl ?_
             -- Goal: TypeOfHM { env := List.map ... instContents ++ (env_post ++ ctx.env), ... }
             --         (body.substN (env_post.length + pat.contents) [v]) τ
@@ -1856,7 +1910,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
                          ← h_inst.length_eq, ← h_contents]
               omega
             simpa [List.append_assoc, h_len] using h_body_subst
-        | tail _ h_mem' =>
+        | inr h_mem' =>
           exact ih_tl
             (fun pat' e' hmem => ihbs pat' e' (List.mem_cons_of_mem _ hmem))
             (fun b hmem => h_brs b (List.mem_cons_of_mem _ hmem))
@@ -1869,6 +1923,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
       have h_body_subst :=
         ih_body (env_post := generalisedExprTy :: env_post)
           h_body_inner h_v
+          (sorry /- need: (generalisedExprTy :: env_post).freeVars ⊆ env.freeVars -/)
       -- Reuse h_gen on the smaller env (relaxed Generalise: ftvs only need
       -- to be a subset of eligibles, and eligibility only grows when env shrinks).
       have h_subset : (env_post ++ env).freeVars ⊆
@@ -1881,7 +1936,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
           exact fun tv h_mem =>
             ⟨(h_eligible tv h_mem).1,
              fun h_in => (h_eligible tv h_mem).2 (h_subset h_in)⟩
-      exact .letIn (ih_be h_be h_v) h_gen_new rfl h_body_subst
+      exact .letIn (ih_be h_be h_v h_env_post_sub) h_gen_new rfl h_body_subst
   | var i =>
     cases h_body with
     | var h_lookup h_tyArgs_closed h_inst =>
@@ -1915,15 +1970,7 @@ theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
         -- By closedness, τ = paramTy.
         have h_τ_eq := InstantiatesBy.eq_of_closed h_paramTy_closed h_inst
         subst h_τ_eq
-        -- Goal: TypeOfHM { ctx with env := env_post ++ ctx.env }
-        --         (v.shiftFrom 0 env_post.length) paramTy
-        -- We previously applied `weaken_env` to h_v with env_pre := [],
-        -- env_post := ctx.env, env_extra := (our outer) env_post. That call
-        -- requires `env_extra.freeVars = []`, i.e. `env_post.freeVars = []`,
-        -- which used to be a premise of `subst_lemma` (`h_env_post_closed`)
-        -- but has since been removed. Without that premise, we can't invoke
-        -- `weaken_env` here, so this sub-case is left as `sorry`.
-        sorry
+        exact weaken_env' h_v h_env_post_sub
       · -- Sub-case (3): i > env_post.length. substN returns `.var (i - 1)`.
         have h_not_lt : ¬ (i < env_post.length) := by omega
         have h_not_lt' : ¬ (i - env_post.length < (1 : Nat)) := by omega
