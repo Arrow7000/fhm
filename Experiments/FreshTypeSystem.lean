@@ -2474,28 +2474,229 @@ def HasScheme (ctx : Ctx) (e : Expr) (M : PolyTy) : Prop :=
     TypeOfHM ctx e (M.openWith Vs)
 
 
-/-! ### Key commute lemmas (statements only — proofs are mechanical). -/
+/-! ### Key commute lemmas. -/
+
+/-- An element is not in `TyList.freeVars tys` iff it's not in any element's
+    freeVars. Standard distribution over dedup'd concatenation. -/
+private theorem TyList.not_mem_freeVars_iff {Z : Nat} {tys : List Ty} :
+    Z ∉ TyList.freeVars tys ↔ ∀ t ∈ tys, Z ∉ t.freeVars := by
+  induction tys with
+  | nil => simp [TyList.freeVars]
+  | cons hd tl ih =>
+    simp only [TyList.freeVars, List.mem_dedup, List.mem_append, not_or,
+               List.mem_cons, forall_eq_or_imp]
+    rw [ih]
+
+/-- If every element of `tys` is unchanged by `Ty.substFvar Z U`, then so is
+    `TyList.substFvar Z U tys`. Plain list induction; used in `customTy`
+    cases of the LHS lemmas. -/
+private theorem TyList.substFvar_eq_self_of_all
+    {Z : Nat} {U : Ty} {tys : List Ty}
+    (h_all : ∀ t ∈ tys, Ty.substFvar Z U t = t) :
+    TyList.substFvar Z U tys = tys := by
+  induction tys with
+  | nil => rfl
+  | cons hd tl ih =>
+    simp only [TyList.substFvar, List.cons.injEq]
+    refine ⟨h_all hd List.mem_cons_self, ih ?_⟩
+    intro t ht
+    exact h_all t (List.mem_cons_of_mem _ ht)
 
 theorem Ty.substFvar_fresh {Z : Nat} {U ty : Ty}
     (h : Z ∉ ty.freeVars) :
-    ty.substFvar Z U = ty := by sorry
+    Ty.substFvar Z U ty = ty := by
+  induction ty using Ty.rec_strong with
+  | prim _ => rfl
+  | pair a b ih_a ih_b =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at h
+    simp only [Ty.substFvar, Ty.pair.injEq]
+    exact ⟨ih_a h.1, ih_b h.2⟩
+  | arrow a b ih_a ih_b =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at h
+    simp only [Ty.substFvar, Ty.arrow.injEq]
+    exact ⟨ih_a h.1, ih_b h.2⟩
+  | bvar _ => rfl
+  | fvar n =>
+    simp only [Ty.freeVars, List.mem_singleton] at h
+    simp only [Ty.substFvar, if_neg (Ne.symm h)]
+  | customTy _ tys ih =>
+    simp only [Ty.freeVars] at h
+    have h' : ∀ t ∈ tys, Z ∉ t.freeVars :=
+      TyList.not_mem_freeVars_iff.mp h
+    simp only [Ty.substFvar, Ty.customTy.injEq, true_and]
+    exact TyList.substFvar_eq_self_of_all (fun t ht => ih t ht (h' t ht))
+
+/-- Instantiation is a no-op on locally-closed types: nothing to instantiate. -/
+private theorem TyList.instantiate_eq_self_of_all_lc
+    {σ : Nat → Ty} {tys : List Ty}
+    (h_all : ∀ t ∈ tys, Ty.IsLC t)
+    (ih : ∀ t ∈ tys, Ty.IsLC t → Ty.instantiate σ t = t) :
+    TyList.instantiate σ tys = tys := by
+  induction tys with
+  | nil => rfl
+  | cons hd tl ih_tl =>
+    simp only [TyList.instantiate, List.cons.injEq]
+    refine ⟨ih hd List.mem_cons_self (h_all hd List.mem_cons_self), ?_⟩
+    exact ih_tl
+      (fun t ht => h_all t (List.mem_cons_of_mem _ ht))
+      (fun t ht => ih t (List.mem_cons_of_mem _ ht))
+
+theorem Ty.instantiate_eq_self_of_lc {σ : Nat → Ty} {ty : Ty}
+    (h : Ty.IsLC ty) :
+    Ty.instantiate σ ty = ty := by
+  induction ty using Ty.rec_strong with
+  | prim _ => rfl
+  | pair a b ih_a ih_b =>
+    cases h with
+    | pair h_a h_b =>
+      simp only [Ty.instantiate, Ty.pair.injEq]
+      exact ⟨ih_a h_a, ih_b h_b⟩
+  | arrow a b ih_a ih_b =>
+    cases h with
+    | arrow h_a h_b =>
+      simp only [Ty.instantiate, Ty.arrow.injEq]
+      exact ⟨ih_a h_a, ih_b h_b⟩
+  | bvar _ =>
+    cases h with
+    | bvar h_lt => exact absurd h_lt (by omega)
+  | fvar _ => rfl
+  | customTy nm tys ih =>
+    cases h with
+    | customTy h_all =>
+      simp only [Ty.instantiate, Ty.customTy.injEq, true_and]
+      exact TyList.instantiate_eq_self_of_all_lc h_all ih
+
+/-- `substFvar` swaps with `instantiate` element-wise on a list, given the
+    pointwise swap on each element. -/
+private theorem TyList.substFvar_instantiate_swap
+    {Z : Nat} {U : Ty} {σ : Nat → Ty} {tys : List Ty}
+    (ih : ∀ t ∈ tys,
+            Ty.substFvar Z U (Ty.instantiate σ t)
+              = Ty.instantiate σ (Ty.substFvar Z U t)) :
+    TyList.substFvar Z U (TyList.instantiate σ tys)
+      = TyList.instantiate σ (TyList.substFvar Z U tys) := by
+  induction tys with
+  | nil => rfl
+  | cons hd tl ih_tl =>
+    simp only [TyList.substFvar, TyList.instantiate, List.cons.injEq]
+    refine ⟨ih hd List.mem_cons_self, ?_⟩
+    exact ih_tl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
 
 theorem Ty.substFvar_openVars
     {Z : Nat} {U ty : Ty} {Xs : List Nat}
-    (h_lc : U.IsLC)
+    (h_lc : Ty.IsLC U)
     (h_Z_not_in_Xs : Z ∉ Xs) :
-    (ty.openVars Xs).substFvar Z U = (ty.substFvar Z U).openVars Xs := by sorry
+    Ty.substFvar Z U (Ty.openVars Xs ty)
+      = Ty.openVars Xs (Ty.substFvar Z U ty) := by
+  -- `openVars` is just `instantiate` with the specific substitution
+  -- `i ↦ Xs[i]? .elim (.bvar i) .fvar`. Unfold and induct on `ty`.
+  unfold Ty.openVars
+  induction ty using Ty.rec_strong with
+  | prim _ => rfl
+  | pair a b ih_a ih_b =>
+    simp only [Ty.instantiate, Ty.substFvar, Ty.pair.injEq]
+    exact ⟨ih_a, ih_b⟩
+  | arrow a b ih_a ih_b =>
+    simp only [Ty.instantiate, Ty.substFvar, Ty.arrow.injEq]
+    exact ⟨ih_a, ih_b⟩
+  | bvar i =>
+    simp only [Ty.instantiate, Ty.substFvar]
+    -- Goal: substFvar Z U (Xs[i]?.elim (.bvar i) .fvar) = Xs[i]?.elim (.bvar i) .fvar
+    cases h_xs : Xs[i]? with
+    | none => simp [Ty.substFvar]
+    | some x =>
+      have h_mem : x ∈ Xs := List.mem_of_getElem? h_xs
+      have h_ne : x ≠ Z := fun heq => h_Z_not_in_Xs (heq ▸ h_mem)
+      simp [Ty.substFvar, h_ne]
+  | fvar n =>
+    simp only [Ty.instantiate, Ty.substFvar]
+    -- LHS: if n=Z then U else .fvar n
+    -- RHS: instantiate σ (if n=Z then U else .fvar n)
+    by_cases h_n : n = Z
+    · simp only [if_pos h_n]
+      -- Need U = instantiate σ U
+      exact (Ty.instantiate_eq_self_of_lc h_lc).symm
+    · simp only [if_neg h_n, Ty.instantiate]
+  | customTy nm tys ih =>
+    simp only [Ty.instantiate, Ty.substFvar, Ty.customTy.injEq, true_and]
+    exact TyList.substFvar_instantiate_swap (fun t ht => ih t ht)
+
+/-- Free vars of a list of types (used in `openWith_eq_substFvars_openVars`'s
+    freshness condition). -/
+def Ty.freeVarsList : List Ty → List Nat
+  | []       => []
+  | hd :: tl => (hd.freeVars ++ Ty.freeVarsList tl).dedup
+
+/-- Opening with anything is a no-op on locally-closed types: nothing to
+    instantiate (no bvars to replace). -/
+theorem Ty.openWith_eq_self_of_lc {Vs : List Ty} {ty : Ty}
+    (h : Ty.IsLC ty) : Ty.openWith Vs ty = ty :=
+  Ty.instantiate_eq_self_of_lc h
+
+/-- `substFvar` commutes with `openWith` when the replacement is LC.
+    Direct corollary: opening then substituting equals substituting (in both
+    body and the args list) then opening. -/
+private theorem TyList.substFvar_openWith_swap
+    {Z : Nat} {U : Ty} {Vs : List Ty} {tys : List Ty}
+    (ih : ∀ t ∈ tys,
+            Ty.substFvar Z U (Ty.openWith Vs t)
+              = Ty.openWith (Vs.map (Ty.substFvar Z U)) (Ty.substFvar Z U t)) :
+    TyList.substFvar Z U (TyList.instantiate (fun i => Vs[i]?.getD (.bvar i)) tys)
+      = TyList.instantiate (fun i => (Vs.map (Ty.substFvar Z U))[i]?.getD (.bvar i))
+          (TyList.substFvar Z U tys) := by
+  induction tys with
+  | nil => rfl
+  | cons hd tl ih_tl =>
+    simp only [TyList.substFvar, TyList.instantiate, List.cons.injEq]
+    refine ⟨ih hd List.mem_cons_self, ?_⟩
+    exact ih_tl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
+
+theorem Ty.substFvar_openWith
+    {Z : Nat} {U ty : Ty} {Vs : List Ty}
+    (h_U_lc : Ty.IsLC U) :
+    Ty.substFvar Z U (Ty.openWith Vs ty)
+      = Ty.openWith (Vs.map (Ty.substFvar Z U)) (Ty.substFvar Z U ty) := by
+  unfold Ty.openWith
+  induction ty using Ty.rec_strong with
+  | prim _ => rfl
+  | pair _ _ ih_a ih_b =>
+    simp only [Ty.instantiate, Ty.substFvar, Ty.pair.injEq]
+    exact ⟨ih_a, ih_b⟩
+  | arrow _ _ ih_a ih_b =>
+    simp only [Ty.instantiate, Ty.substFvar, Ty.arrow.injEq]
+    exact ⟨ih_a, ih_b⟩
+  | bvar i =>
+    simp only [Ty.instantiate, Ty.substFvar, List.getElem?_map]
+    cases h_vs : Vs[i]? with
+    | none => simp [Ty.substFvar]
+    | some v => simp
+  | fvar n =>
+    simp only [Ty.instantiate, Ty.substFvar]
+    by_cases h_n : n = Z
+    · simp only [if_pos h_n]
+      exact (Ty.instantiate_eq_self_of_lc h_U_lc).symm
+    · simp only [if_neg h_n, Ty.instantiate]
+  | customTy _ tys ih =>
+    simp only [Ty.instantiate, Ty.substFvar, Ty.customTy.injEq, true_and]
+    exact TyList.substFvar_openWith_swap (fun t ht => ih t ht)
 
 /-- The "rename-open" intro lemma — Chargueraud's `typ_substs_intro`.
     Opening `ty` with `Vs` factors through opening with fresh `Xs` followed
-    by substituting each `Xi` by the corresponding `Vi`. -/
+    by substituting each `Xi` by the corresponding `Vi`.
+
+    Crucial freshness: `Xs` must be disjoint not only from `ty.freeVars` but
+    also from each `Vi.freeVars` — otherwise iterated substitution can
+    "double-substitute" (substituting `X₀` into `V₁` if `X₀ ∈ V₁.freeVars`).
+    My initial sketch had this incomplete; restored per Chargueraud's actual
+    statement. -/
 theorem Ty.openWith_eq_substFvars_openVars
     {ty : Ty} {Vs : List Ty} {Xs : List Nat}
     (h_lc_Vs : Ty.AreLC Xs.length Vs)
-    (h_xs_fresh : (∀ X ∈ Xs, X ∉ ty.freeVars) ∧ Xs.Nodup
-                  ∧ Xs.length = Vs.length) :
-    ty.openWith Vs
-      = Ty.substFvars (Xs.zip Vs) (ty.openVars Xs) := by sorry
+    (h_Xs_nodup : Xs.Nodup)
+    (h_Xs_fresh_ty : ∀ X ∈ Xs, X ∉ ty.freeVars)
+    (h_Xs_fresh_Vs : ∀ X ∈ Xs, X ∉ Ty.freeVarsList Vs) :
+    Ty.openWith Vs ty
+      = Ty.substFvars (Xs.zip Vs) (Ty.openVars Xs ty) := by sorry
 
 
 /-! ### Metatheory infrastructure (statements only). -/
@@ -2539,12 +2740,51 @@ theorem HasScheme.fromHasSchemeVars
     (h : HasSchemeVars L ctx e M) :
     HasScheme ctx e M := by sorry
 
+/-- Instantiation with the "identity on bvars" substitution is a no-op. Used
+    in `HasScheme.ofTypeOfHM` to show that opening an arity-0 scheme with the
+    empty arg list returns the underlying type unchanged. -/
+private theorem Ty.instantiate_bvar_id {ty : Ty} :
+    Ty.instantiate (fun i => .bvar i) ty = ty := by
+  induction ty using Ty.rec_strong with
+  | prim _ => rfl
+  | pair _ _ ih_a ih_b =>
+    simp only [Ty.instantiate, Ty.pair.injEq]; exact ⟨ih_a, ih_b⟩
+  | arrow _ _ ih_a ih_b =>
+    simp only [Ty.instantiate, Ty.arrow.injEq]; exact ⟨ih_a, ih_b⟩
+  | bvar _ => rfl
+  | fvar _ => rfl
+  | customTy _ tys ih =>
+    simp only [Ty.instantiate, Ty.customTy.injEq, true_and]
+    induction tys with
+    | nil => rfl
+    | cons hd tl ih_tl =>
+      simp only [TyList.instantiate, List.cons.injEq]
+      refine ⟨ih hd List.mem_cons_self, ?_⟩
+      exact ih_tl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
+
+/-- Opening with the empty list of types is identity: nothing to instantiate. -/
+theorem Ty.openWith_nil {ty : Ty} : Ty.openWith [] ty = ty := by
+  unfold Ty.openWith
+  have heq : (fun i => ([] : List Ty)[i]?.getD (.bvar i)) = (fun i => Ty.bvar i) := by
+    funext i; simp
+  rw [heq]
+  exact Ty.instantiate_bvar_id
+
 /-- Monomorphic `has_scheme`: a regular typing is a `HasScheme` for the
     trivial 0-binder scheme. Chargueraud's `has_scheme_from_typ`. -/
 theorem HasScheme.ofTypeOfHM
     {ctx : Ctx} {e : Expr} {τ : Ty}
     (h : TypeOfHM ctx e τ) :
-    HasScheme ctx e (PolyTy.mkTrivial τ) := by sorry
+    HasScheme ctx e (PolyTy.mkTrivial τ) := by
+  intro Vs h_lc
+  obtain ⟨h_len, _⟩ := h_lc
+  -- PolyTy.mkTrivial τ has paramCount = 0, so Vs = []
+  have h_vs_nil : Vs = [] := List.length_eq_zero_iff.mp h_len
+  subst h_vs_nil
+  show TypeOfHM ctx e (PolyTy.openWith [] (PolyTy.mkTrivial τ))
+  unfold PolyTy.openWith PolyTy.mkTrivial
+  rw [Ty.openWith_nil]
+  exact h
 
 
 /-! ### The new `TypeOfHM.letIn` constructor (sketch).
