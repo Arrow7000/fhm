@@ -1350,6 +1350,12 @@ theorem step_complete {e e' : Expr} (h : Step e e') : step e = some e' := by
     have := step_some_not_isValue ih
     unfold step; simp [this, ih]
 
+theorem step_deterministic {e e₁ e₂ : Expr}
+    (h₁ : Step e e₁) (h₂ : Step e e₂) : e₁ = e₂ := by
+  have := step_complete h₁
+  have := step_complete h₂
+  simp_all
+
 /-! ### Evaluation -/
 
 theorem evaluate_isValue {fuel e v} (h : evaluate fuel e = some v) :
@@ -1358,20 +1364,14 @@ theorem evaluate_isValue {fuel e v} (h : evaluate fuel e = some v) :
 
 /-! ### Soundness & completeness of `step` w.r.t. well-typedness (`TypeOfHM`) -/
 
-/-- Preservation: one step of evaluation preserves types. -/
-theorem step_preserves_typing {ctx : Ctx} {e e' : Expr} {τ : Ty}
-    (h_ty : TypeOfHM ctx e τ)
-    (h_step : step e = some e') :
-    TypeOfHM ctx e' τ := by
-  sorry
-
-/-- Progress: a well-typed closed term that is not a value can always step. -/
-theorem step_progress {ctx : Ctx} {e : Expr} {τ : Ty}
-    (h_ty : TypeOfHM ctx e τ)
-    (h_closed : ctx.env = [])
-    (h_not_val : isValue e = false) :
-    ∃ e', step e = some e' := by
-  sorry
+-- Preservation requires the substitution lemma, which needs a value-specific
+-- weakening lemma to avoid the env_post.freeVars ⊆ env.freeVars issue.
+-- Deferred to the implementation-oriented typing relation.
+-- theorem step_preserves_typing {ctx : Ctx} {e e' : Expr} {τ : Ty}
+--     (h_ty : TypeOfHM ctx e τ)
+--     (h_step : step e = some e') :
+--     TypeOfHM ctx e' τ := by
+--   sorry
 
 end SmallStep
 
@@ -2075,6 +2075,82 @@ theorem TypeOfHM.canonical_customTy {ctx e tyName tyArgs}
   | ctorApp h_chain h_v => exact .app h_chain h_v
 
 
+
+
+/-! ## Progress -/
+
+namespace SmallStep
+
+/-- Progress over the Step relation: a well-typed closed term is either a value
+    or can take a step.
+
+    The match case requires exhaustive branch coverage, which `TypeOfHM.match_`
+    doesn't enforce, so that case is left as sorry. All other cases are proved. -/
+theorem progress {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h_ty : TypeOfHM ctx e τ) (h_closed : ctx.env = []) :
+    IsValue e ∨ ∃ e', Step e e' := by
+  induction e using Expr.rec_strong generalizing ctx τ with
+  | primLit p => exact .inl (.primLit p)
+  | lambda _ _ => exact .inl (.lambda _)
+  | ctor name => exact .inl (.ctor name)
+  | var n =>
+    cases h_ty with
+    | var h_lookup _ _ => rw [h_closed] at h_lookup; simp at h_lookup
+  | pair a b iha ihb =>
+    cases h_ty with
+    | pair h_a h_b =>
+      rcases iha h_a h_closed with hva | ⟨a', ha⟩
+      · rcases ihb h_b h_closed with hvb | ⟨b', hb⟩
+        · exact .inl (.pair hva hvb)
+        · exact .inr ⟨_, .pairSnd hva hb⟩
+      · exact .inr ⟨_, .pairFst ha⟩
+  | app f arg ihf iharg =>
+    cases h_ty with
+    | app h_f h_arg =>
+      rcases ihf h_f h_closed with hvf | ⟨f', hf⟩
+      · rcases iharg h_arg h_closed with hva | ⟨arg', harg⟩
+        · rcases TypeOfHM.canonical_arrow h_f hvf with ⟨body, rfl⟩ | hchain
+          · exact .inr ⟨_, .beta hva⟩
+          · exact .inl (.ctorApp hchain hva)
+        · exact .inr ⟨_, .appArg hvf harg⟩
+      · exact .inr ⟨_, .appFn hf⟩
+  | letIn rhs body ihrhs _ =>
+    cases h_ty with
+    | letIn h_rhs _ _ _ =>
+      rcases ihrhs h_rhs h_closed with hvr | ⟨rhs', hrhs⟩
+      · exact .inr ⟨_, .letReduce hvr⟩
+      · exact .inr ⟨_, .letInRhs hrhs⟩
+  | letPairIn rhs body ihrhs _ =>
+    cases h_ty with
+    | letPairIn h_rhs _ _ _ _ =>
+      rcases ihrhs h_rhs h_closed with hvr | ⟨rhs', hrhs⟩
+      · obtain ⟨v₁, v₂, rfl, hv₁, hv₂⟩ := TypeOfHM.canonical_pair h_rhs hvr
+        exact .inr ⟨_, .letPairReduce hv₁ hv₂⟩
+      · exact .inr ⟨_, .letPairRhs hrhs⟩
+  | match_ scrut branches ihscrut _ =>
+    cases h_ty with
+    | match_ h_scrut _ _ =>
+      rcases ihscrut h_scrut h_closed with hvs | ⟨scrut', hscrut⟩
+      · -- scrut is a value of customTy type, so it's a ctor chain.
+        -- Need a matching branch — requires exhaustiveness, which
+        -- TypeOfHM.match_ doesn't enforce.
+        sorry
+      · exact .inr ⟨_, .matchScrut hscrut⟩
+
+/-- Progress for the step function: a well-typed closed non-value can always
+    step. Derived from `progress` + `step_complete`.
+
+    Inherits the match exhaustiveness caveat from `progress`. -/
+theorem step_progress {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h_ty : TypeOfHM ctx e τ)
+    (h_closed : ctx.env = [])
+    (h_not_val : isValue e = false) :
+    ∃ e', step e = some e' := by
+  rcases progress h_ty h_closed with hv | ⟨e', he⟩
+  · exact absurd (isValue_iff_IsValue.mpr hv) (by simp [h_not_val])
+  · exact ⟨e', step_complete he⟩
+
+end SmallStep
 
 
 /-! ## Substitution lemma & preservation
