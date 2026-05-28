@@ -2305,17 +2305,318 @@ theorem findMatchingBranch_of_exists {name : CtorName} {args : List Expr}
 end SmallStep
 
 
-/-! ## Substitution lemma & preservation
+/-! ## Sketch: locally-nameless + cofinite quantification
 
-The substitution lemma is the gateway: it says that replacing a free variable
-with a well-typed value of the right type preserves typing. Preservation then
-follows by case analysis on the Step rule, using the substitution lemma in the
-binder-eliminating cases (beta, let-reduce, letPair-reduce, match-reduce).
+### Design source
 
-Note: the general version below "substitutes anywhere in env" — this is
-necessary to push the induction through binders. Under levels, the level being
-substituted is `env_pre.length`, with `env_pre` the env-prefix before the
-binding being eliminated. -/
+Faithful port of Chargueraud's mini-ML formalisation
+(`charguer/formalmetacoq/ln/ML_{Definitions,Infrastructure,Soundness}.v`), which
+in turn is the canonical application of Aydemir et al.'s "Engineering Formal
+Metatheory" (POPL 2008) to Hindley-Milner with let-polymorphism.
+
+### Why this fixes our problem
+
+Our current `Generalise` is **"exists fresh"** — it picks *one* concrete
+`ftvs ⊆ FV(τ) \ FV(Γ)`. The induction principle gives us the IH **only for
+that one choice**. When the env grows in a recursive `subst_lemma` call,
+those particular ftvs may now alias with names in the new prefix, and we have
+no way to renege.
+
+The cofinite trick **flips the quantifier**: the rule says the property holds
+**for every** `Xs` disjoint from a finite set `L`. The IH is therefore
+*universal* in the choice of fresh names. When env grows, we just re-instantiate
+the IH with `Xs` disjoint from the new env. No invariant threads anywhere.
+
+### What stays the same
+
+- `Ty` (already has `.bvar` / `.fvar` — locally-nameless type syntax). ✓
+- `PolyTy = ⟨paramCount, body⟩` — already the LN "multi-binder" shape. ✓
+- `Env = List PolyTy`, `Ctx`, `Expr`. ✓
+- `Expr` uses de Bruijn levels (no term-var renaming needed in proofs) — so
+  the term-side cofinite quantifier from Chargueraud **vanishes** for us; only
+  the type-side cofinite stays. Easier than Coq, not harder. ✓
+
+### What goes away
+
+- The `Generalise : Env → Ty → PolyTy → Prop` relation is **deleted**.
+  Its job is absorbed into the cofinite premise of the new `letIn`/`letPairIn`
+  constructors.
+- The `env_post.freeVars ⊆ env.freeVars` style side conditions on
+  `weaken_env` and `subst_lemma` are **deleted**.
+
+### What gets added (depended-ordered)
+
+1. `Ty.substFvar`, `PolyTy.substFvar`, `Env.substFvar` — fvar-for-type
+   substitution (`[Z ↦ U] · _`).
+2. `Ty.openVars`, `PolyTy.openVars`, `PolyTy.openWith` — open bvars with
+   either named fvars (`openVars`) or arbitrary types (`openWith`). The
+   latter generalises our existing `InstantiatesBy`.
+3. `Ty.IsLC` — locally-closed type (no `bvar`s); just our existing
+   `ContainsBvarsUpTo 0`.
+4. `PolyTy.IsScheme M` — `∀ Xs (cofinite & |Xs| = M.paramCount),
+   IsLC (M.openVars Xs)`.
+5. `FreshNames L n Xs` — `Xs.length = n ∧ Xs.Nodup ∧ ∀ x ∈ Xs, x ∉ L`.
+6. `HasSchemeVars L Γ e M` — `∀ Xs, FreshNames L M.paramCount Xs →
+   TypeOfHM Γ e (M.openVars Xs)`.
+7. `HasScheme Γ e M` — `∀ Vs, AllLC Vs ∧ Vs.length = M.paramCount →
+   TypeOfHM Γ e (M.openWith Vs)`.
+8. `Ty.substFvar_*` commute lemmas (`_fresh`, `_open`, `_openVars`).
+9. `PolyTy.openWith_substFvars_intro` (the "rename open ↔ subst" key lemma —
+   Chargueraud's `typ_substs_intro`).
+10. `TypeOfHM.typ_subst_preservation` — substituting one fresh type-var by
+    any LC type preserves typing.
+11. `TypeOfHM.weaken_env` (cofinite version) — no env_fv side condition.
+12. `HasScheme.fromHasSchemeVars` (the bridge — uses 9 + 10).
+13. New `TypeOfHM.letIn` constructor (cofinite, replacing the
+    `Generalise`-based one). Same for `letPairIn` and `match_`'s tyArgs.
+14. `TypeOfHM.subst_lemma` — clean, no side condition.
+
+### Open question for the user
+
+Chargueraud also adds **value restriction** (`value t1`) to `typing_let`.
+This is mandatory if the language has effects (ML refs), but our language is
+pure HM. We need *something* equivalent to value restriction *somewhere* —
+because `HasScheme Γ v M` (the substitution lemma's `u` premise) is only
+derivable for values from the cofinite let premise. Easiest: just mirror
+Chargueraud and add `Expr.IsValue boundExpr` to `letIn`. Strictly, we could
+get away without it by leveraging that `red_let` only fires on values
+operationally — but that complicates the substitution lemma. The sketch
+below mirrors Chargueraud (value restriction in the typing rule).
+
+------------------------------------------------------------------------------
+
+The actual sketch follows. Everything is `sorry`'d for now. -/
+
+mutual
+
+/-- `[Z ↦ U] · ty` — replace every `.fvar Z` in `ty` with `U`.
+
+    NOTE the explicit (non-dot) recursive call style: dot notation
+    (`a.substFvar Z U`) would pick `U` for the `Ty` slot since it's the first
+    `Ty`-typed positional arg, causing both an argument-order bug and a
+    termination-check failure. -/
+def Ty.substFvar (Z : Nat) (U : Ty) : Ty → Ty
+  | .prim p          => .prim p
+  | .pair a b        => .pair (Ty.substFvar Z U a) (Ty.substFvar Z U b)
+  | .arrow a b       => .arrow (Ty.substFvar Z U a) (Ty.substFvar Z U b)
+  | .bvar n          => .bvar n
+  | .fvar n          => if n = Z then U else .fvar n
+  | .customTy nm tys => .customTy nm (TyList.substFvar Z U tys)
+
+private def TyList.substFvar (Z : Nat) (U : Ty) : List Ty → List Ty
+  | []        => []
+  | hd :: tl  => Ty.substFvar Z U hd :: TyList.substFvar Z U tl
+
+end
+
+/-- Iterated `substFvar`: apply a list of `(Z, U)` substitutions left-to-right. -/
+def Ty.substFvars : List (Nat × Ty) → Ty → Ty
+  | []              , ty => ty
+  | (Z, U) :: rest  , ty => Ty.substFvars rest (Ty.substFvar Z U ty)
+
+/-- Open a scheme body's bvars with named fvars: `.bvar i ↦ .fvar (Xs.get i)`. -/
+def Ty.openVars (Xs : List Nat) (ty : Ty) : Ty :=
+  ty.instantiate (fun i => (Xs[i]?).elim (.bvar i) .fvar)
+
+/-- Open a scheme body's bvars with arbitrary LC types. -/
+def Ty.openWith (Vs : List Ty) (ty : Ty) : Ty :=
+  ty.instantiate (fun i => (Vs[i]?).getD (.bvar i))
+
+def PolyTy.substFvar (Z : Nat) (U : Ty) (pt : PolyTy) : PolyTy :=
+  { paramCount := pt.paramCount, body := pt.body.substFvar Z U }
+
+def PolyTy.openVars (Xs : List Nat) (pt : PolyTy) : Ty := pt.body.openVars Xs
+
+def PolyTy.openWith (Vs : List Ty) (pt : PolyTy) : Ty := pt.body.openWith Vs
+
+def Env.substFvar (Z : Nat) (U : Ty) (env : Env) : Env :=
+  env.map (PolyTy.substFvar Z U)
+
+
+/-! ### Locally-closed-ness. -/
+
+/-- Locally-closed monotype: no `.bvar`s. Existing `ContainsBvarsUpTo 0`. -/
+abbrev Ty.IsLC (ty : Ty) : Prop := ContainsBvarsUpTo 0 ty
+
+/-- All types in the list are LC, AND the list has the expected length. -/
+def Ty.AreLC (n : Nat) (Vs : List Ty) : Prop :=
+  Vs.length = n ∧ ∀ V ∈ Vs, V.IsLC
+
+/-- A well-formed scheme: when opened with any sufficiently fresh names of
+    the right arity, the resulting type is locally closed. -/
+def PolyTy.IsScheme (M : PolyTy) : Prop :=
+  ∃ L : List Nat, ∀ Xs : List Nat,
+    Xs.length = M.paramCount → Xs.Nodup → (∀ x ∈ Xs, x ∉ L) →
+    Ty.IsLC (M.openVars Xs)
+
+
+/-! ### Freshness packaging. -/
+
+/-- `Xs` is a list of `n` distinct names, all disjoint from `L`. -/
+structure FreshNames (L : List Nat) (n : Nat) (Xs : List Nat) : Prop where
+  length : Xs.length = n
+  nodup  : Xs.Nodup
+  avoid  : ∀ x ∈ Xs, x ∉ L
+
+
+/-! ### Cofinite typing-at-scheme predicates. -/
+
+/-- `t` types at *every* opening of `M` by sufficiently-fresh names. The `L`
+    is the cofinite exclusion set; existentially quantified at the use site. -/
+def HasSchemeVars (L : List Nat) (ctx : Ctx) (e : Expr) (M : PolyTy) : Prop :=
+  ∀ Xs : List Nat, FreshNames L M.paramCount Xs →
+    TypeOfHM ctx e (M.openVars Xs)
+
+/-- `t` types at *every* type-level instance of `M` (by LC types of the
+    right arity). This is what `subst_lemma`'s `u` premise demands. -/
+def HasScheme (ctx : Ctx) (e : Expr) (M : PolyTy) : Prop :=
+  ∀ Vs : List Ty, Ty.AreLC M.paramCount Vs →
+    TypeOfHM ctx e (M.openWith Vs)
+
+
+/-! ### Key commute lemmas (statements only — proofs are mechanical). -/
+
+theorem Ty.substFvar_fresh {Z : Nat} {U ty : Ty}
+    (h : Z ∉ ty.freeVars) :
+    ty.substFvar Z U = ty := by sorry
+
+theorem Ty.substFvar_openVars
+    {Z : Nat} {U ty : Ty} {Xs : List Nat}
+    (h_lc : U.IsLC)
+    (h_Z_not_in_Xs : Z ∉ Xs) :
+    (ty.openVars Xs).substFvar Z U = (ty.substFvar Z U).openVars Xs := by sorry
+
+/-- The "rename-open" intro lemma — Chargueraud's `typ_substs_intro`.
+    Opening `ty` with `Vs` factors through opening with fresh `Xs` followed
+    by substituting each `Xi` by the corresponding `Vi`. -/
+theorem Ty.openWith_eq_substFvars_openVars
+    {ty : Ty} {Vs : List Ty} {Xs : List Nat}
+    (h_lc_Vs : Ty.AreLC Xs.length Vs)
+    (h_xs_fresh : (∀ X ∈ Xs, X ∉ ty.freeVars) ∧ Xs.Nodup
+                  ∧ Xs.length = Vs.length) :
+    ty.openWith Vs
+      = Ty.substFvars (Xs.zip Vs) (ty.openVars Xs) := by sorry
+
+
+/-! ### Metatheory infrastructure (statements only). -/
+
+/-- Type-substitution preserves typing. Substituting a single fresh type
+    variable `Z` (one not appearing in the outer env) by any LC type `U`
+    preserves the typing derivation.
+
+    Chargueraud's `typing_typ_subst`. -/
+theorem TypeOfHM.typ_subst_preservation
+    {ctors : CtorEnv} {env_post env_outer : Env}
+    {e : Expr} {τ : Ty} {Z : Nat} {U : Ty}
+    (h_Z_fresh_outer : Z ∉ env_outer.freeVars)
+    (h_U_lc : U.IsLC)
+    (h : TypeOfHM ⟨env_post ++ env_outer, ctors⟩ e τ) :
+    TypeOfHM ⟨env_post.substFvar Z U ++ env_outer, ctors⟩ e (τ.substFvar Z U) := by
+  sorry
+
+/-- Cofinite weakening: insert `env_extra` in the middle, **no env_fv side
+    condition** (compare to existing `TypeOfHM.weaken_env` above, which still
+    requires `env_extra.freeVars ⊆ ...` because `Generalise` is the lax
+    "exists-fresh" version). The new proof goes through because the new
+    cofinite `letIn`/`letPairIn` rules let us grow `L` to exclude
+    `env_extra`'s fvars on the fly inside the IH.
+
+    Chargueraud's `typing_weaken`. -/
+theorem TypeOfHM.weaken_env_cofinite
+    {ctors : CtorEnv} {env_pre env_extra env : Env} {e : Expr} {τ : Ty}
+    (h : TypeOfHM ⟨env_pre ++ env, ctors⟩ e τ) :
+    TypeOfHM ⟨env_pre ++ env_extra ++ env, ctors⟩
+      (e.shiftFrom env_pre.length env_extra.length) τ := by
+  sorry
+
+/-- The bridge: a cofinite-vars witness gives a "for-all-instances" witness.
+    Chargueraud's `has_scheme_from_vars`. Uses `typ_subst_preservation` +
+    `Ty.openWith_eq_substFvars_openVars` to derive: for any `Vs`, pick
+    fresh `Xs`, use the cofinite witness at `Xs`, then iteratively
+    `typ_subst_preservation`-substitute each `Xi ↦ Vi`. -/
+theorem HasScheme.fromHasSchemeVars
+    {L : List Nat} {ctx : Ctx} {e : Expr} {M : PolyTy}
+    (h : HasSchemeVars L ctx e M) :
+    HasScheme ctx e M := by sorry
+
+/-- Monomorphic `has_scheme`: a regular typing is a `HasScheme` for the
+    trivial 0-binder scheme. Chargueraud's `has_scheme_from_typ`. -/
+theorem HasScheme.ofTypeOfHM
+    {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h : TypeOfHM ctx e τ) :
+    HasScheme ctx e (PolyTy.mkTrivial τ) := by sorry
+
+
+/-! ### The new `TypeOfHM.letIn` constructor (sketch).
+
+We can't easily edit the existing inductive in a sketch — but here's what the
+replacement constructor looks like (the existing `letIn` *and* `Generalise`
+would be removed):
+
+    | letIn (M : PolyTy) (L : List Nat) :
+        SmallStep.IsValue boundExpr →          -- value restriction
+        PolyTy.IsScheme M →                    -- well-formed scheme
+        -- cofinite type-var premise: boundExpr types at EVERY opening of M
+        (∀ Xs, FreshNames L M.paramCount Xs →
+            TypeOfHM ctx boundExpr (M.openVars Xs)) →
+        bodyCtx = { ctx with env := M :: ctx.env } →
+        TypeOfHM bodyCtx body bodyTy →
+        TypeOfHM ctx (.letIn boundExpr body) bodyTy
+
+`letPairIn` and `match_`'s tyArgs-instantiation cases get the same treatment.
+For `var` / `ctor` we keep something like the existing rule but state it via
+`M.openWith tyArgs` (semantically equivalent to current `InstantiatesBy`,
+just spelled in the new vocabulary).
+
+The crucial property that makes everything work: the IH coming out of this
+constructor is **universally quantified** in `Xs`. When the substitution
+lemma descends through a `letIn`, it just picks `Xs` fresh from
+`L ∪ env_post.freeVars ∪ (anything else we need to avoid)` and the IH
+applies. -/
+
+
+/-! ### The clean substitution lemma (no side condition!). -/
+
+/-- Chargueraud's `typing_trm_subst`, adapted to our de-Bruijn-level
+    term-var encoding. Substituting `v` (a value) for the variable at
+    position `env_post.length` preserves typing, provided `v` types at
+    every instance of the scheme `M` that bound that variable.
+
+    For beta-reduction, `M = PolyTy.mkTrivial paramTy` and
+    `HasScheme ctx v (mkTrivial paramTy)` reduces to `TypeOfHM ctx v paramTy`
+    via `HasScheme.ofTypeOfHM`.
+
+    For let-reduction, `M` is the generalised scheme and `HasScheme` is
+    obtained via `HasScheme.fromHasSchemeVars` from the cofinite premise of
+    the `letIn` rule that introduced `M`. -/
+theorem TypeOfHM.subst_lemma
+    {ctors : CtorEnv} {env_post env : Env}
+    {e : Expr} {τ : Ty} {M : PolyTy} {v : Expr}
+    (h_body : TypeOfHM ⟨env_post ++ [M] ++ env, ctors⟩ e τ)
+    (h_v : HasScheme ⟨env, ctors⟩ v M)
+    (h_v_value : SmallStep.IsValue v) :
+    TypeOfHM ⟨env_post ++ env, ctors⟩
+      (e.substN env_post.length [v]) τ := by
+  sorry
+
+
+/-! ### Translation: how this consumes/produces vs. the original `subst_lemma`.
+
+When this is used in `preservation`:
+
+- **Beta** (`(.app (.lambda body) v) → body.subst1 0 v`):
+  Apply with `M := PolyTy.mkTrivial paramTy` (paramTy from the lambda rule).
+  Discharge `h_v` via `HasScheme.ofTypeOfHM (h_v_typing : TypeOfHM env v paramTy)`.
+  Discharge `h_v_value` from the operational hypothesis (red_beta requires
+  the argument to be a value).
+
+- **Let-reduce** (`(.letIn t1 t2) → t2.subst1 0 t1`):
+  Apply with `M` = the scheme from the `letIn` rule.
+  Discharge `h_v` via `HasScheme.fromHasSchemeVars` applied to the cofinite
+  premise of the `letIn` rule.
+  Discharge `h_v_value` from the `Expr.IsValue boundExpr` premise of the
+  `letIn` rule (which we added per Chargueraud's value restriction). -/
+
 
 /-- If `ty` is closed (no `bvar`s), then `InstantiatesBy` on it is the identity:
     no `bvar` ever gets matched, so the structural recursion just reproduces `ty`. -/
