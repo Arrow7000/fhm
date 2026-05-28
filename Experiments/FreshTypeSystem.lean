@@ -220,21 +220,7 @@ structure MatchPattern where
   contents : Nat
 
 
--- inductive Expr
---   | primLit (prim : PrimLitExpr)
---   | pair (a b : Expr)
---   -- | lambda (param : ValName) (paramTy : Ty) (body : Expr)
---   | lambda (param : ValName) (body : Expr)
---   | app (f input : Expr)
---   | letIn (name : ValName) (bindingExpr body : Expr)
---   /-- Destructuring a pair `let (a,b) = pairExpr in body` -/
---   | letPairIn (fstName sndName : ValName) (pairExpr body : Expr)
---   | var (deBruijnLevel : Nat)
---   /-- A type constructor -/
---   | ctor (name : CtorName)
---   | match_ (scrutinee : Expr) (branches : List (MatchPattern × Expr))
-
-
+/-- An expression in our language -/
 inductive Expr
   | primLit (prim : PrimLitExpr)
   | pair (a b : Expr)
@@ -252,13 +238,6 @@ inductive Expr
 
 
 
-
--- def Ctor.toTy (ctorEnv : CtorEnv) (ctor : CtorName) : Option PolyTy :=
---   match ctorEnv.get? ctor with
---   | none => none
---   | some thing =>
---     .customTy thing.tyName thing.contents
---     |> some
 
 
 /-- Build `[.bvar start, .bvar (start+1), ..., .bvar (start+count-1)]`. -/
@@ -291,7 +270,7 @@ def Ty.wrapArrows (result : Ty) : List Ty → Ty
                             (.customTy Result [.bvar 0, .bvar 1]) }`. -/
 def Ctor.toTy (ctor : Ctor) : PolyTy :=
   let resultTy :=
-    .customTy ctor.tyName (Ty.bvarRange ctor.paramCount)
+    Ty.customTy ctor.tyName (Ty.bvarRange ctor.paramCount)
 
   let body := Ty.wrapArrows resultTy ctor.contents
   { paramCount := ctor.paramCount, body }
@@ -597,7 +576,10 @@ def Ty.instSubst (tyArgs : List Ty) (i : Nat) : Ty :=
 
 /-- Resulting type is the input type with the `.bvar i`s swapped out for the `i`th item in `tyArgs`.
 
-Cannot be produced for a `bvar` whose index is out of range of `tyArgs`. Thus if tyArgs doesn't contain any `bvar`s, neither does the output. -/
+Cannot be produced for a `bvar` whose index is out of range of `tyArgs`. Thus if tyArgs doesn't contain any `bvar`s, neither does the output.
+
+@TODO: hm maybe should make the source type here be a PolyTy, and then we can also ensure that all bvars are within range of the original polyty paramCount? then it's also just nicer to work with tbh. instantiation is semantically always from a polyty to a monoty, so it's odd that as it is it is a monoty to another monoty.
+-/
 inductive InstantiatesBy (tyArgs : List Ty) : Ty → Ty → Prop
   | prim :
     InstantiatesBy tyArgs (.prim p) (.prim p)
@@ -1364,14 +1346,88 @@ theorem evaluate_isValue {fuel e v} (h : evaluate fuel e = some v) :
 
 /-! ### Soundness & completeness of `step` w.r.t. well-typedness (`TypeOfHM`) -/
 
--- Preservation requires the substitution lemma, which needs a value-specific
--- weakening lemma to avoid the env_post.freeVars ⊆ env.freeVars issue.
--- Deferred to the implementation-oriented typing relation.
+-- /-- Preservation: one step of evaluation preserves types. -/
 -- theorem step_preserves_typing {ctx : Ctx} {e e' : Expr} {τ : Ty}
 --     (h_ty : TypeOfHM ctx e τ)
 --     (h_step : step e = some e') :
 --     TypeOfHM ctx e' τ := by
---   sorry
+--   have h_step_rel := step_sound h_step; clear h_step
+--   induction h_step_rel generalizing τ with
+--   | beta hval =>
+--     cases h_ty with
+--     | app h_f h_arg =>
+--       cases h_f with
+--       | lambda h_closed h_eq h_body =>
+--         subst h_eq
+--         -- Have:
+--         --   h_body : TypeOfHM {ctx with env := mkTrivial argTy :: ctx.env} body τ
+--         --   h_arg  : TypeOfHM ctx v argTy
+--         -- Need: TypeOfHM ctx (body.subst1 0 v) τ
+--         -- This is the substitution lemma at env_post = [].
+--         sorry
+--   | letReduce hval =>
+--     cases h_ty with
+--     | letIn h_rhs h_gen h_eq h_body =>
+--       subst h_eq
+--       -- Have:
+--       --   h_body : TypeOfHM {ctx with env := generalisedExprTy :: ctx.env} body τ
+--       --   h_rhs  : TypeOfHM ctx v boundExprTy
+--       --   h_gen  : Generalise ctx.env boundExprTy generalisedExprTy
+--       -- Need: TypeOfHM ctx (body.subst1 0 v) τ
+--       -- This is trickier: the binding is polymorphic (generalised), but we
+--       -- substitute a monomorphic value. Each use site instantiates the
+--       -- polytype, and the value must re-type at each instantiation.
+--       sorry
+--   | letPairReduce hv1 hv2 =>
+--     cases h_ty with
+--     | letPairIn h_rhs h_gf h_gs h_eq h_body =>
+--       subst h_eq
+--       cases h_rhs with
+--       | pair h_fst h_snd =>
+--         -- Have:
+--         --   h_body : TypeOfHM {ctx with env := genSndTy :: genFstTy :: ctx.env} body τ
+--         --   h_fst  : TypeOfHM ctx v₁ fstTy
+--         --   h_snd  : TypeOfHM ctx v₂ sndTy
+--         --   h_gf   : Generalise ctx.env fstTy genFstTy
+--         --   h_gs   : Generalise ctx.env sndTy genSndTy
+--         -- Need: TypeOfHM ctx (body.substN 0 [v₂, v₁]) τ
+--         -- Same challenge as letReduce but with two generalised bindings.
+--         sorry
+--   | matchReduce hval hctor hfirst =>
+--     cases h_ty with
+--     | match_ h_scrut h_ne h_brs =>
+--       -- Have:
+--       --   h_scrut : TypeOfHM ctx scrut (.customTy tyName tyArgs)
+--       --   h_brs   : ∀ branch ∈ branches, TypeOfMatchBranch ctx branch tyName tyArgs τ
+--       --   hfirst  : FirstMatchingBranch name args.length branches pat body
+--       --   hctor   : CtorAppliedTo scrut name args
+--       --   hval    : IsValue scrut
+--       -- Need: TypeOfHM ctx (body.substN 0 args) τ
+--       -- Must extract the matching branch's typing, get types for args from
+--       -- the ctor chain + scrutinee typing, then substitute.
+--       sorry
+--   | pairFst _ ih =>
+--     cases h_ty with
+--     | pair h_a h_b => exact .pair (ih h_a) h_b
+--   | pairSnd hval _ ih =>
+--     cases h_ty with
+--     | pair h_a h_b => exact .pair h_a (ih h_b)
+--   | appFn _ ih =>
+--     cases h_ty with
+--     | app h_f h_arg => exact .app (ih h_f) h_arg
+--   | appArg hval _ ih =>
+--     cases h_ty with
+--     | app h_f h_arg => exact .app h_f (ih h_arg)
+--   | letInRhs _ ih =>
+--     cases h_ty with
+--     | letIn h_rhs h_gen h_eq h_body => exact .letIn (ih h_rhs) h_gen h_eq h_body
+--   | letPairRhs _ ih =>
+--     cases h_ty with
+--     | letPairIn h_rhs h_gf h_gs h_eq h_body =>
+--       exact .letPairIn (ih h_rhs) h_gf h_gs h_eq h_body
+--   | matchScrut _ ih =>
+--     cases h_ty with
+--     | match_ h_scrut h_ne h_brs => exact .match_ (ih h_scrut) h_ne h_brs
 
 end SmallStep
 
@@ -2081,74 +2137,170 @@ theorem TypeOfHM.canonical_customTy {ctx e tyName tyArgs}
 
 namespace SmallStep
 
-/-- Progress over the Step relation: a well-typed closed term is either a value
-    or can take a step.
+mutual
 
-    The match case requires exhaustive branch coverage, which `TypeOfHM.match_`
-    doesn't enforce, so that case is left as sorry. All other cases are proved. -/
-theorem progress {ctx : Ctx} {e : Expr} {τ : Ty}
-    (h_ty : TypeOfHM ctx e τ) (h_closed : ctx.env = []) :
-    IsValue e ∨ ∃ e', Step e e' := by
-  induction e using Expr.rec_strong generalizing ctx τ with
-  | primLit p => exact .inl (.primLit p)
-  | lambda _ _ => exact .inl (.lambda _)
-  | ctor name => exact .inl (.ctor name)
-  | var n =>
-    cases h_ty with
-    | var h_lookup _ _ => rw [h_closed] at h_lookup; simp at h_lookup
-  | pair a b iha ihb =>
-    cases h_ty with
-    | pair h_a h_b =>
-      rcases iha h_a h_closed with hva | ⟨a', ha⟩
-      · rcases ihb h_b h_closed with hvb | ⟨b', hb⟩
-        · exact .inl (.pair hva hvb)
-        · exact .inr ⟨_, .pairSnd hva hb⟩
-      · exact .inr ⟨_, .pairFst ha⟩
-  | app f arg ihf iharg =>
-    cases h_ty with
-    | app h_f h_arg =>
-      rcases ihf h_f h_closed with hvf | ⟨f', hf⟩
-      · rcases iharg h_arg h_closed with hva | ⟨arg', harg⟩
-        · rcases TypeOfHM.canonical_arrow h_f hvf with ⟨body, rfl⟩ | hchain
-          · exact .inr ⟨_, .beta hva⟩
-          · exact .inl (.ctorApp hchain hva)
-        · exact .inr ⟨_, .appArg hvf harg⟩
-      · exact .inr ⟨_, .appFn hf⟩
-  | letIn rhs body ihrhs _ =>
-    cases h_ty with
-    | letIn h_rhs _ _ _ =>
-      rcases ihrhs h_rhs h_closed with hvr | ⟨rhs', hrhs⟩
-      · exact .inr ⟨_, .letReduce hvr⟩
-      · exact .inr ⟨_, .letInRhs hrhs⟩
-  | letPairIn rhs body ihrhs _ =>
-    cases h_ty with
-    | letPairIn h_rhs _ _ _ _ =>
-      rcases ihrhs h_rhs h_closed with hvr | ⟨rhs', hrhs⟩
-      · obtain ⟨v₁, v₂, rfl, hv₁, hv₂⟩ := TypeOfHM.canonical_pair h_rhs hvr
-        exact .inr ⟨_, .letPairReduce hv₁ hv₂⟩
-      · exact .inr ⟨_, .letPairRhs hrhs⟩
-  | match_ scrut branches ihscrut _ =>
-    cases h_ty with
-    | match_ h_scrut _ _ =>
-      rcases ihscrut h_scrut h_closed with hvs | ⟨scrut', hscrut⟩
-      · -- scrut is a value of customTy type, so it's a ctor chain.
-        -- Need a matching branch — requires exhaustiveness, which
-        -- TypeOfHM.match_ doesn't enforce.
-        sorry
-      · exact .inr ⟨_, .matchScrut hscrut⟩
+/-- Every match expression (transitively) inside `e` is exhaustive: for each
+    match node, every constructor of the matched type `tyName` has a
+    corresponding branch.  The `tyName` at each match node is existentially
+    quantified — when *building* the proof the caller picks the type that the
+    match covers (typically from the typing derivation). -/
+inductive AllMatchesExhaustive : CtorEnv → Expr → Prop where
+  | primLit : AllMatchesExhaustive ctors (.primLit p)
+  | var : AllMatchesExhaustive ctors (.var n)
+  | ctor : AllMatchesExhaustive ctors (.ctor name)
+  | pair :
+    AllMatchesExhaustive ctors a → AllMatchesExhaustive ctors b →
+    AllMatchesExhaustive ctors (.pair a b)
+  | lambda :
+    AllMatchesExhaustive ctors body →
+    AllMatchesExhaustive ctors (.lambda body)
+  | app :
+    AllMatchesExhaustive ctors f → AllMatchesExhaustive ctors arg →
+    AllMatchesExhaustive ctors (.app f arg)
+  | letIn :
+    AllMatchesExhaustive ctors rhs → AllMatchesExhaustive ctors body →
+    AllMatchesExhaustive ctors (.letIn rhs body)
+  | letPairIn :
+    AllMatchesExhaustive ctors rhs → AllMatchesExhaustive ctors body →
+    AllMatchesExhaustive ctors (.letPairIn rhs body)
+  /-- Exhaustiveness for match: every constructor in the ctor env whose type
+      matches `tyName` has a corresponding branch. The `tyName` is existentially
+      quantified — the caller picks it (typically from the typing derivation). -/
+  | match_ {tyName : TyName} :
+    AllMatchesExhaustive ctors scrut →
+    AllBranchBodiesExhaustive ctors branches →
+    (∀ (ctorName : CtorName) (ctor : Ctor),
+      LookupList.get? ctors ctorName = some ctor →
+      ctor.tyName = tyName →
+      ∃ pat body, (pat, body) ∈ branches ∧ pat.ctor = ctorName ∧
+        pat.contents = ctor.contents.length) →
+    AllMatchesExhaustive ctors (.match_ scrut branches)
 
-/-- Progress for the step function: a well-typed closed non-value can always
-    step. Derived from `progress` + `step_complete`.
+/-- All branch bodies are recursively exhaustive. -/
+inductive AllBranchBodiesExhaustive : CtorEnv → List (MatchPattern × Expr) → Prop where
+  | nil : AllBranchBodiesExhaustive ctors []
+  | cons :
+    AllMatchesExhaustive ctors body →
+    AllBranchBodiesExhaustive ctors rest →
+    AllBranchBodiesExhaustive ctors ((pat, body) :: rest)
 
-    Inherits the match exhaustiveness caveat from `progress`. -/
-theorem step_progress {ctx : Ctx} {e : Expr} {τ : Ty}
-    (h_ty : TypeOfHM ctx e τ)
-    (h_closed : ctx.env = [])
-    (h_not_val : isValue e = false) :
-    ∃ e', step e = some e' := by
-  rcases progress h_ty h_closed with hv | ⟨e', he⟩
-  · exact absurd (isValue_iff_IsValue.mpr hv) (by simp [h_not_val])
-  · exact ⟨e', step_complete he⟩
+end
+
+/-- If a ctor chain is well-typed at `customTy tyName tyArgs`, extract its
+    name, args, ctor entry, and the fact that it's a constructor for `tyName`. -/
+theorem ctor_chain_info {ctx e tyName tyArgs}
+    (h_chain : IsCtorChain e)
+    (h_ty : TypeOfHM ctx e (.customTy tyName tyArgs)) :
+    ∃ name args, ∃ ctor : Ctor,
+      CtorAppliedTo e name args ∧
+      LookupList.get? ctx.ctors name = some ctor ∧
+      ctor.tyName = tyName ∧
+      args.length = ctor.contents.length := by
+  sorry  -- requires ctor-chain typing inversion
+
+/-- If a matching branch exists in the list, `findMatchingBranch` succeeds. -/
+theorem findMatchingBranch_of_exists {name : CtorName} {args : List Expr}
+    {branches : List (MatchPattern × Expr)}
+    (h : ∃ pat body, (pat, body) ∈ branches ∧ pat.ctor = name ∧
+         pat.contents = args.length) :
+    ∃ e', findMatchingBranch name args branches = some e' := by
+  induction branches with
+  | nil => obtain ⟨_, _, hmem, _⟩ := h; exact nomatch hmem
+  | cons hd tl ih =>
+    obtain ⟨pat, body, hmem, hctor, harity⟩ := h
+    unfold findMatchingBranch
+    split
+    · exact ⟨_, rfl⟩
+    · rename_i hnm
+      cases hmem with
+      | head _ => exact absurd (And.intro hctor harity) hnm
+      | tail _ hmem' => exact ih ⟨pat, body, hmem', hctor, harity⟩
+
+-- /-- Progress: a well-typed closed term (with exhaustive matches) is either
+--     a value or can take a step. -/
+-- theorem progress {ctx : Ctx} {e : Expr} {τ : Ty}
+--     (h_ty : TypeOfHM ctx e τ)
+--     (h_closed : ctx.env = [])
+--     (h_exh : AllMatchesExhaustive ctx.ctors e) :
+--     IsValue e ∨ ∃ e', Step e e' := by
+--   induction e using Expr.rec_strong generalizing ctx τ with
+--   | primLit p => exact .inl (.primLit p)
+--   | lambda _ _ => exact .inl (.lambda _)
+--   | ctor name => exact .inl (.ctor name)
+--   | var n =>
+--     cases h_ty with
+--     | var h_lookup _ _ => rw [h_closed] at h_lookup; simp at h_lookup
+--   | pair a b iha ihb =>
+--     cases h_exh with | pair h_exh_a h_exh_b =>
+--     cases h_ty with
+--     | pair h_a h_b =>
+--       rcases iha h_a h_closed h_exh_a with hva | ⟨a', ha⟩
+--       · rcases ihb h_b h_closed h_exh_b with hvb | ⟨b', hb⟩
+--         · exact .inl (.pair hva hvb)
+--         · exact .inr ⟨_, .pairSnd hva hb⟩
+--       · exact .inr ⟨_, .pairFst ha⟩
+--   | app f arg ihf iharg =>
+--     cases h_exh with | app h_exh_f h_exh_arg =>
+--     cases h_ty with
+--     | app h_f h_arg =>
+--       rcases ihf h_f h_closed h_exh_f with hvf | ⟨f', hf⟩
+--       · rcases iharg h_arg h_closed h_exh_arg with hva | ⟨arg', harg⟩
+--         · rcases TypeOfHM.canonical_arrow h_f hvf with ⟨body, rfl⟩ | hchain
+--           · exact .inr ⟨_, .beta hva⟩
+--           · exact .inl (.ctorApp hchain hva)
+--         · exact .inr ⟨_, .appArg hvf harg⟩
+--       · exact .inr ⟨_, .appFn hf⟩
+--   | letIn rhs body ihrhs _ =>
+--     cases h_exh with | letIn h_exh_rhs _ =>
+--     cases h_ty with
+--     | letIn h_rhs _ _ _ =>
+--       rcases ihrhs h_rhs h_closed h_exh_rhs with hvr | ⟨rhs', hrhs⟩
+--       · exact .inr ⟨_, .letReduce hvr⟩
+--       · exact .inr ⟨_, .letInRhs hrhs⟩
+--   | letPairIn rhs body ihrhs _ =>
+--     cases h_exh with | letPairIn h_exh_rhs _ =>
+--     cases h_ty with
+--     | letPairIn h_rhs _ _ _ _ =>
+--       rcases ihrhs h_rhs h_closed h_exh_rhs with hvr | ⟨rhs', hrhs⟩
+--       · obtain ⟨v₁, v₂, rfl, hv₁, hv₂⟩ := TypeOfHM.canonical_pair h_rhs hvr
+--         exact .inr ⟨_, .letPairReduce hv₁ hv₂⟩
+--       · exact .inr ⟨_, .letPairRhs hrhs⟩
+--   | match_ scrut branches ihscrut _ =>
+--     cases h_exh with | match_ h_exh_scrut _ h_match_exh =>
+--     cases h_ty with
+--     | match_ h_scrut _ _ =>
+--       rcases ihscrut h_scrut h_closed h_exh_scrut with hvs | ⟨scrut', hscrut⟩
+--       · have hchain := TypeOfHM.canonical_customTy h_scrut hvs
+--         obtain ⟨name, args, ctor, hctor_app, hctor_lookup, _, hlen⟩ :=
+--           ctor_chain_info hchain h_scrut
+--         -- sorry: ctor.tyName = tyName from exhaustiveness. Holds when
+--         -- AllMatchesExhaustive was built with the same tyName as the typing.
+--         obtain ⟨pat, body, hmem, hpctor, hparity⟩ := by
+--           refine h_match_exh name ctor hctor_lookup ?_
+--           expose_names
+--           suffices tyName = tyName_1 by
+--             subst this
+--             exact left
+--           subst left
+
+--           sorry
+
+--         obtain ⟨e', hfmb⟩ := findMatchingBranch_of_exists
+--           ⟨pat, body, hmem, hpctor, hparity.trans hlen.symm⟩
+--         obtain ⟨pat', body', hfirst, _⟩ := findMatchingBranch_to_FirstMatch hfmb
+--         exact .inr ⟨_, .matchReduce hvs hctor_app hfirst⟩
+--       · exact .inr ⟨_, .matchScrut hscrut⟩
+
+-- /-- Progress for the step function. -/
+-- theorem step_progress {ctx : Ctx} {e : Expr} {τ : Ty}
+--     (h_ty : TypeOfHM ctx e τ)
+--     (h_closed : ctx.env = [])
+--     (h_exh : AllMatchesExhaustive ctx.ctors e)
+--     (h_not_val : isValue e = false) :
+--     ∃ e', step e = some e' := by
+--   rcases progress h_ty h_closed h_exh with hv | ⟨e', he⟩
+--   · exact absurd (isValue_iff_IsValue.mpr hv) (by simp [h_not_val])
+--   · exact ⟨e', step_complete he⟩
 
 end SmallStep
 
@@ -2167,7 +2319,7 @@ binding being eliminated. -/
 
 /-- If `ty` is closed (no `bvar`s), then `InstantiatesBy` on it is the identity:
     no `bvar` ever gets matched, so the structural recursion just reproduces `ty`. -/
-private theorem InstantiatesBy.eq_of_closed
+private lemma InstantiatesBy.eq_of_closed
     {tyArgs : List Ty} {ty τ : Ty}
     (h_closed : OnlyContainsBvars [] ty)
     (h_inst : InstantiatesBy tyArgs ty τ) :
@@ -2429,3 +2581,62 @@ private theorem InstantiatesBy.eq_of_closed
 --     (h_step : SmallStep.Step e e') :
 --     TypeOfHM ctx e' τ := by
 --   sorry
+
+
+
+
+/-- Either a conc or unspec. Either the fvar is constrained or not. -/
+inductive TyMaybe where
+  | unspec
+  | conc (ty : Ty)
+
+
+/-- The unification var context. Each fvar references an item in this context -/
+abbrev FvarCtx := List TyMaybe
+
+
+-- /-- Whether the type-ness is imposed by the value itself or the environment pushes a type onto the value -/
+-- inductive TypeDir where
+--   /-- The surrounding area pushes a certain type onto the value. This is the check direction. -/
+--   | check
+--   /-- The value itself imposes its own type. This is the infer direction. -/
+--   | infer
+
+-- inductive BiTyping : Ctx → TypeDir → Expr → Ty → Prop
+--   | primUnit : BiTyping ctx .infer (.primLit .unit) (.prim .unit)
+--   | primInt : BiTyping ctx .infer (.primLit (.int _)) (.prim .int)
+--   | primNat : BiTyping ctx .infer (.primLit (.nat _)) (.prim .nat)
+--   | primBool : BiTyping ctx .infer (.primLit (.bool _)) (.prim .bool)
+--   | primStr : BiTyping ctx .infer (.primLit (.str _)) (.prim .str)
+
+--   | pair :
+--     BiTyping ctx .infer fst fstTy →
+--     BiTyping ctx .infer snd sndTy →
+--     BiTyping ctx .infer (.pair fst snd) (.pair fstTy sndTy)
+
+--   | lambda :
+--     bodyCtx = { ctx with env := PolyTy.mkTrivial argTy :: ctx.env } →
+--     BiTyping bodyCtx .infer body bodyTy →
+--     BiTyping ctx .infer (.lambda body) (.arrow argTy bodyTy)
+
+--   | app :
+--     BiTyping ctx .infer f (.arrow argTy returnTy) →
+--     BiTyping ctx .check arg argTy →
+--     BiTyping ctx .infer (.app f arg) returnTy
+
+--   | var {ctx : Ctx} {polyTy : PolyTy} :
+--     ctx.env[dbi]? = some polyTy →
+--     InstantiatesBy tyArgs polyTy.body ty →
+--     BiTyping ctx .infer (.var dbi) ty
+
+--   | ctor :
+--     ctx.ctors.get? ctorName = some polyTy →
+--     InstantiatesBy tyArgs polyTy.toTy.body ty →
+--     BiTyping ctx .infer (.ctor ctorName) ty
+
+--   | letIn :
+--     BiTyping ctx .infer binding bindingTy →
+--     Generalise ctx.env bindingTy generalisedTy →
+--     bodyCtx = { ctx with env := generalisedTy :: ctx.env } →
+--     BiTyping ctx .infer body bodyTy →
+--     BiTyping ctx .infer (.letIn binding body) bodyTy
