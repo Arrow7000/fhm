@@ -3418,15 +3418,88 @@ theorem TypeOfLN.weaken_env
       (e.shiftFrom env_pre.length env_extra.length) τ := by
   sorry
 
+/-- Iterated type substitution preserves typing: substituting each `(Zᵢ, Uᵢ)`
+    in turn (with every `Zᵢ` fresh for the env and every `Uᵢ` locally closed)
+    preserves the derivation. Chargueraud's `typing_typ_substs`. -/
+theorem TypeOfLN.typ_substs_preservation {ctx : Ctx} {e : Expr}
+    (pairs : List (Nat × Ty))
+    (h_fresh : ∀ p ∈ pairs, p.1 ∉ ctx.env.freeVars)
+    (h_lc : ∀ p ∈ pairs, Ty.IsLC p.2)
+    {τ : Ty} (h : TypeOfLN ctx e τ) :
+    TypeOfLN ctx e (Ty.substFvars pairs τ) := by
+  induction pairs generalizing τ with
+  | nil => exact h
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    simp only [Ty.substFvars]
+    refine ih (fun p hp => h_fresh p (List.mem_cons_of_mem _ hp))
+              (fun p hp => h_lc p (List.mem_cons_of_mem _ hp)) ?_
+    have hZ : Z ∉ ctx.env.freeVars := h_fresh (Z, U) List.mem_cons_self
+    have hU : Ty.IsLC U := h_lc (Z, U) List.mem_cons_self
+    exact TypeOfLN.typ_subst_preservation (env_post := []) (env_outer := ctx.env)
+      (ctors := ctx.ctors) hZ hU h
+
+/-- Every element of a list is `≤` its `max`-fold. -/
+private theorem List.le_foldr_max {a : Nat} {l : List Nat}
+    (h : a ∈ l) : a ≤ l.foldr max 0 := by
+  induction l with
+  | nil => exact absurd h List.not_mem_nil
+  | cons hd tl ih =>
+    simp only [List.foldr_cons]
+    cases h with
+    | head => exact le_max_left _ _
+    | tail _ h' => exact le_trans (ih h') (le_max_right _ _)
+
+/-- For any finite `avoid` list and any `n`, there exist `n` distinct names
+    avoiding `avoid`. (Take `n` consecutive numbers above `max avoid`.) -/
+theorem exists_fresh_names (avoid : List Nat) (n : Nat) :
+    ∃ Xs : List Nat, Xs.length = n ∧ Xs.Nodup ∧ ∀ x ∈ Xs, x ∉ avoid := by
+  refine ⟨(List.range n).map (· + (avoid.foldr max 0 + 1)), ?_, ?_, ?_⟩
+  · simp
+  · apply List.Nodup.map (fun a b hab => by omega) List.nodup_range
+  · intro x hx hmem
+    simp only [List.mem_map, List.mem_range] at hx
+    obtain ⟨i, _, rfl⟩ := hx
+    have hle := List.le_foldr_max hmem
+    omega
+
 /-- The bridge: a cofinite-vars witness gives a "for-all-instances" witness.
-    Chargueraud's `has_scheme_from_vars`. Uses `typ_subst_preservation` +
-    `Ty.openWith_eq_substFvars_openVars` to derive: for any `Vs`, pick
-    fresh `Xs`, use the cofinite witness at `Xs`, then iteratively
-    `typ_subst_preservation`-substitute each `Xi ↦ Vi`. -/
+    Chargueraud's `has_scheme_from_vars`. For any `Vs`, pick `Xs` fresh for
+    everything relevant, use the cofinite witness at `Xs`, then iteratively
+    `typ_subst_preservation`-substitute each `Xᵢ ↦ Vᵢ` (the
+    `openWith = substFvars ∘ openVars` identity bridges the two openings). -/
 theorem HasScheme.fromHasSchemeVars
     {L : List Nat} {ctx : Ctx} {e : Expr} {M : PolyTy}
     (h : HasSchemeVars L ctx e M) :
-    HasScheme ctx e M := by sorry
+    HasScheme ctx e M := by
+  intro Vs hVs
+  obtain ⟨hVlen, hVlc⟩ := hVs
+  obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
+    exists_fresh_names
+      (L ++ M.body.freeVars ++ Ty.freeVarsList Vs ++ ctx.env.freeVars) M.paramCount
+  -- split the combined freshness into its four parts
+  have hX_L : ∀ x ∈ Xs, x ∉ L := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hX_Mbody : ∀ x ∈ Xs, x ∉ M.body.freeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hX_Vs : ∀ x ∈ Xs, x ∉ Ty.freeVarsList Vs := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hX_env : ∀ x ∈ Xs, x ∉ ctx.env.freeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hVlen' : Vs.length = Xs.length := by rw [hVlen, hXlen]
+  -- the cofinite witness, instantiated at our fresh Xs
+  have hwit := h Xs ⟨hXlen, hXnodup, hX_L⟩
+  -- bridge openWith to substFvars ∘ openVars
+  have hrewrite : M.openWith Vs = Ty.substFvars (Xs.zip Vs) (M.openVars Xs) := by
+    unfold PolyTy.openWith PolyTy.openVars
+    exact Ty.openWith_eq_substFvars_openVars ⟨hVlen', hVlc⟩ hXnodup hX_Mbody hX_Vs
+  show TypeOfLN ctx e (M.openWith Vs)
+  rw [hrewrite]
+  refine TypeOfLN.typ_substs_preservation (Xs.zip Vs) ?_ ?_ hwit
+  · intro p hp
+    exact hX_env p.1 (List.of_mem_zip hp).1
+  · intro p hp
+    exact hVlc p.2 (List.of_mem_zip hp).2
 
 /-- Instantiation with the "identity on bvars" substitution is a no-op. Used
     in `HasScheme.ofTypeOfHM` to show that opening an arity-0 scheme with the
