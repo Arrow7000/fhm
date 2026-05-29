@@ -2423,7 +2423,9 @@ def Ty.openWith (Vs : List Ty) (ty : Ty) : Ty :=
   ty.instantiate (fun i => (Vs[i]?).getD (.bvar i))
 
 def PolyTy.substFvar (Z : Nat) (U : Ty) (pt : PolyTy) : PolyTy :=
-  { paramCount := pt.paramCount, body := pt.body.substFvar Z U }
+  -- NOTE: explicit (non-dot) call: `pt.body.substFvar Z U` would misfire because
+  -- `Ty.substFvar` has two `Ty` args and dot notation fills the wrong one.
+  { paramCount := pt.paramCount, body := Ty.substFvar Z U pt.body }
 
 def PolyTy.openVars (Xs : List Nat) (pt : PolyTy) : Ty := pt.body.openVars Xs
 
@@ -3036,7 +3038,188 @@ theorem Ty.openWith_eq_substFvars_openVars
     simpa using ih t ht ht_fresh
 
 
-/-! ### Metatheory infrastructure (statements only). -/
+/-! ### `substFvar` interaction with the typing-side predicates.
+
+Helpers needed by `typ_subst_preservation`. -/
+
+/-- `substFvar` by an LC type preserves local-closedness. (The `bvar` case is
+    vacuous: an LC type has no bvars.) -/
+theorem Ty.IsLC.substFvar {Z : Nat} {U ty : Ty}
+    (h_U : Ty.IsLC U) (h : Ty.IsLC ty) :
+    Ty.IsLC (Ty.substFvar Z U ty) := by
+  induction ty using Ty.rec_strong with
+  | prim _ => exact .prim
+  | pair a b iha ihb => cases h with | pair ha hb => exact .pair (iha ha) (ihb hb)
+  | arrow a b iha ihb => cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | bvar i => cases h with | bvar hlt => exact absurd hlt (by omega)
+  | fvar m =>
+    simp only [Ty.substFvar]
+    by_cases hm : m = Z
+    · simp only [if_pos hm]; exact h_U
+    · simp only [if_neg hm]; exact .fvar
+  | customTy nm tys ih =>
+    cases h with
+    | customTy hall =>
+      simp only [Ty.substFvar]
+      apply ContainsBvarsUpTo.customTy
+      rw [TyList.substFvar_eq_map]
+      intro t ht
+      obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+      exact ih t0 ht0 (hall t0 ht0)
+
+/-- Instantiation is the identity on locally-closed types (reverse of
+    `InstantiatesBy.eq_of_closed`): if `ty` has no bvars, it instantiates to
+    itself under any `tyArgs`. -/
+theorem InstantiatesBy.refl_of_closed {tyArgs : List Ty} {ty : Ty}
+    (h : ContainsBvarsUpTo 0 ty) : InstantiatesBy tyArgs ty ty := by
+  induction ty using Ty.rec_strong with
+  | prim _ => exact .prim
+  | pair a b iha ihb => cases h with | pair ha hb => exact .pair (iha ha) (ihb hb)
+  | arrow a b iha ihb => cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | bvar i => cases h with | bvar hlt => exact absurd hlt (by omega)
+  | fvar n => exact .fvar
+  | customTy nm tys ih =>
+    cases h with
+    | customTy hall =>
+      apply InstantiatesBy.customTy
+      have aux : ∀ ts : List Ty, (∀ t ∈ ts, ContainsBvarsUpTo 0 t) →
+          (∀ t ∈ ts, InstantiatesBy tyArgs t t) →
+          List.Forall₂ (InstantiatesBy tyArgs) ts ts := by
+        intro ts
+        induction ts with
+        | nil => intro _ _; exact .nil
+        | cons hd tl ihts =>
+          intro hall' hinst'
+          exact .cons (hinst' hd List.mem_cons_self)
+            (ihts (fun t ht => hall' t (List.mem_cons_of_mem _ ht))
+                  (fun t ht => hinst' t (List.mem_cons_of_mem _ ht)))
+      exact aux tys hall (fun t ht => ih t ht (hall t ht))
+
+/-- `substFvar` commutes with `InstantiatesBy` (when the replacement `U` is
+    LC): substituting fvars then instantiating bvars equals instantiating
+    bvars (with the substituted `tyArgs`) then substituting fvars. -/
+theorem InstantiatesBy.substFvar {Z : Nat} {U : Ty}
+    (h_U_lc : Ty.IsLC U) {ty1 ty2 : Ty} {tyArgs : List Ty}
+    (h : InstantiatesBy tyArgs ty1 ty2) :
+    InstantiatesBy (tyArgs.map (Ty.substFvar Z U))
+      (Ty.substFvar Z U ty1) (Ty.substFvar Z U ty2) := by
+  induction ty1 using Ty.rec_strong generalizing ty2 with
+  | prim _ => cases h; exact .prim
+  | pair a b iha ihb =>
+    cases h with | pair ha hb => exact .pair (iha ha) (ihb hb)
+  | arrow a b iha ihb =>
+    cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | bvar i =>
+    cases h with
+    | bvar hsome =>
+      simp only [Ty.substFvar]
+      apply InstantiatesBy.bvar
+      rw [List.getElem?_map, hsome]; rfl
+  | fvar n =>
+    cases h with
+    | fvar =>
+      by_cases hn : n = Z
+      · simp only [Ty.substFvar, if_pos hn]
+        exact InstantiatesBy.refl_of_closed h_U_lc
+      · simp only [Ty.substFvar, if_neg hn]; exact .fvar
+  | customTy nm tys ih =>
+    cases h with
+    | customTy hforall =>
+      simp only [Ty.substFvar]
+      rw [TyList.substFvar_eq_map, TyList.substFvar_eq_map]
+      apply InstantiatesBy.customTy
+      induction hforall with
+      | nil => exact .nil
+      | cons hhd htl ihtl =>
+        rename_i hd_ty hd_it tl_tys tl_it
+        refine .cons (ih hd_ty List.mem_cons_self hhd) ?_
+        exact ihtl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
+
+/-- `Env.substFvar` by a fresh `Z` is the identity. -/
+theorem Env.substFvar_fresh {Z : Nat} {U : Ty} {env : Env}
+    (h : Z ∉ env.freeVars) : env.substFvar Z U = env := by
+  induction env with
+  | nil => rfl
+  | cons hd tl ih =>
+    simp only [Env.freeVars, List.mem_dedup, List.mem_append, not_or] at h
+    simp only [Env.substFvar, List.map_cons]
+    have hd_eq : PolyTy.substFvar Z U hd = hd := by
+      obtain ⟨pc, body⟩ := hd
+      simp only [PolyTy.substFvar]
+      rw [Ty.substFvar_fresh h.1]
+    rw [hd_eq]
+    have htl : Env.substFvar Z U tl = tl := ih h.2
+    simp only [Env.substFvar] at htl
+    rw [htl]
+
+theorem Env.substFvar_append {Z : Nat} {U : Ty} {a b : Env} :
+    Env.substFvar Z U (a ++ b) = Env.substFvar Z U a ++ Env.substFvar Z U b := by
+  simp only [Env.substFvar, List.map_append]
+
+/-- Scheme-ness is preserved by `substFvar` (with LC replacement). -/
+theorem PolyTy.IsScheme.substFvar {Z : Nat} {U : Ty} {M : PolyTy}
+    (h_U_lc : Ty.IsLC U) (h : M.IsScheme) :
+    (M.substFvar Z U).IsScheme := by
+  obtain ⟨L, hL⟩ := h
+  refine ⟨Z :: L, ?_⟩
+  intro Xs h_len h_nodup h_avoid
+  have hZ_notin : Z ∉ Xs := fun hc => h_avoid Z hc List.mem_cons_self
+  have hopen : (M.substFvar Z U).openVars Xs = Ty.substFvar Z U (M.openVars Xs) := by
+    unfold PolyTy.openVars PolyTy.substFvar
+    exact (Ty.substFvar_openVars h_U_lc hZ_notin).symm
+  rw [hopen]
+  refine Ty.IsLC.substFvar h_U_lc (hL Xs h_len h_nodup ?_)
+  exact fun x hx hc => h_avoid x hx (List.mem_cons_of_mem _ hc)
+
+
+/-- A type with no free vars contains no particular free var. -/
+theorem NoFreeVars.not_mem_freeVars {ty : Ty} (h : NoFreeVars ty) (Z : Nat) :
+    Z ∉ ty.freeVars := by
+  induction h with
+  | prim => simp [Ty.freeVars]
+  | pair _ _ iha ihb =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]; exact ⟨iha, ihb⟩
+  | arrow _ _ iha ihb =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]; exact ⟨iha, ihb⟩
+  | bvar => simp [Ty.freeVars]
+  | customTy _ ih =>
+    simp only [Ty.freeVars]
+    exact TyList.not_mem_freeVars_iff.mpr (fun t ht => ih t ht)
+
+/-- Every entry of a `bvarRangeFrom` list is a (free-var-free) bound variable. -/
+private theorem NoFreeVars.bvarRangeFrom (s n : Nat) :
+    ∀ t ∈ Ty.bvarRangeFrom s n, NoFreeVars t := by
+  induction n generalizing s with
+  | zero => intro t ht; simp [Ty.bvarRangeFrom] at ht
+  | succ k ih =>
+    intro t ht
+    simp only [Ty.bvarRangeFrom, List.mem_cons] at ht
+    rcases ht with rfl | ht
+    · exact .bvar
+    · exact ih (s + 1) t ht
+
+/-- Right-nested arrows over free-var-free pieces are free-var-free. -/
+private theorem NoFreeVars.wrapArrows {result : Ty} {args : List Ty}
+    (hres : NoFreeVars result) (hargs : ∀ a ∈ args, NoFreeVars a) :
+    NoFreeVars (Ty.wrapArrows result args) := by
+  induction args with
+  | nil => exact hres
+  | cons hd tl ih =>
+    simp only [Ty.wrapArrows]
+    exact .arrow (hargs hd List.mem_cons_self)
+      (ih (fun a ha => hargs a (List.mem_cons_of_mem _ ha)))
+
+/-- A constructor's polytype body has no free type variables (its only type
+    variables are the bound ones from the constructor's own `paramCount`). -/
+theorem Ctor.toTy_body_noFreeVars (ctor : Ctor) : NoFreeVars ctor.toTy.body := by
+  show NoFreeVars (Ty.wrapArrows (Ty.customTy ctor.tyName (Ty.bvarRange ctor.paramCount))
+    ctor.contents)
+  apply NoFreeVars.wrapArrows
+  · exact NoFreeVars.customTy (fun t ht => NoFreeVars.bvarRangeFrom 0 ctor.paramCount t ht)
+  · exact ctor.closed
+
+
+/-! ### Metatheory infrastructure. -/
 
 /-- Type-substitution preserves typing. Substituting a single fresh type
     variable `Z` (one not appearing in the outer env) by any LC type `U`
@@ -3049,8 +3232,112 @@ theorem TypeOfLN.typ_subst_preservation
     (h_Z_fresh_outer : Z ∉ env_outer.freeVars)
     (h_U_lc : U.IsLC)
     (h : TypeOfLN ⟨env_post ++ env_outer, ctors⟩ e τ) :
-    TypeOfLN ⟨env_post.substFvar Z U ++ env_outer, ctors⟩ e (τ.substFvar Z U) := by
-  sorry
+    TypeOfLN ⟨env_post.substFvar Z U ++ env_outer, ctors⟩ e (Ty.substFvar Z U τ) := by
+  induction e using Expr.rec_strong generalizing env_post τ with
+  | primLit p =>
+    cases h with
+    | primLitUnit => exact .primLitUnit
+    | primLitInt  => exact .primLitInt
+    | primLitNat  => exact .primLitNat
+    | primLitBool => exact .primLitBool
+    | primLitStr  => exact .primLitStr
+  | pair a b ih_a ih_b =>
+    cases h with
+    | pair ha hb =>
+      simp only [Ty.substFvar]
+      exact .pair (ih_a ha) (ih_b hb)
+  | app f inp ih_f ih_i =>
+    cases h with
+    | app hf hi =>
+      have hf' := ih_f hf
+      simp only [Ty.substFvar] at hf'
+      exact .app hf' (ih_i hi)
+  | lambda body ih =>
+    cases h with
+    | lambda hparamLC heq hbody =>
+      subst heq
+      simp only [Ty.substFvar]
+      refine TypeOfLN.lambda (Ty.IsLC.substFvar h_U_lc hparamLC) rfl ?_
+      have hb := ih (env_post := PolyTy.mkTrivial _ :: env_post) hbody
+      simpa only [Env.substFvar, List.map_cons, PolyTy.substFvar, PolyTy.mkTrivial,
+        List.cons_append] using hb
+  | var dbl =>
+    cases h with
+    | var hlook htyargs hinst =>
+      have hlook' := congrArg (Option.map (PolyTy.substFvar Z U)) hlook
+      simp only [Option.map_some] at hlook'
+      rw [← List.getElem?_map] at hlook'
+      have henv : env_post.substFvar Z U ++ env_outer
+          = (env_post ++ env_outer).map (PolyTy.substFvar Z U) := by
+        show Env.substFvar Z U env_post ++ env_outer
+          = Env.substFvar Z U (env_post ++ env_outer)
+        rw [Env.substFvar_append, Env.substFvar_fresh h_Z_fresh_outer]
+      rw [← henv] at hlook'
+      refine TypeOfLN.var hlook' ?_ (InstantiatesBy.substFvar h_U_lc hinst)
+      intro tyArg hmem
+      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hmem
+      exact Ty.IsLC.substFvar h_U_lc (htyargs t ht)
+  | letIn boundExpr body ih_be ih_body =>
+    cases h with
+    | letIn hval hsch hcofin heq hbodyinner =>
+      subst heq
+      expose_names
+      refine TypeOfLN.letIn (M := PolyTy.substFvar Z U M) (L := Z :: L) hval
+        (PolyTy.IsScheme.substFvar h_U_lc hsch) ?_ rfl ?_
+      · intro Xs hfresh
+        have hZ_notin : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
+        have hXs_freshL : FreshNames L M.paramCount Xs :=
+          ⟨by simpa using hfresh.length, hfresh.nodup,
+           fun x hx hc => hfresh.avoid x hx (List.mem_cons_of_mem _ hc)⟩
+        have hbe := ih_be (hcofin Xs hXs_freshL)
+        have hopen : (M.substFvar Z U).openVars Xs = Ty.substFvar Z U (M.openVars Xs) := by
+          unfold PolyTy.openVars PolyTy.substFvar
+          exact (Ty.substFvar_openVars h_U_lc hZ_notin).symm
+        rw [hopen]
+        exact hbe
+      · have hb := ih_body (env_post := M :: env_post) hbodyinner
+        simpa only [Env.substFvar, List.map_cons, List.cons_append] using hb
+  | letPairIn pe body ih_pe ih_body =>
+    cases h with
+    | letPairIn hval hschf hschs harity hcofin heq hbodyinner =>
+      subst heq
+      expose_names
+      refine TypeOfLN.letPairIn (Mfst := PolyTy.substFvar Z U Mfst)
+        (Msnd := PolyTy.substFvar Z U Msnd) (L := Z :: L) hval
+        (PolyTy.IsScheme.substFvar h_U_lc hschf)
+        (PolyTy.IsScheme.substFvar h_U_lc hschs) harity ?_ rfl ?_
+      · intro Xs hfresh
+        have hZ_notin : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
+        have hXs_freshL : FreshNames L Mfst.paramCount Xs :=
+          ⟨by simpa using hfresh.length, hfresh.nodup,
+           fun x hx hc => hfresh.avoid x hx (List.mem_cons_of_mem _ hc)⟩
+        have hpe := ih_pe (hcofin Xs hXs_freshL)
+        have hopenf : (Mfst.substFvar Z U).openVars Xs
+            = Ty.substFvar Z U (Mfst.openVars Xs) := by
+          unfold PolyTy.openVars PolyTy.substFvar
+          exact (Ty.substFvar_openVars h_U_lc hZ_notin).symm
+        have hopens : (Msnd.substFvar Z U).openVars Xs
+            = Ty.substFvar Z U (Msnd.openVars Xs) := by
+          unfold PolyTy.openVars PolyTy.substFvar
+          exact (Ty.substFvar_openVars h_U_lc hZ_notin).symm
+        simp only [Ty.substFvar] at hpe
+        rw [hopenf, hopens]
+        exact hpe
+      · have hb := ih_body (env_post := Msnd :: Mfst :: env_post) hbodyinner
+        simpa only [Env.substFvar, List.map_cons, List.cons_append] using hb
+  | ctor name =>
+    cases h with
+    | ctor hlook htyargs hinst =>
+      expose_names
+      have hbody := InstantiatesBy.substFvar (Z := Z) (U := U) h_U_lc hinst
+      rw [Ty.substFvar_fresh
+          (NoFreeVars.not_mem_freeVars (Ctor.toTy_body_noFreeVars ctor) Z)] at hbody
+      refine TypeOfLN.ctor hlook ?_ hbody
+      intro tyArg hmem
+      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hmem
+      exact Ty.IsLC.substFvar h_U_lc (htyargs t ht)
+  | match_ scrut branches ih_scrut ih_branches =>
+    sorry
 
 /-- Cofinite weakening: insert `env_extra` in the middle, **no env_fv side
     condition** (compare to the old `TypeOfHM.weaken_env`, which still
