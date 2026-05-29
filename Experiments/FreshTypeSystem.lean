@@ -3209,6 +3209,26 @@ private theorem NoFreeVars.wrapArrows {result : Ty} {args : List Ty}
     exact .arrow (hargs hd List.mem_cons_self)
       (ih (fun a ha => hargs a (List.mem_cons_of_mem _ ha)))
 
+/-- `substFvar` applied element-wise through a `Forall₂ InstantiatesBy`. -/
+theorem InstantiatesBy.forall2_substFvar {Z : Nat} {U : Ty}
+    (h_U_lc : Ty.IsLC U) {srcs insts tyArgs : List Ty}
+    (h : List.Forall₂ (InstantiatesBy tyArgs) srcs insts) :
+    List.Forall₂ (InstantiatesBy (tyArgs.map (Ty.substFvar Z U)))
+      (srcs.map (Ty.substFvar Z U)) (insts.map (Ty.substFvar Z U)) := by
+  induction h with
+  | nil => exact .nil
+  | cons hhd _ ih => exact .cons (InstantiatesBy.substFvar h_U_lc hhd) ih
+
+/-- `substFvar` distributes over a list of trivial (monomorphic) bindings,
+    landing inside both the `map` and the trivialisation. -/
+theorem Env.substFvar_map_mkTrivial {Z : Nat} {U : Ty} {ics : List Ty} :
+    Env.substFvar Z U (ics.map PolyTy.mkTrivial)
+      = (ics.map (Ty.substFvar Z U)).map PolyTy.mkTrivial := by
+  simp only [Env.substFvar, List.map_map]
+  apply List.map_congr_left
+  intro c _
+  rfl
+
 /-- A constructor's polytype body has no free type variables (its only type
     variables are the bound ones from the constructor's own `paramCount`). -/
 theorem Ctor.toTy_body_noFreeVars (ctor : Ctor) : NoFreeVars ctor.toTy.body := by
@@ -3337,7 +3357,51 @@ theorem TypeOfLN.typ_subst_preservation
       obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hmem
       exact Ty.IsLC.substFvar h_U_lc (htyargs t ht)
   | match_ scrut branches ih_scrut ih_branches =>
-    sorry
+    cases h with
+    | match_ hscrut hne hbrs =>
+      have hscrut' := ih_scrut hscrut
+      simp only [Ty.substFvar, TyList.substFvar_eq_map] at hscrut'
+      refine TypeOfLN.match_ hscrut' hne ?_
+      clear ih_scrut hscrut hscrut' hne
+      revert hbrs ih_branches
+      induction branches with
+      | nil =>
+        intro _ _ b hmem
+        exact absurd hmem List.not_mem_nil
+      | cons hd tl ih_tl =>
+        intro ih_branches hbrs branch hmem
+        obtain ⟨pat, body⟩ := hd
+        simp only [List.mem_cons] at hmem
+        cases hmem with
+        | inl heq =>
+          subst heq
+          have hbranch := hbrs (pat, body) List.mem_cons_self
+          cases hbranch with
+          | mk hlook htyName hpc hcontents hinstC hpb hctx hbodyT =>
+            subst hctx; subst hpb
+            expose_names
+            -- ctor.contents are closed, so substFvar leaves them fixed
+            have hcc : ctor.contents.map (Ty.substFvar Z U) = ctor.contents := by
+              have hpt : ∀ c ∈ ctor.contents, Ty.substFvar Z U c = id c := fun c hc =>
+                Ty.substFvar_fresh ((ctor.closed c hc).not_mem_freeVars Z)
+              rw [List.map_congr_left hpt, List.map_id]
+            have hinstC' := InstantiatesBy.forall2_substFvar (Z := Z) (U := U) h_U_lc hinstC
+            rw [hcc] at hinstC'
+            -- recurse on the branch body (reassociate env first)
+            rw [show instContents.map PolyTy.mkTrivial ++ (env_post ++ env_outer)
+                  = (instContents.map PolyTy.mkTrivial ++ env_post) ++ env_outer
+                  from (List.append_assoc _ _ _).symm] at hbodyT
+            have hib := ih_branches pat body List.mem_cons_self
+              (env_post := instContents.map PolyTy.mkTrivial ++ env_post) hbodyT
+            rw [Env.substFvar_append, Env.substFvar_map_mkTrivial,
+                List.append_assoc] at hib
+            exact TypeOfMatchBranchLN.mk hlook htyName (by simpa using hpc)
+              hcontents hinstC' rfl rfl hib
+        | inr hmem' =>
+          exact ih_tl
+            (fun pat' e' hm => ih_branches pat' e' (List.mem_cons_of_mem _ hm))
+            (fun b hm => hbrs b (List.mem_cons_of_mem _ hm))
+            branch hmem'
 
 /-- Cofinite weakening: insert `env_extra` in the middle, **no env_fv side
     condition** (compare to the old `TypeOfHM.weaken_env`, which still
