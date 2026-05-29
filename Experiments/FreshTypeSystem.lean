@@ -3697,6 +3697,77 @@ theorem HasScheme.ofTypeOfLN
   exact h
 
 
+/- Values are preserved under multi-substitution (`substN` only rewrites free
+   term vars / descends under binders; value shape is untouched). Mutual with
+   `IsCtorChain.substN`. -/
+mutual
+theorem SmallStep.IsValue.substN {e : Expr} (k : Nat) (vs : List Expr)
+    (h : SmallStep.IsValue e) : SmallStep.IsValue (e.substN k vs) := by
+  cases h with
+  | primLit p => exact .primLit p
+  | lambda body => exact .lambda _
+  | pair h1 h2 => exact .pair (h1.substN k vs) (h2.substN k vs)
+  | ctor name => exact .ctor name
+  | ctorApp hf hv => exact .ctorApp (hf.substN k vs) (hv.substN k vs)
+theorem SmallStep.IsCtorChain.substN {e : Expr} (k : Nat) (vs : List Expr)
+    (h : SmallStep.IsCtorChain e) : SmallStep.IsCtorChain (e.substN k vs) := by
+  cases h with
+  | ctor name => exact .ctor name
+  | app hf hv => exact .app (hf.substN k vs) (hv.substN k vs)
+end
+
+/-- If `ty`'s bvars are all `< n` and `ty` instantiates to `τ` under `tyArgs`,
+    then `τ` is the result of opening `ty` with the length-`n` prefix of
+    `tyArgs` (padding unused slots, which `ty` can't reference, with `unit`).
+    This bridges the var rule's `InstantiatesBy` to the scheme's `openWith`. -/
+theorem InstantiatesBy.eq_openWith_range {tyArgs : List Ty} {n : Nat} {ty τ : Ty}
+    (h : InstantiatesBy tyArgs ty τ) (h_bv : ContainsBvarsUpTo n ty) :
+    τ = Ty.openWith ((List.range n).map (fun i => (tyArgs[i]?).getD (.prim .unit))) ty := by
+  induction ty using Ty.rec_strong generalizing τ with
+  | prim p => cases h; rfl
+  | pair a b iha ihb =>
+    cases h_bv with
+    | pair hba hbb =>
+      cases h with
+      | pair ha hb =>
+        simp only [Ty.openWith, Ty.instantiate] at *
+        rw [iha ha hba, ihb hb hbb]
+  | arrow a b iha ihb =>
+    cases h_bv with
+    | arrow hba hbb =>
+      cases h with
+      | arrow ha hb =>
+        simp only [Ty.openWith, Ty.instantiate] at *
+        rw [iha ha hba, ihb hb hbb]
+  | bvar i =>
+    cases h_bv with
+    | bvar h_lt =>
+      cases h with
+      | bvar hsome =>
+        simp only [Ty.openWith, Ty.instantiate, List.getElem?_map, List.getElem?_range,
+          h_lt, Option.map_some, Option.getD_some, hsome]
+  | fvar m => cases h; rfl
+  | customTy nm tys ih =>
+    cases h_bv with
+    | customTy hball =>
+      cases h with
+      | customTy hforall =>
+        simp only [Ty.openWith, Ty.instantiate]
+        congr 1
+        rw [TyList.instantiate_eq_map]
+        induction hforall with
+        | nil => rfl
+        | cons hhd htl ihtl =>
+          rename_i hd_ty hd_inst tl_tys tl_inst
+          have h_hd := ih hd_ty List.mem_cons_self hhd (hball hd_ty List.mem_cons_self)
+          have h_tl := ihtl
+            (fun t ht => ih t (List.mem_cons_of_mem _ ht))
+            (fun t ht => hball t (List.mem_cons_of_mem _ ht))
+          simp only [List.map_cons]
+          simp only [Ty.openWith] at h_hd
+          rw [← h_hd, h_tl]
+
+
 /-! ### The clean substitution lemma (no side condition!). -/
 
 /-- Chargueraud's `typing_trm_subst`, adapted to our de-Bruijn-level
@@ -3714,12 +3785,172 @@ theorem HasScheme.ofTypeOfLN
 theorem TypeOfLN.subst_lemma
     {ctors : CtorEnv} {env_post env : Env}
     {e : Expr} {τ : Ty} {M : PolyTy} {v : Expr}
+    (h_M_bv : ContainsBvarsUpTo M.paramCount M.body)
     (h_body : TypeOfLN ⟨env_post ++ [M] ++ env, ctors⟩ e τ)
     (h_v : HasScheme ⟨env, ctors⟩ v M)
-    (h_v_value : SmallStep.IsValue v) :
+    -- NOTE: the value restriction isn't needed for this lemma — our
+    -- `IsValue.substN` is unconditional — but we keep it to mirror Chargueraud
+    -- and document that substitution targets values.
+    (_h_v_value : SmallStep.IsValue v) :
     TypeOfLN ⟨env_post ++ env, ctors⟩
       (e.substN env_post.length [v]) τ := by
-  sorry
+  induction e using Expr.rec_strong generalizing env_post τ with
+  | primLit p =>
+    cases h_body with
+    | primLitUnit => exact .primLitUnit
+    | primLitInt  => exact .primLitInt
+    | primLitNat  => exact .primLitNat
+    | primLitBool => exact .primLitBool
+    | primLitStr  => exact .primLitStr
+  | pair a b ih_a ih_b =>
+    cases h_body with
+    | pair ha hb =>
+      simp only [Expr.substN]
+      exact .pair (ih_a ha) (ih_b hb)
+  | app f inp ih_f ih_i =>
+    cases h_body with
+    | app hf hi =>
+      simp only [Expr.substN]
+      exact .app (ih_f hf) (ih_i hi)
+  | lambda body ih =>
+    cases h_body with
+    | lambda hpc heq hbody =>
+      subst heq
+      simp only [Expr.substN]
+      refine TypeOfLN.lambda hpc rfl ?_
+      exact ih (env_post := PolyTy.mkTrivial _ :: env_post) hbody
+  | letIn boundExpr body ih_be ih_body =>
+    cases h_body with
+    | letIn hval hsch hcofin heq hbodyinner =>
+      subst heq
+      simp only [Expr.substN]
+      refine TypeOfLN.letIn (hval.substN _ _) hsch
+        (fun Xs hfresh => ih_be (hcofin Xs hfresh)) rfl ?_
+      exact ih_body (env_post := _ :: env_post) hbodyinner
+  | letPairIn pe body ih_pe ih_body =>
+    cases h_body with
+    | letPairIn hval hschf hschs harity hcofin heq hbodyinner =>
+      subst heq
+      simp only [Expr.substN]
+      refine TypeOfLN.letPairIn (hval.substN _ _) hschf hschs harity
+        (fun Xs hfresh => ih_pe (hcofin Xs hfresh)) rfl ?_
+      exact ih_body (env_post := _ :: _ :: env_post) hbodyinner
+  | ctor name =>
+    cases h_body with
+    | ctor hlook htyargs hinst =>
+      exact .ctor hlook htyargs hinst
+  | var i =>
+    cases h_body with
+    | var h_lookup h_tyArgs_closed h_inst =>
+      rcases lt_trichotomy i env_post.length with h_lt | h_eq | h_gt
+      · -- i < env_post.length: substN keeps `.var i`
+        have h_subst : (Expr.var i).substN env_post.length [v] = .var i := by
+          simp [Expr.substN, h_lt]
+        rw [h_subst]
+        refine .var ?_ h_tyArgs_closed h_inst
+        show (env_post ++ env)[i]? = _
+        rw [List.getElem?_append_left h_lt]
+        rw [List.append_assoc, List.getElem?_append_left h_lt] at h_lookup
+        exact h_lookup
+      · -- i = env_post.length: the substituted position
+        subst h_eq
+        have h_subst : (Expr.var env_post.length).substN env_post.length [v]
+            = v.shiftFrom 0 env_post.length := by simp [Expr.substN]
+        rw [h_subst]
+        rw [List.append_assoc, List.getElem?_append_right (Nat.le_refl _),
+            Nat.sub_self] at h_lookup
+        simp only [List.singleton_append, List.getElem?_cons_zero,
+          Option.some.injEq] at h_lookup
+        subst h_lookup
+        expose_names
+        -- `h_inst : InstantiatesBy tyArgs M.body τ`; produce `v : τ` from `h_v`
+        set Vs := (List.range M.paramCount).map
+            (fun i => (tyArgs[i]?).getD (Ty.prim PrimTy.unit)) with hVs
+        have hVs_lc : Ty.AreLC M.paramCount Vs := by
+          refine ⟨by simp [hVs], ?_⟩
+          intro V hV
+          simp only [hVs, List.mem_map, List.mem_range] at hV
+          obtain ⟨j, _, rfl⟩ := hV
+          cases htj : tyArgs[j]? with
+          | none => simp only [Option.getD_none]; exact .prim
+          | some t =>
+            simp only [Option.getD_some]
+            exact h_tyArgs_closed t (List.mem_of_getElem? htj)
+        have hτ : τ = M.openWith Vs := by
+          have := InstantiatesBy.eq_openWith_range h_inst h_M_bv
+          simpa [hVs, PolyTy.openWith] using this
+        have hv_typed : TypeOfLN ⟨env, ctors⟩ v τ := by
+          rw [hτ]; exact h_v Vs hVs_lc
+        have hw := TypeOfLN.weaken_env (env_pre := []) (env_extra := env_post)
+          (env := env) hv_typed
+        exact hw
+      · -- i > env_post.length: substN returns `.var (i - 1)`
+        have h_not_lt : ¬ (i < env_post.length) := by omega
+        have h_not_lt' : ¬ (i - env_post.length < (1 : Nat)) := by omega
+        have h_subst : (Expr.var i).substN env_post.length [v] = .var (i - 1) := by
+          simp [Expr.substN, h_not_lt, h_not_lt']
+        rw [h_subst]
+        refine .var ?_ h_tyArgs_closed h_inst
+        have h_le_i : env_post.length ≤ i := by omega
+        rw [List.getElem?_append_right (by omega : env_post.length ≤ i - 1)]
+        rw [List.append_assoc, List.getElem?_append_right h_le_i] at h_lookup
+        rw [show ([M] ++ env) = (M :: env) from rfl] at h_lookup
+        rw [show (i - env_post.length) = (i - env_post.length - 1) + 1 from by omega]
+            at h_lookup
+        simp only [List.getElem?_cons_succ] at h_lookup
+        rw [show (i - 1 - env_post.length) = (i - env_post.length - 1) from by omega]
+        exact h_lookup
+  | match_ scrut branches ih_scrut ih_branches =>
+    cases h_body with
+    | match_ h_scrut h_ne h_brs =>
+      simp only [Expr.substN]
+      have h_subst_nonempty :
+          BranchList.substN env_post.length [v] branches ≠ [] := by
+        intro h_eq
+        cases branches with
+        | nil => exact h_ne rfl
+        | cons _ _ => simp [BranchList.substN] at h_eq
+      refine TypeOfLN.match_ (ih_scrut h_scrut) h_subst_nonempty ?_
+      clear ih_scrut h_scrut h_ne h_subst_nonempty
+      revert h_brs ih_branches
+      induction branches with
+      | nil =>
+        intro _ _ b h_mem
+        simp [BranchList.substN] at h_mem
+      | cons hd tl ih_tl =>
+        intro ih_branches h_brs branch h_mem
+        obtain ⟨pat, body⟩ := hd
+        simp only [BranchList.substN, List.mem_cons] at h_mem
+        cases h_mem with
+        | inl h_eq =>
+          subst h_eq
+          have h_branch := h_brs (pat, body) List.mem_cons_self
+          cases h_branch with
+          | mk h_lookup h_tyName h_paramCount h_contents h_inst h_pb h_ctx h_body =>
+            subst h_ctx
+            subst h_pb
+            expose_names
+            rw [show (instContents.map PolyTy.mkTrivial ++ (env_post ++ [M] ++ env))
+                  = (instContents.map PolyTy.mkTrivial ++ env_post) ++ [M] ++ env
+                  by rw [List.append_assoc, List.append_assoc, List.append_assoc]]
+              at h_body
+            have ih_body :=
+              ih_branches pat body List.mem_cons_self
+                (env_post := instContents.map PolyTy.mkTrivial ++ env_post)
+                h_body
+            simp only [List.length_append, List.length_map] at ih_body
+            rw [← h_inst.length_eq, ← h_contents] at ih_body
+            rw [show pat.contents + env_post.length = env_post.length + pat.contents
+                  from Nat.add_comm _ _] at ih_body
+            refine TypeOfMatchBranchLN.mk h_lookup h_tyName h_paramCount h_contents
+              h_inst rfl rfl ?_
+            rw [List.append_assoc] at ih_body
+            exact ih_body
+        | inr h_mem' =>
+          exact ih_tl
+            (fun pat' e' hmem => ih_branches pat' e' (List.mem_cons_of_mem _ hmem))
+            (fun branch hmem => h_brs branch (List.mem_cons_of_mem _ hmem))
+            branch h_mem'
 
 
 /-! ### Translation: how this consumes/produces vs. the original `subst_lemma`.
