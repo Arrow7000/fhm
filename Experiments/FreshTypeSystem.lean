@@ -2822,6 +2822,141 @@ theorem Ty.substFvar_openWith
     simp only [Ty.instantiate, Ty.substFvar, Ty.customTy.injEq, true_and]
     exact TyList.substFvar_openWith_swap (fun t ht => ih t ht)
 
+/-! #### `substFvars` distribution + key lemmas (toward `typ_substs_intro`). -/
+
+private theorem TyList.substFvar_eq_map {Z : Nat} {U : Ty} {tys : List Ty} :
+    TyList.substFvar Z U tys = tys.map (Ty.substFvar Z U) := by
+  induction tys with
+  | nil => rfl
+  | cons hd tl ih => simp only [TyList.substFvar, List.map_cons, ih]
+
+private theorem TyList.instantiate_eq_map {σ : Nat → Ty} {tys : List Ty} :
+    TyList.instantiate σ tys = tys.map (Ty.instantiate σ) := by
+  induction tys with
+  | nil => rfl
+  | cons hd tl ih => simp only [TyList.instantiate, List.map_cons, ih]
+
+theorem Ty.substFvars_prim {pairs : List (Nat × Ty)} {p : PrimTy} :
+    Ty.substFvars pairs (.prim p) = .prim p := by
+  induction pairs with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simpa only [Ty.substFvars, Ty.substFvar] using ih
+
+theorem Ty.substFvars_bvar {pairs : List (Nat × Ty)} {i : Nat} :
+    Ty.substFvars pairs (.bvar i) = .bvar i := by
+  induction pairs with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simpa only [Ty.substFvars, Ty.substFvar] using ih
+
+theorem Ty.substFvars_pair {pairs : List (Nat × Ty)} {a b : Ty} :
+    Ty.substFvars pairs (.pair a b)
+      = .pair (Ty.substFvars pairs a) (Ty.substFvars pairs b) := by
+  induction pairs generalizing a b with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simpa only [Ty.substFvars, Ty.substFvar] using ih
+
+theorem Ty.substFvars_arrow {pairs : List (Nat × Ty)} {a b : Ty} :
+    Ty.substFvars pairs (.arrow a b)
+      = .arrow (Ty.substFvars pairs a) (Ty.substFvars pairs b) := by
+  induction pairs generalizing a b with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simpa only [Ty.substFvars, Ty.substFvar] using ih
+
+theorem Ty.substFvars_customTy {pairs : List (Nat × Ty)} {nm : TyName} {tys : List Ty} :
+    Ty.substFvars pairs (.customTy nm tys)
+      = .customTy nm (tys.map (Ty.substFvars pairs)) := by
+  induction pairs generalizing tys with
+  | nil => simp only [Ty.substFvars, List.map_id_fun', id_eq]
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    simp only [Ty.substFvars, Ty.substFvar, TyList.substFvar_eq_map]
+    rw [ih, List.map_map]
+    rfl
+
+/-- Free vars of a single type are contained in the free vars of any list
+    containing it (`Ty.freeVarsList` flavour, used for the `Vs` freshness). -/
+private theorem Ty.freeVars_subset_freeVarsList {V : Ty} {Vs : List Ty}
+    (h : V ∈ Vs) : ∀ x ∈ V.freeVars, x ∈ Ty.freeVarsList Vs := by
+  induction Vs with
+  | nil => exact absurd h List.not_mem_nil
+  | cons hd tl ih =>
+    intro x hx
+    simp only [Ty.freeVarsList, List.mem_dedup, List.mem_append]
+    cases h with
+    | head _ => exact .inl hx
+    | tail _ h' => exact .inr (ih h' x hx)
+
+/-- Same, but for the private `TyList.freeVars` used inside `(customTy _ _).freeVars`. -/
+private theorem TyList.mem_freeVars_of_mem {t : Ty} {tys : List Ty} {x : Nat}
+    (ht : t ∈ tys) (hx : x ∈ t.freeVars) : x ∈ TyList.freeVars tys := by
+  induction tys with
+  | nil => exact absurd ht List.not_mem_nil
+  | cons hd tl ih =>
+    simp only [TyList.freeVars, List.mem_dedup, List.mem_append]
+    cases ht with
+    | head _ => exact .inl hx
+    | tail _ h' => exact .inr (ih h')
+
+/-- Substituting a list of `(key, value)` pairs none of whose keys occur in
+    `ty` leaves `ty` unchanged. -/
+theorem Ty.substFvars_eq_self_of_no_key {pairs : List (Nat × Ty)} {ty : Ty}
+    (h : ∀ p ∈ pairs, p.1 ∉ ty.freeVars) :
+    Ty.substFvars pairs ty = ty := by
+  induction pairs generalizing ty with
+  | nil => rfl
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    have hZ : Z ∉ ty.freeVars := h (Z, U) List.mem_cons_self
+    simp only [Ty.substFvars]
+    rw [Ty.substFvar_fresh hZ]
+    exact ih (fun p hp => h p (List.mem_cons_of_mem _ hp))
+
+/-- The key lemma for the `bvar` case of `typ_substs_intro`: substituting the
+    zipped `(Xs, Vs)` pairs into `fvar x` (where `x = Xs[i]`, `v = Vs[i]`)
+    yields `v`. The first `i` substitutions don't fire (distinct keys, `Xs`
+    nodup); the `i`-th fires; later ones don't touch `v` (`Xs` fresh for `Vs`). -/
+theorem Ty.substFvars_zip_fvar_eq {Xs : List Nat} {Vs : List Ty}
+    {i : Nat} {x : Nat} {v : Ty}
+    (h_len : Vs.length = Xs.length)
+    (h_nodup : Xs.Nodup)
+    (h_fresh : ∀ X ∈ Xs, X ∉ Ty.freeVarsList Vs)
+    (hx : Xs[i]? = some x)
+    (hv : Vs[i]? = some v) :
+    Ty.substFvars (Xs.zip Vs) (.fvar x) = v := by
+  induction Xs generalizing Vs i x v with
+  | nil => simp at hx
+  | cons X0 Xs' ih =>
+    cases Vs with
+    | nil => simp at h_len
+    | cons V0 Vs' =>
+      cases i with
+      | zero =>
+        simp only [List.getElem?_cons_zero, Option.some.injEq] at hx hv
+        -- hx : X0 = x, hv : V0 = v
+        simp only [List.zip_cons_cons, Ty.substFvars]
+        rw [← hx, show Ty.substFvar X0 V0 (.fvar X0) = V0 by simp [Ty.substFvar], ← hv]
+        -- substFvars (Xs'.zip Vs') V0 = V0: no key (∈ Xs') touches V0's fvars
+        apply Ty.substFvars_eq_self_of_no_key
+        intro p hp hcontra
+        have hp1 : p.1 ∈ Xs' := (List.of_mem_zip hp).1
+        refine h_fresh p.1 (List.mem_cons_of_mem _ hp1) ?_
+        exact Ty.freeVars_subset_freeVarsList List.mem_cons_self p.1 hcontra
+      | succ k =>
+        simp only [List.getElem?_cons_succ] at hx hv
+        have h_X0_notin : X0 ∉ Xs' := (List.nodup_cons.mp h_nodup).1
+        have h_x_mem : x ∈ Xs' := List.mem_of_getElem? hx
+        have h_ne : x ≠ X0 := fun h => h_X0_notin (h ▸ h_x_mem)
+        have h_len' : Vs'.length = Xs'.length := by
+          simp only [List.length_cons] at h_len; omega
+        have h_fresh' : ∀ X ∈ Xs', X ∉ Ty.freeVarsList Vs' := by
+          intro X hX hc
+          refine h_fresh X (List.mem_cons_of_mem _ hX) ?_
+          simp only [Ty.freeVarsList, List.mem_dedup, List.mem_append]
+          exact .inr hc
+        simp only [List.zip_cons_cons, Ty.substFvars]
+        rw [show Ty.substFvar X0 V0 (.fvar x) = .fvar x by simp [Ty.substFvar, h_ne]]
+        exact ih h_len' (List.nodup_cons.mp h_nodup).2 h_fresh' hx hv
+
 /-- The "rename-open" intro lemma — Chargueraud's `typ_substs_intro`.
     Opening `ty` with `Vs` factors through opening with fresh `Xs` followed
     by substituting each `Xi` by the corresponding `Vi`.
@@ -2838,7 +2973,67 @@ theorem Ty.openWith_eq_substFvars_openVars
     (h_Xs_fresh_ty : ∀ X ∈ Xs, X ∉ ty.freeVars)
     (h_Xs_fresh_Vs : ∀ X ∈ Xs, X ∉ Ty.freeVarsList Vs) :
     Ty.openWith Vs ty
-      = Ty.substFvars (Xs.zip Vs) (Ty.openVars Xs ty) := by sorry
+      = Ty.substFvars (Xs.zip Vs) (Ty.openVars Xs ty) := by
+  obtain ⟨h_len, _⟩ := h_lc_Vs
+  unfold Ty.openWith Ty.openVars
+  induction ty using Ty.rec_strong with
+  | prim _ =>
+    simp only [Ty.instantiate]
+    exact (Ty.substFvars_prim).symm
+  | pair a b ih_a ih_b =>
+    simp only [Ty.instantiate]
+    rw [Ty.substFvars_pair]
+    have ha : ∀ X ∈ Xs, X ∉ a.freeVars := fun X hX hc =>
+      h_Xs_fresh_ty X hX (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hc)
+    have hb : ∀ X ∈ Xs, X ∉ b.freeVars := fun X hX hc =>
+      h_Xs_fresh_ty X hX (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hc)
+    rw [ih_a ha, ih_b hb]
+  | arrow a b ih_a ih_b =>
+    simp only [Ty.instantiate]
+    rw [Ty.substFvars_arrow]
+    have ha : ∀ X ∈ Xs, X ∉ a.freeVars := fun X hX hc =>
+      h_Xs_fresh_ty X hX (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hc)
+    have hb : ∀ X ∈ Xs, X ∉ b.freeVars := fun X hX hc =>
+      h_Xs_fresh_ty X hX (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hc)
+    rw [ih_a ha, ih_b hb]
+  | bvar i =>
+    simp only [Ty.instantiate]
+    by_cases h_i : i < Xs.length
+    · -- in range: openVars → fvar Xs[i], openWith → Vs[i]
+      obtain ⟨x, hx⟩ : ∃ x, Xs[i]? = some x := ⟨_, List.getElem?_eq_getElem h_i⟩
+      obtain ⟨v, hv⟩ : ∃ v, Vs[i]? = some v :=
+        ⟨_, List.getElem?_eq_getElem (by omega)⟩
+      rw [hx, hv]
+      simp only [Option.getD, Option.elim]
+      exact (Ty.substFvars_zip_fvar_eq h_len h_Xs_nodup h_Xs_fresh_Vs hx hv).symm
+    · -- out of range: both sides are bvar i
+      have hXi : Xs[i]? = none := List.getElem?_eq_none (by omega)
+      have hVi : Vs[i]? = none := List.getElem?_eq_none (by omega)
+      rw [hXi, hVi]
+      simp only [Option.getD, Option.elim]
+      exact (Ty.substFvars_bvar).symm
+  | fvar n =>
+    simp only [Ty.instantiate]
+    -- n ∉ Xs (from freshness), so no substitution fires
+    have h_n_notin : n ∉ Xs := by
+      intro hn
+      exact h_Xs_fresh_ty n hn (by simp [Ty.freeVars])
+    refine (Ty.substFvars_eq_self_of_no_key ?_).symm
+    intro p hp hc
+    -- p.1 ∈ Xs and p.1 ∈ (fvar n).freeVars = [n] ⇒ p.1 = n ⇒ n ∈ Xs, contradiction
+    have hp1 : p.1 ∈ Xs := (List.of_mem_zip hp).1
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    exact h_n_notin (hc ▸ hp1)
+  | customTy nm tys ih =>
+    simp only [Ty.instantiate]
+    rw [TyList.instantiate_eq_map, TyList.instantiate_eq_map, Ty.substFvars_customTy,
+        List.map_map]
+    apply congrArg (Ty.customTy nm)
+    apply List.map_congr_left
+    intro t ht
+    have ht_fresh : ∀ X ∈ Xs, X ∉ t.freeVars := fun X hX hc =>
+      h_Xs_fresh_ty X hX (TyList.mem_freeVars_of_mem ht hc)
+    simpa using ih t ht ht_fresh
 
 
 /-! ### Metatheory infrastructure (statements only). -/
