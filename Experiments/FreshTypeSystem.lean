@@ -3403,6 +3403,24 @@ theorem TypeOfLN.typ_subst_preservation
             (fun b hm => hbrs b (List.mem_cons_of_mem _ hm))
             branch hmem'
 
+/- Values are preserved under `shiftFrom` (it only renumbers free term vars,
+   leaving the value shape intact). Mutual with `IsCtorChain.shiftFrom`. -/
+mutual
+theorem SmallStep.IsValue.shiftFrom {e : Expr} (k n : Nat)
+    (h : SmallStep.IsValue e) : SmallStep.IsValue (e.shiftFrom k n) := by
+  cases h with
+  | primLit p => exact .primLit p
+  | lambda body => exact .lambda _
+  | pair h1 h2 => exact .pair (h1.shiftFrom k n) (h2.shiftFrom k n)
+  | ctor name => exact .ctor name
+  | ctorApp hf hv => exact .ctorApp (hf.shiftFrom k n) (hv.shiftFrom k n)
+theorem SmallStep.IsCtorChain.shiftFrom {e : Expr} (k n : Nat)
+    (h : SmallStep.IsCtorChain e) : SmallStep.IsCtorChain (e.shiftFrom k n) := by
+  cases h with
+  | ctor name => exact .ctor name
+  | app hf hv => exact .app (hf.shiftFrom k n) (hv.shiftFrom k n)
+end
+
 /-- Cofinite weakening: insert `env_extra` in the middle, **no env_fv side
     condition** (compare to the old `TypeOfHM.weaken_env`, which still
     requires `env_extra.freeVars ⊆ ...` because `Generalise` is the lax
@@ -3416,7 +3434,138 @@ theorem TypeOfLN.weaken_env
     (h : TypeOfLN ⟨env_pre ++ env, ctors⟩ e τ) :
     TypeOfLN ⟨env_pre ++ env_extra ++ env, ctors⟩
       (e.shiftFrom env_pre.length env_extra.length) τ := by
-  sorry
+  induction e using Expr.rec_strong generalizing env_pre τ with
+  | primLit p =>
+    cases h with
+    | primLitUnit => exact .primLitUnit
+    | primLitInt  => exact .primLitInt
+    | primLitNat  => exact .primLitNat
+    | primLitBool => exact .primLitBool
+    | primLitStr  => exact .primLitStr
+  | pair a b ih_a ih_b =>
+    cases h with
+    | pair ha hb =>
+      simp only [Expr.shiftFrom]
+      exact .pair (ih_a ha) (ih_b hb)
+  | app f inp ih_f ih_i =>
+    cases h with
+    | app hf hi =>
+      simp only [Expr.shiftFrom]
+      exact .app (ih_f hf) (ih_i hi)
+  | var i =>
+    cases h with
+    | var h_lookup h_tyArgs_closed h_inst =>
+      simp only [Expr.shiftFrom]
+      by_cases h_lt : i < env_pre.length
+      · rw [if_pos h_lt]
+        refine .var ?_ h_tyArgs_closed h_inst
+        show (env_pre ++ env_extra ++ env)[i]? = _
+        rw [List.getElem?_append_left
+              (by simp only [List.length_append]; omega :
+                  i < (env_pre ++ env_extra).length)]
+        rw [List.getElem?_append_left h_lt]
+        have h_lookup' : (env_pre ++ env)[i]? = _ := h_lookup
+        rw [List.getElem?_append_left h_lt] at h_lookup'
+        exact h_lookup'
+      · push_neg at h_lt
+        rw [if_neg (Nat.not_lt.mpr h_lt)]
+        refine .var ?_ h_tyArgs_closed h_inst
+        show (env_pre ++ env_extra ++ env)[i + env_extra.length]? = _
+        have h_left : (env_pre ++ env_extra).length ≤ i + env_extra.length := by
+          simp only [List.length_append]; omega
+        rw [List.getElem?_append_right h_left]
+        have h_eq_idx :
+            i + env_extra.length - (env_pre ++ env_extra).length
+            = i - env_pre.length := by
+          simp only [List.length_append]; omega
+        rw [h_eq_idx]
+        have h_lookup' : (env_pre ++ env)[i]? = _ := h_lookup
+        rw [List.getElem?_append_right h_lt] at h_lookup'
+        exact h_lookup'
+  | lambda body ih =>
+    cases h with
+    | lambda h_paramTy_closed h_eq h_body_lam =>
+      subst h_eq
+      simp only [Expr.shiftFrom]
+      refine TypeOfLN.lambda h_paramTy_closed rfl ?_
+      exact ih (env_pre := PolyTy.mkTrivial _ :: env_pre) h_body_lam
+  | letIn boundExpr body ih_be ih_body =>
+    cases h with
+    | letIn hval hsch hcofin heq hbodyinner =>
+      subst heq
+      expose_names
+      simp only [Expr.shiftFrom]
+      refine TypeOfLN.letIn (M := M) (L := L) (hval.shiftFrom _ _) hsch ?_ rfl ?_
+      · intro Xs hfresh
+        exact ih_be (hcofin Xs hfresh)
+      · exact ih_body (env_pre := M :: env_pre) hbodyinner
+  | letPairIn pe body ih_pe ih_body =>
+    cases h with
+    | letPairIn hval hschf hschs harity hcofin heq hbodyinner =>
+      subst heq
+      expose_names
+      simp only [Expr.shiftFrom]
+      refine TypeOfLN.letPairIn (Mfst := Mfst) (Msnd := Msnd) (L := L)
+        (hval.shiftFrom _ _) hschf hschs harity ?_ rfl ?_
+      · intro Xs hfresh
+        exact ih_pe (hcofin Xs hfresh)
+      · exact ih_body (env_pre := Msnd :: Mfst :: env_pre) hbodyinner
+  | ctor name =>
+    cases h with
+    | ctor hlook htyargs hinst =>
+      exact .ctor hlook htyargs hinst
+  | match_ scrutinee branches ihs ihbs =>
+    cases h with
+    | match_ h_scrut h_ne h_brs =>
+      simp only [Expr.shiftFrom]
+      have h_shift_nonempty :
+          BranchList.shiftFrom env_pre.length env_extra.length branches ≠ [] := by
+        intro h_eq
+        cases branches with
+        | nil => exact h_ne rfl
+        | cons _ _ => simp [BranchList.shiftFrom] at h_eq
+      refine TypeOfLN.match_ (ihs h_scrut) h_shift_nonempty ?_
+      clear ihs h_scrut h_ne h_shift_nonempty
+      revert h_brs ihbs
+      induction branches with
+      | nil =>
+        intro _ _ b h_mem
+        simp [BranchList.shiftFrom] at h_mem
+      | cons hd tl ih_tl =>
+        intro ihbs h_brs branch h_mem
+        obtain ⟨pat, body⟩ := hd
+        simp only [BranchList.shiftFrom, List.mem_cons] at h_mem
+        cases h_mem with
+        | inl h_eq =>
+          subst h_eq
+          have h_branch := h_brs (pat, body) List.mem_cons_self
+          cases h_branch with
+          | mk h_lookup h_tyName h_paramCount h_contents h_inst h_pb h_ctx h_body =>
+            subst h_ctx
+            subst h_pb
+            expose_names
+            rw [show (instContents.map PolyTy.mkTrivial ++ (env_pre ++ env))
+                  = (instContents.map PolyTy.mkTrivial ++ env_pre) ++ env
+                  from (List.append_assoc _ _ _).symm] at h_body
+            have ih_body :=
+              ihbs pat body List.mem_cons_self
+                (env_pre := instContents.map PolyTy.mkTrivial ++ env_pre)
+                h_body
+            simp only [List.length_append, List.length_map] at ih_body
+            rw [← h_inst.length_eq, ← h_contents] at ih_body
+            rw [show pat.contents + env_pre.length = env_pre.length + pat.contents
+                  from Nat.add_comm _ _] at ih_body
+            refine TypeOfMatchBranchLN.mk h_lookup h_tyName h_paramCount h_contents
+              h_inst rfl rfl ?_
+            rw [List.append_assoc, List.append_assoc] at ih_body
+            rw [show env_pre ++ env_extra ++ env = env_pre ++ (env_extra ++ env)
+                  from List.append_assoc _ _ _]
+            exact ih_body
+        | inr h_mem' =>
+          exact ih_tl
+            (fun pat' e' hmem => ihbs pat' e' (List.mem_cons_of_mem _ hmem))
+            (fun branch hmem => h_brs branch (List.mem_cons_of_mem _ hmem))
+            branch h_mem'
 
 /-- Iterated type substitution preserves typing: substituting each `(Zᵢ, Uᵢ)`
     in turn (with every `Zᵢ` fresh for the env and every `Uᵢ` locally closed)
