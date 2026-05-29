@@ -2459,19 +2459,161 @@ structure FreshNames (L : List Nat) (n : Nat) (Xs : List Nat) : Prop where
   avoid  : ∀ x ∈ Xs, x ∉ L
 
 
+/-! ### The parallel cofinite typing relation `TypeOfLN`.
+
+This mirrors `TypeOfHM` exactly, **except** in the two let-generalising rules
+(`letIn`, `letPairIn`), which replace the old "exists-fresh" `Generalise`
+premise with a cofinite "for-all-fresh" premise. Everything else
+(`primLit*`, `pair`, `lambda`, `app`, `var`, `ctor`, `match_`) is a verbatim
+copy with the relation renamed — including the `InstantiatesBy`-based
+instantiation in `var`/`ctor`/`match_`, which we deliberately leave untouched
+so the two relations are maximally comparable.
+
+The point of keeping both relations alive (rather than editing `TypeOfHM` in
+place) is so the old and new rules can be read side by side. Once the
+metatheory is proven against `TypeOfLN`, the plan is to delete `TypeOfHM` +
+`Generalise` and rename `TypeOfLN` → `TypeOfHM`.
+
+### How the cofinite `letIn` works
+
+Old rule:
+```
+  TypeOfHM ctx boundExpr boundExprTy →
+  Generalise ctx.env boundExprTy generalisedExprTy →      -- picks ONE ftvs
+  bodyCtx = { ctx with env := generalisedExprTy :: ctx.env } →
+  TypeOfHM bodyCtx body bodyTy →
+```
+New rule:
+```
+  SmallStep.IsValue boundExpr →                            -- value restriction
+  PolyTy.IsScheme M →                                      -- M is well-formed
+  (∀ Xs, FreshNames L M.paramCount Xs →                    -- for ALL fresh Xs
+      TypeOfLN ctx boundExpr (M.openVars Xs)) →
+  bodyCtx = { ctx with env := M :: ctx.env } →
+  TypeOfLN bodyCtx body bodyTy →
+```
+The cofinite premise's induction hypothesis is *universally quantified in Xs*,
+so when `subst_lemma` descends through a `letIn` and the env has grown, it just
+re-instantiates the IH at names fresh for the bigger env. No side condition. -/
+
+mutual
+
+/-- Cofinite (locally-nameless-style) declarative typing relation. -/
+inductive TypeOfLN : Ctx → Expr → Ty → Prop
+  | primLitUnit :
+    TypeOfLN ctx (.primLit .unit) (.prim .unit)
+
+  | primLitInt :
+    TypeOfLN ctx (.primLit (.int n)) (.prim .int)
+
+  | primLitNat :
+    TypeOfLN ctx (.primLit (.nat n)) (.prim .nat)
+
+  | primLitBool :
+    TypeOfLN ctx (.primLit (.bool b)) (.prim .bool)
+
+  | primLitStr :
+    TypeOfLN ctx (.primLit (.str s)) (.prim .str)
+
+  | pair :
+    TypeOfLN ctx fst fstTy →
+    TypeOfLN ctx snd sndTy →
+    TypeOfLN ctx (.pair fst snd) (.pair fstTy sndTy)
+
+  | lambda :
+    ContainsBvarsUpTo 0 paramTy →
+    bodyCtx = { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } →
+    TypeOfLN bodyCtx body bodyTy →
+    TypeOfLN ctx (.lambda body) (.arrow paramTy bodyTy)
+
+  | app :
+    TypeOfLN ctx f (.arrow argTy retTy) →
+    TypeOfLN ctx input argTy →
+    TypeOfLN ctx (.app f input) retTy
+
+  /-- Cofinite let-generalisation. See module doc above. `M` is the
+      generalised scheme; the premise says `boundExpr` types at *every*
+      sufficiently-fresh opening of `M`. -/
+  | letIn {M : PolyTy} {L : List Nat} :
+    SmallStep.IsValue boundExpr →
+    PolyTy.IsScheme M →
+    (∀ Xs : List Nat, FreshNames L M.paramCount Xs →
+        TypeOfLN ctx boundExpr (M.openVars Xs)) →
+    bodyCtx = { ctx with env := M :: ctx.env } →
+    TypeOfLN bodyCtx body bodyTy →
+    TypeOfLN ctx (.letIn boundExpr body) bodyTy
+
+  /-- Cofinite pair-let-generalisation. The two component schemes share an
+      arity and are opened with a *shared* fresh list `Xs` — this is the price
+      of cofinite encoding: a type variable common to both halves of the pair
+      must be renamed consistently (the type-substitution lemma renames a var
+      everywhere at once). The old lax `Generalise` allowed fully independent
+      generalisation of the two halves; that esoteric freedom is given up
+      here. -/
+  | letPairIn {Mfst Msnd : PolyTy} {L : List Nat} :
+    SmallStep.IsValue boundExpr →
+    PolyTy.IsScheme Mfst →
+    PolyTy.IsScheme Msnd →
+    Mfst.paramCount = Msnd.paramCount →
+    (∀ Xs : List Nat, FreshNames L Mfst.paramCount Xs →
+        TypeOfLN ctx boundExpr (.pair (Mfst.openVars Xs) (Msnd.openVars Xs))) →
+    bodyCtx = { ctx with env := Msnd :: Mfst :: ctx.env } →
+    TypeOfLN bodyCtx body bodyTy →
+    TypeOfLN ctx (.letPairIn boundExpr body) bodyTy
+
+  | var :
+    ctx.env[dbl]? = some polyTy →
+    (∀ tyArg ∈ tyArgs, ContainsBvarsUpTo 0 tyArg) →
+    InstantiatesBy tyArgs polyTy.body ty →
+    TypeOfLN ctx (.var dbl) ty
+
+  | ctor :
+    LookupList.get? ctx.ctors name = some ctor →
+    (∀ tyArg ∈ tyArgs, ContainsBvarsUpTo 0 tyArg) →
+    InstantiatesBy tyArgs ctor.toTy.body ty →
+    TypeOfLN ctx (.ctor name) ty
+
+  | match_ :
+    TypeOfLN ctx scrutinee (.customTy tyName tyArgs) →
+    branches ≠ [] →
+    (∀ branch ∈ branches, TypeOfMatchBranchLN ctx branch tyName tyArgs resultTy) →
+    TypeOfLN ctx (.match_ scrutinee branches) resultTy
+
+
+/-- Match-branch typing for `TypeOfLN`. Verbatim copy of `TypeOfMatchBranch`
+    with the relation renamed: pattern bindings are monomorphic (`Sch 0`), so
+    no cofinite type-var quantifier is needed, and the term-var quantifier
+    vanishes under de Bruijn levels. -/
+inductive TypeOfMatchBranchLN :
+  (ctx : Ctx) → (MatchPattern × Expr) → (tyName : TyName) → (tyArgs : List Ty) → (resultTy : Ty) → Prop
+  | mk {ctor : Ctor} {ctx : Ctx} {pattern : MatchPattern} :
+    LookupList.get? ctx.ctors pattern.ctor = some ctor →
+    ctor.tyName = tyName →
+    ctor.paramCount = tyArgs.length →
+    pattern.contents = ctor.contents.length →
+    List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents →
+    patternBindings = instContents.map PolyTy.mkTrivial →
+    bodyCtx = {ctx with env := patternBindings ++ ctx.env} →
+    TypeOfLN bodyCtx bodyExpr resultTy →
+    TypeOfMatchBranchLN ctx (pattern, bodyExpr) tyName tyArgs resultTy
+
+end
+
+
 /-! ### Cofinite typing-at-scheme predicates. -/
 
 /-- `t` types at *every* opening of `M` by sufficiently-fresh names. The `L`
-    is the cofinite exclusion set; existentially quantified at the use site. -/
+    is the cofinite exclusion set; existentially quantified at the use site.
+    This is exactly the cofinite premise of `TypeOfLN.letIn`, packaged. -/
 def HasSchemeVars (L : List Nat) (ctx : Ctx) (e : Expr) (M : PolyTy) : Prop :=
   ∀ Xs : List Nat, FreshNames L M.paramCount Xs →
-    TypeOfHM ctx e (M.openVars Xs)
+    TypeOfLN ctx e (M.openVars Xs)
 
 /-- `t` types at *every* type-level instance of `M` (by LC types of the
     right arity). This is what `subst_lemma`'s `u` premise demands. -/
 def HasScheme (ctx : Ctx) (e : Expr) (M : PolyTy) : Prop :=
   ∀ Vs : List Ty, Ty.AreLC M.paramCount Vs →
-    TypeOfHM ctx e (M.openWith Vs)
+    TypeOfLN ctx e (M.openWith Vs)
 
 
 /-! ### Key commute lemmas. -/
@@ -2706,27 +2848,27 @@ theorem Ty.openWith_eq_substFvars_openVars
     preserves the typing derivation.
 
     Chargueraud's `typing_typ_subst`. -/
-theorem TypeOfHM.typ_subst_preservation
+theorem TypeOfLN.typ_subst_preservation
     {ctors : CtorEnv} {env_post env_outer : Env}
     {e : Expr} {τ : Ty} {Z : Nat} {U : Ty}
     (h_Z_fresh_outer : Z ∉ env_outer.freeVars)
     (h_U_lc : U.IsLC)
-    (h : TypeOfHM ⟨env_post ++ env_outer, ctors⟩ e τ) :
-    TypeOfHM ⟨env_post.substFvar Z U ++ env_outer, ctors⟩ e (τ.substFvar Z U) := by
+    (h : TypeOfLN ⟨env_post ++ env_outer, ctors⟩ e τ) :
+    TypeOfLN ⟨env_post.substFvar Z U ++ env_outer, ctors⟩ e (τ.substFvar Z U) := by
   sorry
 
 /-- Cofinite weakening: insert `env_extra` in the middle, **no env_fv side
-    condition** (compare to existing `TypeOfHM.weaken_env` above, which still
+    condition** (compare to the old `TypeOfHM.weaken_env`, which still
     requires `env_extra.freeVars ⊆ ...` because `Generalise` is the lax
     "exists-fresh" version). The new proof goes through because the new
     cofinite `letIn`/`letPairIn` rules let us grow `L` to exclude
     `env_extra`'s fvars on the fly inside the IH.
 
     Chargueraud's `typing_weaken`. -/
-theorem TypeOfHM.weaken_env_cofinite
+theorem TypeOfLN.weaken_env
     {ctors : CtorEnv} {env_pre env_extra env : Env} {e : Expr} {τ : Ty}
-    (h : TypeOfHM ⟨env_pre ++ env, ctors⟩ e τ) :
-    TypeOfHM ⟨env_pre ++ env_extra ++ env, ctors⟩
+    (h : TypeOfLN ⟨env_pre ++ env, ctors⟩ e τ) :
+    TypeOfLN ⟨env_pre ++ env_extra ++ env, ctors⟩
       (e.shiftFrom env_pre.length env_extra.length) τ := by
   sorry
 
@@ -2772,47 +2914,19 @@ theorem Ty.openWith_nil {ty : Ty} : Ty.openWith [] ty = ty := by
 
 /-- Monomorphic `has_scheme`: a regular typing is a `HasScheme` for the
     trivial 0-binder scheme. Chargueraud's `has_scheme_from_typ`. -/
-theorem HasScheme.ofTypeOfHM
+theorem HasScheme.ofTypeOfLN
     {ctx : Ctx} {e : Expr} {τ : Ty}
-    (h : TypeOfHM ctx e τ) :
+    (h : TypeOfLN ctx e τ) :
     HasScheme ctx e (PolyTy.mkTrivial τ) := by
   intro Vs h_lc
   obtain ⟨h_len, _⟩ := h_lc
   -- PolyTy.mkTrivial τ has paramCount = 0, so Vs = []
   have h_vs_nil : Vs = [] := List.length_eq_zero_iff.mp h_len
   subst h_vs_nil
-  show TypeOfHM ctx e (PolyTy.openWith [] (PolyTy.mkTrivial τ))
+  show TypeOfLN ctx e (PolyTy.openWith [] (PolyTy.mkTrivial τ))
   unfold PolyTy.openWith PolyTy.mkTrivial
   rw [Ty.openWith_nil]
   exact h
-
-
-/-! ### The new `TypeOfHM.letIn` constructor (sketch).
-
-We can't easily edit the existing inductive in a sketch — but here's what the
-replacement constructor looks like (the existing `letIn` *and* `Generalise`
-would be removed):
-
-    | letIn (M : PolyTy) (L : List Nat) :
-        SmallStep.IsValue boundExpr →          -- value restriction
-        PolyTy.IsScheme M →                    -- well-formed scheme
-        -- cofinite type-var premise: boundExpr types at EVERY opening of M
-        (∀ Xs, FreshNames L M.paramCount Xs →
-            TypeOfHM ctx boundExpr (M.openVars Xs)) →
-        bodyCtx = { ctx with env := M :: ctx.env } →
-        TypeOfHM bodyCtx body bodyTy →
-        TypeOfHM ctx (.letIn boundExpr body) bodyTy
-
-`letPairIn` and `match_`'s tyArgs-instantiation cases get the same treatment.
-For `var` / `ctor` we keep something like the existing rule but state it via
-`M.openWith tyArgs` (semantically equivalent to current `InstantiatesBy`,
-just spelled in the new vocabulary).
-
-The crucial property that makes everything work: the IH coming out of this
-constructor is **universally quantified** in `Xs`. When the substitution
-lemma descends through a `letIn`, it just picks `Xs` fresh from
-`L ∪ env_post.freeVars ∪ (anything else we need to avoid)` and the IH
-applies. -/
 
 
 /-! ### The clean substitution lemma (no side condition!). -/
@@ -2823,19 +2937,19 @@ applies. -/
     every instance of the scheme `M` that bound that variable.
 
     For beta-reduction, `M = PolyTy.mkTrivial paramTy` and
-    `HasScheme ctx v (mkTrivial paramTy)` reduces to `TypeOfHM ctx v paramTy`
-    via `HasScheme.ofTypeOfHM`.
+    `HasScheme ctx v (mkTrivial paramTy)` reduces to `TypeOfLN ctx v paramTy`
+    via `HasScheme.ofTypeOfLN`.
 
     For let-reduction, `M` is the generalised scheme and `HasScheme` is
     obtained via `HasScheme.fromHasSchemeVars` from the cofinite premise of
     the `letIn` rule that introduced `M`. -/
-theorem TypeOfHM.subst_lemma
+theorem TypeOfLN.subst_lemma
     {ctors : CtorEnv} {env_post env : Env}
     {e : Expr} {τ : Ty} {M : PolyTy} {v : Expr}
-    (h_body : TypeOfHM ⟨env_post ++ [M] ++ env, ctors⟩ e τ)
+    (h_body : TypeOfLN ⟨env_post ++ [M] ++ env, ctors⟩ e τ)
     (h_v : HasScheme ⟨env, ctors⟩ v M)
     (h_v_value : SmallStep.IsValue v) :
-    TypeOfHM ⟨env_post ++ env, ctors⟩
+    TypeOfLN ⟨env_post ++ env, ctors⟩
       (e.substN env_post.length [v]) τ := by
   sorry
 
