@@ -3969,3 +3969,23 @@ theorem Ty.substFvars_append (S T : Subst) (τ : Ty) :
 theorem Subst.onTy_append (S T : Subst) (τ : Ty) :
     (S ++ T).onTy τ = T.onTy (S.onTy τ) := by
   simp only [Subst.onTy, Ty.substFvars_append]
+
+
+/-! ### Most-general unifier specification
+
+`Unifies S τ₁ τ₂` says `S` equates the two monotypes; `IsMGU S τ₁ τ₂` adds that
+*every* unifier factors through `S` (`S` is the least committal one). Because
+composition is `++` and `(S ++ R).onTy τ = R.onTy (S.onTy τ)`, "`S'` factors
+through `S`" means `∃ R, S' acts as (S then R)`.
+
+The occurs check needs no new notion: `.fvar Z` occurs in `τ` exactly when
+`Z ∈ τ.freeVars`. -/
+
+/-- `S` makes `τ₁` and `τ₂` syntactically equal. -/
+def Unifies (S : Subst) (τ₁ τ₂ : Ty) : Prop := S.onTy τ₁ = S.onTy τ₂
+
+/-- `S` is a most-general unifier of `τ₁` and `τ₂`: it unifies them, and any
+    other unifier `S'` is an extension of `S` (factors as `S` then some `R`). -/
+structure IsMGU (S : Subst) (τ₁ τ₂ : Ty) : Prop where
+  unifies : Unifies S τ₁ τ₂
+  greatest : ∀ S', Unifies S' τ₁ τ₂ → ∃ R : Subst, ∀ τ, S'.onTy τ = R.onTy (S.onTy τ)
