@@ -1417,10 +1417,14 @@ inductive AllMatchesExhaustive : CtorEnv → Expr → Prop where
     AllMatchesExhaustive ctors (.letPairIn rhs body)
   /-- Exhaustiveness for match: every constructor in the ctor env whose type
       matches `tyName` has a corresponding branch. The `tyName` is existentially
-      quantified — the caller picks it (typically from the typing derivation). -/
+      quantified — the caller picks it (typically from the typing derivation) —
+      but it is pinned to the branches: every branch's pattern must be a
+      constructor of `tyName`, so a bogus ctor-less type cannot be chosen. -/
   | match_ {tyName : TyName} :
     AllMatchesExhaustive ctors scrut →
     AllBranchBodiesExhaustive ctors branches →
+    (∀ pat body, (pat, body) ∈ branches →
+       ∃ ctor, LookupList.get? ctors pat.ctor = some ctor ∧ ctor.tyName = tyName) →
     (∀ (ctorName : CtorName) (ctor : Ctor),
       LookupList.get? ctors ctorName = some ctor →
       ctor.tyName = tyName →
@@ -3503,6 +3507,112 @@ theorem TypeOfHM.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
   | letPairIn _ _ _ _ => cases h_chain
   | var _ => cases h_chain
   | match_ _ _ _ _ => cases h_chain
+
+
+/-! ## Progress
+
+A well-typed, closed term whose matches are all exhaustive is either a value or
+can take a step. The interesting case is `match_`: the scrutinee value is a
+constructor chain (`canonical_customTy` + `ctor_chain_inversion`), and the
+strengthened `AllMatchesExhaustive.match_` guarantees that the head constructor's
+type — which is pinned to the branches — has a covering branch. -/
+
+open SmallStep in
+theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h_ty : TypeOfHM ctx e τ) (h_closed : ctx.env = [])
+    (h_exh : AllMatchesExhaustive ctx.ctors e) :
+    IsValue e ∨ ∃ e', Step e e' := by
+  induction e using Expr.rec_strong generalizing ctx τ with
+  | primLit p => exact .inl (.primLit p)
+  | lambda _ _ => exact .inl (.lambda _)
+  | ctor name => exact .inl (.ctor name)
+  | var n =>
+    cases h_ty with
+    | var h_lookup _ _ => rw [h_closed] at h_lookup; simp at h_lookup
+  | pair a b iha ihb =>
+    cases h_exh with
+    | pair h_exh_a h_exh_b =>
+      cases h_ty with
+      | pair h_a h_b =>
+        rcases iha h_a h_closed h_exh_a with hva | ⟨a', ha⟩
+        · rcases ihb h_b h_closed h_exh_b with hvb | ⟨b', hb⟩
+          · exact .inl (.pair hva hvb)
+          · exact .inr ⟨_, .pairSnd hva hb⟩
+        · exact .inr ⟨_, .pairFst ha⟩
+  | app f arg ihf iharg =>
+    cases h_exh with
+    | app h_exh_f h_exh_arg =>
+      cases h_ty with
+      | app h_f h_arg =>
+        rcases ihf h_f h_closed h_exh_f with hvf | ⟨f', hf⟩
+        · rcases iharg h_arg h_closed h_exh_arg with hva | ⟨arg', harg⟩
+          · rcases TypeOfHM.canonical_arrow h_f hvf with ⟨body, rfl⟩ | hchain
+            · exact .inr ⟨_, .beta hva⟩
+            · exact .inl (.ctorApp hchain hva)
+          · exact .inr ⟨_, .appArg hvf harg⟩
+        · exact .inr ⟨_, .appFn hf⟩
+  | letIn rhs body ihrhs _ =>
+    cases h_exh with
+    | letIn h_exh_rhs _ =>
+      cases h_ty with
+      | letIn hwf hcofin heq hbody =>
+        expose_names
+        obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L M.paramCount
+        have h_rhs := hcofin Xs ⟨hXlen, hXnodup, hXavoid⟩
+        rcases ihrhs h_rhs h_closed h_exh_rhs with hvr | ⟨rhs', hrhs⟩
+        · exact .inr ⟨_, .letReduce hvr⟩
+        · exact .inr ⟨_, .letInRhs hrhs⟩
+  | letPairIn rhs body ihrhs _ =>
+    cases h_exh with
+    | letPairIn h_exh_rhs _ =>
+      cases h_ty with
+      | letPairIn hwff hwfs harity hcofin heq hbody =>
+        expose_names
+        obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L Mfst.paramCount
+        have h_rhs := hcofin Xs ⟨hXlen, hXnodup, hXavoid⟩
+        rcases ihrhs h_rhs h_closed h_exh_rhs with hvr | ⟨rhs', hrhs⟩
+        · obtain ⟨v₁, v₂, rfl, hv₁, hv₂⟩ := TypeOfHM.canonical_pair h_rhs hvr
+          exact .inr ⟨_, .letPairReduce hv₁ hv₂⟩
+        · exact .inr ⟨_, .letPairRhs hrhs⟩
+  | match_ scrut branches ihscrut _ =>
+    cases h_exh with
+    | match_ h_exh_scrut _ h_branch_ty h_match_exh =>
+      cases h_ty with
+      | match_ h_scrut h_ne h_brs =>
+        rcases ihscrut h_scrut h_closed h_exh_scrut with hvs | ⟨scrut', hscrut⟩
+        · -- scrutinee is a value of customTy type ⇒ a constructor chain
+          have hchain := TypeOfHM.canonical_customTy h_scrut hvs
+          obtain ⟨name, args, ctor, tyArgs', consumed, remaining,
+            hcat, hlook, _, hcontents, hforall, hinst⟩ :=
+            TypeOfHM.ctor_chain_inversion hchain h_scrut
+          cases remaining with
+          | cons c rest => simp only [Ty.wrapArrows] at hinst; cases hinst
+          | nil =>
+            simp only [Ty.wrapArrows] at hinst
+            rw [List.append_nil] at hcontents
+            have hlen : args.length = ctor.contents.length := by
+              rw [hcontents]; exact hforall.length_eq
+            -- `hinst : InstantiatesBy _ (.customTy ctor.tyName _) (.customTy Tscrut tyArgs)`;
+            -- inverting it unifies the scrutinee's type name with `ctor.tyName`.
+            cases hinst with
+            | customTy _ =>
+              -- the scrutinee's type name is now `ctor.tyName`; reconcile it with
+              -- the exhaustiveness type name via any branch (`branches ≠ []`).
+              obtain ⟨pat, body, hmem, hpctor, hparity⟩ :=
+                h_match_exh name ctor hlook (by
+                  obtain ⟨⟨pat0, body0⟩, htl0, hbeq⟩ :=
+                    List.exists_cons_of_ne_nil h_ne
+                  have hb0 : (pat0, body0) ∈ branches := by simp [hbeq]
+                  obtain ⟨ctorB, hlookB, htyB⟩ := h_branch_ty pat0 body0 hb0
+                  cases h_brs (pat0, body0) hb0 with
+                  | mk hlookA htyA _ _ _ _ _ _ =>
+                    rw [← htyA, Option.some.inj (hlookA.symm.trans hlookB)]
+                    exact htyB)
+              obtain ⟨e', hfmb⟩ := findMatchingBranch_of_exists
+                ⟨pat, body, hmem, hpctor, hparity.trans hlen.symm⟩
+              obtain ⟨pat', body', hfirst, _⟩ := findMatchingBranch_to_FirstMatch hfmb
+              exact .inr ⟨_, .matchReduce hvs hcat hfirst⟩
+        · exact .inr ⟨_, .matchScrut hscrut⟩
 
 
 /-! ## Scaffolding for the algorithmic phase
