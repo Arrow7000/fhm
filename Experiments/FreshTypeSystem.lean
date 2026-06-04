@@ -3989,3 +3989,53 @@ def Unifies (S : Subst) (τ₁ τ₂ : Ty) : Prop := S.onTy τ₁ = S.onTy τ₂
 structure IsMGU (S : Subst) (τ₁ τ₂ : Ty) : Prop where
   unifies : Unifies S τ₁ τ₂
   greatest : ∀ S', Unifies S' τ₁ τ₂ → ∃ R : Subst, ∀ τ, S'.onTy τ = R.onTy (S.onTy τ)
+
+
+/-! ### The unification relation
+
+`UnifyRel τ₁ τ₂ S` is the *graph of unification on success*: it holds when the
+two monotypes unify and `S` is a resulting most-general unifier. Failure is the
+*absence* of a derivation (constructor clash, arity clash, or occurs-check), so
+no negative side-conditions are needed and there is no termination obligation —
+this is the relation-first stage; a `unify` function comes later (stage 3).
+
+Compound types thread the prefix substitution into the remaining sub-problems
+(`UnifyRel (S₁.onTy b) (S₁.onTy d) S₂`), exactly as Algorithm W's unifier does.
+The occurs check is the freshness premise `n ∉ τ.freeVars` on the var rules;
+together with `substFvar_fresh` it is what makes `[(n, τ)]` an actual unifier. -/
+mutual
+
+inductive UnifyRel : Ty → Ty → Subst → Prop
+  | prim {p} :
+    UnifyRel (.prim p) (.prim p) []
+  | fvarRefl {n} :
+    UnifyRel (.fvar n) (.fvar n) []
+  | fvarL {n τ} :
+    τ ≠ .fvar n → n ∉ τ.freeVars →
+    UnifyRel (.fvar n) τ [(n, τ)]
+  | fvarR {n τ} :
+    τ ≠ .fvar n → n ∉ τ.freeVars →
+    UnifyRel τ (.fvar n) [(n, τ)]
+  | arrow {a b c d S₁ S₂} :
+    UnifyRel a c S₁ →
+    UnifyRel (S₁.onTy b) (S₁.onTy d) S₂ →
+    UnifyRel (.arrow a b) (.arrow c d) (S₁ ++ S₂)
+  | pair {a b c d S₁ S₂} :
+    UnifyRel a c S₁ →
+    UnifyRel (S₁.onTy b) (S₁.onTy d) S₂ →
+    UnifyRel (.pair a b) (.pair c d) (S₁ ++ S₂)
+  | customTy {nm tys₁ tys₂ S} :
+    UnifyRelList tys₁ tys₂ S →
+    UnifyRel (.customTy nm tys₁) (.customTy nm tys₂) S
+
+/-- Pairwise unification of equal-length type lists, threading the substitution
+    left-to-right. Used for the arguments of a custom type constructor. -/
+inductive UnifyRelList : List Ty → List Ty → Subst → Prop
+  | nil :
+    UnifyRelList [] [] []
+  | cons {t₁ t₂ ts₁ ts₂ S₁ S₂} :
+    UnifyRel t₁ t₂ S₁ →
+    UnifyRelList (ts₁.map S₁.onTy) (ts₂.map S₁.onTy) S₂ →
+    UnifyRelList (t₁ :: ts₁) (t₂ :: ts₂) (S₁ ++ S₂)
+
+end
