@@ -3164,6 +3164,118 @@ private lemma InstantiatesBy.eq_of_closed
 
 
 
+/-! ## Canonical forms
+
+Inversion lemmas: a *value* of a given type has a particular syntactic shape.
+Used by progress to conclude the next step exists when a value sits in a given
+type position. These only invert the value constructors (`lambda`/`pair`/
+`ctor`/ctor-chains), so they're unaffected by the cofinite `let` rules. -/
+
+/-- A well-typed constructor chain has a `wrapArrows … (customTy …)` type:
+    a prefix of arrows ending in a `customTy`.
+
+    Inducts syntactically on `e` (rather than on `h_chain`) because `IsCtorChain`
+    is mutually defined with `IsValue`, so the `induction` tactic refuses it. -/
+private lemma TypeOfHM.ctor_chain_has_customTy_form
+    {ctx e τ}
+    (h_chain : SmallStep.IsCtorChain e) (h_ty : TypeOfHM ctx e τ) :
+    ∃ name args tys, τ = Ty.wrapArrows (.customTy name args) tys := by
+  induction e using Expr.rec_strong generalizing ctx τ with
+  | ctor _ =>
+    cases h_ty with
+    | ctor _ _ h_inst =>
+      have ⟨instArgs, instTys, h_eq⟩ :=
+        InstantiatesBy.wrapArrows_customTy_form h_inst
+      exact ⟨_, instArgs, instTys, h_eq⟩
+  | app _ _ ihf _ =>
+    cases h_chain with
+    | app h_chain' _ =>
+      cases h_ty with
+      | app h_f_ty _ =>
+        obtain ⟨name, args, tys, h_eq⟩ := ihf h_chain' h_f_ty
+        cases tys with
+        | nil => simp [Ty.wrapArrows] at h_eq
+        | cons _ rest =>
+          simp only [Ty.wrapArrows] at h_eq
+          injection h_eq with _ h_ret
+          exact ⟨name, args, rest, h_ret⟩
+  | primLit _      => cases h_chain
+  | pair _ _ _ _   => cases h_chain
+  | lambda _ _     => cases h_chain
+  | letIn _ _ _ _  => cases h_chain
+  | letPairIn _ _ _ _ => cases h_chain
+  | var _          => cases h_chain
+  | match_ _ _ _ _ => cases h_chain
+
+theorem TypeOfHM.canonical_prim {ctx e p}
+    (h_ty : TypeOfHM ctx e (.prim p))
+    (h_val : SmallStep.IsValue e) :
+    ∃ pl, e = .primLit pl := by
+  cases h_val with
+  | primLit p' => exact ⟨p', rfl⟩
+  | lambda _ => cases h_ty
+  | pair _ _ => cases h_ty
+  | ctor name =>
+    exfalso
+    have ⟨_, _, tys, h_eq⟩ :=
+      TypeOfHM.ctor_chain_has_customTy_form (.ctor name) h_ty
+    cases tys with
+    | nil => simp [Ty.wrapArrows] at h_eq
+    | cons _ _ => simp [Ty.wrapArrows] at h_eq
+  | ctorApp h_chain h_v =>
+    exfalso
+    have ⟨_, _, tys, h_eq⟩ :=
+      TypeOfHM.ctor_chain_has_customTy_form (.app h_chain h_v) h_ty
+    cases tys with
+    | nil => simp [Ty.wrapArrows] at h_eq
+    | cons _ _ => simp [Ty.wrapArrows] at h_eq
+
+theorem TypeOfHM.canonical_pair {ctx e fstTy sndTy}
+    (h_ty : TypeOfHM ctx e (.pair fstTy sndTy))
+    (h_val : SmallStep.IsValue e) :
+    ∃ a b, e = .pair a b ∧ SmallStep.IsValue a ∧ SmallStep.IsValue b := by
+  cases h_val with
+  | primLit _ => cases h_ty
+  | lambda _ => cases h_ty
+  | pair h_a h_b => exact ⟨_, _, rfl, h_a, h_b⟩
+  | ctor name =>
+    exfalso
+    have ⟨_, _, tys, h_eq⟩ :=
+      TypeOfHM.ctor_chain_has_customTy_form (.ctor name) h_ty
+    cases tys with
+    | nil => simp [Ty.wrapArrows] at h_eq
+    | cons _ _ => simp [Ty.wrapArrows] at h_eq
+  | ctorApp h_chain h_v =>
+    exfalso
+    have ⟨_, _, tys, h_eq⟩ :=
+      TypeOfHM.ctor_chain_has_customTy_form (.app h_chain h_v) h_ty
+    cases tys with
+    | nil => simp [Ty.wrapArrows] at h_eq
+    | cons _ _ => simp [Ty.wrapArrows] at h_eq
+
+theorem TypeOfHM.canonical_arrow {ctx e argTy retTy}
+    (h_ty : TypeOfHM ctx e (.arrow argTy retTy))
+    (h_val : SmallStep.IsValue e) :
+    (∃ body, e = .lambda body) ∨ SmallStep.IsCtorChain e := by
+  cases h_val with
+  | primLit _ => cases h_ty
+  | lambda body => exact .inl ⟨body, rfl⟩
+  | pair _ _ => cases h_ty
+  | ctor name => exact .inr (.ctor name)
+  | ctorApp h_chain h_v => exact .inr (.app h_chain h_v)
+
+theorem TypeOfHM.canonical_customTy {ctx e tyName tyArgs}
+    (h_ty : TypeOfHM ctx e (.customTy tyName tyArgs))
+    (h_val : SmallStep.IsValue e) :
+    SmallStep.IsCtorChain e := by
+  cases h_val with
+  | primLit _ => cases h_ty
+  | lambda _ => cases h_ty
+  | pair _ _ => cases h_ty
+  | ctor name => exact .ctor name
+  | ctorApp h_chain h_v => exact .app h_chain h_v
+
+
 /-! ## Scaffolding for the algorithmic phase
 
 Not used yet. Once we move from the declarative relation to algorithmic
