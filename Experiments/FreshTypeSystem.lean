@@ -815,15 +815,18 @@ inductive Step : Expr → Expr → Prop
 
   -- ─── reduction rules ────────────────────────────────────────────────
 
-  /-- Beta. -/
+  /-- Beta. (NB: `body.substN 0 [v]` substitutes the argument `v` into `body`;
+      written via `substN` rather than `subst1` because `_.subst1 0 v` misfires
+      under dot notation — `subst1`'s first `Expr` parameter is `v`, not the
+      target.) -/
   | beta {body v} :
       IsValue v →
-      Step (.app (.lambda body) v) (body.subst1 0 v)
+      Step (.app (.lambda body) v) (body.substN 0 [v])
 
   /-- Let reduction (after rhs has been reduced to a value). -/
   | letReduce {v body} :
       IsValue v →
-      Step (.letIn v body) (body.subst1 0 v)
+      Step (.letIn v body) (body.substN 0 [v])
 
   /-- Let-pair destructure on a fully-reduced pair. -/
   | letPairReduce {v₁ v₂ body} :
@@ -929,13 +932,13 @@ def step : Expr → Option Expr
     if isValue f then
       if isValue arg then
         match f with
-        | .lambda body => some (body.subst1 0 arg)
+        | .lambda body => some (body.substN 0 [arg])
         | _ => none
       else do let arg' ← step arg; return .app f arg'
     else do let f' ← step f; return .app f' arg
 
   | .letIn rhs body =>
-    if isValue rhs then some (body.subst1 0 rhs)
+    if isValue rhs then some (body.substN 0 [rhs])
     else do let rhs' ← step rhs; return .letIn rhs' body
 
   | .letPairIn rhs body =>
