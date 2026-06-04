@@ -3615,6 +3615,297 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
         · exact .inr ⟨_, .matchScrut hscrut⟩
 
 
+/-! ## Preservation
+
+Subject reduction: a well-typed term that takes a step stays well-typed at the
+same type. The reduction cases reuse the substitution lemmas; the `matchReduce`
+case is the substantial one — it lines up the scrutinee's constructor-chain
+typing (`ctor_chain_inversion`) with the matched branch's typing
+(`TypeOfMatchBranch`), proving that the two type-argument lists agree on the
+relevant bvar indices so the field instantiations coincide. -/
+
+/-- `bvarRangeFrom` reads back its definition pointwise. -/
+theorem Ty.bvarRangeFrom_getElem? : ∀ (n s k : Nat), k < n →
+    (Ty.bvarRangeFrom s n)[k]? = some (.bvar (s + k)) := by
+  intro n
+  induction n with
+  | zero => intro s k hk; omega
+  | succ m ih =>
+    intro s k hk
+    cases k with
+    | zero => simp [Ty.bvarRangeFrom]
+    | succ j =>
+      simp only [Ty.bvarRangeFrom, List.getElem?_cons_succ]
+      have heq : s + 1 + j = s + (j + 1) := by omega
+      rw [ih (s + 1) j (by omega), heq]
+
+/-- The `k`-th element of `bvarRange n` is `.bvar k` (for `k < n`). -/
+theorem Ty.bvarRange_getElem? {n k : Nat} (hk : k < n) :
+    (Ty.bvarRange n)[k]? = some (Ty.bvar k) := by
+  unfold Ty.bvarRange
+  simpa using Ty.bvarRangeFrom_getElem? n 0 k hk
+
+open SmallStep in
+/-- A value is applied to a unique constructor name and argument list. -/
+theorem SmallStep.CtorAppliedTo.det {e : Expr} {n1 n2 : CtorName} {a1 a2 : List Expr}
+    (h1 : CtorAppliedTo e n1 a1) (h2 : CtorAppliedTo e n2 a2) : n1 = n2 ∧ a1 = a2 := by
+  induction h1 generalizing n2 a2 with
+  | base name => cases h2 with | base => exact ⟨rfl, rfl⟩
+  | step h1' ih =>
+    cases h2 with
+    | step h2' => obtain ⟨hn, ha⟩ := ih h2'; subst hn; subst ha; exact ⟨rfl, rfl⟩
+
+open SmallStep in
+/-- The matched branch is a member of the branch list. -/
+theorem SmallStep.FirstMatchingBranch.mem {name arity} {branches} {pat body}
+    (h : FirstMatchingBranch name arity branches pat body) : (pat, body) ∈ branches := by
+  induction h with
+  | here _ _ => exact List.mem_cons_self
+  | there _ _ ih => exact List.mem_cons_of_mem _ ih
+
+open SmallStep in
+/-- The matched branch's pattern names the matched constructor. -/
+theorem SmallStep.FirstMatchingBranch.ctor_eq {name arity branches pat body}
+    (h : FirstMatchingBranch name arity branches pat body) : pat.ctor = name := by
+  induction h with
+  | here hc _ => exact hc
+  | there _ _ ih => exact ih
+
+/-- Element-wise determinism for two `Forall₂ (InstantiatesBy …)` over a common
+    source list, given a per-element determinism hypothesis. -/
+private theorem InstantiatesBy.forall2_det {tyArgs1 tyArgs2 : List Ty} :
+    ∀ {tys its1 its2 : List Ty},
+      (∀ t ∈ tys, ∀ {a b : Ty},
+        InstantiatesBy tyArgs1 t a → InstantiatesBy tyArgs2 t b → a = b) →
+      List.Forall₂ (InstantiatesBy tyArgs1) tys its1 →
+      List.Forall₂ (InstantiatesBy tyArgs2) tys its2 →
+      its1 = its2 := by
+  intro tys
+  induction tys with
+  | nil =>
+    intro its1 its2 _ hf1 hf2
+    cases hf1; cases hf2; rfl
+  | cons hd tl ih =>
+    intro its1 its2 hdet hf1 hf2
+    cases hf1 with
+    | cons h1hd h1tl =>
+      cases hf2 with
+      | cons h2hd h2tl =>
+        have hhd : _ = _ := hdet hd List.mem_cons_self h1hd h2hd
+        have htl := ih (fun t ht => hdet t (List.mem_cons_of_mem _ ht)) h1tl h2tl
+        rw [hhd, htl]
+
+/-- Two instantiations of a `ContainsBvarsUpTo n` type coincide whenever the two
+    argument lists agree on every index below `n`. -/
+theorem InstantiatesBy.det_agree {n : Nat} {tyArgs1 tyArgs2 : List Ty}
+    (hag : ∀ k, k < n → tyArgs1[k]? = tyArgs2[k]?) :
+    ∀ {ty t1 t2 : Ty}, ContainsBvarsUpTo n ty →
+      InstantiatesBy tyArgs1 ty t1 → InstantiatesBy tyArgs2 ty t2 → t1 = t2 := by
+  intro ty
+  induction ty using Ty.rec_strong with
+  | prim _ => intro t1 t2 _ h1 h2; cases h1; cases h2; rfl
+  | pair a b iha ihb =>
+    intro t1 t2 hbv h1 h2
+    cases hbv with
+    | pair hba hbb =>
+      cases h1 with
+      | pair h1a h1b =>
+        cases h2 with
+        | pair h2a h2b => rw [iha hba h1a h2a, ihb hbb h1b h2b]
+  | arrow a b iha ihb =>
+    intro t1 t2 hbv h1 h2
+    cases hbv with
+    | arrow hba hbb =>
+      cases h1 with
+      | arrow h1a h1b =>
+        cases h2 with
+        | arrow h2a h2b => rw [iha hba h1a h2a, ihb hbb h1b h2b]
+  | bvar i =>
+    intro t1 t2 hbv h1 h2
+    cases hbv with
+    | bvar hlt =>
+      cases h1 with
+      | bvar hs1 =>
+        cases h2 with
+        | bvar hs2 => have h := hag i hlt; rw [hs1, hs2] at h; simpa using h
+  | fvar _ => intro t1 t2 _ h1 h2; cases h1; cases h2; rfl
+  | customTy nm tys ih =>
+    intro t1 t2 hbv h1 h2
+    cases hbv with
+    | customTy hall =>
+      cases h1 with
+      | customTy hf1 =>
+        cases h2 with
+        | customTy hf2 =>
+          congr 1
+          exact InstantiatesBy.forall2_det
+            (fun t ht {_ _} ha hb => ih t ht (hall t ht) ha hb) hf1 hf2
+
+/-- Assemble the per-argument `HasScheme` list for the `match` reduction: each
+    matched argument is well-typed at the corresponding instantiated field type
+    (the two instantiations coincide by `det_agree`), so it has the trivial
+    scheme of that type. -/
+private theorem InstantiatesBy.build_match_vs
+    {ctx : Ctx} {n : Nat} {tyArgs tyArgsS : List Ty}
+    (hag : ∀ k, k < n → tyArgs[k]? = tyArgsS[k]?) :
+    ∀ {contents instContents : List Ty} {args : List Expr},
+      (∀ c ∈ contents, ContainsBvarsUpTo n c) →
+      List.Forall₂ (InstantiatesBy tyArgs) contents instContents →
+      List.Forall₂ (fun a c => ∃ ct, InstantiatesBy tyArgsS c ct ∧ TypeOfHM ctx a ct)
+        args contents →
+      List.Forall₂ (fun v M => HasScheme ctx v M) args (instContents.map PolyTy.mkTrivial) := by
+  intro contents
+  induction contents with
+  | nil =>
+    intro instContents args _ hinst hfor
+    cases hinst
+    cases hfor
+    exact .nil
+  | cons hd tl ih =>
+    intro instContents args hbound hinst hfor
+    cases hinst with
+    | cons hihd hitl =>
+      cases hfor with
+      | cons hfhd hftl =>
+        obtain ⟨ct, hctS, htyA⟩ := hfhd
+        have hdet := InstantiatesBy.det_agree hag (hbound hd List.mem_cons_self) hihd hctS
+        refine List.Forall₂.cons ?_
+          (ih (fun c hc => hbound c (List.mem_cons_of_mem _ hc)) hitl hftl)
+        rw [hdet]
+        exact HasScheme.ofTypeOfHM htyA
+
+open SmallStep in
+theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
+    (h_step : Step e e') (h_ty : TypeOfHM ctx e τ) :
+    TypeOfHM ctx e' τ := by
+  induction h_step generalizing τ with
+  | beta hval =>
+    cases h_ty with
+    | app hf hi =>
+      cases hf with
+      | lambda hpc heq hbody =>
+        subst heq
+        exact TypeOfHM.subst_lemma (env_post := []) (M := PolyTy.mkTrivial _)
+          hpc hbody (HasScheme.ofTypeOfHM hi)
+  | letReduce hval =>
+    cases h_ty with
+    | letIn hwf hcofin heq hbody =>
+      subst heq
+      exact TypeOfHM.subst_lemma (env_post := []) hwf hbody
+        (HasScheme.fromHasSchemeVars hcofin)
+  | letPairReduce hv₁ hv₂ =>
+    cases h_ty with
+    | letPairIn hwff hwfs harity hcofin heq hbody =>
+      subst heq
+      have hv1_sch : HasSchemeVars _ ⟨ctx.env, ctx.ctors⟩ _ _ := fun Xs hfresh => by
+        cases hcofin Xs hfresh with | pair h1 _ => exact h1
+      have hv2_sch : HasSchemeVars _ ⟨ctx.env, ctx.ctors⟩ _ _ := fun Xs hfresh => by
+        cases hcofin Xs ⟨by rw [harity]; exact hfresh.length, hfresh.nodup, hfresh.avoid⟩
+          with | pair _ h2 => exact h2
+      refine TypeOfHM.subst_lemma_many (env_post := [])
+        (Ms := [_, _]) (vs := [_, _]) ?_ hbody ?_
+      · intro M hM
+        simp only [List.mem_cons, List.not_mem_nil, or_false] at hM
+        rcases hM with rfl | rfl
+        · exact hwfs
+        · exact hwff
+      · exact .cons (HasScheme.fromHasSchemeVars hv2_sch)
+          (.cons (HasScheme.fromHasSchemeVars hv1_sch) .nil)
+  | matchReduce hval hctor hfirst =>
+    rename_i scrut branches name args pat body
+    cases h_ty with
+    | match_ h_scrut h_ne h_brs =>
+      rename_i tyName tyArgs
+      have hmem := hfirst.mem
+      have hpeq := hfirst.ctor_eq
+      have hbranch := h_brs (pat, body) hmem
+      cases hbranch with
+      | mk hlookB htyNameB hpcB hcontentsB hinstB hpbB hctxB hbodyB =>
+        subst hctxB
+        subst hpbB
+        have hchain := TypeOfHM.canonical_customTy h_scrut hval
+        obtain ⟨name', args', ctorS, tyArgsS, consumedS, remainingS,
+          hcatS, hlookS, htyargsS, hcontentsS, hforallS, hinstS⟩ :=
+          TypeOfHM.ctor_chain_inversion hchain h_scrut
+        obtain ⟨hnEq, haEq⟩ := hctor.det hcatS
+        subst hnEq
+        subst haEq
+        rw [hpeq] at hlookB
+        have hcc := Option.some.inj (hlookS.symm.trans hlookB)
+        obtain ⟨instCts, hinstB', hbodyB'⟩ :
+            ∃ ic, List.Forall₂ (InstantiatesBy tyArgs) ctorS.contents ic ∧
+              TypeOfHM ⟨ic.map PolyTy.mkTrivial ++ ctx.env, ctx.ctors⟩ body τ := by
+          refine ⟨_, ?_, hbodyB⟩
+          rw [hcc]; exact hinstB
+        cases remainingS with
+        | cons c rest => simp only [Ty.wrapArrows] at hinstS; cases hinstS
+        | nil =>
+          rw [List.append_nil] at hcontentsS
+          subst hcontentsS
+          simp only [Ty.wrapArrows] at hinstS
+          cases hinstS with
+          | customTy hbvr =>
+            have hpc_len : tyArgs.length = ctorS.paramCount := by
+              rw [hcc]; exact hpcB.symm
+            have hagree : ∀ k, k < ctorS.paramCount → tyArgs[k]? = tyArgsS[k]? := by
+              intro k hk
+              have hkt : k < tyArgs.length := by omega
+              have hkr : k < (Ty.bvarRange ctorS.paramCount).length := by
+                rw [hbvr.length_eq]; exact hkt
+              have hrel := List.Forall₂.get hbvr hkr hkt
+              simp only [List.get_eq_getElem] at hrel
+              have helem : (Ty.bvarRange ctorS.paramCount)[k] = Ty.bvar k := by
+                have h1 := Ty.bvarRange_getElem? (n := ctorS.paramCount) (k := k) hk
+                rw [List.getElem?_eq_getElem hkr] at h1
+                exact Option.some.inj h1
+              rw [helem] at hrel
+              cases hrel with
+              | bvar hsome =>
+                rw [hsome]
+                exact List.getElem?_eq_getElem hkt
+            have htyArgs_lc : ∀ t ∈ tyArgs, ContainsBvarsUpTo 0 t := by
+              intro t ht
+              obtain ⟨k, hk, rfl⟩ := List.mem_iff_getElem.mp ht
+              have hkpc : k < ctorS.paramCount := by omega
+              have hag := hagree k hkpc
+              rw [List.getElem?_eq_getElem hk] at hag
+              exact htyargsS _ (List.mem_of_getElem? hag.symm)
+            have h_Ms_wf : ∀ M ∈ instCts.map PolyTy.mkTrivial, M.WF := by
+              intro M hM
+              obtain ⟨ic, hic, rfl⟩ := List.mem_map.mp hM
+              obtain ⟨i, hi, rfl⟩ := List.mem_iff_getElem.mp hic
+              have hrel := List.Forall₂.get hinstB'
+                (by have := hinstB'.length_eq; omega) hi
+              exact InstantiatesBy.preserves_bvars htyArgs_lc hrel
+            have h_vs := InstantiatesBy.build_match_vs hagree ctorS.bound hinstB' hforallS
+            exact TypeOfHM.subst_lemma_many (env_post := [])
+              h_Ms_wf hbodyB' h_vs
+  | pairFst _ ih =>
+    cases h_ty with
+    | pair ha hb => exact .pair (ih ha) hb
+  | pairSnd hv _ ih =>
+    cases h_ty with
+    | pair ha hb => exact .pair ha (ih hb)
+  | appFn _ ih =>
+    cases h_ty with
+    | app hf hi => exact .app (ih hf) hi
+  | appArg hv _ ih =>
+    cases h_ty with
+    | app hf hi => exact .app hf (ih hi)
+  | letInRhs _ ih =>
+    cases h_ty with
+    | letIn hwf hcofin heq hbody =>
+      exact .letIn hwf (fun Xs hfresh => ih (hcofin Xs hfresh)) heq hbody
+  | letPairRhs _ ih =>
+    cases h_ty with
+    | letPairIn hwff hwfs harity hcofin heq hbody =>
+      exact .letPairIn hwff hwfs harity
+        (fun Xs hfresh => ih (hcofin Xs hfresh)) heq hbody
+  | matchScrut _ ih =>
+    cases h_ty with
+    | match_ h_scrut h_ne h_brs => exact .match_ (ih h_scrut) h_ne h_brs
+
+
 /-! ## Scaffolding for the algorithmic phase
 
 Not used yet. Once we move from the declarative relation to algorithmic
