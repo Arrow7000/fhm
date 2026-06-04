@@ -3919,3 +3919,53 @@ inductive TyMaybe where
 
 /-- The unification-var context. Each `.fvar` references an item in this list. -/
 abbrev FvarCtx := List TyMaybe
+
+
+/-! ## Algorithmic phase, step 1: substitution algebra
+
+The declarative `TypeOfHM` treats `.fvar`s as rigid/abstract type variables.
+The algorithm reinterprets them as *unification variables* and solves equality
+constraints between monotypes by computing a most-general unifier (MGU).
+
+A unification substitution maps `.fvar` names to types. We reuse the proven
+`Ty.substFvars` machinery: a substitution is a `List (Nat × Ty)` applied
+left-to-right, so **composition is list append** (`Subst.onTy_append`). This
+algebra is shared scaffolding needed by *any* algorithmic presentation
+(Algorithm W / M / J or constraint-based) — all of them rest on unification. -/
+
+/-- A unification substitution: maps `.fvar` names to types, applied
+    left-to-right via `Ty.substFvars`. Composition of `S` then `T` is `S ++ T`. -/
+abbrev Subst := List (Nat × Ty)
+
+/-- Apply a substitution to a monotype. -/
+def Subst.onTy (S : Subst) : Ty → Ty := Ty.substFvars S
+
+/-- Apply a substitution to a scheme. `substFvars` only rewrites free vars, so
+    the scheme's bound vars (`.bvar`s `< paramCount`) are left untouched. -/
+def Subst.onPolyTy (S : Subst) (M : PolyTy) : PolyTy :=
+  { paramCount := M.paramCount, body := S.onTy M.body }
+
+/-- Apply a substitution to a value environment. -/
+def Subst.onEnv (S : Subst) (env : Env) : Env := env.map S.onPolyTy
+
+/-- Apply a substitution to a typing context. Constructors are closed
+    (`Ctor.closed`), so only the value env is affected. -/
+def Subst.onCtx (S : Subst) (ctx : Ctx) : Ctx :=
+  { env := S.onEnv ctx.env, ctors := ctx.ctors }
+
+/-- `substFvars` of an append applies the prefix first, then the suffix — the
+    elementary fact making list-append the composition of substitutions. -/
+theorem Ty.substFvars_append (S T : Subst) (τ : Ty) :
+    Ty.substFvars (S ++ T) τ = Ty.substFvars T (Ty.substFvars S τ) := by
+  induction S generalizing τ with
+  | nil => rfl
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    simp only [List.cons_append, Ty.substFvars]
+    exact ih (Ty.substFvar Z U τ)
+
+/-- Composition of substitutions is concatenation: `(S ++ T)` applies `S` first,
+    then `T`. -/
+theorem Subst.onTy_append (S T : Subst) (τ : Ty) :
+    (S ++ T).onTy τ = T.onTy (S.onTy τ) := by
+  simp only [Subst.onTy, Ty.substFvars_append]
