@@ -48,8 +48,6 @@ end LookupList
 
 
 
--- inductive List.Rel
--- def asdfa := List.Forall₂
 
 
 
@@ -146,10 +144,6 @@ inductive NoFreeVars : (ty : Ty) → Prop
 
 
 
--- @TODO: make a prop here about a Ty being closed, no fvars!
--- and i think then maybe we can insert a thing about how when a new binding's type contains/inserts a new fvar that it always gets generalised away, so nothing can ever stick an fvar in and keep it around for even after it has generalised itself away!
--- so maybe actually the thing that the initial version of the cursor agent wanted is indeed true: that newer additions to the thing are always fvar-closed – relative to the new binding's thing... so that maybe we can indeed avail ourselves of that starting premise? because we can prove that the TypeOfHM relation doesn't add new fvars into the environment? cuz like, there's not even a modified context it returns. so maybe... this was self-farshtendlich? but then you still need a starting premise on the initial thing saying that all the vars in the lower (prepended) env are closed – with relation to the var's binding? and that if you have that starting premise, you can also transport it quite easily through the things. maybe with the caveat that a) tyArgs you create don't also contain... uh wait. don't also contain new fvars? or existing fvars? bc neither of those are true, rite? ok so maybe that... a.1) yes they indeed may contain either existing *or* new fvars, but that any new fvars *will* be guaranteed to be generalised out. nothing new-fvar-shaped makes it out of the current scope! and then a.2) that therefore tyArgs cannot add... ungeneralisable things in? and thus tyArgs won't cause Generalisation discrepancies compared to with or without the binding? and b) lambda params indeed also either create new fvars, but if they do, they will always be generalised out when we close out the lambda typing!
--- ok so with the above in mind, and vaguely understood, i think maybe it makes sense to a) define a locally closed prop – indeed as our erstwhile agent proposed RIP – b) prove that it is maintained for all things, as in that no fvars stick around after closing off? c) in which case, we can easily use that as a starting premise for the subst_lemma about... the pre_env i think? and d) we can easily feed that through to each inductive hypothesis. ok. yes. yes! (i think).
 
 
 
@@ -179,24 +173,6 @@ abbrev Env := List PolyTy
 
 
 
--- /-- Replace a type var with some other a type -/
--- abbrev Subst := Nat × Ty
-
-
--- mutual
-
--- def Ty.subst : Subst → Ty → Ty
--- | _, .prim p => .prim p
--- | sub, .pair a b => .pair (a.subst sub) (b.subst sub)
--- | sub, .arrow a b => .arrow (a.subst sub) (b.subst sub)
--- | ⟨n, new⟩, .typeVar dbi => if dbi = n then new else .typeVar dbi
--- | sub, .customTy name tys => .customTy name (TyList.subst sub tys)
-
-
--- def TyList.subst (sub : Subst) (list : List Ty) : List Ty :=
---   list.map (Ty.subst sub)
-
--- end
 
 
 
@@ -1223,96 +1199,8 @@ theorem step_deterministic {e e₁ e₂ : Expr}
   have := step_complete h₂
   simp_all
 
-/-! ### Evaluation -/
 
--- theorem evaluate_isValue {fuel e v} (h : evaluate fuel e = some v) :
---     isValue v = true := by
---   sorry
 
-/-! ### Soundness & completeness of `step` w.r.t. well-typedness (`TypeOfHM`) -/
-
--- /-- Preservation: one step of evaluation preserves types. -/
--- theorem step_preserves_typing {ctx : Ctx} {e e' : Expr} {τ : Ty}
---     (h_ty : TypeOfHM ctx e τ)
---     (h_step : step e = some e') :
---     TypeOfHM ctx e' τ := by
---   have h_step_rel := step_sound h_step; clear h_step
---   induction h_step_rel generalizing τ with
---   | beta hval =>
---     cases h_ty with
---     | app h_f h_arg =>
---       cases h_f with
---       | lambda h_closed h_eq h_body =>
---         subst h_eq
---         -- Have:
---         --   h_body : TypeOfHM {ctx with env := mkTrivial argTy :: ctx.env} body τ
---         --   h_arg  : TypeOfHM ctx v argTy
---         -- Need: TypeOfHM ctx (body.subst1 0 v) τ
---         -- This is the substitution lemma at env_post = [].
---         sorry
---   | letReduce hval =>
---     cases h_ty with
---     | letIn h_rhs h_gen h_eq h_body =>
---       subst h_eq
---       -- Have:
---       --   h_body : TypeOfHM {ctx with env := generalisedExprTy :: ctx.env} body τ
---       --   h_rhs  : TypeOfHM ctx v boundExprTy
---       --   h_gen  : Generalise ctx.env boundExprTy generalisedExprTy
---       -- Need: TypeOfHM ctx (body.subst1 0 v) τ
---       -- This is trickier: the binding is polymorphic (generalised), but we
---       -- substitute a monomorphic value. Each use site instantiates the
---       -- polytype, and the value must re-type at each instantiation.
---       sorry
---   | letPairReduce hv1 hv2 =>
---     cases h_ty with
---     | letPairIn h_rhs h_gf h_gs h_eq h_body =>
---       subst h_eq
---       cases h_rhs with
---       | pair h_fst h_snd =>
---         -- Have:
---         --   h_body : TypeOfHM {ctx with env := genSndTy :: genFstTy :: ctx.env} body τ
---         --   h_fst  : TypeOfHM ctx v₁ fstTy
---         --   h_snd  : TypeOfHM ctx v₂ sndTy
---         --   h_gf   : Generalise ctx.env fstTy genFstTy
---         --   h_gs   : Generalise ctx.env sndTy genSndTy
---         -- Need: TypeOfHM ctx (body.substN 0 [v₂, v₁]) τ
---         -- Same challenge as letReduce but with two generalised bindings.
---         sorry
---   | matchReduce hval hctor hfirst =>
---     cases h_ty with
---     | match_ h_scrut h_ne h_brs =>
---       -- Have:
---       --   h_scrut : TypeOfHM ctx scrut (.customTy tyName tyArgs)
---       --   h_brs   : ∀ branch ∈ branches, TypeOfMatchBranch ctx branch tyName tyArgs τ
---       --   hfirst  : FirstMatchingBranch name args.length branches pat body
---       --   hctor   : CtorAppliedTo scrut name args
---       --   hval    : IsValue scrut
---       -- Need: TypeOfHM ctx (body.substN 0 args) τ
---       -- Must extract the matching branch's typing, get types for args from
---       -- the ctor chain + scrutinee typing, then substitute.
---       sorry
---   | pairFst _ ih =>
---     cases h_ty with
---     | pair h_a h_b => exact .pair (ih h_a) h_b
---   | pairSnd hval _ ih =>
---     cases h_ty with
---     | pair h_a h_b => exact .pair h_a (ih h_b)
---   | appFn _ ih =>
---     cases h_ty with
---     | app h_f h_arg => exact .app (ih h_f) h_arg
---   | appArg hval _ ih =>
---     cases h_ty with
---     | app h_f h_arg => exact .app h_f (ih h_arg)
---   | letInRhs _ ih =>
---     cases h_ty with
---     | letIn h_rhs h_gen h_eq h_body => exact .letIn (ih h_rhs) h_gen h_eq h_body
---   | letPairRhs _ ih =>
---     cases h_ty with
---     | letPairIn h_rhs h_gf h_gs h_eq h_body =>
---       exact .letPairIn (ih h_rhs) h_gf h_gs h_eq h_body
---   | matchScrut _ ih =>
---     cases h_ty with
---     | match_ h_scrut h_ne h_brs => exact .match_ (ih h_scrut) h_ne h_brs
 
 end SmallStep
 
@@ -1398,29 +1286,6 @@ theorem InstantiatesBy.preserves_bvars : (∀ tyArg ∈ tyArgs, ContainsBvarsUpT
 
 
 
-
-
-
-
--- /-- If env doesn't already contain fvars, it won't have any after typing an expr
-
--- NOTE: alright well this is of course nor true because for lambda params we can insert fvars -/
--- theorem TypeOfHM.preserves_fvars : ctx.env.freeVars = [] → TypeOfHM ctx expr τ → τ.freeVars = [] := by
---   intro hnofv htm
---   induction expr using Expr.rec_strong generalizing τ with
---   | primLit =>
---     cases htm
---     all_goals (simp [Ty.freeVars])
---   | pair a b aih bih =>
---     cases htm
---     simp [Ty.freeVars]
---     tauto
---   | lambda body ih =>
---     cases htm
---     simp [Ty.freeVars]
---     expose_names
-
---   sorry
 
 
 
@@ -1570,17 +1435,6 @@ inductive AllBranchBodiesExhaustive : CtorEnv → List (MatchPattern × Expr) �
 
 end
 
--- /-- If a ctor chain is well-typed at `customTy tyName tyArgs`, extract its
---     name, args, ctor entry, and the fact that it's a constructor for `tyName`. -/
--- theorem ctor_chain_info {ctx e tyName tyArgs}
---     (h_chain : IsCtorChain e)
---     (h_ty : TypeOfHM ctx e (.customTy tyName tyArgs)) :
---     ∃ name args, ∃ ctor : Ctor,
---       CtorAppliedTo e name args ∧
---       LookupList.get? ctx.ctors name = some ctor ∧
---       ctor.tyName = tyName ∧
---       args.length = ctor.contents.length := by
---   sorry  -- requires ctor-chain typing inversion
 
 /-- If a matching branch exists in the list, `findMatchingBranch` succeeds. -/
 theorem findMatchingBranch_of_exists {name : CtorName} {args : List Expr}
@@ -1600,91 +1454,6 @@ theorem findMatchingBranch_of_exists {name : CtorName} {args : List Expr}
       | head _ => exact absurd (And.intro hctor harity) hnm
       | tail _ hmem' => exact ih ⟨pat, body, hmem', hctor, harity⟩
 
--- /-- Progress: a well-typed closed term (with exhaustive matches) is either
---     a value or can take a step. -/
--- theorem progress {ctx : Ctx} {e : Expr} {τ : Ty}
---     (h_ty : TypeOfHM ctx e τ)
---     (h_closed : ctx.env = [])
---     (h_exh : AllMatchesExhaustive ctx.ctors e) :
---     IsValue e ∨ ∃ e', Step e e' := by
---   induction e using Expr.rec_strong generalizing ctx τ with
---   | primLit p => exact .inl (.primLit p)
---   | lambda _ _ => exact .inl (.lambda _)
---   | ctor name => exact .inl (.ctor name)
---   | var n =>
---     cases h_ty with
---     | var h_lookup _ _ => rw [h_closed] at h_lookup; simp at h_lookup
---   | pair a b iha ihb =>
---     cases h_exh with | pair h_exh_a h_exh_b =>
---     cases h_ty with
---     | pair h_a h_b =>
---       rcases iha h_a h_closed h_exh_a with hva | ⟨a', ha⟩
---       · rcases ihb h_b h_closed h_exh_b with hvb | ⟨b', hb⟩
---         · exact .inl (.pair hva hvb)
---         · exact .inr ⟨_, .pairSnd hva hb⟩
---       · exact .inr ⟨_, .pairFst ha⟩
---   | app f arg ihf iharg =>
---     cases h_exh with | app h_exh_f h_exh_arg =>
---     cases h_ty with
---     | app h_f h_arg =>
---       rcases ihf h_f h_closed h_exh_f with hvf | ⟨f', hf⟩
---       · rcases iharg h_arg h_closed h_exh_arg with hva | ⟨arg', harg⟩
---         · rcases TypeOfHM.canonical_arrow h_f hvf with ⟨body, rfl⟩ | hchain
---           · exact .inr ⟨_, .beta hva⟩
---           · exact .inl (.ctorApp hchain hva)
---         · exact .inr ⟨_, .appArg hvf harg⟩
---       · exact .inr ⟨_, .appFn hf⟩
---   | letIn rhs body ihrhs _ =>
---     cases h_exh with | letIn h_exh_rhs _ =>
---     cases h_ty with
---     | letIn h_rhs _ _ _ =>
---       rcases ihrhs h_rhs h_closed h_exh_rhs with hvr | ⟨rhs', hrhs⟩
---       · exact .inr ⟨_, .letReduce hvr⟩
---       · exact .inr ⟨_, .letInRhs hrhs⟩
---   | letPairIn rhs body ihrhs _ =>
---     cases h_exh with | letPairIn h_exh_rhs _ =>
---     cases h_ty with
---     | letPairIn h_rhs _ _ _ _ =>
---       rcases ihrhs h_rhs h_closed h_exh_rhs with hvr | ⟨rhs', hrhs⟩
---       · obtain ⟨v₁, v₂, rfl, hv₁, hv₂⟩ := TypeOfHM.canonical_pair h_rhs hvr
---         exact .inr ⟨_, .letPairReduce hv₁ hv₂⟩
---       · exact .inr ⟨_, .letPairRhs hrhs⟩
---   | match_ scrut branches ihscrut _ =>
---     cases h_exh with | match_ h_exh_scrut _ h_match_exh =>
---     cases h_ty with
---     | match_ h_scrut _ _ =>
---       rcases ihscrut h_scrut h_closed h_exh_scrut with hvs | ⟨scrut', hscrut⟩
---       · have hchain := TypeOfHM.canonical_customTy h_scrut hvs
---         obtain ⟨name, args, ctor, hctor_app, hctor_lookup, _, hlen⟩ :=
---           ctor_chain_info hchain h_scrut
---         -- sorry: ctor.tyName = tyName from exhaustiveness. Holds when
---         -- AllMatchesExhaustive was built with the same tyName as the typing.
---         obtain ⟨pat, body, hmem, hpctor, hparity⟩ := by
---           refine h_match_exh name ctor hctor_lookup ?_
---           expose_names
---           suffices tyName = tyName_1 by
---             subst this
---             exact left
---           subst left
-
---           sorry
-
---         obtain ⟨e', hfmb⟩ := findMatchingBranch_of_exists
---           ⟨pat, body, hmem, hpctor, hparity.trans hlen.symm⟩
---         obtain ⟨pat', body', hfirst, _⟩ := findMatchingBranch_to_FirstMatch hfmb
---         exact .inr ⟨_, .matchReduce hvs hctor_app hfirst⟩
---       · exact .inr ⟨_, .matchScrut hscrut⟩
-
--- /-- Progress for the step function. -/
--- theorem step_progress {ctx : Ctx} {e : Expr} {τ : Ty}
---     (h_ty : TypeOfHM ctx e τ)
---     (h_closed : ctx.env = [])
---     (h_exh : AllMatchesExhaustive ctx.ctors e)
---     (h_not_val : isValue e = false) :
---     ∃ e', step e = some e' := by
---   rcases progress h_ty h_closed h_exh with hv | ⟨e', he⟩
---   · exact absurd (isValue_iff_IsValue.mpr hv) (by simp [h_not_val])
---   · exact ⟨e', step_complete he⟩
 
 end SmallStep
 
@@ -3395,279 +3164,16 @@ private lemma InstantiatesBy.eq_of_closed
 
 
 
+/-! ## Scaffolding for the algorithmic phase
 
+Not used yet. Once we move from the declarative relation to algorithmic
+inference, `.fvar`s stop being abstract/rigid type variables and become
+*unification variables*, each pointing at an entry in a unification context. -/
 
-
-
--- theorem TypeOfHM.subst_lemma {env ctors env_post e τ paramTy v}
---     (h_body : TypeOfHM
---                 { ctors, env := env_post ++ [PolyTy.mkTrivial paramTy] ++ env }
---                 e τ)
---     (h_v : TypeOfHM {ctors,env} v paramTy)
---     (h_paramTy_closed : OnlyContainsBvars [] paramTy)
---     (h_env_post_sub : env_post.freeVars ⊆ env.freeVars) :
---     TypeOfHM { ctors, env := env_post ++ env }
---       (e.substN env_post.length [v]) τ := by
---   induction e using Expr.rec_strong generalizing env env_post τ with
---   | primLit _ =>
---     cases h_body with
---     | primLitUnit => exact .primLitUnit
---     | primLitInt  => exact .primLitInt
---     | primLitNat  => exact .primLitNat
---     | primLitBool => exact .primLitBool
---     | primLitStr  => exact .primLitStr
---   | ctor _ =>
---     cases h_body with
---     | ctor h_lookup h_tyArgs_closed h_inst =>
---       exact .ctor h_lookup h_tyArgs_closed h_inst
---   | pair _ _ ih_a ih_b =>
---     cases h_body with
---     | pair h_a h_b =>
---       exact .pair (ih_a h_a h_v h_env_post_sub) (ih_b h_b h_v h_env_post_sub)
---   | app _ _ ih_f ih_in =>
---     cases h_body with
---     | app h_f h_in =>
---       exact .app (ih_f h_f h_v h_env_post_sub) (ih_in h_in h_v h_env_post_sub)
---   | lambda body ih =>
---     cases h_body with
---     | lambda h_paramTy_lam_closed h_eq h_body_lam =>
---       subst h_eq
---       -- bodyCtx.env was set to `paramTy_lam :: (env_post ++ [paramTy] ++ ctx.env)`,
---       -- which is definitionally `(paramTy_lam :: env_post) ++ [paramTy] ++ ctx.env`.
---       -- We recurse with env_post' := paramTy_lam :: env_post; substitution position
---       -- becomes (env_post.length + 1), which is exactly what `Expr.substN` produces
---       -- for `.lambda body`.
---       exact .lambda h_paramTy_lam_closed rfl
---         (ih (env_post := PolyTy.mkTrivial _ :: env_post) h_body_lam h_v
---           (sorry /- need: (PolyTy.mkTrivial paramTy_lam :: env_post).freeVars ⊆ env.freeVars -/))
---   | letPairIn _ body ih_pe ih_body =>
---     cases h_body with
---     | letPairIn h_pe h_genFst h_genSnd h_eq h_body_inner =>
---       expose_names
---       subst h_eq
---       -- IH on body with env_post' := genSndTy :: genFstTy :: env_post (matching
---       -- the typing rule's ordering).
---       have h_body_subst :=
---         ih_body (env_post := genSndTy :: genFstTy :: env_post)
---           h_body_inner h_v
---           (sorry /- need: (genSndTy :: genFstTy :: env_post).freeVars ⊆ env.freeVars -/)
---       -- With the relaxed Generalise (`→` instead of `↔`), the same generalisation
---       -- transfers from the bigger env to the smaller env: ftvs need only be
---       -- eligible (i.e. ⊆ ¬env.freeVars), and removing paramTy can only ADD
---       -- eligibility, so the same h_gen still works.
---       have h_subset : (env_post ++ env).freeVars ⊆
---           (env_post ++ [PolyTy.mkTrivial paramTy] ++ env).freeVars :=
---         Env.freeVars_subset_insert_middle env_post env _
---       have h_genFst_new : Generalise (env_post ++ env) fstTy genFstTy := by
---         cases h_genFst with
---         | mk h_nodup h_eligible h_pt =>
---           refine .mk h_nodup ?_ h_pt
---           exact fun tv h_mem =>
---             ⟨(h_eligible tv h_mem).1,
---              fun h_in => (h_eligible tv h_mem).2 (h_subset h_in)⟩
---       have h_genSnd_new : Generalise (env_post ++ env) sndTy genSndTy := by
---         cases h_genSnd with
---         | mk h_nodup h_eligible h_pt =>
---           refine .mk h_nodup ?_ h_pt
---           exact fun tv h_mem =>
---             ⟨(h_eligible tv h_mem).1,
---              fun h_in => (h_eligible tv h_mem).2 (h_subset h_in)⟩
---       exact .letPairIn (ih_pe h_pe h_v h_env_post_sub)
---         h_genFst_new h_genSnd_new rfl h_body_subst
---   | match_ scrutinee branches ih_scrut ih_branches =>
---     cases h_body with
---     | match_ h_scrut h_branches_nonempty h_brs =>
---       have h_subst_nonempty :
---           (BranchList.substN env_post.length [v] branches) ≠ [] := by
---         intro h_eq
---         cases branches with
---         | nil => exact h_branches_nonempty rfl
---         | cons _ _ => simp [BranchList.substN] at h_eq
---       refine .match_ (ih_scrut h_scrut h_v h_env_post_sub) h_subst_nonempty ?_
---       clear ih_scrut h_scrut h_branches_nonempty h_subst_nonempty
---       -- Goal: ∀ branch ∈ BranchList.substN env_post.length [v] branches,
---       --   TypeOfMatchBranch { env := env_post ++ ctx.env, ... } branch ...
---       revert h_brs ih_branches
---       induction branches with
---       | nil =>
---         intros _ _ branch h_mem
---         simp only [BranchList.substN] at h_mem
---         exact absurd h_mem (List.not_mem_nil)
---       | cons hd tl ih_tl =>
---         intro ihbs h_brs
---         obtain ⟨pat, body⟩ := hd
---         intro branch h_mem
---         simp only [BranchList.substN, List.mem_cons] at h_mem
---         cases h_mem with
---         | inl h_eq =>
---           subst h_eq
---           -- branch = (pat, body.substN (env_post.length + pat.contents) [v])
---           have h_branch_orig := h_brs (pat, body) List.mem_cons_self
---           cases h_branch_orig with
---           | mk h_lookup h_tyName h_paramCount h_contents h_inst h_pb h_ctx h_body_orig =>
---             subst h_ctx
---             subst h_pb
---             expose_names
---             -- Apply ih_branches to body with env_post' := patternBindings ++ env_post.
---             have h_body_subst :=
---               ihbs pat body List.mem_cons_self
---                 (env_post := List.map PolyTy.mkTrivial instContents ++ env_post)
---                 (by simpa [List.append_assoc] using h_body_orig)
---                 h_v
---                 (sorry /- need: (instContents.map PolyTy.mkTrivial ++ env_post).freeVars ⊆ env.freeVars -/)
---             refine .mk h_lookup h_tyName h_paramCount h_contents h_inst rfl rfl ?_
---             -- Goal: TypeOfHM { env := List.map ... instContents ++ (env_post ++ ctx.env), ... }
---             --         (body.substN (env_post.length + pat.contents) [v]) τ
---             have h_len :
---                 (List.map PolyTy.mkTrivial instContents ++ env_post).length
---                   = env_post.length + pat.contents := by
---               simp only [List.length_append, List.length_map,
---                          ← h_inst.length_eq, ← h_contents]
---               omega
---             simpa [List.append_assoc, h_len] using h_body_subst
---         | inr h_mem' =>
---           exact ih_tl
---             (fun pat' e' hmem => ihbs pat' e' (List.mem_cons_of_mem _ hmem))
---             (fun b hmem => h_brs b (List.mem_cons_of_mem _ hmem))
---             _ h_mem'
---   | letIn _ body ih_be ih_body =>
---     cases h_body with
---     | letIn h_be h_gen h_eq h_body_inner =>
---       expose_names
---       subst h_eq
---       have h_body_subst :=
---         ih_body (env_post := generalisedExprTy :: env_post)
---           h_body_inner h_v
---           (sorry /- need: (generalisedExprTy :: env_post).freeVars ⊆ env.freeVars -/)
---       -- Reuse h_gen on the smaller env (relaxed Generalise: ftvs only need
---       -- to be a subset of eligibles, and eligibility only grows when env shrinks).
---       have h_subset : (env_post ++ env).freeVars ⊆
---           (env_post ++ [PolyTy.mkTrivial paramTy] ++ env).freeVars :=
---         Env.freeVars_subset_insert_middle env_post env _
---       have h_gen_new : Generalise (env_post ++ env) boundExprTy generalisedExprTy := by
---         cases h_gen with
---         | mk h_nodup h_eligible h_pt =>
---           refine .mk h_nodup ?_ h_pt
---           exact fun tv h_mem =>
---             ⟨(h_eligible tv h_mem).1,
---              fun h_in => (h_eligible tv h_mem).2 (h_subset h_in)⟩
---       exact .letIn (ih_be h_be h_v h_env_post_sub) h_gen_new rfl h_body_subst
---   | var i =>
---     cases h_body with
---     | var h_lookup h_tyArgs_closed h_inst =>
---       rcases lt_trichotomy i env_post.length with h_lt | h_eq | h_gt
---       · -- Sub-case (1): i < env_post.length. substN keeps `.var i`.
---         have h_subst : (Expr.var i).substN env_post.length [v] = .var i := by
---           simp [Expr.substN, h_lt]
---         rw [h_subst]
---         refine .var ?_ h_tyArgs_closed h_inst
---         -- Lookup at i is in env_post in both envs since i < env_post.length.
---         rw [List.getElem?_append_left h_lt]
---         rw [List.append_assoc, List.getElem?_append_left h_lt] at h_lookup
---         exact h_lookup
---       · -- Sub-case (2): i = env_post.length. substN returns `v.shiftFrom 0 k`.
---         subst h_eq
---         -- substN (.var env_post.length) env_post.length [v] = v.shiftFrom 0 env_post.length
---         have h_subst :
---             (Expr.var env_post.length).substN env_post.length [v]
---               = v.shiftFrom 0 env_post.length := by
---           simp [Expr.substN]
---         rw [h_subst]
---         -- Extract polyTy = PolyTy.mkTrivial paramTy from h_lookup.
---         rw [List.append_assoc, List.getElem?_append_right (Nat.le_refl _),
---             Nat.sub_self] at h_lookup
---         simp at h_lookup
---         -- h_lookup : polyTy = PolyTy.mkTrivial paramTy (after simp)
---         subst h_lookup
---         -- h_inst : InstantiatesBy tyArgs (PolyTy.mkTrivial paramTy).body τ
---         --        = InstantiatesBy tyArgs paramTy τ (definitionally, since
---         --        (PolyTy.mkTrivial paramTy).body = paramTy by `rfl`).
---         -- By closedness, τ = paramTy.
---         have h_τ_eq := InstantiatesBy.eq_of_closed h_paramTy_closed h_inst
---         subst h_τ_eq
---         exact weaken_env' h_v h_env_post_sub
---       · -- Sub-case (3): i > env_post.length. substN returns `.var (i - 1)`.
---         have h_not_lt : ¬ (i < env_post.length) := by omega
---         have h_not_lt' : ¬ (i - env_post.length < (1 : Nat)) := by omega
---         have h_subst : (Expr.var i).substN env_post.length [v] = .var (i - 1) := by
---           simp [Expr.substN, h_not_lt, h_not_lt']
---         rw [h_subst]
---         refine .var ?_ h_tyArgs_closed h_inst
---         -- Lookup at i in (env_post ++ [paramTy] ++ ctx.env) falls in ctx.env at
---         -- offset (i - env_post.length - 1). Lookup at (i - 1) in (env_post ++ ctx.env)
---         -- falls in ctx.env at offset (i - 1 - env_post.length). Equal by arith.
---         have h_le_i : env_post.length ≤ i := by omega
---         rw [List.getElem?_append_right (by omega : env_post.length ≤ i - 1)]
---         rw [List.append_assoc, List.getElem?_append_right h_le_i] at h_lookup
---         rw [show ([PolyTy.mkTrivial paramTy] ++ env) = (PolyTy.mkTrivial paramTy
---             :: env) from rfl] at h_lookup
---         rw [show (i - env_post.length) = (i - env_post.length - 1) + 1 from by omega]
---             at h_lookup
---         simp only [List.getElem?_cons_succ] at h_lookup
---         rw [show (i - 1 - env_post.length) = (i - env_post.length - 1) from by omega]
---         exact h_lookup
-
--- theorem TypeOfHM.preservation {ctx e τ e'}
---     (h_ty : TypeOfHM ctx e τ)
---     (h_step : SmallStep.Step e e') :
---     TypeOfHM ctx e' τ := by
---   sorry
-
-
-
-
-/-- Either a conc or unspec. Either the fvar is constrained or not. -/
+/-- Either a constrained (`conc`) or unconstrained (`unspec`) unification var. -/
 inductive TyMaybe where
   | unspec
   | conc (ty : Ty)
 
-
-/-- The unification var context. Each fvar references an item in this context -/
+/-- The unification-var context. Each `.fvar` references an item in this list. -/
 abbrev FvarCtx := List TyMaybe
-
-
--- /-- Whether the type-ness is imposed by the value itself or the environment pushes a type onto the value -/
--- inductive TypeDir where
---   /-- The surrounding area pushes a certain type onto the value. This is the check direction. -/
---   | check
---   /-- The value itself imposes its own type. This is the infer direction. -/
---   | infer
-
--- inductive BiTyping : Ctx → TypeDir → Expr → Ty → Prop
---   | primUnit : BiTyping ctx .infer (.primLit .unit) (.prim .unit)
---   | primInt : BiTyping ctx .infer (.primLit (.int _)) (.prim .int)
---   | primNat : BiTyping ctx .infer (.primLit (.nat _)) (.prim .nat)
---   | primBool : BiTyping ctx .infer (.primLit (.bool _)) (.prim .bool)
---   | primStr : BiTyping ctx .infer (.primLit (.str _)) (.prim .str)
-
---   | pair :
---     BiTyping ctx .infer fst fstTy →
---     BiTyping ctx .infer snd sndTy →
---     BiTyping ctx .infer (.pair fst snd) (.pair fstTy sndTy)
-
---   | lambda :
---     bodyCtx = { ctx with env := PolyTy.mkTrivial argTy :: ctx.env } →
---     BiTyping bodyCtx .infer body bodyTy →
---     BiTyping ctx .infer (.lambda body) (.arrow argTy bodyTy)
-
---   | app :
---     BiTyping ctx .infer f (.arrow argTy returnTy) →
---     BiTyping ctx .check arg argTy →
---     BiTyping ctx .infer (.app f arg) returnTy
-
---   | var {ctx : Ctx} {polyTy : PolyTy} :
---     ctx.env[dbi]? = some polyTy →
---     InstantiatesBy tyArgs polyTy.body ty →
---     BiTyping ctx .infer (.var dbi) ty
-
---   | ctor :
---     ctx.ctors.get? ctorName = some polyTy →
---     InstantiatesBy tyArgs polyTy.toTy.body ty →
---     BiTyping ctx .infer (.ctor ctorName) ty
-
---   | letIn :
---     BiTyping ctx .infer binding bindingTy →
---     Generalise ctx.env bindingTy generalisedTy →
---     bodyCtx = { ctx with env := generalisedTy :: ctx.env } →
---     BiTyping ctx .infer body bodyTy →
---     BiTyping ctx .infer (.letIn binding body) bodyTy
