@@ -4039,3 +4039,74 @@ inductive UnifyRelList : List Ty → List Ty → Subst → Prop
     UnifyRelList (t₁ :: ts₁) (t₂ :: ts₂) (S₁ ++ S₂)
 
 end
+
+
+/-! ### `onTy` distributes over the type formers -/
+
+@[simp] theorem Subst.onTy_nil {τ : Ty} : Subst.onTy [] τ = τ := rfl
+
+@[simp] theorem Subst.onTy_prim {S : Subst} {p : PrimTy} :
+    S.onTy (.prim p) = .prim p := Ty.substFvars_prim
+
+@[simp] theorem Subst.onTy_bvar {S : Subst} {i : Nat} :
+    S.onTy (.bvar i) = .bvar i := Ty.substFvars_bvar
+
+@[simp] theorem Subst.onTy_pair {S : Subst} {a b : Ty} :
+    S.onTy (.pair a b) = .pair (S.onTy a) (S.onTy b) := Ty.substFvars_pair
+
+@[simp] theorem Subst.onTy_arrow {S : Subst} {a b : Ty} :
+    S.onTy (.arrow a b) = .arrow (S.onTy a) (S.onTy b) := Ty.substFvars_arrow
+
+@[simp] theorem Subst.onTy_customTy {S : Subst} {nm : TyName} {tys : List Ty} :
+    S.onTy (.customTy nm tys) = .customTy nm (tys.map S.onTy) := Ty.substFvars_customTy
+
+/-- Mapping a composed substitution over a list = mapping each factor in turn. -/
+theorem Subst.map_onTy_append (S T : Subst) (ts : List Ty) :
+    ts.map (S ++ T).onTy = (ts.map S.onTy).map T.onTy := by
+  rw [List.map_map]
+  apply List.map_congr_left
+  intro x _
+  exact Subst.onTy_append S T x
+
+
+/-! ### Soundness, part 1: a derived substitution is a unifier -/
+
+mutual
+
+/-- Any substitution produced by `UnifyRel` actually unifies the two types. -/
+theorem UnifyRel.unifies : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁ τ₂ S →
+    Unifies S τ₁ τ₂
+  | _, _, _, .prim => rfl
+  | _, _, _, .fvarRefl => rfl
+  | _, _, _, .fvarL _ hocc => by
+    simp [Unifies, Subst.onTy, Ty.substFvars, Ty.substFvar, Ty.substFvar_fresh hocc]
+  | _, _, _, .fvarR _ hocc => by
+    simp [Unifies, Subst.onTy, Ty.substFvars, Ty.substFvar, Ty.substFvar_fresh hocc]
+  | _, _, _, .arrow h₁ h₂ => by
+    have e1 := UnifyRel.unifies h₁
+    have e2 := UnifyRel.unifies h₂
+    simp only [Unifies, Subst.onTy_append, Subst.onTy_arrow] at e1 e2 ⊢
+    rw [Ty.arrow.injEq]
+    exact ⟨by rw [e1], e2⟩
+  | _, _, _, .pair h₁ h₂ => by
+    have e1 := UnifyRel.unifies h₁
+    have e2 := UnifyRel.unifies h₂
+    simp only [Unifies, Subst.onTy_append, Subst.onTy_pair] at e1 e2 ⊢
+    rw [Ty.pair.injEq]
+    exact ⟨by rw [e1], e2⟩
+  | _, _, _, .customTy hl => by
+    have el := UnifyRelList.unifies hl
+    simp only [Unifies, Subst.onTy_customTy, el]
+
+/-- The list version: a list-unifier equalises the two lists pointwise. -/
+theorem UnifyRelList.unifies : {ts₁ ts₂ : List Ty} → {S : Subst} →
+    UnifyRelList ts₁ ts₂ S → ts₁.map S.onTy = ts₂.map S.onTy
+  | _, _, _, .nil => rfl
+  | _, _, _, .cons h₁ ht => by
+    have e1 := UnifyRel.unifies h₁
+    have et := UnifyRelList.unifies ht
+    simp only [Unifies] at e1
+    simp only [List.map_cons, Subst.onTy_append, Subst.map_onTy_append]
+    rw [e1, et]
+
+end
