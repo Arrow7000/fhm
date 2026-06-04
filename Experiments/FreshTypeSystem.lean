@@ -3436,6 +3436,72 @@ theorem TypeOfHM.canonical_customTy {ctx e tyName tyArgs}
   | ctorApp h_chain h_v => exact .app h_chain h_v
 
 
+/-! ## Constructor-chain typing inversion
+
+The keystone for both progress (the matched-constructor's type name and arity)
+and preservation's `match_` case (the applied arguments are well-typed at the
+instantiated field types). Inducting over the chain, each `app` consumes one of
+the constructor's `contents` (one arrow of its `wrapArrows` type). We track the
+already-`consumed` fields and the `remaining` ones explicitly. -/
+
+private theorem List.Forall₂.snoc {α β : Type _} {R : α → β → Prop}
+    {l1 : List α} {l2 : List β} {a : α} {b : β}
+    (h : List.Forall₂ R l1 l2) (hab : R a b) :
+    List.Forall₂ R (l1 ++ [a]) (l2 ++ [b]) := by
+  induction h with
+  | nil => exact .cons hab .nil
+  | cons hhd _ ih => exact .cons hhd ih
+
+/-- A well-typed constructor chain decomposes into a head constructor applied to
+    args, where the consumed fields are well-typed at their instantiations and
+    the result type is the remaining fields wrapped over the (instantiated)
+    `customTy`. -/
+theorem TypeOfHM.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h_chain : SmallStep.IsCtorChain e) (h_ty : TypeOfHM ctx e τ) :
+    ∃ (name : CtorName) (args : List Expr) (ctor : Ctor)
+      (tyArgs consumed remaining : List Ty),
+      SmallStep.CtorAppliedTo e name args ∧
+      LookupList.get? ctx.ctors name = some ctor ∧
+      (∀ t ∈ tyArgs, ContainsBvarsUpTo 0 t) ∧
+      ctor.contents = consumed ++ remaining ∧
+      List.Forall₂ (fun a c => ∃ ct, InstantiatesBy tyArgs c ct ∧ TypeOfHM ctx a ct)
+        args consumed ∧
+      InstantiatesBy tyArgs
+        (Ty.wrapArrows (.customTy ctor.tyName (Ty.bvarRange ctor.paramCount)) remaining) τ := by
+  induction e using Expr.rec_strong generalizing τ with
+  | ctor name =>
+    cases h_ty with
+    | ctor hlook htyargs hinst =>
+      exact ⟨name, [], _, _, [], _, .base name, hlook, htyargs, rfl, .nil,
+        by simpa [Ctor.toTy] using hinst⟩
+  | app f arg ihf _ =>
+    cases h_chain with
+    | app hchainf hvarg =>
+      cases h_ty with
+      | app hf harg =>
+        obtain ⟨name, args, ctor, tyArgs, consumed, remaining, hcat, hlook, htyargs,
+          hcontents, hforall, hinst_f⟩ := ihf hchainf hf
+        cases remaining with
+        | nil =>
+          simp only [Ty.wrapArrows] at hinst_f
+          cases hinst_f
+        | cons c rest =>
+          simp only [Ty.wrapArrows] at hinst_f
+          cases hinst_f with
+          | arrow hc hrest =>
+            refine ⟨name, args ++ [arg], ctor, tyArgs, consumed ++ [c], rest,
+              .step hcat, hlook, htyargs, ?_, hforall.snoc ⟨_, hc, harg⟩, hrest⟩
+            rw [hcontents]
+            exact (List.append_assoc consumed [c] rest).symm
+  | primLit _ => cases h_chain
+  | pair _ _ _ _ => cases h_chain
+  | lambda _ _ => cases h_chain
+  | letIn _ _ _ _ => cases h_chain
+  | letPairIn _ _ _ _ => cases h_chain
+  | var _ => cases h_chain
+  | match_ _ _ _ _ => cases h_chain
+
+
 /-! ## Scaffolding for the algorithmic phase
 
 Not used yet. Once we move from the declarative relation to algorithmic
