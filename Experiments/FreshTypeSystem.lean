@@ -4110,3 +4110,92 @@ theorem UnifyRelList.unifies : {ts₁ ts₂ : List Ty} → {S : Subst} →
     rw [e1, et]
 
 end
+
+
+/-! ### Soundness, part 2: a derived substitution is *most general*
+
+The backbone of the var cases: if `S'` already equates `.fvar n` with `U`, then
+applying `S'` is unchanged by first substituting `[n ↦ U]`. -/
+
+theorem Subst.onTy_substFvar {S' : Subst} {n : Nat} {U : Ty}
+    (h : S'.onTy (.fvar n) = S'.onTy U) :
+    ∀ τ, S'.onTy (Ty.substFvar n U τ) = S'.onTy τ := by
+  intro τ
+  induction τ using Ty.rec_strong with
+  | prim p => rfl
+  | bvar i => rfl
+  | fvar m =>
+    by_cases hm : m = n
+    · subst hm
+      simp only [Ty.substFvar, if_true]
+      exact h.symm
+    · simp only [Ty.substFvar, if_neg hm]
+  | pair a b iha ihb => simp only [Ty.substFvar, Subst.onTy_pair, iha, ihb]
+  | arrow a b iha ihb => simp only [Ty.substFvar, Subst.onTy_arrow, iha, ihb]
+  | customTy nm tys ih =>
+    simp only [Ty.substFvar, TyList.substFvar_eq_map, Subst.onTy_customTy, List.map_map]
+    apply congrArg (Ty.customTy nm)
+    apply List.map_congr_left
+    intro t ht
+    exact ih t ht
+
+/-! Every substitution produced by `UnifyRel` is a *most general* unifier: any
+    other unifier `S'` factors through it. The compound cases thread the
+    sub-problem unifiers (`R₁` then `R₂`) and return the final `R₂`; the var
+    cases use `onTy_substFvar`. -/
+mutual
+
+theorem UnifyRel.greatest : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁ τ₂ S →
+    ∀ S' : Subst, Unifies S' τ₁ τ₂ → ∃ R : Subst, ∀ τ, S'.onTy τ = R.onTy (S.onTy τ)
+  | _, _, _, .prim, S', _ => ⟨S', fun τ => by simp only [Subst.onTy_nil]⟩
+  | _, _, _, .fvarRefl, S', _ => ⟨S', fun τ => by simp only [Subst.onTy_nil]⟩
+  | _, _, _, .fvarL _ _, S', hS' =>
+    ⟨S', fun τ => (Subst.onTy_substFvar hS' τ).symm⟩
+  | _, _, _, .fvarR _ _, S', hS' =>
+    ⟨S', fun τ => (Subst.onTy_substFvar (Eq.symm hS') τ).symm⟩
+  | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, S', hS' => by
+    simp only [Unifies, Subst.onTy_arrow, Ty.arrow.injEq] at hS'
+    obtain ⟨hac, hbd⟩ := hS'
+    obtain ⟨R₁, hR₁⟩ := UnifyRel.greatest h₁ S' hac
+    have hR₁bd : Unifies R₁ (S₁.onTy b) (S₁.onTy d) := by
+      show R₁.onTy (S₁.onTy b) = R₁.onTy (S₁.onTy d)
+      rw [← hR₁ b, ← hR₁ d]; exact hbd
+    obtain ⟨R₂, hR₂⟩ := UnifyRel.greatest h₂ R₁ hR₁bd
+    refine ⟨R₂, fun τ => ?_⟩
+    rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ]
+  | _, _, _, @UnifyRel.pair a b c d S₁ S₂ h₁ h₂, S', hS' => by
+    simp only [Unifies, Subst.onTy_pair, Ty.pair.injEq] at hS'
+    obtain ⟨hac, hbd⟩ := hS'
+    obtain ⟨R₁, hR₁⟩ := UnifyRel.greatest h₁ S' hac
+    have hR₁bd : Unifies R₁ (S₁.onTy b) (S₁.onTy d) := by
+      show R₁.onTy (S₁.onTy b) = R₁.onTy (S₁.onTy d)
+      rw [← hR₁ b, ← hR₁ d]; exact hbd
+    obtain ⟨R₂, hR₂⟩ := UnifyRel.greatest h₂ R₁ hR₁bd
+    refine ⟨R₂, fun τ => ?_⟩
+    rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ]
+  | _, _, _, .customTy hl, S', hS' => by
+    simp only [Unifies, Subst.onTy_customTy, Ty.customTy.injEq, true_and] at hS'
+    exact UnifyRelList.greatest hl S' hS'
+
+theorem UnifyRelList.greatest : {ts₁ ts₂ : List Ty} → {S : Subst} →
+    UnifyRelList ts₁ ts₂ S → ∀ S' : Subst, ts₁.map S'.onTy = ts₂.map S'.onTy →
+      ∃ R : Subst, ∀ τ, S'.onTy τ = R.onTy (S.onTy τ)
+  | _, _, _, .nil, S', _ => ⟨S', fun τ => by simp only [Subst.onTy_nil]⟩
+  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht, S', hS' => by
+    simp only [List.map_cons, List.cons.injEq] at hS'
+    obtain ⟨ht1t2, htail⟩ := hS'
+    obtain ⟨R₁, hR₁⟩ := UnifyRel.greatest h₁ S' ht1t2
+    have key : ∀ (l : List Ty), l.map (R₁.onTy ∘ S₁.onTy) = l.map S'.onTy := by
+      intro l; apply List.map_congr_left; intro t _; exact (hR₁ t).symm
+    have hlist : (ts₁.map S₁.onTy).map R₁.onTy = (ts₂.map S₁.onTy).map R₁.onTy := by
+      rw [List.map_map, List.map_map, key, key]; exact htail
+    obtain ⟨R₂, hR₂⟩ := UnifyRelList.greatest ht R₁ hlist
+    refine ⟨R₂, fun τ => ?_⟩
+    rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ]
+
+end
+
+/-- Unification soundness, assembled: a derivation yields a most-general unifier. -/
+theorem UnifyRel.isMGU {τ₁ τ₂ : Ty} {S : Subst} (h : UnifyRel τ₁ τ₂ S) :
+    IsMGU S τ₁ τ₂ :=
+  ⟨h.unifies, h.greatest⟩
