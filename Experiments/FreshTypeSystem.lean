@@ -4362,17 +4362,17 @@ def freshVars (Φ k : Nat) : List Nat := (List.range k).map (Φ + ·)
 def genVars (env : Env) (τ : Ty) : List Nat :=
   τ.freeVars.filter (fun x => !env.freeVars.contains x)
 
-/-- Abstract the (nodup) free vars `gs` of a type into bound vars
-    `bvar 0, …, bvar (gs.length - 1)` positionally — the inverse of
-    `openVars gs`. Built from `substFvars` (`fvar gs[i] ↦ bvar i`). -/
-def Ty.closeVars (gs : List Nat) (τ : Ty) : Ty :=
-  Ty.substFvars (gs.zipIdx.map (fun p => (p.1, Ty.bvar p.2))) τ
-
 /-- The principal generalization of `τ` relative to `env`: the scheme quantifying
-    over exactly the free vars of `τ` not fixed by `env` (`genVars`). This is the
-    concretely *defined* (not merely posited) scheme that `letIn` binds. -/
+    over exactly the free vars of `τ` not fixed by `env` (`genVars`). Reuses the
+    existing `Ty.closeOver` (`fvar` ↦ `bvar` by position), whose
+    `closeOver_preserves_bvars` immediately gives `genScheme … |>.WF`. -/
 def genScheme (env : Env) (τ : Ty) : PolyTy :=
-  { paramCount := (genVars env τ).length, body := Ty.closeVars (genVars env τ) τ }
+  { paramCount := (genVars env τ).length, body := Ty.closeOver (genVars env τ) τ }
+
+/-- A generalized scheme is well-formed when its body type is locally-closed —
+    closing introduces only the `paramCount`-many fresh bound vars. -/
+theorem genScheme_wf {env : Env} {τ : Ty} (hτ : τ.IsLC) : (genScheme env τ).WF :=
+  Ty.closeOver_preserves_bvars hτ
 
 /-- Algorithm W as a substitution-threading relation.
 @TODO: remember to add constructors for the remaining Expr variants: `letPairIn`, `ctor`, `match_`
