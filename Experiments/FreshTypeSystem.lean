@@ -5549,3 +5549,63 @@ theorem Ty.substFvar_rename_swap {Φ W : Nat} {X : Ty} (h : W ∉ X.freeVars) :
     apply List.map_congr_left
     intro t ht
     exact ih t ht (fun hct => h (TyList.mem_freeVars_of_mem ht hct))
+
+/-- Two distinct fresh names, both `≥ Φ` and avoiding a given finite set. -/
+theorem exists_fresh_two_ge (Φ : Nat) (avoid : List Nat) :
+    ∃ W c, Φ ≤ W ∧ Φ ≤ c ∧ W ≠ c ∧ W ∉ avoid ∧ c ∉ avoid := by
+  obtain ⟨Xs, hlen, hnodup, hav⟩ := exists_fresh_names (List.range Φ ++ avoid) 2
+  obtain ⟨W, c, rfl⟩ : ∃ W c, Xs = [W, c] := by
+    match Xs, hlen with
+    | [W, c], _ => exact ⟨W, c, rfl⟩
+  have hWmem : W ∈ [W, c] := by simp
+  have hcmem : c ∈ [W, c] := by simp
+  have hWav := hav W hWmem
+  have hcav := hav c hcmem
+  simp only [List.mem_append, not_or] at hWav hcav
+  refine ⟨W, c, ?_, ?_, ?_, hWav.2, hcav.2⟩
+  · have := hWav.1; simp only [List.mem_range, not_lt] at this; omega
+  · have := hcav.1; simp only [List.mem_range, not_lt] at this; omega
+  · simp only [List.nodup_cons, List.mem_singleton, List.not_mem_nil, not_false_eq_true,
+      List.nodup_nil, and_true] at hnodup
+    exact hnodup
+
+/-- `substFvar` keeps `W` fresh when `W` is fresh for the input and the replacement. -/
+theorem Ty.not_mem_freeVars_substFvar {Z W : Nat} {U τ : Ty}
+    (hτ : W ∉ τ.freeVars) (hU : W ∉ U.freeVars) :
+    W ∉ (Ty.substFvar Z U τ).freeVars := by
+  induction τ using Ty.rec_strong with
+  | prim p => simp [Ty.substFvar, Ty.freeVars]
+  | bvar i => simp [Ty.substFvar, Ty.freeVars]
+  | fvar n =>
+    simp only [Ty.freeVars, List.mem_singleton] at hτ
+    simp only [Ty.substFvar]
+    by_cases hn : n = Z
+    · simp only [if_pos hn]; exact hU
+    · simp only [if_neg hn, Ty.freeVars, List.mem_singleton]; exact hτ
+  | pair a b iha ihb =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at hτ
+    simp only [Ty.substFvar, Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+    exact ⟨iha hτ.1, ihb hτ.2⟩
+  | arrow a b iha ihb =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at hτ
+    simp only [Ty.substFvar, Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+    exact ⟨iha hτ.1, ihb hτ.2⟩
+  | customTy nm tys ih =>
+    simp only [Ty.freeVars] at hτ
+    simp only [Ty.substFvar, Ty.freeVars, TyList.substFvar_eq_map]
+    rw [TyList.not_mem_freeVars_iff]
+    intro t' ht'
+    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+    exact ih t ht (fun hct => hτ (TyList.mem_freeVars_of_mem ht hct))
+
+/-- A whole substitution keeps `W` fresh when `W` avoids its range and the input. -/
+theorem Subst.not_mem_onTy_freeVars {S : Subst} {W : Nat} {τ : Ty}
+    (hS : ∀ p ∈ S, W ∉ p.2.freeVars) (hτ : W ∉ τ.freeVars) :
+    W ∉ (S.onTy τ).freeVars := by
+  induction S generalizing τ with
+  | nil => simpa using hτ
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    rw [show ((Z, U) :: S') = [(Z, U)] ++ S' from rfl, Subst.onTy_append]
+    refine ih (fun p hp => hS p (List.mem_cons_of_mem _ hp)) ?_
+    exact Ty.not_mem_freeVars_substFvar hτ (hS (Z, U) List.mem_cons_self)
