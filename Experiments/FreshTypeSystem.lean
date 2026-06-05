@@ -6672,3 +6672,116 @@ theorem Infer.complete_app {f arg : Expr}
   intro Φ ctx S₀ τ₀ hwf hbelow hS₀ hty
   cases hty with
   | app hf harg => exact Infer.complete_app_aux ihf iharg hwf hbelow hS₀ hf harg
+
+
+/-! ### Scheme weakening (for the `letIn` principality case)
+
+The algorithm generalises the rhs's principal type with `genScheme`, the
+*maximal* generalisation; the declarative scheme `M` is less general. Giving the
+let-bound variable a more general scheme preserves typing: every instance the
+body used is still available. -/
+
+/-- `M'` is at least as general as `M`: every instantiation of `M` is also an
+    instantiation of `M'`. -/
+def PolyTy.Generalizes (M' M : PolyTy) : Prop :=
+  ∀ tyArgs ty, (∀ t ∈ tyArgs, t.IsLC) → InstantiatesBy tyArgs M.body ty →
+    ∃ tyArgs', (∀ t ∈ tyArgs', t.IsLC) ∧ InstantiatesBy tyArgs' M'.body ty
+
+/-- Replacing a context scheme `M` by a more general `M'` preserves typing. -/
+theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : PolyTy}
+    {e : Expr} {τ : Ty}
+    (hgen : M'.Generalizes M)
+    (h : TypeOfHM ⟨env_post ++ [M] ++ env, ctors⟩ e τ) :
+    TypeOfHM ⟨env_post ++ [M'] ++ env, ctors⟩ e τ := by
+  induction e using Expr.rec_strong generalizing env_post τ with
+  | primLit p =>
+    cases h <;> constructor
+  | pair a b ih_a ih_b =>
+    cases h with
+    | pair ha hb => exact .pair (ih_a ha) (ih_b hb)
+  | app f inp ih_f ih_i =>
+    cases h with
+    | app hf hi => exact .app (ih_f hf) (ih_i hi)
+  | lambda body ih =>
+    cases h with
+    | lambda hpc heq hbody =>
+      subst heq
+      refine TypeOfHM.lambda hpc rfl ?_
+      exact ih (env_post := PolyTy.mkTrivial _ :: env_post) hbody
+  | letIn be body ih_be ih_body =>
+    cases h with
+    | letIn hsch hcofin heq hbody =>
+      subst heq
+      refine TypeOfHM.letIn hsch (fun Xs hfresh => ih_be (hcofin Xs hfresh)) rfl ?_
+      exact ih_body (env_post := _ :: env_post) hbody
+  | letPairIn pe body ih_pe ih_body =>
+    cases h with
+    | letPairIn hschf hschs harity hcofin heq hbody =>
+      subst heq
+      refine TypeOfHM.letPairIn hschf hschs harity
+        (fun Xs hfresh => ih_pe (hcofin Xs hfresh)) rfl ?_
+      exact ih_body (env_post := _ :: _ :: env_post) hbody
+  | ctor name =>
+    cases h with
+    | ctor hlook htyargs hinst => exact .ctor hlook htyargs hinst
+  | var i =>
+    cases h with
+    | var hlook htyargs hinst =>
+      rcases lt_trichotomy i env_post.length with hlt | heq | hgt
+      · -- i < env_post.length: lookup falls in env_post (unchanged)
+        refine TypeOfHM.var ?_ htyargs hinst
+        show (env_post ++ [M'] ++ env)[i]? = _
+        rw [List.append_assoc, List.getElem?_append_left hlt]
+        rw [List.append_assoc, List.getElem?_append_left hlt] at hlook
+        exact hlook
+      · -- i = env_post.length: the M slot, use hgen
+        subst heq
+        rw [List.append_assoc, List.getElem?_append_right (Nat.le_refl _),
+            Nat.sub_self] at hlook
+        simp only [List.singleton_append, List.getElem?_cons_zero,
+          Option.some.injEq] at hlook
+        subst hlook
+        obtain ⟨tyArgs', htyargs', hinst'⟩ := hgen _ _ htyargs hinst
+        refine TypeOfHM.var ?_ htyargs' hinst'
+        show (env_post ++ [M'] ++ env)[env_post.length]? = _
+        rw [List.append_assoc, List.getElem?_append_right (Nat.le_refl _),
+            Nat.sub_self]
+        simp only [List.singleton_append, List.getElem?_cons_zero]
+      · -- i > env_post.length: lookup falls in env (unchanged); slot length is 1
+        refine TypeOfHM.var ?_ htyargs hinst
+        show (env_post ++ [M'] ++ env)[i]? = _
+        have hle : env_post.length ≤ i := by omega
+        rw [List.append_assoc, List.getElem?_append_right hle] at hlook
+        rw [List.append_assoc, List.getElem?_append_right hle]
+        rw [show ([M] ++ env) = M :: env from rfl] at hlook
+        rw [show ([M'] ++ env) = M' :: env from rfl]
+        rw [show (i - env_post.length) = (i - env_post.length - 1) + 1 from by omega]
+            at hlook ⊢
+        simp only [List.getElem?_cons_succ] at hlook ⊢
+        exact hlook
+  | match_ scrut branches ih_scrut ih_branches =>
+    cases h with
+    | match_ h_scrut h_ne h_brs =>
+      refine TypeOfHM.match_ (ih_scrut h_scrut) h_ne ?_
+      intro branch h_mem
+      obtain ⟨pat, body⟩ := branch
+      have h_branch := h_brs (pat, body) h_mem
+      cases h_branch with
+      | mk h_lookup h_tyName h_paramCount h_contents h_inst h_pb h_ctx h_body =>
+        subst h_ctx
+        subst h_pb
+        expose_names
+        rw [show (instContents.map PolyTy.mkTrivial ++ (env_post ++ [M] ++ env))
+              = (instContents.map PolyTy.mkTrivial ++ env_post) ++ [M] ++ env
+              by rw [List.append_assoc, List.append_assoc, List.append_assoc]]
+          at h_body
+        have ih_body :=
+          ih_branches pat body h_mem
+            (env_post := instContents.map PolyTy.mkTrivial ++ env_post)
+            h_body
+        rw [show (instContents.map PolyTy.mkTrivial ++ env_post) ++ [M'] ++ env
+              = instContents.map PolyTy.mkTrivial ++ (env_post ++ [M'] ++ env)
+              by rw [List.append_assoc, List.append_assoc, List.append_assoc]]
+          at ih_body
+        exact TypeOfMatchBranch.mk h_lookup h_tyName h_paramCount h_contents
+          h_inst rfl rfl ih_body
