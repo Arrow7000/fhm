@@ -6254,3 +6254,102 @@ theorem UnifyRelList.greatest_lc : {ts₁ ts₂ : List Ty} → {S : Subst} →
     obtain ⟨R₂, hR₂, hR₂lc⟩ := UnifyRelList.greatest_lc ht R₁ hR₁lc hlist
     exact ⟨R₂, fun τ => by rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ], hR₂lc⟩
 end
+
+/-! A structural size on types (own measure; cleaner than `sizeOf` for the
+    unification termination argument). -/
+mutual
+def Ty.size : Ty → Nat
+  | .prim _ => 1
+  | .bvar _ => 1
+  | .fvar _ => 1
+  | .pair a b => 1 + a.size + b.size
+  | .arrow a b => 1 + a.size + b.size
+  | .customTy _ tys => 1 + TyList.size tys
+def TyList.size : List Ty → Nat
+  | [] => 0
+  | hd :: tl => hd.size + TyList.size tl
+end
+
+theorem TyList.size_mem_le {t : Ty} {tys : List Ty} (h : t ∈ tys) :
+    t.size ≤ TyList.size tys := by
+  induction tys with
+  | nil => exact absurd h List.not_mem_nil
+  | cons hd tl ih =>
+    rcases List.mem_cons.mp h with rfl | h
+    · simp only [TyList.size]; omega
+    · have := ih h; simp only [TyList.size]; omega
+
+@[simp] theorem Ty.size_pos : ∀ {τ : Ty}, 0 < τ.size
+  | .prim _ => by simp only [Ty.size]; omega
+  | .bvar _ => by simp only [Ty.size]; omega
+  | .fvar _ => by simp only [Ty.size]; omega
+  | .pair _ _ => by simp only [Ty.size]; omega
+  | .arrow _ _ => by simp only [Ty.size]; omega
+  | .customTy _ _ => by simp only [Ty.size]; omega
+
+/-- Occurs-check via size: applying any substitution, a variable's image is no
+    bigger than the image of any type containing it. -/
+theorem Ty.size_onTy_fvar_le {S : Subst} {n : Nat} :
+    ∀ {b : Ty}, n ∈ b.freeVars → (S.onTy (.fvar n)).size ≤ (S.onTy b).size := by
+  intro b
+  induction b using Ty.rec_strong with
+  | prim p => simp [Ty.freeVars]
+  | bvar i => simp [Ty.freeVars]
+  | fvar m => intro h; simp only [Ty.freeVars, List.mem_singleton] at h; subst h; exact le_refl _
+  | pair a b iha ihb =>
+    intro h
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at h
+    simp only [Subst.onTy_pair, Ty.size]
+    rcases h with h | h
+    · have := iha h; omega
+    · have := ihb h; omega
+  | arrow a b iha ihb =>
+    intro h
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at h
+    simp only [Subst.onTy_arrow, Ty.size]
+    rcases h with h | h
+    · have := iha h; omega
+    · have := ihb h; omega
+  | customTy nm tys ih =>
+    intro h
+    simp only [Ty.freeVars] at h
+    simp only [Subst.onTy_customTy, Ty.size]
+    obtain ⟨t, ht, hnt⟩ : ∃ t ∈ tys, n ∈ t.freeVars := by
+      by_contra hc; push_neg at hc
+      exact (TyList.not_mem_freeVars_iff.mpr hc) h
+    have h1 := ih t ht hnt
+    have h2 : (S.onTy t).size ≤ TyList.size (tys.map S.onTy) :=
+      TyList.size_mem_le (List.mem_map.mpr ⟨t, ht, rfl⟩)
+    omega
+
+/-- The strict occurs-check: a variable's image is strictly smaller than the
+    image of a *compound* type containing it. -/
+theorem Ty.size_onTy_fvar_lt {S : Subst} {n : Nat} {b : Ty}
+    (hmem : n ∈ b.freeVars) (hne : b ≠ .fvar n) :
+    (S.onTy (.fvar n)).size < (S.onTy b).size := by
+  cases b with
+  | prim p => simp [Ty.freeVars] at hmem
+  | bvar i => simp [Ty.freeVars] at hmem
+  | fvar m => simp only [Ty.freeVars, List.mem_singleton] at hmem; subst hmem; exact absurd rfl hne
+  | pair a b =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hmem
+    simp only [Subst.onTy_pair, Ty.size]
+    rcases hmem with h | h
+    · have := Ty.size_onTy_fvar_le (S := S) (n := n) h; have := @Ty.size_pos (S.onTy b); omega
+    · have := Ty.size_onTy_fvar_le (S := S) (n := n) h; have := @Ty.size_pos (S.onTy a); omega
+  | arrow a b =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hmem
+    simp only [Subst.onTy_arrow, Ty.size]
+    rcases hmem with h | h
+    · have := Ty.size_onTy_fvar_le (S := S) (n := n) h; have := @Ty.size_pos (S.onTy b); omega
+    · have := Ty.size_onTy_fvar_le (S := S) (n := n) h; have := @Ty.size_pos (S.onTy a); omega
+  | customTy nm tys =>
+    simp only [Ty.freeVars] at hmem
+    simp only [Subst.onTy_customTy, Ty.size]
+    obtain ⟨t, ht, hnt⟩ : ∃ t ∈ tys, n ∈ t.freeVars := by
+      by_contra hc; push_neg at hc
+      exact (TyList.not_mem_freeVars_iff.mpr hc) hmem
+    have h1 := Ty.size_onTy_fvar_le (S := S) (n := n) hnt
+    have h2 : (S.onTy t).size ≤ TyList.size (tys.map S.onTy) :=
+      TyList.size_mem_le (List.mem_map.mpr ⟨t, ht, rfl⟩)
+    omega
