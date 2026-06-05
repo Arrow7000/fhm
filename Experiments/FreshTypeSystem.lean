@@ -4539,3 +4539,34 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     rcases hp with hp | hp
     · exact hrhs_s p hp
     · exact hbody_s p hp
+
+private theorem List.forall₂_self_map {α β} {R : α → β → Prop} {f : α → β} :
+    ∀ {l : List α}, (∀ x ∈ l, R x (f x)) → List.Forall₂ R l (l.map f)
+  | [], _ => .nil
+  | _ :: _, h =>
+    .cons (h _ (List.mem_cons_self ..))
+      (List.forall₂_self_map (fun x hx => h x (List.mem_cons_of_mem _ hx)))
+
+/-- Opening a scheme body (bvars `< Xs.length`) with fresh *names* is an
+    instantiation by those names-as-`fvar`s. Bridges the `var` rule: the
+    algorithm's `openVars` result is what the declarative `var` rule's
+    `InstantiatesBy` premise demands. -/
+theorem InstantiatesBy.openVars {Xs : List Nat} {n : Nat} {ty : Ty}
+    (hty : ContainsBvarsUpTo n ty) (hn : n ≤ Xs.length) :
+    InstantiatesBy (Xs.map (Ty.fvar ·)) ty (ty.openVars Xs) := by
+  induction ty using Ty.rec_strong with
+  | prim p => exact .prim
+  | fvar m => exact .fvar
+  | bvar i =>
+    cases hty with
+    | bvar hlt =>
+      have hi : i < Xs.length := by omega
+      simp only [Ty.openVars, Ty.instantiate, List.getElem?_eq_getElem hi, Option.elim_some]
+      exact .bvar (by simp [List.getElem?_map, List.getElem?_eq_getElem hi])
+  | pair a b iha ihb => cases hty with | pair ha hb => exact .pair (iha ha) (ihb hb)
+  | arrow a b iha ihb => cases hty with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | customTy nm tys ih =>
+    cases hty with
+    | customTy hball =>
+      simp only [Ty.openVars, Ty.instantiate, TyList.instantiate_eq_map]
+      exact .customTy (List.forall₂_self_map (fun t ht => ih t ht (hball t ht)))
