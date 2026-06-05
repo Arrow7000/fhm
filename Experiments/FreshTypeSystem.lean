@@ -5259,3 +5259,239 @@ theorem Infer.complete_pair {a b : Expr}
       refine congrArg₂ Ty.pair ?_ htyb
       rw [htya, ← Subst.onTy_append]
       exact Subst.onTy_congr hagb hbelowτa
+
+
+/-! ### Injective renaming of free type variables (principality binder cases)
+
+The list-substitution residual hits an obstruction at fresh binders: a clean
+override of `S₀` mapping the fresh var to the declarative type is unrealisable as
+a `List` once the fresh var occurs in `S₀`'s range (or the declarative
+instantiation types). We dodge it by α-renaming the declarative derivation with a
+*swap* `Φ ↔ W` (`W` fresh) so the clash disappears, then mapping the residual
+back. `Ty.rename` applies a variable relabelling; the swap is realised as the
+3-element list `swapSubst` (with a fresh intermediate `c`) so the existing
+`TypeOfHM.onSubst` carries the renaming through the derivation. -/
+
+mutual
+/-- Relabel every free type variable by `f`. An α-renaming when `f` is injective. -/
+def Ty.rename (f : Nat → Nat) : Ty → Ty
+  | .prim p          => .prim p
+  | .pair a b        => .pair (a.rename f) (b.rename f)
+  | .arrow a b       => .arrow (a.rename f) (b.rename f)
+  | .bvar i          => .bvar i
+  | .fvar n          => .fvar (f n)
+  | .customTy nm tys => .customTy nm (TyList.rename f tys)
+
+private def TyList.rename (f : Nat → Nat) : List Ty → List Ty
+  | []       => []
+  | hd :: tl => hd.rename f :: TyList.rename f tl
+end
+
+theorem TyList.rename_eq_map (f : Nat → Nat) (tys : List Ty) :
+    TyList.rename f tys = tys.map (Ty.rename f) := by
+  induction tys with
+  | nil => rfl
+  | cons hd tl ih => simp only [TyList.rename, List.map_cons, ih]
+
+@[simp] theorem Ty.rename_prim {f : Nat → Nat} {p : PrimTy} :
+    Ty.rename f (.prim p) = .prim p := rfl
+@[simp] theorem Ty.rename_bvar {f : Nat → Nat} {i : Nat} :
+    Ty.rename f (.bvar i) = .bvar i := rfl
+@[simp] theorem Ty.rename_fvar {f : Nat → Nat} {n : Nat} :
+    Ty.rename f (.fvar n) = .fvar (f n) := rfl
+@[simp] theorem Ty.rename_pair {f : Nat → Nat} {a b : Ty} :
+    Ty.rename f (.pair a b) = .pair (Ty.rename f a) (Ty.rename f b) := rfl
+@[simp] theorem Ty.rename_arrow {f : Nat → Nat} {a b : Ty} :
+    Ty.rename f (.arrow a b) = .arrow (Ty.rename f a) (Ty.rename f b) := rfl
+@[simp] theorem Ty.rename_customTy {f : Nat → Nat} {nm : TyName} {tys : List Ty} :
+    Ty.rename f (.customTy nm tys) = .customTy nm (tys.map (Ty.rename f)) := by
+  simp [Ty.rename, TyList.rename_eq_map]
+
+/-- Renaming composes. -/
+theorem Ty.rename_comp (f g : Nat → Nat) (τ : Ty) :
+    Ty.rename g (Ty.rename f τ) = Ty.rename (g ∘ f) τ := by
+  induction τ using Ty.rec_strong with
+  | prim p => rfl
+  | pair a b iha ihb => simp only [Ty.rename_pair, iha, ihb]
+  | arrow a b iha ihb => simp only [Ty.rename_arrow, iha, ihb]
+  | bvar i => rfl
+  | fvar n => rfl
+  | customTy nm tys ih =>
+    simp only [Ty.rename_customTy, List.map_map, Ty.customTy.injEq, true_and]
+    apply List.map_congr_left
+    intro t ht
+    exact ih t ht
+
+/-- Renaming by a function that fixes `τ`'s free vars is the identity. -/
+theorem Ty.rename_eq_self {f : Nat → Nat} {τ : Ty}
+    (h : ∀ v ∈ τ.freeVars, f v = v) : Ty.rename f τ = τ := by
+  induction τ using Ty.rec_strong with
+  | prim _ => rfl
+  | pair a b ih_a ih_b =>
+    simp only [Ty.rename_pair, Ty.pair.injEq]
+    refine ⟨ih_a (fun v hv => h v ?_), ih_b (fun v hv => h v ?_)⟩
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl hv
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr hv
+  | arrow a b ih_a ih_b =>
+    simp only [Ty.rename_arrow, Ty.arrow.injEq]
+    refine ⟨ih_a (fun v hv => h v ?_), ih_b (fun v hv => h v ?_)⟩
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl hv
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr hv
+  | bvar _ => rfl
+  | fvar n =>
+    have hn := h n (by simp [Ty.freeVars])
+    simp only [Ty.rename_fvar, hn]
+  | customTy nm tys ih =>
+    simp only [Ty.rename_customTy, Ty.customTy.injEq, true_and]
+    conv_rhs => rw [← List.map_id tys]
+    apply List.map_congr_left
+    intro t ht
+    exact ih t ht (fun v hv => h v (TyList.mem_freeVars_of_mem ht hv))
+
+/-- Renaming preserves the bvar bound (it only touches `fvar`s). -/
+theorem Ty.rename_containsBvars {f : Nat → Nat} {n : Nat} {τ : Ty}
+    (h : ContainsBvarsUpTo n τ) : ContainsBvarsUpTo n (Ty.rename f τ) := by
+  induction τ using Ty.rec_strong with
+  | prim p => exact .prim
+  | bvar i => cases h with | bvar hlt => exact .bvar hlt
+  | fvar m => exact .fvar
+  | pair a b iha ihb => cases h with | pair ha hb => exact .pair (iha ha) (ihb hb)
+  | arrow a b iha ihb => cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | customTy nm tys ih =>
+    cases h with
+    | customTy hall =>
+      simp only [Ty.rename_customTy]
+      apply ContainsBvarsUpTo.customTy
+      intro t ht
+      obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+      exact ih t0 ht0 (hall t0 ht0)
+
+/-- Renaming preserves local-closedness. -/
+theorem Ty.rename_isLC {f : Nat → Nat} {τ : Ty} (h : τ.IsLC) :
+    (Ty.rename f τ).IsLC := Ty.rename_containsBvars h
+
+/-- Renaming by an injective `f` commutes with single-var substitution. -/
+theorem Ty.rename_substFvar {f : Nat → Nat} (hf : Function.Injective f)
+    (z : Nat) (u t : Ty) :
+    Ty.rename f (Ty.substFvar z u t)
+      = Ty.substFvar (f z) (Ty.rename f u) (Ty.rename f t) := by
+  induction t using Ty.rec_strong with
+  | prim p => rfl
+  | pair a b iha ihb => simp only [Ty.substFvar, Ty.rename_pair, iha, ihb]
+  | arrow a b iha ihb => simp only [Ty.substFvar, Ty.rename_arrow, iha, ihb]
+  | bvar i => rfl
+  | fvar m =>
+    simp only [Ty.substFvar, Ty.rename_fvar]
+    by_cases hm : m = z
+    · rw [if_pos hm, if_pos (congrArg f hm)]
+    · rw [if_neg hm, if_neg (fun heq => hm (hf heq)), Ty.rename_fvar]
+  | customTy nm tys ih =>
+    simp only [Ty.substFvar, TyList.substFvar_eq_map, Ty.rename_customTy, List.map_map,
+               Ty.customTy.injEq, true_and]
+    apply List.map_congr_left
+    intro t0 ht0
+    exact ih t0 ht0
+
+/-- Renaming commutes with opening (the opened names get renamed too). -/
+theorem Ty.rename_openVars {f : Nat → Nat} {Xs : List Nat} {t : Ty} :
+    Ty.rename f (Ty.openVars Xs t) = Ty.openVars (Xs.map f) (Ty.rename f t) := by
+  induction t using Ty.rec_strong with
+  | prim p => rfl
+  | pair a b iha ihb => simp only [Ty.openVars_pair, Ty.rename_pair, iha, ihb]
+  | arrow a b iha ihb => simp only [Ty.openVars_arrow, Ty.rename_arrow, iha, ihb]
+  | fvar n => rfl
+  | bvar i =>
+    simp only [Ty.openVars, Ty.instantiate, Ty.rename_bvar, List.getElem?_map]
+    cases h : Xs[i]? with
+    | none => rfl
+    | some x => rfl
+  | customTy nm tys ih =>
+    simp only [Ty.openVars_customTy, Ty.rename_customTy, List.map_map,
+               Ty.customTy.injEq, true_and]
+    apply List.map_congr_left
+    intro t0 ht0
+    exact ih t0 ht0
+
+/-- Swap two naturals. -/
+def swapNat (a b n : Nat) : Nat := if n = a then b else if n = b then a else n
+
+@[simp] theorem swapNat_left (a b : Nat) : swapNat a b a = b := by simp [swapNat]
+theorem swapNat_right (a b : Nat) : swapNat a b b = a := by
+  simp only [swapNat]; split <;> simp_all
+theorem swapNat_other {a b n : Nat} (ha : n ≠ a) (hb : n ≠ b) : swapNat a b n = n := by
+  simp [swapNat, ha, hb]
+theorem swapNat_involutive (a b n : Nat) : swapNat a b (swapNat a b n) = n := by
+  by_cases hna : n = a
+  · subst hna; rw [swapNat_left, swapNat_right]
+  · by_cases hnb : n = b
+    · subst hnb; rw [swapNat_right, swapNat_left]
+    · rw [swapNat_other hna hnb, swapNat_other hna hnb]
+theorem swapNat_injective (a b : Nat) : Function.Injective (swapNat a b) :=
+  Function.Involutive.injective (swapNat_involutive a b)
+
+/-- Conjugate a substitution by a renaming: relabel both keys and values. -/
+def Subst.conj (f : Nat → Nat) (S : Subst) : Subst :=
+  S.map (fun p => (f p.1, Ty.rename f p.2))
+
+/-- Conjugation preserves LC of the replacement types. -/
+theorem Subst.conj_lc {f : Nat → Nat} {S : Subst} (hS : ∀ p ∈ S, p.2.IsLC) :
+    ∀ p ∈ Subst.conj f S, p.2.IsLC := by
+  intro p hp
+  simp only [Subst.conj, List.mem_map] at hp
+  obtain ⟨p0, hp0, rfl⟩ := hp
+  exact Ty.rename_isLC (hS p0 hp0)
+
+/-- The defining property of conjugation: it intertwines `onTy` with the
+    renaming (for injective `f`). -/
+theorem Subst.onTy_conj {f : Nat → Nat} (hf : Function.Injective f) (S : Subst) (τ : Ty) :
+    (Subst.conj f S).onTy (Ty.rename f τ) = Ty.rename f (S.onTy τ) := by
+  induction S generalizing τ with
+  | nil => simp only [Subst.conj, List.map_nil, Subst.onTy_nil]
+  | cons hd S' ih =>
+    obtain ⟨z, u⟩ := hd
+    show Subst.onTy (Subst.conj f S') (Ty.substFvar (f z) (Ty.rename f u) (Ty.rename f τ))
+        = Ty.rename f (Subst.onTy S' (Ty.substFvar z u τ))
+    rw [← Ty.rename_substFvar hf, ih]
+
+/-- The 3-element list realising the swap `a ↔ b` (with a fresh intermediate `c`),
+    usable with `TypeOfHM.onSubst`. -/
+def swapSubst (a b c : Nat) : Subst := [(a, .fvar c), (b, .fvar a), (c, .fvar b)]
+
+theorem swapSubst_lc (a b c : Nat) : ∀ p ∈ swapSubst a b c, p.2.IsLC := by
+  intro p hp
+  simp only [swapSubst, List.mem_cons, List.not_mem_nil, or_false] at hp
+  obtain rfl | rfl | rfl := hp <;> exact ContainsBvarsUpTo.fvar
+
+/-- The swap list acts as `rename (swapNat a b)` on types avoiding the fresh `c`. -/
+theorem swapSubst_onTy {a b c : Nat} (hab : a ≠ b) (hac : a ≠ c) (hbc : b ≠ c)
+    {τ : Ty} (hc : c ∉ τ.freeVars) :
+    (swapSubst a b c).onTy τ = Ty.rename (swapNat a b) τ := by
+  induction τ using Ty.rec_strong with
+  | prim p => simp only [Subst.onTy_prim, Ty.rename_prim]
+  | bvar i => simp only [Subst.onTy_bvar, Ty.rename_bvar]
+  | pair a' b' iha ihb =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at hc
+    simp only [Subst.onTy_pair, Ty.rename_pair]
+    exact congrArg₂ Ty.pair (iha hc.1) (ihb hc.2)
+  | arrow a' b' iha ihb =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at hc
+    simp only [Subst.onTy_arrow, Ty.rename_arrow]
+    exact congrArg₂ Ty.arrow (iha hc.1) (ihb hc.2)
+  | fvar n =>
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    have hnc : n ≠ c := fun h => hc h.symm
+    by_cases hna : n = a
+    · subst hna
+      simp [swapSubst, Subst.onTy, Ty.substFvars, Ty.substFvar, hbc.symm]
+    · by_cases hnb : n = b
+      · subst hnb
+        simp [swapSubst, Subst.onTy, Ty.substFvars, Ty.substFvar, swapNat_right,
+              hab.symm, hac]
+      · simp [swapSubst, Subst.onTy, Ty.substFvars, Ty.substFvar,
+              swapNat_other hna hnb, hna, hnb, hnc]
+  | customTy nm tys ih =>
+    simp only [Ty.freeVars] at hc
+    simp only [Subst.onTy_customTy, Ty.rename_customTy, Ty.customTy.injEq, true_and]
+    apply List.map_congr_left
+    intro t ht
+    exact ih t ht (fun hct => hc (TyList.mem_freeVars_of_mem ht hct))
