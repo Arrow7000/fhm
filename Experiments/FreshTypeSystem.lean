@@ -6785,3 +6785,209 @@ theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : Po
           at ih_body
         exact TypeOfMatchBranch.mk h_lookup h_tyName h_paramCount h_contents
           h_inst rfl rfl ih_body
+
+
+/-! ### Generalisation/substitution commutation lemmas (for `letIn` principality) -/
+
+/-! Structural simp lemmas for `openWith` (the analogues for `openVars` already
+    exist above, but `openWith` lacks them). -/
+@[simp] private theorem Ty.openWith_prim {Vs : List Ty} {p : PrimTy} :
+    Ty.openWith Vs (.prim p) = .prim p := rfl
+@[simp] private theorem Ty.openWith_fvar {Vs : List Ty} {n : Nat} :
+    Ty.openWith Vs (.fvar n) = .fvar n := rfl
+@[simp] private theorem Ty.openWith_pair {Vs : List Ty} {a b : Ty} :
+    Ty.openWith Vs (.pair a b) = .pair (Ty.openWith Vs a) (Ty.openWith Vs b) := rfl
+@[simp] private theorem Ty.openWith_arrow {Vs : List Ty} {a b : Ty} :
+    Ty.openWith Vs (.arrow a b) = .arrow (Ty.openWith Vs a) (Ty.openWith Vs b) := rfl
+@[simp] private theorem Ty.openWith_customTy {Vs : List Ty} {nm : TyName} {tys : List Ty} :
+    Ty.openWith Vs (.customTy nm tys) = .customTy nm (tys.map (Ty.openWith Vs)) := by
+  unfold Ty.openWith
+  simp only [Ty.instantiate, TyList.instantiate_eq_map]
+
+/-- For a nodup list, `idxOf?` of the element at index `i` is `some i`. -/
+private theorem List.idxOf?_getElem_self {α : Type*} [BEq α] [LawfulBEq α]
+    {l : List α} (hnd : l.Nodup) {i : Nat} (hi : i < l.length) :
+    l.idxOf? l[i] = some i := by
+  induction l generalizing i with
+  | nil => simp at hi
+  | cons x xs ih =>
+    rw [List.nodup_cons] at hnd
+    cases i with
+    | zero => simp [List.idxOf?_cons]
+    | succ j =>
+      have hj : j < xs.length := by simpa using hi
+      have hmem : xs[j] ∈ xs := List.getElem_mem hj
+      have hxne : (x == xs[j]) = false := by
+        simp only [beq_eq_false_iff_ne, ne_eq]
+        intro h; exact hnd.1 (h ▸ hmem)
+      rw [List.getElem_cons_succ, List.idxOf?_cons, hxne]
+      simp [ih hnd.2 hj]
+
+/-- Applying an LC substitution commutes with bvar-instantiation. -/
+theorem Subst.onTy_instantiate {S : Subst} (hS : ∀ p ∈ S, p.2.IsLC) (σ : Nat → Ty) (X : Ty) :
+    S.onTy (Ty.instantiate σ X) = Ty.instantiate (fun i => S.onTy (σ i)) (S.onTy X) := by
+  induction X using Ty.rec_strong with
+  | prim p => simp only [Ty.instantiate, Subst.onTy_prim]
+  | bvar i => simp only [Ty.instantiate, Subst.onTy_bvar]
+  | fvar n =>
+    simp only [Ty.instantiate]
+    rw [Ty.instantiate_eq_self_of_lc (Subst.onTy_lc hS ContainsBvarsUpTo.fvar)]
+  | pair a b iha ihb => simp only [Ty.instantiate, Subst.onTy_pair, iha, ihb]
+  | arrow a b iha ihb => simp only [Ty.instantiate, Subst.onTy_arrow, iha, ihb]
+  | customTy nm tys ih =>
+    simp only [Ty.instantiate, TyList.instantiate_eq_map, Subst.onTy_customTy, List.map_map]
+    apply congrArg (Ty.customTy nm)
+    apply List.map_congr_left
+    intro t ht
+    simp only [Function.comp_apply]
+    exact ih t ht
+
+/-- `onTy` (LC) commutes with `openWith`. -/
+theorem Subst.onTy_openWith {S : Subst} (hS : ∀ p ∈ S, p.2.IsLC) (Vs : List Ty) (X : Ty) :
+    S.onTy (Ty.openWith Vs X) = Ty.openWith (Vs.map S.onTy) (S.onTy X) := by
+  unfold Ty.openWith
+  rw [Subst.onTy_instantiate hS]
+  have hfun : (fun i => S.onTy ((Vs[i]?).getD (.bvar i)))
+      = (fun i => ((Vs.map S.onTy)[i]?).getD (.bvar i)) := by
+    funext i
+    rw [List.getElem?_map]
+    cases Vs[i]? with
+    | none => simp
+    | some t => simp
+  rw [hfun]
+
+/-- Open-then-close round-trip: closing the just-opened fresh names recovers the
+    scheme body. (Converse of `Ty.openVars_closeOver_self`.) -/
+theorem Ty.closeOver_openVars_self {Xs : List Nat} {ty : Ty}
+    (hnodup : Xs.Nodup) (hbv : ContainsBvarsUpTo Xs.length ty)
+    (hfresh : ∀ x ∈ Xs, x ∉ ty.freeVars) :
+    Ty.closeOver Xs (Ty.openVars Xs ty) = ty := by
+  induction ty using Ty.rec_strong with
+  | prim p => rfl
+  | bvar i =>
+    cases hbv with
+    | bvar hlt =>
+      simp only [Ty.openVars, Ty.instantiate, List.getElem?_eq_getElem hlt, Option.elim_some]
+      rw [Ty.closeOver.eq_6, List.idxOf?_getElem_self hnodup hlt]
+  | fvar n =>
+    have hn : n ∉ Xs := fun h => hfresh n h (by simp [Ty.freeVars])
+    simp only [Ty.openVars, Ty.instantiate]
+    rw [Ty.closeOver.eq_6, List.idxOf?_eq_none_iff.mpr hn]
+  | pair a b iha ihb =>
+    cases hbv with
+    | pair hba hbb =>
+      have hfa : ∀ x ∈ Xs, x ∉ a.freeVars := fun x hx hc =>
+        hfresh x hx (List.mem_dedup.mpr (List.mem_append.mpr (Or.inl hc)))
+      have hfb : ∀ x ∈ Xs, x ∉ b.freeVars := fun x hx hc =>
+        hfresh x hx (List.mem_dedup.mpr (List.mem_append.mpr (Or.inr hc)))
+      simp only [Ty.openVars_pair, Ty.closeOver, iha hba hfa, ihb hbb hfb]
+  | arrow a b iha ihb =>
+    cases hbv with
+    | arrow hba hbb =>
+      have hfa : ∀ x ∈ Xs, x ∉ a.freeVars := fun x hx hc =>
+        hfresh x hx (List.mem_dedup.mpr (List.mem_append.mpr (Or.inl hc)))
+      have hfb : ∀ x ∈ Xs, x ∉ b.freeVars := fun x hx hc =>
+        hfresh x hx (List.mem_dedup.mpr (List.mem_append.mpr (Or.inr hc)))
+      simp only [Ty.openVars_arrow, Ty.closeOver, iha hba hfa, ihb hbb hfb]
+  | customTy nm tys ih =>
+    cases hbv with
+    | customTy hball =>
+      simp only [Ty.openVars_customTy, Ty.closeOver, TyList.closeOver_eq_map, List.map_map]
+      apply congrArg (Ty.customTy nm)
+      conv_rhs => rw [← List.map_id tys]
+      apply List.map_congr_left
+      intro t ht
+      exact ih t ht (hball t ht)
+        (fun x hx hc => hfresh x hx (TyList.mem_freeVars_of_mem ht hc))
+
+/-- Closing names fresh for `X` commutes into an `openWith`. -/
+theorem Ty.closeOver_openWith_comm {Xs : List Nat} {Vs : List Ty} {X : Ty}
+    (hfresh : ∀ x ∈ Xs, x ∉ X.freeVars) :
+    Ty.closeOver Xs (Ty.openWith Vs X) = Ty.openWith (Vs.map (Ty.closeOver Xs)) X := by
+  induction X using Ty.rec_strong with
+  | prim p => rfl
+  | bvar i =>
+    simp only [Ty.openWith, Ty.instantiate]
+    rw [List.getElem?_map]
+    cases Vs[i]? with
+    | none => simp [Ty.closeOver]
+    | some t => simp
+  | fvar n =>
+    have hn : n ∉ Xs := fun h => hfresh n h (by simp [Ty.freeVars])
+    simp only [Ty.openWith_fvar]
+    rw [Ty.closeOver.eq_6, List.idxOf?_eq_none_iff.mpr hn]
+  | pair a b iha ihb =>
+    have hfa : ∀ x ∈ Xs, x ∉ a.freeVars := fun x hx hc =>
+      hfresh x hx (List.mem_dedup.mpr (List.mem_append.mpr (Or.inl hc)))
+    have hfb : ∀ x ∈ Xs, x ∉ b.freeVars := fun x hx hc =>
+      hfresh x hx (List.mem_dedup.mpr (List.mem_append.mpr (Or.inr hc)))
+    simp only [Ty.openWith_pair, Ty.closeOver, iha hfa, ihb hfb]
+  | arrow a b iha ihb =>
+    have hfa : ∀ x ∈ Xs, x ∉ a.freeVars := fun x hx hc =>
+      hfresh x hx (List.mem_dedup.mpr (List.mem_append.mpr (Or.inl hc)))
+    have hfb : ∀ x ∈ Xs, x ∉ b.freeVars := fun x hx hc =>
+      hfresh x hx (List.mem_dedup.mpr (List.mem_append.mpr (Or.inr hc)))
+    simp only [Ty.openWith_arrow, Ty.closeOver, iha hfa, ihb hfb]
+  | customTy nm tys ih =>
+    simp only [Ty.openWith_customTy, Ty.closeOver, TyList.closeOver_eq_map, List.map_map]
+    apply congrArg (Ty.customTy nm)
+    apply List.map_congr_left
+    intro t ht
+    simp only [Function.comp_apply]
+    exact ih t ht (fun x hx hc => hfresh x hx (TyList.mem_freeVars_of_mem ht hc))
+
+/-- Composition of openings (when `X`'s bvars are covered by the inner args). -/
+theorem Ty.openWith_openWith {Vs Ws : List Ty} {X : Ty}
+    (hbv : ContainsBvarsUpTo Ws.length X) :
+    Ty.openWith Vs (Ty.openWith Ws X) = Ty.openWith (Ws.map (Ty.openWith Vs)) X := by
+  induction X using Ty.rec_strong with
+  | prim p => rfl
+  | fvar n => rfl
+  | bvar i =>
+    cases hbv with
+    | bvar hlt =>
+      have hi : Ws[i]? = some Ws[i] := List.getElem?_eq_getElem hlt
+      have e1 : Ty.openWith Ws (.bvar i) = Ws[i] := by
+        simp only [Ty.openWith, Ty.instantiate, hi, Option.getD_some]
+      have e2 : Ty.openWith (Ws.map (Ty.openWith Vs)) (.bvar i) = Ty.openWith Vs (Ws[i]) := by
+        simp only [Ty.openWith, Ty.instantiate, List.getElem?_map, hi, Option.map_some,
+          Option.getD_some]
+      rw [e1, e2]
+  | pair a b iha ihb =>
+    cases hbv with
+    | pair hba hbb =>
+      simp only [Ty.openWith_pair, iha hba, ihb hbb]
+  | arrow a b iha ihb =>
+    cases hbv with
+    | arrow hba hbb =>
+      simp only [Ty.openWith_arrow, iha hba, ihb hbb]
+  | customTy nm tys ih =>
+    cases hbv with
+    | customTy hball =>
+      simp only [Ty.openWith_customTy, List.map_map]
+      apply congrArg (Ty.customTy nm)
+      apply List.map_congr_left
+      intro t ht
+      simp only [Function.comp_apply]
+      exact ih t ht (hball t ht)
+
+/-- Opening a scheme body with LC args is an instantiation by those args. -/
+theorem InstantiatesBy.openWith {Vs : List Ty} {n : Nat} {ty : Ty}
+    (hbv : ContainsBvarsUpTo n ty) (hn : n ≤ Vs.length) :
+    InstantiatesBy Vs ty (Ty.openWith Vs ty) := by
+  induction ty using Ty.rec_strong with
+  | prim p => exact .prim
+  | fvar m => exact .fvar
+  | bvar i =>
+    cases hbv with
+    | bvar hlt =>
+      have hi : i < Vs.length := by omega
+      simp only [Ty.openWith, Ty.instantiate, List.getElem?_eq_getElem hi, Option.getD_some]
+      exact .bvar (List.getElem?_eq_getElem hi)
+  | pair a b iha ihb => cases hbv with | pair ha hb => exact .pair (iha ha) (ihb hb)
+  | arrow a b iha ihb => cases hbv with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | customTy nm tys ih =>
+    cases hbv with
+    | customTy hball =>
+      simp only [Ty.openWith_customTy]
+      exact .customTy (List.forall₂_self_map (fun t ht => ih t ht (hball t ht)))
