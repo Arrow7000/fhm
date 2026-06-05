@@ -7179,3 +7179,123 @@ theorem genScheme_generalizes {env : Env} {τ₁ : Ty} {R : Subst} {M : PolyTy} 
     have hinstW := InstantiatesBy.openWith hwf (le_of_eq hVs'len.symm)
     rw [hty_final]
     exact hinstW
+
+
+/-! ### Principality, `letIn` case -/
+
+/-- The `letIn` principality core (inverted form, with the declarative scheme `M`
+    and cofinite-fresh-set `L` named). Mirrors `Infer.sound_letIn`'s factoring to
+    sidestep inaccessible binders. The algorithm infers the rhs to `(S₁, τ₁)` and
+    generalizes with the principal `genScheme`; `genScheme_generalizes` shows that
+    scheme weakens the declarative `M`, so the body — declaratively typed under
+    `M` — retypes (`weaken_scheme`) under the algorithm's scheme, ready for the
+    body IH. Assembly then mirrors `complete_pair`. -/
+theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {rhs body : Expr}
+    {M : PolyTy} {L : List Nat} {τ₀ : Ty}
+    (iha : Infer.CompleteAt rhs) (ihb : Infer.CompleteAt body)
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
+    (hMwf : M.WF)
+    (hcofin : ∀ Xs : List Nat, FreshNames L M.paramCount Xs →
+      TypeOfHM (S₀.onCtx ctx) rhs (M.openVars Xs))
+    (hbody : TypeOfHM { (S₀.onCtx ctx) with env := M :: (S₀.onCtx ctx).env } body τ₀) :
+    ∃ Φ' S τ R,
+      Infer Φ ctx (.letIn rhs body) Φ' S τ ∧
+      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      τ₀ = R.onTy τ ∧
+      (∀ p ∈ R, p.2.IsLC) := by
+  -- A fresh opening avoiding `L`, `M.body`, and the (substituted) env.
+  obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
+    exists_fresh_names (L ++ M.body.freeVars ++ (S₀.onCtx ctx).env.freeVars) M.paramCount
+  have hXfreshL : FreshNames L M.paramCount Xs :=
+    ⟨hXlen, hXnodup,
+      fun x hx hc => hXavoid x hx (List.mem_append_left _ (List.mem_append_left _ hc))⟩
+  have hXMbody : ∀ x ∈ Xs, x ∉ M.body.freeVars :=
+    fun x hx hc => hXavoid x hx (List.mem_append_left _ (List.mem_append_right _ hc))
+  have hXenv : ∀ x ∈ Xs, x ∉ (S₀.onCtx ctx).env.freeVars :=
+    fun x hx hc => hXavoid x hx (List.mem_append_right _ hc)
+  -- Apply the rhs IH at the fresh opening.
+  obtain ⟨Φ₁, S₁, τ₁, R₁, hinfa, haga, htya, hR₁⟩ :=
+    iha hwf hbelow hS₀ (hcofin Xs hXfreshL)
+  have hS₁ : ∀ p ∈ S₁, p.2.IsLC := (Infer.lc hinfa hwf).2
+  have hτ₁lc : τ₁.IsLC := (Infer.lc hinfa hwf).1
+  have hle : Φ ≤ Φ₁ := Infer.frontier_le hinfa
+  have hbelowτ₁ : Ty.BelowFvars Φ₁ τ₁ := (Infer.belowFvars hinfa hbelow).1
+  have hbelowS₁ : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 := (Infer.belowFvars hinfa hbelow).2
+  have hwf₁ : CtxWF (S₁.onCtx ctx) := Subst.onCtx_wf hS₁ hwf
+  have hbelow₁ : CtxBelow Φ₁ (S₁.onCtx ctx) := Subst.onCtx_below hbelowS₁ hle hbelow
+  have hctxeq : R₁.onCtx (S₁.onCtx ctx) = S₀.onCtx ctx := by
+    rw [← Subst.onCtx_append]
+    exact Subst.onCtx_congr (fun v hv => (haga v hv).symm) hbelow
+  -- Well-formedness / below-frontier for the algorithm's body context.
+  have hwfBody : CtxWF { (S₁.onCtx ctx) with
+      env := genScheme (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env } := by
+    intro N hN
+    rcases List.mem_cons.mp hN with rfl | hN
+    · exact genScheme_wf hτ₁lc
+    · exact hwf₁ N hN
+  have hbelowBody : CtxBelow Φ₁ { (S₁.onCtx ctx) with
+      env := genScheme (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env } := by
+    intro N hN
+    rcases List.mem_cons.mp hN with rfl | hN
+    · show Ty.BelowFvars Φ₁ (Ty.closeOver (genVars (S₁.onCtx ctx).env τ₁) τ₁)
+      exact hbelowτ₁.closeOver
+    · exact hbelow₁ N hN
+  -- The freshness obligation for `genScheme_generalizes`: the fresh `Xs` don't
+  -- occur free in the (substituted) principal scheme body.
+  have hXM'' : ∀ x ∈ Xs,
+      x ∉ (R₁.onPolyTy (genScheme (S₁.onCtx ctx).env τ₁)).body.freeVars := by
+    intro x hx hmem
+    change x ∈ (R₁.onTy (Ty.closeOver (genVars (S₁.onCtx ctx).env τ₁) τ₁)).freeVars at hmem
+    obtain ⟨v, hv, hxv⟩ := Ty.mem_freeVars_onTy_iff.mp hmem
+    have hvτ₁ : v ∈ τ₁.freeVars := Ty.closeOver_freeVars_subset hv
+    have hvg : v ∉ genVars (S₁.onCtx ctx).env τ₁ := fun hg => Ty.not_mem_closeOver_freeVars hg hv
+    have hvenv : v ∈ (S₁.onCtx ctx).env.freeVars := by
+      by_contra hc
+      exact hvg (by
+        simp only [genVars, List.mem_filter]
+        exact ⟨hvτ₁, by simpa using hc⟩)
+    obtain ⟨pt, hpt, hvpt⟩ := Env.mem_freeVars_iff.mp hvenv
+    have hx_onTy : x ∈ (R₁.onTy pt.body).freeVars :=
+      Ty.mem_freeVars_onTy_iff.mpr ⟨v, hvpt, hxv⟩
+    have hpt_mem : R₁.onPolyTy pt ∈ (S₀.onCtx ctx).env := by
+      have hmem2 : R₁.onPolyTy pt ∈ (R₁.onCtx (S₁.onCtx ctx)).env := by
+        simp only [Subst.onCtx, Subst.onEnv]
+        exact List.mem_map.mpr ⟨pt, hpt, rfl⟩
+      rw [hctxeq] at hmem2; exact hmem2
+    exact hXenv x hx (Env.mem_freeVars_iff.mpr ⟨R₁.onPolyTy pt, hpt_mem, hx_onTy⟩)
+  -- Weaken the declarative body typing to the algorithm's (more general) scheme.
+  have hgen : (R₁.onPolyTy (genScheme (S₁.onCtx ctx).env τ₁)).Generalizes M :=
+    genScheme_generalizes hτ₁lc hR₁ hMwf hXnodup hXlen hXMbody htya hXM''
+  have hbody' : TypeOfHM
+      ⟨R₁.onPolyTy (genScheme (S₁.onCtx ctx).env τ₁) :: (S₀.onCtx ctx).env,
+        (S₀.onCtx ctx).ctors⟩ body τ₀ :=
+    TypeOfHM.weaken_scheme (env_post := []) (env := (S₀.onCtx ctx).env) (M := M) hgen hbody
+  have hbody'' : TypeOfHM (R₁.onCtx { (S₁.onCtx ctx) with
+      env := genScheme (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }) body τ₀ := by
+    show TypeOfHM ⟨R₁.onPolyTy (genScheme (S₁.onCtx ctx).env τ₁) :: R₁.onEnv (S₁.onCtx ctx).env,
+        (S₁.onCtx ctx).ctors⟩ body τ₀
+    rw [show R₁.onEnv (S₁.onCtx ctx).env = (S₀.onCtx ctx).env from congrArg Ctx.env hctxeq]
+    exact hbody'
+  -- Apply the body IH (specialization is `R₁`).
+  obtain ⟨Φ₂, S₂, τ₂, R₂, hinfb, hagb, htyb, hR₂⟩ :=
+    ihb hwfBody hbelowBody hR₁ hbody''
+  refine ⟨Φ₂, S₁ ++ S₂, τ₂, R₂, .letIn hinfa hinfb, ?_, htyb, hR₂⟩
+  intro v hv
+  have hbv : Ty.BelowFvars Φ₁ (S₁.onTy (.fvar v)) :=
+    Subst.onTy_belowFvars hbelowS₁ (.fvar (by omega))
+  calc S₀.onTy (.fvar v)
+      = (S₁ ++ R₁).onTy (.fvar v) := haga v hv
+    _ = R₁.onTy (S₁.onTy (.fvar v)) := by rw [Subst.onTy_append]
+    _ = (S₂ ++ R₂).onTy (S₁.onTy (.fvar v)) := Subst.onTy_congr hagb hbv
+    _ = ((S₁ ++ S₂) ++ R₂).onTy (.fvar v) := by
+          rw [List.append_assoc, Subst.onTy_append S₁ (S₂ ++ R₂)]
+
+/-- Principality, `letIn` case. -/
+theorem Infer.complete_letIn {rhs body : Expr}
+    (iha : Infer.CompleteAt rhs) (ihb : Infer.CompleteAt body) :
+    Infer.CompleteAt (.letIn rhs body) := by
+  intro Φ ctx S₀ τ₀ hwf hbelow hS₀ hty
+  cases hty with
+  | letIn hMwf hcofin heq hbody =>
+    subst heq
+    exact Infer.complete_letIn_aux iha ihb hwf hbelow hS₀ hMwf hcofin hbody
