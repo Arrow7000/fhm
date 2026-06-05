@@ -6030,6 +6030,26 @@ theorem InstantiatesBy.onTy_openVars_zip {Xs : List Nat} {ty τ : Ty} {tyArgs : 
             simp only [Ty.freeVars, TyList.freeVars, List.mem_dedup, List.mem_append] at hc ⊢
             exact Or.inr hc
 
+/-- Converse of `Ty.BelowFvars.mem_lt`: all free vars `< Φ` gives `BelowFvars Φ`. -/
+theorem Ty.BelowFvars.of_freeVars_lt {Φ : Nat} {τ : Ty}
+    (h : ∀ v ∈ τ.freeVars, v < Φ) : Ty.BelowFvars Φ τ := by
+  induction τ using Ty.rec_strong with
+  | prim p => exact .prim
+  | bvar i => exact .bvar
+  | fvar n => exact .fvar (h n (by simp [Ty.freeVars]))
+  | pair a b iha ihb =>
+    refine .pair (iha fun v hv => h v ?_) (ihb fun v hv => h v ?_)
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hv
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hv
+  | arrow a b iha ihb =>
+    refine .arrow (iha fun v hv => h v ?_) (ihb fun v hv => h v ?_)
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hv
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hv
+  | customTy nm tys ih =>
+    refine .customTy fun t ht => ih t ht (fun v hv => h v ?_)
+    simp only [Ty.freeVars]
+    exact TyList.mem_freeVars_of_mem ht hv
+
 theorem freshVars_nodup {Φ k : Nat} : (freshVars Φ k).Nodup :=
   (List.nodup_range).map (fun _ _ h => by omega)
 
@@ -6047,3 +6067,12 @@ theorem exists_fresh_block (avoid : List Nat) (Φ k : Nat) :
   intro v hv
   have := List.le_foldr_max hv
   omega
+
+/-- Principality, variable case. The algorithm opens the looked-up scheme with a
+    fresh block `[Φ,Φ+pc)`; these may clash with `S₀`'s range or the declarative
+    instantiation `tyArgs`, so we α-rename the derivation by the block-swap
+    `[Φ,Φ+pc) ↔ [W,W+pc)` (`W` fresh), read off the residual from the clean
+    (block-avoiding) renamed instantiation via `InstantiatesBy.onTy_openVars_zip`,
+    then map back with `blockListBack`. -/
+theorem Infer.complete_var {i : Nat} : Infer.CompleteAt (.var i) := by
+  sorry
