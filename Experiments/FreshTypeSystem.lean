@@ -5136,3 +5136,51 @@ theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     rcases hp with hp | hp
     · exact (hr_s p hp).mono (Infer.frontier_le hbody)
     · exact hb_s p hp
+
+
+/-! ### Completeness foundations: core fragment + substitution agreement
+
+`Infer` (v1) covers the let-polymorphic core, so principality is stated for
+core expressions; it extends once `ctor`/`match_`/`letPairIn` are added to
+`Infer`. The agreement lemmas let us swap one substitution for another that
+agrees on the in-scope (`< Φ`) variables. -/
+
+/-- The expressions `Infer` (v1) handles: the let-polymorphic core. -/
+inductive Expr.Core : Expr → Prop
+  | primLit : Expr.Core (.primLit p)
+  | pair : Expr.Core a → Expr.Core b → Expr.Core (.pair a b)
+  | lambda : Expr.Core body → Expr.Core (.lambda body)
+  | app : Expr.Core f → Expr.Core arg → Expr.Core (.app f arg)
+  | var : Expr.Core (.var i)
+  | letIn : Expr.Core rhs → Expr.Core body → Expr.Core (.letIn rhs body)
+
+/-- Two substitutions agreeing on all vars `< Φ` act identically on a
+    below-`Φ` type. -/
+theorem Subst.onTy_congr {Φ : Nat} {S T : Subst}
+    (hag : ∀ v, v < Φ → S.onTy (.fvar v) = T.onTy (.fvar v)) :
+    ∀ {τ : Ty}, Ty.BelowFvars Φ τ → S.onTy τ = T.onTy τ := by
+  intro τ hτ
+  induction τ using Ty.rec_strong with
+  | prim p => simp only [Subst.onTy_prim]
+  | bvar i => simp only [Subst.onTy_bvar]
+  | fvar n => cases hτ with | fvar hlt => exact hag n hlt
+  | pair a b iha ihb => cases hτ with | pair ha hb => simp only [Subst.onTy_pair, iha ha, ihb hb]
+  | arrow a b iha ihb => cases hτ with | arrow ha hb => simp only [Subst.onTy_arrow, iha ha, ihb hb]
+  | customTy nm tys ih =>
+    cases hτ with
+    | customTy hall =>
+      simp only [Subst.onTy_customTy]
+      apply congrArg (Ty.customTy nm)
+      apply List.map_congr_left
+      intro t ht
+      exact ih t ht (hall t ht)
+
+/-- Agreeing substitutions act identically on a below-`Φ` context. -/
+theorem Subst.onCtx_congr {Φ : Nat} {S T : Subst} {ctx : Ctx}
+    (hag : ∀ v, v < Φ → S.onTy (.fvar v) = T.onTy (.fvar v)) (hb : CtxBelow Φ ctx) :
+    S.onCtx ctx = T.onCtx ctx := by
+  simp only [Subst.onCtx, Subst.onEnv]
+  congr 1
+  apply List.map_congr_left
+  intro M hM
+  simp only [Subst.onPolyTy, Subst.onTy_congr hag (hb M hM)]
