@@ -4603,6 +4603,11 @@ theorem Subst.onTy_openVars {S : Subst} {Xs : List Nat}
 @[simp] theorem Ty.openVars_arrow {Xs : List Nat} {a b : Ty} :
     Ty.openVars Xs (.arrow a b) = .arrow (Ty.openVars Xs a) (Ty.openVars Xs b) := rfl
 
+@[simp] theorem Ty.openVars_customTy {Xs : List Nat} {nm : TyName} {tys : List Ty} :
+    Ty.openVars Xs (.customTy nm tys) = .customTy nm (tys.map (Ty.openVars Xs)) := by
+  unfold Ty.openVars
+  simp only [Ty.instantiate, TyList.instantiate_eq_map]
+
 /-- Opening with fresh *names* `Xs` is opening with those names as `fvar` types. -/
 theorem Ty.openVars_eq_openWith {Xs : List Nat} {ty : Ty} :
     Ty.openVars Xs ty = Ty.openWith (Xs.map (Ty.fvar ·)) ty := by
@@ -4612,3 +4617,53 @@ theorem Ty.openVars_eq_openWith {Xs : List Nat} {ty : Ty} :
   rcases h : Xs[i]? with _ | x
   · simp [h]
   · simp [h, List.getElem?_map]
+
+/-- `idxOf?` pinpoints the element: if it returns index `i`, then `l[i]? = a`. -/
+private theorem List.getElem?_of_idxOf? {α : Type*} [BEq α] [LawfulBEq α]
+    {l : List α} {a : α} {i : Nat} (h : l.idxOf? a = some i) : l[i]? = some a := by
+  induction l generalizing i with
+  | nil => simp [List.idxOf?_nil] at h
+  | cons x xs ih =>
+    rw [List.idxOf?_cons] at h
+    split at h
+    · rename_i hxa
+      simp only [Option.some.injEq] at h
+      subst h
+      simp [eq_of_beq hxa]
+    · obtain ⟨j, hj, rfl⟩ := Option.map_eq_some_iff.mp h
+      simpa using ih hj
+
+private theorem TyList.closeOver_eq_map (gs : List Nat) (tys : List Ty) :
+    TyList.closeOver gs tys = tys.map (Ty.closeOver gs) := by
+  induction tys with
+  | nil => rfl
+  | cons hd tl ih => simp [TyList.closeOver, ih]
+
+/-- Closing over `gs` then opening with the *same* `gs` is the identity on an LC
+    type (`gs` nodup ⇒ each closed var reopens to itself). -/
+theorem Ty.openVars_closeOver_self {gs : List Nat} :
+    ∀ {τ : Ty}, τ.IsLC → Ty.openVars gs (Ty.closeOver gs τ) = τ := by
+  intro τ hτ
+  induction τ using Ty.rec_strong with
+  | prim p => rfl
+  | bvar i => cases hτ with | bvar h => omega
+  | fvar n =>
+    rw [Ty.closeOver.eq_6]
+    cases h_idx : gs.idxOf? n with
+    | none => simp [Ty.openVars, Ty.instantiate]
+    | some i =>
+      have hgi : gs[i]? = some n := List.getElem?_of_idxOf? h_idx
+      simp [Ty.openVars, Ty.instantiate, hgi]
+  | pair a b iha ihb =>
+    cases hτ with | pair ha hb => simp only [Ty.closeOver, Ty.openVars_pair, iha ha, ihb hb]
+  | arrow a b iha ihb =>
+    cases hτ with | arrow ha hb => simp only [Ty.closeOver, Ty.openVars_arrow, iha ha, ihb hb]
+  | customTy nm tys ih =>
+    cases hτ with
+    | customTy hall =>
+      simp only [Ty.closeOver, TyList.closeOver_eq_map, Ty.openVars_customTy, List.map_map]
+      apply congrArg (Ty.customTy nm)
+      conv_rhs => rw [← List.map_id tys]
+      apply List.map_congr_left
+      intro t ht
+      exact ih t ht (hall t ht)
