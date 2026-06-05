@@ -6991,3 +6991,91 @@ theorem InstantiatesBy.openWith {Vs : List Ty} {n : Nat} {ty : Ty}
     | customTy hball =>
       simp only [Ty.openWith_customTy]
       exact .customTy (List.forall₂_self_map (fun t ht => ih t ht (hball t ht)))
+
+
+/-! ### Free-var bounds (for the `letIn` principality freshness obligation) -/
+
+/-- Membership in a type-list's free vars iff in some element's. -/
+theorem TyList.mem_freeVars_iff {x : Nat} {tys : List Ty} :
+    x ∈ TyList.freeVars tys ↔ ∃ t ∈ tys, x ∈ t.freeVars := by
+  induction tys with
+  | nil => simp [TyList.freeVars]
+  | cons hd tl ih =>
+    simp only [TyList.freeVars, List.mem_dedup, List.mem_append, List.mem_cons]
+    rw [ih]
+    constructor
+    · rintro (h | ⟨t, ht, hx⟩)
+      · exact ⟨hd, .inl rfl, h⟩
+      · exact ⟨t, .inr ht, hx⟩
+    · rintro ⟨t, (rfl | ht), hx⟩
+      · exact .inl hx
+      · exact .inr ⟨t, ht, hx⟩
+
+/-- Every free var of `S.onTy Z` traces back to a free var of `Z`. -/
+theorem Ty.mem_freeVars_onTy_iff {S : Subst} {x : Nat} {Z : Ty} :
+    x ∈ (S.onTy Z).freeVars ↔ ∃ v ∈ Z.freeVars, x ∈ (S.onTy (.fvar v)).freeVars := by
+  induction Z using Ty.rec_strong with
+  | prim p => simp [Subst.onTy_prim, Ty.freeVars]
+  | bvar i => simp [Subst.onTy_bvar, Ty.freeVars]
+  | fvar n => simp only [Ty.freeVars, List.mem_singleton, exists_eq_left]
+  | pair a b iha ihb =>
+    simp only [Subst.onTy_pair, Ty.freeVars, List.mem_dedup, List.mem_append]
+    rw [iha, ihb]
+    constructor
+    · rintro (⟨v, hv, hx⟩ | ⟨v, hv, hx⟩)
+      · exact ⟨v, .inl hv, hx⟩
+      · exact ⟨v, .inr hv, hx⟩
+    · rintro ⟨v, (hv | hv), hx⟩
+      · exact .inl ⟨v, hv, hx⟩
+      · exact .inr ⟨v, hv, hx⟩
+  | arrow a b iha ihb =>
+    simp only [Subst.onTy_arrow, Ty.freeVars, List.mem_dedup, List.mem_append]
+    rw [iha, ihb]
+    constructor
+    · rintro (⟨v, hv, hx⟩ | ⟨v, hv, hx⟩)
+      · exact ⟨v, .inl hv, hx⟩
+      · exact ⟨v, .inr hv, hx⟩
+    · rintro ⟨v, (hv | hv), hx⟩
+      · exact .inl ⟨v, hv, hx⟩
+      · exact .inr ⟨v, hv, hx⟩
+  | customTy nm tys ih =>
+    simp only [Subst.onTy_customTy, Ty.freeVars]
+    rw [TyList.mem_freeVars_iff]
+    constructor
+    · rintro ⟨t', ht', hx⟩
+      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+      obtain ⟨v, hv, hxv⟩ := (ih t ht).mp hx
+      exact ⟨v, TyList.mem_freeVars_iff.mpr ⟨t, ht, hv⟩, hxv⟩
+    · rintro ⟨v, hv, hx⟩
+      obtain ⟨t, ht, hvt⟩ := TyList.mem_freeVars_iff.mp hv
+      exact ⟨S.onTy t, List.mem_map.mpr ⟨t, ht, rfl⟩, (ih t ht).mpr ⟨v, hvt, hx⟩⟩
+
+/-- Closing over vars only removes free vars. -/
+theorem Ty.closeOver_freeVars_subset {gs : List Nat} {τ : Ty} :
+    (Ty.closeOver gs τ).freeVars ⊆ τ.freeVars := by
+  induction τ using Ty.rec_strong with
+  | prim p => simp [Ty.closeOver, Ty.freeVars]
+  | bvar i => simp [Ty.closeOver, Ty.freeVars]
+  | fvar n =>
+    rw [Ty.closeOver.eq_6]
+    cases gs.idxOf? n with
+    | none => exact fun x hx => hx
+    | some i => simp [Ty.freeVars]
+  | pair a b iha ihb =>
+    intro x hx
+    simp only [Ty.closeOver, Ty.freeVars, List.mem_dedup, List.mem_append] at hx ⊢
+    rcases hx with h | h
+    · exact .inl (iha h)
+    · exact .inr (ihb h)
+  | arrow a b iha ihb =>
+    intro x hx
+    simp only [Ty.closeOver, Ty.freeVars, List.mem_dedup, List.mem_append] at hx ⊢
+    rcases hx with h | h
+    · exact .inl (iha h)
+    · exact .inr (ihb h)
+  | customTy nm tys ih =>
+    intro x hx
+    simp only [Ty.closeOver, Ty.freeVars, TyList.closeOver_eq_map] at hx ⊢
+    obtain ⟨t', ht', hxt⟩ := TyList.mem_freeVars_iff.mp hx
+    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+    exact TyList.mem_freeVars_iff.mpr ⟨t, ht, ih t ht hxt⟩
