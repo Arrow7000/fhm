@@ -4408,7 +4408,7 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
     Infer Φ ctx rhs Φ₁ S₁ τ₁ →
     Infer Φ₁
       { (S₁.onCtx ctx) with
-        env := genScheme (S₁.onCtx ctx).env (S₁.onTy τ₁) :: (S₁.onCtx ctx).env }
+        env := genScheme (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
       body Φ₂ S₂ τ₂ →
     Infer Φ ctx (.letIn rhs body) Φ₂ (S₁ ++ S₂) τ₂
 
@@ -4532,7 +4532,7 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     obtain ⟨hbody_lc, hbody_s⟩ := ihbody (by
       intro M hM
       rcases List.mem_cons.mp hM with rfl | hM
-      · exact genScheme_wf (Subst.onTy_lc hrhs_s hrhs_lc)
+      · exact genScheme_wf hrhs_lc
       · exact (Subst.onCtx_wf hrhs_s hctx) M hM)
     refine ⟨hbody_lc, ?_⟩
     intro p hp; rw [List.mem_append] at hp
