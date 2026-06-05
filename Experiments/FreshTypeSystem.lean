@@ -6029,3 +6029,21 @@ theorem InstantiatesBy.onTy_openVars_zip {Xs : List Nat} {ty τ : Ty} {tyArgs : 
             apply hXfresh x hx
             simp only [Ty.freeVars, TyList.freeVars, List.mem_dedup, List.mem_append] at hc ⊢
             exact Or.inr hc
+
+theorem freshVars_nodup {Φ k : Nat} : (freshVars Φ k).Nodup :=
+  (List.nodup_range).map (fun _ _ h => by omega)
+
+theorem freshVars_ge {Φ k : Nat} : ∀ x ∈ freshVars Φ k, Φ ≤ x := by
+  intro x hx
+  simp only [freshVars, List.mem_map, List.mem_range] at hx
+  obtain ⟨i, _, rfl⟩ := hx
+  omega
+
+/-- A single fresh name `W` starting a block `[W,W+k)` disjoint from `[Φ,Φ+k)`
+    and above a finite `avoid` set. -/
+theorem exists_fresh_block (avoid : List Nat) (Φ k : Nat) :
+    ∃ W, Φ + k ≤ W ∧ ∀ v ∈ avoid, v < W := by
+  refine ⟨avoid.foldr max 0 + Φ + k + 1, by omega, ?_⟩
+  intro v hv
+  have := List.le_foldr_max hv
+  omega
