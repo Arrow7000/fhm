@@ -4374,6 +4374,23 @@ def genScheme (env : Env) (τ : Ty) : PolyTy :=
 theorem genScheme_wf {env : Env} {τ : Ty} (hτ : τ.IsLC) : (genScheme env τ).WF :=
   Ty.closeOver_preserves_bvars hτ
 
+/-- `freeVars` is always duplicate-free (it dedups). -/
+theorem Ty.freeVars_nodup {τ : Ty} : τ.freeVars.Nodup := by
+  cases τ with
+  | prim => simp [Ty.freeVars]
+  | bvar => simp [Ty.freeVars]
+  | fvar => simp [Ty.freeVars]
+  | pair a b => simp [Ty.freeVars, List.nodup_dedup]
+  | arrow a b => simp [Ty.freeVars, List.nodup_dedup]
+  | customTy nm tys =>
+    cases tys with
+    | nil => simp [Ty.freeVars, TyList.freeVars]
+    | cons hd tl => simp [Ty.freeVars, TyList.freeVars, List.nodup_dedup]
+
+/-- The generalization candidates are duplicate-free. -/
+theorem genVars_nodup {env : Env} {τ : Ty} : (genVars env τ).Nodup :=
+  Ty.freeVars_nodup.filter _
+
 /-- Algorithm W as a substitution-threading relation.
 @TODO: remember to add constructors for the remaining Expr variants: `letPairIn`, `ctor`, `match_`
 -/
@@ -4714,3 +4731,99 @@ theorem Ty.openVars_closeOver_rename {gs Xs : List Nat} {τ : Ty}
       (fun g hg => Ty.not_mem_closeOver_freeVars hg)
       (fun g hg hc => h_disj g hg (Ty.mem_freeVarsList_map_fvar.mp hc)),
     Ty.openVars_closeOver_self hτ]
+
+/-- The `letIn` soundness case, factored out (named binders avoid the
+    inaccessible-name problem inside the `Infer.sound` induction). The cofinite
+    premise is built by renaming the generalization candidates `genVars` to the
+    fresh `Xs` (they are not fixed by the env, `genVars_not_mem`), then pushing
+    `S₂` through (it avoids `Xs` by the cofinite `L`). -/
+theorem Infer.sound_letIn {ctx : Ctx} {rhs body : Expr} {S₁ S₂ : Subst} {τ₁ τ₂ : Ty}
+    (hrhs_ty : TypeOfHM (S₁.onCtx ctx) rhs τ₁) (hrhs_lc : τ₁.IsLC)
+    (hbody_s : ∀ p ∈ S₂, p.2.IsLC)
+    (hbody_ty : TypeOfHM (S₂.onCtx
+      { (S₁.onCtx ctx) with
+        env := genScheme (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }) body τ₂) :
+    TypeOfHM ((S₁ ++ S₂).onCtx ctx) (.letIn rhs body) τ₂ := by
+  rw [Subst.onCtx_append]
+  refine TypeOfHM.letIn (M := Subst.onPolyTy S₂ (genScheme (S₁.onCtx ctx).env τ₁))
+    (L := genVars (S₁.onCtx ctx).env τ₁ ++ S₂.map Prod.fst)
+    (Subst.onPolyTy_wf hbody_s (genScheme_wf hrhs_lc)) ?cofin rfl hbody_ty
+  intro Xs hXfresh
+  obtain ⟨hXlen, hXnodup, hXavoid⟩ := hXfresh
+  have hgs_X : ∀ g ∈ genVars (S₁.onCtx ctx).env τ₁, g ∉ Xs :=
+    fun g hg hc => hXavoid g hc (List.mem_append_left _ hg)
+  have hX_S₂ : ∀ p ∈ S₂, p.1 ∉ Xs :=
+    fun p hp hc => hXavoid p.1 hc (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
+  have hrename : TypeOfHM (S₁.onCtx ctx) rhs
+      (Ty.substFvars ((genVars (S₁.onCtx ctx).env τ₁).zip (Xs.map (Ty.fvar ·))) τ₁) := by
+    refine TypeOfHM.typ_substs_preservation _ ?_ ?_ hrhs_ty
+    · intro p hp; exact genVars_not_mem (List.of_mem_zip hp).1
+    · intro p hp
+      obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+      exact hx ▸ ContainsBvarsUpTo.fvar
+  rw [← Ty.openVars_closeOver_rename hrhs_lc genVars_nodup hXlen hgs_X] at hrename
+  have hfin := TypeOfHM.onSubst S₂ hbody_s hrename
+  rw [Subst.onTy_openVars hbody_s hX_S₂] at hfin
+  exact hfin
+
+/-- Soundness of `Infer` against the declarative `TypeOfHM`: applying the
+    inferred substitution to the context yields a declarative typing. -/
+theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+    CtxWF ctx → TypeOfHM (S.onCtx ctx) e τ := by
+  induction h with
+  | primLitUnit => intro _; simp only [Subst.onCtx_nil]; exact .primLitUnit
+  | primLitInt => intro _; simp only [Subst.onCtx_nil]; exact .primLitInt
+  | primLitNat => intro _; simp only [Subst.onCtx_nil]; exact .primLitNat
+  | primLitBool => intro _; simp only [Subst.onCtx_nil]; exact .primLitBool
+  | primLitStr => intro _; simp only [Subst.onCtx_nil]; exact .primLitStr
+  | pair ha hb iha ihb =>
+    intro hctx
+    have ha_s := (Infer.lc ha hctx).2
+    have hb_s := (Infer.lc hb (Subst.onCtx_wf ha_s hctx)).2
+    have ha_ty := TypeOfHM.onSubst _ hb_s (iha hctx)
+    rw [Subst.onCtx_append]
+    exact .pair ha_ty (ihb (Subst.onCtx_wf ha_s hctx))
+  | lambda hbody ih =>
+    intro hctx
+    exact TypeOfHM.lambda
+      (Subst.onTy_lc (Infer.lc hbody (by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact ContainsBvarsUpTo.fvar
+        · exact hctx M hM)).2 ContainsBvarsUpTo.fvar)
+      rfl
+      (ih (by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact ContainsBvarsUpTo.fvar
+        · exact hctx M hM))
+  | app hf harg huni ihf iharg =>
+    intro hctx
+    obtain ⟨hf_lc, hf_s⟩ := Infer.lc hf hctx
+    have hctx1 := Subst.onCtx_wf hf_s hctx
+    obtain ⟨harg_lc, harg_s⟩ := Infer.lc harg hctx1
+    have hs3 := huni.lc (Subst.onTy_lc harg_s hf_lc) (.arrow harg_lc ContainsBvarsUpTo.fvar)
+    have f2 := TypeOfHM.onSubst _ hs3 (TypeOfHM.onSubst _ harg_s (ihf hctx))
+    have a1 := TypeOfHM.onSubst _ hs3 (iharg hctx1)
+    have hueq := huni.unifies
+    simp only [Unifies, Subst.onTy_arrow] at hueq
+    rw [hueq] at f2
+    rw [Subst.onCtx_append, Subst.onCtx_append]
+    exact .app f2 a1
+  | var hlook =>
+    intro hctx
+    simp only [Subst.onCtx_nil]
+    refine TypeOfHM.var hlook (fun tyArg ht => ?_)
+      (InstantiatesBy.openVars (hctx _ (List.mem_of_getElem? hlook)) (by simp))
+    obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht
+    exact .fvar
+  | letIn hrhs hbody ihrhs ihbody =>
+    intro hctx
+    obtain ⟨hrhs_lc, hrhs_s⟩ := Infer.lc hrhs hctx
+    exact Infer.sound_letIn (ihrhs hctx) hrhs_lc
+      (Infer.lc hbody (by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact genScheme_wf hrhs_lc
+        · exact (Subst.onCtx_wf hrhs_s hctx) M hM)).2
+      (ihbody (by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact genScheme_wf hrhs_lc
+        · exact (Subst.onCtx_wf hrhs_s hctx) M hM))
