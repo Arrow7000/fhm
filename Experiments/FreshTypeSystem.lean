@@ -5184,3 +5184,78 @@ theorem Subst.onCtx_congr {Φ : Nat} {S T : Subst} {ctx : Ctx}
   apply List.map_congr_left
   intro M hM
   simp only [Subst.onPolyTy, Subst.onTy_congr hag (hb M hM)]
+
+
+/-! ### Principality (completeness) — per-expression statement + case lemmas
+
+`Infer.CompleteAt e` packages the principality property at a single expression,
+abstracted over the frontier `Φ`, context `ctx`, input specialization `S₀`, and
+declarative type `τ₀`. Each syntactic form gets its own case lemma (taking the
+sub-expressions' `CompleteAt` as hypotheses, exactly the shape produced by
+inducting on `Expr.Core`); `Infer.complete` then just composes them. Keeping the
+universally-quantified `Φ ctx S₀ τ₀` inside the predicate means each case lemma
+is independently stated and verifiable. -/
+
+/-- The principality property at `e`: for *any* declarative typing of `e` under
+    an LC specialization `S₀` of a WF, frontier-bounded context, `Infer`
+    succeeds with `(S, τ)` and the typing factors through it via an LC residual
+    `R` (`S₀ = R ∘ S` below the frontier, `τ₀ = R.onTy τ`). -/
+def Infer.CompleteAt (e : Expr) : Prop :=
+  ∀ {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {τ₀ : Ty},
+    CtxWF ctx → CtxBelow Φ ctx → (∀ p ∈ S₀, p.2.IsLC) →
+    TypeOfHM (S₀.onCtx ctx) e τ₀ →
+    ∃ Φ' S τ R,
+      Infer Φ ctx e Φ' S τ ∧
+      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      τ₀ = R.onTy τ ∧
+      (∀ p ∈ R, p.2.IsLC)
+
+/-- Principality, primitive-literal case: `Infer` returns the literal's type
+    with the empty substitution; the residual is `S₀` unchanged. -/
+theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) := by
+  intro Φ ctx S₀ τ₀ _ _ hS₀ hty
+  cases hty with
+  | primLitUnit => exact ⟨Φ, [], _, S₀, .primLitUnit, fun v _ => by rw [List.nil_append], by simp, hS₀⟩
+  | primLitInt  => exact ⟨Φ, [], _, S₀, .primLitInt,  fun v _ => by rw [List.nil_append], by simp, hS₀⟩
+  | primLitNat  => exact ⟨Φ, [], _, S₀, .primLitNat,  fun v _ => by rw [List.nil_append], by simp, hS₀⟩
+  | primLitBool => exact ⟨Φ, [], _, S₀, .primLitBool, fun v _ => by rw [List.nil_append], by simp, hS₀⟩
+  | primLitStr  => exact ⟨Φ, [], _, S₀, .primLitStr,  fun v _ => by rw [List.nil_append], by simp, hS₀⟩
+
+/-- Principality, pair case. No fresh variables are introduced here, so no
+    renaming is needed: the residual `R₁` from the first component becomes the
+    specialization for the second (it reproduces `S₀` on `ctx` by the agreement
+    clause + `onCtx_congr`), and the second residual `R₂` serves as the pair's
+    residual. The first component's type is transported across the agreement via
+    `onTy_congr` (it is below the intermediate frontier `Φ₁`). -/
+theorem Infer.complete_pair {a b : Expr}
+    (iha : Infer.CompleteAt a) (ihb : Infer.CompleteAt b) :
+    Infer.CompleteAt (.pair a b) := by
+  intro Φ ctx S₀ τ₀ hwf hbelow hS₀ hty
+  cases hty with
+  | pair hta htb =>
+    obtain ⟨Φ₁, S₁, τa, R₁, hinfa, haga, htya, hR₁⟩ := iha hwf hbelow hS₀ hta
+    have hS₁ : ∀ p ∈ S₁, p.2.IsLC := (Infer.lc hinfa hwf).2
+    have hle : Φ ≤ Φ₁ := Infer.frontier_le hinfa
+    have hbelowτa : Ty.BelowFvars Φ₁ τa := (Infer.belowFvars hinfa hbelow).1
+    have hbelowS₁ : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 := (Infer.belowFvars hinfa hbelow).2
+    have hwf₁ : CtxWF (S₁.onCtx ctx) := Subst.onCtx_wf hS₁ hwf
+    have hbelow₁ : CtxBelow Φ₁ (S₁.onCtx ctx) := Subst.onCtx_below hbelowS₁ hle hbelow
+    have hctx_eq : R₁.onCtx (S₁.onCtx ctx) = S₀.onCtx ctx := by
+      rw [← Subst.onCtx_append]
+      exact Subst.onCtx_congr (fun v hv => (haga v hv).symm) hbelow
+    have htb' : TypeOfHM (R₁.onCtx (S₁.onCtx ctx)) b _ := hctx_eq ▸ htb
+    obtain ⟨Φ₂, S₂, τb, R₂, hinfb, hagb, htyb, hR₂⟩ := ihb hwf₁ hbelow₁ hR₁ htb'
+    refine ⟨Φ₂, S₁ ++ S₂, .pair (S₂.onTy τa) τb, R₂, .pair hinfa hinfb, ?_, ?_, hR₂⟩
+    · intro v hv
+      have hbv : Ty.BelowFvars Φ₁ (S₁.onTy (.fvar v)) :=
+        Subst.onTy_belowFvars hbelowS₁ (.fvar (by omega))
+      calc S₀.onTy (.fvar v)
+          = (S₁ ++ R₁).onTy (.fvar v) := haga v hv
+        _ = R₁.onTy (S₁.onTy (.fvar v)) := by rw [Subst.onTy_append]
+        _ = (S₂ ++ R₂).onTy (S₁.onTy (.fvar v)) := Subst.onTy_congr hagb hbv
+        _ = ((S₁ ++ S₂) ++ R₂).onTy (.fvar v) := by
+              rw [List.append_assoc, Subst.onTy_append S₁ (S₂ ++ R₂)]
+    · rw [Subst.onTy_pair]
+      refine congrArg₂ Ty.pair ?_ htyb
+      rw [htya, ← Subst.onTy_append]
+      exact Subst.onTy_congr hagb hbelowτa
