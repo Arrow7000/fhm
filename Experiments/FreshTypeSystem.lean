@@ -4264,6 +4264,79 @@ theorem UnifyRel.isMGU {τ₁ τ₂ : Ty} {S : Subst} (h : UnifyRel τ₁ τ₂ 
   ⟨h.unifies, h.greatest⟩
 
 
+/-! ### Local-closedness of substitutions
+
+Applying an LC substitution preserves local-closedness, and unification of two
+LC monotypes yields an LC substitution (each replacement is a sub-part of an LC
+input). These feed the `Infer.lc` invariant. -/
+
+/-- Applying a substitution whose replacements are all LC preserves LC. -/
+theorem Subst.onTy_lc {S : Subst} (h_lc : ∀ p ∈ S, p.2.IsLC) :
+    ∀ {τ : Ty}, τ.IsLC → (S.onTy τ).IsLC := by
+  induction S with
+  | nil => intro τ hτ; simpa using hτ
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    have hU : U.IsLC := h_lc (Z, U) (List.mem_cons_self ..)
+    have hS' : ∀ p ∈ S', p.2.IsLC := fun p hp => h_lc p (List.mem_cons_of_mem _ hp)
+    intro τ hτ
+    rw [show ((Z, U) :: S') = [(Z, U)] ++ S' from rfl, Subst.onTy_append]
+    exact ih hS' (Ty.IsLC.substFvar hU hτ)
+
+mutual
+
+/-- Unifying two locally-closed monotypes yields an LC substitution. -/
+theorem UnifyRel.lc : {a b : Ty} → {S : Subst} → UnifyRel a b S →
+    a.IsLC → b.IsLC → ∀ p ∈ S, p.2.IsLC
+  | _, _, _, .prim, _, _ => by simp
+  | _, _, _, .fvarRefl, _, _ => by simp
+  | _, _, _, .fvarL _ _, _, hb => by
+    intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hb
+  | _, _, _, .fvarR _ _, ha, _ => by
+    intro p hp; rw [List.mem_singleton] at hp; subst hp; exact ha
+  | _, _, _, .arrow h₁ h₂, ha, hb => by
+    cases ha with | arrow ha_a ha_b => cases hb with | arrow hb_c hb_d =>
+    have h1lc := UnifyRel.lc h₁ ha_a hb_c
+    have h2lc := UnifyRel.lc h₂ (Subst.onTy_lc h1lc ha_b) (Subst.onTy_lc h1lc hb_d)
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact h1lc p hp
+    · exact h2lc p hp
+  | _, _, _, .pair h₁ h₂, ha, hb => by
+    cases ha with | pair ha_a ha_b => cases hb with | pair hb_c hb_d =>
+    have h1lc := UnifyRel.lc h₁ ha_a hb_c
+    have h2lc := UnifyRel.lc h₂ (Subst.onTy_lc h1lc ha_b) (Subst.onTy_lc h1lc hb_d)
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact h1lc p hp
+    · exact h2lc p hp
+  | _, _, _, .customTy hl, ha, hb => by
+    cases ha with | customTy ha_all => cases hb with | customTy hb_all =>
+    exact UnifyRelList.lc hl ha_all hb_all
+
+/-- List version: unifying two LC type lists yields an LC substitution. -/
+theorem UnifyRelList.lc : {ts₁ ts₂ : List Ty} → {S : Subst} → UnifyRelList ts₁ ts₂ S →
+    (∀ t ∈ ts₁, t.IsLC) → (∀ t ∈ ts₂, t.IsLC) → ∀ p ∈ S, p.2.IsLC
+  | _, _, _, .nil, _, _ => by simp
+  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht, hts₁, hts₂ => by
+    have ht1 : t₁.IsLC := hts₁ t₁ (List.mem_cons_self ..)
+    have ht2 : t₂.IsLC := hts₂ t₂ (List.mem_cons_self ..)
+    have h1lc := UnifyRel.lc h₁ ht1 ht2
+    have hmap₁ : ∀ t ∈ ts₁.map S₁.onTy, t.IsLC := by
+      intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
+      exact Subst.onTy_lc h1lc (hts₁ t0 (List.mem_cons_of_mem _ ht0))
+    have hmap₂ : ∀ t ∈ ts₂.map S₁.onTy, t.IsLC := by
+      intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
+      exact Subst.onTy_lc h1lc (hts₂ t0 (List.mem_cons_of_mem _ ht0))
+    have h2lc := UnifyRelList.lc ht hmap₁ hmap₂
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact h1lc p hp
+    · exact h2lc p hp
+
+end
+
+
 /-! ## Algorithmic phase, step 2: the inference relation (Algorithm W, relational)
 
 `Infer Φ ctx e Φ' S τ` is Algorithm W phrased as a *relation* (no function /
