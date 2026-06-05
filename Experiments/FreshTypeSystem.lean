@@ -6199,3 +6199,58 @@ theorem Infer.complete_var {i : Nat} : Infer.CompleteAt (.var i) := by
         · exact Subst.conj_lc hS₀ p hp
         · exact htyargs2 p.2 (List.of_mem_zip hp).2
       · exact blockListBack_lc Φ W pc p hp
+
+
+/-! ### Unification: MGU residual is LC, and unification completeness
+
+For the `app` completeness case we need: (1) the residual `R` factoring a unifier
+`S'` through the MGU `S` is locally-closed when `S'` is (so it can serve as the
+next `S₀`); (2) unifiability implies a `UnifyRel` derivation exists. -/
+
+mutual
+/-- Like `UnifyRel.greatest`, but the residual `R` is also LC when `S'` is. -/
+theorem UnifyRel.greatest_lc : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁ τ₂ S →
+    ∀ S' : Subst, (∀ p ∈ S', p.2.IsLC) → Unifies S' τ₁ τ₂ →
+    ∃ R : Subst, (∀ τ, S'.onTy τ = R.onTy (S.onTy τ)) ∧ (∀ p ∈ R, p.2.IsLC)
+  | _, _, _, .prim, S', hlc, _ => ⟨S', fun τ => by simp only [Subst.onTy_nil], hlc⟩
+  | _, _, _, .fvarRefl, S', hlc, _ => ⟨S', fun τ => by simp only [Subst.onTy_nil], hlc⟩
+  | _, _, _, .fvarL _ _, S', hlc, hS' => ⟨S', fun τ => (Subst.onTy_substFvar hS' τ).symm, hlc⟩
+  | _, _, _, .fvarR _ _, S', hlc, hS' => ⟨S', fun τ => (Subst.onTy_substFvar (Eq.symm hS') τ).symm, hlc⟩
+  | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, S', hlc, hS' => by
+    simp only [Unifies, Subst.onTy_arrow, Ty.arrow.injEq] at hS'
+    obtain ⟨hac, hbd⟩ := hS'
+    obtain ⟨R₁, hR₁, hR₁lc⟩ := UnifyRel.greatest_lc h₁ S' hlc hac
+    have hR₁bd : Unifies R₁ (S₁.onTy b) (S₁.onTy d) := by
+      show R₁.onTy (S₁.onTy b) = R₁.onTy (S₁.onTy d)
+      rw [← hR₁ b, ← hR₁ d]; exact hbd
+    obtain ⟨R₂, hR₂, hR₂lc⟩ := UnifyRel.greatest_lc h₂ R₁ hR₁lc hR₁bd
+    exact ⟨R₂, fun τ => by rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ], hR₂lc⟩
+  | _, _, _, @UnifyRel.pair a b c d S₁ S₂ h₁ h₂, S', hlc, hS' => by
+    simp only [Unifies, Subst.onTy_pair, Ty.pair.injEq] at hS'
+    obtain ⟨hac, hbd⟩ := hS'
+    obtain ⟨R₁, hR₁, hR₁lc⟩ := UnifyRel.greatest_lc h₁ S' hlc hac
+    have hR₁bd : Unifies R₁ (S₁.onTy b) (S₁.onTy d) := by
+      show R₁.onTy (S₁.onTy b) = R₁.onTy (S₁.onTy d)
+      rw [← hR₁ b, ← hR₁ d]; exact hbd
+    obtain ⟨R₂, hR₂, hR₂lc⟩ := UnifyRel.greatest_lc h₂ R₁ hR₁lc hR₁bd
+    exact ⟨R₂, fun τ => by rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ], hR₂lc⟩
+  | _, _, _, .customTy hl, S', hlc, hS' => by
+    simp only [Unifies, Subst.onTy_customTy, Ty.customTy.injEq, true_and] at hS'
+    exact UnifyRelList.greatest_lc hl S' hlc hS'
+
+theorem UnifyRelList.greatest_lc : {ts₁ ts₂ : List Ty} → {S : Subst} →
+    UnifyRelList ts₁ ts₂ S → ∀ S' : Subst, (∀ p ∈ S', p.2.IsLC) →
+      ts₁.map S'.onTy = ts₂.map S'.onTy →
+      ∃ R : Subst, (∀ τ, S'.onTy τ = R.onTy (S.onTy τ)) ∧ (∀ p ∈ R, p.2.IsLC)
+  | _, _, _, .nil, S', hlc, _ => ⟨S', fun τ => by simp only [Subst.onTy_nil], hlc⟩
+  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht, S', hlc, hS' => by
+    simp only [List.map_cons, List.cons.injEq] at hS'
+    obtain ⟨ht1t2, htail⟩ := hS'
+    obtain ⟨R₁, hR₁, hR₁lc⟩ := UnifyRel.greatest_lc h₁ S' hlc ht1t2
+    have key : ∀ (l : List Ty), l.map (R₁.onTy ∘ S₁.onTy) = l.map S'.onTy := by
+      intro l; apply List.map_congr_left; intro t _; exact (hR₁ t).symm
+    have hlist : (ts₁.map S₁.onTy).map R₁.onTy = (ts₂.map S₁.onTy).map R₁.onTy := by
+      rw [List.map_map, List.map_map, key, key]; exact htail
+    obtain ⟨R₂, hR₂, hR₂lc⟩ := UnifyRelList.greatest_lc ht R₁ hR₁lc hlist
+    exact ⟨R₂, fun τ => by rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ], hR₂lc⟩
+end
