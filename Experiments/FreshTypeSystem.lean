@@ -5923,3 +5923,109 @@ theorem blockSwap_rename_not_mem {Φ W k : Nat} (hd : Φ + k ≤ W) {Y : Ty}
     intro t' ht'
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
     exact ih t ht (fun w hw => hY w (TyList.mem_freeVars_of_mem ht hw)) v hv1 hv2
+
+/-- Refinement of `Ty.substFvars_zip_fvar_eq` needing freshness only of the
+    *selected* value `v` (not all of `Vs`), and no length condition. Substituting
+    along `Xs.zip Vs` sends `.fvar Xs[i]` to `Vs[i]`. -/
+theorem Ty.substFvars_zip_fvar_eq' {Xs : List Nat} {Vs : List Ty} {i : Nat} {x : Nat} {v : Ty}
+    (h_nodup : Xs.Nodup) (hx : Xs[i]? = some x) (hv : Vs[i]? = some v)
+    (h_fresh : ∀ X ∈ Xs, X ∉ v.freeVars) :
+    Ty.substFvars (Xs.zip Vs) (.fvar x) = v := by
+  induction Xs generalizing Vs i x v with
+  | nil => simp at hx
+  | cons X0 Xs' ih =>
+    cases Vs with
+    | nil => simp at hv
+    | cons V0 Vs' =>
+      cases i with
+      | zero =>
+        simp only [List.getElem?_cons_zero, Option.some.injEq] at hx hv
+        simp only [List.zip_cons_cons, Ty.substFvars]
+        rw [← hx, show Ty.substFvar X0 V0 (.fvar X0) = V0 by simp [Ty.substFvar], ← hv]
+        apply Ty.substFvars_eq_self_of_no_key
+        intro p hp hcontra
+        have hp1 : p.1 ∈ Xs' := (List.of_mem_zip hp).1
+        exact h_fresh p.1 (List.mem_cons_of_mem _ hp1) (hv ▸ hcontra)
+      | succ k =>
+        simp only [List.getElem?_cons_succ] at hx hv
+        have h_X0_notin : X0 ∉ Xs' := (List.nodup_cons.mp h_nodup).1
+        have h_ne : x ≠ X0 := fun h => h_X0_notin (h ▸ List.mem_of_getElem? hx)
+        simp only [List.zip_cons_cons, Ty.substFvars]
+        rw [show Ty.substFvar X0 V0 (.fvar x) = .fvar x by simp [Ty.substFvar, h_ne]]
+        exact ih (List.nodup_cons.mp h_nodup).2 hx hv
+          (fun X hX => h_fresh X (List.mem_cons_of_mem _ hX))
+
+/-- Bridge for the `var` completeness case: if `ty` instantiates to `τ` under
+    `tyArgs`, then opening `ty` with fresh names `Xs` (nodup, fresh for `τ`) and
+    substituting `Xs ↦ tyArgs` recovers `τ`. Only the result `τ`'s freshness is
+    needed (used `tyArgs` are subterms of `τ`); unused `tyArgs` never matter, as
+    the induction only visits `ty`'s actual bound vars. -/
+theorem InstantiatesBy.onTy_openVars_zip {Xs : List Nat} {ty τ : Ty} {tyArgs : List Ty}
+    (hinst : InstantiatesBy tyArgs ty τ)
+    (hbv : ContainsBvarsUpTo Xs.length ty)
+    (hnodup : Xs.Nodup)
+    (hXfresh : ∀ x ∈ Xs, x ∉ τ.freeVars) :
+    Subst.onTy (Xs.zip tyArgs) (Ty.openVars Xs ty) = τ := by
+  induction ty using Ty.rec_strong generalizing τ with
+  | prim p => cases hinst; simp only [Ty.openVars_prim, Subst.onTy_prim]
+  | fvar n =>
+    cases hinst
+    simp only [Ty.openVars, Ty.instantiate]
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    subst hc
+    exact hXfresh p.1 (List.of_mem_zip hp).1 (by simp [Ty.freeVars])
+  | bvar i =>
+    cases hinst with
+    | bvar hsome =>
+      cases hbv with
+      | bvar hlt =>
+        have hxi : Xs[i]? = some Xs[i] := List.getElem?_eq_getElem hlt
+        simp only [Ty.openVars, Ty.instantiate, hxi, Option.elim_some]
+        exact Ty.substFvars_zip_fvar_eq' hnodup hxi hsome hXfresh
+  | pair a b iha ihb =>
+    cases hinst with
+    | pair ha hb =>
+      cases hbv with
+      | pair hba hbb =>
+        simp only [Ty.openVars_pair, Subst.onTy_pair]
+        refine congrArg₂ Ty.pair (iha ha hba ?_) (ihb hb hbb ?_)
+        · intro x hx hc; exact hXfresh x hx (by
+            simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hc)
+        · intro x hx hc; exact hXfresh x hx (by
+            simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hc)
+  | arrow a b iha ihb =>
+    cases hinst with
+    | arrow ha hb =>
+      cases hbv with
+      | arrow hba hbb =>
+        simp only [Ty.openVars_arrow, Subst.onTy_arrow]
+        refine congrArg₂ Ty.arrow (iha ha hba ?_) (ihb hb hbb ?_)
+        · intro x hx hc; exact hXfresh x hx (by
+            simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hc)
+        · intro x hx hc; exact hXfresh x hx (by
+            simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hc)
+  | customTy nm tys ih =>
+    cases hinst with
+    | customTy hforall =>
+      cases hbv with
+      | customTy hball =>
+        simp only [Ty.openVars_customTy, Subst.onTy_customTy]
+        refine congrArg (Ty.customTy nm) ?_
+        induction hforall with
+        | nil => rfl
+        | cons hhd htl ihtl =>
+          rename_i a instA tys' instTys'
+          simp only [List.map_cons, List.cons.injEq]
+          refine ⟨ih a List.mem_cons_self hhd (hball a List.mem_cons_self) ?_, ?_⟩
+          · intro x hx hc
+            apply hXfresh x hx
+            simp only [Ty.freeVars, TyList.freeVars, List.mem_dedup, List.mem_append]
+            exact Or.inl hc
+          · refine ihtl (fun t ht => ih t (List.mem_cons_of_mem _ ht)) ?_
+              (fun t ht => hball t (List.mem_cons_of_mem _ ht))
+            intro x hx hc
+            apply hXfresh x hx
+            simp only [Ty.freeVars, TyList.freeVars, List.mem_dedup, List.mem_append] at hc ⊢
+            exact Or.inr hc
