@@ -4570,3 +4570,28 @@ theorem InstantiatesBy.openVars {Xs : List Nat} {n : Nat} {ty : Ty}
     | customTy hball =>
       simp only [Ty.openVars, Ty.instantiate, TyList.instantiate_eq_map]
       exact .customTy (List.forall₂_self_map (fun t ht => ih t ht (hball t ht)))
+
+
+/-! ### Cofinite-generalization machinery for the `letIn` soundness case -/
+
+/-- A generalization candidate is, by construction, not fixed by the env. -/
+theorem genVars_not_mem {env : Env} {τ : Ty} {g : Nat}
+    (h : g ∈ genVars env τ) : g ∉ env.freeVars := by
+  simp only [genVars, List.mem_filter] at h
+  simpa using h.2
+
+/-- A substitution whose domain avoids `Xs` commutes with opening by `Xs`. -/
+theorem Subst.onTy_openVars {S : Subst} {Xs : List Nat}
+    (h_lc : ∀ p ∈ S, p.2.IsLC) (h_fresh : ∀ p ∈ S, p.1 ∉ Xs) :
+    ∀ {ty : Ty}, S.onTy (Ty.openVars Xs ty) = Ty.openVars Xs (S.onTy ty) := by
+  induction S with
+  | nil => intro ty; simp only [Subst.onTy_nil]
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    have hU : U.IsLC := h_lc (Z, U) (List.mem_cons_self ..)
+    have hZ : Z ∉ Xs := h_fresh (Z, U) (List.mem_cons_self ..)
+    intro ty
+    simp only [Subst.onTy, Ty.substFvars]
+    rw [Ty.substFvar_openVars hU hZ]
+    exact ih (fun p hp => h_lc p (List.mem_cons_of_mem _ hp))
+             (fun p hp => h_fresh p (List.mem_cons_of_mem _ hp))
