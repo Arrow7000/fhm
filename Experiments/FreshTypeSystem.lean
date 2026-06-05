@@ -4834,9 +4834,101 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
 Foundations for `Infer.complete`, independent of how the residual-substitution
 obstruction is resolved. -/
 
-/-- Every free type var of `ctx` is below the fresh-variable frontier `Φ`
+/-- All free type vars of `τ` are below `Φ`. The `fvar` analogue of
+    `ContainsBvarsUpTo`; clean to push through substitution. -/
+inductive Ty.BelowFvars (Φ : Nat) : Ty → Prop
+  | prim : Ty.BelowFvars Φ (.prim p)
+  | pair : Ty.BelowFvars Φ a → Ty.BelowFvars Φ b → Ty.BelowFvars Φ (.pair a b)
+  | arrow : Ty.BelowFvars Φ a → Ty.BelowFvars Φ b → Ty.BelowFvars Φ (.arrow a b)
+  | bvar : Ty.BelowFvars Φ (.bvar i)
+  | fvar : i < Φ → Ty.BelowFvars Φ (.fvar i)
+  | customTy : (∀ t ∈ tys, Ty.BelowFvars Φ t) → Ty.BelowFvars Φ (.customTy nm tys)
+
+theorem Ty.BelowFvars.mono {Φ Φ' : Nat} {τ : Ty} (hle : Φ ≤ Φ')
+    (h : Ty.BelowFvars Φ τ) : Ty.BelowFvars Φ' τ := by
+  induction h with
+  | prim => exact .prim
+  | pair _ _ iha ihb => exact .pair iha ihb
+  | arrow _ _ iha ihb => exact .arrow iha ihb
+  | bvar => exact .bvar
+  | fvar hlt => exact .fvar (by omega)
+  | customTy _ ih => exact .customTy (fun t ht => ih t ht)
+
+/-- `substFvar` by a below-`Φ` type preserves below-`Φ`. -/
+theorem Ty.BelowFvars.substFvar {Φ Z : Nat} {U τ : Ty}
+    (hU : Ty.BelowFvars Φ U) (h : Ty.BelowFvars Φ τ) :
+    Ty.BelowFvars Φ (Ty.substFvar Z U τ) := by
+  induction τ using Ty.rec_strong with
+  | prim _ => exact .prim
+  | pair a b iha ihb => cases h with | pair ha hb => exact .pair (iha ha) (ihb hb)
+  | arrow a b iha ihb => cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | bvar i => simp only [Ty.substFvar]; exact .bvar
+  | fvar m =>
+    simp only [Ty.substFvar]
+    by_cases hm : m = Z
+    · simp only [if_pos hm]; exact hU
+    · simp only [if_neg hm]; cases h with | fvar hlt => exact .fvar hlt
+  | customTy nm tys ih =>
+    cases h with
+    | customTy hall =>
+      simp only [Ty.substFvar]
+      apply Ty.BelowFvars.customTy
+      rw [TyList.substFvar_eq_map]
+      intro t ht
+      obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+      exact ih t0 ht0 (hall t0 ht0)
+
+/-- A whole substitution with below-`Φ` replacements preserves below-`Φ`. -/
+theorem Subst.onTy_belowFvars {Φ : Nat} {S : Subst} (hS : ∀ p ∈ S, Ty.BelowFvars Φ p.2) :
+    ∀ {τ : Ty}, Ty.BelowFvars Φ τ → Ty.BelowFvars Φ (S.onTy τ) := by
+  induction S with
+  | nil => intro τ hτ; simpa using hτ
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    have hU : Ty.BelowFvars Φ U := hS (Z, U) (List.mem_cons_self ..)
+    have hS' : ∀ p ∈ S', Ty.BelowFvars Φ p.2 := fun p hp => hS p (List.mem_cons_of_mem _ hp)
+    intro τ hτ
+    rw [show ((Z, U) :: S') = [(Z, U)] ++ S' from rfl, Subst.onTy_append]
+    exact ih hS' (Ty.BelowFvars.substFvar hU hτ)
+
+/-- Bridge to the `freeVars` characterisation: a below-`Φ` type's free vars are
+    all `< Φ` (so any `w ≥ Φ` is fresh for it). -/
+theorem Ty.BelowFvars.mem_lt {Φ : Nat} {τ : Ty} (h : Ty.BelowFvars Φ τ) :
+    ∀ v ∈ τ.freeVars, v < Φ := by
+  induction h with
+  | prim => intro v hv; simp [Ty.freeVars] at hv
+  | bvar => intro v hv; simp [Ty.freeVars] at hv
+  | fvar hlt => intro v hv; simp only [Ty.freeVars, List.mem_singleton] at hv; exact hv ▸ hlt
+  | pair _ _ iha ihb =>
+    intro v hv; simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+    rcases hv with h | h
+    · exact iha v h
+    · exact ihb v h
+  | arrow _ _ iha ihb =>
+    intro v hv; simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+    rcases hv with h | h
+    · exact iha v h
+    · exact ihb v h
+  | customTy hall ih =>
+    intro v hv
+    simp only [Ty.freeVars] at hv
+    by_contra hge
+    refine (TyList.not_mem_freeVars_iff.mpr ?_) hv
+    intro t ht hc
+    exact hge (ih t ht v hc)
+
+/-- Every scheme body of `ctx` has its free type vars below the frontier `Φ`
     (the "new_tv" discipline: vars `Infer` allocates `≥ Φ` are genuinely fresh). -/
-def CtxBelow (Φ : Nat) (ctx : Ctx) : Prop := ∀ v ∈ ctx.env.freeVars, v < Φ
+def CtxBelow (Φ : Nat) (ctx : Ctx) : Prop := ∀ M ∈ ctx.env, Ty.BelowFvars Φ M.body
+
+/-- A whole substitution preserves context-below (with frontier growth). -/
+theorem Subst.onCtx_below {Φ Φ' : Nat} {S : Subst} {ctx : Ctx}
+    (hS : ∀ p ∈ S, Ty.BelowFvars Φ' p.2) (hle : Φ ≤ Φ') (hb : CtxBelow Φ ctx) :
+    CtxBelow Φ' (S.onCtx ctx) := by
+  intro M hM
+  simp only [Subst.onCtx, Subst.onEnv] at hM
+  obtain ⟨M0, hM0, rfl⟩ := List.mem_map.mp hM
+  exact Subst.onTy_belowFvars hS ((hb M0 hM0).mono hle)
 
 /-! Regularity: any declaratively-typed term has a locally-closed type. (Each
     rule produces an LC type; `var`/`ctor` via `InstantiatesBy.preserves_bvars`
