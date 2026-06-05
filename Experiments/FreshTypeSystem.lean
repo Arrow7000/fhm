@@ -5609,3 +5609,155 @@ theorem Subst.not_mem_onTy_freeVars {S : Subst} {W : Nat} {τ : Ty}
     rw [show ((Z, U) :: S') = [(Z, U)] ++ S' from rfl, Subst.onTy_append]
     refine ih (fun p hp => hS p (List.mem_cons_of_mem _ hp)) ?_
     exact Ty.not_mem_freeVars_substFvar hτ (hS (Z, U) List.mem_cons_self)
+
+/-- Principality, lambda case (factored with named binders to avoid the
+    inaccessible-name problem). The fresh param var `Φ` may clash with `S₀`'s
+    range, so we α-rename the declarative derivation by the swap `Φ ↔ W`
+    (`W` fresh), apply the IH to the body under the conjugated specialization
+    `S₀ᵃ ++ [(Φ, paramTyᵃ)]` (now `Φ ∉ dom`), then map the residual back with
+    `[(W, .fvar Φ)]` (the swap's involution recovers the originals). -/
+theorem Infer.complete_lambda_aux {body : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
+    {paramTy bodyTy : Ty}
+    (ih : Infer.CompleteAt body)
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
+    (hparamLC : paramTy.IsLC)
+    (hbodyty : TypeOfHM { (S₀.onCtx ctx) with
+        env := PolyTy.mkTrivial paramTy :: (S₀.onCtx ctx).env } body bodyTy) :
+    ∃ Φ' S τ R,
+      Infer Φ ctx (.lambda body) Φ' S τ ∧
+      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      Ty.arrow paramTy bodyTy = R.onTy τ ∧
+      (∀ p ∈ R, p.2.IsLC) := by
+  -- STEP 0: fresh names
+  obtain ⟨W, c, hΦW, hΦc, hWc, hWav, hcav⟩ := exists_fresh_two_ge Φ
+    ([Φ] ++ S₀.map Prod.fst ++ S₀.flatMap (fun p => p.2.freeVars)
+      ++ paramTy.freeVars ++ bodyTy.freeVars)
+  simp only [List.mem_append, List.mem_singleton, List.mem_map, List.mem_flatMap] at hWav hcav
+  push_neg at hWav hcav
+  obtain ⟨⟨⟨⟨hWΦ, hWkey⟩, hWrange⟩, hWparam⟩, hWbody⟩ := hWav
+  obtain ⟨⟨⟨⟨hcΦ, hckey⟩, hcrange⟩, hcparam⟩, hcbody⟩ := hcav
+  have finj : Function.Injective (swapNat Φ W) := swapNat_injective Φ W
+  have hfix : ∀ v, v < Φ → swapNat Φ W v = v := fun v hv =>
+    swapNat_other (by omega) (by omega)
+  have hWonTy : ∀ {τ : Ty}, W ∉ τ.freeVars → W ∉ (S₀.onTy τ).freeVars :=
+    fun h => Subst.not_mem_onTy_freeVars hWrange h
+  have hconΦ : ∀ p ∈ Subst.conj (swapNat Φ W) S₀, p.1 ≠ Φ := by
+    intro p hp
+    simp only [Subst.conj, List.mem_map] at hp
+    obtain ⟨q, hq, rfl⟩ := hp
+    intro hc
+    apply hWkey q hq
+    have hc' : swapNat Φ W q.1 = Φ := hc
+    simp only [swapNat] at hc'
+    split_ifs at hc' <;> omega
+  have hSconjΦ : (Subst.conj (swapNat Φ W) S₀).onTy (.fvar Φ) = .fvar Φ := by
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    exact hconΦ p hp hc
+  -- STEP 1: rename the body derivation and reinterpret its context
+  have hctxeq : (swapSubst Φ W c).onCtx
+        { (S₀.onCtx ctx) with env := PolyTy.mkTrivial paramTy :: (S₀.onCtx ctx).env }
+      = (Subst.conj (swapNat Φ W) S₀ ++ [(Φ, Ty.rename (swapNat Φ W) paramTy)]).onCtx
+        { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+    simp only [Subst.onCtx, Subst.onEnv, List.map_cons, List.map_map]
+    congr 1
+    congr 1
+    · -- head
+      simp only [Subst.onPolyTy, PolyTy.mkTrivial, PolyTy.mk.injEq, true_and]
+      rw [swapSubst_onTy (Ne.symm hWΦ) (Ne.symm hcΦ) hWc hcparam,
+          Subst.onTy_append (Subst.conj (swapNat Φ W) S₀)
+            [(Φ, Ty.rename (swapNat Φ W) paramTy)] (.fvar Φ),
+          hSconjΦ]
+      simp only [Subst.onTy, Ty.substFvars, Ty.substFvar, if_pos]
+    · -- tail
+      apply List.map_congr_left
+      intro M hM
+      have hMbelow : ∀ v ∈ M.body.freeVars, v < Φ := (hbelow M hM).mem_lt
+      have hrenM : Ty.rename (swapNat Φ W) M.body = M.body :=
+        Ty.rename_eq_self (fun v hv => hfix v (hMbelow v hv))
+      have hΦnotin : Φ ∉ (Ty.rename (swapNat Φ W) (S₀.onTy M.body)).freeVars :=
+        Ty.rename_swap_not_mem_left (hWonTy (τ := M.body) (fun hv => by have := hMbelow _ hv; omega))
+      simp only [Function.comp, Subst.onPolyTy, PolyTy.mk.injEq, true_and]
+      rw [swapSubst_onTy (Ne.symm hWΦ) (Ne.symm hcΦ) hWc
+            (Subst.not_mem_onTy_freeVars hcrange (fun hv => by have := hMbelow _ hv; omega)),
+          Subst.onTy_append (Subst.conj (swapNat Φ W) S₀)
+            [(Φ, Ty.rename (swapNat Φ W) paramTy)] M.body]
+      conv_rhs => rw [← hrenM, Subst.onTy_conj finj]
+      exact (Ty.substFvar_fresh hΦnotin).symm
+  have hbodyTyeq : (swapSubst Φ W c).onTy bodyTy = Ty.rename (swapNat Φ W) bodyTy :=
+    swapSubst_onTy (Ne.symm hWΦ) (Ne.symm hcΦ) hWc hcbody
+  have hren := TypeOfHM.onSubst (swapSubst Φ W c) (swapSubst_lc Φ W c) hbodyty
+  rw [hctxeq, hbodyTyeq] at hren
+  -- STEP 2: apply the IH to the body under the conjugated specialization
+  have hwf_b : CtxWF { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+    intro M hM
+    rcases List.mem_cons.mp hM with rfl | hM
+    · exact ContainsBvarsUpTo.fvar
+    · exact hwf M hM
+  have hbelow_b : CtxBelow (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+    intro M hM
+    rcases List.mem_cons.mp hM with rfl | hM
+    · exact .fvar (by omega)
+    · exact (hbelow M hM).mono (by omega)
+  have hT_lc : ∀ p ∈ Subst.conj (swapNat Φ W) S₀ ++ [(Φ, Ty.rename (swapNat Φ W) paramTy)],
+      p.2.IsLC := by
+    intro p hp
+    rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact Subst.conj_lc hS₀ p hp
+    · rw [List.mem_singleton] at hp
+      subst hp
+      exact Ty.rename_isLC hparamLC
+  obtain ⟨Φ', S, τb, R_b, hinfb, hagb, htyb, hR_b⟩ := ih hwf_b hbelow_b hT_lc hren
+  -- STEP 3: assemble the conclusion
+  refine ⟨Φ', S, .arrow (S.onTy (.fvar Φ)) τb, R_b ++ [(W, .fvar Φ)], ?_, ?_, ?_, ?_⟩
+  · exact Infer.lambda hinfb
+  · -- agreement below Φ
+    intro v hv
+    have hWv : W ∉ (Ty.fvar v).freeVars := by
+      simp only [Ty.freeVars, List.mem_singleton]; omega
+    have hconjv : (Subst.conj (swapNat Φ W) S₀).onTy (.fvar v)
+        = Ty.rename (swapNat Φ W) (S₀.onTy (.fvar v)) := by
+      have h := Subst.onTy_conj finj S₀ (.fvar v)
+      rw [Ty.rename_fvar, hfix v hv] at h
+      exact h
+    have hTv : (Subst.conj (swapNat Φ W) S₀ ++ [(Φ, Ty.rename (swapNat Φ W) paramTy)]).onTy (.fvar v)
+        = Ty.rename (swapNat Φ W) (S₀.onTy (.fvar v)) := by
+      rw [Subst.onTy_append (Subst.conj (swapNat Φ W) S₀)
+            [(Φ, Ty.rename (swapNat Φ W) paramTy)] (.fvar v), hconjv]
+      exact Ty.substFvar_fresh (Ty.rename_swap_not_mem_left (hWonTy (τ := .fvar v) hWv))
+    rw [← List.append_assoc, Subst.onTy_append (S ++ R_b) [(W, .fvar Φ)] (.fvar v),
+        ← hagb v (by omega), hTv]
+    exact (Ty.substFvar_rename_swap (hWonTy (τ := .fvar v) hWv)).symm
+  · -- the arrow type is recovered
+    have hTΦ : (Subst.conj (swapNat Φ W) S₀ ++ [(Φ, Ty.rename (swapNat Φ W) paramTy)]).onTy (.fvar Φ)
+        = Ty.rename (swapNat Φ W) paramTy := by
+      rw [Subst.onTy_append (Subst.conj (swapNat Φ W) S₀)
+            [(Φ, Ty.rename (swapNat Φ W) paramTy)] (.fvar Φ), hSconjΦ]
+      simp only [Subst.onTy, Ty.substFvars, Ty.substFvar, if_pos]
+    rw [Subst.onTy_arrow]
+    refine congrArg₂ Ty.arrow ?_ ?_
+    · rw [Subst.onTy_append R_b [(W, .fvar Φ)] (S.onTy (.fvar Φ)),
+          ← Subst.onTy_append S R_b (.fvar Φ),
+          ← hagb Φ (by omega), hTΦ]
+      exact (Ty.substFvar_rename_swap hWparam).symm
+    · rw [Subst.onTy_append R_b [(W, .fvar Φ)] τb, ← htyb]
+      exact (Ty.substFvar_rename_swap hWbody).symm
+  · -- residual is LC
+    intro p hp
+    rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact hR_b p hp
+    · rw [List.mem_singleton] at hp
+      subst hp
+      exact ContainsBvarsUpTo.fvar
+
+/-- Principality, lambda case. -/
+theorem Infer.complete_lambda {body : Expr}
+    (ih : Infer.CompleteAt body) : Infer.CompleteAt (.lambda body) := by
+  intro Φ ctx S₀ τ₀ hwf hbelow hS₀ hty
+  cases hty with
+  | lambda hparamLC heq hbodyty =>
+    subst heq
+    exact Infer.complete_lambda_aux ih hwf hbelow hS₀ hparamLC hbodyty
