@@ -3996,6 +3996,40 @@ theorem Subst.onCtx_append (S T : Subst) (ctx : Ctx) :
   simp only [Subst.onCtx, Subst.onEnv_append]
 
 
+/-! ### Substitution preserves typing
+
+Substituting over the *whole* context needs no environment-freshness side
+condition (the freshness premise of `typ_subst_preservation` is vacuous with an
+empty outer env) — only that each replacement type is locally-closed. This is
+the workhorse for `Infer` soundness: applying the threaded substitution to a
+`TypeOfHM` derivation yields another. -/
+
+/-- Single-variable substitution preserves typing across the whole context. -/
+theorem TypeOfHM.onSubstFvar {ctx : Ctx} {e : Expr} {τ : Ty} (Z : Nat) (U : Ty)
+    (hU : U.IsLC) (h : TypeOfHM ctx e τ) :
+    TypeOfHM (Subst.onCtx [(Z, U)] ctx) e (Subst.onTy [(Z, U)] τ) := by
+  have key := TypeOfHM.typ_subst_preservation (ctors := ctx.ctors) (env_post := ctx.env)
+    (env_outer := []) (Z := Z) (U := U) (by simp [Env.freeVars]) hU
+    (by rw [List.append_nil]; exact h)
+  rw [List.append_nil] at key
+  exact key
+
+/-- A whole substitution preserves typing, given each replacement is LC. -/
+theorem TypeOfHM.onSubst {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
+    (h_lc : ∀ p ∈ S, p.2.IsLC) (h : TypeOfHM ctx e τ) :
+    TypeOfHM (S.onCtx ctx) e (S.onTy τ) := by
+  induction S generalizing ctx τ with
+  | nil => simpa using h
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    have hU : U.IsLC := h_lc (Z, U) (List.mem_cons_self ..)
+    have hS' : ∀ p ∈ S', p.2.IsLC := fun p hp => h_lc p (List.mem_cons_of_mem _ hp)
+    have step := TypeOfHM.onSubstFvar Z U hU h
+    have rest := ih hS' step
+    rw [show ((Z, U) :: S') = [(Z, U)] ++ S' from rfl, Subst.onCtx_append, Subst.onTy_append]
+    exact rest
+
+
 /-! ### Most-general unifier specification
 
 `Unifies S τ₁ τ₂` says `S` equates the two monotypes; `IsMGU S τ₁ τ₂` adds that
