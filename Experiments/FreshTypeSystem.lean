@@ -4667,3 +4667,50 @@ theorem Ty.openVars_closeOver_self {gs : List Nat} :
       apply List.map_congr_left
       intro t ht
       exact ih t ht (hall t ht)
+
+/-- The free vars of a list of `fvar`s are exactly the names. -/
+theorem Ty.mem_freeVarsList_map_fvar {Xs : List Nat} {g : Nat} :
+    g ∈ Ty.freeVarsList (Xs.map (Ty.fvar ·)) ↔ g ∈ Xs := by
+  induction Xs with
+  | nil => simp [Ty.freeVarsList]
+  | cons x xs ih =>
+    simp [Ty.freeVarsList, Ty.freeVars, ih]
+
+/-- A closed-over var no longer occurs free. -/
+theorem Ty.not_mem_closeOver_freeVars {gs : List Nat} {g : Nat} (hg : g ∈ gs) :
+    ∀ {τ : Ty}, g ∉ (Ty.closeOver gs τ).freeVars := by
+  intro τ
+  induction τ using Ty.rec_strong with
+  | prim p => simp [Ty.closeOver, Ty.freeVars]
+  | bvar i => simp [Ty.closeOver, Ty.freeVars]
+  | fvar n =>
+    rw [Ty.closeOver.eq_6]
+    cases h_idx : gs.idxOf? n with
+    | none =>
+      have hn : n ∉ gs := List.idxOf?_eq_none_iff.mp h_idx
+      simp only [Ty.freeVars, List.mem_singleton]
+      intro hgn; exact hn (hgn ▸ hg)
+    | some i => simp [Ty.freeVars]
+  | pair a b iha ihb => simp [Ty.closeOver, Ty.freeVars, List.mem_dedup, List.mem_append, iha, ihb]
+  | arrow a b iha ihb => simp [Ty.closeOver, Ty.freeVars, List.mem_dedup, List.mem_append, iha, ihb]
+  | customTy nm tys ih =>
+    simp only [Ty.closeOver, Ty.freeVars, TyList.closeOver_eq_map]
+    rw [TyList.not_mem_freeVars_iff]
+    intro t' ht'
+    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+    exact ih t ht
+
+/-- The full round-trip: closing over `gs` then opening with fresh `Xs` renames
+    each `gs[i]` to `Xs[i]`. -/
+theorem Ty.openVars_closeOver_rename {gs Xs : List Nat} {τ : Ty}
+    (hτ : τ.IsLC) (h_gs_nodup : gs.Nodup) (h_len : Xs.length = gs.length)
+    (h_disj : ∀ g ∈ gs, g ∉ Xs) :
+    Ty.openVars Xs (Ty.closeOver gs τ)
+      = Ty.substFvars (gs.zip (Xs.map (Ty.fvar ·))) τ := by
+  rw [Ty.openVars_eq_openWith,
+    Ty.openWith_eq_substFvars_openVars (Xs := gs) (Vs := Xs.map (Ty.fvar ·))
+      ⟨by simp [h_len], fun V hV => by obtain ⟨x, _, rfl⟩ := List.mem_map.mp hV; exact .fvar⟩
+      h_gs_nodup
+      (fun g hg => Ty.not_mem_closeOver_freeVars hg)
+      (fun g hg hc => h_disj g hg (Ty.mem_freeVarsList_map_fvar.mp hc)),
+    Ty.openVars_closeOver_self hτ]
