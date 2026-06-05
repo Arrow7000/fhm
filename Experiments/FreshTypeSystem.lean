@@ -4338,3 +4338,10 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
         env := genScheme (S₁.onCtx ctx).env (S₁.onTy τ₁) :: (S₁.onCtx ctx).env }
       body Φ₂ S₂ τ₂ →
     Infer Φ ctx (.letIn rhs body) Φ₂ (S₁ ++ S₂) τ₂
+
+
+/-! ### Invariant layer for `Infer` soundness -/
+
+/-- The fresh-variable frontier only ever grows. -/
+theorem Infer.frontier_le {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) : Φ ≤ Φ' := by
+  induction h <;> omega
