@@ -5013,6 +5013,28 @@ theorem UnifyRelList.belowFvars {Φ : Nat} : {ts₁ ts₂ : List Ty} → {S : Su
 
 end
 
+/-- Closing over `gs` only removes free vars, so it preserves below-`Φ`. -/
+theorem Ty.BelowFvars.closeOver {Φ : Nat} {gs : List Nat} :
+    ∀ {τ : Ty}, Ty.BelowFvars Φ τ → Ty.BelowFvars Φ (Ty.closeOver gs τ) := by
+  intro τ h
+  induction τ using Ty.rec_strong with
+  | prim p => exact .prim
+  | bvar i => exact .bvar
+  | fvar n =>
+    rw [Ty.closeOver.eq_6]
+    cases h_idx : gs.idxOf? n with
+    | none => cases h with | fvar hlt => exact .fvar hlt
+    | some i => exact .bvar
+  | pair a b iha ihb => cases h with | pair ha hb => exact .pair (iha ha) (ihb hb)
+  | arrow a b iha ihb => cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | customTy nm tys ih =>
+    cases h with
+    | customTy hall =>
+      simp only [Ty.closeOver, TyList.closeOver_eq_map]
+      apply Ty.BelowFvars.customTy
+      intro t' ht'; obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+      exact ih t ht (hall t ht)
+
 /-! Regularity: any declaratively-typed term has a locally-closed type. (Each
     rule produces an LC type; `var`/`ctor` via `InstantiatesBy.preserves_bvars`
     on LC `tyArgs`, `lambda` via the LC param premise, the rest by induction.) -/
