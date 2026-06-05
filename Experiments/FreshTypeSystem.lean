@@ -5063,3 +5063,76 @@ theorem TypeOfMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} 
     TypeOfMatchBranch ctx br tn ta rt → rt.IsLC
   | _, _, _, _, _, .mk _ _ _ _ _ _ _ hbody => TypeOfHM.regular hbody
 end
+
+/-- Frontier invariant: from a context whose schemes are below the input frontier
+    `Φ`, `Infer` yields a type and a substitution whose replacements are all below
+    the *output* frontier `Φ'` (so `mono` everything up to `Φ'`). (Named
+    `belowFvars` rather than `below`, since `Infer.below` is reserved by Lean's
+    auto-generated course-of-values recursor for the `Infer` inductive.) -/
+theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+    CtxBelow Φ ctx → Ty.BelowFvars Φ' τ ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
+  induction h with
+  | primLitUnit => intro _; exact ⟨.prim, by simp⟩
+  | primLitInt => intro _; exact ⟨.prim, by simp⟩
+  | primLitNat => intro _; exact ⟨.prim, by simp⟩
+  | primLitBool => intro _; exact ⟨.prim, by simp⟩
+  | primLitStr => intro _; exact ⟨.prim, by simp⟩
+  | pair ha hb iha ihb =>
+    intro hctx
+    obtain ⟨ha_τ, ha_s⟩ := iha hctx
+    have hctx1 := Subst.onCtx_below ha_s (Infer.frontier_le ha) hctx
+    obtain ⟨hb_τ, hb_s⟩ := ihb hctx1
+    have hle := Infer.frontier_le hb
+    refine ⟨.pair (Subst.onTy_belowFvars hb_s (ha_τ.mono hle)) hb_τ, ?_⟩
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact (ha_s p hp).mono hle
+    · exact hb_s p hp
+  | lambda hbody ih =>
+    intro hctx
+    obtain ⟨hb_τ, hb_s⟩ := ih (by
+      intro M hM
+      rcases List.mem_cons.mp hM with rfl | hM
+      · exact .fvar (by omega)
+      · exact (hctx M hM).mono (by omega))
+    refine ⟨.arrow (Subst.onTy_belowFvars hb_s (.fvar ?_)) hb_τ, hb_s⟩
+    have := Infer.frontier_le hbody
+    omega
+  | app hf harg huni ihf iharg =>
+    intro hctx
+    obtain ⟨hf_τ, hf_s⟩ := ihf hctx
+    have hctx1 := Subst.onCtx_below hf_s (Infer.frontier_le hf) hctx
+    obtain ⟨harg_τ, harg_s⟩ := iharg hctx1
+    have h1 := Infer.frontier_le hf
+    have h2 := Infer.frontier_le harg
+    refine ⟨Subst.onTy_belowFvars
+        (UnifyRel.belowFvars huni
+          (Subst.onTy_belowFvars (fun p hp => (harg_s p hp).mono (by omega)) (hf_τ.mono (by omega)))
+          (.arrow (harg_τ.mono (by omega)) (.fvar (by omega))))
+        (.fvar (by omega)), ?_⟩
+    intro p hp; rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · exact (hf_s p hp).mono (by omega)
+    · exact (harg_s p hp).mono (by omega)
+    · exact UnifyRel.belowFvars huni
+        (Subst.onTy_belowFvars (fun p hp => (harg_s p hp).mono (by omega)) (hf_τ.mono (by omega)))
+        (.arrow (harg_τ.mono (by omega)) (.fvar (by omega))) p hp
+  | var hlook =>
+    intro hctx
+    refine ⟨?_, by simp⟩
+    exact Ty.openVars_belowFvars ((hctx _ (List.mem_of_getElem? hlook)).mono (by omega))
+      (fun x hx => by have := freshVars_lt x hx; omega)
+  | letIn hrhs hbody ihrhs ihbody =>
+    intro hctx
+    obtain ⟨hr_τ, hr_s⟩ := ihrhs hctx
+    have hctx1 := Subst.onCtx_below hr_s (Infer.frontier_le hrhs) hctx
+    obtain ⟨hb_τ, hb_s⟩ := ihbody (by
+      intro M hM
+      rcases List.mem_cons.mp hM with rfl | hM
+      · exact hr_τ.closeOver
+      · exact hctx1 M hM)
+    refine ⟨hb_τ, ?_⟩
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact (hr_s p hp).mono (Infer.frontier_le hbody)
+    · exact hb_s p hp
