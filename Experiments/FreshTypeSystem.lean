@@ -5495,3 +5495,57 @@ theorem swapSubst_onTy {a b c : Nat} (hab : a ≠ b) (hac : a ≠ c) (hbc : b �
     apply List.map_congr_left
     intro t ht
     exact ih t ht (fun hct => hc (TyList.mem_freeVars_of_mem ht hct))
+
+/-- After swapping `Φ ↔ W`, the var `Φ` is absent provided `W` was absent
+    (the only source of `Φ` would have been a pre-existing `W`). -/
+theorem Ty.rename_swap_not_mem_left {Φ W : Nat} {Y : Ty} (h : W ∉ Y.freeVars) :
+    Φ ∉ (Ty.rename (swapNat Φ W) Y).freeVars := by
+  induction Y using Ty.rec_strong with
+  | prim p => simp [Ty.freeVars]
+  | bvar i => simp [Ty.freeVars]
+  | fvar n =>
+    simp only [Ty.freeVars, List.mem_singleton] at h
+    simp only [Ty.rename_fvar, Ty.freeVars, List.mem_singleton, swapNat]
+    split_ifs <;> omega
+  | pair a b iha ihb =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at h
+    simp only [Ty.rename_pair, Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+    exact ⟨iha h.1, ihb h.2⟩
+  | arrow a b iha ihb =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at h
+    simp only [Ty.rename_arrow, Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+    exact ⟨iha h.1, ihb h.2⟩
+  | customTy nm tys ih =>
+    simp only [Ty.freeVars] at h
+    simp only [Ty.rename_customTy, Ty.freeVars]
+    rw [TyList.not_mem_freeVars_iff]
+    intro t' ht'
+    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+    exact ih t ht (fun hct => h (TyList.mem_freeVars_of_mem ht hct))
+
+/-- Map-back: substituting `W ↦ Φ` undoes the swap `Φ ↔ W` on a `W`-free type. -/
+theorem Ty.substFvar_rename_swap {Φ W : Nat} {X : Ty} (h : W ∉ X.freeVars) :
+    Ty.substFvar W (.fvar Φ) (Ty.rename (swapNat Φ W) X) = X := by
+  induction X using Ty.rec_strong with
+  | prim p => rfl
+  | bvar i => rfl
+  | fvar n =>
+    simp only [Ty.freeVars, List.mem_singleton] at h
+    simp only [Ty.rename_fvar, Ty.substFvar]
+    by_cases hn : n = Φ
+    · subst hn; simp [swapNat]
+    · rw [swapNat_other hn (fun he => h he.symm), if_neg (fun he => h he.symm)]
+  | pair a b iha ihb =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at h
+    simp only [Ty.rename_pair, Ty.substFvar, iha h.1, ihb h.2]
+  | arrow a b iha ihb =>
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at h
+    simp only [Ty.rename_arrow, Ty.substFvar, iha h.1, ihb h.2]
+  | customTy nm tys ih =>
+    simp only [Ty.freeVars] at h
+    simp only [Ty.rename_customTy, Ty.substFvar, TyList.substFvar_eq_map, List.map_map]
+    refine congrArg (Ty.customTy nm) ?_
+    conv_rhs => rw [← List.map_id tys]
+    apply List.map_congr_left
+    intro t ht
+    exact ih t ht (fun hct => h (TyList.mem_freeVars_of_mem ht hct))
