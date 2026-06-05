@@ -4418,3 +4418,68 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
 /-- The fresh-variable frontier only ever grows. -/
 theorem Infer.frontier_le {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) : Φ ≤ Φ' := by
   induction h <;> omega
+
+/-- A context is well-formed when every scheme in its env is well-formed. -/
+def CtxWF (ctx : Ctx) : Prop := ∀ M ∈ ctx.env, M.WF
+
+@[simp] theorem freshVars_length (Φ k : Nat) : (freshVars Φ k).length = k := by
+  simp [freshVars]
+
+/-- A whole substitution (LC replacements) preserves any bvar bound. -/
+theorem Subst.onTy_containsBvars {S : Subst} (h_lc : ∀ p ∈ S, p.2.IsLC) :
+    ∀ {n : Nat} {τ : Ty}, ContainsBvarsUpTo n τ → ContainsBvarsUpTo n (S.onTy τ) := by
+  induction S with
+  | nil => intro n τ hτ; simpa using hτ
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    have hU : U.IsLC := h_lc (Z, U) (List.mem_cons_self ..)
+    have hS' : ∀ p ∈ S', p.2.IsLC := fun p hp => h_lc p (List.mem_cons_of_mem _ hp)
+    intro n τ hτ
+    rw [show ((Z, U) :: S') = [(Z, U)] ++ S' from rfl, Subst.onTy_append]
+    exact ih hS' (ContainsBvarsUpTo.substFvar hU hτ)
+
+/-- A whole substitution preserves scheme well-formedness. -/
+theorem Subst.onPolyTy_wf {S : Subst} (h_lc : ∀ p ∈ S, p.2.IsLC) {M : PolyTy}
+    (hM : M.WF) : (S.onPolyTy M).WF :=
+  Subst.onTy_containsBvars h_lc hM
+
+/-- A whole substitution preserves context well-formedness. -/
+theorem Subst.onCtx_wf {S : Subst} (h_lc : ∀ p ∈ S, p.2.IsLC) {ctx : Ctx}
+    (h : CtxWF ctx) : CtxWF (S.onCtx ctx) := by
+  intro M hM
+  simp only [Subst.onCtx, Subst.onEnv] at hM
+  obtain ⟨M0, hM0, rfl⟩ := List.mem_map.mp hM
+  exact Subst.onPolyTy_wf h_lc (h M0 hM0)
+
+/-- Instantiating all bvars below `n` with LC types yields an LC type. -/
+theorem Ty.instantiate_isLC {σ : Nat → Ty} {n : Nat}
+    (hσ : ∀ i, i < n → (σ i).IsLC) {ty : Ty} (hty : ContainsBvarsUpTo n ty) :
+    (ty.instantiate σ).IsLC := by
+  induction ty using Ty.rec_strong with
+  | prim p => exact .prim
+  | bvar i => cases hty with | bvar hlt => exact hσ i hlt
+  | fvar m => exact .fvar
+  | pair a b iha ihb => cases hty with | pair ha hb => exact .pair (iha ha) (ihb hb)
+  | arrow a b iha ihb => cases hty with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | customTy nm tys ih =>
+    cases hty with
+    | customTy hall =>
+      simp only [Ty.instantiate, TyList.instantiate_eq_map]
+      apply ContainsBvarsUpTo.customTy
+      intro t ht
+      obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+      exact ih t0 ht0 (hall t0 ht0)
+
+/-- Opening a type whose bvars are `< Xs.length` with fresh names is LC. -/
+theorem Ty.openVars_isLC {Xs : List Nat} {n : Nat} {ty : Ty}
+    (hty : ContainsBvarsUpTo n ty) (hn : n ≤ Xs.length) :
+    (Ty.openVars Xs ty).IsLC := by
+  simp only [Ty.openVars]
+  refine Ty.instantiate_isLC (fun i hi => ?_) hty
+  rw [List.getElem?_eq_getElem (show i < Xs.length by omega)]
+  exact .fvar
+
+/-- Opening a well-formed scheme with enough fresh names is LC. -/
+theorem PolyTy.openVars_isLC {Xs : List Nat} {M : PolyTy}
+    (hM : M.WF) (hn : M.paramCount ≤ Xs.length) : (M.openVars Xs).IsLC :=
+  Ty.openVars_isLC hM hn
