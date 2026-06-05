@@ -7299,3 +7299,33 @@ theorem Infer.complete_letIn {rhs body : Expr}
   | letIn hMwf hcofin heq hbody =>
     subst heq
     exact Infer.complete_letIn_aux iha ihb hwf hbelow hS₀ hMwf hcofin hbody
+
+
+/-! ### Principality, assembled -/
+
+/-- Every core expression satisfies the principality property `CompleteAt`,
+    assembled from the per-form case lemmas by induction on `Expr.Core`. -/
+theorem Infer.completeAt_of_core {e : Expr} (hcore : e.Core) : Infer.CompleteAt e := by
+  induction hcore with
+  | primLit => exact Infer.complete_prim
+  | pair _ _ iha ihb => exact Infer.complete_pair iha ihb
+  | lambda _ ih => exact Infer.complete_lambda ih
+  | app _ _ ihf iharg => exact Infer.complete_app ihf iharg
+  | var => exact Infer.complete_var
+  | letIn _ _ iha ihb => exact Infer.complete_letIn iha ihb
+
+/-- **Principality of `Infer`** (Damas–Milner completeness, core fragment): for
+    any declarative typing of a core expression `e` under an LC specialization
+    `S₀` of a WF, frontier-bounded context, `Infer` succeeds with `(S, τ)` and the
+    declarative typing factors through it via an LC residual `R` (`S₀ = R ∘ S`
+    below the frontier, `τ₀ = R.onTy τ`). Combined with `Infer.sound`, this is
+    full principality: `Infer` computes a most general typing. -/
+theorem Infer.complete {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
+    (hcore : e.Core) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
+    ∃ Φ' S τ R,
+      Infer Φ ctx e Φ' S τ ∧
+      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      τ₀ = R.onTy τ ∧
+      (∀ p ∈ R, p.2.IsLC) :=
+  Infer.completeAt_of_core hcore hwf hbelow hS₀ hty
