@@ -6536,3 +6536,139 @@ theorem UnifyRel.complete_aux : ∀ (N : Nat),
 theorem UnifyRel.complete {a b : Ty} {U : Subst}
     (ha : a.IsLC) (hb : b.IsLC) (hU : Unifies U a b) : ∃ S, UnifyRel a b S :=
   (UnifyRel.complete_aux (2 * (U.onTy a).size + 1)).1 (by omega) ha hb hU
+
+/-- Principality, application case (factored with named binders). Recurse on `f`
+    then `arg`; the declarative typing yields a unifier of `S₂.onTy τf` and
+    `arrow τa (.fvar Φ₂)` — exhibited explicitly as `[(Φ₂,.fvar W)] ++ R₂ ++ [(W,τ₀)]`
+    (`W` fresh) so no derivation renaming is needed — which `UnifyRel.complete`
+    realises as a derivation `S₃`, and `greatest_lc` factors through to the
+    residual. -/
+theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
+    {argTy τ₀ : Ty}
+    (ihf : Infer.CompleteAt f) (iharg : Infer.CompleteAt arg)
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
+    (hf : TypeOfHM (S₀.onCtx ctx) f (.arrow argTy τ₀))
+    (harg : TypeOfHM (S₀.onCtx ctx) arg argTy) :
+    ∃ Φ' S τ R,
+      Infer Φ ctx (.app f arg) Φ' S τ ∧
+      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      τ₀ = R.onTy τ ∧
+      (∀ p ∈ R, p.2.IsLC) := by
+  -- STEP 1: recurse on `f`.
+  obtain ⟨Φ₁, S₁, τf, R₁, hinff, hagf, htyf, hR₁⟩ := ihf hwf hbelow hS₀ hf
+  have hS₁ := (Infer.lc hinff hwf).2
+  have hbf := Infer.belowFvars hinff hbelow
+  have hle1 := Infer.frontier_le hinff
+  have hwf₁ := Subst.onCtx_wf hS₁ hwf
+  have hbelow₁ := Subst.onCtx_below hbf.2 hle1 hbelow
+  -- STEP 2: recurse on `arg`.
+  have hctxeq : R₁.onCtx (S₁.onCtx ctx) = S₀.onCtx ctx := by
+    rw [← Subst.onCtx_append]
+    exact Subst.onCtx_congr (fun v hv => (hagf v hv).symm) hbelow
+  have harg' : TypeOfHM (R₁.onCtx (S₁.onCtx ctx)) arg argTy := by
+    rw [hctxeq]; exact harg
+  obtain ⟨Φ₂, S₂, τa, R₂, hinfa, haga, htya, hR₂⟩ := iharg hwf₁ hbelow₁ hR₁ harg'
+  have hS₂ := (Infer.lc hinfa hwf₁).2
+  have hba := Infer.belowFvars hinfa hbelow₁
+  have hle2 := Infer.frontier_le hinfa
+  have hτfLC := (Infer.lc hinff hwf).1
+  have hτaLC := (Infer.lc hinfa hwf₁).1
+  -- STEP 3: key equalities.
+  have hcongr_f : R₁.onTy τf = (S₂ ++ R₂).onTy τf := Subst.onTy_congr haga hbf.1
+  have hP : R₂.onTy (S₂.onTy τf) = Ty.arrow argTy τ₀ := by
+    rw [← Subst.onTy_append, ← hcongr_f]; exact htyf.symm
+  have hΦ₂τf : Φ₂ ∉ (S₂.onTy τf).freeVars := fun hm => by
+    have := (Subst.onTy_belowFvars hba.2 (hbf.1.mono hle2)).mem_lt _ hm
+    omega
+  have hΦ₂τa : Φ₂ ∉ τa.freeVars := fun hm => by
+    have := hba.1.mem_lt _ hm
+    omega
+  have hτ₀LC : τ₀.IsLC := by
+    have hreg := TypeOfHM.regular hf
+    cases hreg with
+    | arrow _ hT => exact hT
+  -- STEP 4: a fresh variable `W`.
+  obtain ⟨W, hWge, hWfresh⟩ := exists_fresh_block
+    (R₂.map Prod.fst ++ R₂.flatMap (fun p => p.2.freeVars) ++ argTy.freeVars ++ τ₀.freeVars) Φ₂ 1
+  have hWdom : ∀ p ∈ R₂, p.1 ≠ W := by
+    intro p hp he
+    have := hWfresh p.1 (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_append_left _ (List.mem_map.mpr ⟨p, hp, rfl⟩))))
+    omega
+  have hWrange : ∀ p ∈ R₂, W ∉ p.2.freeVars := by
+    intro p hp hc
+    have := hWfresh W (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_append_right _ (List.mem_flatMap.mpr ⟨p, hp, hc⟩))))
+    omega
+  have hWargTy : W ∉ argTy.freeVars := fun hc => by
+    have := hWfresh W (List.mem_append_left _ (List.mem_append_right _ hc)); omega
+  have hWτ₀ : W ∉ τ₀.freeVars := fun hc => by
+    have := hWfresh W (List.mem_append_right _ hc); omega
+  have hR₂Wfvar : R₂.onTy (Ty.fvar W) = Ty.fvar W := by
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    exact hWdom p hp hc
+  -- STEP 5: the explicit unifier `U`.
+  obtain ⟨U, hUdef⟩ : ∃ U : Subst, U = [(Φ₂, Ty.fvar W)] ++ R₂ ++ [(W, τ₀)] := ⟨_, rfl⟩
+  have hsingle : ∀ (Z : Nat) (V y : Ty), Subst.onTy [(Z, V)] y = Ty.substFvar Z V y :=
+    fun _ _ _ => rfl
+  have hsubArrow : ∀ (Z : Nat) (V a b : Ty),
+      Ty.substFvar Z V (Ty.arrow a b) = Ty.arrow (Ty.substFvar Z V a) (Ty.substFvar Z V b) :=
+    fun _ _ _ _ => rfl
+  have hUonTy : ∀ x, U.onTy x = Ty.substFvar W τ₀ (R₂.onTy (Ty.substFvar Φ₂ (Ty.fvar W) x)) := by
+    intro x
+    rw [hUdef, Subst.onTy_append, Subst.onTy_append, hsingle, hsingle]
+  have e1 : Ty.substFvar Φ₂ (Ty.fvar W) (Ty.fvar Φ₂) = Ty.fvar W := by simp [Ty.substFvar]
+  have e2 : Ty.substFvar W τ₀ (Ty.fvar W) = τ₀ := by simp [Ty.substFvar]
+  have hUniL : U.onTy (S₂.onTy τf) = Ty.arrow argTy τ₀ := by
+    rw [hUonTy, Ty.substFvar_fresh hΦ₂τf, hP, hsubArrow,
+        Ty.substFvar_fresh hWargTy, Ty.substFvar_fresh hWτ₀]
+  have hUniR : U.onTy (Ty.arrow τa (Ty.fvar Φ₂)) = Ty.arrow argTy τ₀ := by
+    rw [hUonTy, hsubArrow, Ty.substFvar_fresh hΦ₂τa, e1, Subst.onTy_arrow,
+        hR₂Wfvar, ← htya, hsubArrow, Ty.substFvar_fresh hWargTy, e2]
+  have hUni : Unifies U (S₂.onTy τf) (Ty.arrow τa (Ty.fvar Φ₂)) := by
+    show U.onTy (S₂.onTy τf) = U.onTy (Ty.arrow τa (Ty.fvar Φ₂))
+    rw [hUniL, hUniR]
+  -- STEP 6: realise the unifier as a derivation `S₃`.
+  obtain ⟨S₃, h₃⟩ := UnifyRel.complete (Subst.onTy_lc hS₂ hτfLC)
+    (.arrow hτaLC ContainsBvarsUpTo.fvar) hUni
+  -- STEP 7: factor `U` through `S₃`.
+  have hUlc : ∀ p ∈ U, p.2.IsLC := by
+    rw [hUdef]
+    intro p hp
+    rcases List.mem_append.mp hp with hp' | hp'
+    · rcases List.mem_append.mp hp' with hp'' | hp''
+      · obtain rfl := List.mem_singleton.mp hp''
+        exact ContainsBvarsUpTo.fvar
+      · exact hR₂ p hp''
+    · obtain rfl := List.mem_singleton.mp hp'
+      exact hτ₀LC
+  obtain ⟨R₃, hR₃, hR₃lc⟩ := UnifyRel.greatest_lc h₃ U hUlc hUni
+  -- STEP 8: assemble.
+  refine ⟨Φ₂ + 1, S₁ ++ S₂ ++ S₃, S₃.onTy (Ty.fvar Φ₂), R₃,
+    Infer.app hinff hinfa h₃, ?_, ?_, hR₃lc⟩
+  · intro v hv
+    have ht1 : Ty.BelowFvars Φ₁ (S₁.onTy (Ty.fvar v)) :=
+      Subst.onTy_belowFvars hbf.2 (Ty.BelowFvars.fvar (by omega))
+    have ht : Ty.BelowFvars Φ₂ (S₂.onTy (S₁.onTy (Ty.fvar v))) :=
+      Subst.onTy_belowFvars hba.2 (ht1.mono hle2)
+    have hΦ₂t : Φ₂ ∉ (S₂.onTy (S₁.onTy (Ty.fvar v))).freeVars := fun hm => by
+      have := ht.mem_lt _ hm; omega
+    have hWt : W ∉ (S₂.onTy (S₁.onTy (Ty.fvar v))).freeVars := fun hm => by
+      have := ht.mem_lt _ hm; omega
+    have hWR₂t : W ∉ (R₂.onTy (S₂.onTy (S₁.onTy (Ty.fvar v)))).freeVars :=
+      Subst.not_mem_onTy_freeVars hWrange hWt
+    simp only [Subst.onTy_append]
+    rw [← hR₃ (S₂.onTy (S₁.onTy (Ty.fvar v))), hUonTy,
+        Ty.substFvar_fresh hΦ₂t, Ty.substFvar_fresh hWR₂t,
+        hagf v hv, Subst.onTy_append, Subst.onTy_congr haga ht1, Subst.onTy_append]
+  · rw [← hR₃ (Ty.fvar Φ₂), hUonTy, e1, hR₂Wfvar, e2]
+
+/-- Principality, application case. -/
+theorem Infer.complete_app {f arg : Expr}
+    (ihf : Infer.CompleteAt f) (iharg : Infer.CompleteAt arg) :
+    Infer.CompleteAt (.app f arg) := by
+  intro Φ ctx S₀ τ₀ hwf hbelow hS₀ hty
+  cases hty with
+  | app hf harg => exact Infer.complete_app_aux ihf iharg hwf hbelow hS₀ hf harg
