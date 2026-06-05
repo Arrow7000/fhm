@@ -4199,3 +4199,65 @@ end
 theorem UnifyRel.isMGU {τ₁ τ₂ : Ty} {S : Subst} (h : UnifyRel τ₁ τ₂ S) :
     IsMGU S τ₁ τ₂ :=
   ⟨h.unifies, h.greatest⟩
+
+
+/-! ## Algorithmic phase, step 2: the inference relation (Algorithm W, relational)
+
+`Infer Φ ctx e Φ' S τ` is Algorithm W phrased as a *relation* (no function /
+termination obligation yet — that is stage 3). It reads: starting with the
+fresh-variable frontier `Φ` (every unification var in play is `< Φ`), expression
+`e` infers type `τ` under the most-general substitution `S`, allocating fresh
+vars up to the new frontier `Φ'`. `.fvar`s are the unification variables;
+composition of the threaded substitutions is `++`.
+
+This v1 covers the let-polymorphic core (`primLit`, `pair`, `lambda`, `app`,
+`var`, `letIn`); `ctor`/`match_`/`letPairIn` are added once the core soundness
+bridge to `TypeOfHM` is in place. The relation being partial on those forms is
+harmless — it is a *sound* (not yet complete) specification.
+
+The plan: prove `Infer.sound` (algo type ⟹ declarative type, iterating
+`typ_subst_preservation` and using `UnifyRel.isMGU`), then completeness. -/
+
+/-- The `k` fresh unification-var names starting at frontier `Φ`. -/
+def freshVars (Φ k : Nat) : List Nat := (List.range k).map (Φ + ·)
+
+/-- Generalization candidates: the free unification vars of `τ` that are *not*
+    fixed by `env` (these are the ones a `let` may generalize over). -/
+def genVars (env : Env) (τ : Ty) : List Nat :=
+  τ.freeVars.filter (fun x => !env.freeVars.contains x)
+
+/-- Algorithm W as a substitution-threading relation. -/
+inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
+  | primLitUnit {Φ ctx} :
+    Infer Φ ctx (.primLit .unit) Φ [] (.prim .unit)
+  | primLitInt {Φ ctx n} :
+    Infer Φ ctx (.primLit (.int n)) Φ [] (.prim .int)
+  | primLitNat {Φ ctx n} :
+    Infer Φ ctx (.primLit (.nat n)) Φ [] (.prim .nat)
+  | primLitBool {Φ ctx b} :
+    Infer Φ ctx (.primLit (.bool b)) Φ [] (.prim .bool)
+  | primLitStr {Φ ctx s} :
+    Infer Φ ctx (.primLit (.str s)) Φ [] (.prim .str)
+  | pair {Φ ctx a b Φ₁ Φ₂ S₁ S₂ τa τb} :
+    Infer Φ ctx a Φ₁ S₁ τa →
+    Infer Φ₁ (S₁.onCtx ctx) b Φ₂ S₂ τb →
+    Infer Φ ctx (.pair a b) Φ₂ (S₁ ++ S₂) (.pair (S₂.onTy τa) τb)
+  | lambda {Φ ctx body Φ' S τb} :
+    Infer (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } body Φ' S τb →
+    Infer Φ ctx (.lambda body) Φ' S (.arrow (S.onTy (.fvar Φ)) τb)
+  | app {Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ τf τa} :
+    Infer Φ ctx f Φ₁ S₁ τf →
+    Infer Φ₁ (S₁.onCtx ctx) arg Φ₂ S₂ τa →
+    UnifyRel (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) S₃ →
+    Infer Φ ctx (.app f arg) (Φ₂ + 1) (S₁ ++ S₂ ++ S₃) (S₃.onTy (.fvar Φ₂))
+  | var {Φ ctx i polyTy} :
+    ctx.env[i]? = some polyTy →
+    Infer Φ ctx (.var i) (Φ + polyTy.paramCount) []
+      (polyTy.openVars (freshVars Φ polyTy.paramCount))
+  | letIn {Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ M τ₂} :
+    Infer Φ ctx rhs Φ₁ S₁ τ₁ →
+    M.WF →
+    M.paramCount = (genVars (S₁.onCtx ctx).env (S₁.onTy τ₁)).length →
+    M.openVars (genVars (S₁.onCtx ctx).env (S₁.onTy τ₁)) = S₁.onTy τ₁ →
+    Infer Φ₁ { (S₁.onCtx ctx) with env := M :: (S₁.onCtx ctx).env } body Φ₂ S₂ τ₂ →
+    Infer Φ ctx (.letIn rhs body) Φ₂ (S₁ ++ S₂) τ₂
