@@ -4595,3 +4595,20 @@ theorem Subst.onTy_openVars {S : Subst} {Xs : List Nat}
     rw [Ty.substFvar_openVars hU hZ]
     exact ih (fun p hp => h_lc p (List.mem_cons_of_mem _ hp))
              (fun p hp => h_fresh p (List.mem_cons_of_mem _ hp))
+
+@[simp] theorem Ty.openVars_prim {Xs : List Nat} {p : PrimTy} :
+    Ty.openVars Xs (.prim p) = .prim p := rfl
+@[simp] theorem Ty.openVars_pair {Xs : List Nat} {a b : Ty} :
+    Ty.openVars Xs (.pair a b) = .pair (Ty.openVars Xs a) (Ty.openVars Xs b) := rfl
+@[simp] theorem Ty.openVars_arrow {Xs : List Nat} {a b : Ty} :
+    Ty.openVars Xs (.arrow a b) = .arrow (Ty.openVars Xs a) (Ty.openVars Xs b) := rfl
+
+/-- Opening with fresh *names* `Xs` is opening with those names as `fvar` types. -/
+theorem Ty.openVars_eq_openWith {Xs : List Nat} {ty : Ty} :
+    Ty.openVars Xs ty = Ty.openWith (Xs.map (Ty.fvar ·)) ty := by
+  unfold Ty.openVars Ty.openWith
+  congr 1
+  funext i
+  rcases h : Xs[i]? with _ | x
+  · simp [h]
+  · simp [h, List.getElem?_map]
