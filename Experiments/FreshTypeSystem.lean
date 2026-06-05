@@ -4930,6 +4930,89 @@ theorem Subst.onCtx_below {Φ Φ' : Nat} {S : Subst} {ctx : Ctx}
   obtain ⟨M0, hM0, rfl⟩ := List.mem_map.mp hM
   exact Subst.onTy_belowFvars hS ((hb M0 hM0).mono hle)
 
+/-- The `k` fresh names allocated from frontier `Φ` are all `< Φ + k`. -/
+theorem freshVars_lt {Φ k : Nat} : ∀ x ∈ freshVars Φ k, x < Φ + k := by
+  intro x hx
+  simp only [freshVars, List.mem_map, List.mem_range] at hx
+  obtain ⟨i, hi, rfl⟩ := hx
+  omega
+
+/-- Opening a below-`Φ` type with fresh names all `< Φ` stays below-`Φ`. -/
+theorem Ty.openVars_belowFvars {Φ : Nat} {Xs : List Nat} {τ : Ty}
+    (hτ : Ty.BelowFvars Φ τ) (hXs : ∀ x ∈ Xs, x < Φ) :
+    Ty.BelowFvars Φ (Ty.openVars Xs τ) := by
+  induction τ using Ty.rec_strong with
+  | prim p => exact .prim
+  | pair a b iha ihb => cases hτ with | pair ha hb => exact .pair (iha ha) (ihb hb)
+  | arrow a b iha ihb => cases hτ with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | bvar i =>
+    simp only [Ty.openVars, Ty.instantiate]
+    cases h : Xs[i]? with
+    | none => exact .bvar
+    | some x => exact .fvar (hXs x (List.mem_of_getElem? h))
+  | fvar n => cases hτ with | fvar hlt => exact .fvar hlt
+  | customTy nm tys ih =>
+    cases hτ with
+    | customTy hall =>
+      simp only [Ty.openVars_customTy]
+      apply Ty.BelowFvars.customTy
+      intro t' ht'
+      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+      exact ih t ht (hall t ht)
+
+mutual
+
+/-- Unifying two below-`Φ` monotypes yields a below-`Φ` substitution. -/
+theorem UnifyRel.belowFvars {Φ : Nat} : {a b : Ty} → {S : Subst} → UnifyRel a b S →
+    Ty.BelowFvars Φ a → Ty.BelowFvars Φ b → ∀ p ∈ S, Ty.BelowFvars Φ p.2
+  | _, _, _, .prim, _, _ => by simp
+  | _, _, _, .fvarRefl, _, _ => by simp
+  | _, _, _, .fvarL _ _, _, hb => by
+    intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hb
+  | _, _, _, .fvarR _ _, ha, _ => by
+    intro p hp; rw [List.mem_singleton] at hp; subst hp; exact ha
+  | _, _, _, .arrow h₁ h₂, ha, hb => by
+    cases ha with | arrow ha_a ha_b => cases hb with | arrow hb_c hb_d =>
+    have h1lc := UnifyRel.belowFvars h₁ ha_a hb_c
+    have h2lc := UnifyRel.belowFvars h₂ (Subst.onTy_belowFvars h1lc ha_b) (Subst.onTy_belowFvars h1lc hb_d)
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact h1lc p hp
+    · exact h2lc p hp
+  | _, _, _, .pair h₁ h₂, ha, hb => by
+    cases ha with | pair ha_a ha_b => cases hb with | pair hb_c hb_d =>
+    have h1lc := UnifyRel.belowFvars h₁ ha_a hb_c
+    have h2lc := UnifyRel.belowFvars h₂ (Subst.onTy_belowFvars h1lc ha_b) (Subst.onTy_belowFvars h1lc hb_d)
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact h1lc p hp
+    · exact h2lc p hp
+  | _, _, _, .customTy hl, ha, hb => by
+    cases ha with | customTy ha_all => cases hb with | customTy hb_all =>
+    exact UnifyRelList.belowFvars hl ha_all hb_all
+
+/-- List version: unifying two below-`Φ` type lists yields a below-`Φ` substitution. -/
+theorem UnifyRelList.belowFvars {Φ : Nat} : {ts₁ ts₂ : List Ty} → {S : Subst} → UnifyRelList ts₁ ts₂ S →
+    (∀ t ∈ ts₁, Ty.BelowFvars Φ t) → (∀ t ∈ ts₂, Ty.BelowFvars Φ t) → ∀ p ∈ S, Ty.BelowFvars Φ p.2
+  | _, _, _, .nil, _, _ => by simp
+  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht, hts₁, hts₂ => by
+    have ht1 : Ty.BelowFvars Φ t₁ := hts₁ t₁ (List.mem_cons_self ..)
+    have ht2 : Ty.BelowFvars Φ t₂ := hts₂ t₂ (List.mem_cons_self ..)
+    have h1lc := UnifyRel.belowFvars h₁ ht1 ht2
+    have hmap₁ : ∀ t ∈ ts₁.map S₁.onTy, Ty.BelowFvars Φ t := by
+      intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
+      exact Subst.onTy_belowFvars h1lc (hts₁ t0 (List.mem_cons_of_mem _ ht0))
+    have hmap₂ : ∀ t ∈ ts₂.map S₁.onTy, Ty.BelowFvars Φ t := by
+      intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
+      exact Subst.onTy_belowFvars h1lc (hts₂ t0 (List.mem_cons_of_mem _ ht0))
+    have h2lc := UnifyRelList.belowFvars ht hmap₁ hmap₂
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact h1lc p hp
+    · exact h2lc p hp
+
+end
+
 /-! Regularity: any declaratively-typed term has a locally-closed type. (Each
     rule produces an LC type; `var`/`ctor` via `InstantiatesBy.preserves_bvars`
     on LC `tyArgs`, `lambda` via the LC param premise, the rest by induction.) -/
