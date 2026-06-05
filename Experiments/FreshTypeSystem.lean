@@ -5761,3 +5761,165 @@ theorem Infer.complete_lambda {body : Expr}
   | lambda hparamLC heq hbodyty =>
     subst heq
     exact Infer.complete_lambda_aux ih hwf hbelow hS₀ hparamLC hbodyty
+
+
+/-! ### Block renaming (for the `var`/`letIn` cases, which allocate a block of
+    fresh vars at once). Generalises the single-var swap: `blockSwap Φ W k`
+    transposes `[Φ,Φ+k)` with `[W,W+k)` (disjoint when `Φ+k ≤ W`). On types that
+    avoid the `W`-block, the forward list `blockList` realises it, and the
+    backward list `blockListBack` is the map-back. -/
+
+/-- Transpose the blocks `[Φ,Φ+k)` and `[W,W+k)` (disjoint when `Φ+k ≤ W`). -/
+def blockSwap (Φ W k n : Nat) : Nat :=
+  if Φ ≤ n ∧ n < Φ + k then n + (W - Φ)
+  else if W ≤ n ∧ n < W + k then n - (W - Φ)
+  else n
+
+/-- Forward renaming list: `Φ+i ↦ .fvar (W+i)`. -/
+def blockList (Φ W k : Nat) : Subst := (List.range k).map (fun i => (Φ + i, Ty.fvar (W + i)))
+
+/-- Backward renaming list: `W+i ↦ .fvar (Φ+i)`. -/
+def blockListBack (Φ W k : Nat) : Subst := (List.range k).map (fun i => (W + i, Ty.fvar (Φ + i)))
+
+theorem blockSwap_lt {Φ W k n : Nat} (hle : Φ ≤ W) (h : n < Φ) :
+    blockSwap Φ W k n = n := by
+  simp only [blockSwap]; split_ifs <;> omega
+
+theorem blockSwap_block {Φ W k i : Nat} (hle : Φ ≤ W) (hi : i < k) :
+    blockSwap Φ W k (Φ + i) = W + i := by
+  simp only [blockSwap]; split_ifs <;> omega
+
+theorem blockSwap_involutive {Φ W k : Nat} (hd : Φ + k ≤ W) (n : Nat) :
+    blockSwap Φ W k (blockSwap Φ W k n) = n := by
+  simp only [blockSwap]; split_ifs <;> omega
+
+theorem blockSwap_injective {Φ W k : Nat} (hd : Φ + k ≤ W) :
+    Function.Injective (blockSwap Φ W k) :=
+  Function.Involutive.injective (blockSwap_involutive hd)
+
+theorem blockList_lc (Φ W k : Nat) : ∀ p ∈ blockList Φ W k, p.2.IsLC := by
+  intro p hp
+  simp only [blockList, List.mem_map] at hp
+  obtain ⟨i, _, rfl⟩ := hp
+  exact ContainsBvarsUpTo.fvar
+
+theorem blockListBack_lc (Φ W k : Nat) : ∀ p ∈ blockListBack Φ W k, p.2.IsLC := by
+  intro p hp
+  simp only [blockListBack, List.mem_map] at hp
+  obtain ⟨i, _, rfl⟩ := hp
+  exact ContainsBvarsUpTo.fvar
+
+/-- A `range`-indexed list of single-var substitutions `a+i ↦ .fvar (b+i)`
+    acts on a free variable `n` exactly like the block transposition: if `n`
+    is in `[a, a+k)` it becomes `n - a + b`, otherwise it is unchanged. The
+    disjointness premise prevents a relabelled var from being touched again. -/
+private theorem rangeMapList_onTy_fvar (a b : Nat) (k : Nat)
+    (hdisj : a + k ≤ b ∨ b + k ≤ a) (n : Nat) :
+    Subst.onTy ((List.range k).map (fun i => (a + i, Ty.fvar (b + i)))) (Ty.fvar n)
+      = Ty.fvar (if a ≤ n ∧ n < a + k then n - a + b else n) := by
+  induction k with
+  | zero =>
+    simp only [List.range_zero, List.map_nil, Subst.onTy_nil, Nat.add_zero]
+    split_ifs <;> first | rfl | omega
+  | succ k ih =>
+    have hdisj' : a + k ≤ b ∨ b + k ≤ a := by omega
+    simp only [List.range_succ, List.map_append, List.map_cons, List.map_nil,
+               Subst.onTy_append]
+    rw [ih hdisj']
+    simp only [Subst.onTy, Ty.substFvars, Ty.substFvar]
+    split_ifs <;> first | rfl | omega | (rw [Ty.fvar.injEq]; omega)
+
+/-- The forward list realises `blockSwap` on `W`-block-avoiding types. -/
+theorem blockList_onTy {Φ W k : Nat} (hd : Φ + k ≤ W) {τ : Ty}
+    (hτ : ∀ v ∈ τ.freeVars, ¬ (W ≤ v ∧ v < W + k)) :
+    (blockList Φ W k).onTy τ = Ty.rename (blockSwap Φ W k) τ := by
+  induction τ using Ty.rec_strong with
+  | prim p => simp only [Subst.onTy_prim, Ty.rename_prim]
+  | bvar i => simp only [Subst.onTy_bvar, Ty.rename_bvar]
+  | pair a b iha ihb =>
+    simp only [Subst.onTy_pair, Ty.rename_pair]
+    refine congrArg₂ Ty.pair (iha (fun v hv => hτ v ?_)) (ihb (fun v hv => hτ v ?_))
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl hv
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr hv
+  | arrow a b iha ihb =>
+    simp only [Subst.onTy_arrow, Ty.rename_arrow]
+    refine congrArg₂ Ty.arrow (iha (fun v hv => hτ v ?_)) (ihb (fun v hv => hτ v ?_))
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl hv
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr hv
+  | fvar n =>
+    have hWn : ¬ (W ≤ n ∧ n < W + k) :=
+      hτ n (by simp only [Ty.freeVars, List.mem_singleton])
+    simp only [blockList]
+    rw [rangeMapList_onTy_fvar Φ W k (Or.inl hd) n, Ty.rename_fvar]
+    simp only [blockSwap]
+    split_ifs <;> first | rfl | omega | (rw [Ty.fvar.injEq]; omega)
+  | customTy nm tys ih =>
+    simp only [Subst.onTy_customTy, Ty.rename_customTy, Ty.customTy.injEq, true_and]
+    apply List.map_congr_left
+    intro t ht
+    exact ih t ht (fun v hv => hτ v (TyList.mem_freeVars_of_mem ht hv))
+
+/-- Map-back: the backward list undoes `blockSwap` on `W`-block-avoiding types. -/
+theorem blockListBack_onTy_rename {Φ W k : Nat} (hd : Φ + k ≤ W) {X : Ty}
+    (hX : ∀ v ∈ X.freeVars, ¬ (W ≤ v ∧ v < W + k)) :
+    (blockListBack Φ W k).onTy (Ty.rename (blockSwap Φ W k) X) = X := by
+  induction X using Ty.rec_strong with
+  | prim p => simp only [Ty.rename_prim, Subst.onTy_prim]
+  | bvar i => simp only [Ty.rename_bvar, Subst.onTy_bvar]
+  | pair a b iha ihb =>
+    simp only [Ty.rename_pair, Subst.onTy_pair]
+    refine congrArg₂ Ty.pair (iha (fun v hv => hX v ?_)) (ihb (fun v hv => hX v ?_))
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl hv
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr hv
+  | arrow a b iha ihb =>
+    simp only [Ty.rename_arrow, Subst.onTy_arrow]
+    refine congrArg₂ Ty.arrow (iha (fun v hv => hX v ?_)) (ihb (fun v hv => hX v ?_))
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl hv
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr hv
+  | fvar n =>
+    have hWn : ¬ (W ≤ n ∧ n < W + k) :=
+      hX n (by simp only [Ty.freeVars, List.mem_singleton])
+    simp only [Ty.rename_fvar, blockListBack]
+    rw [rangeMapList_onTy_fvar W Φ k (Or.inr hd) (blockSwap Φ W k n)]
+    simp only [blockSwap]
+    split_ifs <;> first | rfl | omega | (rw [Ty.fvar.injEq]; omega)
+  | customTy nm tys ih =>
+    simp only [Ty.rename_customTy, Subst.onTy_customTy, List.map_map, Ty.customTy.injEq,
+               true_and]
+    conv_rhs => rw [← List.map_id tys]
+    apply List.map_congr_left
+    intro t ht
+    exact ih t ht (fun v hv => hX v (TyList.mem_freeVars_of_mem ht hv))
+
+/-- The `Φ`-block is absent after renaming a `W`-block-avoiding type. -/
+theorem blockSwap_rename_not_mem {Φ W k : Nat} (hd : Φ + k ≤ W) {Y : Ty}
+    (hY : ∀ v ∈ Y.freeVars, ¬ (W ≤ v ∧ v < W + k)) :
+    ∀ v, Φ ≤ v → v < Φ + k → v ∉ (Ty.rename (blockSwap Φ W k) Y).freeVars := by
+  induction Y using Ty.rec_strong with
+  | prim p => simp [Ty.freeVars]
+  | bvar i => simp [Ty.freeVars]
+  | fvar n =>
+    intro v hv1 hv2
+    have hWn : ¬ (W ≤ n ∧ n < W + k) :=
+      hY n (by simp only [Ty.freeVars, List.mem_singleton])
+    simp only [Ty.rename_fvar, Ty.freeVars, List.mem_singleton, blockSwap]
+    split_ifs <;> omega
+  | pair a b iha ihb =>
+    intro v hv1 hv2
+    simp only [Ty.rename_pair, Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+    refine ⟨iha (fun w hw => hY w ?_) v hv1 hv2, ihb (fun w hw => hY w ?_) v hv1 hv2⟩
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl hw
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr hw
+  | arrow a b iha ihb =>
+    intro v hv1 hv2
+    simp only [Ty.rename_arrow, Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+    refine ⟨iha (fun w hw => hY w ?_) v hv1 hv2, ihb (fun w hw => hY w ?_) v hv1 hv2⟩
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl hw
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr hw
+  | customTy nm tys ih =>
+    intro v hv1 hv2
+    simp only [Ty.rename_customTy, Ty.freeVars]
+    rw [TyList.not_mem_freeVars_iff]
+    intro t' ht'
+    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+    exact ih t ht (fun w hw => hY w (TyList.mem_freeVars_of_mem ht hw)) v hv1 hv2
