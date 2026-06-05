@@ -4112,6 +4112,10 @@ theorem UnifyRelList.unifies : {ts₁ ts₂ : List Ty} → {S : Subst} →
 end
 
 
+-- theorem UnifyRelList.unifies_rel : {ts₁ ts₂ : List Ty} → {S : Subst} →
+--     UnifyRelList ts₁ ts₂ S → List.Forall₂ (Unifies S) ts₁ ts₂ := by sorry
+--     -- UnifyRelList ts₁ ts₂ S → List.Forall₂ (UnifyRel · · S) ts₁ ts₂ := by sorry
+
 /-! ### Soundness, part 2: a derived substitution is *most general*
 
 The backbone of the var cases: if `S'` already equates `.fvar n` with `U`, then
@@ -4226,7 +4230,21 @@ def freshVars (Φ k : Nat) : List Nat := (List.range k).map (Φ + ·)
 def genVars (env : Env) (τ : Ty) : List Nat :=
   τ.freeVars.filter (fun x => !env.freeVars.contains x)
 
-/-- Algorithm W as a substitution-threading relation. -/
+/-- Abstract the (nodup) free vars `gs` of a type into bound vars
+    `bvar 0, …, bvar (gs.length - 1)` positionally — the inverse of
+    `openVars gs`. Built from `substFvars` (`fvar gs[i] ↦ bvar i`). -/
+def Ty.closeVars (gs : List Nat) (τ : Ty) : Ty :=
+  Ty.substFvars (gs.zipIdx.map (fun p => (p.1, Ty.bvar p.2))) τ
+
+/-- The principal generalization of `τ` relative to `env`: the scheme quantifying
+    over exactly the free vars of `τ` not fixed by `env` (`genVars`). This is the
+    concretely *defined* (not merely posited) scheme that `letIn` binds. -/
+def genScheme (env : Env) (τ : Ty) : PolyTy :=
+  { paramCount := (genVars env τ).length, body := Ty.closeVars (genVars env τ) τ }
+
+/-- Algorithm W as a substitution-threading relation.
+@TODO: remember to add constructors for the remaining Expr variants: `letPairIn`, `ctor`, `match_`
+-/
 inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
   | primLitUnit {Φ ctx} :
     Infer Φ ctx (.primLit .unit) Φ [] (.prim .unit)
@@ -4254,10 +4272,10 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
     ctx.env[i]? = some polyTy →
     Infer Φ ctx (.var i) (Φ + polyTy.paramCount) []
       (polyTy.openVars (freshVars Φ polyTy.paramCount))
-  | letIn {Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ M τ₂} :
+  | letIn {Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂} :
     Infer Φ ctx rhs Φ₁ S₁ τ₁ →
-    M.WF →
-    M.paramCount = (genVars (S₁.onCtx ctx).env (S₁.onTy τ₁)).length →
-    M.openVars (genVars (S₁.onCtx ctx).env (S₁.onTy τ₁)) = S₁.onTy τ₁ →
-    Infer Φ₁ { (S₁.onCtx ctx) with env := M :: (S₁.onCtx ctx).env } body Φ₂ S₂ τ₂ →
+    Infer Φ₁
+      { (S₁.onCtx ctx) with
+        env := genScheme (S₁.onCtx ctx).env (S₁.onTy τ₁) :: (S₁.onCtx ctx).env }
+      body Φ₂ S₂ τ₂ →
     Infer Φ ctx (.letIn rhs body) Φ₂ (S₁ ++ S₂) τ₂
