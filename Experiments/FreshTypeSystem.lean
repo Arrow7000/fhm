@@ -4483,3 +4483,59 @@ theorem Ty.openVars_isLC {Xs : List Nat} {n : Nat} {ty : Ty}
 theorem PolyTy.openVars_isLC {Xs : List Nat} {M : PolyTy}
     (hM : M.WF) (hn : M.paramCount ≤ Xs.length) : (M.openVars Xs).IsLC :=
   Ty.openVars_isLC hM hn
+
+/-- Local-closedness invariant: from a well-formed context, `Infer` yields an LC
+    type and a substitution whose replacements are all LC. (Context
+    well-formedness of `S.onCtx ctx` follows separately via `Subst.onCtx_wf`.) -/
+theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+    CtxWF ctx → τ.IsLC ∧ (∀ p ∈ S, p.2.IsLC) := by
+  induction h with
+  | primLitUnit => intro _; exact ⟨.prim, by simp⟩
+  | primLitInt => intro _; exact ⟨.prim, by simp⟩
+  | primLitNat => intro _; exact ⟨.prim, by simp⟩
+  | primLitBool => intro _; exact ⟨.prim, by simp⟩
+  | primLitStr => intro _; exact ⟨.prim, by simp⟩
+  | pair ha hb iha ihb =>
+    intro hctx
+    obtain ⟨ha_lc, ha_s⟩ := iha hctx
+    obtain ⟨hb_lc, hb_s⟩ := ihb (Subst.onCtx_wf ha_s hctx)
+    refine ⟨.pair (Subst.onTy_lc hb_s ha_lc) hb_lc, ?_⟩
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact ha_s p hp
+    · exact hb_s p hp
+  | lambda hbody ih =>
+    intro hctx
+    obtain ⟨hb_lc, hb_s⟩ := ih (by
+      intro M hM
+      rcases List.mem_cons.mp hM with rfl | hM
+      · exact ContainsBvarsUpTo.fvar
+      · exact hctx M hM)
+    exact ⟨.arrow (Subst.onTy_lc hb_s ContainsBvarsUpTo.fvar) hb_lc, hb_s⟩
+  | app hf harg huni ihf iharg =>
+    intro hctx
+    obtain ⟨hf_lc, hf_s⟩ := ihf hctx
+    obtain ⟨harg_lc, harg_s⟩ := iharg (Subst.onCtx_wf hf_s hctx)
+    have hs3 := huni.lc (Subst.onTy_lc harg_s hf_lc) (.arrow harg_lc ContainsBvarsUpTo.fvar)
+    refine ⟨Subst.onTy_lc hs3 ContainsBvarsUpTo.fvar, ?_⟩
+    intro p hp; rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · exact hf_s p hp
+    · exact harg_s p hp
+    · exact hs3 p hp
+  | var hlook =>
+    intro hctx
+    exact ⟨PolyTy.openVars_isLC (hctx _ (List.mem_of_getElem? hlook)) (by simp), by simp⟩
+  | letIn hrhs hbody ihrhs ihbody =>
+    intro hctx
+    obtain ⟨hrhs_lc, hrhs_s⟩ := ihrhs hctx
+    obtain ⟨hbody_lc, hbody_s⟩ := ihbody (by
+      intro M hM
+      rcases List.mem_cons.mp hM with rfl | hM
+      · exact genScheme_wf (Subst.onTy_lc hrhs_s hrhs_lc)
+      · exact (Subst.onCtx_wf hrhs_s hctx) M hM)
+    refine ⟨hbody_lc, ?_⟩
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact hrhs_s p hp
+    · exact hbody_s p hp
