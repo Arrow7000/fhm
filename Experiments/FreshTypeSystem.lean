@@ -4827,3 +4827,42 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         intro M hM; rcases List.mem_cons.mp hM with rfl | hM
         · exact genScheme_wf hrhs_lc
         · exact (Subst.onCtx_wf hrhs_s hctx) M hM))
+
+
+/-! ## Algorithmic phase, step 2b: completeness (principality) scaffolding
+
+Foundations for `Infer.complete`, independent of how the residual-substitution
+obstruction is resolved. -/
+
+/-- Every free type var of `ctx` is below the fresh-variable frontier `Φ`
+    (the "new_tv" discipline: vars `Infer` allocates `≥ Φ` are genuinely fresh). -/
+def CtxBelow (Φ : Nat) (ctx : Ctx) : Prop := ∀ v ∈ ctx.env.freeVars, v < Φ
+
+/-! Regularity: any declaratively-typed term has a locally-closed type. (Each
+    rule produces an LC type; `var`/`ctor` via `InstantiatesBy.preserves_bvars`
+    on LC `tyArgs`, `lambda` via the LC param premise, the rest by induction.) -/
+mutual
+theorem TypeOfHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
+    TypeOfHM ctx e τ → τ.IsLC
+  | _, _, _, .primLitUnit => .prim
+  | _, _, _, .primLitInt => .prim
+  | _, _, _, .primLitNat => .prim
+  | _, _, _, .primLitBool => .prim
+  | _, _, _, .primLitStr => .prim
+  | _, _, _, .pair ha hb => .pair (TypeOfHM.regular ha) (TypeOfHM.regular hb)
+  | _, _, _, .lambda hpc _ hbody => .arrow hpc (TypeOfHM.regular hbody)
+  | _, _, _, .app hf _ => by
+    have := TypeOfHM.regular hf; cases this with | arrow _ hret => exact hret
+  | _, _, _, .letIn _ _ _ hbody => TypeOfHM.regular hbody
+  | _, _, _, .letPairIn _ _ _ _ _ hbody => TypeOfHM.regular hbody
+  | _, _, _, .var _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
+  | _, _, _, .ctor _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
+  | _, _, _, @TypeOfHM.match_ _ _ _ _ branches _ hscrut hne hbrs => by
+    obtain ⟨hd, tl, rfl⟩ := List.exists_cons_of_ne_nil hne
+    exact TypeOfMatchBranch.regular (hbrs hd (List.mem_cons_self ..))
+
+theorem TypeOfMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} →
+    {tn : TyName} → {ta : List Ty} → {rt : Ty} →
+    TypeOfMatchBranch ctx br tn ta rt → rt.IsLC
+  | _, _, _, _, _, .mk _ _ _ _ _ _ _ hbody => TypeOfHM.regular hbody
+end
