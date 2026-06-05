@@ -3970,6 +3970,31 @@ theorem Subst.onTy_append (S T : Subst) (τ : Ty) :
     (S ++ T).onTy τ = T.onTy (S.onTy τ) := by
   simp only [Subst.onTy, Ty.substFvars_append]
 
+@[simp] theorem Subst.onPolyTy_nil (M : PolyTy) : Subst.onPolyTy [] M = M := rfl
+
+@[simp] theorem Subst.onEnv_nil (env : Env) : Subst.onEnv [] env = env := by
+  show env.map (Subst.onPolyTy []) = env
+  rw [show (Subst.onPolyTy [] : PolyTy → PolyTy) = id from funext Subst.onPolyTy_nil]
+  exact List.map_id env
+
+@[simp] theorem Subst.onCtx_nil (ctx : Ctx) : Subst.onCtx [] ctx = ctx := by
+  simp only [Subst.onCtx, Subst.onEnv_nil]
+
+theorem Subst.onPolyTy_append (S T : Subst) (M : PolyTy) :
+    (S ++ T).onPolyTy M = T.onPolyTy (S.onPolyTy M) := by
+  simp only [Subst.onPolyTy, Subst.onTy_append]
+
+theorem Subst.onEnv_append (S T : Subst) (env : Env) :
+    (S ++ T).onEnv env = T.onEnv (S.onEnv env) := by
+  simp only [Subst.onEnv, List.map_map]
+  apply List.map_congr_left
+  intro M _
+  exact Subst.onPolyTy_append S T M
+
+theorem Subst.onCtx_append (S T : Subst) (ctx : Ctx) :
+    (S ++ T).onCtx ctx = T.onCtx (S.onCtx ctx) := by
+  simp only [Subst.onCtx, Subst.onEnv_append]
+
 
 /-! ### Most-general unifier specification
 
