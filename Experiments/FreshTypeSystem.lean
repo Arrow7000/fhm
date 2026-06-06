@@ -7116,8 +7116,8 @@ theorem genScheme_generalizes {env : Env} {τ₁ : Ty} {R : Subst} {M : PolyTy} 
     rw [hVsdef] at hv
     obtain ⟨i, _, rfl⟩ := List.mem_map.mp hv
     cases hh : tyArgs[i]? with
-    | none => simp only [hh, Option.getD_none]; exact ContainsBvarsUpTo.prim
-    | some t => simp only [hh, Option.getD_some]; exact htyargs_lc t (List.mem_of_getElem? hh)
+    | none => simp only [Option.getD_none]; exact ContainsBvarsUpTo.prim
+    | some t => simp only [Option.getD_some]; exact htyargs_lc t (List.mem_of_getElem? hh)
   -- `M.body = closeOver Xs (R.onTy τ₁)` (close the just-opened fresh names).
   have hMbody : M.body = Ty.closeOver Xs (R.onTy τ₁) := by
     have hbv : ContainsBvarsUpTo Xs.length M.body := by rw [hXlen]; exact hMwf
@@ -7329,3 +7329,46 @@ theorem Infer.complete {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ :
       τ₀ = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC) :=
   Infer.completeAt_of_core hcore hwf hbelow hS₀ hty
+
+
+/-! ### Cleaner corollaries of principality
+
+`Infer.complete` carries two extra side-conclusions beyond `τ₀ = R.onTy τ` — the
+agreement clause `S₀ = R ∘ S` (below `Φ`) and `R` locally-closed — purely to
+sustain the induction (the `app`/`pair`/`letIn` cases compose specialisations and
+reuse `R` as an inner `S₀`). The corollaries below project that engine down to the
+parts a caller usually wants. -/
+
+/-- Principality, type-only form: the type of *any* declarative typing is a
+    substitution instance of the type `Infer` computes. -/
+theorem Infer.complete_instance {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
+    (hcore : e.Core) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
+    ∃ Φ' S τ R, Infer Φ ctx e Φ' S τ ∧ τ₀ = Subst.onTy R τ := by
+  obtain ⟨Φ', S, τ, R, hInfer, _, hτeq, _⟩ := Infer.complete hcore hwf hbelow hS₀ hty
+  exact ⟨Φ', S, τ, R, hInfer, hτeq⟩
+
+/-- Specialised to the identity input substitution: any declarative type of `e`
+    in `ctx` itself is an instance of the inferred type. -/
+theorem Infer.complete_id {Φ : Nat} {ctx : Ctx} {e : Expr} {τ₀ : Ty}
+    (hcore : e.Core) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hty : TypeOfHM ctx e τ₀) :
+    ∃ Φ' S τ R, Infer Φ ctx e Φ' S τ ∧ τ₀ = Subst.onTy R τ := by
+  refine Infer.complete_instance hcore hwf hbelow (S₀ := []) (by simp) ?_
+  simpa using hty
+
+/-- **Algorithm W decides typeability.** `e` is declaratively typeable under some
+    locally-closed specialisation of `ctx` iff `Infer` succeeds on `e` in `ctx`.
+    (The specialisation is necessary: `Infer` may instantiate `ctx`'s free type
+    variables — rigid in the declarative system — so success does not entail
+    typeability of the *unspecialised* `ctx`.) -/
+theorem Infer.iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
+    (hcore : e.Core) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) :
+    (∃ (S : Subst) (τ : Ty), (∀ p ∈ S, p.2.IsLC) ∧ TypeOfHM (S.onCtx ctx) e τ)
+      ↔ (∃ Φ' S τ, Infer Φ ctx e Φ' S τ) := by
+  constructor
+  · rintro ⟨S, τ, hS, hty⟩
+    obtain ⟨Φ', S', τ', _, hInfer, _⟩ := Infer.complete_instance hcore hwf hbelow hS hty
+    exact ⟨Φ', S', τ', hInfer⟩
+  · rintro ⟨Φ', S, τ, hInfer⟩
+    exact ⟨S, τ, (Infer.lc hInfer hwf).2, Infer.sound hInfer hwf⟩
