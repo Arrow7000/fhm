@@ -5212,6 +5212,7 @@ inductive Expr.Core : Expr → Prop
   | lambda : Expr.Core body → Expr.Core (.lambda body)
   | app : Expr.Core f → Expr.Core arg → Expr.Core (.app f arg)
   | var : Expr.Core (.var i)
+  | ctor : Expr.Core (.ctor name)
   | letIn : Expr.Core rhs → Expr.Core body → Expr.Core (.letIn rhs body)
 
 /-- Two substitutions agreeing on all vars `< Φ` act identically on a
@@ -6229,6 +6230,126 @@ theorem Infer.complete_var {i : Nat} : Infer.CompleteAt (.var i) := by
     refine ⟨Φ + pc, [], polyTy.openVars (freshVars Φ pc),
       (Subst.conj (blockSwap Φ W pc) S₀ ++ (freshVars Φ pc).zip tyArgs2) ++ blockListBack Φ W pc,
       Infer.var hlook_orig, ?_, ?_, ?_⟩
+    · -- agreement below the frontier
+      intro v hv
+      have hbelowfv : Ty.BelowFvars W (S₀.onTy (.fvar v)) :=
+        Subst.onTy_belowFvars hS₀belowW (Ty.BelowFvars.fvar (show v < W by omega))
+      have hconjv : Subst.onTy (Subst.conj (blockSwap Φ W pc) S₀) (.fvar v)
+          = Ty.rename (blockSwap Φ W pc) (S₀.onTy (.fvar v)) := by
+        conv_lhs => rw [show (Ty.fvar v) = Ty.rename (blockSwap Φ W pc) (Ty.fvar v) by
+          rw [Ty.rename_fvar, hffix v hv]]
+        rw [Subst.onTy_conj finj]
+      have hzipnoop : Subst.onTy ((freshVars Φ pc).zip tyArgs2)
+          (Ty.rename (blockSwap Φ W pc) (S₀.onTy (.fvar v)))
+          = Ty.rename (blockSwap Φ W pc) (S₀.onTy (.fvar v)) :=
+        Ty.substFvars_eq_self_of_no_key (fun p hp =>
+          blockSwap_rename_not_mem hd (hWblock_of_belowW hbelowfv) p.1
+            (freshVars_ge p.1 (List.of_mem_zip hp).1) (freshVars_lt p.1 (List.of_mem_zip hp).1))
+      have hback : Subst.onTy (blockListBack Φ W pc)
+          (Ty.rename (blockSwap Φ W pc) (S₀.onTy (.fvar v))) = S₀.onTy (.fvar v) :=
+        blockListBack_onTy_rename hd (hWblock_of_belowW hbelowfv)
+      rw [List.nil_append, Subst.onTy_append, Subst.onTy_append, hconjv, hzipnoop, hback]
+    · -- declarative type factors through the residual
+      rw [Subst.onTy_append, hR'eq, blockListBack_onTy_rename hd hτ₀W]
+    · -- residual is locally closed
+      intro p hp
+      rw [List.mem_append] at hp
+      rcases hp with hp | hp
+      · rw [List.mem_append] at hp
+        rcases hp with hp | hp
+        · exact Subst.conj_lc hS₀ p hp
+        · exact htyargs2 p.2 (List.of_mem_zip hp).2
+      · exact blockListBack_lc Φ W pc p hp
+
+/-- Principality, constructor case. Structurally identical to `complete_var`,
+    but the looked-up scheme `ctor.toTy` lives in `ctx.ctors` (untouched by
+    `S₀.onCtx`) and its body is closed (`Ctor.toTy_body_noFreeVars`), so the
+    substitution `S₀`/`conj` never fires on it. -/
+theorem Infer.complete_ctor {name : CtorName} : Infer.CompleteAt (.ctor name) := by
+  intro Φ ctx S₀ τ₀ hwf hbelow hS₀ hty
+  -- STEP 0: looked-up ctor from `ctx.ctors` (unchanged by `S₀.onCtx`), without consuming `hty`.
+  obtain ⟨ctor, hlook_orig⟩ : ∃ c, LookupList.get? ctx.ctors name = some c := by
+    cases hty with
+    | ctor hlook _ _ => exact ⟨_, hlook⟩
+  set pc := ctor.paramCount with hpc
+  have hwfpoly : ContainsBvarsUpTo pc ctor.toTy.body := Ctor.toTy_wf ctor
+  -- STEP 1: fresh block start `W`.
+  obtain ⟨W, hd, hWfresh⟩ := exists_fresh_block
+    (S₀.map Prod.fst ++ S₀.flatMap (fun p => p.2.freeVars) ++ τ₀.freeVars) Φ pc
+  have hτ₀W : ∀ v ∈ τ₀.freeVars, ¬ (W ≤ v ∧ v < W + pc) := by
+    intro v hv hc
+    have := hWfresh v (List.mem_append_right _ hv)
+    omega
+  have hSrange_lt : ∀ p ∈ S₀, ∀ v ∈ p.2.freeVars, v < W := by
+    intro p hp v hv
+    exact hWfresh v (List.mem_append_left _
+      (List.mem_append_right _ (List.mem_flatMap.mpr ⟨p, hp, hv⟩)))
+  have hSkey_lt : ∀ p ∈ S₀, p.1 < W := by
+    intro p hp
+    exact hWfresh p.1 (List.mem_append_left _
+      (List.mem_append_left _ (List.mem_map.mpr ⟨p, hp, rfl⟩)))
+  have hS₀belowW : ∀ p ∈ S₀, Ty.BelowFvars W p.2 :=
+    fun p hp => Ty.BelowFvars.of_freeVars_lt (fun v hv => hSrange_lt p hp v hv)
+  have hWblock_of_belowW : ∀ {t : Ty}, Ty.BelowFvars W t →
+      ∀ v ∈ t.freeVars, ¬ (W ≤ v ∧ v < W + pc) :=
+    fun {t} ht v hv => by have := ht.mem_lt v hv; omega
+  have finj : Function.Injective (blockSwap Φ W pc) := blockSwap_injective hd
+  have hffix : ∀ v, v < Φ → blockSwap Φ W pc v = v := fun v hv => blockSwap_lt (by omega) hv
+  -- STEP 2: rename `hty` by the block-swap, reinterpret as a `conj`.
+  have hren := TypeOfHM.onSubst (blockList Φ W pc) (blockList_lc Φ W pc) hty
+  have hctxeq : (blockList Φ W pc).onCtx (S₀.onCtx ctx)
+      = (Subst.conj (blockSwap Φ W pc) S₀).onCtx ctx := by
+    simp only [Subst.onCtx, Subst.onEnv, List.map_map]
+    congr 1
+    apply List.map_congr_left
+    intro M hM
+    simp only [Function.comp_apply, Subst.onPolyTy]
+    congr 1
+    rw [blockList_onTy hd
+        (hWblock_of_belowW (Subst.onTy_belowFvars hS₀belowW ((hbelow M hM).mono (by omega))))]
+    conv_rhs => rw [← Ty.rename_eq_self (f := blockSwap Φ W pc) (τ := M.body)
+      (fun v hv => hffix v ((hbelow M hM).mem_lt v hv))]
+    rw [Subst.onTy_conj finj]
+  have htyeq : (blockList Φ W pc).onTy τ₀ = Ty.rename (blockSwap Φ W pc) τ₀ :=
+    blockList_onTy hd hτ₀W
+  have hren2 : TypeOfHM ((Subst.conj (blockSwap Φ W pc) S₀).onCtx ctx) (.ctor name)
+      (Ty.rename (blockSwap Φ W pc) τ₀) := by
+    rw [hctxeq, htyeq] at hren
+    exact hren
+  -- STEP 3: invert renamed derivation.
+  cases hren2 with
+  | ctor hlook2 htyargs2 hinst2 =>
+    rename_i ctor2 tyArgs2
+    have hctor2 : ctor = ctor2 := by
+      have hlook2' : LookupList.get? ctx.ctors name = some ctor2 := hlook2
+      exact Option.some.inj (hlook_orig.symm.trans hlook2')
+    subst hctor2
+    -- STEP 4: assemble.
+    have hdomfresh : ∀ p ∈ Subst.conj (blockSwap Φ W pc) S₀, p.1 ∉ freshVars Φ pc := by
+      intro p hp hmemf
+      simp only [Subst.conj, List.mem_map] at hp
+      obtain ⟨q, hq, rfl⟩ := hp
+      have hq1 : q.1 < W := hSkey_lt q hq
+      have hge := freshVars_ge _ hmemf
+      have hlt := freshVars_lt _ hmemf
+      simp only [blockSwap] at hge hlt
+      split_ifs at hge hlt <;> omega
+    have hbv2 : ContainsBvarsUpTo (freshVars Φ pc).length ctor.toTy.body := by
+      rw [freshVars_length]; exact hwfpoly
+    have hXfresh2 : ∀ x ∈ freshVars Φ pc, x ∉ (Ty.rename (blockSwap Φ W pc) τ₀).freeVars :=
+      fun x hx => blockSwap_rename_not_mem hd hτ₀W x (freshVars_ge x hx) (freshVars_lt x hx)
+    have hR'eq : Subst.onTy (Subst.conj (blockSwap Φ W pc) S₀ ++ (freshVars Φ pc).zip tyArgs2)
+        (ctor.toTy.openVars (freshVars Φ pc)) = Ty.rename (blockSwap Φ W pc) τ₀ := by
+      rw [Subst.onTy_append]
+      simp only [PolyTy.openVars]
+      rw [Subst.onTy_openVars (Subst.conj_lc hS₀) hdomfresh]
+      rw [show (Subst.conj (blockSwap Φ W pc) S₀).onTy ctor.toTy.body = ctor.toTy.body from
+        Ty.substFvars_eq_self_of_no_key
+          (fun p _ => NoFreeVars.not_mem_freeVars (Ctor.toTy_body_noFreeVars ctor) p.1)]
+      exact InstantiatesBy.onTy_openVars_zip hinst2 hbv2 freshVars_nodup hXfresh2
+    refine ⟨Φ + pc, [], ctor.toTy.openVars (freshVars Φ pc),
+      (Subst.conj (blockSwap Φ W pc) S₀ ++ (freshVars Φ pc).zip tyArgs2) ++ blockListBack Φ W pc,
+      Infer.ctor hlook_orig, ?_, ?_, ?_⟩
     · -- agreement below the frontier
       intro v hv
       have hbelowfv : Ty.BelowFvars W (S₀.onTy (.fvar v)) :=
@@ -7372,6 +7493,7 @@ theorem Infer.completeAt_of_core {e : Expr} (hcore : e.Core) : Infer.CompleteAt 
   | lambda _ ih => exact Infer.complete_lambda ih
   | app _ _ ihf iharg => exact Infer.complete_app ihf iharg
   | var => exact Infer.complete_var
+  | ctor => exact Infer.complete_ctor
   | letIn _ _ iha ihb => exact Infer.complete_letIn iha ihb
 
 /-- **Principality of `Infer`** (Damas–Milner completeness, core fragment): for
