@@ -7372,3 +7372,23 @@ theorem Infer.iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
     exact ⟨Φ', S', τ', hInfer⟩
   · rintro ⟨Φ', S, τ, hInfer⟩
     exact ⟨S, τ, (Infer.lc hInfer hwf).2, Infer.sound hInfer hwf⟩
+
+/-- **Algorithm W computes principal types** — soundness and principality bundled
+    into one statement. From any declarative typing of a core `e` under an LC
+    specialization `S₀` of a WF, frontier-bounded `ctx`, `Infer` succeeds with a
+    result `(S, τ)` that
+
+      * is itself a valid declarative typing (`TypeOfHM (S.onCtx ctx) e τ`), and
+      * subsumes the given typing (`τ₀ = R.onTy τ`, i.e. `τ` is more general).
+
+    (A per-output `IsPrincipal ctx e S τ` predicate — "this very `τ` subsumes
+    *every* typing" — would additionally need `Infer` proved functional up to
+    renaming of fresh variables, since `UnifyRel` only pins the MGU up to
+    renaming; that determinism lemma is not yet proved.) -/
+theorem Infer.principal {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
+    (hcore : e.Core) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
+    ∃ Φ' S τ R,
+      Infer Φ ctx e Φ' S τ ∧ TypeOfHM (S.onCtx ctx) e τ ∧ τ₀ = Subst.onTy R τ := by
+  obtain ⟨Φ', S, τ, R, hInfer, hτeq⟩ := Infer.complete_instance hcore hwf hbelow hS₀ hty
+  exact ⟨Φ', S, τ, R, hInfer, Infer.sound hInfer hwf, hτeq⟩
