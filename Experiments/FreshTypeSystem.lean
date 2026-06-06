@@ -4404,6 +4404,30 @@ def genScheme (env : Env) (τ : Ty) : PolyTy :=
 theorem genScheme_wf {env : Env} {τ : Ty} (hτ : τ.IsLC) : (genScheme env τ).WF :=
   Ty.closeOver_preserves_bvars hτ
 
+/-- Shared-arity generalization of a pair's two components for `letPairIn`. Both
+    schemes quantify over the *same* gen vars `g := genVars env (pair τα τβ)`
+    (the free vars of the whole pair not fixed by `env`), so they have equal
+    `paramCount` and a common opening — exactly what the declarative `letPairIn`
+    rule requires. `genFstScheme`/`genSndScheme` close over `τα`/`τβ`. -/
+def genFstScheme (env : Env) (τα τβ : Ty) : PolyTy :=
+  { paramCount := (genVars env (.pair τα τβ)).length,
+    body := Ty.closeOver (genVars env (.pair τα τβ)) τα }
+
+def genSndScheme (env : Env) (τα τβ : Ty) : PolyTy :=
+  { paramCount := (genVars env (.pair τα τβ)).length,
+    body := Ty.closeOver (genVars env (.pair τα τβ)) τβ }
+
+theorem genFstScheme_wf {env : Env} {τα τβ : Ty} (hτα : τα.IsLC) :
+    (genFstScheme env τα τβ).WF :=
+  Ty.closeOver_preserves_bvars hτα
+
+theorem genSndScheme_wf {env : Env} {τα τβ : Ty} (hτβ : τβ.IsLC) :
+    (genSndScheme env τα τβ).WF :=
+  Ty.closeOver_preserves_bvars hτβ
+
+theorem genFstScheme_paramCount_eq {env : Env} {τα τβ : Ty} :
+    (genFstScheme env τα τβ).paramCount = (genSndScheme env τα τβ).paramCount := rfl
+
 /-- `freeVars` is always duplicate-free (it dedups). -/
 theorem Ty.freeVars_nodup {τ : Ty} : τ.freeVars.Nodup := by
   cases τ with
@@ -4462,6 +4486,19 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
         env := genScheme (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
       body Φ₂ S₂ τ₂ →
     Infer Φ ctx (.letIn rhs body) Φ₂ (S₁ ++ S₂) τ₂
+  | letPairIn {Φ ctx pe body Φ₁ Φ₃ S₁ S₂ S₃ τp τ₃} :
+    Infer Φ ctx pe Φ₁ S₁ τp →
+    UnifyRel τp (.pair (.fvar Φ₁) (.fvar (Φ₁ + 1))) S₂ →
+    Infer (Φ₁ + 2)
+      { (S₂.onCtx (S₁.onCtx ctx)) with
+        env :=
+          genSndScheme (S₂.onCtx (S₁.onCtx ctx)).env
+              (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1)))
+          :: genFstScheme (S₂.onCtx (S₁.onCtx ctx)).env
+              (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1)))
+          :: (S₂.onCtx (S₁.onCtx ctx)).env }
+      body Φ₃ S₃ τ₃ →
+    Infer Φ ctx (.letPairIn pe body) Φ₃ (S₁ ++ S₂ ++ S₃) τ₃
 
 
 /-! ### Invariant layer for `Infer` soundness -/
@@ -4592,6 +4629,23 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     intro p hp; rw [List.mem_append] at hp
     rcases hp with hp | hp
     · exact hrhs_s p hp
+    · exact hbody_s p hp
+  | letPairIn hpe huni hbody ihpe ihbody =>
+    intro hctx
+    obtain ⟨hpe_lc, hpe_s⟩ := ihpe hctx
+    have hs2 := huni.lc hpe_lc (.pair ContainsBvarsUpTo.fvar ContainsBvarsUpTo.fvar)
+    obtain ⟨hbody_lc, hbody_s⟩ := ihbody (by
+      intro M hM
+      rcases List.mem_cons.mp hM with rfl | hM
+      · exact genSndScheme_wf (Subst.onTy_lc hs2 ContainsBvarsUpTo.fvar)
+      · rcases List.mem_cons.mp hM with rfl | hM
+        · exact genFstScheme_wf (Subst.onTy_lc hs2 ContainsBvarsUpTo.fvar)
+        · exact (Subst.onCtx_wf hs2 (Subst.onCtx_wf hpe_s hctx)) M hM)
+    refine ⟨hbody_lc, ?_⟩
+    intro p hp; rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · exact hpe_s p hp
+    · exact hs2 p hp
     · exact hbody_s p hp
 
 private theorem List.forall₂_self_map {α β} {R : α → β → Prop} {f : α → β} :
@@ -4803,6 +4857,68 @@ theorem Infer.sound_letIn {ctx : Ctx} {rhs body : Expr} {S₁ S₂ : Subst} {τ�
   rw [Subst.onTy_openVars hbody_s hX_S₂] at hfin
   exact hfin
 
+/-- The `letPairIn` soundness case, factored out (named binders avoid the
+    inaccessible-name problem inside the `Infer.sound` induction). Mirrors
+    `Infer.sound_letIn`, with two extra wrinkles: a unification step turns
+    `pe`'s type into a pair, and the gen-var renaming is applied to *both* pair
+    components sharing the same gen vars (so they stay consistently renamed). -/
+theorem Infer.sound_letPairIn {ctx : Ctx} {pe body : Expr} {S₁ S₂ S₃ : Subst}
+    {Φ₁ : Nat} {τp τ₃ : Ty}
+    (hpe_ty : TypeOfHM (S₁.onCtx ctx) pe τp)
+    (huni : UnifyRel τp (.pair (.fvar Φ₁) (.fvar (Φ₁ + 1))) S₂)
+    (hS₂ : ∀ p ∈ S₂, p.2.IsLC)
+    (hS₃ : ∀ p ∈ S₃, p.2.IsLC)
+    (hbody_ty : TypeOfHM (S₃.onCtx
+      { (S₂.onCtx (S₁.onCtx ctx)) with
+        env :=
+          genSndScheme (S₂.onCtx (S₁.onCtx ctx)).env
+              (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1)))
+          :: genFstScheme (S₂.onCtx (S₁.onCtx ctx)).env
+              (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1)))
+          :: (S₂.onCtx (S₁.onCtx ctx)).env }) body τ₃) :
+    TypeOfHM ((S₁ ++ S₂ ++ S₃).onCtx ctx) (.letPairIn pe body) τ₃ := by
+  rw [Subst.onCtx_append, Subst.onCtx_append]
+  have hτα : (S₂.onTy (.fvar Φ₁)).IsLC := Subst.onTy_lc hS₂ ContainsBvarsUpTo.fvar
+  have hτβ : (S₂.onTy (.fvar (Φ₁ + 1))).IsLC := Subst.onTy_lc hS₂ ContainsBvarsUpTo.fvar
+  refine TypeOfHM.letPairIn
+    (Mfst := Subst.onPolyTy S₃ (genFstScheme (S₂.onCtx (S₁.onCtx ctx)).env
+        (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1)))))
+    (Msnd := Subst.onPolyTy S₃ (genSndScheme (S₂.onCtx (S₁.onCtx ctx)).env
+        (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1)))))
+    (L := genVars (S₂.onCtx (S₁.onCtx ctx)).env
+        (.pair (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1)))) ++ S₃.map Prod.fst)
+    (Subst.onPolyTy_wf hS₃ (genFstScheme_wf hτα))
+    (Subst.onPolyTy_wf hS₃ (genSndScheme_wf hτβ))
+    rfl ?cofin rfl hbody_ty
+  intro Xs hXfresh
+  obtain ⟨hXlen, hXnodup, hXavoid⟩ := hXfresh
+  have hg_X : ∀ x ∈ genVars (S₂.onCtx (S₁.onCtx ctx)).env
+      (.pair (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1)))), x ∉ Xs :=
+    fun x hx hc => hXavoid x hc (List.mem_append_left _ hx)
+  have hX_S₃ : ∀ p ∈ S₃, p.1 ∉ Xs :=
+    fun p hp hc => hXavoid p.1 hc (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
+  have hpe_C2 : TypeOfHM (S₂.onCtx (S₁.onCtx ctx)) pe
+      (.pair (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1)))) := by
+    have h := TypeOfHM.onSubst S₂ hS₂ hpe_ty
+    have hu := huni.unifies
+    simp only [Unifies, Subst.onTy_pair] at hu
+    rwa [hu] at h
+  have hrename : TypeOfHM (S₂.onCtx (S₁.onCtx ctx)) pe
+      (Ty.substFvars ((genVars (S₂.onCtx (S₁.onCtx ctx)).env
+          (.pair (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1))))).zip (Xs.map (Ty.fvar ·)))
+        (.pair (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1))))) := by
+    refine TypeOfHM.typ_substs_preservation _ ?_ ?_ hpe_C2
+    · intro p hp; exact genVars_not_mem (List.of_mem_zip hp).1
+    · intro p hp
+      obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+      exact hx ▸ ContainsBvarsUpTo.fvar
+  rw [Ty.substFvars_pair,
+      ← Ty.openVars_closeOver_rename hτα genVars_nodup hXlen hg_X,
+      ← Ty.openVars_closeOver_rename hτβ genVars_nodup hXlen hg_X] at hrename
+  have hfin := TypeOfHM.onSubst S₃ hS₃ hrename
+  rw [Subst.onTy_pair, Subst.onTy_openVars hS₃ hX_S₃, Subst.onTy_openVars hS₃ hX_S₃] at hfin
+  exact hfin
+
 /-- Soundness of `Infer` against the declarative `TypeOfHM`: applying the
     inferred substitution to the context yields a declarative typing. -/
 theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
@@ -4871,6 +4987,25 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         intro M hM; rcases List.mem_cons.mp hM with rfl | hM
         · exact genScheme_wf hrhs_lc
         · exact (Subst.onCtx_wf hrhs_s hctx) M hM))
+  | letPairIn hpe huni hbody ihpe ihbody =>
+    intro hctx
+    obtain ⟨hpe_lc, hpe_s⟩ := Infer.lc hpe hctx
+    have hs2 := huni.lc hpe_lc (.pair ContainsBvarsUpTo.fvar ContainsBvarsUpTo.fvar)
+    exact Infer.sound_letPairIn (ihpe hctx) huni hs2
+      (Infer.lc hbody (by
+        intro M hM
+        rcases List.mem_cons.mp hM with rfl | hM
+        · exact genSndScheme_wf (Subst.onTy_lc hs2 ContainsBvarsUpTo.fvar)
+        · rcases List.mem_cons.mp hM with rfl | hM
+          · exact genFstScheme_wf (Subst.onTy_lc hs2 ContainsBvarsUpTo.fvar)
+          · exact (Subst.onCtx_wf hs2 (Subst.onCtx_wf hpe_s hctx)) M hM)).2
+      (ihbody (by
+        intro M hM
+        rcases List.mem_cons.mp hM with rfl | hM
+        · exact genSndScheme_wf (Subst.onTy_lc hs2 ContainsBvarsUpTo.fvar)
+        · rcases List.mem_cons.mp hM with rfl | hM
+          · exact genFstScheme_wf (Subst.onTy_lc hs2 ContainsBvarsUpTo.fvar)
+          · exact (Subst.onCtx_wf hs2 (Subst.onCtx_wf hpe_s hctx)) M hM))
 
 
 /-! ## Algorithmic phase, step 2b: completeness (principality) scaffolding
@@ -5195,6 +5330,29 @@ theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     intro p hp; rw [List.mem_append] at hp
     rcases hp with hp | hp
     · exact (hr_s p hp).mono (Infer.frontier_le hbody)
+    · exact hb_s p hp
+  | letPairIn hpe huni hbody ihpe ihbody =>
+    intro hctx
+    expose_names
+    obtain ⟨hpe_τ, hpe_s⟩ := ihpe hctx
+    have hpel := Infer.frontier_le hpe
+    have hbl := Infer.frontier_le hbody
+    have hctx1 := Subst.onCtx_below hpe_s hpel hctx
+    have hs2_below : ∀ p ∈ S₂, Ty.BelowFvars (Φ₁ + 2) p.2 :=
+      UnifyRel.belowFvars huni (hpe_τ.mono (by omega))
+        (.pair (.fvar (by omega)) (.fvar (by omega)))
+    obtain ⟨hb_τ, hb_s⟩ := ihbody (by
+      intro M hM
+      rcases List.mem_cons.mp hM with rfl | hM
+      · exact (Subst.onTy_belowFvars hs2_below (.fvar (by omega))).closeOver
+      · rcases List.mem_cons.mp hM with rfl | hM
+        · exact (Subst.onTy_belowFvars hs2_below (.fvar (by omega))).closeOver
+        · exact (Subst.onCtx_below hs2_below (by omega) hctx1) M hM)
+    refine ⟨hb_τ, ?_⟩
+    intro p hp; rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · exact (hpe_s p hp).mono (by omega)
+    · exact (hs2_below p hp).mono (by omega)
     · exact hb_s p hp
 
 
