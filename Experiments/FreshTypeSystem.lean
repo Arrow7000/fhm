@@ -7431,18 +7431,19 @@ theorem Ty.openWith_isLC {Vs : List Ty} {n : Nat} {X : Ty}
   simp only [List.getElem?_eq_getElem (show i < Vs.length by omega), Option.getD_some]
   exact hVs _ (List.getElem_mem _)
 
-/-- The algorithm's principal generalization `genScheme env τ₁` (transported by
-    the residual `R`) is at least as general as any declarative scheme `M` whose
-    fresh opening factors as `R.onTy τ₁`. This is the crux of `letIn`
+/-- General form: closing `τ₁` over *any* variable set `g` (transported by the
+    residual `R`) yields a scheme at least as general as a declarative scheme `M`
+    whose fresh opening factors as `R.onTy τ₁`. The crux of `let`/`letPair`
     principality: the body, declaratively typed under `M`, can be retyped under
-    the more general scheme the algorithm produces. -/
-theorem genScheme_generalizes {env : Env} {τ₁ : Ty} {R : Subst} {M : PolyTy} {Xs : List Nat}
+    the more general scheme the algorithm produces. (The proof barely uses what
+    `g` is, so `genScheme` and the pair schemes are all instances.) -/
+theorem closeOver_generalizes {g : List Nat} {τ₁ : Ty} {R : Subst} {M : PolyTy} {Xs : List Nat}
     (hτ₁ : τ₁.IsLC) (hR : ∀ p ∈ R, p.2.IsLC) (hMwf : M.WF)
     (hXnodup : Xs.Nodup) (hXlen : Xs.length = M.paramCount)
     (hXMbody : ∀ x ∈ Xs, x ∉ M.body.freeVars)
     (htyr : Ty.openVars Xs M.body = R.onTy τ₁)
-    (hXM'' : ∀ x ∈ Xs, x ∉ (R.onPolyTy (genScheme env τ₁)).body.freeVars) :
-    (R.onPolyTy (genScheme env τ₁)).Generalizes M := by
+    (hXM'' : ∀ x ∈ Xs, x ∉ (R.onPolyTy ⟨g.length, Ty.closeOver g τ₁⟩).body.freeVars) :
+    (R.onPolyTy ⟨g.length, Ty.closeOver g τ₁⟩).Generalizes M := by
   intro tyArgs ty htyargs_lc hinst
   -- `ty = openWith Vs M.body` for the length-`paramCount` prefix `Vs` of `tyArgs`.
   have hty_eq : ty = Ty.openWith
@@ -7465,42 +7466,42 @@ theorem genScheme_generalizes {env : Env} {τ₁ : Ty} {R : Subst} {M : PolyTy} 
     exact hrt.symm
   -- `R.onTy τ₁ = openWith Wg M'.body` where `Wg = R` applied to each gen var.
   have hRτ₁ : R.onTy τ₁ = Ty.openWith
-      ((genVars env τ₁).map (fun gj => R.onTy (Ty.fvar gj)))
-      ((R.onPolyTy (genScheme env τ₁)).body) := by
-    show R.onTy τ₁ = Ty.openWith ((genVars env τ₁).map (fun gj => R.onTy (Ty.fvar gj)))
-      (R.onTy (Ty.closeOver (genVars env τ₁) τ₁))
-    conv_lhs => rw [← Ty.openVars_closeOver_self (gs := genVars env τ₁) hτ₁]
+      (g.map (fun gj => R.onTy (Ty.fvar gj)))
+      ((R.onPolyTy ⟨g.length, Ty.closeOver g τ₁⟩).body) := by
+    show R.onTy τ₁ = Ty.openWith (g.map (fun gj => R.onTy (Ty.fvar gj)))
+      (R.onTy (Ty.closeOver g τ₁))
+    conv_lhs => rw [← Ty.openVars_closeOver_self (gs := g) hτ₁]
     rw [Ty.openVars_eq_openWith, Subst.onTy_openWith hR, List.map_map]
     simp only [Function.comp_def]
   -- Round-trip to `M'.body`, then re-open with the composed args.
   have hbv1 : ContainsBvarsUpTo
-      (((genVars env τ₁).map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs)).length
-      ((R.onPolyTy (genScheme env τ₁)).body) := by
-    have hwf := Subst.onPolyTy_wf hR (genScheme_wf (env := env) hτ₁)
-    have hlen : (((genVars env τ₁).map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs)).length
-        = (R.onPolyTy (genScheme env τ₁)).paramCount := by
+      ((g.map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs)).length
+      ((R.onPolyTy ⟨g.length, Ty.closeOver g τ₁⟩).body) := by
+    have hwf := Subst.onPolyTy_wf hR (M := ⟨g.length, Ty.closeOver g τ₁⟩)
+      (Ty.closeOver_preserves_bvars hτ₁)
+    have hlen : ((g.map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs)).length
+        = (R.onPolyTy ⟨g.length, Ty.closeOver g τ₁⟩).paramCount := by
       simp only [List.length_map]; rfl
     rw [hlen]; exact hwf
   have hty_final : ty = Ty.openWith
-      ((((genVars env τ₁).map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs)).map
-        (Ty.openWith Vs))
-      ((R.onPolyTy (genScheme env τ₁)).body) :=
+      (((g.map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs)).map (Ty.openWith Vs))
+      ((R.onPolyTy ⟨g.length, Ty.closeOver g τ₁⟩).body) :=
     calc ty
         = Ty.openWith Vs M.body := hty_eq
       _ = Ty.openWith Vs (Ty.closeOver Xs (R.onTy τ₁)) := by rw [hMbody]
       _ = Ty.openWith Vs (Ty.closeOver Xs (Ty.openWith
-            ((genVars env τ₁).map (fun gj => R.onTy (Ty.fvar gj)))
-            ((R.onPolyTy (genScheme env τ₁)).body))) := by rw [hRτ₁]
+            (g.map (fun gj => R.onTy (Ty.fvar gj)))
+            ((R.onPolyTy ⟨g.length, Ty.closeOver g τ₁⟩).body))) := by rw [hRτ₁]
       _ = Ty.openWith Vs (Ty.openWith
-            (((genVars env τ₁).map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs))
-            ((R.onPolyTy (genScheme env τ₁)).body)) := by
+            ((g.map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs))
+            ((R.onPolyTy ⟨g.length, Ty.closeOver g τ₁⟩).body)) := by
               rw [Ty.closeOver_openWith_comm hXM'']
       _ = Ty.openWith
-            ((((genVars env τ₁).map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs)).map
+            (((g.map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs)).map
               (Ty.openWith Vs))
-            ((R.onPolyTy (genScheme env τ₁)).body) := by rw [Ty.openWith_openWith hbv1]
+            ((R.onPolyTy ⟨g.length, Ty.closeOver g τ₁⟩).body) := by rw [Ty.openWith_openWith hbv1]
   -- The composed args are LC and witness the instantiation.
-  refine ⟨(((genVars env τ₁).map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs)).map
+  refine ⟨((g.map (fun gj => R.onTy (Ty.fvar gj))).map (Ty.closeOver Xs)).map
       (Ty.openWith Vs), ?_, ?_⟩
   · intro v hv
     obtain ⟨z, hz, rfl⟩ := List.mem_map.mp hv
@@ -7510,14 +7511,49 @@ theorem genScheme_generalizes {env : Env} {τ₁ : Ty} {R : Subst} {M : PolyTy} 
     have hzbv : ContainsBvarsUpTo Xs.length (Ty.closeOver Xs (R.onTy (Ty.fvar gj))) :=
       Ty.closeOver_preserves_bvars hwlc
     exact Ty.openWith_isLC hVs_lc hzbv (by rw [hVs_len]; exact hXlen.le)
-  · have hwf := Subst.onPolyTy_wf hR (genScheme_wf (env := env) hτ₁)
-    have hVs'len : ((((genVars env τ₁).map (fun gj => R.onTy (Ty.fvar gj))).map
+  · have hwf := Subst.onPolyTy_wf hR (M := ⟨g.length, Ty.closeOver g τ₁⟩)
+      (Ty.closeOver_preserves_bvars hτ₁)
+    have hVs'len : (((g.map (fun gj => R.onTy (Ty.fvar gj))).map
         (Ty.closeOver Xs)).map (Ty.openWith Vs)).length
-        = (R.onPolyTy (genScheme env τ₁)).paramCount := by
+        = (R.onPolyTy ⟨g.length, Ty.closeOver g τ₁⟩).paramCount := by
       simp only [List.length_map]; rfl
     have hinstW := InstantiatesBy.openWith hwf (le_of_eq hVs'len.symm)
     rw [hty_final]
     exact hinstW
+
+/-- `genScheme env τ₁` (transported by `R`) generalizes any `M` it factors. The
+    `g := genVars env τ₁` instance of `closeOver_generalizes`. -/
+theorem genScheme_generalizes {env : Env} {τ₁ : Ty} {R : Subst} {M : PolyTy} {Xs : List Nat}
+    (hτ₁ : τ₁.IsLC) (hR : ∀ p ∈ R, p.2.IsLC) (hMwf : M.WF)
+    (hXnodup : Xs.Nodup) (hXlen : Xs.length = M.paramCount)
+    (hXMbody : ∀ x ∈ Xs, x ∉ M.body.freeVars)
+    (htyr : Ty.openVars Xs M.body = R.onTy τ₁)
+    (hXM'' : ∀ x ∈ Xs, x ∉ (R.onPolyTy (genScheme env τ₁)).body.freeVars) :
+    (R.onPolyTy (genScheme env τ₁)).Generalizes M :=
+  closeOver_generalizes (g := genVars env τ₁) hτ₁ hR hMwf hXnodup hXlen hXMbody htyr hXM''
+
+/-- The first pair-scheme (transported by `R`) generalizes the declarative `Mfst`.
+    The `g := genVars env (.pair τα τβ)` instance of `closeOver_generalizes`. -/
+theorem genFstScheme_generalizes {env : Env} {τα τβ : Ty} {R : Subst} {Mfst : PolyTy}
+    {Xs : List Nat}
+    (hτα : τα.IsLC) (hR : ∀ p ∈ R, p.2.IsLC) (hMwf : Mfst.WF)
+    (hXnodup : Xs.Nodup) (hXlen : Xs.length = Mfst.paramCount)
+    (hXMbody : ∀ x ∈ Xs, x ∉ Mfst.body.freeVars)
+    (htyr : Ty.openVars Xs Mfst.body = R.onTy τα)
+    (hXM'' : ∀ x ∈ Xs, x ∉ (R.onPolyTy (genFstScheme env τα τβ)).body.freeVars) :
+    (R.onPolyTy (genFstScheme env τα τβ)).Generalizes Mfst :=
+  closeOver_generalizes (g := genVars env (.pair τα τβ)) hτα hR hMwf hXnodup hXlen hXMbody htyr hXM''
+
+/-- The second pair-scheme (transported by `R`) generalizes the declarative `Msnd`. -/
+theorem genSndScheme_generalizes {env : Env} {τα τβ : Ty} {R : Subst} {Msnd : PolyTy}
+    {Xs : List Nat}
+    (hτβ : τβ.IsLC) (hR : ∀ p ∈ R, p.2.IsLC) (hMwf : Msnd.WF)
+    (hXnodup : Xs.Nodup) (hXlen : Xs.length = Msnd.paramCount)
+    (hXMbody : ∀ x ∈ Xs, x ∉ Msnd.body.freeVars)
+    (htyr : Ty.openVars Xs Msnd.body = R.onTy τβ)
+    (hXM'' : ∀ x ∈ Xs, x ∉ (R.onPolyTy (genSndScheme env τα τβ)).body.freeVars) :
+    (R.onPolyTy (genSndScheme env τα τβ)).Generalizes Msnd :=
+  closeOver_generalizes (g := genVars env (.pair τα τβ)) hτβ hR hMwf hXnodup hXlen hXMbody htyr hXM''
 
 
 /-! ### Principality, `letIn` case -/
