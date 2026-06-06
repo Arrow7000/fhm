@@ -2396,6 +2396,36 @@ theorem Ctor.toTy_body_noFreeVars (ctor : Ctor) : NoFreeVars ctor.toTy.body := b
   · exact NoFreeVars.customTy (fun t ht => NoFreeVars.bvarRangeFrom 0 ctor.paramCount t ht)
   · exact ctor.closed
 
+private theorem ContainsBvarsUpTo.wrapArrows {n : Nat} {result : Ty} {args : List Ty}
+    (hres : ContainsBvarsUpTo n result) (hargs : ∀ a ∈ args, ContainsBvarsUpTo n a) :
+    ContainsBvarsUpTo n (Ty.wrapArrows result args) := by
+  induction args with
+  | nil => exact hres
+  | cons hd tl ih =>
+    exact .arrow (hargs hd (List.mem_cons_self ..))
+      (ih (fun a ha => hargs a (List.mem_cons_of_mem _ ha)))
+
+private theorem ContainsBvarsUpTo.bvarRangeFrom (s n : Nat) :
+    ∀ t ∈ Ty.bvarRangeFrom s n, ContainsBvarsUpTo (s + n) t := by
+  induction n generalizing s with
+  | zero => intro t ht; simp [Ty.bvarRangeFrom] at ht
+  | succ k ih =>
+    intro t ht
+    simp only [Ty.bvarRangeFrom, List.mem_cons] at ht
+    rcases ht with rfl | ht
+    · exact .bvar (by omega)
+    · exact (ih (s + 1) t ht).mono (by omega)
+
+/-- A constructor's type scheme is well-formed: its body's bvars all lie within
+    `paramCount` (from `Ctor.bound` on the contents and the result `customTy`). -/
+theorem Ctor.toTy_wf (ctor : Ctor) : ctor.toTy.WF := by
+  show ContainsBvarsUpTo ctor.paramCount
+    (Ty.wrapArrows (Ty.customTy ctor.tyName (Ty.bvarRange ctor.paramCount)) ctor.contents)
+  apply ContainsBvarsUpTo.wrapArrows
+  · exact .customTy (fun t ht => by
+      simpa using ContainsBvarsUpTo.bvarRangeFrom 0 ctor.paramCount t ht)
+  · exact ctor.bound
+
 
 /-! ### Metatheory infrastructure. -/
 
@@ -4421,6 +4451,10 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
     ctx.env[i]? = some polyTy →
     Infer Φ ctx (.var i) (Φ + polyTy.paramCount) []
       (polyTy.openVars (freshVars Φ polyTy.paramCount))
+  | ctor {Φ ctx name ctor} :
+    LookupList.get? ctx.ctors name = some ctor →
+    Infer Φ ctx (.ctor name) (Φ + ctor.paramCount) []
+      (ctor.toTy.openVars (freshVars Φ ctor.paramCount))
   | letIn {Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂} :
     Infer Φ ctx rhs Φ₁ S₁ τ₁ →
     Infer Φ₁
@@ -4543,6 +4577,9 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
   | var hlook =>
     intro hctx
     exact ⟨PolyTy.openVars_isLC (hctx _ (List.mem_of_getElem? hlook)) (by simp), by simp⟩
+  | ctor hlook =>
+    intro _
+    exact ⟨PolyTy.openVars_isLC (Ctor.toTy_wf _) (by simp [Ctor.toTy]), by simp⟩
   | letIn hrhs hbody ihrhs ihbody =>
     intro hctx
     obtain ⟨hrhs_lc, hrhs_s⟩ := ihrhs hctx
@@ -4815,6 +4852,13 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       (InstantiatesBy.openVars (hctx _ (List.mem_of_getElem? hlook)) (by simp))
     obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht
     exact .fvar
+  | ctor hlook =>
+    intro _
+    simp only [Subst.onCtx_nil]
+    refine TypeOfHM.ctor hlook (fun tyArg ht => ?_)
+      (InstantiatesBy.openVars (Ctor.toTy_wf _) (by simp [Ctor.toTy]))
+    obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht
+    exact .fvar
   | letIn hrhs hbody ihrhs ihbody =>
     intro hctx
     obtain ⟨hrhs_lc, hrhs_s⟩ := Infer.lc hrhs hctx
@@ -4959,6 +5003,16 @@ theorem Ty.openVars_belowFvars {Φ : Nat} {Xs : List Nat} {τ : Ty}
       intro t' ht'
       obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
       exact ih t ht (hall t ht)
+
+/-- A type with no free variables is below any frontier. -/
+theorem Ty.BelowFvars.of_noFreeVars {Φ : Nat} {τ : Ty} (h : NoFreeVars τ) :
+    Ty.BelowFvars Φ τ := by
+  induction h with
+  | prim => exact .prim
+  | pair _ _ iha ihb => exact .pair iha ihb
+  | arrow _ _ iha ihb => exact .arrow iha ihb
+  | bvar => exact .bvar
+  | customTy _ ih => exact .customTy (fun t ht => ih t ht)
 
 mutual
 
@@ -5121,6 +5175,12 @@ theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     intro hctx
     refine ⟨?_, by simp⟩
     exact Ty.openVars_belowFvars ((hctx _ (List.mem_of_getElem? hlook)).mono (by omega))
+      (fun x hx => by have := freshVars_lt x hx; omega)
+  | ctor hlook =>
+    intro _
+    refine ⟨?_, by simp⟩
+    refine Ty.openVars_belowFvars
+      (Ty.BelowFvars.of_noFreeVars (Ctor.toTy_body_noFreeVars _))
       (fun x hx => by have := freshVars_lt x hx; omega)
   | letIn hrhs hbody ihrhs ihbody =>
     intro hctx
