@@ -8332,6 +8332,167 @@ theorem Infer.complete_letPairIn {pe body : Expr}
     exact Infer.complete_letPairIn_aux ihpe ihbody hwf hbelow hS₀ hMfstwf hMsndwf hpcEq hcofin hbody
 
 
+/-- Reconstruct a list from the length-indexed lookups into it. The map of
+    `Vs[i]?.getD d` over `range Vs.length` is just `Vs`. -/
+private theorem range_length_map_getD {Vs : List Ty} {d : Ty} :
+    (List.range Vs.length).map (fun i => (Vs[i]?).getD d) = Vs := by
+  apply List.ext_getElem
+  · simp
+  · intro i h1 h2
+    simp only [List.getElem_map, List.getElem_range]
+    rw [List.getElem?_eq_getElem h2]
+    rfl
+
+/-- The instantiation list of a `Forall₂ (InstantiatesBy Vs)` (when every source
+    type's bvars are within `Vs.length`) is exactly the element-wise `openWith Vs`. -/
+private theorem instContents_eq_openWith {Vs : List Ty} {cs insts : List Ty}
+    (hforall : List.Forall₂ (InstantiatesBy Vs) cs insts)
+    (hbv : ∀ c ∈ cs, ContainsBvarsUpTo Vs.length c) :
+    insts = cs.map (Ty.openWith Vs) := by
+  induction hforall with
+  | nil => rfl
+  | @cons c inst cs' insts' hhead _ ih =>
+    simp only [List.map_cons]
+    have hc_bv : ContainsBvarsUpTo Vs.length c := hbv c List.mem_cons_self
+    have heq := InstantiatesBy.eq_openWith_range hhead hc_bv
+    rw [range_length_map_getD] at heq
+    rw [heq]
+    congr 1
+    exact ih (fun c' hc' => hbv c' (List.mem_cons_of_mem _ hc'))
+
+/-- A composition law for `Subst.onCtx`: if two substitutions compose on every
+    monotype, they compose on whole contexts. -/
+private theorem Subst.onCtx_comp_of_onTy_eq {A B C : Subst} {ctx : Ctx}
+    (h : ∀ τ, A.onTy τ = B.onTy (C.onTy τ)) :
+    A.onCtx ctx = B.onCtx (C.onCtx ctx) := by
+  simp only [Subst.onCtx, Subst.onEnv, List.map_map]
+  congr 1
+  apply List.map_congr_left
+  intro M _
+  simp only [Subst.onPolyTy, Function.comp_apply, h M.body]
+
+
+/-- **Branch-list completeness** companion of `Infer.complete`: if each branch
+    body is principal (`CompleteAt`), and every branch types declaratively under
+    a residual `R` (an LC specialization, below the frontier `Φ`), then
+    `InferBranches` succeeds and the declarative typing factors through it via an
+    LC residual `R'` (`R = R' ∘ S` below `Φ`). The companion to `match_`
+    principality. -/
+theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
+    ∀ {Φ : Nat} {ctx : Ctx} {tyName : TyName} {ta : List Ty} {ρ : Ty} {R : Subst},
+    (∀ br ∈ branches, Infer.CompleteAt br.2) →
+    CtxWF ctx → CtxBelow Φ ctx →
+    (∀ t ∈ ta, t.IsLC) → (∀ t ∈ ta, Ty.BelowFvars Φ t) →
+    ρ.IsLC → Ty.BelowFvars Φ ρ →
+    (∀ p ∈ R, p.2.IsLC) →
+    (∀ br ∈ branches, TypeOfMatchBranch (R.onCtx ctx) br tyName (ta.map R.onTy) (R.onTy ρ)) →
+    ∃ Φ' S R',
+      InferBranches Φ ctx tyName ta ρ branches Φ' S ∧
+      (∀ v, v < Φ → R.onTy (.fvar v) = (S ++ R').onTy (.fvar v)) ∧
+      (∀ p ∈ R', p.2.IsLC) := by
+  induction branches with
+  | nil =>
+    intro Φ ctx tyName ta ρ R _ihbr _hwf _hbelow _hta _hbta _hρ _hbρ hR _hdecl
+    exact ⟨Φ, [], R, InferBranches.nil, fun v _ => by rw [List.nil_append], hR⟩
+  | cons head rest ih =>
+    intro Φ ctx tyName ta ρ R ihbr hwf hbelow hta hbta hρ hbρ hR hdecl
+    obtain ⟨pat, body⟩ := head
+    have hdhead := hdecl (pat, body) (List.mem_cons_self ..)
+    cases hdhead with
+    | mk hlook htyName hpc hpc2 hforall hpb hbctx hbodyty =>
+      expose_names
+      -- paramCount equality, in the un-substituted `ta` form
+      have hpc' : ctor.paramCount = ta.length := hpc.trans (by rw [List.length_map])
+      -- the declarative instantiations are exactly `openWith` of the substituted tyArgs
+      have hinsts : instContents = ctor.contents.map (Ty.openWith (ta.map R.onTy)) :=
+        instContents_eq_openWith hforall (fun c hc => hpc ▸ ctor.bound c hc)
+      -- recast `hbodyty` over the algorithmic body context `R.onCtx bodyCtx_alg`
+      rw [hbctx, hpb, hinsts] at hbodyty
+      have hbodyWF : CtxWF { ctx with
+          env := (ctor.contents.map (Ty.openWith ta)).map PolyTy.mkTrivial ++ ctx.env } :=
+        branchBindings_wf hwf hta hpc'
+      have hbodyBelow : CtxBelow Φ { ctx with
+          env := (ctor.contents.map (Ty.openWith ta)).map PolyTy.mkTrivial ++ ctx.env } :=
+        branchBindings_below hbelow hbta
+      have hbodyty2 : TypeOfHM (R.onCtx { ctx with
+          env := (ctor.contents.map (Ty.openWith ta)).map PolyTy.mkTrivial ++ ctx.env })
+          body (R.onTy ρ) := by
+        rw [Subst.onCtx_branchBindings hR]; exact hbodyty
+      -- STEP: apply the head branch's IH (principality of `body`)
+      obtain ⟨Φ_b, S_b, τ_b, R_b, hinfbody, hagbody, htybody, hR_b⟩ :=
+        ihbr (pat, body) (List.mem_cons_self ..) hbodyWF hbodyBelow hR hbodyty2
+      have hbodyLC := Infer.lc hinfbody hbodyWF
+      have hτb_lc : τ_b.IsLC := hbodyLC.1
+      have hS_b : ∀ p ∈ S_b, p.2.IsLC := hbodyLC.2
+      have hbb := Infer.belowFvars hinfbody hbodyBelow
+      have hle_b : Φ ≤ Φ_b := Infer.frontier_le hinfbody
+      -- STEP: `R_b` already unifies `τ_b` with `S_b.onTy ρ`
+      have hUni : Unifies R_b τ_b (S_b.onTy ρ) := by
+        show R_b.onTy τ_b = R_b.onTy (S_b.onTy ρ)
+        rw [← htybody, ← Subst.onTy_append]
+        exact Subst.onTy_congr hagbody hbρ
+      obtain ⟨S_u, h_u⟩ := UnifyRel.complete hτb_lc (Subst.onTy_lc hS_b hρ) hUni
+      obtain ⟨R_u, hR_u_eq, hR_u⟩ := UnifyRel.greatest_lc h_u R_b hR_b hUni
+      have hS_u : ∀ p ∈ S_u, p.2.IsLC := UnifyRel.lc h_u hτb_lc (Subst.onTy_lc hS_b hρ)
+      have hS_u_below : ∀ p ∈ S_u, Ty.BelowFvars Φ_b p.2 :=
+        UnifyRel.belowFvars h_u hbb.1 (Subst.onTy_belowFvars hbb.2 (hbρ.mono hle_b))
+      -- STEP: hypotheses for the recursion on `rest`
+      have hwf' : CtxWF (S_u.onCtx (S_b.onCtx ctx)) :=
+        Subst.onCtx_wf hS_u (Subst.onCtx_wf hS_b hwf)
+      have hbelow_Sb : CtxBelow Φ_b (S_b.onCtx ctx) := Subst.onCtx_below hbb.2 hle_b hbelow
+      have hbelow' : CtxBelow Φ_b (S_u.onCtx (S_b.onCtx ctx)) :=
+        Subst.onCtx_below hS_u_below (le_refl _) hbelow_Sb
+      have hta' : ∀ t ∈ ta.map (fun t => S_u.onTy (S_b.onTy t)), t.IsLC := by
+        intro t' ht'; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+        exact Subst.onTy_lc hS_u (Subst.onTy_lc hS_b (hta t0 ht0))
+      have hbta' : ∀ t ∈ ta.map (fun t => S_u.onTy (S_b.onTy t)), Ty.BelowFvars Φ_b t := by
+        intro t' ht'; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+        exact Subst.onTy_belowFvars hS_u_below
+          (Subst.onTy_belowFvars hbb.2 ((hbta t0 ht0).mono hle_b))
+      have hρ' : (S_u.onTy (S_b.onTy ρ)).IsLC := Subst.onTy_lc hS_u (Subst.onTy_lc hS_b hρ)
+      have hbρ' : Ty.BelowFvars Φ_b (S_u.onTy (S_b.onTy ρ)) :=
+        Subst.onTy_belowFvars hS_u_below (Subst.onTy_belowFvars hbb.2 (hbρ.mono hle_b))
+      -- STEP: factoring identities for the recursion's declarative typings
+      have key_t : ∀ {t : Ty}, Ty.BelowFvars Φ t →
+          R_u.onTy (S_u.onTy (S_b.onTy t)) = R.onTy t := by
+        intro t ht
+        rw [← hR_u_eq (S_b.onTy t), ← Subst.onTy_append]
+        exact (Subst.onTy_congr hagbody ht).symm
+      have hctx_eq : R_u.onCtx (S_u.onCtx (S_b.onCtx ctx)) = R.onCtx ctx := by
+        rw [← Subst.onCtx_comp_of_onTy_eq hR_u_eq, ← Subst.onCtx_append]
+        exact Subst.onCtx_congr (fun v hv => (hagbody v hv).symm) hbelow
+      have hta_eq : (ta.map (fun t => S_u.onTy (S_b.onTy t))).map R_u.onTy = ta.map R.onTy := by
+        rw [List.map_map]
+        apply List.map_congr_left
+        intro t ht
+        simpa using key_t (hbta t ht)
+      have hρ_eq : R_u.onTy (S_u.onTy (S_b.onTy ρ)) = R.onTy ρ := key_t hbρ
+      have hdecl' : ∀ br ∈ rest, TypeOfMatchBranch (R_u.onCtx (S_u.onCtx (S_b.onCtx ctx)))
+          br tyName ((ta.map (fun t => S_u.onTy (S_b.onTy t))).map R_u.onTy)
+          (R_u.onTy (S_u.onTy (S_b.onTy ρ))) := by
+        intro br hbr
+        rw [hctx_eq, hta_eq, hρ_eq]
+        exact hdecl br (List.mem_cons_of_mem _ hbr)
+      -- STEP: recurse on `rest`
+      obtain ⟨Φ', S_r, R_r, hinfrest, hagrest, hR_r⟩ :=
+        ih (fun br hbr => ihbr br (List.mem_cons_of_mem _ hbr))
+          hwf' hbelow' hta' hbta' hρ' hbρ' hR_u hdecl'
+      -- STEP: assemble
+      refine ⟨Φ', S_b ++ S_u ++ S_r, R_r, ?_, ?_, hR_r⟩
+      · exact InferBranches.cons hlook htyName hpc' hpc2 hinfbody h_u hinfrest
+      · intro v hv
+        have hbv1 : Ty.BelowFvars Φ_b (S_b.onTy (.fvar v)) :=
+          Subst.onTy_belowFvars hbb.2 (.fvar (by omega))
+        have hbv2 : Ty.BelowFvars Φ_b (S_u.onTy (S_b.onTy (.fvar v))) :=
+          Subst.onTy_belowFvars hS_u_below hbv1
+        calc R.onTy (.fvar v)
+            = (S_b ++ R_b).onTy (.fvar v) := hagbody v hv
+          _ = R_b.onTy (S_b.onTy (.fvar v)) := by rw [Subst.onTy_append]
+          _ = R_u.onTy (S_u.onTy (S_b.onTy (.fvar v))) := hR_u_eq (S_b.onTy (.fvar v))
+          _ = (S_r ++ R_r).onTy (S_u.onTy (S_b.onTy (.fvar v))) := Subst.onTy_congr hagrest hbv2
+          _ = ((S_b ++ S_u ++ S_r) ++ R_r).onTy (.fvar v) := by simp only [Subst.onTy_append]
+
+
 /-! ### Principality, assembled -/
 
 /-- Every core expression satisfies the principality property `CompleteAt`,
