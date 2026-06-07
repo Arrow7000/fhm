@@ -5758,6 +5758,8 @@ inductive Expr.Core : Expr → Prop
   | ctor : Expr.Core (.ctor name)
   | letIn : Expr.Core rhs → Expr.Core body → Expr.Core (.letIn rhs body)
   | letPairIn : Expr.Core pe → Expr.Core body → Expr.Core (.letPairIn pe body)
+  | match_ : Expr.Core scrut → (∀ br ∈ branches, Expr.Core br.2) →
+      Expr.Core (.match_ scrut branches)
 
 /-- Two substitutions agreeing on all vars `< Φ` act identically on a
     below-`Φ` type. -/
@@ -8784,6 +8786,7 @@ theorem Infer.completeAt_of_core {e : Expr} (hcore : e.Core) : Infer.CompleteAt 
   | ctor => exact Infer.complete_ctor
   | letIn _ _ iha ihb => exact Infer.complete_letIn iha ihb
   | letPairIn _ _ ihpe ihbody => exact Infer.complete_letPairIn ihpe ihbody
+  | match_ _ _ ihscrut ihbranches => exact Infer.complete_match ihscrut ihbranches
 
 /-- **Principality of `Infer`** (Damas–Milner completeness, core fragment): for
     any declarative typing of a core expression `e` under an LC specialization
