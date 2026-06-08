@@ -11002,3 +11002,71 @@ theorem unify_complete {a b : Ty} {S : Subst} (h : UnifyRel a b S)
   have hcore : (unifyCore a b).isSome :=
     (unifyCore_complete_aux (2 * (S.onTy a).size + 1)).1 (by omega) ha hb h.unifies
   simpa [unify, Option.isSome_map] using hcore
+
+
+/-! ### `infer` completeness
+
+`infer` succeeds whenever `e` is declaratively typeable. Like `unify_complete`,
+the obstacle is that `inferCore` decomposes through its *own* computed
+substitutions/fresh-vars, so this is Algorithm-W completeness *for the function*:
+each recursive case transfers the typing to the function's intermediate state
+(reusing `Infer.complete'` / `InferBranches.complete'`), and `app`/`letPairIn`/
+`match_` additionally rebuild the explicit unifier (mirroring the `complete_*_aux`
+dodges) to discharge `unifyCore` via `unifyCore_complete_aux`. -/
+
+/-- The function-completeness property at `e`: given a (well-formed,
+    frontier-bounded) `Infer` derivation, `inferCore` succeeds. We induct over a
+    *given* derivation (not declarative typeability) so the binder cases compose
+    without an α-renaming dodge: `Infer`'s sub-derivations already live in the
+    exact intermediate states `inferCore` recurses into for `lambda`/`var`/`ctor`,
+    while the compositional cases re-derive the second sub-problem under the
+    function's own prefix via `complete'` + `Infer.complete`. -/
+def InferCoreComplete (e : Expr) : Prop :=
+  ∀ {Φ : Nat} {ctx : Ctx} {Φ' : Nat} {S : Subst} {τ : Ty},
+    CtxWF ctx → CtxBelow Φ ctx → Infer Φ ctx e Φ' S τ → (inferCore Φ ctx e).isSome
+
+theorem inferCore_complete_prim {p : PrimLitExpr} : InferCoreComplete (.primLit p) := by
+  intro Φ ctx Φ' S τ _ _ h
+  cases h <;> simp [inferCore]
+
+theorem inferCore_complete_var {i : Nat} : InferCoreComplete (.var i) := by
+  intro Φ ctx Φ' S τ _ _ h
+  cases h with
+  | var hlook =>
+    rw [inferCore]
+    split
+    · rename_i heq; rw [heq] at hlook; simp at hlook
+    · rfl
+
+theorem inferCore_complete_ctor {name : CtorName} : InferCoreComplete (.ctor name) := by
+  intro Φ ctx Φ' S τ _ _ h
+  cases h with
+  | ctor hlook =>
+    rw [inferCore]
+    split
+    · rename_i heq; rw [heq] at hlook; simp at hlook
+    · rfl
+
+/-- A trivial scheme `mkTrivial (.fvar Φ)` extends a WF context to a WF context. -/
+theorem CtxWF.cons_fvar {Φ : Nat} {ctx : Ctx} (hwf : CtxWF ctx) :
+    CtxWF { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+  intro M hM
+  rcases List.mem_cons.mp hM with rfl | hM
+  · exact ContainsBvarsUpTo.fvar
+  · exact hwf M hM
+
+theorem CtxBelow.cons_fvar {Φ : Nat} {ctx : Ctx} (hbelow : CtxBelow Φ ctx) :
+    CtxBelow (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+  intro M hM
+  rcases List.mem_cons.mp hM with rfl | hM
+  · exact .fvar (by omega)
+  · exact (hbelow M hM).mono (by omega)
+
+theorem inferCore_complete_lambda {body : Expr} (ih : InferCoreComplete body) :
+    InferCoreComplete (.lambda body) := by
+  intro Φ ctx Φ' S τ hwf hbelow h
+  cases h with
+  | lambda hbody =>
+    have hsome := ih hwf.cons_fvar hbelow.cons_fvar hbody
+    obtain ⟨⟨⟨Φ'', S'', τb'⟩, hbody'⟩, he⟩ := Option.isSome_iff_exists.mp hsome
+    rw [inferCore]; simp only [he, Option.isSome_some]
