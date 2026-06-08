@@ -10324,3 +10324,229 @@ theorem UnifyRelList.eliminates : {as bs : List Ty} → {S : Subst} → UnifyRel
           exact UnifyRel.eliminates h₁ p hp t0 hvt
     · exact UnifyRelList.eliminates ht p hp (S₁.onTy x) hc
 end
+
+/-! ### Termination measure for `unify`
+
+`pairVars`/`listVars` count the distinct free vars of a pair of types / type
+lists; these are the primary (lexicographic) component of `unify`'s measure,
+with `Ty.size`/`TyList.size` as the tiebreak. The six `unifyDec_*` lemmas package
+the decrease of each recursive call. -/
+
+/-- Distinct free type vars of a pair of monotypes. -/
+def pairVars (a b : Ty) : List Nat := (a.freeVars ++ b.freeVars).dedup
+
+/-- Distinct free type vars of a pair of monotype lists. -/
+def listVars (as bs : List Ty) : List Nat := (TyList.freeVars as ++ TyList.freeVars bs).dedup
+
+theorem mem_pairVars {a b : Ty} {v : Nat} :
+    v ∈ pairVars a b ↔ v ∈ a.freeVars ∨ v ∈ b.freeVars := by
+  simp [pairVars, List.mem_dedup, List.mem_append]
+
+theorem mem_listVars {as bs : List Ty} {v : Nat} :
+    v ∈ listVars as bs ↔ (∃ t ∈ as, v ∈ t.freeVars) ∨ (∃ t ∈ bs, v ∈ t.freeVars) := by
+  simp only [listVars, List.mem_dedup, List.mem_append, mem_TyList_freeVars]
+
+theorem pairVars_nodup {a b : Ty} : (pairVars a b).Nodup := List.nodup_dedup _
+theorem listVars_nodup {as bs : List Ty} : (listVars as bs).Nodup := List.nodup_dedup _
+
+theorem nodup_length_le {l₁ l₂ : List Nat} (h : l₁.Nodup) (hsub : l₁ ⊆ l₂) :
+    l₁.length ≤ l₂.length := (h.subperm hsub).length_le
+
+theorem nodup_length_lt {l₁ l₂ : List Nat} (h : l₁.Nodup) (hsub : l₁ ⊆ l₂)
+    {z : Nat} (hz2 : z ∈ l₂) (hz1 : z ∉ l₁) : l₁.length < l₂.length := by
+  have hcons : (z :: l₁).Nodup := List.nodup_cons.mpr ⟨hz1, h⟩
+  have hsub2 : (z :: l₁) ⊆ l₂ := List.cons_subset.mpr ⟨hz2, hsub⟩
+  have := nodup_length_le hcons hsub2
+  simpa using this
+
+theorem lexLt_left {a₁ a₂ b₁ b₂ : Nat} (h : a₁ < a₂) :
+    Prod.Lex (· < ·) (· < ·) (a₁, b₁) (a₂, b₂) := Prod.Lex.left _ _ h
+
+theorem lexLt_of_le_of_lt {a₁ a₂ b₁ b₂ : Nat} (ha : a₁ ≤ a₂) (hb : b₁ < b₂) :
+    Prod.Lex (· < ·) (· < ·) (a₁, b₁) (a₂, b₂) := by
+  rcases Nat.lt_or_ge a₁ a₂ with h | h
+  · exact Prod.Lex.left _ _ h
+  · have heq : a₁ = a₂ := Nat.le_antisymm ha h
+    subst heq; exact Prod.Lex.right _ hb
+
+theorem Subst.map_onTy_nil (ts : List Ty) : ts.map (Subst.onTy []) = ts := by
+  induction ts with
+  | nil => rfl
+  | cons hd tl ih => simp only [List.map_cons, Subst.onTy_nil, ih]
+
+/-- First structural subcall of `arrow`: strictly smaller (by size). -/
+theorem unifyDec_arrow1 {a₁ a₂ c₁ c₂ : Ty} :
+    Prod.Lex (· < ·) (· < ·)
+      ((pairVars a₁ c₁).length, a₁.size + c₁.size)
+      ((pairVars (.arrow a₁ a₂) (.arrow c₁ c₂)).length,
+        (Ty.arrow a₁ a₂).size + (Ty.arrow c₁ c₂).size) := by
+  apply lexLt_of_le_of_lt
+  · refine nodup_length_le pairVars_nodup (fun v hv => ?_)
+    rw [mem_pairVars] at hv ⊢
+    rcases hv with h | h
+    · exact Or.inl (Ty.mem_freeVars_arrowL h)
+    · exact Or.inr (Ty.mem_freeVars_arrowL h)
+  · simp only [Ty.size]; have := @Ty.size_pos a₂; have := @Ty.size_pos c₂; omega
+
+/-- Second subcall of `arrow` (after applying the first unifier): strictly fewer
+    distinct vars when the unifier is nontrivial, else strictly smaller by size. -/
+theorem unifyDec_arrow2 {a₁ a₂ c₁ c₂ : Ty} {S₁ : Subst} (hS₁ : UnifyRel a₁ c₁ S₁) :
+    Prod.Lex (· < ·) (· < ·)
+      ((pairVars (S₁.onTy a₂) (S₁.onTy c₂)).length,
+        (S₁.onTy a₂).size + (S₁.onTy c₂).size)
+      ((pairVars (.arrow a₁ a₂) (.arrow c₁ c₂)).length,
+        (Ty.arrow a₁ a₂).size + (Ty.arrow c₁ c₂).size) := by
+  have hsub : pairVars (S₁.onTy a₂) (S₁.onTy c₂)
+      ⊆ pairVars (.arrow a₁ a₂) (.arrow c₁ c₂) := by
+    intro v hv
+    rw [mem_pairVars] at hv ⊢
+    rcases hv with hv | hv
+    · rcases Subst.mem_freeVars_onTy hv with h | ⟨q, hq, hvq⟩
+      · exact Or.inl (Ty.mem_freeVars_arrowR h)
+      · rcases UnifyRel.range_mem hS₁ q hq v hvq with h' | h'
+        · exact Or.inl (Ty.mem_freeVars_arrowL h')
+        · exact Or.inr (Ty.mem_freeVars_arrowL h')
+    · rcases Subst.mem_freeVars_onTy hv with h | ⟨q, hq, hvq⟩
+      · exact Or.inr (Ty.mem_freeVars_arrowR h)
+      · rcases UnifyRel.range_mem hS₁ q hq v hvq with h' | h'
+        · exact Or.inl (Ty.mem_freeVars_arrowL h')
+        · exact Or.inr (Ty.mem_freeVars_arrowL h')
+  by_cases hnil : S₁ = []
+  · subst hnil
+    simp only [Subst.onTy_nil] at hsub ⊢
+    apply lexLt_of_le_of_lt (nodup_length_le pairVars_nodup hsub)
+    simp only [Ty.size]; have := @Ty.size_pos a₁; have := @Ty.size_pos c₁; omega
+  · obtain ⟨p, rest, rfl⟩ := List.exists_cons_of_ne_nil hnil
+    apply lexLt_left
+    refine nodup_length_lt pairVars_nodup hsub (z := p.1) ?_ ?_
+    · rw [mem_pairVars]
+      rcases UnifyRel.dom_mem hS₁ p List.mem_cons_self with h | h
+      · exact Or.inl (Ty.mem_freeVars_arrowL h)
+      · exact Or.inr (Ty.mem_freeVars_arrowL h)
+    · rw [mem_pairVars]; push_neg
+      exact ⟨UnifyRel.eliminates hS₁ p List.mem_cons_self a₂,
+             UnifyRel.eliminates hS₁ p List.mem_cons_self c₂⟩
+
+/-- First structural subcall of `pair`. -/
+theorem unifyDec_pair1 {a₁ a₂ c₁ c₂ : Ty} :
+    Prod.Lex (· < ·) (· < ·)
+      ((pairVars a₁ c₁).length, a₁.size + c₁.size)
+      ((pairVars (.pair a₁ a₂) (.pair c₁ c₂)).length,
+        (Ty.pair a₁ a₂).size + (Ty.pair c₁ c₂).size) := by
+  apply lexLt_of_le_of_lt
+  · refine nodup_length_le pairVars_nodup (fun v hv => ?_)
+    rw [mem_pairVars] at hv ⊢
+    rcases hv with h | h
+    · exact Or.inl (Ty.mem_freeVars_pairL h)
+    · exact Or.inr (Ty.mem_freeVars_pairL h)
+  · simp only [Ty.size]; have := @Ty.size_pos a₂; have := @Ty.size_pos c₂; omega
+
+/-- Second subcall of `pair`. -/
+theorem unifyDec_pair2 {a₁ a₂ c₁ c₂ : Ty} {S₁ : Subst} (hS₁ : UnifyRel a₁ c₁ S₁) :
+    Prod.Lex (· < ·) (· < ·)
+      ((pairVars (S₁.onTy a₂) (S₁.onTy c₂)).length,
+        (S₁.onTy a₂).size + (S₁.onTy c₂).size)
+      ((pairVars (.pair a₁ a₂) (.pair c₁ c₂)).length,
+        (Ty.pair a₁ a₂).size + (Ty.pair c₁ c₂).size) := by
+  have hsub : pairVars (S₁.onTy a₂) (S₁.onTy c₂)
+      ⊆ pairVars (.pair a₁ a₂) (.pair c₁ c₂) := by
+    intro v hv
+    rw [mem_pairVars] at hv ⊢
+    rcases hv with hv | hv
+    · rcases Subst.mem_freeVars_onTy hv with h | ⟨q, hq, hvq⟩
+      · exact Or.inl (Ty.mem_freeVars_pairR h)
+      · rcases UnifyRel.range_mem hS₁ q hq v hvq with h' | h'
+        · exact Or.inl (Ty.mem_freeVars_pairL h')
+        · exact Or.inr (Ty.mem_freeVars_pairL h')
+    · rcases Subst.mem_freeVars_onTy hv with h | ⟨q, hq, hvq⟩
+      · exact Or.inr (Ty.mem_freeVars_pairR h)
+      · rcases UnifyRel.range_mem hS₁ q hq v hvq with h' | h'
+        · exact Or.inl (Ty.mem_freeVars_pairL h')
+        · exact Or.inr (Ty.mem_freeVars_pairL h')
+  by_cases hnil : S₁ = []
+  · subst hnil
+    simp only [Subst.onTy_nil] at hsub ⊢
+    apply lexLt_of_le_of_lt (nodup_length_le pairVars_nodup hsub)
+    simp only [Ty.size]; have := @Ty.size_pos a₁; have := @Ty.size_pos c₁; omega
+  · obtain ⟨p, rest, rfl⟩ := List.exists_cons_of_ne_nil hnil
+    apply lexLt_left
+    refine nodup_length_lt pairVars_nodup hsub (z := p.1) ?_ ?_
+    · rw [mem_pairVars]
+      rcases UnifyRel.dom_mem hS₁ p List.mem_cons_self with h | h
+      · exact Or.inl (Ty.mem_freeVars_pairL h)
+      · exact Or.inr (Ty.mem_freeVars_pairL h)
+    · rw [mem_pairVars]; push_neg
+      exact ⟨UnifyRel.eliminates hS₁ p List.mem_cons_self a₂,
+             UnifyRel.eliminates hS₁ p List.mem_cons_self c₂⟩
+
+/-- `customTy` subcall delegates to `unifyList` (strictly smaller by size). -/
+theorem unifyDec_customTy {n₁ n₂ : TyName} {ts₁ ts₂ : List Ty} :
+    Prod.Lex (· < ·) (· < ·)
+      ((listVars ts₁ ts₂).length, TyList.size ts₁ + TyList.size ts₂ + 1)
+      ((pairVars (.customTy n₁ ts₁) (.customTy n₂ ts₂)).length,
+        (Ty.customTy n₁ ts₁).size + (Ty.customTy n₂ ts₂).size) := by
+  apply lexLt_of_le_of_lt
+  · refine nodup_length_le listVars_nodup (fun v hv => ?_)
+    rw [mem_listVars] at hv; rw [mem_pairVars]
+    rcases hv with ⟨t, ht, h⟩ | ⟨t, ht, h⟩
+    · exact Or.inl (Ty.mem_freeVars_customTy ht h)
+    · exact Or.inr (Ty.mem_freeVars_customTy ht h)
+  · simp only [Ty.size]; omega
+
+/-- First subcall of `unifyList`'s `cons` (the head element). -/
+theorem unifyDec_cons1 {t₁ t₂ : Ty} {ts₁ ts₂ : List Ty} :
+    Prod.Lex (· < ·) (· < ·)
+      ((pairVars t₁ t₂).length, t₁.size + t₂.size)
+      ((listVars (t₁ :: ts₁) (t₂ :: ts₂)).length,
+        TyList.size (t₁ :: ts₁) + TyList.size (t₂ :: ts₂) + 1) := by
+  apply lexLt_of_le_of_lt
+  · refine nodup_length_le pairVars_nodup (fun v hv => ?_)
+    rw [mem_pairVars] at hv; rw [mem_listVars]
+    rcases hv with h | h
+    · exact Or.inl ⟨t₁, List.mem_cons_self, h⟩
+    · exact Or.inr ⟨t₂, List.mem_cons_self, h⟩
+  · simp only [TyList.size]; omega
+
+/-- Second subcall of `unifyList`'s `cons` (the tail, after the head unifier). -/
+theorem unifyDec_cons2 {t₁ t₂ : Ty} {ts₁ ts₂ : List Ty} {S₁ : Subst}
+    (hS₁ : UnifyRel t₁ t₂ S₁) :
+    Prod.Lex (· < ·) (· < ·)
+      ((listVars (ts₁.map S₁.onTy) (ts₂.map S₁.onTy)).length,
+        TyList.size (ts₁.map S₁.onTy) + TyList.size (ts₂.map S₁.onTy) + 1)
+      ((listVars (t₁ :: ts₁) (t₂ :: ts₂)).length,
+        TyList.size (t₁ :: ts₁) + TyList.size (t₂ :: ts₂) + 1) := by
+  have hsub : listVars (ts₁.map S₁.onTy) (ts₂.map S₁.onTy)
+      ⊆ listVars (t₁ :: ts₁) (t₂ :: ts₂) := by
+    intro v hv
+    rw [mem_listVars] at hv ⊢
+    rcases hv with ⟨t, ht, h⟩ | ⟨t, ht, h⟩
+    · obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+      rcases Subst.mem_freeVars_onTy h with hh | ⟨q, hq, hvq⟩
+      · exact Or.inl ⟨t0, List.mem_cons_of_mem _ ht0, hh⟩
+      · rcases UnifyRel.range_mem hS₁ q hq v hvq with h' | h'
+        · exact Or.inl ⟨t₁, List.mem_cons_self, h'⟩
+        · exact Or.inr ⟨t₂, List.mem_cons_self, h'⟩
+    · obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+      rcases Subst.mem_freeVars_onTy h with hh | ⟨q, hq, hvq⟩
+      · exact Or.inr ⟨t0, List.mem_cons_of_mem _ ht0, hh⟩
+      · rcases UnifyRel.range_mem hS₁ q hq v hvq with h' | h'
+        · exact Or.inl ⟨t₁, List.mem_cons_self, h'⟩
+        · exact Or.inr ⟨t₂, List.mem_cons_self, h'⟩
+  by_cases hnil : S₁ = []
+  · subst hnil
+    simp only [Subst.map_onTy_nil] at hsub ⊢
+    apply lexLt_of_le_of_lt (nodup_length_le listVars_nodup hsub)
+    simp only [TyList.size]; have := @Ty.size_pos t₁; have := @Ty.size_pos t₂; omega
+  · obtain ⟨p, rest, rfl⟩ := List.exists_cons_of_ne_nil hnil
+    apply lexLt_left
+    refine nodup_length_lt listVars_nodup hsub (z := p.1) ?_ ?_
+    · rw [mem_listVars]
+      rcases UnifyRel.dom_mem hS₁ p List.mem_cons_self with h | h
+      · exact Or.inl ⟨t₁, List.mem_cons_self, h⟩
+      · exact Or.inr ⟨t₂, List.mem_cons_self, h⟩
+    · rw [mem_listVars]; push_neg
+      refine ⟨fun t ht hc => ?_, fun t ht hc => ?_⟩
+      · obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+        exact UnifyRel.eliminates hS₁ p List.mem_cons_self t0 hc
+      · obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+        exact UnifyRel.eliminates hS₁ p List.mem_cons_self t0 hc
