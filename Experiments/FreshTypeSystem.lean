@@ -12086,3 +12086,72 @@ theorem infer_iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
       ∃ (S : Subst) (τ : Ty), (∀ p ∈ S, p.2.IsLC) ∧ TypeOfHM (S.onCtx ctx) e τ := by
   rw [infer_iff hwf hbelow]
   exact (Infer.iff_typeable hwf hbelow).symm
+
+
+/-! ### Whole-program typechecking
+
+For a *closed* program — context `⟨[], ctors⟩` with an empty term-variable
+environment — the algorithmic side-conditions (`CtxWF`, `CtxBelow 0`) hold
+vacuously, and a substitution does nothing to an empty env (`Subst.onCtx_empty`).
+So the leaky `Φ`/`S` machinery disappears from the statements entirely and we get
+a clean one-argument `typecheck : CtorEnv → Expr → Option Ty` that is sound,
+computes the principal type, and decides typeability — all phrased purely against
+the declarative `TypeOfHM`. -/
+
+theorem CtxWF.empty {ctors : CtorEnv} : CtxWF ⟨[], ctors⟩ := by
+  intro M hM; simp at hM
+
+theorem CtxBelow.empty {Φ : Nat} {ctors : CtorEnv} : CtxBelow Φ ⟨[], ctors⟩ := by
+  intro M hM; simp at hM
+
+@[simp] theorem Subst.onCtx_empty {S : Subst} {ctors : CtorEnv} :
+    S.onCtx ⟨[], ctors⟩ = ⟨[], ctors⟩ := rfl
+
+/-- Type-check a closed program: run Algorithm W from an empty environment and
+    keep just the resulting type (the inferer's `Φ`/`S` are internal). -/
+def typecheck (ctors : CtorEnv) (e : Expr) : Option Ty :=
+  (infer 0 ⟨[], ctors⟩ e).map (·.2.2)
+
+/-- Whole-program soundness: a computed type is a genuine declarative type. -/
+theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h : typecheck ctors e = some τ) : TypeOfHM ⟨[], ctors⟩ e τ := by
+  rw [typecheck] at h
+  rcases hc : infer 0 ⟨[], ctors⟩ e with _ | ⟨Φ', S, τ'⟩ <;> rw [hc] at h
+  · simp at h
+  · simp only [Option.map_some, Option.some.injEq] at h
+    subst h
+    have := Infer.sound (infer_sound hc) CtxWF.empty
+    rwa [Subst.onCtx_empty] at this
+
+/-- Whole-program principality: the computed type is *the* principal type — every
+    declarative type of the program is a substitution instance of it. -/
+theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h : typecheck ctors e = some τ) :
+    ∀ τ₀, TypeOfHM ⟨[], ctors⟩ e τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+  rw [typecheck] at h
+  rcases hc : infer 0 ⟨[], ctors⟩ e with _ | ⟨Φ', S, τ'⟩ <;> rw [hc] at h
+  · simp at h
+  · simp only [Option.map_some, Option.some.injEq] at h
+    subst h
+    have hP := infer_isPrincipal hc CtxWF.empty CtxBelow.empty
+    intro τ₀ hτ₀
+    exact hP.principal (S₀ := []) (by simp) (by rwa [Subst.onCtx_nil])
+
+/-- Whole-program decidability: `typecheck` succeeds iff the program is
+    declaratively typeable. -/
+theorem typecheck_iff {ctors : CtorEnv} {e : Expr} :
+    (typecheck ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
+  constructor
+  · intro h
+    obtain ⟨τ, hτ⟩ := Option.isSome_iff_exists.mp h
+    exact ⟨τ, typecheck_sound hτ⟩
+  · rintro ⟨τ, hτ⟩
+    have hinfer : (infer 0 ⟨[], ctors⟩ e).isSome := by
+      rw [infer_iff_typeable CtxWF.empty CtxBelow.empty]
+      exact ⟨[], τ, by simp, by rwa [Subst.onCtx_nil]⟩
+    simpa [typecheck, Option.isSome_map] using hinfer
+
+-- `typecheck [] (λx. x) = α → α`
+#eval typecheck [] (.lambda (.var 0))
+-- `typecheck [] (5 5) = none`
+#eval typecheck [] (.app (.primLit (.int 5)) (.primLit (.int 5)))
