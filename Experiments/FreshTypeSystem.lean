@@ -12047,3 +12047,42 @@ theorem infer_complete {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst}
     (infer Φ ctx e).isSome := by
   have := inferCore_complete e hwf hbelow h
   simpa [infer, Option.isSome_map] using this
+
+
+/-! ### Sound + complete, packaged as equivalences
+
+Bundling each refinement into a single `↔`: the executable succeeds exactly when
+the corresponding relation is inhabited, and (composing with `Infer.iff_typeable`)
+exactly when the expression is declaratively typeable. -/
+
+/-- `unify` succeeds iff the (LC) monotypes are unifiable. -/
+theorem unify_iff {a b : Ty} (ha : a.IsLC) (hb : b.IsLC) :
+    (unify a b).isSome ↔ ∃ S, UnifyRel a b S := by
+  constructor
+  · intro h
+    obtain ⟨S, hS⟩ := Option.isSome_iff_exists.mp h
+    exact ⟨S, unify_sound hS⟩
+  · rintro ⟨S, hS⟩
+    exact unify_complete hS ha hb
+
+/-- `infer` succeeds iff the `Infer` relation is inhabited (for a well-formed,
+    frontier-bounded context). -/
+theorem infer_iff {Φ : Nat} {ctx : Ctx} {e : Expr}
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) :
+    (infer Φ ctx e).isSome ↔ ∃ Φ' S τ, Infer Φ ctx e Φ' S τ := by
+  constructor
+  · intro h
+    obtain ⟨⟨Φ', S, τ⟩, he⟩ := Option.isSome_iff_exists.mp h
+    exact ⟨Φ', S, τ, infer_sound he⟩
+  · rintro ⟨Φ', S, τ, hInfer⟩
+    exact infer_complete hInfer hwf hbelow
+
+/-- **The executable typechecker decides typeability.** `infer` succeeds iff `e`
+    is declaratively typeable under some LC specialization of `ctx` — the
+    full-circle bridge from the executable function all the way to `TypeOfHM`. -/
+theorem infer_iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) :
+    (infer Φ ctx e).isSome ↔
+      ∃ (S : Subst) (τ : Ty), (∀ p ∈ S, p.2.IsLC) ∧ TypeOfHM (S.onCtx ctx) e τ := by
+  rw [infer_iff hwf hbelow]
+  exact (Infer.iff_typeable hwf hbelow).symm
