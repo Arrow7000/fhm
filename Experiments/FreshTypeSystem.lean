@@ -11070,3 +11070,35 @@ theorem inferCore_complete_lambda {body : Expr} (ih : InferCoreComplete body) :
     have hsome := ih hwf.cons_fvar hbelow.cons_fvar hbody
     obtain ⟨⟨⟨Φ'', S'', τb'⟩, hbody'⟩, he⟩ := Option.isSome_iff_exists.mp hsome
     rw [inferCore]; simp only [he, Option.isSome_some]
+
+theorem inferCore_complete_pair {a b : Expr}
+    (iha : InferCoreComplete a) (ihb : InferCoreComplete b) :
+    InferCoreComplete (.pair a b) := by
+  intro Φ ctx Φ' S τ hwf hbelow h
+  cases h with
+  | @pair _ _ _ _ Φ₁ Φ₂ S₁ S₂ τa τb ha hb =>
+    -- recurse on `a`, get the function's first output `(Φ₁', S₁', τa')`
+    have hsa := iha hwf hbelow ha
+    obtain ⟨⟨⟨Φ₁', S₁', τa'⟩, ha'⟩, hea⟩ := Option.isSome_iff_exists.mp hsa
+    -- factor the derivation's `S₁` through the function's principal `ha'`
+    have hS₁ := (Infer.lc ha hwf).2
+    obtain ⟨R₁, hag1, _, hR₁⟩ := Infer.complete' ha' hwf hbelow hS₁ (Infer.sound ha hwf)
+    have hS₁' := (Infer.lc ha' hwf).2
+    have hbf := Infer.belowFvars ha' hbelow
+    have hle1 := Infer.frontier_le ha'
+    have hwf₁ := Subst.onCtx_wf hS₁' hwf
+    have hbelow₁ := Subst.onCtx_below hbf.2 hle1 hbelow
+    have hctxeq : R₁.onCtx (S₁'.onCtx ctx) = S₁.onCtx ctx := by
+      rw [← Subst.onCtx_append]; exact Subst.onCtx_congr (fun v hv => (hag1 v hv).symm) hbelow
+    -- transfer `b`'s typing to the function's intermediate context, re-derive via `Infer.complete`
+    have hwfS₁ := Subst.onCtx_wf hS₁ hwf
+    have htyb' : TypeOfHM ((R₁ ++ S₂).onCtx (S₁'.onCtx ctx)) b τb := by
+      rw [Subst.onCtx_append, hctxeq]; exact Infer.sound hb hwfS₁
+    have hR₁S₂lc : ∀ p ∈ R₁ ++ S₂, p.2.IsLC := by
+      intro p hp; rcases List.mem_append.mp hp with hp | hp
+      · exact hR₁ p hp
+      · exact (Infer.lc hb hwfS₁).2 p hp
+    obtain ⟨_, _, _, _, hinfb, _, _, _⟩ := Infer.complete hwf₁ hbelow₁ hR₁S₂lc htyb'
+    have hsb := ihb hwf₁ hbelow₁ hinfb
+    obtain ⟨⟨⟨Φ₂', S₂', τb'⟩, hb'⟩, heb⟩ := Option.isSome_iff_exists.mp hsb
+    rw [inferCore]; simp only [hea, heb, Option.isSome_some]
