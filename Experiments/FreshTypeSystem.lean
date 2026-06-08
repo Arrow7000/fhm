@@ -9984,3 +9984,343 @@ theorem Infer.isPrincipal {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
 
 
 #print axioms Infer.isPrincipal
+
+
+/-! ## Stage 4: the executable `unify` and `infer`
+
+Everything above specifies and certifies the *relations* `UnifyRel` and `Infer`.
+This final stage gives the actual *functions* (`unify`, `infer`) and proves they
+**refine** those relations. The only non-trivial part is `unify`'s termination,
+discharged with the standard lexicographic measure `(#distinct free vars, size)`:
+each var-elimination step strictly drops the variable count, while the structural
+decompositions (`arrow`/`pair`/`customTy`) drop `Ty.size`. The supporting
+variable-tracking lemmas about `UnifyRel`-substitutions are proved first. -/
+
+/-! ### Variable-tracking lemmas for substitutions and `UnifyRel`
+
+`Subst.mem_freeVars_onTy` bounds the free vars of a substituted type by the
+input's vars plus the substitution's range; `UnifyRel.range_mem` / `.dom_mem`
+locate a derived substitution's range/domain inside the inputs' vars; and
+`UnifyRel.eliminates` is the occurs-check at the variable-set level (a domain
+variable never survives in any image). Together they make the termination
+measure of `unify` strictly decrease. -/
+
+/-- `TyList.freeVars` membership characterisation (the `customTy` payload). -/
+theorem mem_TyList_freeVars {tys : List Ty} {v : Nat} :
+    v ∈ TyList.freeVars tys ↔ ∃ t ∈ tys, v ∈ t.freeVars := by
+  constructor
+  · intro h
+    by_contra hc
+    push_neg at hc
+    exact (TyList.not_mem_freeVars_iff.mpr hc) h
+  · rintro ⟨t, ht, hv⟩
+    exact TyList.mem_freeVars_of_mem ht hv
+
+/-- Free vars introduced by a single-variable substitution come from the input
+    or from the replacement. -/
+theorem Ty.mem_freeVars_substFvar {Z : Nat} {U x : Ty} {v : Nat}
+    (hv : v ∈ (Ty.substFvar Z U x).freeVars) : v ∈ x.freeVars ∨ v ∈ U.freeVars := by
+  induction x using Ty.rec_strong with
+  | prim p => simp [Ty.substFvar, Ty.freeVars] at hv
+  | bvar i => simp [Ty.substFvar, Ty.freeVars] at hv
+  | fvar m =>
+    simp only [Ty.substFvar] at hv
+    by_cases hm : m = Z
+    · simp only [if_pos hm] at hv; exact Or.inr hv
+    · simp only [if_neg hm, Ty.freeVars, List.mem_singleton] at hv
+      subst hv; exact Or.inl (by simp [Ty.freeVars])
+  | pair a b iha ihb =>
+    simp only [Ty.substFvar, Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+    rcases hv with h | h
+    · rcases iha h with h' | h'
+      · exact Or.inl (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl h')
+      · exact Or.inr h'
+    · rcases ihb h with h' | h'
+      · exact Or.inl (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr h')
+      · exact Or.inr h'
+  | arrow a b iha ihb =>
+    simp only [Ty.substFvar, Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+    rcases hv with h | h
+    · rcases iha h with h' | h'
+      · exact Or.inl (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl h')
+      · exact Or.inr h'
+    · rcases ihb h with h' | h'
+      · exact Or.inl (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr h')
+      · exact Or.inr h'
+  | customTy nm tys ih =>
+    simp only [Ty.substFvar, Ty.freeVars, TyList.substFvar_eq_map] at hv
+    rw [mem_TyList_freeVars] at hv
+    obtain ⟨t', ht', hvt'⟩ := hv
+    obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+    rcases ih t0 ht0 hvt' with h | h
+    · exact Or.inl (by simp only [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht0 h)
+    · exact Or.inr h
+
+/-- Free vars introduced by a whole substitution come from the input or from
+    one of the substitution's replacements. -/
+theorem Subst.mem_freeVars_onTy {S : Subst} {x : Ty} {v : Nat}
+    (hv : v ∈ (S.onTy x).freeVars) : v ∈ x.freeVars ∨ ∃ p ∈ S, v ∈ p.2.freeVars := by
+  induction S generalizing x with
+  | nil => exact Or.inl (by simpa [Subst.onTy] using hv)
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    rw [show ((Z, U) :: tl) = [(Z, U)] ++ tl from rfl, Subst.onTy_append] at hv
+    rcases ih hv with h | h
+    · have he : Subst.onTy [(Z, U)] x = Ty.substFvar Z U x := rfl
+      rw [he] at h
+      rcases Ty.mem_freeVars_substFvar h with h' | h'
+      · exact Or.inl h'
+      · exact Or.inr ⟨(Z, U), List.mem_cons_self, h'⟩
+    · obtain ⟨p, hp, hvp⟩ := h
+      exact Or.inr ⟨p, List.mem_cons_of_mem _ hp, hvp⟩
+
+/-- Injecting a sub-type's free var into a compound type's free vars. -/
+theorem Ty.mem_freeVars_arrowL {a b : Ty} {v : Nat} (h : v ∈ a.freeVars) :
+    v ∈ (Ty.arrow a b).freeVars := by
+  simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl h
+theorem Ty.mem_freeVars_arrowR {a b : Ty} {v : Nat} (h : v ∈ b.freeVars) :
+    v ∈ (Ty.arrow a b).freeVars := by
+  simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr h
+theorem Ty.mem_freeVars_pairL {a b : Ty} {v : Nat} (h : v ∈ a.freeVars) :
+    v ∈ (Ty.pair a b).freeVars := by
+  simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl h
+theorem Ty.mem_freeVars_pairR {a b : Ty} {v : Nat} (h : v ∈ b.freeVars) :
+    v ∈ (Ty.pair a b).freeVars := by
+  simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr h
+theorem Ty.mem_freeVars_customTy {nm : TyName} {tys : List Ty} {t : Ty} {v : Nat}
+    (ht : t ∈ tys) (h : v ∈ t.freeVars) : v ∈ (Ty.customTy nm tys).freeVars := by
+  simp only [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht h
+
+/-- A variable not occurring in the replacement does not survive substituting it. -/
+theorem Ty.not_mem_freeVars_substFvar_self {n : Nat} {U x : Ty}
+    (hU : n ∉ U.freeVars) : n ∉ (Ty.substFvar n U x).freeVars := by
+  induction x using Ty.rec_strong with
+  | prim p => simp [Ty.substFvar, Ty.freeVars]
+  | bvar i => simp [Ty.substFvar, Ty.freeVars]
+  | fvar m =>
+    simp only [Ty.substFvar]
+    by_cases hm : m = n
+    · simp only [if_pos hm]; exact hU
+    · simp only [if_neg hm, Ty.freeVars, List.mem_singleton]; exact fun hc => hm hc.symm
+  | pair a b iha ihb =>
+    simp only [Ty.substFvar, Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+    exact ⟨iha, ihb⟩
+  | arrow a b iha ihb =>
+    simp only [Ty.substFvar, Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+    exact ⟨iha, ihb⟩
+  | customTy nm tys ih =>
+    simp only [Ty.substFvar, Ty.freeVars, TyList.substFvar_eq_map]
+    intro hc
+    rw [mem_TyList_freeVars] at hc
+    obtain ⟨t', ht', hvt'⟩ := hc
+    obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+    exact ih t0 ht0 hvt'
+
+/-! The range of a `UnifyRel`-substitution lies within the inputs' free vars. -/
+mutual
+theorem UnifyRel.range_mem : {a b : Ty} → {S : Subst} → UnifyRel a b S →
+    ∀ p ∈ S, ∀ v ∈ p.2.freeVars, v ∈ a.freeVars ∨ v ∈ b.freeVars
+  | _, _, _, .prim => by simp
+  | _, _, _, .fvarRefl => by simp
+  | _, _, _, .fvarL _ _ => by
+    intro p hp v hv; rw [List.mem_singleton] at hp; subst hp; exact Or.inr hv
+  | _, _, _, .fvarR _ _ => by
+    intro p hp v hv; rw [List.mem_singleton] at hp; subst hp; exact Or.inl hv
+  | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂ => by
+    intro p hp v hv
+    rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · rcases UnifyRel.range_mem h₁ p hp v hv with h | h
+      · exact Or.inl (Ty.mem_freeVars_arrowL h)
+      · exact Or.inr (Ty.mem_freeVars_arrowL h)
+    · rcases UnifyRel.range_mem h₂ p hp v hv with h | h
+      · rcases Subst.mem_freeVars_onTy h with hb | ⟨q, hq, hvq⟩
+        · exact Or.inl (Ty.mem_freeVars_arrowR hb)
+        · rcases UnifyRel.range_mem h₁ q hq v hvq with h' | h'
+          · exact Or.inl (Ty.mem_freeVars_arrowL h')
+          · exact Or.inr (Ty.mem_freeVars_arrowL h')
+      · rcases Subst.mem_freeVars_onTy h with hd | ⟨q, hq, hvq⟩
+        · exact Or.inr (Ty.mem_freeVars_arrowR hd)
+        · rcases UnifyRel.range_mem h₁ q hq v hvq with h' | h'
+          · exact Or.inl (Ty.mem_freeVars_arrowL h')
+          · exact Or.inr (Ty.mem_freeVars_arrowL h')
+  | _, _, _, @UnifyRel.pair a b c d S₁ S₂ h₁ h₂ => by
+    intro p hp v hv
+    rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · rcases UnifyRel.range_mem h₁ p hp v hv with h | h
+      · exact Or.inl (Ty.mem_freeVars_pairL h)
+      · exact Or.inr (Ty.mem_freeVars_pairL h)
+    · rcases UnifyRel.range_mem h₂ p hp v hv with h | h
+      · rcases Subst.mem_freeVars_onTy h with hb | ⟨q, hq, hvq⟩
+        · exact Or.inl (Ty.mem_freeVars_pairR hb)
+        · rcases UnifyRel.range_mem h₁ q hq v hvq with h' | h'
+          · exact Or.inl (Ty.mem_freeVars_pairL h')
+          · exact Or.inr (Ty.mem_freeVars_pairL h')
+      · rcases Subst.mem_freeVars_onTy h with hd | ⟨q, hq, hvq⟩
+        · exact Or.inr (Ty.mem_freeVars_pairR hd)
+        · rcases UnifyRel.range_mem h₁ q hq v hvq with h' | h'
+          · exact Or.inl (Ty.mem_freeVars_pairL h')
+          · exact Or.inr (Ty.mem_freeVars_pairL h')
+  | _, _, _, .customTy hl => by
+    intro p hp v hv
+    rcases UnifyRelList.range_mem hl p hp v hv with ⟨t, ht, h⟩ | ⟨t, ht, h⟩
+    · exact Or.inl (Ty.mem_freeVars_customTy ht h)
+    · exact Or.inr (Ty.mem_freeVars_customTy ht h)
+theorem UnifyRelList.range_mem : {as bs : List Ty} → {S : Subst} → UnifyRelList as bs S →
+    ∀ p ∈ S, ∀ v ∈ p.2.freeVars,
+      (∃ t ∈ as, v ∈ t.freeVars) ∨ (∃ t ∈ bs, v ∈ t.freeVars)
+  | _, _, _, .nil => by simp
+  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht => by
+    intro p hp v hv
+    rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · rcases UnifyRel.range_mem h₁ p hp v hv with h | h
+      · exact Or.inl ⟨t₁, List.mem_cons_self, h⟩
+      · exact Or.inr ⟨t₂, List.mem_cons_self, h⟩
+    · rcases UnifyRelList.range_mem ht p hp v hv with ⟨t, ht', hvt⟩ | ⟨t, ht', hvt⟩
+      · obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+        rcases Subst.mem_freeVars_onTy hvt with hb | ⟨q, hq, hvq⟩
+        · exact Or.inl ⟨t0, List.mem_cons_of_mem _ ht0, hb⟩
+        · rcases UnifyRel.range_mem h₁ q hq v hvq with h' | h'
+          · exact Or.inl ⟨t₁, List.mem_cons_self, h'⟩
+          · exact Or.inr ⟨t₂, List.mem_cons_self, h'⟩
+      · obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+        rcases Subst.mem_freeVars_onTy hvt with hb | ⟨q, hq, hvq⟩
+        · exact Or.inr ⟨t0, List.mem_cons_of_mem _ ht0, hb⟩
+        · rcases UnifyRel.range_mem h₁ q hq v hvq with h' | h'
+          · exact Or.inl ⟨t₁, List.mem_cons_self, h'⟩
+          · exact Or.inr ⟨t₂, List.mem_cons_self, h'⟩
+end
+
+/-! The domain of a `UnifyRel`-substitution lies within the inputs' free vars. -/
+mutual
+theorem UnifyRel.dom_mem : {a b : Ty} → {S : Subst} → UnifyRel a b S →
+    ∀ p ∈ S, p.1 ∈ a.freeVars ∨ p.1 ∈ b.freeVars
+  | _, _, _, .prim => by simp
+  | _, _, _, .fvarRefl => by simp
+  | _, _, _, .fvarL _ _ => by
+    intro p hp; rw [List.mem_singleton] at hp; subst hp; exact Or.inl (by simp [Ty.freeVars])
+  | _, _, _, .fvarR _ _ => by
+    intro p hp; rw [List.mem_singleton] at hp; subst hp; exact Or.inr (by simp [Ty.freeVars])
+  | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂ => by
+    intro p hp
+    rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · rcases UnifyRel.dom_mem h₁ p hp with h | h
+      · exact Or.inl (Ty.mem_freeVars_arrowL h)
+      · exact Or.inr (Ty.mem_freeVars_arrowL h)
+    · rcases UnifyRel.dom_mem h₂ p hp with h | h
+      · rcases Subst.mem_freeVars_onTy h with hb | ⟨q, hq, hvq⟩
+        · exact Or.inl (Ty.mem_freeVars_arrowR hb)
+        · rcases UnifyRel.range_mem h₁ q hq p.1 hvq with h' | h'
+          · exact Or.inl (Ty.mem_freeVars_arrowL h')
+          · exact Or.inr (Ty.mem_freeVars_arrowL h')
+      · rcases Subst.mem_freeVars_onTy h with hd | ⟨q, hq, hvq⟩
+        · exact Or.inr (Ty.mem_freeVars_arrowR hd)
+        · rcases UnifyRel.range_mem h₁ q hq p.1 hvq with h' | h'
+          · exact Or.inl (Ty.mem_freeVars_arrowL h')
+          · exact Or.inr (Ty.mem_freeVars_arrowL h')
+  | _, _, _, @UnifyRel.pair a b c d S₁ S₂ h₁ h₂ => by
+    intro p hp
+    rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · rcases UnifyRel.dom_mem h₁ p hp with h | h
+      · exact Or.inl (Ty.mem_freeVars_pairL h)
+      · exact Or.inr (Ty.mem_freeVars_pairL h)
+    · rcases UnifyRel.dom_mem h₂ p hp with h | h
+      · rcases Subst.mem_freeVars_onTy h with hb | ⟨q, hq, hvq⟩
+        · exact Or.inl (Ty.mem_freeVars_pairR hb)
+        · rcases UnifyRel.range_mem h₁ q hq p.1 hvq with h' | h'
+          · exact Or.inl (Ty.mem_freeVars_pairL h')
+          · exact Or.inr (Ty.mem_freeVars_pairL h')
+      · rcases Subst.mem_freeVars_onTy h with hd | ⟨q, hq, hvq⟩
+        · exact Or.inr (Ty.mem_freeVars_pairR hd)
+        · rcases UnifyRel.range_mem h₁ q hq p.1 hvq with h' | h'
+          · exact Or.inl (Ty.mem_freeVars_pairL h')
+          · exact Or.inr (Ty.mem_freeVars_pairL h')
+  | _, _, _, .customTy hl => by
+    intro p hp
+    rcases UnifyRelList.dom_mem hl p hp with ⟨t, ht, h⟩ | ⟨t, ht, h⟩
+    · exact Or.inl (Ty.mem_freeVars_customTy ht h)
+    · exact Or.inr (Ty.mem_freeVars_customTy ht h)
+theorem UnifyRelList.dom_mem : {as bs : List Ty} → {S : Subst} → UnifyRelList as bs S →
+    ∀ p ∈ S, (∃ t ∈ as, p.1 ∈ t.freeVars) ∨ (∃ t ∈ bs, p.1 ∈ t.freeVars)
+  | _, _, _, .nil => by simp
+  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht => by
+    intro p hp
+    rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · rcases UnifyRel.dom_mem h₁ p hp with h | h
+      · exact Or.inl ⟨t₁, List.mem_cons_self, h⟩
+      · exact Or.inr ⟨t₂, List.mem_cons_self, h⟩
+    · rcases UnifyRelList.dom_mem ht p hp with ⟨t, ht', hvt⟩ | ⟨t, ht', hvt⟩
+      · obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+        rcases Subst.mem_freeVars_onTy hvt with hb | ⟨q, hq, hvq⟩
+        · exact Or.inl ⟨t0, List.mem_cons_of_mem _ ht0, hb⟩
+        · rcases UnifyRel.range_mem h₁ q hq p.1 hvq with h' | h'
+          · exact Or.inl ⟨t₁, List.mem_cons_self, h'⟩
+          · exact Or.inr ⟨t₂, List.mem_cons_self, h'⟩
+      · obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+        rcases Subst.mem_freeVars_onTy hvt with hb | ⟨q, hq, hvq⟩
+        · exact Or.inr ⟨t0, List.mem_cons_of_mem _ ht0, hb⟩
+        · rcases UnifyRel.range_mem h₁ q hq p.1 hvq with h' | h'
+          · exact Or.inl ⟨t₁, List.mem_cons_self, h'⟩
+          · exact Or.inr ⟨t₂, List.mem_cons_self, h'⟩
+end
+
+/-! The occurs check at the variable-set level: a domain variable of a
+    `UnifyRel`-substitution never survives in any of its images. -/
+mutual
+theorem UnifyRel.eliminates : {a b : Ty} → {S : Subst} → UnifyRel a b S →
+    ∀ p ∈ S, ∀ (x : Ty), p.1 ∉ (S.onTy x).freeVars
+  | _, _, _, .prim => by simp
+  | _, _, _, .fvarRefl => by simp
+  | _, _, _, .fvarL _ hocc => by
+    intro p hp x; rw [List.mem_singleton] at hp; subst hp
+    exact Ty.not_mem_freeVars_substFvar_self hocc
+  | _, _, _, .fvarR _ hocc => by
+    intro p hp x; rw [List.mem_singleton] at hp; subst hp
+    exact Ty.not_mem_freeVars_substFvar_self hocc
+  | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂ => by
+    intro p hp x hc
+    rw [Subst.onTy_append] at hc
+    rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · rcases Subst.mem_freeVars_onTy hc with h | ⟨q, hq, hvq⟩
+      · exact UnifyRel.eliminates h₁ p hp x h
+      · rcases UnifyRel.range_mem h₂ q hq p.1 hvq with h' | h'
+        · exact UnifyRel.eliminates h₁ p hp b h'
+        · exact UnifyRel.eliminates h₁ p hp d h'
+    · exact UnifyRel.eliminates h₂ p hp (S₁.onTy x) hc
+  | _, _, _, @UnifyRel.pair a b c d S₁ S₂ h₁ h₂ => by
+    intro p hp x hc
+    rw [Subst.onTy_append] at hc
+    rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · rcases Subst.mem_freeVars_onTy hc with h | ⟨q, hq, hvq⟩
+      · exact UnifyRel.eliminates h₁ p hp x h
+      · rcases UnifyRel.range_mem h₂ q hq p.1 hvq with h' | h'
+        · exact UnifyRel.eliminates h₁ p hp b h'
+        · exact UnifyRel.eliminates h₁ p hp d h'
+    · exact UnifyRel.eliminates h₂ p hp (S₁.onTy x) hc
+  | _, _, _, .customTy hl => by
+    intro p hp x hc
+    exact UnifyRelList.eliminates hl p hp x hc
+theorem UnifyRelList.eliminates : {as bs : List Ty} → {S : Subst} → UnifyRelList as bs S →
+    ∀ p ∈ S, ∀ (x : Ty), p.1 ∉ (S.onTy x).freeVars
+  | _, _, _, .nil => by simp
+  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht => by
+    intro p hp x hc
+    rw [Subst.onTy_append] at hc
+    rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · rcases Subst.mem_freeVars_onTy hc with h | ⟨q, hq, hvq⟩
+      · exact UnifyRel.eliminates h₁ p hp x h
+      · rcases UnifyRelList.range_mem ht q hq p.1 hvq with ⟨t, ht', hvt⟩ | ⟨t, ht', hvt⟩
+        · obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+          exact UnifyRel.eliminates h₁ p hp t0 hvt
+        · obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+          exact UnifyRel.eliminates h₁ p hp t0 hvt
+    · exact UnifyRelList.eliminates ht p hp (S₁.onTy x) hc
+end
