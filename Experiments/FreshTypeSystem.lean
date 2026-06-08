@@ -10767,3 +10767,47 @@ end
 /-- The executable type inferer, refining `Infer`. -/
 def infer (Φ : Nat) (ctx : Ctx) (e : Expr) : Option (Nat × Subst × Ty) :=
   (inferCore Φ ctx e).map (·.1)
+
+/-- `infer` soundness: a returned `(Φ', S, τ)` is a genuine `Infer` derivation
+    (immediate — `inferCore` carries it). -/
+theorem infer_sound {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {τ : Ty}
+    (h : infer Φ ctx e = some (Φ', S, τ)) : Infer Φ ctx e Φ' S τ := by
+  rw [infer] at h
+  rcases hc : inferCore Φ ctx e with _ | ⟨r, hr⟩ <;> rw [hc] at h
+  · exact absurd h (by simp)
+  · simp only [Option.map_some, Option.some.injEq] at h
+    subst h
+    exact hr
+
+/-! ### Capstone: the executable inferer computes the principal type
+
+Composing `infer_sound` with `Infer.isPrincipal`: whenever `infer` returns a
+type, that type is *the principal typing* — every declarative typing of `e`
+(under any LC specialization of a well-formed, frontier-bounded `ctx`) is a
+substitution instance of it. The executable Algorithm W computes principal
+types, machine-verified. -/
+theorem infer_isPrincipal {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {τ : Ty}
+    (h : infer Φ ctx e = some (Φ', S, τ)) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) :
+    Infer.IsPrincipal ctx e S τ :=
+  Infer.isPrincipal (infer_sound h) hwf hbelow
+
+/-! ### Sanity checks: the algorithm actually runs
+
+The first time the algorithm is executed (guards against an operationally-wrong
+but provable relation). `unify` and `infer` reduce only under the compiler
+(`#eval`), since both rest on well-founded recursion. -/
+
+-- `unify (α → α) (Int → β) = [α ↦ Int, β ↦ Int]`
+#eval unify (.arrow (.fvar 0) (.fvar 0)) (.arrow (.prim .int) (.fvar 1))
+-- `unify Int Bool = none` (constructor clash)
+#eval unify (.prim .int) (.prim .bool)
+-- `unify α (α → α) = none` (occurs check)
+#eval unify (.fvar 0) (.arrow (.fvar 0) (.fvar 0))
+-- `infer (λx. x) = α → α`
+#eval infer 0 { env := [], ctors := [] } (.lambda (.var 0))
+-- `infer (λx. λy. x) = α → β → α`
+#eval infer 0 { env := [], ctors := [] } (.lambda (.lambda (.var 1)))
+-- `infer ((λx. x) 5) = Int`
+#eval infer 0 { env := [], ctors := [] } (.app (.lambda (.var 0)) (.primLit (.int 5)))
+-- `infer (5 5) = none` (Int is not a function)
+#eval infer 0 { env := [], ctors := [] } (.app (.primLit (.int 5)) (.primLit (.int 5)))
