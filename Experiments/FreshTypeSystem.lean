@@ -10550,3 +10550,75 @@ theorem unifyDec_cons2 {t₁ t₂ : Ty} {ts₁ ts₂ : List Ty} {S₁ : Subst}
         exact UnifyRel.eliminates hS₁ p List.mem_cons_self t0 hc
       · obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
         exact UnifyRel.eliminates hS₁ p List.mem_cons_self t0 hc
+
+/-! ### The `unify` function
+
+`unifyCore`/`unifyListCore` are the verified unifier: they return, on success, a
+substitution *together with* its `UnifyRel` derivation. Carrying the derivation
+is what lets the `decreasing_by` goals invoke the variable-tracking lemmas
+(`unifyDec_*`) on the prefix unifier. The plain-`Option Subst` `unify` is the
+erasure of this; soundness is then immediate and completeness is a short
+structural argument. -/
+mutual
+def unifyCore (a b : Ty) : Option { S : Subst // UnifyRel a b S } :=
+  match a, b with
+  | .prim p, .prim q =>
+      if h : p = q then some ⟨[], by subst h; exact .prim⟩ else none
+  | .fvar n, .fvar m =>
+      if h : n = m then some ⟨[], by subst h; exact .fvarRefl⟩
+      else some ⟨[(n, .fvar m)], .fvarL (by simp only [ne_eq, Ty.fvar.injEq]; omega)
+        (by simp only [Ty.freeVars, List.mem_singleton]; omega)⟩
+  | .arrow a₁ a₂, .arrow c₁ c₂ =>
+      match unifyCore a₁ c₁ with
+      | none => none
+      | some ⟨S₁, hS₁⟩ =>
+        match unifyCore (S₁.onTy a₂) (S₁.onTy c₂) with
+        | none => none
+        | some ⟨S₂, hS₂⟩ => some ⟨S₁ ++ S₂, .arrow hS₁ hS₂⟩
+  | .pair a₁ a₂, .pair c₁ c₂ =>
+      match unifyCore a₁ c₁ with
+      | none => none
+      | some ⟨S₁, hS₁⟩ =>
+        match unifyCore (S₁.onTy a₂) (S₁.onTy c₂) with
+        | none => none
+        | some ⟨S₂, hS₂⟩ => some ⟨S₁ ++ S₂, .pair hS₁ hS₂⟩
+  | .customTy n₁ ts₁, .customTy n₂ ts₂ =>
+      if h : n₁ = n₂ then
+        match unifyListCore ts₁ ts₂ with
+        | none => none
+        | some ⟨S, hS⟩ => some ⟨S, by subst h; exact .customTy hS⟩
+      else none
+  | .fvar n, b =>
+      if h : n ∈ b.freeVars then none
+      else some ⟨[(n, b)], .fvarL (by intro he; subst he; exact h (by simp [Ty.freeVars])) h⟩
+  | a, .fvar n =>
+      if h : n ∈ a.freeVars then none
+      else some ⟨[(n, a)], .fvarR (by intro he; subst he; exact h (by simp [Ty.freeVars])) h⟩
+  | _, _ => none
+termination_by ((pairVars a b).length, a.size + b.size)
+decreasing_by
+  · exact unifyDec_arrow1
+  · exact unifyDec_arrow2 hS₁
+  · exact unifyDec_pair1
+  · exact unifyDec_pair2 hS₁
+  · exact unifyDec_customTy
+
+def unifyListCore (as bs : List Ty) : Option { S : Subst // UnifyRelList as bs S } :=
+  match as, bs with
+  | [], [] => some ⟨[], .nil⟩
+  | t₁ :: ts₁, t₂ :: ts₂ =>
+      match unifyCore t₁ t₂ with
+      | none => none
+      | some ⟨S₁, hS₁⟩ =>
+        match unifyListCore (ts₁.map S₁.onTy) (ts₂.map S₁.onTy) with
+        | none => none
+        | some ⟨S₂, hS₂⟩ => some ⟨S₁ ++ S₂, .cons hS₁ hS₂⟩
+  | _, _ => none
+termination_by ((listVars as bs).length, TyList.size as + TyList.size bs + 1)
+decreasing_by
+  · exact unifyDec_cons1
+  · exact unifyDec_cons2 hS₁
+end
+
+/-- The executable unifier, refining `UnifyRel`. -/
+def unify (a b : Ty) : Option Subst := (unifyCore a b).map (·.1)
