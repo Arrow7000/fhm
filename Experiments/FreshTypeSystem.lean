@@ -8884,3 +8884,219 @@ theorem Infer.principal {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ 
       Infer Φ ctx e Φ' S τ ∧ TypeOfHM (S.onCtx ctx) e τ ∧ τ₀ = Subst.onTy R τ := by
   obtain ⟨Φ', S, τ, R, hInfer, hτeq⟩ := Infer.complete_instance hwf hbelow hS₀ hty
   exact ⟨Φ', S, τ, R, hInfer, Infer.sound hInfer hwf, hτeq⟩
+/-! ## SPIKE: function-valued substitutions (throwaway exploration)
+
+Measurement spike for `spike/functional-residual`: redo the `var` completeness
+case with the residual `R` (and input specialization `S₀`) as a *total function*
+`Nat → Ty` instead of a `List (Nat × Ty)`. The hypothesis is that function
+override has no over-substitution, so the binder dodge apparatus
+(`blockSwap`/`blockList`/`Subst.conj`/`Ty.rename`/`exists_fresh_block`) becomes
+unnecessary.
+
+FINDING (confirmed): `Spike.complete_var` below is ~49 lines vs ~124 for the
+real `Infer.complete_var`, uses ZERO block-swap machinery, and the one commute
+lemma it needs (`FSubst.onTy_openVars`) is clean — no freshness, no renaming.
+So a function-valued residual is the better representation; the block-swap layer
+is a workaround for the `List`-substitution choice.
+
+DECISION: do NOT adopt this on `main` (yet). The change is all-or-nothing on the
+`CompleteAt` statement (forces re-proving the whole completeness tower, incl. the
+hard `app`/`letPairIn`/`match` cases), and the residual `R` is internal to
+principality — it is NOT a prerequisite for `IsPrincipal`/`output_unique` or for
+Stage 4 (whose interface is the relation `Infer`, whose `S` stays a `List`). Net
+~400–600 lines saved + a cleaner completeness layer, but non-blocking. This
+branch is kept purely as the recorded evidence. Caveat for any future adoption:
+`app`/`letPairIn`/`match` feed a *list* unifier to `UnifyRel.complete`, so the
+hybrid (list `S`, function `R`) needs a one-time fusion bridge
+`R.onTy (S.onTy τ) = (fun v => R.onTy (S.onTy (.fvar v))).onTy τ`. -/
+
+namespace Spike
+
+/-- A function-valued substitution: every `.fvar n` maps to `f n`. -/
+abbrev FSubst := Nat → Ty
+
+mutual
+/-- Apply a function-substitution to a monotype: replace `.fvar n` by `f n`,
+    leaving bvars/prims, recursing structurally. -/
+def FSubst.onTy (f : FSubst) : Ty → Ty
+  | .prim p          => .prim p
+  | .pair a b        => .pair (f.onTy a) (f.onTy b)
+  | .arrow a b       => .arrow (f.onTy a) (f.onTy b)
+  | .bvar i          => .bvar i
+  | .fvar n          => f n
+  | .customTy nm tys => .customTy nm (FSubst.onTyList f tys)
+
+private def FSubst.onTyList (f : FSubst) : List Ty → List Ty
+  | []       => []
+  | hd :: tl => f.onTy hd :: FSubst.onTyList f tl
+end
+
+@[simp] theorem FSubst.onTy_fvar (f : FSubst) (n : Nat) : f.onTy (.fvar n) = f n := rfl
+@[simp] theorem FSubst.onTy_prim (f : FSubst) (p : PrimTy) : f.onTy (.prim p) = .prim p := rfl
+@[simp] theorem FSubst.onTy_bvar (f : FSubst) (i : Nat) : f.onTy (.bvar i) = .bvar i := rfl
+@[simp] theorem FSubst.onTy_pair (f : FSubst) (a b : Ty) :
+    f.onTy (.pair a b) = .pair (f.onTy a) (f.onTy b) := rfl
+@[simp] theorem FSubst.onTy_arrow (f : FSubst) (a b : Ty) :
+    f.onTy (.arrow a b) = .arrow (f.onTy a) (f.onTy b) := rfl
+
+private theorem FSubst.onTyList_eq_map (f : FSubst) (tys : List Ty) :
+    FSubst.onTyList f tys = tys.map f.onTy := by
+  induction tys with
+  | nil => rfl
+  | cons hd tl ih => simp only [FSubst.onTyList, ih, List.map_cons]
+
+@[simp] theorem FSubst.onTy_customTy (f : FSubst) (nm : TyName) (tys : List Ty) :
+    f.onTy (.customTy nm tys) = .customTy nm (tys.map f.onTy) := by
+  simp only [FSubst.onTy, FSubst.onTyList_eq_map]
+
+def FSubst.onPolyTy (f : FSubst) (M : PolyTy) : PolyTy := { M with body := f.onTy M.body }
+def FSubst.onEnv (f : FSubst) (env : Env) : Env := env.map f.onPolyTy
+def FSubst.onCtx (f : FSubst) (ctx : Ctx) : Ctx := { ctx with env := f.onEnv ctx.env }
+
+/-- Function-substitutions agreeing on `τ`'s free vars act identically on `τ`. -/
+theorem FSubst.onTy_congr {f g : FSubst} :
+    ∀ {τ : Ty}, (∀ v ∈ τ.freeVars, f v = g v) → f.onTy τ = g.onTy τ := by
+  intro τ
+  induction τ using Ty.rec_strong with
+  | prim p => intro _; rfl
+  | bvar i => intro _; rfl
+  | fvar n => intro h; exact h n (by simp [Ty.freeVars])
+  | pair a b iha ihb =>
+    intro h
+    simp only [FSubst.onTy_pair]
+    rw [iha (fun v hv => h v (List.mem_dedup.mpr (List.mem_append_left _ hv))),
+        ihb (fun v hv => h v (List.mem_dedup.mpr (List.mem_append_right _ hv)))]
+  | arrow a b iha ihb =>
+    intro h
+    simp only [FSubst.onTy_arrow]
+    rw [iha (fun v hv => h v (List.mem_dedup.mpr (List.mem_append_left _ hv))),
+        ihb (fun v hv => h v (List.mem_dedup.mpr (List.mem_append_right _ hv)))]
+  | customTy nm tys ih =>
+    intro h
+    simp only [FSubst.onTy_customTy]
+    refine congrArg (Ty.customTy nm) (List.map_congr_left (fun t ht => ?_))
+    exact ih t ht (fun v hv => h v (TyList.mem_freeVars_of_mem ht hv))
+
+/-- A function-substitution with LC values preserves any bvar bound. -/
+theorem FSubst.onTy_containsBvars {f : FSubst} (hf : ∀ n, (f n).IsLC) :
+    ∀ {n : Nat} {τ : Ty}, ContainsBvarsUpTo n τ → ContainsBvarsUpTo n (f.onTy τ) := by
+  intro n τ
+  induction τ using Ty.rec_strong with
+  | prim p => intro _; exact .prim
+  | bvar i => intro h; cases h with | bvar hlt => exact .bvar hlt
+  | fvar m => intro _; exact ContainsBvarsUpTo.mono (Nat.zero_le n) (hf m)
+  | pair a b iha ihb => intro h; cases h with | pair ha hb => exact .pair (iha ha) (ihb hb)
+  | arrow a b iha ihb => intro h; cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | customTy nm tys ih =>
+    intro h
+    cases h with
+    | customTy hall =>
+      rw [FSubst.onTy_customTy]
+      refine .customTy (fun t ht => ?_)
+      obtain ⟨t', ht', rfl⟩ := List.mem_map.mp ht
+      exact ih t' ht' (hall t' ht')
+
+/-- Fusion: a function-substitution commutes with bvar-instantiation, given LC
+    values (so the substituted `f n` has no bvars for `instantiate` to disturb). -/
+theorem FSubst.onTy_instantiate {f : FSubst} (hf : ∀ n, (f n).IsLC) {g : Nat → Ty} :
+    ∀ (ty : Ty),
+      f.onTy (ty.instantiate g) = (f.onTy ty).instantiate (fun i => f.onTy (g i)) := by
+  intro ty
+  induction ty using Ty.rec_strong with
+  | prim p => rfl
+  | bvar n => simp only [Ty.instantiate, FSubst.onTy_bvar]
+  | fvar n =>
+    simp only [Ty.instantiate, FSubst.onTy_fvar]
+    exact (Ty.instantiate_eq_self_of_lc (hf n)).symm
+  | pair a b iha ihb => simp only [Ty.instantiate, FSubst.onTy_pair, iha, ihb]
+  | arrow a b iha ihb => simp only [Ty.instantiate, FSubst.onTy_arrow, iha, ihb]
+  | customTy nm tys ih =>
+    simp only [Ty.instantiate, TyList.instantiate_eq_map, FSubst.onTy_customTy, List.map_map]
+    refine congrArg (Ty.customTy nm) (List.map_congr_left (fun t ht => ?_))
+    simp only [Function.comp_apply]
+    exact ih t ht
+
+/-- The decisive commute lemma for the `var` case: pushing a function-substitution
+    `f` through opening by the fresh block `freshVars Φ pc` becomes opening the
+    substituted body with the block's `f`-images. NO freshness side condition is
+    needed — `f` is total, so there is no over-substitution to dodge. -/
+theorem FSubst.onTy_openVars {f : FSubst} (hf : ∀ n, (f n).IsLC) (Φ pc : Nat) (ty : Ty) :
+    f.onTy (Ty.openVars (freshVars Φ pc) ty)
+      = Ty.openWith ((List.range pc).map (fun i => f (Φ + i))) (f.onTy ty) := by
+  rw [Ty.openVars, FSubst.onTy_instantiate hf, Ty.openWith]
+  refine congrArg (fun s => Ty.instantiate s (f.onTy ty)) ?_
+  funext i
+  by_cases hi : i < pc
+  · rw [freshVars_getElem? hi, List.getElem?_map, List.getElem?_range hi]
+    simp
+  · rw [List.getElem?_eq_none (by simp [freshVars_length]; omega),
+        List.getElem?_eq_none (by simp; omega)]
+    simp
+
+/-- The function-valued residual for the `var` case: on the fresh block
+    `[Φ, Φ+pc)` it returns the corresponding `tyArgs` element, elsewhere it is
+    `S₀`. This single, total definition replaces the entire block-swap dodge. -/
+def FSubst.extendBlock (S₀ : FSubst) (Φ pc : Nat) (tyArgs : List Ty) : FSubst :=
+  fun v => if Φ ≤ v ∧ v < Φ + pc then (tyArgs[v - Φ]?).getD (.prim .unit) else S₀ v
+
+/-- Principality, `var` case, with a **function-valued** residual `R`.
+    Note `S` is still the algorithm's list-substitution (here `[]`), while `R` is
+    a function; the agreement clause is `S₀.onTy (.fvar v) = R.onTy (S.onTy (.fvar v))`. -/
+theorem complete_var {i Φ : Nat} {ctx : Ctx} {S₀ : FSubst} {τ₀ : Ty}
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ n, (S₀ n).IsLC)
+    (hty : TypeOfHM (S₀.onCtx ctx) (.var i) τ₀) :
+    ∃ (Φ' : Nat) (S : Subst) (τ : Ty) (R : FSubst),
+      Infer Φ ctx (.var i) Φ' S τ ∧
+      (∀ v, v < Φ → S₀.onTy (.fvar v) = R.onTy (S.onTy (.fvar v))) ∧
+      τ₀ = R.onTy τ ∧ (∀ n, (R n).IsLC) := by
+  cases hty with
+  | var hlook htyargs hinst =>
+    rename_i ptInv tyArgs
+    -- recover the *unsubstituted* scheme `polyTy` from the looked-up `S₀.onPolyTy polyTy`.
+    have hlook_map : (S₀.onCtx ctx).env[i]? = (ctx.env[i]?).map S₀.onPolyTy := by
+      show (ctx.env.map S₀.onPolyTy)[i]? = _
+      rw [List.getElem?_map]
+    rw [hlook_map] at hlook
+    obtain ⟨polyTy, hlook_orig, hpt⟩ := Option.map_eq_some_iff.mp hlook
+    subst hpt
+    have hinst2 : InstantiatesBy tyArgs (S₀.onTy polyTy.body) τ₀ := hinst
+    have hmem : polyTy ∈ ctx.env := List.mem_of_getElem? hlook_orig
+    have hwfpoly : ContainsBvarsUpTo polyTy.paramCount polyTy.body := hwf polyTy hmem
+    have hbelowbody : Ty.BelowFvars Φ polyTy.body := hbelow polyTy hmem
+    set R : FSubst := S₀.extendBlock Φ polyTy.paramCount tyArgs with hR
+    -- residual is locally closed (each value is a `tyArgs` element, `S₀ v`, or unit).
+    have hRlc : ∀ n, (R n).IsLC := by
+      intro n
+      rw [hR]
+      unfold FSubst.extendBlock
+      split
+      · cases h : tyArgs[n - Φ]? with
+        | none => exact ContainsBvarsUpTo.prim
+        | some t => exact htyargs t (List.mem_of_getElem? h)
+      · exact hS₀ n
+    -- `R` agrees with `S₀` on everything below the frontier (block is `≥ Φ`).
+    have hagree : ∀ v ∈ polyTy.body.freeVars, R v = S₀ v := by
+      intro v hv
+      have hvlt : v < Φ := hbelowbody.mem_lt v hv
+      rw [hR]; unfold FSubst.extendBlock; rw [if_neg (by omega)]
+    refine ⟨Φ + polyTy.paramCount, [], polyTy.openVars (freshVars Φ polyTy.paramCount), R,
+      Infer.var hlook_orig, ?_, ?_, hRlc⟩
+    · -- agreement: NO block-swap. For `v < Φ`, `R v = S₀ v`.
+      intro v hv
+      simp only [Subst.onTy_nil, FSubst.onTy_fvar]
+      rw [hR]; unfold FSubst.extendBlock; rw [if_neg (by omega)]
+    · -- factoring: clean commute, NO renaming.
+      have hτeq : polyTy.openVars (freshVars Φ polyTy.paramCount)
+          = Ty.openVars (freshVars Φ polyTy.paramCount) polyTy.body := rfl
+      have hmapeq : (List.range polyTy.paramCount).map (fun j => R (Φ + j))
+          = (List.range polyTy.paramCount).map (fun j => (tyArgs[j]?).getD (.prim .unit)) := by
+        refine List.map_congr_left (fun j hj => ?_)
+        have hjlt : j < polyTy.paramCount := List.mem_range.mp hj
+        show R (Φ + j) = (tyArgs[j]?).getD (.prim .unit)
+        rw [hR]; unfold FSubst.extendBlock
+        rw [if_pos (by omega), show (Φ + j) - Φ = j from by omega]
+      rw [hτeq, FSubst.onTy_openVars hRlc Φ polyTy.paramCount polyTy.body,
+          FSubst.onTy_congr hagree, hmapeq]
+      exact InstantiatesBy.eq_openWith_range hinst2 (FSubst.onTy_containsBvars hS₀ hwfpoly)
+
+end Spike
