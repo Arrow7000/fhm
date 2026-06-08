@@ -9983,7 +9983,7 @@ theorem Infer.isPrincipal {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
     exact ⟨R, hfac⟩
 
 
-#print axioms Infer.isPrincipal
+
 
 
 /-! ## Stage 4: the executable `unify` and `infer`
@@ -10632,3 +10632,138 @@ theorem unify_sound {a b : Ty} {S : Subst} (h : unify a b = some S) : UnifyRel a
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
     exact hS'
+
+
+/-! ### The `infer` function (Algorithm W)
+
+`inferCore`/`inferBranchesCore` mirror `Infer`/`InferBranches` exactly, building
+the `Infer` derivation alongside the output (soundness by construction);
+recursion is structural on the expression / branch list. The `match_` case reads
+the type name + arity off the first branch's constructor (branches are nonempty).
+The public `infer` erases the derivation. -/
+mutual
+def inferCore (Φ : Nat) (ctx : Ctx) (e : Expr) :
+    Option { r : Nat × Subst × Ty // Infer Φ ctx e r.1 r.2.1 r.2.2 } :=
+  match e with
+  | .primLit .unit => some ⟨(Φ, [], .prim .unit), .primLitUnit⟩
+  | .primLit (.int _) => some ⟨(Φ, [], .prim .int), .primLitInt⟩
+  | .primLit (.nat _) => some ⟨(Φ, [], .prim .nat), .primLitNat⟩
+  | .primLit (.bool _) => some ⟨(Φ, [], .prim .bool), .primLitBool⟩
+  | .primLit (.str _) => some ⟨(Φ, [], .prim .str), .primLitStr⟩
+  | .pair a b =>
+      match inferCore Φ ctx a with
+      | none => none
+      | some ⟨(Φ₁, S₁, τa), ha⟩ =>
+        match inferCore Φ₁ (S₁.onCtx ctx) b with
+        | none => none
+        | some ⟨(Φ₂, S₂, τb), hb⟩ =>
+          some ⟨(Φ₂, S₁ ++ S₂, .pair (S₂.onTy τa) τb), .pair ha hb⟩
+  | .lambda body =>
+      match inferCore (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } body with
+      | none => none
+      | some ⟨(Φ', S, τb), hbody⟩ =>
+        some ⟨(Φ', S, .arrow (S.onTy (.fvar Φ)) τb), .lambda hbody⟩
+  | .app f arg =>
+      match inferCore Φ ctx f with
+      | none => none
+      | some ⟨(Φ₁, S₁, τf), hf⟩ =>
+        match inferCore Φ₁ (S₁.onCtx ctx) arg with
+        | none => none
+        | some ⟨(Φ₂, S₂, τa), harg⟩ =>
+          match unifyCore (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) with
+          | none => none
+          | some ⟨S₃, h₃⟩ =>
+            some ⟨(Φ₂ + 1, S₁ ++ S₂ ++ S₃, S₃.onTy (.fvar Φ₂)), .app hf harg h₃⟩
+  | .var i =>
+      match h : ctx.env[i]? with
+      | none => none
+      | some polyTy =>
+        some ⟨(Φ + polyTy.paramCount, [], polyTy.openVars (freshVars Φ polyTy.paramCount)), .var h⟩
+  | .ctor name =>
+      match h : LookupList.get? ctx.ctors name with
+      | none => none
+      | some ctorr =>
+        some ⟨(Φ + ctorr.paramCount, [], ctorr.toTy.openVars (freshVars Φ ctorr.paramCount)), .ctor h⟩
+  | .letIn rhs body =>
+      match inferCore Φ ctx rhs with
+      | none => none
+      | some ⟨(Φ₁, S₁, τ₁), hrhs⟩ =>
+        match inferCore Φ₁
+            { (S₁.onCtx ctx) with env := genScheme (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
+            body with
+        | none => none
+        | some ⟨(Φ₂, S₂, τ₂), hbody⟩ =>
+          some ⟨(Φ₂, S₁ ++ S₂, τ₂), .letIn hrhs hbody⟩
+  | .letPairIn pe body =>
+      match inferCore Φ ctx pe with
+      | none => none
+      | some ⟨(Φ₁, S₁, τp), hpe⟩ =>
+        match unifyCore τp (.pair (.fvar Φ₁) (.fvar (Φ₁ + 1))) with
+        | none => none
+        | some ⟨S₂, huni⟩ =>
+          match inferCore (Φ₁ + 2)
+              { (S₂.onCtx (S₁.onCtx ctx)) with
+                env :=
+                  genSndScheme (S₂.onCtx (S₁.onCtx ctx)).env
+                      (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1)))
+                  :: genFstScheme (S₂.onCtx (S₁.onCtx ctx)).env
+                      (S₂.onTy (.fvar Φ₁)) (S₂.onTy (.fvar (Φ₁ + 1)))
+                  :: (S₂.onCtx (S₁.onCtx ctx)).env }
+              body with
+          | none => none
+          | some ⟨(Φ₃, S₃, τ₃), hbody⟩ =>
+            some ⟨(Φ₃, S₁ ++ S₂ ++ S₃, τ₃), .letPairIn hpe huni hbody⟩
+  | .match_ scrut branches =>
+      match inferCore Φ ctx scrut with
+      | none => none
+      | some ⟨(Φ₁, S₁, τs), hscrut⟩ =>
+        match hh : branches.head? with
+        | none => none
+        | some b0 =>
+          match hget : LookupList.get? ctx.ctors b0.1.ctor with
+          | none => none
+          | some ctor0 =>
+            match unifyCore τs (.customTy ctor0.tyName ((freshVars Φ₁ ctor0.paramCount).map (Ty.fvar ·))) with
+            | none => none
+            | some ⟨S₂, huni⟩ =>
+              match inferBranchesCore (Φ₁ + ctor0.paramCount + 1) (S₂.onCtx (S₁.onCtx ctx)) ctor0.tyName
+                  (((freshVars Φ₁ ctor0.paramCount).map (Ty.fvar ·)).map S₂.onTy)
+                  (S₂.onTy (.fvar (Φ₁ + ctor0.paramCount))) branches with
+              | none => none
+              | some ⟨(Φ₃, S₃), hbranches⟩ =>
+                some ⟨(Φ₃, S₁ ++ S₂ ++ S₃, S₃.onTy (S₂.onTy (.fvar (Φ₁ + ctor0.paramCount)))),
+                      .match_ hscrut (by intro hc; rw [hc] at hh; simp at hh) huni hbranches⟩
+
+def inferBranchesCore (Φ : Nat) (ctx : Ctx) (tyName : TyName) (tyArgs : List Ty) (ρ : Ty)
+    (branches : List (MatchPattern × Expr)) :
+    Option { r : Nat × Subst // InferBranches Φ ctx tyName tyArgs ρ branches r.1 r.2 } :=
+  match branches with
+  | [] => some ⟨(Φ, []), .nil⟩
+  | (pat, body) :: rest =>
+      match hget : LookupList.get? ctx.ctors pat.ctor with
+      | none => none
+      | some ctorr =>
+        if htn : ctorr.tyName = tyName then
+          if hpc : ctorr.paramCount = tyArgs.length then
+            if hcont : pat.contents = ctorr.contents.length then
+              match inferCore Φ
+                  { ctx with env := (ctorr.contents.map (Ty.openWith tyArgs)).map PolyTy.mkTrivial ++ ctx.env }
+                  body with
+              | none => none
+              | some ⟨(Φ₁, S₁, τb), hbody⟩ =>
+                match unifyCore τb (S₁.onTy ρ) with
+                | none => none
+                | some ⟨S₂, huni⟩ =>
+                  match inferBranchesCore Φ₁ (S₂.onCtx (S₁.onCtx ctx)) tyName
+                      (tyArgs.map (fun t => S₂.onTy (S₁.onTy t))) (S₂.onTy (S₁.onTy ρ)) rest with
+                  | none => none
+                  | some ⟨(Φ₂, S₃), hrest⟩ =>
+                    some ⟨(Φ₂, S₁ ++ S₂ ++ S₃), .cons hget htn hpc hcont hbody huni hrest⟩
+            else none
+          else none
+        else none
+end
+
+/-- The executable type inferer, refining `Infer`. -/
+def infer (Φ : Nat) (ctx : Ctx) (e : Expr) : Option (Nat × Subst × Ty) :=
+  (inferCore Φ ctx e).map (·.1)
