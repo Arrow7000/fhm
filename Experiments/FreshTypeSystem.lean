@@ -5840,7 +5840,7 @@ def Infer.CompleteAt (e : Expr) : Prop :=
     TypeOfHM (S₀.onCtx ctx) e τ₀ →
     ∃ Φ' S τ R,
       Infer Φ ctx e Φ' S τ ∧
-      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC)
 
@@ -5880,15 +5880,7 @@ theorem Infer.complete_pair {a b : Expr}
     have htb' : TypeOfHM (R₁.onCtx (S₁.onCtx ctx)) b _ := hctx_eq ▸ htb
     obtain ⟨Φ₂, S₂, τb, R₂, hinfb, hagb, htyb, hR₂⟩ := ihb hwf₁ hbelow₁ hR₁ htb'
     refine ⟨Φ₂, S₁ ++ S₂, .pair (S₂.onTy τa) τb, R₂, .pair hinfa hinfb, ?_, ?_, hR₂⟩
-    · intro v hv
-      have hbv : Ty.BelowFvars Φ₁ (S₁.onTy (.fvar v)) :=
-        Subst.onTy_belowFvars hbelowS₁ (.fvar (by omega))
-      calc S₀.onTy (.fvar v)
-          = (S₁ ++ R₁).onTy (.fvar v) := haga v hv
-        _ = R₁.onTy (S₁.onTy (.fvar v)) := by rw [Subst.onTy_append]
-        _ = (S₂ ++ R₂).onTy (S₁.onTy (.fvar v)) := Subst.onTy_congr hagb hbv
-        _ = ((S₁ ++ S₂) ++ R₂).onTy (.fvar v) := by
-              rw [List.append_assoc, Subst.onTy_append S₁ (S₂ ++ R₂)]
+    · exact Subst.AgreesBelow.trans_append hle haga hbelowS₁ hagb
     · rw [Subst.onTy_pair]
       refine congrArg₂ Ty.pair ?_ htyb
       rw [htya, ← Subst.onTy_append]
@@ -6259,7 +6251,7 @@ theorem Infer.complete_lambda_aux {body : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : S
         env := PolyTy.mkTrivial paramTy :: (S₀.onCtx ctx).env } body bodyTy) :
     ∃ Φ' S τ R,
       Infer Φ ctx (.lambda body) Φ' S τ ∧
-      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       Ty.arrow paramTy bodyTy = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC) := by
   -- STEP 0: fresh names
@@ -7305,7 +7297,7 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
     (harg : TypeOfHM (S₀.onCtx ctx) arg argTy) :
     ∃ Φ' S τ R,
       Infer Φ ctx (.app f arg) Φ' S τ ∧
-      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC) := by
   -- STEP 1: recurse on `f`.
@@ -7911,7 +7903,7 @@ theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {rhs body
     (hbody : TypeOfHM { (S₀.onCtx ctx) with env := M :: (S₀.onCtx ctx).env } body τ₀) :
     ∃ Φ' S τ R,
       Infer Φ ctx (.letIn rhs body) Φ' S τ ∧
-      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC) := by
   -- A fresh opening avoiding `L`, `M.body`, and the (substituted) env.
@@ -7991,15 +7983,7 @@ theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {rhs body
   obtain ⟨Φ₂, S₂, τ₂, R₂, hinfb, hagb, htyb, hR₂⟩ :=
     ihb hwfBody hbelowBody hR₁ hbody''
   refine ⟨Φ₂, S₁ ++ S₂, τ₂, R₂, .letIn hinfa hinfb, ?_, htyb, hR₂⟩
-  intro v hv
-  have hbv : Ty.BelowFvars Φ₁ (S₁.onTy (.fvar v)) :=
-    Subst.onTy_belowFvars hbelowS₁ (.fvar (by omega))
-  calc S₀.onTy (.fvar v)
-      = (S₁ ++ R₁).onTy (.fvar v) := haga v hv
-    _ = R₁.onTy (S₁.onTy (.fvar v)) := by rw [Subst.onTy_append]
-    _ = (S₂ ++ R₂).onTy (S₁.onTy (.fvar v)) := Subst.onTy_congr hagb hbv
-    _ = ((S₁ ++ S₂) ++ R₂).onTy (.fvar v) := by
-          rw [List.append_assoc, Subst.onTy_append S₁ (S₂ ++ R₂)]
+  exact Subst.AgreesBelow.trans_append hle haga hbelowS₁ hagb
 
 /-- Principality, `letIn` case. -/
 theorem Infer.complete_letIn {rhs body : Expr}
@@ -8029,7 +8013,7 @@ theorem Infer.complete_letPairIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {pe b
     (hbody : TypeOfHM { (S₀.onCtx ctx) with env := Msnd :: Mfst :: (S₀.onCtx ctx).env } body τ₀) :
     ∃ Φ' S τ R,
       Infer Φ ctx (.letPairIn pe body) Φ' S τ ∧
-      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧ (∀ p ∈ R, p.2.IsLC) := by
   -- STEP 1: a fresh opening avoiding `L`, both scheme bodies, and the (substituted) env.
   obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names
@@ -8417,7 +8401,7 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
     (∀ br ∈ branches, TypeOfMatchBranch (R.onCtx ctx) br tyName (ta.map R.onTy) (R.onTy ρ)) →
     ∃ Φ' S R',
       InferBranches Φ ctx tyName ta ρ branches Φ' S ∧
-      (∀ v, v < Φ → R.onTy (.fvar v) = (S ++ R').onTy (.fvar v)) ∧
+      Subst.AgreesBelow Φ R (S ++ R') ∧
       (∀ p ∈ R', p.2.IsLC) := by
   induction branches with
   | nil =>
@@ -8544,7 +8528,7 @@ theorem Infer.complete_match_aux {scrut : Expr} {branches : List (MatchPattern �
     (hbranches_decl : ∀ br ∈ branches, TypeOfMatchBranch (S₀.onCtx ctx) br tyName tyArgs τ₀) :
     ∃ Φ' S τ R,
       Infer Φ ctx (.match_ scrut branches) Φ' S τ ∧
-      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧ (∀ p ∈ R, p.2.IsLC) := by
   -- STEP 1: scrutinee IH.
   obtain ⟨Φ₁, S₁, τs, R₁, hinfs, hags, htys, hR₁⟩ := ihscrut hwf hbelow hS₀ hscrut_decl
@@ -8844,7 +8828,7 @@ theorem Infer.complete {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ :
     (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
     ∃ Φ' S τ R,
       Infer Φ ctx e Φ' S τ ∧
-      (∀ v, v < Φ → S₀.onTy (.fvar v) = (S ++ R).onTy (.fvar v)) ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC) :=
   Infer.completeAt_of_core (Expr.core_all e) hwf hbelow hS₀ hty
