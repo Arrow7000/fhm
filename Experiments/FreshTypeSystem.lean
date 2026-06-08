@@ -5792,6 +5792,33 @@ theorem Subst.onCtx_congr {Φ : Nat} {S T : Subst} {ctx : Ctx}
   intro M hM
   simp only [Subst.onPolyTy, Subst.onTy_congr hag (hb M hM)]
 
+/-- `S` and `T` agree (act identically on every `fvar`) below frontier `Φ`. This
+    is the "`S₀ = R ∘ S` below `Φ`" agreement clause threaded through the
+    principality proofs; a reducible abbreviation so it is defeq to the raw `∀`. -/
+abbrev Subst.AgreesBelow (Φ : Nat) (S T : Subst) : Prop :=
+  ∀ v, v < Φ → S.onTy (.fvar v) = T.onTy (.fvar v)
+
+/-- The recurring agreement-threading step: if `S₀` agrees with `S₁ ++ R₁` below
+    `Φ`, and the residual `R₁` agrees with `S₂ ++ R₂` below the larger frontier
+    `Φ₁` (which bounds `S₁`'s replacements), then `S₀` agrees with the composed
+    `(S₁ ++ S₂) ++ R₂` below `Φ`. Collapses the `calc` repeated verbatim across the
+    `pair`/`app`/`letPairIn`/`match` completeness cases. -/
+theorem Subst.AgreesBelow.trans_append {Φ Φ₁ : Nat} {S₀ S₁ R₁ S₂ R₂ : Subst}
+    (hle : Φ ≤ Φ₁)
+    (hag1 : Subst.AgreesBelow Φ S₀ (S₁ ++ R₁))
+    (hbelowS₁ : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2)
+    (hag2 : Subst.AgreesBelow Φ₁ R₁ (S₂ ++ R₂)) :
+    Subst.AgreesBelow Φ S₀ ((S₁ ++ S₂) ++ R₂) := by
+  intro v hv
+  have hbv : Ty.BelowFvars Φ₁ (S₁.onTy (.fvar v)) :=
+    Subst.onTy_belowFvars hbelowS₁ (.fvar (by omega))
+  calc S₀.onTy (.fvar v)
+      = (S₁ ++ R₁).onTy (.fvar v) := hag1 v hv
+    _ = R₁.onTy (S₁.onTy (.fvar v)) := by rw [Subst.onTy_append]
+    _ = (S₂ ++ R₂).onTy (S₁.onTy (.fvar v)) := Subst.onTy_congr hag2 hbv
+    _ = ((S₁ ++ S₂) ++ R₂).onTy (.fvar v) := by
+          rw [List.append_assoc, Subst.onTy_append S₁ (S₂ ++ R₂)]
+
 
 /-! ### Principality (completeness) — per-expression statement + case lemmas
 
