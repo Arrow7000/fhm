@@ -11102,3 +11102,112 @@ theorem inferCore_complete_pair {a b : Expr}
     have hsb := ihb hwf₁ hbelow₁ hinfb
     obtain ⟨⟨⟨Φ₂', S₂', τb'⟩, hb'⟩, heb⟩ := Option.isSome_iff_exists.mp hsb
     rw [inferCore]; simp only [hea, heb, Option.isSome_some]
+
+/-- The explicit unifier behind `app`'s `unify` step (factored from
+    `Infer.complete_app_aux`): with `R₂` factoring the residual and a fresh `W`,
+    `[(Φ₂, fvar W)] ++ R₂ ++ [(W, τ₀)]` unifies `A` with `arrow τa (fvar Φ₂)`. -/
+theorem exists_app_unifier {A τa τ₀ argTy : Ty} {Φ₂ : Nat} {R₂ : Subst}
+    (hP : R₂.onTy A = Ty.arrow argTy τ₀) (htya : argTy = R₂.onTy τa)
+    (hΦ₂A : Φ₂ ∉ A.freeVars) (hΦ₂τa : Φ₂ ∉ τa.freeVars)
+    (hR₂ : ∀ p ∈ R₂, p.2.IsLC) (hτ₀LC : τ₀.IsLC) :
+    ∃ U, Unifies U A (Ty.arrow τa (Ty.fvar Φ₂)) ∧ (∀ p ∈ U, p.2.IsLC) := by
+  obtain ⟨W, hWge, hWfresh⟩ := exists_fresh_block
+    (R₂.map Prod.fst ++ R₂.flatMap (fun p => p.2.freeVars) ++ argTy.freeVars ++ τ₀.freeVars) Φ₂ 1
+  have hWdom : ∀ p ∈ R₂, p.1 ≠ W := by
+    intro p hp he
+    have := hWfresh p.1 (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_append_left _ (List.mem_map.mpr ⟨p, hp, rfl⟩))))
+    omega
+  have hWrange : ∀ p ∈ R₂, W ∉ p.2.freeVars := by
+    intro p hp hc
+    have := hWfresh W (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_append_right _ (List.mem_flatMap.mpr ⟨p, hp, hc⟩))))
+    omega
+  have hWargTy : W ∉ argTy.freeVars := fun hc => by
+    have := hWfresh W (List.mem_append_left _ (List.mem_append_right _ hc)); omega
+  have hWτ₀ : W ∉ τ₀.freeVars := fun hc => by
+    have := hWfresh W (List.mem_append_right _ hc); omega
+  have hR₂Wfvar : R₂.onTy (Ty.fvar W) = Ty.fvar W := by
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    exact hWdom p hp hc
+  obtain ⟨U, hUdef⟩ : ∃ U : Subst, U = [(Φ₂, Ty.fvar W)] ++ R₂ ++ [(W, τ₀)] := ⟨_, rfl⟩
+  have hsingle : ∀ (Z : Nat) (V y : Ty), Subst.onTy [(Z, V)] y = Ty.substFvar Z V y :=
+    fun _ _ _ => rfl
+  have hsubArrow : ∀ (Z : Nat) (V a b : Ty),
+      Ty.substFvar Z V (Ty.arrow a b) = Ty.arrow (Ty.substFvar Z V a) (Ty.substFvar Z V b) :=
+    fun _ _ _ _ => rfl
+  have hUonTy : ∀ x, U.onTy x = Ty.substFvar W τ₀ (R₂.onTy (Ty.substFvar Φ₂ (Ty.fvar W) x)) := by
+    intro x
+    rw [hUdef, Subst.onTy_append, Subst.onTy_append, hsingle, hsingle]
+  have e1 : Ty.substFvar Φ₂ (Ty.fvar W) (Ty.fvar Φ₂) = Ty.fvar W := by simp [Ty.substFvar]
+  have e2 : Ty.substFvar W τ₀ (Ty.fvar W) = τ₀ := by simp [Ty.substFvar]
+  have hUniL : U.onTy A = Ty.arrow argTy τ₀ := by
+    rw [hUonTy, Ty.substFvar_fresh hΦ₂A, hP, hsubArrow,
+        Ty.substFvar_fresh hWargTy, Ty.substFvar_fresh hWτ₀]
+  have hUniR : U.onTy (Ty.arrow τa (Ty.fvar Φ₂)) = Ty.arrow argTy τ₀ := by
+    rw [hUonTy, hsubArrow, Ty.substFvar_fresh hΦ₂τa, e1, Subst.onTy_arrow,
+        hR₂Wfvar, ← htya, hsubArrow, Ty.substFvar_fresh hWargTy, e2]
+  refine ⟨U, by show U.onTy A = U.onTy (Ty.arrow τa (Ty.fvar Φ₂)); rw [hUniL, hUniR], ?_⟩
+  rw [hUdef]
+  intro p hp
+  rcases List.mem_append.mp hp with hp' | hp'
+  · rcases List.mem_append.mp hp' with hp'' | hp''
+    · obtain rfl := List.mem_singleton.mp hp''
+      exact ContainsBvarsUpTo.fvar
+    · exact hR₂ p hp''
+  · obtain rfl := List.mem_singleton.mp hp'
+    exact hτ₀LC
+
+theorem inferCore_complete_app {f arg : Expr}
+    (ihf : InferCoreComplete f) (iharg : InferCoreComplete arg) :
+    InferCoreComplete (.app f arg) := by
+  intro Φ ctx Φ' S τ hwf hbelow h
+  -- declarative typing of the whole app (its arrow structure comes from `huni`)
+  have happ := Infer.sound h hwf
+  cases h with
+  | @app _ _ _ _ Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huni =>
+    -- invert the declarative app typing to expose `argTy` and the result `τ₀`
+    obtain ⟨argTy, hfty, hargty⟩ : ∃ argTy,
+        TypeOfHM ((S₁ ++ S₂ ++ S₃).onCtx ctx) f (.arrow argTy (S₃.onTy (.fvar Φ₂))) ∧
+        TypeOfHM ((S₁ ++ S₂ ++ S₃).onCtx ctx) arg argTy := by
+      cases happ with | app hfty hargty => exact ⟨_, hfty, hargty⟩
+    have hSlc : ∀ p ∈ S₁ ++ S₂ ++ S₃, p.2.IsLC := (Infer.lc (Infer.app hf harg huni) hwf).2
+    -- recurse on `f`, factor the f-typing through the function's principal output
+    have hsf := ihf hwf hbelow hf
+    obtain ⟨⟨⟨Φ₁', S₁', τf'⟩, hf'⟩, hef⟩ := Option.isSome_iff_exists.mp hsf
+    obtain ⟨R_f, hagf, hStepf, hR_f⟩ := Infer.complete' hf' hwf hbelow hSlc hfty
+    have hS₁' := (Infer.lc hf' hwf).2
+    have hbf := Infer.belowFvars hf' hbelow
+    have hle1 := Infer.frontier_le hf'
+    have hwf₁ := Subst.onCtx_wf hS₁' hwf
+    have hbelow₁ := Subst.onCtx_below hbf.2 hle1 hbelow
+    have hctxeq : R_f.onCtx (S₁'.onCtx ctx) = (S₁ ++ S₂ ++ S₃).onCtx ctx := by
+      rw [← Subst.onCtx_append]; exact Subst.onCtx_congr (fun v hv => (hagf v hv).symm) hbelow
+    -- transfer arg's typing, re-derive under the function's intermediate state
+    have hargty' : TypeOfHM (R_f.onCtx (S₁'.onCtx ctx)) arg argTy := by rw [hctxeq]; exact hargty
+    obtain ⟨_, _, _, _, hinfa, _, _, _⟩ := Infer.complete hwf₁ hbelow₁ hR_f hargty'
+    have hsa := iharg hwf₁ hbelow₁ hinfa
+    obtain ⟨⟨⟨Φ₂', S₂', τa'⟩, harg'⟩, hea⟩ := Option.isSome_iff_exists.mp hsa
+    obtain ⟨R_a, haga, hStepa, hR_a⟩ := Infer.complete' harg' hwf₁ hbelow₁ hR_f hargty'
+    -- build the app unifier on the function's `(S₂'.onTy τf')`, `arrow τa' (fvar Φ₂')`
+    have hba := Infer.belowFvars harg' hbelow₁
+    have hle2 := Infer.frontier_le harg'
+    have hcongr_f : R_f.onTy τf' = (S₂' ++ R_a).onTy τf' := Subst.onTy_congr haga hbf.1
+    have hP : R_a.onTy (S₂'.onTy τf') = Ty.arrow argTy (S₃.onTy (.fvar Φ₂)) := by
+      rw [← Subst.onTy_append, ← hcongr_f]; exact hStepf.symm
+    have hΦ₂τf : Φ₂' ∉ (S₂'.onTy τf').freeVars := fun hm => by
+      have := (Subst.onTy_belowFvars hba.2 (hbf.1.mono hle2)).mem_lt _ hm; omega
+    have hΦ₂τa : Φ₂' ∉ τa'.freeVars := fun hm => by have := hba.1.mem_lt _ hm; omega
+    have hτ₀LC : (S₃.onTy (.fvar Φ₂)).IsLC := by
+      have hreg := TypeOfHM.regular hfty; cases hreg with | arrow _ hT => exact hT
+    obtain ⟨U, hUni, _⟩ := exists_app_unifier hP hStepa hΦ₂τf hΦ₂τa hR_a hτ₀LC
+    have hτfLC := (Infer.lc hf' hwf).1
+    have hτaLC := (Infer.lc harg' hwf₁).1
+    have hS₂' := (Infer.lc harg' hwf₁).2
+    have huniSome : (unifyCore (S₂'.onTy τf') (Ty.arrow τa' (Ty.fvar Φ₂'))).isSome :=
+      (unifyCore_complete_aux (2 * (U.onTy (S₂'.onTy τf')).size + 1)).1 (by omega)
+        (Subst.onTy_lc hS₂' hτfLC) (.arrow hτaLC ContainsBvarsUpTo.fvar) hUni
+    obtain ⟨⟨S₃', _⟩, he3⟩ := Option.isSome_iff_exists.mp huniSome
+    rw [inferCore]; simp only [hef, hea, he3, Option.isSome_some]
