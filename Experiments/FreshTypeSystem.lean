@@ -10622,3 +10622,13 @@ end
 
 /-- The executable unifier, refining `UnifyRel`. -/
 def unify (a b : Ty) : Option Subst := (unifyCore a b).map (·.1)
+
+/-- `unify` soundness: a returned substitution is a genuine `UnifyRel` unifier
+    (immediate — `unifyCore` carries the derivation). -/
+theorem unify_sound {a b : Ty} {S : Subst} (h : unify a b = some S) : UnifyRel a b S := by
+  rw [unify] at h
+  rcases hc : unifyCore a b with _ | ⟨S', hS'⟩ <;> rw [hc] at h
+  · exact absurd h (by simp)
+  · simp only [Option.map_some, Option.some.injEq] at h
+    subst h
+    exact hS'
