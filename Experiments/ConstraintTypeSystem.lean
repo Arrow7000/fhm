@@ -86,6 +86,9 @@ inductive Gen : Ctx → Expr → Ty → Constraint → Prop
   | var {ctx i τ M} :
     ctx.env[i]? = some M →
     Gen ctx (.var i) τ (.inst M τ)
+  | ctor {ctx name τ ctorDef} :
+    LookupList.get? ctx.ctors name = some ctorDef →
+    Gen ctx (.ctor name) τ (.inst ctorDef.toTy τ)
 
 /-- **Soundness of generation.** Any locally-closed substitution satisfying a
     generated constraint yields a declarative `TypeOfHM` typing. Note: the
@@ -138,4 +141,17 @@ theorem Gen.sound {ctx : Ctx} {e : Expr} {τ : Ty} {C : Constraint}
     · simp only [Subst.onCtx, Subst.onEnv, List.getElem?_map, hlookup, Option.map_some]
     · rw [← hVseq]
       exact InstantiatesBy.openWith (Subst.onPolyTy_wf hS (hwf Mv (List.mem_of_getElem? hlookup)))
+        (le_of_eq hVsLC.1.symm)
+  | @ctor ctxv namev τv ctorDefv hlookup =>
+    intro _ S hS hsat
+    simp only [Sat] at hsat
+    obtain ⟨Vs, hVsLC, hVseq⟩ := hsat
+    refine TypeOfHM.ctor (ctor := ctorDefv) ?_ hVsLC.2 ?_
+    · simpa only [Subst.onCtx] using hlookup
+    · have hbody : (S.onPolyTy ctorDefv.toTy).body = ctorDefv.toTy.body := by
+        simp only [Subst.onPolyTy]
+        exact Ty.substFvars_eq_self_of_no_key
+          (fun p _ => NoFreeVars.not_mem_freeVars (Ctor.toTy_body_noFreeVars ctorDefv) p.1)
+      rw [← hVseq, ← hbody]
+      exact InstantiatesBy.openWith (Subst.onPolyTy_wf hS (Ctor.toTy_wf ctorDefv))
         (le_of_eq hVsLC.1.symm)
