@@ -107,6 +107,29 @@ def CScheme.ground (S : Subst) : CScheme → PolyTy
 def GenCtx.toCtx (S : Subst) (ctx : GenCtx) : Ctx :=
   ⟨ctx.env.map (CScheme.ground S), ctx.ctors⟩
 
+mutual
+
+/-- Free unification variables occurring in a constraint. -/
+def Constraint.freeVars : Constraint → List Nat
+  | .tru        => []
+  | .eq τ₁ τ₂   => (τ₁.freeVars ++ τ₂.freeVars).dedup
+  | .conj c₁ c₂ => (Constraint.freeVars c₁ ++ Constraint.freeVars c₂).dedup
+  | .inst cs τ  => (CScheme.freeVars cs ++ τ.freeVars).dedup
+  | .instC M τ  => (M.body.freeVars ++ τ.freeVars).dedup
+
+/-- Free unification variables of a scheme: those of the guard/body, minus the
+    bound (generalised) names. -/
+def CScheme.freeVars : CScheme → List Nat
+  | .mk vars guard body =>
+      ((Constraint.freeVars guard ++ body.freeVars).dedup).filter (fun x => !vars.contains x)
+
+end
+
+/-- Free unification variables fixed by a generation context (union over its env
+    schemes). The `let` rule generalises exactly the young vars *not* in here. -/
+def GenCtx.freeVars (ctx : GenCtx) : List Nat :=
+  (ctx.env.map CScheme.freeVars).flatten.dedup
+
 /-- Constraint generation, à la Pottier–Rémy: substitution-free and
     frontier-free (fresh vars are existentially chosen). -/
 inductive Gen : GenCtx → Expr → Ty → Constraint → Prop
