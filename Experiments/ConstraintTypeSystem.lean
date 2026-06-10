@@ -40,6 +40,10 @@ inductive Constraint
   | conj (c₁ c₂ : Constraint)
   /-- `cs ⪰ τ`: `τ` is an instance of constraint scheme `cs`. -/
   | inst (cs : CScheme) (τ : Ty)
+  /-- `M ⪰ τ` for a *closed* (constructor) `PolyTy` scheme `M`. Constructor
+      schemes are closed and de Bruijn, so they bypass the named-variable
+      `CScheme` machinery and instantiate directly via `openWith`. -/
+  | instC (M : PolyTy) (τ : Ty)
 
 /-- A constraint scheme `∀ vars [guard]. body`, with named bound variables. -/
 inductive CScheme
@@ -70,6 +74,8 @@ def Sat : Subst → Constraint → Prop
       ∃ Vs : List Ty, Ty.AreLC vars.length Vs ∧
         Sat (vars.zip Vs ++ S) guard ∧
         Subst.onTy (vars.zip Vs ++ S) body = S.onTy τ
+  | S, .instC M τ =>
+      ∃ Vs : List Ty, Ty.AreLC M.paramCount Vs ∧ (S.onPolyTy M).openWith Vs = S.onTy τ
 
 /-- Generation context: like `Ctx` but the value env maps to constraint
     schemes (lambda/`let`/pattern bindings), enabling guarded `let` schemes. -/
@@ -77,8 +83,14 @@ structure GenCtx where
   env : List CScheme
   ctors : CtorEnv
 
-/-- A scheme is well-formed (for now: monomorphic with a locally-closed body —
-    generalised schemes are admitted with the `let` rule). -/
+/-- A scheme is well-formed.
+
+    @TODO: this is temporarily restricted to *monomorphic* schemes
+    (`cs.vars = []`), because the only schemes in the env so far come from
+    `lambda` (which binds a monotype). When the `let` rule lands it will
+    introduce genuinely polymorphic, guarded schemes (`cs.vars ≠ []`), and this
+    predicate must be generalised — e.g. "the guard/body only mention bound vars
+    in `cs.vars` plus env-fixed vars, and bound vars are distinct/fresh." -/
 def CScheme.WF (cs : CScheme) : Prop := cs.vars = [] ∧ cs.body.IsLC
 
 /-- All schemes in the generation context's env are well-formed. -/
@@ -122,6 +134,9 @@ inductive Gen : GenCtx → Expr → Ty → Constraint → Prop
   | var {ctx i τ cs} :
     ctx.env[i]? = some cs →
     Gen ctx (.var i) τ (.inst cs τ)
+  | ctor {ctx name τ ctorDef} :
+    LookupList.get? ctx.ctors name = some ctorDef →
+    Gen ctx (.ctor name) τ (.instC ctorDef.toTy τ)
 
 /-- **Soundness of generation (guard-free fragment).** Any locally-closed
     substitution satisfying a generated constraint yields a declarative
@@ -181,3 +196,16 @@ theorem Gen.sound {ctx : GenCtx} {e : Expr} {τ : Ty} {C : Constraint}
     · simp only [CScheme.ground, PolyTy.mkTrivial]
       rw [← hbeq]
       exact InstantiatesBy.refl_of_closed (Subst.onTy_lc hS hbodyLC)
+  | @ctor ctxv namev τv ctorDefv hlookup =>
+    intro _ S hS hsat
+    simp only [Sat] at hsat
+    obtain ⟨Vs, hVsLC, hVseq⟩ := hsat
+    refine TypeOfHM.ctor (ctor := ctorDefv) ?_ hVsLC.2 ?_
+    · simpa only [GenCtx.toCtx] using hlookup
+    · have hbody : (S.onPolyTy ctorDefv.toTy).body = ctorDefv.toTy.body := by
+        simp only [Subst.onPolyTy]
+        exact Ty.substFvars_eq_self_of_no_key
+          (fun p _ => NoFreeVars.not_mem_freeVars (Ctor.toTy_body_noFreeVars ctorDefv) p.1)
+      rw [← hVseq, ← hbody]
+      exact InstantiatesBy.openWith (Subst.onPolyTy_wf hS (Ctor.toTy_wf ctorDefv))
+        (le_of_eq hVsLC.1.symm)
