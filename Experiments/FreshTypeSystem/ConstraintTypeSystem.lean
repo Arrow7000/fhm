@@ -1,8 +1,8 @@
-import Experiments.FreshTypeSystem
+import Experiments.FreshTypeSystem.InferW
 
 /-! # Constraint-based Hindley–Milner inference
 
-An alternative to the Algorithm-W development in `Experiments.FreshTypeSystem`
+An alternative to the Algorithm-W development in `Experiments.FreshTypeSystem.InferW`
 (approach A), testing whether a **constraint-based** presentation (Wand /
 Pottier–Rémy) keeps the *inference* layer free of the naked substitutions and
 fresh-variable frontiers that pervade W. We reuse the shared foundation +
