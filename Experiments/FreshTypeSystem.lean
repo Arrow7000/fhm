@@ -255,9 +255,6 @@ def Ctor.toTy (ctor : Ctor) : PolyTy :=
 
 
 
-def CtorEnv.toTy (ctorEnv : CtorEnv) (ctorName : CtorName) : Option PolyTy :=
-  ctorEnv.get? ctorName
-  |>.map (·.toTy)
 
 
 
@@ -535,9 +532,6 @@ def TyList.instantiate (subst : Nat → Ty) : List Ty → List Ty
 end
 
 
-/-- Get the `i`th item from the `tyArgs` list. Otherwise return a `.bvar i` -/
-def Ty.instSubst (tyArgs : List Ty) (i : Nat) : Ty :=
-  tyArgs[i]?.getD (.bvar i)
 
 
 
@@ -575,82 +569,6 @@ inductive InstantiatesBy (tyArgs : List Ty) : Ty → Ty → Prop
 
 
 
-
-
-
-
-/-- `ty` can only contain `bvar`s that are in `vars`. If `vars` is empty, `ty` contains no `bvar`s at all. -/
-inductive OnlyContainsBvars (vars : List Nat) : (ty : Ty) → Prop
-  | prim :
-    OnlyContainsBvars vars (.prim p)
-
-  | pair :
-    OnlyContainsBvars vars fst →
-    OnlyContainsBvars vars snd →
-    OnlyContainsBvars vars (.pair fst snd)
-
-  | arrow :
-    OnlyContainsBvars vars fst →
-    OnlyContainsBvars vars snd →
-    OnlyContainsBvars vars (.arrow fst snd)
-
-  | fvar :
-    OnlyContainsBvars vars (.fvar n)
-
-  | customTy :
-    (∀ ty ∈ tys, OnlyContainsBvars vars ty) →
-    OnlyContainsBvars vars (.customTy name tys)
-
-  | bvar :
-    i ∈ vars →
-    OnlyContainsBvars vars (.bvar i)
-
-
-
-
-
-
-
-
-mutual
-/-- If there are no `bvar`s in `tyArgs`, `instTy` won't contain any `bvar`s -/
-theorem InstantiatesBy.no_bvars_if_nin_tyArgs
-    (h_args : ∀ ty' ∈ tyArgs, OnlyContainsBvars [] ty')
-    (h_inst : InstantiatesBy tyArgs ty instTy) :
-    OnlyContainsBvars [] instTy := by
-  cases h_inst
-  case prim => exact .prim
-  case pair _ _ a b => exact .pair (no_bvars_if_nin_tyArgs h_args a) (no_bvars_if_nin_tyArgs h_args b)
-  case arrow _ _ a b => exact .arrow (no_bvars_if_nin_tyArgs h_args a) (no_bvars_if_nin_tyArgs h_args b)
-  case fvar => exact .fvar
-  case bvar h => exact h_args _ (List.mem_of_getElem? h)
-  case customTy h_forall =>
-    apply OnlyContainsBvars.customTy
-    exact list_no_bvars_if_nin_tyArgs h_args h_forall
-
-theorem InstantiatesBy.list_no_bvars_if_nin_tyArgs
-    (h_args : ∀ ty' ∈ tyArgs, OnlyContainsBvars [] ty')
-    (h_forall : List.Forall₂ (InstantiatesBy tyArgs) tys instTys) :
-    ∀ ty ∈ instTys, OnlyContainsBvars [] ty := by
-  intro ty mem
-  induction h_forall with
-  | nil => exact absurd mem List.not_mem_nil
-  | cons hd tl ih =>
-    cases mem with
-    | head _ => exact no_bvars_if_nin_tyArgs h_args hd
-    | tail _ h => exact ih h
-end
-
-
-
-/-- The zipping of two lists. Lists must be equal in length. -/
-inductive Zipped : List α → List β → List (α × β) → Prop
-  | nil :
-    Zipped [] [] []
-
-  | cons {as bs abs} :
-    Zipped as bs abs →
-    Zipped (a :: as) (b :: bs) ((a,b) :: abs)
 
 
 
@@ -996,8 +914,6 @@ private theorem isValue_isCtorChain_correct (e : Expr) :
 theorem isValue_iff_IsValue {e : Expr} : isValue e = true ↔ IsValue e :=
   (isValue_isCtorChain_correct e).1
 
-theorem isCtorChain_iff_IsCtorChain {e : Expr} : isCtorChain e = true ↔ IsCtorChain e :=
-  (isValue_isCtorChain_correct e).2
 
 /-! ### Helper lemmas -/
 
@@ -3314,49 +3230,49 @@ theorem TypeOfHM.subst_lemma_many
             branch h_mem'
 
 
-/-- If `ty` is closed (no `bvar`s), then `InstantiatesBy` on it is the identity:
-    no `bvar` ever gets matched, so the structural recursion just reproduces `ty`. -/
-private lemma InstantiatesBy.eq_of_closed
-    {tyArgs : List Ty} {ty τ : Ty}
-    (h_closed : OnlyContainsBvars [] ty)
-    (h_inst : InstantiatesBy tyArgs ty τ) :
-    τ = ty := by
-  induction ty using Ty.rec_strong generalizing τ with
-  | prim _ =>
-    cases h_inst; rfl
-  | pair _ _ ih_a ih_b =>
-    cases h_closed with
-    | pair h_a h_b =>
-      cases h_inst with
-      | pair hi_a hi_b => rw [ih_a h_a hi_a, ih_b h_b hi_b]
-  | arrow _ _ ih_a ih_b =>
-    cases h_closed with
-    | arrow h_a h_b =>
-      cases h_inst with
-      | arrow hi_a hi_b => rw [ih_a h_a hi_a, ih_b h_b hi_b]
-  | bvar _ =>
-    cases h_closed with
-    | bvar h_mem => exact absurd h_mem List.not_mem_nil
-  | fvar _ =>
-    cases h_inst; rfl
-  | customTy _ _ ih_tys =>
-    cases h_closed with
-    | customTy h_all =>
-      cases h_inst with
-      | customTy h_forall =>
-        congr 1
-        induction h_forall with
-        | nil => rfl
-        | cons h_hd h_tl ih_tl =>
-          rename_i hd_ty _ tl_tys _
-          have h_hd_eq :=
-            ih_tys hd_ty List.mem_cons_self
-              (h_all hd_ty List.mem_cons_self) h_hd
-          have h_tl_eq :=
-            ih_tl
-              (fun ty h => ih_tys ty (List.mem_cons_of_mem _ h))
-              (fun ty h => h_all ty (List.mem_cons_of_mem _ h))
-          rw [h_hd_eq, h_tl_eq]
+-- /-- If `ty` is closed (no `bvar`s), then `InstantiatesBy` on it is the identity:
+--     no `bvar` ever gets matched, so the structural recursion just reproduces `ty`. -/
+-- private lemma InstantiatesBy.eq_of_closed
+--     {tyArgs : List Ty} {ty τ : Ty}
+--     (h_closed : OnlyContainsBvars [] ty)
+--     (h_inst : InstantiatesBy tyArgs ty τ) :
+--     τ = ty := by
+--   induction ty using Ty.rec_strong generalizing τ with
+--   | prim _ =>
+--     cases h_inst; rfl
+--   | pair _ _ ih_a ih_b =>
+--     cases h_closed with
+--     | pair h_a h_b =>
+--       cases h_inst with
+--       | pair hi_a hi_b => rw [ih_a h_a hi_a, ih_b h_b hi_b]
+--   | arrow _ _ ih_a ih_b =>
+--     cases h_closed with
+--     | arrow h_a h_b =>
+--       cases h_inst with
+--       | arrow hi_a hi_b => rw [ih_a h_a hi_a, ih_b h_b hi_b]
+--   | bvar _ =>
+--     cases h_closed with
+--     | bvar h_mem => exact absurd h_mem List.not_mem_nil
+--   | fvar _ =>
+--     cases h_inst; rfl
+--   | customTy _ _ ih_tys =>
+--     cases h_closed with
+--     | customTy h_all =>
+--       cases h_inst with
+--       | customTy h_forall =>
+--         congr 1
+--         induction h_forall with
+--         | nil => rfl
+--         | cons h_hd h_tl ih_tl =>
+--           rename_i hd_ty _ tl_tys _
+--           have h_hd_eq :=
+--             ih_tys hd_ty List.mem_cons_self
+--               (h_all hd_ty List.mem_cons_self) h_hd
+--           have h_tl_eq :=
+--             ih_tl
+--               (fun ty h => ih_tys ty (List.mem_cons_of_mem _ h))
+--               (fun ty h => h_all ty (List.mem_cons_of_mem _ h))
+--           rw [h_hd_eq, h_tl_eq]
 
 
 
@@ -4097,22 +4013,30 @@ mutual
 inductive UnifyRel : Ty → Ty → Subst → Prop
   | prim {p} :
     UnifyRel (.prim p) (.prim p) []
+
   | fvarRefl {n} :
     UnifyRel (.fvar n) (.fvar n) []
+
   | fvarL {n τ} :
-    τ ≠ .fvar n → n ∉ τ.freeVars →
+    τ ≠ .fvar n → -- are not the same or else `fvarRefl` applies
+    n ∉ τ.freeVars → -- the occurs check: `n` doesn't occur in `τ`
     UnifyRel (.fvar n) τ [(n, τ)]
+
   | fvarR {n τ} :
-    τ ≠ .fvar n → n ∉ τ.freeVars →
+    τ ≠ .fvar n → -- are not the same or else `fvarRefl` applies
+    n ∉ τ.freeVars → -- the occurs check: `n` doesn't occur in `τ`
     UnifyRel τ (.fvar n) [(n, τ)]
+
   | arrow {a b c d S₁ S₂} :
     UnifyRel a c S₁ →
     UnifyRel (S₁.onTy b) (S₁.onTy d) S₂ →
     UnifyRel (.arrow a b) (.arrow c d) (S₁ ++ S₂)
+
   | pair {a b c d S₁ S₂} :
     UnifyRel a c S₁ →
     UnifyRel (S₁.onTy b) (S₁.onTy d) S₂ →
     UnifyRel (.pair a b) (.pair c d) (S₁ ++ S₂)
+
   | customTy {nm tys₁ tys₂ S} :
     UnifyRelList tys₁ tys₂ S →
     UnifyRel (.customTy nm tys₁) (.customTy nm tys₂) S
@@ -12093,10 +12017,14 @@ theorem infer_iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
 For a *closed* program — context `⟨[], ctors⟩` with an empty term-variable
 environment — the algorithmic side-conditions (`CtxWF`, `CtxBelow 0`) hold
 vacuously, and a substitution does nothing to an empty env (`Subst.onCtx_empty`).
-So the leaky `Φ`/`S` machinery disappears from the statements entirely and we get
-a clean one-argument `typecheck : CtorEnv → Expr → Option Ty` that is sound,
-computes the principal type, and decides typeability — all phrased purely against
-the declarative `TypeOfHM`. -/
+So the leaky `Φ`/`S` machinery disappears from the statements entirely.
+
+`principalType` keeps just the inferred monotype (sound, principal, decides
+typeability — `principalType_*`). `typecheck` then **generalizes** it: at an
+empty environment every remaining free type variable is generalizable, so the
+output is a genuine *closed* type scheme — no free type variables, no dangling
+bound variables (`typecheck_closed`). `typecheck` is the intended entry point;
+everything else is in service of it, up to the declarative `TypeOfHM`. -/
 
 theorem CtxWF.empty {ctors : CtorEnv} : CtxWF ⟨[], ctors⟩ := by
   intro M hM; simp at hM
@@ -12107,15 +12035,36 @@ theorem CtxBelow.empty {Φ : Nat} {ctors : CtorEnv} : CtxBelow Φ ⟨[], ctors�
 @[simp] theorem Subst.onCtx_empty {S : Subst} {ctors : CtorEnv} :
     S.onCtx ⟨[], ctors⟩ = ⟨[], ctors⟩ := rfl
 
-/-- Type-check a closed program: run Algorithm W from an empty environment and
-    keep just the resulting type (the inferer's `Φ`/`S` are internal). -/
-def typecheck (ctors : CtorEnv) (e : Expr) : Option Ty :=
+/-- A type with no free vars at all (`NoFreeVars`) is exactly one whose `freeVars`
+    list is uninhabited (the converse of `NoFreeVars.not_mem_freeVars`). -/
+theorem NoFreeVars.of_forall_not_mem {τ : Ty} (h : ∀ Z, Z ∉ τ.freeVars) :
+    NoFreeVars τ := by
+  induction τ using Ty.rec_strong with
+  | prim p => exact .prim
+  | bvar i => exact .bvar
+  | fvar n => exact absurd (by simp [Ty.freeVars]) (h n)
+  | pair a b iha ihb =>
+      refine .pair (iha ?_) (ihb ?_)
+      · intro Z hZ; exact h Z (List.mem_dedup.mpr (List.mem_append.mpr (Or.inl hZ)))
+      · intro Z hZ; exact h Z (List.mem_dedup.mpr (List.mem_append.mpr (Or.inr hZ)))
+  | arrow a b iha ihb =>
+      refine .arrow (iha ?_) (ihb ?_)
+      · intro Z hZ; exact h Z (List.mem_dedup.mpr (List.mem_append.mpr (Or.inl hZ)))
+      · intro Z hZ; exact h Z (List.mem_dedup.mpr (List.mem_append.mpr (Or.inr hZ)))
+  | customTy nm tys ih =>
+      refine .customTy fun t ht => ih t ht ?_
+      intro Z hZ; exact h Z (mem_TyList_freeVars.mpr ⟨t, ht, hZ⟩)
+
+/-- The principal *monotype* of a closed program: run Algorithm W from the empty
+    environment and keep just the resulting type (the inferer's `Φ`/`S` are
+    internal). `typecheck` generalizes this into a closed scheme. -/
+def principalType (ctors : CtorEnv) (e : Expr) : Option Ty :=
   (infer 0 ⟨[], ctors⟩ e).map (·.2.2)
 
-/-- Whole-program soundness: a computed type is a genuine declarative type. -/
-theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
-    (h : typecheck ctors e = some τ) : TypeOfHM ⟨[], ctors⟩ e τ := by
-  rw [typecheck] at h
+/-- Monotype soundness: a computed principal type is a genuine declarative type. -/
+theorem principalType_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h : principalType ctors e = some τ) : TypeOfHM ⟨[], ctors⟩ e τ := by
+  rw [principalType] at h
   rcases hc : infer 0 ⟨[], ctors⟩ e with _ | ⟨Φ', S, τ'⟩ <;> rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
@@ -12123,12 +12072,12 @@ theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
     have := Infer.sound (infer_sound hc) CtxWF.empty
     rwa [Subst.onCtx_empty] at this
 
-/-- Whole-program principality: the computed type is *the* principal type — every
-    declarative type of the program is a substitution instance of it. -/
-theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {τ : Ty}
-    (h : typecheck ctors e = some τ) :
+/-- Monotype principality: every declarative type of the program is a
+    substitution instance of the computed principal type. -/
+theorem principalType_principal {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h : principalType ctors e = some τ) :
     ∀ τ₀, TypeOfHM ⟨[], ctors⟩ e τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
-  rw [typecheck] at h
+  rw [principalType] at h
   rcases hc : infer 0 ⟨[], ctors⟩ e with _ | ⟨Φ', S, τ'⟩ <;> rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
@@ -12137,21 +12086,120 @@ theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {τ : Ty}
     intro τ₀ hτ₀
     exact hP.principal (S₀ := []) (by simp) (by rwa [Subst.onCtx_nil])
 
-/-- Whole-program decidability: `typecheck` succeeds iff the program is
-    declaratively typeable. -/
-theorem typecheck_iff {ctors : CtorEnv} {e : Expr} :
-    (typecheck ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
+/-- Monotype decidability: `principalType` succeeds iff the program is typeable. -/
+theorem principalType_iff {ctors : CtorEnv} {e : Expr} :
+    (principalType ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
   constructor
   · intro h
     obtain ⟨τ, hτ⟩ := Option.isSome_iff_exists.mp h
-    exact ⟨τ, typecheck_sound hτ⟩
+    exact ⟨τ, principalType_sound hτ⟩
   · rintro ⟨τ, hτ⟩
     have hinfer : (infer 0 ⟨[], ctors⟩ e).isSome := by
       rw [infer_iff_typeable CtxWF.empty CtxBelow.empty]
       exact ⟨[], τ, by simp, by rwa [Subst.onCtx_nil]⟩
-    simpa [typecheck, Option.isSome_map] using hinfer
+    simpa [principalType, Option.isSome_map] using hinfer
 
--- `typecheck [] (λx. x) = α → α`
-#eval typecheck [] (.lambda (.var 0))
+/-- **Type-check a closed program** — the intended entry point. Run Algorithm W
+    from the empty environment and *generalize* the result into a closed type
+    scheme. At an empty environment every remaining free type variable is
+    generalizable, so the output is always a genuine closed scheme. -/
+def typecheck (ctors : CtorEnv) (e : Expr) : Option PolyTy :=
+  (principalType ctors e).map (genScheme [])
+
+/-- **`typecheck`'s output is a genuine closed type scheme.** Its body contains
+    no free type variables (`NoFreeVars`) and no dangling bound variables
+    (`PolyTy.WF` — every `bvar` is bound by the scheme's own quantifier). So a
+    successful `typecheck` always yields a concrete (possibly polymorphic) type:
+    never a leftover unification variable, never a naked bound variable. -/
+theorem typecheck_closed {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
+    (h : typecheck ctors e = some σ) : NoFreeVars σ.body ∧ σ.WF := by
+  rw [typecheck, principalType] at h
+  rcases hi : infer 0 ⟨[], ctors⟩ e with _ | ⟨Φ', S, τ⟩ <;> rw [hi] at h
+  · simp at h
+  · simp only [Option.map_some, Option.some.injEq] at h
+    subst h
+    have hlc : τ.IsLC := (Infer.lc (infer_sound hi) CtxWF.empty).1
+    refine ⟨?_, genScheme_wf hlc⟩
+    apply NoFreeVars.of_forall_not_mem
+    intro Z hZ
+    have hsub : Z ∈ τ.freeVars := Ty.closeOver_freeVars_subset hZ
+    have hin : Z ∈ genVars [] τ := List.mem_filter.mpr ⟨hsub, rfl⟩
+    exact Ty.not_mem_closeOver_freeVars hin hZ
+
+/-- Whole-program soundness: a successful `typecheck` generalizes a genuine
+    declarative type of the program. -/
+theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
+    (h : typecheck ctors e = some σ) :
+    ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ ∧ σ = genScheme [] τ := by
+  rw [typecheck] at h
+  rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
+  · simp at h
+  · simp only [Option.map_some, Option.some.injEq] at h
+    exact ⟨τ, principalType_sound hc, h.symm⟩
+
+/-- Whole-program principality: the output scheme generalizes a principal monotype
+    `τ` of which every declarative type of the program is a substitution
+    instance. -/
+theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
+    (h : typecheck ctors e = some σ) :
+    ∃ τ, σ = genScheme [] τ ∧ TypeOfHM ⟨[], ctors⟩ e τ ∧
+      ∀ τ₀, TypeOfHM ⟨[], ctors⟩ e τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+  rw [typecheck] at h
+  rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
+  · simp at h
+  · simp only [Option.map_some, Option.some.injEq] at h
+    exact ⟨τ, h.symm, principalType_sound hc, principalType_principal hc⟩
+
+/-- Whole-program decidability: `typecheck` succeeds iff the program is
+    declaratively typeable. -/
+theorem typecheck_iff {ctors : CtorEnv} {e : Expr} :
+    (typecheck ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
+  simp only [typecheck, Option.isSome_map]
+  exact principalType_iff
+
+open SmallStep in
+/-- Whole-program progress (via `typecheck`): a typeable closed program whose
+    matches are exhaustive is either a value or can take a step. -/
+theorem typecheck_progress {ctors : CtorEnv} {e : Expr}
+    (h : (typecheck ctors e).isSome) (h_exh : AllMatchesExhaustive ctors e) :
+    IsValue e ∨ ∃ e', Step e e' := by
+  obtain ⟨τ, hτ⟩ := typecheck_iff.mp h
+  exact TypeOfHM.progress hτ rfl h_exh
+
+open SmallStep in
+/-- **Whole-program preservation, sharpened.** After a step the reduct still
+    type-checks, and its principal scheme is *at least as general* as the
+    original's: the original's principal monotype `τ` is a substitution instance
+    of the reduct's principal monotype `τ'` (`τ = R.onTy τ'`, so `τ'` — hence the
+    reduct's scheme `σ'` — subsumes the original).
+
+    Reduction can make it **strictly** more general, because duplicating a value
+    un-shares its type variable: `(λf. (f, f)) (λx. x)` has principal scheme
+    `∀a. (a → a) × (a → a)`, but its reduct `((λx. x), (λx. x))` has the more
+    general `∀a b. (a → a) × (b → b)`. That is exactly why we cannot state
+    preservation as "`= some σ` with the *same* `σ`". -/
+theorem typecheck_preservation {ctors : CtorEnv} {e e' : Expr} {σ : PolyTy}
+    (h : typecheck ctors e = some σ) (h_step : Step e e') :
+    ∃ σ' τ τ', typecheck ctors e' = some σ' ∧
+      σ = genScheme [] τ ∧ σ' = genScheme [] τ' ∧ ∃ R : Subst, τ = R.onTy τ' := by
+  obtain ⟨τ, hτ, hσeq⟩ := typecheck_sound h
+  have hτ' : TypeOfHM ⟨[], ctors⟩ e' τ := TypeOfHM.preservation h_step hτ
+  obtain ⟨τ', hpt'eq⟩ :=
+    Option.isSome_iff_exists.mp (principalType_iff.mpr ⟨τ, hτ'⟩)
+  obtain ⟨R, hR⟩ := principalType_principal hpt'eq τ hτ'
+  refine ⟨genScheme [] τ', τ, τ', ?_, hσeq, rfl, R, hR⟩
+  simp only [typecheck, hpt'eq, Option.map_some]
+
+-- `typecheck [] (λx. x) = some ⟨1, bvar 0 → bvar 0⟩`  (i.e. the closed scheme `∀a. a → a`)
+#eval (typecheck [] (.lambda (.var 0))).map (fun σ => (σ.paramCount, σ.body))
 -- `typecheck [] (5 5) = none`
-#eval typecheck [] (.app (.primLit (.int 5)) (.primLit (.int 5)))
+#eval (typecheck [] (.app (.primLit (.int 5)) (.primLit (.int 5)))).map (fun σ => (σ.paramCount, σ.body))
+
+
+
+-- `infer (λx. x) = α → α`
+#eval infer 0 { env := [], ctors := [] } (.lambda (.var 0))
+-- `infer (λx. λy. x) = α → β → α`
+#eval infer 0 { env := [], ctors := [] } (.lambda (.lambda (.var 1)))
+-- `infer ((λx. x) 5) = Int`
+#eval infer 0 { env := [], ctors := [] } (.app (.lambda (.var 0)) (.primLit (.int 5)))
