@@ -1227,50 +1227,6 @@ private theorem Env.mem_freeVars_iff {env : Env} {x : Nat} :
       | head _ => exact .inl h
       | tail _ h' => exact .inr ⟨pt, h', h⟩
 
-/-- If every polytype in `l₁` appears in `l₂`, then `l₁`'s freeVars are a
-    subset of `l₂`'s freeVars. -/
-private theorem Env.freeVars_subset_of_subset {l₁ l₂ : Env}
-    (h : ∀ pt ∈ l₁, pt ∈ l₂) :
-    l₁.freeVars ⊆ l₂.freeVars := by
-  intro x hx
-  rw [Env.mem_freeVars_iff] at hx ⊢
-  obtain ⟨pt, hpt_mem, hpt_x⟩ := hx
-  exact ⟨pt, h pt hpt_mem, hpt_x⟩
-
-/-- Inserting an extra polytype between two halves of an env can only grow its
-    freeVars. -/
-private theorem Env.freeVars_subset_insert_middle
-    (l₁ l₃ : Env) (pt : PolyTy) :
-    (l₁ ++ l₃).freeVars ⊆ (l₁ ++ [pt] ++ l₃).freeVars := by
-  apply Env.freeVars_subset_of_subset
-  intro pt' hpt'
-  simp only [List.mem_append, List.mem_singleton] at hpt' ⊢
-  tauto
-
-/-- Inserting an env-block with no freeVars between two halves doesn't change
-    the freeVars (set-wise): they're equal subsets of each other. We only need
-    one direction here. -/
-private theorem Env.freeVars_subset_append_left (l₁ l₂ : Env) :
-    l₂.freeVars ⊆ (l₁ ++ l₂).freeVars := by
-  intro x hx
-  rw [Env.mem_freeVars_iff] at hx ⊢
-  obtain ⟨pt, hpt_mem, hpt_x⟩ := hx
-  exact ⟨pt, List.mem_append_right _ hpt_mem, hpt_x⟩
-
-private theorem Env.freeVars_subset_insert_closed_middle
-    {env l₂ l₃ : Env} (h_l₂ : l₂.freeVars ⊆ (env ++ l₃).freeVars) :
-    (env ++ l₂ ++ l₃).freeVars ⊆ (env ++ l₃).freeVars := by
-  intro x hx
-  rw [Env.mem_freeVars_iff] at hx ⊢
-  obtain ⟨pt, hpt_mem, hpt_x⟩ := hx
-  simp only [List.mem_append] at hpt_mem
-  rcases hpt_mem with (hpre | hmid) | hpost
-  · exact ⟨pt, by simp only [List.mem_append]; tauto, hpt_x⟩
-  · have h_in_l₂ : x ∈ l₂.freeVars := by
-      rw [Env.mem_freeVars_iff]; exact ⟨pt, hmid, hpt_x⟩
-    exact Env.mem_freeVars_iff.mp (h_l₂ h_in_l₂)
-  · exact ⟨pt, by simp only [List.mem_append]; tauto, hpt_x⟩
-
 
 /-! ## Canonical forms
 
@@ -1814,59 +1770,6 @@ theorem Ty.substFvar_openVars
 def Ty.freeVarsList : List Ty → List Nat
   | []       => []
   | hd :: tl => (hd.freeVars ++ Ty.freeVarsList tl).dedup
-
-/-- Opening with anything is a no-op on locally-closed types: nothing to
-    instantiate (no bvars to replace). -/
-theorem Ty.openWith_eq_self_of_lc {Vs : List Ty} {ty : Ty}
-    (h : Ty.IsLC ty) : Ty.openWith Vs ty = ty :=
-  Ty.instantiate_eq_self_of_lc h
-
-/-- `substFvar` commutes with `openWith` when the replacement is LC.
-    Direct corollary: opening then substituting equals substituting (in both
-    body and the args list) then opening. -/
-private theorem TyList.substFvar_openWith_swap
-    {Z : Nat} {U : Ty} {Vs : List Ty} {tys : List Ty}
-    (ih : ∀ t ∈ tys,
-            Ty.substFvar Z U (Ty.openWith Vs t)
-              = Ty.openWith (Vs.map (Ty.substFvar Z U)) (Ty.substFvar Z U t)) :
-    TyList.substFvar Z U (TyList.instantiate (fun i => Vs[i]?.getD (.bvar i)) tys)
-      = TyList.instantiate (fun i => (Vs.map (Ty.substFvar Z U))[i]?.getD (.bvar i))
-          (TyList.substFvar Z U tys) := by
-  induction tys with
-  | nil => rfl
-  | cons hd tl ih_tl =>
-    simp only [TyList.substFvar, TyList.instantiate, List.cons.injEq]
-    refine ⟨ih hd List.mem_cons_self, ?_⟩
-    exact ih_tl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
-
-theorem Ty.substFvar_openWith
-    {Z : Nat} {U ty : Ty} {Vs : List Ty}
-    (h_U_lc : Ty.IsLC U) :
-    Ty.substFvar Z U (Ty.openWith Vs ty)
-      = Ty.openWith (Vs.map (Ty.substFvar Z U)) (Ty.substFvar Z U ty) := by
-  unfold Ty.openWith
-  induction ty using Ty.rec_strong with
-  | prim _ => rfl
-  | pair _ _ ih_a ih_b =>
-    simp only [Ty.instantiate, Ty.substFvar, Ty.pair.injEq]
-    exact ⟨ih_a, ih_b⟩
-  | arrow _ _ ih_a ih_b =>
-    simp only [Ty.instantiate, Ty.substFvar, Ty.arrow.injEq]
-    exact ⟨ih_a, ih_b⟩
-  | bvar i =>
-    simp only [Ty.instantiate, Ty.substFvar, List.getElem?_map]
-    cases h_vs : Vs[i]? with
-    | none => simp [Ty.substFvar]
-    | some v => simp
-  | fvar n =>
-    simp only [Ty.instantiate, Ty.substFvar]
-    by_cases h_n : n = Z
-    · simp only [if_pos h_n]
-      exact (Ty.instantiate_eq_self_of_lc h_U_lc).symm
-    · simp only [if_neg h_n, Ty.instantiate]
-  | customTy _ tys ih =>
-    simp only [Ty.instantiate, Ty.substFvar, Ty.customTy.injEq, true_and]
-    exact TyList.substFvar_openWith_swap (fun t ht => ih t ht)
 
 /-! #### `substFvars` distribution + key lemmas (toward `typ_substs_intro`). -/
 
@@ -3320,29 +3223,6 @@ private lemma TypeOfHM.ctor_chain_has_customTy_form
   | var _          => cases h_chain
   | match_ _ _ _ _ => cases h_chain
 
-theorem TypeOfHM.canonical_prim {ctx e p}
-    (h_ty : TypeOfHM ctx e (.prim p))
-    (h_val : SmallStep.IsValue e) :
-    ∃ pl, e = .primLit pl := by
-  cases h_val with
-  | primLit p' => exact ⟨p', rfl⟩
-  | lambda _ => cases h_ty
-  | pair _ _ => cases h_ty
-  | ctor name =>
-    exfalso
-    have ⟨_, _, tys, h_eq⟩ :=
-      TypeOfHM.ctor_chain_has_customTy_form (.ctor name) h_ty
-    cases tys with
-    | nil => simp [Ty.wrapArrows] at h_eq
-    | cons _ _ => simp [Ty.wrapArrows] at h_eq
-  | ctorApp h_chain h_v =>
-    exfalso
-    have ⟨_, _, tys, h_eq⟩ :=
-      TypeOfHM.ctor_chain_has_customTy_form (.app h_chain h_v) h_ty
-    cases tys with
-    | nil => simp [Ty.wrapArrows] at h_eq
-    | cons _ _ => simp [Ty.wrapArrows] at h_eq
-
 theorem TypeOfHM.canonical_pair {ctx e fstTy sndTy}
     (h_ty : TypeOfHM ctx e (.pair fstTy sndTy))
     (h_val : SmallStep.IsValue e) :
@@ -4348,9 +4228,6 @@ theorem genFstScheme_wf {env : Env} {τα τβ : Ty} (hτα : τα.IsLC) :
 theorem genSndScheme_wf {env : Env} {τα τβ : Ty} (hτβ : τβ.IsLC) :
     (genSndScheme env τα τβ).WF :=
   Ty.closeOver_preserves_bvars hτβ
-
-theorem genFstScheme_paramCount_eq {env : Env} {τα τβ : Ty} :
-    (genFstScheme env τα τβ).paramCount = (genSndScheme env τα τβ).paramCount := rfl
 
 /-- `freeVars` is always duplicate-free (it dedups). -/
 theorem Ty.freeVars_nodup {τ : Ty} : τ.freeVars.Nodup := by
@@ -5857,21 +5734,6 @@ theorem TyList.rename_eq_map (f : Nat → Nat) (tys : List Ty) :
     Ty.rename f (.customTy nm tys) = .customTy nm (tys.map (Ty.rename f)) := by
   simp [Ty.rename, TyList.rename_eq_map]
 
-/-- Renaming composes. -/
-theorem Ty.rename_comp (f g : Nat → Nat) (τ : Ty) :
-    Ty.rename g (Ty.rename f τ) = Ty.rename (g ∘ f) τ := by
-  induction τ using Ty.rec_strong with
-  | prim p => rfl
-  | pair a b iha ihb => simp only [Ty.rename_pair, iha, ihb]
-  | arrow a b iha ihb => simp only [Ty.rename_arrow, iha, ihb]
-  | bvar i => rfl
-  | fvar n => rfl
-  | customTy nm tys ih =>
-    simp only [Ty.rename_customTy, List.map_map, Ty.customTy.injEq, true_and]
-    apply List.map_congr_left
-    intro t ht
-    exact ih t ht
-
 /-- Renaming by a function that fixes `τ`'s free vars is the identity. -/
 theorem Ty.rename_eq_self {f : Nat → Nat} {τ : Ty}
     (h : ∀ v ∈ τ.freeVars, f v = v) : Ty.rename f τ = τ := by
@@ -5937,26 +5799,6 @@ theorem Ty.rename_substFvar {f : Nat → Nat} (hf : Function.Injective f)
     · rw [if_neg hm, if_neg (fun heq => hm (hf heq)), Ty.rename_fvar]
   | customTy nm tys ih =>
     simp only [Ty.substFvar, TyList.substFvar_eq_map, Ty.rename_customTy, List.map_map,
-               Ty.customTy.injEq, true_and]
-    apply List.map_congr_left
-    intro t0 ht0
-    exact ih t0 ht0
-
-/-- Renaming commutes with opening (the opened names get renamed too). -/
-theorem Ty.rename_openVars {f : Nat → Nat} {Xs : List Nat} {t : Ty} :
-    Ty.rename f (Ty.openVars Xs t) = Ty.openVars (Xs.map f) (Ty.rename f t) := by
-  induction t using Ty.rec_strong with
-  | prim p => rfl
-  | pair a b iha ihb => simp only [Ty.openVars_pair, Ty.rename_pair, iha, ihb]
-  | arrow a b iha ihb => simp only [Ty.openVars_arrow, Ty.rename_arrow, iha, ihb]
-  | fvar n => rfl
-  | bvar i =>
-    simp only [Ty.openVars, Ty.instantiate, Ty.rename_bvar, List.getElem?_map]
-    cases h : Xs[i]? with
-    | none => rfl
-    | some x => rfl
-  | customTy nm tys ih =>
-    simp only [Ty.openVars_customTy, Ty.rename_customTy, List.map_map,
                Ty.customTy.injEq, true_and]
     apply List.map_congr_left
     intro t0 ht0
@@ -6333,10 +6175,6 @@ def blockListBack (Φ W k : Nat) : Subst := (List.range k).map (fun i => (W + i,
 
 theorem blockSwap_lt {Φ W k n : Nat} (hle : Φ ≤ W) (h : n < Φ) :
     blockSwap Φ W k n = n := by
-  simp only [blockSwap]; split_ifs <;> omega
-
-theorem blockSwap_block {Φ W k i : Nat} (hle : Φ ≤ W) (hi : i < k) :
-    blockSwap Φ W k (Φ + i) = W + i := by
   simp only [blockSwap]; split_ifs <;> omega
 
 theorem blockSwap_involutive {Φ W k : Nat} (hd : Φ + k ≤ W) (n : Nat) :
