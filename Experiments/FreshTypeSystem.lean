@@ -23,7 +23,6 @@ inductive ValName
 
 
 
--- abbrev TyCtx (ty : Type) := List (ty)
 abbrev LookupList (key : Type) (value : Type) := List (key × value)
 
 namespace LookupList
@@ -203,8 +202,6 @@ inductive Expr
   | lambda (body : Expr)
   | app (f input : Expr)
   | letIn (bindingExpr body : Expr)
-  -- /-- Destructuring a pair `let (a,b) = pairExpr in body` -/
-  -- | letPairIn (pairExpr body : Expr)
   /-- Get the fst of a pair -/
   | fst (expr : Expr)
   /-- Get the snd of a pair -/
@@ -3162,53 +3159,6 @@ theorem TypeOfHM.subst_lemma_many
             branch h_mem'
 
 
--- /-- If `ty` is closed (no `bvar`s), then `InstantiatesBy` on it is the identity:
---     no `bvar` ever gets matched, so the structural recursion just reproduces `ty`. -/
--- private lemma InstantiatesBy.eq_of_closed
---     {tyArgs : List Ty} {ty τ : Ty}
---     (h_closed : OnlyContainsBvars [] ty)
---     (h_inst : InstantiatesBy tyArgs ty τ) :
---     τ = ty := by
---   induction ty using Ty.rec_strong generalizing τ with
---   | prim _ =>
---     cases h_inst; rfl
---   | pair _ _ ih_a ih_b =>
---     cases h_closed with
---     | pair h_a h_b =>
---       cases h_inst with
---       | pair hi_a hi_b => rw [ih_a h_a hi_a, ih_b h_b hi_b]
---   | arrow _ _ ih_a ih_b =>
---     cases h_closed with
---     | arrow h_a h_b =>
---       cases h_inst with
---       | arrow hi_a hi_b => rw [ih_a h_a hi_a, ih_b h_b hi_b]
---   | bvar _ =>
---     cases h_closed with
---     | bvar h_mem => exact absurd h_mem List.not_mem_nil
---   | fvar _ =>
---     cases h_inst; rfl
---   | customTy _ _ ih_tys =>
---     cases h_closed with
---     | customTy h_all =>
---       cases h_inst with
---       | customTy h_forall =>
---         congr 1
---         induction h_forall with
---         | nil => rfl
---         | cons h_hd h_tl ih_tl =>
---           rename_i hd_ty _ tl_tys _
---           have h_hd_eq :=
---             ih_tys hd_ty List.mem_cons_self
---               (h_all hd_ty List.mem_cons_self) h_hd
---           have h_tl_eq :=
---             ih_tl
---               (fun ty h => ih_tys ty (List.mem_cons_of_mem _ h))
---               (fun ty h => h_all ty (List.mem_cons_of_mem _ h))
---           rw [h_hd_eq, h_tl_eq]
-
-
-
-
 /-! ## Canonical forms
 
 Inversion lemmas: a *value* of a given type has a particular syntactic shape.
@@ -4034,10 +3984,6 @@ theorem UnifyRelList.unifies : {ts₁ ts₂ : List Ty} → {S : Subst} →
 
 end
 
-
--- theorem UnifyRelList.unifies_rel : {ts₁ ts₂ : List Ty} → {S : Subst} →
---     UnifyRelList ts₁ ts₂ S → List.Forall₂ (Unifies S) ts₁ ts₂ := by sorry
---     -- UnifyRelList ts₁ ts₂ S → List.Forall₂ (UnifyRel · · S) ts₁ ts₂ := by sorry
 
 /-! ### Soundness, part 2: a derived substitution is *most general*
 
@@ -5512,25 +5458,11 @@ theorem InferBranches.belowFvars {Φ ctx tn ta ρ brs Φ' S}
 end
 
 
-/-! ### Completeness foundations: core fragment + substitution agreement
+/-! ### Completeness foundations: substitution agreement
 
 `Infer` covers the full language, so principality is stated for all
 expressions. The agreement lemmas let us swap one substitution for another that
 agrees on the in-scope (`< Φ`) variables. -/
-
-/-- The expressions `Infer` (v1) handles: the let-polymorphic core. -/
-inductive Expr.Core : Expr → Prop
-  | primLit : Expr.Core (.primLit p)
-  | pair : Expr.Core a → Expr.Core b → Expr.Core (.pair a b)
-  | lambda : Expr.Core body → Expr.Core (.lambda body)
-  | app : Expr.Core f → Expr.Core arg → Expr.Core (.app f arg)
-  | var : Expr.Core (.var i)
-  | ctor : Expr.Core (.ctor name)
-  | letIn : Expr.Core rhs → Expr.Core body → Expr.Core (.letIn rhs body)
-  | fst : Expr.Core e → Expr.Core (.fst e)
-  | snd : Expr.Core e → Expr.Core (.snd e)
-  | match_ : Expr.Core scrut → (∀ br ∈ branches, Expr.Core br.2) →
-      Expr.Core (.match_ scrut branches)
 
 /-- Two substitutions agreeing on all vars `< Φ` act identically on a
     below-`Φ` type. -/
@@ -5597,9 +5529,9 @@ theorem Subst.AgreesBelow.trans_append {Φ Φ₁ : Nat} {S₀ S₁ R₁ S₂ R�
 abstracted over the frontier `Φ`, context `ctx`, input specialization `S₀`, and
 declarative type `τ₀`. Each syntactic form gets its own case lemma (taking the
 sub-expressions' `CompleteAt` as hypotheses, exactly the shape produced by
-inducting on `Expr.Core`); `Infer.complete` then just composes them. Keeping the
-universally-quantified `Φ ctx S₀ τ₀` inside the predicate means each case lemma
-is independently stated and verifiable. -/
+inducting on `e` with `Expr.rec_strong`); `Infer.completeAt`/`Infer.complete`
+then just compose them. Keeping the universally-quantified `Φ ctx S₀ τ₀` inside
+the predicate means each case lemma is independently stated and verifiable. -/
 
 /-- The principality property at `e`: for *any* declarative typing of `e` under
     an LC specialization `S₀` of a WF, frontier-bounded context, `Infer`
@@ -8370,46 +8302,30 @@ theorem Infer.complete_match {scrut : Expr} {branches : List (MatchPattern × Ex
 
 /-! ### Principality, assembled -/
 
-/-- Every core expression satisfies the principality property `CompleteAt`,
-    assembled from the per-form case lemmas by induction on `Expr.Core`. -/
-theorem Infer.completeAt_of_core {e : Expr} (hcore : e.Core) : Infer.CompleteAt e := by
-  induction hcore with
-  | primLit => exact Infer.complete_prim
-  | pair _ _ iha ihb => exact Infer.complete_pair iha ihb
-  | lambda _ ih => exact Infer.complete_lambda ih
-  | app _ _ ihf iharg => exact Infer.complete_app ihf iharg
-  | var => exact Infer.complete_var
-  | ctor => exact Infer.complete_ctor
-  | letIn _ _ iha ihb => exact Infer.complete_letIn iha ihb
-  | fst _ ih => exact Infer.complete_fst ih
-  | snd _ ih => exact Infer.complete_snd ih
-  | match_ _ _ ihscrut ihbranches => exact Infer.complete_match ihscrut ihbranches
-
-/-- Every expression is in the core fragment — `Infer` now covers *all* `Expr`
-    constructors, so the `Expr.Core` scoping is vacuous. -/
-theorem Expr.core_all (e : Expr) : e.Core := by
+/-- Every expression satisfies the principality property `CompleteAt`,
+    assembled from the per-form case lemmas by structural induction on `e`. -/
+theorem Infer.completeAt (e : Expr) : Infer.CompleteAt e := by
   induction e using Expr.rec_strong with
-  | primLit p => exact .primLit
-  | pair a b iha ihb => exact .pair iha ihb
-  | lambda body ih => exact .lambda ih
-  | app f inp ihf ihi => exact .app ihf ihi
-  | letIn be body ihbe ihbody => exact .letIn ihbe ihbody
-  | fst e ih => exact .fst ih
-  | snd e ih => exact .snd ih
-  | var i => exact .var
-  | ctor name => exact .ctor
-  | match_ scrut branches ih_scrut ih_branches =>
-    refine .match_ ih_scrut (fun br hbr => ?_)
+  | primLit p => exact Infer.complete_prim
+  | pair a b iha ihb => exact Infer.complete_pair iha ihb
+  | lambda body ih => exact Infer.complete_lambda ih
+  | app f inp ihf ihi => exact Infer.complete_app ihf ihi
+  | letIn be body ihbe ihbody => exact Infer.complete_letIn ihbe ihbody
+  | fst e ih => exact Infer.complete_fst ih
+  | snd e ih => exact Infer.complete_snd ih
+  | var i => exact Infer.complete_var
+  | ctor name => exact Infer.complete_ctor
+  | match_ scrut branches ihscrut ihbranches =>
+    refine Infer.complete_match ihscrut (fun br hbr => ?_)
     obtain ⟨pat, body⟩ := br
-    exact ih_branches pat body hbr
+    exact ihbranches pat body hbr
 
 /-- **Principality of `Infer`** (Damas–Milner completeness). For any declarative
     typing of `e` under an LC specialization `S₀` of a WF, frontier-bounded
     context, `Infer` succeeds with `(S, τ)` and the declarative typing factors
     through it via an LC residual `R` (`S₀ = R ∘ S` below the frontier,
     `τ₀ = R.onTy τ`). Combined with `Infer.sound`, this is full principality:
-    `Infer` computes a most general typing. (`Infer` now covers every `Expr`
-    constructor — see `Expr.core_all` — so no fragment restriction is needed.) -/
+    `Infer` computes a most general typing. -/
 theorem Infer.complete {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
@@ -8418,7 +8334,7 @@ theorem Infer.complete {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ :
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC) :=
-  Infer.completeAt_of_core (Expr.core_all e) hwf hbelow hS₀ hty
+  Infer.completeAt e hwf hbelow hS₀ hty
 
 
 /-! ### Cleaner corollaries of principality
@@ -11215,7 +11131,7 @@ theorem inferBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)
         exact hsound br (List.mem_cons_of_mem _ hbr)
       -- STEP: re-derive `rest` in the function's intermediate state, then recurse via the list IH
       obtain ⟨Φ_rr, S_r, R_r, hinfrest, _hagrest, _hR_r⟩ :=
-        InferBranches.complete (fun br _ => Infer.completeAt_of_core (Expr.core_all br.2))
+        InferBranches.complete (fun br _ => Infer.completeAt br.2)
           hwf' hbelow' hta' hbta' hρ' hbρ' hR_u hdecl'
       have hrestsome := ih (fun br hbr => ihbr br (List.mem_cons_of_mem _ hbr))
         hwf' hbelow' hta' hbta' hρ' hbρ' hinfrest
@@ -11469,7 +11385,7 @@ theorem inferCore_complete_match {scrut : Expr} {branches : List (MatchPattern �
         exact hbranches_decl br hbr
       -- STEP 8: thread the branch list with `InferBranches.complete`, then drive the helper.
       obtain ⟨Φ₃f, S₃f, R₃, hinfbr, _hagbr, _hR₃lc⟩ :=
-        InferBranches.complete (fun br _ => Infer.completeAt_of_core (Expr.core_all br.2))
+        InferBranches.complete (fun br _ => Infer.completeAt br.2)
           (Subst.onCtx_wf hS₂ hwf₁) (Subst.onCtx_below hbS₂ (by omega) hbelow₁)
           hta_lc hta_below hρ_lc hρ_below hR₂lc hbr'
       have hbranchesSome := inferBranchesCore_complete ((pat0, body0) :: brest)
