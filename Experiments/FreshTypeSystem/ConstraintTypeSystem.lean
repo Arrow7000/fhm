@@ -147,9 +147,12 @@ inductive Gen : GenCtx → Expr → Ty → Constraint → Prop
     Gen ctx a (.fvar α) Ca →
     Gen ctx b (.fvar β) Cb →
     Gen ctx (.pair a b) τ (.conj (.eq τ (.pair (.fvar α) (.fvar β))) (.conj Ca Cb))
+  -- Constraint generation currently handles only *unannotated* lambdas (the
+  -- param type is a fresh monotype `α`). Annotated lambdas are out of scope for
+  -- this guard-free fragment.
   | lambda {ctx body τ α β Cbody} :
     Gen { ctx with env := CScheme.mono (.fvar α) :: ctx.env } body (.fvar β) Cbody →
-    Gen ctx (.lambda body) τ (.conj (.eq τ (.arrow (.fvar α) (.fvar β))) Cbody)
+    Gen ctx (.lambda none body) τ (.conj (.eq τ (.arrow (.fvar α) (.fvar β))) Cbody)
   | app {ctx f arg τ α Cf Carg} :
     Gen ctx f (.arrow (.fvar α) τ) Cf →
     Gen ctx arg (.fvar α) Carg →
@@ -189,7 +192,8 @@ theorem Gen.sound {ctx : GenCtx} {e : Expr} {τ : Ty} {C : Constraint}
     obtain ⟨heq, hsbody⟩ := hsat
     simp only [Subst.onTy_arrow] at heq
     rw [heq]
-    refine TypeOfHM.lambda (Subst.onTy_lc hS ContainsBvarsUpTo.fvar) rfl ?_
+    refine TypeOfHM.lambda (Subst.onTy_lc hS ContainsBvarsUpTo.fvar)
+      (fun T hT => absurd hT (by simp)) rfl ?_
     refine ih ?_ hS hsbody
     intro cs hcs
     rcases List.mem_cons.mp hcs with rfl | hcs

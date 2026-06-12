@@ -199,9 +199,14 @@ structure MatchPattern where
 inductive Expr
   | primLit (prim : PrimLitExpr)
   | pair (a b : Expr)
-  | lambda (body : Expr)
+  /-- A lambda. `paramAnn` is an optional type ascription on the parameter
+      (surface `λ(x : T). body`); `none` means the param type is inferred. -/
+  | lambda (paramAnn : Option Ty) (body : Expr)
   | app (f input : Expr)
-  | letIn (bindingExpr body : Expr)
+  /-- A let binding. `ann` is an optional scheme ascription on the bound
+      expression (surface `let x : σ = e in body`); `none` means the scheme is
+      generalised by inference. -/
+  | letIn (ann : Option PolyTy) (bindingExpr body : Expr)
   /-- Get the fst of a pair -/
   | fst (expr : Expr)
   /-- Get the snd of a pair -/
@@ -289,6 +294,37 @@ def TyList.freeVars : List Ty → List Nat
   | head :: tail => (head.freeVars ++ TyList.freeVars tail).dedup
 
 end
+
+
+mutual
+/-- A *closed monotype*: no free **and** no bound type variables. This is the
+    decidable check used to validate parameter annotations (`λ(x : T). …`),
+    which must be closed (`Ty.isClosed_iff`: `↔ NoFreeVars ∧ ContainsBvarsUpTo 0`). -/
+def Ty.isClosed : Ty → Bool
+  | .prim _          => true
+  | .pair a b        => a.isClosed && b.isClosed
+  | .arrow a b       => a.isClosed && b.isClosed
+  | .fvar _          => false
+  | .bvar _          => false
+  | .customTy _ tys  => TyList.isClosed tys
+def TyList.isClosed : List Ty → Bool
+  | []      => true
+  | t :: ts => t.isClosed && TyList.isClosed ts
+end
+
+theorem TyList.isClosed_iff_forall (tys : List Ty) :
+    TyList.isClosed tys = true ↔ ∀ t ∈ tys, t.isClosed = true := by
+  induction tys with
+  | nil => simp [TyList.isClosed]
+  | cons hd tl ih =>
+    simp only [TyList.isClosed, Bool.and_eq_true, List.mem_cons]
+    rw [ih]
+    constructor
+    · rintro ⟨hhd, htl⟩ t (rfl | ht)
+      · exact hhd
+      · exact htl t ht
+    · intro h
+      exact ⟨h hd (Or.inl rfl), fun t ht => h t (Or.inr ht)⟩
 
 
 
@@ -433,6 +469,42 @@ decreasing_by
     | omega
     | (have := List.sizeOf_lt_of_mem _ht; omega)
 
+theorem Ty.isClosed_iff (t : Ty) :
+    t.isClosed = true ↔ NoFreeVars t ∧ ContainsBvarsUpTo 0 t := by
+  induction t using Ty.rec_strong with
+  | prim p => exact iff_of_true rfl ⟨.prim, .prim⟩
+  | fvar n =>
+    refine iff_of_false (by simp [Ty.isClosed]) ?_
+    rintro ⟨hnfv, _⟩; cases hnfv
+  | bvar i =>
+    refine iff_of_false (by simp [Ty.isClosed]) ?_
+    rintro ⟨_, hbv⟩; cases hbv with | bvar h => omega
+  | pair a b iha ihb =>
+    simp only [Ty.isClosed, Bool.and_eq_true]
+    rw [iha, ihb]
+    constructor
+    · rintro ⟨⟨na, ca⟩, nb, cb⟩; exact ⟨.pair na nb, .pair ca cb⟩
+    · rintro ⟨hn, hc⟩
+      cases hn with | pair na nb => cases hc with | pair ca cb => exact ⟨⟨na, ca⟩, nb, cb⟩
+  | arrow a b iha ihb =>
+    simp only [Ty.isClosed, Bool.and_eq_true]
+    rw [iha, ihb]
+    constructor
+    · rintro ⟨⟨na, ca⟩, nb, cb⟩; exact ⟨.arrow na nb, .arrow ca cb⟩
+    · rintro ⟨hn, hc⟩
+      cases hn with | arrow na nb => cases hc with | arrow ca cb => exact ⟨⟨na, ca⟩, nb, cb⟩
+  | customTy name tys ih =>
+    show TyList.isClosed tys = true ↔ _
+    rw [TyList.isClosed_iff_forall]
+    constructor
+    · intro h
+      refine ⟨.customTy fun t ht => ((ih t ht).mp (h t ht)).1,
+              .customTy fun t ht => ((ih t ht).mp (h t ht)).2⟩
+    · rintro ⟨hn, hc⟩ t ht
+      cases hn with
+      | customTy hn' => cases hc with
+        | customTy hc' => exact (ih t ht).mpr ⟨hn' t ht, hc' t ht⟩
+
 
 /--
 Strong induction principle for `Expr` that gives a useful IH for the `match_`
@@ -447,9 +519,9 @@ theorem some_property : ∀ e : Expr, P e := by
   induction e using Expr.rec_strong
   case primLit p                       => ...
   case pair a b iha ihb                => ...
-  case lambda body ih                  => ...
+  case lambda paramAnn body ih         => ...
   case app f input ihf ihi             => ...
-  case letIn be body ihbe ihbo         => ...
+  case letIn ann be body ihbe ihbo     => ...
   case fst expr ih                     => ...
   case snd expr ih                     => ...
   case var n                           => ...
@@ -462,11 +534,11 @@ theorem some_property : ∀ e : Expr, P e := by
 def Expr.rec_strong.{u} {motive : Expr → Sort u}
     (primLit    : ∀ p, motive (.primLit p))
     (pair       : ∀ a b, motive a → motive b → motive (.pair a b))
-    (lambda     : ∀ body, motive body → motive (.lambda body))
+    (lambda     : ∀ paramAnn body, motive body → motive (.lambda paramAnn body))
     (app        : ∀ f input, motive f → motive input → motive (.app f input))
-    (letIn      : ∀ bindingExpr body,
+    (letIn      : ∀ ann bindingExpr body,
                     motive bindingExpr → motive body →
-                    motive (.letIn bindingExpr body))
+                    motive (.letIn ann bindingExpr body))
     (fst        : ∀ expr, motive expr → motive (.fst expr))
     (snd        : ∀ expr, motive expr → motive (.snd expr))
     (var        : ∀ n, motive (.var n))
@@ -481,15 +553,15 @@ def Expr.rec_strong.{u} {motive : Expr → Sort u}
       pair a b
         (Expr.rec_strong primLit pair lambda app letIn fst snd var ctor match_ a)
         (Expr.rec_strong primLit pair lambda app letIn fst snd var ctor match_ b)
-  | .lambda body        =>
-      lambda body
+  | .lambda paramAnn body        =>
+      lambda paramAnn body
         (Expr.rec_strong primLit pair lambda app letIn fst snd var ctor match_ body)
   | .app f input        =>
       app f input
         (Expr.rec_strong primLit pair lambda app letIn fst snd var ctor match_ f)
         (Expr.rec_strong primLit pair lambda app letIn fst snd var ctor match_ input)
-  | .letIn be body      =>
-      letIn be body
+  | .letIn ann be body      =>
+      letIn ann be body
         (Expr.rec_strong primLit pair lambda app letIn fst snd var ctor match_ be)
         (Expr.rec_strong primLit pair lambda app letIn fst snd var ctor match_ body)
   | .fst e              =>
@@ -600,10 +672,10 @@ def Expr.shiftFrom (threshold : Nat) (n : Nat) : Expr → Expr
   | .var i             => if i < threshold then .var i else .var (i + n)
   | .primLit p         => .primLit p
   | .pair a b          => .pair (a.shiftFrom threshold n) (b.shiftFrom threshold n)
-  | .lambda body       => .lambda (body.shiftFrom (threshold + 1) n)
+  | .lambda ann body   => .lambda ann (body.shiftFrom (threshold + 1) n)
   | .app f arg         => .app (f.shiftFrom threshold n) (arg.shiftFrom threshold n)
-  | .letIn rhs body    =>
-      .letIn (rhs.shiftFrom threshold n) (body.shiftFrom (threshold + 1) n)
+  | .letIn ann rhs body =>
+      .letIn ann (rhs.shiftFrom threshold n) (body.shiftFrom (threshold + 1) n)
   | .fst e             => .fst (e.shiftFrom threshold n)
   | .snd e             => .snd (e.shiftFrom threshold n)
   | .ctor c            => .ctor c
@@ -647,10 +719,10 @@ def Expr.substN (k : Nat) (vs : List Expr) : Expr → Expr
       else .var (i - vs.length)
   | .primLit p         => .primLit p
   | .pair a b          => .pair (a.substN k vs) (b.substN k vs)
-  | .lambda body       => .lambda (body.substN (k + 1) vs)
+  | .lambda ann body   => .lambda ann (body.substN (k + 1) vs)
   | .app f arg         => .app (f.substN k vs) (arg.substN k vs)
-  | .letIn rhs body    =>
-      .letIn (rhs.substN k vs) (body.substN (k + 1) vs)
+  | .letIn ann rhs body =>
+      .letIn ann (rhs.substN k vs) (body.substN (k + 1) vs)
   | .fst e             => .fst (e.substN k vs)
   | .snd e             => .snd (e.substN k vs)
   | .ctor n            => .ctor n
@@ -683,8 +755,8 @@ mutual
 inductive IsValue : Expr → Prop
   | primLit (p) :
       IsValue (.primLit p)
-  | lambda body :
-      IsValue (.lambda body)
+  | lambda ann body :
+      IsValue (.lambda ann body)
   | pair {v₁ v₂} :
       IsValue v₁ → IsValue v₂ →
       IsValue (.pair v₁ v₂)
@@ -740,14 +812,14 @@ inductive Step : Expr → Expr → Prop
       written via `substN` rather than `subst1` because `_.subst1 0 v` misfires
       under dot notation — `subst1`'s first `Expr` parameter is `v`, not the
       target.) -/
-  | beta {body v} :
+  | beta {ann body v} :
       IsValue v →
-      Step (.app (.lambda body) v) (body.substN 0 [v])
+      Step (.app (.lambda ann body) v) (body.substN 0 [v])
 
   /-- Let reduction (after rhs has been reduced to a value). -/
-  | letReduce {v body} :
+  | letReduce {ann v body} :
       IsValue v →
-      Step (.letIn v body) (body.substN 0 [v])
+      Step (.letIn ann v body) (body.substN 0 [v])
 
   /-- First projection of a fully-reduced pair. -/
   | fstReduce {v₁ v₂} :
@@ -790,9 +862,9 @@ inductive Step : Expr → Expr → Prop
       Step (.app v arg) (.app v arg')
 
   /-- Reduce the rhs of a let-binding. -/
-  | letInRhs {rhs rhs' body} :
+  | letInRhs {ann rhs rhs' body} :
       Step rhs rhs' →
-      Step (.letIn rhs body) (.letIn rhs' body)
+      Step (.letIn ann rhs body) (.letIn ann rhs' body)
 
   /-- Reduce the operand of a first projection. -/
   | fstCong {e e'} :
@@ -817,7 +889,7 @@ mutual
 
 def isValue : Expr → Bool
   | .primLit _ => true
-  | .lambda _ => true
+  | .lambda _ _ => true
   | .pair a b => isValue a && isValue b
   | .ctor _ => true
   | .app f v => isCtorChain f && isValue v
@@ -863,14 +935,14 @@ def step : Expr → Option Expr
     if isValue f then
       if isValue arg then
         match f with
-        | .lambda body => some (body.substN 0 [arg])
+        | .lambda _ body => some (body.substN 0 [arg])
         | _ => none
       else do let arg' ← step arg; return .app f arg'
     else do let f' ← step f; return .app f' arg
 
-  | .letIn rhs body =>
+  | .letIn ann rhs body =>
     if isValue rhs then some (body.substN 0 [rhs])
-    else do let rhs' ← step rhs; return .letIn rhs' body
+    else do let rhs' ← step rhs; return .letIn ann rhs' body
 
   | .fst e =>
     if isValue e then
@@ -911,7 +983,7 @@ private theorem isValue_isCtorChain_correct (e : Expr) :
     (isValue e = true ↔ IsValue e) ∧ (isCtorChain e = true ↔ IsCtorChain e) := by
   induction e using Expr.rec_strong with
   | primLit p => exact ⟨⟨fun _ => .primLit p, fun _ => rfl⟩, ⟨nofun, nofun⟩⟩
-  | lambda body _ => exact ⟨⟨fun _ => .lambda body, fun _ => rfl⟩, ⟨nofun, nofun⟩⟩
+  | lambda ann body _ => exact ⟨⟨fun _ => .lambda ann body, fun _ => rfl⟩, ⟨nofun, nofun⟩⟩
   | ctor name => exact ⟨⟨fun _ => .ctor name, fun _ => rfl⟩, ⟨fun _ => .ctor name, fun _ => rfl⟩⟩
   | pair a b iha ihb =>
     refine ⟨⟨fun h => ?_, fun h => ?_⟩, ⟨nofun, nofun⟩⟩
@@ -927,7 +999,7 @@ private theorem isValue_isCtorChain_correct (e : Expr) :
            ⟨fun ⟨hf, ha⟩ => .app (ihf.2.mp hf) (iharg.1.mp ha),
             fun h => by cases h with | app hc hv => exact ⟨ihf.2.mpr hc, iharg.1.mpr hv⟩⟩⟩
   | var _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
-  | letIn _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
+  | letIn _ _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
   | fst _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
   | snd _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
   | match_ _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
@@ -1000,7 +1072,7 @@ private theorem isCtorChain_imp_isValue {e : Expr}
 private theorem isValue_step_none {e : Expr} (hv : isValue e = true) :
     step e = none := by
   match e with
-  | .primLit _ | .lambda _ | .ctor _ => rfl
+  | .primLit _ | .lambda _ _ | .ctor _ => rfl
   | .pair a b =>
     simp only [isValue, Bool.and_eq_true] at hv
     simp [step, hv.1, hv.2]
@@ -1008,7 +1080,7 @@ private theorem isValue_step_none {e : Expr} (hv : isValue e = true) :
     simp only [isValue, Bool.and_eq_true] at hv
     simp only [step, isCtorChain_imp_isValue hv.1, hv.2, ite_true]
     cases f <;> (first | rfl | simp [isCtorChain] at hv)
-  | .var _ | .letIn _ _ | .fst _ | .snd _ | .match_ _ _ => simp [isValue] at hv
+  | .var _ | .letIn _ _ _ | .fst _ | .snd _ | .match_ _ _ => simp [isValue] at hv
 
 private theorem step_some_not_isValue {e e' : Expr}
     (h : step e = some e') : isValue e = false := by
@@ -1020,7 +1092,7 @@ private theorem step_some_not_isValue {e e' : Expr}
 
 theorem step_sound {e e' : Expr} (h : step e = some e') : Step e e' := by
   induction e using Expr.rec_strong generalizing e' with
-  | primLit _ | lambda _ _ | ctor _ | var _ => simp [step] at h
+  | primLit _ | lambda _ _ _ | ctor _ | var _ => simp [step] at h
   | pair a b iha ihb =>
     unfold step at h
     split at h
@@ -1051,7 +1123,7 @@ theorem step_sound {e e' : Expr} (h : step e = some e') : Step e e' := by
     · match hf : step f with
       | .none => simp [hf] at h
       | .some f' => simp [hf] at h; subst h; exact .appFn (ihf hf)
-  | letIn rhs body ihrhs _ =>
+  | letIn ann rhs body ihrhs _ =>
     unfold step at h
     split at h
     · rename_i hvrhs
@@ -1186,16 +1258,16 @@ inductive Expr.WellScopedUnder : Nat → Expr → Prop
   | pair    {n a b}          :
       Expr.WellScopedUnder n a → Expr.WellScopedUnder n b →
       Expr.WellScopedUnder n (.pair a b)
-  | lambda  {n body}       :
+  | lambda  {n ann body}       :
       Expr.WellScopedUnder (n + 1) body →
-      Expr.WellScopedUnder n (.lambda body)
+      Expr.WellScopedUnder n (.lambda ann body)
   | app     {n f arg}        :
       Expr.WellScopedUnder n f → Expr.WellScopedUnder n arg →
       Expr.WellScopedUnder n (.app f arg)
-  | letIn   {n rhs body}   :
+  | letIn   {n ann rhs body}   :
       Expr.WellScopedUnder n rhs →
       Expr.WellScopedUnder (n + 1) body →
-      Expr.WellScopedUnder n (.letIn rhs body)
+      Expr.WellScopedUnder n (.letIn ann rhs body)
   | fst {n e} :
       Expr.WellScopedUnder n e →
       Expr.WellScopedUnder n (.fst e)
@@ -1320,13 +1392,13 @@ inductive AllMatchesExhaustive : CtorEnv → Expr → Prop where
     AllMatchesExhaustive ctors (.pair a b)
   | lambda :
     AllMatchesExhaustive ctors body →
-    AllMatchesExhaustive ctors (.lambda body)
+    AllMatchesExhaustive ctors (.lambda ann body)
   | app :
     AllMatchesExhaustive ctors f → AllMatchesExhaustive ctors arg →
     AllMatchesExhaustive ctors (.app f arg)
   | letIn :
     AllMatchesExhaustive ctors rhs → AllMatchesExhaustive ctors body →
-    AllMatchesExhaustive ctors (.letIn rhs body)
+    AllMatchesExhaustive ctors (.letIn ann rhs body)
   | fst :
     AllMatchesExhaustive ctors e →
     AllMatchesExhaustive ctors (.fst e)
@@ -1520,6 +1592,34 @@ structure FreshNames (L : List Nat) (n : Nat) (Xs : List Nat) : Prop where
   avoid  : ∀ x ∈ Xs, x ∉ L
 
 
+/-! ### Generic-instance ordering on schemes ("at least as general as"). -/
+
+/-- **Generic-instance ordering** (Damas–Milner `⊑`): `σgen.AtLeastAsGeneralAs
+    σann` says the inferred scheme `σgen` is *at least as general as* the
+    annotation `σann` — equivalently, `σann` is a generic instance of `σgen`.
+
+    Read it operationally: freeze `σann`'s quantifiers as fresh **rigid** names
+    `Ys`; the resulting monotype must be reachable by **some** instantiation `Vs`
+    of `σgen`. The `∀ fresh Ys / ∃ Vs` shape *is* the rigid (annotation) /
+    flexible (inferred) asymmetry — both sides are just `fvar`s, only the
+    quantifier differs. `Vs` may mention the `Ys` (that's how `∀a.a→a` is a
+    generic instance of itself, via `Vs = [.fvar Y]`).
+
+    This is the *declarative* condition a polymorphic `let` annotation must
+    satisfy. By principal types it is equivalent to "`boundExpr` types at every
+    fresh opening of `σann`", so the annotated `letIn` rule needs no new
+    premise — but the **algorithm** can't quantify over all openings, so it
+    decides this relation directly (`polyTyAtLeastAsGeneral?` in `InferW`).
+
+    The cofinite `∃ L, ∀ Ys, FreshNames L …` wrapper matches the let rule's
+    treatment of freshness, so this relation survives `weaken_env`/`subst_lemma`
+    the same way. -/
+def PolyTy.AtLeastAsGeneralAs (σgen σann : PolyTy) : Prop :=
+  ∃ L : List Nat, ∀ Ys : List Nat, FreshNames L σann.paramCount Ys →
+    ∃ Vs : List Ty, Ty.AreLC σgen.paramCount Vs ∧
+      σgen.openWith Vs = σann.openVars Ys
+
+
 /-! ### The declarative typing relation `TypeOfHM`.
 
 Syntax-directed Hindley–Milner typing. All rules are standard except the
@@ -1531,7 +1631,7 @@ let-generalising rule (`letIn`), which uses a **cofinite**
   (∀ Xs, FreshNames L M.paramCount Xs → TypeOfHM ctx boundExpr (M.openVars Xs)) →
   bodyCtx = { ctx with env := M :: ctx.env } →
   TypeOfHM bodyCtx body bodyTy →
-  TypeOfHM ctx (.letIn boundExpr body) bodyTy
+  TypeOfHM ctx (.letIn ann boundExpr body) bodyTy
 ```
 
 The cofinite premise's IH is *universally quantified in `Xs`*, so when
@@ -1567,9 +1667,20 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
 
   | lambda :
     ContainsBvarsUpTo 0 paramTy →
+    -- When a parameter annotation is present it pins the param type, and that
+    -- annotation must be a closed type (no free type vars) — this keeps the
+    -- annotation stable under `typ_subst_preservation`. (HM param annotations
+    -- are monotypes; closedness defers scoped-type-variable support.)
+    --
+    -- @TODO: drop the `NoFreeVars paramTy` conjunct to allow annotations that
+    -- reference type variables from an enclosing scope (Elm/ScopedTypeVariables
+    -- style). Doing so requires `typ_subst_preservation` to also substitute into
+    -- the term's annotations (an `Expr.substTyFvar Z U` pushed through binders),
+    -- so that `[Z↦U]` stays consistent with a non-closed annotation.
+    (∀ T, ann = some T → paramTy = T ∧ NoFreeVars paramTy) →
     bodyCtx = { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } →
     TypeOfHM bodyCtx body bodyTy →
-    TypeOfHM ctx (.lambda body) (.arrow paramTy bodyTy)
+    TypeOfHM ctx (.lambda ann body) (.arrow paramTy bodyTy)
 
   | app :
     TypeOfHM ctx f (.arrow argTy retTy) →
@@ -1586,11 +1697,22 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
       has mutable refs. -/
   | letIn {M : PolyTy} {L : List Nat} :
     PolyTy.WF M →
+    -- When a scheme annotation is present, the generalised scheme *is* the
+    -- annotation `σ`. The cofinite premise below (`boundExpr` types at every
+    -- fresh opening of `M = σ`) then enforces "the annotation is not more
+    -- general than `boundExpr` actually is" for free. `σ` must be a closed
+    -- scheme (its body has no free type vars) to stay stable under
+    -- `typ_subst_preservation`.
+    --
+    -- @TODO: drop the `NoFreeVars σ.body` conjunct to allow let-signatures that
+    -- reference enclosing-scope type variables (see the matching note on the
+    -- `lambda` rule); needs the same `Expr.substTyFvar` in preservation.
+    (∀ σ, ann = some σ → M = σ ∧ NoFreeVars σ.body) →
     (∀ Xs : List Nat, FreshNames L M.paramCount Xs →
         TypeOfHM ctx boundExpr (M.openVars Xs)) →
     bodyCtx = { ctx with env := M :: ctx.env } →
     TypeOfHM bodyCtx body bodyTy →
-    TypeOfHM ctx (.letIn boundExpr body) bodyTy
+    TypeOfHM ctx (.letIn ann boundExpr body) bodyTy
 
   /-- First projection: a monomorphic destructor of a pair type. -/
   | fst :
@@ -2202,6 +2324,14 @@ theorem NoFreeVars.not_mem_freeVars {ty : Ty} (h : NoFreeVars ty) (Z : Nat) :
     simp only [Ty.freeVars]
     exact TyList.not_mem_freeVars_iff.mpr (fun t ht => ih t ht)
 
+/-- Substituting a type-fvar is a no-op on a *closed* scheme (one whose body has
+    no free type vars). Used to keep annotated-`let` schemes stable under
+    `typ_subst_preservation`. -/
+theorem PolyTy.substFvar_eq_self_of_closed {Z : Nat} {U : Ty} {σ : PolyTy}
+    (h : NoFreeVars σ.body) : PolyTy.substFvar Z U σ = σ := by
+  obtain ⟨pc, b⟩ := σ
+  simp only [PolyTy.substFvar, Ty.substFvar_fresh (h.not_mem_freeVars Z)]
+
 /-- Every entry of a `bvarRangeFrom` list is a (free-var-free) bound variable. -/
 private theorem NoFreeVars.bvarRangeFrom (s n : Nat) :
     ∀ t ∈ Ty.bvarRangeFrom s n, NoFreeVars t := by
@@ -2318,12 +2448,16 @@ theorem TypeOfHM.typ_subst_preservation
       have hf' := ih_f hf
       simp only [Ty.substFvar] at hf'
       exact .app hf' (ih_i hi)
-  | lambda body ih =>
+  | lambda ann body ih =>
     cases h with
-    | lambda hparamLC heq hbody =>
+    | lambda hparamLC hann heq hbody =>
       subst heq
       simp only [Ty.substFvar]
-      refine TypeOfHM.lambda (Ty.IsLC.substFvar h_U_lc hparamLC) rfl ?_
+      refine TypeOfHM.lambda (Ty.IsLC.substFvar h_U_lc hparamLC) ?_ rfl ?_
+      · intro T hT
+        obtain ⟨hpeq, hpnfv⟩ := hann T hT
+        rw [Ty.substFvar_fresh (hpnfv.not_mem_freeVars Z)]
+        exact ⟨hpeq, hpnfv⟩
       have hb := ih (env_post := PolyTy.mkTrivial _ :: env_post) hbody
       simpa only [Env.substFvar, List.map_cons, PolyTy.substFvar, PolyTy.mkTrivial,
         List.cons_append] using hb
@@ -2343,13 +2477,17 @@ theorem TypeOfHM.typ_subst_preservation
       intro tyArg hmem
       obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hmem
       exact Ty.IsLC.substFvar h_U_lc (htyargs t ht)
-  | letIn boundExpr body ih_be ih_body =>
+  | letIn ann boundExpr body ih_be ih_body =>
     cases h with
-    | letIn hsch hcofin heq hbodyinner =>
+    | letIn hsch hann hcofin heq hbodyinner =>
       subst heq
       expose_names
       refine TypeOfHM.letIn (M := PolyTy.substFvar Z U M) (L := Z :: L)
-        (PolyTy.WF.substFvar h_U_lc hsch) ?_ rfl ?_
+        (PolyTy.WF.substFvar h_U_lc hsch) ?_ ?_ rfl ?_
+      · intro σ hσ
+        obtain ⟨hMeq, hnfv⟩ := hann σ hσ
+        rw [hMeq]
+        exact ⟨PolyTy.substFvar_eq_self_of_closed hnfv, hnfv⟩
       · intro Xs hfresh
         have hZ_notin : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
         have hXs_freshL : FreshNames L M.paramCount Xs :=
@@ -2440,7 +2578,7 @@ theorem SmallStep.IsValue.shiftFrom {e : Expr} (k n : Nat)
     (h : SmallStep.IsValue e) : SmallStep.IsValue (e.shiftFrom k n) := by
   cases h with
   | primLit p => exact .primLit p
-  | lambda body => exact .lambda _
+  | lambda ann body => exact .lambda _ _
   | pair h1 h2 => exact .pair (h1.shiftFrom k n) (h2.shiftFrom k n)
   | ctor name => exact .ctor name
   | ctorApp hf hv => exact .ctorApp (hf.shiftFrom k n) (hv.shiftFrom k n)
@@ -2511,20 +2649,20 @@ theorem TypeOfHM.weaken_env
         have h_lookup' : (env_pre ++ env)[i]? = _ := h_lookup
         rw [List.getElem?_append_right h_lt] at h_lookup'
         exact h_lookup'
-  | lambda body ih =>
+  | lambda ann body ih =>
     cases h with
-    | lambda h_paramTy_closed h_eq h_body_lam =>
+    | lambda h_paramTy_closed hann h_eq h_body_lam =>
       subst h_eq
       simp only [Expr.shiftFrom]
-      refine TypeOfHM.lambda h_paramTy_closed rfl ?_
+      refine TypeOfHM.lambda h_paramTy_closed hann rfl ?_
       exact ih (env_pre := PolyTy.mkTrivial _ :: env_pre) h_body_lam
-  | letIn boundExpr body ih_be ih_body =>
+  | letIn ann boundExpr body ih_be ih_body =>
     cases h with
-    | letIn hsch hcofin heq hbodyinner =>
+    | letIn hsch hann hcofin heq hbodyinner =>
       subst heq
       expose_names
       simp only [Expr.shiftFrom]
-      refine TypeOfHM.letIn (M := M) (L := L) hsch ?_ rfl ?_
+      refine TypeOfHM.letIn (M := M) (L := L) hsch hann ?_ rfl ?_
       · intro Xs hfresh
         exact ih_be (hcofin Xs hfresh)
       · exact ih_body (env_pre := M :: env_pre) hbodyinner
@@ -2733,7 +2871,7 @@ theorem SmallStep.IsValue.substN {e : Expr} (k : Nat) (vs : List Expr)
     (h : SmallStep.IsValue e) : SmallStep.IsValue (e.substN k vs) := by
   cases h with
   | primLit p => exact .primLit p
-  | lambda body => exact .lambda _
+  | lambda ann body => exact .lambda _ _
   | pair h1 h2 => exact .pair (h1.substN k vs) (h2.substN k vs)
   | ctor name => exact .ctor name
   | ctorApp hf hv => exact .ctorApp (hf.substN k vs) (hv.substN k vs)
@@ -2836,19 +2974,19 @@ theorem TypeOfHM.subst_lemma
     | app hf hi =>
       simp only [Expr.substN]
       exact .app (ih_f hf) (ih_i hi)
-  | lambda body ih =>
+  | lambda ann body ih =>
     cases h_body with
-    | lambda hpc heq hbody =>
+    | lambda hpc hann heq hbody =>
       subst heq
       simp only [Expr.substN]
-      refine TypeOfHM.lambda hpc rfl ?_
+      refine TypeOfHM.lambda hpc hann rfl ?_
       exact ih (env_post := PolyTy.mkTrivial _ :: env_post) hbody
-  | letIn boundExpr body ih_be ih_body =>
+  | letIn ann boundExpr body ih_be ih_body =>
     cases h_body with
-    | letIn hsch hcofin heq hbodyinner =>
+    | letIn hsch hann hcofin heq hbodyinner =>
       subst heq
       simp only [Expr.substN]
-      refine TypeOfHM.letIn hsch
+      refine TypeOfHM.letIn hsch hann
         (fun Xs hfresh => ih_be (hcofin Xs hfresh)) rfl ?_
       exact ih_body (env_post := _ :: env_post) hbodyinner
   | fst e ih =>
@@ -3011,19 +3149,19 @@ theorem TypeOfHM.subst_lemma_many
     | app hf hi =>
       simp only [Expr.substN]
       exact .app (ih_f hf) (ih_i hi)
-  | lambda body ih =>
+  | lambda ann body ih =>
     cases h_body with
-    | lambda hpc heq hbody =>
+    | lambda hpc hann heq hbody =>
       subst heq
       simp only [Expr.substN]
-      refine TypeOfHM.lambda hpc rfl ?_
+      refine TypeOfHM.lambda hpc hann rfl ?_
       exact ih (env_post := PolyTy.mkTrivial _ :: env_post) hbody
-  | letIn boundExpr body ih_be ih_body =>
+  | letIn ann boundExpr body ih_be ih_body =>
     cases h_body with
-    | letIn hsch hcofin heq hbodyinner =>
+    | letIn hsch hann hcofin heq hbodyinner =>
       subst heq
       simp only [Expr.substN]
-      refine TypeOfHM.letIn hsch
+      refine TypeOfHM.letIn hsch hann
         (fun Xs hfresh => ih_be (hcofin Xs hfresh)) rfl ?_
       exact ih_body (env_post := _ :: env_post) hbodyinner
   | fst e ih =>
@@ -3196,8 +3334,8 @@ private lemma TypeOfHM.ctor_chain_has_customTy_form
           exact ⟨name, args, rest, h_ret⟩
   | primLit _      => cases h_chain
   | pair _ _ _ _   => cases h_chain
-  | lambda _ _     => cases h_chain
-  | letIn _ _ _ _  => cases h_chain
+  | lambda _ _ _   => cases h_chain
+  | letIn _ _ _ _ _ => cases h_chain
   | fst _ _        => cases h_chain
   | snd _ _        => cases h_chain
   | var _          => cases h_chain
@@ -3209,7 +3347,7 @@ theorem TypeOfHM.canonical_pair {ctx e fstTy sndTy}
     ∃ a b, e = .pair a b ∧ SmallStep.IsValue a ∧ SmallStep.IsValue b := by
   cases h_val with
   | primLit _ => cases h_ty
-  | lambda _ => cases h_ty
+  | lambda _ _ => cases h_ty
   | pair h_a h_b => exact ⟨_, _, rfl, h_a, h_b⟩
   | ctor name =>
     exfalso
@@ -3229,10 +3367,10 @@ theorem TypeOfHM.canonical_pair {ctx e fstTy sndTy}
 theorem TypeOfHM.canonical_arrow {ctx e argTy retTy}
     (h_ty : TypeOfHM ctx e (.arrow argTy retTy))
     (h_val : SmallStep.IsValue e) :
-    (∃ body, e = .lambda body) ∨ SmallStep.IsCtorChain e := by
+    (∃ ann body, e = .lambda ann body) ∨ SmallStep.IsCtorChain e := by
   cases h_val with
   | primLit _ => cases h_ty
-  | lambda body => exact .inl ⟨body, rfl⟩
+  | lambda ann body => exact .inl ⟨ann, body, rfl⟩
   | pair _ _ => cases h_ty
   | ctor name => exact .inr (.ctor name)
   | ctorApp h_chain h_v => exact .inr (.app h_chain h_v)
@@ -3243,7 +3381,7 @@ theorem TypeOfHM.canonical_customTy {ctx e tyName tyArgs}
     SmallStep.IsCtorChain e := by
   cases h_val with
   | primLit _ => cases h_ty
-  | lambda _ => cases h_ty
+  | lambda _ _ => cases h_ty
   | pair _ _ => cases h_ty
   | ctor name => exact .ctor name
   | ctorApp h_chain h_v => exact .app h_chain h_v
@@ -3308,8 +3446,8 @@ theorem TypeOfHM.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
             exact (List.append_assoc consumed [c] rest).symm
   | primLit _ => cases h_chain
   | pair _ _ _ _ => cases h_chain
-  | lambda _ _ => cases h_chain
-  | letIn _ _ _ _ => cases h_chain
+  | lambda _ _ _ => cases h_chain
+  | letIn _ _ _ _ _ => cases h_chain
   | fst _ _ => cases h_chain
   | snd _ _ => cases h_chain
   | var _ => cases h_chain
@@ -3331,7 +3469,7 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
     IsValue e ∨ ∃ e', Step e e' := by
   induction e using Expr.rec_strong generalizing ctx τ with
   | primLit p => exact .inl (.primLit p)
-  | lambda _ _ => exact .inl (.lambda _)
+  | lambda _ _ _ => exact .inl (.lambda _ _)
   | ctor name => exact .inl (.ctor name)
   | var n =>
     cases h_ty with
@@ -3353,16 +3491,16 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
       | app h_f h_arg =>
         rcases ihf h_f h_closed h_exh_f with hvf | ⟨f', hf⟩
         · rcases iharg h_arg h_closed h_exh_arg with hva | ⟨arg', harg⟩
-          · rcases TypeOfHM.canonical_arrow h_f hvf with ⟨body, rfl⟩ | hchain
+          · rcases TypeOfHM.canonical_arrow h_f hvf with ⟨ann, body, rfl⟩ | hchain
             · exact .inr ⟨_, .beta hva⟩
             · exact .inl (.ctorApp hchain hva)
           · exact .inr ⟨_, .appArg hvf harg⟩
         · exact .inr ⟨_, .appFn hf⟩
-  | letIn rhs body ihrhs _ =>
+  | letIn ann rhs body ihrhs _ =>
     cases h_exh with
     | letIn h_exh_rhs _ =>
       cases h_ty with
-      | letIn hwf hcofin heq hbody =>
+      | letIn hwf _ hcofin heq hbody =>
         expose_names
         obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L M.paramCount
         have h_rhs := hcofin Xs ⟨hXlen, hXnodup, hXavoid⟩
@@ -3596,13 +3734,13 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
     cases h_ty with
     | app hf hi =>
       cases hf with
-      | lambda hpc heq hbody =>
+      | lambda hpc _ heq hbody =>
         subst heq
         exact TypeOfHM.subst_lemma (env_post := []) (M := PolyTy.mkTrivial _)
           hpc hbody (HasScheme.ofTypeOfHM hi)
   | letReduce hval =>
     cases h_ty with
-    | letIn hwf hcofin heq hbody =>
+    | letIn hwf _ hcofin heq hbody =>
       subst heq
       exact TypeOfHM.subst_lemma (env_post := []) hwf hbody
         (HasScheme.fromHasSchemeVars hcofin)
@@ -3699,8 +3837,8 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
     | app hf hi => exact .app hf (ih hi)
   | letInRhs _ ih =>
     cases h_ty with
-    | letIn hwf hcofin heq hbody =>
-      exact .letIn hwf (fun Xs hfresh => ih (hcofin Xs hfresh)) heq hbody
+    | letIn hwf hann hcofin heq hbody =>
+      exact .letIn hwf hann (fun Xs hfresh => ih (hcofin Xs hfresh)) heq hbody
   | fstCong _ ih =>
     cases h_ty with
     | fst he => exact .fst (ih he)
@@ -3710,5 +3848,3 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
   | matchScrut _ ih =>
     cases h_ty with
     | match_ h_scrut h_ne h_brs => exact .match_ (ih h_scrut) h_ne h_brs
-
-
