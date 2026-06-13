@@ -4918,41 +4918,65 @@ theorem OUnifyList.skolem_escape {Ys : List Nat} :
     · exact escape_S₂ Y hY hmem
 end
 
-/-- The **annotated** `letIn` principality core (threading design). Builds a
-    `letInAnn` derivation from the declarative typing: `rhs`'s principal type
-    unifies with the skolemized annotation `σ.openVars Ys`, the escape checks hold
-    (the declarative derivation keeps the skolems rigid), and the closed `σ` is
-    bound in the body context unchanged. -/
-theorem Infer.complete_letIn_ann_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
-    {rhs body : Expr} {σ : PolyTy} {L : List Nat} {τ₀ : Ty}
-    (iha : Infer.CompleteAt rhs) (ihb : Infer.CompleteAt body)
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
-    (hσwf : σ.WF) (hσnfv : NoFreeVars σ.body)
-    (hcofin : ∀ Xs : List Nat, FreshNames L σ.paramCount Xs →
-      TypeOfHM (S₀.onCtx ctx) rhs (σ.openVars Xs))
-    (hbody : TypeOfHM { (S₀.onCtx ctx) with env := σ :: (S₀.onCtx ctx).env } body τ₀) :
-    ∃ Φ' S τ R,
-      Infer Φ ctx (.letIn (some σ) rhs body) Φ' S τ ∧
-      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
-      τ₀ = R.onTy τ ∧
-      (∀ p ∈ R, p.2.IsLC) := by
-  sorry -- TODO(threading): annotated-let completeness (build letInAnn derivation)
+/-! ### Supporting facts for the second escape (`hesc2`)
 
-/-- Principality, `letIn` case. -/
-theorem Infer.complete_letIn {ann : Option PolyTy} {rhs body : Expr}
-    (iha : Infer.CompleteAt rhs) (ihb : Infer.CompleteAt body) :
-    Infer.CompleteAt (.letIn ann rhs body) := by
-  intro Φ ctx S₀ τ₀ hwf hbelow hS₀ hty
-  cases hty with
-  | letIn hMwf hann hcofin heq hbody =>
-    subst heq
-    cases ann with
-    | none => exact Infer.complete_letIn_aux iha ihb hwf hbelow hS₀ hMwf hcofin hbody
-    | some σ =>
-      obtain ⟨hMσ, hσnfv⟩ := hann σ rfl
-      subst hMσ
-      exact Infer.complete_letIn_ann_aux iha ihb hwf hbelow hS₀ hMwf hσnfv hcofin hbody
+The annotated-`let` rule's second escape — *no skolem leaks into the substituted
+body environment* — is the only remaining obligation. The lemmas below package
+the two-opening argument that establishes it: a skolem appearing in
+`Schk.onCtx(S₁.onCtx ctx)` would have to come from an environment variable that
+is *also* free in `τ₁`; its declarative residual image is then pinned (by the
+opening-independent environment image) across two distinct skolem blocks, forcing
+the skolem into both blocks — impossible since they are disjoint. -/
 
+/-- From a positional list-map equality, recover the per-element equality at any
+    member (the member's index supplies the matching positions). -/
+private theorem list_map_eq_of_mem {α β : Type _} {f g : α → β} {x : α} :
+    ∀ {l : List α}, l.map f = l.map g → x ∈ l → f x = g x := by
+  intro l
+  induction l with
+  | nil => intro _ hx; simp at hx
+  | cons hd tl ih =>
+    intro h hx
+    rw [List.map_cons, List.map_cons, List.cons.injEq] at h
+    rcases List.mem_cons.mp hx with rfl | hx'
+    · exact h.1
+    · exact ih h.2 hx'
+
+/-- Two substitutions agreeing on a whole type agree on each of its free
+    variables: the leaf where the variable occurs forces equality of the images
+    (`onTy` is a homomorphism, so the substituted subterm at that position must
+    match on both sides). -/
+theorem Subst.onTy_fvar_eq_of_mem_freeVars {R R' : Subst} {v : Nat} :
+    ∀ {t : Ty}, v ∈ t.freeVars → R.onTy t = R'.onTy t →
+      R.onTy (Ty.fvar v) = R'.onTy (Ty.fvar v) := by
+  intro t
+  induction t using Ty.rec_strong with
+  | prim p => intro hv _; simp [Ty.freeVars] at hv
+  | bvar i => intro hv _; simp [Ty.freeVars] at hv
+  | fvar n =>
+    intro hv heq
+    simp only [Ty.freeVars, List.mem_singleton] at hv
+    subst hv; exact heq
+  | pair a b iha ihb =>
+    intro hv heq
+    rw [Subst.onTy_pair, Subst.onTy_pair, Ty.pair.injEq] at heq
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+    rcases hv with hv | hv
+    · exact iha hv heq.1
+    · exact ihb hv heq.2
+  | arrow a b iha ihb =>
+    intro hv heq
+    rw [Subst.onTy_arrow, Subst.onTy_arrow, Ty.arrow.injEq] at heq
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+    rcases hv with hv | hv
+    · exact iha hv heq.1
+    · exact ihb hv heq.2
+  | customTy nm tys ih =>
+    intro hv heq
+    rw [Subst.onTy_customTy, Subst.onTy_customTy, Ty.customTy.injEq] at heq
+    simp only [Ty.freeVars] at hv
+    obtain ⟨s, hs, hvs⟩ := TyList.mem_freeVars_iff.mp hv
+    exact ih s hs hvs (list_map_eq_of_mem heq.2 hs)
 
 /-! ### Principality, `fst`/`snd` cases -/
 
@@ -5617,105 +5641,6 @@ theorem Infer.complete_match {scrut : Expr} {branches : List (MatchPattern × Ex
   cases hty with
   | match_ hscrut_decl hne hbranches_decl =>
     exact Infer.complete_match_aux ihscrut ihbranches hwf hbelow hS₀ hscrut_decl hne hbranches_decl
-
-
-/-! ### Principality, assembled -/
-
-/-- Every expression satisfies the principality property `CompleteAt`,
-    assembled from the per-form case lemmas by structural induction on `e`. -/
-theorem Infer.completeAt (e : Expr) : Infer.CompleteAt e := by
-  induction e using Expr.rec_strong with
-  | primLit p => exact Infer.complete_prim
-  | pair a b iha ihb => exact Infer.complete_pair iha ihb
-  | lambda ann body ih => exact Infer.complete_lambda ih
-  | app f inp ihf ihi => exact Infer.complete_app ihf ihi
-  | letIn ann be body ihbe ihbody => exact Infer.complete_letIn ihbe ihbody
-  | fst e ih => exact Infer.complete_fst ih
-  | snd e ih => exact Infer.complete_snd ih
-  | var i => exact Infer.complete_var
-  | ctor name => exact Infer.complete_ctor
-  | match_ scrut branches ihscrut ihbranches =>
-    refine Infer.complete_match ihscrut (fun br hbr => ?_)
-    obtain ⟨pat, body⟩ := br
-    exact ihbranches pat body hbr
-
-/-- **Principality of `Infer`** (Damas–Milner completeness). For any declarative
-    typing of `e` under an LC specialization `S₀` of a WF, frontier-bounded
-    context, `Infer` succeeds with `(S, τ)` and the declarative typing factors
-    through it via an LC residual `R` (`S₀ = R ∘ S` below the frontier,
-    `τ₀ = R.onTy τ`). Combined with `Infer.sound`, this is full principality:
-    `Infer` computes a most general typing. -/
-theorem Infer.complete {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
-    ∃ Φ' S τ R,
-      Infer Φ ctx e Φ' S τ ∧
-      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
-      τ₀ = R.onTy τ ∧
-      (∀ p ∈ R, p.2.IsLC) :=
-  Infer.completeAt e hwf hbelow hS₀ hty
-
-
-/-! ### Cleaner corollaries of principality
-
-`Infer.complete` carries two extra side-conclusions beyond `τ₀ = R.onTy τ` — the
-agreement clause `S₀ = R ∘ S` (below `Φ`) and `R` locally-closed — purely to
-sustain the induction (the `app`/`pair`/`letIn` cases compose specialisations and
-reuse `R` as an inner `S₀`). The corollaries below project that engine down to the
-parts a caller usually wants. -/
-
-/-- Principality, type-only form: the type of *any* declarative typing is a
-    substitution instance of the type `Infer` computes. -/
-theorem Infer.complete_instance {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
-    ∃ Φ' S τ R, Infer Φ ctx e Φ' S τ ∧ τ₀ = Subst.onTy R τ := by
-  obtain ⟨Φ', S, τ, R, hInfer, _, hτeq, _⟩ := Infer.complete hwf hbelow hS₀ hty
-  exact ⟨Φ', S, τ, R, hInfer, hτeq⟩
-
-/-- Specialised to the identity input substitution: any declarative type of `e`
-    in `ctx` itself is an instance of the inferred type. -/
-theorem Infer.complete_id {Φ : Nat} {ctx : Ctx} {e : Expr} {τ₀ : Ty}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hty : TypeOfHM ctx e τ₀) :
-    ∃ Φ' S τ R, Infer Φ ctx e Φ' S τ ∧ τ₀ = Subst.onTy R τ := by
-  refine Infer.complete_instance hwf hbelow (S₀ := []) (by simp) ?_
-  simpa using hty
-
-/-- **Algorithm W decides typeability.** `e` is declaratively typeable under some
-    locally-closed specialisation of `ctx` iff `Infer` succeeds on `e` in `ctx`.
-    (The specialisation is necessary: `Infer` may instantiate `ctx`'s free type
-    variables — rigid in the declarative system — so success does not entail
-    typeability of the *unspecialised* `ctx`.) -/
-theorem Infer.iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) :
-    (∃ (S : Subst) (τ : Ty), (∀ p ∈ S, p.2.IsLC) ∧ TypeOfHM (S.onCtx ctx) e τ)
-      ↔ (∃ Φ' S τ, Infer Φ ctx e Φ' S τ) := by
-  constructor
-  · rintro ⟨S, τ, hS, hty⟩
-    obtain ⟨Φ', S', τ', _, hInfer, _⟩ := Infer.complete_instance hwf hbelow hS hty
-    exact ⟨Φ', S', τ', hInfer⟩
-  · rintro ⟨Φ', S, τ, hInfer⟩
-    exact ⟨S, τ, (Infer.lc hInfer hwf).2, Infer.sound hInfer hwf⟩
-
-/-- **Algorithm W computes principal types** — soundness and principality bundled
-    into one statement. From any declarative typing of a core `e` under an LC
-    specialization `S₀` of a WF, frontier-bounded `ctx`, `Infer` succeeds with a
-    result `(S, τ)` that
-
-      * is itself a valid declarative typing (`TypeOfHM (S.onCtx ctx) e τ`), and
-      * subsumes the given typing (`τ₀ = R.onTy τ`, i.e. `τ` is more general).
-
-    (The stronger per-output `IsPrincipal ctx e S τ` predicate — "this very `τ`
-    subsumes *every* typing" — is proved below via `Infer.complete'` /
-    `Infer.output_unique`; see `Infer.isPrincipal`.) -/
-theorem Infer.principal {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
-    ∃ Φ' S τ R,
-      Infer Φ ctx e Φ' S τ ∧ TypeOfHM (S.onCtx ctx) e τ ∧ τ₀ = Subst.onTy R τ := by
-  obtain ⟨Φ', S, τ, R, hInfer, hτeq⟩ := Infer.complete_instance hwf hbelow hS₀ hty
-  exact ⟨Φ', S, τ, R, hInfer, Infer.sound hInfer hwf, hτeq⟩
 
 
 /-! ### Principality of a given inference (`complete'`) → output-uniqueness + `IsPrincipal`
@@ -7247,6 +7172,345 @@ theorem UnifyRelList.dom_mem : {as bs : List Ty} → {S : Subst} → UnifyRelLis
           · exact Or.inr ⟨t₂, List.mem_cons_self, h'⟩
 end
 
+/-! ### Annotated-`let` completeness (relocated after `complete'` / `dom_mem`)
+
+The annotated-`let` principality core needs the orientation kernel
+(`exists_skolem_unifier`, `OUnify`), the reorientation lemma `Infer.complete'`
+(to pull the rhs's typing back to the *specific* skolem opening), and the
+`UnifyRel.dom_mem` domain bound (for the second-escape argument). All three are
+now in scope, so the `letIn` completeness case lemma — and `Infer.completeAt`
+itself — are assembled here. -/
+
+/-- **The second escape, abstractly.** Given the rhs's MGU `Schk` against the
+    skolem opening `σ.openVars Ys` (`Ys = freshVars Φ₁ σ.paramCount`) with the
+    first escape `hesc1` (`Schk` binds no skolem), and *two* declarative residuals
+    `R₁`, `R₁'` realising the typings at two **disjoint** openings `Ys`, `Ys'`
+    (both agreeing with `S₀` below `Φ`), no skolem `Y ∈ Ys` leaks into the
+    threaded body environment `Schk.onCtx (S₁.onCtx ctx)`. -/
+theorem skolem_no_env_leak
+    {Φ Φ₁ : Nat} {ctx : Ctx} {S₀ S₁ Schk R₁ R₁' : Subst} {τ₁ : Ty}
+    {σ : PolyTy} {Ys Ys' : List Nat}
+    (hσnfv : NoFreeVars σ.body)
+    (hle : Φ ≤ Φ₁)
+    (hbelow : CtxBelow Φ ctx)
+    (hτ₁below : Ty.BelowFvars Φ₁ τ₁)
+    (hbelowS₁ : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2)
+    (hYs : Ys = freshVars Φ₁ σ.paramCount)
+    (huni : UnifyRel τ₁ (σ.openVars Ys) Schk)
+    (hesc1 : ∀ Y ∈ Ys, Y ∉ Schk.map Prod.fst)
+    (hR₁lc : ∀ p ∈ R₁, p.2.IsLC)
+    (htya : σ.openVars Ys = R₁.onTy τ₁)
+    (hag1 : Subst.AgreesBelow Φ S₀ (S₁ ++ R₁))
+    (htya' : σ.openVars Ys' = R₁'.onTy τ₁)
+    (hag1' : Subst.AgreesBelow Φ S₀ (S₁ ++ R₁'))
+    (hYdisj : ∀ Y ∈ Ys, Y ∉ Ys') :
+    ∀ Y ∈ Ys, Y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars := by
+  -- The skolem-fixing unifier `U` and its factoring `V` through `Schk`.
+  obtain ⟨U, hUlc, hUfix, hUuni, hUfact⟩ :=
+    exists_skolem_unifier (Ys := Ys) (Φ₁ := Φ₁) (pc := σ.paramCount)
+      hYs hR₁lc (fun z hz => hτ₁below.mem_lt z hz)
+      (fun z hz => Ty.freeVars_openVars_closed hσnfv hz) htya.symm
+  obtain ⟨V, hV⟩ := huni.greatest U hUuni
+  have hbelow₁ : CtxBelow Φ₁ (S₁.onCtx ctx) := Subst.onCtx_below hbelowS₁ hle hbelow
+  -- Both residuals send the threaded context to the same `S₀`-context.
+  have hctx1 : R₁.onCtx (S₁.onCtx ctx) = S₀.onCtx ctx := by
+    rw [← Subst.onCtx_append]
+    exact Subst.onCtx_congr (fun v hv => (hag1 v hv).symm) hbelow
+  have hctx1' : R₁'.onCtx (S₁.onCtx ctx) = S₀.onCtx ctx := by
+    rw [← Subst.onCtx_append]
+    exact Subst.onCtx_congr (fun v hv => (hag1' v hv).symm) hbelow
+  have henvmap : (S₁.onCtx ctx).env.map R₁.onPolyTy
+      = (S₁.onCtx ctx).env.map R₁'.onPolyTy := by
+    have h := congrArg Ctx.env (hctx1.trans hctx1'.symm)
+    simpa only [Subst.onCtx, Subst.onEnv] using h
+  intro Y hY hmem
+  have hYge : Φ₁ ≤ Y := freshVars_ge Y (hYs ▸ hY)
+  -- `V` keeps the skolem `Y` rigid (it is kept rigid by `Schk` and then by `U`).
+  have hSchkY : Schk.onTy (Ty.fvar Y) = Ty.fvar Y :=
+    Ty.substFvars_eq_self_of_no_key (fun p hp hck => by
+      simp only [Ty.freeVars, List.mem_singleton] at hck
+      exact hesc1 Y hY (hck ▸ List.mem_map.mpr ⟨p, hp, rfl⟩))
+  have hVfixY : V.onTy (Ty.fvar Y) = Ty.fvar Y := by
+    have h1 := hV (Ty.fvar Y)
+    rw [hSchkY] at h1
+    rw [← h1]; exact hUfix Y hY
+  -- Locate the leaking (`Schk`-substituted) env scheme `Schk.onPolyTy pt0` and,
+  -- inside it, the leaking variable `v` of the *pre-substitution* scheme `pt0`.
+  obtain ⟨pt, hpt, hYpt⟩ := Env.mem_freeVars_iff.mp hmem
+  have hpt' : pt ∈ (S₁.onCtx ctx).env.map Schk.onPolyTy := hpt
+  obtain ⟨pt0, hpt0, rfl⟩ := List.mem_map.mp hpt'
+  simp only [Subst.onPolyTy] at hYpt
+  have hptbelow : Ty.BelowFvars Φ₁ pt0.body := hbelow₁ pt0 hpt0
+  obtain ⟨v, hvpt, hYv⟩ := Ty.mem_freeVars_onTy_iff.mp hYpt
+  have hvlt : v < Φ₁ := hptbelow.mem_lt v hvpt
+  -- `Schk` must move `v` (otherwise the skolem `Y` would equal `v < Φ₁`).
+  have hvdom : v ∈ Schk.map Prod.fst := by
+    by_contra hc
+    have hfix : Schk.onTy (Ty.fvar v) = Ty.fvar v :=
+      Ty.substFvars_eq_self_of_no_key (fun p hp hck => by
+        simp only [Ty.freeVars, List.mem_singleton] at hck
+        exact hc (hck ▸ List.mem_map.mpr ⟨p, hp, rfl⟩))
+    rw [hfix] at hYv
+    simp only [Ty.freeVars, List.mem_singleton] at hYv
+    omega
+  obtain ⟨p, hp, hpv⟩ := List.mem_map.mp hvdom
+  -- A variable `Schk` binds is among `τ₁`'s/`B`'s free vars; `B`'s are skolems ≥ Φ₁.
+  have hvfree : v ∈ τ₁.freeVars := by
+    rcases UnifyRel.dom_mem huni p hp with h | h
+    · rwa [hpv] at h
+    · rw [hpv] at h
+      have hvYs : v ∈ Ys := Ty.freeVars_openVars_closed hσnfv h
+      have := freshVars_ge v (hYs ▸ hvYs); omega
+  -- Push the skolem through `V`: `Y ∈ (R₁.onTy (.fvar v)).freeVars`.
+  have hYR₁v : Y ∈ (R₁.onTy (Ty.fvar v)).freeVars := by
+    have hVimg : V.onTy (Schk.onTy (Ty.fvar v)) = R₁.onTy (Ty.fvar v) := by
+      rw [← hV (Ty.fvar v)]
+      exact hUfact (Ty.fvar v) (fun z hz => by
+        simp only [Ty.freeVars, List.mem_singleton] at hz; omega)
+    rw [← hVimg]
+    exact Ty.mem_freeVars_onTy_iff.mpr ⟨Y, hYv, by rw [hVfixY]; simp [Ty.freeVars]⟩
+  -- The two residuals agree on the env variable `v`.
+  have hR₁v : R₁.onTy (Ty.fvar v) = R₁'.onTy (Ty.fvar v) := by
+    have hbody : R₁.onTy pt0.body = R₁'.onTy pt0.body := by
+      have he := list_map_eq_of_mem henvmap hpt0
+      simpa only [Subst.onPolyTy] using congrArg PolyTy.body he
+    exact Subst.onTy_fvar_eq_of_mem_freeVars hvpt hbody
+  rw [hR₁v] at hYR₁v
+  -- At the second opening, the skolem `Y` is forced into `Ys'` — contradiction.
+  have hYopen : Y ∈ (R₁'.onTy τ₁).freeVars :=
+    Ty.mem_freeVars_onTy_iff.mpr ⟨v, hvfree, hYR₁v⟩
+  rw [← htya'] at hYopen
+  exact hYdisj Y hY (Ty.freeVars_openVars_closed hσnfv hYopen)
+
+/-- The **annotated** `letIn` principality core (threading design). Builds a
+    `letInAnn` derivation from the declarative typing: `rhs`'s principal type
+    unifies with the skolemized annotation `σ.openVars Ys`, the escape checks hold
+    (the declarative derivation keeps the skolems rigid), and the closed `σ` is
+    bound in the body context unchanged. -/
+theorem Infer.complete_letIn_ann_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
+    {rhs body : Expr} {σ : PolyTy} {L : List Nat} {τ₀ : Ty}
+    (iha : Infer.CompleteAt rhs) (ihb : Infer.CompleteAt body)
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
+    (hσwf : σ.WF) (hσnfv : NoFreeVars σ.body)
+    (hcofin : ∀ Xs : List Nat, FreshNames L σ.paramCount Xs →
+      TypeOfHM (S₀.onCtx ctx) rhs (σ.openVars Xs))
+    (hbody : TypeOfHM { (S₀.onCtx ctx) with env := σ :: (S₀.onCtx ctx).env } body τ₀) :
+    ∃ Φ' S τ R,
+      Infer Φ ctx (.letIn (some σ) rhs body) Φ' S τ ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
+      τ₀ = R.onTy τ ∧
+      (∀ p ∈ R, p.2.IsLC) := by
+  -- Build the rhs derivation `Drhs` from `iha` at *some* fresh opening (only the
+  -- derivation matters; its frontier `Φ₁` then fixes the skolem block `Ys`).
+  obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L σ.paramCount
+  obtain ⟨Φ₁, S₁, τ₁, -, Drhs, -, -, -⟩ :=
+    iha hwf hbelow hS₀ (hcofin Xs ⟨hXlen, hXnodup, hXavoid⟩)
+  -- Reorient the rhs typing to the *specific* skolem opening `freshVars Φ₁ pc`.
+  have hrhs_Ys : TypeOfHM (S₀.onCtx ctx) rhs (σ.openVars (freshVars Φ₁ σ.paramCount)) :=
+    typeOfHM_at_block hσnfv (freshVars_length _ _) hcofin
+  obtain ⟨R₁, haga, htya, hR₁⟩ := Infer.complete' Drhs hwf hbelow hS₀ hrhs_Ys
+  have hτ₁lc := (Infer.lc Drhs hwf).1
+  have hS₁lc := (Infer.lc Drhs hwf).2
+  have hle := Infer.frontier_le Drhs
+  have hbelowτ₁ := (Infer.belowFvars Drhs hbelow).1
+  have hbelowS₁ := (Infer.belowFvars Drhs hbelow).2
+  have hBlc : (σ.openVars (freshVars Φ₁ σ.paramCount)).IsLC :=
+    PolyTy.openVars_isLC hσwf (by simp)
+  -- Build the `Ys`-fixing unifier and the left-leaning MGU `Schk`.
+  obtain ⟨U, hUlc, hUfix, hUuni, hUfact⟩ :=
+    exists_skolem_unifier (Ys := freshVars Φ₁ σ.paramCount) (Φ₁ := Φ₁) (pc := σ.paramCount)
+      rfl hR₁ (fun z hz => hbelowτ₁.mem_lt z hz)
+      (fun z hz => Ty.freeVars_openVars_closed hσnfv hz) htya.symm
+  obtain ⟨Schk, hO⟩ := OUnify.complete hτ₁lc hBlc hUuni
+  have huni : UnifyRel τ₁ (σ.openVars (freshVars Φ₁ σ.paramCount)) Schk := hO.toUnifyRel
+  have hSchk_lc : ∀ p ∈ Schk, p.2.IsLC := UnifyRel.lc huni hτ₁lc hBlc
+  -- The first escape comes straight from the orientation kernel.
+  have hesc1 : ∀ y ∈ freshVars Φ₁ σ.paramCount, y ∉ Schk.map Prod.fst :=
+    OUnify.skolem_escape hO (fun z hz => Ty.freeVars_openVars_closed hσnfv hz)
+      ⟨U, hUuni, hUfix⟩
+  -- The second escape needs a *second* disjoint opening `Ys'`.
+  have hrhs_Ys' : TypeOfHM (S₀.onCtx ctx) rhs
+      (σ.openVars (freshVars (Φ₁ + σ.paramCount) σ.paramCount)) :=
+    typeOfHM_at_block hσnfv (freshVars_length _ _) hcofin
+  obtain ⟨R₁', haga', htya', hR₁'⟩ := Infer.complete' Drhs hwf hbelow hS₀ hrhs_Ys'
+  have hYdisj : ∀ Y ∈ freshVars Φ₁ σ.paramCount,
+      Y ∉ freshVars (Φ₁ + σ.paramCount) σ.paramCount := by
+    intro Y hY hc
+    have h1 := freshVars_lt Y hY
+    have h2 := freshVars_ge Y hc
+    omega
+  have hesc2 : ∀ Y ∈ freshVars Φ₁ σ.paramCount,
+      Y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars :=
+    skolem_no_env_leak hσnfv hle hbelow hbelowτ₁ hbelowS₁ rfl huni hesc1 hR₁ htya haga
+      htya' haga' hYdisj
+  -- Thread the body through (`V` factors `R₁` through `Schk`; mirrors soundness).
+  obtain ⟨V, hV, hVlc⟩ := UnifyRel.greatest_lc huni U hUlc hUuni
+  have hagSchkV : Subst.AgreesBelow Φ S₀ (S₁ ++ Schk ++ V) := by
+    intro v hv
+    have hbv : Ty.BelowFvars Φ₁ (S₁.onTy (Ty.fvar v)) :=
+      Subst.onTy_belowFvars hbelowS₁ (Ty.BelowFvars.fvar (by omega))
+    calc S₀.onTy (Ty.fvar v)
+        = (S₁ ++ R₁).onTy (Ty.fvar v) := haga v hv
+      _ = R₁.onTy (S₁.onTy (Ty.fvar v)) := by rw [Subst.onTy_append]
+      _ = U.onTy (S₁.onTy (Ty.fvar v)) :=
+          (hUfact _ (fun z hz => hbv.mem_lt z hz)).symm
+      _ = V.onTy (Schk.onTy (S₁.onTy (Ty.fvar v))) := hV _
+      _ = (S₁ ++ Schk ++ V).onTy (Ty.fvar v) := by
+            rw [Subst.onTy_append, Subst.onTy_append]
+  have hwf₁ := Subst.onCtx_wf hS₁lc hwf
+  have hwfSchk := Subst.onCtx_wf hSchk_lc hwf₁
+  have hwfB : CtxWF { (Schk.onCtx (S₁.onCtx ctx)) with
+      env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env } := by
+    intro N hN; rcases List.mem_cons.mp hN with rfl | hN
+    · exact hσwf
+    · exact hwfSchk N hN
+  have hσopen : Ty.BelowFvars (Φ₁ + σ.paramCount)
+      (σ.openVars (freshVars Φ₁ σ.paramCount)) :=
+    Ty.openVars_belowFvars (Ty.BelowFvars.of_noFreeVars hσnfv)
+      (fun x hx => by have := freshVars_lt x hx; omega)
+  have hSchkbelow : ∀ p ∈ Schk, Ty.BelowFvars (Φ₁ + σ.paramCount) p.2 :=
+    UnifyRel.belowFvars huni (hbelowτ₁.mono (by omega)) hσopen
+  have hbelowSchk : CtxBelow (Φ₁ + σ.paramCount) (Schk.onCtx (S₁.onCtx ctx)) :=
+    Subst.onCtx_below hSchkbelow (by omega) (Subst.onCtx_below hbelowS₁ hle hbelow)
+  have hbelowB : CtxBelow (Φ₁ + σ.paramCount) { (Schk.onCtx (S₁.onCtx ctx)) with
+      env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env } := by
+    intro N hN; rcases List.mem_cons.mp hN with rfl | hN
+    · exact Ty.BelowFvars.of_noFreeVars hσnfv
+    · exact hbelowSchk N hN
+  have hmain : V.onCtx (Schk.onCtx (S₁.onCtx ctx)) = S₀.onCtx ctx := by
+    have hc : (S₁ ++ Schk ++ V).onCtx ctx = S₀.onCtx ctx :=
+      Subst.onCtx_congr (fun v hv => (hagSchkV v hv).symm) hbelow
+    rwa [Subst.onCtx_append, Subst.onCtx_append] at hc
+  have hbodyV : TypeOfHM (V.onCtx { (Schk.onCtx (S₁.onCtx ctx)) with
+      env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }) body τ₀ := by
+    show TypeOfHM ⟨V.onPolyTy σ :: V.onEnv (Schk.onCtx (S₁.onCtx ctx)).env,
+        (Schk.onCtx (S₁.onCtx ctx)).ctors⟩ body τ₀
+    rw [Subst.onPolyTy_eq_self_of_closed hσnfv,
+        show V.onEnv (Schk.onCtx (S₁.onCtx ctx)).env = (S₀.onCtx ctx).env from
+          congrArg Ctx.env hmain]
+    exact hbody
+  obtain ⟨Φ₂, S₂, τ₂, R₂, Dbody, hagb, htyb, hR₂⟩ := ihb hwfB hbelowB hVlc hbodyV
+  refine ⟨Φ₂, S₁ ++ Schk ++ S₂, τ₂, R₂,
+    Infer.letInAnn Drhs hσwf hσnfv huni hesc1 hesc2 Dbody, ?_, htyb, hR₂⟩
+  refine Subst.AgreesBelow.trans_append (by omega) hagSchkV ?_ hagb
+  intro p hp
+  rcases List.mem_append.mp hp with hp | hp
+  · exact (hbelowS₁ p hp).mono (by omega)
+  · exact hSchkbelow p hp
+
+/-- Principality, `letIn` case. -/
+theorem Infer.complete_letIn {ann : Option PolyTy} {rhs body : Expr}
+    (iha : Infer.CompleteAt rhs) (ihb : Infer.CompleteAt body) :
+    Infer.CompleteAt (.letIn ann rhs body) := by
+  intro Φ ctx S₀ τ₀ hwf hbelow hS₀ hty
+  cases hty with
+  | letIn hMwf hann hcofin heq hbody =>
+    subst heq
+    cases ann with
+    | none => exact Infer.complete_letIn_aux iha ihb hwf hbelow hS₀ hMwf hcofin hbody
+    | some σ =>
+      obtain ⟨hMσ, hσnfv⟩ := hann σ rfl
+      subst hMσ
+      exact Infer.complete_letIn_ann_aux iha ihb hwf hbelow hS₀ hMwf hσnfv hcofin hbody
+
+/-! ### Principality, assembled -/
+
+/-- Every expression satisfies the principality property `CompleteAt`,
+    assembled from the per-form case lemmas by structural induction on `e`. -/
+theorem Infer.completeAt (e : Expr) : Infer.CompleteAt e := by
+  induction e using Expr.rec_strong with
+  | primLit p => exact Infer.complete_prim
+  | pair a b iha ihb => exact Infer.complete_pair iha ihb
+  | lambda ann body ih => exact Infer.complete_lambda ih
+  | app f inp ihf ihi => exact Infer.complete_app ihf ihi
+  | letIn ann be body ihbe ihbody => exact Infer.complete_letIn ihbe ihbody
+  | fst e ih => exact Infer.complete_fst ih
+  | snd e ih => exact Infer.complete_snd ih
+  | var i => exact Infer.complete_var
+  | ctor name => exact Infer.complete_ctor
+  | match_ scrut branches ihscrut ihbranches =>
+    refine Infer.complete_match ihscrut (fun br hbr => ?_)
+    obtain ⟨pat, body⟩ := br
+    exact ihbranches pat body hbr
+
+/-- **Principality of `Infer`** (Damas–Milner completeness). For any declarative
+    typing of `e` under an LC specialization `S₀` of a WF, frontier-bounded
+    context, `Infer` succeeds with `(S, τ)` and the declarative typing factors
+    through it via an LC residual `R` (`S₀ = R ∘ S` below the frontier,
+    `τ₀ = R.onTy τ`). Combined with `Infer.sound`, this is full principality:
+    `Infer` computes a most general typing. -/
+theorem Infer.complete {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
+    ∃ Φ' S τ R,
+      Infer Φ ctx e Φ' S τ ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
+      τ₀ = R.onTy τ ∧
+      (∀ p ∈ R, p.2.IsLC) :=
+  Infer.completeAt e hwf hbelow hS₀ hty
+
+
+/-! ### Cleaner corollaries of principality
+
+`Infer.complete` carries two extra side-conclusions beyond `τ₀ = R.onTy τ` — the
+agreement clause `S₀ = R ∘ S` (below `Φ`) and `R` locally-closed — purely to
+sustain the induction (the `app`/`pair`/`letIn` cases compose specialisations and
+reuse `R` as an inner `S₀`). The corollaries below project that engine down to the
+parts a caller usually wants. -/
+
+/-- Principality, type-only form: the type of *any* declarative typing is a
+    substitution instance of the type `Infer` computes. -/
+theorem Infer.complete_instance {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
+    ∃ Φ' S τ R, Infer Φ ctx e Φ' S τ ∧ τ₀ = Subst.onTy R τ := by
+  obtain ⟨Φ', S, τ, R, hInfer, _, hτeq, _⟩ := Infer.complete hwf hbelow hS₀ hty
+  exact ⟨Φ', S, τ, R, hInfer, hτeq⟩
+
+/-- Specialised to the identity input substitution: any declarative type of `e`
+    in `ctx` itself is an instance of the inferred type. -/
+theorem Infer.complete_id {Φ : Nat} {ctx : Ctx} {e : Expr} {τ₀ : Ty}
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hty : TypeOfHM ctx e τ₀) :
+    ∃ Φ' S τ R, Infer Φ ctx e Φ' S τ ∧ τ₀ = Subst.onTy R τ := by
+  refine Infer.complete_instance hwf hbelow (S₀ := []) (by simp) ?_
+  simpa using hty
+
+/-- **Algorithm W decides typeability.** `e` is declaratively typeable under some
+    locally-closed specialisation of `ctx` iff `Infer` succeeds on `e` in `ctx`.
+    (The specialisation is necessary: `Infer` may instantiate `ctx`'s free type
+    variables — rigid in the declarative system — so success does not entail
+    typeability of the *unspecialised* `ctx`.) -/
+theorem Infer.iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) :
+    (∃ (S : Subst) (τ : Ty), (∀ p ∈ S, p.2.IsLC) ∧ TypeOfHM (S.onCtx ctx) e τ)
+      ↔ (∃ Φ' S τ, Infer Φ ctx e Φ' S τ) := by
+  constructor
+  · rintro ⟨S, τ, hS, hty⟩
+    obtain ⟨Φ', S', τ', _, hInfer, _⟩ := Infer.complete_instance hwf hbelow hS hty
+    exact ⟨Φ', S', τ', hInfer⟩
+  · rintro ⟨Φ', S, τ, hInfer⟩
+    exact ⟨S, τ, (Infer.lc hInfer hwf).2, Infer.sound hInfer hwf⟩
+
+/-- **Algorithm W computes principal types** — soundness and principality bundled
+    into one statement. From any declarative typing of a core `e` under an LC
+    specialization `S₀` of a WF, frontier-bounded `ctx`, `Infer` succeeds with a
+    result `(S, τ)` that
+
+      * is itself a valid declarative typing (`TypeOfHM (S.onCtx ctx) e τ`), and
+      * subsumes the given typing (`τ₀ = R.onTy τ`, i.e. `τ` is more general).
+
+    (The stronger per-output `IsPrincipal ctx e S τ` predicate — "this very `τ`
+    subsumes *every* typing" — is proved below via `Infer.complete'` /
+    `Infer.output_unique`; see `Infer.isPrincipal`.) -/
+theorem Infer.principal {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
+    ∃ Φ' S τ R,
+      Infer Φ ctx e Φ' S τ ∧ TypeOfHM (S.onCtx ctx) e τ ∧ τ₀ = Subst.onTy R τ := by
+  obtain ⟨Φ', S, τ, R, hInfer, hτeq⟩ := Infer.complete_instance hwf hbelow hS₀ hty
+  exact ⟨Φ', S, τ, R, hInfer, Infer.sound hInfer hwf, hτeq⟩
+
 /-! The occurs check at the variable-set level: a domain variable of a
     `UnifyRel`-substitution never survives in any of its images. -/
 mutual
@@ -7610,6 +7874,93 @@ theorem unify_sound {a b : Ty} {S : Subst} (h : unify a b = some S) : UnifyRel a
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
     exact hS'
+
+/-- `unifyCore` computes a **left-leaning** unifier: the carried `UnifyRel` is in
+    fact an `OUnify` derivation (its var-var arm binds the left variable and its
+    `fvar`-right arm has a non-variable left). Proved by functional induction on
+    `unifyCore`, simultaneously with the list version. -/
+theorem unifyCore_oUnify {a b : Ty} (r : {S : Subst // UnifyRel a b S})
+    (h : unifyCore a b = some r) : OUnify a b r.1 := by
+  induction a, b using unifyCore.induct with
+  | motive2 as bs =>
+    exact ∀ (rl : {S : Subst // UnifyRelList as bs S}),
+      unifyListCore as bs = some rl → OUnifyList as bs rl.1
+  | case1 => -- (prim q, prim q)
+    simp only [unifyCore, ↓reduceDIte, Option.some.injEq] at h
+    rw [← h]; exact OUnify.prim
+  | case2 => -- (prim p, prim q), p ≠ q
+    simp only [unifyCore, ↓reduceDIte, reduceCtorEq, *] at h
+  | case3 => -- (fvar m, fvar m)
+    simp only [unifyCore, ↓reduceDIte, Option.some.injEq] at h
+    rw [← h]; exact OUnify.fvarRefl
+  | case4 => -- (fvar n, fvar m), n ≠ m
+    rename_i n m hnm
+    simp only [unifyCore, hnm, ↓reduceDIte, Option.some.injEq] at h
+    rw [← h]
+    exact OUnify.fvarL (by simp only [ne_eq, Ty.fvar.injEq]; omega)
+      (by simp only [Ty.freeVars, List.mem_singleton]; omega)
+  | case5 => -- arrow, first sub none
+    simp only [unifyCore, reduceCtorEq, *] at h
+  | case6 => -- arrow, first some, second none
+    simp only [unifyCore, reduceCtorEq, *] at h
+  | case7 => -- arrow, both some
+    rename_i a₁ a₂ c₁ c₂ S₁ hS₁ he1 S₂ hS₂ he2 ih2 ih1
+    simp only [unifyCore, he1, he2, Option.some.injEq] at h
+    rw [← h]
+    exact OUnify.arrow (ih2 ⟨S₁, hS₁⟩ he1) (ih1 ⟨S₂, hS₂⟩ he2)
+  | case8 => -- pair, first sub none
+    simp only [unifyCore, reduceCtorEq, *] at h
+  | case9 => -- pair, first some, second none
+    simp only [unifyCore, reduceCtorEq, *] at h
+  | case10 => -- pair, both some
+    rename_i a₁ a₂ c₁ c₂ S₁ hS₁ he1 S₂ hS₂ he2 ih2 ih1
+    simp only [unifyCore, he1, he2, Option.some.injEq] at h
+    rw [← h]
+    exact OUnify.pair (ih2 ⟨S₁, hS₁⟩ he1) (ih1 ⟨S₂, hS₂⟩ he2)
+  | case11 => -- customTy (same name), list none
+    simp only [unifyCore, ↓reduceDIte, reduceCtorEq, *] at h
+  | case12 => -- customTy (same name), list some
+    rename_i ts₁ n₂ ts₂ S hS he ihL
+    simp only [unifyCore, ↓reduceDIte, he, Option.some.injEq] at h
+    rw [← h]
+    exact OUnify.customTy (ihL ⟨S, hS⟩ he)
+  | case13 => -- customTy, names differ
+    simp only [unifyCore, ↓reduceDIte, reduceCtorEq, *] at h
+  | case14 => -- (fvar n, b), n ∈ b.freeVars
+    simp only [unifyCore, ↓reduceDIte, reduceCtorEq, *] at h
+  | case15 => -- (fvar n, b), n ∉ b.freeVars
+    rename_i n b hnv hocc
+    simp only [unifyCore, hocc, ↓reduceDIte, Option.some.injEq] at h
+    rw [← h]
+    exact OUnify.fvarL (fun heq => hnv _ heq) hocc
+  | case16 => -- (a, fvar n), n ∈ a.freeVars
+    simp only [unifyCore, ↓reduceDIte, reduceCtorEq, *] at h
+  | case17 => -- (a, fvar n), n ∉ a.freeVars
+    rename_i a n hnvL _ hocc
+    simp only [unifyCore, hnvL, hocc, ↓reduceDIte, Option.some.injEq] at h
+    rw [← h]
+    exact OUnify.fvarR hnvL hocc
+  | case18 => -- catch-all (no arm applies)
+    simp only [unifyCore, reduceCtorEq, *] at h
+  | case19 => -- list nil nil
+    intro rl hl
+    simp only [unifyListCore, Option.some.injEq] at hl
+    rw [← hl]; exact OUnifyList.nil
+  | case20 => -- list cons, first none
+    intro rl hl
+    simp only [unifyListCore, reduceCtorEq, *] at hl
+  | case21 => -- list cons, first some, rest none
+    intro rl hl
+    simp only [unifyListCore, reduceCtorEq, *] at hl
+  | case22 => -- list cons, both some
+    rename_i t₁ ts₁ t₂ ts₂ S₁ hS₁ he1 S₂ hS₂ he2 ih2 ih1
+    intro rl hl
+    simp only [unifyListCore, he1, he2, Option.some.injEq] at hl
+    rw [← hl]
+    exact OUnifyList.cons (ih2 ⟨S₁, hS₁⟩ he1) (ih1 ⟨S₂, hS₂⟩ he2)
+  | case23 => -- list catch-all
+    intro rl hl
+    simp only [unifyListCore, reduceCtorEq, *] at hl
 
 
 /-! ### Deciding the generic-instance ordering (`≤` on schemes)
@@ -8376,7 +8727,109 @@ theorem inferCore_complete_letIn {ann : Option PolyTy} {rhs body : Expr}
     cases happ with
     | letIn hMwf hann hcofin heqctx hbodyD =>
       expose_names
-      sorry -- TODO(threading): annotated-let executable completeness (inferCore .isSome)
+      obtain ⟨hMσ, hσnfv'⟩ := hann σd rfl
+      subst heqctx
+      rw [hMσ] at hcofin hbodyD
+      -- inferCore on rhs succeeds; reorient its typing to the skolem opening
+      obtain ⟨⟨⟨Φ₁', S₁', τ₁'⟩, hrhs'⟩, herhs⟩ :=
+        Option.isSome_iff_exists.mp (iha hwf hbelow hrhs)
+      have hrhs_Ys : TypeOfHM ((S1d ++ Schkd ++ S2d).onCtx ctx) rhs
+          (σd.openVars (freshVars Φ₁' σd.paramCount)) :=
+        typeOfHM_at_block hσnfv' (freshVars_length _ _) hcofin
+      obtain ⟨R₁, haga, htya, hR₁⟩ := Infer.complete' hrhs' hwf hbelow hSlc hrhs_Ys
+      have hτ₁lc := (Infer.lc hrhs' hwf).1
+      have hS₁lc := (Infer.lc hrhs' hwf).2
+      have hle := Infer.frontier_le hrhs'
+      have hbelowτ₁ := (Infer.belowFvars hrhs' hbelow).1
+      have hbelowS₁ := (Infer.belowFvars hrhs' hbelow).2
+      have hBlc : (σd.openVars (freshVars Φ₁' σd.paramCount)).IsLC :=
+        PolyTy.openVars_isLC hσwf (by simp)
+      -- the `Ys`-fixing unifier; `unifyCore` succeeds, carrying a left-leaning `Schk`
+      obtain ⟨U, hUlc, hUfix, hUuni, hUfact⟩ :=
+        exists_skolem_unifier (Ys := freshVars Φ₁' σd.paramCount) (Φ₁ := Φ₁')
+          (pc := σd.paramCount) rfl hR₁ (fun z hz => hbelowτ₁.mem_lt z hz)
+          (fun z hz => Ty.freeVars_openVars_closed hσnfv' hz) htya.symm
+      have huniSome : (unifyCore τ₁' (σd.openVars (freshVars Φ₁' σd.paramCount))).isSome :=
+        (unifyCore_complete_aux (2 * (U.onTy τ₁').size + 1)).1 (by omega) hτ₁lc hBlc hUuni
+      obtain ⟨⟨Schk, hSchk⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
+      have hO : OUnify τ₁' (σd.openVars (freshVars Φ₁' σd.paramCount)) Schk :=
+        unifyCore_oUnify ⟨Schk, hSchk⟩ heuni
+      have hescA : ∀ y ∈ freshVars Φ₁' σd.paramCount, y ∉ Schk.map Prod.fst :=
+        OUnify.skolem_escape hO (fun z hz => Ty.freeVars_openVars_closed hσnfv' hz)
+          ⟨U, hUuni, hUfix⟩
+      -- second opening for the env-escape
+      have hrhs_Ys' : TypeOfHM ((S1d ++ Schkd ++ S2d).onCtx ctx) rhs
+          (σd.openVars (freshVars (Φ₁' + σd.paramCount) σd.paramCount)) :=
+        typeOfHM_at_block hσnfv' (freshVars_length _ _) hcofin
+      obtain ⟨R₁', haga', htya', hR₁'⟩ := Infer.complete' hrhs' hwf hbelow hSlc hrhs_Ys'
+      have hYdisj : ∀ Y ∈ freshVars Φ₁' σd.paramCount,
+          Y ∉ freshVars (Φ₁' + σd.paramCount) σd.paramCount := by
+        intro Y hY hc
+        have h1 := freshVars_lt Y hY
+        have h2 := freshVars_ge Y hc
+        omega
+      have hescB : ∀ Y ∈ freshVars Φ₁' σd.paramCount,
+          Y ∉ (Schk.onCtx (S₁'.onCtx ctx)).env.freeVars :=
+        skolem_no_env_leak hσnfv' hle hbelow hbelowτ₁ hbelowS₁ rfl hSchk hescA hR₁ htya haga
+          htya' haga' hYdisj
+      -- thread the body context and recurse with `ihb`
+      obtain ⟨V, hV, hVlc⟩ := UnifyRel.greatest_lc hSchk U hUlc hUuni
+      have hagSchkV : Subst.AgreesBelow Φ (S1d ++ Schkd ++ S2d) (S₁' ++ Schk ++ V) := by
+        intro v hv
+        have hbv : Ty.BelowFvars Φ₁' (S₁'.onTy (Ty.fvar v)) :=
+          Subst.onTy_belowFvars hbelowS₁ (Ty.BelowFvars.fvar (by omega))
+        calc (S1d ++ Schkd ++ S2d).onTy (Ty.fvar v)
+            = (S₁' ++ R₁).onTy (Ty.fvar v) := haga v hv
+          _ = R₁.onTy (S₁'.onTy (Ty.fvar v)) := by rw [Subst.onTy_append]
+          _ = U.onTy (S₁'.onTy (Ty.fvar v)) :=
+              (hUfact _ (fun z hz => hbv.mem_lt z hz)).symm
+          _ = V.onTy (Schk.onTy (S₁'.onTy (Ty.fvar v))) := hV _
+          _ = (S₁' ++ Schk ++ V).onTy (Ty.fvar v) := by
+                rw [Subst.onTy_append, Subst.onTy_append]
+      have hwf₁ := Subst.onCtx_wf hS₁lc hwf
+      have hwfSchk := Subst.onCtx_wf (UnifyRel.lc hSchk hτ₁lc hBlc) hwf₁
+      have hwfB : CtxWF { (Schk.onCtx (S₁'.onCtx ctx)) with
+          env := σd :: (Schk.onCtx (S₁'.onCtx ctx)).env } := by
+        intro N hN; rcases List.mem_cons.mp hN with rfl | hN
+        · exact hσwf
+        · exact hwfSchk N hN
+      have hσopen : Ty.BelowFvars (Φ₁' + σd.paramCount)
+          (σd.openVars (freshVars Φ₁' σd.paramCount)) :=
+        Ty.openVars_belowFvars (Ty.BelowFvars.of_noFreeVars hσnfv')
+          (fun x hx => by have := freshVars_lt x hx; omega)
+      have hSchkbelow : ∀ p ∈ Schk, Ty.BelowFvars (Φ₁' + σd.paramCount) p.2 :=
+        UnifyRel.belowFvars hSchk (hbelowτ₁.mono (by omega)) hσopen
+      have hbelowSchk : CtxBelow (Φ₁' + σd.paramCount) (Schk.onCtx (S₁'.onCtx ctx)) :=
+        Subst.onCtx_below hSchkbelow (by omega) (Subst.onCtx_below hbelowS₁ hle hbelow)
+      have hbelowB : CtxBelow (Φ₁' + σd.paramCount) { (Schk.onCtx (S₁'.onCtx ctx)) with
+          env := σd :: (Schk.onCtx (S₁'.onCtx ctx)).env } := by
+        intro N hN; rcases List.mem_cons.mp hN with rfl | hN
+        · exact Ty.BelowFvars.of_noFreeVars hσnfv'
+        · exact hbelowSchk N hN
+      have hmain : V.onCtx (Schk.onCtx (S₁'.onCtx ctx))
+          = (S1d ++ Schkd ++ S2d).onCtx ctx := by
+        have hc : (S₁' ++ Schk ++ V).onCtx ctx = (S1d ++ Schkd ++ S2d).onCtx ctx :=
+          Subst.onCtx_congr (fun v hv => (hagSchkV v hv).symm) hbelow
+        rwa [Subst.onCtx_append, Subst.onCtx_append] at hc
+      have hbodyV : TypeOfHM (V.onCtx { (Schk.onCtx (S₁'.onCtx ctx)) with
+          env := σd :: (Schk.onCtx (S₁'.onCtx ctx)).env }) body τ := by
+        show TypeOfHM ⟨V.onPolyTy σd :: V.onEnv (Schk.onCtx (S₁'.onCtx ctx)).env,
+            (Schk.onCtx (S₁'.onCtx ctx)).ctors⟩ body τ
+        rw [Subst.onPolyTy_eq_self_of_closed hσnfv',
+            show V.onEnv (Schk.onCtx (S₁'.onCtx ctx)).env
+                = ((S1d ++ Schkd ++ S2d).onCtx ctx).env from congrArg Ctx.env hmain]
+        exact hbodyD
+      obtain ⟨_, _, _, _, hinfbody, _, _, _⟩ := Infer.complete hwfB hbelowB hVlc hbodyV
+      obtain ⟨⟨⟨Φ₂', S₂', τ₂'⟩, hbody'⟩, hebody⟩ :=
+        Option.isSome_iff_exists.mp (ihb hwfB hbelowB hinfbody)
+      -- drive the executable `inferCore` through its annotated-`let` arm
+      rw [inferCore]
+      simp only [herhs]
+      rw [dif_pos (PolyTy.wf_iff_bvarsBelow.mpr hσwf),
+          dif_pos (Ty.noFreeVars_iff_freeVars_nil.mp hσnfv')]
+      simp only [heuni]
+      rw [dif_pos hescA, dif_pos hescB]
+      simp only [hebody, Option.isSome_some]
 
 /-- The explicit unifier behind the `fst`/`snd` `unify` step: a *doubled*
     `exists_app_unifier` (two fresh names `W`, `W+1`). Given a residual `R₁`
