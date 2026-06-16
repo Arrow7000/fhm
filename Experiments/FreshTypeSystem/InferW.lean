@@ -7963,54 +7963,6 @@ theorem unifyCore_oUnify {a b : Ty} (r : {S : Subst // UnifyRel a b S})
     simp only [unifyListCore, reduceCtorEq, *] at hl
 
 
-/-! ### Deciding the generic-instance ordering (`≤` on schemes)
-
-`polyTyAtLeastAsGeneral?` decides `PolyTy.AtLeastAsGeneralAs` — the check a
-polymorphic `let` annotation must pass against the inferred principal scheme.
-
-The trick that answers "but all we have is `fvar`s": open **both** schemes with
-fresh `fvar`s (so the unifier treats them all as flexible unification vars), run
-`unify`, then *retroactively* declare the annotation's vars rigid by **rejecting
-any solution that assigned one of them**. A skolem `y` was assigned iff `y` is a
-key of the resulting substitution (`Subst.onTy = Ty.substFvars` only rewrites
-`.fvar y` at matching keys), so the escape check is pure domain-disjointness — no
-`DecidableEq Ty` needed.
-
-`Φ` must exceed every `fvar` occurring free in `σgen`/`σann` (the usual W
-freshness precondition); the two fresh ranges below are chosen disjoint. -/
-
-/-- Decide whether `σgen` is at least as general as `σann` (`σgen ≥ σann`):
-    skolemize the annotation, instantiate the inferred scheme flexibly, unify,
-    and require that no skolem escaped (got bound). -/
-def polyTyAtLeastAsGeneral? (Φ : Nat) (σgen σann : PolyTy) : Bool :=
-  let Ys    := freshVars Φ σann.paramCount                      -- rigid skolems
-  let rigid := σann.openVars Ys
-  let Us    := freshVars (Φ + σann.paramCount) σgen.paramCount  -- flexible vars
-  let flex  := σgen.openVars Us
-  match unify flex rigid with
-  | none   => false
-  | some S => Ys.all (fun y => !(S.map Prod.fst).contains y)    -- skolem escape check
-
-section
--- `Int → Int` is NOT as general as `∀a. a → a`  ⇒  false
-#eval polyTyAtLeastAsGeneral? 0
-  { paramCount := 0, body := .arrow (.prim .int) (.prim .int) }
-  { paramCount := 1, body := .arrow (.bvar 0) (.bvar 0) }
--- `∀a. a → a` ≥ `∀a. a → a`  ⇒  true
-#eval polyTyAtLeastAsGeneral? 0
-  { paramCount := 1, body := .arrow (.bvar 0) (.bvar 0) }
-  { paramCount := 1, body := .arrow (.bvar 0) (.bvar 0) }
--- `∀x y. x → y` ≥ `∀a. a → a`  ⇒  true  (LHS is strictly more general)
-#eval polyTyAtLeastAsGeneral? 0
-  { paramCount := 2, body := .arrow (.bvar 0) (.bvar 1) }
-  { paramCount := 1, body := .arrow (.bvar 0) (.bvar 0) }
--- `∀a. a → a` ≥ `∀x y. x → y`  ⇒  false  (annotation claims MORE generality)
-#eval polyTyAtLeastAsGeneral? 0
-  { paramCount := 1, body := .arrow (.bvar 0) (.bvar 0) }
-  { paramCount := 2, body := .arrow (.bvar 0) (.bvar 1) }
-end
-
-
 /-! ### The `infer` function (Algorithm W)
 
 `inferCore`/`inferBranchesCore` mirror `Infer`/`InferBranches` exactly, building

@@ -1592,34 +1592,6 @@ structure FreshNames (L : List Nat) (n : Nat) (Xs : List Nat) : Prop where
   avoid  : ∀ x ∈ Xs, x ∉ L
 
 
-/-! ### Generic-instance ordering on schemes ("at least as general as"). -/
-
-/-- **Generic-instance ordering** (Damas–Milner `⊑`): `σgen.AtLeastAsGeneralAs
-    σann` says the inferred scheme `σgen` is *at least as general as* the
-    annotation `σann` — equivalently, `σann` is a generic instance of `σgen`.
-
-    Read it operationally: freeze `σann`'s quantifiers as fresh **rigid** names
-    `Ys`; the resulting monotype must be reachable by **some** instantiation `Vs`
-    of `σgen`. The `∀ fresh Ys / ∃ Vs` shape *is* the rigid (annotation) /
-    flexible (inferred) asymmetry — both sides are just `fvar`s, only the
-    quantifier differs. `Vs` may mention the `Ys` (that's how `∀a.a→a` is a
-    generic instance of itself, via `Vs = [.fvar Y]`).
-
-    This is the *declarative* condition a polymorphic `let` annotation must
-    satisfy. By principal types it is equivalent to "`boundExpr` types at every
-    fresh opening of `σann`", so the annotated `letIn` rule needs no new
-    premise — but the **algorithm** can't quantify over all openings, so it
-    decides this relation directly (`polyTyAtLeastAsGeneral?` in `InferW`).
-
-    The cofinite `∃ L, ∀ Ys, FreshNames L …` wrapper matches the let rule's
-    treatment of freshness, so this relation survives `weaken_env`/`subst_lemma`
-    the same way. -/
-def PolyTy.AtLeastAsGeneralAs (σgen σann : PolyTy) : Prop :=
-  ∃ L : List Nat, ∀ Ys : List Nat, FreshNames L σann.paramCount Ys →
-    ∃ Vs : List Ty, Ty.AreLC σgen.paramCount Vs ∧
-      σgen.openWith Vs = σann.openVars Ys
-
-
 /-! ### The declarative typing relation `TypeOfHM`.
 
 Syntax-directed Hindley–Milner typing. All rules are standard except the
