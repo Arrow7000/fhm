@@ -98,22 +98,30 @@ empty outer env) — only that each replacement type is locally-closed. This is
 the workhorse for `Infer` soundness: applying the threaded substitution to a
 `TypeOfHM` derivation yields another. -/
 
-/-- Single-variable substitution preserves typing across the whole context. -/
+/-- Single-variable substitution preserves typing across the whole context.
+
+    NOTE (scoped type variables): the new `Core` `typ_subst_preservation`
+    *rewrites the term* — the substitution is pushed through the term's
+    annotations (`Expr.substTyFvar`). So the honest conclusion now mentions
+    `e.substTyFvar Z U`, not `e`. The fixed-term form is recovered by
+    `TypeOfHM.onSubst_fixed` under the hypothesis that `S` fixes `e`'s
+    annotation free vars. -/
 theorem TypeOfHM.onSubstFvar {ctx : Ctx} {e : Expr} {τ : Ty} (Z : Nat) (U : Ty)
     (hU : U.IsLC) (h : TypeOfHM ctx e τ) :
-    TypeOfHM (Subst.onCtx [(Z, U)] ctx) e (Subst.onTy [(Z, U)] τ) := by
+    TypeOfHM (Subst.onCtx [(Z, U)] ctx) (e.substTyFvar Z U) (Subst.onTy [(Z, U)] τ) := by
   have key := TypeOfHM.typ_subst_preservation (ctors := ctx.ctors) (env_post := ctx.env)
     (env_outer := []) (Z := Z) (U := U) (by simp [Env.freeVars]) hU
     (by rw [List.append_nil]; exact h)
   rw [List.append_nil] at key
   exact key
 
-/-- A whole substitution preserves typing, given each replacement is LC. -/
+/-- A whole substitution preserves typing, given each replacement is LC. The
+    term is rewritten (`e.substTyFvars S`) — see `TypeOfHM.onSubstFvar`. -/
 theorem TypeOfHM.onSubst {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
     (h_lc : ∀ p ∈ S, p.2.IsLC) (h : TypeOfHM ctx e τ) :
-    TypeOfHM (S.onCtx ctx) e (S.onTy τ) := by
-  induction S generalizing ctx τ with
-  | nil => simpa using h
+    TypeOfHM (S.onCtx ctx) (e.substTyFvars S) (S.onTy τ) := by
+  induction S generalizing ctx e τ with
+  | nil => simpa [Expr.substTyFvars] using h
   | cons hd S' ih =>
     obtain ⟨Z, U⟩ := hd
     have hU : U.IsLC := h_lc (Z, U) (List.mem_cons_self ..)
@@ -122,6 +130,61 @@ theorem TypeOfHM.onSubst {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
     have rest := ih hS' step
     rw [show ((Z, U) :: S') = [(Z, U)] ++ S' from rfl, Subst.onCtx_append, Subst.onTy_append]
     exact rest
+
+/-- A type-fvar substitution whose keys avoid a term's annotation free vars
+    leaves the term fixed (collapse of `Expr.substTyFvars` to a no-op). -/
+theorem Expr.substTyFvars_eq_self_of_tyFreeVars_nil {e : Expr} (S : Subst)
+    (h : e.tyFreeVars = []) : e.substTyFvars S = e := by
+  apply Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+  intro p _
+  simp [h]
+
+/-- **D1 fixed-term corollary.** When `S` fixes every annotation free variable of
+    `e` (so `e.substTyFvars S = e`), substitution preservation keeps the *term*
+    fixed: `TypeOfHM (S.onCtx ctx) e (S.onTy τ)`. This is the form `Infer.sound`
+    needs — the inferred substitution only touches unification variables, never
+    the (closed / rigid-skolem) annotation variables pinned by the escape
+    discipline. -/
+theorem TypeOfHM.onSubst_fixed {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
+    (h_lc : ∀ p ∈ S, p.2.IsLC) (h_fix : e.substTyFvars S = e) (h : TypeOfHM ctx e τ) :
+    TypeOfHM (S.onCtx ctx) e (S.onTy τ) := by
+  have key := TypeOfHM.onSubst S h_lc h
+  rwa [h_fix] at key
+
+/-- Instantiation is a no-op when the substitution is the identity on every bvar
+    that actually occurs (`< d`) and the type's bvars are all `< d`. -/
+theorem Ty.instantiate_eq_self_of_bvars_lt {σ : Nat → Ty} {d : Nat} {t : Ty}
+    (hσ : ∀ i, i < d → σ i = .bvar i) (h : ContainsBvarsUpTo d t) :
+    Ty.instantiate σ t = t := by
+  induction t using Ty.rec_strong with
+  | prim _ => rfl
+  | pair a b iha ihb =>
+    cases h with
+    | pair ha hb => simp only [Ty.instantiate, Ty.pair.injEq]; exact ⟨iha ha, ihb hb⟩
+  | arrow a b iha ihb =>
+    cases h with
+    | arrow ha hb => simp only [Ty.instantiate, Ty.arrow.injEq]; exact ⟨iha ha, ihb hb⟩
+  | bvar i => cases h with | bvar hlt => exact hσ i hlt
+  | fvar n => rfl
+  | customTy nm tys ih =>
+    cases h with
+    | customTy hall =>
+      simp only [Ty.instantiate, Ty.customTy.injEq, true_and]
+      induction tys with
+      | nil => rfl
+      | cons hd tl ihtl =>
+        simp only [TyList.instantiate, List.cons.injEq]
+        exact ⟨ih hd List.mem_cons_self (hall hd List.mem_cons_self),
+               ihtl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
+                    (fun t ht => hall t (List.mem_cons_of_mem _ ht))⟩
+
+/-- Offset opening (`Ty.openVarsFrom d`) fixes any type whose bvars are all `< d`
+    — the opener only touches bvars `≥ d`. Used by the `openTyVars`-identity
+    invariant (annotation bvars stay within their own scheme's arity). -/
+theorem Ty.openVarsFrom_eq_self_of_containsBvars {d : Nat} {Xs : List Nat} {t : Ty}
+    (h : ContainsBvarsUpTo d t) : Ty.openVarsFrom d Xs t = t := by
+  unfold Ty.openVarsFrom
+  exact Ty.instantiate_eq_self_of_bvars_lt (fun _ hi => if_pos hi) h
 
 
 /-! ### Most-general unifier specification
@@ -454,20 +517,27 @@ The plan: prove `Infer.sound` (algo type ⟹ declarative type, iterating
 def freshVars (Φ k : Nat) : List Nat := (List.range k).map (Φ + ·)
 
 /-- Generalization candidates: the free unification vars of `τ` that are *not*
-    fixed by `env` (these are the ones a `let` may generalize over). -/
-def genVars (env : Env) (τ : Ty) : List Nat :=
-  τ.freeVars.filter (fun x => !env.freeVars.contains x)
+    fixed by `env` and *not* rigid. The `rigid` set carries the in-scope scoped
+    type variables (the free type fvars of the bound expression's annotations):
+    those are skolems bound by an enclosing signature and must stay rigid —
+    generalizing over them is unsound (it would let an inner `let` treat a fixed
+    scoped variable as if it were polymorphic). For an ordinary HM program (no
+    free-variable annotations) `rigid = []`, recovering the classic
+    `ftv(τ) \ ftv(env)`. -/
+def genVars (rigid : List Nat) (env : Env) (τ : Ty) : List Nat :=
+  τ.freeVars.filter (fun x => !env.freeVars.contains x && !rigid.contains x)
 
-/-- The principal generalization of `τ` relative to `env`: the scheme quantifying
-    over exactly the free vars of `τ` not fixed by `env` (`genVars`). Reuses the
-    existing `Ty.closeOver` (`fvar` ↦ `bvar` by position), whose
-    `closeOver_preserves_bvars` immediately gives `genScheme … |>.WF`. -/
-def genScheme (env : Env) (τ : Ty) : PolyTy :=
-  { paramCount := (genVars env τ).length, body := Ty.closeOver (genVars env τ) τ }
+/-- The principal generalization of `τ` relative to `env`, excluding the `rigid`
+    scoped type variables. Reuses the existing `Ty.closeOver` (`fvar` ↦ `bvar` by
+    position), whose `closeOver_preserves_bvars` immediately gives
+    `genScheme … |>.WF`. -/
+def genScheme (rigid : List Nat) (env : Env) (τ : Ty) : PolyTy :=
+  { paramCount := (genVars rigid env τ).length, body := Ty.closeOver (genVars rigid env τ) τ }
 
 /-- A generalized scheme is well-formed when its body type is locally-closed —
     closing introduces only the `paramCount`-many fresh bound vars. -/
-theorem genScheme_wf {env : Env} {τ : Ty} (hτ : τ.IsLC) : (genScheme env τ).WF :=
+theorem genScheme_wf {rigid : List Nat} {env : Env} {τ : Ty} (hτ : τ.IsLC) :
+    (genScheme rigid env τ).WF :=
   Ty.closeOver_preserves_bvars hτ
 
 /-- `freeVars` is always duplicate-free (it dedups). -/
@@ -484,7 +554,7 @@ theorem Ty.freeVars_nodup {τ : Ty} : τ.freeVars.Nodup := by
     | cons hd tl => simp [Ty.freeVars, TyList.freeVars, List.nodup_dedup]
 
 /-- The generalization candidates are duplicate-free. -/
-theorem genVars_nodup {env : Env} {τ : Ty} : (genVars env τ).Nodup :=
+theorem genVars_nodup {rigid : List Nat} {env : Env} {τ : Ty} : (genVars rigid env τ).Nodup :=
   Ty.freeVars_nodup.filter _
 
 /-! ### Decidable scheme-well-formedness and closedness checks
@@ -579,10 +649,28 @@ theorem Ty.noFreeVars_iff_freeVars_nil {t : Ty} :
     closed monotype (consuming no fresh var). -/
 inductive LamSeed (Φ : Nat) : Option Ty → Ty → Nat → Prop
   | none : LamSeed Φ none (.fvar Φ) (Φ + 1)
-  | some (T : Ty) : Ty.isClosed T = true → LamSeed Φ (some T) T Φ
+  | some (T : Ty) : T.IsLC → LamSeed Φ (some T) T Φ
 
 theorem LamSeed.le {Φ : Nat} {ann pt Φ₀} (h : LamSeed Φ ann pt Φ₀) : Φ ≤ Φ₀ := by
   cases h <;> omega
+
+/-- The chosen parameter type is locally closed (no dangling type `bvar`s). It
+    MAY carry free type variables now — those are scoped type variables bound by
+    an enclosing signature (the relaxation enabling `ScopedTypeVariables`). -/
+theorem LamSeed.pt_isLC {Φ : Nat} {ann pt Φ₀} (h : LamSeed Φ ann pt Φ₀) : pt.IsLC := by
+  cases h with
+  | none => exact ContainsBvarsUpTo.fvar
+  | some _ hlc => exact hlc
+
+/-- A `LamSeed`'s annotation is fixed by `openVarsFrom` (the annotated case is
+    locally closed, hence bvar-free). -/
+theorem LamSeed.ann_openVarsFrom {Φ : Nat} {ann pt Φ₀} (h : LamSeed Φ ann pt Φ₀)
+    (d : Nat) (Xs : List Nat) : ann.map (Ty.openVarsFrom d Xs) = ann := by
+  cases h with
+  | none => rfl
+  | some _ hlc =>
+    simp only [Option.map_some, Option.some.injEq]
+    exact Ty.openVarsFrom_eq_self_of_containsBvars (hlc.mono (Nat.zero_le d))
 
 /-! Algorithm W as a substitution-threading relation, mutually defined with
     `InferBranches` (the `match_` branch threader). -/
@@ -623,24 +711,26 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
     Infer Φ ctx rhs Φ₁ S₁ τ₁ →
     Infer Φ₁
       { (S₁.onCtx ctx) with
-        env := genScheme (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
+        env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
       body Φ₂ S₂ τ₂ →
     Infer Φ ctx (.letIn none rhs body) Φ₂ (S₁ ++ S₂) τ₂
-  /-- Annotated `let` (threading / skolemize-and-unify). The bound scheme is the
-      annotation `σ` itself (closed: `σ.WF` + `NoFreeVars σ.body`). The rhs's
-      principal monotype `τ₁` is unified against the **skolemized** annotation
-      `σ.openVars Ys` (`Ys = freshVars Φ₁ σ.paramCount`, rigid skolems), producing
-      `Schk` which is threaded outward. Two escape conditions keep the skolems
-      rigid: none is bound by `Schk` (so the annotation is not more polymorphic
-      than `rhs`), and none leaks into the (threaded) body context (so the skolems
-      can be renamed to the cofinite fresh names — the soundness packaging). -/
+  /-- Annotated `let` (scoped type variables, D2 ordering). The bound scheme is
+      the annotation `σ` (`σ.WF`; it MAY carry free type vars — outer scoped
+      vars). Allocate `σ`'s skolems `Ys = freshVars Φ σ.paramCount` **first**, then
+      infer the bound expression already opened at `Ys` (`rhs.openTyVars Ys`,
+      matching the spec's `openBoundTyVars`), so its scoped vars resolve to the
+      rigid `Ys`. Unify the rhs type `τ₁` against `σ.openVars Ys` (both may mention
+      `Ys`), producing `Schk`. Escape conditions keep `Ys` rigid: none is bound by
+      the **whole** rhs+unify substitution `S₁ ++ Schk` (so the signature is no
+      more general than `rhs` actually is), and none leaks into the threaded body
+      context (so `Ys` can be renamed to the cofinite fresh names). -/
   | letInAnn {Φ ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂} :
-    Infer Φ ctx rhs Φ₁ S₁ τ₁ →
-    σ.WF → NoFreeVars σ.body →
-    UnifyRel τ₁ (σ.openVars (freshVars Φ₁ σ.paramCount)) Schk →
-    (∀ y ∈ freshVars Φ₁ σ.paramCount, y ∉ Schk.map Prod.fst) →
-    (∀ y ∈ freshVars Φ₁ σ.paramCount, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) →
-    Infer (Φ₁ + σ.paramCount)
+    σ.WF →
+    Infer (Φ + σ.paramCount) ctx (rhs.openTyVars (freshVars Φ σ.paramCount)) Φ₁ S₁ τ₁ →
+    UnifyRel τ₁ (σ.openVars (freshVars Φ σ.paramCount)) Schk →
+    (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) →
+    (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) →
+    Infer Φ₁
       { (Schk.onCtx (S₁.onCtx ctx)) with env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
       body Φ₂ S₂ τ₂ →
     Infer Φ ctx (.letIn (some σ) rhs body) Φ₂ (S₁ ++ Schk ++ S₂) τ₂
@@ -702,19 +792,35 @@ theorem Infer.frontier_le {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) : Φ
   | var => omega
   | ctor => omega
   | letIn hrhs hbody => have := Infer.frontier_le hrhs; have := Infer.frontier_le hbody; omega
-  | letInAnn hrhs _ _ _ _ _ hbody =>
+  | letInAnn _ hrhs _ _ _ hbody =>
     have := Infer.frontier_le hrhs; have := Infer.frontier_le hbody; omega
   | fst he _ => have := Infer.frontier_le he; omega
   | snd he _ => have := Infer.frontier_le he; omega
   | match_ hscrut _ _ hbr =>
     have := Infer.frontier_le hscrut; have := InferBranches.frontier_le hbr; omega
+termination_by e.size
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.frontier_le {Φ ctx tn ta ρ brs Φ' S} (h : InferBranches Φ ctx tn ta ρ brs Φ' S) :
     Φ ≤ Φ' := by
   cases h with
   | nil => omega
   | cons _ _ _ _ hbody _ hrest =>
     have := Infer.frontier_le hbody; have := InferBranches.frontier_le hrest; omega
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 end
+
+/-! ### Scoped-variable regime (replaces the old closed-annotation invariants)
+
+The closed-regime invariants `Infer.tyFreeVars_eq_nil` and the `sorry`-gated
+`Infer.openTyVarsAux_eq_self` are gone. With D2 the bound expression is inferred
+*already opened* at the rigid skolems, so an accepted term's annotation free vars
+are no longer empty — they are the in-scope skolems. Soundness now threads an
+ambient rigid-skolem set `K` (the substitution provably avoids `K`, via the escape
+discipline), and the cofinite premise is recovered by renaming `K` to fresh names
+through `Expr.substTyFvars_zip_openTyVars` (the Core bridge). -/
 
 /-- A context is well-formed when every scheme in its env is well-formed. -/
 def CtxWF (ctx : Ctx) : Prop := ∀ M ∈ ctx.env, M.WF
@@ -724,6 +830,22 @@ theorem freshVars_nodup {Φ k : Nat} : (freshVars Φ k).Nodup :=
 
 @[simp] theorem freshVars_length (Φ k : Nat) : (freshVars Φ k).length = k := by
   simp [freshVars]
+
+/-- Every freshly-allocated name is at least the frontier `Φ`. Lets us conclude a
+    skolem block `freshVars Φ k` is disjoint from any set of names below `Φ`
+    (e.g. the ambient skolems `K`, all introduced at earlier frontiers). -/
+theorem freshVars_ge {Φ k : Nat} : ∀ y ∈ freshVars Φ k, Φ ≤ y := by
+  intro y hy
+  simp only [freshVars, List.mem_map, List.mem_range] at hy
+  obtain ⟨i, _, rfl⟩ := hy
+  omega
+
+/-- Every freshly-allocated name is below the post-allocation frontier `Φ + k`. -/
+theorem freshVars_lt {Φ k : Nat} : ∀ y ∈ freshVars Φ k, y < Φ + k := by
+  intro y hy
+  simp only [freshVars, List.mem_map, List.mem_range] at hy
+  obtain ⟨i, hi, rfl⟩ := hy
+  omega
 
 /-- A whole substitution (LC replacements) preserves any bvar bound. -/
 theorem Subst.onTy_containsBvars {S : Subst} (h_lc : ∀ p ∈ S, p.2.IsLC) :
@@ -839,8 +961,7 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         · exact ContainsBvarsUpTo.fvar
         · exact hctx M hM)
       exact ⟨.arrow (Subst.onTy_lc hb_s ContainsBvarsUpTo.fvar) hb_lc, hb_s⟩
-    | some _ hcl =>
-      have hpc := ((Ty.isClosed_iff _).mp hcl).2
+    | some _ hpc =>
       obtain ⟨hb_lc, hb_s⟩ := Infer.lc hbody (by
         intro M hM; rcases List.mem_cons.mp hM with rfl | hM
         · exact hpc
@@ -876,7 +997,7 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     rcases hp with hp | hp
     · exact hrhs_s p hp
     · exact hbody_s p hp
-  | letInAnn hrhs hσwf hσnfv huni _hesc1 _hesc2 hbody =>
+  | letInAnn hσwf hrhs huni _hesc1 _hesc2 hbody =>
     intro hctx
     expose_names
     obtain ⟨hrhs_lc, hrhs_s⟩ := Infer.lc hrhs hctx
@@ -929,6 +1050,9 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     · exact hS₁ p hp
     · exact hS₂ p hp
     · exact hS₃ p hp
+termination_by e.size
+decreasing_by
+  all_goals (simp_wf; try subst_vars; try simp only [Expr.size, Expr.sizeBranches, Expr.size_openTyVars]; omega)
 theorem InferBranches.lc {Φ ctx tn ta ρ brs Φ' S} (h : InferBranches Φ ctx tn ta ρ brs Φ' S)
     (hctx : CtxWF ctx) (hta : ∀ t ∈ ta, t.IsLC) (hρ : ρ.IsLC) :
     (S.onTy ρ).IsLC ∧ (∀ p ∈ S, p.2.IsLC) := by
@@ -950,6 +1074,9 @@ theorem InferBranches.lc {Φ ctx tn ta ρ brs Φ' S} (h : InferBranches Φ ctx t
       · exact hS₁ p hp
       · exact hS₂ p hp
       · exact hS₃ p hp
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (simp_wf; try subst_vars; try simp only [Expr.size, Expr.sizeBranches, Expr.size_openTyVars]; omega)
 end
 
 private theorem List.forall₂_self_map {α β} {R : α → β → Prop} {f : α → β} :
@@ -987,10 +1114,18 @@ theorem InstantiatesBy.openVars {Xs : List Nat} {n : Nat} {ty : Ty}
 /-! ### Cofinite-generalization machinery for the `letIn` soundness case -/
 
 /-- A generalization candidate is, by construction, not fixed by the env. -/
-theorem genVars_not_mem {env : Env} {τ : Ty} {g : Nat}
-    (h : g ∈ genVars env τ) : g ∉ env.freeVars := by
-  simp only [genVars, List.mem_filter] at h
-  simpa using h.2
+theorem genVars_not_mem {rigid : List Nat} {env : Env} {τ : Ty} {g : Nat}
+    (h : g ∈ genVars rigid env τ) : g ∉ env.freeVars := by
+  simp only [genVars, List.mem_filter, Bool.and_eq_true] at h
+  simpa using h.2.1
+
+/-- A generalization candidate is, by construction, not one of the rigid scoped
+    type variables (the bound expression's annotation fvars). This is what keeps
+    the `let` from generalizing over an in-scope skolem. -/
+theorem genVars_not_mem_rigid {rigid : List Nat} {env : Env} {τ : Ty} {g : Nat}
+    (h : g ∈ genVars rigid env τ) : g ∉ rigid := by
+  simp only [genVars, List.mem_filter, Bool.and_eq_true] at h
+  simpa using h.2.2
 
 /-- A substitution whose domain avoids `Xs` commutes with opening by `Xs`. -/
 theorem Subst.onTy_openVars {S : Subst} {Xs : List Nat}
@@ -1202,17 +1337,23 @@ theorem Ty.freeVars_openVars_closed {Xs : List Nat} {t : Ty} (hcl : NoFreeVars t
     fixed by the env, `genVars_not_mem` — to the fresh `Xs`.) -/
 theorem genScheme_hasSchemeVars {ctx : Ctx} {rhs : Expr} {τ₁ : Ty}
     (hrhs : TypeOfHM ctx rhs τ₁) (hlc : τ₁.IsLC) :
-    HasSchemeVars (genVars ctx.env τ₁) ctx rhs (genScheme ctx.env τ₁) := by
+    HasSchemeVars (genVars rhs.tyFreeVars ctx.env τ₁) ctx rhs
+      (genScheme rhs.tyFreeVars ctx.env τ₁) := by
   intro Xs hXfresh
   obtain ⟨hXlen, hXnodup, hXavoid⟩ := hXfresh
-  have hgs_X : ∀ g ∈ genVars ctx.env τ₁, g ∉ Xs := fun g hg hc => hXavoid g hc hg
+  have hgs_X : ∀ g ∈ genVars rhs.tyFreeVars ctx.env τ₁, g ∉ Xs := fun g hg hc => hXavoid g hc hg
   have hrename : TypeOfHM ctx rhs
-      (Ty.substFvars ((genVars ctx.env τ₁).zip (Xs.map (Ty.fvar ·))) τ₁) := by
-    refine TypeOfHM.typ_substs_preservation _ ?_ ?_ hrhs
-    · intro p hp; exact genVars_not_mem (List.of_mem_zip hp).1
-    · intro p hp
-      obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
-      exact hx ▸ ContainsBvarsUpTo.fvar
+      (Ty.substFvars ((genVars rhs.tyFreeVars ctx.env τ₁).zip (Xs.map (Ty.fvar ·))) τ₁) := by
+    have h0 := TypeOfHM.typ_substs_preservation
+      ((genVars rhs.tyFreeVars ctx.env τ₁).zip (Xs.map (Ty.fvar ·)))
+      (fun p hp => genVars_not_mem (List.of_mem_zip hp).1)
+      (fun p hp => by
+        obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+        exact hx ▸ ContainsBvarsUpTo.fvar) hrhs
+    -- The rename keys are generalization candidates, hence avoid `rhs`'s
+    -- annotation fvars (`genVars_not_mem_rigid`); the term collapses back.
+    rwa [Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+      (fun p hp => genVars_not_mem_rigid (List.of_mem_zip hp).1)] at h0
   rw [← Ty.openVars_closeOver_rename hlc genVars_nodup hXlen hgs_X] at hrename
   exact hrename
 
@@ -1227,14 +1368,16 @@ theorem Subst.onPolyTy_eq_self_of_closed {S : Subst} {σ : PolyTy}
 /-- Push a substitution through a `HasSchemeVars` witness: opening commutes with
     `S` (which avoids the fresh names by the cofinite `L`). -/
 theorem HasSchemeVars.onSubst {L : List Nat} {ctx : Ctx} {rhs : Expr} {M : PolyTy}
-    (h : HasSchemeVars L ctx rhs M) (S : Subst) (hS : ∀ p ∈ S, p.2.IsLC) :
+    (h : HasSchemeVars L ctx rhs M) (S : Subst) (hS : ∀ p ∈ S, p.2.IsLC)
+    (hS_rhs : ∀ p ∈ S, p.1 ∉ rhs.tyFreeVars) :
     HasSchemeVars (L ++ S.map Prod.fst) (S.onCtx ctx) rhs (S.onPolyTy M) := by
   intro Xs hXfresh
   obtain ⟨hXlen, hXnodup, hXavoid⟩ := hXfresh
   have hX_S : ∀ p ∈ S, p.1 ∉ Xs := fun p hp hc =>
     hXavoid p.1 hc (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
   have hwit := h Xs ⟨hXlen, hXnodup, fun x hx hc => hXavoid x hx (List.mem_append_left _ hc)⟩
-  have hfin := TypeOfHM.onSubst S hS hwit
+  have hfin := TypeOfHM.onSubst_fixed S hS
+    (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars hS_rhs) hwit
   show TypeOfHM (S.onCtx ctx) rhs (Ty.openVars Xs (S.onTy M.body))
   rw [← Subst.onTy_openVars hS hX_S]
   exact hfin
@@ -1247,116 +1390,125 @@ theorem HasSchemeVars.onSubst {L : List Nat} {ctx : Ctx} {rhs : Expr} {M : PolyT
 theorem Infer.sound_letIn {ctx : Ctx} {rhs body : Expr}
     {S₁ S₂ : Subst} {τ₁ τ₂ : Ty}
     (hrhs_ty : TypeOfHM (S₁.onCtx ctx) rhs τ₁) (hrhs_lc : τ₁.IsLC)
+    (hS₂_rhs : ∀ p ∈ S₂, p.1 ∉ rhs.tyFreeVars)
     (hbody_s : ∀ p ∈ S₂, p.2.IsLC)
     (hbody_ty : TypeOfHM (S₂.onCtx
       { (S₁.onCtx ctx) with
-        env := genScheme (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }) body τ₂) :
+        env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }) body τ₂) :
     TypeOfHM ((S₁ ++ S₂).onCtx ctx) (.letIn none rhs body) τ₂ := by
   rw [Subst.onCtx_append]
-  refine TypeOfHM.letIn (M := Subst.onPolyTy S₂ (genScheme (S₁.onCtx ctx).env τ₁))
-    (L := genVars (S₁.onCtx ctx).env τ₁ ++ S₂.map Prod.fst)
+  -- Principal generalization (excluding `rhs`'s rigid scoped vars) is a cofinite
+  -- witness, pushed through `S₂` (which avoids `rhs`'s annotation fvars).
+  have hsv := (genScheme_hasSchemeVars hrhs_ty hrhs_lc).onSubst S₂ hbody_s hS₂_rhs
+  exact TypeOfHM.letIn (M := S₂.onPolyTy (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁))
+    (L := genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ ++ S₂.map Prod.fst)
     (Subst.onPolyTy_wf hbody_s (genScheme_wf hrhs_lc))
-    (fun σ h => Option.noConfusion h) ?cofin rfl hbody_ty
-  intro Xs hXfresh
-  obtain ⟨hXlen, hXnodup, hXavoid⟩ := hXfresh
-  have hgs_X : ∀ g ∈ genVars (S₁.onCtx ctx).env τ₁, g ∉ Xs :=
-    fun g hg hc => hXavoid g hc (List.mem_append_left _ hg)
-  have hX_S₂ : ∀ p ∈ S₂, p.1 ∉ Xs :=
-    fun p hp hc => hXavoid p.1 hc (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
-  have hrename : TypeOfHM (S₁.onCtx ctx) rhs
-      (Ty.substFvars ((genVars (S₁.onCtx ctx).env τ₁).zip (Xs.map (Ty.fvar ·))) τ₁) := by
-    refine TypeOfHM.typ_substs_preservation _ ?_ ?_ hrhs_ty
-    · intro p hp; exact genVars_not_mem (List.of_mem_zip hp).1
-    · intro p hp
-      obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
-      exact hx ▸ ContainsBvarsUpTo.fvar
-  rw [← Ty.openVars_closeOver_rename hrhs_lc genVars_nodup hXlen hgs_X] at hrename
-  have hfin := TypeOfHM.onSubst S₂ hbody_s hrename
-  rw [Subst.onTy_openVars hbody_s hX_S₂] at hfin
-  exact hfin
+    (fun σ h => Option.noConfusion h) (fun Xs hXfresh => hsv Xs hXfresh) rfl hbody_ty
 
-/-- **Single fresh opening ⟹ cofinite** for a *closed* scheme. If `rhs` types at
-    one opening `σ.openVars Ys` with the `Ys` distinct and not free in the context,
-    then it types at *every* fresh opening of `σ` (cofinitely, avoiding `Ys`): just
-    rename `Ys → Xs` via `typ_substs_preservation` (the `Ys` are fixed neither by
-    the context nor — since `σ` is closed — by anything but the opening). -/
-theorem hasSchemeVars_of_fresh_opening {ctx : Ctx} {rhs : Expr} {σ : PolyTy} {Ys : List Nat}
-    (hσnfv : NoFreeVars σ.body) (hYnodup : Ys.Nodup) (hYlen : Ys.length = σ.paramCount)
-    (hYenv : ∀ y ∈ Ys, y ∉ ctx.env.freeVars)
-    (hrhs : TypeOfHM ctx rhs (σ.openVars Ys)) :
-    HasSchemeVars Ys ctx rhs σ := by
-  intro Xs hXfresh
-  obtain ⟨hXlen, hXnodup, hXavoid⟩ := hXfresh
-  have hrename : TypeOfHM ctx rhs
-      (Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys)) := by
-    refine TypeOfHM.typ_substs_preservation _ ?_ ?_ hrhs
-    · intro p hp; exact hYenv p.1 (List.of_mem_zip hp).1
-    · intro p hp
-      obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
-      exact hx ▸ ContainsBvarsUpTo.fvar
-  have key : σ.openVars Xs = Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys) := by
-    rw [show σ.openVars Xs = Ty.openWith (Xs.map (Ty.fvar ·)) σ.body from Ty.openVars_eq_openWith]
-    exact Ty.openWith_eq_substFvars_openVars
-      ⟨by rw [List.length_map, hXlen, hYlen], fun V hV => by
-        obtain ⟨x, _, rfl⟩ := List.mem_map.mp hV; exact ContainsBvarsUpTo.fvar⟩
-      hYnodup
-      (fun X _ hc => hσnfv.not_mem_freeVars X hc)
-      (fun X hX hc => hXavoid X (Ty.mem_freeVarsList_map_fvar.mp hc) hX)
-  show TypeOfHM ctx rhs (σ.openVars Xs)
-  rw [key]; exact hrename
+/-- The **annotated** `letIn` soundness case (scoped-variable / D2 regime).
 
-/-- The **annotated** `letIn` soundness case (threading design), factored out.
-
-    `Ys := freshVars Φ₁ σ.paramCount` are the rigid skolems. From unify-soundness
-    `Schk.onTy τ₁ = Schk.onTy (σ.openVars Ys)` and the skolem-escape `hesc1`
-    (no `Ys` is a key of `Schk`, so `Schk` fixes the closed `σ.openVars Ys`), we get
-    `Schk.onTy τ₁ = σ.openVars Ys`, i.e. `rhs` types at the *single* fresh opening
-    `Ys`. The env-escape `hesc2` (`Ys` not free in the threaded context) lets us
-    rename `Ys → arbitrary fresh Xs`, yielding the cofinite premise; `S₂` is pushed
-    through via `HasSchemeVars.onSubst`. The bound scheme is the closed `σ`. -/
+    The bound expression is inferred *already opened* at the rigid skolems `Ys`.
+    Unify-soundness gives `Schk.onTy τ₁ = Schk.onTy (σ.openVars Ys)`, and `Schk`
+    fixes both sides — it avoids the ambient skolems `K` (which contains `rhs`'s and
+    `σ`'s annotation free vars) and avoids `Ys` (the escape `hYs_Schk`) — so
+    `rhs.openTyVars Ys` types at the single opening `σ.openVars Ys`. Renaming
+    `Ys ↦ Xs` (Core bridge `Expr.substTyFvars_zip_openTyVars` on the term,
+    `Ty.openWith_eq_substFvars_openVars` on the type) yields the cofinite premise
+    `rhs.openTyVars Xs : σ.openVars Xs`; pushing `S₂` through (it avoids `K` and the
+    fresh `Xs`) lands the body context. `σ` may carry free scoped vars (⊆ K), which
+    every substitution here fixes. -/
 theorem Infer.sound_letInAnn {ctx : Ctx} {σ : PolyTy} {rhs body : Expr}
-    {Φ₁ : Nat} {S₁ Schk S₂ : Subst} {τ₁ τ₂ : Ty}
-    (hrhs_ty : TypeOfHM (S₁.onCtx ctx) rhs τ₁) (hrhs_lc : τ₁.IsLC)
-    (hσwf : σ.WF) (hσnfv : NoFreeVars σ.body)
-    (huni : UnifyRel τ₁ (σ.openVars (freshVars Φ₁ σ.paramCount)) Schk)
-    (hesc1 : ∀ y ∈ freshVars Φ₁ σ.paramCount, y ∉ Schk.map Prod.fst)
-    (hesc2 : ∀ y ∈ freshVars Φ₁ σ.paramCount,
-        y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars)
-    (hSchk_lc : ∀ p ∈ Schk, p.2.IsLC)
-    (hbody_s : ∀ p ∈ S₂, p.2.IsLC)
+    {Ys : List Nat} {S₁ Schk S₂ : Subst} {τ₁ τ₂ : Ty}
+    (hrhs_ty : TypeOfHM (S₁.onCtx ctx) (rhs.openTyVars Ys) τ₁) (hrhs_lc : τ₁.IsLC)
+    (hσwf : σ.WF) (hYnodup : Ys.Nodup) (hYlen : Ys.length = σ.paramCount)
+    (huni : UnifyRel τ₁ (σ.openVars Ys) Schk)
+    (K : List Nat)
+    (hKrhs : ∀ y ∈ rhs.tyFreeVars, y ∈ K) (hKσ : ∀ y ∈ σ.body.freeVars, y ∈ K)
+    (hYsK : ∀ y ∈ Ys, y ∉ K)
+    (hYs_Schk : ∀ y ∈ Ys, y ∉ Schk.map Prod.fst)
+    (hYs_env : ∀ y ∈ Ys, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars)
+    (hSchkK : ∀ p ∈ Schk, p.1 ∉ K) (hSchk_lc : ∀ p ∈ Schk, p.2.IsLC)
+    (hS₂K : ∀ p ∈ S₂, p.1 ∉ K) (hS₂_lc : ∀ p ∈ S₂, p.2.IsLC)
     (hbody_ty : TypeOfHM (S₂.onCtx
       { (Schk.onCtx (S₁.onCtx ctx)) with
         env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }) body τ₂) :
     TypeOfHM ((S₁ ++ Schk ++ S₂).onCtx ctx) (.letIn (some σ) rhs body) τ₂ := by
   rw [Subst.onCtx_append, Subst.onCtx_append]
-  set Ys := freshVars Φ₁ σ.paramCount with hYsdef
-  -- `rhs` types at the single skolem opening `Ys`.
-  have hrhs_Schk : TypeOfHM (Schk.onCtx (S₁.onCtx ctx)) rhs (Schk.onTy τ₁) :=
-    TypeOfHM.onSubst Schk hSchk_lc hrhs_ty
-  have hfix : Schk.onTy (σ.openVars Ys) = σ.openVars Ys :=
-    Ty.substFvars_eq_self_of_no_key (fun p hp hc =>
-      hesc1 p.1 (Ty.freeVars_openVars_closed hσnfv hc) (List.mem_map.mpr ⟨p, hp, rfl⟩))
-  have hrhs_open : TypeOfHM (Schk.onCtx (S₁.onCtx ctx)) rhs (σ.openVars Ys) := by
+  -- `Schk`/`S₂`/`Ys` avoid `rhs`/`σ` annotation fvars (they avoid the superset `K`).
+  have hSchk_rhs : ∀ p ∈ Schk, p.1 ∉ rhs.tyFreeVars := fun p hp hc => hSchkK p hp (hKrhs p.1 hc)
+  have hSchk_σ : ∀ p ∈ Schk, p.1 ∉ σ.body.freeVars := fun p hp hc => hSchkK p hp (hKσ p.1 hc)
+  have hS₂_rhs : ∀ p ∈ S₂, p.1 ∉ rhs.tyFreeVars := fun p hp hc => hS₂K p hp (hKrhs p.1 hc)
+  have hS₂_σ : ∀ p ∈ S₂, p.1 ∉ σ.body.freeVars := fun p hp hc => hS₂K p hp (hKσ p.1 hc)
+  have hYs_rhs : ∀ y ∈ Ys, y ∉ rhs.tyFreeVars := fun y hy hc => hYsK y hy (hKrhs y hc)
+  have hYs_σ : ∀ y ∈ Ys, y ∉ σ.body.freeVars := fun y hy hc => hYsK y hy (hKσ y hc)
+  -- `Schk` fixes the opened rhs (its annotation fvars ⊆ rhs.tyFreeVars ∪ Ys).
+  have hrhs_Schk : TypeOfHM (Schk.onCtx (S₁.onCtx ctx)) (rhs.openTyVars Ys) (Schk.onTy τ₁) := by
+    refine TypeOfHM.onSubst_fixed Schk hSchk_lc
+      (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => ?_)) hrhs_ty
+    rcases Expr.tyFreeVars_openTyVars hc with h | h
+    · exact hSchk_rhs p hp h
+    · exact hYs_Schk p.1 h (List.mem_map.mpr ⟨p, hp, rfl⟩)
+  -- `Schk` fixes `σ.openVars Ys` (free vars ⊆ σ.body.freeVars ∪ Ys).
+  have hfix : Schk.onTy (σ.openVars Ys) = σ.openVars Ys := by
+    refine Ty.substFvars_eq_self_of_no_key (fun p hp hc => ?_)
+    rcases Ty.freeVars_openVars_subset p.1 hc with h | h
+    · exact hSchk_σ p hp h
+    · exact hYs_Schk p.1 h (List.mem_map.mpr ⟨p, hp, rfl⟩)
+  have hrhs_at_Ys : TypeOfHM (Schk.onCtx (S₁.onCtx ctx)) (rhs.openTyVars Ys) (σ.openVars Ys) := by
     have hu := huni.unifies
     rw [hu, hfix] at hrhs_Schk
     exact hrhs_Schk
-  -- Single opening ⟹ cofinite, then push `S₂` through; `σ` is closed so it is fixed.
-  have hsv0 : HasSchemeVars Ys (Schk.onCtx (S₁.onCtx ctx)) rhs σ :=
-    hasSchemeVars_of_fresh_opening hσnfv freshVars_nodup
-      (by rw [hYsdef, freshVars_length]) hesc2 hrhs_open
-  have hsv := hsv0.onSubst S₂ hbody_s
-  rw [Subst.onPolyTy_eq_self_of_closed hσnfv] at hsv
-  -- The body context (already `S₂`-applied) matches `M = σ :: outer.env`.
+  -- `S₂` fixes `σ` (its body fvars ⊆ K, which S₂ avoids).
+  have hS₂σ_fix : S₂.onPolyTy σ = σ := by
+    obtain ⟨pc, b⟩ := σ
+    simp only [Subst.onPolyTy, Subst.onTy, PolyTy.mk.injEq, true_and]
+    exact Ty.substFvars_eq_self_of_no_key (fun p hp hc => hS₂_σ p hp hc)
   have heqbody : S₂.onCtx { (Schk.onCtx (S₁.onCtx ctx)) with
         env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
       = { (S₂.onCtx (Schk.onCtx (S₁.onCtx ctx))) with
           env := σ :: (S₂.onCtx (Schk.onCtx (S₁.onCtx ctx))).env } := by
     simp only [Subst.onCtx, Subst.onEnv, List.map_cons]
-    rw [Subst.onPolyTy_eq_self_of_closed hσnfv]
+    rw [hS₂σ_fix]
   rw [heqbody] at hbody_ty
-  exact TypeOfHM.letIn (M := σ) (L := Ys ++ S₂.map Prod.fst) hσwf
-    (fun σ' h => by obtain rfl := Option.some.inj h; exact ⟨rfl, hσnfv⟩)
-    hsv rfl hbody_ty
+  refine TypeOfHM.letIn (M := σ) (L := Ys ++ S₂.map Prod.fst) hσwf
+    (fun σ' h => Option.some.inj h) ?cofin rfl hbody_ty
+  intro Xs hXfresh
+  obtain ⟨hXlen, hXnodup, hXavoid⟩ := hXfresh
+  have hYs_Xs : ∀ y ∈ Ys, y ∉ Xs := fun y hy hyXs =>
+    hXavoid y hyXs (List.mem_append_left _ hy)
+  have hS₂_Xs : ∀ p ∈ S₂, p.1 ∉ Xs := fun p hp hpXs =>
+    hXavoid p.1 hpXs (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
+  -- Rename `Ys ↦ Xs` in the single-opening typing (term via the Core bridge,
+  -- type via `openWith_eq_substFvars_openVars`).
+  have hrename := TypeOfHM.typ_substs_preservation (Ys.zip (Xs.map (Ty.fvar ·)))
+    (fun p hp => hYs_env p.1 (List.of_mem_zip hp).1)
+    (fun p hp => by
+      obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+      exact hx ▸ ContainsBvarsUpTo.fvar) hrhs_at_Ys
+  rw [Expr.substTyFvars_zip_openTyVars (by rw [hYlen, hXlen]) hYnodup hYs_rhs hYs_Xs] at hrename
+  have key : σ.openVars Xs = Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys) := by
+    rw [show σ.openVars Xs = Ty.openWith (Xs.map (Ty.fvar ·)) σ.body from Ty.openVars_eq_openWith]
+    exact Ty.openWith_eq_substFvars_openVars
+      ⟨by rw [List.length_map, hXlen, hYlen], fun V hV => by
+        obtain ⟨x, _, rfl⟩ := List.mem_map.mp hV; exact ContainsBvarsUpTo.fvar⟩
+      hYnodup hYs_σ
+      (fun Y hY hc => hYs_Xs Y hY (Ty.mem_freeVarsList_map_fvar.mp hc))
+  rw [← key] at hrename
+  -- Push `S₂` through; it fixes both `rhs.openTyVars Xs` and `σ.openVars Xs`.
+  show TypeOfHM (S₂.onCtx (Schk.onCtx (S₁.onCtx ctx))) (rhs.openTyVars Xs) (σ.openVars Xs)
+  have hS₂_openXs : (rhs.openTyVars Xs).substTyFvars S₂ = rhs.openTyVars Xs := by
+    refine Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => ?_)
+    rcases Expr.tyFreeVars_openTyVars hc with h | h
+    · exact hS₂_rhs p hp h
+    · exact hS₂_Xs p hp h
+  have hS₂_σXs : S₂.onTy (σ.openVars Xs) = σ.openVars Xs := by
+    refine Ty.substFvars_eq_self_of_no_key (fun p hp hc => ?_)
+    rcases Ty.freeVars_openVars_subset p.1 hc with h | h
+    · exact hS₂_σ p hp h
+    · exact hS₂_Xs p hp h
+  have hgoal := TypeOfHM.onSubst_fixed S₂ hS₂_lc hS₂_openXs hrename
+  rw [hS₂_σXs] at hgoal
+  exact hgoal
 
 /-- The `fst` soundness case, factored out (named binders avoid the
     inaccessible-name problem inside the `Infer.sound` induction). A unification
@@ -1364,12 +1516,13 @@ theorem Infer.sound_letInAnn {ctx : Ctx} {σ : PolyTy} {rhs body : Expr}
     is the (substituted) first component. -/
 theorem Infer.sound_fst {ctx : Ctx} {e : Expr} {S₁ S₂ : Subst}
     {Φ₁ : Nat} {τe : Ty}
-    (he_ty : TypeOfHM (S₁.onCtx ctx) e τe)
+    (he_ty : TypeOfHM (S₁.onCtx ctx) e τe) (hS₂_e : ∀ p ∈ S₂, p.1 ∉ e.tyFreeVars)
     (huni : UnifyRel τe (.pair (.fvar Φ₁) (.fvar (Φ₁ + 1))) S₂)
     (hS₂ : ∀ p ∈ S₂, p.2.IsLC) :
     TypeOfHM ((S₁ ++ S₂).onCtx ctx) (.fst e) (S₂.onTy (.fvar Φ₁)) := by
   rw [Subst.onCtx_append]
-  have h := TypeOfHM.onSubst S₂ hS₂ he_ty
+  have h := TypeOfHM.onSubst_fixed S₂ hS₂
+    (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars hS₂_e) he_ty
   have hu := huni.unifies
   simp only [Unifies, Subst.onTy_pair] at hu
   rw [hu] at h
@@ -1378,12 +1531,13 @@ theorem Infer.sound_fst {ctx : Ctx} {e : Expr} {S₁ S₂ : Subst}
 /-- The `snd` soundness case, mirror of `Infer.sound_fst`. -/
 theorem Infer.sound_snd {ctx : Ctx} {e : Expr} {S₁ S₂ : Subst}
     {Φ₁ : Nat} {τe : Ty}
-    (he_ty : TypeOfHM (S₁.onCtx ctx) e τe)
+    (he_ty : TypeOfHM (S₁.onCtx ctx) e τe) (hS₂_e : ∀ p ∈ S₂, p.1 ∉ e.tyFreeVars)
     (huni : UnifyRel τe (.pair (.fvar Φ₁) (.fvar (Φ₁ + 1))) S₂)
     (hS₂ : ∀ p ∈ S₂, p.2.IsLC) :
     TypeOfHM ((S₁ ++ S₂).onCtx ctx) (.snd e) (S₂.onTy (.fvar (Φ₁ + 1))) := by
   rw [Subst.onCtx_append]
-  have h := TypeOfHM.onSubst S₂ hS₂ he_ty
+  have h := TypeOfHM.onSubst_fixed S₂ hS₂
+    (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars hS₂_e) he_ty
   have hu := huni.unifies
   simp only [Unifies, Subst.onTy_pair] at hu
   rw [hu] at h
@@ -1490,24 +1644,35 @@ theorem Subst.onCtx_branchBindings {S : Subst} {ctorr : Ctor} {ta : List Ty} {ct
     inferred substitution to the context yields a declarative typing. -/
 mutual
 theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
-    CtxWF ctx → TypeOfHM (S.onCtx ctx) e τ := by
+    CtxWF ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
+    (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
+    TypeOfHM (S.onCtx ctx) e τ := by
   cases h with
-  | primLitUnit => intro _; simp only [Subst.onCtx_nil]; exact .primLitUnit
-  | primLitInt => intro _; simp only [Subst.onCtx_nil]; exact .primLitInt
-  | primLitNat => intro _; simp only [Subst.onCtx_nil]; exact .primLitNat
-  | primLitBool => intro _; simp only [Subst.onCtx_nil]; exact .primLitBool
-  | primLitStr => intro _; simp only [Subst.onCtx_nil]; exact .primLitStr
+  | primLitUnit => intro _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitUnit
+  | primLitInt => intro _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitInt
+  | primLitNat => intro _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitNat
+  | primLitBool => intro _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitBool
+  | primLitStr => intro _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitStr
   | pair ha hb =>
-    intro hctx
+    intro hctx K hKΦ hKe hSK
+    simp only [Expr.tyFreeVars, List.mem_append] at hKe
     have ha_s := (Infer.lc ha hctx).2
     have hb_s := (Infer.lc hb (Subst.onCtx_wf ha_s hctx)).2
-    have ha_ty := TypeOfHM.onSubst _ hb_s (Infer.sound ha hctx)
+    have ha_sound := Infer.sound ha hctx K hKΦ (fun y hy => hKe y (.inl hy))
+      (fun p hp => hSK p (List.mem_append_left _ hp))
+    have hb_sound := Infer.sound hb (Subst.onCtx_wf ha_s hctx) K
+      (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le ha))
+      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+    have ha_ty := TypeOfHM.onSubst_fixed _ hb_s
+      (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+        (fun p hp hc => hSK p (List.mem_append_right _ hp) (hKe p.1 (.inl hc)))) ha_sound
     rw [Subst.onCtx_append]
-    exact .pair ha_ty (Infer.sound hb (Subst.onCtx_wf ha_s hctx))
+    exact .pair ha_ty hb_sound
   | lambda hseed hbody =>
-    intro hctx
+    intro hctx K hKΦ hKe hSK
     cases hseed
     case none =>
+      simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at hKe
       refine TypeOfHM.lambda
         (Subst.onTy_lc (Infer.lc hbody (by
           intro M hM; rcases List.mem_cons.mp hM with rfl | hM
@@ -1517,59 +1682,79 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         (Infer.sound hbody (by
           intro M hM; rcases List.mem_cons.mp hM with rfl | hM
           · exact ContainsBvarsUpTo.fvar
-          · exact hctx M hM))
+          · exact hctx M hM) K (fun k hk => by have := hKΦ k hk; omega) hKe hSK)
     case some hcl =>
       expose_names
-      have hpc := ((Ty.isClosed_iff paramTy).mp hcl).2
-      have hnfv := ((Ty.isClosed_iff paramTy).mp hcl).1
+      simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at hKe
       have hself : S.onTy paramTy = paramTy :=
-        Ty.substFvars_eq_self_of_no_key (fun p _ => hnfv.not_mem_freeVars p.1)
+        Ty.substFvars_eq_self_of_no_key (fun p hp hc => hSK p hp (hKe p.1 (.inl hc)))
       refine TypeOfHM.lambda
         (Subst.onTy_lc (Infer.lc hbody (by
           intro M hM; rcases List.mem_cons.mp hM with rfl | hM
-          · exact hpc
-          · exact hctx M hM)).2 hpc)
+          · exact hcl
+          · exact hctx M hM)).2 hcl)
         ?_ rfl
         (Infer.sound hbody (by
           intro M hM; rcases List.mem_cons.mp hM with rfl | hM
-          · exact hpc
-          · exact hctx M hM))
+          · exact hcl
+          · exact hctx M hM) K (fun k hk => by have := hKΦ k hk; omega)
+          (fun y hy => hKe y (.inr hy)) hSK)
       intro T' hT'
       simp only [Option.some.injEq] at hT'
       subst hT'
-      rw [hself]
-      exact ⟨rfl, hnfv⟩
+      exact hself
   | app hf harg huni =>
-    intro hctx
+    intro hctx K hKΦ hKe hSK
+    simp only [Expr.tyFreeVars, List.mem_append] at hKe
     obtain ⟨hf_lc, hf_s⟩ := Infer.lc hf hctx
     have hctx1 := Subst.onCtx_wf hf_s hctx
     obtain ⟨harg_lc, harg_s⟩ := Infer.lc harg hctx1
     have hs3 := huni.lc (Subst.onTy_lc harg_s hf_lc) (.arrow harg_lc ContainsBvarsUpTo.fvar)
-    have f2 := TypeOfHM.onSubst _ hs3 (TypeOfHM.onSubst _ harg_s (Infer.sound hf hctx))
-    have a1 := TypeOfHM.onSubst _ hs3 (Infer.sound harg hctx1)
+    have hf_sound := Infer.sound hf hctx K hKΦ (fun y hy => hKe y (.inl hy))
+      (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
+    have harg_sound := Infer.sound harg hctx1 K
+      (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hf))
+      (fun y hy => hKe y (.inr hy))
+      (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)))
+    have f2 := TypeOfHM.onSubst_fixed _ hs3
+      (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+        (fun p hp hc => hSK p (List.mem_append_right _ hp) (hKe p.1 (.inl hc))))
+      (TypeOfHM.onSubst_fixed _ harg_s
+        (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+          (fun p hp hc => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)) (hKe p.1 (.inl hc))))
+        hf_sound)
+    have a1 := TypeOfHM.onSubst_fixed _ hs3
+      (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+        (fun p hp hc => hSK p (List.mem_append_right _ hp) (hKe p.1 (.inr hc))))
+      harg_sound
     have hueq := huni.unifies
     simp only [Unifies, Subst.onTy_arrow] at hueq
     rw [hueq] at f2
     rw [Subst.onCtx_append, Subst.onCtx_append]
     exact .app f2 a1
   | var hlook =>
-    intro hctx
+    intro hctx _ _ _ _
     simp only [Subst.onCtx_nil]
     refine TypeOfHM.var hlook (fun tyArg ht => ?_)
       (InstantiatesBy.openVars (hctx _ (List.mem_of_getElem? hlook)) (by simp))
     obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht
     exact .fvar
   | ctor hlook =>
-    intro _
+    intro _ _ _ _ _
     simp only [Subst.onCtx_nil]
     refine TypeOfHM.ctor hlook (fun tyArg ht => ?_)
       (InstantiatesBy.openVars (Ctor.toTy_wf _) (by simp [Ctor.toTy]))
     obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht
     exact .fvar
   | letIn hrhs hbody =>
-    intro hctx
+    intro hctx K hKΦ hKe hSK
+    simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append] at hKe
     obtain ⟨hrhs_lc, hrhs_s⟩ := Infer.lc hrhs hctx
-    exact Infer.sound_letIn (Infer.sound hrhs hctx) hrhs_lc
+    exact Infer.sound_letIn
+      (Infer.sound hrhs hctx K hKΦ (fun y hy => hKe y (.inl hy))
+        (fun p hp => hSK p (List.mem_append_left _ hp)))
+      hrhs_lc
+      (fun p hp hc => hSK p (List.mem_append_right _ hp) (hKe p.1 (.inl hc)))
       (Infer.lc hbody (by
         intro M hM; rcases List.mem_cons.mp hM with rfl | hM
         · exact genScheme_wf hrhs_lc
@@ -1577,10 +1762,13 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       (Infer.sound hbody (by
         intro M hM; rcases List.mem_cons.mp hM with rfl | hM
         · exact genScheme_wf hrhs_lc
-        · exact (Subst.onCtx_wf hrhs_s hctx) M hM))
-  | letInAnn hrhs hσwf hσnfv huni hesc1 hesc2 hbody =>
-    intro hctx
+        · exact (Subst.onCtx_wf hrhs_s hctx) M hM) K
+        (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hrhs))
+        (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp)))
+  | letInAnn hσwf hrhs huni hesc1 hesc2 hbody =>
+    intro hctx K hKΦ hKe hSK
     expose_names
+    simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at hKe
     obtain ⟨hrhs_lc, hrhs_s⟩ := Infer.lc hrhs hctx
     have hSchk_lc : ∀ p ∈ Schk, p.2.IsLC :=
       UnifyRel.lc huni hrhs_lc (PolyTy.openVars_isLC hσwf (by simp))
@@ -1589,21 +1777,56 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       intro M hM; rcases List.mem_cons.mp hM with rfl | hM
       · exact hσwf
       · exact (Subst.onCtx_wf hSchk_lc (Subst.onCtx_wf hrhs_s hctx)) M hM
-    exact Infer.sound_letInAnn (Infer.sound hrhs hctx) hrhs_lc hσwf hσnfv huni hesc1 hesc2
-      hSchk_lc (Infer.lc hbody hbodyWF).2 (Infer.sound hbody hbodyWF)
+    have hbody_s := (Infer.lc hbody hbodyWF).2
+    have hrhs_sound := Infer.sound hrhs hctx (K ++ freshVars Φ σ.paramCount)
+      (fun k hk => by
+        rw [List.mem_append] at hk
+        rcases hk with hk | hk
+        · have := hKΦ k hk; omega
+        · have := freshVars_lt k hk; omega)
+      (fun y hy => by
+        rcases Expr.tyFreeVars_openTyVars hy with h | h
+        · exact List.mem_append_left _ (hKe y (.inl (.inr h)))
+        · exact List.mem_append_right _ h)
+      (fun p hp hc => by
+        rw [List.mem_append] at hc
+        rcases hc with hc | hc
+        · exact hSK p (List.mem_append_left _ (List.mem_append_left _ hp)) hc
+        · exact hesc1 p.1 hc
+            (by rw [List.map_append]; exact List.mem_append_left _ (List.mem_map.mpr ⟨p, hp, rfl⟩)))
+    have hbody_sound := Infer.sound hbody hbodyWF K
+      (fun k hk => by have := hKΦ k hk; have := Infer.frontier_le hrhs; omega)
+      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+    exact Infer.sound_letInAnn hrhs_sound hrhs_lc hσwf freshVars_nodup
+      (freshVars_length Φ σ.paramCount) huni K
+      (fun y hy => hKe y (.inl (.inr hy))) (fun y hy => hKe y (.inl (.inl hy)))
+      (fun y hy hyK => by have := hKΦ y hyK; have := freshVars_ge y hy; omega)
+      (fun y hy hc => hesc1 y hy (by rw [List.map_append]; exact List.mem_append_right _ hc))
+      hesc2
+      (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)))
+      hSchk_lc
+      (fun p hp => hSK p (List.mem_append_right _ hp))
+      hbody_s hbody_sound
   | fst he huni =>
-    intro hctx
+    intro hctx K hKΦ hKe hSK
+    simp only [Expr.tyFreeVars] at hKe
     obtain ⟨he_lc, _⟩ := Infer.lc he hctx
     have hs2 := huni.lc he_lc (.pair ContainsBvarsUpTo.fvar ContainsBvarsUpTo.fvar)
-    exact Infer.sound_fst (Infer.sound he hctx) huni hs2
+    exact Infer.sound_fst
+      (Infer.sound he hctx K hKΦ hKe (fun p hp => hSK p (List.mem_append_left _ hp)))
+      (fun p hp hc => hSK p (List.mem_append_right _ hp) (hKe p.1 hc)) huni hs2
   | snd he huni =>
-    intro hctx
+    intro hctx K hKΦ hKe hSK
+    simp only [Expr.tyFreeVars] at hKe
     obtain ⟨he_lc, _⟩ := Infer.lc he hctx
     have hs2 := huni.lc he_lc (.pair ContainsBvarsUpTo.fvar ContainsBvarsUpTo.fvar)
-    exact Infer.sound_snd (Infer.sound he hctx) huni hs2
+    exact Infer.sound_snd
+      (Infer.sound he hctx K hKΦ hKe (fun p hp => hSK p (List.mem_append_left _ hp)))
+      (fun p hp hc => hSK p (List.mem_append_right _ hp) (hKe p.1 hc)) huni hs2
   | match_ hscrut hne huni hbr =>
-    intro hctx
+    intro hctx K hKΦ hKe hSK
     expose_names
+    simp only [Expr.tyFreeVars, List.mem_append] at hKe
     rw [Subst.onCtx_append, Subst.onCtx_append]
     obtain ⟨hscrut_lc, hS₁⟩ := Infer.lc hscrut hctx
     have hS₂ := huni.lc hscrut_lc
@@ -1618,22 +1841,38 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     have hS₃ := (InferBranches.lc hbr hctxbr htabr hρbr).2
     have hscrut_decl : TypeOfHM (S₃.onCtx (S₂.onCtx (S₁.onCtx ctx))) scrut
         (.customTy tyName ((((freshVars Φ₁ arity).map (Ty.fvar ·)).map S₂.onTy).map S₃.onTy)) := by
-      have h0 := TypeOfHM.onSubst S₃ hS₃ (TypeOfHM.onSubst S₂ hS₂ (Infer.sound hscrut hctx))
+      have h0 := TypeOfHM.onSubst_fixed S₃ hS₃
+        (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+          (fun p hp hc => hSK p (List.mem_append_right _ hp) (hKe p.1 (.inl hc))))
+        (TypeOfHM.onSubst_fixed S₂ hS₂
+          (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+            (fun p hp hc => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)) (hKe p.1 (.inl hc))))
+          (Infer.sound hscrut hctx K hKΦ (fun y hy => hKe y (.inl hy))
+            (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))))
       have hu := huni.unifies
       simp only [Unifies] at hu
       rw [hu] at h0
       simp only [Subst.onTy_customTy] at h0
       exact h0
     refine TypeOfHM.match_ hscrut_decl hne ?_
-    exact InferBranches.sound hbr hctxbr htabr hρbr
+    exact InferBranches.sound hbr hctxbr htabr hρbr K
+      (fun k hk => by have := hKΦ k hk; have := Infer.frontier_le hscrut; omega)
+      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+termination_by e.size
+decreasing_by
+  all_goals (simp_wf; try subst_vars; try simp only [Expr.size, Expr.sizeBranches, Expr.size_openTyVars]; omega)
 theorem InferBranches.sound {Φ ctx tn ta ρ brs Φ' S}
     (h : InferBranches Φ ctx tn ta ρ brs Φ' S)
-    (hctx : CtxWF ctx) (hta : ∀ t ∈ ta, t.IsLC) (hρ : ρ.IsLC) :
+    (hctx : CtxWF ctx) (hta : ∀ t ∈ ta, t.IsLC) (hρ : ρ.IsLC) (K : List Nat)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
     ∀ br ∈ brs, TypeOfMatchBranch (S.onCtx ctx) br tn (ta.map S.onTy) (S.onTy ρ) := by
   cases h with
   | nil => intro br hbr; simp at hbr
   | cons hlook htyName hpc hpc2 hbody huni hrest =>
     expose_names
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at hKbr
     have hbodyWF := branchBindings_wf hctx hta hpc
     obtain ⟨hτb_lc, hS₁⟩ := Infer.lc hbody hbodyWF
     have hS₂ := huni.lc hτb_lc (Subst.onTy_lc hS₁ hρ)
@@ -1651,8 +1890,15 @@ theorem InferBranches.sound {Φ ctx tn ta ρ brs Φ' S}
       · exact hS₃ p hp
     intro br hbr
     rcases List.mem_cons.mp hbr with rfl | hbr_rest
-    · have h0 := Infer.sound hbody hbodyWF
-      have h1 := TypeOfHM.onSubst S₃ hS₃ (TypeOfHM.onSubst S₂ hS₂ h0)
+    · have h0 := Infer.sound hbody hbodyWF K hKΦ (fun y hy => hKbr y (.inl hy))
+        (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
+      have h1 := TypeOfHM.onSubst_fixed S₃ hS₃
+        (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+          (fun p hp hc => hSK p (List.mem_append_right _ hp) (hKbr p.1 (.inl hc))))
+        (TypeOfHM.onSubst_fixed S₂ hS₂
+          (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+            (fun p hp hc => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)) (hKbr p.1 (.inl hc))))
+          h0)
       have huni_eq := huni.unifies
       simp only [Unifies] at huni_eq
       rw [huni_eq] at h1
@@ -1678,9 +1924,24 @@ theorem InferBranches.sound {Φ ctx tn ta ρ brs Φ' S}
         (fun t ht => by
           obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
           exact Subst.onTy_lc hS₂ (Subst.onTy_lc hS₁ (hta t0 ht0)))
-        (Subst.onTy_lc hS₂ (Subst.onTy_lc hS₁ hρ))
+        (Subst.onTy_lc hS₂ (Subst.onTy_lc hS₁ hρ)) K
+        (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hbody))
+        (fun y hy => hKbr y (.inr hy))
+        (fun p hp => hSK p (List.mem_append_right _ hp))
         br hbr_rest
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (simp_wf; try subst_vars; try simp only [Expr.size, Expr.sizeBranches, Expr.size_openTyVars]; omega)
 end
+
+/-- **Headline soundness for a closed program.** A program with no free scoped
+    type variables (`e.tyFreeVars = []`, the top-level case) instantiates the
+    ambient skolem set `K := []`: the inferred substitution then trivially avoids
+    it, recovering the plain `TypeOfHM (S.onCtx ctx) e τ`. -/
+theorem Infer.sound_closed {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
+    (hctx : CtxWF ctx) (hclosed : e.tyFreeVars = []) :
+    TypeOfHM (S.onCtx ctx) e τ :=
+  Infer.sound h hctx [] (by simp) (by simp [hclosed]) (by simp)
 
 
 /-! ## Algorithmic phase, step 2b: completeness (principality) scaffolding
@@ -1783,13 +2044,6 @@ theorem Subst.onCtx_below {Φ Φ' : Nat} {S : Subst} {ctx : Ctx}
   simp only [Subst.onCtx, Subst.onEnv] at hM
   obtain ⟨M0, hM0, rfl⟩ := List.mem_map.mp hM
   exact Subst.onTy_belowFvars hS ((hb M0 hM0).mono hle)
-
-/-- The `k` fresh names allocated from frontier `Φ` are all `< Φ + k`. -/
-theorem freshVars_lt {Φ k : Nat} : ∀ x ∈ freshVars Φ k, x < Φ + k := by
-  intro x hx
-  simp only [freshVars, List.mem_map, List.mem_range] at hx
-  obtain ⟨i, hi, rfl⟩ := hx
-  omega
 
 /-- Opening a below-`Φ` type with fresh names all `< Φ` stays below-`Φ`. -/
 theorem Ty.openVars_belowFvars {Φ : Nat} {Xs : List Nat} {τ : Ty}
@@ -3084,12 +3338,6 @@ theorem Ty.BelowFvars.of_freeVars_lt {Φ : Nat} {τ : Ty}
     simp only [Ty.freeVars]
     exact TyList.mem_freeVars_of_mem ht hv
 
-theorem freshVars_ge {Φ k : Nat} : ∀ x ∈ freshVars Φ k, Φ ≤ x := by
-  intro x hx
-  simp only [freshVars, List.mem_map, List.mem_range] at hx
-  obtain ⟨i, _, rfl⟩ := hx
-  omega
-
 /-- A single fresh name `W` starting a block `[W,W+k)` disjoint from `[Φ,Φ+k)`
     and above a finite `avoid` set. -/
 theorem exists_fresh_block (avoid : List Nat) (Φ k : Nat) :
@@ -3143,7 +3391,8 @@ theorem Infer.complete_var {i : Nat} : Infer.CompleteAt (.var i) := by
   have finj : Function.Injective (blockSwap Φ W pc) := blockSwap_injective hd
   have hffix : ∀ v, v < Φ → blockSwap Φ W pc v = v := fun v hv => blockSwap_lt (by omega) hv
   -- STEP 2: rename `hty` by the block-swap, reinterpret as a `conj`.
-  have hren := TypeOfHM.onSubst (blockList Φ W pc) (blockList_lc Φ W pc) hty
+  have hren := TypeOfHM.onSubst_fixed (blockList Φ W pc) (blockList_lc Φ W pc)
+    (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) hty
   have hctxeq : (blockList Φ W pc).onCtx (S₀.onCtx ctx)
       = (Subst.conj (blockSwap Φ W pc) S₀).onCtx ctx := by
     simp only [Subst.onCtx, Subst.onEnv, List.map_map]
@@ -3266,7 +3515,8 @@ theorem Infer.complete_ctor {name : CtorName} : Infer.CompleteAt (.ctor name) :=
   have finj : Function.Injective (blockSwap Φ W pc) := blockSwap_injective hd
   have hffix : ∀ v, v < Φ → blockSwap Φ W pc v = v := fun v hv => blockSwap_lt (by omega) hv
   -- STEP 2: rename `hty` by the block-swap, reinterpret as a `conj`.
-  have hren := TypeOfHM.onSubst (blockList Φ W pc) (blockList_lc Φ W pc) hty
+  have hren := TypeOfHM.onSubst_fixed (blockList Φ W pc) (blockList_lc Φ W pc)
+    (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) hty
   have hctxeq : (blockList Φ W pc).onCtx (S₀.onCtx ctx)
       = (Subst.conj (blockSwap Φ W pc) S₀).onCtx ctx := by
     simp only [Subst.onCtx, Subst.onEnv, List.map_map]

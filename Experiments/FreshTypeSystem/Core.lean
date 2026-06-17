@@ -2374,6 +2374,81 @@ theorem Ty.openWith_eq_substFvars_openVars
     simpa using ih t ht ht_fresh
 
 
+/-- **Rename the opening (type level, depth-general).** Opening `t`'s scoped
+    `bvar`s (offset `d`) at a fresh block `Ys`, then renaming `Ys ↦ Xs` (as
+    `fvar`s), equals opening directly at `Xs`. The freshness side conditions
+    (`Ys` nodup, disjoint from `t`'s pre-existing free vars and from `Xs`) ensure
+    the rename only touches names introduced by the opening. This is the
+    depth-general fact the term-level renamer below recurses with through nested
+    schemes; `Ty.openWith_eq_substFvars_openVars` is essentially its `d = 0`
+    converse. -/
+theorem Ty.substFvars_zip_openVarsFrom {d : Nat} {t : Ty} {Ys Xs : List Nat}
+    (h_len : Ys.length = Xs.length) (h_Ys_nodup : Ys.Nodup)
+    (h_Ys_t : ∀ y ∈ Ys, y ∉ t.freeVars) (h_Ys_Xs : ∀ y ∈ Ys, y ∉ Xs) :
+    Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (Ty.openVarsFrom d Ys t)
+      = Ty.openVarsFrom d Xs t := by
+  have h_lenV : (Xs.map (Ty.fvar ·)).length = Ys.length := by
+    rw [List.length_map, ← h_len]
+  have h_freshV : ∀ Y ∈ Ys, Y ∉ Ty.freeVarsList (Xs.map (Ty.fvar ·)) := by
+    intro Y hY hc
+    refine h_Ys_Xs Y hY ?_
+    clear hY h_len h_Ys_nodup h_Ys_t h_Ys_Xs h_lenV
+    induction Xs with
+    | nil => simp only [List.map_nil, Ty.freeVarsList] at hc; exact absurd hc List.not_mem_nil
+    | cons x xs ih =>
+      simp only [List.map_cons, Ty.freeVarsList, List.mem_dedup, List.mem_append] at hc
+      cases hc with
+      | inl h => simp only [Ty.freeVars, List.mem_singleton] at h; exact h ▸ List.mem_cons_self
+      | inr h => exact List.mem_cons_of_mem _ (ih h)
+  unfold Ty.openVarsFrom
+  induction t using Ty.rec_strong with
+  | prim p => simp only [Ty.instantiate, Ty.substFvars_prim]
+  | bvar i =>
+    simp only [Ty.instantiate]
+    by_cases h_d : i < d
+    · simp only [if_pos h_d, Ty.substFvars_bvar]
+    · simp only [if_neg h_d]
+      cases h_ys : Ys[i - d]? with
+      | none =>
+        have h_xs : Xs[i - d]? = none := by
+          rw [List.getElem?_eq_none_iff] at h_ys ⊢; omega
+        simp only [h_xs, Option.elim, Ty.substFvars_bvar]
+      | some y =>
+        have hlt : i - d < Ys.length := by
+          obtain ⟨h, _⟩ := List.getElem?_eq_some_iff.mp h_ys; exact h
+        have h_xs : Xs[i - d]? = some Xs[i - d] := List.getElem?_eq_getElem (by omega)
+        have hvx : (Xs.map (Ty.fvar ·))[i - d]? = some (Ty.fvar Xs[i - d]) := by
+          rw [List.getElem?_map, h_xs]; rfl
+        simp only [h_xs, Option.elim]
+        exact Ty.substFvars_zip_fvar_eq h_lenV h_Ys_nodup h_freshV h_ys hvx
+  | fvar n =>
+    simp only [Ty.instantiate]
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    exact h_Ys_t p.1 (List.of_mem_zip hp).1 (hc ▸ by simp [Ty.freeVars])
+  | pair a b iha ihb =>
+    simp only [Ty.instantiate, Ty.substFvars_pair]
+    rw [iha (fun y hy hc => h_Ys_t y hy (by
+          simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hc)),
+        ihb (fun y hy hc => h_Ys_t y hy (by
+          simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hc))]
+  | arrow a b iha ihb =>
+    simp only [Ty.instantiate, Ty.substFvars_arrow]
+    rw [iha (fun y hy hc => h_Ys_t y hy (by
+          simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hc)),
+        ihb (fun y hy hc => h_Ys_t y hy (by
+          simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hc))]
+  | customTy nm tys ih =>
+    simp only [Ty.instantiate, TyList.instantiate_eq_map, Ty.substFvars_customTy, List.map_map]
+    apply congrArg (Ty.customTy nm)
+    apply List.map_congr_left
+    intro t ht
+    have ht_fresh : ∀ y ∈ Ys, y ∉ t.freeVars := fun y hy hc =>
+      h_Ys_t y hy (by simp only [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht hc)
+    simpa using ih t ht ht_fresh
+
+
 /-! ### `substFvar` interaction with the typing-side predicates.
 
 Helpers needed by `typ_subst_preservation`. -/
@@ -3203,6 +3278,453 @@ theorem Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars {pairs : List (Nat × Ty
     simp only [Expr.substTyFvars]
     rw [Expr.substTyFvar_eq_self_of_not_mem_tyFreeVars hZ]
     exact ih (fun p hp => h p (List.mem_cons_of_mem _ hp))
+
+/-! ### `substTyFvars` structural distribution (toward the term-level rename lemma).
+
+`Expr.substTyFvars` (a left-to-right fold of `Expr.substTyFvar`) pushes through
+every term constructor; the annotation cases map the corresponding `Ty`/`PolyTy`
+substitution over the stored annotation. These mirror the `Ty.substFvars_*`
+distribution lemmas. -/
+
+private theorem BranchList.substTyFvar_eq_map {Z : Nat} {U : Ty}
+    {brs : List (MatchPattern × Expr)} :
+    BranchList.substTyFvar Z U brs = brs.map (fun pb => (pb.1, pb.2.substTyFvar Z U)) := by
+  induction brs with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨p, b⟩ := hd; simp only [BranchList.substTyFvar, List.map_cons, ih]
+
+private theorem BranchList.openTyVarsAux_eq_map {d : Nat} {Xs : List Nat}
+    {brs : List (MatchPattern × Expr)} :
+    BranchList.openTyVarsAux d Xs brs = brs.map (fun pb => (pb.1, pb.2.openTyVarsAux d Xs)) := by
+  induction brs with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨p, b⟩ := hd; simp only [BranchList.openTyVarsAux, List.map_cons, ih]
+
+theorem Expr.substTyFvars_pair {σ : List (Nat × Ty)} {a b : Expr} :
+    Expr.substTyFvars σ (.pair a b) = .pair (a.substTyFvars σ) (b.substTyFvars σ) := by
+  induction σ generalizing a b with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [Expr.substTyFvars, Expr.substTyFvar, ih]
+
+theorem Expr.substTyFvars_app {σ : List (Nat × Ty)} {f arg : Expr} :
+    Expr.substTyFvars σ (.app f arg) = .app (f.substTyFvars σ) (arg.substTyFvars σ) := by
+  induction σ generalizing f arg with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [Expr.substTyFvars, Expr.substTyFvar, ih]
+
+theorem Expr.substTyFvars_fst {σ : List (Nat × Ty)} {e : Expr} :
+    Expr.substTyFvars σ (.fst e) = .fst (e.substTyFvars σ) := by
+  induction σ generalizing e with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [Expr.substTyFvars, Expr.substTyFvar, ih]
+
+theorem Expr.substTyFvars_snd {σ : List (Nat × Ty)} {e : Expr} :
+    Expr.substTyFvars σ (.snd e) = .snd (e.substTyFvars σ) := by
+  induction σ generalizing e with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [Expr.substTyFvars, Expr.substTyFvar, ih]
+
+theorem Expr.substTyFvars_lambda {σ : List (Nat × Ty)} {ann : Option Ty} {body : Expr} :
+    Expr.substTyFvars σ (.lambda ann body)
+      = .lambda (ann.map (Ty.substFvars σ)) (body.substTyFvars σ) := by
+  induction σ generalizing ann body with
+  | nil => cases ann <;> rfl
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    simp only [Expr.substTyFvars, Expr.substTyFvar]
+    rw [ih]
+    cases ann with
+    | none => rfl
+    | some t => simp only [Option.map_some, Ty.substFvars]
+
+theorem Expr.substTyFvars_letIn {σ : List (Nat × Ty)} {ann : Option PolyTy} {rhs body : Expr} :
+    Expr.substTyFvars σ (.letIn ann rhs body)
+      = .letIn (ann.map (fun M => ⟨M.paramCount, Ty.substFvars σ M.body⟩))
+          (rhs.substTyFvars σ) (body.substTyFvars σ) := by
+  induction σ generalizing ann rhs body with
+  | nil => cases ann <;> rfl
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    simp only [Expr.substTyFvars, Expr.substTyFvar]
+    rw [ih]
+    cases ann with
+    | none => rfl
+    | some M => simp only [Option.map_some, PolyTy.substFvar, Ty.substFvars]
+
+theorem Expr.substTyFvars_match {σ : List (Nat × Ty)} {scrut : Expr}
+    {branches : List (MatchPattern × Expr)} :
+    Expr.substTyFvars σ (.match_ scrut branches)
+      = .match_ (scrut.substTyFvars σ) (branches.map (fun pb => (pb.1, pb.2.substTyFvars σ))) := by
+  induction σ generalizing scrut branches with
+  | nil =>
+    simp only [Expr.substTyFvars]
+    congr 1
+    conv_lhs => rw [← List.map_id branches]
+    apply List.map_congr_left
+    rintro ⟨p, b⟩ _; rfl
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    simp only [Expr.substTyFvars, Expr.substTyFvar, BranchList.substTyFvar_eq_map, ih,
+      List.map_map, Function.comp_def]
+
+/-- A branch body's annotation free vars are among the branch list's. -/
+private theorem Expr.mem_branchList_tyFreeVars {p : MatchPattern} {b : Expr} {y : Nat}
+    {brs : List (MatchPattern × Expr)} (hmem : (p, b) ∈ brs) (hy : y ∈ b.tyFreeVars) :
+    y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs := by
+  induction brs with
+  | nil => exact absurd hmem List.not_mem_nil
+  | cons hd tl ih =>
+    obtain ⟨p', b'⟩ := hd
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]
+    rcases List.mem_cons.mp hmem with h | h
+    · rw [Prod.mk.injEq] at h; obtain ⟨_, rfl⟩ := h; exact .inl hy
+    · exact .inr (ih h)
+
+/-- **Rename the opening (term level, depth-general).** Opening a term `e`'s
+    scoped type variables (offset `d`) at a fresh block `Ys`, then renaming
+    `Ys ↦ Xs` (as `fvar`s through the annotations), equals opening directly at
+    `Xs`. The annotation cases use `Ty.substFvars_zip_openVarsFrom`. Freshness
+    side conditions (`Ys` nodup, disjoint from `e`'s pre-existing annotation free
+    vars and from `Xs`) ensure the rename only touches names introduced by the
+    opening. -/
+theorem Expr.substTyFvars_zip_openTyVarsAux {Ys Xs : List Nat}
+    (h_len : Ys.length = Xs.length) (h_Ys_nodup : Ys.Nodup) (h_Ys_Xs : ∀ y ∈ Ys, y ∉ Xs) :
+    ∀ (e : Expr) (d : Nat), (∀ y ∈ Ys, y ∉ e.tyFreeVars) →
+      (e.openTyVarsAux d Ys).substTyFvars (Ys.zip (Xs.map (Ty.fvar ·)))
+        = e.openTyVarsAux d Xs := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p =>
+    intro d _; simp only [Expr.openTyVarsAux]
+    exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
+  | var n =>
+    intro d _; simp only [Expr.openTyVarsAux]
+    exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
+  | ctor nm =>
+    intro d _; simp only [Expr.openTyVarsAux]
+    exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
+  | pair a b iha ihb =>
+    intro d hfresh
+    simp only [Expr.openTyVarsAux, Expr.substTyFvars_pair]
+    rw [iha d (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, List.mem_append]; tauto)),
+        ihb d (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, List.mem_append]; tauto))]
+  | app f arg ihf iharg =>
+    intro d hfresh
+    simp only [Expr.openTyVarsAux, Expr.substTyFvars_app]
+    rw [ihf d (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, List.mem_append]; tauto)),
+        iharg d (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, List.mem_append]; tauto))]
+  | fst e ih =>
+    intro d hfresh
+    simp only [Expr.openTyVarsAux, Expr.substTyFvars_fst]
+    rw [ih d (fun y hy hc => hfresh y hy (by simpa only [Expr.tyFreeVars] using hc))]
+  | snd e ih =>
+    intro d hfresh
+    simp only [Expr.openTyVarsAux, Expr.substTyFvars_snd]
+    rw [ih d (fun y hy hc => hfresh y hy (by simpa only [Expr.tyFreeVars] using hc))]
+  | lambda ann body ih =>
+    intro d hfresh
+    simp only [Expr.openTyVarsAux, Expr.substTyFvars_lambda]
+    rw [ih d (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, List.mem_append]; tauto))]
+    cases ann with
+    | none => rfl
+    | some t =>
+      simp only [Option.map_some]
+      rw [Ty.substFvars_zip_openVarsFrom h_len h_Ys_nodup
+        (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, Option.elim, List.mem_append]; tauto))
+        h_Ys_Xs]
+  | letIn ann rhs body ihrhs ihbody =>
+    intro d hfresh
+    cases ann with
+    | none =>
+      simp only [Expr.openTyVarsAux, Expr.substTyFvars_letIn, Option.map_none]
+      rw [ihrhs d (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, Option.elim, List.mem_append]; tauto)),
+          ihbody d (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, Option.elim, List.mem_append]; tauto))]
+    | some σ =>
+      simp only [Expr.openTyVarsAux, Expr.substTyFvars_letIn]
+      rw [ihrhs (d + σ.paramCount) (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, Option.elim, List.mem_append]; tauto)),
+          ihbody d (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, Option.elim, List.mem_append]; tauto))]
+      simp only [Option.map_some]
+      rw [Ty.substFvars_zip_openVarsFrom h_len h_Ys_nodup
+        (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, Option.elim, List.mem_append]; tauto))
+        h_Ys_Xs]
+  | match_ scrut branches ihscrut ihbranches =>
+    intro d hfresh
+    simp only [Expr.openTyVarsAux, BranchList.openTyVarsAux_eq_map, Expr.substTyFvars_match]
+    rw [ihscrut d (fun y hy hc => hfresh y hy (by simp only [Expr.tyFreeVars, List.mem_append]; tauto))]
+    congr 1
+    rw [List.map_map]
+    apply List.map_congr_left
+    rintro ⟨p, b⟩ hpb
+    simp only [Function.comp_def]
+    rw [ihbranches p b hpb d (fun y hy hc => hfresh y hy (by
+      simp only [Expr.tyFreeVars, List.mem_append]
+      exact .inr (Expr.mem_branchList_tyFreeVars hpb hc)))]
+
+/-- Top-level form of `Expr.substTyFvars_zip_openTyVarsAux`
+    (`Expr.openTyVars = Expr.openTyVarsAux 0`). The key bridge for soundness of
+    scoped type variables: the algorithm checks the bound expression opened at one
+    skolem block `Ys`; this lets the declarative cofinite premise be recovered by
+    renaming `Ys` to any fresh `Xs`. -/
+theorem Expr.substTyFvars_zip_openTyVars {Ys Xs : List Nat} {e : Expr}
+    (h_len : Ys.length = Xs.length) (h_Ys_nodup : Ys.Nodup)
+    (h_Ys_e : ∀ y ∈ Ys, y ∉ e.tyFreeVars) (h_Ys_Xs : ∀ y ∈ Ys, y ∉ Xs) :
+    (e.openTyVars Ys).substTyFvars (Ys.zip (Xs.map (Ty.fvar ·))) = e.openTyVars Xs := by
+  unfold Expr.openTyVars
+  exact Expr.substTyFvars_zip_openTyVarsAux h_len h_Ys_nodup h_Ys_Xs e 0 h_Ys_e
+
+/-! ### Annotation-free structural size (a well-founded measure for derivation
+    recursion). The D2 algorithm infers the bound expression *opened* at skolems
+    (`rhs.openTyVars Ys`), which is not a structural subterm of the `let`, so the
+    default term measure no longer decreases for the `Infer`-recursive metatheory.
+    `Expr.size` ignores type annotations, so `openTyVars` preserves it
+    (`Expr.size_openTyVars`), giving a measure that *does* decrease. -/
+mutual
+def Expr.size : Expr → Nat
+  | .primLit _          => 1
+  | .pair a b           => 1 + a.size + b.size
+  | .lambda _ body      => 1 + body.size
+  | .app f arg          => 1 + f.size + arg.size
+  | .letIn _ rhs body   => 1 + rhs.size + body.size
+  | .fst e              => 1 + e.size
+  | .snd e              => 1 + e.size
+  | .var _              => 1
+  | .ctor _             => 1
+  | .match_ scrut branches => 1 + scrut.size + Expr.sizeBranches branches
+def Expr.sizeBranches : List (MatchPattern × Expr) → Nat
+  | []                  => 0
+  | (_, b) :: rest      => 1 + b.size + Expr.sizeBranches rest
+end
+
+/-- `Expr.size` is invariant under opening scoped type variables (it ignores the
+    annotations that `openTyVars` rewrites). The match-case branch reasoning lives
+    here in `Core` where `BranchList.openTyVarsAux` is in scope. -/
+theorem Expr.size_openTyVarsAux {Xs : List Nat} :
+    ∀ (e : Expr) (d : Nat), (e.openTyVarsAux d Xs).size = e.size := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro d; rfl
+  | pair a b iha ihb => intro d; simp only [Expr.openTyVarsAux, Expr.size, iha, ihb]
+  | app f inp ihf ihi => intro d; simp only [Expr.openTyVarsAux, Expr.size, ihf, ihi]
+  | lambda ann body ih => intro d; simp only [Expr.openTyVarsAux, Expr.size, ih]
+  | letIn ann be body ihbe ihbody =>
+    intro d
+    cases ann with
+    | none => simp only [Expr.openTyVarsAux, Expr.size, ihbe, ihbody]
+    | some σ => simp only [Expr.openTyVarsAux, Expr.size, ihbe, ihbody]
+  | fst e ih => intro d; simp only [Expr.openTyVarsAux, Expr.size, ih]
+  | snd e ih => intro d; simp only [Expr.openTyVarsAux, Expr.size, ih]
+  | var n => intro d; rfl
+  | ctor nm => intro d; rfl
+  | match_ scrut branches ihs ihbs =>
+    intro d
+    simp only [Expr.openTyVarsAux, Expr.size]
+    rw [ihs d]
+    congr 1
+    revert ihbs
+    induction branches with
+    | nil => intro _; rfl
+    | cons hd tl ihtl =>
+      intro ihbs
+      obtain ⟨pat, body⟩ := hd
+      simp only [BranchList.openTyVarsAux, Expr.sizeBranches]
+      rw [ihbs pat body List.mem_cons_self d,
+          ihtl (fun p e hm => ihbs p e (List.mem_cons_of_mem _ hm))]
+
+theorem Expr.size_openTyVars {Xs : List Nat} {e : Expr} :
+    (e.openTyVars Xs).size = e.size := Expr.size_openTyVarsAux e 0
+
+/-! ### Free-variable containment under opening
+
+Opening a term's scoped type variables (`Expr.openTyVars Xs`) can only introduce
+the fresh opening names `Xs` into the term's annotation free vars — every other
+free var was already there. The `letInAnn` soundness case uses this to bound the
+*opened* bound expression's annotation fvars by `K ∪ Ys` (the ambient skolem set
+extended with the freshly-allocated skolems). Type-level first, then lifted
+through terms (the match-branch reasoning lives here in `Core`, where the private
+`BranchList.openTyVarsAux` is in scope, exactly as for `Expr.size_openTyVars`). -/
+
+@[simp] theorem Ty.openVarsFrom_pair {d : Nat} {Xs : List Nat} {a b : Ty} :
+    Ty.openVarsFrom d Xs (.pair a b)
+      = .pair (Ty.openVarsFrom d Xs a) (Ty.openVarsFrom d Xs b) := rfl
+@[simp] theorem Ty.openVarsFrom_arrow {d : Nat} {Xs : List Nat} {a b : Ty} :
+    Ty.openVarsFrom d Xs (.arrow a b)
+      = .arrow (Ty.openVarsFrom d Xs a) (Ty.openVarsFrom d Xs b) := rfl
+@[simp] theorem Ty.openVarsFrom_customTy {d : Nat} {Xs : List Nat} {nm : TyName} {tys : List Ty} :
+    Ty.openVarsFrom d Xs (.customTy nm tys)
+      = .customTy nm (tys.map (Ty.openVarsFrom d Xs)) := by
+  unfold Ty.openVarsFrom
+  simp only [Ty.instantiate, TyList.instantiate_eq_map]
+
+/-- The free vars of an offset opening are among the original free vars or the
+    opening names (depth-general form; `Ty.freeVars_openVars_subset` is `d = 0`). -/
+theorem Ty.freeVars_openVarsFrom_subset {d : Nat} {Xs : List Nat} {t : Ty} :
+    ∀ z ∈ (Ty.openVarsFrom d Xs t).freeVars, z ∈ t.freeVars ∨ z ∈ Xs := by
+  induction t using Ty.rec_strong with
+  | prim p => intro z hz; simp [Ty.openVarsFrom, Ty.instantiate, Ty.freeVars] at hz
+  | fvar n => intro z hz; left; simpa only [Ty.openVarsFrom, Ty.instantiate, Ty.freeVars] using hz
+  | bvar i =>
+    intro z hz
+    simp only [Ty.openVarsFrom, Ty.instantiate] at hz
+    by_cases hi : i < d
+    · rw [if_pos hi] at hz; simp [Ty.freeVars] at hz
+    · rw [if_neg hi] at hz
+      cases hh : Xs[i - d]? with
+      | none => rw [hh] at hz; simp [Ty.freeVars] at hz
+      | some x =>
+        rw [hh] at hz
+        simp only [Option.elim_some, Ty.freeVars, List.mem_singleton] at hz
+        subst hz; exact .inr (List.mem_of_getElem? hh)
+  | pair a b iha ihb =>
+    intro z hz
+    rw [Ty.openVarsFrom_pair] at hz
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hz ⊢
+    rcases hz with hz | hz
+    · rcases iha z hz with h | h
+      · exact .inl (.inl h)
+      · exact .inr h
+    · rcases ihb z hz with h | h
+      · exact .inl (.inr h)
+      · exact .inr h
+  | arrow a b iha ihb =>
+    intro z hz
+    rw [Ty.openVarsFrom_arrow] at hz
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hz ⊢
+    rcases hz with hz | hz
+    · rcases iha z hz with h | h
+      · exact .inl (.inl h)
+      · exact .inr h
+    · rcases ihb z hz with h | h
+      · exact .inl (.inr h)
+      · exact .inr h
+  | customTy nm tys ih =>
+    intro z hz
+    rw [Ty.openVarsFrom_customTy, Ty.freeVars] at hz
+    have hex : ∃ t' ∈ tys.map (Ty.openVarsFrom d Xs), z ∈ t'.freeVars := by
+      by_contra hcon
+      push_neg at hcon
+      exact (TyList.not_mem_freeVars_iff.mpr hcon) hz
+    obtain ⟨t', ht', hzt'⟩ := hex
+    obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+    rcases ih t0 ht0 z hzt' with h | h
+    · exact .inl (by rw [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht0 h)
+    · exact .inr h
+
+/-- Term-level free-variable containment under offset opening: every annotation
+    free var of `e.openTyVarsAux d Xs` was already an annotation free var of `e`,
+    or is one of the opening names `Xs`. -/
+theorem Expr.tyFreeVars_openTyVarsAux {Xs : List Nat} :
+    ∀ (e : Expr) (d : Nat) (z : Nat),
+      z ∈ (e.openTyVarsAux d Xs).tyFreeVars → z ∈ e.tyFreeVars ∨ z ∈ Xs := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro d z hz; simp [Expr.openTyVarsAux, Expr.tyFreeVars] at hz
+  | var n => intro d z hz; simp [Expr.openTyVarsAux, Expr.tyFreeVars] at hz
+  | ctor nm => intro d z hz; simp [Expr.openTyVarsAux, Expr.tyFreeVars] at hz
+  | pair a b iha ihb =>
+    intro d z hz
+    simp only [Expr.openTyVarsAux, Expr.tyFreeVars, List.mem_append] at hz ⊢
+    rcases hz with hz | hz
+    · rcases iha d z hz with h | h
+      · exact .inl (.inl h)
+      · exact .inr h
+    · rcases ihb d z hz with h | h
+      · exact .inl (.inr h)
+      · exact .inr h
+  | app f arg ihf iha =>
+    intro d z hz
+    simp only [Expr.openTyVarsAux, Expr.tyFreeVars, List.mem_append] at hz ⊢
+    rcases hz with hz | hz
+    · rcases ihf d z hz with h | h
+      · exact .inl (.inl h)
+      · exact .inr h
+    · rcases iha d z hz with h | h
+      · exact .inl (.inr h)
+      · exact .inr h
+  | fst e ih =>
+    intro d z hz
+    simp only [Expr.openTyVarsAux, Expr.tyFreeVars] at hz ⊢
+    exact ih d z hz
+  | snd e ih =>
+    intro d z hz
+    simp only [Expr.openTyVarsAux, Expr.tyFreeVars] at hz ⊢
+    exact ih d z hz
+  | lambda ann body ih =>
+    intro d z hz
+    cases ann with
+    | none =>
+      -- `lambda none` opens/erases-annotations to `body` definitionally.
+      exact ih d z hz
+    | some T =>
+      simp only [Expr.openTyVarsAux, Expr.tyFreeVars, Option.map_some, Option.elim_some,
+        List.mem_append] at hz ⊢
+      rcases hz with hz | hz
+      · rcases Ty.freeVars_openVarsFrom_subset z hz with h | h
+        · exact .inl (.inl h)
+        · exact .inr h
+      · rcases ih d z hz with h | h
+        · exact .inl (.inr h)
+        · exact .inr h
+  | letIn ann rhs body ihr ihb =>
+    intro d z hz
+    cases ann with
+    | none =>
+      simp only [Expr.openTyVarsAux, Expr.tyFreeVars, Option.elim_none, List.nil_append,
+        List.mem_append] at hz ⊢
+      rcases hz with hz | hz
+      · rcases ihr d z hz with h | h
+        · exact .inl (.inl h)
+        · exact .inr h
+      · rcases ihb d z hz with h | h
+        · exact .inl (.inr h)
+        · exact .inr h
+    | some σ =>
+      simp only [Expr.openTyVarsAux, Expr.tyFreeVars, Option.elim_some, List.mem_append] at hz ⊢
+      rcases hz with (hz | hz) | hz
+      · rcases Ty.freeVars_openVarsFrom_subset z hz with h | h
+        · exact .inl (.inl (.inl h))
+        · exact .inr h
+      · rcases ihr (d + σ.paramCount) z hz with h | h
+        · exact .inl (.inl (.inr h))
+        · exact .inr h
+      · rcases ihb d z hz with h | h
+        · exact .inl (.inr h)
+        · exact .inr h
+  | match_ scrut branches ihs ihbs =>
+    intro d z hz
+    simp only [Expr.openTyVarsAux, Expr.tyFreeVars, List.mem_append] at hz ⊢
+    rcases hz with hz | hz
+    · rcases ihs d z hz with h | h
+      · exact .inl (.inl h)
+      · exact .inr h
+    · have hbr : z ∈ Expr.tyFreeVars.BranchList.tyFreeVars branches ∨ z ∈ Xs := by
+        revert hz
+        revert ihbs
+        induction branches with
+        | nil =>
+          intro _ hz
+          simp [BranchList.openTyVarsAux, Expr.tyFreeVars.BranchList.tyFreeVars] at hz
+        | cons hd tl ihtl =>
+          intro ihbs hz
+          obtain ⟨pat, body⟩ := hd
+          simp only [BranchList.openTyVarsAux, Expr.tyFreeVars.BranchList.tyFreeVars,
+            List.mem_append] at hz ⊢
+          rcases hz with hz | hz
+          · rcases ihbs pat body List.mem_cons_self d z hz with h | h
+            · exact .inl (.inl h)
+            · exact .inr h
+          · rcases ihtl (fun p e hm => ihbs p e (List.mem_cons_of_mem _ hm)) hz with h | h
+            · exact .inl (.inr h)
+            · exact .inr h
+      rcases hbr with h | h
+      · exact .inl (.inr h)
+      · exact .inr h
+
+/-- Top-level free-variable containment under opening (`d = 0`). The bridge the
+    `letInAnn` soundness case needs: the opened bound expression's annotation
+    fvars are among `rhs`'s original ones or the skolems `Xs`. -/
+theorem Expr.tyFreeVars_openTyVars {Xs : List Nat} {e : Expr} {z : Nat}
+    (hz : z ∈ (e.openTyVars Xs).tyFreeVars) : z ∈ e.tyFreeVars ∨ z ∈ Xs :=
+  Expr.tyFreeVars_openTyVarsAux e 0 z hz
 
 /-- The bridge: a cofinite-vars witness gives a "for-all-instances" witness.
     Chargueraud's `has_scheme_from_vars`. For any `Vs`, pick `Xs` fresh for
