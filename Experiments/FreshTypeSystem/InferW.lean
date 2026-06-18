@@ -724,12 +724,13 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
       the **whole** rhs+unify substitution `S₁ ++ Schk` (so the signature is no
       more general than `rhs` actually is), and none leaks into the threaded body
       context (so `Ys` can be renamed to the cofinite fresh names). -/
-  | letInAnn {Φ ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂} :
+  | letInAnn {Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂} :
     σ.WF →
-    Infer (Φ + σ.paramCount) ctx (rhs.openTyVars (freshVars Φ σ.paramCount)) Φ₁ S₁ τ₁ →
-    UnifyRel τ₁ (σ.openVars (freshVars Φ σ.paramCount)) Schk →
-    (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) →
-    (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) →
+    Φ ≤ N →
+    Infer (N + σ.paramCount) ctx (rhs.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ τ₁ →
+    UnifyRel τ₁ (σ.openVars (freshVars N σ.paramCount)) Schk →
+    (∀ y ∈ freshVars N σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) →
+    (∀ y ∈ freshVars N σ.paramCount, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) →
     Infer Φ₁
       { (Schk.onCtx (S₁.onCtx ctx)) with env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
       body Φ₂ S₂ τ₂ →
@@ -792,7 +793,7 @@ theorem Infer.frontier_le {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) : Φ
   | var => omega
   | ctor => omega
   | letIn hrhs hbody => have := Infer.frontier_le hrhs; have := Infer.frontier_le hbody; omega
-  | letInAnn _ hrhs _ _ _ hbody =>
+  | letInAnn _ _hΦN hrhs _ _ _ hbody =>
     have := Infer.frontier_le hrhs; have := Infer.frontier_le hbody; omega
   | fst he _ => have := Infer.frontier_le he; omega
   | snd he _ => have := Infer.frontier_le he; omega
@@ -997,7 +998,7 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     rcases hp with hp | hp
     · exact hrhs_s p hp
     · exact hbody_s p hp
-  | letInAnn hσwf hrhs huni _hesc1 _hesc2 hbody =>
+  | letInAnn hσwf _hΦN hrhs huni _hesc1 _hesc2 hbody =>
     intro hctx
     expose_names
     obtain ⟨hrhs_lc, hrhs_s⟩ := Infer.lc hrhs hctx
@@ -1765,7 +1766,7 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         · exact (Subst.onCtx_wf hrhs_s hctx) M hM) K
         (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hrhs))
         (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp)))
-  | letInAnn hσwf hrhs huni hesc1 hesc2 hbody =>
+  | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody =>
     intro hctx K hKΦ hKe hSK
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at hKe
@@ -1778,7 +1779,7 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       · exact hσwf
       · exact (Subst.onCtx_wf hSchk_lc (Subst.onCtx_wf hrhs_s hctx)) M hM
     have hbody_s := (Infer.lc hbody hbodyWF).2
-    have hrhs_sound := Infer.sound hrhs hctx (K ++ freshVars Φ σ.paramCount)
+    have hrhs_sound := Infer.sound hrhs hctx (K ++ freshVars N σ.paramCount)
       (fun k hk => by
         rw [List.mem_append] at hk
         rcases hk with hk | hk
@@ -1798,7 +1799,7 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       (fun k hk => by have := hKΦ k hk; have := Infer.frontier_le hrhs; omega)
       (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
     exact Infer.sound_letInAnn hrhs_sound hrhs_lc hσwf freshVars_nodup
-      (freshVars_length Φ σ.paramCount) huni K
+      (freshVars_length N σ.paramCount) huni K
       (fun y hy => hKe y (.inl (.inr hy))) (fun y hy => hKe y (.inl (.inl hy)))
       (fun y hy hyK => by have := hKΦ y hyK; have := freshVars_ge y hy; omega)
       (fun y hy hc => hesc1 y hy (by rw [List.map_append]; exact List.mem_append_right _ hc))
@@ -2340,12 +2341,12 @@ theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     rcases hp with hp | hp
     · exact (hr_s p hp).mono (Infer.frontier_le hbody)
     · exact hb_s p hp
-  | letInAnn hσwf hrhs huni _hesc1 _hesc2 hbody =>
+  | letInAnn hσwf hΦN hrhs huni _hesc1 _hesc2 hbody =>
     intro hctx htfv
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
     have hrle := Infer.frontier_le hrhs
-    have hctx_pc : CtxBelow (Φ + σ.paramCount) ctx := fun M hM => (hctx M hM).mono (by omega)
+    have hctx_pc : CtxBelow (N + σ.paramCount) ctx := fun M hM => (hctx M hM).mono (by omega)
     have hσbody : Ty.BelowFvars Φ σ.body :=
       Ty.BelowFvars.of_freeVars_lt (fun v hv => htfv v (.inl (.inl hv)))
     obtain ⟨hr_τ, hr_s⟩ := Infer.belowFvars hrhs hctx_pc (fun y hy => by
@@ -2353,7 +2354,7 @@ theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       · have := htfv y (.inl (.inr h)); omega
       · have := freshVars_lt y h; omega)
     have hσopen : Ty.BelowFvars Φ₁
-        (σ.openVars (freshVars Φ σ.paramCount)) :=
+        (σ.openVars (freshVars N σ.paramCount)) :=
       Ty.openVars_belowFvars (hσbody.mono (by omega))
         (fun x hx => by have := freshVars_lt x hx; omega)
     have hSchk : ∀ p ∈ Schk, Ty.BelowFvars Φ₁ p.2 :=
