@@ -9012,6 +9012,101 @@ decreasing_by
   · exact unifyDec_cons2 hS₁
 end
 
+mutual
+/-- **Rigidity-aware unifier.** Like `unifyCore`, but refuses to bind any variable
+    in the rigid set `K`: at a variable step it orients the binding toward the
+    non-rigid side, and fails when forced to equate a rigid var with a non-variable
+    or with a different rigid var. This is the executable mirror of the relational
+    `UnifyRel.complete_K`; the resulting MGU **avoids `K` by construction** (carried
+    in the result), so the executable keeps scoped-type-variable skolems rigid —
+    which plain left-leaning `unifyCore` does not (it would bind a skolem sitting on
+    the left of a flexible unification, spuriously failing the annotated-`let`
+    escape check). With `K = []` it coincides with `unifyCore`. -/
+def unifyCoreK (K : List Nat) (a b : Ty) :
+    Option { S : Subst // UnifyRel a b S ∧ (∀ p ∈ S, p.1 ∉ K) } :=
+  match a, b with
+  | .prim p, .prim q =>
+      if h : p = q then some ⟨[], by subst h; exact .prim, by simp⟩ else none
+  | .fvar n, .fvar m =>
+      if h : n = m then some ⟨[], by subst h; exact .fvarRefl, by simp⟩
+      else if hnK : n ∈ K then
+        if hmK : m ∈ K then none
+        else some ⟨[(m, .fvar n)],
+          .fvarR (by simp only [ne_eq, Ty.fvar.injEq]; omega)
+            (by simp only [Ty.freeVars, List.mem_singleton]; omega),
+          by intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hmK⟩
+      else some ⟨[(n, .fvar m)],
+        .fvarL (by simp only [ne_eq, Ty.fvar.injEq]; omega)
+          (by simp only [Ty.freeVars, List.mem_singleton]; omega),
+        by intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hnK⟩
+  | .arrow a₁ a₂, .arrow c₁ c₂ =>
+      match unifyCoreK K a₁ c₁ with
+      | none => none
+      | some ⟨S₁, hS₁, hav₁⟩ =>
+        match unifyCoreK K (S₁.onTy a₂) (S₁.onTy c₂) with
+        | none => none
+        | some ⟨S₂, hS₂, hav₂⟩ => some ⟨S₁ ++ S₂, .arrow hS₁ hS₂, by
+            intro p hp; rcases List.mem_append.mp hp with hp | hp
+            · exact hav₁ p hp
+            · exact hav₂ p hp⟩
+  | .pair a₁ a₂, .pair c₁ c₂ =>
+      match unifyCoreK K a₁ c₁ with
+      | none => none
+      | some ⟨S₁, hS₁, hav₁⟩ =>
+        match unifyCoreK K (S₁.onTy a₂) (S₁.onTy c₂) with
+        | none => none
+        | some ⟨S₂, hS₂, hav₂⟩ => some ⟨S₁ ++ S₂, .pair hS₁ hS₂, by
+            intro p hp; rcases List.mem_append.mp hp with hp | hp
+            · exact hav₁ p hp
+            · exact hav₂ p hp⟩
+  | .customTy n₁ ts₁, .customTy n₂ ts₂ =>
+      if h : n₁ = n₂ then
+        match unifyListCoreK K ts₁ ts₂ with
+        | none => none
+        | some ⟨S, hS, hav⟩ => some ⟨S, by subst h; exact .customTy hS, hav⟩
+      else none
+  | .fvar n, b =>
+      if hnK : n ∈ K then none
+      else if h : n ∈ b.freeVars then none
+      else some ⟨[(n, b)],
+        .fvarL (by intro he; subst he; exact h (by simp [Ty.freeVars])) h,
+        by intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hnK⟩
+  | a, .fvar n =>
+      if hnK : n ∈ K then none
+      else if h : n ∈ a.freeVars then none
+      else some ⟨[(n, a)],
+        .fvarR (by intro he; subst he; exact h (by simp [Ty.freeVars])) h,
+        by intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hnK⟩
+  | _, _ => none
+termination_by ((pairVars a b).length, a.size + b.size)
+decreasing_by
+  · exact unifyDec_arrow1
+  · exact unifyDec_arrow2 hS₁
+  · exact unifyDec_pair1
+  · exact unifyDec_pair2 hS₁
+  · exact unifyDec_customTy
+
+def unifyListCoreK (K : List Nat) (as bs : List Ty) :
+    Option { S : Subst // UnifyRelList as bs S ∧ (∀ p ∈ S, p.1 ∉ K) } :=
+  match as, bs with
+  | [], [] => some ⟨[], .nil, by simp⟩
+  | t₁ :: ts₁, t₂ :: ts₂ =>
+      match unifyCoreK K t₁ t₂ with
+      | none => none
+      | some ⟨S₁, hS₁, hav₁⟩ =>
+        match unifyListCoreK K (ts₁.map S₁.onTy) (ts₂.map S₁.onTy) with
+        | none => none
+        | some ⟨S₂, hS₂, hav₂⟩ => some ⟨S₁ ++ S₂, .cons hS₁ hS₂, by
+            intro p hp; rcases List.mem_append.mp hp with hp | hp
+            · exact hav₁ p hp
+            · exact hav₂ p hp⟩
+  | _, _ => none
+termination_by ((listVars as bs).length, TyList.size as + TyList.size bs + 1)
+decreasing_by
+  · exact unifyDec_cons1
+  · exact unifyDec_cons2 hS₁
+end
+
 /-- The executable unifier, refining `UnifyRel`. -/
 def unify (a b : Ty) : Option Subst := (unifyCore a b).map (·.1)
 
