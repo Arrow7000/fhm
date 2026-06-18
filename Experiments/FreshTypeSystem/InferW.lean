@@ -5087,19 +5087,31 @@ itself (`OUnify` / `OUnify.skolem_escape`). -/
     typing at one *specific* opening `Ys` (any list of the right length): pick a
     generic fresh `Xs`, type at `σ.openVars Xs`, then rename `Xs → Ys`. -/
 theorem typeOfHM_at_block {ctx : Ctx} {rhs : Expr} {σ : PolyTy} {L Ys : List Nat}
-    (hσnfv : NoFreeVars σ.body) (hYlen : Ys.length = σ.paramCount)
+    (hYlen : Ys.length = σ.paramCount)
     (hcofin : ∀ Xs : List Nat, FreshNames L σ.paramCount Xs →
-      TypeOfHM ctx rhs (σ.openVars Xs)) :
-    TypeOfHM ctx rhs (σ.openVars Ys) := by
+      TypeOfHM ctx (rhs.openTyVars Xs) (σ.openVars Xs)) :
+    TypeOfHM ctx (rhs.openTyVars Ys) (σ.openVars Ys) := by
+  -- Type at a generic fresh `Xs`, then rename `Xs → Ys` (term via the Core bridge
+  -- `substTyFvars_zip_openTyVars`, type via `openWith_eq_substFvars_openVars`).
   obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
-    exists_fresh_names (L ++ ctx.env.freeVars ++ Ys) σ.paramCount
-  have hXL : ∀ x ∈ Xs, x ∉ L := fun x hx hc =>
-    hXavoid x hx (List.mem_append_left _ (List.mem_append_left _ hc))
+    exists_fresh_names (L ++ ctx.env.freeVars ++ Ys ++ rhs.tyFreeVars ++ σ.body.freeVars)
+      σ.paramCount
+  have hXL : ∀ x ∈ Xs, x ∉ L := fun x hx hc => hXavoid x hx (by simp only [List.mem_append]; tauto)
   have hXenv : ∀ x ∈ Xs, x ∉ ctx.env.freeVars := fun x hx hc =>
-    hXavoid x hx (List.mem_append_left _ (List.mem_append_right _ hc))
-  have hXYs : ∀ x ∈ Xs, x ∉ Ys := fun x hx hc =>
-    hXavoid x hx (List.mem_append_right _ hc)
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXYs : ∀ x ∈ Xs, x ∉ Ys := fun x hx hc => hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXrhs : ∀ x ∈ Xs, x ∉ rhs.tyFreeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXσ : ∀ x ∈ Xs, x ∉ σ.body.freeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
   have hwit := hcofin Xs ⟨hXlen, hXnodup, hXL⟩
+  have hrename := TypeOfHM.typ_substs_preservation (Xs.zip (Ys.map (Ty.fvar ·)))
+    (fun p hp => hXenv p.1 (List.of_mem_zip hp).1)
+    (fun p hp => by
+      obtain ⟨y, _, hy⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+      exact hy ▸ ContainsBvarsUpTo.fvar)
+    hwit
+  rw [Expr.substTyFvars_zip_openTyVars (by rw [hXlen, hYlen]) hXnodup hXrhs hXYs] at hrename
   have hkey : σ.openVars Ys
       = Ty.substFvars (Xs.zip (Ys.map (Ty.fvar ·))) (σ.openVars Xs) := by
     rw [show σ.openVars Ys = Ty.openWith (Ys.map (Ty.fvar ·)) σ.body from
@@ -5107,15 +5119,10 @@ theorem typeOfHM_at_block {ctx : Ctx} {rhs : Expr} {σ : PolyTy} {L Ys : List Na
     exact Ty.openWith_eq_substFvars_openVars
       ⟨by rw [List.length_map, hYlen, hXlen], fun V hV => by
         obtain ⟨y, _, rfl⟩ := List.mem_map.mp hV; exact ContainsBvarsUpTo.fvar⟩
-      hXnodup
-      (fun X _ => hσnfv.not_mem_freeVars X)
+      hXnodup hXσ
       (fun X hX hc => hXYs X hX (Ty.mem_freeVarsList_map_fvar.mp hc))
   rw [hkey]
-  refine TypeOfHM.typ_substs_preservation _ ?_ ?_ hwit
-  · intro p hp; exact hXenv p.1 (List.of_mem_zip hp).1
-  · intro p hp
-    obtain ⟨y, _, hy⟩ := List.mem_map.mp (List.of_mem_zip hp).2
-    exact hy ▸ ContainsBvarsUpTo.fvar
+  exact hrename
 
 /-- **Skolem unifier existence.** When the declarative residual `R` sends `τ₁` to
     the closed skolem opening `B = σ.openVars Ys` (`Ys = freshVars Φ₁ pc` the
