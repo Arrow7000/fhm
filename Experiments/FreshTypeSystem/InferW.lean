@@ -7768,7 +7768,7 @@ theorem Infer.complete' {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
               Subst.onTy_congr hagbr hρ_below
         _ = R₃.onTy (S₃.onTy (S₂.onTy (Ty.fvar (Φ₁ + taD.length)))) := by rw [Subst.onTy_append]
 termination_by e.size
-decreasing_by all_goals (simp_wf; try subst_vars; try simp only [Expr.size, Expr.sizeBranches, Expr.size_openTyVars]; omega)
+decreasing_by all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
 theorem InferBranches.complete' {Φ ctx tn ta ρ branches Φ' S}
     (h : InferBranches Φ ctx tn ta ρ branches Φ' S)
@@ -7879,7 +7879,7 @@ theorem InferBranches.complete' {Φ ctx tn ta ρ branches Φ' S}
         _ = (S₃ ++ R_r).onTy (S₂.onTy (S₁.onTy (.fvar v))) := Subst.onTy_congr hagrest hbv2
         _ = ((S₁ ++ S₂ ++ S₃) ++ R_r).onTy (.fvar v) := by simp only [Subst.onTy_append]
 termination_by Expr.sizeBranches branches
-decreasing_by all_goals (simp_wf; try subst_vars; try simp only [Expr.size, Expr.sizeBranches, Expr.size_openTyVars]; omega)
+decreasing_by all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 end
 
 /-- Output-uniqueness up to instance: any two `Infer` results on the same input
@@ -8413,11 +8413,6 @@ theorem skolem_no_env_leak_K
   · have := hKΦ Y (hσK Y h); omega
   · exact hYdisj Y hY h
 
-/-- The **annotated** `letIn` principality core (threading design). Builds a
-    `letInAnn` derivation from the declarative typing: `rhs`'s principal type
-    unifies with the skolemized annotation `σ.openVars Ys`, the escape checks hold
-    (the declarative derivation keeps the skolems rigid), and the closed `σ` is
-    bound in the body context unchanged. -/
 /-- The **annotated** `letIn` principality core (rigidity-aware). Choose a skolem
     block `Ys = freshVars N pc` with `N ≥ Φ` fresh for `S₀` (domain + range),
     `ctx`, and `L`; infer the *opened* rhs `rhs.openTyVars Ys` at rigid set
