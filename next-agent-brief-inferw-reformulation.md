@@ -104,12 +104,18 @@ Reading Core + `sound_letInAnn` settled every open question for `complete_letIn_
   3. `U := R₁` unifies `τ₁` with `σ.openVars Ys` (R₁ fixes `K∪Ys` ⊇ both sides'
      fvars); `complete_K … U …` → `Schk` with **`Schk` avoids `K∪Ys`** (⇒ hesc1's
      `Schk` half + `hSchkK`).
-  4. **hesc2 via `skolem_no_env_leak_K`** needs a *second* opening `Ys'` factoring
-     the **same** `τ₁`. Don't use `complete'` (red; also can't bridge the two
-     opened exprs). Construct `R₁' := R₁ ++ ρ` with `ρ` block-renaming `Ys → Ys'`
-     (`(R₁++ρ).onTy = ρ∘R₁`): `σ.openVars Ys' = ρ(R₁.onTy τ₁) = ρ(σ.openVars Ys)`
-     (ρ fixes `K`, maps `Ys→Ys'`), and `AgreesBelow Φ S₀ (S₁++R₁')` holds because
-     `Ys` avoids `dom S₀`+range (so ρ fixes `S₀`'s images below `Φ`).
+  4. **hesc2 — direct argument (do NOT use `skolem_no_env_leak_K`).** That kernel
+     assumes `Ys ≥ Φ₁` (skolems above the rhs *output* frontier — the OLD
+     surface-rhs design). The relaxed rule infers the *opened* rhs, so `Ys` is
+     allocated *before* it ⇒ `Ys < N+pc ≤ Φ₁`; the kernel is **unfit** and is
+     deleted unused. Instead: let `V` be the `greatest_K` factor of `R₁` through
+     `Schk` (`V∘Schk = R₁` below `Φ`, `V` fixes `K`). `V` also **fixes each
+     `Y∈Ys`** (`Schk` fixes `Y` by hesc1 + `R₁` fixes `Y`). If `Y ∈
+     (Schk.onCtx (S₁.onCtx ctx)).env.freeVars`, then `Y ∈ (V.onCtx …).env =
+     (S₀.onCtx ctx).env` (the `hmain` identity), which avoids `Ys` because
+     `ctx`'s fvars `< Φ ≤ N` and **`S₀`'s range avoids `Ys`** (freshness choice).
+     Contradiction. ~15 lines, reusing the `V` needed for the body anyway. No
+     second opening, no renaming.
   5. body: factor `R₁` through `Schk` via `greatest_K` → `V` (fixes `K`); recast
      `hbody` over `V.onCtx {σ :: Schk.onCtx (S₁.onCtx ctx)}` (σ fixed since
      `σ.body.freeVars ⊆ K`, `V`/`S₂` avoid `K`); `ihb K … hbodyV` → `Dbody`,`S₂`,`R₂`.
@@ -117,7 +123,8 @@ Reading Core + `sound_letInAnn` settled every open question for `complete_letIn_
      `τ₀ = R₂.onTy τ₂` mirror `complete_letIn_aux`; output `S = S₁++Schk++S₂`
      avoids `K` from S₁/Schk/S₂ avoidances.
 - **Delete once unused**: `exists_skolem_unifier`, the `OUnify.skolem_escape`
-  mutual, the old `skolem_no_env_leak`, `typeOfHM_at_block` (the red one).
+  mutual, the old `skolem_no_env_leak`, **`skolem_no_env_leak_K`** (unfit — see
+  point 4), `typeOfHM_at_block` (the red one).
 
 ## 3. The one remaining design point (issue 2a) — decided
 Both kernels need the rhs residual `R₁` to fix `Ys` (and `K`). The producer gets
