@@ -9656,6 +9656,223 @@ theorem unify_complete {a b : Ty} {S : Subst} (h : UnifyRel a b S)
     (unifyCore_complete_aux (2 * (S.onTy a).size + 1)).1 (by omega) ha hb h.unifies
   simpa [unify, Option.isSome_map] using hcore
 
+/-- **Rigidity-aware unify completeness.** When the (LC) inputs admit an LC unifier
+    `U` that keeps every `k ∈ K` rigid, the rigidity-aware `unifyCoreK K` succeeds.
+    Fuses the size induction of `unifyCore_complete_aux` with the orientation
+    reasoning of `UnifyRel.complete_K_aux`: at a variable step the `K`-fixing `U`
+    rules out the branch that `unifyCoreK` would refuse (binding a rigid var). -/
+theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
+    (∀ {a b : Ty} {U : Subst}, 2 * (U.onTy a).size < N → a.IsLC → b.IsLC →
+        (∀ p ∈ U, p.2.IsLC) → Unifies U a b → (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) →
+        (unifyCoreK K a b).isSome) ∧
+    (∀ {as bs : List Ty} {U : Subst}, 2 * TyList.size (as.map U.onTy) + 1 < N →
+        (∀ t ∈ as, t.IsLC) → (∀ t ∈ bs, t.IsLC) → (∀ p ∈ U, p.2.IsLC) →
+        as.length = bs.length → as.map U.onTy = bs.map U.onTy →
+        (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) →
+        (unifyListCoreK K as bs).isSome) := by
+  intro N
+  induction N with
+  | zero => exact ⟨fun h => absurd h (by omega), fun h => absurd h (by omega)⟩
+  | succ N ih =>
+    obtain ⟨ihU, ihL⟩ := ih
+    refine ⟨?_, ?_⟩
+    · intro a b U hsz ha hb hUlc hU hUK
+      cases a with
+      | bvar i => cases ha with | bvar h => omega
+      | prim p =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | prim q => simp only [Unifies, Subst.onTy_prim, Ty.prim.injEq] at hU; subst hU; simp [unifyCoreK]
+        | fvar m =>
+          have hmK : m ∉ K := fun hmK => by
+            have h1 : U.onTy (Ty.prim p) = U.onTy (Ty.fvar m) := hU
+            rw [hUK m hmK, Subst.onTy_prim] at h1; exact absurd h1 (by simp)
+          simp [unifyCoreK, hmK, Ty.freeVars]
+        | pair b₁ b₂ => simp [Unifies] at hU
+        | arrow b₁ b₂ => simp [Unifies] at hU
+        | customTy nm bs => simp [Unifies] at hU
+      | fvar n =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | fvar m =>
+          by_cases hnm : n = m
+          · subst hnm; simp [unifyCoreK]
+          · by_cases hnK : n ∈ K
+            · have hmK : m ∉ K := fun hmK => by
+                have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.fvar m) := hU
+                rw [hUK n hnK, hUK m hmK] at h1; simp only [Ty.fvar.injEq] at h1; exact hnm h1
+              simp [unifyCoreK, hnm, hnK, hmK]
+            · simp [unifyCoreK, hnm, hnK]
+        | prim q =>
+          by_cases hocc : n ∈ (Ty.prim q).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hnK : n ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.prim q) := hU
+              rw [hUK n hnK, Subst.onTy_prim] at h1; exact absurd h1 (by simp)
+            · simp [unifyCoreK, hnK, hocc]
+        | pair b₁ b₂ =>
+          by_cases hocc : n ∈ (Ty.pair b₁ b₂).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hnK : n ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.pair b₁ b₂) := hU
+              rw [hUK n hnK, Subst.onTy_pair] at h1; exact absurd h1 (by simp)
+            · simp [unifyCoreK, hnK, hocc]
+        | arrow b₁ b₂ =>
+          by_cases hocc : n ∈ (Ty.arrow b₁ b₂).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hnK : n ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.arrow b₁ b₂) := hU
+              rw [hUK n hnK, Subst.onTy_arrow] at h1; exact absurd h1 (by simp)
+            · simp [unifyCoreK, hnK, hocc]
+        | customTy nm bs =>
+          by_cases hocc : n ∈ (Ty.customTy nm bs).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hnK : n ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.customTy nm bs) := hU
+              rw [hUK n hnK, Subst.onTy_customTy] at h1; exact absurd h1 (by simp)
+            · simp [unifyCoreK, hnK, hocc]
+      | pair a₁ a₂ =>
+        cases ha with
+        | pair ha₁ ha₂ =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | fvar m =>
+          by_cases hocc : m ∈ (Ty.pair a₁ a₂).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hmK : m ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.pair a₁ a₂) = U.onTy (Ty.fvar m) := hU
+              rw [hUK m hmK, Subst.onTy_pair] at h1; exact absurd h1 (by simp)
+            · simp [unifyCoreK, hmK, hocc]
+        | prim q => simp [Unifies] at hU
+        | arrow b₁ b₂ => simp [Unifies] at hU
+        | customTy nm bs => simp [Unifies] at hU
+        | pair b₁ b₂ =>
+          cases hb with
+          | pair hb₁ hb₂ =>
+          have hpsz : (U.onTy (.pair a₁ a₂)).size = 1 + (U.onTy a₁).size + (U.onTy a₂).size := by
+            simp [Subst.onTy_pair, Ty.size]
+          simp only [Unifies, Subst.onTy_pair, Ty.pair.injEq] at hU
+          obtain ⟨⟨S₁, h₁, _⟩, he1⟩ := Option.isSome_iff_exists.mp
+            (ihU (a := a₁) (b := b₁) (U := U) (by rw [hpsz] at hsz; omega) ha₁ hb₁ hUlc hU.1 hUK)
+          have hS₁lc := UnifyRel.lc h₁ ha₁ hb₁
+          obtain ⟨R, hR, hRlc, hRK⟩ := UnifyRel.greatest_K h₁ U hUlc hU.1 hUK
+          obtain ⟨⟨S₂, h₂, _⟩, he2⟩ := Option.isSome_iff_exists.mp
+            (ihU (a := S₁.onTy a₂) (b := S₁.onTy b₂) (U := R) (by rw [← hR a₂]; rw [hpsz] at hsz; omega)
+              (Subst.onTy_lc hS₁lc ha₂) (Subst.onTy_lc hS₁lc hb₂) hRlc
+              (by show R.onTy (S₁.onTy a₂) = R.onTy (S₁.onTy b₂); rw [← hR a₂, ← hR b₂]; exact hU.2) hRK)
+          rw [unifyCoreK]; simp only [he1, he2, Option.isSome_some]
+      | arrow a₁ a₂ =>
+        cases ha with
+        | arrow ha₁ ha₂ =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | fvar m =>
+          by_cases hocc : m ∈ (Ty.arrow a₁ a₂).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hmK : m ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.arrow a₁ a₂) = U.onTy (Ty.fvar m) := hU
+              rw [hUK m hmK, Subst.onTy_arrow] at h1; exact absurd h1 (by simp)
+            · simp [unifyCoreK, hmK, hocc]
+        | prim q => simp [Unifies] at hU
+        | pair b₁ b₂ => simp [Unifies] at hU
+        | customTy nm bs => simp [Unifies] at hU
+        | arrow b₁ b₂ =>
+          cases hb with
+          | arrow hb₁ hb₂ =>
+          have hpsz : (U.onTy (.arrow a₁ a₂)).size = 1 + (U.onTy a₁).size + (U.onTy a₂).size := by
+            simp [Subst.onTy_arrow, Ty.size]
+          simp only [Unifies, Subst.onTy_arrow, Ty.arrow.injEq] at hU
+          obtain ⟨⟨S₁, h₁, _⟩, he1⟩ := Option.isSome_iff_exists.mp
+            (ihU (a := a₁) (b := b₁) (U := U) (by rw [hpsz] at hsz; omega) ha₁ hb₁ hUlc hU.1 hUK)
+          have hS₁lc := UnifyRel.lc h₁ ha₁ hb₁
+          obtain ⟨R, hR, hRlc, hRK⟩ := UnifyRel.greatest_K h₁ U hUlc hU.1 hUK
+          obtain ⟨⟨S₂, h₂, _⟩, he2⟩ := Option.isSome_iff_exists.mp
+            (ihU (a := S₁.onTy a₂) (b := S₁.onTy b₂) (U := R) (by rw [← hR a₂]; rw [hpsz] at hsz; omega)
+              (Subst.onTy_lc hS₁lc ha₂) (Subst.onTy_lc hS₁lc hb₂) hRlc
+              (by show R.onTy (S₁.onTy a₂) = R.onTy (S₁.onTy b₂); rw [← hR a₂, ← hR b₂]; exact hU.2) hRK)
+          rw [unifyCoreK]; simp only [he1, he2, Option.isSome_some]
+      | customTy nm tys₁ =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | fvar m =>
+          by_cases hocc : m ∈ (Ty.customTy nm tys₁).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hmK : m ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.customTy nm tys₁) = U.onTy (Ty.fvar m) := hU
+              rw [hUK m hmK, Subst.onTy_customTy] at h1; exact absurd h1 (by simp)
+            · simp [unifyCoreK, hmK, hocc]
+        | prim q => simp [Unifies] at hU
+        | pair b₁ b₂ => simp [Unifies] at hU
+        | arrow b₁ b₂ => simp [Unifies] at hU
+        | customTy nm' tys₂ =>
+          have hcsz : (U.onTy (.customTy nm tys₁)).size = 1 + TyList.size (tys₁.map U.onTy) := by
+            simp [Subst.onTy_customTy, Ty.size]
+          simp only [Unifies, Subst.onTy_customTy, Ty.customTy.injEq] at hU
+          obtain ⟨rfl, hmapeq⟩ := hU
+          have hlen : tys₁.length = tys₂.length := by
+            have := congrArg List.length hmapeq; simpa using this
+          obtain ⟨⟨S, hS, _⟩, heL⟩ := Option.isSome_iff_exists.mp
+            (ihL (as := tys₁) (bs := tys₂) (U := U) (by rw [hcsz] at hsz; omega)
+              (fun t ht => by cases ha with | customTy h => exact h t ht)
+              (fun t ht => by cases hb with | customTy h => exact h t ht)
+              hUlc hlen hmapeq hUK)
+          rw [unifyCoreK]; simp [heL]
+    · intro as bs U hsz has hbs hUlc hlen hmap hUK
+      cases as with
+      | nil =>
+        cases bs with
+        | nil => simp [unifyListCoreK]
+        | cons t₂ ts₂ => simp at hlen
+      | cons t₁ ts₁ =>
+        cases bs with
+        | nil => simp at hlen
+        | cons t₂ ts₂ =>
+          simp only [List.map_cons, List.cons.injEq] at hmap
+          have htsz : TyList.size ((t₁ :: ts₁).map U.onTy)
+              = (U.onTy t₁).size + TyList.size (ts₁.map U.onTy) := by simp [List.map_cons, TyList.size]
+          have ht1pos := @Ty.size_pos (U.onTy t₁)
+          obtain ⟨⟨S₁, h₁, _⟩, he1⟩ := Option.isSome_iff_exists.mp
+            (ihU (a := t₁) (b := t₂) (U := U) (by rw [htsz] at hsz; omega)
+              (has t₁ List.mem_cons_self) (hbs t₂ List.mem_cons_self) hUlc hmap.1 hUK)
+          have hS₁lc := UnifyRel.lc h₁ (has t₁ List.mem_cons_self) (hbs t₂ List.mem_cons_self)
+          obtain ⟨R, hR, hRlc, hRK⟩ := UnifyRel.greatest_K h₁ U hUlc hmap.1 hUK
+          have key : ∀ l : List Ty, l.map (R.onTy ∘ S₁.onTy) = l.map U.onTy := by
+            intro l; apply List.map_congr_left; intro t _; exact (hR t).symm
+          have hkey1 : (ts₁.map S₁.onTy).map R.onTy = ts₁.map U.onTy := by
+            rw [List.map_map]; exact key ts₁
+          have hmaptail : (ts₁.map S₁.onTy).map R.onTy = (ts₂.map S₁.onTy).map R.onTy := by
+            rw [List.map_map, List.map_map, key, key]; exact hmap.2
+          obtain ⟨⟨S₂, h₂, _⟩, he2⟩ := Option.isSome_iff_exists.mp
+            (ihL (as := ts₁.map S₁.onTy) (bs := ts₂.map S₁.onTy) (U := R)
+              (by rw [hkey1]; rw [htsz] at hsz; omega)
+              (by intro t ht; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+                  exact Subst.onTy_lc hS₁lc (has t0 (List.mem_cons_of_mem _ ht0)))
+              (by intro t ht; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+                  exact Subst.onTy_lc hS₁lc (hbs t0 (List.mem_cons_of_mem _ ht0)))
+              hRlc (by simp only [List.length_map]; have := hlen; simpa using this) hmaptail hRK)
+          rw [unifyListCoreK]; simp only [he1, he2, Option.isSome_some]
+
+/-- `unifyCoreK` completeness wrapper. -/
+theorem unifyCoreK_complete {K : List Nat} {a b : Ty} {U : Subst}
+    (ha : a.IsLC) (hb : b.IsLC) (hUlc : ∀ p ∈ U, p.2.IsLC)
+    (hU : Unifies U a b) (hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k) :
+    (unifyCoreK K a b).isSome :=
+  (unifyCoreK_complete_aux (2 * (U.onTy a).size + 1)).1 (by omega) ha hb hUlc hU hUK
+
 
 /-! ### `infer` completeness
 
