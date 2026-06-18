@@ -331,7 +331,32 @@ from `completeAt` (circular via `output_unique`). **Migration:**
     off them (the assembly above no longer needs `exists_skolem_unifier`; `skolem_no_env_leak` is
     likely dead).
 
-### 7e. STOP — `inferCore_complete` is FALSE for the current executable (ORIENTATION WALL)
+### 7f. RESOLVED — orientation wall closed by making the executable rigidity-aware
+The §7e blocker had a clean, natural fix (the executable mirror of the relation's `complete_K`
+reformulation), now implemented + committed + **validated by `#eval`**:
+- `2be1cac` **`unifyCoreK`** (≈ line 9015): rigidity-aware decidable unifier — takes a rigid set `K`,
+  orients away from it, carries `UnifyRel ∧ (S avoids K)`. With `K=[]` ≡ `unifyCore`.
+- `23de728` **`inferCore`/`inferBranchesCore` thread `K`** and use `unifyCoreK K`; annotated-`let`
+  infers the opened rhs at `K ++ freshVars Φ pc` (skolems rigid) and the body at `K`. `infer` runs at
+  `K=[]`. `infer_sound` re-proved. **Validated:** the §7e counterexample now `#eval`s to
+  `some (α→α)` (skolem kept rigid) instead of `none`.
+- `f0ef0f8` **`inferCore`/`inferBranchesCore` carry `avoids K`** in their result subtype (free, like
+  `unifyCoreK`) — so the annotated-`let` `hesc1` and sub-recursion rigidity are available directly.
+- `3d2655d` **`unifyCoreK_complete`** (≈ line 9659): rigidity-aware unify completeness — a `K`-fixing
+  LC unifier ⇒ `unifyCoreK K` succeeds (fuses `unifyCore_complete_aux`'s size induction with
+  `complete_K_aux`'s orientation reasoning). Axiom-clean.
+- **Net:** `inferCore_complete` is now a TRUE statement and all foundations are in place:
+  `gap_avoid` + `letInAnn_block_fresh` (freshness), `unifyCoreK_complete` (rigidity-aware unify),
+  carried `avoids K`. Remaining = re-prove `inferCore_complete` (predicate `+K`; cases thread `K` and
+  use `inferCore K`/`unifyCoreK_complete`; the compositional unify steps need the manual app/pair
+  unifier to also fix `K` — extend `exists_app_unifier`/`exists_pair_unifier` with an "`U` fixes `K`"
+  output, available since the residual `R` fixes `K` and the fresh `W`/`Φ₂` ∉ `K`; the annotated-`let`
+  `hesc1` from the carried/`unifyCoreK` avoids, `hesc2` from `letInAnn_block_fresh` (B) + the producer
+  `V`/`greatest_K` argument) and the headlines (`hclosed`/`K:=[]`). NOTE: `OUnify.skolem_escape`,
+  `exists_skolem_unifier`, `skolem_no_env_leak` are now superseded by `unifyCoreK` — delete once
+  `inferCore_complete` no longer references them.
+
+### 7e. (historical) `inferCore_complete` was FALSE for the pre-fix executable (ORIENTATION WALL)
 While building the §7d.4 assembly, found (and **empirically confirmed via `#eval`**) a second,
 *deeper* obstacle that the freshness lemmas do **not** fix and that **no proof can fix**: the
 executable `inferCore` rejects a typeable program.
