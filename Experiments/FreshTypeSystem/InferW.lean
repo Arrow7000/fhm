@@ -1420,7 +1420,7 @@ theorem Infer.sound_letIn {ctx : Ctx} {rhs body : Expr}
     every substitution here fixes. -/
 theorem Infer.sound_letInAnn {ctx : Ctx} {σ : PolyTy} {rhs body : Expr}
     {Ys : List Nat} {S₁ Schk S₂ : Subst} {τ₁ τ₂ : Ty}
-    (hrhs_ty : TypeOfHM (S₁.onCtx ctx) (rhs.openTyVars Ys) τ₁) (hrhs_lc : τ₁.IsLC)
+    (hrhs_ty : TypeOfHM (S₁.onCtx ctx) (rhs.openTyVars Ys) τ₁)
     (hσwf : σ.WF) (hYnodup : Ys.Nodup) (hYlen : Ys.length = σ.paramCount)
     (huni : UnifyRel τ₁ (σ.openVars Ys) Schk)
     (K : List Nat)
@@ -1798,7 +1798,7 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     have hbody_sound := Infer.sound hbody hbodyWF K
       (fun k hk => by have := hKΦ k hk; have := Infer.frontier_le hrhs; omega)
       (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
-    exact Infer.sound_letInAnn hrhs_sound hrhs_lc hσwf freshVars_nodup
+    exact Infer.sound_letInAnn hrhs_sound hσwf freshVars_nodup
       (freshVars_length N σ.paramCount) huni K
       (fun y hy => hKe y (.inl (.inr hy))) (fun y hy => hKe y (.inl (.inl hy)))
       (fun y hy hyK => by have := hKΦ y hyK; have := freshVars_ge y hy; omega)
@@ -8309,109 +8309,6 @@ theorem skolem_no_env_leak
     Ty.mem_freeVars_onTy_iff.mpr ⟨v, hvfree, hYR₁v⟩
   rw [← htya'] at hYopen
   exact hYdisj Y hY (Ty.freeVars_openVars_closed hσnfv hYopen)
-
-/-- **EXPERIMENT (hesc2 / leak, reformulated).** Scoped-σ generalization of
-    `skolem_no_env_leak`, validating that the leak obligation survives the move to
-    rigidity-aware unification. The closed-σ `exists_skolem_unifier` (block-swap)
-    is replaced by taking the witness `U := R₁` directly — legitimate because in
-    the reformulated producer the rhs is inferred with `Ys` (and `K`) kept rigid,
-    so its residual `R₁` already fixes them (`hR₁Ys`, `hR₁K`). The new scoped
-    residue in `B = σ.openVars Ys` (free vars ⊆ `Ys ∪ K`) is handled by `Schk`
-    avoiding `K` (`hSchkK`, a `complete_K` output) and `Ys` lying above the
-    frontier. No `NoFreeVars σ` assumption. -/
-theorem skolem_no_env_leak_K
-    {Φ Φ₁ : Nat} {ctx : Ctx} {S₀ S₁ Schk R₁ R₁' : Subst} {τ₁ : Ty}
-    {σ : PolyTy} {Ys Ys' : List Nat} {K : List Nat}
-    (hle : Φ ≤ Φ₁)
-    (hbelow : CtxBelow Φ ctx)
-    (hbelowS₁ : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2)
-    (hYsΦ₁ : ∀ Y ∈ Ys, Φ₁ ≤ Y)
-    (hσK : ∀ y ∈ σ.body.freeVars, y ∈ K)
-    (hKΦ : ∀ k ∈ K, k < Φ)
-    (hSchkK : ∀ p ∈ Schk, p.1 ∉ K)
-    (huni : UnifyRel τ₁ (σ.openVars Ys) Schk)
-    (hesc1 : ∀ Y ∈ Ys, Y ∉ Schk.map Prod.fst)
-    (hR₁lc : ∀ p ∈ R₁, p.2.IsLC)
-    (hR₁Ys : ∀ Y ∈ Ys, R₁.onTy (.fvar Y) = .fvar Y)
-    (hR₁K : ∀ k ∈ K, R₁.onTy (.fvar k) = .fvar k)
-    (htya : σ.openVars Ys = R₁.onTy τ₁)
-    (hag1 : Subst.AgreesBelow Φ S₀ (S₁ ++ R₁))
-    (htya' : σ.openVars Ys' = R₁'.onTy τ₁)
-    (hag1' : Subst.AgreesBelow Φ S₀ (S₁ ++ R₁'))
-    (hYdisj : ∀ Y ∈ Ys, Y ∉ Ys') :
-    ∀ Y ∈ Ys, Y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars := by
-  -- The witness unifier is `R₁` itself: it fixes both `Ys` and `K`, hence `B`.
-  have hUuni : Unifies R₁ τ₁ (σ.openVars Ys) := by
-    show R₁.onTy τ₁ = R₁.onTy (σ.openVars Ys)
-    rw [← htya]
-    refine (Subst.onTy_eq_self_of_fixes (fun z hz => ?_)).symm
-    rcases Ty.freeVars_openVars_subset z hz with h | h
-    · exact hR₁K z (hσK z h)
-    · exact hR₁Ys z h
-  obtain ⟨V, hV⟩ := huni.greatest R₁ hUuni
-  have hbelow₁ : CtxBelow Φ₁ (S₁.onCtx ctx) := Subst.onCtx_below hbelowS₁ hle hbelow
-  have hctx1 : R₁.onCtx (S₁.onCtx ctx) = S₀.onCtx ctx := by
-    rw [← Subst.onCtx_append]
-    exact Subst.onCtx_congr (fun v hv => (hag1 v hv).symm) hbelow
-  have hctx1' : R₁'.onCtx (S₁.onCtx ctx) = S₀.onCtx ctx := by
-    rw [← Subst.onCtx_append]
-    exact Subst.onCtx_congr (fun v hv => (hag1' v hv).symm) hbelow
-  have henvmap : (S₁.onCtx ctx).env.map R₁.onPolyTy
-      = (S₁.onCtx ctx).env.map R₁'.onPolyTy := by
-    have h := congrArg Ctx.env (hctx1.trans hctx1'.symm)
-    simpa only [Subst.onCtx, Subst.onEnv] using h
-  intro Y hY hmem
-  have hYge : Φ₁ ≤ Y := hYsΦ₁ Y hY
-  have hSchkY : Schk.onTy (Ty.fvar Y) = Ty.fvar Y :=
-    Ty.substFvars_eq_self_of_no_key (fun p hp hck => by
-      simp only [Ty.freeVars, List.mem_singleton] at hck
-      exact hesc1 Y hY (hck ▸ List.mem_map.mpr ⟨p, hp, rfl⟩))
-  have hVfixY : V.onTy (Ty.fvar Y) = Ty.fvar Y := by
-    have h1 := hV (Ty.fvar Y)
-    rw [hSchkY] at h1
-    rw [← h1]; exact hR₁Ys Y hY
-  obtain ⟨pt, hpt, hYpt⟩ := Env.mem_freeVars_iff.mp hmem
-  have hpt' : pt ∈ (S₁.onCtx ctx).env.map Schk.onPolyTy := hpt
-  obtain ⟨pt0, hpt0, rfl⟩ := List.mem_map.mp hpt'
-  simp only [Subst.onPolyTy] at hYpt
-  have hptbelow : Ty.BelowFvars Φ₁ pt0.body := hbelow₁ pt0 hpt0
-  obtain ⟨v, hvpt, hYv⟩ := Ty.mem_freeVars_onTy_iff.mp hYpt
-  have hvlt : v < Φ₁ := hptbelow.mem_lt v hvpt
-  have hvdom : v ∈ Schk.map Prod.fst := by
-    by_contra hc
-    have hfix : Schk.onTy (Ty.fvar v) = Ty.fvar v :=
-      Ty.substFvars_eq_self_of_no_key (fun p hp hck => by
-        simp only [Ty.freeVars, List.mem_singleton] at hck
-        exact hc (hck ▸ List.mem_map.mpr ⟨p, hp, rfl⟩))
-    rw [hfix] at hYv
-    simp only [Ty.freeVars, List.mem_singleton] at hYv
-    omega
-  obtain ⟨p, hp, hpv⟩ := List.mem_map.mp hvdom
-  -- A var `Schk` binds is among `τ₁`'s/`B`'s free vars. `B`'s split into `Ys`
-  -- (≥ Φ₁, impossible for `v < Φ₁`) and `K` (impossible: `Schk` avoids `K`).
-  have hvfree : v ∈ τ₁.freeVars := by
-    rcases UnifyRel.dom_mem huni p hp with h | h
-    · rwa [hpv] at h
-    · rw [hpv] at h
-      rcases Ty.freeVars_openVars_subset v h with hh | hh
-      · exact absurd (hσK v hh) (hpv ▸ hSchkK p hp)
-      · have := hYsΦ₁ v hh; omega
-  have hYR₁v : Y ∈ (R₁.onTy (Ty.fvar v)).freeVars := by
-    have hVimg : V.onTy (Schk.onTy (Ty.fvar v)) = R₁.onTy (Ty.fvar v) := (hV (Ty.fvar v)).symm
-    rw [← hVimg]
-    exact Ty.mem_freeVars_onTy_iff.mpr ⟨Y, hYv, by rw [hVfixY]; simp [Ty.freeVars]⟩
-  have hR₁v : R₁.onTy (Ty.fvar v) = R₁'.onTy (Ty.fvar v) := by
-    have hbody : R₁.onTy pt0.body = R₁'.onTy pt0.body := by
-      have he := list_map_eq_of_mem henvmap hpt0
-      simpa only [Subst.onPolyTy] using congrArg PolyTy.body he
-    exact Subst.onTy_fvar_eq_of_mem_freeVars hvpt hbody
-  rw [hR₁v] at hYR₁v
-  have hYopen : Y ∈ (R₁'.onTy τ₁).freeVars :=
-    Ty.mem_freeVars_onTy_iff.mpr ⟨v, hvfree, hYR₁v⟩
-  rw [← htya'] at hYopen
-  rcases Ty.freeVars_openVars_subset Y hYopen with h | h
-  · have := hKΦ Y (hσK Y h); omega
-  · exact hYdisj Y hY h
 
 /-- The **annotated** `letIn` principality core (rigidity-aware). Choose a skolem
     block `Ys = freshVars N pc` with `N ≥ Φ` fresh for `S₀` (domain + range),
