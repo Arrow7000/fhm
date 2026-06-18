@@ -260,3 +260,73 @@ from `completeAt` (circular via `output_unique`). **Migration:**
   executable-refinement layer (`inferCore_complete` ← the wall above; then Stage C `typecheck`
   over erased programs, whose headline region is independently WIP: `genScheme` 3-arg,
   `IsTyErased` erasure on progress/preservation, an errored Stage-C theorem ~line 10760).
+
+### 7d. UPDATE — the wall is CRACKED (locality lemma; block-swap is a dead-end)
+- **Design decision (reasoned through with concrete examples):** the **block-swap** route
+  (Approach A in §7c-style thinking) is a **DEAD END** for this wall. Cleaning `S`'s domain/range
+  w.r.t. the executable block `Ys = freshVars Φ pc` via `Subst.conj (blockSwap …)` necessarily
+  renames the env's occurrences of `Ys` — which, to keep a valid declarative typing, forces
+  renaming the *subject*/*type*'s `Ys` too (to `freshVars W pc`). But the executable is **pinned**
+  to `Ys = freshVars Φ pc`; the block cannot move. So §7c-path-1's `dom S₀ < Φ` also fails (the
+  `completeAt` residuals are block-swap conjugates with huge domain `[W,W+pc)`). The viable route
+  is **path 2-flavoured but realized via a structural locality lemma about the given derivation.**
+- **DONE + committed (axiom-clean):**
+  - `b98b39c` **`Infer.gap_avoid`** / `InferBranches.gap_avoid` (≈ line 9590): a derivation whose
+    ctx env + annotation free vars avoid an interval `[lo,hi)` with `hi ≤ Φ` (gap *below* the input
+    frontier) has output substitution **domain AND range** + result type all avoiding `[lo,hi)`.
+    The `[lo,hi)` analogue of `belowFvars`, additionally bounding the substitution *domain*.
+    Helpers: `Subst.onTy_avoidsItv`, `Subst.onCtx_avoidsItv`, `Ty.openWith_avoidsItv`,
+    `UnifyRel.gap_avoid`/`UnifyRelList.gap_avoid`.
+  - `bc41274` **`Infer.letInAnn_block_fresh`** (≈ line 10000): from a given `letInAnn` derivation,
+    `(A) dom S avoids freshVars Φ pc` and `(B) (S.onCtx ctx).env avoids freshVars Φ pc`. Proof
+    splits `freshVars Φ pc` at the derivation's own block start `N`: lower gap `[Φ,N)` → `gap_avoid`
+    on rhs/Schk/body sub-derivations; upper part `[N,Φ+pc) ⊆ freshVars N pc` → `hesc1` (rhs/unify)
+    + `gap_avoid` over the `hesc2`-cleaned body context. Also added `Subst.fixes_fvar_of_avoids`.
+- **REMAINING (mechanical migration + assembly — the design is fully de-risked):**
+  1. **`InferCoreComplete` predicate** (≈ line 10090): add `(K : List Nat)` + `(hKΦ : ∀ k∈K, k<Φ)`
+     + `(hKe : ∀ y∈e.tyFreeVars, y∈K)` + `(hSK : ∀ p∈S, p.1∉K)` (mirror `CompleteAt`). Every case
+     lemma then K-threads.
+  2. **Mechanical cases** (prim/var/ctor: K unused; lambda/letIn-none/pair/app/fst/snd/match/
+     branches): thread `K` to the `iha`/`ihb` recursive calls, to `Infer.sound h hwf K hKΦ hKe hSK`,
+     to `Infer.belowFvars h hbelow (fun y hy => hKΦ y (hKe y …))` (now 3-arg), and switch
+     `Infer.complete` → **`Infer.completeAt e K …`** (6-conjunct: it yields the "reconstructed S
+     avoids K" needed to feed `ihb`). `Infer.complete'` calls take `K` + `hKΦ`/`hKe`/`hKfix`
+     (`hKfix` from `Subst.fixes_fvar_of_avoids` on the per-subterm "S avoids K" split of `hSK`).
+     The `complete'`/`completeAt` output is now a 5-/6-tuple — capture the extra `R`-fixes-`K` and
+     `S`-avoids-`K` conjuncts.
+  3. **`inferCore_complete` assembler** (≈ line 10580): restructure to **strong induction on
+     `e.size`** (mirror `Infer.completeAt`, NOT `Expr.rec_strong`), so the annotated-`let` case gets
+     `iha : ∀ Ys, InferCoreComplete (rhs.openTyVars Ys)` (via `Expr.size_openTyVars`). Make
+     `inferCore_complete_letIn` take `(iha : InferCoreComplete rhs) (ihao : ∀ Ys, InferCoreComplete
+     (rhs.openTyVars Ys)) (ihb : InferCoreComplete body)` (mirror `Infer.complete_letIn`).
+  4. **Annotated-`let` assembly** (the only non-mechanical part, now de-risked): in
+     `inferCore_complete_letIn`'s `letInAnn` case, with `Ys := freshVars Φ σ.paramCount`:
+     - `happ := Infer.sound h hwf K hKΦ hKe hSK`; `cases happ` (Core `letIn`) → `hcofin` over the
+       opened rhs; `hann σ rfl : M = σ`.
+     - `⟨hAdom, hBenv⟩ := Infer.letInAnn_block_fresh h hbelow (htfv from hKΦ∘hKe)`.  ⇒ `S` fixes
+       `K ∪ Ys` (K via `hSK`+`fixes_fvar_of_avoids`; Ys via `hAdom`).
+     - `htyYs := typeOfHM_at_block (freshVars_length …) hcofin : TypeOfHM (S.onCtx ctx)
+       (rhs.openTyVars Ys) (σ.openVars Ys)` — block-independent, free.
+     - `Infer.completeAt (rhs.openTyVars Ys) (K ++ Ys) hwf hbelowN hSlc … htyYs` → `Drhs` +
+       residual `R₁` (fixes `K∪Ys`, `σ.openVars Ys = R₁.onTy τ₁`) + **`S₁` avoids `K∪Ys`** (hesc1
+       first half). Feed `Drhs` to `ihao Ys (K++Ys) …` ⇒ executable infers the opened rhs; use
+       `Infer.output_unique` (needs `(rhs.openTyVars Ys).tyFreeVars = []`? NO — `output_unique`'s
+       `hclosed` is too strong here; instead re-run `complete'`/`completeAt` directly on the
+       executable's `hrhs'` at `K∪Ys`, OR thread the avoid-conjunct via `completeAt` and match by
+       determinism using a `closed`-free principality variant — reconcile S₁'=S₁ etc.).
+     - `unifyCore τ₁ (σ.openVars Ys)` succeeds with witness `U := R₁` (fixes `K∪Ys` ⊇ both fvars)
+       via `unifyCore_complete_aux`; gives left-leaning `Schk'`.
+     - `hesc1`: S₁' avoids `Ys` (from the `completeAt` avoid-conjunct) + `Schk'` avoids `Ys` via the
+       **generalized `OUnify.skolem_escape`** (generalize its `b.freeVars ⊆ Ys` premise to `⊆ K∪Ys`;
+       witness `U = R₁`).
+     - `hesc2`: producer-style `V` argument (factor `R₁` through `Schk'` via `greatest_K`; `V` fixes
+       `K∪Ys`; `V.onCtx (Schk'.onCtx (S₁'.onCtx ctx)) = S.onCtx ctx`); a leak would put `Y∈Ys` into
+       `(S.onCtx ctx).env`, contradicting `hBenv`.
+     - body: recast `hbodyD` over `V`, recurse `ihb K …` (via `completeAt` for the reconstructed body
+       derivation + match), drive the executable arm (`dif_pos` for `hσwf`/`hesc1`/`hesc2`).
+  5. **Headlines:** add `hclosed : e.tyFreeVars = []` to `infer_isPrincipal`/`principalType_*`/
+     `infer_iff_typeable`/`typecheck_*` (closed programs ⇒ `K := []`, `output_unique`/`isPrincipal`
+     already take `hclosed`). Then `lean_verify` the headlines axiom-clean.
+  - Reassess deleting `exists_skolem_unifier`/`skolem_no_env_leak` only once `inferCore_complete` is
+    off them (the assembly above no longer needs `exists_skolem_unifier`; `skolem_no_env_leak` is
+    likely dead).
