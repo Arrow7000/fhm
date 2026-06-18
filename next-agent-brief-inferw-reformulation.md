@@ -230,3 +230,33 @@ from `completeAt` (circular via `output_unique`). **Migration:**
 - **Delete** now-dead lemmas: `exists_skolem_unifier`, the `OUnify.skolem_escape`
   mutual, `skolem_no_env_leak`, `skolem_no_env_leak_K`.
 - Stage C: `typecheck` over the *erased* program + final headline; `lean_verify`.
+
+### 7c. UPDATE after the §7b attempt (subagent 2) — what's done + the real wall
+- **DONE + committed (`a97fda4`):** removed unused `hrhs_lc` from `sound_letInAnn` (+ caller),
+  deleted dead `skolem_no_env_leak_K`. `Infer.sound_closed` axiom-clean.
+- **`inferCore_complete` annotated-let is the hard wall — it's the DUAL of issue 2a.**
+  The producer solved 2a by letting completeness *choose* `Ys ∉ dom S₀`; but the executable
+  `inferCore` **hard-codes `Ys = freshVars Φ pc` (N=Φ)** and can't choose, while the relation
+  allows any `N ≥ Φ`. So the proof must bridge the executable's fixed block vs the relation's
+  abstract `N`. The non-annotated cases (prim/var/ctor/lambda/pair/app/letIn-none) migrate
+  mechanically (lambda seed → `Ty.bvarsBelow 0`; `genScheme` 3-arg `rhs.tyFreeVars`; thread
+  `K`/`hSK`; a `Subst.fixes_fvar_of_avoids` helper). Two candidate unblocks, both real work:
+  1. Add invariant `hS₀dom : ∀ p∈S₀, p.1 < Φ` to the executable-completeness predicate (then
+     `Ys ≥ Φ ∉ dom S₀` automatically). Needs a NEW **residual-domain-bound** lemma (the `R`
+     from `complete'`/`completeAt` has `dom R < Φ'`) so the invariant survives the
+     second-subterm compositional cases — i.e. a new output conjunct threaded through
+     `completeAt`/`complete'` (like the step-2 `S`-avoids-`K` threading).
+  2. Rename the *given* derivation's block `N→Φ` (block-swap) + use `output_unique`/principality
+     to reconcile the executable's deterministic re-inference. (More like what `complete'`'s
+     `letInAnn` did.)
+- **`OUnify.skolem_escape` is NOT dead** (the §7b "delete it" was WRONG): the executable `hesc1`
+  needs the LEFT-LEANING `unifyCore` MGU to avoid `Ys`, which `complete_K` (existential,
+  away-from-`K`) doesn't give. KEEP it; generalize its `b.freeVars ⊆ Ys` to `⊆ K∪Ys` and call
+  at the rigid set `K∪Ys`. (`exists_skolem_unifier`/`skolem_no_env_leak` are still referenced by
+  the red `inferCore_complete`; reassess after B.)
+- **Big picture:** the RELATION metatheory is fully done + axiom-clean — soundness
+  (`sound_closed`), completeness (`completeAt`), principality (`complete'`/`isPrincipal`/
+  `output_unique`). Executable: soundness (`infer_sound`) done; the remaining red is the
+  executable-refinement layer (`inferCore_complete` ← the wall above; then Stage C `typecheck`
+  over erased programs, whose headline region is independently WIP: `genScheme` 3-arg,
+  `IsTyErased` erasure on progress/preservation, an errored Stage-C theorem ~line 10760).
