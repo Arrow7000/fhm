@@ -2556,18 +2556,19 @@ def Infer.CompleteAt (e : Expr) : Prop :=
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC) ∧
-      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
+      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      (∀ p ∈ S, p.1 ∉ K)
 
 /-- Principality, primitive-literal case: `Infer` returns the literal's type
     with the empty substitution; the residual is `S₀` unchanged. -/
 theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) := by
   intro Φ ctx S₀ τ₀ K _ _ hS₀ _ _ hKfix hty
   cases hty with
-  | primLitUnit => exact ⟨Φ, [], _, S₀, .primLitUnit, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
-  | primLitInt  => exact ⟨Φ, [], _, S₀, .primLitInt,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
-  | primLitNat  => exact ⟨Φ, [], _, S₀, .primLitNat,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
-  | primLitBool => exact ⟨Φ, [], _, S₀, .primLitBool, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
-  | primLitStr  => exact ⟨Φ, [], _, S₀, .primLitStr,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
+  | primLitUnit => exact ⟨Φ, [], _, S₀, .primLitUnit, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
+  | primLitInt  => exact ⟨Φ, [], _, S₀, .primLitInt,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
+  | primLitNat  => exact ⟨Φ, [], _, S₀, .primLitNat,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
+  | primLitBool => exact ⟨Φ, [], _, S₀, .primLitBool, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
+  | primLitStr  => exact ⟨Φ, [], _, S₀, .primLitStr,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
 
 /-- Principality, pair case. No fresh variables are introduced here, so no
     renaming is needed: the residual `R₁` from the first component becomes the
@@ -2582,7 +2583,7 @@ theorem Infer.complete_pair {a b : Expr}
   simp only [Expr.tyFreeVars, List.mem_append] at hKe
   cases hty with
   | pair hta htb =>
-    obtain ⟨Φ₁, S₁, τa, R₁, hinfa, haga, htya, hR₁, hR₁fix⟩ :=
+    obtain ⟨Φ₁, S₁, τa, R₁, hinfa, haga, htya, hR₁, hR₁fix, hS₁K⟩ :=
       iha K hwf hbelow hS₀ hKΦ (fun y hy => hKe y (.inl hy)) hKfix hta
     have hS₁ : ∀ p ∈ S₁, p.2.IsLC := (Infer.lc hinfa hwf).2
     have hle : Φ ≤ Φ₁ := Infer.frontier_le hinfa
@@ -2596,15 +2597,19 @@ theorem Infer.complete_pair {a b : Expr}
       rw [← Subst.onCtx_append]
       exact Subst.onCtx_congr (fun v hv => (haga v hv).symm) hbelow
     have htb' : TypeOfHM (R₁.onCtx (S₁.onCtx ctx)) b _ := hctx_eq ▸ htb
-    obtain ⟨Φ₂, S₂, τb, R₂, hinfb, hagb, htyb, hR₂, hR₂fix⟩ :=
+    obtain ⟨Φ₂, S₂, τb, R₂, hinfb, hagb, htyb, hR₂, hR₂fix, hS₂K⟩ :=
       ihb K hwf₁ hbelow₁ hR₁ (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle)
         (fun y hy => hKe y (.inr hy)) hR₁fix htb'
-    refine ⟨Φ₂, S₁ ++ S₂, .pair (S₂.onTy τa) τb, R₂, .pair hinfa hinfb, ?_, ?_, hR₂, hR₂fix⟩
+    refine ⟨Φ₂, S₁ ++ S₂, .pair (S₂.onTy τa) τb, R₂, .pair hinfa hinfb, ?_, ?_, hR₂, hR₂fix, ?_⟩
     · exact Subst.AgreesBelow.trans_append hle haga hbelowS₁ hagb
     · rw [Subst.onTy_pair]
       refine congrArg₂ Ty.pair ?_ htyb
       rw [htya, ← Subst.onTy_append]
       exact Subst.onTy_congr hagb hbelowτa
+    · intro p hp
+      rcases List.mem_append.mp hp with hp | hp
+      · exact hS₁K p hp
+      · exact hS₂K p hp
 
 
 /-! ### Injective renaming of free type variables (principality binder cases)
@@ -2969,7 +2974,8 @@ theorem Infer.complete_lambda_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       Ty.arrow paramTy bodyTy = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC) ∧
-      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
+      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      (∀ p ∈ S, p.1 ∉ K) := by
   -- STEP 0: fresh names
   obtain ⟨W, c, hΦW, hΦc, hWc, hWav, hcav⟩ := exists_fresh_two_ge Φ
     ([Φ] ++ S₀.map Prod.fst ++ S₀.flatMap (fun p => p.2.freeVars)
@@ -3073,10 +3079,10 @@ theorem Infer.complete_lambda_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
     exact Ty.substFvars_eq_self_of_no_key (fun p hp hc => by
       rw [List.mem_singleton] at hp; subst hp
       simp only [Ty.freeVars, List.mem_singleton] at hc; omega)
-  obtain ⟨Φ', S, τb, R_b, hinfb, hagb, htyb, hR_b, hR_bfix⟩ :=
+  obtain ⟨Φ', S, τb, R_b, hinfb, hagb, htyb, hR_b, hR_bfix, hSK⟩ :=
     ih K hwf_b hbelow_b hT_lc (fun k hk => by have := hKΦ k hk; omega) hbodyK hSconjK hren
   -- STEP 3: assemble the conclusion
-  refine ⟨Φ', S, .arrow (S.onTy (.fvar Φ)) τb, R_b ++ [(W, .fvar Φ)], ?_, ?_, ?_, ?_, ?_⟩
+  refine ⟨Φ', S, .arrow (S.onTy (.fvar Φ)) τb, R_b ++ [(W, .fvar Φ)], ?_, ?_, ?_, ?_, ?_, hSK⟩
   · exact Infer.lambda .none hinfb
   · -- agreement below Φ
     intro v hv
@@ -3144,7 +3150,8 @@ theorem Infer.complete_lambda_ann_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       Ty.arrow T bodyTy = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC) ∧
-      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
+      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      (∀ p ∈ S, p.1 ∉ K) := by
   have hTbelow : Ty.BelowFvars Φ T := Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hTK v hv))
   have hself : S₀.onTy T = T := Subst.onTy_eq_self_of_fixes (fun v hv => hKfix v (hTK v hv))
   have hwf' : CtxWF { ctx with env := PolyTy.mkTrivial T :: ctx.env } := by
@@ -3160,9 +3167,9 @@ theorem Infer.complete_lambda_ann_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
         = { (S₀.onCtx ctx) with env := PolyTy.mkTrivial T :: (S₀.onCtx ctx).env } := by
       simp only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy, PolyTy.mkTrivial, hself]
     rw [heq2]; exact hbodyty
-  obtain ⟨Φ', S, τ, R, hinfb, hag, htyb, hRlc, hRfix⟩ :=
+  obtain ⟨Φ', S, τ, R, hinfb, hag, htyb, hRlc, hRfix, hSK⟩ :=
     ih K hwf' hbelow' hS₀ hKΦ hbodyK hKfix hbody'
-  refine ⟨Φ', S, .arrow (S.onTy T) τ, R, Infer.lambda (.some T hTlc) hinfb, hag, ?_, hRlc, hRfix⟩
+  refine ⟨Φ', S, .arrow (S.onTy T) τ, R, Infer.lambda (.some T hTlc) hinfb, hag, ?_, hRlc, hRfix, hSK⟩
   rw [Subst.onTy_arrow]
   refine congrArg₂ Ty.arrow ?_ htyb
   rw [← Subst.onTy_append, ← Subst.onTy_congr hag hTbelow, hself]
@@ -3580,7 +3587,8 @@ theorem Infer.complete_var {i : Nat} : Infer.CompleteAt (.var i) := by
       rw [List.nil_append, Subst.onTy_append, Subst.onTy_append, hconjv, hzipnoop, hback]
     refine ⟨Φ + pc, [], polyTy.openVars (freshVars Φ pc),
       (Subst.conj (blockSwap Φ W pc) S₀ ++ (freshVars Φ pc).zip tyArgs2) ++ blockListBack Φ W pc,
-      Infer.var hlook_orig, hagree, ?_, ?_, fun k hk => (hagree k (hKΦ k hk)).symm.trans (hKfix k hk)⟩
+      Infer.var hlook_orig, hagree, ?_, ?_,
+      fun k hk => (hagree k (hKΦ k hk)).symm.trans (hKfix k hk), by simp⟩
     · -- declarative type factors through the residual
       rw [Subst.onTy_append, hR'eq, blockListBack_onTy_rename hd hτ₀W]
     · -- residual is locally closed
@@ -3703,7 +3711,8 @@ theorem Infer.complete_ctor {name : CtorName} : Infer.CompleteAt (.ctor name) :=
       rw [List.nil_append, Subst.onTy_append, Subst.onTy_append, hconjv, hzipnoop, hback]
     refine ⟨Φ + pc, [], ctor.toTy.openVars (freshVars Φ pc),
       (Subst.conj (blockSwap Φ W pc) S₀ ++ (freshVars Φ pc).zip tyArgs2) ++ blockListBack Φ W pc,
-      Infer.ctor hlook_orig, hagree, ?_, ?_, fun k hk => (hagree k (hKΦ k hk)).symm.trans (hKfix k hk)⟩
+      Infer.ctor hlook_orig, hagree, ?_, ?_,
+      fun k hk => (hagree k (hKΦ k hk)).symm.trans (hKfix k hk), by simp⟩
     · -- declarative type factors through the residual
       rw [Subst.onTy_append, hR'eq, blockListBack_onTy_rename hd hτ₀W]
     · -- residual is locally closed
@@ -4120,6 +4129,258 @@ theorem UnifyRel.complete {a b : Ty} {U : Subst}
     (ha : a.IsLC) (hb : b.IsLC) (hU : Unifies U a b) : ∃ S, UnifyRel a b S :=
   (UnifyRel.complete_aux (2 * (U.onTy a).size + 1)).1 (by omega) ha hb hU
 
+/-! ### EXPERIMENT (rigidity-aware unification completeness)
+
+Validating lemma for the planned move from post-hoc escape checks to *structural*
+skolem rigidity. Claim: the **symmetric** `UnifyRel` can always be oriented to
+**avoid a rigid set `K`**, given only that some LC unifier `U` keeps every
+`k ∈ K` fixed — crucially with NO restriction that one operand's free vars lie in
+`K` (the `b.freeVars ⊆ Ys` hypothesis that broke `OUnify.skolem_escape` under
+D2). Mirrors `OUnify.complete_aux`, but: var–var is oriented away from `K`; a
+rigid var meeting a non-variable is *vacuous* (`U` fixes it, so it can't equal a
+non-var image); and the structural recursion threads the `K`-fixing witness via
+`greatest_K`. The produced `S` avoids `K` by construction, so `hesc1` becomes
+structural rather than a property to re-establish. -/
+theorem UnifyRel.complete_K_aux {K : List Nat} : ∀ (N : Nat),
+    (∀ {a b : Ty} {U : Subst}, 2 * (U.onTy a).size < N → a.IsLC → b.IsLC →
+        (∀ p ∈ U, p.2.IsLC) → Unifies U a b → (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) →
+        ∃ S, UnifyRel a b S ∧ (∀ p ∈ S, p.1 ∉ K)) ∧
+    (∀ {as bs : List Ty} {U : Subst}, 2 * TyList.size (as.map U.onTy) + 1 < N →
+        (∀ t ∈ as, t.IsLC) → (∀ t ∈ bs, t.IsLC) → (∀ p ∈ U, p.2.IsLC) →
+        as.length = bs.length → as.map U.onTy = bs.map U.onTy →
+        (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) →
+        ∃ S, UnifyRelList as bs S ∧ (∀ p ∈ S, p.1 ∉ K)) := by
+  intro N
+  induction N with
+  | zero => exact ⟨fun h => absurd h (by omega), fun h => absurd h (by omega)⟩
+  | succ N ih =>
+    obtain ⟨ihU, ihL⟩ := ih
+    refine ⟨?_, ?_⟩
+    · intro a b U hsz ha hb hUlc hU hUK
+      cases a with
+      | bvar i => cases ha with | bvar h => omega
+      | prim p =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | prim q =>
+          simp only [Unifies, Subst.onTy_prim, Ty.prim.injEq] at hU
+          subst hU; exact ⟨[], .prim, by simp⟩
+        | fvar m =>
+          have hmK : m ∉ K := fun hmK => by
+            have h1 : U.onTy (Ty.prim p) = U.onTy (Ty.fvar m) := hU
+            rw [hUK m hmK, Subst.onTy_prim] at h1; exact absurd h1 (by simp)
+          exact ⟨[(m, .prim p)], .fvarR (by simp) (by simp [Ty.freeVars]),
+            by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
+        | pair b₁ b₂ => simp [Unifies] at hU
+        | arrow b₁ b₂ => simp [Unifies] at hU
+        | customTy nm bs => simp [Unifies] at hU
+      | fvar n =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | fvar m =>
+          by_cases hnm : n = m
+          · subst hnm; exact ⟨[], .fvarRefl, by simp⟩
+          · by_cases hnK : n ∈ K
+            · have hmK : m ∉ K := fun hmK => by
+                have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.fvar m) := hU
+                rw [hUK n hnK, hUK m hmK] at h1
+                simp only [Ty.fvar.injEq] at h1; exact hnm h1
+              exact ⟨[(m, .fvar n)], .fvarR (by simp only [ne_eq, Ty.fvar.injEq]; omega)
+                (by simp only [Ty.freeVars, List.mem_singleton]; omega),
+                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
+            · exact ⟨[(n, .fvar m)], .fvarL (by simp only [ne_eq, Ty.fvar.injEq]; omega)
+                (by simp only [Ty.freeVars, List.mem_singleton]; omega),
+                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hnK⟩
+        | prim q =>
+          by_cases hocc : n ∈ (Ty.prim q).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hnK : n ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.prim q) := hU
+              rw [hUK n hnK, Subst.onTy_prim] at h1; exact absurd h1 (by simp)
+            · exact ⟨[(n, .prim q)], .fvarL (by simp) hocc,
+                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hnK⟩
+        | pair b₁ b₂ =>
+          by_cases hocc : n ∈ (Ty.pair b₁ b₂).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hnK : n ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.pair b₁ b₂) := hU
+              rw [hUK n hnK, Subst.onTy_pair] at h1; exact absurd h1 (by simp)
+            · exact ⟨[(n, .pair b₁ b₂)], .fvarL (by simp) hocc,
+                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hnK⟩
+        | arrow b₁ b₂ =>
+          by_cases hocc : n ∈ (Ty.arrow b₁ b₂).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hnK : n ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.arrow b₁ b₂) := hU
+              rw [hUK n hnK, Subst.onTy_arrow] at h1; exact absurd h1 (by simp)
+            · exact ⟨[(n, .arrow b₁ b₂)], .fvarL (by simp) hocc,
+                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hnK⟩
+        | customTy nm bs =>
+          by_cases hocc : n ∈ (Ty.customTy nm bs).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hnK : n ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.customTy nm bs) := hU
+              rw [hUK n hnK, Subst.onTy_customTy] at h1; exact absurd h1 (by simp)
+            · exact ⟨[(n, .customTy nm bs)], .fvarL (by simp) hocc,
+                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hnK⟩
+      | pair a₁ a₂ =>
+        cases ha with
+        | pair ha₁ ha₂ =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | fvar m =>
+          by_cases hocc : m ∈ (Ty.pair a₁ a₂).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hmK : m ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.pair a₁ a₂) = U.onTy (Ty.fvar m) := hU
+              rw [hUK m hmK, Subst.onTy_pair] at h1; exact absurd h1 (by simp)
+            · exact ⟨[(m, .pair a₁ a₂)], .fvarR (by simp) hocc,
+                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
+        | prim q => simp [Unifies] at hU
+        | arrow b₁ b₂ => simp [Unifies] at hU
+        | customTy nm bs => simp [Unifies] at hU
+        | pair b₁ b₂ =>
+          cases hb with
+          | pair hb₁ hb₂ =>
+          have hpsz : (U.onTy (.pair a₁ a₂)).size = 1 + (U.onTy a₁).size + (U.onTy a₂).size := by
+            simp [Subst.onTy_pair, Ty.size]
+          simp only [Unifies, Subst.onTy_pair, Ty.pair.injEq] at hU
+          obtain ⟨S₁, h₁, hS₁K⟩ := ihU (a := a₁) (b := b₁) (U := U)
+            (by rw [hpsz] at hsz; omega) ha₁ hb₁ hUlc hU.1 hUK
+          have hS₁lc := UnifyRel.lc h₁ ha₁ hb₁
+          obtain ⟨R, hR, hRlc, hRK⟩ := UnifyRel.greatest_K h₁ U hUlc hU.1 hUK
+          obtain ⟨S₂, h₂, hS₂K⟩ := ihU (a := S₁.onTy a₂) (b := S₁.onTy b₂) (U := R)
+            (by rw [← hR a₂]; rw [hpsz] at hsz; omega)
+            (Subst.onTy_lc hS₁lc ha₂) (Subst.onTy_lc hS₁lc hb₂) hRlc
+            (by show R.onTy (S₁.onTy a₂) = R.onTy (S₁.onTy b₂); rw [← hR a₂, ← hR b₂]; exact hU.2) hRK
+          exact ⟨S₁ ++ S₂, .pair h₁ h₂, by
+            intro p hp; rcases List.mem_append.mp hp with h | h
+            · exact hS₁K p h
+            · exact hS₂K p h⟩
+      | arrow a₁ a₂ =>
+        cases ha with
+        | arrow ha₁ ha₂ =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | fvar m =>
+          by_cases hocc : m ∈ (Ty.arrow a₁ a₂).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hmK : m ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.arrow a₁ a₂) = U.onTy (Ty.fvar m) := hU
+              rw [hUK m hmK, Subst.onTy_arrow] at h1; exact absurd h1 (by simp)
+            · exact ⟨[(m, .arrow a₁ a₂)], .fvarR (by simp) hocc,
+                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
+        | prim q => simp [Unifies] at hU
+        | pair b₁ b₂ => simp [Unifies] at hU
+        | customTy nm bs => simp [Unifies] at hU
+        | arrow b₁ b₂ =>
+          cases hb with
+          | arrow hb₁ hb₂ =>
+          have hpsz : (U.onTy (.arrow a₁ a₂)).size = 1 + (U.onTy a₁).size + (U.onTy a₂).size := by
+            simp [Subst.onTy_arrow, Ty.size]
+          simp only [Unifies, Subst.onTy_arrow, Ty.arrow.injEq] at hU
+          obtain ⟨S₁, h₁, hS₁K⟩ := ihU (a := a₁) (b := b₁) (U := U)
+            (by rw [hpsz] at hsz; omega) ha₁ hb₁ hUlc hU.1 hUK
+          have hS₁lc := UnifyRel.lc h₁ ha₁ hb₁
+          obtain ⟨R, hR, hRlc, hRK⟩ := UnifyRel.greatest_K h₁ U hUlc hU.1 hUK
+          obtain ⟨S₂, h₂, hS₂K⟩ := ihU (a := S₁.onTy a₂) (b := S₁.onTy b₂) (U := R)
+            (by rw [← hR a₂]; rw [hpsz] at hsz; omega)
+            (Subst.onTy_lc hS₁lc ha₂) (Subst.onTy_lc hS₁lc hb₂) hRlc
+            (by show R.onTy (S₁.onTy a₂) = R.onTy (S₁.onTy b₂); rw [← hR a₂, ← hR b₂]; exact hU.2) hRK
+          exact ⟨S₁ ++ S₂, .arrow h₁ h₂, by
+            intro p hp; rcases List.mem_append.mp hp with h | h
+            · exact hS₁K p h
+            · exact hS₂K p h⟩
+      | customTy nm tys₁ =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | fvar m =>
+          by_cases hocc : m ∈ (Ty.customTy nm tys₁).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hmK : m ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.customTy nm tys₁) = U.onTy (Ty.fvar m) := hU
+              rw [hUK m hmK, Subst.onTy_customTy] at h1; exact absurd h1 (by simp)
+            · exact ⟨[(m, .customTy nm tys₁)], .fvarR (by simp) hocc,
+                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
+        | prim q => simp [Unifies] at hU
+        | pair b₁ b₂ => simp [Unifies] at hU
+        | arrow b₁ b₂ => simp [Unifies] at hU
+        | customTy nm' tys₂ =>
+          have hcsz : (U.onTy (.customTy nm tys₁)).size = 1 + TyList.size (tys₁.map U.onTy) := by
+            simp [Subst.onTy_customTy, Ty.size]
+          simp only [Unifies, Subst.onTy_customTy, Ty.customTy.injEq] at hU
+          obtain ⟨rfl, hmapeq⟩ := hU
+          have hlen : tys₁.length = tys₂.length := by
+            have := congrArg List.length hmapeq; simpa using this
+          obtain ⟨S, hS, hSK⟩ := ihL (as := tys₁) (bs := tys₂) (U := U)
+            (by rw [hcsz] at hsz; omega)
+            (fun t ht => by cases ha with | customTy h => exact h t ht)
+            (fun t ht => by cases hb with | customTy h => exact h t ht)
+            hUlc hlen hmapeq hUK
+          exact ⟨S, .customTy hS, hSK⟩
+    · intro as bs U hsz has hbs hUlc hlen hmap hUK
+      cases as with
+      | nil =>
+        cases bs with
+        | nil => exact ⟨[], .nil, by simp⟩
+        | cons t₂ ts₂ => simp at hlen
+      | cons t₁ ts₁ =>
+        cases bs with
+        | nil => simp at hlen
+        | cons t₂ ts₂ =>
+          simp only [List.map_cons, List.cons.injEq] at hmap
+          have htsz : TyList.size ((t₁ :: ts₁).map U.onTy)
+              = (U.onTy t₁).size + TyList.size (ts₁.map U.onTy) := by simp [List.map_cons, TyList.size]
+          have ht1pos := @Ty.size_pos (U.onTy t₁)
+          obtain ⟨S₁, h₁, hS₁K⟩ := ihU (a := t₁) (b := t₂) (U := U)
+            (by rw [htsz] at hsz; omega) (has t₁ List.mem_cons_self) (hbs t₂ List.mem_cons_self)
+            hUlc hmap.1 hUK
+          have hS₁lc := UnifyRel.lc h₁ (has t₁ List.mem_cons_self) (hbs t₂ List.mem_cons_self)
+          obtain ⟨R, hR, hRlc, hRK⟩ := UnifyRel.greatest_K h₁ U hUlc hmap.1 hUK
+          have key : ∀ l : List Ty, l.map (R.onTy ∘ S₁.onTy) = l.map U.onTy := by
+            intro l; apply List.map_congr_left; intro t _; exact (hR t).symm
+          have hkey1 : (ts₁.map S₁.onTy).map R.onTy = ts₁.map U.onTy := by
+            rw [List.map_map]; exact key ts₁
+          have hmaptail : (ts₁.map S₁.onTy).map R.onTy = (ts₂.map S₁.onTy).map R.onTy := by
+            rw [List.map_map, List.map_map, key, key]; exact hmap.2
+          obtain ⟨S₂, h₂, hS₂K⟩ := ihL (as := ts₁.map S₁.onTy) (bs := ts₂.map S₁.onTy) (U := R)
+            (by rw [hkey1]; rw [htsz] at hsz; omega)
+            (by intro t ht; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+                exact Subst.onTy_lc hS₁lc (has t0 (List.mem_cons_of_mem _ ht0)))
+            (by intro t ht; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+                exact Subst.onTy_lc hS₁lc (hbs t0 (List.mem_cons_of_mem _ ht0)))
+            hRlc
+            (by simp only [List.length_map]; have := hlen; simpa using this)
+            hmaptail hRK
+          exact ⟨S₁ ++ S₂, .cons h₁ h₂, by
+            intro p hp; rcases List.mem_append.mp hp with h | h
+            · exact hS₁K p h
+            · exact hS₂K p h⟩
+
+/-- Validating wrapper: a `K`-fixing LC unifier of two LC types yields a
+    `UnifyRel` derivation that **avoids `K`** — with no side-condition on the
+    operands' free variables. This is the clean replacement for
+    `OUnify.skolem_escape` + `exists_skolem_unifier`. -/
+theorem UnifyRel.complete_K {K : List Nat} {a b : Ty} {U : Subst}
+    (ha : a.IsLC) (hb : b.IsLC) (hUlc : ∀ p ∈ U, p.2.IsLC)
+    (hU : Unifies U a b) (hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k) :
+    ∃ S, UnifyRel a b S ∧ (∀ p ∈ S, p.1 ∉ K) :=
+  (UnifyRel.complete_K_aux (2 * (U.onTy a).size + 1)).1 (by omega) ha hb hUlc hU hUK
+
 /-- Principality, application case (factored with named binders). Recurse on `f`
     then `arg`; the declarative typing yields a unifier of `S₂.onTy τf` and
     `arrow τa (.fvar Φ₂)` — exhibited explicitly as `[(Φ₂,.fvar W)] ++ R₂ ++ [(W,τ₀)]`
@@ -4140,9 +4401,10 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC) ∧
-      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
+      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      (∀ p ∈ S, p.1 ∉ K) := by
   -- STEP 1: recurse on `f`.
-  obtain ⟨Φ₁, S₁, τf, R₁, hinff, hagf, htyf, hR₁, hR₁K⟩ :=
+  obtain ⟨Φ₁, S₁, τf, R₁, hinff, hagf, htyf, hR₁, hR₁K, hS₁K⟩ :=
     ihf K hwf hbelow hS₀ hKΦ hKf hKfix hf
   have hS₁ := (Infer.lc hinff hwf).2
   have hbf := Infer.belowFvars hinff hbelow (fun y hy => hKΦ y (hKf y hy))
@@ -4155,7 +4417,7 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
     exact Subst.onCtx_congr (fun v hv => (hagf v hv).symm) hbelow
   have harg' : TypeOfHM (R₁.onCtx (S₁.onCtx ctx)) arg argTy := by
     rw [hctxeq]; exact harg
-  obtain ⟨Φ₂, S₂, τa, R₂, hinfa, haga, htya, hR₂, hR₂K⟩ :=
+  obtain ⟨Φ₂, S₂, τa, R₂, hinfa, haga, htya, hR₂, hR₂K, hS₂K⟩ :=
     iharg K hwf₁ hbelow₁ hR₁ (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle1) hKa hR₁K harg'
   have hS₂ := (Infer.lc hinfa hwf₁).2
   have hba := Infer.belowFvars hinfa hbelow₁ (fun y hy => lt_of_lt_of_le (hKΦ y (hKa y hy)) hle1)
@@ -4219,10 +4481,7 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
   have hUni : Unifies U (S₂.onTy τf) (Ty.arrow τa (Ty.fvar Φ₂)) := by
     show U.onTy (S₂.onTy τf) = U.onTy (Ty.arrow τa (Ty.fvar Φ₂))
     rw [hUniL, hUniR]
-  -- STEP 6: realise the unifier as a derivation `S₃`.
-  obtain ⟨S₃, h₃⟩ := UnifyRel.complete (Subst.onTy_lc hS₂ hτfLC)
-    (.arrow hτaLC ContainsBvarsUpTo.fvar) hUni
-  -- STEP 7: factor `U` through `S₃`.
+  -- STEP 6/7: factor `U` through the `K`-avoiding derivation `S₃`.
   have hUlc : ∀ p ∈ U, p.2.IsLC := by
     rw [hUdef]
     intro p hp
@@ -4241,10 +4500,12 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
     have hkW : W ∉ (Ty.fvar k).freeVars := by
       simp only [Ty.freeVars, List.mem_singleton]; omega
     rw [hUonTy, Ty.substFvar_fresh hkΦ₂, hR₂K k hk, Ty.substFvar_fresh hkW]
+  obtain ⟨S₃, h₃, hS₃K⟩ := UnifyRel.complete_K (Subst.onTy_lc hS₂ hτfLC)
+    (.arrow hτaLC ContainsBvarsUpTo.fvar) hUlc hUni hUK
   obtain ⟨R₃, hR₃, hR₃lc, hR₃K⟩ := UnifyRel.greatest_K h₃ U hUlc hUni hUK
   -- STEP 8: assemble.
   refine ⟨Φ₂ + 1, S₁ ++ S₂ ++ S₃, S₃.onTy (Ty.fvar Φ₂), R₃,
-    Infer.app hinff hinfa h₃, ?_, ?_, hR₃lc, hR₃K⟩
+    Infer.app hinff hinfa h₃, ?_, ?_, hR₃lc, hR₃K, ?_⟩
   · intro v hv
     have ht1 : Ty.BelowFvars Φ₁ (S₁.onTy (Ty.fvar v)) :=
       Subst.onTy_belowFvars hbf.2 (Ty.BelowFvars.fvar (by omega))
@@ -4261,6 +4522,12 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
         Ty.substFvar_fresh hΦ₂t, Ty.substFvar_fresh hWR₂t,
         hagf v hv, Subst.onTy_append, Subst.onTy_congr haga ht1, Subst.onTy_append]
   · rw [← hR₃ (Ty.fvar Φ₂), hUonTy, e1, hR₂Wfvar, e2]
+  · intro p hp
+    rcases List.mem_append.mp hp with hp' | hp'
+    · rcases List.mem_append.mp hp' with hp'' | hp''
+      · exact hS₁K p hp''
+      · exact hS₂K p hp''
+    · exact hS₃K p hp'
 
 /-- Principality, application case. -/
 theorem Infer.complete_app {f arg : Expr}
@@ -4701,7 +4968,8 @@ theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧
       (∀ p ∈ R, p.2.IsLC) ∧
-      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
+      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      (∀ p ∈ S, p.1 ∉ K) := by
   -- A fresh opening avoiding `L`, `M.body`, the (substituted) env, and the rigid
   -- scoped vars `rhs.tyFreeVars` (which `genScheme` keeps free).
   obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
@@ -4718,7 +4986,7 @@ theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
   have hXrhs : ∀ x ∈ Xs, x ∉ rhs.tyFreeVars :=
     fun x hx hc => hXavoid x hx (List.mem_append_right _ hc)
   -- Apply the rhs IH at the fresh opening.
-  obtain ⟨Φ₁, S₁, τ₁, R₁, hinfa, haga, htya, hR₁, hR₁K⟩ :=
+  obtain ⟨Φ₁, S₁, τ₁, R₁, hinfa, haga, htya, hR₁, hR₁K, hS₁K⟩ :=
     iha K hwf hbelow hS₀ hKΦ hKrhs hKfix (hcofin Xs hXfreshL)
   have hS₁ : ∀ p ∈ S₁, p.2.IsLC := (Infer.lc hinfa hwf).2
   have hτ₁lc : τ₁.IsLC := (Infer.lc hinfa hwf).1
@@ -4794,10 +5062,14 @@ theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     rw [show R₁.onEnv (S₁.onCtx ctx).env = (S₀.onCtx ctx).env from congrArg Ctx.env hctxeq]
     exact hbody'
   -- Apply the body IH (specialization is `R₁`).
-  obtain ⟨Φ₂, S₂, τ₂, R₂, hinfb, hagb, htyb, hR₂, hR₂K⟩ :=
+  obtain ⟨Φ₂, S₂, τ₂, R₂, hinfb, hagb, htyb, hR₂, hR₂K, hS₂K⟩ :=
     ihb K hwfBody hbelowBody hR₁ (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbody hR₁K hbody''
-  refine ⟨Φ₂, S₁ ++ S₂, τ₂, R₂, .letIn hinfa hinfb, ?_, htyb, hR₂, hR₂K⟩
-  exact Subst.AgreesBelow.trans_append hle haga hbelowS₁ hagb
+  refine ⟨Φ₂, S₁ ++ S₂, τ₂, R₂, .letIn hinfa hinfb, ?_, htyb, hR₂, hR₂K, ?_⟩
+  · exact Subst.AgreesBelow.trans_append hle haga hbelowS₁ hagb
+  · intro p hp
+    rcases List.mem_append.mp hp with hp | hp
+    · exact hS₁K p hp
+    · exact hS₂K p hp
 
 /-! ### Kernel for annotated-`let` completeness
 
@@ -5166,258 +5438,6 @@ theorem OUnify.complete {a b : Ty} {U : Subst}
     (ha : a.IsLC) (hb : b.IsLC) (hU : Unifies U a b) : ∃ S, OUnify a b S :=
   (OUnify.complete_aux (2 * (U.onTy a).size + 1)).1 (by omega) ha hb hU
 
-/-! ### EXPERIMENT (rigidity-aware unification completeness)
-
-Validating lemma for the planned move from post-hoc escape checks to *structural*
-skolem rigidity. Claim: the **symmetric** `UnifyRel` can always be oriented to
-**avoid a rigid set `K`**, given only that some LC unifier `U` keeps every
-`k ∈ K` fixed — crucially with NO restriction that one operand's free vars lie in
-`K` (the `b.freeVars ⊆ Ys` hypothesis that broke `OUnify.skolem_escape` under
-D2). Mirrors `OUnify.complete_aux`, but: var–var is oriented away from `K`; a
-rigid var meeting a non-variable is *vacuous* (`U` fixes it, so it can't equal a
-non-var image); and the structural recursion threads the `K`-fixing witness via
-`greatest_K`. The produced `S` avoids `K` by construction, so `hesc1` becomes
-structural rather than a property to re-establish. -/
-theorem UnifyRel.complete_K_aux {K : List Nat} : ∀ (N : Nat),
-    (∀ {a b : Ty} {U : Subst}, 2 * (U.onTy a).size < N → a.IsLC → b.IsLC →
-        (∀ p ∈ U, p.2.IsLC) → Unifies U a b → (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) →
-        ∃ S, UnifyRel a b S ∧ (∀ p ∈ S, p.1 ∉ K)) ∧
-    (∀ {as bs : List Ty} {U : Subst}, 2 * TyList.size (as.map U.onTy) + 1 < N →
-        (∀ t ∈ as, t.IsLC) → (∀ t ∈ bs, t.IsLC) → (∀ p ∈ U, p.2.IsLC) →
-        as.length = bs.length → as.map U.onTy = bs.map U.onTy →
-        (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) →
-        ∃ S, UnifyRelList as bs S ∧ (∀ p ∈ S, p.1 ∉ K)) := by
-  intro N
-  induction N with
-  | zero => exact ⟨fun h => absurd h (by omega), fun h => absurd h (by omega)⟩
-  | succ N ih =>
-    obtain ⟨ihU, ihL⟩ := ih
-    refine ⟨?_, ?_⟩
-    · intro a b U hsz ha hb hUlc hU hUK
-      cases a with
-      | bvar i => cases ha with | bvar h => omega
-      | prim p =>
-        cases b with
-        | bvar i => cases hb with | bvar h => omega
-        | prim q =>
-          simp only [Unifies, Subst.onTy_prim, Ty.prim.injEq] at hU
-          subst hU; exact ⟨[], .prim, by simp⟩
-        | fvar m =>
-          have hmK : m ∉ K := fun hmK => by
-            have h1 : U.onTy (Ty.prim p) = U.onTy (Ty.fvar m) := hU
-            rw [hUK m hmK, Subst.onTy_prim] at h1; exact absurd h1 (by simp)
-          exact ⟨[(m, .prim p)], .fvarR (by simp) (by simp [Ty.freeVars]),
-            by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
-        | pair b₁ b₂ => simp [Unifies] at hU
-        | arrow b₁ b₂ => simp [Unifies] at hU
-        | customTy nm bs => simp [Unifies] at hU
-      | fvar n =>
-        cases b with
-        | bvar i => cases hb with | bvar h => omega
-        | fvar m =>
-          by_cases hnm : n = m
-          · subst hnm; exact ⟨[], .fvarRefl, by simp⟩
-          · by_cases hnK : n ∈ K
-            · have hmK : m ∉ K := fun hmK => by
-                have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.fvar m) := hU
-                rw [hUK n hnK, hUK m hmK] at h1
-                simp only [Ty.fvar.injEq] at h1; exact hnm h1
-              exact ⟨[(m, .fvar n)], .fvarR (by simp only [ne_eq, Ty.fvar.injEq]; omega)
-                (by simp only [Ty.freeVars, List.mem_singleton]; omega),
-                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
-            · exact ⟨[(n, .fvar m)], .fvarL (by simp only [ne_eq, Ty.fvar.injEq]; omega)
-                (by simp only [Ty.freeVars, List.mem_singleton]; omega),
-                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hnK⟩
-        | prim q =>
-          by_cases hocc : n ∈ (Ty.prim q).freeVars
-          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
-            simp only [Unifies] at hU; rw [hU] at hlt; omega
-          · by_cases hnK : n ∈ K
-            · exfalso
-              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.prim q) := hU
-              rw [hUK n hnK, Subst.onTy_prim] at h1; exact absurd h1 (by simp)
-            · exact ⟨[(n, .prim q)], .fvarL (by simp) hocc,
-                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hnK⟩
-        | pair b₁ b₂ =>
-          by_cases hocc : n ∈ (Ty.pair b₁ b₂).freeVars
-          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
-            simp only [Unifies] at hU; rw [hU] at hlt; omega
-          · by_cases hnK : n ∈ K
-            · exfalso
-              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.pair b₁ b₂) := hU
-              rw [hUK n hnK, Subst.onTy_pair] at h1; exact absurd h1 (by simp)
-            · exact ⟨[(n, .pair b₁ b₂)], .fvarL (by simp) hocc,
-                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hnK⟩
-        | arrow b₁ b₂ =>
-          by_cases hocc : n ∈ (Ty.arrow b₁ b₂).freeVars
-          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
-            simp only [Unifies] at hU; rw [hU] at hlt; omega
-          · by_cases hnK : n ∈ K
-            · exfalso
-              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.arrow b₁ b₂) := hU
-              rw [hUK n hnK, Subst.onTy_arrow] at h1; exact absurd h1 (by simp)
-            · exact ⟨[(n, .arrow b₁ b₂)], .fvarL (by simp) hocc,
-                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hnK⟩
-        | customTy nm bs =>
-          by_cases hocc : n ∈ (Ty.customTy nm bs).freeVars
-          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
-            simp only [Unifies] at hU; rw [hU] at hlt; omega
-          · by_cases hnK : n ∈ K
-            · exfalso
-              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.customTy nm bs) := hU
-              rw [hUK n hnK, Subst.onTy_customTy] at h1; exact absurd h1 (by simp)
-            · exact ⟨[(n, .customTy nm bs)], .fvarL (by simp) hocc,
-                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hnK⟩
-      | pair a₁ a₂ =>
-        cases ha with
-        | pair ha₁ ha₂ =>
-        cases b with
-        | bvar i => cases hb with | bvar h => omega
-        | fvar m =>
-          by_cases hocc : m ∈ (Ty.pair a₁ a₂).freeVars
-          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
-            simp only [Unifies] at hU; rw [hU] at hlt; omega
-          · by_cases hmK : m ∈ K
-            · exfalso
-              have h1 : U.onTy (Ty.pair a₁ a₂) = U.onTy (Ty.fvar m) := hU
-              rw [hUK m hmK, Subst.onTy_pair] at h1; exact absurd h1 (by simp)
-            · exact ⟨[(m, .pair a₁ a₂)], .fvarR (by simp) hocc,
-                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
-        | prim q => simp [Unifies] at hU
-        | arrow b₁ b₂ => simp [Unifies] at hU
-        | customTy nm bs => simp [Unifies] at hU
-        | pair b₁ b₂ =>
-          cases hb with
-          | pair hb₁ hb₂ =>
-          have hpsz : (U.onTy (.pair a₁ a₂)).size = 1 + (U.onTy a₁).size + (U.onTy a₂).size := by
-            simp [Subst.onTy_pair, Ty.size]
-          simp only [Unifies, Subst.onTy_pair, Ty.pair.injEq] at hU
-          obtain ⟨S₁, h₁, hS₁K⟩ := ihU (a := a₁) (b := b₁) (U := U)
-            (by rw [hpsz] at hsz; omega) ha₁ hb₁ hUlc hU.1 hUK
-          have hS₁lc := UnifyRel.lc h₁ ha₁ hb₁
-          obtain ⟨R, hR, hRlc, hRK⟩ := UnifyRel.greatest_K h₁ U hUlc hU.1 hUK
-          obtain ⟨S₂, h₂, hS₂K⟩ := ihU (a := S₁.onTy a₂) (b := S₁.onTy b₂) (U := R)
-            (by rw [← hR a₂]; rw [hpsz] at hsz; omega)
-            (Subst.onTy_lc hS₁lc ha₂) (Subst.onTy_lc hS₁lc hb₂) hRlc
-            (by show R.onTy (S₁.onTy a₂) = R.onTy (S₁.onTy b₂); rw [← hR a₂, ← hR b₂]; exact hU.2) hRK
-          exact ⟨S₁ ++ S₂, .pair h₁ h₂, by
-            intro p hp; rcases List.mem_append.mp hp with h | h
-            · exact hS₁K p h
-            · exact hS₂K p h⟩
-      | arrow a₁ a₂ =>
-        cases ha with
-        | arrow ha₁ ha₂ =>
-        cases b with
-        | bvar i => cases hb with | bvar h => omega
-        | fvar m =>
-          by_cases hocc : m ∈ (Ty.arrow a₁ a₂).freeVars
-          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
-            simp only [Unifies] at hU; rw [hU] at hlt; omega
-          · by_cases hmK : m ∈ K
-            · exfalso
-              have h1 : U.onTy (Ty.arrow a₁ a₂) = U.onTy (Ty.fvar m) := hU
-              rw [hUK m hmK, Subst.onTy_arrow] at h1; exact absurd h1 (by simp)
-            · exact ⟨[(m, .arrow a₁ a₂)], .fvarR (by simp) hocc,
-                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
-        | prim q => simp [Unifies] at hU
-        | pair b₁ b₂ => simp [Unifies] at hU
-        | customTy nm bs => simp [Unifies] at hU
-        | arrow b₁ b₂ =>
-          cases hb with
-          | arrow hb₁ hb₂ =>
-          have hpsz : (U.onTy (.arrow a₁ a₂)).size = 1 + (U.onTy a₁).size + (U.onTy a₂).size := by
-            simp [Subst.onTy_arrow, Ty.size]
-          simp only [Unifies, Subst.onTy_arrow, Ty.arrow.injEq] at hU
-          obtain ⟨S₁, h₁, hS₁K⟩ := ihU (a := a₁) (b := b₁) (U := U)
-            (by rw [hpsz] at hsz; omega) ha₁ hb₁ hUlc hU.1 hUK
-          have hS₁lc := UnifyRel.lc h₁ ha₁ hb₁
-          obtain ⟨R, hR, hRlc, hRK⟩ := UnifyRel.greatest_K h₁ U hUlc hU.1 hUK
-          obtain ⟨S₂, h₂, hS₂K⟩ := ihU (a := S₁.onTy a₂) (b := S₁.onTy b₂) (U := R)
-            (by rw [← hR a₂]; rw [hpsz] at hsz; omega)
-            (Subst.onTy_lc hS₁lc ha₂) (Subst.onTy_lc hS₁lc hb₂) hRlc
-            (by show R.onTy (S₁.onTy a₂) = R.onTy (S₁.onTy b₂); rw [← hR a₂, ← hR b₂]; exact hU.2) hRK
-          exact ⟨S₁ ++ S₂, .arrow h₁ h₂, by
-            intro p hp; rcases List.mem_append.mp hp with h | h
-            · exact hS₁K p h
-            · exact hS₂K p h⟩
-      | customTy nm tys₁ =>
-        cases b with
-        | bvar i => cases hb with | bvar h => omega
-        | fvar m =>
-          by_cases hocc : m ∈ (Ty.customTy nm tys₁).freeVars
-          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
-            simp only [Unifies] at hU; rw [hU] at hlt; omega
-          · by_cases hmK : m ∈ K
-            · exfalso
-              have h1 : U.onTy (Ty.customTy nm tys₁) = U.onTy (Ty.fvar m) := hU
-              rw [hUK m hmK, Subst.onTy_customTy] at h1; exact absurd h1 (by simp)
-            · exact ⟨[(m, .customTy nm tys₁)], .fvarR (by simp) hocc,
-                by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
-        | prim q => simp [Unifies] at hU
-        | pair b₁ b₂ => simp [Unifies] at hU
-        | arrow b₁ b₂ => simp [Unifies] at hU
-        | customTy nm' tys₂ =>
-          have hcsz : (U.onTy (.customTy nm tys₁)).size = 1 + TyList.size (tys₁.map U.onTy) := by
-            simp [Subst.onTy_customTy, Ty.size]
-          simp only [Unifies, Subst.onTy_customTy, Ty.customTy.injEq] at hU
-          obtain ⟨rfl, hmapeq⟩ := hU
-          have hlen : tys₁.length = tys₂.length := by
-            have := congrArg List.length hmapeq; simpa using this
-          obtain ⟨S, hS, hSK⟩ := ihL (as := tys₁) (bs := tys₂) (U := U)
-            (by rw [hcsz] at hsz; omega)
-            (fun t ht => by cases ha with | customTy h => exact h t ht)
-            (fun t ht => by cases hb with | customTy h => exact h t ht)
-            hUlc hlen hmapeq hUK
-          exact ⟨S, .customTy hS, hSK⟩
-    · intro as bs U hsz has hbs hUlc hlen hmap hUK
-      cases as with
-      | nil =>
-        cases bs with
-        | nil => exact ⟨[], .nil, by simp⟩
-        | cons t₂ ts₂ => simp at hlen
-      | cons t₁ ts₁ =>
-        cases bs with
-        | nil => simp at hlen
-        | cons t₂ ts₂ =>
-          simp only [List.map_cons, List.cons.injEq] at hmap
-          have htsz : TyList.size ((t₁ :: ts₁).map U.onTy)
-              = (U.onTy t₁).size + TyList.size (ts₁.map U.onTy) := by simp [List.map_cons, TyList.size]
-          have ht1pos := @Ty.size_pos (U.onTy t₁)
-          obtain ⟨S₁, h₁, hS₁K⟩ := ihU (a := t₁) (b := t₂) (U := U)
-            (by rw [htsz] at hsz; omega) (has t₁ List.mem_cons_self) (hbs t₂ List.mem_cons_self)
-            hUlc hmap.1 hUK
-          have hS₁lc := UnifyRel.lc h₁ (has t₁ List.mem_cons_self) (hbs t₂ List.mem_cons_self)
-          obtain ⟨R, hR, hRlc, hRK⟩ := UnifyRel.greatest_K h₁ U hUlc hmap.1 hUK
-          have key : ∀ l : List Ty, l.map (R.onTy ∘ S₁.onTy) = l.map U.onTy := by
-            intro l; apply List.map_congr_left; intro t _; exact (hR t).symm
-          have hkey1 : (ts₁.map S₁.onTy).map R.onTy = ts₁.map U.onTy := by
-            rw [List.map_map]; exact key ts₁
-          have hmaptail : (ts₁.map S₁.onTy).map R.onTy = (ts₂.map S₁.onTy).map R.onTy := by
-            rw [List.map_map, List.map_map, key, key]; exact hmap.2
-          obtain ⟨S₂, h₂, hS₂K⟩ := ihL (as := ts₁.map S₁.onTy) (bs := ts₂.map S₁.onTy) (U := R)
-            (by rw [hkey1]; rw [htsz] at hsz; omega)
-            (by intro t ht; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
-                exact Subst.onTy_lc hS₁lc (has t0 (List.mem_cons_of_mem _ ht0)))
-            (by intro t ht; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
-                exact Subst.onTy_lc hS₁lc (hbs t0 (List.mem_cons_of_mem _ ht0)))
-            hRlc
-            (by simp only [List.length_map]; have := hlen; simpa using this)
-            hmaptail hRK
-          exact ⟨S₁ ++ S₂, .cons h₁ h₂, by
-            intro p hp; rcases List.mem_append.mp hp with h | h
-            · exact hS₁K p h
-            · exact hS₂K p h⟩
-
-/-- Validating wrapper: a `K`-fixing LC unifier of two LC types yields a
-    `UnifyRel` derivation that **avoids `K`** — with no side-condition on the
-    operands' free variables. This is the clean replacement for
-    `OUnify.skolem_escape` + `exists_skolem_unifier`. -/
-theorem UnifyRel.complete_K {K : List Nat} {a b : Ty} {U : Subst}
-    (ha : a.IsLC) (hb : b.IsLC) (hUlc : ∀ p ∈ U, p.2.IsLC)
-    (hU : Unifies U a b) (hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k) :
-    ∃ S, UnifyRel a b S ∧ (∀ p ∈ S, p.1 ∉ K) :=
-  (UnifyRel.complete_K_aux (2 * (U.onTy a).size + 1)).1 (by omega) ha hb hUlc hU hUK
-
 /-! **The orientation kernel.** If `b`'s free vars are all skolems `Ys` and some
     unifier of `a` and `b` keeps every `Y ∈ Ys` rigid, then the left-leaning MGU
     `S` binds none of the `Ys`. Intuition: a skolem on the right is only ever
@@ -5668,13 +5688,14 @@ theorem Infer.complete_pair_unify_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {e :
       R.onTy (S₂.onTy (.fvar Φ₁)) = τα ∧
       R.onTy (S₂.onTy (.fvar (Φ₁ + 1))) = τβ ∧
       (∀ p ∈ R, p.2.IsLC) ∧
-      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
+      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      (∀ p ∈ S₁ ++ S₂, p.1 ∉ K) := by
   have hαLC : τα.IsLC := by
     have := TypeOfHM.regular he; cases this with | pair h _ => exact h
   have hβLC : τβ.IsLC := by
     have := TypeOfHM.regular he; cases this with | pair _ h => exact h
   -- STEP 1: recurse on `e`.
-  obtain ⟨Φ₁, S₁, τe, R₁, hinfe, hage, htye, hR₁, hR₁K⟩ :=
+  obtain ⟨Φ₁, S₁, τe, R₁, hinfe, hage, htye, hR₁, hR₁K, hS₁K⟩ :=
     ihe K hwf hbelow hS₀ hKΦ hKe hKfix he
   have hS₁ : ∀ p ∈ S₁, p.2.IsLC := (Infer.lc hinfe hwf).2
   have hτeLC : τe.IsLC := (Infer.lc hinfe hwf).1
@@ -5799,9 +5820,7 @@ theorem Infer.complete_pair_unify_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {e :
   have hUni : Unifies U τe (Ty.pair (Ty.fvar Φ₁) (Ty.fvar (Φ₁ + 1))) := by
     show U.onTy τe = U.onTy (Ty.pair (Ty.fvar Φ₁) (Ty.fvar (Φ₁ + 1)))
     rw [hUτe, Subst.onTy_pair, hUφ₁, hUφ₂]
-  -- Realise the unifier as `S₂`, and factor `U` through it.
-  obtain ⟨S₂, h₂⟩ := UnifyRel.complete hτeLC
-    (ContainsBvarsUpTo.pair ContainsBvarsUpTo.fvar ContainsBvarsUpTo.fvar) hUni
+  -- Factor `U` through the `K`-avoiding derivation `S₂`.
   have hUlc : ∀ p ∈ U, p.2.IsLC := by
     rw [hUdef]
     intro p hp
@@ -5818,9 +5837,11 @@ theorem Infer.complete_pair_unify_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {e :
         exact hβLC
   have hUK : ∀ k ∈ K, U.onTy (Ty.fvar k) = Ty.fvar k := fun k hk =>
     (hUvar k (lt_of_lt_of_le (hKΦ k hk) hle1)).trans (hR₁K k hk)
+  obtain ⟨S₂, h₂, hS₂K⟩ := UnifyRel.complete_K hτeLC
+    (ContainsBvarsUpTo.pair ContainsBvarsUpTo.fvar ContainsBvarsUpTo.fvar) hUlc hUni hUK
   obtain ⟨R₂, hR₂, hR₂lc, hR₂K⟩ := UnifyRel.greatest_K h₂ U hUlc hUni hUK
   -- Assemble.
-  refine ⟨Φ₁, S₁, S₂, τe, R₂, hinfe, h₂, ?_, ?_, ?_, hR₂lc, hR₂K⟩
+  refine ⟨Φ₁, S₁, S₂, τe, R₂, hinfe, h₂, ?_, ?_, ?_, hR₂lc, hR₂K, ?_⟩
   · intro v hv
     have ht1 : Ty.BelowFvars Φ₁ (S₁.onTy (Ty.fvar v)) :=
       Subst.onTy_belowFvars hbe.2 (Ty.BelowFvars.fvar (by omega))
@@ -5859,6 +5880,10 @@ theorem Infer.complete_pair_unify_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {e :
       _ = ((S₁ ++ S₂) ++ R₂).onTy (Ty.fvar v) := by simp only [Subst.onTy_append]
   · rw [← hR₂ (Ty.fvar Φ₁), hUφ₁]
   · rw [← hR₂ (Ty.fvar (Φ₁ + 1)), hUφ₂]
+  · intro p hp
+    rcases List.mem_append.mp hp with hp | hp
+    · exact hS₁K p hp
+    · exact hS₂K p hp
 
 /-- Principality, `fst` case. -/
 theorem Infer.complete_fst {e : Expr} (ihe : Infer.CompleteAt e) :
@@ -5867,9 +5892,9 @@ theorem Infer.complete_fst {e : Expr} (ihe : Infer.CompleteAt e) :
   simp only [Expr.tyFreeVars] at hKe
   cases hty with
   | fst he =>
-    obtain ⟨Φ₁, S₁, S₂, τe, R, hinfe, huni, hag, hα, _, hRlc, hRK⟩ :=
+    obtain ⟨Φ₁, S₁, S₂, τe, R, hinfe, huni, hag, hα, _, hRlc, hRK, hSK⟩ :=
       Infer.complete_pair_unify_aux ihe hwf hbelow hS₀ hKΦ hKe hKfix he
-    exact ⟨Φ₁ + 2, S₁ ++ S₂, S₂.onTy (.fvar Φ₁), R, .fst hinfe huni, hag, hα.symm, hRlc, hRK⟩
+    exact ⟨Φ₁ + 2, S₁ ++ S₂, S₂.onTy (.fvar Φ₁), R, .fst hinfe huni, hag, hα.symm, hRlc, hRK, hSK⟩
 
 /-- Principality, `snd` case. -/
 theorem Infer.complete_snd {e : Expr} (ihe : Infer.CompleteAt e) :
@@ -5878,9 +5903,9 @@ theorem Infer.complete_snd {e : Expr} (ihe : Infer.CompleteAt e) :
   simp only [Expr.tyFreeVars] at hKe
   cases hty with
   | snd he =>
-    obtain ⟨Φ₁, S₁, S₂, τe, R, hinfe, huni, hag, _, hβ, hRlc, hRK⟩ :=
+    obtain ⟨Φ₁, S₁, S₂, τe, R, hinfe, huni, hag, _, hβ, hRlc, hRK, hSK⟩ :=
       Infer.complete_pair_unify_aux ihe hwf hbelow hS₀ hKΦ hKe hKfix he
-    exact ⟨Φ₁ + 2, S₁ ++ S₂, S₂.onTy (.fvar (Φ₁ + 1)), R, .snd hinfe huni, hag, hβ.symm, hRlc, hRK⟩
+    exact ⟨Φ₁ + 2, S₁ ++ S₂, S₂.onTy (.fvar (Φ₁ + 1)), R, .snd hinfe huni, hag, hβ.symm, hRlc, hRK, hSK⟩
 /-- Reconstruct a list from the length-indexed lookups into it. The map of
     `Vs[i]?.getD d` over `range Vs.length` is just `Vs`. -/
 private theorem range_length_map_getD {Vs : List Ty} {d : Ty} :
@@ -5942,11 +5967,12 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
       InferBranches Φ ctx tyName ta ρ branches Φ' S ∧
       Subst.AgreesBelow Φ R (S ++ R') ∧
       (∀ p ∈ R', p.2.IsLC) ∧
-      (∀ k ∈ K, R'.onTy (.fvar k) = .fvar k) := by
+      (∀ k ∈ K, R'.onTy (.fvar k) = .fvar k) ∧
+      (∀ p ∈ S, p.1 ∉ K) := by
   induction branches with
   | nil =>
     intro Φ ctx tyName ta ρ R K _ihbr _hwf _hbelow _hta _hbta _hρ _hbρ hR _hKΦ _hKbr hKfix _hdecl
-    exact ⟨Φ, [], R, InferBranches.nil, fun v _ => by rw [List.nil_append], hR, hKfix⟩
+    exact ⟨Φ, [], R, InferBranches.nil, fun v _ => by rw [List.nil_append], hR, hKfix, by simp⟩
   | cons head rest ih =>
     intro Φ ctx tyName ta ρ R K ihbr hwf hbelow hta hbta hρ hbρ hR hKΦ hKbr hKfix hdecl
     obtain ⟨pat, body⟩ := head
@@ -5976,7 +6002,7 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
           body (R.onTy ρ) := by
         rw [Subst.onCtx_branchBindings hR]; exact hbodyty
       -- STEP: apply the head branch's IH (principality of `body`)
-      obtain ⟨Φ_b, S_b, τ_b, R_b, hinfbody, hagbody, htybody, hR_b, hR_bK⟩ :=
+      obtain ⟨Φ_b, S_b, τ_b, R_b, hinfbody, hagbody, htybody, hR_b, hR_bK, hS_bK⟩ :=
         ihbr (pat, body) (List.mem_cons_self ..) K hbodyWF hbodyBelow hR hKΦ hKbody hKfix hbodyty2
       have hbodyLC := Infer.lc hinfbody hbodyWF
       have hτb_lc : τ_b.IsLC := hbodyLC.1
@@ -5988,7 +6014,8 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
         show R_b.onTy τ_b = R_b.onTy (S_b.onTy ρ)
         rw [← htybody, ← Subst.onTy_append]
         exact Subst.onTy_congr hagbody hbρ
-      obtain ⟨S_u, h_u⟩ := UnifyRel.complete hτb_lc (Subst.onTy_lc hS_b hρ) hUni
+      obtain ⟨S_u, h_u, hS_uK⟩ :=
+        UnifyRel.complete_K hτb_lc (Subst.onTy_lc hS_b hρ) hR_b hUni hR_bK
       obtain ⟨R_u, hR_u_eq, hR_u, hR_uK⟩ := UnifyRel.greatest_K h_u R_b hR_b hUni hR_bK
       have hS_u : ∀ p ∈ S_u, p.2.IsLC := UnifyRel.lc h_u hτb_lc (Subst.onTy_lc hS_b hρ)
       have hS_u_below : ∀ p ∈ S_u, Ty.BelowFvars Φ_b p.2 :=
@@ -6031,12 +6058,12 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
         rw [hctx_eq, hta_eq, hρ_eq]
         exact hdecl br (List.mem_cons_of_mem _ hbr)
       -- STEP: recurse on `rest`
-      obtain ⟨Φ', S_r, R_r, hinfrest, hagrest, hR_r, hR_rK⟩ :=
+      obtain ⟨Φ', S_r, R_r, hinfrest, hagrest, hR_r, hR_rK, hS_rK⟩ :=
         ih K (fun br hbr => ihbr br (List.mem_cons_of_mem _ hbr))
           hwf' hbelow' hta' hbta' hρ' hbρ' hR_u
           (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle_b) hKrest hR_uK hdecl'
       -- STEP: assemble
-      refine ⟨Φ', S_b ++ S_u ++ S_r, R_r, ?_, ?_, hR_r, hR_rK⟩
+      refine ⟨Φ', S_b ++ S_u ++ S_r, R_r, ?_, ?_, hR_r, hR_rK, ?_⟩
       · exact InferBranches.cons hlook htyName hpc' hpc2 hinfbody h_u hinfrest
       · intro v hv
         have hbv1 : Ty.BelowFvars Φ_b (S_b.onTy (.fvar v)) :=
@@ -6049,6 +6076,12 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
           _ = R_u.onTy (S_u.onTy (S_b.onTy (.fvar v))) := hR_u_eq (S_b.onTy (.fvar v))
           _ = (S_r ++ R_r).onTy (S_u.onTy (S_b.onTy (.fvar v))) := Subst.onTy_congr hagrest hbv2
           _ = ((S_b ++ S_u ++ S_r) ++ R_r).onTy (.fvar v) := by simp only [Subst.onTy_append]
+      · intro p hp
+        rcases List.mem_append.mp hp with hp' | hp'
+        · rcases List.mem_append.mp hp' with hp'' | hp''
+          · exact hS_bK p hp''
+          · exact hS_uK p hp''
+        · exact hS_rK p hp'
 
 
 /-- The `i`-th allocated fresh name (`i < k`) is `Φ + i`. -/
@@ -6079,9 +6112,10 @@ theorem Infer.complete_match_aux {scrut : Expr} {branches : List (MatchPattern �
       Infer Φ ctx (.match_ scrut branches) Φ' S τ ∧
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧ (∀ p ∈ R, p.2.IsLC) ∧
-      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
+      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      (∀ p ∈ S, p.1 ∉ K) := by
   -- STEP 1: scrutinee IH.
-  obtain ⟨Φ₁, S₁, τs, R₁, hinfs, hags, htys, hR₁, hR₁K⟩ :=
+  obtain ⟨Φ₁, S₁, τs, R₁, hinfs, hags, htys, hR₁, hR₁K, hS₁K⟩ :=
     ihscrut K hwf hbelow hS₀ hKΦ hKscrut hKfix hscrut_decl
   have hS₁ := (Infer.lc hinfs hwf).2
   have hτsLC := (Infer.lc hinfs hwf).1
@@ -6218,7 +6252,6 @@ theorem Infer.complete_match_aux {scrut : Expr} {branches : List (MatchPattern �
   have hcustomTy_lc : (Ty.customTy tyName ((freshVars Φ₁ tyArgs.length).map (Ty.fvar ·))).IsLC :=
     ContainsBvarsUpTo.customTy (fun t ht => by
       obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht; exact ContainsBvarsUpTo.fvar)
-  obtain ⟨S₂, h₂⟩ := UnifyRel.complete hτsLC hcustomTy_lc hUni
   have hUlc : ∀ p ∈ U, p.2.IsLC := by
     rw [hUdef]
     intro p hp
@@ -6253,6 +6286,7 @@ theorem Infer.complete_match_aux {scrut : Expr} {branches : List (MatchPattern �
       (by simp only [Ty.freeVars, List.mem_singleton]; omega) hc
   have hUK : ∀ k ∈ K, U.onTy (Ty.fvar k) = Ty.fvar k := fun k hk =>
     (hUeqR₁ k (lt_of_lt_of_le (hKΦ k hk) hle1)).trans (hR₁K k hk)
+  obtain ⟨S₂, h₂, hS₂K⟩ := UnifyRel.complete_K hτsLC hcustomTy_lc hUlc hUni hUK
   obtain ⟨R₂, hR₂_eq, hR₂lc, hR₂K⟩ := UnifyRel.greatest_K h₂ U hUlc hUni hUK
   have hS₂ : ∀ p ∈ S₂, p.2.IsLC := UnifyRel.lc h₂ hτsLC hcustomTy_lc
   have hbS₂ : ∀ p ∈ S₂, Ty.BelowFvars (Φ₁ + tyArgs.length + 1) p.2 := by
@@ -6297,14 +6331,14 @@ theorem Infer.complete_match_aux {scrut : Expr} {branches : List (MatchPattern �
     rw [hR₂ctx, hta_R₂, hρ_R₂]
     exact hbranches_decl br hbr
   -- STEP 8: thread the branch list with `InferBranches.complete`.
-  obtain ⟨Φ₃, S₃, R₃, hinfbr, hagbr, hR₃lc, hR₃K⟩ :=
+  obtain ⟨Φ₃, S₃, R₃, hinfbr, hagbr, hR₃lc, hR₃K, hS₃K⟩ :=
     InferBranches.complete K ihbranches (Subst.onCtx_wf hS₂ hwf₁)
       (Subst.onCtx_below hbS₂ (by omega) hbelow₁)
       hta_lc hta_below hρ_lc hρ_below hR₂lc
       (fun k hk => by have := hKΦ k hk; have := hle1; omega) hKbr hR₂K hbr'
   -- STEP 9: assemble.
   refine ⟨Φ₃, S₁ ++ S₂ ++ S₃, S₃.onTy (S₂.onTy (Ty.fvar (Φ₁ + tyArgs.length))), R₃,
-    Infer.match_ hinfs hne h₂ hinfbr, ?_, ?_, hR₃lc, hR₃K⟩
+    Infer.match_ hinfs hne h₂ hinfbr, ?_, ?_, hR₃lc, hR₃K, ?_⟩
   · intro v hv
     have hag2 : ∀ w, w < Φ₁ → R₁.onTy (Ty.fvar w) = (S₂ ++ R₂).onTy (Ty.fvar w) := by
       intro w hw
@@ -6325,6 +6359,12 @@ theorem Infer.complete_match_aux {scrut : Expr} {branches : List (MatchPattern �
       _ = (S₃ ++ R₃).onTy (S₂.onTy (Ty.fvar (Φ₁ + tyArgs.length))) :=
             Subst.onTy_congr hagbr hρ_below
       _ = R₃.onTy (S₃.onTy (S₂.onTy (Ty.fvar (Φ₁ + tyArgs.length)))) := by rw [Subst.onTy_append]
+  · intro p hp
+    rcases List.mem_append.mp hp with hp' | hp'
+    · rcases List.mem_append.mp hp' with hp'' | hp''
+      · exact hS₁K p hp''
+      · exact hS₂K p hp''
+    · exact hS₃K p hp'
 
 /-- Principality, `match_` case. -/
 theorem Infer.complete_match {scrut : Expr} {branches : List (MatchPattern × Expr)}
