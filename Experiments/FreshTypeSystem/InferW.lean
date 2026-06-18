@@ -9217,68 +9217,79 @@ the type name + arity off the first branch's constructor (branches are nonempty)
 The public `infer` erases the derivation. -/
 mutual
 def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
-    Option { r : Nat × Subst × Ty // Infer Φ ctx e r.1 r.2.1 r.2.2 } :=
+    Option { r : Nat × Subst × Ty // Infer Φ ctx e r.1 r.2.1 r.2.2 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match e with
-  | .primLit .unit => some ⟨(Φ, [], .prim .unit), .primLitUnit⟩
-  | .primLit (.int _) => some ⟨(Φ, [], .prim .int), .primLitInt⟩
-  | .primLit (.nat _) => some ⟨(Φ, [], .prim .nat), .primLitNat⟩
-  | .primLit (.bool _) => some ⟨(Φ, [], .prim .bool), .primLitBool⟩
-  | .primLit (.str _) => some ⟨(Φ, [], .prim .str), .primLitStr⟩
+  | .primLit .unit => some ⟨(Φ, [], .prim .unit), .primLitUnit, by simp⟩
+  | .primLit (.int _) => some ⟨(Φ, [], .prim .int), .primLitInt, by simp⟩
+  | .primLit (.nat _) => some ⟨(Φ, [], .prim .nat), .primLitNat, by simp⟩
+  | .primLit (.bool _) => some ⟨(Φ, [], .prim .bool), .primLitBool, by simp⟩
+  | .primLit (.str _) => some ⟨(Φ, [], .prim .str), .primLitStr, by simp⟩
   | .pair a b =>
       match inferCore K Φ ctx a with
       | none => none
-      | some ⟨(Φ₁, S₁, τa), ha⟩ =>
+      | some ⟨(Φ₁, S₁, τa), ha, hav₁⟩ =>
         match inferCore K Φ₁ (S₁.onCtx ctx) b with
         | none => none
-        | some ⟨(Φ₂, S₂, τb), hb⟩ =>
-          some ⟨(Φ₂, S₁ ++ S₂, .pair (S₂.onTy τa) τb), .pair ha hb⟩
+        | some ⟨(Φ₂, S₂, τb), hb, hav₂⟩ =>
+          some ⟨(Φ₂, S₁ ++ S₂, .pair (S₂.onTy τa) τb), .pair ha hb, by
+            intro p hp; rcases List.mem_append.mp hp with h | h
+            · exact hav₁ p h
+            · exact hav₂ p h⟩
   | .lambda none body =>
       match inferCore K (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } body with
       | none => none
-      | some ⟨(Φ', S, τb), hbody⟩ =>
-        some ⟨(Φ', S, .arrow (S.onTy (.fvar Φ)) τb), .lambda .none hbody⟩
+      | some ⟨(Φ', S, τb), hbody, hav⟩ =>
+        some ⟨(Φ', S, .arrow (S.onTy (.fvar Φ)) τb), .lambda .none hbody, hav⟩
   | .lambda (some T) body =>
       if hT : Ty.bvarsBelow 0 T = true then
         match inferCore K Φ { ctx with env := PolyTy.mkTrivial T :: ctx.env } body with
         | none => none
-        | some ⟨(Φ', S, τb), hbody⟩ =>
+        | some ⟨(Φ', S, τb), hbody, hav⟩ =>
           some ⟨(Φ', S, .arrow (S.onTy T) τb),
-            .lambda (.some T ((Ty.bvarsBelow_iff T).mp hT)) hbody⟩
+            .lambda (.some T ((Ty.bvarsBelow_iff T).mp hT)) hbody, hav⟩
       else none
   | .app f arg =>
       match inferCore K Φ ctx f with
       | none => none
-      | some ⟨(Φ₁, S₁, τf), hf⟩ =>
+      | some ⟨(Φ₁, S₁, τf), hf, hav₁⟩ =>
         match inferCore K Φ₁ (S₁.onCtx ctx) arg with
         | none => none
-        | some ⟨(Φ₂, S₂, τa), harg⟩ =>
+        | some ⟨(Φ₂, S₂, τa), harg, hav₂⟩ =>
           match unifyCoreK K (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) with
           | none => none
-          | some ⟨S₃, h₃, _⟩ =>
-            some ⟨(Φ₂ + 1, S₁ ++ S₂ ++ S₃, S₃.onTy (.fvar Φ₂)), .app hf harg h₃⟩
+          | some ⟨S₃, h₃, hav₃⟩ =>
+            some ⟨(Φ₂ + 1, S₁ ++ S₂ ++ S₃, S₃.onTy (.fvar Φ₂)), .app hf harg h₃, by
+              intro p hp; rcases List.mem_append.mp hp with h | h
+              · rcases List.mem_append.mp h with h | h
+                · exact hav₁ p h
+                · exact hav₂ p h
+              · exact hav₃ p h⟩
   | .var i =>
       match h : ctx.env[i]? with
       | none => none
       | some polyTy =>
-        some ⟨(Φ + polyTy.paramCount, [], polyTy.openVars (freshVars Φ polyTy.paramCount)), .var h⟩
+        some ⟨(Φ + polyTy.paramCount, [], polyTy.openVars (freshVars Φ polyTy.paramCount)), .var h, by simp⟩
   | .ctor name =>
       match h : LookupList.get? ctx.ctors name with
       | none => none
       | some ctorr =>
-        some ⟨(Φ + ctorr.paramCount, [], ctorr.toTy.openVars (freshVars Φ ctorr.paramCount)), .ctor h⟩
+        some ⟨(Φ + ctorr.paramCount, [], ctorr.toTy.openVars (freshVars Φ ctorr.paramCount)), .ctor h, by simp⟩
   | .letIn ann rhs body =>
       match ann with
       | none =>
         match inferCore K Φ ctx rhs with
         | none => none
-        | some ⟨(Φ₁, S₁, τ₁), hrhs⟩ =>
+        | some ⟨(Φ₁, S₁, τ₁), hrhs, hav₁⟩ =>
         match inferCore K Φ₁
             { (S₁.onCtx ctx) with
               env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
             body with
         | none => none
-        | some ⟨(Φ₂, S₂, τ₂), hbody⟩ =>
-          some ⟨(Φ₂, S₁ ++ S₂, τ₂), .letIn hrhs hbody⟩
+        | some ⟨(Φ₂, S₂, τ₂), hbody, hav₂⟩ =>
+          some ⟨(Φ₂, S₁ ++ S₂, τ₂), .letIn hrhs hbody, by
+            intro p hp; rcases List.mem_append.mp hp with h | h
+            · exact hav₁ p h
+            · exact hav₂ p h⟩
       | some σ =>
         -- Annotated `let`: skolemize `σ` with `Ys = freshVars Φ pc`, infer the
         -- *opened* rhs `rhs.openTyVars Ys` at frontier `Φ + pc` **with `Ys` added to
@@ -9290,11 +9301,11 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
           match inferCore (K ++ freshVars Φ σ.paramCount) (Φ + σ.paramCount) ctx
               (rhs.openTyVars (freshVars Φ σ.paramCount)) with
           | none => none
-          | some ⟨(Φ₁, S₁, τ₁), hrhs⟩ =>
+          | some ⟨(Φ₁, S₁, τ₁), hrhs, hav₁⟩ =>
             match unifyCoreK (K ++ freshVars Φ σ.paramCount) τ₁
                 (σ.openVars (freshVars Φ σ.paramCount)) with
             | none => none
-            | some ⟨Schk, hSchk, _⟩ =>
+            | some ⟨Schk, hSchk, havS⟩ =>
               if hesc1 : (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) then
                 if hesc2 : (∀ y ∈ freshVars Φ σ.paramCount,
                     y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
@@ -9303,33 +9314,44 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
                         env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
                       body with
                   | none => none
-                  | some ⟨(Φ₂, S₂, τ₂), hbody⟩ =>
+                  | some ⟨(Φ₂, S₂, τ₂), hbody, hav₂⟩ =>
                     some ⟨(Φ₂, S₁ ++ Schk ++ S₂, τ₂),
                       .letInAnn (PolyTy.wf_iff_bvarsBelow.mp hσwf) (Nat.le_refl Φ)
-                        hrhs hSchk hesc1 hesc2 hbody⟩
+                        hrhs hSchk hesc1 hesc2 hbody, by
+                      intro p hp; rcases List.mem_append.mp hp with h | h
+                      · rcases List.mem_append.mp h with h | h
+                        · exact fun hc => hav₁ p h (List.mem_append_left _ hc)
+                        · exact fun hc => havS p h (List.mem_append_left _ hc)
+                      · exact hav₂ p h⟩
                 else none
               else none
         else none
   | .fst e =>
       match inferCore K Φ ctx e with
       | none => none
-      | some ⟨(Φ₁, S₁, τe), he⟩ =>
+      | some ⟨(Φ₁, S₁, τe), he, hav₁⟩ =>
         match unifyCoreK K τe (.pair (.fvar Φ₁) (.fvar (Φ₁ + 1))) with
         | none => none
-        | some ⟨S₂, huni, _⟩ =>
-          some ⟨(Φ₁ + 2, S₁ ++ S₂, S₂.onTy (.fvar Φ₁)), .fst he huni⟩
+        | some ⟨S₂, huni, hav₂⟩ =>
+          some ⟨(Φ₁ + 2, S₁ ++ S₂, S₂.onTy (.fvar Φ₁)), .fst he huni, by
+            intro p hp; rcases List.mem_append.mp hp with h | h
+            · exact hav₁ p h
+            · exact hav₂ p h⟩
   | .snd e =>
       match inferCore K Φ ctx e with
       | none => none
-      | some ⟨(Φ₁, S₁, τe), he⟩ =>
+      | some ⟨(Φ₁, S₁, τe), he, hav₁⟩ =>
         match unifyCoreK K τe (.pair (.fvar Φ₁) (.fvar (Φ₁ + 1))) with
         | none => none
-        | some ⟨S₂, huni, _⟩ =>
-          some ⟨(Φ₁ + 2, S₁ ++ S₂, S₂.onTy (.fvar (Φ₁ + 1))), .snd he huni⟩
+        | some ⟨S₂, huni, hav₂⟩ =>
+          some ⟨(Φ₁ + 2, S₁ ++ S₂, S₂.onTy (.fvar (Φ₁ + 1))), .snd he huni, by
+            intro p hp; rcases List.mem_append.mp hp with h | h
+            · exact hav₁ p h
+            · exact hav₂ p h⟩
   | .match_ scrut branches =>
       match inferCore K Φ ctx scrut with
       | none => none
-      | some ⟨(Φ₁, S₁, τs), hscrut⟩ =>
+      | some ⟨(Φ₁, S₁, τs), hscrut, hav₁⟩ =>
         match hh : branches.head? with
         | none => none
         | some b0 =>
@@ -9338,23 +9360,28 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
           | some ctor0 =>
             match unifyCoreK K τs (.customTy ctor0.tyName ((freshVars Φ₁ ctor0.paramCount).map (Ty.fvar ·))) with
             | none => none
-            | some ⟨S₂, huni, _⟩ =>
+            | some ⟨S₂, huni, hav₂⟩ =>
               match inferBranchesCore K (Φ₁ + ctor0.paramCount + 1) (S₂.onCtx (S₁.onCtx ctx)) ctor0.tyName
                   (((freshVars Φ₁ ctor0.paramCount).map (Ty.fvar ·)).map S₂.onTy)
                   (S₂.onTy (.fvar (Φ₁ + ctor0.paramCount))) branches with
               | none => none
-              | some ⟨(Φ₃, S₃), hbranches⟩ =>
+              | some ⟨(Φ₃, S₃), hbranches, hav₃⟩ =>
                 some ⟨(Φ₃, S₁ ++ S₂ ++ S₃, S₃.onTy (S₂.onTy (.fvar (Φ₁ + ctor0.paramCount)))),
-                      .match_ hscrut (by intro hc; rw [hc] at hh; simp at hh) huni hbranches⟩
+                      .match_ hscrut (by intro hc; rw [hc] at hh; simp at hh) huni hbranches, by
+                      intro p hp; rcases List.mem_append.mp hp with h | h
+                      · rcases List.mem_append.mp h with h | h
+                        · exact hav₁ p h
+                        · exact hav₂ p h
+                      · exact hav₃ p h⟩
 termination_by e.size
 decreasing_by
   all_goals (try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
 def inferBranchesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (tyName : TyName) (tyArgs : List Ty) (ρ : Ty)
     (branches : List (MatchPattern × Expr)) :
-    Option { r : Nat × Subst // InferBranches Φ ctx tyName tyArgs ρ branches r.1 r.2 } :=
+    Option { r : Nat × Subst // InferBranches Φ ctx tyName tyArgs ρ branches r.1 r.2 ∧ (∀ p ∈ r.2, p.1 ∉ K) } :=
   match branches with
-  | [] => some ⟨(Φ, []), .nil⟩
+  | [] => some ⟨(Φ, []), .nil, by simp⟩
   | (pat, body) :: rest =>
       match hget : LookupList.get? ctx.ctors pat.ctor with
       | none => none
@@ -9366,15 +9393,20 @@ def inferBranchesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (tyName : TyName) (t
                   { ctx with env := (ctorr.contents.map (Ty.openWith tyArgs)).map PolyTy.mkTrivial ++ ctx.env }
                   body with
               | none => none
-              | some ⟨(Φ₁, S₁, τb), hbody⟩ =>
+              | some ⟨(Φ₁, S₁, τb), hbody, hav₁⟩ =>
                 match unifyCoreK K τb (S₁.onTy ρ) with
                 | none => none
-                | some ⟨S₂, huni, _⟩ =>
+                | some ⟨S₂, huni, hav₂⟩ =>
                   match inferBranchesCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx)) tyName
                       (tyArgs.map (fun t => S₂.onTy (S₁.onTy t))) (S₂.onTy (S₁.onTy ρ)) rest with
                   | none => none
-                  | some ⟨(Φ₂, S₃), hrest⟩ =>
-                    some ⟨(Φ₂, S₁ ++ S₂ ++ S₃), .cons hget htn hpc hcont hbody huni hrest⟩
+                  | some ⟨(Φ₂, S₃), hrest, hav₃⟩ =>
+                    some ⟨(Φ₂, S₁ ++ S₂ ++ S₃), .cons hget htn hpc hcont hbody huni hrest, by
+                      intro p hp; rcases List.mem_append.mp hp with h | h
+                      · rcases List.mem_append.mp h with h | h
+                        · exact hav₁ p h
+                        · exact hav₂ p h
+                      · exact hav₃ p h⟩
             else none
           else none
         else none
@@ -9398,7 +9430,7 @@ theorem infer_sound {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {�
   · exact absurd h (by simp)
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
-    exact hr
+    exact hr.1
 
 /-! ### Capstone: the executable inferer computes the principal type
 
