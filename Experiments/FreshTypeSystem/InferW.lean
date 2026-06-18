@@ -9536,6 +9536,464 @@ each recursive case transfers the typing to the function's intermediate state
 `match_` additionally rebuild the explicit unifier (mirroring the `complete_*_aux`
 dodges) to discharge `unifyCore` via `unifyCore_complete_aux`. -/
 
+/-! ### Gap-avoidance (domain/range locality of `Infer` substitutions)
+
+The executable annotated-`let` arm hard-codes its skolem block `Ys = freshVars Φ pc`
+(`N = Φ`), while the relation `Infer.letInAnn` permits any `N ≥ Φ`. Bridging the two
+in `inferCore_complete` requires that a *given* derivation's output substitution `S`
+leaves `Ys` rigid — concretely that `S`'s domain and range avoid the half-open
+interval the block occupies. The driver is a structural locality fact: a derivation
+inferred from a context/annotations that avoid an interval `[lo, hi)` (with the gap
+*below* the input frontier) produces a substitution (domain **and** range) and a
+result type that also avoid `[lo, hi)`. Threading the interval through the
+`letInAnn` sub-derivations (rhs at frontier `N+pc`, body at `Φ₁`, plus the `Schk`
+unifier) — combined with the rule's own escape checks — yields exactly the
+`Ys`-rigidity the executable bridge needs. -/
+
+/-- A whole substitution applied to an interval-avoiding type yields an
+    interval-avoiding type (the `[lo, hi)` analogue of `Subst.onTy_belowFvars`). -/
+theorem Subst.onTy_avoidsItv {lo hi : Nat} :
+    ∀ {S : Subst}, (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v) →
+    ∀ {τ : Ty}, (∀ v ∈ τ.freeVars, v < lo ∨ hi ≤ v) →
+    ∀ v ∈ (S.onTy τ).freeVars, v < lo ∨ hi ≤ v := by
+  intro S
+  induction S with
+  | nil => intro _ τ hτ v hv; rw [Subst.onTy_nil] at hv; exact hτ v hv
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    intro hS τ hτ v hv
+    rw [show ((Z, U) :: S') = [(Z, U)] ++ S' from rfl, Subst.onTy_append] at hv
+    refine ih (fun p hp => hS p (List.mem_cons_of_mem _ hp)) ?_ v hv
+    intro w hw
+    rcases Ty.mem_freeVars_substFvar hw with h | h
+    · exact hτ w h
+    · exact hS (Z, U) (List.mem_cons_self ..) w h
+
+/-- A whole substitution applied to an interval-avoiding context env stays
+    interval-avoiding. -/
+theorem Subst.onCtx_avoidsItv {lo hi : Nat} {S : Subst} {ctx : Ctx}
+    (hS : ∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v)
+    (hctx : ∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v) :
+    ∀ M ∈ (S.onCtx ctx).env, ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v := by
+  intro M hM
+  simp only [Subst.onCtx, Subst.onEnv] at hM
+  obtain ⟨M0, hM0, rfl⟩ := List.mem_map.mp hM
+  simp only [Subst.onPolyTy]
+  exact Subst.onTy_avoidsItv hS (hctx M0 hM0)
+
+/-- Opening with interval-avoiding type args preserves interval-avoidance. -/
+theorem Ty.openWith_avoidsItv {lo hi : Nat} {Vs : List Ty}
+    (hVs : ∀ t ∈ Vs, ∀ v ∈ t.freeVars, v < lo ∨ hi ≤ v) :
+    ∀ {X : Ty}, (∀ v ∈ X.freeVars, v < lo ∨ hi ≤ v) →
+    ∀ v ∈ (Ty.openWith Vs X).freeVars, v < lo ∨ hi ≤ v := by
+  intro X
+  induction X using Ty.rec_strong with
+  | prim p => intro _ v hv; simp [Ty.openWith, Ty.instantiate, Ty.freeVars] at hv
+  | fvar n =>
+    intro hX v hv
+    simp only [Ty.openWith, Ty.instantiate, Ty.freeVars, List.mem_singleton] at hv
+    rw [hv]; exact hX n (by simp [Ty.freeVars])
+  | bvar i =>
+    intro _ v hv
+    simp only [Ty.openWith, Ty.instantiate] at hv
+    cases h : Vs[i]? with
+    | none => rw [h] at hv; simp [Ty.freeVars] at hv
+    | some t =>
+      rw [h] at hv; simp only [Option.getD_some] at hv
+      exact hVs t (List.mem_of_getElem? h) v hv
+  | pair a b iha ihb =>
+    intro hX v hv
+    simp only [Ty.openWith, Ty.instantiate, Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+    rcases hv with hv | hv
+    · exact iha (fun w hw => hX w (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hw)) v hv
+    · exact ihb (fun w hw => hX w (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hw)) v hv
+  | arrow a b iha ihb =>
+    intro hX v hv
+    simp only [Ty.openWith, Ty.instantiate, Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+    rcases hv with hv | hv
+    · exact iha (fun w hw => hX w (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hw)) v hv
+    · exact ihb (fun w hw => hX w (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hw)) v hv
+  | customTy nm tys ih =>
+    intro hX v hv
+    simp only [Ty.openWith, Ty.instantiate, TyList.instantiate_eq_map, Ty.freeVars] at hv
+    obtain ⟨t', ht', hvt'⟩ := TyList.mem_freeVars_iff.mp hv
+    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+    exact ih t ht (fun w hw => hX w (by rw [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht hw)) v hvt'
+
+mutual
+/-- Unifying interval-avoiding monotypes yields an interval-avoiding substitution
+    (both domain and range avoid `[lo, hi)`). -/
+theorem UnifyRel.gap_avoid {lo hi : Nat} : {a b : Ty} → {S : Subst} → UnifyRel a b S →
+    (∀ v ∈ a.freeVars, v < lo ∨ hi ≤ v) → (∀ v ∈ b.freeVars, v < lo ∨ hi ≤ v) →
+    (∀ p ∈ S, p.1 < lo ∨ hi ≤ p.1) ∧ (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v)
+  | _, _, _, .prim, _, _ => ⟨by simp, by simp⟩
+  | _, _, _, .fvarRefl, _, _ => ⟨by simp, by simp⟩
+  | _, _, _, @UnifyRel.fvarL n τ _ _, ha, hb => by
+    refine ⟨?_, ?_⟩
+    · intro p hp; rw [List.mem_singleton] at hp; subst hp; exact ha n (by simp [Ty.freeVars])
+    · intro p hp v hv; rw [List.mem_singleton] at hp; subst hp; exact hb v hv
+  | _, _, _, @UnifyRel.fvarR n τ _ _, ha, hb => by
+    refine ⟨?_, ?_⟩
+    · intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hb n (by simp [Ty.freeVars])
+    · intro p hp v hv; rw [List.mem_singleton] at hp; subst hp; exact ha v hv
+  | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, ha, hb => by
+    have haa : ∀ v ∈ a.freeVars, v < lo ∨ hi ≤ v := fun v hv =>
+      ha v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hv)
+    have hab : ∀ v ∈ b.freeVars, v < lo ∨ hi ≤ v := fun v hv =>
+      ha v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hv)
+    have hbc : ∀ v ∈ c.freeVars, v < lo ∨ hi ≤ v := fun v hv =>
+      hb v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hv)
+    have hbd : ∀ v ∈ d.freeVars, v < lo ∨ hi ≤ v := fun v hv =>
+      hb v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hv)
+    obtain ⟨hd₁, hr₁⟩ := UnifyRel.gap_avoid h₁ haa hbc
+    obtain ⟨hd₂, hr₂⟩ := UnifyRel.gap_avoid h₂ (Subst.onTy_avoidsItv hr₁ hab) (Subst.onTy_avoidsItv hr₁ hbd)
+    refine ⟨?_, ?_⟩
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact hd₁ p hp
+      · exact hd₂ p hp
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact hr₁ p hp
+      · exact hr₂ p hp
+  | _, _, _, @UnifyRel.pair a b c d S₁ S₂ h₁ h₂, ha, hb => by
+    have haa : ∀ v ∈ a.freeVars, v < lo ∨ hi ≤ v := fun v hv =>
+      ha v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hv)
+    have hab : ∀ v ∈ b.freeVars, v < lo ∨ hi ≤ v := fun v hv =>
+      ha v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hv)
+    have hbc : ∀ v ∈ c.freeVars, v < lo ∨ hi ≤ v := fun v hv =>
+      hb v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hv)
+    have hbd : ∀ v ∈ d.freeVars, v < lo ∨ hi ≤ v := fun v hv =>
+      hb v (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hv)
+    obtain ⟨hd₁, hr₁⟩ := UnifyRel.gap_avoid h₁ haa hbc
+    obtain ⟨hd₂, hr₂⟩ := UnifyRel.gap_avoid h₂ (Subst.onTy_avoidsItv hr₁ hab) (Subst.onTy_avoidsItv hr₁ hbd)
+    refine ⟨?_, ?_⟩
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact hd₁ p hp
+      · exact hd₂ p hp
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact hr₁ p hp
+      · exact hr₂ p hp
+  | _, _, _, @UnifyRel.customTy nm tys₁ tys₂ S hl, ha, hb => by
+    exact UnifyRelList.gap_avoid hl
+      (fun t ht v hv => ha v (by rw [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht hv))
+      (fun t ht v hv => hb v (by rw [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht hv))
+
+theorem UnifyRelList.gap_avoid {lo hi : Nat} : {as bs : List Ty} → {S : Subst} → UnifyRelList as bs S →
+    (∀ t ∈ as, ∀ v ∈ t.freeVars, v < lo ∨ hi ≤ v) → (∀ t ∈ bs, ∀ v ∈ t.freeVars, v < lo ∨ hi ≤ v) →
+    (∀ p ∈ S, p.1 < lo ∨ hi ≤ p.1) ∧ (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v)
+  | _, _, _, .nil, _, _ => ⟨by simp, by simp⟩
+  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht, ha, hb => by
+    obtain ⟨hd₁, hr₁⟩ := UnifyRel.gap_avoid h₁ (ha t₁ List.mem_cons_self) (hb t₂ List.mem_cons_self)
+    have hmap_a : ∀ t ∈ ts₁.map S₁.onTy, ∀ v ∈ t.freeVars, v < lo ∨ hi ≤ v := by
+      intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
+      exact Subst.onTy_avoidsItv hr₁ (ha t0 (List.mem_cons_of_mem _ ht0))
+    have hmap_b : ∀ t ∈ ts₂.map S₁.onTy, ∀ v ∈ t.freeVars, v < lo ∨ hi ≤ v := by
+      intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
+      exact Subst.onTy_avoidsItv hr₁ (hb t0 (List.mem_cons_of_mem _ ht0))
+    obtain ⟨hd₂, hr₂⟩ := UnifyRelList.gap_avoid ht hmap_a hmap_b
+    refine ⟨?_, ?_⟩
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact hd₁ p hp
+      · exact hd₂ p hp
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact hr₁ p hp
+      · exact hr₂ p hp
+end
+
+mutual
+/-- **Gap-avoidance locality.** If a derivation's context env and the term's
+    annotation free vars all avoid an interval `[lo, hi)` whose top `hi` is at most
+    the input frontier `Φ`, then the inferred type and the output substitution's
+    domain **and** range all avoid `[lo, hi)`. (The `[lo, hi)` analogue of
+    `Infer.belowFvars`, but tracking the substitution *domain* too — `belowFvars`
+    only bounds the range from above.) -/
+theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+    hi ≤ Φ → (∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v) →
+    (∀ y ∈ e.tyFreeVars, y < lo ∨ hi ≤ y) →
+    (∀ v ∈ τ.freeVars, v < lo ∨ hi ≤ v) ∧ (∀ p ∈ S, p.1 < lo ∨ hi ≤ p.1) ∧
+      (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v) := by
+  cases h with
+  | primLitUnit => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
+  | primLitInt => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
+  | primLitNat => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
+  | primLitBool => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
+  | primLitStr => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
+  | @pair _ _ _ _ Φ₁ Φ₂ S₁ S₂ τa τb ha hb =>
+    intro hhi hctx htfv
+    simp only [Expr.tyFreeVars, List.mem_append] at htfv
+    obtain ⟨haτ, haD, haR⟩ := Infer.gap_avoid ha hhi hctx (fun y hy => htfv y (.inl hy))
+    have hle1 := Infer.frontier_le ha
+    obtain ⟨hbτ, hbD, hbR⟩ := Infer.gap_avoid hb (by omega) (Subst.onCtx_avoidsItv haR hctx)
+      (fun y hy => htfv y (.inr hy))
+    refine ⟨?_, ?_, ?_⟩
+    · intro v hv; simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+      rcases hv with hv | hv
+      · exact Subst.onTy_avoidsItv hbR haτ v hv
+      · exact hbτ v hv
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact haD p hp
+      · exact hbD p hp
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact haR p hp
+      · exact hbR p hp
+  | lambda hseed hbody =>
+    intro hhi hctx htfv
+    cases hseed with
+    | none =>
+      simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at htfv
+      have hctx' : ∀ M ∈ ({ ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env }).env,
+          ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v := by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact fun v hv => Or.inr (by have hvΦ : v = Φ := List.mem_singleton.mp hv; subst hvΦ; exact hhi)
+        · exact hctx M hM
+      obtain ⟨hbτ, hbD, hbR⟩ := Infer.gap_avoid hbody (by omega) hctx' htfv
+      refine ⟨?_, hbD, hbR⟩
+      intro v hv; simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+      rcases hv with hv | hv
+      · exact Subst.onTy_avoidsItv hbR
+          (fun w hw => by simp only [Ty.freeVars, List.mem_singleton] at hw; subst hw; exact Or.inr hhi) v hv
+      · exact hbτ v hv
+    | some _ hlc =>
+      expose_names
+      simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
+      have hTavoid : ∀ v ∈ paramTy.freeVars, v < lo ∨ hi ≤ v := fun v hv => htfv v (.inl hv)
+      have hctx' : ∀ M ∈ ({ ctx with env := PolyTy.mkTrivial paramTy :: ctx.env }).env,
+          ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v := by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact hTavoid
+        · exact hctx M hM
+      obtain ⟨hbτ, hbD, hbR⟩ := Infer.gap_avoid hbody hhi hctx' (fun y hy => htfv y (.inr hy))
+      refine ⟨?_, hbD, hbR⟩
+      intro v hv; simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+      rcases hv with hv | hv
+      · exact Subst.onTy_avoidsItv hbR hTavoid v hv
+      · exact hbτ v hv
+  | @app _ _ _ _ Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huni =>
+    intro hhi hctx htfv
+    simp only [Expr.tyFreeVars, List.mem_append] at htfv
+    obtain ⟨hfτ, hfD, hfR⟩ := Infer.gap_avoid hf hhi hctx (fun y hy => htfv y (.inl hy))
+    have hle1 := Infer.frontier_le hf
+    obtain ⟨hargτ, hargD, hargR⟩ := Infer.gap_avoid harg (by omega) (Subst.onCtx_avoidsItv hfR hctx)
+      (fun y hy => htfv y (.inr hy))
+    have hle2 := Infer.frontier_le harg
+    have hinR : ∀ v ∈ (Ty.arrow τa (Ty.fvar Φ₂)).freeVars, v < lo ∨ hi ≤ v := by
+      intro v hv; simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+      rcases hv with hv | hv
+      · exact hargτ v hv
+      · simp only [Ty.freeVars, List.mem_singleton] at hv; subst hv; exact Or.inr (by omega)
+    obtain ⟨h3D, h3R⟩ := UnifyRel.gap_avoid huni (Subst.onTy_avoidsItv hargR hfτ) hinR
+    refine ⟨?_, ?_, ?_⟩
+    · exact Subst.onTy_avoidsItv h3R
+        (fun v hv => by simp only [Ty.freeVars, List.mem_singleton] at hv; subst hv; exact Or.inr (by omega))
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hfD p hp
+      · exact hargD p hp
+      · exact h3D p hp
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hfR p hp
+      · exact hargR p hp
+      · exact h3R p hp
+  | @var _ _ _ polyTy hlook =>
+    intro hhi hctx _
+    refine ⟨?_, by simp, by simp⟩
+    intro v hv
+    rcases Ty.freeVars_openVars_subset v hv with h | h
+    · exact hctx polyTy (List.mem_of_getElem? hlook) v h
+    · exact Or.inr (by have := freshVars_ge v h; omega)
+  | @ctor _ _ _ ctorr hlook =>
+    intro hhi _ _
+    refine ⟨?_, by simp, by simp⟩
+    intro v hv
+    rcases Ty.freeVars_openVars_subset v hv with h | h
+    · exact absurd h (NoFreeVars.not_mem_freeVars (Ctor.toTy_body_noFreeVars ctorr) v)
+    · exact Or.inr (by have := freshVars_ge v h; omega)
+  | @letIn _ _ rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂ hrhs hbody =>
+    intro hhi hctx htfv
+    simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append] at htfv
+    obtain ⟨hrτ, hrD, hrR⟩ := Infer.gap_avoid hrhs hhi hctx (fun y hy => htfv y (.inl hy))
+    have hle1 := Infer.frontier_le hrhs
+    have hctx' : ∀ M ∈ ({ (S₁.onCtx ctx) with
+        env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }).env,
+        ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v := by
+      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+      · exact fun v hv => hrτ v (Ty.closeOver_freeVars_subset hv)
+      · exact Subst.onCtx_avoidsItv hrR hctx M hM
+    obtain ⟨hbτ, hbD, hbR⟩ := Infer.gap_avoid hbody (by omega) hctx' (fun y hy => htfv y (.inr hy))
+    refine ⟨hbτ, ?_, ?_⟩
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact hrD p hp
+      · exact hbD p hp
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact hrR p hp
+      · exact hbR p hp
+  | @letInAnn _ N _ σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂ hσwf hΦN hrhs huni _hesc1 _hesc2 hbody =>
+    intro hhi hctx htfv
+    simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
+    have hle1 := Infer.frontier_le hrhs
+    have hrhsTfv : ∀ y ∈ (rhs.openTyVars (freshVars N σ.paramCount)).tyFreeVars, y < lo ∨ hi ≤ y := by
+      intro y hy
+      rcases Expr.tyFreeVars_openTyVars hy with hh | hh
+      · exact htfv y (.inl (.inr hh))
+      · exact Or.inr (by have := freshVars_ge y hh; omega)
+    obtain ⟨hrτ, hrD, hrR⟩ := Infer.gap_avoid hrhs (by omega) hctx hrhsTfv
+    have hσopenAvoid : ∀ v ∈ (σ.openVars (freshVars N σ.paramCount)).freeVars, v < lo ∨ hi ≤ v := by
+      intro v hv
+      rcases Ty.freeVars_openVars_subset v hv with hh | hh
+      · exact htfv v (.inl (.inl hh))
+      · exact Or.inr (by have := freshVars_ge v hh; omega)
+    obtain ⟨hSchkD, hSchkR⟩ := UnifyRel.gap_avoid huni hrτ hσopenAvoid
+    have hctx2 := Subst.onCtx_avoidsItv hSchkR (Subst.onCtx_avoidsItv hrR hctx)
+    have hctx' : ∀ M ∈ ({ (Schk.onCtx (S₁.onCtx ctx)) with
+        env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }).env, ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v := by
+      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+      · exact fun v hv => htfv v (.inl (.inl hv))
+      · exact hctx2 M hM
+    obtain ⟨hbτ, hbD, hbR⟩ := Infer.gap_avoid hbody (by omega) hctx' (fun y hy => htfv y (.inr hy))
+    refine ⟨hbτ, ?_, ?_⟩
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hrD p hp
+      · exact hSchkD p hp
+      · exact hbD p hp
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hrR p hp
+      · exact hSchkR p hp
+      · exact hbR p hp
+  | @fst _ _ _ Φ₁ S₁ S₂ τe he huni =>
+    intro hhi hctx htfv
+    simp only [Expr.tyFreeVars] at htfv
+    obtain ⟨heτ, heD, heR⟩ := Infer.gap_avoid he hhi hctx htfv
+    have hle1 := Infer.frontier_le he
+    have hinR : ∀ v ∈ (Ty.pair (Ty.fvar Φ₁) (Ty.fvar (Φ₁+1))).freeVars, v < lo ∨ hi ≤ v := by
+      intro v hv; simp only [Ty.freeVars, List.mem_dedup, List.mem_append, List.mem_singleton] at hv
+      rcases hv with hv | hv <;> subst hv <;> exact Or.inr (by omega)
+    obtain ⟨h2D, h2R⟩ := UnifyRel.gap_avoid huni heτ hinR
+    refine ⟨?_, ?_, ?_⟩
+    · exact Subst.onTy_avoidsItv h2R
+        (fun v hv => by simp only [Ty.freeVars, List.mem_singleton] at hv; subst hv; exact Or.inr (by omega))
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact heD p hp
+      · exact h2D p hp
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact heR p hp
+      · exact h2R p hp
+  | @snd _ _ _ Φ₁ S₁ S₂ τe he huni =>
+    intro hhi hctx htfv
+    simp only [Expr.tyFreeVars] at htfv
+    obtain ⟨heτ, heD, heR⟩ := Infer.gap_avoid he hhi hctx htfv
+    have hle1 := Infer.frontier_le he
+    have hinR : ∀ v ∈ (Ty.pair (Ty.fvar Φ₁) (Ty.fvar (Φ₁+1))).freeVars, v < lo ∨ hi ≤ v := by
+      intro v hv; simp only [Ty.freeVars, List.mem_dedup, List.mem_append, List.mem_singleton] at hv
+      rcases hv with hv | hv <;> subst hv <;> exact Or.inr (by omega)
+    obtain ⟨h2D, h2R⟩ := UnifyRel.gap_avoid huni heτ hinR
+    refine ⟨?_, ?_, ?_⟩
+    · exact Subst.onTy_avoidsItv h2R
+        (fun v hv => by simp only [Ty.freeVars, List.mem_singleton] at hv; subst hv; exact Or.inr (by omega))
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact heD p hp
+      · exact h2D p hp
+    · intro p hp; rw [List.mem_append] at hp; rcases hp with hp | hp
+      · exact heR p hp
+      · exact h2R p hp
+  | @match_ _ _ _ _ Φ₁ Φ₃ S₁ S₂ S₃ tyName arity τs hscrut hne huni hbr =>
+    intro hhi hctx htfv
+    simp only [Expr.tyFreeVars, List.mem_append] at htfv
+    obtain ⟨hsτ, hsD, hsR⟩ := Infer.gap_avoid hscrut hhi hctx (fun y hy => htfv y (.inl hy))
+    have hle1 := Infer.frontier_le hscrut
+    have hcustomAvoid : ∀ v ∈ (Ty.customTy tyName ((freshVars Φ₁ arity).map (Ty.fvar ·))).freeVars,
+        v < lo ∨ hi ≤ v := by
+      intro v hv
+      rw [Ty.freeVars] at hv
+      obtain ⟨t, ht, hvt⟩ := TyList.mem_freeVars_iff.mp hv
+      obtain ⟨x, hx, hxeq⟩ := List.mem_map.mp ht
+      rw [← hxeq] at hvt
+      simp only [Ty.freeVars, List.mem_singleton] at hvt
+      exact Or.inr (by have := freshVars_ge x hx; omega)
+    obtain ⟨h2D, h2R⟩ := UnifyRel.gap_avoid huni hsτ hcustomAvoid
+    have hρAvoid : ∀ v ∈ (S₂.onTy (Ty.fvar (Φ₁+arity))).freeVars, v < lo ∨ hi ≤ v :=
+      Subst.onTy_avoidsItv h2R
+        (fun w hw => by simp only [Ty.freeVars, List.mem_singleton] at hw; subst hw; exact Or.inr (by omega))
+    have htaAvoid : ∀ t ∈ ((freshVars Φ₁ arity).map (Ty.fvar ·)).map S₂.onTy,
+        ∀ v ∈ t.freeVars, v < lo ∨ hi ≤ v := by
+      intro t ht v hv
+      obtain ⟨s, hs, rfl⟩ := List.mem_map.mp ht
+      obtain ⟨x, hx, hxeq⟩ := List.mem_map.mp hs
+      refine Subst.onTy_avoidsItv h2R ?_ v hv
+      intro w hw; rw [← hxeq] at hw; simp only [Ty.freeVars, List.mem_singleton] at hw
+      exact Or.inr (by have := freshVars_ge x hx; omega)
+    obtain ⟨hρτ, h3D, h3R⟩ := InferBranches.gap_avoid hbr (by omega)
+      (Subst.onCtx_avoidsItv h2R (Subst.onCtx_avoidsItv hsR hctx)) htaAvoid hρAvoid
+      (fun y hy => htfv y (.inr hy))
+    refine ⟨hρτ, ?_, ?_⟩
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hsD p hp
+      · exact h2D p hp
+      · exact h3D p hp
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hsR p hp
+      · exact h2R p hp
+      · exact h3R p hp
+termination_by e.size
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+
+theorem InferBranches.gap_avoid {lo hi : Nat} {Φ ctx tn ta ρ brs Φ' S}
+    (h : InferBranches Φ ctx tn ta ρ brs Φ' S) :
+    hi ≤ Φ → (∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v) →
+    (∀ t ∈ ta, ∀ v ∈ t.freeVars, v < lo ∨ hi ≤ v) → (∀ v ∈ ρ.freeVars, v < lo ∨ hi ≤ v) →
+    (∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y < lo ∨ hi ≤ y) →
+    (∀ v ∈ (S.onTy ρ).freeVars, v < lo ∨ hi ≤ v) ∧ (∀ p ∈ S, p.1 < lo ∨ hi ≤ p.1) ∧
+      (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v) := by
+  cases h with
+  | nil =>
+    intro _ _ _ hρ _
+    exact ⟨by rw [Subst.onTy_nil]; exact hρ, by simp, by simp⟩
+  | @cons _ _ _ _ _ pat body rest ctorr Φ₁ Φ₂ S₁ S₂ S₃ τb hlook htyName hpc hcont hbody huni hrest =>
+    intro hhi hctx hta hρ htfv
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
+    have hbind : ∀ M ∈ ({ ctx with
+        env := (ctorr.contents.map (Ty.openWith ta)).map PolyTy.mkTrivial ++ ctx.env }).env,
+        ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v := by
+      intro M hM
+      rw [List.mem_append] at hM
+      rcases hM with hM | hM
+      · obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hM
+        obtain ⟨c, hc, rfl⟩ := List.mem_map.mp ht
+        exact Ty.openWith_avoidsItv hta
+          (fun v hv => absurd hv (NoFreeVars.not_mem_freeVars (ctorr.closed c hc) v))
+      · exact hctx M hM
+    obtain ⟨hτb, hbD, hbR⟩ := Infer.gap_avoid hbody hhi hbind (fun y hy => htfv y (.inl hy))
+    have hle1 := Infer.frontier_le hbody
+    have hS₁ρ : ∀ v ∈ (S₁.onTy ρ).freeVars, v < lo ∨ hi ≤ v := Subst.onTy_avoidsItv hbR hρ
+    obtain ⟨h2D, h2R⟩ := UnifyRel.gap_avoid huni hτb hS₁ρ
+    have hta' : ∀ t ∈ ta.map (fun t => S₂.onTy (S₁.onTy t)), ∀ v ∈ t.freeVars, v < lo ∨ hi ≤ v := by
+      intro t ht v hv
+      obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+      exact Subst.onTy_avoidsItv h2R (Subst.onTy_avoidsItv hbR (hta t0 ht0)) v hv
+    obtain ⟨hresτ, h3D, h3R⟩ := InferBranches.gap_avoid hrest (by omega)
+      (Subst.onCtx_avoidsItv h2R (Subst.onCtx_avoidsItv hbR hctx)) hta' (Subst.onTy_avoidsItv h2R hS₁ρ)
+      (fun y hy => htfv y (.inr hy))
+    refine ⟨?_, ?_, ?_⟩
+    · rw [Subst.onTy_append, Subst.onTy_append]; exact hresτ
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hbD p hp
+      · exact h2D p hp
+      · exact h3D p hp
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hbR p hp
+      · exact h2R p hp
+      · exact h3R p hp
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
+end
+
 /-- The function-completeness property at `e`: given a (well-formed,
     frontier-bounded) `Infer` derivation, `inferCore` succeeds. We induct over a
     *given* derivation (not declarative typeability) so the binder cases compose
