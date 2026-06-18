@@ -8960,11 +8960,12 @@ def inferCore (Φ : Nat) (ctx : Ctx) (e : Expr) :
       | some ⟨(Φ', S, τb), hbody⟩ =>
         some ⟨(Φ', S, .arrow (S.onTy (.fvar Φ)) τb), .lambda .none hbody⟩
   | .lambda (some T) body =>
-      if hT : Ty.isClosed T = true then
+      if hT : Ty.bvarsBelow 0 T = true then
         match inferCore Φ { ctx with env := PolyTy.mkTrivial T :: ctx.env } body with
         | none => none
         | some ⟨(Φ', S, τb), hbody⟩ =>
-          some ⟨(Φ', S, .arrow (S.onTy T) τb), .lambda (.some T hT) hbody⟩
+          some ⟨(Φ', S, .arrow (S.onTy T) τb),
+            .lambda (.some T ((Ty.bvarsBelow_iff T).mp hT)) hbody⟩
       else none
   | .app f arg =>
       match inferCore Φ ctx f with
@@ -8988,44 +8989,47 @@ def inferCore (Φ : Nat) (ctx : Ctx) (e : Expr) :
       | some ctorr =>
         some ⟨(Φ + ctorr.paramCount, [], ctorr.toTy.openVars (freshVars Φ ctorr.paramCount)), .ctor h⟩
   | .letIn ann rhs body =>
-      match inferCore Φ ctx rhs with
-      | none => none
-      | some ⟨(Φ₁, S₁, τ₁), hrhs⟩ =>
-        match ann with
-        | none =>
-          match inferCore Φ₁
-              { (S₁.onCtx ctx) with env := genScheme (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
-              body with
+      match ann with
+      | none =>
+        match inferCore Φ ctx rhs with
+        | none => none
+        | some ⟨(Φ₁, S₁, τ₁), hrhs⟩ =>
+        match inferCore Φ₁
+            { (S₁.onCtx ctx) with
+              env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
+            body with
+        | none => none
+        | some ⟨(Φ₂, S₂, τ₂), hbody⟩ =>
+          some ⟨(Φ₂, S₁ ++ S₂, τ₂), .letIn hrhs hbody⟩
+      | some σ =>
+        -- Annotated `let`: skolemize `σ` with `Ys = freshVars Φ pc`, infer the
+        -- *opened* rhs `rhs.openTyVars Ys` at frontier `Φ + pc`, unify the result
+        -- against the skolem opening, and escape-check (no skolem bound by
+        -- `S₁`/`Schk`, none leaked into the body ctx). `σ` may carry outer scoped
+        -- type variables — no closedness requirement.
+        if hσwf : Ty.bvarsBelow σ.paramCount σ.body = true then
+          match inferCore (Φ + σ.paramCount) ctx
+              (rhs.openTyVars (freshVars Φ σ.paramCount)) with
           | none => none
-          | some ⟨(Φ₂, S₂, τ₂), hbody⟩ =>
-            some ⟨(Φ₂, S₁ ++ S₂, τ₂), .letIn hrhs hbody⟩
-        | some σ =>
-          -- Annotated `let` (threading): `σ` must be a closed, well-formed scheme.
-          -- Skolemize it (`Ys = freshVars Φ₁ σ.paramCount`, rigid), unify the rhs's
-          -- principal type against the skolemized annotation, then check that no
-          -- skolem escaped (got bound by `Schk`, or leaked into the threaded body
-          -- context). Bind `σ` itself and thread `Schk` outward.
-          if hσwf : Ty.bvarsBelow σ.paramCount σ.body = true then
-            if hσcl : σ.body.freeVars = [] then
-              match unifyCore τ₁ (σ.openVars (freshVars Φ₁ σ.paramCount)) with
-              | none => none
-              | some ⟨Schk, hSchk⟩ =>
-                if hesc1 : (∀ y ∈ freshVars Φ₁ σ.paramCount, y ∉ Schk.map Prod.fst) then
-                  if hesc2 : (∀ y ∈ freshVars Φ₁ σ.paramCount,
-                      y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
-                    match inferCore (Φ₁ + σ.paramCount)
-                        { (Schk.onCtx (S₁.onCtx ctx)) with
-                          env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
-                        body with
-                    | none => none
-                    | some ⟨(Φ₂, S₂, τ₂), hbody⟩ =>
-                      some ⟨(Φ₂, S₁ ++ Schk ++ S₂, τ₂),
-                        .letInAnn hrhs (PolyTy.wf_iff_bvarsBelow.mp hσwf)
-                          (Ty.noFreeVars_iff_freeVars_nil.mpr hσcl) hSchk hesc1 hesc2 hbody⟩
-                  else none
+          | some ⟨(Φ₁, S₁, τ₁), hrhs⟩ =>
+            match unifyCore τ₁ (σ.openVars (freshVars Φ σ.paramCount)) with
+            | none => none
+            | some ⟨Schk, hSchk⟩ =>
+              if hesc1 : (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) then
+                if hesc2 : (∀ y ∈ freshVars Φ σ.paramCount,
+                    y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
+                  match inferCore Φ₁
+                      { (Schk.onCtx (S₁.onCtx ctx)) with
+                        env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
+                      body with
+                  | none => none
+                  | some ⟨(Φ₂, S₂, τ₂), hbody⟩ =>
+                    some ⟨(Φ₂, S₁ ++ Schk ++ S₂, τ₂),
+                      .letInAnn (PolyTy.wf_iff_bvarsBelow.mp hσwf) (Nat.le_refl Φ)
+                        hrhs hSchk hesc1 hesc2 hbody⟩
                 else none
-            else none
-          else none
+              else none
+        else none
   | .fst e =>
       match inferCore Φ ctx e with
       | none => none
@@ -9062,6 +9066,9 @@ def inferCore (Φ : Nat) (ctx : Ctx) (e : Expr) :
               | some ⟨(Φ₃, S₃), hbranches⟩ =>
                 some ⟨(Φ₃, S₁ ++ S₂ ++ S₃, S₃.onTy (S₂.onTy (.fvar (Φ₁ + ctor0.paramCount)))),
                       .match_ hscrut (by intro hc; rw [hc] at hh; simp at hh) huni hbranches⟩
+termination_by e.size
+decreasing_by
+  all_goals (simp_wf; try simp only [Expr.size, Expr.sizeBranches, Expr.size_openTyVars]; omega)
 
 def inferBranchesCore (Φ : Nat) (ctx : Ctx) (tyName : TyName) (tyArgs : List Ty) (ρ : Ty)
     (branches : List (MatchPattern × Expr)) :
@@ -9091,6 +9098,9 @@ def inferBranchesCore (Φ : Nat) (ctx : Ctx) (tyName : TyName) (tyArgs : List Ty
             else none
           else none
         else none
+termination_by Expr.sizeBranches branches
+decreasing_by
+  all_goals (simp_wf; try simp only [Expr.size, Expr.sizeBranches, Expr.size_openTyVars]; omega)
 end
 
 /-- The executable type inferer, refining `Infer`. -/
