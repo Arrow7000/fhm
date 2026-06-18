@@ -330,3 +330,44 @@ from `completeAt` (circular via `output_unique`). **Migration:**
   - Reassess deleting `exists_skolem_unifier`/`skolem_no_env_leak` only once `inferCore_complete` is
     off them (the assembly above no longer needs `exists_skolem_unifier`; `skolem_no_env_leak` is
     likely dead).
+
+### 7e. STOP — `inferCore_complete` is FALSE for the current executable (ORIENTATION WALL)
+While building the §7d.4 assembly, found (and **empirically confirmed via `#eval`**) a second,
+*deeper* obstacle that the freshness lemmas do **not** fix and that **no proof can fix**: the
+executable `inferCore` rejects a typeable program.
+
+- **Counterexample (verified `#eval infer 0 ⟨[],[]⟩ … = none`):**
+  `let f : ∀a.(a→a) = (λw. (λ(z:a).z) w) in f`
+  i.e. `.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)`
+  `      (.lambda none (.app (.lambda (some (.bvar 0)) (.var 0)) (.var 0))) (.var 0)`.
+  Control `let f : ∀a.(a→a) = (λ(z:a).z) in f` ⇒ `some (α→α)` (works — trivial scoped use).
+- **Why.** D2 infers the *opened* rhs `rhs.openTyVars Ys` (`Ys = freshVars Φ pc` the skolems) with
+  the skolems already present. Inside the rhs, the app `(λ(z:a).z) w` unifies the function domain
+  `fvar Y` (skolem, on the LEFT) with the flexible arg var `fvar X` (`X > Y`). The executable's
+  **left-leaning** `unifyCore (.fvar Y) (.fvar X)` always binds the LEFT var ⇒ `[(Y, fvar X)]`,
+  i.e. it binds the skolem. So the rhs substitution `S₁` has `Y ∈ dom S₁`, the rule's own
+  `hesc1` (`Ys ∉ (S₁++Schk).map fst`) fails, and `inferCore` returns `none`. The **relation**
+  `Infer` accepts (its `UnifyRel (.fvar Y) (.fvar X)` may choose `fvarR ⇒ [(X, fvar Y)]`, keeping
+  `Y` rigid; `Infer.completeAt` is proven, and the declarative `TypeOfHM` accepts). Hence
+  relation-complete but executable-incomplete ⇒ `inferCore_complete` (relation ⇒ executable) is FALSE.
+- **Scope.** Triggers whenever a scoped-typed value is *used* (applied/projected) against a flexible
+  type inside the rhs — a broad class, not a corner case. `OUnify.skolem_escape` only saves the
+  *final* `unifyCore τ₁ (σ.openVars Ys)` step (there `b = σ.openVars Ys` is all-skolems, so skolems
+  sit on the RIGHT and `fvarR`/refl keep them rigid). It does NOT help the rhs's *internal*
+  unifications, where skolems can be on the left.
+- **The fix is a DESIGN change to the executable, not a proof.** `inferCore`'s rhs inference must use
+  **rigidity-aware unification** that knows the skolem block `K ∪ Ys` and orients away from it
+  (refuses to bind a rigid var; binds the other side; fails on rigid-vs-nonvar). I.e. give `inferCore`
+  a rigid-set parameter and a `unifyCoreK`/decidable analogue of `UnifyRel.complete_K`, threaded
+  through the opened-rhs inference (and re-prove `infer_sound`). This is the executable mirror of the
+  reformulation that fixed the *relation*. Only AFTER that does `inferCore_complete` become true, and
+  the §7d migration (predicate K-threading + the §7d.4 assembly using `gap_avoid`/`letInAnn_block_fresh`)
+  applies.
+- **Net status of this session.** Committed + axiom-clean: `Infer.gap_avoid` (locality) and
+  `Infer.letInAnn_block_fresh` (the freshness bridge: given derivation's `S` leaves `freshVars Φ pc`
+  rigid in domain + env-range). Block-swap ruled out as a dead end. These are necessary for the
+  eventual executable-completeness proof but **not sufficient** — the orientation wall above must be
+  closed first by making the executable rigidity-aware. The §7d.4 partial case-migration (K-threading
+  of prim/var/ctor/lambda/pair/app/letIn-none) was drafted and green but reverted, since it targets a
+  statement that is currently false; redo it once the executable is rigidity-aware (the recipe in §7d
+  still applies, plus each unify step in app/fst/snd/match must use the rigidity-aware unifier).
