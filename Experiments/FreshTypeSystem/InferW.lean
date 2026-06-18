@@ -8394,15 +8394,19 @@ theorem Infer.completeAt (e : Expr) : Infer.CompleteAt e := by
     through it via an LC residual `R` (`S₀ = R ∘ S` below the frontier,
     `τ₀ = R.onTy τ`). Combined with `Infer.sound`, this is full principality:
     `Infer` computes a most general typing. -/
-theorem Infer.complete {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
+theorem Infer.complete {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty} (K : List Nat)
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
+    (hKΦ : ∀ k ∈ K, k < Φ) (hKe : ∀ y ∈ e.tyFreeVars, y ∈ K)
+    (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
+    (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
     ∃ Φ' S τ R,
       Infer Φ ctx e Φ' S τ ∧
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
       τ₀ = R.onTy τ ∧
-      (∀ p ∈ R, p.2.IsLC) :=
-  Infer.completeAt e hwf hbelow hS₀ hty
+      (∀ p ∈ R, p.2.IsLC) := by
+  obtain ⟨Φ', S, τ, R, h1, h2, h3, h4, _, _⟩ :=
+    Infer.completeAt e K hwf hbelow hS₀ hKΦ hKe hKfix hty
+  exact ⟨Φ', S, τ, R, h1, h2, h3, h4⟩
 
 
 /-! ### Cleaner corollaries of principality
@@ -8416,19 +8420,22 @@ parts a caller usually wants. -/
 /-- Principality, type-only form: the type of *any* declarative typing is a
     substitution instance of the type `Infer` computes. -/
 theorem Infer.complete_instance {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
+    (K : List Nat) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
+    (hKΦ : ∀ k ∈ K, k < Φ) (hKe : ∀ y ∈ e.tyFreeVars, y ∈ K)
+    (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
+    (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
     ∃ Φ' S τ R, Infer Φ ctx e Φ' S τ ∧ τ₀ = Subst.onTy R τ := by
-  obtain ⟨Φ', S, τ, R, hInfer, _, hτeq, _⟩ := Infer.complete hwf hbelow hS₀ hty
+  obtain ⟨Φ', S, τ, R, hInfer, _, hτeq, _⟩ := Infer.complete K hwf hbelow hS₀ hKΦ hKe hKfix hty
   exact ⟨Φ', S, τ, R, hInfer, hτeq⟩
 
 /-- Specialised to the identity input substitution: any declarative type of `e`
     in `ctx` itself is an instance of the inferred type. -/
 theorem Infer.complete_id {Φ : Nat} {ctx : Ctx} {e : Expr} {τ₀ : Ty}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hΦe : ∀ y ∈ e.tyFreeVars, y < Φ)
     (hty : TypeOfHM ctx e τ₀) :
     ∃ Φ' S τ R, Infer Φ ctx e Φ' S τ ∧ τ₀ = Subst.onTy R τ := by
-  refine Infer.complete_instance hwf hbelow (S₀ := []) (by simp) ?_
+  refine Infer.complete_instance e.tyFreeVars hwf hbelow (S₀ := []) (by simp) hΦe
+    (fun y hy => hy) (by simp) ?_
   simpa using hty
 
 /-- **Algorithm W decides typeability.** `e` is declaratively typeable under some
@@ -8437,15 +8444,17 @@ theorem Infer.complete_id {Φ : Nat} {ctx : Ctx} {e : Expr} {τ₀ : Ty}
     variables — rigid in the declarative system — so success does not entail
     typeability of the *unspecialised* `ctx`.) -/
 theorem Infer.iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) :
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hclosed : e.tyFreeVars = []) :
     (∃ (S : Subst) (τ : Ty), (∀ p ∈ S, p.2.IsLC) ∧ TypeOfHM (S.onCtx ctx) e τ)
       ↔ (∃ Φ' S τ, Infer Φ ctx e Φ' S τ) := by
   constructor
   · rintro ⟨S, τ, hS, hty⟩
-    obtain ⟨Φ', S', τ', _, hInfer, _⟩ := Infer.complete_instance hwf hbelow hS hty
+    obtain ⟨Φ', S', τ', _, hInfer, _⟩ :=
+      Infer.complete_instance [] hwf hbelow hS (by simp) (by rw [hclosed]; simp) (by simp) hty
     exact ⟨Φ', S', τ', hInfer⟩
   · rintro ⟨Φ', S, τ, hInfer⟩
-    exact ⟨S, τ, (Infer.lc hInfer hwf).2, Infer.sound hInfer hwf⟩
+    exact ⟨S, τ, (Infer.lc hInfer hwf).2,
+      Infer.sound hInfer hwf [] (by simp) (by rw [hclosed]; simp) (by simp)⟩
 
 /-- **Algorithm W computes principal types** — soundness and principality bundled
     into one statement. From any declarative typing of a core `e` under an LC
@@ -8458,13 +8467,16 @@ theorem Infer.iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
     (The stronger per-output `IsPrincipal ctx e S τ` predicate — "this very `τ`
     subsumes *every* typing" — is proved below via `Infer.complete'` /
     `Infer.output_unique`; see `Infer.isPrincipal`.) -/
-theorem Infer.principal {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
+theorem Infer.principal {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty} (K : List Nat)
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
+    (hKΦ : ∀ k ∈ K, k < Φ) (hKe : ∀ y ∈ e.tyFreeVars, y ∈ K)
+    (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
+    (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
     ∃ Φ' S τ R,
       Infer Φ ctx e Φ' S τ ∧ TypeOfHM (S.onCtx ctx) e τ ∧ τ₀ = Subst.onTy R τ := by
-  obtain ⟨Φ', S, τ, R, hInfer, hτeq⟩ := Infer.complete_instance hwf hbelow hS₀ hty
-  exact ⟨Φ', S, τ, R, hInfer, Infer.sound hInfer hwf, hτeq⟩
+  obtain ⟨Φ', S, τ, R, hInfer, _, hτeq, _, _, hSK⟩ :=
+    Infer.completeAt e K hwf hbelow hS₀ hKΦ hKe hKfix hty
+  exact ⟨Φ', S, τ, R, hInfer, Infer.sound hInfer hwf K hKΦ hKe hSK, hτeq⟩
 
 /-! The occurs check at the variable-set level: a domain variable of a
     `UnifyRel`-substitution never survives in any of its images. -/
