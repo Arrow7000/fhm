@@ -9216,7 +9216,7 @@ recursion is structural on the expression / branch list. The `match_` case reads
 the type name + arity off the first branch's constructor (branches are nonempty).
 The public `infer` erases the derivation. -/
 mutual
-def inferCore (Φ : Nat) (ctx : Ctx) (e : Expr) :
+def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
     Option { r : Nat × Subst × Ty // Infer Φ ctx e r.1 r.2.1 r.2.2 } :=
   match e with
   | .primLit .unit => some ⟨(Φ, [], .prim .unit), .primLitUnit⟩
@@ -9225,36 +9225,36 @@ def inferCore (Φ : Nat) (ctx : Ctx) (e : Expr) :
   | .primLit (.bool _) => some ⟨(Φ, [], .prim .bool), .primLitBool⟩
   | .primLit (.str _) => some ⟨(Φ, [], .prim .str), .primLitStr⟩
   | .pair a b =>
-      match inferCore Φ ctx a with
+      match inferCore K Φ ctx a with
       | none => none
       | some ⟨(Φ₁, S₁, τa), ha⟩ =>
-        match inferCore Φ₁ (S₁.onCtx ctx) b with
+        match inferCore K Φ₁ (S₁.onCtx ctx) b with
         | none => none
         | some ⟨(Φ₂, S₂, τb), hb⟩ =>
           some ⟨(Φ₂, S₁ ++ S₂, .pair (S₂.onTy τa) τb), .pair ha hb⟩
   | .lambda none body =>
-      match inferCore (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } body with
+      match inferCore K (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } body with
       | none => none
       | some ⟨(Φ', S, τb), hbody⟩ =>
         some ⟨(Φ', S, .arrow (S.onTy (.fvar Φ)) τb), .lambda .none hbody⟩
   | .lambda (some T) body =>
       if hT : Ty.bvarsBelow 0 T = true then
-        match inferCore Φ { ctx with env := PolyTy.mkTrivial T :: ctx.env } body with
+        match inferCore K Φ { ctx with env := PolyTy.mkTrivial T :: ctx.env } body with
         | none => none
         | some ⟨(Φ', S, τb), hbody⟩ =>
           some ⟨(Φ', S, .arrow (S.onTy T) τb),
             .lambda (.some T ((Ty.bvarsBelow_iff T).mp hT)) hbody⟩
       else none
   | .app f arg =>
-      match inferCore Φ ctx f with
+      match inferCore K Φ ctx f with
       | none => none
       | some ⟨(Φ₁, S₁, τf), hf⟩ =>
-        match inferCore Φ₁ (S₁.onCtx ctx) arg with
+        match inferCore K Φ₁ (S₁.onCtx ctx) arg with
         | none => none
         | some ⟨(Φ₂, S₂, τa), harg⟩ =>
-          match unifyCore (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) with
+          match unifyCoreK K (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) with
           | none => none
-          | some ⟨S₃, h₃⟩ =>
+          | some ⟨S₃, h₃, _⟩ =>
             some ⟨(Φ₂ + 1, S₁ ++ S₂ ++ S₃, S₃.onTy (.fvar Φ₂)), .app hf harg h₃⟩
   | .var i =>
       match h : ctx.env[i]? with
@@ -9269,10 +9269,10 @@ def inferCore (Φ : Nat) (ctx : Ctx) (e : Expr) :
   | .letIn ann rhs body =>
       match ann with
       | none =>
-        match inferCore Φ ctx rhs with
+        match inferCore K Φ ctx rhs with
         | none => none
         | some ⟨(Φ₁, S₁, τ₁), hrhs⟩ =>
-        match inferCore Φ₁
+        match inferCore K Φ₁
             { (S₁.onCtx ctx) with
               env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
             body with
@@ -9281,22 +9281,24 @@ def inferCore (Φ : Nat) (ctx : Ctx) (e : Expr) :
           some ⟨(Φ₂, S₁ ++ S₂, τ₂), .letIn hrhs hbody⟩
       | some σ =>
         -- Annotated `let`: skolemize `σ` with `Ys = freshVars Φ pc`, infer the
-        -- *opened* rhs `rhs.openTyVars Ys` at frontier `Φ + pc`, unify the result
-        -- against the skolem opening, and escape-check (no skolem bound by
-        -- `S₁`/`Schk`, none leaked into the body ctx). `σ` may carry outer scoped
-        -- type variables — no closedness requirement.
+        -- *opened* rhs `rhs.openTyVars Ys` at frontier `Φ + pc` **with `Ys` added to
+        -- the rigid set** (so the rigidity-aware `unifyCoreK` keeps the skolems
+        -- rigid), unify the result against the skolem opening, escape-check, and
+        -- type the body under `σ` at the outer rigid set `K`. `σ` may carry outer
+        -- scoped type variables — no closedness requirement.
         if hσwf : Ty.bvarsBelow σ.paramCount σ.body = true then
-          match inferCore (Φ + σ.paramCount) ctx
+          match inferCore (K ++ freshVars Φ σ.paramCount) (Φ + σ.paramCount) ctx
               (rhs.openTyVars (freshVars Φ σ.paramCount)) with
           | none => none
           | some ⟨(Φ₁, S₁, τ₁), hrhs⟩ =>
-            match unifyCore τ₁ (σ.openVars (freshVars Φ σ.paramCount)) with
+            match unifyCoreK (K ++ freshVars Φ σ.paramCount) τ₁
+                (σ.openVars (freshVars Φ σ.paramCount)) with
             | none => none
-            | some ⟨Schk, hSchk⟩ =>
+            | some ⟨Schk, hSchk, _⟩ =>
               if hesc1 : (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) then
                 if hesc2 : (∀ y ∈ freshVars Φ σ.paramCount,
                     y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
-                  match inferCore Φ₁
+                  match inferCore K Φ₁
                       { (Schk.onCtx (S₁.onCtx ctx)) with
                         env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
                       body with
@@ -9309,23 +9311,23 @@ def inferCore (Φ : Nat) (ctx : Ctx) (e : Expr) :
               else none
         else none
   | .fst e =>
-      match inferCore Φ ctx e with
+      match inferCore K Φ ctx e with
       | none => none
       | some ⟨(Φ₁, S₁, τe), he⟩ =>
-        match unifyCore τe (.pair (.fvar Φ₁) (.fvar (Φ₁ + 1))) with
+        match unifyCoreK K τe (.pair (.fvar Φ₁) (.fvar (Φ₁ + 1))) with
         | none => none
-        | some ⟨S₂, huni⟩ =>
+        | some ⟨S₂, huni, _⟩ =>
           some ⟨(Φ₁ + 2, S₁ ++ S₂, S₂.onTy (.fvar Φ₁)), .fst he huni⟩
   | .snd e =>
-      match inferCore Φ ctx e with
+      match inferCore K Φ ctx e with
       | none => none
       | some ⟨(Φ₁, S₁, τe), he⟩ =>
-        match unifyCore τe (.pair (.fvar Φ₁) (.fvar (Φ₁ + 1))) with
+        match unifyCoreK K τe (.pair (.fvar Φ₁) (.fvar (Φ₁ + 1))) with
         | none => none
-        | some ⟨S₂, huni⟩ =>
+        | some ⟨S₂, huni, _⟩ =>
           some ⟨(Φ₁ + 2, S₁ ++ S₂, S₂.onTy (.fvar (Φ₁ + 1))), .snd he huni⟩
   | .match_ scrut branches =>
-      match inferCore Φ ctx scrut with
+      match inferCore K Φ ctx scrut with
       | none => none
       | some ⟨(Φ₁, S₁, τs), hscrut⟩ =>
         match hh : branches.head? with
@@ -9334,10 +9336,10 @@ def inferCore (Φ : Nat) (ctx : Ctx) (e : Expr) :
           match hget : LookupList.get? ctx.ctors b0.1.ctor with
           | none => none
           | some ctor0 =>
-            match unifyCore τs (.customTy ctor0.tyName ((freshVars Φ₁ ctor0.paramCount).map (Ty.fvar ·))) with
+            match unifyCoreK K τs (.customTy ctor0.tyName ((freshVars Φ₁ ctor0.paramCount).map (Ty.fvar ·))) with
             | none => none
-            | some ⟨S₂, huni⟩ =>
-              match inferBranchesCore (Φ₁ + ctor0.paramCount + 1) (S₂.onCtx (S₁.onCtx ctx)) ctor0.tyName
+            | some ⟨S₂, huni, _⟩ =>
+              match inferBranchesCore K (Φ₁ + ctor0.paramCount + 1) (S₂.onCtx (S₁.onCtx ctx)) ctor0.tyName
                   (((freshVars Φ₁ ctor0.paramCount).map (Ty.fvar ·)).map S₂.onTy)
                   (S₂.onTy (.fvar (Φ₁ + ctor0.paramCount))) branches with
               | none => none
@@ -9348,7 +9350,7 @@ termination_by e.size
 decreasing_by
   all_goals (try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
-def inferBranchesCore (Φ : Nat) (ctx : Ctx) (tyName : TyName) (tyArgs : List Ty) (ρ : Ty)
+def inferBranchesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (tyName : TyName) (tyArgs : List Ty) (ρ : Ty)
     (branches : List (MatchPattern × Expr)) :
     Option { r : Nat × Subst // InferBranches Φ ctx tyName tyArgs ρ branches r.1 r.2 } :=
   match branches with
@@ -9360,15 +9362,15 @@ def inferBranchesCore (Φ : Nat) (ctx : Ctx) (tyName : TyName) (tyArgs : List Ty
         if htn : ctorr.tyName = tyName then
           if hpc : ctorr.paramCount = tyArgs.length then
             if hcont : pat.contents = ctorr.contents.length then
-              match inferCore Φ
+              match inferCore K Φ
                   { ctx with env := (ctorr.contents.map (Ty.openWith tyArgs)).map PolyTy.mkTrivial ++ ctx.env }
                   body with
               | none => none
               | some ⟨(Φ₁, S₁, τb), hbody⟩ =>
-                match unifyCore τb (S₁.onTy ρ) with
+                match unifyCoreK K τb (S₁.onTy ρ) with
                 | none => none
-                | some ⟨S₂, huni⟩ =>
-                  match inferBranchesCore Φ₁ (S₂.onCtx (S₁.onCtx ctx)) tyName
+                | some ⟨S₂, huni, _⟩ =>
+                  match inferBranchesCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx)) tyName
                       (tyArgs.map (fun t => S₂.onTy (S₁.onTy t))) (S₂.onTy (S₁.onTy ρ)) rest with
                   | none => none
                   | some ⟨(Φ₂, S₃), hrest⟩ =>
@@ -9381,16 +9383,18 @@ decreasing_by
   all_goals (try simp only [Expr.sizeBranches]; omega)
 end
 
-/-- The executable type inferer, refining `Infer`. -/
+/-- The executable type inferer, refining `Infer`. Runs from the empty rigid set
+    (top-level programs have no in-scope scoped type variables); annotated `let`s
+    extend it internally with their skolem block. -/
 def infer (Φ : Nat) (ctx : Ctx) (e : Expr) : Option (Nat × Subst × Ty) :=
-  (inferCore Φ ctx e).map (·.1)
+  (inferCore [] Φ ctx e).map (·.1)
 
 /-- `infer` soundness: a returned `(Φ', S, τ)` is a genuine `Infer` derivation
     (immediate — `inferCore` carries it). -/
 theorem infer_sound {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {τ : Ty}
     (h : infer Φ ctx e = some (Φ', S, τ)) : Infer Φ ctx e Φ' S τ := by
   rw [infer] at h
-  rcases hc : inferCore Φ ctx e with _ | ⟨r, hr⟩ <;> rw [hc] at h
+  rcases hc : inferCore [] Φ ctx e with _ | ⟨r, hr⟩ <;> rw [hc] at h
   · exact absurd h (by simp)
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
