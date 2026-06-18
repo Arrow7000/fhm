@@ -71,6 +71,54 @@ the skolems (`Ys = freshVars Φ pc`) but does not mark rigidity — **`K` does**
   residue of `B = σ.openVars Ys` is discharged by "`Schk` avoids `K`" + "`Ys`
   above frontier"; two-opening (cofinite) contradiction core unchanged.
 
+## 2b. Step-3 design, fully nailed down (do this next)
+Reading Core + `sound_letInAnn` settled every open question for `complete_letIn_ann_aux`:
+- **Core's `letIn` (Core.lean ~1761) allows scoped `σ`.** Premises: `M.WF`,
+  `hann : ∀ σ, ann = some σ → M = σ` (scheme *is* the annotation; **no
+  `NoFreeVars`** — free vars of `σ.body` are scoped vars ⊆ `K`), and the cofinite
+  premise is over the **opened** rhs:
+  `∀ Xs fresh, TypeOfHM ctx (Expr.openBoundTyVars ann Xs rhs) (M.openVars Xs)`,
+  where `openBoundTyVars (some σ) Xs rhs = rhs.openTyVars Xs`. So the declarative
+  input for the opened rhs is **free** — no `typeOfHM_at_block` rename. The
+  current dispatcher's `obtain ⟨hMσ, hσnfv⟩ := hann σ rfl` is **stale** (hann is a
+  single `M = σ`, not a pair) — fix it to `have hMσ := hann σ rfl; subst hMσ`.
+- **`completeAt` → strong induction on `e.size`** (NOT `Expr.rec_strong`, NOT
+  `TypeOfHM.rec_strong`). Pattern: prove `∀ n, ∀ e, e.size ≤ n → CompleteAt e` by
+  `induction n`; each case derives its sub-`CompleteAt`s from the size-IH. This is
+  the *only* place that changes; the standalone case lemmas keep taking
+  `CompleteAt subterm`. (`TypeOfHM.rec_strong` would force restating the whole
+  producer in derivation-motive form *and* fights `CompleteAt`'s `S₀`/`ctx`/`K`
+  abstraction — rejected.) `Expr.size_openTyVars` (Core) gives
+  `(rhs.openTyVars Ys).size = rhs.size`, so the size-IH reaches the opened rhs.
+- **`complete_letIn_ann_aux` new signature**: `iha : ∀ Ys, CompleteAt (rhs.openTyVars Ys)`,
+  `ihb : CompleteAt body`, hyps `hKrhs/hKbody/hKσ : … ⊆ K`, `hKfix`, `hσwf`,
+  `hcofin : ∀ Xs fresh, TypeOfHM (S₀.onCtx ctx) (rhs.openTyVars Xs) (σ.openVars Xs)`,
+  `hbody`. Output = the 6-conjunct `CompleteAt` shape.
+- **Body of the proof** (use `sound_letInAnn`'s signature as the checklist of
+  facts to produce):
+  1. pick `N ≥ Φ` with `Ys := freshVars N pc` disjoint from `dom S₀` **and**
+     `S₀`'s range (and `ctx`); `S₀` then fixes `K ∪ Ys`.
+  2. `iha Ys (K∪Ys) … (hcofin Ys)` → `Drhs : Infer (N+pc) ctx (rhs.openTyVars Ys) Φ₁ S₁ τ₁`,
+     residual `R₁` fixing `K∪Ys`, `htya : σ.openVars Ys = R₁.onTy τ₁`,
+     and **`S₁` avoids `K∪Ys`** (step-2 conjunct ⇒ hesc1's `S₁` half).
+  3. `U := R₁` unifies `τ₁` with `σ.openVars Ys` (R₁ fixes `K∪Ys` ⊇ both sides'
+     fvars); `complete_K … U …` → `Schk` with **`Schk` avoids `K∪Ys`** (⇒ hesc1's
+     `Schk` half + `hSchkK`).
+  4. **hesc2 via `skolem_no_env_leak_K`** needs a *second* opening `Ys'` factoring
+     the **same** `τ₁`. Don't use `complete'` (red; also can't bridge the two
+     opened exprs). Construct `R₁' := R₁ ++ ρ` with `ρ` block-renaming `Ys → Ys'`
+     (`(R₁++ρ).onTy = ρ∘R₁`): `σ.openVars Ys' = ρ(R₁.onTy τ₁) = ρ(σ.openVars Ys)`
+     (ρ fixes `K`, maps `Ys→Ys'`), and `AgreesBelow Φ S₀ (S₁++R₁')` holds because
+     `Ys` avoids `dom S₀`+range (so ρ fixes `S₀`'s images below `Φ`).
+  5. body: factor `R₁` through `Schk` via `greatest_K` → `V` (fixes `K`); recast
+     `hbody` over `V.onCtx {σ :: Schk.onCtx (S₁.onCtx ctx)}` (σ fixed since
+     `σ.body.freeVars ⊆ K`, `V`/`S₂` avoid `K`); `ihb K … hbodyV` → `Dbody`,`S₂`,`R₂`.
+  6. assemble `Infer.letInAnn hσwf (Φ≤N) Drhs huni hesc1 hesc2 Dbody`; agreement +
+     `τ₀ = R₂.onTy τ₂` mirror `complete_letIn_aux`; output `S = S₁++Schk++S₂`
+     avoids `K` from S₁/Schk/S₂ avoidances.
+- **Delete once unused**: `exists_skolem_unifier`, the `OUnify.skolem_escape`
+  mutual, the old `skolem_no_env_leak`, `typeOfHM_at_block` (the red one).
+
 ## 3. The one remaining design point (issue 2a) — decided
 Both kernels need the rhs residual `R₁` to fix `Ys` (and `K`). The producer gets
 that by inferring the *opened* rhs (`rhs.openTyVars Ys`) at rigid set `K ∪ Ys`,
