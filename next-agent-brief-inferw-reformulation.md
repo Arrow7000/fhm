@@ -174,3 +174,59 @@ fixed names). Low risk: **`sound_letInAnn` is already stated abstractly over
 lean-lsp MCP: `lean_diagnostic_messages` (scope; trust `items`), `lean_goal`,
 `lean_multi_attempt`, `lean_hover_info`, `lean_verify` (axiom check; fully
 qualified names — expect exactly `propext`/`Classical.choice`/`Quot.sound`).
+
+## 7. STATUS (live) — what's green vs. what remains
+
+**Axiom-clean + committed:** the whole completeness *producer* — `Infer.completeAt`
+(via `completeAt` size-induction, the relaxed `letInAnn`, the rigidity-aware
+`complete_K`, and `complete_letIn_ann_aux`) — plus the headlines `Infer.complete`
+/`complete_instance`/`complete_id`/`iff_typeable`/`principal` (they carry `K`;
+the closed/identity ones instantiate `K:=[]`). Soundness (`Infer.sound_closed`).
+The executable `inferCore`/`infer`/`infer_sound` (annotated-let arm realigned to
+the relaxed rule; lambda checks `Ty.bvarsBelow 0`; unannotated-let `genScheme` gets
+the `rhs.tyFreeVars` rigid arg; `termination_by e.size`). `typeOfHM_at_block`
+(fixed to the opened-rhs/scoped-σ cofinite shape).
+
+**Still RED (the remaining work, in order):**
+
+### 7a. `Infer.complete'` / `InferBranches.complete'` (mutual, ~6396–7594) — the big one
+"Principality of a *given* derivation": `(h : Infer …) → typing → ∃ R, AgreesBelow ∧
+τ₀=R.onTy τ ∧ R lc`. Atomic mutual (no partial commits). Needed by `output_unique`
+→ `isPrincipal` → `infer_principal`, and by `inferCore_complete`. Cannot be derived
+from `completeAt` (circular via `output_unique`). **Migration:**
+- **Signature**: add `(K : List Nat)` + `(hKΦ : ∀ k∈K, k<Φ)` +
+  `(hKe : ∀ y∈e.tyFreeVars, y∈K)` + `(hKfix : ∀ k∈K, S₀.onTy (.fvar k)=.fvar k)` to
+  both `complete'` and `InferBranches.complete'` (mirror `CompleteAt`'s preconds).
+- **`belowFvars` calls** (e.g. 6610/6622/6731/6801/6879/7064): now 3-arg — pass
+  `htfv := fun y hy => hKΦ y (hKe y hy)` (split `hKe` per sub-expr first).
+- **prim×5**: signature only (K unused).
+- **var/ctor**: `Infer.complete_var K hwf hbelow hS₀ hKΦ hKe hKfix hty` (hKe vacuous,
+  `(var i).tyFreeVars = []`); destructure the 6-tuple ignoring the last two
+  (`R-fix-K`, `S-avoids-K`): `⟨_,_,_,R,hinf,hag,hfac,hRlc,_,_⟩`.
+- **pair / letIn-none / app / fst / snd / match**: thread `K` through the recursive
+  `complete'` calls (sub-expr `tyFreeVars ⊆ K` via the `hKe` split) + the
+  `belowFvars` `htfv`. The `app`/`fst`/`snd`/`match` manual-`U` + `greatest_lc`
+  factoring is UNCHANGED (these factor the *given* MGU `Duni`, no `complete_K`).
+- **lambda-none** (~6479–6602): K-thread the conjugated-spec recursion; `K`-vars
+  `< Φ` are untouched by the swap `Φ↔W` (W,Φ chosen ≥ everything). `hKfix` for the
+  conjugated `S₀` follows since the swap fixes `<Φ` vars.
+- **lambda-some** (~6445–6478): **REWORK** for scoped `T` (`LamSeed.some T (_:T.IsLC)`,
+  `T.freeVars ⊆ K`). Mirror `complete_lambda_ann_aux`: `hself : S₀.onTy T = T` from
+  `hKfix`+`hTK`; recurse `complete'` on body at `K`; no `NoFreeVars`.
+- **letInAnn** (~6787–6865): **REWRITE** for the relaxed rule. New `cases` pattern
+  `| letInAnn Drhs hΦN huni hesc1 hesc2 Dbody` (N abstract, no `hσnfv`). From Core's
+  `letIn`, `hann σ rfl : M = σ`; `hcofin` is over the opened rhs. Get the typing at
+  the derivation's own block `Ys = freshVars N pc` via the FIXED `typeOfHM_at_block`
+  (no more `hσnfv`); recurse `complete'` on `Drhs` at `K ∪ Ys`; factor `R₁` through
+  `Schk` (`greatest_lc` — `huni` is given). Reuse the producer's `V`/`hmain` shape
+  for the body. Delete the old `exists_skolem_unifier` path here.
+- **InferBranches.complete'** (nil/cons): thread `K` (mirror `InferBranches.complete`).
+
+### 7b. After `complete'` is green
+- `output_unique` (7599), `isPrincipal` (7617): pass `K:=[]` for closed `e` (add a
+  closure hyp or carry `K`); `infer_principal` (≈9121) follows.
+- `inferCore_complete` (≈9335+): migrate like `complete'` (it also uses the old
+  escape lemmas at ≈9657/9668/9677/9682/9692) → off the escape lemmas.
+- **Delete** now-dead lemmas: `exists_skolem_unifier`, the `OUnify.skolem_escape`
+  mutual, `skolem_no_env_leak`, `skolem_no_env_leak_K`.
+- Stage C: `typecheck` over the *erased* program + final headline; `lean_verify`.
