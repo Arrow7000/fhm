@@ -9994,6 +9994,94 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 end
 
+/-- A substitution whose domain avoids `K` fixes every `fvar k` with `k ∈ K`. -/
+theorem Subst.fixes_fvar_of_avoids {S : Subst} {K : List Nat}
+    (hSK : ∀ p ∈ S, p.1 ∉ K) {k : Nat} (hk : k ∈ K) : S.onTy (.fvar k) = .fvar k :=
+  Ty.substFvars_eq_self_of_no_key (fun p hp hc => by
+    simp only [Ty.freeVars, List.mem_singleton] at hc; subst hc; exact hSK p hp hk)
+
+/-- **The annotated-`let` block-freshness bridge.** A given `letInAnn` derivation
+    leaves the *executable's* skolem block `freshVars Φ pc` rigid: its output
+    substitution `S` neither binds (domain) nor leaks (range, via `S.onCtx ctx`)
+    any name of that block. This is exactly what `inferCore_complete`'s annotated-
+    `let` arm needs to re-infer the opened rhs at the rigid set `K ∪ freshVars Φ pc`.
+
+    The derivation's *own* block `freshVars N pc` (`N ≥ Φ`) need not coincide with
+    `freshVars Φ pc`; the proof splits the latter at `N`: the lower part `[Φ, N)` is
+    a gap below every allocation (discharged by `Infer.gap_avoid` on each
+    sub-derivation), while the upper part `[N, Φ+pc) ⊆ freshVars N pc` is exactly the
+    derivation's own skolems (discharged by the rule's escape premises `hesc1`/
+    `hesc2` for the rhs/unify part, and `gap_avoid` again for the body part once its
+    context is shown block-free). -/
+theorem Infer.letInAnn_block_fresh {Φ : Nat} {ctx : Ctx} {σ : PolyTy} {rhs body : Expr}
+    {Φ' : Nat} {S : Subst} {τ : Ty}
+    (h : Infer Φ ctx (.letIn (some σ) rhs body) Φ' S τ)
+    (hbelow : CtxBelow Φ ctx)
+    (htfv : ∀ y ∈ (Expr.letIn (some σ) rhs body).tyFreeVars, y < Φ) :
+    (∀ y ∈ freshVars Φ σ.paramCount, y ∉ S.map Prod.fst) ∧
+    (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S.onCtx ctx).env.freeVars) := by
+  cases h with
+  | @letInAnn _ N _ _ _ _ Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂ hσwf hΦN hrhs huni hesc1 hesc2 hbody =>
+    simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
+    have hctxGap : ∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < Φ ∨ N ≤ v :=
+      fun M hM v hv => Or.inl ((hbelow M hM).mem_lt v hv)
+    have hrhsTfvGap : ∀ y ∈ (rhs.openTyVars (freshVars N σ.paramCount)).tyFreeVars, y < Φ ∨ N ≤ y := by
+      intro y hy
+      rcases Expr.tyFreeVars_openTyVars hy with hh | hh
+      · exact Or.inl (htfv y (.inl (.inr hh)))
+      · exact Or.inr (freshVars_ge y hh)
+    obtain ⟨hr_τ, hr_D, hr_R⟩ := Infer.gap_avoid hrhs (by omega) hctxGap hrhsTfvGap
+    have hσopenGap : ∀ v ∈ (σ.openVars (freshVars N σ.paramCount)).freeVars, v < Φ ∨ N ≤ v := by
+      intro v hv
+      rcases Ty.freeVars_openVars_subset v hv with hh | hh
+      · exact Or.inl (htfv v (.inl (.inl hh)))
+      · exact Or.inr (freshVars_ge v hh)
+    obtain ⟨hSchk_D, hSchk_R⟩ := UnifyRel.gap_avoid huni hr_τ hσopenGap
+    -- The body's threaded context avoids the whole block `[Φ, Φ+pc)`.
+    have hbodyEnvGap : ∀ M ∈ (Schk.onCtx (S₁.onCtx ctx)).env, ∀ v ∈ M.body.freeVars,
+        v < Φ ∨ Φ + σ.paramCount ≤ v := by
+      intro M hM v hv
+      rcases Subst.onCtx_avoidsItv hSchk_R (Subst.onCtx_avoidsItv hr_R hctxGap) M hM v hv with hlt | hge
+      · exact Or.inl hlt
+      · by_cases hvlt : v < Φ + σ.paramCount
+        · exact absurd (Env.mem_freeVars_iff.mpr ⟨M, hM, hv⟩) (hesc2 v (by
+            simp only [freshVars, List.mem_map, List.mem_range]; exact ⟨v - N, by omega, by omega⟩))
+        · exact Or.inr (by omega)
+    have hle1 := Infer.frontier_le hrhs
+    obtain ⟨hb_τ, hb_D, hb_R⟩ := Infer.gap_avoid hbody (show Φ + σ.paramCount ≤ Φ₁ by omega)
+      (by intro M hM v hv
+          rcases List.mem_cons.mp hM with rfl | hM
+          · exact Or.inl (htfv v (.inl (.inl hv)))
+          · exact hbodyEnvGap M hM v hv)
+      (fun y hy => Or.inl (htfv y (.inr hy)))
+    refine ⟨?_, ?_⟩
+    · intro y hy hmem
+      have hyge := freshVars_ge y hy
+      have hylt := freshVars_lt y hy
+      rw [List.map_append, List.map_append, List.mem_append, List.mem_append] at hmem
+      rcases hmem with (hmem | hmem) | hmem
+      · obtain ⟨p, hp, hpy⟩ := List.mem_map.mp hmem
+        by_cases hyN : y < N
+        · rcases hr_D p hp with hh | hh <;> rw [hpy] at hh <;> omega
+        · exact hesc1 y (by simp only [freshVars, List.mem_map, List.mem_range]; exact ⟨y - N, by omega, by omega⟩)
+            (List.mem_map.mpr ⟨p, List.mem_append_left _ hp, hpy⟩)
+      · obtain ⟨p, hp, hpy⟩ := List.mem_map.mp hmem
+        by_cases hyN : y < N
+        · rcases hSchk_D p hp with hh | hh <;> rw [hpy] at hh <;> omega
+        · exact hesc1 y (by simp only [freshVars, List.mem_map, List.mem_range]; exact ⟨y - N, by omega, by omega⟩)
+            (List.mem_map.mpr ⟨p, List.mem_append_right _ hp, hpy⟩)
+      · obtain ⟨p, hp, hpy⟩ := List.mem_map.mp hmem
+        rcases hb_D p hp with hh | hh <;> rw [hpy] at hh <;> omega
+    · intro y hy hmem
+      have hyge := freshVars_ge y hy
+      have hylt := freshVars_lt y hy
+      have hSenv : ∀ M ∈ ((S₁ ++ Schk ++ S₂).onCtx ctx).env, ∀ v ∈ M.body.freeVars,
+          v < Φ ∨ Φ + σ.paramCount ≤ v := by
+        rw [Subst.onCtx_append, Subst.onCtx_append]
+        exact Subst.onCtx_avoidsItv hb_R hbodyEnvGap
+      obtain ⟨M, hM, hyM⟩ := Env.mem_freeVars_iff.mp hmem
+      rcases hSenv M hM y hyM with hh | hh <;> omega
+
 /-- The function-completeness property at `e`: given a (well-formed,
     frontier-bounded) `Infer` derivation, `inferCore` succeeds. We induct over a
     *given* derivation (not declarative typeability) so the binder cases compose
