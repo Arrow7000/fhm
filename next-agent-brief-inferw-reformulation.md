@@ -347,14 +347,44 @@ reformulation), now implemented + committed + **validated by `#eval`**:
   `complete_K_aux`'s orientation reasoning). Axiom-clean.
 - **Net:** `inferCore_complete` is now a TRUE statement and all foundations are in place:
   `gap_avoid` + `letInAnn_block_fresh` (freshness), `unifyCoreK_complete` (rigidity-aware unify),
-  carried `avoids K`. Remaining = re-prove `inferCore_complete` (predicate `+K`; cases thread `K` and
-  use `inferCore K`/`unifyCoreK_complete`; the compositional unify steps need the manual app/pair
-  unifier to also fix `K` — extend `exists_app_unifier`/`exists_pair_unifier` with an "`U` fixes `K`"
-  output, available since the residual `R` fixes `K` and the fresh `W`/`Φ₂` ∉ `K`; the annotated-`let`
-  `hesc1` from the carried/`unifyCoreK` avoids, `hesc2` from `letInAnn_block_fresh` (B) + the producer
-  `V`/`greatest_K` argument) and the headlines (`hclosed`/`K:=[]`). NOTE: `OUnify.skolem_escape`,
-  `exists_skolem_unifier`, `skolem_no_env_leak` are now superseded by `unifyCoreK` — delete once
-  `inferCore_complete` no longer references them.
+  carried `avoids K`.
+- **`inferCore_complete` migration — IN PROGRESS (8/11 cases committed green):**
+  - `InferCoreComplete` predicate is now `+K` (`(K : List Nat)` + `hKΦ`/`hKe`/`hSK`); executable call
+    is `inferCore K Φ ctx e`; each result destructures the carried avoids `⟨(…), hInfer, hav⟩`.
+  - DONE + committed: prim/var/ctor/lambda (lambda-some uses `hcl : IsLC` for WF, `hKΦ`/`hKe` for
+    below, `dif_pos (Ty.bvarsBelow_iff …).mpr hcl`; reduce via `split` not `simp`),
+    pair/app/fst/snd. `exists_app_unifier`/`exists_pair_unifier` extended with a `(∀k∈K, U fixes k)`
+    output (hyps `hR₂K`/`hR₁K` + `hΦ₂K`/`hΦ₁K`); unify steps use `unifyCoreK_complete`.
+    Pattern per compositional case: split `hKe`/`hSK`; `Infer.sound h hwf K …`; `Infer.complete' …
+    K hKΦ hKe (fixes_fvar_of_avoids …)`; `Infer.belowFvars … (fun y hy => hKΦ y (hKe y hy))`;
+    `Infer.completeAt` (NOT `complete`) to reconstruct the 2nd subterm + get its `S avoids K` for the
+    sub-IH; unify via the K-fixing `exists_*_unifier` + `unifyCoreK_complete`.
+  - REMAINING (mechanical, same pattern):
+    1. **`inferBranchesCore_complete`** (predicate `InferBranchesCoreComplete` `+K`; `InferBranches.sound`
+       already takes `K`/`hKΦ`/`hKbr`/`hSK`; `InferBranches.belowFvars` is 4-arg with a `htfv`;
+       `InferBranches.complete` threads `K`; unify via `unifyCoreK_complete` — the branch-body unify
+       `unifyCore τb (S₁.onTy ρ)`'s K-fixing unifier is `R_b` (the `greatest_lc`/`complete'` residual,
+       which fixes `K`)).
+    2. **`inferCore_complete_match`**: like app but with the doubled manual unifier `U` (the
+       `freshVars … zip` block); extend its construction with a `U`-fixes-`K` fact (`R₁` fixes `K`,
+       the `freshVars Φ₁ …`/`freshVars W₀ …` are `≥ Φ₁ > K`) and call `unifyCoreK_complete`.
+    3. **`inferCore_complete_letIn`**: `iha`/`ihao`/`ihb` IHs (size induction in the assembler). none =
+       like pair (3-arg `genScheme rhs.tyFreeVars`). ann = the assembly: `Ys := freshVars Φ pc`;
+       `Infer.sound h` → cofinite; `typeOfHM_at_block` → `TypeOfHM (S.onCtx ctx) (rhs.openTyVars Ys)
+       (σ.openVars Ys)`; `⟨hAdom,hBenv⟩ := Infer.letInAnn_block_fresh h hbelow (htfv from hKΦ∘hKe)`;
+       reconstruct opened rhs via `Infer.completeAt … (K++Ys) … (S fixes K++Ys via hSK + hAdom)`; feed
+       to `ihao Ys (K++Ys)`; `hesc1` from the carried avoids of the rhs result (`inferCore (K++Ys)` ⇒
+       `S₁ avoids K++Ys ⇒ avoids Ys`) + the `unifyCoreK (K++Ys)` result's carried avoids (`Schk` avoids
+       Ys); `hesc2` via the producer `V`/`greatest_K` argument + `hBenv`; recurse `ihb K`; drive the
+       executable arm (the `if hσwf`/`if hesc1`/`if hesc2` all now provably pass).
+    4. **assembler `inferCore_complete`**: strong induction on `e.size` (mirror `Infer.completeAt`),
+       passing `inferCore_complete_letIn (iha) (fun Ys => …) (ihb)`.
+    5. **headlines**: `infer_complete`/`infer_iff`/`infer_iff_typeable`/`principalType_*`/`typecheck_*`/
+       `infer_isPrincipal` — add `hclosed : e.tyFreeVars = []` (closed top-level ⇒ `K:=[]`;
+       `inferCore_complete e [] … (by simp)/(by simp[hclosed])/(by simp)`); `output_unique`/`isPrincipal`
+       already take `hclosed`.
+- NOTE: `OUnify.skolem_escape`, `exists_skolem_unifier`, `skolem_no_env_leak` are now superseded by
+  `unifyCoreK` — delete once `inferCore_complete` no longer references them.
 
 ### 7e. (historical) `inferCore_complete` was FALSE for the pre-fix executable (ORIENTATION WALL)
 While building the §7d.4 assembly, found (and **empirically confirmed via `#eval`**) a second,
