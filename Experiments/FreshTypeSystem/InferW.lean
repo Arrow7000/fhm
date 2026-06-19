@@ -11916,7 +11916,8 @@ theorem typecheck_preservation {ctors : CtorEnv} {e e' : Expr} {σ : PolyTy}
 #eval infer 0 { env := [], ctors := [] } (.app (.lambda none (.var 0)) (.primLit (.int 5)))
 -- annotated param: `infer (λ(x : Int). x) = Int → Int`
 #eval infer 0 { env := [], ctors := [] } (.lambda (some (.prim .int)) (.var 0))
--- non-closed annotation `λ(x : α). x` is rejected (α free) ⇒ none
+-- free annotation var `λ(x : α). x` ⇒ `α → α` (α is treated as a scoped/rigid
+-- type variable by the rigidity-aware inferer — sound: the result type carries α free)
 #eval infer 0 { env := [], ctors := [] } (.lambda (some (.fvar 5)) (.var 0))
 
 /-! ### Acceptance tests for annotated `let` (threading design) -/
