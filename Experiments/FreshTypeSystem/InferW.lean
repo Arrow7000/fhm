@@ -11729,50 +11729,90 @@ theorem NoFreeVars.of_forall_not_mem {τ : Ty} (h : ∀ Z, Z ∉ τ.freeVars) :
       refine .customTy fun t ht => ih t ht ?_
       intro Z hZ; exact h Z (mem_TyList_freeVars.mpr ⟨t, ht, hZ⟩)
 
-/-- The principal *monotype* of a closed program: run Algorithm W from the empty
-    environment and keep just the resulting type (the inferer's `Φ`/`S` are
-    internal). `typecheck` generalizes this into a closed scheme. -/
-def principalType (ctors : CtorEnv) (e : Expr) : Option Ty :=
-  (infer 0 ⟨[], ctors⟩ e).map (·.2.2)
+/-- A strict upper bound for a list of `fvar` indices: every member is `< this`. -/
+def tyVarCeil : List Nat → Nat
+  | [] => 0
+  | x :: xs => max (x + 1) (tyVarCeil xs)
 
-/-- Monotype soundness: a computed principal type is a genuine declarative type. -/
+theorem lt_tyVarCeil {y : Nat} {L : List Nat} (h : y ∈ L) : y < tyVarCeil L := by
+  induction L with
+  | nil => simp at h
+  | cons x xs ih =>
+    rcases List.mem_cons.mp h with rfl | h
+    · exact Nat.lt_of_lt_of_le (Nat.lt_succ_self _) (Nat.le_max_left _ _)
+    · exact Nat.lt_of_lt_of_le (ih h) (Nat.le_max_right _ _)
+
+/-- The fresh-variable floor for `e`: a frontier strictly above every free type
+    variable occurring in `e`'s annotations. Inference is started here (rather
+    than at `0`) so those in-scope type variables are never re-minted as fresh,
+    and — paired with the rigid set `K := e.tyFreeVars` — they stay *rigid*
+    (the rigidity-aware `unifyCoreK` refuses to bind them). -/
+def Expr.freshFloor (e : Expr) : Nat := tyVarCeil e.tyFreeVars
+
+theorem Expr.lt_freshFloor {e : Expr} {y : Nat} (h : y ∈ e.tyFreeVars) :
+    y < e.freshFloor := lt_tyVarCeil h
+
+/-- The principal *monotype* of a program: run Algorithm W from the empty
+    environment, keeping just the resulting type (the inferer's `Φ`/`S` are
+    internal). `typecheck` generalizes this into a closed scheme.
+
+    Inference seeds the rigid set with `e.tyFreeVars` and the frontier with
+    `e.freshFloor`, so any free type variable appearing in a top-level annotation
+    is treated as a **rigid scoped constant** (it is never bound by unification).
+    For a *closed* program this is exactly `inferCore [] 0 …`. -/
+def principalType (ctors : CtorEnv) (e : Expr) : Option Ty :=
+  (inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e).map (·.val.2.2)
+
+/-- Monotype soundness: a computed principal type is a genuine declarative type.
+    Holds for *any* `e`: a free top-level annotation variable is kept rigid (in
+    `K := e.tyFreeVars`), so the inferred substitution never binds it. -/
 theorem principalType_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
-    (h : principalType ctors e = some τ) (hclosed : e.tyFreeVars = []) :
+    (h : principalType ctors e = some τ) :
     TypeOfHM ⟨[], ctors⟩ e τ := by
   rw [principalType] at h
-  rcases hc : infer 0 ⟨[], ctors⟩ e with _ | ⟨Φ', S, τ'⟩ <;> rw [hc] at h
+  rcases hc : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with _ | ⟨⟨Φ', S, τ'⟩, hInfer, hSK⟩ <;>
+    rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
-    have := Infer.sound_closed (infer_sound hc) CtxWF.empty hclosed
+    have := Infer.sound hInfer CtxWF.empty e.tyFreeVars
+      (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) hSK
     rwa [Subst.onCtx_empty] at this
 
 /-- Monotype principality: every declarative type of the program is a
     substitution instance of the computed principal type. -/
 theorem principalType_principal {ctors : CtorEnv} {e : Expr} {τ : Ty}
-    (h : principalType ctors e = some τ) (hclosed : e.tyFreeVars = []) :
+    (h : principalType ctors e = some τ) :
     ∀ τ₀, TypeOfHM ⟨[], ctors⟩ e τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
   rw [principalType] at h
-  rcases hc : infer 0 ⟨[], ctors⟩ e with _ | ⟨Φ', S, τ'⟩ <;> rw [hc] at h
+  rcases hc : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with _ | ⟨⟨Φ', S, τ'⟩, hInfer, hSK⟩ <;>
+    rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
-    have hP := infer_isPrincipal hc CtxWF.empty CtxBelow.empty hclosed
     intro τ₀ hτ₀
-    exact hP.principal (S₀ := []) (by simp) (by rwa [Subst.onCtx_nil])
+    obtain ⟨R, _, hfac, _, _⟩ :=
+      Infer.complete' hInfer CtxWF.empty CtxBelow.empty (S₀ := []) (by simp) e.tyFreeVars
+        (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) (by simp)
+        (by rw [Subst.onCtx_nil]; exact hτ₀)
+    exact ⟨R, hfac⟩
 
 /-- Monotype decidability: `principalType` succeeds iff the program is typeable. -/
-theorem principalType_iff {ctors : CtorEnv} {e : Expr} (hclosed : e.tyFreeVars = []) :
+theorem principalType_iff {ctors : CtorEnv} {e : Expr} :
     (principalType ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
   constructor
   · intro h
     obtain ⟨τ, hτ⟩ := Option.isSome_iff_exists.mp h
-    exact ⟨τ, principalType_sound hτ hclosed⟩
+    exact ⟨τ, principalType_sound hτ⟩
   · rintro ⟨τ, hτ⟩
-    have hinfer : (infer 0 ⟨[], ctors⟩ e).isSome := by
-      rw [infer_iff_typeable CtxWF.empty CtxBelow.empty hclosed]
-      exact ⟨[], τ, by simp, by rwa [Subst.onCtx_nil]⟩
-    simpa [principalType, Option.isSome_map] using hinfer
+    obtain ⟨Φ', S, τ', R, hInfer, _, _, _, _, hSK⟩ :=
+      Infer.completeAt e (S₀ := []) e.tyFreeVars CtxWF.empty CtxBelow.empty (by simp)
+        (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) (by simp)
+        (by rw [Subst.onCtx_nil]; exact hτ)
+    have hsome : (inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e).isSome :=
+      inferCore_complete e e.tyFreeVars CtxWF.empty CtxBelow.empty
+        (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) hSK hInfer
+    simpa [principalType, Option.isSome_map] using hsome
 
 /-- **Type-check a closed program** — the intended entry point. Run Algorithm W
     from the empty environment and *generalize* the result into a closed type
@@ -11789,11 +11829,12 @@ def typecheck (ctors : CtorEnv) (e : Expr) : Option PolyTy :=
 theorem typecheck_closed {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     (h : typecheck ctors e = some σ) : NoFreeVars σ.body ∧ σ.WF := by
   rw [typecheck, principalType] at h
-  rcases hi : infer 0 ⟨[], ctors⟩ e with _ | ⟨Φ', S, τ⟩ <;> rw [hi] at h
+  rcases hi : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with _ | ⟨⟨Φ', S, τ⟩, hInfer, hSK⟩ <;>
+    rw [hi] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
-    have hlc : τ.IsLC := (Infer.lc (infer_sound hi) CtxWF.empty).1
+    have hlc : τ.IsLC := (Infer.lc hInfer CtxWF.empty).1
     refine ⟨?_, genScheme_wf hlc⟩
     apply NoFreeVars.of_forall_not_mem
     intro Z hZ
@@ -11804,33 +11845,33 @@ theorem typecheck_closed {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
 /-- Whole-program soundness: a successful `typecheck` generalizes a genuine
     declarative type of the program. -/
 theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
-    (h : typecheck ctors e = some σ) (hclosed : e.tyFreeVars = []) :
+    (h : typecheck ctors e = some σ) :
     ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ ∧ σ = genScheme [] [] τ := by
   rw [typecheck] at h
   rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
-    exact ⟨τ, principalType_sound hc hclosed, h.symm⟩
+    exact ⟨τ, principalType_sound hc, h.symm⟩
 
 /-- Whole-program principality: the output scheme generalizes a principal monotype
     `τ` of which every declarative type of the program is a substitution
     instance. -/
 theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
-    (h : typecheck ctors e = some σ) (hclosed : e.tyFreeVars = []) :
+    (h : typecheck ctors e = some σ) :
     ∃ τ, σ = genScheme [] [] τ ∧ TypeOfHM ⟨[], ctors⟩ e τ ∧
       ∀ τ₀, TypeOfHM ⟨[], ctors⟩ e τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
   rw [typecheck] at h
   rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
-    exact ⟨τ, h.symm, principalType_sound hc hclosed, principalType_principal hc hclosed⟩
+    exact ⟨τ, h.symm, principalType_sound hc, principalType_principal hc⟩
 
 /-- Whole-program decidability: `typecheck` succeeds iff the program is
     declaratively typeable. -/
-theorem typecheck_iff {ctors : CtorEnv} {e : Expr} (hclosed : e.tyFreeVars = []) :
+theorem typecheck_iff {ctors : CtorEnv} {e : Expr} :
     (typecheck ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
   simp only [typecheck, Option.isSome_map]
-  exact principalType_iff hclosed
+  exact principalType_iff
 
 /-- An erased branch list (each body type-erased) has no free type variables. -/
 theorem Expr.tyFreeVars.BranchList.eq_nil_of_bodies {branches : List (MatchPattern × Expr)}
@@ -11844,9 +11885,9 @@ theorem Expr.tyFreeVars.BranchList.eq_nil_of_bodies {branches : List (MatchPatte
     rw [h p b (List.mem_cons_self ..), List.nil_append]
     exact ih (fun pat e hm => h pat e (List.mem_cons_of_mem _ hm))
 
-/-- A type-erased term carries no annotations, hence no free type variables. This
-    bridges the runtime regime (`IsTyErased`) to the closed top-level hypothesis
-    `tyFreeVars = []` the typechecker headlines require. -/
+/-- A type-erased term carries no annotations, hence no free type variables.
+    (Utility lemma; the typechecker headlines no longer require closedness — see
+    `principalType`'s rigid-seeding — so this is currently unused.) -/
 theorem Expr.IsTyErased.tyFreeVars_eq_nil {e : Expr} (he : e.IsTyErased) :
     e.tyFreeVars = [] := by
   induction he with
@@ -11864,40 +11905,47 @@ theorem Expr.IsTyErased.tyFreeVars_eq_nil {e : Expr} (he : e.IsTyErased) :
     exact Expr.tyFreeVars.BranchList.eq_nil_of_bodies ihbr
 
 open SmallStep in
-/-- Whole-program progress (via `typecheck`): a typeable closed program whose
-    matches are exhaustive is either a value or can take a step. -/
+/-- **Whole-program progress (check with annotations, run erased).** A typeable
+    program whose matches are exhaustive reduces — after type erasure — to either
+    a value or a step. We typecheck the (possibly annotated) `e`, since its
+    scoped-variable annotations are exactly what may let it pass, but evaluate the
+    annotation-free image `e.eraseTyAnnots`: subject reduction is false on
+    annotated terms (`Core.preservation_is_unsound`). No `IsTyErased`/closedness
+    hypothesis on `e` is needed — erasure always yields a closed, erased term. -/
 theorem typecheck_progress {ctors : CtorEnv} {e : Expr}
-    (h : (typecheck ctors e).isSome) (h_exh : AllMatchesExhaustive ctors e)
-    (he : e.IsTyErased) :
-    IsValue e ∨ ∃ e', Step e e' := by
-  obtain ⟨τ, hτ⟩ := (typecheck_iff he.tyFreeVars_eq_nil).mp h
-  exact TypeOfHM.progress hτ rfl h_exh he
+    (h : (typecheck ctors e).isSome) (h_exh : AllMatchesExhaustive ctors e) :
+    IsValue e.eraseTyAnnots ∨ ∃ e', Step e.eraseTyAnnots e' := by
+  obtain ⟨τ, hτ⟩ := typecheck_iff.mp h
+  exact (TypeOfHM.erased_type_safety hτ h_exh).2.1
 
 open SmallStep in
-/-- **Whole-program preservation, sharpened.** After a step the reduct still
-    type-checks, and its principal scheme is *at least as general* as the
-    original's: the original's principal monotype `τ` is a substitution instance
-    of the reduct's principal monotype `τ'` (`τ = R.onTy τ'`, so `τ'` — hence the
-    reduct's scheme `σ'` — subsumes the original).
+/-- **Whole-program preservation, sharpened (check with annotations, run
+    erased).** We typecheck the (possibly annotated) program `e` but step its
+    erasure `e.eraseTyAnnots`; after a step the reduct still type-checks, and its
+    principal scheme is *at least as general* as the original's: the original's
+    principal monotype `τ` is a substitution instance of the reduct's principal
+    monotype `τ'` (`τ = R.onTy τ'`, so `τ'` — hence the reduct's scheme `σ'` —
+    subsumes the original).
 
     Reduction can make it **strictly** more general, because duplicating a value
     un-shares its type variable: `(λf. (f, f)) (λx. x)` has principal scheme
     `∀a. (a → a) × (a → a)`, but its reduct `((λx. x), (λx. x))` has the more
     general `∀a b. (a → a) × (b → b)`. That is exactly why we cannot state
-    preservation as "`= some σ` with the *same* `σ`". The program is run *erased*
-    (`e.IsTyErased`), which in particular makes it closed (`tyFreeVars = []`). -/
+    preservation as "`= some σ` with the *same* `σ`". We step the erased program
+    because subject reduction is false on annotated terms
+    (`Core.preservation_is_unsound`); erasure preserves typing
+    (`TypeOfHM.erase_preserves_typing`). -/
 theorem typecheck_preservation {ctors : CtorEnv} {e e' : Expr} {σ : PolyTy}
-    (h : typecheck ctors e = some σ) (h_step : Step e e') (he : e.IsTyErased) :
+    (h : typecheck ctors e = some σ) (h_step : Step e.eraseTyAnnots e') :
     ∃ σ' τ τ', typecheck ctors e' = some σ' ∧
       σ = genScheme [] [] τ ∧ σ' = genScheme [] [] τ' ∧ ∃ R : Subst, τ = R.onTy τ' := by
-  have hclosed : e.tyFreeVars = [] := he.tyFreeVars_eq_nil
-  have he' : e'.IsTyErased := Step.preserves_isTyErased h_step he
-  have hclosed' : e'.tyFreeVars = [] := he'.tyFreeVars_eq_nil
-  obtain ⟨τ, hτ, hσeq⟩ := typecheck_sound h hclosed
-  have hτ' : TypeOfHM ⟨[], ctors⟩ e' τ := TypeOfHM.preservation h_step hτ he
+  obtain ⟨τ, hτ, hσeq⟩ := typecheck_sound h
+  have hτe : TypeOfHM ⟨[], ctors⟩ e.eraseTyAnnots τ := TypeOfHM.erase_preserves_typing hτ
+  have hτ' : TypeOfHM ⟨[], ctors⟩ e' τ :=
+    TypeOfHM.preservation h_step hτe (Expr.isTyErased_eraseTyAnnots e)
   obtain ⟨τ', hpt'eq⟩ :=
-    Option.isSome_iff_exists.mp ((principalType_iff hclosed').mpr ⟨τ, hτ'⟩)
-  obtain ⟨R, hR⟩ := principalType_principal hpt'eq hclosed' τ hτ'
+    Option.isSome_iff_exists.mp (principalType_iff.mpr ⟨τ, hτ'⟩)
+  obtain ⟨R, hR⟩ := principalType_principal hpt'eq τ hτ'
   refine ⟨genScheme [] [] τ', τ, τ', ?_, hσeq, rfl, R, hR⟩
   simp only [typecheck, hpt'eq, Option.map_some]
 
@@ -11938,3 +11986,14 @@ theorem typecheck_preservation {ctors : CtorEnv} {e e' : Expr} {σ : PolyTy}
 -- unannotated `let f = λx. x in f`  ⇒  `α → α`  (full generalization, unchanged)
 #eval infer 0 { env := [], ctors := [] }
   (.letIn none (.lambda none (.var 0)) (.var 0))
+
+/-! ### Rigid top-level type variables (the `principalType`/`typecheck` entry seeds
+    `K := e.tyFreeVars`, so an unbound annotation var is a rigid scoped constant). -/
+
+-- open identity `λ(x : α). x`  ⇒  `some (α → α)`  (α kept rigid; this IS declaratively typeable)
+#eval principalType [] (.lambda (some (.fvar 5)) (.var 0))
+-- open misuse `(λ(x : α). x) 5`  ⇒  `none`  (forcing α := Int would bind the rigid var —
+-- rejected; declaratively untypeable. `infer`/`inferCore []` used to wrongly return `some Int`.)
+#eval principalType [] (.app (.lambda (some (.fvar 5)) (.var 0)) (.primLit (.int 5)))
+-- closed program: seeding is a no-op (`K = []`, floor `= 0`)  ⇒  `∀a. a → a`
+#eval (typecheck [] (.lambda none (.var 0))).map (fun σ => (σ.paramCount, σ.body))
