@@ -9440,9 +9440,10 @@ type, that type is *the principal typing* — every declarative typing of `e`
 substitution instance of it. The executable Algorithm W computes principal
 types, machine-verified. -/
 theorem infer_isPrincipal {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {τ : Ty}
-    (h : infer Φ ctx e = some (Φ', S, τ)) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) :
+    (h : infer Φ ctx e = some (Φ', S, τ)) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hclosed : e.tyFreeVars = []) :
     Infer.IsPrincipal ctx e S τ :=
-  Infer.isPrincipal (infer_sound h) hwf hbelow
+  Infer.isPrincipal (infer_sound h) hwf hbelow hclosed
 
 /-! ### Sanity checks: the algorithm actually runs
 
@@ -11639,9 +11640,10 @@ theorem inferCore_complete : ∀ e, InferCoreComplete e := by
 /-- **`infer` completeness.** Algorithm W succeeds whenever the expression is
     declaratively typeable under a well-formed, frontier-bounded context. -/
 theorem infer_complete {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {τ : Ty}
-    (h : Infer Φ ctx e Φ' S τ) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) :
+    (h : Infer Φ ctx e Φ' S τ) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hclosed : e.tyFreeVars = []) :
     (infer Φ ctx e).isSome := by
-  have := inferCore_complete e hwf hbelow h
+  have := inferCore_complete e [] hwf hbelow (by simp) (by rw [hclosed]; simp) (by simp) h
   simpa [infer, Option.isSome_map] using this
 
 
@@ -11664,24 +11666,24 @@ theorem unify_iff {a b : Ty} (ha : a.IsLC) (hb : b.IsLC) :
 /-- `infer` succeeds iff the `Infer` relation is inhabited (for a well-formed,
     frontier-bounded context). -/
 theorem infer_iff {Φ : Nat} {ctx : Ctx} {e : Expr}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) :
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hclosed : e.tyFreeVars = []) :
     (infer Φ ctx e).isSome ↔ ∃ Φ' S τ, Infer Φ ctx e Φ' S τ := by
   constructor
   · intro h
     obtain ⟨⟨Φ', S, τ⟩, he⟩ := Option.isSome_iff_exists.mp h
     exact ⟨Φ', S, τ, infer_sound he⟩
   · rintro ⟨Φ', S, τ, hInfer⟩
-    exact infer_complete hInfer hwf hbelow
+    exact infer_complete hInfer hwf hbelow hclosed
 
 /-- **The executable typechecker decides typeability.** `infer` succeeds iff `e`
     is declaratively typeable under some LC specialization of `ctx` — the
     full-circle bridge from the executable function all the way to `TypeOfHM`. -/
 theorem infer_iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
-    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) :
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hclosed : e.tyFreeVars = []) :
     (infer Φ ctx e).isSome ↔
       ∃ (S : Subst) (τ : Ty), (∀ p ∈ S, p.2.IsLC) ∧ TypeOfHM (S.onCtx ctx) e τ := by
-  rw [infer_iff hwf hbelow]
-  exact (Infer.iff_typeable hwf hbelow).symm
+  rw [infer_iff hwf hbelow hclosed]
+  exact (Infer.iff_typeable hwf hbelow hclosed).symm
 
 
 /-! ### Whole-program typechecking
@@ -11735,39 +11737,40 @@ def principalType (ctors : CtorEnv) (e : Expr) : Option Ty :=
 
 /-- Monotype soundness: a computed principal type is a genuine declarative type. -/
 theorem principalType_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
-    (h : principalType ctors e = some τ) : TypeOfHM ⟨[], ctors⟩ e τ := by
+    (h : principalType ctors e = some τ) (hclosed : e.tyFreeVars = []) :
+    TypeOfHM ⟨[], ctors⟩ e τ := by
   rw [principalType] at h
   rcases hc : infer 0 ⟨[], ctors⟩ e with _ | ⟨Φ', S, τ'⟩ <;> rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
-    have := Infer.sound (infer_sound hc) CtxWF.empty
+    have := Infer.sound_closed (infer_sound hc) CtxWF.empty hclosed
     rwa [Subst.onCtx_empty] at this
 
 /-- Monotype principality: every declarative type of the program is a
     substitution instance of the computed principal type. -/
 theorem principalType_principal {ctors : CtorEnv} {e : Expr} {τ : Ty}
-    (h : principalType ctors e = some τ) :
+    (h : principalType ctors e = some τ) (hclosed : e.tyFreeVars = []) :
     ∀ τ₀, TypeOfHM ⟨[], ctors⟩ e τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
   rw [principalType] at h
   rcases hc : infer 0 ⟨[], ctors⟩ e with _ | ⟨Φ', S, τ'⟩ <;> rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
-    have hP := infer_isPrincipal hc CtxWF.empty CtxBelow.empty
+    have hP := infer_isPrincipal hc CtxWF.empty CtxBelow.empty hclosed
     intro τ₀ hτ₀
     exact hP.principal (S₀ := []) (by simp) (by rwa [Subst.onCtx_nil])
 
 /-- Monotype decidability: `principalType` succeeds iff the program is typeable. -/
-theorem principalType_iff {ctors : CtorEnv} {e : Expr} :
+theorem principalType_iff {ctors : CtorEnv} {e : Expr} (hclosed : e.tyFreeVars = []) :
     (principalType ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
   constructor
   · intro h
     obtain ⟨τ, hτ⟩ := Option.isSome_iff_exists.mp h
-    exact ⟨τ, principalType_sound hτ⟩
+    exact ⟨τ, principalType_sound hτ hclosed⟩
   · rintro ⟨τ, hτ⟩
     have hinfer : (infer 0 ⟨[], ctors⟩ e).isSome := by
-      rw [infer_iff_typeable CtxWF.empty CtxBelow.empty]
+      rw [infer_iff_typeable CtxWF.empty CtxBelow.empty hclosed]
       exact ⟨[], τ, by simp, by rwa [Subst.onCtx_nil]⟩
     simpa [principalType, Option.isSome_map] using hinfer
 
@@ -11776,7 +11779,7 @@ theorem principalType_iff {ctors : CtorEnv} {e : Expr} :
     scheme. At an empty environment every remaining free type variable is
     generalizable, so the output is always a genuine closed scheme. -/
 def typecheck (ctors : CtorEnv) (e : Expr) : Option PolyTy :=
-  (principalType ctors e).map (genScheme [])
+  (principalType ctors e).map (genScheme [] [])
 
 /-- **`typecheck`'s output is a genuine closed type scheme.** Its body contains
     no free type variables (`NoFreeVars`) and no dangling bound variables
@@ -11795,48 +11798,80 @@ theorem typecheck_closed {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     apply NoFreeVars.of_forall_not_mem
     intro Z hZ
     have hsub : Z ∈ τ.freeVars := Ty.closeOver_freeVars_subset hZ
-    have hin : Z ∈ genVars [] τ := List.mem_filter.mpr ⟨hsub, rfl⟩
+    have hin : Z ∈ genVars [] [] τ := List.mem_filter.mpr ⟨hsub, rfl⟩
     exact Ty.not_mem_closeOver_freeVars hin hZ
 
 /-- Whole-program soundness: a successful `typecheck` generalizes a genuine
     declarative type of the program. -/
 theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
-    (h : typecheck ctors e = some σ) :
-    ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ ∧ σ = genScheme [] τ := by
+    (h : typecheck ctors e = some σ) (hclosed : e.tyFreeVars = []) :
+    ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ ∧ σ = genScheme [] [] τ := by
   rw [typecheck] at h
   rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
-    exact ⟨τ, principalType_sound hc, h.symm⟩
+    exact ⟨τ, principalType_sound hc hclosed, h.symm⟩
 
 /-- Whole-program principality: the output scheme generalizes a principal monotype
     `τ` of which every declarative type of the program is a substitution
     instance. -/
 theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
-    (h : typecheck ctors e = some σ) :
-    ∃ τ, σ = genScheme [] τ ∧ TypeOfHM ⟨[], ctors⟩ e τ ∧
+    (h : typecheck ctors e = some σ) (hclosed : e.tyFreeVars = []) :
+    ∃ τ, σ = genScheme [] [] τ ∧ TypeOfHM ⟨[], ctors⟩ e τ ∧
       ∀ τ₀, TypeOfHM ⟨[], ctors⟩ e τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
   rw [typecheck] at h
   rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
-    exact ⟨τ, h.symm, principalType_sound hc, principalType_principal hc⟩
+    exact ⟨τ, h.symm, principalType_sound hc hclosed, principalType_principal hc hclosed⟩
 
 /-- Whole-program decidability: `typecheck` succeeds iff the program is
     declaratively typeable. -/
-theorem typecheck_iff {ctors : CtorEnv} {e : Expr} :
+theorem typecheck_iff {ctors : CtorEnv} {e : Expr} (hclosed : e.tyFreeVars = []) :
     (typecheck ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
-  simp only [typecheck]
-  exact principalType_iff
+  simp only [typecheck, Option.isSome_map]
+  exact principalType_iff hclosed
+
+/-- An erased branch list (each body type-erased) has no free type variables. -/
+theorem Expr.tyFreeVars.BranchList.eq_nil_of_bodies {branches : List (MatchPattern × Expr)}
+    (h : ∀ pat e, (pat, e) ∈ branches → e.tyFreeVars = []) :
+    Expr.tyFreeVars.BranchList.tyFreeVars branches = [] := by
+  induction branches with
+  | nil => rfl
+  | cons hd tl ih =>
+    obtain ⟨p, b⟩ := hd
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars]
+    rw [h p b (List.mem_cons_self ..), List.nil_append]
+    exact ih (fun pat e hm => h pat e (List.mem_cons_of_mem _ hm))
+
+/-- A type-erased term carries no annotations, hence no free type variables. This
+    bridges the runtime regime (`IsTyErased`) to the closed top-level hypothesis
+    `tyFreeVars = []` the typechecker headlines require. -/
+theorem Expr.IsTyErased.tyFreeVars_eq_nil {e : Expr} (he : e.IsTyErased) :
+    e.tyFreeVars = [] := by
+  induction he with
+  | primLit p => rfl
+  | pair _ _ iha ihb => simp [Expr.tyFreeVars, iha, ihb]
+  | lambda _ ih => simp [Expr.tyFreeVars, ih]
+  | app _ _ ihf iha => simp [Expr.tyFreeVars, ihf, iha]
+  | letIn _ _ ihr ihb => simp [Expr.tyFreeVars, ihr, ihb]
+  | fst _ ih => simpa [Expr.tyFreeVars] using ih
+  | snd _ ih => simpa [Expr.tyFreeVars] using ih
+  | var i => rfl
+  | ctor c => rfl
+  | match_ _ _ ihscrut ihbr =>
+    simp only [Expr.tyFreeVars, ihscrut, List.nil_append]
+    exact Expr.tyFreeVars.BranchList.eq_nil_of_bodies ihbr
 
 open SmallStep in
 /-- Whole-program progress (via `typecheck`): a typeable closed program whose
     matches are exhaustive is either a value or can take a step. -/
 theorem typecheck_progress {ctors : CtorEnv} {e : Expr}
-    (h : (typecheck ctors e).isSome) (h_exh : AllMatchesExhaustive ctors e) :
+    (h : (typecheck ctors e).isSome) (h_exh : AllMatchesExhaustive ctors e)
+    (he : e.IsTyErased) :
     IsValue e ∨ ∃ e', Step e e' := by
-  obtain ⟨τ, hτ⟩ := typecheck_iff.mp h
-  exact TypeOfHM.progress hτ rfl h_exh
+  obtain ⟨τ, hτ⟩ := (typecheck_iff he.tyFreeVars_eq_nil).mp h
+  exact TypeOfHM.progress hτ rfl h_exh he
 
 open SmallStep in
 /-- **Whole-program preservation, sharpened.** After a step the reduct still
@@ -11849,17 +11884,21 @@ open SmallStep in
     un-shares its type variable: `(λf. (f, f)) (λx. x)` has principal scheme
     `∀a. (a → a) × (a → a)`, but its reduct `((λx. x), (λx. x))` has the more
     general `∀a b. (a → a) × (b → b)`. That is exactly why we cannot state
-    preservation as "`= some σ` with the *same* `σ`". -/
+    preservation as "`= some σ` with the *same* `σ`". The program is run *erased*
+    (`e.IsTyErased`), which in particular makes it closed (`tyFreeVars = []`). -/
 theorem typecheck_preservation {ctors : CtorEnv} {e e' : Expr} {σ : PolyTy}
-    (h : typecheck ctors e = some σ) (h_step : Step e e') :
+    (h : typecheck ctors e = some σ) (h_step : Step e e') (he : e.IsTyErased) :
     ∃ σ' τ τ', typecheck ctors e' = some σ' ∧
-      σ = genScheme [] τ ∧ σ' = genScheme [] τ' ∧ ∃ R : Subst, τ = R.onTy τ' := by
-  obtain ⟨τ, hτ, hσeq⟩ := typecheck_sound h
-  have hτ' : TypeOfHM ⟨[], ctors⟩ e' τ := TypeOfHM.preservation h_step hτ
+      σ = genScheme [] [] τ ∧ σ' = genScheme [] [] τ' ∧ ∃ R : Subst, τ = R.onTy τ' := by
+  have hclosed : e.tyFreeVars = [] := he.tyFreeVars_eq_nil
+  have he' : e'.IsTyErased := Step.preserves_isTyErased h_step he
+  have hclosed' : e'.tyFreeVars = [] := he'.tyFreeVars_eq_nil
+  obtain ⟨τ, hτ, hσeq⟩ := typecheck_sound h hclosed
+  have hτ' : TypeOfHM ⟨[], ctors⟩ e' τ := TypeOfHM.preservation h_step hτ he
   obtain ⟨τ', hpt'eq⟩ :=
-    Option.isSome_iff_exists.mp (principalType_iff.mpr ⟨τ, hτ'⟩)
-  obtain ⟨R, hR⟩ := principalType_principal hpt'eq τ hτ'
-  refine ⟨genScheme [] τ', τ, τ', ?_, hσeq, rfl, R, hR⟩
+    Option.isSome_iff_exists.mp ((principalType_iff hclosed').mpr ⟨τ, hτ'⟩)
+  obtain ⟨R, hR⟩ := principalType_principal hpt'eq hclosed' τ hτ'
+  refine ⟨genScheme [] [] τ', τ, τ', ?_, hσeq, rfl, R, hR⟩
   simp only [typecheck, hpt'eq, Option.map_some]
 
 -- `typecheck [] (λx. x) = some ⟨1, bvar 0 → bvar 0⟩`  (i.e. the closed scheme `∀a. a → a`)
