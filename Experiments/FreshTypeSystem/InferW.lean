@@ -5124,68 +5124,6 @@ theorem typeOfHM_at_block {ctx : Ctx} {rhs : Expr} {σ : PolyTy} {L Ys : List Na
   rw [hkey]
   exact hrename
 
-
-
-/-! ### Supporting facts for the second escape (`hesc2`)
-
-The annotated-`let` rule's second escape — *no skolem leaks into the substituted
-body environment* — is the only remaining obligation. The lemmas below package
-the two-opening argument that establishes it: a skolem appearing in
-`Schk.onCtx(S₁.onCtx ctx)` would have to come from an environment variable that
-is *also* free in `τ₁`; its declarative residual image is then pinned (by the
-opening-independent environment image) across two distinct skolem blocks, forcing
-the skolem into both blocks — impossible since they are disjoint. -/
-
-/-- From a positional list-map equality, recover the per-element equality at any
-    member (the member's index supplies the matching positions). -/
-private theorem list_map_eq_of_mem {α β : Type _} {f g : α → β} {x : α} :
-    ∀ {l : List α}, l.map f = l.map g → x ∈ l → f x = g x := by
-  intro l
-  induction l with
-  | nil => intro _ hx; simp at hx
-  | cons hd tl ih =>
-    intro h hx
-    rw [List.map_cons, List.map_cons, List.cons.injEq] at h
-    rcases List.mem_cons.mp hx with rfl | hx'
-    · exact h.1
-    · exact ih h.2 hx'
-
-/-- Two substitutions agreeing on a whole type agree on each of its free
-    variables: the leaf where the variable occurs forces equality of the images
-    (`onTy` is a homomorphism, so the substituted subterm at that position must
-    match on both sides). -/
-theorem Subst.onTy_fvar_eq_of_mem_freeVars {R R' : Subst} {v : Nat} :
-    ∀ {t : Ty}, v ∈ t.freeVars → R.onTy t = R'.onTy t →
-      R.onTy (Ty.fvar v) = R'.onTy (Ty.fvar v) := by
-  intro t
-  induction t using Ty.rec_strong with
-  | prim p => intro hv _; simp [Ty.freeVars] at hv
-  | bvar i => intro hv _; simp [Ty.freeVars] at hv
-  | fvar n =>
-    intro hv heq
-    simp only [Ty.freeVars, List.mem_singleton] at hv
-    subst hv; exact heq
-  | pair a b iha ihb =>
-    intro hv heq
-    rw [Subst.onTy_pair, Subst.onTy_pair, Ty.pair.injEq] at heq
-    simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
-    rcases hv with hv | hv
-    · exact iha hv heq.1
-    · exact ihb hv heq.2
-  | arrow a b iha ihb =>
-    intro hv heq
-    rw [Subst.onTy_arrow, Subst.onTy_arrow, Ty.arrow.injEq] at heq
-    simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
-    rcases hv with hv | hv
-    · exact iha hv heq.1
-    · exact ihb hv heq.2
-  | customTy nm tys ih =>
-    intro hv heq
-    rw [Subst.onTy_customTy, Subst.onTy_customTy, Ty.customTy.injEq] at heq
-    simp only [Ty.freeVars] at hv
-    obtain ⟨s, hs, hvs⟩ := TyList.mem_freeVars_iff.mp hv
-    exact ih s hs hvs (list_map_eq_of_mem heq.2 hs)
-
 /-! ### Principality, `fst`/`snd` cases -/
 
 /-- Shared core for the `fst`/`snd` principality cases. Given that `e` types as a
