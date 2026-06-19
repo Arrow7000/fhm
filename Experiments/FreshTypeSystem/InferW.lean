@@ -5841,7 +5841,11 @@ factors through *its* output. Pulling the typing back through one derivation
 avoids the diverging-substituted-context problem that an `output_unique`-by-
 two-derivations attack would hit. -/
 
-set_option maxHeartbeats 1000000 in
+-- `Infer.complete'` is a large mutual block (~1480 lines): its elaboration needs a
+-- raised `maxRecDepth` (the default 512 is exceeded by the equation-compiler /
+-- well-founded-recursion machinery for a mutual this size). It does NOT need a
+-- `maxHeartbeats` bump — it elaborates within the default budget (the former
+-- `1000000` was ~5x over-provisioned).
 set_option maxRecDepth 4000 in
 mutual
 /-- Principality of a *given* derivation: if `Infer` derived `(S, τ)` for `e`,
