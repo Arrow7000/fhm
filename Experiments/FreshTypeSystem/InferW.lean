@@ -10127,7 +10127,7 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ
       intro v hv; simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
       rcases hv with hv | hv
       · exact hargτ v hv
-      · simp only [Ty.freeVars, List.mem_singleton] at hv; subst hv; exact Or.inr (by omega)
+      · simp only [List.mem_singleton] at hv; subst hv; exact Or.inr (by omega)
     obtain ⟨h3D, h3R⟩ := UnifyRel.gap_avoid huni (Subst.onTy_avoidsItv hargR hfτ) hinR
     refine ⟨?_, ?_, ?_⟩
     · exact Subst.onTy_avoidsItv h3R
@@ -11081,25 +11081,34 @@ theorem inferCore_complete_snd {e : Expr} (ihe : InferCoreComplete e) :
     Mirrors `InferBranches.complete`, but concludes `.isSome` instead of producing
     a derivation, driving each branch body via `InferCoreComplete`. -/
 def InferBranchesCoreComplete (branches : List (MatchPattern × Expr)) : Prop :=
-  ∀ {Φ : Nat} {ctx : Ctx} {tyName : TyName} {ta : List Ty} {ρ : Ty} {Φ' : Nat} {S : Subst},
+  ∀ {Φ : Nat} {ctx : Ctx} {tyName : TyName} {ta : List Ty} {ρ : Ty} {Φ' : Nat} {S : Subst}
+    (K : List Nat),
     CtxWF ctx → CtxBelow Φ ctx → (∀ t ∈ ta, t.IsLC) → (∀ t ∈ ta, Ty.BelowFvars Φ t) →
     ρ.IsLC → Ty.BelowFvars Φ ρ →
+    (∀ k ∈ K, k < Φ) → (∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars branches, y ∈ K) →
+    (∀ p ∈ S, p.1 ∉ K) →
     InferBranches Φ ctx tyName ta ρ branches Φ' S →
-    (inferBranchesCore Φ ctx tyName ta ρ branches).isSome
+    (inferBranchesCore K Φ ctx tyName ta ρ branches).isSome
 
 theorem inferBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)),
     (∀ br ∈ branches, InferCoreComplete br.2) → InferBranchesCoreComplete branches := by
   intro branches
   induction branches with
   | nil =>
-    intro _ Φ ctx tyName ta ρ Φ' S _ _ _ _ _ _ _
+    intro _ Φ ctx tyName ta ρ Φ' S K _ _ _ _ _ _ _ _ _ _
     simp [inferBranchesCore]
   | cons head rest ih =>
     intro ihbr
     obtain ⟨pat, body⟩ := head
-    intro Φ ctx tyName ta ρ Φ' S hwf hbelow hta hbta hρ hbρ h
+    intro Φ ctx tyName ta ρ Φ' S K hwf hbelow hta hbta hρ hbρ hKΦ hKbr hSK h
+    -- split the rigid-set coverage across the head body and the rest of the list
+    have hKbody : ∀ y ∈ body.tyFreeVars, y ∈ K := fun y hy => hKbr y (by
+      simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy)
+    have hKrest : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars rest, y ∈ K := fun y hy => hKbr y (by
+      simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inr hy)
+    have hKfixS : ∀ k ∈ K, S.onTy (.fvar k) = .fvar k := fun k hk => Subst.fixes_fvar_of_avoids hSK hk
     -- declarative branch typings + LC facts from the given derivation
-    have hsound := InferBranches.sound h hwf hta hρ
+    have hsound := InferBranches.sound h hwf hta hρ K hKΦ hKbr hSK
     have hSlc : ∀ p ∈ S, p.2.IsLC := (InferBranches.lc h hwf hta hρ).2
     -- invert the head branch's declarative typing (at the residual `S`)
     have hdhead := hsound (pat, body) (List.mem_cons_self ..)
@@ -11121,25 +11130,28 @@ theorem inferBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)
           env := (ctor.contents.map (Ty.openWith ta)).map PolyTy.mkTrivial ++ ctx.env })
           body (S.onTy ρ) := by
         rw [Subst.onCtx_branchBindings hSlc]; exact hbodyty
-      -- STEP: drive the head branch body IH (functionally), then factor via `complete'`
-      obtain ⟨_, _, _, _, hbodyderiv, _, _, _⟩ := Infer.complete hbodyWF hbodyBelow hSlc hbodyty2
-      have hbodysome := (ihbr (pat, body) (List.mem_cons_self ..)) hbodyWF hbodyBelow hbodyderiv
-      obtain ⟨⟨⟨Φ_b, S_b, τ_b⟩, hinfbody⟩, hebody⟩ := Option.isSome_iff_exists.mp hbodysome
-      obtain ⟨R_b, hagbody, htybody, hR_b⟩ := Infer.complete' hinfbody hbodyWF hbodyBelow hSlc hbodyty2
+      -- STEP: reconstruct a head-body derivation (carrying its `K`-avoidance), drive the
+      -- head body IH (functionally), then factor via `complete'`
+      obtain ⟨_, _, _, _, hbodyderiv, _, _, _, _, hSbK⟩ :=
+        Infer.completeAt body K hbodyWF hbodyBelow hSlc hKΦ hKbody hKfixS hbodyty2
+      have hbodysome := (ihbr (pat, body) (List.mem_cons_self ..)) K hbodyWF hbodyBelow
+        hKΦ hKbody hSbK hbodyderiv
+      obtain ⟨⟨⟨Φ_b, S_b, τ_b⟩, hinfbody, _⟩, hebody⟩ := Option.isSome_iff_exists.mp hbodysome
+      obtain ⟨R_b, hagbody, htybody, hR_b, hR_bK⟩ :=
+        Infer.complete' hinfbody hbodyWF hbodyBelow hSlc K hKΦ hKbody hKfixS hbodyty2
       have hτb_lc : τ_b.IsLC := (Infer.lc hinfbody hbodyWF).1
       have hS_b : ∀ p ∈ S_b, p.2.IsLC := (Infer.lc hinfbody hbodyWF).2
-      have hbb := Infer.belowFvars hinfbody hbodyBelow
+      have hbb := Infer.belowFvars hinfbody hbodyBelow (fun y hy => hKΦ y (hKbody y hy))
       have hle_b := Infer.frontier_le hinfbody
-      -- STEP: `R_b` unifies `τ_b` with `S_b.onTy ρ`; realise the function's MGU via `unifyCore`
+      -- STEP: `R_b` unifies `τ_b` with `S_b.onTy ρ`; realise the function's MGU via `unifyCoreK`
       have hUni : Unifies R_b τ_b (S_b.onTy ρ) := by
         show R_b.onTy τ_b = R_b.onTy (S_b.onTy ρ)
         rw [← htybody, ← Subst.onTy_append]
         exact Subst.onTy_congr hagbody hbρ
-      have huniSome : (unifyCore τ_b (S_b.onTy ρ)).isSome :=
-        (unifyCore_complete_aux (2 * (R_b.onTy τ_b).size + 1)).1 (by omega)
-          hτb_lc (Subst.onTy_lc hS_b hρ) hUni
-      obtain ⟨⟨S_u, h_u⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
-      obtain ⟨R_u, hR_u_eq, hR_u⟩ := UnifyRel.greatest_lc h_u R_b hR_b hUni
+      have huniSome : (unifyCoreK K τ_b (S_b.onTy ρ)).isSome :=
+        unifyCoreK_complete hτb_lc (Subst.onTy_lc hS_b hρ) hR_b hUni hR_bK
+      obtain ⟨⟨S_u, h_u, _⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
+      obtain ⟨R_u, hR_u_eq, hR_u, hR_uK⟩ := UnifyRel.greatest_K h_u R_b hR_b hUni hR_bK
       have hS_u : ∀ p ∈ S_u, p.2.IsLC := UnifyRel.lc h_u hτb_lc (Subst.onTy_lc hS_b hρ)
       have hS_u_below : ∀ p ∈ S_u, Ty.BelowFvars Φ_b p.2 :=
         UnifyRel.belowFvars h_u hbb.1 (Subst.onTy_belowFvars hbb.2 (hbρ.mono hle_b))
@@ -11181,12 +11193,14 @@ theorem inferBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)
         rw [hctx_eq, hta_eq, hρ_eq]
         exact hsound br (List.mem_cons_of_mem _ hbr)
       -- STEP: re-derive `rest` in the function's intermediate state, then recurse via the list IH
-      obtain ⟨Φ_rr, S_r, R_r, hinfrest, _hagrest, _hR_r⟩ :=
-        InferBranches.complete (fun br _ => Infer.completeAt br.2)
-          hwf' hbelow' hta' hbta' hρ' hbρ' hR_u hdecl'
-      have hrestsome := ih (fun br hbr => ihbr br (List.mem_cons_of_mem _ hbr))
-        hwf' hbelow' hta' hbta' hρ' hbρ' hinfrest
-      obtain ⟨⟨⟨Φ_r, S_r2⟩, hrest'⟩, herest⟩ := Option.isSome_iff_exists.mp hrestsome
+      obtain ⟨Φ_rr, S_r, R_r, hinfrest, _hagrest, _hR_r, _hR_rK, hS_rK⟩ :=
+        InferBranches.complete K (fun br _ => Infer.completeAt br.2)
+          hwf' hbelow' hta' hbta' hρ' hbρ' hR_u
+          (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle_b) hKrest hR_uK hdecl'
+      have hrestsome := ih (fun br hbr => ihbr br (List.mem_cons_of_mem _ hbr)) K
+        hwf' hbelow' hta' hbta' hρ' hbρ'
+        (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle_b) hKrest hS_rK hinfrest
+      obtain ⟨⟨⟨Φ_r, S_r2⟩, hrest', _⟩, herest⟩ := Option.isSome_iff_exists.mp hrestsome
       -- STEP: conclude by unfolding `inferBranchesCore` and discharging the guards
       rw [inferBranchesCore]
       split
