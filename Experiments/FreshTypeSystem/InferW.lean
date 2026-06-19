@@ -11214,8 +11214,8 @@ theorem inferCore_complete_match {scrut : Expr} {branches : List (MatchPattern �
     (ihscrut : InferCoreComplete scrut)
     (ihbranches : ∀ pat e, (pat, e) ∈ branches → InferCoreComplete e) :
     InferCoreComplete (.match_ scrut branches) := by
-  intro Φ ctx Φ' S τ hwf hbelow h
-  have happ := Infer.sound h hwf
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
+  have happ := Infer.sound h hwf K hKΦ hKe hSK
   have hSlc : ∀ p ∈ S, p.2.IsLC := (Infer.lc h hwf).2
   cases h with
   | @match_ _ _ _ _ Φ1d Φ3d S1d S2d S3d tyNamed arityd τsd hscrutderiv hne huniD hbranchesderiv =>
@@ -11228,6 +11228,15 @@ theorem inferCore_complete_match {scrut : Expr} {branches : List (MatchPattern �
       obtain ⟨b0, brest, hbeq⟩ := List.exists_cons_of_ne_nil hne'
       subst hbeq
       obtain ⟨pat0, body0⟩ := b0
+      -- split the rigid set across scrutinee / branches, and record `S₀`'s fixings
+      simp only [Expr.tyFreeVars, List.mem_append] at hKe
+      have hKescrut : ∀ y ∈ scrut.tyFreeVars, y ∈ K := fun y hy => hKe y (.inl hy)
+      have hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars ((pat0, body0) :: brest), y ∈ K :=
+        fun y hy => hKe y (.inr hy)
+      have hKfixS : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k :=
+        fun k hk => Subst.fixes_fvar_of_avoids hSK hk
+      have hSK₁ : ∀ p ∈ S1d, p.1 ∉ K := fun p hp =>
+        hSK p (by rw [hS₀def]; exact List.mem_append_left _ (List.mem_append_left _ hp))
       have hhead_decl := hbranches_decl (pat0, body0) (List.mem_cons_self ..)
       have hτ₀_lc : τ₀.IsLC := TypeOfMatchBranch.regular hhead_decl
       obtain ⟨ctor0, hlook0, htyName0, hpc0⟩ :
@@ -11236,13 +11245,14 @@ theorem inferCore_complete_match {scrut : Expr} {branches : List (MatchPattern �
         cases hhead_decl with
         | mk hlk htn hpc _ _ _ _ _ => exact ⟨_, by simpa [Subst.onCtx] using hlk, htn, hpc⟩
       -- STEP 1: scrutinee function IH, then factor via `complete'`.
-      have hsscrut := ihscrut hwf hbelow hscrutderiv
-      obtain ⟨⟨⟨Φ₁, S₁, τs⟩, hinfs⟩, hescrut⟩ := Option.isSome_iff_exists.mp hsscrut
-      obtain ⟨R₁, hags, htys, hR₁⟩ := Infer.complete' hinfs hwf hbelow hSlc hscrut_decl
+      have hsscrut := ihscrut K hwf hbelow hKΦ hKescrut hSK₁ hscrutderiv
+      obtain ⟨⟨⟨Φ₁, S₁, τs⟩, hinfs, _⟩, hescrut⟩ := Option.isSome_iff_exists.mp hsscrut
+      obtain ⟨R₁, hags, htys, hR₁, hR₁K⟩ :=
+        Infer.complete' hinfs hwf hbelow hSlc K hKΦ hKescrut hKfixS hscrut_decl
       have hS₁ : ∀ p ∈ S₁, p.2.IsLC := (Infer.lc hinfs hwf).2
       have hτsLC : τs.IsLC := (Infer.lc hinfs hwf).1
       have hbs : Ty.BelowFvars Φ₁ τs ∧ ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 :=
-        Infer.belowFvars hinfs hbelow
+        Infer.belowFvars hinfs hbelow (fun y hy => hKΦ y (hKescrut y hy))
       have hle1 : Φ ≤ Φ₁ := Infer.frontier_le hinfs
       have hwf₁ : CtxWF (S₁.onCtx ctx) := Subst.onCtx_wf hS₁ hwf
       have hbelow₁ : CtxBelow Φ₁ (S₁.onCtx ctx) := Subst.onCtx_below hbs.2 hle1 hbelow
@@ -11365,7 +11375,29 @@ theorem inferCore_complete_match {scrut : Expr} {branches : List (MatchPattern �
       have hUni : Unifies U τs (Ty.customTy tyName ((freshVars Φ₁ tyArgs.length).map (Ty.fvar ·))) := by
         show U.onTy τs = U.onTy (Ty.customTy tyName ((freshVars Φ₁ tyArgs.length).map (Ty.fvar ·)))
         rw [hUL, hUR]
-      -- STEP 5: realise the unifier as the *function's* MGU `S₂` (via `unifyCore`), factor `U`.
+      -- `U` keeps every rigid `k ∈ K` fixed: `k < Φ ≤ Φ₁ ≤ W₀`, so neither fresh block
+      -- touches it, and `R₁` fixes it (scrutinee residual preserves `K`).
+      have hUK : ∀ k ∈ K, U.onTy (Ty.fvar k) = Ty.fvar k := by
+        intro k hk
+        have hkΦ₁ : k < Φ₁ := lt_of_lt_of_le (hKΦ k hk) hle1
+        rw [hUonTy]
+        have hA_id : Subst.onTy ((freshVars Φ₁ (tyArgs.length + 1)).zip
+            ((freshVars W₀ (tyArgs.length + 1)).map (Ty.fvar ·))) (Ty.fvar k) = Ty.fvar k := by
+          apply Ty.substFvars_eq_self_of_no_key
+          intro p hp hc
+          simp only [Ty.freeVars, List.mem_singleton] at hc
+          have hp1 : p.1 ∈ freshVars Φ₁ (tyArgs.length + 1) := (List.of_mem_zip hp).1
+          have hge := freshVars_ge p.1 hp1
+          omega
+        rw [hA_id, hR₁K k hk]
+        apply Ty.substFvars_eq_self_of_no_key
+        intro p hp hc
+        simp only [Ty.freeVars, List.mem_singleton] at hc
+        have hp1 : p.1 ∈ freshVars W₀ (tyArgs.length + 1) := (List.of_mem_zip hp).1
+        have hge := freshVars_ge p.1 hp1
+        have := hW₀ge
+        omega
+      -- STEP 5: realise the unifier as the *function's* MGU `S₂` (via `unifyCoreK`), factor `U`.
       have hcustomTy_lc : (Ty.customTy tyName ((freshVars Φ₁ tyArgs.length).map (Ty.fvar ·))).IsLC :=
         ContainsBvarsUpTo.customTy (fun t ht => by
           obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht; exact ContainsBvarsUpTo.fvar)
@@ -11383,11 +11415,11 @@ theorem inferCore_complete_match {scrut : Expr} {branches : List (MatchPattern �
           · exact htyArgs_lc p.2 ht
           · have hpτ₀ : p.2 = τ₀ := List.mem_singleton.mp hτ
             rw [hpτ₀]; exact hτ₀_lc
-      have huniSome : (unifyCore τs
+      have huniSome : (unifyCoreK K τs
           (Ty.customTy tyName ((freshVars Φ₁ tyArgs.length).map (Ty.fvar ·)))).isSome :=
-        (unifyCore_complete_aux (2 * (U.onTy τs).size + 1)).1 (by omega) hτsLC hcustomTy_lc hUni
-      obtain ⟨⟨S₂, h₂⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
-      obtain ⟨R₂, hR₂_eq, hR₂lc⟩ := UnifyRel.greatest_lc h₂ U hUlc hUni
+        unifyCoreK_complete hτsLC hcustomTy_lc hUlc hUni hUK
+      obtain ⟨⟨S₂, h₂, _⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
+      obtain ⟨R₂, hR₂_eq, hR₂lc, hR₂K⟩ := UnifyRel.greatest_K h₂ U hUlc hUni hUK
       have hS₂ : ∀ p ∈ S₂, p.2.IsLC := UnifyRel.lc h₂ hτsLC hcustomTy_lc
       have hbS₂ : ∀ p ∈ S₂, Ty.BelowFvars (Φ₁ + tyArgs.length + 1) p.2 := by
         apply UnifyRel.belowFvars h₂ (hbs.1.mono (by omega))
@@ -11449,15 +11481,17 @@ theorem inferCore_complete_match {scrut : Expr} {branches : List (MatchPattern �
         rw [hR₂ctx, hta_R₂, hρ_R₂]
         exact hbranches_decl br hbr
       -- STEP 8: thread the branch list with `InferBranches.complete`, then drive the helper.
-      obtain ⟨Φ₃f, S₃f, R₃, hinfbr, _hagbr, _hR₃lc⟩ :=
-        InferBranches.complete (fun br _ => Infer.completeAt br.2)
+      have hKΦ₂ : ∀ k ∈ K, k < Φ₁ + tyArgs.length + 1 :=
+        fun k hk => by have := hKΦ k hk; have := hle1; omega
+      obtain ⟨Φ₃f, S₃f, R₃, hinfbr, _hagbr, _hR₃lc, _hR₃K, hS₃fK⟩ :=
+        InferBranches.complete K (fun br _ => Infer.completeAt br.2)
           (Subst.onCtx_wf hS₂ hwf₁) (Subst.onCtx_below hbS₂ (by omega) hbelow₁)
-          hta_lc hta_below hρ_lc hρ_below hR₂lc hbr'
+          hta_lc hta_below hρ_lc hρ_below hR₂lc hKΦ₂ hKbr hR₂K hbr'
       have hbranchesSome := inferBranchesCore_complete ((pat0, body0) :: brest)
-        (fun br hbr => by obtain ⟨p, e⟩ := br; exact ihbranches p e hbr)
+        (fun br hbr => by obtain ⟨p, e⟩ := br; exact ihbranches p e hbr) K
         (Subst.onCtx_wf hS₂ hwf₁) (Subst.onCtx_below hbS₂ (by omega) hbelow₁)
-        hta_lc hta_below hρ_lc hρ_below hinfbr
-      obtain ⟨⟨⟨Φ₃b, S₃b⟩, hbrf⟩, hbr_eq⟩ := Option.isSome_iff_exists.mp hbranchesSome
+        hta_lc hta_below hρ_lc hρ_below hKΦ₂ hKbr hS₃fK hinfbr
+      obtain ⟨⟨⟨Φ₃b, S₃b⟩, hbrf, _⟩, hbr_eq⟩ := Option.isSome_iff_exists.mp hbranchesSome
       -- STEP 9: conclude by unfolding `inferCore`'s `.match_` arm.
       rw [inferCore]
       simp only [hescrut, List.head?_cons]
@@ -11466,33 +11500,33 @@ theorem inferCore_complete_match {scrut : Expr} {branches : List (MatchPattern �
       · rename_i ctor0' heqs
         obtain rfl : ctor0' = ctor0 := by rw [hlook0] at heqs; exact (Option.some.inj heqs).symm
         -- The function's match discriminants are stated with `ctor0'.tyName`/`ctor0'.paramCount`,
-        -- while the success facts use the declarative `tyName`/`tyArgs.length`. They are equal
-        -- (`htyName0`/`hpc0`), but the matcher's dependent motive forbids rewriting the
-        -- discriminant in place; instead we rebuild each success fact at the exact discriminant
-        -- (where `Option.isSome`/the unify result type is polymorphic, so the `rw` is legal),
-        -- then reduce each match by rewriting the *whole* discriminant.
+        -- while the success facts use the declarative `tyName`/`tyArgs.length`; they are equal
+        -- (`htyName0`/`hpc0`). Since the matcher is dependent, `split` it and discharge each
+        -- `none` arm against the rebuilt `isSome` facts (`hD1`/`hD2`).
         have harg_eq : Ty.customTy ctor0'.tyName ((freshVars Φ₁ ctor0'.paramCount).map (Ty.fvar ·))
             = Ty.customTy tyName ((freshVars Φ₁ tyArgs.length).map (Ty.fvar ·)) := by
           rw [htyName0, hpc0]
-        have hD1 : (unifyCore τs (Ty.customTy ctor0'.tyName
+        have hD1 : (unifyCoreK K τs (Ty.customTy ctor0'.tyName
             ((freshVars Φ₁ ctor0'.paramCount).map (Ty.fvar ·)))).isSome := by
           rw [harg_eq, heuni]; exact Option.isSome_some
-        obtain ⟨⟨S₂x, h₂x⟩, hD1eq⟩ := Option.isSome_iff_exists.mp hD1
-        have hSeq : S₂ = S₂x := by
-          have key : Option.map Subtype.val (unifyCore τs (Ty.customTy ctor0'.tyName
-                ((freshVars Φ₁ ctor0'.paramCount).map (Ty.fvar ·))))
-              = Option.map Subtype.val (unifyCore τs (Ty.customTy tyName
-                ((freshVars Φ₁ tyArgs.length).map (Ty.fvar ·)))) := by
-            rw [harg_eq]
-          rw [hD1eq, heuni] at key
-          simpa using key.symm
-        subst hSeq
-        have hD2 : (inferBranchesCore (Φ₁ + ctor0'.paramCount + 1) (S₂.onCtx (S₁.onCtx ctx))
+        have hD2 : (inferBranchesCore K (Φ₁ + ctor0'.paramCount + 1) (S₂.onCtx (S₁.onCtx ctx))
             ctor0'.tyName (((freshVars Φ₁ ctor0'.paramCount).map (Ty.fvar ·)).map S₂.onTy)
             (S₂.onTy (Ty.fvar (Φ₁ + ctor0'.paramCount))) ((pat0, body0) :: brest)).isSome := by
           rw [htyName0, hpc0, hbr_eq]; exact Option.isSome_some
-        obtain ⟨⟨⟨Φ₃z, S₃z⟩, hbz⟩, hD2eq⟩ := Option.isSome_iff_exists.mp hD2
-        simp only [hD1eq, hD2eq, Option.isSome_some]
+        split
+        · rename_i heqn; rw [heqn] at hD1; exact absurd hD1 (by simp)
+        · rename_i S₂x huni2 hav2 heqn
+          have hS2 : S₂x = S₂ := by
+            have key : Option.map Subtype.val (unifyCoreK K τs (Ty.customTy ctor0'.tyName
+                  ((freshVars Φ₁ ctor0'.paramCount).map (Ty.fvar ·))))
+                = Option.map Subtype.val (unifyCoreK K τs (Ty.customTy tyName
+                  ((freshVars Φ₁ tyArgs.length).map (Ty.fvar ·)))) := by rw [harg_eq]
+            rw [heqn, heuni] at key
+            simpa using key
+          subst hS2
+          split
+          · rename_i heqn2; rw [heqn2] at hD2; exact absurd hD2 (by simp)
+          · rfl
 
 /-- **`inferCore` completeness, assembled.** For every expression, a (WF,
     frontier-bounded) `Infer` derivation entails that `inferCore` succeeds. -/
