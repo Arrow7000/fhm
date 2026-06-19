@@ -10679,197 +10679,254 @@ theorem inferCore_complete_app {f arg : Expr}
     rw [inferCore]; simp only [hef, hea, he3, Option.isSome_some]
 
 theorem inferCore_complete_letIn {ann : Option PolyTy} {rhs body : Expr}
-    (iha : InferCoreComplete rhs) (ihb : InferCoreComplete body) :
+    (iha : InferCoreComplete rhs) (ihao : ∀ Ys, InferCoreComplete (rhs.openTyVars Ys))
+    (ihb : InferCoreComplete body) :
     InferCoreComplete (.letIn ann rhs body) := by
-  intro Φ ctx Φ' S τ hwf hbelow h
-  have happ := Infer.sound h hwf
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
   have hSlc : ∀ p ∈ S, p.2.IsLC := (Infer.lc h hwf).2
-  cases h with
-  | @letIn _ _ _ _ Φ1d Φ2d S1d S2d τ1d τ2 hrhs hbody =>
+  have happ := Infer.sound h hwf K hKΦ hKe hSK
+  cases ann with
+  | none =>
+    cases h with
+    | @letIn _ _ _ _ Φ1d Φ2d S1d S2d τ1d τ2 hrhs hbody =>
+      cases happ with
+      | letIn hMwf hann hcofin heqctx hbodyD =>
+        expose_names
+        subst heqctx
+        simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append] at hKe
+        have hKrhs : ∀ y ∈ rhs.tyFreeVars, y ∈ K := fun y hy => hKe y (.inl hy)
+        have hKbody : ∀ y ∈ body.tyFreeVars, y ∈ K := fun y hy => hKe y (.inr hy)
+        have hKfixS : ∀ k ∈ K, (S1d ++ S2d).onTy (.fvar k) = .fvar k :=
+          fun k hk => Subst.fixes_fvar_of_avoids hSK hk
+        have hSK₁ : ∀ p ∈ S1d, p.1 ∉ K := fun p hp => hSK p (List.mem_append_left _ hp)
+        -- fresh opening avoiding `L`, `M.body`, the (substituted) env, and the rigid `rhs.tyFreeVars`
+        obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names
+          (L ++ M.body.freeVars ++ ((S1d ++ S2d).onCtx ctx).env.freeVars ++ rhs.tyFreeVars) M.paramCount
+        have hXfreshL : FreshNames L M.paramCount Xs :=
+          ⟨hXlen, hXnodup, fun x hx hc => hXavoid x hx
+            (List.mem_append_left _ (List.mem_append_left _ (List.mem_append_left _ hc)))⟩
+        have hXMbody : ∀ x ∈ Xs, x ∉ M.body.freeVars := fun x hx hc => hXavoid x hx
+          (List.mem_append_left _ (List.mem_append_left _ (List.mem_append_right _ hc)))
+        have hXenv : ∀ x ∈ Xs, x ∉ ((S1d ++ S2d).onCtx ctx).env.freeVars := fun x hx hc =>
+          hXavoid x hx (List.mem_append_left _ (List.mem_append_right _ hc))
+        have hXrhs : ∀ x ∈ Xs, x ∉ rhs.tyFreeVars := fun x hx hc =>
+          hXavoid x hx (List.mem_append_right _ hc)
+        -- recurse on the given rhs derivation; factor the rhs-opening typing
+        have hsa := iha K hwf hbelow hKΦ hKrhs hSK₁ hrhs
+        obtain ⟨⟨⟨Φ₁', S₁', τ₁'⟩, hrhs', hav₁⟩, herhs⟩ := Option.isSome_iff_exists.mp hsa
+        obtain ⟨R₁, haga, htya, hR₁, hR₁K⟩ :=
+          Infer.complete' hrhs' hwf hbelow hSlc K hKΦ hKrhs hKfixS (hcofin Xs hXfreshL)
+        have hS₁ : ∀ p ∈ S₁', p.2.IsLC := (Infer.lc hrhs' hwf).2
+        have hτ₁lc : τ₁'.IsLC := (Infer.lc hrhs' hwf).1
+        have hle : Φ ≤ Φ₁' := Infer.frontier_le hrhs'
+        have hbf := Infer.belowFvars hrhs' hbelow (fun y hy => hKΦ y (hKrhs y hy))
+        have hbelowτ₁ : Ty.BelowFvars Φ₁' τ₁' := hbf.1
+        have hbelowS₁ : ∀ p ∈ S₁', Ty.BelowFvars Φ₁' p.2 := hbf.2
+        have hwf₁ : CtxWF (S₁'.onCtx ctx) := Subst.onCtx_wf hS₁ hwf
+        have hbelow₁ : CtxBelow Φ₁' (S₁'.onCtx ctx) := Subst.onCtx_below hbelowS₁ hle hbelow
+        have hctxeq : R₁.onCtx (S₁'.onCtx ctx) = (S1d ++ S2d).onCtx ctx := by
+          rw [← Subst.onCtx_append]
+          exact Subst.onCtx_congr (fun v hv => (haga v hv).symm) hbelow
+        have hwfBody : CtxWF { (S₁'.onCtx ctx) with
+            env := genScheme rhs.tyFreeVars (S₁'.onCtx ctx).env τ₁' :: (S₁'.onCtx ctx).env } := by
+          intro N hN
+          rcases List.mem_cons.mp hN with rfl | hN
+          · exact genScheme_wf hτ₁lc
+          · exact hwf₁ N hN
+        have hbelowBody : CtxBelow Φ₁' { (S₁'.onCtx ctx) with
+            env := genScheme rhs.tyFreeVars (S₁'.onCtx ctx).env τ₁' :: (S₁'.onCtx ctx).env } := by
+          intro N hN
+          rcases List.mem_cons.mp hN with rfl | hN
+          · show Ty.BelowFvars Φ₁' (Ty.closeOver (genVars rhs.tyFreeVars (S₁'.onCtx ctx).env τ₁') τ₁')
+            exact hbelowτ₁.closeOver
+          · exact hbelow₁ N hN
+        have hXM'' : ∀ x ∈ Xs,
+            x ∉ (R₁.onPolyTy (genScheme rhs.tyFreeVars (S₁'.onCtx ctx).env τ₁')).body.freeVars := by
+          intro x hx hmem
+          change x ∈ (R₁.onTy (Ty.closeOver (genVars rhs.tyFreeVars (S₁'.onCtx ctx).env τ₁') τ₁')).freeVars
+            at hmem
+          obtain ⟨v, hv, hxv⟩ := Ty.mem_freeVars_onTy_iff.mp hmem
+          have hvτ₁ : v ∈ τ₁'.freeVars := Ty.closeOver_freeVars_subset hv
+          have hvg : v ∉ genVars rhs.tyFreeVars (S₁'.onCtx ctx).env τ₁' :=
+            fun hg => Ty.not_mem_closeOver_freeVars hg hv
+          by_cases hvrhs : v ∈ rhs.tyFreeVars
+          · have hfix : R₁.onTy (Ty.fvar v) = Ty.fvar v := hR₁K v (hKrhs v hvrhs)
+            rw [hfix] at hxv
+            simp only [Ty.freeVars, List.mem_singleton] at hxv
+            exact hXrhs x hx (hxv ▸ hvrhs)
+          · have hvenv : v ∈ (S₁'.onCtx ctx).env.freeVars := by
+              by_contra hc
+              apply hvg
+              simp only [genVars, List.mem_filter, Bool.and_eq_true]
+              exact ⟨hvτ₁, by simpa using hc, by simpa using hvrhs⟩
+            obtain ⟨pt, hpt, hvpt⟩ := Env.mem_freeVars_iff.mp hvenv
+            have hx_onTy : x ∈ (R₁.onTy pt.body).freeVars :=
+              Ty.mem_freeVars_onTy_iff.mpr ⟨v, hvpt, hxv⟩
+            have hpt_mem : R₁.onPolyTy pt ∈ ((S1d ++ S2d).onCtx ctx).env := by
+              have hmem2 : R₁.onPolyTy pt ∈ (R₁.onCtx (S₁'.onCtx ctx)).env := by
+                simp only [Subst.onCtx, Subst.onEnv]
+                exact List.mem_map.mpr ⟨pt, hpt, rfl⟩
+              rw [hctxeq] at hmem2; exact hmem2
+            exact hXenv x hx (Env.mem_freeVars_iff.mpr ⟨R₁.onPolyTy pt, hpt_mem, hx_onTy⟩)
+        have hgen : (R₁.onPolyTy (genScheme rhs.tyFreeVars (S₁'.onCtx ctx).env τ₁')).Generalizes M :=
+          genScheme_generalizes hτ₁lc hR₁ hMwf hXnodup hXlen hXMbody htya hXM''
+        have hbody' : TypeOfHM
+            ⟨R₁.onPolyTy (genScheme rhs.tyFreeVars (S₁'.onCtx ctx).env τ₁') :: ((S1d ++ S2d).onCtx ctx).env,
+              ((S1d ++ S2d).onCtx ctx).ctors⟩ body τ :=
+          TypeOfHM.weaken_scheme (env_post := []) (env := ((S1d ++ S2d).onCtx ctx).env) (M := M) hgen hbodyD
+        have hbody'' : TypeOfHM (R₁.onCtx { (S₁'.onCtx ctx) with
+            env := genScheme rhs.tyFreeVars (S₁'.onCtx ctx).env τ₁' :: (S₁'.onCtx ctx).env }) body τ := by
+          show TypeOfHM ⟨R₁.onPolyTy (genScheme rhs.tyFreeVars (S₁'.onCtx ctx).env τ₁')
+              :: R₁.onEnv (S₁'.onCtx ctx).env, (S₁'.onCtx ctx).ctors⟩ body τ
+          rw [show R₁.onEnv (S₁'.onCtx ctx).env = ((S1d ++ S2d).onCtx ctx).env from congrArg Ctx.env hctxeq]
+          exact hbody'
+        obtain ⟨_, _, _, _, hinfb, _, _, _, _, hSbK⟩ := Infer.completeAt body K hwfBody hbelowBody hR₁
+          (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbody hR₁K hbody''
+        have hsb := ihb K hwfBody hbelowBody (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle) hKbody hSbK hinfb
+        obtain ⟨⟨⟨Φ₂', S₂', τ₂'⟩, hbodyf, hav₂⟩, hebody⟩ := Option.isSome_iff_exists.mp hsb
+        rw [inferCore]; simp only [herhs, hebody, Option.isSome_some]
+  | some σ =>
+    obtain ⟨hAdom, hBenv⟩ :=
+      Infer.letInAnn_block_fresh h hbelow (fun y hy => hKΦ y (hKe y hy))
     cases happ with
     | letIn hMwf hann hcofin heqctx hbodyD =>
-      expose_names
       subst heqctx
-      -- fresh opening avoiding `L`, `M.body`, and the (substituted) env
-      obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
-        exists_fresh_names (L ++ M.body.freeVars ++ ((S1d ++ S2d).onCtx ctx).env.freeVars) M.paramCount
-      have hXfreshL : FreshNames L M.paramCount Xs :=
-        ⟨hXlen, hXnodup,
-          fun x hx hc => hXavoid x hx (List.mem_append_left _ (List.mem_append_left _ hc))⟩
-      have hXMbody : ∀ x ∈ Xs, x ∉ M.body.freeVars :=
-        fun x hx hc => hXavoid x hx (List.mem_append_left _ (List.mem_append_right _ hc))
-      have hXenv : ∀ x ∈ Xs, x ∉ ((S1d ++ S2d).onCtx ctx).env.freeVars :=
-        fun x hx hc => hXavoid x hx (List.mem_append_right _ hc)
-      -- recurse on rhs; factor the rhs-opening typing through the function's output
-      have hsa := iha hwf hbelow hrhs
-      obtain ⟨⟨⟨Φ₁', S₁', τ₁'⟩, hrhs'⟩, herhs⟩ := Option.isSome_iff_exists.mp hsa
-      obtain ⟨R₁, haga, htya, hR₁⟩ := Infer.complete' hrhs' hwf hbelow hSlc (hcofin Xs hXfreshL)
-      have hS₁ : ∀ p ∈ S₁', p.2.IsLC := (Infer.lc hrhs' hwf).2
-      have hτ₁lc : τ₁'.IsLC := (Infer.lc hrhs' hwf).1
-      have hle : Φ ≤ Φ₁' := Infer.frontier_le hrhs'
-      have hbelowτ₁ : Ty.BelowFvars Φ₁' τ₁' := (Infer.belowFvars hrhs' hbelow).1
-      have hbelowS₁ : ∀ p ∈ S₁', Ty.BelowFvars Φ₁' p.2 := (Infer.belowFvars hrhs' hbelow).2
-      have hwf₁ : CtxWF (S₁'.onCtx ctx) := Subst.onCtx_wf hS₁ hwf
-      have hbelow₁ : CtxBelow Φ₁' (S₁'.onCtx ctx) := Subst.onCtx_below hbelowS₁ hle hbelow
-      have hctxeq : R₁.onCtx (S₁'.onCtx ctx) = (S1d ++ S2d).onCtx ctx := by
-        rw [← Subst.onCtx_append]
-        exact Subst.onCtx_congr (fun v hv => (haga v hv).symm) hbelow
-      have hwfBody : CtxWF { (S₁'.onCtx ctx) with
-          env := genScheme (S₁'.onCtx ctx).env τ₁' :: (S₁'.onCtx ctx).env } := by
-        intro N hN
-        rcases List.mem_cons.mp hN with rfl | hN
-        · exact genScheme_wf hτ₁lc
-        · exact hwf₁ N hN
-      have hbelowBody : CtxBelow Φ₁' { (S₁'.onCtx ctx) with
-          env := genScheme (S₁'.onCtx ctx).env τ₁' :: (S₁'.onCtx ctx).env } := by
-        intro N hN
-        rcases List.mem_cons.mp hN with rfl | hN
-        · show Ty.BelowFvars Φ₁' (Ty.closeOver (genVars (S₁'.onCtx ctx).env τ₁') τ₁')
-          exact hbelowτ₁.closeOver
-        · exact hbelow₁ N hN
-      have hXM'' : ∀ x ∈ Xs,
-          x ∉ (R₁.onPolyTy (genScheme (S₁'.onCtx ctx).env τ₁')).body.freeVars := by
-        intro x hx hmem
-        change x ∈ (R₁.onTy (Ty.closeOver (genVars (S₁'.onCtx ctx).env τ₁') τ₁')).freeVars at hmem
-        obtain ⟨v, hv, hxv⟩ := Ty.mem_freeVars_onTy_iff.mp hmem
-        have hvτ₁ : v ∈ τ₁'.freeVars := Ty.closeOver_freeVars_subset hv
-        have hvg : v ∉ genVars (S₁'.onCtx ctx).env τ₁' := fun hg => Ty.not_mem_closeOver_freeVars hg hv
-        have hvenv : v ∈ (S₁'.onCtx ctx).env.freeVars := by
-          by_contra hc
-          exact hvg (by
-            simp only [genVars, List.mem_filter]
-            exact ⟨hvτ₁, by simpa using hc⟩)
-        obtain ⟨pt, hpt, hvpt⟩ := Env.mem_freeVars_iff.mp hvenv
-        have hx_onTy : x ∈ (R₁.onTy pt.body).freeVars :=
-          Ty.mem_freeVars_onTy_iff.mpr ⟨v, hvpt, hxv⟩
-        have hpt_mem : R₁.onPolyTy pt ∈ ((S1d ++ S2d).onCtx ctx).env := by
-          have hmem2 : R₁.onPolyTy pt ∈ (R₁.onCtx (S₁'.onCtx ctx)).env := by
-            simp only [Subst.onCtx, Subst.onEnv]
-            exact List.mem_map.mpr ⟨pt, hpt, rfl⟩
-          rw [hctxeq] at hmem2; exact hmem2
-        exact hXenv x hx (Env.mem_freeVars_iff.mpr ⟨R₁.onPolyTy pt, hpt_mem, hx_onTy⟩)
-      have hgen : (R₁.onPolyTy (genScheme (S₁'.onCtx ctx).env τ₁')).Generalizes M :=
-        genScheme_generalizes hτ₁lc hR₁ hMwf hXnodup hXlen hXMbody htya hXM''
-      have hbody' : TypeOfHM
-          ⟨R₁.onPolyTy (genScheme (S₁'.onCtx ctx).env τ₁') :: ((S1d ++ S2d).onCtx ctx).env,
-            ((S1d ++ S2d).onCtx ctx).ctors⟩ body τ :=
-        TypeOfHM.weaken_scheme (env_post := []) (env := ((S1d ++ S2d).onCtx ctx).env) (M := M) hgen hbodyD
-      have hbody'' : TypeOfHM (R₁.onCtx { (S₁'.onCtx ctx) with
-          env := genScheme (S₁'.onCtx ctx).env τ₁' :: (S₁'.onCtx ctx).env }) body τ := by
-        show TypeOfHM ⟨R₁.onPolyTy (genScheme (S₁'.onCtx ctx).env τ₁') :: R₁.onEnv (S₁'.onCtx ctx).env,
-            (S₁'.onCtx ctx).ctors⟩ body τ
-        rw [show R₁.onEnv (S₁'.onCtx ctx).env = ((S1d ++ S2d).onCtx ctx).env from congrArg Ctx.env hctxeq]
-        exact hbody'
-      obtain ⟨_, _, _, _, hinfb, _, _, _⟩ := Infer.complete hwfBody hbelowBody hR₁ hbody''
-      have hsb := ihb hwfBody hbelowBody hinfb
-      obtain ⟨⟨⟨Φ₂', S₂', τ₂'⟩, hbody'⟩, hebody⟩ := Option.isSome_iff_exists.mp hsb
-      rw [inferCore]; simp only [herhs, hebody, Option.isSome_some]
-  | @letInAnn _ _ σd _ _ Φ1d Φ2d S1d Schkd S2d τ1d τ2 hrhs hσwf hσnfv huni hesc1 hesc2 hbody =>
-    cases happ with
-    | letIn hMwf hann hcofin heqctx hbodyD =>
-      expose_names
-      obtain ⟨hMσ, hσnfv'⟩ := hann σd rfl
-      subst heqctx
-      rw [hMσ] at hcofin hbodyD
-      -- inferCore on rhs succeeds; reorient its typing to the skolem opening
-      obtain ⟨⟨⟨Φ₁', S₁', τ₁'⟩, hrhs'⟩, herhs⟩ :=
-        Option.isSome_iff_exists.mp (iha hwf hbelow hrhs)
-      have hrhs_Ys : TypeOfHM ((S1d ++ Schkd ++ S2d).onCtx ctx) rhs
-          (σd.openVars (freshVars Φ₁' σd.paramCount)) :=
-        typeOfHM_at_block hσnfv' (freshVars_length _ _) hcofin
-      obtain ⟨R₁, haga, htya, hR₁⟩ := Infer.complete' hrhs' hwf hbelow hSlc hrhs_Ys
-      have hτ₁lc := (Infer.lc hrhs' hwf).1
-      have hS₁lc := (Infer.lc hrhs' hwf).2
-      have hle := Infer.frontier_le hrhs'
-      have hbelowτ₁ := (Infer.belowFvars hrhs' hbelow).1
-      have hbelowS₁ := (Infer.belowFvars hrhs' hbelow).2
-      have hBlc : (σd.openVars (freshVars Φ₁' σd.paramCount)).IsLC :=
-        PolyTy.openVars_isLC hσwf (by simp)
-      -- the `Ys`-fixing unifier; `unifyCore` succeeds, carrying a left-leaning `Schk`
-      obtain ⟨U, hUlc, hUfix, hUuni, hUfact⟩ :=
-        exists_skolem_unifier (Ys := freshVars Φ₁' σd.paramCount) (Φ₁ := Φ₁')
-          (pc := σd.paramCount) rfl hR₁ (fun z hz => hbelowτ₁.mem_lt z hz)
-          (fun z hz => Ty.freeVars_openVars_closed hσnfv' hz) htya.symm
-      have huniSome : (unifyCore τ₁' (σd.openVars (freshVars Φ₁' σd.paramCount))).isSome :=
-        (unifyCore_complete_aux (2 * (U.onTy τ₁').size + 1)).1 (by omega) hτ₁lc hBlc hUuni
-      obtain ⟨⟨Schk, hSchk⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
-      have hO : OUnify τ₁' (σd.openVars (freshVars Φ₁' σd.paramCount)) Schk :=
-        unifyCore_oUnify ⟨Schk, hSchk⟩ heuni
-      have hescA : ∀ y ∈ freshVars Φ₁' σd.paramCount, y ∉ Schk.map Prod.fst :=
-        OUnify.skolem_escape hO (fun z hz => Ty.freeVars_openVars_closed hσnfv' hz)
-          ⟨U, hUuni, hUfix⟩
-      -- second opening for the env-escape
-      have hrhs_Ys' : TypeOfHM ((S1d ++ Schkd ++ S2d).onCtx ctx) rhs
-          (σd.openVars (freshVars (Φ₁' + σd.paramCount) σd.paramCount)) :=
-        typeOfHM_at_block hσnfv' (freshVars_length _ _) hcofin
-      obtain ⟨R₁', haga', htya', hR₁'⟩ := Infer.complete' hrhs' hwf hbelow hSlc hrhs_Ys'
-      have hYdisj : ∀ Y ∈ freshVars Φ₁' σd.paramCount,
-          Y ∉ freshVars (Φ₁' + σd.paramCount) σd.paramCount := by
-        intro Y hY hc
-        have h1 := freshVars_lt Y hY
-        have h2 := freshVars_ge Y hc
-        omega
-      have hescB : ∀ Y ∈ freshVars Φ₁' σd.paramCount,
-          Y ∉ (Schk.onCtx (S₁'.onCtx ctx)).env.freeVars :=
-        skolem_no_env_leak hσnfv' hle hbelow hbelowτ₁ hbelowS₁ rfl hSchk hescA hR₁ htya haga
-          htya' haga' hYdisj
-      -- thread the body context and recurse with `ihb`
-      obtain ⟨V, hV, hVlc⟩ := UnifyRel.greatest_lc hSchk U hUlc hUuni
-      have hagSchkV : Subst.AgreesBelow Φ (S1d ++ Schkd ++ S2d) (S₁' ++ Schk ++ V) := by
+      obtain hMσ := hann σ rfl
+      rw [hMσ] at hMwf hcofin hbodyD
+      simp only [Expr.openBoundTyVars] at hcofin
+      simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at hKe
+      have hKσ : ∀ y ∈ σ.body.freeVars, y ∈ K := fun y hy => hKe y (.inl (.inl hy))
+      have hKrhs : ∀ y ∈ rhs.tyFreeVars, y ∈ K := fun y hy => hKe y (.inl (.inr hy))
+      have hKbody : ∀ y ∈ body.tyFreeVars, y ∈ K := fun y hy => hKe y (.inr hy)
+      have hσwf : σ.WF := hMwf
+      have hbelowN : CtxBelow (Φ + σ.paramCount) ctx := fun M hM => (hbelow M hM).mono (by omega)
+      -- rigid-set coverage of `K ∪ Ys` for the opened-rhs reconstruction
+      have hKΦ' : ∀ k ∈ K ++ freshVars Φ σ.paramCount, k < Φ + σ.paramCount := by
+        intro k hk; rcases List.mem_append.mp hk with hk | hk
+        · have := hKΦ k hk; omega
+        · have := freshVars_lt k hk; omega
+      have hKe' : ∀ y ∈ (rhs.openTyVars (freshVars Φ σ.paramCount)).tyFreeVars,
+          y ∈ K ++ freshVars Φ σ.paramCount := by
+        intro y hy
+        rcases Expr.tyFreeVars_openTyVars hy with h' | h'
+        · exact List.mem_append_left _ (hKrhs y h')
+        · exact List.mem_append_right _ h'
+      have hKfix' : ∀ k ∈ K ++ freshVars Φ σ.paramCount, S.onTy (.fvar k) = .fvar k := by
+        intro k hk; rcases List.mem_append.mp hk with hk | hk
+        · exact Subst.fixes_fvar_of_avoids hSK hk
+        · exact Ty.substFvars_eq_self_of_no_key (fun p hp hc => by
+            simp only [Ty.freeVars, List.mem_singleton] at hc
+            exact hAdom k hk (hc ▸ List.mem_map.mpr ⟨p, hp, rfl⟩))
+      have htyYs : TypeOfHM (S.onCtx ctx) (rhs.openTyVars (freshVars Φ σ.paramCount))
+          (σ.openVars (freshVars Φ σ.paramCount)) :=
+        typeOfHM_at_block (freshVars_length _ _) hcofin
+      -- reconstruct a derivation of the opened rhs (carrying its `K ∪ Ys` avoidance)
+      obtain ⟨_, _, _, _, Drhs, _, _, _, _, hSrhsK⟩ :=
+        Infer.completeAt (rhs.openTyVars (freshVars Φ σ.paramCount)) (K ++ freshVars Φ σ.paramCount)
+          hwf hbelowN hSlc hKΦ' hKe' hKfix' htyYs
+      have hrhsSome := ihao (freshVars Φ σ.paramCount) (K ++ freshVars Φ σ.paramCount)
+        hwf hbelowN hKΦ' hKe' hSrhsK Drhs
+      obtain ⟨⟨⟨Φ₁e, S₁e, τ₁e⟩, hrhse, hav₁⟩, herhs⟩ := Option.isSome_iff_exists.mp hrhsSome
+      obtain ⟨R₁, haga, htya, hR₁lc, hR₁K⟩ :=
+        Infer.complete' hrhse hwf hbelowN hSlc (K ++ freshVars Φ σ.paramCount) hKΦ' hKe' hKfix' htyYs
+      have hτ₁elc : τ₁e.IsLC := (Infer.lc hrhse hwf).1
+      have hS₁elc : ∀ p ∈ S₁e, p.2.IsLC := (Infer.lc hrhse hwf).2
+      have hle1 : Φ + σ.paramCount ≤ Φ₁e := Infer.frontier_le hrhse
+      have hbf := Infer.belowFvars hrhse hbelowN (fun y hy => hKΦ' y (hKe' y hy))
+      have hbelowτ₁ : Ty.BelowFvars Φ₁e τ₁e := hbf.1
+      have hbelowS₁ : ∀ p ∈ S₁e, Ty.BelowFvars Φ₁e p.2 := hbf.2
+      have hBlc : (σ.openVars (freshVars Φ σ.paramCount)).IsLC := PolyTy.openVars_isLC hσwf (by simp)
+      have hR₁_K : ∀ k ∈ K, R₁.onTy (.fvar k) = .fvar k :=
+        fun k hk => hR₁K k (List.mem_append_left _ hk)
+      have hR₁_Ys : ∀ Y ∈ freshVars Φ σ.paramCount, R₁.onTy (.fvar Y) = .fvar Y :=
+        fun Y hY => hR₁K Y (List.mem_append_right _ hY)
+      have hUuni : Unifies R₁ τ₁e (σ.openVars (freshVars Φ σ.paramCount)) := by
+        show R₁.onTy τ₁e = R₁.onTy (σ.openVars (freshVars Φ σ.paramCount))
+        rw [← htya]
+        refine (Subst.onTy_eq_self_of_fixes (fun z hz => ?_)).symm
+        rcases Ty.freeVars_openVars_subset z hz with h' | h'
+        · exact hR₁_K z (hKσ z h')
+        · exact hR₁_Ys z h'
+      have huniSome :
+          (unifyCoreK (K ++ freshVars Φ σ.paramCount) τ₁e (σ.openVars (freshVars Φ σ.paramCount))).isSome :=
+        unifyCoreK_complete hτ₁elc hBlc hR₁lc hUuni hR₁K
+      obtain ⟨⟨Schke, hSchke, havSchk⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
+      -- escape A: `Ys` is bound neither by the rhs subst nor the unifier
+      have hesc1 : ∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁e ++ Schke).map Prod.fst := by
+        intro y hy hc
+        obtain ⟨p, hp, hpy⟩ := List.mem_map.mp hc
+        have hyKYs : p.1 ∈ K ++ freshVars Φ σ.paramCount := by rw [hpy]; exact List.mem_append_right _ hy
+        rcases List.mem_append.mp hp with hp | hp
+        · exact hav₁ p hp hyKYs
+        · exact havSchk p hp hyKYs
+      -- factor `R₁` through the MGU `Schke` to get `V`, fixing `K ∪ Ys`
+      obtain ⟨V, hVeq, hVlc, hVK⟩ := UnifyRel.greatest_K hSchke R₁ hR₁lc hUuni hR₁K
+      have hagSchkV : Subst.AgreesBelow Φ S (S₁e ++ Schke ++ V) := by
         intro v hv
-        have hbv : Ty.BelowFvars Φ₁' (S₁'.onTy (Ty.fvar v)) :=
-          Subst.onTy_belowFvars hbelowS₁ (Ty.BelowFvars.fvar (by omega))
-        calc (S1d ++ Schkd ++ S2d).onTy (Ty.fvar v)
-            = (S₁' ++ R₁).onTy (Ty.fvar v) := haga v hv
-          _ = R₁.onTy (S₁'.onTy (Ty.fvar v)) := by rw [Subst.onTy_append]
-          _ = U.onTy (S₁'.onTy (Ty.fvar v)) :=
-              (hUfact _ (fun z hz => hbv.mem_lt z hz)).symm
-          _ = V.onTy (Schk.onTy (S₁'.onTy (Ty.fvar v))) := hV _
-          _ = (S₁' ++ Schk ++ V).onTy (Ty.fvar v) := by
-                rw [Subst.onTy_append, Subst.onTy_append]
-      have hwf₁ := Subst.onCtx_wf hS₁lc hwf
-      have hwfSchk := Subst.onCtx_wf (UnifyRel.lc hSchk hτ₁lc hBlc) hwf₁
-      have hwfB : CtxWF { (Schk.onCtx (S₁'.onCtx ctx)) with
-          env := σd :: (Schk.onCtx (S₁'.onCtx ctx)).env } := by
+        calc S.onTy (Ty.fvar v)
+            = (S₁e ++ R₁).onTy (Ty.fvar v) := haga v (by omega)
+          _ = R₁.onTy (S₁e.onTy (Ty.fvar v)) := by rw [Subst.onTy_append]
+          _ = V.onTy (Schke.onTy (S₁e.onTy (Ty.fvar v))) := hVeq _
+          _ = (S₁e ++ Schke ++ V).onTy (Ty.fvar v) := by rw [Subst.onTy_append, Subst.onTy_append]
+      have hmain : V.onCtx (Schke.onCtx (S₁e.onCtx ctx)) = S.onCtx ctx := by
+        have hc : (S₁e ++ Schke ++ V).onCtx ctx = S.onCtx ctx :=
+          Subst.onCtx_congr (fun v hv => (hagSchkV v hv).symm) hbelow
+        rwa [Subst.onCtx_append, Subst.onCtx_append] at hc
+      -- escape B: a leak of `Ys` into the threaded env survives into `(S.onCtx ctx).env`
+      have hesc2 : ∀ y ∈ freshVars Φ σ.paramCount,
+          y ∉ (Schke.onCtx (S₁e.onCtx ctx)).env.freeVars := by
+        intro Y hY hmem
+        have hVfixY : V.onTy (Ty.fvar Y) = Ty.fvar Y := hVK Y (List.mem_append_right _ hY)
+        obtain ⟨M, hM, hYM⟩ := Env.mem_freeVars_iff.mp hmem
+        have hgo : Y ∈ (V.onCtx (Schke.onCtx (S₁e.onCtx ctx))).env.freeVars := by
+          refine Env.mem_freeVars_iff.mpr ⟨V.onPolyTy M, ?_, ?_⟩
+          · simp only [Subst.onCtx, Subst.onEnv]; exact List.mem_map.mpr ⟨M, hM, rfl⟩
+          · simp only [Subst.onPolyTy]
+            exact Ty.mem_freeVars_onTy_iff.mpr ⟨Y, hYM, by rw [hVfixY]; simp [Ty.freeVars]⟩
+        rw [hmain] at hgo
+        exact hBenv Y hY hgo
+      -- body: reconstruct over `V`, then drive the body IH
+      have hwf₁ := Subst.onCtx_wf hS₁elc hwf
+      have hwfSchk := Subst.onCtx_wf (UnifyRel.lc hSchke hτ₁elc hBlc) hwf₁
+      have hwfB : CtxWF { (Schke.onCtx (S₁e.onCtx ctx)) with
+          env := σ :: (Schke.onCtx (S₁e.onCtx ctx)).env } := by
         intro N hN; rcases List.mem_cons.mp hN with rfl | hN
         · exact hσwf
         · exact hwfSchk N hN
-      have hσopen : Ty.BelowFvars (Φ₁' + σd.paramCount)
-          (σd.openVars (freshVars Φ₁' σd.paramCount)) :=
-        Ty.openVars_belowFvars (Ty.BelowFvars.of_noFreeVars hσnfv')
-          (fun x hx => by have := freshVars_lt x hx; omega)
-      have hSchkbelow : ∀ p ∈ Schk, Ty.BelowFvars (Φ₁' + σd.paramCount) p.2 :=
-        UnifyRel.belowFvars hSchk (hbelowτ₁.mono (by omega)) hσopen
-      have hbelowSchk : CtxBelow (Φ₁' + σd.paramCount) (Schk.onCtx (S₁'.onCtx ctx)) :=
-        Subst.onCtx_below hSchkbelow (by omega) (Subst.onCtx_below hbelowS₁ hle hbelow)
-      have hbelowB : CtxBelow (Φ₁' + σd.paramCount) { (Schk.onCtx (S₁'.onCtx ctx)) with
-          env := σd :: (Schk.onCtx (S₁'.onCtx ctx)).env } := by
+      have hσbelow : Ty.BelowFvars Φ₁e σ.body :=
+        Ty.BelowFvars.of_freeVars_lt (fun v hv => by have := hKΦ v (hKσ v hv); omega)
+      have hσopen' : Ty.BelowFvars Φ₁e (σ.openVars (freshVars Φ σ.paramCount)) :=
+        Ty.openVars_belowFvars hσbelow (fun x hx => by have := freshVars_lt x hx; omega)
+      have hSchkbelow : ∀ p ∈ Schke, Ty.BelowFvars Φ₁e p.2 :=
+        UnifyRel.belowFvars hSchke hbelowτ₁ hσopen'
+      have hbelowSchk : CtxBelow Φ₁e (Schke.onCtx (S₁e.onCtx ctx)) :=
+        Subst.onCtx_below hSchkbelow (le_refl _) (Subst.onCtx_below hbelowS₁ hle1 hbelowN)
+      have hbelowB : CtxBelow Φ₁e { (Schke.onCtx (S₁e.onCtx ctx)) with
+          env := σ :: (Schke.onCtx (S₁e.onCtx ctx)).env } := by
         intro N hN; rcases List.mem_cons.mp hN with rfl | hN
-        · exact Ty.BelowFvars.of_noFreeVars hσnfv'
+        · exact hσbelow
         · exact hbelowSchk N hN
-      have hmain : V.onCtx (Schk.onCtx (S₁'.onCtx ctx))
-          = (S1d ++ Schkd ++ S2d).onCtx ctx := by
-        have hc : (S₁' ++ Schk ++ V).onCtx ctx = (S1d ++ Schkd ++ S2d).onCtx ctx :=
-          Subst.onCtx_congr (fun v hv => (hagSchkV v hv).symm) hbelow
-        rwa [Subst.onCtx_append, Subst.onCtx_append] at hc
-      have hbodyV : TypeOfHM (V.onCtx { (Schk.onCtx (S₁'.onCtx ctx)) with
-          env := σd :: (Schk.onCtx (S₁'.onCtx ctx)).env }) body τ := by
-        show TypeOfHM ⟨V.onPolyTy σd :: V.onEnv (Schk.onCtx (S₁'.onCtx ctx)).env,
-            (Schk.onCtx (S₁'.onCtx ctx)).ctors⟩ body τ
-        rw [Subst.onPolyTy_eq_self_of_closed hσnfv',
-            show V.onEnv (Schk.onCtx (S₁'.onCtx ctx)).env
-                = ((S1d ++ Schkd ++ S2d).onCtx ctx).env from congrArg Ctx.env hmain]
+      have hVσ_fix : V.onPolyTy σ = σ := by
+        obtain ⟨pcc, b⟩ := σ
+        simp only [Subst.onPolyTy, PolyTy.mk.injEq, true_and]
+        exact Subst.onTy_eq_self_of_fixes (fun v hv => hVK v (List.mem_append_left _ (hKσ v hv)))
+      have hbodyV : TypeOfHM (V.onCtx { (Schke.onCtx (S₁e.onCtx ctx)) with
+          env := σ :: (Schke.onCtx (S₁e.onCtx ctx)).env }) body τ := by
+        show TypeOfHM ⟨V.onPolyTy σ :: V.onEnv (Schke.onCtx (S₁e.onCtx ctx)).env,
+            (Schke.onCtx (S₁e.onCtx ctx)).ctors⟩ body τ
+        rw [hVσ_fix, show V.onEnv (Schke.onCtx (S₁e.onCtx ctx)).env = (S.onCtx ctx).env from
+            congrArg Ctx.env hmain]
         exact hbodyD
-      obtain ⟨_, _, _, _, hinfbody, _, _, _⟩ := Infer.complete hwfB hbelowB hVlc hbodyV
-      obtain ⟨⟨⟨Φ₂', S₂', τ₂'⟩, hbody'⟩, hebody⟩ :=
-        Option.isSome_iff_exists.mp (ihb hwfB hbelowB hinfbody)
-      -- drive the executable `inferCore` through its annotated-`let` arm
-      rw [inferCore]
-      simp only [herhs]
-      rw [dif_pos (PolyTy.wf_iff_bvarsBelow.mpr hσwf),
-          dif_pos (Ty.noFreeVars_iff_freeVars_nil.mp hσnfv')]
-      simp only [heuni]
-      rw [dif_pos hescA, dif_pos hescB]
+      obtain ⟨_, _, _, _, Dbody, _, _, _, _, hSbodyK⟩ := Infer.completeAt body K hwfB hbelowB hVlc
+        (fun k hk => by have := hKΦ k hk; have := hle1; omega) hKbody
+        (fun k hk => hVK k (List.mem_append_left _ hk)) hbodyV
+      have hbodySome := ihb K hwfB hbelowB
+        (fun k hk => by have := hKΦ k hk; have := hle1; omega) hKbody hSbodyK Dbody
+      obtain ⟨⟨⟨Φ₂e, S₂e, τ₂e⟩, hbodye, hav₂⟩, hebody⟩ := Option.isSome_iff_exists.mp hbodySome
+      -- drive the executable annotated-`let` arm
+      rw [inferCore, dif_pos (PolyTy.wf_iff_bvarsBelow.mpr hσwf)]
+      simp only [herhs, heuni]
+      rw [dif_pos hesc1, dif_pos hesc2]
       simp only [hebody, Option.isSome_some]
 
 /-- The explicit unifier behind the `fst`/`snd` `unify` step: a *doubled*
@@ -11531,18 +11588,53 @@ theorem inferCore_complete_match {scrut : Expr} {branches : List (MatchPattern �
 /-- **`inferCore` completeness, assembled.** For every expression, a (WF,
     frontier-bounded) `Infer` derivation entails that `inferCore` succeeds. -/
 theorem inferCore_complete : ∀ e, InferCoreComplete e := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit p => exact inferCore_complete_prim
-  | pair a b iha ihb => exact inferCore_complete_pair iha ihb
-  | lambda ann body ih => exact inferCore_complete_lambda ih
-  | app f inp ihf ihi => exact inferCore_complete_app ihf ihi
-  | letIn ann be body ihbe ihbody => exact inferCore_complete_letIn ihbe ihbody
-  | fst e ih => exact inferCore_complete_fst ih
-  | snd e ih => exact inferCore_complete_snd ih
-  | var n => exact inferCore_complete_var
-  | ctor nm => exact inferCore_complete_ctor
-  | match_ scrut branches ihscrut ihbranches => exact inferCore_complete_match ihscrut ihbranches
+  -- Strong induction on `e.size`: the annotated-`let` case needs completeness of
+  -- the *opened* rhs `rhs.openTyVars Ys`, which is not a structural subterm but has
+  -- the same size (`Expr.size_openTyVars`).
+  suffices h : ∀ n, ∀ e : Expr, e.size ≤ n → InferCoreComplete e by
+    exact fun e => h e.size e (le_refl _)
+  intro n
+  induction n with
+  | zero => intro e he; exfalso; cases e <;> simp only [Expr.size] at he <;> omega
+  | succ n ih =>
+    intro e he
+    cases e with
+    | primLit p => exact inferCore_complete_prim
+    | pair a b =>
+      exact inferCore_complete_pair (ih a (by simp only [Expr.size] at he; omega))
+        (ih b (by simp only [Expr.size] at he; omega))
+    | lambda ann body => exact inferCore_complete_lambda (ih body (by simp only [Expr.size] at he; omega))
+    | app f arg =>
+      exact inferCore_complete_app (ih f (by simp only [Expr.size] at he; omega))
+        (ih arg (by simp only [Expr.size] at he; omega))
+    | letIn ann be body =>
+      refine inferCore_complete_letIn (ih be (by simp only [Expr.size] at he; omega))
+        (fun Ys => ih (be.openTyVars Ys)
+          (by rw [Expr.size_openTyVars]; simp only [Expr.size] at he; omega))
+        (ih body (by simp only [Expr.size] at he; omega))
+    | fst e => exact inferCore_complete_fst (ih e (by simp only [Expr.size] at he; omega))
+    | snd e => exact inferCore_complete_snd (ih e (by simp only [Expr.size] at he; omega))
+    | var i => exact inferCore_complete_var
+    | ctor name => exact inferCore_complete_ctor
+    | match_ scrut branches =>
+      refine inferCore_complete_match (ih scrut (by simp only [Expr.size] at he; omega)) ?_
+      intro pat e' hbr
+      refine ih e' ?_
+      have hb : ∀ (br : MatchPattern × Expr) (bs : List (MatchPattern × Expr)),
+          br ∈ bs → br.2.size ≤ Expr.sizeBranches bs := by
+        intro br bs
+        induction bs with
+        | nil => intro hbs; simp at hbs
+        | cons hd tl ihtl =>
+          intro hbs
+          obtain ⟨p2, b2⟩ := hd
+          simp only [Expr.sizeBranches]
+          rcases List.mem_cons.mp hbs with h | h
+          · have hbb : br.2.size = b2.size := by rw [h]
+            omega
+          · have := ihtl h; omega
+      have hble : e'.size ≤ Expr.sizeBranches branches := hb (pat, e') branches hbr
+      simp only [Expr.size] at he; omega
 
 /-- **`infer` completeness.** Algorithm W succeeds whenever the expression is
     declaratively typeable under a well-formed, frontier-bounded context. -/
