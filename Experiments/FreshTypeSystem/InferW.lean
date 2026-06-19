@@ -4129,18 +4129,16 @@ theorem UnifyRel.complete {a b : Ty} {U : Subst}
     (ha : a.IsLC) (hb : b.IsLC) (hU : Unifies U a b) : ∃ S, UnifyRel a b S :=
   (UnifyRel.complete_aux (2 * (U.onTy a).size + 1)).1 (by omega) ha hb hU
 
-/-! ### EXPERIMENT (rigidity-aware unification completeness)
+/-! ### Rigidity-aware unification completeness
 
-Validating lemma for the planned move from post-hoc escape checks to *structural*
-skolem rigidity. Claim: the **symmetric** `UnifyRel` can always be oriented to
-**avoid a rigid set `K`**, given only that some LC unifier `U` keeps every
-`k ∈ K` fixed — crucially with NO restriction that one operand's free vars lie in
-`K` (the `b.freeVars ⊆ Ys` hypothesis that broke `OUnify.skolem_escape` under
-D2). Mirrors `OUnify.complete_aux`, but: var–var is oriented away from `K`; a
-rigid var meeting a non-variable is *vacuous* (`U` fixes it, so it can't equal a
-non-var image); and the structural recursion threads the `K`-fixing witness via
-`greatest_K`. The produced `S` avoids `K` by construction, so `hesc1` becomes
-structural rather than a property to re-establish. -/
+The **symmetric** `UnifyRel` can always be oriented to **avoid a rigid set `K`**,
+given only that some LC unifier `U` keeps every `k ∈ K` fixed — crucially with NO
+restriction that one operand's free vars lie in `K`. The structural recursion
+threads the `K`-fixing witness via `greatest_K`: var–var is oriented away from
+`K`, and a rigid var meeting a non-variable is *vacuous* (`U` fixes it, so it
+can't equal a non-var image). The produced `S` avoids `K` by construction, so the
+no-skolem-escape obligation (`hesc1`) is structural rather than a property to
+re-establish — this is what replaced the old post-hoc escape-check approach. -/
 theorem UnifyRel.complete_K_aux {K : List Nat} : ∀ (N : Nat),
     (∀ {a b : Ty} {U : Subst}, 2 * (U.onTy a).size < N → a.IsLC → b.IsLC →
         (∀ p ∈ U, p.2.IsLC) → Unifies U a b → (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) →
@@ -4371,10 +4369,10 @@ theorem UnifyRel.complete_K_aux {K : List Nat} : ∀ (N : Nat),
             · exact hS₁K p h
             · exact hS₂K p h⟩
 
-/-- Validating wrapper: a `K`-fixing LC unifier of two LC types yields a
-    `UnifyRel` derivation that **avoids `K`** — with no side-condition on the
-    operands' free variables. This is the clean replacement for
-    `OUnify.skolem_escape` + `exists_skolem_unifier`. -/
+/-- A `K`-fixing LC unifier of two LC types yields a `UnifyRel` derivation that
+    **avoids `K`** — with no side-condition on the operands' free variables. The
+    rigidity-aware orientation that makes annotated-`let` completeness's `hesc1`
+    structural. -/
 theorem UnifyRel.complete_K {K : List Nat} {a b : Ty} {U : Subst}
     (ha : a.IsLC) (hb : b.IsLC) (hUlc : ∀ p ∈ U, p.2.IsLC)
     (hU : Unifies U a b) (hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k) :
@@ -5073,15 +5071,12 @@ theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
 
 /-! ### Kernel for annotated-`let` completeness
 
-The annotated `let` rule skolemizes `σ` with fresh rigid names
-`Ys = freshVars Φ₁ σ.paramCount`, unifies the rhs's principal type `τ₁` with the
-skolem opening `σ.openVars Ys`, and escape-checks that the MGU `Schk` binds no
-`Y`. The completeness proofs all reduce to: (a) that unification succeeds, and
-(b) the unification-orientation fact that `Schk` binds none of the `Ys`. The
-helpers below package the shared reasoning: extracting a typing at a *specific*
-opening (`typeOfHM_at_block`), building a `Ys`-fixing unifier from the
-declarative residual (`exists_skolem_unifier`), and the orientation kernel
-itself (`OUnify` / `OUnify.skolem_escape`). -/
+The annotated `let` rule skolemizes `σ` with fresh rigid names `Ys`, infers the
+*opened* rhs at the rigid set `K ∪ Ys`, and unifies the rhs's principal type `τ₁`
+with the skolem opening `σ.openVars Ys`. Rigidity is structural: the rhs residual
+`R₁` fixes `K ∪ Ys`, so `UnifyRel.complete_K` yields an MGU `Schk` that avoids
+`Ys` (`hesc1`) by construction. The helper below extracts a typing at one
+*specific* opening `Ys` from the cofinite premise (`typeOfHM_at_block`). -/
 
 /-- From the cofinite "types at every fresh opening of `σ`" premise, extract a
     typing at one *specific* opening `Ys` (any list of the right length): pick a
@@ -7653,12 +7648,12 @@ end
 
 /-! ### Annotated-`let` completeness (relocated after `complete'` / `dom_mem`)
 
-The annotated-`let` principality core needs the orientation kernel
-(`exists_skolem_unifier`, `OUnify`), the reorientation lemma `Infer.complete'`
-(to pull the rhs's typing back to the *specific* skolem opening), and the
-`UnifyRel.dom_mem` domain bound (for the second-escape argument). All three are
-now in scope, so the `letIn` completeness case lemma — and `Infer.completeAt`
-itself — are assembled here. -/
+The annotated-`let` principality core (`Infer.complete_letIn_ann_aux`) is
+assembled here, now that its ingredients are in scope: the rigidity-aware
+unification completeness `UnifyRel.complete_K` (for `hesc1` — the MGU avoids the
+skolems by construction), the `greatest_K` factoring (for the direct `hesc2`
+argument), and the `UnifyRel.dom_mem` domain bound. `Infer.completeAt` itself is
+assembled here too. -/
 
 
 /-- The **annotated** `letIn` principality core (rigidity-aware). Choose a skolem
@@ -9148,7 +9143,7 @@ substitutions/fresh-vars, so this is Algorithm-W completeness *for the function*
 each recursive case transfers the typing to the function's intermediate state
 (reusing `Infer.complete'` / `InferBranches.complete'`), and `app`/`fst`/`snd`/
 `match_` additionally rebuild the explicit unifier (mirroring the `complete_*_aux`
-dodges) to discharge `unifyCore` via `unifyCore_complete_aux`. -/
+dodges) to discharge the rigidity-aware `unifyCoreK` via `unifyCoreK_complete`. -/
 
 /-! ### Gap-avoidance (domain/range locality of `Infer` substitutions)
 
