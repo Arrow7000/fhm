@@ -10875,11 +10875,13 @@ theorem inferCore_complete_letIn {ann : Option PolyTy} {rhs body : Expr}
 /-- The explicit unifier behind the `fst`/`snd` `unify` step: a *doubled*
     `exists_app_unifier` (two fresh names `W`, `W+1`). Given a residual `R₁`
     sending `τe` to `pair τα τβ`, `U` unifies `τe` with the pair of fresh vars. -/
-theorem exists_pair_unifier {τe τα τβ : Ty} {Φ₁ : Nat} {R₁ : Subst}
+theorem exists_pair_unifier {τe τα τβ : Ty} {Φ₁ : Nat} {R₁ : Subst} {K : List Nat}
     (htye : R₁.onTy τe = Ty.pair τα τβ)
     (hΦ₁τe : Φ₁ ∉ τe.freeVars) (hΦ₁1τe : Φ₁ + 1 ∉ τe.freeVars)
-    (hR₁ : ∀ p ∈ R₁, p.2.IsLC) (hαLC : τα.IsLC) (hβLC : τβ.IsLC) :
-    ∃ U, Unifies U τe (Ty.pair (Ty.fvar Φ₁) (Ty.fvar (Φ₁ + 1))) ∧ (∀ p ∈ U, p.2.IsLC) := by
+    (hR₁ : ∀ p ∈ R₁, p.2.IsLC) (hαLC : τα.IsLC) (hβLC : τβ.IsLC)
+    (hR₁K : ∀ k ∈ K, R₁.onTy (.fvar k) = .fvar k) (hΦ₁K : ∀ k ∈ K, k < Φ₁) :
+    ∃ U, Unifies U τe (Ty.pair (Ty.fvar Φ₁) (Ty.fvar (Φ₁ + 1))) ∧ (∀ p ∈ U, p.2.IsLC) ∧
+      (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) := by
   obtain ⟨W, hWge, hWfresh⟩ := exists_fresh_block
     (R₁.map Prod.fst ++ R₁.flatMap (fun p => p.2.freeVars)
       ++ τα.freeVars ++ τβ.freeVars) Φ₁ 2
@@ -10975,7 +10977,7 @@ theorem exists_pair_unifier {τe τα τβ : Ty} {Φ₁ : Nat} {R₁ : Subst}
     · obtain rfl := List.mem_singleton.mp hp'
       simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
       exact ⟨hW1P, hW1Q⟩
-  refine ⟨U, ?_, ?_⟩
+  refine ⟨U, ?_, ?_, ?_⟩
   · show U.onTy τe = U.onTy (Ty.pair (Ty.fvar Φ₁) (Ty.fvar (Φ₁ + 1)))
     rw [hUτe, Subst.onTy_pair, hUφ₁, hUφ₂]
   · rw [hUdef]
@@ -10991,15 +10993,34 @@ theorem exists_pair_unifier {τe τα τβ : Ty} {Φ₁ : Nat} {R₁ : Subst}
       · exact hαLC
       · obtain rfl := List.mem_singleton.mp hp''
         exact hβLC
+  · intro k hk
+    have hkΦ := hΦ₁K k hk
+    rw [hUonTy,
+      show Subst.onTy [(Φ₁, Ty.fvar W), (Φ₁ + 1, Ty.fvar (W + 1))] (Ty.fvar k) = Ty.fvar k from
+        Ty.substFvars_eq_self_of_no_key (by
+          intro p hp
+          rcases List.mem_cons.mp hp with rfl | hp'
+          · simp only [Ty.freeVars, List.mem_singleton]; omega
+          · obtain rfl := List.mem_singleton.mp hp'; simp only [Ty.freeVars, List.mem_singleton]; omega),
+      hR₁K k hk]
+    exact Ty.substFvars_eq_self_of_no_key (by
+      intro p hp
+      rcases List.mem_cons.mp hp with rfl | hp'
+      · simp only [Ty.freeVars, List.mem_singleton]; have := hWge; omega
+      · obtain rfl := List.mem_singleton.mp hp'; simp only [Ty.freeVars, List.mem_singleton]; have := hWge; omega)
 
 /-- Executable completeness, `fst` case. -/
 theorem inferCore_complete_fst {e : Expr} (ihe : InferCoreComplete e) :
     InferCoreComplete (.fst e) := by
-  intro Φ ctx Φ' S τ hwf hbelow h
-  have happ := Infer.sound h hwf
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
+  have happ := Infer.sound h hwf K hKΦ hKe hSK
   have hSlc : ∀ p ∈ S, p.2.IsLC := (Infer.lc h hwf).2
   cases h with
   | @fst _ _ _ Φ1d S1d S2d τed hpe huniD =>
+    simp only [Expr.tyFreeVars] at hKe
+    have hKfixS : ∀ k ∈ K, (S1d ++ S2d).onTy (.fvar k) = .fvar k :=
+      fun k hk => Subst.fixes_fvar_of_avoids hSK hk
+    have hSK₁ : ∀ p ∈ S1d, p.1 ∉ K := fun p hp => hSK p (List.mem_append_left _ hp)
     obtain ⟨τβ, hfty⟩ : ∃ τβ,
         TypeOfHM ((S1d ++ S2d).onCtx ctx) e (.pair (S2d.onTy (.fvar Φ1d)) τβ) := by
       cases happ with | fst hh => exact ⟨_, hh⟩
@@ -11007,28 +11028,33 @@ theorem inferCore_complete_fst {e : Expr} (ihe : InferCoreComplete e) :
       have := TypeOfHM.regular hfty; cases this with | pair h _ => exact h
     have hβLC : τβ.IsLC := by
       have := TypeOfHM.regular hfty; cases this with | pair _ h => exact h
-    have hspe := ihe hwf hbelow hpe
-    obtain ⟨⟨⟨Φ₁, S₁, τe⟩, hinfe⟩, hee⟩ := Option.isSome_iff_exists.mp hspe
-    obtain ⟨R₁, hagpe, htye, hR₁⟩ := Infer.complete' hinfe hwf hbelow hSlc hfty
+    have hspe := ihe K hwf hbelow hKΦ hKe hSK₁ hpe
+    obtain ⟨⟨⟨Φ₁, S₁, τe⟩, hinfe, hav⟩, hee⟩ := Option.isSome_iff_exists.mp hspe
+    obtain ⟨R₁, hagpe, htye, hR₁, hR₁K⟩ := Infer.complete' hinfe hwf hbelow hSlc K hKΦ hKe hKfixS hfty
     have hτeLC : τe.IsLC := (Infer.lc hinfe hwf).1
-    have hbpe := Infer.belowFvars hinfe hbelow
+    have hbpe := Infer.belowFvars hinfe hbelow (fun y hy => hKΦ y (hKe y hy))
     have hΦ₁τe : Φ₁ ∉ τe.freeVars := fun hm => by have := hbpe.1.mem_lt _ hm; omega
     have hΦ₁1τe : Φ₁ + 1 ∉ τe.freeVars := fun hm => by have := hbpe.1.mem_lt _ hm; omega
-    obtain ⟨U, hUni, _⟩ := exists_pair_unifier htye.symm hΦ₁τe hΦ₁1τe hR₁ hαLC hβLC
-    have huniSome : (unifyCore τe (Ty.pair (Ty.fvar Φ₁) (Ty.fvar (Φ₁ + 1)))).isSome :=
-      (unifyCore_complete_aux (2 * (U.onTy τe).size + 1)).1 (by omega)
-        hτeLC (ContainsBvarsUpTo.pair ContainsBvarsUpTo.fvar ContainsBvarsUpTo.fvar) hUni
-    obtain ⟨⟨S₂', _⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
+    obtain ⟨U, hUni, hUlc, hUK⟩ := exists_pair_unifier htye.symm hΦ₁τe hΦ₁1τe hR₁ hαLC hβLC hR₁K
+      (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hinfe))
+    have huniSome : (unifyCoreK K τe (Ty.pair (Ty.fvar Φ₁) (Ty.fvar (Φ₁ + 1)))).isSome :=
+      unifyCoreK_complete hτeLC (ContainsBvarsUpTo.pair ContainsBvarsUpTo.fvar ContainsBvarsUpTo.fvar)
+        hUlc hUni hUK
+    obtain ⟨⟨S₂', _, _⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
     rw [inferCore]; simp only [hee, heuni, Option.isSome_some]
 
 /-- Executable completeness, `snd` case. -/
 theorem inferCore_complete_snd {e : Expr} (ihe : InferCoreComplete e) :
     InferCoreComplete (.snd e) := by
-  intro Φ ctx Φ' S τ hwf hbelow h
-  have happ := Infer.sound h hwf
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
+  have happ := Infer.sound h hwf K hKΦ hKe hSK
   have hSlc : ∀ p ∈ S, p.2.IsLC := (Infer.lc h hwf).2
   cases h with
   | @snd _ _ _ Φ1d S1d S2d τed hpe huniD =>
+    simp only [Expr.tyFreeVars] at hKe
+    have hKfixS : ∀ k ∈ K, (S1d ++ S2d).onTy (.fvar k) = .fvar k :=
+      fun k hk => Subst.fixes_fvar_of_avoids hSK hk
+    have hSK₁ : ∀ p ∈ S1d, p.1 ∉ K := fun p hp => hSK p (List.mem_append_left _ hp)
     obtain ⟨τα, hfty⟩ : ∃ τα,
         TypeOfHM ((S1d ++ S2d).onCtx ctx) e (.pair τα (S2d.onTy (.fvar (Φ1d + 1)))) := by
       cases happ with | snd hh => exact ⟨_, hh⟩
@@ -11036,18 +11062,19 @@ theorem inferCore_complete_snd {e : Expr} (ihe : InferCoreComplete e) :
       have := TypeOfHM.regular hfty; cases this with | pair h _ => exact h
     have hβLC : (S2d.onTy (.fvar (Φ1d + 1))).IsLC := by
       have := TypeOfHM.regular hfty; cases this with | pair _ h => exact h
-    have hspe := ihe hwf hbelow hpe
-    obtain ⟨⟨⟨Φ₁, S₁, τe⟩, hinfe⟩, hee⟩ := Option.isSome_iff_exists.mp hspe
-    obtain ⟨R₁, hagpe, htye, hR₁⟩ := Infer.complete' hinfe hwf hbelow hSlc hfty
+    have hspe := ihe K hwf hbelow hKΦ hKe hSK₁ hpe
+    obtain ⟨⟨⟨Φ₁, S₁, τe⟩, hinfe, hav⟩, hee⟩ := Option.isSome_iff_exists.mp hspe
+    obtain ⟨R₁, hagpe, htye, hR₁, hR₁K⟩ := Infer.complete' hinfe hwf hbelow hSlc K hKΦ hKe hKfixS hfty
     have hτeLC : τe.IsLC := (Infer.lc hinfe hwf).1
-    have hbpe := Infer.belowFvars hinfe hbelow
+    have hbpe := Infer.belowFvars hinfe hbelow (fun y hy => hKΦ y (hKe y hy))
     have hΦ₁τe : Φ₁ ∉ τe.freeVars := fun hm => by have := hbpe.1.mem_lt _ hm; omega
     have hΦ₁1τe : Φ₁ + 1 ∉ τe.freeVars := fun hm => by have := hbpe.1.mem_lt _ hm; omega
-    obtain ⟨U, hUni, _⟩ := exists_pair_unifier htye.symm hΦ₁τe hΦ₁1τe hR₁ hαLC hβLC
-    have huniSome : (unifyCore τe (Ty.pair (Ty.fvar Φ₁) (Ty.fvar (Φ₁ + 1)))).isSome :=
-      (unifyCore_complete_aux (2 * (U.onTy τe).size + 1)).1 (by omega)
-        hτeLC (ContainsBvarsUpTo.pair ContainsBvarsUpTo.fvar ContainsBvarsUpTo.fvar) hUni
-    obtain ⟨⟨S₂', _⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
+    obtain ⟨U, hUni, hUlc, hUK⟩ := exists_pair_unifier htye.symm hΦ₁τe hΦ₁1τe hR₁ hαLC hβLC hR₁K
+      (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hinfe))
+    have huniSome : (unifyCoreK K τe (Ty.pair (Ty.fvar Φ₁) (Ty.fvar (Φ₁ + 1)))).isSome :=
+      unifyCoreK_complete hτeLC (ContainsBvarsUpTo.pair ContainsBvarsUpTo.fvar ContainsBvarsUpTo.fvar)
+        hUlc hUni hUK
+    obtain ⟨⟨S₂', _, _⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
     rw [inferCore]; simp only [hee, heuni, Option.isSome_some]
 /-- Function-completeness for a branch list: given a (well-formed,
     frontier-bounded) `InferBranches` derivation, `inferBranchesCore` succeeds.
