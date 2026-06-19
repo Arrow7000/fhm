@@ -11997,3 +11997,145 @@ theorem typecheck_preservation {ctors : CtorEnv} {e e' : Expr} {σ : PolyTy}
 #eval principalType [] (.app (.lambda (some (.fvar 5)) (.var 0)) (.primLit (.int 5)))
 -- closed program: seeding is a no-op (`K = []`, floor `= 0`)  ⇒  `∀a. a → a`
 #eval (typecheck [] (.lambda none (.var 0))).map (fun σ => (σ.paramCount, σ.body))
+
+
+/-! ## Audit capstone: the headlines fire on concrete programs
+
+A vacuous theorem (an unsatisfiable premise) cannot be *instantiated* to produce a
+positive result, so the most convincing anti-vacuity check is to drive the public
+pipeline end-to-end on concrete inputs. Because `inferCore`/`unifyCoreK` use
+well-founded recursion (they do not reduce by `rfl`), we witness "`typecheck`
+succeeds" by building the *declarative* `TypeOfHM` derivation and crossing the `↔`
+headlines — never `decide`/`native_decide`. -/
+
+namespace AuditCapstone
+
+/-! ### A typeable program — all three headlines fire -/
+
+/-- `λx. x`. -/
+def polyId : Expr := .lambda none (.var 0)
+
+theorem polyId_typeable : TypeOfHM ⟨[], []⟩ polyId (.arrow (.fvar 0) (.fvar 0)) :=
+  TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
+    (TypeOfHM.var (tyArgs := []) rfl (by intro t ht; cases ht) .fvar)
+
+/-- `typecheck` succeeds, produces a genuine declarative type (soundness), and that
+    type is principal — instantiated on a real program, with no escape hatch. -/
+theorem polyId_headlines_fire :
+    ∃ σ τ, typecheck [] polyId = some σ ∧ σ = genScheme [] [] τ ∧
+      TypeOfHM ⟨[], []⟩ polyId τ ∧
+      ∀ τ₀, TypeOfHM ⟨[], []⟩ polyId τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+  obtain ⟨σ, hσ⟩ := Option.isSome_iff_exists.mp (typecheck_iff.mpr ⟨_, polyId_typeable⟩)
+  obtain ⟨τ, hτeq, hty, hprin⟩ := typecheck_principal hσ
+  exact ⟨σ, τ, hσ, hτeq, hty, hprin⟩
+
+/-! ### An ill-typed program — completeness's contrapositive is not vacuous -/
+
+/-- `5 5` — applying a non-function. -/
+def appFiveFive : Expr := .app (.primLit (.int 5)) (.primLit (.int 5))
+
+theorem appFiveFive_untypeable : ¬ ∃ τ, TypeOfHM ⟨[], []⟩ appFiveFive τ := by
+  rintro ⟨τ, h⟩
+  cases h with
+  | app hf _ => cases hf
+
+theorem appFiveFive_rejected : ¬ (typecheck [] appFiveFive).isSome := by
+  rw [typecheck_iff]; exact appFiveFive_untypeable
+
+/-! ### Open programs — a free top-level annotation var is a RIGID scoped constant
+    (the soundness fix this session). -/
+
+/-- `λ(x : α). x`, with `α` free at the top level. -/
+def openId : Expr := .lambda (some (.fvar 5)) (.var 0)
+
+/-- Accepted, and sound: `α` is rigid, so the only declarative type is `α → α`. -/
+theorem openId_typeable : TypeOfHM ⟨[], []⟩ openId (.arrow (.fvar 5) (.fvar 5)) :=
+  TypeOfHM.lambda .fvar (fun _ h => Option.some.inj h) rfl
+    (TypeOfHM.var (tyArgs := []) rfl (by intro t ht; cases ht) .fvar)
+
+/-- `(λ(x : α). x) 5` — forcing `α := Int` would bind the rigid var. Declaratively
+    untypeable (`α` cannot equal `Int`); the rigidity-seeded executable correctly
+    returns `none`. Before the fix, `inferCore []` wrongly returned `some Int`. -/
+def openMisuse : Expr := .app openId (.primLit (.int 5))
+
+theorem openMisuse_untypeable : ¬ ∃ τ, TypeOfHM ⟨[], []⟩ openMisuse τ := by
+  rintro ⟨τ, h⟩
+  cases h with
+  | app hf ha =>
+    cases ha with
+    | primLitInt =>
+      cases hf with
+      | lambda hpc hann hbctx hbody => exact Ty.noConfusion (hann _ rfl)
+
+theorem openMisuse_rejected : ¬ (typecheck [] openMisuse).isSome := by
+  rw [typecheck_iff]; exact openMisuse_untypeable
+
+/-! ### A polymorphic program — let-generalization + double instantiation -/
+
+/-- `let id : ∀a. a → a = λx. x in id id`. -/
+def idid : Expr :=
+  .letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (.lambda none (.var 0))
+    (.app (.var 0) (.var 0))
+
+theorem idid_typeable : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 0) (.fvar 0)) := by
+  apply TypeOfHM.letIn (M := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (L := [])
+  · show ContainsBvarsUpTo 1 (Ty.arrow (Ty.bvar 0) (Ty.bvar 0))
+    exact .arrow (.bvar (by omega)) (.bvar (by omega))
+  · intro σ' h; exact Option.some.inj h
+  · intro Xs hfresh
+    have hlen : Xs.length = 1 := hfresh.length
+    rcases Xs with _ | ⟨X, _ | ⟨Y, tl⟩⟩
+    · simp at hlen
+    · have hterm : Expr.openBoundTyVars (some (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy)) [X]
+            (.lambda none (.var 0)) = .lambda none (.var 0) := rfl
+      have htype : (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy).openVars [X]
+            = .arrow (.fvar X) (.fvar X) := rfl
+      rw [hterm, htype]
+      exact TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
+        (TypeOfHM.var (tyArgs := []) rfl (by intro t ht; cases ht) .fvar)
+    · simp at hlen
+  · rfl
+  · exact TypeOfHM.app
+      (TypeOfHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+        (tyArgs := [.arrow (.fvar 0) (.fvar 0)]) rfl
+        (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar)
+        (.arrow (.bvar rfl) (.bvar rfl)))
+      (TypeOfHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+        (tyArgs := [.fvar 0]) rfl
+        (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
+        (.arrow (.bvar rfl) (.bvar rfl)))
+
+theorem idid_headlines_fire :
+    ∃ σ τ, typecheck [] idid = some σ ∧ σ = genScheme [] [] τ ∧
+      TypeOfHM ⟨[], []⟩ idid τ ∧
+      ∀ τ₀, TypeOfHM ⟨[], []⟩ idid τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+  obtain ⟨σ, hσ⟩ := Option.isSome_iff_exists.mp (typecheck_iff.mpr ⟨_, idid_typeable⟩)
+  obtain ⟨τ, hτeq, hty, hprin⟩ := typecheck_principal hσ
+  exact ⟨σ, τ, hσ, hτeq, hty, hprin⟩
+
+/-! ### Progress / preservation fire on a concrete erased program -/
+
+/-- `(λx. x) 5` — already annotation-free; beta-reduces to `5`. -/
+def appIdFive : Expr := .app (.lambda none (.var 0)) (.primLit (.int 5))
+
+theorem appIdFive_typeable : TypeOfHM ⟨[], []⟩ appIdFive (.prim .int) :=
+  TypeOfHM.app
+    (TypeOfHM.lambda .prim (fun _ h => Option.noConfusion h) rfl
+      (TypeOfHM.var (tyArgs := []) rfl (by intro t ht; cases ht) .prim))
+    TypeOfHM.primLitInt
+
+open SmallStep in
+/-- Progress fires: the typeable program is not a value, so it steps. -/
+theorem appIdFive_progresses :
+    IsValue appIdFive.eraseTyAnnots ∨ ∃ e', Step appIdFive.eraseTyAnnots e' :=
+  typecheck_progress (typecheck_iff.mpr ⟨_, appIdFive_typeable⟩) (.app (.lambda .var) .primLit)
+
+open SmallStep in
+/-- Preservation fires: stepping the erased program gives a still-typeable reduct. -/
+theorem appIdFive_preserves :
+    ∃ σ', typecheck [] ((Expr.var 0).substN 0 [.primLit (.int 5)]) = some σ' := by
+  obtain ⟨σ, hσ⟩ := Option.isSome_iff_exists.mp (typecheck_iff.mpr ⟨_, appIdFive_typeable⟩)
+  obtain ⟨σ', _, _, hσ', _⟩ := typecheck_preservation hσ (Step.beta (IsValue.primLit _))
+  exact ⟨σ', hσ'⟩
+
+end AuditCapstone
