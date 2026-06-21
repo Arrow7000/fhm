@@ -774,6 +774,15 @@ inductive Step : Expr → Expr → Prop
       FirstMatchingBranch name args.length branches pat body →
       Step (.match_ scrut branches) (body.substN 0 (args.take pat.bindCount))
 
+  /-- Wildcard match reduction. When the scrutinee is a value that is *not* a
+      constructor chain (e.g. an `Int` or a function), it can only be matched by
+      a wildcard. By typing such a match's first branch is a wildcard, so reduce
+      to that branch's body (a wildcard binds nothing). -/
+  | matchWildReduce {scrut body rest} :
+      IsValue scrut →
+      ¬ IsCtorChain scrut →
+      Step (.match_ scrut ((.wildcard, body) :: rest)) body
+
   -- ─── congruence rules (enforce left-to-right CBV) ─────────────────
 
   /-- Reduce the function position of an application. -/
@@ -856,7 +865,10 @@ def step : Expr → Option Expr
     if isValue scrut then
       match getCtorArgs scrut with
       | some (name, args) => findMatchingBranch name args branches
-      | none => none
+      | none =>
+        match branches with
+        | (.wildcard, body) :: _ => some body
+        | _ => none
     else do let scrut' ← step scrut; return .match_ scrut' branches
 
   | _ => none
@@ -918,6 +930,37 @@ private theorem getCtorArgs_of_CtorAppliedTo {e name args}
   induction h with
   | base => simp [getCtorArgs]
   | step _ ih => simp [getCtorArgs, ih]
+
+/-- Every constructor chain is a constructor applied to some arguments. Proved by
+    structural induction on the expression (`IsCtorChain` is mutual with `IsValue`,
+    so we cannot induct on the proof directly). -/
+private theorem CtorAppliedTo_of_IsCtorChain :
+    ∀ {e : Expr}, IsCtorChain e → ∃ name args, CtorAppliedTo e name args := by
+  intro e
+  induction e using Expr.rec_strong with
+  | ctor nm => intro _; exact ⟨nm, [], .base nm⟩
+  | app f v ihf _ =>
+    intro h
+    cases h with
+    | app hf _ =>
+      obtain ⟨name, args, hca⟩ := ihf hf
+      exact ⟨name, args ++ [v], .step hca⟩
+  | primLit p => intro h; cases h
+  | lambda a b _ => intro h; cases h
+  | var n => intro h; cases h
+  | letIn a be b _ _ => intro h; cases h
+  | match_ s br _ _ => intro h; cases h
+
+/-- A constructor chain always decomposes via `getCtorArgs`; contrapositively, a
+    `getCtorArgs = none` term is not a constructor chain. -/
+private theorem getCtorArgs_ne_none_of_IsCtorChain {e : Expr}
+    (h : IsCtorChain e) : getCtorArgs e ≠ none := by
+  obtain ⟨name, args, hca⟩ := CtorAppliedTo_of_IsCtorChain h
+  rw [getCtorArgs_of_CtorAppliedTo hca]; exact nofun
+
+private theorem not_IsCtorChain_of_getCtorArgs_none {e : Expr}
+    (h : getCtorArgs e = none) : ¬ IsCtorChain e :=
+  fun hcc => getCtorArgs_ne_none_of_IsCtorChain hcc h
 
 private theorem findMatchingBranch_to_FirstMatch {name args branches e'}
     (h : findMatchingBranch name args branches = some e') :
@@ -1008,7 +1051,15 @@ theorem step_sound {e e' : Expr} (h : step e = some e') : Step e e' := by
     · rename_i hvscrut
       revert h
       cases hga : getCtorArgs scrut with
-      | none => intro h; exact nomatch h
+      | none =>
+        intro h
+        match branches, h with
+        | (.wildcard, body) :: rest, h =>
+          obtain rfl := Option.some.inj h
+          exact .matchWildReduce (isValue_iff_IsValue.mp hvscrut)
+            (not_IsCtorChain_of_getCtorArgs_none hga)
+        | [], h => exact nomatch h
+        | (.named c n, body) :: rest, h => exact nomatch h
       | some p =>
         obtain ⟨name, args⟩ := p
         intro h
@@ -1035,6 +1086,16 @@ theorem step_complete {e e' : Expr} (h : Step e e') : step e = some e' := by
     have := getCtorArgs_of_CtorAppliedTo hctor
     have := FirstMatch_to_findMatchingBranch hfirst rfl
     unfold step; simp [*]
+  | matchWildReduce hval hnc =>
+    rename_i scrut body rest
+    have hv := isValue_iff_IsValue.mpr hval
+    have hga : getCtorArgs scrut = none := by
+      cases hval with
+      | primLit _ => rfl
+      | lambda _ _ => rfl
+      | ctor name => exact absurd (.ctor name) hnc
+      | ctorApp hch hvv => exact absurd (.app hch hvv) hnc
+    unfold step; simp [hv, hga]
   | appFn _ ih =>
     have := step_some_not_isValue ih
     unfold step; simp [this, ih]
@@ -1584,9 +1645,9 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     TypeOfHM ctx (.ctor name) ty
 
   | match_ :
-    TypeOfHM ctx scrutinee (.customTy tyName tyArgs) →
+    TypeOfHM ctx scrutinee scrutTy →
     branches ≠ [] →
-    (∀ branch ∈ branches, TypeOfMatchBranch ctx branch tyName tyArgs resultTy) →
+    (∀ branch ∈ branches, TypeOfMatchBranch ctx branch scrutTy resultTy) →
     TypeOfHM ctx (.match_ scrutinee branches) resultTy
 
 
@@ -1595,22 +1656,23 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     no cofinite type-var quantifier is needed, and the term-var quantifier
     vanishes under de Bruijn levels. -/
 inductive TypeOfMatchBranch :
-  (ctx : Ctx) → (MatchPattern × Expr) → (tyName : TyName) → (tyArgs : List Ty) → (resultTy : Ty) → Prop
-  | mk {ctor : Ctor} {ctx : Ctx} {c : CtorName} {n : Nat} :
+  (ctx : Ctx) → (MatchPattern × Expr) → (scrutTy : Ty) → (resultTy : Ty) → Prop
+  | mk {ctor : Ctor} {ctx : Ctx} {c : CtorName} {n : Nat} {tyArgs : List Ty} :
     LookupList.get? ctx.ctors c = some ctor →
-    ctor.tyName = tyName →
+    scrutTy = .customTy ctor.tyName tyArgs →
     ctor.paramCount = tyArgs.length →
     n = ctor.contents.length →
     List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents →
     patternBindings = instContents.map PolyTy.mkTrivial →
     bodyCtx = {ctx with env := patternBindings ++ ctx.env} →
     TypeOfHM bodyCtx bodyExpr resultTy →
-    TypeOfMatchBranch ctx (.named c n, bodyExpr) tyName tyArgs resultTy
+    TypeOfMatchBranch ctx (.named c n, bodyExpr) scrutTy resultTy
   /-- A wildcard branch binds nothing and types its body in the unextended
-      context; it imposes no constraint on the scrutinee's constructors. -/
+      context; it imposes no constraint on the scrutinee's type (in particular
+      the scrutinee need not be a `customTy`). -/
   | wildcard {ctx : Ctx} :
     TypeOfHM ctx bodyExpr resultTy →
-    TypeOfMatchBranch ctx (.wildcard, bodyExpr) tyName tyArgs resultTy
+    TypeOfMatchBranch ctx (.wildcard, bodyExpr) scrutTy resultTy
 
 end
 
@@ -2467,12 +2529,12 @@ theorem Ctor.toTy_wf (ctor : Ctor) : ctor.toTy.WF := by
     case of a `rec_strong` proof can destructure it to rebuild each branch. -/
 abbrev TypeOfHM.BranchMotive
     (motive : (ctx : Ctx) → (e : Expr) → (τ : Ty) → TypeOfHM ctx e τ → Prop)
-    (ctx : Ctx) (branch : MatchPattern × Expr) (tyName : TyName)
-    (tyArgs : List Ty) (resultTy : Ty) : Prop :=
-  (∃ (ctor : Ctor) (c : CtorName) (n : Nat) (instContents : List Ty),
+    (ctx : Ctx) (branch : MatchPattern × Expr) (scrutTy : Ty)
+    (resultTy : Ty) : Prop :=
+  (∃ (ctor : Ctor) (c : CtorName) (n : Nat) (tyArgs : List Ty) (instContents : List Ty),
     branch.1 = .named c n ∧
     LookupList.get? ctx.ctors c = some ctor ∧
-    ctor.tyName = tyName ∧
+    scrutTy = .customTy ctor.tyName tyArgs ∧
     ctor.paramCount = tyArgs.length ∧
     n = ctor.contents.length ∧
     List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents ∧
@@ -2540,18 +2602,17 @@ theorem TypeOfHM.rec_strong
       (htyargs : ∀ tyArg ∈ tyArgs, ContainsBvarsUpTo 0 tyArg)
       (hinst : InstantiatesBy tyArgs ctorr.toTy.body ty),
       motive ctx (.ctor name) ty (.ctor hlook htyargs hinst))
-    (match_ : ∀ {ctx : Ctx} {scrutinee : Expr} {tyName : TyName} {tyArgs : List Ty}
+    (match_ : ∀ {ctx : Ctx} {scrutinee : Expr} {scrutTy : Ty}
       {branches : List (MatchPattern × Expr)} {resultTy : Ty}
-      (hscrut : TypeOfHM ctx scrutinee (.customTy tyName tyArgs)) (hne : branches ≠ [])
-      (hfirst : ∃ c n body rest, branches = (MatchPattern.named c n, body) :: rest)
-      (hbrs : ∀ branch ∈ branches, TypeOfMatchBranch ctx branch tyName tyArgs resultTy),
-      motive ctx scrutinee (.customTy tyName tyArgs) hscrut →
-      (∀ branch ∈ branches, TypeOfHM.BranchMotive motive ctx branch tyName tyArgs resultTy) →
-      motive ctx (.match_ scrutinee branches) resultTy (.match_ hscrut hne hfirst hbrs))
+      (hscrut : TypeOfHM ctx scrutinee scrutTy) (hne : branches ≠ [])
+      (hbrs : ∀ branch ∈ branches, TypeOfMatchBranch ctx branch scrutTy resultTy),
+      motive ctx scrutinee scrutTy hscrut →
+      (∀ branch ∈ branches, TypeOfHM.BranchMotive motive ctx branch scrutTy resultTy) →
+      motive ctx (.match_ scrutinee branches) resultTy (.match_ hscrut hne hbrs))
     {ctx : Ctx} {e : Expr} {τ : Ty} (h : TypeOfHM ctx e τ) : motive ctx e τ h := by
   induction h using TypeOfHM.rec
-    (motive_2 := fun ctx br tyName tyArgs resultTy _ =>
-      TypeOfHM.BranchMotive motive ctx br tyName tyArgs resultTy) with
+    (motive_2 := fun ctx br scrutTy resultTy _ =>
+      TypeOfHM.BranchMotive motive ctx br scrutTy resultTy) with
   | primLitUnit => exact primLitUnit
   | primLitInt => exact primLitInt
   | primLitNat => exact primLitNat
@@ -2563,10 +2624,10 @@ theorem TypeOfHM.rec_strong
       exact letIn hwf hann hcofin heq hbody ihcofin ihbody
   | var hlook htyargs hinst => exact var hlook htyargs hinst
   | ctor hlook htyargs hinst => exact ctor hlook htyargs hinst
-  | match_ hscrut hne hfirst hbrs ihscrut ihbrs => exact match_ hscrut hne hfirst hbrs ihscrut ihbrs
-  | mk hlook htyName hpc hcontents hinstC hpb heq hbodyT ih =>
+  | match_ hscrut hne hbrs ihscrut ihbrs => exact match_ hscrut hne hbrs ihscrut ihbrs
+  | mk hlook hscrutEq hpc hcontents hinstC hpb heq hbodyT ih =>
       subst hpb; subst heq
-      exact Or.inl ⟨_, _, _, _, rfl, hlook, htyName, hpc, hcontents, hinstC, hbodyT, ih⟩
+      exact Or.inl ⟨_, _, _, _, _, rfl, hlook, hscrutEq, hpc, hcontents, hinstC, hbodyT, ih⟩
   | wildcard hbodyT ih =>
       exact Or.inr ⟨rfl, hbodyT, ih⟩
 
@@ -2701,21 +2762,17 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
       rw [hopen]
       exact hbe
     · simpa only [Env.substFvar, List.map_cons] using ihbody
-  | match_ hscrut hne hfirst hbrs ihscrut ihbrs =>
+  | match_ hscrut hne hbrs ihscrut ihbrs =>
     simp only [Expr.substTyFvar]
-    have hscrut' := ihscrut
-    simp only [Ty.substFvar, TyList.substFvar_eq_map] at hscrut'
-    refine TypeOfHM.match_ hscrut' ?_ ?_ ?_
+    refine TypeOfHM.match_ ihscrut ?_ ?_
     · intro hcontra
       obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil hne
       rw [hb] at hcontra
       simp [BranchList.substTyFvar] at hcontra
-    · obtain ⟨c, n, body, rest, heq⟩ := hfirst
-      exact ⟨c, n, body.substTyFvar Z U, BranchList.substTyFvar Z U rest, by rw [heq]; rfl⟩
     · intro branch' hmem'
       obtain ⟨pat, body, hmem, rfl⟩ := BranchList.mem_substTyFvar hmem'
       rcases ihbrs (pat, body) hmem with
-        ⟨ct, c, n, instContents, hpat, hlook, htyName, hpc, hcontents, hinstC, _, hbodyIH⟩ |
+        ⟨ct, c, n, tyArgs, instContents, hpat, hlook, hScrutEq, hpc, hcontents, hinstC, _, hbodyIH⟩ |
         ⟨hpat, _, hbodyIH⟩
       · subst hpat
         have hcc : ct.contents.map (Ty.substFvar Z U) = ct.contents := by
@@ -2725,7 +2782,8 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
         have hinstC' := InstantiatesBy.forall2_substFvar (Z := Z) (U := U) h_U_lc hinstC
         rw [hcc] at hinstC'
         rw [Env.substFvar_append, Env.substFvar_map_mkTrivial] at hbodyIH
-        exact TypeOfMatchBranch.mk hlook htyName (by simpa using hpc) hcontents hinstC' rfl rfl hbodyIH
+        refine TypeOfMatchBranch.mk hlook ?_ (by simpa using hpc) hcontents hinstC' rfl rfl hbodyIH
+        rw [hScrutEq]; simp [Ty.substFvar, TyList.substFvar_eq_map]
       · subst hpat
         exact TypeOfMatchBranch.wildcard hbodyIH
 
@@ -2838,20 +2896,18 @@ theorem TypeOfHM.weaken_env
       rwa [Expr.shiftFrom_openBoundTyVars] at hc
     · have hb := ihbody (M :: env_pre') (by rw [hctx, List.cons_append])
       simpa only [List.cons_append, List.length_cons] using hb
-  | match_ hscrut hne hfirst hbrs ihscrut ihbrs =>
+  | match_ hscrut hne hbrs ihscrut ihbrs =>
     intro env_pre' hctx
     simp only [Expr.shiftFrom]
-    refine TypeOfHM.match_ (ihscrut env_pre' hctx) ?_ ?_ ?_
+    refine TypeOfHM.match_ (ihscrut env_pre' hctx) ?_ ?_
     · intro hcontra
       obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil hne
       rw [hb] at hcontra
       simp [BranchList.shiftFrom] at hcontra
-    · obtain ⟨c, n, body, rest, rfl⟩ := hfirst
-      exact ⟨c, n, _, _, rfl⟩
     · intro branch' hmem'
       obtain ⟨pat, body, hmem, rfl⟩ := BranchList.mem_shiftFrom hmem'
       rcases ihbrs (pat, body) hmem with
-        ⟨ct, c, n, instContents, hpat, hlook, htyName, hpc, hcontents, hinstC, _, hbodyIH⟩ |
+        ⟨ct, c, n, tyArgs, instContents, hpat, hlook, hScrutEq, hpc, hcontents, hinstC, _, hbodyIH⟩ |
         ⟨hpat, _, hbodyIH⟩
       · subst hpat
         simp only [MatchPattern.bindCount]
@@ -2861,7 +2917,7 @@ theorem TypeOfHM.weaken_env
         rw [← hinstC.length_eq, ← hcontents,
             show n + env_pre'.length = env_pre'.length + n
               from Nat.add_comm _ _] at hib
-        refine TypeOfMatchBranch.mk hlook htyName hpc hcontents hinstC rfl rfl ?_
+        refine TypeOfMatchBranch.mk hlook hScrutEq hpc hcontents hinstC rfl rfl ?_
         rw [show env_pre' ++ env_extra ++ env = env_pre' ++ (env_extra ++ env)
               from List.append_assoc _ _ _]
         rw [List.append_assoc, List.append_assoc] at hib
@@ -3746,21 +3802,19 @@ theorem TypeOfHM.erase_preserves_typing {ctx : Ctx} {e : Expr} {τ : Ty}
     intro Xs hfresh
     have hc := ihcofin Xs hfresh
     rwa [Expr.eraseTyAnnots_openBoundTyVars] at hc
-  | match_ hscrut hne hfirst hbrs ihscrut ihbrs =>
-    refine TypeOfHM.match_ ihscrut ?_ ?_ ?_
+  | match_ hscrut hne hbrs ihscrut ihbrs =>
+    refine TypeOfHM.match_ ihscrut ?_ ?_
     · intro hcontra
       obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil hne
       rw [hb] at hcontra
       simp [BranchList.eraseTyAnnots] at hcontra
-    · obtain ⟨c, n, body, rest, rfl⟩ := hfirst
-      exact ⟨c, n, _, _, rfl⟩
     · intro branch' hmem'
       obtain ⟨pat, body, hmem, rfl⟩ := BranchList.mem_eraseTyAnnots hmem'
       rcases ihbrs (pat, body) hmem with
-        ⟨ct, c, n, instContents, hpat, hlook, htyName, hpc, hcontents, hinstC, _, hbodyIH⟩ |
+        ⟨ct, c, n, tyArgs, instContents, hpat, hlook, hScrutEq, hpc, hcontents, hinstC, _, hbodyIH⟩ |
         ⟨hpat, _, hbodyIH⟩
       · subst hpat
-        exact TypeOfMatchBranch.mk hlook htyName hpc hcontents hinstC rfl rfl hbodyIH
+        exact TypeOfMatchBranch.mk hlook hScrutEq hpc hcontents hinstC rfl rfl hbodyIH
       · subst hpat
         exact TypeOfMatchBranch.wildcard hbodyIH
 
@@ -4282,46 +4336,59 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
       cases h_ty with
       | match_ h_scrut h_ne h_brs =>
         rcases ihscrut h_scrut h_closed h_exh_scrut hscrut_e with hvs | ⟨scrut', hscrut⟩
-        · -- scrutinee is a value of customTy type ⇒ a constructor chain
-          have hchain := TypeOfHM.canonical_customTy h_scrut hvs
-          obtain ⟨name, args, ctor, tyArgs', consumed, remaining,
-            hcat, hlook, _, hcontents, hforall, hinst⟩ :=
-            TypeOfHM.ctor_chain_inversion hchain h_scrut
-          cases remaining with
-          | cons c rest => simp only [Ty.wrapArrows] at hinst; cases hinst
-          | nil =>
-            simp only [Ty.wrapArrows] at hinst
-            rw [List.append_nil] at hcontents
-            have hlen : args.length = ctor.contents.length := by
-              rw [hcontents]; exact hforall.length_eq
-            -- `hinst : InstantiatesBy _ (.customTy ctor.tyName _) (.customTy Tscrut tyArgs)`;
-            -- inverting it unifies the scrutinee's type name with `ctor.tyName`.
-            cases hinst with
-            | customTy _ =>
-              -- the scrutinee's type name is now `ctor.tyName`. Find a branch
-              -- whose pattern matches the head constructor: a wildcard branch
-              -- covers directly; a named branch lets us pin the exhaustiveness
-              -- type name (via cover1) and invoke coverage (cover2).
-              obtain ⟨⟨pat0, body0⟩, rest0, hbeq⟩ := List.exists_cons_of_ne_nil h_ne
-              have hb0 : (pat0, body0) ∈ branches := by
-                rw [hbeq]; exact List.mem_cons_self
-              have hcover : ∃ pat body, (pat, body) ∈ branches ∧
-                  pat.matchesCtor name args.length = true := by
-                cases pat0 with
-                | wildcard => exact ⟨.wildcard, body0, hb0, rfl⟩
-                | named c0 n0 =>
-                  obtain ⟨pat, body, hmem, hcov⟩ :=
-                    h_match_exh name ctor hlook (by
-                      obtain ⟨ctorB, hlookB, htyB⟩ := h_branch_ty c0 n0 body0 hb0
-                      cases h_brs (.named c0 n0, body0) hb0 with
-                      | mk hlookA htyA _ _ _ _ _ _ =>
-                        rw [← htyA, Option.some.inj (hlookA.symm.trans hlookB)]
-                        exact htyB)
-                  exact ⟨pat, body, hmem, by rw [hlen]; exact hcov⟩
-              obtain ⟨pat, body, hmem, hcov⟩ := hcover
-              obtain ⟨e', hfmb⟩ := findMatchingBranch_of_exists ⟨pat, body, hmem, hcov⟩
-              obtain ⟨pat', body', hfirst, _⟩ := findMatchingBranch_to_FirstMatch hfmb
-              exact .inr ⟨_, .matchReduce hvs hcat hfirst⟩
+        · -- scrutinee is a value; split on whether it is a constructor chain
+          obtain ⟨⟨pat0, body0⟩, rest0, hbeq⟩ := List.exists_cons_of_ne_nil h_ne
+          have hb0 : (pat0, body0) ∈ branches := by rw [hbeq]; exact List.mem_cons_self
+          by_cases hchain : IsCtorChain scrut
+          · -- a constructor chain ⇒ it is some `name` applied to `args`; reduce the matched branch
+            obtain ⟨name, args, hcat⟩ := CtorAppliedTo_of_IsCtorChain hchain
+            have hcover : ∃ pat body, (pat, body) ∈ branches ∧
+                pat.matchesCtor name args.length = true := by
+              cases pat0 with
+              | wildcard => exact ⟨.wildcard, body0, hb0, rfl⟩
+              | named c0 n0 =>
+                -- the named first branch forces `scrutTy` to a `customTy`, so the value
+                -- is a fully-applied constructor; use exhaustiveness for coverage.
+                cases h_brs (.named c0 n0, body0) hb0 with
+                | mk hlook0 hScrut0 _ _ _ _ _ _ =>
+                  obtain ⟨name', args', ctor, tyArgs', consumed, remaining,
+                    hcat', hlook, _, hcontents, hforall, hinst⟩ :=
+                    TypeOfHM.ctor_chain_inversion hchain h_scrut
+                  obtain ⟨rfl, rfl⟩ : name = name' ∧ args = args' := by
+                    have h1 := getCtorArgs_of_CtorAppliedTo hcat
+                    have h2 := getCtorArgs_of_CtorAppliedTo hcat'
+                    rw [h1, Option.some.injEq, Prod.mk.injEq] at h2; exact h2
+                  cases remaining with
+                  | cons d rest =>
+                    simp only [Ty.wrapArrows] at hinst
+                    rw [hScrut0] at hinst; cases hinst
+                  | nil =>
+                    simp only [Ty.wrapArrows] at hinst
+                    rw [List.append_nil] at hcontents
+                    have hlen : args.length = ctor.contents.length := by
+                      rw [hcontents]; exact hforall.length_eq
+                    obtain ⟨ctorB, hlookB, htyB⟩ := h_branch_ty c0 n0 body0 hb0
+                    cases hinst with
+                    | customTy _ =>
+                      obtain ⟨pat, body, hmem, hcov⟩ := h_match_exh name ctor hlook (by
+                        injection hScrut0 with hn _
+                        rw [hn, Option.some.inj (hlook0.symm.trans hlookB)]; exact htyB)
+                      exact ⟨pat, body, hmem, by rw [hlen]; exact hcov⟩
+            obtain ⟨pat, body, hmem, hcov⟩ := hcover
+            obtain ⟨e', hfmb⟩ := findMatchingBranch_of_exists ⟨pat, body, hmem, hcov⟩
+            obtain ⟨pat', body', hfirst, _⟩ := findMatchingBranch_to_FirstMatch hfmb
+            exact .inr ⟨_, .matchReduce hvs hcat hfirst⟩
+          · -- not a constructor chain ⇒ the (necessarily wildcard) first branch fires
+            have hwild : pat0 = .wildcard := by
+              cases pat0 with
+              | wildcard => rfl
+              | named c0 n0 =>
+                cases h_brs (.named c0 n0, body0) hb0 with
+                | mk hlookA hScrutA _ _ _ _ _ _ =>
+                  exact absurd (TypeOfHM.canonical_customTy (hScrutA ▸ h_scrut) hvs) hchain
+            subst hwild
+            rw [hbeq]
+            exact .inr ⟨body0, .matchWildReduce hvs hchain⟩
         · exact .inr ⟨_, .matchScrut hscrut⟩
 
 
@@ -4517,7 +4584,6 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
     | match_ hscrut_e hbr_e =>
     cases h_ty with
     | match_ h_scrut h_ne h_brs =>
-      rename_i tyName tyArgs
       have hmem := hfirst.mem
       have hpeq := hfirst.ctor_eq
       cases pat with
@@ -4537,9 +4603,12 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
         simp only [MatchPattern.bindCount]
         rw [hnlen, List.take_length]
         cases h_brs (.named c n, body) hmem with
-        | mk hlookB htyNameB hpcB hcontentsB hinstB hpbB hctxB hbodyB =>
+        | @mk _ instContents _ _ _ _ ctorB _ _ _ tyArgsB hlookB hScrutB hpcB hcontentsB hinstB hpbB hctxB hbodyB =>
           subst hctxB
           subst hpbB
+          -- the named branch pins the scrutinee's type to `customTy ctorB.tyName tyArgsB`,
+          -- so the (value) scrutinee is a constructor chain.
+          rw [hScrutB] at h_scrut
           have hchain := TypeOfHM.canonical_customTy h_scrut hval
           obtain ⟨name', args', ctorS, tyArgsS, consumedS, remainingS,
             hcatS, hlookS, htyargsS, hcontentsS, hforallS, hinstS⟩ :=
@@ -4549,24 +4618,19 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
           subst haEq
           rw [hcname] at hlookB
           have hcc := Option.some.inj (hlookS.symm.trans hlookB)
-          obtain ⟨instCts, hinstB', hbodyB'⟩ :
-              ∃ ic, List.Forall₂ (InstantiatesBy tyArgs) ctorS.contents ic ∧
-                TypeOfHM ⟨ic.map PolyTy.mkTrivial ++ ctx.env, ctx.ctors⟩ body τ := by
-            refine ⟨_, ?_, hbodyB⟩
-            rw [hcc]; exact hinstB
+          subst ctorB
           cases remainingS with
-          | cons c rest => simp only [Ty.wrapArrows] at hinstS; cases hinstS
+          | cons d rest => simp only [Ty.wrapArrows] at hinstS; cases hinstS
           | nil =>
             rw [List.append_nil] at hcontentsS
             subst hcontentsS
             simp only [Ty.wrapArrows] at hinstS
             cases hinstS with
             | customTy hbvr =>
-              have hpc_len : tyArgs.length = ctorS.paramCount := by
-                rw [hcc]; exact hpcB.symm
-              have hagree : ∀ k, k < ctorS.paramCount → tyArgs[k]? = tyArgsS[k]? := by
+              have hpc_len : tyArgsB.length = ctorS.paramCount := hpcB.symm
+              have hagree : ∀ k, k < ctorS.paramCount → tyArgsB[k]? = tyArgsS[k]? := by
                 intro k hk
-                have hkt : k < tyArgs.length := by omega
+                have hkt : k < tyArgsB.length := by omega
                 have hkr : k < (Ty.bvarRange ctorS.paramCount).length := by
                   rw [hbvr.length_eq]; exact hkt
                 have hrel := List.Forall₂.get hbvr hkr hkt
@@ -4580,23 +4644,30 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
                 | bvar hsome =>
                   rw [hsome]
                   exact List.getElem?_eq_getElem hkt
-              have htyArgs_lc : ∀ t ∈ tyArgs, ContainsBvarsUpTo 0 t := by
+              have htyArgs_lc : ∀ t ∈ tyArgsB, ContainsBvarsUpTo 0 t := by
                 intro t ht
                 obtain ⟨k, hk, rfl⟩ := List.mem_iff_getElem.mp ht
                 have hkpc : k < ctorS.paramCount := by omega
                 have hag := hagree k hkpc
                 rw [List.getElem?_eq_getElem hk] at hag
                 exact htyargsS _ (List.mem_of_getElem? hag.symm)
-              have h_Ms_wf : ∀ M ∈ instCts.map PolyTy.mkTrivial, M.WF := by
+              have h_Ms_wf : ∀ M ∈ instContents.map PolyTy.mkTrivial, M.WF := by
                 intro M hM
                 obtain ⟨ic, hic, rfl⟩ := List.mem_map.mp hM
                 obtain ⟨i, hi, rfl⟩ := List.mem_iff_getElem.mp hic
-                have hrel := List.Forall₂.get hinstB'
-                  (by have := hinstB'.length_eq; omega) hi
+                have hrel := List.Forall₂.get hinstB
+                  (by have := hinstB.length_eq; omega) hi
                 exact InstantiatesBy.preserves_bvars htyArgs_lc hrel
-              have h_vs := InstantiatesBy.build_match_vs hagree ctorS.bound hinstB' hforallS
+              have h_vs := InstantiatesBy.build_match_vs hagree ctorS.bound hinstB hforallS
               exact TypeOfHM.subst_lemma_many (env_post := [])
-                h_Ms_wf hbodyB' h_vs (hbr_e (.named c n) body hmem)
+                h_Ms_wf hbodyB h_vs (hbr_e (.named c n) body hmem)
+  | matchWildReduce hval hnc =>
+    rename_i scrut body rest
+    cases h_ty with
+    | match_ h_scrut h_ne h_brs =>
+      -- the fired branch is the wildcard head; it types `body` directly in `ctx`.
+      cases h_brs (.wildcard, body) (List.mem_cons_self ..) with
+      | wildcard hbodyW => exact hbodyW
   | appFn _ ih =>
     cases he with
     | app hf_e harg_e =>
@@ -4993,6 +5064,10 @@ theorem Step.preserves_isTyErased {e e' : Expr}
       exact Expr.IsTyErased.substN
         (fun a ha => CtorAppliedTo.args_isTyErased hctor hscrut_e a (List.mem_of_mem_take ha))
         (hbr_e _ _ hfirst.mem) 0
+  | matchWildReduce hval hnc =>
+    rename_i scrut body rest
+    cases he with
+    | match_ hscrut_e hbr_e => exact hbr_e _ _ (List.mem_cons_self ..)
   | appFn _ ih => cases he with | app hf ha => exact .app (ih hf) ha
   | appArg hv _ ih => cases he with | app hf ha => exact .app hf (ih ha)
   | letInRhs _ ih => cases he with | letIn hr hb => exact .letIn (ih hr) hb
@@ -5025,6 +5100,11 @@ theorem Step.preserves_exhaustive {ctors : CtorEnv} {e e' : Expr}
       exact AllMatchesExhaustive.substN
         (fun a ha => CtorAppliedTo.args_exhaustive hctor h_scrut a (List.mem_of_mem_take ha))
         (h_bodies.mem hfirst.mem) 0
+  | matchWildReduce hval hnc =>
+    rename_i scrut body rest
+    cases h_exh with
+    | match_ h_scrut h_bodies h_cover1 h_cover2 =>
+      exact h_bodies.mem (List.mem_cons_self ..)
   | appFn _ ih => cases h_exh with | app hf ha => exact .app (ih hf) ha
   | appArg hv _ ih => cases h_exh with | app hf ha => exact .app hf (ih ha)
   | letInRhs _ ih => cases h_exh with | letIn hr hb => exact .letIn (ih hr) hb
