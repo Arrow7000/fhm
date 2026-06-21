@@ -239,7 +239,7 @@ def Surface.Expr.prettyAux (prec : Nat) : Surface.Expr → String
   | .app f x   => prettyParenIf (prec ≥ 2) (Surface.Expr.prettyAux 1 f ++ " " ++ Surface.Expr.prettyAux 2 x)
   | .lambda param ann body =>
       let annStr := match ann with | none => "" | some t => " : " ++ t.pretty
-      prettyParenIf (prec ≥ 1) ("λ" ++ Surface.Pattern.pretty 2 param ++ annStr ++ ". "
+      prettyParenIf (prec ≥ 1) ("\\" ++ Surface.Pattern.pretty 2 param ++ annStr ++ " -> "
         ++ Surface.Expr.prettyAux 0 body)
   | .letIn v ann be body =>
       let annStr := match ann with | none => "" | some σ => " : " ++ σ.pretty
@@ -272,16 +272,20 @@ instance : ToString Surface.Expr := ⟨Surface.Expr.pretty⟩
 
 section SurfaceExamples
 
--- `λ(x, y). if x then [1, 2] else y :: ys`
-#eval toString (Surface.Expr.lambda (.pair (.name (.mk "x")) (.name (.mk "y"))) none
+-- `\(x, y) -> if x then [1, 2] else y :: ys`
+#eval IO.println (Surface.Expr.lambda (.pair (.name (.mk "x")) (.name (.mk "y"))) none
   (.ife (.var (.mk "x"))
     (.list [.primLit (.int 1), .primLit (.int 2)])
     (.cons (.var (.mk "y")) (.var (.mk "ys")))))
 -- `match xs with | Cons h t => h | [] => 0`
-#eval toString (Surface.Expr.match_ (.var (.mk "xs"))
+#eval IO.println (Surface.Expr.match_ (.var (.mk "xs"))
   [(.ctor (.mk "Cons") [.name (.mk "h"), .name (.mk "t")], .var (.mk "h")),
    (.list [], .primLit (.int 0))])
+-- `match xs with | h :: t => h | [] => 0`
+#eval IO.println (Surface.Expr.match_ (.var ⟨"xs"⟩)
+  [(.cons (.name (.mk "h")) (.name (.mk "t")), .var (.mk "h")),
+   (.list [], .primLit (.int 0))])
 -- `∀ a. List a → a`
-#eval toString (⟨[.mk "a"], .arrow (.customTy (.mk "List") [.tvar (.mk "a")]) (.tvar (.mk "a"))⟩ : Surface.PolyTy)
+#eval IO.println (⟨[.mk "a"], .arrow (.customTy (.mk "List") [.tvar (.mk "a")]) (.tvar (.mk "a"))⟩ : Surface.PolyTy)
 
 end SurfaceExamples
