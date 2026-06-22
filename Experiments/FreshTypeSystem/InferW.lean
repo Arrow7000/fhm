@@ -11217,4 +11217,56 @@ theorem matchWild_headlines_fire :
   obtain ⟨τ, hτeq, hty, hprin⟩ := typecheck_principal hσ
   exact ⟨σ, τ, hσ, hτeq, hty, hprin⟩
 
+/-! ### A recursive program — `letRec` typechecks at its principal type
+
+The mutually-recursive group `letRec [f := g; g := f] in f` (`f = g`, `g = f`).
+Under the old disjoint-slice `openGroup` rule this group could NOT be given the
+polymorphic schemes `[∀a.a, ∀a.a]` (the disjoint opening severed the `f`/`g`
+type-sharing — proved unsound vs Damas–Milner for `n > 1`); the shared-monotype
+rule does. Its principal type is `∀a. a`. This is the capstone witness that the
+recursive-binding inference fires end-to-end at the principal type. -/
+
+/-- `letRec [var 1, var 0] (var 0)` — the `f = g; g = f` mutual loop returning `f`. -/
+def mutualRec : Expr := .letRec [.var 1, .var 0] (.var 0)
+
+theorem mutualRec_typeable : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 0) := by
+  refine TypeOfHM.letRec (τs := [.fvar 100, .fvar 100]) (Ms := [⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩])
+    (G := [100]) (L := []) rfl rfl ?_ (by simp) ?_ ?_ rfl ?_
+  · -- every shared monotype is locally closed
+    intro τ hτ; have : τ = Ty.fvar 100 := by simpa using hτ
+    subst this; exact ContainsBvarsUpTo.fvar
+  · -- each body-scheme is the generalisation `∀a. a = genGroup [100] (fvar 100)`
+    intro p hp
+    rw [show [Ty.fvar 100, Ty.fvar 100].zip [(⟨1, .bvar 0⟩ : PolyTy), ⟨1, .bvar 0⟩]
+          = [(Ty.fvar 100, (⟨1, .bvar 0⟩ : PolyTy)), (Ty.fvar 100, ⟨1, .bvar 0⟩)] from rfl] at hp
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hp
+    rcases hp with rfl | rfl <;> rfl
+  · -- the cofinite SHARED opening: both bindings see the SAME fresh name `X`
+    intro Xs hfresh
+    obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp (by simpa using hfresh.length)
+    intro p hp
+    rw [show [Ty.fvar 100, Ty.fvar 100].map (Ty.renameG [100] [X]) = [Ty.fvar X, Ty.fvar X] from rfl] at hp
+    rw [show [Expr.var 1, Expr.var 0].zip [Ty.fvar X, Ty.fvar X]
+          = [(Expr.var 1, Ty.fvar X), (Expr.var 0, Ty.fvar X)] from rfl] at hp
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hp
+    rcases hp with rfl | rfl
+    · exact TypeOfHM.var (tyArgs := []) (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+        (by intro t ht; cases ht) InstantiatesBy.fvar
+    · exact TypeOfHM.var (tyArgs := []) (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+        (by intro t ht; cases ht) InstantiatesBy.fvar
+  · -- body `var 0` instantiates `∀a. a` (the scheme of `f`) at `fvar 0`
+    exact TypeOfHM.var (polyTy := ⟨1, .bvar 0⟩) (tyArgs := [.fvar 0]) rfl
+      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact ContainsBvarsUpTo.fvar)
+      (InstantiatesBy.bvar rfl)
+
+/-- All headlines fire on the recursive group: `typecheck` succeeds, the produced
+    type is a genuine declarative type (soundness), and it is principal. -/
+theorem mutualRec_headlines_fire :
+    ∃ σ τ, typecheck [] mutualRec = some σ ∧ σ = genScheme [] [] τ ∧
+      TypeOfHM ⟨[], []⟩ mutualRec τ ∧
+      ∀ τ₀, TypeOfHM ⟨[], []⟩ mutualRec τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+  obtain ⟨σ, hσ⟩ := Option.isSome_iff_exists.mp (typecheck_iff.mpr ⟨_, mutualRec_typeable⟩)
+  obtain ⟨τ, hτeq, hty, hprin⟩ := typecheck_principal hσ
+  exact ⟨σ, τ, hσ, hτeq, hty, hprin⟩
+
 end AuditCapstone

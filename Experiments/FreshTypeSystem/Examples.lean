@@ -197,4 +197,32 @@ the rest. Each rejection below corresponds to a genuinely *untypeable* program
 -- fully polymorphic and the branch body contributes its own `∀`.
 #eval showType (.lambda none (.match_ (.var 0) [(.wildcard, .lambda none (.var 0))]))
 
+
+/-! ## Recursion (`letRec`)
+
+Recursive binding groups. `n = 1` is self-recursion (coincides with `fix`); `n > 1`
+is mutual recursion, now typed at genuinely polymorphic, *shared* types. The earlier
+disjoint-slice rule under-typed mutual groups (it severed the cross-binding sharing);
+the shared-monotype rule infers their principal types. -/
+
+-- let rec f = λx. x in f  :  ∀ a. a → a
+-- (a non-recursive binding placed in a letRec — still sound, generalised as usual)
+#eval showType (.letRec [.lambda none (.var 0)] (.var 0))
+
+-- let rec f = λx. f x in f  :  ∀ a b. a → b
+-- (genuine self-recursion: `f` calls itself; the loop is well-typed, productive `f`
+--  would need a productive body — here the type is the most general fixpoint shape)
+#eval showType (.letRec [.lambda none (.app (.var 1) (.var 0))] (.var 0))
+
+-- let rec f = g and g = f in f  :  ∀ a. a
+-- (mutual recursion: `f`/`g` share one polymorphic type — the exact program the
+--  disjoint-slice predecessor could NOT type polymorphically)
+#eval showType (.letRec [.var 1, .var 0] (.var 0))
+
+-- let rec f = λx. g x and g = λx. f x in f  :  ∀ a b. a → b
+-- (mutual deferral: `f` and `g` share their `a → b` shape across the group)
+#eval showType (.letRec
+  [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
+  (.var 0))
+
 end Core.Demo
