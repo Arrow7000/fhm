@@ -106,6 +106,13 @@ def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
   | .match_ scrut branches =>
       prettyParenIf (prec ≥ 1) ("match " ++ Expr.prettyAux ctx 0 scrut ++ " with"
         ++ Expr.prettyBranches ctx branches)
+  | .letRec bindings body =>
+      -- The `n = bindings.length` group binders are in scope (de Bruijn `0..n-1`)
+      -- in every binding *and* the body, named by depth like the other cases.
+      let names := (List.range bindings.length).map (fun j => prettyTermVarName (ctx.length + j))
+      let ctx' := names ++ ctx
+      prettyParenIf (prec ≥ 1) ("let rec " ++ Expr.prettyRecGroup ctx' names bindings
+        ++ " in " ++ Expr.prettyAux ctx' 0 body)
 
 def Expr.prettyBranches (ctx : List String) : List (MatchPattern × Expr) → String
   | [] => ""
@@ -113,6 +120,15 @@ def Expr.prettyBranches (ctx : List String) : List (MatchPattern × Expr) → St
       let names := (List.range pat.bindCount).map (fun j => prettyTermVarName (ctx.length + j))
       " | " ++ pat.pretty names ++ " => " ++ Expr.prettyAux (names ++ ctx) 0 body
         ++ Expr.prettyBranches ctx rest
+
+/-- Render a `letRec` group `x₀ = e₀ and x₁ = e₁ and …`, each binding printed in
+    the (already group-extended) context `ctx'`. -/
+def Expr.prettyRecGroup (ctx' : List String) (names : List String) : List Expr → String
+  | [] => ""
+  | e :: rest =>
+      names.headD "?" ++ " = " ++ Expr.prettyAux ctx' 0 e
+        ++ (match rest with | [] => "" | _ :: _ => " and ")
+        ++ Expr.prettyRecGroup ctx' names.tail rest
 
 end
 
