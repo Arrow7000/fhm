@@ -16,6 +16,49 @@ private def typeStr (e : Expr) : String :=
 
 private def showType (e : Expr) : IO Unit := IO.println s!"({e})  :  {typeStr e}"
 
+/-! ## A tiny prelude of data types (for the `letRec` demos below)
+
+The `letRec` showcases further down want real recursive data to fold over, so we
+need a non-empty `CtorEnv`. `mkCtor` builds a constructor entry, discharging the
+`bound`/`closed` side-conditions by decision (`contents` is always a concrete
+literal here, so `Ty.bvarsBelow` / `Ty.freeVars` reduce). `demoCtors` then
+declares a handful of standard algebraic types:
+
+* `Bool`            — `True`, `False`
+* `List a`          — `Nil`, `Cons a (List a)`
+* `Peano`           — `Zero`, `Succ Peano`
+* `Tree a`/`Forest a` — `Node a (Forest a)`; `FNil`, `FCons (Tree a) (Forest a)`
+  (mutually recursive types — the natural home for a mutually recursive map). -/
+
+private def mkCtor (pc : Nat) (tn : TyName) (cs : List Ty)
+    (hb : TyList.bvarsBelow pc cs = true := by decide)
+    (hc : ∀ ty ∈ cs, ty.freeVars = [] := by decide) : Ctor where
+  paramCount := pc
+  tyName := tn
+  contents := cs
+  bound := fun ty h => (Ty.bvarsBelow_iff ty).mp ((TyList.bvarsBelow_iff_forall cs).mp hb ty h)
+  closed := fun ty h => Ty.noFreeVars_iff_freeVars_nil.mpr (hc ty h)
+
+private def demoCtors : CtorEnv :=
+  [ (⟨"True"⟩,  mkCtor 0 ⟨"Bool"⟩ [])
+  , (⟨"False"⟩, mkCtor 0 ⟨"Bool"⟩ [])
+  , (⟨"Nil"⟩,   mkCtor 1 ⟨"List"⟩ [])
+  , (⟨"Cons"⟩,  mkCtor 1 ⟨"List"⟩ [.bvar 0, .customTy ⟨"List"⟩ [.bvar 0]])
+  , (⟨"Zero"⟩,  mkCtor 0 ⟨"Peano"⟩ [])
+  , (⟨"Succ"⟩,  mkCtor 0 ⟨"Peano"⟩ [.customTy ⟨"Peano"⟩ []])
+  , (⟨"Node"⟩,  mkCtor 1 ⟨"Tree"⟩ [.bvar 0, .customTy ⟨"Forest"⟩ [.bvar 0]])
+  , (⟨"FNil"⟩,  mkCtor 1 ⟨"Forest"⟩ [])
+  , (⟨"FCons"⟩, mkCtor 1 ⟨"Forest"⟩ [.customTy ⟨"Tree"⟩ [.bvar 0], .customTy ⟨"Forest"⟩ [.bvar 0]]) ]
+
+private def typeStrP (e : Expr) : String :=
+  match typecheck demoCtors e with
+  | none   => "ill-typed"
+  | some σ => toString σ
+
+/-- Like `showType`, but type-checks against `demoCtors` so the program may use
+    the prelude's constructors and pattern-match on them. -/
+private def showTypeP (e : Expr) : IO Unit := IO.println s!"({e})  :  {typeStrP e}"
+
 -- λx. x  :  ∀ a. a → a
 #eval showType (.lambda none (.var 0))
 
@@ -224,5 +267,137 @@ the shared-monotype rule infers their principal types. -/
 #eval showType (.letRec
   [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
   (.var 0))
+
+
+/-! ### Recursion over real data
+
+The genuine article: self-recursive folds over an inductive type, defined with a
+single-binding `letRec` (`n = 1`, i.e. `fix`) and driven by a `match`. These type
+against `demoCtors` (so `showTypeP`), and each recursive call re-uses the binding
+at its *own* monotype — exactly the monomorphic recursion `letRec` provides. -/
+
+-- let rec length = λxs. match xs with                         ∀ a. List a → Peano
+--                        | Nil      => Zero
+--                        | Cons h t => Succ (length t)
+-- in length
+-- (`t : List a` recurses, the result is a `Peano`; `length` generalises to be
+--  polymorphic in the element type `a` once the group is closed)
+#eval showTypeP (.letRec
+  [.lambda none (.match_ (.var 0)
+    [ (.named (.mk "Nil") 0, .ctor (.mk "Zero"))
+    , (.named (.mk "Cons") 2, .app (.ctor (.mk "Succ")) (.app (.var 3) (.var 1))) ])]
+  (.var 0))
+
+-- let rec map = λf. λxs. match xs with             ∀ a b. (a → b) → List a → List b
+--                          | Nil      => Nil
+--                          | Cons h t => Cons (f h) (map f t)
+-- in map
+-- (the headline example: a polymorphic recursive function. The recursive `map f t`
+--  pins `map` at its shared monotype inside the group; the body then sees the fully
+--  generalised `∀ a b. (a → b) → List a → List b`)
+#eval showTypeP (.letRec
+  [.lambda none (.lambda none (.match_ (.var 0)
+    [ (.named (.mk "Nil") 0, .ctor (.mk "Nil"))
+    , (.named (.mk "Cons") 2,
+        .app (.app (.ctor (.mk "Cons")) (.app (.var 3) (.var 0)))
+          (.app (.app (.var 4) (.var 3)) (.var 1))) ]))]
+  (.var 0))
+
+
+/-! ### Mutual recursion over real data
+
+Now `n > 1`: two (or more) bindings that call *each other*. This is precisely the
+shape the disjoint-slice predecessor mis-typed — here the group's shared monotypes
+keep `even`/`odd` (and `mapTree`/`mapForest`) linked, and each binding is then
+generalised independently for the body. -/
+
+-- let rec even = λn. match n with | Zero => True  | Succ m => odd m       Peano → Bool
+--     and odd  = λn. match n with | Zero => False | Succ m => even m
+-- in even
+-- (the textbook mutual recursion: `even` calls `odd` and vice versa; the body
+--  returns `even`. Both share the monotype `Peano → Bool` across the group)
+#eval showTypeP (.letRec
+  [ .lambda none (.match_ (.var 0)
+      [ (.named (.mk "Zero") 0, .ctor (.mk "True"))
+      , (.named (.mk "Succ") 1, .app (.var 3) (.var 0)) ])
+  , .lambda none (.match_ (.var 0)
+      [ (.named (.mk "Zero") 0, .ctor (.mk "False"))
+      , (.named (.mk "Succ") 1, .app (.var 2) (.var 0)) ]) ]
+  (.var 0))
+
+-- let rec mapTree   = λf. λt.  match t with                            (the complex one)
+--                                | Node x ts => Node (f x) (mapForest f ts)
+--     and mapForest = λf. λts. match ts with
+--                                | FNil        => FNil
+--                                | FCons hd tl => FCons (mapTree f hd) (mapForest f tl)
+-- in mapTree                                          ∀ a b. (a → b) → Tree a → Tree b
+-- (mutual recursion mirroring mutually-recursive *data* (`Tree`/`Forest`). The whole
+--  group shares the single `(a → b)` and a single element-type pair `a`/`b` — the
+--  exact polymorphic cross-binding sharing the old rule severed)
+#eval showTypeP (.letRec
+  [ .lambda none (.lambda none (.match_ (.var 0)
+      [ (.named (.mk "Node") 2,
+          .app (.app (.ctor (.mk "Node")) (.app (.var 3) (.var 0)))
+            (.app (.app (.var 5) (.var 3)) (.var 1))) ]))
+  , .lambda none (.lambda none (.match_ (.var 0)
+      [ (.named (.mk "FNil") 0, .ctor (.mk "FNil"))
+      , (.named (.mk "FCons") 2,
+          .app (.app (.ctor (.mk "FCons")) (.app (.app (.var 4) (.var 3)) (.var 0)))
+            (.app (.app (.var 5) (.var 3)) (.var 1))) ])) ]
+  (.var 0))
+
+
+/-! ### Body generalisation (the `letRec` analogue of `let y = λx. x in y y`)
+
+Inside the group every binding is monomorphic, but the *body* sees each binding
+generalised. So a polymorphic self-application in the body must be accepted. -/
+
+-- let rec id = λx. x in id id   :  ∀ a. a → a
+-- (`id id` forces the body's `id` to be used at two types at once — only typeable
+--  because the body generalises the group binding to `∀ a. a → a`. A checker that
+--  forgot to generalise the body would reject this)
+#eval showType (.letRec [.lambda none (.var 0)] (.app (.var 0) (.var 0)))
+
+
+/-! ### Adversarial: where `letRec` is *supposed* to say no
+
+Monomorphic recursion is the whole point: a binding is NOT generalised *within its
+own group*. These are the programs whose acceptance would mean we'd silently slipped
+into unsound polymorphic recursion (or an occurs-check loop). All correctly rejected. -/
+
+-- let rec f = λx. let a = f 0 in let b = f () in x in f   :  ill-typed
+-- (polymorphic recursion: `f` is used at both `Int → _` and `Unit → _` inside its own
+--  group, where it is monomorphic. HM (rightly) refuses — no annotation, no poly-rec)
+#eval showType (.letRec
+  [.lambda none
+    (.letIn none (.app (.var 1) (.primLit (.int 0)))
+      (.letIn none (.app (.var 2) (.primLit .unit))
+        (.var 2)))]
+  (.var 0))
+
+-- let rec f = f f in f   :  ill-typed
+-- (self-application under recursion: `f`'s monotype `a` must equal `a → b`. Occurs
+--  check fails — the recursive binding cannot paper over a non-finite type)
+#eval showType (.letRec [.app (.var 0) (.var 0)] (.var 0))
+
+-- let rec id = λx. x and bad = λu. let a = id 0 in id () in bad   :  ill-typed
+-- (the soundness landmine: `bad` uses the *group-bound* `id` at `Int` and `Unit`.
+--  Because `id` is monomorphic inside the group, the two uses clash. Contrast the
+--  next example, where moving `id` to a plain `let` makes it generalise — accepted)
+#eval showType (.letRec
+  [ .lambda none (.var 0)
+  , .lambda none (.letIn none (.app (.var 1) (.primLit (.int 0)))
+      (.app (.var 2) (.primLit .unit))) ]
+  (.var 1))
+
+-- let id = λx. x in let bad = λu. let a = id 0 in id () in bad   :  ∀ a. a → Unit
+-- (the well-typed sibling: `id` is now `let`-bound, hence generalised before `bad`
+--  uses it, so `id 0` and `id ()` each instantiate it freshly. Same body, opposite
+--  verdict — `let` vs `letRec` is the entire difference)
+#eval showType (.letIn none (.lambda none (.var 0))
+  (.letIn none
+    (.lambda none (.letIn none (.app (.var 1) (.primLit (.int 0)))
+      (.app (.var 2) (.primLit .unit))))
+    (.var 0)))
 
 end Core.Demo
