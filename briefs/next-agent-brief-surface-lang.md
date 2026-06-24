@@ -12,13 +12,13 @@
 
 Type annotations are a real, fully‑proven part of the core HM/Algorithm‑W system. Three layers agree:
 
-- **AST** (`Experiments/FreshTypeSystem/Core.lean`): `Expr.lambda (paramAnn : Option Ty) (body)` and `Expr.letIn (ann : Option PolyTy) (bindingExpr body)`. `none` = inferred, `some _` = annotated. (Param annotations are monotypes; let annotations are full schemes.)
+- **AST** (`FHM/Core.lean`): `Expr.lambda (paramAnn : Option Ty) (body)` and `Expr.letIn (ann : Option PolyTy) (bindingExpr body)`. `none` = inferred, `some _` = annotated. (Param annotations are monotypes; let annotations are full schemes.)
 - **Declarative spec** `TypeOfHM` (Core): the `lambda` rule pins the parameter type to the annotation when present; the `letIn` rule makes the generalized scheme **be** the annotation `σ`, and its cofinite premise ("`boundExpr` types at every fresh opening of `σ`") rejects over‑general annotations *for free*. Both annotated rules currently require the annotation to be **closed** (`NoFreeVars`) — this is exactly what §4 removes.
 - **Algorithm** `Infer`/`inferCore` (`InferW.lean`): lambda via `LamSeed`; let via the **threading** design `Infer.letInAnn` (skolemize the annotation, unify `rhs`'s type against it, **thread** the substitution outward so an annotation can refine outer fresh vars, escape‑check that no skolem is bound or leaks into the env).
 
 Commits: `b086a6b` (lambda + declarative let) → `e2cdcf2` (threading + soundness) → `ac789e3` (orientation kernel) → `91e3626` (completeness) → (this session) dead‑code removal. `infer_complete`/`Infer.principal` were `lean_verify`‑checked: only `propext`/`Classical.choice`/`Quot.sound`, no `sorryAx`.
 
-Build: `lake build Experiments.FreshTypeSystem.ConstraintTypeSystem`. Re‑run `lean_verify` (lean‑lsp MCP) on the top theorems as part of review.
+Build: `lake build FHM.ConstraintTypeSystem`. Re‑run `lean_verify` (lean‑lsp MCP) on the top theorems as part of review.
 
 **Note:** `PolyTy.AtLeastAsGeneralAs` and `polyTyAtLeastAsGeneral?` were created early (the abandoned "infer‑then‑check‑≥" design) and have now been **removed** as dead code — the final algorithm uses threading instead. Nothing references them.
 

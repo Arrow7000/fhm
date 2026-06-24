@@ -1,13 +1,13 @@
 <!-- Handoff brief: audit + cleanup after the InferW metatheory was completed.
      Companion: next-agent-brief-inferw-reformulation.md (the full story, §7d–§7f).
-     Status as of writing: Experiments/FreshTypeSystem/InferW.lean compiles with ZERO
+     Status as of writing: FHM/InferW.lean compiles with ZERO
      errors; the whole chain Core.TypeOfHM (declarative) → Infer (relation) →
      inferCore/typecheck (executable) is sound + complete + principal, axiom-clean. -->
 
 # Handoff: audit the finished InferW metatheory, then clean it up
 
 ## 0. What you're inheriting (context)
-`Experiments/FreshTypeSystem/InferW.lean` (~11.9k lines) is a verified Hindley–Milner
+`FHM/InferW.lean` (~11.9k lines) is a verified Hindley–Milner
 type system with **scoped type variables** (Elm/GHC `ScopedTypeVariables`-style),
 checked against the declarative spec `TypeOfHM` in `Core.lean`. After a long repair arc
 it is now **fully green and axiom-clean**:

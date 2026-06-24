@@ -5,7 +5,7 @@
 
 ## 0. Workflow the user wants from you (please follow, in order)
 
-1. **Orient first.** Read this brief end-to-end. Then look around with the lean-lsp MCP (read, don't just grep): the new machinery in `Experiments/FreshTypeSystem/Core.lean` (committed, green, axiom-clean) and the **work-in-progress** in `Experiments/FreshTypeSystem/InferW.lean` (uncommitted, exactly one deliberately-gated `sorry`).
+1. **Orient first.** Read this brief end-to-end. Then look around with the lean-lsp MCP (read, don't just grep): the new machinery in `FHM/Core.lean` (committed, green, axiom-clean) and the **work-in-progress** in `FHM/InferW.lean` (uncommitted, exactly one deliberately-gated `sorry`).
 2. **Then think, then PRESENT — do NOT barrel into implementation.** After orienting, give the user your own read of where things stand and what you think the next step should be. The next move is soundness-critical, and the user strongly prefers to **brainstorm / confirm the algorithm design before it is implemented** (we did exactly this for the erasure fix below, and it paid off). Hold off on any big implementation push until you've presented and aligned.
 3. **Be merciless about correctness, never cosmetic.** No weakening of headline statements to force a green build; no `sorry`/`axiom`/`native_decide` in any final state. If something can't be proven honestly, say so and report the real obstacle. That ethic has served this project well.
 

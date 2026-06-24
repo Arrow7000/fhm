@@ -12,7 +12,7 @@ nothing further into it.
 
 ## What's in here
 
-The core development lives under `Experiments/FreshTypeSystem/`:
+The core development lives under `FHM/`:
 
 - **`Core.lean`** — the declarative type system: types, schemes, contexts (de Bruijn),
   the `TypeOfHM` typing relation, type-erasure dynamics, and the metatheory
@@ -32,7 +32,7 @@ The core development lives under `Experiments/FreshTypeSystem/`:
   (annotated polymorphic recursion / type-passing). `SpikeLetRecAnn` compiles;
   `SpikeC` is a forward draft referencing a `letRecAnn` constructor not yet in `Core`,
   so it's excluded from the default build.
-- **`Experiments/HasItem.lean`** — a small indexed list-membership relation used for
+- **`HasItem.lean`** — a small indexed list-membership relation used for
   context lookups.
 
 ### The opinionated extras

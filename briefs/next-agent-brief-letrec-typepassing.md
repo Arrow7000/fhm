@@ -145,16 +145,16 @@ A separate agent tested Elm 0.19.1. Findings + our reading:
 
 ## What's on disk
 
-- **`Experiments/FreshTypeSystem/Core.lean`** — Stage 1 landed: `Expr.letRecAnn` node,
+- **`FHM/Core.lean`** — Stage 1 landed: `Expr.letRecAnn` node,
   `TypeOfHM.letRecAnn` rule, `Step.letRecAnnUnfold`, full safety chain (incl.
   `recAnn_binding_hasScheme`), all structural/erasure cases. Axiom-clean
   (`propext`/`Classical.choice`/`Quot.sound`); independently re-verified. Also: lint
   cleanup (dead `decreasing_by` branch removed; redundant premises dropped from
   `rewrap_at_opening`/`rewrap_hasScheme`).
-- **`Experiments/FreshTypeSystem/SpikeLetRecAnn.lean`** — standalone Stage-1 design
+- **`FHM/SpikeLetRecAnn.lean`** — standalone Stage-1 design
   spike (the `TypeOfLetRecAnn` predicate, a genuine poly-rec witness, the
   monomorphic-reading-fails `#eval`, and proven `weaken_env`/`typ_subst` templates).
-- **`Experiments/FreshTypeSystem/SpikeC.lean`** — the C investigation:
+- **`FHM/SpikeC.lean`** — the C investigation:
   `cTerm_typeable` (Feature B types), **`cTerm_rigid`** (the obstruction — kept scheme
   rigid in `Z`), `mutual_typeable` (mutual poly-rec = Feature A, works). Axiom-clean.
 - **`next-agent-brief-letrec-annotated-stage1.md`** — the Stage-1 implementation brief.

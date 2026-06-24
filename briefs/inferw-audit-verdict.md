@@ -1,4 +1,4 @@
-<!-- Part A audit verdict for Experiments/FreshTypeSystem/InferW.lean.
+<!-- Part A audit verdict for FHM/InferW.lean.
      Companion: next-agent-brief-inferw-audit-cleanup.md (the task spec).
      Written after the open-program soundness fix landed (commit b38e39d). -->
 

@@ -1,7 +1,7 @@
 <!-- Handoff brief written at the end of the "Core v2 (pair removal + wildcard
      match patterns) + surface-language groundwork" session.
      Supersedes nothing; companion to next-agent-brief-surface-lang.md.
-     Files: Experiments/FreshTypeSystem/{Core,InferW,SurfaceLang}.lean -->
+     Files: FHM/{Core,InferW,SurfaceLang}.lean -->
 
 # Handoff: finish Core v2 (the match-wildcard fix), then build the surface language
 
@@ -95,7 +95,7 @@ e.g. `match c with True => 1 | _ => 0` typechecks, while you're at it.)
 
 ### Workflow note (bit us repeatedly)
 After editing `Core.lean`, `InferW` keeps elaborating against the **stale Core `.olean`**. To
-refresh: targeted `lake build Experiments.FreshTypeSystem.Core` (only this module — NOT whole
+refresh: targeted `lake build FHM.Core` (only this module — NOT whole
 project), then MCP `lean_build` to restart the LSP (it "fails" on the unrelated `Filterings.lean`
 — ignore that). Otherwise you'll chase phantom errors about removed constructors.
 

@@ -49,7 +49,7 @@
 - NEVER `sorry`/`admit`/`axiom`/`native_decide` in the final; never weaken a headline
   statement; if a goal needs a statement change, STOP and report (that's how the
   existential-premise bug was caught in Stage 1).
-- Targeted builds only: `lake build Experiments.FreshTypeSystem.InferW` (NOT
+- Targeted builds only: `lake build FHM.InferW` (NOT
   whole-project — `Filterings.lean` is broken). After editing Core (you shouldn't),
   rebuild Core first. Use the `project-0-experiments-lean-lsp` MCP.
 - Verify axiom-clean (`propext`/`Classical.choice`/`Quot.sound`) on the headline set

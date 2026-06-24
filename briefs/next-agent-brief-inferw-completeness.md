@@ -13,7 +13,7 @@ against the (already-committed) scoped-var `Core` spec, then exposing a public
 
 ## 0a. Workflow the user wants (please follow, in order)
 1. **Orient first.** Read this brief end-to-end. Then read (don't just grep)
-   the relevant parts of `Experiments/FreshTypeSystem/InferW.lean` with the
+   the relevant parts of `FHM/InferW.lean` with the
    lean-lsp MCP — especially the now-green soundness layer (`Infer.sound`,
    `Infer.belowFvars`) and the partially-migrated completeness layer
    (`Infer.CompleteAt` and the `complete_*` helpers).
@@ -33,7 +33,7 @@ against the (already-committed) scoped-var `Core` spec, then exposing a public
   Core machinery this work needs already exists (rename bridge, size measures,
   `Expr.tyFreeVars_openTyVars`, erasure). If you *do* edit Core, you must rebuild
   its olean and restart the LSP or InferW shows stale "fake green": shell
-  `lake build Experiments.FreshTypeSystem.Core` (~35s), then MCP `lean_build`
+  `lake build FHM.Core` (~35s), then MCP `lean_build`
   (it restarts the LSP; it will "fail" on the **unrelated pre-broken**
   `Experiments/Filterings.lean` — ignore that).
 - **`lean_diagnostic_messages`: trust the `items` array, not whole-file

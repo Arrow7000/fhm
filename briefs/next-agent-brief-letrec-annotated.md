@@ -61,7 +61,7 @@ scoped-type-variable / skolem machinery you must lift to a group:
   that only `weaken_env` exposed — and an even-earlier wrong redesign. Do the spike.)
 - If a goal needs a Core statement change, STOP and report.
 - NEVER `sorry`/`admit`/`axiom`/`native_decide`; never weaken a headline statement.
-- Targeted builds only (`lake build Experiments.FreshTypeSystem.InferW`; the
+- Targeted builds only (`lake build FHM.InferW`; the
   whole project is broken — `Filterings.lean`). Use the
   `project-0-experiments-lean-lsp` MCP; verify axiom-clean via `lean_verify`
   (cross-check, not just the editor's cache — and re-verify subagent claims yourself).

@@ -7,8 +7,8 @@
 ## 0. Workflow the user wants (please follow, in order)
 
 1. **Orient first.** Read this brief end-to-end. Then look around with the lean-lsp MCP
-   (read, don't just grep): the new machinery in `Experiments/FreshTypeSystem/Core.lean`
-   and the work-in-progress in `Experiments/FreshTypeSystem/InferW.lean`. Both are
+   (read, don't just grep): the new machinery in `FHM/Core.lean`
+   and the work-in-progress in `FHM/InferW.lean`. Both are
    **uncommitted** right now (see §0a).
 2. **Design soundness-critical moves with the user before a big implementation push.**
    The remaining `Infer.sound` rewrite (§4) is the soundness crux. The *algorithm*
@@ -29,7 +29,7 @@
   shows stale "fake green". The whole-project `lake build` / MCP `lean_build` **fails on an
   UNRELATED pre-existing-broken file `Experiments/Filterings.lean`** (nothing to do with
   us — do NOT try to fix it). So target Core directly:
-  `lake build Experiments.FreshTypeSystem.Core` (shell, ~35s), then MCP `lean_build`
+  `lake build FHM.Core` (shell, ~35s), then MCP `lean_build`
   (restarts the LSP; it will still "fail" on Filterings — ignore that). Then verify the
   new Core symbols resolve from InferW.
 - **Termination diagnostics are enormous** for the mutual `Infer`/`InferBranches`

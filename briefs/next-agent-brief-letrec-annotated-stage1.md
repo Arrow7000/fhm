@@ -1,11 +1,11 @@
 <!-- Handoff: Stage 3 / Step 1 of `letRec` — annotated polymorphic recursion, CORE.
      Parent brief: next-agent-brief-letrec-annotated.md. Spike (proven, axiom-clean):
-     Experiments/FreshTypeSystem/SpikeLetRecAnn.lean. -->
+     FHM/SpikeLetRecAnn.lean. -->
 
 # Brief: `letRecAnn` Stage 1 — Core rule + dynamics + full safety
 
 ## Status / what is already done (READ FIRST)
-- The **design is spiked and proven** in `Experiments/FreshTypeSystem/SpikeLetRecAnn.lean`
+- The **design is spiked and proven** in `FHM/SpikeLetRecAnn.lean`
   (standalone, no Core edits, axiom-clean). It contains:
   - `TypeOfLetRecAnn` — the declarative rule as a derived predicate (this is the
     EXACT shape to port into Core as the `TypeOfHM.letRecAnn` constructor);
