@@ -561,8 +561,6 @@ decreasing_by
     | (have h := List.sizeOf_lt_of_mem _hb
        simp only [Prod.mk.sizeOf_spec] at h
        omega)
-    | (have h := List.sizeOf_lt_of_mem _hb
-       omega)
 
 
 
@@ -6011,12 +6009,9 @@ theorem Ty.renameG_eq_genFilter {G W : List Nat} {τ : Ty}
     the body. -/
 theorem TypeOfHM.rewrap_at_opening
     {ctors : CtorEnv} {env : Env} {bindings : List Expr} {τs : List Ty}
-    {Ms : List PolyTy} {G L : List Nat}
+    {G L : List Nat}
     (hlen : bindings.length = τs.length)
-    (hlen2 : τs.length = Ms.length)
     (hlc : ∀ τ ∈ τs, τ.IsLC)
-    (hG : G.Nodup)
-    (hgen : ∀ p ∈ τs.zip Ms, p.2 = PolyTy.genGroup G p.1)
     (hcofin : ∀ Xs, FreshNames L G.length Xs →
         ∀ p ∈ bindings.zip (τs.map (Ty.renameG G Xs)),
           TypeOfHM ⟨(τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ env, ctors⟩ p.1 p.2)
@@ -6058,12 +6053,10 @@ theorem TypeOfHM.rewrap_at_opening
     arbitrary instance. -/
 theorem TypeOfHM.rewrap_hasScheme
     {ctors : CtorEnv} {env : Env} {bindings : List Expr} {τs : List Ty}
-    {Ms : List PolyTy} {G L : List Nat}
+    {G L : List Nat}
     (hlen : bindings.length = τs.length)
-    (hlen2 : τs.length = Ms.length)
     (hlc : ∀ τ ∈ τs, τ.IsLC)
     (hG : G.Nodup)
-    (hgen : ∀ p ∈ τs.zip Ms, p.2 = PolyTy.genGroup G p.1)
     (hcofin : ∀ Xs, FreshNames L G.length Xs →
         ∀ p ∈ bindings.zip (τs.map (Ty.renameG G Xs)),
           TypeOfHM ⟨(τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ env, ctors⟩ p.1 p.2)
@@ -6086,7 +6079,7 @@ theorem TypeOfHM.rewrap_hasScheme
   have hmem' : (e, Ty.renameG G Ws τ) ∈ bindings.zip (τs.map (Ty.renameG G Ws)) :=
     List.mem_zip_map_right hmem
   have h1 : TypeOfHM ⟨env, ctors⟩ (.letRec bindings e) (Ty.renameG G Ws τ) :=
-    TypeOfHM.rewrap_at_opening hlen hlen2 hlc hG hgen hcofin hWfresh hmem'
+    TypeOfHM.rewrap_at_opening hlen hlc hcofin hWfresh hmem'
   have ha : Ty.renameG G Ws τ
       = Ty.renameG (Ty.genFilter G τ) (Ty.genFilter Ws (Ty.renameG G Ws τ)) τ :=
     Ty.renameG_eq_genFilter hWlen hG hWnodup hdisj hWτ
@@ -6296,7 +6289,7 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
         rw [hMs_eq, List.forall₂_map_left_iff, List.forall₂_map_right_iff]
         refine List.forall₂_of_mem_zip hlen ?_
         intro p hp
-        exact TypeOfHM.rewrap_hasScheme hlen hlen2 hlc hG hgen hcofin hp
+        exact TypeOfHM.rewrap_hasScheme hlen hlc hG hcofin hp
       -- Discharge the body: substitute the re-wrapped group for the scheme block `Ms`.
       have hfinal := TypeOfHM.subst_lemma_many (env_post := []) (env := ctx.env) (Ms := Ms)
         (ctors := ctx.ctors) hMwf hbodyT h_vs hbody_e

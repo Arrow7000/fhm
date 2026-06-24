@@ -9,7 +9,6 @@ name = "FHM"
 #   FHM.ConstraintTypeSystem  -- stale vs current Core (pre-fst/snd refactor)
 #   FHM.SpikeC                -- forward draft of letRecAnn (constructors not yet in Core)
 roots = [
-  "FHM.HasItem",
   "FHM.Core",
   "FHM.InferW",
   "FHM.SurfaceLang",
