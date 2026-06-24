@@ -1,4 +1,4 @@
-import Experiments.FreshTypeSystem.InferW
+import FHM.InferW
 
 /-! # SPIKE: annotated polymorphic recursion (`letRecAnn`)
 

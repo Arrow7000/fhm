@@ -1,5 +1,5 @@
-import Experiments.FreshTypeSystem.Core
-import Experiments.FreshTypeSystem.SurfaceLang
+import FHM.Core
+import FHM.SurfaceLang
 
 /-! # Pretty-printers for the Core language
 

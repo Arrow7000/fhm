@@ -1,5 +1,5 @@
-import Experiments.FreshTypeSystem.InferW
-import Experiments.FreshTypeSystem.Pretty
+import FHM.InferW
+import FHM.Pretty
 
 /-! # End-to-end demos
 

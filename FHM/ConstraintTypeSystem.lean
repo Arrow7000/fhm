@@ -1,12 +1,12 @@
-import Experiments.FreshTypeSystem.InferW
+import FHM.InferW
 
 /-! # Constraint-based Hindley–Milner inference
 
-An alternative to the Algorithm-W development in `Experiments.FreshTypeSystem.InferW`
+An alternative to the Algorithm-W development in `FHM.InferW`
 (approach A), testing whether a **constraint-based** presentation (Wand /
 Pottier–Rémy) keeps the *inference* layer free of the naked substitutions and
 fresh-variable frontiers that pervade W. We reuse the shared foundation +
-unification kernel from `FreshTypeSystem` (the declarative `TypeOfHM`, its
+unification kernel from `FHM` (the declarative `TypeOfHM`, its
 metatheory, `Subst`/`UnifyRel`/`IsMGU`, the executable `unify`).
 
 ## Schemes with guards

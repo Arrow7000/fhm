@@ -1,4 +1,4 @@
-import Experiments.FreshTypeSystem.Core
+import FHM.Core
 
 /-! # SPIKE C: a *kept* recursion scheme referencing an enclosing-scope type var
 

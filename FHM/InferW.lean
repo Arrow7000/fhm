@@ -1,4 +1,4 @@
-import Experiments.FreshTypeSystem.Core
+import FHM.Core
 
 -- These pure `Ty`-level lemmas now live in `Core` (they were originally developed
 -- here). Core declares them without `@[simp]`, but the InferW proofs below rely on

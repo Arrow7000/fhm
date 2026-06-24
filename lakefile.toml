@@ -1,21 +1,21 @@
 name = "FHM"
 version = "0.1.0"
-defaultTargets = ["Experiments"]
+defaultTargets = ["FHM"]
 
 [[lean_lib]]
-name = "Experiments"
+name = "FHM"
 # Default build target = the modules that currently compile against Core.
 # Excluded (present in the tree but not built by default):
-#   Experiments.FreshTypeSystem.ConstraintTypeSystem  -- stale vs current Core (pre-fst/snd refactor)
-#   Experiments.FreshTypeSystem.SpikeC                -- forward draft of letRecAnn (constructors not yet in Core)
+#   FHM.ConstraintTypeSystem  -- stale vs current Core (pre-fst/snd refactor)
+#   FHM.SpikeC                -- forward draft of letRecAnn (constructors not yet in Core)
 roots = [
-  "Experiments.HasItem",
-  "Experiments.FreshTypeSystem.Core",
-  "Experiments.FreshTypeSystem.InferW",
-  "Experiments.FreshTypeSystem.SurfaceLang",
-  "Experiments.FreshTypeSystem.Pretty",
-  "Experiments.FreshTypeSystem.Examples",
-  "Experiments.FreshTypeSystem.SpikeLetRecAnn",
+  "FHM.HasItem",
+  "FHM.Core",
+  "FHM.InferW",
+  "FHM.SurfaceLang",
+  "FHM.Pretty",
+  "FHM.Examples",
+  "FHM.SpikeLetRecAnn",
 ]
 
 [[require]]
