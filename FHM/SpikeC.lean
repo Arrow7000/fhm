@@ -35,12 +35,11 @@ theorem cTerm_typeable (Z : Nat) :
   refine TypeOfHM.letRecAnn (schemes := [sigZ Z]) (L := []) rfl ?_ ?_ rfl ?_
   · intro σ hσ; simp only [List.mem_singleton] at hσ; subst hσ
     exact .arrow .fvar .fvar
-  · intro Xs hfresh p hp
-    obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    have hog : PolyTy.openGroup [sigZ Z] [] = [(Ty.fvar Z).arrow (Ty.fvar Z)] := rfl
-    rw [hog] at hp
+  · intro p hp Xs hfresh
     simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
     subst hp
+    obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
+    show TypeOfHM ⟨[sigZ Z], []⟩ (rhs.openTyVars []) ((Ty.fvar Z).arrow (Ty.fvar Z))
     refine TypeOfHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
     refine TypeOfHM.app (argTy := .fvar Z) ?_ ?_
     · exact TypeOfHM.var (polyTy := sigZ Z) (tyArgs := []) rfl
@@ -72,88 +71,100 @@ theorem cTerm_rigid (Z X : Nat) (hne : X ≠ Z) :
         cases hfst
         exact hne rfl
 
-/-! ## Mutual annotated polymorphic recursion is FULLY supported (Feature A)
+/-! ## Mutual OWN-variable annotated polymorphic recursion is supported
 
-Mutual recursion is NOT the hard case. Each member of a mutual group carries its
-OWN `∀`-quantified scheme; cross-calls instantiate the *other* member's scheme
-freshly. No member references another's bound variable, so every scheme is closed
-(own binders only) — exactly the erasure-safe Feature-A case Stage 1 handles. The
-"C" obstruction above is orthogonal: it is about a scheme referencing a variable
-bound by an ENCLOSING scope (ScopedTypeVariables), not about mutuality. -/
+Each member of a `[∀a.a→a, ∀a.a→a]` group cross-calls the sibling **at its own
+type variable** `a` (stored scheme-relatively as `arrow (bvar 0) (bvar 0)`, the own
+var at `bvar 0`), and the recursive result is genuinely *used* (applied to the
+parameter). Under the OLD un-shielded `instTy` this failed subject reduction (see
+`SpikeSchemeRelMutual.preservation_fails`); with the scheme-relative opened rule
+plus `instTy`/`openTyVars` depth-shielding now in Core, it both types and reduces
+soundly (it is covered by `TypeOfHM.preservation`). -/
 
-/-- `∀a. a → a` — an *inhabitable* own-`∀` scheme. (Pre-migration this witness
-    used the degenerate `∀a. a`; under type-passing that is unusable here, because
-    `∀a. a` is uninhabited, so a binding's RHS could only be typed by instantiating
-    the sibling at the binding's OWN fresh skolem — a type the fixed term cannot
-    name. Switching to the inhabited `∀a. a → a` lets each RHS produce its opened
-    type via its `λ`, exactly as `Core.LetRecAnnSmokeTest.polyRecRhs` does.) -/
+/-- `∀a. a → a`. -/
 def selfSig : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
 
-/-- `f`'s RHS: `λx. let _ = g [Int] 0 in x`. Genuinely mutual (it calls the
-    sibling `g`) and polymorphic-recursive (the cross-call instantiates `g`'s OWN
-    scheme at the concrete `Int`, independent of `f`'s parameter). Under the group's
-    two binders `f = var 0`, `g = var 1`; beneath the `λ` they shift to `1`/`2`. -/
+/-- `f`'s RHS: `λx. ((g [a→a]) (λy. y)) x`. Member 0 cross-calls the sibling `g`
+    (`= var 2` under the λ) at member 0's OWN type variable `a` (`arrow (bvar 0)
+    (bvar 0)`), and *uses* the result `(g[a→a]) (λy.y) : a→a` by applying it to
+    `x : a`, giving `a`. So `f : a → a`. -/
 def fRhs : Expr :=
-  .lambda none (.letIn none (.app (.var 2 [.prim .int]) (.primLit (.int 0))) (.var 1 []))
+  .lambda none
+    (.app (.app (.var 2 [.arrow (.bvar 0) (.bvar 0)]) (.lambda none (.var 0 [])))
+      (.var 0 []))
 
-/-- `g`'s RHS: `λx. let _ = f [Int] 0 in x`, the symmetric cross-call to `f`. -/
+/-- `g`'s RHS: `λx. ((f [a→a]) (λy. y)) x`, the symmetric own-variable cross-call
+    to `f` (`= var 1` under the λ). -/
 def gRhs : Expr :=
-  .lambda none (.letIn none (.app (.var 1 [.prim .int]) (.primLit (.int 0))) (.var 1 []))
+  .lambda none
+    (.app (.app (.var 1 [.arrow (.bvar 0) (.bvar 0)]) (.lambda none (.var 0 [])))
+      (.var 0 []))
 
-/-- `let rec (f : ∀a.a→a) = λx. … g[Int] … and (g : ∀a.a→a) = λx. … f[Int] … in f`,
-    the annotated mutual group. `f` is `var 0`, `g` is `var 1` inside the group. -/
-def mutualTerm : Expr := .letRecAnn [selfSig, selfSig] [fRhs, gRhs] (.var 0 [.fvar 0])
+/-- `let rec (f : ∀a.a→a) = λx. (g[a→a] id) x and (g : ∀a.a→a) = λx. (f[a→a] id) x
+    in f [Int]`, the mutual OWN-variable polymorphic-recursion group. -/
+def mutualTerm : Expr := .letRecAnn [selfSig, selfSig] [fRhs, gRhs] (.var 0 [.prim .int])
 
-/-- Mutual annotated polymorphic recursion types at `f`'s principal-ish instance
-    `(fvar 0) → (fvar 0)` (Feature A). Each binding is checked at its own fresh
-    skolem opening; the cross-calls instantiate the sibling's scheme at `Int`. -/
+theorem fRhs_opened_types (X : Nat) :
+    TypeOfHM ⟨[selfSig, selfSig], []⟩ (fRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X)) := by
+  show TypeOfHM ⟨[selfSig, selfSig], []⟩
+    (.lambda none
+      (.app (.app (.var 2 [.arrow (.fvar X) (.fvar X)]) (.lambda none (.var 0 [])))
+        (.var 0 [])))
+    ((Ty.fvar X).arrow (Ty.fvar X))
+  refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfHM.app (argTy := .fvar X) ?_ ?_
+  · refine TypeOfHM.app (argTy := .arrow (.fvar X) (.fvar X)) ?_ ?_
+    · exact TypeOfHM.var (polyTy := selfSig) rfl
+        (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar)
+        rfl (.arrow (.bvar rfl) (.bvar rfl))
+    · refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+      exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+        (by intro t ht; cases ht) rfl .fvar
+  · exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+      (by intro t ht; cases ht) rfl .fvar
+
+theorem gRhs_opened_types (X : Nat) :
+    TypeOfHM ⟨[selfSig, selfSig], []⟩ (gRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X)) := by
+  show TypeOfHM ⟨[selfSig, selfSig], []⟩
+    (.lambda none
+      (.app (.app (.var 1 [.arrow (.fvar X) (.fvar X)]) (.lambda none (.var 0 [])))
+        (.var 0 [])))
+    ((Ty.fvar X).arrow (Ty.fvar X))
+  refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfHM.app (argTy := .fvar X) ?_ ?_
+  · refine TypeOfHM.app (argTy := .arrow (.fvar X) (.fvar X)) ?_ ?_
+    · exact TypeOfHM.var (polyTy := selfSig) rfl
+        (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar)
+        rfl (.arrow (.bvar rfl) (.bvar rfl))
+    · refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+      exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+        (by intro t ht; cases ht) rfl .fvar
+  · exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+      (by intro t ht; cases ht) rfl .fvar
+
+/-- **Mutual own-variable polymorphic recursion types** under Core's fixed
+    `TypeOfHM.letRecAnn`: each binding is checked scheme-relatively at its own fresh
+    `X` (its own-var cross-call becomes the closed `X → X`); the body uses `f` at
+    `Int`. -/
 theorem mutual_typeable :
-    TypeOfHM ⟨[], []⟩ mutualTerm ((Ty.fvar 0).arrow (Ty.fvar 0)) := by
+    TypeOfHM ⟨[], []⟩ mutualTerm ((Ty.prim .int).arrow (.prim .int)) := by
   refine TypeOfHM.letRecAnn (schemes := [selfSig, selfSig]) (L := []) rfl ?_ ?_ rfl ?_
   · intro σ hσ
     simp only [List.mem_cons, List.not_mem_nil, or_false] at hσ
     rcases hσ with rfl | rfl <;>
       exact (show ContainsBvarsUpTo 1 ((Ty.bvar 0).arrow (Ty.bvar 0)) from
         .arrow (.bvar (by omega)) (.bvar (by omega)))
-  · intro Xs hfresh p hp
-    obtain ⟨X0, X1, rfl⟩ : ∃ X0 X1, Xs = [X0, X1] := by
-      have hl : Xs.length = 2 := hfresh.length
-      rcases Xs with _ | ⟨X0, _ | ⟨X1, _ | _⟩⟩ <;> simp_all
-    have hog : PolyTy.openGroup [selfSig, selfSig] [X0, X1]
-        = [(Ty.fvar X0).arrow (Ty.fvar X0), (Ty.fvar X1).arrow (Ty.fvar X1)] := rfl
-    rw [hog] at hp
-    rw [show ([fRhs, gRhs]).zip [(Ty.fvar X0).arrow (Ty.fvar X0), (Ty.fvar X1).arrow (Ty.fvar X1)]
-          = [(fRhs, (Ty.fvar X0).arrow (Ty.fvar X0)), (gRhs, (Ty.fvar X1).arrow (Ty.fvar X1))]
-          from rfl] at hp
+  · intro p hp Xs hfresh
+    have hzip : [fRhs, gRhs].zip [selfSig, selfSig] = [(fRhs, selfSig), (gRhs, selfSig)] := rfl
+    rw [hzip] at hp
     simp only [List.mem_cons, List.not_mem_nil, or_false] at hp
     rcases hp with rfl | rfl
-    · -- `fRhs` types at `(fvar X0) → (fvar X0)`
-      refine TypeOfHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
-      refine TypeOfHM.letIn (M := PolyTy.mkTrivial (.prim .int)) (L := [])
-        .prim (fun σ h => Option.noConfusion h) ?_ rfl ?_
-      · intro Ys hfreshY
-        obtain rfl : Ys = [] := List.eq_nil_of_length_eq_zero hfreshY.length
-        refine TypeOfHM.app ?_ TypeOfHM.primLitInt
-        exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [.prim .int]) rfl
-          (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim) rfl
-          (.arrow (.bvar rfl) (.bvar rfl))
-      exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X0)) (tyArgs := []) rfl
-        (by intro t ht; cases ht) rfl .fvar
-    · -- `gRhs` types at `(fvar X1) → (fvar X1)`
-      refine TypeOfHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
-      refine TypeOfHM.letIn (M := PolyTy.mkTrivial (.prim .int)) (L := [])
-        .prim (fun σ h => Option.noConfusion h) ?_ rfl ?_
-      · intro Ys hfreshY
-        obtain rfl : Ys = [] := List.eq_nil_of_length_eq_zero hfreshY.length
-        refine TypeOfHM.app ?_ TypeOfHM.primLitInt
-        exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [.prim .int]) rfl
-          (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim) rfl
-          (.arrow (.bvar rfl) (.bvar rfl))
-      exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X1)) (tyArgs := []) rfl
-        (by intro t ht; cases ht) rfl .fvar
-  · -- body `f [fvar 0]` types at `(fvar 0) → (fvar 0)`
-    exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [Ty.fvar 0]) rfl
-      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar) rfl
-      (.arrow (.bvar rfl) (.bvar rfl))
+    · obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
+      exact fRhs_opened_types X
+    · obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
+      exact gRhs_opened_types X
+  · exact TypeOfHM.var (polyTy := selfSig) rfl
+      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim)
+      rfl (.arrow (.bvar rfl) (.bvar rfl))
 
 end SpikeC

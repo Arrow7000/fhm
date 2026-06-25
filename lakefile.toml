@@ -12,6 +12,9 @@ name = "FHM"
 #     yet, so InferW's completeness theorem (`Infer.completeAt`) can't cover the
 #     new case (Examples + SpikeLetRecAnn import InferW). Re-add when inference
 #     lands as part of the type-passing migration.
+# (Own-variable polymorphic recursion uses a scheme-relative `letRecAnn` rule +
+#  depth-shielded `instTyAux`/`openTyVarsAux`; validated by the genuine witnesses
+#  `LetRecAnnSmokeTest.ownVarSelfRec_typeable` (Core) and `SpikeC.mutual_typeable`.)
 roots = [
   "FHM.Core",
   "FHM.SurfaceLang",
