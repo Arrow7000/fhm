@@ -91,7 +91,7 @@ mutual
 
 def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
   | .primLit p => prettyPrimLit p
-  | .var n     => (ctx[n]?).getD ("#" ++ toString n)
+  | .var n _   => (ctx[n]?).getD ("#" ++ toString n)
   | .ctor (.mk s) => s
   | .app f x   => prettyParenIf (prec ≥ 2) (Expr.prettyAux ctx 1 f ++ " " ++ Expr.prettyAux ctx 2 x)
   | .lambda ann body =>
@@ -158,17 +158,17 @@ section Examples
 #eval toString (Ty.arrow (.arrow (.prim .int) (.prim .int)) (.prim .int))
 
 -- `λx. x`
-#eval toString (Expr.lambda none (.var 0))
+#eval toString (Expr.lambda none (.var 0 []))
 -- `λx. λy. x`
-#eval toString (Expr.lambda none (.lambda none (.var 1)))
+#eval toString (Expr.lambda none (.lambda none (.var 1 [])))
 -- `(λx. x) 5`
-#eval toString (Expr.app (.lambda none (.var 0)) (.primLit (.int 5)))
+#eval toString (Expr.app (.lambda none (.var 0 [])) (.primLit (.int 5)))
 -- `let x : ∀ a. a → a = λy. y in x x`
 #eval toString (Expr.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
-  (.lambda none (.var 0)) (.app (.var 0) (.var 0)))
+  (.lambda none (.var 0 [])) (.app (.var 0 []) (.var 0 [])))
 -- `λx. match x with | Cons y z => y | Nil => x | _ => x`
-#eval toString (Expr.lambda none (.match_ (.var 0)
-  [(.named (.mk "Cons") 2, .var 1), (.named (.mk "Nil") 0, .var 0), (.wildcard, .var 0)]))
+#eval toString (Expr.lambda none (.match_ (.var 0 [])
+  [(.named (.mk "Cons") 2, .var 1 []), (.named (.mk "Nil") 0, .var 0 []), (.wildcard, .var 0 [])]))
 
 end Examples
 
