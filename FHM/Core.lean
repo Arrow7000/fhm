@@ -1,5 +1,4 @@
 import Mathlib
-import FHM.HasItem
 
 
 /-- Name of a type -/
@@ -206,7 +205,10 @@ inductive Expr
       expression (surface `let x : σ = e in body`); `none` means the scheme is
       generalised by inference. -/
   | letIn (ann : Option PolyTy) (bindingExpr body : Expr)
-  | var (deBruijnIndex : Nat)
+  /-- A variable use, carrying the explicit type arguments at which its scheme is
+      instantiated (type-passing). `tyArgs = []` for a monomorphic use. These are
+      runtime-relevant: they drive type-beta when a polymorphic binding is unfolded. -/
+  | var (deBruijnIndex : Nat) (tyArgs : List Ty)
   /-- A type constructor -/
   | ctor (name : CtorName)
   | match_ (scrutinee : Expr) (branches : List (MatchPattern × Expr))
@@ -215,6 +217,14 @@ inductive Expr
       binding `j` at de Bruijn index `j`. Generalisation is monomorphic-in-the-RHSs,
       then per-binding for `body` (see `TypeOfHM.letRec`). `n = 1` is `fix`. -/
   | letRec (bindings : List Expr) (body : Expr)
+  /-- An *annotated* (mutually) recursive binding group with *polymorphic*
+      recursion (Pottier's `LetRecPoly`). `schemes` carries one declared scheme
+      per binding (PARALLEL to `bindings`), and the group is in scope at the FULL
+      schemes in BOTH the RHSs and the `body` — so recursive occurrences may
+      instantiate `schemeⱼ` at different types. The length invariant
+      `bindings.length = schemes.length` lives in the typing rule
+      (`TypeOfHM.letRecAnn`), not the constructor (mirroring `letRec`). -/
+  | letRecAnn (schemes : List PolyTy) (bindings : List Expr) (body : Expr)
 
 
 
@@ -518,7 +528,7 @@ def Expr.rec_strong.{u} {motive : Expr → Sort u}
     (letIn      : ∀ ann bindingExpr body,
                     motive bindingExpr → motive body →
                     motive (.letIn ann bindingExpr body))
-    (var        : ∀ n, motive (.var n))
+    (var        : ∀ n tyArgs, motive (.var n tyArgs))
     (ctor       : ∀ nm, motive (.ctor nm))
     (match_     : ∀ scrutinee branches,
                     motive scrutinee →
@@ -527,32 +537,41 @@ def Expr.rec_strong.{u} {motive : Expr → Sort u}
     (letRec     : ∀ bindings body,
                     (∀ e ∈ bindings, motive e) →
                     motive body →
-                    motive (.letRec bindings body)) :
+                    motive (.letRec bindings body))
+    (letRecAnn  : ∀ schemes bindings body,
+                    (∀ e ∈ bindings, motive e) →
+                    motive body →
+                    motive (.letRecAnn schemes bindings body)) :
     (e : Expr) → motive e
   | .primLit p          => primLit p
   | .lambda paramAnn body        =>
       lambda paramAnn body
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec body)
+        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec letRecAnn body)
   | .app f input        =>
       app f input
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec f)
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec input)
+        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec letRecAnn f)
+        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec letRecAnn input)
   | .letIn ann be body      =>
       letIn ann be body
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec be)
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec body)
-  | .var n              => var n
+        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec letRecAnn be)
+        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec letRecAnn body)
+  | .var n tyArgs       => var n tyArgs
   | .ctor nm            => ctor nm
   | .match_ scrutinee branches =>
       match_ scrutinee branches
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec scrutinee)
+        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec letRecAnn scrutinee)
         (fun _pat e _hb =>
-          Expr.rec_strong primLit lambda app letIn var ctor match_ letRec e)
+          Expr.rec_strong primLit lambda app letIn var ctor match_ letRec letRecAnn e)
   | .letRec bindings body =>
       letRec bindings body
         (fun e _hb =>
-          Expr.rec_strong primLit lambda app letIn var ctor match_ letRec e)
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec body)
+          Expr.rec_strong primLit lambda app letIn var ctor match_ letRec letRecAnn e)
+        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec letRecAnn body)
+  | .letRecAnn schemes bindings body =>
+      letRecAnn schemes bindings body
+        (fun e _hb =>
+          Expr.rec_strong primLit lambda app letIn var ctor match_ letRec letRecAnn e)
+        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec letRecAnn body)
 termination_by e => sizeOf e
 decreasing_by
   all_goals simp_wf
@@ -639,7 +658,7 @@ Used by `substN`: when a value is inserted at substitution depth `k`, it has
 to pass under `k` new binders, which shifts its free vars up by `k`.
 -/
 def Expr.shiftFrom (threshold : Nat) (n : Nat) : Expr → Expr
-  | .var i             => if i < threshold then .var i else .var (i + n)
+  | .var i tyArgs      => if i < threshold then .var i tyArgs else .var (i + n) tyArgs
   | .primLit p         => .primLit p
   | .lambda ann body   => .lambda ann (body.shiftFrom (threshold + 1) n)
   | .app f arg         => .app (f.shiftFrom threshold n) (arg.shiftFrom threshold n)
@@ -652,6 +671,11 @@ def Expr.shiftFrom (threshold : Nat) (n : Nat) : Expr → Expr
   | .letRec bindings body =>
       -- the `bindings.length` group binders are in scope in every RHS and the body
       .letRec (RecGroup.shiftFrom (threshold + bindings.length) n bindings)
+        (body.shiftFrom (threshold + bindings.length) n)
+  | .letRecAnn schemes bindings body =>
+      -- schemes are types, untouched by term-var shifting; the `bindings.length`
+      -- group binders are in scope in every RHS and the body (as for `letRec`).
+      .letRecAnn schemes (RecGroup.shiftFrom (threshold + bindings.length) n bindings)
         (body.shiftFrom (threshold + bindings.length) n)
 
 private def BranchList.shiftFrom (threshold : Nat) (n : Nat) :
@@ -689,10 +713,10 @@ Replaces `.var`s that are `≥ k` with their corresponding item in `vs`. If the 
 In other words, this replaces a bunch of specific vars with their values and leaves other one untouched.
 -/
 def Expr.substN (k : Nat) (vs : List Expr) : Expr → Expr
-  | .var i =>
-      if i < k then .var i
+  | .var i tyArgs =>
+      if i < k then .var i tyArgs
       else if h : i - k < vs.length then (vs[i - k]).shiftFrom 0 k
-      else .var (i - vs.length)
+      else .var (i - vs.length) tyArgs
   | .primLit p         => .primLit p
   | .lambda ann body   => .lambda ann (body.substN (k + 1) vs)
   | .app f arg         => .app (f.substN k vs) (arg.substN k vs)
@@ -704,6 +728,11 @@ def Expr.substN (k : Nat) (vs : List Expr) : Expr → Expr
   | .letRec bindings body =>
       -- the `bindings.length` group binders are in scope in every RHS and the body
       .letRec (RecGroup.substN (k + bindings.length) vs bindings)
+        (body.substN (k + bindings.length) vs)
+  | .letRecAnn schemes bindings body =>
+      -- schemes are types, untouched by term-var substitution; the `bindings.length`
+      -- group binders are in scope in every RHS and the body (as for `letRec`).
+      .letRecAnn schemes (RecGroup.substN (k + bindings.length) vs bindings)
         (body.substN (k + bindings.length) vs)
 
 private def BranchList.substN (k : Nat) (vs : List Expr) :
@@ -824,6 +853,13 @@ inductive Step : Expr → Expr → Prop
       Step (.letRec bindings body)
         (body.substN 0 (bindings.map (fun e => Expr.letRec bindings e)))
 
+  /-- Annotated recursive-group unfolding. Mirrors `letRecUnfold`, carrying the
+      `schemes` in each re-wrapped binding so its own recursive references stay
+      resolved at the right scheme. Always steps (never a value). -/
+  | letRecAnnUnfold {schemes bindings body} :
+      Step (.letRecAnn schemes bindings body)
+        (body.substN 0 (bindings.map (fun e => Expr.letRecAnn schemes bindings e)))
+
   -- ─── congruence rules (enforce left-to-right CBV) ─────────────────
 
   /-- Reduce the function position of an application. -/
@@ -915,6 +951,9 @@ def step : Expr → Option Expr
   | .letRec bindings body =>
     some (body.substN 0 (bindings.map (fun e => Expr.letRec bindings e)))
 
+  | .letRecAnn schemes bindings body =>
+    some (body.substN 0 (bindings.map (fun e => Expr.letRecAnn schemes bindings e)))
+
   | _ => none
 
 /-- Multi-step evaluator with fuel. Returns `some v` when a value is reached,
@@ -941,10 +980,11 @@ private theorem isValue_isCtorChain_correct (e : Expr) :
             fun h => by cases h with | ctorApp hc hv => exact ⟨ihf.2.mpr hc, iharg.1.mpr hv⟩⟩,
            ⟨fun ⟨hf, ha⟩ => .app (ihf.2.mp hf) (iharg.1.mp ha),
             fun h => by cases h with | app hc hv => exact ⟨ihf.2.mpr hc, iharg.1.mpr hv⟩⟩⟩
-  | var _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
+  | var _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
   | letIn _ _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
   | match_ _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
   | letRec _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
+  | letRecAnn _ _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
 
 theorem isValue_iff_IsValue {e : Expr} : isValue e = true ↔ IsValue e :=
   (isValue_isCtorChain_correct e).1
@@ -996,6 +1036,7 @@ private theorem CtorAppliedTo_of_IsCtorChain :
   | letIn a be b _ _ => intro h; cases h
   | match_ s br _ _ => intro h; cases h
   | letRec _ _ _ _ => intro h; cases h
+  | letRecAnn _ _ _ _ _ => intro h; cases h
 
 /-- A constructor chain always decomposes via `getCtorArgs`; contrapositively, a
     `getCtorArgs = none` term is not a constructor chain. -/
@@ -1052,7 +1093,7 @@ private theorem isValue_step_none {e : Expr} (hv : isValue e = true) :
     simp only [isValue, Bool.and_eq_true] at hv
     simp only [step, isCtorChain_imp_isValue hv.1, hv.2, ite_true]
     cases f <;> (first | rfl | simp [isCtorChain] at hv)
-  | .var _ | .letIn _ _ _ | .match_ _ _ => simp [isValue] at hv
+  | .var _ _ | .letIn _ _ _ | .match_ _ _ => simp [isValue] at hv
 
 private theorem step_some_not_isValue {e e' : Expr}
     (h : step e = some e') : isValue e = false := by
@@ -1064,7 +1105,7 @@ private theorem step_some_not_isValue {e e' : Expr}
 
 theorem step_sound {e e' : Expr} (h : step e = some e') : Step e e' := by
   induction e using Expr.rec_strong generalizing e' with
-  | primLit _ | lambda _ _ _ | ctor _ | var _ => simp [step] at h
+  | primLit _ | lambda _ _ _ | ctor _ | var _ _ => simp [step] at h
   | app f arg ihf iharg =>
     unfold step at h
     split at h
@@ -1120,6 +1161,10 @@ theorem step_sound {e e' : Expr} (h : step e = some e') : Step e e' := by
     simp only [step, Option.some.injEq] at h
     subst h
     exact .letRecUnfold
+  | letRecAnn schemes bindings body _ _ =>
+    simp only [step, Option.some.injEq] at h
+    subst h
+    exact .letRecAnnUnfold
 
 /-! ### Completeness of `step` w.r.t. the `Step` relation -/
 
@@ -1160,6 +1205,7 @@ theorem step_complete {e e' : Expr} (h : Step e e') : step e = some e' := by
     have := step_some_not_isValue ih
     unfold step; simp [this, ih]
   | letRecUnfold => rfl
+  | letRecAnnUnfold => rfl
 
 theorem step_deterministic {e e₁ e₂ : Expr}
     (h₁ : Step e e₁) (h₂ : Step e e₂) : e₁ = e₂ := by
@@ -1190,7 +1236,7 @@ mutual
 inductive Expr.WellScopedUnder : Nat → Expr → Prop
   | primLit {n p}            : Expr.WellScopedUnder n (.primLit p)
   | ctor    {n c}            : Expr.WellScopedUnder n (.ctor c)
-  | var     {n i}            : i < n → Expr.WellScopedUnder n (.var i)
+  | var     {n i tyArgs}     : i < n → Expr.WellScopedUnder n (.var i tyArgs)
   | lambda  {n ann body}       :
       Expr.WellScopedUnder (n + 1) body →
       Expr.WellScopedUnder n (.lambda ann body)
@@ -1209,6 +1255,10 @@ inductive Expr.WellScopedUnder : Nat → Expr → Prop
       (∀ e ∈ bindings, Expr.WellScopedUnder (n + bindings.length) e) →
       Expr.WellScopedUnder (n + bindings.length) body →
       Expr.WellScopedUnder n (.letRec bindings body)
+  | letRecAnn {n schemes bindings body} :
+      (∀ e ∈ bindings, Expr.WellScopedUnder (n + bindings.length) e) →
+      Expr.WellScopedUnder (n + bindings.length) body →
+      Expr.WellScopedUnder n (.letRecAnn schemes bindings body)
 
 inductive Expr.BranchListWellScoped : Nat → List (MatchPattern × Expr) → Prop
   | nil  {n}          : Expr.BranchListWellScoped n []
@@ -1325,7 +1375,7 @@ mutual
     match covers (typically from the typing derivation). -/
 inductive AllMatchesExhaustive : CtorEnv → Expr → Prop where
   | primLit : AllMatchesExhaustive ctors (.primLit p)
-  | var : AllMatchesExhaustive ctors (.var n)
+  | var : AllMatchesExhaustive ctors (.var n tyArgs)
   | ctor : AllMatchesExhaustive ctors (.ctor name)
   | lambda :
     AllMatchesExhaustive ctors body →
@@ -1357,6 +1407,11 @@ inductive AllMatchesExhaustive : CtorEnv → Expr → Prop where
     (∀ e ∈ bindings, AllMatchesExhaustive ctors e) →
     AllMatchesExhaustive ctors body →
     AllMatchesExhaustive ctors (.letRec bindings body)
+  /-- A `letRecAnn` group is exhaustive iff every binding and the body are. -/
+  | letRecAnn :
+    (∀ e ∈ bindings, AllMatchesExhaustive ctors e) →
+    AllMatchesExhaustive ctors body →
+    AllMatchesExhaustive ctors (.letRecAnn schemes bindings body)
 
 /-- All branch bodies are recursively exhaustive. -/
 inductive AllBranchBodiesExhaustive : CtorEnv → List (MatchPattern × Expr) → Prop where
@@ -1513,12 +1568,16 @@ def Expr.substTyFvar (Z : Nat) (U : Ty) : Expr → Expr
   | .app f arg          => .app (f.substTyFvar Z U) (arg.substTyFvar Z U)
   | .letIn ann rhs body =>
       .letIn (ann.map (PolyTy.substFvar Z U)) (rhs.substTyFvar Z U) (body.substTyFvar Z U)
-  | .var i              => .var i
+  | .var i tyArgs       => .var i (tyArgs.map (Ty.substFvar Z U))
   | .ctor c             => .ctor c
   | .match_ scrut branches =>
       .match_ (scrut.substTyFvar Z U) (BranchList.substTyFvar Z U branches)
   | .letRec bindings body =>
       .letRec (RecGroup.substTyFvar Z U bindings) (body.substTyFvar Z U)
+  | .letRecAnn schemes bindings body =>
+      -- schemes are kept type annotations: push `[Z ↦ U]` through them too.
+      .letRecAnn (schemes.map (PolyTy.substFvar Z U)) (RecGroup.substTyFvar Z U bindings)
+        (body.substTyFvar Z U)
 
 private def BranchList.substTyFvar (Z : Nat) (U : Ty) :
     List (MatchPattern × Expr) → List (MatchPattern × Expr)
@@ -1534,6 +1593,13 @@ end
 def Expr.substTyFvars : List (Nat × Ty) → Expr → Expr
   | []             , e => e
   | (Z, U) :: rest , e => Expr.substTyFvars rest (Expr.substTyFvar Z U e)
+
+/-- Iterated `PolyTy.substFvar` (left-to-right), mirroring `Expr.substTyFvars`.
+    Used to push a block of type-fvar substitutions through a kept `letRecAnn`
+    scheme. -/
+def PolyTy.substFvars : List (Nat × Ty) → PolyTy → PolyTy
+  | []             , σ => σ
+  | (Z, U) :: rest , σ => PolyTy.substFvars rest (PolyTy.substFvar Z U σ)
 
 /-- Open the `bvar (d + i)` of a type (offset `d`) to `.fvar (Xs[i])`, leaving
     `bvar`s `< d` (those bound by *inner* schemes) untouched. `d = 0` coincides
@@ -1561,7 +1627,7 @@ def Expr.openTyVarsAux (d : Nat) (Xs : List Nat) : Expr → Expr
         (body.openTyVarsAux d Xs)
   | .letIn none rhs body =>
       .letIn none (rhs.openTyVarsAux d Xs) (body.openTyVarsAux d Xs)
-  | .var i              => .var i
+  | .var i tyArgs       => .var i (tyArgs.map (Ty.openVarsFrom d Xs))
   | .ctor c             => .ctor c
   | .match_ scrut branches =>
       .match_ (scrut.openTyVarsAux d Xs) (BranchList.openTyVarsAux d Xs branches)
@@ -1569,6 +1635,10 @@ def Expr.openTyVarsAux (d : Nat) (Xs : List Nat) : Expr → Expr
       -- `letRec` bindings carry no scheme annotations (v1), so they introduce no
       -- inner type binders: `d` is unchanged in every RHS and the body.
       .letRec (RecGroup.openTyVarsAux d Xs bindings) (body.openTyVarsAux d Xs)
+  | .letRecAnn schemes bindings body =>
+      -- v1 `letRecAnn` schemes are CLOSED, so opening is a no-op on them — leave
+      -- the schemes untouched and recurse into the RHSs/body at the same `d`.
+      .letRecAnn schemes (RecGroup.openTyVarsAux d Xs bindings) (body.openTyVarsAux d Xs)
 
 private def BranchList.openTyVarsAux (d : Nat) (Xs : List Nat) :
     List (MatchPattern × Expr) → List (MatchPattern × Expr)
@@ -1806,7 +1876,7 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     ctx.env[dbl]? = some polyTy →
     (∀ tyArg ∈ tyArgs, ContainsBvarsUpTo 0 tyArg) →
     InstantiatesBy tyArgs polyTy.body ty →
-    TypeOfHM ctx (.var dbl) ty
+    TypeOfHM ctx (.var dbl tyArgs) ty
 
   | ctor :
     LookupList.get? ctx.ctors name = some ctor →
@@ -1843,6 +1913,24 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     bodyCtx = { ctx with env := Ms ++ ctx.env } →
     TypeOfHM bodyCtx body ρ →
     TypeOfHM ctx (.letRec bindings body) ρ
+
+  /-- Annotated *polymorphic*-recursion group (Pottier's `LetRecPoly`). The group
+      is in scope at the FULL declared `schemes` in BOTH the RHSs and the body, so
+      recursive occurrences may instantiate `schemeⱼ` at different types. Each RHS
+      is checked at its scheme's own disjoint skolem slice (`PolyTy.openGroup`),
+      cofinitely over all sufficiently-fresh `Xs` (so weakening-sound, à la
+      `letIn`). There is NO generalisation step (the schemes are given), so the
+      disjoint-slice opening — wrong for the monomorphic `letRec` — is exactly
+      right here. Ported from the proven `SpikeLetRecAnn.TypeOfLetRecAnn`. -/
+  | letRecAnn {schemes : List PolyTy} {L : List Nat} :
+    bindings.length = schemes.length →
+    (∀ σ ∈ schemes, σ.WF) →
+    (∀ Xs, FreshNames L (PolyTy.totalParams schemes) Xs →
+        ∀ p ∈ bindings.zip (PolyTy.openGroup schemes Xs),
+          TypeOfHM { ctx with env := schemes ++ ctx.env } p.1 p.2) →
+    bodyCtx = { ctx with env := schemes ++ ctx.env } →
+    TypeOfHM bodyCtx body ρ →
+    TypeOfHM ctx (.letRecAnn schemes bindings body) ρ
 
 
 /-- Match-branch typing for `TypeOfHM`. Verbatim copy of `TypeOfMatchBranch`
@@ -1934,6 +2022,22 @@ theorem Ty.substFvar_fresh {Z : Nat} {U ty : Ty}
       TyList.not_mem_freeVars_iff.mp h
     simp only [Ty.substFvar, Ty.customTy.injEq, true_and]
     exact TyList.substFvar_eq_self_of_all (fun t ht => ih t ht (h' t ht))
+
+/-- A block of type-fvar substitutions whose keys all avoid a scheme's body free
+    vars leaves the scheme fixed. -/
+theorem PolyTy.substFvars_eq_self_of_fresh {pairs : List (Nat × Ty)} :
+    ∀ {σ : PolyTy}, (∀ p ∈ pairs, p.1 ∉ σ.body.freeVars) → PolyTy.substFvars pairs σ = σ := by
+  induction pairs with
+  | nil => intro σ _; rfl
+  | cons hd tl ih =>
+    intro σ h
+    obtain ⟨Z, U⟩ := hd
+    have hZ : Z ∉ σ.body.freeVars := h (Z, U) List.mem_cons_self
+    have hstep : PolyTy.substFvar Z U σ = σ := by
+      unfold PolyTy.substFvar
+      rw [Ty.substFvar_fresh hZ]
+    simp only [PolyTy.substFvars, hstep]
+    exact ih (fun p hp => h p (List.mem_cons_of_mem _ hp))
 
 /-- Instantiation is a no-op on locally-closed types: nothing to instantiate. -/
 private theorem TyList.instantiate_eq_self_of_all_lc
@@ -2083,7 +2187,13 @@ theorem Expr.substTyFvar_openTyVarsAux
     | some σ =>
       simp only [Expr.openTyVarsAux, Expr.substTyFvar, Option.map_some, PolyTy.substFvar]
       rw [Ty.substFvar_openVarsFrom h_lc h_Z, ih_be (d + σ.paramCount), ih_body d]
-  | var n => intro d; rfl
+  | var n tyArgs =>
+    intro d
+    simp only [Expr.openTyVarsAux, Expr.substTyFvar]
+    refine congrArg (Expr.var n) ?_
+    induction tyArgs with
+    | nil => rfl
+    | cons t ts ih => simp only [List.map_cons, Ty.substFvar_openVarsFrom h_lc h_Z, ih]
   | ctor nm => intro d; rfl
   | match_ scrut branches ih_scrut ih_branches =>
     intro d
@@ -2103,6 +2213,12 @@ theorem Expr.substTyFvar_openTyVarsAux
     simp only [Expr.openTyVarsAux, Expr.substTyFvar, RecGroup.openTyVarsAux_eq_map,
       RecGroup.substTyFvar_eq_map, List.map_map, Expr.letRec.injEq, Function.comp_def]
     exact ⟨List.map_congr_left fun e he => ih_bindings e he d, ih_body d⟩
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    intro d
+    simp only [Expr.openTyVarsAux, Expr.substTyFvar, RecGroup.openTyVarsAux_eq_map,
+      RecGroup.substTyFvar_eq_map, List.map_map, Function.comp_def]
+    rw [Expr.letRecAnn.injEq]
+    exact ⟨rfl, List.map_congr_left fun e he => ih_bindings e he d, ih_body d⟩
 
 /-- `substTyFvar` commutes with the top-level `Expr.openTyVars`. -/
 theorem Expr.substTyFvar_openTyVars
@@ -2147,7 +2263,7 @@ theorem Expr.shiftFrom_openTyVarsAux {Xs : List Nat} (n : Nat) :
     | some σ =>
       simp only [Expr.openTyVarsAux, Expr.shiftFrom]
       rw [ih_be (d + σ.paramCount) k, ih_body d (k + 1)]
-  | var m => intro d k; simp only [Expr.openTyVarsAux, Expr.shiftFrom]; split <;> rfl
+  | var m _ => intro d k; simp only [Expr.openTyVarsAux, Expr.shiftFrom]; split <;> rfl
   | ctor nm => intro d k; rfl
   | match_ scrut branches ih_scrut ih_branches =>
     intro d k
@@ -2168,6 +2284,13 @@ theorem Expr.shiftFrom_openTyVarsAux {Xs : List Nat} (n : Nat) :
       RecGroup.shiftFrom_eq_map, List.map_map, List.length_map, Expr.letRec.injEq,
       Function.comp_def]
     exact ⟨List.map_congr_left fun e he => ih_bindings e he d (k + bindings.length),
+      ih_body d (k + bindings.length)⟩
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    intro d k
+    simp only [Expr.openTyVarsAux, Expr.shiftFrom, RecGroup.openTyVarsAux_eq_map,
+      RecGroup.shiftFrom_eq_map, List.map_map, List.length_map, Function.comp_def]
+    rw [Expr.letRecAnn.injEq]
+    exact ⟨rfl, List.map_congr_left fun e he => ih_bindings e he d (k + bindings.length),
       ih_body d (k + bindings.length)⟩
 
 /-- `shiftFrom` commutes with the top-level `Expr.openTyVars`. -/
@@ -3380,7 +3503,7 @@ theorem TypeOfHM.rec_strong
     (var : ∀ {dbl : Nat} {polyTy : PolyTy} {tyArgs : List Ty} {ty : Ty} {ctx : Ctx}
       (hlook : ctx.env[dbl]? = some polyTy) (htyargs : ∀ tyArg ∈ tyArgs, ContainsBvarsUpTo 0 tyArg)
       (hinst : InstantiatesBy tyArgs polyTy.body ty),
-      motive ctx (.var dbl) ty (.var hlook htyargs hinst))
+      motive ctx (.var dbl tyArgs) ty (.var hlook htyargs hinst))
     (ctor : ∀ {name : CtorName} {ctorr : Ctor} {tyArgs : List Ty} {ty : Ty} {ctx : Ctx}
       (hlook : LookupList.get? ctx.ctors name = some ctorr)
       (htyargs : ∀ tyArg ∈ tyArgs, ContainsBvarsUpTo 0 tyArg)
@@ -3412,6 +3535,20 @@ theorem TypeOfHM.rec_strong
           p.1 p.2 (hcofin Xs hf p hp)) →
       motive bodyCtx body ρ hbody →
       motive ctx (.letRec bindings body) ρ (.letRec hlen hlen2 hlc hG hgen hcofin heq hbody))
+    (letRecAnn : ∀ {ctx bodyCtx : Ctx} {schemes : List PolyTy} {bindings : List Expr}
+      {L : List Nat} {body : Expr} {ρ : Ty}
+      (hlen : bindings.length = schemes.length)
+      (hwf : ∀ σ ∈ schemes, σ.WF)
+      (hcofin : ∀ Xs, FreshNames L (PolyTy.totalParams schemes) Xs →
+        ∀ p ∈ bindings.zip (PolyTy.openGroup schemes Xs),
+          TypeOfHM { ctx with env := schemes ++ ctx.env } p.1 p.2)
+      (heq : bodyCtx = { ctx with env := schemes ++ ctx.env })
+      (hbody : TypeOfHM bodyCtx body ρ),
+      (∀ Xs (hf : FreshNames L (PolyTy.totalParams schemes) Xs)
+          p (hp : p ∈ bindings.zip (PolyTy.openGroup schemes Xs)),
+        motive { ctx with env := schemes ++ ctx.env } p.1 p.2 (hcofin Xs hf p hp)) →
+      motive bodyCtx body ρ hbody →
+      motive ctx (.letRecAnn schemes bindings body) ρ (.letRecAnn hlen hwf hcofin heq hbody))
     {ctx : Ctx} {e : Expr} {τ : Ty} (h : TypeOfHM ctx e τ) : motive ctx e τ h := by
   induction h using TypeOfHM.rec
     (motive_2 := fun ctx br scrutTy resultTy _ =>
@@ -3430,6 +3567,8 @@ theorem TypeOfHM.rec_strong
   | match_ hscrut hne hbrs ihscrut ihbrs => exact match_ hscrut hne hbrs ihscrut ihbrs
   | letRec hlen hlen2 hlc hG hgen hcofin heq hbody ihcofin ihbody =>
       exact letRec hlen hlen2 hlc hG hgen hcofin heq hbody ihcofin ihbody
+  | letRecAnn hlen hwf hcofin heq hbody ihcofin ihbody =>
+      exact letRecAnn hlen hwf hcofin heq hbody ihcofin ihbody
   | mk hlook hscrutEq hpc hcontents hinstC hpb heq hbodyT ih =>
       subst hpb; subst heq
       exact Or.inl ⟨_, _, _, _, _, rfl, hlook, hscrutEq, hpc, hcontents, hinstC, hbodyT, ih⟩
@@ -3831,6 +3970,29 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
              = List.map (fun t => Ty.substFvar Z U (Ty.renameG G Xs t)) τs from List.map_map] at hIH
       exact hIH
     · simpa only [Env.substFvar, List.map_append] using ihbody
+  | letRecAnn hlen hwf hcofin heq hbody ihcofin ihbody =>
+    -- Port of `SpikeLetRecAnn.TypeOfLetRecAnn.typ_subst`: schemes substituted
+    -- pointwise (WF preserved), opening commutes with substFvar, no gen-var
+    -- freshening (schemes are given). Strictly simpler than the `letRec` case.
+    subst heq
+    expose_names
+    simp only [Expr.substTyFvar, RecGroup.substTyFvar_eq_map]
+    refine TypeOfHM.letRecAnn (schemes := schemes.map (PolyTy.substFvar Z U)) (L := Z :: L)
+      ?_ ?_ ?_ rfl ?_
+    · simp only [List.length_map]; exact hlen
+    · intro σ' hσ'
+      obtain ⟨σ, hσ, rfl⟩ := List.mem_map.mp hσ'
+      exact PolyTy.WF.substFvar h_U_lc (hwf σ hσ)
+    · intro Xs hfresh p hp
+      have hZXs : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
+      have hfreshL : FreshNames L (PolyTy.totalParams schemes) Xs :=
+        ⟨by have hl := hfresh.length; rwa [PolyTy.totalParams_map_substFvar] at hl,
+         hfresh.nodup, fun x hx hc => hfresh.avoid x hx (List.mem_cons_of_mem _ hc)⟩
+      rw [PolyTy.openGroup_map_substFvar h_U_lc schemes hZXs] at hp
+      obtain ⟨a, b, hq, rfl⟩ := List.mem_zip_map hp
+      have hIH := ihcofin Xs hfreshL (a, b) hq
+      simpa only [Env.substFvar, List.map_append] using hIH
+    · simpa only [Env.substFvar, List.map_append] using ihbody
 
 theorem TypeOfHM.typ_subst_preservation
     {ctors : CtorEnv} {env_post env_outer : Env}
@@ -3994,6 +4156,29 @@ theorem TypeOfHM.weaken_env
           Nat.add_comm bindings.length env_pre'.length] at hb
       simp only [List.append_assoc] at hb ⊢
       exact hb
+  | letRecAnn hlen hwf hcofin heq hbody ihcofin ihbody =>
+    -- Port of `SpikeLetRecAnn.TypeOfLetRecAnn.weaken_env_front`: cofinite + the
+    -- ctx-free schemes ⇒ delegate each RHS/body to the IH; no `L` growth.
+    intro env_pre' hctx
+    subst heq
+    expose_names
+    simp only [Expr.shiftFrom, RecGroup.shiftFrom_eq_map]
+    refine TypeOfHM.letRecAnn (schemes := schemes) (L := L) ?_ hwf ?_ rfl ?_
+    · rw [List.length_map]; exact hlen
+    · intro Xs hfresh p hp
+      obtain ⟨a, b, _, hq, rfl⟩ := List.mem_zip_map_left hp
+      have hc := ihcofin Xs hfresh (a, b) hq (schemes ++ env_pre')
+        (by rw [hctx, List.append_assoc])
+      simp only [List.length_append] at hc
+      rw [← hlen, Nat.add_comm bindings.length env_pre'.length] at hc
+      simp only [List.append_assoc] at hc ⊢
+      exact hc
+    · have hb := ihbody (schemes ++ env_pre') (by rw [hctx, List.append_assoc])
+      simp only [List.length_append] at hb
+      rw [show schemes.length = bindings.length from hlen.symm,
+          Nat.add_comm bindings.length env_pre'.length] at hb
+      simp only [List.append_assoc] at hb ⊢
+      exact hb
 
 /-- Iterated type substitution preserves typing: substituting each `(Zᵢ, Uᵢ)`
     in turn (with every `Zᵢ` fresh for the env and every `Uᵢ` locally closed)
@@ -4026,10 +4211,13 @@ def Expr.tyFreeVars : Expr → List Nat
   | .lambda ann body    => (ann.elim [] Ty.freeVars) ++ body.tyFreeVars
   | .app f arg          => f.tyFreeVars ++ arg.tyFreeVars
   | .letIn ann rhs body => (ann.elim [] (fun σ => σ.body.freeVars)) ++ rhs.tyFreeVars ++ body.tyFreeVars
-  | .var _              => []
+  | .var _ tyArgs       => tyArgs.flatMap Ty.freeVars
   | .ctor _             => []
   | .match_ scrut branches => scrut.tyFreeVars ++ BranchList.tyFreeVars branches
   | .letRec bindings body => RecGroup.tyFreeVars bindings ++ body.tyFreeVars
+  | .letRecAnn schemes bindings body =>
+      -- kept schemes contribute the free type vars in their bodies (scoped vars).
+      SchemeList.tyFreeVars schemes ++ RecGroup.tyFreeVars bindings ++ body.tyFreeVars
 where
   BranchList.tyFreeVars : List (MatchPattern × Expr) → List Nat
   | []                  => []
@@ -4037,6 +4225,9 @@ where
   RecGroup.tyFreeVars : List Expr → List Nat
   | []        => []
   | e :: rest => e.tyFreeVars ++ Expr.tyFreeVars.RecGroup.tyFreeVars rest
+  SchemeList.tyFreeVars : List PolyTy → List Nat
+  | []        => []
+  | σ :: rest => σ.body.freeVars ++ Expr.tyFreeVars.SchemeList.tyFreeVars rest
 
 /-- Substituting a fresh type variable (one not occurring in the term's
     annotations) is a no-op. -/
@@ -4095,6 +4286,29 @@ theorem Expr.substTyFvar_eq_self_of_not_mem_tyFreeVars {Z : Nat} {U : Ty} {e : E
       simp only [RecGroup.substTyFvar, List.cons.injEq]
       refine ⟨ih_bindings hd List.mem_cons_self hbindings.1, ?_⟩
       exact ihtl (fun e he hp => ih_bindings e (List.mem_cons_of_mem _ he) hp) hbindings.2
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    simp only [Expr.tyFreeVars, List.mem_append, not_or] at h
+    obtain ⟨⟨hschemes, hbindings⟩, hbody⟩ := h
+    simp only [Expr.substTyFvar, Expr.letRecAnn.injEq]
+    refine ⟨?_, ?_, ih_body hbody⟩
+    · clear ih_bindings ih_body hbindings hbody
+      induction schemes with
+      | nil => rfl
+      | cons hd tl ihtl =>
+        simp only [Expr.tyFreeVars.SchemeList.tyFreeVars, List.mem_append, not_or] at hschemes
+        simp only [List.map_cons, List.cons.injEq]
+        refine ⟨?_, ihtl hschemes.2⟩
+        show PolyTy.substFvar Z U hd = hd
+        unfold PolyTy.substFvar
+        rw [Ty.substFvar_fresh hschemes.1]
+    · clear ih_body hbody hschemes
+      induction bindings with
+      | nil => rfl
+      | cons hd tl ihtl =>
+        simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbindings
+        simp only [RecGroup.substTyFvar, List.cons.injEq]
+        refine ⟨ih_bindings hd List.mem_cons_self hbindings.1, ?_⟩
+        exact ihtl (fun e he hp => ih_bindings e (List.mem_cons_of_mem _ he) hp) hbindings.2
 
 /-- Iterated version: a list of type-fvar substitutions whose keys all avoid the
     term's annotation free variables leaves the term fixed. -/
@@ -4195,6 +4409,25 @@ theorem Expr.substTyFvars_letRec {σ : List (Nat × Ty)} {bindings : List Expr} 
     simp only [Expr.substTyFvars, Expr.substTyFvar, RecGroup.substTyFvar_eq_map, ih,
       List.map_map, Function.comp_def]
 
+theorem Expr.substTyFvars_letRecAnn {pairs : List (Nat × Ty)} {schemes : List PolyTy}
+    {bindings : List Expr} {body : Expr} :
+    Expr.substTyFvars pairs (.letRecAnn schemes bindings body)
+      = .letRecAnn (schemes.map (PolyTy.substFvars pairs)) (bindings.map (·.substTyFvars pairs))
+          (body.substTyFvars pairs) := by
+  induction pairs generalizing schemes bindings body with
+  | nil =>
+    simp only [Expr.substTyFvars]
+    rw [Expr.letRecAnn.injEq]
+    refine ⟨?_, ?_, rfl⟩
+    · conv_lhs => rw [← List.map_id schemes]
+      apply List.map_congr_left; intro s _; rfl
+    · conv_lhs => rw [← List.map_id bindings]
+      apply List.map_congr_left; intro b _; rfl
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    simp only [Expr.substTyFvars, Expr.substTyFvar, PolyTy.substFvars,
+      RecGroup.substTyFvar_eq_map, ih, List.map_map, Function.comp_def]
+
 /-- A branch body's annotation free vars are among the branch list's. -/
 private theorem Expr.mem_branchList_tyFreeVars {p : MatchPattern} {b : Expr} {y : Nat}
     {brs : List (MatchPattern × Expr)} (hmem : (p, b) ∈ brs) (hy : y ∈ b.tyFreeVars) :
@@ -4220,6 +4453,18 @@ private theorem Expr.mem_recGroup_tyFreeVars {e : Expr} {y : Nat}
     · subst h; exact .inl hy
     · exact .inr (ih h)
 
+/-- A `letRecAnn` scheme's body free vars are among the scheme list's. -/
+private theorem Expr.mem_schemeList_tyFreeVars {σ : PolyTy} {y : Nat}
+    {ss : List PolyTy} (hmem : σ ∈ ss) (hy : y ∈ σ.body.freeVars) :
+    y ∈ Expr.tyFreeVars.SchemeList.tyFreeVars ss := by
+  induction ss with
+  | nil => exact absurd hmem List.not_mem_nil
+  | cons hd tl ih =>
+    simp only [Expr.tyFreeVars.SchemeList.tyFreeVars, List.mem_append]
+    rcases List.mem_cons.mp hmem with h | h
+    · subst h; exact .inl hy
+    · exact .inr (ih h)
+
 /-- **Rename the opening (term level, depth-general).** Opening a term `e`'s
     scoped type variables (offset `d`) at a fresh block `Ys`, then renaming
     `Ys ↦ Xs` (as `fvar`s through the annotations), equals opening directly at
@@ -4237,7 +4482,7 @@ theorem Expr.substTyFvars_zip_openTyVarsAux {Ys Xs : List Nat}
   | primLit p =>
     intro d _; simp only [Expr.openTyVarsAux]
     exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
-  | var n =>
+  | var n _ =>
     intro d _; simp only [Expr.openTyVarsAux]
     exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
   | ctor nm =>
@@ -4299,6 +4544,29 @@ theorem Expr.substTyFvars_zip_openTyVarsAux {Ys Xs : List Nat}
     exact ih_bindings e he d (fun y hy hc => hfresh y hy (by
       simp only [Expr.tyFreeVars, List.mem_append]
       exact .inl (Expr.mem_recGroup_tyFreeVars he hc)))
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    intro d hfresh
+    simp only [Expr.openTyVarsAux, RecGroup.openTyVarsAux_eq_map, Expr.substTyFvars_letRecAnn,
+      Expr.letRecAnn.injEq]
+    refine ⟨?_, ?_, ih_body d (fun y hy hc => hfresh y hy (by
+      simp only [Expr.tyFreeVars, List.mem_append]; tauto))⟩
+    · -- the kept schemes are unchanged: `Ys` avoids their free vars, so the rename is a no-op
+      conv_rhs => rw [← List.map_id schemes]
+      apply List.map_congr_left
+      intro s hs
+      show PolyTy.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) s = id s
+      rw [id_eq]
+      exact PolyTy.substFvars_eq_self_of_fresh (fun p hp hc =>
+        hfresh p.1 (List.of_mem_zip hp).1 (by
+          simp only [Expr.tyFreeVars, List.mem_append]
+          exact .inl (.inl (Expr.mem_schemeList_tyFreeVars hs hc))))
+    · rw [List.map_map]
+      apply List.map_congr_left
+      intro e he
+      simp only [Function.comp_def]
+      exact ih_bindings e he d (fun y hy hc => hfresh y hy (by
+        simp only [Expr.tyFreeVars, List.mem_append]
+        exact .inl (.inr (Expr.mem_recGroup_tyFreeVars he hc))))
 
 /-- Top-level form of `Expr.substTyFvars_zip_openTyVarsAux`
     (`Expr.openTyVars = Expr.openTyVarsAux 0`). The key bridge for soundness of
@@ -4324,10 +4592,11 @@ def Expr.size : Expr → Nat
   | .lambda _ body      => 1 + body.size
   | .app f arg          => 1 + f.size + arg.size
   | .letIn _ rhs body   => 1 + rhs.size + body.size
-  | .var _              => 1
+  | .var _ _            => 1
   | .ctor _             => 1
   | .match_ scrut branches => 1 + scrut.size + Expr.sizeBranches branches
   | .letRec bindings body  => 1 + Expr.sizeRecGroup bindings + body.size
+  | .letRecAnn _ bindings body => 1 + Expr.sizeRecGroup bindings + body.size
 def Expr.sizeBranches : List (MatchPattern × Expr) → Nat
   | []                  => 0
   | (_, b) :: rest      => 1 + b.size + Expr.sizeBranches rest
@@ -4368,6 +4637,21 @@ theorem Expr.size_openTyVarsAux {Xs : List Nat} :
       rw [ihbs pat body List.mem_cons_self d,
           ihtl (fun p e hm => ihbs p e (List.mem_cons_of_mem _ hm))]
   | letRec bindings body ih_bindings ih_body =>
+    intro d
+    simp only [Expr.openTyVarsAux, Expr.size]
+    rw [ih_body d]
+    have hrec : Expr.sizeRecGroup (RecGroup.openTyVarsAux d Xs bindings)
+        = Expr.sizeRecGroup bindings := by
+      revert ih_bindings
+      induction bindings with
+      | nil => intro _; rfl
+      | cons hd tl ihtl =>
+        intro ih_bindings
+        simp only [RecGroup.openTyVarsAux, Expr.sizeRecGroup]
+        rw [ih_bindings hd List.mem_cons_self d,
+            ihtl (fun e he => ih_bindings e (List.mem_cons_of_mem _ he))]
+    rw [hrec]
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
     intro d
     simp only [Expr.openTyVarsAux, Expr.size]
     rw [ih_body d]
@@ -4457,7 +4741,7 @@ theorem Expr.tyFreeVars_openTyVarsAux {Xs : List Nat} :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d z hz; simp [Expr.openTyVarsAux, Expr.tyFreeVars] at hz
-  | var n => intro d z hz; simp [Expr.openTyVarsAux, Expr.tyFreeVars] at hz
+  | var n _ => intro d z hz; simp [Expr.openTyVarsAux, Expr.tyFreeVars] at hz
   | ctor nm => intro d z hz; simp [Expr.openTyVarsAux, Expr.tyFreeVars] at hz
   | app f arg ihf iha =>
     intro d z hz
@@ -4563,6 +4847,36 @@ theorem Expr.tyFreeVars_openTyVarsAux {Xs : List Nat} :
             · exact .inr h
       rcases hrec with h | h
       · exact .inl (.inl h)
+      · exact .inr h
+    · rcases ih_body d z hz with h | h
+      · exact .inl (.inr h)
+      · exact .inr h
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    intro d z hz
+    simp only [Expr.openTyVarsAux, Expr.tyFreeVars, List.mem_append] at hz ⊢
+    rcases hz with (hz | hz) | hz
+    · -- schemes are untouched by opening, so the var was already there
+      exact .inl (.inl (.inl hz))
+    · have hrec : z ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings ∨ z ∈ Xs := by
+        revert hz
+        revert ih_bindings
+        induction bindings with
+        | nil =>
+          intro _ hz
+          simp [RecGroup.openTyVarsAux, Expr.tyFreeVars.RecGroup.tyFreeVars] at hz
+        | cons hd tl ihtl =>
+          intro ih_bindings hz
+          simp only [RecGroup.openTyVarsAux, Expr.tyFreeVars.RecGroup.tyFreeVars,
+            List.mem_append] at hz ⊢
+          rcases hz with hz | hz
+          · rcases ih_bindings hd List.mem_cons_self d z hz with h | h
+            · exact .inl (.inl h)
+            · exact .inr h
+          · rcases ihtl (fun e he => ih_bindings e (List.mem_cons_of_mem _ he)) hz with h | h
+            · exact .inl (.inr h)
+            · exact .inr h
+      rcases hrec with h | h
+      · exact .inl (.inl (.inr h))
       · exact .inr h
     · rcases ih_body d z hz with h | h
       · exact .inl (.inr h)
@@ -4746,9 +5060,9 @@ section PreservationProbe
 private def probeSig : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
 /-- The let-bound value `λ(x : a). x`, where `a` is the scoped type variable
     `bvar 0` (referencing `σ`'s binder). -/
-private def probeV : Expr := .lambda (some (.bvar 0)) (.var 0)
+private def probeV : Expr := .lambda (some (.bvar 0)) (.var 0 [])
 /-- `let f : σ = (λ(x:a). x) in f`. -/
-private def probeLHS : Expr := .letIn (some probeSig) probeV (.var 0)
+private def probeLHS : Expr := .letIn (some probeSig) probeV (.var 0 [.prim .int])
 
 /-- The reduct `λ(x : a). x` (with a dangling scoped type-`bvar` in its
     annotation) is untypeable at any type: the `lambda` rule pins `paramTy` to
@@ -4776,7 +5090,7 @@ private theorem probe_LHS_typeable :
     rcases Xs with _ | ⟨X, _ | ⟨Y, tl⟩⟩
     · simp at hlen
     · have hterm : Expr.openBoundTyVars (some probeSig) [X] probeV
-          = .lambda (some (.fvar X)) (.var 0) := rfl
+          = .lambda (some (.fvar X)) (.var 0 []) := rfl
       have htype : probeSig.openVars [X] = .arrow (.fvar X) (.fvar X) := rfl
       rw [hterm, htype]
       exact TypeOfHM.lambda .fvar (fun T h => Option.some.inj h) rfl
@@ -4793,7 +5107,7 @@ private theorem preservation_is_unsound :
     ¬ (∀ {ctx : Ctx} {e e' : Expr} {τ : Ty},
         SmallStep.Step e e' → TypeOfHM ctx e τ → TypeOfHM ctx e' τ) := by
   intro pres
-  have hstep : SmallStep.Step probeLHS ((Expr.var 0).substN 0 [probeV]) :=
+  have hstep : SmallStep.Step probeLHS ((Expr.var 0 [.prim .int]).substN 0 [probeV]) :=
     SmallStep.Step.letReduce (SmallStep.IsValue.lambda _ _)
   exact probe_reduct_untypeable _ _ (pres hstep probe_LHS_typeable)
 
@@ -4817,10 +5131,14 @@ def Expr.eraseTyAnnots : Expr → Expr
   | .lambda _ body      => .lambda none body.eraseTyAnnots
   | .app f arg          => .app f.eraseTyAnnots arg.eraseTyAnnots
   | .letIn _ rhs body   => .letIn none rhs.eraseTyAnnots body.eraseTyAnnots
-  | .var i              => .var i
+  | .var i tyArgs       => .var i tyArgs
   | .ctor c             => .ctor c
   | .match_ scrut branches => .match_ scrut.eraseTyAnnots (BranchList.eraseTyAnnots branches)
   | .letRec bindings body  => .letRec (RecGroup.eraseTyAnnots bindings) body.eraseTyAnnots
+  | .letRecAnn schemes bindings body  =>
+      -- KEEP the recursion schemes: they are load-bearing for typeability (the
+      -- monomorphic reading is rejected), so unlike λ/let annotations they survive.
+      .letRecAnn schemes (RecGroup.eraseTyAnnots bindings) body.eraseTyAnnots
 private def BranchList.eraseTyAnnots :
     List (MatchPattern × Expr) → List (MatchPattern × Expr)
   | []                  => []
@@ -4843,12 +5161,17 @@ inductive Expr.IsTyErased : Expr → Prop
   | lambda {body} : body.IsTyErased → IsTyErased (.lambda none body)
   | app {f arg} : f.IsTyErased → arg.IsTyErased → IsTyErased (.app f arg)
   | letIn {rhs body} : rhs.IsTyErased → body.IsTyErased → IsTyErased (.letIn none rhs body)
-  | var (i) : IsTyErased (.var i)
+  | var (i) (tyArgs) : IsTyErased (.var i tyArgs)
   | ctor (c) : IsTyErased (.ctor c)
   | match_ {scrut branches} : scrut.IsTyErased →
       (∀ pat e, (pat, e) ∈ branches → e.IsTyErased) → IsTyErased (.match_ scrut branches)
   | letRec {bindings body} :
       (∀ e ∈ bindings, e.IsTyErased) → body.IsTyErased → IsTyErased (.letRec bindings body)
+  /-- `letRecAnn` keeps its schemes through erasure, so an erased term may still
+      carry a `letRecAnn` node — its bindings and body must themselves be erased. -/
+  | letRecAnn {schemes bindings body} :
+      (∀ e ∈ bindings, e.IsTyErased) → body.IsTyErased →
+        IsTyErased (.letRecAnn schemes bindings body)
 
 /-- Membership in an erased branch list reflects to the original. -/
 theorem BranchList.mem_eraseTyAnnots {branches : List (MatchPattern × Expr)}
@@ -4912,6 +5235,12 @@ theorem Expr.eraseTyAnnots_openTyVarsAux {Xs : List Nat} :
     simp only [Expr.openTyVarsAux, Expr.eraseTyAnnots, RecGroup.openTyVarsAux_eq_map,
       RecGroup.eraseTyAnnots_eq_map, List.map_map, Expr.letRec.injEq, Function.comp_def]
     exact ⟨List.map_congr_left fun e he => ih_bindings e he d, ih_body d⟩
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    intro d
+    simp only [Expr.openTyVarsAux, Expr.eraseTyAnnots, RecGroup.openTyVarsAux_eq_map,
+      RecGroup.eraseTyAnnots_eq_map, List.map_map, Function.comp_def]
+    rw [Expr.letRecAnn.injEq]
+    exact ⟨rfl, List.map_congr_left fun e he => ih_bindings e he d, ih_body d⟩
 
 theorem Expr.eraseTyAnnots_openTyVars {Xs : List Nat} {e : Expr} :
     (e.openTyVars Xs).eraseTyAnnots = e.eraseTyAnnots :=
@@ -4942,6 +5271,13 @@ theorem Expr.isTyErased_eraseTyAnnots (e : Expr) : e.eraseTyAnnots.IsTyErased :=
   | letRec bindings body ih_bindings ih_body =>
     simp only [Expr.eraseTyAnnots]
     refine .letRec ?_ ih_body
+    intro e he
+    rw [RecGroup.eraseTyAnnots_eq_map] at he
+    obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
+    exact ih_bindings e' he'
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    simp only [Expr.eraseTyAnnots]
+    refine .letRecAnn ?_ ih_body
     intro e he
     rw [RecGroup.eraseTyAnnots_eq_map] at he
     obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
@@ -4998,6 +5334,17 @@ theorem TypeOfHM.erase_preserves_typing {ctx : Ctx} {e : Expr} {τ : Ty}
     expose_names
     refine TypeOfHM.letRec (τs := τs) (Ms := Ms) (G := G) (L := L)
       ?_ hlen2 hlc hG hgen ?_ heq ihbody
+    · rw [RecGroup.eraseTyAnnots_eq_map, List.length_map]; exact hlen
+    · intro Xs hf p hp
+      rw [RecGroup.eraseTyAnnots_eq_map] at hp
+      obtain ⟨a, b, _, hq, rfl⟩ := List.mem_zip_map_left hp
+      exact ihcofin Xs hf (a, b) hq
+  | letRecAnn hlen hwf hcofin heq hbody ihcofin ihbody =>
+    -- Erasure keeps the schemes verbatim and leaves the cofinite openings
+    -- untouched; only the bindings/body are erased, via the IHs.
+    simp only [Expr.eraseTyAnnots]
+    expose_names
+    refine TypeOfHM.letRecAnn (schemes := schemes) (L := L) ?_ hwf ?_ heq ihbody
     · rw [RecGroup.eraseTyAnnots_eq_map, List.length_map]; exact hlen
     · intro Xs hf p hp
       rw [RecGroup.eraseTyAnnots_eq_map] at hp
@@ -5067,12 +5414,12 @@ theorem TypeOfHM.subst_lemma
     cases h_body with
     | ctor hlook htyargs hinst =>
       exact .ctor hlook htyargs hinst
-  | var i =>
+  | var i tyArgs =>
     cases h_body with
     | var h_lookup h_tyArgs_closed h_inst =>
       rcases lt_trichotomy i env_post.length with h_lt | h_eq | h_gt
       · -- i < env_post.length: substN keeps `.var i`
-        have h_subst : (Expr.var i).substN env_post.length [v] = .var i := by
+        have h_subst : (Expr.var i tyArgs).substN env_post.length [v] = .var i tyArgs := by
           simp [Expr.substN, h_lt]
         rw [h_subst]
         refine .var ?_ h_tyArgs_closed h_inst
@@ -5082,7 +5429,7 @@ theorem TypeOfHM.subst_lemma
         exact h_lookup
       · -- i = env_post.length: the substituted position
         subst h_eq
-        have h_subst : (Expr.var env_post.length).substN env_post.length [v]
+        have h_subst : (Expr.var env_post.length tyArgs).substN env_post.length [v]
             = v.shiftFrom 0 env_post.length := by simp [Expr.substN]
         rw [h_subst]
         rw [List.append_assoc, List.getElem?_append_right (Nat.le_refl _),
@@ -5115,7 +5462,7 @@ theorem TypeOfHM.subst_lemma
       · -- i > env_post.length: substN returns `.var (i - 1)`
         have h_not_lt : ¬ (i < env_post.length) := by omega
         have h_not_lt' : ¬ (i - env_post.length < (1 : Nat)) := by omega
-        have h_subst : (Expr.var i).substN env_post.length [v] = .var (i - 1) := by
+        have h_subst : (Expr.var i tyArgs).substN env_post.length [v] = .var (i - 1) tyArgs := by
           simp [Expr.substN, h_not_lt, h_not_lt']
         rw [h_subst]
         refine .var ?_ h_tyArgs_closed h_inst
@@ -5199,6 +5546,32 @@ theorem TypeOfHM.subst_lemma
         rw [show Ms.length = bindings.length from (hlen.trans hlen2).symm,
             Nat.add_comm bindings.length env_post.length] at ih
         exact ih
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    cases he with
+    | letRecAnn hbindings_e hbody_e =>
+    cases h_body with
+    | letRecAnn hlen hwf hcofin heq hbodyT =>
+      subst heq
+      expose_names
+      simp only [Expr.substN, RecGroup.substN_eq_map]
+      refine TypeOfHM.letRecAnn (schemes := schemes) (L := L) ?_ hwf ?_ rfl ?_
+      · rw [List.length_map]; exact hlen
+      · intro Xs hfresh p hp
+        obtain ⟨a, b, hmemBind, hq, rfl⟩ := List.mem_zip_map_left hp
+        have hbT := hcofin Xs hfresh (a, b) hq
+        rw [← List.append_assoc, ← List.append_assoc] at hbT
+        have ih := ih_bindings a hmemBind hbT (hbindings_e a hmemBind)
+        rw [List.append_assoc] at ih
+        simp only [List.length_append] at ih
+        rw [← hlen, Nat.add_comm bindings.length env_post.length] at ih
+        exact ih
+      · rw [← List.append_assoc, ← List.append_assoc] at hbodyT
+        have ih := ih_body hbodyT hbody_e
+        rw [List.append_assoc] at ih
+        simp only [List.length_append] at ih
+        rw [show schemes.length = bindings.length from hlen.symm,
+            Nat.add_comm bindings.length env_post.length] at ih
+        exact ih
 
 
 /-- Multi-binding substitution: substitute a whole block of values `vs` for a
@@ -5254,12 +5627,12 @@ theorem TypeOfHM.subst_lemma_many
     cases h_body with
     | ctor hlook htyargs hinst =>
       exact .ctor hlook htyargs hinst
-  | var i =>
+  | var i tyArgs =>
     cases h_body with
     | var h_lookup h_tyArgs_closed h_inst =>
       by_cases h_lt : i < env_post.length
       · -- below the substituted block: keep `.var i`
-        have h_subst : (Expr.var i).substN env_post.length vs = .var i := by
+        have h_subst : (Expr.var i tyArgs).substN env_post.length vs = .var i tyArgs := by
           simp [Expr.substN, h_lt]
         rw [h_subst]
         refine .var ?_ h_tyArgs_closed h_inst
@@ -5271,7 +5644,7 @@ theorem TypeOfHM.subst_lemma_many
         by_cases h_in : i - env_post.length < vs.length
         · -- inside the substituted block: pick `vs[i - env_post.length]`
           have hj_Ms : i - env_post.length < Ms.length := by omega
-          have h_subst : (Expr.var i).substN env_post.length vs
+          have h_subst : (Expr.var i tyArgs).substN env_post.length vs
               = (vs[i - env_post.length]).shiftFrom 0 env_post.length := by
             simp only [Expr.substN]
             rw [if_neg (by omega), dif_pos h_in]
@@ -5307,8 +5680,8 @@ theorem TypeOfHM.subst_lemma_many
             (env := env) hv_typed
         · -- above the block: shift down by `vs.length`
           push_neg at h_in
-          have h_subst : (Expr.var i).substN env_post.length vs
-              = .var (i - vs.length) := by
+          have h_subst : (Expr.var i tyArgs).substN env_post.length vs
+              = .var (i - vs.length) tyArgs := by
             simp only [Expr.substN]
             rw [if_neg (by omega), dif_neg (by omega)]
           rw [h_subst]
@@ -5391,6 +5764,32 @@ theorem TypeOfHM.subst_lemma_many
         rw [show Ms_1.length = bindings.length from (hlen.trans hlen2).symm,
             Nat.add_comm bindings.length env_post.length] at ih
         exact ih
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    cases he with
+    | letRecAnn hbindings_e hbody_e =>
+    cases h_body with
+    | letRecAnn hlen hwf hcofin heq hbodyT =>
+      subst heq
+      expose_names
+      simp only [Expr.substN, RecGroup.substN_eq_map]
+      refine TypeOfHM.letRecAnn (schemes := schemes) (L := L) ?_ hwf ?_ rfl ?_
+      · rw [List.length_map]; exact hlen
+      · intro Xs hfresh p hp
+        obtain ⟨a, b, hmemBind, hq, rfl⟩ := List.mem_zip_map_left hp
+        have hbT := hcofin Xs hfresh (a, b) hq
+        rw [← List.append_assoc, ← List.append_assoc] at hbT
+        have ih := ih_bindings a hmemBind hbT (hbindings_e a hmemBind)
+        rw [List.append_assoc] at ih
+        simp only [List.length_append] at ih
+        rw [← hlen, Nat.add_comm bindings.length env_post.length] at ih
+        exact ih
+      · rw [← List.append_assoc, ← List.append_assoc] at hbodyT
+        have ih := ih_body hbodyT hbody_e
+        rw [List.append_assoc] at ih
+        simp only [List.length_append] at ih
+        rw [show schemes.length = bindings.length from hlen.symm,
+            Nat.add_comm bindings.length env_post.length] at ih
+        exact ih
 
 
 /-! ## Canonical forms
@@ -5434,6 +5833,7 @@ private lemma TypeOfHM.ctor_chain_has_customTy_form
   | var _          => cases h_chain
   | match_ _ _ _ _ => cases h_chain
   | letRec _ _ _ _ => cases h_chain
+  | letRecAnn _ _ _ _ _ => cases h_chain
 
 theorem TypeOfHM.canonical_arrow {ctx e argTy retTy}
     (h_ty : TypeOfHM ctx e (.arrow argTy retTy))
@@ -5519,6 +5919,7 @@ theorem TypeOfHM.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
   | var _ => cases h_chain
   | match_ _ _ _ _ => cases h_chain
   | letRec _ _ _ _ => cases h_chain
+  | letRecAnn _ _ _ _ _ => cases h_chain
 
 
 /-! ## Progress
@@ -5634,6 +6035,8 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
         · exact .inr ⟨_, .matchScrut hscrut⟩
   | letRec bindings body _ _ =>
     exact .inr ⟨_, .letRecUnfold⟩
+  | letRecAnn schemes bindings body _ _ =>
+    exact .inr ⟨_, .letRecAnnUnfold⟩
 
 
 /-! ## Preservation
@@ -6125,6 +6528,69 @@ theorem TypeOfHM.rewrap_hasScheme
   rwa [Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
         (fun p hp => hY_e p.1 (List.of_mem_zip hp).1)] at hsub
 
+/-! ### `letRecAnn` preservation helper.
+
+Discharging the `letRecAnnUnfold` reduct
+`body.substN 0 (bindings.map (letRecAnn schemes bindings ·))` needs: each
+re-wrapped `letRecAnn schemes bindings eⱼ` has scheme `σⱼ` (`HasScheme`), then
+`subst_lemma_many` substitutes them for the scheme block `schemes` in the body.
+Unlike `letRec`'s `rewrap_hasScheme` there is NO generalisation: `eⱼ` already
+types at a fresh opening of `σⱼ` via the cofinite group premise
+(`PolyTy.mem_zip_openGroup` carves out `σⱼ`'s slice), and the fresh opening is
+lifted to an arbitrary instance by `typ_substs_preservation`. -/
+
+/-- Each re-wrapped binding `letRecAnn schemes bindings e` (with scheme `σ`) has
+    that scheme. Direct: re-apply `TypeOfHM.letRecAnn` with body `e` typed at a
+    fresh opening of `σ` (a slice of the group opening), then `typ_substs` the
+    fresh slice to an arbitrary instance. -/
+theorem TypeOfHM.recAnn_binding_hasScheme
+    {ctors : CtorEnv} {env : Env} {schemes : List PolyTy} {bindings : List Expr}
+    {L : List Nat}
+    (hlen : bindings.length = schemes.length)
+    (hwf : ∀ σ ∈ schemes, σ.WF)
+    (hcofin : ∀ Xs, FreshNames L (PolyTy.totalParams schemes) Xs →
+        ∀ p ∈ bindings.zip (PolyTy.openGroup schemes Xs),
+          TypeOfHM ⟨schemes ++ env, ctors⟩ p.1 p.2)
+    {e : Expr} {σ : PolyTy} (hmem : (e, σ) ∈ bindings.zip schemes) :
+    HasScheme ⟨env, ctors⟩ (.letRecAnn schemes bindings e) σ := by
+  intro Vs hVs
+  obtain ⟨hVlen, hVlc⟩ := hVs
+  -- fresh names for the whole group opening, avoiding everything relevant
+  obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
+    exists_fresh_names
+      (L ++ σ.body.freeVars ++ Ty.freeVarsList Vs ++ env.freeVars
+        ++ (Expr.letRecAnn schemes bindings e).tyFreeVars) (PolyTy.totalParams schemes)
+  have hXfresh : FreshNames L (PolyTy.totalParams schemes) Xs :=
+    ⟨hXlen, hXnodup, fun x hx hc => hXavoid x hx (by simp only [List.mem_append]; tauto)⟩
+  -- carve out `σ`'s slice `Ys` (sublist of `Xs`); `e` types at `σ.openVars Ys`
+  obtain ⟨Ys, hYslen, hYsub, hzip⟩ :=
+    PolyTy.mem_zip_openGroup hmem hlen (Xs := Xs) (by rw [hXlen])
+  have hetyped : TypeOfHM ⟨schemes ++ env, ctors⟩ e (σ.openVars Ys) :=
+    hcofin Xs hXfresh (e, σ.openVars Ys) hzip
+  have h1 : TypeOfHM ⟨env, ctors⟩ (.letRecAnn schemes bindings e) (σ.openVars Ys) :=
+    TypeOfHM.letRecAnn (schemes := schemes) (L := L) hlen hwf hcofin rfl hetyped
+  -- freshness facts for `Ys` (it is a sublist of `Xs`)
+  have hYnodup : Ys.Nodup := hXnodup.sublist hYsub
+  have hYσ : ∀ y ∈ Ys, y ∉ σ.body.freeVars := fun y hy hc =>
+    hXavoid y (hYsub.subset hy) (by simp only [List.mem_append]; tauto)
+  have hYVs : ∀ y ∈ Ys, y ∉ Ty.freeVarsList Vs := fun y hy hc =>
+    hXavoid y (hYsub.subset hy) (by simp only [List.mem_append]; tauto)
+  have hYenv : ∀ y ∈ Ys, y ∉ env.freeVars := fun y hy hc =>
+    hXavoid y (hYsub.subset hy) (by simp only [List.mem_append]; tauto)
+  have hYe : ∀ y ∈ Ys, y ∉ (Expr.letRecAnn schemes bindings e).tyFreeVars := fun y hy hc =>
+    hXavoid y (hYsub.subset hy) (by simp only [List.mem_append]; tauto)
+  have hVlen' : Vs.length = Ys.length := by rw [hVlen, hYslen]
+  have hrewrite : σ.openWith Vs = Ty.substFvars (Ys.zip Vs) (σ.openVars Ys) := by
+    unfold PolyTy.openWith PolyTy.openVars
+    exact Ty.openWith_eq_substFvars_openVars ⟨hVlen', hVlc⟩ hYnodup hYσ hYVs
+  show TypeOfHM ⟨env, ctors⟩ (.letRecAnn schemes bindings e) (σ.openWith Vs)
+  rw [hrewrite]
+  have hsub := TypeOfHM.typ_substs_preservation (Ys.zip Vs)
+    (fun p hp => hYenv p.1 (List.of_mem_zip hp).1)
+    (fun p hp => hVlc p.2 (List.of_mem_zip hp).2) h1
+  rwa [Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+        (fun p hp => hYe p.1 (List.of_mem_zip hp).1)] at hsub
+
 open SmallStep in
 /-- Subject reduction for the **type-erased** dynamic semantics (`he : e` is
     annotation-free). This REPLACES the literal `preservation`, which is false
@@ -6294,6 +6760,26 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
       have hfinal := TypeOfHM.subst_lemma_many (env_post := []) (env := ctx.env) (Ms := Ms)
         (ctors := ctx.ctors) hMwf hbodyT h_vs hbody_e
       simpa using hfinal
+  | letRecAnnUnfold =>
+    rename_i schemes bindings body
+    cases he with
+    | letRecAnn hbindings_e hbody_e =>
+    cases h_ty with
+    | letRecAnn hlen hwf hcofin heq hbodyT =>
+      subst heq
+      expose_names
+      -- Each re-wrapped `letRecAnn schemes bindings eⱼ` carries the scheme `σⱼ`
+      -- DIRECTLY (no generalisation): `eⱼ` already types at `σⱼ`'s opening.
+      have h_vs : List.Forall₂ (fun v M' => HasScheme ⟨ctx.env, ctx.ctors⟩ v M')
+          (bindings.map (fun e => Expr.letRecAnn schemes bindings e)) schemes := by
+        rw [List.forall₂_map_left_iff]
+        refine List.forall₂_of_mem_zip hlen ?_
+        intro p hp
+        exact TypeOfHM.recAnn_binding_hasScheme hlen hwf hcofin hp
+      -- Discharge the body: substitute the re-wrapped group for the scheme block.
+      have hfinal := TypeOfHM.subst_lemma_many (env_post := []) (env := ctx.env) (Ms := schemes)
+        (ctors := ctx.ctors) hwf hbodyT h_vs hbody_e
+      simpa using hfinal
 
 open SmallStep in
 /-- Erasure preserves branch-body exhaustiveness (companion to
@@ -6350,6 +6836,16 @@ theorem exhaustive_eraseTyAnnots {ctors : CtorEnv} :
     | letRec hbindings hbody =>
       simp only [Expr.eraseTyAnnots]
       refine .letRec ?_ (ih_body hbody)
+      intro e he
+      rw [RecGroup.eraseTyAnnots_eq_map] at he
+      obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
+      exact ih_bindings e' he' (hbindings e' he')
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    intro h
+    cases h with
+    | letRecAnn hbindings hbody =>
+      simp only [Expr.eraseTyAnnots]
+      refine .letRecAnn ?_ (ih_body hbody)
       intro e he
       rw [RecGroup.eraseTyAnnots_eq_map] at he
       obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
@@ -6424,7 +6920,7 @@ theorem Expr.IsTyErased.shiftFrom :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _ threshold n; exact .primLit _
-  | var m => intro _ threshold n; simp only [Expr.shiftFrom]; split <;> exact .var _
+  | var m _ => intro _ threshold n; simp only [Expr.shiftFrom]; split <;> exact .var _ _
   | ctor nm => intro _ threshold n; exact .ctor _
   | lambda ann body ih =>
     intro he threshold n; cases he with
@@ -6455,6 +6951,15 @@ theorem Expr.IsTyErased.shiftFrom :
       rw [RecGroup.shiftFrom_eq_map] at he
       obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
       exact ih_bindings e' he' (hbindings e' he') (threshold + bindings.length) n
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    intro he threshold n; cases he with
+    | letRecAnn hbindings hbody =>
+      simp only [Expr.shiftFrom]
+      refine .letRecAnn ?_ (ih_body hbody (threshold + bindings.length) n)
+      intro e he
+      rw [RecGroup.shiftFrom_eq_map] at he
+      obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
+      exact ih_bindings e' he' (hbindings e' he') (threshold + bindings.length) n
 
 /-- `substN` preserves annotation-freeness, provided every substituted value is
     annotation-free: reduction only ever inserts erased sub-terms (and `shiftFrom`
@@ -6464,14 +6969,14 @@ theorem Expr.IsTyErased.substN {vs : List Expr} (hvs : ∀ v ∈ vs, v.IsTyErase
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _ k; exact .primLit _
-  | var m =>
+  | var m _ =>
     intro _ k
     simp only [Expr.substN]
     split
-    · exact .var _
+    · exact .var _ _
     · split
       · next h => exact (hvs _ (List.getElem_mem h)).shiftFrom 0 k
-      · exact .var _
+      · exact .var _ _
   | ctor nm => intro _ k; exact .ctor _
   | lambda ann body ih =>
     intro he k; cases he with
@@ -6497,6 +7002,15 @@ theorem Expr.IsTyErased.substN {vs : List Expr} (hvs : ∀ v ∈ vs, v.IsTyErase
     | letRec hbindings hbody =>
       simp only [Expr.substN]
       refine .letRec ?_ (ih_body hbody (k + bindings.length))
+      intro e he
+      rw [RecGroup.substN_eq_map] at he
+      obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
+      exact ih_bindings e' he' (hbindings e' he') (k + bindings.length)
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    intro he k; cases he with
+    | letRecAnn hbindings hbody =>
+      simp only [Expr.substN]
+      refine .letRecAnn ?_ (ih_body hbody (k + bindings.length))
       intro e he
       rw [RecGroup.substN_eq_map] at he
       obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
@@ -6532,7 +7046,7 @@ theorem AllMatchesExhaustive.shiftFrom {ctors : CtorEnv} :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _ threshold n; exact .primLit
-  | var m => intro _ threshold n; simp only [Expr.shiftFrom]; split <;> exact .var
+  | var m _ => intro _ threshold n; simp only [Expr.shiftFrom]; split <;> exact .var
   | ctor nm => intro _ threshold n; exact .ctor
   | lambda ann body ih =>
     intro h threshold n; cases h with
@@ -6569,6 +7083,15 @@ theorem AllMatchesExhaustive.shiftFrom {ctors : CtorEnv} :
       rw [RecGroup.shiftFrom_eq_map] at he
       obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
       exact ih_bindings e' he' (hbindings e' he') (threshold + bindings.length) n
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    intro h threshold n; cases h with
+    | letRecAnn hbindings hbody =>
+      simp only [Expr.shiftFrom]
+      refine .letRecAnn ?_ (ih_body hbody (threshold + bindings.length) n)
+      intro e he
+      rw [RecGroup.shiftFrom_eq_map] at he
+      obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
+      exact ih_bindings e' he' (hbindings e' he') (threshold + bindings.length) n
 
 /-- `substN` preserves branch-body exhaustiveness (companion to
     `AllMatchesExhaustive.substN`). -/
@@ -6600,7 +7123,7 @@ theorem AllMatchesExhaustive.substN {ctors : CtorEnv} {vs : List Expr}
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _ k; exact .primLit
-  | var m =>
+  | var m _ =>
     intro _ k
     simp only [Expr.substN]
     split
@@ -6639,6 +7162,15 @@ theorem AllMatchesExhaustive.substN {ctors : CtorEnv} {vs : List Expr}
     | letRec hbindings hbody =>
       simp only [Expr.substN]
       refine .letRec ?_ (ih_body hbody (k + bindings.length))
+      intro e he
+      rw [RecGroup.substN_eq_map] at he
+      obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
+      exact ih_bindings e' he' (hbindings e' he') (k + bindings.length)
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    intro h k; cases h with
+    | letRecAnn hbindings hbody =>
+      simp only [Expr.substN]
+      refine .letRecAnn ?_ (ih_body hbody (k + bindings.length))
       intro e he
       rw [RecGroup.substN_eq_map] at he
       obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
@@ -6731,6 +7263,14 @@ theorem Step.preserves_isTyErased {e e' : Expr}
       intro v hv
       obtain ⟨e', he', rfl⟩ := List.mem_map.mp hv
       exact .letRec hbindings (hbindings e' he')
+  | letRecAnnUnfold =>
+    rename_i schemes bindings body
+    cases he with
+    | letRecAnn hbindings hbody =>
+      refine Expr.IsTyErased.substN ?_ hbody 0
+      intro v hv
+      obtain ⟨e', he', rfl⟩ := List.mem_map.mp hv
+      exact .letRecAnn hbindings (hbindings e' he')
 
 /-- **Reduction preserves match-exhaustiveness.** Reduction never invents new
     match patterns: congruence steps keep the same matches, and the substituting
@@ -6779,6 +7319,14 @@ theorem Step.preserves_exhaustive {ctors : CtorEnv} {e e' : Expr}
       intro v hv
       obtain ⟨e', he', rfl⟩ := List.mem_map.mp hv
       exact .letRec hbindings (hbindings e' he')
+  | letRecAnnUnfold =>
+    rename_i schemes bindings body
+    cases h_exh with
+    | letRecAnn hbindings hbody =>
+      refine AllMatchesExhaustive.substN ?_ hbody 0
+      intro v hv
+      obtain ⟨e', he', rfl⟩ := List.mem_map.mp hv
+      exact .letRecAnn hbindings (hbindings e' he')
 
 end SmallStep
 
@@ -6822,3 +7370,104 @@ theorem TypeOfHM.erased_type_safety_star {ctors : CtorEnv} {e : Expr} {τ : Ty}
       (Expr.isTyErased_eraseTyAnnots e)
       (exhaustive_eraseTyAnnots h_exh)
   exact ⟨h_ty', TypeOfHM.progress h_ty' rfl h_exh' he'⟩
+
+/-! ## `letRecAnn` correctness smoke test (ported from `SpikeLetRecAnn`)
+
+A genuine *polymorphic*-recursion witness types under the new rule, and a
+recursion scheme mentioning a scoped (rigid) free `fvar` is supported. These are
+the proven spike's witnesses re-checked against the real `TypeOfHM.letRecAnn`
+constructor, confirming the ported rule has the intended shape. -/
+
+namespace LetRecAnnSmokeTest
+
+/-- `σ = ∀a. a → a`. -/
+def selfSig : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
+
+/-- `λx. let _ = f 0 in let _ = f () in x`. Under the λ, `f = var 1`; after the
+    first `let`, `f = var 2`; the body returns `x`. -/
+def polyRecRhs : Expr :=
+  .lambda none
+    (.letIn none (.app (.var 1 [.prim .int]) (.primLit (.int 0)))
+      (.letIn none (.app (.var 2 [.prim .unit]) (.primLit .unit))
+        (.var 2 [])))
+
+/-- The RHS types at every skolem opening `X → X` of `σ`, with `f : σ` in scope
+    (polymorphic recursion: `f` is used at `Int → Int` AND at `Unit → Unit`). -/
+theorem polyRecRhs_typeable (X : Nat) :
+    TypeOfHM ⟨[selfSig], []⟩ polyRecRhs (.arrow (.fvar X) (.fvar X)) := by
+  refine TypeOfHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfHM.letIn (M := PolyTy.mkTrivial (.prim .int)) (L := [])
+    .prim (fun σ h => Option.noConfusion h) ?_ rfl ?_
+  · intro Xs hfresh
+    obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
+    refine TypeOfHM.app ?_ TypeOfHM.primLitInt
+    exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [.prim .int]) rfl
+      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim)
+      (.arrow (.bvar rfl) (.bvar rfl))
+  refine TypeOfHM.letIn (M := PolyTy.mkTrivial (.prim .unit)) (L := [])
+    .prim (fun σ h => Option.noConfusion h) ?_ rfl ?_
+  · intro Xs hfresh
+    obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
+    refine TypeOfHM.app ?_ TypeOfHM.primLitUnit
+    exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [.prim .unit]) rfl
+      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim)
+      (.arrow (.bvar rfl) (.bvar rfl))
+  exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (tyArgs := []) rfl
+    (by intro t ht; cases ht) .fvar
+
+/-- The headline: the annotated group **types** at its principal-ish instance
+    `(fvar 0) → (fvar 0)` — polymorphic recursion accepted by `TypeOfHM.letRecAnn`. -/
+theorem polyRec_typeable :
+    TypeOfHM ⟨[], []⟩ (.letRecAnn [selfSig] [polyRecRhs] (.var 0 [.fvar 0]))
+      (.arrow (.fvar 0) (.fvar 0)) := by
+  refine TypeOfHM.letRecAnn (schemes := [selfSig]) (L := []) rfl ?_ ?_ rfl ?_
+  · intro σ hσ
+    simp only [List.mem_singleton] at hσ; subst hσ
+    show ContainsBvarsUpTo 1 (Ty.arrow (Ty.bvar 0) (Ty.bvar 0))
+    exact .arrow (.bvar (by omega)) (.bvar (by omega))
+  · intro Xs hfresh p hp
+    obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] :=
+      List.length_eq_one_iff.mp hfresh.length
+    have hog : PolyTy.openGroup [selfSig] [X] = [(Ty.fvar X).arrow (Ty.fvar X)] := rfl
+    rw [hog] at hp
+    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
+    subst hp
+    exact polyRecRhs_typeable X
+  · exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [.fvar 0]) rfl
+      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
+      (.arrow (.bvar rfl) (.bvar rfl))
+
+/-- `Z → Z` with `Z` a free (scoped/rigid) type variable. -/
+def rigidSig (Z : Nat) : PolyTy := ⟨0, .arrow (.fvar Z) (.fvar Z)⟩
+
+/-- `λx. f x`, self-recursive at the rigid scheme `Z → Z`. -/
+def scopedRhs : Expr := .lambda none (.app (.var 1 []) (.var 0 []))
+
+theorem scopedRhs_typeable (Z : Nat) :
+    TypeOfHM ⟨[rigidSig Z], []⟩ scopedRhs (.arrow (.fvar Z) (.fvar Z)) := by
+  refine TypeOfHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfHM.app (argTy := .fvar Z) ?_ ?_
+  · exact TypeOfHM.var (polyTy := rigidSig Z) (tyArgs := []) rfl
+      (by intro t ht; cases ht) (.arrow .fvar .fvar)
+  · exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar Z)) (tyArgs := []) rfl
+      (by intro t ht; cases ht) .fvar
+
+/-- The kept scheme `Z → Z` mentions the free/rigid `Z`, is WF, and the group
+    types — so a recursion scheme referencing a scoped variable is supported. -/
+theorem scopedRec_typeable (Z : Nat) :
+    TypeOfHM ⟨[], []⟩ (.letRecAnn [rigidSig Z] [scopedRhs] (.var 0 []))
+      (.arrow (.fvar Z) (.fvar Z)) := by
+  refine TypeOfHM.letRecAnn (schemes := [rigidSig Z]) (L := []) rfl ?_ ?_ rfl ?_
+  · intro σ hσ; simp only [List.mem_singleton] at hσ; subst hσ
+    exact .arrow .fvar .fvar
+  · intro Xs hfresh p hp
+    obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
+    have hog : PolyTy.openGroup [rigidSig Z] [] = [(Ty.fvar Z).arrow (Ty.fvar Z)] := rfl
+    rw [hog] at hp
+    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
+    subst hp
+    exact scopedRhs_typeable Z
+  · exact TypeOfHM.var (polyTy := rigidSig Z) (tyArgs := []) rfl
+      (by intro t ht; cases ht) (.arrow .fvar .fvar)
+
+end LetRecAnnSmokeTest

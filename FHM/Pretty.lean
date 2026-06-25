@@ -113,6 +113,14 @@ def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
       let ctx' := names ++ ctx
       prettyParenIf (prec ≥ 1) ("let rec " ++ Expr.prettyRecGroup ctx' names bindings
         ++ " in " ++ Expr.prettyAux ctx' 0 body)
+  | .letRecAnn schemes bindings body =>
+      -- Like `letRec`, but each binding carries a declared (load-bearing)
+      -- recursion scheme — annotated polymorphic recursion. Same binder scoping.
+      let names := (List.range bindings.length).map (fun j => prettyTermVarName (ctx.length + j))
+      let ctx' := names ++ ctx
+      let schemeStr := " {" ++ String.intercalate ", " (schemes.map (·.pretty)) ++ "}"
+      prettyParenIf (prec ≥ 1) ("let rec" ++ schemeStr ++ " " ++ Expr.prettyRecGroup ctx' names bindings
+        ++ " in " ++ Expr.prettyAux ctx' 0 body)
 
 def Expr.prettyBranches (ctx : List String) : List (MatchPattern × Expr) → String
   | [] => ""
