@@ -5123,28 +5123,47 @@ theorem Ty.substFvars_openVars {S : List (Nat × Ty)} {Xs : List Nat} {t : Ty}
         ← Ty.substFvar_openVars (hS_lc (Z, U) List.mem_cons_self)
             (hS_Xs (Z, U) List.mem_cons_self)]
 
-/-- The `letIn` soundness case, factored out (named binders avoid the
-    inaccessible-name problem inside the `Infer.sound` induction). The cofinite
-    premise is built by renaming the generalization candidates `genVars` to the
-    fresh `Xs` (they are not fixed by the env, `genVars_not_mem`), then pushing
-    `S₂` through (it avoids `Xs` by the cofinite `L`). -/
-theorem Infer.sound_letIn {ctx : Ctx} {rhs body : Expr}
-    {S₁ S₂ : Subst} {τ₁ τ₂ : Ty}
-    (hrhs_ty : TypeOfElabHM (S₁.onCtx ctx) rhs τ₁) (hrhs_lc : τ₁.IsLC)
-    (hS₂_rhs : ∀ p ∈ S₂, p.1 ∉ rhs.tyFreeVars)
-    (hbody_s : ∀ p ∈ S₂, p.2.IsLC)
-    (hbody_ty : TypeOfElabHM (S₂.onCtx
-      { (S₁.onCtx ctx) with
-        env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }) body τ₂) :
-    TypeOfElabHM ((S₁ ++ S₂).onCtx ctx) (.letIn none rhs body) τ₂ := by
-  rw [Subst.onCtx_append]
-  -- Principal generalization (excluding `rhs`'s rigid scoped vars) is a cofinite
-  -- witness, pushed through `S₂` (which avoids `rhs`'s annotation fvars).
-  have hsv := (genScheme_hasSchemeVars hrhs_ty hrhs_lc).onSubst S₂ hbody_s hS₂_rhs
-  exact TypeOfElabHM.letIn (M := S₂.onPolyTy (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁))
-    (L := genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ ++ S₂.map Prod.fst)
-    (Subst.onPolyTy_wf hbody_s (genScheme_wf hrhs_lc))
-    (fun σ h => Option.noConfusion h) (fun Xs hXfresh => hsv Xs hXfresh) rfl hbody_ty
+/-- The **honest** `letIn` soundness case (close-after-`S₁` encoding). Given the
+    *elaborated* bound expression `rhsElab` already typed at `τ₁`, the generalised
+    `letIn` over `genV` (with bound expr `rhsElab.closeTyVars genV` and scheme
+    `⟨genV.length, closeOver genV τ₁⟩`) types at `τ₂`. The cofinite premise is the
+    close/open round-trip: `(rhsElab.closeTyVars genV).openTyVars Xs` is the
+    `genV ↦ Xs` rename of `rhsElab` (`openTyVars_closeTyVars_rename`), which types
+    at `(closeOver genV τ₁).openVars Xs` (`openVars_closeOver_rename`) by
+    `typ_substs_preservation`. Because `genV` may include tyArg-mediated vars (now
+    closed in `rhsElab` by the close-after-`S₁` fix), this generalises them soundly
+    — every opening re-instantiates the stored tyArgs. -/
+theorem Infer.sound_letIn {ctx : Ctx} {rhsElab bodyElab : Expr}
+    {τ₁ τ₂ : Ty} {genV : List Nat}
+    (hrhs_ty : TypeOfElabHM ctx rhsElab τ₁) (hrhs_lc : τ₁.IsLC)
+    (hrhs_norec : rhsElab.NoRecAnn)
+    (hgenV_nodup : genV.Nodup) (hgenV_env : ∀ g ∈ genV, g ∉ ctx.env.freeVars)
+    (hbody_ty : TypeOfElabHM
+      { ctx with env := ⟨genV.length, Ty.closeOver genV τ₁⟩ :: ctx.env } bodyElab τ₂) :
+    TypeOfElabHM ctx
+      (.letIn (some ⟨genV.length, Ty.closeOver genV τ₁⟩) (rhsElab.closeTyVars genV) bodyElab) τ₂ := by
+  refine TypeOfElabHM.letIn (M := ⟨genV.length, Ty.closeOver genV τ₁⟩) (L := genV)
+    (Ty.closeOver_preserves_bvars hrhs_lc) (fun σ' h => Option.some.inj h) ?_ rfl hbody_ty
+  intro Xs hXfresh
+  obtain ⟨hXlen, hXnodup, hXavoid⟩ := hXfresh
+  have hgenV_Xs : ∀ g ∈ genV, g ∉ Xs := fun g hg hc => hXavoid g hc hg
+  have hterm : Expr.openBoundTyVars (some ⟨genV.length, Ty.closeOver genV τ₁⟩) Xs
+        (rhsElab.closeTyVars genV)
+      = rhsElab.substTyFvars (genV.zip (Xs.map (Ty.fvar ·))) := by
+    simp only [Expr.openBoundTyVars]
+    exact Expr.openTyVars_closeTyVars_rename (TypeOfElabHM.tyBvarBounded hrhs_ty) hrhs_norec
+      hXlen.symm hgenV_nodup hgenV_Xs
+  have htype : PolyTy.openVars Xs ⟨genV.length, Ty.closeOver genV τ₁⟩
+      = Ty.substFvars (genV.zip (Xs.map (Ty.fvar ·))) τ₁ := by
+    simp only [PolyTy.openVars]
+    exact Ty.openVars_closeOver_rename hrhs_lc hgenV_nodup hXlen hgenV_Xs
+  rw [hterm, htype]
+  exact TypeOfElabHM.typ_substs_preservation (genV.zip (Xs.map (Ty.fvar ·)))
+    (fun p hp => hgenV_env p.1 (List.of_mem_zip hp).1)
+    (fun p hp => by
+      obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+      exact hx ▸ ContainsBvarsUpTo.fvar)
+    hrhs_ty
 
 /-- The **annotated** `letIn` soundness case (scoped-variable / D2 regime).
 
