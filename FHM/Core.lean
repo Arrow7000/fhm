@@ -4142,6 +4142,39 @@ theorem TypeOfElabHM.rec_strong
   | wildcard hbodyT ih =>
       exact Or.inr ⟨rfl, hbodyT, ih⟩
 
+/-- **Faithfulness** (`TypeOfElabHM ⊆ TypeOfHM`): every elaborated typing erases to a
+    declarative HM typing — the type-passing decorations never type a program that
+    plain HM would reject. The two relations differ only in `var`, where the stored
+    `tyArgs` (and their dropped `length = paramCount` constraint) simply furnish the
+    declarative rule's existential instantiation witness. This is the spec-vs-spec
+    adequacy edge complementing elaboration soundness / completeness. -/
+theorem TypeOfElabHM.faithful {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h : TypeOfElabHM ctx e τ) : TypeOfHM ctx e τ := by
+  induction h using TypeOfElabHM.rec_strong with
+  | primLitUnit => exact .primLitUnit
+  | primLitInt => exact .primLitInt
+  | primLitNat => exact .primLitNat
+  | primLitStr => exact .primLitStr
+  | lambda hpc hann heq _ ihbody => exact .lambda hpc hann heq ihbody
+  | app _ _ ihf ihinput => exact .app ihf ihinput
+  | letIn hwf hann _ heq _ ihcofin ihbody => exact .letIn hwf hann ihcofin heq ihbody
+  | var hlook htyargs _ hinst => exact .var hlook htyargs hinst
+  | ctor hlook htyargs hinst => exact .ctor hlook htyargs hinst
+  | match_ _ hne _ ihscrut ihbrs =>
+      refine .match_ ihscrut hne ?_
+      rintro ⟨pat, body⟩ hb
+      rcases ihbrs (pat, body) hb with
+        ⟨ct, c, n, tyArgs, instContents, hpat, hlook, hScrutEq, hpc, hcontents, hinstC, _, hbodyIH⟩ |
+        ⟨hpat, _, hbodyIH⟩
+      · subst hpat
+        exact .mk hlook hScrutEq hpc hcontents hinstC rfl rfl hbodyIH
+      · subst hpat
+        exact .wildcard hbodyIH
+  | letRec hlen hlen2 hlc hG hgen _ heq _ ihcofin ihbody =>
+      exact .letRec hlen hlen2 hlc hG hgen ihcofin heq ihbody
+  | letRecAnn hlen hwf _ heq _ ihcofin ihbody =>
+      exact .letRecAnn hlen hwf ihcofin heq ihbody
+
 /-- Membership in a `BranchList.substTyFvar`ed branch list reflects back to the
     original: each member is `(pat, body.substTyFvar Z U)` for an original
     `(pat, body) ∈ branches`. -/
