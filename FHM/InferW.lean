@@ -5165,110 +5165,48 @@ theorem Infer.sound_letIn {ctx : Ctx} {rhsElab bodyElab : Expr}
       exact hx ▸ ContainsBvarsUpTo.fvar)
     hrhs_ty
 
-/-- The **annotated** `letIn` soundness case (scoped-variable / D2 regime).
+/-- The **honest annotated** `letIn` soundness case (scoped-variable / D2 regime).
 
-    The bound expression is inferred *already opened* at the rigid skolems `Ys`.
-    Unify-soundness gives `Schk.onTy τ₁ = Schk.onTy (σ.openVars Ys)`, and `Schk`
-    fixes both sides — it avoids the ambient skolems `K` (which contains `rhs`'s and
-    `σ`'s annotation free vars) and avoids `Ys` (the escape `hYs_Schk`) — so
-    `rhs.openTyVars Ys` types at the single opening `σ.openVars Ys`. Renaming
-    `Ys ↦ Xs` (Core bridge `Expr.substTyFvars_zip_openTyVars` on the term,
-    `Ty.openWith_eq_substFvars_openVars` on the type) yields the cofinite premise
-    `rhs.openTyVars Xs : σ.openVars Xs`; pushing `S₂` through (it avoids `K` and the
-    fresh `Xs`) lands the body context. `σ` may carry free scoped vars (⊆ K), which
-    every substitution here fixes. -/
-theorem Infer.sound_letInAnn {ctx : Ctx} {σ : PolyTy} {rhs body : Expr}
-    {Ys : List Nat} {S₁ Schk S₂ : Subst} {τ₁ τ₂ : Ty}
-    (hrhs_ty : TypeOfElabHM (S₁.onCtx ctx) (rhs.openTyVars Ys) τ₁)
+    Given the *elaborated* opened bound expr `rhsElab` typed at the single opening
+    `σ.openVars Ys` (the `Schk`-unify resolution is done by the caller), the
+    annotated `letIn` with bound expr `rhsElab.closeTyVars Ys` and scheme `σ` types
+    at `τ₂`. The cofinite premise is the close/open `Ys ↦ Xs` rename
+    (`openTyVars_closeTyVars_rename` on the term, `openWith_eq_substFvars_openVars`
+    on the type) via `typ_substs_preservation`. The skolems `Ys` are closed exactly
+    as before (the close-after-`S₁` fix leaves `letInAnn` untouched: `S` avoids `Ys`
+    by the escape conditions). -/
+theorem Infer.sound_letInAnn {ctx : Ctx} {σ : PolyTy} {rhsElab bodyElab : Expr}
+    {Ys : List Nat} {τ₂ : Ty}
+    (hrhs_at_Ys : TypeOfElabHM ctx rhsElab (σ.openVars Ys))
     (hσwf : σ.WF) (hYnodup : Ys.Nodup) (hYlen : Ys.length = σ.paramCount)
-    (huni : UnifyRel τ₁ (σ.openVars Ys) Schk)
-    (K : List Nat)
-    (hKrhs : ∀ y ∈ rhs.tyFreeVars, y ∈ K) (hKσ : ∀ y ∈ σ.body.freeVars, y ∈ K)
-    (hYsK : ∀ y ∈ Ys, y ∉ K)
-    (hYs_Schk : ∀ y ∈ Ys, y ∉ Schk.map Prod.fst)
-    (hYs_env : ∀ y ∈ Ys, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars)
-    (hSchkK : ∀ p ∈ Schk, p.1 ∉ K) (hSchk_lc : ∀ p ∈ Schk, p.2.IsLC)
-    (hS₂K : ∀ p ∈ S₂, p.1 ∉ K) (hS₂_lc : ∀ p ∈ S₂, p.2.IsLC)
-    (hbody_ty : TypeOfElabHM (S₂.onCtx
-      { (Schk.onCtx (S₁.onCtx ctx)) with
-        env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }) body τ₂) :
-    TypeOfElabHM ((S₁ ++ Schk ++ S₂).onCtx ctx) (.letIn (some σ) rhs body) τ₂ := by
-  rw [Subst.onCtx_append, Subst.onCtx_append]
-  -- `Schk`/`S₂`/`Ys` avoid `rhs`/`σ` annotation fvars (they avoid the superset `K`).
-  have hSchk_rhs : ∀ p ∈ Schk, p.1 ∉ rhs.tyFreeVars := fun p hp hc => hSchkK p hp (hKrhs p.1 hc)
-  have hSchk_σ : ∀ p ∈ Schk, p.1 ∉ σ.body.freeVars := fun p hp hc => hSchkK p hp (hKσ p.1 hc)
-  have hS₂_rhs : ∀ p ∈ S₂, p.1 ∉ rhs.tyFreeVars := fun p hp hc => hS₂K p hp (hKrhs p.1 hc)
-  have hS₂_σ : ∀ p ∈ S₂, p.1 ∉ σ.body.freeVars := fun p hp hc => hS₂K p hp (hKσ p.1 hc)
-  have hYs_rhs : ∀ y ∈ Ys, y ∉ rhs.tyFreeVars := fun y hy hc => hYsK y hy (hKrhs y hc)
-  have hYs_σ : ∀ y ∈ Ys, y ∉ σ.body.freeVars := fun y hy hc => hYsK y hy (hKσ y hc)
-  -- `Schk` fixes the opened rhs (its annotation fvars ⊆ rhs.tyFreeVars ∪ Ys).
-  have hrhs_Schk : TypeOfElabHM (Schk.onCtx (S₁.onCtx ctx)) (rhs.openTyVars Ys) (Schk.onTy τ₁) := by
-    refine TypeOfElabHM.onSubst_fixed Schk hSchk_lc
-      (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => ?_)) hrhs_ty
-    rcases Expr.tyFreeVars_openTyVars hc with h | h
-    · exact hSchk_rhs p hp h
-    · exact hYs_Schk p.1 h (List.mem_map.mpr ⟨p, hp, rfl⟩)
-  -- `Schk` fixes `σ.openVars Ys` (free vars ⊆ σ.body.freeVars ∪ Ys).
-  have hfix : Schk.onTy (σ.openVars Ys) = σ.openVars Ys := by
-    refine Ty.substFvars_eq_self_of_no_key (fun p hp hc => ?_)
-    rcases Ty.freeVars_openVars_subset p.1 hc with h | h
-    · exact hSchk_σ p hp h
-    · exact hYs_Schk p.1 h (List.mem_map.mpr ⟨p, hp, rfl⟩)
-  have hrhs_at_Ys : TypeOfElabHM (Schk.onCtx (S₁.onCtx ctx)) (rhs.openTyVars Ys) (σ.openVars Ys) := by
-    have hu := huni.unifies
-    rw [hu, hfix] at hrhs_Schk
-    exact hrhs_Schk
-  -- `S₂` fixes `σ` (its body fvars ⊆ K, which S₂ avoids).
-  have hS₂σ_fix : S₂.onPolyTy σ = σ := by
-    obtain ⟨pc, b⟩ := σ
-    simp only [Subst.onPolyTy, Subst.onTy, PolyTy.mk.injEq, true_and]
-    exact Ty.substFvars_eq_self_of_no_key (fun p hp hc => hS₂_σ p hp hc)
-  have heqbody : S₂.onCtx { (Schk.onCtx (S₁.onCtx ctx)) with
-        env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
-      = { (S₂.onCtx (Schk.onCtx (S₁.onCtx ctx))) with
-          env := σ :: (S₂.onCtx (Schk.onCtx (S₁.onCtx ctx))).env } := by
-    simp only [Subst.onCtx, Subst.onEnv, List.map_cons]
-    rw [hS₂σ_fix]
-  rw [heqbody] at hbody_ty
-  refine TypeOfElabHM.letIn (M := σ) (L := Ys ++ S₂.map Prod.fst) hσwf
-    (fun σ' h => Option.some.inj h) ?cofin rfl hbody_ty
+    (hrhs_norec : rhsElab.NoRecAnn)
+    (hYs_env : ∀ y ∈ Ys, y ∉ ctx.env.freeVars)
+    (hYs_σ : ∀ y ∈ Ys, y ∉ σ.body.freeVars)
+    (hbody_ty : TypeOfElabHM { ctx with env := σ :: ctx.env } bodyElab τ₂) :
+    TypeOfElabHM ctx (.letIn (some σ) (rhsElab.closeTyVars Ys) bodyElab) τ₂ := by
+  refine TypeOfElabHM.letIn (M := σ) (L := Ys) hσwf (fun σ' h => Option.some.inj h) ?_ rfl hbody_ty
   intro Xs hXfresh
   obtain ⟨hXlen, hXnodup, hXavoid⟩ := hXfresh
-  have hYs_Xs : ∀ y ∈ Ys, y ∉ Xs := fun y hy hyXs =>
-    hXavoid y hyXs (List.mem_append_left _ hy)
-  have hS₂_Xs : ∀ p ∈ S₂, p.1 ∉ Xs := fun p hp hpXs =>
-    hXavoid p.1 hpXs (List.mem_append_right _ (List.mem_map.mpr ⟨p, hp, rfl⟩))
-  -- Rename `Ys ↦ Xs` in the single-opening typing (term via the Core bridge,
-  -- type via `openWith_eq_substFvars_openVars`).
-  have hrename := TypeOfElabHM.typ_substs_preservation (Ys.zip (Xs.map (Ty.fvar ·)))
-    (fun p hp => hYs_env p.1 (List.of_mem_zip hp).1)
-    (fun p hp => by
-      obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
-      exact hx ▸ ContainsBvarsUpTo.fvar) hrhs_at_Ys
-  rw [Expr.substTyFvars_zip_openTyVars (by rw [hYlen, hXlen]) hYnodup hYs_rhs hYs_Xs] at hrename
-  have key : σ.openVars Xs = Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys) := by
-    rw [show σ.openVars Xs = Ty.openWith (Xs.map (Ty.fvar ·)) σ.body from Ty.openVars_eq_openWith]
+  have hYs_Xs : ∀ y ∈ Ys, y ∉ Xs := fun y hy hc => hXavoid y hc hy
+  have hterm : Expr.openBoundTyVars (some σ) Xs (rhsElab.closeTyVars Ys)
+      = rhsElab.substTyFvars (Ys.zip (Xs.map (Ty.fvar ·))) := by
+    simp only [Expr.openBoundTyVars]
+    exact Expr.openTyVars_closeTyVars_rename (TypeOfElabHM.tyBvarBounded hrhs_at_Ys) hrhs_norec
+      (by rw [hXlen, hYlen]) hYnodup hYs_Xs
+  have key : PolyTy.openVars Xs σ = Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys) := by
+    rw [show PolyTy.openVars Xs σ = Ty.openWith (Xs.map (Ty.fvar ·)) σ.body from Ty.openVars_eq_openWith]
     exact Ty.openWith_eq_substFvars_openVars
       ⟨by rw [List.length_map, hXlen, hYlen], fun V hV => by
         obtain ⟨x, _, rfl⟩ := List.mem_map.mp hV; exact ContainsBvarsUpTo.fvar⟩
       hYnodup hYs_σ
       (fun Y hY hc => hYs_Xs Y hY (Ty.mem_freeVarsList_map_fvar.mp hc))
-  rw [← key] at hrename
-  -- Push `S₂` through; it fixes both `rhs.openTyVars Xs` and `σ.openVars Xs`.
-  show TypeOfElabHM (S₂.onCtx (Schk.onCtx (S₁.onCtx ctx))) (rhs.openTyVars Xs) (σ.openVars Xs)
-  have hS₂_openXs : (rhs.openTyVars Xs).substTyFvars S₂ = rhs.openTyVars Xs := by
-    refine Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => ?_)
-    rcases Expr.tyFreeVars_openTyVars hc with h | h
-    · exact hS₂_rhs p hp h
-    · exact hS₂_Xs p hp h
-  have hS₂_σXs : S₂.onTy (σ.openVars Xs) = σ.openVars Xs := by
-    refine Ty.substFvars_eq_self_of_no_key (fun p hp hc => ?_)
-    rcases Ty.freeVars_openVars_subset p.1 hc with h | h
-    · exact hS₂_σ p hp h
-    · exact hS₂_Xs p hp h
-  have hgoal := TypeOfElabHM.onSubst_fixed S₂ hS₂_lc hS₂_openXs hrename
-  rw [hS₂_σXs] at hgoal
-  exact hgoal
+  rw [hterm, key]
+  exact TypeOfElabHM.typ_substs_preservation (Ys.zip (Xs.map (Ty.fvar ·)))
+    (fun p hp => hYs_env p.1 (List.of_mem_zip hp).1)
+    (fun p hp => by
+      obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+      exact hx ▸ ContainsBvarsUpTo.fvar)
+    hrhs_at_Ys
 
 /-! Structural simp lemmas for `openWith` (the analogues for `openVars` already
     exist above, but `openWith` lacks them). -/
