@@ -4767,6 +4767,47 @@ theorem Expr.substTyFvars_append (A B : List (Nat × Ty)) (e : Expr) :
   | nil => rfl
   | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [List.cons_append, Expr.substTyFvars, ih]
 
+/-! ### M6 close-back plumbing: `substTyFvars` / `openTyVars` commutation
+
+An LC substitution whose domain avoids the opening names `Xs` commutes with scoped
+opening (its images carry no `Xs`, and it never substitutes the freshly-opened
+`Xs`). Iterated lifts of Core's single-step `Expr.substTyFvar_openTyVarsAux` /
+`Ty.substFvar_openVars`. -/
+
+theorem Expr.substTyFvars_openTyVarsAux {S : List (Nat × Ty)} {Xs : List Nat}
+    (hS_lc : ∀ p ∈ S, p.2.IsLC) (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) :
+    ∀ (e : Expr) (d : Nat),
+      (e.substTyFvars S).openTyVarsAux d Xs = (e.openTyVarsAux d Xs).substTyFvars S := by
+  induction S with
+  | nil => intro e d; rfl
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    intro e d
+    simp only [Expr.substTyFvars]
+    rw [ih (fun p hp => hS_lc p (List.mem_cons_of_mem _ hp))
+          (fun p hp => hS_Xs p (List.mem_cons_of_mem _ hp)),
+        ← Expr.substTyFvar_openTyVarsAux (hS_lc (Z, U) List.mem_cons_self)
+            (hS_Xs (Z, U) List.mem_cons_self) e d]
+
+/-- Top-level (`d = 0`) `substTyFvars`/`openTyVars` commutation. -/
+theorem Expr.substTyFvars_openTyVars {S : List (Nat × Ty)} {Xs : List Nat} {e : Expr}
+    (hS_lc : ∀ p ∈ S, p.2.IsLC) (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) :
+    (e.substTyFvars S).openTyVars Xs = (e.openTyVars Xs).substTyFvars S :=
+  Expr.substTyFvars_openTyVarsAux hS_lc hS_Xs e 0
+
+theorem Ty.substFvars_openVars {S : List (Nat × Ty)} {Xs : List Nat} {t : Ty}
+    (hS_lc : ∀ p ∈ S, p.2.IsLC) (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) :
+    (t.substFvars S).openVars Xs = (t.openVars Xs).substFvars S := by
+  induction S generalizing t with
+  | nil => rfl
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    simp only [Ty.substFvars]
+    rw [ih (fun p hp => hS_lc p (List.mem_cons_of_mem _ hp))
+          (fun p hp => hS_Xs p (List.mem_cons_of_mem _ hp)),
+        ← Ty.substFvar_openVars (hS_lc (Z, U) List.mem_cons_self)
+            (hS_Xs (Z, U) List.mem_cons_self)]
+
 /-- The `letIn` soundness case, factored out (named binders avoid the
     inaccessible-name problem inside the `Infer.sound` induction). The cofinite
     premise is built by renaming the generalization candidates `genVars` to the
