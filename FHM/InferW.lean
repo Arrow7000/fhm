@@ -1168,48 +1168,67 @@ theorem Expr.openTyVars_closeTyVars_rename {Ys Xs : List Nat} {e : Expr}
   rw [← Expr.substTyFvars_zip_openTyVars h_len h_Ys_nodup hfresh h_Ys_Xs,
       Expr.openTyVars_closeTyVars_self he]
 
-/-! Algorithm W as a substitution-threading relation, mutually defined with
-    `InferBranches` (the `match_` branch threader). -/
+/-- Close each elaborated `letRec` binding over the variables actually generalised
+    for it (`G ∩ ftv τⱼ = Ty.genFilter G τⱼ`), matching the per-binding scheme
+    `PolyTy.genGroup G τⱼ`. The shared pool is `G = genGroupVars rigid env τs`. -/
+def Expr.closeRecGroup (rigid : List Nat) (env : Env) (bindingsOut : List Expr)
+    (τs : List Ty) : List Expr :=
+  (bindingsOut.zip τs).map
+    (fun p => p.1.closeTyVars (Ty.genFilter (genGroupVars rigid env τs) p.2))
+
+/-! Algorithm W as a type-directed **elaboration** relation: the subject `eIn` is
+    the unelaborated skeleton and the new output index `eOut` carries the elaborated
+    (type-passing) term. The runnable term is `eOut.substTyFvars S`. Mutually defined
+    with `InferBranches`/`InferRecGroup` (the `match_`/`letRec` threaders), which
+    each thread out their elaborated sub-terms. -/
 mutual
-inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
+inductive Infer : Nat → Ctx → Expr → Nat → Subst → Expr → Ty → Prop
   | primLitUnit {Φ ctx} :
-    Infer Φ ctx (.primLit .unit) Φ [] (.prim .unit)
+    Infer Φ ctx (.primLit .unit) Φ [] (.primLit .unit) (.prim .unit)
   | primLitInt {Φ ctx n} :
-    Infer Φ ctx (.primLit (.int n)) Φ [] (.prim .int)
+    Infer Φ ctx (.primLit (.int n)) Φ [] (.primLit (.int n)) (.prim .int)
   | primLitNat {Φ ctx n} :
-    Infer Φ ctx (.primLit (.nat n)) Φ [] (.prim .nat)
+    Infer Φ ctx (.primLit (.nat n)) Φ [] (.primLit (.nat n)) (.prim .nat)
   -- | primLitBool {Φ ctx b} :
-  --   Infer Φ ctx (.primLit (.bool b)) Φ [] (.prim .bool)
+  --   Infer Φ ctx (.primLit (.bool b)) Φ [] (.primLit (.bool b)) (.prim .bool)
   | primLitStr {Φ ctx s} :
-    Infer Φ ctx (.primLit (.str s)) Φ [] (.prim .str)
-  | lambda {Φ ctx ann paramTy body Φ₀ Φ' S τb} :
+    Infer Φ ctx (.primLit (.str s)) Φ [] (.primLit (.str s)) (.prim .str)
+  | lambda {Φ ctx ann paramTy body Φ₀ Φ' S bodyOut τb} :
     LamSeed Φ ann paramTy Φ₀ →
-    Infer Φ₀ { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body Φ' S τb →
-    Infer Φ ctx (.lambda ann body) Φ' S (.arrow (S.onTy paramTy) τb)
-  | app {Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ τf τa} :
-    Infer Φ ctx f Φ₁ S₁ τf →
-    Infer Φ₁ (S₁.onCtx ctx) arg Φ₂ S₂ τa →
+    Infer Φ₀ { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body Φ' S bodyOut τb →
+    Infer Φ ctx (.lambda ann body) Φ' S (.lambda ann bodyOut) (.arrow (S.onTy paramTy) τb)
+  | app {Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ fOut argOut τf τa} :
+    Infer Φ ctx f Φ₁ S₁ fOut τf →
+    Infer Φ₁ (S₁.onCtx ctx) arg Φ₂ S₂ argOut τa →
     UnifyRel (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) S₃ →
-    Infer Φ ctx (.app f arg) (Φ₂ + 1) (S₁ ++ S₂ ++ S₃) (S₃.onTy (.fvar Φ₂))
-  | var {Φ ctx i polyTy} :
+    Infer Φ ctx (.app f arg) (Φ₂ + 1) (S₁ ++ S₂ ++ S₃) (.app fOut argOut) (S₃.onTy (.fvar Φ₂))
+  | var {Φ ctx i tyArgsIn polyTy} :
     ctx.env[i]? = some polyTy →
-    -- Type-passing elaboration: the var's `tyArgs` are the scheme's fresh opening
-    -- block `freshVars Φ paramCount` (as fvars). The final substitution `S` later
-    -- resolves these to concrete types (`e.substTyFvars S`); `tyArgs.length =
+    -- Type-passing elaboration: the *input* var carries an ignored `tyArgsIn`
+    -- (the skeleton). The *output* var's `tyArgs` are the scheme's fresh opening
+    -- block `freshVars Φ paramCount` (as fvars); the final substitution `S` later
+    -- resolves these to concrete types (`eOut.substTyFvars S`). `tyArgs.length =
     -- paramCount` holds by construction (`freshVars` has length `paramCount`).
-    Infer Φ ctx (.var i ((freshVars Φ polyTy.paramCount).map Ty.fvar)) (Φ + polyTy.paramCount) []
+    Infer Φ ctx (.var i tyArgsIn) (Φ + polyTy.paramCount) []
+      (.var i ((freshVars Φ polyTy.paramCount).map Ty.fvar))
       (polyTy.openVars (freshVars Φ polyTy.paramCount))
   | ctor {Φ ctx name ctor} :
     LookupList.get? ctx.ctors name = some ctor →
     Infer Φ ctx (.ctor name) (Φ + ctor.paramCount) []
+      (.ctor name)
       (ctor.toTy.openVars (freshVars Φ ctor.paramCount))
-  | letIn {Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂} :
-    Infer Φ ctx rhs Φ₁ S₁ τ₁ →
+  | letIn {Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ rhsOut bodyOut τ₁ τ₂} :
+    Infer Φ ctx rhs Φ₁ S₁ rhsOut τ₁ →
     Infer Φ₁
       { (S₁.onCtx ctx) with
         env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
-      body Φ₂ S₂ τ₂ →
-    Infer Φ ctx (.letIn none rhs body) Φ₂ (S₁ ++ S₂) τ₂
+      body Φ₂ S₂ bodyOut τ₂ →
+    -- Elaboration: generalise `rhs` to `genScheme …` and store the closed rhs (its
+    -- generalised vars closed back to scheme `bvar`s) under that scheme.
+    Infer Φ ctx (.letIn none rhs body) Φ₂ (S₁ ++ S₂)
+      (.letIn (some (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁))
+        (rhsOut.closeTyVars (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁)) bodyOut)
+      τ₂
   /-- Annotated `let` (scoped type variables, D2 ordering). The bound scheme is
       the annotation `σ` (`σ.WF`; it MAY carry free type vars — outer scoped
       vars). Allocate `σ`'s skolems `Ys = freshVars Φ σ.paramCount` **first**, then
@@ -1219,54 +1238,63 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
       `Ys`), producing `Schk`. Escape conditions keep `Ys` rigid: none is bound by
       the **whole** rhs+unify substitution `S₁ ++ Schk` (so the signature is no
       more general than `rhs` actually is), and none leaks into the threaded body
-      context (so `Ys` can be renamed to the cofinite fresh names). -/
-  | letInAnn {Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂} :
+      context (so `Ys` can be renamed to the cofinite fresh names). The output
+      closes the elaborated rhs back over the skolems `Ys`. -/
+  | letInAnn {Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ rhsOut bodyOut τ₁ τ₂} :
     σ.WF →
     Φ ≤ N →
-    Infer (N + σ.paramCount) ctx (rhs.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ τ₁ →
+    Infer (N + σ.paramCount) ctx (rhs.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ rhsOut τ₁ →
     UnifyRel τ₁ (σ.openVars (freshVars N σ.paramCount)) Schk →
     (∀ y ∈ freshVars N σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) →
     (∀ y ∈ freshVars N σ.paramCount, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) →
     Infer Φ₁
       { (Schk.onCtx (S₁.onCtx ctx)) with env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
-      body Φ₂ S₂ τ₂ →
-    Infer Φ ctx (.letIn (some σ) rhs body) Φ₂ (S₁ ++ Schk ++ S₂) τ₂
-  | match_ {Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ τs} :
-    Infer Φ ctx scrut Φ₁ S₁ τs →
+      body Φ₂ S₂ bodyOut τ₂ →
+    Infer Φ ctx (.letIn (some σ) rhs body) Φ₂ (S₁ ++ Schk ++ S₂)
+      (.letIn (some σ) (rhsOut.closeTyVars (freshVars N σ.paramCount)) bodyOut)
+      τ₂
+  | match_ {Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ scrutOut branchesOut τs} :
+    Infer Φ ctx scrut Φ₁ S₁ scrutOut τs →
     branches ≠ [] →
-    InferBranches (Φ₁ + 1) (S₁.onCtx ctx) τs (.fvar Φ₁) branches Φ₂ S₂ →
-    Infer Φ ctx (.match_ scrut branches) Φ₂ (S₁ ++ S₂) (S₂.onTy (.fvar Φ₁))
+    InferBranches (Φ₁ + 1) (S₁.onCtx ctx) τs (.fvar Φ₁) branches Φ₂ S₂ branchesOut →
+    Infer Φ ctx (.match_ scrut branches) Φ₂ (S₁ ++ S₂) (.match_ scrutOut branchesOut)
+      (S₂.onTy (.fvar Φ₁))
   /-- (Mutually) recursive binding group, monomorphic recursion (Damas–Milner /
       Pottier `LetRec`; mirrors `TypeOfElabHM.letRec`). Allocate the group's fresh
       monotype vars `β = freshVars Φ n` (`n = bindings.length`), bind the group
       MONOMORPHICALLY at those `β`s in the RHS context, thread inference over the
       bindings unifying each RHS against its `βⱼ` (`InferRecGroup`), then generalize
       the SOLVED monotypes `S₁.onTy βⱼ` over the shared group pool and type the body
-      under those per-binding schemes (`genGroupSchemes`). -/
-  | letRec {Φ ctx bindings body Φ₁ Φ₂ S₁ S₂ τ₂} :
+      under those per-binding schemes (`genGroupSchemes`). The output closes each
+      elaborated binding over its own generalised variables (`Expr.closeRecGroup`). -/
+  | letRec {Φ ctx bindings body Φ₁ Φ₂ S₁ S₂ bindingsOut bodyOut τ₂} :
     InferRecGroup (Φ + bindings.length)
         { ctx with env := (freshVars Φ bindings.length).map (fun i => PolyTy.mkTrivial (Ty.fvar i)) ++ ctx.env }
         bindings
         ((freshVars Φ bindings.length).map Ty.fvar)
-        Φ₁ S₁ →
+        Φ₁ S₁ bindingsOut →
     Infer Φ₁
       { (S₁.onCtx ctx) with
         env := genGroupSchemes (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env
                  ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i)))
                ++ (S₁.onCtx ctx).env }
-      body Φ₂ S₂ τ₂ →
-    Infer Φ ctx (.letRec bindings body) Φ₂ (S₁ ++ S₂) τ₂
+      body Φ₂ S₂ bodyOut τ₂ →
+    Infer Φ ctx (.letRec bindings body) Φ₂ (S₁ ++ S₂)
+      (.letRec (Expr.closeRecGroup (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env bindingsOut
+                  ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i)))) bodyOut)
+      τ₂
 
 /-- Threads inference through a `match_`'s branch list. Carries the scrutinee type
     `scrutTy` (which each *named* pattern constrains to its ADT by unifying it with a
     fresh `customTy` instance) and a running result type `ρ` that each branch body's
     type is unified against, with substitutions propagated to the next branch. An
-    all-wildcard list leaves `scrutTy` free. -/
+    all-wildcard list leaves `scrutTy` free. The output index threads the elaborated
+    branch list. -/
 inductive InferBranches :
-    Nat → Ctx → Ty → Ty → List (MatchPattern × Expr) → Nat → Subst → Prop
+    Nat → Ctx → Ty → Ty → List (MatchPattern × Expr) → Nat → Subst → List (MatchPattern × Expr) → Prop
   | nil {Φ ctx scrutTy ρ} :
-    InferBranches Φ ctx scrutTy ρ [] Φ []
-  | cons {Φ ctx scrutTy ρ c n body rest ctor Φ₁ Φ₂ S₀ S₁ S₂ S₃ τb} :
+    InferBranches Φ ctx scrutTy ρ [] Φ [] []
+  | cons {Φ ctx scrutTy ρ c n body rest ctor Φ₁ Φ₂ S₀ S₁ S₂ S₃ bodyOut restOut τb} :
     LookupList.get? ctx.ctors c = some ctor →
     n = ctor.contents.length →
     UnifyRel scrutTy
@@ -1276,33 +1304,37 @@ inductive InferBranches :
         env := (ctor.contents.map (Ty.openWith
             (((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy))).map PolyTy.mkTrivial
           ++ (S₀.onCtx ctx).env }
-      body Φ₁ S₁ τb →
+      body Φ₁ S₁ bodyOut τb →
     UnifyRel τb (S₁.onTy (S₀.onTy ρ)) S₂ →
     InferBranches Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))
-      (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))) (S₂.onTy (S₁.onTy (S₀.onTy ρ))) rest Φ₂ S₃ →
+      (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))) (S₂.onTy (S₁.onTy (S₀.onTy ρ))) rest Φ₂ S₃ restOut →
     InferBranches Φ ctx scrutTy ρ ((.named c n, body) :: rest) Φ₂ (S₀ ++ S₁ ++ S₂ ++ S₃)
+      ((.named c n, bodyOut) :: restOut)
   /-- A wildcard branch: infer `body` in the *unextended* context (it binds
       nothing) and imposes no constraint on `scrutTy`; unify its type against the
       running result type `ρ`, continue. -/
-  | consWild {Φ ctx scrutTy ρ body rest Φ₁ Φ₂ S₁ S₂ S₃ τb} :
-    Infer Φ ctx body Φ₁ S₁ τb →
+  | consWild {Φ ctx scrutTy ρ body rest Φ₁ Φ₂ S₁ S₂ S₃ bodyOut restOut τb} :
+    Infer Φ ctx body Φ₁ S₁ bodyOut τb →
     UnifyRel τb (S₁.onTy ρ) S₂ →
     InferBranches Φ₁ (S₂.onCtx (S₁.onCtx ctx))
-      (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) rest Φ₂ S₃ →
+      (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) rest Φ₂ S₃ restOut →
     InferBranches Φ ctx scrutTy ρ ((.wildcard, body) :: rest) Φ₂ (S₁ ++ S₂ ++ S₃)
+      ((.wildcard, bodyOut) :: restOut)
 
 /-- Threads inference through a `letRec`'s recursive group. Carries the per-binding
     target monotypes `targets` (the group's fresh shared vars `βⱼ`, as `Ty`s): each
     binding's inferred type is unified against its (substituted) target, and the
     remaining targets are pushed through the running substitution — exactly like
-    `InferBranches` threads the running result type. -/
-inductive InferRecGroup : Nat → Ctx → List Expr → List Ty → Nat → Subst → Prop
-  | nil {Φ ctx} : InferRecGroup Φ ctx [] [] Φ []
-  | cons {Φ ctx e rest β βs Φ₁ Φ₂ S₁ S₂ S₃ τ} :
-    Infer Φ ctx e Φ₁ S₁ τ →
+    `InferBranches` threads the running result type. The output index threads the
+    RAW elaborated bindings (closing over the per-binding gen-vars happens in the
+    enclosing `letRec` rule). -/
+inductive InferRecGroup : Nat → Ctx → List Expr → List Ty → Nat → Subst → List Expr → Prop
+  | nil {Φ ctx} : InferRecGroup Φ ctx [] [] Φ [] []
+  | cons {Φ ctx e rest β βs Φ₁ Φ₂ S₁ S₂ S₃ eOut restOut τ} :
+    Infer Φ ctx e Φ₁ S₁ eOut τ →
     UnifyRel τ (S₁.onTy β) S₂ →
-    InferRecGroup Φ₁ (S₂.onCtx (S₁.onCtx ctx)) rest (βs.map (fun b => S₂.onTy (S₁.onTy b))) Φ₂ S₃ →
-    InferRecGroup Φ ctx (e :: rest) (β :: βs) Φ₂ (S₁ ++ S₂ ++ S₃)
+    InferRecGroup Φ₁ (S₂.onCtx (S₁.onCtx ctx)) rest (βs.map (fun b => S₂.onTy (S₁.onTy b))) Φ₂ S₃ restOut →
+    InferRecGroup Φ ctx (e :: rest) (β :: βs) Φ₂ (S₁ ++ S₂ ++ S₃) (eOut :: restOut)
 end
 
 
@@ -1310,7 +1342,7 @@ end
 
 /-! The fresh-variable frontier only ever grows (`Infer.frontier_le`). -/
 mutual
-theorem Infer.frontier_le {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) : Φ ≤ Φ' := by
+theorem Infer.frontier_le {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) : Φ ≤ Φ' := by
   cases h with
   | primLitUnit => omega
   | primLitInt => omega
@@ -1331,7 +1363,8 @@ theorem Infer.frontier_le {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) : Φ
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
-theorem InferBranches.frontier_le {Φ ctx scrutTy ρ brs Φ' S} (h : InferBranches Φ ctx scrutTy ρ brs Φ' S) :
+theorem InferBranches.frontier_le {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut) :
     Φ ≤ Φ' := by
   cases h with
   | nil => omega
@@ -1342,8 +1375,8 @@ theorem InferBranches.frontier_le {Φ ctx scrutTy ρ brs Φ' S} (h : InferBranch
 termination_by Expr.sizeBranches brs
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
-theorem InferRecGroup.frontier_le {Φ ctx bindings targets Φ' S}
-    (h : InferRecGroup Φ ctx bindings targets Φ' S) : Φ ≤ Φ' := by
+theorem InferRecGroup.frontier_le {Φ ctx bindings targets Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut) : Φ ≤ Φ' := by
   cases h with
   | nil => omega
   | cons he _ hrest =>
@@ -1475,7 +1508,7 @@ theorem branchBindings_wf {ctorr : Ctor} {ta : List Ty} {ctx : Ctx}
     yields an LC type and a substitution whose replacements are all LC. (Context
     well-formedness of `S.onCtx ctx` follows separately via `Subst.onCtx_wf`.) -/
 mutual
-theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+theorem Infer.lc {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
     CtxWF ctx → τ.IsLC ∧ (∀ p ∈ S, p.2.IsLC) := by
   cases h with
   | primLitUnit => intro _; exact ⟨.prim, by simp⟩
@@ -1587,7 +1620,8 @@ theorem Infer.lc {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
-theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S} (h : InferBranches Φ ctx scrutTy ρ brs Φ' S)
+theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
     (hctx : CtxWF ctx) (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC) :
     (S.onTy ρ).IsLC ∧ (∀ p ∈ S, p.2.IsLC) := by
   cases h with
@@ -1632,7 +1666,8 @@ theorem InferBranches.lc {Φ ctx scrutTy ρ brs Φ' S} (h : InferBranches Φ ctx
 termination_by Expr.sizeBranches brs
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
-theorem InferRecGroup.lc {Φ ctx bindings targets Φ' S} (h : InferRecGroup Φ ctx bindings targets Φ' S)
+theorem InferRecGroup.lc {Φ ctx bindings targets Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut)
     (hctx : CtxWF ctx) (htargets : ∀ β ∈ targets, β.IsLC) :
     (∀ p ∈ S, p.2.IsLC) := by
   cases h with
@@ -3001,7 +3036,7 @@ end
     to `Φ'`). (Named `belowFvars` rather than `below`, since `Infer.below` is
     reserved by Lean's auto-generated recursor for the `Infer` inductive.) -/
 mutual
-theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+theorem Infer.belowFvars {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
     CtxBelow Φ ctx → (∀ y ∈ e.tyFreeVars, y < Φ) →
     Ty.BelowFvars Φ' τ ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
   cases h with
@@ -3165,8 +3200,8 @@ theorem Infer.belowFvars {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
-theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S)
+theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
     (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
     (htfv : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y < Φ) :
     Ty.BelowFvars Φ' (S.onTy ρ) ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
@@ -3236,8 +3271,8 @@ theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S}
 termination_by Expr.sizeBranches brs
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
-theorem InferRecGroup.belowFvars {Φ ctx bindings targets Φ' S}
-    (h : InferRecGroup Φ ctx bindings targets Φ' S)
+theorem InferRecGroup.belowFvars {Φ ctx bindings targets Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut)
     (hctx : CtxBelow Φ ctx) (htargets : ∀ β ∈ targets, Ty.BelowFvars Φ β)
     (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
     (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
@@ -9051,65 +9086,71 @@ the type name + arity off the first branch's constructor (branches are nonempty)
 The public `infer` erases the derivation. -/
 mutual
 def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
-    Option { r : Nat × Subst × Ty // Infer Φ ctx e r.1 r.2.1 r.2.2 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+    Option { r : Nat × Subst × Expr × Ty //
+      Infer Φ ctx e r.1 r.2.1 r.2.2.1 r.2.2.2 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match e with
-  | .primLit .unit => some ⟨(Φ, [], .prim .unit), .primLitUnit, by simp⟩
-  | .primLit (.int _) => some ⟨(Φ, [], .prim .int), .primLitInt, by simp⟩
-  | .primLit (.nat _) => some ⟨(Φ, [], .prim .nat), .primLitNat, by simp⟩
-  -- | .primLit (.bool _) => some ⟨(Φ, [], .prim .bool), .primLitBool, by simp⟩
-  | .primLit (.str _) => some ⟨(Φ, [], .prim .str), .primLitStr, by simp⟩
+  | .primLit .unit => some ⟨(Φ, [], .primLit .unit, .prim .unit), .primLitUnit, by simp⟩
+  | .primLit (.int n) => some ⟨(Φ, [], .primLit (.int n), .prim .int), .primLitInt, by simp⟩
+  | .primLit (.nat n) => some ⟨(Φ, [], .primLit (.nat n), .prim .nat), .primLitNat, by simp⟩
+  -- | .primLit (.bool b) => some ⟨(Φ, [], .primLit (.bool b), .prim .bool), .primLitBool, by simp⟩
+  | .primLit (.str s) => some ⟨(Φ, [], .primLit (.str s), .prim .str), .primLitStr, by simp⟩
   | .lambda none body =>
       match inferCore K (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } body with
       | none => none
-      | some ⟨(Φ', S, τb), hbody, hav⟩ =>
-        some ⟨(Φ', S, .arrow (S.onTy (.fvar Φ)) τb), .lambda .none hbody, hav⟩
+      | some ⟨(Φ', S, bodyOut, τb), hbody, hav⟩ =>
+        some ⟨(Φ', S, .lambda none bodyOut, .arrow (S.onTy (.fvar Φ)) τb), .lambda .none hbody, hav⟩
   | .lambda (some T) body =>
       if hT : Ty.bvarsBelow 0 T = true then
         match inferCore K Φ { ctx with env := PolyTy.mkTrivial T :: ctx.env } body with
         | none => none
-        | some ⟨(Φ', S, τb), hbody, hav⟩ =>
-          some ⟨(Φ', S, .arrow (S.onTy T) τb),
+        | some ⟨(Φ', S, bodyOut, τb), hbody, hav⟩ =>
+          some ⟨(Φ', S, .lambda (some T) bodyOut, .arrow (S.onTy T) τb),
             .lambda (.some T ((Ty.bvarsBelow_iff T).mp hT)) hbody, hav⟩
       else none
   | .app f arg =>
       match inferCore K Φ ctx f with
       | none => none
-      | some ⟨(Φ₁, S₁, τf), hf, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, fOut, τf), hf, hav₁⟩ =>
         match inferCore K Φ₁ (S₁.onCtx ctx) arg with
         | none => none
-        | some ⟨(Φ₂, S₂, τa), harg, hav₂⟩ =>
+        | some ⟨(Φ₂, S₂, argOut, τa), harg, hav₂⟩ =>
           match unifyCoreK K (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) with
           | none => none
           | some ⟨S₃, h₃, hav₃⟩ =>
-            some ⟨(Φ₂ + 1, S₁ ++ S₂ ++ S₃, S₃.onTy (.fvar Φ₂)), .app hf harg h₃, by
+            some ⟨(Φ₂ + 1, S₁ ++ S₂ ++ S₃, .app fOut argOut, S₃.onTy (.fvar Φ₂)), .app hf harg h₃, by
               intro p hp; rcases List.mem_append.mp hp with h | h
               · rcases List.mem_append.mp h with h | h
                 · exact hav₁ p h
                 · exact hav₂ p h
               · exact hav₃ p h⟩
-  | .var i =>
+  | .var i _ =>
       match h : ctx.env[i]? with
       | none => none
       | some polyTy =>
-        some ⟨(Φ + polyTy.paramCount, [], polyTy.openVars (freshVars Φ polyTy.paramCount)), .var h, by simp⟩
+        some ⟨(Φ + polyTy.paramCount, [], .var i ((freshVars Φ polyTy.paramCount).map Ty.fvar),
+          polyTy.openVars (freshVars Φ polyTy.paramCount)), .var h, by simp⟩
   | .ctor name =>
       match h : LookupList.get? ctx.ctors name with
       | none => none
       | some ctorr =>
-        some ⟨(Φ + ctorr.paramCount, [], ctorr.toTy.openVars (freshVars Φ ctorr.paramCount)), .ctor h, by simp⟩
+        some ⟨(Φ + ctorr.paramCount, [], .ctor name, ctorr.toTy.openVars (freshVars Φ ctorr.paramCount)),
+          .ctor h, by simp⟩
   | .letIn ann rhs body =>
       match ann with
       | none =>
         match inferCore K Φ ctx rhs with
         | none => none
-        | some ⟨(Φ₁, S₁, τ₁), hrhs, hav₁⟩ =>
+        | some ⟨(Φ₁, S₁, rhsOut, τ₁), hrhs, hav₁⟩ =>
         match inferCore K Φ₁
             { (S₁.onCtx ctx) with
               env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
             body with
         | none => none
-        | some ⟨(Φ₂, S₂, τ₂), hbody, hav₂⟩ =>
-          some ⟨(Φ₂, S₁ ++ S₂, τ₂), .letIn hrhs hbody, by
+        | some ⟨(Φ₂, S₂, bodyOut, τ₂), hbody, hav₂⟩ =>
+          some ⟨(Φ₂, S₁ ++ S₂,
+              .letIn (some (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁))
+                (rhsOut.closeTyVars (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁)) bodyOut, τ₂),
+            .letIn hrhs hbody, by
             intro p hp; rcases List.mem_append.mp hp with h | h
             · exact hav₁ p h
             · exact hav₂ p h⟩
@@ -9119,12 +9160,13 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
         -- the rigid set** (so the rigidity-aware `unifyCoreK` keeps the skolems
         -- rigid), unify the result against the skolem opening, escape-check, and
         -- type the body under `σ` at the outer rigid set `K`. `σ` may carry outer
-        -- scoped type variables — no closedness requirement.
+        -- scoped type variables — no closedness requirement. The output closes the
+        -- elaborated rhs back over the skolems.
         if hσwf : Ty.bvarsBelow σ.paramCount σ.body = true then
           match inferCore (K ++ freshVars Φ σ.paramCount) (Φ + σ.paramCount) ctx
               (rhs.openTyVars (freshVars Φ σ.paramCount)) with
           | none => none
-          | some ⟨(Φ₁, S₁, τ₁), hrhs, hav₁⟩ =>
+          | some ⟨(Φ₁, S₁, rhsOut, τ₁), hrhs, hav₁⟩ =>
             match unifyCoreK (K ++ freshVars Φ σ.paramCount) τ₁
                 (σ.openVars (freshVars Φ σ.paramCount)) with
             | none => none
@@ -9137,8 +9179,9 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
                         env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
                       body with
                   | none => none
-                  | some ⟨(Φ₂, S₂, τ₂), hbody, hav₂⟩ =>
-                    some ⟨(Φ₂, S₁ ++ Schk ++ S₂, τ₂),
+                  | some ⟨(Φ₂, S₂, bodyOut, τ₂), hbody, hav₂⟩ =>
+                    some ⟨(Φ₂, S₁ ++ Schk ++ S₂,
+                        .letIn (some σ) (rhsOut.closeTyVars (freshVars Φ σ.paramCount)) bodyOut, τ₂),
                       .letInAnn (PolyTy.wf_iff_bvarsBelow.mp hσwf) (Nat.le_refl Φ)
                         hrhs hSchk hesc1 hesc2 hbody, by
                       intro p hp; rcases List.mem_append.mp hp with h | h
@@ -9152,14 +9195,14 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
   | .match_ scrut branches =>
       match inferCore K Φ ctx scrut with
       | none => none
-      | some ⟨(Φ₁, S₁, τs), hscrut, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, scrutOut, τs), hscrut, hav₁⟩ =>
         match hh : branches.head? with
         | none => none
         | some _ =>
           match inferBranchesCore K (Φ₁ + 1) (S₁.onCtx ctx) τs (.fvar Φ₁) branches with
           | none => none
-          | some ⟨(Φ₂, S₂), hbranches, hav₂⟩ =>
-            some ⟨(Φ₂, S₁ ++ S₂, S₂.onTy (.fvar Φ₁)),
+          | some ⟨(Φ₂, S₂, branchesOut), hbranches, hav₂⟩ =>
+            some ⟨(Φ₂, S₁ ++ S₂, .match_ scrutOut branchesOut, S₂.onTy (.fvar Φ₁)),
                   .match_ hscrut (by intro hc; rw [hc] at hh; simp at hh) hbranches, by
                   intro p hp; rcases List.mem_append.mp hp with h | h
                   · exact hav₁ p h
@@ -9169,7 +9212,7 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
           { ctx with env := (freshVars Φ bindings.length).map (fun i => PolyTy.mkTrivial (Ty.fvar i)) ++ ctx.env }
           bindings ((freshVars Φ bindings.length).map Ty.fvar) with
       | none => none
-      | some ⟨(Φ₁, S₁), hgroup, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, bindingsOut), hgroup, hav₁⟩ =>
         match inferCore K Φ₁
             { (S₁.onCtx ctx) with
               env := genGroupSchemes (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env
@@ -9177,32 +9220,38 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
                      ++ (S₁.onCtx ctx).env }
             body with
         | none => none
-        | some ⟨(Φ₂, S₂, τ₂), hbody, hav₂⟩ =>
-          some ⟨(Φ₂, S₁ ++ S₂, τ₂), .letRec hgroup hbody, by
+        | some ⟨(Φ₂, S₂, bodyOut, τ₂), hbody, hav₂⟩ =>
+          some ⟨(Φ₂, S₁ ++ S₂,
+              .letRec (Expr.closeRecGroup (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env bindingsOut
+                        ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i)))) bodyOut, τ₂),
+            .letRec hgroup hbody, by
             intro p hp; rcases List.mem_append.mp hp with h | h
             · exact hav₁ p h
             · exact hav₂ p h⟩
+  | .letRecAnn _ _ _ => none
 termination_by e.size
 decreasing_by
   all_goals (try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
 def inferBranchesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) (ρ : Ty)
     (branches : List (MatchPattern × Expr)) :
-    Option { r : Nat × Subst // InferBranches Φ ctx scrutTy ρ branches r.1 r.2 ∧ (∀ p ∈ r.2, p.1 ∉ K) } :=
+    Option { r : Nat × Subst × List (MatchPattern × Expr) //
+      InferBranches Φ ctx scrutTy ρ branches r.1 r.2.1 r.2.2 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match branches with
-  | [] => some ⟨(Φ, []), .nil, by simp⟩
+  | [] => some ⟨(Φ, [], []), .nil, by simp⟩
   | (.wildcard, body) :: rest =>
       match inferCore K Φ ctx body with
       | none => none
-      | some ⟨(Φ₁, S₁, τb), hbody, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, bodyOut, τb), hbody, hav₁⟩ =>
         match unifyCoreK K τb (S₁.onTy ρ) with
         | none => none
         | some ⟨S₂, huni, hav₂⟩ =>
           match inferBranchesCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx))
               (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) rest with
           | none => none
-          | some ⟨(Φ₂, S₃), hrest, hav₃⟩ =>
-            some ⟨(Φ₂, S₁ ++ S₂ ++ S₃), .consWild hbody huni hrest, by
+          | some ⟨(Φ₂, S₃, restOut), hrest, hav₃⟩ =>
+            some ⟨(Φ₂, S₁ ++ S₂ ++ S₃, (.wildcard, bodyOut) :: restOut),
+                .consWild hbody huni hrest, by
               intro p hp; rcases List.mem_append.mp hp with h | h
               · rcases List.mem_append.mp h with h | h
                 · exact hav₁ p h
@@ -9224,15 +9273,16 @@ def inferBranchesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) (ρ :
                     ++ (S₀.onCtx ctx).env }
                 body with
             | none => none
-            | some ⟨(Φ₁, S₁, τb), hbody, hav₁⟩ =>
+            | some ⟨(Φ₁, S₁, bodyOut, τb), hbody, hav₁⟩ =>
               match unifyCoreK K τb (S₁.onTy (S₀.onTy ρ)) with
               | none => none
               | some ⟨S₂, huni, hav₂⟩ =>
                 match inferBranchesCore K Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))
                     (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))) (S₂.onTy (S₁.onTy (S₀.onTy ρ))) rest with
                 | none => none
-                | some ⟨(Φ₂, S₃), hrest, hav₃⟩ =>
-                  some ⟨(Φ₂, S₀ ++ S₁ ++ S₂ ++ S₃), .cons hget hcont huni0 hbody huni hrest, by
+                | some ⟨(Φ₂, S₃, restOut), hrest, hav₃⟩ =>
+                  some ⟨(Φ₂, S₀ ++ S₁ ++ S₂ ++ S₃, (.named c n, bodyOut) :: restOut),
+                      .cons hget hcont huni0 hbody huni hrest, by
                     intro p hp
                     rcases List.mem_append.mp hp with h | h
                     · rcases List.mem_append.mp h with h | h
@@ -9247,21 +9297,22 @@ decreasing_by
   all_goals (try simp only [Expr.sizeBranches]; omega)
 
 def inferRecGroupCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (bindings : List Expr) (targets : List Ty) :
-    Option { r : Nat × Subst // InferRecGroup Φ ctx bindings targets r.1 r.2 ∧ (∀ p ∈ r.2, p.1 ∉ K) } :=
+    Option { r : Nat × Subst × List Expr //
+      InferRecGroup Φ ctx bindings targets r.1 r.2.1 r.2.2 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match bindings, targets with
-  | [], [] => some ⟨(Φ, []), .nil, by simp⟩
+  | [], [] => some ⟨(Φ, [], []), .nil, by simp⟩
   | e :: rest, β :: βs =>
       match inferCore K Φ ctx e with
       | none => none
-      | some ⟨(Φ₁, S₁, τ), he, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, eOut, τ), he, hav₁⟩ =>
         match unifyCoreK K τ (S₁.onTy β) with
         | none => none
         | some ⟨S₂, huni, hav₂⟩ =>
           match inferRecGroupCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx)) rest
               (βs.map (fun b => S₂.onTy (S₁.onTy b))) with
           | none => none
-          | some ⟨(Φ₂, S₃), hrest, hav₃⟩ =>
-            some ⟨(Φ₂, S₁ ++ S₂ ++ S₃), .cons he huni hrest, by
+          | some ⟨(Φ₂, S₃, restOut), hrest, hav₃⟩ =>
+            some ⟨(Φ₂, S₁ ++ S₂ ++ S₃, eOut :: restOut), .cons he huni hrest, by
               intro p hp; rcases List.mem_append.mp hp with h | h
               · rcases List.mem_append.mp h with h | h
                 · exact hav₁ p h
