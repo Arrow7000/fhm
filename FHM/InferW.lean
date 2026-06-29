@@ -1201,6 +1201,93 @@ def Expr.letRecElab (G : List Nat) (rawBindings : List Expr) (τs : List Ty)
   Expr.letRecElabNest G rawBindings.length rawBindings
     (((List.range rawBindings.length).zip τs).reverse) body
 
+/-- Term-var shifting leaves all *type* annotations untouched, so it preserves the
+    set of free type variables. -/
+theorem Expr.shiftFrom_tyFreeVars (e : Expr) (t n : Nat) :
+    (e.shiftFrom t n).tyFreeVars = e.tyFreeVars := by
+  induction e using Expr.rec_strong generalizing t with
+  | primLit p => rfl
+  | ctor c => rfl
+  | var i tyArgs => simp only [Expr.shiftFrom]; split <;> rfl
+  | lambda ann body ih => simp only [Expr.shiftFrom, Expr.tyFreeVars, ih]
+  | app f arg ihf iharg => simp only [Expr.shiftFrom, Expr.tyFreeVars, ihf, iharg]
+  | letIn ann rhs body ihr ihb => simp only [Expr.shiftFrom, Expr.tyFreeVars, ihr, ihb]
+  | match_ scrut branches ihs ihbr =>
+    simp only [Expr.shiftFrom, Expr.tyFreeVars, ihs]
+    congr 1
+    induction branches with
+    | nil => rfl
+    | cons hd tl ihtl =>
+      obtain ⟨p, b⟩ := hd
+      change (b.shiftFrom (t + p.bindCount) n).tyFreeVars
+          ++ _ = b.tyFreeVars ++ Expr.tyFreeVars.BranchList.tyFreeVars tl
+      rw [ihbr p b List.mem_cons_self,
+          ihtl (fun p' b' hmem => ihbr p' b' (List.mem_cons_of_mem _ hmem))]
+  | letRec bindings body ihbs ihb =>
+    simp only [Expr.shiftFrom, Expr.tyFreeVars, ihb]
+    congr 1
+    generalize t + bindings.length = thr
+    induction bindings with
+    | nil => rfl
+    | cons hd tl ihtl =>
+      change (hd.shiftFrom thr n).tyFreeVars
+          ++ _ = hd.tyFreeVars ++ Expr.tyFreeVars.RecGroup.tyFreeVars tl
+      rw [ihbs hd List.mem_cons_self thr,
+          ihtl (fun e' hmem => ihbs e' (List.mem_cons_of_mem _ hmem))]
+  | letRecAnn schemes bindings body ihbs ihb =>
+    simp only [Expr.shiftFrom, Expr.tyFreeVars, ihb]
+    congr 1
+    congr 1
+    generalize t + bindings.length = thr
+    induction bindings with
+    | nil => rfl
+    | cons hd tl ihtl =>
+      change (hd.shiftFrom thr n).tyFreeVars
+          ++ _ = hd.tyFreeVars ++ Expr.tyFreeVars.RecGroup.tyFreeVars tl
+      rw [ihbs hd List.mem_cons_self thr,
+          ihtl (fun e' hmem => ihbs e' (List.mem_cons_of_mem _ hmem))]
+
+/-- Term-var shifting preserves `NoRecAnn` (it rebuilds every node shape unchanged;
+    `letRecAnn` never appears under the hypothesis). -/
+theorem Expr.NoRecAnn.shiftFrom (n : Nat) {e : Expr} :
+    ∀ t, e.NoRecAnn → (e.shiftFrom t n).NoRecAnn := by
+  induction e using Expr.rec_strong with
+  | primLit p => intro t _; exact trivial
+  | ctor c => intro t _; exact trivial
+  | var i tyArgs => intro t _; simp only [Expr.shiftFrom]; split <;> exact trivial
+  | lambda ann body ih =>
+    intro t hno; simp only [Expr.NoRecAnn] at hno
+    simp only [Expr.shiftFrom, Expr.NoRecAnn]; exact ih (t + 1) hno
+  | app f arg ihf iharg =>
+    intro t hno; simp only [Expr.NoRecAnn] at hno
+    simp only [Expr.shiftFrom, Expr.NoRecAnn]; exact ⟨ihf t hno.1, iharg t hno.2⟩
+  | letIn ann rhs body ihr ihb =>
+    intro t hno; simp only [Expr.NoRecAnn] at hno
+    simp only [Expr.shiftFrom, Expr.NoRecAnn]; exact ⟨ihr t hno.1, ihb (t + 1) hno.2⟩
+  | match_ scrut branches ihs ihbr =>
+    intro t hno; simp only [Expr.NoRecAnn] at hno
+    simp only [Expr.shiftFrom, Expr.NoRecAnn]
+    refine ⟨ihs t hno.1, ?_⟩
+    obtain ⟨_, hbr⟩ := hno
+    induction branches with
+    | nil => exact trivial
+    | cons hd tl ihtl =>
+      obtain ⟨p, b⟩ := hd
+      exact ⟨ihbr p b List.mem_cons_self (t + p.bindCount) hbr.1,
+             ihtl (fun p' b' hmem => ihbr p' b' (List.mem_cons_of_mem _ hmem)) hbr.2⟩
+  | letRec bindings body ihbs ihb =>
+    intro t hno; simp only [Expr.NoRecAnn] at hno
+    simp only [Expr.shiftFrom, Expr.NoRecAnn]
+    refine ⟨?_, ihb (t + bindings.length) hno.2⟩
+    obtain ⟨hbs, _⟩ := hno
+    generalize t + bindings.length = thr
+    induction bindings with
+    | nil => exact trivial
+    | cons hd tl ihtl =>
+      exact ⟨ihbs hd List.mem_cons_self thr hbs.1,
+             ihtl (fun e' hmem => ihbs e' (List.mem_cons_of_mem _ hmem)) hbs.2⟩
+  | letRecAnn schemes bindings body _ _ => intro t hno; exact hno.elim
+
 /-! Algorithm W as a type-directed **elaboration** relation: the subject `eIn` is
     the unelaborated skeleton and the new output index `eOut` carries the elaborated
     (type-passing) term. The runnable term is `eOut.substTyFvars S`. Mutually defined
@@ -1435,6 +1522,30 @@ theorem Expr.NoRecAnn.closeTyVarsAux {Xs : List Nat} :
 theorem Expr.NoRecAnn.closeTyVars {Xs : List Nat} {e : Expr} (he : e.NoRecAnn) :
     (e.closeTyVars Xs).NoRecAnn := Expr.NoRecAnn.closeTyVarsAux e 0 he
 
+/-- The Λ-outside nest is `letRecAnn`-free: every wrapper is a `letIn` around a
+    `closeTyVars`-of-`letRec` (both `NoRecAnn`-allowed) over shifted `NoRecAnn`
+    bindings, bottoming at a `NoRecAnn` body. -/
+theorem Expr.letRecElabNest_noRecAnn {G : List Nat} {n : Nat} {rawBindings : List Expr}
+    (hraw : ∀ e ∈ rawBindings, e.NoRecAnn) :
+    ∀ (members : List (Nat × Ty)) {body : Expr}, body.NoRecAnn →
+      (Expr.letRecElabNest G n rawBindings members body).NoRecAnn := by
+  intro members
+  induction members with
+  | nil => intro body hbody; exact hbody
+  | cons hd tl ih =>
+    obtain ⟨i, τ⟩ := hd
+    intro body hbody
+    refine ⟨Expr.NoRecAnn.closeTyVars ⟨?_, trivial⟩, ih hbody⟩
+    rw [Expr.NoRecAnn.RecGroup_iff]
+    intro e he
+    obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
+    exact (hraw e' he').shiftFrom (n - 1 - i) n
+
+theorem Expr.letRecElab_noRecAnn {G : List Nat} {rawBindings : List Expr} {τs : List Ty}
+    {body : Expr} (hraw : ∀ e ∈ rawBindings, e.NoRecAnn) (hbody : body.NoRecAnn) :
+    (Expr.letRecElab G rawBindings τs body).NoRecAnn :=
+  Expr.letRecElabNest_noRecAnn hraw _ hbody
+
 mutual
 /-- The elaborated output term has no `letRecAnn` nodes. -/
 theorem Infer.eOut_noRecAnn {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
@@ -1456,12 +1567,8 @@ theorem Infer.eOut_noRecAnn {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S e
   | match_ hscrut _ hbr =>
     exact ⟨Infer.eOut_noRecAnn hscrut, InferBranches.eOut_noRecAnn hbr⟩
   | letRec hgroup hbody =>
-    refine ⟨?_, Infer.eOut_noRecAnn hbody⟩
-    rw [Expr.NoRecAnn.RecGroup_iff]
-    intro e he
-    simp only [Expr.closeRecGroup] at he
-    obtain ⟨p, hp, rfl⟩ := List.mem_map.mp he
-    exact Expr.NoRecAnn.closeTyVars (InferRecGroup.eOut_noRecAnn hgroup p.1 (List.of_mem_zip hp).1)
+    exact Expr.letRecElab_noRecAnn (fun e he => InferRecGroup.eOut_noRecAnn hgroup e he)
+      (Infer.eOut_noRecAnn hbody)
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -3269,6 +3376,56 @@ theorem Expr.mem_recGroupTyFreeVars {L : List Expr} {w : Nat}
     · exact ⟨hd, List.mem_cons_self, h⟩
     · obtain ⟨e, he, hwe⟩ := ih h; exact ⟨e, List.mem_cons_of_mem _ he, hwe⟩
 
+/-- Every free type var of the Λ-outside nest comes from a member monotype `τⱼ`
+    (the schemes `Mⱼ`/closed copies only contain `τⱼ`'s vars), a raw binding, or the
+    body — shifting and closing introduce no new type vars. -/
+theorem Expr.mem_tyFreeVars_letRecElabNest {G : List Nat} {n : Nat} {rawBindings : List Expr}
+    (hraw : ∀ e ∈ rawBindings, e.NoRecAnn) :
+    ∀ {members : List (Nat × Ty)} {body : Expr} {y : Nat},
+      y ∈ (Expr.letRecElabNest G n rawBindings members body).tyFreeVars →
+      (∃ p ∈ members, y ∈ p.2.freeVars) ∨ (∃ e ∈ rawBindings, y ∈ e.tyFreeVars)
+        ∨ y ∈ body.tyFreeVars := by
+  intro members
+  induction members with
+  | nil => intro body y hy; exact Or.inr (Or.inr hy)
+  | cons hd tl ih =>
+    obtain ⟨i, τ⟩ := hd
+    intro body y hy
+    simp only [Expr.letRecElabNest, Expr.tyFreeVars, Option.elim_some, List.mem_append] at hy
+    rcases hy with (hy | hy) | hy
+    · refine Or.inl ⟨(i, τ), List.mem_cons_self, ?_⟩
+      simp only [PolyTy.genGroup] at hy
+      exact Ty.freeVars_closeOver_subset hy
+    · have hno : (Expr.letRec (rawBindings.map (·.shiftFrom n (n - 1 - i))) (Expr.var i [])).NoRecAnn := by
+        refine ⟨?_, trivial⟩
+        rw [Expr.NoRecAnn.RecGroup_iff]
+        intro e he; obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
+        exact (hraw e' he').shiftFrom (n - 1 - i) n
+      have hy2 := Expr.tyFreeVars_closeTyVars_subset hno hy
+      rw [Expr.tyFreeVars, List.mem_append] at hy2
+      rcases hy2 with hy2 | hy2
+      · obtain ⟨e', he', hye'⟩ := Expr.mem_recGroupTyFreeVars hy2
+        obtain ⟨e'', he'', rfl⟩ := List.mem_map.mp he'
+        refine Or.inr (Or.inl ⟨e'', he'', ?_⟩)
+        rwa [Expr.shiftFrom_tyFreeVars] at hye'
+      · simp [Expr.tyFreeVars] at hy2
+    · rcases ih hy with h | h | h
+      · obtain ⟨p, hp, hyp⟩ := h
+        exact Or.inl ⟨p, List.mem_cons_of_mem _ hp, hyp⟩
+      · exact Or.inr (Or.inl h)
+      · exact Or.inr (Or.inr h)
+
+theorem Expr.mem_tyFreeVars_letRecElab {G : List Nat} {rawBindings : List Expr} {τs : List Ty}
+    {body : Expr} {y : Nat} (hraw : ∀ e ∈ rawBindings, e.NoRecAnn)
+    (hy : y ∈ (Expr.letRecElab G rawBindings τs body).tyFreeVars) :
+    (∃ τ ∈ τs, y ∈ τ.freeVars) ∨ (∃ e ∈ rawBindings, y ∈ e.tyFreeVars) ∨ y ∈ body.tyFreeVars := by
+  simp only [Expr.letRecElab] at hy
+  rcases Expr.mem_tyFreeVars_letRecElabNest hraw hy with h | h | h
+  · obtain ⟨p, hp, hyp⟩ := h
+    exact Or.inl ⟨p.2, (List.of_mem_zip (List.mem_reverse.mp hp)).2, hyp⟩
+  · exact Or.inr (Or.inl h)
+  · exact Or.inr (Or.inr h)
+
 /-- Push a var-avoidance through a substitution (avoid form of `Subst.onTy`). -/
 theorem Subst.notMemOnTy {S : Subst} {w : Nat} {τ : Ty}
     (hS : ∀ p ∈ S, w ∉ p.2.freeVars) (hτ : w ∉ τ.freeVars) : w ∉ (S.onTy τ).freeVars := by
@@ -3503,15 +3660,17 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
       rcases hp with hp | hp
       · exact hgS p hp
       · exact hbS p hp
-    · simp only [Expr.tyFreeVars, List.mem_append, not_or]
-      refine ⟨?_, hbo⟩
-      intro hc
-      obtain ⟨e, he, hwe'⟩ := Expr.mem_recGroupTyFreeVars hc
-      simp only [Expr.closeRecGroup] at he
-      obtain ⟨p, hp, rfl⟩ := List.mem_map.mp he
-      exact hgo p.1 (List.of_mem_zip hp).1
-        (Expr.tyFreeVars_closeTyVars_subset
-          (InferRecGroup.eOut_noRecAnn hgroup p.1 (List.of_mem_zip hp).1) hwe')
+    · intro hc
+      rcases Expr.mem_tyFreeVars_letRecElab
+          (fun e he => InferRecGroup.eOut_noRecAnn hgroup e he) hc with h | h | h
+      · obtain ⟨τ, hτ, hwτ⟩ := h
+        obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hτ
+        rcases Subst.mem_freeVars_onTy hwτ with h' | ⟨p, hp, hvp⟩
+        · simp only [Ty.freeVars, List.mem_singleton] at h'
+          have := freshVars_ge x hx; omega
+        · exact hgS p hp hvp
+      · obtain ⟨e, he, hwe'⟩ := h; exact hgo e he hwe'
+      · exact hbo h
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
