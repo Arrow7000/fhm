@@ -4759,6 +4759,14 @@ termination_by Expr.sizeRecGroup bindings
 decreasing_by all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 end
 
+/-- `substTyFvars` distributes over substitution append (it is the left fold of
+    `substTyFvar`). -/
+theorem Expr.substTyFvars_append (A B : List (Nat × Ty)) (e : Expr) :
+    e.substTyFvars (A ++ B) = (e.substTyFvars A).substTyFvars B := by
+  induction A generalizing e with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [List.cons_append, Expr.substTyFvars, ih]
+
 /-- The `letIn` soundness case, factored out (named binders avoid the
     inaccessible-name problem inside the `Infer.sound` induction). The cofinite
     premise is built by renaming the generalization candidates `genVars` to the
