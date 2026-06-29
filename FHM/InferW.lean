@@ -1176,6 +1176,31 @@ def Expr.closeRecGroup (rigid : List Nat) (env : Env) (bindingsOut : List Expr)
   (bindingsOut.zip τs).map
     (fun p => p.1.closeTyVars (Ty.genFilter (genGroupVars rigid env τs) p.2))
 
+/-- Λ-outside encoding of an elaborated `letRec` (one nest level per member). Given
+    `(i, τ)` for member `i` with shared gen-pool `G`, bind the per-binding scheme
+    `Mᵢ = genGroup G τᵢ` to a fresh copy of the *monomorphic* group `rawBindings`
+    (its outer de Bruijn refs shifted past the `i`-enclosing wrappers — there are
+    `n - 1 - i` of them) projecting member `i`, with the generalised variables
+    `gvᵢ = genFilter G τᵢ` closed back over that copy. The members are processed
+    outermost-first; calling with member `0` last (innermost) keeps the body's
+    group de Bruijn indices unchanged (`M₀` at `0`, …, `M₍ₙ₋₁₎` at `n-1`). -/
+def Expr.letRecElabNest (G : List Nat) (n : Nat) (rawBindings : List Expr) :
+    List (Nat × Ty) → Expr → Expr
+  | [], body => body
+  | (i, τ) :: rest, body =>
+      .letIn (some (PolyTy.genGroup G τ))
+        (Expr.closeTyVars (Ty.genFilter G τ)
+          (.letRec (rawBindings.map (·.shiftFrom n (n - 1 - i))) (.var i [])))
+        (Expr.letRecElabNest G n rawBindings rest body)
+
+/-- The full Λ-outside elaborated `letRec`: stack the per-member wrappers with
+    member `0` innermost (so the body sees `M₀ … M₍ₙ₋₁₎` at indices `0 … n-1`,
+    matching `genGroupSchemes`). -/
+def Expr.letRecElab (G : List Nat) (rawBindings : List Expr) (τs : List Ty)
+    (body : Expr) : Expr :=
+  Expr.letRecElabNest G rawBindings.length rawBindings
+    (((List.range rawBindings.length).zip τs).reverse) body
+
 /-! Algorithm W as a type-directed **elaboration** relation: the subject `eIn` is
     the unelaborated skeleton and the new output index `eOut` carries the elaborated
     (type-passing) term. The runnable term is `eOut.substTyFvars S`. Mutually defined
@@ -1280,8 +1305,12 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Expr → Ty → Pro
                ++ (S₁.onCtx ctx).env }
       body Φ₂ S₂ bodyOut τ₂ →
     Infer Φ ctx (.letRec bindings body) Φ₂ (S₁ ++ S₂)
-      (.letRec (Expr.closeRecGroup (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env bindingsOut
-                  ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i)))) bodyOut)
+      (Expr.letRecElab
+        (genGroupVars (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env
+          ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i))))
+        bindingsOut
+        ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i)))
+        bodyOut)
       τ₂
 
 /-- Threads inference through a `match_`'s branch list. Carries the scrutinee type
@@ -10754,8 +10783,12 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
         | none => none
         | some ⟨(Φ₂, S₂, bodyOut, τ₂), hbody, hav₂⟩ =>
           some ⟨(Φ₂, S₁ ++ S₂,
-              .letRec (Expr.closeRecGroup (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env bindingsOut
-                        ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i)))) bodyOut, τ₂),
+              Expr.letRecElab
+                (genGroupVars (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env
+                  ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i))))
+                bindingsOut
+                ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i)))
+                bodyOut, τ₂),
             .letRec hgroup hbody, by
             intro p hp; rcases List.mem_append.mp hp with h | h
             · exact hav₁ p h
