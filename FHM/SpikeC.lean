@@ -168,3 +168,62 @@ theorem mutual_typeable :
       rfl (.arrow (.bvar rfl) (.bvar rfl))
 
 end SpikeC
+
+/-! ## SPIKE (de-risk): let-generalisation by elaboration to an annotated + closed `let`
+
+Validates the InferW elaboration design: an *unannotated* source `let` whose rhs
+uses a polymorphic variable should elaborate to an *annotated + closed* core `let`,
+which `TypeOfHM.letIn` (it opens the bound expression per-opening) accepts at full
+polymorphism — refuting the prior session's "must stay monomorphic" conclusion.
+
+  Source skeleton :  let g = λx. id x in g 5         (id : ∀a.a→a at de Bruijn 0)
+  Elaboration     :  let g : ∀a.a→a = λx. id[bvar0] x in g[Int] 5
+-/
+namespace SpikeLetInElab
+
+/-- `∀a. a → a` — both `id`'s scheme and `g`'s inferred scheme. -/
+def polyId : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
+
+/-- Elaborated `let g = λx. id x in g 5`: `g`'s rhs is stored scheme-relatively
+    (its generalised variable closed to `bvar 0`, so `id`'s tyArg is `[bvar 0]`). -/
+def elabTerm : Expr :=
+  .letIn (some polyId)
+    (.lambda none (.app (.var 1 [.bvar 0]) (.var 0 [])))   -- closed rhs: λx. id[bvar0] x
+    (.app (.var 0 [.prim .int]) (.primLit (.int 5)))        -- body: g[Int] 5
+
+/-- The closed rhs, opened at any `X`, types at `X → X` — i.e. at EVERY opening of
+    `g`'s scheme `∀a.a→a`. This is the cofinite premise of `TypeOfHM.letIn`. -/
+theorem elabRhs_opened_typeable (X : Nat) :
+    TypeOfHM ⟨[polyId], []⟩
+      ((Expr.lambda none (.app (.var 1 [.bvar 0]) (.var 0 []))).openTyVars [X])
+      ((Ty.fvar X).arrow (.fvar X)) := by
+  show TypeOfHM ⟨[polyId], []⟩
+    (.lambda none (.app (.var 1 [.fvar X]) (.var 0 [])))
+    ((Ty.fvar X).arrow (.fvar X))
+  refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfHM.app (argTy := .fvar X) ?_ ?_
+  · exact TypeOfHM.var (polyTy := polyId) rfl
+      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
+      rfl (.arrow (.bvar rfl) (.bvar rfl))
+  · exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+      (by intro t ht; cases ht) rfl .fvar
+
+/-- **De-risk headline.** The elaborated term types at `Int` with `g` generalised
+    to the full `∀a.a→a` — the let-polymorphism the prior session declared
+    impossible. Sound (the annotated `letIn` rule opens the closed rhs per-opening)
+    AND principal. -/
+theorem elabTerm_typeable :
+    TypeOfHM ⟨[polyId], []⟩ elabTerm (.prim .int) := by
+  refine TypeOfHM.letIn (M := polyId) (L := [])
+    ?_ (fun σ h => Option.some.inj h) ?_ rfl ?_
+  · show ContainsBvarsUpTo 1 (Ty.arrow (Ty.bvar 0) (Ty.bvar 0))
+    exact .arrow (.bvar (by omega)) (.bvar (by omega))
+  · intro Xs hfresh
+    obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
+    exact elabRhs_opened_typeable X
+  · refine TypeOfHM.app (argTy := .prim .int) ?_ TypeOfHM.primLitInt
+    exact TypeOfHM.var (polyTy := polyId) rfl
+      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim)
+      rfl (.arrow (.bvar rfl) (.bvar rfl))
+
+end SpikeLetInElab
