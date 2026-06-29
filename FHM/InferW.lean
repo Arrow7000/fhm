@@ -2258,6 +2258,977 @@ theorem HasSchemeVars.onSubst {L : List Nat} {ctx : Ctx} {rhs : Expr} {M : PolyT
   rw [Expr.instTy_fvar_eq_openTyVars, ← Subst.onTy_openVars hS hX_S]
   exact hfin
 
+/-! ### Free-var subset lemmas for the close-back operations (for `Infer.locality`)
+
+Closing scoped variables only ever maps `fvar`s to `bvar`s, never the reverse, so
+it never *introduces* a free type var. These let the locality lemma reduce the
+closed-back elaborated sub-terms to their pre-close free vars. -/
+
+/-- `Ty.closeOverFrom` introduces no new free vars. -/
+theorem Ty.freeVars_closeOverFrom_subset {d : Nat} {vars : List Nat} :
+    ∀ {τ : Ty} {g : Nat}, g ∈ (Ty.closeOverFrom d vars τ).freeVars → g ∈ τ.freeVars := by
+  intro τ
+  induction τ using Ty.rec_strong with
+  | prim p => intro g h; simp [Ty.closeOverFrom, Ty.freeVars] at h
+  | bvar i => intro g h; simp [Ty.closeOverFrom, Ty.freeVars] at h
+  | fvar n =>
+    intro g h
+    simp only [Ty.closeOverFrom] at h
+    cases hidx : vars.idxOf? n with
+    | none => rw [hidx] at h; exact h
+    | some i => rw [hidx] at h; simp [Ty.freeVars] at h
+  | arrow a b iha ihb =>
+    intro g h
+    simp only [Ty.closeOverFrom, Ty.freeVars, List.mem_dedup, List.mem_append] at h ⊢
+    rcases h with h | h
+    · exact .inl (iha h)
+    · exact .inr (ihb h)
+  | customTy nm tys ih =>
+    intro g h
+    simp only [Ty.closeOverFrom, Ty.freeVars, TyList.closeOverFrom_eq_map] at h
+    rw [mem_TyList_freeVars] at h
+    obtain ⟨t', ht', hgt'⟩ := h
+    obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+    rw [Ty.freeVars]
+    exact TyList.mem_freeVars_of_mem ht0 (ih t0 ht0 hgt')
+
+/-- `Expr.closeTyVarsAux` introduces no new free type vars (for `letRecAnn`-free
+    terms, the only ones `Infer` produces). -/
+theorem Expr.tyFreeVars_closeTyVarsAux_subset {Xs : List Nat} {g : Nat} :
+    ∀ (e : Expr) (d : Nat), e.NoRecAnn → g ∈ (e.closeTyVarsAux d Xs).tyFreeVars → g ∈ e.tyFreeVars := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro d _ h; simp [Expr.closeTyVarsAux, Expr.tyFreeVars] at h
+  | ctor nm => intro d _ h; simp [Expr.closeTyVarsAux, Expr.tyFreeVars] at h
+  | var n tyArgs =>
+    intro d _ h
+    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_flatMap] at h ⊢
+    obtain ⟨t, ht, hgt⟩ := h
+    obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+    exact ⟨t0, ht0, Ty.freeVars_closeOverFrom_subset hgt⟩
+  | lambda ann body ih =>
+    intro d hno h
+    simp only [Expr.NoRecAnn] at hno
+    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_append] at h ⊢
+    rcases h with h | h
+    · refine .inl ?_
+      cases ann with
+      | none => simp [Option.elim] at h
+      | some t => simp only [Option.map_some, Option.elim] at h ⊢; exact Ty.freeVars_closeOverFrom_subset h
+    · exact .inr (ih d hno h)
+  | app f arg ihf iharg =>
+    intro d hno h
+    simp only [Expr.NoRecAnn] at hno
+    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_append] at h ⊢
+    rcases h with h | h
+    · exact .inl (ihf d hno.1 h)
+    · exact .inr (iharg d hno.2 h)
+  | letIn ann rhs body ihrhs ihbody =>
+    intro d hno h
+    simp only [Expr.NoRecAnn] at hno
+    cases ann with
+    | none =>
+      simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, Option.elim, List.nil_append,
+        List.mem_append] at h ⊢
+      rcases h with h | h
+      · exact .inl (ihrhs d hno.1 h)
+      · exact .inr (ihbody d hno.2 h)
+    | some σ =>
+      obtain ⟨pc, sbody⟩ := σ
+      simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, Option.elim, List.mem_append] at h ⊢
+      rcases h with (h | h) | h
+      · exact .inl (.inl (Ty.freeVars_closeOverFrom_subset h))
+      · exact .inl (.inr (ihrhs (d + pc) hno.1 h))
+      · exact .inr (ihbody d hno.2 h)
+  | match_ scrut branches ihscrut ihbranches =>
+    intro d hno h
+    simp only [Expr.NoRecAnn] at hno
+    obtain ⟨hs, hbr⟩ := hno
+    rw [Expr.NoRecAnn.BranchList_iff] at hbr
+    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, BranchList.closeTyVarsAux_eq_map,
+      List.mem_append] at h ⊢
+    rcases h with h | h
+    · exact .inl (ihscrut d hs h)
+    · refine .inr ?_
+      induction branches with
+      | nil => simp [Expr.tyFreeVars.BranchList.tyFreeVars] at h
+      | cons hd tl ihtl =>
+        obtain ⟨p, b⟩ := hd
+        simp only [List.map_cons, Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at h ⊢
+        rcases h with h | h
+        · exact .inl (ihbranches p b (List.mem_cons_self ..) d (hbr p b (List.mem_cons_self ..)) h)
+        · exact .inr (ihtl (fun p' b' hm => ihbranches p' b' (List.mem_cons_of_mem _ hm))
+            (fun p' b' hm => hbr p' b' (List.mem_cons_of_mem _ hm)) h)
+  | letRec bindings body ih_bindings ih_body =>
+    intro d hno h
+    simp only [Expr.NoRecAnn] at hno
+    obtain ⟨hbs, hb⟩ := hno
+    rw [Expr.NoRecAnn.RecGroup_iff] at hbs
+    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, RecGroup.closeTyVarsAux_eq_map,
+      List.mem_append] at h ⊢
+    rcases h with h | h
+    · refine .inl ?_
+      induction bindings with
+      | nil => simp [Expr.tyFreeVars.RecGroup.tyFreeVars] at h
+      | cons hd tl ihtl =>
+        simp only [List.map_cons, Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at h ⊢
+        rcases h with h | h
+        · exact .inl (ih_bindings hd (List.mem_cons_self ..) d (hbs hd (List.mem_cons_self ..)) h)
+        · exact .inr (ihtl (fun e hm => ih_bindings e (List.mem_cons_of_mem _ hm))
+            (fun e hm => hbs e (List.mem_cons_of_mem _ hm)) h)
+    · exact .inr (ih_body d hb h)
+  | letRecAnn schemes bindings body _ _ => intro d hno _; exact (hno : (False : Prop)).elim
+
+/-- `Expr.closeTyVars` introduces no new free type vars (top level). -/
+theorem Expr.tyFreeVars_closeTyVars_subset {Xs : List Nat} {e : Expr} {g : Nat}
+    (hno : e.NoRecAnn) (h : g ∈ (e.closeTyVars Xs).tyFreeVars) : g ∈ e.tyFreeVars :=
+  Expr.tyFreeVars_closeTyVarsAux_subset e 0 hno h
+
+/-- All free type vars of `τ` are below `Φ`. The `fvar` analogue of
+    `ContainsBvarsUpTo`; clean to push through substitution. -/
+inductive Ty.BelowFvars (Φ : Nat) : Ty → Prop
+  | prim : Ty.BelowFvars Φ (.prim p)
+  | arrow : Ty.BelowFvars Φ a → Ty.BelowFvars Φ b → Ty.BelowFvars Φ (.arrow a b)
+  | bvar : Ty.BelowFvars Φ (.bvar i)
+  | fvar : i < Φ → Ty.BelowFvars Φ (.fvar i)
+  | customTy : (∀ t ∈ tys, Ty.BelowFvars Φ t) → Ty.BelowFvars Φ (.customTy nm tys)
+
+theorem Ty.BelowFvars.mono {Φ Φ' : Nat} {τ : Ty} (hle : Φ ≤ Φ')
+    (h : Ty.BelowFvars Φ τ) : Ty.BelowFvars Φ' τ := by
+  induction h with
+  | prim => exact .prim
+  | arrow _ _ iha ihb => exact .arrow iha ihb
+  | bvar => exact .bvar
+  | fvar hlt => exact .fvar (by omega)
+  | customTy _ ih => exact .customTy (fun t ht => ih t ht)
+
+/-- `substFvar` by a below-`Φ` type preserves below-`Φ`. -/
+theorem Ty.BelowFvars.substFvar {Φ Z : Nat} {U τ : Ty}
+    (hU : Ty.BelowFvars Φ U) (h : Ty.BelowFvars Φ τ) :
+    Ty.BelowFvars Φ (Ty.substFvar Z U τ) := by
+  induction τ using Ty.rec_strong with
+  | prim _ => exact .prim
+  | arrow a b iha ihb => cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | bvar i => simp only [Ty.substFvar]; exact .bvar
+  | fvar m =>
+    simp only [Ty.substFvar]
+    by_cases hm : m = Z
+    · simp only [if_pos hm]; exact hU
+    · simp only [if_neg hm]; cases h with | fvar hlt => exact .fvar hlt
+  | customTy nm tys ih =>
+    cases h with
+    | customTy hall =>
+      simp only [Ty.substFvar]
+      apply Ty.BelowFvars.customTy
+      rw [TyList.substFvar_eq_map]
+      intro t ht
+      obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+      exact ih t0 ht0 (hall t0 ht0)
+
+/-- A whole substitution with below-`Φ` replacements preserves below-`Φ`. -/
+theorem Subst.onTy_belowFvars {Φ : Nat} {S : Subst} (hS : ∀ p ∈ S, Ty.BelowFvars Φ p.2) :
+    ∀ {τ : Ty}, Ty.BelowFvars Φ τ → Ty.BelowFvars Φ (S.onTy τ) := by
+  induction S with
+  | nil => intro τ hτ; simpa using hτ
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    have hU : Ty.BelowFvars Φ U := hS (Z, U) (List.mem_cons_self ..)
+    have hS' : ∀ p ∈ S', Ty.BelowFvars Φ p.2 := fun p hp => hS p (List.mem_cons_of_mem _ hp)
+    intro τ hτ
+    rw [show ((Z, U) :: S') = [(Z, U)] ++ S' from rfl, Subst.onTy_append]
+    exact ih hS' (Ty.BelowFvars.substFvar hU hτ)
+
+/-- Bridge to the `freeVars` characterisation: a below-`Φ` type's free vars are
+    all `< Φ` (so any `w ≥ Φ` is fresh for it). -/
+theorem Ty.BelowFvars.mem_lt {Φ : Nat} {τ : Ty} (h : Ty.BelowFvars Φ τ) :
+    ∀ v ∈ τ.freeVars, v < Φ := by
+  induction h with
+  | prim => intro v hv; simp [Ty.freeVars] at hv
+  | bvar => intro v hv; simp [Ty.freeVars] at hv
+  | fvar hlt => intro v hv; simp only [Ty.freeVars, List.mem_singleton] at hv; exact hv ▸ hlt
+  | arrow _ _ iha ihb =>
+    intro v hv; simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
+    rcases hv with h | h
+    · exact iha v h
+    · exact ihb v h
+  | customTy hall ih =>
+    intro v hv
+    simp only [Ty.freeVars] at hv
+    by_contra hge
+    refine (TyList.not_mem_freeVars_iff.mpr ?_) hv
+    intro t ht hc
+    exact hge (ih t ht v hc)
+
+/-- Every scheme body of `ctx` has its free type vars below the frontier `Φ`
+    (the "new_tv" discipline: vars `Infer` allocates `≥ Φ` are genuinely fresh). -/
+def CtxBelow (Φ : Nat) (ctx : Ctx) : Prop := ∀ M ∈ ctx.env, Ty.BelowFvars Φ M.body
+
+/-- A whole substitution preserves context-below (with frontier growth). -/
+theorem Subst.onCtx_below {Φ Φ' : Nat} {S : Subst} {ctx : Ctx}
+    (hS : ∀ p ∈ S, Ty.BelowFvars Φ' p.2) (hle : Φ ≤ Φ') (hb : CtxBelow Φ ctx) :
+    CtxBelow Φ' (S.onCtx ctx) := by
+  intro M hM
+  simp only [Subst.onCtx, Subst.onEnv] at hM
+  obtain ⟨M0, hM0, rfl⟩ := List.mem_map.mp hM
+  exact Subst.onTy_belowFvars hS ((hb M0 hM0).mono hle)
+
+/-- Opening a below-`Φ` type with fresh names all `< Φ` stays below-`Φ`. -/
+theorem Ty.openVars_belowFvars {Φ : Nat} {Xs : List Nat} {τ : Ty}
+    (hτ : Ty.BelowFvars Φ τ) (hXs : ∀ x ∈ Xs, x < Φ) :
+    Ty.BelowFvars Φ (Ty.openVars Xs τ) := by
+  induction τ using Ty.rec_strong with
+  | prim p => exact .prim
+  | arrow a b iha ihb => cases hτ with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | bvar i =>
+    simp only [Ty.openVars, Ty.instantiate]
+    cases h : Xs[i]? with
+    | none => exact .bvar
+    | some x => exact .fvar (hXs x (List.mem_of_getElem? h))
+  | fvar n => cases hτ with | fvar hlt => exact .fvar hlt
+  | customTy nm tys ih =>
+    cases hτ with
+    | customTy hall =>
+      simp only [Ty.openVars_customTy]
+      apply Ty.BelowFvars.customTy
+      intro t' ht'
+      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+      exact ih t ht (hall t ht)
+
+/-- A type with no free variables is below any frontier. -/
+theorem Ty.BelowFvars.of_noFreeVars {Φ : Nat} {τ : Ty} (h : NoFreeVars τ) :
+    Ty.BelowFvars Φ τ := by
+  induction h with
+  | prim => exact .prim
+  | arrow _ _ iha ihb => exact .arrow iha ihb
+  | bvar => exact .bvar
+  | customTy _ ih => exact .customTy (fun t ht => ih t ht)
+
+/-- Converse of `Ty.BelowFvars.mem_lt`: all free vars `< Φ` gives `BelowFvars Φ`. -/
+theorem Ty.BelowFvars.of_freeVars_lt {Φ : Nat} {τ : Ty}
+    (h : ∀ v ∈ τ.freeVars, v < Φ) : Ty.BelowFvars Φ τ := by
+  induction τ using Ty.rec_strong with
+  | prim p => exact .prim
+  | bvar i => exact .bvar
+  | fvar n => exact .fvar (h n (by simp [Ty.freeVars]))
+  | arrow a b iha ihb =>
+    refine .arrow (iha fun v hv => h v ?_) (ihb fun v hv => h v ?_)
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hv
+    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hv
+  | customTy nm tys ih =>
+    refine .customTy fun t ht => ih t ht (fun v hv => h v ?_)
+    simp only [Ty.freeVars]
+    exact TyList.mem_freeVars_of_mem ht hv
+
+/-- Opening with below-`Φ` args preserves below-`Φ`-ness. -/
+theorem Ty.openWith_belowFvars {Φ : Nat} {Vs : List Ty} {X : Ty}
+    (hVs : ∀ v ∈ Vs, Ty.BelowFvars Φ v) (hX : Ty.BelowFvars Φ X) :
+    Ty.BelowFvars Φ (Ty.openWith Vs X) := by
+  induction X using Ty.rec_strong with
+  | prim p => exact .prim
+  | fvar n => cases hX with | fvar hlt => exact .fvar hlt
+  | bvar i =>
+    simp only [Ty.openWith, Ty.instantiate]
+    cases h : Vs[i]? with
+    | none => simp only [Option.getD_none]; exact .bvar
+    | some v => simp only [Option.getD_some]; exact hVs v (List.mem_of_getElem? h)
+  | arrow a b iha ihb => cases hX with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | customTy nm tys ih =>
+    cases hX with
+    | customTy hall =>
+      simp only [Ty.openWith, Ty.instantiate, TyList.instantiate_eq_map]
+      exact .customTy (fun t' ht' => by
+        obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'; exact ih t ht (hall t ht))
+
+/-- A `match_` branch's pattern bindings stay below `Φ` (ctor contents are closed,
+    so opening with below-`Φ` type args yields below-`Φ` bindings). -/
+theorem branchBindings_below {Φ : Nat} {ctorr : Ctor} {ta : List Ty} {ctx : Ctx}
+    (hctx : CtxBelow Φ ctx) (hta : ∀ t ∈ ta, Ty.BelowFvars Φ t) :
+    CtxBelow Φ { ctx with
+      env := (ctorr.contents.map (Ty.openWith ta)).map PolyTy.mkTrivial ++ ctx.env } := by
+  intro M hM
+  rw [List.mem_append] at hM
+  rcases hM with hM | hM
+  · obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hM
+    obtain ⟨c, hc, rfl⟩ := List.mem_map.mp ht
+    show Ty.BelowFvars Φ (Ty.openWith ta c)
+    exact Ty.openWith_belowFvars hta (Ty.BelowFvars.of_noFreeVars (ctorr.closed c hc))
+  · exact hctx M hM
+
+mutual
+
+/-- Unifying two below-`Φ` monotypes yields a below-`Φ` substitution. -/
+theorem UnifyRel.belowFvars {Φ : Nat} : {a b : Ty} → {S : Subst} → UnifyRel a b S →
+    Ty.BelowFvars Φ a → Ty.BelowFvars Φ b → ∀ p ∈ S, Ty.BelowFvars Φ p.2
+  | _, _, _, .prim, _, _ => by simp
+  | _, _, _, .fvarRefl, _, _ => by simp
+  | _, _, _, .fvarL _ _, _, hb => by
+    intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hb
+  | _, _, _, .fvarR _ _, ha, _ => by
+    intro p hp; rw [List.mem_singleton] at hp; subst hp; exact ha
+  | _, _, _, .arrow h₁ h₂, ha, hb => by
+    cases ha with | arrow ha_a ha_b => cases hb with | arrow hb_c hb_d =>
+    have h1lc := UnifyRel.belowFvars h₁ ha_a hb_c
+    have h2lc := UnifyRel.belowFvars h₂ (Subst.onTy_belowFvars h1lc ha_b) (Subst.onTy_belowFvars h1lc hb_d)
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact h1lc p hp
+    · exact h2lc p hp
+  | _, _, _, .customTy hl, ha, hb => by
+    cases ha with | customTy ha_all => cases hb with | customTy hb_all =>
+    exact UnifyRelList.belowFvars hl ha_all hb_all
+
+/-- List version: unifying two below-`Φ` type lists yields a below-`Φ` substitution. -/
+theorem UnifyRelList.belowFvars {Φ : Nat} : {ts₁ ts₂ : List Ty} → {S : Subst} → UnifyRelList ts₁ ts₂ S →
+    (∀ t ∈ ts₁, Ty.BelowFvars Φ t) → (∀ t ∈ ts₂, Ty.BelowFvars Φ t) → ∀ p ∈ S, Ty.BelowFvars Φ p.2
+  | _, _, _, .nil, _, _ => by simp
+  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht, hts₁, hts₂ => by
+    have ht1 : Ty.BelowFvars Φ t₁ := hts₁ t₁ (List.mem_cons_self ..)
+    have ht2 : Ty.BelowFvars Φ t₂ := hts₂ t₂ (List.mem_cons_self ..)
+    have h1lc := UnifyRel.belowFvars h₁ ht1 ht2
+    have hmap₁ : ∀ t ∈ ts₁.map S₁.onTy, Ty.BelowFvars Φ t := by
+      intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
+      exact Subst.onTy_belowFvars h1lc (hts₁ t0 (List.mem_cons_of_mem _ ht0))
+    have hmap₂ : ∀ t ∈ ts₂.map S₁.onTy, Ty.BelowFvars Φ t := by
+      intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
+      exact Subst.onTy_belowFvars h1lc (hts₂ t0 (List.mem_cons_of_mem _ ht0))
+    have h2lc := UnifyRelList.belowFvars ht hmap₁ hmap₂
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact h1lc p hp
+    · exact h2lc p hp
+
+end
+
+/-- Closing over `gs` only removes free vars, so it preserves below-`Φ`. -/
+theorem Ty.BelowFvars.closeOver {Φ : Nat} {gs : List Nat} :
+    ∀ {τ : Ty}, Ty.BelowFvars Φ τ → Ty.BelowFvars Φ (Ty.closeOver gs τ) := by
+  intro τ h
+  induction τ using Ty.rec_strong with
+  | prim p => exact .prim
+  | bvar i => exact .bvar
+  | fvar n =>
+    rw [Ty.closeOver.eq_5]
+    cases h_idx : gs.idxOf? n with
+    | none => cases h with | fvar hlt => exact .fvar hlt
+    | some i => exact .bvar
+  | arrow a b iha ihb => cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | customTy nm tys ih =>
+    cases h with
+    | customTy hall =>
+      simp only [Ty.closeOver, TyList.closeOver_eq_map]
+      apply Ty.BelowFvars.customTy
+      intro t' ht'; obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+      exact ih t ht (hall t ht)
+
+/-! Regularity: any declaratively-typed term has a locally-closed type. (Each
+    rule produces an LC type; `var`/`ctor` via `InstantiatesBy.preserves_bvars`
+    on LC `tyArgs`, `lambda` via the LC param premise, the rest by induction.) -/
+mutual
+theorem TypeOfElabHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
+    TypeOfElabHM ctx e τ → τ.IsLC
+  | _, _, _, .primLitUnit => .prim
+  | _, _, _, .primLitInt => .prim
+  | _, _, _, .primLitNat => .prim
+  -- | _, _, _, .primLitBool => .prim
+  | _, _, _, .primLitStr => .prim
+  | _, _, _, .lambda hpc _ _ hbody => .arrow hpc (TypeOfElabHM.regular hbody)
+  | _, _, _, .app hf _ => by
+    have := TypeOfElabHM.regular hf; cases this with | arrow _ hret => exact hret
+  | _, _, _, .letIn _ _ _ _ hbody => TypeOfElabHM.regular hbody
+  | _, _, _, .var _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
+  | _, _, _, .ctor _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
+  | _, _, _, @TypeOfElabHM.match_ _ _ _ branches _ hscrut hne hbrs => by
+    obtain ⟨hd, tl, rfl⟩ := List.exists_cons_of_ne_nil hne
+    exact TypeOfElabMatchBranch.regular (hbrs hd (List.mem_cons_self ..))
+  | _, _, _, .letRec _ _ _ _ _ _ _ hbody => TypeOfElabHM.regular hbody
+
+theorem TypeOfElabMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} →
+    {scrutTy : Ty} → {rt : Ty} →
+    TypeOfElabMatchBranch ctx br scrutTy rt → rt.IsLC
+  | _, _, _, _, .mk _ _ _ _ _ _ _ hbody => TypeOfElabHM.regular hbody
+  | _, _, _, _, .wildcard hbody => TypeOfElabHM.regular hbody
+end
+
+/-! Frontier invariant (`Infer.belowFvars`): from a context whose schemes are below
+    the input frontier `Φ`, `Infer` yields a type and a substitution whose
+    replacements are all below the *output* frontier `Φ'` (so `mono` everything up
+    to `Φ'`). (Named `belowFvars` rather than `below`, since `Infer.below` is
+    reserved by Lean's auto-generated recursor for the `Infer` inductive.) -/
+mutual
+theorem Infer.belowFvars {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
+    CtxBelow Φ ctx → (∀ y ∈ e.tyFreeVars, y < Φ) →
+    Ty.BelowFvars Φ' τ ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
+  cases h with
+  | primLitUnit => intro _ _; exact ⟨.prim, by simp⟩
+  | primLitInt => intro _ _; exact ⟨.prim, by simp⟩
+  | primLitNat => intro _ _; exact ⟨.prim, by simp⟩
+  -- | primLitBool => intro _ _; exact ⟨.prim, by simp⟩
+  | primLitStr => intro _ _; exact ⟨.prim, by simp⟩
+  | lambda hseed hbody =>
+    intro hctx htfv
+    cases hseed with
+    | none =>
+      simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at htfv
+      obtain ⟨hb_τ, hb_s⟩ := Infer.belowFvars hbody (by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact .fvar (by omega)
+        · exact (hctx M hM).mono (by omega))
+        (fun y hy => by have := htfv y hy; omega)
+      have hfl := Infer.frontier_le hbody
+      exact ⟨.arrow (Subst.onTy_belowFvars hb_s (.fvar (by omega))) hb_τ, hb_s⟩
+    | some _ hcl =>
+      expose_names
+      simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
+      have hparamTy : Ty.BelowFvars Φ paramTy :=
+        Ty.BelowFvars.of_freeVars_lt (fun v hv => htfv v (.inl hv))
+      obtain ⟨hb_τ, hb_s⟩ := Infer.belowFvars hbody (by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact hparamTy
+        · exact hctx M hM)
+        (fun y hy => htfv y (.inr hy))
+      exact ⟨.arrow (Subst.onTy_belowFvars hb_s (hparamTy.mono (Infer.frontier_le hbody))) hb_τ, hb_s⟩
+  | app hf harg huni =>
+    intro hctx htfv
+    simp only [Expr.tyFreeVars, List.mem_append] at htfv
+    obtain ⟨hf_τ, hf_s⟩ := Infer.belowFvars hf hctx (fun y hy => htfv y (.inl hy))
+    have hctx1 := Subst.onCtx_below hf_s (Infer.frontier_le hf) hctx
+    obtain ⟨harg_τ, harg_s⟩ := Infer.belowFvars harg hctx1
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (Infer.frontier_le hf))
+    have h1 := Infer.frontier_le hf
+    have h2 := Infer.frontier_le harg
+    refine ⟨Subst.onTy_belowFvars
+        (UnifyRel.belowFvars huni
+          (Subst.onTy_belowFvars (fun p hp => (harg_s p hp).mono (by omega)) (hf_τ.mono (by omega)))
+          (.arrow (harg_τ.mono (by omega)) (.fvar (by omega))))
+        (.fvar (by omega)), ?_⟩
+    intro p hp; rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · exact (hf_s p hp).mono (by omega)
+    · exact (harg_s p hp).mono (by omega)
+    · exact UnifyRel.belowFvars huni
+        (Subst.onTy_belowFvars (fun p hp => (harg_s p hp).mono (by omega)) (hf_τ.mono (by omega)))
+        (.arrow (harg_τ.mono (by omega)) (.fvar (by omega))) p hp
+  | var hlook =>
+    intro hctx _
+    refine ⟨?_, by simp⟩
+    exact Ty.openVars_belowFvars ((hctx _ (List.mem_of_getElem? hlook)).mono (by omega))
+      (fun x hx => by have := freshVars_lt x hx; omega)
+  | ctor hlook =>
+    intro _ _
+    refine ⟨?_, by simp⟩
+    refine Ty.openVars_belowFvars
+      (Ty.BelowFvars.of_noFreeVars (Ctor.toTy_body_noFreeVars _))
+      (fun x hx => by have := freshVars_lt x hx; omega)
+  | letIn hrhs hbody =>
+    intro hctx htfv
+    simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append] at htfv
+    obtain ⟨hr_τ, hr_s⟩ := Infer.belowFvars hrhs hctx (fun y hy => htfv y (.inl hy))
+    have hctx1 := Subst.onCtx_below hr_s (Infer.frontier_le hrhs) hctx
+    obtain ⟨hb_τ, hb_s⟩ := Infer.belowFvars hbody (by
+      intro M hM
+      rcases List.mem_cons.mp hM with rfl | hM
+      · exact hr_τ.closeOver
+      · exact hctx1 M hM)
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (Infer.frontier_le hrhs))
+    refine ⟨hb_τ, ?_⟩
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact (hr_s p hp).mono (Infer.frontier_le hbody)
+    · exact hb_s p hp
+  | letInAnn hσwf hΦN hrhs huni _hesc1 _hesc2 hbody =>
+    intro hctx htfv
+    expose_names
+    simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
+    have hrle := Infer.frontier_le hrhs
+    have hctx_pc : CtxBelow (N + σ.paramCount) ctx := fun M hM => (hctx M hM).mono (by omega)
+    have hσbody : Ty.BelowFvars Φ σ.body :=
+      Ty.BelowFvars.of_freeVars_lt (fun v hv => htfv v (.inl (.inl hv)))
+    obtain ⟨hr_τ, hr_s⟩ := Infer.belowFvars hrhs hctx_pc (fun y hy => by
+      rcases Expr.tyFreeVars_openTyVars hy with h | h
+      · have := htfv y (.inl (.inr h)); omega
+      · have := freshVars_lt y h; omega)
+    have hσopen : Ty.BelowFvars Φ₁
+        (σ.openVars (freshVars N σ.paramCount)) :=
+      Ty.openVars_belowFvars (hσbody.mono (by omega))
+        (fun x hx => by have := freshVars_lt x hx; omega)
+    have hSchk : ∀ p ∈ Schk, Ty.BelowFvars Φ₁ p.2 :=
+      UnifyRel.belowFvars huni hr_τ hσopen
+    have hctx1 : CtxBelow Φ₁ (Schk.onCtx (S₁.onCtx ctx)) :=
+      Subst.onCtx_below hSchk (le_refl _) (Subst.onCtx_below hr_s hrle hctx_pc)
+    obtain ⟨hb_τ, hb_s⟩ := Infer.belowFvars hbody (by
+      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+      · exact hσbody.mono (by omega)
+      · exact hctx1 M hM)
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (by omega))
+    have hble := Infer.frontier_le hbody
+    refine ⟨hb_τ, ?_⟩
+    intro p hp; rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · exact (hr_s p hp).mono (by omega)
+    · exact (hSchk p hp).mono (by omega)
+    · exact hb_s p hp
+  | match_ hscrut hne hbr =>
+    intro hctx htfv
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append] at htfv
+    obtain ⟨hτs, hS₁⟩ := Infer.belowFvars hscrut hctx (fun y hy => htfv y (.inl hy))
+    have hle1 := Infer.frontier_le hscrut
+    have hbrctx : CtxBelow (Φ₁ + 1) (S₁.onCtx ctx) :=
+      Subst.onCtx_below (fun p hp => (hS₁ p hp).mono (by omega)) (by omega) hctx
+    obtain ⟨hρ_below, hS₂⟩ := InferBranches.belowFvars hbr
+      hbrctx
+      (hτs.mono (by omega))
+      (.fvar (by omega))
+      (fun y hy => by have := htfv y (.inr hy); omega)
+    refine ⟨hρ_below, ?_⟩
+    have hbrle := InferBranches.frontier_le hbr
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact (hS₁ p hp).mono (by omega)
+    · exact hS₂ p hp
+  | letRec hgroup hbody =>
+    intro hctx htfv
+    simp only [Expr.tyFreeVars, List.mem_append] at htfv
+    have hgle := InferRecGroup.frontier_le hgroup
+    have hS₁ := InferRecGroup.belowFvars hgroup
+      (by
+        intro M hM; rcases List.mem_append.mp hM with hM | hM
+        · obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hM
+          exact .fvar (by have := freshVars_lt x hx; omega)
+        · exact (hctx M hM).mono (by omega))
+      (by
+        intro β hβ; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hβ
+        exact .fvar (by have := freshVars_lt x hx; omega))
+      (fun y hy => lt_of_lt_of_le (htfv y (.inl hy)) (by omega))
+    obtain ⟨hb_τ, hb_s⟩ := Infer.belowFvars hbody
+      (by
+        intro M hM; rcases List.mem_append.mp hM with hM | hM
+        · simp only [genGroupSchemes] at hM
+          obtain ⟨τ, hτ, rfl⟩ := List.mem_map.mp hM
+          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hτ
+          simp only [PolyTy.genGroup]
+          exact (Subst.onTy_belowFvars hS₁ (.fvar (by have := freshVars_lt x hx; omega))).closeOver
+        · exact (Subst.onCtx_below hS₁ (by omega) hctx) M hM)
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (by omega))
+    have hble := Infer.frontier_le hbody
+    refine ⟨hb_τ, ?_⟩
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · exact (hS₁ p hp).mono hble
+    · exact hb_s p hp
+termination_by e.size
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
+    (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
+    (htfv : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y < Φ) :
+    Ty.BelowFvars Φ' (S.onTy ρ) ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
+  cases h with
+  | nil => exact ⟨by simpa using hρ, by simp⟩
+  | cons hlook hn huni0 hbody huni hrest =>
+    expose_names
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
+    have hS₀ : ∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2 :=
+      UnifyRel.belowFvars huni0 (hscrutTy.mono (by omega))
+        (.customTy (fun t ht => by
+          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+          exact .fvar (by have := freshVars_lt x hx; omega)))
+    obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody
+      (branchBindings_below (ctorr := ctor)
+        (ta := ((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy)
+        (Subst.onCtx_below hS₀ (by omega) hctx)
+        (fun t ht => by
+          obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
+          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hv
+          exact Subst.onTy_belowFvars hS₀ (.fvar (by have := freshVars_lt x hx; omega))))
+      (fun y hy => by have := htfv y (.inl hy); omega)
+    have hle0 : Φ + ctor.paramCount ≤ Φ₁ := Infer.frontier_le hbody
+    have hS₀ρ : Ty.BelowFvars Φ₁ (S₀.onTy ρ) :=
+      (Subst.onTy_belowFvars hS₀ (hρ.mono (by omega))).mono hle0
+    have hS₀scrut : Ty.BelowFvars Φ₁ (S₀.onTy scrutTy) :=
+      (Subst.onTy_belowFvars hS₀ (hscrutTy.mono (by omega))).mono hle0
+    have hS₁ρ := Subst.onTy_belowFvars hS₁ hS₀ρ
+    have hS₂ := UnifyRel.belowFvars huni hτb hS₁ρ
+    have hctx1 : CtxBelow Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx))) :=
+      Subst.onCtx_below hS₂ (le_refl _)
+        (Subst.onCtx_below hS₁ (le_refl _)
+          (Subst.onCtx_below (fun p hp => (hS₀ p hp).mono hle0) (by omega) hctx))
+    obtain ⟨hres, hS₃⟩ := InferBranches.belowFvars hrest hctx1
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀scrut))
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀ρ))
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (by omega))
+    have hbrle := InferBranches.frontier_le hrest
+    refine ⟨?_, ?_⟩
+    · rw [Subst.onTy_append, Subst.onTy_append, Subst.onTy_append]; exact hres
+    · intro p hp; rw [List.mem_append, List.mem_append, List.mem_append] at hp
+      rcases hp with ((hp | hp) | hp) | hp
+      · exact (hS₀ p hp).mono (by omega)
+      · exact (hS₁ p hp).mono (by omega)
+      · exact (hS₂ p hp).mono (by omega)
+      · exact hS₃ p hp
+  | consWild hbody huni hrest =>
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
+    obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody hctx
+      (fun y hy => htfv y (.inl hy))
+    have hle1 := Infer.frontier_le hbody
+    have hS₁ρ := Subst.onTy_belowFvars hS₁ (hρ.mono hle1)
+    have hS₂ := UnifyRel.belowFvars huni hτb hS₁ρ
+    have hctx1 := Subst.onCtx_below hS₂ (le_refl _) (Subst.onCtx_below hS₁ hle1 hctx)
+    obtain ⟨hres, hS₃⟩ := InferBranches.belowFvars hrest hctx1
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hscrutTy.mono hle1)))
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hρ.mono hle1)))
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) hle1)
+    have hbrle := InferBranches.frontier_le hrest
+    refine ⟨?_, ?_⟩
+    · rw [Subst.onTy_append, Subst.onTy_append]; exact hres
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact (hS₁ p hp).mono (by omega)
+      · exact (hS₂ p hp).mono (by omega)
+      · exact hS₃ p hp
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
+theorem InferRecGroup.belowFvars {Φ ctx bindings targets Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut)
+    (hctx : CtxBelow Φ ctx) (htargets : ∀ β ∈ targets, Ty.BelowFvars Φ β)
+    (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
+    (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
+  cases h with
+  | nil => simp
+  | cons he huni hrest =>
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
+    obtain ⟨hτ, hS₁⟩ := Infer.belowFvars he hctx (fun y hy => htfv y (.inl hy))
+    have hle1 := Infer.frontier_le he
+    have hS₂ := UnifyRel.belowFvars huni hτ
+      (Subst.onTy_belowFvars hS₁ ((htargets _ (List.mem_cons_self ..)).mono hle1))
+    have hbrle := InferRecGroup.frontier_le hrest
+    have hS₃ := InferRecGroup.belowFvars hrest
+      (Subst.onCtx_below hS₂ (le_refl _) (Subst.onCtx_below hS₁ hle1 hctx))
+      (by
+        intro β' hβ'
+        obtain ⟨b, hb, rfl⟩ := List.mem_map.mp hβ'
+        exact Subst.onTy_belowFvars hS₂
+          (Subst.onTy_belowFvars hS₁ ((htargets b (List.mem_cons_of_mem _ hb)).mono hle1)))
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) hle1)
+    intro p hp; rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · exact (hS₁ p hp).mono hbrle
+    · exact (hS₂ p hp).mono hbrle
+    · exact hS₃ p hp
+termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
+end
+
+
+/-! ### M2: substitution domain bound + elaborated-output free-var locality
+
+`Infer.dom_below` extends the frontier discipline to the substitution **domain**
+(`∀ p ∈ S, p.1 < Φ'`, via `UnifyRel.dom_mem` + `Infer.belowFvars`).
+`Infer.eOut_avoid` is the *locality* of the elaborated output (avoid form): a
+variable that is below the input frontier and avoids both the context env and the
+skeleton's annotation free vars cannot appear in `eOut`/`τ`/the substitution
+range. Together with idempotency (`Infer.eliminates`, M3) these give the prefix-fix
+corollary (M4) that the honest soundness needs. -/
+
+mutual
+theorem Infer.dom_below {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
+    CtxBelow Φ ctx → (∀ y ∈ e.tyFreeVars, y < Φ) → (∀ p ∈ S, p.1 < Φ') := by
+  cases h with
+  | primLitUnit => intro _ _; simp
+  | primLitInt => intro _ _; simp
+  | primLitNat => intro _ _; simp
+  | primLitStr => intro _ _; simp
+  | lambda hseed hbody =>
+    intro hctx htfv
+    cases hseed with
+    | none =>
+      simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at htfv
+      exact Infer.dom_below hbody (by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact .fvar (by omega)
+        · exact (hctx M hM).mono (by omega))
+        (fun y hy => by have := htfv y hy; omega)
+    | some _ hcl =>
+      expose_names
+      simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
+      have hparamTy : Ty.BelowFvars Φ paramTy :=
+        Ty.BelowFvars.of_freeVars_lt (fun v hv => htfv v (.inl hv))
+      exact Infer.dom_below hbody (by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact hparamTy
+        · exact hctx M hM)
+        (fun y hy => htfv y (.inr hy))
+  | app hf harg huni =>
+    intro hctx htfv
+    simp only [Expr.tyFreeVars, List.mem_append] at htfv
+    have hfle := Infer.frontier_le hf
+    have hargle := Infer.frontier_le harg
+    obtain ⟨hf_τ, hf_s⟩ := Infer.belowFvars hf hctx (fun y hy => htfv y (.inl hy))
+    have hf_dom := Infer.dom_below hf hctx (fun y hy => htfv y (.inl hy))
+    have hctx1 := Subst.onCtx_below hf_s hfle hctx
+    obtain ⟨harg_τ, harg_s⟩ := Infer.belowFvars harg hctx1
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) hfle)
+    have harg_dom := Infer.dom_below harg hctx1
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) hfle)
+    intro p hp
+    rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · have := hf_dom p hp; omega
+    · have := harg_dom p hp; omega
+    · rcases UnifyRel.dom_mem huni p hp with h | h
+      · have hb := Subst.onTy_belowFvars harg_s (hf_τ.mono hargle)
+        have := hb.mem_lt p.1 h; omega
+      · simp only [Ty.freeVars, List.mem_dedup, List.mem_append, List.mem_singleton] at h
+        rcases h with h | h
+        · have := harg_τ.mem_lt p.1 h; omega
+        · omega
+  | var => intro _ _; simp
+  | ctor => intro _ _; simp
+  | letIn hrhs hbody =>
+    intro hctx htfv
+    simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append] at htfv
+    have hrle := Infer.frontier_le hrhs
+    obtain ⟨hr_τ, hr_s⟩ := Infer.belowFvars hrhs hctx (fun y hy => htfv y (.inl hy))
+    have hr_dom := Infer.dom_below hrhs hctx (fun y hy => htfv y (.inl hy))
+    have hctx1 := Subst.onCtx_below hr_s hrle hctx
+    have hb_dom := Infer.dom_below hbody (by
+      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+      · exact hr_τ.closeOver
+      · exact hctx1 M hM)
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) hrle)
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · have := hr_dom p hp; have := Infer.frontier_le hbody; omega
+    · exact hb_dom p hp
+  | letInAnn hσwf hΦN hrhs huni _hesc1 _hesc2 hbody =>
+    intro hctx htfv
+    expose_names
+    simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
+    have hrle := Infer.frontier_le hrhs
+    have hctx_pc : CtxBelow (N + σ.paramCount) ctx := fun M hM => (hctx M hM).mono (by omega)
+    have hσbody : Ty.BelowFvars Φ σ.body :=
+      Ty.BelowFvars.of_freeVars_lt (fun v hv => htfv v (.inl (.inl hv)))
+    obtain ⟨hr_τ, hr_s⟩ := Infer.belowFvars hrhs hctx_pc (fun y hy => by
+      rcases Expr.tyFreeVars_openTyVars hy with h | h
+      · have := htfv y (.inl (.inr h)); omega
+      · have := freshVars_lt y h; omega)
+    have hr_dom := Infer.dom_below hrhs hctx_pc (fun y hy => by
+      rcases Expr.tyFreeVars_openTyVars hy with h | h
+      · have := htfv y (.inl (.inr h)); omega
+      · have := freshVars_lt y h; omega)
+    have hσopen : Ty.BelowFvars Φ₁ (σ.openVars (freshVars N σ.paramCount)) :=
+      Ty.openVars_belowFvars (hσbody.mono (by omega))
+        (fun x hx => by have := freshVars_lt x hx; omega)
+    have hSchk : ∀ p ∈ Schk, Ty.BelowFvars Φ₁ p.2 := UnifyRel.belowFvars huni hr_τ hσopen
+    have hctx1 : CtxBelow Φ₁ (Schk.onCtx (S₁.onCtx ctx)) :=
+      Subst.onCtx_below hSchk (le_refl _) (Subst.onCtx_below hr_s hrle hctx_pc)
+    have hb_dom := Infer.dom_below hbody (by
+      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+      · exact hσbody.mono (by omega)
+      · exact hctx1 M hM)
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (by omega))
+    have hble := Infer.frontier_le hbody
+    intro p hp; rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · have := hr_dom p hp; omega
+    · rcases UnifyRel.dom_mem huni p hp with h | h
+      · have := hr_τ.mem_lt p.1 h; omega
+      · have := hσopen.mem_lt p.1 h; omega
+    · exact hb_dom p hp
+  | match_ hscrut hne hbr =>
+    intro hctx htfv
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append] at htfv
+    have hle1 := Infer.frontier_le hscrut
+    obtain ⟨hτs, hS₁⟩ := Infer.belowFvars hscrut hctx (fun y hy => htfv y (.inl hy))
+    have hsc_dom := Infer.dom_below hscrut hctx (fun y hy => htfv y (.inl hy))
+    have hbrctx : CtxBelow (Φ₁ + 1) (S₁.onCtx ctx) :=
+      Subst.onCtx_below (fun p hp => (hS₁ p hp).mono (by omega)) (by omega) hctx
+    have hbr_dom := InferBranches.dom_below hbr hbrctx (hτs.mono (by omega)) (.fvar (by omega))
+      (fun y hy => by have := htfv y (.inr hy); omega)
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · have := hsc_dom p hp; have := InferBranches.frontier_le hbr; omega
+    · exact hbr_dom p hp
+  | letRec hgroup hbody =>
+    intro hctx htfv
+    simp only [Expr.tyFreeVars, List.mem_append] at htfv
+    have hgle := InferRecGroup.frontier_le hgroup
+    have hg_dom := InferRecGroup.dom_below hgroup
+      (by intro M hM; rcases List.mem_append.mp hM with hM | hM
+          · obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hM
+            exact .fvar (by have := freshVars_lt x hx; omega)
+          · exact (hctx M hM).mono (by omega))
+      (by intro β hβ; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hβ
+          exact .fvar (by have := freshVars_lt x hx; omega))
+      (fun y hy => lt_of_lt_of_le (htfv y (.inl hy)) (by omega))
+    have hS₁ := InferRecGroup.belowFvars hgroup
+      (by intro M hM; rcases List.mem_append.mp hM with hM | hM
+          · obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hM
+            exact .fvar (by have := freshVars_lt x hx; omega)
+          · exact (hctx M hM).mono (by omega))
+      (by intro β hβ; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hβ
+          exact .fvar (by have := freshVars_lt x hx; omega))
+      (fun y hy => lt_of_lt_of_le (htfv y (.inl hy)) (by omega))
+    have hb_dom := Infer.dom_below hbody (by
+      intro M hM; rcases List.mem_append.mp hM with hM | hM
+      · simp only [genGroupSchemes] at hM
+        obtain ⟨τ, hτ, rfl⟩ := List.mem_map.mp hM
+        obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hτ
+        simp only [PolyTy.genGroup]
+        exact (Subst.onTy_belowFvars hS₁ (.fvar (by have := freshVars_lt x hx; omega))).closeOver
+      · exact (Subst.onCtx_below hS₁ (by omega) hctx) M hM)
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (by omega))
+    have hble := Infer.frontier_le hbody
+    intro p hp; rw [List.mem_append] at hp
+    rcases hp with hp | hp
+    · have := hg_dom p hp; omega
+    · exact hb_dom p hp
+termination_by e.size
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+theorem InferBranches.dom_below {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
+    (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
+    (htfv : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y < Φ) :
+    (∀ p ∈ S, p.1 < Φ') := by
+  cases h with
+  | nil => simp
+  | cons hlook hn huni0 hbody huni hrest =>
+    expose_names
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
+    have hS₀ : ∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2 :=
+      UnifyRel.belowFvars huni0 (hscrutTy.mono (by omega))
+        (.customTy (fun t ht => by
+          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+          exact .fvar (by have := freshVars_lt x hx; omega)))
+    have hS₀dom : ∀ p ∈ S₀, p.1 < Φ + ctor.paramCount := by
+      intro p hp
+      rcases UnifyRel.dom_mem huni0 p hp with h | h
+      · have := (hscrutTy.mono (show Φ ≤ Φ + ctor.paramCount by omega)).mem_lt p.1 h; omega
+      · simp only [Ty.freeVars] at h
+        rw [mem_TyList_freeVars] at h
+        obtain ⟨t, ht, hgt⟩ := h
+        obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+        simp only [Ty.freeVars, List.mem_singleton] at hgt
+        have := freshVars_lt x hx; omega
+    have hbctx := branchBindings_below (ctorr := ctor)
+        (ta := ((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy)
+        (Subst.onCtx_below hS₀ (by omega) hctx)
+        (fun t ht => by
+          obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
+          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hv
+          exact Subst.onTy_belowFvars hS₀ (.fvar (by have := freshVars_lt x hx; omega)))
+    obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody hbctx (fun y hy => by have := htfv y (.inl hy); omega)
+    have hS₁dom := Infer.dom_below hbody hbctx (fun y hy => by have := htfv y (.inl hy); omega)
+    have hle0 : Φ + ctor.paramCount ≤ Φ₁ := Infer.frontier_le hbody
+    have hS₀ρ : Ty.BelowFvars Φ₁ (S₀.onTy ρ) :=
+      (Subst.onTy_belowFvars hS₀ (hρ.mono (by omega))).mono hle0
+    have hS₀scrut : Ty.BelowFvars Φ₁ (S₀.onTy scrutTy) :=
+      (Subst.onTy_belowFvars hS₀ (hscrutTy.mono (by omega))).mono hle0
+    have hS₁ρ := Subst.onTy_belowFvars hS₁ hS₀ρ
+    have hS₂ := UnifyRel.belowFvars huni hτb hS₁ρ
+    have hS₂dom : ∀ p ∈ S₂, p.1 < Φ₁ := by
+      intro p hp
+      rcases UnifyRel.dom_mem huni p hp with h | h
+      · have := hτb.mem_lt p.1 h; omega
+      · have := hS₁ρ.mem_lt p.1 h; omega
+    have hctx1 : CtxBelow Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx))) :=
+      Subst.onCtx_below hS₂ (le_refl _)
+        (Subst.onCtx_below hS₁ (le_refl _)
+          (Subst.onCtx_below (fun p hp => (hS₀ p hp).mono hle0) (by omega) hctx))
+    have hrest_dom := InferBranches.dom_below hrest hctx1
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀scrut))
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀ρ))
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (by omega))
+    have hbrle := InferBranches.frontier_le hrest
+    intro p hp; rw [List.mem_append, List.mem_append, List.mem_append] at hp
+    rcases hp with ((hp | hp) | hp) | hp
+    · have := hS₀dom p hp; omega
+    · have := hS₁dom p hp; omega
+    · have := hS₂dom p hp; omega
+    · exact hrest_dom p hp
+  | consWild hbody huni hrest =>
+    expose_names
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
+    have hle1 := Infer.frontier_le hbody
+    obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody hctx (fun y hy => htfv y (.inl hy))
+    have hS₁dom := Infer.dom_below hbody hctx (fun y hy => htfv y (.inl hy))
+    have hS₁ρ := Subst.onTy_belowFvars hS₁ (hρ.mono hle1)
+    have hS₂ := UnifyRel.belowFvars huni hτb hS₁ρ
+    have hS₂dom : ∀ p ∈ S₂, p.1 < Φ₁ := by
+      intro p hp
+      rcases UnifyRel.dom_mem huni p hp with h | h
+      · have := hτb.mem_lt p.1 h; omega
+      · have := hS₁ρ.mem_lt p.1 h; omega
+    have hctx1 := Subst.onCtx_below hS₂ (le_refl _) (Subst.onCtx_below hS₁ hle1 hctx)
+    have hrest_dom := InferBranches.dom_below hrest hctx1
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hscrutTy.mono hle1)))
+      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hρ.mono hle1)))
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) hle1)
+    have hbrle := InferBranches.frontier_le hrest
+    intro p hp; rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · have := hS₁dom p hp; omega
+    · have := hS₂dom p hp; omega
+    · exact hrest_dom p hp
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
+theorem InferRecGroup.dom_below {Φ ctx bindings targets Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut)
+    (hctx : CtxBelow Φ ctx) (htargets : ∀ β ∈ targets, Ty.BelowFvars Φ β)
+    (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
+    (∀ p ∈ S, p.1 < Φ') := by
+  cases h with
+  | nil => simp
+  | cons he huni hrest =>
+    expose_names
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
+    have hle1 := Infer.frontier_le he
+    obtain ⟨hτ, hS₁⟩ := Infer.belowFvars he hctx (fun y hy => htfv y (.inl hy))
+    have hS₁dom := Infer.dom_below he hctx (fun y hy => htfv y (.inl hy))
+    have hS₁β := Subst.onTy_belowFvars hS₁ ((htargets _ (List.mem_cons_self ..)).mono hle1)
+    have hS₂ := UnifyRel.belowFvars huni hτ hS₁β
+    have hS₂dom : ∀ p ∈ S₂, p.1 < Φ₁ := by
+      intro p hp
+      rcases UnifyRel.dom_mem huni p hp with h | h
+      · have := hτ.mem_lt p.1 h; omega
+      · have := hS₁β.mem_lt p.1 h; omega
+    have hctx1 := Subst.onCtx_below hS₂ (le_refl _) (Subst.onCtx_below hS₁ hle1 hctx)
+    have hrest_dom := InferRecGroup.dom_below hrest hctx1
+      (by intro β' hβ'; obtain ⟨b, hb, rfl⟩ := List.mem_map.mp hβ'
+          exact Subst.onTy_belowFvars hS₂
+            (Subst.onTy_belowFvars hS₁ ((htargets b (List.mem_cons_of_mem _ hb)).mono hle1)))
+      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) hle1)
+    have hbrle := InferRecGroup.frontier_le hrest
+    intro p hp; rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · have := hS₁dom p hp; omega
+    · have := hS₂dom p hp; omega
+    · exact hrest_dom p hp
+termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
+end
+
+/-- A var avoiding both the context env and a substitution's range avoids the
+    substituted context env. -/
+theorem Subst.onCtx_avoid {S : Subst} {ctx : Ctx} {w : Nat}
+    (hctx : ∀ M ∈ ctx.env, w ∉ M.body.freeVars) (hS : ∀ p ∈ S, w ∉ p.2.freeVars) :
+    ∀ M ∈ (S.onCtx ctx).env, w ∉ M.body.freeVars := by
+  intro M hM
+  simp only [Subst.onCtx, Subst.onEnv] at hM
+  obtain ⟨M0, hM0, rfl⟩ := List.mem_map.mp hM
+  intro hc
+  simp only [Subst.onPolyTy] at hc
+  rcases Subst.mem_freeVars_onTy hc with h | ⟨p, hp, hvp⟩
+  · exact hctx M0 hM0 h
+  · exact hS p hp hvp
+
 /-- The `letIn` soundness case, factored out (named binders avoid the
     inaccessible-name problem inside the `Infer.sound` induction). The cofinite
     premise is built by renaming the generalization candidates `genVars` to the
@@ -3139,545 +4110,6 @@ theorem Infer.sound_closed {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
 
 Foundations for `Infer.complete`, independent of how the residual-substitution
 obstruction is resolved. -/
-
-/-- All free type vars of `τ` are below `Φ`. The `fvar` analogue of
-    `ContainsBvarsUpTo`; clean to push through substitution. -/
-inductive Ty.BelowFvars (Φ : Nat) : Ty → Prop
-  | prim : Ty.BelowFvars Φ (.prim p)
-  | arrow : Ty.BelowFvars Φ a → Ty.BelowFvars Φ b → Ty.BelowFvars Φ (.arrow a b)
-  | bvar : Ty.BelowFvars Φ (.bvar i)
-  | fvar : i < Φ → Ty.BelowFvars Φ (.fvar i)
-  | customTy : (∀ t ∈ tys, Ty.BelowFvars Φ t) → Ty.BelowFvars Φ (.customTy nm tys)
-
-theorem Ty.BelowFvars.mono {Φ Φ' : Nat} {τ : Ty} (hle : Φ ≤ Φ')
-    (h : Ty.BelowFvars Φ τ) : Ty.BelowFvars Φ' τ := by
-  induction h with
-  | prim => exact .prim
-  | arrow _ _ iha ihb => exact .arrow iha ihb
-  | bvar => exact .bvar
-  | fvar hlt => exact .fvar (by omega)
-  | customTy _ ih => exact .customTy (fun t ht => ih t ht)
-
-/-- `substFvar` by a below-`Φ` type preserves below-`Φ`. -/
-theorem Ty.BelowFvars.substFvar {Φ Z : Nat} {U τ : Ty}
-    (hU : Ty.BelowFvars Φ U) (h : Ty.BelowFvars Φ τ) :
-    Ty.BelowFvars Φ (Ty.substFvar Z U τ) := by
-  induction τ using Ty.rec_strong with
-  | prim _ => exact .prim
-  | arrow a b iha ihb => cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
-  | bvar i => simp only [Ty.substFvar]; exact .bvar
-  | fvar m =>
-    simp only [Ty.substFvar]
-    by_cases hm : m = Z
-    · simp only [if_pos hm]; exact hU
-    · simp only [if_neg hm]; cases h with | fvar hlt => exact .fvar hlt
-  | customTy nm tys ih =>
-    cases h with
-    | customTy hall =>
-      simp only [Ty.substFvar]
-      apply Ty.BelowFvars.customTy
-      rw [TyList.substFvar_eq_map]
-      intro t ht
-      obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
-      exact ih t0 ht0 (hall t0 ht0)
-
-/-- A whole substitution with below-`Φ` replacements preserves below-`Φ`. -/
-theorem Subst.onTy_belowFvars {Φ : Nat} {S : Subst} (hS : ∀ p ∈ S, Ty.BelowFvars Φ p.2) :
-    ∀ {τ : Ty}, Ty.BelowFvars Φ τ → Ty.BelowFvars Φ (S.onTy τ) := by
-  induction S with
-  | nil => intro τ hτ; simpa using hτ
-  | cons hd S' ih =>
-    obtain ⟨Z, U⟩ := hd
-    have hU : Ty.BelowFvars Φ U := hS (Z, U) (List.mem_cons_self ..)
-    have hS' : ∀ p ∈ S', Ty.BelowFvars Φ p.2 := fun p hp => hS p (List.mem_cons_of_mem _ hp)
-    intro τ hτ
-    rw [show ((Z, U) :: S') = [(Z, U)] ++ S' from rfl, Subst.onTy_append]
-    exact ih hS' (Ty.BelowFvars.substFvar hU hτ)
-
-/-- Bridge to the `freeVars` characterisation: a below-`Φ` type's free vars are
-    all `< Φ` (so any `w ≥ Φ` is fresh for it). -/
-theorem Ty.BelowFvars.mem_lt {Φ : Nat} {τ : Ty} (h : Ty.BelowFvars Φ τ) :
-    ∀ v ∈ τ.freeVars, v < Φ := by
-  induction h with
-  | prim => intro v hv; simp [Ty.freeVars] at hv
-  | bvar => intro v hv; simp [Ty.freeVars] at hv
-  | fvar hlt => intro v hv; simp only [Ty.freeVars, List.mem_singleton] at hv; exact hv ▸ hlt
-  | arrow _ _ iha ihb =>
-    intro v hv; simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hv
-    rcases hv with h | h
-    · exact iha v h
-    · exact ihb v h
-  | customTy hall ih =>
-    intro v hv
-    simp only [Ty.freeVars] at hv
-    by_contra hge
-    refine (TyList.not_mem_freeVars_iff.mpr ?_) hv
-    intro t ht hc
-    exact hge (ih t ht v hc)
-
-/-- Every scheme body of `ctx` has its free type vars below the frontier `Φ`
-    (the "new_tv" discipline: vars `Infer` allocates `≥ Φ` are genuinely fresh). -/
-def CtxBelow (Φ : Nat) (ctx : Ctx) : Prop := ∀ M ∈ ctx.env, Ty.BelowFvars Φ M.body
-
-/-- A whole substitution preserves context-below (with frontier growth). -/
-theorem Subst.onCtx_below {Φ Φ' : Nat} {S : Subst} {ctx : Ctx}
-    (hS : ∀ p ∈ S, Ty.BelowFvars Φ' p.2) (hle : Φ ≤ Φ') (hb : CtxBelow Φ ctx) :
-    CtxBelow Φ' (S.onCtx ctx) := by
-  intro M hM
-  simp only [Subst.onCtx, Subst.onEnv] at hM
-  obtain ⟨M0, hM0, rfl⟩ := List.mem_map.mp hM
-  exact Subst.onTy_belowFvars hS ((hb M0 hM0).mono hle)
-
-/-- Opening a below-`Φ` type with fresh names all `< Φ` stays below-`Φ`. -/
-theorem Ty.openVars_belowFvars {Φ : Nat} {Xs : List Nat} {τ : Ty}
-    (hτ : Ty.BelowFvars Φ τ) (hXs : ∀ x ∈ Xs, x < Φ) :
-    Ty.BelowFvars Φ (Ty.openVars Xs τ) := by
-  induction τ using Ty.rec_strong with
-  | prim p => exact .prim
-  | arrow a b iha ihb => cases hτ with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
-  | bvar i =>
-    simp only [Ty.openVars, Ty.instantiate]
-    cases h : Xs[i]? with
-    | none => exact .bvar
-    | some x => exact .fvar (hXs x (List.mem_of_getElem? h))
-  | fvar n => cases hτ with | fvar hlt => exact .fvar hlt
-  | customTy nm tys ih =>
-    cases hτ with
-    | customTy hall =>
-      simp only [Ty.openVars_customTy]
-      apply Ty.BelowFvars.customTy
-      intro t' ht'
-      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
-      exact ih t ht (hall t ht)
-
-/-- A type with no free variables is below any frontier. -/
-theorem Ty.BelowFvars.of_noFreeVars {Φ : Nat} {τ : Ty} (h : NoFreeVars τ) :
-    Ty.BelowFvars Φ τ := by
-  induction h with
-  | prim => exact .prim
-  | arrow _ _ iha ihb => exact .arrow iha ihb
-  | bvar => exact .bvar
-  | customTy _ ih => exact .customTy (fun t ht => ih t ht)
-
-/-- Converse of `Ty.BelowFvars.mem_lt`: all free vars `< Φ` gives `BelowFvars Φ`. -/
-theorem Ty.BelowFvars.of_freeVars_lt {Φ : Nat} {τ : Ty}
-    (h : ∀ v ∈ τ.freeVars, v < Φ) : Ty.BelowFvars Φ τ := by
-  induction τ using Ty.rec_strong with
-  | prim p => exact .prim
-  | bvar i => exact .bvar
-  | fvar n => exact .fvar (h n (by simp [Ty.freeVars]))
-  | arrow a b iha ihb =>
-    refine .arrow (iha fun v hv => h v ?_) (ihb fun v hv => h v ?_)
-    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hv
-    · simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hv
-  | customTy nm tys ih =>
-    refine .customTy fun t ht => ih t ht (fun v hv => h v ?_)
-    simp only [Ty.freeVars]
-    exact TyList.mem_freeVars_of_mem ht hv
-
-/-- Opening with below-`Φ` args preserves below-`Φ`-ness. -/
-theorem Ty.openWith_belowFvars {Φ : Nat} {Vs : List Ty} {X : Ty}
-    (hVs : ∀ v ∈ Vs, Ty.BelowFvars Φ v) (hX : Ty.BelowFvars Φ X) :
-    Ty.BelowFvars Φ (Ty.openWith Vs X) := by
-  induction X using Ty.rec_strong with
-  | prim p => exact .prim
-  | fvar n => cases hX with | fvar hlt => exact .fvar hlt
-  | bvar i =>
-    simp only [Ty.openWith, Ty.instantiate]
-    cases h : Vs[i]? with
-    | none => simp only [Option.getD_none]; exact .bvar
-    | some v => simp only [Option.getD_some]; exact hVs v (List.mem_of_getElem? h)
-  | arrow a b iha ihb => cases hX with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
-  | customTy nm tys ih =>
-    cases hX with
-    | customTy hall =>
-      simp only [Ty.openWith, Ty.instantiate, TyList.instantiate_eq_map]
-      exact .customTy (fun t' ht' => by
-        obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'; exact ih t ht (hall t ht))
-
-/-- A `match_` branch's pattern bindings stay below `Φ` (ctor contents are closed,
-    so opening with below-`Φ` type args yields below-`Φ` bindings). -/
-theorem branchBindings_below {Φ : Nat} {ctorr : Ctor} {ta : List Ty} {ctx : Ctx}
-    (hctx : CtxBelow Φ ctx) (hta : ∀ t ∈ ta, Ty.BelowFvars Φ t) :
-    CtxBelow Φ { ctx with
-      env := (ctorr.contents.map (Ty.openWith ta)).map PolyTy.mkTrivial ++ ctx.env } := by
-  intro M hM
-  rw [List.mem_append] at hM
-  rcases hM with hM | hM
-  · obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hM
-    obtain ⟨c, hc, rfl⟩ := List.mem_map.mp ht
-    show Ty.BelowFvars Φ (Ty.openWith ta c)
-    exact Ty.openWith_belowFvars hta (Ty.BelowFvars.of_noFreeVars (ctorr.closed c hc))
-  · exact hctx M hM
-
-mutual
-
-/-- Unifying two below-`Φ` monotypes yields a below-`Φ` substitution. -/
-theorem UnifyRel.belowFvars {Φ : Nat} : {a b : Ty} → {S : Subst} → UnifyRel a b S →
-    Ty.BelowFvars Φ a → Ty.BelowFvars Φ b → ∀ p ∈ S, Ty.BelowFvars Φ p.2
-  | _, _, _, .prim, _, _ => by simp
-  | _, _, _, .fvarRefl, _, _ => by simp
-  | _, _, _, .fvarL _ _, _, hb => by
-    intro p hp; rw [List.mem_singleton] at hp; subst hp; exact hb
-  | _, _, _, .fvarR _ _, ha, _ => by
-    intro p hp; rw [List.mem_singleton] at hp; subst hp; exact ha
-  | _, _, _, .arrow h₁ h₂, ha, hb => by
-    cases ha with | arrow ha_a ha_b => cases hb with | arrow hb_c hb_d =>
-    have h1lc := UnifyRel.belowFvars h₁ ha_a hb_c
-    have h2lc := UnifyRel.belowFvars h₂ (Subst.onTy_belowFvars h1lc ha_b) (Subst.onTy_belowFvars h1lc hb_d)
-    intro p hp; rw [List.mem_append] at hp
-    rcases hp with hp | hp
-    · exact h1lc p hp
-    · exact h2lc p hp
-  | _, _, _, .customTy hl, ha, hb => by
-    cases ha with | customTy ha_all => cases hb with | customTy hb_all =>
-    exact UnifyRelList.belowFvars hl ha_all hb_all
-
-/-- List version: unifying two below-`Φ` type lists yields a below-`Φ` substitution. -/
-theorem UnifyRelList.belowFvars {Φ : Nat} : {ts₁ ts₂ : List Ty} → {S : Subst} → UnifyRelList ts₁ ts₂ S →
-    (∀ t ∈ ts₁, Ty.BelowFvars Φ t) → (∀ t ∈ ts₂, Ty.BelowFvars Φ t) → ∀ p ∈ S, Ty.BelowFvars Φ p.2
-  | _, _, _, .nil, _, _ => by simp
-  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht, hts₁, hts₂ => by
-    have ht1 : Ty.BelowFvars Φ t₁ := hts₁ t₁ (List.mem_cons_self ..)
-    have ht2 : Ty.BelowFvars Φ t₂ := hts₂ t₂ (List.mem_cons_self ..)
-    have h1lc := UnifyRel.belowFvars h₁ ht1 ht2
-    have hmap₁ : ∀ t ∈ ts₁.map S₁.onTy, Ty.BelowFvars Φ t := by
-      intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
-      exact Subst.onTy_belowFvars h1lc (hts₁ t0 (List.mem_cons_of_mem _ ht0))
-    have hmap₂ : ∀ t ∈ ts₂.map S₁.onTy, Ty.BelowFvars Φ t := by
-      intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
-      exact Subst.onTy_belowFvars h1lc (hts₂ t0 (List.mem_cons_of_mem _ ht0))
-    have h2lc := UnifyRelList.belowFvars ht hmap₁ hmap₂
-    intro p hp; rw [List.mem_append] at hp
-    rcases hp with hp | hp
-    · exact h1lc p hp
-    · exact h2lc p hp
-
-end
-
-/-- Closing over `gs` only removes free vars, so it preserves below-`Φ`. -/
-theorem Ty.BelowFvars.closeOver {Φ : Nat} {gs : List Nat} :
-    ∀ {τ : Ty}, Ty.BelowFvars Φ τ → Ty.BelowFvars Φ (Ty.closeOver gs τ) := by
-  intro τ h
-  induction τ using Ty.rec_strong with
-  | prim p => exact .prim
-  | bvar i => exact .bvar
-  | fvar n =>
-    rw [Ty.closeOver.eq_5]
-    cases h_idx : gs.idxOf? n with
-    | none => cases h with | fvar hlt => exact .fvar hlt
-    | some i => exact .bvar
-  | arrow a b iha ihb => cases h with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
-  | customTy nm tys ih =>
-    cases h with
-    | customTy hall =>
-      simp only [Ty.closeOver, TyList.closeOver_eq_map]
-      apply Ty.BelowFvars.customTy
-      intro t' ht'; obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
-      exact ih t ht (hall t ht)
-
-/-! Regularity: any declaratively-typed term has a locally-closed type. (Each
-    rule produces an LC type; `var`/`ctor` via `InstantiatesBy.preserves_bvars`
-    on LC `tyArgs`, `lambda` via the LC param premise, the rest by induction.) -/
-mutual
-theorem TypeOfElabHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
-    TypeOfElabHM ctx e τ → τ.IsLC
-  | _, _, _, .primLitUnit => .prim
-  | _, _, _, .primLitInt => .prim
-  | _, _, _, .primLitNat => .prim
-  -- | _, _, _, .primLitBool => .prim
-  | _, _, _, .primLitStr => .prim
-  | _, _, _, .lambda hpc _ _ hbody => .arrow hpc (TypeOfElabHM.regular hbody)
-  | _, _, _, .app hf _ => by
-    have := TypeOfElabHM.regular hf; cases this with | arrow _ hret => exact hret
-  | _, _, _, .letIn _ _ _ _ hbody => TypeOfElabHM.regular hbody
-  | _, _, _, .var _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
-  | _, _, _, .ctor _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
-  | _, _, _, @TypeOfElabHM.match_ _ _ _ branches _ hscrut hne hbrs => by
-    obtain ⟨hd, tl, rfl⟩ := List.exists_cons_of_ne_nil hne
-    exact TypeOfElabMatchBranch.regular (hbrs hd (List.mem_cons_self ..))
-  | _, _, _, .letRec _ _ _ _ _ _ _ hbody => TypeOfElabHM.regular hbody
-
-theorem TypeOfElabMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} →
-    {scrutTy : Ty} → {rt : Ty} →
-    TypeOfElabMatchBranch ctx br scrutTy rt → rt.IsLC
-  | _, _, _, _, .mk _ _ _ _ _ _ _ hbody => TypeOfElabHM.regular hbody
-  | _, _, _, _, .wildcard hbody => TypeOfElabHM.regular hbody
-end
-
-/-! Frontier invariant (`Infer.belowFvars`): from a context whose schemes are below
-    the input frontier `Φ`, `Infer` yields a type and a substitution whose
-    replacements are all below the *output* frontier `Φ'` (so `mono` everything up
-    to `Φ'`). (Named `belowFvars` rather than `below`, since `Infer.below` is
-    reserved by Lean's auto-generated recursor for the `Infer` inductive.) -/
-mutual
-theorem Infer.belowFvars {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
-    CtxBelow Φ ctx → (∀ y ∈ e.tyFreeVars, y < Φ) →
-    Ty.BelowFvars Φ' τ ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
-  cases h with
-  | primLitUnit => intro _ _; exact ⟨.prim, by simp⟩
-  | primLitInt => intro _ _; exact ⟨.prim, by simp⟩
-  | primLitNat => intro _ _; exact ⟨.prim, by simp⟩
-  -- | primLitBool => intro _ _; exact ⟨.prim, by simp⟩
-  | primLitStr => intro _ _; exact ⟨.prim, by simp⟩
-  | lambda hseed hbody =>
-    intro hctx htfv
-    cases hseed with
-    | none =>
-      simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at htfv
-      obtain ⟨hb_τ, hb_s⟩ := Infer.belowFvars hbody (by
-        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
-        · exact .fvar (by omega)
-        · exact (hctx M hM).mono (by omega))
-        (fun y hy => by have := htfv y hy; omega)
-      have hfl := Infer.frontier_le hbody
-      exact ⟨.arrow (Subst.onTy_belowFvars hb_s (.fvar (by omega))) hb_τ, hb_s⟩
-    | some _ hcl =>
-      expose_names
-      simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
-      have hparamTy : Ty.BelowFvars Φ paramTy :=
-        Ty.BelowFvars.of_freeVars_lt (fun v hv => htfv v (.inl hv))
-      obtain ⟨hb_τ, hb_s⟩ := Infer.belowFvars hbody (by
-        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
-        · exact hparamTy
-        · exact hctx M hM)
-        (fun y hy => htfv y (.inr hy))
-      exact ⟨.arrow (Subst.onTy_belowFvars hb_s (hparamTy.mono (Infer.frontier_le hbody))) hb_τ, hb_s⟩
-  | app hf harg huni =>
-    intro hctx htfv
-    simp only [Expr.tyFreeVars, List.mem_append] at htfv
-    obtain ⟨hf_τ, hf_s⟩ := Infer.belowFvars hf hctx (fun y hy => htfv y (.inl hy))
-    have hctx1 := Subst.onCtx_below hf_s (Infer.frontier_le hf) hctx
-    obtain ⟨harg_τ, harg_s⟩ := Infer.belowFvars harg hctx1
-      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (Infer.frontier_le hf))
-    have h1 := Infer.frontier_le hf
-    have h2 := Infer.frontier_le harg
-    refine ⟨Subst.onTy_belowFvars
-        (UnifyRel.belowFvars huni
-          (Subst.onTy_belowFvars (fun p hp => (harg_s p hp).mono (by omega)) (hf_τ.mono (by omega)))
-          (.arrow (harg_τ.mono (by omega)) (.fvar (by omega))))
-        (.fvar (by omega)), ?_⟩
-    intro p hp; rw [List.mem_append, List.mem_append] at hp
-    rcases hp with (hp | hp) | hp
-    · exact (hf_s p hp).mono (by omega)
-    · exact (harg_s p hp).mono (by omega)
-    · exact UnifyRel.belowFvars huni
-        (Subst.onTy_belowFvars (fun p hp => (harg_s p hp).mono (by omega)) (hf_τ.mono (by omega)))
-        (.arrow (harg_τ.mono (by omega)) (.fvar (by omega))) p hp
-  | var hlook =>
-    intro hctx _
-    refine ⟨?_, by simp⟩
-    exact Ty.openVars_belowFvars ((hctx _ (List.mem_of_getElem? hlook)).mono (by omega))
-      (fun x hx => by have := freshVars_lt x hx; omega)
-  | ctor hlook =>
-    intro _ _
-    refine ⟨?_, by simp⟩
-    refine Ty.openVars_belowFvars
-      (Ty.BelowFvars.of_noFreeVars (Ctor.toTy_body_noFreeVars _))
-      (fun x hx => by have := freshVars_lt x hx; omega)
-  | letIn hrhs hbody =>
-    intro hctx htfv
-    simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append] at htfv
-    obtain ⟨hr_τ, hr_s⟩ := Infer.belowFvars hrhs hctx (fun y hy => htfv y (.inl hy))
-    have hctx1 := Subst.onCtx_below hr_s (Infer.frontier_le hrhs) hctx
-    obtain ⟨hb_τ, hb_s⟩ := Infer.belowFvars hbody (by
-      intro M hM
-      rcases List.mem_cons.mp hM with rfl | hM
-      · exact hr_τ.closeOver
-      · exact hctx1 M hM)
-      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (Infer.frontier_le hrhs))
-    refine ⟨hb_τ, ?_⟩
-    intro p hp; rw [List.mem_append] at hp
-    rcases hp with hp | hp
-    · exact (hr_s p hp).mono (Infer.frontier_le hbody)
-    · exact hb_s p hp
-  | letInAnn hσwf hΦN hrhs huni _hesc1 _hesc2 hbody =>
-    intro hctx htfv
-    expose_names
-    simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
-    have hrle := Infer.frontier_le hrhs
-    have hctx_pc : CtxBelow (N + σ.paramCount) ctx := fun M hM => (hctx M hM).mono (by omega)
-    have hσbody : Ty.BelowFvars Φ σ.body :=
-      Ty.BelowFvars.of_freeVars_lt (fun v hv => htfv v (.inl (.inl hv)))
-    obtain ⟨hr_τ, hr_s⟩ := Infer.belowFvars hrhs hctx_pc (fun y hy => by
-      rcases Expr.tyFreeVars_openTyVars hy with h | h
-      · have := htfv y (.inl (.inr h)); omega
-      · have := freshVars_lt y h; omega)
-    have hσopen : Ty.BelowFvars Φ₁
-        (σ.openVars (freshVars N σ.paramCount)) :=
-      Ty.openVars_belowFvars (hσbody.mono (by omega))
-        (fun x hx => by have := freshVars_lt x hx; omega)
-    have hSchk : ∀ p ∈ Schk, Ty.BelowFvars Φ₁ p.2 :=
-      UnifyRel.belowFvars huni hr_τ hσopen
-    have hctx1 : CtxBelow Φ₁ (Schk.onCtx (S₁.onCtx ctx)) :=
-      Subst.onCtx_below hSchk (le_refl _) (Subst.onCtx_below hr_s hrle hctx_pc)
-    obtain ⟨hb_τ, hb_s⟩ := Infer.belowFvars hbody (by
-      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
-      · exact hσbody.mono (by omega)
-      · exact hctx1 M hM)
-      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (by omega))
-    have hble := Infer.frontier_le hbody
-    refine ⟨hb_τ, ?_⟩
-    intro p hp; rw [List.mem_append, List.mem_append] at hp
-    rcases hp with (hp | hp) | hp
-    · exact (hr_s p hp).mono (by omega)
-    · exact (hSchk p hp).mono (by omega)
-    · exact hb_s p hp
-  | match_ hscrut hne hbr =>
-    intro hctx htfv
-    expose_names
-    simp only [Expr.tyFreeVars, List.mem_append] at htfv
-    obtain ⟨hτs, hS₁⟩ := Infer.belowFvars hscrut hctx (fun y hy => htfv y (.inl hy))
-    have hle1 := Infer.frontier_le hscrut
-    have hbrctx : CtxBelow (Φ₁ + 1) (S₁.onCtx ctx) :=
-      Subst.onCtx_below (fun p hp => (hS₁ p hp).mono (by omega)) (by omega) hctx
-    obtain ⟨hρ_below, hS₂⟩ := InferBranches.belowFvars hbr
-      hbrctx
-      (hτs.mono (by omega))
-      (.fvar (by omega))
-      (fun y hy => by have := htfv y (.inr hy); omega)
-    refine ⟨hρ_below, ?_⟩
-    have hbrle := InferBranches.frontier_le hbr
-    intro p hp; rw [List.mem_append] at hp
-    rcases hp with hp | hp
-    · exact (hS₁ p hp).mono (by omega)
-    · exact hS₂ p hp
-  | letRec hgroup hbody =>
-    intro hctx htfv
-    simp only [Expr.tyFreeVars, List.mem_append] at htfv
-    have hgle := InferRecGroup.frontier_le hgroup
-    have hS₁ := InferRecGroup.belowFvars hgroup
-      (by
-        intro M hM; rcases List.mem_append.mp hM with hM | hM
-        · obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hM
-          exact .fvar (by have := freshVars_lt x hx; omega)
-        · exact (hctx M hM).mono (by omega))
-      (by
-        intro β hβ; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hβ
-        exact .fvar (by have := freshVars_lt x hx; omega))
-      (fun y hy => lt_of_lt_of_le (htfv y (.inl hy)) (by omega))
-    obtain ⟨hb_τ, hb_s⟩ := Infer.belowFvars hbody
-      (by
-        intro M hM; rcases List.mem_append.mp hM with hM | hM
-        · simp only [genGroupSchemes] at hM
-          obtain ⟨τ, hτ, rfl⟩ := List.mem_map.mp hM
-          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hτ
-          simp only [PolyTy.genGroup]
-          exact (Subst.onTy_belowFvars hS₁ (.fvar (by have := freshVars_lt x hx; omega))).closeOver
-        · exact (Subst.onCtx_below hS₁ (by omega) hctx) M hM)
-      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (by omega))
-    have hble := Infer.frontier_le hbody
-    refine ⟨hb_τ, ?_⟩
-    intro p hp; rw [List.mem_append] at hp
-    rcases hp with hp | hp
-    · exact (hS₁ p hp).mono hble
-    · exact hb_s p hp
-termination_by e.size
-decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
-theorem InferBranches.belowFvars {Φ ctx scrutTy ρ brs Φ' S brsOut}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
-    (hctx : CtxBelow Φ ctx) (hscrutTy : Ty.BelowFvars Φ scrutTy) (hρ : Ty.BelowFvars Φ ρ)
-    (htfv : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y < Φ) :
-    Ty.BelowFvars Φ' (S.onTy ρ) ∧ (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
-  cases h with
-  | nil => exact ⟨by simpa using hρ, by simp⟩
-  | cons hlook hn huni0 hbody huni hrest =>
-    expose_names
-    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
-    have hS₀ : ∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2 :=
-      UnifyRel.belowFvars huni0 (hscrutTy.mono (by omega))
-        (.customTy (fun t ht => by
-          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
-          exact .fvar (by have := freshVars_lt x hx; omega)))
-    obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody
-      (branchBindings_below (ctorr := ctor)
-        (ta := ((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy)
-        (Subst.onCtx_below hS₀ (by omega) hctx)
-        (fun t ht => by
-          obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
-          obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hv
-          exact Subst.onTy_belowFvars hS₀ (.fvar (by have := freshVars_lt x hx; omega))))
-      (fun y hy => by have := htfv y (.inl hy); omega)
-    have hle0 : Φ + ctor.paramCount ≤ Φ₁ := Infer.frontier_le hbody
-    have hS₀ρ : Ty.BelowFvars Φ₁ (S₀.onTy ρ) :=
-      (Subst.onTy_belowFvars hS₀ (hρ.mono (by omega))).mono hle0
-    have hS₀scrut : Ty.BelowFvars Φ₁ (S₀.onTy scrutTy) :=
-      (Subst.onTy_belowFvars hS₀ (hscrutTy.mono (by omega))).mono hle0
-    have hS₁ρ := Subst.onTy_belowFvars hS₁ hS₀ρ
-    have hS₂ := UnifyRel.belowFvars huni hτb hS₁ρ
-    have hctx1 : CtxBelow Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx))) :=
-      Subst.onCtx_below hS₂ (le_refl _)
-        (Subst.onCtx_below hS₁ (le_refl _)
-          (Subst.onCtx_below (fun p hp => (hS₀ p hp).mono hle0) (by omega) hctx))
-    obtain ⟨hres, hS₃⟩ := InferBranches.belowFvars hrest hctx1
-      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀scrut))
-      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ hS₀ρ))
-      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) (by omega))
-    have hbrle := InferBranches.frontier_le hrest
-    refine ⟨?_, ?_⟩
-    · rw [Subst.onTy_append, Subst.onTy_append, Subst.onTy_append]; exact hres
-    · intro p hp; rw [List.mem_append, List.mem_append, List.mem_append] at hp
-      rcases hp with ((hp | hp) | hp) | hp
-      · exact (hS₀ p hp).mono (by omega)
-      · exact (hS₁ p hp).mono (by omega)
-      · exact (hS₂ p hp).mono (by omega)
-      · exact hS₃ p hp
-  | consWild hbody huni hrest =>
-    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at htfv
-    obtain ⟨hτb, hS₁⟩ := Infer.belowFvars hbody hctx
-      (fun y hy => htfv y (.inl hy))
-    have hle1 := Infer.frontier_le hbody
-    have hS₁ρ := Subst.onTy_belowFvars hS₁ (hρ.mono hle1)
-    have hS₂ := UnifyRel.belowFvars huni hτb hS₁ρ
-    have hctx1 := Subst.onCtx_below hS₂ (le_refl _) (Subst.onCtx_below hS₁ hle1 hctx)
-    obtain ⟨hres, hS₃⟩ := InferBranches.belowFvars hrest hctx1
-      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hscrutTy.mono hle1)))
-      (Subst.onTy_belowFvars hS₂ (Subst.onTy_belowFvars hS₁ (hρ.mono hle1)))
-      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) hle1)
-    have hbrle := InferBranches.frontier_le hrest
-    refine ⟨?_, ?_⟩
-    · rw [Subst.onTy_append, Subst.onTy_append]; exact hres
-    · intro p hp; rw [List.mem_append, List.mem_append] at hp
-      rcases hp with (hp | hp) | hp
-      · exact (hS₁ p hp).mono (by omega)
-      · exact (hS₂ p hp).mono (by omega)
-      · exact hS₃ p hp
-termination_by Expr.sizeBranches brs
-decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
-theorem InferRecGroup.belowFvars {Φ ctx bindings targets Φ' S bindingsOut}
-    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut)
-    (hctx : CtxBelow Φ ctx) (htargets : ∀ β ∈ targets, Ty.BelowFvars Φ β)
-    (htfv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ) :
-    (∀ p ∈ S, Ty.BelowFvars Φ' p.2) := by
-  cases h with
-  | nil => simp
-  | cons he huni hrest =>
-    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
-    obtain ⟨hτ, hS₁⟩ := Infer.belowFvars he hctx (fun y hy => htfv y (.inl hy))
-    have hle1 := Infer.frontier_le he
-    have hS₂ := UnifyRel.belowFvars huni hτ
-      (Subst.onTy_belowFvars hS₁ ((htargets _ (List.mem_cons_self ..)).mono hle1))
-    have hbrle := InferRecGroup.frontier_le hrest
-    have hS₃ := InferRecGroup.belowFvars hrest
-      (Subst.onCtx_below hS₂ (le_refl _) (Subst.onCtx_below hS₁ hle1 hctx))
-      (by
-        intro β' hβ'
-        obtain ⟨b, hb, rfl⟩ := List.mem_map.mp hβ'
-        exact Subst.onTy_belowFvars hS₂
-          (Subst.onTy_belowFvars hS₁ ((htargets b (List.mem_cons_of_mem _ hb)).mono hle1)))
-      (fun y hy => lt_of_lt_of_le (htfv y (.inr hy)) hle1)
-    intro p hp; rw [List.mem_append, List.mem_append] at hp
-    rcases hp with (hp | hp) | hp
-    · exact (hS₁ p hp).mono hbrle
-    · exact (hS₂ p hp).mono hbrle
-    · exact hS₃ p hp
-termination_by Expr.sizeRecGroup bindings
-decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
-end
-
 
 /-! ### Completeness foundations: substitution agreement
 
