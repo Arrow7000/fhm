@@ -1884,21 +1884,6 @@ theorem Subst.onTy_openVars {S : Subst} {Xs : List Nat}
 @[simp] theorem Ty.openVars_prim {Xs : List Nat} {p : PrimTy} :
     Ty.openVars Xs (.prim p) = .prim p := rfl
 
-/-- `idxOf?` pinpoints the element: if it returns index `i`, then `l[i]? = a`. -/
-private theorem List.getElem?_of_idxOf? {α : Type*} [BEq α] [LawfulBEq α]
-    {l : List α} {a : α} {i : Nat} (h : l.idxOf? a = some i) : l[i]? = some a := by
-  induction l generalizing i with
-  | nil => simp [List.idxOf?_nil] at h
-  | cons x xs ih =>
-    rw [List.idxOf?_cons] at h
-    split at h
-    · rename_i hxa
-      simp only [Option.some.injEq] at h
-      subst h
-      simp [eq_of_beq hxa]
-    · obtain ⟨j, hj, rfl⟩ := Option.map_eq_some_iff.mp h
-      simpa using ih hj
-
 private theorem TyList.closeOver_eq_map (gs : List Nat) (tys : List Ty) :
     TyList.closeOver gs tys = tys.map (Ty.closeOver gs) := by
   induction tys with
