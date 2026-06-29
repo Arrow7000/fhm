@@ -1338,6 +1338,132 @@ inductive InferRecGroup : Nat → Ctx → List Expr → List Ty → Nat → Subs
 end
 
 
+/-! ### The elaborated output is `letRecAnn`-free
+
+`Infer` never produces a `letRecAnn` node (there is no `letRecAnn` rule in Stage 1),
+so every elaborated output `eOut` satisfies `NoRecAnn`. This is the hypothesis the
+close-back kernel (`Expr.openTyVars_closeTyVars_rename`) needs for the annotated
+binder soundness cases. -/
+
+/-- `closeTyVarsAux` preserves `NoRecAnn`: it rebuilds every node shape unchanged
+    (`letRecAnn` maps to `letRecAnn`, excluded by the hypothesis). -/
+theorem Expr.NoRecAnn.closeTyVarsAux {Xs : List Nat} :
+    ∀ (e : Expr) (d : Nat), e.NoRecAnn → (e.closeTyVarsAux d Xs).NoRecAnn := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro d _; exact trivial
+  | ctor nm => intro d _; exact trivial
+  | var n tyArgs => intro d _; exact trivial
+  | lambda ann body ih =>
+    intro d hno
+    simp only [Expr.NoRecAnn] at hno
+    simp only [Expr.closeTyVarsAux, Expr.NoRecAnn]
+    exact ih d hno
+  | app f arg ihf iharg =>
+    intro d hno
+    simp only [Expr.NoRecAnn] at hno
+    simp only [Expr.closeTyVarsAux, Expr.NoRecAnn]
+    exact ⟨ihf d hno.1, iharg d hno.2⟩
+  | letIn ann rhs body ihrhs ihbody =>
+    intro d hno
+    cases ann with
+    | none =>
+      simp only [Expr.NoRecAnn] at hno
+      simp only [Expr.closeTyVarsAux, Expr.NoRecAnn]
+      exact ⟨ihrhs d hno.1, ihbody d hno.2⟩
+    | some σ =>
+      obtain ⟨pc, sbody⟩ := σ
+      simp only [Expr.NoRecAnn] at hno
+      simp only [Expr.closeTyVarsAux, Expr.NoRecAnn]
+      exact ⟨ihrhs (d + pc) hno.1, ihbody d hno.2⟩
+  | match_ scrut branches ihscrut ihbranches =>
+    intro d hno
+    simp only [Expr.NoRecAnn] at hno
+    obtain ⟨hs, hbr⟩ := hno
+    rw [Expr.NoRecAnn.BranchList_iff] at hbr
+    simp only [Expr.closeTyVarsAux, Expr.NoRecAnn, BranchList.closeTyVarsAux_eq_map]
+    refine ⟨ihscrut d hs, ?_⟩
+    rw [Expr.NoRecAnn.BranchList_iff]
+    intro p b hpb
+    obtain ⟨⟨p', b'⟩, hmem, heq⟩ := List.mem_map.mp hpb
+    simp only [Prod.mk.injEq] at heq
+    obtain ⟨_, rfl⟩ := heq
+    exact ihbranches p' b' hmem d (hbr p' b' hmem)
+  | letRec bindings body ih_bindings ih_body =>
+    intro d hno
+    simp only [Expr.NoRecAnn] at hno
+    obtain ⟨hbs, hb⟩ := hno
+    rw [Expr.NoRecAnn.RecGroup_iff] at hbs
+    simp only [Expr.closeTyVarsAux, Expr.NoRecAnn, RecGroup.closeTyVarsAux_eq_map]
+    refine ⟨?_, ih_body d hb⟩
+    rw [Expr.NoRecAnn.RecGroup_iff]
+    intro e he
+    obtain ⟨e', hmem, rfl⟩ := List.mem_map.mp he
+    exact ih_bindings e' hmem d (hbs e' hmem)
+  | letRecAnn schemes bindings body _ _ => intro d hno; exact (hno : (False : Prop)).elim
+
+/-- `closeTyVars` preserves `NoRecAnn` (top-level `d = 0`). -/
+theorem Expr.NoRecAnn.closeTyVars {Xs : List Nat} {e : Expr} (he : e.NoRecAnn) :
+    (e.closeTyVars Xs).NoRecAnn := Expr.NoRecAnn.closeTyVarsAux e 0 he
+
+mutual
+/-- The elaborated output term has no `letRecAnn` nodes. -/
+theorem Infer.eOut_noRecAnn {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
+    eOut.NoRecAnn := by
+  cases h with
+  | primLitUnit => exact trivial
+  | primLitInt => exact trivial
+  | primLitNat => exact trivial
+  -- | primLitBool => exact trivial
+  | primLitStr => exact trivial
+  | var => exact trivial
+  | ctor => exact trivial
+  | lambda _ hbody => simp only [Expr.NoRecAnn]; exact Infer.eOut_noRecAnn hbody
+  | app hf harg _ => exact ⟨Infer.eOut_noRecAnn hf, Infer.eOut_noRecAnn harg⟩
+  | letIn hrhs hbody =>
+    exact ⟨Expr.NoRecAnn.closeTyVars (Infer.eOut_noRecAnn hrhs), Infer.eOut_noRecAnn hbody⟩
+  | letInAnn _ _ hrhs _ _ _ hbody =>
+    exact ⟨Expr.NoRecAnn.closeTyVars (Infer.eOut_noRecAnn hrhs), Infer.eOut_noRecAnn hbody⟩
+  | match_ hscrut _ hbr =>
+    exact ⟨Infer.eOut_noRecAnn hscrut, InferBranches.eOut_noRecAnn hbr⟩
+  | letRec hgroup hbody =>
+    refine ⟨?_, Infer.eOut_noRecAnn hbody⟩
+    rw [Expr.NoRecAnn.RecGroup_iff]
+    intro e he
+    simp only [Expr.closeRecGroup] at he
+    obtain ⟨p, hp, rfl⟩ := List.mem_map.mp he
+    exact Expr.NoRecAnn.closeTyVars (InferRecGroup.eOut_noRecAnn hgroup p.1 (List.of_mem_zip hp).1)
+termination_by e.size
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+theorem InferBranches.eOut_noRecAnn {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut) :
+    Expr.NoRecAnn.BranchList brsOut := by
+  cases h with
+  | nil => exact trivial
+  | cons _ _ _ hbody _ hrest =>
+    exact ⟨Infer.eOut_noRecAnn hbody, InferBranches.eOut_noRecAnn hrest⟩
+  | consWild hbody _ hrest =>
+    exact ⟨Infer.eOut_noRecAnn hbody, InferBranches.eOut_noRecAnn hrest⟩
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
+theorem InferRecGroup.eOut_noRecAnn {Φ ctx bindings targets Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut) :
+    ∀ e ∈ bindingsOut, e.NoRecAnn := by
+  cases h with
+  | nil => intro e he; simp at he
+  | cons he _ hrest =>
+    intro e' he'
+    rcases List.mem_cons.mp he' with rfl | hmem
+    · exact Infer.eOut_noRecAnn he
+    · exact InferRecGroup.eOut_noRecAnn hrest e' hmem
+termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
+end
+
+
 /-! ### Invariant layer for `Infer` soundness -/
 
 /-! The fresh-variable frontier only ever grows (`Infer.frontier_le`). -/
