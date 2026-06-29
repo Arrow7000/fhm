@@ -216,7 +216,7 @@ inductive Expr
   /-- A (mutually) recursive binding group. The `bindings` (the RHSs `e₀ … e_{n-1}`)
       AND `body` are all in scope of the `n = bindings.length` group binders, with
       binding `j` at de Bruijn index `j`. Generalisation is monomorphic-in-the-RHSs,
-      then per-binding for `body` (see `TypeOfHM.letRec`). `n = 1` is `fix`. -/
+      then per-binding for `body` (see `TypeOfElabHM.letRec`). `n = 1` is `fix`. -/
   | letRec (bindings : List Expr) (body : Expr)
   /-- An *annotated* (mutually) recursive binding group with *polymorphic*
       recursion (Pottier's `LetRecPoly`). `schemes` carries one declared scheme
@@ -224,7 +224,7 @@ inductive Expr
       schemes in BOTH the RHSs and the `body` — so recursive occurrences may
       instantiate `schemeⱼ` at different types. The length invariant
       `bindings.length = schemes.length` lives in the typing rule
-      (`TypeOfHM.letRecAnn`), not the constructor (mirroring `letRec`). -/
+      (`TypeOfElabHM.letRecAnn`), not the constructor (mirroring `letRec`). -/
   | letRecAnn (schemes : List PolyTy) (bindings : List Expr) (body : Expr)
 
 
@@ -647,7 +647,7 @@ disappearing binder.
 
 The machine here is independent of type checking — it would run on any
 syntactically well-formed `Expr`. Type soundness (progress + preservation) is
-the bridge between this and `TypeOfHM`. -/
+the bridge between this and `TypeOfElabHM`. -/
 
 mutual
 
@@ -2123,7 +2123,7 @@ structure FreshNames (L : List Nat) (n : Nat) (Xs : List Nat) : Prop where
   avoid  : ∀ x ∈ Xs, x ∉ L
 
 
-/-! ### The declarative typing relation `TypeOfHM`.
+/-! ### The declarative typing relation `TypeOfElabHM`.
 
 Syntax-directed Hindley–Milner typing. All rules are standard except the
 let-generalising rule (`letIn`), which uses a **cofinite**
@@ -2131,10 +2131,10 @@ let-generalising rule (`letIn`), which uses a **cofinite**
 
 ```
   PolyTy.WF M →
-  (∀ Xs, FreshNames L M.paramCount Xs → TypeOfHM ctx boundExpr (M.openVars Xs)) →
+  (∀ Xs, FreshNames L M.paramCount Xs → TypeOfElabHM ctx boundExpr (M.openVars Xs)) →
   bodyCtx = { ctx with env := M :: ctx.env } →
-  TypeOfHM bodyCtx body bodyTy →
-  TypeOfHM ctx (.letIn ann boundExpr body) bodyTy
+  TypeOfElabHM bodyCtx body bodyTy →
+  TypeOfElabHM ctx (.letIn ann boundExpr body) bodyTy
 ```
 
 The cofinite premise's IH is *universally quantified in `Xs`*, so when
@@ -2147,21 +2147,21 @@ re-instantiate it at names fresh for the bigger env — no side conditions.
 mutual
 
 /-- Cofinite (locally-nameless-style) declarative typing relation. -/
-inductive TypeOfHM : Ctx → Expr → Ty → Prop
+inductive TypeOfElabHM : Ctx → Expr → Ty → Prop
   | primLitUnit :
-    TypeOfHM ctx (.primLit .unit) (.prim .unit)
+    TypeOfElabHM ctx (.primLit .unit) (.prim .unit)
 
   | primLitInt :
-    TypeOfHM ctx (.primLit (.int n)) (.prim .int)
+    TypeOfElabHM ctx (.primLit (.int n)) (.prim .int)
 
   | primLitNat :
-    TypeOfHM ctx (.primLit (.nat n)) (.prim .nat)
+    TypeOfElabHM ctx (.primLit (.nat n)) (.prim .nat)
 
   -- | primLitBool :
-  --   TypeOfHM ctx (.primLit (.bool b)) (.prim .bool)
+  --   TypeOfElabHM ctx (.primLit (.bool b)) (.prim .bool)
 
   | primLitStr :
-    TypeOfHM ctx (.primLit (.str s)) (.prim .str)
+    TypeOfElabHM ctx (.primLit (.str s)) (.prim .str)
 
   | lambda :
     -- `paramTy` is locally closed (no dangling type `bvar`s). When the lambda
@@ -2178,13 +2178,13 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     -- pushing `[Z↦U]` through the term's annotations (`Expr.substTyFvar`).
     (∀ T, ann = some T → paramTy = T) →
     bodyCtx = { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } →
-    TypeOfHM bodyCtx body bodyTy →
-    TypeOfHM ctx (.lambda ann body) (.arrow paramTy bodyTy)
+    TypeOfElabHM bodyCtx body bodyTy →
+    TypeOfElabHM ctx (.lambda ann body) (.arrow paramTy bodyTy)
 
   | app :
-    TypeOfHM ctx f (.arrow argTy retTy) →
-    TypeOfHM ctx input argTy →
-    TypeOfHM ctx (.app f input) retTy
+    TypeOfElabHM ctx f (.arrow argTy retTy) →
+    TypeOfElabHM ctx input argTy →
+    TypeOfElabHM ctx (.app f input) retTy
 
   /-- Cofinite let-generalisation. See module doc above. `M` is the
       generalised scheme; the premise says `boundExpr` types at *every*
@@ -2209,10 +2209,10 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     -- This ties annotations inside `boundExpr` that reference the signature to the
     -- cofinite fresh names — the spec-level home of scoped type variables.
     (∀ Xs : List Nat, FreshNames L M.paramCount Xs →
-        TypeOfHM ctx (Expr.openBoundTyVars ann Xs boundExpr) (M.openVars Xs)) →
+        TypeOfElabHM ctx (Expr.openBoundTyVars ann Xs boundExpr) (M.openVars Xs)) →
     bodyCtx = { ctx with env := M :: ctx.env } →
-    TypeOfHM bodyCtx body bodyTy →
-    TypeOfHM ctx (.letIn ann boundExpr body) bodyTy
+    TypeOfElabHM bodyCtx body bodyTy →
+    TypeOfElabHM ctx (.letIn ann boundExpr body) bodyTy
 
   | var :
     ctx.env[dbl]? = some polyTy →
@@ -2224,19 +2224,19 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     -- full instantiation guarantees no scheme `bvar` is left dangling.
     tyArgs.length = polyTy.paramCount →
     InstantiatesBy tyArgs polyTy.body ty →
-    TypeOfHM ctx (.var dbl tyArgs) ty
+    TypeOfElabHM ctx (.var dbl tyArgs) ty
 
   | ctor :
     LookupList.get? ctx.ctors name = some ctor →
     (∀ tyArg ∈ tyArgs, ContainsBvarsUpTo 0 tyArg) →
     InstantiatesBy tyArgs ctor.toTy.body ty →
-    TypeOfHM ctx (.ctor name) ty
+    TypeOfElabHM ctx (.ctor name) ty
 
   | match_ :
-    TypeOfHM ctx scrutinee scrutTy →
+    TypeOfElabHM ctx scrutinee scrutTy →
     branches ≠ [] →
-    (∀ branch ∈ branches, TypeOfMatchBranch ctx branch scrutTy resultTy) →
-    TypeOfHM ctx (.match_ scrutinee branches) resultTy
+    (∀ branch ∈ branches, TypeOfElabMatchBranch ctx branch scrutTy resultTy) →
+    TypeOfElabHM ctx (.match_ scrutinee branches) resultTy
 
   /-- (Mutually) recursive binding group, monomorphic recursion à la Damas–Milner
       (Pottier's `LetRec`; see `letrec-design.md`). Textbook **shared-monotype**
@@ -2256,11 +2256,11 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     (∀ p ∈ τs.zip Ms, p.2 = PolyTy.genGroup G p.1) →
     (∀ Xs, FreshNames L G.length Xs →
         ∀ p ∈ bindings.zip (τs.map (Ty.renameG G Xs)),
-          TypeOfHM { ctx with env := (τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ ctx.env }
+          TypeOfElabHM { ctx with env := (τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ ctx.env }
             p.1 p.2) →
     bodyCtx = { ctx with env := Ms ++ ctx.env } →
-    TypeOfHM bodyCtx body ρ →
-    TypeOfHM ctx (.letRec bindings body) ρ
+    TypeOfElabHM bodyCtx body ρ →
+    TypeOfElabHM ctx (.letRec bindings body) ρ
 
   /-- Annotated *polymorphic*-recursion group (Pottier's `LetRecPoly`). The group
       is in scope at the FULL declared `schemes` in BOTH the RHSs and the body, so
@@ -2277,18 +2277,18 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     (∀ σ ∈ schemes, σ.WF) →
     (∀ p ∈ bindings.zip schemes,
         ∀ Xs, FreshNames L p.2.paramCount Xs →
-          TypeOfHM { ctx with env := schemes ++ ctx.env }
+          TypeOfElabHM { ctx with env := schemes ++ ctx.env }
             (p.1.openTyVars Xs) (p.2.openVars Xs)) →
     bodyCtx = { ctx with env := schemes ++ ctx.env } →
-    TypeOfHM bodyCtx body ρ →
-    TypeOfHM ctx (.letRecAnn schemes bindings body) ρ
+    TypeOfElabHM bodyCtx body ρ →
+    TypeOfElabHM ctx (.letRecAnn schemes bindings body) ρ
 
 
-/-- Match-branch typing for `TypeOfHM`. Verbatim copy of `TypeOfMatchBranch`
+/-- Match-branch typing for `TypeOfElabHM`. Verbatim copy of `TypeOfElabMatchBranch`
     with the relation renamed: pattern bindings are monomorphic (`Sch 0`), so
     no cofinite type-var quantifier is needed, and the term-var quantifier
     vanishes under de Bruijn levels. -/
-inductive TypeOfMatchBranch :
+inductive TypeOfElabMatchBranch :
   (ctx : Ctx) → (MatchPattern × Expr) → (scrutTy : Ty) → (resultTy : Ty) → Prop
   | mk {ctor : Ctor} {ctx : Ctx} {c : CtorName} {n : Nat} {tyArgs : List Ty} :
     LookupList.get? ctx.ctors c = some ctor →
@@ -2298,14 +2298,14 @@ inductive TypeOfMatchBranch :
     List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents →
     patternBindings = instContents.map PolyTy.mkTrivial →
     bodyCtx = {ctx with env := patternBindings ++ ctx.env} →
-    TypeOfHM bodyCtx bodyExpr resultTy →
-    TypeOfMatchBranch ctx (.named c n, bodyExpr) scrutTy resultTy
+    TypeOfElabHM bodyCtx bodyExpr resultTy →
+    TypeOfElabMatchBranch ctx (.named c n, bodyExpr) scrutTy resultTy
   /-- A wildcard branch binds nothing and types its body in the unextended
       context; it imposes no constraint on the scrutinee's type (in particular
       the scrutinee need not be a `customTy`). -/
   | wildcard {ctx : Ctx} :
-    TypeOfHM ctx bodyExpr resultTy →
-    TypeOfMatchBranch ctx (.wildcard, bodyExpr) scrutTy resultTy
+    TypeOfElabHM ctx bodyExpr resultTy →
+    TypeOfElabMatchBranch ctx (.wildcard, bodyExpr) scrutTy resultTy
 
 end
 
@@ -2314,10 +2314,10 @@ end
 
 /-- `t` types at *every* opening of `M` by sufficiently-fresh names. The `L`
     is the cofinite exclusion set; existentially quantified at the use site.
-    This is exactly the cofinite premise of `TypeOfHM.letIn`, packaged. -/
+    This is exactly the cofinite premise of `TypeOfElabHM.letIn`, packaged. -/
 def HasSchemeVars (L : List Nat) (ctx : Ctx) (e : Expr) (M : PolyTy) : Prop :=
   ∀ Xs : List Nat, FreshNames L M.paramCount Xs →
-    TypeOfHM ctx (e.instTy (Xs.map Ty.fvar)) (M.openVars Xs)
+    TypeOfElabHM ctx (e.instTy (Xs.map Ty.fvar)) (M.openVars Xs)
 
 /-- `t.instTy Vs` types at *every* type-level instance of `M` (by LC types of the
     right arity). This is the **type-passing** `HasScheme`: opening the scheme's
@@ -2326,7 +2326,7 @@ def HasSchemeVars (L : List Nat) (ctx : Ctx) (e : Expr) (M : PolyTy) : Prop :=
     case demands — `substN` produces `(v.instTy tyArgs).shiftFrom 0 k`. -/
 def HasScheme (ctx : Ctx) (e : Expr) (M : PolyTy) : Prop :=
   ∀ Vs : List Ty, Ty.AreLC M.paramCount Vs →
-    TypeOfHM ctx (e.instTy Vs) (M.openWith Vs)
+    TypeOfElabHM ctx (e.instTy Vs) (M.openWith Vs)
 
 
 /-! ### Key commute lemmas. -/
@@ -3858,16 +3858,16 @@ theorem Ctor.toTy_wf (ctor : Ctor) : ctor.toTy.WF := by
 
 /-! ### Metatheory infrastructure. -/
 
-/-- The per-branch motive used internally by `TypeOfHM.rec_strong`. For a branch
-    `(pat, body)` it bundles the inverted `TypeOfMatchBranch` structure (the
+/-- The per-branch motive used internally by `TypeOfElabHM.rec_strong`. For a branch
+    `(pat, body)` it bundles the inverted `TypeOfElabMatchBranch` structure (the
     constructor lookup, type-name/arity agreements, the field instantiations)
     together with an induction hypothesis on the branch *body* derivation.
 
     Phrased existentially so the `mk` minor premise of the auto-generated mutual
-    recursor `TypeOfHM.rec` can produce it from the body IH, and the `match_`
+    recursor `TypeOfElabHM.rec` can produce it from the body IH, and the `match_`
     case of a `rec_strong` proof can destructure it to rebuild each branch. -/
-abbrev TypeOfHM.BranchMotive
-    (motive : (ctx : Ctx) → (e : Expr) → (τ : Ty) → TypeOfHM ctx e τ → Prop)
+abbrev TypeOfElabHM.BranchMotive
+    (motive : (ctx : Ctx) → (e : Expr) → (τ : Ty) → TypeOfElabHM ctx e τ → Prop)
     (ctx : Ctx) (branch : MatchPattern × Expr) (scrutTy : Ty)
     (resultTy : Ty) : Prop :=
   (∃ (ctor : Ctor) (c : CtorName) (n : Nat) (tyArgs : List Ty) (instContents : List Ty),
@@ -3877,17 +3877,17 @@ abbrev TypeOfHM.BranchMotive
     ctor.paramCount = tyArgs.length ∧
     n = ctor.contents.length ∧
     List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents ∧
-    ∃ hbody : TypeOfHM ⟨instContents.map PolyTy.mkTrivial ++ ctx.env, ctx.ctors⟩ branch.2 resultTy,
+    ∃ hbody : TypeOfElabHM ⟨instContents.map PolyTy.mkTrivial ++ ctx.env, ctx.ctors⟩ branch.2 resultTy,
       motive ⟨instContents.map PolyTy.mkTrivial ++ ctx.env, ctx.ctors⟩ branch.2 resultTy hbody)
   ∨
   (branch.1 = .wildcard ∧
-    ∃ hbody : TypeOfHM ctx branch.2 resultTy,
+    ∃ hbody : TypeOfElabHM ctx branch.2 resultTy,
       motive ctx branch.2 resultTy hbody)
 
 /--
-Strong induction principle for the mutual `TypeOfHM`/`TypeOfMatchBranch`
-relation, packaged with a *single* motive on `TypeOfHM` derivations so the
-metatheory can do `induction h using TypeOfHM.rec_strong` and never touch the
+Strong induction principle for the mutual `TypeOfElabHM`/`TypeOfElabMatchBranch`
+relation, packaged with a *single* motive on `TypeOfElabHM` derivations so the
+metatheory can do `induction h using TypeOfElabHM.rec_strong` and never touch the
 mutual recursor / `motive_2` directly.
 
 Each constructor's minor premise carries induction hypotheses for its recursive
@@ -3901,11 +3901,11 @@ sub-derivations. The crucial cases:
 * `match_`: each branch carries (via `BranchMotive`) the inverted branch
   structure together with an IH on that branch's body derivation.
 
-Built on the auto-generated `TypeOfHM.rec` with an internal
+Built on the auto-generated `TypeOfElabHM.rec` with an internal
 `motive_2 := BranchMotive`. -/
 @[elab_as_elim]
-theorem TypeOfHM.rec_strong
-    {motive : (ctx : Ctx) → (e : Expr) → (τ : Ty) → TypeOfHM ctx e τ → Prop}
+theorem TypeOfElabHM.rec_strong
+    {motive : (ctx : Ctx) → (e : Expr) → (τ : Ty) → TypeOfElabHM ctx e τ → Prop}
     (primLitUnit : ∀ {ctx : Ctx}, motive ctx (.primLit .unit) (.prim .unit) .primLitUnit)
     (primLitInt : ∀ {ctx : Ctx} {n : ℤ}, motive ctx (.primLit (.int n)) (.prim .int) .primLitInt)
     (primLitNat : ∀ {ctx : Ctx} {n : ℕ}, motive ctx (.primLit (.nat n)) (.prim .nat) .primLitNat)
@@ -3914,20 +3914,20 @@ theorem TypeOfHM.rec_strong
     (lambda : ∀ {paramTy : Ty} {ann : Option Ty} {bodyCtx ctx : Ctx} {body : Expr} {bodyTy : Ty}
       (hpc : ContainsBvarsUpTo 0 paramTy) (hann : ∀ T, ann = some T → paramTy = T)
       (heq : bodyCtx = { env := PolyTy.mkTrivial paramTy :: ctx.env, ctors := ctx.ctors })
-      (hbody : TypeOfHM bodyCtx body bodyTy),
+      (hbody : TypeOfElabHM bodyCtx body bodyTy),
       motive bodyCtx body bodyTy hbody →
       motive ctx (.lambda ann body) (.arrow paramTy bodyTy) (.lambda hpc hann heq hbody))
     (app : ∀ {ctx : Ctx} {f : Expr} {argTy retTy : Ty} {input : Expr}
-      (hf : TypeOfHM ctx f (.arrow argTy retTy)) (hinput : TypeOfHM ctx input argTy),
+      (hf : TypeOfElabHM ctx f (.arrow argTy retTy)) (hinput : TypeOfElabHM ctx input argTy),
       motive ctx f (.arrow argTy retTy) hf → motive ctx input argTy hinput →
       motive ctx (.app f input) retTy (.app hf hinput))
     (letIn : ∀ {ann : Option PolyTy} {ctx : Ctx} {boundExpr : Expr} {bodyCtx : Ctx} {body : Expr}
       {bodyTy : Ty} {M : PolyTy} {L : List Nat}
       (hwf : M.WF) (hann : ∀ σ, ann = some σ → M = σ)
       (hcofin : ∀ Xs, FreshNames L M.paramCount Xs →
-        TypeOfHM ctx (Expr.openBoundTyVars ann Xs boundExpr) (M.openVars Xs))
+        TypeOfElabHM ctx (Expr.openBoundTyVars ann Xs boundExpr) (M.openVars Xs))
       (heq : bodyCtx = { env := M :: ctx.env, ctors := ctx.ctors })
-      (hbody : TypeOfHM bodyCtx body bodyTy),
+      (hbody : TypeOfElabHM bodyCtx body bodyTy),
       (∀ Xs (hf : FreshNames L M.paramCount Xs),
         motive ctx (Expr.openBoundTyVars ann Xs boundExpr) (M.openVars Xs) (hcofin Xs hf)) →
       motive bodyCtx body bodyTy hbody →
@@ -3944,10 +3944,10 @@ theorem TypeOfHM.rec_strong
       motive ctx (.ctor name) ty (.ctor hlook htyargs hinst))
     (match_ : ∀ {ctx : Ctx} {scrutinee : Expr} {scrutTy : Ty}
       {branches : List (MatchPattern × Expr)} {resultTy : Ty}
-      (hscrut : TypeOfHM ctx scrutinee scrutTy) (hne : branches ≠ [])
-      (hbrs : ∀ branch ∈ branches, TypeOfMatchBranch ctx branch scrutTy resultTy),
+      (hscrut : TypeOfElabHM ctx scrutinee scrutTy) (hne : branches ≠ [])
+      (hbrs : ∀ branch ∈ branches, TypeOfElabMatchBranch ctx branch scrutTy resultTy),
       motive ctx scrutinee scrutTy hscrut →
-      (∀ branch ∈ branches, TypeOfHM.BranchMotive motive ctx branch scrutTy resultTy) →
+      (∀ branch ∈ branches, TypeOfElabHM.BranchMotive motive ctx branch scrutTy resultTy) →
       motive ctx (.match_ scrutinee branches) resultTy (.match_ hscrut hne hbrs))
     (letRec : ∀ {ctx bodyCtx : Ctx} {bindings : List Expr} {L G : List Nat} {τs : List Ty}
       {Ms : List PolyTy} {body : Expr} {ρ : Ty}
@@ -3958,10 +3958,10 @@ theorem TypeOfHM.rec_strong
       (hgen : ∀ p ∈ τs.zip Ms, p.2 = PolyTy.genGroup G p.1)
       (hcofin : ∀ Xs, FreshNames L G.length Xs →
         ∀ p ∈ bindings.zip (τs.map (Ty.renameG G Xs)),
-          TypeOfHM { ctx with env := (τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ ctx.env }
+          TypeOfElabHM { ctx with env := (τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ ctx.env }
             p.1 p.2)
       (heq : bodyCtx = { ctx with env := Ms ++ ctx.env })
-      (hbody : TypeOfHM bodyCtx body ρ),
+      (hbody : TypeOfElabHM bodyCtx body ρ),
       (∀ Xs (hf : FreshNames L G.length Xs)
           p (hp : p ∈ bindings.zip (τs.map (Ty.renameG G Xs))),
         motive { ctx with env := (τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ ctx.env }
@@ -3974,20 +3974,20 @@ theorem TypeOfHM.rec_strong
       (hwf : ∀ σ ∈ schemes, σ.WF)
       (hcofin : ∀ p ∈ bindings.zip schemes,
         ∀ Xs, FreshNames L p.2.paramCount Xs →
-          TypeOfHM { ctx with env := schemes ++ ctx.env }
+          TypeOfElabHM { ctx with env := schemes ++ ctx.env }
             (p.1.openTyVars Xs) (p.2.openVars Xs))
       (heq : bodyCtx = { ctx with env := schemes ++ ctx.env })
-      (hbody : TypeOfHM bodyCtx body ρ),
+      (hbody : TypeOfElabHM bodyCtx body ρ),
       (∀ p (hp : p ∈ bindings.zip schemes)
           Xs (hf : FreshNames L p.2.paramCount Xs),
         motive { ctx with env := schemes ++ ctx.env }
           (p.1.openTyVars Xs) (p.2.openVars Xs) (hcofin p hp Xs hf)) →
       motive bodyCtx body ρ hbody →
       motive ctx (.letRecAnn schemes bindings body) ρ (.letRecAnn hlen hwf hcofin heq hbody))
-    {ctx : Ctx} {e : Expr} {τ : Ty} (h : TypeOfHM ctx e τ) : motive ctx e τ h := by
-  induction h using TypeOfHM.rec
+    {ctx : Ctx} {e : Expr} {τ : Ty} (h : TypeOfElabHM ctx e τ) : motive ctx e τ h := by
+  induction h using TypeOfElabHM.rec
     (motive_2 := fun ctx br scrutTy resultTy _ =>
-      TypeOfHM.BranchMotive motive ctx br scrutTy resultTy) with
+      TypeOfElabHM.BranchMotive motive ctx br scrutTy resultTy) with
   | primLitUnit => exact primLitUnit
   | primLitInt => exact primLitInt
   | primLitNat => exact primLitNat
@@ -4247,10 +4247,10 @@ theorem Ty.renameG_substFvar_comm {Z : Nat} {U : Ty} {W Xs : List Nat} {τ : Ty}
     expression, not a structural subterm — goes through.
 
     Chargueraud's `typing_typ_subst`. -/
-theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.IsLC)
-    {ctx : Ctx} {e : Expr} {τ : Ty} (h : TypeOfHM ctx e τ) :
-    TypeOfHM ⟨ctx.env.substFvar Z U, ctx.ctors⟩ (e.substTyFvar Z U) (Ty.substFvar Z U τ) := by
-  induction h using TypeOfHM.rec_strong with
+theorem TypeOfElabHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.IsLC)
+    {ctx : Ctx} {e : Expr} {τ : Ty} (h : TypeOfElabHM ctx e τ) :
+    TypeOfElabHM ⟨ctx.env.substFvar Z U, ctx.ctors⟩ (e.substTyFvar Z U) (Ty.substFvar Z U τ) := by
+  induction h using TypeOfElabHM.rec_strong with
   | primLitUnit => exact .primLitUnit
   | primLitInt => exact .primLitInt
   | primLitNat => exact .primLitNat
@@ -4264,7 +4264,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
     subst heq
     expose_names
     simp only [Ty.substFvar, Expr.substTyFvar]
-    refine TypeOfHM.lambda (Ty.IsLC.substFvar h_U_lc hpc) ?_ rfl ?_
+    refine TypeOfElabHM.lambda (Ty.IsLC.substFvar h_U_lc hpc) ?_ rfl ?_
     · intro T hT
       rcases ann with _ | T₀
       · simp at hT
@@ -4277,7 +4277,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
     have hlook' := congrArg (Option.map (PolyTy.substFvar Z U)) hlook
     simp only [Option.map_some] at hlook'
     rw [← List.getElem?_map] at hlook'
-    refine TypeOfHM.var hlook' ?_ (by simpa only [List.length_map, PolyTy.substFvar] using hlen)
+    refine TypeOfElabHM.var hlook' ?_ (by simpa only [List.length_map, PolyTy.substFvar] using hlen)
       (InstantiatesBy.substFvar h_U_lc hinst)
     intro tyArg hmem
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hmem
@@ -4286,7 +4286,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
     simp only [Expr.substTyFvar]
     have hbody := InstantiatesBy.substFvar (Z := Z) (U := U) h_U_lc hinst
     rw [Ty.substFvar_fresh (NoFreeVars.not_mem_freeVars (Ctor.toTy_body_noFreeVars _) Z)] at hbody
-    refine TypeOfHM.ctor hlook ?_ hbody
+    refine TypeOfElabHM.ctor hlook ?_ hbody
     intro tyArg hmem
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hmem
     exact Ty.IsLC.substFvar h_U_lc (htyargs t ht)
@@ -4294,7 +4294,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
     subst heq
     expose_names
     simp only [Expr.substTyFvar]
-    refine TypeOfHM.letIn (M := PolyTy.substFvar Z U M) (L := Z :: L)
+    refine TypeOfElabHM.letIn (M := PolyTy.substFvar Z U M) (L := Z :: L)
       (PolyTy.WF.substFvar h_U_lc hwf) ?_ ?_ rfl ?_
     · intro σ hσ
       rcases ann with _ | σ₀
@@ -4317,7 +4317,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
     · simpa only [Env.substFvar, List.map_cons] using ihbody
   | match_ hscrut hne hbrs ihscrut ihbrs =>
     simp only [Expr.substTyFvar]
-    refine TypeOfHM.match_ ihscrut ?_ ?_
+    refine TypeOfElabHM.match_ ihscrut ?_ ?_
     · intro hcontra
       obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil hne
       rw [hb] at hcontra
@@ -4335,10 +4335,10 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
         have hinstC' := InstantiatesBy.forall2_substFvar (Z := Z) (U := U) h_U_lc hinstC
         rw [hcc] at hinstC'
         rw [Env.substFvar_append, Env.substFvar_map_mkTrivial] at hbodyIH
-        refine TypeOfMatchBranch.mk hlook ?_ (by simpa using hpc) hcontents hinstC' rfl rfl hbodyIH
+        refine TypeOfElabMatchBranch.mk hlook ?_ (by simpa using hpc) hcontents hinstC' rfl rfl hbodyIH
         rw [hScrutEq]; simp [Ty.substFvar, TyList.substFvar_eq_map]
       · subst hpat
-        exact TypeOfMatchBranch.wildcard hbodyIH
+        exact TypeOfElabMatchBranch.wildcard hbodyIH
   | letRec hlen hlen2 hlc hG hgen hcofin heq hbody ihcofin ihbody =>
     subst heq
     expose_names
@@ -4358,7 +4358,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
       hWavoid w hw (List.mem_append_right _ hc)
     have hWfree : ∀ t ∈ τs, ∀ w ∈ W, w ∉ t.freeVars := fun t ht w hw hc =>
       hW_τs w hw (Ty.freeVars_subset_freeVarsList ht w hc)
-    refine TypeOfHM.letRec
+    refine TypeOfElabHM.letRec
       (τs := τs.map (fun t => Ty.substFvar Z U (Ty.renameG G W t)))
       (Ms := Ms.map (PolyTy.substFvar Z U)) (G := W) (L := Z :: (G ++ W ++ L))
       ?_ ?_ ?_ ?_ ?_ ?_ rfl ?_
@@ -4413,7 +4413,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
     subst heq
     expose_names
     simp only [Expr.substTyFvar, RecGroup.substTyFvar_eq_map]
-    refine TypeOfHM.letRecAnn (schemes := schemes.map (PolyTy.substFvar Z U)) (L := Z :: L)
+    refine TypeOfElabHM.letRecAnn (schemes := schemes.map (PolyTy.substFvar Z U)) (L := Z :: L)
       ?_ ?_ ?_ rfl ?_
     · simp only [List.length_map]; exact hlen
     · intro σ' hσ'
@@ -4430,17 +4430,17 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
       simpa only [Env.substFvar, List.map_append] using hIH
     · simpa only [Env.substFvar, List.map_append] using ihbody
 
-theorem TypeOfHM.typ_subst_preservation
+theorem TypeOfElabHM.typ_subst_preservation
     {ctors : CtorEnv} {env_post env_outer : Env}
     {e : Expr} {τ : Ty} {Z : Nat} {U : Ty}
     (h_Z_fresh_outer : Z ∉ env_outer.freeVars)
     (h_U_lc : U.IsLC)
-    (h : TypeOfHM ⟨env_post ++ env_outer, ctors⟩ e τ) :
-    TypeOfHM ⟨env_post.substFvar Z U ++ env_outer, ctors⟩ (e.substTyFvar Z U) (Ty.substFvar Z U τ) := by
+    (h : TypeOfElabHM ⟨env_post ++ env_outer, ctors⟩ e τ) :
+    TypeOfElabHM ⟨env_post.substFvar Z U ++ env_outer, ctors⟩ (e.substTyFvar Z U) (Ty.substFvar Z U τ) := by
   -- A direct corollary of the uniform version: uniform substitution turns the
   -- whole env `env_post ++ env_outer` into `(env_post ++ env_outer).substFvar Z U`,
   -- and `env_outer` is unchanged since `Z` is fresh for it.
-  have huniform := TypeOfHM.typ_subst_preservation_uniform (Z := Z) (U := U) h_U_lc h
+  have huniform := TypeOfElabHM.typ_subst_preservation_uniform (Z := Z) (U := U) h_U_lc h
   rwa [show (⟨env_post ++ env_outer, ctors⟩ : Ctx).env.substFvar Z U
         = env_post.substFvar Z U ++ env_outer from by
       show Env.substFvar Z U (env_post ++ env_outer) = _
@@ -4470,21 +4470,21 @@ end
     type vars on the fly inside the IH.
 
     Chargueraud's `typing_weaken`. -/
-theorem TypeOfHM.weaken_env
+theorem TypeOfElabHM.weaken_env
     {ctors : CtorEnv} {env_pre env_extra env : Env} {e : Expr} {τ : Ty}
-    (h : TypeOfHM ⟨env_pre ++ env, ctors⟩ e τ) :
-    TypeOfHM ⟨env_pre ++ env_extra ++ env, ctors⟩
+    (h : TypeOfElabHM ⟨env_pre ++ env, ctors⟩ e τ) :
+    TypeOfElabHM ⟨env_pre ++ env_extra ++ env, ctors⟩
       (e.shiftFrom env_pre.length env_extra.length) τ := by
   -- Derivation induction (`rec_strong`): the `letIn` cofinite case needs an IH
   -- for the *opened* bound expression, which structural induction can't reach.
   -- Generalize over the env split point `env_pre'` (it grows under binders).
-  suffices H : ∀ {ctx' : Ctx} {e' : Expr} {τ' : Ty}, TypeOfHM ctx' e' τ' →
+  suffices H : ∀ {ctx' : Ctx} {e' : Expr} {τ' : Ty}, TypeOfElabHM ctx' e' τ' →
       ∀ (env_pre' : Env), ctx'.env = env_pre' ++ env →
-        TypeOfHM ⟨env_pre' ++ env_extra ++ env, ctx'.ctors⟩
+        TypeOfElabHM ⟨env_pre' ++ env_extra ++ env, ctx'.ctors⟩
           (e'.shiftFrom env_pre'.length env_extra.length) τ' by
     exact H h env_pre rfl
   intro ctx' e' τ' hd
-  induction hd using TypeOfHM.rec_strong with
+  induction hd using TypeOfElabHM.rec_strong with
   | primLitUnit => intro env_pre' _; exact .primLitUnit
   | primLitInt => intro env_pre' _; exact .primLitInt
   | primLitNat => intro env_pre' _; exact .primLitNat
@@ -4524,7 +4524,7 @@ theorem TypeOfHM.weaken_env
     intro env_pre' hctx
     subst heq
     simp only [Expr.shiftFrom]
-    refine TypeOfHM.lambda hpc hann rfl ?_
+    refine TypeOfElabHM.lambda hpc hann rfl ?_
     expose_names
     have hb := ihbody (PolyTy.mkTrivial paramTy :: env_pre') (by rw [hctx, List.cons_append])
     simpa only [List.cons_append, List.length_cons] using hb
@@ -4533,7 +4533,7 @@ theorem TypeOfHM.weaken_env
     subst heq
     expose_names
     simp only [Expr.shiftFrom]
-    refine TypeOfHM.letIn (M := M) (L := L) hwf hann ?_ rfl ?_
+    refine TypeOfElabHM.letIn (M := M) (L := L) hwf hann ?_ rfl ?_
     · intro Xs hfresh
       have hc := ihcofin Xs hfresh env_pre' hctx
       rwa [Expr.shiftFrom_openBoundTyVars] at hc
@@ -4542,7 +4542,7 @@ theorem TypeOfHM.weaken_env
   | match_ hscrut hne hbrs ihscrut ihbrs =>
     intro env_pre' hctx
     simp only [Expr.shiftFrom]
-    refine TypeOfHM.match_ (ihscrut env_pre' hctx) ?_ ?_
+    refine TypeOfElabHM.match_ (ihscrut env_pre' hctx) ?_ ?_
     · intro hcontra
       obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil hne
       rw [hb] at hcontra
@@ -4560,21 +4560,21 @@ theorem TypeOfHM.weaken_env
         rw [← hinstC.length_eq, ← hcontents,
             show n + env_pre'.length = env_pre'.length + n
               from Nat.add_comm _ _] at hib
-        refine TypeOfMatchBranch.mk hlook hScrutEq hpc hcontents hinstC rfl rfl ?_
+        refine TypeOfElabMatchBranch.mk hlook hScrutEq hpc hcontents hinstC rfl rfl ?_
         rw [show env_pre' ++ env_extra ++ env = env_pre' ++ (env_extra ++ env)
               from List.append_assoc _ _ _]
         rw [List.append_assoc, List.append_assoc] at hib
         exact hib
       · subst hpat
         simp only [MatchPattern.bindCount, Nat.add_zero]
-        exact TypeOfMatchBranch.wildcard (hbodyIH env_pre' hctx)
+        exact TypeOfElabMatchBranch.wildcard (hbodyIH env_pre' hctx)
   | letRec hlen hlen2 hlc hG hgen hcofin heq hbody ihcofin ihbody =>
     intro env_pre' hctx
     subst heq
     expose_names
     simp only [Expr.shiftFrom, RecGroup.shiftFrom_eq_map]
     -- premise (2) `hgen` is ctx-free → unchanged; premise (1)/body re-instantiate the IH.
-    refine TypeOfHM.letRec (τs := τs) (Ms := Ms) (G := G) (L := L)
+    refine TypeOfElabHM.letRec (τs := τs) (Ms := Ms) (G := G) (L := L)
       ?_ hlen2 hlc hG hgen ?_ rfl ?_
     · rw [List.length_map]; exact hlen
     · intro Xs hfresh p hp
@@ -4599,7 +4599,7 @@ theorem TypeOfHM.weaken_env
     subst heq
     expose_names
     simp only [Expr.shiftFrom, RecGroup.shiftFrom_eq_map]
-    refine TypeOfHM.letRecAnn (schemes := schemes) (L := L) ?_ hwf ?_ rfl ?_
+    refine TypeOfElabHM.letRecAnn (schemes := schemes) (L := L) ?_ hwf ?_ rfl ?_
     · rw [List.length_map]; exact hlen
     · intro p hp Xs hfresh
       obtain ⟨a, b, _, hq, rfl⟩ := List.mem_zip_map_left hp
@@ -4620,12 +4620,12 @@ theorem TypeOfHM.weaken_env
 /-- Iterated type substitution preserves typing: substituting each `(Zᵢ, Uᵢ)`
     in turn (with every `Zᵢ` fresh for the env and every `Uᵢ` locally closed)
     preserves the derivation. Chargueraud's `typing_typ_substs`. -/
-theorem TypeOfHM.typ_substs_preservation {ctx : Ctx} {e : Expr}
+theorem TypeOfElabHM.typ_substs_preservation {ctx : Ctx} {e : Expr}
     (pairs : List (Nat × Ty))
     (h_fresh : ∀ p ∈ pairs, p.1 ∉ ctx.env.freeVars)
     (h_lc : ∀ p ∈ pairs, Ty.IsLC p.2)
-    {τ : Ty} (h : TypeOfHM ctx e τ) :
-    TypeOfHM ctx (e.substTyFvars pairs) (Ty.substFvars pairs τ) := by
+    {τ : Ty} (h : TypeOfElabHM ctx e τ) :
+    TypeOfElabHM ctx (e.substTyFvars pairs) (Ty.substFvars pairs τ) := by
   induction pairs generalizing e τ with
   | nil => exact h
   | cons hd tl ih =>
@@ -4633,7 +4633,7 @@ theorem TypeOfHM.typ_substs_preservation {ctx : Ctx} {e : Expr}
     simp only [Expr.substTyFvars, Ty.substFvars]
     have hZ : Z ∉ ctx.env.freeVars := h_fresh (Z, U) List.mem_cons_self
     have hU : Ty.IsLC U := h_lc (Z, U) List.mem_cons_self
-    have hstep := TypeOfHM.typ_subst_preservation (env_post := []) (env_outer := ctx.env)
+    have hstep := TypeOfElabHM.typ_subst_preservation (env_post := []) (env_outer := ctx.env)
       (ctors := ctx.ctors) hZ hU h
     simp only [Env.substFvar, List.map_nil, List.nil_append] at hstep
     exact ih (fun p hp => h_fresh p (List.mem_cons_of_mem _ hp))
@@ -5539,9 +5539,9 @@ theorem HasScheme.fromHasSchemeVars
   have hrewrite : M.openWith Vs = Ty.substFvars (Xs.zip Vs) (M.openVars Xs) := by
     unfold PolyTy.openWith PolyTy.openVars
     exact Ty.openWith_eq_substFvars_openVars ⟨hVlen', hVlc⟩ hXnodup hX_Mbody hX_Vs
-  show TypeOfHM ctx (e.instTy Vs) (M.openWith Vs)
+  show TypeOfElabHM ctx (e.instTy Vs) (M.openWith Vs)
   rw [hrewrite]
-  have hsub := TypeOfHM.typ_substs_preservation (Xs.zip Vs)
+  have hsub := TypeOfElabHM.typ_substs_preservation (Xs.zip Vs)
     (fun p hp => hX_env p.1 (List.of_mem_zip hp).1)
     (fun p hp => hVlc p.2 (List.of_mem_zip hp).2) hwit
   -- `e.instTy (Xs.map fvar) = e.openTyVars Xs`, then the concrete bridge turns the
@@ -5550,7 +5550,7 @@ theorem HasScheme.fromHasSchemeVars
   rwa [Expr.substTyFvars_zip_openTyVars_concrete hVlen' hXnodup hX_e hX_Vs hVlc] at hsub
 
 /-- Instantiation with the "identity on bvars" substitution is a no-op. Used
-    in `HasScheme.ofTypeOfHM` to show that opening an arity-0 scheme with the
+    in `HasScheme.ofTypeOfElabHM` to show that opening an arity-0 scheme with the
     empty arg list returns the underlying type unchanged. -/
 private theorem Ty.instantiate_bvar_id {ty : Ty} :
     Ty.instantiate (fun i => .bvar i) ty = ty := by
@@ -5579,16 +5579,16 @@ theorem Ty.openWith_nil {ty : Ty} : Ty.openWith [] ty = ty := by
 
 /-- Monomorphic `has_scheme`: a regular typing is a `HasScheme` for the
     trivial 0-binder scheme. Chargueraud's `has_scheme_from_typ`. -/
-theorem HasScheme.ofTypeOfHM
+theorem HasScheme.ofTypeOfElabHM
     {ctx : Ctx} {e : Expr} {τ : Ty}
-    (h : TypeOfHM ctx e τ) :
+    (h : TypeOfElabHM ctx e τ) :
     HasScheme ctx e (PolyTy.mkTrivial τ) := by
   intro Vs h_lc
   obtain ⟨h_len, _⟩ := h_lc
   -- PolyTy.mkTrivial τ has paramCount = 0, so Vs = []
   have h_vs_nil : Vs = [] := List.length_eq_zero_iff.mp h_len
   subst h_vs_nil
-  show TypeOfHM ctx (e.instTy []) (PolyTy.openWith [] (PolyTy.mkTrivial τ))
+  show TypeOfElabHM ctx (e.instTy []) (PolyTy.openWith [] (PolyTy.mkTrivial τ))
   rw [Expr.instTy_nil]
   unfold PolyTy.openWith PolyTy.mkTrivial
   rw [Ty.openWith_nil]
@@ -6018,9 +6018,9 @@ theorem Expr.tyBvarBounded_of_openTyVarsAux (Xs : List Nat) :
 
 /-- Extract a branch body's `TyBvarBounded 0` from its `BranchMotive` (under the
     `tyBvarBounded` motive, which ignores the derivation). -/
-private theorem TypeOfHM.branchMotive_tyBvarBounded {ctx : Ctx} {p : MatchPattern} {b : Expr}
+private theorem TypeOfElabHM.branchMotive_tyBvarBounded {ctx : Ctx} {p : MatchPattern} {b : Expr}
     {scrutTy resultTy : Ty}
-    (h : TypeOfHM.BranchMotive (fun _ e _ _ => e.TyBvarBounded 0) ctx (p, b) scrutTy resultTy) :
+    (h : TypeOfElabHM.BranchMotive (fun _ e _ _ => e.TyBvarBounded 0) ctx (p, b) scrutTy resultTy) :
     b.TyBvarBounded 0 := by
   rcases h with ⟨_, _, _, _, _, _, _, _, _, _, _, _, hb⟩ | ⟨_, _, hb⟩
   · exact hb
@@ -6029,9 +6029,9 @@ private theorem TypeOfHM.branchMotive_tyBvarBounded {ctx : Ctx} {p : MatchPatter
 /-- **Well-typed terms are type-`bvar`-closed** (no free type bvars). The `lambda`
     rule forces annotations LC, the `var`/`ctor` rules force `tyArgs` LC, schemes
     are WF; the `letIn`-with-scheme case reflects the opened cofinite premise. -/
-theorem TypeOfHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
-    (h : TypeOfHM ctx e τ) : e.TyBvarBounded 0 := by
-  induction h using TypeOfHM.rec_strong with
+theorem TypeOfElabHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h : TypeOfElabHM ctx e τ) : e.TyBvarBounded 0 := by
+  induction h using TypeOfElabHM.rec_strong with
   | primLitUnit => trivial
   | primLitInt => trivial
   | primLitNat => trivial
@@ -6065,7 +6065,7 @@ theorem TypeOfHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
       simpa only [Nat.zero_add, hXlen] using this
   | match_ hscrut hne hbrs ihscrut ihbrs =>
     exact ⟨ihscrut, Expr.TyBvarBounded.BranchList_iff.mpr
-      (fun p b hmem => TypeOfHM.branchMotive_tyBvarBounded (ihbrs (p, b) hmem))⟩
+      (fun p b hmem => TypeOfElabHM.branchMotive_tyBvarBounded (ihbrs (p, b) hmem))⟩
   | letRec hlen hlen2 hlc hG hgen hcofin heq hbody ihcofin ihbody =>
     expose_names
     refine ⟨?_, ihbody⟩
@@ -6099,7 +6099,7 @@ theorem HasScheme.tyBvarBounded {ctx : Ctx} {v : Expr} {M : PolyTy}
     intro V hV; obtain ⟨x, _, rfl⟩ := List.mem_map.mp hV; exact .fvar
   have htyped := h (Xs.map Ty.fvar) hVs_lc
   rw [Expr.instTy_fvar_eq_openTyVars] at htyped
-  have hbound := TypeOfHM.tyBvarBounded htyped
+  have hbound := TypeOfElabHM.tyBvarBounded htyped
   have := Expr.tyBvarBounded_of_openTyVarsAux Xs v 0 (by
     simpa only [Expr.openTyVars] using hbound)
   simpa only [Nat.zero_add, hXlen] using this
@@ -6328,12 +6328,12 @@ theorem Expr.SubstArgsGe_openTyVarsAux (Ns : List Nat) (Ys : List Nat) :
     split of its context: the `var` rule pins `tyArgs.length = scheme.paramCount`,
     so every substituted-position use supplies exactly (hence `≥`) its scheme's
     arity of type arguments. -/
-theorem TypeOfHM.substArgsGe {ctors : CtorEnv} {blk env : Env} :
-    ∀ {ctx : Ctx} {e : Expr} {τ : Ty}, TypeOfHM ctx e τ →
+theorem TypeOfElabHM.substArgsGe {ctors : CtorEnv} {blk env : Env} :
+    ∀ {ctx : Ctx} {e : Expr} {τ : Ty}, TypeOfElabHM ctx e τ →
       ∀ env_post : Env, ctx = ⟨env_post ++ blk ++ env, ctors⟩ →
         e.SubstArgsGe (blk.map PolyTy.paramCount) env_post.length := by
   intro ctx e τ h
-  induction h using TypeOfHM.rec_strong with
+  induction h using TypeOfElabHM.rec_strong with
   | primLitUnit => intro _ _; trivial
   | primLitInt => intro _ _; trivial
   | primLitNat => intro _ _; trivial
@@ -6597,13 +6597,13 @@ private theorem Expr.size_le_of_mem_recGroup {e : Expr} {bs : List Expr} (h : e 
     scoped-variable opening commute, since `tyArgs` cover the values' scoped bvars).
     Strong induction on `Expr.size` (which `openTyVars` preserves) lets the `letIn`
     case recurse on the *opened* bound expression. -/
-theorem TypeOfHM.subst_lemma_many
+theorem TypeOfElabHM.subst_lemma_many
     {ctors : CtorEnv} {env Ms : Env} {vs : List Expr}
     (h_Ms_wf : ∀ M ∈ Ms, M.WF)
     (h_vs : List.Forall₂ (fun v M => HasScheme ⟨env, ctors⟩ v M) vs Ms) :
     ∀ (n : Nat) (e : Expr), e.size ≤ n → ∀ (env_post : Env) (τ : Ty),
-      TypeOfHM ⟨env_post ++ Ms ++ env, ctors⟩ e τ →
-      TypeOfHM ⟨env_post ++ env, ctors⟩ (e.substN env_post.length vs) τ := by
+      TypeOfElabHM ⟨env_post ++ Ms ++ env, ctors⟩ e τ →
+      TypeOfElabHM ⟨env_post ++ env, ctors⟩ (e.substN env_post.length vs) τ := by
   have h_len : vs.length = Ms.length := h_vs.length_eq
   -- the substituted values' scoped bvars are bounded by their scheme arities
   have h_bound : ∀ (j : Nat) (w : Expr) (N : Nat),
@@ -6638,14 +6638,14 @@ theorem TypeOfHM.subst_lemma_many
       subst heq
       simp only [Expr.size] at he
       simp only [Expr.substN]
-      refine TypeOfHM.lambda hpc hann rfl ?_
+      refine TypeOfElabHM.lambda hpc hann rfl ?_
       have := ih _ (by omega) (PolyTy.mkTrivial _ :: env_post) _ hbody
       simpa using this
     | @letIn ann _ boundExpr _ body bodyTy M' L hsch hann hcofin heq hbodyinner =>
       subst heq
       simp only [Expr.size] at he
       simp only [Expr.substN]
-      refine TypeOfHM.letIn (M := M') (L := L) hsch hann (fun Xs hfresh => ?_) rfl ?_
+      refine TypeOfElabHM.letIn (M := M') (L := L) hsch hann (fun Xs hfresh => ?_) rfl ?_
       · have hbe := hcofin Xs hfresh
         cases ann with
         | none =>
@@ -6655,7 +6655,7 @@ theorem TypeOfHM.subst_lemma_many
           simp only [Expr.openBoundTyVars] at hbe ⊢
           have hopen_typed := ih _ (by rw [Expr.size_openTyVars]; omega) env_post _ hbe
           have hsa : (boundExpr.openTyVars Xs).SubstArgsGe (Ms.map PolyTy.paramCount)
-              env_post.length := TypeOfHM.substArgsGe hbe env_post rfl
+              env_post.length := TypeOfElabHM.substArgsGe hbe env_post rfl
           have hsa' : boundExpr.SubstArgsGe (Ms.map PolyTy.paramCount) env_post.length :=
             Expr.SubstArgsGe_openTyVarsAux _ Xs _ 0 _ hsa
           have hcomm := Expr.substN_openTyVarsAux_comm (Ys := Xs)
@@ -6696,10 +6696,10 @@ theorem TypeOfHM.subst_lemma_many
             simpa [PolyTy.openWith] using this
           have hlc : Ty.AreLC Ms[dbl - env_post.length].paramCount tyArgs :=
             ⟨h_len_va, h_tyArgs_closed⟩
-          have hv_typed : TypeOfHM ⟨env, ctors⟩
+          have hv_typed : TypeOfElabHM ⟨env, ctors⟩
               (vs[dbl - env_post.length].instTy tyArgs) τ := by
             rw [hτ]; exact hhs tyArgs hlc
-          exact TypeOfHM.weaken_env (env_pre := []) (env_extra := env_post) hv_typed
+          exact TypeOfElabHM.weaken_env (env_pre := []) (env_extra := env_post) hv_typed
         · -- above the block: shift down by `vs.length`
           push_neg at h_in
           have h_subst : (Expr.var dbl tyArgs).substN env_post.length vs
@@ -6719,7 +6719,7 @@ theorem TypeOfHM.subst_lemma_many
       expose_names
       simp only [Expr.size] at he
       simp only [Expr.substN]
-      refine TypeOfHM.match_ (ih _ (by omega) _ _ h_scrut) ?_ ?_
+      refine TypeOfElabHM.match_ (ih _ (by omega) _ _ h_scrut) ?_ ?_
       · intro hcontra
         obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil h_ne
         rw [hb] at hcontra
@@ -6744,7 +6744,7 @@ theorem TypeOfHM.subst_lemma_many
             simp only [List.length_append, List.length_map] at ih_b
             rw [← h_inst.length_eq, ← h_contents] at ih_b
             rw [show m + env_post.length = env_post.length + m from Nat.add_comm _ _] at ih_b
-            refine TypeOfMatchBranch.mk h_lookup h_tyName h_paramCount h_contents
+            refine TypeOfElabMatchBranch.mk h_lookup h_tyName h_paramCount h_contents
               h_inst rfl rfl ?_
             rw [List.append_assoc] at ih_b
             exact ih_b
@@ -6752,13 +6752,13 @@ theorem TypeOfHM.subst_lemma_many
           simp only [MatchPattern.bindCount, Nat.add_zero]
           cases h_brs (.wildcard, body) hmem with
           | wildcard h_bodyT =>
-            exact TypeOfMatchBranch.wildcard (ih body hbsize env_post _ h_bodyT)
+            exact TypeOfElabMatchBranch.wildcard (ih body hbsize env_post _ h_bodyT)
     | letRec hlen hlen2 hlc hG hgen hcofin heq hbodyT =>
       subst heq
       expose_names
       simp only [Expr.size] at he
       simp only [Expr.substN, RecGroup.substN_eq_map]
-      refine TypeOfHM.letRec (τs := τs) (Ms := Ms_1) (G := G) (L := L)
+      refine TypeOfElabHM.letRec (τs := τs) (Ms := Ms_1) (G := G) (L := L)
         ?_ hlen2 hlc hG hgen ?_ rfl ?_
       · rw [List.length_map]; exact hlen
       · intro Xs hfresh p hp
@@ -6784,7 +6784,7 @@ theorem TypeOfHM.subst_lemma_many
       expose_names
       simp only [Expr.size] at he
       simp only [Expr.substN, RecGroup.substN_eq_map]
-      refine TypeOfHM.letRecAnn (schemes := schemes) (L := L) ?_ hwf ?_ rfl ?_
+      refine TypeOfElabHM.letRecAnn (schemes := schemes) (L := L) ?_ hwf ?_ rfl ?_
       · rw [List.length_map]; exact hlen
       · intro p hp Xs hfresh
         obtain ⟨a, b, hmemBind, hq, rfl⟩ := List.mem_zip_map_left hp
@@ -6795,7 +6795,7 @@ theorem TypeOfHM.subst_lemma_many
           exact le_trans (Expr.size_le_of_mem_recGroup hmemBind) (by omega)
         have hopen := ih (a.openTyVars Xs) hasize _ _ hbT
         have hsa : (a.openTyVars Xs).SubstArgsGe (Ms.map PolyTy.paramCount)
-            (schemes ++ env_post).length := TypeOfHM.substArgsGe hbT (schemes ++ env_post) rfl
+            (schemes ++ env_post).length := TypeOfElabHM.substArgsGe hbT (schemes ++ env_post) rfl
         have hsa' : a.SubstArgsGe (Ms.map PolyTy.paramCount) (schemes ++ env_post).length :=
           Expr.SubstArgsGe_openTyVarsAux _ Xs _ 0 _ hsa
         have hcomm := Expr.substN_openTyVarsAux_comm (Ys := Xs)
@@ -6816,14 +6816,14 @@ theorem TypeOfHM.subst_lemma_many
 
 /-- Single-value substitution (`beta`/`letReduce`): the `Ms = [M]`, `vs = [v]`
     instance of `subst_lemma_many`. -/
-theorem TypeOfHM.subst_lemma
+theorem TypeOfElabHM.subst_lemma
     {ctors : CtorEnv} {env_post env : Env}
     {e : Expr} {τ : Ty} {M : PolyTy} {v : Expr}
     (h_M_wf : M.WF)
-    (h_body : TypeOfHM ⟨env_post ++ [M] ++ env, ctors⟩ e τ)
+    (h_body : TypeOfElabHM ⟨env_post ++ [M] ++ env, ctors⟩ e τ)
     (h_v : HasScheme ⟨env, ctors⟩ v M) :
-    TypeOfHM ⟨env_post ++ env, ctors⟩ (e.substN env_post.length [v]) τ :=
-  TypeOfHM.subst_lemma_many (Ms := [M]) (vs := [v])
+    TypeOfElabHM ⟨env_post ++ env, ctors⟩ (e.substN env_post.length [v]) τ :=
+  TypeOfElabHM.subst_lemma_many (Ms := [M]) (vs := [v])
     (by intro M' hM'; rw [List.mem_singleton] at hM'; subst hM'; exact h_M_wf)
     (List.Forall₂.cons h_v List.Forall₂.nil) e.size e (Nat.le_refl _) env_post τ h_body
 
@@ -6841,9 +6841,9 @@ type position. These only invert the value constructors (`lambda`/`pair`/
 
     Inducts syntactically on `e` (rather than on `h_chain`) because `IsCtorChain`
     is mutually defined with `IsValue`, so the `induction` tactic refuses it. -/
-private lemma TypeOfHM.ctor_chain_has_customTy_form
+private lemma TypeOfElabHM.ctor_chain_has_customTy_form
     {ctx e τ}
-    (h_chain : SmallStep.IsCtorChain e) (h_ty : TypeOfHM ctx e τ) :
+    (h_chain : SmallStep.IsCtorChain e) (h_ty : TypeOfElabHM ctx e τ) :
     ∃ name args tys, τ = Ty.wrapArrows (.customTy name args) tys := by
   induction e using Expr.rec_strong generalizing ctx τ with
   | ctor _ =>
@@ -6872,8 +6872,8 @@ private lemma TypeOfHM.ctor_chain_has_customTy_form
   | letRec _ _ _ _ => cases h_chain
   | letRecAnn _ _ _ _ _ => cases h_chain
 
-theorem TypeOfHM.canonical_arrow {ctx e argTy retTy}
-    (h_ty : TypeOfHM ctx e (.arrow argTy retTy))
+theorem TypeOfElabHM.canonical_arrow {ctx e argTy retTy}
+    (h_ty : TypeOfElabHM ctx e (.arrow argTy retTy))
     (h_val : SmallStep.IsValue e) :
     (∃ ann body, e = .lambda ann body) ∨ SmallStep.IsCtorChain e := by
   cases h_val with
@@ -6882,8 +6882,8 @@ theorem TypeOfHM.canonical_arrow {ctx e argTy retTy}
   | ctor name => exact .inr (.ctor name)
   | ctorApp h_chain h_v => exact .inr (.app h_chain h_v)
 
-theorem TypeOfHM.canonical_customTy {ctx e tyName tyArgs}
-    (h_ty : TypeOfHM ctx e (.customTy tyName tyArgs))
+theorem TypeOfElabHM.canonical_customTy {ctx e tyName tyArgs}
+    (h_ty : TypeOfElabHM ctx e (.customTy tyName tyArgs))
     (h_val : SmallStep.IsValue e) :
     SmallStep.IsCtorChain e := by
   cases h_val with
@@ -6913,15 +6913,15 @@ private theorem List.Forall₂.snoc {α β : Type _} {R : α → β → Prop}
     args, where the consumed fields are well-typed at their instantiations and
     the result type is the remaining fields wrapped over the (instantiated)
     `customTy`. -/
-theorem TypeOfHM.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
-    (h_chain : SmallStep.IsCtorChain e) (h_ty : TypeOfHM ctx e τ) :
+theorem TypeOfElabHM.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h_chain : SmallStep.IsCtorChain e) (h_ty : TypeOfElabHM ctx e τ) :
     ∃ (name : CtorName) (args : List Expr) (ctor : Ctor)
       (tyArgs consumed remaining : List Ty),
       SmallStep.CtorAppliedTo e name args ∧
       LookupList.get? ctx.ctors name = some ctor ∧
       (∀ t ∈ tyArgs, ContainsBvarsUpTo 0 t) ∧
       ctor.contents = consumed ++ remaining ∧
-      List.Forall₂ (fun a c => ∃ ct, InstantiatesBy tyArgs c ct ∧ TypeOfHM ctx a ct)
+      List.Forall₂ (fun a c => ∃ ct, InstantiatesBy tyArgs c ct ∧ TypeOfElabHM ctx a ct)
         args consumed ∧
       InstantiatesBy tyArgs
         (Ty.wrapArrows (.customTy ctor.tyName (Ty.bvarRange ctor.paramCount)) remaining) τ := by
@@ -6980,12 +6980,12 @@ lemmas above. Strong induction on `Expr.size` (preserved by `openTyVars`) lets t
 `letIn (some)` case recurse on the opened bound expression. -/
 
 open SmallStep in
-theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
-    (h_ty : TypeOfHM ctx e τ) (h_closed : ctx.env = [])
+theorem TypeOfElabHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h_ty : TypeOfElabHM ctx e τ) (h_closed : ctx.env = [])
     (h_exh : AllMatchesExhaustive ctx.ctors e) :
     IsValue e ∨ ∃ e', Step e e' := by
   suffices H : ∀ (n : Nat) (e : Expr), e.size ≤ n → ∀ (ctx : Ctx) (τ : Ty),
-      TypeOfHM ctx e τ → ctx.env = [] → AllMatchesExhaustive ctx.ctors e →
+      TypeOfElabHM ctx e τ → ctx.env = [] → AllMatchesExhaustive ctx.ctors e →
       IsValue e ∨ ∃ e', Step e e' by
     exact H e.size e (Nat.le_refl _) ctx τ h_ty h_closed h_exh
   intro n
@@ -7007,7 +7007,7 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
         simp only [Expr.size] at hsize
         rcases ih f (by omega) ctx _ h_f h_closed h_exh_f with hvf | ⟨f', hf⟩
         · rcases ih arg (by omega) ctx _ h_arg h_closed h_exh_arg with hva | ⟨arg', harg⟩
-          · rcases TypeOfHM.canonical_arrow h_f hvf with ⟨ann, body, rfl⟩ | hchain
+          · rcases TypeOfElabHM.canonical_arrow h_f hvf with ⟨ann, body, rfl⟩ | hchain
             · exact .inr ⟨_, .beta hva⟩
             · exact .inl (.ctorApp hchain hva)
           · exact .inr ⟨_, .appArg hvf harg⟩
@@ -7033,7 +7033,7 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
                 | mk hlook0 hScrut0 _ _ _ _ _ _ =>
                   obtain ⟨name', args', ctor, tyArgs', consumed, remaining,
                     hcat', hlook, _, hcontents, hforall, hinst⟩ :=
-                    TypeOfHM.ctor_chain_inversion hchain h_scrut
+                    TypeOfElabHM.ctor_chain_inversion hchain h_scrut
                   obtain ⟨rfl, rfl⟩ : name = name' ∧ args = args' := by
                     have h1 := getCtorArgs_of_CtorAppliedTo hcat
                     have h2 := getCtorArgs_of_CtorAppliedTo hcat'
@@ -7064,7 +7064,7 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
               | named c0 n0 =>
                 cases h_brs (.named c0 n0, body0) hb0 with
                 | mk hlookA hScrutA _ _ _ _ _ _ =>
-                  exact absurd (TypeOfHM.canonical_customTy (hScrutA ▸ h_scrut) hvs) hchain
+                  exact absurd (TypeOfElabHM.canonical_customTy (hScrutA ▸ h_scrut) hvs) hchain
             subst hwild
             rw [hbeq]
             exact .inr ⟨body0, .matchWildReduce hvs hchain⟩
@@ -7079,7 +7079,7 @@ Subject reduction: a well-typed term that takes a step stays well-typed at the
 same type. The reduction cases reuse the substitution lemmas; the `matchReduce`
 case is the substantial one — it lines up the scrutinee's constructor-chain
 typing (`ctor_chain_inversion`) with the matched branch's typing
-(`TypeOfMatchBranch`), proving that the two type-argument lists agree on the
+(`TypeOfElabMatchBranch`), proving that the two type-argument lists agree on the
 relevant bvar indices so the field instantiations coincide. -/
 
 /-- `bvarRangeFrom` reads back its definition pointwise. -/
@@ -7203,7 +7203,7 @@ private theorem InstantiatesBy.build_match_vs
     ∀ {contents instContents : List Ty} {args : List Expr},
       (∀ c ∈ contents, ContainsBvarsUpTo n c) →
       List.Forall₂ (InstantiatesBy tyArgs) contents instContents →
-      List.Forall₂ (fun a c => ∃ ct, InstantiatesBy tyArgsS c ct ∧ TypeOfHM ctx a ct)
+      List.Forall₂ (fun a c => ∃ ct, InstantiatesBy tyArgsS c ct ∧ TypeOfElabHM ctx a ct)
         args contents →
       List.Forall₂ (fun v M => HasScheme ctx v M) args (instContents.map PolyTy.mkTrivial) := by
   intro contents
@@ -7224,7 +7224,7 @@ private theorem InstantiatesBy.build_match_vs
         refine List.Forall₂.cons ?_
           (ih (fun c hc => hbound c (List.mem_cons_of_mem _ hc)) hitl hftl)
         rw [hdet]
-        exact HasScheme.ofTypeOfHM htyA
+        exact HasScheme.ofTypeOfElabHM htyA
 
 /-- Opening scoped type variables is a no-op on a term whose annotation `bvar`s are
     all `< d` (used to bridge an unannotated `let`'s cofinite premise — which types
@@ -7411,7 +7411,7 @@ theorem Expr.instTy_eq_self_of_tyBvarBounded {e : Expr} {Ts : List Ty}
 Discharging the `letRecUnfold` reduct `body.substN 0 (bindings.map (letRec bindings ·))`
 needs: each re-wrapped `letRec bindings eⱼ` has scheme `Mⱼ` (`HasScheme`), then
 `subst_lemma_many` substitutes them for the generalised block `Ms` in the body. The
-`HasScheme` is built by the **mono-group trick**: re-apply `TypeOfHM.letRec` with the
+`HasScheme` is built by the **mono-group trick**: re-apply `TypeOfElabHM.letRec` with the
 group bound at its *monomorphic opening* `(openGroup Ms Xs).map mkTrivial` (so the
 cofinite premise `hcofin` supplies the body directly), then `typ_subst` the opening's
 fresh slice to an arbitrary instance — exactly `HasScheme.fromHasSchemeVars`'s argument. -/
@@ -7620,22 +7620,22 @@ theorem Ty.renameG_eq_genFilter {G W : List Nat} {τ : Ty}
 
 /-- The re-wrapped binding `letRec bindings e` typed at the shared opening
     `Ty.renameG G Xs τ` — using the **mono-group trick**: re-apply
-    `TypeOfHM.letRec` with the group bound monomorphically at
+    `TypeOfElabHM.letRec` with the group bound monomorphically at
     `(τs.map (renameG G Xs)).map mkTrivial` (gen-var pool `G := []`), so the
     cofinite premise `hcofin` supplies both the (vacuous) recursive premise and
     the body. -/
-theorem TypeOfHM.rewrap_at_opening
+theorem TypeOfElabHM.rewrap_at_opening
     {ctors : CtorEnv} {env : Env} {bindings : List Expr} {τs : List Ty}
     {G L : List Nat}
     (hlen : bindings.length = τs.length)
     (hlc : ∀ τ ∈ τs, τ.IsLC)
     (hcofin : ∀ Xs, FreshNames L G.length Xs →
         ∀ p ∈ bindings.zip (τs.map (Ty.renameG G Xs)),
-          TypeOfHM ⟨(τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ env, ctors⟩ p.1 p.2)
+          TypeOfElabHM ⟨(τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ env, ctors⟩ p.1 p.2)
     {Xs : List Nat} (hXs : FreshNames L G.length Xs)
     {e : Expr} {t : Ty} (hmem : (e, t) ∈ bindings.zip (τs.map (Ty.renameG G Xs))) :
-    TypeOfHM ⟨env, ctors⟩ (.letRec bindings e) t := by
-  refine TypeOfHM.letRec
+    TypeOfElabHM ⟨env, ctors⟩ (.letRec bindings e) t := by
+  refine TypeOfElabHM.letRec
     (τs := τs.map (Ty.renameG G Xs))
     (Ms := (τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial)
     (G := []) (L := []) ?_ ?_ ?_ ?_ ?_ ?_ rfl (hcofin Xs hXs (e, t) hmem)
@@ -7668,7 +7668,7 @@ theorem TypeOfHM.rewrap_at_opening
     `rewrap_at_opening` gives it at the monomorphic opening; then `typ_subst`
     (à la `HasScheme.fromHasSchemeVars`) lifts the fresh opening slice to an
     arbitrary instance. -/
-theorem TypeOfHM.rewrap_hasScheme
+theorem TypeOfElabHM.rewrap_hasScheme
     {ctors : CtorEnv} {env : Env} {bindings : List Expr} {τs : List Ty}
     {G L : List Nat}
     (hlen : bindings.length = τs.length)
@@ -7676,7 +7676,7 @@ theorem TypeOfHM.rewrap_hasScheme
     (hG : G.Nodup)
     (hcofin : ∀ Xs, FreshNames L G.length Xs →
         ∀ p ∈ bindings.zip (τs.map (Ty.renameG G Xs)),
-          TypeOfHM ⟨(τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ env, ctors⟩ p.1 p.2)
+          TypeOfElabHM ⟨(τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ env, ctors⟩ p.1 p.2)
     {e : Expr} {τ : Ty} (hmem : (e, τ) ∈ bindings.zip τs) :
     HasScheme ⟨env, ctors⟩ (.letRec bindings e) (PolyTy.genGroup G τ) := by
   intro Vs hVs
@@ -7695,8 +7695,8 @@ theorem TypeOfHM.rewrap_hasScheme
     hWavoid w hw (by simp only [List.mem_append]; tauto)
   have hmem' : (e, Ty.renameG G Ws τ) ∈ bindings.zip (τs.map (Ty.renameG G Ws)) :=
     List.mem_zip_map_right hmem
-  have h1 : TypeOfHM ⟨env, ctors⟩ (.letRec bindings e) (Ty.renameG G Ws τ) :=
-    TypeOfHM.rewrap_at_opening hlen hlc hcofin hWfresh hmem'
+  have h1 : TypeOfElabHM ⟨env, ctors⟩ (.letRec bindings e) (Ty.renameG G Ws τ) :=
+    TypeOfElabHM.rewrap_at_opening hlen hlc hcofin hWfresh hmem'
   have ha : Ty.renameG G Ws τ
       = Ty.renameG (Ty.genFilter G τ) (Ty.genFilter Ws (Ty.renameG G Ws τ)) τ :=
     Ty.renameG_eq_genFilter hWlen hG hWnodup hdisj hWτ
@@ -7734,8 +7734,8 @@ theorem TypeOfHM.rewrap_hasScheme
     unfold PolyTy.openWith PolyTy.openVars
     exact Ty.openWith_eq_substFvars_openVars ⟨hVlen', hVlc⟩ hYnodup hY_Mbody hY_Vs
   -- the re-wrapped `letRec` value is type-`bvar` closed, so `instTy` is a no-op.
-  rw [Expr.instTy_eq_self_of_tyBvarBounded (TypeOfHM.tyBvarBounded h1), hrewrite]
-  have hsub := TypeOfHM.typ_substs_preservation
+  rw [Expr.instTy_eq_self_of_tyBvarBounded (TypeOfElabHM.tyBvarBounded h1), hrewrite]
+  have hsub := TypeOfElabHM.typ_substs_preservation
       ((Ty.genFilter Ws (Ty.renameG G Ws τ)).zip Vs)
       (fun p hp => hY_env p.1 (List.of_mem_zip hp).1)
       (fun p hp => hVlc p.2 (List.of_mem_zip hp).2) h1
@@ -7759,14 +7759,14 @@ lifted to an arbitrary instance by `typ_substs_preservation`. -/
     own scheme's arity, so the shielded type-beta is a no-op), so the cofinite group
     premise transfers verbatim; only the BODY `e` is instantiated at `Vs`, which we
     obtain from `e`'s own scheme-relative opening via `typ_substs_preservation`. -/
-theorem TypeOfHM.recAnn_binding_hasScheme
+theorem TypeOfElabHM.recAnn_binding_hasScheme
     {ctors : CtorEnv} {env : Env} {schemes : List PolyTy} {bindings : List Expr}
     {L : List Nat}
     (hlen : bindings.length = schemes.length)
     (hwf : ∀ σ ∈ schemes, σ.WF)
     (hcofin : ∀ p ∈ bindings.zip schemes,
         ∀ Xs, FreshNames L p.2.paramCount Xs →
-          TypeOfHM ⟨schemes ++ env, ctors⟩ (p.1.openTyVars Xs) (p.2.openVars Xs))
+          TypeOfElabHM ⟨schemes ++ env, ctors⟩ (p.1.openTyVars Xs) (p.2.openVars Xs))
     {e : Expr} {σ : PolyTy} (hmem : (e, σ) ∈ bindings.zip schemes) :
     HasScheme ⟨env, ctors⟩ (.letRecAnn schemes bindings e) σ := by
   intro Vs hVs
@@ -7778,7 +7778,7 @@ theorem TypeOfHM.recAnn_binding_hasScheme
     obtain ⟨Ws, hWlen, hWnodup, hWavoid⟩ := exists_fresh_names L p.2.paramCount
     have hc := hcofin p hp Ws ⟨hWlen, hWnodup, hWavoid⟩
     have hb := Expr.tyBvarBounded_of_openTyVarsAux Ws p.1 0
-      (by simpa only [Expr.openTyVars] using TypeOfHM.tyBvarBounded hc)
+      (by simpa only [Expr.openTyVars] using TypeOfElabHM.tyBvarBounded hc)
     simpa only [Nat.zero_add, hWlen] using hb
   -- Hence type-beta `instTy Vs` is a no-op on the inner re-wrapped group.
   have hRGA : Expr.TyBvarBounded.RecGroupAnn 0 schemes bindings :=
@@ -7796,7 +7796,7 @@ theorem TypeOfHM.recAnn_binding_hasScheme
         ++ e.tyFreeVars) σ.paramCount
   have hYfresh : FreshNames L σ.paramCount Ys :=
     ⟨hYslen, hYnodup, fun x hx hc => hYavoid x hx (by simp only [List.mem_append]; tauto)⟩
-  have hetyped : TypeOfHM ⟨schemes ++ env, ctors⟩ (e.openTyVars Ys) (σ.openVars Ys) :=
+  have hetyped : TypeOfElabHM ⟨schemes ++ env, ctors⟩ (e.openTyVars Ys) (σ.openVars Ys) :=
     hcofin (e, σ) hmem Ys hYfresh
   have hYσ : ∀ y ∈ Ys, y ∉ σ.body.freeVars := fun y hy hc =>
     hYavoid y hy (by simp only [List.mem_append]; tauto)
@@ -7810,8 +7810,8 @@ theorem TypeOfHM.recAnn_binding_hasScheme
   have hrewrite : σ.openWith Vs = Ty.substFvars (Ys.zip Vs) (σ.openVars Ys) := by
     unfold PolyTy.openWith PolyTy.openVars
     exact Ty.openWith_eq_substFvars_openVars ⟨hVlen', hVlc⟩ hYnodup hYσ hYVs
-  have hbody : TypeOfHM ⟨schemes ++ env, ctors⟩ (e.instTy Vs) (σ.openWith Vs) := by
-    have hsub := TypeOfHM.typ_substs_preservation (Ys.zip Vs)
+  have hbody : TypeOfElabHM ⟨schemes ++ env, ctors⟩ (e.instTy Vs) (σ.openWith Vs) := by
+    have hsub := TypeOfElabHM.typ_substs_preservation (Ys.zip Vs)
       (fun p hp => hYenv p.1 (List.of_mem_zip hp).1)
       (fun p hp => hVlc p.2 (List.of_mem_zip hp).2) hetyped
     rw [Expr.substTyFvars_zip_openTyVars_concrete hVlen' hYnodup hYe hYVs hVlc] at hsub
@@ -7823,7 +7823,7 @@ theorem TypeOfHM.recAnn_binding_hasScheme
         (e.instTy Vs) = _
     rw [hgroup]
   rw [hval]
-  exact TypeOfHM.letRecAnn (schemes := schemes) (L := L) hlen hwf hcofin rfl hbody
+  exact TypeOfElabHM.letRecAnn (schemes := schemes) (L := L) hlen hwf hcofin rfl hbody
 
 /-- Bridge a `let`-rule cofinite premise to `HasScheme` for the bound expression.
     For an annotated `let` the cofinite already opens the bound expression's scoped
@@ -7834,7 +7834,7 @@ theorem TypeOfHM.recAnn_binding_hasScheme
 theorem HasScheme.fromLetCofinite {ctx : Ctx} {M : PolyTy} {rhs : Expr}
     {ann : Option PolyTy} {L : List Nat}
     (hcofin : ∀ Xs : List Nat, FreshNames L M.paramCount Xs →
-        TypeOfHM ctx (Expr.openBoundTyVars ann Xs rhs) (M.openVars Xs)) :
+        TypeOfElabHM ctx (Expr.openBoundTyVars ann Xs rhs) (M.openVars Xs)) :
     HasScheme ctx rhs M := by
   apply HasScheme.fromHasSchemeVars (L := L)
   intro Xs hfresh
@@ -7845,7 +7845,7 @@ theorem HasScheme.fromLetCofinite {ctx : Ctx} {M : PolyTy} {rhs : Expr}
   | none =>
     simp only [Expr.openBoundTyVars] at hc
     simp only [Expr.openTyVars]
-    rw [Expr.openTyVarsAux_eq_self_of_tyBvarBounded Xs rhs 0 (TypeOfHM.tyBvarBounded hc)]
+    rw [Expr.openTyVarsAux_eq_self_of_tyBvarBounded Xs rhs 0 (TypeOfElabHM.tyBvarBounded hc)]
     exact hc
 
 open SmallStep in
@@ -7855,9 +7855,9 @@ open SmallStep in
     `letIn`, getting `HasScheme` for the bound expression from the cofinite premise
     via `fromHasSchemeVars` (an unannotated `let`'s bound expression is type-`bvar`
     closed, so its unopened cofinite premise already *is* `HasSchemeVars`). -/
-theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
-    (h_step : Step e e') (h_ty : TypeOfHM ctx e τ) :
-    TypeOfHM ctx e' τ := by
+theorem TypeOfElabHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
+    (h_step : Step e e') (h_ty : TypeOfElabHM ctx e τ) :
+    TypeOfElabHM ctx e' τ := by
   induction h_step generalizing τ with
   | beta hval =>
     cases h_ty with
@@ -7865,13 +7865,13 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
       cases hf with
       | lambda hpc _ heq hbody =>
         subst heq
-        exact TypeOfHM.subst_lemma (env_post := []) (M := PolyTy.mkTrivial _)
-          hpc hbody (HasScheme.ofTypeOfHM hi)
+        exact TypeOfElabHM.subst_lemma (env_post := []) (M := PolyTy.mkTrivial _)
+          hpc hbody (HasScheme.ofTypeOfElabHM hi)
   | letReduce =>
     cases h_ty with
     | letIn hwf _ hcofin heq hbody =>
       subst heq
-      exact TypeOfHM.subst_lemma (env_post := []) hwf hbody
+      exact TypeOfElabHM.subst_lemma (env_post := []) hwf hbody
         (HasScheme.fromLetCofinite hcofin)
   | matchReduce hval hctor hfirst =>
     rename_i scrut branches name args pat body
@@ -7886,7 +7886,7 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
         simp only [MatchPattern.bindCount, List.take_zero]
         cases h_brs (.wildcard, body) hmem with
         | wildcard hbodyW =>
-          exact TypeOfHM.subst_lemma_many (Ms := []) (by simp)
+          exact TypeOfElabHM.subst_lemma_many (Ms := []) (by simp)
             List.Forall₂.nil body.size body (Nat.le_refl _) [] _ hbodyW
       | named c n =>
         -- A matched named branch binds exactly the chain's args
@@ -7902,10 +7902,10 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
           -- the named branch pins the scrutinee's type to `customTy ctorB.tyName tyArgsB`,
           -- so the (value) scrutinee is a constructor chain.
           rw [hScrutB] at h_scrut
-          have hchain := TypeOfHM.canonical_customTy h_scrut hval
+          have hchain := TypeOfElabHM.canonical_customTy h_scrut hval
           obtain ⟨name', args', ctorS, tyArgsS, consumedS, remainingS,
             hcatS, hlookS, htyargsS, hcontentsS, hforallS, hinstS⟩ :=
-            TypeOfHM.ctor_chain_inversion hchain h_scrut
+            TypeOfElabHM.ctor_chain_inversion hchain h_scrut
           obtain ⟨hnEq, haEq⟩ := hctor.det hcatS
           subst hnEq
           subst haEq
@@ -7952,7 +7952,7 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
                   (by have := hinstB.length_eq; omega) hi
                 exact InstantiatesBy.preserves_bvars htyArgs_lc hrel
               have h_vs := InstantiatesBy.build_match_vs hagree ctorS.bound hinstB hforallS
-              exact TypeOfHM.subst_lemma_many h_Ms_wf h_vs
+              exact TypeOfElabHM.subst_lemma_many h_Ms_wf h_vs
                 body.size body (Nat.le_refl _) [] _ hbodyB
   | matchWildReduce hval hnc =>
     rename_i scrut body rest
@@ -7988,9 +7988,9 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
         rw [hMs_eq, List.forall₂_map_left_iff, List.forall₂_map_right_iff]
         refine List.forall₂_of_mem_zip hlen ?_
         intro p hp
-        exact TypeOfHM.rewrap_hasScheme hlen hlc hG hcofin hp
+        exact TypeOfElabHM.rewrap_hasScheme hlen hlc hG hcofin hp
       -- Discharge the body: substitute the re-wrapped group for the scheme block `Ms`.
-      have hfinal := TypeOfHM.subst_lemma_many (env := ctx.env) (Ms := Ms)
+      have hfinal := TypeOfElabHM.subst_lemma_many (env := ctx.env) (Ms := Ms)
         (ctors := ctx.ctors) hMwf h_vs body.size body (Nat.le_refl _) [] _ hbodyT
       simpa using hfinal
   | letRecAnnUnfold =>
@@ -8006,9 +8006,9 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
         rw [List.forall₂_map_left_iff]
         refine List.forall₂_of_mem_zip hlen ?_
         intro p hp
-        exact TypeOfHM.recAnn_binding_hasScheme hlen hwf hcofin hp
+        exact TypeOfElabHM.recAnn_binding_hasScheme hlen hwf hcofin hp
       -- Discharge the body: substitute the re-wrapped group for the scheme block.
-      have hfinal := TypeOfHM.subst_lemma_many (env := ctx.env) (Ms := schemes)
+      have hfinal := TypeOfElabHM.subst_lemma_many (env := ctx.env) (Ms := schemes)
         (ctors := ctx.ctors) hwf h_vs body.size body (Nat.le_refl _) [] _ hbodyT
       simpa using hfinal
 
@@ -8392,16 +8392,16 @@ open SmallStep in
     well-typed term keeps its type and stays exhaustive (so `progress` can be
     re-applied at the end). Induction on the reflexive-transitive closure: each
     tail step uses single-step `preservation` and `Step.preserves_exhaustive`. -/
-theorem TypeOfHM.preservation_star {ctors : CtorEnv} {e e' : Expr} {τ : Ty}
+theorem TypeOfElabHM.preservation_star {ctors : CtorEnv} {e e' : Expr} {τ : Ty}
     (h_rtc : Relation.ReflTransGen Step e e')
-    (h_ty : TypeOfHM ⟨[], ctors⟩ e τ)
+    (h_ty : TypeOfElabHM ⟨[], ctors⟩ e τ)
     (h_exh : AllMatchesExhaustive ctors e) :
-    TypeOfHM ⟨[], ctors⟩ e' τ ∧ AllMatchesExhaustive ctors e' := by
+    TypeOfElabHM ⟨[], ctors⟩ e' τ ∧ AllMatchesExhaustive ctors e' := by
   induction h_rtc with
   | refl => exact ⟨h_ty, h_exh⟩
   | tail _ h_bc ih =>
     obtain ⟨h_ty_b, h_exh_b⟩ := ih
-    exact ⟨TypeOfHM.preservation h_bc h_ty_b, Step.preserves_exhaustive h_exh_b h_bc⟩
+    exact ⟨TypeOfElabHM.preservation h_bc h_ty_b, Step.preserves_exhaustive h_exh_b h_bc⟩
 
 open SmallStep in
 /-- **Type safety** ("well-typed programs don't go wrong") for the genuine
@@ -8409,13 +8409,13 @@ open SmallStep in
     program whose matches are all exhaustive makes progress (it is a value or it
     steps) and every step preserves typing. No erasure — types are carried at run
     time and reduction (type-beta) keeps the program well-typed. -/
-theorem TypeOfHM.type_safety {ctors : CtorEnv} {e : Expr} {τ : Ty}
-    (h_ty : TypeOfHM ⟨[], ctors⟩ e τ)
+theorem TypeOfElabHM.type_safety {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h_ty : TypeOfElabHM ⟨[], ctors⟩ e τ)
     (h_exh : AllMatchesExhaustive ctors e) :
     (IsValue e ∨ ∃ e', Step e e') ∧
-    (∀ e', Step e e' → TypeOfHM ⟨[], ctors⟩ e' τ) :=
-  ⟨TypeOfHM.progress h_ty rfl h_exh,
-   fun _ hstep => TypeOfHM.preservation hstep h_ty⟩
+    (∀ e', Step e e' → TypeOfElabHM ⟨[], ctors⟩ e' τ) :=
+  ⟨TypeOfElabHM.progress h_ty rfl h_exh,
+   fun _ hstep => TypeOfElabHM.preservation hstep h_ty⟩
 
 open SmallStep in
 /-- **Iterated type safety.** A closed, well-typed exhaustive program never gets
@@ -8424,19 +8424,19 @@ open SmallStep in
     still well-typed at `τ` and is itself a value or can take another step. Lifts
     `type_safety` via `preservation_star` (iterated preservation, staying
     exhaustive) followed by `progress`. -/
-theorem TypeOfHM.type_safety_star {ctors : CtorEnv} {e : Expr} {τ : Ty}
-    (h_ty : TypeOfHM ⟨[], ctors⟩ e τ) (h_exh : AllMatchesExhaustive ctors e) :
+theorem TypeOfElabHM.type_safety_star {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h_ty : TypeOfElabHM ⟨[], ctors⟩ e τ) (h_exh : AllMatchesExhaustive ctors e) :
     ∀ e', Relation.ReflTransGen Step e e' →
-      TypeOfHM ⟨[], ctors⟩ e' τ ∧ (IsValue e' ∨ ∃ e'', Step e' e'') := by
+      TypeOfElabHM ⟨[], ctors⟩ e' τ ∧ (IsValue e' ∨ ∃ e'', Step e' e'') := by
   intro e' h_rtc
-  obtain ⟨h_ty', h_exh'⟩ := TypeOfHM.preservation_star h_rtc h_ty h_exh
-  exact ⟨h_ty', TypeOfHM.progress h_ty' rfl h_exh'⟩
+  obtain ⟨h_ty', h_exh'⟩ := TypeOfElabHM.preservation_star h_rtc h_ty h_exh
+  exact ⟨h_ty', TypeOfElabHM.progress h_ty' rfl h_exh'⟩
 
 /-! ## `letRecAnn` correctness smoke test (ported from `SpikeLetRecAnn`)
 
 A genuine *polymorphic*-recursion witness types under the new rule, and a
 recursion scheme mentioning a scoped (rigid) free `fvar` is supported. These are
-the proven spike's witnesses re-checked against the real `TypeOfHM.letRecAnn`
+the proven spike's witnesses re-checked against the real `TypeOfElabHM.letRecAnn`
 constructor, confirming the ported rule has the intended shape. -/
 
 namespace LetRecAnnSmokeTest
@@ -8455,33 +8455,33 @@ def polyRecRhs : Expr :=
 /-- The RHS types at every skolem opening `X → X` of `σ`, with `f : σ` in scope
     (polymorphic recursion: `f` is used at `Int → Int` AND at `Unit → Unit`). -/
 theorem polyRecRhs_typeable (X : Nat) :
-    TypeOfHM ⟨[selfSig], []⟩ polyRecRhs (.arrow (.fvar X) (.fvar X)) := by
-  refine TypeOfHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
-  refine TypeOfHM.letIn (M := PolyTy.mkTrivial (.prim .int)) (L := [])
+    TypeOfElabHM ⟨[selfSig], []⟩ polyRecRhs (.arrow (.fvar X) (.fvar X)) := by
+  refine TypeOfElabHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.letIn (M := PolyTy.mkTrivial (.prim .int)) (L := [])
     .prim (fun σ h => Option.noConfusion h) ?_ rfl ?_
   · intro Xs hfresh
     obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    refine TypeOfHM.app ?_ TypeOfHM.primLitInt
-    exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [.prim .int]) rfl
+    refine TypeOfElabHM.app ?_ TypeOfElabHM.primLitInt
+    exact TypeOfElabHM.var (polyTy := selfSig) (tyArgs := [.prim .int]) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim) rfl
       (.arrow (.bvar rfl) (.bvar rfl))
-  refine TypeOfHM.letIn (M := PolyTy.mkTrivial (.prim .unit)) (L := [])
+  refine TypeOfElabHM.letIn (M := PolyTy.mkTrivial (.prim .unit)) (L := [])
     .prim (fun σ h => Option.noConfusion h) ?_ rfl ?_
   · intro Xs hfresh
     obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    refine TypeOfHM.app ?_ TypeOfHM.primLitUnit
-    exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [.prim .unit]) rfl
+    refine TypeOfElabHM.app ?_ TypeOfElabHM.primLitUnit
+    exact TypeOfElabHM.var (polyTy := selfSig) (tyArgs := [.prim .unit]) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim) rfl
       (.arrow (.bvar rfl) (.bvar rfl))
-  exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (tyArgs := []) rfl
+  exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (tyArgs := []) rfl
     (by intro t ht; cases ht) rfl .fvar
 
 /-- The headline: the annotated group **types** at its principal-ish instance
-    `(fvar 0) → (fvar 0)` — polymorphic recursion accepted by `TypeOfHM.letRecAnn`. -/
+    `(fvar 0) → (fvar 0)` — polymorphic recursion accepted by `TypeOfElabHM.letRecAnn`. -/
 theorem polyRec_typeable :
-    TypeOfHM ⟨[], []⟩ (.letRecAnn [selfSig] [polyRecRhs] (.var 0 [.fvar 0]))
+    TypeOfElabHM ⟨[], []⟩ (.letRecAnn [selfSig] [polyRecRhs] (.var 0 [.fvar 0]))
       (.arrow (.fvar 0) (.fvar 0)) := by
-  refine TypeOfHM.letRecAnn (schemes := [selfSig]) (L := []) rfl ?_ ?_ rfl ?_
+  refine TypeOfElabHM.letRecAnn (schemes := [selfSig]) (L := []) rfl ?_ ?_ rfl ?_
   · intro σ hσ
     simp only [List.mem_singleton] at hσ; subst hσ
     show ContainsBvarsUpTo 1 (Ty.arrow (Ty.bvar 0) (Ty.bvar 0))
@@ -8490,9 +8490,9 @@ theorem polyRec_typeable :
     simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
     subst hp
     obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
-    show TypeOfHM ⟨[selfSig], []⟩ (polyRecRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X))
+    show TypeOfElabHM ⟨[selfSig], []⟩ (polyRecRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X))
     exact polyRecRhs_typeable X
-  · exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [.fvar 0]) rfl
+  · exact TypeOfElabHM.var (polyTy := selfSig) (tyArgs := [.fvar 0]) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar) rfl
       (.arrow (.bvar rfl) (.bvar rfl))
 
@@ -8516,37 +8516,37 @@ def ownVarRhs : Expr :=
 /-- Opening the single binding at `[X]` turns the recursive call's `bvar 0` into
     the fresh skolem `fvar X` (closed), which the `var` rule accepts. -/
 theorem ownVarRhs_opened_typeable (X : Nat) :
-    TypeOfHM ⟨[selfSig], []⟩ (ownVarRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X)) := by
-  show TypeOfHM ⟨[selfSig], []⟩
+    TypeOfElabHM ⟨[selfSig], []⟩ (ownVarRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X)) := by
+  show TypeOfElabHM ⟨[selfSig], []⟩
     (.lambda none
       (.letIn none
         (.app (.var 1 [.arrow (.fvar X) (.fvar X)]) (.lambda none (.var 0 [])))
         (.var 1 [])))
     ((Ty.fvar X).arrow (Ty.fvar X))
-  refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
-  refine TypeOfHM.letIn (M := PolyTy.mkTrivial ((Ty.fvar X).arrow (.fvar X))) (L := [])
+  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.letIn (M := PolyTy.mkTrivial ((Ty.fvar X).arrow (.fvar X))) (L := [])
     (.arrow .fvar .fvar) (fun σ h => Option.noConfusion h) ?_ rfl ?_
   · intro Xs hfresh
     obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), selfSig], []⟩
+    show TypeOfElabHM ⟨[PolyTy.mkTrivial (.fvar X), selfSig], []⟩
       (.app (.var 1 [.arrow (.fvar X) (.fvar X)]) (.lambda none (.var 0 [])))
       ((Ty.fvar X).arrow (.fvar X))
-    refine TypeOfHM.app (argTy := (Ty.fvar X).arrow (.fvar X)) ?_ ?_
-    · exact TypeOfHM.var (polyTy := selfSig) rfl
+    refine TypeOfElabHM.app (argTy := (Ty.fvar X).arrow (.fvar X)) ?_ ?_
+    · exact TypeOfElabHM.var (polyTy := selfSig) rfl
         (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar)
         rfl (.arrow (.bvar rfl) (.bvar rfl))
-    · refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
-      exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+    · refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+      exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
         (by intro t ht; cases ht) rfl .fvar
-  · exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+  · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
       (by intro t ht; cases ht) rfl .fvar
 
 /-- **Genuine own-variable polymorphic recursion types** under the fixed rule:
     the body uses `f` at the concrete `Int`, giving `Int → Int`. -/
 theorem ownVarSelfRec_typeable :
-    TypeOfHM ⟨[], []⟩ (.letRecAnn [selfSig] [ownVarRhs] (.var 0 [.prim .int]))
+    TypeOfElabHM ⟨[], []⟩ (.letRecAnn [selfSig] [ownVarRhs] (.var 0 [.prim .int]))
       ((Ty.prim .int).arrow (.prim .int)) := by
-  refine TypeOfHM.letRecAnn (schemes := [selfSig]) (L := []) rfl ?_ ?_ rfl ?_
+  refine TypeOfElabHM.letRecAnn (schemes := [selfSig]) (L := []) rfl ?_ ?_ rfl ?_
   · intro σ hσ
     simp only [List.mem_singleton] at hσ; subst hσ
     show ContainsBvarsUpTo 1 (Ty.arrow (Ty.bvar 0) (Ty.bvar 0))
@@ -8556,7 +8556,7 @@ theorem ownVarSelfRec_typeable :
     subst hp
     obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
     exact ownVarRhs_opened_typeable X
-  · exact TypeOfHM.var (polyTy := selfSig) rfl
+  · exact TypeOfElabHM.var (polyTy := selfSig) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim)
       rfl (.arrow (.bvar rfl) (.bvar rfl))
 
@@ -8567,29 +8567,29 @@ def rigidSig (Z : Nat) : PolyTy := ⟨0, .arrow (.fvar Z) (.fvar Z)⟩
 def scopedRhs : Expr := .lambda none (.app (.var 1 []) (.var 0 []))
 
 theorem scopedRhs_typeable (Z : Nat) :
-    TypeOfHM ⟨[rigidSig Z], []⟩ scopedRhs (.arrow (.fvar Z) (.fvar Z)) := by
-  refine TypeOfHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
-  refine TypeOfHM.app (argTy := .fvar Z) ?_ ?_
-  · exact TypeOfHM.var (polyTy := rigidSig Z) (tyArgs := []) rfl
+    TypeOfElabHM ⟨[rigidSig Z], []⟩ scopedRhs (.arrow (.fvar Z) (.fvar Z)) := by
+  refine TypeOfElabHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.app (argTy := .fvar Z) ?_ ?_
+  · exact TypeOfElabHM.var (polyTy := rigidSig Z) (tyArgs := []) rfl
       (by intro t ht; cases ht) rfl (.arrow .fvar .fvar)
-  · exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar Z)) (tyArgs := []) rfl
+  · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar Z)) (tyArgs := []) rfl
       (by intro t ht; cases ht) rfl .fvar
 
 /-- The kept scheme `Z → Z` mentions the free/rigid `Z`, is WF, and the group
     types — so a recursion scheme referencing a scoped variable is supported. -/
 theorem scopedRec_typeable (Z : Nat) :
-    TypeOfHM ⟨[], []⟩ (.letRecAnn [rigidSig Z] [scopedRhs] (.var 0 []))
+    TypeOfElabHM ⟨[], []⟩ (.letRecAnn [rigidSig Z] [scopedRhs] (.var 0 []))
       (.arrow (.fvar Z) (.fvar Z)) := by
-  refine TypeOfHM.letRecAnn (schemes := [rigidSig Z]) (L := []) rfl ?_ ?_ rfl ?_
+  refine TypeOfElabHM.letRecAnn (schemes := [rigidSig Z]) (L := []) rfl ?_ ?_ rfl ?_
   · intro σ hσ; simp only [List.mem_singleton] at hσ; subst hσ
     exact .arrow .fvar .fvar
   · intro p hp Xs hfresh
     simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
     subst hp
     obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    show TypeOfHM ⟨[rigidSig Z], []⟩ (scopedRhs.openTyVars []) ((Ty.fvar Z).arrow (Ty.fvar Z))
+    show TypeOfElabHM ⟨[rigidSig Z], []⟩ (scopedRhs.openTyVars []) ((Ty.fvar Z).arrow (Ty.fvar Z))
     exact scopedRhs_typeable Z
-  · exact TypeOfHM.var (polyTy := rigidSig Z) (tyArgs := []) rfl
+  · exact TypeOfElabHM.var (polyTy := rigidSig Z) (tyArgs := []) rfl
       (by intro t ht; cases ht) rfl (.arrow .fvar .fvar)
 
 end LetRecAnnSmokeTest

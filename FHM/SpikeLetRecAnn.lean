@@ -4,7 +4,7 @@ import FHM.InferW
 
 Standalone validation of the Stage-3 declarative rule **before** touching frozen
 `Core`. We state Pottier's `LetRecPoly` rule as a derived predicate
-`TypeOfLetRecAnn` over the existing `TypeOfHM` (the recursive group lives in the
+`TypeOfLetRecAnn` over the existing `TypeOfElabHM` (the recursive group lives in the
 environment at its FULL given schemes), then:
 
 1. prove a genuine *polymorphic*-recursion witness types under the rule;
@@ -52,8 +52,8 @@ def TypeOfLetRecAnn (ctx : Ctx) (σs : List PolyTy) (bindings : List Expr)
     (∀ σ ∈ σs, σ.WF) ∧
     (∀ Xs, FreshNames L (PolyTy.totalParams σs) Xs →
         ∀ p ∈ bindings.zip (PolyTy.openGroup σs Xs),
-          TypeOfHM { ctx with env := σs ++ ctx.env } p.1 p.2) ∧
-    TypeOfHM { ctx with env := σs ++ ctx.env } body ρ
+          TypeOfElabHM { ctx with env := σs ++ ctx.env } p.1 p.2) ∧
+    TypeOfElabHM { ctx with env := σs ++ ctx.env } body ρ
 
 /-! ## A genuine polymorphic-recursion witness
 
@@ -78,29 +78,29 @@ def polyRecRhs : Expr :=
 /-- The RHS types at every skolem opening `X → X` of `σ`, with `f : σ` in scope
     (polymorphic). This is the cofinite premise's content. -/
 theorem polyRecRhs_typeable (X : Nat) :
-    TypeOfHM ⟨[selfSig], []⟩ polyRecRhs (.arrow (.fvar X) (.fvar X)) := by
+    TypeOfElabHM ⟨[selfSig], []⟩ polyRecRhs (.arrow (.fvar X) (.fvar X)) := by
   -- λ : (fvar X) → (fvar X); body typed with x : fvar X, f : σ in scope.
-  refine TypeOfHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
   -- first `let _ = f 0`: `f` instantiated at `Int`, so the binding has type `Int`.
-  refine TypeOfHM.letIn (M := PolyTy.mkTrivial (.prim .int)) (L := [])
+  refine TypeOfElabHM.letIn (M := PolyTy.mkTrivial (.prim .int)) (L := [])
     .prim (fun σ h => Option.noConfusion h) ?_ rfl ?_
   · intro Xs hfresh
     obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    refine TypeOfHM.app ?_ TypeOfHM.primLitInt
-    exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [.prim .int]) rfl
+    refine TypeOfElabHM.app ?_ TypeOfElabHM.primLitInt
+    exact TypeOfElabHM.var (polyTy := selfSig) (tyArgs := [.prim .int]) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim)
       (.arrow (.bvar rfl) (.bvar rfl))
   -- second `let _ = f ()`: `f` instantiated at `Unit`.
-  refine TypeOfHM.letIn (M := PolyTy.mkTrivial (.prim .unit)) (L := [])
+  refine TypeOfElabHM.letIn (M := PolyTy.mkTrivial (.prim .unit)) (L := [])
     .prim (fun σ h => Option.noConfusion h) ?_ rfl ?_
   · intro Xs hfresh
     obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    refine TypeOfHM.app ?_ TypeOfHM.primLitUnit
-    exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [.prim .unit]) rfl
+    refine TypeOfElabHM.app ?_ TypeOfElabHM.primLitUnit
+    exact TypeOfElabHM.var (polyTy := selfSig) (tyArgs := [.prim .unit]) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim)
       (.arrow (.bvar rfl) (.bvar rfl))
   -- body: return `x : fvar X`.
-  exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (tyArgs := []) rfl
+  exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (tyArgs := []) rfl
     (by intro t ht; cases ht) .fvar
 
 /-- The headline: the annotated group **types** at its principal-ish instance
@@ -122,7 +122,7 @@ theorem polyRec_typeable :
     subst hp
     exact polyRecRhs_typeable X
   · -- body `var 0` = `f`, instantiated at `fvar 0`.
-    exact TypeOfHM.var (polyTy := selfSig) (tyArgs := [.fvar 0]) rfl
+    exact TypeOfElabHM.var (polyTy := selfSig) (tyArgs := [.fvar 0]) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
       (.arrow (.bvar rfl) (.bvar rfl))
 
@@ -145,7 +145,7 @@ def monoRecProg : Expr := .letRec [polyRecRhs] (.var 0)
 The §2.3 monomorphic redesign died because an *existential* premise pinned the
 opening and weakening could capture it. Our premise is **cofinite** and the
 schemes are **ctx-free**, so weakening goes through by delegating each RHS/body to
-`TypeOfHM.weaken_env` — with NO env-freshness side condition and NO need to grow
+`TypeOfElabHM.weaken_env` — with NO env-freshness side condition and NO need to grow
 `L`. This is the key structural check that the rule is weakening-sound. -/
 theorem TypeOfLetRecAnn.weaken_env_front {ctors : CtorEnv}
     {env_extra env : Env} {σs : List PolyTy} {bindings : List Expr} {body : Expr}
@@ -158,11 +158,11 @@ theorem TypeOfLetRecAnn.weaken_env_front {ctors : CtorEnv}
   · rw [List.length_map]; exact hlen
   · intro Xs hfresh p hp
     obtain ⟨a, b, _, hq, rfl⟩ := mem_zip_map_left hp
-    have hw := TypeOfHM.weaken_env (env_pre := σs) (env_extra := env_extra)
+    have hw := TypeOfElabHM.weaken_env (env_pre := σs) (env_extra := env_extra)
       (env := env) (hcofin Xs hfresh (a, b) hq)
     rw [List.append_assoc] at hw
     exact hw
-  · have hw := TypeOfHM.weaken_env (env_pre := σs) (env_extra := env_extra)
+  · have hw := TypeOfElabHM.weaken_env (env_pre := σs) (env_extra := env_extra)
       (env := env) hbody
     rw [List.append_assoc] at hw
     exact hw
@@ -183,12 +183,12 @@ def rigidSig (Z : Nat) : PolyTy := ⟨0, .arrow (.fvar Z) (.fvar Z)⟩
 def scopedRhs : Expr := .lambda none (.app (.var 1) (.var 0))
 
 theorem scopedRhs_typeable (Z : Nat) :
-    TypeOfHM ⟨[rigidSig Z], []⟩ scopedRhs (.arrow (.fvar Z) (.fvar Z)) := by
-  refine TypeOfHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
-  refine TypeOfHM.app (argTy := .fvar Z) ?_ ?_
-  · exact TypeOfHM.var (polyTy := rigidSig Z) (tyArgs := []) rfl
+    TypeOfElabHM ⟨[rigidSig Z], []⟩ scopedRhs (.arrow (.fvar Z) (.fvar Z)) := by
+  refine TypeOfElabHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.app (argTy := .fvar Z) ?_ ?_
+  · exact TypeOfElabHM.var (polyTy := rigidSig Z) (tyArgs := []) rfl
       (by intro t ht; cases ht) (.arrow .fvar .fvar)
-  · exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar Z)) (tyArgs := []) rfl
+  · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar Z)) (tyArgs := []) rfl
       (by intro t ht; cases ht) .fvar
 
 /-- The kept scheme `Z → Z` mentions the free/rigid `Z`, is WF, and the group
@@ -207,7 +207,7 @@ theorem scopedRec_typeable (Z : Nat) :
     simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
     subst hp
     exact scopedRhs_typeable Z
-  · exact TypeOfHM.var (polyTy := rigidSig Z) (tyArgs := []) rfl
+  · exact TypeOfElabHM.var (polyTy := rigidSig Z) (tyArgs := []) rfl
       (by intro t ht; cases ht) (.arrow .fvar .fvar)
 
 /-! ## Tractability 2: `typ_subst` — and it is *simpler* than the monomorphic rule
@@ -216,7 +216,7 @@ Pushing `[Z ↦ U]` through the rule needs only: schemes substituted pointwise
 (`PolyTy.WF.substFvar` keeps them WF — `substFvar` touches the free `fvar` `Z`,
 never a `bvar`), the opening/subst commutation `PolyTy.openGroup_map_substFvar`
 (already in Core, built for the monomorphic rule, and needing only `Z ∉ Xs`), and
-`TypeOfHM.typ_subst_preservation` on the RHSs/body. There is NO gen-var freshening
+`TypeOfElabHM.typ_subst_preservation` on the RHSs/body. There is NO gen-var freshening
 (`genGroup_renameG`), because the schemes are *given* — so this is strictly cheaper
 than the shipped monomorphic `letRec`. -/
 
@@ -258,10 +258,10 @@ theorem TypeOfLetRecAnn.typ_subst {ctors : CtorEnv} {env : Env}
        hfresh.nodup, fun x hx hc => hfresh.avoid x hx (List.mem_cons_of_mem _ hc)⟩
     rw [PolyTy.openGroup_map_substFvar hUlc σs hZXs] at hp
     obtain ⟨a, b, hq, rfl⟩ := mem_zip_map hp
-    have hsub := TypeOfHM.typ_subst_preservation (env_post := σs) (env_outer := env)
+    have hsub := TypeOfElabHM.typ_subst_preservation (env_post := σs) (env_outer := env)
       hZ hUlc (hcofin Xs hfreshL (a, b) hq)
     simpa only [Env.substFvar] using hsub
-  · have hsub := TypeOfHM.typ_subst_preservation (env_post := σs) (env_outer := env)
+  · have hsub := TypeOfElabHM.typ_subst_preservation (env_post := σs) (env_outer := env)
       hZ hUlc hbody
     simpa only [Env.substFvar] using hsub
 

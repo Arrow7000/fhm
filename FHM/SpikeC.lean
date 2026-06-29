@@ -11,7 +11,7 @@ erase the enclosing binder's `∀a`, "freeze" `a` to a fresh free `fvar Z` insid
 kept recursion scheme, and let the now-unannotated enclosing binder *re-generalise*
 `Z` to recover the outer function's polymorphism.
 
-This file tests the crux of that idea on the REAL `TypeOfHM.letRecAnn` node:
+This file tests the crux of that idea on the REAL `TypeOfElabHM.letRecAnn` node:
 a kept scheme carrying a free `fvar Z` is **rigid** in `Z`. If it is rigid, the
 enclosing binder canNOT re-generalise `Z`, so freeze-and-re-generalise cannot
 recover the outer polymorphism — i.e. C is *not* supported by pure type-erasure. -/
@@ -31,22 +31,22 @@ def cTerm (Z : Nat) : Expr := .letRecAnn [sigZ Z] [rhs] (.var 0 [])
 /-- POSITIVE — Feature B: with `Z` a *top-level* rigid constant, the term types at
     `Z → Z`, and this is erasure-safe (free `fvar`s never dangle). -/
 theorem cTerm_typeable (Z : Nat) :
-    TypeOfHM ⟨[], []⟩ (cTerm Z) (.arrow (.fvar Z) (.fvar Z)) := by
-  refine TypeOfHM.letRecAnn (schemes := [sigZ Z]) (L := []) rfl ?_ ?_ rfl ?_
+    TypeOfElabHM ⟨[], []⟩ (cTerm Z) (.arrow (.fvar Z) (.fvar Z)) := by
+  refine TypeOfElabHM.letRecAnn (schemes := [sigZ Z]) (L := []) rfl ?_ ?_ rfl ?_
   · intro σ hσ; simp only [List.mem_singleton] at hσ; subst hσ
     exact .arrow .fvar .fvar
   · intro p hp Xs hfresh
     simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
     subst hp
     obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    show TypeOfHM ⟨[sigZ Z], []⟩ (rhs.openTyVars []) ((Ty.fvar Z).arrow (Ty.fvar Z))
-    refine TypeOfHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
-    refine TypeOfHM.app (argTy := .fvar Z) ?_ ?_
-    · exact TypeOfHM.var (polyTy := sigZ Z) (tyArgs := []) rfl
+    show TypeOfElabHM ⟨[sigZ Z], []⟩ (rhs.openTyVars []) ((Ty.fvar Z).arrow (Ty.fvar Z))
+    refine TypeOfElabHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
+    refine TypeOfElabHM.app (argTy := .fvar Z) ?_ ?_
+    · exact TypeOfElabHM.var (polyTy := sigZ Z) (tyArgs := []) rfl
         (by intro t ht; cases ht) rfl (.arrow .fvar .fvar)
-    · exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar Z)) (tyArgs := []) rfl
+    · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar Z)) (tyArgs := []) rfl
         (by intro t ht; cases ht) rfl .fvar
-  · exact TypeOfHM.var (polyTy := sigZ Z) (tyArgs := []) rfl
+  · exact TypeOfElabHM.var (polyTy := sigZ Z) (tyArgs := []) rfl
       (by intro t ht; cases ht) rfl (.arrow .fvar .fvar)
 
 /-- NEGATIVE — the obstruction: the kept scheme `Z → Z` is **rigid** in `Z`. The
@@ -56,7 +56,7 @@ theorem cTerm_typeable (Z : Nat) :
     type-erasure setting. Supporting C therefore needs the type *application*
     structure to survive (type-passing), not be erased. -/
 theorem cTerm_rigid (Z X : Nat) (hne : X ≠ Z) :
-    ¬ TypeOfHM ⟨[], []⟩ (cTerm Z) (.arrow (.fvar X) (.fvar X)) := by
+    ¬ TypeOfElabHM ⟨[], []⟩ (cTerm Z) (.arrow (.fvar X) (.fvar X)) := by
   intro h
   cases h with
   | letRecAnn hlen hwf hcofin heq hbody =>
@@ -79,7 +79,7 @@ var at `bvar 0`), and the recursive result is genuinely *used* (applied to the
 parameter). Under the OLD un-shielded `instTy` this failed subject reduction (see
 `SpikeSchemeRelMutual.preservation_fails`); with the scheme-relative opened rule
 plus `instTy`/`openTyVars` depth-shielding now in Core, it both types and reduces
-soundly (it is covered by `TypeOfHM.preservation`). -/
+soundly (it is covered by `TypeOfElabHM.preservation`). -/
 
 /-- `∀a. a → a`. -/
 def selfSig : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
@@ -105,50 +105,50 @@ def gRhs : Expr :=
 def mutualTerm : Expr := .letRecAnn [selfSig, selfSig] [fRhs, gRhs] (.var 0 [.prim .int])
 
 theorem fRhs_opened_types (X : Nat) :
-    TypeOfHM ⟨[selfSig, selfSig], []⟩ (fRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X)) := by
-  show TypeOfHM ⟨[selfSig, selfSig], []⟩
+    TypeOfElabHM ⟨[selfSig, selfSig], []⟩ (fRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X)) := by
+  show TypeOfElabHM ⟨[selfSig, selfSig], []⟩
     (.lambda none
       (.app (.app (.var 2 [.arrow (.fvar X) (.fvar X)]) (.lambda none (.var 0 [])))
         (.var 0 [])))
     ((Ty.fvar X).arrow (Ty.fvar X))
-  refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
-  refine TypeOfHM.app (argTy := .fvar X) ?_ ?_
-  · refine TypeOfHM.app (argTy := .arrow (.fvar X) (.fvar X)) ?_ ?_
-    · exact TypeOfHM.var (polyTy := selfSig) rfl
+  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.app (argTy := .fvar X) ?_ ?_
+  · refine TypeOfElabHM.app (argTy := .arrow (.fvar X) (.fvar X)) ?_ ?_
+    · exact TypeOfElabHM.var (polyTy := selfSig) rfl
         (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar)
         rfl (.arrow (.bvar rfl) (.bvar rfl))
-    · refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
-      exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+    · refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+      exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
         (by intro t ht; cases ht) rfl .fvar
-  · exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+  · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
       (by intro t ht; cases ht) rfl .fvar
 
 theorem gRhs_opened_types (X : Nat) :
-    TypeOfHM ⟨[selfSig, selfSig], []⟩ (gRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X)) := by
-  show TypeOfHM ⟨[selfSig, selfSig], []⟩
+    TypeOfElabHM ⟨[selfSig, selfSig], []⟩ (gRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X)) := by
+  show TypeOfElabHM ⟨[selfSig, selfSig], []⟩
     (.lambda none
       (.app (.app (.var 1 [.arrow (.fvar X) (.fvar X)]) (.lambda none (.var 0 [])))
         (.var 0 [])))
     ((Ty.fvar X).arrow (Ty.fvar X))
-  refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
-  refine TypeOfHM.app (argTy := .fvar X) ?_ ?_
-  · refine TypeOfHM.app (argTy := .arrow (.fvar X) (.fvar X)) ?_ ?_
-    · exact TypeOfHM.var (polyTy := selfSig) rfl
+  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.app (argTy := .fvar X) ?_ ?_
+  · refine TypeOfElabHM.app (argTy := .arrow (.fvar X) (.fvar X)) ?_ ?_
+    · exact TypeOfElabHM.var (polyTy := selfSig) rfl
         (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar)
         rfl (.arrow (.bvar rfl) (.bvar rfl))
-    · refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
-      exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+    · refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+      exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
         (by intro t ht; cases ht) rfl .fvar
-  · exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+  · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
       (by intro t ht; cases ht) rfl .fvar
 
 /-- **Mutual own-variable polymorphic recursion types** under Core's fixed
-    `TypeOfHM.letRecAnn`: each binding is checked scheme-relatively at its own fresh
+    `TypeOfElabHM.letRecAnn`: each binding is checked scheme-relatively at its own fresh
     `X` (its own-var cross-call becomes the closed `X → X`); the body uses `f` at
     `Int`. -/
 theorem mutual_typeable :
-    TypeOfHM ⟨[], []⟩ mutualTerm ((Ty.prim .int).arrow (.prim .int)) := by
-  refine TypeOfHM.letRecAnn (schemes := [selfSig, selfSig]) (L := []) rfl ?_ ?_ rfl ?_
+    TypeOfElabHM ⟨[], []⟩ mutualTerm ((Ty.prim .int).arrow (.prim .int)) := by
+  refine TypeOfElabHM.letRecAnn (schemes := [selfSig, selfSig]) (L := []) rfl ?_ ?_ rfl ?_
   · intro σ hσ
     simp only [List.mem_cons, List.not_mem_nil, or_false] at hσ
     rcases hσ with rfl | rfl <;>
@@ -163,7 +163,7 @@ theorem mutual_typeable :
       exact fRhs_opened_types X
     · obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
       exact gRhs_opened_types X
-  · exact TypeOfHM.var (polyTy := selfSig) rfl
+  · exact TypeOfElabHM.var (polyTy := selfSig) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim)
       rfl (.arrow (.bvar rfl) (.bvar rfl))
 
@@ -173,7 +173,7 @@ end SpikeC
 
 Validates the InferW elaboration design: an *unannotated* source `let` whose rhs
 uses a polymorphic variable should elaborate to an *annotated + closed* core `let`,
-which `TypeOfHM.letIn` (it opens the bound expression per-opening) accepts at full
+which `TypeOfElabHM.letIn` (it opens the bound expression per-opening) accepts at full
 polymorphism — refuting the prior session's "must stay monomorphic" conclusion.
 
   Source skeleton :  let g = λx. id x in g 5         (id : ∀a.a→a at de Bruijn 0)
@@ -192,20 +192,20 @@ def elabTerm : Expr :=
     (.app (.var 0 [.prim .int]) (.primLit (.int 5)))        -- body: g[Int] 5
 
 /-- The closed rhs, opened at any `X`, types at `X → X` — i.e. at EVERY opening of
-    `g`'s scheme `∀a.a→a`. This is the cofinite premise of `TypeOfHM.letIn`. -/
+    `g`'s scheme `∀a.a→a`. This is the cofinite premise of `TypeOfElabHM.letIn`. -/
 theorem elabRhs_opened_typeable (X : Nat) :
-    TypeOfHM ⟨[polyId], []⟩
+    TypeOfElabHM ⟨[polyId], []⟩
       ((Expr.lambda none (.app (.var 1 [.bvar 0]) (.var 0 []))).openTyVars [X])
       ((Ty.fvar X).arrow (.fvar X)) := by
-  show TypeOfHM ⟨[polyId], []⟩
+  show TypeOfElabHM ⟨[polyId], []⟩
     (.lambda none (.app (.var 1 [.fvar X]) (.var 0 [])))
     ((Ty.fvar X).arrow (.fvar X))
-  refine TypeOfHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
-  refine TypeOfHM.app (argTy := .fvar X) ?_ ?_
-  · exact TypeOfHM.var (polyTy := polyId) rfl
+  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.app (argTy := .fvar X) ?_ ?_
+  · exact TypeOfElabHM.var (polyTy := polyId) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
       rfl (.arrow (.bvar rfl) (.bvar rfl))
-  · exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+  · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
       (by intro t ht; cases ht) rfl .fvar
 
 /-- **De-risk headline.** The elaborated term types at `Int` with `g` generalised
@@ -213,16 +213,16 @@ theorem elabRhs_opened_typeable (X : Nat) :
     impossible. Sound (the annotated `letIn` rule opens the closed rhs per-opening)
     AND principal. -/
 theorem elabTerm_typeable :
-    TypeOfHM ⟨[polyId], []⟩ elabTerm (.prim .int) := by
-  refine TypeOfHM.letIn (M := polyId) (L := [])
+    TypeOfElabHM ⟨[polyId], []⟩ elabTerm (.prim .int) := by
+  refine TypeOfElabHM.letIn (M := polyId) (L := [])
     ?_ (fun σ h => Option.some.inj h) ?_ rfl ?_
   · show ContainsBvarsUpTo 1 (Ty.arrow (Ty.bvar 0) (Ty.bvar 0))
     exact .arrow (.bvar (by omega)) (.bvar (by omega))
   · intro Xs hfresh
     obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
     exact elabRhs_opened_typeable X
-  · refine TypeOfHM.app (argTy := .prim .int) ?_ TypeOfHM.primLitInt
-    exact TypeOfHM.var (polyTy := polyId) rfl
+  · refine TypeOfElabHM.app (argTy := .prim .int) ?_ TypeOfElabHM.primLitInt
+    exact TypeOfElabHM.var (polyTy := polyId) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim)
       rfl (.arrow (.bvar rfl) (.bvar rfl))
 

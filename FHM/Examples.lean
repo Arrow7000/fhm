@@ -158,7 +158,7 @@ These are the programs that expose the classic landmines — over-eager
 generalization, escaping skolems, occurs-check loops, and rigid scoped type
 variables. The verified checker should accept exactly the sound ones and reject
 the rest. Each rejection below corresponds to a genuinely *untypeable* program
-(no `TypeOfHM` derivation exists), not merely an algorithmic giving-up. -/
+(no `TypeOfElabHM` derivation exists), not merely an algorithmic giving-up. -/
 
 -- λx. x x   :  ill-typed   (occurs check: a = a → b has no finite solution)
 #eval showType (.lambda none (.app (.var 0) (.var 0)))

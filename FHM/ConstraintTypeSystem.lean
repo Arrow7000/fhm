@@ -6,7 +6,7 @@ An alternative to the Algorithm-W development in `FHM.InferW`
 (approach A), testing whether a **constraint-based** presentation (Wand /
 Pottier–Rémy) keeps the *inference* layer free of the naked substitutions and
 fresh-variable frontiers that pervade W. We reuse the shared foundation +
-unification kernel from `FHM` (the declarative `TypeOfHM`, its
+unification kernel from `FHM` (the declarative `TypeOfElabHM`, its
 metatheory, `Subst`/`UnifyRel`/`IsMGU`, the executable `unify`).
 
 ## Schemes with guards
@@ -166,11 +166,11 @@ inductive Gen : GenCtx → Expr → Ty → Constraint → Prop
 
 /-- **Soundness of generation (guard-free fragment).** Any locally-closed
     substitution satisfying a generated constraint yields a declarative
-    `TypeOfHM` typing under the grounded context. -/
+    `TypeOfElabHM` typing under the grounded context. -/
 theorem Gen.sound {ctx : GenCtx} {e : Expr} {τ : Ty} {C : Constraint}
     (h : Gen ctx e τ C) :
     GenCtxWF ctx → ∀ {S : Subst}, (∀ p ∈ S, p.2.IsLC) → Sat S C →
-    TypeOfHM (ctx.toCtx S) e (S.onTy τ) := by
+    TypeOfElabHM (ctx.toCtx S) e (S.onTy τ) := by
   induction h with
   | primLitUnit => intro _ S _ hsat; simp only [Sat, Subst.onTy_prim] at hsat; rw [hsat]; exact .primLitUnit
   | primLitInt  => intro _ S _ hsat; simp only [Sat, Subst.onTy_prim] at hsat; rw [hsat]; exact .primLitInt
@@ -192,7 +192,7 @@ theorem Gen.sound {ctx : GenCtx} {e : Expr} {τ : Ty} {C : Constraint}
     obtain ⟨heq, hsbody⟩ := hsat
     simp only [Subst.onTy_arrow] at heq
     rw [heq]
-    refine TypeOfHM.lambda (Subst.onTy_lc hS ContainsBvarsUpTo.fvar)
+    refine TypeOfElabHM.lambda (Subst.onTy_lc hS ContainsBvarsUpTo.fvar)
       (fun T hT => absurd hT (by simp)) rfl ?_
     refine ih ?_ hS hsbody
     intro cs hcs
@@ -217,7 +217,7 @@ theorem Gen.sound {ctx : GenCtx} {e : Expr} {τ : Ty} {C : Constraint}
     obtain ⟨Vs, _, _, hbodyeq⟩ := hsat
     -- `[].zip Vs ++ S` is definitionally `S`
     have hbeq : S.onTy body = S.onTy τv := hbodyeq
-    refine TypeOfHM.var (polyTy := CScheme.ground S (.mk [] guard body)) (tyArgs := []) ?_ (by simp) ?_
+    refine TypeOfElabHM.var (polyTy := CScheme.ground S (.mk [] guard body)) (tyArgs := []) ?_ (by simp) ?_
     · show (ctxv.toCtx S).env[iv]? = _
       simp only [GenCtx.toCtx, List.getElem?_map, hlookup, Option.map_some]
     · simp only [CScheme.ground, PolyTy.mkTrivial]
@@ -227,7 +227,7 @@ theorem Gen.sound {ctx : GenCtx} {e : Expr} {τ : Ty} {C : Constraint}
     intro _ S hS hsat
     simp only [Sat] at hsat
     obtain ⟨Vs, hVsLC, hVseq⟩ := hsat
-    refine TypeOfHM.ctor (ctor := ctorDefv) ?_ hVsLC.2 ?_
+    refine TypeOfElabHM.ctor (ctor := ctorDefv) ?_ hVsLC.2 ?_
     · simpa only [GenCtx.toCtx] using hlookup
     · have hbody : (S.onPolyTy ctorDefv.toTy).body = ctorDefv.toTy.body := by
         simp only [Subst.onPolyTy]
