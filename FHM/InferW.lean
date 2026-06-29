@@ -4197,6 +4197,21 @@ termination_by Expr.sizeRecGroup bindings
 decreasing_by all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 end
 
+/-! ### M4: prefix-fix corollary
+
+An earlier substitution `R` (domain below this derivation's input frontier `Φ`,
+avoiding the context env and the skeleton's type variables) fixes the elaborated
+output: `eOut.substTyFvars R = eOut`. Immediate from `Infer.eOut_avoid` (which
+places `eOut.tyFreeVars` off `R`'s domain) and the syntactic
+`Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars`. -/
+theorem Infer.eOut_substTyFvars_eq {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ)
+    {R : Subst} (hRΦ : ∀ p ∈ R, p.1 < Φ)
+    (hRctx : ∀ p ∈ R, ∀ M ∈ ctx.env, p.1 ∉ M.body.freeVars)
+    (hRe : ∀ p ∈ R, p.1 ∉ e.tyFreeVars) :
+    eOut.substTyFvars R = eOut :=
+  Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc =>
+    (Infer.eOut_avoid h (w := p.1) (hRΦ p hp) (hRctx p hp) (hRe p hp)).2.2 hc)
+
 /-- The `letIn` soundness case, factored out (named binders avoid the
     inaccessible-name problem inside the `Infer.sound` induction). The cofinite
     premise is built by renaming the generalization candidates `genVars` to the
