@@ -5468,6 +5468,215 @@ theorem TypeOfElabHM.letRec_cofinite_of_rhs
   rw [htype, henv] at hsub
   exact hsub
 
+/-! ### Λ-outside `letRec` elaboration soundness (`letRecElab_sound`).
+
+The elaborated `letRec` is a right-nested stack of annotated `letIn`s
+(`Expr.letRecElab`): member `i` is wrapped in `letIn (some (genGroup G τᵢ)) …`
+whose bound expr is the *monomorphic* inner group `letRec (raw shifted) (var i [])`
+with its gen-vars `genFilter G τᵢ` closed back. We type it bottom-up: the inner
+monomorphic group via `TypeOfElabHM.letRec` (shared pool `G' = []`) + `weaken_env`
+for the `shiftFrom`, each outer wrapper via the committed `sound_letInAnn`
+close-back pattern. These are standalone (the mutual feeds in the bindings'/body's
+typings as hypotheses). -/
+
+/-- The inner monomorphic group of the Λ-outside nest for member `i`: the shifted
+    raw bindings type at the monotypes `τs` (shared pool `[]`), and projecting
+    member `i` (`var i []`) lands its monotype `τ = τs[i]`. The `shiftFrom n …`
+    de Bruijn shift is absorbed by `TypeOfElabHM.weaken_env`, inserting the
+    `accEnv` outer-wrapper schemes between the group binders and the outer ctx. -/
+private theorem innerMonoLetRec_sound {ctors : CtorEnv} {ctxEnv accEnv : Env}
+    {bs : List Expr} {τs : List Ty} {n i : Nat} {τ : Ty}
+    (hn : n = bs.length) (hlen : bs.length = τs.length)
+    (hτs_lc : ∀ t ∈ τs, t.IsLC)
+    (hτ : τs[i]? = some τ)
+    (hshift : n - 1 - i = accEnv.length)
+    (hRHS : ∀ p ∈ bs.zip τs, TypeOfElabHM ⟨τs.map PolyTy.mkTrivial ++ ctxEnv, ctors⟩ p.1 p.2) :
+    TypeOfElabHM ⟨accEnv ++ ctxEnv, ctors⟩
+      (.letRec (bs.map (·.shiftFrom n (n - 1 - i))) (.var i [])) τ := by
+  have hi : i < τs.length := by rw [List.getElem?_eq_some_iff] at hτ; exact hτ.1
+  have hτlc : τ.IsLC := hτs_lc τ (by rw [List.getElem?_eq_some_iff] at hτ; exact hτ.2 ▸ List.getElem_mem _)
+  have hgnil : ∀ t : Ty, PolyTy.genGroup [] t = PolyTy.mkTrivial t := by
+    intro t
+    have hcl : Ty.closeOver [] t = t := Ty.closeOver_eq_self_of_fresh (by simp)
+    simp only [PolyTy.genGroup, Ty.genFilter, List.filter_nil, List.length_nil, hcl,
+      PolyTy.mkTrivial]
+  have hmapren : ∀ (Xs : List Nat) (ts : List Ty), ts.map (Ty.renameG [] Xs) = ts := by
+    intro Xs ts
+    induction ts with
+    | nil => rfl
+    | cons hd tl ih =>
+      have hhd : Ty.renameG [] Xs hd = hd := rfl
+      rw [List.map_cons, ih, hhd]
+  refine TypeOfElabHM.letRec (τs := τs) (Ms := τs.map PolyTy.mkTrivial) (G := []) (L := [])
+    (by rw [List.length_map]; omega) (by rw [List.length_map]) hτs_lc List.nodup_nil
+    (fun p hp => (List.mem_zip_self_map' hp).trans (hgnil p.1).symm)
+    ?cofin rfl ?body
+  case cofin =>
+    intro Xs _ p hp
+    rw [hmapren Xs τs] at hp ⊢
+    rw [List.zip_map_left, List.mem_map] at hp
+    obtain ⟨q, hq, rfl⟩ := hp
+    have hw := TypeOfElabHM.weaken_env (env_pre := τs.map PolyTy.mkTrivial)
+      (env_extra := accEnv) (env := ctxEnv) (hRHS q hq)
+    have hlen' : (τs.map PolyTy.mkTrivial).length = n := by rw [List.length_map, ← hlen, ← hn]
+    rw [hlen', ← hshift, List.append_assoc] at hw
+    exact hw
+  case body =>
+    refine TypeOfElabHM.var (polyTy := PolyTy.mkTrivial τ) ?_ (by simp)
+      (by simp [PolyTy.mkTrivial]) (InstantiatesBy.refl_of_closed hτlc)
+    rw [List.getElem?_append_left (by rw [List.length_map]; exact hi), List.getElem?_map, hτ]
+    rfl
+
+/-- `((range τs.length).zip τs).map (f ∘ snd) = τs.map f` (the zip's second
+    components are exactly `τs`). -/
+private theorem map_snd_range_zip {β : Type _} (f : Ty → β) (τs : List Ty) :
+    (((List.range τs.length).zip τs).map (fun p => f p.2)) = τs.map f := by
+  apply List.ext_getElem
+  · simp [List.length_zip, List.length_range]
+  · intro k h1 h2
+    simp only [List.getElem_map, List.getElem_zip]
+
+/-- The Λ-outside nest types: each outer wrapper (member `i`) generalises
+    `genFilter G τᵢ` over the inner monomorphic group via the committed
+    `sound_letInAnn` close-back, and the body sees the per-binding schemes. Proved
+    by induction on the member stack `ms`, accumulating the outer schemes `acc`
+    (whose length equals the `shiftFrom` depth `n-1-i` for the current member). -/
+private theorem letRecElabNest_sound {ctx : Ctx} {G : List Nat} {n : Nat}
+    {bs : List Expr} {τs : List Ty} {body : Expr} {ρ : Ty}
+    (hn : n = bs.length) (hlen : bs.length = τs.length)
+    (hτs_lc : ∀ τ ∈ τs, τ.IsLC)
+    (hG_nodup : G.Nodup)
+    (hG_env : ∀ g ∈ G, g ∉ ctx.env.freeVars)
+    (hbs_norec : ∀ e ∈ bs, e.NoRecAnn)
+    (hRHS : ∀ p ∈ bs.zip τs,
+      TypeOfElabHM ⟨τs.map PolyTy.mkTrivial ++ ctx.env, ctx.ctors⟩ p.1 p.2) :
+    ∀ (ms : List (Nat × Ty)) (acc : List PolyTy),
+      (∀ M ∈ acc, ∀ g ∈ G, g ∉ M.body.freeVars) →
+      acc.length + ms.length = n →
+      (∀ k (hk : k < ms.length), (ms[k]'hk).1 = n - 1 - (acc.length + k) ∧
+        τs[(ms[k]'hk).1]? = some (ms[k]'hk).2) →
+      TypeOfElabHM ⟨(ms.map (fun p => PolyTy.genGroup G p.2)).reverse ++ acc ++ ctx.env,
+          ctx.ctors⟩ body ρ →
+      TypeOfElabHM ⟨acc ++ ctx.env, ctx.ctors⟩ (Expr.letRecElabNest G n bs ms body) ρ := by
+  intro ms
+  induction ms with
+  | nil =>
+    intro acc _ _ _ hbody
+    simpa only [Expr.letRecElabNest, List.map_nil, List.reverse_nil, List.nil_append] using hbody
+  | cons hd rest ih =>
+    intro acc hacc_genG hcard hms hbody
+    obtain ⟨i, τ⟩ := hd
+    have hcard1 : acc.length + (rest.length + 1) = n := by simpa only [List.length_cons] using hcard
+    obtain ⟨hi_eq, hτ_eq⟩ := hms 0 (by simp)
+    simp only [List.getElem_cons_zero, Nat.add_zero] at hi_eq hτ_eq
+    have hτlc : τ.IsLC := hτs_lc τ (List.mem_of_getElem? hτ_eq)
+    have hshift : n - 1 - i = acc.length := by omega
+    have hyG : ∀ y ∈ Ty.genFilter G τ, y ∈ G := fun y hy => by
+      simp only [Ty.genFilter, List.mem_filter] at hy; exact hy.1
+    simp only [Expr.letRecElabNest]
+    refine Infer.sound_letInAnn
+      (σ := PolyTy.genGroup G τ) (Ys := Ty.genFilter G τ)
+      (rhsElab := .letRec (bs.map (·.shiftFrom n (n - 1 - i))) (.var i []))
+      (bodyElab := Expr.letRecElabNest G n bs rest body)
+      ?hrhs (PolyTy.genGroup_wf hτlc) (hG_nodup.filter _) rfl ?hnorec ?hYsenv ?hYsσ ?hbody'
+    case hrhs =>
+      have hopen : PolyTy.openVars (Ty.genFilter G τ) (PolyTy.genGroup G τ) = τ := by
+        simp only [PolyTy.openVars, PolyTy.genGroup]; exact Ty.openVars_closeOver_self hτlc
+      rw [hopen]
+      exact innerMonoLetRec_sound hn hlen hτs_lc hτ_eq hshift hRHS
+    case hnorec =>
+      refine ⟨?_, trivial⟩
+      rw [Expr.NoRecAnn.RecGroup_iff]
+      intro e he
+      obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
+      exact (hbs_norec e' he').shiftFrom (n - 1 - i) n
+    case hYsenv =>
+      intro y hy hc
+      rw [Env.mem_freeVars_iff] at hc
+      obtain ⟨pt, hpt, hypt⟩ := hc
+      rcases List.mem_append.mp hpt with hpt | hpt
+      · exact hacc_genG pt hpt y (hyG y hy) hypt
+      · exact hG_env y (hyG y hy) (Env.mem_freeVars_iff.mpr ⟨pt, hpt, hypt⟩)
+    case hYsσ =>
+      intro y hy
+      exact Ty.not_mem_closeOver_freeVars hy
+    case hbody' =>
+      have hacc'_genG : ∀ M ∈ PolyTy.genGroup G τ :: acc, ∀ g ∈ G, g ∉ M.body.freeVars := by
+        intro M hM g hg
+        rcases List.mem_cons.mp hM with rfl | hM
+        · intro hc
+          by_cases hgτ : g ∈ τ.freeVars
+          · exact Ty.not_mem_closeOver_freeVars
+              (by simp only [Ty.genFilter, List.mem_filter, decide_eq_true_eq]; exact ⟨hg, hgτ⟩) hc
+          · exact hgτ (Ty.freeVars_closeOver_subset hc)
+        · exact hacc_genG M hM g hg
+      have hcard' : (PolyTy.genGroup G τ :: acc).length + rest.length = n := by
+        simp only [List.length_cons]; omega
+      have hms' : ∀ k (hk : k < rest.length),
+          (rest[k]'hk).1 = n - 1 - ((PolyTy.genGroup G τ :: acc).length + k) ∧
+          τs[(rest[k]'hk).1]? = some (rest[k]'hk).2 := by
+        intro k hk
+        have := hms (k + 1) (by simp only [List.length_cons]; omega)
+        simp only [List.getElem_cons_succ, List.length_cons] at this ⊢
+        refine ⟨?_, this.2⟩
+        rw [this.1]; congr 1; omega
+      have hbody' : TypeOfElabHM
+          ⟨(rest.map (fun p => PolyTy.genGroup G p.2)).reverse
+              ++ (PolyTy.genGroup G τ :: acc) ++ ctx.env, ctx.ctors⟩ body ρ := by
+        rw [List.map_cons, List.reverse_cons] at hbody
+        simpa only [List.append_assoc, List.singleton_append, List.cons_append] using hbody
+      have key := ih (PolyTy.genGroup G τ :: acc) hacc'_genG hcard' hms' hbody'
+      simpa only [List.cons_append] using key
+
+/-- **Λ-outside `letRec` elaboration soundness.** The fully-elaborated recursive
+    group `Expr.letRecElab G bs τs body` types at `ρ` given the bindings' (bare,
+    monomorphic) RHS typings and the body's typing under the per-binding gen
+    schemes. (The mutual feeds these in; `S`-distribution is done at the call site.) -/
+theorem Expr.letRecElab_sound {ctx : Ctx} {G : List Nat} {bs : List Expr}
+    {τs : List Ty} {body : Expr} {ρ : Ty}
+    (hlen : bs.length = τs.length)
+    (hτs_lc : ∀ τ ∈ τs, τ.IsLC)
+    (hG_nodup : G.Nodup)
+    (hG_env : ∀ g ∈ G, g ∉ ctx.env.freeVars)
+    (hbs_norec : ∀ e ∈ bs, e.NoRecAnn)
+    (hRHS : ∀ p ∈ bs.zip τs,
+      TypeOfElabHM ⟨τs.map PolyTy.mkTrivial ++ ctx.env, ctx.ctors⟩ p.1 p.2)
+    (hbody : TypeOfElabHM ⟨τs.map (PolyTy.genGroup G) ++ ctx.env, ctx.ctors⟩ body ρ) :
+    TypeOfElabHM ctx (Expr.letRecElab G bs τs body) ρ := by
+  have hmlen : bs.length = τs.length := hlen
+  rw [Expr.letRecElab]
+  have hcard : ([] : List PolyTy).length + (((List.range bs.length).zip τs).reverse).length
+      = bs.length := by
+    simp only [List.length_nil, List.length_reverse, List.length_zip, List.length_range,
+      Nat.zero_add, ← hlen, Nat.min_self]
+  have hbodyctx : TypeOfElabHM
+      ⟨((((List.range bs.length).zip τs).reverse).map (fun p => PolyTy.genGroup G p.2)).reverse
+          ++ ([] : List PolyTy) ++ ctx.env, ctx.ctors⟩ body ρ := by
+    rw [List.map_reverse, List.reverse_reverse, List.append_nil]
+    rw [show bs.length = τs.length from hlen, map_snd_range_zip]
+    exact hbody
+  have hvalid : ∀ k (hk : k < (((List.range bs.length).zip τs).reverse).length),
+      ((((List.range bs.length).zip τs).reverse)[k]'hk).1
+          = bs.length - 1 - (([] : List PolyTy).length + k) ∧
+      τs[((((List.range bs.length).zip τs).reverse)[k]'hk).1]?
+          = some ((((List.range bs.length).zip τs).reverse)[k]'hk).2 := by
+    intro k hk
+    have hlen_ms : (((List.range bs.length).zip τs).reverse).length = bs.length := by
+      rw [List.length_reverse, List.length_zip, List.length_range, ← hlen, Nat.min_self]
+    have hkn : k < bs.length := by rw [← hlen_ms]; exact hk
+    have h1 : ((List.range bs.length).zip τs).length = bs.length := by
+      rw [List.length_zip, List.length_range, ← hlen, Nat.min_self]
+    have hidx : (((List.range bs.length).zip τs).reverse)[k]'hk
+        = (bs.length - 1 - k, τs[bs.length - 1 - k]'(by omega)) := by
+      simp only [List.getElem_reverse, List.getElem_zip, List.getElem_range, h1]
+    rw [hidx]
+    refine ⟨by simp only [List.length_nil, Nat.zero_add], ?_⟩
+    simp only [List.getElem?_eq_getElem (by omega : bs.length - 1 - k < τs.length)]
+  have key := letRecElabNest_sound (ctx := ctx) (G := G) (n := bs.length) (bs := bs) (τs := τs)
+    (body := body) (ρ := ρ) rfl hlen hτs_lc hG_nodup hG_env hbs_norec hRHS
+    (((List.range bs.length).zip τs).reverse) [] (by simp) hcard hvalid hbodyctx
+  simpa only [List.nil_append] using key
+
 /-! Soundness of `Infer` against the declarative `TypeOfElabHM`: applying the
     inferred substitution to the context yields a declarative typing. -/
 mutual
