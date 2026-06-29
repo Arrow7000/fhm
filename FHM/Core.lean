@@ -207,7 +207,8 @@ inductive Expr
   | letIn (ann : Option PolyTy) (bindingExpr body : Expr)
   /-- A variable use, carrying the explicit type arguments at which its scheme is
       instantiated (type-passing). `tyArgs = []` for a monomorphic use. These are
-      runtime-relevant: they drive type-beta when a polymorphic binding is unfolded. -/
+      runtime-relevant: they drive type-beta when a polymorphic binding is unfolded.
+      We initialise this to `[]`. Only gets replaced with real `tyArgs` during elaboration. -/
   | var (deBruijnIndex : Nat) (tyArgs : List Ty)
   /-- A type constructor -/
   | ctor (name : CtorName)
@@ -1878,19 +1879,19 @@ def Expr.openTyVarsAux (d : Nat) (Xs : List Nat) : Expr → Expr
       .letRecAnn schemes (RecGroupAnn.openTyVarsAux d Xs schemes bindings)
         (body.openTyVarsAux d Xs)
 
-private def BranchList.openTyVarsAux (d : Nat) (Xs : List Nat) :
+def BranchList.openTyVarsAux (d : Nat) (Xs : List Nat) :
     List (MatchPattern × Expr) → List (MatchPattern × Expr)
   | []                  => []
   | (pat, body) :: rest => (pat, body.openTyVarsAux d Xs) :: BranchList.openTyVarsAux d Xs rest
 
-private def RecGroup.openTyVarsAux (d : Nat) (Xs : List Nat) : List Expr → List Expr
+def RecGroup.openTyVarsAux (d : Nat) (Xs : List Nat) : List Expr → List Expr
   | []        => []
   | e :: rest => e.openTyVarsAux d Xs :: RecGroup.openTyVarsAux d Xs rest
 
 /-- Open scoped type variables through an *annotated* recursion group's bindings:
     each binding is descended at `d + σⱼ.paramCount` (shielding its own scheme's
     variables), the schemes consumed in lockstep. Mirrors `RecGroupAnn.instTyAux`. -/
-private def RecGroupAnn.openTyVarsAux (d : Nat) (Xs : List Nat) :
+def RecGroupAnn.openTyVarsAux (d : Nat) (Xs : List Nat) :
     List PolyTy → List Expr → List Expr
   | _,       []        => []
   | [],      e :: rest => e.openTyVarsAux d Xs :: RecGroupAnn.openTyVarsAux d Xs [] rest
@@ -1921,7 +1922,7 @@ private theorem RecGroup.substTyFvar_eq_map (Z : Nat) (U : Ty) (bs : List Expr) 
   | nil => rfl
   | cons hd tl ih => simp only [RecGroup.substTyFvar, List.map_cons, ih]
 
-private theorem RecGroup.openTyVarsAux_eq_map (d : Nat) (Xs : List Nat) (bs : List Expr) :
+theorem RecGroup.openTyVarsAux_eq_map (d : Nat) (Xs : List Nat) (bs : List Expr) :
     RecGroup.openTyVarsAux d Xs bs = bs.map (·.openTyVarsAux d Xs) := by
   induction bs with
   | nil => rfl
@@ -4785,7 +4786,7 @@ private theorem BranchList.substTyFvar_eq_map {Z : Nat} {U : Ty}
   | nil => rfl
   | cons hd tl ih => obtain ⟨p, b⟩ := hd; simp only [BranchList.substTyFvar, List.map_cons, ih]
 
-private theorem BranchList.openTyVarsAux_eq_map {d : Nat} {Xs : List Nat}
+theorem BranchList.openTyVarsAux_eq_map {d : Nat} {Xs : List Nat}
     {brs : List (MatchPattern × Expr)} :
     BranchList.openTyVarsAux d Xs brs = brs.map (fun pb => (pb.1, pb.2.openTyVarsAux d Xs)) := by
   induction brs with
