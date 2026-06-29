@@ -1624,12 +1624,12 @@ theorem Expr.substTyFvar_tyBvarBounded (Z : Nat) {U : Ty} (hU : U.IsLC) {e : Exp
     cases ann with
     | none =>
       simp only [Expr.NoRecAnn] at hno; simp only [Expr.TyBvarBounded] at hb
-      simp only [Expr.substTyFvar, Expr.TyBvarBounded]
+      simp only [Expr.substTyFvar]
       exact ⟨ihr d hno.1 hb.1, ihb d hno.2 hb.2⟩
     | some σ =>
       obtain ⟨pc, sb⟩ := σ
       simp only [Expr.NoRecAnn] at hno; simp only [Expr.TyBvarBounded] at hb
-      simp only [Expr.substTyFvar, Expr.TyBvarBounded, PolyTy.substFvar]
+      simp only [Expr.substTyFvar]
       exact ⟨ContainsBvarsUpTo.substFvar hU hb.1, ihr (d + pc) hno.1 hb.2.1, ihb d hno.2 hb.2.2⟩
   | match_ scrut branches ihs ihbr =>
     intro d hno hb
@@ -5122,6 +5122,190 @@ theorem Ty.substFvars_openVars {S : List (Nat × Ty)} {Xs : List Nat} {t : Ty}
           (fun p hp => hS_Xs p (List.mem_cons_of_mem _ hp)),
         ← Ty.substFvar_openVars (hS_lc (Z, U) List.mem_cons_self)
             (hS_Xs (Z, U) List.mem_cons_self)]
+
+/-! ### M6 close-back plumbing: `substTyFvars` / `closeTyVars` commutation
+
+The elaboration `closeTyVars`-closes the (substituted) bound expression over the
+generalised variables `genV`. Pushing the *enclosing* substitution `S` through
+that close commutes when `S` avoids `genV` in **both** domain and range: `S`
+never substitutes a freshly-closed `genV` (domain), and its images carry no
+`genV` that would be spuriously captured by the close (range). Structural
+mirror of `Expr.substTyFvars_openTyVars`, lifting the single-step
+`Ty.substFvar_closeOverFrom_comm`. -/
+
+/-- Closing at depth `d` over variables none of which occur free in `τ` is the
+    identity (the offset analogue of `Ty.closeOver_eq_self_of_fresh`). -/
+theorem Ty.closeOverFrom_eq_self_of_fresh {d : Nat} {gs : List Nat} {τ : Ty}
+    (h : ∀ g ∈ gs, g ∉ τ.freeVars) : Ty.closeOverFrom d gs τ = τ := by
+  induction τ using Ty.rec_strong with
+  | prim p => simp [Ty.closeOverFrom]
+  | bvar i => simp [Ty.closeOverFrom]
+  | fvar n =>
+    have hn : n ∉ gs := fun hmem => h n hmem (by simp [Ty.freeVars])
+    simp only [Ty.closeOverFrom, List.idxOf?_eq_none_iff.mpr hn]
+  | arrow a b iha ihb =>
+    have ha : ∀ g ∈ gs, g ∉ a.freeVars := fun g hg hc =>
+      h g hg (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hc)
+    have hb : ∀ g ∈ gs, g ∉ b.freeVars := fun g hg hc =>
+      h g hg (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hc)
+    simp only [Ty.closeOverFrom, iha ha, ihb hb]
+  | customTy nm tys ih =>
+    simp only [Ty.closeOverFrom, TyList.closeOverFrom_eq_map]
+    apply congrArg (Ty.customTy nm)
+    conv_rhs => rw [← List.map_id tys]
+    apply List.map_congr_left
+    intro t ht
+    exact ih t ht (fun g hg hc => h g hg (TyList.mem_freeVars_of_mem ht hc))
+
+/-- `substFvar` commutes with offset closing (`Ty.closeOverFrom`) when the
+    substituted variable `Z` and every free var of the replacement `U` avoid the
+    closed-over pool `gs` (the offset analogue of `Ty.substFvar_closeOver_comm`). -/
+theorem Ty.substFvar_closeOverFrom_comm {Z : Nat} {U : Ty} {gs : List Nat} {d : Nat} {τ : Ty}
+    (hZ : Z ∉ gs) (hU : ∀ g ∈ gs, g ∉ U.freeVars) :
+    Ty.substFvar Z U (Ty.closeOverFrom d gs τ) = Ty.closeOverFrom d gs (Ty.substFvar Z U τ) := by
+  induction τ using Ty.rec_strong with
+  | prim p => simp [Ty.closeOverFrom, Ty.substFvar]
+  | bvar i => simp [Ty.closeOverFrom, Ty.substFvar]
+  | fvar n =>
+    cases h_idx : gs.idxOf? n with
+    | none =>
+      have hn : n ∉ gs := List.idxOf?_eq_none_iff.mp h_idx
+      by_cases hnz : n = Z
+      · subst hnz
+        simp only [Ty.closeOverFrom, h_idx, Ty.substFvar, if_pos]
+        exact (Ty.closeOverFrom_eq_self_of_fresh hU).symm
+      · simp only [Ty.closeOverFrom, h_idx, Ty.substFvar, if_neg hnz]
+    | some i =>
+      have hn : n ∈ gs := List.mem_of_getElem? (List.getElem?_of_idxOf? h_idx)
+      have hnz : ¬ n = Z := fun h => hZ (h ▸ hn)
+      simp only [Ty.closeOverFrom, h_idx, Ty.substFvar, if_neg hnz]
+  | arrow a b iha ihb =>
+    simp only [Ty.closeOverFrom, Ty.substFvar, iha, ihb]
+  | customTy nm tys ih =>
+    simp only [Ty.closeOverFrom, Ty.substFvar, TyList.closeOverFrom_eq_map, TyList.substFvar_eq_map,
+               List.map_map]
+    apply congrArg (Ty.customTy nm)
+    apply List.map_congr_left
+    intro t ht
+    simpa using ih t ht
+
+/-- Iterated `substFvars` commutes with offset closing, lifting
+    `Ty.substFvar_closeOverFrom_comm` over the substitution `S` (which must avoid
+    the closed-over pool `Xs` in both domain and range). -/
+theorem Ty.substFvars_closeOverFrom {S : Subst} {Xs : List Nat} {d : Nat}
+    (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) (hS_ran : ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∉ Xs) :
+    ∀ {t : Ty}, Ty.substFvars S (Ty.closeOverFrom d Xs t) = Ty.closeOverFrom d Xs (Ty.substFvars S t) := by
+  induction S with
+  | nil => intro t; rfl
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    intro t
+    simp only [Ty.substFvars]
+    rw [Ty.substFvar_closeOverFrom_comm (hS_Xs (Z, U) List.mem_cons_self)
+          (fun g hg hc => hS_ran (Z, U) List.mem_cons_self g hc hg),
+        ih (fun p hp => hS_Xs p (List.mem_cons_of_mem _ hp))
+          (fun p hp => hS_ran p (List.mem_cons_of_mem _ hp))]
+
+/-- `substTyFvars` is the identity on `primLit` leaves. -/
+private theorem Expr.substTyFvars_primLit {S : Subst} {p : PrimLitExpr} :
+    (Expr.primLit p).substTyFvars S = .primLit p := by
+  induction S with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [Expr.substTyFvars, Expr.substTyFvar, ih]
+
+/-- `substTyFvars` is the identity on `ctor` leaves. -/
+private theorem Expr.substTyFvars_ctor {S : Subst} {c : CtorName} :
+    (Expr.ctor c).substTyFvars S = .ctor c := by
+  induction S with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [Expr.substTyFvars, Expr.substTyFvar, ih]
+
+/-- Iterated `substTyFvars` commutes with `closeTyVarsAux` when the substitution
+    `S` avoids the closing names `Xs` in both domain and range. The `NoRecAnn`
+    hypothesis kills the `letRecAnn` shape (which `Infer` never produces); proved
+    by structural induction over the term using the public `substTyFvars_*` node
+    distribution lemmas + `Ty.substFvars_closeOverFrom` for annotations/tyArgs. -/
+theorem Expr.substTyFvars_closeTyVarsAux {S : Subst} {Xs : List Nat}
+    (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) (hS_ran : ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∉ Xs) :
+    ∀ (e : Expr) (d : Nat), e.NoRecAnn →
+      (e.closeTyVarsAux d Xs).substTyFvars S = (e.substTyFvars S).closeTyVarsAux d Xs := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro d _; simp only [Expr.closeTyVarsAux, Expr.substTyFvars_primLit]
+  | ctor nm => intro d _; simp only [Expr.closeTyVarsAux, Expr.substTyFvars_ctor]
+  | var n tyArgs =>
+    intro d _
+    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_var, List.map_map]
+    refine congrArg (Expr.var n) ?_
+    apply List.map_congr_left
+    intro t _
+    simp only [Function.comp_apply]
+    exact Ty.substFvars_closeOverFrom hS_Xs hS_ran
+  | app f inp ih_f ih_i =>
+    intro d hno
+    simp only [Expr.NoRecAnn] at hno
+    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_app, Expr.app.injEq]
+    exact ⟨ih_f d hno.1, ih_i d hno.2⟩
+  | lambda ann body ih =>
+    intro d hno
+    simp only [Expr.NoRecAnn] at hno
+    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_lambda, Expr.lambda.injEq]
+    refine ⟨?_, ih d hno⟩
+    cases ann with
+    | none => rfl
+    | some t =>
+      simp only [Option.map_some, Option.some.injEq]
+      exact Ty.substFvars_closeOverFrom hS_Xs hS_ran
+  | letIn ann be body ih_be ih_body =>
+    intro d hno
+    cases ann with
+    | none =>
+      simp only [Expr.NoRecAnn] at hno
+      simp only [Expr.closeTyVarsAux, Expr.substTyFvars_letIn, Option.map_none]
+      rw [ih_be d hno.1, ih_body d hno.2]
+    | some σ =>
+      simp only [Expr.NoRecAnn] at hno
+      simp only [Expr.closeTyVarsAux, Expr.substTyFvars_letIn, Option.map_some]
+      rw [ih_be (d + σ.paramCount) hno.1, ih_body d hno.2,
+          Ty.substFvars_closeOverFrom hS_Xs hS_ran (t := σ.body)]
+  | match_ scrut branches ih_scrut ih_branches =>
+    intro d hno
+    simp only [Expr.NoRecAnn] at hno
+    obtain ⟨hscrut_no, hbr_no⟩ := hno
+    rw [Expr.NoRecAnn.BranchList_iff] at hbr_no
+    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_match, BranchList.closeTyVarsAux_eq_map,
+      List.map_map, Expr.match_.injEq]
+    refine ⟨ih_scrut d hscrut_no, ?_⟩
+    apply List.map_congr_left
+    rintro ⟨p, b⟩ hpb
+    simp only [Function.comp_apply, Prod.mk.injEq, true_and]
+    exact ih_branches p b hpb d (hbr_no p b hpb)
+  | letRec bindings body ih_bindings ih_body =>
+    intro d hno
+    simp only [Expr.NoRecAnn] at hno
+    obtain ⟨hbs_no, hbody_no⟩ := hno
+    rw [Expr.NoRecAnn.RecGroup_iff] at hbs_no
+    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_letRec, RecGroup.closeTyVarsAux_eq_map,
+      List.map_map, Expr.letRec.injEq, Function.comp_def]
+    refine ⟨?_, ih_body d hbody_no⟩
+    apply List.map_congr_left
+    intro e he
+    exact ih_bindings e he d (hbs_no e he)
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    intro d hno
+    simp only [Expr.NoRecAnn] at hno
+
+/-- **Step A — the missing close/subst commutation.** Pushing a substitution `S`
+    that avoids `Xs` (domain AND range) through a top-level `closeTyVars Xs`
+    commutes: `(e.closeTyVars Xs).substTyFvars S = (e.substTyFvars S).closeTyVars Xs`
+    (for `letRecAnn`-free terms, the only ones `Infer` produces). This is the
+    bound-expression `S`-distribution the honest `letIn`/`letInAnn` soundness
+    cases need. -/
+theorem Expr.substTyFvars_closeTyVars {S : Subst} {Xs : List Nat} {e : Expr}
+    (he : e.NoRecAnn) (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs)
+    (hS_ran : ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∉ Xs) :
+    (e.closeTyVars Xs).substTyFvars S = (e.substTyFvars S).closeTyVars Xs :=
+  Expr.substTyFvars_closeTyVarsAux hS_Xs hS_ran e 0 he
 
 /-- The **honest** `letIn` soundness case (close-after-`S₁` encoding). Given the
     *elaborated* bound expression `rhsElab` already typed at `τ₁`, the generalised
