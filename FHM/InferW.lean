@@ -3229,6 +3229,389 @@ theorem Subst.onCtx_avoid {S : Subst} {ctx : Ctx} {w : Nat}
   · exact hctx M0 hM0 h
   · exact hS p hp hvp
 
+/-- `RecGroup.tyFreeVars` membership decomposes to a member binding. -/
+theorem Expr.mem_recGroupTyFreeVars {L : List Expr} {w : Nat}
+    (h : w ∈ Expr.tyFreeVars.RecGroup.tyFreeVars L) : ∃ e ∈ L, w ∈ e.tyFreeVars := by
+  induction L with
+  | nil => simp [Expr.tyFreeVars.RecGroup.tyFreeVars] at h
+  | cons hd tl ih =>
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at h
+    rcases h with h | h
+    · exact ⟨hd, List.mem_cons_self, h⟩
+    · obtain ⟨e, he, hwe⟩ := ih h; exact ⟨e, List.mem_cons_of_mem _ he, hwe⟩
+
+/-- Push a var-avoidance through a substitution (avoid form of `Subst.onTy`). -/
+theorem Subst.notMemOnTy {S : Subst} {w : Nat} {τ : Ty}
+    (hS : ∀ p ∈ S, w ∉ p.2.freeVars) (hτ : w ∉ τ.freeVars) : w ∉ (S.onTy τ).freeVars := by
+  intro hc
+  rcases Subst.mem_freeVars_onTy hc with h | ⟨p, hp, hvp⟩
+  · exact hτ h
+  · exact hS p hp hvp
+
+/-- A var avoiding all opening args (and the body) avoids the opened type. -/
+theorem Ty.not_mem_freeVars_openWith {Vs : List Ty} {w : Nat} (hVs : ∀ v ∈ Vs, w ∉ v.freeVars) :
+    ∀ {X : Ty}, w ∉ X.freeVars → w ∉ (Ty.openWith Vs X).freeVars := by
+  intro X
+  induction X using Ty.rec_strong with
+  | prim p => intro _; simp [Ty.openWith, Ty.instantiate, Ty.freeVars]
+  | fvar n => intro hX; simpa [Ty.openWith, Ty.instantiate, Ty.freeVars] using hX
+  | bvar i =>
+    intro _
+    simp only [Ty.openWith, Ty.instantiate]
+    cases h : Vs[i]? with
+    | none => simp [Ty.freeVars]
+    | some v => simp only [Option.getD_some]; exact hVs v (List.mem_of_getElem? h)
+  | arrow a b iha ihb =>
+    intro hX
+    simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at hX
+    simp only [Ty.openWith, Ty.instantiate, Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+    exact ⟨iha hX.1, ihb hX.2⟩
+  | customTy nm tys ih =>
+    intro hX
+    have hX' : ∀ t ∈ tys, w ∉ t.freeVars := fun t ht hc =>
+      hX (by rw [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht hc)
+    simp only [Ty.openWith, Ty.instantiate, TyList.instantiate_eq_map, Ty.freeVars]
+    intro hc
+    rw [mem_TyList_freeVars] at hc
+    obtain ⟨t', ht', hwt'⟩ := hc
+    obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
+    exact ih t0 ht0 (hX' t0 ht0) hwt'
+
+mutual
+/-- **Locality (avoid form).** A var below the input frontier that avoids the
+    context env and the skeleton's annotation free vars also avoids the inferred
+    substitution range, result type, and elaborated output. This is the
+    characterisation the prefix-fix corollary (M4) needs. -/
+theorem Infer.eOut_avoid {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
+    ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ e.tyFreeVars →
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ τ.freeVars ∧ w ∉ eOut.tyFreeVars := by
+  cases h with
+  | primLitUnit => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
+  | primLitInt => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
+  | primLitNat => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
+  | primLitStr => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
+  | var hlook =>
+    intro w hwΦ hctx _
+    refine ⟨by simp, ?_, ?_⟩
+    · intro hc
+      rcases Ty.freeVars_openVars_subset w hc with h | h
+      · exact hctx _ (List.mem_of_getElem? hlook) h
+      · have := freshVars_ge w h; omega
+    · simp only [Expr.tyFreeVars, List.mem_flatMap, not_exists, not_and]
+      intro t ht hwt
+      obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+      simp only [Ty.freeVars, List.mem_singleton] at hwt
+      have := freshVars_ge x hx; omega
+  | ctor hlook =>
+    intro w hwΦ _ _
+    refine ⟨by simp, ?_, by simp [Expr.tyFreeVars]⟩
+    intro hc
+    rcases Ty.freeVars_openVars_subset w hc with h | h
+    · exact (Ctor.toTy_body_noFreeVars _).not_mem_freeVars w h
+    · have := freshVars_ge w h; omega
+  | lambda hseed hbody =>
+    intro w hwΦ hctx hwe
+    cases hseed with
+    | none =>
+      simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at hwe
+      obtain ⟨hbS, hbτ, hbo⟩ := Infer.eOut_avoid hbody (w := w) (by omega)
+        (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+            · intro hc; simp only [PolyTy.mkTrivial, Ty.freeVars, List.mem_singleton] at hc; omega
+            · exact hctx M hM)
+        hwe
+      refine ⟨hbS, ?_, ?_⟩
+      · simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+        refine ⟨?_, hbτ⟩
+        intro hc
+        rcases Subst.mem_freeVars_onTy hc with h | ⟨p, hp, hvp⟩
+        · simp only [Ty.freeVars, List.mem_singleton] at h; omega
+        · exact hbS p hp hvp
+      · simpa only [Expr.tyFreeVars, Option.elim_none, List.nil_append] using hbo
+    | some T hT =>
+      simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or] at hwe
+      obtain ⟨hbS, hbτ, hbo⟩ := Infer.eOut_avoid hbody (w := w) hwΦ
+        (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+            · simpa only [PolyTy.mkTrivial] using hwe.1
+            · exact hctx M hM)
+        hwe.2
+      refine ⟨hbS, ?_, ?_⟩
+      · simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
+        exact ⟨Subst.notMemOnTy hbS hwe.1, hbτ⟩
+      · simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or]
+        exact ⟨hwe.1, hbo⟩
+  | app hf harg huni =>
+    intro w hwΦ hctx hwe
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
+    obtain ⟨hfS, hfτ, hfo⟩ := Infer.eOut_avoid hf (w := w) hwΦ hctx hwe.1
+    have hfle := Infer.frontier_le hf
+    have hargle := Infer.frontier_le harg
+    obtain ⟨haS, haτ, hao⟩ := Infer.eOut_avoid harg (w := w) (by omega)
+      (Subst.onCtx_avoid hctx hfS) hwe.2
+    have hS₃ : ∀ p ∈ S₃, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni p hp w hwp with h | h
+      · exact Subst.notMemOnTy haS hfτ h
+      · simp only [Ty.freeVars, List.mem_dedup, List.mem_append, List.mem_singleton] at h
+        rcases h with h | h
+        · exact haτ h
+        · omega
+    refine ⟨?_, ?_, ?_⟩
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hfS p hp
+      · exact haS p hp
+      · exact hS₃ p hp
+    · intro hc
+      rcases Subst.mem_freeVars_onTy hc with h | ⟨q, hq, hvq⟩
+      · simp only [Ty.freeVars, List.mem_singleton] at h; omega
+      · exact hS₃ q hq hvq
+    · simp only [Expr.tyFreeVars, List.mem_append, not_or]
+      exact ⟨hfo, hao⟩
+  | letIn hrhs hbody =>
+    intro w hwΦ hctx hwe
+    expose_names
+    simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append, not_or] at hwe
+    obtain ⟨hrS, hrτ, hro⟩ := Infer.eOut_avoid hrhs (w := w) hwΦ hctx hwe.1
+    have hrle := Infer.frontier_le hrhs
+    have hMbody : w ∉ (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁).body.freeVars :=
+      fun hc => hrτ (Ty.freeVars_closeOver_subset hc)
+    obtain ⟨hbS, hbτ, hbo⟩ := Infer.eOut_avoid hbody (w := w) (by omega)
+      (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+          · exact hMbody
+          · exact Subst.onCtx_avoid hctx hrS M hM)
+      hwe.2
+    refine ⟨?_, hbτ, ?_⟩
+    · intro p hp; rw [List.mem_append] at hp
+      rcases hp with hp | hp
+      · exact hrS p hp
+      · exact hbS p hp
+    · simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or]
+      exact ⟨⟨hMbody,
+        fun hc => hro (Expr.tyFreeVars_closeTyVars_subset (Infer.eOut_noRecAnn hrhs) hc)⟩, hbo⟩
+  | letInAnn hσwf hΦN hrhs huni _hesc1 _hesc2 hbody =>
+    intro w hwΦ hctx hwe
+    expose_names
+    simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or] at hwe
+    have hrle := Infer.frontier_le hrhs
+    obtain ⟨hrS, hrτ, hro⟩ := Infer.eOut_avoid hrhs (w := w) (by omega) hctx (by
+      intro hc
+      rcases Expr.tyFreeVars_openTyVars hc with h | h
+      · exact hwe.1.2 h
+      · have := freshVars_ge w h; omega)
+    have hσopen : w ∉ (σ.openVars (freshVars N σ.paramCount)).freeVars := by
+      intro hc
+      rcases Ty.freeVars_openVars_subset w hc with h | h
+      · exact hwe.1.1 h
+      · have := freshVars_ge w h; omega
+    have hSchk : ∀ p ∈ Schk, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni p hp w hwp with h | h
+      · exact hrτ h
+      · exact hσopen h
+    obtain ⟨hbS, hbτ, hbo⟩ := Infer.eOut_avoid hbody (w := w) (by omega)
+      (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+          · exact hwe.1.1
+          · exact Subst.onCtx_avoid (Subst.onCtx_avoid hctx hrS) hSchk M hM)
+      hwe.2
+    refine ⟨?_, hbτ, ?_⟩
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hrS p hp
+      · exact hSchk p hp
+      · exact hbS p hp
+    · simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or]
+      exact ⟨⟨hwe.1.1,
+        fun hc => hro (Expr.tyFreeVars_closeTyVars_subset (Infer.eOut_noRecAnn hrhs) hc)⟩, hbo⟩
+  | match_ hscrut hne hbr =>
+    intro w hwΦ hctx hwe
+    simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
+    obtain ⟨hsS, hsτ, hso⟩ := Infer.eOut_avoid hscrut (w := w) hwΦ hctx hwe.1
+    have hle1 := Infer.frontier_le hscrut
+    obtain ⟨hbrS, hbrρ, hbro⟩ := InferBranches.eOut_avoid hbr (w := w) (by omega)
+      (Subst.onCtx_avoid hctx hsS) hsτ
+      (by intro hc; simp only [Ty.freeVars, List.mem_singleton] at hc; omega) hwe.2
+    refine ⟨?_, hbrρ, ?_⟩
+    · intro p hp; rw [List.mem_append] at hp
+      rcases hp with hp | hp
+      · exact hsS p hp
+      · exact hbrS p hp
+    · simp only [Expr.tyFreeVars, List.mem_append, not_or]
+      exact ⟨hso, hbro⟩
+  | letRec hgroup hbody =>
+    intro w hwΦ hctx hwe
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
+    have hgle := InferRecGroup.frontier_le hgroup
+    obtain ⟨hgS, hgo⟩ := InferRecGroup.eOut_avoid hgroup (w := w) (by omega)
+      (by intro M hM; rcases List.mem_append.mp hM with hM | hM
+          · obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hM
+            simp only [PolyTy.mkTrivial, Ty.freeVars, List.mem_singleton]
+            have := freshVars_ge x hx; omega
+          · exact hctx M hM)
+      (by intro β hβ; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hβ
+          simp only [Ty.freeVars, List.mem_singleton]; have := freshVars_ge x hx; omega)
+      hwe.1
+    have hgenBody : ∀ M ∈ (genGroupSchemes (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env
+            ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i)))), w ∉ M.body.freeVars := by
+      intro M hM
+      simp only [genGroupSchemes] at hM
+      obtain ⟨τ, hτ, rfl⟩ := List.mem_map.mp hM
+      obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hτ
+      simp only [PolyTy.genGroup]
+      intro hc
+      have hc' := Ty.freeVars_closeOver_subset hc
+      rcases Subst.mem_freeVars_onTy hc' with h | ⟨p, hp, hvp⟩
+      · simp only [Ty.freeVars, List.mem_singleton] at h; have := freshVars_ge x hx; omega
+      · exact hgS p hp hvp
+    obtain ⟨hbS, hbτ, hbo⟩ := Infer.eOut_avoid hbody (w := w) (by omega)
+      (by intro M hM; rcases List.mem_append.mp hM with hM | hM
+          · exact hgenBody M hM
+          · exact Subst.onCtx_avoid hctx hgS M hM)
+      hwe.2
+    refine ⟨?_, hbτ, ?_⟩
+    · intro p hp; rw [List.mem_append] at hp
+      rcases hp with hp | hp
+      · exact hgS p hp
+      · exact hbS p hp
+    · simp only [Expr.tyFreeVars, List.mem_append, not_or]
+      refine ⟨?_, hbo⟩
+      intro hc
+      obtain ⟨e, he, hwe'⟩ := Expr.mem_recGroupTyFreeVars hc
+      simp only [Expr.closeRecGroup] at he
+      obtain ⟨p, hp, rfl⟩ := List.mem_map.mp he
+      exact hgo p.1 (List.of_mem_zip hp).1
+        (Expr.tyFreeVars_closeTyVars_subset
+          (InferRecGroup.eOut_noRecAnn hgroup p.1 (List.of_mem_zip hp).1) hwe')
+termination_by e.size
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+theorem InferBranches.eOut_avoid {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut) :
+    ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ scrutTy.freeVars →
+    w ∉ ρ.freeVars → w ∉ Expr.tyFreeVars.BranchList.tyFreeVars brs →
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ (S.onTy ρ).freeVars ∧
+      w ∉ Expr.tyFreeVars.BranchList.tyFreeVars brsOut := by
+  cases h with
+  | nil =>
+    intro w _ _ _ hρ _
+    exact ⟨by simp, by simpa using hρ, by simp [Expr.tyFreeVars.BranchList.tyFreeVars]⟩
+  | cons hlook hn huni0 hbody huni hrest =>
+    intro w hwΦ hctx hscrut hρ hbrs
+    expose_names
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
+    have hS₀ : ∀ p ∈ S₀, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni0 p hp w hwp with h | h
+      · exact hscrut h
+      · simp only [Ty.freeVars] at h
+        rw [mem_TyList_freeVars] at h
+        obtain ⟨t, ht, hgt⟩ := h
+        obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+        simp only [Ty.freeVars, List.mem_singleton] at hgt
+        have := freshVars_ge x hx; omega
+    have hta : ∀ v ∈ (((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy), w ∉ v.freeVars := by
+      intro v hv hwv
+      obtain ⟨v0, hv0, rfl⟩ := List.mem_map.mp hv
+      obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hv0
+      rcases Subst.mem_freeVars_onTy hwv with h | ⟨p, hp, hvp⟩
+      · simp only [Ty.freeVars, List.mem_singleton] at h; have := freshVars_ge x hx; omega
+      · exact hS₀ p hp hvp
+    have hle0 := Infer.frontier_le hbody
+    obtain ⟨hbS, hbτ, hbo⟩ := Infer.eOut_avoid hbody (w := w) (by omega)
+      (by intro M hM; rcases List.mem_append.mp hM with hM | hM
+          · obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hM
+            obtain ⟨c, hc, rfl⟩ := List.mem_map.mp ht
+            simpa only [PolyTy.mkTrivial] using
+              Ty.not_mem_freeVars_openWith hta ((ctor.closed c hc).not_mem_freeVars w)
+          · exact Subst.onCtx_avoid hctx hS₀ M hM)
+      hbrs.1
+    have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni p hp w hwp with h | h
+      · exact hbτ h
+      · exact Subst.notMemOnTy hbS (Subst.notMemOnTy hS₀ hρ) h
+    obtain ⟨hrS, hrρ, hro⟩ := InferBranches.eOut_avoid hrest (w := w) (by omega)
+      (Subst.onCtx_avoid (Subst.onCtx_avoid (Subst.onCtx_avoid hctx hS₀) hbS) hS₂)
+      (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS (Subst.notMemOnTy hS₀ hscrut)))
+      (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS (Subst.notMemOnTy hS₀ hρ)))
+      hbrs.2
+    refine ⟨?_, ?_, ?_⟩
+    · intro p hp; rw [List.mem_append, List.mem_append, List.mem_append] at hp
+      rcases hp with ((hp | hp) | hp) | hp
+      · exact hS₀ p hp
+      · exact hbS p hp
+      · exact hS₂ p hp
+      · exact hrS p hp
+    · rw [Subst.onTy_append, Subst.onTy_append, Subst.onTy_append]; exact hrρ
+    · simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or]
+      exact ⟨hbo, hro⟩
+  | consWild hbody huni hrest =>
+    intro w hwΦ hctx hscrut hρ hbrs
+    expose_names
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
+    have hle1 := Infer.frontier_le hbody
+    obtain ⟨hbS, hbτ, hbo⟩ := Infer.eOut_avoid hbody (w := w) hwΦ hctx hbrs.1
+    have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni p hp w hwp with h | h
+      · exact hbτ h
+      · exact Subst.notMemOnTy hbS hρ h
+    obtain ⟨hrS, hrρ, hro⟩ := InferBranches.eOut_avoid hrest (w := w) (by omega)
+      (Subst.onCtx_avoid (Subst.onCtx_avoid hctx hbS) hS₂)
+      (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS hscrut))
+      (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS hρ))
+      hbrs.2
+    refine ⟨?_, ?_, ?_⟩
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hbS p hp
+      · exact hS₂ p hp
+      · exact hrS p hp
+    · rw [Subst.onTy_append, Subst.onTy_append]; exact hrρ
+    · simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or]
+      exact ⟨hbo, hro⟩
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
+theorem InferRecGroup.eOut_avoid {Φ ctx bindings targets Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut) :
+    ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
+    (∀ β ∈ targets, w ∉ β.freeVars) → w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
+    (∀ p ∈ S, w ∉ p.2.freeVars) ∧ (∀ e ∈ bindingsOut, w ∉ e.tyFreeVars) := by
+  cases h with
+  | nil => intro w _ _ _ _; exact ⟨by simp, by simp⟩
+  | cons he huni hrest =>
+    intro w hwΦ hctx htargets hbinds
+    expose_names
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
+    have hle1 := Infer.frontier_le he
+    obtain ⟨heS, heτ, heo⟩ := Infer.eOut_avoid he (w := w) hwΦ hctx hbinds.1
+    have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni p hp w hwp with h | h
+      · exact heτ h
+      · exact Subst.notMemOnTy heS (htargets _ (List.mem_cons_self ..)) h
+    obtain ⟨hrS, hro⟩ := InferRecGroup.eOut_avoid hrest (w := w) (by omega)
+      (Subst.onCtx_avoid (Subst.onCtx_avoid hctx heS) hS₂)
+      (by intro β' hβ'; obtain ⟨b, hb, rfl⟩ := List.mem_map.mp hβ'
+          exact Subst.notMemOnTy hS₂ (Subst.notMemOnTy heS (htargets b (List.mem_cons_of_mem _ hb))))
+      hbinds.2
+    refine ⟨?_, ?_⟩
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact heS p hp
+      · exact hS₂ p hp
+      · exact hrS p hp
+    · intro e' he'
+      rcases List.mem_cons.mp he' with rfl | hmem
+      · exact heo
+      · exact hro e' hmem
+termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
+end
+
 /-- The `letIn` soundness case, factored out (named binders avoid the
     inaccessible-name problem inside the `Infer.sound` induction). The cofinite
     premise is built by renaming the generalization candidates `genVars` to the
