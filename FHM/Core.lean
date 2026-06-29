@@ -2310,6 +2310,138 @@ inductive TypeOfElabMatchBranch :
 end
 
 
+/-! ### The *declarative* HM typing relation `TypeOfHM` (the completeness spec).
+
+Classic Damas–Milner typing, **decoration-blind**: the algorithm-independent
+specification of "this (source) program is HM-typeable", against which the
+elaborator's completeness / principality is stated. It ranges over the same `Expr`
+as `TypeOfElabHM` but **ignores** the `tyArgs` stored in `var` nodes — a use
+instantiates its scheme by *some* witness types (existentially), exactly as in
+textbook HM, with no `length = paramCount` requirement.
+
+`TypeOfHM` and `TypeOfElabHM` differ in **exactly one rule** — `var`. Every other
+constructor is identical: `ctor`/`match` store no tyArgs (already decoration-blind),
+and the `let`/`letRec(Ann)` openings act on annotation scoped-type-variables (present
+in source terms) and harmlessly on the ignored var-tyArgs. Consequently
+`TypeOfElabHM e τ → TypeOfHM e τ` (the elaborated relation is the stricter one). The
+dynamics / progress / preservation / type safety are stated about `TypeOfElabHM`;
+`TypeOfHM` borrows its operational meaning through elaboration. -/
+
+mutual
+
+/-- Decoration-blind declarative Hindley–Milner typing (the source-level spec). -/
+inductive TypeOfHM : Ctx → Expr → Ty → Prop
+  | primLitUnit :
+    TypeOfHM ctx (.primLit .unit) (.prim .unit)
+
+  | primLitInt :
+    TypeOfHM ctx (.primLit (.int n)) (.prim .int)
+
+  | primLitNat :
+    TypeOfHM ctx (.primLit (.nat n)) (.prim .nat)
+
+  -- | primLitBool :
+  --   TypeOfHM ctx (.primLit (.bool b)) (.prim .bool)
+
+  | primLitStr :
+    TypeOfHM ctx (.primLit (.str s)) (.prim .str)
+
+  | lambda :
+    ContainsBvarsUpTo 0 paramTy →
+    (∀ T, ann = some T → paramTy = T) →
+    bodyCtx = { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } →
+    TypeOfHM bodyCtx body bodyTy →
+    TypeOfHM ctx (.lambda ann body) (.arrow paramTy bodyTy)
+
+  | app :
+    TypeOfHM ctx f (.arrow argTy retTy) →
+    TypeOfHM ctx input argTy →
+    TypeOfHM ctx (.app f input) retTy
+
+  /-- Cofinite let-generalisation (identical to `TypeOfElabHM.letIn`). The opening
+      `Expr.openBoundTyVars ann Xs boundExpr` resolves the annotation's scoped type
+      variables; for an unannotated `let` it is just `boundExpr`. -/
+  | letIn {M : PolyTy} {L : List Nat} :
+    PolyTy.WF M →
+    (∀ σ, ann = some σ → M = σ) →
+    (∀ Xs : List Nat, FreshNames L M.paramCount Xs →
+        TypeOfHM ctx (Expr.openBoundTyVars ann Xs boundExpr) (M.openVars Xs)) →
+    bodyCtx = { ctx with env := M :: ctx.env } →
+    TypeOfHM bodyCtx body bodyTy →
+    TypeOfHM ctx (.letIn ann boundExpr body) bodyTy
+
+  /-- **The one rule that differs from `TypeOfElabHM`.** Decoration-blind: the
+      stored `tyArgs` are ignored (the use is well-typed for *any* decoration), and
+      the scheme is instantiated by *some* witness `instArgs` (existential), with no
+      `length = paramCount` requirement — the classic HM instantiation. -/
+  | var :
+    ctx.env[dbl]? = some polyTy →
+    (∀ tyArg ∈ instArgs, ContainsBvarsUpTo 0 tyArg) →
+    InstantiatesBy instArgs polyTy.body ty →
+    TypeOfHM ctx (.var dbl tyArgs) ty
+
+  | ctor :
+    LookupList.get? ctx.ctors name = some ctor →
+    (∀ tyArg ∈ tyArgs, ContainsBvarsUpTo 0 tyArg) →
+    InstantiatesBy tyArgs ctor.toTy.body ty →
+    TypeOfHM ctx (.ctor name) ty
+
+  | match_ :
+    TypeOfHM ctx scrutinee scrutTy →
+    branches ≠ [] →
+    (∀ branch ∈ branches, TypeOfMatchBranch ctx branch scrutTy resultTy) →
+    TypeOfHM ctx (.match_ scrutinee branches) resultTy
+
+  /-- Shared-monotype recursive group (identical to `TypeOfElabHM.letRec`). -/
+  | letRec {τs : List Ty} {Ms : List PolyTy} {G L : List Nat} :
+    bindings.length = τs.length →
+    τs.length = Ms.length →
+    (∀ τ ∈ τs, τ.IsLC) →
+    G.Nodup →
+    (∀ p ∈ τs.zip Ms, p.2 = PolyTy.genGroup G p.1) →
+    (∀ Xs, FreshNames L G.length Xs →
+        ∀ p ∈ bindings.zip (τs.map (Ty.renameG G Xs)),
+          TypeOfHM { ctx with env := (τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ ctx.env }
+            p.1 p.2) →
+    bodyCtx = { ctx with env := Ms ++ ctx.env } →
+    TypeOfHM bodyCtx body ρ →
+    TypeOfHM ctx (.letRec bindings body) ρ
+
+  /-- Annotated polymorphic-recursion group (identical to `TypeOfElabHM.letRecAnn`;
+      recursing into declarative `TypeOfHM`). -/
+  | letRecAnn {schemes : List PolyTy} {L : List Nat} :
+    bindings.length = schemes.length →
+    (∀ σ ∈ schemes, σ.WF) →
+    (∀ p ∈ bindings.zip schemes,
+        ∀ Xs, FreshNames L p.2.paramCount Xs →
+          TypeOfHM { ctx with env := schemes ++ ctx.env }
+            (p.1.openTyVars Xs) (p.2.openVars Xs)) →
+    bodyCtx = { ctx with env := schemes ++ ctx.env } →
+    TypeOfHM bodyCtx body ρ →
+    TypeOfHM ctx (.letRecAnn schemes bindings body) ρ
+
+
+/-- Match-branch typing for the declarative `TypeOfHM` (mirrors
+    `TypeOfElabMatchBranch`; the scrutinee's `tyArgs` are an existential witness). -/
+inductive TypeOfMatchBranch :
+  (ctx : Ctx) → (MatchPattern × Expr) → (scrutTy : Ty) → (resultTy : Ty) → Prop
+  | mk {ctor : Ctor} {ctx : Ctx} {c : CtorName} {n : Nat} {tyArgs : List Ty} :
+    LookupList.get? ctx.ctors c = some ctor →
+    scrutTy = .customTy ctor.tyName tyArgs →
+    ctor.paramCount = tyArgs.length →
+    n = ctor.contents.length →
+    List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents →
+    patternBindings = instContents.map PolyTy.mkTrivial →
+    bodyCtx = {ctx with env := patternBindings ++ ctx.env} →
+    TypeOfHM bodyCtx bodyExpr resultTy →
+    TypeOfMatchBranch ctx (.named c n, bodyExpr) scrutTy resultTy
+  | wildcard {ctx : Ctx} :
+    TypeOfHM ctx bodyExpr resultTy →
+    TypeOfMatchBranch ctx (.wildcard, bodyExpr) scrutTy resultTy
+
+end
+
+
 /-! ### Cofinite typing-at-scheme predicates. -/
 
 /-- `t` types at *every* opening of `M` by sufficiently-fresh names. The `L`
