@@ -1,6 +1,4 @@
-<!-- @format -->
-
-# FHM: Formalised Hindley–Milner
+# FHM: Formalised Hindley-Milner
 
 A formalisation of a language with a Hindley-Milner type system. Includes some additional features, like:
 
@@ -20,7 +18,7 @@ InferW.lean contains an algorithmically-oriented relation `Infer` as well as its
 
 We also prove that `infer` finds principal types (the most general type allowable by the declarative typing relation).
 
-The declarative typing relation `TypeOfHM` uses cofinite let-generalisation, taken from Chargeraud's formalisation of mini-ML.
+The declarative typing relation `TypeOfHM` uses cofinite let-generalisation, taken from Charguéraud's formalisation of mini-ML.
 
 There is also a surface language that contains syntax for constructing booleans, tuples, lists, patterns for destructuring them in let bindings and match expressions. This surface language is not yet wired up to the rest of the project. This will come when the desired core functionality is fully implemented and proven.
 
@@ -32,13 +30,23 @@ We also now support mutually recursive let bindings. This can be done as long as
 
 However I also wanted to support polymorphic mutually recursive let bindings. Polymorphic recursive inference is undecidable [source](source) but is decidable when the bindings have polymorphic type annotations. However, this makes these type annotations un-erasable. Since upon erasing these type annotations, we'd have to fall back to monomorphic type inference. Thus erasing types would make our language strictly less capable than the typed version. This is thus not compatible with type erasure. In order to keep type annotations while preventing orphan skolems on let reduction, we need to move to a type-passing semantics, where our core language explicitly carries the instantiated types that a variable pointing to a polymorphic type has been applied to. However, since our language still adheres to the HM restrictions (only prenex polymorphism), it is still fully decidable with inference-only. Thus, the types that our polymorphic vars are "applied" to do not actually need to be made explicit in the source program, but can be fully determined by inference alone. To express this, we split the original HM declarative relation in two: one that is defined on the original program that does not contain vars' applied types, and one that operates on an "elaborated" program that _does_ contain applied types. This is effectively an elaboration stage. We therefore repurposed our `Infer` relation to not only infer the type of a given expression, but also returns a new expression, that takes the types it infers and applies it to polymorphic vars. Thus effectively acting as an elaborator from a non-type-passing source language to a System F style language that contains applied types in the term itself.
 
-This above migration (from type erasure to type passing, from only supporting monomorphic unannotated mutually recursive let bindings to also supporting annotated polymorphic ones) is why Infer.lean is currently in a temporarily broken state.
+This above migration (from type erasure to type passing, from only supporting monomorphic unannotated mutually recursive let bindings to also supporting annotated polymorphic ones) is why InferW.lean is currently in a temporarily broken state.
 
 ## Purpose, workflow & LLM usage
 
 This project contains a lot of LLM-written code, primarily Claude Opus 4.x. This formalisation has proven very labour-intensive and requires a lot of legwork. It's therefore a prime candidate for using LLMs to getting much of the gruntwork done. At the same time, there have been many points at which the LLM would have gone off the rails had I not taken the time to understand exactly what is going on, get it to explain its choices to me, form a mental picture, and to use my own judgment to guide it to the right path. So this project is simultaneously 1. a testbed for assessing the performance of the latest frontier LLMs, 2. a learn-by-doing project for learning PLT and type theory with all its gnarly complexities, and 3. a tangible source to enlist LLMs to supercharge my own self-learning through detailed back and forth interrogation of the workhorse LLM at points where my intuitions are lacking or where I am presented with a new idea or technique.
 
 Contrary to my initial expectations, it has actually taken a huge amount of human effort to get this project to the state that it is, not just LLM-hours. It has therefore proven quite successful in its goal as a pedagogical project for me.
+
+## Building
+
+Requires the Lean toolchain pinned in `lean-toolchain` (`leanprover/lean4:v4.26.0`,
+managed by `elan`). On a fresh clone:
+
+```bash
+lake exe cache get   # download prebuilt Mathlib oleans (don't recompile Mathlib!)
+lake build
+```
 
 ---
 
