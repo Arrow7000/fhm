@@ -2898,12 +2898,13 @@ theorem TypeOfElabHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
   | _, _, _, .app hf _ => by
     have := TypeOfElabHM.regular hf; cases this with | arrow _ hret => exact hret
   | _, _, _, .letIn _ _ _ _ hbody => TypeOfElabHM.regular hbody
-  | _, _, _, .var _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
+  | _, _, _, .var _ htyargs _ hinst => InstantiatesBy.preserves_bvars htyargs hinst
   | _, _, _, .ctor _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
   | _, _, _, @TypeOfElabHM.match_ _ _ _ branches _ hscrut hne hbrs => by
     obtain ⟨hd, tl, rfl⟩ := List.exists_cons_of_ne_nil hne
     exact TypeOfElabMatchBranch.regular (hbrs hd (List.mem_cons_self ..))
   | _, _, _, .letRec _ _ _ _ _ _ _ hbody => TypeOfElabHM.regular hbody
+  | _, _, _, .letRecAnn _ _ _ _ hbody => TypeOfElabHM.regular hbody
 
 theorem TypeOfElabMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} →
     {scrutTy : Ty} → {rt : Ty} →
