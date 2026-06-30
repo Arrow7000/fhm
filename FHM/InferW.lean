@@ -6375,8 +6375,95 @@ theorem InferRecGroup.sound {Φ ctx bindings targets Φ' S bindingsOut}
     (hSK : ∀ p ∈ S, p.1 ∉ K) :
     ∀ p ∈ bindingsOut.zip (targets.map S.onTy),
       TypeOfElabHM (S.onCtx ctx) (p.1.substTyFvars S) p.2 := by
-  sorry
+  cases h with
+  | nil => intro p hp; simp at hp
+  | cons he huni hrest =>
+    expose_names
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at hKbr
+    obtain ⟨hτ_lc, hS₁⟩ := Infer.lc he hctx
+    have hβ_lc : β.IsLC := htargets β List.mem_cons_self
+    have hS₂ := huni.lc hτ_lc (Subst.onTy_lc hS₁ hβ_lc)
+    have hle1 := Infer.frontier_le he
+    have he_below := Infer.belowFvars he hbelow (fun y hy => hKΦ y (hKbr y (.inl hy)))
+    have he_dom := Infer.dom_below he hbelow (fun y hy => hKΦ y (hKbr y (.inl hy)))
+    have hβ_below : Ty.BelowFvars Φ β := htargetsB β List.mem_cons_self
+    have hS₁β := Subst.onTy_belowFvars he_below.2 (hβ_below.mono hle1)
+    have hS₂below := UnifyRel.belowFvars huni he_below.1 hS₁β
+    have hS₂dom : ∀ p ∈ S₂, p.1 < Φ₁ := by
+      intro p hp
+      rcases UnifyRel.dom_mem huni p hp with h | h
+      · exact he_below.1.mem_lt p.1 h
+      · exact hS₁β.mem_lt p.1 h
+    have hbelow2 := Subst.onCtx_below hS₂below (le_refl _) (Subst.onCtx_below he_below.2 hle1 hbelow)
+    have hctx2 := Subst.onCtx_wf hS₂ (Subst.onCtx_wf hS₁ hctx)
+    have hS₃' : ∀ p ∈ S₃, p.2.IsLC := InferRecGroup.lc hrest hctx2
+      (fun b' hb' => by obtain ⟨b, hb, rfl⟩ := List.mem_map.mp hb'
+                        exact Subst.onTy_lc hS₂ (Subst.onTy_lc hS₁ (htargets b (List.mem_cons_of_mem _ hb))))
+    have helimE := Infer.eliminates he hbelow (fun y hy => hKΦ y (hKbr y (.inl hy)))
+      (fun p hp hc => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)) (hKbr p.1 (.inl hc)))
+    -- combined S₁ ++ S₂ idempotency
+    have hcross : ∀ p ∈ S₁, ∀ q ∈ S₂, p.1 ∉ q.2.freeVars := by
+      intro p hp q hq hvq
+      rcases UnifyRel.range_mem huni q hq p.1 hvq with h | h
+      · exact helimE.2 p hp h
+      · exact helimE.1 p hp β h
+    have hS₁₂elim := Subst.eliminates_append helimE.1 (UnifyRel.eliminates huni) hcross
+    -- S₁ ++ S₂ fixes the rest's outputs (prefix-fix)
+    have hfix : ∀ b ∈ restOut, b.substTyFvars (S₁ ++ S₂) = b := by
+      intro b hb
+      refine Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => ?_)
+      refine (InferRecGroup.eOut_avoid hrest (w := p.1) ?_ ?_ ?_ ?_).2 b hb hc
+      · rcases List.mem_append.mp hp with hp | hp
+        · exact he_dom p hp
+        · exact hS₂dom p hp
+      · intro M hM
+        rw [show (S₂.onCtx (S₁.onCtx ctx)) = (S₁ ++ S₂).onCtx ctx
+              from (Subst.onCtx_append S₁ S₂ ctx).symm] at hM
+        exact Subst.eliminates_onCtx (hS₁₂elim p hp) M hM
+      · intro β' hβ'; obtain ⟨b0, _, rfl⟩ := List.mem_map.mp hβ'
+        rw [show S₂.onTy (S₁.onTy b0) = (S₁ ++ S₂).onTy b0 from (Subst.onTy_append S₁ S₂ b0).symm]
+        exact hS₁₂elim p hp b0
+      · rcases List.mem_append.mp hp with hp | hp
+        · exact fun hcc => hSK p (List.mem_append_left _ (List.mem_append_left _ hp))
+            (hKbr p.1 (.inr hcc))
+        · exact fun hcc => hSK p (List.mem_append_left _ (List.mem_append_right _ hp))
+            (hKbr p.1 (.inr hcc))
+    -- the recursive group typing
+    have hrest_sound := InferRecGroup.sound hrest hctx2 hbelow2
+      (fun b' hb' => by obtain ⟨b, hb, rfl⟩ := List.mem_map.mp hb'
+                        exact Subst.onTy_lc hS₂ (Subst.onTy_lc hS₁ (htargets b (List.mem_cons_of_mem _ hb))))
+      (fun b' hb' => by obtain ⟨b, hb, rfl⟩ := List.mem_map.mp hb'
+                        exact Subst.onTy_belowFvars hS₂below
+                          (Subst.onTy_belowFvars he_below.2 ((htargetsB b (List.mem_cons_of_mem _ hb)).mono hle1)))
+      K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle1)
+      (fun y hy => hKbr y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+    intro p hp
+    simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at hp
+    rcases hp with rfl | hp_rest
+    · rw [Subst.onCtx_append, Subst.onCtx_append, Subst.onTy_append, Subst.onTy_append]
+      have h0 := Infer.sound he hctx hbelow K hKΦ (fun y hy => hKbr y (.inl hy))
+        (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
+      have hhead := TypeOfElabHM.onSubst S₃ hS₃' (TypeOfElabHM.onSubst S₂ hS₂ h0)
+      rw [← Expr.substTyFvars_append, ← Expr.substTyFvars_append, ← List.append_assoc] at hhead
+      have huni_eq := huni.unifies
+      simp only [Unifies] at huni_eq
+      rw [huni_eq] at hhead
+      exact hhead
+    · have hmap : List.map (Subst.onTy (S₁ ++ S₂ ++ S₃)) βs
+          = List.map (Subst.onTy S₃) (List.map (fun b => Subst.onTy S₂ (Subst.onTy S₁ b)) βs) := by
+        rw [List.map_map]
+        apply List.map_congr_left
+        intro b _
+        simp only [Function.comp_apply, Subst.onTy_append]
+      rw [hmap] at hp_rest
+      have hb_in : p.1 ∈ restOut := (List.of_mem_zip hp_rest).1
+      rw [Subst.onCtx_append, Subst.onCtx_append,
+          show p.1.substTyFvars (S₁ ++ S₂ ++ S₃) = p.1.substTyFvars S₃ from by
+            rw [Expr.substTyFvars_append, hfix p.1 hb_in]]
+      exact hrest_sound p hp_rest
 termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 end
 
 /-- **Headline soundness for a closed program.** A program with no free scoped
