@@ -6253,6 +6253,17 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 end
 
+/-- **Survival under substitution.** A free var not in `S`'s domain survives
+    applying `S` (its occurrences are untouched). Used by the honest `letIn` case
+    to show the generalised vars `genV` (which are not env-fixed) are `≥ Φ`. -/
+theorem Ty.mem_freeVars_onTy_of_not_dom {S : Subst} {τ : Ty} {g : Nat}
+    (hg : g ∈ τ.freeVars) (hdom : ∀ p ∈ S, p.1 ≠ g) : g ∈ (S.onTy τ).freeVars := by
+  rw [Subst.onTy, Ty.mem_freeVars_substFvars_image]
+  refine ⟨g, hg, ?_⟩
+  rw [Ty.substFvars_eq_self_of_no_key (fun p hp hc => by
+    simp only [Ty.freeVars, List.mem_singleton] at hc; exact hdom p hp hc)]
+  simp [Ty.freeVars]
+
 /-! Soundness of `Infer` against the declarative `TypeOfElabHM`: applying the
     inferred substitution to the context yields a declarative typing. -/
 mutual
@@ -6347,7 +6358,139 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
       (InstantiatesBy.openVars (Ctor.toTy_wf _) (by simp [Ctor.toTy]))
     obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht
     exact .fvar
-  | letIn hrhs hbody => intro hctx hbelow K hKΦ hKe hSK; sorry
+  | letIn hrhs hbody =>
+    intro hctx hbelow K hKΦ hKe hSK
+    expose_names
+    simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append] at hKe
+    obtain ⟨hrhs_lc, hrhs_s⟩ := Infer.lc hrhs hctx
+    have hrhs_below := Infer.belowFvars hrhs hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+    have hbelow1 := Subst.onCtx_below hrhs_below.2 (Infer.frontier_le hrhs) hbelow
+    have hrhs_norec := Infer.eOut_noRecAnn hrhs
+    have helimR := Infer.eliminates hrhs hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+      (fun p hp hc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inl hc)))
+    have hS₁τ₁ : S₁.onTy τ₁ = τ₁ := Ty.substFvars_eq_self_of_no_key (fun p hp => helimR.2 p hp)
+    have hbodyWF : CtxWF { (S₁.onCtx ctx) with
+        env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env } := by
+      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+      · exact genScheme_wf hrhs_lc
+      · exact (Subst.onCtx_wf hrhs_s hctx) M hM
+    have hbodyBelow : CtxBelow Φ₁ { (S₁.onCtx ctx) with
+        env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env } := by
+      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+      · exact hrhs_below.1.closeOver
+      · exact hbelow1 M hM
+    have hbody_s := (Infer.lc hbody hbodyWF).2
+    -- genV facts (genV := genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁)
+    have hgenV_τ₁ : ∀ g ∈ genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁, g ∈ τ₁.freeVars :=
+      fun g hg => by simp only [genVars, List.mem_filter] at hg; exact hg.1
+    have hgenV_env : ∀ g ∈ genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁,
+        g ∉ (S₁.onCtx ctx).env.freeVars := fun g hg => genVars_not_mem hg
+    have hgenV_lt : ∀ g ∈ genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁, g < Φ₁ :=
+      fun g hg => hrhs_below.1.mem_lt g (hgenV_τ₁ g hg)
+    have hgenV_ge : ∀ g ∈ genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁, Φ ≤ g := by
+      intro g hg
+      by_contra hlt
+      push_neg at hlt
+      have hg_S₁dom : ∀ p ∈ S₁, p.1 ≠ g := fun p hp hpeq => helimR.2 p hp (hpeq ▸ hgenV_τ₁ g hg)
+      have hg_ctxenv : ∀ M ∈ ctx.env, g ∉ M.body.freeVars := by
+        intro M₀ hM₀ hgM
+        exact hgenV_env g hg (Env.mem_freeVars_iff.mpr ⟨S₁.onPolyTy M₀,
+          List.mem_map.mpr ⟨M₀, hM₀, rfl⟩, Ty.mem_freeVars_onTy_of_not_dom hgM hg_S₁dom⟩)
+      exact (Infer.eOut_avoid hrhs (w := g) hlt hg_ctxenv (genVars_not_mem_rigid hg)).2.1
+        (hgenV_τ₁ g hg)
+    have hgenV_body : ∀ g ∈ genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁, g ∉ body.tyFreeVars :=
+      fun g hg hc => by have := hKΦ g (hKe g (.inr hc)); have := hgenV_ge g hg; omega
+    have hbodyCtxAvoid : ∀ g ∈ genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁,
+        ∀ M ∈ (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env),
+          g ∉ M.body.freeVars := by
+      intro g hg M hM
+      rcases List.mem_cons.mp hM with rfl | hM
+      · exact Ty.not_mem_closeOver_freeVars hg
+      · exact fun hc2 => hgenV_env g hg (Env.mem_freeVars_iff.mpr ⟨M, hM, hc2⟩)
+    have hS₂genV : ∀ p ∈ S₂, p.1 ∉ genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ := by
+      intro p hp hc
+      exact Infer.dom_avoid hbody (hgenV_lt p.1 hc) (hbodyCtxAvoid p.1 hc)
+        (fun hc2 => hSK p (List.mem_append_right _ hp) (hKe p.1 (.inr hc2)))
+        (List.mem_map.mpr ⟨p, hp, rfl⟩)
+    have hS₂genVran : ∀ p ∈ S₂, ∀ u ∈ p.2.freeVars, u ∉ genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ := by
+      intro p hp u hu hc
+      exact (Infer.eOut_avoid hbody (w := u) (hgenV_lt u hc) (hbodyCtxAvoid u hc)
+        (hgenV_body u hc)).1 p hp hu
+    have hS₁fixE : ∀ p ∈ S₁, p.1 ∉ (rhsOut.substTyFvars S₁).tyFreeVars :=
+      fun p hp => Expr.dom_notMem_substTyFvars (fun x => helimR.1 p hp x) hrhs_norec
+    have hbodyfix : bodyOut.substTyFvars S₁ = bodyOut :=
+      Infer.eOut_substTyFvars_eq hbody
+        (fun p hp => Infer.dom_below hrhs hbelow (fun y hy => hKΦ y (hKe y (.inl hy))) p hp)
+        (fun p hp M hM => by
+          rcases List.mem_cons.mp hM with rfl | hM
+          · exact fun hc2 => helimR.2 p hp (Ty.freeVars_closeOver_subset hc2)
+          · obtain ⟨M₀, _, rfl⟩ := List.mem_map.mp hM; exact helimR.1 p hp M₀.body)
+        (fun p hp hc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inr hc)))
+    have hbound : ((rhsOut.substTyFvars S₁).closeTyVars (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁)).substTyFvars (S₁ ++ S₂)
+        = (rhsOut.substTyFvars (S₁ ++ S₂)).closeTyVars (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) := by
+      rw [Expr.substTyFvars_append,
+          Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+            (fun p hp hc => hS₁fixE p hp (Expr.tyFreeVars_closeTyVars_subset
+              (Expr.substTyFvars_noRecAnn hrhs_norec) hc)),
+          Expr.substTyFvars_closeTyVars (Expr.substTyFvars_noRecAnn hrhs_norec) hS₂genV hS₂genVran,
+          ← Expr.substTyFvars_append]
+    have hSτ₁ : (S₁ ++ S₂).onTy τ₁ = S₂.onTy τ₁ := by rw [Subst.onTy_append, hS₁τ₁]
+    have hschemebody : S₂.onTy (Ty.closeOver (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) τ₁)
+        = Ty.closeOver (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) ((S₁ ++ S₂).onTy τ₁) := by
+      have h1 : S₂.onTy (Ty.closeOver (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) τ₁)
+          = Ty.closeOver (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) (S₂.onTy τ₁) :=
+        Ty.substFvars_closeOver hS₂genV hS₂genVran
+      rw [h1, ← hSτ₁]
+    have hann : Ty.substFvars (S₁ ++ S₂) (Ty.closeOver (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) τ₁)
+        = Ty.closeOver (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) ((S₁ ++ S₂).onTy τ₁) := by
+      rw [show Ty.substFvars (S₁ ++ S₂) (Ty.closeOver (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) τ₁)
+            = (S₁ ++ S₂).onTy (Ty.closeOver (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) τ₁) from rfl,
+          Subst.onTy_append,
+          show S₁.onTy (Ty.closeOver (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) τ₁)
+            = Ty.closeOver (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) τ₁ from
+            Ty.substFvars_eq_self_of_no_key (fun p hp hc => helimR.2 p hp (Ty.freeVars_closeOver_subset hc)),
+          hschemebody]
+    have hgenV_env' : ∀ g ∈ genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁,
+        g ∉ ((S₁ ++ S₂).onCtx ctx).env.freeVars := by
+      intro g hg hc
+      rw [Subst.onCtx_append, Env.mem_freeVars_iff] at hc
+      obtain ⟨M, hM, hgM⟩ := hc
+      simp only [Subst.onCtx, Subst.onEnv] at hM
+      obtain ⟨M₀, hM₀, rfl⟩ := List.mem_map.mp hM
+      exact Subst.notMemOnTy (fun p hp hgp => hS₂genVran p hp g hgp hg)
+        (fun hc2 => hgenV_env g hg (Env.mem_freeVars_iff.mpr ⟨M₀, hM₀, hc2⟩)) hgM
+    -- typings
+    have hrhs_sound := Infer.sound hrhs hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+      (fun p hp => hSK p (List.mem_append_left _ hp))
+    have hr2 := TypeOfElabHM.onSubst S₂ hbody_s hrhs_sound
+    rw [← Expr.substTyFvars_append, ← Subst.onCtx_append, ← hSτ₁] at hr2
+    have hbodyterm : bodyOut.substTyFvars (S₁ ++ S₂) = bodyOut.substTyFvars S₂ := by
+      rw [Expr.substTyFvars_append, hbodyfix]
+    have hschemeeq : Subst.onPolyTy S₂ (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁)
+        = ⟨(genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁).length,
+            Ty.closeOver (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁) ((S₁ ++ S₂).onTy τ₁)⟩ := by
+      simp only [Subst.onPolyTy, genScheme]
+      rw [hschemebody]
+    have heqbodyctx : Subst.onCtx S₂ { (S₁.onCtx ctx) with
+          env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
+        = { (S₁ ++ S₂).onCtx ctx with
+          env := Subst.onPolyTy S₂ (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁)
+            :: ((S₁ ++ S₂).onCtx ctx).env } := by
+      rw [Subst.onCtx_append]
+      simp only [Subst.onCtx, Subst.onEnv, List.map_cons]
+    have hbody_sound := Infer.sound hbody hbodyWF hbodyBelow K
+      (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hrhs))
+      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+    rw [heqbodyctx, hschemeeq, ← hbodyterm] at hbody_sound
+    -- assemble
+    rw [Expr.substTyFvars_letIn]
+    simp only [Option.map_some, genScheme]
+    rw [hann, hbound]
+    exact Infer.sound_letIn hr2 (Subst.onTy_lc (fun p hp => by
+        rcases List.mem_append.mp hp with h | h
+        · exact hrhs_s p h
+        · exact hbody_s p h) hrhs_lc)
+      (Expr.substTyFvars_noRecAnn hrhs_norec) genVars_nodup hgenV_env' hbody_sound
   | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody => intro hctx hbelow K hKΦ hKe hSK; sorry
   | match_ hscrut hne hbr => intro hctx hbelow K hKΦ hKe hSK; sorry
   | letRec hgroup hbody => intro hctx hbelow K hKΦ hKe hSK; sorry
