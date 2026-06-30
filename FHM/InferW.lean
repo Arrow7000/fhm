@@ -6518,6 +6518,65 @@ theorem Infer.sound_letInAnn {ctx : Ctx} {σ : PolyTy} {rhsElab bodyElab : Expr}
       exact hx ▸ ContainsBvarsUpTo.fvar)
     hrhs_at_Ys
 
+/-- **Cofinite close-back** (the `?_` guts of `sound_letInAnn`, factored out for the
+    annotated recursion group). Given that the elaborated RHS types at a *specific*
+    skolem opening `σ.openVars Ys` (with `Ys` fresh for the term, the env, and `σ`),
+    the closed-back `rhsElab.closeTyVars Ys`, re-opened at *any* sufficiently-fresh
+    `Xs`, types at `σ.openVars Xs` — i.e. the cofinite premise of the scheme-relative
+    typing rules. -/
+theorem TypeOfElabHM.closeBack_cofinite {ctx : Ctx} {σ : PolyTy} {rhsElab : Expr} {Ys : List Nat}
+    (hrhs_at_Ys : TypeOfElabHM ctx rhsElab (σ.openVars Ys))
+    (hYnodup : Ys.Nodup) (hYlen : Ys.length = σ.paramCount)
+    (hrhs_fresh : ∀ y ∈ Ys, y ∉ rhsElab.recAnnSchemeFreeVars)
+    (hYs_env : ∀ y ∈ Ys, y ∉ ctx.env.freeVars)
+    (hYs_σ : ∀ y ∈ Ys, y ∉ σ.body.freeVars) :
+    ∀ Xs, FreshNames Ys σ.paramCount Xs →
+      TypeOfElabHM ctx ((rhsElab.closeTyVars Ys).openTyVars Xs) (σ.openVars Xs) := by
+  intro Xs hXfresh
+  obtain ⟨hXlen, hXnodup, hXavoid⟩ := hXfresh
+  have hYs_Xs : ∀ y ∈ Ys, y ∉ Xs := fun y hy hc => hXavoid y hc hy
+  have hterm : (rhsElab.closeTyVars Ys).openTyVars Xs
+      = rhsElab.substTyFvars (Ys.zip (Xs.map (Ty.fvar ·))) :=
+    Expr.openTyVars_closeTyVars_rename_of_fresh (TypeOfElabHM.tyBvarBounded hrhs_at_Ys) hrhs_fresh
+      (by rw [hXlen, hYlen]) hYnodup hYs_Xs
+  have key : PolyTy.openVars Xs σ = Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys) := by
+    rw [show PolyTy.openVars Xs σ = Ty.openWith (Xs.map (Ty.fvar ·)) σ.body from Ty.openVars_eq_openWith]
+    exact Ty.openWith_eq_substFvars_openVars
+      ⟨by rw [List.length_map, hXlen, hYlen], fun V hV => by
+        obtain ⟨x, _, rfl⟩ := List.mem_map.mp hV; exact ContainsBvarsUpTo.fvar⟩
+      hYnodup hYs_σ
+      (fun Y hY hc => hYs_Xs Y hY (Ty.mem_freeVarsList_map_fvar.mp hc))
+  rw [hterm, key]
+  exact TypeOfElabHM.typ_substs_preservation (Ys.zip (Xs.map (Ty.fvar ·)))
+    (fun p hp => hYs_env p.1 (List.of_mem_zip hp).1)
+    (fun p hp => by
+      obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+      exact hx ▸ ContainsBvarsUpTo.fvar)
+    hrhs_at_Ys
+
+/-- Mapping a function over the left list of a `zip` distributes over the zip. -/
+theorem List.zip_map_left_eq {α β γ : Type _} (f : α → γ) :
+    ∀ (l : List α) (r : List β), (l.map f).zip r = (l.zip r).map (fun ab => (f ab.1, ab.2)) := by
+  intro l
+  induction l with
+  | nil => intro r; simp
+  | cons hd tl ih =>
+    intro r; cases r with
+    | nil => simp
+    | cons rhd rtl => simp only [List.map_cons, List.zip_cons_cons, ih]
+
+/-- A `letRecAnn` scheme's body free vars are among the scheme list's `tyFreeVars`. -/
+theorem Expr.mem_tyFreeVars_schemeList {σ : PolyTy} {y : Nat} {ss : List PolyTy}
+    (hmem : σ ∈ ss) (hy : y ∈ σ.body.freeVars) :
+    y ∈ Expr.tyFreeVars.SchemeList.tyFreeVars ss := by
+  induction ss with
+  | nil => exact absurd hmem List.not_mem_nil
+  | cons hd tl ih =>
+    simp only [Expr.tyFreeVars.SchemeList.tyFreeVars, List.mem_append]
+    rcases List.mem_cons.mp hmem with h | h
+    · subst h; exact .inl hy
+    · exact .inr (ih h)
+
 /-! Structural simp lemmas for `openWith` (the analogues for `openVars` already
     exist above, but `openWith` lacks them). -/
 @[simp] private theorem Ty.openWith_prim {Vs : List Ty} {p : PrimTy} :
@@ -8700,7 +8759,103 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
         exact Subst.onPolyTy_genGroup hS₂G hS₂Gran
       rw [hbctxeq] at hbodysound
       exact hbodysound
-  | letRecAnn _ _ _ _ => sorry
+  | letRecAnn hwf hlen hgroup hbody =>
+    intro hctx hbelow K hKΦ hKe hSK
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append] at hKe
+    -- derived `K`-bounds for the schemes and the bindings
+    have hKsch : ∀ σ ∈ schemes, ∀ y ∈ σ.body.freeVars, y ∈ K := fun σ hσ y hy =>
+      hKe y (.inl (.inl (Expr.mem_tyFreeVars_schemeList hσ hy)))
+    have hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K := fun y hy =>
+      hKe y (.inl (.inr hy))
+    have hKbrΦ : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ := fun y hy => hKΦ y (hKbr y hy)
+    have hschB : ∀ σ ∈ schemes, Ty.BelowFvars Φ σ.body := fun σ hσ =>
+      Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hKsch σ hσ v hv))
+    -- the schemes-extended group context, well-formed and frontier-bounded
+    have hgWF : CtxWF { env := schemes ++ ctx.env, ctors := ctx.ctors } := by
+      intro M hM; rcases List.mem_append.mp hM with hM | hM
+      · exact hwf M hM
+      · exact hctx M hM
+    have hgbelow : CtxBelow Φ { env := schemes ++ ctx.env, ctors := ctx.ctors } := by
+      intro M hM; rcases List.mem_append.mp hM with hM | hM
+      · exact hschB M hM
+      · exact hbelow M hM
+    have hgrle : Φ ≤ Φ₁ := InferRecGroupAnn.frontier_le hgroup
+    have hS₁K : ∀ p ∈ S₁, p.1 ∉ K := fun p hp => hSK p (List.mem_append_left _ hp)
+    have hS₂K : ∀ p ∈ S₂, p.1 ∉ K := fun p hp => hSK p (List.mem_append_right _ hp)
+    have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := InferRecGroupAnn.lc hgroup hgWF hwf
+    have hS₁below : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 := InferRecGroupAnn.belowFvars hgroup hgbelow hschB hKbrΦ
+    have hS₁dom : ∀ p ∈ S₁, p.1 < Φ₁ := InferRecGroupAnn.dom_below hgroup hgbelow hschB hKbrΦ
+    have helimS₁ : ∀ p ∈ S₁, ∀ x : Ty, p.1 ∉ (S₁.onTy x).freeVars :=
+      InferRecGroupAnn.eliminates hgroup hgbelow hschB hKbrΦ
+        (fun p hp hc => hS₁K p hp (hKbr p.1 hc))
+        (fun p hp hc => hS₁K p hp (hKe p.1 (.inl (.inl hc))))
+    have hgS₁WF : CtxWF (S₁.onCtx { env := schemes ++ ctx.env, ctors := ctx.ctors }) :=
+      Subst.onCtx_wf hS₁lc hgWF
+    have hgS₁below : CtxBelow Φ₁ (S₁.onCtx { env := schemes ++ ctx.env, ctors := ctx.ctors }) :=
+      Subst.onCtx_below hS₁below hgrle hgbelow
+    have hS₂lc : ∀ p ∈ S₂, p.2.IsLC := (Infer.lc hbody hgS₁WF).2
+    -- the schemes are *rigid* under `S₁ ++ S₂` (their free vars are `⊆ K`, which `S` avoids)
+    have hσfix : ∀ σ ∈ schemes, PolyTy.substFvars (S₁ ++ S₂) σ = σ := fun σ hσ => by
+      have hb : Ty.substFvars (S₁ ++ S₂) σ.body = σ.body :=
+        Ty.substFvars_eq_self_of_no_key (fun p hp hc => hSK p hp (hKsch σ hσ p.1 hc))
+      calc PolyTy.substFvars (S₁ ++ S₂) σ
+          = ⟨(PolyTy.substFvars (S₁ ++ S₂) σ).paramCount, (PolyTy.substFvars (S₁ ++ S₂) σ).body⟩ := rfl
+        _ = σ := by rw [PolyTy.paramCount_substFvars, PolyTy.body_substFvars, hb]
+    have hschemesmap : schemes.map (PolyTy.substFvars (S₁ ++ S₂)) = schemes := by
+      conv_rhs => rw [← List.map_id schemes]
+      exact List.map_congr_left hσfix
+    have hschemes_onEnv : ∀ (T : Subst), (∀ p ∈ T, p.1 ∉ K) → Subst.onEnv T schemes = schemes :=
+      fun T hT => Subst.onEnv_eq_self_of_fresh (fun p hp hc => by
+        obtain ⟨M, hM, hMc⟩ := Env.mem_freeVars_iff.mp hc
+        exact hT p hp (hKsch M hM p.1 hMc))
+    -- pushing `S₂` past `S₁` over the schemes-extended context (schemes are `S`-rigid)
+    have hctxbridge : S₂.onCtx (S₁.onCtx { env := schemes ++ ctx.env, ctors := ctx.ctors })
+        = { env := schemes ++ ((S₁ ++ S₂).onCtx ctx).env, ctors := ((S₁ ++ S₂).onCtx ctx).ctors } := by
+      rw [← Subst.onCtx_append]
+      simp only [Subst.onCtx, Subst.onEnv, List.map_append]
+      rw [show List.map (Subst.onPolyTy (S₁ ++ S₂)) schemes = schemes from hschemes_onEnv (S₁ ++ S₂) hSK]
+    -- the group's cofinite soundness
+    obtain ⟨L, hcof⟩ := InferRecGroupAnn.sound hgroup hgWF hgbelow hwf K hKΦ hKbr hKsch hS₁K
+    rw [Expr.substTyFvars_letRecAnn, hschemesmap]
+    refine TypeOfElabHM.letRecAnn (L := L ++ S₂.map Prod.fst) ?_ hwf ?_ rfl ?_
+    · rw [List.length_map]; exact (InferRecGroupAnn.bindingsOut_length hgroup).trans hlen
+    · -- the cofinite premise: bridge `S₁`-typings to `S₁ ++ S₂` by pushing `S₂`
+      intro p hp Xs hXfresh
+      rw [List.zip_map_left_eq] at hp
+      obtain ⟨⟨bo, σ⟩, hbozip, rfl⟩ := List.mem_map.mp hp
+      have hXfresh' : FreshNames L σ.paramCount Xs :=
+        ⟨hXfresh.length, hXfresh.nodup, fun x hx hc => hXfresh.avoid x hx (List.mem_append_left _ hc)⟩
+      have hXs_S₂ : ∀ q ∈ S₂, q.1 ∉ Xs := fun q hq hc =>
+        hXfresh.avoid q.1 hc (List.mem_append_right _ (List.mem_map.mpr ⟨q, hq, rfl⟩))
+      have hzipS₁ : (bo.substTyFvars S₁, σ) ∈ (bindingsOut.map (·.substTyFvars S₁)).zip schemes := by
+        rw [List.zip_map_left_eq]; exact List.mem_map.mpr ⟨(bo, σ), hbozip, rfl⟩
+      have hcof_p := hcof (bo.substTyFvars S₁, σ) hzipS₁ Xs hXfresh'
+      have hpushed := TypeOfElabHM.onSubst S₂ hS₂lc hcof_p
+      rw [hctxbridge] at hpushed
+      rw [show ((bo.substTyFvars S₁).openTyVars Xs).substTyFvars S₂
+            = (bo.substTyFvars (S₁ ++ S₂)).openTyVars Xs from by
+            rw [← Expr.substTyFvars_openTyVars hS₂lc hXs_S₂, ← Expr.substTyFvars_append]] at hpushed
+      rw [show S₂.onTy (σ.openVars Xs) = σ.openVars Xs from
+            Ty.substFvars_eq_self_of_no_key (fun q hq hc => by
+              rcases Ty.freeVars_openVars_subset q.1 hc with h | h
+              · exact hS₂K q hq (hKsch σ (List.of_mem_zip hbozip).2 q.1 h)
+              · exact hXs_S₂ q hq h)] at hpushed
+      exact hpushed
+    · -- the body typing, threaded through `S₂`
+      have hbodyfix : bodyOut.substTyFvars S₁ = bodyOut :=
+        Infer.eOut_substTyFvars_eq hbody hS₁dom
+          (fun p hp M hM => by
+            obtain ⟨M₀, hM₀, rfl⟩ := List.mem_map.mp hM
+            exact fun hc => helimS₁ p hp M₀.body hc)
+          (fun p hp hc => hS₁K p hp (hKe p.1 (.inr hc)))
+      have hbodyterm : bodyOut.substTyFvars (S₁ ++ S₂) = bodyOut.substTyFvars S₂ := by
+        rw [Expr.substTyFvars_append, hbodyfix]
+      have hbodysound := Infer.sound hbody hgS₁WF hgS₁below K
+        (fun k hk => by have := hKΦ k hk; have := hgrle; omega)
+        (fun y hy => hKe y (.inr hy)) hS₂K
+      rw [hctxbridge, ← hbodyterm] at hbodysound
+      exact hbodysound
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -9052,6 +9207,25 @@ theorem InferRecGroup.sound {Φ ctx bindings targets Φ' S bindingsOut}
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
+/-- **Soundness of an annotated recursion group**, cofinite at the (rigid) schemes.
+    Each elaborated binding (substituted by the group's `S`), opened at any
+    sufficiently-fresh `Xs`, types at its scheme's opening — exactly the cofinite
+    premise of `TypeOfElabHM.letRecAnn`. -/
+theorem InferRecGroupAnn.sound {Φ ctx bindings schemes Φ' S bindingsOut}
+    (h : InferRecGroupAnn Φ ctx bindings schemes Φ' S bindingsOut)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hschemesWF : ∀ σ ∈ schemes, σ.WF)
+    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hKsch : ∀ σ ∈ schemes, ∀ y ∈ σ.body.freeVars, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    ∃ L : List Nat, ∀ p ∈ (bindingsOut.map (·.substTyFvars S)).zip schemes,
+      ∀ Xs, FreshNames L p.2.paramCount Xs →
+        TypeOfElabHM (S.onCtx ctx) (p.1.openTyVars Xs) (p.2.openVars Xs) := by
+  sorry
+termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 /-- **Headline soundness for a closed program.** A program with no free scoped
