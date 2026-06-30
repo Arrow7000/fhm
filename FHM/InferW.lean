@@ -11901,9 +11901,8 @@ theorem letRec_body_retype
         by_contra hcon
         push_neg at hcon
         apply hvGinf
-        simp only [genGroupVars, List.mem_filter, Bool.and_eq_true, Bool.not_eq_true',
-          Bool.not_eq_eq_eq_not, Bool.not_true, List.contains_eq_mem, decide_eq_false_iff_not,
-          decide_eq_true_eq]
+        simp only [genGroupVars, List.mem_filter, Bool.and_eq_true, Bool.not_eq_eq_eq_not,
+          Bool.not_true, List.contains_eq_mem, decide_eq_false_iff_not]
         exact ⟨hv_flist, hcon.1, hcon.2⟩
       rcases hcase with henv | hrig
       · obtain ⟨pt, hpt, hvpt⟩ := Env.mem_freeVars_iff.mp henv
@@ -14113,6 +14112,210 @@ def RecGroup.eraseVarTyArgs : List Expr → List Expr
   | []        => []
   | e :: rest => e.eraseVarTyArgs :: RecGroup.eraseVarTyArgs rest
 end
+
+/-- Membership-aware `List.Forall₂` implication. -/
+theorem List.Forall₂.imp_mem {α β : Type*} {R S : α → β → Prop} :
+    ∀ {l₁ : List α} {l₂ : List β}, (∀ a ∈ l₁, ∀ b, R a b → S a b) →
+      List.Forall₂ R l₁ l₂ → List.Forall₂ S l₁ l₂ := by
+  intro l₁
+  induction l₁ with
+  | nil => intro l₂ _ h; cases h; exact .nil
+  | cons a l₁' ih =>
+    intro l₂ H h
+    cases h with
+    | cons hab hrest =>
+      exact .cons (H a (List.mem_cons_self ..) _ hab)
+        (ih (fun a' ha' b' hb' => H a' (List.mem_cons_of_mem _ ha') b' hb') hrest)
+
+/-- Truncate-or-pad `tyArgs` to exactly `m` (Wall-2 fix): when the scheme body's
+    bvars are `< m` (`CtxWF`), the instantiation survives because every consulted
+    bvar index is `< min(tyArgs.length, m)` and the adjusted list agrees there. -/
+theorem InstantiatesBy.adjustLen {tyArgs : List Ty} (m : Nat) :
+    ∀ {body τ : Ty}, InstantiatesBy tyArgs body τ → ContainsBvarsUpTo m body →
+      InstantiatesBy ((tyArgs ++ List.replicate m (Ty.prim .unit)).take m) body τ := by
+  intro body
+  induction body using Ty.rec_strong with
+  | prim p => intro τ h _; cases h; exact .prim
+  | fvar n => intro τ h _; cases h; exact .fvar
+  | bvar i =>
+    intro τ h hbv
+    cases h with
+    | bvar hs =>
+      cases hbv with
+      | bvar hlt =>
+        have hi : i < tyArgs.length := by
+          by_contra hc
+          rw [List.getElem?_eq_none (Nat.le_of_not_lt hc)] at hs
+          exact Option.noConfusion hs
+        refine .bvar ?_
+        rw [List.getElem?_take_of_lt hlt, List.getElem?_append_left hi]
+        exact hs
+  | arrow a b iha ihb =>
+    intro τ h hbv
+    cases h with
+    | arrow ha hb => cases hbv with | arrow hba hbb => exact .arrow (iha ha hba) (ihb hb hbb)
+  | customTy nm tys ih =>
+    intro τ h hbv
+    cases h with
+    | customTy hf =>
+      cases hbv with
+      | customTy hball =>
+        exact .customTy (List.Forall₂.imp_mem (fun t ht b hb => ih t ht hb (hball t ht)) hf)
+
+/-- `eraseVarTyArgs` commutes with the per-branch `substTyFvars`-map. -/
+theorem BranchList.eraseVarTyArgs_map_substTyFvars {S : Subst}
+    (brs : List (MatchPattern × Expr))
+    (h : ∀ pat e, (pat, e) ∈ brs →
+        (e.substTyFvars S).eraseVarTyArgs = (e.eraseVarTyArgs).substTyFvars S) :
+    BranchList.eraseVarTyArgs (brs.map (fun pb => (pb.1, pb.2.substTyFvars S)))
+      = (BranchList.eraseVarTyArgs brs).map (fun pb => (pb.1, pb.2.substTyFvars S)) := by
+  induction brs with
+  | nil => rfl
+  | cons hd tl ih =>
+    obtain ⟨pat, body⟩ := hd
+    simp only [List.map_cons, BranchList.eraseVarTyArgs]
+    rw [h pat body (List.mem_cons_self ..)]
+    congr 1
+    exact ih (fun p e hpe => h p e (List.mem_cons_of_mem _ hpe))
+
+/-- `eraseVarTyArgs` commutes with the per-binding `substTyFvars`-map. -/
+theorem RecGroup.eraseVarTyArgs_map_substTyFvars {S : Subst} (bs : List Expr)
+    (h : ∀ e ∈ bs, (e.substTyFvars S).eraseVarTyArgs = (e.eraseVarTyArgs).substTyFvars S) :
+    RecGroup.eraseVarTyArgs (bs.map (·.substTyFvars S))
+      = (RecGroup.eraseVarTyArgs bs).map (·.substTyFvars S) := by
+  induction bs with
+  | nil => rfl
+  | cons hd tl ih =>
+    simp only [List.map_cons, RecGroup.eraseVarTyArgs]
+    rw [h hd (List.mem_cons_self ..)]
+    congr 1
+    exact ih (fun e he => h e (List.mem_cons_of_mem _ he))
+
+/-- `eraseVarTyArgs` commutes with `substTyFvars` (both zero var decorations;
+    annotations are substituted identically). -/
+theorem Expr.eraseVarTyArgs_substTyFvars {e : Expr} {S : Subst} :
+    (e.substTyFvars S).eraseVarTyArgs = (e.eraseVarTyArgs).substTyFvars S := by
+  induction e using Expr.rec_strong with
+  | primLit p => simp only [Expr.substTyFvars_primLit, Expr.eraseVarTyArgs]
+  | var n tyArgs => simp only [Expr.substTyFvars_var, Expr.eraseVarTyArgs, List.map_nil]
+  | ctor nm => simp only [Expr.substTyFvars_ctor, Expr.eraseVarTyArgs]
+  | lambda ann body ih => simp only [Expr.substTyFvars_lambda, Expr.eraseVarTyArgs, ih]
+  | app f arg ihf iharg => simp only [Expr.substTyFvars_app, Expr.eraseVarTyArgs, ihf, iharg]
+  | letIn ann be body ihbe ihbo =>
+    simp only [Expr.substTyFvars_letIn, Expr.eraseVarTyArgs, ihbe, ihbo]
+  | match_ scrut branches ihs ihbs =>
+    simp only [Expr.substTyFvars_match, Expr.eraseVarTyArgs, ihs]
+    rw [BranchList.eraseVarTyArgs_map_substTyFvars branches ihbs]
+  | letRec bindings body ihbs ihbo =>
+    simp only [Expr.substTyFvars_letRec, Expr.eraseVarTyArgs, ihbo]
+    rw [RecGroup.eraseVarTyArgs_map_substTyFvars bindings ihbs]
+  | letRecAnn schemes bindings body ihbs ihbo =>
+    simp only [Expr.substTyFvars_letRecAnn, Expr.eraseVarTyArgs, ihbo]
+    rw [RecGroup.eraseVarTyArgs_map_substTyFvars bindings ihbs]
+
+/-! `eraseVarTyArgs` commutes with scoped-tyvar opening (both zero var decorations;
+    annotations are opened identically). Needed for `insensitive`'s annotated
+    cofinite cases. -/
+mutual
+theorem Expr.eraseVarTyArgs_openTyVarsAux {Xs : List Nat} : ∀ (d : Nat) (e : Expr),
+    (e.openTyVarsAux d Xs).eraseVarTyArgs = (e.eraseVarTyArgs).openTyVarsAux d Xs
+  | _, .primLit _ => rfl
+  | _, .ctor _ => rfl
+  | _, .var _ _ => rfl
+  | d, .lambda ann body => by
+      simp only [Expr.openTyVarsAux, Expr.eraseVarTyArgs, Expr.eraseVarTyArgs_openTyVarsAux d body]
+  | d, .app f arg => by
+      simp only [Expr.openTyVarsAux, Expr.eraseVarTyArgs,
+        Expr.eraseVarTyArgs_openTyVarsAux d f, Expr.eraseVarTyArgs_openTyVarsAux d arg]
+  | d, .letIn (some σ) rhs body => by
+      simp only [Expr.openTyVarsAux, Expr.eraseVarTyArgs,
+        Expr.eraseVarTyArgs_openTyVarsAux (d + σ.paramCount) rhs,
+        Expr.eraseVarTyArgs_openTyVarsAux d body]
+  | d, .letIn none rhs body => by
+      simp only [Expr.openTyVarsAux, Expr.eraseVarTyArgs,
+        Expr.eraseVarTyArgs_openTyVarsAux d rhs, Expr.eraseVarTyArgs_openTyVarsAux d body]
+  | d, .match_ scrut branches => by
+      simp only [Expr.openTyVarsAux, Expr.eraseVarTyArgs,
+        Expr.eraseVarTyArgs_openTyVarsAux d scrut, BranchList.eraseVarTyArgs_openTyVarsAux d branches]
+  | d, .letRec bindings body => by
+      simp only [Expr.openTyVarsAux, Expr.eraseVarTyArgs,
+        RecGroup.eraseVarTyArgs_openTyVarsAux d bindings, Expr.eraseVarTyArgs_openTyVarsAux d body]
+  | d, .letRecAnn schemes bindings body => by
+      simp only [Expr.openTyVarsAux, Expr.eraseVarTyArgs,
+        RecGroupAnn.eraseVarTyArgs_openTyVarsAux d schemes bindings,
+        Expr.eraseVarTyArgs_openTyVarsAux d body]
+theorem BranchList.eraseVarTyArgs_openTyVarsAux {Xs : List Nat} :
+    ∀ (d : Nat) (brs : List (MatchPattern × Expr)),
+      BranchList.eraseVarTyArgs (BranchList.openTyVarsAux d Xs brs)
+        = BranchList.openTyVarsAux d Xs (BranchList.eraseVarTyArgs brs)
+  | _, [] => rfl
+  | d, (pat, body) :: rest => by
+      simp only [BranchList.openTyVarsAux, BranchList.eraseVarTyArgs,
+        Expr.eraseVarTyArgs_openTyVarsAux d body, BranchList.eraseVarTyArgs_openTyVarsAux d rest]
+theorem RecGroup.eraseVarTyArgs_openTyVarsAux {Xs : List Nat} : ∀ (d : Nat) (bs : List Expr),
+    RecGroup.eraseVarTyArgs (RecGroup.openTyVarsAux d Xs bs)
+      = RecGroup.openTyVarsAux d Xs (RecGroup.eraseVarTyArgs bs)
+  | _, [] => rfl
+  | d, e :: rest => by
+      simp only [RecGroup.openTyVarsAux, RecGroup.eraseVarTyArgs,
+        Expr.eraseVarTyArgs_openTyVarsAux d e, RecGroup.eraseVarTyArgs_openTyVarsAux d rest]
+theorem RecGroupAnn.eraseVarTyArgs_openTyVarsAux {Xs : List Nat} :
+    ∀ (d : Nat) (schemes : List PolyTy) (bs : List Expr),
+      RecGroup.eraseVarTyArgs (RecGroupAnn.openTyVarsAux d Xs schemes bs)
+        = RecGroupAnn.openTyVarsAux d Xs schemes (RecGroup.eraseVarTyArgs bs)
+  | _, _, [] => rfl
+  | d, [], e :: rest => by
+      simp only [RecGroupAnn.openTyVarsAux, RecGroup.eraseVarTyArgs,
+        Expr.eraseVarTyArgs_openTyVarsAux d e, RecGroupAnn.eraseVarTyArgs_openTyVarsAux d [] rest]
+  | d, σ :: ss, e :: rest => by
+      simp only [RecGroupAnn.openTyVarsAux, RecGroup.eraseVarTyArgs,
+        Expr.eraseVarTyArgs_openTyVarsAux (d + σ.paramCount) e,
+        RecGroupAnn.eraseVarTyArgs_openTyVarsAux d ss rest]
+end
+
+theorem Expr.eraseVarTyArgs_openTyVars {Xs : List Nat} {e : Expr} :
+    (e.openTyVars Xs).eraseVarTyArgs = (e.eraseVarTyArgs).openTyVars Xs :=
+  Expr.eraseVarTyArgs_openTyVarsAux 0 e
+
+/-- `eraseVarTyArgs` congruence through `openBoundTyVars` (both `ann` cases). -/
+theorem Expr.eraseVarTyArgs_openBoundTyVars_congr {ann : Option PolyTy} {Xs : List Nat}
+    {e e' : Expr} (h : e.eraseVarTyArgs = e'.eraseVarTyArgs) :
+    (Expr.openBoundTyVars ann Xs e).eraseVarTyArgs
+      = (Expr.openBoundTyVars ann Xs e').eraseVarTyArgs := by
+  cases ann with
+  | none => simpa only [Expr.openBoundTyVars] using h
+  | some σ =>
+    simp only [Expr.openBoundTyVars, Expr.eraseVarTyArgs_openTyVars, h]
+
+/-- `TypeOfHM` is blind to `var` decorations: an erase-equal term types the same. -/
+theorem TypeOfHM.eraseVarTyArgs_insensitive {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h : TypeOfHM ctx e τ) {e' : Expr} (heq : e.eraseVarTyArgs = e'.eraseVarTyArgs) :
+    TypeOfHM ctx e' τ := by
+  sorry
+
+/-- **Forward decoration bridge** (Wall-2 fixed: needs `CtxWF`). Every declarative
+    `TypeOfHM` typing is the erasure of a fully-decorated `TypeOfElabHM` typing.
+    The `var` case truncates-or-pads the existential instantiation witness to
+    exactly `polyTy.paramCount` (legitimate because `CtxWF` ⇒ the looked-up
+    scheme's body has bvars `< paramCount`). -/
+theorem TypeOfHM.toElab {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h : TypeOfHM ctx e τ) (hwf : CtxWF ctx) :
+    ∃ e', e.eraseVarTyArgs = e'.eraseVarTyArgs ∧ TypeOfElabHM ctx e' τ := by
+  sorry
+
+/-- **Substitution preservation for `TypeOfHM`**, derived from the `TypeOfElabHM`
+    metatheory via the "sandwich": decorate (`toElab`), push the substitution
+    through (`TypeOfElabHM.onSubst`), erase back (`faithful`), then re-skeleton
+    (`eraseVarTyArgs_insensitive` using the `substTyFvars`/`eraseVarTyArgs`
+    commutation). No re-proof by induction on `TypeOfHM`. -/
+theorem TypeOfHM.onSubst {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
+    (h : TypeOfHM ctx e τ) (hwf : CtxWF ctx) (hS : ∀ p ∈ S, p.2.IsLC) :
+    TypeOfHM (S.onCtx ctx) (e.substTyFvars S) (S.onTy τ) := by
+  obtain ⟨e', he, hElab⟩ := h.toElab hwf
+  have hElab' := TypeOfElabHM.onSubst S hS hElab
+  have hHM' := TypeOfElabHM.faithful hElab'
+  refine hHM'.eraseVarTyArgs_insensitive ?_
+  rw [Expr.eraseVarTyArgs_substTyFvars, Expr.eraseVarTyArgs_substTyFvars, he]
 
 /-- Output-uniqueness up to instance: any two `Infer` results on the same input
     are mutual substitution-instances. (From `complete'` of the first applied to
