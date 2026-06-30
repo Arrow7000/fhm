@@ -14739,7 +14739,26 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
             intro p hp; rcases List.mem_append.mp hp with h | h
             · exact hav₁ p h
             · exact hav₂ p h⟩
-  | .letRecAnn _ _ _ => none
+  | .letRecAnn schemes bindings body =>
+      -- Annotated polymorphic recursion: the `schemes` are GIVEN, so this is
+      -- check-and-elaborate. Decidably check each scheme is WF (`bvarsBelow`), then
+      -- thread the group through `inferRecGroupAnnCore` (per-binding `letInAnn`
+      -- mechanics, schemes in scope throughout) and type the body under the schemes.
+      if hwf : (∀ σ ∈ schemes, Ty.bvarsBelow σ.paramCount σ.body = true) then
+        if hlen : bindings.length = schemes.length then
+          match inferRecGroupAnnCore K Φ { ctx with env := schemes ++ ctx.env } bindings schemes with
+          | none => none
+          | some ⟨(Φ₁, S₁, bindingsOut), hgroup, hav₁⟩ =>
+            match inferCore K Φ₁ (S₁.onCtx { ctx with env := schemes ++ ctx.env }) body with
+            | none => none
+            | some ⟨(Φ₂, S₂, bodyOut, τ₂), hbody, hav₂⟩ =>
+              some ⟨(Φ₂, S₁ ++ S₂, .letRecAnn schemes bindingsOut bodyOut, τ₂),
+                .letRecAnn (fun σ hσ => PolyTy.wf_iff_bvarsBelow.mp (hwf σ hσ)) hlen hgroup hbody, by
+                intro p hp; rcases List.mem_append.mp hp with h | h
+                · exact hav₁ p h
+                · exact hav₂ p h⟩
+        else none
+      else none
 termination_by e.size
 decreasing_by
   all_goals (try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -14833,6 +14852,46 @@ def inferRecGroupCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (bindings : List Exp
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup]; omega)
+
+/-- Check-and-elaborate an **annotated** recursive group (the executable analogue of
+    `inferRecGroupCore` for `letRecAnn`). The `schemes` are RIGID user annotations,
+    threaded unchanged; each binding is handled with `letInAnn` mechanics (skolemise,
+    infer the opened binding against the opened scheme, escape-check, close back). -/
+def inferRecGroupAnnCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (bindings : List Expr)
+    (schemes : List PolyTy) :
+    Option { r : Nat × Subst × List Expr //
+      InferRecGroupAnn Φ ctx bindings schemes r.1 r.2.1 r.2.2 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+  match bindings, schemes with
+  | [], [] => some ⟨(Φ, [], []), .nil, by simp⟩
+  | e :: rest, σ :: ss =>
+      match inferCore (K ++ freshVars Φ σ.paramCount) (Φ + σ.paramCount) ctx
+          (e.openTyVars (freshVars Φ σ.paramCount)) with
+      | none => none
+      | some ⟨(Φ₁, S₁, eOut, τ), he, hav₁⟩ =>
+        match unifyCoreK (K ++ freshVars Φ σ.paramCount) τ
+            (σ.openVars (freshVars Φ σ.paramCount)) with
+        | none => none
+        | some ⟨Schk, hSchk, havS⟩ =>
+          if hesc1 : (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) then
+            if hesc2 : (∀ y ∈ freshVars Φ σ.paramCount,
+                y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
+              match inferRecGroupAnnCore K Φ₁ (Schk.onCtx (S₁.onCtx ctx)) rest ss with
+              | none => none
+              | some ⟨(Φ₂, S₂, restOut), hrest, hav₃⟩ =>
+                some ⟨(Φ₂, S₁ ++ Schk ++ S₂,
+                    ((eOut.substTyFvars (S₁ ++ Schk)).closeTyVars (freshVars Φ σ.paramCount)) :: restOut),
+                  .cons (Nat.le_refl Φ) he hSchk hesc1 hesc2 hrest, by
+                  intro p hp; rcases List.mem_append.mp hp with h | h
+                  · rcases List.mem_append.mp h with h | h
+                    · exact fun hc => hav₁ p h (List.mem_append_left _ hc)
+                    · exact fun hc => havS p h (List.mem_append_left _ hc)
+                  · exact hav₃ p h⟩
+            else none
+          else none
+  | _, _ => none
+termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 /-- The executable type inferer, refining `Infer`. Runs from the empty rigid set
