@@ -5861,6 +5861,397 @@ theorem Expr.letRecElab_sound {ctx : Ctx} {G : List Nat} {bs : List Expr}
     (((List.range bs.length).zip τs).reverse) [] (by simp) hcard hvalid hbodyctx
   simpa only [List.nil_append] using key
 
+/-- Iterated `substFvars` commutes with `closeOver` when `S` avoids the closed-over
+    pool `gs` in domain and range. Plural lift of `Ty.substFvar_closeOver_comm`
+    (the `d = 0` companion of Step A's `Ty.substFvars_closeOverFrom`). Used by the
+    honest `letIn` soundness case to push `S` through the generalised scheme. -/
+theorem Ty.substFvars_closeOver {S : Subst} {gs : List Nat}
+    (hS_gs : ∀ p ∈ S, p.1 ∉ gs) (hS_ran : ∀ p ∈ S, ∀ u ∈ p.2.freeVars, u ∉ gs) :
+    ∀ {τ : Ty}, Ty.substFvars S (Ty.closeOver gs τ) = Ty.closeOver gs (Ty.substFvars S τ) := by
+  induction S with
+  | nil => intro τ; rfl
+  | cons hd S' ih =>
+    obtain ⟨Z, U⟩ := hd
+    intro τ
+    simp only [Ty.substFvars]
+    rw [Ty.substFvar_closeOver_comm (hS_gs (Z, U) List.mem_cons_self)
+          (fun g hg hc => hS_ran (Z, U) List.mem_cons_self g hc hg),
+        ih (fun p hp => hS_gs p (List.mem_cons_of_mem _ hp))
+          (fun p hp => hS_ran p (List.mem_cons_of_mem _ hp))]
+
+/-- **Substitution removes its own domain from a term's free type vars.** If `w`
+    avoids `S.onTy x` for every `x` (i.e. `w` is idempotently eliminated by `S`),
+    then `w` is not free in `e.substTyFvars S` (for `letRecAnn`-free `e`). Direct
+    structural twin of `Expr.mem_tyFreeVars_substTyFvars` that keeps the
+    `(S.onTy t)` form for annotations instead of weakening to a disjunction — this
+    is what makes `S₁` idempotent on the close-after-`S₁` `letIn` rhs. -/
+theorem Expr.dom_notMem_substTyFvars {S : Subst} {w : Nat}
+    (hidem : ∀ x : Ty, w ∉ (Ty.substFvars S x).freeVars) :
+    ∀ {e : Expr}, e.NoRecAnn → w ∉ (e.substTyFvars S).tyFreeVars := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro _; rw [Expr.substTyFvars_primLit]; simp [Expr.tyFreeVars]
+  | ctor c => intro _; rw [Expr.substTyFvars_ctor]; simp [Expr.tyFreeVars]
+  | var n tyArgs =>
+    intro _
+    rw [Expr.substTyFvars_var]
+    simp only [Expr.tyFreeVars, List.mem_flatMap, not_exists, not_and]
+    intro t ht
+    obtain ⟨t0, _, rfl⟩ := List.mem_map.mp ht
+    exact hidem t0
+  | lambda ann body ih =>
+    intro hno
+    simp only [Expr.NoRecAnn] at hno
+    rw [Expr.substTyFvars_lambda]
+    cases ann with
+    | none => simpa only [Expr.tyFreeVars, Option.map_none, Option.elim_none, List.nil_append] using ih hno
+    | some t =>
+      simp only [Expr.tyFreeVars, Option.map_some, Option.elim_some, List.mem_append, not_or]
+      exact ⟨hidem t, ih hno⟩
+  | app f arg ihf iharg =>
+    intro hno
+    simp only [Expr.NoRecAnn] at hno
+    rw [Expr.substTyFvars_app]
+    simp only [Expr.tyFreeVars, List.mem_append, not_or]
+    exact ⟨ihf hno.1, iharg hno.2⟩
+  | letIn ann rhs body ihr ihb =>
+    intro hno
+    simp only [Expr.NoRecAnn] at hno
+    rw [Expr.substTyFvars_letIn]
+    cases ann with
+    | none =>
+      simp only [Expr.tyFreeVars, Option.map_none, Option.elim_none, List.nil_append,
+        List.mem_append, not_or]
+      exact ⟨ihr hno.1, ihb hno.2⟩
+    | some σ =>
+      simp only [Expr.tyFreeVars, Option.map_some, Option.elim_some, List.mem_append, not_or]
+      exact ⟨⟨hidem σ.body, ihr hno.1⟩, ihb hno.2⟩
+  | match_ scrut branches ihs ihbr =>
+    intro hno
+    simp only [Expr.NoRecAnn] at hno
+    rw [Expr.substTyFvars_match]
+    simp only [Expr.tyFreeVars, List.mem_append, not_or]
+    refine ⟨ihs hno.1, ?_⟩
+    intro hc
+    obtain ⟨pb, hpb, hwpb⟩ := Expr.mem_branchListTyFreeVars hc
+    obtain ⟨pb0, hpb0, rfl⟩ := List.mem_map.mp hpb
+    obtain ⟨p0, b0⟩ := pb0
+    exact ihbr p0 b0 hpb0 (Expr.NoRecAnn.BranchList_iff.mp hno.2 p0 b0 hpb0) hwpb
+  | letRec bindings body ihbs ihb =>
+    intro hno
+    simp only [Expr.NoRecAnn] at hno
+    rw [Expr.substTyFvars_letRec]
+    simp only [Expr.tyFreeVars, List.mem_append, not_or]
+    refine ⟨?_, ihb hno.2⟩
+    intro hc
+    obtain ⟨e', he', hwe'⟩ := Expr.mem_recGroupTyFreeVars hc
+    obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he'
+    exact ihbs e0 he0 (Expr.NoRecAnn.RecGroup_iff.mp hno.1 e0 he0) hwe'
+  | letRecAnn schemes bindings body _ _ => intro hno; exact hno.elim
+
+/-! ### Domain-locality (avoid form): `Infer.dom_avoid`
+
+The substitution-**domain** twin of `Infer.eOut_avoid`: a var below the input
+frontier that avoids the context env and the term's annotation free vars is not
+**bound** by the inferred substitution. (`eOut_avoid` only handles the range;
+`dom_below` only bounds the domain from above.) The honest soundness `let`/`letRec`
+cases need this to show the body substitution leaves the *generalised* variables
+untouched. Proof mirrors `eOut_avoid`, using `UnifyRel.dom_mem` (the unifier's
+domain lies in the unified types' free vars) where `eOut_avoid` uses
+`range_mem`. -/
+mutual
+theorem Infer.dom_avoid {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
+    ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ e.tyFreeVars →
+    w ∉ S.map Prod.fst := by
+  cases h with
+  | primLitUnit => intro w _ _ _; simp
+  | primLitInt => intro w _ _ _; simp
+  | primLitNat => intro w _ _ _; simp
+  | primLitStr => intro w _ _ _; simp
+  | var hlook => intro w _ _ _; simp
+  | ctor hlook => intro w _ _ _; simp
+  | lambda hseed hbody =>
+    intro w hwΦ hctx hwe
+    cases hseed with
+    | none =>
+      simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at hwe
+      exact Infer.dom_avoid hbody (by omega)
+        (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+            · intro hc; simp only [PolyTy.mkTrivial, Ty.freeVars, List.mem_singleton] at hc; omega
+            · exact hctx M hM)
+        hwe
+    | some T hT =>
+      simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or] at hwe
+      exact Infer.dom_avoid hbody hwΦ
+        (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+            · simpa only [PolyTy.mkTrivial] using hwe.1
+            · exact hctx M hM)
+        hwe.2
+  | app hf harg huni =>
+    intro w hwΦ hctx hwe
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
+    have hfle := Infer.frontier_le hf
+    have hargle := Infer.frontier_le harg
+    obtain ⟨hfS, hfτ, hfo⟩ := Infer.eOut_avoid hf (w := w) hwΦ hctx hwe.1
+    have hfdom := Infer.dom_avoid hf hwΦ hctx hwe.1
+    obtain ⟨haS, haτ, hao⟩ := Infer.eOut_avoid harg (w := w) (by omega)
+      (Subst.onCtx_avoid hctx hfS) hwe.2
+    have hadom := Infer.dom_avoid harg (by omega) (Subst.onCtx_avoid hctx hfS) hwe.2
+    intro hc; simp only [List.map_append, List.mem_append] at hc
+    rcases hc with (hc | hc) | hc
+    · exact hfdom hc
+    · exact hadom hc
+    · obtain ⟨p, hp, hpw⟩ := List.mem_map.mp hc
+      rcases UnifyRel.dom_mem huni p hp with h | h
+      · rw [hpw] at h; exact Subst.notMemOnTy haS hfτ h
+      · rw [hpw] at h
+        simp only [Ty.freeVars, List.mem_dedup, List.mem_append, List.mem_singleton] at h
+        rcases h with h | h
+        · exact haτ h
+        · omega
+  | letIn hrhs hbody =>
+    intro w hwΦ hctx hwe
+    expose_names
+    simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append, not_or] at hwe
+    have hrle := Infer.frontier_le hrhs
+    obtain ⟨hrS, hrτ, hro⟩ := Infer.eOut_avoid hrhs (w := w) hwΦ hctx hwe.1
+    have hrdom := Infer.dom_avoid hrhs hwΦ hctx hwe.1
+    have hbdom := Infer.dom_avoid hbody (by omega)
+      (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+          · intro hc; exact hrτ (Ty.freeVars_closeOver_subset hc)
+          · exact Subst.onCtx_avoid hctx hrS M hM)
+      hwe.2
+    intro hc; simp only [List.map_append, List.mem_append] at hc
+    rcases hc with hc | hc
+    · exact hrdom hc
+    · exact hbdom hc
+  | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody =>
+    intro w hwΦ hctx hwe
+    expose_names
+    simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or] at hwe
+    have hrle := Infer.frontier_le hrhs
+    obtain ⟨hrS, hrτ, hro⟩ := Infer.eOut_avoid hrhs (w := w) (by omega) hctx (by
+      intro hc; rcases Expr.tyFreeVars_openTyVars hc with h | h
+      · exact hwe.1.2 h
+      · have := freshVars_ge w h; omega)
+    have hrdom := Infer.dom_avoid hrhs (by omega) hctx (by
+      intro hc; rcases Expr.tyFreeVars_openTyVars hc with h | h
+      · exact hwe.1.2 h
+      · have := freshVars_ge w h; omega)
+    have hσopen : w ∉ (σ.openVars (freshVars N σ.paramCount)).freeVars := by
+      intro hc; rcases Ty.freeVars_openVars_subset w hc with h | h
+      · exact hwe.1.1 h
+      · have := freshVars_ge w h; omega
+    have hSchk : ∀ p ∈ Schk, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni p hp w hwp with h | h
+      · exact hrτ h
+      · exact hσopen h
+    have hSchkdom : w ∉ Schk.map Prod.fst := by
+      intro hc; obtain ⟨p, hp, hpw⟩ := List.mem_map.mp hc
+      rcases UnifyRel.dom_mem huni p hp with h | h
+      · rw [hpw] at h; exact hrτ h
+      · rw [hpw] at h; exact hσopen h
+    have hbdom := Infer.dom_avoid hbody (by omega)
+      (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+          · exact hwe.1.1
+          · exact Subst.onCtx_avoid (Subst.onCtx_avoid hctx hrS) hSchk M hM)
+      hwe.2
+    intro hc; simp only [List.map_append, List.mem_append] at hc
+    rcases hc with (hc | hc) | hc
+    · exact hrdom hc
+    · exact hSchkdom hc
+    · exact hbdom hc
+  | match_ hscrut hne hbr =>
+    intro w hwΦ hctx hwe
+    simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
+    obtain ⟨hsS, hsτ, hso⟩ := Infer.eOut_avoid hscrut (w := w) hwΦ hctx hwe.1
+    have hsdom := Infer.dom_avoid hscrut hwΦ hctx hwe.1
+    have hle1 := Infer.frontier_le hscrut
+    have hbrdom := InferBranches.dom_avoid hbr (w := w) (by omega)
+      (Subst.onCtx_avoid hctx hsS) hsτ
+      (by intro hc; simp only [Ty.freeVars, List.mem_singleton] at hc; omega) hwe.2
+    intro hc; simp only [List.map_append, List.mem_append] at hc
+    rcases hc with hc | hc
+    · exact hsdom hc
+    · exact hbrdom hc
+  | letRec hgroup hbody =>
+    intro w hwΦ hctx hwe
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
+    have hgle := InferRecGroup.frontier_le hgroup
+    obtain ⟨hgS, hgo⟩ := InferRecGroup.eOut_avoid hgroup (w := w) (by omega)
+      (by intro M hM; rcases List.mem_append.mp hM with hM | hM
+          · obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hM
+            simp only [PolyTy.mkTrivial, Ty.freeVars, List.mem_singleton]
+            have := freshVars_ge x hx; omega
+          · exact hctx M hM)
+      (by intro β hβ; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hβ
+          simp only [Ty.freeVars, List.mem_singleton]; have := freshVars_ge x hx; omega)
+      hwe.1
+    have hgdom := InferRecGroup.dom_avoid hgroup (w := w) (by omega)
+      (by intro M hM; rcases List.mem_append.mp hM with hM | hM
+          · obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hM
+            simp only [PolyTy.mkTrivial, Ty.freeVars, List.mem_singleton]
+            have := freshVars_ge x hx; omega
+          · exact hctx M hM)
+      (by intro β hβ; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hβ
+          simp only [Ty.freeVars, List.mem_singleton]; have := freshVars_ge x hx; omega)
+      hwe.1
+    have hbdom := Infer.dom_avoid hbody (by omega)
+      (by intro M hM; rcases List.mem_append.mp hM with hM | hM
+          · simp only [genGroupSchemes] at hM
+            obtain ⟨τ, hτ, rfl⟩ := List.mem_map.mp hM
+            obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hτ
+            simp only [PolyTy.genGroup]
+            intro hc
+            have hc' := Ty.freeVars_closeOver_subset hc
+            rcases Subst.mem_freeVars_onTy hc' with h | ⟨p, hp, hvp⟩
+            · simp only [Ty.freeVars, List.mem_singleton] at h; have := freshVars_ge x hx; omega
+            · exact hgS p hp hvp
+          · exact Subst.onCtx_avoid hctx hgS M hM)
+      hwe.2
+    intro hc; simp only [List.map_append, List.mem_append] at hc
+    rcases hc with hc | hc
+    · exact hgdom hc
+    · exact hbdom hc
+termination_by e.size
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+theorem InferBranches.dom_avoid {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut) :
+    ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ scrutTy.freeVars →
+    w ∉ ρ.freeVars → w ∉ Expr.tyFreeVars.BranchList.tyFreeVars brs →
+    w ∉ S.map Prod.fst := by
+  cases h with
+  | nil => intro w _ _ _ _ _; simp
+  | cons hlook hn huni0 hbody huni hrest =>
+    intro w hwΦ hctx hscrut hρ hbrs
+    expose_names
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
+    have hS₀ : ∀ p ∈ S₀, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni0 p hp w hwp with h | h
+      · exact hscrut h
+      · simp only [Ty.freeVars] at h; rw [mem_TyList_freeVars] at h
+        obtain ⟨t, ht, hgt⟩ := h; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+        simp only [Ty.freeVars, List.mem_singleton] at hgt; have := freshVars_ge x hx; omega
+    have hS₀dom : w ∉ S₀.map Prod.fst := by
+      intro hc; obtain ⟨p, hp, hpw⟩ := List.mem_map.mp hc
+      rcases UnifyRel.dom_mem huni0 p hp with h | h
+      · rw [hpw] at h; exact hscrut h
+      · rw [hpw] at h; simp only [Ty.freeVars] at h; rw [mem_TyList_freeVars] at h
+        obtain ⟨t, ht, hgt⟩ := h; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+        simp only [Ty.freeVars, List.mem_singleton] at hgt; have := freshVars_ge x hx; omega
+    have hta : ∀ v ∈ (((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy), w ∉ v.freeVars := by
+      intro v hv hwv; obtain ⟨v0, hv0, rfl⟩ := List.mem_map.mp hv; obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hv0
+      rcases Subst.mem_freeVars_onTy hwv with h | ⟨p, hp, hvp⟩
+      · simp only [Ty.freeVars, List.mem_singleton] at h; have := freshVars_ge x hx; omega
+      · exact hS₀ p hp hvp
+    have hle0 := Infer.frontier_le hbody
+    obtain ⟨hbS, hbτ, hbo⟩ := Infer.eOut_avoid hbody (w := w) (by omega)
+      (by intro M hM; rcases List.mem_append.mp hM with hM | hM
+          · obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hM; obtain ⟨c, hc, rfl⟩ := List.mem_map.mp ht
+            simpa only [PolyTy.mkTrivial] using Ty.not_mem_freeVars_openWith hta ((ctor.closed c hc).not_mem_freeVars w)
+          · exact Subst.onCtx_avoid hctx hS₀ M hM)
+      hbrs.1
+    have hbdom := Infer.dom_avoid hbody (by omega)
+      (by intro M hM; rcases List.mem_append.mp hM with hM | hM
+          · obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hM; obtain ⟨c, hc, rfl⟩ := List.mem_map.mp ht
+            simpa only [PolyTy.mkTrivial] using Ty.not_mem_freeVars_openWith hta ((ctor.closed c hc).not_mem_freeVars w)
+          · exact Subst.onCtx_avoid hctx hS₀ M hM)
+      hbrs.1
+    have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni p hp w hwp with h | h
+      · exact hbτ h
+      · exact Subst.notMemOnTy hbS (Subst.notMemOnTy hS₀ hρ) h
+    have hS₂dom : w ∉ S₂.map Prod.fst := by
+      intro hc; obtain ⟨p, hp, hpw⟩ := List.mem_map.mp hc
+      rcases UnifyRel.dom_mem huni p hp with h | h
+      · rw [hpw] at h; exact hbτ h
+      · rw [hpw] at h; exact Subst.notMemOnTy hbS (Subst.notMemOnTy hS₀ hρ) h
+    have hrdom := InferBranches.dom_avoid hrest (w := w) (by omega)
+      (Subst.onCtx_avoid (Subst.onCtx_avoid (Subst.onCtx_avoid hctx hS₀) hbS) hS₂)
+      (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS (Subst.notMemOnTy hS₀ hscrut)))
+      (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS (Subst.notMemOnTy hS₀ hρ)))
+      hbrs.2
+    intro hc; simp only [List.map_append, List.mem_append] at hc
+    rcases hc with ((hc | hc) | hc) | hc
+    · exact hS₀dom hc
+    · exact hbdom hc
+    · exact hS₂dom hc
+    · exact hrdom hc
+  | consWild hbody huni hrest =>
+    intro w hwΦ hctx hscrut hρ hbrs
+    expose_names
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
+    have hle1 := Infer.frontier_le hbody
+    obtain ⟨hbS, hbτ, hbo⟩ := Infer.eOut_avoid hbody (w := w) hwΦ hctx hbrs.1
+    have hbdom := Infer.dom_avoid hbody hwΦ hctx hbrs.1
+    have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni p hp w hwp with h | h
+      · exact hbτ h
+      · exact Subst.notMemOnTy hbS hρ h
+    have hS₂dom : w ∉ S₂.map Prod.fst := by
+      intro hc; obtain ⟨p, hp, hpw⟩ := List.mem_map.mp hc
+      rcases UnifyRel.dom_mem huni p hp with h | h
+      · rw [hpw] at h; exact hbτ h
+      · rw [hpw] at h; exact Subst.notMemOnTy hbS hρ h
+    have hrdom := InferBranches.dom_avoid hrest (w := w) (by omega)
+      (Subst.onCtx_avoid (Subst.onCtx_avoid hctx hbS) hS₂)
+      (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS hscrut))
+      (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS hρ))
+      hbrs.2
+    intro hc; simp only [List.map_append, List.mem_append] at hc
+    rcases hc with (hc | hc) | hc
+    · exact hbdom hc
+    · exact hS₂dom hc
+    · exact hrdom hc
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
+theorem InferRecGroup.dom_avoid {Φ ctx bindings targets Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut) :
+    ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
+    (∀ β ∈ targets, w ∉ β.freeVars) → w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
+    w ∉ S.map Prod.fst := by
+  cases h with
+  | nil => intro w _ _ _ _; simp
+  | cons he huni hrest =>
+    intro w hwΦ hctx htargets hbinds
+    expose_names
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
+    have hle1 := Infer.frontier_le he
+    obtain ⟨heS, heτ, heo⟩ := Infer.eOut_avoid he (w := w) hwΦ hctx hbinds.1
+    have hedom := Infer.dom_avoid he hwΦ hctx hbinds.1
+    have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
+      intro p hp hwp
+      rcases UnifyRel.range_mem huni p hp w hwp with h | h
+      · exact heτ h
+      · exact Subst.notMemOnTy heS (htargets _ (List.mem_cons_self ..)) h
+    have hS₂dom : w ∉ S₂.map Prod.fst := by
+      intro hc; obtain ⟨p, hp, hpw⟩ := List.mem_map.mp hc
+      rcases UnifyRel.dom_mem huni p hp with h | h
+      · rw [hpw] at h; exact heτ h
+      · rw [hpw] at h; exact Subst.notMemOnTy heS (htargets _ (List.mem_cons_self ..)) h
+    have hrdom := InferRecGroup.dom_avoid hrest (w := w) (by omega)
+      (Subst.onCtx_avoid (Subst.onCtx_avoid hctx heS) hS₂)
+      (by intro β' hβ'; obtain ⟨b, hb, rfl⟩ := List.mem_map.mp hβ'
+          exact Subst.notMemOnTy hS₂ (Subst.notMemOnTy heS (htargets b (List.mem_cons_of_mem _ hb))))
+      hbinds.2
+    intro hc; simp only [List.map_append, List.mem_append] at hc
+    rcases hc with (hc | hc) | hc
+    · exact hedom hc
+    · exact hS₂dom hc
+    · exact hrdom hc
+termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
+end
+
 /-! Soundness of `Infer` against the declarative `TypeOfElabHM`: applying the
     inferred substitution to the context yields a declarative typing. -/
 mutual
