@@ -6271,10 +6271,154 @@ theorem Ty.mem_freeVars_onTy_of_not_dom {S : Subst} {τ : Ty} {g : Nat}
     simp only [Ty.freeVars, List.mem_singleton] at hc; exact hdom p hp hc)]
   simp [Ty.freeVars]
 
-/-! Soundness of `Infer` against the declarative `TypeOfElabHM`: applying the
-    inferred substitution to the context yields a declarative typing. -/
+/-! ### `substTyFvars`-over-`letRecElab` distribution (honest `letRec` soundness)
+
+Type-substitution only rewrites type annotations/tyArgs while term-variable
+shifting (`shiftFrom`) only renumbers term de Bruijn indices, so they commute;
+combined with `Subst.onPolyTy_genGroup` (push `S` through the generalised scheme,
+`S` avoiding the gen-pool `G`) and the Step-A close/subst commutation, a
+substitution avoiding `G` distributes over the whole `Λ`-outside `letRecElab`. -/
+
+theorem Expr.substTyFvars_shiftFrom {S : Subst} :
+    ∀ (e : Expr) (t n : Nat),
+      (e.shiftFrom t n).substTyFvars S = (e.substTyFvars S).shiftFrom t n := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p =>
+    intro t n
+    have h : (Expr.primLit p).substTyFvars S = Expr.primLit p :=
+      Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun q _ hc => by simp [Expr.tyFreeVars] at hc)
+    simp only [Expr.shiftFrom, h]
+  | ctor c =>
+    intro t n
+    have h : (Expr.ctor c).substTyFvars S = Expr.ctor c :=
+      Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun q _ hc => by simp [Expr.tyFreeVars] at hc)
+    simp only [Expr.shiftFrom, h]
+  | var i tyArgs =>
+    intro t n
+    rw [Expr.substTyFvars_var]
+    simp only [Expr.shiftFrom]
+    split <;> rw [Expr.substTyFvars_var]
+  | lambda ann body ih =>
+    intro t n
+    simp only [Expr.shiftFrom, Expr.substTyFvars_lambda, Expr.lambda.injEq, true_and]
+    exact ih (t + 1) n
+  | app f arg ihf iharg =>
+    intro t n
+    simp only [Expr.shiftFrom, Expr.substTyFvars_app, Expr.app.injEq]
+    exact ⟨ihf t n, iharg t n⟩
+  | letIn ann rhs body ihr ihb =>
+    intro t n
+    simp only [Expr.shiftFrom, Expr.substTyFvars_letIn, Expr.letIn.injEq, true_and]
+    exact ⟨ihr t n, ihb (t + 1) n⟩
+  | match_ scrut branches ihs ihbr =>
+    intro t n
+    simp only [Expr.shiftFrom, Expr.substTyFvars_match, Expr.match_.injEq]
+    refine ⟨ihs t n, ?_⟩
+    induction branches with
+    | nil => rfl
+    | cons hd tl ihtl =>
+      obtain ⟨p, b⟩ := hd
+      show ((p, (b.shiftFrom (t + p.bindCount) n).substTyFvars S) :: _)
+          = ((p, (b.substTyFvars S).shiftFrom (t + p.bindCount) n) :: _)
+      rw [ihbr p b List.mem_cons_self (t + p.bindCount) n,
+          ihtl (fun p' b' hm => ihbr p' b' (List.mem_cons_of_mem _ hm))]
+  | letRec bindings body ihbs ihb =>
+    intro t n
+    simp only [Expr.shiftFrom, Expr.substTyFvars_letRec, List.length_map, Expr.letRec.injEq]
+    refine ⟨?_, ihb (t + bindings.length) n⟩
+    generalize t + bindings.length = thr
+    induction bindings with
+    | nil => rfl
+    | cons hd tl ihtl =>
+      show ((hd.shiftFrom thr n).substTyFvars S :: _)
+          = ((hd.substTyFvars S).shiftFrom thr n :: _)
+      rw [ihbs hd List.mem_cons_self thr n,
+          ihtl (fun e' hm => ihbs e' (List.mem_cons_of_mem _ hm))]
+  | letRecAnn schemes bindings body ihbs ihb =>
+    intro t n
+    simp only [Expr.shiftFrom, Expr.substTyFvars_letRecAnn, List.length_map, Expr.letRecAnn.injEq,
+      true_and]
+    refine ⟨?_, ihb (t + bindings.length) n⟩
+    generalize t + bindings.length = thr
+    induction bindings with
+    | nil => rfl
+    | cons hd tl ihtl =>
+      show ((hd.shiftFrom thr n).substTyFvars S :: _)
+          = ((hd.substTyFvars S).shiftFrom thr n :: _)
+      rw [ihbs hd List.mem_cons_self thr n,
+          ihtl (fun e' hm => ihbs e' (List.mem_cons_of_mem _ hm))]
+
+/-- `genFilter` is invariant under a substitution avoiding the gen-pool `G`
+    (`G`-members survive `S` iff they were already present). -/
+theorem Ty.genFilter_onTy {S : Subst} {G : List Nat}
+    (hSG : ∀ p ∈ S, p.1 ∉ G) (hSran : ∀ p ∈ S, ∀ u ∈ p.2.freeVars, u ∉ G) {τ : Ty} :
+    Ty.genFilter G (S.onTy τ) = Ty.genFilter G τ := by
+  simp only [Ty.genFilter]
+  apply List.filter_congr
+  intro g hg
+  simp only [decide_eq_decide]
+  constructor
+  · intro h
+    rcases Subst.mem_freeVars_onTy h with h | ⟨p, hp, hgp⟩
+    · exact h
+    · exact absurd hg (hSran p hp g hgp)
+  · intro h
+    exact Ty.mem_freeVars_onTy_of_not_dom h (by rintro p hp rfl; exact hSG p hp hg)
+
+/-- Distribution of a `G`-avoiding substitution over one `letRecElabNest` level. -/
+theorem Expr.substTyFvars_letRecElabNest {S : Subst} {G : List Nat} {n : Nat} {bs : List Expr}
+    (hbs : ∀ e ∈ bs, e.NoRecAnn)
+    (hSG : ∀ p ∈ S, p.1 ∉ G) (hSran : ∀ p ∈ S, ∀ u ∈ p.2.freeVars, u ∉ G) :
+    ∀ (L : List (Nat × Ty)) (body : Expr),
+      (Expr.letRecElabNest G n bs L body).substTyFvars S
+        = Expr.letRecElabNest G n (bs.map (·.substTyFvars S))
+            (L.map (fun p => (p.1, S.onTy p.2))) (body.substTyFvars S) := by
+  intro L
+  induction L with
+  | nil => intro body; rfl
+  | cons hd tl ih =>
+    obtain ⟨i, τ⟩ := hd
+    intro body
+    simp only [Expr.letRecElabNest, List.map_cons]
+    rw [Expr.substTyFvars_letIn, ih body]
+    have hSgf : ∀ p ∈ S, p.1 ∉ Ty.genFilter G τ :=
+      fun p hp hc => hSG p hp (by simp only [Ty.genFilter, List.mem_filter] at hc; exact hc.1)
+    have hSgfran : ∀ p ∈ S, ∀ u ∈ p.2.freeVars, u ∉ Ty.genFilter G τ :=
+      fun p hp u hu hc => hSran p hp u hu (by
+        simp only [Ty.genFilter, List.mem_filter] at hc; exact hc.1)
+    have hno : (Expr.letRec (bs.map (·.shiftFrom n (n - 1 - i))) (Expr.var i [])).NoRecAnn := by
+      refine ⟨?_, trivial⟩
+      rw [Expr.NoRecAnn.RecGroup_iff]
+      intro e he; obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
+      exact (hbs e' he').shiftFrom (n - 1 - i) n
+    congr 1
+    · simp only [Option.map_some, Option.some.injEq]
+      show Subst.onPolyTy S (PolyTy.genGroup G τ) = PolyTy.genGroup G (S.onTy τ)
+      exact Subst.onPolyTy_genGroup hSG hSran
+    · rw [Expr.substTyFvars_closeTyVars hno hSgf hSgfran, Expr.substTyFvars_letRec,
+          Expr.substTyFvars_var, Ty.genFilter_onTy hSG hSran]
+      congr 2
+      rw [List.map_map, List.map_map]
+      exact List.map_congr_left (fun e _ => Expr.substTyFvars_shiftFrom e n (n - 1 - i))
+
+theorem Expr.substTyFvars_letRecElab {S : Subst} {G : List Nat} {bs : List Expr} {τs : List Ty}
+    {body : Expr} (hbs : ∀ e ∈ bs, e.NoRecAnn)
+    (hSG : ∀ p ∈ S, p.1 ∉ G) (hSran : ∀ p ∈ S, ∀ u ∈ p.2.freeVars, u ∉ G) :
+    (Expr.letRecElab G bs τs body).substTyFvars S
+      = Expr.letRecElab G (bs.map (·.substTyFvars S)) (τs.map S.onTy) (body.substTyFvars S) := by
+  simp only [Expr.letRecElab, List.length_map]
+  rw [Expr.substTyFvars_letRecElabNest hbs hSG hSran]
+  congr 1
+  rw [List.map_reverse]
+  congr 1
+  rw [List.zip_map_right]
+  exact List.map_congr_left (fun p _ => rfl)
+
 set_option maxRecDepth 8000 in
 mutual
+/-- Soundness of `Infer` against the declarative `TypeOfElabHM`: applying the
+    inferred substitution to the context yields a declarative typing. -/
 theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
