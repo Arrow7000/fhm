@@ -14082,6 +14082,38 @@ termination_by Expr.sizeRecGroup bindings
 decreasing_by all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 end
 
+/-! ### Source↔elaborated bridges (Phase 5 step 2)
+
+`eraseVarTyArgs` strips the type-application decorations on `var` nodes
+(`.var i _ ↦ .var i []`) — the skeleton both the declarative `TypeOfHM` and the
+source program share. With the insensitivity lemma (`Infer.eraseVarTyArgs_invariant`),
+the forward decoration bridge (`TypeOfHM.toElab`), and the backward `Infer.sourceSound`,
+we expose the declarative `TypeOfHM` at the user-facing principality/typeability
+boundary while keeping all internal machinery against `TypeOfElabHM`. -/
+
+mutual
+/-- Strip every `var` node's type-application decoration. -/
+def Expr.eraseVarTyArgs : Expr → Expr
+  | .primLit p          => .primLit p
+  | .lambda ann body    => .lambda ann body.eraseVarTyArgs
+  | .app f arg          => .app f.eraseVarTyArgs arg.eraseVarTyArgs
+  | .letIn ann rhs body => .letIn ann rhs.eraseVarTyArgs body.eraseVarTyArgs
+  | .var i _            => .var i []
+  | .ctor c             => .ctor c
+  | .match_ scrut branches =>
+      .match_ scrut.eraseVarTyArgs (BranchList.eraseVarTyArgs branches)
+  | .letRec bindings body =>
+      .letRec (RecGroup.eraseVarTyArgs bindings) body.eraseVarTyArgs
+  | .letRecAnn schemes bindings body =>
+      .letRecAnn schemes (RecGroup.eraseVarTyArgs bindings) body.eraseVarTyArgs
+def BranchList.eraseVarTyArgs : List (MatchPattern × Expr) → List (MatchPattern × Expr)
+  | []                  => []
+  | (pat, body) :: rest => (pat, body.eraseVarTyArgs) :: BranchList.eraseVarTyArgs rest
+def RecGroup.eraseVarTyArgs : List Expr → List Expr
+  | []        => []
+  | e :: rest => e.eraseVarTyArgs :: RecGroup.eraseVarTyArgs rest
+end
+
 /-- Output-uniqueness up to instance: any two `Infer` results on the same input
     are mutual substitution-instances. (From `complete'` of the first applied to
     the `sound` typing of the second.) -/
