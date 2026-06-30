@@ -7086,8 +7086,47 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
         (fun hc2 => hG_envS₁ g hg (Env.mem_freeVars_iff.mpr ⟨M₀, hM₀, hc2⟩)) hgM
     · intro e he; obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
       exact Expr.substTyFvars_noRecAnn (hbindingsOut_norec e0 he0)
-    · sorry
-    · sorry
+    · intro p hp
+      rw [List.zip_map] at hp
+      obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hp
+      have honsubst := TypeOfElabHM.onSubst S₂ hS₂lc (hgroupSound q hq)
+      rw [← Expr.substTyFvars_append] at honsubst
+      have hctxeq : Subst.onCtx S₂ ⟨τs.map PolyTy.mkTrivial ++ (S₁.onCtx ctx).env, ctx.ctors⟩
+          = ⟨(τs.map S₂.onTy).map PolyTy.mkTrivial ++ ((S₁ ++ S₂).onCtx ctx).env,
+              ((S₁ ++ S₂).onCtx ctx).ctors⟩ := by
+        rw [Subst.onCtx_append]
+        simp only [Subst.onCtx, Subst.onEnv, List.map_append, List.map_map, Function.comp_def,
+          Subst.onPolyTy, PolyTy.mkTrivial]
+      rw [hctxeq] at honsubst
+      exact honsubst
+    · have hbodyBelow : CtxBelow Φ₁ ⟨genGroupSchemes (bindings.flatMap Expr.tyFreeVars)
+          (S₁.onCtx ctx).env τs ++ (S₁.onCtx ctx).env, (S₁.onCtx ctx).ctors⟩ := by
+        intro M hM
+        rcases List.mem_append.mp hM with hM | hM
+        · simp only [genGroupSchemes] at hM
+          obtain ⟨τ, hτ, rfl⟩ := List.mem_map.mp hM
+          exact (hτs_below τ hτ).closeOver
+        · exact Subst.onCtx_below hS₁below (by omega) hbelow M hM
+      have hbodysound := Infer.sound hbody hbodyWF hbodyBelow K
+        (fun k hk => by have := hKΦ k hk; have := hgrle; omega)
+        (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+      have hbctxeq : Subst.onCtx S₂ ⟨genGroupSchemes (bindings.flatMap Expr.tyFreeVars)
+            (S₁.onCtx ctx).env τs ++ (S₁.onCtx ctx).env, (S₁.onCtx ctx).ctors⟩
+          = ⟨(τs.map S₂.onTy).map (PolyTy.genGroup G) ++ ((S₁ ++ S₂).onCtx ctx).env,
+              ((S₁ ++ S₂).onCtx ctx).ctors⟩ := by
+        rw [Subst.onCtx_append]
+        show (⟨Subst.onEnv S₂ (genGroupSchemes (bindings.flatMap Expr.tyFreeVars)
+              (S₁.onCtx ctx).env τs ++ (S₁.onCtx ctx).env), (S₁.onCtx ctx).ctors⟩ : Ctx) = _
+        rw [Subst.onEnv, List.map_append]
+        refine congrArg (fun E => (⟨E ++ (S₂.onCtx (S₁.onCtx ctx)).env, _⟩ : Ctx)) ?_
+        simp only [genGroupSchemes, List.map_map]
+        rw [← hG]
+        apply List.map_congr_left
+        intro τ hτ
+        simp only [Function.comp_apply]
+        exact Subst.onPolyTy_genGroup hS₂G hS₂Gran
+      rw [hbctxeq] at hbodysound
+      exact hbodysound
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
