@@ -6492,7 +6492,54 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
         · exact hbody_s p h) hrhs_lc)
       (Expr.substTyFvars_noRecAnn hrhs_norec) genVars_nodup hgenV_env' hbody_sound
   | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody => intro hctx hbelow K hKΦ hKe hSK; sorry
-  | match_ hscrut hne hbr => intro hctx hbelow K hKΦ hKe hSK; sorry
+  | match_ hscrut hne hbr =>
+    intro hctx hbelow K hKΦ hKe hSK
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append] at hKe
+    obtain ⟨hτs_lc, hS₁⟩ := Infer.lc hscrut hctx
+    have hle1 := Infer.frontier_le hscrut
+    have hscrut_below := Infer.belowFvars hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+    have hctx1 := Subst.onCtx_wf hS₁ hctx
+    have hbelow1 := Subst.onCtx_below hscrut_below.2 hle1 hbelow
+    have helimS := Infer.eliminates hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+      (fun p hp hc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inl hc)))
+    have hS₂lc := (InferBranches.lc hbr hctx1 hτs_lc ContainsBvarsUpTo.fvar).2
+    -- S₁ prefix-fixes the branch outputs
+    have hbrfix : ∀ b ∈ branchesOut, b.2.substTyFvars S₁ = b.2 := by
+      intro b hb
+      refine Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => ?_)
+      refine (InferBranches.eOut_avoid hbr (w := p.1)
+        (by have := Infer.dom_below hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy))) p hp; omega)
+        (Subst.eliminates_onCtx (helimS.1 p hp)) (helimS.2 p hp)
+        (by have := Infer.dom_below hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy))) p hp
+            simp only [Ty.freeVars, List.mem_singleton]; omega)
+        (fun hcc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inr hcc)))).2.2
+        (Expr.mem_branchListTyFreeVars_of hb hc)
+    -- scrutinee typing
+    have hscrut_sound := Infer.sound hscrut hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+      (fun p hp => hSK p (List.mem_append_left _ hp))
+    have hscrut_decl := TypeOfElabHM.onSubst S₂ hS₂lc hscrut_sound
+    rw [← Expr.substTyFvars_append, ← Subst.onCtx_append] at hscrut_decl
+    -- branch typings
+    have hbr_sound := InferBranches.sound hbr hctx1 (fun M hM => (hbelow1 M hM).mono (by omega))
+      hτs_lc ContainsBvarsUpTo.fvar
+      (hscrut_below.1.mono (by omega)) (.fvar (by omega)) K
+      (fun k hk => by have := hKΦ k hk; omega)
+      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+    have hbrne : branchesOut ≠ [] := by
+      cases hbr with
+      | nil => exact absurd rfl hne
+      | cons => simp
+      | consWild => simp
+    rw [Expr.substTyFvars_match]
+    refine TypeOfElabHM.match_ hscrut_decl
+      (by simp only [ne_eq, List.map_eq_nil_iff]; exact hbrne) ?_
+    intro br hbr_mem
+    obtain ⟨pb, hpb, rfl⟩ := List.mem_map.mp hbr_mem
+    rw [Subst.onCtx_append,
+        show pb.2.substTyFvars (S₁ ++ S₂) = pb.2.substTyFvars S₂ from by
+          rw [Expr.substTyFvars_append, hbrfix pb hpb]]
+    exact hbr_sound pb hpb
   | letRec hgroup hbody => intro hctx hbelow K hKΦ hKe hSK; sorry
 termination_by e.size
 decreasing_by
