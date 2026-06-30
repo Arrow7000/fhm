@@ -1624,6 +1624,25 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Expr → Ty → Pro
         ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i)))
         bodyOut)
       τ₂
+  /-- (Mutually) recursive binding group with **annotated polymorphic recursion**
+      (Pottier's `LetRecPoly`; mirrors `TypeOfElabHM.letRecAnn`). The schemes are
+      GIVEN (annotations), so this is **check-and-elaborate**, not infer-the-recursion —
+      hence decidable (Henglein; unannotated poly-recursion is undecidable). The whole
+      group is in scope at its FULL declared `schemes` in BOTH the RHSs and the body, so
+      recursive occurrences may instantiate `σⱼ` at different types (the polymorphism).
+      Each binding is checked scheme-relatively by `InferRecGroupAnn` — the per-binding
+      `letInAnn` mechanics: skolemise `σⱼ`, infer the binding opened at the skolems
+      against `σⱼ`'s opening, escape-check the skolems rigid, emit it closed back over
+      them (after the binding/check MGU). The output is a genuine `letRecAnn` node (the
+      only Core form that types polymorphic recursion); its bindings are already closed
+      back by `InferRecGroupAnn`. -/
+  | letRecAnn {Φ ctx schemes bindings body Φ₁ Φ₂ S₁ S₂ bindingsOut bodyOut τ₂} :
+    (∀ σ ∈ schemes, σ.WF) →
+    bindings.length = schemes.length →
+    InferRecGroupAnn Φ { ctx with env := schemes ++ ctx.env } bindings schemes Φ₁ S₁ bindingsOut →
+    Infer Φ₁ (S₁.onCtx { ctx with env := schemes ++ ctx.env }) body Φ₂ S₂ bodyOut τ₂ →
+    Infer Φ ctx (.letRecAnn schemes bindings body) Φ₂ (S₁ ++ S₂)
+      (.letRecAnn schemes bindingsOut bodyOut) τ₂
 
 /-- Threads inference through a `match_`'s branch list. Carries the scrutinee type
     `scrutTy` (which each *named* pattern constrains to its ADT by unifying it with a
@@ -1676,6 +1695,29 @@ inductive InferRecGroup : Nat → Ctx → List Expr → List Ty → Nat → Subs
     UnifyRel τ (S₁.onTy β) S₂ →
     InferRecGroup Φ₁ (S₂.onCtx (S₁.onCtx ctx)) rest (βs.map (fun b => S₂.onTy (S₁.onTy b))) Φ₂ S₃ restOut →
     InferRecGroup Φ ctx (e :: rest) (β :: βs) Φ₂ (S₁ ++ S₂ ++ S₃) (eOut :: restOut)
+
+/-- Threads check-and-elaborate through an **annotated** recursive group (the analogue
+    of `InferRecGroup` for `letRecAnn`). The whole group is already in scope at its full
+    `schemes` in `ctx` (the enclosing `Infer.letRecAnn` rule adds them), so — unlike the
+    monomorphic `InferRecGroup`, whose targets are mutable fresh `βⱼ` — the `schemes`
+    targets are RIGID user annotations that thread UNCHANGED (only the *context* is
+    pushed through the running substitution). Each binding `e` is handled exactly like
+    `letInAnn`: skolemise its scheme `σ` (`Ys = freshVars N σ.paramCount`), infer
+    `e.openTyVars Ys` against `σ.openVars Ys`, escape-check `Ys` rigid (none bound by
+    `S₁ ++ Schk`, none leaking into the threaded context), and emit the elaborated
+    binding **closed back over `Ys` after applying `S₁ ++ Schk`** (close-after-MGU). The
+    output threads the already-closed bindings. -/
+inductive InferRecGroupAnn : Nat → Ctx → List Expr → List PolyTy → Nat → Subst → List Expr → Prop
+  | nil {Φ ctx} : InferRecGroupAnn Φ ctx [] [] Φ [] []
+  | cons {Φ N ctx σ schemes e rest Φ₁ Φ₂ S₁ Schk S₂ eOut restOut τ} :
+    Φ ≤ N →
+    Infer (N + σ.paramCount) ctx (e.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ eOut τ →
+    UnifyRel τ (σ.openVars (freshVars N σ.paramCount)) Schk →
+    (∀ y ∈ freshVars N σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) →
+    (∀ y ∈ freshVars N σ.paramCount, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) →
+    InferRecGroupAnn Φ₁ (Schk.onCtx (S₁.onCtx ctx)) rest schemes Φ₂ S₂ restOut →
+    InferRecGroupAnn Φ ctx (e :: rest) (σ :: schemes) Φ₂ (S₁ ++ Schk ++ S₂)
+      (((eOut.substTyFvars (S₁ ++ Schk)).closeTyVars (freshVars N σ.paramCount)) :: restOut)
 end
 
 
