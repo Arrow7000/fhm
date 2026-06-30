@@ -1363,7 +1363,7 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Expr → Ty → Pro
       { (Schk.onCtx (S₁.onCtx ctx)) with env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
       body Φ₂ S₂ bodyOut τ₂ →
     Infer Φ ctx (.letIn (some σ) rhs body) Φ₂ (S₁ ++ Schk ++ S₂)
-      (.letIn (some σ) (rhsOut.closeTyVars (freshVars N σ.paramCount)) bodyOut)
+      (.letIn (some σ) ((rhsOut.substTyFvars (S₁ ++ Schk)).closeTyVars (freshVars N σ.paramCount)) bodyOut)
       τ₂
   | match_ {Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ scrutOut branchesOut τs} :
     Infer Φ ctx scrut Φ₁ S₁ scrutOut τs →
@@ -1687,7 +1687,8 @@ theorem Infer.eOut_noRecAnn {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S e
     exact ⟨Expr.NoRecAnn.closeTyVars (Expr.substTyFvars_noRecAnn (Infer.eOut_noRecAnn hrhs)),
       Infer.eOut_noRecAnn hbody⟩
   | letInAnn _ _ hrhs _ _ _ hbody =>
-    exact ⟨Expr.NoRecAnn.closeTyVars (Infer.eOut_noRecAnn hrhs), Infer.eOut_noRecAnn hbody⟩
+    exact ⟨Expr.NoRecAnn.closeTyVars (Expr.substTyFvars_noRecAnn (Infer.eOut_noRecAnn hrhs)),
+      Infer.eOut_noRecAnn hbody⟩
   | match_ hscrut _ hbr =>
     exact ⟨Infer.eOut_noRecAnn hscrut, InferBranches.eOut_noRecAnn hbr⟩
   | letRec hgroup hbody =>
@@ -3910,7 +3911,10 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
       · exact hbS p hp
     · simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or]
       exact ⟨⟨hwe.1.1,
-        fun hc => hro (Expr.tyFreeVars_closeTyVars_subset (Infer.eOut_noRecAnn hrhs) hc)⟩, hbo⟩
+        fun hc => Expr.notMem_tyFreeVars_substTyFvars (Infer.eOut_noRecAnn hrhs) hro
+          (fun p hp => (List.mem_append.mp hp).elim (hrS p) (hSchk p))
+          (Expr.tyFreeVars_closeTyVars_subset
+            (Expr.substTyFvars_noRecAnn (Infer.eOut_noRecAnn hrhs)) hc)⟩, hbo⟩
   | match_ hscrut hne hbr =>
     intro w hwΦ hctx hwe
     simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
@@ -4975,7 +4979,10 @@ theorem Infer.eOut_tyBvarBounded {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ
     simp only [Expr.TyBvarBounded, Nat.zero_add]
     refine ⟨hσwf, ?_, Infer.eOut_tyBvarBounded hbody ?_⟩
     · have hh := Expr.closeTyVars_tyBvarBounded (Xs := freshVars N σ.paramCount)
-        (Infer.eOut_noRecAnn hrhs) (Infer.eOut_tyBvarBounded hrhs hctx)
+        (Expr.substTyFvars_noRecAnn (Infer.eOut_noRecAnn hrhs))
+        (Expr.substTyFvars_tyBvarBounded
+          (fun p hp => (List.mem_append.mp hp).elim (hrhs_s p) (hSchk_lc p))
+          (Infer.eOut_noRecAnn hrhs) (Infer.eOut_tyBvarBounded hrhs hctx))
       rw [freshVars_length] at hh; exact hh
     · intro M hM; rcases List.mem_cons.mp hM with rfl | hM
       · exact hσwf
@@ -12529,7 +12536,7 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
                   | none => none
                   | some ⟨(Φ₂, S₂, bodyOut, τ₂), hbody, hav₂⟩ =>
                     some ⟨(Φ₂, S₁ ++ Schk ++ S₂,
-                        .letIn (some σ) (rhsOut.closeTyVars (freshVars Φ σ.paramCount)) bodyOut, τ₂),
+                        .letIn (some σ) ((rhsOut.substTyFvars (S₁ ++ Schk)).closeTyVars (freshVars Φ σ.paramCount)) bodyOut, τ₂),
                       .letInAnn (PolyTy.wf_iff_bvarsBelow.mp hσwf) (Nat.le_refl Φ)
                         hrhs hSchk hesc1 hesc2 hbody, by
                       intro p hp; rcases List.mem_append.mp hp with h | h
