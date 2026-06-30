@@ -14675,6 +14675,175 @@ theorem TypeOfHM.onSubst {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
     rw [show ((Z, U) :: S') = [(Z, U)] ++ S' from rfl, Subst.onCtx_append, Subst.onTy_append]
     exact rest
 
+/-- **Fixed-term corollary of `TypeOfHM.onSubst`.** When `S` fixes `e`'s annotation
+    free vars (`e.substTyFvars S = e`), preservation keeps the term fixed. -/
+theorem TypeOfHM.onSubst_fixed {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
+    (h_lc : ∀ p ∈ S, p.2.IsLC) (h_fix : e.substTyFvars S = e) (h : TypeOfHM ctx e τ) :
+    TypeOfHM (S.onCtx ctx) e (S.onTy τ) := by
+  have key := TypeOfHM.onSubst S h h_lc
+  rwa [h_fix] at key
+
+/-! Regularity for `TypeOfHM`: a declaratively-typed term has a locally-closed type.
+    Direct port of `TypeOfElabHM.regular`; `var`/`ctor` via `InstantiatesBy.preserves_bvars`
+    on the (existential) LC instantiation witness. -/
+mutual
+theorem TypeOfHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
+    TypeOfHM ctx e τ → τ.IsLC
+  | _, _, _, .primLitUnit => .prim
+  | _, _, _, .primLitInt => .prim
+  | _, _, _, .primLitNat => .prim
+  | _, _, _, .primLitStr => .prim
+  | _, _, _, .lambda hpc _ _ hbody => .arrow hpc (TypeOfHM.regular hbody)
+  | _, _, _, .app hf _ => by
+    have := TypeOfHM.regular hf; cases this with | arrow _ hret => exact hret
+  | _, _, _, .letIn _ _ _ _ hbody => TypeOfHM.regular hbody
+  | _, _, _, .var _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
+  | _, _, _, .ctor _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
+  | _, _, _, @TypeOfHM.match_ _ _ _ branches _ hscrut hne hbrs => by
+    obtain ⟨hd, tl, rfl⟩ := List.exists_cons_of_ne_nil hne
+    exact TypeOfMatchBranch.regular (hbrs hd (List.mem_cons_self ..))
+  | _, _, _, .letRec _ _ _ _ _ _ _ hbody => TypeOfHM.regular hbody
+  | _, _, _, .letRecAnn _ _ _ _ hbody => TypeOfHM.regular hbody
+
+theorem TypeOfMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} →
+    {scrutTy : Ty} → {rt : Ty} →
+    TypeOfMatchBranch ctx br scrutTy rt → rt.IsLC
+  | _, _, _, _, .mk _ _ _ _ _ _ _ hbody => TypeOfHM.regular hbody
+  | _, _, _, _, .wildcard hbody => TypeOfHM.regular hbody
+end
+
+/-- Replacing a context scheme `M` by a more general `M'` preserves `TypeOfHM`.
+    Direct port of `TypeOfElabHM.weaken_scheme`; the weakened-position `var` case
+    (sorry'd for `TypeOfElabHM` since the stored `tyArgs` instantiate the OLD scheme)
+    **dissolves** here: `TypeOfHM.var`'s instantiation witness is existential, so
+    `hgen` supplies a fresh witness for `M'` while the term keeps its decoration. -/
+theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : PolyTy}
+    {e : Expr} {τ : Ty}
+    (hgen : M'.Generalizes M)
+    (h : TypeOfHM ⟨env_post ++ [M] ++ env, ctors⟩ e τ) :
+    TypeOfHM ⟨env_post ++ [M'] ++ env, ctors⟩ e τ := by
+  have H : ∀ {ctx : Ctx} {e₀ : Expr} {τ₀ : Ty}, TypeOfHM ctx e₀ τ₀ →
+      ∀ ep : Env, ctx.env = ep ++ [M] ++ env →
+      TypeOfHM ⟨ep ++ [M'] ++ env, ctx.ctors⟩ e₀ τ₀ := by
+    intro ctx e₀ τ₀ hd
+    induction hd using TypeOfHM.rec_strong with
+    | primLitUnit => intro ep _; exact .primLitUnit
+    | primLitInt => intro ep _; exact .primLitInt
+    | primLitNat => intro ep _; exact .primLitNat
+    | primLitStr => intro ep _; exact .primLitStr
+    | app hf hinput ihf ihinput => intro ep heq; exact .app (ihf ep heq) (ihinput ep heq)
+    | @lambda paramTy ann bodyCtx ctx body bodyTy hpc hann heqctx hbody ihbody =>
+      intro ep heq
+      refine TypeOfHM.lambda hpc hann rfl ?_
+      have hbc := ihbody (PolyTy.mkTrivial paramTy :: ep) (by simp only [heqctx, heq, List.cons_append])
+      simpa only [heqctx, List.cons_append] using hbc
+    | @letIn ann ctx boundExpr bodyCtx body bodyTy Msch L hwf hann hcofin heqctx hbody ihcofin ihbody =>
+      intro ep heq
+      refine TypeOfHM.letIn hwf hann (fun Xs hfresh => ihcofin Xs hfresh ep heq) rfl ?_
+      have hbc := ihbody (Msch :: ep) (by simp only [heqctx, heq, List.cons_append])
+      simpa only [heqctx, List.cons_append] using hbc
+    | @var dbl polyTy instArgs tyArgs ty ctx hlook hbvars hinst =>
+      intro ep heq
+      rw [heq] at hlook
+      rcases lt_trichotomy dbl ep.length with hlt | heqd | hgt
+      · refine TypeOfHM.var ?_ hbvars hinst
+        show (ep ++ [M'] ++ env)[dbl]? = _
+        rw [List.append_assoc, List.getElem?_append_left hlt]
+        rw [List.append_assoc, List.getElem?_append_left hlt] at hlook
+        exact hlook
+      · subst heqd
+        have hpoly : polyTy = M := by
+          rw [List.append_assoc, List.getElem?_append_right (le_refl ep.length)] at hlook
+          simpa only [Nat.sub_self, List.singleton_append, List.getElem?_cons_zero,
+            Option.some.injEq] using hlook.symm
+        subst hpoly
+        obtain ⟨instArgs', hbvars', hinst'⟩ := hgen instArgs ty hbvars hinst
+        refine TypeOfHM.var ?_ hbvars' hinst'
+        show (ep ++ [M'] ++ env)[ep.length]? = some M'
+        rw [List.append_assoc, List.getElem?_append_right (le_refl ep.length)]
+        simp only [Nat.sub_self, List.singleton_append, List.getElem?_cons_zero]
+      · refine TypeOfHM.var ?_ hbvars hinst
+        show (ep ++ [M'] ++ env)[dbl]? = _
+        have hle : ep.length ≤ dbl := by omega
+        rw [List.append_assoc, List.getElem?_append_right hle] at hlook
+        rw [List.append_assoc, List.getElem?_append_right hle]
+        rw [show ([M] ++ env) = M :: env from rfl] at hlook
+        rw [show ([M'] ++ env) = M' :: env from rfl]
+        rw [show (dbl - ep.length) = (dbl - ep.length - 1) + 1 from by omega] at hlook ⊢
+        simp only [List.getElem?_cons_succ] at hlook ⊢
+        exact hlook
+    | ctor hlook htyargs hinst => intro ep _; exact .ctor hlook htyargs hinst
+    | @match_ ctx scrut scrutTy branches resultTy hscrut hne hbrs ihscrut ihbrs =>
+      intro ep heq
+      refine TypeOfHM.match_ (ihscrut ep heq) hne ?_
+      intro branch hmem
+      obtain ⟨pat, body⟩ := branch
+      rcases ihbrs (pat, body) hmem with
+        ⟨ctorr, c, n, tyArgs, instContents, hpat, hlook, hscrutEq, hpc, hn, hinstC, _, ihbody⟩ |
+        ⟨hpat, _, ihbody⟩
+      · subst hpat
+        refine TypeOfMatchBranch.mk hlook hscrutEq hpc hn hinstC rfl rfl ?_
+        have hbc := ihbody (instContents.map PolyTy.mkTrivial ++ ep)
+          (by simp only [heq, List.append_assoc])
+        simpa only [List.append_assoc] using hbc
+      · subst hpat
+        exact TypeOfMatchBranch.wildcard (ihbody ep heq)
+    | letRec hlen hlen2 hlc hG hgen hcofin heq hbody ihcofin ihbody =>
+      intro ep hep
+      subst heq
+      expose_names
+      refine TypeOfHM.letRec (τs := τs) (Ms := Ms) (G := G) (L := L)
+        hlen hlen2 hlc hG hgen ?_ rfl ?_
+      · intro Xs hfresh p hp
+        have hc := ihcofin Xs hfresh p hp
+          ((τs.map (Ty.renameG G Xs)).map PolyTy.mkTrivial ++ ep)
+          (by rw [hep]; simp only [List.append_assoc])
+        simp only [List.append_assoc] at hc ⊢
+        exact hc
+      · have hb := ihbody (Ms ++ ep) (by rw [hep]; simp only [List.append_assoc])
+        simp only [List.append_assoc] at hb ⊢
+        exact hb
+    | letRecAnn hlen hwf hcofin heq hbody ihcofin ihbody =>
+      intro ep hep
+      subst heq
+      expose_names
+      refine TypeOfHM.letRecAnn (schemes := schemes) (L := L) hlen hwf ?_ rfl ?_
+      · intro p hp Xs hfresh
+        have hc := ihcofin p hp Xs hfresh (schemes ++ ep)
+          (by rw [hep]; simp only [List.append_assoc])
+        simp only [List.append_assoc] at hc ⊢
+        exact hc
+      · have hb := ihbody (schemes ++ ep) (by rw [hep]; simp only [List.append_assoc])
+        simp only [List.append_assoc] at hb ⊢
+        exact hb
+  exact H h env_post rfl
+
+/-- Replacing a *list* of context schemes by pointwise more-general schemes preserves
+    `TypeOfHM`. Direct port of `TypeOfElabHM.weaken_schemes` (iterates `weaken_scheme`). -/
+theorem TypeOfHM.weaken_schemes {ctors : CtorEnv} {env : Env} {e : Expr} {τ : Ty}
+    {Ms Ms' : List PolyTy}
+    (hgen : List.Forall₂ PolyTy.Generalizes Ms' Ms)
+    (h : TypeOfHM ⟨Ms ++ env, ctors⟩ e τ) :
+    TypeOfHM ⟨Ms' ++ env, ctors⟩ e τ := by
+  have H : ∀ {Ms Ms' : List PolyTy}, List.Forall₂ PolyTy.Generalizes Ms' Ms →
+      ∀ (ep : Env), TypeOfHM ⟨ep ++ Ms ++ env, ctors⟩ e τ →
+        TypeOfHM ⟨ep ++ Ms' ++ env, ctors⟩ e τ := by
+    intro Ms Ms' hgen
+    induction hgen with
+    | nil => intro ep h; simpa using h
+    | @cons M' M Mt' Mt hM htail ih =>
+      intro ep h
+      have h1 : TypeOfHM ⟨(ep ++ [M]) ++ Mt ++ env, ctors⟩ e τ := by
+        simpa only [List.append_assoc, List.cons_append, List.nil_append,
+          List.singleton_append] using h
+      have h2 := ih (ep ++ [M]) h1
+      have h3 := TypeOfHM.weaken_scheme (env_post := ep) (env := Mt' ++ env) hM
+        (by simpa only [List.append_assoc, List.singleton_append] using h2)
+      simpa only [List.append_assoc, List.cons_append, List.nil_append,
+        List.singleton_append] using h3
+  have hfin := H hgen [] (by simpa using h)
+  simpa using hfin
+
 /-- Output-uniqueness up to instance: any two `Infer` results on the same input
     are mutual substitution-instances. (From `complete'` of the first applied to
     the `sound` typing of the second.) -/
