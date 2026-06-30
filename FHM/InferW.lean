@@ -14394,11 +14394,89 @@ theorem TypeOfHM.rec_strong
   | wildcard hbodyT ih =>
       exact Or.inr ⟨rfl, hbodyT, ih⟩
 
+/-! Local copies of Core-private auxiliary lemmas (needed by the `letRec`/`letRecAnn`
+    cases of `typ_subst_preservation_uniform`; cf. the `SpikeLetRecAnn` precedent of
+    copying Core-private helpers into the consuming file). -/
+
+private theorem Ty.freeVars_subset_freeVarsList {V : Ty} {Vs : List Ty}
+    (h : V ∈ Vs) : ∀ x ∈ V.freeVars, x ∈ Ty.freeVarsList Vs := by
+  induction Vs with
+  | nil => exact absurd h List.not_mem_nil
+  | cons hd tl ih =>
+    intro x hx
+    simp only [Ty.freeVarsList, List.mem_dedup, List.mem_append]
+    cases h with
+    | head _ => exact .inl hx
+    | tail _ h' => exact .inr (ih h' x hx)
+
+private theorem Ty.IsLC.substFvars {s : List (Nat × Ty)} {τ : Ty}
+    (hs : ∀ p ∈ s, p.2.IsLC) (hτ : τ.IsLC) : (Ty.substFvars s τ).IsLC := by
+  induction s generalizing τ with
+  | nil => exact hτ
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    simp only [Ty.substFvars]
+    exact ih (fun p hp => hs p (List.mem_cons_of_mem _ hp))
+      (Ty.IsLC.substFvar (hs (Z, U) List.mem_cons_self) hτ)
+
+private theorem Ty.renameG_isLC {G Xs : List Nat} {τ : Ty}
+    (hτ : τ.IsLC) : (Ty.renameG G Xs τ).IsLC := by
+  unfold Ty.renameG
+  refine Ty.IsLC.substFvars ?_ hτ
+  intro p hp
+  obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+  rw [← hx]; exact .fvar
+
+private theorem List.mem_zip_map {α β γ δ : Type _} {f : α → γ} {g : β → δ} :
+    ∀ {l : List α} {r : List β} {p : γ × δ},
+      p ∈ (l.map f).zip (r.map g) → ∃ a b, (a, b) ∈ l.zip r ∧ p = (f a, g b) := by
+  intro l
+  induction l with
+  | nil => intro r p h; simp at h
+  | cons hd tl ih =>
+    intro r p h
+    cases r with
+    | nil => simp at h
+    | cons rhd rtl =>
+      simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at h
+      cases h with
+      | inl heq => exact ⟨hd, rhd, List.mem_cons_self, heq⟩
+      | inr h' =>
+        obtain ⟨a, b, hmem, heq⟩ := ih h'
+        exact ⟨a, b, List.mem_cons_of_mem _ hmem, heq⟩
+
+private theorem List.mem_zip_map_right {α β γ : Type _} {g : β → γ}
+    {l : List α} {r : List β} {a : α} {b : β}
+    (h : (a, b) ∈ l.zip r) : (a, g b) ∈ l.zip (r.map g) := by
+  induction l generalizing r with
+  | nil => simp at h
+  | cons hd tl ih =>
+    cases r with
+    | nil => simp at h
+    | cons rhd rtl =>
+      simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at h ⊢
+      cases h with
+      | inl heq =>
+        rw [Prod.mk.injEq] at heq
+        obtain ⟨rfl, rfl⟩ := heq
+        exact Or.inl rfl
+      | inr h' => exact Or.inr (ih h')
+
+/-- Single-fvar `substTyFvar` is the one-element iterated `substTyFvars` (defeq).
+    Lets the `match_`/`letRec`/`letRecAnn` cases use the *public*
+    `Expr.substTyFvars_*` structural lemmas instead of the Core-private single-fvar
+    list helpers. -/
+private theorem Expr.substTyFvar_eq_substTyFvars_single {Z : Nat} {U : Ty} {e : Expr} :
+    Expr.substTyFvar Z U e = Expr.substTyFvars [(Z, U)] e := rfl
+
 /-- **Single-fvar substitution preservation for `TypeOfHM`** (uniform over the whole
     env). Direct induction port of `TypeOfElabHM.typ_subst_preservation_uniform`; the
     `var`/`ctor` cases are simpler (existential instantiation witness, no length
     premise). All auxiliary lemmas (`Ty.renameG_*`, `PolyTy.genGroup_*`,
-    `InstantiatesBy.substFvar`, …) are relation-agnostic and reused verbatim. -/
+    `InstantiatesBy.substFvar`, …) are relation-agnostic and reused verbatim.
+    The `match_`/`letRec`/`letRecAnn` cases bridge the Core-private single-fvar
+    list helpers via `Expr.substTyFvar Z U e ≡ Expr.substTyFvars [(Z, U)] e` (defeq)
+    + the public `Expr.substTyFvars_match/_letRec/_letRecAnn`. -/
 theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.IsLC)
     {ctx : Ctx} {e : Expr} {τ : Ty} (h : TypeOfHM ctx e τ) :
     TypeOfHM ⟨ctx.env.substFvar Z U, ctx.ctors⟩ (e.substTyFvar Z U) (Ty.substFvar Z U τ) := by
@@ -14466,17 +14544,113 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
       exact hbe
     · simpa only [Env.substFvar, List.map_cons] using ihbody
   | match_ hscrut hne hbrs ihscrut ihbrs =>
-    -- SORRY: single-fvar match case reuses Core-private `BranchList.substTyFvar`
-    -- (the def can't be named in InferW). Clean via whole-S `Expr.substTyFvars_match`.
-    sorry
+    rw [Expr.substTyFvar_eq_substTyFvars_single, Expr.substTyFvars_match]
+    refine TypeOfHM.match_ ihscrut ?_ ?_
+    · simpa using hne
+    · intro branch' hmem'
+      obtain ⟨⟨pat, body⟩, hmem, rfl⟩ := List.mem_map.mp hmem'
+      rcases ihbrs (pat, body) hmem with
+        ⟨ct, c, n, tyArgs, instContents, hpat, hlook, hScrutEq, hpc, hcontents, hinstC, _, hbodyIH⟩ |
+        ⟨hpat, _, hbodyIH⟩
+      · subst hpat
+        have hcc : ct.contents.map (Ty.substFvar Z U) = ct.contents := by
+          have hpt : ∀ c ∈ ct.contents, Ty.substFvar Z U c = id c := fun c hc =>
+            Ty.substFvar_fresh ((ct.closed c hc).not_mem_freeVars Z)
+          rw [List.map_congr_left hpt, List.map_id]
+        have hinstC' := InstantiatesBy.forall2_substFvar (Z := Z) (U := U) h_U_lc hinstC
+        rw [hcc] at hinstC'
+        rw [Env.substFvar_append, Env.substFvar_map_mkTrivial] at hbodyIH
+        refine TypeOfMatchBranch.mk hlook ?_ (by simpa using hpc) hcontents hinstC' rfl rfl hbodyIH
+        rw [hScrutEq]; simp [Ty.substFvar, TyList.substFvar_eq_map]
+      · subst hpat
+        exact TypeOfMatchBranch.wildcard hbodyIH
   | letRec hlen hlen2 hlc hG hgen hcofin heq hbody ihcofin ihbody =>
-    -- SORRY: single-fvar letRec case reuses Core-private `RecGroup.substTyFvar_eq_map`
-    -- + aux lemmas (`Ty.renameG_isLC`, `List.mem_zip_map`, `Ty.freeVars_subset_freeVarsList`).
-    -- Clean via whole-S `Expr.substTyFvars_letRec` + local copies of the aux lemmas.
-    sorry
+    subst heq
+    expose_names
+    rw [Expr.substTyFvar_eq_substTyFvars_single, Expr.substTyFvars_letRec]
+    obtain ⟨W, hWlen0, hWnodup, hWavoid⟩ :=
+      exists_fresh_names (G ++ [Z] ++ U.freeVars ++ Ty.freeVarsList τs) G.length
+    have hWG : ∀ w ∈ W, w ∉ G := fun w hw hc =>
+      hWavoid w hw (List.mem_append_left _ (List.mem_append_left _ (List.mem_append_left _ hc)))
+    have hGW : ∀ g ∈ G, g ∉ W := fun g hg hc => hWG g hc hg
+    have hZW : Z ∉ W := fun hc =>
+      hWavoid Z hc (List.mem_append_left _ (List.mem_append_left _
+        (List.mem_append_right _ (List.mem_singleton.2 rfl))))
+    have hUW : ∀ u ∈ U.freeVars, u ∉ W := fun u hu hc =>
+      hWavoid u hc (List.mem_append_left _ (List.mem_append_right _ hu))
+    have hW_τs : ∀ w ∈ W, w ∉ Ty.freeVarsList τs := fun w hw hc =>
+      hWavoid w hw (List.mem_append_right _ hc)
+    have hWfree : ∀ t ∈ τs, ∀ w ∈ W, w ∉ t.freeVars := fun t ht w hw hc =>
+      hW_τs w hw (Ty.freeVars_subset_freeVarsList ht w hc)
+    refine TypeOfHM.letRec
+      (τs := τs.map (fun t => Ty.substFvar Z U (Ty.renameG G W t)))
+      (Ms := Ms.map (PolyTy.substFvar Z U)) (G := W) (L := Z :: (G ++ W ++ L))
+      ?_ ?_ ?_ ?_ ?_ ?_ rfl ?_
+    · simp only [List.length_map]; exact hlen
+    · simp only [List.length_map]; exact hlen2
+    · intro τ' hτ'
+      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hτ'
+      exact Ty.IsLC.substFvar h_U_lc (Ty.renameG_isLC (hlc t ht))
+    · exact hWnodup
+    · intro p hp
+      obtain ⟨a, b, hab, rfl⟩ := List.mem_zip_map hp
+      have ha : a ∈ τs := (List.of_mem_zip hab).1
+      have hbgen : b = PolyTy.genGroup G a := hgen (a, b) hab
+      rw [hbgen, PolyTy.genGroup_renameG (hlc a ha) hWlen0 hG hWnodup hGW (hWfree a ha)]
+      exact PolyTy.genGroup_substFvar hZW hUW
+    · intro Xs hfresh p hp
+      have hXlen : Xs.length = G.length := hfresh.length.trans hWlen0
+      have hZXs : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
+      have hGXs : ∀ g ∈ G, g ∉ Xs := fun g hg hc =>
+        hfresh.avoid g hc (List.mem_cons_of_mem _ (List.mem_append_left _ (List.mem_append_left _ hg)))
+      have hWXs : ∀ w ∈ W, w ∉ Xs := fun w hw hc =>
+        hfresh.avoid w hc (List.mem_cons_of_mem _ (List.mem_append_left _ (List.mem_append_right _ hw)))
+      have hXsL : FreshNames L G.length Xs :=
+        ⟨hXlen, hfresh.nodup, fun x hx hc =>
+          hfresh.avoid x hx (List.mem_cons_of_mem _ (List.mem_append_right _ hc))⟩
+      have key : ∀ t ∈ τs,
+          Ty.renameG W Xs (Ty.substFvar Z U (Ty.renameG G W t))
+            = Ty.substFvar Z U (Ty.renameG G Xs t) := by
+        intro t ht
+        rw [Ty.renameG_substFvar_comm h_U_lc hZW hUW hZXs
+              (Ty.renameG_isLC (hlc t ht)) hWnodup hfresh.length hWXs,
+            Ty.renameG_renameG (hlc t ht) hG hWnodup hWlen0 hXlen hGW (hWfree t ht) hWXs hGXs]
+      have hlist : List.map (Ty.renameG W Xs)
+            (List.map (fun t => Ty.substFvar Z U (Ty.renameG G W t)) τs)
+          = List.map (fun t => Ty.substFvar Z U (Ty.renameG G Xs t)) τs := by
+        rw [List.map_map]
+        apply List.map_congr_left
+        intro t ht
+        simpa only [Function.comp_apply] using key t ht
+      rw [hlist] at hp ⊢
+      obtain ⟨a, b, hab, rfl⟩ := List.mem_zip_map hp
+      have hIH := ihcofin Xs hXsL (a, Ty.renameG G Xs b) (List.mem_zip_map_right hab)
+      rw [Env.substFvar_append, Env.substFvar_map_mkTrivial,
+          show List.map (Ty.substFvar Z U) (List.map (Ty.renameG G Xs) τs)
+             = List.map (fun t => Ty.substFvar Z U (Ty.renameG G Xs t)) τs from List.map_map] at hIH
+      exact hIH
+    · simpa only [Env.substFvar, List.map_append] using ihbody
   | letRecAnn hlen hwf hcofin heq hbody ihcofin ihbody =>
-    -- SORRY: as `letRec` (private `RecGroup.substTyFvar_eq_map` / `List.mem_zip_map`).
-    sorry
+    subst heq
+    expose_names
+    rw [Expr.substTyFvar_eq_substTyFvars_single, Expr.substTyFvars_letRecAnn,
+        show PolyTy.substFvars [(Z, U)] = PolyTy.substFvar Z U from rfl]
+    refine TypeOfHM.letRecAnn (L := Z :: L) ?_ ?_ ?_ rfl ?_
+    · simp only [List.length_map]; exact hlen
+    · intro σ' hσ'
+      obtain ⟨σ, hσ, rfl⟩ := List.mem_map.mp hσ'
+      exact PolyTy.WF.substFvar h_U_lc (hwf σ hσ)
+    · intro p hp Xs hfresh
+      obtain ⟨a, b, hab, rfl⟩ := List.mem_zip_map hp
+      have hZXs : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
+      have hfreshL : FreshNames L b.paramCount Xs :=
+        ⟨hfresh.length, hfresh.nodup, fun x hx hc => hfresh.avoid x hx (List.mem_cons_of_mem _ hc)⟩
+      have hIH := ihcofin (a, b) hab Xs hfreshL
+      rw [Expr.substTyFvar_openTyVars h_U_lc hZXs,
+          ← PolyTy.substFvar_openVars h_U_lc hZXs] at hIH
+      simpa only [Env.substFvar, List.map_append] using hIH
+    · rw [← Expr.substTyFvar_eq_substTyFvars_single]
+      simpa only [Env.substFvar, List.map_append] using ihbody
 
 /-- Single-variable substitution preserves `TypeOfHM` across the whole context. -/
 theorem TypeOfHM.onSubstFvar {ctx : Ctx} {e : Expr} {τ : Ty} (Z : Nat) (U : Ty)
