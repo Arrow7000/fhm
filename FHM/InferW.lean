@@ -1964,6 +1964,7 @@ theorem Infer.eOut_noRecAnn {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S e
         obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
         exact Expr.substTyFvars_noRecAnn (InferRecGroup.eOut_noRecAnn hgroup e0 he0))
       (Infer.eOut_noRecAnn hbody)
+  | letRecAnn _ _ _ _ => sorry
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -2017,6 +2018,7 @@ theorem Infer.frontier_le {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
     have := Infer.frontier_le hscrut; have := InferBranches.frontier_le hbr; omega
   | letRec hgroup hbody =>
     have := InferRecGroup.frontier_le hgroup; have := Infer.frontier_le hbody; omega
+  | letRecAnn _ _ _ _ => sorry
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -2274,6 +2276,7 @@ theorem Infer.lc {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
     rcases hp with hp | hp
     · exact hS₁ p hp
     · exact hbody_s p hp
+  | letRecAnn _ _ _ _ => sorry
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -3348,6 +3351,7 @@ theorem Infer.belowFvars {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
     rcases hp with hp | hp
     · exact (hS₁ p hp).mono hble
     · exact hb_s p hp
+  | letRecAnn _ _ _ _ => sorry
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -3619,6 +3623,7 @@ theorem Infer.dom_below {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
     rcases hp with hp | hp
     · have := hg_dom p hp; omega
     · exact hb_dom p hp
+  | letRecAnn _ _ _ _ => sorry
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -4250,6 +4255,7 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
         exact Expr.notMem_tyFreeVars_substTyFvars
           (InferRecGroup.eOut_noRecAnn hgroup e0 he0) (hgo e0 he0) hgS hwe'
       · exact hbo h
+  | letRecAnn _ _ _ _ => sorry
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -4730,6 +4736,7 @@ theorem Infer.eliminates {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
     rcases List.mem_append.mp hp with hpS₁ | hpS₂
     · exact (Infer.eOut_avoid hbody (w := p.1) (hg_dom p hpS₁) (hbodyctx p hpS₁) (hSbody1 p hpS₁)).2.1
     · exact hbR p hpS₂
+  | letRecAnn _ _ _ _ => sorry
 termination_by e.size
 decreasing_by all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.eliminates {Φ ctx scrutTy ρ brs Φ' S brsOut}
@@ -5288,6 +5295,7 @@ theorem Infer.eOut_tyBvarBounded {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ
         exact Expr.substTyFvars_tyBvarBounded hS₁lc (InferRecGroup.eOut_noRecAnn hgroup e0 he0)
           (InferRecGroup.eOut_tyBvarBounded hgroup hctxβ htgβ e0 he0))
       hτslc (Infer.eOut_tyBvarBounded hbody hbodyWF)
+  | letRecAnn _ _ _ _ => sorry
 termination_by e.size
 decreasing_by all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.eOut_tyBvarBounded {Φ ctx scrutTy ρ brs Φ' S brsOut}
@@ -6391,6 +6399,7 @@ theorem Infer.dom_avoid {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
     rcases hc with hc | hc
     · exact hgdom hc
     · exact hbdom hc
+  | letRecAnn _ _ _ _ => sorry
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -7394,6 +7403,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
         exact Subst.onPolyTy_genGroup hS₂G hS₂Gran
       rw [hbctxeq] at hbodysound
       exact hbodysound
+  | letRecAnn _ _ _ _ => sorry
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
