@@ -2340,9 +2340,6 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | primLitNat :
     TypeOfHM ctx (.primLit (.nat n)) (.prim .nat)
 
-  -- | primLitBool :
-  --   TypeOfHM ctx (.primLit (.bool b)) (.prim .bool)
-
   | primLitStr :
     TypeOfHM ctx (.primLit (.str s)) (.prim .str)
 
