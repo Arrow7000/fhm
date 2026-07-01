@@ -11017,7 +11017,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
       exact TypeOfMatchBranch.wildcard h1
     · simp only [Subst.onCtx_append, Subst.onTy_append]
       exact hrest_sound p hp_rest
-  | grpNil => intros; exact absurd (by assumption) (by simp)
+  | grpNil => exact absurd (by assumption) (by simp)
   | grpCons he huni hrest ihe ihrest =>
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at h_5
@@ -11068,7 +11068,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
       rw [hmap] at hp_rest
       rw [Subst.onCtx_append, Subst.onCtx_append]
       exact hrest_sound p hp_rest
-  | grpAnnNil => intros; exact ⟨[], fun p hp => absurd hp (by simp)⟩
+  | grpAnnNil => exact ⟨[], fun p hp => absurd hp (by simp)⟩
   | grpAnnCons hΦN he huni hesc1 hesc2 hrest ihe ihrest =>
     expose_names
     have hσwf : σ.WF := h_2 σ List.mem_cons_self
@@ -19012,6 +19012,82 @@ theorem Infer.letInAnn_block_fresh {Φ : Nat} {ctx : Ctx} {σ : PolyTy} {rhs bod
           v < Φ ∨ Φ + σ.paramCount ≤ v := by
         rw [Subst.onCtx_append, Subst.onCtx_append]
         exact Subst.onCtx_avoidsItv hb_R hbodyEnvGap
+      obtain ⟨M, hM, hyM⟩ := Env.mem_freeVars_iff.mp hmem
+      rcases hSenv M hM y hyM with hh | hh <;> omega
+
+/-- **The annotated recursion-group block-freshness bridge** (group analogue of
+    `Infer.letInAnn_block_fresh`). A given annotated-group derivation leaves the
+    *executable's* head skolem block `freshVars Φ σ.paramCount` rigid: the output
+    `S` neither binds it (domain) nor leaks it (range, via `S.onCtx ctx`). Same
+    split-at-`N` proof as `letInAnn_block_fresh` for the head binding, with the
+    rest of the group handled by `InferRecGroupAnn.gap_avoid` on the full block. -/
+theorem InferRecGroupAnn.block_fresh {Φ : Nat} {ctx : Ctx} {σ : PolyTy} {schtl : List PolyTy}
+    {e : Expr} {rest : List Expr} {Φ' : Nat} {S : Subst} {bindingsOut : List Expr}
+    (h : InferRecGroupAnn Φ ctx (e :: rest) (σ :: schtl) Φ' S bindingsOut)
+    (hbelow : CtxBelow Φ ctx)
+    (hschB : ∀ σ' ∈ (σ :: schtl), ∀ v ∈ σ'.body.freeVars, v < Φ)
+    (hbindB : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars (e :: rest), y < Φ) :
+    (∀ y ∈ freshVars Φ σ.paramCount, y ∉ S.map Prod.fst) ∧
+    (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S.onCtx ctx).env.freeVars) := by
+  cases h with
+  | @cons _ N _ _ _ _ _ Φ₁ Φ₂ S₁ Schk S₂ eOut restOut τ hΦN hrhs huni hesc1 hesc2 hrest =>
+    have hbindHead : ∀ y ∈ e.tyFreeVars, y < Φ := fun y hy =>
+      hbindB y (Expr.mem_recGroupTyFreeVars_of List.mem_cons_self hy)
+    have hσB : ∀ v ∈ σ.body.freeVars, v < Φ := hschB σ List.mem_cons_self
+    have hctxGap : ∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < Φ ∨ N ≤ v :=
+      fun M hM v hv => Or.inl ((hbelow M hM).mem_lt v hv)
+    have hrhsTfvGap : ∀ y ∈ (e.openTyVars (freshVars N σ.paramCount)).tyFreeVars, y < Φ ∨ N ≤ y := by
+      intro y hy
+      rcases Expr.tyFreeVars_openTyVars hy with hh | hh
+      · exact Or.inl (hbindHead y hh)
+      · exact Or.inr (freshVars_ge y hh)
+    obtain ⟨hr_τ, hr_D, hr_R⟩ := Infer.gap_avoid hrhs (by omega) hctxGap hrhsTfvGap
+    have hσopenGap : ∀ v ∈ (σ.openVars (freshVars N σ.paramCount)).freeVars, v < Φ ∨ N ≤ v := by
+      intro v hv
+      rcases Ty.freeVars_openVars_subset v hv with hh | hh
+      · exact Or.inl (hσB v hh)
+      · exact Or.inr (freshVars_ge v hh)
+    obtain ⟨hSchk_D, hSchk_R⟩ := UnifyRel.gap_avoid huni hr_τ hσopenGap
+    have hheadEnvGap : ∀ M ∈ (Schk.onCtx (S₁.onCtx ctx)).env, ∀ v ∈ M.body.freeVars,
+        v < Φ ∨ Φ + σ.paramCount ≤ v := by
+      intro M hM v hv
+      rcases Subst.onCtx_avoidsItv hSchk_R (Subst.onCtx_avoidsItv hr_R hctxGap) M hM v hv with hlt | hge
+      · exact Or.inl hlt
+      · by_cases hvlt : v < Φ + σ.paramCount
+        · exact absurd (Env.mem_freeVars_iff.mpr ⟨M, hM, hv⟩) (hesc2 v (by
+            simp only [freshVars, List.mem_map, List.mem_range]; exact ⟨v - N, by omega, by omega⟩))
+        · exact Or.inr (by omega)
+    have hle1 := Infer.frontier_le hrhs
+    obtain ⟨hS₂_D, hS₂_R⟩ := InferRecGroupAnn.gap_avoid hrest (show Φ + σ.paramCount ≤ Φ₁ by omega)
+      hheadEnvGap
+      (fun σ'' hσ'' v hv => Or.inl (hschB σ'' (List.mem_cons_of_mem _ hσ'') v hv))
+      (fun y hy => Or.inl (hbindB y (by
+        simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]; exact Or.inr hy)))
+    refine ⟨?_, ?_⟩
+    · intro y hy hmem
+      have hyge := freshVars_ge y hy
+      have hylt := freshVars_lt y hy
+      rw [List.map_append, List.map_append, List.mem_append, List.mem_append] at hmem
+      rcases hmem with (hmem | hmem) | hmem
+      · obtain ⟨p, hp, hpy⟩ := List.mem_map.mp hmem
+        by_cases hyN : y < N
+        · rcases hr_D p hp with hh | hh <;> rw [hpy] at hh <;> omega
+        · exact hesc1 y (by simp only [freshVars, List.mem_map, List.mem_range]; exact ⟨y - N, by omega, by omega⟩)
+            (List.mem_map.mpr ⟨p, List.mem_append_left _ hp, hpy⟩)
+      · obtain ⟨p, hp, hpy⟩ := List.mem_map.mp hmem
+        by_cases hyN : y < N
+        · rcases hSchk_D p hp with hh | hh <;> rw [hpy] at hh <;> omega
+        · exact hesc1 y (by simp only [freshVars, List.mem_map, List.mem_range]; exact ⟨y - N, by omega, by omega⟩)
+            (List.mem_map.mpr ⟨p, List.mem_append_right _ hp, hpy⟩)
+      · obtain ⟨p, hp, hpy⟩ := List.mem_map.mp hmem
+        rcases hS₂_D p hp with hh | hh <;> rw [hpy] at hh <;> omega
+    · intro y hy hmem
+      have hyge := freshVars_ge y hy
+      have hylt := freshVars_lt y hy
+      have hSenv : ∀ M ∈ ((S₁ ++ Schk ++ S₂).onCtx ctx).env, ∀ v ∈ M.body.freeVars,
+          v < Φ ∨ Φ + σ.paramCount ≤ v := by
+        rw [Subst.onCtx_append, Subst.onCtx_append]
+        exact Subst.onCtx_avoidsItv hS₂_R hheadEnvGap
       obtain ⟨M, hM, hyM⟩ := Env.mem_freeVars_iff.mp hmem
       rcases hSenv M hM y hyM with hh | hh <;> omega
 
