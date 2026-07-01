@@ -686,6 +686,31 @@ def TyList.closeOverFrom (d : Nat) (vars : List Nat) : List Ty → List Ty
   | hd :: tl  => hd.closeOverFrom d vars :: TyList.closeOverFrom d vars tl
 end
 
+/-- Close scoped type variables through an *annotated* recursion group's SCHEME
+    BODIES: each `σⱼ.body` is descended at `d + σⱼ.paramCount` (shielding `σⱼ`'s own
+    quantified variables), the structural inverse of `RecGroupAnn.openSchemes`. This
+    keeps `open`/`close` symmetric on scheme bodies, so a scheme may reference an
+    enclosing scope's type variable and the close-back correctly rebinds it. -/
+def RecGroupAnn.closeSchemes (d : Nat) (Xs : List Nat) (schemes : List PolyTy) : List PolyTy :=
+  schemes.map (fun σ => { σ with body := Ty.closeOverFrom (d + σ.paramCount) Xs σ.body })
+
+@[simp] theorem RecGroupAnn.closeSchemes_nil (d : Nat) (Xs : List Nat) :
+    RecGroupAnn.closeSchemes d Xs [] = [] := rfl
+
+theorem RecGroupAnn.closeSchemes_cons (d : Nat) (Xs : List Nat) (σ : PolyTy) (ss : List PolyTy) :
+    RecGroupAnn.closeSchemes d Xs (σ :: ss)
+      = { σ with body := Ty.closeOverFrom (d + σ.paramCount) Xs σ.body }
+          :: RecGroupAnn.closeSchemes d Xs ss := rfl
+
+/-- `PolyTy.substFvars` acts only on the body (the `paramCount` is preserved). -/
+theorem PolyTy.substFvars_mk : ∀ (S : List (Nat × Ty)) (pc : Nat) (b : Ty),
+    PolyTy.substFvars S { paramCount := pc, body := b }
+      = { paramCount := pc, body := Ty.substFvars S b }
+  | [], _, _ => rfl
+  | (Z, U) :: rest, pc, b => by
+      simp only [PolyTy.substFvars, PolyTy.substFvar, Ty.substFvars]
+      exact PolyTy.substFvars_mk rest pc (Ty.substFvar Z U b)
+
 mutual
 /-- Close the scoped type variables `Xs` inside a term's annotations and var/ctor
     tyArgs: the structural inverse of `Expr.openTyVarsAux` (same `d` discipline). -/
@@ -706,7 +731,8 @@ def Expr.closeTyVarsAux (d : Nat) (Xs : List Nat) : Expr → Expr
   | .letRec bindings body =>
       .letRec (RecGroup.closeTyVarsAux d Xs bindings) (body.closeTyVarsAux d Xs)
   | .letRecAnn schemes bindings body =>
-      .letRecAnn schemes (RecGroupAnn.closeTyVarsAux d Xs schemes bindings)
+      .letRecAnn (RecGroupAnn.closeSchemes d Xs schemes)
+        (RecGroupAnn.closeTyVarsAux d Xs schemes bindings)
         (body.closeTyVarsAux d Xs)
 
 private def BranchList.closeTyVarsAux (d : Nat) (Xs : List Nat) :
@@ -944,6 +970,37 @@ private theorem RecGroupAnn.openClose_self (Ys : List Nat) :
       exact ⟨hself hd List.mem_cons_self (d + σ.paramCount) hbb.1,
              ih ss d hbb.2 (fun e he => hself e (List.mem_cons_of_mem _ he))⟩
 
+/-- Close-then-reopen-at-the-same-names is the identity on scheme bodies, given each
+    body's bvars are within `d + σ.paramCount` (the scheme-list lift of
+    `Ty.openVarsFrom_closeOverFrom_self`). This makes `open`/`close` symmetric on the
+    `letRecAnn` scheme bodies. -/
+theorem RecGroupAnn.openSchemes_closeSchemes_self {d : Nat} {Ys : List Nat} {schemes : List PolyTy}
+    (h : ∀ σ ∈ schemes, ContainsBvarsUpTo (d + σ.paramCount) σ.body) :
+    RecGroupAnn.openSchemes d Ys (RecGroupAnn.closeSchemes d Ys schemes) = schemes := by
+  simp only [RecGroupAnn.openSchemes, RecGroupAnn.closeSchemes, List.map_map]
+  conv_rhs => rw [← List.map_id schemes]
+  refine List.map_congr_left (fun σ hσ => ?_)
+  obtain ⟨pc, sbody⟩ := σ
+  simp only [Function.comp_def, id_eq, PolyTy.mk.injEq, true_and]
+  exact Ty.openVarsFrom_closeOverFrom_self (h ⟨pc, sbody⟩ hσ)
+
+/-- `RecGroupAnn.openTyVarsAux` inspects the scheme list only through each scheme's
+    `paramCount` (the per-binding shield depths), and `closeSchemes` preserves every
+    `paramCount`; so opening bindings is insensitive to whether the schemes were first
+    closed. Lets `openClose_self` discharge the symmetric-close bindings goal. -/
+private theorem RecGroupAnn.openTyVarsAux_closeSchemes (d : Nat) (Ys : List Nat)
+    (d' : Nat) (Xs : List Nat) :
+    ∀ (schemes : List PolyTy) (bs : List Expr),
+      RecGroupAnn.openTyVarsAux d Ys (RecGroupAnn.closeSchemes d' Xs schemes) bs
+        = RecGroupAnn.openTyVarsAux d Ys schemes bs := by
+  intro schemes bs
+  induction bs generalizing schemes with
+  | nil => rfl
+  | cons hd tl ih =>
+    cases schemes with
+    | nil => rfl
+    | cons σ ss => simp only [RecGroupAnn.closeSchemes_cons, RecGroupAnn.openTyVarsAux, ih ss]
+
 /-- **Term-level close-then-reopen-at-the-same-names = identity.** The structural
     lift of `Ty.openVarsFrom_closeOverFrom_self` over a `TyBvarBounded` term. -/
 theorem Expr.openTyVarsAux_closeTyVarsAux_self {Ys : List Nat} :
@@ -1020,8 +1077,11 @@ theorem Expr.openTyVarsAux_closeTyVarsAux_self {Ys : List Nat} :
     intro d hb
     simp only [Expr.TyBvarBounded] at hb
     obtain ⟨hsc, hbs, hb'⟩ := hb
-    simp only [Expr.closeTyVarsAux, Expr.openTyVarsAux, Expr.letRecAnn.injEq, true_and]
-    exact ⟨RecGroupAnn.openClose_self Ys schemes bindings d hbs ih_bindings, ih_body d hb'⟩
+    simp only [Expr.closeTyVarsAux, Expr.openTyVarsAux, Expr.letRecAnn.injEq]
+    refine ⟨RecGroupAnn.openSchemes_closeSchemes_self hsc, ?_, ih_body d hb'⟩
+    rw [RecGroupAnn.openTyVarsAux_closeSchemes d Ys d Ys schemes
+        (RecGroupAnn.closeTyVarsAux d Ys schemes bindings)]
+    exact RecGroupAnn.openClose_self Ys schemes bindings d hbs ih_bindings
 
 /-- Top-level (`d = 0`) close-then-reopen identity. -/
 theorem Expr.openTyVars_closeTyVars_self {Ys : List Nat} {e : Expr} (he : e.TyBvarBounded 0) :
@@ -1198,9 +1258,10 @@ def Expr.recAnnSchemeFreeVars : Expr → List Nat
   | .ctor _                => []
   | .match_ scrut branches => scrut.recAnnSchemeFreeVars ++ BranchList.recAnnSchemeFreeVars branches
   | .letRec bindings body  => RecGroup.recAnnSchemeFreeVars bindings ++ body.recAnnSchemeFreeVars
-  | .letRecAnn schemes bindings body =>
-      Expr.tyFreeVars.SchemeList.tyFreeVars schemes
-        ++ RecGroup.recAnnSchemeFreeVars bindings ++ body.recAnnSchemeFreeVars
+  | .letRecAnn _ bindings body =>
+      -- `open`/`close` now descend into scheme bodies symmetrically, so scheme bodies
+      -- carry no *untouched* free vars: this set only tracks bindings/body.
+      RecGroup.recAnnSchemeFreeVars bindings ++ body.recAnnSchemeFreeVars
 where
   BranchList.recAnnSchemeFreeVars : List (MatchPattern × Expr) → List Nat
   | []             => []
@@ -1208,6 +1269,65 @@ where
   RecGroup.recAnnSchemeFreeVars : List Expr → List Nat
   | []        => []
   | e :: rest => e.recAnnSchemeFreeVars ++ Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars rest
+
+/-- **`recAnnSchemeFreeVars` is identically empty.** Now that `open`/`close` descend
+    into `letRecAnn` scheme bodies symmetrically, there are no *untouched* scheme
+    positions, so every constructor contributes nothing. This trivialises the whole
+    freshness machinery (the kernel side-condition becomes vacuous). -/
+theorem Expr.recAnnSchemeFreeVars_eq_nil : ∀ (e : Expr), e.recAnnSchemeFreeVars = [] := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => rfl
+  | ctor nm => rfl
+  | var n tyArgs => rfl
+  | lambda ann body ih => simp only [Expr.recAnnSchemeFreeVars, ih]
+  | app f arg ihf iharg => simp only [Expr.recAnnSchemeFreeVars, ihf, iharg, List.append_nil]
+  | letIn ann rhs body ihrhs ihbody =>
+    simp only [Expr.recAnnSchemeFreeVars, ihrhs, ihbody, List.append_nil]
+  | match_ scrut branches ihscrut ihbranches =>
+    simp only [Expr.recAnnSchemeFreeVars, ihscrut, List.nil_append]
+    induction branches with
+    | nil => rfl
+    | cons hd tl ihtl =>
+      obtain ⟨p, b⟩ := hd
+      simp only [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars,
+        ihbranches p b (List.mem_cons_self ..), List.nil_append]
+      exact ihtl (fun p' b' hm => ihbranches p' b' (List.mem_cons_of_mem _ hm))
+  | letRec bindings body ih_bindings ih_body =>
+    simp only [Expr.recAnnSchemeFreeVars, ih_body, List.append_nil]
+    induction bindings with
+    | nil => rfl
+    | cons hd tl ihtl =>
+      simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars,
+        ih_bindings hd (List.mem_cons_self ..), List.nil_append]
+      exact ihtl (fun e' hm => ih_bindings e' (List.mem_cons_of_mem _ hm))
+  | letRecAnn schemes bindings body ih_bindings ih_body =>
+    simp only [Expr.recAnnSchemeFreeVars, ih_body, List.append_nil]
+    induction bindings with
+    | nil => rfl
+    | cons hd tl ihtl =>
+      simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars,
+        ih_bindings hd (List.mem_cons_self ..), List.nil_append]
+      exact ihtl (fun e' hm => ih_bindings e' (List.mem_cons_of_mem _ hm))
+
+/-- Binding-group form of `recAnnSchemeFreeVars_eq_nil`. -/
+theorem Expr.recAnnSchemeFreeVars_RecGroup_eq_nil :
+    ∀ (bs : List Expr), Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars bs = []
+  | [] => rfl
+  | e :: rest => by
+      simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars,
+        Expr.recAnnSchemeFreeVars_eq_nil e, Expr.recAnnSchemeFreeVars_RecGroup_eq_nil rest,
+        List.append_nil]
+
+/-- Branch-list form of `recAnnSchemeFreeVars_eq_nil`. -/
+theorem Expr.recAnnSchemeFreeVars_BranchList_eq_nil :
+    ∀ (brs : List (MatchPattern × Expr)),
+      Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars brs = []
+  | [] => rfl
+  | (_, b) :: rest => by
+      simp only [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars,
+        Expr.recAnnSchemeFreeVars_eq_nil b, Expr.recAnnSchemeFreeVars_BranchList_eq_nil rest,
+        List.append_nil]
 
 /-- Membership in a binding group's `recAnnSchemeFreeVars` is membership in some
     binding's. -/
@@ -1252,6 +1372,18 @@ private theorem RecGroupAnn.not_mem_closeTyVarsAux_tyFreeVars {Ys : List Nat} {g
       exact ⟨ihB hd List.mem_cons_self (d + σ.paramCount) (hfree hd List.mem_cons_self),
         ih ss d (fun e he => ihB e (List.mem_cons_of_mem _ he))
           (fun e he => hfree e (List.mem_cons_of_mem _ he))⟩
+
+/-- Closing an annotated group's scheme bodies over `Ys` removes every `g ∈ Ys` from
+    them (each body is `closeOverFrom`-ed, which strips the closed-over names). -/
+theorem RecGroupAnn.not_mem_closeSchemes_tyFreeVars {Ys : List Nat} {d g : Nat} (hg : g ∈ Ys) :
+    ∀ (schemes : List PolyTy),
+      g ∉ Expr.tyFreeVars.SchemeList.tyFreeVars (RecGroupAnn.closeSchemes d Ys schemes)
+  | [] => by simp [Expr.tyFreeVars.SchemeList.tyFreeVars]
+  | σ :: ss => by
+      simp only [RecGroupAnn.closeSchemes_cons, Expr.tyFreeVars.SchemeList.tyFreeVars,
+        List.mem_append, not_or]
+      exact ⟨Ty.not_mem_closeOverFrom_freeVars hg,
+        RecGroupAnn.not_mem_closeSchemes_tyFreeVars hg ss⟩
 
 /-- Freshness-based generalisation of `not_mem_closeTyVarsAux_tyFreeVars`: closing over
     `Ys` removes `g ∈ Ys` from the term's free type vars provided `g` is not buried in an
@@ -1335,9 +1467,9 @@ theorem Expr.not_mem_closeTyVarsAux_tyFreeVars_of_fresh {Ys : List Nat} {g : Nat
   | letRecAnn schemes bindings body ih_bindings ih_body =>
     intro d hfree
     simp only [Expr.recAnnSchemeFreeVars, List.mem_append, not_or] at hfree
-    obtain ⟨⟨hsch, hbs⟩, hb⟩ := hfree
+    obtain ⟨hbs, hb⟩ := hfree
     simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_append, not_or]
-    refine ⟨⟨hsch, ?_⟩, ih_body d hb⟩
+    refine ⟨⟨RecGroupAnn.not_mem_closeSchemes_tyFreeVars hg schemes, ?_⟩, ih_body d hb⟩
     exact RecGroupAnn.not_mem_closeTyVarsAux_tyFreeVars hg schemes bindings d ih_bindings
       (fun e he hc => hbs (Expr.mem_recAnnSchemeFreeVars_RecGroup.mpr ⟨e, he, hc⟩))
 
@@ -1356,117 +1488,16 @@ theorem Expr.openTyVars_closeTyVars_rename_of_fresh {Ys Xs : List Nat} {e : Expr
 /-- `NoRecAnn` terms have no untouched scheme positions: `recAnnSchemeFreeVars = []`.
     Lets the existing `NoRecAnn`-based close-back sites feed the freshness kernel until
     they migrate to genuine freshness. -/
-theorem Expr.recAnnSchemeFreeVars_eq_nil_of_noRecAnn {e : Expr} (h : e.NoRecAnn) :
-    e.recAnnSchemeFreeVars = [] := by
-  induction e using Expr.rec_strong with
-  | primLit p => rfl
-  | ctor nm => rfl
-  | var n tyArgs => rfl
-  | lambda ann body ih => simp only [Expr.NoRecAnn] at h; simp [Expr.recAnnSchemeFreeVars, ih h]
-  | app f arg ihf iharg =>
-    simp only [Expr.NoRecAnn] at h
-    simp [Expr.recAnnSchemeFreeVars, ihf h.1, iharg h.2]
-  | letIn ann rhs body ihrhs ihbody =>
-    simp only [Expr.NoRecAnn] at h
-    simp [Expr.recAnnSchemeFreeVars, ihrhs h.1, ihbody h.2]
-  | match_ scrut branches ihscrut ihbranches =>
-    simp only [Expr.NoRecAnn] at h
-    obtain ⟨hs, hbr⟩ := h
-    rw [Expr.NoRecAnn.BranchList_iff] at hbr
-    simp only [Expr.recAnnSchemeFreeVars, ihscrut hs, List.nil_append]
-    induction branches with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      obtain ⟨p, b⟩ := hd
-      simp only [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars,
-        ihbranches p b (List.mem_cons_self ..) (hbr p b (List.mem_cons_self ..)), List.nil_append]
-      exact ihtl (fun p' b' hm => ihbranches p' b' (List.mem_cons_of_mem _ hm))
-        (fun p' b' hm => hbr p' b' (List.mem_cons_of_mem _ hm))
-  | letRec bindings body ih_bindings ih_body =>
-    simp only [Expr.NoRecAnn] at h
-    obtain ⟨hbs, hb⟩ := h
-    rw [Expr.NoRecAnn.RecGroup_iff] at hbs
-    simp only [Expr.recAnnSchemeFreeVars, ih_body hb, List.append_nil]
-    induction bindings with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars,
-        ih_bindings hd (List.mem_cons_self ..) (hbs hd (List.mem_cons_self ..)), List.nil_append]
-      exact ihtl (fun e hm => ih_bindings e (List.mem_cons_of_mem _ hm))
-        (fun e hm => hbs e (List.mem_cons_of_mem _ hm))
-  | letRecAnn schemes bindings body _ _ => exact (h : (False : Prop)).elim
+theorem Expr.recAnnSchemeFreeVars_eq_nil_of_noRecAnn {e : Expr} (_h : e.NoRecAnn) :
+    e.recAnnSchemeFreeVars = [] :=
+  Expr.recAnnSchemeFreeVars_eq_nil e
 
-/-- The scheme-body free vars are among all the term's free type vars. -/
+/-- The scheme-body free vars are among all the term's free type vars. (Vacuous now
+    that `recAnnSchemeFreeVars` is empty, kept so its callers still typecheck.) -/
 theorem Expr.recAnnSchemeFreeVars_subset_tyFreeVars {e : Expr} {g : Nat} :
     g ∈ e.recAnnSchemeFreeVars → g ∈ e.tyFreeVars := by
-  induction e using Expr.rec_strong with
-  | primLit p => intro h; exact h
-  | ctor nm => intro h; exact h
-  | var n tyArgs => intro h; simp [Expr.recAnnSchemeFreeVars] at h
-  | lambda ann body ih =>
-    intro h
-    simp only [Expr.recAnnSchemeFreeVars] at h
-    simp only [Expr.tyFreeVars, List.mem_append]
-    exact Or.inr (ih h)
-  | app f arg ihf iharg =>
-    intro h
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at h
-    simp only [Expr.tyFreeVars, List.mem_append]
-    exact h.imp ihf iharg
-  | letIn ann rhs body ihr ihb =>
-    intro h
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at h
-    simp only [Expr.tyFreeVars, List.mem_append]
-    rcases h with h | h
-    · exact Or.inl (Or.inr (ihr h))
-    · exact Or.inr (ihb h)
-  | match_ scrut branches ihs ihbr =>
-    intro h
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at h
-    simp only [Expr.tyFreeVars, List.mem_append]
-    rcases h with h | h
-    · exact Or.inl (ihs h)
-    · refine Or.inr ?_
-      induction branches with
-      | nil => simp [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars] at h
-      | cons hd tl ihtl =>
-        obtain ⟨p, b⟩ := hd
-        simp only [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars, List.mem_append] at h
-        simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]
-        rcases h with h | h
-        · exact Or.inl (ihbr p b (List.mem_cons_self ..) h)
-        · exact Or.inr (ihtl (fun p' b' hm => ihbr p' b' (List.mem_cons_of_mem _ hm)) h)
-  | letRec bindings body ih_bindings ih_body =>
-    intro h
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at h
-    simp only [Expr.tyFreeVars, List.mem_append]
-    rcases h with h | h
-    · refine Or.inl ?_
-      induction bindings with
-      | nil => simp [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars] at h
-      | cons hd tl ihtl =>
-        simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars, List.mem_append] at h
-        simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]
-        rcases h with h | h
-        · exact Or.inl (ih_bindings hd (List.mem_cons_self ..) h)
-        · exact Or.inr (ihtl (fun e' hm => ih_bindings e' (List.mem_cons_of_mem _ hm)) h)
-    · exact Or.inr (ih_body h)
-  | letRecAnn schemes bindings body ih_bindings ih_body =>
-    intro h
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at h
-    simp only [Expr.tyFreeVars, List.mem_append]
-    rcases h with (h | h) | h
-    · exact Or.inl (Or.inl h)
-    · refine Or.inl (Or.inr ?_)
-      induction bindings with
-      | nil => simp [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars] at h
-      | cons hd tl ihtl =>
-        simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars, List.mem_append] at h
-        simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]
-        rcases h with h | h
-        · exact Or.inl (ih_bindings hd (List.mem_cons_self ..) h)
-        · exact Or.inr (ihtl (fun e' hm => ih_bindings e' (List.mem_cons_of_mem _ hm)) h)
-    · exact Or.inr (ih_body h)
+  rw [Expr.recAnnSchemeFreeVars_eq_nil]
+  exact fun h => (List.not_mem_nil h).elim
 
 /-- Membership in a branch list's `recAnnSchemeFreeVars` is membership in some branch
     body's. -/
@@ -1480,145 +1511,20 @@ theorem Expr.mem_recAnnSchemeFreeVars_BranchList {brs : List (MatchPattern × Ex
     simp only [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars, List.mem_append, ih,
       List.mem_cons, exists_eq_or_imp]
 
-/-- The annotated-group close keeps the schemes' bodies untouched and recurses into each
-    binding (depth-shifted by its scheme), preserving `recAnnSchemeFreeVars`. -/
-private theorem RecGroupAnn.recAnnSchemeFreeVars_closeTyVarsAux {Xs : List Nat} :
-    ∀ (schemes : List PolyTy) (bindings : List Expr) (d : Nat),
-      (∀ e ∈ bindings, ∀ d', (e.closeTyVarsAux d' Xs).recAnnSchemeFreeVars = e.recAnnSchemeFreeVars) →
-      Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars
-          (RecGroupAnn.closeTyVarsAux d Xs schemes bindings)
-        = Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars bindings := by
-  intro schemes bindings
-  induction bindings generalizing schemes with
-  | nil => intro d _; cases schemes <;> rfl
-  | cons hd tl ih =>
-    intro d ihB
-    cases schemes with
-    | nil =>
-      simp only [RecGroupAnn.closeTyVarsAux, Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars]
-      rw [ihB hd List.mem_cons_self d, ih [] d (fun e he => ihB e (List.mem_cons_of_mem _ he))]
-    | cons σ ss =>
-      simp only [RecGroupAnn.closeTyVarsAux, Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars]
-      rw [ihB hd List.mem_cons_self (d + σ.paramCount),
-          ih ss d (fun e he => ihB e (List.mem_cons_of_mem _ he))]
-
-/-- `closeTyVarsAux` preserves `recAnnSchemeFreeVars` (it leaves `letRecAnn` scheme
-    bodies untouched and only renames closed-over names in the touched positions). -/
+/-- `closeTyVarsAux` preserves `recAnnSchemeFreeVars` (trivial: both sides empty). -/
 theorem Expr.recAnnSchemeFreeVars_closeTyVarsAux {Xs : List Nat} :
-    ∀ (e : Expr) (d : Nat), (e.closeTyVarsAux d Xs).recAnnSchemeFreeVars = e.recAnnSchemeFreeVars := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit p => intro d; simp only [Expr.closeTyVarsAux, Expr.recAnnSchemeFreeVars]
-  | ctor c => intro d; simp only [Expr.closeTyVarsAux, Expr.recAnnSchemeFreeVars]
-  | var i tyArgs => intro d; simp only [Expr.closeTyVarsAux, Expr.recAnnSchemeFreeVars]
-  | lambda ann body ih => intro d; simp only [Expr.closeTyVarsAux, Expr.recAnnSchemeFreeVars, ih]
-  | app f arg ihf iharg => intro d; simp only [Expr.closeTyVarsAux, Expr.recAnnSchemeFreeVars, ihf, iharg]
-  | letIn ann rhs body ihr ihb =>
-    intro d
-    cases ann with
-    | none => simp only [Expr.closeTyVarsAux, Expr.recAnnSchemeFreeVars, ihr, ihb]
-    | some σ => obtain ⟨pc, sb⟩ := σ; simp only [Expr.closeTyVarsAux, Expr.recAnnSchemeFreeVars, ihr, ihb]
-  | match_ scrut branches ihs ihbr =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.recAnnSchemeFreeVars, BranchList.closeTyVarsAux_eq_map, ihs]
-    congr 1
-    induction branches with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      obtain ⟨p, b⟩ := hd
-      simp only [List.map_cons]
-      change (b.closeTyVarsAux d Xs).recAnnSchemeFreeVars ++ _
-          = b.recAnnSchemeFreeVars ++ Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars tl
-      rw [ihbr p b List.mem_cons_self d, ihtl (fun p' b' hmem => ihbr p' b' (List.mem_cons_of_mem _ hmem))]
-  | letRec bindings body ihbs ihb =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.recAnnSchemeFreeVars, RecGroup.closeTyVarsAux_eq_map, ihb]
-    congr 1
-    induction bindings with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      simp only [List.map_cons]
-      change (hd.closeTyVarsAux d Xs).recAnnSchemeFreeVars ++ _
-          = hd.recAnnSchemeFreeVars ++ Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars tl
-      rw [ihbs hd List.mem_cons_self d, ihtl (fun e' hmem => ihbs e' (List.mem_cons_of_mem _ hmem))]
-  | letRecAnn schemes bindings body ihbs ihb =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.recAnnSchemeFreeVars, ihb]
-    congr 1
-    congr 1
-    exact RecGroupAnn.recAnnSchemeFreeVars_closeTyVarsAux schemes bindings d (fun e he d' => ihbs e he d')
+    ∀ (e : Expr) (d : Nat), (e.closeTyVarsAux d Xs).recAnnSchemeFreeVars = e.recAnnSchemeFreeVars :=
+  fun e _ => by rw [Expr.recAnnSchemeFreeVars_eq_nil, Expr.recAnnSchemeFreeVars_eq_nil]
 
 /-- `closeTyVars` preserves `recAnnSchemeFreeVars` (top level). -/
 theorem Expr.recAnnSchemeFreeVars_closeTyVars {Xs : List Nat} {e : Expr} :
     (e.closeTyVars Xs).recAnnSchemeFreeVars = e.recAnnSchemeFreeVars :=
   Expr.recAnnSchemeFreeVars_closeTyVarsAux e 0
 
-/-- The annotated-group open keeps the schemes' bodies untouched and recurses into each
-    binding, preserving `recAnnSchemeFreeVars`. -/
-private theorem RecGroupAnn.recAnnSchemeFreeVars_openTyVarsAux {Xs : List Nat} :
-    ∀ (schemes : List PolyTy) (bindings : List Expr) (d : Nat),
-      (∀ e ∈ bindings, ∀ d', (e.openTyVarsAux d' Xs).recAnnSchemeFreeVars = e.recAnnSchemeFreeVars) →
-      Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars
-          (RecGroupAnn.openTyVarsAux d Xs schemes bindings)
-        = Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars bindings := by
-  intro schemes bindings
-  induction bindings generalizing schemes with
-  | nil => intro d _; cases schemes <;> rfl
-  | cons hd tl ih =>
-    intro d ihB
-    cases schemes with
-    | nil =>
-      simp only [RecGroupAnn.openTyVarsAux, Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars]
-      rw [ihB hd List.mem_cons_self d, ih [] d (fun e he => ihB e (List.mem_cons_of_mem _ he))]
-    | cons σ ss =>
-      simp only [RecGroupAnn.openTyVarsAux, Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars]
-      rw [ihB hd List.mem_cons_self (d + σ.paramCount),
-          ih ss d (fun e he => ihB e (List.mem_cons_of_mem _ he))]
-
-/-- `openTyVarsAux` preserves `recAnnSchemeFreeVars` (scheme bodies are untouched). -/
+/-- `openTyVarsAux` preserves `recAnnSchemeFreeVars` (trivial: both sides empty). -/
 theorem Expr.recAnnSchemeFreeVars_openTyVarsAux {Xs : List Nat} :
-    ∀ (e : Expr) (d : Nat), (e.openTyVarsAux d Xs).recAnnSchemeFreeVars = e.recAnnSchemeFreeVars := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit p => intro d; simp only [Expr.openTyVarsAux, Expr.recAnnSchemeFreeVars]
-  | ctor c => intro d; simp only [Expr.openTyVarsAux, Expr.recAnnSchemeFreeVars]
-  | var i tyArgs => intro d; simp only [Expr.openTyVarsAux, Expr.recAnnSchemeFreeVars]
-  | lambda ann body ih => intro d; simp only [Expr.openTyVarsAux, Expr.recAnnSchemeFreeVars, ih]
-  | app f arg ihf iharg => intro d; simp only [Expr.openTyVarsAux, Expr.recAnnSchemeFreeVars, ihf, iharg]
-  | letIn ann rhs body ihr ihb =>
-    intro d
-    cases ann with
-    | none => simp only [Expr.openTyVarsAux, Expr.recAnnSchemeFreeVars, ihr, ihb]
-    | some σ => simp only [Expr.openTyVarsAux, Expr.recAnnSchemeFreeVars, ihr, ihb]
-  | match_ scrut branches ihs ihbr =>
-    intro d
-    simp only [Expr.openTyVarsAux, Expr.recAnnSchemeFreeVars, BranchList.openTyVarsAux_eq_map, ihs]
-    congr 1
-    induction branches with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      obtain ⟨p, b⟩ := hd
-      simp only [List.map_cons]
-      change (b.openTyVarsAux d Xs).recAnnSchemeFreeVars ++ _
-          = b.recAnnSchemeFreeVars ++ Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars tl
-      rw [ihbr p b List.mem_cons_self d, ihtl (fun p' b' hmem => ihbr p' b' (List.mem_cons_of_mem _ hmem))]
-  | letRec bindings body ihbs ihb =>
-    intro d
-    simp only [Expr.openTyVarsAux, Expr.recAnnSchemeFreeVars, RecGroup.openTyVarsAux_eq_map, ihb]
-    congr 1
-    induction bindings with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      simp only [List.map_cons]
-      change (hd.openTyVarsAux d Xs).recAnnSchemeFreeVars ++ _
-          = hd.recAnnSchemeFreeVars ++ Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars tl
-      rw [ihbs hd List.mem_cons_self d, ihtl (fun e' hmem => ihbs e' (List.mem_cons_of_mem _ hmem))]
-  | letRecAnn schemes bindings body ihbs ihb =>
-    intro d
-    simp only [Expr.openTyVarsAux, Expr.recAnnSchemeFreeVars, ihb]
-    congr 1
-    congr 1
-    exact RecGroupAnn.recAnnSchemeFreeVars_openTyVarsAux schemes bindings d (fun e he d' => ihbs e he d')
+    ∀ (e : Expr) (d : Nat), (e.openTyVarsAux d Xs).recAnnSchemeFreeVars = e.recAnnSchemeFreeVars :=
+  fun e _ => by rw [Expr.recAnnSchemeFreeVars_eq_nil, Expr.recAnnSchemeFreeVars_eq_nil]
 
 /-- Opening scoped type variables leaves the untouched scheme-body positions
     unchanged, hence preserves `recAnnSchemeFreeVars`. -/
@@ -1626,50 +1532,10 @@ theorem Expr.recAnnSchemeFreeVars_openTyVars {Xs : List Nat} {e : Expr} :
     (e.openTyVars Xs).recAnnSchemeFreeVars = e.recAnnSchemeFreeVars :=
   Expr.recAnnSchemeFreeVars_openTyVarsAux e 0
 
-/-- Term-var shifting preserves `recAnnSchemeFreeVars` (it only renames term `bvar`s). -/
+/-- Term-var shifting preserves `recAnnSchemeFreeVars` (trivial: both sides empty). -/
 theorem Expr.recAnnSchemeFreeVars_shiftFrom (e : Expr) (t n : Nat) :
     (e.shiftFrom t n).recAnnSchemeFreeVars = e.recAnnSchemeFreeVars := by
-  induction e using Expr.rec_strong generalizing t with
-  | primLit p => rfl
-  | ctor c => rfl
-  | var i tyArgs => simp only [Expr.shiftFrom]; split <;> rfl
-  | lambda ann body ih => simp only [Expr.shiftFrom, Expr.recAnnSchemeFreeVars, ih]
-  | app f arg ihf iharg => simp only [Expr.shiftFrom, Expr.recAnnSchemeFreeVars, ihf, iharg]
-  | letIn ann rhs body ihr ihb => simp only [Expr.shiftFrom, Expr.recAnnSchemeFreeVars, ihr, ihb]
-  | match_ scrut branches ihs ihbr =>
-    simp only [Expr.shiftFrom, Expr.recAnnSchemeFreeVars, ihs]
-    congr 1
-    induction branches with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      obtain ⟨p, b⟩ := hd
-      change (b.shiftFrom (t + p.bindCount) n).recAnnSchemeFreeVars
-          ++ _ = b.recAnnSchemeFreeVars ++ Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars tl
-      rw [ihbr p b List.mem_cons_self,
-          ihtl (fun p' b' hmem => ihbr p' b' (List.mem_cons_of_mem _ hmem))]
-  | letRec bindings body ihbs ihb =>
-    simp only [Expr.shiftFrom, Expr.recAnnSchemeFreeVars, ihb]
-    congr 1
-    generalize t + bindings.length = thr
-    induction bindings with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      change (hd.shiftFrom thr n).recAnnSchemeFreeVars
-          ++ _ = hd.recAnnSchemeFreeVars ++ Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars tl
-      rw [ihbs hd List.mem_cons_self thr,
-          ihtl (fun e' hmem => ihbs e' (List.mem_cons_of_mem _ hmem))]
-  | letRecAnn schemes bindings body ihbs ihb =>
-    simp only [Expr.shiftFrom, Expr.recAnnSchemeFreeVars, ihb]
-    congr 1
-    congr 1
-    generalize t + bindings.length = thr
-    induction bindings with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      change (hd.shiftFrom thr n).recAnnSchemeFreeVars
-          ++ _ = hd.recAnnSchemeFreeVars ++ Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars tl
-      rw [ihbs hd List.mem_cons_self thr,
-          ihtl (fun e' hmem => ihbs e' (List.mem_cons_of_mem _ hmem))]
+  rw [Expr.recAnnSchemeFreeVars_eq_nil, Expr.recAnnSchemeFreeVars_eq_nil]
 
 /-- Close each elaborated `letRec` binding over the variables actually generalised
     for it (`G ∩ ftv τⱼ = Ty.genFilter G τⱼ`), matching the per-binding scheme
@@ -3234,9 +3100,23 @@ private theorem RecGroupAnn.tyFreeVars_closeTyVarsAux_subset {Xs : List Nat} {g 
       · exact .inl (ihB hd List.mem_cons_self (d + σ.paramCount) h)
       · exact .inr (ih ss d (fun e he => ihB e (List.mem_cons_of_mem _ he)) h)
 
-/-- `Expr.closeTyVarsAux` introduces no new free type vars. (Re-based off `NoRecAnn`:
-    closing only ever *removes* free vars — even through `letRecAnn` scheme bodies,
-    which it leaves untouched — so the subset holds unconditionally.) -/
+/-- Closing an annotated group's scheme bodies only *removes* free type vars, so a free
+    var of the closed schemes was already a free var of the original schemes. -/
+theorem RecGroupAnn.tyFreeVars_closeSchemes_subset {d : Nat} {Xs : List Nat} {g : Nat} :
+    ∀ {schemes : List PolyTy},
+      g ∈ Expr.tyFreeVars.SchemeList.tyFreeVars (RecGroupAnn.closeSchemes d Xs schemes) →
+      g ∈ Expr.tyFreeVars.SchemeList.tyFreeVars schemes
+  | [], h => by simp [Expr.tyFreeVars.SchemeList.tyFreeVars] at h
+  | σ :: ss, h => by
+      simp only [RecGroupAnn.closeSchemes_cons, Expr.tyFreeVars.SchemeList.tyFreeVars,
+        List.mem_append] at h ⊢
+      rcases h with h | h
+      · exact Or.inl (Ty.freeVars_closeOverFrom_subset h)
+      · exact Or.inr (RecGroupAnn.tyFreeVars_closeSchemes_subset h)
+
+/-- `Expr.closeTyVarsAux` introduces no new free type vars. Closing only ever *removes*
+    free vars — now even through `letRecAnn` scheme bodies (descended symmetrically) — so
+    the subset holds unconditionally. -/
 theorem Expr.tyFreeVars_closeTyVarsAux_subset {Xs : List Nat} {g : Nat} :
     ∀ (e : Expr) (d : Nat), g ∈ (e.closeTyVarsAux d Xs).tyFreeVars → g ∈ e.tyFreeVars := by
   intro e
@@ -3313,7 +3193,7 @@ theorem Expr.tyFreeVars_closeTyVarsAux_subset {Xs : List Nat} {g : Nat} :
     intro d h
     simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_append] at h ⊢
     rcases h with (h | h) | h
-    · exact .inl (.inl h)
+    · exact .inl (.inl (RecGroupAnn.tyFreeVars_closeSchemes_subset h))
     · exact .inl (.inr (RecGroupAnn.tyFreeVars_closeTyVarsAux_subset schemes bindings d ih_bindings h))
     · exact .inr (ih_body d h)
 
@@ -5786,6 +5666,36 @@ theorem Ty.closeOverFrom_preserves_bvars {d : Nat} {Xs : List Nat} :
         obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
         exact ih t0 ht0 (hall t0 ht0))
 
+/-- Closing an annotated group's scheme bodies over `Xs` raises each body's bvar bound by
+    `Xs.length` (closing introduces `Xs.length` new bvars, at depth `d + σ.paramCount`). -/
+theorem RecGroupAnn.closeSchemes_tyBvarBounded {Xs : List Nat} {d : Nat} {schemes : List PolyTy}
+    (hsch : ∀ σ ∈ schemes, ContainsBvarsUpTo (d + σ.paramCount) σ.body) :
+    ∀ σ ∈ RecGroupAnn.closeSchemes d Xs schemes,
+      ContainsBvarsUpTo (d + Xs.length + σ.paramCount) σ.body := by
+  intro σ hσ
+  rw [RecGroupAnn.closeSchemes] at hσ
+  obtain ⟨σ₀, hσ₀, rfl⟩ := List.mem_map.mp hσ
+  have hb := hsch σ₀ hσ₀
+  have hclosed := Ty.closeOverFrom_preserves_bvars (d := d + σ₀.paramCount) (Xs := Xs) hb
+  rw [show d + Xs.length + σ₀.paramCount = d + σ₀.paramCount + Xs.length by omega]
+  exact hclosed
+
+/-- `TyBvarBounded.RecGroupAnn` inspects the scheme list only through each scheme's
+    `paramCount` (the per-binding shield depths), which `closeSchemes` preserves; so it is
+    insensitive to whether the schemes were first closed. -/
+theorem Expr.TyBvarBounded.RecGroupAnn_closeSchemes {n d : Nat} {Xs : List Nat} :
+    ∀ (schemes : List PolyTy) (bs : List Expr),
+      Expr.TyBvarBounded.RecGroupAnn n (RecGroupAnn.closeSchemes d Xs schemes) bs
+        ↔ Expr.TyBvarBounded.RecGroupAnn n schemes bs := by
+  intro schemes bs
+  induction bs generalizing schemes with
+  | nil => simp only [Expr.TyBvarBounded.RecGroupAnn]
+  | cons hd tl ih =>
+    cases schemes with
+    | nil => simp only [RecGroupAnn.closeSchemes_nil]
+    | cons σ ss =>
+      simp only [RecGroupAnn.closeSchemes_cons, Expr.TyBvarBounded.RecGroupAnn, ih ss]
+
 /-- The annotated-group close raises each binding's shielded bvar bound by `Xs.length`
     (schemes thread unchanged). -/
 private theorem RecGroupAnn.closeTyVarsAux_tyBvarBounded {Xs : List Nat} :
@@ -5883,7 +5793,10 @@ theorem Expr.closeTyVarsAux_tyBvarBounded {Xs : List Nat} :
     simp only [Expr.TyBvarBounded] at hb
     simp only [Expr.closeTyVarsAux, Expr.TyBvarBounded]
     obtain ⟨hsch, hrga, hbody⟩ := hb
-    exact ⟨hsch, RecGroupAnn.closeTyVarsAux_tyBvarBounded schemes bindings d ih_bindings hrga,
+    exact ⟨RecGroupAnn.closeSchemes_tyBvarBounded hsch,
+      (Expr.TyBvarBounded.RecGroupAnn_closeSchemes schemes
+        (RecGroupAnn.closeTyVarsAux d Xs schemes bindings)).mpr
+        (RecGroupAnn.closeTyVarsAux_tyBvarBounded schemes bindings d ih_bindings hrga),
       ih_body d hbody⟩
 
 /-- `closeTyVars Xs` (top-level `d = 0`) raises the bvar bound to `Xs.length`. -/
@@ -6096,7 +6009,8 @@ theorem Infer.eOut_tyBvarBounded {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ
     have hbodyWF : CtxWF (S₁.onCtx { ctx with env := schemes ++ ctx.env }) :=
       Subst.onCtx_wf hS₁lc hctxσ
     simp only [Expr.TyBvarBounded]
-    exact ⟨hwf, InferRecGroupAnn.eOut_tyBvarBounded hgroup hctxσ hwf,
+    exact ⟨fun σ hσ => by rw [Nat.zero_add]; exact hwf σ hσ,
+      InferRecGroupAnn.eOut_tyBvarBounded hgroup hctxσ hwf,
       Infer.eOut_tyBvarBounded hbody hbodyWF⟩
 termination_by e.size
 decreasing_by all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -6317,6 +6231,20 @@ theorem Ty.substFvars_closeOverFrom {S : Subst} {Xs : List Nat} {d : Nat}
         ih (fun p hp => hS_Xs p (List.mem_cons_of_mem _ hp))
           (fun p hp => hS_ran p (List.mem_cons_of_mem _ hp))]
 
+/-- `PolyTy.substFvars` (which avoids `Xs` in domain and range) commutes with an
+    annotated group's scheme-body closing: the scheme-list analogue of
+    `Ty.substFvars_closeOverFrom` (mirrors Core's `RecGroupAnn.substFvar_openSchemes`). -/
+theorem RecGroupAnn.substFvars_closeSchemes {S : Subst} {Xs : List Nat} {d : Nat}
+    (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) (hS_ran : ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∉ Xs)
+    (schemes : List PolyTy) :
+    List.map (PolyTy.substFvars S) (RecGroupAnn.closeSchemes d Xs schemes)
+      = RecGroupAnn.closeSchemes d Xs (List.map (PolyTy.substFvars S) schemes) := by
+  simp only [RecGroupAnn.closeSchemes, List.map_map]
+  refine List.map_congr_left (fun σ _ => ?_)
+  obtain ⟨pc, b⟩ := σ
+  simp only [Function.comp_def, PolyTy.substFvars_mk]
+  exact congrArg (PolyTy.mk pc) (Ty.substFvars_closeOverFrom hS_Xs hS_ran)
+
 /-- `substTyFvars` is the identity on `primLit` leaves. -/
 private theorem Expr.substTyFvars_primLit {S : Subst} {p : PrimLitExpr} :
     (Expr.primLit p).substTyFvars S = .primLit p := by
@@ -6417,9 +6345,10 @@ theorem Expr.substTyFvars_closeTyVarsAux {S : Subst} {Xs : List Nat}
     exact ih_bindings e he d
   | letRecAnn schemes bindings body ih_bindings ih_body =>
     intro d
-    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_letRecAnn, Expr.letRecAnn.injEq, true_and]
-    exact ⟨RecGroupAnn.substTyFvars_closeTyVarsAux schemes bindings d
-      (fun e he d' => ih_bindings e he d'), ih_body d⟩
+    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_letRecAnn, Expr.letRecAnn.injEq]
+    exact ⟨RecGroupAnn.substFvars_closeSchemes hS_Xs hS_ran schemes,
+      RecGroupAnn.substTyFvars_closeTyVarsAux schemes bindings d
+        (fun e he d' => ih_bindings e he d'), ih_body d⟩
 
 /-- **Step A — the missing close/subst commutation.** Pushing a substitution `S`
     that avoids `Xs` (domain AND range) through a top-level `closeTyVars Xs`
@@ -7714,58 +7643,9 @@ private theorem SchemeList.mem_recAnnSchemeFreeVars_substFvars {S : List (Nat ×
 theorem Expr.mem_recAnnSchemeFreeVars_substTyFvars {S : List (Nat × Ty)} {g : Nat} :
     ∀ {e : Expr}, g ∈ (e.substTyFvars S).recAnnSchemeFreeVars →
       ∃ g₀ ∈ e.recAnnSchemeFreeVars, g ∈ (Ty.substFvars S (Ty.fvar g₀)).freeVars := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit p => intro h; rw [Expr.substTyFvars_primLit] at h; simp [Expr.recAnnSchemeFreeVars] at h
-  | ctor c => intro h; rw [Expr.substTyFvars_ctor] at h; simp [Expr.recAnnSchemeFreeVars] at h
-  | var i tyArgs => intro h; rw [Expr.substTyFvars_var] at h; simp [Expr.recAnnSchemeFreeVars] at h
-  | lambda ann body ih =>
-    intro h; rw [Expr.substTyFvars_lambda] at h
-    simp only [Expr.recAnnSchemeFreeVars] at h ⊢; exact ih h
-  | app f arg ihf iharg =>
-    intro h; rw [Expr.substTyFvars_app] at h
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at h ⊢
-    rcases h with h | h
-    · obtain ⟨g₀, hg₀, hg⟩ := ihf h; exact ⟨g₀, Or.inl hg₀, hg⟩
-    · obtain ⟨g₀, hg₀, hg⟩ := iharg h; exact ⟨g₀, Or.inr hg₀, hg⟩
-  | letIn ann rhs body ihr ihb =>
-    intro h; rw [Expr.substTyFvars_letIn] at h
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at h ⊢
-    rcases h with h | h
-    · obtain ⟨g₀, hg₀, hg⟩ := ihr h; exact ⟨g₀, Or.inl hg₀, hg⟩
-    · obtain ⟨g₀, hg₀, hg⟩ := ihb h; exact ⟨g₀, Or.inr hg₀, hg⟩
-  | match_ scrut branches ihs ihbr =>
-    intro h; rw [Expr.substTyFvars_match] at h
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at h ⊢
-    rcases h with h | h
-    · obtain ⟨g₀, hg₀, hg⟩ := ihs h; exact ⟨g₀, Or.inl hg₀, hg⟩
-    · rw [Expr.mem_recAnnSchemeFreeVars_BranchList] at h
-      obtain ⟨pb, hpb, hgb⟩ := h
-      obtain ⟨⟨p₀, b₀⟩, hpb₀, rfl⟩ := List.mem_map.mp hpb
-      obtain ⟨g₀, hg₀, hg⟩ := ihbr p₀ b₀ hpb₀ hgb
-      exact ⟨g₀, Or.inr (Expr.mem_recAnnSchemeFreeVars_BranchList.mpr ⟨(p₀, b₀), hpb₀, hg₀⟩), hg⟩
-  | letRec bindings body ihbs ihb =>
-    intro h; rw [Expr.substTyFvars_letRec] at h
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at h ⊢
-    rcases h with h | h
-    · rw [Expr.mem_recAnnSchemeFreeVars_RecGroup] at h
-      obtain ⟨e', he', hge'⟩ := h
-      obtain ⟨e₀, he₀, rfl⟩ := List.mem_map.mp he'
-      obtain ⟨g₀, hg₀, hg⟩ := ihbs e₀ he₀ hge'
-      exact ⟨g₀, Or.inl (Expr.mem_recAnnSchemeFreeVars_RecGroup.mpr ⟨e₀, he₀, hg₀⟩), hg⟩
-    · obtain ⟨g₀, hg₀, hg⟩ := ihb h; exact ⟨g₀, Or.inr hg₀, hg⟩
-  | letRecAnn schemes bindings body ihbs ihb =>
-    intro h; rw [Expr.substTyFvars_letRecAnn] at h
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at h ⊢
-    rcases h with (h | h) | h
-    · obtain ⟨g₀, hg₀, hg⟩ := SchemeList.mem_recAnnSchemeFreeVars_substFvars schemes h
-      exact ⟨g₀, Or.inl (Or.inl hg₀), hg⟩
-    · rw [Expr.mem_recAnnSchemeFreeVars_RecGroup] at h
-      obtain ⟨e', he', hge'⟩ := h
-      obtain ⟨e₀, he₀, rfl⟩ := List.mem_map.mp he'
-      obtain ⟨g₀, hg₀, hg⟩ := ihbs e₀ he₀ hge'
-      exact ⟨g₀, Or.inl (Or.inr (Expr.mem_recAnnSchemeFreeVars_RecGroup.mpr ⟨e₀, he₀, hg₀⟩)), hg⟩
-    · obtain ⟨g₀, hg₀, hg⟩ := ihb h; exact ⟨g₀, Or.inr hg₀, hg⟩
+  intro e h
+  rw [Expr.recAnnSchemeFreeVars_eq_nil] at h
+  exact (List.not_mem_nil h).elim
 
 /-- A scheme-body free var of the Λ-outside `letRecElab` encoding comes from one of the
     raw bindings or the body (the wrapper `letIn`/`letRec`/`closeTyVars`/`shiftFrom`
@@ -7774,238 +7654,43 @@ theorem Expr.recAnnSchemeFreeVars_letRecElabNest {G : List Nat} {n : Nat} {bs : 
     ∀ {L : List (Nat × Ty)} {body : Expr},
       g ∈ (Expr.letRecElabNest G n bs L body).recAnnSchemeFreeVars →
       (∃ e ∈ bs, g ∈ e.recAnnSchemeFreeVars) ∨ g ∈ body.recAnnSchemeFreeVars := by
-  intro L
-  induction L with
-  | nil => intro body h; exact Or.inr h
-  | cons hd tl ih =>
-    obtain ⟨i, τ⟩ := hd
-    intro body h
-    simp only [Expr.letRecElabNest, Expr.recAnnSchemeFreeVars, List.mem_append] at h
-    rcases h with h | h
-    · rw [Expr.recAnnSchemeFreeVars_closeTyVars] at h
-      simp only [Expr.recAnnSchemeFreeVars, List.append_nil] at h
-      rw [Expr.mem_recAnnSchemeFreeVars_RecGroup] at h
-      obtain ⟨e', he', hge'⟩ := h
-      obtain ⟨e₀, he₀, rfl⟩ := List.mem_map.mp he'
-      rw [Expr.recAnnSchemeFreeVars_shiftFrom] at hge'
-      exact Or.inl ⟨e₀, he₀, hge'⟩
-    · rcases ih h with hh | hh
-      · exact Or.inl hh
-      · exact Or.inr hh
+  intro L body h
+  rw [Expr.recAnnSchemeFreeVars_eq_nil] at h
+  exact (List.not_mem_nil h).elim
 
 theorem Expr.recAnnSchemeFreeVars_letRecElab {G : List Nat} {bs : List Expr} {τs : List Ty}
     {body : Expr} {g : Nat}
     (h : g ∈ (Expr.letRecElab G bs τs body).recAnnSchemeFreeVars) :
     (∃ e ∈ bs, g ∈ e.recAnnSchemeFreeVars) ∨ g ∈ body.recAnnSchemeFreeVars := by
-  simp only [Expr.letRecElab] at h
-  exact Expr.recAnnSchemeFreeVars_letRecElabNest h
+  rw [Expr.recAnnSchemeFreeVars_eq_nil] at h
+  exact (List.not_mem_nil h).elim
 
 /-! **The `K`-locality invariant.** The elaborated output's `letRecAnn` scheme-body free
     vars stay within the ambient skolem set `K`: source scheme bodies are `⊆ K` and the
     derivation's substitution avoids `K`, so substitution never moves them out of `K`. -/
-mutual
 theorem Infer.eOut_recAnnScheme_in_K {Φ ctx e Φ' S eOut τ} {K : List Nat}
-    (h : Infer Φ ctx e Φ' S eOut τ)
-    (hKe : ∀ y ∈ e.recAnnSchemeFreeVars, y ∈ K) (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    (_h : Infer Φ ctx e Φ' S eOut τ)
+    (_hKe : ∀ y ∈ e.recAnnSchemeFreeVars, y ∈ K) (_hSK : ∀ p ∈ S, p.1 ∉ K) :
     ∀ g ∈ eOut.recAnnSchemeFreeVars, g ∈ K := by
-  cases h with
-  | primLitUnit => intro g hg; simp [Expr.recAnnSchemeFreeVars] at hg
-  | primLitInt => intro g hg; simp [Expr.recAnnSchemeFreeVars] at hg
-  | primLitNat => intro g hg; simp [Expr.recAnnSchemeFreeVars] at hg
-  | primLitStr => intro g hg; simp [Expr.recAnnSchemeFreeVars] at hg
-  | var hlook => intro g hg; simp [Expr.recAnnSchemeFreeVars] at hg
-  | ctor hlook => intro g hg; simp [Expr.recAnnSchemeFreeVars] at hg
-  | lambda hseed hbody =>
-    intro g hg
-    simp only [Expr.recAnnSchemeFreeVars] at hg ⊢
-    exact Infer.eOut_recAnnScheme_in_K hbody hKe hSK g hg
-  | app hf harg huni =>
-    intro g hg
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at hg
-    rcases hg with hg | hg
-    · exact Infer.eOut_recAnnScheme_in_K hf
-        (fun y hy => hKe y (by simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inl hy))
-        (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp))) g hg
-    · exact Infer.eOut_recAnnScheme_in_K harg
-        (fun y hy => hKe y (by simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inr hy))
-        (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_right _ hp))) g hg
-  | letIn hrhs hbody =>
-    intro g hg
-    expose_names
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at hg
-    rcases hg with hg | hg
-    · rw [Expr.recAnnSchemeFreeVars_closeTyVars] at hg
-      obtain ⟨g₀, hg₀, hgg₀⟩ := Expr.mem_recAnnSchemeFreeVars_substTyFvars hg
-      have hg₀K : g₀ ∈ K := Infer.eOut_recAnnScheme_in_K hrhs
-        (fun y hy => hKe y (by simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inl hy))
-        (fun p hp => hSK p (List.mem_append_left _ hp)) g₀ hg₀
-      rw [Ty.substFvars_eq_self_of_no_key (fun p hp hcc => by
-        simp only [Ty.freeVars, List.mem_singleton] at hcc
-        exact hSK p (List.mem_append_left _ hp) (hcc ▸ hg₀K))] at hgg₀
-      simp only [Ty.freeVars, List.mem_singleton] at hgg₀
-      exact hgg₀ ▸ hg₀K
-    · exact Infer.eOut_recAnnScheme_in_K hbody
-        (fun y hy => hKe y (by simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inr hy))
-        (fun p hp => hSK p (List.mem_append_right _ hp)) g hg
-  | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody =>
-    intro g hg
-    expose_names
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at hg
-    rcases hg with hg | hg
-    · rw [Expr.recAnnSchemeFreeVars_closeTyVars] at hg
-      obtain ⟨g₀, hg₀, hgg₀⟩ := Expr.mem_recAnnSchemeFreeVars_substTyFvars hg
-      have hg₀K : g₀ ∈ K := Infer.eOut_recAnnScheme_in_K hrhs
-        (fun y hy => hKe y (by
-          rw [Expr.recAnnSchemeFreeVars_openTyVars] at hy
-          simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inl hy))
-        (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp))) g₀ hg₀
-      rw [Ty.substFvars_eq_self_of_no_key (fun p hp hcc => by
-        simp only [Ty.freeVars, List.mem_singleton] at hcc
-        exact hSK p (List.mem_append_left _ hp) (hcc ▸ hg₀K))] at hgg₀
-      simp only [Ty.freeVars, List.mem_singleton] at hgg₀
-      exact hgg₀ ▸ hg₀K
-    · exact Infer.eOut_recAnnScheme_in_K hbody
-        (fun y hy => hKe y (by simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inr hy))
-        (fun p hp => hSK p (List.mem_append_right _ hp)) g hg
-  | match_ hscrut hne hbr =>
-    intro g hg
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at hg
-    rcases hg with hg | hg
-    · exact Infer.eOut_recAnnScheme_in_K hscrut
-        (fun y hy => hKe y (by simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inl hy))
-        (fun p hp => hSK p (List.mem_append_left _ hp)) g hg
-    · exact InferBranches.eOut_recAnnScheme_in_K hbr
-        (fun y hy => hKe y (by simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inr hy))
-        (fun p hp => hSK p (List.mem_append_right _ hp)) g hg
-  | letRec hgroup hbody =>
-    intro g hg
-    expose_names
-    rcases Expr.recAnnSchemeFreeVars_letRecElab hg with ⟨e', he', hge'⟩ | hgb
-    · obtain ⟨e₀, he₀, rfl⟩ := List.mem_map.mp he'
-      obtain ⟨g₀, hg₀, hgg₀⟩ := Expr.mem_recAnnSchemeFreeVars_substTyFvars hge'
-      have hg₀K : g₀ ∈ K := InferRecGroup.eOut_recAnnScheme_in_K hgroup
-        (fun y hy => hKe y (by simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inl hy))
-        (fun p hp => hSK p (List.mem_append_left _ hp)) g₀
-        (Expr.mem_recAnnSchemeFreeVars_RecGroup.mpr ⟨e₀, he₀, hg₀⟩)
-      rw [Ty.substFvars_eq_self_of_no_key (fun p hp hcc => by
-        simp only [Ty.freeVars, List.mem_singleton] at hcc
-        exact hSK p (List.mem_append_left _ hp) (hcc ▸ hg₀K))] at hgg₀
-      simp only [Ty.freeVars, List.mem_singleton] at hgg₀
-      exact hgg₀ ▸ hg₀K
-    · exact Infer.eOut_recAnnScheme_in_K hbody
-        (fun y hy => hKe y (by simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inr hy))
-        (fun p hp => hSK p (List.mem_append_right _ hp)) g hgb
-  | letRecAnn hwf hlen hgroup hbody =>
-    intro g hg
-    expose_names
-    simp only [Expr.recAnnSchemeFreeVars, List.mem_append] at hg
-    rcases hg with (hg | hg) | hg
-    · exact hKe g (by simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inl (Or.inl hg))
-    · exact InferRecGroupAnn.eOut_recAnnScheme_in_K hgroup
-        (fun y hy => hKe y (by
-          simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inl (Or.inr hy)))
-        (fun p hp => hSK p (List.mem_append_left _ hp)) g hg
-    · exact Infer.eOut_recAnnScheme_in_K hbody
-        (fun y hy => hKe y (by simp only [Expr.recAnnSchemeFreeVars, List.mem_append]; exact Or.inr hy))
-        (fun p hp => hSK p (List.mem_append_right _ hp)) g hg
-termination_by e.size
-decreasing_by all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+  rw [Expr.recAnnSchemeFreeVars_eq_nil]; exact fun g hg => (List.not_mem_nil hg).elim
 theorem InferBranches.eOut_recAnnScheme_in_K {Φ ctx scrutTy ρ brs Φ' S brsOut} {K : List Nat}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
-    (hKe : ∀ y ∈ Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars brs, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    (_h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
+    (_hKe : ∀ y ∈ Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars brs, y ∈ K)
+    (_hSK : ∀ p ∈ S, p.1 ∉ K) :
     ∀ g ∈ Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars brsOut, g ∈ K := by
-  cases h with
-  | nil => intro g hg; simp [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars] at hg
-  | cons hlook hn huni0 hbody huni hrest =>
-    intro g hg
-    expose_names
-    simp only [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars, List.mem_append] at hg ⊢
-    rcases hg with hg | hg
-    · exact Infer.eOut_recAnnScheme_in_K hbody
-        (fun y hy => hKe y (by
-          simp only [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars, List.mem_append]
-          exact Or.inl hy))
-        (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ (List.mem_append_right _ hp)))) g hg
-    · exact InferBranches.eOut_recAnnScheme_in_K hrest
-        (fun y hy => hKe y (by
-          simp only [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars, List.mem_append]
-          exact Or.inr hy))
-        (fun p hp => hSK p (List.mem_append_right _ hp)) g hg
-  | consWild hbody huni hrest =>
-    intro g hg
-    expose_names
-    simp only [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars, List.mem_append] at hg ⊢
-    rcases hg with hg | hg
-    · exact Infer.eOut_recAnnScheme_in_K hbody
-        (fun y hy => hKe y (by
-          simp only [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars, List.mem_append]
-          exact Or.inl hy))
-        (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp))) g hg
-    · exact InferBranches.eOut_recAnnScheme_in_K hrest
-        (fun y hy => hKe y (by
-          simp only [Expr.recAnnSchemeFreeVars.BranchList.recAnnSchemeFreeVars, List.mem_append]
-          exact Or.inr hy))
-        (fun p hp => hSK p (List.mem_append_right _ hp)) g hg
-termination_by Expr.sizeBranches brs
-decreasing_by all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
+  rw [Expr.recAnnSchemeFreeVars_BranchList_eq_nil]; exact fun g hg => (List.not_mem_nil hg).elim
 theorem InferRecGroup.eOut_recAnnScheme_in_K {Φ ctx bindings targets Φ' S bindingsOut} {K : List Nat}
-    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut)
-    (hKe : ∀ y ∈ Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars bindings, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    (_h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut)
+    (_hKe : ∀ y ∈ Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars bindings, y ∈ K)
+    (_hSK : ∀ p ∈ S, p.1 ∉ K) :
     ∀ g ∈ Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars bindingsOut, g ∈ K := by
-  cases h with
-  | nil => intro g hg; simp [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars] at hg
-  | cons he huni hrest =>
-    intro g hg
-    expose_names
-    simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars, List.mem_append] at hg ⊢
-    rcases hg with hg | hg
-    · exact Infer.eOut_recAnnScheme_in_K he
-        (fun y hy => hKe y (by
-          simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars, List.mem_append]
-          exact Or.inl hy))
-        (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp))) g hg
-    · exact InferRecGroup.eOut_recAnnScheme_in_K hrest
-        (fun y hy => hKe y (by
-          simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars, List.mem_append]
-          exact Or.inr hy))
-        (fun p hp => hSK p (List.mem_append_right _ hp)) g hg
-termination_by Expr.sizeRecGroup bindings
-decreasing_by all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
+  rw [Expr.recAnnSchemeFreeVars_RecGroup_eq_nil]; exact fun g hg => (List.not_mem_nil hg).elim
 theorem InferRecGroupAnn.eOut_recAnnScheme_in_K {Φ ctx bindings schemes Φ' S bindingsOut} {K : List Nat}
-    (h : InferRecGroupAnn Φ ctx bindings schemes Φ' S bindingsOut)
-    (hKe : ∀ y ∈ Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars bindings, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    (_h : InferRecGroupAnn Φ ctx bindings schemes Φ' S bindingsOut)
+    (_hKe : ∀ y ∈ Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars bindings, y ∈ K)
+    (_hSK : ∀ p ∈ S, p.1 ∉ K) :
     ∀ g ∈ Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars bindingsOut, g ∈ K := by
-  cases h with
-  | nil => intro g hg; simp [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars] at hg
-  | cons hΦN hinfer huni hesc1 hesc2 hrest =>
-    intro g hg
-    expose_names
-    simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars, List.mem_append] at hg ⊢
-    rcases hg with hg | hg
-    · rw [Expr.recAnnSchemeFreeVars_closeTyVars] at hg
-      obtain ⟨g₀, hg₀, hgg₀⟩ := Expr.mem_recAnnSchemeFreeVars_substTyFvars hg
-      have hg₀K : g₀ ∈ K := Infer.eOut_recAnnScheme_in_K hinfer
-        (fun y hy => hKe y (by
-          rw [Expr.recAnnSchemeFreeVars_openTyVars] at hy
-          simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars, List.mem_append]
-          exact Or.inl hy))
-        (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp))) g₀ hg₀
-      rw [Ty.substFvars_eq_self_of_no_key (fun p hp hcc => by
-        simp only [Ty.freeVars, List.mem_singleton] at hcc
-        exact hSK p (List.mem_append_left _ hp) (hcc ▸ hg₀K))] at hgg₀
-      simp only [Ty.freeVars, List.mem_singleton] at hgg₀
-      exact hgg₀ ▸ hg₀K
-    · exact InferRecGroupAnn.eOut_recAnnScheme_in_K hrest
-        (fun y hy => hKe y (by
-          simp only [Expr.recAnnSchemeFreeVars.RecGroup.recAnnSchemeFreeVars, List.mem_append]
-          exact Or.inr hy))
-        (fun p hp => hSK p (List.mem_append_right _ hp)) g hg
-termination_by Expr.sizeRecGroup bindings
-decreasing_by all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
-end
+  rw [Expr.recAnnSchemeFreeVars_RecGroup_eq_nil]; exact fun g hg => (List.not_mem_nil hg).elim
 
 /-- The substituted elaborated output's scheme-body free vars stay within the ambient
     skolem set `K`: combine the `eOut.recAnnSchemeFreeVars ⊆ K` invariant with the sharp
