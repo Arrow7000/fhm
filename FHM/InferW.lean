@@ -10383,7 +10383,30 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
     rw [hctxfix, hrhsfixRen] at hren
     exact hren
   | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody ihrhs ihbody => sorry
-  | match_ hscrut hne hbranches ihscrut ihbranches => sorry
+  | match_ hscrut hne hbranches ihscrut ihbranches =>
+    intro hctx hbelow K hKΦ hKe hSK
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append] at hKe
+    obtain ⟨hτs_lc, hS₁⟩ := Infer.lc hscrut hctx
+    have hle1 := Infer.frontier_le hscrut
+    have hscrut_below := Infer.belowFvars hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+    have hctx1 := Subst.onCtx_wf hS₁ hctx
+    have hbelow1 := Subst.onCtx_below hscrut_below.2 hle1 hbelow
+    have hS₂lc := (InferBranches.lc hbranches hctx1 hτs_lc ContainsBvarsUpTo.fvar).2
+    have hscrut_sound := ihscrut hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+      (fun p hp => hSK p (List.mem_append_left _ hp))
+    have hscrut_decl := TypeOfHM.onSubst S₂ hS₂lc hscrut_sound
+    have hscrutfix : scrut.substTyFvars S₂ = scrut :=
+      Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+        (fun p hp hc => hSK p (List.mem_append_right _ hp) (hKe p.1 (.inl hc)))
+    rw [hscrutfix] at hscrut_decl
+    have hbr_sound := ihbranches hctx1 (fun M hM => (hbelow1 M hM).mono (by omega))
+      hτs_lc ContainsBvarsUpTo.fvar
+      (hscrut_below.1.mono (by omega)) (.fvar (by omega)) K
+      (fun k hk => by have := hKΦ k hk; omega)
+      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+    rw [Subst.onCtx_append]
+    exact TypeOfHM.match_ hscrut_decl hne hbr_sound
   | letRec hgroup hbody ihgroup ihbody =>
     -- exercise the InferRecGroup sibling IH `ihgroup` (validates the sibling motive plumbing)
     intro hctx hbelow K hKΦ hKe hSK
@@ -10392,7 +10415,56 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
   | letRecAnn hwf hlen hgroup hbody ihgroup ihbody => sorry
   | brNil => intros; exact absurd (by assumption) (by simp)
   | brCons hlook hn huni0 hbody huni hrest ihbody ihrest => sorry
-  | brWild hbody huni hrest ihbody ihrest => sorry
+  | brWild hbody huni hrest ihbody ihrest =>
+    expose_names
+    have hle1 := Infer.frontier_le hbody
+    have hΦhead : ∀ y ∈ body.tyFreeVars, y < Φ_1 := fun y hy => h_6 y (h_7 y (by
+      simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy))
+    obtain ⟨hτb_lc, hS₁lc⟩ := Infer.lc hbody h
+    have hS₂lc := huni.lc hτb_lc (Subst.onTy_lc hS₁lc h_3)
+    have hctx1WF := Subst.onCtx_wf hS₂lc (Subst.onCtx_wf hS₁lc h)
+    have hS₃lc := (InferBranches.lc hrest hctx1WF
+      (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc h_2))
+      (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc h_3))).2
+    have hSbody : ∀ p ∈ S₁, p.1 ∉ body.tyFreeVars := fun p hp hc =>
+      h_8 p (List.mem_append_left _ (List.mem_append_left _ hp))
+        (h_7 p.1 (by simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hc))
+    obtain ⟨hbE, hbR⟩ := Infer.eliminates hbody h_1 hΦhead hSbody
+    obtain ⟨hb_τbel, hb_sbel⟩ := Infer.belowFvars hbody h_1 hΦhead
+    have hS₁ρbel : Ty.BelowFvars Φ₁ (S₁.onTy ρ) := Subst.onTy_belowFvars hb_sbel (h_5.mono hle1)
+    have hS₂bel : ∀ p ∈ S₂, Ty.BelowFvars Φ₁ p.2 := UnifyRel.belowFvars huni hb_τbel hS₁ρbel
+    have hctx1bel : CtxBelow Φ₁ (S₂.onCtx (S₁.onCtx ctx_1)) :=
+      Subst.onCtx_below hS₂bel (le_refl _) (Subst.onCtx_below hb_sbel hle1 h_1)
+    have hscrut'bel : Ty.BelowFvars Φ₁ (S₂.onTy (S₁.onTy scrutTy)) :=
+      Subst.onTy_belowFvars hS₂bel (Subst.onTy_belowFvars hb_sbel (h_4.mono hle1))
+    have hρ'bel : Ty.BelowFvars Φ₁ (S₂.onTy (S₁.onTy ρ)) :=
+      Subst.onTy_belowFvars hS₂bel hS₁ρbel
+    have hrest_sound := ihrest hctx1WF hctx1bel
+      (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc h_2))
+      (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc h_3))
+      hscrut'bel hρ'bel K (fun k hk => by have := h_6 k hk; omega)
+      (fun y hy => h_7 y (by simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inr hy))
+      (fun p hp => h_8 p (List.mem_append_right _ hp))
+    rcases List.mem_cons.mp h_9 with rfl | hp_rest
+    · simp only [Subst.onCtx_append, Subst.onTy_append]
+      have h0 := ihbody h h_1 K h_6
+        (fun y hy => h_7 y (by simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy))
+        (fun q hq => h_8 q (List.mem_append_left _ (List.mem_append_left _ hq)))
+      have h1 := TypeOfHM.onSubst S₃ hS₃lc (TypeOfHM.onSubst S₂ hS₂lc h0)
+      have hbodyfix : (body.substTyFvars S₂).substTyFvars S₃ = body := by
+        rw [← Expr.substTyFvars_append]
+        refine Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun q hq hc => ?_)
+        have hmem : q.1 ∈ Expr.tyFreeVars.BranchList.tyFreeVars ((MatchPattern.wildcard, body) :: rest) := by
+          simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hc
+        rcases List.mem_append.mp hq with hh | hh
+        · exact h_8 q (List.mem_append_left _ (List.mem_append_right _ hh)) (h_7 q.1 hmem)
+        · exact h_8 q (List.mem_append_right _ hh) (h_7 q.1 hmem)
+      rw [hbodyfix] at h1
+      have huni_eq := huni.unifies; simp only [Unifies] at huni_eq
+      rw [huni_eq] at h1
+      exact TypeOfMatchBranch.wildcard h1
+    · simp only [Subst.onCtx_append, Subst.onTy_append]
+      exact hrest_sound p hp_rest
   | grpNil => intros; exact absurd (by assumption) (by simp)
   | grpCons he huni hrest ihe ihrest => sorry
   | grpAnnNil => intros; exact ⟨[], fun p hp => absurd hp (by simp)⟩
