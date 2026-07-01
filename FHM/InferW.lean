@@ -15737,7 +15737,60 @@ theorem Infer.complete' {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
       have hag1 : Subst.AgreesBelow Φ S₀ (S₁ ++ R₁) := fun v hv =>
         (hR₀agΦ v hv).symm.trans (hag_group v (by omega))
       exact Subst.AgreesBelow.trans_append (le_trans (Nat.le_add_right Φ _) hgle) hag1 hS₁below hagb
-  | letRecAnn _ _ _ _ => sorry
+  | @letRecAnn _ _ schemes bindings body Φ₁ Φ₂ S₁ S₂ bindingsOut bodyOut τ₂ hwf' hlen hgroup hbody =>
+    cases hty with
+    | letRecAnn hlen' hwf'' hcofin heqc hbodyD =>
+      subst heqc
+      simp only [Expr.tyFreeVars, List.mem_append] at hKe
+      have hKsch : ∀ σ ∈ schemes, ∀ y ∈ σ.body.freeVars, y ∈ K := fun σ hσ y hy =>
+        hKe y (.inl (.inl (Expr.mem_tyFreeVars_schemeList hσ hy)))
+      have hKgrp : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K := fun y hy =>
+        hKe y (.inl (.inr hy))
+      have hKbody : ∀ y ∈ body.tyFreeVars, y ∈ K := fun y hy => hKe y (.inr hy)
+      have hschB : ∀ σ ∈ schemes, Ty.BelowFvars Φ σ.body := fun σ hσ =>
+        Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hKsch σ hσ v hv))
+      have hctxSWF : CtxWF { ctx with env := schemes ++ ctx.env } := by
+        intro M hM; rcases List.mem_append.mp hM with hM | hM
+        · exact hwf' M hM
+        · exact hwf M hM
+      have hctxSbelow : CtxBelow Φ { ctx with env := schemes ++ ctx.env } := by
+        intro M hM; rcases List.mem_append.mp hM with hM | hM
+        · exact hschB M hM
+        · exact hbelow M hM
+      have hSschmap : schemes.map (Subst.onPolyTy S₀) = schemes := by
+        conv_rhs => rw [← List.map_id schemes]
+        refine List.map_congr_left (fun σ hσ => ?_)
+        obtain ⟨pcc, b⟩ := σ
+        simp only [Subst.onPolyTy, PolyTy.mk.injEq, true_and, id_eq]
+        exact Subst.onTy_eq_self_of_fixes (fun v hv => hKfix v (hKsch ⟨pcc, b⟩ hσ v hv))
+      have hctxS_eq : S₀.onCtx { ctx with env := schemes ++ ctx.env }
+          = { (S₀.onCtx ctx) with env := schemes ++ (S₀.onCtx ctx).env } := by
+        simp only [Subst.onCtx, Subst.onEnv, List.map_append]
+        rw [hSschmap]
+      obtain ⟨R₁, hag_group, hR₁lc, hR₁fix⟩ :=
+        InferRecGroupAnn.complete' hgroup hctxSWF hctxSbelow hwf' hS₀ K hKΦ hKgrp hKsch hKfix
+          (fun p hp Xs hX => by rw [hctxS_eq]; exact hcofin p hp Xs hX)
+      have hgrle : Φ ≤ Φ₁ := InferRecGroupAnn.frontier_le hgroup
+      have hKgrpΦ : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ :=
+        fun y hy => hKΦ y (hKgrp y hy)
+      have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := InferRecGroupAnn.lc hgroup hctxSWF hwf'
+      have hS₁below : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 :=
+        InferRecGroupAnn.belowFvars hgroup hctxSbelow hschB hKgrpΦ
+      have hbodyWF : CtxWF (S₁.onCtx { ctx with env := schemes ++ ctx.env }) :=
+        Subst.onCtx_wf hS₁lc hctxSWF
+      have hbodybelow : CtxBelow Φ₁ (S₁.onCtx { ctx with env := schemes ++ ctx.env }) :=
+        Subst.onCtx_below hS₁below hgrle hctxSbelow
+      have hbodyctx_eq : R₁.onCtx (S₁.onCtx { ctx with env := schemes ++ ctx.env })
+          = S₀.onCtx { ctx with env := schemes ++ ctx.env } := by
+        rw [← Subst.onCtx_append]
+        exact Subst.onCtx_congr (fun v hv => (hag_group v hv).symm) hctxSbelow
+      have hbody'' : TypeOfHM (R₁.onCtx (S₁.onCtx { ctx with env := schemes ++ ctx.env })) body τ₀ := by
+        rw [hbodyctx_eq, hctxS_eq]; exact hbodyD
+      obtain ⟨R₂, hagb, htyb, hR₂lc, hR₂fix⟩ :=
+        Infer.complete' hbody hbodyWF hbodybelow hR₁lc K
+          (fun k hk => lt_of_lt_of_le (hKΦ k hk) hgrle) hKbody hR₁fix hbody''
+      refine ⟨R₂, ?_, htyb, hR₂lc, hR₂fix⟩
+      exact Subst.AgreesBelow.trans_append hgrle hag_group hS₁below hagb
 termination_by e.size
 decreasing_by all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
@@ -16279,7 +16332,7 @@ theorem InferRecGroupAnn.complete' {Φ ctx bindings schemes Φ' S bindingsOut}
     · exact hSchkbelow p hp
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 /-! ### Source↔elaborated bridges (Phase 5 step 2)
