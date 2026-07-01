@@ -18252,7 +18252,30 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx
       rcases hp with hp | hp
       · exact hgR p hp
       · exact hbR p hp
-  | letRecAnn _ _ _ _ => sorry
+  | @letRecAnn _ _ schemes bindings body _ _ S₁ S₂ _ _ τ₂ hwf' hlen hgroup hbody =>
+    intro hhi hctx htfv
+    simp only [Expr.tyFreeVars, List.mem_append] at htfv
+    have hgle := InferRecGroupAnn.frontier_le hgroup
+    have hctxS : ∀ M ∈ ({ ctx with env := schemes ++ ctx.env }).env,
+        ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v := by
+      intro M hM v hv
+      rcases List.mem_append.mp hM with hM | hM
+      · exact htfv v (.inl (.inl (Expr.mem_tyFreeVars_schemeList hM hv)))
+      · exact hctx M hM v hv
+    obtain ⟨hgD, hgR⟩ := InferRecGroupAnn.gap_avoid hgroup (by omega) hctxS
+      (fun σ hσ v hv => htfv v (.inl (.inl (Expr.mem_tyFreeVars_schemeList hσ hv))))
+      (fun y hy => htfv y (.inl (.inr hy)))
+    obtain ⟨hbτ, hbD, hbR⟩ := Infer.gap_avoid hbody (by omega)
+      (Subst.onCtx_avoidsItv hgR hctxS) (fun y hy => htfv y (.inr hy))
+    refine ⟨hbτ, ?_, ?_⟩
+    · intro p hp; rw [List.mem_append] at hp
+      rcases hp with hp | hp
+      · exact hgD p hp
+      · exact hbD p hp
+    · intro p hp; rw [List.mem_append] at hp
+      rcases hp with hp | hp
+      · exact hgR p hp
+      · exact hbR p hp
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -18391,6 +18414,54 @@ theorem InferRecGroup.gap_avoid {lo hi : Nat} {Φ ctx bindings targets Φ' S bin
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
+
+/-- Gap-avoidance for an annotated recursion group (analogue of
+    `InferRecGroup.gap_avoid`). The per-binding skolem block `freshVars N pc`
+    (`N ≥ Φ ≥ hi`) is entirely `≥ hi`, so the skolem-opened rhs and scheme opening
+    avoid `[lo, hi)`; then thread. -/
+theorem InferRecGroupAnn.gap_avoid {lo hi : Nat} {Φ ctx bindings schemes Φ' S bindingsOut}
+    (h : InferRecGroupAnn Φ ctx bindings schemes Φ' S bindingsOut) :
+    hi ≤ Φ → (∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v) →
+    (∀ σ ∈ schemes, ∀ v ∈ σ.body.freeVars, v < lo ∨ hi ≤ v) →
+    (∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < lo ∨ hi ≤ y) →
+    (∀ p ∈ S, p.1 < lo ∨ hi ≤ p.1) ∧ (∀ p ∈ S, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v) := by
+  cases h with
+  | nil => intro _ _ _ _; exact ⟨by simp, by simp⟩
+  | cons hΦN he huni hesc1 hesc2 hrest =>
+    intro hhi hctx hschemes htfv
+    expose_names
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at htfv
+    have hle1 := Infer.frontier_le he
+    have hrhsTfv : ∀ y ∈ (e.openTyVars (freshVars N σ.paramCount)).tyFreeVars, y < lo ∨ hi ≤ y := by
+      intro y hy
+      rcases Expr.tyFreeVars_openTyVars hy with hh | hh
+      · exact htfv y (.inl hh)
+      · exact Or.inr (by have := freshVars_ge y hh; omega)
+    obtain ⟨hrτ, hrD, hrR⟩ := Infer.gap_avoid he (by omega) hctx hrhsTfv
+    have hσopenAvoid : ∀ v ∈ (σ.openVars (freshVars N σ.paramCount)).freeVars, v < lo ∨ hi ≤ v := by
+      intro v hv
+      rcases Ty.freeVars_openVars_subset v hv with hh | hh
+      · exact hschemes σ List.mem_cons_self v hh
+      · exact Or.inr (by have := freshVars_ge v hh; omega)
+    obtain ⟨hSchkD, hSchkR⟩ := UnifyRel.gap_avoid huni hrτ hσopenAvoid
+    obtain ⟨hD₃, hR₃⟩ := InferRecGroupAnn.gap_avoid hrest (by omega)
+      (Subst.onCtx_avoidsItv hSchkR (Subst.onCtx_avoidsItv hrR hctx))
+      (fun σ' hσ' => hschemes σ' (List.mem_cons_of_mem _ hσ'))
+      (fun y hy => htfv y (.inr hy))
+    refine ⟨?_, ?_⟩
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hrD p hp
+      · exact hSchkD p hp
+      · exact hD₃ p hp
+    · intro p hp; rw [List.mem_append, List.mem_append] at hp
+      rcases hp with (hp | hp) | hp
+      · exact hrR p hp
+      · exact hSchkR p hp
+      · exact hR₃ p hp
+termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 /-- A substitution whose domain avoids `K` fixes every `fvar k` with `k ∈ K`. -/
