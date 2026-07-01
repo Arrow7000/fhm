@@ -10,38 +10,84 @@ A formalisation of a language with a Hindley-Milner type system. Includes some a
 
 ## Architecture
 
-A few representational choices shape everything else. Terms use de Bruijn indices for their bound variables; type variables use a locally-nameless representation with cofinite quantification, in the style of [Charguéraud's formalisation of mini-ML](https://github.com/charguer/formalmetacoq/blob/master/ln/ML_Definitions.v). Types come in two layers — monotypes and `∀`-quantified schemes — and typing contexts are de-Bruijn-indexed (with a small `HasItem` membership relation for lookups). Terms also come in two forms: plain source expressions, and _elaborated_ ones that additionally carry the type arguments each polymorphic variable is instantiated at (see the elaboration split below).
+Type inference here does two jobs at once: it works out the types, and it elaborates the program while doing so. The two can't really be pulled apart, because the whole point of the polymorphic annotations is that inference has to record how each polymorphic variable gets instantiated. So there are two ways to read a program: before elaboration, where those instantiations are left implicit, and after, where they have been written in. Each reading gets its own declarative typing relation.
 
-The formalisation splits into `Core.lean` and `InferW.lean`.
+Here's how the pieces are represented:
 
-`Core.lean` is the language and its theory. It defines the term language (`Expr`), two declarative typing relations — `TypeOfHM` on source programs and `TypeOfElabHM` on elaborated ones (they differ in exactly one rule) — a type-passing small-step semantics (`SmallStep.Step`), and the metatheory: substitution lemmas, type safety, and the faithfulness bridge between the two typing relations.
+- terms use de Bruijn indices for their bound variables
+- type variables use a locally-nameless representation with cofinite quantification, following [Charguéraud's formalisation of mini-ML](https://github.com/charguer/formalmetacoq/blob/master/ln/ML_Definitions.v)
+- types split into monotypes and `∀`-quantified schemes
+- typing contexts are indexed by de Bruijn position
 
-`InferW.lean` is the algorithm. The `Infer` relation specifies inference and elaboration together — from a source expression it produces a substitution, an inferred type, and an elaborated term — and `infer` / `typecheck` are its executable counterparts (`typecheck` runs a whole program from the empty context and generalises the result). Its soundness, completeness, and principality results, and how they bridge to the declarative relations, are covered in the next section.
+### Core.lean
 
-There is also a surface language that contains syntax for constructing booleans, tuples, lists, patterns for destructuring them in let bindings and match expressions. This surface language is not yet wired up to the rest of the project. This will come when the desired core functionality is fully implemented and proven.
+This is where the language lives and where we say, abstractly, what it means for a program to be well-typed. It doesn't compute anything; it just lays down the rules.
 
-Beyond `Core.lean` and `InferW.lean`, the rest of `FHM/` is:
+- `Expr`: the term language.
+- `TypeOfHM`: the declarative typing relation for the pre-elaboration reading. This is textbook HM, where a polymorphic variable may be used at any instance of its scheme.
+- `TypeOfElabHM`: the same relation for the post-elaboration reading, where every polymorphic use carries the exact type arguments it was instantiated at. The two relations are identical apart from that one rule.
+- `SmallStep.Step`: a small-step semantics that runs the elaborated program directly, carrying types at runtime rather than erasing them.
 
-- `SurfaceLang.lean`, `Pretty.lean` — the surface language and pretty-printers for Core and Surface terms.
-- `Examples.lean` — `#eval` demos: infer-then-pretty-print, let-polymorphism, polymorphic recursion, and adversarial reject cases.
-- `ConstraintTypeSystem.lean` — an alternative constraint-based presentation of HM, with soundness back to `TypeOfElabHM`. Currently stale against `Core` and excluded from the default build; kept for reference.
-- `SpikeC.lean`, `SpikeLetRecAnn.lean` — exploratory spikes used while working out the annotated-polymorphic-recursion / type-passing design.
-- `HasItem.lean` — a small indexed list-membership relation used for context lookups.
+### InferW.lean
 
-## Where things stand
+This is where we actually work out a program's type, instead of just declaring which types are valid. It's the algorithmic side, and it's where elaboration happens.
 
-The pipeline now works end to end: programs are inferred, elaborated, and evaluated under a type-passing semantics, and the metatheory is machine-checked and axiom-clean.
+- `Infer`: a relation specifying inference and elaboration together. From a source program it produces a substitution, an inferred type, and the elaborated program.
+- `infer` and `inferCore`: the executable versions of that relation.
+- `typecheck`: the whole-program entry point. It runs from the empty context and generalises the result into a closed scheme.
 
-**The elaboration split.** Supporting polymorphic recursion made type annotations load-bearing, so the declarative system comes in two halves: `TypeOfHM`, the classic decoration-blind HM relation on source programs, and `TypeOfElabHM`, the same system on _elaborated_ programs, where every use of a polymorphic variable carries the type arguments it is instantiated at. The two differ in exactly one rule (`var`). Three bridges tie the algorithm to both: `Infer.sound` (the elaborated output is well-typed in `TypeOfElabHM`), `TypeOfElabHM.faithful` (elaboration is faithful to source-level HM, `TypeOfElabHM ⟹ TypeOfHM`), and `Infer.sourceSound` (the algorithm is sound directly against `TypeOfHM`).
+### SurfaceLang.lean 🏗️
 
-**What's proven.**
+This is what the language is meant to look like to a user: real string names, and syntactic sugar for building and taking apart pairs and lists. The plan is to desugar and name-resolve it down into the constructor-based, de-Bruijn-indexed Core language, but that bridging step isn't written yet. Worth a look if you want a fuller picture of the user-facing language.
 
-- Inference is sound, complete, and finds [principal types](https://doi.org/10.1145/582153.582176) — `Infer.sound`, `Infer.iff_typeable`, `Infer.principal` — with whole-program counterparts `typecheck_sound`, `typecheck_iff`, `typecheck_principal`.
-- The unifier is sound and complete: `unify_sound`, `unify_complete`.
-- The type-passing dynamics are safe: `TypeOfElabHM.progress` and `TypeOfElabHM.preservation`, bundled as `TypeOfElabHM.type_safety`.
-- Mutually recursive bindings are covered both unannotated (`InferRecGroup.sound` / `.complete`) and annotated-and-polymorphic (`InferRecGroupAnn.sound` / `.complete`).
+### ConstraintTypeSystem.lean 🚧
 
-**How we got here.** The core HM system came first — inference proven sound, complete, and principal, over a safe dynamics. Then I wanted type annotations that could reference type variables bound in outer scopes, which initially pushed the evaluator toward type erasure (to avoid leaving orphan skolems behind on let-reduction). Mutual recursion came next — monomorphic during checking, generalised afterwards. The turning point was wanting _polymorphic_ mutual recursion: inference for it is [undecidable](https://doi.org/10.1145/169701.169692) in general but decidable once the bindings carry annotations — and those annotations can't be erased without collapsing back to monomorphic inference, i.e. erasure would make the typed language strictly weaker. So type erasure had to go, replaced by the [type-passing](https://doi.org/10.1017/S0956796801004282) semantics and the elaboration split above.
+A work-in-progress experiment in a different approach. Instead of Algorithm W, it tries the constraint-based style (Wand; Pottier and Rémy), where inference generates a constraint and then solves it, using guarded constraint schemes `∀ᾱ[C].τ`. It's currently out of date against `Core`, so unlike the surface language it isn't really worth reading yet.
+
+Rounding things out, `Pretty.lean` prints Core and Surface terms readably, and `Examples.lean` collects runnable `#eval` demos, including let-polymorphism, polymorphic recursion, and programs that should be rejected.
+
+### What we've proved
+
+All of these are fully proved. The theorems only use the standard axioms and are completely free of `sorry`s.
+
+**Inference and principality** (`InferW.lean`):
+
+- `Infer.sound`: if inference succeeds, the elaborated program it returns really is well-typed under the post-elaboration relation.
+- `Infer.sourceSound`: and the original source program is well-typed under plain HM.
+- `Infer.iff_typeable`: inference succeeds exactly when the program is typeable at all.
+- `Infer.principal`: the type it finds is the [most general](https://doi.org/10.1145/582153.582176) one, and every other valid type is an instance of it.
+- `typecheck_sound`, `typecheck_iff`, `typecheck_principal`: the same three guarantees, packaged up for a whole program.
+
+**Unification** (`InferW.lean`):
+
+- `unify_sound`, `unify_complete`: the unifier returns a most general unifier when one exists, and only when one exists.
+
+**Recursive bindings** (`InferW.lean`):
+
+- `InferRecGroup.sound`, `InferRecGroup.complete`: inference is sound and complete for unannotated mutually recursive groups (checked monomorphically, then generalised).
+- `InferRecGroupAnn.sound`, `InferRecGroupAnn.complete`: and for annotated, polymorphic mutually recursive groups.
+
+**Runtime safety** (`Core.lean`):
+
+- `TypeOfElabHM.progress`: a well-typed elaborated program is either a finished value or it can take another step.
+- `TypeOfElabHM.preservation`: taking a step never changes a program's type.
+- `TypeOfElabHM.type_safety`: putting those together, a well-typed program never gets stuck.
+
+**The elaboration bridge** (`Core.lean`):
+
+- `TypeOfElabHM.faithful`: anything well-typed after elaboration was already well-typed in plain HM, so elaboration never invents new typings.
+
+## How it got here
+
+The core HM system came first: inference proven sound, complete, and principal, over a small-step semantics that was proven safe.
+
+Then I wanted type annotations that could mention type variables bound further out, in an enclosing scope. That caused a problem. When a let binding reduces, those variables can end up orphaned, pointing at a scope that no longer exists. The fix at the time was to erase types before running a program, so there was nothing left to dangle.
+
+Mutual recursion came next. That one stayed manageable as long as I checked the bindings monomorphically and only generalised them afterwards.
+
+The next thing I wanted was polymorphic mutual recursion, and that's where it got hard. Inferring it in general is [undecidable](https://doi.org/10.1145/169701.169692), but it becomes decidable once each binding carries a type annotation. The catch is that those annotations can no longer be erased: erase them and inference has to fall back to the monomorphic case, which would leave the typed language strictly weaker than the annotated one. So erasing types stopped being an option.
+
+That's what forced the current model. Instead of erasing types, the program keeps them and runs under a [type-passing](https://doi.org/10.1017/S0956796801004282) semantics, and inference elaborates each program into that form. To keep everything honest, the declarative typing was split into the two relations above, one for the program before elaboration and one for after, with `TypeOfElabHM.faithful` tying them together. The main piece still missing is the translation from the surface language down into Core.
 
 ## Building
 
@@ -55,9 +101,11 @@ lake build
 
 ## Why this exists
 
-Most of the code and proofs here were written by an LLM — mostly Claude Opus 4.x. I'm not going to pretend otherwise: formalisation is a slog, and much of it is exactly the legwork these models are now good at. But I designed the language and its type system — the features it supports, what the relations and theorems should say, what counts as correct — and I stay the guardian of anything we actually claim to have proved. That part isn't optional: left alone the model will quietly weaken a theorem or prove something adjacent to what I asked, so I stay in the loop wherever it matters, and I've pushed for the principled route wherever it stays decidable, however much harder that makes the proof.
+I've been into type systems for a long time, and I have a soft spot for ML-style pure languages like Elm. This is my attempt to formalise a small language and type system in that spirit, and to learn some proper PLT by building one rather than just reading about it.
 
-It's also been the best way I've found to actually learn this material. Driving the project — and interrogating the model at the points where my own intuition gives out — has taught me more PLT and type theory than any amount of reading.
+I've leaned on LLMs a lot along the way, in two ways. I've used them as a tutor, to explain things when I got stuck, and I've handed them most of the proving grunt-work, which is a genuine slog. But whenever that surfaced a broken assumption, the decision came back to me. I made sure I understood enough of the context to make the design call myself, and only then handed the reins back. I designed the language, chose which features it should support, and decided what the theorems needed to say.
+
+Doing it this way has taught me far more than reading would have. I learn by building, and this has been the most rewarding way I've found to actually absorb this material.
 
 ## References
 
@@ -71,4 +119,4 @@ It's also been the best way I've found to actually learn this material. Driving 
 - Karl Crary, Stephanie Weirich, and Greg Morrisett. _Intensional polymorphism in type-erasure semantics._ Journal of Functional Programming 12(6):567–600, 2002 (ICFP 1998). <https://doi.org/10.1017/S0956796801004282>
 - François Pottier and Didier Rémy. _The essence of ML type inference._ In B. C. Pierce (ed.), Advanced Topics in Types and Programming Languages, ch. 10, 389–489. MIT Press, 2005. <https://pauillac.inria.fr/~fpottier/publis/emlti-final.pdf>
 - Brian Aydemir, Arthur Charguéraud, Benjamin C. Pierce, Randy Pollack, and Stephanie Weirich. _Engineering formal metatheory._ POPL 2008, 3–15. <https://doi.org/10.1145/1328438.1328443>
-- Arthur Charguéraud. _The locally nameless representation._ Journal of Automated Reasoning 49(3):363–408, 2012. <https://doi.org/10.1007/s10817-011-9225-2> — Coq sources: <https://github.com/charguer/formalmetacoq> (the `ln/ML_*` files).
+- Arthur Charguéraud. _The locally nameless representation._ Journal of Automated Reasoning 49(3):363–408, 2012. <https://doi.org/10.1007/s10817-011-9225-2>. Coq sources: <https://github.com/charguer/formalmetacoq> (the `ln/ML_*` files).
