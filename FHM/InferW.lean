@@ -16817,11 +16817,75 @@ theorem InferRecGroupAnn.complete {bindings : List Expr} :
           · exact hSchk_K p hp
         · exact hS_rK p hp
 
-/-- Principality, annotated-recursion-group case (producer). -/
+/-- Principality, annotated-recursion-group case (producer). Mirrors
+    `complete_letRec`'s assembly, but the schemes are GIVEN and rigid: no
+    `genGroup`/`renameG`, and the body sees the same declarative schemes, so the
+    inverted body typing transfers directly (via `AgreesBelow`). -/
 theorem Infer.complete_letRecAnn {schemes : List PolyTy} {bindings : List Expr} {body : Expr}
-    (ihbindings : ∀ e ∈ bindings, Infer.CompleteAt e) (ihbody : Infer.CompleteAt body) :
+    (ihbindings : ∀ e ∈ bindings, ∀ Ys, Infer.CompleteAt (e.openTyVars Ys))
+    (ihbody : Infer.CompleteAt body) :
     Infer.CompleteAt (.letRecAnn schemes bindings body) := by
-  sorry
+  intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKe hKfix hty
+  simp only [Expr.tyFreeVars, List.mem_append] at hKe
+  have hKsch : ∀ σ ∈ schemes, ∀ y ∈ σ.body.freeVars, y ∈ K := fun σ hσ y hy =>
+    hKe y (.inl (.inl (Expr.mem_tyFreeVars_schemeList hσ hy)))
+  have hKgrp : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K := fun y hy =>
+    hKe y (.inl (.inr hy))
+  have hKbody : ∀ y ∈ body.tyFreeVars, y ∈ K := fun y hy => hKe y (.inr hy)
+  cases hty with
+  | letRecAnn hlen hwf' hcofin heqc hbodyD =>
+    subst heqc
+    have hschB : ∀ σ ∈ schemes, Ty.BelowFvars Φ σ.body := fun σ hσ =>
+      Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hKsch σ hσ v hv))
+    have hctxSWF : CtxWF { ctx with env := schemes ++ ctx.env } := by
+      intro M hM; rcases List.mem_append.mp hM with hM | hM
+      · exact hwf' M hM
+      · exact hwf M hM
+    have hctxSbelow : CtxBelow Φ { ctx with env := schemes ++ ctx.env } := by
+      intro M hM; rcases List.mem_append.mp hM with hM | hM
+      · exact hschB M hM
+      · exact hbelow M hM
+    have hSschmap : schemes.map (Subst.onPolyTy S₀) = schemes := by
+      conv_rhs => rw [← List.map_id schemes]
+      refine List.map_congr_left (fun σ hσ => ?_)
+      obtain ⟨pcc, b⟩ := σ
+      simp only [Subst.onPolyTy, PolyTy.mk.injEq, true_and, id_eq]
+      exact Subst.onTy_eq_self_of_fixes (fun v hv => hKfix v (hKsch ⟨pcc, b⟩ hσ v hv))
+    have hctxS_eq : S₀.onCtx { ctx with env := schemes ++ ctx.env }
+        = { (S₀.onCtx ctx) with env := schemes ++ (S₀.onCtx ctx).env } := by
+      simp only [Subst.onCtx, Subst.onEnv, List.map_append]
+      rw [hSschmap]
+    obtain ⟨Φ₁, S₁, bindingsOut, R₁, hgroup, hag_group, hR₁lc, hR₁fix, hS₁K⟩ :=
+      InferRecGroupAnn.complete (bindings := bindings) (schemes := schemes) (R := S₀)
+        (ctx := { ctx with env := schemes ++ ctx.env }) K
+        hlen ihbindings hctxSWF hctxSbelow hwf' hS₀ hKΦ hKgrp hKsch hKfix
+        (fun p hp Xs hX => by rw [hctxS_eq]; exact hcofin p hp Xs hX)
+    have hgrle : Φ ≤ Φ₁ := InferRecGroupAnn.frontier_le hgroup
+    have hKgrpΦ : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ :=
+      fun y hy => hKΦ y (hKgrp y hy)
+    have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := InferRecGroupAnn.lc hgroup hctxSWF hwf'
+    have hS₁below : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 :=
+      InferRecGroupAnn.belowFvars hgroup hctxSbelow hschB hKgrpΦ
+    have hbodyWF : CtxWF (S₁.onCtx { ctx with env := schemes ++ ctx.env }) :=
+      Subst.onCtx_wf hS₁lc hctxSWF
+    have hbodybelow : CtxBelow Φ₁ (S₁.onCtx { ctx with env := schemes ++ ctx.env }) :=
+      Subst.onCtx_below hS₁below hgrle hctxSbelow
+    have hbodyctx_eq : R₁.onCtx (S₁.onCtx { ctx with env := schemes ++ ctx.env })
+        = S₀.onCtx { ctx with env := schemes ++ ctx.env } := by
+      rw [← Subst.onCtx_append]
+      exact Subst.onCtx_congr (fun v hv => (hag_group v hv).symm) hctxSbelow
+    have hbody'' : TypeOfHM (R₁.onCtx (S₁.onCtx { ctx with env := schemes ++ ctx.env })) body τ₀ := by
+      rw [hbodyctx_eq, hctxS_eq]; exact hbodyD
+    obtain ⟨Φ₂, S₂, eOut₂, τ₂, R₂, hbodyInf, hagb, htyb, hR₂lc, hR₂K, hS₂K⟩ :=
+      ihbody K hbodyWF hbodybelow hR₁lc (fun k hk => lt_of_lt_of_le (hKΦ k hk) hgrle)
+        hKbody hR₁fix hbody''
+    refine ⟨Φ₂, S₁ ++ S₂, _, τ₂, R₂,
+      Infer.letRecAnn hwf' hlen hgroup hbodyInf, ?_, htyb, hR₂lc, hR₂K, ?_⟩
+    · exact Subst.AgreesBelow.trans_append hgrle hag_group hS₁below hagb
+    · intro p hp
+      rcases List.mem_append.mp hp with hp | hp
+      · exact hS₁K p hp
+      · exact hS₂K p hp
 
 /-! ### Principality, assembled -/
 
@@ -16888,8 +16952,9 @@ theorem Infer.completeAt (e : Expr) : Infer.CompleteAt e := by
       simp only [Expr.size] at he; omega
     | letRecAnn schemes bindings body =>
       refine Infer.complete_letRecAnn ?_ (ih body (by simp only [Expr.size] at he; omega))
-      intro e' hbr
-      refine ih e' ?_
+      intro e' hbr Ys
+      refine ih (e'.openTyVars Ys) ?_
+      rw [Expr.size_openTyVars]
       have hb : ∀ (bs : List Expr), e' ∈ bs → e'.size ≤ Expr.sizeRecGroup bs := by
         intro bs
         induction bs with
