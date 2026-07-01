@@ -10223,7 +10223,39 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
             Ty.substFvars_eq_self_of_no_key (fun p hp hc => hSK p hp (hKe p.1 (.inl hc)))
           rw [h2, h1]) ?_ hbodyTy
       simp only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy, PolyTy.mkTrivial]
-  | app hf harg huni ihf iharg => sorry
+  | app hf harg huni ihf iharg =>
+    intro hctx hbelow K hKΦ hKe hSK
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append] at hKe
+    obtain ⟨hf_lc, hf_s⟩ := Infer.lc hf hctx
+    have hctx1 := Subst.onCtx_wf hf_s hctx
+    obtain ⟨harg_lc, harg_s⟩ := Infer.lc harg hctx1
+    have hf_below := Infer.belowFvars hf hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+    have hbelow1 := Subst.onCtx_below hf_below.2 (Infer.frontier_le hf) hbelow
+    have hs3 := huni.lc (Subst.onTy_lc harg_s hf_lc) (.arrow harg_lc ContainsBvarsUpTo.fvar)
+    have hf_sound := ihf hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+      (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
+    have harg_sound := iharg hctx1 hbelow1 K
+      (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hf))
+      (fun y hy => hKe y (.inr hy))
+      (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)))
+    have hueq := huni.unifies
+    simp only [Unifies, Subst.onTy_arrow] at hueq
+    have hffix : (f.substTyFvars S₂).substTyFvars S₃ = f := by
+      rw [← Expr.substTyFvars_append]
+      refine Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => ?_)
+      rcases List.mem_append.mp hp with h | h
+      · exact hSK p (List.mem_append_left _ (List.mem_append_right _ h)) (hKe p.1 (.inl hc))
+      · exact hSK p (List.mem_append_right _ h) (hKe p.1 (.inl hc))
+    have hargfix : arg.substTyFvars S₃ = arg :=
+      Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc =>
+        hSK p (List.mem_append_right _ hp) (hKe p.1 (.inr hc)))
+    have f2 := TypeOfHM.onSubst S₃ hs3 (TypeOfHM.onSubst S₂ harg_s hf_sound)
+    rw [hffix, hueq] at f2
+    have a1 := TypeOfHM.onSubst S₃ hs3 harg_sound
+    rw [hargfix] at a1
+    rw [Subst.onCtx_append, Subst.onCtx_append]
+    exact .app f2 a1
   | letIn hrhs hbody ihrhs ihbody => sorry
   | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody ihrhs ihbody => sorry
   | match_ hscrut hne hbranches ihscrut ihbranches => sorry
@@ -10233,12 +10265,12 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
     have _hgrp := ihgroup
     sorry
   | letRecAnn hwf hlen hgroup hbody ihgroup ihbody => sorry
-  | brNil => sorry
+  | brNil => intros; exact absurd (by assumption) (by simp)
   | brCons hlook hn huni0 hbody huni hrest ihbody ihrest => sorry
   | brWild hbody huni hrest ihbody ihrest => sorry
-  | grpNil => sorry
+  | grpNil => intros; exact absurd (by assumption) (by simp)
   | grpCons he huni hrest ihe ihrest => sorry
-  | grpAnnNil => sorry
+  | grpAnnNil => intros; exact ⟨[], fun p hp => absurd hp (by simp)⟩
   | grpAnnCons hΦN he huni hesc1 hesc2 hrest ihe ihrest => sorry
 
 /-- The principality property at `e`: for *any* declarative typing of `e` under
