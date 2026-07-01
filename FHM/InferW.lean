@@ -10009,7 +10009,10 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S brsOut}
     (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K)
     (hSK : ∀ p ∈ S, p.1 ∉ K) :
     ∀ p ∈ brs, TypeOfMatchBranch (S.onCtx ctx) p (S.onTy scrutTy) (S.onTy ρ) := by
-  sorry
+  cases h with
+  | nil => intro p hp; simp at hp
+  | cons hlook hn huni0 hbody huni hrest => sorry
+  | consWild hbody huni hrest => sorry
 
 theorem InferRecGroup.sourceSound {Φ ctx bindings targets Φ' S bindingsOut}
     (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut)
@@ -10019,7 +10022,9 @@ theorem InferRecGroup.sourceSound {Φ ctx bindings targets Φ' S bindingsOut}
     (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
     (hSK : ∀ p ∈ S, p.1 ∉ K) :
     ∀ p ∈ bindings.zip (targets.map S.onTy), TypeOfHM (S.onCtx ctx) p.1 p.2 := by
-  sorry
+  cases h with
+  | nil => intro p hp; simp at hp
+  | cons he huni hrest => sorry
 
 theorem InferRecGroupAnn.sourceSound {Φ ctx bindings schemes Φ' S bindingsOut}
     (h : InferRecGroupAnn Φ ctx bindings schemes Φ' S bindingsOut)
@@ -10032,7 +10037,9 @@ theorem InferRecGroupAnn.sourceSound {Φ ctx bindings schemes Φ' S bindingsOut}
     ∃ L : List Nat, ∀ p ∈ bindings.zip schemes,
       ∀ Xs, FreshNames L p.2.paramCount Xs →
         TypeOfHM (S.onCtx ctx) (p.1.openTyVars Xs) (p.2.openVars Xs) := by
-  sorry
+  cases h with
+  | nil => exact ⟨[], by intro p hp; simp at hp⟩
+  | cons hΦN hinfer huni hesc1 hesc2 hrest => sorry
 end
 
 /-- The principality property at `e`: for *any* declarative typing of `e` under
