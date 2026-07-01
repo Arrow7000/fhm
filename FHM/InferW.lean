@@ -10549,7 +10549,56 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
     · simp only [Subst.onCtx_append, Subst.onTy_append]
       exact hrest_sound p hp_rest
   | grpNil => intros; exact absurd (by assumption) (by simp)
-  | grpCons he huni hrest ihe ihrest => sorry
+  | grpCons he huni hrest ihe ihrest =>
+    expose_names
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at h_5
+    obtain ⟨hτ_lc, hS₁⟩ := Infer.lc he h
+    have hβ_lc : β.IsLC := h_2 β List.mem_cons_self
+    have hS₂ := huni.lc hτ_lc (Subst.onTy_lc hS₁ hβ_lc)
+    have hle1 := Infer.frontier_le he
+    have he_below := Infer.belowFvars he h_1 (fun y hy => h_4 y (h_5 y (.inl hy)))
+    have hβ_below : Ty.BelowFvars Φ_1 β := h_3 β List.mem_cons_self
+    have hS₁β := Subst.onTy_belowFvars he_below.2 (hβ_below.mono hle1)
+    have hS₂below := UnifyRel.belowFvars huni he_below.1 hS₁β
+    have hbelow2 := Subst.onCtx_below hS₂below (le_refl _) (Subst.onCtx_below he_below.2 hle1 h_1)
+    have hctx2 := Subst.onCtx_wf hS₂ (Subst.onCtx_wf hS₁ h)
+    have hS₃' : ∀ p ∈ S₃, p.2.IsLC := InferRecGroup.lc hrest hctx2
+      (fun b' hb' => by obtain ⟨b, hb, rfl⟩ := List.mem_map.mp hb'
+                        exact Subst.onTy_lc hS₂ (Subst.onTy_lc hS₁ (h_2 b (List.mem_cons_of_mem _ hb))))
+    have hrest_sound := ihrest hctx2 hbelow2
+      (fun b' hb' => by obtain ⟨b, hb, rfl⟩ := List.mem_map.mp hb'
+                        exact Subst.onTy_lc hS₂ (Subst.onTy_lc hS₁ (h_2 b (List.mem_cons_of_mem _ hb))))
+      (fun b' hb' => by obtain ⟨b, hb, rfl⟩ := List.mem_map.mp hb'
+                        exact Subst.onTy_belowFvars hS₂below
+                          (Subst.onTy_belowFvars he_below.2 ((h_3 b (List.mem_cons_of_mem _ hb)).mono hle1)))
+      K (fun k hk => lt_of_lt_of_le (h_4 k hk) hle1)
+      (fun y hy => h_5 y (.inr hy)) (fun p hp => h_6 p (List.mem_append_right _ hp))
+    simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at h_7
+    rcases h_7 with rfl | hp_rest
+    · rw [Subst.onCtx_append, Subst.onCtx_append, Subst.onTy_append, Subst.onTy_append]
+      have h0 := ihe h h_1 K h_4 (fun y hy => h_5 y (.inl hy))
+        (fun q hq => h_6 q (List.mem_append_left _ (List.mem_append_left _ hq)))
+      have hhead := TypeOfHM.onSubst S₃ hS₃' (TypeOfHM.onSubst S₂ hS₂ h0)
+      have hefix : (e_1.substTyFvars S₂).substTyFvars S₃ = e_1 := by
+        rw [← Expr.substTyFvars_append]
+        refine Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun q hq hc => ?_)
+        rcases List.mem_append.mp hq with hh | hh
+        · exact h_6 q (List.mem_append_left _ (List.mem_append_right _ hh)) (h_5 q.1 (Or.inl hc))
+        · exact h_6 q (List.mem_append_right _ hh) (h_5 q.1 (Or.inl hc))
+      rw [hefix] at hhead
+      have huni_eq := huni.unifies
+      simp only [Unifies] at huni_eq
+      rw [huni_eq] at hhead
+      exact hhead
+    · have hmap : List.map (Subst.onTy (S₁ ++ S₂ ++ S₃)) βs
+          = List.map (Subst.onTy S₃) (List.map (fun b => Subst.onTy S₂ (Subst.onTy S₁ b)) βs) := by
+        rw [List.map_map]
+        apply List.map_congr_left
+        intro b _
+        simp only [Function.comp_apply, Subst.onTy_append]
+      rw [hmap] at hp_rest
+      rw [Subst.onCtx_append, Subst.onCtx_append]
+      exact hrest_sound p hp_rest
   | grpAnnNil => intros; exact ⟨[], fun p hp => absurd hp (by simp)⟩
   | grpAnnCons hΦN he huni hesc1 hesc2 hrest ihe ihrest => sorry
 
