@@ -359,6 +359,24 @@ generalised. So a polymorphic self-application in the body must be accepted. -/
 #eval showType (.letRec [.lambda none (.var 0 [])] (.app (.var 0 []) (.var 0 [])))
 
 
+/-! ### Annotated polymorphic recursion referencing an OUTER scoped type variable
+
+The witness for nested-`letRecAnn` support: a `letRecAnn` scheme whose body mentions
+a type variable bound by an *enclosing* scope. Here the group binding `loop`'s
+annotation `a → a` refers to the outer `let`'s `∀ a`, i.e. a `bvar` past `loop`'s
+own (zero) parameters. This was previously *rejected* — `open`/`close` didn't descend
+into `letRecAnn` scheme bodies, so the outer `bvar` never resolved and failed
+`PolyTy.WF`; the elaborator now opens it to the enclosing skolem and closes it back,
+so the whole thing infers `∀ a. a → a`. -/
+
+-- let (g : ∀ a. a → a) = (let rec (loop : a → a) = λy. loop y in loop) in g   :  ∀ a. a → a
+#eval showType (.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+  (.letRecAnn [⟨0, .arrow (.bvar 0) (.bvar 0)⟩]
+     [.lambda none (.app (.var 1 []) (.var 0 []))]
+     (.var 0 []))
+  (.var 0 []))
+
+
 /-! ### Adversarial: where `letRec` is *supposed* to say no
 
 Monomorphic recursion is the whole point: a binding is NOT generalised *within its
