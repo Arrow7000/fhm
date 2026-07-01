@@ -1028,11 +1028,14 @@ theorem Expr.openTyVars_closeTyVars_self {Ys : List Nat} {e : Expr} (he : e.TyBv
     (e.closeTyVars Ys).openTyVars Ys = e :=
   Expr.openTyVarsAux_closeTyVarsAux_self e 0 he
 
-/-- A term with no `letRecAnn` nodes. In Stage 1 the `Infer` relation has no
-    `letRecAnn` rule, so every `Infer`-derived term satisfies this — which is what
-    discharges the only non-uniform case of the close-back freshness below (the
-    `letRecAnn` schemes are left untouched by `openTyVars`/`closeTyVars`, so closing
-    does not remove `Ys` from them). -/
+/-- A term with no `letRecAnn` nodes. This is a *sufficient* condition for the
+    close-back freshness kernel: a `letRecAnn`-free term has no untouched scheme
+    positions (`recAnnSchemeFreeVars_eq_nil_of_noRecAnn`), so closing back removes
+    every `Ys`. It is used by the `letRec` elaboration path, whose Λ-nest output
+    (`letRecElab`) is `letRecAnn`-free. The `letRecAnn` case itself — whose output
+    *does* contain a `letRecAnn` node — is instead handled by the general
+    `recAnnSchemeFreeVars`-based freshness kernel
+    (`openTyVars_closeTyVars_rename_of_fresh`), which subsumes this predicate. -/
 def Expr.NoRecAnn : Expr → Prop
   | .primLit _          => True
   | .lambda _ body      => body.NoRecAnn
@@ -1801,8 +1804,6 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Expr → Ty → Pro
     Infer Φ ctx (.primLit (.int n)) Φ [] (.primLit (.int n)) (.prim .int)
   | primLitNat {Φ ctx n} :
     Infer Φ ctx (.primLit (.nat n)) Φ [] (.primLit (.nat n)) (.prim .nat)
-  -- | primLitBool {Φ ctx b} :
-  --   Infer Φ ctx (.primLit (.bool b)) Φ [] (.primLit (.bool b)) (.prim .bool)
   | primLitStr {Φ ctx s} :
     Infer Φ ctx (.primLit (.str s)) Φ [] (.primLit (.str s)) (.prim .str)
   | lambda {Φ ctx ann paramTy body Φ₀ Φ' S bodyOut τb} :
@@ -1996,12 +1997,15 @@ inductive InferRecGroupAnn : Nat → Ctx → List Expr → List PolyTy → Nat �
 end
 
 
-/-! ### The elaborated output is `letRecAnn`-free
+/-! ### `NoRecAnn` preservation (for the unannotated-`letRec` elaboration path)
 
-`Infer` never produces a `letRecAnn` node (there is no `letRecAnn` rule in Stage 1),
-so every elaborated output `eOut` satisfies `NoRecAnn`. This is the hypothesis the
-close-back kernel (`Expr.openTyVars_closeTyVars_rename`) needs for the annotated
-binder soundness cases. -/
+The `Infer.letRecAnn` rule *does* emit a `letRecAnn` node, so not every elaborated
+output is `NoRecAnn`. But the unannotated-`letRec` elaboration nest (`letRecElab`)
+is `letRecAnn`-free (`Expr.letRecElabNest_noRecAnn`), so its close-back soundness
+can go through the `NoRecAnn`-gated close-back kernel
+(`Expr.openTyVars_closeTyVars_rename`). The genuine `letRecAnn` outputs instead use
+the general `recAnnSchemeFreeVars` freshness kernel. The lemmas below establish that
+`NoRecAnn` is preserved by the term operations used along that path. -/
 
 /-- `closeTyVarsAux` preserves `NoRecAnn`: it rebuilds every node shape unchanged
     (`letRecAnn` maps to `letRecAnn`, excluded by the hypothesis). -/
@@ -2335,7 +2339,6 @@ theorem Infer.frontier_le {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
   | primLitUnit => omega
   | primLitInt => omega
   | primLitNat => omega
-  -- | primLitBool => omega
   | primLitStr => omega
   | lambda hseed hbody => have := Infer.frontier_le hbody; have := hseed.le; omega
   | app hf harg _ => have := Infer.frontier_le hf; have := Infer.frontier_le harg; omega
@@ -2387,7 +2390,7 @@ end
 
 /-! ### Scoped-variable regime (replaces the old closed-annotation invariants)
 
-The closed-regime invariants `Infer.tyFreeVars_eq_nil` and the `sorry`-gated
+The closed-regime invariants `Infer.tyFreeVars_eq_nil` and the provisional
 `Infer.openTyVarsAux_eq_self` are gone. With D2 the bound expression is inferred
 *already opened* at the rigid skolems, so an accepted term's annotation free vars
 are no longer empty — they are the in-scope skolems. Soundness now threads an
@@ -2513,7 +2516,6 @@ theorem Infer.lc {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
   | primLitUnit => intro _; exact ⟨.prim, by simp⟩
   | primLitInt => intro _; exact ⟨.prim, by simp⟩
   | primLitNat => intro _; exact ⟨.prim, by simp⟩
-  -- | primLitBool => intro _; exact ⟨.prim, by simp⟩
   | primLitStr => intro _; exact ⟨.prim, by simp⟩
   | lambda hseed hbody =>
     intro hctx
@@ -3565,7 +3567,6 @@ theorem TypeOfElabHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
   | _, _, _, .primLitUnit => .prim
   | _, _, _, .primLitInt => .prim
   | _, _, _, .primLitNat => .prim
-  -- | _, _, _, .primLitBool => .prim
   | _, _, _, .primLitStr => .prim
   | _, _, _, .lambda hpc _ _ hbody => .arrow hpc (TypeOfElabHM.regular hbody)
   | _, _, _, .app hf _ => by
@@ -3613,7 +3614,6 @@ theorem Infer.belowFvars {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
   | primLitUnit => intro _ _; exact ⟨.prim, by simp⟩
   | primLitInt => intro _ _; exact ⟨.prim, by simp⟩
   | primLitNat => intro _ _; exact ⟨.prim, by simp⟩
-  -- | primLitBool => intro _ _; exact ⟨.prim, by simp⟩
   | primLitStr => intro _ _; exact ⟨.prim, by simp⟩
   | lambda hseed hbody =>
     intro hctx htfv
@@ -8055,7 +8055,6 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
   | primLitUnit => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primLitUnit
   | primLitInt => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primLitInt
   | primLitNat => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primLitNat
-  -- | primLitBool => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primLitBool
   | primLitStr => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primLitStr
   | lambda hseed hbody =>
     intro hctx hbelow K hKΦ hKe hSK
@@ -10140,9 +10139,8 @@ theorem Infer.rec_strong
     `letRecElab`). The `var` case uses `TypeOfHM.var`'s existential instantiation
     witness `(freshVars Φ pc).map (Ty.fvar ·)`.
 
-    NOTE: the cofinite/recursive arms (`lambda`/`app`/`letIn`/`letInAnn`/`match_`/
-    `letRec`/`letRecAnn`) mirror the corresponding (substantial) `Infer.sound` arms
-    and are currently `sorry`-scaffolded pending the backward-soundness port. -/
+    The cofinite/recursive arms (`lambda`/`app`/`letIn`/`letInAnn`/`match_`/
+    `letRec`/`letRecAnn`) mirror the corresponding (substantial) `Infer.sound` arms. -/
 theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
@@ -10882,7 +10880,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
         (fun y hy => hKe y (.inr hy)) hS₂K
       rw [hctxbridge] at hbodysound
       exact hbodysound
-  | brNil => intros; exact absurd (by assumption) (by simp)
+  | brNil => exact absurd (by assumption) (by simp)
   | brCons hlook hn huni0 hbody huni hrest ihbody ihrest =>
     expose_names
     have hΦhead : ∀ y ∈ body.tyFreeVars, y < Φ_1 := fun y hy => h_6 y (h_7 y (by
@@ -11654,7 +11652,6 @@ theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) :=
   | primLitUnit => exact ⟨Φ, [], _, _, S₀, .primLitUnit, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
   | primLitInt  => exact ⟨Φ, [], _, _, S₀, .primLitInt,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
   | primLitNat  => exact ⟨Φ, [], _, _, S₀, .primLitNat,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
-  -- | primLitBool => exact ⟨Φ, [], _, S₀, .primLitBool, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
   | primLitStr  => exact ⟨Φ, [], _, _, S₀, .primLitStr,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
 
 /-! ### Injective renaming of free type variables (principality binder cases)
@@ -13425,8 +13422,8 @@ def PolyTy.Generalizes (M' M : PolyTy) : Prop :=
 
 /-- Replacing a context scheme `M` by a more general `M'` preserves `TypeOfHM`.
     Direct port of `TypeOfElabHM.weaken_scheme`; the weakened-position `var` case
-    (sorry'd for `TypeOfElabHM` since the stored `tyArgs` instantiate the OLD scheme)
-    **dissolves** here: `TypeOfHM.var`'s instantiation witness is existential, so
+    (which would be unprovable for `TypeOfElabHM`, since the stored `tyArgs` instantiate
+    the OLD scheme) **dissolves** here: `TypeOfHM.var`'s instantiation witness is existential, so
     `hgen` supplies a fresh witness for `M'` while the term keeps its decoration. -/
 theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : PolyTy}
     {e : Expr} {τ : Ty}
@@ -15022,7 +15019,6 @@ theorem Infer.complete' {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
   | primLitUnit => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | primLitInt  => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | primLitNat  => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
-  -- | primLitBool => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | primLitStr  => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | var hlook =>
     obtain ⟨_, _, _, _, R, hinf, hag, hfac, hRlc, hRfix, _⟩ :=
@@ -17830,7 +17826,6 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
   | .primLit .unit => some ⟨(Φ, [], .primLit .unit, .prim .unit), .primLitUnit, by simp⟩
   | .primLit (.int n) => some ⟨(Φ, [], .primLit (.int n), .prim .int), .primLitInt, by simp⟩
   | .primLit (.nat n) => some ⟨(Φ, [], .primLit (.nat n), .prim .nat), .primLitNat, by simp⟩
-  -- | .primLit (.bool b) => some ⟨(Φ, [], .primLit (.bool b), .prim .bool), .primLitBool, by simp⟩
   | .primLit (.str s) => some ⟨(Φ, [], .primLit (.str s), .prim .str), .primLitStr, by simp⟩
   | .lambda none body =>
       match inferCore K (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } body with
@@ -18530,7 +18525,6 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx
   | primLitUnit => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | primLitInt => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | primLitNat => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
-  -- | primLitBool => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | primLitStr => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | lambda hseed hbody =>
     intro hhi hctx htfv
@@ -19825,8 +19819,7 @@ theorem inferRecGroupCore_complete : ∀ (bindings : List Expr),
     cases h
     simp [inferRecGroupCore]
   | cons e rest ih =>
-    intro ihbr
-    intro Φ ctx targets Φ' S bindingsOut K hwf hbelow htlc htbelow hKΦ hKbr hSK h
+    intro ihbr Φ ctx targets Φ' S bindingsOut K hwf hbelow htlc htbelow hKΦ hKbr hSK h
     obtain ⟨β, βs, rfl⟩ : ∃ β βs, targets = β :: βs := by cases h with | cons => exact ⟨_, _, rfl⟩
     have hKbody : ∀ y ∈ e.tyFreeVars, y ∈ K := fun y hy => hKbr y (by
       simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]; exact Or.inl hy)
@@ -19924,8 +19917,7 @@ theorem inferRecGroupAnnCore_complete : ∀ (bindings : List Expr),
     cases h
     simp [inferRecGroupAnnCore]
   | cons e rest ih =>
-    intro ihbr
-    intro Φ ctx schemes Φ' S bindingsOut K hwf hbelow hschemesWF hKΦ hKbr hKsch hSK h
+    intro ihbr Φ ctx schemes Φ' S bindingsOut K hwf hbelow hschemesWF hKΦ hKbr hKsch hSK h
     obtain ⟨σ, schtl, rfl⟩ : ∃ σ schtl, schemes = σ :: schtl := by
       cases h with | cons => exact ⟨_, _, rfl⟩
     have hσwf : σ.WF := hschemesWF σ List.mem_cons_self

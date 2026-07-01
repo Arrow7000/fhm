@@ -2157,9 +2157,6 @@ inductive TypeOfElabHM : Ctx → Expr → Ty → Prop
   | primLitNat :
     TypeOfElabHM ctx (.primLit (.nat n)) (.prim .nat)
 
-  -- | primLitBool :
-  --   TypeOfElabHM ctx (.primLit (.bool b)) (.prim .bool)
-
   | primLitStr :
     TypeOfElabHM ctx (.primLit (.str s)) (.prim .str)
 
@@ -4038,7 +4035,6 @@ theorem TypeOfElabHM.rec_strong
     (primLitUnit : ∀ {ctx : Ctx}, motive ctx (.primLit .unit) (.prim .unit) .primLitUnit)
     (primLitInt : ∀ {ctx : Ctx} {n : ℤ}, motive ctx (.primLit (.int n)) (.prim .int) .primLitInt)
     (primLitNat : ∀ {ctx : Ctx} {n : ℕ}, motive ctx (.primLit (.nat n)) (.prim .nat) .primLitNat)
-    -- (primLitBool : ∀ {ctx : Ctx} {b : Bool}, motive ctx (.primLit (.bool b)) (.prim .bool) .primLitBool)
     (primLitStr : ∀ {ctx : Ctx} {s : String}, motive ctx (.primLit (.str s)) (.prim .str) .primLitStr)
     (lambda : ∀ {paramTy : Ty} {ann : Option Ty} {bodyCtx ctx : Ctx} {body : Expr} {bodyTy : Ty}
       (hpc : ContainsBvarsUpTo 0 paramTy) (hann : ∀ T, ann = some T → paramTy = T)
@@ -4120,7 +4116,6 @@ theorem TypeOfElabHM.rec_strong
   | primLitUnit => exact primLitUnit
   | primLitInt => exact primLitInt
   | primLitNat => exact primLitNat
-  -- | primLitBool => exact primLitBool
   | primLitStr => exact primLitStr
   | lambda hpc hann heq hbody ihbody => exact lambda hpc hann heq hbody ihbody
   | app hf hinput ihf ihinput => exact app hf hinput ihf ihinput
@@ -4416,7 +4411,6 @@ theorem TypeOfElabHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc :
   | primLitUnit => exact .primLitUnit
   | primLitInt => exact .primLitInt
   | primLitNat => exact .primLitNat
-  -- | primLitBool => exact .primLitBool
   | primLitStr => exact .primLitStr
   | app _ _ ihf ihinput =>
     simp only [Expr.substTyFvar]
@@ -4650,7 +4644,6 @@ theorem TypeOfElabHM.weaken_env
   | primLitUnit => intro env_pre' _; exact .primLitUnit
   | primLitInt => intro env_pre' _; exact .primLitInt
   | primLitNat => intro env_pre' _; exact .primLitNat
-  -- | primLitBool => intro env_pre' _; exact .primLitBool
   | primLitStr => intro env_pre' _; exact .primLitStr
   | app hf hinput ihf ihinput =>
     intro env_pre' hctx

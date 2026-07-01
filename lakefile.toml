@@ -4,22 +4,16 @@ defaultTargets = ["FHM"]
 
 [[lean_lib]]
 name = "FHM"
-# Default build target = the modules that currently compile against Core.
+# Default build target = the verified stack.
 # Excluded (present in the tree but not built by default):
-#   FHM.ConstraintTypeSystem  -- stale vs current Core (pre-fst/snd refactor)
-#   FHM.InferW / FHM.Examples / FHM.SpikeLetRecAnn  -- TEMPORARY: Core now has the
-#     `letRecAnn` constructor, but Algorithm-W inference for it is not implemented
-#     yet, so InferW's completeness theorem (`Infer.completeAt`) can't cover the
-#     new case (Examples + SpikeLetRecAnn import InferW). Re-add when inference
-#     lands as part of the type-passing migration.
-# (Own-variable polymorphic recursion uses a scheme-relative `letRecAnn` rule +
-#  depth-shielded `instTyAux`/`openTyVarsAux`; validated by the genuine witnesses
-#  `LetRecAnnSmokeTest.ownVarSelfRec_typeable` (Core) and `SpikeC.mutual_typeable`.)
+#   FHM.ConstraintTypeSystem  -- stale vs current Core (pre-fst/snd refactor); kept for reference
 roots = [
   "FHM.Core",
   "FHM.SurfaceLang",
   "FHM.Pretty",
   "FHM.SpikeC",
+  "FHM.InferW",
+  "FHM.Examples",
 ]
 
 [[require]]
