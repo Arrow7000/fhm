@@ -20315,6 +20315,87 @@ theorem inferCore_complete_letRec {bindings : List Expr} {body : Expr}
       rw [inferCore]
       simp only [hgroupeq, hbodyeq, Option.isSome_some]
 
+/-- Function-completeness, annotated-recursion-group case. Mirrors
+    `inferCore_complete_letRec` but the schemes are given and rigid: the executable
+    group `inferRecGroupAnnCore` runs at the schemes-extended context, factored via
+    `InferRecGroupAnn.complete'`, and the body sees the same rigid schemes (no
+    `genGroup`/retype). -/
+theorem inferCore_complete_letRecAnn {schemes : List PolyTy} {bindings : List Expr} {body : Expr}
+    (ihbindings : ∀ e ∈ bindings, ∀ Ys, InferCoreComplete (e.openTyVars Ys))
+    (ihbody : InferCoreComplete body) :
+    InferCoreComplete (.letRecAnn schemes bindings body) := by
+  intro Φ ctx Φ' S eOut τ K hwf hbelow hKΦ hKe hSK h
+  have happ := Infer.sourceSound h hwf hbelow K hKΦ hKe hSK
+  have hSlc : ∀ p ∈ S, p.2.IsLC := (Infer.lc h hwf).2
+  cases h with
+  | @letRecAnn _ _ _ _ _ Φ₁ Φ₂ S₁ S₂ bindingsOut bodyOut _ hwf' hlen hgroup hbody =>
+    cases happ with
+    | letRecAnn hlen' hwf'' hcofin heqc hbodyD =>
+      subst heqc
+      simp only [Expr.tyFreeVars, List.mem_append] at hKe
+      have hKsch : ∀ σ ∈ schemes, ∀ y ∈ σ.body.freeVars, y ∈ K := fun σ hσ y hy =>
+        hKe y (.inl (.inl (Expr.mem_tyFreeVars_schemeList hσ hy)))
+      have hKgrp : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K := fun y hy =>
+        hKe y (.inl (.inr hy))
+      have hKbody : ∀ y ∈ body.tyFreeVars, y ∈ K := fun y hy => hKe y (.inr hy)
+      have hKgrpΦ : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y < Φ :=
+        fun y hy => hKΦ y (hKgrp y hy)
+      have hKfixS : ∀ k ∈ K, (S₁ ++ S₂).onTy (.fvar k) = .fvar k :=
+        fun k hk => Subst.fixes_fvar_of_avoids hSK hk
+      have hSK₁ : ∀ p ∈ S₁, p.1 ∉ K := fun p hp => hSK p (List.mem_append_left _ hp)
+      have hschB : ∀ σ ∈ schemes, Ty.BelowFvars Φ σ.body := fun σ hσ =>
+        Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hKsch σ hσ v hv))
+      have hctxSWF : CtxWF { ctx with env := schemes ++ ctx.env } := by
+        intro M hM; rcases List.mem_append.mp hM with hM | hM
+        · exact hwf' M hM
+        · exact hwf M hM
+      have hctxSbelow : CtxBelow Φ { ctx with env := schemes ++ ctx.env } := by
+        intro M hM; rcases List.mem_append.mp hM with hM | hM
+        · exact hschB M hM
+        · exact hbelow M hM
+      have hSschmap : schemes.map (Subst.onPolyTy (S₁ ++ S₂)) = schemes := by
+        conv_rhs => rw [← List.map_id schemes]
+        refine List.map_congr_left (fun σ hσ => ?_)
+        obtain ⟨pcc, b⟩ := σ
+        simp only [Subst.onPolyTy, PolyTy.mk.injEq, true_and, id_eq]
+        exact Subst.onTy_eq_self_of_fixes (fun v hv => hKfixS v (hKsch ⟨pcc, b⟩ hσ v hv))
+      have hctxS_eq : (S₁ ++ S₂).onCtx { ctx with env := schemes ++ ctx.env }
+          = { ((S₁ ++ S₂).onCtx ctx) with env := schemes ++ ((S₁ ++ S₂).onCtx ctx).env } := by
+        simp only [Subst.onCtx, Subst.onEnv, List.map_append]
+        rw [hSschmap]
+      -- STEP 1: the executable annotated group succeeds.
+      have hgroupsome := inferRecGroupAnnCore_complete bindings ihbindings K
+        hctxSWF hctxSbelow hwf' hKΦ hKgrp hKsch hSK₁ hgroup
+      obtain ⟨⟨⟨Φ₁', S₁', bsOut'⟩, hgroup', _⟩, hgroupeq⟩ := Option.isSome_iff_exists.mp hgroupsome
+      have hgle' : Φ ≤ Φ₁' := InferRecGroupAnn.frontier_le hgroup'
+      have hS₁'lc : ∀ p ∈ S₁', p.2.IsLC := InferRecGroupAnn.lc hgroup' hctxSWF hwf'
+      have hS₁'below : ∀ p ∈ S₁', Ty.BelowFvars Φ₁' p.2 :=
+        InferRecGroupAnn.belowFvars hgroup' hctxSbelow hschB hKgrpΦ
+      have hwf₁' : CtxWF (S₁'.onCtx { ctx with env := schemes ++ ctx.env }) :=
+        Subst.onCtx_wf hS₁'lc hctxSWF
+      have hbelow₁' : CtxBelow Φ₁' (S₁'.onCtx { ctx with env := schemes ++ ctx.env }) :=
+        Subst.onCtx_below hS₁'below hgle' hctxSbelow
+      -- STEP 2: factor the executable group via `InferRecGroupAnn.complete'`.
+      obtain ⟨R₁, hag_group, hR₁lc, hR₁fix⟩ :=
+        InferRecGroupAnn.complete' hgroup' hctxSWF hctxSbelow hwf' hSlc K hKΦ hKgrp hKsch hKfixS
+          (fun p hp Xs hX => by rw [hctxS_eq]; exact hcofin p hp Xs hX)
+      have hctxeq : R₁.onCtx (S₁'.onCtx { ctx with env := schemes ++ ctx.env })
+          = (S₁ ++ S₂).onCtx { ctx with env := schemes ++ ctx.env } := by
+        rw [← Subst.onCtx_append]
+        exact Subst.onCtx_congr (fun v hv => (hag_group v hv).symm) hctxSbelow
+      have hbody'' : TypeOfHM (R₁.onCtx (S₁'.onCtx { ctx with env := schemes ++ ctx.env })) body τ := by
+        rw [hctxeq, hctxS_eq]; exact hbodyD
+      -- STEP 3: the body `inferCore` succeeds at the group result state.
+      obtain ⟨_, _, _, _, _, hbodyderiv, _, _, _, _, hSbK⟩ :=
+        Infer.completeAt body K hwf₁' hbelow₁' hR₁lc
+          (fun k hk => lt_of_lt_of_le (hKΦ k hk) hgle') hKbody hR₁fix hbody''
+      have hbodysome := ihbody K hwf₁' hbelow₁'
+        (fun k hk => lt_of_lt_of_le (hKΦ k hk) hgle') hKbody hSbK hbodyderiv
+      obtain ⟨⟨⟨Φ₂', S₂', eOut₂', τ₂''⟩, hinfbody', _⟩, hbodyeq⟩ := Option.isSome_iff_exists.mp hbodysome
+      rw [inferCore]
+      rw [dif_pos (fun σ hσ => PolyTy.wf_iff_bvarsBelow.mpr (hwf' σ hσ)), dif_pos hlen]
+      simp only [hgroupeq, hbodyeq, Option.isSome_some]
+
 /-- **`inferCore` completeness, assembled.** For every expression, a (WF,
     frontier-bounded) `Infer` derivation entails that `inferCore` succeeds. -/
 theorem inferCore_complete : ∀ e, InferCoreComplete e := by
@@ -20377,9 +20458,22 @@ theorem inferCore_complete : ∀ e, InferCoreComplete e := by
       have hble : e'.size ≤ Expr.sizeRecGroup bindings := hb bindings hbr
       simp only [Expr.size] at he; omega
     | letRecAnn schemes bindings body =>
-      -- RESERVED: executable completeness for annotated recursion groups depends on
-      -- the (reserved) `inferRecGroupAnnCore`-completeness; kept `sorry` for the design pass.
-      sorry
+      refine inferCore_complete_letRecAnn ?_ (ih body (by simp only [Expr.size] at he; omega))
+      intro e' hbr Ys
+      refine ih (e'.openTyVars Ys) ?_
+      rw [Expr.size_openTyVars]
+      have hb : ∀ (bs : List Expr), e' ∈ bs → e'.size ≤ Expr.sizeRecGroup bs := by
+        intro bs
+        induction bs with
+        | nil => intro hbs; simp at hbs
+        | cons hd tl ihtl =>
+          intro hbs
+          simp only [Expr.sizeRecGroup]
+          rcases List.mem_cons.mp hbs with h | h
+          · subst h; omega
+          · have := ihtl h; omega
+      have hble : e'.size ≤ Expr.sizeRecGroup bindings := hb bindings hbr
+      simp only [Expr.size] at he; omega
 
 /-- **`infer` completeness.** Algorithm W succeeds whenever the expression is
     declaratively typeable under a well-formed, frontier-bounded context. -/
