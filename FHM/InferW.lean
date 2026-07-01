@@ -19900,6 +19900,169 @@ theorem inferRecGroupCore_complete : ∀ (bindings : List Expr),
     rw [inferRecGroupCore]
     simp only [heinfer, heuni, herest, Option.isSome_some]
 
+/-- Function-completeness for an annotated recursion group: given a WF,
+    frontier-bounded `InferRecGroupAnn` derivation, `inferRecGroupAnnCore` succeeds.
+    The executable opens each binding at its current-frontier block `freshVars Φ pc`;
+    the per-binding `hesc2` escape is discharged via `InferRecGroupAnn.block_fresh`. -/
+def InferRecGroupAnnCoreComplete (bindings : List Expr) : Prop :=
+  ∀ {Φ : Nat} {ctx : Ctx} {schemes : List PolyTy} {Φ' : Nat} {S : Subst}
+    {bindingsOut : List Expr} (K : List Nat),
+    CtxWF ctx → CtxBelow Φ ctx → (∀ σ ∈ schemes, σ.WF) →
+    (∀ k ∈ K, k < Φ) → (∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K) →
+    (∀ σ ∈ schemes, ∀ y ∈ σ.body.freeVars, y ∈ K) →
+    (∀ p ∈ S, p.1 ∉ K) →
+    InferRecGroupAnn Φ ctx bindings schemes Φ' S bindingsOut →
+    (inferRecGroupAnnCore K Φ ctx bindings schemes).isSome
+
+theorem inferRecGroupAnnCore_complete : ∀ (bindings : List Expr),
+    (∀ e ∈ bindings, ∀ Ys, InferCoreComplete (e.openTyVars Ys)) →
+    InferRecGroupAnnCoreComplete bindings := by
+  intro bindings
+  induction bindings with
+  | nil =>
+    intro _ Φ ctx schemes Φ' S bindingsOut K _ _ _ _ _ _ _ h
+    cases h
+    simp [inferRecGroupAnnCore]
+  | cons e rest ih =>
+    intro ihbr
+    intro Φ ctx schemes Φ' S bindingsOut K hwf hbelow hschemesWF hKΦ hKbr hKsch hSK h
+    obtain ⟨σ, schtl, rfl⟩ : ∃ σ schtl, schemes = σ :: schtl := by
+      cases h with | cons => exact ⟨_, _, rfl⟩
+    have hσwf : σ.WF := hschemesWF σ List.mem_cons_self
+    have hKrhs : ∀ y ∈ e.tyFreeVars, y ∈ K := fun y hy =>
+      hKbr y (Expr.mem_recGroupTyFreeVars_of List.mem_cons_self hy)
+    have hKσ : ∀ y ∈ σ.body.freeVars, y ∈ K := hKsch σ List.mem_cons_self
+    have hKrest : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars rest, y ∈ K := fun y hy =>
+      hKbr y (by simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append]; exact Or.inr hy)
+    have hKschtl : ∀ σ' ∈ schtl, ∀ y ∈ σ'.body.freeVars, y ∈ K := fun σ' hσ' y hy =>
+      hKsch σ' (List.mem_cons_of_mem _ hσ') y hy
+    have hSlc : ∀ p ∈ S, p.2.IsLC := InferRecGroupAnn.lc h hwf hschemesWF
+    have hschB : ∀ v ∈ σ.body.freeVars, v < Φ := fun v hv => hKΦ v (hKσ v hv)
+    have hschBall : ∀ σ' ∈ (σ :: schtl), ∀ v ∈ σ'.body.freeVars, v < Φ :=
+      fun σ' hσ' v hv => hKΦ v (hKsch σ' hσ' v hv)
+    have hbindBall : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars (e :: rest), y < Φ :=
+      fun y hy => hKΦ y (hKbr y hy)
+    -- declarative per-binding cofinite typings + the executable block-freshness bridge
+    obtain ⟨L, hcofin⟩ := InferRecGroupAnn.sourceSound h hwf hbelow hschemesWF K hKΦ hKbr hKsch hSK
+    obtain ⟨hAdom, hBenv⟩ := InferRecGroupAnn.block_fresh h hbelow hschBall hbindBall
+    have hbelowN : CtxBelow (Φ + σ.paramCount) ctx := fun M hM => (hbelow M hM).mono (by omega)
+    have hKΦ' : ∀ k ∈ K ++ freshVars Φ σ.paramCount, k < Φ + σ.paramCount := by
+      intro k hk; rcases List.mem_append.mp hk with hk | hk
+      · have := hKΦ k hk; omega
+      · have := freshVars_lt k hk; omega
+    have hKe' : ∀ y ∈ (e.openTyVars (freshVars Φ σ.paramCount)).tyFreeVars,
+        y ∈ K ++ freshVars Φ σ.paramCount := by
+      intro y hy
+      rcases Expr.tyFreeVars_openTyVars hy with h' | h'
+      · exact List.mem_append_left _ (hKrhs y h')
+      · exact List.mem_append_right _ h'
+    have hKfix' : ∀ k ∈ K ++ freshVars Φ σ.paramCount, S.onTy (.fvar k) = .fvar k := by
+      intro k hk; rcases List.mem_append.mp hk with hk | hk
+      · exact Subst.fixes_fvar_of_avoids hSK hk
+      · exact Ty.substFvars_eq_self_of_no_key (fun p hp hc => by
+          simp only [Ty.freeVars, List.mem_singleton] at hc
+          exact hAdom k hk (hc ▸ List.mem_map.mpr ⟨p, hp, rfl⟩))
+    have htyYs : TypeOfHM (S.onCtx ctx) (e.openTyVars (freshVars Φ σ.paramCount))
+        (σ.openVars (freshVars Φ σ.paramCount)) :=
+      typeOfHM_at_block (freshVars_length _ _)
+        (hcofin (e, σ) (by rw [List.zip_cons_cons]; exact List.mem_cons_self))
+    obtain ⟨_, _, _, _, _, Drhs, _, _, _, _, hSrhsK⟩ :=
+      Infer.completeAt (e.openTyVars (freshVars Φ σ.paramCount)) (K ++ freshVars Φ σ.paramCount)
+        hwf hbelowN hSlc hKΦ' hKe' hKfix' htyYs
+    have hrhsSome := ihbr e List.mem_cons_self (freshVars Φ σ.paramCount) (K ++ freshVars Φ σ.paramCount)
+      hwf hbelowN hKΦ' hKe' hSrhsK Drhs
+    obtain ⟨⟨⟨Φ₁e, S₁e, eOut₁e, τ₁e⟩, hrhse, hav₁⟩, herhs⟩ := Option.isSome_iff_exists.mp hrhsSome
+    obtain ⟨R₁, haga, htya, hR₁lc, hR₁K⟩ :=
+      Infer.complete' hrhse hwf hbelowN hSlc (K ++ freshVars Φ σ.paramCount) hKΦ' hKe' hKfix' htyYs
+    have hτ₁elc : τ₁e.IsLC := (Infer.lc hrhse hwf).1
+    have hS₁elc : ∀ p ∈ S₁e, p.2.IsLC := (Infer.lc hrhse hwf).2
+    have hle1 : Φ + σ.paramCount ≤ Φ₁e := Infer.frontier_le hrhse
+    have hbf := Infer.belowFvars hrhse hbelowN (fun y hy => hKΦ' y (hKe' y hy))
+    have hbelowτ₁ : Ty.BelowFvars Φ₁e τ₁e := hbf.1
+    have hbelowS₁ : ∀ p ∈ S₁e, Ty.BelowFvars Φ₁e p.2 := hbf.2
+    have hBlc : (σ.openVars (freshVars Φ σ.paramCount)).IsLC := PolyTy.openVars_isLC hσwf (by simp)
+    have hR₁_K : ∀ k ∈ K, R₁.onTy (.fvar k) = .fvar k :=
+      fun k hk => hR₁K k (List.mem_append_left _ hk)
+    have hR₁_Ys : ∀ Y ∈ freshVars Φ σ.paramCount, R₁.onTy (.fvar Y) = .fvar Y :=
+      fun Y hY => hR₁K Y (List.mem_append_right _ hY)
+    have hUuni : Unifies R₁ τ₁e (σ.openVars (freshVars Φ σ.paramCount)) := by
+      show R₁.onTy τ₁e = R₁.onTy (σ.openVars (freshVars Φ σ.paramCount))
+      rw [← htya]
+      refine (Subst.onTy_eq_self_of_fixes (fun z hz => ?_)).symm
+      rcases Ty.freeVars_openVars_subset z hz with h' | h'
+      · exact hR₁_K z (hKσ z h')
+      · exact hR₁_Ys z h'
+    have huniSome :
+        (unifyCoreK (K ++ freshVars Φ σ.paramCount) τ₁e (σ.openVars (freshVars Φ σ.paramCount))).isSome :=
+      unifyCoreK_complete hτ₁elc hBlc hR₁lc hUuni hR₁K
+    obtain ⟨⟨Schke, hSchke, havSchk⟩, heuni⟩ := Option.isSome_iff_exists.mp huniSome
+    have hesc1 : ∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁e ++ Schke).map Prod.fst := by
+      intro y hy hc
+      obtain ⟨p, hp, hpy⟩ := List.mem_map.mp hc
+      have hyKYs : p.1 ∈ K ++ freshVars Φ σ.paramCount := by rw [hpy]; exact List.mem_append_right _ hy
+      rcases List.mem_append.mp hp with hp | hp
+      · exact hav₁ p hp hyKYs
+      · exact havSchk p hp hyKYs
+    obtain ⟨V, hVeq, hVlc, hVK⟩ := UnifyRel.greatest_K hSchke R₁ hR₁lc hUuni hR₁K
+    have hagSchkV : Subst.AgreesBelow Φ S (S₁e ++ Schke ++ V) := by
+      intro v hv
+      calc S.onTy (Ty.fvar v)
+          = (S₁e ++ R₁).onTy (Ty.fvar v) := haga v (by omega)
+        _ = R₁.onTy (S₁e.onTy (Ty.fvar v)) := by rw [Subst.onTy_append]
+        _ = V.onTy (Schke.onTy (S₁e.onTy (Ty.fvar v))) := hVeq _
+        _ = (S₁e ++ Schke ++ V).onTy (Ty.fvar v) := by rw [Subst.onTy_append, Subst.onTy_append]
+    have hmain : V.onCtx (Schke.onCtx (S₁e.onCtx ctx)) = S.onCtx ctx := by
+      have hc : (S₁e ++ Schke ++ V).onCtx ctx = S.onCtx ctx :=
+        Subst.onCtx_congr (fun v hv => (hagSchkV v hv).symm) hbelow
+      rwa [Subst.onCtx_append, Subst.onCtx_append] at hc
+    have hesc2 : ∀ y ∈ freshVars Φ σ.paramCount,
+        y ∉ (Schke.onCtx (S₁e.onCtx ctx)).env.freeVars := by
+      intro Y hY hmem
+      have hVfixY : V.onTy (Ty.fvar Y) = Ty.fvar Y := hVK Y (List.mem_append_right _ hY)
+      obtain ⟨M, hM, hYM⟩ := Env.mem_freeVars_iff.mp hmem
+      have hgo : Y ∈ (V.onCtx (Schke.onCtx (S₁e.onCtx ctx))).env.freeVars := by
+        refine Env.mem_freeVars_iff.mpr ⟨V.onPolyTy M, ?_, ?_⟩
+        · simp only [Subst.onCtx, Subst.onEnv]; exact List.mem_map.mpr ⟨M, hM, rfl⟩
+        · simp only [Subst.onPolyTy]
+          exact Ty.mem_freeVars_onTy_iff.mpr ⟨Y, hYM, by rw [hVfixY]; simp [Ty.freeVars]⟩
+      rw [hmain] at hgo
+      exact hBenv Y hY hgo
+    -- recurse on the rest at the executable's threaded context, via the group producer
+    have hSchke_lc : ∀ p ∈ Schke, p.2.IsLC := UnifyRel.lc hSchke hτ₁elc hBlc
+    have hwf₁ := Subst.onCtx_wf hS₁elc hwf
+    have hwfSchk : CtxWF (Schke.onCtx (S₁e.onCtx ctx)) := Subst.onCtx_wf hSchke_lc hwf₁
+    have hσbelow : Ty.BelowFvars Φ₁e σ.body :=
+      Ty.BelowFvars.of_freeVars_lt (fun v hv => by have := hschB v hv; omega)
+    have hσopen' : Ty.BelowFvars Φ₁e (σ.openVars (freshVars Φ σ.paramCount)) :=
+      Ty.openVars_belowFvars hσbelow (fun x hx => by have := freshVars_lt x hx; omega)
+    have hSchkbelow : ∀ p ∈ Schke, Ty.BelowFvars Φ₁e p.2 :=
+      UnifyRel.belowFvars hSchke hbelowτ₁ hσopen'
+    have hbelowSchk : CtxBelow Φ₁e (Schke.onCtx (S₁e.onCtx ctx)) :=
+      Subst.onCtx_below hSchkbelow (le_refl _) (Subst.onCtx_below hbelowS₁ hle1 hbelowN)
+    have hdecl_rest : ∀ p ∈ rest.zip schtl, ∀ Xs, FreshNames L p.2.paramCount Xs →
+        TypeOfHM (V.onCtx (Schke.onCtx (S₁e.onCtx ctx))) (p.1.openTyVars Xs) (p.2.openVars Xs) := by
+      intro p hp Xs hX
+      rw [hmain]
+      exact hcofin p (by rw [List.zip_cons_cons]; exact List.mem_cons_of_mem _ hp) Xs hX
+    have hlenrest : rest.length = schtl.length := by
+      have := InferRecGroupAnn.length_eq h; simpa using this
+    obtain ⟨_, S₂g, _, _, hinfrest, _, _, _, hS₂gK⟩ :=
+      InferRecGroupAnn.complete (bindings := rest) (schemes := schtl) (R := V)
+        (ctx := Schke.onCtx (S₁e.onCtx ctx)) K
+        hlenrest (fun e' _ Ys => Infer.completeAt (e'.openTyVars Ys))
+        hwfSchk hbelowSchk (fun σ' hσ' => hschemesWF σ' (List.mem_cons_of_mem _ hσ')) hVlc
+        (fun k hk => lt_of_lt_of_le (hKΦ k hk) (le_trans (Nat.le_add_right Φ _) hle1))
+        hKrest hKschtl (fun k hk => hVK k (List.mem_append_left _ hk)) hdecl_rest
+    have hrestSome := ih (fun e' he' Ys => ihbr e' (List.mem_cons_of_mem _ he') Ys) K
+      hwfSchk hbelowSchk (fun σ' hσ' => hschemesWF σ' (List.mem_cons_of_mem _ hσ'))
+      (fun k hk => lt_of_lt_of_le (hKΦ k hk) (le_trans (Nat.le_add_right Φ _) hle1))
+      hKrest hKschtl hS₂gK hinfrest
+    obtain ⟨⟨⟨Φ_r, S_r, restOut_r⟩, hrest', _⟩, herest⟩ := Option.isSome_iff_exists.mp hrestSome
+    rw [inferRecGroupAnnCore]
+    simp only [herhs, heuni]
+    rw [dif_pos hesc1, dif_pos hesc2]
+    simp only [herest, Option.isSome_some]
+
 theorem inferCore_complete_match {scrut : Expr} {branches : List (MatchPattern × Expr)}
     (ihscrut : InferCoreComplete scrut)
     (ihbranches : ∀ pat e, (pat, e) ∈ branches → InferCoreComplete e) :
