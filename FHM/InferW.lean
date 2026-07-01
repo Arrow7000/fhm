@@ -19655,10 +19655,16 @@ theorem principalType_iff {ctors : CtorEnv} {e : Expr} :
   · intro h
     obtain ⟨τ, hτ⟩ := Option.isSome_iff_exists.mp h
     exact ⟨τ, principalType_sound hτ⟩
-  · -- RESERVED (C3): re-point `hτ` (LHS `TypeOfHM`) to `TypeOfHM`
-    -- (then `completeAt` + `inferCore_complete` apply directly).
-    rintro ⟨τ, hτ⟩
-    sorry
+  · rintro ⟨τ, hτ⟩
+    rw [principalType, Option.isSome_map]
+    obtain ⟨Φ', S, eOut, τ', R, hInfer, _, _, _, _, hSK⟩ :=
+      Infer.completeAt e (Φ := e.freshFloor) (ctx := ⟨[], ctors⟩) (S₀ := []) e.tyFreeVars
+        CtxWF.empty (fun M hM => by simp at hM) (by simp)
+        (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) (fun k _ => by simp)
+        (by rw [Subst.onCtx_nil]; exact hτ)
+    exact inferCore_complete e (ctx := ⟨[], ctors⟩) e.tyFreeVars CtxWF.empty
+      (fun M hM => by simp at hM)
+      (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) hSK hInfer
 
 /-- **Type-check a closed program** — the intended entry point. Run Algorithm W
     from the empty environment and *generalize* the result into a closed type
