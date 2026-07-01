@@ -9958,6 +9958,181 @@ theorem TypeOfMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} 
   | _, _, _, _, .wildcard hbody => TypeOfHM.regular hbody
 end
 
+/-- **Strong 4-motive mutual eliminator for `Infer`** (mirrors `TypeOfHM.rec_strong`).
+    A thin repackaging of `Infer.rec` with distinctly-named minor premises (so the
+    sibling `nil`/`cons`/`consWild` tag collisions disappear) that hands each case
+    genuine induction hypotheses. Lets the backward-soundness / metatheory proofs do
+    `induction h using Infer.rec_strong with | lambda … => …` and get kernel-valid
+    terms (unlike the `cases h` + self-call fixpoint, which the kernel rejects when
+    the conclusion mentions the recursion subject `e`). -/
+@[elab_as_elim]
+theorem Infer.rec_strong
+    {motive : (Φ : ℕ) → (ctx : Ctx) → (e : Expr) → (Φ' : ℕ) → (S : Subst) → (eOut : Expr) →
+      (τ : Ty) → Infer Φ ctx e Φ' S eOut τ → Prop}
+    {motiveBr : (Φ : ℕ) → (ctx : Ctx) → (scrutTy ρ : Ty) → (brs : List (MatchPattern × Expr)) →
+      (Φ' : ℕ) → (S : Subst) → (brsOut : List (MatchPattern × Expr)) →
+      InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut → Prop}
+    {motiveGrp : (Φ : ℕ) → (ctx : Ctx) → (bindings : List Expr) → (targets : List Ty) →
+      (Φ' : ℕ) → (S : Subst) → (bindingsOut : List Expr) →
+      InferRecGroup Φ ctx bindings targets Φ' S bindingsOut → Prop}
+    {motiveGrpAnn : (Φ : ℕ) → (ctx : Ctx) → (bindings : List Expr) → (schemes : List PolyTy) →
+      (Φ' : ℕ) → (S : Subst) → (bindingsOut : List Expr) →
+      InferRecGroupAnn Φ ctx bindings schemes Φ' S bindingsOut → Prop}
+    (primLitUnit : ∀ {Φ ctx},
+      motive Φ ctx (.primLit .unit) Φ [] (.primLit .unit) (.prim .unit) .primLitUnit)
+    (primLitInt : ∀ {Φ ctx n},
+      motive Φ ctx (.primLit (.int n)) Φ [] (.primLit (.int n)) (.prim .int) .primLitInt)
+    (primLitNat : ∀ {Φ ctx n},
+      motive Φ ctx (.primLit (.nat n)) Φ [] (.primLit (.nat n)) (.prim .nat) .primLitNat)
+    (primLitStr : ∀ {Φ ctx s},
+      motive Φ ctx (.primLit (.str s)) Φ [] (.primLit (.str s)) (.prim .str) .primLitStr)
+    (lambda : ∀ {Φ ctx ann paramTy body Φ₀ Φ' S bodyOut τb}
+      (hseed : LamSeed Φ ann paramTy Φ₀)
+      (hbody : Infer Φ₀ { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env }
+        body Φ' S bodyOut τb),
+      motive Φ₀ { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env }
+          body Φ' S bodyOut τb hbody →
+        motive Φ ctx (.lambda ann body) Φ' S (.lambda ann bodyOut) ((S.onTy paramTy).arrow τb)
+          (.lambda hseed hbody))
+    (app : ∀ {Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ fOut argOut τf τa}
+      (hf : Infer Φ ctx f Φ₁ S₁ fOut τf) (harg : Infer Φ₁ (S₁.onCtx ctx) arg Φ₂ S₂ argOut τa)
+      (huni : UnifyRel (S₂.onTy τf) (τa.arrow (Ty.fvar Φ₂)) S₃),
+      motive Φ ctx f Φ₁ S₁ fOut τf hf →
+        motive Φ₁ (S₁.onCtx ctx) arg Φ₂ S₂ argOut τa harg →
+          motive Φ ctx (f.app arg) (Φ₂ + 1) (S₁ ++ S₂ ++ S₃) (fOut.app argOut) (S₃.onTy (Ty.fvar Φ₂))
+            (.app hf harg huni))
+    (var : ∀ {Φ ctx i tyArgsIn polyTy} (hlook : ctx.env[i]? = some polyTy),
+      motive Φ ctx (.var i tyArgsIn) (Φ + polyTy.paramCount) []
+        (.var i ((freshVars Φ polyTy.paramCount).map Ty.fvar))
+        (polyTy.openVars (freshVars Φ polyTy.paramCount)) (.var hlook))
+    (ctor : ∀ {Φ ctx name ctorr} (hlook : LookupList.get? ctx.ctors name = some ctorr),
+      motive Φ ctx (.ctor name) (Φ + ctorr.paramCount) [] (.ctor name)
+        (ctorr.toTy.openVars (freshVars Φ ctorr.paramCount)) (.ctor hlook))
+    (letIn : ∀ {Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ rhsOut bodyOut τ₁ τ₂}
+      (hrhs : Infer Φ ctx rhs Φ₁ S₁ rhsOut τ₁)
+      (hbody : Infer Φ₁ { (S₁.onCtx ctx) with
+          env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
+          body Φ₂ S₂ bodyOut τ₂),
+      motive Φ ctx rhs Φ₁ S₁ rhsOut τ₁ hrhs →
+        motive Φ₁ { (S₁.onCtx ctx) with
+            env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
+            body Φ₂ S₂ bodyOut τ₂ hbody →
+          motive Φ ctx (.letIn none rhs body) Φ₂ (S₁ ++ S₂)
+            (.letIn (some (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁))
+              ((rhsOut.substTyFvars S₁).closeTyVars (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁)) bodyOut)
+            τ₂ (.letIn hrhs hbody))
+    (letInAnn : ∀ {Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ rhsOut bodyOut τ₁ τ₂}
+      (hσwf : σ.WF) (hΦN : Φ ≤ N)
+      (hrhs : Infer (N + σ.paramCount) ctx (rhs.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ rhsOut τ₁)
+      (huni : UnifyRel τ₁ (σ.openVars (freshVars N σ.paramCount)) Schk)
+      (hesc1 : ∀ y ∈ freshVars N σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst)
+      (hesc2 : ∀ y ∈ freshVars N σ.paramCount, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars)
+      (hbody : Infer Φ₁ { (Schk.onCtx (S₁.onCtx ctx)) with
+          env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env } body Φ₂ S₂ bodyOut τ₂),
+      motive (N + σ.paramCount) ctx (rhs.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ rhsOut τ₁ hrhs →
+        motive Φ₁ { (Schk.onCtx (S₁.onCtx ctx)) with
+            env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env } body Φ₂ S₂ bodyOut τ₂ hbody →
+          motive Φ ctx (.letIn (some σ) rhs body) Φ₂ (S₁ ++ Schk ++ S₂)
+            (.letIn (some σ) ((rhsOut.substTyFvars (S₁ ++ Schk)).closeTyVars
+              (freshVars N σ.paramCount)) bodyOut) τ₂ (.letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody))
+    (match_ : ∀ {Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ scrutOut branchesOut τs}
+      (hscrut : Infer Φ ctx scrut Φ₁ S₁ scrutOut τs) (hne : branches ≠ [])
+      (hbranches : InferBranches (Φ₁ + 1) (S₁.onCtx ctx) τs (.fvar Φ₁) branches Φ₂ S₂ branchesOut),
+      motive Φ ctx scrut Φ₁ S₁ scrutOut τs hscrut →
+        motiveBr (Φ₁ + 1) (S₁.onCtx ctx) τs (.fvar Φ₁) branches Φ₂ S₂ branchesOut hbranches →
+          motive Φ ctx (.match_ scrut branches) Φ₂ (S₁ ++ S₂) (.match_ scrutOut branchesOut)
+            (S₂.onTy (.fvar Φ₁)) (.match_ hscrut hne hbranches))
+    (letRec : ∀ {Φ ctx bindings body Φ₁ Φ₂ S₁ S₂ bindingsOut bodyOut τ₂}
+      (hgroup : InferRecGroup (Φ + bindings.length)
+        { ctx with env := (freshVars Φ bindings.length).map (fun i => PolyTy.mkTrivial (Ty.fvar i)) ++ ctx.env }
+        bindings ((freshVars Φ bindings.length).map Ty.fvar) Φ₁ S₁ bindingsOut)
+      (hbody : Infer Φ₁ { (S₁.onCtx ctx) with
+          env := genGroupSchemes (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env
+            ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i))) ++ (S₁.onCtx ctx).env }
+          body Φ₂ S₂ bodyOut τ₂),
+      motiveGrp (Φ + bindings.length)
+          { ctx with env := (freshVars Φ bindings.length).map (fun i => PolyTy.mkTrivial (Ty.fvar i)) ++ ctx.env }
+          bindings ((freshVars Φ bindings.length).map Ty.fvar) Φ₁ S₁ bindingsOut hgroup →
+        motive Φ₁ { (S₁.onCtx ctx) with
+            env := genGroupSchemes (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env
+              ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i))) ++ (S₁.onCtx ctx).env }
+            body Φ₂ S₂ bodyOut τ₂ hbody →
+          motive Φ ctx (.letRec bindings body) Φ₂ (S₁ ++ S₂)
+            (Expr.letRecElab
+              (genGroupVars (bindings.flatMap Expr.tyFreeVars) (S₁.onCtx ctx).env
+                ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i))))
+              (bindingsOut.map (·.substTyFvars S₁))
+              ((freshVars Φ bindings.length).map (fun i => S₁.onTy (Ty.fvar i))) bodyOut)
+            τ₂ (.letRec hgroup hbody))
+    (letRecAnn : ∀ {Φ ctx schemes bindings body Φ₁ Φ₂ S₁ S₂ bindingsOut bodyOut τ₂}
+      (hwf : ∀ σ ∈ schemes, σ.WF) (hlen : bindings.length = schemes.length)
+      (hgroup : InferRecGroupAnn Φ { ctx with env := schemes ++ ctx.env }
+        bindings schemes Φ₁ S₁ bindingsOut)
+      (hbody : Infer Φ₁ (S₁.onCtx { ctx with env := schemes ++ ctx.env })
+        body Φ₂ S₂ bodyOut τ₂),
+      motiveGrpAnn Φ { ctx with env := schemes ++ ctx.env }
+          bindings schemes Φ₁ S₁ bindingsOut hgroup →
+        motive Φ₁ (S₁.onCtx { ctx with env := schemes ++ ctx.env })
+            body Φ₂ S₂ bodyOut τ₂ hbody →
+          motive Φ ctx (.letRecAnn schemes bindings body) Φ₂ (S₁ ++ S₂)
+            (.letRecAnn schemes bindingsOut bodyOut) τ₂ (.letRecAnn hwf hlen hgroup hbody))
+    (brNil : ∀ {Φ ctx scrutTy ρ}, motiveBr Φ ctx scrutTy ρ [] Φ [] [] .nil)
+    (brCons : ∀ {Φ ctx scrutTy ρ c n body rest ctorr Φ₁ Φ₂ S₀ S₁ S₂ S₃ bodyOut restOut τb}
+      (hlook : LookupList.get? ctx.ctors c = some ctorr) (hn : n = ctorr.contents.length)
+      (huni0 : UnifyRel scrutTy
+        (.customTy ctorr.tyName ((freshVars Φ ctorr.paramCount).map (Ty.fvar ·))) S₀)
+      (hbody : Infer (Φ + ctorr.paramCount)
+        { (S₀.onCtx ctx) with env := (ctorr.contents.map (Ty.openWith
+            (((freshVars Φ ctorr.paramCount).map (Ty.fvar ·)).map S₀.onTy))).map PolyTy.mkTrivial
+          ++ (S₀.onCtx ctx).env } body Φ₁ S₁ bodyOut τb)
+      (huni : UnifyRel τb (S₁.onTy (S₀.onTy ρ)) S₂)
+      (hrest : InferBranches Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))
+        (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))) (S₂.onTy (S₁.onTy (S₀.onTy ρ))) rest Φ₂ S₃ restOut),
+      motive (Φ + ctorr.paramCount)
+          { (S₀.onCtx ctx) with env := (ctorr.contents.map (Ty.openWith
+              (((freshVars Φ ctorr.paramCount).map (Ty.fvar ·)).map S₀.onTy))).map PolyTy.mkTrivial
+            ++ (S₀.onCtx ctx).env } body Φ₁ S₁ bodyOut τb hbody →
+        motiveBr Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))
+            (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))) (S₂.onTy (S₁.onTy (S₀.onTy ρ))) rest Φ₂ S₃ restOut hrest →
+          motiveBr Φ ctx scrutTy ρ ((.named c n, body) :: rest) Φ₂ (S₀ ++ S₁ ++ S₂ ++ S₃)
+            ((.named c n, bodyOut) :: restOut) (.cons hlook hn huni0 hbody huni hrest))
+    (brWild : ∀ {Φ ctx scrutTy ρ body rest Φ₁ Φ₂ S₁ S₂ S₃ bodyOut restOut τb}
+      (hbody : Infer Φ ctx body Φ₁ S₁ bodyOut τb) (huni : UnifyRel τb (S₁.onTy ρ) S₂)
+      (hrest : InferBranches Φ₁ (S₂.onCtx (S₁.onCtx ctx)) (S₂.onTy (S₁.onTy scrutTy))
+        (S₂.onTy (S₁.onTy ρ)) rest Φ₂ S₃ restOut),
+      motive Φ ctx body Φ₁ S₁ bodyOut τb hbody →
+        motiveBr Φ₁ (S₂.onCtx (S₁.onCtx ctx)) (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ))
+            rest Φ₂ S₃ restOut hrest →
+          motiveBr Φ ctx scrutTy ρ ((.wildcard, body) :: rest) Φ₂ (S₁ ++ S₂ ++ S₃)
+            ((.wildcard, bodyOut) :: restOut) (.consWild hbody huni hrest))
+    (grpNil : ∀ {Φ ctx}, motiveGrp Φ ctx [] [] Φ [] [] .nil)
+    (grpCons : ∀ {Φ ctx e rest β βs Φ₁ Φ₂ S₁ S₂ S₃ eOut restOut τ}
+      (he : Infer Φ ctx e Φ₁ S₁ eOut τ) (huni : UnifyRel τ (S₁.onTy β) S₂)
+      (hrest : InferRecGroup Φ₁ (S₂.onCtx (S₁.onCtx ctx)) rest
+        (βs.map (fun b => S₂.onTy (S₁.onTy b))) Φ₂ S₃ restOut),
+      motive Φ ctx e Φ₁ S₁ eOut τ he →
+        motiveGrp Φ₁ (S₂.onCtx (S₁.onCtx ctx)) rest (βs.map (fun b => S₂.onTy (S₁.onTy b))) Φ₂ S₃ restOut hrest →
+          motiveGrp Φ ctx (e :: rest) (β :: βs) Φ₂ (S₁ ++ S₂ ++ S₃) (eOut :: restOut)
+            (.cons he huni hrest))
+    (grpAnnNil : ∀ {Φ ctx}, motiveGrpAnn Φ ctx [] [] Φ [] [] .nil)
+    (grpAnnCons : ∀ {Φ N ctx σ schemes e rest Φ₁ Φ₂ S₁ Schk S₂ eOut restOut τ}
+      (hΦN : Φ ≤ N)
+      (he : Infer (N + σ.paramCount) ctx (e.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ eOut τ)
+      (huni : UnifyRel τ (σ.openVars (freshVars N σ.paramCount)) Schk)
+      (hesc1 : ∀ y ∈ freshVars N σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst)
+      (hesc2 : ∀ y ∈ freshVars N σ.paramCount, y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars)
+      (hrest : InferRecGroupAnn Φ₁ (Schk.onCtx (S₁.onCtx ctx)) rest schemes Φ₂ S₂ restOut),
+      motive (N + σ.paramCount) ctx (e.openTyVars (freshVars N σ.paramCount)) Φ₁ S₁ eOut τ he →
+        motiveGrpAnn Φ₁ (Schk.onCtx (S₁.onCtx ctx)) rest schemes Φ₂ S₂ restOut hrest →
+          motiveGrpAnn Φ ctx (e :: rest) (σ :: schemes) Φ₂ (S₁ ++ Schk ++ S₂)
+            ((eOut.substTyFvars (S₁ ++ Schk)).closeTyVars (freshVars N σ.paramCount) :: restOut)
+            (.cons hΦN he huni hesc1 hesc2 hrest))
+    {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) : motive Φ ctx e Φ' S eOut τ h :=
+  Infer.rec (motive_1 := motive) (motive_2 := motiveBr) (motive_3 := motiveGrp)
+    (motive_4 := motiveGrpAnn)
+    primLitUnit primLitInt primLitNat primLitStr lambda app var ctor letIn letInAnn
+    match_ letRec letRecAnn brNil brCons brWild grpNil grpCons grpAnnNil grpAnnCons h
+
 /-! **Backward soundness against the source skeleton (C2).** `Infer` on source `e`
     yields a declarative `TypeOfHM` typing of `e` *itself* (not the elaborated
     output) under the solved context `S.onCtx ctx`. Mirrors `Infer.sound`'s
@@ -9968,12 +10143,29 @@ end
     NOTE: the cofinite/recursive arms (`lambda`/`app`/`letIn`/`letInAnn`/`match_`/
     `letRec`/`letRecAnn`) mirror the corresponding (substantial) `Infer.sound` arms
     and are currently `sorry`-scaffolded pending the backward-soundness port. -/
-mutual
 theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
     TypeOfHM (S.onCtx ctx) e τ := by
-  cases h with
+  induction h using Infer.rec_strong
+    (motiveBr := fun Φb ctxb scrutTy ρ brs _ Sb _ _ =>
+      CtxWF ctxb → CtxBelow Φb ctxb → scrutTy.IsLC → ρ.IsLC →
+      Ty.BelowFvars Φb scrutTy → Ty.BelowFvars Φb ρ → ∀ (K : List Nat), (∀ k ∈ K, k < Φb) →
+      (∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K) → (∀ p ∈ Sb, p.1 ∉ K) →
+      ∀ p ∈ brs, TypeOfMatchBranch (Sb.onCtx ctxb) p (Sb.onTy scrutTy) (Sb.onTy ρ))
+    (motiveGrp := fun Φb ctxb bindings targets _ Sb _ _ =>
+      CtxWF ctxb → CtxBelow Φb ctxb → (∀ τ ∈ targets, τ.IsLC) →
+      (∀ τ ∈ targets, Ty.BelowFvars Φb τ) → ∀ (K : List Nat), (∀ k ∈ K, k < Φb) →
+      (∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K) → (∀ p ∈ Sb, p.1 ∉ K) →
+      ∀ p ∈ bindings.zip (targets.map Sb.onTy), TypeOfHM (Sb.onCtx ctxb) p.1 p.2)
+    (motiveGrpAnn := fun Φb ctxb bindings schemes _ Sb _ _ =>
+      CtxWF ctxb → CtxBelow Φb ctxb → (∀ σ ∈ schemes, σ.WF) →
+      ∀ (K : List Nat), (∀ k ∈ K, k < Φb) →
+      (∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K) →
+      (∀ σ ∈ schemes, ∀ y ∈ σ.body.freeVars, y ∈ K) → (∀ p ∈ Sb, p.1 ∉ K) →
+      ∃ L : List Nat, ∀ p ∈ bindings.zip schemes, ∀ Xs, FreshNames L p.2.paramCount Xs →
+        TypeOfHM (Sb.onCtx ctxb) (p.1.openTyVars Xs) (p.2.openVars Xs))
+    with
   | primLitUnit => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitUnit
   | primLitInt => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitInt
   | primLitNat => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitNat
@@ -9992,55 +10184,62 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
       (InstantiatesBy.openVars (Ctor.toTy_wf _) (by simp [Ctor.toTy]))
     obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht
     exact .fvar
-  | lambda hseed hbody => sorry
-  | app hf harg huni => sorry
-  | letIn hrhs hbody => sorry
-  | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody => sorry
-  | match_ hscrut hne hbranches => sorry
-  | letRec hgroup hbody => sorry
-  | letRecAnn hwf hlen hgroup hbody => sorry
-
-theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S brsOut}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
-    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
-    (hscrutB : Ty.BelowFvars Φ scrutTy) (hρB : Ty.BelowFvars Φ ρ) (K : List Nat)
-    (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
-    ∀ p ∈ brs, TypeOfMatchBranch (S.onCtx ctx) p (S.onTy scrutTy) (S.onTy ρ) := by
-  cases h with
-  | nil => intro p hp; simp at hp
-  | cons hlook hn huni0 hbody huni hrest => sorry
-  | consWild hbody huni hrest => sorry
-
-theorem InferRecGroup.sourceSound {Φ ctx bindings targets Φ' S bindingsOut}
-    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut)
-    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (htargets : ∀ τ ∈ targets, τ.IsLC) (htargetsB : ∀ τ ∈ targets, Ty.BelowFvars Φ τ)
-    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
-    ∀ p ∈ bindings.zip (targets.map S.onTy), TypeOfHM (S.onCtx ctx) p.1 p.2 := by
-  cases h with
-  | nil => intro p hp; simp at hp
-  | cons he huni hrest => sorry
-
-theorem InferRecGroupAnn.sourceSound {Φ ctx bindings schemes Φ' S bindingsOut}
-    (h : InferRecGroupAnn Φ ctx bindings schemes Φ' S bindingsOut)
-    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hschemesWF : ∀ σ ∈ schemes, σ.WF)
-    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
-    (hKsch : ∀ σ ∈ schemes, ∀ y ∈ σ.body.freeVars, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
-    ∃ L : List Nat, ∀ p ∈ bindings.zip schemes,
-      ∀ Xs, FreshNames L p.2.paramCount Xs →
-        TypeOfHM (S.onCtx ctx) (p.1.openTyVars Xs) (p.2.openVars Xs) := by
-  cases h with
-  | nil => exact ⟨[], by intro p hp; simp at hp⟩
-  | cons hΦN hinfer huni hesc1 hesc2 hrest => sorry
-end
+  | lambda hseed hbody ihbody =>
+    intro hctx hbelow K hKΦ hKe hSK
+    expose_names
+    cases hseed
+    case none =>
+      simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at hKe
+      have hbodyWF : CtxWF { ctx_1 with env := PolyTy.mkTrivial (.fvar Φ_1) :: ctx_1.env } := by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact ContainsBvarsUpTo.fvar
+        · exact hctx M hM
+      have hbodyBelow : CtxBelow (Φ_1 + 1) { ctx_1 with env := PolyTy.mkTrivial (.fvar Φ_1) :: ctx_1.env } := by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact .fvar (by omega)
+        · exact (hbelow M hM).mono (by omega)
+      have hbodyTy := ihbody hbodyWF hbodyBelow K (fun k hk => by have := hKΦ k hk; omega) hKe hSK
+      refine TypeOfHM.lambda
+        (Subst.onTy_lc (Infer.lc hbody hbodyWF).2 ContainsBvarsUpTo.fvar)
+        (fun T hT => absurd hT (by simp)) ?_ hbodyTy
+      simp only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy, PolyTy.mkTrivial]
+    case some hcl =>
+      simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at hKe
+      have hbodyWF : CtxWF { ctx_1 with env := PolyTy.mkTrivial paramTy :: ctx_1.env } := by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact hcl
+        · exact hctx M hM
+      have hbodyBelow : CtxBelow Φ_1 { ctx_1 with env := PolyTy.mkTrivial paramTy :: ctx_1.env } := by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hKe v (.inl hv)))
+        · exact hbelow M hM
+      have hbodyTy := ihbody hbodyWF hbodyBelow K (fun k hk => by have := hKΦ k hk; omega)
+        (fun y hy => hKe y (.inr hy)) hSK
+      refine TypeOfHM.lambda
+        (Subst.onTy_lc (Infer.lc hbody hbodyWF).2 hcl)
+        (fun T hT => by
+          have h1 : paramTy = T := Option.some.inj hT
+          have h2 : S_1.onTy paramTy = paramTy :=
+            Ty.substFvars_eq_self_of_no_key (fun p hp hc => hSK p hp (hKe p.1 (.inl hc)))
+          rw [h2, h1]) ?_ hbodyTy
+      simp only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy, PolyTy.mkTrivial]
+  | app hf harg huni ihf iharg => sorry
+  | letIn hrhs hbody ihrhs ihbody => sorry
+  | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody ihrhs ihbody => sorry
+  | match_ hscrut hne hbranches ihscrut ihbranches => sorry
+  | letRec hgroup hbody ihgroup ihbody =>
+    -- exercise the InferRecGroup sibling IH `ihgroup` (validates the sibling motive plumbing)
+    intro hctx hbelow K hKΦ hKe hSK
+    have _hgrp := ihgroup
+    sorry
+  | letRecAnn hwf hlen hgroup hbody ihgroup ihbody => sorry
+  | brNil => sorry
+  | brCons hlook hn huni0 hbody huni hrest ihbody ihrest => sorry
+  | brWild hbody huni hrest ihbody ihrest => sorry
+  | grpNil => sorry
+  | grpCons he huni hrest ihe ihrest => sorry
+  | grpAnnNil => sorry
+  | grpAnnCons hΦN he huni hesc1 hesc2 hrest ihe ihrest => sorry
 
 /-- The principality property at `e`: for *any* declarative typing of `e` under
     an LC specialization `S₀` of a WF, frontier-bounded context, `Infer`
