@@ -9958,6 +9958,83 @@ theorem TypeOfMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} 
   | _, _, _, _, .wildcard hbody => TypeOfHM.regular hbody
 end
 
+/-! **Backward soundness against the source skeleton (C2).** `Infer` on source `e`
+    yields a declarative `TypeOfHM` typing of `e` *itself* (not the elaborated
+    output) under the solved context `S.onCtx ctx`. Mirrors `Infer.sound`'s
+    hypotheses but is simpler (source terms are un-elaborated — no close-back /
+    `letRecElab`). The `var` case uses `TypeOfHM.var`'s existential instantiation
+    witness `(freshVars Φ pc).map (Ty.fvar ·)`.
+
+    NOTE: the cofinite/recursive arms (`lambda`/`app`/`letIn`/`letInAnn`/`match_`/
+    `letRec`/`letRecAnn`) mirror the corresponding (substantial) `Infer.sound` arms
+    and are currently `sorry`-scaffolded pending the backward-soundness port. -/
+mutual
+theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
+    CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
+    (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
+    TypeOfHM (S.onCtx ctx) e τ := by
+  cases h with
+  | primLitUnit => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitUnit
+  | primLitInt => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitInt
+  | primLitNat => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitNat
+  | primLitStr => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitStr
+  | var hlook =>
+    intro hctx _ _ _ _ _
+    simp only [Subst.onCtx_nil]
+    refine TypeOfHM.var hlook (fun tyArg ht => ?_)
+      (InstantiatesBy.openVars (hctx _ (List.mem_of_getElem? hlook)) (by simp [freshVars_length]))
+    obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht
+    exact .fvar
+  | ctor hlook =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil]
+    refine TypeOfHM.ctor hlook (fun tyArg ht => ?_)
+      (InstantiatesBy.openVars (Ctor.toTy_wf _) (by simp [Ctor.toTy]))
+    obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht
+    exact .fvar
+  | lambda hseed hbody => sorry
+  | app hf harg huni => sorry
+  | letIn hrhs hbody => sorry
+  | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody => sorry
+  | match_ hscrut hne hbranches => sorry
+  | letRec hgroup hbody => sorry
+  | letRecAnn hwf hlen hgroup hbody => sorry
+
+theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
+    (hscrutB : Ty.BelowFvars Φ scrutTy) (hρB : Ty.BelowFvars Φ ρ) (K : List Nat)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    ∀ p ∈ brs, TypeOfMatchBranch (S.onCtx ctx) p (S.onTy scrutTy) (S.onTy ρ) := by
+  sorry
+
+theorem InferRecGroup.sourceSound {Φ ctx bindings targets Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings targets Φ' S bindingsOut)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (htargets : ∀ τ ∈ targets, τ.IsLC) (htargetsB : ∀ τ ∈ targets, Ty.BelowFvars Φ τ)
+    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    ∀ p ∈ bindings.zip (targets.map S.onTy), TypeOfHM (S.onCtx ctx) p.1 p.2 := by
+  sorry
+
+theorem InferRecGroupAnn.sourceSound {Φ ctx bindings schemes Φ' S bindingsOut}
+    (h : InferRecGroupAnn Φ ctx bindings schemes Φ' S bindingsOut)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hschemesWF : ∀ σ ∈ schemes, σ.WF)
+    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hKsch : ∀ σ ∈ schemes, ∀ y ∈ σ.body.freeVars, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    ∃ L : List Nat, ∀ p ∈ bindings.zip schemes,
+      ∀ Xs, FreshNames L p.2.paramCount Xs →
+        TypeOfHM (S.onCtx ctx) (p.1.openTyVars Xs) (p.2.openVars Xs) := by
+  sorry
+end
+
 /-- The principality property at `e`: for *any* declarative typing of `e` under
     an LC specialization `S₀` of a WF, frontier-bounded context, `Infer`
     succeeds with `(S, τ)` and the typing factors through it via an LC residual
