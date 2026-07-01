@@ -18841,8 +18841,6 @@ def InferBranchesCoreComplete (branches : List (MatchPattern × Expr)) : Prop :=
 
 theorem inferBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)),
     (∀ br ∈ branches, InferCoreComplete br.2) → InferBranchesCoreComplete branches := by
-  sorry
-/- RESERVED: source↔elaborated bridge (orchestrator's domain). Old proof:
   intro branches
   induction branches with
   | nil =>
@@ -18859,7 +18857,7 @@ theorem inferBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)
       simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inr hy)
     have hKfixS : ∀ k ∈ K, S.onTy (.fvar k) = .fvar k := fun k hk => Subst.fixes_fvar_of_avoids hSK hk
     -- declarative branch typings + LC facts from the given derivation
-    have hsound := InferBranches.sound h hwf hbelow hscrutLC hρ K hKΦ hKbr hSK
+    have hsound := InferBranches.sourceSound h hwf hbelow hscrutLC hρ hbscrut hbρ K hKΦ hKbr hSK
     have hSlc : ∀ p ∈ S, p.2.IsLC := (InferBranches.lc h hwf hscrutLC hρ).2
     -- invert the head branch's declarative typing (at the residual `S`)
     have hdhead := hsound (pat, body) (List.mem_cons_self ..)
@@ -18923,19 +18921,19 @@ theorem inferBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)
             obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
             obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hv
             exact Subst.onTy_belowFvars hS₀below (.fvar (by have := freshVars_lt x hx; omega)))
-      have hbodyty2 : TypeOfElabHM (R_s.onCtx { S₀.onCtx ctx with
+      have hbodyty2 : TypeOfHM (R_s.onCtx { S₀.onCtx ctx with
           env := (ctor.contents.map (Ty.openWith
               (((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy))).map PolyTy.mkTrivial
             ++ (S₀.onCtx ctx).env }) body (R_s.onTy (S₀.onTy ρ)) := by
         rw [Subst.onCtx_branchBindings hR_s_lc, hctx0, hfresh_R_s, key_t hbρ]
         exact hbodytyD
       -- STEP: reconstruct a head-body derivation, drive the body function, factor via `complete'`
-      obtain ⟨_, _, _, _, hbodyderiv, _, _, _, _, hSbK⟩ :=
+      obtain ⟨_, _, _, _, _, hbodyderiv, _, _, _, _, hSbK⟩ :=
         Infer.completeAt body K hbodyWF hbodyBelow hR_s_lc
           (fun k hk => by have := hKΦ k hk; omega) hKbody hR_s_K hbodyty2
       have hbodysome := (ihbr (.named c n, body) (List.mem_cons_self ..)) K hbodyWF hbodyBelow
         (fun k hk => by have := hKΦ k hk; omega) hKbody hSbK hbodyderiv
-      obtain ⟨⟨⟨Φ_b, S_b, τ_b⟩, hinfbody, _⟩, hebody⟩ := Option.isSome_iff_exists.mp hbodysome
+      obtain ⟨⟨⟨Φ_b, S_b, eOut_b, τ_b⟩, hinfbody, _⟩, hebody⟩ := Option.isSome_iff_exists.mp hbodysome
       obtain ⟨R_b, hagbody, htybody, hR_b, hR_bK⟩ :=
         Infer.complete' hinfbody hbodyWF hbodyBelow hR_s_lc K
           (fun k hk => by have := hKΦ k hk; omega) hKbody hR_s_K hbodyty2
@@ -18992,7 +18990,7 @@ theorem inferBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)
         intro br hbr
         rw [hctx_full, key_full hbscrut, key_full hbρ]
         exact hsound br (List.mem_cons_of_mem _ hbr)
-      obtain ⟨Φ_rr, S_r, R_r, hinfrest, _hagrest, _hR_r, _hR_rK, hS_rK⟩ :=
+      obtain ⟨Φ_rr, S_r, brsOut_r2, R_r, hinfrest, _hagrest, _hR_r, _hR_rK, hS_rK⟩ :=
         InferBranches.complete K (fun br _ => Infer.completeAt br.2)
           hwf' hbelow' hscrutLC' hbscrut' hρ' hbρ' hR_u
           (fun k hk => lt_of_lt_of_le (hKΦ k hk) (le_trans (Nat.le_add_right _ _) hle_b))
@@ -19001,7 +18999,7 @@ theorem inferBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)
         hwf' hbelow' hscrutLC' hbscrut' hρ' hbρ'
         (fun k hk => lt_of_lt_of_le (hKΦ k hk) (le_trans (Nat.le_add_right _ _) hle_b))
         hKrest hS_rK hinfrest
-      obtain ⟨⟨⟨Φ_r, S_r2⟩, hrest', _⟩, herest⟩ := Option.isSome_iff_exists.mp hrestsome
+      obtain ⟨⟨⟨Φ_r, S_r2, brsOut_r⟩, hrest', _⟩, herest⟩ := Option.isSome_iff_exists.mp hrestsome
       -- STEP: conclude by unfolding `inferBranchesCore` and discharging the guards.
       rw [inferBranchesCore]
       split
@@ -19011,11 +19009,11 @@ theorem inferBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)
         rw [dif_pos hnD]
         simp only [he0, hebody, heuni, herest, Option.isSome_some]
     | wildcard hbodyty =>
-      obtain ⟨_, _, _, _, hbodyderiv, _, _, _, _, hSbK⟩ :=
+      obtain ⟨_, _, _, _, _, hbodyderiv, _, _, _, _, hSbK⟩ :=
         Infer.completeAt body K hwf hbelow hSlc hKΦ hKbody hKfixS hbodyty
       have hbodysome := (ihbr (.wildcard, body) (List.mem_cons_self ..)) K hwf hbelow
         hKΦ hKbody hSbK hbodyderiv
-      obtain ⟨⟨⟨Φ_b, S_b, τ_b⟩, hinfbody, _⟩, hebody⟩ := Option.isSome_iff_exists.mp hbodysome
+      obtain ⟨⟨⟨Φ_b, S_b, eOut_b, τ_b⟩, hinfbody, _⟩, hebody⟩ := Option.isSome_iff_exists.mp hbodysome
       obtain ⟨R_b, hagbody, htybody, hR_b, hR_bK⟩ :=
         Infer.complete' hinfbody hwf hbelow hSlc K hKΦ hKbody hKfixS hbodyty
       have hτb_lc : τ_b.IsLC := (Infer.lc hinfbody hwf).1
@@ -19058,17 +19056,16 @@ theorem inferBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)
         intro br hbr
         rw [hctx_eq, key_t hbscrut, key_t hbρ]
         exact hsound br (List.mem_cons_of_mem _ hbr)
-      obtain ⟨Φ_rr, S_r, R_r, hinfrest, _hagrest, _hR_r, _hR_rK, hS_rK⟩ :=
+      obtain ⟨Φ_rr, S_r, brsOut_r2, R_r, hinfrest, _hagrest, _hR_r, _hR_rK, hS_rK⟩ :=
         InferBranches.complete K (fun br _ => Infer.completeAt br.2)
           hwf' hbelow' hscrutLC' hbscrut' hρ' hbρ' hR_u
           (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle_b) hKrest hR_uK hdecl'
       have hrestsome := ih (fun br hbr => ihbr br (List.mem_cons_of_mem _ hbr)) K
         hwf' hbelow' hscrutLC' hbscrut' hρ' hbρ'
         (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle_b) hKrest hS_rK hinfrest
-      obtain ⟨⟨⟨Φ_r, S_r2⟩, hrest', _⟩, herest⟩ := Option.isSome_iff_exists.mp hrestsome
+      obtain ⟨⟨⟨Φ_r, S_r2, brsOut_r⟩, hrest', _⟩, herest⟩ := Option.isSome_iff_exists.mp hrestsome
       rw [inferBranchesCore]
       simp only [hebody, heuni, herest, Option.isSome_some]
--/
 
 /-- An `InferRecGroup` derivation has matching binding/target lengths. -/
 theorem InferRecGroup.length_eq {Φ ctx bindings targets Φ' S bindingsOut}
@@ -19097,8 +19094,6 @@ def InferRecGroupCoreComplete (bindings : List Expr) : Prop :=
 
 theorem inferRecGroupCore_complete : ∀ (bindings : List Expr),
     (∀ e ∈ bindings, InferCoreComplete e) → InferRecGroupCoreComplete bindings := by
-  sorry
-/- RESERVED: source↔elaborated bridge (orchestrator's domain). Old proof:
   intro bindings
   induction bindings with
   | nil =>
@@ -19117,14 +19112,14 @@ theorem inferRecGroupCore_complete : ∀ (bindings : List Expr),
     have hβlc : β.IsLC := htlc β List.mem_cons_self
     have hbβ : Ty.BelowFvars Φ β := htbelow β List.mem_cons_self
     have hlenrest : rest.length = βs.length := by have := InferRecGroup.length_eq h; simpa using this
-    have hsound := InferRecGroup.sound h hwf hbelow htlc K hKΦ hKbr hSK
+    have hsound := InferRecGroup.sourceSound h hwf hbelow htlc htbelow K hKΦ hKbr hSK
     have hSlc : ∀ p ∈ S, p.2.IsLC := InferRecGroup.lc h hwf htlc
-    have hbodyty : TypeOfElabHM (S.onCtx ctx) e (S.onTy β) :=
+    have hbodyty : TypeOfHM (S.onCtx ctx) e (S.onTy β) :=
       hsound (e, S.onTy β) (by rw [List.map_cons, List.zip_cons_cons]; exact List.mem_cons_self)
     obtain ⟨_, _, _, _, _, hederiv, _, _, _, _, hSeK⟩ :=
       Infer.completeAt e K hwf hbelow hSlc hKΦ hKbody hKfixS hbodyty
     have hesome := (ihbr e List.mem_cons_self) K hwf hbelow hKΦ hKbody hSeK hederiv
-    obtain ⟨⟨⟨Φ_e, S_e, τ_e⟩, hinfe, _⟩, heinfer⟩ := Option.isSome_iff_exists.mp hesome
+    obtain ⟨⟨⟨Φ_e, S_e, eOut_e, τ_e⟩, hinfe, _⟩, heinfer⟩ := Option.isSome_iff_exists.mp hesome
     obtain ⟨R_e, hage, htye, hR_e, hR_eK⟩ :=
       Infer.complete' hinfe hwf hbelow hSlc K hKΦ hKbody hKfixS hbodyty
     have hτe_lc : τ_e.IsLC := (Infer.lc hinfe hwf).1
@@ -19164,11 +19159,11 @@ theorem inferRecGroupCore_complete : ∀ (bindings : List Expr),
       rw [List.map_map]; apply List.map_congr_left; intro b hb
       exact key_t (htbelow b (List.mem_cons_of_mem _ hb))
     have hdecl' : ∀ p ∈ rest.zip ((βs.map (fun b => S_u.onTy (S_e.onTy b))).map R_u.onTy),
-        TypeOfElabHM (R_u.onCtx (S_u.onCtx (S_e.onCtx ctx))) p.1 p.2 := by
+        TypeOfHM (R_u.onCtx (S_u.onCtx (S_e.onCtx ctx))) p.1 p.2 := by
       rw [hmapeq, hctx_eq]
       intro p hp
       exact hsound p (by rw [List.map_cons, List.zip_cons_cons]; exact List.mem_cons_of_mem _ hp)
-    obtain ⟨Φ_rr, S_r, R_r, hinfrest, _, _, _, hS_rK⟩ :=
+    obtain ⟨Φ_rr, S_r, bsOut_rr, R_r, hinfrest, _, _, _, hS_rK⟩ :=
       InferRecGroup.complete (bindings := rest)
         (targets := βs.map (fun b => S_u.onTy (S_e.onTy b))) (R := R_u) K
         (by rw [List.length_map]; exact hlenrest) (fun e' _ => Infer.completeAt e')
@@ -19177,10 +19172,9 @@ theorem inferRecGroupCore_complete : ∀ (bindings : List Expr),
     have hrestsome := ih (fun e' he' => ihbr e' (List.mem_cons_of_mem _ he')) K
       hwf' hbelow' htlc' htbelow'
       (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle_e) hKrest hS_rK hinfrest
-    obtain ⟨⟨⟨Φ_r2, S_r2⟩, hrest', _⟩, herest⟩ := Option.isSome_iff_exists.mp hrestsome
+    obtain ⟨⟨⟨Φ_r2, S_r2, bsOut_r2⟩, hrest', _⟩, herest⟩ := Option.isSome_iff_exists.mp hrestsome
     rw [inferRecGroupCore]
     simp only [heinfer, heuni, herest, Option.isSome_some]
--/
 
 theorem inferCore_complete_match {scrut : Expr} {branches : List (MatchPattern × Expr)}
     (ihscrut : InferCoreComplete scrut)
