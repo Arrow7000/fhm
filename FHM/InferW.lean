@@ -16145,30 +16145,31 @@ theorem Infer.output_unique {Φ ctx e Φ'₁ S₁ eOut₁ τ₁ Φ'₂ S₂ eOut
     (h₁ : Infer Φ ctx e Φ'₁ S₁ eOut₁ τ₁) (h₂ : Infer Φ ctx e Φ'₂ S₂ eOut₂ τ₂)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hclosed : e.tyFreeVars = []) :
     ∃ R, τ₂ = Subst.onTy R τ₁ ∧ (∀ p ∈ R, p.2.IsLC) := by
-  -- RESERVED: `Infer.sound` now yields the *elaborated* output's typing
-  -- (`eOut.substTyFvars S`), not the source `e`'s; reconciling them is the
-  -- orchestrator's `TypeOfHM.toElab` / var-tyArgs-insensitivity bridge.
-  sorry
+  -- `h₂`'s output types the source `e` (`sourceSound`); factor it through `h₁`'s
+  -- output via `complete'`.
+  have hty₂ := Infer.sourceSound h₂ hwf hbelow [] (by simp) (by rw [hclosed]; simp) (by simp)
+  obtain ⟨R, _, hτeq, hRlc, _⟩ :=
+    Infer.complete' h₁ hwf hbelow (Infer.lc h₂ hwf).2 [] (by simp) (by rw [hclosed]; simp) (by simp) hty₂
+  exact ⟨R, hτeq, hRlc⟩
 
 /-- `(S, τ)` is a *principal typing* of `e` in `ctx`: a valid declarative typing
     of which every declarative typing (under any LC specialization of `ctx`) is a
     substitution instance. -/
 structure Infer.IsPrincipal (ctx : Ctx) (e : Expr) (S : Subst) (τ : Ty) : Prop where
-  typing : TypeOfElabHM (S.onCtx ctx) e τ
+  typing : TypeOfHM (S.onCtx ctx) e τ
   principal : ∀ {S₀ : Subst} {τ₀ : Ty}, (∀ p ∈ S₀, p.2.IsLC) →
-    TypeOfElabHM (S₀.onCtx ctx) e τ₀ → ∃ R, τ₀ = Subst.onTy R τ
+    TypeOfHM (S₀.onCtx ctx) e τ₀ → ∃ R, τ₀ = Subst.onTy R τ
 
 /-- Every `Infer` result is a principal typing. With `Infer.complete`'s existence
     half, `Infer` computes the principal type of any typeable `e`. -/
 theorem Infer.isPrincipal {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hclosed : e.tyFreeVars = []) :
     Infer.IsPrincipal ctx e S τ where
-  -- RESERVED: `typing` needs the source `e` typed at `(S, τ)`, but `Infer.sound`
-  -- now yields the elaborated output's typing — bridged by the orchestrator.
-  typing := by sorry
-  -- RESERVED (C3): re-point `Infer.IsPrincipal` + `principal` to `TypeOfHM`
-  -- (the struct field `hty` is still `TypeOfElabHM`; `complete'` now inverts `TypeOfHM`).
-  principal := fun hS₀ hty => by sorry
+  typing := Infer.sourceSound h hwf hbelow [] (by simp) (by rw [hclosed]; simp) (by simp)
+  principal := fun {S₀ τ₀} hS₀ hty => by
+    obtain ⟨R, _, hτeq, _, _⟩ :=
+      Infer.complete' h hwf hbelow hS₀ [] (by simp) (by rw [hclosed]; simp) (by simp) hty
+    exact ⟨R, hτeq⟩
 
 
 
@@ -16690,17 +16691,16 @@ theorem Infer.complete_id {Φ : Nat} {ctx : Ctx} {e : Expr} {τ₀ : Ty}
     typeability of the *unspecialised* `ctx`.) -/
 theorem Infer.iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hclosed : e.tyFreeVars = []) :
-    (∃ (S : Subst) (τ : Ty), (∀ p ∈ S, p.2.IsLC) ∧ TypeOfElabHM (S.onCtx ctx) e τ)
+    (∃ (S : Subst) (τ : Ty), (∀ p ∈ S, p.2.IsLC) ∧ TypeOfHM (S.onCtx ctx) e τ)
       ↔ (∃ Φ' S eOut τ, Infer Φ ctx e Φ' S eOut τ) := by
   constructor
-  · -- RESERVED (C3): re-point the LHS `TypeOfElabHM` to `TypeOfHM` (then
-    -- `complete_instance` applies directly).
-    rintro ⟨S, τ, hS, hty⟩
-    sorry
+  · rintro ⟨S, τ, hS, hty⟩
+    obtain ⟨Φ', S', eOut, τ', R, hInfer, _⟩ :=
+      Infer.complete_instance [] hwf hbelow hS (by simp) (by rw [hclosed]; simp) (by simp) hty
+    exact ⟨Φ', S', eOut, τ', hInfer⟩
   · rintro ⟨Φ', S, eOut, τ, hInfer⟩
-    -- RESERVED: `Infer.sound` now types the elaborated output (`eOut.substTyFvars S`),
-    -- not the source `e`; the source↔elaborated bridge is the orchestrator's domain.
-    exact ⟨S, τ, (Infer.lc hInfer hwf).2, by sorry⟩
+    exact ⟨S, τ, (Infer.lc hInfer hwf).2,
+      Infer.sourceSound hInfer hwf hbelow [] (by simp) (by rw [hclosed]; simp) (by simp)⟩
 
 /-- **Algorithm W computes principal types** — soundness and principality bundled
     into one statement. From any declarative typing of a core `e` under an LC
@@ -16717,12 +16717,13 @@ theorem Infer.principal {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ 
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
     (hKΦ : ∀ k ∈ K, k < Φ) (hKe : ∀ y ∈ e.tyFreeVars, y ∈ K)
     (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
-    (hty : TypeOfElabHM (S₀.onCtx ctx) e τ₀) :
+    (hty : TypeOfHM (S₀.onCtx ctx) e τ₀) :
     ∃ Φ' S eOut τ R,
-      Infer Φ ctx e Φ' S eOut τ ∧ TypeOfElabHM (S.onCtx ctx) e τ ∧ τ₀ = Subst.onTy R τ := by
-  -- RESERVED (C3): re-point `hty` (LHS) + the middle `TypeOfElabHM` conjunct to
-  -- `TypeOfHM` (then `completeAt` applies and the middle conjunct is `sourceSound`).
-  sorry
+      Infer Φ ctx e Φ' S eOut τ ∧ TypeOfHM (S.onCtx ctx) e τ ∧ τ₀ = Subst.onTy R τ := by
+  obtain ⟨Φ', S, eOut, τ, R, hInfer, _, hτeq, _, _, hSK⟩ :=
+    Infer.completeAt e K hwf hbelow hS₀ hKΦ hKe hKfix hty
+  exact ⟨Φ', S, eOut, τ, R, hInfer,
+    Infer.sourceSound hInfer hwf hbelow K hKΦ hKe hSK, hτeq⟩
 
 /-! (`UnifyRel.eliminates` / `UnifyRelList.eliminates` relocated to the
     soundness-prerequisites section above, before `Infer.sound`.) -/
@@ -18293,12 +18294,9 @@ theorem exists_app_unifier {A τa τ₀ argTy : Ty} {Φ₂ : Nat} {R₂ : Subst}
 theorem inferCore_complete_app {f arg : Expr}
     (ihf : InferCoreComplete f) (iharg : InferCoreComplete arg) :
     InferCoreComplete (.app f arg) := by
-  sorry
-/- RESERVED: `Infer.sound` now types the elaborated output, not the source; the
-   roundtrip here needs the orchestrator's source↔elaborated bridge. Old proof:
   intro Φ ctx Φ' S eOut τ K hwf hbelow hKΦ hKe hSK h
   -- declarative typing of the whole app (its arrow structure comes from `huni`)
-  have happ := Infer.sound h hwf hbelow K hKΦ hKe hSK
+  have happ := Infer.sourceSound h hwf hbelow K hKΦ hKe hSK
   cases h with
   | @app _ _ _ _ Φ₁ Φ₂ S₁ S₂ S₃ _ _ τf τa hf harg huni =>
     simp only [Expr.tyFreeVars, List.mem_append] at hKe
@@ -18310,13 +18308,13 @@ theorem inferCore_complete_app {f arg : Expr}
       fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp))
     -- invert the declarative app typing to expose `argTy` and the result `τ₀`
     obtain ⟨argTy, hfty, hargty⟩ : ∃ argTy,
-        TypeOfElabHM ((S₁ ++ S₂ ++ S₃).onCtx ctx) f (.arrow argTy (S₃.onTy (.fvar Φ₂))) ∧
-        TypeOfElabHM ((S₁ ++ S₂ ++ S₃).onCtx ctx) arg argTy := by
+        TypeOfHM ((S₁ ++ S₂ ++ S₃).onCtx ctx) f (.arrow argTy (S₃.onTy (.fvar Φ₂))) ∧
+        TypeOfHM ((S₁ ++ S₂ ++ S₃).onCtx ctx) arg argTy := by
       cases happ with | app hfty hargty => exact ⟨_, hfty, hargty⟩
     have hSlc : ∀ p ∈ S₁ ++ S₂ ++ S₃, p.2.IsLC := (Infer.lc (Infer.app hf harg huni) hwf).2
     -- recurse on `f`, factor the f-typing through the function's principal output
     have hsf := ihf K hwf hbelow hKΦ hKef hSK₁ hf
-    obtain ⟨⟨⟨Φ₁', S₁', τf'⟩, hf', havf⟩, hef⟩ := Option.isSome_iff_exists.mp hsf
+    obtain ⟨⟨⟨Φ₁', S₁', eOut₁', τf'⟩, hf', havf⟩, hef⟩ := Option.isSome_iff_exists.mp hsf
     obtain ⟨R_f, hagf, hStepf, hR_f, hR_fK⟩ := Infer.complete' hf' hwf hbelow hSlc K hKΦ hKef hKfixS hfty
     have hS₁' := (Infer.lc hf' hwf).2
     have hbf := Infer.belowFvars hf' hbelow (fun y hy => hKΦ y (hKef y hy))
@@ -18327,11 +18325,11 @@ theorem inferCore_complete_app {f arg : Expr}
     have hctxeq : R_f.onCtx (S₁'.onCtx ctx) = (S₁ ++ S₂ ++ S₃).onCtx ctx := by
       rw [← Subst.onCtx_append]; exact Subst.onCtx_congr (fun v hv => (hagf v hv).symm) hbelow
     -- transfer arg's typing, re-derive under the function's intermediate state
-    have hargty' : TypeOfElabHM (R_f.onCtx (S₁'.onCtx ctx)) arg argTy := by rw [hctxeq]; exact hargty
+    have hargty' : TypeOfHM (R_f.onCtx (S₁'.onCtx ctx)) arg argTy := by rw [hctxeq]; exact hargty
     obtain ⟨_, _, _, _, _, hinfa, _, _, _, _, hSaK⟩ :=
       Infer.completeAt arg K hwf₁ hbelow₁ hR_f hKΦ₁ hKea hR_fK hargty'
     have hsa := iharg K hwf₁ hbelow₁ hKΦ₁ hKea hSaK hinfa
-    obtain ⟨⟨⟨Φ₂', S₂', τa'⟩, harg', hava⟩, hea⟩ := Option.isSome_iff_exists.mp hsa
+    obtain ⟨⟨⟨Φ₂', S₂', eOut₂', τa'⟩, harg', hava⟩, hea⟩ := Option.isSome_iff_exists.mp hsa
     obtain ⟨R_a, haga, hStepa, hR_a, hR_aK⟩ :=
       Infer.complete' harg' hwf₁ hbelow₁ hR_f K hKΦ₁ hKea hR_fK hargty'
     -- build the app unifier on the function's `(S₂'.onTy τf')`, `arrow τa' (fvar Φ₂')`
@@ -18344,7 +18342,7 @@ theorem inferCore_complete_app {f arg : Expr}
       have := (Subst.onTy_belowFvars hba.2 (hbf.1.mono hle2)).mem_lt _ hm; omega
     have hΦ₂τa : Φ₂' ∉ τa'.freeVars := fun hm => by have := hba.1.mem_lt _ hm; omega
     have hτ₀LC : (S₃.onTy (.fvar Φ₂)).IsLC := by
-      have hreg := TypeOfElabHM.regular hfty; cases hreg with | arrow _ hT => exact hT
+      have hreg := TypeOfHM.regular hfty; cases hreg with | arrow _ hT => exact hT
     have hKΦ₂ : ∀ k ∈ K, k < Φ₂' := fun k hk => lt_of_lt_of_le (hKΦ₁ k hk) hle2
     obtain ⟨U, hUni, hUlc, hUK⟩ :=
       exists_app_unifier hP hStepa hΦ₂τf hΦ₂τa hR_a hτ₀LC hR_aK hKΦ₂
@@ -18355,7 +18353,6 @@ theorem inferCore_complete_app {f arg : Expr}
       unifyCoreK_complete (Subst.onTy_lc hS₂' hτfLC) (.arrow hτaLC ContainsBvarsUpTo.fvar) hUlc hUni hUK
     obtain ⟨⟨S₃', _, _⟩, he3⟩ := Option.isSome_iff_exists.mp huniSome
     rw [inferCore]; simp only [hef, hea, he3, Option.isSome_some]
--/
 
 theorem inferCore_complete_letIn {ann : Option PolyTy} {rhs body : Expr}
     (iha : InferCoreComplete rhs) (ihao : ∀ Ys, InferCoreComplete (rhs.openTyVars Ys))
@@ -19332,11 +19329,11 @@ theorem infer_iff {Φ : Nat} {ctx : Ctx} {e : Expr}
 
 /-- **The executable typechecker decides typeability.** `infer` succeeds iff `e`
     is declaratively typeable under some LC specialization of `ctx` — the
-    full-circle bridge from the executable function all the way to `TypeOfElabHM`. -/
+    full-circle bridge from the executable function all the way to `TypeOfHM`. -/
 theorem infer_iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hclosed : e.tyFreeVars = []) :
     (infer Φ ctx e).isSome ↔
-      ∃ (S : Subst) (τ : Ty), (∀ p ∈ S, p.2.IsLC) ∧ TypeOfElabHM (S.onCtx ctx) e τ := by
+      ∃ (S : Subst) (τ : Ty), (∀ p ∈ S, p.2.IsLC) ∧ TypeOfHM (S.onCtx ctx) e τ := by
   rw [infer_iff hwf hbelow hclosed]
   exact (Infer.iff_typeable hwf hbelow hclosed).symm
 
@@ -19353,7 +19350,7 @@ typeability — `principalType_*`). `typecheck` then **generalizes** it: at an
 empty environment every remaining free type variable is generalizable, so the
 output is a genuine *closed* type scheme — no free type variables, no dangling
 bound variables (`typecheck_closed`). `typecheck` is the intended entry point;
-everything else is in service of it, up to the declarative `TypeOfElabHM`. -/
+everything else is in service of it, up to the declarative `TypeOfHM`. -/
 
 theorem CtxWF.empty {ctors : CtorEnv} : CtxWF ⟨[], ctors⟩ := by
   intro M hM; simp at hM
@@ -19419,41 +19416,41 @@ def principalType (ctors : CtorEnv) (e : Expr) : Option Ty :=
     `K := e.tyFreeVars`), so the inferred substitution never binds it. -/
 theorem principalType_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
     (h : principalType ctors e = some τ) :
-    TypeOfElabHM ⟨[], ctors⟩ e τ := by
+    TypeOfHM ⟨[], ctors⟩ e τ := by
   rw [principalType] at h
   rcases hc : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with _ | ⟨⟨Φ', S, eOut, τ'⟩, hInfer, hSK⟩ <;>
     rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
-    -- RESERVED: `Infer.sound` now types the elaborated output, not the source `e`;
-    -- bridged by the orchestrator's `TypeOfHM.toElab`.
-    sorry
+    exact Infer.sourceSound hInfer CtxWF.empty (fun M hM => by simp at hM)
+      e.tyFreeVars (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) hSK
 
 /-- Monotype principality: every declarative type of the program is a
     substitution instance of the computed principal type. -/
 theorem principalType_principal {ctors : CtorEnv} {e : Expr} {τ : Ty}
     (h : principalType ctors e = some τ) :
-    ∀ τ₀, TypeOfElabHM ⟨[], ctors⟩ e τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+    ∀ τ₀, TypeOfHM ⟨[], ctors⟩ e τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
   rw [principalType] at h
   rcases hc : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with _ | ⟨⟨Φ', S, eOut, τ'⟩, hInfer, hSK⟩ <;>
     rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
-    -- RESERVED (C3): re-point `hτ₀` (LHS `TypeOfElabHM`) to `TypeOfHM`
-    -- (then `complete'` applies directly).
     intro τ₀ hτ₀
-    sorry
+    obtain ⟨R, _, hτeq, _, _⟩ := Infer.complete' hInfer CtxWF.empty (fun M hM => by simp at hM)
+      (S₀ := []) (by simp) e.tyFreeVars (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy)
+      (fun k _ => by simp) (by rw [Subst.onCtx_nil]; exact hτ₀)
+    exact ⟨R, hτeq⟩
 
 /-- Monotype decidability: `principalType` succeeds iff the program is typeable. -/
 theorem principalType_iff {ctors : CtorEnv} {e : Expr} :
-    (principalType ctors e).isSome ↔ ∃ τ, TypeOfElabHM ⟨[], ctors⟩ e τ := by
+    (principalType ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
   constructor
   · intro h
     obtain ⟨τ, hτ⟩ := Option.isSome_iff_exists.mp h
     exact ⟨τ, principalType_sound hτ⟩
-  · -- RESERVED (C3): re-point `hτ` (LHS `TypeOfElabHM`) to `TypeOfHM`
+  · -- RESERVED (C3): re-point `hτ` (LHS `TypeOfHM`) to `TypeOfHM`
     -- (then `completeAt` + `inferCore_complete` apply directly).
     rintro ⟨τ, hτ⟩
     sorry
@@ -19490,7 +19487,7 @@ theorem typecheck_closed {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     declarative type of the program. -/
 theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     (h : typecheck ctors e = some σ) :
-    ∃ τ, TypeOfElabHM ⟨[], ctors⟩ e τ ∧ σ = genScheme [] [] τ := by
+    ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ ∧ σ = genScheme [] [] τ := by
   rw [typecheck] at h
   rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
   · simp at h
@@ -19502,8 +19499,8 @@ theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     instance. -/
 theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     (h : typecheck ctors e = some σ) :
-    ∃ τ, σ = genScheme [] [] τ ∧ TypeOfElabHM ⟨[], ctors⟩ e τ ∧
-      ∀ τ₀, TypeOfElabHM ⟨[], ctors⟩ e τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+    ∃ τ, σ = genScheme [] [] τ ∧ TypeOfHM ⟨[], ctors⟩ e τ ∧
+      ∀ τ₀, TypeOfHM ⟨[], ctors⟩ e τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
   rw [typecheck] at h
   rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
   · simp at h
@@ -19513,14 +19510,14 @@ theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
 /-- Whole-program decidability: `typecheck` succeeds iff the program is
     declaratively typeable. -/
 theorem typecheck_iff {ctors : CtorEnv} {e : Expr} :
-    (typecheck ctors e).isSome ↔ ∃ τ, TypeOfElabHM ⟨[], ctors⟩ e τ := by
+    (typecheck ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
   simp only [typecheck, Option.isSome_map]
   exact principalType_iff
 
 -- (The whole-program progress/preservation theorems and the type-erasure helper
 -- lemmas that lived here have been removed: the type-passing Core has no erasure
 -- layer, so `eraseTyAnnots`/`IsTyErased`/`erased_type_safety`/`erase_preserves_typing`
--- no longer exist. Whole-program safety is now the literal `TypeOfElabHM.type_safety`
+-- no longer exist. Whole-program safety is now the literal `TypeOfHM.type_safety`
 -- chain in `Core` (no erasure premise).)
 
 -- `typecheck [] (λx. x) = some ⟨1, bvar 0 → bvar 0⟩`  (i.e. the closed scheme `∀a. a → a`)
@@ -19579,7 +19576,7 @@ A vacuous theorem (an unsatisfiable premise) cannot be *instantiated* to produce
 positive result, so the most convincing anti-vacuity check is to drive the public
 pipeline end-to-end on concrete inputs. Because `inferCore`/`unifyCoreK` use
 well-founded recursion (they do not reduce by `rfl`), we witness "`typecheck`
-succeeds" by building the *declarative* `TypeOfElabHM` derivation and crossing the `↔`
+succeeds" by building the *declarative* `TypeOfHM` derivation and crossing the `↔`
 headlines — never `decide`/`native_decide`. -/
 
 namespace AuditCapstone
@@ -19589,16 +19586,16 @@ namespace AuditCapstone
 /-- `λx. x`. -/
 def polyId : Expr := .lambda none (.var 0 [])
 
-theorem polyId_typeable : TypeOfElabHM ⟨[], []⟩ polyId (.arrow (.fvar 0) (.fvar 0)) :=
-  TypeOfElabHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
-    (TypeOfElabHM.var (tyArgs := []) rfl (by intro t ht; cases ht) rfl .fvar)
+theorem polyId_typeable : TypeOfHM ⟨[], []⟩ polyId (.arrow (.fvar 0) (.fvar 0)) :=
+  TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
+    (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .fvar)
 
 /-- `typecheck` succeeds, produces a genuine declarative type (soundness), and that
     type is principal — instantiated on a real program, with no escape hatch. -/
 theorem polyId_headlines_fire :
     ∃ σ τ, typecheck [] polyId = some σ ∧ σ = genScheme [] [] τ ∧
-      TypeOfElabHM ⟨[], []⟩ polyId τ ∧
-      ∀ τ₀, TypeOfElabHM ⟨[], []⟩ polyId τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+      TypeOfHM ⟨[], []⟩ polyId τ ∧
+      ∀ τ₀, TypeOfHM ⟨[], []⟩ polyId τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
   obtain ⟨σ, hσ⟩ := Option.isSome_iff_exists.mp (typecheck_iff.mpr ⟨_, polyId_typeable⟩)
   obtain ⟨τ, hτeq, hty, hprin⟩ := typecheck_principal hσ
   exact ⟨σ, τ, hσ, hτeq, hty, hprin⟩
@@ -19608,7 +19605,7 @@ theorem polyId_headlines_fire :
 /-- `5 5` — applying a non-function. -/
 def appFiveFive : Expr := .app (.primLit (.int 5)) (.primLit (.int 5))
 
-theorem appFiveFive_untypeable : ¬ ∃ τ, TypeOfElabHM ⟨[], []⟩ appFiveFive τ := by
+theorem appFiveFive_untypeable : ¬ ∃ τ, TypeOfHM ⟨[], []⟩ appFiveFive τ := by
   rintro ⟨τ, h⟩
   cases h with
   | app hf _ => cases hf
@@ -19623,16 +19620,16 @@ theorem appFiveFive_rejected : ¬ (typecheck [] appFiveFive).isSome := by
 def openId : Expr := .lambda (some (.fvar 5)) (.var 0 [])
 
 /-- Accepted, and sound: `α` is rigid, so the only declarative type is `α → α`. -/
-theorem openId_typeable : TypeOfElabHM ⟨[], []⟩ openId (.arrow (.fvar 5) (.fvar 5)) :=
-  TypeOfElabHM.lambda .fvar (fun _ h => Option.some.inj h) rfl
-    (TypeOfElabHM.var (tyArgs := []) rfl (by intro t ht; cases ht) rfl .fvar)
+theorem openId_typeable : TypeOfHM ⟨[], []⟩ openId (.arrow (.fvar 5) (.fvar 5)) :=
+  TypeOfHM.lambda .fvar (fun _ h => Option.some.inj h) rfl
+    (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .fvar)
 
 /-- `(λ(x : α). x) 5` — forcing `α := Int` would bind the rigid var. Declaratively
     untypeable (`α` cannot equal `Int`); the rigidity-seeded executable correctly
     returns `none`. Before the fix, `inferCore []` wrongly returned `some Int`. -/
 def openMisuse : Expr := .app openId (.primLit (.int 5))
 
-theorem openMisuse_untypeable : ¬ ∃ τ, TypeOfElabHM ⟨[], []⟩ openMisuse τ := by
+theorem openMisuse_untypeable : ¬ ∃ τ, TypeOfHM ⟨[], []⟩ openMisuse τ := by
   rintro ⟨τ, h⟩
   cases h with
   | app hf ha =>
@@ -19651,8 +19648,8 @@ def idid : Expr :=
   .letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (.lambda none (.var 0 []))
     (.app (.var 0 [.arrow (.fvar 0) (.fvar 0)]) (.var 0 [.fvar 0]))
 
-theorem idid_typeable : TypeOfElabHM ⟨[], []⟩ idid (.arrow (.fvar 0) (.fvar 0)) := by
-  apply TypeOfElabHM.letIn (M := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (L := [])
+theorem idid_typeable : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 0) (.fvar 0)) := by
+  apply TypeOfHM.letIn (M := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (L := [])
   · show ContainsBvarsUpTo 1 (Ty.arrow (Ty.bvar 0) (Ty.bvar 0))
     exact .arrow (.bvar (by omega)) (.bvar (by omega))
   · intro σ' h; exact Option.some.inj h
@@ -19665,24 +19662,24 @@ theorem idid_typeable : TypeOfElabHM ⟨[], []⟩ idid (.arrow (.fvar 0) (.fvar 
       have htype : (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy).openVars [X]
             = .arrow (.fvar X) (.fvar X) := rfl
       rw [hterm, htype]
-      exact TypeOfElabHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
-        (TypeOfElabHM.var (tyArgs := []) rfl (by intro t ht; cases ht) rfl .fvar)
+      exact TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
+        (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .fvar)
     · simp at hlen
   · rfl
-  · exact TypeOfElabHM.app
-      (TypeOfElabHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
-        (tyArgs := [.arrow (.fvar 0) (.fvar 0)]) rfl
+  · exact TypeOfHM.app
+      (TypeOfHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+        (instArgs := [.arrow (.fvar 0) (.fvar 0)]) rfl
         (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar)
-        rfl (.arrow (.bvar rfl) (.bvar rfl)))
-      (TypeOfElabHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
-        (tyArgs := [.fvar 0]) rfl
+        (.arrow (.bvar rfl) (.bvar rfl)))
+      (TypeOfHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+        (instArgs := [.fvar 0]) rfl
         (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
-        rfl (.arrow (.bvar rfl) (.bvar rfl)))
+        (.arrow (.bvar rfl) (.bvar rfl)))
 
 theorem idid_headlines_fire :
     ∃ σ τ, typecheck [] idid = some σ ∧ σ = genScheme [] [] τ ∧
-      TypeOfElabHM ⟨[], []⟩ idid τ ∧
-      ∀ τ₀, TypeOfElabHM ⟨[], []⟩ idid τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+      TypeOfHM ⟨[], []⟩ idid τ ∧
+      ∀ τ₀, TypeOfHM ⟨[], []⟩ idid τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
   obtain ⟨σ, hσ⟩ := Option.isSome_iff_exists.mp (typecheck_iff.mpr ⟨_, idid_typeable⟩)
   obtain ⟨τ, hτeq, hty, hprin⟩ := typecheck_principal hσ
   exact ⟨σ, τ, hσ, hτeq, hty, hprin⟩
@@ -19692,15 +19689,15 @@ theorem idid_headlines_fire :
 /-- `(λx. x) 5` — already annotation-free; beta-reduces to `5`. -/
 def appIdFive : Expr := .app (.lambda none (.var 0 [])) (.primLit (.int 5))
 
-theorem appIdFive_typeable : TypeOfElabHM ⟨[], []⟩ appIdFive (.prim .int) :=
-  TypeOfElabHM.app
-    (TypeOfElabHM.lambda .prim (fun _ h => Option.noConfusion h) rfl
-      (TypeOfElabHM.var (tyArgs := []) rfl (by intro t ht; cases ht) rfl .prim))
-    TypeOfElabHM.primLitInt
+theorem appIdFive_typeable : TypeOfHM ⟨[], []⟩ appIdFive (.prim .int) :=
+  TypeOfHM.app
+    (TypeOfHM.lambda .prim (fun _ h => Option.noConfusion h) rfl
+      (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .prim))
+    TypeOfHM.primLitInt
 
 -- (The progress/preservation capstone examples referenced the now-removed type-erasure
 -- layer — `Expr.eraseTyAnnots` / `typecheck_progress` / `typecheck_preservation` no longer
--- exist; whole-program safety is the literal `TypeOfElabHM.type_safety` chain in `Core`.
+-- exist; whole-program safety is the literal `TypeOfHM.type_safety` chain in `Core`.
 -- These two examples are dropped accordingly.)
 
 /-! ### Core v2: an all-wildcard match has a principal type (the match-fix witness) -/
@@ -19710,20 +19707,20 @@ theorem appIdFive_typeable : TypeOfElabHM ⟨[], []⟩ appIdFive (.prim .int) :=
     after the §1 fix the scrutinee type is free, so the principal type is `∀α. α → Int`. -/
 def matchWild : Expr := .lambda none (.match_ (.var 0 []) [(.wildcard, .primLit (.int 0))])
 
-theorem matchWild_typeable : TypeOfElabHM ⟨[], []⟩ matchWild (.arrow (.fvar 0) (.prim .int)) := by
-  refine TypeOfElabHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl ?_
-  refine TypeOfElabHM.match_ (scrutTy := .fvar 0)
-    (TypeOfElabHM.var (tyArgs := []) rfl (by intro t ht; cases ht) rfl .fvar) (by simp) ?_
+theorem matchWild_typeable : TypeOfHM ⟨[], []⟩ matchWild (.arrow (.fvar 0) (.prim .int)) := by
+  refine TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl ?_
+  refine TypeOfHM.match_ (scrutTy := .fvar 0)
+    (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .fvar) (by simp) ?_
   intro branch hbr
   rw [List.mem_singleton] at hbr; subst hbr
-  exact TypeOfElabMatchBranch.wildcard TypeOfElabHM.primLitInt
+  exact TypeOfMatchBranch.wildcard TypeOfHM.primLitInt
 
 /-- All three headlines fire on the all-wildcard match: it typechecks, the produced
     type is a genuine declarative type (soundness), and it is principal. -/
 theorem matchWild_headlines_fire :
     ∃ σ τ, typecheck [] matchWild = some σ ∧ σ = genScheme [] [] τ ∧
-      TypeOfElabHM ⟨[], []⟩ matchWild τ ∧
-      ∀ τ₀, TypeOfElabHM ⟨[], []⟩ matchWild τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+      TypeOfHM ⟨[], []⟩ matchWild τ ∧
+      ∀ τ₀, TypeOfHM ⟨[], []⟩ matchWild τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
   obtain ⟨σ, hσ⟩ := Option.isSome_iff_exists.mp (typecheck_iff.mpr ⟨_, matchWild_typeable⟩)
   obtain ⟨τ, hτeq, hty, hprin⟩ := typecheck_principal hσ
   exact ⟨σ, τ, hσ, hτeq, hty, hprin⟩
@@ -19740,8 +19737,8 @@ recursive-binding inference fires end-to-end at the principal type. -/
 /-- `letRec [var 1, var 0] (var 0)` — the `f = g; g = f` mutual loop returning `f`. -/
 def mutualRec : Expr := .letRec [.var 1 [], .var 0 []] (.var 0 [.fvar 0])
 
-theorem mutualRec_typeable : TypeOfElabHM ⟨[], []⟩ mutualRec (.fvar 0) := by
-  refine TypeOfElabHM.letRec (τs := [.fvar 100, .fvar 100]) (Ms := [⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩])
+theorem mutualRec_typeable : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 0) := by
+  refine TypeOfHM.letRec (τs := [.fvar 100, .fvar 100]) (Ms := [⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩])
     (G := [100]) (L := []) rfl rfl ?_ (by simp) ?_ ?_ rfl ?_
   · -- every shared monotype is locally closed
     intro τ hτ; have : τ = Ty.fvar 100 := by simpa using hτ
@@ -19761,21 +19758,21 @@ theorem mutualRec_typeable : TypeOfElabHM ⟨[], []⟩ mutualRec (.fvar 0) := by
           = [(Expr.var 1 [], Ty.fvar X), (Expr.var 0 [], Ty.fvar X)] from rfl] at hp
     simp only [List.mem_cons, List.not_mem_nil, or_false] at hp
     rcases hp with rfl | rfl
-    · exact TypeOfElabHM.var (tyArgs := []) (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
-        (by intro t ht; cases ht) rfl InstantiatesBy.fvar
-    · exact TypeOfElabHM.var (tyArgs := []) (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
-        (by intro t ht; cases ht) rfl InstantiatesBy.fvar
+    · exact TypeOfHM.var (instArgs := []) (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+        (by intro t ht; cases ht) InstantiatesBy.fvar
+    · exact TypeOfHM.var (instArgs := []) (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
+        (by intro t ht; cases ht) InstantiatesBy.fvar
   · -- body `var 0` instantiates `∀a. a` (the scheme of `f`) at `fvar 0`
-    exact TypeOfElabHM.var (polyTy := ⟨1, .bvar 0⟩) (tyArgs := [.fvar 0]) rfl
+    exact TypeOfHM.var (polyTy := ⟨1, .bvar 0⟩) (instArgs := [.fvar 0]) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact ContainsBvarsUpTo.fvar)
-      rfl (InstantiatesBy.bvar rfl)
+      (InstantiatesBy.bvar rfl)
 
 /-- All headlines fire on the recursive group: `typecheck` succeeds, the produced
     type is a genuine declarative type (soundness), and it is principal. -/
 theorem mutualRec_headlines_fire :
     ∃ σ τ, typecheck [] mutualRec = some σ ∧ σ = genScheme [] [] τ ∧
-      TypeOfElabHM ⟨[], []⟩ mutualRec τ ∧
-      ∀ τ₀, TypeOfElabHM ⟨[], []⟩ mutualRec τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+      TypeOfHM ⟨[], []⟩ mutualRec τ ∧
+      ∀ τ₀, TypeOfHM ⟨[], []⟩ mutualRec τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
   obtain ⟨σ, hσ⟩ := Option.isSome_iff_exists.mp (typecheck_iff.mpr ⟨_, mutualRec_typeable⟩)
   obtain ⟨τ, hτeq, hty, hprin⟩ := typecheck_principal hσ
   exact ⟨σ, τ, hσ, hτeq, hty, hprin⟩
