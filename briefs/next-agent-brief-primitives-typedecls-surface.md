@@ -399,6 +399,82 @@ BranchCtorSpec; Core's `TypeOfElabHM.faithful` is the destructuring model).
   `inferRecGroupCore_complete` (separate mono-raw vs poly-opened `CompleteAt` hyps).
   Executable-relation result types match the fused relation (kernel-accepted).
 
+- 2026-07-02 (**Phase B DONE**): every Phase-B stub filled; `FHM/InferW.lean`
+  (16,516 lines) elaborates with **ZERO errors** (`lean-lsp` full-file diagnostic
+  clean); 18 `sorry`s remain, all in the catalogued Phase-C list + the one Phase-D
+  witness. No new `axiom`/`admit`; other files untouched.
+
+  **Filled (structural):** `Expr.substTyFvars_tyBvarBounded`,
+  `closeTyVarsAux_tyBvarBounded`, `shiftFrom_tyBvarBounded`,
+  `substTyFvars_closeTyVarsAux`, `substTyFvars_shiftFrom` (fused `letRec` arms);
+  `Expr.mem_tyFreeVars_letRecElab(Nest)`; `Expr.letRecElab(Nest)_tyBvarBounded`;
+  `Expr.substTyFvars_letRecElab(Nest)`. New supporting lemmas:
+  `RecGroup.closeAnns_tyBvarBounded`, `RecGroup.substFvars_closeAnns`,
+  `Expr.TyBvarBounded.RecGroup_map_shiftFrom`/`_map_substTyFvars`/`.monotone`,
+  `ContainsBvarsUpTo.bvarRange`, `RecSpec` transport block (`mem_init`,
+  `poly_mem_init/_map_onSubst`, `LC/BelowFvars.onSubst`, `onSubst_append`,
+  `rhsEntry_nil_*`, `bodyScheme_*`, `map_ann_onSubst`, `renameG_nil_pool`),
+  `Ty/RecSpec.freeVars_onSubst_mem_onEnv`, `List.zip_map_left/right_eq'`.
+
+  **Filled (invariants):** fused `letRec` arms + in-mutual fused `InferRecGroup.*`
+  for `lc`/`belowFvars`/`dom_below`/`eOut_avoid`/`eliminates`/`eOut_tyBvarBounded`/
+  `dom_avoid`.
+
+  **Filled (soundness):** `Expr.letRecElab_sound` (via new `innerFusedLetRec_sound`
+  — the empty-pool re-derivation of the fused rule — plus a fused
+  `letRecElabNest_sound` handling both wrapper shapes; poly wrappers via
+  `letRec_proj_openTyVars` + `InstantiatesBy.openVars`); the full
+  `Infer.sound`/`InferBranches.sound`/`InferRecGroup.sound` mutual (non-`letRec`
+  arms restored from git with `var`/branch-`mk` packaging fixes; fused `letRec` arm
+  and fused two-halves group theorem new); `TypeOfHM.rec_strong` (via
+  `TypeOfHM.rec`, motive extended with the fused rule's mono/poly IHs);
+  `TypeOfHM.typ_subst_preservation_uniform` (port of Core's fused proof); the full
+  `Infer.sourceSound`/`InferBranches.sourceSound`/`InferRecGroup.sourceSound`
+  mutual (converted from the retired `Infer.rec_strong` style to a `cases` mutual;
+  fused source `letRec` arm re-derives `TypeOfHM.letRec` with the pool renaming
+  `G ↦ Xs` pushed through the solved-form group typings).
+
+  **Soundness-forced statement adjustments (all ≥ the old `letRec`+`letRecAnn`
+  strength; PROMINENT):**
+  1. **Pool rigid set widened (design-relevant, rule + executable changed):**
+     `Infer.letRec`/`inferCore` now pass `RecGroup.rigidVars anns bindings`
+     (= ann scheme-body vars ++ binding ann vars) to `genGroupVars`, not just
+     `bindings.flatMap Expr.tyFreeVars` — without it a stored scheme's scoped
+     var could be generalised into the pool (soundness bug in the Phase-A guess).
+  2. `InferRecGroup.sound`/`sourceSound`: both halves stated over `substTyFvars S`
+     outputs (sound) / source bindings (sourceSound); two premises added —
+     `hspecs_env` (spec free vars live in the threaded env; ties mono monotypes to
+     the context so the poly skolem-escape check also covers sibling monotypes)
+     and `hKsch` (stored scheme bodies are `K`-rigid). Both are discharged
+     trivially at the `letRec` call site (rhs entries ARE env members; ann bodies
+     are scoped vars). Jointly not weaker than the old split pair.
+  3. `Expr.substTyFvars_letRecElab(Nest)`: added premise that `S` fixes the stored
+     poly-scheme bodies (schemes are RIGID under `RecSpec.onSubst`); supplied from
+     `K`-rigidity at the call site.
+  4. `Expr.letRecElab_sound`: hypotheses in solved/identity form over the
+     elaborated bindings (`specs.map (rhsEntry [] [])` env, skolems fresh for a
+     caller-chosen `Lp`) rather than Core's pool-opened `RecSpecs.Mono/PolyTyped`;
+     the pool-`G` premise re-emerges inside via the empty-pool inner rule. New
+     premise `hG_specs` (pool avoids stored scheme bodies) — supplied by
+     `RecGroup.rigidVars` (adjustment 1).
+  5. `Expr.letRecElabNest_tyBvarBounded`: raw-bindings hypothesis strengthened from
+     per-binding `TyBvarBounded 0` to the shielded `TyBvarBounded.RecGroup 0 anns`
+     zip form (poly members are closed back over their own arity), matching
+     `InferRecGroup.eOut_tyBvarBounded`'s new zip-form conclusion.
+  6. `TypeOfHM.rec_strong`: `letRec` minor premise extended with the mono/poly
+     cofinite IHs (mirroring Core's `TypeOfElabHM.rec_strong`) — needed by
+     `typ_subst_preservation_uniform`; strictly more information for users.
+
+  **Line-count note (requested):** Phase A shrank `InferW` 20.3k → 12.6k almost
+  entirely by REPLACING the heavy proof families' bodies with catalogued stubs
+  (the ~52 `sorry`s) plus the genuine deletions listed in the Phase-A entry
+  (`NoRecAnn` family, `InferRecGroupAnn.*`, `SchemeList` suite, `closeRecGroup`,
+  `Infer.rec_strong`, `inferRecGroupAnnCore`). Phase B re-added the fused proof
+  bodies, growing the file back to 16.5k; the remaining ~3.8k gap vs the old file
+  is (a) the still-stubbed Phase-C completeness bodies and (b) the intended
+  consolidation above. Nothing substantial was removed beyond the Phase-A
+  deletion list.
+
 ## Working discipline (non-negotiable, learned the hard way)
 - The headline theorems must stay `sorry`/`admit`/`axiom`-free and **axiom-clean**
   (`propext`/`Classical.choice`/`Quot.sound`). Gate every increment with a full
