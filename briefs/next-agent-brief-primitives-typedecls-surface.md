@@ -475,6 +475,91 @@ BranchCtorSpec; Core's `TypeOfElabHM.faithful` is the destructuring model).
   consolidation above. Nothing substantial was removed beyond the Phase-A
   deletion list.
 
+- 2026-07-02 (**Phase C DONE**): every Phase-C completeness stub filled;
+  `FHM/InferW.lean` (20,915 lines) elaborates with **ZERO errors** (`lean-lsp`
+  full-file diagnostic clean). Exactly **one `sorry` remains**: the catalogued
+  Phase-D witness `AuditCapstone.mutualRec_typeable` (the two capstone
+  `mutualRec_*` theorems that consume it already elaborate). No new
+  `axiom`/`admit`; `Infer.completeAt`, `Infer.iff_typeable` and
+  `inferCore_complete` verified axiom-clean (`propext`/`Classical.choice`/
+  `Quot.sound`). Only `InferW` + this log edited.
+
+  **Filled (support):** `TypeOfHM.weaken_scheme` (git restore; fused `letRec`
+  case via the extended `rec_strong` mono/poly IHs; packaged branch-`mk`
+  rebuild); the `gap_avoid` mutual (`Infer`/`InferBranches` restored; fused
+  spec-keyed `InferRecGroup.gap_avoid` new — mono members thread `onSubst`,
+  poly skolem blocks sit above the gap); fused `InferRecGroup.block_fresh`
+  (supersedes `InferRecGroupAnn.block_fresh`; tail mono specs handled through
+  the group env via the new `hspecs_env` premise + `gap_avoid`).
+
+  **Filled (producer completeness):** `InferBranches.complete` (git restore +
+  `mk` packaging); **fused `InferRecGroup.complete`** — the campaign's core
+  risk item — carrying BOTH old invariants at once: the mutable-target
+  substitution connection (mono half, threaded through `UnifyRel.complete_K`/
+  `greatest_K`) and the rigid-scheme/skolem-gap conditions (poly half, the old
+  ann threading with per-member fresh blocks above `Φ`, escape checks from
+  domain-avoidance); `Infer.complete_letIn` (restore; `GeneralisesTo` unfolds
+  by `simp only [GeneralisesTo, Expr.openBoundTyVars]` — packaging is defeq);
+  **fused `Infer.complete_letRec`**; `Infer.completeAt` (fused size-induction
+  arm).
+
+  **Filled (given-derivation principality):** the full ~1550-line
+  `Infer.complete'`/`InferBranches.complete'`/fused `InferRecGroup.complete'`
+  mutual (non-`letRec` arms restored from git; branch-`mk` repackaged; fused
+  `letRec` arm and fused group' new; the group' consPoly keeps the old
+  block-swap re-skolemisation (`Subst.conj`/`blockList(Back)`) and adds the
+  mono-half threading through the same residual).
+
+  **New fused-`letRec` infrastructure (shared by `complete'`, `complete_letRec`
+  and `inferCore_complete_letRec`):**
+  - `letRecFused_residual_setup`: from the fused declarative rule's data pick a
+    fresh pool opening `Xs` and build a block residual `R₀` with the spec-level
+    connection `init.map (onSubst R₀) = dspecs.map (openAt G Xs)` (mono
+    positions ↦ `renameG G Xs τ`, poly positions rigid; unused poly block vars
+    sent to `unit`), plus both cofinite premises transported to the algorithm's
+    group context (poly at the rule's nested exclusion `L ++ Xs`).
+  - `letRecFused_body_retype` (supersedes the now-dead mono `letRec_body_retype`,
+    kept): pointwise `Forall₂ PolyTy.Generalizes` between the algorithm's solved
+    `bodyScheme` env (transported by the group residual) and the declarative
+    one — mono members via `genGroup_generalizes_renameG`, poly members are
+    FIXED by the residual (scheme bodies live in `RecGroup.rigidVars ⊆ K`; the
+    Phase-B widening is load-bearing exactly here) so they generalize
+    reflexively; concludes via `weaken_schemes`.
+  - Positional helpers `List.mem_zip_getElem?`/`zip_mem_of_getElem?`,
+    `RecSpecs.monoTy_mem_monoTys`, local `RecSpec.map_rhsEntry_openAt'`.
+
+  **Filled (executable completeness):** `inferCore_complete_letIn` (restore),
+  `inferBranchesCore_complete` (restore + `mk` packaging), **fused
+  `inferRecGroupCore_complete`** (consMono = old mono threading with spec
+  transports; consPoly = old ann threading + `block_fresh` bridge + mono-half
+  tail threading), **fused `inferCore_complete_letRec`** (exec group at the
+  init-spec state, factored via `letRecFused_residual_setup` + fused
+  `complete'`, body retyped via `letRecFused_body_retype`), `inferCore_complete`
+  (fused assembly arm). Capstones (`Infer.complete`, `iff_typeable`,
+  `principalType_*`, `typecheck_*`, `infer_complete`) were already real and now
+  rest on filled proofs.
+
+  **Completeness-forced statement adjustments (all ≥ the old pair jointly;
+  logged per protocol):**
+  1. **Fused `InferRecGroup.complete` / `.complete'` (resolving the Phase-A
+     FLAGGED packaging):** declarative hypotheses added as the two spec-keyed
+     halves — mono `∀ (b, .mono τ) ∈ zip, TypeOfHM (R.onCtx ctx) b (R.onTy τ)`,
+     poly cofinite at a caller-chosen exclusion `{L}` — plus premises `ihopen`
+     (opened-binding principality, producer only) and `hKsch` (stored scheme
+     bodies `K`-rigid). Mirrors the Phase-B `sound`/`sourceSound` packaging.
+  2. **`InferRecGroupCoreComplete`:** premises `hspecs_env` (spec free vars live
+     in the group env — feeds the fused `sourceSound`) and `hKsch` added; both
+     discharged at the `letRec` site (rhs entries ARE env members; ann bodies
+     are `K`-vars) and threaded through the recursion via
+     `RecSpec.freeVars_onSubst_mem_onEnv` + executable domain-avoidance.
+  3. **`InferRecGroup.block_fresh`:** fused analogue takes `hspecs_env` too —
+     with mixed groups the TAIL may contain solved monotypes, whose gap-avoidance
+     must route through the substituted env (old ann version had only rigid
+     schemes there). Same conclusions as the old ann lemma.
+
+  Nothing blocked; no design-relevant deviations beyond the (flagged-and-resolved)
+  packaging above.
+
 ## Working discipline (non-negotiable, learned the hard way)
 - The headline theorems must stay `sorry`/`admit`/`axiom`-free and **axiom-clean**
   (`propext`/`Classical.choice`/`Quot.sound`). Gate every increment with a full
