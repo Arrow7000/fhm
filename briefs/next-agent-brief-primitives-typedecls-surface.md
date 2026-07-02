@@ -15,7 +15,9 @@ type-passing payoff). `FHM.InferW` and `FHM.Examples` are back in the lakefile b
 1. **Arithmetic primitive ops** (self-contained; the on-ramp — details below).
 2. **Type declarations + prelude** (user `data` decls → `CtorEnv`; a fixed prelude env).
 3. **Comparison / boolean primops** (`<`, `==`, … → `Bool`; needs the prelude).
-4. **Mixed annotated/unannotated mutual recursion** (the hard one; completes the trifecta).
+4. **Mixed annotated/unannotated mutual recursion** — **DONE (2026-07-02/03)**: Core fused
+   `letRec`/`letRecAnn` into one node with per-binding `Option PolyTy` anns; InferW fully
+   ported (soundness + completeness + executable gate); witnesses in `Examples.lean`.
 5. **Surface-language bridging** (desugar → resolve → elaborate + bridge lemmas + pattern
    compilation; includes the prelude). This is the north star (see README ~L90 and
    `next-agent-brief-corev2-and-surface.md` §3's staged 0→6 plan).
@@ -176,12 +178,15 @@ type-passing payoff). `FHM.InferW` and `FHM.Examples` are back in the lakefile b
   the Core rule's internals. NOT spiked (node-dependent): preservation rewrap, inference.
 
 ## Recursion status (so nobody re-opens closed doors)
-- **Done:** `letRec` (monomorphic, generalise-after), `letRecAnn` (annotated polymorphic
-  mutual recursion), scoped type variables in annotations, **nested `letRecAnn` schemes
-  referencing outer scoped vars** (Feature C), and **inference of scoped-var threading in
-  `letRecAnn`** (Feature B — demonstrated by the nested witness in `Examples.lean`:
-  `let (g : ∀a. a→a) = (let rec (loop : a→a) = λy. loop y in loop) in g` infers `∀a. a→a`).
-- **Open:** mixed blocks (step 4) and top-level `def` groups only.
+- **Done:** the FUSED `letRec` node (per-binding `Option PolyTy` anns) covering monomorphic
+  generalise-after recursion, annotated polymorphic mutual recursion, AND mixed groups in
+  one rule/algorithm; scoped type variables in annotations; **nested annotated-recursion
+  schemes referencing outer scoped vars** (Feature C); and **inference of scoped-var
+  threading in annotated groups** (Feature B — demonstrated by the nested witness in
+  `Examples.lean`: `let (g : ∀a. a→a) = (let rec (loop : a→a) = λy. loop y in loop) in g`
+  infers `∀a. a→a`). Mixed positive + skolem-leak negative witnesses run executably in
+  `Examples.lean` (ported from the retired `SpikeLetRecMixed.lean`).
+- **Open:** top-level `def` groups only.
 
 ## Cleanup-pass backlog (deferred; do as a dedicated hygiene session)
 
@@ -559,6 +564,50 @@ BranchCtorSpec; Core's `TypeOfElabHM.faithful` is the destructuring model).
 
   Nothing blocked; no design-relevant deviations beyond the (flagged-and-resolved)
   packaging above.
+
+- 2026-07-03 (**Phase D DONE — the InferW port is COMPLETE**): last `sorry` filled,
+  Examples ported, spike deleted, lakefile restored, and the ground-truth gate passed.
+
+  **Witness fill:** `AuditCapstone.mutualRec_typeable` proved against the fused
+  `TypeOfHM.letRec` (`specs = [.mono (fvar 100), .mono (fvar 100)]`, pool `[100]`,
+  `L = []`); `FHM/InferW.lean` is now **`sorry`-free** end to end.
+
+  **Examples port:** every `.letRec` node gained its anns argument (12 all-`none`
+  sites); the nested-`letRecAnn` witness became the all-`some` fused node
+  (`.letRec [some ⟨0, a→a⟩] …` — still infers `∀a. a→a`). All 40 `#eval`s
+  re-verified against their comments in the build log. The two
+  `SpikeLetRecMixed` witnesses were ported as EXECUTABLE checks and the spike
+  DELETED: the mixed positive
+  (`let rec (f : ∀a.a→a) = λx. let _ = f () in x and g = λx. f x in g 0`)
+  **infers `Int`** (`#eval` + `#guard isSome`) — poly recursion in `f` AND
+  cross-boundary use from `g` at once; its all-`none` reading is `#guard`-rejected;
+  the skolem-leak negative (`f = λx. g x`) is `#guard`-rejected. (Core docstrings
+  still cite `SpikeLetRecMixed` as dated historical provenance — left untouched,
+  Core was out of Phase-D scope.)
+
+  **Lakefile:** `FHM.InferW` + `FHM.Examples` restored to roots; temporary-trim
+  comment removed (ConstraintTypeSystem exclusion note kept).
+
+  **The gate:** fresh `lake build` — **Build completed successfully (7749 jobs)**,
+  zero errors/warnings. Axiom audit (`lake env lean` + `#print axioms` against the
+  fresh oleans) on all 25 catalogued headline theorems:
+  `TypeOfElabHM.{type_safety_star, type_safety, preservation, progress, faithful}`,
+  `Infer.{sound, sourceSound, iff_typeable, completeAt, complete, principal}`,
+  `unify_{sound, complete}`, `inferCore_complete`, `infer_complete`,
+  `infer_iff_typeable`, `principalType_{sound, principal, iff}`,
+  `typecheck_{sound, principal, iff, closed}`,
+  `AuditCapstone.mutualRec_{typeable, headlines_fire}` — ALL within
+  `{propext, Classical.choice, Quot.sound}` (`faithful` and `mutualRec_typeable`
+  need only `{propext, Quot.sound}`). No `sorry`/`admit`/`axiom` anywhere in the
+  built stack.
+
+  **README:** two minimal accuracy fixes — the features list now describes
+  per-binding annotations/mixable groups, and the recursive-bindings theorem list
+  drops the deleted `InferRecGroupAnn.*` pair in favour of the fused
+  `InferRecGroup.sound/complete`. No other claims were invalidated.
+
+  **Roadmap:** step 4 (mixed recursion) marked DONE; recursion status updated
+  (only top-level `def` groups remain open).
 
 ## Working discipline (non-negotiable, learned the hard way)
 - The headline theorems must stay `sorry`/`admit`/`axiom`-free and **axiom-clean**

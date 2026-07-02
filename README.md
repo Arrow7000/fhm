@@ -5,8 +5,8 @@ A formalisation of a language with a Hindley-Milner type system. Includes some a
 - type annotations on let bindings and lambda variables (not part of core HM)
 - annotations can reference [type variables quantified in outer scopes](https://www.microsoft.com/en-us/research/publication/lexically-scoped-type-variables/)
 - pattern matching (with wildcard patterns)
-- mutually recursive let bindings (unannotated, internally monomorphic)
-- mutually recursive let bindings with _polymorphic_ type annotations
+- mutually recursive let bindings (unannotated members are internally monomorphic, generalised for the body)
+- _polymorphic_ type annotations on recursive bindings (enabling polymorphic recursion) — annotations are per binding, so a single group can mix annotated and unannotated members
 
 ## Architecture
 
@@ -64,8 +64,7 @@ All of these are fully proved. The theorems only use the standard axioms and are
 
 **Recursive bindings** (`InferW.lean`):
 
-- `InferRecGroup.sound`, `InferRecGroup.complete`: inference is sound and complete for unannotated mutually recursive groups (checked monomorphically, then generalised).
-- `InferRecGroupAnn.sound`, `InferRecGroupAnn.complete`: and for annotated, polymorphic mutually recursive groups.
+- `InferRecGroup.sound`, `InferRecGroup.complete`: inference is sound and complete for mutually recursive groups — unannotated members are checked monomorphically and then generalised, annotated members are checked at their declared schemes (polymorphic recursion), and one group may mix both kinds.
 
 **Runtime safety** (`Core.lean`):
 

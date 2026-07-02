@@ -5,11 +5,6 @@ defaultTargets = ["FHM"]
 [[lean_lib]]
 name = "FHM"
 # Default build target = the verified stack.
-# TEMPORARILY trimmed during the mixed-recursion Core migration (letRec/letRecAnn
-# fused into one letRec node with per-binding Option PolyTy anns). Core, Pretty
-# and SpikeC are PORTED and restored. Still to port + restore: FHM.InferW,
-# FHM.Examples. (FHM.SpikeLetRecMixed is superseded by the migration itself —
-# port its two witnesses into Examples at cleanup, then delete it.)
 # Excluded (present in the tree but not built by default):
 #   FHM.ConstraintTypeSystem  -- stale vs current Core (pre-fst/snd refactor); kept for reference
 roots = [
@@ -17,6 +12,8 @@ roots = [
   "FHM.SurfaceLang",
   "FHM.Pretty",
   "FHM.SpikeC",
+  "FHM.InferW",
+  "FHM.Examples",
 ]
 
 [[require]]

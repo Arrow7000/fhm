@@ -20893,13 +20893,47 @@ recursive-binding inference fires end-to-end at the principal type. -/
     (both unannotated) returning `f`. -/
 def mutualRec : Expr := .letRec [none, none] [.var 1 [], .var 0 []] (.var 0 [.fvar 0])
 
-/-- STUB (Phase D witness port): the all-`none` mutual group types at its principal
-    monotype under the fused `TypeOfHM.letRec` (`specs = [.mono (fvar 100), .mono
-    (fvar 100)]`, pool `[100]`). The declarative derivation is straightforward but
-    verbose against the packaged `RecSpecs.WF`/`MonoTyped` premises; deferred with
-    `SpikeLetRecMixed`'s witnesses to the Phase-D Examples port. -/
+/-- The all-`none` mutual group types at its principal monotype under the fused
+    `TypeOfHM.letRec`: `specs = [.mono (fvar 100), .mono (fvar 100)]`, pool
+    `[100]`. Inside the group both members sit at the opened shared monotype
+    `fvar X`; the body sees them generalised to `∀a. a` and instantiates at
+    `fvar 0`. -/
 theorem mutualRec_typeable : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 0) := by
-  sorry
+  refine TypeOfHM.letRec (specs := [.mono (.fvar 100), .mono (.fvar 100)]) (G := [100])
+    (L := []) ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
+  · -- shared monotypes are LC
+    intro τ hτ
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hτ
+    rcases hτ with h | h <;> (injection h with h'; rw [h']; exact .fvar)
+  · -- no annotated members
+    intro σ hσ
+    simp only [List.mem_cons, List.not_mem_nil, or_false, reduceCtorEq, or_self] at hσ
+  · -- MonoTyped: both members at the opened shared monotype `fvar X`
+    intro Xs hfresh p hp τ hτ
+    obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
+    simp only [mutualRec, List.zip_cons_cons, List.zip_nil_right, List.mem_cons,
+      List.not_mem_nil, or_false] at hp
+    rcases hp with rfl | rfl <;> (injection hτ with h'; rw [← h'])
+    · -- `f = g`: look up `g` at index 1
+      show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
+        (.var 1 []) (.fvar X)
+      exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl
+        (by intro t ht; cases ht) .fvar
+    · -- `g = f`: look up `f` at index 0
+      show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
+        (.var 0 []) (.fvar X)
+      exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl
+        (by intro t ht; cases ht) .fvar
+  · -- PolyTyped: vacuous (no annotated members)
+    intro Xs hfresh p hp σ hσ
+    simp only [mutualRec, List.zip_cons_cons, List.zip_nil_right, List.mem_cons,
+      List.not_mem_nil, or_false] at hp
+    rcases hp with rfl | rfl <;> exact RecSpec.noConfusion hσ
+  · -- the body sees `f`/`g` generalised to `∀a. a` and instantiates at `fvar 0`
+    show TypeOfHM ⟨[⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩], []⟩ (.var 0 [.fvar 0]) (.fvar 0)
+    exact TypeOfHM.var (polyTy := ⟨1, .bvar 0⟩) (instArgs := [.fvar 0]) rfl
+      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
+      (.bvar rfl)
 
 /-- All headlines fire on the recursive group: `typecheck` succeeds, the produced
     type is a genuine declarative type (soundness), and it is principal. -/

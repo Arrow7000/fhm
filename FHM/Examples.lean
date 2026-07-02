@@ -250,21 +250,21 @@ the shared-monotype rule infers their principal types. -/
 
 -- let rec f = λx. x in f  :  ∀ a. a → a
 -- (a non-recursive binding placed in a letRec — still sound, generalised as usual)
-#eval showType (.letRec [.lambda none (.var 0 [])] (.var 0 []))
+#eval showType (.letRec [none] [.lambda none (.var 0 [])] (.var 0 []))
 
 -- let rec f = λx. f x in f  :  ∀ a b. a → b
 -- (genuine self-recursion: `f` calls itself; the loop is well-typed, productive `f`
 --  would need a productive body — here the type is the most general fixpoint shape)
-#eval showType (.letRec [.lambda none (.app (.var 1 []) (.var 0 []))] (.var 0 []))
+#eval showType (.letRec [none] [.lambda none (.app (.var 1 []) (.var 0 []))] (.var 0 []))
 
 -- let rec f = g and g = f in f  :  ∀ a. a
 -- (mutual recursion: `f`/`g` share one polymorphic type — the exact program the
 --  disjoint-slice predecessor could NOT type polymorphically)
-#eval showType (.letRec [.var 1 [], .var 0 []] (.var 0 []))
+#eval showType (.letRec [none, none] [.var 1 [], .var 0 []] (.var 0 []))
 
 -- let rec f = λx. g x and g = λx. f x in f  :  ∀ a b. a → b
 -- (mutual deferral: `f` and `g` share their `a → b` shape across the group)
-#eval showType (.letRec
+#eval showType (.letRec [none, none]
   [.lambda none (.app (.var 2 []) (.var 0 [])), .lambda none (.app (.var 1 []) (.var 0 []))]
   (.var 0 []))
 
@@ -282,7 +282,7 @@ at its *own* monotype — exactly the monomorphic recursion `letRec` provides. -
 -- in length
 -- (`t : List a` recurses, the result is a `Peano`; `length` generalises to be
 --  polymorphic in the element type `a` once the group is closed)
-#eval showTypeP (.letRec
+#eval showTypeP (.letRec [none]
   [.lambda none (.match_ (.var 0 [])
     [ (.named (.mk "Nil") 0, .ctor (.mk "Zero"))
     , (.named (.mk "Cons") 2, .app (.ctor (.mk "Succ")) (.app (.var 3 []) (.var 1 []))) ])]
@@ -295,7 +295,7 @@ at its *own* monotype — exactly the monomorphic recursion `letRec` provides. -
 -- (the headline example: a polymorphic recursive function. The recursive `map f t`
 --  pins `map` at its shared monotype inside the group; the body then sees the fully
 --  generalised `∀ a b. (a → b) → List a → List b`)
-#eval showTypeP (.letRec
+#eval showTypeP (.letRec [none]
   [.lambda none (.lambda none (.match_ (.var 0 [])
     [ (.named (.mk "Nil") 0, .ctor (.mk "Nil"))
     , (.named (.mk "Cons") 2,
@@ -316,7 +316,7 @@ generalised independently for the body. -/
 -- in even
 -- (the textbook mutual recursion: `even` calls `odd` and vice versa; the body
 --  returns `even`. Both share the monotype `Peano → Bool` across the group)
-#eval showTypeP (.letRec
+#eval showTypeP (.letRec [none, none]
   [ .lambda none (.match_ (.var 0 [])
       [ (.named (.mk "Zero") 0, .ctor (.mk "True"))
       , (.named (.mk "Succ") 1, .app (.var 3 []) (.var 0 [])) ])
@@ -334,7 +334,7 @@ generalised independently for the body. -/
 -- (mutual recursion mirroring mutually-recursive *data* (`Tree`/`Forest`). The whole
 --  group shares the single `(a → b)` and a single element-type pair `a`/`b` — the
 --  exact polymorphic cross-binding sharing the old rule severed)
-#eval showTypeP (.letRec
+#eval showTypeP (.letRec [none, none]
   [ .lambda none (.lambda none (.match_ (.var 0 [])
       [ (.named (.mk "Node") 2,
           .app (.app (.ctor (.mk "Node")) (.app (.var 3 []) (.var 0 [])))
@@ -356,25 +356,77 @@ generalised. So a polymorphic self-application in the body must be accepted. -/
 -- (`id id` forces the body's `id` to be used at two types at once — only typeable
 --  because the body generalises the group binding to `∀ a. a → a`. A checker that
 --  forgot to generalise the body would reject this)
-#eval showType (.letRec [.lambda none (.var 0 [])] (.app (.var 0 []) (.var 0 [])))
+#eval showType (.letRec [none] [.lambda none (.var 0 [])] (.app (.var 0 []) (.var 0 [])))
 
 
 /-! ### Annotated polymorphic recursion referencing an OUTER scoped type variable
 
-The witness for nested-`letRecAnn` support: a `letRecAnn` scheme whose body mentions
-a type variable bound by an *enclosing* scope. Here the group binding `loop`'s
-annotation `a → a` refers to the outer `let`'s `∀ a`, i.e. a `bvar` past `loop`'s
-own (zero) parameters. This was previously *rejected* — `open`/`close` didn't descend
-into `letRecAnn` scheme bodies, so the outer `bvar` never resolved and failed
-`PolyTy.WF`; the elaborator now opens it to the enclosing skolem and closes it back,
-so the whole thing infers `∀ a. a → a`. -/
+The witness for nested annotated-recursion support: an annotated `letRec` member
+whose scheme body mentions a type variable bound by an *enclosing* scope. Here the
+group binding `loop`'s annotation `a → a` refers to the outer `let`'s `∀ a`, i.e. a
+`bvar` past `loop`'s own (zero) parameters. This was previously *rejected* —
+`open`/`close` didn't descend into stored recursion-annotation scheme bodies, so the
+outer `bvar` never resolved and failed `PolyTy.WF`; the elaborator now opens it to
+the enclosing skolem and closes it back, so the whole thing infers `∀ a. a → a`. -/
 
 -- let (g : ∀ a. a → a) = (let rec (loop : a → a) = λy. loop y in loop) in g   :  ∀ a. a → a
 #eval showType (.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
-  (.letRecAnn [⟨0, .arrow (.bvar 0) (.bvar 0)⟩]
+  (.letRec [some ⟨0, .arrow (.bvar 0) (.bvar 0)⟩]
      [.lambda none (.app (.var 1 []) (.var 0 []))]
      (.var 0 []))
   (.var 0 []))
+
+
+/-! ### Mixed annotated/unannotated recursion (the fused rule end-to-end)
+
+The fused `letRec` node carries per-binding `Option PolyTy` annotations, so ONE
+group can mix both regimes: annotated members are checked at their declared
+schemes (polymorphic recursion allowed), unannotated members at shared monotypes
+that are generalised only for the body. These witnesses are ported from the
+retired `SpikeLetRecMixed.lean`, upgraded from declarative derivations to
+executable `typecheck` runs. -/
+
+/-- `∀a. a → a`. -/
+private def selfSig : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
+
+/-- `f`'s RHS: `λx. let _ = f () in x` — the recursive call instantiates `f`'s
+    OWN scheme at `unit`: polymorphic recursion (needs the annotated regime). -/
+private def fRhs : Expr :=
+  .lambda none (.letIn none (.app (.var 1 []) (.primLit .unit)) (.var 1 []))
+
+/-- `g`'s RHS: `λx. f x` — the unannotated member instantiates the annotated
+    sibling at `g`'s own shared pool variable. -/
+private def gRhs : Expr := .lambda none (.app (.var 1 []) (.var 0 []))
+
+-- let rec (f : ∀ a. a → a) = λx. let _ = f () in x
+--     and g                = λx. f x
+-- in g 0   :   Int
+-- (the mixed POSITIVE witness: `f` poly-recurses at `unit` while being checked at
+--  a fresh skolem — the annotated regime; `g` cross-calls `f` at its own shared
+--  monotype and is generalised for the body — the unannotated regime. Neither
+--  regime alone types this program.)
+#eval showType (.letRec [some selfSig, none] [fRhs, gRhs]
+  (.app (.var 1 []) (.primLit (.int 0))))
+#guard (typecheck [] (.letRec [some selfSig, none] [fRhs, gRhs]
+  (.app (.var 1 []) (.primLit (.int 0))))).isSome = true
+
+-- …and the SAME program's all-unannotated reading is REJECTED (the recursive call
+-- `f ()` pins `f`'s monotype to `unit → unit`, so the body's `g 0` fails): the
+-- mixed witness genuinely needs BOTH regimes at once.
+#guard (typecheck [] (.letRec [none, none] [fRhs, gRhs]
+  (.app (.var 1 []) (.primLit (.int 0))))).isSome = false
+
+-- let rec (f : ∀ a. a → a) = λx. g x and g = λx. f x in f   :   ill-typed
+-- (the skolem-leak NEGATIVE witness: checking `f` at a fresh skolem `Y` of its
+--  scheme forces the unannotated sibling's shared monotype to be `Y → Y` — but
+--  the shared monotypes are fixed OUTSIDE the per-binding skolem quantifier, so
+--  the annotation variable cannot leak into the pool. Correctly rejected.)
+#eval showType (.letRec [some selfSig, none]
+  [.lambda none (.app (.var 2 []) (.var 0 [])), .lambda none (.app (.var 1 []) (.var 0 []))]
+  (.var 0 []))
+#guard (typecheck [] (.letRec [some selfSig, none]
+  [.lambda none (.app (.var 2 []) (.var 0 [])), .lambda none (.app (.var 1 []) (.var 0 []))]
+  (.var 0 []))).isSome = false
 
 
 /-! ### Adversarial: where `letRec` is *supposed* to say no
@@ -386,7 +438,7 @@ into unsound polymorphic recursion (or an occurs-check loop). All correctly reje
 -- let rec f = λx. let a = f 0 in let b = f () in x in f   :  ill-typed
 -- (polymorphic recursion: `f` is used at both `Int → _` and `Unit → _` inside its own
 --  group, where it is monomorphic. HM (rightly) refuses — no annotation, no poly-rec)
-#eval showType (.letRec
+#eval showType (.letRec [none]
   [.lambda none
     (.letIn none (.app (.var 1 []) (.primLit (.int 0)))
       (.letIn none (.app (.var 2 []) (.primLit .unit))
@@ -396,13 +448,13 @@ into unsound polymorphic recursion (or an occurs-check loop). All correctly reje
 -- let rec f = f f in f   :  ill-typed
 -- (self-application under recursion: `f`'s monotype `a` must equal `a → b`. Occurs
 --  check fails — the recursive binding cannot paper over a non-finite type)
-#eval showType (.letRec [.app (.var 0 []) (.var 0 [])] (.var 0 []))
+#eval showType (.letRec [none] [.app (.var 0 []) (.var 0 [])] (.var 0 []))
 
 -- let rec id = λx. x and bad = λu. let a = id 0 in id () in bad   :  ill-typed
 -- (the soundness landmine: `bad` uses the *group-bound* `id` at `Int` and `Unit`.
 --  Because `id` is monomorphic inside the group, the two uses clash. Contrast the
 --  next example, where moving `id` to a plain `let` makes it generalise — accepted)
-#eval showType (.letRec
+#eval showType (.letRec [none, none]
   [ .lambda none (.var 0 [])
   , .lambda none (.letIn none (.app (.var 1 []) (.primLit (.int 0)))
       (.app (.var 2 []) (.primLit .unit))) ]
