@@ -106,20 +106,14 @@ def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
   | .match_ scrut branches =>
       prettyParenIf (prec ≥ 1) ("match " ++ Expr.prettyAux ctx 0 scrut ++ " with"
         ++ Expr.prettyBranches ctx branches)
-  | .letRec bindings body =>
+  | .letRec anns bindings body =>
       -- The `n = bindings.length` group binders are in scope (de Bruijn `0..n-1`)
       -- in every binding *and* the body, named by depth like the other cases.
+      -- Annotated members print their declared (load-bearing) recursion scheme
+      -- inline: `let rec (f : σ) = e and g = e' in body`.
       let names := (List.range bindings.length).map (fun j => prettyTermVarName (ctx.length + j))
       let ctx' := names ++ ctx
-      prettyParenIf (prec ≥ 1) ("let rec " ++ Expr.prettyRecGroup ctx' names bindings
-        ++ " in " ++ Expr.prettyAux ctx' 0 body)
-  | .letRecAnn schemes bindings body =>
-      -- Like `letRec`, but each binding carries a declared (load-bearing)
-      -- recursion scheme — annotated polymorphic recursion. Same binder scoping.
-      let names := (List.range bindings.length).map (fun j => prettyTermVarName (ctx.length + j))
-      let ctx' := names ++ ctx
-      let schemeStr := " {" ++ String.intercalate ", " (schemes.map (·.pretty)) ++ "}"
-      prettyParenIf (prec ≥ 1) ("let rec" ++ schemeStr ++ " " ++ Expr.prettyRecGroup ctx' names bindings
+      prettyParenIf (prec ≥ 1) ("let rec " ++ Expr.prettyRecGroup ctx' names anns bindings
         ++ " in " ++ Expr.prettyAux ctx' 0 body)
 
 def Expr.prettyBranches (ctx : List String) : List (MatchPattern × Expr) → String
@@ -129,14 +123,19 @@ def Expr.prettyBranches (ctx : List String) : List (MatchPattern × Expr) → St
       " | " ++ pat.pretty names ++ " => " ++ Expr.prettyAux (names ++ ctx) 0 body
         ++ Expr.prettyBranches ctx rest
 
-/-- Render a `letRec` group `x₀ = e₀ and x₁ = e₁ and …`, each binding printed in
-    the (already group-extended) context `ctx'`. -/
-def Expr.prettyRecGroup (ctx' : List String) (names : List String) : List Expr → String
+/-- Render a `letRec` group `x₀ = e₀ and (x₁ : σ₁) = e₁ and …`, each binding
+    printed in the (already group-extended) context `ctx'`; annotated members
+    show their declared scheme. -/
+def Expr.prettyRecGroup (ctx' : List String) (names : List String)
+    (anns : List (Option PolyTy)) : List Expr → String
   | [] => ""
   | e :: rest =>
-      names.headD "?" ++ " = " ++ Expr.prettyAux ctx' 0 e
+      (match anns.headD none with
+        | none => names.headD "?"
+        | some σ => "(" ++ names.headD "?" ++ " : " ++ σ.pretty ++ ")")
+        ++ " = " ++ Expr.prettyAux ctx' 0 e
         ++ (match rest with | [] => "" | _ :: _ => " and ")
-        ++ Expr.prettyRecGroup ctx' names.tail rest
+        ++ Expr.prettyRecGroup ctx' names.tail anns.tail rest
 
 end
 

@@ -26,28 +26,35 @@ def sigZ (Z : Nat) : PolyTy := ⟨0, .arrow (.fvar Z) (.fvar Z)⟩
 def rhs : Expr := .lambda none (.app (.var 1 []) (.var 0 []))
 
 /-- `let rec (f : Z → Z) = λx. f x in f`. -/
-def cTerm (Z : Nat) : Expr := .letRecAnn [sigZ Z] [rhs] (.var 0 [])
+def cTerm (Z : Nat) : Expr := .letRec [some (sigZ Z)] [rhs] (.var 0 [])
 
 /-- POSITIVE — Feature B: with `Z` a *top-level* rigid constant, the term types at
     `Z → Z`, and this is erasure-safe (free `fvar`s never dangle). -/
 theorem cTerm_typeable (Z : Nat) :
     TypeOfElabHM ⟨[], []⟩ (cTerm Z) (.arrow (.fvar Z) (.fvar Z)) := by
-  refine TypeOfElabHM.letRecAnn (schemes := [sigZ Z]) (L := []) rfl ?_ ?_ rfl ?_
-  · intro σ hσ; simp only [List.mem_singleton] at hσ; subst hσ
+  refine TypeOfElabHM.letRec (specs := [.poly (sigZ Z)]) (G := []) (L := [])
+    ⟨rfl, rfl, List.nodup_nil, fun τ hτ => by simp at hτ, ?_⟩ ?_ ?_ rfl ?_
+  · intro σ hσ; simp only [List.mem_singleton, RecSpec.poly.injEq] at hσ; subst hσ
     exact .arrow .fvar .fvar
-  · intro p hp Xs hfresh
+  · intro Xs _hfresh p hp τ hτ
     simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
     subst hp
-    obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
+    exact RecSpec.noConfusion hτ
+  · intro Xs _hfresh p hp σ hσ Ys hYs
+    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
+    subst hp
+    injection hσ with hσσ
+    subst hσσ
+    obtain rfl : Ys = [] := List.eq_nil_of_length_eq_zero hYs.length
     show TypeOfElabHM ⟨[sigZ Z], []⟩ (rhs.openTyVars []) ((Ty.fvar Z).arrow (Ty.fvar Z))
     refine TypeOfElabHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
     refine TypeOfElabHM.app (argTy := .fvar Z) ?_ ?_
     · exact TypeOfElabHM.var (polyTy := sigZ Z) (tyArgs := []) rfl
-        (by intro t ht; cases ht) rfl (.arrow .fvar .fvar)
+        ⟨rfl, by intro t ht; cases ht⟩ (.arrow .fvar .fvar)
     · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar Z)) (tyArgs := []) rfl
-        (by intro t ht; cases ht) rfl .fvar
+        ⟨rfl, by intro t ht; cases ht⟩ .fvar
   · exact TypeOfElabHM.var (polyTy := sigZ Z) (tyArgs := []) rfl
-      (by intro t ht; cases ht) rfl (.arrow .fvar .fvar)
+      ⟨rfl, by intro t ht; cases ht⟩ (.arrow .fvar .fvar)
 
 /-- NEGATIVE — the obstruction: the kept scheme `Z → Z` is **rigid** in `Z`. The
     term does NOT type at `X → X` for any `X ≠ Z`, so it is *not* polymorphic in
@@ -59,17 +66,24 @@ theorem cTerm_rigid (Z X : Nat) (hne : X ≠ Z) :
     ¬ TypeOfElabHM ⟨[], []⟩ (cTerm Z) (.arrow (.fvar X) (.fvar X)) := by
   intro h
   cases h with
-  | letRecAnn hlen hwf hcofin heq hbody =>
+  | letRec hwf hmono hpoly heq hbody =>
     subst heq
-    cases hbody with
-    | var hlook _htyargs _hlen hinst =>
-      simp only [List.append_nil, List.getElem?_cons_zero, Option.some.injEq] at hlook
-      subst hlook
-      simp only [sigZ] at hinst
-      cases hinst with
-      | arrow hfst hsnd =>
-        cases hfst
-        exact hne rfl
+    expose_names
+    -- The spec list is forced: `[.poly (sigZ Z)]` by the stored annotation.
+    match specs, hwf.anns_eq with
+    | [s], hanns =>
+      simp only [List.map_cons, List.map_nil, List.cons.injEq, and_true] at hanns
+      cases RecSpec.ann_eq_some hanns
+      cases hbody with
+      | var hlook _hlc hinst =>
+        simp only [RecSpecs.bodyCtx, List.map_cons, List.map_nil, RecSpec.bodyScheme,
+          List.append_nil, List.getElem?_cons_zero, Option.some.injEq] at hlook
+        subst hlook
+        simp only [PolyTy.InstantiatesTo, sigZ] at hinst
+        cases hinst with
+        | arrow hfst hsnd =>
+          cases hfst
+          exact hne rfl
 
 /-! ## Mutual OWN-variable annotated polymorphic recursion is supported
 
@@ -102,7 +116,8 @@ def gRhs : Expr :=
 
 /-- `let rec (f : ∀a.a→a) = λx. (g[a→a] id) x and (g : ∀a.a→a) = λx. (f[a→a] id) x
     in f [Int]`, the mutual OWN-variable polymorphic-recursion group. -/
-def mutualTerm : Expr := .letRecAnn [selfSig, selfSig] [fRhs, gRhs] (.var 0 [.prim .int])
+def mutualTerm : Expr :=
+  .letRec [some selfSig, some selfSig] [fRhs, gRhs] (.var 0 [.prim .int])
 
 theorem fRhs_opened_types (X : Nat) :
     TypeOfElabHM ⟨[selfSig, selfSig], []⟩ (fRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X)) := by
@@ -115,13 +130,13 @@ theorem fRhs_opened_types (X : Nat) :
   refine TypeOfElabHM.app (argTy := .fvar X) ?_ ?_
   · refine TypeOfElabHM.app (argTy := .arrow (.fvar X) (.fvar X)) ?_ ?_
     · exact TypeOfElabHM.var (polyTy := selfSig) rfl
-        (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar)
-        rfl (.arrow (.bvar rfl) (.bvar rfl))
+        ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar⟩
+        (.arrow (.bvar rfl) (.bvar rfl))
     · refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
       exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
-        (by intro t ht; cases ht) rfl .fvar
+        ⟨rfl, by intro t ht; cases ht⟩ .fvar
   · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
-      (by intro t ht; cases ht) rfl .fvar
+      ⟨rfl, by intro t ht; cases ht⟩ .fvar
 
 theorem gRhs_opened_types (X : Nat) :
     TypeOfElabHM ⟨[selfSig, selfSig], []⟩ (gRhs.openTyVars [X]) ((Ty.fvar X).arrow (Ty.fvar X)) := by
@@ -134,38 +149,47 @@ theorem gRhs_opened_types (X : Nat) :
   refine TypeOfElabHM.app (argTy := .fvar X) ?_ ?_
   · refine TypeOfElabHM.app (argTy := .arrow (.fvar X) (.fvar X)) ?_ ?_
     · exact TypeOfElabHM.var (polyTy := selfSig) rfl
-        (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar)
-        rfl (.arrow (.bvar rfl) (.bvar rfl))
+        ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar⟩
+        (.arrow (.bvar rfl) (.bvar rfl))
     · refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
       exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
-        (by intro t ht; cases ht) rfl .fvar
+        ⟨rfl, by intro t ht; cases ht⟩ .fvar
   · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
-      (by intro t ht; cases ht) rfl .fvar
+      ⟨rfl, by intro t ht; cases ht⟩ .fvar
 
-/-- **Mutual own-variable polymorphic recursion types** under Core's fixed
-    `TypeOfElabHM.letRecAnn`: each binding is checked scheme-relatively at its own fresh
-    `X` (its own-var cross-call becomes the closed `X → X`); the body uses `f` at
-    `Int`. -/
+/-- **Mutual own-variable polymorphic recursion types** under the fused
+    `TypeOfElabHM.letRec` (all-`some` degenerate case): each binding is checked
+    scheme-relatively at its own fresh `X` (its own-var cross-call becomes the
+    closed `X → X`); the body uses `f` at `Int`. -/
 theorem mutual_typeable :
     TypeOfElabHM ⟨[], []⟩ mutualTerm ((Ty.prim .int).arrow (.prim .int)) := by
-  refine TypeOfElabHM.letRecAnn (schemes := [selfSig, selfSig]) (L := []) rfl ?_ ?_ rfl ?_
+  refine TypeOfElabHM.letRec (specs := [.poly selfSig, .poly selfSig]) (G := []) (L := [])
+    ⟨rfl, rfl, List.nodup_nil, fun τ hτ => by simp at hτ, ?_⟩ ?_ ?_ rfl ?_
   · intro σ hσ
-    simp only [List.mem_cons, List.not_mem_nil, or_false] at hσ
+    simp only [List.mem_cons, List.not_mem_nil, or_false, RecSpec.poly.injEq] at hσ
     rcases hσ with rfl | rfl <;>
       exact (show ContainsBvarsUpTo 1 ((Ty.bvar 0).arrow (Ty.bvar 0)) from
         .arrow (.bvar (by omega)) (.bvar (by omega)))
-  · intro p hp Xs hfresh
-    have hzip : [fRhs, gRhs].zip [selfSig, selfSig] = [(fRhs, selfSig), (gRhs, selfSig)] := rfl
+  · intro Xs _hfresh p hp τ hτ
+    have hzip : [fRhs, gRhs].zip [RecSpec.poly selfSig, RecSpec.poly selfSig]
+        = [(fRhs, RecSpec.poly selfSig), (gRhs, RecSpec.poly selfSig)] := rfl
     rw [hzip] at hp
     simp only [List.mem_cons, List.not_mem_nil, or_false] at hp
-    rcases hp with rfl | rfl
-    · obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
+    rcases hp with rfl | rfl <;> exact RecSpec.noConfusion hτ
+  · intro Xs _hfresh p hp σ hσ Ys hYs
+    have hzip : [fRhs, gRhs].zip [RecSpec.poly selfSig, RecSpec.poly selfSig]
+        = [(fRhs, RecSpec.poly selfSig), (gRhs, RecSpec.poly selfSig)] := rfl
+    rw [hzip] at hp
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hp
+    rcases hp with rfl | rfl <;>
+      (injection hσ with hσσ; subst hσσ)
+    · obtain ⟨X, rfl⟩ : ∃ X, Ys = [X] := List.length_eq_one_iff.mp hYs.length
       exact fRhs_opened_types X
-    · obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
+    · obtain ⟨X, rfl⟩ : ∃ X, Ys = [X] := List.length_eq_one_iff.mp hYs.length
       exact gRhs_opened_types X
   · exact TypeOfElabHM.var (polyTy := selfSig) rfl
-      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim)
-      rfl (.arrow (.bvar rfl) (.bvar rfl))
+      ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim⟩
+      (.arrow (.bvar rfl) (.bvar rfl))
 
 end SpikeC
 
@@ -203,10 +227,10 @@ theorem elabRhs_opened_typeable (X : Nat) :
   refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
   refine TypeOfElabHM.app (argTy := .fvar X) ?_ ?_
   · exact TypeOfElabHM.var (polyTy := polyId) rfl
-      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
-      rfl (.arrow (.bvar rfl) (.bvar rfl))
+      ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar⟩
+      (.arrow (.bvar rfl) (.bvar rfl))
   · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
-      (by intro t ht; cases ht) rfl .fvar
+      ⟨rfl, by intro t ht; cases ht⟩ .fvar
 
 /-- **De-risk headline.** The elaborated term types at `Int` with `g` generalised
     to the full `∀a.a→a` — the let-polymorphism the prior session declared
@@ -223,7 +247,7 @@ theorem elabTerm_typeable :
     exact elabRhs_opened_typeable X
   · refine TypeOfElabHM.app (argTy := .prim .int) ?_ TypeOfElabHM.primLitInt
     exact TypeOfElabHM.var (polyTy := polyId) rfl
-      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim)
-      rfl (.arrow (.bvar rfl) (.bvar rfl))
+      ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim⟩
+      (.arrow (.bvar rfl) (.bvar rfl))
 
 end SpikeLetInElab
