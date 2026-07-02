@@ -200,6 +200,9 @@ type-passing payoff). `FHM.InferW` and `FHM.Examples` are back in the lakefile b
 - **Stale docstring**: `HasSchemeVars` still claims to be "exactly the cofinite premise
   of `TypeOfElabHM.letIn`" — that role now belongs to `GeneralisesTo` (the ann-aware
   opener); `HasSchemeVars` is the `instTy`-based sibling.
+- **Stale spike citations**: a few Core docstrings cite `SpikeLetRecMixed` (deleted
+  2026-07-03; witnesses live in Examples) as provenance — reword to point at the
+  Examples witnesses or keep as dated historical notes, owner's call.
 - **Optional**: `Ctx.extend`-style builders for the remaining inline
   `{ ctx with env := … ++ ctx.env }` in lambda/match (marginal; short enough inline).
 - **File split** of `Core.lean` (Syntax/Semantics/Typing/Metatheory/Safety) + a
