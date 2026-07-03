@@ -136,6 +136,28 @@ needed — the result is a primitive `Int`). -/
 #guard (typecheck [] (.app (.primBinOp .intAdd) (.primLit .unit))).isSome = false
 
 
+/-! ### The comparison op `intLt` (returns the prelude `Bool`)
+
+`intLt : Int → Int → Bool`. Its δ-rule emits `.ctor "True"/"False"`, so it is
+well-typed only relative to an env that provides `Bool` — captured by the two
+`.ctor "True"/"False" : Bool` premises of its typing rule. `demoCtors` provides
+`Bool`, so it typechecks there; against the empty env it is (correctly) rejected. -/
+
+-- intLt 2 3  :  Bool   (typechecks against `demoCtors`, which provides Bool)
+#eval showTypeP (.app (.app (.primBinOp .intLt) (.primLit (.int 2))) (.primLit (.int 3)))
+#guard (typecheck demoCtors
+  (.app (.app (.primBinOp .intLt) (.primLit (.int 2))) (.primLit (.int 3)))).isSome = true
+
+-- intLt 2 3  ⟹  True   and   intLt 3 2  ⟹  False   (δ emits the Bool ctor)
+#guard evalStr (.app (.app (.primBinOp .intLt) (.primLit (.int 2))) (.primLit (.int 3))) = "True"
+#guard evalStr (.app (.app (.primBinOp .intLt) (.primLit (.int 3))) (.primLit (.int 2))) = "False"
+
+-- intLt 2 3  :  ill-typed against the EMPTY env — no Bool in scope (conditional soundness)
+#eval showType (.app (.app (.primBinOp .intLt) (.primLit (.int 2))) (.primLit (.int 3)))
+#guard (typecheck []
+  (.app (.app (.primBinOp .intLt) (.primLit (.int 2))) (.primLit (.int 3)))).isSome = false
+
+
 /-! ## Polymorphic combinators
 
 The classic SKI-zoo. Each is ~7–12 nodes and should print a fully polymorphic

@@ -175,12 +175,15 @@ inductive PrimLitExpr
 
 
 /-- Primitive binary operators: built-in, monomorphic, curried 2-argument
-    functions. Each has a fixed type (currently all `int → int → int`; the
-    typing rules assign it explicitly) and a δ-rule in `SmallStep.Step` that
-    fires on a *saturated* application to literal operands. -/
+    functions. Each has a fixed type (the typing rules assign it explicitly) and
+    a δ-rule in `SmallStep.Step` that fires on a *saturated* application to
+    literal operands. Arithmetic ops (`intAdd`/`intSub`) return `int`
+    unconditionally; the comparison op `intLt` returns `Bool` and so is only
+    well-typed relative to an env providing `Bool` (see `TypeOfElabHM.primBinOpIntLt`). -/
 inductive PrimBinOp
   | intAdd
   | intSub
+  | intLt
   deriving DecidableEq, Repr
 
 
@@ -1159,6 +1162,13 @@ inductive Step : Expr → Expr → Prop
       Step (.app (.app (.primBinOp .intSub) (.primLit (.int m))) (.primLit (.int n)))
         (.primLit (.int (m - n)))
 
+  /-- δ-reduction for `intLt`: emit the prelude `Bool` constructor. The result is
+      well-typed because the `primBinOpIntLt` typing premise supplies
+      `True`/`False : Bool` (so preservation reads it straight off). -/
+  | deltaIntLt {m n : Int} :
+      Step (.app (.app (.primBinOp .intLt) (.primLit (.int m))) (.primLit (.int n)))
+        (.ctor (if m < n then ⟨"True"⟩ else ⟨"False"⟩))
+
   -- ─── congruence rules (enforce left-to-right CBV) ─────────────────
 
   /-- Reduce the function position of an application. -/
@@ -1231,6 +1241,8 @@ def step : Expr → Option Expr
           match op, v, arg with
           | .intAdd, .primLit (.int m), .primLit (.int n) => some (.primLit (.int (m + n)))
           | .intSub, .primLit (.int m), .primLit (.int n) => some (.primLit (.int (m - n)))
+          | .intLt, .primLit (.int m), .primLit (.int n) =>
+              some (.ctor (if m < n then ⟨"True"⟩ else ⟨"False"⟩))
           | _, _, _ => none
         | _ => none
       else do let arg' ← step arg; return .app f arg'
@@ -1479,6 +1491,7 @@ theorem step_sound {e e' : Expr} (h : step e = some e') : Step e e' := by
         · split at h
           · simp at h; subst h; exact .deltaIntAdd
           · simp at h; subst h; exact .deltaIntSub
+          · simp at h; subst h; exact .deltaIntLt
           · exact nomatch h
         · exact nomatch h
       · match harg : step arg with
@@ -1561,6 +1574,7 @@ theorem step_complete {e e' : Expr} (h : Step e e') : step e = some e' := by
   | letRecUnfold => rfl
   | deltaIntAdd => unfold step; simp [isValue]
   | deltaIntSub => unfold step; simp [isValue]
+  | deltaIntLt => unfold step; simp [isValue]
 
 theorem step_deterministic {e e₁ e₂ : Expr}
     (h₁ : Step e e₁) (h₂ : Step e e₂) : e₁ = e₂ := by
@@ -2499,6 +2513,17 @@ inductive TypeOfElabHM : Ctx → Expr → Ty → Prop
     TypeOfElabHM ctx (.primBinOp .intSub)
       (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
 
+  /-- `intLt : int → int → Bool`. Env-dependent: the δ-result is `.ctor "True"`
+      or `.ctor "False"`, so this is well-typed only when the ambient env types
+      those ctors at `Bool` — carried as the two premises (reusing the `ctor`
+      typing judgment). Then preservation types the δ-result directly from a
+      premise: typechecks ⟹ Bool present ⟹ result well-typed. -/
+  | primBinOpIntLt :
+    TypeOfElabHM ctx (.ctor ⟨"True"⟩) (.customTy ⟨"Bool"⟩ []) →
+    TypeOfElabHM ctx (.ctor ⟨"False"⟩) (.customTy ⟨"Bool"⟩ []) →
+    TypeOfElabHM ctx (.primBinOp .intLt)
+      (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])))
+
   | lambda :
     -- `paramTy` is locally closed (no dangling type `bvar`s). When the lambda
     -- sits inside a `let`-bound expression, its annotation may mention the
@@ -2650,6 +2675,13 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | primBinOpIntSub :
     TypeOfHM ctx (.primBinOp .intSub)
       (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
+
+  /-- `intLt : int → int → Bool` (identical to the `TypeOfElabHM` rule). -/
+  | primBinOpIntLt :
+    TypeOfHM ctx (.ctor ⟨"True"⟩) (.customTy ⟨"Bool"⟩ []) →
+    TypeOfHM ctx (.ctor ⟨"False"⟩) (.customTy ⟨"Bool"⟩ []) →
+    TypeOfHM ctx (.primBinOp .intLt)
+      (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])))
 
   | lambda :
     paramTy.IsLC →
@@ -4339,6 +4371,14 @@ theorem TypeOfElabHM.rec_strong
     (primBinOpIntSub : ∀ {ctx : Ctx},
       motive ctx (.primBinOp .intSub)
         (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int))) .primBinOpIntSub)
+    (primBinOpIntLt : ∀ {ctx : Ctx}
+      (htrue : TypeOfElabHM ctx (.ctor ⟨"True"⟩) (.customTy ⟨"Bool"⟩ []))
+      (hfalse : TypeOfElabHM ctx (.ctor ⟨"False"⟩) (.customTy ⟨"Bool"⟩ [])),
+      motive ctx (.ctor ⟨"True"⟩) (.customTy ⟨"Bool"⟩ []) htrue →
+      motive ctx (.ctor ⟨"False"⟩) (.customTy ⟨"Bool"⟩ []) hfalse →
+      motive ctx (.primBinOp .intLt)
+        (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])))
+        (.primBinOpIntLt htrue hfalse))
     (lambda : ∀ {paramTy : Ty} {ann : Option Ty} {bodyCtx ctx : Ctx} {body : Expr} {bodyTy : Ty}
       (hpc : paramTy.IsLC) (hann : ann.Pins paramTy)
       (heq : bodyCtx = { env := PolyTy.mkTrivial paramTy :: ctx.env, ctors := ctx.ctors })
@@ -4405,6 +4445,7 @@ theorem TypeOfElabHM.rec_strong
   | primLitChar => exact primLitChar
   | primBinOpIntAdd => exact primBinOpIntAdd
   | primBinOpIntSub => exact primBinOpIntSub
+  | primBinOpIntLt htrue hfalse ihtrue ihfalse => exact primBinOpIntLt htrue hfalse ihtrue ihfalse
   | lambda hpc hann heq hbody ihbody => exact lambda hpc hann heq hbody ihbody
   | app hf hinput ihf ihinput => exact app hf hinput ihf ihinput
   | letIn hwf hann hcofin heq hbody ihcofin ihbody =>
@@ -4435,6 +4476,7 @@ theorem TypeOfElabHM.faithful {ctx : Ctx} {e : Expr} {τ : Ty}
   | primLitChar => exact .primLitChar
   | primBinOpIntAdd => exact .primBinOpIntAdd
   | primBinOpIntSub => exact .primBinOpIntSub
+  | primBinOpIntLt _ _ ihtrue ihfalse => exact .primBinOpIntLt ihtrue ihfalse
   | lambda hpc hann heq _ ihbody => exact .lambda hpc hann heq ihbody
   | app _ _ ihf ihinput => exact .app ihf ihinput
   | letIn hwf hann _ heq _ ihcofin ihbody => exact .letIn hwf hann ihcofin heq ihbody
@@ -4699,6 +4741,7 @@ theorem TypeOfElabHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc :
   | primLitChar => exact .primLitChar
   | primBinOpIntAdd => exact .primBinOpIntAdd
   | primBinOpIntSub => exact .primBinOpIntSub
+  | primBinOpIntLt _ _ ihtrue ihfalse => exact .primBinOpIntLt ihtrue ihfalse
   | app _ _ ihf ihinput =>
     simp only [Expr.substTyFvar]
     simp only [Ty.substFvar] at ihf
@@ -5014,6 +5057,9 @@ theorem TypeOfElabHM.weaken_env
   | primLitChar => intro env_pre' _; exact .primLitChar
   | primBinOpIntAdd => intro env_pre' _; exact .primBinOpIntAdd
   | primBinOpIntSub => intro env_pre' _; exact .primBinOpIntSub
+  | primBinOpIntLt _ _ ihtrue ihfalse =>
+    intro env_pre' hctx
+    exact .primBinOpIntLt (ihtrue env_pre' hctx) (ihfalse env_pre' hctx)
   | app hf hinput ihf ihinput =>
     intro env_pre' hctx
     simp only [Expr.shiftFrom]
@@ -6608,6 +6654,7 @@ theorem TypeOfElabHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
   | primLitChar => trivial
   | primBinOpIntAdd => trivial
   | primBinOpIntSub => trivial
+  | primBinOpIntLt _ _ _ _ => trivial
   | app _ _ ihf ihi => exact ⟨ihf, ihi⟩
   | var hlook hlc hinst => exact hlc.2
   | ctor _ _ _ => trivial
@@ -6912,6 +6959,7 @@ theorem TypeOfElabHM.substArgsGe {ctors : CtorEnv} {blk env : Env} :
   | primLitChar => intro _ _; trivial
   | primBinOpIntAdd => intro _ _; trivial
   | primBinOpIntSub => intro _ _; trivial
+  | primBinOpIntLt _ _ _ _ => intro _ _; trivial
   | ctor _ _ _ => intro _ _; trivial
   | app _ _ ihf ihi => intro env_post hctx; exact ⟨ihf env_post hctx, ihi env_post hctx⟩
   | var hlook hlc hinst =>
@@ -7187,6 +7235,12 @@ theorem TypeOfElabHM.subst_lemma_many
     | primLitChar  => exact .primLitChar
     | primBinOpIntAdd => exact .primBinOpIntAdd
     | primBinOpIntSub => exact .primBinOpIntSub
+    | primBinOpIntLt htrue hfalse =>
+      cases htrue with
+      | ctor hlookT htyargsT hinstT =>
+        cases hfalse with
+        | ctor hlookF htyargsF hinstF =>
+          exact .primBinOpIntLt (.ctor hlookT htyargsT hinstT) (.ctor hlookF htyargsF hinstF)
     | ctor hlook htyargs hinst => exact .ctor hlook htyargs hinst
     | app hf hi =>
       simp only [Expr.size] at he
@@ -7579,6 +7633,7 @@ theorem TypeOfElabHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
     | primLitChar => exact .inl (.primLit _)
     | primBinOpIntAdd => exact .inl (.primBinOp _)
     | primBinOpIntSub => exact .inl (.primBinOp _)
+    | primBinOpIntLt _ _ => exact .inl (.primBinOp _)
     | ctor _ _ _ => exact .inl (.ctor _)
     | lambda _ _ _ _ => exact .inl (.lambda _ _)
     | var h_lookup _ _ => rw [h_closed] at h_lookup; simp at h_lookup
@@ -7610,6 +7665,10 @@ theorem TypeOfElabHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
                     obtain ⟨m, rfl⟩ := TypeOfElabHM.canonical_int h_v hv
                     obtain ⟨n, rfl⟩ := TypeOfElabHM.canonical_int h_arg hva
                     exact .inr ⟨_, .deltaIntSub⟩
+                  | primBinOpIntLt _ _ =>
+                    obtain ⟨m, rfl⟩ := TypeOfElabHM.canonical_int h_v hv
+                    obtain ⟨n, rfl⟩ := TypeOfElabHM.canonical_int h_arg hva
+                    exact .inr ⟨_, .deltaIntLt⟩
           · exact .inr ⟨_, .appArg hvf harg⟩
         · exact .inr ⟨_, .appFn hf⟩
     | letIn _ _ _ _ _ =>
@@ -8533,6 +8592,13 @@ theorem TypeOfElabHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
     cases h_ty with
     | app h_f _ => cases h_f with
       | app h_pbo _ => cases h_pbo; exact .primLitInt
+  | deltaIntLt =>
+    -- result type is `Bool`; the reduct is `.ctor "True"/"False"`, typed directly
+    -- from the `primBinOpIntLt` premises (Bool present in the env).
+    cases h_ty with
+    | app h_f _ => cases h_f with
+      | app h_pbo _ => cases h_pbo with
+        | primBinOpIntLt htrue hfalse => split <;> assumption
   | matchReduce hval hctor hfirst =>
     rename_i scrut branches name args pat body
     cases h_ty with
@@ -8984,6 +9050,7 @@ theorem Step.preserves_exhaustive {ctors : CtorEnv} {e e' : Expr}
         (fun x hx => by rw [List.mem_singleton] at hx; subst hx; exact h_v) h_body 0
   | deltaIntAdd => exact .primLit
   | deltaIntSub => exact .primLit
+  | deltaIntLt => exact .ctor
   | matchReduce hval hctor hfirst =>
     cases h_exh with
     | match_ h_scrut h_bodies h_cover1 h_cover2 =>

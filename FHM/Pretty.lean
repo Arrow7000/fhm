@@ -93,6 +93,7 @@ def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
   | .primLit p => prettyPrimLit p
   | .primBinOp .intAdd => "intAdd"
   | .primBinOp .intSub => "intSub"
+  | .primBinOp .intLt => "intLt"
   | .var n _   => (ctx[n]?).getD ("#" ++ toString n)
   | .ctor (.mk s) => s
   | .app f x   => prettyParenIf (prec ≥ 2) (Expr.prettyAux ctx 1 f ++ " " ++ Expr.prettyAux ctx 2 x)
