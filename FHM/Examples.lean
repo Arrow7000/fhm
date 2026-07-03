@@ -28,7 +28,11 @@ declares a handful of standard algebraic types:
 * `List a`          — `Nil`, `Cons a (List a)`
 * `Peano`           — `Zero`, `Succ Peano`
 * `Tree a`/`Forest a` — `Node a (Forest a)`; `FNil`, `FCons (Tree a) (Forest a)`
-  (mutually recursive types — the natural home for a mutually recursive map). -/
+  (mutually recursive types — the natural home for a mutually recursive map).
+* `Seq a`           — `SNil`, `SCons a (Seq (List a))`: a NON-REGULAR (nested)
+  type — the recursive occurrence is at `List a`, not `a`. Functions folding a
+  `Seq` need *polymorphic recursion* (each call one `List`-layer deeper), which
+  is inferable only with an annotation — the mixed-`letRec` showcases below. -/
 
 private def mkCtor (pc : Nat) (tn : TyName) (cs : List Ty)
     (hb : TyList.bvarsBelow pc cs = true := by decide)
@@ -48,7 +52,9 @@ private def demoCtors : CtorEnv :=
   , (⟨"Succ"⟩,  mkCtor 0 ⟨"Peano"⟩ [.customTy ⟨"Peano"⟩ []])
   , (⟨"Node"⟩,  mkCtor 1 ⟨"Tree"⟩ [.bvar 0, .customTy ⟨"Forest"⟩ [.bvar 0]])
   , (⟨"FNil"⟩,  mkCtor 1 ⟨"Forest"⟩ [])
-  , (⟨"FCons"⟩, mkCtor 1 ⟨"Forest"⟩ [.customTy ⟨"Tree"⟩ [.bvar 0], .customTy ⟨"Forest"⟩ [.bvar 0]]) ]
+  , (⟨"FCons"⟩, mkCtor 1 ⟨"Forest"⟩ [.customTy ⟨"Tree"⟩ [.bvar 0], .customTy ⟨"Forest"⟩ [.bvar 0]])
+  , (⟨"SNil"⟩,  mkCtor 1 ⟨"Seq"⟩ [])
+  , (⟨"SCons"⟩, mkCtor 1 ⟨"Seq"⟩ [.bvar 0, .customTy ⟨"Seq"⟩ [.customTy ⟨"List"⟩ [.bvar 0]]]) ]
 
 private def typeStrP (e : Expr) : String :=
   match typecheck demoCtors e with
@@ -427,6 +433,104 @@ private def gRhs : Expr := .lambda none (.app (.var 1 []) (.var 0 []))
 #guard (typecheck [] (.letRec [some selfSig, none]
   [.lambda none (.app (.var 2 []) (.var 0 [])), .lambda none (.app (.var 1 []) (.var 0 []))]
   (.var 0 []))).isSome = false
+
+
+/-! ### Pushing the fused rule: nested data, three-member mixed groups
+
+The heavy-duty showcases. `Seq a` is NON-REGULAR (`SCons a (Seq (List a))`), so
+any fold over it must call itself one `List`-layer deeper — *polymorphic
+recursion*, which is undecidable to infer and only typeable through an
+annotation. Mixing that annotated member with plain unannotated helpers in ONE
+group is exactly what the fused rule buys us. -/
+
+/-- `slen`'s declared scheme: `∀ a. Seq a → Peano`. -/
+private def slenSig : PolyTy :=
+  ⟨1, .arrow (.customTy ⟨"Seq"⟩ [.bvar 0]) (.customTy ⟨"Peano"⟩ [])⟩
+
+/-- `λs. match s with | SNil => Zero | SCons x xs => bump (slen xs)`.
+    `xs : Seq (List a)`, so the recursive call instantiates `slen`'s OWN scheme
+    at `List a` — genuine polymorphic recursion over a nested type — and feeds
+    the result to the UNANNOTATED sibling `bump` (at the concrete `Peano`,
+    which is what makes the cross-boundary use legal). -/
+private def slenRhs : Expr :=
+  .lambda none (.match_ (.var 0 [])
+    [ (.named ⟨"SNil"⟩ 0, .ctor ⟨"Zero"⟩)
+    , (.named ⟨"SCons"⟩ 2, .app (.var 4 []) (.app (.var 3 []) (.var 1 []))) ])
+
+/-- `λn. Succ n` — the unannotated helper. -/
+private def bumpRhs : Expr := .lambda none (.app (.ctor ⟨"Succ"⟩) (.var 0 []))
+
+-- let rec (slen : ∀ a. Seq a → Peano) = λs. match s with
+--                                             | SNil       => Zero
+--                                             | SCons x xs => bump (slen xs)
+--     and bump                        = λn. Succ n
+-- in slen   :   ∀ a. Seq a → Peano
+-- (polymorphic recursion over a NESTED datatype, mixed with an unannotated
+--  helper the annotated member calls — neither regime alone types this)
+#eval showTypeP (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0 []))
+#guard (typecheck demoCtors
+  (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0 []))).isSome = true
+
+-- …and WITHOUT the annotation the same program is REJECTED: monomorphic `slen`
+-- forces `a = List a` at the recursive call (no finite type). Poly-recursion
+-- over non-regular data is exactly what annotations exist to unlock.
+#eval showTypeP (.letRec [none, none] [slenRhs, bumpRhs] (.var 0 []))
+#guard (typecheck demoCtors
+  (.letRec [none, none] [slenRhs, bumpRhs] (.var 0 []))).isSome = false
+
+/-! A THREE-member mixed group exercising everything at once: an annotated
+member that polymorphically recurses at a concrete type, an unannotated member
+that instantiates the annotated sibling AT ITS OWN POOL VARIABLE, a second
+unannotated member self-recursing over `Forest` with its OWN pool slice (the
+per-binding `genFilter` slicing of one shared pool), and a body composing the
+generalised members. -/
+
+-- let rec (poly : ∀ a. a → a) = λx. let _ = poly Zero in x     (poly-rec at Peano)
+--     and dup   = λt. FCons (poly t) (FCons t FNil)            (uses poly at pool var)
+--     and sizeF = λts. match ts with | FNil       => Zero      (own pool slice)
+--                                    | FCons h tl => Succ (sizeF tl)
+-- in λt. sizeF (dup t)   :   ∀ a. Tree a → Peano
+#eval showTypeP (.letRec [some selfSig, none, none]
+  [ .lambda none (.letIn none (.app (.var 1 []) (.ctor ⟨"Zero"⟩)) (.var 1 []))
+  , .lambda none (.app (.app (.ctor ⟨"FCons"⟩) (.app (.var 1 []) (.var 0 [])))
+      (.app (.app (.ctor ⟨"FCons"⟩) (.var 0 [])) (.ctor ⟨"FNil"⟩)))
+  , .lambda none (.match_ (.var 0 [])
+      [ (.named ⟨"FNil"⟩ 0, .ctor ⟨"Zero"⟩)
+      , (.named ⟨"FCons"⟩ 2, .app (.ctor ⟨"Succ"⟩) (.app (.var 5 []) (.var 1 []))) ]) ]
+  (.lambda none (.app (.var 3 []) (.app (.var 2 []) (.var 0 [])))))
+#guard (typecheck demoCtors (.letRec [some selfSig, none, none]
+  [ .lambda none (.letIn none (.app (.var 1 []) (.ctor ⟨"Zero"⟩)) (.var 1 []))
+  , .lambda none (.app (.app (.ctor ⟨"FCons"⟩) (.app (.var 1 []) (.var 0 [])))
+      (.app (.app (.ctor ⟨"FCons"⟩) (.var 0 [])) (.ctor ⟨"FNil"⟩)))
+  , .lambda none (.match_ (.var 0 [])
+      [ (.named ⟨"FNil"⟩ 0, .ctor ⟨"Zero"⟩)
+      , (.named ⟨"FCons"⟩ 2, .app (.ctor ⟨"Succ"⟩) (.app (.var 5 []) (.var 1 []))) ]) ]
+  (.lambda none (.app (.var 3 []) (.app (.var 2 []) (.var 0 [])))))).isSome = true
+
+/-! Mono-visibility, documented: annotating `f` does NOT unlock polymorphic use
+of its unannotated sibling `h` *inside the group* — `h` is monomorphic there
+(same contract as an ordinary unannotated `let` binding inside its own RHS).
+Annotate `h` too and the same program is accepted. -/
+
+/-- `λx. let _ = h 0 in let _ = h () in x` — uses the sibling at `Int` AND `Unit`. -/
+private def fUsesHTwice : Expr :=
+  .lambda none (.letIn none (.app (.var 2 []) (.primLit (.int 0)))
+    (.letIn none (.app (.var 3 []) (.primLit .unit)) (.var 2 [])))
+
+-- let rec (f : ∀ a. a → a) = λx. let _ = h 0 in let _ = h () in x
+--     and h = λy. y
+-- in f   :   ill-typed   (h is mono inside the group: Int vs Unit clash)
+#eval showType (.letRec [some selfSig, none]
+  [fUsesHTwice, .lambda none (.var 0 [])] (.var 0 []))
+#guard (typecheck [] (.letRec [some selfSig, none]
+  [fUsesHTwice, .lambda none (.var 0 [])] (.var 0 []))).isSome = false
+
+-- …annotate `h` as well and it is accepted: both members now live in the
+-- polymorphic regime.   :   ∀ a. a → a
+#eval showType (.letRec [some selfSig, some selfSig]
+  [fUsesHTwice, .lambda none (.var 0 [])] (.var 0 []))
+#guard (typecheck [] (.letRec [some selfSig, some selfSig]
+  [fUsesHTwice, .lambda none (.var 0 [])] (.var 0 []))).isSome = true
 
 
 /-! ### Adversarial: where `letRec` is *supposed* to say no
