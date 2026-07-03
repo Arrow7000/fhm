@@ -16,6 +16,13 @@ private def typeStr (e : Expr) : String :=
 
 private def showType (e : Expr) : IO Unit := IO.println s!"({e})  :  {typeStr e}"
 
+/-- Run the small-step evaluator (fuel 100) and pretty-print the resulting value
+    (`Expr` has no `DecidableEq`, so we compare the printed form in `#guard`s). -/
+private def evalStr (e : Expr) : String :=
+  match SmallStep.evaluate 100 e with
+  | some v => toString v
+  | none   => "stuck / out of fuel"
+
 /-! ## A tiny prelude of data types (for the `letRec` demos below)
 
 The `letRec` showcases further down want real recursive data to fold over, so we
@@ -86,6 +93,47 @@ private def showTypeP (e : Expr) : IO Unit := IO.println s!"({e})  :  {typeStrP 
 
 -- 5 5  :  ill-typed
 #eval showType (.app (.primLit (.int 5)) (.primLit (.int 5)))
+
+
+/-! ## Arithmetic primops (`intAdd`, `intSub`)
+
+Primitive binary operators are curried built-in *functions*: a fixed type
+`Int → Int → Int`, δ-reduced when saturated on integer literals, and a value
+while partially applied. They type against the empty `CtorEnv` (no prelude
+needed — the result is a primitive `Int`). -/
+
+-- intAdd  :  Int → Int → Int
+#eval showType (.primBinOp .intAdd)
+-- intSub  :  Int → Int → Int
+#eval showType (.primBinOp .intSub)
+
+-- (λx. intAdd x 1) 41  :  Int   (typechecks)
+#eval showType (.app (.lambda none
+    (.app (.app (.primBinOp .intAdd) (.var 0 [])) (.primLit (.int 1))))
+  (.primLit (.int 41)))
+#guard (typecheck [] (.app (.lambda none
+    (.app (.app (.primBinOp .intAdd) (.var 0 [])) (.primLit (.int 1))))
+  (.primLit (.int 41)))).isSome = true
+
+-- (λx. intAdd x 1) 41  ⟹  42   (β then δ actually computes)
+#eval evalStr (.app (.lambda none
+    (.app (.app (.primBinOp .intAdd) (.var 0 [])) (.primLit (.int 1))))
+  (.primLit (.int 41)))
+#guard evalStr (.app (.lambda none
+    (.app (.app (.primBinOp .intAdd) (.var 0 [])) (.primLit (.int 1))))
+  (.primLit (.int 41))) = "42"
+
+-- intSub 43 1  ⟹  42
+#eval evalStr (.app (.app (.primBinOp .intSub) (.primLit (.int 43))) (.primLit (.int 1)))
+#guard evalStr (.app (.app (.primBinOp .intSub) (.primLit (.int 43))) (.primLit (.int 1))) = "42"
+
+-- intAdd 41  is a value (partial application), of type  Int → Int
+#guard SmallStep.isValue (.app (.primBinOp .intAdd) (.primLit (.int 41))) = true
+#eval showType (.app (.primBinOp .intAdd) (.primLit (.int 41)))
+
+-- intAdd ()  :  ill-typed   (a Unit operand is rejected)
+#eval showType (.app (.primBinOp .intAdd) (.primLit .unit))
+#guard (typecheck [] (.app (.primBinOp .intAdd) (.primLit .unit))).isSome = false
 
 
 /-! ## Polymorphic combinators

@@ -174,6 +174,16 @@ inductive PrimLitExpr
   | str : String → PrimLitExpr
 
 
+/-- Primitive binary operators: built-in, monomorphic, curried 2-argument
+    functions. Each has a fixed type (currently all `int → int → int`; the
+    typing rules assign it explicitly) and a δ-rule in `SmallStep.Step` that
+    fires on a *saturated* application to literal operands. -/
+inductive PrimBinOp
+  | intAdd
+  | intSub
+  deriving DecidableEq, Repr
+
+
 
 inductive MatchPattern
   /-- `contents` is basically just a binding range. i.e. if 2 this means we've bound 2 new "names" to the context -/
@@ -197,6 +207,13 @@ def MatchPattern.matchesCtor : MatchPattern → CtorName → Nat → Bool
 /-- An expression in our language -/
 inductive Expr
   | primLit (prim : PrimLitExpr)
+  /-- A primitive binary operator (e.g. `intAdd`). A leaf naming a built-in,
+      curried, monomorphic 2-argument function, applied via ordinary `app`. Its
+      type is fixed (see the `primBinOp*` rules of `TypeOfElabHM`/`TypeOfHM`); a
+      *saturated* application to literal operands reduces by a δ-rule in
+      `SmallStep.Step`, while a partial application `app (primBinOp op) v` is a
+      value (a stuck function). -/
+  | primBinOp (op : PrimBinOp)
   /-- A lambda. `paramAnn` is an optional type ascription on the parameter
       (surface `λ(x : T). body`); `none` means the param type is inferred. -/
   | lambda (paramAnn : Option Ty) (body : Expr)
@@ -528,6 +545,7 @@ theorem some_property : ∀ e : Expr, P e := by
 @[elab_as_elim]
 def Expr.rec_strong.{u} {motive : Expr → Sort u}
     (primLit    : ∀ p, motive (.primLit p))
+    (primBinOp  : ∀ op, motive (.primBinOp op))
     (lambda     : ∀ paramAnn body, motive body → motive (.lambda paramAnn body))
     (app        : ∀ f input, motive f → motive input → motive (.app f input))
     (letIn      : ∀ ann bindingExpr body,
@@ -545,29 +563,30 @@ def Expr.rec_strong.{u} {motive : Expr → Sort u}
                     motive (.letRec anns bindings body)) :
     (e : Expr) → motive e
   | .primLit p          => primLit p
+  | .primBinOp op       => primBinOp op
   | .lambda paramAnn body        =>
       lambda paramAnn body
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec body)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec body)
   | .app f input        =>
       app f input
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec f)
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec input)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec f)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec input)
   | .letIn ann be body      =>
       letIn ann be body
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec be)
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec body)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec be)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec body)
   | .var n tyArgs       => var n tyArgs
   | .ctor nm            => ctor nm
   | .match_ scrutinee branches =>
       match_ scrutinee branches
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec scrutinee)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec scrutinee)
         (fun _pat e _hb =>
-          Expr.rec_strong primLit lambda app letIn var ctor match_ letRec e)
+          Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec e)
   | .letRec anns bindings body =>
       letRec anns bindings body
         (fun e _hb =>
-          Expr.rec_strong primLit lambda app letIn var ctor match_ letRec e)
-        (Expr.rec_strong primLit lambda app letIn var ctor match_ letRec body)
+          Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec e)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec body)
 termination_by e => sizeOf e
 decreasing_by
   all_goals simp_wf
@@ -670,6 +689,7 @@ to pass under `k` new binders, which shifts its free vars up by `k`.
 def Expr.shiftFrom (threshold : Nat) (n : Nat) : Expr → Expr
   | .var i tyArgs      => if i < threshold then .var i tyArgs else .var (i + n) tyArgs
   | .primLit p         => .primLit p
+  | .primBinOp op      => .primBinOp op
   | .lambda ann body   => .lambda ann (body.shiftFrom (threshold + 1) n)
   | .app f arg         => .app (f.shiftFrom threshold n) (arg.shiftFrom threshold n)
   | .letIn ann rhs body =>
@@ -773,6 +793,7 @@ mutual
     arguments), but substitutes arbitrary `Ts` via `Ty.openTyFrom`. -/
 def Expr.instTyAux (d : Nat) (Ts : List Ty) : Expr → Expr
   | .primLit p          => .primLit p
+  | .primBinOp op       => .primBinOp op
   | .lambda ann body    => .lambda (ann.map (Ty.openTyFrom d Ts)) (body.instTyAux d Ts)
   | .app f arg          => .app (f.instTyAux d Ts) (arg.instTyAux d Ts)
   | .letIn (some σ) rhs body =>
@@ -917,6 +938,7 @@ theorem Expr.instTyAux_nil : ∀ (e : Expr) (d : Nat), e.instTyAux d [] = e := b
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d; rfl
+  | primBinOp op => intro d; rfl
   | ctor nm => intro d; rfl
   | var n tyArgs =>
     intro d; simp only [Expr.instTyAux, Expr.var.injEq, true_and]
@@ -978,6 +1000,7 @@ def Expr.substN (k : Nat) (vs : List Expr) : Expr → Expr
       else if h : i - k < vs.length then ((vs[i - k]).instTy tyArgs).shiftFrom 0 k
       else .var (i - vs.length) tyArgs
   | .primLit p         => .primLit p
+  | .primBinOp op      => .primBinOp op
   | .lambda ann body   => .lambda ann (body.substN (k + 1) vs)
   | .app f arg         => .app (f.substN k vs) (arg.substN k vs)
   | .letIn ann rhs body =>
@@ -1028,6 +1051,16 @@ inductive IsValue : Expr → Prop
   | ctorApp {f v} :
       IsCtorChain f → IsValue v →
       IsValue (.app f v)
+  /-- A bare primitive operator is a value (a stuck built-in function). -/
+  | primBinOp (op) :
+      IsValue (.primBinOp op)
+  /-- A *partially* applied binary primop (one argument short of saturation) is
+      a value — a stuck function awaiting its second operand. A *saturated*
+      application `app (app (primBinOp op) v₁) v₂` is deliberately NOT a value
+      (it reduces by a δ-rule), so this covers exactly the one-argument case. -/
+  | primBinOpPartial {op v} :
+      IsValue v →
+      IsValue (.app (.primBinOp op) v)
 
 /-- A constructor optionally applied to zero or more *values*. Both `.ctor c`
     (zero args) and `.app (.app (.ctor c) v₁) v₂` (multiple args) qualify. -/
@@ -1113,6 +1146,19 @@ inductive Step : Expr → Expr → Prop
       Step (.letRec anns bindings body)
         (body.substN 0 (bindings.map (fun e => Expr.letRec anns bindings e)))
 
+  /-- δ-reduction for `intAdd`: a saturated application on integer literals
+      computes the sum. The operands are already literals because the CBV
+      congruence rules reduce them first, and canonical forms guarantees a
+      value of type `int` is an `int` literal. -/
+  | deltaIntAdd {m n : Int} :
+      Step (.app (.app (.primBinOp .intAdd) (.primLit (.int m))) (.primLit (.int n)))
+        (.primLit (.int (m + n)))
+
+  /-- δ-reduction for `intSub`. -/
+  | deltaIntSub {m n : Int} :
+      Step (.app (.app (.primBinOp .intSub) (.primLit (.int m))) (.primLit (.int n)))
+        (.primLit (.int (m - n)))
+
   -- ─── congruence rules (enforce left-to-right CBV) ─────────────────
 
   /-- Reduce the function position of an application. -/
@@ -1140,6 +1186,8 @@ def isValue : Expr → Bool
   | .primLit _ => true
   | .lambda _ _ => true
   | .ctor _ => true
+  | .primBinOp _ => true
+  | .app (.primBinOp _) v => isValue v
   | .app f v => isCtorChain f && isValue v
   | _ => false
 
@@ -1178,6 +1226,12 @@ def step : Expr → Option Expr
       if isValue arg then
         match f with
         | .lambda _ body => some (body.substN 0 [arg])
+        | .app (.primBinOp op) v =>
+          -- saturated binary primop: δ-reduce when both operands are int literals
+          match op, v, arg with
+          | .intAdd, .primLit (.int m), .primLit (.int n) => some (.primLit (.int (m + n)))
+          | .intSub, .primLit (.int m), .primLit (.int n) => some (.primLit (.int (m - n)))
+          | _, _, _ => none
         | _ => none
       else do let arg' ← step arg; return .app f arg'
     else do let f' ← step f; return .app f' arg
@@ -1217,14 +1271,38 @@ private theorem isValue_isCtorChain_correct (e : Expr) :
     (isValue e = true ↔ IsValue e) ∧ (isCtorChain e = true ↔ IsCtorChain e) := by
   induction e using Expr.rec_strong with
   | primLit p => exact ⟨⟨fun _ => .primLit p, fun _ => rfl⟩, ⟨nofun, nofun⟩⟩
+  | primBinOp op => exact ⟨⟨fun _ => .primBinOp op, fun _ => rfl⟩, ⟨nofun, nofun⟩⟩
   | lambda ann body _ => exact ⟨⟨fun _ => .lambda ann body, fun _ => rfl⟩, ⟨nofun, nofun⟩⟩
   | ctor name => exact ⟨⟨fun _ => .ctor name, fun _ => rfl⟩, ⟨fun _ => .ctor name, fun _ => rfl⟩⟩
   | app f arg ihf iharg =>
-    simp only [isValue, isCtorChain, Bool.and_eq_true]
-    exact ⟨⟨fun ⟨hf, ha⟩ => .ctorApp (ihf.2.mp hf) (iharg.1.mp ha),
-            fun h => by cases h with | ctorApp hc hv => exact ⟨ihf.2.mpr hc, iharg.1.mpr hv⟩⟩,
-           ⟨fun ⟨hf, ha⟩ => .app (ihf.2.mp hf) (iharg.1.mp ha),
-            fun h => by cases h with | app hc hv => exact ⟨ihf.2.mpr hc, iharg.1.mpr hv⟩⟩⟩
+    refine ⟨⟨fun hv => ?_, fun h => ?_⟩, ?_⟩
+    · -- isValue (f.app arg) = true → IsValue (f.app arg)
+      cases f with
+      | primBinOp op => exact .primBinOpPartial (iharg.1.mp (by simpa only [isValue] using hv))
+      | lambda a b => simp [isValue, isCtorChain] at hv
+      | primLit p => simp [isValue, isCtorChain] at hv
+      | var a b => simp [isValue, isCtorChain] at hv
+      | letIn a b c => simp [isValue, isCtorChain] at hv
+      | match_ a b => simp [isValue, isCtorChain] at hv
+      | letRec a b c => simp [isValue, isCtorChain] at hv
+      | ctor c =>
+        have ha : isValue arg = true := by simpa only [isValue, isCtorChain, Bool.true_and] using hv
+        exact .ctorApp (.ctor c) (iharg.1.mp ha)
+      | app f1 f2 =>
+        have hv' : isCtorChain (f1.app f2) = true ∧ isValue arg = true := by
+          simpa only [isValue, Bool.and_eq_true] using hv
+        exact .ctorApp (ihf.2.mp hv'.1) (iharg.1.mp hv'.2)
+    · -- IsValue (f.app arg) → isValue (f.app arg) = true
+      cases h with
+      | ctorApp hc hvv =>
+        have hcf := ihf.2.mpr hc
+        have hva := iharg.1.mpr hvv
+        cases f <;> simp_all [isValue, isCtorChain]
+      | primBinOpPartial hvv => exact iharg.1.mpr hvv
+    · -- isCtorChain (f.app arg) = true ↔ IsCtorChain (f.app arg)
+      simp only [isCtorChain, Bool.and_eq_true]
+      exact ⟨fun ⟨hf, ha⟩ => .app (ihf.2.mp hf) (iharg.1.mp ha),
+             fun h => by cases h with | app hc hv => exact ⟨ihf.2.mpr hc, iharg.1.mpr hv⟩⟩
   | var _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
   | letIn _ _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
   | match_ _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
@@ -1275,6 +1353,7 @@ private theorem CtorAppliedTo_of_IsCtorChain :
       obtain ⟨name, args, hca⟩ := ihf hf
       exact ⟨name, args ++ [v], .step hca⟩
   | primLit p => intro h; cases h
+  | primBinOp op => intro h; cases h
   | lambda a b _ => intro h; cases h
   | var n => intro h; cases h
   | letIn a be b _ _ => intro h; cases h
@@ -1326,17 +1405,56 @@ private theorem FirstMatch_to_findMatchingBranch {name : CtorName} {arity : Nat}
 
 private theorem isCtorChain_imp_isValue {e : Expr}
     (h : isCtorChain e = true) : isValue e = true := by
-  cases e <;> simp_all [isValue, isCtorChain]
+  cases e with
+  | app f v => cases f <;> simp_all [isValue, isCtorChain]
+  | ctor c => rfl
+  | primLit p => simp [isCtorChain] at h
+  | primBinOp op => simp [isCtorChain] at h
+  | lambda a b => simp [isCtorChain] at h
+  | var a b => simp [isCtorChain] at h
+  | letIn a b c => simp [isCtorChain] at h
+  | match_ a b => simp [isCtorChain] at h
+  | letRec a b c => simp [isCtorChain] at h
 
 private theorem isValue_step_none {e : Expr} (hv : isValue e = true) :
     step e = none := by
-  match e with
-  | .primLit _ | .lambda _ _ | .ctor _ => rfl
-  | .app f arg =>
-    simp only [isValue, Bool.and_eq_true] at hv
-    simp only [step, isCtorChain_imp_isValue hv.1, hv.2, ite_true]
-    cases f <;> (first | rfl | simp [isCtorChain] at hv)
-  | .var _ _ | .letIn _ _ _ | .match_ _ _ => simp [isValue] at hv
+  cases e with
+  | primLit _ => rfl
+  | lambda _ _ => rfl
+  | ctor _ => rfl
+  | primBinOp _ => rfl
+  | var _ _ => simp [isValue] at hv
+  | letIn _ _ _ => simp [isValue] at hv
+  | match_ _ _ => simp [isValue] at hv
+  | letRec _ _ _ => simp [isValue] at hv
+  | app f arg =>
+    cases f with
+    | primBinOp op =>
+      have ha : isValue arg = true := by simpa only [isValue] using hv
+      simp [step, ha]
+    | lambda _ _ => simp [isValue, isCtorChain] at hv
+    | primLit _ => simp [isValue, isCtorChain] at hv
+    | var _ _ => simp [isValue, isCtorChain] at hv
+    | letIn _ _ _ => simp [isValue, isCtorChain] at hv
+    | match_ _ _ => simp [isValue, isCtorChain] at hv
+    | letRec _ _ _ => simp [isValue, isCtorChain] at hv
+    | ctor c =>
+      have ha : isValue arg = true := by simpa only [isValue, isCtorChain, Bool.true_and] using hv
+      simp [step, ha]
+    | app f1 f2 =>
+      have hv' : isCtorChain (f1.app f2) = true ∧ isValue arg = true := by
+        simpa only [isValue, Bool.and_eq_true] using hv
+      have hvf : isValue (f1.app f2) = true := isCtorChain_imp_isValue hv'.1
+      cases f1 with
+      | primBinOp op => simp [isCtorChain] at hv'
+      | ctor c => simp [step, hvf, hv'.2]
+      | app g1 g2 => simp [step, hvf, hv'.2]
+      | lambda _ _ => simp [isCtorChain] at hv'
+      | primLit _ => simp [isCtorChain] at hv'
+      | var _ _ => simp [isCtorChain] at hv'
+      | letIn _ _ _ => simp [isCtorChain] at hv'
+      | match_ _ _ => simp [isCtorChain] at hv'
+      | letRec _ _ _ => simp [isCtorChain] at hv'
 
 private theorem step_some_not_isValue {e e' : Expr}
     (h : step e = some e') : isValue e = false := by
@@ -1348,7 +1466,7 @@ private theorem step_some_not_isValue {e e' : Expr}
 
 theorem step_sound {e e' : Expr} (h : step e = some e') : Step e e' := by
   induction e using Expr.rec_strong generalizing e' with
-  | primLit _ | lambda _ _ _ | ctor _ | var _ _ => simp [step] at h
+  | primLit _ | primBinOp _ | lambda _ _ _ | ctor _ | var _ _ => simp [step] at h
   | app f arg ihf iharg =>
     unfold step at h
     split at h
@@ -1358,6 +1476,10 @@ theorem step_sound {e e' : Expr} (h : step e = some e') : Step e e' := by
         split at h
         · simp at h; subst h
           exact .beta (isValue_iff_IsValue.mp hvarg)
+        · split at h
+          · simp at h; subst h; exact .deltaIntAdd
+          · simp at h; subst h; exact .deltaIntSub
+          · exact nomatch h
         · exact nomatch h
       · match harg : step arg with
         | .none => simp [harg] at h
@@ -1421,6 +1543,8 @@ theorem step_complete {e e' : Expr} (h : Step e e') : step e = some e' := by
       cases hval with
       | primLit _ => rfl
       | lambda _ _ => rfl
+      | primBinOp op => rfl
+      | primBinOpPartial hvv => rfl
       | ctor name => exact absurd (.ctor name) hnc
       | ctorApp hch hvv => exact absurd (.app hch hvv) hnc
     unfold step; simp [hv, hga]
@@ -1435,6 +1559,8 @@ theorem step_complete {e e' : Expr} (h : Step e e') : step e = some e' := by
     have := step_some_not_isValue ih
     unfold step; simp [this, ih]
   | letRecUnfold => rfl
+  | deltaIntAdd => unfold step; simp [isValue]
+  | deltaIntSub => unfold step; simp [isValue]
 
 theorem step_deterministic {e e₁ e₂ : Expr}
     (h₁ : Step e e₁) (h₂ : Step e e₂) : e₁ = e₂ := by
@@ -1784,6 +1910,7 @@ mutual
     binder-depth bookkeeping. Used by `typ_subst_preservation`. -/
 def Expr.substTyFvar (Z : Nat) (U : Ty) : Expr → Expr
   | .primLit p          => .primLit p
+  | .primBinOp op       => .primBinOp op
   | .lambda ann body    => .lambda (ann.map (Ty.substFvar Z U)) (body.substTyFvar Z U)
   | .app f arg          => .app (f.substTyFvar Z U) (arg.substTyFvar Z U)
   | .letIn ann rhs body =>
@@ -1845,6 +1972,7 @@ mutual
     bind no type variables, so they leave `d` unchanged. -/
 def Expr.openTyVarsAux (d : Nat) (Xs : List Nat) : Expr → Expr
   | .primLit p          => .primLit p
+  | .primBinOp op       => .primBinOp op
   | .lambda ann body    => .lambda (ann.map (Ty.openVarsFrom d Xs)) (body.openTyVarsAux d Xs)
   | .app f arg          => .app (f.openTyVarsAux d Xs) (arg.openTyVarsAux d Xs)
   | .letIn (some σ) rhs body =>
@@ -1979,6 +2107,7 @@ theorem Expr.instTyAux_fvar_eq_openTyVarsAux (Xs : List Nat) :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d; rfl
+  | primBinOp op => intro d; rfl
   | ctor nm => intro d; rfl
   | var n tyArgs =>
     intro d
@@ -2359,6 +2488,17 @@ inductive TypeOfElabHM : Ctx → Expr → Ty → Prop
   | primLitStr :
     TypeOfElabHM ctx (.primLit (.str s)) (.prim .str)
 
+  /-- `intAdd : int → int → int`. A fixed, env-independent monotype (no premises)
+      — the operational counterpart is the `SmallStep.Step.deltaIntAdd` δ-rule. -/
+  | primBinOpIntAdd :
+    TypeOfElabHM ctx (.primBinOp .intAdd)
+      (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
+
+  /-- `intSub : int → int → int`. -/
+  | primBinOpIntSub :
+    TypeOfElabHM ctx (.primBinOp .intSub)
+      (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
+
   | lambda :
     -- `paramTy` is locally closed (no dangling type `bvar`s). When the lambda
     -- sits inside a `let`-bound expression, its annotation may mention the
@@ -2499,6 +2639,17 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
 
   | primLitStr :
     TypeOfHM ctx (.primLit (.str s)) (.prim .str)
+
+  /-- `intAdd : int → int → int` (identical to the `TypeOfElabHM` rule — a primop
+      carries no `tyArgs`, so the two relations agree; `faithful` is trivial). -/
+  | primBinOpIntAdd :
+    TypeOfHM ctx (.primBinOp .intAdd)
+      (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
+
+  /-- `intSub : int → int → int`. -/
+  | primBinOpIntSub :
+    TypeOfHM ctx (.primBinOp .intSub)
+      (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
 
   | lambda :
     paramTy.IsLC →
@@ -2802,6 +2953,7 @@ theorem Expr.substTyFvar_openTyVarsAux
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d; rfl
+  | primBinOp op => intro d; rfl
   | app f inp ih_f ih_i =>
     intro d; simp only [Expr.openTyVarsAux, Expr.substTyFvar]; rw [ih_f d, ih_i d]
   | lambda ann body ih =>
@@ -2900,6 +3052,7 @@ theorem Expr.shiftFrom_openTyVarsAux {Xs : List Nat} (n : Nat) :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d k; rfl
+  | primBinOp op => intro d k; rfl
   | app f inp ih_f ih_i =>
     intro d k; simp only [Expr.openTyVarsAux, Expr.shiftFrom]; rw [ih_f d k, ih_i d k]
   | lambda ann body ih =>
@@ -4180,6 +4333,12 @@ theorem TypeOfElabHM.rec_strong
     (primLitInt : ∀ {ctx : Ctx} {n : ℤ}, motive ctx (.primLit (.int n)) (.prim .int) .primLitInt)
     (primLitNat : ∀ {ctx : Ctx} {n : ℕ}, motive ctx (.primLit (.nat n)) (.prim .nat) .primLitNat)
     (primLitStr : ∀ {ctx : Ctx} {s : String}, motive ctx (.primLit (.str s)) (.prim .str) .primLitStr)
+    (primBinOpIntAdd : ∀ {ctx : Ctx},
+      motive ctx (.primBinOp .intAdd)
+        (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int))) .primBinOpIntAdd)
+    (primBinOpIntSub : ∀ {ctx : Ctx},
+      motive ctx (.primBinOp .intSub)
+        (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int))) .primBinOpIntSub)
     (lambda : ∀ {paramTy : Ty} {ann : Option Ty} {bodyCtx ctx : Ctx} {body : Expr} {bodyTy : Ty}
       (hpc : paramTy.IsLC) (hann : ann.Pins paramTy)
       (heq : bodyCtx = { env := PolyTy.mkTrivial paramTy :: ctx.env, ctors := ctx.ctors })
@@ -4244,6 +4403,8 @@ theorem TypeOfElabHM.rec_strong
   | primLitInt => exact primLitInt
   | primLitNat => exact primLitNat
   | primLitStr => exact primLitStr
+  | primBinOpIntAdd => exact primBinOpIntAdd
+  | primBinOpIntSub => exact primBinOpIntSub
   | lambda hpc hann heq hbody ihbody => exact lambda hpc hann heq hbody ihbody
   | app hf hinput ihf ihinput => exact app hf hinput ihf ihinput
   | letIn hwf hann hcofin heq hbody ihcofin ihbody =>
@@ -4272,6 +4433,8 @@ theorem TypeOfElabHM.faithful {ctx : Ctx} {e : Expr} {τ : Ty}
   | primLitInt => exact .primLitInt
   | primLitNat => exact .primLitNat
   | primLitStr => exact .primLitStr
+  | primBinOpIntAdd => exact .primBinOpIntAdd
+  | primBinOpIntSub => exact .primBinOpIntSub
   | lambda hpc hann heq _ ihbody => exact .lambda hpc hann heq ihbody
   | app _ _ ihf ihinput => exact .app ihf ihinput
   | letIn hwf hann _ heq _ ihcofin ihbody => exact .letIn hwf hann ihcofin heq ihbody
@@ -4534,6 +4697,8 @@ theorem TypeOfElabHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc :
   | primLitInt => exact .primLitInt
   | primLitNat => exact .primLitNat
   | primLitStr => exact .primLitStr
+  | primBinOpIntAdd => exact .primBinOpIntAdd
+  | primBinOpIntSub => exact .primBinOpIntSub
   | app _ _ ihf ihinput =>
     simp only [Expr.substTyFvar]
     simp only [Ty.substFvar] at ihf
@@ -4812,6 +4977,8 @@ theorem SmallStep.IsValue.shiftFrom {e : Expr} (k n : Nat)
   | lambda ann body => exact .lambda _ _
   | ctor name => exact .ctor name
   | ctorApp hf hv => exact .ctorApp (hf.shiftFrom k n) (hv.shiftFrom k n)
+  | primBinOp op => exact .primBinOp op
+  | primBinOpPartial hv => exact .primBinOpPartial (hv.shiftFrom k n)
 theorem SmallStep.IsCtorChain.shiftFrom {e : Expr} (k n : Nat)
     (h : SmallStep.IsCtorChain e) : SmallStep.IsCtorChain (e.shiftFrom k n) := by
   cases h with
@@ -4845,6 +5012,8 @@ theorem TypeOfElabHM.weaken_env
   | primLitInt => intro env_pre' _; exact .primLitInt
   | primLitNat => intro env_pre' _; exact .primLitNat
   | primLitStr => intro env_pre' _; exact .primLitStr
+  | primBinOpIntAdd => intro env_pre' _; exact .primBinOpIntAdd
+  | primBinOpIntSub => intro env_pre' _; exact .primBinOpIntSub
   | app hf hinput ihf ihinput =>
     intro env_pre' hctx
     simp only [Expr.shiftFrom]
@@ -4989,6 +5158,7 @@ theorem TypeOfElabHM.typ_substs_preservation {ctx : Ctx} {e : Expr}
     (`Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars`). -/
 def Expr.tyFreeVars : Expr → List Nat
   | .primLit _          => []
+  | .primBinOp _        => []
   | .lambda ann body    => (ann.elim [] Ty.freeVars) ++ body.tyFreeVars
   | .app f arg          => f.tyFreeVars ++ arg.tyFreeVars
   | .letIn ann rhs body => (ann.elim [] (fun σ => σ.body.freeVars)) ++ rhs.tyFreeVars ++ body.tyFreeVars
@@ -5015,6 +5185,7 @@ theorem Expr.substTyFvar_eq_self_of_not_mem_tyFreeVars {Z : Nat} {U : Ty} {e : E
     (h : Z ∉ e.tyFreeVars) : e.substTyFvar Z U = e := by
   induction e using Expr.rec_strong with
   | primLit p => rfl
+  | primBinOp op => rfl
   | app f arg ihf iha =>
     simp only [Expr.tyFreeVars, List.mem_append, not_or] at h
     simp only [Expr.substTyFvar, ihf h.1, iha h.2]
@@ -5330,6 +5501,9 @@ theorem Expr.substTyFvars_zip_openTyVarsAux {Ys Xs : List Nat}
   | primLit p =>
     intro d _; simp only [Expr.openTyVarsAux]
     exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
+  | primBinOp op =>
+    intro d _; simp only [Expr.openTyVarsAux]
+    exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
   | var n tyArgs =>
     intro d hfresh
     simp only [Expr.openTyVarsAux, Expr.substTyFvars_var, Expr.var.injEq, true_and, List.map_map]
@@ -5430,6 +5604,9 @@ theorem Expr.substTyFvars_zip_openTyVarsAux_concrete {Ys : List Nat} {Vs : List 
   | primLit p =>
     intro d _; simp only [Expr.openTyVarsAux, Expr.instTyAux]
     exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
+  | primBinOp op =>
+    intro d _; simp only [Expr.openTyVarsAux, Expr.instTyAux]
+    exact Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])
   | var n tyArgs =>
     intro d hfresh
     simp only [Expr.openTyVarsAux, Expr.instTyAux, Expr.substTyFvars_var, Expr.var.injEq,
@@ -5528,6 +5705,7 @@ theorem Expr.substTyFvars_zip_openTyVars_concrete {Ys : List Nat} {Vs : List Ty}
 mutual
 def Expr.size : Expr → Nat
   | .primLit _          => 1
+  | .primBinOp _        => 1
   | .lambda _ body      => 1 + body.size
   | .app f arg          => 1 + f.size + arg.size
   | .letIn _ rhs body   => 1 + rhs.size + body.size
@@ -5551,6 +5729,7 @@ theorem Expr.size_openTyVarsAux {Xs : List Nat} :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d; rfl
+  | primBinOp op => intro d; rfl
   | app f inp ihf ihi => intro d; simp only [Expr.openTyVarsAux, Expr.size, ihf, ihi]
   | lambda ann body ih => intro d; simp only [Expr.openTyVarsAux, Expr.size, ih]
   | letIn ann be body ihbe ihbody =>
@@ -5696,6 +5875,7 @@ theorem Expr.tyFreeVars_openTyVarsAux {Xs : List Nat} :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d z hz; simp [Expr.openTyVarsAux, Expr.tyFreeVars] at hz
+  | primBinOp op => intro d z hz; simp [Expr.openTyVarsAux, Expr.tyFreeVars] at hz
   | var n tyArgs =>
     intro d z hz
     simp only [Expr.openTyVarsAux, Expr.tyFreeVars, List.mem_flatMap] at hz ⊢
@@ -5940,6 +6120,8 @@ theorem SmallStep.IsValue.substN {e : Expr} (k : Nat) (vs : List Expr)
   | lambda ann body => exact .lambda _ _
   | ctor name => exact .ctor name
   | ctorApp hf hv => exact .ctorApp (hf.substN k vs) (hv.substN k vs)
+  | primBinOp op => exact .primBinOp op
+  | primBinOpPartial hv => exact .primBinOpPartial (hv.substN k vs)
 theorem SmallStep.IsCtorChain.substN {e : Expr} (k : Nat) (vs : List Expr)
     (h : SmallStep.IsCtorChain e) : SmallStep.IsCtorChain (e.substN k vs) := by
   cases h with
@@ -6163,6 +6345,7 @@ theorem RecGroup.openAnns_instAnns_comm {d d' : Nat} {Ys : List Nat} {Ts : List 
 mutual
 def Expr.TyBvarBounded (n : Nat) : Expr → Prop
   | .primLit _          => True
+  | .primBinOp _        => True
   | .lambda ann body    => (∀ t, ann = some t → ContainsBvarsUpTo n t) ∧ body.TyBvarBounded n
   | .app f arg          => f.TyBvarBounded n ∧ arg.TyBvarBounded n
   | .letIn (some σ) rhs body =>
@@ -6244,6 +6427,7 @@ theorem Expr.TyBvarBounded.mono : ∀ {n m : Nat} {e : Expr},
   intro n m e
   induction e using Expr.rec_strong generalizing n m with
   | primLit p => intro _ _; trivial
+  | primBinOp op => intro _ _; trivial
   | ctor nm => intro _ _; trivial
   | var i tyArgs => intro h hnm t ht; exact (h t ht).mono hnm
   | lambda ann body ih =>
@@ -6320,6 +6504,7 @@ theorem Expr.tyBvarBounded_of_openTyVarsAux (Xs : List Nat) :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d _; trivial
+  | primBinOp op => intro d _; trivial
   | ctor nm => intro d _; trivial
   | var n tyArgs =>
     intro d h
@@ -6421,6 +6606,8 @@ theorem TypeOfElabHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
   | primLitInt => trivial
   | primLitNat => trivial
   | primLitStr => trivial
+  | primBinOpIntAdd => trivial
+  | primBinOpIntSub => trivial
   | app _ _ ihf ihi => exact ⟨ihf, ihi⟩
   | var hlook hlc hinst => exact hlc.2
   | ctor _ _ _ => trivial
@@ -6507,6 +6694,7 @@ theorem Expr.openTyVarsAux_instTyAux (Ys : List Nat) (Ts : List Ty) :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d d' _; rfl
+  | primBinOp op => intro d d' _; rfl
   | ctor nm => intro d d' _; rfl
   | var n tyArgs =>
     intro d d' h
@@ -6602,6 +6790,7 @@ theorem Expr.openTyVarsAux_instTyAux (Ys : List Nat) (Ts : List Ty) :
 mutual
 def Expr.SubstArgsGe (Ns : List Nat) (k : Nat) : Expr → Prop
   | .primLit _          => True
+  | .primBinOp _        => True
   | .lambda _ body      => body.SubstArgsGe Ns (k + 1)
   | .app f arg          => f.SubstArgsGe Ns k ∧ arg.SubstArgsGe Ns k
   | .letIn _ rhs body   => rhs.SubstArgsGe Ns k ∧ body.SubstArgsGe Ns (k + 1)
@@ -6656,6 +6845,7 @@ theorem Expr.SubstArgsGe_openTyVarsAux (Ns : List Nat) (Ys : List Nat) :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d k _; trivial
+  | primBinOp op => intro d k _; trivial
   | ctor nm => intro d k _; trivial
   | var n tyArgs =>
     intro d k h
@@ -6720,6 +6910,8 @@ theorem TypeOfElabHM.substArgsGe {ctors : CtorEnv} {blk env : Env} :
   | primLitInt => intro _ _; trivial
   | primLitNat => intro _ _; trivial
   | primLitStr => intro _ _; trivial
+  | primBinOpIntAdd => intro _ _; trivial
+  | primBinOpIntSub => intro _ _; trivial
   | ctor _ _ _ => intro _ _; trivial
   | app _ _ ihf ihi => intro env_post hctx; exact ⟨ihf env_post hctx, ihi env_post hctx⟩
   | var hlook hlc hinst =>
@@ -6826,6 +7018,7 @@ theorem Expr.substN_openTyVarsAux_comm {Ys : List Nat} {vs : List Expr} {Ns : Li
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d k _; rfl
+  | primBinOp op => intro d k _; rfl
   | ctor nm => intro d k _; rfl
   | var i tyArgs =>
     intro d k h_sa
@@ -6992,6 +7185,8 @@ theorem TypeOfElabHM.subst_lemma_many
     | primLitInt  => exact .primLitInt
     | primLitNat  => exact .primLitNat
     | primLitStr  => exact .primLitStr
+    | primBinOpIntAdd => exact .primBinOpIntAdd
+    | primBinOpIntSub => exact .primBinOpIntSub
     | ctor hlook htyargs hinst => exact .ctor hlook htyargs hinst
     | app hf hi =>
       simp only [Expr.size] at he
@@ -7220,6 +7415,7 @@ private lemma TypeOfElabHM.ctor_chain_has_customTy_form
           injection h_eq with _ h_ret
           exact ⟨name, args, rest, h_ret⟩
   | primLit _      => cases h_chain
+  | primBinOp _    => cases h_chain
   | lambda _ _ _   => cases h_chain
   | letIn _ _ _ _ _ => cases h_chain
   | var _          => cases h_chain
@@ -7229,12 +7425,16 @@ private lemma TypeOfElabHM.ctor_chain_has_customTy_form
 theorem TypeOfElabHM.canonical_arrow {ctx e argTy retTy}
     (h_ty : TypeOfElabHM ctx e (.arrow argTy retTy))
     (h_val : SmallStep.IsValue e) :
-    (∃ ann body, e = .lambda ann body) ∨ SmallStep.IsCtorChain e := by
+    (∃ ann body, e = .lambda ann body) ∨ SmallStep.IsCtorChain e
+    ∨ (∃ op, e = .primBinOp op) ∨ (∃ op v, e = .app (.primBinOp op) v) := by
   cases h_val with
   | primLit _ => cases h_ty
   | lambda ann body => exact .inl ⟨ann, body, rfl⟩
-  | ctor name => exact .inr (.ctor name)
-  | ctorApp h_chain h_v => exact .inr (.app h_chain h_v)
+  | ctor name => exact .inr (.inl (.ctor name))
+  | ctorApp h_chain h_v => exact .inr (.inl (.app h_chain h_v))
+  -- a bare primop and a one-argument-short application are both arrow-typed values
+  | primBinOp op => exact .inr (.inr (.inl ⟨op, rfl⟩))
+  | primBinOpPartial hv => exact .inr (.inr (.inr ⟨_, _, rfl⟩))
 
 theorem TypeOfElabHM.canonical_customTy {ctx e tyName tyArgs}
     (h_ty : TypeOfElabHM ctx e (.customTy tyName tyArgs))
@@ -7245,6 +7445,31 @@ theorem TypeOfElabHM.canonical_customTy {ctx e tyName tyArgs}
   | lambda _ _ => cases h_ty
   | ctor name => exact .ctor name
   | ctorApp h_chain h_v => exact .app h_chain h_v
+  -- `primBinOp`/`primBinOpPartial` are arrow-typed, never `customTy` — the typing
+  -- rule for `.primBinOp _` forces an arrow, contradicting `customTy`.
+  | primBinOp op => cases h_ty
+  | primBinOpPartial hv => cases h_ty with | app h_pbo _ => cases h_pbo
+
+/-- Canonical forms at `int`: a value of type `int` is an integer literal. A
+    lambda / bare primop / partial primop application is arrow-typed, and a
+    constructor chain is `customTy`-headed, so none of them can inhabit `int`. -/
+theorem TypeOfElabHM.canonical_int {ctx e}
+    (h_ty : TypeOfElabHM ctx e (.prim .int))
+    (h_val : SmallStep.IsValue e) :
+    ∃ m : Int, e = .primLit (.int m) := by
+  cases h_val with
+  | primLit p => cases h_ty; exact ⟨_, rfl⟩
+  | lambda _ _ => cases h_ty
+  | ctor name =>
+    obtain ⟨_, _, tys, h_eq⟩ :=
+      TypeOfElabHM.ctor_chain_has_customTy_form (.ctor name) h_ty
+    cases tys <;> simp [Ty.wrapArrows] at h_eq
+  | ctorApp h_chain h_v =>
+    obtain ⟨_, _, tys, h_eq⟩ :=
+      TypeOfElabHM.ctor_chain_has_customTy_form (.app h_chain h_v) h_ty
+    cases tys <;> simp [Ty.wrapArrows] at h_eq
+  | primBinOp op => cases h_ty
+  | primBinOpPartial hv => cases h_ty with | app h_pbo _ => cases h_pbo
 
 
 /-! ## Constructor-chain typing inversion
@@ -7305,6 +7530,7 @@ theorem TypeOfElabHM.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
             rw [hcontents]
             exact (List.append_assoc consumed [c] rest).symm
   | primLit _ => cases h_chain
+  | primBinOp _ => cases h_chain
   | lambda _ _ _ => cases h_chain
   | letIn _ _ _ _ _ => cases h_chain
   | var _ => cases h_chain
@@ -7351,6 +7577,8 @@ theorem TypeOfElabHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
     | primLitInt => exact .inl (.primLit _)
     | primLitNat => exact .inl (.primLit _)
     | primLitStr => exact .inl (.primLit _)
+    | primBinOpIntAdd => exact .inl (.primBinOp _)
+    | primBinOpIntSub => exact .inl (.primBinOp _)
     | ctor _ _ _ => exact .inl (.ctor _)
     | lambda _ _ _ _ => exact .inl (.lambda _ _)
     | var h_lookup _ _ => rw [h_closed] at h_lookup; simp at h_lookup
@@ -7360,9 +7588,28 @@ theorem TypeOfElabHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
         simp only [Expr.size] at hsize
         rcases ih f (by omega) ctx _ h_f h_closed h_exh_f with hvf | ⟨f', hf⟩
         · rcases ih arg (by omega) ctx _ h_arg h_closed h_exh_arg with hva | ⟨arg', harg⟩
-          · rcases TypeOfElabHM.canonical_arrow h_f hvf with ⟨ann, body, rfl⟩ | hchain
+          · rcases TypeOfElabHM.canonical_arrow h_f hvf with
+                ⟨ann, body, rfl⟩ | hchain | ⟨op, rfl⟩ | ⟨op, v, rfl⟩
             · exact .inr ⟨_, .beta hva⟩
             · exact .inl (.ctorApp hchain hva)
+            · -- `f` is a bare primop; applying one value leaves it one arg short → a value
+              exact .inl (.primBinOpPartial hva)
+            · -- `f` is a partial primop; this application saturates it → δ-step.
+              -- Both operands are values of type `int`, hence literals (canonical_int).
+              cases hvf with
+              | ctorApp hchain _ => nomatch hchain
+              | primBinOpPartial hv =>
+                cases h_f with
+                | app h_pbo h_v =>
+                  cases h_pbo with
+                  | primBinOpIntAdd =>
+                    obtain ⟨m, rfl⟩ := TypeOfElabHM.canonical_int h_v hv
+                    obtain ⟨n, rfl⟩ := TypeOfElabHM.canonical_int h_arg hva
+                    exact .inr ⟨_, .deltaIntAdd⟩
+                  | primBinOpIntSub =>
+                    obtain ⟨m, rfl⟩ := TypeOfElabHM.canonical_int h_v hv
+                    obtain ⟨n, rfl⟩ := TypeOfElabHM.canonical_int h_arg hva
+                    exact .inr ⟨_, .deltaIntSub⟩
           · exact .inr ⟨_, .appArg hvf harg⟩
         · exact .inr ⟨_, .appFn hf⟩
     | letIn _ _ _ _ _ =>
@@ -7586,6 +7833,7 @@ theorem Expr.openTyVarsAux_eq_self_of_tyBvarBounded (Xs : List Nat) :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d _; rfl
+  | primBinOp op => intro d _; rfl
   | ctor nm => intro d _; rfl
   | var i tyArgs =>
     intro d h
@@ -7665,6 +7913,7 @@ theorem Expr.instTyAux_eq_self_of_tyBvarBounded (Ts : List Ty) :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro d _; rfl
+  | primBinOp op => intro d _; rfl
   | ctor nm => intro d _; rfl
   | var i tyArgs =>
     intro d h
@@ -8274,6 +8523,16 @@ theorem TypeOfElabHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
       subst heq
       exact TypeOfElabHM.subst_lemma (env_post := []) hwf hbody
         (HasScheme.fromLetCofinite hcofin)
+  | deltaIntAdd =>
+    -- the result type is pinned to `int` by inverting the primop's typing;
+    -- the reduct is an `int` literal.
+    cases h_ty with
+    | app h_f _ => cases h_f with
+      | app h_pbo _ => cases h_pbo; exact .primLitInt
+  | deltaIntSub =>
+    cases h_ty with
+    | app h_f _ => cases h_f with
+      | app h_pbo _ => cases h_pbo; exact .primLitInt
   | matchReduce hval hctor hfirst =>
     rename_i scrut branches name args pat body
     cases h_ty with
@@ -8476,6 +8735,7 @@ theorem AllMatchesExhaustive.shiftFrom {ctors : CtorEnv} :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _ threshold n; exact .primLit
+  | primBinOp op => intro h _ _; exact h
   | var m _ => intro _ threshold n; simp only [Expr.shiftFrom]; split <;> exact .var
   | ctor nm => intro _ threshold n; exact .ctor
   | lambda ann body ih =>
@@ -8544,6 +8804,7 @@ theorem AllMatchesExhaustive.instTyAux {ctors : CtorEnv} (Ts : List Ty) :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _ _; exact .primLit
+  | primBinOp op => intro _ h; exact h
   | var i tyArgs => intro _ _; exact .var
   | ctor nm => intro _ _; exact .ctor
   | lambda ann body ih => intro d h; cases h with | lambda hb => exact .lambda (ih d hb)
@@ -8622,6 +8883,7 @@ theorem AllMatchesExhaustive.substN {ctors : CtorEnv} {vs : List Expr}
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _ k; exact .primLit
+  | primBinOp op => intro h _; exact h
   | var m _ =>
     intro _ k
     simp only [Expr.substN]
@@ -8720,6 +8982,8 @@ theorem Step.preserves_exhaustive {ctors : CtorEnv} {e e' : Expr}
     | letIn h_v h_body =>
       exact AllMatchesExhaustive.substN
         (fun x hx => by rw [List.mem_singleton] at hx; subst hx; exact h_v) h_body 0
+  | deltaIntAdd => exact .primLit
+  | deltaIntSub => exact .primLit
   | matchReduce hval hctor hfirst =>
     cases h_exh with
     | match_ h_scrut h_bodies h_cover1 h_cover2 =>

@@ -8,6 +8,20 @@ A formalisation of a language with a Hindley-Milner type system. Includes some a
 - mutually recursive let bindings (unannotated members are internally monomorphic, generalised for the body)
 - _polymorphic_ type annotations on recursive bindings (enabling polymorphic recursion) — annotations are per binding, so a single group can mix annotated and unannotated members
 
+<!-- TODO(readme, in Aron's voice): fold in the arithmetic-primops work (roadmap step 1). Points to cover:
+     - Feature list: arithmetic primitive operators `intAdd`/`intSub` — built-in, curried,
+       monomorphic 2-arg functions (`Int → Int → Int`), applied via ordinary application; a
+       partial application is a value, a saturated one δ-reduces on integer literals.
+     - Core.lean section: new `PrimBinOp` enum + single `Expr.primBinOp` leaf node; typing is a
+       fixed monotype in both `TypeOf*` relations; dynamics are Plotkin-style δ-rules in
+       `SmallStep.Step`; progress/preservation extended (new `canonical_int`, widened
+       `canonical_arrow`).
+     - "What we've proved": nothing new to claim, but note progress/preservation now also cover
+       the δ-steps; headline theorem set is unchanged (still 25) and still axiom-clean.
+     - Design note (optional): `−`/`*`/etc. are userland-derivable once comparisons + recursion
+       exist, so only `intAdd` (and `intSub` for ergonomics) is primitive. Comparisons → Bool are
+       deferred to the prelude step. -->
+
 ## Architecture
 
 Type inference here does two jobs at once: it works out the types, and it elaborates the program while doing so. The two can't really be pulled apart, because the whole point of the polymorphic annotations is that inference has to record how each polymorphic variable gets instantiated. So there are two ways to read a program: before elaboration, where those instantiations are left implicit, and after, where they have been written in. Each reading gets its own declarative typing relation.
