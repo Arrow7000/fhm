@@ -20907,12 +20907,12 @@ theorem mutualRec_typeable : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 0) := by
     rcases hτ with h | h <;> (injection h with h'; rw [h']; exact .fvar)
   · -- no annotated members
     intro σ hσ
-    simp only [List.mem_cons, List.not_mem_nil, or_false, reduceCtorEq, or_self] at hσ
+    simp only [List.mem_cons, List.not_mem_nil, reduceCtorEq, or_self] at hσ
   · -- MonoTyped: both members at the opened shared monotype `fvar X`
     intro Xs hfresh p hp τ hτ
     obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
-    simp only [mutualRec, List.zip_cons_cons, List.zip_nil_right, List.mem_cons,
-      List.not_mem_nil, or_false] at hp
+    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
+      or_false] at hp
     rcases hp with rfl | rfl <;> (injection hτ with h'; rw [← h'])
     · -- `f = g`: look up `g` at index 1
       show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
@@ -20926,8 +20926,8 @@ theorem mutualRec_typeable : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 0) := by
         (by intro t ht; cases ht) .fvar
   · -- PolyTyped: vacuous (no annotated members)
     intro Xs hfresh p hp σ hσ
-    simp only [mutualRec, List.zip_cons_cons, List.zip_nil_right, List.mem_cons,
-      List.not_mem_nil, or_false] at hp
+    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
+      or_false] at hp
     rcases hp with rfl | rfl <;> exact RecSpec.noConfusion hσ
   · -- the body sees `f`/`g` generalised to `∀a. a` and instantiates at `fvar 0`
     show TypeOfHM ⟨[⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩], []⟩ (.var 0 [.fvar 0]) (.fvar 0)
