@@ -1544,8 +1544,8 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Expr → Ty → Pro
     Infer Φ ctx (.primLit (.int n)) Φ [] (.primLit (.int n)) (.prim .int)
   | primLitNat {Φ ctx n} :
     Infer Φ ctx (.primLit (.nat n)) Φ [] (.primLit (.nat n)) (.prim .nat)
-  | primLitStr {Φ ctx s} :
-    Infer Φ ctx (.primLit (.str s)) Φ [] (.primLit (.str s)) (.prim .str)
+  | primLitChar {Φ ctx c} :
+    Infer Φ ctx (.primLit (.char c)) Φ [] (.primLit (.char c)) (.prim .char)
   | primBinOpIntAdd {Φ ctx} :
     Infer Φ ctx (.primBinOp .intAdd) Φ [] (.primBinOp .intAdd)
       (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
@@ -1880,7 +1880,7 @@ theorem Infer.frontier_le {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
   | primLitUnit => omega
   | primLitInt => omega
   | primLitNat => omega
-  | primLitStr => omega
+  | primLitChar => omega
   | primBinOpIntAdd => omega
   | primBinOpIntSub => omega
   | lambda hseed hbody => have := Infer.frontier_le hbody; have := hseed.le; omega
@@ -2073,7 +2073,7 @@ theorem Infer.lc {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
   | primLitUnit => intro _; exact ⟨.prim, by simp⟩
   | primLitInt => intro _; exact ⟨.prim, by simp⟩
   | primLitNat => intro _; exact ⟨.prim, by simp⟩
-  | primLitStr => intro _; exact ⟨.prim, by simp⟩
+  | primLitChar => intro _; exact ⟨.prim, by simp⟩
   | primBinOpIntAdd => intro _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
   | primBinOpIntSub => intro _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
   | lambda hseed hbody =>
@@ -3154,7 +3154,7 @@ theorem TypeOfElabHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
   | _, _, _, .primLitUnit => .prim
   | _, _, _, .primLitInt => .prim
   | _, _, _, .primLitNat => .prim
-  | _, _, _, .primLitStr => .prim
+  | _, _, _, .primLitChar => .prim
   | _, _, _, .primBinOpIntAdd => .arrow .prim (.arrow .prim .prim)
   | _, _, _, .primBinOpIntSub => .arrow .prim (.arrow .prim .prim)
   | _, _, _, .lambda hpc _ _ hbody => .arrow hpc (TypeOfElabHM.regular hbody)
@@ -3202,7 +3202,7 @@ theorem Infer.belowFvars {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
   | primLitUnit => intro _ _; exact ⟨.prim, by simp⟩
   | primLitInt => intro _ _; exact ⟨.prim, by simp⟩
   | primLitNat => intro _ _; exact ⟨.prim, by simp⟩
-  | primLitStr => intro _ _; exact ⟨.prim, by simp⟩
+  | primLitChar => intro _ _; exact ⟨.prim, by simp⟩
   | primBinOpIntAdd => intro _ _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
   | primBinOpIntSub => intro _ _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
   | lambda hseed hbody =>
@@ -3523,7 +3523,7 @@ theorem Infer.dom_below {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
   | primLitUnit => intro _ _; simp
   | primLitInt => intro _ _; simp
   | primLitNat => intro _ _; simp
-  | primLitStr => intro _ _; simp
+  | primLitChar => intro _ _; simp
   | primBinOpIntAdd => intro _ _; simp
   | primBinOpIntSub => intro _ _; simp
   | lambda hseed hbody =>
@@ -4249,7 +4249,7 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
   | primLitUnit => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
   | primLitInt => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
   | primLitNat => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
-  | primLitStr => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
+  | primLitChar => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
   | primBinOpIntAdd => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
   | primBinOpIntSub => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
   | var hlook =>
@@ -4668,7 +4668,7 @@ theorem Infer.eliminates {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
   | primLitUnit => exact ⟨by simp, by simp [Ty.freeVars]⟩
   | primLitInt => exact ⟨by simp, by simp [Ty.freeVars]⟩
   | primLitNat => exact ⟨by simp, by simp [Ty.freeVars]⟩
-  | primLitStr => exact ⟨by simp, by simp [Ty.freeVars]⟩
+  | primLitChar => exact ⟨by simp, by simp [Ty.freeVars]⟩
   | primBinOpIntAdd => exact ⟨by simp, by simp [Ty.freeVars]⟩
   | primBinOpIntSub => exact ⟨by simp, by simp [Ty.freeVars]⟩
   | var hlook => exact ⟨by simp, by simp⟩
@@ -5712,7 +5712,7 @@ theorem Infer.eOut_tyBvarBounded {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ
   | primLitUnit => exact trivial
   | primLitInt => exact trivial
   | primLitNat => exact trivial
-  | primLitStr => exact trivial
+  | primLitChar => exact trivial
   | primBinOpIntAdd => exact trivial
   | primBinOpIntSub => exact trivial
   | var hlook =>
@@ -7026,7 +7026,7 @@ theorem Infer.dom_avoid {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
   | primLitUnit => intro w _ _ _; simp
   | primLitInt => intro w _ _ _; simp
   | primLitNat => intro w _ _ _; simp
-  | primLitStr => intro w _ _ _; simp
+  | primLitChar => intro w _ _ _; simp
   | primBinOpIntAdd => intro w _ _ _; simp
   | primBinOpIntSub => intro w _ _ _; simp
   | var hlook => intro w _ _ _; simp
@@ -7603,7 +7603,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
   | primLitUnit => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primLitUnit
   | primLitInt => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primLitInt
   | primLitNat => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primLitNat
-  | primLitStr => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primLitStr
+  | primLitChar => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primLitChar
   | primBinOpIntAdd => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primBinOpIntAdd
   | primBinOpIntSub => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil, Expr.substTyFvars]; exact .primBinOpIntSub
   | lambda hseed hbody =>
@@ -9258,7 +9258,7 @@ theorem TypeOfHM.rec_strong
     (primLitUnit : ∀ {ctx : Ctx}, motive ctx (.primLit .unit) (.prim .unit) .primLitUnit)
     (primLitInt : ∀ {ctx : Ctx} {n : ℤ}, motive ctx (.primLit (.int n)) (.prim .int) .primLitInt)
     (primLitNat : ∀ {ctx : Ctx} {n : ℕ}, motive ctx (.primLit (.nat n)) (.prim .nat) .primLitNat)
-    (primLitStr : ∀ {ctx : Ctx} {s : String}, motive ctx (.primLit (.str s)) (.prim .str) .primLitStr)
+    (primLitChar : ∀ {ctx : Ctx} {c : Char}, motive ctx (.primLit (.char c)) (.prim .char) .primLitChar)
     (primBinOpIntAdd : ∀ {ctx : Ctx},
       motive ctx (.primBinOp .intAdd)
         (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int))) .primBinOpIntAdd)
@@ -9328,7 +9328,7 @@ theorem TypeOfHM.rec_strong
   | primLitUnit => exact primLitUnit
   | primLitInt => exact primLitInt
   | primLitNat => exact primLitNat
-  | primLitStr => exact primLitStr
+  | primLitChar => exact primLitChar
   | primBinOpIntAdd => exact primBinOpIntAdd
   | primBinOpIntSub => exact primBinOpIntSub
   | lambda hpc hann heq hbody ihbody => exact lambda hpc hann heq hbody ihbody
@@ -9437,7 +9437,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
   | primLitUnit => exact .primLitUnit
   | primLitInt => exact .primLitInt
   | primLitNat => exact .primLitNat
-  | primLitStr => exact .primLitStr
+  | primLitChar => exact .primLitChar
   | primBinOpIntAdd => exact .primBinOpIntAdd
   | primBinOpIntSub => exact .primBinOpIntSub
   | app _ _ ihf ihinput =>
@@ -9749,7 +9749,7 @@ theorem TypeOfHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
   | _, _, _, .primLitUnit => .prim
   | _, _, _, .primLitInt => .prim
   | _, _, _, .primLitNat => .prim
-  | _, _, _, .primLitStr => .prim
+  | _, _, _, .primLitChar => .prim
   | _, _, _, .primBinOpIntAdd => .arrow .prim (.arrow .prim .prim)
   | _, _, _, .primBinOpIntSub => .arrow .prim (.arrow .prim .prim)
   | _, _, _, .lambda hpc _ _ hbody => .arrow hpc (TypeOfHM.regular hbody)
@@ -9791,7 +9791,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
   | primLitUnit => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitUnit
   | primLitInt => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitInt
   | primLitNat => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitNat
-  | primLitStr => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitStr
+  | primLitChar => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primLitChar
   | primBinOpIntAdd => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primBinOpIntAdd
   | primBinOpIntSub => intro _ _ _ _ _ _; simp only [Subst.onCtx_nil]; exact .primBinOpIntSub
   | var hlook =>
@@ -11157,7 +11157,7 @@ theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) :=
   | primLitUnit => exact ⟨Φ, [], _, _, S₀, .primLitUnit, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
   | primLitInt  => exact ⟨Φ, [], _, _, S₀, .primLitInt,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
   | primLitNat  => exact ⟨Φ, [], _, _, S₀, .primLitNat,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
-  | primLitStr  => exact ⟨Φ, [], _, _, S₀, .primLitStr,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
+  | primLitChar  => exact ⟨Φ, [], _, _, S₀, .primLitChar,  fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
 
 /-- Principality, primitive binary-operator case: `Infer` returns the operator's
     fixed arrow type with the empty substitution; the residual is `S₀` unchanged. -/
@@ -12951,7 +12951,7 @@ theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : Po
     | primLitUnit => intro ep _; exact .primLitUnit
     | primLitInt => intro ep _; exact .primLitInt
     | primLitNat => intro ep _; exact .primLitNat
-    | primLitStr => intro ep _; exact .primLitStr
+    | primLitChar => intro ep _; exact .primLitChar
     | primBinOpIntAdd => intro ep _; exact .primBinOpIntAdd
     | primBinOpIntSub => intro ep _; exact .primBinOpIntSub
     | app hf hinput ihf ihinput => intro ep heq; exact .app (ihf ep heq) (ihinput ep heq)
@@ -15214,7 +15214,7 @@ theorem Infer.complete' {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
   | primLitUnit => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | primLitInt  => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | primLitNat  => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
-  | primLitStr  => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
+  | primLitChar  => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | primBinOpIntAdd => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | primBinOpIntSub => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | var hlook =>
@@ -17811,7 +17811,7 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
   | .primLit .unit => some ⟨(Φ, [], .primLit .unit, .prim .unit), .primLitUnit, by simp⟩
   | .primLit (.int n) => some ⟨(Φ, [], .primLit (.int n), .prim .int), .primLitInt, by simp⟩
   | .primLit (.nat n) => some ⟨(Φ, [], .primLit (.nat n), .prim .nat), .primLitNat, by simp⟩
-  | .primLit (.str s) => some ⟨(Φ, [], .primLit (.str s), .prim .str), .primLitStr, by simp⟩
+  | .primLit (.char c) => some ⟨(Φ, [], .primLit (.char c), .prim .char), .primLitChar, by simp⟩
   | .primBinOp .intAdd =>
       some ⟨(Φ, [], .primBinOp .intAdd,
               .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))), .primBinOpIntAdd, by simp⟩
@@ -18134,7 +18134,7 @@ but provable relation). `unify` and `infer` reduce only under the compiler
 -- `unify (α → α) (Int → β) = [α ↦ Int, β ↦ Int]`
 #eval unify (.arrow (.fvar 0) (.fvar 0)) (.arrow (.prim .int) (.fvar 1))
 -- `unify Int String = none` (constructor clash)
-#eval unify (.prim .int) (.prim .str)
+#eval unify (.prim .int) (.prim .char)
 -- `unify α (α → α) = none` (occurs check)
 #eval unify (.fvar 0) (.arrow (.fvar 0) (.fvar 0))
 -- `infer (λx. x) = α → α`
@@ -18498,7 +18498,7 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx
   | primLitUnit => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | primLitInt => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | primLitNat => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
-  | primLitStr => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
+  | primLitChar => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | primBinOpIntAdd => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | primBinOpIntSub => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | lambda hseed hbody =>

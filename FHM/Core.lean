@@ -57,7 +57,7 @@ inductive PrimTy
   | unit
   | int
   | nat
-  | str
+  | char
   deriving DecidableEq, Repr
 
 
@@ -171,7 +171,7 @@ inductive PrimLitExpr
   | unit : PrimLitExpr
   | int : Int → PrimLitExpr
   | nat : Nat → PrimLitExpr
-  | str : String → PrimLitExpr
+  | char : Char → PrimLitExpr
 
 
 /-- Primitive binary operators: built-in, monomorphic, curried 2-argument
@@ -2485,8 +2485,8 @@ inductive TypeOfElabHM : Ctx → Expr → Ty → Prop
   | primLitNat :
     TypeOfElabHM ctx (.primLit (.nat n)) (.prim .nat)
 
-  | primLitStr :
-    TypeOfElabHM ctx (.primLit (.str s)) (.prim .str)
+  | primLitChar :
+    TypeOfElabHM ctx (.primLit (.char c)) (.prim .char)
 
   /-- `intAdd : int → int → int`. A fixed, env-independent monotype (no premises)
       — the operational counterpart is the `SmallStep.Step.deltaIntAdd` δ-rule. -/
@@ -2637,8 +2637,8 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | primLitNat :
     TypeOfHM ctx (.primLit (.nat n)) (.prim .nat)
 
-  | primLitStr :
-    TypeOfHM ctx (.primLit (.str s)) (.prim .str)
+  | primLitChar :
+    TypeOfHM ctx (.primLit (.char c)) (.prim .char)
 
   /-- `intAdd : int → int → int` (identical to the `TypeOfElabHM` rule — a primop
       carries no `tyArgs`, so the two relations agree; `faithful` is trivial). -/
@@ -4332,7 +4332,7 @@ theorem TypeOfElabHM.rec_strong
     (primLitUnit : ∀ {ctx : Ctx}, motive ctx (.primLit .unit) (.prim .unit) .primLitUnit)
     (primLitInt : ∀ {ctx : Ctx} {n : ℤ}, motive ctx (.primLit (.int n)) (.prim .int) .primLitInt)
     (primLitNat : ∀ {ctx : Ctx} {n : ℕ}, motive ctx (.primLit (.nat n)) (.prim .nat) .primLitNat)
-    (primLitStr : ∀ {ctx : Ctx} {s : String}, motive ctx (.primLit (.str s)) (.prim .str) .primLitStr)
+    (primLitChar : ∀ {ctx : Ctx} {c : Char}, motive ctx (.primLit (.char c)) (.prim .char) .primLitChar)
     (primBinOpIntAdd : ∀ {ctx : Ctx},
       motive ctx (.primBinOp .intAdd)
         (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int))) .primBinOpIntAdd)
@@ -4402,7 +4402,7 @@ theorem TypeOfElabHM.rec_strong
   | primLitUnit => exact primLitUnit
   | primLitInt => exact primLitInt
   | primLitNat => exact primLitNat
-  | primLitStr => exact primLitStr
+  | primLitChar => exact primLitChar
   | primBinOpIntAdd => exact primBinOpIntAdd
   | primBinOpIntSub => exact primBinOpIntSub
   | lambda hpc hann heq hbody ihbody => exact lambda hpc hann heq hbody ihbody
@@ -4432,7 +4432,7 @@ theorem TypeOfElabHM.faithful {ctx : Ctx} {e : Expr} {τ : Ty}
   | primLitUnit => exact .primLitUnit
   | primLitInt => exact .primLitInt
   | primLitNat => exact .primLitNat
-  | primLitStr => exact .primLitStr
+  | primLitChar => exact .primLitChar
   | primBinOpIntAdd => exact .primBinOpIntAdd
   | primBinOpIntSub => exact .primBinOpIntSub
   | lambda hpc hann heq _ ihbody => exact .lambda hpc hann heq ihbody
@@ -4696,7 +4696,7 @@ theorem TypeOfElabHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc :
   | primLitUnit => exact .primLitUnit
   | primLitInt => exact .primLitInt
   | primLitNat => exact .primLitNat
-  | primLitStr => exact .primLitStr
+  | primLitChar => exact .primLitChar
   | primBinOpIntAdd => exact .primBinOpIntAdd
   | primBinOpIntSub => exact .primBinOpIntSub
   | app _ _ ihf ihinput =>
@@ -5011,7 +5011,7 @@ theorem TypeOfElabHM.weaken_env
   | primLitUnit => intro env_pre' _; exact .primLitUnit
   | primLitInt => intro env_pre' _; exact .primLitInt
   | primLitNat => intro env_pre' _; exact .primLitNat
-  | primLitStr => intro env_pre' _; exact .primLitStr
+  | primLitChar => intro env_pre' _; exact .primLitChar
   | primBinOpIntAdd => intro env_pre' _; exact .primBinOpIntAdd
   | primBinOpIntSub => intro env_pre' _; exact .primBinOpIntSub
   | app hf hinput ihf ihinput =>
@@ -6605,7 +6605,7 @@ theorem TypeOfElabHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
   | primLitUnit => trivial
   | primLitInt => trivial
   | primLitNat => trivial
-  | primLitStr => trivial
+  | primLitChar => trivial
   | primBinOpIntAdd => trivial
   | primBinOpIntSub => trivial
   | app _ _ ihf ihi => exact ⟨ihf, ihi⟩
@@ -6909,7 +6909,7 @@ theorem TypeOfElabHM.substArgsGe {ctors : CtorEnv} {blk env : Env} :
   | primLitUnit => intro _ _; trivial
   | primLitInt => intro _ _; trivial
   | primLitNat => intro _ _; trivial
-  | primLitStr => intro _ _; trivial
+  | primLitChar => intro _ _; trivial
   | primBinOpIntAdd => intro _ _; trivial
   | primBinOpIntSub => intro _ _; trivial
   | ctor _ _ _ => intro _ _; trivial
@@ -7184,7 +7184,7 @@ theorem TypeOfElabHM.subst_lemma_many
     | primLitUnit => exact .primLitUnit
     | primLitInt  => exact .primLitInt
     | primLitNat  => exact .primLitNat
-    | primLitStr  => exact .primLitStr
+    | primLitChar  => exact .primLitChar
     | primBinOpIntAdd => exact .primBinOpIntAdd
     | primBinOpIntSub => exact .primBinOpIntSub
     | ctor hlook htyargs hinst => exact .ctor hlook htyargs hinst
@@ -7576,7 +7576,7 @@ theorem TypeOfElabHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
     | primLitUnit => exact .inl (.primLit _)
     | primLitInt => exact .inl (.primLit _)
     | primLitNat => exact .inl (.primLit _)
-    | primLitStr => exact .inl (.primLit _)
+    | primLitChar => exact .inl (.primLit _)
     | primBinOpIntAdd => exact .inl (.primBinOp _)
     | primBinOpIntSub => exact .inl (.primBinOp _)
     | ctor _ _ _ => exact .inl (.ctor _)

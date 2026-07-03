@@ -33,13 +33,13 @@ def prettyPrimTy : PrimTy → String
   | .unit => "Unit"
   | .int  => "Int"
   | .nat  => "Nat"
-  | .str  => "Str"
+  | .char => "Char"
 
 def prettyPrimLit : PrimLitExpr → String
   | .unit  => "()"
   | .int n => toString n
   | .nat n => toString n
-  | .str s => "\"" ++ s ++ "\""
+  | .char c => "'" ++ String.singleton c ++ "'"
 
 @[inline] def prettyParenIf (b : Bool) (s : String) : String := if b then "(" ++ s ++ ")" else s
 
