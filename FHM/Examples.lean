@@ -157,6 +157,13 @@ well-typed only relative to an env that provides `Bool` — captured by the two
 #guard (typecheck []
   (.app (.app (.primBinOp .intLt) (.primLit (.int 2))) (.primLit (.int 3)))).isSome = false
 
+-- charLt 'a' 'b'  :  Bool  (char ordering by codepoint); 'a' < 'b' ⟹ True, 'b' < 'a' ⟹ False
+#eval showTypeP (.app (.app (.primBinOp .charLt) (.primLit (.char 'a'))) (.primLit (.char 'b')))
+#guard evalStr (.app (.app (.primBinOp .charLt) (.primLit (.char 'a'))) (.primLit (.char 'b'))) = "True"
+#guard evalStr (.app (.app (.primBinOp .charLt) (.primLit (.char 'b'))) (.primLit (.char 'a'))) = "False"
+#guard (typecheck demoCtors
+  (.app (.app (.primBinOp .charLt) (.primLit (.char 'a'))) (.primLit (.char 'b')))).isSome = true
+
 
 /-! ## Polymorphic combinators
 

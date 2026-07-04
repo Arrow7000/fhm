@@ -1629,6 +1629,11 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Expr → Ty → Pro
     LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC → falseC.IsBoolCtor →
     Infer Φ ctx (.primBinOp .intLt) Φ [] (.primBinOp .intLt)
       (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])))
+  | primBinOpCharLt {Φ ctx trueC falseC} :
+    LookupList.get? ctx.ctors ⟨"True"⟩  = some trueC → trueC.IsBoolCtor →
+    LookupList.get? ctx.ctors ⟨"False"⟩ = some falseC → falseC.IsBoolCtor →
+    Infer Φ ctx (.primBinOp .charLt) Φ [] (.primBinOp .charLt)
+      (.arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ [])))
   | lambda {Φ ctx ann paramTy body Φ₀ Φ' S bodyOut τb} :
     LamSeed Φ ann paramTy Φ₀ →
     Infer Φ₀ { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } body Φ' S bodyOut τb →
@@ -1961,6 +1966,7 @@ theorem Infer.frontier_le {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
   | primBinOpIntAdd => omega
   | primBinOpIntSub => omega
   | primBinOpIntLt _ _ _ _ => omega
+  | primBinOpCharLt _ _ _ _ => omega
   | lambda hseed hbody => have := Infer.frontier_le hbody; have := hseed.le; omega
   | app hf harg _ => have := Infer.frontier_le hf; have := Infer.frontier_le harg; omega
   | var => omega
@@ -2155,6 +2161,7 @@ theorem Infer.lc {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
   | primBinOpIntAdd => intro _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
   | primBinOpIntSub => intro _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
   | primBinOpIntLt _ _ _ _ => intro _; exact ⟨.arrow .prim (.arrow .prim (.customTy (by simp))), by simp⟩
+  | primBinOpCharLt _ _ _ _ => intro _; exact ⟨.arrow .prim (.arrow .prim (.customTy (by simp))), by simp⟩
   | lambda hseed hbody =>
     intro hctx
     cases hseed with
@@ -3237,6 +3244,7 @@ theorem TypeOfElabHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
   | _, _, _, .primBinOpIntAdd => .arrow .prim (.arrow .prim .prim)
   | _, _, _, .primBinOpIntSub => .arrow .prim (.arrow .prim .prim)
   | _, _, _, .primBinOpIntLt _ _ => .arrow .prim (.arrow .prim (.customTy (by simp)))
+  | _, _, _, .primBinOpCharLt _ _ => .arrow .prim (.arrow .prim (.customTy (by simp)))
   | _, _, _, .lambda hpc _ _ hbody => .arrow hpc (TypeOfElabHM.regular hbody)
   | _, _, _, .app hf _ => by
     have := TypeOfElabHM.regular hf; cases this with | arrow _ hret => exact hret
@@ -3286,6 +3294,7 @@ theorem Infer.belowFvars {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
   | primBinOpIntAdd => intro _ _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
   | primBinOpIntSub => intro _ _; exact ⟨.arrow .prim (.arrow .prim .prim), by simp⟩
   | primBinOpIntLt _ _ _ _ => intro _ _; exact ⟨.arrow .prim (.arrow .prim (.customTy (by simp))), by simp⟩
+  | primBinOpCharLt _ _ _ _ => intro _ _; exact ⟨.arrow .prim (.arrow .prim (.customTy (by simp))), by simp⟩
   | lambda hseed hbody =>
     intro hctx htfv
     cases hseed with
@@ -3608,6 +3617,7 @@ theorem Infer.dom_below {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
   | primBinOpIntAdd => intro _ _; simp
   | primBinOpIntSub => intro _ _; simp
   | primBinOpIntLt _ _ _ _ => intro _ _; simp
+  | primBinOpCharLt _ _ _ _ => intro _ _; simp
   | lambda hseed hbody =>
     intro hctx htfv
     cases hseed with
@@ -4335,6 +4345,7 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
   | primBinOpIntAdd => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
   | primBinOpIntSub => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars], by simp [Expr.tyFreeVars]⟩
   | primBinOpIntLt _ _ _ _ => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars, TyList.freeVars], by simp [Expr.tyFreeVars]⟩
+  | primBinOpCharLt _ _ _ _ => intro w _ _ _; exact ⟨by simp, by simp [Ty.freeVars, TyList.freeVars], by simp [Expr.tyFreeVars]⟩
   | var hlook =>
     intro w hwΦ hctx _
     refine ⟨by simp, ?_, ?_⟩
@@ -4755,6 +4766,7 @@ theorem Infer.eliminates {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
   | primBinOpIntAdd => exact ⟨by simp, by simp [Ty.freeVars]⟩
   | primBinOpIntSub => exact ⟨by simp, by simp [Ty.freeVars]⟩
   | primBinOpIntLt _ _ _ _ => exact ⟨by simp, by simp [Ty.freeVars]⟩
+  | primBinOpCharLt _ _ _ _ => exact ⟨by simp, by simp [Ty.freeVars]⟩
   | var hlook => exact ⟨by simp, by simp⟩
   | ctor hlook => exact ⟨by simp, by simp⟩
   | lambda hseed hbody =>
@@ -5800,6 +5812,7 @@ theorem Infer.eOut_tyBvarBounded {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ
   | primBinOpIntAdd => exact trivial
   | primBinOpIntSub => exact trivial
   | primBinOpIntLt _ _ _ _ => exact trivial
+  | primBinOpCharLt _ _ _ _ => exact trivial
   | var hlook =>
     simp only [Expr.TyBvarBounded]
     intro t ht; obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht; exact ContainsBvarsUpTo.fvar
@@ -7115,6 +7128,7 @@ theorem Infer.dom_avoid {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
   | primBinOpIntAdd => intro w _ _ _; simp
   | primBinOpIntSub => intro w _ _ _; simp
   | primBinOpIntLt _ _ _ _ => intro w _ _ _; simp
+  | primBinOpCharLt _ _ _ _ => intro w _ _ _; simp
   | var hlook => intro w _ _ _; simp
   | ctor hlook => intro w _ _ _; simp
   | lambda hseed hbody =>
@@ -7696,6 +7710,10 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
     intro _ _ _ _ _ _
     simp only [Subst.onCtx_nil, Expr.substTyFvars]
     exact .primBinOpIntLt (Ctor.IsBoolCtor.typeOfElabHM hlookT hbT) (Ctor.IsBoolCtor.typeOfElabHM hlookF hbF)
+  | primBinOpCharLt hlookT hbT hlookF hbF =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil, Expr.substTyFvars]
+    exact .primBinOpCharLt (Ctor.IsBoolCtor.typeOfElabHM hlookT hbT) (Ctor.IsBoolCtor.typeOfElabHM hlookF hbF)
   | lambda hseed hbody =>
     intro hctx hbelow K hKΦ hKe hSK
     rw [Expr.substTyFvars_lambda]
@@ -9363,6 +9381,14 @@ theorem TypeOfHM.rec_strong
       motive ctx (.primBinOp .intLt)
         (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])))
         (.primBinOpIntLt htrue hfalse))
+    (primBinOpCharLt : ∀ {ctx : Ctx}
+      (htrue : TypeOfHM ctx (.ctor ⟨"True"⟩) (.customTy ⟨"Bool"⟩ []))
+      (hfalse : TypeOfHM ctx (.ctor ⟨"False"⟩) (.customTy ⟨"Bool"⟩ [])),
+      motive ctx (.ctor ⟨"True"⟩) (.customTy ⟨"Bool"⟩ []) htrue →
+      motive ctx (.ctor ⟨"False"⟩) (.customTy ⟨"Bool"⟩ []) hfalse →
+      motive ctx (.primBinOp .charLt)
+        (.arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ [])))
+        (.primBinOpCharLt htrue hfalse))
     (lambda : ∀ {paramTy : Ty} {ann : Option Ty} {bodyCtx ctx : Ctx} {body : Expr} {bodyTy : Ty}
       (hpc : ContainsBvarsUpTo 0 paramTy) (hann : ∀ T, ann = some T → paramTy = T)
       (heq : bodyCtx = { env := PolyTy.mkTrivial paramTy :: ctx.env, ctors := ctx.ctors })
@@ -9430,6 +9456,7 @@ theorem TypeOfHM.rec_strong
   | primBinOpIntAdd => exact primBinOpIntAdd
   | primBinOpIntSub => exact primBinOpIntSub
   | primBinOpIntLt htrue hfalse ihtrue ihfalse => exact primBinOpIntLt htrue hfalse ihtrue ihfalse
+  | primBinOpCharLt htrue hfalse ihtrue ihfalse => exact primBinOpCharLt htrue hfalse ihtrue ihfalse
   | lambda hpc hann heq hbody ihbody => exact lambda hpc hann heq hbody ihbody
   | app hf hinput ihf ihinput => exact app hf hinput ihf ihinput
   | letIn hwf hann hcofin heq hbody ihcofin ihbody =>
@@ -9540,6 +9567,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
   | primBinOpIntAdd => exact .primBinOpIntAdd
   | primBinOpIntSub => exact .primBinOpIntSub
   | primBinOpIntLt _ _ ihtrue ihfalse => exact .primBinOpIntLt ihtrue ihfalse
+  | primBinOpCharLt _ _ ihtrue ihfalse => exact .primBinOpCharLt ihtrue ihfalse
   | app _ _ ihf ihinput =>
     simp only [Expr.substTyFvar]
     simp only [Ty.substFvar] at ihf
@@ -9853,6 +9881,7 @@ theorem TypeOfHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
   | _, _, _, .primBinOpIntAdd => .arrow .prim (.arrow .prim .prim)
   | _, _, _, .primBinOpIntSub => .arrow .prim (.arrow .prim .prim)
   | _, _, _, .primBinOpIntLt _ _ => .arrow .prim (.arrow .prim (.customTy (by simp)))
+  | _, _, _, .primBinOpCharLt _ _ => .arrow .prim (.arrow .prim (.customTy (by simp)))
   | _, _, _, .lambda hpc _ _ hbody => .arrow hpc (TypeOfHM.regular hbody)
   | _, _, _, .app hf _ => by
     have := TypeOfHM.regular hf; cases this with | arrow _ hret => exact hret
@@ -9899,6 +9928,10 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
     intro _ _ _ _ _ _
     simp only [Subst.onCtx_nil]
     exact .primBinOpIntLt (Ctor.IsBoolCtor.typeOfHM hlookT hbT) (Ctor.IsBoolCtor.typeOfHM hlookF hbF)
+  | primBinOpCharLt hlookT hbT hlookF hbF =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil]
+    exact .primBinOpCharLt (Ctor.IsBoolCtor.typeOfHM hlookT hbT) (Ctor.IsBoolCtor.typeOfHM hlookF hbF)
   | var hlook =>
     intro hctx _ _ _ _ _
     simp only [Subst.onCtx_nil]
@@ -11275,6 +11308,11 @@ theorem Infer.complete_primBinOp {op : PrimBinOp} : Infer.CompleteAt (.primBinOp
     obtain ⟨tc, hlookT, hbT⟩ := Ctor.isBoolCtor_of_typeOfHM htrue
     obtain ⟨fc, hlookF, hbF⟩ := Ctor.isBoolCtor_of_typeOfHM hfalse
     exact ⟨Φ, [], _, _, S₀, .primBinOpIntLt hlookT hbT hlookF hbF,
+      fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
+  | primBinOpCharLt htrue hfalse =>
+    obtain ⟨tc, hlookT, hbT⟩ := Ctor.isBoolCtor_of_typeOfHM htrue
+    obtain ⟨fc, hlookF, hbF⟩ := Ctor.isBoolCtor_of_typeOfHM hfalse
+    exact ⟨Φ, [], _, _, S₀, .primBinOpCharLt hlookT hbT hlookF hbF,
       fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix, by simp⟩
 
 /-! ### Injective renaming of free type variables (principality binder cases)
@@ -13065,6 +13103,7 @@ theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : Po
     | primBinOpIntAdd => intro ep _; exact .primBinOpIntAdd
     | primBinOpIntSub => intro ep _; exact .primBinOpIntSub
     | primBinOpIntLt _ _ ihtrue ihfalse => intro ep heq; exact .primBinOpIntLt (ihtrue ep heq) (ihfalse ep heq)
+    | primBinOpCharLt _ _ ihtrue ihfalse => intro ep heq; exact .primBinOpCharLt (ihtrue ep heq) (ihfalse ep heq)
     | app hf hinput ihf ihinput => intro ep heq; exact .app (ihf ep heq) (ihinput ep heq)
     | @lambda paramTy ann bodyCtx ctx body bodyTy hpc hann heqctx hbody ihbody =>
       intro ep heq
@@ -15329,6 +15368,7 @@ theorem Infer.complete' {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
   | primBinOpIntAdd => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | primBinOpIntSub => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | primBinOpIntLt _ _ _ _ => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
+  | primBinOpCharLt _ _ _ _ => cases hty; exact ⟨S₀, fun v _ => by rw [List.nil_append], by simp, hS₀, hKfix⟩
   | var hlook =>
     obtain ⟨_, _, _, _, R, hinf, hag, hfac, hRlc, hRfix, _⟩ :=
       Infer.complete_var K hwf hbelow hS₀ hKΦ hKe hKfix hty
@@ -17944,6 +17984,20 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
                     .primBinOpIntLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc), by simp⟩
             else none
           else none
+  | .primBinOp .charLt =>
+      match hT : LookupList.get? ctx.ctors ⟨"True"⟩ with
+      | none => none
+      | some tc =>
+        match hF : LookupList.get? ctx.ctors ⟨"False"⟩ with
+        | none => none
+        | some fc =>
+          if htc : tc.isBoolCtor = true then
+            if hfc : fc.isBoolCtor = true then
+              some ⟨(Φ, [], .primBinOp .charLt,
+                      .arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ []))),
+                    .primBinOpCharLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc), by simp⟩
+            else none
+          else none
   | .lambda none body =>
       match inferCore K (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } body with
       | none => none
@@ -18628,6 +18682,7 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx
   | primBinOpIntAdd => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | primBinOpIntSub => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars] at hv
   | primBinOpIntLt _ _ _ _ => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
+  | primBinOpCharLt _ _ _ _ => intro _ _ _; refine ⟨?_, by simp, by simp⟩; intro v hv; simp [Ty.freeVars, TyList.freeVars] at hv
   | lambda hseed hbody =>
     intro hhi hctx htfv
     cases hseed with
@@ -19125,6 +19180,20 @@ theorem inferCore_complete_primBinOp {op : PrimBinOp} : InferCoreComplete (.prim
   | primBinOpIntAdd => simp [inferCore]
   | primBinOpIntSub => simp [inferCore]
   | primBinOpIntLt hlookT hbT hlookF hbF =>
+    rw [inferCore]
+    split
+    next heqT => rw [hlookT] at heqT; exact absurd heqT (by simp)
+    next tc heqT =>
+      rw [hlookT] at heqT
+      obtain rfl := (Option.some.inj heqT).symm
+      split
+      next heqF => rw [hlookF] at heqF; exact absurd heqF (by simp)
+      next fc heqF =>
+        rw [hlookF] at heqF
+        obtain rfl := (Option.some.inj heqF).symm
+        rw [dif_pos (Ctor.isBoolCtor_iff.mpr hbT), dif_pos (Ctor.isBoolCtor_iff.mpr hbF)]
+        rfl
+  | primBinOpCharLt hlookT hbT hlookF hbF =>
     rw [inferCore]
     split
     next heqT => rw [hlookT] at heqT; exact absurd heqT (by simp)
