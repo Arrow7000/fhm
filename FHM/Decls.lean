@@ -105,19 +105,217 @@ structure DataDecls.WF (decls : List DataDecl) : Prop where
   ctorNamesNodup : (decls.flatMap (fun d => d.ctors.map Prod.fst)).Nodup
 
 
-/-! ## Deferred to the next step (functions — held for review of the spec above)
+/-! ## The executable side (checker, elaborator, prelude)
 
-Once the spec is agreed, the executable side is:
+Everything below turns the spec above into running code with proofs — no `Core`
+changes needed. `bvarsBelow`-style helpers live in `InferW` (not importable
+here), so the checkers are self-contained, reusing only `Core`'s `Ty`,
+`ContainsBvarsUpTo`, `NoFreeVars`, `Ctor`, and `LookupList.get?`. -/
 
-* `Ty.decWellKinded : KindEnv → Nat → Ty → Bool` (or a `Decidable` instance) with
-  a reflection lemma `= true ↔ Ty.WellKinded …`, plus
-  `WellKinded → ContainsBvarsUpTo pc ty` and `WellKinded → NoFreeVars ty`
-  (to feed a `Ctor`'s `bound`/`closed` fields — generalising `Examples.mkCtor`).
-* `elabDecls : List DataDecl → Option CtorEnv` — the two-pass elaborator: build
-  the `KindEnv`, check `DataDecls.WF` decidably, and on success emit one `Ctor`
-  per constructor (`toTy` builds the uniform ADT result type automatically), as a
-  `LookupList CtorName Ctor`; `none` on any violation.
-* soundness: `elabDecls decls = some env → DataDecls.WF decls` (and vice-versa),
-  so the produced env is well-formed by construction.
-* a fixed **prelude** `CtorEnv` built via `elabDecls` (`Bool`, `List`, …),
-  retiring the ad-hoc `Examples.demoCtors`. -/
+
+/-! ### 1. The `Bool` kind-checker (mirrors `Core`'s `Ty.freeVars` mutual idiom). -/
+
+mutual
+/-- Decidable kind-check of a single field type against `ke` at arity `pc`. -/
+def Ty.wellKindedB (ke : KindEnv) (pc : Nat) : Ty → Bool
+  | .prim _        => true
+  | .bvar i        => decide (i < pc)
+  | .fvar _        => false
+  | .arrow a b     => Ty.wellKindedB ke pc a && Ty.wellKindedB ke pc b
+  | .customTy T args => decide (LookupList.get? ke T = some args.length) && TyList.wellKindedB ke pc args
+/-- Pointwise kind-check of a list of field types. -/
+def TyList.wellKindedB (ke : KindEnv) (pc : Nat) : List Ty → Bool
+  | []      => true
+  | t :: ts => Ty.wellKindedB ke pc t && TyList.wellKindedB ke pc ts
+end
+
+
+/-! ### 2. Reflection: the checker agrees with `Ty.WellKinded`. -/
+
+/-- The list checker succeeds iff each element passes the `Bool` checker. Pure
+    list induction (mirrors `Core`'s `TyList.isClosed_iff_forall`). -/
+theorem TyList.wellKindedB_iff_forall {ke : KindEnv} {pc : Nat} (tys : List Ty) :
+    TyList.wellKindedB ke pc tys = true ↔ ∀ t ∈ tys, Ty.wellKindedB ke pc t = true := by
+  induction tys with
+  | nil => simp [TyList.wellKindedB]
+  | cons hd tl ih =>
+    simp only [TyList.wellKindedB, Bool.and_eq_true, List.mem_cons]
+    rw [ih]
+    constructor
+    · rintro ⟨hhd, htl⟩ t (rfl | ht)
+      · exact hhd
+      · exact htl t ht
+    · intro h
+      exact ⟨h hd (Or.inl rfl), fun t ht => h t (Or.inr ht)⟩
+
+/-- **Reflection for a single type**: the `Bool` checker agrees with the
+    `Ty.WellKinded` spec. Structural induction via `Core`'s `Ty.rec_strong`,
+    whose `customTy` IH ranges over the argument list. -/
+theorem Ty.wellKindedB_iff {ke : KindEnv} {pc : Nat} (ty : Ty) :
+    Ty.wellKindedB ke pc ty = true ↔ Ty.WellKinded ke pc ty := by
+  induction ty using Ty.rec_strong with
+  | prim p => exact iff_of_true rfl .prim
+  | bvar i =>
+    simp only [Ty.wellKindedB, decide_eq_true_eq]
+    constructor
+    · intro h; exact .bvar h
+    · intro h; cases h with | bvar hlt => exact hlt
+  | fvar n =>
+    refine iff_of_false (by simp [Ty.wellKindedB]) ?_
+    intro h; cases h
+  | arrow a b iha ihb =>
+    simp only [Ty.wellKindedB, Bool.and_eq_true]
+    rw [iha, ihb]
+    constructor
+    · rintro ⟨ha, hb⟩; exact .arrow ha hb
+    · intro h; cases h with | arrow ha hb => exact ⟨ha, hb⟩
+  | customTy T args ih =>
+    simp only [Ty.wellKindedB, Bool.and_eq_true, decide_eq_true_eq]
+    rw [TyList.wellKindedB_iff_forall]
+    constructor
+    · rintro ⟨harity, hargs⟩
+      exact .customTy harity (fun t ht => (ih t ht).mp (hargs t ht))
+    · intro h
+      cases h with
+      | customTy harity hargs =>
+        exact ⟨harity, fun t ht => (ih t ht).mpr (hargs t ht)⟩
+
+/-- **Reflection for a list of types**, phrased directly against the spec (the
+    form the elaborator consumes). -/
+theorem TyList.wellKindedB_iff {ke : KindEnv} {pc : Nat} (tys : List Ty) :
+    TyList.wellKindedB ke pc tys = true ↔ ∀ t ∈ tys, Ty.WellKinded ke pc t := by
+  rw [TyList.wellKindedB_iff_forall]
+  constructor
+  · intro h t ht; exact (Ty.wellKindedB_iff t).mp (h t ht)
+  · intro h t ht; exact (Ty.wellKindedB_iff t).mpr (h t ht)
+
+/-- The spec is decidable, via the checker. -/
+instance (ke : KindEnv) (pc : Nat) (ty : Ty) : Decidable (Ty.WellKinded ke pc ty) :=
+  decidable_of_iff _ (Ty.wellKindedB_iff ty)
+
+
+/-! ### 3. `WellKinded` discharges a `Ctor`'s `bound`/`closed` obligations. -/
+
+/-- A well-kinded type only references params in range (`Ctor.bound`). -/
+theorem Ty.WellKinded.toContainsBvars {ke : KindEnv} {pc : Nat} {ty : Ty}
+    (h : Ty.WellKinded ke pc ty) : ContainsBvarsUpTo pc ty := by
+  induction h with
+  | prim => exact .prim
+  | bvar hlt => exact .bvar hlt
+  | arrow _ _ iha ihb => exact .arrow iha ihb
+  | customTy _ _ ih => exact .customTy ih
+
+/-- A well-kinded type has no free type vars (`Ctor.closed`). -/
+theorem Ty.WellKinded.toNoFreeVars {ke : KindEnv} {pc : Nat} {ty : Ty}
+    (h : Ty.WellKinded ke pc ty) : NoFreeVars ty := by
+  induction h with
+  | prim => exact .prim
+  | bvar _ => exact .bvar
+  | arrow _ _ iha ihb => exact .arrow iha ihb
+  | customTy _ _ ih => exact .customTy ih
+
+
+/-! ### 4. Building one `Ctor` from a constructor's checked field list. -/
+
+/-- Build a `Ctor` for the type `tn` (arity `pc`) from `fields`, discharging the
+    `bound`/`closed` obligations from a successful kind-check. `none` if the
+    fields don't kind-check. -/
+def mkCtorFromFields (ke : KindEnv) (pc : Nat) (tn : TyName) (fields : List Ty) : Option Ctor :=
+  if h : TyList.wellKindedB ke pc fields = true then
+    some { paramCount := pc, tyName := tn, contents := fields,
+           bound  := fun ty hty => ((TyList.wellKindedB_iff fields).mp h ty hty).toContainsBvars,
+           closed := fun ty hty => ((TyList.wellKindedB_iff fields).mp h ty hty).toNoFreeVars }
+  else none
+
+/-- A successful `mkCtorFromFields` implies its fields kind-checked. -/
+theorem mkCtorFromFields_wellKinded {ke : KindEnv} {pc : Nat} {tn : TyName}
+    {fields : List Ty} {ct : Ctor} (h : mkCtorFromFields ke pc tn fields = some ct) :
+    TyList.wellKindedB ke pc fields = true := by
+  unfold mkCtorFromFields at h
+  split at h
+  · assumption
+  · exact absurd h (by simp)
+
+
+/-! ### 5. The two-pass elaborator into a `CtorEnv`. -/
+
+/-- A successful `Option` bind forces its scrutinee to have succeeded. -/
+theorem option_bind_eq_some_left {α β : Type} {o : Option α} {f : α → Option β}
+    {b : β} (h : (o >>= f) = some b) : ∃ a, o = some a := by
+  cases o with
+  | none => simp at h
+  | some a => exact ⟨a, rfl⟩
+
+/-- Generic inversion: if a `List.mapM` in the `Option` monad succeeds, then each
+    input element mapped to `some`. Used to invert `elabDecls`' nested `mapM`s. -/
+theorem mapM_option_mem {α β : Type} {g : α → Option β} :
+    ∀ {l : List α} {r : List β}, l.mapM g = some r → ∀ x ∈ l, ∃ y, g x = some y := by
+  intro l
+  induction l with
+  | nil => intro r _ x hx; simp at hx
+  | cons a as ih =>
+    intro r h x hx
+    rw [List.mapM_cons] at h
+    cases hga : g a with
+    | none => rw [hga] at h; simp at h
+    | some b =>
+      cases hmas : List.mapM g as with
+      | none => rw [hga, hmas] at h; simp at h
+      | some bs =>
+        rcases List.mem_cons.mp hx with rfl | hx'
+        · exact ⟨b, hga⟩
+        · exact ih hmas x hx'
+
+/-- Inversion of a single `guard` in the `Option` monad: success forces the
+    predicate and reduces the continuation. -/
+theorem option_guard_bind {P : Prop} [Decidable P] {β : Type} {k : Unit → Option β}
+    {b : β} (h : (guard P >>= k) = some b) : P ∧ k () = some b := by
+  by_cases hP : P
+  · exact ⟨hP, by simpa [guard, hP] using h⟩
+  · simp [guard, hP] at h
+
+/-- **Elaborate a declaration group into a `CtorEnv`.** Two passes: build the
+    `KindEnv` (names + arities), then — after checking type/constructor names are
+    distinct — kind-check every constructor's fields and emit one `Ctor` each.
+    `none` on any violation. -/
+def elabDecls (decls : List DataDecl) : Option CtorEnv := do
+  let ke := DataDecls.kindEnv decls
+  guard ((decls.map (·.name)).Nodup)
+  guard ((decls.flatMap (fun d => d.ctors.map Prod.fst)).Nodup)
+  let nested ← decls.mapM (fun d =>
+    d.ctors.mapM (fun c => (mkCtorFromFields ke d.paramCount d.name c.2).map (fun ct => (c.1, ct))))
+  pure nested.flatten
+
+
+/-! ### 6. Soundness: a produced env came from a well-formed declaration group. -/
+
+/-- **Soundness of the elaborator.** If `elabDecls` succeeds, the input group is
+    well-formed (`DataDecls.WF`): the two `guard`s give the `Nodup` conditions,
+    and each constructor's successful `mkCtorFromFields` gives its fields'
+    well-kindedness via `TyList.wellKindedB_iff`. -/
+theorem elabDecls_sound {decls : List DataDecl} {env : CtorEnv}
+    (h : elabDecls decls = some env) : DataDecls.WF decls := by
+  unfold elabDecls at h
+  simp only [] at h
+  obtain ⟨hP1, h⟩ := option_guard_bind h
+  obtain ⟨hP2, h⟩ := option_guard_bind h
+  obtain ⟨nested, hmapM⟩ := option_bind_eq_some_left h
+  refine ⟨?_, hP1, hP2⟩
+  intro d hd c hc ty hty
+  obtain ⟨inner, hinner⟩ := mapM_option_mem hmapM d hd
+  obtain ⟨pair, hpair⟩ := mapM_option_mem hinner c hc
+  obtain ⟨ct, hct, _⟩ := Option.map_eq_some_iff.mp hpair
+  exact (TyList.wellKindedB_iff c.2).mp (mkCtorFromFields_wellKinded hct) ty hty
+
+
+/-! ### 7. A fixed prelude, elaborated through the checker. -/
+
+/-- A small prelude: `Bool` (nullary) and the recursive, unary `List`. -/
+def preludeDecls : List DataDecl :=
+  [ { name := ⟨"Bool"⟩, paramCount := 0, ctors := [(⟨"True"⟩, []), (⟨"False"⟩, [])] },
+    { name := ⟨"List"⟩, paramCount := 1,
+      ctors := [(⟨"Nil"⟩, []), (⟨"Cons"⟩, [.bvar 0, .customTy ⟨"List"⟩ [.bvar 0]])] } ]
+
+-- The prelude elaborates successfully (witnessing the whole pipeline).
+#guard (elabDecls preludeDecls).isSome
+#guard (elabDecls preludeDecls).isSome = true
