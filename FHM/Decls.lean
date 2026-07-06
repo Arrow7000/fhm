@@ -308,6 +308,68 @@ theorem elabDecls_sound {decls : List DataDecl} {env : CtorEnv}
   exact (TyList.wellKindedB_iff c.2).mp (mkCtorFromFields_wellKinded hct) ty hty
 
 
+/-! ### 6b. Completeness: a well-formed declaration group elaborates. -/
+
+/-- Converse of `mapM_option_mem`: if every element maps to `some`, then a
+    `List.mapM` in the `Option` monad succeeds. Pure list induction. -/
+theorem mapM_option_isSome {α β : Type} {g : α → Option β} :
+    ∀ {l : List α}, (∀ x ∈ l, (g x).isSome) → (l.mapM g).isSome := by
+  intro l
+  induction l with
+  | nil => intro _; rfl
+  | cons a as ih =>
+    intro h
+    rw [List.mapM_cons]
+    obtain ⟨b, hb⟩ := Option.isSome_iff_exists.mp (h a (List.mem_cons_self))
+    obtain ⟨bs, hbs⟩ :=
+      Option.isSome_iff_exists.mp (ih (fun x hx => h x (List.mem_cons_of_mem a hx)))
+    rw [hb, hbs]
+    rfl
+
+/-- A successful kind-check makes `mkCtorFromFields` succeed (converse of
+    `mkCtorFromFields_wellKinded`): the `if h : … = true` takes the `then`
+    branch. -/
+theorem mkCtorFromFields_isSome {ke : KindEnv} {pc : Nat} {tn : TyName}
+    {fields : List Ty} (h : TyList.wellKindedB ke pc fields = true) :
+    (mkCtorFromFields ke pc tn fields).isSome := by
+  unfold mkCtorFromFields
+  rw [dif_pos h]
+  rfl
+
+/-- Forward inversion of a single `guard` in the `Option` monad: if the
+    predicate holds, the `guard` vanishes into its continuation. -/
+theorem option_guard_bind_pos {P : Prop} [Decidable P] {β : Type} {k : Unit → Option β}
+    (hP : P) : (guard P >>= k) = k () := by
+  simp [guard, hP]
+
+/-- **Completeness of the elaborator.** A well-formed declaration group
+    (`DataDecls.WF`) elaborates successfully: the two `guard`s pass from the
+    `Nodup` fields, and every constructor's fields kind-check (from `h.fields`
+    via `TyList.wellKindedB_iff`), so both the inner and outer `mapM`s succeed. -/
+theorem elabDecls_complete {decls : List DataDecl} (h : DataDecls.WF decls) :
+    (elabDecls decls).isSome := by
+  unfold elabDecls
+  simp only []
+  rw [option_guard_bind_pos h.tyNamesNodup, option_guard_bind_pos h.ctorNamesNodup]
+  have hOuter :
+      (decls.mapM (fun (d : DataDecl) =>
+        d.ctors.mapM (fun c =>
+          (mkCtorFromFields (DataDecls.kindEnv decls) d.paramCount d.name c.2).map
+            (fun ct => (c.1, ct))))).isSome := by
+    apply mapM_option_isSome
+    intro d hd
+    apply mapM_option_isSome
+    intro c hc
+    have hwk : TyList.wellKindedB (DataDecls.kindEnv decls) d.paramCount c.2 = true :=
+      (TyList.wellKindedB_iff c.2).mpr (h.fields d hd c hc)
+    obtain ⟨ct, hct⟩ := Option.isSome_iff_exists.mp (mkCtorFromFields_isSome hwk)
+    rw [hct]
+    rfl
+  obtain ⟨nested, hnested⟩ := Option.isSome_iff_exists.mp hOuter
+  rw [hnested]
+  rfl
+
+
 /-! ### 7. A fixed prelude, elaborated through the checker. -/
 
 /-- A small prelude: `Bool` (nullary) and the recursive, unary `List`. -/
