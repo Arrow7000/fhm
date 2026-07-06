@@ -32,6 +32,21 @@ type-passing payoff). `FHM.InferW` and `FHM.Examples` are back in the lakefile b
   blocks); small, fold into recursion or surface work whenever.
 - **Brief consolidation / repo hygiene** whenever.
 
+**Campaign status (2026-07-06, append-only):** steps 1–3 have LANDED, all
+axiom-clean and `lake build` green. Step 1 — arithmetic primops `intAdd`/`intSub`
+(one `Expr.primBinOp` leaf; structural, arity-free value semantics; the
+irreducible int kernel is `{intAdd, intLt}`, everything else userland). Also the
+`str` primitive was replaced by a primitive `Char` (strings become `List Char`).
+Step 3 — comparison primops `intLt`/`charLt` (`… → Bool`), env-dependent via the
+`ctor`-typing-judgment premise (`TypeOf ctx (.ctor "True"/"False") Bool`), so
+typechecks ⟹ Bool present ⟹ δ-result well-typed; `intEq`/`charEq` are userland.
+Step 2 — type declarations in the new leaf module `FHM/Decls.lean` (imports only
+Core; NO new Core metatheory): `DataDecl` AST, `Ty.WellKinded` kind-check,
+decidable checker, `elabDecls : List DataDecl → Option CtorEnv` proven **sound
+AND complete**, `preludeDecls` (Bool, List); `Examples.demoCtors` is now produced
+by `elabDecls` (hand-built `mkCtor` retired). Only step 5 (surface bridge)
+remains — see `next-agent-brief-surface-bridge.md`.
+
 ## Design decisions (agreed)
 
 ### Primitive ops
