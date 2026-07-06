@@ -825,6 +825,576 @@ decreasing_by
     exact Prod.Lex.left _ _ (defaultMatrix_ctorCount_lt occ0 _ hne)
 
 
+/-! ### H1: compiler correctness
+
+`evalDTree ∘ compile` against `matrixSem` — the irreducible heart of the
+campaign. First a plumbing layer (occurrence/fetch algebra, width and
+captured-occurrence preservation, `evalSwitch` as a `find?`), then Maranget's
+S/D equations in capture-aware form, then the main functional induction and
+the hypothesis-free surface headline. -/
+
+/-- Occurrence paths compose: fetching along `o₁ ++ o₂` is fetching `o₁` then
+    `o₂` from there. -/
+private theorem fetch_append (root : Expr) (o₁ o₂ : Occ) :
+    fetch root (o₁ ++ o₂) = (fetch root o₁).bind (fun v => fetch v o₂) := by
+  induction o₁ generalizing root with
+  | nil => simp [fetch]
+  | cons i o₁ ih =>
+    simp only [List.cons_append, fetch]
+    cases hget : getCtorArgs root with
+    | none => rfl
+    | some ca =>
+      obtain ⟨c, args⟩ := ca
+      simp only [Option.bind_eq_bind, Option.bind_some]
+      cases hidx : args[i]? with
+      | none => rfl
+      | some a => simp [ih a]
+
+/-- One-step fetch extension: `occ0 ++ [i]` reads field `i` of the ctor value
+    at `occ0`. -/
+private theorem fetch_snoc_index {root v : Expr} {name : CtorName}
+    {args : List Expr} (occ0 : Occ) (i : Nat)
+    (hocc : fetch root occ0 = some v)
+    (hget : getCtorArgs v = some (name, args)) :
+    fetch root (occ0 ++ [i]) = args[i]? := by
+  rw [fetch_append, hocc, Option.bind_some]
+  simp only [fetch, hget, Option.bind_eq_bind, Option.bind_some]
+  cases args[i]? <;> rfl
+
+/-- Reading every index of `args` in order gives back `args`. -/
+private theorem range_mapM_getElem? : ∀ (args : List Expr),
+    (List.range args.length).mapM (fun i => args[i]?) = some args
+  | [] => rfl
+  | a :: args => by
+    rw [List.length_cons, List.range_succ_eq_map]
+    simp [List.mapM_map, Function.comp_def, range_mapM_getElem? args]
+
+/-- The field occurrences of a ctor value all fetch, yielding exactly the
+    ctor's argument vector. -/
+private theorem fetch_subOccs {v : Expr} {name : CtorName} {args : List Expr}
+    (root : Expr) (occ0 : Occ) (hocc : fetch root occ0 = some v)
+    (hget : getCtorArgs v = some (name, args)) :
+    (subOccs occ0 args.length).mapM (fetch root) = some args := by
+  have hfun : (fetch root ∘ fun i => occ0 ++ [i]) = (fun i : Nat => args[i]?) := by
+    funext i
+    exact fetch_snoc_index occ0 i hocc hget
+  rw [subOccs, List.mapM_map, hfun, range_mapM_getElem?]
+
+/-- Inversion of a successful `mapM` on a cons. -/
+private theorem mapM_cons_some {f : Occ → Option Expr} {o : Occ} {os : List Occ}
+    {vals : List Expr} (h : (o :: os).mapM f = some vals) :
+    ∃ v vrest, vals = v :: vrest ∧ f o = some v ∧ os.mapM f = some vrest := by
+  cases hv : f o with
+  | none => rw [List.mapM_cons, hv] at h; simp at h
+  | some v =>
+    cases hrest : os.mapM f with
+    | none => rw [List.mapM_cons, hv, hrest] at h; simp at h
+    | some vrest =>
+      rw [List.mapM_cons, hv, hrest] at h
+      simp only [Option.bind_eq_bind, Option.bind_some, Option.pure_def,
+        Option.some.injEq] at h
+      exact ⟨v, vrest, h.symm, rfl, rfl⟩
+
+/-- All-`isSome` pointwise ⇒ the whole `mapM` succeeds. -/
+private theorem mapM_isSome {f : Occ → Option Expr} :
+    ∀ {l : List Occ}, (∀ o ∈ l, (f o).isSome) → ∃ vs, l.mapM f = some vs
+  | [], _ => ⟨[], rfl⟩
+  | o :: l, h => by
+    obtain ⟨v, hv⟩ := Option.isSome_iff_exists.mp (h o (List.mem_cons_self ..))
+    obtain ⟨vs, hvs⟩ := mapM_isSome (fun o' ho' => h o' (List.mem_cons_of_mem _ ho'))
+    exact ⟨v :: vs, by rw [List.mapM_cons, hv, hvs]; rfl⟩
+
+/-- A `gctor`-headed row registers its `(ctor, arity)` in `colHeads`. -/
+private theorem head_mem_colHeads {M : Matrix} {r : Row} {c : CtorName}
+    {pats rest : List GPat} (hr : r ∈ M) (hp : r.pats = .gctor c pats :: rest) :
+    (c, pats.length) ∈ colHeads M := by
+  simp only [colHeads, List.mem_dedup, List.mem_filterMap]
+  exact ⟨r, hr, by rw [hp]; rfl⟩
+
+/-- Row-level width bookkeeping for `specializeRow`. -/
+private theorem specializeRow_width {c : CtorName} {a : Nat} {occ0 : Occ}
+    {r r' : Row} {w : Nat} (hw : r.pats.length = w + 1)
+    (hs : specializeRow c a occ0 r = some r') : r'.pats.length = a + w := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil => simp [specializeRow] at hs
+  | cons p prest =>
+    have hplen : prest.length = w := by simpa using hw
+    cases p with
+    | gctor c' cargs =>
+      simp only [specializeRow] at hs
+      split at hs
+      · rename_i hcond
+        simp only [Option.some.injEq] at hs
+        subst hs
+        simp [hcond.2, hplen]
+      · simp at hs
+    | gbind =>
+      simp only [specializeRow, Option.some.injEq] at hs
+      subst hs
+      simp [hplen]
+    | gwild =>
+      simp only [specializeRow, Option.some.injEq] at hs
+      subst hs
+      simp [hplen]
+
+/-- Row-level width bookkeeping for `defaultRow`. -/
+private theorem defaultRow_width {occ0 : Occ} {r r' : Row} {w : Nat}
+    (hw : r.pats.length = w + 1) (hs : defaultRow occ0 r = some r') :
+    r'.pats.length = w := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil => simp [defaultRow] at hs
+  | cons p prest =>
+    have hplen : prest.length = w := by simpa using hw
+    cases p with
+    | gctor c' cargs => simp [defaultRow] at hs
+    | gbind =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      simpa using hplen
+    | gwild =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      simpa using hplen
+
+/-- `specialize` preserves the row-width invariant (columns: 1 consumed,
+    `a` fields opened). -/
+private theorem specialize_width {M : Matrix} {w : Nat}
+    (hw : ∀ r ∈ M, r.pats.length = w + 1) (c : CtorName) (a : Nat) (occ0 : Occ) :
+    ∀ r' ∈ specialize c a occ0 M, r'.pats.length = a + w := by
+  intro r' hr'
+  simp only [specialize, List.mem_filterMap] at hr'
+  obtain ⟨r, hr, hs⟩ := hr'
+  exact specializeRow_width (hw r hr) hs
+
+/-- `defaultMatrix` preserves the row-width invariant (one column consumed). -/
+private theorem defaultMatrix_width {M : Matrix} {w : Nat}
+    (hw : ∀ r ∈ M, r.pats.length = w + 1) (occ0 : Occ) :
+    ∀ r' ∈ defaultMatrix occ0 M, r'.pats.length = w := by
+  intro r' hr'
+  simp only [defaultMatrix, List.mem_filterMap] at hr'
+  obtain ⟨r, hr, hs⟩ := hr'
+  exact defaultRow_width (hw r hr) hs
+
+/-- `specializeRow` only ever adds `occ0` to a row's captures. -/
+private theorem specializeRow_captured_sub {c : CtorName} {a : Nat} {occ0 : Occ}
+    {r r' : Row} (hs : specializeRow c a occ0 r = some r') :
+    ∀ o ∈ r'.captured, o ∈ r.captured ∨ o = occ0 := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil => simp [specializeRow] at hs
+  | cons p prest =>
+    cases p with
+    | gctor c' cargs =>
+      simp only [specializeRow] at hs
+      split at hs
+      · simp only [Option.some.injEq] at hs
+        subst hs
+        intro o ho
+        exact Or.inl ho
+      · simp at hs
+    | gbind =>
+      simp only [specializeRow, Option.some.injEq] at hs
+      subst hs
+      intro o ho
+      simpa using ho
+    | gwild =>
+      simp only [specializeRow, Option.some.injEq] at hs
+      subst hs
+      intro o ho
+      exact Or.inl ho
+
+/-- `defaultRow` only ever adds `occ0` to a row's captures. -/
+private theorem defaultRow_captured_sub {occ0 : Occ} {r r' : Row}
+    (hs : defaultRow occ0 r = some r') :
+    ∀ o ∈ r'.captured, o ∈ r.captured ∨ o = occ0 := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil => simp [defaultRow] at hs
+  | cons p prest =>
+    cases p with
+    | gctor c' cargs => simp [defaultRow] at hs
+    | gbind =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      intro o ho
+      simpa using ho
+    | gwild =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      intro o ho
+      exact Or.inl ho
+
+/-- `specialize` keeps every captured occurrence fetchable. -/
+private theorem specialize_captured {root : Expr} {M : Matrix}
+    (hc : ∀ r ∈ M, ∀ o ∈ r.captured, (fetch root o).isSome)
+    {occ0 : Occ} (hocc : (fetch root occ0).isSome) (c : CtorName) (a : Nat) :
+    ∀ r' ∈ specialize c a occ0 M, ∀ o ∈ r'.captured, (fetch root o).isSome := by
+  intro r' hr' o ho
+  simp only [specialize, List.mem_filterMap] at hr'
+  obtain ⟨r, hr, hs⟩ := hr'
+  rcases specializeRow_captured_sub hs o ho with h | rfl
+  · exact hc r hr o h
+  · exact hocc
+
+/-- `defaultMatrix` keeps every captured occurrence fetchable. -/
+private theorem defaultMatrix_captured {root : Expr} {M : Matrix}
+    (hc : ∀ r ∈ M, ∀ o ∈ r.captured, (fetch root o).isSome)
+    {occ0 : Occ} (hocc : (fetch root occ0).isSome) :
+    ∀ r' ∈ defaultMatrix occ0 M, ∀ o ∈ r'.captured, (fetch root o).isSome := by
+  intro r' hr' o ho
+  simp only [defaultMatrix, List.mem_filterMap] at hr'
+  obtain ⟨r, hr, hs⟩ := hr'
+  rcases defaultRow_captured_sub hs o ho with h | rfl
+  · exact hc r hr o h
+  · exact hocc
+
+/-- `evalSwitch` is first-match search over the case list. -/
+private theorem evalSwitch_eq_find (root : Expr) (name : CtorName) (arity : Nat) :
+    ∀ (cases : List (CtorName × Nat × DTree)) (dflt : DTree),
+      evalSwitch root name arity cases dflt
+        = match cases.find? (fun x => decide (x.1 = name ∧ x.2.1 = arity)) with
+          | some x => evalDTree root x.2.2
+          | none => evalDTree root dflt
+  | [], dflt => by simp [evalSwitch]
+  | (c, a, t) :: rest, dflt => by
+    rw [evalSwitch]
+    by_cases hca : c = name ∧ a = arity
+    · rw [if_pos hca, List.find?_cons_of_pos (by simpa using hca)]
+    · rw [if_neg hca, List.find?_cons_of_neg (by simpa using hca),
+        evalSwitch_eq_find root name arity rest dflt]
+
+/-- `find?` over a `(ctor, arity, subtree)` case list built from `l` by a
+    function of the `(ctor, arity)` pair: a member is found, and — since the
+    subtree is DETERMINED by the pair — the result is canonical (duplicates
+    carry identical subtrees, so dedup-uniqueness is never needed). -/
+private theorem find?_casesList_mem {l : List (CtorName × Nat)} {name : CtorName}
+    {arity : Nat} (g : CtorName × Nat → DTree) (hmem : (name, arity) ∈ l) :
+    (l.map (fun p => (p.1, p.2, g p))).find?
+        (fun x => decide (x.1 = name ∧ x.2.1 = arity))
+      = some (name, arity, g (name, arity)) := by
+  induction l with
+  | nil => simp at hmem
+  | cons hd tl ih =>
+    obtain ⟨hc, ha⟩ := hd
+    rw [List.map_cons]
+    by_cases hhd : (hc, ha) = (name, arity)
+    · injection hhd with h1 h2
+      subst h1
+      subst h2
+      rw [List.find?_cons_of_pos (by simp)]
+    · rw [List.find?_cons_of_neg (by
+        simp only [decide_eq_true_eq]
+        rintro ⟨h1, h2⟩
+        exact hhd (by rw [h1, h2]))]
+      refine ih ?_
+      rcases List.mem_cons.mp hmem with heq | h
+      · exact absurd heq.symm hhd
+      · exact h
+
+/-- `find?` fails on a case list none of whose pairs is `(name, arity)`. -/
+private theorem find?_casesList_not_mem {l : List (CtorName × Nat)}
+    {name : CtorName} {arity : Nat} (g : CtorName × Nat → DTree)
+    (hmem : (name, arity) ∉ l) :
+    (l.map (fun p => (p.1, p.2, g p))).find?
+        (fun x => decide (x.1 = name ∧ x.2.1 = arity)) = none := by
+  rw [List.find?_eq_none]
+  intro x hx
+  simp only [List.mem_map] at hx
+  obtain ⟨p, hp, rfl⟩ := hx
+  obtain ⟨pc, pa⟩ := p
+  simp only [decide_eq_true_eq]
+  rintro ⟨h1, h2⟩
+  subst h1
+  subst h2
+  exact hmem hp
+
+/-- Composite: a hit case in a pair-determined case list runs its subtree. -/
+private theorem evalSwitch_casesList_mem (root : Expr)
+    {l : List (CtorName × Nat)} {name : CtorName} {arity : Nat}
+    (g : CtorName × Nat → DTree) (hmem : (name, arity) ∈ l) (dflt : DTree) :
+    evalSwitch root name arity (l.map (fun p => (p.1, p.2, g p))) dflt
+      = evalDTree root (g (name, arity)) := by
+  rw [evalSwitch_eq_find, find?_casesList_mem g hmem]
+
+/-- Composite: a missed case list falls through to the default. -/
+private theorem evalSwitch_casesList_not_mem (root : Expr)
+    {l : List (CtorName × Nat)} {name : CtorName} {arity : Nat}
+    (g : CtorName × Nat → DTree) (hmem : (name, arity) ∉ l) (dflt : DTree) :
+    evalSwitch root name arity (l.map (fun p => (p.1, p.2, g p))) dflt
+      = evalDTree root dflt := by
+  rw [evalSwitch_eq_find, find?_casesList_not_mem g hmem]
+
+
+/-! ### The S/D equations (capture-aware Maranget) -/
+
+/-- Per-row specialization equation: on a ctor value, a row means exactly what
+    its specialization means (dropped rows mean `none`). -/
+private theorem rowSem_specializeRow {root v0 : Expr} {vrest : List Expr}
+    {occ0 : Occ} {name : CtorName} {args : List Expr}
+    (hocc : fetch root occ0 = some v0)
+    (hget : getCtorArgs v0 = some (name, args)) (r : Row) :
+    rowSem root (v0 :: vrest) r
+      = (specializeRow name args.length occ0 r).bind
+          (rowSem root (args ++ vrest)) := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil =>
+    simp only [specializeRow, Option.bind_none, rowSem, matchGs]
+    cases captured.mapM (fetch root) <;> simp
+  | cons p prest =>
+    cases p with
+    | gctor c' cargs =>
+      by_cases hcond : c' = name ∧ cargs.length = args.length
+      · obtain ⟨rfl, hlen⟩ := hcond
+        have hmg : matchG v0 (.gctor c' cargs) = matchGs args cargs := by
+          simp [matchG, hget, guard_eq_ite, hlen]
+        have hs : specializeRow c' args.length occ0
+            ⟨captured, .gctor c' cargs :: prest, act⟩
+              = some ⟨captured, cargs ++ prest, act⟩ := by
+          simp [specializeRow, hlen]
+        rw [hs, Option.bind_some]
+        simp only [rowSem, matchGs, hmg]
+        rw [matchGs_append hlen.symm]
+      · have hmg : matchG v0 (.gctor c' cargs) = none := by
+          simp only [matchG, hget, Option.bind_eq_bind, Option.bind_some]
+          rw [guard_neg (fun hand => hcond ⟨hand.1.symm, hand.2.symm⟩)]
+          rfl
+        have hs : specializeRow name args.length occ0
+            ⟨captured, .gctor c' cargs :: prest, act⟩ = none := by
+          simp [specializeRow, hcond]
+        rw [hs, Option.bind_none]
+        simp only [rowSem, matchGs, hmg]
+        cases captured.mapM (fetch root) <;> simp
+    | gbind =>
+      simp only [specializeRow, Option.bind_some]
+      simp only [rowSem, matchGs, matchG_gbind]
+      rw [matchGs_append (by simp :
+            args.length = (List.replicate args.length GPat.gwild).length),
+          matchGs_replicate_gwild rfl, List.mapM_append]
+      simp only [List.mapM_cons, List.mapM_nil, hocc]
+      cases captured.mapM (fetch root) <;> cases matchGs vrest prest <;> simp
+    | gwild =>
+      simp only [specializeRow, Option.bind_some]
+      simp only [rowSem, matchGs, matchG_gwild]
+      rw [matchGs_append (by simp :
+            args.length = (List.replicate args.length GPat.gwild).length),
+          matchGs_replicate_gwild rfl]
+
+/-- Maranget's S: on a ctor value, the matrix means exactly what its
+    specialization means on the unfolded value vector. -/
+theorem matrixSem_specialize {root v0 : Expr} {vrest : List Expr} {occ0 : Occ}
+    (M : Matrix) {name : CtorName} {args : List Expr}
+    (hocc : fetch root occ0 = some v0)
+    (hget : getCtorArgs v0 = some (name, args)) :
+    matrixSem root (v0 :: vrest) M
+      = matrixSem root (args ++ vrest) (specialize name args.length occ0 M) := by
+  induction M with
+  | nil => rfl
+  | cons r M ih =>
+    simp only [matrixSem]
+    rw [rowSem_specializeRow hocc hget r, ih]
+    simp only [specialize, List.filterMap_cons]
+    cases specializeRow name args.length occ0 r with
+    | none => simp
+    | some r' => simp [matrixSem]
+
+/-- Per-row default equation: when the row's head (if a ctor test) refutes
+    the column value, a row means what its default means. -/
+private theorem rowSem_defaultRow {root v0 : Expr} {vrest : List Expr}
+    {occ0 : Occ} (hocc : fetch root occ0 = some v0) (r : Row)
+    (hrefute : ∀ c pats rest, r.pats = .gctor c pats :: rest →
+      matchG v0 (.gctor c pats) = none) :
+    rowSem root (v0 :: vrest) r = (defaultRow occ0 r).bind (rowSem root vrest) := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil =>
+    simp only [defaultRow, Option.bind_none, rowSem, matchGs]
+    cases captured.mapM (fetch root) <;> simp
+  | cons p prest =>
+    cases p with
+    | gctor c cargs =>
+      have hmg := hrefute c cargs prest rfl
+      simp only [defaultRow, Option.bind_none, rowSem, matchGs, hmg]
+      cases captured.mapM (fetch root) <;> simp
+    | gbind =>
+      simp only [defaultRow, Option.bind_some]
+      simp only [rowSem, matchGs, matchG_gbind]
+      rw [List.mapM_append]
+      simp only [List.mapM_cons, List.mapM_nil, hocc]
+      cases captured.mapM (fetch root) <;> cases matchGs vrest prest <;> simp
+    | gwild =>
+      simp only [defaultRow, Option.bind_some]
+      simp only [rowSem, matchGs, matchG_gwild]
+      cases captured.mapM (fetch root) <;> cases matchGs vrest prest <;> simp
+
+/-- Maranget's D: when no row's head ctor test matches the column value, the
+    matrix means what its default means on the popped value vector. Serves the
+    pop rule, the switch default, and non-ctor column values alike. -/
+theorem matrixSem_default {root v0 : Expr} {vrest : List Expr} {occ0 : Occ}
+    (M : Matrix) (hocc : fetch root occ0 = some v0)
+    (hrefute : ∀ r ∈ M, ∀ c pats rest, r.pats = .gctor c pats :: rest →
+      matchG v0 (.gctor c pats) = none) :
+    matrixSem root (v0 :: vrest) M = matrixSem root vrest (defaultMatrix occ0 M) := by
+  induction M with
+  | nil => rfl
+  | cons r M ih =>
+    simp only [matrixSem]
+    rw [rowSem_defaultRow hocc r (hrefute r (List.mem_cons_self ..)),
+        ih (fun r' hr' => hrefute r' (List.mem_cons_of_mem _ hr'))]
+    simp only [defaultMatrix, List.filterMap_cons]
+    cases defaultRow occ0 r with
+    | none => simp
+    | some r' => simp [matrixSem]
+
+
+/-! ### The main theorem -/
+
+/-- H1, matrix form: the compiled tree denotes exactly the matrix semantics,
+    given the width invariant, a fully-fetchable occurrence vector, and
+    fetchable captured occurrences. Functional induction mirroring `compile`'s
+    four cases. -/
+theorem compile_correct (root : Expr) (occs : List Occ) (M : Matrix) :
+    ∀ vals : List Expr,
+      (∀ r ∈ M, r.pats.length = occs.length) →
+      occs.mapM (fetch root) = some vals →
+      (∀ r ∈ M, ∀ o ∈ r.captured, (fetch root o).isSome) →
+      evalDTree root (compile occs M) = matrixSem root vals M := by
+  induction occs, M using compile.induct with
+  | case1 occs =>
+    intro vals _ _ _
+    simp [compile, evalDTree, matrixSem]
+  | case2 r1 rest =>
+    intro vals hw hv hc
+    have hvals : vals = [] := by simpa using hv.symm
+    subst hvals
+    obtain ⟨pre, hpre⟩ := mapM_isSome (hc r1 (List.mem_cons_self ..))
+    have hpats : r1.pats = [] :=
+      List.length_eq_zero_iff.mp (hw r1 (List.mem_cons_self ..))
+    simp [compile, evalDTree, matrixSem, rowSem, hpre, hpats, matchGs]
+  | case3 r1 rest occ0 orest hh ih =>
+    intro vals hw hv hc
+    obtain ⟨v0, vrest, rfl, hocc, hvrest⟩ := mapM_cons_some hv
+    have hw' : ∀ r ∈ (r1 :: rest), r.pats.length = orest.length + 1 :=
+      fun r hr => by simpa using hw r hr
+    have hrefute : ∀ r ∈ (r1 :: rest), ∀ c pats prest,
+        r.pats = .gctor c pats :: prest → matchG v0 (.gctor c pats) = none := by
+      intro r hr c pats prest hp
+      exact absurd (head_mem_colHeads hr hp) (by simp [hh])
+    rw [matrixSem_default (r1 :: rest) hocc hrefute]
+    rw [compile]
+    split
+    · exact ih vrest (defaultMatrix_width hw' occ0) hvrest
+        (defaultMatrix_captured hc (by simp [hocc]))
+    · rename_i heq
+      rw [hh] at heq
+      exact absurd heq.symm (List.cons_ne_nil _ _)
+  | case4 r1 rest occ0 orest hhd htl hh ihcases ihdflt =>
+    intro vals hw hv hc
+    obtain ⟨v0, vrest, rfl, hocc, hvrest⟩ := mapM_cons_some hv
+    have hw' : ∀ r ∈ (r1 :: rest), r.pats.length = orest.length + 1 :=
+      fun r hr => by simpa using hw r hr
+    rw [compile]
+    split
+    · rename_i heq
+      rw [hh] at heq
+      exact absurd heq (List.cons_ne_nil _ _)
+    · rename_i hhd' htl' heq
+      rw [hh] at heq
+      injection heq with h1 h2
+      subst h1
+      subst h2
+      rw [List.attach_map_val (l := hhd :: htl)
+        (f := fun p => (p.1, p.2,
+          compile (subOccs occ0 p.2 ++ orest)
+                  (specialize p.1 p.2 occ0 (r1 :: rest))))]
+      cases hgetv : getCtorArgs v0 with
+      | none =>
+        -- non-ctor column value: the switch falls to the default (iii)
+        simp only [evalDTree, hocc, hgetv]
+        have hrefute : ∀ r ∈ (r1 :: rest), ∀ c pats prest,
+            r.pats = .gctor c pats :: prest → matchG v0 (.gctor c pats) = none := by
+          intro r hr c pats prest hp
+          simp [matchG, hgetv]
+        rw [matrixSem_default (r1 :: rest) hocc hrefute]
+        exact ihdflt vrest (defaultMatrix_width hw' occ0) hvrest
+          (defaultMatrix_captured hc (by simp [hocc]))
+      | some ca =>
+        obtain ⟨name, args⟩ := ca
+        simp only [evalDTree, hocc, hgetv]
+        by_cases hmem : (name, args.length) ∈ hhd :: htl
+        · -- hit case: run the specialized subtree
+          rw [evalSwitch_casesList_mem root
+            (fun p => compile (subOccs occ0 p.2 ++ orest)
+              (specialize p.1 p.2 occ0 (r1 :: rest))) hmem,
+            matrixSem_specialize (r1 :: rest) hocc hgetv]
+          refine ihcases ⟨(name, args.length), hmem⟩ (args ++ vrest) ?_ ?_ ?_
+          · intro r' hr'
+            have hlen := specialize_width hw' name args.length occ0 r' hr'
+            simp only [List.length_append, subOccs, List.length_map,
+              List.length_range]
+            omega
+          · rw [List.mapM_append, fetch_subOccs root occ0 hocc hgetv, hvrest]
+            rfl
+          · exact specialize_captured hc (by simp [hocc]) name args.length
+        · -- miss case: no head test matches — default (ii)
+          rw [evalSwitch_casesList_not_mem root
+            (fun p => compile (subOccs occ0 p.2 ++ orest)
+              (specialize p.1 p.2 occ0 (r1 :: rest))) hmem]
+          have hrefute : ∀ r ∈ (r1 :: rest), ∀ c pats prest,
+              r.pats = .gctor c pats :: prest → matchG v0 (.gctor c pats) = none := by
+            intro r hr c pats prest hp
+            cases hm : matchG v0 (.gctor c pats) with
+            | none => rfl
+            | some cs =>
+              obtain ⟨args', hget', hlen', -⟩ := matchG_gctor_iff.mp hm
+              rw [hgetv] at hget'
+              simp only [Option.some.injEq, Prod.mk.injEq] at hget'
+              obtain ⟨rfl, rfl⟩ := hget'
+              have hin : (name, pats.length) ∈ colHeads (r1 :: rest) :=
+                head_mem_colHeads hr hp
+              rw [hh, ← hlen'] at hin
+              exact absurd hin hmem
+          rw [matrixSem_default (r1 :: rest) hocc hrefute]
+          exact ihdflt vrest (defaultMatrix_width hw' occ0) hvrest
+            (defaultMatrix_captured hc (by simp [hocc]))
+
+/-- Width of the initial matrix: one column. -/
+private theorem initMatrix_width : ∀ (ps : List Surface.Pattern) (k : Nat),
+    ∀ r ∈ initMatrix ps k, r.pats.length = 1
+  | [], _ => by simp [initMatrix]
+  | p :: ps, k => by
+    intro r hr
+    rw [initMatrix] at hr
+    rcases List.mem_cons.mp hr with rfl | hr'
+    · rfl
+    · exact initMatrix_width ps (k + 1) r hr'
+
+/-- The initial matrix captures nothing yet. -/
+private theorem initMatrix_captured : ∀ (ps : List Surface.Pattern) (k : Nat),
+    ∀ r ∈ initMatrix ps k, r.captured = []
+  | [], _ => by simp [initMatrix]
+  | p :: ps, k => by
+    intro r hr
+    rw [initMatrix] at hr
+    rcases List.mem_cons.mp hr with rfl | hr'
+    · rfl
+    · exact initMatrix_captured ps (k + 1) r hr'
+
+/-- The H1 headline, hypothesis-free: on ANY scrutinee value, the compiled
+    tree of a surface match selects exactly the branch (and captures) that the
+    trusted surface spec `firstMatch` selects. -/
+theorem compile_correct_surface (v : Expr) (ps : List Surface.Pattern) :
+    evalDTree v (compile [[]] (initMatrix ps)) = firstMatch v ps := by
+  rw [compile_correct v [[]] (initMatrix ps) [v]
+      (fun r hr => initMatrix_width ps 0 r hr)
+      (by simp [fetch])
+      (fun r hr o ho => by
+        rw [initMatrix_captured ps 0 r hr] at ho
+        simp at ho),
+    firstMatch_eq_matrixSem]
+
 /-! ## Emission: `DTree → Core.Expr`
 
 Parametric in the leaf bodies (`bodies : Nat → Expr`), so adequacy quantifies

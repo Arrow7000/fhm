@@ -181,6 +181,21 @@ Quot.sound}`.
   (~L1616) duplicating `varsBelow` rule-for-rule, never connected to
   typing — candidate for a leaf-module `iff` unification later (backlog;
   do NOT touch Core for it).
+- 2026-07-06: plan step 3 done (matchGs algebra + factoring, axiom-clean —
+  headlines need only {propext, Quot.sound}). Plan step 5 done: **H1 LANDED** —
+  `compile_correct` (functional induction via `compile.induct`; capture-aware
+  `matrixSem_specialize`/`matrixSem_default` serving pop/∉-heads/non-ctor from
+  ONE default lemma) and the hypothesis-free headline
+  `compile_correct_surface : evalDTree v (compile [[]] (initMatrix ps)) =
+  firstMatch v ps`. Axioms exactly {propext, Classical.choice, Quot.sound}.
+  All parent-audited statements held verbatim (incl.: row-drop congruence
+  needs no captured-isSome hypothesis; duplicate colHeads entries carry
+  identical subtrees so dedup-uniqueness is never needed).
+  Proof-engineering notes for future slices: getting past `compile`'s
+  dependent `match _hh : colHeads …` needs `rw [compile]; split` + equation
+  rewriting; `List.attach_map_val` needs its function argument fully explicit
+  (higher-order unification misses `fun i => f ↑i`); `do`-binds want
+  `Option.bind_eq_bind, Option.bind_some` normalisation before `cases`.
 - H2 statement note (decided during design, recorded for the H2 slice):
   `evalDTree` DEFAULTS on a non-ctor value at a switch, mirroring `D(M)` —
   so H1 is typing-free and unconditional. But Core's `matchWildReduce`
