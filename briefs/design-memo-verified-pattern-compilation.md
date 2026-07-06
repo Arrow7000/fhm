@@ -172,3 +172,22 @@ Quot.sound}`.
   pipeline landed with 3 sorry'd termination lemmas (slice 2 pending their
   discharge); lakefile root added. `#guard` suite green locally incl. the
   pop-rule pathology and 2-deep-nesting H2 smoke tests (via `SmallStep.step`).
+- 2026-07-06: termination lemmas proved (plan step 2 done) — PatComp
+  sorry-free, committed a9613c2. Plan step 4 done: `FHM/ExprClosed.lean`
+  closedness library complete and axiom-clean (`varsBelow` + mono +
+  `shiftFrom`/`substN` identity on scoped terms + `TypeOfElabHM.varsBelow`
+  at threshold `ctx.env.length` + empty-ctx `closed` corollary).
+  RECORDED, not actioned: Core has an ORPHAN `Expr.WellScopedUnder`
+  (~L1616) duplicating `varsBelow` rule-for-rule, never connected to
+  typing — candidate for a leaf-module `iff` unification later (backlog;
+  do NOT touch Core for it).
+- H2 statement note (decided during design, recorded for the H2 slice):
+  `evalDTree` DEFAULTS on a non-ctor value at a switch, mirroring `D(M)` —
+  so H1 is typing-free and unconditional. But Core's `matchWildReduce`
+  only fires when the wildcard branch is FIRST, so an emitted switch is
+  STUCK on a non-ctor scrutinee. H2 therefore carries a path condition
+  ("every switched occurrence on the taken path holds a ctor-chain
+  value"), discharged at top level from scrutinee typing (switches only
+  test ADT-typed columns). Do not "fix" this by reordering emitted
+  branches — named-first + trailing wildcard is correct for ctor values
+  via `FirstMatchingBranch`.

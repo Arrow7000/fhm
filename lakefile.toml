@@ -11,6 +11,8 @@ roots = [
   "FHM.Core",
   "FHM.Decls",
   "FHM.SurfaceLang",
+  "FHM.ExprClosed",
+  "FHM.PatComp",
   "FHM.Pretty",
   "FHM.SpikeC",
   "FHM.InferW",
