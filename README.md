@@ -5,8 +5,8 @@ A formalisation of a language with a Hindley-Milner type system. Includes some a
 - type annotations on let bindings and lambda variables (not part of core HM)
 - annotations can reference [type variables quantified in outer scopes](https://www.microsoft.com/en-us/research/publication/lexically-scoped-type-variables/)
 - pattern matching (with wildcard patterns)
-- mutually recursive let bindings (unannotated members are internally monomorphic, generalised for the body)
-- _polymorphic_ type annotations on recursive bindings (enabling polymorphic recursion) — annotations are per binding, so a single group can mix annotated and unannotated members
+- mutually recursive let bindings with optional type annotations on each (unannotated bindings are assumed to be monomorphic and generalised after typechecking the recursive block)
+- when recursive bindings have annotations they may be polymorphic – which enables fully polymorphic recursion!
 
 <!-- TODO(readme, in Aron's voice): fold in the arithmetic-primops work (roadmap step 1). Points to cover:
      - Feature list: arithmetic primitive operators `intAdd`/`intSub` — built-in, curried,
@@ -24,16 +24,27 @@ A formalisation of a language with a Hindley-Milner type system. Includes some a
 
 ## Architecture
 
-Type inference here does two jobs at once: it works out the types, and it elaborates the program while doing so. The two can't really be pulled apart, because the whole point of the polymorphic annotations is that inference has to record how each polymorphic variable gets instantiated. So there are two ways to read a program: before elaboration, where those instantiations are left implicit, and after, where they have been written in. Each reading gets its own declarative typing relation.
+A high-level overview:
 
-Here's how the pieces are represented:
+- A surface language (`Surface.Expr`) – this is a direct AST representation of user-authorable code
+- A core language (`Core.lean`'s `Expr`) that the surface language is lowered to after syntax desugaring and name resolution – converts names to de Bruijn indices (both for terms and types)
+  - Lowering returns a pre-elaboration program
+- The Hindley-Milner typing relation (`TypeOfHM`), defined on the pre-elaboration core language
+- An elaboration (`Infer`) from desugared core language to a core language suitable for execution – adds type annotations on all let bindings and applied type parameters on vars (for System F style type-passing semantics)
+  - This doubles as the algorithm-oriented spec for typechecking (as opposed to the `TypeOf*` relations which are non-algorithmic, _declarative_ typing relations)
+- The HM typing relation defined on the _post_-elaboration core language (`TypeOfElabHM`)
+- A small-step, type-passing, operational semantics (`SmallStep.Step`) defined on an elaborated core-language program
+
+Elaboration actually does two things at once: it infers a type for every term, and it writes those types into the program as it goes. The two are inseparable – you can't annotate the bindings and variables without inferring their types first, and there's no point inferring types unless you're also getting the program closer to something runnable. The reason this is needed is that our operational semantics only accepts fully-annotated programs; but because the type system stays within HM (rank-1 prenex polymorphism), inference is still 100% decidable without any annotations. So the source stays annotation-optional, and elaboration is the phase that turns it into the fully-annotated form the evaluator needs.
+
+Representation choices:
 
 - terms use de Bruijn indices for their bound variables
 - type variables use a locally-nameless representation with cofinite quantification, following [Charguéraud's formalisation of mini-ML](https://github.com/charguer/formalmetacoq/blob/master/ln/ML_Definitions.v)
 - types split into monotypes and `∀`-quantified schemes
 - typing contexts are indexed by de Bruijn position
 
-### Core.lean
+### [`Core.lean`](./FHM/Core.lean)
 
 This is where the language lives and where we say, abstractly, what it means for a program to be well-typed. It doesn't compute anything; it just lays down the rules.
 
@@ -42,7 +53,7 @@ This is where the language lives and where we say, abstractly, what it means for
 - `TypeOfElabHM`: the same relation for the post-elaboration reading, where every polymorphic use carries the exact type arguments it was instantiated at. The two relations are identical apart from that one rule.
 - `SmallStep.Step`: a small-step semantics that runs the elaborated program directly, carrying types at runtime rather than erasing them.
 
-### InferW.lean
+### [`InferW.lean`](./FHM/InferW.lean)
 
 This is where we actually work out a program's type, instead of just declaring which types are valid. It's the algorithmic side, and it's where elaboration happens.
 
@@ -50,17 +61,19 @@ This is where we actually work out a program's type, instead of just declaring w
 - `infer` and `inferCore`: the executable versions of that relation.
 - `typecheck`: the whole-program entry point. It runs from the empty context and generalises the result into a closed scheme.
 
-### SurfaceLang.lean 🏗️
+### [`SurfaceLang.lean`](./FHM/SurfaceLang.lean) 🏗️
 
-This is what the language is meant to look like to a user: real string names, and syntactic sugar for building and taking apart pairs and lists. The plan is to desugar and name-resolve it down into the constructor-based, de-Bruijn-indexed Core language, but that bridging step isn't written yet. Worth a look if you want a fuller picture of the user-facing language.
+This is what the language actually looks like to a user: real string names, and syntactic sugar for constructing and destructuring pairs and lists. We desugar and name-resolve this down into the constructor-based, de-Bruijn-indexed Core language – although this is still a WIP. Worth a look if you want a fuller picture of the user-facing language.
 
-### ConstraintTypeSystem.lean 🚧
+### [`ConstraintTypeSystem.lean`](./FHM/ConstraintTypeSystem.lean) 🚧
 
-A work-in-progress experiment in a different approach. Instead of Algorithm W, it tries the constraint-based style (Wand; Pottier and Rémy), where inference generates a constraint and then solves it, using guarded constraint schemes `∀ᾱ[C].τ`. It's currently out of date against `Core`, so unlike the surface language it isn't really worth reading yet.
+A work-in-progress experiment in a different approach. Instead of Algorithm W, it tries the constraint-based style (Wand; Pottier and Rémy), where inference generates a constraint and then solves it, using guarded constraint schemes `∀ᾱ[C].τ`. It's currently out of date against `Core` and may be getting discarded.
 
-Rounding things out, `Pretty.lean` prints Core and Surface terms readably, and `Examples.lean` collects runnable `#eval` demos, including let-polymorphism, polymorphic recursion, and programs that should be rejected.
+### [`Pretty.lean`](./FHM/Pretty.lean), [`Examples.lean`](./FHM/Examples.lean)
 
-### What we've proved
+`Pretty.lean` prints Core and Surface terms readably, and `Examples.lean` collects runnable `#eval` demos, including examples of let-polymorphism, polymorphic recursion, and various ill-typed programs that should be rejected.
+
+### Proven theorems
 
 All of these are fully proved. The theorems only use the standard axioms and are completely free of `sorry`s.
 
@@ -90,17 +103,17 @@ All of these are fully proved. The theorems only use the standard axioms and are
 
 - `TypeOfElabHM.faithful`: anything well-typed after elaboration was already well-typed in plain HM, so elaboration never invents new typings.
 
-## How it got here
+## Why type-passing semantics for a Hindley-Milner language
 
-The core HM system came first: inference proven sound, complete, and principal, over a small-step semantics that was proven safe.
+I first implemented a simple language without type annotations at all. Then I wanted to support type annotations that could mention type variables (skolems) from a higher enclosing scope. That caused a problem because when a let binding reduces, those skolems can end up orphaned, pointing at a scope that no longer exists. This would break type preservation, as stepping would result in an invalid, ill-scoped type variable reference. I decided to tackle this by erasing all type annotations before running a program, and defining all theorems related to evaluation against type-erased programs. That makes sure there are no skolems left to dangle during evaluation.
 
-Then I wanted type annotations that could mention type variables bound further out, in an enclosing scope. That caused a problem. When a let binding reduces, those variables can end up orphaned, pointing at a scope that no longer exists. The fix at the time was to erase types before running a program, so there was nothing left to dangle.
+Then I wanted to support mutually recursive let bindings. This is manageable as long as you stick to unannotated bindings or keep them all monomorphic.
 
-Mutual recursion came next. That one stayed manageable as long as I checked the bindings monomorphically and only generalised them afterwards.
+But then I also wanted _polymorphic_ mutual recursion, and that's where it got difficult. Inferring it in general is [undecidable](https://doi.org/10.1145/169701.169692), but it becomes decidable once each binding carries a type annotation. The catch is that those annotations can no longer be erased: erase them and inference has to fall back to the monomorphic case, which would leave the typed language strictly weaker than the annotated one. What used to be two separate valid instantiations of a single polymorphic binding has now become two incompatible applications of a _monomorphic_ binding. So erasing types is no longer an option.
 
-The next thing I wanted was polymorphic mutual recursion, and that's where it got hard. Inferring it in general is [undecidable](https://doi.org/10.1145/169701.169692), but it becomes decidable once each binding carries a type annotation. The catch is that those annotations can no longer be erased: erase them and inference has to fall back to the monomorphic case, which would leave the typed language strictly weaker than the annotated one. So erasing types stopped being an option.
+<!-- But then I also wanted to support _polymorphic_ type annotations on mutually recursive bindings, which is where things got tricky. The problem is that recursive polymorphic inference is undecidable The problem with this is that now as soon as you erase type annotations, your program's semantics have changed. What used to be two separate but equally valid instantiations of a single polymorphic binding has now become two incompatible applications of a _monomorphic_ binding. For this reason I decided to implement a System F style type-passing semantics. Where bindings are explicitly polymorphic. -->
 
-That's what forced the current model. Instead of erasing types, the program keeps them and runs under a [type-passing](https://doi.org/10.1017/S0956796801004282) semantics, and inference elaborates each program into that form. To keep everything honest, the declarative typing was split into the two relations above, one for the program before elaboration and one for after, with `TypeOfElabHM.faithful` tying them together. The main piece still missing is the translation from the surface language down into Core.
+That's what forced the current evaluation model. Instead of erasing types, the program keeps them and runs under a [type-passing](https://doi.org/10.1017/S0956796801004282) semantics, and inference elaborates each program into fully-annotated form. To show that this is merely an evaluation semantics and type annotations are not required for inference, we maintain two different declarative typing relations as stated above: one for the program _before_ elaboration and one for after, with `TypeOfElabHM.faithful` tying them together.
 
 ## Building
 
@@ -112,13 +125,18 @@ lake exe cache get   # download prebuilt Mathlib oleans (don't recompile Mathlib
 lake build
 ```
 
-## Why this exists
+## My motivation
 
-I've been into type systems for a long time, and I have a soft spot for ML-style pure languages like Elm. This is my attempt to formalise a small language and type system in that spirit, and to learn some proper PLT by building one rather than just reading about it.
+I've been interested in type systems for a long time, and I really enjoy working in ML-style pure languages like e.g. Elm. At the same time I've been frustrated by Elm's limitations and wanted to create my own implementation of an Elm-like language that I could steer according to my own instincts and desired features.
 
-I've leaned on LLMs a lot along the way, in two ways. I've used them as a tutor, to explain things when I got stuck, and I've handed them most of the proving grunt-work, which is a genuine slog. But whenever that surfaced a broken assumption, the decision came back to me. I made sure I understood enough of the context to make the design call myself, and only then handed the reins back. I designed the language, chose which features it should support, and decided what the theorems needed to say.
+I've also had some ideas for novel type system features, some of which I haven't seen mentioned in the literature. I'd like to explore what is involved in implementing those and to see if I could make them work. So this project really serves two purposes: both a pedagogical project for my own learning about well-trodden PLT grounds, and also to serve as a testbed for exploring my own type system ideas, once the stable HM (and perhaps row types) foundations are in place.
 
-Doing it this way has taught me far more than reading would have. I learn by building, and this has been the most rewarding way I've found to actually absorb this material.
+For this I've leaned quite a bit on LLMs. Mainly in two ways:
+
+- As tutor: to bounce ideas off of, to get feedback on my designs, but also to help me explore – and understand – relevant papers when I can't figure out how to solve a problem. I've spent quite a bit of time talking to claude (mostly opus 4.8) getting it to explain certain concepts to me, in different ways, using different examples. I would propose my own simpler solutions and it would give me a counterexample to illustrate why that idea won't work. This has proven massively useful to me and I certainly would not have the understanding I have now had I not done this work.
+- Proof workhorse: I've used LLMs to do most of the proving grunt-work. Although there have been quite a few moments when in the midst of trying to amend a broken theorem after adding a new feature, it realised that the original theorem was now false as stated. At that point it would surface the issue to me, I'd interrogate it, making sure I had a clear grasp of the issue. It would propose some solutions, I'd usually need to push it to make sure we were actually coming up with the most principled solution, rather than an ad hoc one. Once I decided on a solution, I'd prompt it to execute the amended brief.
+
+This workflow has been very fruitful, both in getting this formalisation to the mature point it is now, and also in advancing my own learning. I learn best by building, and this has been an incredibly successful way for me to learn and absorb the relevant material.
 
 ## References
 
