@@ -48,11 +48,27 @@ whole **lowering** to Core.
 
 Settled framing (from the reference brief + recent session):
 
-- **No independent surface relation.** Surface well-typedness is *defined* by
-  lowering: `s` is well-typed `:= ∃ core, lower s = some core ∧ (typecheck env
-  core).isSome`; surface semantics = "lower, then run in Core." So the bridge's
-  proof content is **desugarer correctness** (well-scoped output + pattern-compilation
-  equivalence), NOT a typing correspondence. Do **not** build a `Surface.TypeOf`.
+- **No surface *typing* relation, but a declarative *lowering* relation.** Surface
+  typing/semantics are still given entirely by Core — do **not** build a
+  `Surface.TypeOf`. But lowering itself gets the house-style treatment (as
+  `TypeOf`/`Infer`/`unify` do): a declarative `Lowers` **relation** — the readable
+  desugaring + name-resolution + kind-checking spec, the trusted artefact the
+  theorems are stated against — plus an opaque executable `lower` **function**,
+  bridged by **soundness** (`lower s = some c → Lowers … s c`) and **completeness**
+  (a valid lowering exists ⟹ `lower` finds one). Surface well-typedness is then
+  *defined* against the relation: `s` well-typed `:= ∃ c, Lowers … s c ∧ (typecheck
+  env c).isSome`; the executable pipeline decides it with `lower` + `typecheck`.
+  Applies to Expr **and** DataDecl lowering.
+  - **Completeness nuance:** name-resolution and sugar are deterministic
+    (`lower s = some c ↔ Lowers s c`), but **pattern compilation admits several
+    valid Core renderings** of one surface match, so `Lowers` is *one-to-many*
+    there and completeness reads "if some valid lowering exists, `lower` produces
+    one" — not "`lower` produces this exact `c`." Decide up front whether to keep
+    `Lowers` non-deterministic for matches (cleaner spec) or pin a compilation
+    strategy into it (so `lower` = `Lowers` exactly). The `Lowers` rule for `match`
+    is precisely where **pattern-compilation equivalence** (match order + binding +
+    exhaustiveness preserved) is pinned down as a spec — so the `lower`-soundness
+    obligation for that case *is* the compilation-correctness theorem.
 - **Terminology (don't conflate):** *elaboration* = `Infer`'s `e → eOut` (the
   type-passing `tyArgs` decoration, Core-internal); *lowering* = surface → Core
   (name resolution + kind-checking + desugaring), the new work.
