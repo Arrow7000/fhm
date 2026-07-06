@@ -199,6 +199,231 @@ def matchGs : List Expr → List GPat → Option (List Expr)
 end
 
 
+/-! ### `matchGs` list algebra
+
+The vector-splicing kit H1's `S`/`D` lemmas lean on: length discipline,
+append-splitting, wildcard blocks, and the ctor-case characterisation. -/
+
+/-- `guard` in the `Option` monad, positive case. -/
+private theorem guard_pos {p : Prop} [Decidable p] (h : p) :
+    (guard p : Option Unit) = some () := by
+  unfold guard
+  rw [if_pos h]
+  rfl
+
+/-- `guard` in the `Option` monad, negative case. -/
+private theorem guard_neg {p : Prop} [Decidable p] (h : ¬p) :
+    (guard p : Option Unit) = none := by
+  unfold guard
+  rw [if_neg h]
+  rfl
+
+/-- `guard` as an `ite`, so `simp` can decide the condition. -/
+private theorem guard_eq_ite {p : Prop} [Decidable p] :
+    (guard p : Option Unit) = if p then some () else none := by
+  by_cases h : p
+  · rw [guard_pos h, if_pos h]
+  · rw [guard_neg h, if_neg h]
+
+@[simp] theorem matchG_gbind (v : Expr) : matchG v .gbind = some [v] := by
+  simp [matchG]
+
+@[simp] theorem matchG_gwild (v : Expr) : matchG v .gwild = some [] := by
+  simp [matchG]
+
+/-- A successful `matchGs` forces the vectors to the same length. -/
+theorem matchGs_length {vs : List Expr} {ps : List GPat} {cs : List Expr}
+    (h : matchGs vs ps = some cs) : vs.length = ps.length := by
+  induction vs generalizing ps cs with
+  | nil =>
+    cases ps with
+    | nil => rfl
+    | cons p ps => simp [matchGs] at h
+  | cons v vs ih =>
+    cases ps with
+    | nil => simp [matchGs] at h
+    | cons p ps =>
+      cases hA : matchG v p with
+      | none => simp [matchGs, hA] at h
+      | some a =>
+        cases hB : matchGs vs ps with
+        | none => simp [matchGs, hA, hB] at h
+        | some b => simp [ih hB]
+
+/-- `matchGs` splits over appends when the first halves line up in length
+    (captures concatenate). Stated in the `do`/bind normal form matching
+    `matchGs`'s own cons equation, so it rewrites cleanly. -/
+theorem matchGs_append {vs₁ vs₂ : List Expr} {ps₁ ps₂ : List GPat}
+    (h : vs₁.length = ps₁.length) :
+    matchGs (vs₁ ++ vs₂) (ps₁ ++ ps₂)
+      = (do pure ((← matchGs vs₁ ps₁) ++ (← matchGs vs₂ ps₂))) := by
+  induction vs₁ generalizing ps₁ with
+  | nil =>
+    cases ps₁ with
+    | nil => cases hm : matchGs vs₂ ps₂ <;> simp [matchGs, hm]
+    | cons p ps => simp at h
+  | cons v vs₁ ih =>
+    cases ps₁ with
+    | nil => simp at h
+    | cons p ps₁ =>
+      simp only [List.cons_append, matchGs]
+      rw [ih (by simpa using h)]
+      cases matchG v p <;> cases matchGs vs₁ ps₁ <;>
+        cases matchGs vs₂ ps₂ <;> simp
+
+/-- A block of wildcards of the right width always matches, capturing
+    nothing. -/
+theorem matchGs_replicate_gwild {vs : List Expr} {n : Nat}
+    (h : vs.length = n) :
+    matchGs vs (List.replicate n .gwild) = some [] := by
+  induction vs generalizing n with
+  | nil => subst h; simp [matchGs]
+  | cons v vs ih =>
+    subst h
+    simp [List.replicate_succ, matchGs, ih rfl]
+
+/-- What a successful generic-ctor match MEANS: the value decomposes under
+    that ctor at the right arity and the fields match pointwise. -/
+theorem matchG_gctor_iff {v : Expr} {c : CtorName} {pats : List GPat}
+    {cs : List Expr} :
+    matchG v (.gctor c pats) = some cs
+      ↔ ∃ args, getCtorArgs v = some (c, args) ∧ args.length = pats.length
+          ∧ matchGs args pats = some cs := by
+  cases hget : getCtorArgs v with
+  | none => simp [matchG, hget]
+  | some ca =>
+    obtain ⟨name, args⟩ := ca
+    constructor
+    · intro h
+      simp only [matchG, hget, Option.bind_eq_bind, Option.bind_some] at h
+      by_cases hcond : name = c ∧ args.length = pats.length
+      · obtain ⟨rfl, hlen⟩ := hcond
+        refine ⟨args, rfl, hlen, ?_⟩
+        rw [guard_pos (show name = name ∧ args.length = pats.length
+          from ⟨rfl, hlen⟩)] at h
+        simpa using h
+      · rw [guard_neg hcond] at h
+        simp at h
+    · rintro ⟨args', hget', hlen, hms⟩
+      obtain ⟨rfl, rfl⟩ : name = c ∧ args = args' := by
+        simpa using hget'
+      simp [matchG, hget, guard_eq_ite, hlen, hms]
+
+
+/-! ### Factoring: the surface spec runs through `norm`
+
+`matchPat` (the trusted spec) and `matchG ∘ norm` agree ON THE NOSE, so the
+matrix campaign only ever reasons about `matchG`. The mutual induction mirrors
+the `matchPat`/`matchPats`/`matchListPat` recursion structure exactly. -/
+
+private theorem normList_length : ∀ ps : List Surface.Pattern,
+    (normList ps).length = ps.length
+  | [] => rfl
+  | p :: ps => by simp [normList, normList_length ps]
+
+mutual
+
+/-- The factoring theorem: the surface spec is `matchG` after `norm`. -/
+theorem matchPat_eq_matchG_norm : ∀ (v : Expr) (p : Surface.Pattern),
+    matchPat v p = matchG v (norm p)
+  | v, .name _ => by simp [matchPat, norm]
+  | v, .wildcard => by simp [matchPat, norm]
+  | v, .ctor cn ps => by
+    simp only [matchPat, norm, matchG, normList_length]
+    cases hget : getCtorArgs v with
+    | none => rfl
+    | some ca =>
+      obtain ⟨c, args⟩ := ca
+      simp only [Option.bind_eq_bind, Option.bind_some]
+      by_cases hcond : c = cn ∧ args.length = ps.length
+      · simp [guard_pos hcond, matchPats_eq_matchGs_normList args ps]
+      · simp [guard_neg hcond]
+  | v, .pair p q => by
+    simp only [matchPat, norm, matchG]
+    cases hget : getCtorArgs v with
+    | none => rfl
+    | some ca =>
+      obtain ⟨c, args⟩ := ca
+      simp only [Option.bind_eq_bind, Option.bind_some]
+      match args with
+      | [] => simp [guard_eq_ite]
+      | [a] => simp [guard_eq_ite]
+      | [a, b] =>
+        by_cases hc : c = CtorName.mk "Pair"
+        · cases hA : matchG a (norm p) <;> cases hB : matchG b (norm q) <;>
+            simp [guard_eq_ite, hc, matchGs, hA, hB,
+              matchPat_eq_matchG_norm a p, matchPat_eq_matchG_norm b q]
+        · simp [guard_eq_ite, hc]
+      | _ :: _ :: _ :: _ => simp [guard_eq_ite]
+  | v, .cons hp tp => by
+    simp only [matchPat, norm, matchG]
+    cases hget : getCtorArgs v with
+    | none => rfl
+    | some ca =>
+      obtain ⟨c, args⟩ := ca
+      simp only [Option.bind_eq_bind, Option.bind_some]
+      match args with
+      | [] => simp [guard_eq_ite]
+      | [a] => simp [guard_eq_ite]
+      | [a, b] =>
+        by_cases hc : c = CtorName.mk "Cons"
+        · cases hA : matchG a (norm hp) <;> cases hB : matchG b (norm tp) <;>
+            simp [guard_eq_ite, hc, matchGs, hA, hB,
+              matchPat_eq_matchG_norm a hp, matchPat_eq_matchG_norm b tp]
+        · simp [guard_eq_ite, hc]
+      | _ :: _ :: _ :: _ => simp [guard_eq_ite]
+  | v, .list items => matchListPat_eq_matchG_normListPat v items
+
+/-- Pointwise companion: `matchPats` is `matchGs` after `normList`. -/
+theorem matchPats_eq_matchGs_normList : ∀ (vs : List Expr) (ps : List Surface.Pattern),
+    matchPats vs ps = matchGs vs (normList ps)
+  | [], [] => by simp [matchPats, normList, matchGs]
+  | [], _ :: _ => by simp [matchPats, normList, matchGs]
+  | _ :: _, [] => by simp [matchPats, normList, matchGs]
+  | v :: vs, p :: ps => by
+    simp only [matchPats, normList, matchGs]
+    rw [matchPat_eq_matchG_norm v p, matchPats_eq_matchGs_normList vs ps]
+
+/-- List-pattern companion: unrolling matches the normalised `Cons`/`Nil`
+    chain. -/
+theorem matchListPat_eq_matchG_normListPat : ∀ (v : Expr) (items : List Surface.Pattern),
+    matchListPat v items = matchG v (normListPat items)
+  | v, [] => by
+    simp only [matchListPat, normListPat, matchG]
+    cases hget : getCtorArgs v with
+    | none => rfl
+    | some ca =>
+      obtain ⟨c, args⟩ := ca
+      simp only [Option.bind_eq_bind, Option.bind_some]
+      match args with
+      | [] =>
+        by_cases hc : c = CtorName.mk "Nil"
+        · simp [guard_eq_ite, hc, matchGs]
+        · simp [guard_eq_ite, hc]
+      | _ :: _ => simp [guard_eq_ite]
+  | v, p :: ps => by
+    simp only [matchListPat, normListPat, matchG]
+    cases hget : getCtorArgs v with
+    | none => rfl
+    | some ca =>
+      obtain ⟨c, args⟩ := ca
+      simp only [Option.bind_eq_bind, Option.bind_some]
+      match args with
+      | [] => simp [guard_eq_ite]
+      | [a] => simp [guard_eq_ite]
+      | [a, b] =>
+        by_cases hc : c = CtorName.mk "Cons"
+        · cases hA : matchG a (norm p) <;>
+            cases hB : matchG b (normListPat ps) <;>
+            simp [guard_eq_ite, hc, matchGs, hA, hB,
+              matchPat_eq_matchG_norm a p,
+              matchListPat_eq_matchG_normListPat b ps]
+        · simp [guard_eq_ite, hc]
+      | _ :: _ :: _ :: _ => simp [guard_eq_ite]
+
+end
+
+
 /-! ## Pattern matrices
 
 A `Row` is one surface branch mid-compilation: the patterns still to test (one
@@ -241,6 +466,42 @@ def initMatrix (pats : List Surface.Pattern) (firstAct : Nat := 0) : Matrix :=
   | [] => []
   | p :: rest => { captured := [], pats := [norm p], act := firstAct }
       :: initMatrix rest (firstAct + 1)
+
+/-- Generalisation of `firstMatch_eq_matrixSem` over the starting act index:
+    `initMatrix` numbers its rows from `k`, so `matrixSem` reports the
+    `firstMatch` index shifted by `k`. -/
+private theorem matrixSem_initMatrix_shift (v : Expr) (ps : List Surface.Pattern)
+    (k : Nat) :
+    matrixSem v [v] (initMatrix ps k)
+      = (firstMatch v ps).map (fun x => (x.1 + k, x.2)) := by
+  induction ps generalizing k with
+  | nil => simp [initMatrix, matrixSem, firstMatch]
+  | cons p ps ih =>
+    have hfac := (matchPat_eq_matchG_norm v p).symm
+    simp only [initMatrix, matrixSem, firstMatch]
+    cases hm : matchPat v p with
+    | some cs =>
+      have hg : matchG v (norm p) = some cs := hfac.trans hm
+      simp [rowSem, matchGs, hg]
+    | none =>
+      have hg : matchG v (norm p) = none := hfac.trans hm
+      simp only [rowSem, matchGs, hg]
+      simp [ih (k + 1)]
+      cases hf : firstMatch v ps with
+      | none => rfl
+      | some x =>
+        obtain ⟨i, vs⟩ := x
+        simp
+        omega
+
+/-- Bridging F-corollary: on the initial one-column matrix, `matrixSem` IS the
+    surface `firstMatch`. -/
+theorem firstMatch_eq_matrixSem (v : Expr) (ps : List Surface.Pattern) :
+    matrixSem v [v] (initMatrix ps) = firstMatch v ps := by
+  rw [matrixSem_initMatrix_shift v ps 0]
+  cases firstMatch v ps with
+  | none => rfl
+  | some x => simp
 
 
 /-! ## The decision-tree IR -/
