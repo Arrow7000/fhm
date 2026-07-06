@@ -1,5 +1,6 @@
 import FHM.InferW
 import FHM.Pretty
+import FHM.Decls
 
 /-! # End-to-end demos
 
@@ -26,10 +27,13 @@ private def evalStr (e : Expr) : String :=
 /-! ## A tiny prelude of data types (for the `letRec` demos below)
 
 The `letRec` showcases further down want real recursive data to fold over, so we
-need a non-empty `CtorEnv`. `mkCtor` builds a constructor entry, discharging the
-`bound`/`closed` side-conditions by decision (`contents` is always a concrete
-literal here, so `Ty.bvarsBelow` / `Ty.freeVars` reduce). `demoCtors` then
-declares a handful of standard algebraic types:
+need a non-empty `CtorEnv`. Rather than hand-build the `Ctor`s, we declare the
+group as `demoDecls : List DataDecl` and run the *verified* `elabDecls`
+elaborator (`FHM.Decls`) — it kind-checks every field, enforces name
+distinctness, and discharges each `Ctor`'s `bound`/`closed` obligations from the
+successful check. `demoCtors` is then just the elaborated env, and the `#guard`
+below witnesses that the whole declaration pipeline succeeds. The group declares
+a handful of standard algebraic types:
 
 * `Bool`            — `True`, `False`
 * `List a`          — `Nil`, `Cons a (List a)`
@@ -41,27 +45,30 @@ declares a handful of standard algebraic types:
   `Seq` need *polymorphic recursion* (each call one `List`-layer deeper), which
   is inferable only with an annotation — the mixed-`letRec` showcases below. -/
 
-private def mkCtor (pc : Nat) (tn : TyName) (cs : List Ty)
-    (hb : TyList.bvarsBelow pc cs = true := by decide)
-    (hc : ∀ ty ∈ cs, ty.freeVars = [] := by decide) : Ctor where
-  paramCount := pc
-  tyName := tn
-  contents := cs
-  bound := fun ty h => (Ty.bvarsBelow_iff ty).mp ((TyList.bvarsBelow_iff_forall cs).mp hb ty h)
-  closed := fun ty h => Ty.noFreeVars_iff_freeVars_nil.mpr (hc ty h)
+/-- The demo declaration group, in `DataDecl` form (one entry per type, its
+    constructors bundled). Fed to the verified `elabDecls` to produce `demoCtors`. -/
+private def demoDecls : List DataDecl :=
+  [ { name := ⟨"Bool"⟩, paramCount := 0,
+      ctors := [(⟨"True"⟩, []), (⟨"False"⟩, [])] }
+  , { name := ⟨"List"⟩, paramCount := 1,
+      ctors := [(⟨"Nil"⟩, []), (⟨"Cons"⟩, [.bvar 0, .customTy ⟨"List"⟩ [.bvar 0]])] }
+  , { name := ⟨"Peano"⟩, paramCount := 0,
+      ctors := [(⟨"Zero"⟩, []), (⟨"Succ"⟩, [.customTy ⟨"Peano"⟩ []])] }
+  , { name := ⟨"Tree"⟩, paramCount := 1,
+      ctors := [(⟨"Node"⟩, [.bvar 0, .customTy ⟨"Forest"⟩ [.bvar 0]])] }
+  , { name := ⟨"Forest"⟩, paramCount := 1,
+      ctors := [ (⟨"FNil"⟩, [])
+               , (⟨"FCons"⟩, [.customTy ⟨"Tree"⟩ [.bvar 0], .customTy ⟨"Forest"⟩ [.bvar 0]]) ] }
+  , { name := ⟨"Seq"⟩, paramCount := 1,
+      ctors := [ (⟨"SNil"⟩, [])
+               , (⟨"SCons"⟩, [.bvar 0, .customTy ⟨"Seq"⟩ [.customTy ⟨"List"⟩ [.bvar 0]]]) ] } ]
 
-private def demoCtors : CtorEnv :=
-  [ (⟨"True"⟩,  mkCtor 0 ⟨"Bool"⟩ [])
-  , (⟨"False"⟩, mkCtor 0 ⟨"Bool"⟩ [])
-  , (⟨"Nil"⟩,   mkCtor 1 ⟨"List"⟩ [])
-  , (⟨"Cons"⟩,  mkCtor 1 ⟨"List"⟩ [.bvar 0, .customTy ⟨"List"⟩ [.bvar 0]])
-  , (⟨"Zero"⟩,  mkCtor 0 ⟨"Peano"⟩ [])
-  , (⟨"Succ"⟩,  mkCtor 0 ⟨"Peano"⟩ [.customTy ⟨"Peano"⟩ []])
-  , (⟨"Node"⟩,  mkCtor 1 ⟨"Tree"⟩ [.bvar 0, .customTy ⟨"Forest"⟩ [.bvar 0]])
-  , (⟨"FNil"⟩,  mkCtor 1 ⟨"Forest"⟩ [])
-  , (⟨"FCons"⟩, mkCtor 1 ⟨"Forest"⟩ [.customTy ⟨"Tree"⟩ [.bvar 0], .customTy ⟨"Forest"⟩ [.bvar 0]])
-  , (⟨"SNil"⟩,  mkCtor 1 ⟨"Seq"⟩ [])
-  , (⟨"SCons"⟩, mkCtor 1 ⟨"Seq"⟩ [.bvar 0, .customTy ⟨"Seq"⟩ [.customTy ⟨"List"⟩ [.bvar 0]]]) ]
+/-- The demo constructor env, produced end-to-end by the verified elaborator. -/
+private def demoCtors : CtorEnv := (elabDecls demoDecls).getD []
+
+-- The whole declaration group kind-checks and elaborates (if this fails, a
+-- `DataDecl` above doesn't match its intended `Ctor`).
+#guard (elabDecls demoDecls).isSome
 
 private def typeStrP (e : Expr) : String :=
   match typecheck demoCtors e with
