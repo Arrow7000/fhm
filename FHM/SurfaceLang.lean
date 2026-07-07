@@ -11,7 +11,7 @@ inductive PrimTy
   | int
   | nat
   | bool
-  | str
+  | char
   deriving DecidableEq, Repr
 
 
@@ -41,7 +41,7 @@ inductive PrimLitExpr
   | int : Int → PrimLitExpr
   | nat : Nat → PrimLitExpr
   | bool : Bool → PrimLitExpr
-  | str : String → PrimLitExpr
+  | char : Char → PrimLitExpr
 
 
 
@@ -67,6 +67,7 @@ inductive Expr
   | lambda (param : Pattern) (paramAnn : Option Ty) (body : Expr)
   | app (f input : Expr)
   | letIn (binding : ValName) (ann : Option PolyTy) (bindingExpr body : Expr)
+  | letRecIn (bindingsAnns : List (ValName × Option PolyTy × Expr)) (body : Expr)
   | var (binding : ValName)
   | ctor (name : CtorName)
   | ife (cond t f : Expr)
