@@ -1461,6 +1461,37 @@ def lowerMatch (scrut : Expr) (pats : List Surface.Pattern) (bodies : Nat → Ex
   .letIn none scrut (emit [[]] bodies (compile [[]] (initMatrix pats)))
 
 
+/-! ## Exhaustiveness — internal totality layer (plan step 7, partial)
+
+The behavioural theorem (H1+H2) is done. The remaining **(X)** exhaustiveness
+corollary splits into an INTERNAL part (here: pointwise totality
+equivalences, immediate from H1) and an INTEGRATION part (surface matrix
+covers all ctors of `T` ⇒ emitted term satisfies Core's
+`AllMatchesExhaustive` ⇒ feeds `progress`; needs the `CtorEnv` + scrutinee
+typing — deferred to bridge integration). A structural `DTree.NoFail`
+predicate and its forward-to-totality lemma belong with that integration
+slice (they connect to `AllMatchesExhaustive`'s recursive body-exhaustiveness
+check and need the ctor-chain `CtorSwitches` hypothesis anyway). -/
+
+/-- `compile`'s tree is total on a value iff the matrix semantics is: by H1
+    the two are equal, so totality agrees. Pointwise in the scrutinee. -/
+theorem compile_total_iff (root : Expr) (occs : List Occ) (M : Matrix) (vals : List Expr)
+    (hw : ∀ r ∈ M, r.pats.length = occs.length)
+    (hv : occs.mapM (fetch root) = some vals)
+    (hc : ∀ r ∈ M, ∀ o ∈ r.captured, (fetch root o).isSome) :
+    (evalDTree root (compile occs M)).isSome ↔ (matrixSem root vals M).isSome := by
+  rw [compile_correct root occs M vals hw hv hc]
+
+/-- Surface-level totality: the compiled tree selects a branch on `v` iff the
+    surface spec does. This is the pointwise exhaustiveness equivalence; the
+    "for all well-typed `v`" lift is integration (needs the scrutinee's ADT
+    type to prune non-ctor values, where a non-exhaustive match correctly
+    refutes). -/
+theorem compile_surface_total_iff (v : Expr) (ps : List Surface.Pattern) :
+    (evalDTree v (compile [[]] (initMatrix ps))).isSome ↔ (firstMatch v ps).isSome := by
+  rw [compile_correct_surface]
+
+
 /-! ## Executable sanity checks
 
 Value/pattern helpers for the tests, then `#guard`s at three levels:
