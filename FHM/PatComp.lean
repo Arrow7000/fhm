@@ -1623,4 +1623,58 @@ private def nestedPats : List Surface.Pattern :=
     (fun i => if i = 0 then .var 0 [] else vInt 0)) with
   | .primLit (.int 5) => true | _ => false
 
+-- ── realistic demo: List patterns (cons/list sugar → Cons/Nil) ─────────
+-- These exercise the .cons/.list normalization path (norm maps .cons hp tp
+-- → Cons[hp, tp], .list [] → Nil) — the existing Maybe/pair tests don't.
+
+private def vNil : Expr := .ctor (.mk "Nil")
+private def vCons (h t : Expr) : Expr := .app (.app (.ctor (.mk "Cons")) h) t
+
+-- List.head with a default:  match xs with h :: t => h | [] => 0
+-- (Cons is arity-2; only h is used, t is captured but the body ignores it)
+#guard match runN 32 (lowerMatch (vCons (vInt 42) vNil)
+    [.cons (.name (.mk "h")) (.name (.mk "t")), .list []]
+    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+  | .primLit (.int 42) => true | _ => false
+
+-- List.head on Nil falls to the [] branch:  0
+#guard match runN 32 (lowerMatch vNil
+    [.cons (.name (.mk "h")) (.name (.mk "t")), .list []]
+    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+  | .primLit (.int 0) => true | _ => false
+
+-- List.head on a multi-element list: Cons 7 (Cons 8 Nil)  ⇒  7
+-- (the tail is itself a Cons value — the compiler binds h=7, t=Cons 8 Nil)
+#guard match runN 32 (lowerMatch (vCons (vInt 7) (vCons (vInt 8) vNil))
+    [.cons (.name (.mk "h")) (.name (.mk "t")), .list []]
+    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+  | .primLit (.int 7) => true | _ => false
+
+-- nested List-of-Maybe:  match xs with Just x :: _ => x | _ => 0
+-- (cons + ctor nesting; the wildcard tail is never bound; _ catches Nil/Nothing-head)
+#guard match runN 32 (lowerMatch (vCons (vJust (vInt 99)) vNil)
+    [.cons pJustX .wildcard, .wildcard]
+    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+  | .primLit (.int 99) => true | _ => false
+
+-- same, but the head is Nothing ⇒ the cons pattern fails (Just ≠ Nothing),
+-- falls through to the catch-all wildcard:  0
+#guard match runN 32 (lowerMatch (vCons vNothing vNil)
+    [.cons pJustX .wildcard, .wildcard]
+    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+  | .primLit (.int 0) => true | _ => false
+
+-- same, but the list is Nil ⇒ the cons pattern fails (Nil ≠ Cons), catches:  0
+#guard match runN 32 (lowerMatch vNil
+    [.cons pJustX .wildcard, .wildcard]
+    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+  | .primLit (.int 0) => true | _ => false
+
+-- two-level List-of-List:  match xss with (x :: _) :: _ => x | _ => 0
+-- (cons inside cons — arity-2 ctor at depth 2; pre-order capture gives x@var0)
+#guard match runN 32 (lowerMatch (vCons (vCons (vInt 5) vNil) vNil)
+    [.cons (.cons (.name (.mk "x")) .wildcard) .wildcard, .wildcard]
+    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+  | .primLit (.int 5) => true | _ => false
+
 end PatComp
