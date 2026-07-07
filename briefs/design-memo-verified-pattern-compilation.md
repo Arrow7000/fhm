@@ -236,4 +236,39 @@ Quot.sound}`.
   also needs `DTree.occs`, which is nested-recursive — left for the
   integration workhorse). Separately fixed `FHM/Pretty.lean` for the other
   agent's `SurfaceLang` edits (`str`→`char`, `letRecIn` pretty case) to
-  unblock the shared `lake build` gate — full project now green.
+  unblock the shared `lake build` gate — full project now green. Added a
+  realistic `List`-pattern demo suite (`cons`/`list` sugar → `Cons`/`Nil`,
+  multi-arg ctor binding, two-level `List`-of-`List` nesting).
+- 2026-07-07: **file consolidation** — folded `ExprClosed.lean` into
+  `Core.lean` (varsBelow section) and merged `PatCompAdequacy.lean` into
+  `PatComp.lean` (H2 section), restoring the project's file discipline.
+  Lakefile roots trimmed to 8; full build green, all headlines axiom-clean.
+- 2026-07-07: **integration-prep audit** — the Core typing lemmas needed
+  for the `CtorSwitches` discharge ALREADY EXIST, no prep required:
+  * `TypeOfElabHM.canonical_customTy` (Core ~L7540): a well-typed VALUE of
+    `customTy` type is an `IsCtorChain` — the scrutinee-is-a-ctor-chain step.
+  * `TypeOfElabHM.ctor_chain_inversion` (Core ~L7616): a typed ctor chain
+    `c v₀..vₙ` decomposes into `CtorAppliedTo` + `Forall₂` giving each arg's
+    type (instantiated field type) — the sub-value-typing step.
+  * `isValue_of_isCtorChain` / `getCtorArgs_of_isCtorChain` (PatComp, from
+    the H2 workhorse): structural `IsCtorChain` facts.
+  The remaining work is the COMBINATION (genuine integration, needs bridge):
+  ```
+  theorem compile_ctorSwitches
+      {ctors : CtorEnv} {root : Expr} {name : TyName} {tyArgs : List Ty}
+      (hty : TypeOfElabHM ⟨[], ctors⟩ root (.customTy name tyArgs))
+      (hval : IsValue root)
+      (ps : List Surface.Pattern)
+      (hwf : -- patterns well-formed wrt ctors: every ctor pattern's ctor
+             -- is in the env and tests an ADT-typed position — bridge concern) :
+      CtorSwitches root (compile [[]] (initMatrix ps))
+  ```
+  The proof combines: (1) `canonical_customTy` gives `IsCtorChain root`;
+  (2) at each `switch occ` in the compiled tree, `occ` follows ctor field
+  indices into ADT-typed positions (from the pattern matrix structure —
+  this is the bridge between `compile`'s occurrences and the typing);
+  (3) `ctor_chain_inversion` + `canonical_customTy` iterated along `occ`
+  gives `IsCtorChain (fetch root occ)`. The `hwf` hypothesis's exact shape
+  depends on the bridge's pattern-well-formedness relation (TBD). This is
+  the THEOREM that removes `CtorSwitches` from `lowerMatch_adequate`'s
+  hypothesis list — the last step before the headline theorem is unconditional.
