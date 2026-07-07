@@ -188,14 +188,14 @@ def Surface.prettyPrimTy : Surface.PrimTy → String
   | .int  => "Int"
   | .nat  => "Nat"
   | .bool => "Bool"
-  | .str  => "Str"
+  | .char => "Char"
 
 def Surface.prettyPrimLit : Surface.PrimLitExpr → String
   | .unit   => "()"
   | .int n  => toString n
   | .nat n  => toString n
   | .bool b => toString b
-  | .str s  => "\"" ++ s ++ "\""
+  | .char c => "'" ++ toString c ++ "'"
 
 /-! ## Surface types -/
 
@@ -272,6 +272,9 @@ def Surface.Expr.prettyAux (prec : Nat) : Surface.Expr → String
       let annStr := match ann with | none => "" | some σ => " : " ++ σ.pretty
       prettyParenIf (prec ≥ 1) ("let " ++ prettyValName v ++ annStr ++ " = " ++ Surface.Expr.prettyAux 0 be
         ++ " in " ++ Surface.Expr.prettyAux 0 body)
+  | .letRecIn bindingsAnns body =>
+      prettyParenIf (prec ≥ 1) ("let rec " ++ Surface.Expr.prettyRecGroup bindingsAnns
+        ++ " in " ++ Surface.Expr.prettyAux 0 body)
   | .ife c t f =>
       prettyParenIf (prec ≥ 1) ("if " ++ Surface.Expr.prettyAux 0 c ++ " then " ++ Surface.Expr.prettyAux 0 t
         ++ " else " ++ Surface.Expr.prettyAux 0 f)
@@ -288,6 +291,19 @@ def Surface.Expr.prettyBranches : List (Surface.Pattern × Surface.Expr) → Str
   | (pat, body) :: rest =>
       " | " ++ Surface.Pattern.pretty 0 pat ++ " => " ++ Surface.Expr.prettyAux 0 body
         ++ Surface.Expr.prettyBranches rest
+
+/-- Render a surface `letRecIn` group `x₀ = e₀ and (x₁ : σ₁) = e₁ and …`,
+    each binding printed with its optional scheme annotation. Mirrors
+    `prettyList`/`prettyBranches`' single-list-arg recursion shape. -/
+def Surface.Expr.prettyRecGroup : List (ValName × Option Surface.PolyTy × Surface.Expr) → String
+  | [] => ""
+  | (v, ann, e) :: rest =>
+      (match ann with
+        | none => prettyValName v
+        | some σ => "(" ++ prettyValName v ++ " : " ++ σ.pretty ++ ")")
+        ++ " = " ++ Surface.Expr.prettyAux 0 e
+        ++ (match rest with | [] => "" | _ :: _ => " and ")
+        ++ Surface.Expr.prettyRecGroup rest
 
 end
 
