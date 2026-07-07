@@ -196,6 +196,27 @@ Quot.sound}`.
   rewriting; `List.attach_map_val` needs its function argument fully explicit
   (higher-order unification misses `fun i => f ↑i`); `do`-binds want
   `Option.bind_eq_bind, Option.bind_some` normalisation before `cases`.
+- 2026-07-07: plan step 6 done: **H2 LANDED** in `FHM/PatCompAdequacy.lean`.
+  `emit_adequate` (induction on the tree; parametric in `bodies`) +
+  `lowerMatch_adequate` (one `letReduce` + H1 + H2). Axioms exactly
+  {propext, Classical.choice, Quot.sound}. The leaf-lets design validated
+  FORMALLY: the `emitLets` trace's base case is `substN_shiftFrom_cancel`
+  at threshold `binds.length` with `|envVals| = env.length`, exactly as
+  the parent derivation predicted — H4 is not a separate theorem, just
+  H2's env-invariant + the emitLets lemma. `CtorSwitches` (the typing-
+  dischargeable path condition) correctly rules out `evalDTree`'s non-ctor
+  default arm via IsCtorChain ⇒ getCtorArgs-some. Nastiest part: the
+  `emitLets` go-induction closes on a DOUBLE pending substitution
+  `((go rem d).substN d envVals).substN 0 pendVals` at split point
+  (rem, pendOccs); each `letReduce` step's singleton substitution folds
+  into the pending vector via `substN_substN_append` at `k=0, ws=[u]`,
+  commuting past the remaining let RHSs by closedness of fetched values.
+  Core-bridge note: Core's branch-list/rec-group substN/shiftFrom
+  companions are private — routed through ExprClosed's public
+  `matchBranchesOf`/`letRecBindingsOf` projections (same trick as the
+  ExprClosed slice). Top-level `lowerMatch_adequate` now states the full
+  behavioural-correctness theorem for one lowered match (modulo
+  `CtorSwitches`, awaiting typing discharge at integration).
 - H2 statement note (decided during design, recorded for the H2 slice):
   `evalDTree` DEFAULTS on a non-ctor value at a switch, mirroring `D(M)` —
   so H1 is typing-free and unconditional. But Core's `matchWildReduce`
