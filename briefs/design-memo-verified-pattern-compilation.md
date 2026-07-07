@@ -227,3 +227,13 @@ Quot.sound}`.
   test ADT-typed columns). Do not "fix" this by reordering emitted
   branches — named-first + trailing wildcard is correct for ctor values
   via `FirstMatchingBranch`.
+- 2026-07-07: **(X) INTERNAL totality layer landed** (`compile_total_iff`,
+  `compile_surface_total_iff` in PatComp.lean) — pointwise, the compiled tree
+  selects a branch iff the surface spec does; immediate from H1, axiom-clean.
+  The "for all well-typed `v`" lift + `AllMatchesExhaustive` connection +
+  `DTree.NoFail` structural predicate are deferred to bridge integration
+  (need `CtorEnv` + scrutinee typing; `NoFail`'s forward-to-totality lemma
+  also needs `DTree.occs`, which is nested-recursive — left for the
+  integration workhorse). Separately fixed `FHM/Pretty.lean` for the other
+  agent's `SurfaceLang` edits (`str`→`char`, `letRecIn` pretty case) to
+  unblock the shared `lake build` gate — full project now green.
