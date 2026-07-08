@@ -2282,16 +2282,33 @@ theorem compile_occsBound (occs : List Occ) (M : Matrix) (env : List Occ)
         · exact hcap r hr o h
         · exact hoccs _ (List.mem_cons_self ..)
 
-/-- Every occurrence the tree switches on holds a ctor chain, whenever it
-    fetches at all. (Conditional form: off-path occurrences that don't fetch
-    for this particular value are vacuous.) Discharged from typing at
-    integration time. -/
+/-- Every switch the tree *actually reaches* — following `root`'s real ctor at
+    each tested occurrence — tests a value that has a constructor. This is
+    PATH-SENSITIVE: at a switch we descend only into the single case that
+    `root`'s ctor selects (`hit`), or into the default when it selects none
+    (`miss`), mirroring `evalDTree`. Off-path subtrees (cases for ctors `root`
+    doesn't have at that occurrence) are left unconstrained — crucial, since
+    their occurrences may point into a differently-shaped part of `root`.
+
+    Contrast the earlier global form (which recursed into *every* case): that
+    was unsatisfiable for well-typed roots whose actual ctor differs from a
+    branch's assumption (e.g. `A 5` against patterns testing `B`'s field),
+    because an unreached switch would demand `IsCtorChain` of a non-ctor value.
+    Dischargeable from scrutinee typing + pattern well-formedness. -/
 inductive CtorSwitches (root : Expr) : DTree → Prop
   | fail : CtorSwitches root .fail
   | leaf {act binds} : CtorSwitches root (.leaf act binds)
-  | switch {occ cases dflt} :
-      (∀ v, fetch root occ = some v → IsCtorChain v) →
-      (∀ c a t', (c, a, t') ∈ cases → CtorSwitches root t') →
+  | hit {occ cases dflt v name args t'} :
+      fetch root occ = some v →
+      getCtorArgs v = some (name, args) →
+      cases.find? (fun c => decide (c.1 = name ∧ c.2.1 = args.length))
+        = some (name, args.length, t') →
+      CtorSwitches root t' →
+      CtorSwitches root (.switch occ cases dflt)
+  | miss {occ cases dflt v name args} :
+      fetch root occ = some v →
+      getCtorArgs v = some (name, args) →
+      cases.find? (fun c => decide (c.1 = name ∧ c.2.1 = args.length)) = none →
       CtorSwitches root dflt →
       CtorSwitches root (.switch occ cases dflt)
 
@@ -2678,57 +2695,44 @@ theorem emit_adequate {root : Expr} (hval : IsValue root)
     intro env envVals henv hbound hctor i ws heval
     cases hbound with
     | switch hoccmem hbcases hbdflt =>
+    -- Path-sensitive: `hit` = `root`'s ctor at `occ` selects a case; `miss` =
+    -- it selects none (the default fires). Both carry the fetched value and the
+    -- `find?` verdict, so they line up with the two reduction branches below.
     cases hctor with
-    | switch hcocc hccases hcdflt =>
-    -- the switched occurrence's value: a ctor chain
-    have hlt : env.idxOf occ < envVals.length := by
-      rw [mapM_length henv]; exact List.idxOf_lt_length_of_mem hoccmem
-    obtain ⟨v0, hv0⟩ : ∃ v, fetch root occ = some v :=
-      ⟨envVals[env.idxOf occ], (mapM_idxOf henv hoccmem).symm.trans
-        (List.getElem?_eq_getElem hlt)⟩
-    have hchain : IsCtorChain v0 := hcocc v0 hv0
-    obtain ⟨name, args, hget⟩ := getCtorArgs_of_isCtorChain hchain
-    simp only [evalDTree, hv0, hget] at heval
-    rw [evalSwitch_eq_find' root name args.length cases dflt] at heval
-    -- the substituted emitted term: a match on the fetched value
-    have hemit :
-        (emit env bodies (.switch occ cases dflt)).substN 0 envVals
-          = .match_ v0
-              (cases.map (fun x => (MatchPattern.named x.1 x.2.1,
-                  (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals))
-                ++ [(.wildcard, (emit env bodies dflt).substN 0 envVals)]) := by
-      show (Expr.match_ (resolveOcc env occ)
-          (emitCases env bodies occ cases
-            ++ [(.wildcard, emit env bodies dflt)])).substN 0 envVals = _
-      rw [Expr.substN_match, resolveOcc, substN_var_resolve0 henv hroot hoccmem hv0,
-        List.map_append, emitCases_eq_map, List.map_map]
-      congr 1
-      congr 1
-      apply List.map_congr_left
-      intro x hx
-      simp only [Function.comp_apply, MatchPattern.bindCount, Nat.zero_add]
-    cases hfind : cases.find? (fun y => decide (y.1 = name ∧ y.2.1 = args.length)) with
-    | some x =>
-      -- FOUND: matchReduce into the case's subtree
-      rw [hfind] at heval
-      obtain ⟨c, a, t'⟩ := x
-      obtain ⟨rfl, rfl⟩ : c = name ∧ a = args.length := by
-        simpa using List.find?_some hfind
-      -- NB: the substs above may rename `name`/`args.length` to `c`/`a` in
-      -- context; everything below is phrased via `c` to be direction-proof
-      have hmem : (c, args.length, t') ∈ cases := List.mem_of_find?_eq_some hfind
+    | hit hfetch hgc hfind hrec =>
+      rename_i v name args t'
+      -- the fetched value is a ctor chain and its tag hits case `t'`
+      simp only [evalDTree, hfetch, hgc] at heval
+      rw [evalSwitch_eq_find' root name args.length cases dflt, hfind] at heval
+      have hemit :
+          (emit env bodies (.switch occ cases dflt)).substN 0 envVals
+            = .match_ v
+                (cases.map (fun x => (MatchPattern.named x.1 x.2.1,
+                    (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals))
+                  ++ [(.wildcard, (emit env bodies dflt).substN 0 envVals)]) := by
+        show (Expr.match_ (resolveOcc env occ)
+            (emitCases env bodies occ cases
+              ++ [(.wildcard, emit env bodies dflt)])).substN 0 envVals = _
+        rw [Expr.substN_match, resolveOcc, substN_var_resolve0 henv hroot hoccmem hfetch,
+          List.map_append, emitCases_eq_map, List.map_map]
+        congr 1
+        congr 1
+        apply List.map_congr_left
+        intro x hx
+        simp only [Function.comp_apply, MatchPattern.bindCount, Nat.zero_add]
+      have hmem : (name, args.length, t') ∈ cases := List.mem_of_find?_eq_some hfind
       have hFMB := firstMatchingBranch_found
         (fun x => (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals)
         [(.wildcard, (emit env bodies dflt).substN 0 envVals)]
-        cases (c, args.length, t') hfind
+        cases (name, args.length, t') hfind
       have hstep : Step ((emit env bodies (.switch occ cases dflt)).substN 0 envVals)
           (((emit (subOccs occ args.length ++ env) bodies t').substN
               args.length envVals).substN 0
-            (args.take (MatchPattern.named c args.length).bindCount)) := by
+            (args.take (MatchPattern.named name args.length).bindCount)) := by
         rw [hemit]
-        exact Step.matchReduce (fetch_isValue hval hv0)
-          (getCtorArgs_ctorAppliedTo hget) hFMB
-      rw [show (MatchPattern.named c args.length).bindCount = args.length from rfl,
+        exact Step.matchReduce (fetch_isValue hval hfetch)
+          (getCtorArgs_ctorAppliedTo hgc) hFMB
+      rw [show (MatchPattern.named name args.length).bindCount = args.length from rfl,
         List.take_length] at hstep
       have hcomp := Expr.substN_substN_append
         (emit (subOccs occ args.length ++ env) bodies t') 0 args envVals
@@ -2738,14 +2742,31 @@ theorem emit_adequate {root : Expr} (hval : IsValue root)
       refine Relation.ReflTransGen.head hstep ?_
       have henv' : (subOccs occ args.length ++ env).mapM (fetch root)
           = some (args ++ envVals) := by
-        rw [List.mapM_append, fetch_subOccs' root occ hv0 hget, henv]
+        rw [List.mapM_append, fetch_subOccs' root occ hfetch hgc, henv]
         rfl
-      exact ihcases c args.length t' hmem (subOccs occ args.length ++ env)
-        (args ++ envVals) henv' (hbcases c args.length t' hmem)
-        (hccases c args.length t' hmem) heval
-    | none =>
-      -- NOT FOUND: matchReduce into the trailing wildcard (the default tree)
-      rw [hfind] at heval
+      exact ihcases name args.length t' hmem (subOccs occ args.length ++ env)
+        (args ++ envVals) henv' (hbcases name args.length t' hmem) hrec heval
+    | miss hfetch hgc hfind hrec =>
+      rename_i v name args
+      -- the fetched value is a ctor chain but its tag hits no case ⇒ default
+      simp only [evalDTree, hfetch, hgc] at heval
+      rw [evalSwitch_eq_find' root name args.length cases dflt, hfind] at heval
+      have hemit :
+          (emit env bodies (.switch occ cases dflt)).substN 0 envVals
+            = .match_ v
+                (cases.map (fun x => (MatchPattern.named x.1 x.2.1,
+                    (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals))
+                  ++ [(.wildcard, (emit env bodies dflt).substN 0 envVals)]) := by
+        show (Expr.match_ (resolveOcc env occ)
+            (emitCases env bodies occ cases
+              ++ [(.wildcard, emit env bodies dflt)])).substN 0 envVals = _
+        rw [Expr.substN_match, resolveOcc, substN_var_resolve0 henv hroot hoccmem hfetch,
+          List.map_append, emitCases_eq_map, List.map_map]
+        congr 1
+        congr 1
+        apply List.map_congr_left
+        intro x hx
+        simp only [Function.comp_apply, MatchPattern.bindCount, Nat.zero_add]
       have hall : ∀ x ∈ cases, ¬(x.1 = name ∧ x.2.1 = args.length) := by
         intro x hx
         simpa using List.find?_eq_none.mp hfind x hx
@@ -2756,12 +2777,12 @@ theorem emit_adequate {root : Expr} (hval : IsValue root)
           (((emit env bodies dflt).substN 0 envVals).substN 0
             (args.take MatchPattern.wildcard.bindCount)) := by
         rw [hemit]
-        exact Step.matchReduce (fetch_isValue hval hv0)
-          (getCtorArgs_ctorAppliedTo hget) hFMB
+        exact Step.matchReduce (fetch_isValue hval hfetch)
+          (getCtorArgs_ctorAppliedTo hgc) hFMB
       rw [show MatchPattern.wildcard.bindCount = 0 from rfl, List.take_zero,
         Expr.substN_nil] at hstep
       exact Relation.ReflTransGen.head hstep
-        (ihdflt env envVals henv hbdflt hcdflt heval)
+        (ihdflt env envVals henv hbdflt hrec heval)
 
 
 /-! ## The composed headline (uses H1 = `compile_correct_surface`) -/
@@ -2804,6 +2825,463 @@ theorem lowerMatch_adequate {v : Expr} {ps : List Surface.Pattern}
   · -- H1 turns the tree's verdict into the surface verdict
     rw [compile_correct_surface]
     exact hmatch
+
+
+/-! ## Discharging `CtorSwitches` from typing — the integration keystone
+
+`lowerMatch_adequate` above is conditional on `CtorSwitches root tree`. Here we
+DISCHARGE that hypothesis from scrutinee typing + pattern well-formedness,
+making the theorem unconditional (the final form the surface bridge consumes).
+
+The keystone is `GPatWF`: a well-formedness relation typing the (normalised)
+patterns against the scrutinee's Core type. A `gctor c` test is well-formed
+only at a `customTy`, and its sub-patterns must respect `c`'s (instantiated)
+field types — exactly what rules out ctor-tests at non-ADT positions, which
+would otherwise make the (path-sensitive) `CtorSwitches` unprovable. -/
+
+mutual
+/-- A generic pattern is well-formed at Core type `τ` wrt a ctor env: binds and
+    wildcards fit any type; a `gctor c` test requires `τ` to be `c`'s ADT type
+    and its sub-patterns to fit `c`'s instantiated field types. -/
+inductive GPatWF (ctors : CtorEnv) : GPat → Ty → Prop
+  | gbind {τ} : GPatWF ctors .gbind τ
+  | gwild {τ} : GPatWF ctors .gwild τ
+  | gctor {c args T tyArgs ctor fieldTys} :
+      LookupList.get? ctors c = some ctor →
+      ctor.tyName = T →
+      List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys →
+      GPatWFList ctors args fieldTys →
+      GPatWF ctors (.gctor c args) (.customTy T tyArgs)
+/-- Pointwise `GPatWF` of a pattern vector against a column-type vector. -/
+inductive GPatWFList (ctors : CtorEnv) : List GPat → List Ty → Prop
+  | nil : GPatWFList ctors [] []
+  | cons {p ps τ τs} :
+      GPatWF ctors p τ → GPatWFList ctors ps τs →
+      GPatWFList ctors (p :: ps) (τ :: τs)
+end
+
+/-- Path invariant: the value at occurrence `occ` in `root` is present, a value,
+    and well-typed at the column type `τ`. Threaded (parallel to the `occs`
+    vector) through `compile`'s recursion; maintained across a `hit` because the
+    matched ctor's fields inherit its instantiated field types. -/
+def OccTyped (ctors : CtorEnv) (root : Expr) (occ : Occ) (τ : Ty) : Prop :=
+  ∃ w, fetch root occ = some w ∧ IsValue w ∧ TypeOfElabHM ⟨[], ctors⟩ w τ
+
+/-! ### Helpers for `compile_ctorSwitches_aux`
+
+These thread `GPatWF`/`OccTyped` through `compile`'s matrix reshaping
+(`defaultRow`/`specializeRow`) and relate a typed ctor-chain value's fields to
+a `gctor` pattern's instantiated field types (the crux of the `hit` case). -/
+
+private theorem GPatWFList.forall₂ {ctors : CtorEnv} {l t} :
+    GPatWFList ctors l t → List.Forall₂ (GPatWF ctors) l t
+  | .nil => .nil
+  | .cons hp htl => .cons hp htl.forall₂
+
+private theorem GPatWFList.of_forall₂ {ctors : CtorEnv} : ∀ {l t},
+    List.Forall₂ (GPatWF ctors) l t → GPatWFList ctors l t
+  | _, _, .nil => .nil
+  | _, _, .cons hp htl => .cons hp (GPatWFList.of_forall₂ htl)
+
+private theorem Forall₂_append {α β : Type _} (R : α → β → Prop) {l1 t1 l2 t2}
+    (h1 : List.Forall₂ R l1 t1) (h2 : List.Forall₂ R l2 t2) :
+    List.Forall₂ R (l1 ++ l2) (t1 ++ t2) := by
+  induction h1 with
+  | nil => simp only [List.nil_append]; exact h2
+  | cons hp hps ih => simp only [List.cons_append]; exact .cons hp ih
+
+private theorem Forall₂_length {α β : Type _} (R : α → β → Prop) :
+    ∀ {l1 l2}, List.Forall₂ R l1 l2 → l1.length = l2.length := by
+  intro l1 l2 h
+  induction h with
+  | nil => rfl
+  | cons _ htl ih => simp only [List.length_cons, ih]
+
+private theorem GPatWFList_append {ctors : CtorEnv} {l1 t1 l2 t2}
+    (h1 : GPatWFList ctors l1 t1) (h2 : GPatWFList ctors l2 t2) :
+    GPatWFList ctors (l1 ++ l2) (t1 ++ t2) :=
+  GPatWFList.of_forall₂ (Forall₂_append _ h1.forall₂ h2.forall₂)
+
+/-- Inversion of `GPatWF.gctor`, naming every existential (the type args, the ctor
+    entry, and the instantiated field types). -/
+private theorem GPatWF.gctor_inv {ctors : CtorEnv} {c : CtorName} {cargs : List GPat} {τ : Ty}
+    (h : GPatWF ctors (.gctor c cargs) τ) :
+    ∃ T tyArgs ctor fieldTys, τ = .customTy T tyArgs ∧ LookupList.get? ctors c = some ctor ∧
+      ctor.tyName = T ∧ List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys ∧
+      GPatWFList ctors cargs fieldTys := by
+  cases h with
+  | gctor hlook hname hinst hwfargs => exact ⟨_, _, _, _, rfl, hlook, hname, hinst, hwfargs⟩
+
+private theorem GPatWFList_replicate_gwild : ∀ (n : Nat) (tys : List Ty),
+    tys.length = n → GPatWFList ctors (List.replicate n GPat.gwild) tys
+  | 0, [], _ => .nil
+  | 0, _ :: _, h => by simp at h
+  | n + 1, [], h => by simp at h
+  | n + 1, τ :: τs, h => by
+    rw [List.length_cons] at h
+    simp only [List.replicate_succ]
+    exact .cons .gwild (GPatWFList_replicate_gwild n τs (by omega))
+
+/-- `defaultRow` keeps `gbind`/`gwild`-headed rows (dropping their head column),
+    so the tail of the row's `GPatWFList` (at the tail column types) is preserved. -/
+private theorem defaultRow_wf {ctors : CtorEnv} {occ0 : Occ} {τ0 : Ty} {ttys : List Ty}
+    {r r' : Row} (hwf : GPatWFList ctors r.pats (τ0 :: ttys))
+    (hs : defaultRow occ0 r = some r') :
+    GPatWFList ctors r'.pats ttys := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil => simp [defaultRow] at hs
+  | cons p prest =>
+    cases p with
+    | gctor c cargs => simp [defaultRow] at hs
+    | gbind =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      cases hwf with | cons _ htl => exact htl
+    | gwild =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      cases hwf with | cons _ htl => exact htl
+
+/-- Two pointwise instantiations of one source list coincide when the two
+    argument lists agree below `n` and the source is `bvar`-bounded by `n`. -/
+private theorem InstantiatesBy_forall2_det_agree {tyArgs1 tyArgs2 : List Ty} {n : Nat}
+    (hag : ∀ k, k < n → tyArgs1[k]? = tyArgs2[k]?)
+    {tys l1 l2 : List Ty}
+    (hbound : ∀ c ∈ tys, ContainsBvarsUpTo n c)
+    (h1 : List.Forall₂ (InstantiatesBy tyArgs1) tys l1)
+    (h2 : List.Forall₂ (InstantiatesBy tyArgs2) tys l2) : l1 = l2 := by
+  induction h1 generalizing l2 with
+  | nil => cases h2; rfl
+  | cons hi1 h1tl ih =>
+    cases h2 with
+    | cons hi2 h2tl =>
+      have hhd := InstantiatesBy.det_agree hag (hbound _ List.mem_cons_self) hi1 hi2
+      rw [hhd, ih (fun c hc => hbound c (List.mem_cons_of_mem _ hc)) h2tl]
+
+private theorem get?_cons_zero {α : Type _} (a : α) (l : List α) : (a :: l)[0]? = some a := rfl
+
+private theorem get?_cons_succ {α : Type _} (a : α) (l : List α) (n : Nat) :
+    (a :: l)[n + 1]? = l[n]? := rfl
+
+/-- From `Forall₂ (InstantiatesBy tyArgs') (bvarRangeFrom start n) tyArgs`: the
+    `k`-th entry (k < n) forces `tyArgs[k]? = tyArgs'[start + k]?`. -/
+private theorem bvarRangeFrom_forall₂_agreement {tyArgs tyArgs' : List Ty} :
+    ∀ {start n : Nat},
+      List.Forall₂ (InstantiatesBy tyArgs') (Ty.bvarRangeFrom start n) tyArgs →
+      ∀ k, k < n → tyArgs[k]? = tyArgs'[start + k]?
+  | start, 0, h, k, hk => by simp [Ty.bvarRangeFrom] at h; cases h; omega
+  | start, n + 1, h, k, hk => by
+    simp only [Ty.bvarRangeFrom] at h
+    cases h with
+    | cons hhd htl =>
+      cases hhd with
+      | bvar hidx =>
+        cases k with
+        | zero => rw [get?_cons_zero, Nat.add_zero, hidx]
+        | succ k =>
+          rw [get?_cons_succ, bvarRangeFrom_forall₂_agreement htl k (by omega),
+            show (start + 1) + k = start + (k + 1) from by omega]
+
+private theorem bvarRange_forall₂_agreement {tyArgs tyArgs' : List Ty} {n : Nat}
+    (h : List.Forall₂ (InstantiatesBy tyArgs') (Ty.bvarRange n) tyArgs) (k : Nat) (hk : k < n) :
+    tyArgs[k]? = tyArgs'[k]? := by
+  have := bvarRangeFrom_forall₂_agreement h k hk
+  rwa [Nat.zero_add] at this
+
+/-- A successful `mapM` gives a pointwise `Forall₂` of `f a = some b`. -/
+private theorem mapM_forall₂_of_eq {α β : Type _} (f : α → Option β) :
+    ∀ {l : List α} {vs : List β}, l.mapM f = some vs →
+      List.Forall₂ (fun a b => f a = some b) l vs
+  | [], vs => by
+    intro h; rw [List.mapM_nil] at h; injection h with hvs; subst hvs; exact .nil
+  | a :: l, vs => by
+    intro h
+    rw [List.mapM_cons] at h
+    cases hfa : f a with
+    | none => simp [hfa] at h
+    | some b =>
+      cases hrest : l.mapM f with
+      | none => simp [hrest] at h
+      | some rest =>
+        rw [hfa, hrest] at h
+        simp only [Option.bind_eq_bind, Option.bind_some, Option.pure_def,
+          Option.some.injEq] at h
+        obtain rfl := h.symm
+        exact .cons hfa (mapM_forall₂_of_eq f hrest)
+
+/-- Combine `Forall₂ R` with a pointwise `P` over the left list. -/
+private theorem Forall₂_and_of_forall {α β : Type _} (R : α → β → Prop) (P : α → Prop)
+    {l1 l2} (hR : List.Forall₂ R l1 l2) (hP : ∀ a ∈ l1, P a) :
+    List.Forall₂ (fun a b => P a ∧ R a b) l1 l2 := by
+  induction hR with
+  | nil => exact .nil
+  | cons hhd htl ih =>
+    exact .cons ⟨hP _ List.mem_cons_self, hhd⟩
+      (ih (fun a ha => hP a (List.mem_cons_of_mem _ ha)))
+
+/-- Relay two `Forall₂`s through a shared middle list. -/
+private theorem Forall₂_relay {α β γ : Type _} (R : α → β → Prop) (S : β → γ → Prop)
+    (T : α → γ → Prop) (hrel : ∀ a b c, R a b → S b c → T a c)
+    {l1 l2 l3} (h1 : List.Forall₂ R l1 l2) (h2 : List.Forall₂ S l2 l3) :
+    List.Forall₂ T l1 l3 := by
+  induction h1 generalizing l3 with
+  | nil => cases h2; exact .nil
+  | cons hr h1tl ih =>
+    cases h2 with
+    | cons hs h2tl => exact .cons (hrel _ _ _ hr hs) (ih h2tl)
+
+/-- A ctor-chain value's args are typed at the `gctor` pattern's instantiated field
+    types: the inversion's per-arg types (instantiated by the value's `tyArgs'`)
+    coincide with the pattern's (`tyArgs`) by `InstantiatesBy.det_agree`, since the
+    two argument lists agree below `ctor.paramCount` (from the saturated
+    `customTy` instantiation) and the field types are `bvar`-bounded. -/
+private theorem args_typed_fieldTys {ctors : CtorEnv} {ctor : Ctor}
+    {tyArgs tyArgs' : List Ty} {fieldTys : List Ty} {args : List Expr}
+    (hbound : ∀ c ∈ ctor.contents, ContainsBvarsUpTo ctor.paramCount c)
+    (hinst : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys)
+    (hfor : List.Forall₂
+      (fun a c => ∃ ct, InstantiatesBy tyArgs' c ct ∧ TypeOfElabHM ⟨[], ctors⟩ a ct)
+      args ctor.contents)
+    (hagr : List.Forall₂ (InstantiatesBy tyArgs') (Ty.bvarRange ctor.paramCount) tyArgs) :
+    List.Forall₂ (fun a ft => TypeOfElabHM ⟨[], ctors⟩ a ft) args fieldTys := by
+  revert hbound hinst hfor
+  generalize ctor.contents = c
+  intro hbound hinst hfor
+  have hag : ∀ k, k < ctor.paramCount → tyArgs[k]? = tyArgs'[k]? :=
+    fun k hk => bvarRange_forall₂_agreement hagr k hk
+  induction hfor generalizing fieldTys with
+  | nil => cases hinst; exact .nil
+  | cons hhd hfortl ih =>
+    obtain ⟨ct, hct, htyped⟩ := hhd
+    cases hinst with
+    | cons hinst_hd hinst_tl =>
+      have hdet := InstantiatesBy.det_agree hag (hbound _ List.mem_cons_self) hinst_hd hct
+      subst hdet
+      exact .cons htyped
+        (ih (fun c' hc' => hbound c' (List.mem_cons_of_mem _ hc')) hinst_tl)
+
+/-- The field occurrences of a ctor value are `OccTyped` at the field types:
+    each `occ0 ++ [i]` fetches `args[i]` (a value, well-typed at `fieldTys[i]`). -/
+private theorem occTyped_subOccs {ctors : CtorEnv} {root v : Expr} {name : CtorName}
+    {args : List Expr} {occ0 : Occ} {fieldTys : List Ty}
+    (hfetch : fetch root occ0 = some v)
+    (hget : getCtorArgs v = some (name, args))
+    (hvals : ∀ a ∈ args, IsValue a)
+    (htyped : List.Forall₂ (fun a ft => TypeOfElabHM ⟨[], ctors⟩ a ft) args fieldTys) :
+    List.Forall₂ (OccTyped ctors root) (subOccs occ0 args.length) fieldTys := by
+  have hfetch₂ : List.Forall₂ (fun o a => fetch root o = some a)
+      (subOccs occ0 args.length) args :=
+    mapM_forall₂_of_eq (fetch root) (fetch_subOccs root occ0 hfetch hget)
+  have hboth : List.Forall₂ (fun a ft => IsValue a ∧ TypeOfElabHM ⟨[], ctors⟩ a ft)
+      args fieldTys :=
+    Forall₂_and_of_forall (fun (a : Expr) (ft : Ty) => TypeOfElabHM ⟨[], ctors⟩ a ft)
+      IsValue htyped hvals
+  exact Forall₂_relay _ _ _
+    (fun o a ft hfo ⟨hval, hty⟩ => ⟨a, hfo, hval, hty⟩) hfetch₂ hboth
+
+/-- `specializeRow c arity` reshapes a row's patterns against the field types of
+    `c`: a `gctor c` row unfolds its sub-patterns (WF at the field types, which
+    equal `c`'s instantiated contents by `InstantiatesBy` determinism); a
+    `gbind`/`gwild` head becomes `arity` wildcards (WF at any field types of
+    matching length); other `gctor c'` rows refute (dropped). -/
+private theorem specializeRow_wf {ctors : CtorEnv} {c : CtorName} {arity : Nat} {occ0 : Occ}
+    {T : TyName} {tyArgs : List Ty} {ctor : Ctor} {fieldTys ttys : List Ty} {r r' : Row}
+    (hlook : LookupList.get? ctors c = some ctor)
+    (hinst : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys)
+    (hlen : fieldTys.length = arity)
+    (hwf : GPatWFList ctors r.pats (.customTy T tyArgs :: ttys))
+    (hs : specializeRow c arity occ0 r = some r') :
+    GPatWFList ctors r'.pats (fieldTys ++ ttys) := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil => simp [specializeRow] at hs
+  | cons p prest =>
+    cases p with
+    | gctor c' cargs =>
+      by_cases hcond : c' = c ∧ cargs.length = arity
+      · simp only [specializeRow, if_pos hcond, Option.some.injEq] at hs
+        subst hs
+        cases hwf with
+        | cons hwf_hd hwf_tl =>
+          obtain ⟨hc', _⟩ := hcond
+          rw [hc'] at hwf_hd
+          cases hwf_hd with
+          | gctor hlook' hname' hinst' hwfargs =>
+            rw [hlook'] at hlook
+            injection hlook with hceq
+            rw [hceq] at hinst' hname'
+            have hdet := InstantiatesBy_forall2_det_agree (fun _ _ => rfl) ctor.bound hinst' hinst
+            rw [hdet] at hwfargs
+            exact GPatWFList_append hwfargs hwf_tl
+      · simp only [specializeRow, if_neg hcond] at hs
+        simp at hs
+    | gbind =>
+      simp only [specializeRow, Option.some.injEq] at hs
+      subst hs
+      cases hwf with
+      | cons _ hwf_tl =>
+        exact GPatWFList_append (GPatWFList_replicate_gwild arity fieldTys hlen) hwf_tl
+    | gwild =>
+      simp only [specializeRow, Option.some.injEq] at hs
+      subst hs
+      cases hwf with
+      | cons _ hwf_tl =>
+        exact GPatWFList_append (GPatWFList_replicate_gwild arity fieldTys hlen) hwf_tl
+
+/-- The workhorse: for a value `root`, if every current occurrence is typed at
+    its column type (`OccTyped`) and the matrix is well-formed against those
+    column types, then the compiled tree is `CtorSwitches`-safe. By induction on
+    `compile`; a `switch` fires `hit`/`miss` per `root`'s actual ctor. -/
+theorem compile_ctorSwitches_aux {ctors : CtorEnv} {root : Expr} (_hrootval : IsValue root)
+    (occs : List Occ) (M : Matrix) (tys : List Ty)
+    (hocctys : List.Forall₂ (OccTyped ctors root) occs tys)
+    (hMwf : ∀ r ∈ M, GPatWFList ctors r.pats tys) :
+    CtorSwitches root (compile occs M) := by
+  revert tys hocctys hMwf
+  induction occs, M using compile.induct with
+  | case1 occs =>
+    intro _ _ _
+    simp only [compile]
+    exact .fail
+  | case2 r1 rest =>
+    intro _ _ _
+    simp only [compile]
+    exact .leaf
+  | case3 r1 rest occ0 orest hh ih =>
+    intro tys hocctys hMwf
+    rw [compile]
+    split
+    · cases hocctys with
+      | cons hocc0 hoccRest =>
+        rename_i τ0 ttys
+        clear hocc0
+        refine ih ttys hoccRest ?_
+        intro r' hr'
+        obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+        exact defaultRow_wf (hMwf r hr) hs
+    · rename_i heq
+      rw [hh] at heq
+      exact absurd heq.symm (List.cons_ne_nil _ _)
+  | case4 r1 rest occ0 orest hhd htl hh ihcases ihdflt =>
+    intro tys hocctys hMwf
+    cases hocctys with
+    | cons hocc0 hoccRest =>
+      rename_i τ0 ttys
+      obtain ⟨v, hfetch, hval, hty⟩ := hocc0
+      have hhdmem : hhd ∈ colHeads (r1 :: rest) := by rw [hh]; exact List.mem_cons_self
+      obtain ⟨r0, hr0, cargs0, rest0, hpats0, hlen0⟩ :=
+        colHeads_mem_witness (r1 :: rest) hhd.1 hhd.2 hhdmem
+      have hwf0 := hMwf r0 hr0
+      rw [hpats0] at hwf0
+      cases hwf0 with
+      | cons hwf0_hd _ =>
+        obtain ⟨T0, tyArgs0, _, _, hTy0, _, _, _, _⟩ := GPatWF.gctor_inv hwf0_hd
+        subst hTy0
+        have hchain : IsCtorChain v := TypeOfElabHM.canonical_customTy hty hval
+        obtain ⟨name, args, hget⟩ := getCtorArgs_of_isCtorChain hchain
+        have hvals : ∀ a ∈ args, IsValue a := isValue_getCtorArgs hval hget
+        rw [compile]
+        split
+        · rename_i heq
+          rw [hh] at heq
+          exact absurd heq (List.cons_ne_nil _ _)
+        · rename_i hhd' htl' heq
+          rw [hh] at heq
+          injection heq with h1 h2
+          subst h1
+          subst h2
+          let g := fun (p : CtorName × Nat) => compile (subOccs occ0 p.2 ++ orest)
+            (specialize p.1 p.2 occ0 (r1 :: rest))
+          rw [List.attach_map_val (l := hhd :: htl)
+            (f := fun p => (p.1, p.2, g p))]
+          by_cases hmem : (name, args.length) ∈ hhd :: htl
+          · -- HIT: the value's ctor selects a compiled case
+            have hfind := find?_casesList_mem (g := g) hmem
+            obtain ⟨rN, hrN, cargsN, restN, hpatsN, hlenN⟩ :=
+              colHeads_mem_witness (r1 :: rest) name args.length
+                (by rw [hh]; exact hmem)
+            have hwfN := hMwf rN hrN
+            rw [hpatsN] at hwfN
+            cases hwfN with
+            | cons hwfN_hd hwfN_tl =>
+              obtain ⟨TN, tyArgsN, ctorN, fieldTysN, hTyN, hlookN, hnameN, hinstN, hwfargsN⟩ :=
+                GPatWF.gctor_inv hwfN_hd
+              injection hTyN with hTN hTyArgsN
+              subst hTN
+              subst hTyArgsN
+              have hinv := TypeOfElabHM.ctor_chain_inversion hchain hty
+              obtain ⟨nameInv, argsInv, ctorInv, tyArgs', consumed, remaining,
+                hcat, hlookInv, hbv, hcc, hforInv, hinstInv⟩ := hinv
+              have hcat2 : CtorAppliedTo v name args := getCtorArgs_ctorAppliedTo hget
+              obtain ⟨hnameEq, hargsEq⟩ := CtorAppliedTo.det hcat2 hcat
+              subst hnameEq
+              subst hargsEq
+              rw [hlookInv] at hlookN
+              injection hlookN with hctorEq
+              rw [← hctorEq] at hinstN
+              cases remaining with
+              | nil =>
+                simp only [Ty.wrapArrows] at hinstInv
+                cases hinstInv with
+                | customTy hbv2 =>
+                  rw [List.append_nil] at hcc
+                  rw [← hcc] at hforInv
+                  have hargTyped := args_typed_fieldTys ctorInv.bound hinstN hforInv hbv2
+                  have hoccSub := occTyped_subOccs hfetch hget hvals hargTyped
+                  have hoccAll : List.Forall₂ (OccTyped ctors root)
+                      (subOccs occ0 args.length ++ orest) (fieldTysN ++ ttys) :=
+                    Forall₂_append _ hoccSub hoccRest
+                  have h1 := Forall₂_length _ hforInv
+                  have h2 := Forall₂_length _ hinstN
+                  have hspec : ∀ r ∈ specialize name args.length occ0 (r1 :: rest),
+                      GPatWFList ctors r.pats (fieldTysN ++ ttys) := by
+                    intro r' hr'
+                    obtain ⟨rS, hrS, hsS⟩ := List.mem_filterMap.mp hr'
+                    exact specializeRow_wf hlookInv hinstN (by omega) (hMwf rS hrS) hsS
+                  exact CtorSwitches.hit hfetch hget hfind
+                    (ihcases ⟨(name, args.length), hmem⟩ (fieldTysN ++ ttys) hoccAll hspec)
+              | cons rc rrest =>
+                simp only [Ty.wrapArrows] at hinstInv
+                cases hinstInv
+          · -- MISS: the value's ctor selects no case, fall to default
+            have hfind := find?_casesList_not_mem (g := g) hmem
+            have hdefwf : ∀ r ∈ defaultMatrix occ0 (r1 :: rest),
+                GPatWFList ctors r.pats ttys := by
+              intro r' hr'
+              obtain ⟨rD, hrD, hsD⟩ := List.mem_filterMap.mp hr'
+              exact defaultRow_wf (hMwf rD hrD) hsD
+            exact CtorSwitches.miss hfetch hget hfind
+              (ihdflt ttys hoccRest hdefwf)
+
+/-- **The keystone.** For a well-typed scrutinee VALUE of an ADT type, if the
+    (normalised) surface patterns are well-formed against that type, the
+    compiled tree is `CtorSwitches`-safe — no residual hypothesis. -/
+theorem compile_ctorSwitches {ctors : CtorEnv} {root : Expr} {T : TyName} {tyArgs : List Ty}
+    (hty : TypeOfElabHM ⟨[], ctors⟩ root (.customTy T tyArgs))
+    (hval : IsValue root)
+    (ps : List Surface.Pattern)
+    (hwf : ∀ r ∈ initMatrix ps, GPatWFList ctors r.pats [.customTy T tyArgs]) :
+    CtorSwitches root (compile [[]] (initMatrix ps)) := by
+  refine compile_ctorSwitches_aux hval [[]] (initMatrix ps) [.customTy T tyArgs] ?_ hwf
+  exact List.Forall₂.cons ⟨root, rfl, hval, hty⟩ List.Forall₂.nil
+
+/-- **Unconditional adequacy** — the final form the bridge consumes. With the
+    scrutinee typed at an ADT type and the patterns well-formed, the compiled-
+    and-emitted Core term reduces to the surface-selected branch body with the
+    right captures. `CtorSwitches` is discharged (`compile_ctorSwitches`) and
+    closedness comes from typing (`TypeOfElabHM.closed`). -/
+theorem lowerMatch_adequate_of_typed {ctors : CtorEnv} {root : Expr}
+    {T : TyName} {tyArgs : List Ty}
+    (hty : TypeOfElabHM ⟨[], ctors⟩ root (.customTy T tyArgs))
+    (hval : IsValue root)
+    (ps : List Surface.Pattern) (bodies : Nat → Expr)
+    (hwf : ∀ r ∈ initMatrix ps, GPatWFList ctors r.pats [.customTy T tyArgs])
+    {i : Nat} {ws : List Expr}
+    (hmatch : firstMatch root ps = some (i, ws)) :
+    Relation.ReflTransGen Step (lowerMatch root ps bodies) ((bodies i).substN 0 ws) :=
+  lowerMatch_adequate bodies hval (TypeOfElabHM.closed hty)
+    (compile_ctorSwitches hty hval ps hwf) hmatch
 
 
 /-! ## Executable sanity checks

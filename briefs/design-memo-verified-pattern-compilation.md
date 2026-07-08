@@ -272,3 +272,47 @@ Quot.sound}`.
   depends on the bridge's pattern-well-formedness relation (TBD). This is
   the THEOREM that removes `CtorSwitches` from `lowerMatch_adequate`'s
   hypothesis list — the last step before the headline theorem is unconditional.
+- 2026-07-08: **BLOCKER FOUND then FIXED; `CtorSwitches` discharged — the
+  headline is now UNCONDITIONAL.** During integration-prep an independent review
+  found the planned `compile_ctorSwitches` was **not provable as stated: the
+  `CtorSwitches` predicate (as originally defined) was FALSE for some well-typed,
+  exhaustive inputs.** Counterexample (verified by `#eval`): type `T` with
+  `A : Int → T`, `B : T → T`; patterns `[B (B x), _]`; `root = A 5`. `compile`
+  builds `switch [] [(B,1, switch [0] …)] (leaf 1)`; the `B`-branch statically
+  switches on occ `[0]`, but `fetch (A 5) [0] = primLit 5` (not a ctor chain),
+  so the OLD global `CtorSwitches` demanded `IsCtorChain (primLit 5)`
+  (uninhabited) — even though `evalDTree (A 5)` correctly defaults to branch 1.
+  Root cause: the `inductive CtorSwitches` recursed into **all** case subtrees,
+  whereas the memo's own intent (H2 note above) was "on the **taken path**". H2
+  was still SOUND (the hypothesis was merely vacuous for such roots) — a
+  completeness gap, not unsoundness; tests never exercised it.
+  * **FIX (predicate reshape):** `CtorSwitches` is now **path-sensitive** — two
+    constructors `hit`/`miss` that, at a switch, descend only into the case
+    `root`'s actual ctor selects (or the default), mirroring `evalDTree`.
+    `emit_adequate` re-proven against it (the old two-level `cases hctor` +
+    `cases hfind` collapses into one `cases hctor`, since `hit`/`miss` carry the
+    `find?` verdict). This STRENGTHENS H2 (weaker hypothesis) — no headline
+    weakening. Axiom-clean.
+  * **DISCHARGE (new):** `GPatWF`/`GPatWFList` — a type-directed pattern
+    well-formedness relation (a `gctor c` test is WF only at `c`'s `customTy`,
+    sub-patterns fitting `c`'s instantiated field types). `compile_ctorSwitches_aux`
+    (induction on `compile.induct`, threading an `OccTyped` occurrence-typing
+    invariant; `hit`/`miss` per `root`'s real ctor, crux = `ctor_chain_inversion`
+    + `canonical_customTy` giving a matched ctor's fields their instantiated
+    types) ⟹ `compile_ctorSwitches` (keystone) ⟹ **`lowerMatch_adequate_of_typed`**:
+    ```
+    theorem lowerMatch_adequate_of_typed
+        (hty : TypeOfElabHM ⟨[], ctors⟩ root (.customTy T tyArgs))
+        (hval : IsValue root) (ps) (bodies)
+        (hwf : ∀ r ∈ initMatrix ps, GPatWFList ctors r.pats [.customTy T tyArgs])
+        (hmatch : firstMatch root ps = some (i, ws)) :
+      ReflTransGen Step (lowerMatch root ps bodies) ((bodies i).substN 0 ws)
+    ```
+    the UNCONDITIONAL final form the bridge consumes — `CtorSwitches` discharged,
+    closedness from `TypeOfElabHM.closed`. Only residual inputs: scrutinee typing
+    + pattern well-formedness (`GPatWF`, the bridge interface). The `aux`
+    induction was delegated to a GLM-5.2-Max subagent under supervision (18
+    `private` helpers); full `lake build` green, `#print axioms` on
+    `compile_ctorSwitches_aux` / `compile_ctorSwitches` /
+    `lowerMatch_adequate_of_typed` / `emit_adequate` all exactly
+    `{propext, Classical.choice, Quot.sound}`, no `sorry`/`axiom` in the file.
