@@ -372,11 +372,14 @@ theorem elabDecls_complete {decls : List DataDecl} (h : DataDecls.WF decls) :
 
 /-! ### 7. A fixed prelude, elaborated through the checker. -/
 
-/-- A small prelude: `Bool` (nullary) and the recursive, unary `List`. -/
+/-- A small prelude: `Bool` (nullary), the recursive unary `List`, and the
+    binary `Pair` (the tuple type — needed by the surface bridge's `(a, b)`
+    sugar; its single ctor `Pair` has two fields `.bvar 0`/`.bvar 1`). -/
 def preludeDecls : List DataDecl :=
   [ { name := ⟨"Bool"⟩, paramCount := 0, ctors := [(⟨"True"⟩, []), (⟨"False"⟩, [])] },
     { name := ⟨"List"⟩, paramCount := 1,
-      ctors := [(⟨"Nil"⟩, []), (⟨"Cons"⟩, [.bvar 0, .customTy ⟨"List"⟩ [.bvar 0]])] } ]
+      ctors := [(⟨"Nil"⟩, []), (⟨"Cons"⟩, [.bvar 0, .customTy ⟨"List"⟩ [.bvar 0]])] },
+    { name := ⟨"Pair"⟩, paramCount := 2, ctors := [(⟨"Pair"⟩, [.bvar 0, .bvar 1])] } ]
 
 -- The prelude elaborates successfully (witnessing the whole pipeline).
 #guard (elabDecls preludeDecls).isSome
