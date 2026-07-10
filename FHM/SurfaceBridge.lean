@@ -4,16 +4,20 @@ import FHM.Decls
 import FHM.PatComp
 import FHM.InferW
 
-/-! # The surface → Core bridge (item-0 skeleton)
+/-! # The surface → Core bridge
 
-This module is the **front end**: it lowers `Surface.Expr`/`Surface.Ty`/data
-declarations into Core, and states the campaign's headline payoff — *a well-typed
-surface program elaborates to a Core program that is type-safe and never gets
-stuck*.
+This module is the **front end**: it lowers `Surface.Expr`/`Surface.Ty` into Core
+and states the campaign's headline payoff — *a well-typed, exhaustive surface
+program elaborates to a Core program that is type-safe and never gets stuck*.
 
-**Status:** `lowerTy` and `lower` are **real** (`#guard`-tested). `Lowers`,
-`SurfaceCovers`, and `PatternWF` are **real** inductive definitions below. Proof
-bodies remain `sorry` (delegable to Grok 4.5 xhigh).
+**Status: COMPLETE and axiom-clean.** The headline `surface_type_safe` and every
+lemma it depends on are proved `sorry`-free; `#print axioms surface_type_safe`
+= `{propext, Classical.choice, Quot.sound}`. `lowerTy`/`lower`/`elaborate` are
+executable (`#guard`-tested); `Lowers`/`SurfaceCovers`/`DTreeExhaustive`/
+`PatternWF` are the declarative specs. See
+`briefs/next-agent-brief-surface-bridge-followups.md` for what remains (surface
+`DataDecl` lowering, whole-program top-level pipeline, executable
+`checkExhaustive`, error messages).
 
 ## Design decisions this skeleton bakes in (settled with Aron)
 
