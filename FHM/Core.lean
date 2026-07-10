@@ -9071,6 +9071,95 @@ theorem AllMatchesExhaustive.substN {ctors : CtorEnv} {vs : List Expr}
       obtain ⟨e', he', rfl⟩ := List.mem_map.mp he
       exact ih_bindings e' he' (hbindings e' he') (k + bindings.length)
 
+/-- The substituted image of a branch is a member of the `substTyFvar`ed list. -/
+theorem BranchList.mem_substTyFvar_of_mem {Z : Nat} {U : Ty}
+    {branches : List (MatchPattern × Expr)} {pat : MatchPattern} {body : Expr}
+    (h : (pat, body) ∈ branches) :
+    (pat, body.substTyFvar Z U) ∈ BranchList.substTyFvar Z U branches := by
+  induction branches with
+  | nil => exact absurd h List.not_mem_nil
+  | cons hd tl ih =>
+    obtain ⟨p, b⟩ := hd
+    simp only [BranchList.substTyFvar, List.mem_cons] at h ⊢
+    cases h with
+    | inl heq =>
+      simp only [Prod.mk.injEq] at heq; obtain ⟨rfl, rfl⟩ := heq; exact Or.inl rfl
+    | inr h' => exact Or.inr (ih h')
+
+/-- Companion: `substTyFvar` preserves branch-body exhaustiveness. -/
+private theorem AllBranchBodiesExhaustive.substTyFvar {ctors : CtorEnv} {Z : Nat} {U : Ty}
+    {branches : List (MatchPattern × Expr)}
+    (ih : ∀ pat e, (pat, e) ∈ branches → AllMatchesExhaustive ctors e →
+      AllMatchesExhaustive ctors (e.substTyFvar Z U))
+    (h : AllBranchBodiesExhaustive ctors branches) :
+    AllBranchBodiesExhaustive ctors (BranchList.substTyFvar Z U branches) := by
+  induction branches with
+  | nil => exact .nil
+  | cons hd tl ih_tl =>
+    obtain ⟨pat, body⟩ := hd
+    cases h with
+    | cons hbody hrest =>
+      simp only [BranchList.substTyFvar]
+      exact .cons (ih pat body List.mem_cons_self hbody)
+        (ih_tl (fun p e hm hae => ih p e (List.mem_cons_of_mem _ hm) hae) hrest)
+
+/-- Single-step `substTyFvar` preserves match-exhaustiveness: it only rewrites
+    type annotations / var tyArgs, never match patterns or the ctor env. -/
+theorem AllMatchesExhaustive.substTyFvar {ctors : CtorEnv} (Z : Nat) (U : Ty) :
+    ∀ {e : Expr}, AllMatchesExhaustive ctors e →
+      AllMatchesExhaustive ctors (e.substTyFvar Z U) := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro _; exact .primLit
+  | primBinOp op => intro h; exact h
+  | var i tyArgs => intro _; exact .var
+  | ctor nm => intro _; exact .ctor
+  | lambda ann body ih =>
+    intro h; cases h with | lambda hb => exact .lambda (ih hb)
+  | app f arg ihf iharg =>
+    intro h; cases h with | app hf ha => exact .app (ihf hf) (iharg ha)
+  | letIn ann rhs body ihr ihb =>
+    intro h; cases h with | letIn hr hb => exact .letIn (ihr hr) (ihb hb)
+  | match_ scrut branches ihs ihbs =>
+    intro h
+    cases h with
+    | match_ hscrut hbranches hpinned hcover =>
+      expose_names
+      simp only [Expr.substTyFvar]
+      refine .match_ (tyName := tyName) (ihs hscrut)
+        (AllBranchBodiesExhaustive.substTyFvar
+          (fun p b hm hb => ihbs p b hm hb) hbranches) ?_ ?_
+      · intro c n body' hmem
+        obtain ⟨p, b, hmem0, heq⟩ := BranchList.mem_substTyFvar hmem
+        simp only [Prod.mk.injEq] at heq
+        obtain ⟨rfl, rfl⟩ := heq
+        exact hpinned c n b hmem0
+      · intro ctorName ctor hlook htyn
+        obtain ⟨pat, body, hmem, hcov⟩ := hcover ctorName ctor hlook htyn
+        exact ⟨pat, body.substTyFvar Z U, BranchList.mem_substTyFvar_of_mem hmem, hcov⟩
+  | letRec anns bindings body ihbs ihb =>
+    intro h
+    cases h with
+    | letRec hbs hb =>
+      simp only [Expr.substTyFvar, RecGroup.substTyFvar_eq_map]
+      refine .letRec ?_ (ihb hb)
+      intro e hmem
+      rw [List.mem_map] at hmem
+      obtain ⟨e0, he0, rfl⟩ := hmem
+      exact ihbs e0 he0 (hbs e0 he0)
+
+/-- Iterated `substTyFvars` preserves match-exhaustiveness. -/
+theorem AllMatchesExhaustive.substTyFvars {ctors : CtorEnv} (S : List (Nat × Ty)) :
+    ∀ {e : Expr}, AllMatchesExhaustive ctors e →
+      AllMatchesExhaustive ctors (e.substTyFvars S) := by
+  induction S with
+  | nil => intro e h; simpa [Expr.substTyFvars] using h
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    intro e h
+    simp only [Expr.substTyFvars]
+    exact ih (AllMatchesExhaustive.substTyFvar Z U h)
+
 /-- Every argument of a constructor-chain value is exhaustive if the chain is. -/
 theorem CtorAppliedTo.args_exhaustive {ctors : CtorEnv} {e : Expr} {name : CtorName}
     {args : List Expr} (h : CtorAppliedTo e name args)

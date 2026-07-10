@@ -486,20 +486,73 @@ def PatternWF (ctors : CtorEnv) (p : Surface.Pattern) (τ : Ty) : Prop :=
 theorem PatternWF_to_GPatWF {ctors : CtorEnv} {p : Surface.Pattern} {τ : Ty}
     (h : PatternWF ctors p τ) : GPatWF ctors (norm p) τ := h
 
-/-- **Semantic exhaustiveness of one match's branch patterns** at scrutinee type
-    `customTy T tyArgs`: the surface oracle `firstMatch` selects SOME branch for
-    every well-typed value of that type. This is the honest coverage condition —
-    a flat "top-level ctors covered" check is UNSOUND (it misses nested gaps: e.g.
-    `Cons (Just x) t | Nil` leaves `Cons Nothing Nil` unmatched, verified by
-    `firstMatch (Cons Nothing Nil) … = none`). Via `PatComp.compile_surface_total_iff`
-    this lifts to "the compiled tree has no reachable `fail`", hence (with the
-    emit fix) the emitted match covers every ctor ⇒ `AllMatchesExhaustive` (O5).
-    NOTE: not executable; an executable checker implying this is the deferred
-    item-6 refinement (`checkExhaustive`). -/
+/-- **Occurrence typing context**: the ADT type known to sit at each occurrence
+    the compiled tree may switch on. `[] ↦ scrutinee type` at the root; a case for
+    ctor `c` extends it with `c`'s instantiated field types at the field
+    occurrences `subOccs occ arity`. (Keyed by `Occ = List Nat`, which has
+    `DecidableEq`, so `get?` works.) -/
+abbrev OccCtx := LookupList Occ Ty
+
+/-- A constructor's *instantiated* field types at type arguments `tyArgs`
+    (`ctor.contents` with its `bvar` params replaced by `tyArgs`, via `Ty.openWith`
+    — the functional twin of `InstantiatesBy`, bridged by `InstantiatesBy.eq_openWith`).
+    `[]` if `c` is unknown. Computed (not existential) so the tree-coverage
+    recursion below stays strictly positive. -/
+def instFieldTys (ctors : CtorEnv) (c : CtorName) (tyArgs : List Ty) : List Ty :=
+  ((LookupList.get? ctors c).map (fun ctor => ctor.contents.map (Ty.openWith tyArgs))).getD []
+
+/-- Extend an occurrence context with a ctor's field-occurrence types. -/
+def OccCtx.extend (octx : OccCtx) (occ : Occ) (fieldTys : List Ty) : OccCtx :=
+  (subOccs occ fieldTys.length).zip fieldTys ++ octx
+
+/-- **Syntactic (tree) exhaustiveness** of a compiled decision tree under an
+    occurrence typing `octx`. This is the decidable coverage condition matching
+    Core's `AllMatchesExhaustive` (item 6), robust to the pop rule because it
+    types each switch by its *occurrence* (not by a positional column list):
+
+    * a `leaf` is exhaustive (its body's exhaustiveness is a separate obligation);
+    * a `switch occ cases .fail` (a COMPLETE signature — `emit` emits NO wildcard)
+      is exhaustive iff `occ` holds an ADT `T`, every case tests a real ctor of
+      `T` (with matching arity) whose subtree is exhaustive (fields typed by
+      `instFieldTys`), and EVERY ctor of `T` in the env is tested (full coverage);
+    * a `switch occ cases dflt` with `dflt ≠ .fail` (an emitted wildcard covers
+      the rest) is exhaustive iff `occ` holds an ADT `T`, every case is a real
+      ctor of `T` with an exhaustive subtree, and the default is exhaustive;
+    * a bare `.fail` is NEVER exhaustive (an uncovered match). -/
+inductive DTreeExhaustive (ctors : CtorEnv) : OccCtx → DTree → Prop
+  | leaf {octx act binds} : DTreeExhaustive ctors octx (.leaf act binds)
+  | switchFail {octx occ cases T tyArgs} :
+      LookupList.get? octx occ = some (.customTy T tyArgs) →
+      (∀ c a t, (c, a, t) ∈ cases →
+        ∃ ctor, LookupList.get? ctors c = some ctor ∧ ctor.tyName = T ∧
+          a = ctor.contents.length) →
+      (∀ c a t, (c, a, t) ∈ cases →
+        DTreeExhaustive ctors (OccCtx.extend octx occ (instFieldTys ctors c tyArgs)) t) →
+      (∀ c ctor, LookupList.get? ctors c = some ctor → ctor.tyName = T →
+        ∃ a t, (c, a, t) ∈ cases) →
+      DTreeExhaustive ctors octx (.switch occ cases .fail)
+  | switchDefault {octx occ cases dflt T tyArgs} :
+      dflt ≠ .fail →
+      LookupList.get? octx occ = some (.customTy T tyArgs) →
+      (∀ c a t, (c, a, t) ∈ cases →
+        ∃ ctor, LookupList.get? ctors c = some ctor ∧ ctor.tyName = T ∧
+          a = ctor.contents.length) →
+      (∀ c a t, (c, a, t) ∈ cases →
+        DTreeExhaustive ctors (OccCtx.extend octx occ (instFieldTys ctors c tyArgs)) t) →
+      DTreeExhaustive ctors octx dflt →
+      DTreeExhaustive ctors octx (.switch occ cases dflt)
+
+/-- **Syntactic exhaustiveness of one match's branch patterns** at scrutinee type
+    `customTy T tyArgs`: the compiled decision tree is tree-exhaustive, starting
+    from the root occurrence `[]` typed at the scrutinee's ADT type. This is the
+    decidable, honest coverage condition (matches Core's `AllMatchesExhaustive`);
+    `emit_compile_AllMatchesExhaustive` turns it into the real predicate on the
+    emitted match. A flat "top-level ctors covered" check is UNSOUND (misses
+    nested gaps: `Cons (Just x) t | Nil` leaves `Cons Nothing Nil` — the `Cons`
+    sub-switch omits `Nothing`, so `DTreeExhaustive` fails there, correctly). -/
 def MatchExhaustive (ctors : CtorEnv) (T : TyName) (tyArgs : List Ty)
     (ps : List Surface.Pattern) : Prop :=
-  ∀ v, IsValue v → TypeOfElabHM ⟨[], ctors⟩ v (.customTy T tyArgs) →
-    (firstMatch v ps).isSome
+  DTreeExhaustive ctors [([], .customTy T tyArgs)] (compile [[]] (initMatrix ps))
 
 /-- Every `match` in `s` is exhaustive (and subexpressions recurse). At `match_`
     the witness carries the scrutinee's ADT type `(T, tyArgs)` — O5 instantiates it
@@ -1593,28 +1646,83 @@ theorem infer_of_typecheck {ctors : CtorEnv} {c : Expr}
   · simp [hcore] at htc
   · exact ⟨Φ', S, eOut, τ, by simp⟩
 
-/-- **(O5) Exhaustiveness of the emitted-and-elaborated matches — THE workhorse
-    target.** If every surface `match` in `s` covers its scrutinee's ADT type
-    (`SurfaceCovers`), then the lowered-then-elaborated Core term's matches are
-    all `AllMatchesExhaustive` — exactly the conjunct `type_safety` demands.
+/-! ### O5 helpers
 
-    Sub-obligations (for the handoff):
-    * lowering emits, for each surface match, the compiled `PatComp.lowerMatch`
-      whose branch set is the compiler's `DTree` leaves;
-    * a `DTree.NoFail` ⇒ totality lemma connects "no reachable `fail`" to
-      `AllMatchesExhaustive` on the emitted `match_` (the memo's deferred (X)
-      piece; needs the nested-recursive `DTree.occs`);
-    * `SurfaceCovers` ⇒ the compiled tree has no reachable `fail`
-      (`PatComp.compile_surface_total_iff`, given scrutinee typing);
-    * exhaustiveness is preserved by elaboration
-      (`AllMatchesExhaustive.instTy`/`substN`/`shiftFrom`) down to
-      `eOut.substTyFvars S`. -/
+Transport across elaboration is mechanical (`AllMatchesExhaustive.substTyFvars`
+in Core; `infer_preserves_AllMatchesExhaustive` via induction on `Infer`). The
+crux (A) is now SYNTACTIC: `emit` of a `DTreeExhaustive` tree is
+`AllMatchesExhaustive`, by induction on the coverage derivation — no semantic
+totality, no inhabitation. -/
+
+/-- `emitLets` (leaf `let`-cascade) preserves exhaustiveness: it wraps the body in
+    `.letIn none (.var …)` binders (vars are exhaustive) over `body.shiftFrom …`
+    (`AllMatchesExhaustive.shiftFrom`). -/
+theorem emitLets_AllMatchesExhaustive {ctors : CtorEnv} (env binds : List Occ)
+    {body : Expr} (h : AllMatchesExhaustive ctors body) :
+    AllMatchesExhaustive ctors (emitLets env binds body) := by
+  sorry -- unfold emitLets `go`; each step is `.letIn (.var…) …`; base = shiftFrom
+
+/-- **(A-core) Emitting a tree-exhaustive decision tree yields an
+    `AllMatchesExhaustive` Core term** — given the leaf bodies are exhaustive.
+    Structural induction on the `DTreeExhaustive` derivation: `switchFail` uses
+    the coverage clause (every ctor of `T` tested) for `AllMatchesExhaustive`'s
+    cover obligation with no wildcard; `switchDefault`'s emitted wildcard covers
+    the rest; the per-case ctor typing gives the "pinned" (named ctors ∈ `T`)
+    obligation; `leaf` via `emitLets_AllMatchesExhaustive`. `env` is generalized
+    (it only drives `resolveOcc`/leaf-lets, irrelevant to coverage). -/
+theorem emit_DTreeExhaustive {ctors : CtorEnv} (bodies : Nat → Expr)
+    (hbodies : ∀ i, AllMatchesExhaustive ctors (bodies i)) :
+    ∀ {octx : OccCtx} {t : DTree}, DTreeExhaustive ctors octx t →
+      ∀ (env : List Occ), AllMatchesExhaustive ctors (emit env bodies t) := by
+  sorry -- induction on the DTreeExhaustive derivation (env generalized)
+
+/-- Corollary at a compiled match tree: `MatchExhaustive` (tree coverage) plus
+    exhaustive branch bodies ⇒ the emitted match is `AllMatchesExhaustive`. -/
+theorem emit_compile_AllMatchesExhaustive {ctors : CtorEnv} {T : TyName}
+    {tyArgs : List Ty} (bodies : Nat → Expr) (ps : List Surface.Pattern)
+    (hbodies : ∀ i, AllMatchesExhaustive ctors (bodies i))
+    (hexh : MatchExhaustive ctors T tyArgs ps) :
+    AllMatchesExhaustive ctors (emit [[]] bodies (compile [[]] (initMatrix ps))) := by
+  unfold MatchExhaustive at hexh
+  exact emit_DTreeExhaustive bodies hbodies hexh [[]]
+
+/-- **(A) Surface coverage + successful lowering ⇒ the Core term is exhaustive.**
+    Induction on `SurfaceCovers` threaded through `lowerExpr`; the `match` case
+    feeds `emit_compile_AllMatchesExhaustive` (its `MatchExhaustive` comes from the
+    `SurfaceCovers.match_` witness, its exhaustive branch bodies from the recursive
+    `SurfaceCovers` on the branches). No typing hypothesis needed — `DTreeExhaustive`
+    is self-contained (it carries the tested ctors' env membership). -/
+theorem lower_exhaustive {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
+    (hcov : SurfaceCovers ctors s) (hlow : lower ctors s = some c) :
+    AllMatchesExhaustive ctors c := by
+  sorry -- induction on SurfaceCovers + lowerExpr; match case → emit_compile aux
+
+/-- Infer only rewrites annotations / var tyArgs / let-generalisation wrappers;
+    match patterns are preserved, so exhaustiveness of the source lifts to `eOut`.
+    (Note: `eOut.eraseVarTyArgs = e` is FALSE in general — Infer inserts `letIn`
+    annotations / `closeTyVars` — so we preserve `AllMatchesExhaustive` directly
+    rather than routing through erasure equality.) -/
+theorem infer_preserves_AllMatchesExhaustive {Φ ctx e Φ' S eOut τ}
+    (h : Infer Φ ctx e Φ' S eOut τ)
+    (hexh : AllMatchesExhaustive ctx.ctors e) :
+    AllMatchesExhaustive ctx.ctors eOut := by
+  sorry -- induction on Infer; needs closeTyVars / letRecElab preservation
+
+/-- **(O5) Exhaustiveness of the emitted-and-elaborated matches.** If every surface
+    `match` in `s` covers its scrutinee's ADT type (`SurfaceCovers`), then the
+    lowered-then-elaborated Core term's matches are all `AllMatchesExhaustive` —
+    the conjunct `type_safety` demands. Composition: `lower_exhaustive` (A) then
+    `infer_preserves_AllMatchesExhaustive` then `AllMatchesExhaustive.substTyFvars`. -/
 theorem lower_elab_exhaustive {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     {Φ' : Nat} {S : Subst} {eOut : Expr} {τ : Ty}
     (hcov : SurfaceCovers ctors s) (hlow : lower ctors s = some c)
     (hinf : infer c.freshFloor ⟨[], ctors⟩ c = some (Φ', S, eOut, τ)) :
     AllMatchesExhaustive ctors (eOut.substTyFvars S) := by
-  sorry
+  have hexh_c : AllMatchesExhaustive ctors c := lower_exhaustive hcov hlow
+  have hInfer : Infer c.freshFloor ⟨[], ctors⟩ c Φ' S eOut τ := infer_sound hinf
+  have hexh_out : AllMatchesExhaustive ctors eOut :=
+    infer_preserves_AllMatchesExhaustive hInfer hexh_c
+  exact AllMatchesExhaustive.substTyFvars S hexh_out
 
 
 /-! ## 10. THE HEADLINE

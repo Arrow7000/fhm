@@ -17059,6 +17059,183 @@ theorem Expr.eraseVarTyArgs_openBoundTyVars_congr {ann : Option PolyTy} {Xs : Li
   | some σ =>
     simp only [Expr.openBoundTyVars, Expr.eraseVarTyArgs_openTyVars, h]
 
+/-! ### `AllMatchesExhaustive` is insensitive to `eraseVarTyArgs`
+
+`eraseVarTyArgs` only zeroes var tyArgs; match patterns and the ctor env are
+unchanged, so exhaustiveness is preserved both ways. -/
+
+open SmallStep
+
+private theorem BranchList.mem_eraseVarTyArgs {branches : List (MatchPattern × Expr)}
+    {branch' : MatchPattern × Expr}
+    (h : branch' ∈ BranchList.eraseVarTyArgs branches) :
+    ∃ pat body, (pat, body) ∈ branches ∧ branch' = (pat, body.eraseVarTyArgs) := by
+  induction branches with
+  | nil => simp only [BranchList.eraseVarTyArgs] at h; cases h
+  | cons hd tl ih =>
+    obtain ⟨pat, body⟩ := hd
+    simp only [BranchList.eraseVarTyArgs, List.mem_cons] at h
+    cases h with
+    | inl heq => exact ⟨pat, body, List.mem_cons_self, heq⟩
+    | inr h' =>
+      obtain ⟨p, b, hm, heq⟩ := ih h'
+      exact ⟨p, b, List.mem_cons_of_mem _ hm, heq⟩
+
+private theorem BranchList.mem_eraseVarTyArgs_of_mem {branches : List (MatchPattern × Expr)}
+    {pat : MatchPattern} {body : Expr} (h : (pat, body) ∈ branches) :
+    (pat, body.eraseVarTyArgs) ∈ BranchList.eraseVarTyArgs branches := by
+  induction branches with
+  | nil => cases h
+  | cons hd tl ih =>
+    obtain ⟨p, b⟩ := hd
+    simp only [List.mem_cons] at h
+    cases h with
+    | inl heq =>
+      simp only [Prod.mk.injEq] at heq; obtain ⟨rfl, rfl⟩ := heq
+      simp only [BranchList.eraseVarTyArgs]; exact List.mem_cons_self
+    | inr h' =>
+      simp only [BranchList.eraseVarTyArgs]; exact List.mem_cons_of_mem _ (ih h')
+
+private theorem RecGroup.mem_eraseVarTyArgs_of_mem {bindings : List Expr} {e : Expr}
+    (he : e ∈ bindings) :
+    e.eraseVarTyArgs ∈ RecGroup.eraseVarTyArgs bindings := by
+  induction bindings with
+  | nil => cases he
+  | cons hd tl ih =>
+    simp only [List.mem_cons] at he
+    cases he with
+    | inl heq =>
+      subst heq; simp only [RecGroup.eraseVarTyArgs]; exact List.mem_cons_self
+    | inr h' =>
+      simp only [RecGroup.eraseVarTyArgs]; exact List.mem_cons_of_mem _ (ih h')
+
+private theorem RecGroup.mem_of_eraseVarTyArgs {bindings : List Expr} {e' : Expr}
+    (h : e' ∈ RecGroup.eraseVarTyArgs bindings) :
+    ∃ e, e ∈ bindings ∧ e' = e.eraseVarTyArgs := by
+  induction bindings with
+  | nil => simp only [RecGroup.eraseVarTyArgs] at h; cases h
+  | cons hd tl ih =>
+    simp only [RecGroup.eraseVarTyArgs, List.mem_cons] at h
+    cases h with
+    | inl heq => exact ⟨hd, List.mem_cons_self, heq⟩
+    | inr h' =>
+      obtain ⟨e, he, rfl⟩ := ih h'
+      exact ⟨e, List.mem_cons_of_mem _ he, rfl⟩
+
+private theorem AllBranchBodiesExhaustive.eraseVarTyArgs_aux {ctors : CtorEnv}
+    {branches : List (MatchPattern × Expr)}
+    (ih : ∀ pat e, (pat, e) ∈ branches → AllMatchesExhaustive ctors e →
+      AllMatchesExhaustive ctors e.eraseVarTyArgs)
+    (h : AllBranchBodiesExhaustive ctors branches) :
+    AllBranchBodiesExhaustive ctors (BranchList.eraseVarTyArgs branches) := by
+  induction branches with
+  | nil => cases h; exact .nil
+  | cons hd tl ih_tl =>
+    obtain ⟨pat, body⟩ := hd
+    cases h with
+    | cons hbody hrest =>
+      simp only [BranchList.eraseVarTyArgs]
+      exact .cons (ih pat body List.mem_cons_self hbody)
+        (ih_tl (fun p e hm hae => ih p e (List.mem_cons_of_mem _ hm) hae) hrest)
+
+theorem AllMatchesExhaustive.eraseVarTyArgs {ctors : CtorEnv} :
+    ∀ {e : Expr}, AllMatchesExhaustive ctors e →
+      AllMatchesExhaustive ctors e.eraseVarTyArgs := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro _; exact .primLit
+  | primBinOp op => intro h; exact h
+  | var i tyArgs => intro _; exact .var
+  | ctor nm => intro _; exact .ctor
+  | lambda ann body ih =>
+    intro h; cases h with | lambda hb => exact .lambda (ih hb)
+  | app f arg ihf iharg =>
+    intro h; cases h with | app hf ha => exact .app (ihf hf) (iharg ha)
+  | letIn ann rhs body ihr ihb =>
+    intro h; cases h with | letIn hr hb => exact .letIn (ihr hr) (ihb hb)
+  | match_ scrut branches ihs ihbs =>
+    intro h
+    cases h with
+    | match_ hscrut hbranches hpinned hcover =>
+      expose_names
+      simp only [Expr.eraseVarTyArgs]
+      refine .match_ (tyName := tyName) (ihs hscrut)
+        (AllBranchBodiesExhaustive.eraseVarTyArgs_aux
+          (fun p b hm hb => ihbs p b hm hb) hbranches) ?_ ?_
+      · intro c n body' hmem
+        obtain ⟨p, b, hmem0, heq⟩ := BranchList.mem_eraseVarTyArgs hmem
+        simp only [Prod.mk.injEq] at heq; obtain ⟨rfl, rfl⟩ := heq
+        exact hpinned c n b hmem0
+      · intro ctorName ctor hlook htyn
+        obtain ⟨pat, body, hmem, hcov⟩ := hcover ctorName ctor hlook htyn
+        exact ⟨pat, body.eraseVarTyArgs, BranchList.mem_eraseVarTyArgs_of_mem hmem, hcov⟩
+  | letRec anns bindings body ihbs ihb =>
+    intro h
+    cases h with
+    | letRec hbs hb =>
+      simp only [Expr.eraseVarTyArgs]
+      refine .letRec ?_ (ihb hb)
+      intro e hmem
+      obtain ⟨e0, he0, rfl⟩ := RecGroup.mem_of_eraseVarTyArgs hmem
+      exact ihbs e0 he0 (hbs e0 he0)
+
+private theorem AllBranchBodiesExhaustive.of_eraseVarTyArgs_aux {ctors : CtorEnv}
+    {branches : List (MatchPattern × Expr)}
+    (ih : ∀ pat e, (pat, e) ∈ branches → AllMatchesExhaustive ctors e.eraseVarTyArgs →
+      AllMatchesExhaustive ctors e)
+    (h : AllBranchBodiesExhaustive ctors (BranchList.eraseVarTyArgs branches)) :
+    AllBranchBodiesExhaustive ctors branches := by
+  induction branches with
+  | nil => cases h; exact .nil
+  | cons hd tl ih_tl =>
+    obtain ⟨pat, body⟩ := hd
+    cases h with
+    | cons hbody hrest =>
+      exact .cons (ih pat body List.mem_cons_self hbody)
+        (ih_tl (fun p e hm hae => ih p e (List.mem_cons_of_mem _ hm) hae) hrest)
+
+theorem AllMatchesExhaustive.of_eraseVarTyArgs {ctors : CtorEnv} :
+    ∀ {e : Expr}, AllMatchesExhaustive ctors e.eraseVarTyArgs →
+      AllMatchesExhaustive ctors e := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro _; exact .primLit
+  | primBinOp op => intro h; exact h
+  | var i tyArgs => intro _; exact .var
+  | ctor nm => intro _; exact .ctor
+  | lambda ann body ih =>
+    intro h; cases h with | lambda hb => exact .lambda (ih hb)
+  | app f arg ihf iharg =>
+    intro h; cases h with | app hf ha => exact .app (ihf hf) (iharg ha)
+  | letIn ann rhs body ihr ihb =>
+    intro h; cases h with | letIn hr hb => exact .letIn (ihr hr) (ihb hb)
+  | match_ scrut branches ihs ihbs =>
+    intro h
+    cases h with
+    | match_ hscrut hbranches hpinned hcover =>
+      expose_names
+      refine .match_ (tyName := tyName) (ihs hscrut)
+        (AllBranchBodiesExhaustive.of_eraseVarTyArgs_aux
+          (fun p b hm hb => ihbs p b hm hb) hbranches) ?_ ?_
+      · intro c n body hmem
+        exact hpinned c n body.eraseVarTyArgs (BranchList.mem_eraseVarTyArgs_of_mem hmem)
+      · intro ctorName ctor hlook htyn
+        obtain ⟨pat, body', hmem', hcov⟩ := hcover ctorName ctor hlook htyn
+        obtain ⟨pat0, body, hmem, heq⟩ := BranchList.mem_eraseVarTyArgs hmem'
+        simp only [Prod.mk.injEq] at heq; obtain ⟨rfl, rfl⟩ := heq
+        exact ⟨pat, body, hmem, hcov⟩
+  | letRec anns bindings body ihbs ihb =>
+    intro h
+    cases h with
+    | letRec hbs hb =>
+      refine .letRec ?_ (ihb hb)
+      intro e he
+      exact ihbs e he (hbs _ (RecGroup.mem_eraseVarTyArgs_of_mem he))
+
+theorem AllMatchesExhaustive.eraseVarTyArgs_iff {ctors : CtorEnv} {e : Expr} :
+    AllMatchesExhaustive ctors e ↔ AllMatchesExhaustive ctors e.eraseVarTyArgs :=
+  ⟨AllMatchesExhaustive.eraseVarTyArgs, AllMatchesExhaustive.of_eraseVarTyArgs⟩
+
 /-- Output-uniqueness up to instance: any two `Infer` results on the same input
     are mutual substitution-instances. (From `complete'` of the first applied to
     the `sound` typing of the second.) -/
