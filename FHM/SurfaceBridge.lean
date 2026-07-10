@@ -2223,23 +2223,149 @@ private theorem letRecElab_AllMatchesExhaustive {ctors : CtorEnv}
   simp only [Expr.letRecElab]
   exact letRecElabNest_AllMatchesExhaustive G anns _ rawBindings hraw _ body hbody
 
-/-- Infer only rewrites annotations / var tyArgs / let-generalisation wrappers;
-    match patterns are preserved, so exhaustiveness of the source lifts to `eOut`.
-    (Note: `eOut.eraseVarTyArgs = e` is FALSE in general — Infer inserts `letIn`
-    annotations / `closeTyVars` — so we preserve `AllMatchesExhaustive` directly
-    rather than routing through erasure equality.)
+/-- Transfer `(a, _)` membership across a branch list whose first projections
+    (patterns) agree — the key fact letting a `match`'s pinned/cover clauses
+    survive inference (which preserves patterns, only rewriting branch bodies). -/
+private theorem mem_of_map_fst_eq {α β : Type _} {l l' : List (α × β)}
+    (h : l.map (·.1) = l'.map (·.1)) {a : α} {b : β} (hm : (a, b) ∈ l) :
+    ∃ b', (a, b') ∈ l' := by
+  have hmem : a ∈ l.map (·.1) := List.mem_map.mpr ⟨(a, b), hm, rfl⟩
+  rw [h] at hmem
+  obtain ⟨⟨a', b'⟩, hmem', heq⟩ := List.mem_map.mp hmem
+  obtain rfl : a' = a := heq
+  exact ⟨b', hmem'⟩
 
-    **Blocked on `Infer.rec`:** `Infer`/`InferBranches`/`InferRecGroup` are mutual, so
-    `induction`/`cases`+recursive calls fix the output frontier and reject subcalls.
-    Helpers ready above: `AllMatchesExhaustive.openTyVars`/`closeTyVars(Aux)`,
-    `closeTyVarsAux_match_eq`/`closeTyVarsAux_letRec_eq`,
-    `letRecElab(Nest)_AllMatchesExhaustive`. Remaining: wire all 22 `Infer.rec`
-    minors (motive_1/2/3 as exhaustiveness implications + pattern-list equality). -/
+/-! **Inference preserves match-exhaustiveness** (`Infer`/`InferBranches`/`InferRecGroup`
+    mutual family). Mirrors the `Infer.sourceSound` template: a `cases h`-style mutual
+    block (WF on `Expr.size`/`sizeBranches`/`sizeRecGroup`) whose arms recurse through
+    the companions. Inference only decorates `var` tyArgs, substitutes annotations, and
+    wraps let/letRec generalisation (`closeTyVars`/`letRecElab`) — none of which touch
+    a match's pattern skeleton — so each output stays exhaustive. Type-level wrappers
+    are discharged by the `substTyFvars`/`openTyVars`/`closeTyVars`/`letRecElab`
+    preservation helpers above. -/
+set_option maxRecDepth 8000 in
+mutual
+/-- **(O5 transport)** `Infer` preserves `AllMatchesExhaustive` on the elaborated term. -/
 theorem infer_preserves_AllMatchesExhaustive {Φ ctx e Φ' S eOut τ}
     (h : Infer Φ ctx e Φ' S eOut τ)
     (hexh : AllMatchesExhaustive ctx.ctors e) :
     AllMatchesExhaustive ctx.ctors eOut := by
-  sorry -- Infer.rec over mutual Infer family (22 minors); helpers above are ready
+  cases h with
+  | primLitUnit | primLitInt | primLitNat | primLitChar => exact .primLit
+  | primBinOpIntAdd => exact hexh
+  | primBinOpIntSub => exact hexh
+  | primBinOpIntLt _ _ _ _ => exact hexh
+  | primBinOpCharLt _ _ _ _ => exact hexh
+  | var _ => exact .var
+  | ctor _ => exact .ctor
+  | lambda _ hbody =>
+    cases hexh with
+    | lambda hbe =>
+      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
+      exact .lambda hbo
+  | app hf harg _ =>
+    cases hexh with
+    | app hfe hae =>
+      have hfo := infer_preserves_AllMatchesExhaustive hf hfe
+      have hao := infer_preserves_AllMatchesExhaustive harg hae
+      exact .app hfo hao
+  | letIn hrhs hbody =>
+    cases hexh with
+    | letIn hre hbe =>
+      have hro := infer_preserves_AllMatchesExhaustive hrhs hre
+      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
+      exact .letIn
+        (AllMatchesExhaustive.closeTyVars _ (AllMatchesExhaustive.substTyFvars _ hro)) hbo
+  | letInAnn _ _ hrhs _ _ _ hbody =>
+    cases hexh with
+    | letIn hre hbe =>
+      have hro := infer_preserves_AllMatchesExhaustive hrhs
+        (AllMatchesExhaustive.openTyVars _ hre)
+      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
+      exact .letIn
+        (AllMatchesExhaustive.closeTyVars _ (AllMatchesExhaustive.substTyFvars _ hro)) hbo
+  | match_ hscrut _ hbranches =>
+    cases hexh with
+    | match_ hse hbodies hpinned hcover =>
+      expose_names
+      have hso := infer_preserves_AllMatchesExhaustive hscrut hse
+      obtain ⟨hbodiesOut, hpats⟩ := inferBranches_preserves_exh hbranches hbodies
+      refine AllMatchesExhaustive.match_ (tyName := tyName) hso hbodiesOut ?_ ?_
+      · intro c n body' hmem
+        obtain ⟨b0, hb0⟩ := mem_of_map_fst_eq hpats hmem
+        exact hpinned c n b0 hb0
+      · intro ctorName ctor hlook hty
+        obtain ⟨pat, body, hmem, hcov⟩ := hcover ctorName ctor hlook hty
+        obtain ⟨b', hb'⟩ := mem_of_map_fst_eq hpats.symm hmem
+        exact ⟨pat, b', hb', hcov⟩
+  | letRec _ hgroup hbody =>
+    cases hexh with
+    | letRec hbs hbe =>
+      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
+      have hraw := inferRecGroup_preserves_exh hgroup hbs
+      exact letRecElab_AllMatchesExhaustive _ _ _ _ _
+        (fun e he => by
+          obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
+          exact AllMatchesExhaustive.substTyFvars _ (hraw e0 he0))
+        hbo
+termination_by e.size
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
+
+/-- Branch-list companion: preserves branch-body exhaustiveness AND the pattern list
+    (only bodies are re-inferred). -/
+theorem inferBranches_preserves_exh {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
+    (hexh : AllBranchBodiesExhaustive ctx.ctors brs) :
+    AllBranchBodiesExhaustive ctx.ctors brsOut ∧
+      brsOut.map (·.1) = brs.map (·.1) := by
+  cases h with
+  | nil => exact ⟨.nil, rfl⟩
+  | cons _ _ _ hbody _ hrest =>
+    cases hexh with
+    | cons hbe hreste =>
+      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
+      obtain ⟨hre, hpe⟩ := inferBranches_preserves_exh hrest hreste
+      exact ⟨.cons hbo hre, by simp only [List.map_cons, hpe]⟩
+  | consWild hbody _ hrest =>
+    cases hexh with
+    | cons hbe hreste =>
+      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
+      obtain ⟨hre, hpe⟩ := inferBranches_preserves_exh hrest hreste
+      exact ⟨.cons hbo hre, by simp only [List.map_cons, hpe]⟩
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
+
+/-- Rec-group companion: every output binding is exhaustive given every input is. -/
+theorem inferRecGroup_preserves_exh {Φ ctx bindings specs Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings specs Φ' S bindingsOut)
+    (hexh : ∀ e ∈ bindings, AllMatchesExhaustive ctx.ctors e) :
+    ∀ e ∈ bindingsOut, AllMatchesExhaustive ctx.ctors e := by
+  cases h with
+  | nil => intro e he; simp at he
+  | consMono he0 _ hrest =>
+    intro e he
+    simp only [List.mem_cons] at he
+    rcases he with rfl | he
+    · exact infer_preserves_AllMatchesExhaustive he0 (hexh _ List.mem_cons_self)
+    · have hraw := inferRecGroup_preserves_exh hrest
+        (fun e' he' => hexh e' (List.mem_cons_of_mem _ he'))
+      exact hraw e he
+  | consPoly _ hinfer _ _ _ hrest =>
+    intro e he
+    simp only [List.mem_cons] at he
+    rcases he with rfl | he
+    · have hio := infer_preserves_AllMatchesExhaustive hinfer
+        (AllMatchesExhaustive.openTyVars _ (hexh _ List.mem_cons_self))
+      exact AllMatchesExhaustive.closeTyVars _ (AllMatchesExhaustive.substTyFvars _ hio)
+    · have hraw := inferRecGroup_preserves_exh hrest
+        (fun e' he' => hexh e' (List.mem_cons_of_mem _ he'))
+      exact hraw e he
+termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
+end
 
 /-- **(O5) Exhaustiveness of the emitted-and-elaborated matches.** If every surface
     `match` in `s` covers its scrutinee's ADT type (`SurfaceCovers`), then the
