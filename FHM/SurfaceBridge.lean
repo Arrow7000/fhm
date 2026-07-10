@@ -584,6 +584,10 @@ inductive SurfaceCovers (ctors : CtorEnv) : Surface.Expr → Prop where
       SurfaceCovers ctors (.letRecIn binds body)
   | ife {c t f} :
       SurfaceCovers ctors c → SurfaceCovers ctors t → SurfaceCovers ctors f →
+      -- `ife` desugars to a `True | False` match on `Bool`; its exhaustiveness
+      -- depends on `ctors` having `Bool = {True, False}` (no rogue extra ctor),
+      -- so carry the coverage witness here (as `match_` does).
+      MatchExhaustive ctors nBool [] [.ctor cTrue [], .ctor cFalse []] →
       SurfaceCovers ctors (.ife c t f)
   | match_ {scrut brs T tyArgs} :
       SurfaceCovers ctors scrut →
@@ -1660,7 +1664,71 @@ totality, no inhabitation. -/
 theorem emitLets_AllMatchesExhaustive {ctors : CtorEnv} (env binds : List Occ)
     {body : Expr} (h : AllMatchesExhaustive ctors body) :
     AllMatchesExhaustive ctors (emitLets env binds body) := by
-  sorry -- unfold emitLets `go`; each step is `.letIn (.var…) …`; base = shiftFrom
+  unfold emitLets
+  have go_exh : ∀ (bs : List Occ) (depth : Nat),
+      AllMatchesExhaustive ctors (emitLets.go env binds body bs depth) := by
+    intro bs depth
+    induction bs generalizing depth with
+    | nil => exact AllMatchesExhaustive.shiftFrom h _ _
+    | cons _b rest ih => exact .letIn .var (ih (depth + 1))
+  exact go_exh binds.reverse 0
+
+/-- `emitCases` as a `List.map` (local copy of PatComp's private lemma). -/
+private theorem emitCases_eq_map' (env : List Occ) (bodies : Nat → Expr) (occ : Occ) :
+    ∀ (cases : List (CtorName × Nat × DTree)),
+      emitCases env bodies occ cases
+        = cases.map (fun x => (MatchPattern.named x.1 x.2.1,
+            emit (subOccs occ x.2.1 ++ env) bodies x.2.2))
+  | [] => rfl
+  | (_c, _a, _t) :: rest => by
+    rw [emitCases, emitCases_eq_map' env bodies occ rest, List.map_cons]
+
+/-- Membership: a case in `cases` yields the corresponding named branch in `emitCases`. -/
+private theorem mem_emitCases_of_mem_cases (env : List Occ) (bodies : Nat → Expr)
+    (occ : Occ) {cases : List (CtorName × Nat × DTree)} {c : CtorName} {a : Nat}
+    {t : DTree} (h : (c, a, t) ∈ cases) :
+    (MatchPattern.named c a, emit (subOccs occ a ++ env) bodies t) ∈
+      emitCases env bodies occ cases := by
+  rw [emitCases_eq_map']
+  exact List.mem_map.mpr ⟨(c, a, t), h, rfl⟩
+
+/-- Inverse membership: a named branch in `emitCases` comes from a case. -/
+private theorem mem_cases_of_mem_emitCases (env : List Occ) (bodies : Nat → Expr)
+    (occ : Occ) {cases : List (CtorName × Nat × DTree)} {c : CtorName} {n : Nat}
+    {body : Expr}
+    (h : (MatchPattern.named c n, body) ∈ emitCases env bodies occ cases) :
+    ∃ t, (c, n, t) ∈ cases ∧ body = emit (subOccs occ n ++ env) bodies t := by
+  rw [emitCases_eq_map'] at h
+  obtain ⟨⟨c', a', t'⟩, hx, heq⟩ := List.mem_map.mp h
+  obtain ⟨⟨rfl, rfl⟩, rfl⟩ := (Prod.mk.injEq _ _ _ _).mp heq
+  exact ⟨t', hx, rfl⟩
+
+/-- Branch bodies of `emitCases` are exhaustive when each case subtree is. -/
+private theorem emitCases_AllBranchBodiesExhaustive {ctors : CtorEnv}
+    (bodies : Nat → Expr) (env : List Occ) (occ : Occ)
+    (cases : List (CtorName × Nat × DTree))
+    (h : ∀ c a t, (c, a, t) ∈ cases →
+      AllMatchesExhaustive ctors (emit (subOccs occ a ++ env) bodies t)) :
+    AllBranchBodiesExhaustive ctors (emitCases env bodies occ cases) := by
+  induction cases with
+  | nil => exact .nil
+  | cons hd tl ih =>
+    obtain ⟨c, a, t⟩ := hd
+    rw [emitCases]
+    exact .cons (h c a t List.mem_cons_self)
+      (ih fun c' a' t' hm => h c' a' t' (List.mem_cons_of_mem _ hm))
+
+/-- Append a single exhaustive branch onto an exhaustive branch list. -/
+private theorem AllBranchBodiesExhaustive.append_singleton {ctors : CtorEnv}
+    {brs : List (MatchPattern × Expr)} {pat : MatchPattern} {body : Expr}
+    (hbrs : AllBranchBodiesExhaustive ctors brs)
+    (hbody : AllMatchesExhaustive ctors body) :
+    AllBranchBodiesExhaustive ctors (brs ++ [(pat, body)]) := by
+  induction brs with
+  | nil => exact .cons hbody .nil
+  | cons hd tl ih =>
+    cases hbrs with
+    | cons hb0 hrest => exact .cons hb0 (ih hrest)
 
 /-- **(A-core) Emitting a tree-exhaustive decision tree yields an
     `AllMatchesExhaustive` Core term** — given the leaf bodies are exhaustive.
@@ -1674,7 +1742,59 @@ theorem emit_DTreeExhaustive {ctors : CtorEnv} (bodies : Nat → Expr)
     (hbodies : ∀ i, AllMatchesExhaustive ctors (bodies i)) :
     ∀ {octx : OccCtx} {t : DTree}, DTreeExhaustive ctors octx t →
       ∀ (env : List Occ), AllMatchesExhaustive ctors (emit env bodies t) := by
-  sorry -- induction on the DTreeExhaustive derivation (env generalized)
+  intro octx t hexh
+  induction hexh with
+  | leaf =>
+    intro env
+    simp only [emit]
+    exact emitLets_AllMatchesExhaustive env _ (hbodies _)
+  | @switchFail octx occ cases T tyArgs hlook htyped hsub hcover ih =>
+    intro env
+    change AllMatchesExhaustive ctors
+      (.match_ (resolveOcc env occ) (emitCases env bodies occ cases ++ []))
+    rw [List.append_nil]
+    refine AllMatchesExhaustive.match_ (tyName := T) .var
+      (emitCases_AllBranchBodiesExhaustive bodies env occ cases
+        (fun c a t hm => ih c a t hm (subOccs occ a ++ env))) ?_ ?_
+    · intro c n body hmem
+      obtain ⟨t, ht, rfl⟩ := mem_cases_of_mem_emitCases env bodies occ hmem
+      obtain ⟨ctor, hctor, hty, _⟩ := htyped c n t ht
+      exact ⟨ctor, hctor, hty⟩
+    · intro ctorName ctor hctor hty
+      obtain ⟨a, t, ht⟩ := hcover ctorName ctor hctor hty
+      obtain ⟨ctor', hctor', _, ha⟩ := htyped ctorName a t ht
+      have hlen : a = ctor.contents.length := by
+        have : ctor' = ctor := Option.some.inj (hctor'.symm.trans hctor)
+        exact this ▸ ha
+      refine ⟨.named ctorName a, emit (subOccs occ a ++ env) bodies t,
+        mem_emitCases_of_mem_cases env bodies occ ht, ?_⟩
+      simp only [MatchPattern.matchesCtor, Bool.and_eq_true, beq_iff_eq, true_and, hlen]
+  | @switchDefault octx occ cases dflt T tyArgs hdne hlook htyped hsub hexh_dflt ih ihd =>
+    intro env
+    have hemit :
+        emit env bodies (.switch occ cases dflt) =
+          .match_ (resolveOcc env occ)
+            (emitCases env bodies occ cases ++
+              [(.wildcard, emit env bodies dflt)]) := by
+      cases dflt with
+      | fail => exact (hdne rfl).elim
+      | leaf | switch => rfl
+    rw [hemit]
+    refine AllMatchesExhaustive.match_ (tyName := T) .var
+      (AllBranchBodiesExhaustive.append_singleton
+        (emitCases_AllBranchBodiesExhaustive bodies env occ cases
+          (fun c a t hm => ih c a t hm (subOccs occ a ++ env)))
+        (ihd env)) ?_ ?_
+    · intro c n body hmem
+      simp only [List.mem_append, List.mem_singleton] at hmem
+      rcases hmem with hmem | hmem
+      · obtain ⟨t, ht, rfl⟩ := mem_cases_of_mem_emitCases env bodies occ hmem
+        obtain ⟨ctor, hctor, hty, _⟩ := htyped c n t ht
+        exact ⟨ctor, hctor, hty⟩
+      · nomatch hmem
+    · intro ctorName ctor hctor hty
+      exact ⟨.wildcard, emit env bodies dflt,
+        by simp only [List.mem_append, List.mem_singleton, or_true], rfl⟩
 
 /-- Corollary at a compiled match tree: `MatchExhaustive` (tree coverage) plus
     exhaustive branch bodies ⇒ the emitted match is `AllMatchesExhaustive`. -/
@@ -1686,6 +1806,254 @@ theorem emit_compile_AllMatchesExhaustive {ctors : CtorEnv} {T : TyName}
   unfold MatchExhaustive at hexh
   exact emit_DTreeExhaustive bodies hbodies hexh [[]]
 
+/-- `mkList` of exhaustive elements is exhaustive. -/
+private theorem mkList_AllMatchesExhaustive {ctors : CtorEnv} :
+    ∀ (es : List Expr), (∀ e ∈ es, AllMatchesExhaustive ctors e) →
+      AllMatchesExhaustive ctors (mkList es)
+  | [], _ => .ctor
+  | e :: rest, h =>
+    .app (.app .ctor (h e List.mem_cons_self))
+      (mkList_AllMatchesExhaustive rest fun e' he' => h e' (List.mem_cons_of_mem _ he'))
+
+/-- Successful `lowerExprList` yields exhaustive Core terms when each surface item is covered. -/
+private theorem lowerExprList_exhaustive {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName}
+    {vs : List ValName} {es : List Surface.Expr} {es' : List Expr}
+    (hcov : ∀ e ∈ es, SurfaceCovers ctors e)
+    (ih : ∀ e ∈ es, ∀ {vs : List ValName} {c : Expr},
+      lowerExpr ke tvs vs e = some c → AllMatchesExhaustive ctors c)
+    (hlow : lowerExprList ke tvs vs es = some es') :
+    (∀ e ∈ es', AllMatchesExhaustive ctors e) := by
+  induction es generalizing es' with
+  | nil =>
+    simp only [lowerExprList, Option.some.injEq] at hlow; subst hlow
+    intro _ he; exact nomatch he
+  | cons e rest ih_es =>
+    simp only [lowerExprList] at hlow
+    cases he : lowerExpr ke tvs vs e with
+    | none => simp [he] at hlow
+    | some e' =>
+      cases hr : lowerExprList ke tvs vs rest with
+      | none => simp [he, hr] at hlow
+      | some rest' =>
+        simp only [he, hr, Option.some.injEq] at hlow; subst hlow
+        intro x hx
+        simp only [List.mem_cons] at hx
+        rcases hx with rfl | hx
+        · exact ih e List.mem_cons_self he
+        · exact ih_es (fun e' he' => hcov e' (List.mem_cons_of_mem _ he'))
+            (fun e' he' => ih e' (List.mem_cons_of_mem _ he')) hr x hx
+
+/-- Successful `lowerRecBinds` yields exhaustive Core bindings. -/
+private theorem lowerRecBinds_exhaustive {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName}
+    {recScope : List ValName}
+    {binds : List (ValName × Option Surface.PolyTy × Surface.Expr)} {bs' : List Expr}
+    (hcov : ∀ b ∈ binds, SurfaceCovers ctors b.2.2)
+    (ih : ∀ b ∈ binds, ∀ {vs : List ValName} {c : Expr},
+      lowerExpr ke tvs vs b.2.2 = some c → AllMatchesExhaustive ctors c)
+    (hlow : lowerRecBinds ke tvs recScope binds = some bs') :
+    ∀ e ∈ bs', AllMatchesExhaustive ctors e := by
+  induction binds generalizing bs' with
+  | nil =>
+    simp only [lowerRecBinds, Option.some.injEq] at hlow; subst hlow
+    intro _ he; exact nomatch he
+  | cons b rest ih_bs =>
+    simp only [lowerRecBinds] at hlow
+    cases he : lowerExpr ke tvs recScope b.2.2 with
+    | none => simp [he] at hlow
+    | some e' =>
+      cases hr : lowerRecBinds ke tvs recScope rest with
+      | none => simp [he, hr] at hlow
+      | some rest' =>
+        simp only [he, hr, Option.some.injEq] at hlow; subst hlow
+        intro x hx
+        simp only [List.mem_cons] at hx
+        rcases hx with rfl | hx
+        · exact ih b List.mem_cons_self he
+        · exact ih_bs (fun b' hb' => hcov b' (List.mem_cons_of_mem _ hb'))
+            (fun b' hb' => ih b' (List.mem_cons_of_mem _ hb')) hr x hx
+
+/-- `lowerBranches` bodies (and the `.ctor cNil` default) are exhaustive. -/
+private theorem lowerBranches_getD_exhaustive {ctors : CtorEnv} {ke : KindEnv}
+    {tvs : List ValName} {vs : List ValName}
+    {brs : List (Surface.Pattern × Surface.Expr)} {bodies' : List Expr}
+    (hcov : ∀ p b, (p, b) ∈ brs → SurfaceCovers ctors b)
+    (ih : ∀ p b, (p, b) ∈ brs → ∀ {vs : List ValName} {c : Expr},
+      lowerExpr ke tvs vs b = some c → AllMatchesExhaustive ctors c)
+    (hlow : lowerBranches ke tvs vs brs = some bodies') :
+    ∀ i, AllMatchesExhaustive ctors (bodies'.getD i (.ctor cNil)) := by
+  induction brs generalizing bodies' with
+  | nil =>
+    simp only [lowerBranches, Option.some.injEq] at hlow; subst hlow
+    intro i; simp only [List.getD_nil]; exact .ctor
+  | cons pb rest ih_brs =>
+    obtain ⟨p, b⟩ := pb
+    simp only [lowerBranches] at hlow
+    cases hb : lowerExpr ke tvs (patVars p ++ vs) b with
+    | none => simp [hb] at hlow
+    | some b' =>
+      cases hr : lowerBranches ke tvs vs rest with
+      | none => simp [hb, hr] at hlow
+      | some rest' =>
+        simp only [hb, hr, Option.some.injEq] at hlow; subst hlow
+        intro i
+        cases i with
+        | zero =>
+          simp only [List.getD_cons_zero]
+          exact ih p b List.mem_cons_self hb
+        | succ i =>
+          simp only [List.getD_cons_succ]
+          exact ih_brs (fun p' b' hm => hcov p' b' (List.mem_cons_of_mem _ hm))
+            (fun p' b' hm => ih p' b' (List.mem_cons_of_mem _ hm)) hr i
+
+/-- Generalized: `SurfaceCovers` + successful `lowerExpr` ⇒ Core exhaustiveness. -/
+theorem lowerExpr_exhaustive {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName} :
+    ∀ {vs : List ValName} {s : Surface.Expr} {c : Expr},
+      SurfaceCovers ctors s → lowerExpr ke tvs vs s = some c →
+      AllMatchesExhaustive ctors c := by
+  intro vs s c hcov hlow
+  induction hcov generalizing vs c with
+  | @primLit p =>
+    cases p with
+    | bool b =>
+      simp only [lowerExpr, Option.some.injEq] at hlow; subst hlow; exact .ctor
+    | unit =>
+      simp only [lowerExpr, Option.some.injEq] at hlow; subst hlow; exact .primLit
+    | int n =>
+      simp only [lowerExpr, Option.some.injEq] at hlow; subst hlow; exact .primLit
+    | nat n =>
+      simp only [lowerExpr, Option.some.injEq] at hlow; subst hlow; exact .primLit
+    | char ch =>
+      simp only [lowerExpr, Option.some.injEq] at hlow; subst hlow; exact .primLit
+  | @var n =>
+    simp only [lowerExpr] at hlow
+    cases hi : tvarIndex vs n with
+    | none => simp [hi] at hlow
+    | some i =>
+      simp only [hi, Option.some.injEq] at hlow; subst hlow; exact .var
+  | @ctor n =>
+    simp only [lowerExpr, Option.some.injEq] at hlow; subst hlow; exact .ctor
+  | @pair a b ha hb iha ihb =>
+    simp only [lowerExpr] at hlow
+    cases ha' : lowerExpr ke tvs vs a with
+    | none => simp [ha'] at hlow
+    | some a' =>
+      cases hb' : lowerExpr ke tvs vs b with
+      | none => simp [ha', hb'] at hlow
+      | some b' =>
+        simp only [ha', hb', Option.some.injEq] at hlow; subst hlow
+        exact .app (.app .ctor (iha ha')) (ihb hb')
+  | @cons h t hh ht ihh iht =>
+    simp only [lowerExpr] at hlow
+    cases hh' : lowerExpr ke tvs vs h with
+    | none => simp [hh'] at hlow
+    | some h' =>
+      cases ht' : lowerExpr ke tvs vs t with
+      | none => simp [hh', ht'] at hlow
+      | some t' =>
+        simp only [hh', ht', Option.some.injEq] at hlow; subst hlow
+        exact .app (.app .ctor (ihh hh')) (iht ht')
+  | @list items hitems ih =>
+    simp only [lowerExpr] at hlow
+    cases hi : lowerExprList ke tvs vs items with
+    | none => simp [hi] at hlow
+    | some items' =>
+      simp only [hi, Option.some.injEq] at hlow; subst hlow
+      exact mkList_AllMatchesExhaustive items'
+        (lowerExprList_exhaustive hitems ih hi)
+  | @lambda param ann body hb ihb =>
+    simp only [lowerExpr] at hlow
+    cases hann : lowerAnn ke tvs ann with
+    | none => simp [hann] at hlow
+    | some ann' =>
+      cases param with
+      | name x =>
+        cases hb' : lowerExpr ke tvs (x :: vs) body with
+        | none => simp [hann, hb'] at hlow
+        | some b' =>
+          simp only [hann, hb', Option.some.injEq] at hlow; subst hlow
+          exact .lambda (ihb hb')
+      | wildcard =>
+        cases hb' : lowerExpr ke tvs (.mk "_" :: vs) body with
+        | none => simp [hann, hb'] at hlow
+        | some b' =>
+          simp only [hann, hb', Option.some.injEq] at hlow; subst hlow
+          exact .lambda (ihb hb')
+      | ctor | pair | cons | list => simp [hann] at hlow
+  | @app f x hf hx ihf ihx =>
+    simp only [lowerExpr] at hlow
+    cases hf' : lowerExpr ke tvs vs f with
+    | none => simp [hf'] at hlow
+    | some f' =>
+      cases hx' : lowerExpr ke tvs vs x with
+      | none => simp [hf', hx'] at hlow
+      | some x' =>
+        simp only [hf', hx', Option.some.injEq] at hlow; subst hlow
+        exact .app (ihf hf') (ihx hx')
+  | @letIn name ann rhs body hr hb ihr ihb =>
+    simp only [lowerExpr] at hlow
+    cases hann : lowerPolyAnn ke ann with
+    | none => simp [hann] at hlow
+    | some ann' =>
+      cases hr' : lowerExpr ke tvs vs rhs with
+      | none => simp [hann, hr'] at hlow
+      | some rhs' =>
+        cases hb' : lowerExpr ke tvs (name :: vs) body with
+        | none => simp [hann, hr', hb'] at hlow
+        | some body' =>
+          simp only [hann, hr', hb', Option.some.injEq] at hlow; subst hlow
+          exact .letIn (ihr hr') (ihb hb')
+  | @letRecIn binds body hbinds hb ihbinds ihb =>
+    simp only [lowerExpr] at hlow
+    cases hann : lowerAnnList ke (binds.map (·.2.1)) with
+    | none => simp [hann] at hlow
+    | some anns' =>
+      cases hbs : lowerRecBinds ke tvs (binds.map (·.1) ++ vs) binds with
+      | none => simp [hann, hbs] at hlow
+      | some bindings' =>
+        cases hb' : lowerExpr ke tvs (binds.map (·.1) ++ vs) body with
+        | none => simp [hann, hbs, hb'] at hlow
+        | some body' =>
+          simp only [hann, hbs, hb', Option.some.injEq] at hlow; subst hlow
+          exact .letRec (lowerRecBinds_exhaustive hbinds ihbinds hbs) (ihb hb')
+  | @ife cond t f hc ht hf hexh ihc iht ihf =>
+    simp only [lowerExpr] at hlow
+    cases hc' : lowerExpr ke tvs vs cond with
+    | none => simp [hc'] at hlow
+    | some c' =>
+      cases ht' : lowerExpr ke tvs vs t with
+      | none => simp [hc', ht'] at hlow
+      | some t' =>
+        cases hf' : lowerExpr ke tvs vs f with
+        | none => simp [hc', ht', hf'] at hlow
+        | some f' =>
+          simp only [hc', ht', hf', Option.some.injEq] at hlow; subst hlow
+          simp only [lowerMatch]
+          refine .letIn (ihc hc')
+            (emit_compile_AllMatchesExhaustive
+              (fun i => if i = 0 then t' else f')
+              [.ctor cTrue [], .ctor cFalse []]
+              (fun i => by
+                by_cases hi : i = 0
+                · simp only [hi, ↓reduceIte]; exact iht ht'
+                · simp only [hi, ↓reduceIte]; exact ihf hf')
+              hexh)
+  | @match_ scrut brs T tyArgs hs hbrs hexh ihs ihbrs =>
+    simp only [lowerExpr] at hlow
+    cases hs' : lowerExpr ke tvs vs scrut with
+    | none => simp [hs'] at hlow
+    | some scrut' =>
+      cases hb' : lowerBranches ke tvs vs brs with
+      | none => simp [hs', hb'] at hlow
+      | some bodies' =>
+        simp only [hs', hb', Option.some.injEq] at hlow; subst hlow
+        simp only [lowerMatch]
+        exact .letIn (ihs hs')
+          (emit_compile_AllMatchesExhaustive
+            (fun i => bodies'.getD i (.ctor cNil))
+            (brs.map Prod.fst)
+            (lowerBranches_getD_exhaustive hbrs ihbrs hb')
+            hexh)
+
 /-- **(A) Surface coverage + successful lowering ⇒ the Core term is exhaustive.**
     Induction on `SurfaceCovers` threaded through `lowerExpr`; the `match` case
     feeds `emit_compile_AllMatchesExhaustive` (its `MatchExhaustive` comes from the
@@ -1695,18 +2063,183 @@ theorem emit_compile_AllMatchesExhaustive {ctors : CtorEnv} {T : TyName}
 theorem lower_exhaustive {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     (hcov : SurfaceCovers ctors s) (hlow : lower ctors s = some c) :
     AllMatchesExhaustive ctors c := by
-  sorry -- induction on SurfaceCovers + lowerExpr; match case → emit_compile aux
+  simp only [lower] at hlow
+  exact lowerExpr_exhaustive hcov hlow
+
+/-- `openTyVars` preserves exhaustiveness (via `instTy`). -/
+private theorem AllMatchesExhaustive.openTyVars {ctors : CtorEnv} (Xs : List Nat)
+    {e : Expr} (h : AllMatchesExhaustive ctors e) :
+    AllMatchesExhaustive ctors (e.openTyVars Xs) := by
+  rw [← Expr.instTy_fvar_eq_openTyVars]
+  exact AllMatchesExhaustive.instTy _ h
+
+/-- Local copy of private `BranchList.closeTyVarsAux_eq_map`. -/
+private theorem closeTyVarsAux_match_eq (d : Nat) (Xs : List Nat) (scrut : Expr) :
+    ∀ (brs : List (MatchPattern × Expr)),
+      (Expr.match_ scrut brs).closeTyVarsAux d Xs =
+        .match_ (scrut.closeTyVarsAux d Xs)
+          (brs.map fun pb => (pb.1, pb.2.closeTyVarsAux d Xs))
+  | [] => rfl
+  | (p, b) :: rest => by
+    have hrest := closeTyVarsAux_match_eq d Xs scrut rest
+    simp only [Expr.closeTyVarsAux] at hrest ⊢
+    injection hrest with _ hbr
+    exact congrArg (fun t => Expr.match_ _ ((p, b.closeTyVarsAux d Xs) :: t)) hbr
+
+/-- Local copy of private `RecGroup.closeTyVarsAux_eq_zip`. -/
+private theorem closeTyVarsAux_letRec_eq (d : Nat) (Xs : List Nat) (body : Expr) :
+    ∀ (anns : List (Option PolyTy)) (bs : List Expr),
+      (Expr.letRec anns bs body).closeTyVarsAux d Xs =
+        .letRec (RecGroup.closeAnns d Xs anns)
+          ((bs.zip (RecGroup.shieldDepths d anns bs)).map
+            fun p => p.1.closeTyVarsAux p.2 Xs)
+          (body.closeTyVarsAux d Xs) := by
+  intro anns bs
+  induction bs generalizing anns with
+  | nil => cases anns <;> rfl
+  | cons e rest ih =>
+    cases anns with
+    | nil =>
+      have hrest := ih ([] : List (Option PolyTy))
+      simp only [Expr.closeTyVarsAux, RecGroup.shieldDepths, List.zip_cons_cons,
+        List.map_cons, RecGroup.closeAnns_nil] at hrest ⊢
+      injection hrest with _ hbind _
+      exact congrArg (fun t => Expr.letRec _ (e.closeTyVarsAux d Xs :: t) _) hbind
+    | cons a as =>
+      have hrest := ih as
+      simp only [Expr.closeTyVarsAux, RecGroup.shieldDepths, List.zip_cons_cons,
+        List.map_cons, RecGroup.closeAnns_cons] at hrest ⊢
+      injection hrest with _ hbind _
+      exact congrArg
+        (fun t => Expr.letRec _ (e.closeTyVarsAux (d + RecAnn.params a) Xs :: t) _) hbind
+
+/-- Map-form of `AllBranchBodiesExhaustive` under `closeTyVarsAux`. -/
+private theorem AllBranchBodiesExhaustive.closeTyVarsAux_map {ctors : CtorEnv}
+    {d : Nat} {Xs : List Nat} :
+    ∀ (brs : List (MatchPattern × Expr)),
+      (∀ p b, (p, b) ∈ brs → AllMatchesExhaustive ctors b →
+        AllMatchesExhaustive ctors (b.closeTyVarsAux d Xs)) →
+      AllBranchBodiesExhaustive ctors brs →
+      AllBranchBodiesExhaustive ctors
+        (brs.map fun pb => (pb.1, pb.2.closeTyVarsAux d Xs))
+  | [], _, _ => .nil
+  | (p, b) :: rest, ih, h => by
+    cases h with
+    | cons hbody hrest =>
+      exact .cons (ih p b List.mem_cons_self hbody)
+        (AllBranchBodiesExhaustive.closeTyVarsAux_map rest
+          (fun p' b' hm => ih p' b' (List.mem_cons_of_mem _ hm)) hrest)
+
+/-- `closeTyVarsAux` preserves exhaustiveness. -/
+private theorem AllMatchesExhaustive.closeTyVarsAux {ctors : CtorEnv}
+    (Xs : List Nat) :
+    ∀ (e : Expr) (d : Nat), AllMatchesExhaustive ctors e →
+      AllMatchesExhaustive ctors (e.closeTyVarsAux d Xs) := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro _ _; exact .primLit
+  | primBinOp op => intro _ h; exact h
+  | var i tyArgs => intro _ _; exact .var
+  | ctor nm => intro _ _; exact .ctor
+  | lambda ann body ih =>
+    intro d h; cases h with | lambda hb => exact .lambda (ih d hb)
+  | app f arg ihf iharg =>
+    intro d h; cases h with | app hf ha => exact .app (ihf d hf) (iharg d ha)
+  | letIn ann rhs body ihr ihb =>
+    intro d h; cases h with
+    | letIn hr hb =>
+      cases ann with
+      | none => exact .letIn (ihr d hr) (ihb d hb)
+      | some σ => exact .letIn (ihr (d + σ.paramCount) hr) (ihb d hb)
+  | match_ scrut branches ihs ihbs =>
+    intro d h
+    cases h with
+    | match_ hscrut hbranches hpinned hcover =>
+      expose_names
+      rw [closeTyVarsAux_match_eq]
+      refine .match_ (tyName := tyName) (ihs d hscrut)
+        (AllBranchBodiesExhaustive.closeTyVarsAux_map branches
+          (fun p b hm hb => ihbs p b hm d hb) hbranches) ?_ ?_
+      · intro c n body' hmem
+        obtain ⟨⟨p, b⟩, hmem0, heq⟩ := List.mem_map.mp hmem
+        simp only [Prod.mk.injEq] at heq; obtain ⟨rfl, rfl⟩ := heq
+        exact hpinned c n b hmem0
+      · intro ctorName ctor hlook htyn
+        obtain ⟨pat, body, hmem, hcov⟩ := hcover ctorName ctor hlook htyn
+        exact ⟨pat, body.closeTyVarsAux d Xs,
+          List.mem_map.mpr ⟨(pat, body), hmem, rfl⟩, hcov⟩
+  | letRec anns bindings body ihbs ihb =>
+    intro d h
+    cases h with
+    | letRec hbs hb =>
+      rw [closeTyVarsAux_letRec_eq]
+      refine .letRec ?_ (ihb d hb)
+      intro e he
+      obtain ⟨⟨e0, d0⟩, he0, rfl⟩ := List.mem_map.mp he
+      exact ihbs e0 (List.of_mem_zip he0).1 d0 (hbs e0 (List.of_mem_zip he0).1)
+
+private theorem AllMatchesExhaustive.closeTyVars {ctors : CtorEnv} (Xs : List Nat)
+    {e : Expr} (h : AllMatchesExhaustive ctors e) :
+    AllMatchesExhaustive ctors (e.closeTyVars Xs) :=
+  AllMatchesExhaustive.closeTyVarsAux Xs e 0 h
+
+/-- `letRecElabNest` preserves exhaustiveness given exhaustive raw bindings + body. -/
+private theorem letRecElabNest_AllMatchesExhaustive {ctors : CtorEnv}
+    (G : List Nat) (anns : List (Option PolyTy)) (n : Nat)
+    (rawBindings : List Expr)
+    (hraw : ∀ e ∈ rawBindings, AllMatchesExhaustive ctors e)
+    (members : List (Nat × RecSpec)) (body : Expr)
+    (hbody : AllMatchesExhaustive ctors body) :
+    AllMatchesExhaustive ctors
+      (Expr.letRecElabNest G anns n rawBindings members body) := by
+  induction members with
+  | nil => exact hbody
+  | cons hd rest ih =>
+    obtain ⟨i, spec⟩ := hd
+    cases spec with
+    | mono τ =>
+      simp only [Expr.letRecElabNest]
+      refine .letIn ?_ ih
+      · exact AllMatchesExhaustive.closeTyVars _
+          (.letRec (fun e he => by
+              obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
+              exact AllMatchesExhaustive.shiftFrom (hraw e0 he0) _ _)
+            .var)
+    | poly σ =>
+      simp only [Expr.letRecElabNest]
+      refine .letIn
+        (.letRec (fun e he => by
+            obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
+            exact AllMatchesExhaustive.shiftFrom (hraw e0 he0) _ _)
+          .var)
+        ih
+
+private theorem letRecElab_AllMatchesExhaustive {ctors : CtorEnv}
+    (G : List Nat) (anns : List (Option PolyTy)) (rawBindings : List Expr)
+    (specs : List RecSpec) (body : Expr)
+    (hraw : ∀ e ∈ rawBindings, AllMatchesExhaustive ctors e)
+    (hbody : AllMatchesExhaustive ctors body) :
+    AllMatchesExhaustive ctors (Expr.letRecElab G anns rawBindings specs body) := by
+  simp only [Expr.letRecElab]
+  exact letRecElabNest_AllMatchesExhaustive G anns _ rawBindings hraw _ body hbody
 
 /-- Infer only rewrites annotations / var tyArgs / let-generalisation wrappers;
     match patterns are preserved, so exhaustiveness of the source lifts to `eOut`.
     (Note: `eOut.eraseVarTyArgs = e` is FALSE in general — Infer inserts `letIn`
     annotations / `closeTyVars` — so we preserve `AllMatchesExhaustive` directly
-    rather than routing through erasure equality.) -/
+    rather than routing through erasure equality.)
+
+    **Blocked on `Infer.rec`:** `Infer`/`InferBranches`/`InferRecGroup` are mutual, so
+    `induction`/`cases`+recursive calls fix the output frontier and reject subcalls.
+    Helpers ready above: `AllMatchesExhaustive.openTyVars`/`closeTyVars(Aux)`,
+    `closeTyVarsAux_match_eq`/`closeTyVarsAux_letRec_eq`,
+    `letRecElab(Nest)_AllMatchesExhaustive`. Remaining: wire all 22 `Infer.rec`
+    minors (motive_1/2/3 as exhaustiveness implications + pattern-list equality). -/
 theorem infer_preserves_AllMatchesExhaustive {Φ ctx e Φ' S eOut τ}
     (h : Infer Φ ctx e Φ' S eOut τ)
     (hexh : AllMatchesExhaustive ctx.ctors e) :
     AllMatchesExhaustive ctx.ctors eOut := by
-  sorry -- induction on Infer; needs closeTyVars / letRecElab preservation
+  sorry -- Infer.rec over mutual Infer family (22 minors); helpers above are ready
 
 /-- **(O5) Exhaustiveness of the emitted-and-elaborated matches.** If every surface
     `match` in `s` covers its scrutinee's ADT type (`SurfaceCovers`), then the
