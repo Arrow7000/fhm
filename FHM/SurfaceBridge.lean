@@ -405,36 +405,24 @@ def PatternWF (ctors : CtorEnv) (p : Surface.Pattern) (τ : Ty) : Prop :=
 theorem PatternWF_to_GPatWF {ctors : CtorEnv} {p : Surface.Pattern} {τ : Ty}
     (h : PatternWF ctors p τ) : GPatWF ctors (norm p) τ := h
 
-/-- Is `p` irrefutable (matches any value without a top-level ctor test)? -/
-def PatternIrrefutable (p : Surface.Pattern) : Bool :=
-  match p with | .name _ | .wildcard => true | _ => false
+/-- **Semantic exhaustiveness of one match's branch patterns** at scrutinee type
+    `customTy T tyArgs`: the surface oracle `firstMatch` selects SOME branch for
+    every well-typed value of that type. This is the honest coverage condition —
+    a flat "top-level ctors covered" check is UNSOUND (it misses nested gaps: e.g.
+    `Cons (Just x) t | Nil` leaves `Cons Nothing Nil` unmatched, verified by
+    `firstMatch (Cons Nothing Nil) … = none`). Via `PatComp.compile_surface_total_iff`
+    this lifts to "the compiled tree has no reachable `fail`", hence (with the
+    emit fix) the emitted match covers every ctor ⇒ `AllMatchesExhaustive` (O5).
+    NOTE: not executable; an executable checker implying this is the deferred
+    item-6 refinement (`checkExhaustive`). -/
+def MatchExhaustive (ctors : CtorEnv) (T : TyName) (tyArgs : List Ty)
+    (ps : List Surface.Pattern) : Prop :=
+  ∀ v, IsValue v → TypeOfElabHM ⟨[], ctors⟩ v (.customTy T tyArgs) →
+    (firstMatch v ps).isSome
 
-/-- Does `p` test constructor `c` at the top level with arity `n`? (Sugar maps
-    to prelude ctors the same way `norm` does.) -/
-def patternTestsCtor (p : Surface.Pattern) (c : CtorName) (n : Nat) : Bool :=
-  match p with
-  | .ctor c' ps => c' == c && ps.length == n
-  | .pair _ _   => c == cPair && n == 2
-  | .cons _ _   => c == cCons && n == 2
-  | .list []    => c == cNil && n == 0
-  | .list (_ :: _) => c == cCons && n == 2
-  | .name _ | .wildcard => false
-
-/-- Branch patterns `ps` cover ADT type `T`: `T` is declared in `ctors`, and
-    either some branch is an irrefutable catch-all, or every ctor of `T` has a
-    branch whose pattern tests it at the top level. (Flat, syntactic — the O5
-    proof lifts this to runtime totality given scrutinee typing.) -/
-def MatchPatternsCover (ctors : CtorEnv) (T : TyName) (ps : List Surface.Pattern) : Prop :=
-  (∃ (c : CtorName) (ctor : Ctor),
-    LookupList.get? ctors c = some ctor ∧ ctor.tyName = T) ∧
-  ((∃ p ∈ ps, PatternIrrefutable p = true) ∨
-    ∀ (c : CtorName) (ctor : Ctor),
-      LookupList.get? ctors c = some ctor → ctor.tyName = T →
-        ∃ p ∈ ps, patternTestsCtor p c ctor.contents.length = true)
-
-/-- Every `match` in `s` has covering patterns (and subexpressions recurse).
-    At `match_`, the witness carries the ADT type name `T` the patterns cover —
-    O5 instantiates this from the lowered scrutinee's type. -/
+/-- Every `match` in `s` is exhaustive (and subexpressions recurse). At `match_`
+    the witness carries the scrutinee's ADT type `(T, tyArgs)` — O5 instantiates it
+    from the lowered scrutinee's typing. -/
 inductive SurfaceCovers (ctors : CtorEnv) : Surface.Expr → Prop where
   | primLit {p} : SurfaceCovers ctors (.primLit p)
   | var {n} : SurfaceCovers ctors (.var n)
@@ -463,10 +451,10 @@ inductive SurfaceCovers (ctors : CtorEnv) : Surface.Expr → Prop where
   | ife {c t f} :
       SurfaceCovers ctors c → SurfaceCovers ctors t → SurfaceCovers ctors f →
       SurfaceCovers ctors (.ife c t f)
-  | match_ {scrut brs T} :
+  | match_ {scrut brs T tyArgs} :
       SurfaceCovers ctors scrut →
       (∀ p b, (p, b) ∈ brs → SurfaceCovers ctors b) →
-      MatchPatternsCover ctors T (brs.map Prod.fst) →
+      MatchExhaustive ctors T tyArgs (brs.map Prod.fst) →
       SurfaceCovers ctors (.match_ scrut brs)
 
 
@@ -655,6 +643,10 @@ private def maybeCtors : CtorEnv :=
 -- a catch-all match still typechecks.
 #guard (elaborate maybeCtors (.match_ (.app (.ctor (⟨"Just"⟩)) (.primLit (.int 5)))
     [(.ctor ⟨"Just"⟩ [.name ⟨"x"⟩], .var ⟨"x"⟩), (.wildcard, .primLit (.int 0))])).isSome
+-- a NON-exhaustive match (missing Nothing, no catch-all) ALSO typechecks — so
+-- `typecheck` does NOT enforce exhaustiveness; `SurfaceCovers` genuinely is.
+#guard (elaborate maybeCtors (.match_ (.app (.ctor (⟨"Just"⟩)) (.primLit (.int 5)))
+    [(.ctor ⟨"Just"⟩ [.name ⟨"x"⟩], .var ⟨"x"⟩)])).isSome
 
 
 /-! ## 9. The obligations the seam creates (proof bodies — delegable)
