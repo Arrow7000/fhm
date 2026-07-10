@@ -131,6 +131,31 @@ theorem tvarIndex_lt {tvs : List ValName} {n : ValName} {i : Nat}
       have := ih hj
       simp only [List.length_cons]; omega
 
+mutual
+/-- Kind-check soundness for a list of surface types (mutual with `lowerTy_wellKinded`). -/
+theorem lowerTyList_wellKinded {ke : KindEnv} {tvs : List ValName}
+    {ss : List Surface.Ty} {cs : List Ty}
+    (h : lowerTyList ke tvs ss = some cs) :
+    ∀ c ∈ cs, Ty.WellKinded ke tvs.length c := by
+  cases ss with
+  | nil =>
+    simp only [lowerTyList, Option.some.injEq] at h; subst h
+    intro c hc; cases hc
+  | cons s ss =>
+    simp only [lowerTyList] at h
+    cases ht : lowerTy ke tvs s with
+    | none => simp [ht] at h
+    | some t' =>
+      cases hts : lowerTyList ke tvs ss with
+      | none => simp [ht, hts] at h
+      | some ts' =>
+        simp only [ht, hts, Option.some.injEq] at h; subst h
+        intro c hc
+        simp only [List.mem_cons] at hc
+        rcases hc with rfl | hc
+        · exact lowerTy_wellKinded ht
+        · exact lowerTyList_wellKinded hts c hc
+
 /-- **Kind-check soundness of `Surface.Ty` lowering** (plan item 2's payoff): a
     successful `lowerTy` produces a well-kinded Core type at arity `tvs.length`.
     So the front-end annotation kind-check is correct — the produced type never
@@ -139,7 +164,63 @@ theorem tvarIndex_lt {tvs : List ValName} {n : ValName} {i : Nat}
     `tvarIndex_lt`. DELEGABLE proof of a concrete, `#guard`-tested function.) -/
 theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} {c : Ty}
     (h : lowerTy ke tvs s = some c) : Ty.WellKinded ke tvs.length c := by
-  sorry
+  cases s with
+  | prim p =>
+    cases p with
+    | unit | int | nat | char =>
+      simp only [lowerTy, Option.some.injEq] at h; subst h; exact .prim
+    | bool =>
+      simp only [lowerTy] at h
+      split at h
+      · rename_i hg; simp only [Option.some.injEq] at h; subst h
+        exact .customTy hg (by intro _ hmem; simp at hmem)
+      · cases h
+  | arrow a b =>
+    simp only [lowerTy] at h
+    cases ha : lowerTy ke tvs a with
+    | none => simp [ha] at h
+    | some a' =>
+      cases hb : lowerTy ke tvs b with
+      | none => simp [ha, hb] at h
+      | some b' =>
+        simp only [ha, hb, Option.some.injEq] at h; subst h
+        exact .arrow (lowerTy_wellKinded ha) (lowerTy_wellKinded hb)
+  | pair a b =>
+    simp only [lowerTy] at h
+    cases ha : lowerTy ke tvs a with
+    | none => simp [ha] at h
+    | some a' =>
+      cases hb : lowerTy ke tvs b with
+      | none => simp [ha, hb] at h
+      | some b' =>
+        simp only [ha, hb] at h
+        split at h
+        · rename_i hg; simp only [Option.some.injEq] at h; subst h
+          exact .customTy hg (by
+            intro arg hmem
+            simp only [List.mem_cons, List.not_mem_nil, or_false] at hmem
+            rcases hmem with rfl | rfl
+            · exact lowerTy_wellKinded ha
+            · exact lowerTy_wellKinded hb)
+        · cases h
+  | tvar name =>
+    simp only [lowerTy] at h
+    cases hi : tvarIndex tvs name with
+    | none => simp [hi] at h
+    | some i =>
+      simp only [hi, Option.some.injEq] at h; subst h
+      exact .bvar (tvarIndex_lt hi)
+  | customTy T args =>
+    simp only [lowerTy] at h
+    cases hargs : lowerTyList ke tvs args with
+    | none => simp [hargs] at h
+    | some args' =>
+      simp only [hargs] at h
+      split at h
+      · rename_i hg; simp only [Option.some.injEq] at h; subst h
+        exact .customTy hg (lowerTyList_wellKinded hargs)
+      · cases h
+end
 
 -- Adversarial `#guard`s (per the house lesson: eval the executable side on
 -- mismatched / out-of-range / missing-prelude inputs before trusting it).
@@ -588,16 +669,385 @@ end
 def Lowers (ctors : CtorEnv) (s : Surface.Expr) (c : Expr) : Prop :=
   LowersExpr ctors (kindEnvOfCtors ctors) [] [] s c
 
+mutual
+theorem lowerExpr_isSome_of_LowersExpr {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName} :
+    ∀ {vs : List ValName} {s : Surface.Expr} {c : Expr},
+      LowersExpr ctors ke tvs vs s c → (lowerExpr ke tvs vs s).isSome := by
+  intro vs s c h
+  cases h with
+  | primLitUnit | primLitInt | primLitNat | primLitChar | primLitBool | ctor =>
+    simp [lowerExpr]
+  | pair ha hb =>
+    simp only [lowerExpr]
+    obtain ⟨_, ha'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr ha)
+    obtain ⟨_, hb'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hb)
+    simp [ha', hb']
+  | cons ha hb =>
+    simp only [lowerExpr]
+    obtain ⟨_, ha'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr ha)
+    obtain ⟨_, hb'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hb)
+    simp [ha', hb']
+  | list hitems =>
+    simp only [lowerExpr]
+    obtain ⟨_, hi⟩ := Option.isSome_iff_exists.mp (lowerExprList_isSome_of_LowersExprList hitems)
+    simp [hi]
+  | lambda_name hann hb =>
+    simp only [lowerExpr]
+    obtain ⟨_, hb'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hb)
+    split at hann
+    · subst hann; simp [lowerAnn, hb']
+    · expose_names
+      simp only [lowerAnn]
+      have hmap : Option.map some (lowerTy ke tvs τ) = some ann' := by
+        rwa [Option.map_eq_bind]
+      simp [hmap, hb']
+  | lambda_wild hann hb =>
+    simp only [lowerExpr]
+    obtain ⟨_, hb'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hb)
+    split at hann
+    · subst hann; simp [lowerAnn, hb']
+    · expose_names
+      simp only [lowerAnn]
+      have hmap : Option.map some (lowerTy ke tvs τ) = some ann' := by
+        rwa [Option.map_eq_bind]
+      simp [hmap, hb']
+  | app hf hx =>
+    simp only [lowerExpr]
+    obtain ⟨_, hf'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hf)
+    obtain ⟨_, hx'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hx)
+    simp [hf', hx']
+  | letIn hann hr hb =>
+    simp only [lowerExpr]
+    obtain ⟨_, hr'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hr)
+    obtain ⟨_, hb'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hb)
+    split at hann
+    · subst hann; simp [lowerPolyAnn, hr', hb']
+    · expose_names
+      simp only [lowerPolyAnn]
+      have hmap : Option.map some (lowerPoly ke σ) = some ann' := by
+        rwa [Option.map_eq_bind]
+      simp [hmap, hr', hb']
+  | letRecIn hann hbinds hb =>
+    simp only [lowerExpr]
+    obtain ⟨_, hbinds'⟩ := Option.isSome_iff_exists.mp (lowerRecBinds_isSome_of_LowersRecBinds hbinds)
+    obtain ⟨_, hb'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hb)
+    simp [hann, hbinds', hb']
+  | var hi =>
+    simp [lowerExpr, hi]
+  | ife hc ht hf =>
+    simp only [lowerExpr]
+    obtain ⟨_, hc'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hc)
+    obtain ⟨_, ht'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr ht)
+    obtain ⟨_, hf'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hf)
+    simp [hc', ht', hf']
+  | match_ hs hbrs _hbeh =>
+    simp only [lowerExpr]
+    obtain ⟨_, hs'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hs)
+    obtain ⟨_, hbrs'⟩ := Option.isSome_iff_exists.mp (lowerBranches_isSome_of_LowersBranches hbrs)
+    simp [hs', hbrs']
+
+theorem lowerExprList_isSome_of_LowersExprList {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName} :
+    ∀ {vs : List ValName} {es : List Surface.Expr} {es' : List Expr},
+      LowersExprList ctors ke tvs vs es es' → (lowerExprList ke tvs vs es).isSome := by
+  intro vs es es' h
+  cases h with
+  | nil => simp [lowerExprList]
+  | cons he hrest =>
+    simp only [lowerExprList]
+    obtain ⟨_, he'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr he)
+    obtain ⟨_, hrest'⟩ := Option.isSome_iff_exists.mp (lowerExprList_isSome_of_LowersExprList hrest)
+    simp [he', hrest']
+
+theorem lowerRecBinds_isSome_of_LowersRecBinds {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName} :
+    ∀ {vs : List ValName} {binds : List (ValName × Option Surface.PolyTy × Surface.Expr)}
+      {bindings' : List Expr},
+      LowersRecBinds ctors ke tvs vs binds bindings' →
+      (lowerRecBinds ke tvs vs binds).isSome := by
+  intro vs binds bindings' h
+  cases h with
+  | nil => simp [lowerRecBinds]
+  | cons he hrest =>
+    simp only [lowerRecBinds]
+    obtain ⟨_, he'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr he)
+    obtain ⟨_, hrest'⟩ := Option.isSome_iff_exists.mp (lowerRecBinds_isSome_of_LowersRecBinds hrest)
+    simp [he', hrest']
+
+theorem lowerBranches_isSome_of_LowersBranches {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName} :
+    ∀ {vs : List ValName} {brs : List (Surface.Pattern × Surface.Expr)} {bodies' : List Expr},
+      LowersBranches ctors ke tvs vs brs bodies' →
+      (lowerBranches ke tvs vs brs).isSome := by
+  intro vs brs bodies' h
+  cases h with
+  | nil => simp [lowerBranches]
+  | cons hb hrest =>
+    simp only [lowerBranches]
+    obtain ⟨_, hb'⟩ := Option.isSome_iff_exists.mp (lowerExpr_isSome_of_LowersExpr hb)
+    obtain ⟨_, hrest'⟩ := Option.isSome_iff_exists.mp (lowerBranches_isSome_of_LowersBranches hrest)
+    simp [hb', hrest']
+end
+
+theorem lower_complete {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
+    (h : Lowers ctors s c) : (lower ctors s).isSome := by
+  simp only [Lowers] at h
+  exact lowerExpr_isSome_of_LowersExpr h
+
+/-- Generalized: every row of `initMatrix ps k` has `pats = [norm p]` for the corresponding pattern. -/
+theorem initMatrix_GPatWFList_shift {ctors : CtorEnv} {τ : Ty}
+    (ps : List Surface.Pattern) (k : Nat)
+    (hpwf : ∀ p ∈ ps, PatternWF ctors p τ) :
+    ∀ r ∈ initMatrix ps k, GPatWFList ctors r.pats [τ] := by
+  induction ps generalizing k with
+  | nil => intro r hr; cases hr
+  | cons p rest ih =>
+    intro r hr
+    simp only [initMatrix, List.mem_cons] at hr
+    rcases hr with rfl | hr
+    · exact .cons (PatternWF_to_GPatWF (hpwf p List.mem_cons_self)) .nil
+    · exact ih (k + 1) (fun p' hp' => hpwf p' (List.mem_cons_of_mem _ hp')) r hr
+
+/-- Rows of `initMatrix ps` are single-column `[norm p]` for each pattern `p`. -/
+theorem initMatrix_GPatWFList {ctors : CtorEnv} {ps : List Surface.Pattern} {τ : Ty}
+    (hpwf : ∀ p ∈ ps, PatternWF ctors p τ) :
+    ∀ r ∈ initMatrix ps, GPatWFList ctors r.pats [τ] :=
+  initMatrix_GPatWFList_shift ps 0 hpwf
+
+mutual
+theorem lowerExpr_LowersExpr {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName} :
+    ∀ {vs : List ValName} {s : Surface.Expr} {c : Expr},
+      lowerExpr ke tvs vs s = some c → LowersExpr ctors ke tvs vs s c := by
+  intro vs s c h
+  match s with
+  | .primLit .unit =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; exact .primLitUnit
+  | .primLit (.int n) =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; exact .primLitInt
+  | .primLit (.nat n) =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; exact .primLitNat
+  | .primLit (.char ch) =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; exact .primLitChar
+  | .primLit (.bool b) =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; exact .primLitBool
+  | .pair a b =>
+    simp only [lowerExpr] at h
+    cases ha : lowerExpr ke tvs vs a with
+    | none => simp [ha] at h
+    | some a' =>
+      cases hb : lowerExpr ke tvs vs b with
+      | none => simp [ha, hb] at h
+      | some b' =>
+        simp only [ha, hb, Option.some.injEq] at h; subst h
+        exact .pair (lowerExpr_LowersExpr ha) (lowerExpr_LowersExpr hb)
+  | .cons hd tl =>
+    simp only [lowerExpr] at h
+    cases ha : lowerExpr ke tvs vs hd with
+    | none => simp [ha] at h
+    | some h' =>
+      cases hb : lowerExpr ke tvs vs tl with
+      | none => simp [ha, hb] at h
+      | some t' =>
+        simp only [ha, hb, Option.some.injEq] at h; subst h
+        exact .cons (lowerExpr_LowersExpr ha) (lowerExpr_LowersExpr hb)
+  | .list items =>
+    simp only [lowerExpr] at h
+    cases hi : lowerExprList ke tvs vs items with
+    | none => simp [hi] at h
+    | some items' =>
+      simp only [hi, Option.some.injEq] at h; subst h
+      exact .list (lowerExprList_LowersExprList hi)
+  | .lambda param paramAnn body =>
+    simp only [lowerExpr] at h
+    cases hann : lowerAnn ke tvs paramAnn with
+    | none => simp [hann] at h
+    | some ann' =>
+      cases param with
+      | name x =>
+        cases hb : lowerExpr ke tvs (x :: vs) body with
+        | none => simp [hann, hb] at h
+        | some b' =>
+          simp only [hann, hb, Option.some.injEq] at h; subst h
+          refine .lambda_name ?_ (lowerExpr_LowersExpr hb)
+          cases paramAnn with
+          | none =>
+            simp only [lowerAnn, Option.some.injEq] at hann
+            subst hann; rfl
+          | some τ =>
+            simp only [lowerAnn] at hann
+            obtain ⟨τ', hτ, rfl⟩ := Option.map_eq_some_iff.mp hann
+            simpa [hτ, Option.map_eq_bind]
+      | wildcard =>
+        cases hb : lowerExpr ke tvs (.mk "_" :: vs) body with
+        | none => simp [hann, hb] at h
+        | some b' =>
+          simp only [hann, hb, Option.some.injEq] at h; subst h
+          refine .lambda_wild ?_ (lowerExpr_LowersExpr hb)
+          cases paramAnn with
+          | none =>
+            simp only [lowerAnn, Option.some.injEq] at hann
+            subst hann; rfl
+          | some τ =>
+            simp only [lowerAnn] at hann
+            obtain ⟨τ', hτ, rfl⟩ := Option.map_eq_some_iff.mp hann
+            simpa [hτ, Option.map_eq_bind]
+      | ctor | pair | cons | list => simp [hann] at h
+  | .app f x =>
+    simp only [lowerExpr] at h
+    cases hf : lowerExpr ke tvs vs f with
+    | none => simp [hf] at h
+    | some f' =>
+      cases hx : lowerExpr ke tvs vs x with
+      | none => simp [hf, hx] at h
+      | some x' =>
+        simp only [hf, hx, Option.some.injEq] at h; subst h
+        exact .app (lowerExpr_LowersExpr hf) (lowerExpr_LowersExpr hx)
+  | .letIn name ann rhs body =>
+    simp only [lowerExpr] at h
+    cases hann : lowerPolyAnn ke ann with
+    | none => simp [hann] at h
+    | some ann' =>
+      cases hr : lowerExpr ke tvs vs rhs with
+      | none => simp [hann, hr] at h
+      | some rhs' =>
+        cases hb : lowerExpr ke tvs (name :: vs) body with
+        | none => simp [hann, hr, hb] at h
+        | some body' =>
+          simp only [hann, hr, hb, Option.some.injEq] at h; subst h
+          refine .letIn ?_ (lowerExpr_LowersExpr hr) (lowerExpr_LowersExpr hb)
+          cases ann with
+          | none =>
+            simp only [lowerPolyAnn, Option.some.injEq] at hann
+            subst hann; rfl
+          | some σ =>
+            simp only [lowerPolyAnn] at hann
+            obtain ⟨σ', hσ, rfl⟩ := Option.map_eq_some_iff.mp hann
+            simpa [hσ, Option.map_eq_bind]
+  | .letRecIn binds body =>
+    simp only [lowerExpr] at h
+    cases hann : lowerAnnList ke (binds.map (·.2.1)) with
+    | none => simp [hann] at h
+    | some anns' =>
+      cases hbinds : lowerRecBinds ke tvs (binds.map (·.1) ++ vs) binds with
+      | none => simp [hann, hbinds] at h
+      | some bindings' =>
+        cases hb : lowerExpr ke tvs (binds.map (·.1) ++ vs) body with
+        | none => simp [hann, hbinds, hb] at h
+        | some body' =>
+          simp only [hann, hbinds, hb, Option.some.injEq] at h; subst h
+          exact .letRecIn hann (lowerRecBinds_LowersRecBinds hbinds)
+            (lowerExpr_LowersExpr hb)
+  | .var name =>
+    simp only [lowerExpr] at h
+    cases hi : tvarIndex vs name with
+    | none => simp [hi] at h
+    | some i =>
+      simp only [hi, Option.some.injEq] at h; subst h
+      exact .var hi
+  | .ctor name =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; exact .ctor
+  | .ife c t f =>
+    simp only [lowerExpr] at h
+    cases hc : lowerExpr ke tvs vs c with
+    | none => simp [hc] at h
+    | some c' =>
+      cases ht : lowerExpr ke tvs vs t with
+      | none => simp [hc, ht] at h
+      | some t' =>
+        cases hf : lowerExpr ke tvs vs f with
+        | none => simp [hc, ht, hf] at h
+        | some f' =>
+          simp only [hc, ht, hf, Option.some.injEq] at h; subst h
+          exact .ife (lowerExpr_LowersExpr hc) (lowerExpr_LowersExpr ht)
+            (lowerExpr_LowersExpr hf)
+  | .match_ scrut brs =>
+    simp only [lowerExpr] at h
+    cases hs : lowerExpr ke tvs vs scrut with
+    | none => simp [hs] at h
+    | some scrut' =>
+      cases hb : lowerBranches ke tvs vs brs with
+      | none => simp [hs, hb] at h
+      | some bodies' =>
+        simp only [hs, hb, Option.some.injEq] at h; subst h
+        -- c = lowerMatch scrut' (brs.map Prod.fst) (fun i => bodies'.getD i (.ctor cNil))
+        -- = lowerMatch scrut' pats (bodyFn bodies')
+        have hbodyFn : (fun i => bodies'.getD i (.ctor cNil)) = bodyFn bodies' := by
+          funext i; rfl
+        rw [hbodyFn]
+        -- lowerMatch = .letIn none scrut' emitInner
+        refine .match_ (lowerExpr_LowersExpr hs) (lowerBranches_LowersBranches hb) ?_
+        intro T tyArgs root hval hty hpwf i ws hfm
+        -- Need ReflTransGen Step (.letIn none root emitInner) ((bodyFn bodies' i).substN 0 ws)
+        -- where emitInner is from lowerMatch scrut' ... = .letIn none scrut' emitInner
+        -- Apply lowerMatch_adequate_of_typed with root, bodies := bodyFn bodies'
+        have hwf := initMatrix_GPatWFList hpwf
+        have := lowerMatch_adequate_of_typed hty hval (brs.map Prod.fst) (bodyFn bodies') hwf hfm
+        -- this : ReflTransGen Step (lowerMatch root pats (bodyFn bodies')) (...)
+        -- and lowerMatch root = .letIn none root (emit ...)
+        simpa [lowerMatch] using this
+
+theorem lowerExprList_LowersExprList {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName} :
+    ∀ {vs : List ValName} {es : List Surface.Expr} {es' : List Expr},
+      lowerExprList ke tvs vs es = some es' →
+      LowersExprList ctors ke tvs vs es es' := by
+  intro vs es es' h
+  match es with
+  | [] =>
+    simp only [lowerExprList, Option.some.injEq] at h; subst h; exact .nil
+  | e :: rest =>
+    simp only [lowerExprList] at h
+    cases he : lowerExpr ke tvs vs e with
+    | none => simp [he] at h
+    | some e' =>
+      cases hrest : lowerExprList ke tvs vs rest with
+      | none => simp [he, hrest] at h
+      | some rest' =>
+        simp only [he, hrest, Option.some.injEq] at h; subst h
+        exact .cons (lowerExpr_LowersExpr he) (lowerExprList_LowersExprList hrest)
+
+theorem lowerRecBinds_LowersRecBinds {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName} :
+    ∀ {vs : List ValName} {binds : List (ValName × Option Surface.PolyTy × Surface.Expr)}
+      {bindings' : List Expr},
+      lowerRecBinds ke tvs vs binds = some bindings' →
+      LowersRecBinds ctors ke tvs vs binds bindings' := by
+  intro vs binds bindings' h
+  match binds with
+  | [] =>
+    simp only [lowerRecBinds, Option.some.injEq] at h; subst h; exact .nil
+  | b :: rest =>
+    simp only [lowerRecBinds] at h
+    cases he : lowerExpr ke tvs vs b.2.2 with
+    | none => simp [he] at h
+    | some e' =>
+      cases hrest : lowerRecBinds ke tvs vs rest with
+      | none => simp [he, hrest] at h
+      | some rest' =>
+        simp only [he, hrest, Option.some.injEq] at h; subst h
+        exact .cons (lowerExpr_LowersExpr he) (lowerRecBinds_LowersRecBinds hrest)
+
+theorem lowerBranches_LowersBranches {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValName} :
+    ∀ {vs : List ValName} {brs : List (Surface.Pattern × Surface.Expr)} {bodies' : List Expr},
+      lowerBranches ke tvs vs brs = some bodies' →
+      LowersBranches ctors ke tvs vs brs bodies' := by
+  intro vs brs bodies' h
+  match brs with
+  | [] =>
+    simp only [lowerBranches, Option.some.injEq] at h; subst h; exact .nil
+  | (p, b) :: rest =>
+    simp only [lowerBranches] at h
+    cases hb : lowerExpr ke tvs (patVars p ++ vs) b with
+    | none => simp [hb] at h
+    | some b' =>
+      cases hrest : lowerBranches ke tvs vs rest with
+      | none => simp [hb, hrest] at h
+      | some rest' =>
+        simp only [hb, hrest, Option.some.injEq] at h; subst h
+        exact .cons (lowerExpr_LowersExpr hb) (lowerBranches_LowersBranches hrest)
+end
+
 /-- **`lower` soundness:** the executable lowering satisfies the spec. Match case
     cites `lowerMatch_adequate_of_typed` via `PatternWF_to_GPatWF`. -/
 theorem lower_sound {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     (h : lower ctors s = some c) : Lowers ctors s c := by
-  sorry
-
-/-- **`lower` completeness:** if some valid lowering exists, `lower` finds one. -/
-theorem lower_complete {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
-    (h : Lowers ctors s c) : (lower ctors s).isSome := by
-  sorry
+  simp only [lower] at h
+  exact lowerExpr_LowersExpr h
 
 
 /-! ## 7. Surface well-typedness — DEFINED via the relation (no `Surface.TypeOf`)
@@ -655,13 +1105,478 @@ These are the ONLY genuinely-new proof obligations behind the headline; the rest
 of the payoff is `infer_sound`/`Infer.sound` + `type_safety_star`, discharged
 inline in `surface_type_safe`. -/
 
+/-- `lowerTy` never emits free type variables (only `.bvar`/`.prim`/`.customTy`/`.arrow`). -/
+theorem lowerTy_freeVars {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} {c : Ty}
+    (h : lowerTy ke tvs s = some c) : c.freeVars = [] :=
+  List.eq_nil_iff_forall_not_mem.mpr fun z =>
+    NoFreeVars.not_mem_freeVars (Ty.WellKinded.toNoFreeVars (lowerTy_wellKinded h)) z
+
+theorem lowerPoly_freeVars {ke : KindEnv} {σ : Surface.PolyTy} {σ' : PolyTy}
+    (h : lowerPoly ke σ = some σ') : σ'.body.freeVars = [] := by
+  simp only [lowerPoly] at h
+  obtain ⟨b, hb, rfl⟩ := Option.map_eq_some_iff.mp h
+  exact lowerTy_freeVars hb
+
+theorem lowerAnn_freeVars {ke : KindEnv} {tvs : List ValName} {ann : Option Surface.Ty}
+    {ann' : Option Ty} (h : lowerAnn ke tvs ann = some ann') :
+    ann'.elim [] Ty.freeVars = [] := by
+  cases ann with
+  | none =>
+    simp only [lowerAnn, Option.some.injEq] at h; subst h; rfl
+  | some τ =>
+    simp only [lowerAnn] at h
+    obtain ⟨c, hc, rfl⟩ := Option.map_eq_some_iff.mp h
+    simp [lowerTy_freeVars hc]
+
+theorem lowerPolyAnn_freeVars {ke : KindEnv} {ann : Option Surface.PolyTy}
+    {ann' : Option PolyTy} (h : lowerPolyAnn ke ann = some ann') :
+    ann'.elim [] (fun σ => σ.body.freeVars) = [] := by
+  cases ann with
+  | none =>
+    simp only [lowerPolyAnn, Option.some.injEq] at h; subst h; rfl
+  | some σ =>
+    simp only [lowerPolyAnn] at h
+    obtain ⟨σ', hσ, rfl⟩ := Option.map_eq_some_iff.mp h
+    simp [lowerPoly_freeVars hσ]
+
+theorem lowerAnnList_freeVars {ke : KindEnv} :
+    ∀ {as : List (Option Surface.PolyTy)} {as' : List (Option PolyTy)},
+      lowerAnnList ke as = some as' →
+      Expr.tyFreeVars.AnnList.tyFreeVars as' = []
+  | [], as', h => by
+    simp only [lowerAnnList, Option.some.injEq] at h; subst h; rfl
+  | a :: as, as', h => by
+    simp only [lowerAnnList] at h
+    cases ha : lowerPolyAnn ke a with
+    | none => simp [ha] at h
+    | some a' =>
+      cases has : lowerAnnList ke as with
+      | none => simp [ha, has] at h
+      | some as'' =>
+        simp only [ha, has, Option.some.injEq] at h; subst h
+        simp only [Expr.tyFreeVars.AnnList.tyFreeVars, lowerPolyAnn_freeVars ha,
+          lowerAnnList_freeVars has, List.nil_append]
+
+/-- Public face of private `BranchList.shiftFrom` via `matchBranchesOf`. -/
+private theorem shiftFrom_match_cons (scrut : Expr) (pat : MatchPattern)
+    (body : Expr) (rest : List (MatchPattern × Expr)) (t n : Nat) :
+    ((Expr.match_ scrut ((pat, body) :: rest)).shiftFrom t n).matchBranchesOf
+      = (pat, body.shiftFrom (t + pat.bindCount) n)
+        :: ((Expr.match_ scrut rest).shiftFrom t n).matchBranchesOf := rfl
+
+private theorem shiftFrom_matchBranches (n : Nat) (scrut : Expr)
+    (brs : List (MatchPattern × Expr)) (t : Nat) :
+    ((Expr.match_ scrut brs).shiftFrom t n).matchBranchesOf
+      = brs.map (fun pb => (pb.1, pb.2.shiftFrom (t + pb.1.bindCount) n)) := by
+  induction brs generalizing t with
+  | nil => rfl
+  | cons hd tl ih =>
+    obtain ⟨pat, body⟩ := hd
+    rw [shiftFrom_match_cons, ih]
+    simp only [List.map_cons]
+
+private theorem shiftFrom_letRec_bridge (anns : List (Option PolyTy)) (e : Expr)
+    (rest : List Expr) (body : Expr) (base n : Nat) :
+    ((Expr.letRec anns (e :: rest) body).shiftFrom base n).letRecBindingsOf.tail
+      = ((Expr.letRec anns rest body).shiftFrom (base + 1) n).letRecBindingsOf := by
+  simp only [Expr.shiftFrom, Expr.letRecBindingsOf, List.length_cons]
+  rw [show base + (rest.length + 1) = base + 1 + rest.length from by omega]
+  rfl
+
+private theorem shiftFrom_letRec_headtail (anns : List (Option PolyTy)) (e : Expr)
+    (rest : List Expr) (body : Expr) (t n : Nat) :
+    ((Expr.letRec anns (e :: rest) body).shiftFrom t n).letRecBindingsOf
+      = e.shiftFrom (t + (e :: rest).length) n
+        :: ((Expr.letRec anns (e :: rest) body).shiftFrom t n).letRecBindingsOf.tail := rfl
+
+private theorem shiftFrom_letRecBindings (n : Nat) (bs : List Expr) (base : Nat)
+    (anns : List (Option PolyTy)) (body : Expr) :
+    ((Expr.letRec anns bs body).shiftFrom base n).letRecBindingsOf
+      = bs.map (·.shiftFrom (base + bs.length) n) := by
+  induction bs generalizing base with
+  | nil => rfl
+  | cons e rest ih =>
+    rw [shiftFrom_letRec_headtail, shiftFrom_letRec_bridge, ih]
+    simp only [List.map_cons, List.length_cons]
+    congr 1
+    apply List.map_congr_left
+    intro x _; congr 1; omega
+
+private theorem branchList_tyFreeVars_nil (brs : List (MatchPattern × Expr))
+    (h : ∀ p e, (p, e) ∈ brs → e.tyFreeVars = []) :
+    Expr.tyFreeVars.BranchList.tyFreeVars brs = [] := by
+  induction brs with
+  | nil => rfl
+  | cons br rest ih =>
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.append_eq_nil_iff]
+    exact ⟨h br.1 br.2 List.mem_cons_self, ih fun p e hp => h p e (List.mem_cons_of_mem _ hp)⟩
+
+private theorem recGroup_tyFreeVars_nil (bs : List Expr)
+    (h : ∀ e ∈ bs, e.tyFreeVars = []) :
+    Expr.tyFreeVars.RecGroup.tyFreeVars bs = [] := by
+  induction bs with
+  | nil => rfl
+  | cons e rest ih =>
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.append_eq_nil_iff]
+    exact ⟨h e List.mem_cons_self, ih fun e' he' => h e' (List.mem_cons_of_mem _ he')⟩
+
+private theorem mem_of_branchList_tyFreeVars_nil (brs : List (MatchPattern × Expr))
+    (h : Expr.tyFreeVars.BranchList.tyFreeVars brs = []) :
+    ∀ p e, (p, e) ∈ brs → e.tyFreeVars = [] := by
+  induction brs with
+  | nil => intro _ _ he; cases he
+  | cons br rest ih =>
+    intro p e he
+    simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.append_eq_nil_iff, List.mem_cons] at h he
+    rcases he with he | he
+    · obtain ⟨rfl, rfl⟩ := he; exact h.1
+    · exact ih h.2 p e he
+
+private theorem mem_of_recGroup_tyFreeVars_nil (bs : List Expr)
+    (h : Expr.tyFreeVars.RecGroup.tyFreeVars bs = []) :
+    ∀ e ∈ bs, e.tyFreeVars = [] := by
+  induction bs with
+  | nil => intro _ he; cases he
+  | cons e rest ih =>
+    intro e' he'
+    simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.append_eq_nil_iff, List.mem_cons] at h he'
+    rcases he' with rfl | he'
+    · exact h.1
+    · exact ih h.2 e' he'
+
+/-- Term-variable shifting does not introduce free type variables. -/
+theorem Expr.tyFreeVars_shiftFrom (e : Expr) (threshold n : Nat)
+    (h : e.tyFreeVars = []) : (e.shiftFrom threshold n).tyFreeVars = [] := by
+  induction e using Expr.rec_strong generalizing threshold with
+  | primLit | primBinOp | ctor =>
+    simp only [Expr.shiftFrom, Expr.tyFreeVars] at *
+  | var i tyArgs =>
+    simp only [Expr.shiftFrom]
+    split <;> simpa [Expr.tyFreeVars] using h
+  | lambda ann body ih =>
+    simp only [Expr.shiftFrom, Expr.tyFreeVars, List.append_eq_nil_iff] at h ⊢
+    exact ⟨h.1, ih (threshold + 1) h.2⟩
+  | app f arg ihf iharg =>
+    simp only [Expr.shiftFrom, Expr.tyFreeVars, List.append_eq_nil_iff] at h ⊢
+    exact ⟨ihf threshold h.1, iharg threshold h.2⟩
+  | letIn ann rhs body ihrhs ihbody =>
+    simp only [Expr.shiftFrom, Expr.tyFreeVars, List.append_eq_nil_iff] at h ⊢
+    exact ⟨⟨h.1.1, ihrhs threshold h.1.2⟩, ihbody (threshold + 1) h.2⟩
+  | match_ scrut branches ihscrut ihbr =>
+    have heq : (Expr.match_ scrut branches).shiftFrom threshold n =
+        .match_ (scrut.shiftFrom threshold n)
+          ((Expr.match_ scrut branches).shiftFrom threshold n).matchBranchesOf := rfl
+    rw [heq, shiftFrom_matchBranches]
+    simp only [Expr.tyFreeVars, List.append_eq_nil_iff] at h ⊢
+    refine ⟨ihscrut threshold h.1, branchList_tyFreeVars_nil _ ?_⟩
+    intro p e hin
+    obtain ⟨pb, hpb, heq'⟩ := List.mem_map.mp hin
+    cases heq'
+    exact ihbr pb.1 pb.2 hpb (threshold + pb.1.bindCount)
+      (mem_of_branchList_tyFreeVars_nil branches h.2 pb.1 pb.2 hpb)
+  | letRec anns bindings body ihbind ihbody =>
+    have heq : (Expr.letRec anns bindings body).shiftFrom threshold n =
+        .letRec anns ((Expr.letRec anns bindings body).shiftFrom threshold n).letRecBindingsOf
+          (body.shiftFrom (threshold + bindings.length) n) := rfl
+    rw [heq, shiftFrom_letRecBindings]
+    simp only [Expr.tyFreeVars, List.append_eq_nil_iff] at h ⊢
+    refine ⟨⟨h.1.1, recGroup_tyFreeVars_nil _ ?_⟩, ihbody (threshold + bindings.length) h.2⟩
+    intro e he
+    obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
+    exact ihbind e0 he0 (threshold + bindings.length)
+      (mem_of_recGroup_tyFreeVars_nil bindings h.1.2 e0 he0)
+
+private theorem emitLets_tyFreeVars (env : List Occ) (binds : List Occ) (body : Expr)
+    (hb : body.tyFreeVars = []) :
+    (emitLets env binds body).tyFreeVars = [] := by
+  unfold emitLets
+  have hshift : (body.shiftFrom binds.length env.length).tyFreeVars = [] :=
+    Expr.tyFreeVars_shiftFrom body _ _ hb
+  suffices ∀ rest depth,
+      (emitLets.go env binds body rest depth).tyFreeVars = [] from this _ _
+  intro rest; induction rest with
+  | nil => intro depth; exact hshift
+  | cons _ rest ih =>
+    intro depth
+    simp only [emitLets.go, Expr.tyFreeVars, List.append_eq_nil_iff]
+    exact ⟨⟨rfl, rfl⟩, ih (depth + 1)⟩
+
+mutual
+private theorem emit_tyFreeVars (env : List Occ) (bodies : Nat → Expr) (t : DTree)
+    (hb : ∀ i, (bodies i).tyFreeVars = []) :
+    (emit env bodies t).tyFreeVars = [] := by
+  match t with
+  | .fail =>
+    rw [emit]
+    simp only [Expr.tyFreeVars, Expr.tyFreeVars.BranchList.tyFreeVars, List.nil_append]
+  | .leaf act binds =>
+    rw [emit]
+    exact emitLets_tyFreeVars env binds (bodies act) (hb act)
+  | .switch occ cases dflt =>
+    have happ : ∀ cs (e : Expr),
+        Expr.tyFreeVars.BranchList.tyFreeVars (cs ++ [(.wildcard, e)]) =
+          Expr.tyFreeVars.BranchList.tyFreeVars cs ++ e.tyFreeVars := by
+      intro cs; induction cs with
+      | nil => intro e; simp [Expr.tyFreeVars.BranchList.tyFreeVars]
+      | cons _ tl ih =>
+        intro e; simp [Expr.tyFreeVars.BranchList.tyFreeVars, ih]
+    cases dflt with
+    | fail =>
+      rw [emit]
+      have hcases := emitCases_tyFreeVars env bodies occ cases hb
+      simp [Expr.tyFreeVars, resolveOcc, hcases]
+    | leaf act binds =>
+      rw [emit]
+      have hcases := emitCases_tyFreeVars env bodies occ cases hb
+      have hd := emit_tyFreeVars env bodies (.leaf act binds) hb
+      simp only [Expr.tyFreeVars, resolveOcc]
+      rw [happ, hcases, hd]
+      simp
+      intro h; cases h
+    | switch occ' cases' dflt' =>
+      rw [emit]
+      have hcases := emitCases_tyFreeVars env bodies occ cases hb
+      have hd := emit_tyFreeVars env bodies (.switch occ' cases' dflt') hb
+      simp only [Expr.tyFreeVars, resolveOcc]
+      rw [happ, hcases, hd]
+      simp
+      intro h; cases h
+
+
+private theorem emitCases_tyFreeVars (env : List Occ) (bodies : Nat → Expr) (occ : Occ) :
+    ∀ (cases : List (CtorName × Nat × DTree)),
+      (∀ i, (bodies i).tyFreeVars = []) →
+      Expr.tyFreeVars.BranchList.tyFreeVars (emitCases env bodies occ cases) = []
+  | [], _ => rfl
+  | (_c, a, t) :: rest, hb => by
+    simp only [emitCases, Expr.tyFreeVars.BranchList.tyFreeVars, List.append_eq_nil_iff]
+    exact ⟨emit_tyFreeVars (subOccs occ a ++ env) bodies t hb,
+      emitCases_tyFreeVars env bodies occ rest hb⟩
+end
+
+theorem lowerMatch_tyFreeVars (scrut : Expr) (pats : List Surface.Pattern) (bodies : Nat → Expr)
+    (hs : scrut.tyFreeVars = []) (hb : ∀ i, (bodies i).tyFreeVars = []) :
+    (lowerMatch scrut pats bodies).tyFreeVars = [] := by
+  simp only [lowerMatch, Expr.tyFreeVars, Option.elim, List.nil_append, hs]
+  exact emit_tyFreeVars [[]] bodies (compile [[]] (initMatrix pats)) hb
+
+theorem mkList_tyFreeVars :
+    ∀ (items : List Expr), (∀ e ∈ items, e.tyFreeVars = []) → (mkList items).tyFreeVars = []
+  | [], _ => rfl
+  | x :: xs, h => by
+    simp only [mkList, Expr.tyFreeVars, List.nil_append, List.append_eq_nil_iff]
+    exact ⟨h x List.mem_cons_self, mkList_tyFreeVars xs fun e he =>
+      h e (List.mem_cons_of_mem _ he)⟩
+
+mutual
+theorem lowerExpr_tyFreeVars {ke : KindEnv} {tvs vs : List ValName} :
+    ∀ {s : Surface.Expr} {c : Expr},
+      lowerExpr ke tvs vs s = some c → c.tyFreeVars = [] := by
+  intro s c h
+  match s with
+  | .primLit (.bool _) =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; rfl
+  | .primLit .unit | .primLit (.int _) | .primLit (.nat _) | .primLit (.char _) =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; rfl
+  | .pair a b =>
+    simp only [lowerExpr] at h
+    cases ha : lowerExpr ke tvs vs a with
+    | none => simp [ha] at h
+    | some a' =>
+      cases hb : lowerExpr ke tvs vs b with
+      | none => simp [ha, hb] at h
+      | some b' =>
+        simp only [ha, hb, Option.some.injEq] at h; subst h
+        simp [Expr.tyFreeVars, lowerExpr_tyFreeVars ha, lowerExpr_tyFreeVars hb]
+  | .cons hd tl =>
+    simp only [lowerExpr] at h
+    cases ha : lowerExpr ke tvs vs hd with
+    | none => simp [ha] at h
+    | some h' =>
+      cases hb : lowerExpr ke tvs vs tl with
+      | none => simp [ha, hb] at h
+      | some t' =>
+        simp only [ha, hb, Option.some.injEq] at h; subst h
+        simp [Expr.tyFreeVars, lowerExpr_tyFreeVars ha, lowerExpr_tyFreeVars hb]
+  | .list items =>
+    simp only [lowerExpr] at h
+    cases hi : lowerExprList ke tvs vs items with
+    | none => simp [hi] at h
+    | some items' =>
+      simp only [hi, Option.some.injEq] at h; subst h
+      exact mkList_tyFreeVars items' (lowerExprList_tyFreeVars hi)
+  | .lambda param paramAnn body =>
+    simp only [lowerExpr] at h
+    cases hann : lowerAnn ke tvs paramAnn with
+    | none => simp [hann] at h
+    | some ann' =>
+      cases param with
+      | name x =>
+        cases hb : lowerExpr ke tvs (x :: vs) body with
+        | none => simp [hann, hb] at h
+        | some b' =>
+          simp only [hann, hb, Option.some.injEq] at h; subst h
+          simp [Expr.tyFreeVars, lowerAnn_freeVars hann, lowerExpr_tyFreeVars hb]
+      | wildcard =>
+        cases hb : lowerExpr ke tvs (.mk "_" :: vs) body with
+        | none => simp [hann, hb] at h
+        | some b' =>
+          simp only [hann, hb, Option.some.injEq] at h; subst h
+          simp [Expr.tyFreeVars, lowerAnn_freeVars hann, lowerExpr_tyFreeVars hb]
+      | ctor | pair | cons | list => simp [hann] at h
+  | .app f x =>
+    simp only [lowerExpr] at h
+    cases hf : lowerExpr ke tvs vs f with
+    | none => simp [hf] at h
+    | some f' =>
+      cases hx : lowerExpr ke tvs vs x with
+      | none => simp [hf, hx] at h
+      | some x' =>
+        simp only [hf, hx, Option.some.injEq] at h; subst h
+        simp [Expr.tyFreeVars, lowerExpr_tyFreeVars hf, lowerExpr_tyFreeVars hx]
+  | .letIn name ann rhs body =>
+    simp only [lowerExpr] at h
+    cases hann : lowerPolyAnn ke ann with
+    | none => simp [hann] at h
+    | some ann' =>
+      cases hr : lowerExpr ke tvs vs rhs with
+      | none => simp [hann, hr] at h
+      | some rhs' =>
+        cases hb : lowerExpr ke tvs (name :: vs) body with
+        | none => simp [hann, hr, hb] at h
+        | some body' =>
+          simp only [hann, hr, hb, Option.some.injEq] at h; subst h
+          simp [Expr.tyFreeVars, lowerPolyAnn_freeVars hann,
+            lowerExpr_tyFreeVars hr, lowerExpr_tyFreeVars hb]
+  | .letRecIn binds body =>
+    simp only [lowerExpr] at h
+    cases hann : lowerAnnList ke (binds.map (·.2.1)) with
+    | none => simp [hann] at h
+    | some anns' =>
+      cases hbinds : lowerRecBinds ke tvs (binds.map (·.1) ++ vs) binds with
+      | none => simp [hann, hbinds] at h
+      | some bindings' =>
+        cases hb : lowerExpr ke tvs (binds.map (·.1) ++ vs) body with
+        | none => simp [hann, hbinds, hb] at h
+        | some body' =>
+          simp only [hann, hbinds, hb, Option.some.injEq] at h; subst h
+          simp [Expr.tyFreeVars, lowerAnnList_freeVars hann,
+            lowerRecBinds_tyFreeVars hbinds, lowerExpr_tyFreeVars hb]
+  | .var name =>
+    simp only [lowerExpr] at h
+    cases hi : tvarIndex vs name with
+    | none => simp [hi] at h
+    | some i =>
+      simp only [hi, Option.some.injEq] at h; subst h
+      simp [Expr.tyFreeVars]
+  | .ctor name =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; rfl
+  | .ife c t f =>
+    simp only [lowerExpr] at h
+    cases hc : lowerExpr ke tvs vs c with
+    | none => simp [hc] at h
+    | some c' =>
+      cases ht : lowerExpr ke tvs vs t with
+      | none => simp [hc, ht] at h
+      | some t' =>
+        cases hf : lowerExpr ke tvs vs f with
+        | none => simp [hc, ht, hf] at h
+        | some f' =>
+          simp only [hc, ht, hf, Option.some.injEq] at h; subst h
+          exact lowerMatch_tyFreeVars c' _ _ (lowerExpr_tyFreeVars hc) (fun i => by
+            split <;> first | exact lowerExpr_tyFreeVars ht | exact lowerExpr_tyFreeVars hf)
+  | .match_ scrut brs =>
+    simp only [lowerExpr] at h
+    cases hs : lowerExpr ke tvs vs scrut with
+    | none => simp [hs] at h
+    | some scrut' =>
+      cases hb : lowerBranches ke tvs vs brs with
+      | none => simp [hs, hb] at h
+      | some bodies' =>
+        simp only [hs, hb, Option.some.injEq] at h; subst h
+        exact lowerMatch_tyFreeVars scrut' _ (bodyFn bodies')
+          (lowerExpr_tyFreeVars hs) (fun i => by
+            change (bodies'.getD i matchBodyDefault).tyFreeVars = []
+            rw [List.getD]
+            cases hget : bodies'[i]? with
+            | none => simp [Option.getD, matchBodyDefault, Expr.tyFreeVars]
+            | some e =>
+              simp only [Option.getD]
+              exact lowerBranches_tyFreeVars hb e (List.mem_of_getElem? hget))
+
+theorem lowerExprList_tyFreeVars {ke : KindEnv} {tvs vs : List ValName} :
+    ∀ {es : List Surface.Expr} {es' : List Expr},
+      lowerExprList ke tvs vs es = some es' →
+      ∀ e ∈ es', e.tyFreeVars = [] := by
+  intro es es' h e he
+  match es with
+  | [] =>
+    simp only [lowerExprList, Option.some.injEq] at h; subst h; cases he
+  | e0 :: rest =>
+    simp only [lowerExprList] at h
+    cases he0 : lowerExpr ke tvs vs e0 with
+    | none => simp [he0] at h
+    | some e0' =>
+      cases hrest : lowerExprList ke tvs vs rest with
+      | none => simp [he0, hrest] at h
+      | some rest' =>
+        simp only [he0, hrest, Option.some.injEq] at h; subst h
+        simp only [List.mem_cons] at he
+        rcases he with rfl | he
+        · exact lowerExpr_tyFreeVars he0
+        · exact lowerExprList_tyFreeVars hrest e he
+
+theorem lowerBranches_tyFreeVars {ke : KindEnv} {tvs vs : List ValName} :
+    ∀ {brs : List (Surface.Pattern × Surface.Expr)} {bodies' : List Expr},
+      lowerBranches ke tvs vs brs = some bodies' →
+      ∀ e ∈ bodies', e.tyFreeVars = [] := by
+  intro brs bodies' h e he
+  match brs with
+  | [] =>
+    simp only [lowerBranches, Option.some.injEq] at h; subst h; cases he
+  | (p, b) :: rest =>
+    simp only [lowerBranches] at h
+    cases hb : lowerExpr ke tvs (patVars p ++ vs) b with
+    | none => simp [hb] at h
+    | some b' =>
+      cases hrest : lowerBranches ke tvs vs rest with
+      | none => simp [hb, hrest] at h
+      | some rest' =>
+        simp only [hb, hrest, Option.some.injEq] at h; subst h
+        simp only [List.mem_cons] at he
+        rcases he with rfl | he
+        · exact lowerExpr_tyFreeVars hb
+        · exact lowerBranches_tyFreeVars hrest e he
+
+theorem lowerRecBinds_tyFreeVars {ke : KindEnv} {tvs recScope : List ValName} :
+    ∀ {binds : List (ValName × Option Surface.PolyTy × Surface.Expr)} {bindings' : List Expr},
+      lowerRecBinds ke tvs recScope binds = some bindings' →
+      Expr.tyFreeVars.RecGroup.tyFreeVars bindings' = [] := by
+  intro binds bindings' h
+  match binds with
+  | [] =>
+    simp only [lowerRecBinds, Option.some.injEq] at h; subst h; rfl
+  | (_, _, e) :: rest =>
+    simp only [lowerRecBinds] at h
+    cases he : lowerExpr ke tvs recScope e with
+    | none => simp [he] at h
+    | some e' =>
+      cases hrest : lowerRecBinds ke tvs recScope rest with
+      | none => simp [he, hrest] at h
+      | some rest' =>
+        simp only [he, hrest, Option.some.injEq] at h; subst h
+        simp [Expr.tyFreeVars.RecGroup.tyFreeVars, lowerExpr_tyFreeVars he,
+          lowerRecBinds_tyFreeVars hrest]
+end
+
 /-- **(O2) Lowered programs are type-closed.** A `lower` output has no free type
     variables, so inference's rigid seed is empty and the frontier machinery
     disappears. Provable once `lower` is defined (it emits `bvar`-indexed types
     from the kind-checker; no `fvar`s). -/
 theorem lower_tyClosed {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     (h : lower ctors s = some c) : c.tyFreeVars = [] := by
-  sorry
+  simp only [lower] at h
+  exact lowerExpr_tyFreeVars h
 
 /-- **(O3) Typechecking ⇒ inference succeeds (recovering the runtime term).**
     For a type-closed `c`, `typecheck` and `infer` run the *same* `inferCore`
@@ -671,7 +1586,12 @@ theorem lower_tyClosed {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
 theorem infer_of_typecheck {ctors : CtorEnv} {c : Expr}
     (hclosed : c.tyFreeVars = []) (htc : (typecheck ctors c).isSome) :
     ∃ Φ' S eOut τ, infer c.freshFloor ⟨[], ctors⟩ c = some (Φ', S, eOut, τ) := by
-  sorry
+  simp only [typecheck, principalType, Option.isSome_map] at htc
+  rw [hclosed] at htc
+  simp only [infer]
+  rcases hcore : inferCore [] c.freshFloor ⟨[], ctors⟩ c with _ | ⟨⟨Φ', S, eOut, τ⟩, _⟩
+  · simp [hcore] at htc
+  · exact ⟨Φ', S, eOut, τ, by simp⟩
 
 /-- **(O5) Exhaustiveness of the emitted-and-elaborated matches — THE workhorse
     target.** If every surface `match` in `s` covers its scrutinee's ADT type

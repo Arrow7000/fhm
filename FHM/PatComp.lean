@@ -2705,93 +2705,165 @@ theorem emit_adequate {root : Expr} (hval : IsValue root)
     intro env envVals henv hbound hctor i ws heval
     cases hbound with
     | switch hoccmem hbcases hbdflt =>
-    -- ⚠️ PROOF REPAIR NEEDED (emit changed: switch now omits the wildcard branch
-    -- when `dflt = .fail`; see `emit` above). The OLD proof (preserved below in a
-    -- comment) assumed the emitted branch list was always
-    --   `emitCases … ++ [(.wildcard, emit … dflt)]`.
-    -- It is now
-    --   `emitCases … ++ (match dflt with | .fail => [] | d => [(.wildcard, emit … d)])`.
-    -- Required repair (statement UNCHANGED):
-    --  • HIT (a case matches): the reduction picks a NAMED branch, so it is
-    --    independent of the trailing list. `firstMatchingBranch_found` takes an
-    --    ARBITRARY `trailing`, so pass the actual (match-dflt) tail unchanged.
-    --  • MISS (no case matches): the emitted term reduces via the default.
-    --     – if `dflt = .fail`: the tail is `[]` so there is no wildcard, BUT then
-    --       `evalDTree root .fail = none` contradicts `heval : … = some (i, ws)`
-    --       (after the `evalSwitch`/`hfind` rewrite `heval : evalDTree root dflt =
-    --       some (i,ws)`), so this sub-case is VACUOUS — derive `False`.
-    --     – if `dflt ≠ .fail`: the tail is `[(.wildcard, emit … dflt)]`, so proceed
-    --       exactly as the old proof (`firstMatchingBranch_default` + recurse via
-    --       `ihdflt`).
-    --    Concretely: `cases dflt` — the `.fail` sub-case closes by
-    --    `simp [evalDTree] at heval`; the `.leaf`/`.switch` sub-cases run the old
-    --    miss proof verbatim (their tail is the wildcard singleton).
-    sorry
-    /- OLD PROOF (guide for the repair):
     cases hctor with
     | hit hfetch hgc hfind hrec =>
       rename_i v name args t'
       simp only [evalDTree, hfetch, hgc] at heval
       rw [evalSwitch_eq_find' root name args.length cases dflt, hfind] at heval
-      have hemit : (emit env bodies (.switch occ cases dflt)).substN 0 envVals
-            = .match_ v (cases.map (fun x => (MatchPattern.named x.1 x.2.1,
-                    (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals))
-                  ++ [(.wildcard, (emit env bodies dflt).substN 0 envVals)]) := by
-        show (Expr.match_ (resolveOcc env occ) (emitCases env bodies occ cases
-              ++ [(.wildcard, emit env bodies dflt)])).substN 0 envVals = _
-        rw [Expr.substN_match, resolveOcc, substN_var_resolve0 henv hroot hoccmem hfetch,
-          List.map_append, emitCases_eq_map, List.map_map]
-        congr 1; congr 1; apply List.map_congr_left; intro x hx
-        simp only [Function.comp_apply, MatchPattern.bindCount, Nat.zero_add]
       have hmem : (name, args.length, t') ∈ cases := List.mem_of_find?_eq_some hfind
-      have hFMB := firstMatchingBranch_found
-        (fun x => (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals)
-        [(.wildcard, (emit env bodies dflt).substN 0 envVals)]
-        cases (name, args.length, t') hfind
-      have hstep : Step ((emit env bodies (.switch occ cases dflt)).substN 0 envVals)
-          (((emit (subOccs occ args.length ++ env) bodies t').substN args.length envVals).substN 0
-            (args.take (MatchPattern.named name args.length).bindCount)) := by
-        rw [hemit]
-        exact Step.matchReduce (fetch_isValue hval hfetch) (getCtorArgs_ctorAppliedTo hgc) hFMB
-      rw [show (MatchPattern.named name args.length).bindCount = args.length from rfl,
-        List.take_length] at hstep
-      have hcomp := Expr.substN_substN_append
-        (emit (subOccs occ args.length ++ env) bodies t') 0 args envVals
-        (mapM_fetch_closed hroot henv)
-      rw [Nat.zero_add] at hcomp
-      rw [hcomp] at hstep
-      refine Relation.ReflTransGen.head hstep ?_
-      have henv' : (subOccs occ args.length ++ env).mapM (fetch root) = some (args ++ envVals) := by
-        rw [List.mapM_append, fetch_subOccs' root occ hfetch hgc, henv]; rfl
-      exact ihcases name args.length t' hmem (subOccs occ args.length ++ env)
-        (args ++ envVals) henv' (hbcases name args.length t' hmem) hrec heval
+      -- Named-branch reduction is independent of the trailing list; case on `dflt`
+      -- only so the trailing is concrete (`[]` vs `[wildcard]`) and we avoid
+      -- writing a `match dflt` that would generalize dflt-dependent hyps.
+      cases dflt with
+      | fail =>
+        have hemit : (emit env bodies (.switch occ cases .fail)).substN 0 envVals
+              = .match_ v (cases.map (fun x => (MatchPattern.named x.1 x.2.1,
+                      (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals))
+                    ++ ([] : List (MatchPattern × Expr))) := by
+          show (Expr.match_ (resolveOcc env occ) (emitCases env bodies occ cases
+                ++ ([] : List (MatchPattern × Expr)))).substN 0 envVals = _
+          rw [Expr.substN_match, resolveOcc, substN_var_resolve0 henv hroot hoccmem hfetch,
+            List.map_append, emitCases_eq_map, List.map_map]
+          congr 1; congr 1; apply List.map_congr_left; intro x hx
+          simp only [Function.comp_apply, MatchPattern.bindCount, Nat.zero_add]
+        have hFMB := firstMatchingBranch_found
+          (fun x => (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals)
+          ([] : List (MatchPattern × Expr))
+          cases (name, args.length, t') hfind
+        have hstep : Step ((emit env bodies (.switch occ cases .fail)).substN 0 envVals)
+            (((emit (subOccs occ args.length ++ env) bodies t').substN args.length envVals).substN 0
+              (args.take (MatchPattern.named name args.length).bindCount)) := by
+          rw [hemit]
+          exact Step.matchReduce (fetch_isValue hval hfetch) (getCtorArgs_ctorAppliedTo hgc) hFMB
+        rw [show (MatchPattern.named name args.length).bindCount = args.length from rfl,
+          List.take_length] at hstep
+        have hcomp := Expr.substN_substN_append
+          (emit (subOccs occ args.length ++ env) bodies t') 0 args envVals
+          (mapM_fetch_closed hroot henv)
+        rw [Nat.zero_add] at hcomp
+        rw [hcomp] at hstep
+        refine Relation.ReflTransGen.head hstep ?_
+        have henv' : (subOccs occ args.length ++ env).mapM (fetch root) = some (args ++ envVals) := by
+          rw [List.mapM_append, fetch_subOccs' root occ hfetch hgc, henv]; rfl
+        exact ihcases name args.length t' hmem (subOccs occ args.length ++ env)
+          (args ++ envVals) henv' (hbcases name args.length t' hmem) hrec heval
+      | leaf act binds =>
+        have hemit : (emit env bodies (.switch occ cases (.leaf act binds))).substN 0 envVals
+              = .match_ v (cases.map (fun x => (MatchPattern.named x.1 x.2.1,
+                      (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals))
+                    ++ [(.wildcard, (emit env bodies (.leaf act binds)).substN 0 envVals)]) := by
+          show (Expr.match_ (resolveOcc env occ) (emitCases env bodies occ cases
+                ++ [(.wildcard, emit env bodies (.leaf act binds))])).substN 0 envVals = _
+          rw [Expr.substN_match, resolveOcc, substN_var_resolve0 henv hroot hoccmem hfetch,
+            List.map_append, emitCases_eq_map, List.map_map]
+          congr 1; congr 1; apply List.map_congr_left; intro x hx
+          simp only [Function.comp_apply, MatchPattern.bindCount, Nat.zero_add]
+        have hFMB := firstMatchingBranch_found
+          (fun x => (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals)
+          [(.wildcard, (emit env bodies (.leaf act binds)).substN 0 envVals)]
+          cases (name, args.length, t') hfind
+        have hstep : Step ((emit env bodies (.switch occ cases (.leaf act binds))).substN 0 envVals)
+            (((emit (subOccs occ args.length ++ env) bodies t').substN args.length envVals).substN 0
+              (args.take (MatchPattern.named name args.length).bindCount)) := by
+          rw [hemit]
+          exact Step.matchReduce (fetch_isValue hval hfetch) (getCtorArgs_ctorAppliedTo hgc) hFMB
+        rw [show (MatchPattern.named name args.length).bindCount = args.length from rfl,
+          List.take_length] at hstep
+        have hcomp := Expr.substN_substN_append
+          (emit (subOccs occ args.length ++ env) bodies t') 0 args envVals
+          (mapM_fetch_closed hroot henv)
+        rw [Nat.zero_add] at hcomp
+        rw [hcomp] at hstep
+        refine Relation.ReflTransGen.head hstep ?_
+        have henv' : (subOccs occ args.length ++ env).mapM (fetch root) = some (args ++ envVals) := by
+          rw [List.mapM_append, fetch_subOccs' root occ hfetch hgc, henv]; rfl
+        exact ihcases name args.length t' hmem (subOccs occ args.length ++ env)
+          (args ++ envVals) henv' (hbcases name args.length t' hmem) hrec heval
+      | switch occ' cases' dflt' =>
+        have hemit : (emit env bodies (.switch occ cases (.switch occ' cases' dflt'))).substN 0 envVals
+              = .match_ v (cases.map (fun x => (MatchPattern.named x.1 x.2.1,
+                      (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals))
+                    ++ [(.wildcard, (emit env bodies (.switch occ' cases' dflt')).substN 0 envVals)]) := by
+          show (Expr.match_ (resolveOcc env occ) (emitCases env bodies occ cases
+                ++ [(.wildcard, emit env bodies (.switch occ' cases' dflt'))])).substN 0 envVals = _
+          rw [Expr.substN_match, resolveOcc, substN_var_resolve0 henv hroot hoccmem hfetch,
+            List.map_append, emitCases_eq_map, List.map_map]
+          congr 1; congr 1; apply List.map_congr_left; intro x hx
+          simp only [Function.comp_apply, MatchPattern.bindCount, Nat.zero_add]
+        have hFMB := firstMatchingBranch_found
+          (fun x => (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals)
+          [(.wildcard, (emit env bodies (.switch occ' cases' dflt')).substN 0 envVals)]
+          cases (name, args.length, t') hfind
+        have hstep : Step ((emit env bodies (.switch occ cases (.switch occ' cases' dflt'))).substN 0 envVals)
+            (((emit (subOccs occ args.length ++ env) bodies t').substN args.length envVals).substN 0
+              (args.take (MatchPattern.named name args.length).bindCount)) := by
+          rw [hemit]
+          exact Step.matchReduce (fetch_isValue hval hfetch) (getCtorArgs_ctorAppliedTo hgc) hFMB
+        rw [show (MatchPattern.named name args.length).bindCount = args.length from rfl,
+          List.take_length] at hstep
+        have hcomp := Expr.substN_substN_append
+          (emit (subOccs occ args.length ++ env) bodies t') 0 args envVals
+          (mapM_fetch_closed hroot henv)
+        rw [Nat.zero_add] at hcomp
+        rw [hcomp] at hstep
+        refine Relation.ReflTransGen.head hstep ?_
+        have henv' : (subOccs occ args.length ++ env).mapM (fetch root) = some (args ++ envVals) := by
+          rw [List.mapM_append, fetch_subOccs' root occ hfetch hgc, henv]; rfl
+        exact ihcases name args.length t' hmem (subOccs occ args.length ++ env)
+          (args ++ envVals) henv' (hbcases name args.length t' hmem) hrec heval
     | miss hfetch hgc hfind hrec =>
       rename_i v name args
       simp only [evalDTree, hfetch, hgc] at heval
       rw [evalSwitch_eq_find' root name args.length cases dflt, hfind] at heval
-      have hemit : (emit env bodies (.switch occ cases dflt)).substN 0 envVals
-            = .match_ v (cases.map (fun x => (MatchPattern.named x.1 x.2.1,
-                    (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals))
-                  ++ [(.wildcard, (emit env bodies dflt).substN 0 envVals)]) := by
-        show (Expr.match_ (resolveOcc env occ) (emitCases env bodies occ cases
-              ++ [(.wildcard, emit env bodies dflt)])).substN 0 envVals = _
-        rw [Expr.substN_match, resolveOcc, substN_var_resolve0 henv hroot hoccmem hfetch,
-          List.map_append, emitCases_eq_map, List.map_map]
-        congr 1; congr 1; apply List.map_congr_left; intro x hx
-        simp only [Function.comp_apply, MatchPattern.bindCount, Nat.zero_add]
-      have hall : ∀ x ∈ cases, ¬(x.1 = name ∧ x.2.1 = args.length) := by
-        intro x hx; simpa using List.find?_eq_none.mp hfind x hx
-      have hFMB := firstMatchingBranch_default
-        (fun x => (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals)
-        ((emit env bodies dflt).substN 0 envVals) cases hall
-      have hstep : Step ((emit env bodies (.switch occ cases dflt)).substN 0 envVals)
-          (((emit env bodies dflt).substN 0 envVals).substN 0
-            (args.take MatchPattern.wildcard.bindCount)) := by
-        rw [hemit]
-        exact Step.matchReduce (fetch_isValue hval hfetch) (getCtorArgs_ctorAppliedTo hgc) hFMB
-      rw [show MatchPattern.wildcard.bindCount = 0 from rfl, List.take_zero, Expr.substN_nil] at hstep
-      exact Relation.ReflTransGen.head hstep (ihdflt env envVals henv hbdflt hrec heval)
-    -/
+      cases dflt with
+      | fail =>
+        simp [evalDTree] at heval
+      | leaf act binds =>
+        have hemit : (emit env bodies (.switch occ cases (.leaf act binds))).substN 0 envVals
+              = .match_ v (cases.map (fun x => (MatchPattern.named x.1 x.2.1,
+                      (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals))
+                    ++ [(.wildcard, (emit env bodies (.leaf act binds)).substN 0 envVals)]) := by
+          show (Expr.match_ (resolveOcc env occ) (emitCases env bodies occ cases
+                ++ [(.wildcard, emit env bodies (.leaf act binds))])).substN 0 envVals = _
+          rw [Expr.substN_match, resolveOcc, substN_var_resolve0 henv hroot hoccmem hfetch,
+            List.map_append, emitCases_eq_map, List.map_map]
+          congr 1; congr 1; apply List.map_congr_left; intro x hx
+          simp only [Function.comp_apply, MatchPattern.bindCount, Nat.zero_add]
+        have hall : ∀ x ∈ cases, ¬(x.1 = name ∧ x.2.1 = args.length) := by
+          intro x hx; simpa using List.find?_eq_none.mp hfind x hx
+        have hFMB := firstMatchingBranch_default
+          (fun x => (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals)
+          ((emit env bodies (.leaf act binds)).substN 0 envVals) cases hall
+        have hstep : Step ((emit env bodies (.switch occ cases (.leaf act binds))).substN 0 envVals)
+            (((emit env bodies (.leaf act binds)).substN 0 envVals).substN 0
+              (args.take MatchPattern.wildcard.bindCount)) := by
+          rw [hemit]
+          exact Step.matchReduce (fetch_isValue hval hfetch) (getCtorArgs_ctorAppliedTo hgc) hFMB
+        rw [show MatchPattern.wildcard.bindCount = 0 from rfl, List.take_zero, Expr.substN_nil] at hstep
+        exact Relation.ReflTransGen.head hstep (ihdflt env envVals henv hbdflt hrec heval)
+      | switch occ' cases' dflt' =>
+        have hemit : (emit env bodies (.switch occ cases (.switch occ' cases' dflt'))).substN 0 envVals
+              = .match_ v (cases.map (fun x => (MatchPattern.named x.1 x.2.1,
+                      (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals))
+                    ++ [(.wildcard, (emit env bodies (.switch occ' cases' dflt')).substN 0 envVals)]) := by
+          show (Expr.match_ (resolveOcc env occ) (emitCases env bodies occ cases
+                ++ [(.wildcard, emit env bodies (.switch occ' cases' dflt'))])).substN 0 envVals = _
+          rw [Expr.substN_match, resolveOcc, substN_var_resolve0 henv hroot hoccmem hfetch,
+            List.map_append, emitCases_eq_map, List.map_map]
+          congr 1; congr 1; apply List.map_congr_left; intro x hx
+          simp only [Function.comp_apply, MatchPattern.bindCount, Nat.zero_add]
+        have hall : ∀ x ∈ cases, ¬(x.1 = name ∧ x.2.1 = args.length) := by
+          intro x hx; simpa using List.find?_eq_none.mp hfind x hx
+        have hFMB := firstMatchingBranch_default
+          (fun x => (emit (subOccs occ x.2.1 ++ env) bodies x.2.2).substN x.2.1 envVals)
+          ((emit env bodies (.switch occ' cases' dflt')).substN 0 envVals) cases hall
+        have hstep : Step ((emit env bodies (.switch occ cases (.switch occ' cases' dflt'))).substN 0 envVals)
+            (((emit env bodies (.switch occ' cases' dflt')).substN 0 envVals).substN 0
+              (args.take MatchPattern.wildcard.bindCount)) := by
+          rw [hemit]
+          exact Step.matchReduce (fetch_isValue hval hfetch) (getCtorArgs_ctorAppliedTo hgc) hFMB
+        rw [show MatchPattern.wildcard.bindCount = 0 from rfl, List.take_zero, Expr.substN_nil] at hstep
+        exact Relation.ReflTransGen.head hstep (ihdflt env envVals henv hbdflt hrec heval)
 
 
 /-! ## The composed headline (uses H1 = `compile_correct_surface`) -/
