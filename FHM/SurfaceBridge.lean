@@ -635,6 +635,27 @@ def elaborate (ctors : CtorEnv) (s : Surface.Expr) : Option Expr :=
   (lower ctors s).bind fun c =>
     (infer c.freshFloor ⟨[], ctors⟩ c).map fun r => r.2.2.1.substTyFvars r.2.1
 
+/-! ### Trust-free regression guards for the `emit` fix (see PatComp `emit`)
+
+These `#guard`s RUN the pipeline, so they catch a regression in `emit`'s
+wildcard handling independently of any proof: before the fix, `emit` appended an
+untypeable `PatCompFail` wildcard to every switch, so `if` and enumerated
+(catch-all-free) matches failed to typecheck. -/
+
+private def maybeCtors : CtorEnv :=
+  (elabDecls (preludeDecls ++
+    [{ name := ⟨"Maybe"⟩, paramCount := 1,
+       ctors := [(⟨"Just"⟩, [.bvar 0]), (⟨"Nothing"⟩, [])] }])).getD []
+
+-- `if true then 1 else 0` now typechecks (desugars to an enumerated True|False match).
+#guard (elaborate ctorsDemo (.ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0)))).isSome
+-- a fully-enumerated exhaustive match (no catch-all) now typechecks.
+#guard (elaborate maybeCtors (.match_ (.app (.ctor (⟨"Just"⟩)) (.primLit (.int 5)))
+    [(.ctor ⟨"Just"⟩ [.name ⟨"x"⟩], .var ⟨"x"⟩), (.ctor ⟨"Nothing"⟩ [], .primLit (.int 0))])).isSome
+-- a catch-all match still typechecks.
+#guard (elaborate maybeCtors (.match_ (.app (.ctor (⟨"Just"⟩)) (.primLit (.int 5)))
+    [(.ctor ⟨"Just"⟩ [.name ⟨"x"⟩], .var ⟨"x"⟩), (.wildcard, .primLit (.int 0))])).isSome
+
 
 /-! ## 9. The obligations the seam creates (proof bodies — delegable)
 
