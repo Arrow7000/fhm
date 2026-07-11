@@ -10,11 +10,10 @@ This module is the **front end**: it lowers `Surface.Expr`/`Surface.Ty` into Cor
 and states the campaign's headline payoff — *a well-typed, exhaustive surface
 program elaborates to a Core program that is type-safe and never gets stuck*.
 
-**Status: expression headline + DataDecl + Program (decls/groups/body) COMPLETE.**
-`surface_type_safe`, DataDecl bridge, and `program_type_safe` (via `Program.term`
-desugar of explicit binding groups → `letRecIn`) are `sorry`-free. SCC invention
-of `groups` is future work. See
-`briefs/next-agent-brief-surface-bridge-followups.md`.
+**Status: expression headline + DataDecl + Program groups + freeNames + sccGroups.**
+`sccGroups` (naive mutual-reachability SCC) feeds `Program.groups`;
+`ValidBindingGroups` is the non-det spec (`sccGroups_sound`/`_complete` still `sorry`).
+See `briefs/next-agent-brief-surface-bridge-followups.md`.
 
 ## Design decisions this skeleton bakes in (settled with Aron)
 
@@ -828,6 +827,285 @@ def patVarsList : List Surface.Pattern → List ValName
   | []      => []
   | p :: ps => patVars p ++ patVarsList ps
 end
+
+/-! ### Free value-names (C0 — dependency analysis for future SCC)
+
+Executable free-name collection under a bound-name scope. Reuses `patVars` for
+pattern binders. This is **not** Infer’s job: Infer never sees a flat binding
+list (surface already has `letRecIn`). Top-level SCC will use these free names
+to build a dependency graph among `Binding`s, then emit `Program.groups`.
+
+Future (not yet): collapse surface `letIn`/`letRecIn` into a single `letBlock`
+and run this analysis in lowering so authors don’t declare SCCs by hand — still
+one language layer, one desugar, no extra IR. -/
+
+mutual
+/-- Value names occurring free in `e` relative to `bound` (shadowing). -/
+def freeNames (bound : List ValName) : Surface.Expr → List ValName
+  | .primLit _ => []
+  | .ctor _ => []
+  | .var n => if n ∈ bound then [] else [n]
+  | .pair a b => freeNames bound a ++ freeNames bound b
+  | .cons h t => freeNames bound h ++ freeNames bound t
+  | .list xs => freeNamesList bound xs
+  | .app f x => freeNames bound f ++ freeNames bound x
+  | .lambda p _ann body => freeNames (patVars p ++ bound) body
+  | .letIn n _ann rhs body =>
+      freeNames bound rhs ++ freeNames (n :: bound) body
+  | .letRecIn binds body =>
+      let bound' := binds.map (·.1) ++ bound
+      freeNamesBinds bound' binds ++ freeNames bound' body
+  | .ife c t f =>
+      freeNames bound c ++ freeNames bound t ++ freeNames bound f
+  | .match_ s brs => freeNames bound s ++ freeNamesBranches bound brs
+
+def freeNamesList (bound : List ValName) : List Surface.Expr → List ValName
+  | [] => []
+  | e :: es => freeNames bound e ++ freeNamesList bound es
+
+def freeNamesBinds (bound : List ValName) :
+    List (ValName × Option Surface.PolyTy × Surface.Expr) → List ValName
+  | [] => []
+  | (_n, _ann, rhs) :: rest => freeNames bound rhs ++ freeNamesBinds bound rest
+
+def freeNamesBranches (bound : List ValName) :
+    List (Surface.Pattern × Surface.Expr) → List ValName
+  | [] => []
+  | (p, e) :: rest =>
+      freeNames (patVars p ++ bound) e ++ freeNamesBranches bound rest
+end
+
+/-- Deduped free names (stable order of first occurrence). -/
+def freeNamesD (bound : List ValName) (e : Surface.Expr) : List ValName :=
+  (freeNames bound e).eraseDups
+
+/-- Does binding `b`'s RHS freely mention value name `n`? (top-level / empty scope) -/
+def Binding.refersTo (b : Surface.Binding) (n : ValName) : Bool :=
+  n ∈ freeNames [] b.rhs
+
+/-- Dependency edges among a flat binding list: `(src, dst)` means `src`'s RHS
+    mentions `dst` (including self-loops for recursive singles). -/
+def bindingDepEdges (binds : List Surface.Binding) : List (ValName × ValName) :=
+  let names := binds.map (·.name)
+  binds.flatMap fun b =>
+    names.filterMap fun n =>
+      if Binding.refersTo b n then some (b.name, n) else none
+
+-- Free-name / dependency `#guard`s
+#guard freeNamesD [] (.var (.mk "x")) = [.mk "x"]
+#guard freeNamesD [] (.lambda (.name (.mk "x")) none (.var (.mk "x"))) = []
+#guard freeNamesD [] (.lambda (.name (.mk "x")) none (.var (.mk "y"))) = [.mk "y"]
+-- λ-bound name must not count as a free ref to a same-named outer
+#guard freeNamesD [.mk "x"] (.lambda (.name (.mk "x")) none (.var (.mk "x"))) = []
+#guard freeNamesD [] (.letIn (.mk "x") none (.var (.mk "y")) (.var (.mk "x"))) = [.mk "y"]
+#guard freeNamesD [] (.letRecIn [(.mk "f", none, .var (.mk "f"))] (.var (.mk "f"))) = []
+-- match binders shadow
+#guard freeNamesD [] (.match_ (.var (.mk "s"))
+  [(.name (.mk "x"), .var (.mk "x")), (.wildcard, .var (.mk "z"))]) = [.mk "s", .mk "z"]
+-- binding dependency edges
+#guard Binding.refersTo ⟨.mk "g", none, .var (.mk "f")⟩ (.mk "f") = true
+#guard Binding.refersTo ⟨.mk "g", none, .lambda (.name (.mk "f")) none (.var (.mk "f"))⟩
+  (.mk "f") = false
+#guard (bindingDepEdges [
+  ⟨.mk "f", none, .lambda (.name (.mk "x")) none (.app (.var (.mk "f")) (.var (.mk "x")))⟩,
+  ⟨.mk "g", none, .var (.mk "f")⟩]).contains ((.mk "g", .mk "f"))
+#guard (bindingDepEdges [
+  ⟨.mk "f", none, .lambda (.name (.mk "x")) none (.app (.var (.mk "f")) (.var (.mk "x")))⟩,
+  ⟨.mk "g", none, .var (.mk "f")⟩]).contains ((.mk "f", .mk "f"))
+
+
+/-! ### C1 — naive SCC groups (mutual reachability + condensation topo)
+
+Non-deterministic spec `ValidBindingGroups`: partition into SCCs of the
+dependency graph, topo-ordered so callees are outer. Executable `sccGroups`
+uses pairwise reachability (fine for small binding lists) + Kahn on the
+condensation. Adequacy proofs are frozen with `sorry` for a follow-up handoff. -/
+
+/-- Direct edge: some binding named `a` refers to `b`. -/
+def DepEdge (binds : List Surface.Binding) (a b : ValName) : Prop :=
+  ∃ bdg ∈ binds, bdg.name = a ∧ Binding.refersTo bdg b = true
+
+/-- Reflexive-transitive closure of `DepEdge` (follow “depends on” edges). -/
+inductive DepReach (binds : List Surface.Binding) : ValName → ValName → Prop
+  | refl {a} : DepReach binds a a
+  | tail {a b c} :
+      DepEdge binds a b → DepReach binds b c → DepReach binds a c
+
+def DepMutual (binds : List Surface.Binding) (a b : ValName) : Prop :=
+  DepReach binds a b ∧ DepReach binds b a
+
+/-- Declarative: `groups` is a valid SCC grouping of `binds` for desugaring.
+    Intra-group order and order among incomparable SCCs are left free. -/
+structure ValidBindingGroups
+    (binds : List Surface.Binding) (groups : List (List Surface.Binding)) : Prop where
+  namesNodup : (binds.map (·.name)).Nodup
+  flatPerm : groups.flatten.Perm binds
+  nonempty : ∀ g ∈ groups, g ≠ []
+  sameScc :
+    ∀ g ∈ groups, ∀ b1 ∈ g, ∀ b2 ∈ g, DepMutual binds b1.name b2.name
+  maxScc :
+    ∀ b1 ∈ binds, ∀ b2 ∈ binds,
+      DepMutual binds b1.name b2.name → ∃ g ∈ groups, b1 ∈ g ∧ b2 ∈ g
+  /-- Direct edge across groups ⇒ dependency’s group is strictly outer (smaller index). -/
+  topo :
+    ∀ (i j : Nat) (gi gj : List Surface.Binding),
+      groups[i]? = some gi → groups[j]? = some gj → i ≠ j →
+      ∀ b1 ∈ gi, ∀ b2 ∈ gj,
+        Binding.refersTo b1 b2.name = true → j < i
+
+/-- Successors of binding index `i`: indices `j` that `binds[i]` refers to. -/
+def bindSucc (binds : List Surface.Binding) (i : Nat) : List Nat :=
+  match binds[i]? with
+  | none => []
+  | some b =>
+    (List.range binds.length).filterMap fun j =>
+      match binds[j]? with
+      | some b' => if Binding.refersTo b b'.name then some j else none
+      | none => none
+
+/-- Reachability in the index graph (empty path ⇒ `src = dst`). -/
+def canReach (succ : Nat → List Nat) (fuel : Nat) (seen : List Nat)
+    (src dst : Nat) : Bool :=
+  if src = dst then true
+  else match fuel with
+  | 0 => false
+  | fuel + 1 =>
+    if src ∈ seen then false
+    else (succ src).any fun n => canReach succ fuel (src :: seen) n dst
+
+def mutuallyReachable (succ : Nat → List Nat) (fuel : Nat) (i j : Nat) : Bool :=
+  canReach succ fuel [] i j && canReach succ fuel [] j i
+
+/-- Partition indices `0..n-1` into mutual-reachability classes (stable: seed order). -/
+def sccIndexSets (binds : List Surface.Binding) : List (List Nat) :=
+  let n := binds.length
+  let succ := bindSucc binds
+  let fuelN := n
+  let mutReach (i j : Nat) := mutuallyReachable succ fuelN i j
+  let rec go (fuel : Nat) (todo : List Nat) (acc : List (List Nat)) : List (List Nat) :=
+    match fuel with
+    | 0 => acc
+    | fuel + 1 =>
+      match todo with
+      | [] => acc
+      | i :: _ =>
+        let comp := todo.filter (mutReach i)
+        let rest := todo.filter (fun j => !(mutReach i j))
+        go fuel rest (acc ++ [comp])
+  go (n + 1) (List.range n) []
+
+/-- Does component `ca` directly depend on component `cb`? -/
+def compDependsOn (succ : Nat → List Nat) (ca cb : List Nat) : Bool :=
+  ca.any fun i => (succ i).any fun j => j ∈ cb
+
+/-- Kahn edges `(u,v)` meaning `u` should appear before `v` in `groups`
+    (dependency before dependent). -/
+def sccBeforeEdges (succ : Nat → List Nat) (comps : List (List Nat)) :
+    List (Nat × Nat) :=
+  let nc := comps.length
+  (List.range nc).flatMap fun a =>
+    (List.range nc).filterMap fun b =>
+      if a = b then none
+      else
+        match comps[a]?, comps[b]? with
+        | some ca, some cb =>
+          if compDependsOn succ ca cb then some (b, a) else none
+        | _, _ => none
+
+/-- Read `indeg[i]` (0 if OOB). -/
+private def indegGet (indeg : List Nat) (i : Nat) : Nat :=
+  indeg[i]?.getD 0
+
+/-- Set `indeg[i] := v`. -/
+private def indegSet (indeg : List Nat) (i v : Nat) : List Nat :=
+  indeg.mapIdx fun j x => if j = i then v else x
+
+/-- Kahn topological order on `0..n-1` given before-edges `(u,v)` (u before v). -/
+def kahnTopo (n : Nat) (beforeEdges : List (Nat × Nat)) : List Nat :=
+  let indeg0 : List Nat :=
+    (List.range n).map fun v =>
+      beforeEdges.filter (fun e => e.2 = v) |>.length
+  let ready0 := (List.range n).filter fun v => indegGet indeg0 v = 0
+  let rec go (fuel : Nat) (indeg : List Nat) (ready : List Nat) (acc : List Nat) :
+      List Nat :=
+    match fuel with
+    | 0 => acc
+    | fuel + 1 =>
+      match ready with
+      | [] => acc
+      | u :: us =>
+        let acc' := acc ++ [u]
+        let nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+        let indeg' := nbrs.foldl (fun ig b =>
+          indegSet ig b (indegGet ig b - 1)) indeg
+        let newReady := nbrs.filter fun b =>
+          indegGet indeg' b = 0 && b ∉ acc' && b ∉ us
+        go fuel indeg' (us ++ newReady) acc'
+  go (n + 1) indeg0 ready0 []
+
+/-- Map index sets through `binds` (skips OOB defensively). -/
+def indexSetsToBindings (binds : List Surface.Binding) (sets : List (List Nat)) :
+    List (List Surface.Binding) :=
+  sets.map fun idxs =>
+    idxs.filterMap fun i => binds[i]?
+
+/-- Executable SCC grouping: `none` if binding names are not unique. -/
+def sccGroups (binds : List Surface.Binding) :
+    Option (List (List Surface.Binding)) := do
+  guard (binds.map (·.name)).Nodup
+  let succ := bindSucc binds
+  let comps := sccIndexSets binds
+  let order := kahnTopo comps.length (sccBeforeEdges succ comps)
+  let ordered := order.filterMap fun k => comps[k]?
+  pure (indexSetsToBindings binds ordered)
+
+/-- Soundness: executable groups satisfy the declarative SCC spec. -/
+theorem sccGroups_sound {binds : List Surface.Binding}
+    {groups : List (List Surface.Binding)} :
+    sccGroups binds = some groups → ValidBindingGroups binds groups := by
+  sorry
+
+/-- Completeness: some valid grouping exists ⇒ executable succeeds
+    (not that it returns this exact `groups` — topo/intra-group order is free). -/
+theorem sccGroups_complete {binds : List Surface.Binding}
+    {groups : List (List Surface.Binding)} :
+    ValidBindingGroups binds groups → (sccGroups binds).isSome := by
+  sorry
+
+-- SCC `#guard`s
+private def bF : Surface.Binding :=
+  ⟨.mk "f", none,
+    .lambda (.name (.mk "x")) none (.app (.var (.mk "f")) (.var (.mk "x")))⟩
+private def bG : Surface.Binding :=
+  ⟨.mk "g", none, .var (.mk "f")⟩
+private def bA : Surface.Binding :=
+  ⟨.mk "a", none, .primLit (.int 1)⟩
+private def bB : Surface.Binding :=
+  ⟨.mk "b", none, .primLit (.int 2)⟩
+private def bH : Surface.Binding :=
+  ⟨.mk "h", none, .var (.mk "k")⟩
+private def bK : Surface.Binding :=
+  ⟨.mk "k", none, .var (.mk "h")⟩
+
+-- g depends on f ⇒ [f]-group outer, then [g]
+#guard match sccGroups [bF, bG] with
+  | some [[⟨.mk "f", _, _⟩], [⟨.mk "g", _, _⟩]] => true
+  | _ => false
+-- mutual h↔ k ⇒ one group containing both (order inside free)
+#guard match sccGroups [bH, bK] with
+  | some [g] =>
+      g.length = 2 && (g.map (·.name)).contains (.mk "h") &&
+        (g.map (·.name)).contains (.mk "k")
+  | _ => false
+-- independent a, b ⇒ two singleton groups (stable by seed order)
+#guard match sccGroups [bA, bB] with
+  | some [[⟨.mk "a", _, _⟩], [⟨.mk "b", _, _⟩]] => true
+  | _ => false
+-- duplicate names rejected
+#guard (sccGroups [bA, ⟨.mk "a", none, .primLit (.int 0)⟩]).isNone
+-- empty
+#guard match sccGroups [] with | some [] => true | _ => false
+
 
 /-- Build a Core list value from element expressions: `[x,y] ↦ Cons x (Cons y Nil)`. -/
 def mkList : List Expr → Expr
@@ -3031,6 +3309,8 @@ private def pLetRecTwo : Surface.Program :=
 #guard match Surface.desugarGroups [[]] (.primLit (.int 0)) with
   | .primLit (.int 0) => true
   | _ => false
+-- SCC → desugar → elaborate
+#guard (elaborateProgram ⟨[], (sccGroups [bF, bG]).getD [], .var (.mk "g")⟩).isSome
 -- SurfaceCovers is inhabited for the Maybe term (no matches → trivial coverage)
 example : ∀ ctors, SurfaceCovers ctors pMaybeId.term := fun _ =>
   .app (.ctor) (.primLit)
