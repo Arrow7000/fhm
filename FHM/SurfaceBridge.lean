@@ -10,15 +10,13 @@ This module is the **front end**: it lowers `Surface.Expr`/`Surface.Ty` into Cor
 and states the campaign's headline payoff — *a well-typed, exhaustive surface
 program elaborates to a Core program that is type-safe and never gets stuck*.
 
-**Status: expression headline COMPLETE and axiom-clean.** `surface_type_safe` and
-every lemma it depends on are proved `sorry`-free; `#print axioms surface_type_safe`
-= `{propext, Classical.choice, Quot.sound}`. `lowerTy`/`lower`/`elaborate` are
-executable (`#guard`-tested); `Lowers`/`SurfaceCovers`/`DTreeExhaustive`/
-`PatternWF` are the declarative specs. Surface `DataDecl` lowering (plan item 1,
-slice A) is also COMPLETE and axiom-clean (`lowerDataDecls_sound` /
-`_complete` / `LowersDataDecls.unique` / `.toWF`; axioms `{propext, Quot.sound}`).
-See `briefs/next-agent-brief-surface-bridge-followups.md` for what remains
-(whole-program pipeline, executable `checkExhaustive`, …).
+**Status: expression headline + DataDecl lowering + whole-program slice A COMPLETE.**
+`surface_type_safe`, DataDecl bridge, and `program_type_safe` /
+`lowerProgram_sound` / `lowerProgram_complete` / `toCombinedWF` are
+`sorry`-free. `lowerProgram_complete` is ∃-style (same match non-determinism as
+expression `lower_complete`). See
+`briefs/next-agent-brief-surface-bridge-followups.md` for what remains
+(SCC top-level bindings, executable `checkExhaustive`, …).
 
 ## Design decisions this skeleton bakes in (settled with Aron)
 
@@ -255,17 +253,24 @@ private def keDemo : KindEnv := [(nBool, 0), (nPair, 2), (nList, 1), (.mk "Maybe
   | some (.customTy (.mk "List") [.bvar 0]) => true | _ => false
 
 
-/-! ## 2b. Surface `DataDecl` lowering (plan item 1, slice A)
+/-! ## 2b. Surface `DataDecl` lowering (plan item 1)
 
-Named params → `paramCount` + de Bruijn field types via `lowerTy`; group-level
-`KindEnv` from headers so mutual refs work. Spec/impl split: `LowersDataDecls`
-is the declarative relation; `lowerDataDecls` is the executable function.
-Deterministic (no one-to-many), but still relational for Infer-style confidence.
-Prelude merging / expression-bridge rewiring are out of scope for this slice. -/
+Named params → `paramCount` + de Bruijn field types via `lowerTy`. An ambient
+`KindEnv` (`ke₀`, typically the prelude) is prepended so user fields may mention
+prelude types; headers of `sdecls` still contribute mutual refs. Spec/impl:
+`LowersDataDeclsIn` / `lowerDataDeclsIn`. The `ke₀ = []` specializations recover
+the original closed-group API. -/
 
 /-- Pass 1: type name ↦ arity from surface decl headers (params still named). -/
 def surfaceKindEnv (sdecls : List Surface.DataDecl) : KindEnv :=
   sdecls.map (fun d => (d.name, d.params.length))
+
+/-- Prelude kinds (from the Core `preludeDecls`). -/
+def preludeKindEnv : KindEnv := DataDecls.kindEnv preludeDecls
+
+/-- Ambient kinds ++ surface headers (prelude first). -/
+def declKindEnv (ke₀ : KindEnv) (sdecls : List Surface.DataDecl) : KindEnv :=
+  ke₀ ++ surfaceKindEnv sdecls
 
 /-- Field-type list lowers pointwise via `lowerTy`. -/
 inductive LowersFields (ke : KindEnv) (tvs : List ValName) :
@@ -294,14 +299,18 @@ inductive LowersDataDecl (ke : KindEnv) : Surface.DataDecl → DataDecl → Prop
         ⟨name, params, ctors⟩
         ⟨name, params.length, ctors'⟩
 
-/-- A surface decl group lowers to a Core decl group. -/
-structure LowersDataDecls
+/-- A surface decl group lowers under ambient kinds `ke₀`. -/
+structure LowersDataDeclsIn (ke₀ : KindEnv)
     (sdecls : List Surface.DataDecl) (decls : List DataDecl) : Prop where
   tyNamesNodup : (sdecls.map (·.name)).Nodup
   ctorNamesNodup :
     (sdecls.flatMap (fun d => d.ctors.map Prod.fst)).Nodup
   lowers :
-    List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) sdecls decls
+    List.Forall₂ (LowersDataDecl (declKindEnv ke₀ sdecls)) sdecls decls
+
+/-- Closed-group specialization (`ke₀ = []`). -/
+abbrev LowersDataDecls (sdecls : List Surface.DataDecl) (decls : List DataDecl) : Prop :=
+  LowersDataDeclsIn [] sdecls decls
 
 /-- Lower one surface decl against a kind env. -/
 def lowerDataDecl (ke : KindEnv) (s : Surface.DataDecl) : Option DataDecl := do
@@ -310,12 +319,17 @@ def lowerDataDecl (ke : KindEnv) (s : Surface.DataDecl) : Option DataDecl := do
     (lowerTyList ke s.params fs).map fun fs' => (n, fs')
   pure ⟨s.name, s.params.length, ctors'⟩
 
-/-- Lower a surface decl group: nodup guards, then each decl against the group `KindEnv`. -/
-def lowerDataDecls (sdecls : List Surface.DataDecl) : Option (List DataDecl) := do
+/-- Lower a surface decl group under ambient kinds `ke₀`. -/
+def lowerDataDeclsIn (ke₀ : KindEnv) (sdecls : List Surface.DataDecl) :
+    Option (List DataDecl) := do
   guard ((sdecls.map (·.name)).Nodup)
   guard ((sdecls.flatMap (fun d => d.ctors.map Prod.fst)).Nodup)
-  let ke := surfaceKindEnv sdecls
+  let ke := declKindEnv ke₀ sdecls
   sdecls.mapM (lowerDataDecl ke)
+
+/-- Closed-group specialization (`ke₀ = []`). -/
+def lowerDataDecls (sdecls : List Surface.DataDecl) : Option (List DataDecl) :=
+  lowerDataDeclsIn [] sdecls
 
 /-- A successful `mapM` yields pointwise `f a = some b`. -/
 private theorem mapM_forall₂_of_eq {α β : Type} (f : α → Option β) :
@@ -512,27 +526,22 @@ private theorem LowersCtors.flatMap_names_eq {ke : KindEnv} {tvs : List ValName}
   | nil => rfl
   | cons _ htl ih => simp only [List.map_cons, ih]
 
-private theorem LowersDataDecls.map_names_eq {sdecls : List Surface.DataDecl} {decls : List DataDecl}
-    (h : List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) sdecls decls) :
+private theorem LowersDataDeclsIn.map_names_eq {ke : KindEnv}
+    {sdecls : List Surface.DataDecl} {decls : List DataDecl}
+    (h : List.Forall₂ (LowersDataDecl ke) sdecls decls) :
     sdecls.map (·.name) = decls.map (·.name) := by
-  suffices ∀ {l1 l2}, List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) l1 l2 →
-      l1.map (·.name) = l2.map (·.name) from this h
-  intro l1 l2 h'
-  induction h' with
+  induction h with
   | nil => rfl
   | cons hdecl htl ih =>
     cases hdecl with | mk _ _ =>
     simp only [List.map_cons, ih]
 
-private theorem LowersDataDecls.flatMap_ctorNames_eq {sdecls : List Surface.DataDecl} {decls : List DataDecl}
-    (h : List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) sdecls decls) :
+private theorem LowersDataDeclsIn.flatMap_ctorNames_eq {ke : KindEnv}
+    {sdecls : List Surface.DataDecl} {decls : List DataDecl}
+    (h : List.Forall₂ (LowersDataDecl ke) sdecls decls) :
     (sdecls.flatMap (fun d => d.ctors.map Prod.fst)) =
       (decls.flatMap (fun d => d.ctors.map Prod.fst)) := by
-  suffices ∀ {l1 l2}, List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) l1 l2 →
-      (l1.flatMap (fun d => d.ctors.map Prod.fst)) =
-        (l2.flatMap (fun d => d.ctors.map Prod.fst)) from this h
-  intro l1 l2 h'
-  induction h' with
+  induction h with
   | nil => rfl
   | cons hdecl htl ih =>
     cases hdecl with
@@ -540,17 +549,14 @@ private theorem LowersDataDecls.flatMap_ctorNames_eq {sdecls : List Surface.Data
       have hflat := LowersCtors.flatMap_names_eq hctors
       simp only [List.flatMap_cons, ih, hflat]
 
-private theorem LowersDataDecls.kindEnv_eq {sdecls : List Surface.DataDecl} {decls : List DataDecl}
-    (h : List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) sdecls decls) :
+private theorem LowersDataDeclsIn.kindEnv_eq {ke : KindEnv}
+    {sdecls : List Surface.DataDecl} {decls : List DataDecl}
+    (h : List.Forall₂ (LowersDataDecl ke) sdecls decls) :
     surfaceKindEnv sdecls = DataDecls.kindEnv decls := by
   have hmap :
       sdecls.map (fun d => (d.name, d.params.length)) =
         decls.map (fun d => (d.name, d.paramCount)) := by
-    suffices ∀ {l1 l2}, List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) l1 l2 →
-        l1.map (fun d => (d.name, d.params.length)) =
-          l2.map (fun d => (d.name, d.paramCount)) from this h
-    intro l1 l2 h'
-    induction h' with
+    induction h with
     | nil => rfl
     | cons hdecl htl ih =>
       cases hdecl with | mk _ _ =>
@@ -579,62 +585,153 @@ private theorem LowersDataDecl.fieldsWF {ke : KindEnv} {s : Surface.DataDecl} {d
     intro c hc ty hty
     exact LowersCtors.fieldsWF hctors c hc ty hty
 
+private theorem LookupList.get?_append_left {k v : Type} [DecidableEq k]
+    (l l' : LookupList k v) (key : k) {val : v}
+    (h : LookupList.get? l key = some val) :
+    LookupList.get? (l ++ l') key = some val := by
+  induction l generalizing key with
+  | nil =>
+    simp [LookupList.get?] at h
+  | cons hd tl ih =>
+    cases hd with
+    | mk k' v' =>
+      by_cases hk : key = k'
+      · subst hk
+        simp only [LookupList.get?] at h
+        cases h
+        simp only [LookupList.get?, List.cons_append]
+        split_ifs <;> rfl
+      · have htl : LookupList.get? tl key = some val := by
+          simp [LookupList.get?, hk] at h
+          exact h
+        simp [LookupList.get?, List.cons_append, hk]
+        exact ih key htl
+
+private theorem Ty.WellKinded.weaken {ke ke' : KindEnv} {pc : Nat} {ty : Ty}
+    (h : Ty.WellKinded ke pc ty) : Ty.WellKinded (ke ++ ke') pc ty := by
+  cases h with
+  | prim => exact .prim
+  | bvar hi => exact .bvar hi
+  | arrow ha hb => exact .arrow (Ty.WellKinded.weaken ha) (Ty.WellKinded.weaken hb)
+  | customTy hget hargs =>
+    exact .customTy (LookupList.get?_append_left ke ke' _ hget)
+      (fun arg ha => Ty.WellKinded.weaken (hargs arg ha))
+
+private theorem DataDecls.kindEnv_append (pre user : List DataDecl) :
+    DataDecls.kindEnv (pre ++ user) = DataDecls.kindEnv pre ++ DataDecls.kindEnv user := by
+  simp [DataDecls.kindEnv, List.map_append]
+
 /-- Soundness: executable success implies the declarative relation. -/
-theorem lowerDataDecls_sound {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
-    lowerDataDecls sdecls = some decls → LowersDataDecls sdecls decls := by
+theorem lowerDataDeclsIn_sound {ke₀ : KindEnv}
+    {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
+    lowerDataDeclsIn ke₀ sdecls = some decls → LowersDataDeclsIn ke₀ sdecls decls := by
   intro h
-  unfold lowerDataDecls at h
+  unfold lowerDataDeclsIn at h
   obtain ⟨hP1, h⟩ := option_guard_bind h
   obtain ⟨hP2, h⟩ := option_guard_bind h
-  have hfor := mapM_forall₂_of_eq (lowerDataDecl (surfaceKindEnv sdecls)) h
+  have hfor := mapM_forall₂_of_eq (lowerDataDecl (declKindEnv ke₀ sdecls)) h
   have hlowers := Forall₂_imp
-    (R := fun s d => lowerDataDecl (surfaceKindEnv sdecls) s = some d)
-    (S := LowersDataDecl (surfaceKindEnv sdecls))
+    (R := fun s d => lowerDataDecl (declKindEnv ke₀ sdecls) s = some d)
+    (S := LowersDataDecl (declKindEnv ke₀ sdecls))
     (fun {s d} hs => lowerDataDecl_sound hs) hfor
   exact { tyNamesNodup := hP1, ctorNamesNodup := hP2, lowers := hlowers }
 
 /-- Completeness: the relation is realized by the executable lowerer. -/
-theorem lowerDataDecls_complete {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
-    LowersDataDecls sdecls decls → lowerDataDecls sdecls = some decls := by
+theorem lowerDataDeclsIn_complete {ke₀ : KindEnv}
+    {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
+    LowersDataDeclsIn ke₀ sdecls decls → lowerDataDeclsIn ke₀ sdecls = some decls := by
   intro h
-  unfold lowerDataDecls
+  unfold lowerDataDeclsIn
   rw [option_guard_bind_pos h.tyNamesNodup, option_guard_bind_pos h.ctorNamesNodup]
   simp only
   rw [mapM_of_forall₂_of_eq _ (Forall₂_imp
-    (R := LowersDataDecl (surfaceKindEnv sdecls))
-    (S := fun s d => lowerDataDecl (surfaceKindEnv sdecls) s = some d)
+    (R := LowersDataDecl (declKindEnv ke₀ sdecls))
+    (S := fun s d => lowerDataDecl (declKindEnv ke₀ sdecls) s = some d)
     (fun {s d} hs => lowerDataDecl_complete hs) h.lowers)]
 
-/-- Determinism of the relation (follows from completeness + soundness, or directly). -/
-theorem LowersDataDecls.unique {sdecls : List Surface.DataDecl}
+/-- Determinism of the relation. -/
+theorem LowersDataDeclsIn.unique {ke₀ : KindEnv} {sdecls : List Surface.DataDecl}
     {decls decls' : List DataDecl} :
-    LowersDataDecls sdecls decls → LowersDataDecls sdecls decls' → decls = decls' := by
+    LowersDataDeclsIn ke₀ sdecls decls → LowersDataDeclsIn ke₀ sdecls decls' →
+      decls = decls' := by
   intro h1 h2
-  exact Option.some.inj ((lowerDataDecls_complete h1).symm.trans (lowerDataDecls_complete h2))
+  exact Option.some.inj
+    ((lowerDataDeclsIn_complete h1).symm.trans (lowerDataDeclsIn_complete h2))
 
-/-- Payoff: a related Core group is well-formed for `Decls`. -/
-theorem LowersDataDecls.toWF {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
-    LowersDataDecls sdecls decls → DataDecls.WF decls := by
+/-- Closed-group payoff: related Core decls are well-formed on their own kind env. -/
+theorem LowersDataDeclsIn.toWF {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
+    LowersDataDeclsIn [] sdecls decls → DataDecls.WF decls := by
   intro h
-  have hke := LowersDataDecls.kindEnv_eq h.lowers
-  have hnames := LowersDataDecls.map_names_eq h.lowers
-  have hctors := LowersDataDecls.flatMap_ctorNames_eq h.lowers
+  have hke := LowersDataDeclsIn.kindEnv_eq h.lowers
+  have hnames := LowersDataDeclsIn.map_names_eq h.lowers
+  have hctors := LowersDataDeclsIn.flatMap_ctorNames_eq h.lowers
   exact {
     tyNamesNodup := hnames ▸ h.tyNamesNodup
     ctorNamesNodup := hctors ▸ h.ctorNamesNodup
     fields := fun d hd c hc ty hty => by
       obtain ⟨sd, _, hdecl⟩ := Forall₂_mem_right h.lowers hd
       have hwf := LowersDataDecl.fieldsWF hdecl
-      rw [hke] at hwf
+      have hke' : declKindEnv [] sdecls = DataDecls.kindEnv decls := by
+        simpa [declKindEnv] using hke
+      rw [hke'] at hwf
       exact hwf c hc ty hty
   }
 
-/-- Corollary: successful lowering yields a well-formed Core decl group. -/
+/-- Prelude + user decls form a well-formed combined group.
+    Declarative-side companion for `LowersProgram` witnesses; the executable
+    `lowerProgram_sound` path gets the same fact from `elabDecls_sound` instead.
+    Needs `Ty.WellKinded` weakening along kind-env extension + name disjointness. -/
+theorem LowersDataDeclsIn.toCombinedWF
+    {sdecls : List Surface.DataDecl} {userCore : List DataDecl}
+    (hP : DataDecls.WF preludeDecls)
+    (hU : LowersDataDeclsIn preludeKindEnv sdecls userCore)
+    (hTy : (preludeDecls.map (·.name) ++ sdecls.map (·.name)).Nodup)
+    (hCtor :
+      ((preludeDecls.flatMap (fun d => d.ctors.map Prod.fst)) ++
+        (sdecls.flatMap (fun d => d.ctors.map Prod.fst))).Nodup) :
+    DataDecls.WF (preludeDecls ++ userCore) := by
+  have hnames := LowersDataDeclsIn.map_names_eq hU.lowers
+  have hctors := LowersDataDeclsIn.flatMap_ctorNames_eq hU.lowers
+  have hkeUser := LowersDataDeclsIn.kindEnv_eq hU.lowers
+  have hcombinedKe :
+      DataDecls.kindEnv (preludeDecls ++ userCore) = declKindEnv preludeKindEnv sdecls := by
+    rw [DataDecls.kindEnv_append, declKindEnv, preludeKindEnv, hkeUser]
+  exact {
+    tyNamesNodup := by simpa [List.map_append, hnames] using hTy
+    ctorNamesNodup := by simpa [List.flatMap_append, hctors] using hCtor
+    fields := fun d hd c hc ty hty => by
+      rcases List.mem_append.mp hd with hdPre | hdUser
+      · exact Ty.WellKinded.weaken (hP.fields d hdPre c hc ty hty)
+      · obtain ⟨sd, _, hdecl⟩ := Forall₂_mem_right hU.lowers hdUser
+        have hwf := LowersDataDecl.fieldsWF hdecl
+        exact (hcombinedKe ▸ hwf) c hc ty hty
+  }
+
+/-- Closed-group soundness (abbrev API). -/
+theorem lowerDataDecls_sound {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
+    lowerDataDecls sdecls = some decls → LowersDataDecls sdecls decls :=
+  fun h => lowerDataDeclsIn_sound (by simpa [lowerDataDecls] using h)
+
+/-- Closed-group completeness (abbrev API). -/
+theorem lowerDataDecls_complete {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
+    LowersDataDecls sdecls decls → lowerDataDecls sdecls = some decls :=
+  fun h => by simpa [lowerDataDecls] using lowerDataDeclsIn_complete h
+
+theorem LowersDataDecls.unique {sdecls : List Surface.DataDecl}
+    {decls decls' : List DataDecl} :
+    LowersDataDecls sdecls decls → LowersDataDecls sdecls decls' → decls = decls' :=
+  LowersDataDeclsIn.unique
+
+theorem LowersDataDecls.toWF {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
+    LowersDataDecls sdecls decls → DataDecls.WF decls :=
+  LowersDataDeclsIn.toWF
+
+/-- Corollary: successful closed-group lowering yields a well-formed Core decl group. -/
 theorem lowerDataDecls_WF {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
     lowerDataDecls sdecls = some decls → DataDecls.WF decls :=
   fun h => LowersDataDecls.toWF (lowerDataDecls_sound h)
 
-/-- Corollary: successful lowering elaborates into a `CtorEnv`. -/
+/-- Corollary: successful closed-group lowering elaborates into a `CtorEnv`. -/
 theorem lowerDataDecls_elab {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
     lowerDataDecls sdecls = some decls → (elabDecls decls).isSome :=
   fun h => elabDecls_complete (lowerDataDecls_WF h)
@@ -2819,6 +2916,97 @@ theorem lower_elab_exhaustive {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   exact AllMatchesExhaustive.substTyFvars S hexh_out
 
 
+/-! ## 9b. Whole-program pipeline (plan item 7, slice A)
+
+`Surface.Program` = user `DataDecl`s + body expression. Prelude is merged in:
+lower user decls under `preludeKindEnv`, then `elabDecls (preludeDecls ++ userCore)`,
+then reuse expression `lower`/`elaborate`/`surface_type_safe`. No top-level binding
+SCC yet — vals live in `body`. -/
+
+/-- Declarative program lowering: user decls under the prelude, combined env, body. -/
+inductive LowersProgram : Surface.Program → CtorEnv → Expr → Prop
+  | mk {p : Surface.Program} {ctors : CtorEnv} {c : Expr} {userCore : List DataDecl} :
+      LowersDataDeclsIn preludeKindEnv p.decls userCore →
+      DataDecls.WF (preludeDecls ++ userCore) →
+      elabDecls (preludeDecls ++ userCore) = some ctors →
+      Lowers ctors p.body c →
+      LowersProgram p ctors c
+
+/-- Elaborate a program's decl group + lower its body to Core. -/
+def lowerProgram (p : Surface.Program) : Option (CtorEnv × Expr) := do
+  let userCore ← lowerDataDeclsIn preludeKindEnv p.decls
+  let ctors ← elabDecls (preludeDecls ++ userCore)
+  let c ← lower ctors p.body
+  pure (ctors, c)
+
+/-- Lower then elaborate the program body under the program's `CtorEnv`. -/
+def elaborateProgram (p : Surface.Program) : Option Expr := do
+  let (ctors, _) ← lowerProgram p
+  elaborate ctors p.body
+
+private theorem option_bind_eq_some {α β : Type} {o : Option α} {f : α → Option β} {b : β}
+    (h : o >>= f = some b) : ∃ a, o = some a ∧ f a = some b :=
+  Option.bind_eq_some_iff.mp h
+
+/-- Soundness: executable program lowering implies the declarative relation. -/
+theorem lowerProgram_sound {p : Surface.Program} {ctors : CtorEnv} {c : Expr} :
+    lowerProgram p = some (ctors, c) → LowersProgram p ctors c := by
+  intro h
+  unfold lowerProgram at h
+  obtain ⟨userCore, hUser, hb⟩ := option_bind_eq_some h
+  obtain ⟨ctors', hElab, hb'⟩ := option_bind_eq_some hb
+  obtain ⟨c', hBody, hPure⟩ := option_bind_eq_some hb'
+  simp at hPure
+  obtain ⟨rfl, rfl⟩ := hPure
+  refine LowersProgram.mk (lowerDataDeclsIn_sound hUser) (elabDecls_sound hElab) hElab
+    (lower_sound hBody)
+
+/-- Completeness: a related program has *some* executable lowering to the same
+    `CtorEnv`. The Core body need not be definitionally `c` — `Lowers` /
+    `LowersExpr.match_` is one-to-many (any behaviourally adequate `emitInner`),
+    matching expression-level `lower_complete` (which only concludes `.isSome`). -/
+theorem lowerProgram_complete {p : Surface.Program} {ctors : CtorEnv} {c : Expr} :
+    LowersProgram p ctors c → ∃ c', lowerProgram p = some (ctors, c') := by
+  intro h
+  cases h with
+  | mk hUser _hWF hElab hBody =>
+    obtain ⟨c', hc'⟩ := Option.isSome_iff_exists.mp (lower_complete hBody)
+    refine ⟨c', ?_⟩
+    simp [lowerProgram, lowerDataDeclsIn_complete hUser, hElab, hc']
+
+-- Program-level `#guard`s
+private def pPreludeIf : Surface.Program :=
+  ⟨[], .ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0))⟩
+
+private def pMaybeId : Surface.Program :=
+  ⟨[⟨.mk "Maybe", [.mk "a"],
+      [(.mk "Just", [.tvar (.mk "a")]), (.mk "Nothing", [])]⟩],
+   .app (.ctor ⟨"Just"⟩) (.primLit (.int 5))⟩
+
+private def pClashBool : Surface.Program :=
+  ⟨[⟨.mk "Bool", [], [(.mk "Nope", [])]⟩], .primLit (.int 0)⟩
+
+-- prelude-only body (if) elaborates
+#guard (elaborateProgram pPreludeIf).isSome
+-- user Maybe + Just 5 elaborates
+#guard (elaborateProgram pMaybeId).isSome
+-- redeclaring Bool clashes with prelude
+#guard (lowerProgram pClashBool).isNone
+-- user field references prelude type; combined decl group elaborates
+#guard match lowerDataDeclsIn preludeKindEnv
+    [⟨.mk "Box", [], [(.mk "Mk", [.customTy (.mk "List") [.prim .bool]])]⟩] with
+  | some userCore => (elabDecls (preludeDecls ++ userCore)).isSome
+  | none => false
+-- wrong-arity prelude ref in a user field → rejected
+#guard (lowerDataDeclsIn preludeKindEnv
+  [⟨.mk "Bad", [], [(.mk "Mk", [.customTy (.mk "List") [.prim .int, .prim .int]])]⟩]).isNone
+-- user ctor name clashes with prelude ctor True → rejected
+#guard (lowerProgram ⟨[⟨.mk "Box", [], [(.mk "True", [])]⟩], .primLit (.int 0)⟩).isNone
+-- SurfaceCovers is inhabited for the Maybe body (no matches → trivial coverage)
+example : ∀ ctors, SurfaceCovers ctors pMaybeId.body := fun _ =>
+  .app (.ctor) (.primLit)
+
+
 /-! ## 10. THE HEADLINE
 
 A well-typed, exhaustive surface program elaborates to a Core term that is
@@ -2857,5 +3045,26 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   · -- (O6) non-stuckness: iterated type safety of the elaborated term.
     intro e' hrtc
     exact (TypeOfElabHM.type_safety_star hty hexh e' hrtc).2
+
+/-- **Well-typed surface programs don't go wrong** (program-level).
+    Composes decl elaboration with `surface_type_safe` on the body. -/
+theorem program_type_safe {p : Surface.Program} {ctors : CtorEnv} {c : Expr}
+    (hlow : lowerProgram p = some (ctors, c))
+    (htc : (typecheck ctors c).isSome)
+    (hcov : SurfaceCovers ctors p.body) :
+    ∃ e τ, elaborateProgram p = some e ∧
+      TypeOfElabHM ⟨[], ctors⟩ e τ ∧
+      AllMatchesExhaustive ctors e ∧
+      ∀ e', Relation.ReflTransGen Step e e' →
+        (IsValue e' ∨ ∃ e'', Step e' e'') := by
+  have hlp := hlow
+  unfold lowerProgram at hlow
+  obtain ⟨userCore, _, hb'⟩ := option_bind_eq_some hlow
+  obtain ⟨ctors', _, hb''⟩ := option_bind_eq_some hb'
+  obtain ⟨c', hBody, hPure⟩ := option_bind_eq_some hb''
+  rcases hPure with ⟨rfl, rfl⟩
+  obtain ⟨e, τ, helab, hty, hexh, hsafe⟩ := surface_type_safe hBody htc hcov
+  refine ⟨e, τ, ?_, hty, hexh, hsafe⟩
+  simp [elaborateProgram, hlp, helab]
 
 end SurfaceBridge

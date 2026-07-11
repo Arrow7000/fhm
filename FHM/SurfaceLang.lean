@@ -79,3 +79,10 @@ inductive Expr
   | ctor (name : CtorName)
   | ife (cond t f : Expr)
   | match_ (scrutinee : Expr) (branches : List (Pattern × Expr))
+
+/-- A surface program: user data declarations plus a body expression.
+    Top-level value bindings (SCC / nested `letRec`) are a later slice —
+    for now vals live inside `body` via `letIn`/`letRecIn`. -/
+structure Program where
+  decls : List DataDecl
+  body  : Expr
