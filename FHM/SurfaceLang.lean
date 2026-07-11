@@ -80,9 +80,30 @@ inductive Expr
   | ife (cond t f : Expr)
   | match_ (scrutinee : Expr) (branches : List (Pattern × Expr))
 
-/-- A surface program: user data declarations plus a body expression.
-    Top-level value bindings (SCC / nested `letRec`) are a later slice —
-    for now vals live inside `body` via `letIn`/`letRecIn`. -/
+/-- A top-level value binding (name, optional scheme annotation, RHS). -/
+structure Binding where
+  name : ValName
+  ann  : Option PolyTy
+  rhs  : Expr
+
+/-- A surface program: user data declarations, explicit mutual-binding groups
+    (later: SCC output), and a body. Each nonempty group desugars to `letRecIn`
+    (including size 1 — self-recursion works; SCC is a later slice). -/
 structure Program where
-  decls : List DataDecl
-  body  : Expr
+  decls  : List DataDecl
+  groups : List (List Binding)
+  body   : Expr
+
+def bindingTriple (b : Binding) : ValName × Option PolyTy × Expr :=
+  (b.name, b.ann, b.rhs)
+
+/-- Nest groups outermost-first as `letRecIn`, then `body`.
+    Empty groups are skipped; nonempty → always `letRecIn` (incl. size 1). -/
+def desugarGroups (groups : List (List Binding)) (body : Expr) : Expr :=
+  groups.foldr (fun g acc =>
+    if g.isEmpty then acc
+    else .letRecIn (g.map bindingTriple) acc) body
+
+/-- The expression a program lowers: desugared groups wrapped around `body`. -/
+def Program.term (p : Program) : Expr :=
+  desugarGroups p.groups p.body

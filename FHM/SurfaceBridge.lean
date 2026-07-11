@@ -10,13 +10,11 @@ This module is the **front end**: it lowers `Surface.Expr`/`Surface.Ty` into Cor
 and states the campaign's headline payoff — *a well-typed, exhaustive surface
 program elaborates to a Core program that is type-safe and never gets stuck*.
 
-**Status: expression headline + DataDecl lowering + whole-program slice A COMPLETE.**
-`surface_type_safe`, DataDecl bridge, and `program_type_safe` /
-`lowerProgram_sound` / `lowerProgram_complete` / `toCombinedWF` are
-`sorry`-free. `lowerProgram_complete` is ∃-style (same match non-determinism as
-expression `lower_complete`). See
-`briefs/next-agent-brief-surface-bridge-followups.md` for what remains
-(SCC top-level bindings, executable `checkExhaustive`, …).
+**Status: expression headline + DataDecl + Program (decls/groups/body) COMPLETE.**
+`surface_type_safe`, DataDecl bridge, and `program_type_safe` (via `Program.term`
+desugar of explicit binding groups → `letRecIn`) are `sorry`-free. SCC invention
+of `groups` is future work. See
+`briefs/next-agent-brief-surface-bridge-followups.md`.
 
 ## Design decisions this skeleton bakes in (settled with Aron)
 
@@ -2916,33 +2914,44 @@ theorem lower_elab_exhaustive {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   exact AllMatchesExhaustive.substTyFvars S hexh_out
 
 
-/-! ## 9b. Whole-program pipeline (plan item 7, slice A)
+/-! ## 9b. Whole-program pipeline (plan item 7)
 
-`Surface.Program` = user `DataDecl`s + body expression. Prelude is merged in:
-lower user decls under `preludeKindEnv`, then `elabDecls (preludeDecls ++ userCore)`,
-then reuse expression `lower`/`elaborate`/`surface_type_safe`. No top-level binding
-SCC yet — vals live in `body`. -/
+`Surface.Program` = user `DataDecl`s + explicit binding `groups` + body.
+Groups desugar to nested `letRecIn` (`Program.term`); prelude is merged in;
+then reuse expression `lower`/`elaborate`/`surface_type_safe`. SCC that *invents*
+`groups` from a flat binding list is a later slice — same desugarer consumer. -/
 
-/-- Declarative program lowering: user decls under the prelude, combined env, body. -/
+theorem desugarGroups_nil (body : Surface.Expr) :
+    Surface.desugarGroups [] body = body := rfl
+
+theorem Program.term_no_groups (p : Surface.Program) (h : p.groups = []) :
+    p.term = p.body := by
+  rcases p with ⟨decls, groups, body⟩
+  simp only [Surface.Program.term] at *
+  subst h
+  rfl
+
+/-- Declarative program lowering: user decls under the prelude, combined env,
+    desugared term. -/
 inductive LowersProgram : Surface.Program → CtorEnv → Expr → Prop
   | mk {p : Surface.Program} {ctors : CtorEnv} {c : Expr} {userCore : List DataDecl} :
       LowersDataDeclsIn preludeKindEnv p.decls userCore →
       DataDecls.WF (preludeDecls ++ userCore) →
       elabDecls (preludeDecls ++ userCore) = some ctors →
-      Lowers ctors p.body c →
+      Lowers ctors p.term c →
       LowersProgram p ctors c
 
-/-- Elaborate a program's decl group + lower its body to Core. -/
+/-- Elaborate a program's decl group + lower its desugared term to Core. -/
 def lowerProgram (p : Surface.Program) : Option (CtorEnv × Expr) := do
   let userCore ← lowerDataDeclsIn preludeKindEnv p.decls
   let ctors ← elabDecls (preludeDecls ++ userCore)
-  let c ← lower ctors p.body
+  let c ← lower ctors p.term
   pure (ctors, c)
 
-/-- Lower then elaborate the program body under the program's `CtorEnv`. -/
+/-- Lower then elaborate the program term under the program's `CtorEnv`. -/
 def elaborateProgram (p : Surface.Program) : Option Expr := do
   let (ctors, _) ← lowerProgram p
-  elaborate ctors p.body
+  elaborate ctors p.term
 
 private theorem option_bind_eq_some {α β : Type} {o : Option α} {f : α → Option β} {b : β}
     (h : o >>= f = some b) : ∃ a, o = some a ∧ f a = some b :=
@@ -2976,15 +2985,28 @@ theorem lowerProgram_complete {p : Surface.Program} {ctors : CtorEnv} {c : Expr}
 
 -- Program-level `#guard`s
 private def pPreludeIf : Surface.Program :=
-  ⟨[], .ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0))⟩
+  ⟨[], [], .ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0))⟩
 
 private def pMaybeId : Surface.Program :=
   ⟨[⟨.mk "Maybe", [.mk "a"],
       [(.mk "Just", [.tvar (.mk "a")]), (.mk "Nothing", [])]⟩],
+   [],
    .app (.ctor ⟨"Just"⟩) (.primLit (.int 5))⟩
 
 private def pClashBool : Surface.Program :=
-  ⟨[⟨.mk "Bool", [], [(.mk "Nope", [])]⟩], .primLit (.int 0)⟩
+  ⟨[⟨.mk "Bool", [], [(.mk "Nope", [])]⟩], [], .primLit (.int 0)⟩
+
+-- Simple top-level binding group: `let rec x = 1 in x`
+private def pLetRecOne : Surface.Program :=
+  ⟨[], [[{ name := .mk "x", ann := none, rhs := .primLit (.int 1) }]],
+   .var (.mk "x")⟩
+
+-- Two nested singleton groups: `let rec x = 1 in let rec y = x in y`
+private def pLetRecTwo : Surface.Program :=
+  ⟨[],
+   [[{ name := .mk "x", ann := none, rhs := .primLit (.int 1) }],
+    [{ name := .mk "y", ann := none, rhs := .var (.mk "x") }]],
+   .var (.mk "y")⟩
 
 -- prelude-only body (if) elaborates
 #guard (elaborateProgram pPreludeIf).isSome
@@ -3001,9 +3023,16 @@ private def pClashBool : Surface.Program :=
 #guard (lowerDataDeclsIn preludeKindEnv
   [⟨.mk "Bad", [], [(.mk "Mk", [.customTy (.mk "List") [.prim .int, .prim .int]])]⟩]).isNone
 -- user ctor name clashes with prelude ctor True → rejected
-#guard (lowerProgram ⟨[⟨.mk "Box", [], [(.mk "True", [])]⟩], .primLit (.int 0)⟩).isNone
--- SurfaceCovers is inhabited for the Maybe body (no matches → trivial coverage)
-example : ∀ ctors, SurfaceCovers ctors pMaybeId.body := fun _ =>
+#guard (lowerProgram ⟨[⟨.mk "Box", [], [(.mk "True", [])]⟩], [], .primLit (.int 0)⟩).isNone
+-- top-level binding groups desugar + elaborate
+#guard (elaborateProgram pLetRecOne).isSome
+#guard (elaborateProgram pLetRecTwo).isSome
+-- empty group is a no-op (`term` equals body)
+#guard match Surface.desugarGroups [[]] (.primLit (.int 0)) with
+  | .primLit (.int 0) => true
+  | _ => false
+-- SurfaceCovers is inhabited for the Maybe term (no matches → trivial coverage)
+example : ∀ ctors, SurfaceCovers ctors pMaybeId.term := fun _ =>
   .app (.ctor) (.primLit)
 
 
@@ -3047,11 +3076,11 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     exact (TypeOfElabHM.type_safety_star hty hexh e' hrtc).2
 
 /-- **Well-typed surface programs don't go wrong** (program-level).
-    Composes decl elaboration with `surface_type_safe` on the body. -/
+    Composes decl elaboration with `surface_type_safe` on the desugared term. -/
 theorem program_type_safe {p : Surface.Program} {ctors : CtorEnv} {c : Expr}
     (hlow : lowerProgram p = some (ctors, c))
     (htc : (typecheck ctors c).isSome)
-    (hcov : SurfaceCovers ctors p.body) :
+    (hcov : SurfaceCovers ctors p.term) :
     ∃ e τ, elaborateProgram p = some e ∧
       TypeOfElabHM ⟨[], ctors⟩ e τ ∧
       AllMatchesExhaustive ctors e ∧
