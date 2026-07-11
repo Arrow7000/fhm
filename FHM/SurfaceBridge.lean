@@ -10,14 +10,15 @@ This module is the **front end**: it lowers `Surface.Expr`/`Surface.Ty` into Cor
 and states the campaign's headline payoff — *a well-typed, exhaustive surface
 program elaborates to a Core program that is type-safe and never gets stuck*.
 
-**Status: COMPLETE and axiom-clean.** The headline `surface_type_safe` and every
-lemma it depends on are proved `sorry`-free; `#print axioms surface_type_safe`
+**Status: expression headline COMPLETE and axiom-clean.** `surface_type_safe` and
+every lemma it depends on are proved `sorry`-free; `#print axioms surface_type_safe`
 = `{propext, Classical.choice, Quot.sound}`. `lowerTy`/`lower`/`elaborate` are
 executable (`#guard`-tested); `Lowers`/`SurfaceCovers`/`DTreeExhaustive`/
-`PatternWF` are the declarative specs. See
-`briefs/next-agent-brief-surface-bridge-followups.md` for what remains (surface
-`DataDecl` lowering, whole-program top-level pipeline, executable
-`checkExhaustive`, error messages).
+`PatternWF` are the declarative specs. Surface `DataDecl` lowering (plan item 1,
+slice A) is also COMPLETE and axiom-clean (`lowerDataDecls_sound` /
+`_complete` / `LowersDataDecls.unique` / `.toWF`; axioms `{propext, Quot.sound}`).
+See `briefs/next-agent-brief-surface-bridge-followups.md` for what remains
+(whole-program pipeline, executable `checkExhaustive`, …).
 
 ## Design decisions this skeleton bakes in (settled with Aron)
 
@@ -252,6 +253,436 @@ private def keDemo : KindEnv := [(nBool, 0), (nPair, 2), (nList, 1), (.mk "Maybe
 -- nested application under a tyvar scope
 #guard match lowerTy keDemo [.mk "a"] (.customTy nList [.tvar (.mk "a")]) with
   | some (.customTy (.mk "List") [.bvar 0]) => true | _ => false
+
+
+/-! ## 2b. Surface `DataDecl` lowering (plan item 1, slice A)
+
+Named params → `paramCount` + de Bruijn field types via `lowerTy`; group-level
+`KindEnv` from headers so mutual refs work. Spec/impl split: `LowersDataDecls`
+is the declarative relation; `lowerDataDecls` is the executable function.
+Deterministic (no one-to-many), but still relational for Infer-style confidence.
+Prelude merging / expression-bridge rewiring are out of scope for this slice. -/
+
+/-- Pass 1: type name ↦ arity from surface decl headers (params still named). -/
+def surfaceKindEnv (sdecls : List Surface.DataDecl) : KindEnv :=
+  sdecls.map (fun d => (d.name, d.params.length))
+
+/-- Field-type list lowers pointwise via `lowerTy`. -/
+inductive LowersFields (ke : KindEnv) (tvs : List ValName) :
+    List Surface.Ty → List Ty → Prop
+  | nil : LowersFields ke tvs [] []
+  | cons {sty cty stys ctys} :
+      lowerTy ke tvs sty = some cty →
+      LowersFields ke tvs stys ctys →
+      LowersFields ke tvs (sty :: stys) (cty :: ctys)
+
+/-- Constructor list: names preserved, fields via `LowersFields`. -/
+inductive LowersCtors (ke : KindEnv) (tvs : List ValName) :
+    List (CtorName × List Surface.Ty) → List (CtorName × List Ty) → Prop
+  | nil : LowersCtors ke tvs [] []
+  | cons {n fs fs' rest rest'} :
+      LowersFields ke tvs fs fs' →
+      LowersCtors ke tvs rest rest' →
+      LowersCtors ke tvs ((n, fs) :: rest) ((n, fs') :: rest')
+
+/-- One surface decl lowers to a Core `DataDecl` against an ambient `KindEnv`. -/
+inductive LowersDataDecl (ke : KindEnv) : Surface.DataDecl → DataDecl → Prop
+  | mk {name params ctors ctors'} :
+      params.Nodup →
+      LowersCtors ke params ctors ctors' →
+      LowersDataDecl ke
+        ⟨name, params, ctors⟩
+        ⟨name, params.length, ctors'⟩
+
+/-- A surface decl group lowers to a Core decl group. -/
+structure LowersDataDecls
+    (sdecls : List Surface.DataDecl) (decls : List DataDecl) : Prop where
+  tyNamesNodup : (sdecls.map (·.name)).Nodup
+  ctorNamesNodup :
+    (sdecls.flatMap (fun d => d.ctors.map Prod.fst)).Nodup
+  lowers :
+    List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) sdecls decls
+
+/-- Lower one surface decl against a kind env. -/
+def lowerDataDecl (ke : KindEnv) (s : Surface.DataDecl) : Option DataDecl := do
+  guard s.params.Nodup
+  let ctors' ← s.ctors.mapM fun (n, fs) =>
+    (lowerTyList ke s.params fs).map fun fs' => (n, fs')
+  pure ⟨s.name, s.params.length, ctors'⟩
+
+/-- Lower a surface decl group: nodup guards, then each decl against the group `KindEnv`. -/
+def lowerDataDecls (sdecls : List Surface.DataDecl) : Option (List DataDecl) := do
+  guard ((sdecls.map (·.name)).Nodup)
+  guard ((sdecls.flatMap (fun d => d.ctors.map Prod.fst)).Nodup)
+  let ke := surfaceKindEnv sdecls
+  sdecls.mapM (lowerDataDecl ke)
+
+/-- A successful `mapM` yields pointwise `f a = some b`. -/
+private theorem mapM_forall₂_of_eq {α β : Type} (f : α → Option β) :
+    ∀ {l vs}, l.mapM f = some vs → List.Forall₂ (fun a b => f a = some b) l vs
+  | [], vs => by
+    intro h; rw [List.mapM_nil] at h; injection h with hvs; subst hvs; exact .nil
+  | a :: l, vs => by
+    intro h
+    rw [List.mapM_cons] at h
+    cases hfa : f a with
+    | none => simp [hfa] at h
+    | some b =>
+      cases hrest : l.mapM f with
+      | none => simp [hrest] at h
+      | some rest =>
+        rw [hfa, hrest] at h
+        simp only [Option.bind_eq_bind, Option.bind_some, Option.pure_def,
+          Option.some.injEq] at h
+        obtain rfl := h.symm
+        exact .cons hfa (mapM_forall₂_of_eq f hrest)
+
+/-- Converse: pointwise `f a = some b` makes `mapM` succeed. -/
+private theorem mapM_of_forall₂_of_eq {α β : Type} (f : α → Option β) :
+    ∀ {l vs}, List.Forall₂ (fun a b => f a = some b) l vs → l.mapM f = some vs
+  | [], vs => by
+    intro h; cases h; simp [List.mapM_nil]
+  | a :: l, b :: vs => by
+    intro h
+    cases h with
+    | cons hab htl =>
+      simp [List.mapM_cons, hab, mapM_of_forall₂_of_eq f htl]
+  | a :: l, [] => by
+    intro h; cases h
+
+private theorem Forall₂_length {α β : Type} (R : α → β → Prop) :
+    ∀ {l1 l2}, List.Forall₂ R l1 l2 → l1.length = l2.length := by
+  intro l1 l2 h
+  induction h with
+  | nil => rfl
+  | cons _ htl ih => simp only [List.length_cons, ih]
+
+private theorem Forall₂_mem_right {α β : Type} {R : α → β → Prop} :
+    ∀ {l1 l2}, List.Forall₂ R l1 l2 → ∀ {b}, b ∈ l2 → ∃ a, a ∈ l1 ∧ R a b := by
+  intro l1 l2 h
+  induction h with
+  | nil => intro b hb; simp at hb
+  | cons hr htl ih =>
+    intro b hb
+    simp only [List.mem_cons] at hb
+    rcases hb with rfl | hb
+    · exact ⟨_, List.mem_cons_self, hr⟩
+    · obtain ⟨a, ha, hr⟩ := ih hb
+      exact ⟨a, List.mem_cons_of_mem _ ha, hr⟩
+
+private theorem Forall₂_imp {α β : Type} {R S : α → β → Prop} (himp : ∀ {a b}, R a b → S a b) :
+    ∀ {l1 l2}, List.Forall₂ R l1 l2 → List.Forall₂ S l1 l2 := by
+  intro l1 l2 h
+  induction h with
+  | nil => exact .nil
+  | cons hr htl ih => exact .cons (himp hr) ih
+
+mutual
+/-- `lowerTyList` success implies the declarative field-lowering relation. -/
+theorem LowersFields.of_lowerTyList {ke : KindEnv} {tvs : List ValName}
+    {ss : List Surface.Ty} {cs : List Ty}
+    (h : lowerTyList ke tvs ss = some cs) : LowersFields ke tvs ss cs := by
+  cases ss with
+  | nil =>
+    simp only [lowerTyList, Option.some.injEq] at h; subst h
+    exact .nil
+  | cons s ss =>
+    simp only [lowerTyList] at h
+    cases ht : lowerTy ke tvs s with
+    | none => simp [ht] at h
+    | some c =>
+      cases hts : lowerTyList ke tvs ss with
+      | none => simp [ht, hts] at h
+      | some cs' =>
+        simp only [ht, hts, Option.some.injEq] at h; subst h
+        exact .cons ht (LowersFields.of_lowerTyList hts)
+
+/-- The declarative field-lowering relation makes `lowerTyList` succeed. -/
+theorem LowersFields.to_lowerTyList {ke : KindEnv} {tvs : List ValName}
+    {ss : List Surface.Ty} {cs : List Ty}
+    (h : LowersFields ke tvs ss cs) : lowerTyList ke tvs ss = some cs := by
+  induction h with
+  | nil => rfl
+  | cons ht htl ih =>
+    simp only [lowerTyList, ht, ih]
+end
+
+private theorem LowersFields.mem_lowerTy {ke : KindEnv} {tvs : List ValName}
+    {stys : List Surface.Ty} {ctys : List Ty} (h : LowersFields ke tvs stys ctys) :
+    ∀ {cty}, cty ∈ ctys → ∃ sty, sty ∈ stys ∧ lowerTy ke tvs sty = some cty := by
+  induction h with
+  | nil => intro cty hmem; simp at hmem
+  | cons ht htl ih =>
+    intro cty hmem
+    simp only [List.mem_cons] at hmem
+    rcases hmem with rfl | hmem
+    · exact ⟨_, List.mem_cons_self, ht⟩
+    · obtain ⟨sty, hsty, heq⟩ := ih hmem
+      exact ⟨sty, List.mem_cons_of_mem _ hsty, heq⟩
+
+private theorem LowersCtors.of_forall₂' {ke : KindEnv} {tvs : List ValName}
+    {ss : List (CtorName × List Surface.Ty)} {cs : List (CtorName × List Ty)}
+    (h : List.Forall₂
+      (fun (nc, fs) (nc', fs') => nc = nc' ∧ LowersFields ke tvs fs fs') ss cs) :
+    LowersCtors ke tvs ss cs := by
+  revert cs
+  induction ss with
+  | nil =>
+    intro cs h
+    cases cs with
+    | nil => exact .nil
+    | cons _ _ => cases h
+  | cons a ss ih =>
+    intro cs h
+    match cs with
+    | [] => cases h
+    | b :: cs =>
+      match h with
+      | List.Forall₂.cons hr htl =>
+        rcases a with ⟨nc, fs⟩
+        rcases b with ⟨nc', fs'⟩
+        obtain ⟨hn, hfs⟩ := hr
+        subst hn
+        exact .cons hfs (ih htl)
+
+private theorem LowersCtors.to_forall₂ {ke : KindEnv} {tvs : List ValName}
+    {ss : List (CtorName × List Surface.Ty)} {cs : List (CtorName × List Ty)}
+    (h : LowersCtors ke tvs ss cs) :
+    List.Forall₂ (fun (nc, fs) (nc', fs') => nc = nc' ∧ LowersFields ke tvs fs fs') ss cs := by
+  induction h with
+  | nil => exact .nil
+  | cons hfs htl ih => exact .cons ⟨rfl, hfs⟩ ih
+
+private def lowerCtorFields (ke : KindEnv) (tvs : List ValName)
+    (p : CtorName × List Surface.Ty) : Option (CtorName × List Ty) :=
+  (lowerTyList ke tvs p.2).map fun fs' => (p.1, fs')
+
+private theorem lowerDataDecl_sound {ke : KindEnv} {s : Surface.DataDecl} {d : DataDecl}
+    (h : lowerDataDecl ke s = some d) : LowersDataDecl ke s d := by
+  unfold lowerDataDecl at h
+  obtain ⟨hp, hbind⟩ := option_guard_bind h
+  obtain ⟨ctors', hmap⟩ := option_bind_eq_some_left hbind
+  have hpure :
+      (pure { name := s.name, paramCount := s.params.length, ctors := ctors' }) = some d := by
+    have h' := hbind
+    rw [hmap] at h'
+    simp only [Option.bind_eq_bind, Option.bind_some, Option.pure_def] at h'
+    exact h'
+  have hct := mapM_forall₂_of_eq (lowerCtorFields ke s.params) hmap
+  have hct' := Forall₂_imp
+    (R := fun a b => lowerCtorFields ke s.params a = some b)
+    (S := fun a b => a.1 = b.1 ∧ LowersFields ke s.params a.2 b.2)
+    (fun {a b} h => by
+      unfold lowerCtorFields at h
+      obtain ⟨fs', hfs, heq⟩ := Option.map_eq_some_iff.mp h
+      rcases b with ⟨nc, fs''⟩
+      cases heq
+      exact ⟨rfl, LowersFields.of_lowerTyList hfs⟩) hct
+  have hctors := LowersCtors.of_forall₂' hct'
+  have heq : d = ⟨s.name, s.params.length, ctors'⟩ := (Option.some.inj hpure).symm
+  exact heq ▸ LowersDataDecl.mk hp hctors
+
+private theorem lowerDataDecl_complete {ke : KindEnv} {s : Surface.DataDecl} {d : DataDecl}
+    (h : LowersDataDecl ke s d) : lowerDataDecl ke s = some d := by
+  rcases s with ⟨sname, params, sctors⟩
+  rcases d with ⟨dname, pc, dctors⟩
+  cases h with
+  | mk hp hctors =>
+    have hct := LowersCtors.to_forall₂ hctors
+    have hct' := Forall₂_imp
+      (R := fun a b => a.1 = b.1 ∧ LowersFields ke params a.2 b.2)
+      (S := fun a b => lowerCtorFields ke params a = some b)
+      (fun {a b} ⟨hn, hfs⟩ => by
+        dsimp [lowerCtorFields]
+        rw [LowersFields.to_lowerTyList hfs, Option.map_some, hn])
+      hct
+    have hmap := mapM_of_forall₂_of_eq (lowerCtorFields ke params) hct'
+    rw [lowerDataDecl, option_guard_bind_pos hp]
+    have hbind :
+        (sctors.mapM (fun x =>
+          (lowerTyList ke params x.2).map fun fs' => (x.1, fs'))) = some dctors := by
+      simpa [lowerCtorFields] using hmap
+    rw [hbind, Option.bind_eq_bind, Option.bind_some, Option.pure_def]
+
+private theorem LowersCtors.flatMap_names_eq {ke : KindEnv} {tvs : List ValName}
+    {ss : List (CtorName × List Surface.Ty)} {cs : List (CtorName × List Ty)}
+    (h : LowersCtors ke tvs ss cs) :
+    ss.map Prod.fst = cs.map Prod.fst := by
+  induction h with
+  | nil => rfl
+  | cons _ htl ih => simp only [List.map_cons, ih]
+
+private theorem LowersDataDecls.map_names_eq {sdecls : List Surface.DataDecl} {decls : List DataDecl}
+    (h : List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) sdecls decls) :
+    sdecls.map (·.name) = decls.map (·.name) := by
+  suffices ∀ {l1 l2}, List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) l1 l2 →
+      l1.map (·.name) = l2.map (·.name) from this h
+  intro l1 l2 h'
+  induction h' with
+  | nil => rfl
+  | cons hdecl htl ih =>
+    cases hdecl with | mk _ _ =>
+    simp only [List.map_cons, ih]
+
+private theorem LowersDataDecls.flatMap_ctorNames_eq {sdecls : List Surface.DataDecl} {decls : List DataDecl}
+    (h : List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) sdecls decls) :
+    (sdecls.flatMap (fun d => d.ctors.map Prod.fst)) =
+      (decls.flatMap (fun d => d.ctors.map Prod.fst)) := by
+  suffices ∀ {l1 l2}, List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) l1 l2 →
+      (l1.flatMap (fun d => d.ctors.map Prod.fst)) =
+        (l2.flatMap (fun d => d.ctors.map Prod.fst)) from this h
+  intro l1 l2 h'
+  induction h' with
+  | nil => rfl
+  | cons hdecl htl ih =>
+    cases hdecl with
+    | mk _ hctors =>
+      have hflat := LowersCtors.flatMap_names_eq hctors
+      simp only [List.flatMap_cons, ih, hflat]
+
+private theorem LowersDataDecls.kindEnv_eq {sdecls : List Surface.DataDecl} {decls : List DataDecl}
+    (h : List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) sdecls decls) :
+    surfaceKindEnv sdecls = DataDecls.kindEnv decls := by
+  have hmap :
+      sdecls.map (fun d => (d.name, d.params.length)) =
+        decls.map (fun d => (d.name, d.paramCount)) := by
+    suffices ∀ {l1 l2}, List.Forall₂ (LowersDataDecl (surfaceKindEnv sdecls)) l1 l2 →
+        l1.map (fun d => (d.name, d.params.length)) =
+          l2.map (fun d => (d.name, d.paramCount)) from this h
+    intro l1 l2 h'
+    induction h' with
+    | nil => rfl
+    | cons hdecl htl ih =>
+      cases hdecl with | mk _ _ =>
+      simp only [List.map_cons, ih]
+  simpa [surfaceKindEnv, DataDecls.kindEnv] using hmap
+
+private theorem LowersCtors.fieldsWF {ke : KindEnv} {tvs : List ValName}
+    {ctors : List (CtorName × List Surface.Ty)} {ctors' : List (CtorName × List Ty)}
+    (h : LowersCtors ke tvs ctors ctors') :
+    ∀ (c : CtorName × List Ty) (_ : c ∈ ctors'), ∀ ty ∈ c.2, Ty.WellKinded ke tvs.length ty := by
+  induction h with
+  | nil => intro c hc; simp at hc
+  | cons hfs htl ih =>
+    intro c hc ty hty
+    rcases c with ⟨n, fs'⟩
+    simp only [List.mem_cons] at hc
+    rcases hc with ⟨rfl, hty⟩ | hc'
+    · obtain ⟨_, _, hsty⟩ := LowersFields.mem_lowerTy hfs hty
+      exact lowerTy_wellKinded hsty
+    · exact ih ⟨n, fs'⟩ hc' ty hty
+
+private theorem LowersDataDecl.fieldsWF {ke : KindEnv} {s : Surface.DataDecl} {d : DataDecl}
+    (h : LowersDataDecl ke s d) : DataDecl.WF ke d := by
+  cases h with
+  | mk _ hctors =>
+    intro c hc ty hty
+    exact LowersCtors.fieldsWF hctors c hc ty hty
+
+/-- Soundness: executable success implies the declarative relation. -/
+theorem lowerDataDecls_sound {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
+    lowerDataDecls sdecls = some decls → LowersDataDecls sdecls decls := by
+  intro h
+  unfold lowerDataDecls at h
+  obtain ⟨hP1, h⟩ := option_guard_bind h
+  obtain ⟨hP2, h⟩ := option_guard_bind h
+  have hfor := mapM_forall₂_of_eq (lowerDataDecl (surfaceKindEnv sdecls)) h
+  have hlowers := Forall₂_imp
+    (R := fun s d => lowerDataDecl (surfaceKindEnv sdecls) s = some d)
+    (S := LowersDataDecl (surfaceKindEnv sdecls))
+    (fun {s d} hs => lowerDataDecl_sound hs) hfor
+  exact { tyNamesNodup := hP1, ctorNamesNodup := hP2, lowers := hlowers }
+
+/-- Completeness: the relation is realized by the executable lowerer. -/
+theorem lowerDataDecls_complete {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
+    LowersDataDecls sdecls decls → lowerDataDecls sdecls = some decls := by
+  intro h
+  unfold lowerDataDecls
+  rw [option_guard_bind_pos h.tyNamesNodup, option_guard_bind_pos h.ctorNamesNodup]
+  simp only
+  rw [mapM_of_forall₂_of_eq _ (Forall₂_imp
+    (R := LowersDataDecl (surfaceKindEnv sdecls))
+    (S := fun s d => lowerDataDecl (surfaceKindEnv sdecls) s = some d)
+    (fun {s d} hs => lowerDataDecl_complete hs) h.lowers)]
+
+/-- Determinism of the relation (follows from completeness + soundness, or directly). -/
+theorem LowersDataDecls.unique {sdecls : List Surface.DataDecl}
+    {decls decls' : List DataDecl} :
+    LowersDataDecls sdecls decls → LowersDataDecls sdecls decls' → decls = decls' := by
+  intro h1 h2
+  exact Option.some.inj ((lowerDataDecls_complete h1).symm.trans (lowerDataDecls_complete h2))
+
+/-- Payoff: a related Core group is well-formed for `Decls`. -/
+theorem LowersDataDecls.toWF {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
+    LowersDataDecls sdecls decls → DataDecls.WF decls := by
+  intro h
+  have hke := LowersDataDecls.kindEnv_eq h.lowers
+  have hnames := LowersDataDecls.map_names_eq h.lowers
+  have hctors := LowersDataDecls.flatMap_ctorNames_eq h.lowers
+  exact {
+    tyNamesNodup := hnames ▸ h.tyNamesNodup
+    ctorNamesNodup := hctors ▸ h.ctorNamesNodup
+    fields := fun d hd c hc ty hty => by
+      obtain ⟨sd, _, hdecl⟩ := Forall₂_mem_right h.lowers hd
+      have hwf := LowersDataDecl.fieldsWF hdecl
+      rw [hke] at hwf
+      exact hwf c hc ty hty
+  }
+
+/-- Corollary: successful lowering yields a well-formed Core decl group. -/
+theorem lowerDataDecls_WF {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
+    lowerDataDecls sdecls = some decls → DataDecls.WF decls :=
+  fun h => LowersDataDecls.toWF (lowerDataDecls_sound h)
+
+/-- Corollary: successful lowering elaborates into a `CtorEnv`. -/
+theorem lowerDataDecls_elab {sdecls : List Surface.DataDecl} {decls : List DataDecl} :
+    lowerDataDecls sdecls = some decls → (elabDecls decls).isSome :=
+  fun h => elabDecls_complete (lowerDataDecls_WF h)
+
+-- Adversarial `#guard`s for decl lowering.
+private def sMaybe : Surface.DataDecl :=
+  ⟨.mk "Maybe", [.mk "a"],
+    [(.mk "Just", [.tvar (.mk "a")]), (.mk "Nothing", [])]⟩
+
+private def sTree : Surface.DataDecl :=
+  ⟨.mk "Tree", [.mk "a"],
+    [(.mk "Node", [.tvar (.mk "a"), .customTy (.mk "Forest") [.tvar (.mk "a")]])]⟩
+
+private def sForest : Surface.DataDecl :=
+  ⟨.mk "Forest", [.mk "a"],
+    [(.mk "FNil", []),
+     (.mk "FCons", [.customTy (.mk "Tree") [.tvar (.mk "a")],
+                    .customTy (.mk "Forest") [.tvar (.mk "a")]])]⟩
+
+-- Maybe lowers and elaborates
+#guard match lowerDataDecls [sMaybe] with
+  | some decls => (elabDecls decls).isSome
+  | none => false
+#guard match lowerDataDecls [sMaybe] with
+  | some [⟨.mk "Maybe", 1, [(.mk "Just", [.bvar 0]), (.mk "Nothing", [])]⟩] => true
+  | _ => false
+-- mutual Tree/Forest
+#guard match lowerDataDecls [sTree, sForest] with
+  | some decls => (elabDecls decls).isSome
+  | none => false
+-- duplicate type name fails
+#guard (lowerDataDecls [sMaybe, sMaybe]).isNone
+-- duplicate ctor name across the group fails
+#guard (lowerDataDecls [
+  ⟨.mk "A", [], [(.mk "C", [])]⟩,
+  ⟨.mk "B", [], [(.mk "C", [])]⟩]).isNone
+-- duplicate type params fail
+#guard (lowerDataDecls [
+  ⟨.mk "Dup", [.mk "a", .mk "a"], [(.mk "Mk", [])]⟩]).isNone
+-- unbound tvar in a field fails
+#guard (lowerDataDecls [
+  ⟨.mk "Bad", [.mk "a"], [(.mk "Mk", [.tvar (.mk "z")])]⟩]).isNone
+-- unknown type name in a field fails
+#guard (lowerDataDecls [
+  ⟨.mk "Bad", [], [(.mk "Mk", [.customTy (.mk "Nope") []])]⟩]).isNone
+-- wrong arity fails
+#guard (lowerDataDecls [
+  ⟨.mk "Wrap", [], [(.mk "Mk", [.customTy (.mk "Wrap") [.prim .int]])]⟩]).isNone
 
 
 /-! ## 3. Prelude value-constructor names + the `KindEnv` from a `CtorEnv`
@@ -934,7 +1365,7 @@ theorem lowerExpr_LowersExpr {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValNam
           | some τ =>
             simp only [lowerAnn] at hann
             obtain ⟨τ', hτ, rfl⟩ := Option.map_eq_some_iff.mp hann
-            simpa [hτ, Option.map_eq_bind]
+            simp [hτ]
       | wildcard =>
         cases hb : lowerExpr ke tvs (.mk "_" :: vs) body with
         | none => simp [hann, hb] at h
@@ -948,7 +1379,7 @@ theorem lowerExpr_LowersExpr {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValNam
           | some τ =>
             simp only [lowerAnn] at hann
             obtain ⟨τ', hτ, rfl⟩ := Option.map_eq_some_iff.mp hann
-            simpa [hτ, Option.map_eq_bind]
+            simp [hτ]
       | ctor | pair | cons | list => simp [hann] at h
   | .app f x =>
     simp only [lowerExpr] at h
@@ -980,7 +1411,7 @@ theorem lowerExpr_LowersExpr {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValNam
           | some σ =>
             simp only [lowerPolyAnn] at hann
             obtain ⟨σ', hσ, rfl⟩ := Option.map_eq_some_iff.mp hann
-            simpa [hσ, Option.map_eq_bind]
+            simp [hσ]
   | .letRecIn binds body =>
     simp only [lowerExpr] at h
     cases hann : lowerAnnList ke (binds.map (·.2.1)) with

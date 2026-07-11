@@ -33,6 +33,13 @@ structure PolyTy where
   body : Ty
 
 
+/-- Surface algebraic data declaration: named type params, named ctors,
+    positional field types (no field names in this slice). -/
+structure DataDecl where
+  name   : TyName
+  params : List ValName
+  ctors  : List (CtorName × List Ty)
+  deriving Repr
 
 
 /-- Primitive literals -/
