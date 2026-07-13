@@ -12,7 +12,7 @@ program elaborates to a Core program that is type-safe and never gets stuck*.
 
 **Status: expression headline + DataDecl + Program groups + freeNames + sccGroups.**
 `sccGroups` (naive mutual-reachability SCC) feeds `Program.groups`;
-`ValidBindingGroups` is the non-det spec (`sccGroups_sound`/`_complete` still `sorry`).
+`ValidBindingGroups` is the non-det spec (`sccGroups_sound` / `_complete` proved).
 See `briefs/next-agent-brief-surface-bridge-followups.md`.
 
 ## Design decisions this skeleton bakes in (settled with Aron)
@@ -919,7 +919,7 @@ def bindingDepEdges (binds : List Surface.Binding) : List (ValName × ValName) :
 Non-deterministic spec `ValidBindingGroups`: partition into SCCs of the
 dependency graph, topo-ordered so callees are outer. Executable `sccGroups`
 uses pairwise reachability (fine for small binding lists) + Kahn on the
-condensation. Adequacy proofs are frozen with `sorry` for a follow-up handoff. -/
+condensation. Adequacy (`sccGroups_sound` / `_complete`) is proved. -/
 
 /-- Direct edge: some binding named `a` refers to `b`. -/
 def DepEdge (binds : List Surface.Binding) (a b : ValName) : Prop :=
@@ -1020,28 +1020,27 @@ private def indegGet (indeg : List Nat) (i : Nat) : Nat :=
 private def indegSet (indeg : List Nat) (i v : Nat) : List Nat :=
   indeg.mapIdx fun j x => if j = i then v else x
 
+/-- Extracted Kahn loop body for induction. -/
+private def kahnGo (beforeEdges : List (Nat × Nat)) :
+    Nat → List Nat → List Nat → List Nat → List Nat
+  | 0, _indeg, _ready, acc => acc
+  | _fuel + 1, _indeg, [], acc => acc
+  | fuel + 1, indeg, u :: us, acc =>
+    let acc' := acc ++ [u]
+    let nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+    let indeg' := nbrs.foldl (fun ig b =>
+      indegSet ig b (indegGet ig b - 1)) indeg
+    let newReady := nbrs.filter fun b =>
+      indegGet indeg' b = 0 && b ∉ acc' && b ∉ us
+    kahnGo beforeEdges fuel indeg' (us ++ newReady) acc'
+
 /-- Kahn topological order on `0..n-1` given before-edges `(u,v)` (u before v). -/
 def kahnTopo (n : Nat) (beforeEdges : List (Nat × Nat)) : List Nat :=
   let indeg0 : List Nat :=
     (List.range n).map fun v =>
       beforeEdges.filter (fun e => e.2 = v) |>.length
   let ready0 := (List.range n).filter fun v => indegGet indeg0 v = 0
-  let rec go (fuel : Nat) (indeg : List Nat) (ready : List Nat) (acc : List Nat) :
-      List Nat :=
-    match fuel with
-    | 0 => acc
-    | fuel + 1 =>
-      match ready with
-      | [] => acc
-      | u :: us =>
-        let acc' := acc ++ [u]
-        let nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
-        let indeg' := nbrs.foldl (fun ig b =>
-          indegSet ig b (indegGet ig b - 1)) indeg
-        let newReady := nbrs.filter fun b =>
-          indegGet indeg' b = 0 && b ∉ acc' && b ∉ us
-        go fuel indeg' (us ++ newReady) acc'
-  go (n + 1) indeg0 ready0 []
+  kahnGo beforeEdges (n + 1) indeg0 ready0 []
 
 /-- Map index sets through `binds` (skips OOB defensively). -/
 def indexSetsToBindings (binds : List Surface.Binding) (sets : List (List Nat)) :
@@ -1059,18 +1058,2391 @@ def sccGroups (binds : List Surface.Binding) :
   let ordered := order.filterMap fun k => comps[k]?
   pure (indexSetsToBindings binds ordered)
 
+/-! #### SCC adequacy helpers -/
+
+private def sccOrderedIndexSets (binds : List Surface.Binding) : List (List Nat) :=
+  let comps := sccIndexSets binds
+  (kahnTopo comps.length (sccBeforeEdges (bindSucc binds) comps)).filterMap
+    fun k => comps[k]?
+
+theorem sccGroups_eq_some_iff {binds : List Surface.Binding}
+    {groups : List (List Surface.Binding)} :
+    sccGroups binds = some groups ↔
+      (binds.map (·.name)).Nodup ∧
+        groups = indexSetsToBindings binds (sccOrderedIndexSets binds) := by
+  constructor
+  · intro h
+    have hn : (binds.map (·.name)).Nodup := by
+      by_contra hdup
+      simp [sccGroups, guard, hdup] at h
+    refine ⟨hn, ?_⟩
+    simp [sccGroups, guard, hn] at h
+    exact h.symm
+  · intro ⟨hn, hg⟩
+    simp [sccGroups, guard, hn, sccOrderedIndexSets, hg]
+
+private theorem map_name_length (binds : List Surface.Binding) :
+    (binds.map (·.name)).length = binds.length := by
+  simp
+
+private theorem map_name_getElem {binds : List Surface.Binding} {i : Nat}
+    (hi : i < binds.length) :
+    (binds.map (·.name))[i]'(by rw [map_name_length]; exact hi) = (binds[i]).name := by
+  simp [List.getElem_map]
+
+private theorem name_inj_of_nodup {binds : List Surface.Binding}
+    (hn : (binds.map (·.name)).Nodup) {i j : Nat}
+    (hi : i < binds.length) (hj : j < binds.length)
+    (h : (binds[i]).name = (binds[j]).name) : i = j := by
+  have hi' : i < (binds.map (·.name)).length := by simpa [map_name_length] using hi
+  have hj' : j < (binds.map (·.name)).length := by simpa [map_name_length] using hj
+  have hinj := List.nodup_iff_injective_getElem.mp hn
+  have hfin : (⟨i, hi'⟩ : Fin (binds.map (·.name)).length) = ⟨j, hj'⟩ :=
+    hinj (by simpa [map_name_getElem hi, map_name_getElem hj] using h)
+  exact congrArg Fin.val hfin
+
+private theorem bind_eq_of_name_eq {binds : List Surface.Binding}
+    (hn : (binds.map (·.name)).Nodup) {bdg : Surface.Binding} {i : Nat}
+    (hbdg : bdg ∈ binds) (hi : i < binds.length)
+    (hname : bdg.name = (binds[i]).name) : bdg = binds[i] := by
+  obtain ⟨k, hk, hkget⟩ := List.mem_iff_getElem.mp hbdg
+  have : k = i := name_inj_of_nodup hn hk hi (by simpa [hkget] using hname)
+  simpa [this] using hkget.symm
+
+private theorem DepEdge_src_mem {binds : List Surface.Binding} {a b : ValName}
+    (h : DepEdge binds a b) : a ∈ binds.map (·.name) := by
+  obtain ⟨bdg, hmem, hname, _⟩ := h
+  exact List.mem_map.mpr ⟨bdg, hmem, hname⟩
+
+private theorem DepReach_start_mem {binds : List Surface.Binding} {b c : ValName}
+    (hend : c ∈ binds.map (·.name)) (h : DepReach binds b c) :
+    b ∈ binds.map (·.name) := by
+  induction h with
+  | refl => exact hend
+  | tail hab _ _ => exact DepEdge_src_mem hab
+
+private theorem name_mem_idxOf {binds : List Surface.Binding}
+    (_hn : (binds.map (·.name)).Nodup) {b : ValName}
+    (hmem : b ∈ binds.map (·.name)) :
+    ∃ (k : Nat) (hk : k < binds.length), (binds[k]).name = b := by
+  obtain ⟨bdg, hbdg, hname⟩ := List.mem_map.mp hmem
+  obtain ⟨k, hk, hkget⟩ := List.mem_iff_getElem.mp hbdg
+  exact ⟨k, hk, by simpa [hkget] using hname⟩
+
+theorem bindSucc_mem {binds : List Surface.Binding} {i j : Nat} :
+    j ∈ bindSucc binds i ↔
+      ∃ b b', binds[i]? = some b ∧ binds[j]? = some b' ∧
+        Binding.refersTo b b'.name = true := by
+  unfold bindSucc
+  cases hbi : binds[i]? with
+  | none => simp
+  | some b =>
+    simp only [List.mem_filterMap, List.mem_range]
+    constructor
+    · intro ⟨j', hj', hj⟩
+      cases hbj : binds[j']? with
+      | none => simp [hbj] at hj
+      | some b' =>
+        simp only [hbj] at hj
+        by_cases href : Binding.refersTo b b'.name = true
+        · simp [href] at hj
+          cases hj
+          exact ⟨b, b', rfl, hbj, href⟩
+        · simp [href] at hj
+    · intro ⟨b, b', hb, hj, hrt⟩
+      obtain ⟨rfl⟩ := hb
+      refine ⟨j, (List.getElem?_eq_some_iff.mp hj).1, ?_⟩
+      simp [hj, hrt]
+
+theorem DepEdge_of_bindSucc {binds : List Surface.Binding} {i j : Nat}
+    (h : j ∈ bindSucc binds i) :
+    ∃ b b', binds[i]? = some b ∧ binds[j]? = some b' ∧
+      DepEdge binds b.name b'.name := by
+  obtain ⟨b, b', hi, hj, hrt⟩ := (bindSucc_mem (binds := binds) (i := i) (j := j)).mp h
+  exact ⟨b, b', hi, hj, ⟨b, List.mem_of_getElem? hi, rfl, hrt⟩⟩
+
+private theorem bindSucc_lt {binds : List Surface.Binding} {i j : Nat}
+    (h : j ∈ bindSucc binds i) : j < binds.length := by
+  obtain ⟨_, _, _, hj, _⟩ := (bindSucc_mem (binds := binds) (i := i) (j := j)).mp h
+  exact (List.getElem?_eq_some_iff.mp hj).1
+
+private theorem DepEdge_to_bindSucc {binds : List Surface.Binding} {i : Nat}
+    (hn : (binds.map (·.name)).Nodup) (hi : i < binds.length) {b : ValName}
+    (hmem : b ∈ binds.map (·.name))
+    (he : DepEdge binds (binds[i]).name b) :
+    ∃ (k : Nat) (hk : k < binds.length),
+      (binds[k]).name = b ∧ k ∈ bindSucc binds i := by
+  obtain ⟨bdg, hbdg, hname, hrt⟩ := he
+  have heq : bdg = binds[i] := bind_eq_of_name_eq hn hbdg hi hname
+  subst heq
+  obtain ⟨k, hk, hkname⟩ := name_mem_idxOf hn hmem
+  refine ⟨k, hk, hkname, ?_⟩
+  refine (bindSucc_mem (binds := binds) (i := i) (j := k)).mpr ?_
+  refine ⟨binds[i], binds[k], List.getElem?_eq_getElem hi, List.getElem?_eq_getElem hk, ?_⟩
+  simpa [hkname] using hrt
+
+private theorem canReach_sound_go (binds : List Surface.Binding) :
+    ∀ (fuel : Nat) (seen : List Nat) (src dst : Nat)
+      (hsrc : src < binds.length) (hdst : dst < binds.length),
+      (∀ s ∈ seen, s < binds.length) →
+      canReach (bindSucc binds) fuel seen src dst = true →
+      DepReach binds (binds[src]).name (binds[dst]).name := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro seen src dst hsrc hdst _hseen h
+    unfold canReach at h
+    by_cases heq : src = dst
+    · subst heq; exact DepReach.refl
+    · simp [heq] at h
+  | succ fuel ih =>
+    intro seen src dst hsrc hdst hseen h
+    unfold canReach at h
+    by_cases heq : src = dst
+    · subst heq; exact DepReach.refl
+    · by_cases hmem : src ∈ seen
+      · simp [heq, hmem] at h
+      · simp [heq, hmem, List.any_eq_true] at h
+        obtain ⟨n, hnmem, hn⟩ := h
+        have hnlt : n < binds.length := bindSucc_lt hnmem
+        have hnreach := ih (src :: seen) n dst hnlt hdst
+          (by
+            intro s hs
+            cases List.mem_cons.mp hs with
+            | inl hseq => cases hseq; exact hsrc
+            | inr hs' => exact hseen s hs')
+          hn
+        obtain ⟨b, b', hb, hj, hedge⟩ := DepEdge_of_bindSucc hnmem
+        have hb' : b = binds[src] := (List.getElem?_eq_some_iff.mp hb).2.symm
+        have hj' : b' = binds[n] := (List.getElem?_eq_some_iff.mp hj).2.symm
+        subst hb' hj'
+        exact DepReach.tail hedge hnreach
+
+theorem canReach_sound {binds : List Surface.Binding} {fuel : Nat} {i j : Nat}
+    (h : canReach (bindSucc binds) fuel [] i j = true)
+    (hi : i < binds.length) (hj : j < binds.length) :
+    DepReach binds (binds[i]).name (binds[j]).name :=
+  canReach_sound_go binds fuel [] i j hi hj (by simp) h
+
+/-- Consecutive `bindSucc` edges along an index list. -/
+private def isBindChain (binds : List Surface.Binding) : List Nat → Prop
+  | [] => True
+  | [_] => True
+  | a :: b :: rest => b ∈ bindSucc binds a ∧ isBindChain binds (b :: rest)
+
+private theorem isBindChain_append {binds : List Surface.Binding}
+    {xs ys : List Nat} (hx : isBindChain binds xs) (hy : isBindChain binds ys)
+    (hbridge : ∀ a b, xs.getLast? = some a → ys.head? = some b → b ∈ bindSucc binds a) :
+    isBindChain binds (xs ++ ys) := by
+  induction xs with
+  | nil => simpa using hy
+  | cons x xs ih =>
+    cases xs with
+    | nil =>
+      cases ys with
+      | nil => trivial
+      | cons y ys =>
+        refine ⟨hbridge x y rfl rfl, hy⟩
+    | cons x' xs =>
+      simp only [List.cons_append, isBindChain] at hx ⊢
+      exact ⟨hx.1, ih hx.2 (by
+        intro a b ha hb
+        exact hbridge a b (by
+          simpa [List.getLast?_cons_cons] using ha) hb)⟩
+
+private theorem isBindChain_take {binds : List Surface.Binding}
+    {vs : List Nat} (n : Nat) (h : isBindChain binds vs) :
+    isBindChain binds (vs.take n) := by
+  induction vs generalizing n with
+  | nil =>
+    simp [isBindChain]
+  | cons a vs ih =>
+    cases n with
+    | zero => simp [isBindChain]
+    | succ n =>
+      cases vs with
+      | nil => simp [isBindChain]
+      | cons b vs =>
+        cases n with
+        | zero => simp [isBindChain]
+        | succ n =>
+          simp only [List.take_succ_cons, isBindChain] at h ⊢
+          exact ⟨h.1, by simpa [List.take_cons] using ih (n + 1) h.2⟩
+
+private theorem isBindChain_drop {binds : List Surface.Binding}
+    {vs : List Nat} (n : Nat) (h : isBindChain binds vs) :
+    isBindChain binds (vs.drop n) := by
+  induction n generalizing vs with
+  | zero => simpa using h
+  | succ n ih =>
+    cases vs with
+    | nil => simp [isBindChain]
+    | cons a vs =>
+      simp only [List.drop_succ_cons]
+      cases vs with
+      | nil => simp [isBindChain]
+      | cons b vs =>
+        exact ih h.2
+
+private theorem isBindChain_succ_getElem {binds : List Surface.Binding}
+    {vs : List Nat} {j : Nat} (h : isBindChain binds vs)
+    (hj : j + 1 < vs.length) :
+    vs[j + 1] ∈ bindSucc binds vs[j] := by
+  induction vs generalizing j with
+  | nil => cases hj
+  | cons a vs ih =>
+    cases vs with
+    | nil =>
+      simp at hj
+    | cons b vs =>
+      cases j with
+      | zero =>
+        exact h.1
+      | succ j =>
+        have : j + 1 < (b :: vs).length := by simp at hj ⊢; omega
+        simpa [List.getElem_cons_succ] using ih h.2 this
+
+private theorem isBindChain_take_append_drop {binds : List Surface.Binding}
+    {vs : List Nat} {i j : Nat}
+    (hij : i < j) (hjlen : j < vs.length)
+    (hget : vs[i]? = vs[j]?) (hchain : isBindChain binds vs) :
+    isBindChain binds (vs.take (i + 1) ++ vs.drop (j + 1)) := by
+  have htake := isBindChain_take (i + 1) hchain
+  have hdrop := isBindChain_drop (j + 1) hchain
+  refine isBindChain_append htake hdrop ?_
+  intro a b ha hb
+  have hi1 : i < vs.length := Nat.lt_trans hij hjlen
+  have htake_last : (vs.take (i + 1)).getLast? = vs[i]? := by
+    rw [List.getLast?_take]
+    simp [List.getElem?_eq_getElem hi1]
+  have ha' : vs[i]? = some a := htake_last ▸ ha
+  cases hdropNil : vs.drop (j + 1) with
+  | nil =>
+    simp [hdropNil] at hb
+  | cons b' rest =>
+    have eqb : b = b' := by
+      have : (b' :: rest).head? = some b := by simpa [hdropNil] using hb
+      simp at this; exact this.symm
+    subst eqb
+    have hj1 : j + 1 < vs.length := by
+      have hlen := congrArg List.length hdropNil
+      simp [List.length_drop] at hlen
+      omega
+    have hb_get : vs[j + 1]? = some b := by
+      rw [← List.head?_drop, hdropNil]; rfl
+    have hedge := isBindChain_succ_getElem hchain hj1
+    have hvi : vs[i] = a := (List.getElem?_eq_some_iff.mp ha').2
+    have hvj : vs[j] = a := by
+      have : vs[j]? = some a := hget ▸ ha'
+      exact (List.getElem?_eq_some_iff.mp this).2
+    have hvj1 : vs[j + 1] = b := (List.getElem?_eq_some_iff.mp hb_get).2
+    rw [← hvj1, ← hvj]
+    exact hedge
+
+private theorem DepReach_exists_chain {binds : List Surface.Binding}
+    (hn : (binds.map (·.name)).Nodup) {i j : Nat}
+    (hi : i < binds.length) (hj : j < binds.length)
+    (h : DepReach binds (binds[i]).name (binds[j]).name) :
+    ∃ vs : List Nat,
+      vs.head? = some i ∧ vs.getLast? = some j ∧
+        isBindChain binds vs ∧ ∀ v ∈ vs, v < binds.length := by
+  suffices ∀ a c, DepReach binds a c →
+      ∀ (i j : Nat) (hi : i < binds.length) (hj : j < binds.length),
+        a = (binds[i]).name → c = (binds[j]).name →
+        ∃ vs : List Nat,
+          vs.head? = some i ∧ vs.getLast? = some j ∧
+            isBindChain binds vs ∧ ∀ v ∈ vs, v < binds.length from
+    this _ _ h i j hi hj rfl rfl
+  intro a c hreach
+  induction hreach with
+  | refl =>
+    intro i j hi hj ha hc
+    have hij : i = j := name_inj_of_nodup hn hi hj (ha.symm.trans hc)
+    subst hij
+    exact ⟨[i], rfl, rfl, trivial, by intro v hv; simp at hv; subst hv; exact hi⟩
+  | @tail a b c hab hbc ih =>
+    intro i j hi hj ha hc
+    have hbmem : b ∈ binds.map (·.name) :=
+      DepReach_start_mem
+        (List.mem_map.mpr ⟨binds[j], List.getElem_mem hj, hc.symm⟩) hbc
+    have hedge : DepEdge binds (binds[i]).name b := by simpa [← ha] using hab
+    obtain ⟨k, hk, hkname, hksucc⟩ := DepEdge_to_bindSucc hn hi hbmem hedge
+    obtain ⟨vs, hvsh, hvsl, hvsc, hvsb⟩ := ih k j hk hj hkname.symm hc
+    refine ⟨i :: vs, by simp, ?_, ?_, ?_⟩
+    · cases vs with
+      | nil => simp at hvsh
+      | cons v vs' => simpa [List.getLast?_cons_cons] using hvsl
+    · cases vs with
+      | nil => simp at hvsh
+      | cons v vs' =>
+        have hv : v = k := by simp at hvsh; exact hvsh
+        subst hv
+        exact ⟨hksucc, hvsc⟩
+    · intro v hv
+      cases List.mem_cons.mp hv with
+      | inl hvi => subst hvi; exact hi
+      | inr hv' => exact hvsb v hv'
+
+private theorem exists_nodup_bindChain (binds : List Surface.Binding) :
+    ∀ (vs : List Nat), isBindChain binds vs → vs ≠ [] →
+      (∀ v ∈ vs, v < binds.length) →
+      ∃ ws : List Nat, isBindChain binds ws ∧ ws.Nodup ∧ ws ≠ [] ∧
+        ws.head? = vs.head? ∧ ws.getLast? = vs.getLast? ∧
+        (∀ v ∈ ws, v < binds.length) := by
+  intro vs
+  induction hlen : vs.length using Nat.strongRecOn generalizing vs with
+  | ind n ih =>
+    intro hchain hne hbound
+    subst hlen
+    by_cases hn : vs.Nodup
+    · exact ⟨vs, hchain, hn, hne, rfl, rfl, hbound⟩
+    · have hrep : ∃ (i j : Nat), i < j ∧ j < vs.length ∧ vs[i]? = vs[j]? := by
+        have := mt (List.nodup_iff_getElem?_ne_getElem? (l := vs)).2 hn
+        push_neg at this
+        exact this
+      obtain ⟨i, j, hij, hjlen, hget⟩ := hrep
+      set ws := vs.take (i + 1) ++ vs.drop (j + 1)
+      have hi1 : i + 1 ≤ vs.length := Nat.succ_le_of_lt (Nat.lt_trans hij hjlen)
+      have hj1 : j + 1 ≤ vs.length := Nat.succ_le_of_lt hjlen
+      have hlen' : ws.length < vs.length := by
+        -- |take (i+1)| + |drop (j+1)| = (i+1) + (len - (j+1)) = len + (i - j) < len
+        have htake_len : (vs.take (i + 1)).length = i + 1 := by
+          simp [List.length_take, Nat.min_eq_left hi1]
+        have hdrop_len : (vs.drop (j + 1)).length = vs.length - (j + 1) := by
+          simp [List.length_drop]
+        simp only [ws, List.length_append, htake_len, hdrop_len]
+        omega
+      have hne' : ws ≠ [] := by
+        have hpos : (vs.take (i + 1)).length = i + 1 := by
+          simp [List.length_take, Nat.min_eq_left hi1]
+        intro hempty
+        have hlen0 : ws.length = 0 := by simp [hempty]
+        simp only [ws, List.length_append, hpos] at hlen0
+        omega
+      have hchain' : isBindChain binds ws :=
+        isBindChain_take_append_drop hij hjlen hget hchain
+      have hbound' : ∀ v ∈ ws, v < binds.length := by
+        intro v hv
+        simp only [ws, List.mem_append] at hv
+        cases hv with
+        | inl ht => exact hbound v (List.mem_of_mem_take ht)
+        | inr hd => exact hbound v (List.mem_of_mem_drop hd)
+      have hhead : ws.head? = vs.head? := by
+        cases vs with
+        | nil => cases hne rfl
+        | cons v vs' => simp [ws]
+      have hlast : ws.getLast? = vs.getLast? := by
+        cases hdrop : vs.drop (j + 1) with
+        | nil =>
+          have hjend : j + 1 = vs.length := by
+            have := congrArg List.length hdrop
+            simp [List.length_drop] at this; omega
+          have hws : ws = vs.take (i + 1) := by simp [ws, hdrop]
+          have hti : (vs.take (i + 1)).getLast? = vs[i]? := by
+            rw [List.getLast?_take]
+            simp [List.getElem?_eq_getElem (Nat.lt_trans hij hjlen)]
+          have hlastj : vs.getLast? = vs[j]? := by
+            have hj' : j = vs.length - 1 := by omega
+            rw [hj', List.getLast?_eq_getElem?]
+          rw [hws, hti, hget, hlastj]
+        | cons x xs =>
+          have hws_last : ws.getLast? = (x :: xs).getLast? := by
+            simp [ws, hdrop, List.getLast?_append]
+            cases hgl : (x :: xs).getLast? with
+            | none => simp at hgl
+            | some v => simp
+          have hdrop_last : (vs.drop (j + 1)).getLast? = vs.getLast? := by
+            have hjlt : ¬(vs.length ≤ j + 1) := by
+              have := congrArg List.length hdrop
+              simp [List.length_drop] at this; omega
+            simp [List.getLast?_drop, hjlt]
+          rw [hws_last, ← hdrop, hdrop_last]
+      obtain ⟨ws', hc', hn', hne'', hh', hl', hb'⟩ :=
+        ih ws.length hlen' ws rfl hchain' hne' hbound'
+      exact ⟨ws', hc', hn', hne'', hh'.trans hhead, hl'.trans hlast, hb'⟩
+
+private theorem canReach_of_nodup_chain {binds : List Surface.Binding}
+    {fuel : Nat} {seen vs : List Nat} {src dst : Nat}
+    (hchain : isBindChain binds vs) (hnodup : vs.Nodup)
+    (hhead : vs.head? = some src) (hlast : vs.getLast? = some dst)
+    (havoid : ∀ v ∈ vs, v ∉ seen)
+    (hfuel : vs.length - 1 ≤ fuel) :
+    canReach (bindSucc binds) fuel seen src dst = true := by
+  induction vs generalizing fuel seen src dst with
+  | nil => simp at hhead
+  | cons a rest ih =>
+    cases rest with
+    | nil =>
+      simp only [List.head?, Option.some.injEq] at hhead
+      simp only [List.getLast?] at hlast
+      subst hhead; cases hlast
+      unfold canReach; simp
+    | cons b rest =>
+      simp only [List.head?, Option.some.injEq] at hhead
+      subst hhead
+      have hlast_tail : (b :: rest).getLast? = some dst := by
+        simpa [List.getLast?_cons_cons] using hlast
+      have hlast_mem : dst ∈ b :: rest := by
+        obtain ⟨ys, hys⟩ := (List.getLast?_eq_some_iff).1 hlast_tail
+        rw [hys]; exact List.mem_append_right _ (by simp)
+      have hsrc_ne : a ≠ dst := by
+        intro heq; subst heq
+        exact (List.nodup_cons.mp hnodup).1 hlast_mem
+      have hnotin : a ∉ seen := havoid a (by simp)
+      cases fuel with
+      | zero =>
+        have : (a :: b :: rest).length - 1 ≤ 0 := hfuel
+        simp at this
+      | succ fuel =>
+        unfold canReach
+        simp [hsrc_ne, hnotin, List.any_eq_true]
+        refine ⟨b, hchain.1, ?_⟩
+        refine ih (fuel := fuel) (seen := a :: seen) (src := b) (dst := dst)
+          hchain.2 (List.nodup_cons.mp hnodup).2 rfl hlast_tail
+          (fun v hv hin => by
+            cases List.mem_cons.mp hin with
+            | inl heq =>
+              subst heq
+              exact (List.nodup_cons.mp hnodup).1 hv
+            | inr hs =>
+              exact havoid v (List.mem_cons_of_mem _ hv) hs)
+          (by have := hfuel; simp at this ⊢; omega)
+
+theorem canReach_complete {binds : List Surface.Binding} {i j : Nat}
+    (hn : (binds.map (·.name)).Nodup)
+    (hi : i < binds.length) (hj : j < binds.length)
+    (h : DepReach binds (binds[i]).name (binds[j]).name) :
+    canReach (bindSucc binds) binds.length [] i j = true := by
+  obtain ⟨vs, hvsh, hvsl, hchain, hbound⟩ := DepReach_exists_chain hn hi hj h
+  have hne : vs ≠ [] := fun he => by subst he; simp at hvsh
+  obtain ⟨ws, hchain', hnodup, _hne', hhead, hlast, hbound'⟩ :=
+    exists_nodup_bindChain binds vs hchain hne hbound
+  have hfuel : ws.length - 1 ≤ binds.length := by
+    have hle : ws.length ≤ binds.length := by
+      have hcard := List.toFinset_card_of_nodup hnodup
+      have hsub : ws.toFinset ⊆ Finset.range binds.length := by
+        intro x hx
+        simp [Finset.mem_range]
+        exact hbound' x (List.mem_toFinset.mp hx)
+      have := Finset.card_le_card hsub
+      simpa [hcard, Finset.card_range] using this
+    omega
+  exact canReach_of_nodup_chain hchain' hnodup
+    (hhead.trans hvsh) (hlast.trans hvsl) (fun _ _ => by simp) hfuel
+
+/-! ##### Partition / Kahn helpers for `sccOrderedIndexSets` -/
+
+/-- Same algorithm as the `let rec go` inside `sccIndexSets`, extracted for induction. -/
+private def sccPartitionGo (mutReach : Nat → Nat → Bool) :
+    Nat → List Nat → List (List Nat) → List (List Nat)
+  | 0, _todo, acc => acc
+  | _fuel + 1, [], acc => acc
+  | fuel + 1, i :: rest, acc =>
+    let todo := i :: rest
+    let comp := todo.filter (mutReach i)
+    let rest' := todo.filter (fun j => !mutReach i j)
+    sccPartitionGo mutReach fuel rest' (acc ++ [comp])
+
+private theorem sccIndexSets.go_eq_partitionGo
+    (mutReach : Nat → Nat → Bool) :
+    ∀ fuel todo acc,
+      sccIndexSets.go mutReach fuel todo acc =
+        sccPartitionGo mutReach fuel todo acc := by
+  intro fuel
+  induction fuel with
+  | zero => intros; rfl
+  | succ fuel ih =>
+    intro todo acc
+    cases todo with
+    | nil => rfl
+    | cons i rest =>
+      simp only [sccIndexSets.go, sccPartitionGo, ih]
+
+private theorem sccIndexSets_eq_partitionGo (binds : List Surface.Binding) :
+    sccIndexSets binds =
+      sccPartitionGo
+        (fun i j => mutuallyReachable (bindSucc binds) binds.length i j)
+        (binds.length + 1) (List.range binds.length) [] := by
+  unfold sccIndexSets
+  rw [sccIndexSets.go_eq_partitionGo]
+
+private theorem mutuallyReachable_refl (succ : Nat → List Nat) (fuel i : Nat) :
+    mutuallyReachable succ fuel i i = true := by
+  simp only [mutuallyReachable, Bool.and_self]
+  unfold canReach
+  simp
+
+private theorem filter_append_filter_not_perm {α} (p : α → Bool) (l : List α) :
+    (l.filter p ++ l.filter (fun x => !p x)).Perm l := by
+  induction l with
+  | nil => simp
+  | cons a l ih =>
+    cases hp : p a
+    · simp only [List.filter_cons, hp, Bool.not_false]
+      exact (List.perm_middle).trans (ih.cons a)
+    · simp only [List.filter_cons, hp, Bool.not_true]
+      exact ih.cons a
+
+/-- Needs reflexivity so each step removes the seed (otherwise fuel can run out
+    with `todo` nonempty and the unconstrained claim is false). -/
+private theorem sccPartitionGo_flatten_perm (mutReach : Nat → Nat → Bool)
+    (hrefl : ∀ i, mutReach i i = true) :
+    ∀ (fuel : Nat) (todo : List Nat) (accs : List (List Nat)),
+      todo.length ≤ fuel →
+      (sccPartitionGo mutReach fuel todo accs).flatten.Perm
+        (accs.flatten ++ todo) := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro todo accs hlen
+    have : todo = [] := by
+      cases todo with
+      | nil => rfl
+      | cons _ _ => simp at hlen
+    subst this
+    simp [sccPartitionGo]
+  | succ fuel ih =>
+    intro todo accs hlen
+    cases todo with
+    | nil => simp [sccPartitionGo]
+    | cons i rest =>
+      simp only [sccPartitionGo]
+      have hsplit := filter_append_filter_not_perm (mutReach i) (i :: rest)
+      have himem : i ∈ (i :: rest).filter (mutReach i) := by
+        simp [List.mem_filter, hrefl]
+      have hlen' : ((i :: rest).filter (fun j => !mutReach i j)).length ≤ fuel := by
+        have hsum := List.length_eq_length_filter_add (f := mutReach i) (l := i :: rest)
+        have hpos : 0 < ((i :: rest).filter (mutReach i)).length :=
+          List.length_pos_of_mem himem
+        have htodo : (i :: rest).length ≤ fuel + 1 := hlen
+        omega
+      have hih := ih _ (accs ++ [(i :: rest).filter (mutReach i)]) hlen'
+      refine hih.trans ?_
+      simp only [List.flatten_append, List.flatten_cons, List.flatten_nil, List.append_assoc,
+        List.nil_append]
+      exact List.Perm.append_left accs.flatten hsplit
+
+private theorem sccPartitionGo_nonempty (mutReach : Nat → Nat → Bool)
+    (hrefl : ∀ i, mutReach i i = true) :
+    ∀ (fuel : Nat) (todo : List Nat) (accs : List (List Nat)),
+      (∀ g ∈ accs, g ≠ []) →
+      (∀ g ∈ sccPartitionGo mutReach fuel todo accs, g ≠ []) := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro todo accs hacc g hg; exact hacc g hg
+  | succ fuel ih =>
+    intro todo accs hacc g hg
+    cases todo with
+    | nil =>
+      simp [sccPartitionGo] at hg; exact hacc g hg
+    | cons i rest =>
+      simp only [sccPartitionGo] at hg
+      refine ih _ _ ?_ g hg
+      intro g' hg'
+      simp only [List.mem_append, List.mem_singleton] at hg'
+      cases hg' with
+      | inl h => exact hacc g' h
+      | inr h =>
+        subst h
+        intro hempty
+        have : i ∈ (i :: rest).filter (mutReach i) := by
+          simp [List.mem_filter, hrefl]
+        simp [hempty] at this
+
+private theorem sccIndexSets_flatten_perm (binds : List Surface.Binding) :
+    (sccIndexSets binds).flatten.Perm (List.range binds.length) := by
+  rw [sccIndexSets_eq_partitionGo]
+  have h := sccPartitionGo_flatten_perm
+    (fun i j => mutuallyReachable (bindSucc binds) binds.length i j)
+    (fun i => mutuallyReachable_refl _ _ i)
+    (binds.length + 1) (List.range binds.length) []
+    (by simp [List.length_range])
+  simpa using h
+
+private theorem sccIndexSets_nonempty_comp (binds : List Surface.Binding) :
+    ∀ g ∈ sccIndexSets binds, g ≠ [] := by
+  rw [sccIndexSets_eq_partitionGo]
+  exact sccPartitionGo_nonempty _
+    (fun i => mutuallyReachable_refl _ _ i) _ _ _
+    (by intro g hg; cases hg)
+
+private theorem flatten_map_filterMap {α β}
+    (f : α → Option β) (sets : List (List α)) :
+    (sets.map (fun idxs => idxs.filterMap f)).flatten =
+      sets.flatten.filterMap f := by
+  induction sets with
+  | nil => simp
+  | cons s sets ih =>
+    simp only [List.map_cons, List.flatten_cons, List.filterMap_append, ih]
+
+private theorem range_filterMap_getElem? {α} (l : List α) :
+    (List.range l.length).filterMap (fun i => l[i]?) = l := by
+  induction l with
+  | nil => simp
+  | cons a xs ih =>
+    simp only [List.length_cons]
+    rw [List.range_succ_eq_map]
+    simp only [List.filterMap_cons, List.getElem?_cons_zero, List.filterMap_map]
+    change a :: (List.range xs.length).filterMap (fun i => (a :: xs)[i + 1]?) = a :: xs
+    have h := List.filterMap_congr (f := fun i => (a :: xs)[i + 1]?) (g := fun i => xs[i]?)
+      (l := List.range xs.length) (fun i _ => List.getElem?_cons_succ)
+    rw [h, ih]
+
+private theorem indexSetsToBindings_flatten_of_perm
+    {binds : List Surface.Binding} {sets : List (List Nat)}
+    (hperm : sets.flatten.Perm (List.range binds.length)) :
+    (indexSetsToBindings binds sets).flatten.Perm binds := by
+  unfold indexSetsToBindings
+  rw [flatten_map_filterMap]
+  have h := hperm.filterMap (fun i => binds[i]?)
+  rw [range_filterMap_getElem?] at h
+  exact h
+
+private theorem sccIndexSets_mem_lt (binds : List Surface.Binding) :
+    ∀ g ∈ sccIndexSets binds, ∀ i ∈ g, i < binds.length := by
+  intro g hg i hi
+  have hperm := sccIndexSets_flatten_perm binds
+  have himem : i ∈ (sccIndexSets binds).flatten :=
+    List.mem_flatten.mpr ⟨g, hg, hi⟩
+  have : i ∈ List.range binds.length := (List.Perm.mem_iff hperm).1 himem
+  exact List.mem_range.mp this
+
+private theorem DepReach_trans {binds : List Surface.Binding} {a b c : ValName}
+    (hab : DepReach binds a b) (hbc : DepReach binds b c) :
+    DepReach binds a c := by
+  induction hab with
+  | refl => exact hbc
+  | tail hedge _ ih => exact DepReach.tail hedge (ih hbc)
+
+private theorem mutuallyReachable_sym (succ : Nat → List Nat) (fuel i j : Nat) :
+    mutuallyReachable succ fuel i j = mutuallyReachable succ fuel j i := by
+  simp only [mutuallyReachable, Bool.and_comm]
+
+/-- Seed-filter components are pairwise `DepMutual` (no Bool-trans / Nodup needed). -/
+private theorem sccPartitionGo_depMutual (binds : List Surface.Binding) :
+    let mutReach := fun i j =>
+      mutuallyReachable (bindSucc binds) binds.length i j
+    ∀ (fuel : Nat) (todo : List Nat) (accs : List (List Nat)),
+      (∀ x ∈ todo, x < binds.length) →
+      (∀ g ∈ accs, ∀ a ∈ g, ∀ b ∈ g,
+        ∀ (ha : a < binds.length) (hb : b < binds.length),
+          DepMutual binds (binds[a]).name (binds[b]).name) →
+      (∀ g ∈ sccPartitionGo mutReach fuel todo accs,
+        ∀ a ∈ g, ∀ b ∈ g,
+          ∀ (ha : a < binds.length) (hb : b < binds.length),
+            DepMutual binds (binds[a]).name (binds[b]).name) := by
+  intro mutReach fuel
+  induction fuel with
+  | zero =>
+    intro todo accs _hbound hacc g hg; exact hacc g hg
+  | succ fuel ih =>
+    intro todo accs hbound hacc g hg
+    cases todo with
+    | nil =>
+      simp [sccPartitionGo] at hg; exact hacc g hg
+    | cons seed rest =>
+      simp only [sccPartitionGo] at hg
+      have hseed_lt : seed < binds.length := hbound seed (by simp)
+      have htodo_bound : ∀ x ∈ seed :: rest, x < binds.length := hbound
+      refine ih _ _ ?_ ?_ g hg
+      · intro x hx
+        exact htodo_bound x (List.mem_of_mem_filter hx)
+      · intro g' hg' a ha b hb ha_lt hb_lt
+        simp only [List.mem_append, List.mem_singleton] at hg'
+        cases hg' with
+        | inl h => exact hacc g' h a ha b hb ha_lt hb_lt
+        | inr h =>
+          subst h
+          have hsa : mutReach seed a = true := (List.mem_filter.mp ha).2
+          have hsb : mutReach seed b = true := (List.mem_filter.mp hb).2
+          have ⟨hsa1, hsa2⟩ := Bool.and_eq_true_iff.mp hsa
+          have ⟨hsb1, hsb2⟩ := Bool.and_eq_true_iff.mp hsb
+          have dsa := canReach_sound hsa1 hseed_lt ha_lt
+          have das := canReach_sound hsa2 ha_lt hseed_lt
+          have dsb := canReach_sound hsb1 hseed_lt hb_lt
+          have dbs := canReach_sound hsb2 hb_lt hseed_lt
+          exact ⟨DepReach_trans das dsb, DepReach_trans dbs dsa⟩
+
+private theorem sccIndexSets_comp_depMutual (binds : List Surface.Binding)
+    {g : List Nat} (hg : g ∈ sccIndexSets binds)
+    {i j : Nat} (hi : i ∈ g) (hj : j ∈ g) :
+    DepMutual binds (binds[i]'(sccIndexSets_mem_lt binds g hg i hi)).name
+      (binds[j]'(sccIndexSets_mem_lt binds g hg j hj)).name := by
+  have hi_lt := sccIndexSets_mem_lt binds g hg i hi
+  have hj_lt := sccIndexSets_mem_lt binds g hg j hj
+  have hg' : g ∈
+      sccPartitionGo
+        (fun i j => mutuallyReachable (bindSucc binds) binds.length i j)
+        (binds.length + 1) (List.range binds.length) [] := by
+    rwa [← sccIndexSets_eq_partitionGo]
+  exact sccPartitionGo_depMutual binds (binds.length + 1)
+    (List.range binds.length) []
+    (fun x hx => List.mem_range.mp hx)
+    (fun g hg => by cases hg)
+    g hg' i hi j hj hi_lt hj_lt
+
+private theorem filterMap_ne_nil_of_isSome {α β}
+    (f : α → Option β) {l : List α} (hne : l ≠ [])
+    (h : ∀ x ∈ l, (f x).isSome) : l.filterMap f ≠ [] := by
+  cases l with
+  | nil => cases hne rfl
+  | cons a as =>
+    have ha := h a (by simp)
+    cases hf : f a with
+    | none => simp [hf] at ha
+    | some b => simp [hf]
+
+private theorem mutuallyReachable_trans_of_nodup {binds : List Surface.Binding}
+    (hn : (binds.map (·.name)).Nodup)
+    {i j k : Nat}
+    (hi : i < binds.length) (hj : j < binds.length) (hk : k < binds.length)
+    (hij : mutuallyReachable (bindSucc binds) binds.length i j = true)
+    (hjk : mutuallyReachable (bindSucc binds) binds.length j k = true) :
+    mutuallyReachable (bindSucc binds) binds.length i k = true := by
+  obtain ⟨hij1, hij2⟩ := Bool.and_eq_true_iff.mp hij
+  obtain ⟨hjk1, hjk2⟩ := Bool.and_eq_true_iff.mp hjk
+  have dik := DepReach_trans (canReach_sound hij1 hi hj) (canReach_sound hjk1 hj hk)
+  have dki := DepReach_trans (canReach_sound hjk2 hk hj) (canReach_sound hij2 hj hi)
+  exact Bool.and_eq_true_iff.mpr ⟨canReach_complete hn hi hk dik,
+    canReach_complete hn hk hi dki⟩
+
+private theorem sccOrderedIndexSets_mem_of_getElem
+    (binds : List Surface.Binding) {idxs : List Nat}
+    (h : idxs ∈ sccOrderedIndexSets binds) :
+    idxs ∈ sccIndexSets binds := by
+  simp only [sccOrderedIndexSets] at h
+  obtain ⟨k, _hk, hget⟩ := List.mem_filterMap.mp h
+  exact List.mem_of_getElem? hget
+
+private theorem filterMap_getElem?_of_perm {α} {l : List α} {order : List Nat}
+    (h : order.Perm (List.range l.length)) :
+    (order.filterMap (fun i => l[i]?)).Perm l := by
+  have h' := h.filterMap (fun i => l[i]?)
+  rwa [range_filterMap_getElem?] at h'
+
+private theorem perm_range_of_nodup_length {l : List Nat} {n : Nat}
+    (hn : l.Nodup) (hbound : ∀ x ∈ l, x < n) (hlen : l.length = n) :
+    l.Perm (List.range n) := by
+  refine (List.perm_ext_iff_of_nodup hn List.nodup_range).2 ?_
+  intro a
+  constructor
+  · intro ha
+    exact List.mem_range.mpr (hbound a ha)
+  · intro ha
+    have hsub : l.toFinset ⊆ Finset.range n := by
+      intro x hx
+      exact Finset.mem_range.mpr (hbound x (List.mem_toFinset.mp hx))
+    have hcard : l.toFinset.card = n := by
+      rw [List.toFinset_card_of_nodup hn, hlen]
+    have hEq : l.toFinset = Finset.range n :=
+      Finset.eq_of_subset_of_card_le hsub (by simp [hcard])
+    exact List.mem_toFinset.mp (by
+      rw [hEq]
+      simpa [Finset.mem_range] using List.mem_range.mp ha)
+
+/-! ##### Abstract Kahn invariants
+
+`kahnTopo_edge_before` is false for arbitrary edges: targets `≥ n` always read
+`indegGet = 0`, so Kahn can emit them before an out-of-range source. All lemmas
+below assume every before-edge endpoint lies in `0 .. n-1`. -/
+
+/-- Edges into `v` whose source is not yet emitted. -/
+private def remInDeg (beforeEdges : List (Nat × Nat)) (acc : List Nat) (v : Nat) : Nat :=
+  (beforeEdges.filter (fun e => e.2 = v && e.1 ∉ acc)).length
+
+private theorem indegSet_length (indeg : List Nat) (i v : Nat) :
+    (indegSet indeg i v).length = indeg.length := by
+  simp only [indegSet, List.length_mapIdx]
+
+private theorem indegGet_indegSet_eq (indeg : List Nat) (i v : Nat)
+    (hi : i < indeg.length) :
+    indegGet (indegSet indeg i v) i = v := by
+  simp only [indegGet, indegSet]
+  have hget : (indeg.mapIdx fun j x => if j = i then v else x)[i]? = some v := by
+    rw [List.getElem?_mapIdx, List.getElem?_eq_getElem hi]
+    simp
+  simp [hget]
+
+private theorem indegGet_indegSet_ne (indeg : List Nat) (i j v : Nat)
+    (hne : j ≠ i) :
+    indegGet (indegSet indeg i v) j = indegGet indeg j := by
+  simp only [indegGet, indegSet]
+  by_cases hj : j < indeg.length
+  · have hget :
+        (indeg.mapIdx fun k x => if k = i then v else x)[j]? =
+          some (if j = i then v else indeg[j]) := by
+      rw [List.getElem?_mapIdx, List.getElem?_eq_getElem hj]
+      simp
+    simp only [hget, Option.getD_some, hne, ↓reduceIte]
+    simp [List.getElem?_eq_getElem hj]
+  · have hlen : indeg.length ≤ j := Nat.le_of_not_gt hj
+    simp [List.getElem?_eq_none_iff.mpr hlen,
+      List.getElem?_eq_none_iff.mpr (by rwa [List.length_mapIdx] : (indeg.mapIdx fun k x =>
+        if k = i then v else x).length ≤ j)]
+
+private theorem remInDeg_nil_acc (beforeEdges : List (Nat × Nat)) (v : Nat) :
+    remInDeg beforeEdges [] v =
+      (beforeEdges.filter (fun e => e.2 = v)).length := by
+  simp only [remInDeg]
+  congr 1
+  refine List.filter_congr ?_
+  intro e _
+  simp
+
+private theorem remInDeg_eq_zero_preds (beforeEdges : List (Nat × Nat))
+    (acc : List Nat) {u v : Nat}
+    (he : (u, v) ∈ beforeEdges)
+    (hz : remInDeg beforeEdges acc v = 0) :
+    u ∈ acc := by
+  by_contra hnotin
+  have hmem : (u, v) ∈ beforeEdges.filter (fun e => e.2 = v && e.1 ∉ acc) := by
+    simp only [List.mem_filter, he, true_and]
+    simp [hnotin]
+  have hpos : 0 < remInDeg beforeEdges acc v :=
+    List.length_pos_of_mem hmem
+  omega
+
+private theorem filter_length_split {α} (p q : α → Bool) (l : List α) :
+    (l.filter fun x => p x && q x).length +
+      (l.filter fun x => p x && !q x).length =
+      (l.filter p).length := by
+  induction l with
+  | nil => simp
+  | cons a as ih =>
+    simp only [List.filter_cons]
+    cases hp : p a <;> cases hq : q a <;> simp <;> omega
+
+/-- Emitting `u` (not already in `acc`) removes exactly the `(u, v)` edges. -/
+private theorem remInDeg_append (beforeEdges : List (Nat × Nat)) (acc : List Nat)
+    (u v : Nat) (hu : u ∉ acc) :
+    remInDeg beforeEdges (acc ++ [u]) v +
+        (beforeEdges.filter (fun e => e.1 = u && e.2 = v)).length =
+      remInDeg beforeEdges acc v := by
+  simp only [remInDeg]
+  let p : Nat × Nat → Bool := fun e => decide (e.2 = v) && decide (e.1 ∉ acc)
+  let q : Nat × Nat → Bool := fun e => decide (e.1 = u)
+  have hleft : ∀ e ∈ beforeEdges,
+      (decide (e.2 = v) && decide (e.1 ∉ (acc ++ [u]))) = (p e && !q e) := by
+    intro e _
+    simp [p, q, List.mem_append, List.mem_singleton, Bool.and_assoc]
+  have hright : ∀ e ∈ beforeEdges,
+      (decide (e.1 = u) && decide (e.2 = v)) = (p e && q e) := by
+    intro e _
+    simp only [p, q]
+    by_cases heq : e.1 = u
+    · simp [heq, hu, Bool.and_true, Bool.true_and]
+    · simp [heq]
+  rw [List.filter_congr hleft, List.filter_congr hright]
+  change (beforeEdges.filter fun e => p e && !q e).length +
+      (beforeEdges.filter fun e => p e && q e).length =
+    (beforeEdges.filter (fun e => decide (e.2 = v) && decide (e.1 ∉ acc))).length
+  have hp : beforeEdges.filter p =
+      beforeEdges.filter (fun e => decide (e.2 = v) && decide (e.1 ∉ acc)) := rfl
+  rw [← hp]
+  exact Nat.add_comm _ _ ▸ filter_length_split p q beforeEdges
+
+private theorem kahnTopo_indeg0_eq (n : Nat) (beforeEdges : List (Nat × Nat))
+    {v : Nat} (hv : v < n) :
+    indegGet
+      ((List.range n).map fun w =>
+        (beforeEdges.filter (fun e => e.2 = w)).length)
+      v =
+      remInDeg beforeEdges [] v := by
+  simp only [indegGet, remInDeg_nil_acc]
+  have hlen :
+      ((List.range n).map fun w =>
+        (beforeEdges.filter (fun e => e.2 = w)).length).length = n := by
+    simp [List.length_map, List.length_range]
+  rw [List.getElem?_eq_getElem (by omega)]
+  simp only [Option.getD_some, List.getElem_map, List.getElem_range]
+
+/-- Bounded edges: every endpoint is `< n`. -/
+private def edgesBounded (n : Nat) (edges : List (Nat × Nat)) : Prop :=
+  ∀ e ∈ edges, e.1 < n ∧ e.2 < n
+
+private theorem filterMap_nbrs_count (beforeEdges : List (Nat × Nat)) (u w : Nat) :
+    ((beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none).count w) =
+      (beforeEdges.filter fun e => e.1 = u && e.2 = w).length := by
+  induction beforeEdges with
+  | nil => simp
+  | cons e es ih =>
+    rcases e with ⟨a, b⟩
+    simp only [List.filterMap_cons, List.filter_cons, List.count_cons]
+    by_cases ha : a = u
+    · by_cases hb : b = w
+      · simp [ha, hb, ih]
+      · simp [ha, hb, ih]
+    · simp [ha, ih]
+
+private theorem foldl_indegSet_sub (indeg : List Nat) (nbrs : List Nat) (w : Nat)
+    (hw : w < indeg.length) :
+    indegGet (nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg) w =
+      indegGet indeg w - nbrs.count w := by
+  induction nbrs generalizing indeg with
+  | nil => simp
+  | cons b bs ih =>
+    simp only [List.foldl_cons]
+    have hw' : w < (indegSet indeg b (indegGet indeg b - 1)).length := by
+      rw [indegSet_length]; exact hw
+    rw [ih _ hw']
+    by_cases hb : b = w
+    · rw [hb, indegGet_indegSet_eq _ _ _ hw]
+      simp [List.count_cons, Nat.sub_sub, Nat.add_comm 1]
+    · rw [indegGet_indegSet_ne indeg b w _ (Ne.symm hb)]
+      simp [List.count_cons, hb]
+
+/-- After emitting `u`, foldl-decrements preserve `remInDeg` for indices `< indeg.length`. -/
+private theorem foldl_indeg_remInDeg (beforeEdges : List (Nat × Nat))
+    (acc : List Nat) (u : Nat) (indeg : List Nat)
+    (hu : u ∉ acc)
+    (hinv : ∀ w < indeg.length, indegGet indeg w = remInDeg beforeEdges acc w)
+    {w : Nat} (hw : w < indeg.length) :
+    indegGet
+        ((beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none).foldl
+          (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg)
+        w =
+      remInDeg beforeEdges (acc ++ [u]) w := by
+  set nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+  have hsub := foldl_indegSet_sub indeg nbrs w hw
+  have hcnt : nbrs.count w =
+      (beforeEdges.filter fun e => e.1 = u && e.2 = w).length :=
+    filterMap_nbrs_count beforeEdges u w
+  have happ := remInDeg_append beforeEdges acc u w hu
+  have hinvw := hinv w hw
+  rw [hsub, hinvw, hcnt]
+  exact (Nat.eq_sub_of_add_eq happ).symm
+
+private theorem getElem?_append_left_of_eq {α} {l₁ l₂ : List α} {i : Nat} {x : α}
+    (h : l₁[i]? = some x) : (l₁ ++ l₂)[i]? = some x := by
+  have hi : i < l₁.length := (List.getElem?_eq_some_iff.mp h).1
+  rw [List.getElem?_append_left hi, h]
+
+private theorem getElem?_append_snoc {α} (l : List α) (x : α) :
+    (l ++ [x])[l.length]? = some x := by
+  rw [List.getElem?_append_right (Nat.le_refl _), Nat.sub_self]
+  rfl
+
+private theorem foldl_indegSet_length (indeg : List Nat) (nbrs : List Nat) :
+    (nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg).length =
+      indeg.length := by
+  induction nbrs generalizing indeg with
+  | nil => rfl
+  | cons b bs ih =>
+    simp only [List.foldl_cons]
+    rw [ih, indegSet_length]
+
+private theorem filterMap_succ_nodup (beforeEdges : List (Nat × Nat))
+    (hedges_nodup : beforeEdges.Nodup) (u : Nat) :
+    (beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none).Nodup := by
+  refine List.Nodup.filterMap ?_ hedges_nodup
+  intro e1 e2 b hb1 hb2
+  rcases e1 with ⟨a1, b1⟩
+  rcases e2 with ⟨a2, b2⟩
+  by_cases h1 : a1 = u
+  · by_cases h2 : a2 = u
+    · simp only [h1, h2, ↓reduceIte, Option.mem_def, Option.some.injEq] at hb1 hb2
+      subst hb1; subst hb2
+      simp [h1, h2]
+    · simp [h2] at hb2
+  · simp [h1] at hb1
+
+/-- Core order invariant of `kahnGo` under bounded edges.
+    Needs `beforeEdges.Nodup` so successor lists stay Nodup (multi-edges can
+    duplicate `ready` and break `b ∉ acc`). Also tracks `remInDeg = 0` on `acc`. -/
+private theorem kahnGo_edge_before_of_bounded (beforeEdges : List (Nat × Nat))
+    (n : Nat) (hn : edgesBounded n beforeEdges) (hedges_nodup : beforeEdges.Nodup) :
+    ∀ (fuel : Nat) (indeg ready acc : List Nat),
+      indeg.length = n →
+      (∀ w < n, indegGet indeg w = remInDeg beforeEdges acc w) →
+      (∀ b ∈ ready, b < n ∧ remInDeg beforeEdges acc b = 0 ∧ b ∉ acc) →
+      ready.Nodup →
+      (∀ y ∈ acc, remInDeg beforeEdges acc y = 0) →
+      (∀ {x y i j : Nat}, (x, y) ∈ beforeEdges →
+        acc[i]? = some x → acc[j]? = some y → i < j) →
+      ∀ {x y i j : Nat}, (x, y) ∈ beforeEdges →
+        (kahnGo beforeEdges fuel indeg ready acc)[i]? = some x →
+        (kahnGo beforeEdges fuel indeg ready acc)[j]? = some y → i < j := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro indeg ready acc _hlen _hinv _hready _hnodup _hacc hedge x y i j he hi hj
+    simp only [kahnGo] at hi hj
+    exact hedge he hi hj
+  | succ fuel ih =>
+    intro indeg ready acc hlen hinv hready hnodup hacc hedge x y i j he hi hj
+    cases ready with
+    | nil =>
+      simp only [kahnGo] at hi hj
+      exact hedge he hi hj
+    | cons u us =>
+      simp only [kahnGo] at hi hj
+      set acc' := acc ++ [u]
+      set nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+      set indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
+      set newReady := nbrs.filter fun b =>
+        indegGet indeg' b = 0 && b ∉ acc' && b ∉ us
+      have hu_ready := hready u List.mem_cons_self
+      have hu : u ∉ acc := hu_ready.2.2
+      have hu_lt : u < n := hu_ready.1
+      have hu_deg : remInDeg beforeEdges acc u = 0 := hu_ready.2.1
+      have hu_us : u ∉ us := (List.nodup_cons.mp hnodup).1
+      have hlen' : indeg'.length = n := by
+        simp only [indeg']
+        rw [foldl_indegSet_length, hlen]
+      have hinv' : ∀ w < n, indegGet indeg' w = remInDeg beforeEdges acc' w := by
+        intro w hw
+        have hw' : w < indeg.length := by omega
+        simpa [indeg', nbrs, acc'] using
+          foldl_indeg_remInDeg beforeEdges acc u indeg hu
+            (fun w'' hw'' => by
+              have : w'' < n := by omega
+              exact hinv w'' this) hw'
+      have hacc' : ∀ z ∈ acc', remInDeg beforeEdges acc' z = 0 := by
+        intro z hz
+        have hz' : z ∈ acc ∨ z = u := by
+          simpa [acc', List.mem_append, List.mem_singleton] using hz
+        cases hz' with
+        | inl hzacc =>
+          have happ := remInDeg_append beforeEdges acc u z hu
+          have h0 := hacc z hzacc
+          have : remInDeg beforeEdges (acc ++ [u]) z = 0 := by omega
+          simpa [acc'] using this
+        | inr hzu =>
+          rw [hzu]
+          have happ := remInDeg_append beforeEdges acc u u hu
+          have : remInDeg beforeEdges (acc ++ [u]) u = 0 := by
+            have h0 := hu_deg
+            omega
+          simpa [acc'] using this
+      have hready' : ∀ b ∈ us ++ newReady,
+          b < n ∧ remInDeg beforeEdges acc' b = 0 ∧ b ∉ acc' := by
+        intro b hb
+        simp only [List.mem_append] at hb
+        cases hb with
+        | inl hbus =>
+          have hb0 := hready b (List.mem_cons_of_mem u hbus)
+          refine ⟨hb0.1, ?_, ?_⟩
+          · have happ := remInDeg_append beforeEdges acc u b hu
+            have h0 := hb0.2.1
+            have : remInDeg beforeEdges (acc ++ [u]) b = 0 := by omega
+            simpa [acc'] using this
+          · intro hin
+            have hin' : b ∈ acc ∨ b = u := by
+              simpa [acc', List.mem_append, List.mem_singleton] using hin
+            cases hin' with
+            | inl h => exact hb0.2.2 h
+            | inr h => exact hu_us (h ▸ hbus)
+        | inr hbnew =>
+          have ⟨hbmem, hcond⟩ := List.mem_filter.mp hbnew
+          simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+          obtain ⟨⟨hz, hnotin⟩, _⟩ := hcond
+          have hb_lt : b < n := by
+            simp only [nbrs, List.mem_filterMap] at hbmem
+            obtain ⟨e, hee, hopt⟩ := hbmem
+            rcases e with ⟨a, b'⟩
+            by_cases ha : a = u
+            · simp only [ha, ↓reduceIte, Option.some.injEq] at hopt
+              subst hopt; exact (hn _ hee).2
+            · simp [ha] at hopt
+          refine ⟨hb_lt, by rwa [← hinv' b hb_lt], hnotin⟩
+      have hnodup' : (us ++ newReady).Nodup := by
+        have hus : us.Nodup := (List.nodup_cons.mp hnodup).2
+        have hnbrs : nbrs.Nodup := by
+          simpa [nbrs] using filterMap_succ_nodup beforeEdges hedges_nodup u
+        have hnew : newReady.Nodup := List.Nodup.filter _ hnbrs
+        refine List.Nodup.append hus hnew ?_
+        intro x hx hx'
+        have hcond := (List.mem_filter.mp hx').2
+        simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+        exact hcond.2 hx
+      have hedge' : ∀ {x y i j : Nat}, (x, y) ∈ beforeEdges →
+          acc'[i]? = some x → acc'[j]? = some y → i < j := by
+        intro x y i j he' hi' hj'
+        have hi_lt : i < acc'.length := (List.getElem?_eq_some_iff.mp hi').1
+        have hj_lt : j < acc'.length := (List.getElem?_eq_some_iff.mp hj').1
+        simp only [acc', List.length_append, List.length_singleton] at hi_lt hj_lt
+        by_cases hi_acc : i < acc.length
+        · have hi'' : acc[i]? = some x := by
+            rwa [List.getElem?_append_left hi_acc] at hi'
+          by_cases hj_acc : j < acc.length
+          · have hj'' : acc[j]? = some y := by
+              rwa [List.getElem?_append_left hj_acc] at hj'
+            exact hedge he' hi'' hj''
+          · have hj_eq : j = acc.length := by omega
+            have hyu : y = u := by
+              have : acc'[j]? = some u := by
+                simp only [acc', hj_eq]
+                exact getElem?_append_snoc acc u
+              simp only [this, Option.some.injEq] at hj'; exact hj'.symm
+            exact Nat.lt_of_lt_of_le hi_acc (by omega)
+        · have hi_eq : i = acc.length := by omega
+          have hxu : x = u := by
+            have : acc'[i]? = some u := by
+              simp only [acc', hi_eq]
+              exact getElem?_append_snoc acc u
+            simp only [this, Option.some.injEq] at hi'; exact hi'.symm
+          have hy_mem : y ∈ acc' := List.mem_of_getElem? hj'
+          have hy_mem' : y ∈ acc ∨ y = u := by
+            simpa [acc', List.mem_append, List.mem_singleton] using hy_mem
+          cases hy_mem' with
+          | inl hyacc =>
+            have heu : (u, y) ∈ beforeEdges := by simpa [hxu] using he'
+            exact (hu (remInDeg_eq_zero_preds beforeEdges acc heu (hacc y hyacc))).elim
+          | inr hyu =>
+            have heu : (u, u) ∈ beforeEdges := by simpa [hxu, hyu] using he'
+            exact (hu (remInDeg_eq_zero_preds beforeEdges acc heu hu_deg)).elim
+      exact ih indeg' (us ++ newReady) acc' hlen' hinv' hready' hnodup' hacc' hedge'
+        he hi hj
+
+/-- Kahn emits sources before dependents, when all edge endpoints are `< n`
+    and `edges` has no duplicates. -/
+private theorem kahnTopo_edge_before (n : Nat) (edges : List (Nat × Nat))
+    (hb : edgesBounded n edges) (hnodup : edges.Nodup)
+    {u v : Nat} (he : (u, v) ∈ edges)
+    {i j : Nat}
+    (hi : (kahnTopo n edges)[i]? = some u)
+    (hj : (kahnTopo n edges)[j]? = some v) :
+    i < j := by
+  simp only [kahnTopo] at hi hj
+  refine kahnGo_edge_before_of_bounded edges n hb hnodup (n + 1)
+    ((List.range n).map fun w => (edges.filter (fun e => e.2 = w)).length)
+    ((List.range n).filter fun w =>
+      indegGet ((List.range n).map fun w =>
+        (edges.filter (fun e => e.2 = w)).length) w = 0)
+    [] ?hlen ?hinv ?hready ?hnodup_ready ?hacc ?hedge he hi hj
+  · simp [List.length_map, List.length_range]
+  · intro w hw
+    exact kahnTopo_indeg0_eq n edges hw
+  · intro b hb'
+    have hbmem := List.mem_filter.mp hb'
+    refine ⟨List.mem_range.mp hbmem.1, ?_, by simp⟩
+    have hdec : decide
+        (indegGet ((List.range n).map fun w =>
+          (edges.filter (fun e => e.2 = w)).length) b = 0) = true := hbmem.2
+    have heq : indegGet ((List.range n).map fun w =>
+        (edges.filter (fun e => e.2 = w)).length) b = 0 :=
+      of_decide_eq_true hdec
+    rwa [kahnTopo_indeg0_eq n edges (List.mem_range.mp hbmem.1)] at heq
+  · exact List.Nodup.filter _ List.nodup_range
+  · intro y hy; cases hy
+  · intro x y i j _he' hi' _hj'
+    simp at hi'
+
+/-- `sccBeforeEdges` only emits component-index pairs. -/
+private theorem sccBeforeEdges_bounded (succ : Nat → List Nat)
+    (comps : List (List Nat)) :
+    edgesBounded comps.length (sccBeforeEdges succ comps) := by
+  intro e he
+  simp only [sccBeforeEdges, List.mem_flatMap] at he
+  obtain ⟨a, ha, h⟩ := he
+  have ha' : a ∈ List.range comps.length := ha
+  simp only [List.mem_filterMap] at h
+  obtain ⟨b, hb, hopt⟩ := h
+  by_cases hab : a = b
+  · simp [hab] at hopt
+  · simp only [hab, ↓reduceIte] at hopt
+    cases hca : comps[a]? with
+    | none => simp [hca] at hopt
+    | some ca =>
+      cases hcb : comps[b]? with
+      | none => simp [hca, hcb] at hopt
+      | some cb =>
+        simp only [hca, hcb] at hopt
+        split at hopt
+        · next hdep =>
+          simp only [Option.some.injEq] at hopt
+          subst hopt
+          exact ⟨List.mem_range.mp hb, List.mem_range.mp ha'⟩
+        · simp at hopt
+
+/-- Each `(dependency, dependent)` pair appears at most once. -/
+private theorem sccBeforeEdges_nodup (succ : Nat → List Nat)
+    (comps : List (List Nat)) :
+    (sccBeforeEdges succ comps).Nodup := by
+  simp only [sccBeforeEdges]
+  set nc := comps.length
+  refine (List.nodup_flatMap).2 ⟨?_, ?_⟩
+  · intro a ha
+    refine List.Nodup.filterMap ?_ List.nodup_range
+    intro b1 b2 e he1 he2
+    by_cases h1 : a = b1
+    · simp [h1] at he1
+    · by_cases h2 : a = b2
+      · simp [h2] at he2
+      · simp only [h1, h2, ↓reduceIte] at he1 he2
+        cases hca : comps[a]? with
+        | none => simp [hca] at he1
+        | some ca =>
+          cases hcb1 : comps[b1]? with
+          | none => simp [hca, hcb1] at he1
+          | some cb1 =>
+            cases hcb2 : comps[b2]? with
+            | none => simp [hca, hcb2] at he2
+            | some cb2 =>
+              simp only [hca, hcb1] at he1
+              simp only [hca, hcb2] at he2
+              split at he1
+              · next =>
+                split at he2
+                · next =>
+                  simp only [Option.mem_def, Option.some.injEq] at he1 he2
+                  cases he1; cases he2
+                  rfl
+                · simp at he2
+              · simp at he1
+  · refine List.Pairwise.imp ?_ (List.nodup_iff_pairwise_ne.mp List.nodup_range)
+    intro a1 a2 hne
+    intro e he1 he2
+    simp only [List.mem_filterMap] at he1 he2
+    obtain ⟨b1, hb1, hopt1⟩ := he1
+    obtain ⟨b2, hb2, hopt2⟩ := he2
+    by_cases h1 : a1 = b1
+    · simp [h1] at hopt1
+    · by_cases h2 : a2 = b2
+      · simp [h2] at hopt2
+      · simp only [h1, h2, ↓reduceIte] at hopt1 hopt2
+        cases hca1 : comps[a1]? with
+        | none => simp [hca1] at hopt1
+        | some ca1 =>
+          cases hcb1 : comps[b1]? with
+          | none => simp [hca1, hcb1] at hopt1
+          | some cb1 =>
+            cases hca2 : comps[a2]? with
+            | none => simp [hca2] at hopt2
+            | some ca2 =>
+              cases hcb2 : comps[b2]? with
+              | none => simp [hca2, hcb2] at hopt2
+              | some cb2 =>
+                simp only [hca1, hcb1] at hopt1
+                simp only [hca2, hcb2] at hopt2
+                split at hopt1
+                · next =>
+                  split at hopt2
+                  · next =>
+                    simp only [Option.some.injEq] at hopt1 hopt2
+                    cases hopt1; cases hopt2
+                    exact hne rfl
+                  · simp at hopt2
+                · simp at hopt1
+
+/-- Positive remaining in-degree ⇒ some unemitted predecessor edge. -/
+private theorem exists_pred_of_remInDeg_pos (beforeEdges : List (Nat × Nat))
+    (acc : List Nat) {v : Nat} (hpos : 0 < remInDeg beforeEdges acc v) :
+    ∃ u, (u, v) ∈ beforeEdges ∧ u ∉ acc := by
+  simp only [remInDeg] at hpos
+  obtain ⟨e, he⟩ := List.exists_mem_of_length_pos hpos
+  have ⟨hem, hcond⟩ := List.mem_filter.mp he
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+  rcases e with ⟨u, v'⟩
+  obtain ⟨hv, hu⟩ := hcond
+  subst hv
+  exact ⟨u, hem, hu⟩
+
+/-- Length bound from Nodup + range membership. -/
+private theorem length_le_of_nodup_lt {l : List Nat} {n : Nat}
+    (hn : l.Nodup) (hbound : ∀ x ∈ l, x < n) :
+    l.length ≤ n := by
+  have hsub : l.toFinset ⊆ Finset.range n := by
+    intro x hx
+    exact Finset.mem_range.mpr (hbound x (List.mem_toFinset.mp hx))
+  have := Finset.card_le_card hsub
+  rwa [List.toFinset_card_of_nodup hn, Finset.card_range] at this
+
+/-- Zero-closed ready invariant: every `remInDeg = 0` vertex is queued or emitted. -/
+private theorem kahnGo_zero_closed (beforeEdges : List (Nat × Nat))
+    (n : Nat) (hn : edgesBounded n beforeEdges) (hedges_nodup : beforeEdges.Nodup) :
+    ∀ (fuel : Nat) (indeg ready acc : List Nat),
+      indeg.length = n →
+      (∀ w < n, indegGet indeg w = remInDeg beforeEdges acc w) →
+      (∀ b ∈ ready, b < n ∧ remInDeg beforeEdges acc b = 0 ∧ b ∉ acc) →
+      ready.Nodup →
+      (∀ y ∈ acc, y < n ∧ remInDeg beforeEdges acc y = 0) →
+      acc.Nodup →
+      (∀ v < n, remInDeg beforeEdges acc v = 0 → v ∈ acc ∨ v ∈ ready) →
+      fuel + acc.length ≥ n + 1 →
+      let out := kahnGo beforeEdges fuel indeg ready acc
+      out.Nodup ∧
+        (∀ x ∈ out, x < n) ∧
+        (out.length = n ∨
+          (∃ v < n, v ∉ out ∧
+            ∀ w < n, w ∉ out → ∃ u, u < n ∧ u ∉ out ∧ (u, w) ∈ beforeEdges)) := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro indeg ready acc hlen hinv hready hnodup_r hacc hnodup_a hclosed hfuel
+    -- fuel = 0 ⇒ acc.length ≥ n + 1, contradicting Nodup+bound
+    have hacc_lt : ∀ y ∈ acc, y < n := fun y hy => (hacc y hy).1
+    have hle := length_le_of_nodup_lt hnodup_a hacc_lt
+    omega
+  | succ fuel ih =>
+    intro indeg ready acc hlen hinv hready hnodup_r hacc hnodup_a hclosed hfuel
+    cases ready with
+    | nil =>
+      simp only [kahnGo]
+      refine ⟨hnodup_a, fun x hx => (hacc x hx).1, ?_⟩
+      by_cases hlen_acc : acc.length = n
+      · exact Or.inl hlen_acc
+      · have hlt : acc.length < n := by
+          have hle := length_le_of_nodup_lt hnodup_a (fun y hy => (hacc y hy).1)
+          omega
+        refine Or.inr ?_
+        have hex : ∃ v, v < n ∧ v ∉ acc := by
+          by_contra hnone
+          push_neg at hnone
+          have hsub : Finset.range n ⊆ acc.toFinset := by
+            intro v hv
+            exact List.mem_toFinset.mpr (hnone v (Finset.mem_range.mp hv))
+          have hcard := Finset.card_le_card hsub
+          simp only [Finset.card_range, List.toFinset_card_of_nodup hnodup_a] at hcard
+          omega
+        obtain ⟨v0, hv0, hv0n⟩ := hex
+        refine ⟨v0, hv0, hv0n, ?_⟩
+        intro w hw hwn
+        have hpos : 0 < remInDeg beforeEdges acc w := by
+          by_contra hnp
+          have hz : remInDeg beforeEdges acc w = 0 := by omega
+          have := hclosed w hw hz
+          simp only [List.mem_nil_iff, or_false] at this
+          exact hwn this
+        obtain ⟨u, he, hu⟩ := exists_pred_of_remInDeg_pos beforeEdges acc hpos
+        exact ⟨u, (hn _ he).1, hu, he⟩
+    | cons u us =>
+      simp only [kahnGo]
+      set acc' := acc ++ [u]
+      set nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+      set indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
+      set newReady := nbrs.filter fun b =>
+        indegGet indeg' b = 0 && b ∉ acc' && b ∉ us
+      have hu_ready := hready u List.mem_cons_self
+      have hu : u ∉ acc := hu_ready.2.2
+      have hu_lt : u < n := hu_ready.1
+      have hu_deg : remInDeg beforeEdges acc u = 0 := hu_ready.2.1
+      have hu_us : u ∉ us := (List.nodup_cons.mp hnodup_r).1
+      have hlen' : indeg'.length = n := by
+        simp only [indeg']
+        rw [foldl_indegSet_length, hlen]
+      have hinv' : ∀ w < n, indegGet indeg' w = remInDeg beforeEdges acc' w := by
+        intro w hw
+        have hw' : w < indeg.length := by omega
+        simpa [indeg', nbrs, acc'] using
+          foldl_indeg_remInDeg beforeEdges acc u indeg hu
+            (fun w'' hw'' => by
+              have : w'' < n := by omega
+              exact hinv w'' this) hw'
+      have hacc' : ∀ z ∈ acc', z < n ∧ remInDeg beforeEdges acc' z = 0 := by
+        intro z hz
+        have hz' : z ∈ acc ∨ z = u := by
+          simpa [acc', List.mem_append, List.mem_singleton] using hz
+        cases hz' with
+        | inl hzacc =>
+          refine ⟨(hacc z hzacc).1, ?_⟩
+          have happ := remInDeg_append beforeEdges acc u z hu
+          have h0 := (hacc z hzacc).2
+          have : remInDeg beforeEdges (acc ++ [u]) z = 0 := by omega
+          simpa [acc'] using this
+        | inr hzu =>
+          rw [hzu]
+          refine ⟨hu_lt, ?_⟩
+          have happ := remInDeg_append beforeEdges acc u u hu
+          have : remInDeg beforeEdges (acc ++ [u]) u = 0 := by omega
+          simpa [acc'] using this
+      have hready' : ∀ b ∈ us ++ newReady,
+          b < n ∧ remInDeg beforeEdges acc' b = 0 ∧ b ∉ acc' := by
+        intro b hb
+        simp only [List.mem_append] at hb
+        cases hb with
+        | inl hbus =>
+          have hb0 := hready b (List.mem_cons_of_mem u hbus)
+          refine ⟨hb0.1, ?_, ?_⟩
+          · have happ := remInDeg_append beforeEdges acc u b hu
+            have h0 := hb0.2.1
+            have : remInDeg beforeEdges (acc ++ [u]) b = 0 := by omega
+            simpa [acc'] using this
+          · intro hin
+            have hin' : b ∈ acc ∨ b = u := by
+              simpa [acc', List.mem_append, List.mem_singleton] using hin
+            cases hin' with
+            | inl h => exact hb0.2.2 h
+            | inr h => exact hu_us (h ▸ hbus)
+        | inr hbnew =>
+          have ⟨hbmem, hcond⟩ := List.mem_filter.mp hbnew
+          simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+          obtain ⟨⟨hz, hnotin⟩, _⟩ := hcond
+          have hb_lt : b < n := by
+            simp only [nbrs, List.mem_filterMap] at hbmem
+            obtain ⟨e, hee, hopt⟩ := hbmem
+            rcases e with ⟨a, b'⟩
+            by_cases ha : a = u
+            · simp only [ha, ↓reduceIte, Option.some.injEq] at hopt
+              subst hopt; exact (hn _ hee).2
+            · simp [ha] at hopt
+          refine ⟨hb_lt, by rwa [← hinv' b hb_lt], hnotin⟩
+      have hnodup' : (us ++ newReady).Nodup := by
+        have hus : us.Nodup := (List.nodup_cons.mp hnodup_r).2
+        have hnbrs : nbrs.Nodup := by
+          simpa [nbrs] using filterMap_succ_nodup beforeEdges hedges_nodup u
+        have hnew : newReady.Nodup := List.Nodup.filter _ hnbrs
+        refine List.Nodup.append hus hnew ?_
+        intro x hx hx'
+        have hcond := (List.mem_filter.mp hx').2
+        simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+        exact hcond.2 hx
+      have hnodup_a' : acc'.Nodup := by
+        refine List.Nodup.append hnodup_a (List.nodup_singleton u) ?_
+        intro x hx hx'
+        simp only [List.mem_singleton] at hx'
+        exact hu (hx' ▸ hx)
+      have hclosed' : ∀ v < n, remInDeg beforeEdges acc' v = 0 →
+          v ∈ acc' ∨ v ∈ us ++ newReady := by
+        intro v hv hz'
+        by_cases hvacc : v ∈ acc'
+        · exact Or.inl hvacc
+        · right
+          -- remInDeg became / stayed 0; not in acc'
+          have happ := remInDeg_append beforeEdges acc u v hu
+          have hrem' : remInDeg beforeEdges (acc ++ [u]) v = 0 := by
+            simpa [acc'] using hz'
+          have hcount :
+              (beforeEdges.filter fun e => e.1 = u && e.2 = v).length =
+                remInDeg beforeEdges acc v := by omega
+          by_cases hz0 : remInDeg beforeEdges acc v = 0
+          · have hmem := hclosed v hv hz0
+            simp only [List.mem_cons] at hmem
+            cases hmem with
+            | inl h =>
+              exact (hvacc (by simpa [acc', List.mem_append] using Or.inl h)).elim
+            | inr h =>
+              cases h with
+              | inl hvu =>
+                exact (hvacc (by simpa [acc', hvu, List.mem_append, List.mem_singleton])).elim
+              | inr hus =>
+                exact List.mem_append.mpr (Or.inl hus)
+          · -- newly zeroed via edges from u ⇒ in nbrs, hence newReady
+            have hpos : 0 < remInDeg beforeEdges acc v := by omega
+            have hcnt_pos :
+                0 < (beforeEdges.filter fun e => e.1 = u && e.2 = v).length := by
+              omega
+            obtain ⟨⟨a, b⟩, he⟩ := List.exists_mem_of_length_pos hcnt_pos
+            have ⟨hem, hcond⟩ := List.mem_filter.mp he
+            simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+            obtain ⟨ha, hb⟩ := hcond
+            have hbmem : v ∈ nbrs := by
+              simp only [nbrs, List.mem_filterMap]
+              refine ⟨(a, b), hem, ?_⟩
+              simp [ha, hb]
+            have hvus : v ∉ us := by
+              intro hus
+              have hb0 := hready v (List.mem_cons_of_mem u hus)
+              exact hz0 hb0.2.1
+            have hnew : v ∈ newReady := by
+              refine List.mem_filter.mpr ⟨hbmem, ?_⟩
+              simp only [Bool.and_eq_true, decide_eq_true_eq]
+              exact ⟨⟨by rwa [← hinv' v hv] at hrem', hvacc⟩, hvus⟩
+            exact List.mem_append.mpr (Or.inr hnew)
+      have hfuel' : fuel + acc'.length ≥ n + 1 := by
+        simp only [acc', List.length_append, List.length_singleton]
+        omega
+      exact ih indeg' (us ++ newReady) acc' hlen' hinv' hready' hnodup' hacc'
+        hnodup_a' hclosed' hfuel'
+
+/-- Stuck remainder with a predecessor in the remainder ⇒ a before-edge cycle
+    (two distinct vertices mutually reachable by `TransGen`). -/
+private theorem exists_edge_cycle_of_pred_closed (beforeEdges : List (Nat × Nat))
+    {n : Nat} {out : List Nat}
+    (hout_nodup : out.Nodup)
+    (hlen : out.length < n)
+    (hloop : ∀ u, (u, u) ∉ beforeEdges)
+    (hpred : ∀ w < n, w ∉ out → ∃ u, u < n ∧ u ∉ out ∧ (u, w) ∈ beforeEdges) :
+    ∃ u v, u ≠ v ∧
+      Relation.TransGen (fun a b => (a, b) ∈ beforeEdges) u v ∧
+      Relation.TransGen (fun a b => (a, b) ∈ beforeEdges) v u := by
+  classical
+  let rem := (List.range n).filter (fun v => decide (v ∉ out))
+  have hrem_nodup : rem.Nodup := List.Nodup.filter _ List.nodup_range
+  have hrem_mem : ∀ v ∈ rem, v < n ∧ v ∉ out := by
+    intro v hv
+    have ⟨hrm, hcond⟩ := List.mem_filter.mp hv
+    exact ⟨List.mem_range.mp hrm, of_decide_eq_true hcond⟩
+  have hrem_ne : rem ≠ [] := by
+    intro hempty
+    have hall : ∀ v < n, v ∈ out := by
+      intro v hv
+      by_contra hnotin
+      have : v ∈ rem :=
+        List.mem_filter.mpr ⟨List.mem_range.mpr hv, decide_eq_true hnotin⟩
+      simp [hempty] at this
+    have hsub : Finset.range n ⊆ out.toFinset := by
+      intro v hv
+      exact List.mem_toFinset.mpr (hall v (Finset.mem_range.mp hv))
+    have hcard := Finset.card_le_card hsub
+    simp only [Finset.card_range, List.toFinset_card_of_nodup hout_nodup] at hcard
+    omega
+  have pred_spec : ∀ v ∈ rem, ∃ u ∈ rem, (u, v) ∈ beforeEdges := by
+    intro v hv
+    obtain ⟨hvlt, hvout⟩ := hrem_mem v hv
+    obtain ⟨u, hult, huout, he⟩ := hpred v hvlt hvout
+    exact ⟨u, List.mem_filter.mpr ⟨List.mem_range.mpr hult, decide_eq_true huout⟩, he⟩
+  let predOf (v : Nat) : Nat :=
+    if hv : v ∈ rem then Classical.choose (pred_spec v hv) else v
+  have predOf_spec : ∀ v ∈ rem,
+      predOf v ∈ rem ∧ (predOf v, v) ∈ beforeEdges := by
+    intro v hv
+    dsimp [predOf]
+    rw [dif_pos hv]
+    exact Classical.choose_spec (pred_spec v hv)
+  let walk : Nat → Nat :=
+    Nat.rec (rem.head hrem_ne) fun _ w => predOf w
+  have walk_mem : ∀ k, walk k ∈ rem := by
+    intro k
+    induction k with
+    | zero => exact List.head_mem hrem_ne
+    | succ k ih => exact (predOf_spec (walk k) ih).1
+  have walk_edge : ∀ k, (walk (k + 1), walk k) ∈ beforeEdges := by
+    intro k
+    exact (predOf_spec (walk k) (walk_mem k)).2
+  let ws := (List.range (rem.length + 1)).map walk
+  have hws_len : ws.length = rem.length + 1 := by
+    simp [ws, List.length_map, List.length_range]
+  have hws_mem : ∀ x ∈ ws, x ∈ rem := by
+    intro x hx
+    obtain ⟨i, hi, rfl⟩ := List.mem_map.mp hx
+    exact walk_mem _
+  have hws_not_nodup : ¬ws.Nodup := by
+    intro hnodup
+    have hsub : ws.toFinset ⊆ rem.toFinset := by
+      intro x hx
+      exact List.mem_toFinset.mpr (hws_mem x (List.mem_toFinset.mp hx))
+    have hcard := Finset.card_le_card hsub
+    rw [List.toFinset_card_of_nodup hnodup, List.toFinset_card_of_nodup hrem_nodup,
+      hws_len] at hcard
+    omega
+  obtain ⟨d, hd⟩ := (List.exists_duplicate_iff_not_nodup).2 hws_not_nodup
+  obtain ⟨i, j, hij, hx_i, hx_j⟩ := (List.duplicate_iff_exists_distinct_get).1 hd
+  have hwi : ws[i.1] = walk i.1 := by
+    simp only [ws, List.getElem_map, List.getElem_range]
+  have hwj : ws[j.1] = walk j.1 := by
+    simp only [ws, List.getElem_map, List.getElem_range]
+  have heq : walk i.1 = walk j.1 := by
+    have ei : ws[i.1] = d := by simpa [List.get_eq_getElem] using hx_i.symm
+    have ej : ws[j.1] = d := by simpa [List.get_eq_getElem] using hx_j.symm
+    rw [hwi] at ei; rw [hwj] at ej; exact ei.trans ej.symm
+  have hlt : i.1 < j.1 := hij
+  let ilo := i.1
+  let j0 := j.1
+  have hj0_ge : ilo + 2 ≤ j0 := by
+    have hne1 : j0 ≠ ilo + 1 := by
+      intro h
+      have he : walk (ilo + 1) = walk ilo := by
+        rw [show ilo + 1 = j0 from h.symm, ← heq]
+      exact hloop _ (by simpa [he] using walk_edge ilo)
+    omega
+  have hj0_eq : walk j0 = walk ilo := heq.symm
+  -- TransGen along walk (m+d) → … → walk m
+  have hseg : ∀ m d, Relation.ReflTransGen (fun a b => (a, b) ∈ beforeEdges)
+      (walk (m + d)) (walk m) := by
+    intro m d
+    induction d with
+    | zero => exact Relation.ReflTransGen.refl
+    | succ d ih =>
+      exact Relation.ReflTransGen.head (walk_edge (m + d)) ih
+  have huv : walk (ilo + 1) ≠ walk ilo := by
+    intro he
+    exact hloop _ (by simpa [he] using walk_edge ilo)
+  refine ⟨walk (ilo + 1), walk ilo, huv, ?_, ?_⟩
+  · exact Relation.TransGen.single (walk_edge ilo)
+  · have hrt : Relation.ReflTransGen (fun a b => (a, b) ∈ beforeEdges)
+        (walk j0) (walk (ilo + 1)) := by
+      have := hseg (ilo + 1) (j0 - (ilo + 1))
+      rwa [show (ilo + 1) + (j0 - (ilo + 1)) = j0 by omega] at this
+    have hrt' : Relation.ReflTransGen (fun a b => (a, b) ∈ beforeEdges)
+        (walk ilo) (walk (ilo + 1)) := by
+      rwa [← hj0_eq]
+    exact (Relation.reflTransGen_iff_eq_or_transGen.mp hrt').resolve_left huv
+
+/-- No self-loops in `sccBeforeEdges`. -/
+private theorem sccBeforeEdges_no_loop (succ : Nat → List Nat)
+    (comps : List (List Nat)) (u : Nat) :
+    (u, u) ∉ sccBeforeEdges succ comps := by
+  intro he
+  simp only [sccBeforeEdges, List.mem_flatMap] at he
+  obtain ⟨a, ha, h⟩ := he
+  simp only [List.mem_filterMap] at h
+  obtain ⟨b, hb, hopt⟩ := h
+  by_cases hab : a = b
+  · simp [hab] at hopt
+  · simp only [hab, ↓reduceIte] at hopt
+    cases hca : comps[a]? with
+    | none => simp [hca] at hopt
+    | some ca =>
+      cases hcb : comps[b]? with
+      | none => simp [hca, hcb] at hopt
+      | some cb =>
+        simp only [hca, hcb] at hopt
+        split at hopt
+        · next =>
+          simp only [Option.some.injEq] at hopt
+          cases hopt
+          exact hab rfl
+        · simp at hopt
+
+/-- Unpack a condensation before-edge into a concrete `bindSucc` hop. -/
+private theorem exists_succ_of_mem_sccBeforeEdges (succ : Nat → List Nat)
+    (comps : List (List Nat)) {u v : Nat}
+    (he : (u, v) ∈ sccBeforeEdges succ comps) :
+    u ≠ v ∧ u < comps.length ∧ v < comps.length ∧
+      ∃ ca cb, comps[v]? = some ca ∧ comps[u]? = some cb ∧
+        ∃ p ∈ ca, ∃ q ∈ cb, q ∈ succ p := by
+  simp only [sccBeforeEdges, List.mem_flatMap] at he
+  obtain ⟨a, ha, h⟩ := he
+  simp only [List.mem_filterMap] at h
+  obtain ⟨b, hb, hopt⟩ := h
+  by_cases hab : a = b
+  · simp [hab] at hopt
+  · simp only [hab, ↓reduceIte] at hopt
+    have ha' := List.mem_range.mp ha
+    have hb' := List.mem_range.mp hb
+    cases hca : comps[a]? with
+    | none => simp [hca] at hopt
+    | some ca =>
+      cases hcb : comps[b]? with
+      | none => simp [hca, hcb] at hopt
+      | some cb =>
+        simp only [hca, hcb] at hopt
+        split at hopt
+        · next hdep =>
+          simp only [Option.some.injEq] at hopt
+          obtain ⟨rfl, rfl⟩ := hopt
+          refine ⟨Ne.symm hab, hb', ha', ca, cb, ?_, ?_, ?_⟩
+          · simpa [List.getElem?_eq_getElem ha'] using hca
+          · simpa [List.getElem?_eq_getElem hb'] using hcb
+          · simp only [compDependsOn, List.any_eq_true] at hdep
+            obtain ⟨p, hp, hq⟩ := hdep
+            obtain ⟨q, hqsucc, hqmem⟩ := hq
+            exact ⟨p, hp, q, by simpa using hqmem, hqsucc⟩
+        · simp at hopt
+
+/-- One condensation before-edge ⇒ `DepReach` from dependent component into dependency. -/
+private theorem DepReach_of_sccBeforeEdge (binds : List Surface.Binding)
+    {u v x y : Nat}
+    (he : (u, v) ∈ sccBeforeEdges (bindSucc binds) (sccIndexSets binds))
+    {ca cb : List Nat}
+    (hca : (sccIndexSets binds)[v]? = some ca)
+    (hcb : (sccIndexSets binds)[u]? = some cb)
+    (hx : x ∈ ca) (hy : y ∈ cb)
+    (hx_lt : x < binds.length) (hy_lt : y < binds.length) :
+    DepReach binds (binds[x]).name (binds[y]).name := by
+  set comps := sccIndexSets binds
+  obtain ⟨_hne, _hu_lt, _hv_lt, ca', cb', hca', hcb', p, hp, q, hq, hsucc⟩ :=
+    exists_succ_of_mem_sccBeforeEdges (bindSucc binds) comps he
+  have hca_eq : ca' = ca := by
+    rw [hca'] at hca; exact Option.some.inj hca
+  have hcb_eq : cb' = cb := by
+    rw [hcb'] at hcb; exact Option.some.inj hcb
+  rw [hca_eq] at hp; rw [hcb_eq] at hq
+  have hv_mem : ca ∈ comps := List.mem_of_getElem? hca
+  have hu_mem : cb ∈ comps := List.mem_of_getElem? hcb
+  have hp_lt := sccIndexSets_mem_lt binds ca hv_mem p hp
+  have hq_lt := sccIndexSets_mem_lt binds cb hu_mem q hq
+  obtain ⟨b, b', hb, hb', hedge⟩ := DepEdge_of_bindSucc hsucc
+  have hb1 : b = binds[p] := by
+    rw [List.getElem?_eq_getElem hp_lt] at hb; exact Option.some.inj hb.symm
+  have hb2 : b' = binds[q] := by
+    rw [List.getElem?_eq_getElem hq_lt] at hb'; exact Option.some.inj hb'.symm
+  rw [hb1, hb2] at hedge
+  have hxp : DepMutual binds (binds[x]).name (binds[p]).name :=
+    sccIndexSets_comp_depMutual binds hv_mem hx hp
+  have hqy : DepMutual binds (binds[q]).name (binds[y]).name :=
+    sccIndexSets_comp_depMutual binds hu_mem hq hy
+  exact DepReach_trans hxp.1 (DepReach.tail hedge hqy.1)
+
+/-- Endpoints of a condensation path are valid component indices. -/
+private theorem sccBeforeReach_lt (binds : List Surface.Binding)
+    {u v : Nat}
+    (h : Relation.TransGen
+      (fun a b => (a, b) ∈ sccBeforeEdges (bindSucc binds) (sccIndexSets binds)) u v) :
+    u < (sccIndexSets binds).length ∧ v < (sccIndexSets binds).length := by
+  induction h with
+  | single he =>
+    exact ⟨(exists_succ_of_mem_sccBeforeEdges (bindSucc binds) _ he).2.1,
+      (exists_succ_of_mem_sccBeforeEdges (bindSucc binds) _ he).2.2.1⟩
+  | tail _hab hbc ih =>
+    exact ⟨ih.1, (exists_succ_of_mem_sccBeforeEdges (bindSucc binds) _ hbc).2.2.1⟩
+
+/-- Condensation path ⇒ `DepReach` from the path end's component back to the start's. -/
+private theorem DepReach_of_sccBeforeReach (binds : List Surface.Binding)
+    {u v : Nat}
+    (h : Relation.TransGen
+      (fun a b => (a, b) ∈ sccBeforeEdges (bindSucc binds) (sccIndexSets binds)) u v)
+    {ca cb : List Nat}
+    (hca : (sccIndexSets binds)[v]? = some ca)
+    (hcb : (sccIndexSets binds)[u]? = some cb)
+    {x y : Nat} (hx : x ∈ ca) (hy : y ∈ cb)
+    (hx_lt : x < binds.length) (hy_lt : y < binds.length) :
+    DepReach binds (binds[x]).name (binds[y]).name := by
+  induction h generalizing ca cb x y with
+  | single he =>
+    exact DepReach_of_sccBeforeEdge binds he hca hcb hx hy hx_lt hy_lt
+  | tail hab hbc ih =>
+    -- hab : TransGen u w, hbc : (w, v) ∈ edges
+    obtain ⟨_hne, _hw_lt, _hv_lt, cv, cw, hcv, hcw, p, hp, q, hq, hsucc⟩ :=
+      exists_succ_of_mem_sccBeforeEdges (bindSucc binds) (sccIndexSets binds) hbc
+    have hcv_eq : cv = ca := by
+      rw [hcv] at hca; exact Option.some.inj hca
+    rw [hcv_eq] at hp
+    have hq_lt := sccIndexSets_mem_lt binds cw (List.mem_of_getElem? hcw) q hq
+    have hp_lt := sccIndexSets_mem_lt binds ca (List.mem_of_getElem? hca) p hp
+    have h_to_q : DepReach binds (binds[x]).name (binds[q]).name := by
+      obtain ⟨b, b', hb, hb', hedge⟩ := DepEdge_of_bindSucc hsucc
+      have hb1 : b = binds[p] := by
+        rw [List.getElem?_eq_getElem hp_lt] at hb; exact Option.some.inj hb.symm
+      have hb2 : b' = binds[q] := by
+        rw [List.getElem?_eq_getElem hq_lt] at hb'; exact Option.some.inj hb'.symm
+      rw [hb1, hb2] at hedge
+      have hxp : DepMutual binds (binds[x]).name (binds[p]).name :=
+        sccIndexSets_comp_depMutual binds (List.mem_of_getElem? hca) hx hp
+      exact DepReach_trans hxp.1 (DepReach.tail hedge DepReach.refl)
+    have h_from_q : DepReach binds (binds[q]).name (binds[y]).name :=
+      ih hcw hcb hq hy hq_lt hy_lt
+    exact DepReach_trans h_to_q h_from_q
+
+private theorem eq_of_mem_of_mem_of_pairwise_disjoint {α} {L : List (List α)}
+    (hdisj : List.Pairwise List.Disjoint L)
+    {g g' : List α} (hg : g ∈ L) (hg' : g' ∈ L) {x : α}
+    (hx : x ∈ g) (hx' : x ∈ g') : g = g' := by
+  induction L with
+  | nil => cases hg
+  | cons hd tl ih =>
+    have hdisj' := List.pairwise_cons.mp hdisj
+    cases List.mem_cons.mp hg with
+    | inl h =>
+      subst h
+      cases List.mem_cons.mp hg' with
+      | inl h' => exact h'.symm
+      | inr h' => exact (hdisj'.1 g' h' hx hx').elim
+    | inr h =>
+      cases List.mem_cons.mp hg' with
+      | inl h' =>
+        subst h'
+        exact (hdisj'.1 g h hx' hx).elim
+      | inr h' => exact ih hdisj'.2 h h'
+
+/-- Each index appears in exactly one `sccIndexSets` component. -/
+private theorem sccIndexSets_unique_comp (binds : List Surface.Binding) {i : Nat}
+    (hi : i < binds.length) :
+    ∃ g ∈ sccIndexSets binds, i ∈ g ∧
+      ∀ g' ∈ sccIndexSets binds, i ∈ g' → g' = g := by
+  have hperm := sccIndexSets_flatten_perm binds
+  have himem : i ∈ (sccIndexSets binds).flatten :=
+    (List.Perm.mem_iff hperm).2 (List.mem_range.mpr hi)
+  obtain ⟨g, hg, hi'⟩ := List.mem_flatten.mp himem
+  refine ⟨g, hg, hi', ?_⟩
+  intro g' hg' hi''
+  have hnodup : (sccIndexSets binds).flatten.Nodup :=
+    (List.Perm.nodup_iff hperm).2 List.nodup_range
+  have hdisj : List.Pairwise List.Disjoint (sccIndexSets binds) :=
+    (List.nodup_flatten.mp hnodup).2
+  exact (eq_of_mem_of_mem_of_pairwise_disjoint hdisj hg hg' hi' hi'').symm
+
+/-- Partition components are pairwise `mutReach`-separated (needs Bool-trans / Nodup). -/
+private theorem sccPartitionGo_separated (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup) :
+    let mutReach := fun i j =>
+      mutuallyReachable (bindSucc binds) binds.length i j
+    ∀ (fuel : Nat) (todo : List Nat) (accs : List (List Nat)),
+      (∀ x ∈ todo, x < binds.length) →
+      (∀ g ∈ accs, ∀ x ∈ g, x < binds.length) →
+      (∀ g1 ∈ accs, ∀ g2 ∈ accs, g1 ≠ g2 →
+        ∀ a ∈ g1, ∀ b ∈ g2, mutReach a b = false) →
+      (∀ g ∈ accs, ∀ a ∈ g, ∀ b ∈ todo, mutReach a b = false) →
+      (∀ g1 ∈ sccPartitionGo mutReach fuel todo accs,
+        ∀ g2 ∈ sccPartitionGo mutReach fuel todo accs, g1 ≠ g2 →
+          ∀ a ∈ g1, ∀ b ∈ g2, mutReach a b = false) := by
+  intro mutReach fuel
+  induction fuel with
+  | zero =>
+    intro todo accs _hbound _haccBound hacc_sep _hacc_todo g1 hg1 g2 hg2 hne a ha b hb
+    simp only [sccPartitionGo] at hg1 hg2
+    exact hacc_sep g1 hg1 g2 hg2 hne a ha b hb
+  | succ fuel ih =>
+    intro todo accs hbound haccbound hacc_sep hacc_todo g1 hg1 g2 hg2 hne a ha b hb
+    cases todo with
+    | nil =>
+      simp only [sccPartitionGo] at hg1 hg2
+      exact hacc_sep g1 hg1 g2 hg2 hne a ha b hb
+    | cons seed rest =>
+      simp only [sccPartitionGo] at hg1 hg2
+      have hseed_lt : seed < binds.length := hbound seed (by simp)
+      have hcomp_lt : ∀ x ∈ (seed :: rest).filter (mutReach seed), x < binds.length := by
+        intro x hx
+        exact hbound x (List.mem_of_mem_filter hx)
+      have hrest'_lt : ∀ x ∈ (seed :: rest).filter (fun j => !mutReach seed j),
+          x < binds.length := by
+        intro x hx
+        exact hbound x (List.mem_of_mem_filter hx)
+      have hcomp_clique : ∀ x ∈ (seed :: rest).filter (mutReach seed),
+          mutReach seed x = true := by
+        intro x hx; exact (List.mem_filter.mp hx).2
+      have hrest'_sep_seed : ∀ x ∈ (seed :: rest).filter (fun j => !mutReach seed j),
+          mutReach seed x = false := by
+        intro x hx
+        cases hmr : mutReach seed x
+        · rfl
+        · have hnot : (!mutReach seed x) = true := (List.mem_filter.mp hx).2
+          simp [hmr] at hnot
+      have hmut_sym : ∀ x y, mutReach x y = mutReach y x := by
+        intro x y
+        simpa [mutReach] using mutuallyReachable_sym (bindSucc binds) binds.length x y
+      have hcross_comp_rest :
+          ∀ x ∈ (seed :: rest).filter (mutReach seed),
+            ∀ y ∈ (seed :: rest).filter (fun j => !mutReach seed j),
+              mutReach x y = false := by
+        intro x hx y hy
+        cases hxy : mutReach x y with
+        | false => rfl
+        | true =>
+          have hsx := hcomp_clique x hx
+          have hsy := hrest'_sep_seed y hy
+          have hx_lt := hcomp_lt x hx
+          have hy_lt := hrest'_lt y hy
+          have hsy' : mutReach seed y = true :=
+            mutuallyReachable_trans_of_nodup hn hseed_lt hx_lt hy_lt hsx hxy
+          simp [hsy] at hsy'
+      have hcross_acc_comp :
+          ∀ g ∈ accs, ∀ x ∈ g, ∀ y ∈ (seed :: rest).filter (mutReach seed),
+            mutReach x y = false := by
+        intro g hg x hx y hy
+        cases hxy : mutReach x y with
+        | false => rfl
+        | true =>
+          have hsy := hcomp_clique y hy
+          have hx_lt := haccbound g hg x hx
+          have hy_lt := hcomp_lt y hy
+          have hxs : mutReach x seed = false :=
+            hacc_todo g hg x hx seed (by simp)
+          have hys : mutReach y seed = true := by
+            rw [hmut_sym]; exact hsy
+          have hxs' : mutReach x seed = true :=
+            mutuallyReachable_trans_of_nodup hn hx_lt hy_lt hseed_lt hxy hys
+          simp [hxs] at hxs'
+      have hacc'_sep :
+          ∀ g1 ∈ accs ++ [(seed :: rest).filter (mutReach seed)],
+            ∀ g2 ∈ accs ++ [(seed :: rest).filter (mutReach seed)], g1 ≠ g2 →
+              ∀ a ∈ g1, ∀ b ∈ g2, mutReach a b = false := by
+        intro g1' hg1' g2' hg2' hne' a' ha' b' hb'
+        simp only [List.mem_append, List.mem_singleton] at hg1' hg2'
+        cases hg1' with
+        | inl h1 =>
+          cases hg2' with
+          | inl h2 => exact hacc_sep g1' h1 g2' h2 hne' a' ha' b' hb'
+          | inr h2 =>
+            subst h2; exact hcross_acc_comp g1' h1 a' ha' b' hb'
+        | inr h1 =>
+          subst h1
+          cases hg2' with
+          | inl h2 =>
+            have h := hcross_acc_comp g2' h2 b' hb' a' ha'
+            rwa [hmut_sym] at h
+          | inr h2 =>
+            subst h2; exact (hne' rfl).elim
+      have hacc'_todo :
+          ∀ g ∈ accs ++ [(seed :: rest).filter (mutReach seed)],
+            ∀ a ∈ g, ∀ b ∈ (seed :: rest).filter (fun j => !mutReach seed j),
+              mutReach a b = false := by
+        intro g hg a ha b hb
+        simp only [List.mem_append, List.mem_singleton] at hg
+        cases hg with
+        | inl h =>
+          exact hacc_todo g h a ha b (List.mem_of_mem_filter hb)
+        | inr h =>
+          subst h; exact hcross_comp_rest a ha b hb
+      exact ih ((seed :: rest).filter (fun j => !mutReach seed j))
+        (accs ++ [(seed :: rest).filter (mutReach seed)]) hrest'_lt
+        (by
+          intro g hg x hx
+          simp only [List.mem_append, List.mem_singleton] at hg
+          cases hg with
+          | inl h => exact haccbound g h x hx
+          | inr h => subst h; exact hcomp_lt x hx)
+        hacc'_sep hacc'_todo g1 hg1 g2 hg2 hne a ha b hb
+
+private theorem sccIndexSets_separated (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup)
+    {g1 g2 : List Nat} (hg1 : g1 ∈ sccIndexSets binds) (hg2 : g2 ∈ sccIndexSets binds)
+    (hne : g1 ≠ g2) {a b : Nat} (ha : a ∈ g1) (hb : b ∈ g2) :
+    mutuallyReachable (bindSucc binds) binds.length a b = false := by
+  have hg1' : g1 ∈
+      sccPartitionGo
+        (fun i j => mutuallyReachable (bindSucc binds) binds.length i j)
+        (binds.length + 1) (List.range binds.length) [] := by
+    rwa [← sccIndexSets_eq_partitionGo]
+  have hg2' : g2 ∈
+      sccPartitionGo
+        (fun i j => mutuallyReachable (bindSucc binds) binds.length i j)
+        (binds.length + 1) (List.range binds.length) [] := by
+    rwa [← sccIndexSets_eq_partitionGo]
+  exact sccPartitionGo_separated binds hn (binds.length + 1)
+    (List.range binds.length) []
+    (fun x hx => List.mem_range.mp hx)
+    (fun g hg => by cases hg)
+    (fun g1 hg => by cases hg)
+    (fun g hg => by cases hg)
+    g1 hg1' g2 hg2' hne a ha b hb
+
+/-- A before-edge cycle among distinct SCC indices contradicts separation. -/
+private theorem sccBeforeEdges_acyclic (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup)
+    {u v : Nat} (hne : u ≠ v)
+    (huv : Relation.TransGen
+      (fun a b => (a, b) ∈ sccBeforeEdges (bindSucc binds) (sccIndexSets binds)) u v)
+    (hvu : Relation.TransGen
+      (fun a b => (a, b) ∈ sccBeforeEdges (bindSucc binds) (sccIndexSets binds)) v u) :
+    False := by
+  set comps := sccIndexSets binds
+  have ⟨hu_lt, hv_lt⟩ := sccBeforeReach_lt binds huv
+  have hcu : comps[u]? = some comps[u] := List.getElem?_eq_getElem hu_lt
+  have hcv : comps[v]? = some comps[v] := List.getElem?_eq_getElem hv_lt
+  have hu_mem : comps[u] ∈ comps := List.getElem_mem hu_lt
+  have hv_mem : comps[v] ∈ comps := List.getElem_mem hv_lt
+  have hu_ne : comps[u] ≠ [] := sccIndexSets_nonempty_comp binds _ hu_mem
+  have hv_ne : comps[v] ≠ [] := sccIndexSets_nonempty_comp binds _ hv_mem
+  have hx := List.head_mem hu_ne
+  have hy := List.head_mem hv_ne
+  set x := comps[u].head hu_ne
+  set y := comps[v].head hv_ne
+  have hx_lt := sccIndexSets_mem_lt binds _ hu_mem x hx
+  have hy_lt := sccIndexSets_mem_lt binds _ hv_mem y hy
+  have hne_g : comps[u] ≠ comps[v] := by
+    intro heq
+    have hnodup : comps.flatten.Nodup :=
+      (List.Perm.nodup_iff (sccIndexSets_flatten_perm binds)).2 List.nodup_range
+    have hdisj : List.Pairwise List.Disjoint comps :=
+      (List.nodup_flatten.mp hnodup).2
+    have hlt : (⟨u, hu_lt⟩ : Fin comps.length) < ⟨v, hv_lt⟩ ∨
+        (⟨v, hv_lt⟩ : Fin comps.length) < ⟨u, hu_lt⟩ := by
+      rcases Nat.lt_or_gt_of_ne hne with h | h
+      · exact Or.inl h
+      · exact Or.inr h
+    cases hlt with
+    | inl h =>
+      have hd := List.Pairwise.rel_get_of_lt hdisj h
+      exact hd hx (by simpa [heq] using hx)
+    | inr h =>
+      have hd := List.Pairwise.rel_get_of_lt hdisj h
+      exact hd (by simpa [heq] using hx) hx
+  have dxy : DepReach binds (binds[y]).name (binds[x]).name :=
+    DepReach_of_sccBeforeReach binds huv hcv hcu hy hx hy_lt hx_lt
+  have dyx : DepReach binds (binds[x]).name (binds[y]).name :=
+    DepReach_of_sccBeforeReach binds hvu hcu hcv hx hy hx_lt hy_lt
+  have hmut : mutuallyReachable (bindSucc binds) binds.length x y = true :=
+    Bool.and_eq_true_iff.mpr ⟨canReach_complete hn hx_lt hy_lt dyx,
+      canReach_complete hn hy_lt hx_lt dxy⟩
+  have hsep : mutuallyReachable (bindSucc binds) binds.length x y = false :=
+    sccIndexSets_separated binds hn hu_mem hv_mem hne_g hx hy
+  simp [hmut] at hsep
+
+/-- Critical Kahn gap: condensation of `sccIndexSets` is a DAG, so Kahn returns a
+    full permutation of `0 .. comps.length - 1`.
+    Needs name-Nodup so Bool mutual-reachability is transitive (condensation acyclic). -/
+private theorem kahnTopo_scc_perm (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup) :
+    let comps := sccIndexSets binds
+    let edges := sccBeforeEdges (bindSucc binds) comps
+    (kahnTopo comps.length edges).Perm (List.range comps.length) := by
+  set comps := sccIndexSets binds
+  set edges := sccBeforeEdges (bindSucc binds) comps
+  have hb := sccBeforeEdges_bounded (bindSucc binds) comps
+  have hnodup_e := sccBeforeEdges_nodup (bindSucc binds) comps
+  simp only [kahnTopo]
+  set indeg0 := (List.range comps.length).map fun w =>
+    (edges.filter (fun e => e.2 = w)).length
+  set ready0 := (List.range comps.length).filter fun w => indegGet indeg0 w = 0
+  set out := kahnGo edges (comps.length + 1) indeg0 ready0 []
+  have hres := kahnGo_zero_closed edges comps.length hb hnodup_e
+    (comps.length + 1) indeg0 ready0 []
+    (by simp [indeg0, List.length_map, List.length_range])
+    (fun w hw => by simpa [indeg0] using kahnTopo_indeg0_eq comps.length edges hw)
+    (fun b hb' => by
+      have hbmem := List.mem_filter.mp hb'
+      refine ⟨List.mem_range.mp hbmem.1, ?_, by simp⟩
+      have heq : indegGet indeg0 b = 0 := of_decide_eq_true hbmem.2
+      rwa [show indeg0 = (List.range comps.length).map fun w =>
+        (edges.filter (fun e => e.2 = w)).length from rfl,
+        kahnTopo_indeg0_eq comps.length edges (List.mem_range.mp hbmem.1)] at heq)
+    (List.Nodup.filter _ List.nodup_range)
+    (fun y hy => by cases hy)
+    (by simp)
+    (fun v hv hz => by
+      right
+      refine List.mem_filter.mpr ⟨List.mem_range.mpr hv, ?_⟩
+      have : indegGet indeg0 v = 0 := by
+        rwa [show indeg0 = (List.range comps.length).map fun w =>
+          (edges.filter (fun e => e.2 = w)).length from rfl,
+          kahnTopo_indeg0_eq comps.length edges hv]
+      exact decide_eq_true this)
+    (by omega)
+  change out.Perm (List.range comps.length)
+  obtain ⟨hnodup_out, hlt_out, hlen_or⟩ := hres
+  refine perm_range_of_nodup_length hnodup_out hlt_out ?_
+  cases hlen_or with
+  | inl hlen => exact hlen
+  | inr hstuck =>
+    obtain ⟨v0, hv0, hv0n, hpred⟩ := hstuck
+    have hlen_lt : out.length < comps.length := by
+      have hle := length_le_of_nodup_lt hnodup_out hlt_out
+      by_contra hnge
+      have heq : out.length = comps.length := Nat.le_antisymm hle (by omega)
+      have hperm := perm_range_of_nodup_length hnodup_out hlt_out heq
+      exact hv0n ((List.Perm.mem_iff hperm).2 (List.mem_range.mpr hv0))
+    obtain ⟨u, v, hne, huv, hvu⟩ :=
+      exists_edge_cycle_of_pred_closed edges hnodup_out hlen_lt
+        (sccBeforeEdges_no_loop (bindSucc binds) comps) hpred
+    exact (sccBeforeEdges_acyclic binds hn hne huv hvu).elim
+
+private theorem sccOrderedIndexSets_flatten_perm (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup) :
+    (sccOrderedIndexSets binds).flatten.Perm (List.range binds.length) := by
+  simp only [sccOrderedIndexSets]
+  set comps := sccIndexSets binds
+  set edges := sccBeforeEdges (bindSucc binds) comps
+  set order := kahnTopo comps.length edges
+  have hord := kahnTopo_scc_perm binds hn
+  have hcomps : (order.filterMap (fun k => comps[k]?)).Perm comps :=
+    filterMap_getElem?_of_perm hord
+  have hflat := hcomps.flatten
+  exact hflat.trans (sccIndexSets_flatten_perm binds)
+
+/-- If `mutReach i j` and `i` lies in an `sccIndexSets` component, so does `j`. -/
+private theorem sccIndexSets_mem_of_mutReach (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup)
+    {g : List Nat} (hg : g ∈ sccIndexSets binds)
+    {i j : Nat} (hi : i ∈ g)
+    (hmut : mutuallyReachable (bindSucc binds) binds.length i j = true)
+    (hj : j < binds.length) :
+    j ∈ g := by
+  obtain ⟨g', hg', hj', _⟩ := sccIndexSets_unique_comp binds hj
+  suffices g' = g by rwa [← this]
+  by_contra hne
+  have hsep : mutuallyReachable (bindSucc binds) binds.length i j = false :=
+    sccIndexSets_separated binds hn hg hg' (Ne.symm hne) hi hj'
+  simp [hmut] at hsep
+
+theorem sccOrderedIndexSets_flatPerm (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup) :
+    (indexSetsToBindings binds (sccOrderedIndexSets binds)).flatten.Perm binds :=
+  indexSetsToBindings_flatten_of_perm (sccOrderedIndexSets_flatten_perm binds hn)
+
+theorem sccOrderedIndexSets_nonempty (binds : List Surface.Binding) :
+    ∀ g ∈ indexSetsToBindings binds (sccOrderedIndexSets binds), g ≠ [] := by
+  intro g hg
+  simp only [indexSetsToBindings, List.mem_map] at hg
+  obtain ⟨idxs, hidxs, rfl⟩ := hg
+  have hcomp := sccOrderedIndexSets_mem_of_getElem binds hidxs
+  have hne := sccIndexSets_nonempty_comp binds idxs hcomp
+  refine filterMap_ne_nil_of_isSome (fun i => binds[i]?) hne ?_
+  intro i hi
+  have hlt := sccIndexSets_mem_lt binds idxs hcomp i hi
+  simp [List.getElem?_eq_getElem hlt]
+
+theorem sccOrderedIndexSets_sameScc (binds : List Surface.Binding) :
+    ∀ g ∈ indexSetsToBindings binds (sccOrderedIndexSets binds),
+      ∀ b1 ∈ g, ∀ b2 ∈ g, DepMutual binds b1.name b2.name := by
+  intro g hg b1 hb1 b2 hb2
+  simp only [indexSetsToBindings, List.mem_map] at hg
+  obtain ⟨idxs, hidxs, rfl⟩ := hg
+  have hcomp := sccOrderedIndexSets_mem_of_getElem binds hidxs
+  have hb1' := List.mem_filterMap.mp hb1
+  have hb2' := List.mem_filterMap.mp hb2
+  obtain ⟨i, hi, hbi⟩ := hb1'
+  obtain ⟨j, hj, hbj⟩ := hb2'
+  have hi_lt := sccIndexSets_mem_lt binds idxs hcomp i hi
+  have hj_lt := sccIndexSets_mem_lt binds idxs hcomp j hj
+  have hbi' : binds[i] = b1 := by
+    rw [List.getElem?_eq_getElem hi_lt] at hbi; exact Option.some.inj hbi
+  have hbj' : binds[j] = b2 := by
+    rw [List.getElem?_eq_getElem hj_lt] at hbj; exact Option.some.inj hbj
+  have hmut := sccIndexSets_comp_depMutual binds hcomp hi hj
+  simpa [hbi', hbj'] using hmut
+
+theorem sccOrderedIndexSets_maxScc (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup) :
+    ∀ b1 ∈ binds, ∀ b2 ∈ binds,
+      DepMutual binds b1.name b2.name →
+        ∃ g ∈ indexSetsToBindings binds (sccOrderedIndexSets binds),
+          b1 ∈ g ∧ b2 ∈ g := by
+  intro b1 hb1 b2 hb2 ⟨hab, hba⟩
+  obtain ⟨i, hi, hib⟩ := List.mem_iff_getElem.mp hb1
+  obtain ⟨j, hj, hjb⟩ := List.mem_iff_getElem.mp hb2
+  subst hib; subst hjb
+  have hmut : mutuallyReachable (bindSucc binds) binds.length i j = true :=
+    Bool.and_eq_true_iff.mpr ⟨canReach_complete hn hi hj hab,
+      canReach_complete hn hj hi hba⟩
+  obtain ⟨gIdxs, hgIdxs, hi_mem, _huniq⟩ := sccIndexSets_unique_comp binds hi
+  have hj_mem : j ∈ gIdxs :=
+    sccIndexSets_mem_of_mutReach binds hn hgIdxs hi_mem hmut hj
+  -- Kahn perm ⇒ gIdxs appears in ordered index sets
+  have hord := kahnTopo_scc_perm binds hn
+  obtain ⟨k, hklt, rfl⟩ := List.mem_iff_getElem.mp hgIdxs
+  have hk_ord : k ∈
+      kahnTopo (sccIndexSets binds).length
+        (sccBeforeEdges (bindSucc binds) (sccIndexSets binds)) :=
+    (List.Perm.mem_iff hord).2 (List.mem_range.mpr hklt)
+  have hidxs : (sccIndexSets binds)[k] ∈ sccOrderedIndexSets binds := by
+    simp only [sccOrderedIndexSets, List.mem_filterMap]
+    exact ⟨k, hk_ord, List.getElem?_eq_getElem hklt⟩
+  refine ⟨(sccIndexSets binds)[k].filterMap (fun t => binds[t]?), ?_, ?_, ?_⟩
+  · simp only [indexSetsToBindings, List.mem_map]
+    exact ⟨(sccIndexSets binds)[k], hidxs, rfl⟩
+  · exact List.mem_filterMap.mpr ⟨i, hi_mem, by simp [List.getElem?_eq_getElem hi]⟩
+  · exact List.mem_filterMap.mpr ⟨j, hj_mem, by simp [List.getElem?_eq_getElem hj]⟩
+
+private theorem kahnGo_nodup (beforeEdges : List (Nat × Nat))
+    (hedges_nodup : beforeEdges.Nodup) :
+    ∀ (fuel : Nat) (indeg ready acc : List Nat),
+      ready.Nodup → acc.Nodup → (∀ x ∈ ready, x ∉ acc) →
+      (kahnGo beforeEdges fuel indeg ready acc).Nodup := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro indeg ready acc _hr ha _hdisj
+    simpa [kahnGo] using ha
+  | succ fuel ih =>
+    intro indeg ready acc hr ha hdisj
+    cases ready with
+    | nil => simpa [kahnGo] using ha
+    | cons u us =>
+      simp only [kahnGo]
+      set acc' := acc ++ [u]
+      set nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+      set indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
+      set newReady := nbrs.filter fun b =>
+        indegGet indeg' b = 0 && b ∉ acc' && b ∉ us
+      have hu_us : u ∉ us := (List.nodup_cons.mp hr).1
+      have hu_acc : u ∉ acc := hdisj u List.mem_cons_self
+      have hacc' : acc'.Nodup := by
+        refine List.Nodup.append ha (List.nodup_singleton u) ?_
+        intro x hx hx'
+        simp only [List.mem_singleton] at hx'
+        exact hu_acc (hx' ▸ hx)
+      have hready' : (us ++ newReady).Nodup := by
+        have hus := (List.nodup_cons.mp hr).2
+        have hnbrs := filterMap_succ_nodup beforeEdges hedges_nodup u
+        have hnew : newReady.Nodup := List.Nodup.filter _ hnbrs
+        refine List.Nodup.append hus hnew ?_
+        intro x hx hx'
+        have hcond := (List.mem_filter.mp hx').2
+        simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+        exact hcond.2 hx
+      have hdisj' : ∀ x ∈ us ++ newReady, x ∉ acc' := by
+        intro x hx
+        simp only [List.mem_append] at hx
+        cases hx with
+        | inl h =>
+          intro hin
+          simp only [acc', List.mem_append, List.mem_singleton] at hin
+          cases hin with
+          | inl hacc => exact hdisj x (List.mem_cons_of_mem _ h) hacc
+          | inr hu => exact hu_us (hu ▸ h)
+        | inr h =>
+          have hcond := (List.mem_filter.mp h).2
+          simp only [Bool.and_eq_true, decide_eq_true_eq] at hcond
+          exact hcond.1.2
+      exact ih indeg' (us ++ newReady) acc' hready' hacc' hdisj'
+
+private theorem kahnTopo_nodup (n : Nat) (edges : List (Nat × Nat))
+    (hnodup : edges.Nodup) :
+    (kahnTopo n edges).Nodup := by
+  simp only [kahnTopo]
+  refine kahnGo_nodup edges hnodup (n + 1) _ _ []
+    (List.Nodup.filter _ List.nodup_range) (by simp) (by simp)
+
+/-- If Kahn only queues in-bounds nodes and edges are bounded, outputs stay `< n`. -/
+private theorem kahnGo_lt (beforeEdges : List (Nat × Nat)) (n : Nat)
+    (hn : edgesBounded n beforeEdges) :
+    ∀ (fuel : Nat) (indeg ready acc : List Nat),
+      (∀ b ∈ ready, b < n) →
+      (∀ y ∈ acc, y < n) →
+      ∀ x ∈ kahnGo beforeEdges fuel indeg ready acc, x < n := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro indeg ready acc _hready hacc x hx
+    simp only [kahnGo] at hx; exact hacc x hx
+  | succ fuel ih =>
+    intro indeg ready acc hready hacc x hx
+    cases ready with
+    | nil =>
+      simp only [kahnGo] at hx; exact hacc x hx
+    | cons u us =>
+      simp only [kahnGo] at hx
+      set acc' := acc ++ [u]
+      set nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+      set indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
+      set newReady := nbrs.filter fun b =>
+        indegGet indeg' b = 0 && b ∉ acc' && b ∉ us
+      refine ih indeg' (us ++ newReady) acc' ?_ ?_ x hx
+      · intro b hb
+        simp only [List.mem_append] at hb
+        cases hb with
+        | inl h => exact hready b (List.mem_cons_of_mem _ h)
+        | inr h =>
+          have ⟨hbmem, _⟩ := List.mem_filter.mp h
+          simp only [nbrs, List.mem_filterMap] at hbmem
+          obtain ⟨e, hee, hopt⟩ := hbmem
+          rcases e with ⟨a, b'⟩
+          by_cases ha : a = u
+          · simp only [ha, ↓reduceIte, Option.some.injEq] at hopt
+            subst hopt; exact (hn _ hee).2
+          · simp [ha] at hopt
+      · intro y hy
+        simp only [acc', List.mem_append, List.mem_singleton] at hy
+        cases hy with
+        | inl h => exact hacc y h
+        | inr h => exact h ▸ hready u List.mem_cons_self
+
+private theorem kahnTopo_lt (n : Nat) (edges : List (Nat × Nat))
+    (hb : edgesBounded n edges) :
+    ∀ x ∈ kahnTopo n edges, x < n := by
+  simp only [kahnTopo]
+  refine kahnGo_lt edges n hb (n + 1) _ _ [] ?_ (by intro y hy; cases hy)
+  intro b hb'
+  exact List.mem_range.mp (List.mem_of_mem_filter hb')
+
+/-- `filterMap` of always-`some` is `map` of the forced values. -/
+private theorem filterMap_getElem?_eq_map {α β} (f : α → Option β) (l : List α)
+    (h : ∀ x ∈ l, (f x).isSome) (i : Nat) :
+    (l.filterMap f)[i]? = l[i]? >>= f := by
+  induction l generalizing i with
+  | nil => simp
+  | cons a as ih =>
+    have ha := h a (by simp)
+    cases hf : f a with
+    | none => simp [hf] at ha
+    | some b =>
+      simp only [List.filterMap_cons, hf]
+      cases i with
+      | zero => simp [hf]
+      | succ i =>
+        simp only [List.getElem?_cons_succ]
+        exact ih (fun x hx => h x (List.mem_cons_of_mem _ hx)) i
+
+private theorem mem_sccBeforeEdges_of_compDependsOn (succ : Nat → List Nat)
+    (comps : List (List Nat)) {a b : Nat}
+    (ha : a < comps.length) (hb : b < comps.length) (hne : a ≠ b)
+    (hdep : compDependsOn succ (comps[a]) (comps[b]) = true) :
+    (b, a) ∈ sccBeforeEdges succ comps := by
+  simp only [sccBeforeEdges, List.mem_flatMap]
+  refine ⟨a, List.mem_range.mpr ha, ?_⟩
+  simp only [List.mem_filterMap]
+  refine ⟨b, List.mem_range.mpr hb, ?_⟩
+  simp [hne, List.getElem?_eq_getElem ha, List.getElem?_eq_getElem hb, hdep]
+
+private theorem compDependsOn_of_succ_mem (succ : Nat → List Nat)
+    {ca cb : List Nat} {p q : Nat}
+    (hp : p ∈ ca) (hq : q ∈ cb) (hs : q ∈ succ p) :
+    compDependsOn succ ca cb = true := by
+  simp only [compDependsOn, List.any_eq_true]
+  refine ⟨p, hp, ?_⟩
+  exact ⟨q, hs, by simpa using hq⟩
+
+theorem sccOrderedIndexSets_topo (binds : List Surface.Binding) :
+    let groups := indexSetsToBindings binds (sccOrderedIndexSets binds)
+    ∀ (i j : Nat) (gi gj : List Surface.Binding),
+      groups[i]? = some gi → groups[j]? = some gj → i ≠ j →
+      ∀ b1 ∈ gi, ∀ b2 ∈ gj,
+        Binding.refersTo b1 b2.name = true → j < i := by
+  intro groups i j gi gj hgi hgj _hne b1 hb1 b2 hb2 href
+  set comps := sccIndexSets binds
+  set edges := sccBeforeEdges (bindSucc binds) comps
+  set order := kahnTopo comps.length edges
+  have hb := sccBeforeEdges_bounded (bindSucc binds) comps
+  have hnodup := sccBeforeEdges_nodup (bindSucc binds) comps
+  simp only [groups, indexSetsToBindings, sccOrderedIndexSets] at hgi hgj
+  -- groups[i]? = (ordered.map ... )[i]? where ordered = order.filterMap comps[·]?
+  rw [List.getElem?_map] at hgi hgj
+  have hord_lt : ∀ x ∈ order, x < comps.length := kahnTopo_lt _ _ hb
+  have hgi_fm :
+      ((order.filterMap fun k => comps[k]?)[i]?).map
+        (fun idxs => idxs.filterMap fun t => binds[t]?) = some gi := hgi
+  have hgj_fm :
+      ((order.filterMap fun k => comps[k]?)[j]?).map
+        (fun idxs => idxs.filterMap fun t => binds[t]?) = some gj := hgj
+  -- Extract the index-sets at positions i, j
+  cases hi_ord : (order.filterMap fun k => comps[k]?)[i]? with
+  | none => simp [hi_ord] at hgi_fm
+  | some idxsi =>
+    cases hj_ord : (order.filterMap fun k => comps[k]?)[j]? with
+    | none => simp [hj_ord] at hgj_fm
+    | some idxsj =>
+      simp only [hi_ord, hj_ord, Option.map_some, Option.some.injEq] at hgi_fm hgj_fm
+      -- Relate filterMap getElem? to order[i]?
+      have hfm_i := filterMap_getElem?_eq_map (fun k => comps[k]?) order
+        (fun x hx => by
+          have := hord_lt x hx
+          simp [List.getElem?_eq_getElem this]) i
+      have hfm_j := filterMap_getElem?_eq_map (fun k => comps[k]?) order
+        (fun x hx => by
+          have := hord_lt x hx
+          simp [List.getElem?_eq_getElem this]) j
+      rw [hfm_i] at hi_ord
+      rw [hfm_j] at hj_ord
+      cases hi_o : order[i]? with
+      | none => simp [hi_o] at hi_ord
+      | some ki =>
+        cases hj_o : order[j]? with
+        | none => simp [hj_o] at hj_ord
+        | some kj =>
+          simp only [hi_o, hj_o, Option.bind_eq_bind, Option.some_bind] at hi_ord hj_ord
+          have hki_lt : ki < comps.length := hord_lt ki (List.mem_of_getElem? hi_o)
+          have hkj_lt : kj < comps.length := hord_lt kj (List.mem_of_getElem? hj_o)
+          have hidxsi : idxsi = comps[ki] := by
+            simpa [List.getElem?_eq_getElem hki_lt] using hi_ord.symm
+          have hidxsj : idxsj = comps[kj] := by
+            simpa [List.getElem?_eq_getElem hkj_lt] using hj_ord.symm
+          have hb1' := List.mem_filterMap.mp (by simpa [← hgi_fm] using hb1)
+          have hb2' := List.mem_filterMap.mp (by simpa [← hgj_fm] using hb2)
+          obtain ⟨p, hp, hbp⟩ := hb1'
+          obtain ⟨q, hq, hbq⟩ := hb2'
+          have hp' : p ∈ comps[ki] := by simpa [hidxsi] using hp
+          have hq' : q ∈ comps[kj] := by simpa [hidxsj] using hq
+          have hsucc : q ∈ bindSucc binds p :=
+            (bindSucc_mem (binds := binds) (i := p) (j := q)).mpr
+              ⟨b1, b2, hbp, hbq, href⟩
+          have hne_kj : ki ≠ kj := by
+            intro heq
+            subst heq
+            have hnodup_ord := kahnTopo_nodup comps.length edges hnodup
+            have hi_lt : i < order.length := (List.getElem?_eq_some_iff.mp hi_o).1
+            have hj_lt : j < order.length := (List.getElem?_eq_some_iff.mp hj_o).1
+            have hei : order[i] = ki := (List.getElem?_eq_some_iff.mp hi_o).2
+            have hej : order[j] = ki := (List.getElem?_eq_some_iff.mp hj_o).2
+            exact _hne ((List.Nodup.getElem_inj_iff hnodup_ord).1 (hei.trans hej.symm))
+          have hdep := compDependsOn_of_succ_mem (bindSucc binds) hp' hq' hsucc
+          have hedge := mem_sccBeforeEdges_of_compDependsOn (bindSucc binds) comps
+            hki_lt hkj_lt hne_kj hdep
+          exact kahnTopo_edge_before comps.length edges hb hnodup hedge hj_o hi_o
+
 /-- Soundness: executable groups satisfy the declarative SCC spec. -/
 theorem sccGroups_sound {binds : List Surface.Binding}
     {groups : List (List Surface.Binding)} :
     sccGroups binds = some groups → ValidBindingGroups binds groups := by
-  sorry
+  intro h
+  obtain ⟨hn, rfl⟩ := (sccGroups_eq_some_iff).1 h
+  exact ⟨hn,
+    sccOrderedIndexSets_flatPerm binds hn,
+    sccOrderedIndexSets_nonempty binds,
+    sccOrderedIndexSets_sameScc binds,
+    sccOrderedIndexSets_maxScc binds hn,
+    sccOrderedIndexSets_topo binds⟩
 
 /-- Completeness: some valid grouping exists ⇒ executable succeeds
     (not that it returns this exact `groups` — topo/intra-group order is free). -/
 theorem sccGroups_complete {binds : List Surface.Binding}
     {groups : List (List Surface.Binding)} :
     ValidBindingGroups binds groups → (sccGroups binds).isSome := by
-  sorry
+  intro h
+  have hn := h.namesNodup
+  simp [sccGroups, guard, hn]
 
 -- SCC `#guard`s
 private def bF : Surface.Binding :=
