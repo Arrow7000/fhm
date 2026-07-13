@@ -67,8 +67,8 @@ fused `letRec`, PatComp, surface→Core **expression** bridge) are done.
 **real front-end**: declare types, declare top-level vals, don’t ask the author
 to pre-partition mutual recursion.
 
-North-star *product* end state (SCC+ofFlat+checkExhaustive done; SurfaceWT
-corollary + public AST still open):
+North-star *product* end state (SCC+ofFlat+checkExhaustive+SurfaceWT done;
+`letBlock` / public AST still open):
 
 > A surface program (decls + flat bindings + body) elaborates to safe Core,
 > with SCC inferred automatically, coverage checkable (and decidable), no Core
@@ -159,24 +159,20 @@ def Program.ofFlat decls binds body : Option Surface.Program :=
 
 ## Immediate next work (recommended)
 
-### Priority 1 — `SurfaceWT` corollary (Approach A) — ACTIVE
-
-**Takeover doc:** `briefs/next-agent-brief-surface-wt-corollary.md`.
-
-Push declarative headline via `SurfaceWT` + `SurfaceCovers` → safety.
-Hard part is `match_` / `lowerMatch` typing (not weird-emit transfer).
-Next concrete proofs: `TypeOfHM.weaken_env`, `emitLets_typeable`, then clear
-`emit_DTreeTypeable` / `compile_initMatrix_typeable`.
-
-Fallbacks B (pin Lowers emit) / C (executable SurfaceWT) only with Aron.
-
-### Priority 2 — `letBlock` collapse (design settled, not scheduled)
+### Priority 1 — `letBlock` collapse (design settled)
 
 Remove surface `letIn`/`letRecIn` from the *public* AST; one `letBlock`; run
 the **same** freeNames→SCC→nested Core `let`/`letRec` in **lowering** (not a
 second IR layer). Internal desugar to today’s `letRecIn` / `desugarGroups` is
 fine as a stepping stone. **Do not** confuse with `Program.ofFlat` (already
 done — that only SCC-fills `Program.groups`).
+
+### Done — `SurfaceWT` corollary (Approach A / 1a)
+
+**Record:** `briefs/next-agent-brief-surface-wt-corollary.md`.
+Strong inductive `SurfaceWT` + `surface_type_safe_of_SurfaceWT` axiom-clean.
+Optional polish: annotated/poly `letIn`/`letRec` strong constructors (still
+`of_lowers`-only when match-free).
 
 ### Optional / deferred
 
@@ -229,12 +225,10 @@ Pattern-λ desugar, errors, strings.
 
 ## Suggested first message for the next agent
 
-> Read `briefs/next-agent-brief-surface-wt-corollary.md` (primary) and
-> `briefs/next-agent-brief-surface-bridge-program-scc.md` (Program/SCC context).
-> `checkExhaustive` is done (`7e9fc1f`). Continue **SurfaceWT Approach A** emit
-> typing (`emit_DTreeTypeable` / `compile_initMatrix_typeable` and deps). Do not
-> reopen Core, `ValidBindingGroups`, or switch to B/C without Aron. Gate with
-> `lake build` + axiom checks; farm composer one lemma at a time.
+> Read `briefs/next-agent-brief-surface-wt-corollary.md` (SurfaceWT **DONE**)
+> and `briefs/next-agent-brief-surface-bridge-program-scc.md`. Next deferred
+> item is **`letBlock`**. Do not reopen Core, `ValidBindingGroups`, or B/C
+> without Aron.
 
 ---
 
@@ -246,8 +240,8 @@ Pattern-λ desugar, errors, strings.
 | `FHM/SurfaceBridge.lean` §2b | DataDecl lowering |
 | `FHM/SurfaceBridge.lean` (after `patVars`) | `freeNames`, `sccGroups`, `ValidBindingGroups`, `Program.ofFlat` |
 | `FHM/SurfaceBridge.lean` §5b | `dTreeExhaustiveB`, `checkExhaustive` → `SurfaceCovers` |
-| `FHM/SurfaceBridge.lean` §7 + ladder ~5165–5410 | `SurfaceWT`, Approach A emit-typing stubs |
+| `FHM/SurfaceBridge.lean` §7 + Approach A | strong `SurfaceWT` / `SurfaceWTExpr`, corollary |
 | `FHM/SurfaceBridge.lean` §9b | `LowersProgram`, `lowerProgram`, `program_type_safe` |
 | `FHM/Decls.lean` | `preludeDecls`, `elabDecls` |
-| `briefs/next-agent-brief-surface-wt-corollary.md` | **CURRENT** SurfaceWT Approach A handoff |
-| `briefs/next-agent-brief-surface-bridge-followups.md` | Post-expression-headline backlog (coverage lessons; program/SCC superseded by **this** brief; SurfaceWT superseded by surface-wt brief) |
+| `briefs/next-agent-brief-surface-wt-corollary.md` | SurfaceWT Approach A record (DONE / 1a) |
+| `briefs/next-agent-brief-surface-bridge-followups.md` | Coverage lessons; program/SCC / SurfaceWT superseded |
