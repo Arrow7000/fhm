@@ -11,7 +11,8 @@ and states the campaign's headline payoff — *a well-typed, exhaustive surface
 program elaborates to a Core program that is type-safe and never gets stuck*.
 
 **Status: expression headline + DataDecl + Program groups + freeNames + sccGroups
-(+ `Program.ofFlat`).**
+(+ `Program.ofFlat`) + executable exhaustiveness (`dTreeExhaustiveB` /
+`matchExhaustiveB` / `checkExhaustive` with Bool→Prop soundness).**
 `sccGroups` (naive mutual-reachability SCC) feeds `Program.groups`;
 `ValidBindingGroups` is the non-det spec (`sccGroups_sound` / `_complete` proved).
 See `briefs/next-agent-brief-surface-bridge-followups.md`.
@@ -1926,7 +1927,7 @@ private theorem remInDeg_append (beforeEdges : List (Nat × Nat)) (acc : List Na
   have hleft : ∀ e ∈ beforeEdges,
       (decide (e.2 = v) && decide (e.1 ∉ (acc ++ [u]))) = (p e && !q e) := by
     intro e _
-    simp [p, q, List.mem_append, List.mem_singleton, Bool.and_assoc]
+    simp [p, q, List.mem_append, Bool.and_assoc]
   have hright : ∀ e ∈ beforeEdges,
       (decide (e.1 = u) && decide (e.2 = v)) = (p e && q e) := by
     intro e _
@@ -1969,7 +1970,7 @@ private theorem filterMap_nbrs_count (beforeEdges : List (Nat × Nat)) (u w : Na
   | nil => simp
   | cons e es ih =>
     rcases e with ⟨a, b⟩
-    simp only [List.filterMap_cons, List.filter_cons, List.count_cons]
+    simp only [List.filterMap_cons, List.filter_cons]
     by_cases ha : a = u
     · by_cases hb : b = w
       · simp [ha, hb, ih]
@@ -1989,9 +1990,9 @@ private theorem foldl_indegSet_sub (indeg : List Nat) (nbrs : List Nat) (w : Nat
     rw [ih _ hw']
     by_cases hb : b = w
     · rw [hb, indegGet_indegSet_eq _ _ _ hw]
-      simp [List.count_cons, Nat.sub_sub, Nat.add_comm 1]
+      simp [Nat.sub_sub, Nat.add_comm 1]
     · rw [indegGet_indegSet_ne indeg b w _ (Ne.symm hb)]
-      simp [List.count_cons, hb]
+      simp [hb]
 
 /-- After emitting `u`, foldl-decrements preserve `remInDeg` for indices `< indeg.length`. -/
 private theorem foldl_indeg_remInDeg (beforeEdges : List (Nat × Nat))
@@ -2293,8 +2294,7 @@ private theorem sccBeforeEdges_nodup (succ : Nat → List Nat)
                 · simp at he2
               · simp at he1
   · refine List.Pairwise.imp ?_ (List.nodup_iff_pairwise_ne.mp List.nodup_range)
-    intro a1 a2 hne
-    intro e he1 he2
+    intro a1 a2 hne e he1 he2
     simp only [List.mem_filterMap] at he1 he2
     obtain ⟨b1, hb1, hopt1⟩ := he1
     obtain ⟨b2, hb2, hopt2⟩ := he2
@@ -2516,7 +2516,7 @@ private theorem kahnGo_zero_closed (beforeEdges : List (Nat × Nat))
             | inr h =>
               cases h with
               | inl hvu =>
-                exact (hvacc (by simpa [acc', hvu, List.mem_append, List.mem_singleton])).elim
+                exact (hvacc (by simp [acc', hvu, List.mem_append])).elim
               | inr hus =>
                 exact List.mem_append.mpr (Or.inl hus)
           · -- newly zeroed via edges from u ⇒ in nbrs, hence newReady
@@ -3393,7 +3393,7 @@ theorem sccOrderedIndexSets_topo (binds : List Surface.Binding) :
         cases hj_o : order[j]? with
         | none => simp [hj_o] at hj_ord
         | some kj =>
-          simp only [hi_o, hj_o, Option.bind_eq_bind, Option.some_bind] at hi_ord hj_ord
+          simp only [hi_o, hj_o, Option.bind_eq_bind] at hi_ord hj_ord
           have hki_lt : ki < comps.length := hord_lt ki (List.mem_of_getElem? hi_o)
           have hkj_lt : kj < comps.length := hord_lt kj (List.mem_of_getElem? hj_o)
           have hidxsi : idxsi = comps[ki] := by
@@ -3802,6 +3802,593 @@ inductive SurfaceCovers (ctors : CtorEnv) : Surface.Expr → Prop where
       MatchExhaustive ctors T tyArgs (brs.map Prod.fst) →
       SurfaceCovers ctors (.match_ scrut brs)
 
+
+/-! ## 5b. Executable exhaustiveness (`dTreeExhaustiveB` / `checkExhaustive`)
+
+Bool mirrors of `DTreeExhaustive` / `MatchExhaustive` / `SurfaceCovers`.
+Soundness (`= true → Prop`) is the confidence gate — not `#guard` smoke.
+Concrete instances preferred as `example … := by native_decide` (kernel-checked). -/
+
+/-- Every case tests a real ctor of `T` at the declared arity. -/
+def dTreeCasesOk (ctors : CtorEnv) (T : TyName) :
+    List (CtorName × Nat × DTree) → Bool
+  | [] => true
+  | (c, a, _) :: rest =>
+    match LookupList.get? ctors c with
+    | some ctor =>
+        (ctor.tyName == T) && (a == ctor.contents.length) &&
+          dTreeCasesOk ctors T rest
+    | none => false
+
+/-- Every env ctor of type `T` appears as a case (complete signature).
+    Iterates ctor *names*; `get?` selects the visible binding (same as the Prop). -/
+def dTreeAllCtorsCovered (ctors : CtorEnv) (T : TyName)
+    (cases : List (CtorName × Nat × DTree)) : Bool :=
+  (ctors.map (·.1)).all fun c =>
+    match LookupList.get? ctors c with
+    | some ctor =>
+        ctor.tyName != T || cases.any fun ⟨c', _, _⟩ => c' == c
+    | none => true
+
+mutual
+
+/-- Recurse into switch cases under extended occurrence typing. -/
+def dTreeCasesRec (ctors : CtorEnv) (octx : OccCtx) (occ : Occ) (tyArgs : List Ty) :
+    List (CtorName × Nat × DTree) → Bool
+  | [] => true
+  | (c, _, t) :: rest =>
+    dTreeExhaustiveB ctors (OccCtx.extend octx occ (instFieldTys ctors c tyArgs)) t &&
+      dTreeCasesRec ctors octx occ tyArgs rest
+
+/-- **Executable tree exhaustiveness.** Structural Bool twin of `DTreeExhaustive`. -/
+def dTreeExhaustiveB (ctors : CtorEnv) (octx : OccCtx) : DTree → Bool
+  | .fail => false
+  | .leaf _ _ => true
+  | .switch occ cases dflt =>
+    match LookupList.get? octx occ with
+    | some (.customTy T tyArgs) =>
+      let casesOk := dTreeCasesOk ctors T cases
+      let recOk := dTreeCasesRec ctors octx occ tyArgs cases
+      match dflt with
+      | .fail =>
+        casesOk && recOk && dTreeAllCtorsCovered ctors T cases
+      | _ =>
+        casesOk && recOk && dTreeExhaustiveB ctors octx dflt
+    | _ => false
+
+end
+
+/-- **Executable match-pattern exhaustiveness** at scrutinee type `customTy T tyArgs`. -/
+def matchExhaustiveB (ctors : CtorEnv) (T : TyName) (tyArgs : List Ty)
+    (ps : List Surface.Pattern) : Bool :=
+  dTreeExhaustiveB ctors [([], .customTy T tyArgs)] (compile [[]] (initMatrix ps))
+
+/-- Guess `tyArgs` length from any ctor of `T` (placeholders; fail-closed for nested ADTs
+    when placeholders don't instantiate field ADTs — soundness still holds). -/
+private def tyArgsGuess (ctors : CtorEnv) (T : TyName) : List Ty :=
+  match ctors.find? fun ⟨_, ctor⟩ => ctor.tyName == T with
+  | some ⟨_, ctor⟩ => List.replicate ctor.paramCount (.prim .unit)
+  | none => []
+
+/-- Top-level ctor name in a pattern, if any. -/
+private def patternTopCtor : Surface.Pattern → Option CtorName
+  | .ctor n _ => some n
+  | .pair _ _ | .cons _ _ | .list _ | .name _ | .wildcard => none
+
+/-- Recover a candidate ADT name from top-level ctor patterns (all must agree). -/
+private def tyNameFromPatterns (ctors : CtorEnv) :
+    List Surface.Pattern → Option TyName
+  | [] => none
+  | p :: ps =>
+    match patternTopCtor p >>= LookupList.get? ctors with
+    | none => tyNameFromPatterns ctors ps
+    | some ctor =>
+      let T := ctor.tyName
+      if ps.all fun q =>
+        match patternTopCtor q >>= LookupList.get? ctors with
+        | none => true
+        | some ctor' => ctor'.tyName == T
+      then some T else none
+
+mutual
+
+/-- Structural size for `checkExhaustive` termination (mirrors `Core.Expr.size`). -/
+def surfaceExprSize : Surface.Expr → Nat
+  | .primLit _ | .var _ | .ctor _ => 1
+  | .pair a b => 1 + surfaceExprSize a + surfaceExprSize b
+  | .cons h t => 1 + surfaceExprSize h + surfaceExprSize t
+  | .list items => 1 + surfaceExprSizeList items
+  | .lambda _ _ body => 1 + surfaceExprSize body
+  | .app f x => 1 + surfaceExprSize f + surfaceExprSize x
+  | .letIn _ _ rhs body => 1 + surfaceExprSize rhs + surfaceExprSize body
+  | .letRecIn binds body => 1 + surfaceExprSizeLetRecBinds binds + surfaceExprSize body
+  | .ife c t f => 1 + surfaceExprSize c + surfaceExprSize t + surfaceExprSize f
+  | .match_ scrut brs => 1 + surfaceExprSize scrut + surfaceExprSizeBranches brs
+
+def surfaceExprSizeList : List Surface.Expr → Nat
+  | [] => 0
+  | e :: es => 1 + surfaceExprSize e + surfaceExprSizeList es
+
+def surfaceExprSizeLetRecBinds : List (ValName × Option Surface.PolyTy × Surface.Expr) → Nat
+  | [] => 0
+  | (_, _, rhs) :: rest => 1 + surfaceExprSize rhs + surfaceExprSizeLetRecBinds rest
+
+def surfaceExprSizeBranches : List (Surface.Pattern × Surface.Expr) → Nat
+  | [] => 0
+  | (_, b) :: rest => 1 + surfaceExprSize b + surfaceExprSizeBranches rest
+
+/-- List-element coverage helper (mutual with `checkExhaustive`). -/
+def checkExhaustiveList (ctors : CtorEnv) : List Surface.Expr → Bool
+  | [] => true
+  | e :: es => checkExhaustive ctors e && checkExhaustiveList ctors es
+termination_by es => surfaceExprSizeList es
+decreasing_by
+  all_goals (simp only [surfaceExprSizeList]; omega)
+
+/-- `letRecIn` binding-RHS coverage helper (mutual with `checkExhaustive`). -/
+def checkExhaustiveLetRecBinds (ctors : CtorEnv) :
+    List (ValName × Option Surface.PolyTy × Surface.Expr) → Bool
+  | [] => true
+  | (_, _, rhs) :: rest =>
+      checkExhaustive ctors rhs && checkExhaustiveLetRecBinds ctors rest
+termination_by binds => surfaceExprSizeLetRecBinds binds
+decreasing_by
+  all_goals (simp only [surfaceExprSizeLetRecBinds]; omega)
+
+/-- Branch-body coverage helper (mutual with `checkExhaustive`). -/
+def checkExhaustiveBranches (ctors : CtorEnv) :
+    List (Surface.Pattern × Surface.Expr) → Bool
+  | [] => true
+  | (_, b) :: rest =>
+      checkExhaustive ctors b && checkExhaustiveBranches ctors rest
+termination_by brs => surfaceExprSizeBranches brs
+decreasing_by
+  all_goals (simp only [surfaceExprSizeBranches]; omega)
+
+/-- **Executable `SurfaceCovers`.** At `match_`, recovers `T` from branch ctor
+    patterns when possible and seeds `tyArgs` via `tyArgsGuess` (fail-closed).
+    Drivers that already know scrutinee types may call `matchExhaustiveB` directly. -/
+def checkExhaustive (ctors : CtorEnv) : Surface.Expr → Bool
+  | .primLit _ | .var _ | .ctor _ => true
+  | .pair a b => checkExhaustive ctors a && checkExhaustive ctors b
+  | .cons h t => checkExhaustive ctors h && checkExhaustive ctors t
+  | .list items => checkExhaustiveList ctors items
+  | .lambda _ _ body => checkExhaustive ctors body
+  | .app f x => checkExhaustive ctors f && checkExhaustive ctors x
+  | .letIn _ _ rhs body =>
+      checkExhaustive ctors rhs && checkExhaustive ctors body
+  | .letRecIn binds body =>
+      checkExhaustiveLetRecBinds ctors binds && checkExhaustive ctors body
+  | .ife c t f =>
+      checkExhaustive ctors c && checkExhaustive ctors t && checkExhaustive ctors f &&
+        matchExhaustiveB ctors nBool []
+          [.ctor cTrue [], .ctor cFalse []]
+  | .match_ scrut brs =>
+      checkExhaustive ctors scrut &&
+        checkExhaustiveBranches ctors brs &&
+        match tyNameFromPatterns ctors (brs.map Prod.fst) with
+        | some T =>
+          matchExhaustiveB ctors T (tyArgsGuess ctors T) (brs.map Prod.fst)
+        | none =>
+          matchExhaustiveB ctors nBool [] (brs.map Prod.fst)
+termination_by s => surfaceExprSize s
+decreasing_by
+  all_goals (simp only [surfaceExprSize]; omega)
+
+end
+
+private theorem surfaceExprSize_lt_pair_left (a b : Surface.Expr) :
+    surfaceExprSize a < surfaceExprSize (.pair a b) := by simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_pair_right (a b : Surface.Expr) :
+    surfaceExprSize b < surfaceExprSize (.pair a b) := by simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_cons_head (h t : Surface.Expr) :
+    surfaceExprSize h < surfaceExprSize (.cons h t) := by simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_cons_tail (h t : Surface.Expr) :
+    surfaceExprSize t < surfaceExprSize (.cons h t) := by simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_lambda_body (param : Surface.Pattern) (ann : Option Surface.Ty)
+    (body : Surface.Expr) :
+    surfaceExprSize body < surfaceExprSize (.lambda param ann body) := by
+  simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_app_fn (f x : Surface.Expr) :
+    surfaceExprSize f < surfaceExprSize (.app f x) := by simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_app_arg (f x : Surface.Expr) :
+    surfaceExprSize x < surfaceExprSize (.app f x) := by simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_letIn_rhs (vname : ValName) (ann : Option Surface.PolyTy)
+    (rhs body : Surface.Expr) :
+    surfaceExprSize rhs < surfaceExprSize (.letIn vname ann rhs body) := by
+  simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_letIn_body (vname : ValName) (ann : Option Surface.PolyTy)
+    (rhs body : Surface.Expr) :
+    surfaceExprSize body < surfaceExprSize (.letIn vname ann rhs body) := by
+  simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_letRecIn_body
+    (binds : List (ValName × Option Surface.PolyTy × Surface.Expr)) (body : Surface.Expr) :
+    surfaceExprSize body < surfaceExprSize (.letRecIn binds body) := by
+  simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_ife_cond (c t f : Surface.Expr) :
+    surfaceExprSize c < surfaceExprSize (.ife c t f) := by simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_ife_then (c t f : Surface.Expr) :
+    surfaceExprSize t < surfaceExprSize (.ife c t f) := by simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_ife_else (c t f : Surface.Expr) :
+    surfaceExprSize f < surfaceExprSize (.ife c t f) := by simp only [surfaceExprSize]; omega
+
+private theorem surfaceExprSize_lt_match_scrut (scrut : Surface.Expr)
+    (brs : List (Surface.Pattern × Surface.Expr)) :
+    surfaceExprSize scrut < surfaceExprSize (.match_ scrut brs) := by simp only [surfaceExprSize]; omega
+
+/-! ### Soundness: Bool → Prop -/
+
+private theorem dTreeCasesOk_sound {ctors : CtorEnv} {T : TyName} :
+    ∀ cases, dTreeCasesOk ctors T cases = true →
+      ∀ c a t, (c, a, t) ∈ cases →
+        ∃ ctor, LookupList.get? ctors c = some ctor ∧ ctor.tyName = T ∧
+          a = ctor.contents.length
+  | [], _, _c, _a, _t, hmem => nomatch hmem
+  | (c, a, t) :: rest, hok, c', a', t', hmem => by
+    simp only [dTreeCasesOk] at hok
+    cases hg : LookupList.get? ctors c with
+    | none => simp [hg] at hok
+    | some ctor =>
+      simp only [hg, Bool.and_eq_true, beq_iff_eq] at hok
+      rcases hok with ⟨⟨hty, har⟩, hrest⟩
+      simp only [List.mem_cons] at hmem
+      rcases hmem with ⟨rfl, rfl, rfl⟩ | hmem
+      · exact ⟨ctor, hg, hty, har⟩
+      · exact dTreeCasesOk_sound rest hrest c' a' t' hmem
+
+private theorem mem_of_get?_eq_some {k v : Type} [DecidableEq k]
+    {l : LookupList k v} {key : k} {val : v}
+    (h : LookupList.get? l key = some val) : (key, val) ∈ l := by
+  induction l with
+  | nil => simp [LookupList.get?] at h
+  | cons hd tl ih =>
+    simp only [LookupList.get?] at h
+    cases hd with
+    | mk k₀ v₀ =>
+      split_ifs at h with hk
+      · simp only [List.mem_cons]; left; simp_all
+      · exact List.mem_cons_of_mem _ (ih h)
+
+private theorem dTreeAllCtorsCovered_sound {ctors : CtorEnv} {T : TyName}
+    {cases : List (CtorName × Nat × DTree)}
+    (h : dTreeAllCtorsCovered ctors T cases = true) :
+    ∀ c ctor, LookupList.get? ctors c = some ctor → ctor.tyName = T →
+      ∃ a t, (c, a, t) ∈ cases := by
+  intro c ctor hg hty
+  have hc := (List.all_eq_true.mp h) c
+    (List.mem_map.mpr ⟨(c, ctor), mem_of_get?_eq_some hg, rfl⟩)
+  simp only [hg, Bool.or_eq_true, bne_iff_ne] at hc
+  rcases hc with hne | hin
+  · exact (hne hty).elim
+  · obtain ⟨⟨c', a, t⟩, hmemC, hc'⟩ := List.any_eq_true.mp hin
+    simp only [beq_iff_eq] at hc'
+    exact hc' ▸ ⟨a, t, hmemC⟩
+
+/-- Unpack `dTreeCasesRec = true` into per-case Bool exhaustiveness. -/
+private theorem dTreeCasesRec_get {ctors : CtorEnv} {octx : OccCtx} {occ : Occ}
+    {tyArgs : List Ty} :
+    ∀ cases, dTreeCasesRec ctors octx occ tyArgs cases = true →
+      ∀ c a t, (c, a, t) ∈ cases →
+        dTreeExhaustiveB ctors (OccCtx.extend octx occ (instFieldTys ctors c tyArgs)) t = true
+  | [], _, _c, _a, _t, hmem => nomatch hmem
+  | (c, a, t) :: rest, hok, c', a', t', hmem => by
+    simp only [dTreeCasesRec, Bool.and_eq_true] at hok
+    simp only [List.mem_cons] at hmem
+    rcases hmem with ⟨rfl, rfl, rfl⟩ | hmem
+    · exact hok.1
+    · exact dTreeCasesRec_get rest hok.2 c' a' t' hmem
+
+private theorem sizeOf_lt_of_mem_dTree_cases {occ : Occ}
+    {cases : List (CtorName × Nat × DTree)} {dflt : DTree}
+    {c : CtorName} {a : Nat} {t : DTree}
+    (h : (c, a, t) ∈ cases) :
+    sizeOf t < sizeOf (DTree.switch occ cases dflt) := by
+  have h1 := List.sizeOf_lt_of_mem h
+  have h2 : sizeOf t < sizeOf (c, a, t) := by
+    simp only [Prod.mk.sizeOf_spec]; omega
+  have h3 : sizeOf (c, a, t) < sizeOf (DTree.switch occ cases dflt) := by
+    simp only [DTree.switch.sizeOf_spec]; omega
+  exact Nat.lt_trans h2 h3
+
+private theorem sizeOf_dflt_lt_switch {occ : Occ}
+    {cases : List (CtorName × Nat × DTree)} {dflt : DTree} :
+    sizeOf dflt < sizeOf (DTree.switch occ cases dflt) := by
+  simp only [DTree.switch.sizeOf_spec]; omega
+
+theorem dTreeExhaustiveB_sound {ctors : CtorEnv} {octx : OccCtx} {t : DTree}
+    (h : dTreeExhaustiveB ctors octx t = true) :
+    DTreeExhaustive ctors octx t := by
+  suffices hgoal : ∀ (n : Nat) (t : DTree) (octx : OccCtx), sizeOf t ≤ n →
+      dTreeExhaustiveB ctors octx t = true → DTreeExhaustive ctors octx t by
+    exact hgoal (sizeOf t) t octx le_rfl h
+  intro n
+  induction n with
+  | zero =>
+    intro t octx hsz hB
+    have h0 : sizeOf t = 0 := Nat.le_zero.mp hsz
+    cases t <;> simp [DTree.leaf.sizeOf_spec, DTree.fail.sizeOf_spec,
+      DTree.switch.sizeOf_spec] at h0 hB ⊢
+  | succ n ihn =>
+    intro t octx hsz hB
+    match t with
+    | .fail => cases hB
+    | .leaf act binds => exact .leaf
+    | .switch occ cases dflt =>
+      simp only [dTreeExhaustiveB] at hB
+      cases hg : LookupList.get? octx occ with
+      | none => simp [hg] at hB
+      | some ty =>
+        match ty with
+        | .prim _ | .arrow _ _ | .bvar _ | .fvar _ => simp [hg] at hB
+        | .customTy T tyArgs =>
+          simp only [hg] at hB
+          have casesOk : dTreeCasesOk ctors T cases = true := by
+            cases dflt <;> simp only [Bool.and_eq_true] at hB <;> exact hB.1.1
+          have recOk : dTreeCasesRec ctors octx occ tyArgs cases = true := by
+            cases dflt <;> simp only [Bool.and_eq_true] at hB <;> exact hB.1.2
+          have hcases := dTreeCasesOk_sound cases casesOk
+          have hrec : ∀ c a t, (c, a, t) ∈ cases →
+              DTreeExhaustive ctors
+                (OccCtx.extend octx occ (instFieldTys ctors c tyArgs)) t := by
+            intro c a t' hmem
+            have hB' := dTreeCasesRec_get cases recOk c a t' hmem
+            have hlt := sizeOf_lt_of_mem_dTree_cases (occ := occ) (dflt := dflt) hmem
+            have hle : sizeOf t' ≤ n := Nat.le_of_lt_succ (Nat.lt_of_lt_of_le hlt hsz)
+            exact ihn t' _ hle hB'
+          match dflt with
+          | .fail =>
+            simp only [Bool.and_eq_true] at hB
+            exact .switchFail hg hcases hrec (dTreeAllCtorsCovered_sound hB.2)
+          | .leaf act binds =>
+            simp only [Bool.and_eq_true] at hB
+            have hle : sizeOf (DTree.leaf act binds) ≤ n :=
+              Nat.le_of_lt_succ (Nat.lt_of_lt_of_le sizeOf_dflt_lt_switch hsz)
+            exact .switchDefault (fun hneq => nomatch hneq) hg hcases hrec
+              (ihn (.leaf act binds) octx hle hB.2)
+          | .switch occ' cases' dflt' =>
+            simp only [Bool.and_eq_true] at hB
+            have hle : sizeOf (DTree.switch occ' cases' dflt') ≤ n :=
+              Nat.le_of_lt_succ (Nat.lt_of_lt_of_le sizeOf_dflt_lt_switch hsz)
+            exact .switchDefault (fun hneq => nomatch hneq) hg hcases hrec
+              (ihn (.switch occ' cases' dflt') octx hle hB.2)
+
+theorem matchExhaustiveB_sound {ctors : CtorEnv} {T : TyName} {tyArgs : List Ty}
+    {ps : List Surface.Pattern}
+    (h : matchExhaustiveB ctors T tyArgs ps = true) :
+    MatchExhaustive ctors T tyArgs ps :=
+  dTreeExhaustiveB_sound h
+
+/-- Unpack list Bool coverage into per-element checks. -/
+private theorem checkExhaustiveList_get {ctors : CtorEnv} :
+    ∀ es, checkExhaustiveList ctors es = true →
+      ∀ e ∈ es, checkExhaustive ctors e = true
+  | [] => by intro _ e he; nomatch he
+  | e :: es => by
+    intro h e' he'
+    simp only [checkExhaustiveList, Bool.and_eq_true] at h
+    simp only [List.mem_cons] at he'
+    rcases he' with ⟨rfl, _⟩ | he'
+    · exact h.1
+    · exact checkExhaustiveList_get es h.2 e' he'
+
+/-- Unpack `letRecIn` binding Bool coverage into per-binding checks. -/
+private theorem checkExhaustiveLetRecBinds_get {ctors : CtorEnv} :
+    ∀ binds, checkExhaustiveLetRecBinds ctors binds = true →
+      ∀ b ∈ binds, checkExhaustive ctors b.2.2 = true
+  | [] => by intro _ b hb; nomatch hb
+  | (_, _, rhs) :: rest => by
+    intro h b' hb'
+    simp only [checkExhaustiveLetRecBinds, Bool.and_eq_true] at h
+    simp only [List.mem_cons] at hb'
+    rcases hb' with ⟨rfl, rfl, rfl⟩ | hb'
+    · exact h.1
+    · exact checkExhaustiveLetRecBinds_get rest h.2 b' hb'
+
+/-- Unpack branch Bool coverage into per-branch checks. -/
+private theorem checkExhaustiveBranches_get {ctors : CtorEnv} :
+    ∀ brs, checkExhaustiveBranches ctors brs = true →
+      ∀ pb ∈ brs, checkExhaustive ctors pb.2 = true
+  | [] => by intro _ pb hmem; nomatch hmem
+  | (p, b) :: rest => by
+    intro h pb' hmem
+    simp only [checkExhaustiveBranches, Bool.and_eq_true] at h
+    simp only [List.mem_cons] at hmem
+    rcases hmem with ⟨rfl, rfl⟩ | hmem
+    · exact h.1
+    · exact checkExhaustiveBranches_get rest h.2 pb' hmem
+
+/-- Unpack branch Bool coverage. -/
+private theorem checkExhaustiveBranches_sound {ctors : CtorEnv} :
+    ∀ brs, checkExhaustiveBranches ctors brs = true →
+      (∀ s, checkExhaustive ctors s = true → SurfaceCovers ctors s) →
+      ∀ p b, (p, b) ∈ brs → SurfaceCovers ctors b
+  | [] => by intro _ _ _ _ hmem; nomatch hmem
+  | (p, b) :: rest => by
+    intro h ih p' b' hmem
+    simp only [checkExhaustiveBranches, Bool.and_eq_true] at h
+    simp only [List.mem_cons] at hmem
+    rcases hmem with ⟨rfl, rfl⟩ | hmem
+    · exact ih b h.1
+    · exact checkExhaustiveBranches_sound rest h.2 ih p' b' hmem
+
+private theorem surfaceExprSize_lt_of_mem_list {items : List Surface.Expr} {e : Surface.Expr}
+    (h : e ∈ items) : surfaceExprSize e < surfaceExprSize (.list items) := by
+  induction items with
+  | nil => nomatch h
+  | cons hd tl ih =>
+    simp only [List.mem_cons] at h
+    rcases h with rfl | h
+    · simp only [surfaceExprSize, surfaceExprSizeList]; omega
+    · have hlt := ih h
+      have htail : surfaceExprSize (.list tl) < surfaceExprSize (.list (hd :: tl)) := by
+        simp only [surfaceExprSize, surfaceExprSizeList]; omega
+      exact Nat.lt_trans hlt htail
+
+private theorem surfaceExprSize_lt_of_mem_letRecBinds
+    {binds : List (ValName × Option Surface.PolyTy × Surface.Expr)}
+    {body : Surface.Expr}
+    {b : ValName × Option Surface.PolyTy × Surface.Expr}
+    (h : b ∈ binds) :
+    surfaceExprSize b.2.2 < surfaceExprSize (.letRecIn binds body) := by
+  induction binds with
+  | nil => nomatch h
+  | cons hd rest ih =>
+    rcases hd with ⟨v, ann, rhs⟩
+    simp only [List.mem_cons] at h
+    rcases h with ⟨⟨rfl, rfl, rfl⟩, _⟩ | h
+    · simp only [surfaceExprSize, surfaceExprSizeLetRecBinds]; omega
+    · have hlt := ih h
+      have htail : surfaceExprSize (.letRecIn rest body) <
+          surfaceExprSize (.letRecIn ((v, ann, rhs) :: rest) body) := by
+        simp only [surfaceExprSize, surfaceExprSizeLetRecBinds]; omega
+      exact Nat.lt_trans hlt htail
+
+private theorem surfaceExprSize_lt_of_mem_branches
+    {scrut : Surface.Expr} {brs : List (Surface.Pattern × Surface.Expr)}
+    {p : Surface.Pattern} {b : Surface.Expr} (h : (p, b) ∈ brs) :
+    surfaceExprSize b < surfaceExprSize (.match_ scrut brs) := by
+  induction brs with
+  | nil => nomatch h
+  | cons pb rest ih =>
+    rcases pb with ⟨p', b'⟩
+    simp only [List.mem_cons] at h
+    rcases h with ⟨rfl, rfl⟩ | h
+    · simp only [surfaceExprSize, surfaceExprSizeBranches]; omega
+    · have hlt := ih h
+      have htail : surfaceExprSize (.match_ scrut rest) <
+          surfaceExprSize (.match_ scrut ((p', b') :: rest)) := by
+        simp only [surfaceExprSize, surfaceExprSizeBranches]; omega
+      exact Nat.lt_trans hlt htail
+
+/-- Bool surface coverage ⇒ `SurfaceCovers` (uses the same `T`/`tyArgs` seed as the checker). -/
+theorem checkExhaustive_sound {ctors : CtorEnv} :
+    ∀ (s : Surface.Expr), checkExhaustive ctors s = true → SurfaceCovers ctors s := by
+  suffices hgoal : ∀ (n : Nat) (s : Surface.Expr), surfaceExprSize s ≤ n →
+      checkExhaustive ctors s = true → SurfaceCovers ctors s by
+    intro s h
+    exact hgoal (surfaceExprSize s) s le_rfl h
+  intro n
+  induction n with
+  | zero =>
+    intro s hsz h
+    have h0 : surfaceExprSize s = 0 := Nat.le_zero.mp hsz
+    cases s <;> simp only [surfaceExprSize] at h0 <;> omega
+  | succ n ih =>
+    intro s hsz h
+    match s with
+    | .primLit _ => exact .primLit
+    | .var _ => exact .var
+    | .ctor _ => exact .ctor
+    | .pair a b =>
+      simp only [checkExhaustive, Bool.and_eq_true] at h
+      have hle₁ : surfaceExprSize a ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_pair_left a b) hsz)
+      have hle₂ : surfaceExprSize b ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_pair_right a b) hsz)
+      exact .pair (ih a hle₁ h.1) (ih b hle₂ h.2)
+    | .cons hd tl =>
+      simp only [checkExhaustive, Bool.and_eq_true] at h
+      have hle₁ : surfaceExprSize hd ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_cons_head hd tl) hsz)
+      have hle₂ : surfaceExprSize tl ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_cons_tail hd tl) hsz)
+      exact .cons (ih hd hle₁ h.1) (ih tl hle₂ h.2)
+    | .list items =>
+      simp only [checkExhaustive] at h
+      refine .list ?_
+      intro e he
+      have heq := checkExhaustiveList_get items h e he
+      have hle : surfaceExprSize e ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_of_mem_list he) hsz)
+      exact ih e hle heq
+    | .lambda param ann body =>
+      simp only [checkExhaustive] at h
+      have hle : surfaceExprSize body ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_lambda_body param ann body) hsz)
+      exact .lambda (ih body hle h)
+    | .app f x =>
+      simp only [checkExhaustive, Bool.and_eq_true] at h
+      have hle₁ : surfaceExprSize f ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_app_fn f x) hsz)
+      have hle₂ : surfaceExprSize x ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_app_arg f x) hsz)
+      exact .app (ih f hle₁ h.1) (ih x hle₂ h.2)
+    | .letIn vname ann rhs body =>
+      simp only [checkExhaustive, Bool.and_eq_true] at h
+      have hle₁ : surfaceExprSize rhs ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_letIn_rhs vname ann rhs body) hsz)
+      have hle₂ : surfaceExprSize body ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_letIn_body vname ann rhs body) hsz)
+      exact .letIn (ih rhs hle₁ h.1) (ih body hle₂ h.2)
+    | .letRecIn binds body =>
+      simp only [checkExhaustive, Bool.and_eq_true] at h
+      refine .letRecIn ?_ (ih body (Nat.le_of_lt_succ (Nat.lt_of_lt_of_le
+        (surfaceExprSize_lt_letRecIn_body binds body) hsz)) h.2)
+      intro b hb
+      have heq := checkExhaustiveLetRecBinds_get binds h.1 b hb
+      have hle : surfaceExprSize b.2.2 ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_of_mem_letRecBinds hb) hsz)
+      exact ih b.2.2 hle heq
+    | .ife c t f =>
+      simp only [checkExhaustive, Bool.and_eq_true] at h
+      have hle₁ : surfaceExprSize c ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_ife_cond c t f) hsz)
+      have hle₂ : surfaceExprSize t ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_ife_then c t f) hsz)
+      have hle₃ : surfaceExprSize f ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_ife_else c t f) hsz)
+      exact .ife (ih c hle₁ h.1.1.1) (ih t hle₂ h.1.1.2) (ih f hle₃ h.1.2)
+        (matchExhaustiveB_sound h.2)
+    | .match_ scrut brs =>
+      simp only [checkExhaustive, Bool.and_eq_true] at h
+      rcases h with ⟨⟨hs, hbrs⟩, hexh⟩
+      have hscrut : surfaceExprSize scrut ≤ n :=
+        Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_match_scrut scrut brs) hsz)
+      cases hT : tyNameFromPatterns ctors (brs.map Prod.fst) with
+      | some T =>
+        simp only [hT] at hexh
+        refine .match_ (T := T) (tyArgs := tyArgsGuess ctors T) (ih scrut hscrut hs) ?_ ?_
+        · intro p b hb
+          have heq := checkExhaustiveBranches_get brs hbrs (p, b) hb
+          have hle : surfaceExprSize b ≤ n :=
+            Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_of_mem_branches hb) hsz)
+          exact ih b hle heq
+        · exact matchExhaustiveB_sound hexh
+      | none =>
+        simp only [hT] at hexh
+        refine .match_ (T := nBool) (tyArgs := []) (ih scrut hscrut hs) ?_ ?_
+        · intro p b hb
+          have heq := checkExhaustiveBranches_get brs hbrs (p, b) hb
+          have hle : surfaceExprSize b ≤ n :=
+            Nat.le_of_lt_succ (Nat.lt_of_lt_of_le (surfaceExprSize_lt_of_mem_branches hb) hsz)
+          exact ih b hle heq
+        · exact matchExhaustiveB_sound hexh
+
+/- Concrete instances are *theorems* (`native_decide`), not `#guard` smoke.
+    Soundness is `checkExhaustive_sound` / `matchExhaustiveB_sound` above. -/
+example : matchExhaustiveB ctorsDemo nBool []
+    [.ctor cTrue [], .ctor cFalse []] = true := by native_decide
+example : matchExhaustiveB ctorsDemo nBool []
+    [.ctor cTrue []] = false := by native_decide
+example : checkExhaustive ctorsDemo (.primLit (.int 0)) = true := by native_decide
+example : checkExhaustive ctorsDemo
+    (.ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0))) = true := by
+  native_decide
+example : checkExhaustive ctorsDemo (.primLit (.int 0)) = true →
+    SurfaceCovers ctorsDemo (.primLit (.int 0)) :=
+  checkExhaustive_sound _
 
 /-! ## 6. The `Lowers` relation (spec — B1 behavioural match)
 
