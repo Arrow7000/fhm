@@ -13210,6 +13210,150 @@ theorem TypeOfHM.weaken_schemes {ctors : CtorEnv} {env : Env} {e : Expr} {τ : T
   have hfin := H hgen [] (by simpa using h)
   simpa using hfin
 
+/-- Inserting an environment segment and shifting term de Bruijn indices preserves
+    `TypeOfHM`. Direct port of `TypeOfElabHM.weaken_env`: cofinite `letIn`/`letRec`
+    re-instantiate under the grown env; `var` remaps lookup (existential `instArgs`
+    unchanged). No env-freshness side condition. -/
+theorem TypeOfHM.weaken_env
+    {ctors : CtorEnv} {env_pre env_extra env : Env} {e : Expr} {τ : Ty}
+    (h : TypeOfHM ⟨env_pre ++ env, ctors⟩ e τ) :
+    TypeOfHM ⟨env_pre ++ env_extra ++ env, ctors⟩
+      (e.shiftFrom env_pre.length env_extra.length) τ := by
+  suffices H : ∀ {ctx' : Ctx} {e' : Expr} {τ' : Ty}, TypeOfHM ctx' e' τ' →
+      ∀ (env_pre' : Env), ctx'.env = env_pre' ++ env →
+        TypeOfHM ⟨env_pre' ++ env_extra ++ env, ctx'.ctors⟩
+          (e'.shiftFrom env_pre'.length env_extra.length) τ' by
+    exact H h env_pre rfl
+  intro ctx' e' τ' hd
+  induction hd using TypeOfHM.rec_strong with
+  | primLitUnit => intro env_pre' _; exact .primLitUnit
+  | primLitInt => intro env_pre' _; exact .primLitInt
+  | primLitNat => intro env_pre' _; exact .primLitNat
+  | primLitChar => intro env_pre' _; exact .primLitChar
+  | primBinOpIntAdd => intro env_pre' _; exact .primBinOpIntAdd
+  | primBinOpIntSub => intro env_pre' _; exact .primBinOpIntSub
+  | primBinOpIntLt _ _ ihtrue ihfalse =>
+    intro env_pre' hctx
+    exact .primBinOpIntLt (ihtrue env_pre' hctx) (ihfalse env_pre' hctx)
+  | primBinOpCharLt _ _ ihtrue ihfalse =>
+    intro env_pre' hctx
+    exact .primBinOpCharLt (ihtrue env_pre' hctx) (ihfalse env_pre' hctx)
+  | app hf hinput ihf ihinput =>
+    intro env_pre' hctx
+    simp only [Expr.shiftFrom]
+    exact .app (ihf env_pre' hctx) (ihinput env_pre' hctx)
+  | ctor hlook htyargs hinst =>
+    intro env_pre' _
+    exact .ctor hlook htyargs hinst
+  | var hlook hlc hinst =>
+    intro env_pre' hctx
+    expose_names
+    rw [hctx] at hlook
+    simp only [Expr.shiftFrom]
+    by_cases h_lt : dbl < env_pre'.length
+    · rw [if_pos h_lt]
+      refine .var ?_ hlc hinst
+      show (env_pre' ++ env_extra ++ env)[dbl]? = _
+      rw [List.getElem?_append_left
+            (by simp only [List.length_append]; omega : dbl < (env_pre' ++ env_extra).length),
+          List.getElem?_append_left h_lt]
+      rwa [List.getElem?_append_left h_lt] at hlook
+    · push_neg at h_lt
+      rw [if_neg (Nat.not_lt.mpr h_lt)]
+      refine .var ?_ hlc hinst
+      show (env_pre' ++ env_extra ++ env)[dbl + env_extra.length]? = _
+      rw [List.getElem?_append_right
+            (by simp only [List.length_append]; omega :
+              (env_pre' ++ env_extra).length ≤ dbl + env_extra.length)]
+      rw [show dbl + env_extra.length - (env_pre' ++ env_extra).length = dbl - env_pre'.length
+            from by simp only [List.length_append]; omega]
+      rwa [List.getElem?_append_right h_lt] at hlook
+  | lambda hpc hann heq hbody ihbody =>
+    intro env_pre' hctx
+    subst heq
+    simp only [Expr.shiftFrom]
+    refine TypeOfHM.lambda hpc hann rfl ?_
+    expose_names
+    have hb := ihbody (PolyTy.mkTrivial paramTy :: env_pre') (by rw [hctx, List.cons_append])
+    simpa only [List.cons_append, List.length_cons] using hb
+  | letIn hwf hann hcofin heq hbody ihcofin ihbody =>
+    intro env_pre' hctx
+    subst heq
+    expose_names
+    simp only [Expr.shiftFrom]
+    refine TypeOfHM.letIn (M := M) (L := L) hwf hann ?_ rfl ?_
+    · intro Xs hfresh
+      have hc := ihcofin Xs hfresh env_pre' hctx
+      rwa [Expr.shiftFrom_openBoundTyVars] at hc
+    · have hb := ihbody (M :: env_pre') (by rw [hctx, List.cons_append])
+      simpa only [List.cons_append, List.length_cons] using hb
+  | match_ hscrut hne hbrs ihscrut ihbrs =>
+    intro env_pre' hctx
+    simp only [Expr.shiftFrom]
+    refine TypeOfHM.match_ (ihscrut env_pre' hctx) ?_ ?_
+    · intro hcontra
+      obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil hne
+      have hmem' := BranchList.mem_shiftFrom_of_mem
+        (threshold := env_pre'.length) (n := env_extra.length)
+        (hb ▸ List.mem_cons_self (a := (p, b)))
+      rw [hcontra] at hmem'
+      exact List.not_mem_nil hmem'
+    · intro branch' hmem'
+      obtain ⟨pat, body, hmem, rfl⟩ := BranchList.mem_shiftFrom hmem'
+      rcases ihbrs (pat, body) hmem with
+        ⟨ctorr, c, n, tyArgs, instContents, hpat, hlook, hscrutEq, hpc, hn, hinstC, _, hbodyIH⟩ |
+        ⟨hpat, _, hbodyIH⟩
+      · subst hpat
+        simp only [MatchPattern.bindCount]
+        have hib := hbodyIH (instContents.map PolyTy.mkTrivial ++ env_pre')
+          (by rw [hctx, List.append_assoc])
+        simp only [List.length_append, List.length_map] at hib
+        have hlen : instContents.length = n := by
+          have := List.Forall₂.length_eq hinstC
+          omega
+        rw [hlen, show n + env_pre'.length = env_pre'.length + n from Nat.add_comm _ _] at hib
+        refine TypeOfMatchBranch.mk ⟨hlook, hscrutEq, hpc, hn, hinstC⟩ rfl ?_
+        rw [show env_pre' ++ env_extra ++ env = env_pre' ++ (env_extra ++ env)
+              from List.append_assoc _ _ _]
+        rw [List.append_assoc, List.append_assoc] at hib
+        exact hib
+      · subst hpat
+        simp only [MatchPattern.bindCount, Nat.add_zero]
+        exact TypeOfMatchBranch.wildcard (hbodyIH env_pre' hctx)
+  | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+    intro env_pre' hctx
+    subst heq
+    expose_names
+    simp only [Expr.shiftFrom, RecGroup.shiftFrom_eq_map]
+    refine TypeOfHM.letRec (specs := specs) (G := G) (L := L)
+      ⟨hwf.anns_eq, ?_, hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩ ?_ ?_ rfl ?_
+    · rw [List.length_map]; exact hwf.length
+    · intro Xs hfresh p hp τ hτ
+      obtain ⟨a, b, _, hq, rfl⟩ := List.mem_zip_map_left hp
+      have hc := ihmono Xs hfresh (a, b) hq τ hτ
+        (specs.map (RecSpec.rhsEntry G Xs) ++ env_pre')
+        (by simp only [RecSpecs.rhsCtx]; rw [hctx, List.append_assoc])
+      simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at hc
+      rw [← hwf.length, Nat.add_comm bindings.length env_pre'.length] at hc
+      simp only [RecSpecs.rhsCtx, List.append_assoc] at hc ⊢
+      exact hc
+    · intro Xs hfresh p hp σ hσ Ys hYs
+      obtain ⟨a, b, _, hq, rfl⟩ := List.mem_zip_map_left hp
+      have hc := ihpoly Xs hfresh (a, b) hq σ hσ Ys hYs
+        (specs.map (RecSpec.rhsEntry G Xs) ++ env_pre')
+        (by simp only [RecSpecs.rhsCtx]; rw [hctx, List.append_assoc])
+      rw [Expr.shiftFrom_openTyVars] at hc
+      simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at hc
+      rw [← hwf.length, Nat.add_comm bindings.length env_pre'.length] at hc
+      simp only [RecSpecs.rhsCtx, List.append_assoc] at hc ⊢
+      exact hc
+    · have hb := ihbody (specs.map (RecSpec.bodyScheme G) ++ env_pre')
+        (by simp only [RecSpecs.bodyCtx]; rw [hctx, List.append_assoc])
+      simp only [RecSpecs.bodyCtx, List.length_append, List.length_map] at hb
+      rw [← hwf.length, Nat.add_comm bindings.length env_pre'.length] at hb
+      simp only [RecSpecs.bodyCtx, List.append_assoc] at hb ⊢
+      exact hb
+
 /-- Build a `Forall₂` from equal lengths and a pointwise (index-indexed) relation. -/
 private theorem List.forall₂_of_getElem {α β : Type*} {R : α → β → Prop}
     {l₁ : List α} {l₂ : List β} (hlen : l₁.length = l₂.length)

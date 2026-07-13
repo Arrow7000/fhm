@@ -718,7 +718,7 @@ private def BranchList.shiftFrom (threshold : Nat) (n : Nat) :
 
 /-- Shift every binding of a `letRec` group at a single (already group-adjusted)
     threshold. -/
-private def RecGroup.shiftFrom (threshold : Nat) (n : Nat) : List Expr → List Expr
+def RecGroup.shiftFrom (threshold : Nat) (n : Nat) : List Expr → List Expr
   | []        => []
   | e :: rest => e.shiftFrom threshold n :: RecGroup.shiftFrom threshold n rest
 
@@ -2045,7 +2045,7 @@ end
     `letRec` cases of the structural lemmas reuse the generic `List.map` lemmas
     (membership, length, `map_map`) exactly as the `BranchList.*_eq_map` lemmas
     do for `match_`. -/
-private theorem RecGroup.shiftFrom_eq_map (threshold n : Nat) (bs : List Expr) :
+theorem RecGroup.shiftFrom_eq_map (threshold n : Nat) (bs : List Expr) :
     RecGroup.shiftFrom threshold n bs = bs.map (·.shiftFrom threshold n) := by
   induction bs with
   | nil => rfl
@@ -2177,7 +2177,7 @@ theorem Expr.instTyAux_fvar_eq_openTyVarsAux (Xs : List Nat) :
 /-- A member of `(l.map f).zip r` reflects to a member of `l.zip r`: the
     `letRec` typing rule's `bindings.zip τs` premise must be reconstructed after a
     structural transform `f` is mapped over the bindings. -/
-private theorem List.mem_zip_map_left {α β γ : Type _} {f : α → γ} :
+theorem List.mem_zip_map_left {α β γ : Type _} {f : α → γ} :
     ∀ {l : List α} {r : List β} {p : γ × β},
       p ∈ (l.map f).zip r → ∃ a b, a ∈ l ∧ (a, b) ∈ l.zip r ∧ p = (f a, b) := by
   intro l

@@ -1,5 +1,8 @@
 <!-- Written 2026-07-11 (DataDecl → Program → freeNames → naive SCC scaffold).
      UPDATED 2026-07-13: SCC adequacy proved + Program.ofFlat landed.
+     UPDATED 2026-07-13 evening: checkExhaustive DONE.
+     UPDATED 2026-07-13 night: SurfaceWT Approach A / 1a DONE —
+       see briefs/next-agent-brief-surface-wt-corollary.md.
      Read these FIRST, in order:
        1. briefs/next-agent-brief-surface-bridge.md — THE ORIGINAL PLAN (items 1–9).
        2. briefs/next-agent-brief-surface-bridge-followups.md — status when the
@@ -7,12 +10,14 @@
           Core/expr story; this brief UPDATES the program/SCC / front-end backlog).
        3. briefs/next-agent-brief-surface-bridge-kickoff.md — PatComp interface
           (historical; pattern compilation is done).
+       4. briefs/next-agent-brief-surface-wt-corollary.md — SurfaceWT Approach A
+          (DONE / 1a); next deferred item is `letBlock`.
      This brief does NOT duplicate the plan. It gives FRESH status after SCC
-     proofs + ofFlat, and where the next agent should start. -->
+     proofs + ofFlat + checkExhaustive, and points at the SurfaceWT brief. -->
 
 # Brief: surface Program pipeline + SCC — handoff (updated)
 
-## TL;DR — where we are (2026-07-13)
+## TL;DR — where we are (2026-07-13 evening)
 
 The **expression** north star is complete and axiom-clean:
 
@@ -21,8 +26,8 @@ surface_type_safe : lower + typecheck + SurfaceCovers
   → elaborate yields typed, exhaustive, non-stuck Core
 ```
 
-The **program / top-level** layer on top of that is also complete through
-automatic SCC grouping:
+The **program / top-level** layer is complete through automatic SCC grouping.
+**Executable coverage** (`checkExhaustive`) is also done.
 
 | Layer | Status |
 |-------|--------|
@@ -33,11 +38,13 @@ automatic SCC grouping:
 | `ValidBindingGroups` + `sccGroups` (C1) | **DONE** executable + `#guard`s |
 | Adequacy `sccGroups_sound` / `_complete` (C2) | **DONE**, axiom-clean |
 | `Program.ofFlat` (flat binds → SCC groups) | **DONE**, axiom-clean |
-| `checkExhaustive`, `SurfaceWT` corollary, `letBlock` | **OPEN** (next) |
+| `checkExhaustive` / `dTreeExhaustiveB` → `SurfaceCovers` | **DONE** (`7e9fc1f`) |
+| `SurfaceWT` corollary (Approach A / 1a) | **DONE** — see surface-wt brief |
+| `letBlock` | **OPEN** (next) |
 
-`lake build` green. No `sorry` in `FHM/SurfaceBridge.lean`.
-`#print axioms sccGroups_sound` / `program_type_safe` / `Program.ofFlat_groups_valid`
-= `{propext, Classical.choice?, Quot.sound}` (no `sorryAx`).
+`lake build` green through SurfaceWT Approach A / 1a. See
+`briefs/next-agent-brief-surface-wt-corollary.md` for the strong `SurfaceWT`
+definition and axiom-clean corollary.
 
 Recent commits on this arc:
 - `ace4206` — surface DataDecl lowering
@@ -45,7 +52,9 @@ Recent commits on this arc:
 - `3fb2a3a` — explicit `groups` → `letRecIn` desugar
 - `ebf20d5` — `freeNames` + naive `sccGroups` + `ValidBindingGroups`
 - `9f59e10` — prove `sccGroups_sound` / `_complete`
-- (HEAD) — `Program.ofFlat` + thin lemmas / `#guard`s
+- `568853a` — `Program.ofFlat`
+- `7e9fc1f` — `checkExhaustive` + Bool→Prop soundness
+- *(this arc)* — SurfaceWT Approach A / 1a corollary
 
 ---
 
@@ -58,10 +67,12 @@ fused `letRec`, PatComp, surface→Core **expression** bridge) are done.
 **real front-end**: declare types, declare top-level vals, don’t ask the author
 to pre-partition mutual recursion.
 
-North-star *product* end state (SCC+ofFlat done; coverage / public AST still open):
+North-star *product* end state (SCC+ofFlat+checkExhaustive done; SurfaceWT
+corollary + public AST still open):
 
 > A surface program (decls + flat bindings + body) elaborates to safe Core,
-> with SCC inferred automatically, coverage checkable, no Core metatheory growth.
+> with SCC inferred automatically, coverage checkable (and decidable), no Core
+> metatheory growth.
 
 ---
 
@@ -148,18 +159,18 @@ def Program.ofFlat decls binds body : Option Surface.Program :=
 
 ## Immediate next work (recommended)
 
-### Priority 1 — `checkExhaustive` / `dTreeExhaustiveB`
+### Priority 1 — `SurfaceWT` corollary (Approach A) — ACTIVE
 
-Decide `SurfaceCovers` from an executable / Prop checker aligned with
-`DTreeExhaustive` / PatComp. See followups brief for the coverage story.
-This is the main open product gap after ofFlat.
+**Takeover doc:** `briefs/next-agent-brief-surface-wt-corollary.md`.
 
-### Priority 2 — `SurfaceWT` corollary
+Push declarative headline via `SurfaceWT` + `SurfaceCovers` → safety.
+Hard part is `match_` / `lowerMatch` typing (not weird-emit transfer).
+Next concrete proofs: `TypeOfHM.weaken_env`, `emitLets_typeable`, then clear
+`emit_DTreeTypeable` / `compile_initMatrix_typeable`.
 
-Declarative headline phrased via `SurfaceWT` (needs typeability invariant
-across match lowerings — why it was deferred past `surface_type_safe`).
+Fallbacks B (pin Lowers emit) / C (executable SurfaceWT) only with Aron.
 
-### Priority 3 — `letBlock` collapse (design settled, not scheduled)
+### Priority 2 — `letBlock` collapse (design settled, not scheduled)
 
 Remove surface `letIn`/`letRecIn` from the *public* AST; one `letBlock`; run
 the **same** freeNames→SCC→nested Core `let`/`letRec` in **lowering** (not a
@@ -218,11 +229,12 @@ Pattern-λ desugar, errors, strings.
 
 ## Suggested first message for the next agent
 
-> Read `briefs/next-agent-brief-surface-bridge-program-scc.md` (updated
-> 2026-07-13) and `briefs/next-agent-brief-surface-bridge-followups.md`.
-> Program/SCC/ofFlat are done. Start on **`checkExhaustive` /
-> `dTreeExhaustiveB`** (or the next backlog item Aron picks). Do not reopen
-> Core or `ValidBindingGroups`. Gate with `lake build` + axiom checks.
+> Read `briefs/next-agent-brief-surface-wt-corollary.md` (primary) and
+> `briefs/next-agent-brief-surface-bridge-program-scc.md` (Program/SCC context).
+> `checkExhaustive` is done (`7e9fc1f`). Continue **SurfaceWT Approach A** emit
+> typing (`emit_DTreeTypeable` / `compile_initMatrix_typeable` and deps). Do not
+> reopen Core, `ValidBindingGroups`, or switch to B/C without Aron. Gate with
+> `lake build` + axiom checks; farm composer one lemma at a time.
 
 ---
 
@@ -233,6 +245,9 @@ Pattern-λ desugar, errors, strings.
 | `FHM/SurfaceLang.lean` | `DataDecl`, `Binding`, `Program`, `desugarGroups`, `Program.term` |
 | `FHM/SurfaceBridge.lean` §2b | DataDecl lowering |
 | `FHM/SurfaceBridge.lean` (after `patVars`) | `freeNames`, `sccGroups`, `ValidBindingGroups`, `Program.ofFlat` |
+| `FHM/SurfaceBridge.lean` §5b | `dTreeExhaustiveB`, `checkExhaustive` → `SurfaceCovers` |
+| `FHM/SurfaceBridge.lean` §7 + ladder ~5165–5410 | `SurfaceWT`, Approach A emit-typing stubs |
 | `FHM/SurfaceBridge.lean` §9b | `LowersProgram`, `lowerProgram`, `program_type_safe` |
 | `FHM/Decls.lean` | `preludeDecls`, `elabDecls` |
-| `briefs/next-agent-brief-surface-bridge-followups.md` | Post-expression-headline backlog (coverage / `SurfaceWT`; program/SCC superseded by **this** brief) |
+| `briefs/next-agent-brief-surface-wt-corollary.md` | **CURRENT** SurfaceWT Approach A handoff |
+| `briefs/next-agent-brief-surface-bridge-followups.md` | Post-expression-headline backlog (coverage lessons; program/SCC superseded by **this** brief; SurfaceWT superseded by surface-wt brief) |

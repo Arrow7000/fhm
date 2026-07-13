@@ -800,6 +800,72 @@ def cNil   : CtorName := .mk "Nil"
 def kindEnvOfCtors (ctors : CtorEnv) : KindEnv :=
   ctors.map (fun p => (p.2.tyName, p.2.paramCount))
 
+/-- Every ctor agrees with `kindEnvOfCtors` (all ctors of a type share arity).
+    True of any `elabDecls` env. -/
+def CtorEnv.arityConsistent (ctors : CtorEnv) : Prop :=
+  ∀ c ctor, LookupList.get? ctors c = some ctor →
+    LookupList.get? (kindEnvOfCtors ctors) ctor.tyName = some ctor.paramCount
+
+/-- Ctor field types are well-kinded against `kindEnvOfCtors` at the ctor arity.
+    True of any `elabDecls` env. -/
+def CtorEnv.fieldsKinded (ctors : CtorEnv) : Prop :=
+  ∀ c ctor, LookupList.get? ctors c = some ctor →
+    ∀ ty ∈ ctor.contents, Ty.WellKinded (kindEnvOfCtors ctors) ctor.paramCount ty
+
+/-- Root/local arity pin from global ctor-env hygiene + a kinding fact for `T`. -/
+theorem CtorEnv.paramCount_eq_of_arityConsistent {ctors : CtorEnv}
+    (hcons : CtorEnv.arityConsistent ctors)
+    {T : TyName} {tyArgs : List Ty} {c : CtorName} {ctor : Ctor}
+    (hkind : LookupList.get? (kindEnvOfCtors ctors) T = some tyArgs.length)
+    (hctor : LookupList.get? ctors c = some ctor)
+    (hty : ctor.tyName = T) :
+    ctor.paramCount = tyArgs.length := by
+  have h1 := hcons c ctor hctor
+  rw [hty] at h1
+  exact Option.some.inj (h1.symm.trans hkind)
+
+/-- Opening a well-kinded type at arity `n ≤ |Vs|` with well-kinded (at 0) args
+    yields a well-kinded type at arity 0. In particular `customTy` argument-list
+    length is preserved, so `get? ke T = some args.length` survives `openWith`. -/
+theorem Ty.WellKinded_openWith {ke : KindEnv} {Vs : List Ty} {n : Nat} {ty : Ty}
+    (hty : Ty.WellKinded ke n ty)
+    (hVs : ∀ v ∈ Vs, Ty.WellKinded ke 0 v)
+    (hn : n ≤ Vs.length) :
+    Ty.WellKinded ke 0 (Ty.openWith Vs ty) := by
+  induction ty using Ty.rec_strong generalizing n with
+  | prim p =>
+    cases hty
+    simp only [Ty.openWith, Ty.instantiate]
+    exact .prim
+  | bvar i =>
+    cases hty with
+    | bvar hi =>
+      have hi' : i < Vs.length := by omega
+      simp only [Ty.openWith, Ty.instantiate, List.getElem?_eq_getElem hi', Option.getD_some]
+      exact hVs _ (List.getElem_mem _)
+  | fvar _ => cases hty
+  | arrow a b iha ihb =>
+    cases hty with
+    | arrow ha hb =>
+      simp only [Ty.openWith, Ty.instantiate]
+      exact .arrow (iha ha hn) (ihb hb hn)
+  | customTy T args ih =>
+    cases hty with
+    | customTy hget hargs =>
+      simp only [Ty.openWith, Ty.instantiate, TyList.instantiate_eq_map]
+      refine .customTy (by simpa [List.length_map] using hget) ?_
+      intro arg harg
+      obtain ⟨arg0, harg0, rfl⟩ := List.mem_map.mp harg
+      exact ih arg0 harg0 (hargs arg0 harg0) hn
+
+/-- Inversion: well-kinded `customTy` pins the kind-env arity. -/
+theorem Ty.WellKinded.customTy_inv {ke : KindEnv} {pc : Nat} {T : TyName} {args : List Ty}
+    (h : Ty.WellKinded ke pc (.customTy T args)) :
+    LookupList.get? ke T = some args.length ∧
+      (∀ arg ∈ args, Ty.WellKinded ke pc arg) := by
+  cases h with
+  | customTy hget hargs => exact ⟨hget, hargs⟩
+
 
 /-! ## 4. Executable expression lowering (`lower`)
 
@@ -3594,7 +3660,9 @@ def lowerExpr (ke : KindEnv) (tvs vs : List ValName) : Surface.Expr → Option E
   | .ife c t f =>
     match lowerExpr ke tvs vs c, lowerExpr ke tvs vs t, lowerExpr ke tvs vs f with
     | some c', some t', some f' =>
-        some (lowerMatch c' [.ctor cTrue [], .ctor cFalse []] (fun i => if i = 0 then t' else f'))
+        -- Same body function as `match_` / `bodyFn [t', f']` (defined later).
+        some (lowerMatch c' [.ctor cTrue [], .ctor cFalse []]
+          (fun i => [t', f'].getD i (.ctor cNil)))
     | _, _, _ => none
   | .match_ scrut brs =>
     match lowerExpr ke tvs vs scrut, lowerBranches ke tvs vs brs with
@@ -4470,7 +4538,7 @@ inductive LowersExpr (ctors : CtorEnv) (ke : KindEnv) (tvs : List ValName) :
       LowersExpr ctors ke tvs vs t t' →
       LowersExpr ctors ke tvs vs f f' →
       LowersExpr ctors ke tvs vs (.ife c t f)
-        (lowerMatch c' [.ctor cTrue [], .ctor cFalse []] (fun i => if i = 0 then t' else f'))
+        (lowerMatch c' [.ctor cTrue [], .ctor cFalse []] (bodyFn [t', f']))
   -- `match_` (B1, behavioural + non-deterministic): scrutinee + branch bodies
   -- lower recursively; `emitInner` is ANY Core term that, wrapped as
   -- `let scrut in emitInner`, reduces to the `firstMatch`-selected branch body
@@ -4806,6 +4874,9 @@ theorem lowerExpr_LowersExpr {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValNam
         | none => simp [hc, ht, hf] at h
         | some f' =>
           simp only [hc, ht, hf, Option.some.injEq] at h; subst h
+          have hbodyFn : (fun i => [t', f'].getD i (.ctor cNil)) = bodyFn [t', f'] := by
+            funext i; simp [bodyFn, matchBodyDefault]
+          rw [hbodyFn]
           exact .ife (lowerExpr_LowersExpr hc) (lowerExpr_LowersExpr ht)
             (lowerExpr_LowersExpr hf)
   | .match_ scrut brs =>
@@ -4901,15 +4972,2788 @@ theorem lower_sound {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   exact lowerExpr_LowersExpr h
 
 
+/-! ### Functional `Lowers` away from surface `match_`
+
+`LowersExpr.match_` is one-to-many (`emitInner`). Every other rule — including
+`ife`, which pins the same `lowerMatch` as `lower` — is deterministic in the
+Core term. Full uniqueness therefore holds on the `NoMatch` fragment (no
+surface `match_` node anywhere). Nested `match_` inside `pair`/`let`/… also
+breaks uniqueness of the outer term, so the hypothesis is global on `s`. -/
+
+mutual
+/-- No surface `match_` anywhere in the expression. `ife` is allowed (Core-level
+    match via deterministic `lowerMatch` sugar). -/
+inductive SurfaceExprNoMatch : Surface.Expr → Prop where
+  | primLit {p} : SurfaceExprNoMatch (.primLit p)
+  | pair {a b} : SurfaceExprNoMatch a → SurfaceExprNoMatch b → SurfaceExprNoMatch (.pair a b)
+  | cons {h t} : SurfaceExprNoMatch h → SurfaceExprNoMatch t → SurfaceExprNoMatch (.cons h t)
+  | list {items} : SurfaceExprListNoMatch items → SurfaceExprNoMatch (.list items)
+  | lambda {param ann body} :
+      SurfaceExprNoMatch body → SurfaceExprNoMatch (.lambda param ann body)
+  | app {f x} : SurfaceExprNoMatch f → SurfaceExprNoMatch x → SurfaceExprNoMatch (.app f x)
+  | letIn {name ann rhs body} :
+      SurfaceExprNoMatch rhs → SurfaceExprNoMatch body →
+      SurfaceExprNoMatch (.letIn name ann rhs body)
+  | letRecIn {binds body} :
+      SurfaceExprLetRecNoMatch binds → SurfaceExprNoMatch body →
+      SurfaceExprNoMatch (.letRecIn binds body)
+  | var {name} : SurfaceExprNoMatch (.var name)
+  | ctor {name} : SurfaceExprNoMatch (.ctor name)
+  | ife {c t f} :
+      SurfaceExprNoMatch c → SurfaceExprNoMatch t → SurfaceExprNoMatch f →
+      SurfaceExprNoMatch (.ife c t f)
+
+inductive SurfaceExprListNoMatch : List Surface.Expr → Prop where
+  | nil : SurfaceExprListNoMatch []
+  | cons {e es} : SurfaceExprNoMatch e → SurfaceExprListNoMatch es → SurfaceExprListNoMatch (e :: es)
+
+inductive SurfaceExprLetRecNoMatch :
+    List (ValName × Option Surface.PolyTy × Surface.Expr) → Prop where
+  | nil : SurfaceExprLetRecNoMatch []
+  | cons {bind rest} :
+      SurfaceExprNoMatch bind.2.2 → SurfaceExprLetRecNoMatch rest →
+      SurfaceExprLetRecNoMatch (bind :: rest)
+end
+
+mutual
+theorem LowersExpr_unique_of_NoMatch (ctors : CtorEnv) (ke : KindEnv) (tvs : List ValName)
+    (vs : List ValName) (s : Surface.Expr) (c₁ c₂ : Expr)
+    (hnm : SurfaceExprNoMatch s)
+    (h₁ : LowersExpr ctors ke tvs vs s c₁) (h₂ : LowersExpr ctors ke tvs vs s c₂) :
+    c₁ = c₂ := by
+  cases hnm with
+  | primLit =>
+    cases h₁ with
+    | primLitUnit | primLitInt | primLitNat | primLitChar | primLitBool =>
+      cases h₂; rfl
+  | pair ha hb =>
+    cases h₁; cases h₂
+    expose_names
+    have := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ ha h h_2
+    have := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ hb h_1 h_3
+    simp_all
+  | cons hh ht =>
+    cases h₁; cases h₂
+    expose_names
+    have := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ hh h_1 h_3
+    have := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ ht h_2 h_4
+    simp_all
+  | list hitems =>
+    cases h₁; cases h₂
+    expose_names
+    have := LowersExprList_unique_of_NoMatch ctors ke tvs vs _ _ _ hitems h h_1
+    simp_all
+  | lambda hb =>
+    cases h₁ with
+    | lambda_name hann₁ hb₁ =>
+      cases h₂ with
+      | lambda_name hann₂ hb₂ =>
+        expose_names
+        have hb' := LowersExpr_unique_of_NoMatch ctors ke tvs _ _ _ _ hb hb₁ hb₂
+        cases ann with
+        | none =>
+          cases hann₁; cases hann₂; simp [hb']
+        | some τ =>
+          cases hτ : lowerTy ke tvs τ with
+          | none => simp [hτ] at hann₁
+          | some τ' =>
+            simp [hτ] at hann₁ hann₂
+            cases hann₁; cases hann₂; simp [hb']
+    | lambda_wild hann₁ hb₁ =>
+      cases h₂ with
+      | lambda_wild hann₂ hb₂ =>
+        expose_names
+        have hb' := LowersExpr_unique_of_NoMatch ctors ke tvs _ _ _ _ hb hb₁ hb₂
+        cases ann with
+        | none =>
+          cases hann₁; cases hann₂; simp [hb']
+        | some τ =>
+          cases hτ : lowerTy ke tvs τ with
+          | none => simp [hτ] at hann₁
+          | some τ' =>
+            simp [hτ] at hann₁ hann₂
+            cases hann₁; cases hann₂; simp [hb']
+  | app hf hx =>
+    cases h₁; cases h₂
+    expose_names
+    have := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ hf h h_2
+    have := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ hx h_1 h_3
+    simp_all
+  | letIn hr hb =>
+    cases h₁; cases h₂
+    expose_names
+    have hr' := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ hr h_1 h_4
+    have hb' := LowersExpr_unique_of_NoMatch ctors ke tvs _ _ _ _ hb h_2 h_5
+    cases ann with
+    | none =>
+      cases h; cases h_3; simp [hr', hb']
+    | some σ =>
+      cases hσ : lowerPoly ke σ with
+      | none => simp [hσ] at h
+      | some σ' =>
+        simp [hσ] at h h_3
+        cases h; cases h_3; simp [hr', hb']
+  | letRecIn hbinds hb =>
+    cases h₁; cases h₂
+    expose_names
+    have hann : anns' = anns'_1 := Option.some_inj.mp (h.symm.trans h_3)
+    have hbinds' :=
+      LowersRecBinds_unique_of_NoMatch ctors ke tvs _ _ _ _ hbinds h_1 h_4
+    have hb' := LowersExpr_unique_of_NoMatch ctors ke tvs _ _ _ _ hb h_2 h_5
+    simp [hann, hbinds', hb']
+  | var =>
+    cases h₁; cases h₂
+    expose_names
+    have hi : i = i_1 := Option.some_inj.mp (h.symm.trans h_1)
+    simp [hi]
+  | ctor =>
+    cases h₁; cases h₂; rfl
+  | ife hc ht hf =>
+    cases h₁; cases h₂
+    expose_names
+    have := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ hc h h_3
+    have := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ ht h_1 h_4
+    have := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ hf h_2 h_5
+    simp_all
+
+theorem LowersExprList_unique_of_NoMatch (ctors : CtorEnv) (ke : KindEnv) (tvs : List ValName)
+    (vs : List ValName) (es : List Surface.Expr) (es₁ es₂ : List Expr)
+    (hnm : SurfaceExprListNoMatch es)
+    (h₁ : LowersExprList ctors ke tvs vs es es₁)
+    (h₂ : LowersExprList ctors ke tvs vs es es₂) : es₁ = es₂ := by
+  cases hnm with
+  | nil =>
+    cases h₁; cases h₂; rfl
+  | cons he hes =>
+    cases h₁; cases h₂
+    expose_names
+    have := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ he h h_2
+    have := LowersExprList_unique_of_NoMatch ctors ke tvs vs _ _ _ hes h_1 h_3
+    simp_all
+
+theorem LowersRecBinds_unique_of_NoMatch (ctors : CtorEnv) (ke : KindEnv) (tvs : List ValName)
+    (vs : List ValName) (binds : List (ValName × Option Surface.PolyTy × Surface.Expr))
+    (es₁ es₂ : List Expr)
+    (hnm : SurfaceExprLetRecNoMatch binds)
+    (h₁ : LowersRecBinds ctors ke tvs vs binds es₁)
+    (h₂ : LowersRecBinds ctors ke tvs vs binds es₂) : es₁ = es₂ := by
+  cases hnm with
+  | nil =>
+    cases h₁; cases h₂; rfl
+  | cons he hrest =>
+    cases h₁; cases h₂
+    expose_names
+    have := LowersExpr_unique_of_NoMatch ctors ke tvs vs _ _ _ he h h_2
+    have := LowersRecBinds_unique_of_NoMatch ctors ke tvs vs _ _ _ hrest h_1 h_3
+    simp_all
+end
+
+/-- On the `NoMatch` fragment, a `Lowers` witness equals the executable `lower`. -/
+theorem lowerExpr_eq_of_LowersExpr_of_NoMatch {ctors : CtorEnv} {ke : KindEnv}
+    {tvs vs : List ValName} {s : Surface.Expr} {c₀ c : Expr}
+    (hnm : SurfaceExprNoMatch s)
+    (hL : LowersExpr ctors ke tvs vs s c₀)
+    (hlow : lowerExpr ke tvs vs s = some c) :
+    c₀ = c :=
+  LowersExpr_unique_of_NoMatch ctors ke tvs vs s c₀ c hnm hL (lowerExpr_LowersExpr hlow)
+
+
 /-! ## 7. Surface well-typedness — DEFINED via the relation (no `Surface.TypeOf`)
 
-`s` is well-typed exactly when *some* lowering of it is Core-typeable. The
-executable pipeline decides this with `lower` + `typecheck`. -/
+Approach A / **option 1a**: closed well-typedness is inhabited open inductive
+`SurfaceWTExpr`. Former weak meaning was
+`∃ c, Lowers s c ∧ (typecheck ctors c).isSome` — archaeology:
 
-/-- A surface program is well-typed iff some lowering of it typechecks in Core. -/
+```
+-- old: def SurfaceWT ctors s := ∃ c, Lowers ctors s c ∧ (typecheck ctors c).isSome
+```
+
+The strong carrier requires open branch typings at `match_` / `ife`, so the
+executable `lower` output is typeable without transferring from a weird B1
+`emitInner`. -/
+
+/-- Env for a match branch body: trivial schemes for pattern binders (in
+    `patBindTys` / `patVars` pre-order) prepended to `Γ`. Mirrors
+    `LowersBranches` typing under `patVars p ++ vs`. -/
+def branchBodyEnv (Γ : Env) (bindTys : List Ty) : Env :=
+  bindTys.map PolyTy.mkTrivial ++ Γ
+
+/-- Instantiated ctor field types when `τ = customTy T tyArgs` and `c ∈ T`. -/
+def patGctorFieldTys (ctors : CtorEnv) (c : CtorName) (τ : Ty) : Option (List Ty) :=
+  match τ with
+  | .customTy T tyArgs =>
+    match LookupList.get? ctors c with
+    | some ctor => if ctor.tyName = T then some (instFieldTys ctors c tyArgs) else none
+    | none => none
+  | _ => none
+
+mutual
+/-- Types of variables bound by a generic pattern, in capture (`matchG`) order. -/
+def patBindTysG (ctors : CtorEnv) : GPat → Ty → List Ty
+  | .gbind, τ => [τ]
+  | .gwild, _ => []
+  | .gctor c args, τ =>
+    match patGctorFieldTys ctors c τ with
+    | none => []
+    | some fieldTys => patBindTysGList ctors args fieldTys
+
+def patBindTysGList (ctors : CtorEnv) : List GPat → List Ty → List Ty
+  | [], _ => []
+  | p :: ps, τ :: τs => patBindTysG ctors p τ ++ patBindTysGList ctors ps τs
+  | _, _ => []
+end
+
+/-- Surface-facing wrapper: bind types of `p` at scrutinee type `τ`. -/
+def patBindTys (ctors : CtorEnv) (p : Surface.Pattern) (τ : Ty) : List Ty :=
+  patBindTysG ctors (norm p) τ
+
+/-- Strong open surface well-typedness (Approach A / 1a).
+    At `match_`, ingredients are typed openly — not “some weird emitInner typechecks”.
+    Match-free fragments use `of_lowers` (unique Lowers + TypeOfHM). Match-capable
+    forms recurse so induction reaches nested matches. -/
+inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
+    List ValName → List ValName → Env → Surface.Expr → Ty → Prop where
+  /-- Match-free fragment: Lowers is unique, so TypeOfHM transfers to `lowerExpr`. -/
+  | of_lowers {tvs vs Γ s c τ} :
+      SurfaceExprNoMatch s →
+      LowersExpr ctors ke tvs vs s c →
+      TypeOfHM ⟨Γ, ctors⟩ c τ →
+      SurfaceWTExpr ctors ke tvs vs Γ s τ
+  | pair {tvs vs Γ a b τa τb τ} :
+      SurfaceWTExpr ctors ke tvs vs Γ a τa →
+      SurfaceWTExpr ctors ke tvs vs Γ b τb →
+      TypeOfHM ⟨Γ, ctors⟩ (.ctor cPair) (.arrow τa (.arrow τb τ)) →
+      SurfaceWTExpr ctors ke tvs vs Γ (.pair a b) τ
+  | cons {tvs vs Γ h t τh τt τ} :
+      SurfaceWTExpr ctors ke tvs vs Γ h τh →
+      SurfaceWTExpr ctors ke tvs vs Γ t τt →
+      TypeOfHM ⟨Γ, ctors⟩ (.ctor cCons) (.arrow τh (.arrow τt τ)) →
+      SurfaceWTExpr ctors ke tvs vs Γ (.cons h t) τ
+  | list {tvs vs Γ items τelem} :
+      (∀ e ∈ items, SurfaceWTExpr ctors ke tvs vs Γ e τelem) →
+      TypeOfHM ⟨Γ, ctors⟩ (.ctor cNil) (.customTy nList [τelem]) →
+      TypeOfHM ⟨Γ, ctors⟩ (.ctor cCons)
+        (.arrow τelem (.arrow (.customTy nList [τelem]) (.customTy nList [τelem]))) →
+      SurfaceWTExpr ctors ke tvs vs Γ (.list items) (.customTy nList [τelem])
+  | app {tvs vs Γ f x τarg τ} :
+      SurfaceWTExpr ctors ke tvs vs Γ f (.arrow τarg τ) →
+      SurfaceWTExpr ctors ke tvs vs Γ x τarg →
+      SurfaceWTExpr ctors ke tvs vs Γ (.app f x) τ
+  | lambda_name {tvs vs Γ x ann body paramTy bodyTy} :
+      paramTy.IsLC →
+      (match ann with
+        | none => True
+        | some τs => lowerTy ke tvs τs = some paramTy) →
+      SurfaceWTExpr ctors ke tvs (x :: vs) (PolyTy.mkTrivial paramTy :: Γ) body bodyTy →
+      SurfaceWTExpr ctors ke tvs vs Γ (.lambda (.name x) ann body) (.arrow paramTy bodyTy)
+  | lambda_wild {tvs vs Γ ann body paramTy bodyTy} :
+      paramTy.IsLC →
+      (match ann with
+        | none => True
+        | some τs => lowerTy ke tvs τs = some paramTy) →
+      SurfaceWTExpr ctors ke tvs (.mk "_" :: vs) (PolyTy.mkTrivial paramTy :: Γ) body bodyTy →
+      SurfaceWTExpr ctors ke tvs vs Γ (.lambda .wildcard ann body) (.arrow paramTy bodyTy)
+  /-- Unannotated mono let. Annotated lets (mono or poly) stay under `of_lowers`
+      (NoMatch only): `GeneralisesTo` for `some σ` needs `openBoundTyVars` / arity-0
+      `openTyVars []` transport that is not yet wired into the strong inductive. -/
+  | letIn {tvs vs Γ name rhs body τrhs τ} :
+      SurfaceWTExpr ctors ke tvs vs Γ rhs τrhs →
+      SurfaceWTExpr ctors ke tvs (name :: vs) (PolyTy.mkTrivial τrhs :: Γ) body τ →
+      SurfaceWTExpr ctors ke tvs vs Γ (.letIn name none rhs body) τ
+  /-- Unannotated monomorphic `letRecIn` under the empty gen-var pool (RHS + body
+      share `τs.map mkTrivial ++ Γ`). Annotated / poly-recursion groups stay under
+      `of_lowers` (NoMatch only). -/
+  | letRecIn {tvs vs Γ}
+      {binds : List (ValName × Option Surface.PolyTy × Surface.Expr)}
+      {τs : List Ty} {body : Surface.Expr} {τ : Ty}
+      (hlen : binds.length = τs.length)
+      (hann : ∀ b ∈ binds, b.2.1 = none)
+      (hbinds : ∀ (i : Nat) (hi : i < binds.length),
+        SurfaceWTExpr ctors ke tvs (binds.map (·.1) ++ vs)
+          (τs.map PolyTy.mkTrivial ++ Γ)
+          (binds[i]'hi).2.2 (τs[i]'(Nat.lt_of_lt_of_eq hi hlen)))
+      (hbody : SurfaceWTExpr ctors ke tvs (binds.map (·.1) ++ vs)
+          (τs.map PolyTy.mkTrivial ++ Γ) body τ) :
+      SurfaceWTExpr ctors ke tvs vs Γ (.letRecIn binds body) τ
+  | match_ {tvs vs Γ scrut brs T tyArgs τres} :
+      SurfaceWTExpr ctors ke tvs vs Γ scrut (.customTy T tyArgs) →
+      (∀ (i : Nat) (hi : i < brs.length),
+        SurfaceWTExpr ctors ke tvs (patVars (brs[i]'hi).1 ++ vs)
+          (branchBodyEnv Γ (patBindTys ctors (brs[i]'hi).1 (.customTy T tyArgs)))
+          (brs[i]'hi).2 τres) →
+      (∀ p ∈ brs.map Prod.fst, PatternWF ctors p (.customTy T tyArgs)) →
+      MatchExhaustive ctors T tyArgs (brs.map Prod.fst) →
+      LookupList.get? (kindEnvOfCtors ctors) T = some tyArgs.length →
+      Ty.WellKinded (kindEnvOfCtors ctors) 0 (.customTy T tyArgs) →
+      SurfaceWTExpr ctors ke tvs vs Γ (.match_ scrut brs) τres
+  | ife {tvs vs Γ c t f τ} :
+      SurfaceWTExpr ctors ke tvs vs Γ c (.customTy nBool []) →
+      SurfaceWTExpr ctors ke tvs vs Γ t τ →
+      SurfaceWTExpr ctors ke tvs vs Γ f τ →
+      (∀ p ∈ ([.ctor cTrue [], .ctor cFalse []] : List Surface.Pattern),
+        PatternWF ctors p (.customTy nBool [])) →
+      MatchExhaustive ctors nBool [] [.ctor cTrue [], .ctor cFalse []] →
+      LookupList.get? (kindEnvOfCtors ctors) nBool = some 0 →
+      Ty.WellKinded (kindEnvOfCtors ctors) 0 (.customTy nBool []) →
+      SurfaceWTExpr ctors ke tvs vs Γ (.ife c t f) τ
+
+/-- Closed surface well-typedness: some result type under empty scopes/env. -/
 def SurfaceWT (ctors : CtorEnv) (s : Surface.Expr) : Prop :=
+  ∃ τ, SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] [] s τ
+
+/-- Weak (pre-1a) SurfaceWT, retained for the match-free uniqueness transfer. -/
+def SurfaceWT_weak (ctors : CtorEnv) (s : Surface.Expr) : Prop :=
   ∃ c, Lowers ctors s c ∧ (typecheck ctors c).isSome
 
+/-- Match-free corollary: `SurfaceWT_weak` + `lower` ⇒ `typecheck`. -/
+theorem typecheck_of_lower_of_SurfaceWT_of_NoMatch {ctors : CtorEnv} {s : Surface.Expr}
+    {c : Expr}
+    (hnm : SurfaceExprNoMatch s)
+    (hwt : SurfaceWT_weak ctors s) (hlow : lower ctors s = some c) :
+    (typecheck ctors c).isSome := by
+  obtain ⟨c₀, hL, htc₀⟩ := hwt
+  have heq : c₀ = c := by
+    simp only [Lowers, lower] at hL hlow
+    exact lowerExpr_eq_of_LowersExpr_of_NoMatch hnm hL hlow
+  simpa [heq] using htc₀
+
+/-- Invert a `Lowers` derivation at surface `match_`. -/
+theorem LowersExpr_match_inv {ctors : CtorEnv} {ke : KindEnv} {tvs vs : List ValName}
+    {scrut : Surface.Expr} {brs : List (Surface.Pattern × Surface.Expr)} {c : Expr}
+    (h : LowersExpr ctors ke tvs vs (.match_ scrut brs) c) :
+    ∃ scrut' bodies' emitInner,
+      c = .letIn none scrut' emitInner ∧
+      LowersExpr ctors ke tvs vs scrut scrut' ∧
+      LowersBranches ctors ke tvs vs brs bodies' ∧
+      (∀ (T : TyName) (tyArgs : List Ty) (root : Expr),
+        IsValue root →
+        TypeOfElabHM ⟨[], ctors⟩ root (.customTy T tyArgs) →
+        (∀ p ∈ brs.map Prod.fst, PatternWF ctors p (.customTy T tyArgs)) →
+        ∀ (i : Nat) (ws : List Expr),
+          firstMatch root (brs.map Prod.fst) = some (i, ws) →
+            Relation.ReflTransGen Step (.letIn none root emitInner)
+              ((bodyFn bodies' i).substN 0 ws)) := by
+  cases h with
+  | match_ hs hb hadq =>
+    exact ⟨_, _, _, rfl, hs, hb, hadq⟩
+
+/-- From strong `SurfaceWT` of a match, the scrutinee is `SurfaceWT`. -/
+theorem SurfaceWT_of_match_scrut {ctors : CtorEnv}
+    {scrut : Surface.Expr} {brs : List (Surface.Pattern × Surface.Expr)}
+    (hwt : SurfaceWT ctors (.match_ scrut brs)) : SurfaceWT ctors scrut := by
+  obtain ⟨τ, hwt'⟩ := hwt
+  cases hwt' with
+  | match_ hscrut _ _ _ _ _ => exact ⟨_, hscrut⟩
+  | of_lowers hnm _ _ => cases hnm
+
+
+/-! ### Emit typing (Approach A rung 2 infrastructure)
+
+Parallel to `DTreeExhaustive` / `emit_DTreeExhaustive`: a syntactic typing
+layer showing `emit` of a well-formed compiled tree is `TypeOfHM`. -/
+
+private theorem patBindTysG_gbind (ctors : CtorEnv) (τ : Ty) :
+    patBindTysG ctors .gbind τ = [τ] := rfl
+
+private theorem Ty.openVars_self_of_IsLC {τ : Ty} (h : τ.IsLC) (Xs : List Nat) :
+    Ty.openVars Xs τ = τ := by
+  simp only [Ty.openVars]
+  exact Ty.instantiate_eq_self_of_lc h
+
+private theorem generalisesTo_of_typeable {Γ : Env} {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h : TypeOfHM ⟨Γ, ctors⟩ e τ) :
+    GeneralisesTo TypeOfHM ⟨Γ, ctors⟩ none e (PolyTy.mkTrivial τ) [] := by
+  intro Xs _
+  simp only [Expr.openBoundTyVars, PolyTy.openVars, PolyTy.mkTrivial,
+    Ty.openVars_self_of_IsLC (TypeOfHM.regular h) Xs]
+  exact h
+
+/-- `PatternWF` computes the correct bind-type list for `norm p`. -/
+theorem PatternWF_patBindTys_eq {ctors : CtorEnv} {p : Surface.Pattern} {τ : Ty}
+    (_h : PatternWF ctors p τ) :
+    patBindTys ctors p τ = patBindTysG ctors (norm p) τ := rfl
+
+/-- **Emit typing context**: base env `Γ` (occurrence schemes prepended to the
+    outer surface env), occurrence index map, and occurrence typing. -/
+structure EmitTyCtx (ctors : CtorEnv) where
+  Γ : Env
+  occEnv : List Occ
+  octx : OccCtx
+
+/-- `ectx.Γ` is trivial schemes for `occEnv` (typed by `octx`) prepended to
+    `Γ_outer`. This is the invariant `emit` typing maintains under switches. -/
+def EmitTyCtx.agrees (ectx : EmitTyCtx ctors) (Γ_outer : Env) : Prop :=
+  ∃ (τs : List Ty) (hlen : τs.length = ectx.occEnv.length),
+    ectx.Γ = τs.map PolyTy.mkTrivial ++ Γ_outer ∧
+    ∀ (i : Nat) (hi : i < ectx.occEnv.length),
+      LookupList.get? ectx.octx (ectx.occEnv[i]) = some (τs[i]'(hlen ▸ hi)) ∧
+        (τs[i]'(hlen ▸ hi)).IsLC
+
+/-- Syntactic typing of a compiled tree under `EmitTyCtx`, indexed by the outer
+    env / branch bodies / result type so leaves can carry `TypeOfHM` obligations.
+    Switches extend `Γ` with instantiated field schemes (parallel to `occEnv` /
+    `octx` growth). Twin of `DTreeExhaustive`, plus leaf body typing. -/
+inductive DTreeTypeable (ctors : CtorEnv) (Γ_outer : Env) (bodies : Nat → Expr)
+    (τres : Ty) : EmitTyCtx ctors → DTree → Prop
+  | leaf {ectx : EmitTyCtx ctors} {act : Nat} {binds : List Occ} {bindTys : List Ty}
+      (hag : EmitTyCtx.agrees ectx Γ_outer)
+      (hlen : binds.length = bindTys.length)
+      (hbnds : ∀ (i : Nat) (hi : i < binds.length),
+        LookupList.get? ectx.octx (binds[i]) = some (bindTys[i]'(hlen ▸ hi)) ∧
+          binds[i] ∈ ectx.occEnv)
+      (hbody : TypeOfHM ⟨bindTys.map PolyTy.mkTrivial ++ Γ_outer, ctors⟩ (bodies act) τres) :
+      DTreeTypeable ctors Γ_outer bodies τres ectx (.leaf act binds)
+  | switchFail {ectx : EmitTyCtx ctors} {occ : Occ}
+      {cases : List (CtorName × Nat × DTree)} {T : TyName} {tyArgs : List Ty}
+      (hne : cases ≠ [])
+      (hag : EmitTyCtx.agrees ectx Γ_outer)
+      (hlook : LookupList.get? ectx.octx occ = some (.customTy T tyArgs))
+      (hmem : occ ∈ ectx.occEnv)
+      (hlc : ∀ ty ∈ tyArgs, ty.IsLC)
+      (htyped : ∀ c a t, (c, a, t) ∈ cases →
+        ∃ ctor, LookupList.get? ctors c = some ctor ∧ ctor.tyName = T ∧
+          a = ctor.contents.length ∧ ctor.paramCount = tyArgs.length)
+      (hsub : ∀ c a t, (c, a, t) ∈ cases →
+        DTreeTypeable ctors Γ_outer bodies τres
+          { Γ := (instFieldTys ctors c tyArgs).map PolyTy.mkTrivial ++ ectx.Γ
+            occEnv := subOccs occ a ++ ectx.occEnv
+            octx := OccCtx.extend ectx.octx occ (instFieldTys ctors c tyArgs) } t)
+      (hcover : ∀ c ctor, LookupList.get? ctors c = some ctor → ctor.tyName = T →
+        ∃ a t, (c, a, t) ∈ cases) :
+      DTreeTypeable ctors Γ_outer bodies τres ectx (.switch occ cases .fail)
+  | switchDefault {ectx : EmitTyCtx ctors} {occ : Occ}
+      {cases : List (CtorName × Nat × DTree)} {dflt : DTree} {T : TyName} {tyArgs : List Ty}
+      (hdne : dflt ≠ .fail)
+      (hag : EmitTyCtx.agrees ectx Γ_outer)
+      (hlook : LookupList.get? ectx.octx occ = some (.customTy T tyArgs))
+      (hmem : occ ∈ ectx.occEnv)
+      (hlc : ∀ ty ∈ tyArgs, ty.IsLC)
+      (htyped : ∀ c a t, (c, a, t) ∈ cases →
+        ∃ ctor, LookupList.get? ctors c = some ctor ∧ ctor.tyName = T ∧
+          a = ctor.contents.length ∧ ctor.paramCount = tyArgs.length)
+      (hsub : ∀ c a t, (c, a, t) ∈ cases →
+        DTreeTypeable ctors Γ_outer bodies τres
+          { Γ := (instFieldTys ctors c tyArgs).map PolyTy.mkTrivial ++ ectx.Γ
+            occEnv := subOccs occ a ++ ectx.occEnv
+            octx := OccCtx.extend ectx.octx occ (instFieldTys ctors c tyArgs) } t)
+      (hdflt : DTreeTypeable ctors Γ_outer bodies τres ectx dflt) :
+      DTreeTypeable ctors Γ_outer bodies τres ectx (.switch occ cases dflt)
+
+/-- `resolveOcc` is a monomorphic var: `Γ_env` is parallel to `env`, and the
+    occurrence's scheme is `mkTrivial τ`. -/
+theorem resolveOcc_typeable {ctors : CtorEnv} {Γ_env Γ_outer : Env}
+    {env : List Occ} {occ : Occ} {τ : Ty}
+    (hlen : Γ_env.length = env.length)
+    (hmem : occ ∈ env)
+    (hlook : Γ_env[env.idxOf occ]? = some (PolyTy.mkTrivial τ))
+    (hlc : τ.IsLC) :
+    TypeOfHM ⟨Γ_env ++ Γ_outer, ctors⟩ (resolveOcc env occ) τ := by
+  simp only [resolveOcc]
+  refine TypeOfHM.var (polyTy := PolyTy.mkTrivial τ) (instArgs := []) ?_
+    (fun _ h => (List.not_mem_nil h).elim) (InstantiatesBy.refl_of_closed hlc)
+  have hlt : env.idxOf occ < Γ_env.length := by
+    rw [hlen]; exact List.idxOf_lt_length_of_mem hmem
+  rw [List.getElem?_append_left hlt]
+  exact hlook
+
+/-- Under `doneTys ++ Γ_env ++ Γ_outer` with `doneTys.length = depth`, the RHS
+    `var (env.idxOf b + depth)` types at `τ` when `Γ_env` holds `mkTrivial τ`
+    at `env.idxOf b`. -/
+private theorem emitLets_rhs_typeable {ctors : CtorEnv} {Γ_env Γ_outer doneTys : Env}
+    {env : List Occ} {b : Occ} {τ : Ty} {depth : Nat}
+    (hlen : Γ_env.length = env.length)
+    (hdepth : doneTys.length = depth)
+    (hmem : b ∈ env)
+    (hlook : Γ_env[env.idxOf b]? = some (PolyTy.mkTrivial τ))
+    (hlc : τ.IsLC) :
+    TypeOfHM ⟨doneTys ++ Γ_env ++ Γ_outer, ctors⟩
+      (.var (env.idxOf b + depth) []) τ := by
+  refine TypeOfHM.var (polyTy := PolyTy.mkTrivial τ) (instArgs := []) ?_
+    (fun _ h => (List.not_mem_nil h).elim) (InstantiatesBy.refl_of_closed hlc)
+  have hlt : env.idxOf b < Γ_env.length := by
+    rw [hlen]; exact List.idxOf_lt_length_of_mem hmem
+  have hge : doneTys.length ≤ env.idxOf b + depth := by omega
+  rw [show doneTys ++ Γ_env ++ Γ_outer = doneTys ++ (Γ_env ++ Γ_outer) from List.append_assoc _ _ _]
+  rw [List.getElem?_append_right hge]
+  rw [show env.idxOf b + depth - doneTys.length = env.idxOf b from by omega]
+  rw [List.getElem?_append_left hlt]
+  exact hlook
+
+/-- **Leaf-let cascade typing.** If `body` types under capture schemes
+    `bindTys` prepended to `Γ_outer`, and each capture `binds[i]` looks up in
+    the occurrence env segment `Γ_env` at `mkTrivial bindTys[i]`, then
+    `emitLets` types under `Γ_env ++ Γ_outer`.
+
+    Proof: `emitLets.go` induction on remaining reversed captures; base case is
+    `TypeOfHM.weaken_env` for `shiftFrom binds.length env.length`; step is
+    unannotated monomorphic `letIn`. -/
+theorem emitLets_typeable {ctors : CtorEnv} {Γ_env Γ_outer : Env}
+    {env binds : List Occ} {bindTys : List Ty} {body : Expr} {τ : Ty}
+    (hlen_env : Γ_env.length = env.length)
+    (hlen_binds : binds.length = bindTys.length)
+    (hbound : ∀ o ∈ binds, o ∈ env)
+    (hbind_look : ∀ (i : Nat) (hi : i < binds.length),
+      Γ_env[env.idxOf (binds[i])]? = some (PolyTy.mkTrivial (bindTys[i]'(hlen_binds ▸ hi))) ∧
+        (bindTys[i]'(hlen_binds ▸ hi)).IsLC)
+    (hbody : TypeOfHM ⟨bindTys.map PolyTy.mkTrivial ++ Γ_outer, ctors⟩ body τ) :
+    TypeOfHM ⟨Γ_env ++ Γ_outer, ctors⟩ (emitLets env binds body) τ := by
+  unfold emitLets
+  have go_ty : ∀ (rem : List Occ) (k : Nat),
+      k + rem.length = binds.length →
+      rem = binds.reverse.drop k →
+      TypeOfHM
+        ⟨(bindTys.drop rem.length).map PolyTy.mkTrivial ++ Γ_env ++ Γ_outer, ctors⟩
+        (emitLets.go env binds body rem k) τ := by
+    intro rem k hsum hrem
+    induction rem generalizing k with
+    | nil =>
+      simp only [List.length_nil, List.drop_zero, emitLets.go] at hsum ⊢
+      subst hsum
+      have hw := TypeOfHM.weaken_env (env_pre := bindTys.map PolyTy.mkTrivial)
+        (env_extra := Γ_env) (env := Γ_outer) hbody
+      simpa only [List.length_map, hlen_binds, hlen_env, List.append_assoc] using hw
+    | cons b rest ih =>
+      simp only [emitLets.go]
+      have hsum' : k + 1 + rest.length = binds.length := by
+        simp only [List.length_cons] at hsum; omega
+      have hrest : rest = binds.reverse.drop (k + 1) := by
+        have ht := congrArg List.tail hrem
+        simpa only [List.tail_cons, List.tail_drop] using ht
+      have hi : rest.length < bindTys.length := by
+        simp only [List.length_cons] at hsum; omega
+      have hb_eq : binds[rest.length]'(by omega) = b := by
+        have hklt : k < binds.reverse.length := by
+          simp only [List.length_reverse]; omega
+        have hget : binds.reverse[k] = b := by
+          have hpos : 0 < (binds.reverse.drop k).length := by
+            rw [← hrem]; simp
+          have : (binds.reverse.drop k)[0]'hpos = b := by
+            simp only [← hrem, List.getElem_cons_zero]
+          rwa [List.getElem_drop] at this
+        rw [← hget, List.getElem_reverse hklt]
+        congr 1; omega
+      obtain ⟨hlookb, hlcb⟩ := hbind_look rest.length (by omega)
+      rw [hb_eq] at hlookb
+      set τb : Ty := bindTys[rest.length]'hi with hτb
+      have hdrop_cons :
+          bindTys.drop rest.length =
+            τb :: bindTys.drop (rest.length + 1) := by
+        simp only [τb, List.drop_eq_getElem_cons hi]
+      have hih := ih (k + 1) hsum' hrest
+      have hrhs : TypeOfHM
+          ⟨(bindTys.drop (rest.length + 1)).map PolyTy.mkTrivial ++ Γ_env ++ Γ_outer,
+            ctors⟩
+          (.var (env.idxOf b + k) []) τb := by
+        refine emitLets_rhs_typeable (doneTys :=
+            (bindTys.drop (rest.length + 1)).map PolyTy.mkTrivial)
+          hlen_env ?_ (hbound b (by
+            have : b ∈ binds.reverse.drop k := by rw [← hrem]; exact List.mem_cons_self
+            exact List.mem_reverse.mp (List.mem_of_mem_drop this)))
+          hlookb hlcb
+        simp only [List.length_map, List.length_drop]
+        omega
+      refine TypeOfHM.letIn (M := PolyTy.mkTrivial τb) (L := []) hlcb
+        (fun _ h => nomatch h) (generalisesTo_of_typeable hrhs) rfl ?_
+      -- body under τb :: drop (rest+1) = drop rest, which is hih after rewriting rem length
+      have hih' : TypeOfHM
+          ⟨(τb :: bindTys.drop (rest.length + 1)).map PolyTy.mkTrivial ++ Γ_env ++ Γ_outer,
+            ctors⟩
+          (emitLets.go env binds body rest (k + 1)) τ := by
+        convert hih using 2
+        rw [← hdrop_cons]
+      simpa only [List.map_cons, List.cons_append, List.length_cons] using hih'
+  have hgo := go_ty binds.reverse 0 (by simp [List.length_reverse]) (by simp [List.drop_zero])
+  simpa only [List.length_reverse, hlen_binds, List.drop_length, List.map_nil,
+    List.nil_append] using hgo
+
+/-- From `agrees`, the occurrence-env prefix of `Γ` looks up like `octx`. -/
+private theorem EmitTyCtx.agrees_lookup {ctors : CtorEnv} {ectx : EmitTyCtx ctors}
+    {Γ_outer : Env} {occ : Occ} {τ : Ty}
+    (hag : EmitTyCtx.agrees ectx Γ_outer)
+    (hmem : occ ∈ ectx.occEnv)
+    (hτ : LookupList.get? ectx.octx occ = some τ) :
+    ∃ Γ_env, Γ_env.length = ectx.occEnv.length ∧
+      ectx.Γ = Γ_env ++ Γ_outer ∧
+      Γ_env[ectx.occEnv.idxOf occ]? = some (PolyTy.mkTrivial τ) ∧ τ.IsLC := by
+  obtain ⟨τs, hlen, hΓ, hlook⟩ := hag
+  refine ⟨τs.map PolyTy.mkTrivial, ?_, hΓ, ?_, ?_⟩
+  · simp [hlen]
+  · have hi : ectx.occEnv.idxOf occ < ectx.occEnv.length :=
+      List.idxOf_lt_length_of_mem hmem
+    have ⟨hτ', hlc⟩ := hlook (ectx.occEnv.idxOf occ) hi
+    have hocceq : ectx.occEnv[ectx.occEnv.idxOf occ] = occ := List.getElem_idxOf hi
+    rw [hocceq] at hτ'
+    have hτs : τs[ectx.occEnv.idxOf occ]'(hlen ▸ hi) = τ :=
+      Option.some.inj (hτ'.symm.trans hτ)
+    rw [List.getElem?_map, List.getElem?_eq_getElem (by omega)]
+    simp only [hτs, Option.map_some]
+  · have hi : ectx.occEnv.idxOf occ < ectx.occEnv.length :=
+      List.idxOf_lt_length_of_mem hmem
+    have ⟨hτ', hlc⟩ := hlook (ectx.occEnv.idxOf occ) hi
+    have hocceq : ectx.occEnv[ectx.occEnv.idxOf occ] = occ := List.getElem_idxOf hi
+    rw [hocceq] at hτ'
+    have hτs : τs[ectx.occEnv.idxOf occ]'(hlen ▸ hi) = τ :=
+      Option.some.inj (hτ'.symm.trans hτ)
+    simpa [hτs] using hlc
+
+/-- `emitCases` as a `List.map` (local copy — private below §O5). -/
+private theorem emitCases_eq_map' (env : List Occ) (bodies : Nat → Expr) (occ : Occ) :
+    ∀ (cases : List (CtorName × Nat × DTree)),
+      emitCases env bodies occ cases
+        = cases.map (fun x => (MatchPattern.named x.1 x.2.1,
+            emit (subOccs occ x.2.1 ++ env) bodies x.2.2))
+  | [] => rfl
+  | (_c, _a, _t) :: rest => by
+    rw [emitCases, emitCases_eq_map' env bodies occ rest, List.map_cons]
+
+/-- Branches in `emitCases` are always named patterns. -/
+private theorem emitCases_named_mem (env : List Occ) (bodies : Nat → Expr) (occ : Occ)
+    {cases : List (CtorName × Nat × DTree)} {pat : MatchPattern} {body : Expr}
+    (h : (pat, body) ∈ emitCases env bodies occ cases) :
+    ∃ c n, pat = .named c n := by
+  rw [emitCases_eq_map'] at h
+  obtain ⟨_, _, heq⟩ := List.mem_map.mp h
+  obtain ⟨rfl, rfl⟩ := (Prod.mk.injEq _ _ _ _).mp heq
+  exact ⟨_, _, rfl⟩
+
+private theorem emitCases_ne_nil (env : List Occ) (bodies : Nat → Expr) (occ : Occ)
+    {cases : List (CtorName × Nat × DTree)} (hne : cases ≠ []) :
+    emitCases env bodies occ cases ≠ [] := by
+  cases cases with
+  | nil => exact (hne rfl).elim
+  | cons _ _ => simp [emitCases]
+
+/-- `List.Forall₂` for a pointwise map (local copy of InferW's private lemma). -/
+private theorem List.forall₂_self_map {α β} {R : α → β → Prop} {f : α → β} :
+    ∀ {l : List α}, (∀ x ∈ l, R x (f x)) → List.Forall₂ R l (l.map f)
+  | [], _ => .nil
+  | _ :: _, h =>
+    .cons (h _ (List.mem_cons_self ..))
+      (List.forall₂_self_map (fun x hx => h x (List.mem_cons_of_mem _ hx)))
+
+/-- `instFieldTys` instantiates ctor field types via `InstantiatesBy`. -/
+private theorem instFieldTys_forall₂ {ctors : CtorEnv} {c : CtorName} {tyArgs : List Ty}
+    {ctor : Ctor} (hlook : LookupList.get? ctors c = some ctor)
+    (hpc : ctor.paramCount = tyArgs.length) :
+    List.Forall₂ (InstantiatesBy tyArgs) ctor.contents (instFieldTys ctors c tyArgs) := by
+  unfold instFieldTys
+  simp only [hlook, Option.map_some, Option.getD]
+  exact List.forall₂_self_map (fun c0 hc0 =>
+    InstantiatesBy.openWith (ctor.bound c0 hc0) (Nat.le_of_eq hpc))
+
+/-- Membership: a case in `cases` yields the corresponding named branch in `emitCases`. -/
+private theorem mem_emitCases_of_mem_cases (env : List Occ) (bodies : Nat → Expr)
+    (occ : Occ) {cases : List (CtorName × Nat × DTree)} {c : CtorName} {a : Nat}
+    {t : DTree} (h : (c, a, t) ∈ cases) :
+    (MatchPattern.named c a, emit (subOccs occ a ++ env) bodies t) ∈
+      emitCases env bodies occ cases := by
+  rw [emitCases_eq_map']
+  exact List.mem_map.mpr ⟨(c, a, t), h, rfl⟩
+
+/-- Inverse membership: a named branch in `emitCases` comes from a case. -/
+private theorem mem_cases_of_mem_emitCases (env : List Occ) (bodies : Nat → Expr)
+    (occ : Occ) {cases : List (CtorName × Nat × DTree)} {c : CtorName} {n : Nat}
+    {body : Expr}
+    (h : (MatchPattern.named c n, body) ∈ emitCases env bodies occ cases) :
+    ∃ t, (c, n, t) ∈ cases ∧ body = emit (subOccs occ n ++ env) bodies t := by
+  rw [emitCases_eq_map'] at h
+  obtain ⟨⟨c', a', t'⟩, hx, heq⟩ := List.mem_map.mp h
+  obtain ⟨⟨rfl, rfl⟩, rfl⟩ := (Prod.mk.injEq _ _ _ _).mp heq
+  exact ⟨t', hx, rfl⟩
+
+/-- **(Typing A-core, FROZEN).** Emitting a `DTreeTypeable` tree yields a
+    `TypeOfHM` term at `τres`. Mirror of `emit_DTreeExhaustive`. -/
+theorem emit_DTreeTypeable {ctors : CtorEnv} {Γ_outer : Env} {ectx : EmitTyCtx ctors}
+    {t : DTree} {bodies : Nat → Expr} {τres : Ty}
+    (hdt : DTreeTypeable ctors Γ_outer bodies τres ectx t) :
+    TypeOfHM ⟨ectx.Γ, ctors⟩ (emit ectx.occEnv bodies t) τres := by
+  induction hdt with
+  | @leaf ectx act binds bindTys hag hlen hbnds hbody =>
+    obtain ⟨τs, hlen_occ, hΓ, hlook_agrees⟩ := hag
+    set Γ_env := τs.map PolyTy.mkTrivial
+    have hlen_env : Γ_env.length = ectx.occEnv.length := by simp [Γ_env, hlen_occ]
+    have hbound : ∀ o ∈ binds, o ∈ ectx.occEnv := fun o ho => by
+      have hi := List.idxOf_lt_length_of_mem ho
+      have hmem := (hbnds _ hi).2
+      simpa [List.getElem_idxOf hi] using hmem
+    have hbind_look : ∀ (i : Nat) (hi : i < binds.length),
+        Γ_env[ectx.occEnv.idxOf (binds[i])]? = some (PolyTy.mkTrivial (bindTys[i]'(hlen ▸ hi))) ∧
+          (bindTys[i]'(hlen ▸ hi)).IsLC := by
+      intro i hi
+      have ⟨hτ, hmem⟩ := hbnds i hi
+      have hi' : ectx.occEnv.idxOf (binds[i]) < ectx.occEnv.length :=
+        List.idxOf_lt_length_of_mem hmem
+      have ⟨hτ_octx, hlc⟩ := hlook_agrees (ectx.occEnv.idxOf (binds[i])) hi'
+      have hocceq : ectx.occEnv[ectx.occEnv.idxOf (binds[i])] = binds[i] :=
+        List.getElem_idxOf hi'
+      rw [hocceq] at hτ_octx
+      have hτs : τs[ectx.occEnv.idxOf (binds[i])]'(hlen_occ ▸ hi') = bindTys[i]'(hlen ▸ hi) :=
+        Option.some.inj (hτ_octx.symm.trans hτ)
+      constructor
+      · rw [List.getElem?_map, List.getElem?_eq_getElem (by omega)]
+        simp only [hτs, Option.map_some]
+      · simpa [hτs] using hlc
+    have ht := emitLets_typeable (env := ectx.occEnv) (Γ_env := Γ_env)
+      hlen_env hlen hbound hbind_look hbody
+    simpa only [emit, Γ_env, hΓ] using ht
+  | @switchFail ectx occ cases T tyArgs hne hag hlook hmem hlc htyped hsub hcover ih =>
+    simp only [emit]
+    obtain ⟨Γ_env, hlen_env, hΓ, hlook', hlc_scrut⟩ :=
+      EmitTyCtx.agrees_lookup hag hmem hlook
+    have hscrut : TypeOfHM ⟨ectx.Γ, ctors⟩ (resolveOcc ectx.occEnv occ) (.customTy T tyArgs) :=
+      hΓ ▸ resolveOcc_typeable hlen_env hmem hlook' hlc_scrut
+    have hbrs_ne := emitCases_ne_nil ectx.occEnv bodies occ hne
+    change TypeOfHM ⟨ectx.Γ, ctors⟩
+      (.match_ (resolveOcc ectx.occEnv occ) (emitCases ectx.occEnv bodies occ cases ++ [])) τres
+    rw [List.append_nil]
+    refine TypeOfHM.match_ hscrut hbrs_ne ?_
+    intro branch hmem
+    obtain ⟨pat, body⟩ := branch
+    cases pat with
+    | named c n =>
+      obtain ⟨t, ht, rfl⟩ := mem_cases_of_mem_emitCases ectx.occEnv bodies occ hmem
+      obtain ⟨ctor, hctor, hty, ha, hpc⟩ := htyped _ _ _ ht
+      have hfields : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents
+          (instFieldTys ctors _ tyArgs) :=
+        instFieldTys_forall₂ hctor hpc
+      refine TypeOfMatchBranch.mk
+        ⟨hctor, (by rw [hty]), hpc, ha, hfields⟩ rfl ?_
+      exact ih c n t ht
+    | wildcard =>
+      rcases emitCases_named_mem ectx.occEnv bodies occ hmem with ⟨_, _, hnom⟩
+      cases hnom
+  | @switchDefault ectx occ cases dflt T tyArgs hdne hag hlook hmem hlc htyped hsub hdflt ih_sub ih_dflt =>
+    obtain ⟨Γ_env, hlen_env, hΓ, hlook', hlc_scrut⟩ :=
+      EmitTyCtx.agrees_lookup hag hmem hlook
+    have hscrut : TypeOfHM ⟨ectx.Γ, ctors⟩ (resolveOcc ectx.occEnv occ) (.customTy T tyArgs) :=
+      hΓ ▸ resolveOcc_typeable hlen_env hmem hlook' hlc_scrut
+    have hemit :
+        emit ectx.occEnv bodies (.switch occ cases dflt) =
+          .match_ (resolveOcc ectx.occEnv occ)
+            (emitCases ectx.occEnv bodies occ cases ++
+              [(.wildcard, emit ectx.occEnv bodies dflt)]) := by
+      cases dflt with
+      | fail => exact (hdne rfl).elim
+      | leaf | switch => rfl
+    rw [hemit]
+    have hbrs_ne : emitCases ectx.occEnv bodies occ cases ++
+        [(.wildcard, emit ectx.occEnv bodies dflt)] ≠ [] := by
+      intro h
+      rcases List.append_eq_nil_iff.mp h with ⟨_, hnil⟩
+      cases hnil
+    refine TypeOfHM.match_ hscrut hbrs_ne ?_
+    intro branch hmem
+    obtain ⟨pat, body⟩ := branch
+    simp only [List.mem_append, List.mem_singleton] at hmem
+    rcases hmem with hmem | hmem
+    · cases pat with
+      | named c n =>
+        obtain ⟨t, ht, rfl⟩ := mem_cases_of_mem_emitCases ectx.occEnv bodies occ hmem
+        obtain ⟨ctor, hctor, hty, ha, hpc⟩ := htyped _ _ _ ht
+        have hfields : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents
+            (instFieldTys ctors _ tyArgs) :=
+          instFieldTys_forall₂ hctor hpc
+        refine TypeOfMatchBranch.mk
+          ⟨hctor, (by rw [hty]), hpc, ha, hfields⟩ rfl ?_
+        exact ih_sub c n t ht
+      | wildcard =>
+        rcases emitCases_named_mem ectx.occEnv bodies occ hmem with ⟨_, _, hnom⟩
+        cases hnom
+    · cases pat with
+      | wildcard =>
+        obtain ⟨rfl, rfl⟩ := hmem
+        exact TypeOfMatchBranch.wildcard ih_dflt
+      | named c n =>
+        rcases hmem with ⟨rfl, _⟩
+
+/-! ### `compile_initMatrix_typeable` infrastructure
+
+Private WF helpers (copied from `PatComp` — originals are `private` there). -/
+
+private def compile_GPatWFList_forall₂ {ctors : CtorEnv} {l t} :
+    GPatWFList ctors l t → List.Forall₂ (GPatWF ctors) l t
+  | .nil => .nil
+  | .cons hp htl => .cons hp (compile_GPatWFList_forall₂ htl)
+
+private theorem compile_GPatWFList_of_forall₂ {ctors : CtorEnv} :
+    ∀ {l t}, List.Forall₂ (GPatWF ctors) l t → GPatWFList ctors l t
+  | _, _, .nil => .nil
+  | _, _, .cons hp htl => .cons hp (compile_GPatWFList_of_forall₂ htl)
+
+private theorem compile_Forall₂_append {α β : Type _} (R : α → β → Prop) {l1 t1 l2 t2}
+    (h1 : List.Forall₂ R l1 t1) (h2 : List.Forall₂ R l2 t2) :
+    List.Forall₂ R (l1 ++ l2) (t1 ++ t2) := by
+  induction h1 with
+  | nil => simp only [List.nil_append]; exact h2
+  | cons hp hps ih => simp only [List.cons_append]; exact .cons hp ih
+
+private theorem compile_GPatWFList_append {ctors : CtorEnv} {l1 t1 l2 t2}
+    (h1 : GPatWFList ctors l1 t1) (h2 : GPatWFList ctors l2 t2) :
+    GPatWFList ctors (l1 ++ l2) (t1 ++ t2) :=
+  compile_GPatWFList_of_forall₂
+    (compile_Forall₂_append _ (compile_GPatWFList_forall₂ h1) (compile_GPatWFList_forall₂ h2))
+
+private theorem compile_GPatWFList_length {ctors : CtorEnv} {l t} (h : GPatWFList ctors l t) :
+    l.length = t.length := by
+  match h with
+  | .nil => rfl
+  | .cons _ htl => simp [compile_GPatWFList_length htl]
+
+private theorem compile_GPatWF.gctor_inv {ctors : CtorEnv} {c : CtorName} {cargs : List GPat} {τ : Ty}
+    (h : GPatWF ctors (.gctor c cargs) τ) :
+    ∃ T tyArgs ctor fieldTys, τ = .customTy T tyArgs ∧ LookupList.get? ctors c = some ctor ∧
+      ctor.tyName = T ∧ List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys ∧
+      GPatWFList ctors cargs fieldTys := by
+  cases h with
+  | gctor hlook hname hinst hwfargs => exact ⟨_, _, _, _, rfl, hlook, hname, hinst, hwfargs⟩
+
+private theorem compile_GPatWFList_replicate_gwild {ctors : CtorEnv} :
+    ∀ (n : Nat) (tys : List Ty), tys.length = n →
+      GPatWFList ctors (List.replicate n GPat.gwild) tys
+  | 0, [], _ => .nil
+  | 0, _ :: _, h => by simp at h
+  | n + 1, [], h => by simp at h
+  | n + 1, τ :: τs, h => by
+    rw [List.length_cons] at h
+    simp only [List.replicate_succ]
+    exact .cons .gwild (compile_GPatWFList_replicate_gwild n τs (by omega))
+
+private theorem compile_InstantiatesBy_forall2_det_agree {tyArgs1 tyArgs2 : List Ty} {n : Nat}
+    (hag : ∀ k, k < n → tyArgs1[k]? = tyArgs2[k]?)
+    {tys l1 l2 : List Ty}
+    (hbound : ∀ c ∈ tys, ContainsBvarsUpTo n c)
+    (h1 : List.Forall₂ (InstantiatesBy tyArgs1) tys l1)
+    (h2 : List.Forall₂ (InstantiatesBy tyArgs2) tys l2) : l1 = l2 := by
+  induction h1 generalizing l2 with
+  | nil => cases h2; rfl
+  | cons hi1 h1tl ih =>
+    cases h2 with
+    | cons hi2 h2tl =>
+      have hhd := InstantiatesBy.det_agree hag (hbound _ List.mem_cons_self) hi1 hi2
+      rw [hhd, ih (fun c hc => hbound c (List.mem_cons_of_mem _ hc)) h2tl]
+
+private theorem compile_defaultRow_wf {ctors : CtorEnv} {occ0 : Occ} {τ0 : Ty} {ttys : List Ty}
+    {r r' : Row} (hwf : GPatWFList ctors r.pats (τ0 :: ttys))
+    (hs : defaultRow occ0 r = some r') :
+    GPatWFList ctors r'.pats ttys := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil => simp [defaultRow] at hs
+  | cons p prest =>
+    cases p with
+    | gctor c cargs => simp [defaultRow] at hs
+    | gbind =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      cases hwf with | cons _ htl => exact htl
+    | gwild =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      cases hwf with | cons _ htl => exact htl
+
+private theorem compile_specializeRow_wf {ctors : CtorEnv} {c : CtorName} {arity : Nat} {occ0 : Occ}
+    {T : TyName} {tyArgs : List Ty} {ctor : Ctor} {fieldTys ttys : List Ty} {r r' : Row}
+    (hlook : LookupList.get? ctors c = some ctor)
+    (hinst : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys)
+    (hlen : fieldTys.length = arity)
+    (hwf : GPatWFList ctors r.pats (.customTy T tyArgs :: ttys))
+    (hs : specializeRow c arity occ0 r = some r') :
+    GPatWFList ctors r'.pats (fieldTys ++ ttys) := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil => simp [specializeRow] at hs
+  | cons p prest =>
+    cases p with
+    | gctor c' cargs =>
+      by_cases hcond : c' = c ∧ cargs.length = arity
+      · simp only [specializeRow, if_pos hcond, Option.some.injEq] at hs
+        subst hs
+        cases hwf with
+        | cons hwf_hd hwf_tl =>
+          obtain ⟨hc', _⟩ := hcond
+          rw [hc'] at hwf_hd
+          cases hwf_hd with
+          | gctor hlook' hname' hinst' hwfargs =>
+            rw [hlook'] at hlook
+            injection hlook with hceq
+            rw [hceq] at hinst' hname'
+            have hdet := compile_InstantiatesBy_forall2_det_agree (fun _ _ => rfl) ctor.bound hinst' hinst
+            rw [hdet] at hwfargs
+            exact compile_GPatWFList_append hwfargs hwf_tl
+      · simp only [specializeRow, if_neg hcond] at hs
+        simp at hs
+    | gbind =>
+      simp only [specializeRow, Option.some.injEq] at hs
+      subst hs
+      cases hwf with
+      | cons _ hwf_tl =>
+        exact compile_GPatWFList_append
+          (compile_GPatWFList_replicate_gwild arity fieldTys hlen) hwf_tl
+    | gwild =>
+      simp only [specializeRow, Option.some.injEq] at hs
+      subst hs
+      cases hwf with
+      | cons _ hwf_tl =>
+        exact compile_GPatWFList_append
+          (compile_GPatWFList_replicate_gwild arity fieldTys hlen) hwf_tl
+
+private theorem compile_colHeads_mem_witness (M : Matrix) (c : CtorName) (arity : Nat)
+    (h : (c, arity) ∈ colHeads M) :
+    ∃ r ∈ M, ∃ args rest, r.pats = GPat.gctor c args :: rest ∧ args.length = arity := by
+  simp only [colHeads, List.mem_dedup, List.mem_filterMap] at h
+  obtain ⟨r, hrmem, hgr⟩ := h
+  refine ⟨r, hrmem, ?_⟩
+  cases hpats : r.pats with
+  | nil => rw [hpats] at hgr; simp at hgr
+  | cons q t =>
+      cases q with
+      | gctor c' cargs =>
+          rw [hpats] at hgr
+          simp [GPat.headCtor] at hgr
+          obtain ⟨rfl, ha⟩ := hgr
+          exact ⟨cargs, t, rfl, ha⟩
+      | gbind => rw [hpats] at hgr; simp [GPat.headCtor] at hgr
+      | gwild => rw [hpats] at hgr; simp [GPat.headCtor] at hgr
+
+private theorem compile_defaultRow_captured_sub {occ0 : Occ} {r r' : Row}
+    (hs : defaultRow occ0 r = some r') :
+    ∀ o ∈ r'.captured, o ∈ r.captured ∨ o = occ0 := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil => simp [defaultRow] at hs
+  | cons p prest =>
+    cases p with
+    | gctor _ _ => simp [defaultRow] at hs
+    | gbind =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      intro o ho
+      simpa using ho
+    | gwild =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      intro o ho
+      exact Or.inl ho
+
+private theorem compile_specializeRow_captured_sub {c : CtorName} {a : Nat} {occ0 : Occ}
+    {r r' : Row} (hs : specializeRow c a occ0 r = some r') :
+    ∀ o ∈ r'.captured, o ∈ r.captured ∨ o = occ0 := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil => simp [specializeRow] at hs
+  | cons p prest =>
+    cases p with
+    | gctor c' args =>
+      simp only [specializeRow] at hs
+      split_ifs at hs
+      simp only [Option.some.injEq] at hs
+      subst hs
+      intro o ho
+      exact Or.inl ho
+    | gbind =>
+      simp only [specializeRow, Option.some.injEq] at hs
+      subst hs
+      intro o ho
+      simpa using ho
+    | gwild =>
+      simp only [specializeRow, Option.some.injEq] at hs
+      subst hs
+      intro o ho
+      exact Or.inl ho
+
+private theorem DTreeExhaustive_not_fail {ctors : CtorEnv} {octx : OccCtx} :
+    ¬ DTreeExhaustive ctors octx DTree.fail := by intro h; cases h
+
+/-- Bind types for a matrix row: captured occurrence types (from `octx`) plus
+    pattern binders from residual columns. -/
+private def captureBindTys (octx : OccCtx) (captured : List Occ) : List Ty :=
+  captured.map (fun o => (LookupList.get? octx o).getD (.prim .unit))
+
+private def rowBindTys (ctors : CtorEnv) (octx : OccCtx) (captured : List Occ)
+    (pats : List GPat) (tys : List Ty) : List Ty :=
+  captureBindTys octx captured ++ patBindTysGList ctors pats tys
+
+private theorem patBindTysGList_cons {ctors : CtorEnv} {p ps τ τs} :
+    patBindTysGList ctors (p :: ps) (τ :: τs) =
+      patBindTysG ctors p τ ++ patBindTysGList ctors ps τs := rfl
+
+private theorem patBindTysGList_append {ctors : CtorEnv} {l1 l2 t1 t2}
+    (hlen : l1.length = t1.length) :
+    patBindTysGList ctors (l1 ++ l2) (t1 ++ t2) =
+      patBindTysGList ctors l1 t1 ++ patBindTysGList ctors l2 t2 := by
+  revert t1
+  induction l1 <;> intro t1 hlen <;> cases t1 <;> simp_all [patBindTysGList]
+
+private theorem captureBindTys_snoc {octx : OccCtx} {xs : List Occ} {o : Occ} {τ : Ty}
+    (hτ : LookupList.get? octx o = some τ) :
+    captureBindTys octx (xs ++ [o]) = captureBindTys octx xs ++ [τ] := by
+  simp only [captureBindTys, List.map_append, List.map_cons, hτ, Option.getD_some]
+  rfl
+
+private theorem rowBindTys_defaultRow_gbind {ctors : CtorEnv} {octx : OccCtx}
+    {occ0 : Occ} {captured pats : List _} {τ0 : Ty} {ttys : List Ty}
+    (hlook : LookupList.get? octx occ0 = some τ0) :
+    rowBindTys ctors octx (captured ++ [occ0]) pats ttys =
+      rowBindTys ctors octx captured (.gbind :: pats) (τ0 :: ttys) := by
+  simp only [rowBindTys, captureBindTys_snoc hlook, patBindTysGList_cons, patBindTysG_gbind,
+    List.append_assoc]
+
+private theorem rowBindTys_defaultRow_gwild {ctors : CtorEnv} {octx : OccCtx}
+    {captured pats : List _} {τ0 : Ty} {ttys : List Ty} :
+    rowBindTys ctors octx captured pats ttys =
+      rowBindTys ctors octx captured (.gwild :: pats) (τ0 :: ttys) := by
+  ac_rfl
+
+private theorem patBindTysG_gctor {ctors : CtorEnv} {c : CtorName} {args : List GPat} {τ : Ty}
+    {fieldTys : List Ty} (hfield : patGctorFieldTys ctors c τ = some fieldTys) :
+    patBindTysG ctors (.gctor c args) τ = patBindTysGList ctors args fieldTys := by
+  simp only [patBindTysG, hfield]
+
+private theorem rowBindTys_gctor_cons {ctors : CtorEnv} {octx : OccCtx}
+    {captured : List Occ} {args rest : List GPat} {c : CtorName} {τ : Ty} {ttys : List Ty}
+    {fieldTys : List Ty}
+    (hfield : patGctorFieldTys ctors c τ = some fieldTys)
+    (hlen : args.length = fieldTys.length) :
+    rowBindTys ctors octx captured (.gctor c args :: rest) (τ :: ttys) =
+      rowBindTys ctors octx captured (args ++ rest) (fieldTys ++ ttys) := by
+  simp only [rowBindTys, patBindTysGList_cons, patBindTysG_gctor hfield]
+  rw [patBindTysGList_append hlen]
+
+private theorem defaultRow_body_inv {ctors : CtorEnv} {octx : OccCtx} {Γ_outer : Env}
+    {τres : Ty} {occ0 : Occ} {τ0 : Ty} {ttys : List Ty} {bodies : Nat → Expr}
+    {r r' : Row}
+    (hlook : LookupList.get? octx occ0 = some τ0)
+    (hs : defaultRow occ0 r = some r')
+    (hbody : TypeOfHM
+      ⟨(rowBindTys ctors octx r.captured r.pats (τ0 :: ttys)).map PolyTy.mkTrivial ++ Γ_outer,
+        ctors⟩
+      (bodies r.act) τres) :
+    TypeOfHM
+      ⟨(rowBindTys ctors octx r'.captured r'.pats ttys).map PolyTy.mkTrivial ++ Γ_outer, ctors⟩
+      (bodies r'.act) τres := by
+  obtain ⟨captured, pats, act⟩ := r
+  cases pats with
+  | nil => simp [defaultRow] at hs
+  | cons p prest =>
+    cases p with
+    | gctor _ _ => simp [defaultRow] at hs
+    | gbind =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      simpa [rowBindTys_defaultRow_gbind hlook] using hbody
+    | gwild =>
+      simp only [defaultRow, Option.some.injEq] at hs
+      subst hs
+      simpa [rowBindTys_defaultRow_gwild] using hbody
+
+private theorem specializeRow_body_inv_gctor {ctors : CtorEnv} {octx : OccCtx} {Γ_outer : Env}
+    {τres : Ty} {occ0 : Occ} {c : CtorName} {τ : Ty} {ttys : List Ty} {bodies : Nat → Expr}
+    {r r' : Row} {args rest : List GPat} {fieldTys : List Ty}
+    (hfield : patGctorFieldTys ctors c τ = some fieldTys)
+    (hs : specializeRow c args.length occ0 r = some r')
+    (hpats : r.pats = .gctor c args :: rest)
+    (hlen : args.length = fieldTys.length)
+    (hbody : TypeOfHM
+      ⟨(rowBindTys ctors octx r.captured r.pats (τ :: ttys)).map PolyTy.mkTrivial ++ Γ_outer,
+        ctors⟩
+      (bodies r.act) τres) :
+    TypeOfHM
+      ⟨(rowBindTys ctors octx r'.captured r'.pats (fieldTys ++ ttys)).map PolyTy.mkTrivial ++ Γ_outer,
+        ctors⟩
+      (bodies r'.act) τres := by
+  obtain ⟨captured, pats, act⟩ := r
+  subst hpats
+  simp only [specializeRow, and_self, ↓reduceIte, Option.some.injEq] at hs
+  subst hs
+  simpa [rowBindTys_gctor_cons hfield hlen] using hbody
+
+private theorem patBindTysGList_replicate_gwild (ctors : CtorEnv) :
+    ∀ (n : Nat) (tys : List Ty), tys.length = n →
+      patBindTysGList ctors (List.replicate n .gwild) tys = []
+  | 0, [], _ => rfl
+  | 0, _ :: _, h => by cases h
+  | n + 1, [], h => by cases h
+  | n + 1, τ :: τs, h => by
+    simp only [List.replicate_succ, patBindTysGList_cons, patBindTysG]
+    exact patBindTysGList_replicate_gwild ctors n τs (by simpa using h)
+
+private theorem specializeRow_body_inv_gbind {ctors : CtorEnv} {octx : OccCtx} {Γ_outer : Env}
+    {τres : Ty} {occ0 : Occ} {c : CtorName} {τ0 : Ty} {ttys : List Ty} {bodies : Nat → Expr}
+    {r r' : Row} {prest : List GPat} {arity : Nat}
+    (hlook : LookupList.get? octx occ0 = some τ0)
+    (hs : specializeRow c arity occ0 r = some r')
+    (hpats : r.pats = .gbind :: prest)
+    (hbody : TypeOfHM
+      ⟨(rowBindTys ctors octx r.captured r.pats (τ0 :: ttys)).map PolyTy.mkTrivial ++ Γ_outer,
+        ctors⟩
+      (bodies r.act) τres) :
+    TypeOfHM
+      ⟨(rowBindTys ctors octx r'.captured r'.pats (List.replicate arity τ0 ++ ttys)).map
+          PolyTy.mkTrivial ++ Γ_outer, ctors⟩
+      (bodies r'.act) τres := by
+  obtain ⟨captured, pats, act⟩ := r
+  subst hpats
+  simp only [specializeRow, Option.some.injEq] at hs
+  subst hs
+  have hrow :
+      rowBindTys ctors octx (captured ++ [occ0]) (List.replicate arity .gwild ++ prest)
+        (List.replicate arity τ0 ++ ttys) =
+      rowBindTys ctors octx captured (.gbind :: prest) (τ0 :: ttys) := by
+    simp only [rowBindTys, captureBindTys_snoc hlook, patBindTysGList_cons, patBindTysG_gbind]
+    rw [patBindTysGList_append (by simp [List.length_replicate]),
+      patBindTysGList_replicate_gwild ctors arity _ (by simp [List.length_replicate])]
+    simp [List.append_assoc]
+  simpa [hrow] using hbody
+
+private theorem bodyFn_get {bodies' : List Expr} {i : Nat} (hi : i < bodies'.length) :
+    bodyFn bodies' i = bodies'[i]'hi := by
+  simp [bodyFn, List.getElem?_eq_getElem hi]
+
+private theorem initMatrix_row {ps : List Surface.Pattern} {k : Nat} {p : Surface.Pattern}
+    (hp : p ∈ ps) :
+    ∃ r ∈ initMatrix ps k, r.captured = [] ∧ r.pats = [norm p] ∧
+      ∃ i, r.act = k + i ∧ ps[i]? = some p := by
+  induction ps generalizing k with
+  | nil => cases hp
+  | cons q qs ih =>
+    simp only [List.mem_cons] at hp
+    rcases hp with rfl | hp
+    · refine ⟨{ captured := [], pats := [norm p], act := k }, ?_, rfl, rfl, 0, by simp⟩
+      simp [initMatrix]
+    · obtain ⟨r, hr, hcap, hpats, i, hact, hget⟩ := ih (k := k + 1) hp
+      refine ⟨r, ?_, hcap, hpats, i + 1, by omega, ?_⟩
+      · simp only [initMatrix, List.mem_cons]
+        exact Or.inr hr
+      · simpa [List.getElem?_cons_succ] using hget
+
+private theorem initMatrix_ne_nil_of_hexh {ctors : CtorEnv} {T : TyName} {tyArgs : List Ty}
+    {ps : List Surface.Pattern} (hexh : MatchExhaustive ctors T tyArgs ps) :
+    ps ≠ [] := by
+  intro hnil
+  subst hnil
+  simp only [MatchExhaustive, initMatrix, compile] at hexh
+  exact DTreeExhaustive_not_fail hexh
+
+private theorem EmitTyCtx.agrees_root (ctors : CtorEnv) {Γ_outer : Env} {τ : Ty}
+    (hlc : τ.IsLC) :
+    EmitTyCtx.agrees (ctors := ctors)
+      { Γ := PolyTy.mkTrivial τ :: Γ_outer, occEnv := [[]],
+        octx := [([], τ)] }
+      Γ_outer := by
+  refine ⟨[τ], by rfl, by rfl, ?_⟩
+  intro i hi
+  have hi0 : i = 0 := by simpa using hi
+  subst hi0
+  simp only [List.getElem_cons_zero, LookupList.get?]
+  exact And.intro rfl hlc
+
+/-- `get?` on a zip finds the `i`-th entry when earlier keys differ from `ks[i]`. -/
+private theorem LookupList.get?_zip_getElem {α β : Type _} [DecidableEq α]
+    {ks : List α} {vs : List β} (i : Nat)
+    (hlen : ks.length = vs.length) (hi : i < vs.length)
+    (hbefore : ∀ j : Nat, j < i →
+      (hj : j < ks.length) → (hii : i < ks.length) → ks[j]'hj ≠ ks[i]'hii) :
+    LookupList.get? (ks.zip vs) (ks[i]'(by omega)) = some (vs[i]'hi) := by
+  induction ks generalizing vs i with
+  | nil =>
+    cases vs with
+    | nil => cases hi
+    | cons _ _ => cases hlen
+  | cons k ks ih =>
+    cases vs with
+    | nil => cases hlen
+    | cons v vs =>
+      cases i with
+      | zero =>
+        simp only [List.zip_cons_cons, List.getElem_cons_zero, LookupList.get?, ↓reduceIte]
+      | succ i =>
+        simp only [List.length_cons] at hlen hi
+        have hlen' : ks.length = vs.length := by omega
+        have hi' : i < vs.length := by omega
+        have hiks : i < ks.length := by omega
+        have hne : ks[i]'hiks ≠ k :=
+          (hbefore 0 (Nat.zero_lt_succ i) (Nat.zero_lt_succ _) (Nat.succ_lt_succ hiks)).symm
+        simp only [List.zip_cons_cons, List.getElem_cons_succ, LookupList.get?, hne, ↓reduceIte]
+        exact ih i hlen' hi' (fun j hj hji hii =>
+          hbefore (j + 1) (Nat.succ_lt_succ hj) (Nat.succ_lt_succ hji) (Nat.succ_lt_succ hii))
+
+private theorem subOccs_getElem (occ : Occ) (n i : Nat) (hi : i < n) :
+    (subOccs occ n)[i]'(by simp [subOccs, List.length_map, List.length_range]; omega) =
+      occ ++ [i] := by
+  simp only [subOccs, List.getElem_map, List.getElem_range]
+
+private theorem subOccs_before_ne (occ : Occ) (n i j : Nat) (hj : j < i) (hi : i < n) :
+    (subOccs occ n)[j]'(by simp [subOccs]; omega) ≠
+      (subOccs occ n)[i]'(by simp [subOccs]; omega) := by
+  rw [subOccs_getElem occ n j (by omega), subOccs_getElem occ n i hi]
+  intro h
+  exact Nat.ne_of_lt hj (List.cons.inj (List.append_cancel_left h)).1
+
+private theorem LookupList.get?_zip_eq_none {α β : Type _} [DecidableEq α]
+    {ks : List α} {vs : List β} {key : α} (h : key ∉ ks) :
+    LookupList.get? (ks.zip vs) key = none := by
+  induction ks generalizing vs with
+  | nil => simp [LookupList.get?]
+  | cons k ks ih =>
+    cases vs with
+    | nil => simp [List.zip_nil_right, LookupList.get?]
+    | cons v vs =>
+      have hk : key ≠ k := fun he => h (by simp [he])
+      have htl : key ∉ ks := fun hm => h (List.mem_cons_of_mem _ hm)
+      simp only [List.zip_cons_cons, LookupList.get?, hk, ↓reduceIte]
+      exact ih htl
+
+private theorem LookupList.get?_append_of_left_eq_none {k v : Type} [DecidableEq k]
+    {l l' : LookupList k v} {key : k} {val : v}
+    (hn : LookupList.get? l key = none)
+    (h : LookupList.get? l' key = some val) :
+    LookupList.get? (l ++ l') key = some val := by
+  induction l with
+  | nil => simpa using h
+  | cons hd tl ih =>
+    cases hd with
+    | mk k' v' =>
+      by_cases hk : key = k'
+      · simp only [LookupList.get?, hk, ↓reduceIte] at hn
+        nomatch hn
+      · simp only [List.cons_append, LookupList.get?, hk, ↓reduceIte]
+        exact ih (by simpa [LookupList.get?, hk] using hn)
+
+private theorem OccCtx.get?_extend_sub {octx : OccCtx} {occ : Occ} {fieldTys : List Ty} {i : Nat}
+    (hi : i < fieldTys.length) :
+    LookupList.get? (OccCtx.extend octx occ fieldTys)
+      ((subOccs occ fieldTys.length)[i]'(by simp [subOccs, List.length_map, List.length_range]; omega)) =
+      some (fieldTys[i]'hi) := by
+  simp only [OccCtx.extend]
+  have hlen : (subOccs occ fieldTys.length).length = fieldTys.length := by
+    simp [subOccs]
+  have hzip := LookupList.get?_zip_getElem (ks := subOccs occ fieldTys.length) (vs := fieldTys) i
+    hlen hi (fun j hj _ _ => subOccs_before_ne occ fieldTys.length i j hj hi)
+  exact LookupList.get?_append_left _ octx _ hzip
+
+/-- Preserve an existing lookup across `OccCtx.extend`, provided the key is not
+    among the freshly prepended field occurrences. -/
+private theorem OccCtx.get?_extend_orig {octx : OccCtx} {occ : Occ} {fieldTys : List Ty}
+    {o : Occ} {τ : Ty}
+    (hdisj : o ∉ subOccs occ fieldTys.length)
+    (h : LookupList.get? octx o = some τ) :
+    LookupList.get? (OccCtx.extend octx occ fieldTys) o = some τ := by
+  simp only [OccCtx.extend]
+  exact LookupList.get?_append_of_left_eq_none
+    (LookupList.get?_zip_eq_none hdisj) h
+
+private theorem LookupList.get?_append_left_none {k v : Type} [DecidableEq k]
+    {l l' : LookupList k v} {key : k}
+    (hn : LookupList.get? l key = none) :
+    LookupList.get? (l ++ l') key = LookupList.get? l' key := by
+  induction l with
+  | nil => simp
+  | cons hd tl ih =>
+    cases hd with
+    | mk k' v' =>
+      by_cases hk : key = k'
+      · simp only [LookupList.get?, hk, ↓reduceIte] at hn
+        nomatch hn
+      · simp only [List.cons_append, LookupList.get?, hk, ↓reduceIte]
+        exact ih (by simpa [LookupList.get?, hk] using hn)
+
+private theorem OccCtx.get?_extend_eq_of_not_mem {octx : OccCtx} {occ : Occ}
+    {fieldTys : List Ty} {o : Occ}
+    (hdisj : o ∉ subOccs occ fieldTys.length) :
+    LookupList.get? (OccCtx.extend octx occ fieldTys) o = LookupList.get? octx o := by
+  simp only [OccCtx.extend]
+  exact LookupList.get?_append_left_none (LookupList.get?_zip_eq_none hdisj)
+
+private theorem captureBindTys_extend_eq {octx : OccCtx} {occ0 : Occ} {fieldTys : List Ty}
+    {captured : List Occ}
+    (hdisj : ∀ o ∈ captured, o ∉ subOccs occ0 fieldTys.length) :
+    captureBindTys (OccCtx.extend octx occ0 fieldTys) captured =
+      captureBindTys octx captured := by
+  simp only [captureBindTys]
+  refine List.map_congr_left ?_
+  intro o ho
+  simp [OccCtx.get?_extend_eq_of_not_mem (hdisj o ho)]
+
+private theorem rowBindTys_extend_eq {ctors : CtorEnv} {octx : OccCtx} {occ0 : Occ}
+    {fieldTys : List Ty} {captured : List Occ} {pats : List GPat} {tys : List Ty}
+    (hdisj : ∀ o ∈ captured, o ∉ subOccs occ0 fieldTys.length) :
+    rowBindTys ctors (OccCtx.extend octx occ0 fieldTys) captured pats tys =
+      rowBindTys ctors octx captured pats tys := by
+  simp only [rowBindTys, captureBindTys_extend_eq hdisj]
+
+private theorem rowBindTys_gwild_prefix_irrel {ctors : CtorEnv} {octx : OccCtx}
+    {captured : List Occ} {n : Nat} {prest : List GPat} {tys1 tys2 ttys : List Ty}
+    (h1 : tys1.length = n) (h2 : tys2.length = n) :
+    rowBindTys ctors octx captured (List.replicate n .gwild ++ prest) (tys1 ++ ttys) =
+      rowBindTys ctors octx captured (List.replicate n .gwild ++ prest) (tys2 ++ ttys) := by
+  simp only [rowBindTys]
+  rw [patBindTysGList_append (l1 := List.replicate n .gwild) (l2 := prest) (t1 := tys1)
+        (t2 := ttys) (by simp [List.length_replicate, h1]),
+    patBindTysGList_append (l1 := List.replicate n .gwild) (l2 := prest) (t1 := tys2)
+      (t2 := ttys) (by simp [List.length_replicate, h2]),
+    patBindTysGList_replicate_gwild ctors n tys1 h1,
+    patBindTysGList_replicate_gwild ctors n tys2 h2]
+
+private theorem instFieldTys_eq_of_inst {ctors : CtorEnv} {c : CtorName} {ctor : Ctor}
+    {tyArgs fieldTys : List Ty}
+    (hlook : LookupList.get? ctors c = some ctor)
+    (hpc : ctor.paramCount = tyArgs.length)
+    (hinst : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys) :
+    fieldTys = instFieldTys ctors c tyArgs :=
+  compile_InstantiatesBy_forall2_det_agree (fun _ _ => rfl) ctor.bound hinst
+    (instFieldTys_forall₂ hlook hpc)
+
+private theorem EmitTyCtx.agrees_switch_sub (ctors : CtorEnv) {ectx : EmitTyCtx ctors}
+    {Γ_outer : Env} {occ0 : Occ} {fieldTys : List Ty}
+    (hag : EmitTyCtx.agrees ectx Γ_outer)
+    (hlc_f : ∀ t ∈ fieldTys, t.IsLC)
+    (hdisj : ∀ o ∈ ectx.occEnv, o ∉ subOccs occ0 fieldTys.length) :
+    EmitTyCtx.agrees (ctors := ctors)
+      { Γ := fieldTys.map PolyTy.mkTrivial ++ ectx.Γ
+        occEnv := subOccs occ0 fieldTys.length ++ ectx.occEnv
+        octx := OccCtx.extend ectx.octx occ0 fieldTys }
+      Γ_outer := by
+  obtain ⟨τs, hlen, hΓ, hlook⟩ := hag
+  refine ⟨fieldTys ++ τs, by simp [subOccs, hlen], ?_, ?_⟩
+  · simp only [List.map_append, hΓ, List.append_assoc]
+  · intro i hi
+    have hi' : i < fieldTys.length + τs.length := by
+      simpa [subOccs, hlen] using hi
+    by_cases hlt : i < fieldTys.length
+    · have hget := OccCtx.get?_extend_sub (octx := ectx.octx) (occ := occ0) hlt
+      have hkey :
+          (subOccs occ0 fieldTys.length ++ ectx.occEnv)[i]'(by simpa [subOccs, hlen] using hi) =
+            (subOccs occ0 fieldTys.length)[i]'(by simp [subOccs]; omega) :=
+        List.getElem_append_left (by simp [subOccs]; omega)
+      refine ⟨?_, ?_⟩
+      · rw [hkey, List.getElem_append_left hlt]
+        exact hget
+      · rw [List.getElem_append_left hlt]
+        exact hlc_f _ (List.getElem_mem _)
+    · have hix : i - fieldTys.length < ectx.occEnv.length := by omega
+      have hkey :
+          (subOccs occ0 fieldTys.length ++ ectx.occEnv)[i]'(by simpa [subOccs, hlen] using hi) =
+            ectx.occEnv[i - fieldTys.length]'hix := by
+        rw [List.getElem_append_right (by simp [subOccs]; omega)]
+        simp [subOccs]
+      have ⟨hτ, hlc⟩ := hlook (i - fieldTys.length) hix
+      have hdisj' : ectx.occEnv[i - fieldTys.length]'hix ∉ subOccs occ0 fieldTys.length :=
+        hdisj _ (List.getElem_mem _)
+      refine ⟨?_, ?_⟩
+      · rw [hkey, List.getElem_append_right (by omega)]
+        exact OccCtx.get?_extend_orig hdisj' hτ
+      · rw [List.getElem_append_right (by omega)]
+        exact hlc
+
+private theorem specializeRow_body_inv_gwild {ctors : CtorEnv} {octx : OccCtx} {Γ_outer : Env}
+    {τres : Ty} {occ0 : Occ} {c : CtorName} {τ0 : Ty} {ttys : List Ty} {bodies : Nat → Expr}
+    {r r' : Row} {prest : List GPat} {arity : Nat} {fieldTys : List Ty}
+    (hlen : fieldTys.length = arity)
+    (hs : specializeRow c arity occ0 r = some r')
+    (hpats : r.pats = .gwild :: prest)
+    (hbody : TypeOfHM
+      ⟨(rowBindTys ctors octx r.captured r.pats (τ0 :: ttys)).map PolyTy.mkTrivial ++ Γ_outer,
+        ctors⟩
+      (bodies r.act) τres) :
+    TypeOfHM
+      ⟨(rowBindTys ctors octx r'.captured r'.pats (fieldTys ++ ttys)).map
+          PolyTy.mkTrivial ++ Γ_outer, ctors⟩
+      (bodies r'.act) τres := by
+  obtain ⟨captured, pats, act⟩ := r
+  subst hpats
+  simp only [specializeRow, Option.some.injEq] at hs
+  subst hs
+  have hrow :
+      rowBindTys ctors octx captured (List.replicate arity .gwild ++ prest)
+        (fieldTys ++ ttys) =
+      rowBindTys ctors octx captured (.gwild :: prest) (τ0 :: ttys) := by
+    simp only [rowBindTys, patBindTysGList_cons, patBindTysG]
+    rw [patBindTysGList_append (by simp [hlen]),
+      patBindTysGList_replicate_gwild ctors arity _ (by simp [hlen])]
+  simpa [hrow] using hbody
+
+mutual
+/-- An `InstantiatesBy tyArgs` witness only ever consults `tyArgs` within its own
+    length (every `.bvar i` it touches has `tyArgs[i]? = some _`, forcing
+    `i < tyArgs.length`) — so the *source* type is automatically
+    `ContainsBvarsUpTo tyArgs.length`, with NO separate arity/`paramCount`
+    hypothesis needed. This lets us recover `instFieldTys ctors c tyArgs =
+    fieldTys` from a `GPatWF`-derived `Forall₂` alone (via
+    `InstantiatesBy.eq_openWith`), independently of the (possibly false, see
+    `compile_initMatrix_typeable`'s `harity`) `ctor.paramCount = tyArgs.length`
+    fact. -/
+private theorem InstantiatesBy.containsBvarsUpTo_length {tyArgs : List Ty} :
+    ∀ {ty τ : Ty}, InstantiatesBy tyArgs ty τ → ContainsBvarsUpTo tyArgs.length ty
+  | _, _, .prim => .prim
+  | _, _, .fvar => .fvar
+  | _, _, .bvar h => .bvar (List.getElem?_eq_some_iff.mp h).1
+  | _, _, .arrow ha hb =>
+      .arrow (InstantiatesBy.containsBvarsUpTo_length ha)
+        (InstantiatesBy.containsBvarsUpTo_length hb)
+  | _, _, .customTy hforall =>
+      .customTy (InstantiatesBy_forall₂_containsBvarsUpTo hforall)
+
+private theorem InstantiatesBy_forall₂_containsBvarsUpTo {tyArgs : List Ty} :
+    ∀ {tys instTys : List Ty}, List.Forall₂ (InstantiatesBy tyArgs) tys instTys →
+      ∀ t ∈ tys, ContainsBvarsUpTo tyArgs.length t
+  | _, _, .nil => by simp
+  | _, _, .cons hhd htl => fun t ht => by
+      rcases List.mem_cons.mp ht with rfl | ht'
+      · exact InstantiatesBy.containsBvarsUpTo_length hhd
+      · exact InstantiatesBy_forall₂_containsBvarsUpTo htl t ht'
+end
+
+/-- `InstantiatesBy` determines `Ty.openWith` at exactly its own witness length
+    (specialising `InstantiatesBy.eq_openWith` with `n := tyArgs.length`, using
+    `containsBvarsUpTo_length` for the side condition — no `paramCount`
+    hypothesis needed). -/
+private theorem InstantiatesBy.eq_openWith_self {tyArgs : List Ty} {ty τ : Ty}
+    (h : InstantiatesBy tyArgs ty τ) : τ = Ty.openWith tyArgs ty :=
+  InstantiatesBy.eq_openWith h (InstantiatesBy.containsBvarsUpTo_length h) rfl
+
+private theorem instFieldTys_eq_of_forall₂' {tyArgs : List Ty} :
+    ∀ {contents fieldTys : List Ty},
+      List.Forall₂ (InstantiatesBy tyArgs) contents fieldTys →
+      contents.map (Ty.openWith tyArgs) = fieldTys
+  | _, _, .nil => rfl
+  | _, _, .cons hhd htl => by
+      simp only [List.map_cons, instFieldTys_eq_of_forall₂' htl,
+        ← InstantiatesBy.eq_openWith_self hhd]
+
+private theorem instFieldTys_eq_of_forall₂ {ctors : CtorEnv} {c : CtorName} {ctor : Ctor}
+    {tyArgs fieldTys : List Ty}
+    (hctor : LookupList.get? ctors c = some ctor)
+    (hinst : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys) :
+    instFieldTys ctors c tyArgs = fieldTys := by
+  unfold instFieldTys
+  simp only [hctor, Option.map_some, Option.getD]
+  exact instFieldTys_eq_of_forall₂' hinst
+
+private theorem subOccs_nodup (occ : Occ) : ∀ n, List.Nodup (subOccs occ n)
+  | 0 => by simp [subOccs]
+  | n + 1 => by
+    have ih := subOccs_nodup occ n
+    simp only [subOccs, List.range_succ, List.map_append, List.map_cons, List.map_nil] at ih ⊢
+    refine List.Nodup.append ih (List.nodup_singleton _) ?_
+    intro a ha hin
+    simp only [List.mem_singleton] at hin
+    subst hin
+    simp only [List.mem_map, List.mem_range] at ha
+    obtain ⟨i, hi, h⟩ := ha
+    exact Nat.ne_of_lt hi (List.cons.inj (List.append_cancel_left h)).1
+
+private theorem subOccs_disjoint_of_fringe {occ0 : Occ} {n : Nat} {orest : List Occ}
+    {occEnv : List Occ}
+    (horest : ∀ o ∈ orest, o ∈ occEnv)
+    (hnochild : ∀ o ∈ occEnv, ∀ suffix : List Nat, suffix ≠ [] → o ≠ occ0 ++ suffix) :
+    ∀ a ∈ subOccs occ0 n, a ∉ orest := by
+  intro a ha hin
+  simp only [subOccs, List.mem_map, List.mem_range] at ha
+  obtain ⟨i, hi, rfl⟩ := ha
+  exact hnochild _ (horest _ hin) [i] (List.cons_ne_nil _ _) rfl
+
+/-- Auxiliary: `DTreeTypeable` for `compile occs M`. Strengthened with column
+    lookups, frontier membership, no-proper-extension fringe, frontier `Nodup`,
+    global ctor-env hygiene (`arityConsistent` / `fieldsKinded`), and
+    octx-kinded occurrences (every `customTy` in `octx` agrees with
+    `kindEnvOfCtors`). Local arity pin is `hcons` + `hoctx_kinded`.
+    Fringe: no `occEnv` entry is a proper extension of a frontier occurrence
+    (generalizes “no direct child”, needed under nested `OccCtx.extend`).
+    Column types are also `WellKinded ke 0` so field types under `openWith`
+    stay kinded (needed for nested foreign ADT arity). -/
+private theorem compile_typeable_aux {ctors : CtorEnv} {Γ_outer : Env} {bodies : Nat → Expr}
+    {τres : Ty}
+    (hcons : CtorEnv.arityConsistent ctors)
+    (hfields : CtorEnv.fieldsKinded ctors) :
+    ∀ (ectx : EmitTyCtx ctors), EmitTyCtx.agrees ectx Γ_outer →
+    ∀ (occs : List Occ) (M : Matrix) (tys : List Ty)
+      (hlen : tys.length = occs.length),
+      List.Nodup occs →
+      (∀ o ∈ occs, o ∈ ectx.occEnv) →
+      (∀ (i : Nat) (hi : i < occs.length),
+        LookupList.get? ectx.octx (occs[i]) = some (tys[i]'(hlen ▸ hi)) ∧
+          (tys[i]'(hlen ▸ hi)).IsLC ∧
+          Ty.WellKinded (kindEnvOfCtors ctors) 0 (tys[i]'(hlen ▸ hi))) →
+      (∀ occ ∈ occs, ∀ o ∈ ectx.occEnv, ∀ suffix : List Nat,
+        suffix ≠ [] → o ≠ occ ++ suffix) →
+      (∀ {occ : Occ} {T' : TyName} {args : List Ty},
+        LookupList.get? ectx.octx occ = some (.customTy T' args) →
+        LookupList.get? (kindEnvOfCtors ctors) T' = some args.length) →
+      (∀ r ∈ M, GPatWFList ctors r.pats tys) →
+      DTreeExhaustive ctors ectx.octx (compile occs M) →
+      (∀ r ∈ M, ∀ o ∈ r.captured, o ∈ ectx.occEnv) →
+      (∀ r ∈ M,
+        TypeOfHM
+          ⟨(rowBindTys ctors ectx.octx r.captured r.pats tys).map PolyTy.mkTrivial ++ Γ_outer,
+            ctors⟩
+          (bodies r.act) τres) →
+      DTreeTypeable ctors Γ_outer bodies τres ectx (compile occs M) := by
+  intro ectx hag occs M
+  induction occs, M using compile.induct generalizing ectx with
+  | case1 occs =>
+    intro tys hlen hnodup hoccs htys hnochild hoctx_kinded hMwf hexh hcap hbody
+    simp only [compile] at hexh ⊢
+    exact (DTreeExhaustive_not_fail hexh).elim
+  | case2 r1 rest =>
+    intro tys hlen hnodup hoccs htys hnochild hoctx_kinded hMwf hexh hcap hbody
+    simp only [compile]
+    have hnil : tys = [] := (List.length_eq_zero_iff).mp hlen
+    subst hnil
+    have hwf := hMwf r1 List.mem_cons_self
+    have hpats : r1.pats = [] :=
+      (List.length_eq_zero_iff).mp (compile_GPatWFList_length hwf)
+    have hcap1 := hcap r1 List.mem_cons_self
+    have hbody1 := hbody r1 List.mem_cons_self
+    refine DTreeTypeable.leaf (binds := r1.captured)
+      (bindTys := captureBindTys ectx.octx r1.captured) hag (by simp [captureBindTys]) ?_ ?_
+    · intro i hi
+      have hmem := hcap1 (r1.captured[i]'hi) (List.getElem_mem hi)
+      refine ⟨?_, hmem⟩
+      simp only [captureBindTys, List.getElem_map]
+      obtain ⟨τs, hlenτ, _, hlook⟩ := hag
+      have hj := List.idxOf_lt_length_of_mem hmem
+      have ⟨hτ, _⟩ := hlook _ hj
+      have hocceq : ectx.occEnv[ectx.occEnv.idxOf (r1.captured[i]'hi)]'hj =
+          r1.captured[i]'hi := List.getElem_idxOf hj
+      rw [hocceq] at hτ
+      simp [hτ]
+    · convert hbody1
+      simp only [rowBindTys, hpats, patBindTysGList, List.append_nil]
+  | case3 r1 rest occ0 orest hh ih =>
+    intro tys hlen hnodup hoccs htys hnochild hoctx_kinded hMwf hexh hcap hbody
+    rw [compile]
+    split
+    · rename_i heq
+      cases tys with
+      | nil => cases hlen
+      | cons τ0 ttys =>
+        have hlen' : ttys.length = orest.length := by
+          simpa [List.length_cons] using hlen
+        have hlook0 : LookupList.get? ectx.octx occ0 = some τ0 := (htys 0 (Nat.zero_lt_succ _)).1
+        have hmem0 : occ0 ∈ ectx.occEnv := hoccs _ List.mem_cons_self
+        have hexh' : DTreeExhaustive ctors ectx.octx
+            (compile orest (defaultMatrix occ0 (r1 :: rest))) := by
+          have hexh2 := hexh
+          simp only [compile] at hexh2
+          split at hexh2
+          · exact hexh2
+          · rename_i heq2
+            cases heq.symm.trans heq2
+        refine ih ectx hag ttys hlen'
+          (List.nodup_cons.mp hnodup).2
+          (fun o ho => hoccs o (List.mem_cons_of_mem _ ho))
+          (fun i hi => htys (i + 1) (Nat.succ_lt_succ hi))
+          (fun occ hoc o ho suf hsuf =>
+            hnochild occ (List.mem_cons_of_mem _ hoc) o ho suf hsuf)
+          hoctx_kinded
+          (fun r' hr' => by
+            obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+            exact compile_defaultRow_wf (hMwf r hr) hs)
+          hexh'
+          (fun r' hr' o ho => by
+            obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+            rcases compile_defaultRow_captured_sub hs o ho with h | rfl
+            · exact hcap r hr o h
+            · exact hmem0)
+          (fun r' hr' => by
+            obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+            exact defaultRow_body_inv hlook0 hs (hbody r hr))
+    · rename_i heq
+      rw [hh] at heq
+      exact absurd heq.symm (List.cons_ne_nil _ _)
+  | case4 r1 rest occ0 orest hhd htl hh ihcases ihdflt =>
+    intro tys hlen hnodup hoccs htys hnochild hoctx_kinded hMwf hexh hcap hbody
+    cases tys with
+    | nil => cases hlen
+    | cons τ0 ttys =>
+      have hlen' : ttys.length = orest.length := by
+        simpa [List.length_cons] using hlen
+      have hlook0 : LookupList.get? ectx.octx occ0 = some τ0 := (htys 0 (Nat.zero_lt_succ _)).1
+      have hlc0 : τ0.IsLC := (htys 0 (Nat.zero_lt_succ _)).2.1
+      have hwk0 : Ty.WellKinded (kindEnvOfCtors ctors) 0 τ0 :=
+        (htys 0 (Nat.zero_lt_succ _)).2.2
+      have hmem0 : occ0 ∈ ectx.occEnv := hoccs _ List.mem_cons_self
+      have hhdmem : hhd ∈ colHeads (r1 :: rest) := by rw [hh]; exact List.mem_cons_self
+      obtain ⟨r0, hr0, cargs0, rest0, hpats0, hlen0⟩ :=
+        compile_colHeads_mem_witness (r1 :: rest) hhd.1 hhd.2 hhdmem
+      have hwf0 := hMwf r0 hr0
+      rw [hpats0] at hwf0
+      obtain ⟨T0, tyArgs0, ctor0, fieldTys0, hTy0, hlook_ctor0, hname0, hinst0, hwfargs0⟩ :=
+        compile_GPatWF.gctor_inv (by cases hwf0 with | cons hwf0_hd _ => exact hwf0_hd)
+      subst hTy0
+      have htyArgs_lc : ∀ t ∈ tyArgs0, t.IsLC := by
+        cases hlc0 with | customTy h => exact h
+      have htyArgs_wk : ∀ t ∈ tyArgs0, Ty.WellKinded (kindEnvOfCtors ctors) 0 t :=
+        (Ty.WellKinded.customTy_inv hwk0).2
+      have hkind0 : LookupList.get? (kindEnvOfCtors ctors) T0 = some tyArgs0.length :=
+        (Ty.WellKinded.customTy_inv hwk0).1
+      rw [compile]
+      split
+      · rename_i heq
+        rw [hh] at heq
+        exact absurd heq (List.cons_ne_nil _ _)
+      · rename_i hhd' htl' heq
+        rw [hh] at heq
+        injection heq with h1 h2
+        subst h1; subst h2
+        set cases : List (CtorName × Nat × DTree) :=
+          (hhd :: htl).attach.map (fun x =>
+            (x.1.1, x.1.2,
+              compile (subOccs occ0 x.1.2 ++ orest)
+                (specialize x.1.1 x.1.2 occ0 (r1 :: rest))))
+        have hne : cases ≠ [] := by
+          intro hnil
+          have : (hhd :: htl).attach = [] := (List.map_eq_nil_iff).mp hnil
+          exact List.cons_ne_nil _ _ (List.attach_eq_nil_iff.mp this)
+        have hexh' : DTreeExhaustive ctors ectx.octx
+            (.switch occ0 cases (compile orest (defaultMatrix occ0 (r1 :: rest)))) := by
+          have hexh2 := hexh
+          simp only [compile] at hexh2
+          split at hexh2
+          · rename_i heq2
+            rw [hh] at heq2
+            exact absurd heq2 (List.cons_ne_nil _ _)
+          · rename_i hhd2 htl2 heq2
+            rw [hh] at heq2
+            injection heq2 with h1 h2
+            subst h1; subst h2
+            simpa [cases] using hexh2
+        have hdisj_frontier :
+            ∀ o ∈ ectx.occEnv, ∀ n : Nat, o ∉ subOccs occ0 n := by
+          intro o ho n hin
+          simp only [subOccs, List.mem_map, List.mem_range] at hin
+          obtain ⟨i, hi, heq⟩ := hin
+          exact hnochild occ0 List.mem_cons_self o ho [i] (List.cons_ne_nil i []) heq.symm
+        have htyped_cases : ∀ c a t, (c, a, t) ∈ cases →
+            ∃ ctor, LookupList.get? ctors c = some ctor ∧ ctor.tyName = T0 ∧
+              a = ctor.contents.length ∧ ctor.paramCount = tyArgs0.length := by
+          intro c a t ht
+          obtain ⟨x, hx, heq⟩ := List.mem_map.mp ht
+          injection heq with hc hrest
+          injection hrest with ha htEq
+          subst hc; subst ha; subst htEq
+          have hmem : x.val ∈ hhd :: htl := x.property
+          obtain ⟨rN, hrN, cargsN, restN, hpatsN, hlenN⟩ :=
+            compile_colHeads_mem_witness (r1 :: rest) x.val.1 x.val.2
+              (by rw [hh]; exact hmem)
+          have hwfN := hMwf rN hrN
+          rw [hpatsN] at hwfN
+          cases hwfN with
+          | cons hwfN_hd _ =>
+            obtain ⟨TN, tyArgsN, ctorN, fieldTysN, hTyN, hlookN, hnameN, hinstN, hwfargsN⟩ :=
+              compile_GPatWF.gctor_inv hwfN_hd
+            injection hTyN with hTN hTyArgsN
+            subst hTN; subst hTyArgsN
+            have hlen_c := compile_GPatWFList_length hwfargsN
+            have hlen_f := List.Forall₂.length_eq hinstN
+            refine ⟨ctorN, hlookN, hnameN, ?_,
+              CtorEnv.paramCount_eq_of_arityConsistent hcons hkind0 hlookN hnameN⟩
+            omega
+        -- Child specialize IH under `OccCtx.extend`. Nested foreign / differently-
+        -- parameterized ADT arity is discharged by `hfields` + `WellKinded_openWith`
+        -- + `hoctx_kinded` maintained under extend (not a root-only `harity`).
+        have hsub_cases :
+            (∀ c a t, (c, a, t) ∈ cases →
+              DTreeExhaustive ctors
+                (OccCtx.extend ectx.octx occ0 (instFieldTys ctors c tyArgs0)) t) →
+            ∀ c a t, (c, a, t) ∈ cases →
+              DTreeTypeable ctors Γ_outer bodies τres
+                { Γ := (instFieldTys ctors c tyArgs0).map PolyTy.mkTrivial ++ ectx.Γ
+                  occEnv := subOccs occ0 a ++ ectx.occEnv
+                  octx := OccCtx.extend ectx.octx occ0 (instFieldTys ctors c tyArgs0) } t := by
+          intro hsubExh c a t ht
+          obtain ⟨x, hx, heq⟩ := List.mem_map.mp ht
+          injection heq with hc hrest
+          injection hrest with ha htEq
+          subst hc; subst ha; subst htEq
+          have hmem : x.val ∈ hhd :: htl := x.property
+          obtain ⟨rN, hrN, cargsN, restN, hpatsN, hlenN⟩ :=
+            compile_colHeads_mem_witness (r1 :: rest) x.val.1 x.val.2
+              (by rw [hh]; exact hmem)
+          have hwfN := hMwf rN hrN
+          rw [hpatsN] at hwfN
+          cases hwfN with
+          | cons hwfN_hd hwfN_tl =>
+            obtain ⟨TN, tyArgsN, ctorN, fieldTysN, hTyN, hlookN, hnameN, hinstN, hwfargsN⟩ :=
+              compile_GPatWF.gctor_inv hwfN_hd
+            injection hTyN with hTN hTyArgsN
+            subst hTN; subst hTyArgsN
+            have hpcN : ctorN.paramCount = tyArgs0.length :=
+              CtorEnv.paramCount_eq_of_arityConsistent hcons hkind0 hlookN hnameN
+            have hfields_eq : fieldTysN = instFieldTys ctors x.val.1 tyArgs0 :=
+              instFieldTys_eq_of_inst hlookN hpcN hinstN
+            have hlen_c := compile_GPatWFList_length hwfargsN
+            have hlen_f := List.Forall₂.length_eq hinstN
+            have hlen_inst : (instFieldTys ctors x.val.1 tyArgs0).length = x.val.2 := by
+              rw [← hfields_eq]; omega
+            set fieldTys := instFieldTys ctors x.val.1 tyArgs0
+            have hlc_f : ∀ ty ∈ fieldTys, ty.IsLC := by
+              intro ty hty
+              obtain ⟨c0, hc0, heqTy⟩ :
+                  ∃ c0 ∈ ctorN.contents, Ty.openWith tyArgs0 c0 = ty := by
+                simpa [fieldTys, instFieldTys, hlookN, Option.map_some, Option.getD] using hty
+              exact heqTy ▸
+                Ty.openWith_isLC htyArgs_lc (hpcN ▸ ctorN.bound c0 hc0) (le_of_eq hpcN)
+            have hwk_f : ∀ ty ∈ fieldTys, Ty.WellKinded (kindEnvOfCtors ctors) 0 ty := by
+              intro ty hty
+              obtain ⟨c0, hc0, heqTy⟩ :
+                  ∃ c0 ∈ ctorN.contents, Ty.openWith tyArgs0 c0 = ty := by
+                simpa [fieldTys, instFieldTys, hlookN, Option.map_some, Option.getD] using hty
+              exact heqTy ▸
+                Ty.WellKinded_openWith (hpcN ▸ hfields _ _ hlookN c0 hc0)
+                  htyArgs_wk (le_of_eq hpcN)
+            have hdisj_env : ∀ o ∈ ectx.occEnv, o ∉ subOccs occ0 fieldTys.length :=
+              fun o ho => hdisj_frontier o ho fieldTys.length
+            have hag' :=
+              EmitTyCtx.agrees_switch_sub ctors hag hlc_f hdisj_env
+            set ectx' : EmitTyCtx ctors :=
+              { Γ := fieldTys.map PolyTy.mkTrivial ++ ectx.Γ
+                occEnv := subOccs occ0 fieldTys.length ++ ectx.occEnv
+                octx := OccCtx.extend ectx.octx occ0 fieldTys }
+            have hlen_child : (fieldTys ++ ttys).length =
+                (subOccs occ0 x.val.2 ++ orest).length := by
+              simp [subOccs, hlen', hlen_inst]
+            have hoccs_child : ∀ o ∈ subOccs occ0 x.val.2 ++ orest, o ∈ ectx'.occEnv := by
+              intro o ho
+              simp only [ectx']
+              rcases List.mem_append.mp ho with ho | ho
+              · refine List.mem_append_left _ ?_
+                simpa [hlen_inst] using ho
+              · exact List.mem_append_right _ (hoccs o (List.mem_cons_of_mem _ ho))
+            have hnodup_child : List.Nodup (subOccs occ0 x.val.2 ++ orest) := by
+              refine List.Nodup.append (by simpa [hlen_inst] using subOccs_nodup occ0 fieldTys.length)
+                (List.nodup_cons.mp hnodup).2 ?_
+              intro a ha hin
+              exact subOccs_disjoint_of_fringe
+                (fun o ho => hoccs o (List.mem_cons_of_mem _ ho))
+                (fun o ho suf hsuf => hnochild occ0 List.mem_cons_self o ho suf hsuf)
+                a (by simpa [hlen_inst] using ha) hin
+            have htys_child : ∀ (i : Nat) (hi : i < (subOccs occ0 x.val.2 ++ orest).length),
+                LookupList.get? ectx'.octx ((subOccs occ0 x.val.2 ++ orest)[i]'hi) =
+                  some ((fieldTys ++ ttys)[i]'(by simpa [hlen_child] using hi)) ∧
+                ((fieldTys ++ ttys)[i]'(by simpa [hlen_child] using hi)).IsLC ∧
+                Ty.WellKinded (kindEnvOfCtors ctors) 0
+                  ((fieldTys ++ ttys)[i]'(by simpa [hlen_child] using hi)) := by
+              intro i hi
+              have hiτ : i < (fieldTys ++ ttys).length := by simpa [hlen_child] using hi
+              by_cases hlt : i < fieldTys.length
+              · have hkey :
+                    (subOccs occ0 x.val.2 ++ orest)[i]'hi =
+                      (subOccs occ0 fieldTys.length)[i]'(by simp [subOccs]; omega) := by
+                  simp only [← hlen_inst]
+                  exact List.getElem_append_left (by simp [subOccs]; omega)
+                refine ⟨?_, ?_, ?_⟩
+                · rw [hkey, List.getElem_append_left hlt]
+                  simpa [ectx', hlen_inst] using
+                    OccCtx.get?_extend_sub (octx := ectx.octx) (occ := occ0)
+                      (fieldTys := fieldTys) hlt
+                · rw [List.getElem_append_left hlt]
+                  exact hlc_f _ (List.getElem_mem _)
+                · rw [List.getElem_append_left hlt]
+                  exact hwk_f _ (List.getElem_mem _)
+              · have hix : i - fieldTys.length < orest.length := by
+                  simp [subOccs] at hi; omega
+                have hkey :
+                    (subOccs occ0 x.val.2 ++ orest)[i]'hi =
+                      orest[i - fieldTys.length]'hix := by
+                  have hi' : i < (subOccs occ0 fieldTys.length ++ orest).length := by
+                    simpa [hlen_inst] using hi
+                  have h := List.getElem_append_right
+                    (as := subOccs occ0 fieldTys.length) (bs := orest)
+                    (h₁ := by simp [subOccs]; omega) (h₂ := hi')
+                  simpa [hlen_inst, subOccs, List.length_map, List.length_range] using h
+                have ⟨hτ, hlc, hwk⟩ := htys (i - fieldTys.length + 1) (Nat.succ_lt_succ hix)
+                have hdisj' :
+                    orest[i - fieldTys.length]'hix ∉ subOccs occ0 fieldTys.length :=
+                  hdisj_frontier _ (hoccs _ (List.mem_cons_of_mem _
+                    (List.getElem_mem hix))) _
+                refine ⟨?_, ?_, ?_⟩
+                · rw [hkey, List.getElem_append_right (by omega)]
+                  simpa [ectx', List.getElem_cons_succ] using
+                    OccCtx.get?_extend_orig hdisj' hτ
+                · rw [List.getElem_append_right (by omega)]
+                  simpa [List.getElem_cons_succ] using hlc
+                · rw [List.getElem_append_right (by omega)]
+                  simpa [List.getElem_cons_succ] using hwk
+            have hnochild_child :
+                ∀ occ ∈ subOccs occ0 x.val.2 ++ orest,
+                  ∀ o ∈ ectx'.occEnv, ∀ suffix : List Nat,
+                    suffix ≠ [] → o ≠ occ ++ suffix := by
+              intro occ hoc o ho suf hsuf heq
+              have hnotin0 : occ0 ∉ orest := (List.nodup_cons.mp hnodup).1
+              simp only [List.mem_append, ectx'] at hoc ho
+              rcases hoc with hoc | hoc <;> rcases ho with ho | ho
+              · simp only [subOccs, List.mem_map, List.mem_range, hlen_inst] at hoc ho
+                obtain ⟨i, hi, rfl⟩ := hoc
+                obtain ⟨j, hj, rfl⟩ := ho
+                have heq' : occ0 ++ [j] = occ0 ++ ([i] ++ suf) := by
+                  simpa [List.append_assoc] using heq
+                have htail : [j] = [i] ++ suf := List.append_cancel_left heq'
+                have hsuf0 : suf = [] := by
+                  have := congrArg List.length htail
+                  simp only [List.length_append, List.length_cons, List.length_nil] at this
+                  exact List.eq_nil_of_length_eq_zero (by omega)
+                exact hsuf hsuf0
+              · simp only [subOccs, List.mem_map, List.mem_range] at hoc
+                obtain ⟨i, hi, rfl⟩ := hoc
+                exact hnochild occ0 List.mem_cons_self o ho (i :: suf)
+                  (List.cons_ne_nil _ _) (by simpa [List.append_assoc] using heq)
+              · simp only [subOccs, List.mem_map, List.mem_range, hlen_inst] at ho
+                obtain ⟨i, hi, rfl⟩ := ho
+                have hlenEq := congrArg List.length heq
+                simp [List.length_append] at hlenEq
+                have hle : occ.length ≤ occ0.length := by
+                  have := List.length_pos_of_ne_nil hsuf; omega
+                have htake : (occ0 ++ [i]).take occ.length = occ := by
+                  simpa [List.take_left' (by omega)] using
+                    (congrArg (fun l : List Nat => l.take occ.length) heq.symm).symm
+                have htake0 : occ0.take occ.length = occ := by
+                  simpa [List.take_append_of_le_length hle] using htake
+                have hmid : occ0 = occ ++ occ0.drop occ.length := by
+                  simpa [htake0] using (List.take_append_drop occ.length occ0).symm
+                cases hdrop : occ0.drop occ.length with
+                | nil =>
+                  have : occ = occ0 := by
+                    have := hmid; simp [hdrop, List.append_nil] at this; exact this.symm
+                  exact hnotin0 (this ▸ hoc)
+                | cons k mid' =>
+                  have hmid' : occ0 = occ ++ (k :: mid') := by simpa [hdrop] using hmid
+                  exact hnochild occ (List.mem_cons_of_mem _ hoc) occ0 hmem0 (k :: mid')
+                    (List.cons_ne_nil _ _) hmid'
+              · exact hnochild occ (List.mem_cons_of_mem _ hoc) o ho suf hsuf heq
+            have hoctx_kinded_child :
+                ∀ {occ : Occ} {T' : TyName} {args : List Ty},
+                  LookupList.get? ectx'.octx occ = some (.customTy T' args) →
+                  LookupList.get? (kindEnvOfCtors ctors) T' = some args.length := by
+              intro occ T' args hlookOcc
+              by_cases hin : occ ∈ subOccs occ0 fieldTys.length
+              · simp only [subOccs, List.mem_map, List.mem_range] at hin
+                obtain ⟨i, hi, rfl⟩ := hin
+                have hlook_f :=
+                  OccCtx.get?_extend_sub (octx := ectx.octx) (occ := occ0)
+                    (fieldTys := fieldTys) hi
+                simp only [ectx'] at hlookOcc
+                rw [← subOccs_getElem occ0 fieldTys.length i hi] at hlookOcc
+                rw [hlook_f] at hlookOcc
+                injection hlookOcc with hτEq
+                have hwk_i := hwk_f _ (List.getElem_mem hi)
+                exact (Ty.WellKinded.customTy_inv (hτEq ▸ hwk_i)).1
+              · have hlook' :
+                    LookupList.get? ectx.octx occ = some (.customTy T' args) := by
+                  simpa [ectx', OccCtx.get?_extend_eq_of_not_mem hin] using hlookOcc
+                exact hoctx_kinded hlook'
+            have hwf_child : ∀ r ∈ specialize x.val.1 x.val.2 occ0 (r1 :: rest),
+                GPatWFList ctors r.pats (fieldTys ++ ttys) := by
+              intro r' hr'
+              obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+              have hinst' : List.Forall₂ (InstantiatesBy tyArgs0) ctorN.contents fieldTys := by
+                simpa [fieldTys, ← hfields_eq] using hinstN
+              exact compile_specializeRow_wf hlookN hinst' hlen_inst
+                (hMwf r hr) hs
+            have hexh_child :
+                DTreeExhaustive ctors ectx'.octx
+                  (compile (subOccs occ0 x.val.2 ++ orest)
+                    (specialize x.val.1 x.val.2 occ0 (r1 :: rest))) := by
+              simpa [ectx', fieldTys, hlen_inst] using hsubExh x.val.1 x.val.2 _ ht
+            have hcap_child : ∀ r ∈ specialize x.val.1 x.val.2 occ0 (r1 :: rest),
+                ∀ o ∈ r.captured, o ∈ ectx'.occEnv := by
+              intro r' hr' o ho
+              simp only [ectx']
+              obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+              rcases compile_specializeRow_captured_sub hs o ho with h | hocceq
+              · exact List.mem_append_right _ (hcap r hr o h)
+              · exact List.mem_append_right _ (hocceq ▸ hmem0)
+            have hbody_child : ∀ r ∈ specialize x.val.1 x.val.2 occ0 (r1 :: rest),
+                TypeOfHM
+                  ⟨(rowBindTys ctors ectx'.octx r.captured r.pats (fieldTys ++ ttys)).map
+                      PolyTy.mkTrivial ++ Γ_outer, ctors⟩
+                  (bodies r.act) τres := by
+              intro r' hr'
+              obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+              have hbody0 := hbody r hr
+              cases hp : r.pats with
+              | nil => simp [specializeRow, hp] at hs
+              | cons p prest =>
+                match p with
+                | .gctor c' args =>
+                  by_cases hcond : c' = x.val.1 ∧ args.length = x.val.2
+                  · obtain ⟨rfl, ha'⟩ := hcond
+                    have hfield :
+                        patGctorFieldTys ctors x.val.1 (.customTy T0 tyArgs0) =
+                          some fieldTys := by
+                      simp only [patGctorFieldTys, hlookN, hnameN, ↓reduceIte, fieldTys]
+                    have hs' : specializeRow x.val.1 args.length occ0 r = some r' := by
+                      simpa [specializeRow, hp, ha'] using hs
+                    have hbody1 :=
+                      specializeRow_body_inv_gctor hfield hs' hp (by omega) hbody0
+                    have hdisj_cap : ∀ o ∈ r'.captured, o ∉ subOccs occ0 fieldTys.length := by
+                      intro o ho
+                      have hs'' := hs'
+                      simp only [specializeRow, hp, ha', and_self, ↓reduceIte,
+                        Option.some.injEq] at hs''
+                      cases hs''; exact hdisj_frontier o (hcap r hr o ho) _
+                    simpa [ectx', rowBindTys_extend_eq hdisj_cap] using hbody1
+                  · simp [specializeRow, hp, hcond] at hs
+                | .gbind =>
+                  have hbody1 :=
+                    specializeRow_body_inv_gbind (c := x.val.1) hlook0 hs hp hbody0
+                  simp only [specializeRow, hp, Option.some.injEq] at hs
+                  subst hs
+                  have hrow :=
+                    rowBindTys_gwild_prefix_irrel (ctors := ctors) (octx := ectx.octx)
+                      (captured := r.captured ++ [occ0]) (n := x.val.2) (prest := prest)
+                      (tys1 := List.replicate x.val.2 (.customTy T0 tyArgs0))
+                      (tys2 := fieldTys) (ttys := ttys)
+                      (by simp [List.length_replicate]) (by omega)
+                  have hbody2 :
+                      TypeOfHM
+                        ⟨(rowBindTys ctors ectx.octx (r.captured ++ [occ0])
+                            (List.replicate x.val.2 .gwild ++ prest)
+                            (fieldTys ++ ttys)).map PolyTy.mkTrivial ++ Γ_outer, ctors⟩
+                        (bodies r.act) τres := by
+                    simpa [hrow] using hbody1
+                  have hdisj_cap : ∀ o ∈ r.captured ++ [occ0], o ∉ subOccs occ0 fieldTys.length := by
+                    intro o ho
+                    simp only [List.mem_append, List.mem_singleton] at ho
+                    rcases ho with ho | rfl
+                    · exact hdisj_frontier o (hcap r hr o ho) _
+                    · exact hdisj_frontier _ hmem0 _
+                  simpa [ectx', rowBindTys_extend_eq hdisj_cap] using hbody2
+                | .gwild =>
+                  have hbody1 :=
+                    specializeRow_body_inv_gwild hlen_inst hs hp hbody0
+                  have hdisj_cap : ∀ o ∈ r'.captured, o ∉ subOccs occ0 fieldTys.length := by
+                    intro o ho
+                    simp only [specializeRow, hp, Option.some.injEq] at hs
+                    subst hs
+                    exact hdisj_frontier o (hcap r hr o ho) _
+                  simpa [ectx', rowBindTys_extend_eq hdisj_cap] using hbody1
+            have hgoal :=
+              ihcases x ectx' hag' (fieldTys ++ ttys) hlen_child hnodup_child
+                hoccs_child htys_child hnochild_child hoctx_kinded_child hwf_child hexh_child
+                hcap_child hbody_child
+            convert hgoal using 1 <;> first | rfl | simp [ectx', fieldTys, hlen_inst]
+        cases hdef : compile orest (defaultMatrix occ0 (r1 :: rest)) with
+        | fail =>
+          have hexhF : DTreeExhaustive ctors ectx.octx (.switch occ0 cases .fail) := by
+            simpa [hdef] using hexh'
+          cases hexhF with
+          | switchFail hlookEx htypedEx hsubEx hcoverEx =>
+            rename_i TEx tyArgsEx
+            rw [hlook0] at hlookEx
+            injection hlookEx with hτ
+            injection hτ with hT hArgs
+            subst hT; subst hArgs
+            exact DTreeTypeable.switchFail hne hag hlook0 hmem0 htyArgs_lc
+              htyped_cases (hsub_cases hsubEx) hcoverEx
+          | switchDefault hdne hlookEx htypedEx hsubEx hexhDflt =>
+            rename_i TEx tyArgsEx
+            exact (hdne rfl).elim
+        | leaf act binds =>
+          have hexhD : DTreeExhaustive ctors ectx.octx
+              (.switch occ0 cases (.leaf act binds)) := by simpa [hdef] using hexh'
+          cases hexhD with
+          | switchDefault hdne hlookEx htypedEx hsubEx hexhDflt =>
+            rename_i TEx tyArgsEx
+            rw [hlook0] at hlookEx
+            injection hlookEx with hτ
+            injection hτ with hT hArgs
+            subst hT; subst hArgs
+            refine DTreeTypeable.switchDefault hdne hag hlook0 hmem0 htyArgs_lc
+              htyped_cases (hsub_cases hsubEx) ?_
+            have hd := ihdflt ectx hag ttys hlen'
+              (List.nodup_cons.mp hnodup).2
+              (fun o ho => hoccs o (List.mem_cons_of_mem _ ho))
+              (fun i hi => htys (i + 1) (Nat.succ_lt_succ hi))
+              (fun occ hoc o ho suf hsuf =>
+                hnochild occ (List.mem_cons_of_mem _ hoc) o ho suf hsuf)
+              hoctx_kinded
+              (fun r' hr' => by
+                obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+                exact compile_defaultRow_wf (hMwf r hr) hs)
+              (by simpa [hdef] using hexhDflt)
+              (fun r' hr' o ho => by
+                obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+                rcases compile_defaultRow_captured_sub hs o ho with h | hocceq
+                · exact hcap r hr o h
+                · exact hocceq ▸ hmem0)
+              (fun r' hr' => by
+                obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+                exact defaultRow_body_inv hlook0 hs (hbody r hr))
+            simpa [hdef] using hd
+        | switch occ' cases' dflt' =>
+          have hexhD : DTreeExhaustive ctors ectx.octx
+              (.switch occ0 cases (.switch occ' cases' dflt')) := by
+            simpa [hdef] using hexh'
+          cases hexhD with
+          | switchDefault hdne hlookEx htypedEx hsubEx hexhDflt =>
+            rename_i TEx tyArgsEx
+            rw [hlook0] at hlookEx
+            injection hlookEx with hτ
+            injection hτ with hT hArgs
+            subst hT; subst hArgs
+            refine DTreeTypeable.switchDefault hdne hag hlook0 hmem0 htyArgs_lc
+              htyped_cases (hsub_cases hsubEx) ?_
+            have hd := ihdflt ectx hag ttys hlen'
+              (List.nodup_cons.mp hnodup).2
+              (fun o ho => hoccs o (List.mem_cons_of_mem _ ho))
+              (fun i hi => htys (i + 1) (Nat.succ_lt_succ hi))
+              (fun occ hoc o ho suf hsuf =>
+                hnochild occ (List.mem_cons_of_mem _ hoc) o ho suf hsuf)
+              hoctx_kinded
+              (fun r' hr' => by
+                obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+                exact compile_defaultRow_wf (hMwf r hr) hs)
+              (by simpa [hdef] using hexhDflt)
+              (fun r' hr' o ho => by
+                obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+                rcases compile_defaultRow_captured_sub hs o ho with h | hocceq
+                · exact hcap r hr o h
+                · exact hocceq ▸ hmem0)
+              (fun r' hr' => by
+                obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
+                exact defaultRow_body_inv hlook0 hs (hbody r hr))
+            simpa [hdef] using hd
+
+/-- **(Typing A compile, FROZEN).** Thread branch typings through `compile` on
+    `initMatrix`, producing `DTreeTypeable` (which carries leaf body `TypeOfHM`).
+
+    **Do not change this statement.** Root `EmitTyCtx.agrees` holds from `hlc`
+    (`Γ = [mkTrivial τscrut] ++ Γ`, `occEnv = [[]]`, `octx = [([], τscrut)]`).
+
+    **Proof plan for subagent:**
+    1. Likely need an auxiliary `compile_typeable_aux` by induction on
+       `compile` (mirror `PatComp.compile_ctorSwitches_aux`), threading:
+       * `EmitTyCtx.agrees ectx Γ_outer`
+       * matrix rows well-formed (`GPatWFList` / `patBindTys` surviving
+         `specialize` / `defaultRow` / `pop`)
+       * for each row `r` with action `act`, body typing under captures
+         reconstructed from `octx` equals `branchBodyEnv` / `patBindTys` of the
+         original clause (or a generalized open-body invariant)
+    2. At `compile` leaf: build `DTreeTypeable.leaf` from `hbodies` via `bodyFn`
+       (acts are row indices `< pats.length`).
+    3. At switch: use `MatchExhaustive` = `DTreeExhaustive` structure for
+       coverage/`htyped`; extend `Γ`/`occEnv`/`octx` as in `DTreeTypeable.switch*`.
+    4. Top theorem = aux at `occs = [[]]`, `M = initMatrix pats`.
+
+    Prefer `composer-2.5-fast`; bump if compile induction / `patBindTys` gets
+    nasty. Escape hatch: report obstruction, leave sorry — do not change A/B/C. -/
+private theorem initMatrix_captured_empty :
+    ∀ (ps : List Surface.Pattern) (k : Nat), ∀ r ∈ initMatrix ps k, r.captured = []
+  | [], _, r, hr => by cases hr
+  | _ :: ps, k, r, hr => by
+    simp only [initMatrix, List.mem_cons] at hr
+    rcases hr with rfl | hr
+    · rfl
+    · exact initMatrix_captured_empty ps (k + 1) r hr
+
+private theorem initMatrix_mem_inv {ps : List Surface.Pattern} {k : Nat} {r : Row}
+    (hr : r ∈ initMatrix ps k) :
+    ∃ p ∈ ps, r.captured = [] ∧ r.pats = [norm p] ∧
+      ∃ i, r.act = k + i ∧ ps[i]? = some p := by
+  induction ps generalizing k with
+  | nil => cases hr
+  | cons q qs ih =>
+    simp only [initMatrix, List.mem_cons] at hr
+    rcases hr with rfl | hr
+    · exact ⟨q, List.mem_cons_self, rfl, rfl, 0, rfl, by simp⟩
+    · obtain ⟨p, hp, hcap, hpats, i, hact, hget⟩ := ih hr
+      refine ⟨p, List.mem_cons_of_mem _ hp, hcap, hpats, i + 1, by omega, ?_⟩
+      simpa [List.getElem?_cons_succ] using hget
+
+/-- **(Typing A compile).** Thread branch typings through `compile` on
+    `initMatrix`, producing `DTreeTypeable` (which carries leaf body `TypeOfHM`).
+
+    **Premise note (2026-07-13, strengthened):** root arity follows from global
+    `CtorEnv.arityConsistent` + `get? (kindEnvOfCtors ctors) T = some tyArgs.length`.
+    Nested field occurrences (foreign / differently-parameterized ADTs under
+    `OccCtx.extend`) need the same facts globally, plus `CtorEnv.fieldsKinded` and
+    `Ty.WellKinded ke 0` of column types (so `WellKinded_openWith` kinds field
+    types). True of any `elabDecls` env at a well-kinded `customTy T tyArgs`;
+    thread through `TypeOfHM_lowerMatch` and discharge at the corollary. -/
+theorem compile_initMatrix_typeable {ctors : CtorEnv} {Γ : Env} {pats : List Surface.Pattern}
+    {bodies' : List Expr} {T : TyName} {tyArgs : List Ty} {τscrut τres : Ty}
+    (hτscrut : τscrut = .customTy T tyArgs)
+    (hlen : bodies'.length = pats.length)
+    (hpats : ∀ p ∈ pats, PatternWF ctors p τscrut)
+    (hbodies : ∀ (i : Nat) (hi : i < bodies'.length),
+      TypeOfHM ⟨branchBodyEnv Γ (patBindTys ctors (pats[i]'(hlen ▸ hi)) τscrut), ctors⟩
+        (bodies'[i]'hi) τres)
+    (hexh : MatchExhaustive ctors T tyArgs pats)
+    (hlc : τscrut.IsLC)
+    (hcons : CtorEnv.arityConsistent ctors)
+    (hfields : CtorEnv.fieldsKinded ctors)
+    (hkind : LookupList.get? (kindEnvOfCtors ctors) T = some tyArgs.length)
+    (hwk : Ty.WellKinded (kindEnvOfCtors ctors) 0 τscrut) :
+    DTreeTypeable ctors Γ (bodyFn bodies') τres
+      { Γ := PolyTy.mkTrivial τscrut :: Γ, occEnv := [[]],
+        octx := [([], τscrut)] }
+      (compile [[]] (initMatrix pats)) := by
+  subst hτscrut
+  refine compile_typeable_aux hcons hfields
+    (ectx := { Γ := PolyTy.mkTrivial (.customTy T tyArgs) :: Γ, occEnv := [[]],
+               octx := [([], .customTy T tyArgs)] })
+    (EmitTyCtx.agrees_root ctors hlc)
+    [[]] (initMatrix pats) [.customTy T tyArgs] rfl
+    (List.nodup_singleton _)
+    (by intro o ho; simpa using ho)
+    (fun i hi => by
+      have hi0 : i = 0 := by simpa using hi
+      subst hi0
+      simp only [List.getElem_cons_zero, LookupList.get?]
+      exact ⟨rfl, hlc, hwk⟩)
+    (fun occ hoc o ho suffix hsuf => by
+      simp only [List.mem_singleton] at hoc ho
+      subst hoc; subst ho
+      intro h
+      have : ([] : Occ).length = (suffix).length := by
+        simpa using congrArg List.length h
+      exact hsuf (List.eq_nil_of_length_eq_zero this.symm))
+    (fun {occ T' args} hlook => by
+      -- Root octx is a singleton, so the looked-up ADT is exactly `T`/`tyArgs`.
+      have hlook' : LookupList.get? ([([], Ty.customTy T tyArgs)] : OccCtx) occ =
+          some (.customTy T' args) := hlook
+      simp only [LookupList.get?] at hlook'
+      split_ifs at hlook'
+      injection hlook' with htyeq
+      injection htyeq with hT hArgs
+      subst hT; subst hArgs
+      exact hkind)
+    (initMatrix_GPatWFList hpats)
+    (by simpa [MatchExhaustive] using hexh)
+    (fun r hr o ho => by
+      have hcap := initMatrix_captured_empty pats 0 r hr
+      rw [hcap] at ho
+      cases ho)
+    (fun r hr => by
+      obtain ⟨p, hp, hcap0, hpats0, i, hact, hget⟩ := initMatrix_mem_inv hr
+      have hi : i < pats.length := (List.getElem?_eq_some_iff.mp hget).1
+      have hi' : i < bodies'.length := by omega
+      have hbody_i := hbodies i hi'
+      have hp_eq : pats[i]'(hlen ▸ hi') = p :=
+        Option.some.inj ((List.getElem?_eq_getElem hi).symm.trans hget)
+      have henv :
+          (rowBindTys ctors [([], Ty.customTy T tyArgs)] r.captured r.pats
+            [.customTy T tyArgs]).map PolyTy.mkTrivial ++ Γ =
+          branchBodyEnv Γ (patBindTys ctors (pats[i]'(hlen ▸ hi')) (.customTy T tyArgs)) := by
+        simp only [rowBindTys, hcap0, captureBindTys, List.map_nil, List.nil_append,
+          hpats0, patBindTysGList, List.append_nil, branchBodyEnv, patBindTys, hp_eq]
+      have hact' : bodyFn bodies' r.act = bodies'[i]'hi' := by
+        simp only [bodyFn_get hi', hact, Nat.zero_add]
+      simpa [henv, hact'] using hbody_i)
+
+
+/-! ### Approach A lemma ladder (1a)
+
+Strategy: do **not** transfer typecheck from a weird B1 `emitInner` to canonical
+`emit compile`. Instead typecheck what `lower` builds, using open typing of
+ingredients from strong `SurfaceWTExpr` (defined in §7). Coverage (`SurfaceCovers`)
+remains on the closed transfer / corollary. -/
+
+/-- **Rung 1.** Executable match lowering is exactly `lowerMatch` of lowered parts. -/
+theorem lowerExpr_match_decomp {ke : KindEnv} {tvs vs : List ValName}
+    {scrut : Surface.Expr} {brs : List (Surface.Pattern × Surface.Expr)} {c : Expr}
+    (hlow : lowerExpr ke tvs vs (.match_ scrut brs) = some c) :
+    ∃ scrut' bodies',
+      lowerExpr ke tvs vs scrut = some scrut' ∧
+      lowerBranches ke tvs vs brs = some bodies' ∧
+      c = lowerMatch scrut' (brs.map Prod.fst) (bodyFn bodies') := by
+  simp only [lowerExpr] at hlow
+  cases hs : lowerExpr ke tvs vs scrut with
+  | none => simp [hs] at hlow
+  | some scrut' =>
+    cases hb : lowerBranches ke tvs vs brs with
+    | none => simp [hs, hb] at hlow
+    | some bodies' =>
+      simp only [hs, hb, Option.some.injEq] at hlow
+      refine ⟨scrut', bodies', rfl, rfl, ?_⟩
+      have hfn : (fun i => bodies'.getD i (.ctor cNil)) = bodyFn bodies' := by
+        funext i; simp [bodyFn, matchBodyDefault]
+      rw [← hfn, hlow]
+
+/-- **Rung 2.** Canonical `lowerMatch` is typeable from open typings + hygiene. -/
+theorem TypeOfHM_lowerMatch {ctors : CtorEnv} {Γ : Env} {scrut' : Expr}
+    {bodies' : List Expr} {pats : List Surface.Pattern} {T : TyName} {tyArgs : List Ty}
+    {τscrut τres : Ty}
+    (hτscrut : τscrut = .customTy T tyArgs)
+    (hlen : bodies'.length = pats.length)
+    (hscrut : TypeOfHM ⟨Γ, ctors⟩ scrut' τscrut)
+    (hpats : ∀ p ∈ pats, PatternWF ctors p τscrut)
+    (hbodies : ∀ (i : Nat) (hi : i < bodies'.length),
+      TypeOfHM ⟨branchBodyEnv Γ (patBindTys ctors (pats[i]'(hlen ▸ hi)) τscrut), ctors⟩
+        (bodies'[i]'hi) τres)
+    (hexh : MatchExhaustive ctors T tyArgs pats)
+    (hcons : CtorEnv.arityConsistent ctors)
+    (hfields : CtorEnv.fieldsKinded ctors)
+    (hkind : LookupList.get? (kindEnvOfCtors ctors) T = some tyArgs.length)
+    (hwk : Ty.WellKinded (kindEnvOfCtors ctors) 0 τscrut)
+    : TypeOfHM ⟨Γ, ctors⟩ (lowerMatch scrut' pats (bodyFn bodies')) τres := by
+  have hdt := compile_initMatrix_typeable (Γ := Γ) (bodies' := bodies')
+    (hτscrut := hτscrut) (hlen := hlen) (hpats := hpats) (hbodies := hbodies)
+    (hexh := hexh) (hlc := TypeOfHM.regular hscrut)
+    (hcons := hcons) (hfields := hfields) (hkind := hkind) (hwk := hwk)
+  subst hτscrut
+  simp only [lowerMatch]
+  apply TypeOfHM.letIn (M := PolyTy.mkTrivial (.customTy T tyArgs)) (L := [])
+  · simpa [PolyTy.WF, PolyTy.mkTrivial, Ty.IsLC] using TypeOfHM.regular hscrut
+  · intro σ hσ; cases hσ
+  · exact generalisesTo_of_typeable hscrut
+  · rfl
+  · exact emit_DTreeTypeable (Γ_outer := Γ) (bodies := bodyFn bodies') hdt
+
+private theorem lowerBranches_length {ke : KindEnv} {tvs vs : List ValName}
+    {brs : List (Surface.Pattern × Surface.Expr)} {bodies : List Expr}
+    (h : lowerBranches ke tvs vs brs = some bodies) :
+    bodies.length = brs.length := by
+  induction brs generalizing bodies with
+  | nil =>
+    simp only [lowerBranches, Option.some.injEq] at h; subst h; rfl
+  | cons hd tl ih =>
+    simp only [lowerBranches] at h
+    cases hb : lowerExpr ke tvs (patVars hd.1 ++ vs) hd.2 with
+    | none => simp [hb] at h
+    | some b' =>
+      cases hrest : lowerBranches ke tvs vs tl with
+      | none => simp [hb, hrest] at h
+      | some rest' =>
+        simp only [hb, hrest, Option.some.injEq] at h; subst h
+        simp [ih hrest]
+
+private theorem lowerBranches_get {ke : KindEnv} {tvs vs : List ValName}
+    {brs : List (Surface.Pattern × Surface.Expr)} {bodies : List Expr}
+    (h : lowerBranches ke tvs vs brs = some bodies) :
+    ∀ (i : Nat) (hi : i < brs.length),
+      lowerExpr ke tvs (patVars (brs[i]'hi).1 ++ vs) (brs[i]'hi).2 =
+        some (bodies[i]'(by simpa [lowerBranches_length h] using hi)) := by
+  induction brs generalizing bodies with
+  | nil => intro i hi; cases hi
+  | cons hd tl ih =>
+    simp only [lowerBranches] at h
+    cases hb : lowerExpr ke tvs (patVars hd.1 ++ vs) hd.2 with
+    | none => simp [hb] at h
+    | some b' =>
+      cases hrest : lowerBranches ke tvs vs tl with
+      | none => simp [hb, hrest] at h
+      | some rest' =>
+        simp only [hb, hrest, Option.some.injEq] at h; subst h
+        intro i hi
+        match i with
+        | 0 => simpa using hb
+        | i' + 1 =>
+          have hi' : i' < tl.length := Nat.lt_of_succ_lt_succ hi
+          simpa using ih hrest i' hi'
+
+private theorem lowerExprList_length_get {ke : KindEnv} {tvs vs : List ValName}
+    {items : List Surface.Expr} {items' : List Expr}
+    (h : lowerExprList ke tvs vs items = some items') :
+    items'.length = items.length ∧
+      ∀ (i : Nat) (hi : i < items.length),
+        ∃ hi' : i < items'.length,
+          lowerExpr ke tvs vs (items[i]'hi) = some (items'[i]'hi') := by
+  induction items generalizing items' with
+  | nil =>
+    simp only [lowerExprList, Option.some.injEq] at h; subst h
+    exact ⟨rfl, fun i hi => by cases hi⟩
+  | cons hd tl ih =>
+    simp only [lowerExprList] at h
+    cases he : lowerExpr ke tvs vs hd with
+    | none => simp [he] at h
+    | some e' =>
+      cases hrest : lowerExprList ke tvs vs tl with
+      | none => simp [he, hrest] at h
+      | some rest' =>
+        simp only [he, hrest, Option.some.injEq] at h; subst h
+        have ⟨hlen, hget⟩ := ih hrest
+        refine ⟨by simp [hlen], ?_⟩
+        intro i hi
+        match i with
+        | 0 => exact ⟨Nat.zero_lt_succ _, he⟩
+        | i' + 1 =>
+          have hi' : i' < tl.length := Nat.lt_of_succ_lt_succ hi
+          obtain ⟨hi'', hget'⟩ := hget i' hi'
+          exact ⟨Nat.succ_lt_succ hi'', hget'⟩
+
+private theorem mkList_TypeOfHM {ctors : CtorEnv} {Γ : Env} {items : List Expr}
+    {τelem : Ty}
+    (hnil : TypeOfHM ⟨Γ, ctors⟩ (.ctor cNil) (.customTy nList [τelem]))
+    (hcons : TypeOfHM ⟨Γ, ctors⟩ (.ctor cCons)
+      (.arrow τelem (.arrow (.customTy nList [τelem]) (.customTy nList [τelem]))))
+    (hitems : ∀ e ∈ items, TypeOfHM ⟨Γ, ctors⟩ e τelem) :
+    TypeOfHM ⟨Γ, ctors⟩ (mkList items) (.customTy nList [τelem]) := by
+  induction items with
+  | nil => exact hnil
+  | cons hd tl ih =>
+    exact TypeOfHM.app
+      (TypeOfHM.app hcons (hitems hd List.mem_cons_self))
+      (ih fun e he => hitems e (List.mem_cons_of_mem _ he))
+
+private theorem lowerBranches_isSome_of_forall {ke : KindEnv} {tvs vs : List ValName}
+    {brs : List (Surface.Pattern × Surface.Expr)}
+    (h : ∀ (i : Nat) (hi : i < brs.length),
+      (lowerExpr ke tvs (patVars (brs[i]'hi).1 ++ vs) (brs[i]'hi).2).isSome) :
+    (lowerBranches ke tvs vs brs).isSome := by
+  induction brs with
+  | nil => simp [lowerBranches]
+  | cons hd tl ih =>
+    simp only [lowerBranches]
+    have hhd := h 0 (by simp)
+    simp only [List.getElem_cons_zero] at hhd
+    obtain ⟨b', hhd'⟩ := Option.isSome_iff_exists.mp hhd
+    have htl := ih fun i hi => by
+      simpa [List.getElem_cons_succ] using h (i + 1) (Nat.succ_lt_succ hi)
+    obtain ⟨rest', htl'⟩ := Option.isSome_iff_exists.mp htl
+    simp [hhd', htl']
+
+private theorem lowerExprList_isSome_of_forall {ke : KindEnv} {tvs vs : List ValName}
+    {items : List Surface.Expr}
+    (h : ∀ e ∈ items, (lowerExpr ke tvs vs e).isSome) :
+    (lowerExprList ke tvs vs items).isSome := by
+  induction items with
+  | nil => simp [lowerExprList]
+  | cons hd tl ih =>
+    simp only [lowerExprList]
+    obtain ⟨_, hhd⟩ := Option.isSome_iff_exists.mp (h hd List.mem_cons_self)
+    obtain ⟨_, htl⟩ := Option.isSome_iff_exists.mp
+      (ih fun e he => h e (List.mem_cons_of_mem _ he))
+    simp [hhd, htl]
+
+private theorem lowerRecBinds_isSome_of_forall {ke : KindEnv} {tvs recScope : List ValName}
+    {binds : List (ValName × Option Surface.PolyTy × Surface.Expr)}
+    (h : ∀ (i : Nat) (hi : i < binds.length),
+      (lowerExpr ke tvs recScope (binds[i]'hi).2.2).isSome) :
+    (lowerRecBinds ke tvs recScope binds).isSome := by
+  induction binds with
+  | nil => simp [lowerRecBinds]
+  | cons hd tl ih =>
+    simp only [lowerRecBinds]
+    have hhd := h 0 (by simp)
+    simp only [List.getElem_cons_zero] at hhd
+    obtain ⟨_, hhd'⟩ := Option.isSome_iff_exists.mp hhd
+    have htl := ih fun i hi => by
+      simpa [List.getElem_cons_succ] using h (i + 1) (Nat.succ_lt_succ hi)
+    obtain ⟨_, htl'⟩ := Option.isSome_iff_exists.mp htl
+    simp [hhd', htl']
+
+private theorem lowerAnnList_all_none
+    {ke : KindEnv} {binds : List (ValName × Option Surface.PolyTy × Surface.Expr)}
+    (h : ∀ b ∈ binds, b.2.1 = none) :
+    lowerAnnList ke (binds.map (·.2.1)) = some (List.replicate binds.length none) := by
+  induction binds with
+  | nil => simp [lowerAnnList]
+  | cons hd tl ih =>
+    have hhd : hd.2.1 = none := h hd List.mem_cons_self
+    have htl := ih fun b hb => h b (List.mem_cons_of_mem _ hb)
+    simp only [List.map_cons, List.length_cons, List.replicate_succ, lowerAnnList, hhd,
+      lowerPolyAnn, htl]
+
+/-- Empty-pool `genGroup` is the trivial scheme. -/
+private theorem PolyTy.genGroup_nil' {t : Ty} :
+    PolyTy.genGroup [] t = PolyTy.mkTrivial t := by
+  have hgf : Ty.genFilter [] t = [] := rfl
+  have hcl : Ty.closeOver [] t = t := Ty.closeOver_eq_self_of_fresh (by simp)
+  simp only [PolyTy.genGroup, hgf, List.length_nil, hcl, PolyTy.mkTrivial]
+
+private theorem RecSpec.bodyScheme_nil_mono {τ : Ty} :
+    RecSpec.bodyScheme [] (.mono τ) = PolyTy.mkTrivial τ :=
+  PolyTy.genGroup_nil'
+
+private theorem RecSpec.rhsEntry_nil_mono {τ : Ty} {Xs : List Nat} :
+    RecSpec.rhsEntry [] Xs (.mono τ) = PolyTy.mkTrivial τ := by
+  simp only [RecSpec.rhsEntry, Ty.renameG_nil_pool, PolyTy.mkTrivial]
+
+/-- Recover the shared index of a `zip` membership when lengths agree. -/
+private theorem List.mem_zip_getElem {α β : Type _} {as : List α} {bs : List β}
+    {a : α} {b : β} (hlen : as.length = bs.length)
+    (h : (a, b) ∈ as.zip bs) :
+    ∃ (i : Nat) (hi : i < as.length), as[i] = a ∧ bs[i]'(by omega) = b := by
+  induction as generalizing bs with
+  | nil =>
+    simp only [List.zip_nil_left, List.not_mem_nil] at h
+  | cons ahd atl ih =>
+    cases bs with
+    | nil =>
+      simp only [List.zip_nil_right, List.not_mem_nil] at h
+    | cons bhd btl =>
+      simp only [List.zip_cons_cons, List.mem_cons] at h
+      rcases h with hhere | hrest
+      · cases hhere
+        exact ⟨0, by simp, rfl, rfl⟩
+      · have hlen' : atl.length = btl.length := by
+          simp only [List.length_cons] at hlen; omega
+        obtain ⟨i, hi, ha, hb⟩ := ih hlen' hrest
+        exact ⟨i + 1, by simp; omega,
+          by simpa [List.getElem_cons_succ] using ha,
+          by simpa [List.getElem_cons_succ] using hb⟩
+
+private theorem RecSpec.map_ann_mono (τs : List Ty) :
+    (τs.map RecSpec.mono).map RecSpec.ann = List.replicate τs.length none := by
+  induction τs with
+  | nil => rfl
+  | cons _ _ ih => simp [List.replicate_succ, RecSpec.ann, ih]
+
+private theorem lowerRecBinds_length {ke : KindEnv} {tvs recScope : List ValName}
+    {binds : List (ValName × Option Surface.PolyTy × Surface.Expr)} {bs' : List Expr}
+    (h : lowerRecBinds ke tvs recScope binds = some bs') :
+    bs'.length = binds.length := by
+  induction binds generalizing bs' with
+  | nil =>
+    simp only [lowerRecBinds, Option.some.injEq] at h; subst h; rfl
+  | cons hd tl ih =>
+    simp only [lowerRecBinds] at h
+    cases hhd : lowerExpr ke tvs recScope hd.2.2 with
+    | none => simp [hhd] at h
+    | some e' =>
+      cases htl : lowerRecBinds ke tvs recScope tl with
+      | none => simp [hhd, htl] at h
+      | some rest' =>
+        simp only [hhd, htl, Option.some.injEq] at h; subst h
+        simp [ih htl]
+
+private theorem lowerRecBinds_get {ke : KindEnv} {tvs recScope : List ValName}
+    {binds : List (ValName × Option Surface.PolyTy × Surface.Expr)} {bs' : List Expr}
+    (h : lowerRecBinds ke tvs recScope binds = some bs') :
+    ∀ (i : Nat) (hi : i < binds.length),
+      lowerExpr ke tvs recScope (binds[i]'hi).2.2 =
+        some (bs'[i]'(by simpa [lowerRecBinds_length h] using hi)) := by
+  induction binds generalizing bs' with
+  | nil => intro i hi; cases hi
+  | cons hd tl ih =>
+    simp only [lowerRecBinds] at h
+    cases hhd : lowerExpr ke tvs recScope hd.2.2 with
+    | none => simp [hhd] at h
+    | some e' =>
+      cases htl : lowerRecBinds ke tvs recScope tl with
+      | none => simp [hhd, htl] at h
+      | some rest' =>
+        simp only [hhd, htl, Option.some.injEq] at h; subst h
+        intro i hi
+        match i with
+        | 0 => simpa using hhd
+        | i' + 1 =>
+          have hi' : i' < tl.length := Nat.lt_of_succ_lt_succ hi
+          simpa using ih htl i' hi'
+
+/-- `SurfaceWTExpr` ⇒ `lowerExpr` succeeds. -/
+theorem lowerExpr_isSome_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
+    {tvs vs : List ValName} {Γ : Env} {s : Surface.Expr} {τ : Ty}
+    (hwt : SurfaceWTExpr ctors ke tvs vs Γ s τ) :
+    (lowerExpr ke tvs vs s).isSome := by
+  induction hwt with
+  | of_lowers _ hL _ => exact lowerExpr_isSome_of_LowersExpr hL
+  | pair _ _ _ iha ihb =>
+    simp only [lowerExpr]
+    obtain ⟨_, ha⟩ := Option.isSome_iff_exists.mp iha
+    obtain ⟨_, hb⟩ := Option.isSome_iff_exists.mp ihb
+    simp [ha, hb]
+  | cons _ _ _ iha ihb =>
+    simp only [lowerExpr]
+    obtain ⟨_, ha⟩ := Option.isSome_iff_exists.mp iha
+    obtain ⟨_, hb⟩ := Option.isSome_iff_exists.mp ihb
+    simp [ha, hb]
+  | list _ _ _ ih =>
+    simp only [lowerExpr]
+    obtain ⟨_, hlist'⟩ := Option.isSome_iff_exists.mp (lowerExprList_isSome_of_forall ih)
+    simp [hlist']
+  | app _ _ ihf ihx =>
+    simp only [lowerExpr]
+    obtain ⟨_, hf⟩ := Option.isSome_iff_exists.mp ihf
+    obtain ⟨_, hx⟩ := Option.isSome_iff_exists.mp ihx
+    simp [hf, hx]
+  | lambda_name =>
+    rename_i vs Γ x ann body paramTy bodyTy hlc hann _hb ihb
+    simp only [lowerExpr]
+    cases hAnn : lowerAnn ke tvs ann with
+    | none =>
+      cases ann with
+      | none => simp [lowerAnn] at hAnn
+      | some τs =>
+        have : lowerTy ke tvs τs = some paramTy := by simpa using hann
+        simp [lowerAnn, this] at hAnn
+    | some annL =>
+      obtain ⟨_, hb⟩ := Option.isSome_iff_exists.mp ihb
+      simp [hb]
+  | lambda_wild =>
+    rename_i vs Γ ann body paramTy bodyTy hlc hann _hb ihb
+    simp only [lowerExpr]
+    cases hAnn : lowerAnn ke tvs ann with
+    | none =>
+      cases ann with
+      | none => simp [lowerAnn] at hAnn
+      | some τs =>
+        have : lowerTy ke tvs τs = some paramTy := by simpa using hann
+        simp [lowerAnn, this] at hAnn
+    | some annL =>
+      obtain ⟨_, hb⟩ := Option.isSome_iff_exists.mp ihb
+      simp [hb]
+  | letIn =>
+    rename_i vs Γ name rhs body τrhs τ _hr _hb ihr ihb
+    simp only [lowerExpr, lowerPolyAnn]
+    obtain ⟨_, hr⟩ := Option.isSome_iff_exists.mp ihr
+    obtain ⟨_, hb⟩ := Option.isSome_iff_exists.mp ihb
+    simp [hr, hb]
+  | letRecIn =>
+    rename_i vs Γ binds τs body τ hlen hann _hbinds _hb ihbinds ihb
+    simp only [lowerExpr]
+    have hann' := lowerAnnList_all_none (ke := ke) hann
+    obtain ⟨_, hb⟩ := Option.isSome_iff_exists.mp ihb
+    obtain ⟨_, hbinds'⟩ := Option.isSome_iff_exists.mp
+      (lowerRecBinds_isSome_of_forall ihbinds)
+    simp [hann', hbinds', hb]
+  | match_ _ _ _ _ _ _ ihs ihbrs =>
+    simp only [lowerExpr]
+    obtain ⟨_, hs⟩ := Option.isSome_iff_exists.mp ihs
+    obtain ⟨_, hb'⟩ := Option.isSome_iff_exists.mp (lowerBranches_isSome_of_forall ihbrs)
+    simp [hs, hb']
+  | ife _ _ _ _ _ _ _ ihc iht ihf =>
+    simp only [lowerExpr]
+    obtain ⟨_, hc⟩ := Option.isSome_iff_exists.mp ihc
+    obtain ⟨_, ht⟩ := Option.isSome_iff_exists.mp iht
+    obtain ⟨_, hf⟩ := Option.isSome_iff_exists.mp ihf
+    simp [hc, ht, hf]
+
+/-- **Rung 3.** Open transfer: `SurfaceWTExpr` + `lowerExpr` ⇒ `TypeOfHM` at same `τ`. -/
+theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
+    {tvs vs : List ValName} {Γ : Env} {s : Surface.Expr} {c : Expr} {τ : Ty}
+    (hwt : SurfaceWTExpr ctors ke tvs vs Γ s τ)
+    (hlow : lowerExpr ke tvs vs s = some c)
+    (hcons : CtorEnv.arityConsistent ctors)
+    (hfields : CtorEnv.fieldsKinded ctors) :
+    TypeOfHM ⟨Γ, ctors⟩ c τ := by
+  induction hwt generalizing c with
+  | of_lowers hnm hL hT =>
+    have heq := lowerExpr_eq_of_LowersExpr_of_NoMatch hnm hL hlow
+    simpa [heq] using hT
+  | pair =>
+    rename_i vs Γ a b τa τb τ ha hb hctor iha ihb
+    simp only [lowerExpr] at hlow
+    cases haL : lowerExpr ke tvs vs a with
+    | none => simp [haL] at hlow
+    | some aL =>
+      cases hbL : lowerExpr ke tvs vs b with
+      | none => simp [haL, hbL] at hlow
+      | some bL =>
+        simp only [haL, hbL, Option.some.injEq] at hlow; subst hlow
+        exact TypeOfHM.app (TypeOfHM.app hctor (iha haL)) (ihb hbL)
+  | cons =>
+    rename_i vs Γ h t τh τt τ hh ht hctor ihh iht
+    simp only [lowerExpr] at hlow
+    cases hhL : lowerExpr ke tvs vs h with
+    | none => simp [hhL] at hlow
+    | some hL =>
+      cases htL : lowerExpr ke tvs vs t with
+      | none => simp [hhL, htL] at hlow
+      | some tL =>
+        simp only [hhL, htL, Option.some.injEq] at hlow; subst hlow
+        exact TypeOfHM.app (TypeOfHM.app hctor (ihh hhL)) (iht htL)
+  | list =>
+    rename_i vs Γ items τelem hitems hnil hconsC ih
+    simp only [lowerExpr] at hlow
+    cases hi : lowerExprList ke tvs vs items with
+    | none => simp [hi] at hlow
+    | some items' =>
+      simp only [hi, Option.some.injEq] at hlow; subst hlow
+      have ⟨hlen, hget⟩ := lowerExprList_length_get hi
+      apply mkList_TypeOfHM hnil hconsC
+      intro e' he'
+      obtain ⟨i, hi, rfl⟩ := List.mem_iff_getElem.mp he'
+      have hiS : i < items.length := by omega
+      obtain ⟨_, hlowi⟩ := hget i hiS
+      exact ih (items[i]'hiS) (List.getElem_mem hiS) hlowi
+  | app =>
+    rename_i vs Γ f x τarg τ hf hx ihf ihx
+    simp only [lowerExpr] at hlow
+    cases hfL : lowerExpr ke tvs vs f with
+    | none => simp [hfL] at hlow
+    | some fL =>
+      cases hxL : lowerExpr ke tvs vs x with
+      | none => simp [hfL, hxL] at hlow
+      | some xL =>
+        simp only [hfL, hxL, Option.some.injEq] at hlow; subst hlow
+        exact TypeOfHM.app (ihf hfL) (ihx hxL)
+  | lambda_name =>
+    rename_i vs Γ x ann body paramTy bodyTy hlc hann hb ihb
+    simp only [lowerExpr] at hlow
+    cases hann' : lowerAnn ke tvs ann with
+    | none => simp [hann'] at hlow
+    | some annL =>
+      cases hbL : lowerExpr ke tvs (x :: vs) body with
+      | none => simp [hann', hbL] at hlow
+      | some bL =>
+        simp only [hann', hbL, Option.some.injEq] at hlow; subst hlow
+        have hpins : annL.Pins paramTy := by
+          intro a ha
+          cases ann with
+          | none =>
+            simp only [lowerAnn, Option.some.injEq] at hann'; subst hann'
+            cases ha
+          | some τs =>
+            have : lowerTy ke tvs τs = some paramTy := by simpa using hann
+            simp only [lowerAnn, this, Option.map_some, Option.some.injEq] at hann'
+            subst hann'; cases ha; rfl
+        exact TypeOfHM.lambda hlc hpins rfl (ihb hbL)
+  | lambda_wild =>
+    rename_i vs Γ ann body paramTy bodyTy hlc hann hb ihb
+    simp only [lowerExpr] at hlow
+    cases hann' : lowerAnn ke tvs ann with
+    | none => simp [hann'] at hlow
+    | some annL =>
+      cases hbL : lowerExpr ke tvs (.mk "_" :: vs) body with
+      | none => simp [hann', hbL] at hlow
+      | some bL =>
+        simp only [hann', hbL, Option.some.injEq] at hlow; subst hlow
+        have hpins : annL.Pins paramTy := by
+          intro a ha
+          cases ann with
+          | none =>
+            simp only [lowerAnn, Option.some.injEq] at hann'; subst hann'
+            cases ha
+          | some τs =>
+            have : lowerTy ke tvs τs = some paramTy := by simpa using hann
+            simp only [lowerAnn, this, Option.map_some, Option.some.injEq] at hann'
+            subst hann'; cases ha; rfl
+        exact TypeOfHM.lambda hlc hpins rfl (ihb hbL)
+  | letIn =>
+    rename_i vs Γ name rhs body τrhs τ _hr _hb ihr ihb
+    simp only [lowerExpr] at hlow
+    -- ann is definitionally `none`
+    cases hrL : lowerExpr ke tvs vs rhs with
+    | none => simp [lowerPolyAnn, hrL] at hlow
+    | some rhsL =>
+      cases hbL : lowerExpr ke tvs (name :: vs) body with
+      | none => simp [lowerPolyAnn, hrL, hbL] at hlow
+      | some bodyL =>
+        simp only [lowerPolyAnn, hrL, hbL, Option.some.injEq] at hlow; subst hlow
+        have hTyR := ihr hrL
+        refine TypeOfHM.letIn (M := PolyTy.mkTrivial τrhs) (L := [])
+          (by simpa [PolyTy.WF, PolyTy.mkTrivial] using TypeOfHM.regular hTyR)
+          (fun _ h => Option.noConfusion h)
+          (generalisesTo_of_typeable hTyR) rfl (ihb hbL)
+  | letRecIn =>
+    rename_i vs Γ binds τs body τ hlen hann _hbinds _hb ihbinds ihb
+    simp only [lowerExpr] at hlow
+    have hann' := lowerAnnList_all_none (ke := ke) hann
+    cases hbindsL : lowerRecBinds ke tvs (binds.map (·.1) ++ vs) binds with
+    | none => simp [hann', hbindsL] at hlow
+    | some bindings' =>
+      cases hbL : lowerExpr ke tvs (binds.map (·.1) ++ vs) body with
+      | none => simp [hann', hbindsL, hbL] at hlow
+      | some bodyL =>
+        simp only [hann', hbindsL, hbL, Option.some.injEq] at hlow; subst hlow
+        have hlenB := lowerRecBinds_length hbindsL
+        have hgetB := lowerRecBinds_get hbindsL
+        set specs : List RecSpec := τs.map RecSpec.mono with hspecs
+        have hanns_eq : specs.map RecSpec.ann =
+            List.replicate binds.length (none : Option PolyTy) := by
+          simpa [specs, hlen] using RecSpec.map_ann_mono τs
+        have hwf : RecSpecs.WF (List.replicate binds.length none) bindings' specs [] := by
+          refine ⟨hanns_eq, ?_, List.nodup_nil, ?_, ?_⟩
+          · simp only [specs, List.length_map, hlenB, hlen]
+          · intro τm hτ
+            simp only [specs, List.mem_map] at hτ
+            obtain ⟨τ', hτ', hτeq⟩ := hτ
+            cases hτeq
+            obtain ⟨i, hi, rfl⟩ := List.mem_iff_getElem.mp hτ'
+            have hiB : i < binds.length := by omega
+            exact TypeOfHM.regular (ihbinds i hiB (hgetB i hiB))
+          · intro σ hσ
+            simp only [specs, List.mem_map] at hσ
+            obtain ⟨_, _, hcontrad⟩ := hσ
+            cases hcontrad
+        refine TypeOfHM.letRec (specs := specs) (G := []) (L := [])
+          hwf ?mono ?poly rfl ?body
+        · -- MonoTyped at empty pool
+          intro Xs hXs p hp τ0 hτ0
+          have hXs_nil : Xs = [] := List.eq_nil_of_length_eq_zero hXs.length
+          subst hXs_nil
+          obtain ⟨b, s⟩ := p
+          have hs : s = .mono τ0 := hτ0
+          subst hs
+          simp only [RecSpecs.rhsCtx, Ty.renameG_nil_pool]
+          have hzip_len : bindings'.length = specs.length := by
+            simp only [specs, List.length_map, hlenB, hlen]
+          obtain ⟨i, hi, hb_eq, hs_eq⟩ := List.mem_zip_getElem hzip_len hp
+          subst hb_eq
+          have hτs : τs[i]'(by omega) = τ0 := by
+            simp only [specs, List.getElem_map, RecSpec.mono.injEq] at hs_eq
+            exact hs_eq
+          have henv : specs.map (RecSpec.rhsEntry [] []) = τs.map PolyTy.mkTrivial := by
+            simp only [specs, List.map_map]
+            exact List.map_congr_left fun _ _ => RecSpec.rhsEntry_nil_mono
+          rw [henv, ← hτs]
+          exact ihbinds i (by omega) (hgetB i (by omega))
+        · -- PolyTyped: no poly specs
+          intro Xs _hXs p hp σ hσ
+          have hs := (List.of_mem_zip hp).2
+          simp only [specs, List.mem_map] at hs
+          obtain ⟨_, _, hcontrad⟩ := hs
+          rw [hσ] at hcontrad
+          cases hcontrad
+        · -- body under empty-pool bodyCtx = mkTrivial schemes
+          simp only [RecSpecs.bodyCtx, specs, List.map_map]
+          have hmap : List.map (RecSpec.bodyScheme [] ∘ RecSpec.mono) τs =
+              τs.map PolyTy.mkTrivial :=
+            List.map_congr_left fun _ _ => RecSpec.bodyScheme_nil_mono
+          rw [hmap]
+          exact ihb hbL
+  | match_ =>
+    rename_i vs Γ scrut brs T tyArgs τres hs hbrs hpats hexh hkind hwk ihs ihbrs
+    obtain ⟨scrut', bodies', hsL, hbL, rfl⟩ := lowerExpr_match_decomp hlow
+    have hscrut := ihs hsL
+    have hlen := lowerBranches_length hbL
+    have hbodies : ∀ (i : Nat) (hi : i < bodies'.length),
+        TypeOfHM ⟨branchBodyEnv Γ
+          (patBindTys ctors ((brs.map Prod.fst)[i]'(by
+            simpa [List.length_map, hlen] using hi)) (.customTy T tyArgs)), ctors⟩
+          (bodies'[i]'hi) τres := by
+      intro i hi
+      have hi' : i < brs.length := by omega
+      have hlow_i := lowerBranches_get hbL i hi'
+      have := ihbrs i hi' hlow_i
+      simpa [List.getElem_map] using this
+    exact TypeOfHM_lowerMatch
+      (τscrut := .customTy T tyArgs) (τres := τres)
+      rfl (by simpa [List.length_map] using hlen) hscrut hpats hbodies hexh
+      hcons hfields hkind hwk
+  | ife =>
+    rename_i vs Γ cond t f τ hc ht hf hpats hexh hkind hwk ihc iht ihf
+    simp only [lowerExpr] at hlow
+    cases hcL : lowerExpr ke tvs vs cond with
+    | none => simp [hcL] at hlow
+    | some cL =>
+      cases htL : lowerExpr ke tvs vs t with
+      | none => simp [hcL, htL] at hlow
+      | some tL =>
+        cases hfL : lowerExpr ke tvs vs f with
+        | none => simp [hcL, htL, hfL] at hlow
+        | some fL =>
+          simp only [hcL, htL, hfL, Option.some.injEq] at hlow
+          have hbodyFn : (fun i => [tL, fL].getD i (.ctor cNil)) = bodyFn [tL, fL] := by
+            funext i; simp [bodyFn, matchBodyDefault]
+          rw [hbodyFn] at hlow; subst hlow
+          have hbindT : patBindTys ctors (.ctor cTrue []) (.customTy nBool []) = [] := by
+            simp only [patBindTys, PatComp.norm, patBindTysG]
+            cases patGctorFieldTys ctors cTrue (.customTy nBool []) <;> rfl
+          have hbindF : patBindTys ctors (.ctor cFalse []) (.customTy nBool []) = [] := by
+            simp only [patBindTys, PatComp.norm, patBindTysG]
+            cases patGctorFieldTys ctors cFalse (.customTy nBool []) <;> rfl
+          have hbodies' : ∀ (i : Nat) (hi : i < ([tL, fL] : List Expr).length),
+              TypeOfHM ⟨branchBodyEnv Γ
+                (patBindTys ctors
+                  (([.ctor cTrue [], .ctor cFalse []] : List Surface.Pattern)[i]'(by
+                    simpa using hi)) (.customTy nBool [])), ctors⟩
+                ([tL, fL][i]'hi) τ := by
+            intro i hi
+            have hi2 : i < 2 := by simpa using hi
+            match i with
+            | 0 =>
+              simpa [branchBodyEnv, hbindT] using iht htL
+            | 1 =>
+              simpa [branchBodyEnv, hbindF] using ihf hfL
+            | n + 2 =>
+              exact (Nat.not_lt_zero n (Nat.lt_of_succ_lt_succ (Nat.lt_of_succ_lt_succ hi2))).elim
+          exact TypeOfHM_lowerMatch
+            (τscrut := .customTy nBool []) (τres := τ)
+            rfl (by simp) (ihc hcL) hpats hbodies' hexh hcons hfields hkind hwk
 
 /-! ## 8. The runtime term: lower, then ELABORATE
 
@@ -5335,7 +8179,11 @@ theorem lowerExpr_tyFreeVars {ke : KindEnv} {tvs vs : List ValName} :
         | some f' =>
           simp only [hc, ht, hf, Option.some.injEq] at h; subst h
           exact lowerMatch_tyFreeVars c' _ _ (lowerExpr_tyFreeVars hc) (fun i => by
-            split <;> first | exact lowerExpr_tyFreeVars ht | exact lowerExpr_tyFreeVars hf)
+            rw [List.getD]
+            match i with
+            | 0 => simpa [Option.getD] using lowerExpr_tyFreeVars ht
+            | 1 => simpa [Option.getD] using lowerExpr_tyFreeVars hf
+            | _ + 2 => simp [Option.getD, Expr.tyFreeVars])
   | .match_ scrut brs =>
     simp only [lowerExpr] at h
     cases hs : lowerExpr ke tvs vs scrut with
@@ -5466,36 +8314,6 @@ theorem emitLets_AllMatchesExhaustive {ctors : CtorEnv} (env binds : List Occ)
     | nil => exact AllMatchesExhaustive.shiftFrom h _ _
     | cons _b rest ih => exact .letIn .var (ih (depth + 1))
   exact go_exh binds.reverse 0
-
-/-- `emitCases` as a `List.map` (local copy of PatComp's private lemma). -/
-private theorem emitCases_eq_map' (env : List Occ) (bodies : Nat → Expr) (occ : Occ) :
-    ∀ (cases : List (CtorName × Nat × DTree)),
-      emitCases env bodies occ cases
-        = cases.map (fun x => (MatchPattern.named x.1 x.2.1,
-            emit (subOccs occ x.2.1 ++ env) bodies x.2.2))
-  | [] => rfl
-  | (_c, _a, _t) :: rest => by
-    rw [emitCases, emitCases_eq_map' env bodies occ rest, List.map_cons]
-
-/-- Membership: a case in `cases` yields the corresponding named branch in `emitCases`. -/
-private theorem mem_emitCases_of_mem_cases (env : List Occ) (bodies : Nat → Expr)
-    (occ : Occ) {cases : List (CtorName × Nat × DTree)} {c : CtorName} {a : Nat}
-    {t : DTree} (h : (c, a, t) ∈ cases) :
-    (MatchPattern.named c a, emit (subOccs occ a ++ env) bodies t) ∈
-      emitCases env bodies occ cases := by
-  rw [emitCases_eq_map']
-  exact List.mem_map.mpr ⟨(c, a, t), h, rfl⟩
-
-/-- Inverse membership: a named branch in `emitCases` comes from a case. -/
-private theorem mem_cases_of_mem_emitCases (env : List Occ) (bodies : Nat → Expr)
-    (occ : Occ) {cases : List (CtorName × Nat × DTree)} {c : CtorName} {n : Nat}
-    {body : Expr}
-    (h : (MatchPattern.named c n, body) ∈ emitCases env bodies occ cases) :
-    ∃ t, (c, n, t) ∈ cases ∧ body = emit (subOccs occ n ++ env) bodies t := by
-  rw [emitCases_eq_map'] at h
-  obtain ⟨⟨c', a', t'⟩, hx, heq⟩ := List.mem_map.mp h
-  obtain ⟨⟨rfl, rfl⟩, rfl⟩ := (Prod.mk.injEq _ _ _ _).mp heq
-  exact ⟨t', hx, rfl⟩
 
 /-- Branch bodies of `emitCases` are exhaustive when each case subtree is. -/
 private theorem emitCases_AllBranchBodiesExhaustive {ctors : CtorEnv}
@@ -5824,12 +8642,15 @@ theorem lowerExpr_exhaustive {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValNam
           simp only [lowerMatch]
           refine .letIn (ihc hc')
             (emit_compile_AllMatchesExhaustive
-              (fun i => if i = 0 then t' else f')
+              (fun i => [t', f'].getD i (.ctor cNil))
               [.ctor cTrue [], .ctor cFalse []]
               (fun i => by
-                by_cases hi : i = 0
-                · simp only [hi, ↓reduceIte]; exact iht ht'
-                · simp only [hi, ↓reduceIte]; exact ihf hf')
+                change AllMatchesExhaustive ctors ([t', f'].getD i (.ctor cNil))
+                rw [List.getD]
+                match i with
+                | 0 => simpa [Option.getD] using iht ht'
+                | 1 => simpa [Option.getD] using ihf hf'
+                | _ + 2 => simp [Option.getD]; exact .ctor)
               hexh)
   | @match_ scrut brs T tyArgs hs hbrs hexh ihs ihbrs =>
     simp only [lowerExpr] at hlow
@@ -6311,8 +9132,10 @@ example : ∀ ctors, SurfaceCovers ctors pMaybeId.term := fun _ =>
 A well-typed, exhaustive surface program elaborates to a Core term that is
 type-safe and never gets stuck. Stated over the executable pipeline (`lower`
 succeeds, `typecheck` succeeds, patterns cover) — the object that actually runs.
-The declarative `SurfaceWT`-phrased corollary is future work (goes through
-`lower`-completeness + typeability-invariance across valid lowerings). -/
+
+The declarative `SurfaceWT` corollary (below) closes the spec/impl loop under
+Approach A / 1a: strong open `SurfaceWTExpr` + coverage ⇒ the concrete `lower`
+output typechecks, then reuse `surface_type_safe`. -/
 
 /-- **Well-typed surface programs don't go wrong.** Given a lowering `c` of `s`
     that typechecks and whose matches cover their types, `elaborate ctors s`
@@ -6344,6 +9167,42 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   · -- (O6) non-stuckness: iterated type safety of the elaborated term.
     intro e' hrtc
     exact (TypeOfElabHM.type_safety_star hty hexh e' hrtc).2
+
+/-! ### SurfaceWT corollary (Approach A / 1a)
+
+Strong `SurfaceWTExpr` carries open branch typings; rung 3 transfers to
+`lowerExpr` via `TypeOfHM_lowerMatch`. Do **not** pin `LowersExpr.match_`
+(Approach B) without parent approval. -/
+
+/-- Coverage is load-bearing on the closed claim; hygiene feeds `TypeOfHM_lowerMatch`. -/
+theorem typecheck_of_lower_of_SurfaceWT {ctors : CtorEnv} {s : Surface.Expr}
+    {c : Expr}
+    (hwt : SurfaceWT ctors s) (_hcov : SurfaceCovers ctors s)
+    (hlow : lower ctors s = some c)
+    (hcons : CtorEnv.arityConsistent ctors)
+    (hfields : CtorEnv.fieldsKinded ctors) :
+    (typecheck ctors c).isSome := by
+  obtain ⟨τ, hwt'⟩ := hwt
+  have hT := TypeOfHM_of_lowerExpr_of_SurfaceWTExpr hwt' hlow hcons hfields
+  exact (typecheck_iff (ctors := ctors) (e := c)).mpr ⟨τ, hT⟩
+
+/-- Declarative headline: `SurfaceWT` + `SurfaceCovers` ⇒ type-safe Core.
+    Hygiene premises: true of any `elabDecls` `CtorEnv`. -/
+theorem surface_type_safe_of_SurfaceWT {ctors : CtorEnv} {s : Surface.Expr}
+    (hwt : SurfaceWT ctors s) (hcov : SurfaceCovers ctors s)
+    (hcons : CtorEnv.arityConsistent ctors)
+    (hfields : CtorEnv.fieldsKinded ctors) :
+    ∃ e τ, elaborate ctors s = some e ∧
+      TypeOfElabHM ⟨[], ctors⟩ e τ ∧
+      AllMatchesExhaustive ctors e ∧
+      ∀ e', Relation.ReflTransGen Step e e' →
+        (IsValue e' ∨ ∃ e'', Step e' e'') := by
+  obtain ⟨τ, hwt'⟩ := hwt
+  have hlow_some : (lower ctors s).isSome := by
+    simpa [lower] using lowerExpr_isSome_of_SurfaceWTExpr hwt'
+  obtain ⟨c, hc⟩ := Option.isSome_iff_exists.mp hlow_some
+  exact surface_type_safe hc
+    (typecheck_of_lower_of_SurfaceWT ⟨τ, hwt'⟩ hcov hc hcons hfields) hcov
 
 /-- **Well-typed surface programs don't go wrong** (program-level).
     Composes decl elaboration with `surface_type_safe` on the desugared term. -/
