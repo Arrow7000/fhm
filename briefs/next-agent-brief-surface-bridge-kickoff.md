@@ -39,7 +39,7 @@ from typing. `lake build` green; all headlines axiom-clean
 - **The bridge interface you must produce**: `GPatWF ctors : GPat → Ty → Prop`
   (with its pointwise `GPatWFList`), in `PatComp.lean`. A `gctor c` test is
   well-formed only at its ctor's `customTy`, with sub-patterns fitting the
-  ctor's *instantiated* field types. The `Lowers` `match` case must establish
+  ctor's _instantiated_ field types. The `Lowers` `match` case must establish
   `∀ r ∈ initMatrix ps, GPatWFList ctors r.pats [.customTy T tyArgs]` for the
   scrutinee's type — then `lowerMatch_adequate_of_typed` fires and the match
   case's soundness obligation is discharged. Recommended: define a surface-level
@@ -72,11 +72,11 @@ front-end**:
    `= true → AllMatchesExhaustive`.
 4. Top-level binding/SCC handling (item 7).
 5. **The headline payoff**: compose `Lowers` soundness with Core's existing
-   `type_safety`/`progress` into *"a well-typed surface program lowers to a
-   type-safe Core program that does not get stuck."*
+   `type_safety`/`progress` into _"a well-typed surface program lowers to a
+   type-safe Core program that does not get stuck."_
 
 Note on "semantics preserved": there is no separate surface operational
-semantics — surface meaning *is* Core meaning by the lowering. So for
+semantics — surface meaning _is_ Core meaning by the lowering. So for
 names/sugar/types, soundness of `lower` wrt `Lowers` is the whole story.
 **Pattern matching is the one construct with genuine behavioural content**, and
 that behavioural theorem is already done (`lowerMatch_adequate_of_typed`); the
@@ -96,8 +96,8 @@ soundness/completeness pattern before the `Expr` case. Add `Pair` to
 
 **A predicate or theorem can be subtly FALSE or vacuous even when it "looks
 right" and everything around it type-checks.** Today's blocker: the
-`CtorSwitches` side-condition had been stated to recurse into *every* case
-branch of the decision tree; that made it *unsatisfiable* for well-typed
+`CtorSwitches` side-condition had been stated to recurse into _every_ case
+branch of the decision tree; that made it _unsatisfiable_ for well-typed
 scrutinees whose actual constructor differs from a branch's assumption. The
 theorem carrying it stayed **sound** but **vacuous** for those inputs, and the
 planned discharge was impossible. Crucially, it was **not** caught by staring at
@@ -106,11 +106,12 @@ passed) — it was caught by **constructing a concrete instance and `#eval`-ing
 it** (`root = A 5` against patterns testing `B`'s field).
 
 So, before investing in a big proof of any new predicate / relation:
+
 - **`#eval` the executable side on adversarial inputs** — especially
   mismatched, non-matching, wrong-shape, empty, and out-of-range ones.
 - **Check your hypotheses are actually satisfiable** — construct a witness so
   you're not about to prove something vacuously true.
-- This applies *double* to `Lowers` **completeness** and to `checkExhaustive`:
+- This applies _double_ to `Lowers` **completeness** and to `checkExhaustive`:
   it is easy to state a checker or a completeness lemma that is trivially true.
 
 ## Non-negotiables (from the house rules)

@@ -1,28 +1,28 @@
-<!-- Written 2026-07-11, end of the post-headline front-end session
-     (DataDecl → Program → freeNames → naive SCC). Read these FIRST, in order:
+<!-- Written 2026-07-11 (DataDecl → Program → freeNames → naive SCC scaffold).
+     UPDATED 2026-07-13: SCC adequacy proved + Program.ofFlat landed.
+     Read these FIRST, in order:
        1. briefs/next-agent-brief-surface-bridge.md — THE ORIGINAL PLAN (items 1–9).
        2. briefs/next-agent-brief-surface-bridge-followups.md — status when the
           expression headline `surface_type_safe` landed (still accurate for the
-          Core/expr story; this brief UPDATES the program/SCC backlog).
+          Core/expr story; this brief UPDATES the program/SCC / front-end backlog).
        3. briefs/next-agent-brief-surface-bridge-kickoff.md — PatComp interface
           (historical; pattern compilation is done).
-     This brief does NOT duplicate the plan. It gives the FRESH status after
-     program-pipeline + SCC scaffolding landed, what’s proved vs sorry, and
-     where the next agent should start. -->
+     This brief does NOT duplicate the plan. It gives FRESH status after SCC
+     proofs + ofFlat, and where the next agent should start. -->
 
-# Brief: surface Program pipeline + SCC scaffolding — handoff
+# Brief: surface Program pipeline + SCC — handoff (updated)
 
-## TL;DR — where we are
+## TL;DR — where we are (2026-07-13)
 
-The **expression** north star is still complete and axiom-clean:
+The **expression** north star is complete and axiom-clean:
 
 ```
 surface_type_safe : lower + typecheck + SurfaceCovers
   → elaborate yields typed, exhaustive, non-stuck Core
 ```
 
-This session built the **program / top-level** layer on top of that, and paved
-the road to automatic mutual-recursion grouping:
+The **program / top-level** layer on top of that is also complete through
+automatic SCC grouping:
 
 | Layer | Status |
 |-------|--------|
@@ -30,21 +30,22 @@ the road to automatic mutual-recursion grouping:
 | `Program` = decls + groups + body; prelude merge | **DONE**, axiom-clean |
 | `desugarGroups` → nested `letRecIn`; `program_type_safe` | **DONE**, axiom-clean |
 | `freeNames` / `bindingDepEdges` (C0) | **DONE**, `#guard`-tested |
-| `ValidBindingGroups` + `sccGroups` (C1 executable) | **DONE** executable + `#guard`s; **`sccGroups_sound` / `_complete` still `sorry`** |
-| Adequacy of SCC vs dependency graph (C2) | **OPEN** (those sorries + polish) |
-| `checkExhaustive`, `SurfaceWT` corollary, `letBlock` collapse | **OPEN** (later) |
+| `ValidBindingGroups` + `sccGroups` (C1) | **DONE** executable + `#guard`s |
+| Adequacy `sccGroups_sound` / `_complete` (C2) | **DONE**, axiom-clean |
+| `Program.ofFlat` (flat binds → SCC groups) | **DONE**, axiom-clean |
+| `checkExhaustive`, `SurfaceWT` corollary, `letBlock` | **OPEN** (next) |
 
-`lake build` green. `#print axioms` on `program_type_safe` /
-`lowerProgram_sound` / `toCombinedWF` / DataDecl headlines =
-`{propext, Classical.choice?, Quot.sound}` (no `sorryAx` on those). The **only**
-intentional `sorry`s in the new SCC slice are `sccGroups_sound` and
-`sccGroups_complete`.
+`lake build` green. No `sorry` in `FHM/SurfaceBridge.lean`.
+`#print axioms sccGroups_sound` / `program_type_safe` / `Program.ofFlat_groups_valid`
+= `{propext, Classical.choice?, Quot.sound}` (no `sorryAx`).
 
 Recent commits on this arc:
 - `ace4206` — surface DataDecl lowering
 - `e5f1835` — prelude-aware `Program` + `program_type_safe`
 - `3fb2a3a` — explicit `groups` → `letRecIn` desugar
-- (HEAD) — `freeNames` + naive `sccGroups` + `ValidBindingGroups`
+- `ebf20d5` — `freeNames` + naive `sccGroups` + `ValidBindingGroups`
+- `9f59e10` — prove `sccGroups_sound` / `_complete`
+- (HEAD) — `Program.ofFlat` + thin lemmas / `#guard`s
 
 ---
 
@@ -57,16 +58,16 @@ fused `letRec`, PatComp, surface→Core **expression** bridge) are done.
 **real front-end**: declare types, declare top-level vals, don’t ask the author
 to pre-partition mutual recursion.
 
-North-star *product* end state (not all done):
+North-star *product* end state (SCC+ofFlat done; coverage / public AST still open):
 
 > A surface program (decls + flat bindings + body) elaborates to safe Core,
 > with SCC inferred automatically, coverage checkable, no Core metatheory growth.
 
 ---
 
-## What this session delivered (concrete)
+## What landed (concrete) — all COMPLETE through ofFlat
 
-### 1. Surface `DataDecl` (plan item 1) — COMPLETE
+### 1. Surface `DataDecl` (plan item 1)
 
 - AST: `Surface.DataDecl` in `FHM/SurfaceLang.lean`
 - Spec/impl: `LowersDataDeclsIn` / `lowerDataDeclsIn` (ambient `ke₀`, typically
@@ -74,7 +75,7 @@ North-star *product* end state (not all done):
 - Payoff: `toWF`, `toCombinedWF`, elaborates via `elabDecls`
 - File: `FHM/SurfaceBridge.lean` §2b
 
-### 2. Whole-program slice A — COMPLETE
+### 2. Whole-program slice A
 
 - `Surface.Program`: `decls`, `groups : List (List Binding)`, `body`
 - Prelude: `lowerDataDeclsIn preludeKindEnv` then
@@ -88,12 +89,12 @@ North-star *product* end state (not all done):
   `lower_complete` only concludes `.isSome`). Do **not** strengthen back to
   `= some c` without pinning `match_`.
 
-### 3. Binding groups desugar (explicit SCCs) — COMPLETE
+### 3. Binding groups desugar (explicit SCCs)
 
 Authors *can* write `groups` by hand. Desugar reuses existing `letRecIn` /
 `lower` — **no Core edits**, no second letRec metatheory.
 
-### 4. C0 free-name analysis — COMPLETE
+### 4. C0 free-name analysis
 
 In `SurfaceBridge` (after `patVars`):
 
@@ -104,7 +105,7 @@ In `SurfaceBridge` (after `patVars`):
 **Infer does not do SCC** — surface already had `letRecIn`. Nothing to reuse
 from Infer for this.
 
-### 5. C1 naive SCC — EXECUTABLE DONE; PROOFS OPEN
+### 5. C1/C2 naive SCC + adequacy
 
 - **Spec** `ValidBindingGroups binds groups`:
   - names `Nodup`
@@ -114,67 +115,65 @@ from Infer for this.
   - maximality (mutual ⇒ same group)
   - **topo**: direct cross-group edge `b1 → b2` ⇒ `b2`’s group index `<` `b1`’s
     (callee outer — matches `desugarGroups` foldr)
-- **Reachability** `DepEdge` / `DepReach` / `DepMutual` (Prop)
-- **Executable** `sccGroups`:
-  1. reject dup names
-  2. pairwise `canReach` on index graph → mutual-reachability partitions
-  3. Kahn topo on condensation (`sccBeforeEdges`: dependency before dependent)
-  4. map indices back to `List (List Binding)`
-- `#guard`s: `f`/`g` chain, mutual `h`/`k`, independents, dups, empty,
-  SCC→desugar→`elaborateProgram`
-- **Frozen, still `sorry`:**
+- **Executable** `sccGroups`: pairwise `canReach` → mutual partitions → Kahn on
+  condensation → bindings
+- **Proved:**
   ```
   theorem sccGroups_sound : sccGroups binds = some groups → ValidBindingGroups binds groups
   theorem sccGroups_complete : ValidBindingGroups binds groups → (sccGroups binds).isSome
   ```
   Completeness is deliberately **not** `= some groups` (order freedom).
 
+Proof stack highlights (do not reopen casually):
+- Bool `canReach` ↔ Prop `DepReach` (fuel / simple paths / Nodup name↔index)
+- Partition separation + Kahn on DAG condensation
+- `sccOrderedIndexSets_flatPerm` needs **name-Nodup** (without it condensation
+  can cycle and Kahn truncates — unconstrained form was false)
+- Unbounded `kahnTopo_edge_before` was also false (OOB targets get indeg 0);
+  private form requires `edgesBounded` + edge `Nodup`
+
+### 6. `Program.ofFlat` (Priority 2)
+
+```
+def Program.ofFlat decls binds body : Option Surface.Program :=
+  (sccGroups binds).map fun groups => ⟨decls, groups, body⟩
+```
+
+- `ofFlat_groups_valid` / `ofFlat_decls_body`
+- `#guard`s: f/g chain elaborates; dup names → `none`
+- `desugarGroups` remains the sole consumer of `List (List Binding)`
+- Authors may still hand-write `groups`; ofFlat is the flat-bindings path
+
 ---
 
 ## Immediate next work (recommended)
 
-### Priority 1 — discharge `sccGroups_sound` / `sccGroups_complete`
+### Priority 1 — `checkExhaustive` / `dTreeExhaustiveB`
 
-Parent-owned freeze is already in-tree. Hand off proofs only; **do not**
-weaken `ValidBindingGroups` without Aron agreeing.
+Decide `SurfaceCovers` from an executable / Prop checker aligned with
+`DTreeExhaustive` / PatComp. See followups brief for the coverage story.
+This is the main open product gap after ofFlat.
 
-Hints:
-- Bridge Bool `canReach` ↔ `DepReach` (fuel ≥ n, simple paths)
-- Partition ↔ sameScc + maxScc
-- Kahn ↔ topo
-- `flatPerm` from reconstructing bindings via indices
-- Completeness: Nodup ⇒ executable doesn’t `guard`-fail; algorithm always
-  returns *some* partition (existence, not uniqueness)
+### Priority 2 — `SurfaceWT` corollary
 
-Model: try **composer-2.5** first; bump to **grok-4.5-xhigh** if
-reachability↔Prop or Kahn proofs get nasty.
+Declarative headline phrased via `SurfaceWT` (needs typeability invariant
+across match lowerings — why it was deferred past `surface_type_safe`).
 
-Gate: `lake build` + no `sorry` on those two + `#print axioms` clean.
+### Priority 3 — `letBlock` collapse (design settled, not scheduled)
 
-### Priority 2 — wire flat bindings into `Program` (optional small slice)
+Remove surface `letIn`/`letRecIn` from the *public* AST; one `letBlock`; run
+the **same** freeNames→SCC→nested Core `let`/`letRec` in **lowering** (not a
+second IR layer). Internal desugar to today’s `letRecIn` / `desugarGroups` is
+fine as a stepping stone. **Do not** confuse with `Program.ofFlat` (already
+done — that only SCC-fills `Program.groups`).
 
-Today `Program.groups` is still author-supplied (or filled via
-`(sccGroups binds).getD []` in tests). Natural glue:
+### Optional / deferred
 
-- helper `Program.ofFlat decls binds body` using `sccGroups`, or
-- change `Program` to carry a flat list and compute groups in `Program.term`
-
-Keep desugarer as the single consumer of `List (List Binding)`.
-
-### Priority 3 — later backlog (from followups; don’t mix into SCC proofs)
-
-1. **`checkExhaustive` / `dTreeExhaustiveB`** — decide `SurfaceCovers`
-2. **`SurfaceWT` corollary** — declarative headline (needs typeability
-   invariant across match lowerings)
-3. **`letBlock` collapse** (design settled, not scheduled): remove surface
-   `letIn`/`letRecIn` from the *public* AST; one `letBlock`; run the **same**
-   freeNames→SCC→nested Core `let`/`letRec` in **lowering** (not a second IR
-   layer). Internal desugar to today’s `letRecIn` is fine as a stepping stone.
-4. Pattern-λ desugar, errors, strings — still deferred / optional
+Pattern-λ desugar, errors, strings.
 
 ---
 
-## Design decisions (settled this session — don’t reopen casually)
+## Design decisions (settled — don’t reopen casually)
 
 1. **Core stays minimal** — SCC/desugar live in `SurfaceBridge` / `SurfaceLang`.
 2. **Always `letRecIn` for nonempty groups** (incl. size 1). Tagged
@@ -184,12 +183,12 @@ Keep desugarer as the single consumer of `List (List Binding)`.
 4. **Naive mutual-reachability SCC**, not Kosaraju, not `Lean.Util.SCC`
    (`partial` / meta — unfit for FHM proofs).
 5. **AbstractWalk** (`lean-experiments`) = directed reachability library only;
-   **not** imported; patterns optional for `DepReach` proofs, insufficient for
-   SCC+topo alone.
+   **not** imported.
 6. **Workflow**: parent freezes Prop/theorem *statements*; subagent proves or
    returns obstruction; parent edits specs if false. Prefer respectful prompts
    (no “workhorse” framing). Gate with fresh-olean `lake build`, not LSP alone
-   after dependency edits.
+   after dependency edits. Prove agents: `composer-2.5-fast` first; bump to
+   `cursor-grok-4.5-high` when reachability/Kahn get nasty.
 
 ---
 
@@ -203,6 +202,8 @@ Keep desugarer as the single consumer of `List (List Binding)`.
   `elabDecls_sound` for the same WF fact — both fine.
 - Stale LSP oleans after `SurfaceLang` edits → trust `lake build` /
   `lean_build`.
+- SCC: name-Nodup is load-bearing for Kahn completeness; private Kahn lemmas
+  need bounded edges.
 
 ---
 
@@ -217,12 +218,11 @@ Keep desugarer as the single consumer of `List (List Binding)`.
 
 ## Suggested first message for the next agent
 
-> Read `briefs/next-agent-brief-surface-bridge-program-scc.md`. Discharge
-> `sccGroups_sound` and `sccGroups_complete` in `FHM/SurfaceBridge.lean` without
-> changing `ValidBindingGroups` or `sccGroups`’ meaning. If a statement is
-> unprovable/false, stop and explain with a minimal obstruction. Gate with
-> `lake build` + axiom check. Then optionally wire `Program.ofFlat` /
-> flat-bindings path.
+> Read `briefs/next-agent-brief-surface-bridge-program-scc.md` (updated
+> 2026-07-13) and `briefs/next-agent-brief-surface-bridge-followups.md`.
+> Program/SCC/ofFlat are done. Start on **`checkExhaustive` /
+> `dTreeExhaustiveB`** (or the next backlog item Aron picks). Do not reopen
+> Core or `ValidBindingGroups`. Gate with `lake build` + axiom checks.
 
 ---
 
@@ -232,7 +232,7 @@ Keep desugarer as the single consumer of `List (List Binding)`.
 |------|------|
 | `FHM/SurfaceLang.lean` | `DataDecl`, `Binding`, `Program`, `desugarGroups`, `Program.term` |
 | `FHM/SurfaceBridge.lean` §2b | DataDecl lowering |
-| `FHM/SurfaceBridge.lean` (after `patVars`) | `freeNames`, `sccGroups`, `ValidBindingGroups` |
+| `FHM/SurfaceBridge.lean` (after `patVars`) | `freeNames`, `sccGroups`, `ValidBindingGroups`, `Program.ofFlat` |
 | `FHM/SurfaceBridge.lean` §9b | `LowersProgram`, `lowerProgram`, `program_type_safe` |
 | `FHM/Decls.lean` | `preludeDecls`, `elabDecls` |
-| `briefs/next-agent-brief-surface-bridge-followups.md` | Post-expression-headline backlog (partially superseded for program/SCC by **this** brief) |
+| `briefs/next-agent-brief-surface-bridge-followups.md` | Post-expression-headline backlog (coverage / `SurfaceWT`; program/SCC superseded by **this** brief) |
