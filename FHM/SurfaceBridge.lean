@@ -10,7 +10,8 @@ This module is the **front end**: it lowers `Surface.Expr`/`Surface.Ty` into Cor
 and states the campaign's headline payoff — *a well-typed, exhaustive surface
 program elaborates to a Core program that is type-safe and never gets stuck*.
 
-**Status: expression headline + DataDecl + Program groups + freeNames + sccGroups.**
+**Status: expression headline + DataDecl + Program groups + freeNames + sccGroups
+(+ `Program.ofFlat`).**
 `sccGroups` (naive mutual-reachability SCC) feeds `Program.groups`;
 `ValidBindingGroups` is the non-det spec (`sccGroups_sound` / `_complete` proved).
 See `briefs/next-agent-brief-surface-bridge-followups.md`.
@@ -3444,6 +3445,32 @@ theorem sccGroups_complete {binds : List Surface.Binding}
   have hn := h.namesNodup
   simp [sccGroups, guard, hn]
 
+/-- Build a `Program` from a flat binding list: SCC-infer groups, keep
+    `desugarGroups` as the sole consumer of `List (List Binding)`.
+    Fails (`none`) iff binding names are not unique. -/
+def Program.ofFlat (decls : List Surface.DataDecl)
+    (binds : List Surface.Binding) (body : Surface.Expr) :
+    Option Surface.Program :=
+  (sccGroups binds).map fun groups => ⟨decls, groups, body⟩
+
+theorem Program.ofFlat_groups_valid {decls : List Surface.DataDecl}
+    {binds : List Surface.Binding} {body : Surface.Expr}
+    {p : Surface.Program}
+    (h : Program.ofFlat decls binds body = some p) :
+    ValidBindingGroups binds p.groups := by
+  simp only [Program.ofFlat, Option.map_eq_some_iff] at h
+  obtain ⟨groups, hscc, rfl⟩ := h
+  exact sccGroups_sound hscc
+
+theorem Program.ofFlat_decls_body {decls : List Surface.DataDecl}
+    {binds : List Surface.Binding} {body : Surface.Expr}
+    {p : Surface.Program}
+    (h : Program.ofFlat decls binds body = some p) :
+    p.decls = decls ∧ p.body = body := by
+  simp only [Program.ofFlat, Option.map_eq_some_iff] at h
+  obtain ⟨groups, _, rfl⟩ := h
+  exact ⟨rfl, rfl⟩
+
 -- SCC `#guard`s
 private def bF : Surface.Binding :=
   ⟨.mk "f", none,
@@ -5566,10 +5593,10 @@ theorem lower_elab_exhaustive {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
 
 /-! ## 9b. Whole-program pipeline (plan item 7)
 
-`Surface.Program` = user `DataDecl`s + explicit binding `groups` + body.
+`Surface.Program` = user `DataDecl`s + binding `groups` + body.
 Groups desugar to nested `letRecIn` (`Program.term`); prelude is merged in;
-then reuse expression `lower`/`elaborate`/`surface_type_safe`. SCC that *invents*
-`groups` from a flat binding list is a later slice — same desugarer consumer. -/
+then reuse expression `lower`/`elaborate`/`surface_type_safe`. Flat bindings
+go through `Program.ofFlat` → `sccGroups` → the same desugarer. -/
 
 theorem desugarGroups_nil (body : Surface.Expr) :
     Surface.desugarGroups [] body = body := rfl
@@ -5681,8 +5708,12 @@ private def pLetRecTwo : Surface.Program :=
 #guard match Surface.desugarGroups [[]] (.primLit (.int 0)) with
   | .primLit (.int 0) => true
   | _ => false
--- SCC → desugar → elaborate
-#guard (elaborateProgram ⟨[], (sccGroups [bF, bG]).getD [], .var (.mk "g")⟩).isSome
+-- SCC → desugar → elaborate (via ofFlat)
+#guard match Program.ofFlat [] [bF, bG] (.var (.mk "g")) with
+  | some p => (elaborateProgram p).isSome
+  | none => false
+#guard (Program.ofFlat [] [bA, ⟨.mk "a", none, .primLit (.int 0)⟩]
+  (.primLit (.int 0))).isNone
 -- SurfaceCovers is inhabited for the Maybe term (no matches → trivial coverage)
 example : ∀ ctors, SurfaceCovers ctors pMaybeId.term := fun _ =>
   .app (.ctor) (.primLit)

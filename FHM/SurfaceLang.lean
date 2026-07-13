@@ -86,9 +86,10 @@ structure Binding where
   ann  : Option PolyTy
   rhs  : Expr
 
-/-- A surface program: user data declarations, explicit mutual-binding groups
-    (later: SCC output), and a body. Each nonempty group desugars to `letRecIn`
-    (including size 1 — self-recursion works; SCC is a later slice). -/
+/-- A surface program: user data declarations, mutual-binding groups
+    (author-supplied, or from `SurfaceBridge.Program.ofFlat` / `sccGroups`),
+    and a body. Each nonempty group desugars to `letRecIn` (including size 1 —
+    self-recursion works). -/
 structure Program where
   decls  : List DataDecl
   groups : List (List Binding)
