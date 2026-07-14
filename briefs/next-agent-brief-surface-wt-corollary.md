@@ -91,9 +91,10 @@ Hygiene premises on the corollary (true of `elabDecls` envs):
 
 ## What is NOT this brief
 
-- **`letBlock`** — still deferred (collapse surface `letIn`/`letRecIn`).
-- Annotated/poly `letIn`/`letRecIn` under nested matches — optional polish if needed.
-- Core / SCC / `ValidBindingGroups` — do not reopen.
+- Annotated/poly strong `SurfaceWTExpr` ctors — **next slice** (finish 1a);
+  see `briefs/next-agent-brief-surface-front-end-backlog.md` Priority 1.
+- **`letBlock`** — after that (Priority 2 in the backlog brief).
+- Core / SCC / `ValidBindingGroups` / Approach B/C — do not reopen.
 
 ---
 
@@ -105,11 +106,4 @@ Hygiene premises on the corollary (true of `elabDecls` envs):
 | `FHM/InferW.lean` | `TypeOfHM.weaken_env` |
 | `FHM/PatComp.lean` | `emit` / `compile` / `lowerMatch` |
 | `briefs/next-agent-brief-surface-bridge-followups.md` | Why `DTreeExhaustive` |
-
----
-
-## Suggested first message for the next agent
-
-> SurfaceWT Approach A / 1a is **done** (see this brief). Next deferred item is
-> **`letBlock`** (or optional annotated `letIn`/`letRec` strong constructors).
-> Do not reopen B/C or Core/SCC unless Aron asks.
+| `briefs/next-agent-brief-surface-front-end-backlog.md` | Current takeover |

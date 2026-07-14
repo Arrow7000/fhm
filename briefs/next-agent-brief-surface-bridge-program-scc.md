@@ -159,7 +159,12 @@ def Program.ofFlat decls binds body : Option Surface.Program :=
 
 ## Immediate next work (recommended)
 
-### Priority 1 — `letBlock` collapse (design settled)
+### Sequencing (authoritative: front-end backlog brief)
+
+Finish annotated/poly strong `SurfaceWTExpr` **before** `letBlock`. Full order:
+`briefs/next-agent-brief-surface-front-end-backlog.md`.
+
+### `letBlock` collapse (design settled — Priority 2 after WT polish)
 
 Remove surface `letIn`/`letRecIn` from the *public* AST; one `letBlock`; run
 the **same** freeNames→SCC→nested Core `let`/`letRec` in **lowering** (not a
@@ -167,12 +172,10 @@ second IR layer). Internal desugar to today’s `letRecIn` / `desugarGroups` is
 fine as a stepping stone. **Do not** confuse with `Program.ofFlat` (already
 done — that only SCC-fills `Program.groups`).
 
-### Done — `SurfaceWT` corollary (Approach A / 1a)
+### Done — `SurfaceWT` corollary headlines (Approach A / 1a)
 
 **Record:** `briefs/next-agent-brief-surface-wt-corollary.md`.
-Strong inductive `SurfaceWT` + `surface_type_safe_of_SurfaceWT` axiom-clean.
-Optional polish: annotated/poly `letIn`/`letRec` strong constructors (still
-`of_lowers`-only when match-free).
+Headlines axiom-clean; annotated/poly strong ctors still open (backlog P1).
 
 ### Optional / deferred
 
@@ -220,15 +223,6 @@ Pattern-λ desugar, errors, strings.
 - No new `.lean` roots without strong justification (still 9 roots)
 - Don’t weaken frozen statements; add helper hypotheses instead
 - Granular commits per slice
-
----
-
-## Suggested first message for the next agent
-
-> Read `briefs/next-agent-brief-surface-wt-corollary.md` (SurfaceWT **DONE**)
-> and `briefs/next-agent-brief-surface-bridge-program-scc.md`. Next deferred
-> item is **`letBlock`**. Do not reopen Core, `ValidBindingGroups`, or B/C
-> without Aron.
 
 ---
 
