@@ -18,6 +18,7 @@ roots = [
   "FHM.SurfaceBridge",
   "FHM.Examples",
   "FHM.EvaluateUnsafe",
+  "FHM.Headlines",
 ]
 
 [[require]]
