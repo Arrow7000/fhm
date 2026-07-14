@@ -70,12 +70,13 @@ Hygiene premises on the corollary (true of `elabDecls` envs):
 | Form | Strong constructor? | Notes |
 |------|---------------------|--------|
 | Unannotated mono `letIn` | **yes** | Nested matches OK |
-| Annotated / poly `letIn` | `of_lowers` only | Needs match-free whole term |
+| Annotated / poly `letIn` | **yes** (`letInAnn`) | Requires `tvs = []` |
 | Unannotated mono `letRecIn` | **yes** | Empty gen pool; nested matches OK |
-| Annotated / poly `letRecIn` | `of_lowers` only | Needs match-free whole term |
+| Annotated / poly `letRecIn` | **yes** (`letRecInAnn`) | Requires `tvs = []`; `RecSpec` mono/poly |
 | `match_` / `ife` / app / pair / … | **yes** | Recursive |
 
-`of_lowers` = `SurfaceExprNoMatch` + `LowersExpr` + `TypeOfHM` (unique fragment).
+`of_lowers` = `SurfaceExprNoMatch` + `LowersExpr` + `TypeOfHM` (unique fragment;
+still available as escape hatch, no longer required for annotated/poly lets).
 
 ---
 
@@ -91,9 +92,7 @@ Hygiene premises on the corollary (true of `elabDecls` envs):
 
 ## What is NOT this brief
 
-- Annotated/poly strong `SurfaceWTExpr` ctors — **next slice** (finish 1a);
-  see `briefs/next-agent-brief-surface-front-end-backlog.md` Priority 1.
-- **`letBlock`** — after that (Priority 2 in the backlog brief).
+- **`letBlock`** — next product item (Priority 1 in the backlog brief).
 - Core / SCC / `ValidBindingGroups` / Approach B/C — do not reopen.
 
 ---

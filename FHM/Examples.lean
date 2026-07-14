@@ -1,6 +1,7 @@
 import FHM.InferW
 import FHM.Pretty
 import FHM.Decls
+import FHM.SurfaceBridge
 
 /-! # End-to-end demos
 
@@ -659,3 +660,88 @@ into unsound polymorphic recursion (or an occurs-check loop). All correctly reje
     (.var 0 [])))
 
 end Core.Demo
+
+/-! # Surface → Core → eval demos
+
+The Core section above feeds **hand-built Core** into `typecheck` / `evaluate`.
+This section runs the **front-end pipeline**: `Surface.Program` →
+`elaborateProgram` (decls + SCC desugar + `lower` + `infer`) → `evaluate`.
+
+Prints use `ToString` on the surface term (same shape as Core demos).
+`#guard`s assert `.isSome` / printed eval results directly — no opaque matches.
+
+@TODO(pattern-λ): λ with nontrivial pattern params (`ctor`/`pair`/`cons`/`list`)
+still fail to lower (`none`); name/wildcard params are fine. See `lowerExpr` /
+`LowersExpr` in `SurfaceBridge`.
+-/
+
+namespace SurfacePipelineDemo
+
+open SurfaceBridge
+
+private def evalStr (e : _root_.Expr) : String :=
+  match SmallStep.evaluate 100 e with
+  | some v => toString v
+  | none   => "stuck / out of fuel"
+
+/-- Elaborate then evaluate a surface program; print surface term ⟹ result. -/
+private def evalProgram (p : Surface.Program) : String :=
+  match elaborateProgram p with
+  | none => "elaborate failed"
+  | some e => evalStr e
+
+private def showEval (p : Surface.Program) : IO Unit :=
+  IO.println s!"({p.term})  ⟹  {evalProgram p}"
+
+-- if true then 1 else 0  ⟹  1
+private def sIf : Surface.Program :=
+  ⟨[], [], .ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0))⟩
+#eval showEval sIf
+#guard (elaborateProgram sIf).isSome = true
+#guard evalProgram sIf = "1"
+
+-- match Just 5 with Just x => x | Nothing => 0  ⟹  5
+private def sMaybeMatch : Surface.Program :=
+  ⟨[⟨.mk "Maybe", [.mk "a"],
+      [(.mk "Just", [.tvar (.mk "a")]), (.mk "Nothing", [])]⟩],
+   [],
+   .match_ (.app (.ctor ⟨"Just"⟩) (.primLit (.int 5)))
+     [(.ctor ⟨"Just"⟩ [.name ⟨"x"⟩], .var ⟨"x"⟩),
+      (.ctor ⟨"Nothing"⟩ [], .primLit (.int 0))]⟩
+#eval showEval sMaybeMatch
+#guard (elaborateProgram sMaybeMatch).isSome = true
+#guard evalProgram sMaybeMatch = "5"
+#guard (lowerProgram sMaybeMatch).isSome = true
+private def sMaybeMatchCtors : CtorEnv :=
+  (lowerProgram sMaybeMatch).map Prod.fst |>.getD []
+#guard checkExhaustive sMaybeMatchCtors sMaybeMatch.term = true
+
+-- let id = λx. x in id 7  ⟹  7   (`Program.ofFlat`)
+private def sIdApp : Surface.Program :=
+  match Program.ofFlat []
+      [{ name := .mk "id", ann := none,
+         rhs := .lambda (.name (.mk "x")) none (.var (.mk "x")) }]
+      (.app (.var (.mk "id")) (.primLit (.int 7))) with
+  | some p => p
+  | none => ⟨[], [], .primLit (.unit)⟩
+#eval showEval sIdApp
+#guard (elaborateProgram sIdApp).isSome = true
+#guard evalProgram sIdApp = "7"
+
+-- let id : ∀ a. a → a = λx. x in id 41  ⟹  41
+private def sAnnId : Surface.Program :=
+  ⟨[], [],
+   .letIn (.mk "id")
+     (some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩)
+     (.lambda (.name (.mk "x")) none (.var (.mk "x")))
+     (.app (.var (.mk "id")) (.primLit (.int 41)))⟩
+#eval showEval sAnnId
+#guard (elaborateProgram sAnnId).isSome = true
+#guard evalProgram sAnnId = "41"
+
+-- @TODO(pattern-λ): nontrivial pattern param — lower refuses (not a pipeline demo)
+private def sPatternLam : Surface.Expr :=
+  .lambda (.ctor ⟨"Just"⟩ [.name ⟨"x"⟩]) none (.var (.mk "x"))
+#guard (lower ((elabDecls preludeDecls).getD []) sPatternLam).isNone = true
+
+end SurfacePipelineDemo
