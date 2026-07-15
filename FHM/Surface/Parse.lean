@@ -529,8 +529,12 @@ partial def infixExpr : P Expr :=
       | none =>
         return applyBinOp op left right
 
-/-- One `let` binding: `name [: polyTy] = expr`. Returns binder column. -/
-partial def letBinding : P (Nat × ValName × Option PolyTy × Expr) :=
+/-- One `let` binding: `name [: polyTy] = expr`. Returns binder column.
+    `indentCol` is the column of the introducing `let` (or of the first
+    binder, for sibling bindings): a newline RHS must start strictly right of
+    it, so `let map =\n  e` works with a 2-space indent even when `map` itself
+    sits further right than that indent. -/
+partial def letBinding (indentCol : Nat) : P (Nat × ValName × Option PolyTy × Expr) :=
   withErrorMessage "expected let binding" do
     skipComments
     let (tok, name) ← lowerIdentTok
@@ -543,10 +547,10 @@ partial def letBinding : P (Nat × ValName × Option PolyTy × Expr) :=
     skipComments
     let eqTok ← punct .eq
     skipComments
-    -- RHS: same line as `=`, or indented past the binder column
+    -- RHS: same line as `=`, or indented past `indentCol`
     let t ← nextTok
     if t.startLine > eqTok.startLine then
-      colGt blockCol
+      colGt indentCol
     let rhs ← expr
     return (blockCol, .mk name, ann, rhs)
 
@@ -554,11 +558,11 @@ partial def letBinding : P (Nat × ValName × Option PolyTy × Expr) :=
 partial def letExpr : P Expr :=
   withErrorMessage "expected let expression" do
     skipComments
-    let _ ← keyword .«let»
-    let (blockCol, n0, ann0, rhs0) ← letBinding
+    let letTok ← keyword .«let»
+    let (blockCol, n0, ann0, rhs0) ← letBinding letTok.startCol
     let rest ← takeMany (withBacktracking do
       colEq blockCol
-      let (_, n, ann, rhs) ← letBinding
+      let (_, n, ann, rhs) ← letBinding blockCol
       return (n, ann, rhs))
     skipComments
     let _ ← keyword .«in»
@@ -707,8 +711,8 @@ def typeDecl : P DataDecl :=
 def topLet : P Binding :=
   withErrorMessage "expected top-level let" do
     skipComments
-    let _ ← keyword .«let»
-    let (_, name, ann, rhs) ← letBinding
+    let letTok ← keyword .«let»
+    let (_, name, ann, rhs) ← letBinding letTok.startCol
     return ⟨name, ann, rhs⟩
 
 /-- Interleaved `type` / `let`, then optional body expr (default unit).
@@ -995,6 +999,12 @@ def parseProgram (src : String) : Except ParseError Program :=
         .lambda (.name (.mk "x")) none (.var (.mk "x"))⟩]],
       .primLit .unit => true
     | _, _ => false
+  | _ => false)
+
+-- newline RHS indented past `let` (not past the binder name)
+#guard (parseProgram "let map : {a} a -> a =\n  \\x -> x\nmap").isOk
+#guard (match parseExpr "let x =\n  1\nin x" with
+  | .ok (.letIn (.mk "x") none (.primLit (.int 1)) (.var (.mk "x"))) => true
   | _ => false)
 
 -- duplicate top-level names → error
