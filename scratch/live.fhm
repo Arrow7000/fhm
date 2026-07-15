@@ -1,0 +1,37 @@
+-- Insertion sort + polymorphic map/filter.
+-- No triples yet, so the result is a nested pair:
+--   (sorted, (mapped, filtered))
+
+let map : {a b} (a -> b) -> List a -> List b =
+  \f xs ->
+    match xs with
+    | [] -> []
+    | h :: t -> (f h) :: (map f t)
+
+let filter : {a} (a -> Bool) -> List a -> List a =
+  \p xs ->
+    match xs with
+    | [] -> []
+    | h :: t ->
+      if p h then
+        h :: (filter p t)
+      else
+        filter p t
+
+let insert = \x xs ->
+  match xs with
+  | [] -> [x]
+  | h :: t ->
+    if x < h then
+      x :: xs
+    else
+      h :: (insert x t)
+
+let sort = \xs ->
+  match xs with
+  | [] -> []
+  | h :: t -> insert h (sort t)
+
+let xs = [9, 38, 1, 0, 4, 83, 2, 5, 2]
+
+(sort xs, (map (\x -> x + 1) xs, filter (\x -> x < 10) xs))
