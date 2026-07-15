@@ -87,12 +87,14 @@ theorem tyOfUpperName_Maybe : tyOfUpperName "Maybe" = .customTy (.mk "Maybe") []
 
 /-! ## Apply type arguments (juxtaposition) -/
 
-/-- Attach args to a custom type head; reject prim / tvar / arrow / pair heads. -/
+/-- Attach args to a bare custom type head (`Maybe` + `[Int]`); reject prim /
+    tvar / arrow / pair, and also already-applied heads (`(Maybe Int) Bool`). -/
 def applyTyArgs (head : Ty) (args : List Ty) : Except String Ty :=
   if args.isEmpty then .ok head
   else
     match head with
-    | .customTy name existing => .ok (.customTy name (existing ++ args))
+    | .customTy name [] => .ok (.customTy name args)
+    | .customTy _ (_ :: _) => .error "type application is already saturated"
     | .prim _ => .error "primitive type cannot take arguments"
     | .tvar _ => .error "type variable cannot take arguments"
     | .arrow _ _ => .error "function type cannot take arguments"
@@ -104,6 +106,8 @@ theorem applyTyArgs_empty (t : Ty) : applyTyArgs t [] = .ok t := by
 #guard (match applyTyArgs (.customTy (.mk "Maybe") []) [.prim .int] with
   | .ok (.customTy (.mk "Maybe") [.prim .int]) => true | _ => false)
 #guard (match applyTyArgs (.prim .int) [.prim .bool] with
+  | .error _ => true | _ => false)
+#guard (match applyTyArgs (.customTy (.mk "Maybe") [.prim .int]) [.prim .bool] with
   | .error _ => true | _ => false)
 
 /-! ## Low-level token matchers -/
@@ -244,14 +248,18 @@ partial def tyAtom : P Ty :=
         return .tvar (.mk name)
     ]
 
-/-- One or more atoms; fold juxtaposition onto a customTy head. -/
+/-- One or more atoms; fold juxtaposition onto a *bare* customTy head only.
+    Already-applied heads (`(Tree a)`), tvars, and prims do not absorb trailing
+    atoms — so ctor fields like `Node (Tree a) a` stay two fields. -/
 partial def tyApp : P Ty :=
   withErrorMessage "expected type" do
     let head ← tyAtom
-    let args ← takeMany (withBacktracking tyAtom)
-    match applyTyArgs head args.toList with
-    | .ok t => return t
-    | .error msg => throwUnexpectedWithMessage none msg
+    match head with
+    | .customTy name [] =>
+        let args ← takeMany (withBacktracking tyAtom)
+        return .customTy name args.toList
+    | _ =>
+        return head
 
 /-- Right-associative arrows: `A -> B -> C` ≡ `A -> (B -> C)`. -/
 partial def ty : P Ty :=
@@ -802,6 +810,8 @@ def parseProgram (src : String) : Except ParseError Program :=
 -- prims / tvars must not take args
 #guard (match parseTy "Int Bool" with | .error _ => true | _ => false)
 #guard (match parseTy "a Int" with | .error _ => true | _ => false)
+-- already-applied customTy must not absorb trailing atoms
+#guard (match parseTy "(Maybe Int) Bool" with | .error _ => true | _ => false)
 
 -- Nat is custom (never prim .nat)
 #guard (match parseTy "Nat" with
@@ -977,6 +987,34 @@ def parseProgram (src : String) : Except ParseError Program :=
     | [⟨.mk "Maybe", [.mk "a"],
         [(.mk "Just", [.tvar (.mk "a")]), (.mk "Nothing", [])]⟩] => true
     | _ => false
+  | _ => false)
+
+-- multi-field recursive ADT: trailing atoms are separate fields, not args
+#guard (match parseProgram "type Tree a = Leaf | Node (Tree a) a (Tree a)" with
+  | .ok p =>
+    match p.decls with
+    | [⟨.mk "Tree", [.mk "a"],
+        [(.mk "Leaf", []),
+         (.mk "Node",
+           [.customTy (.mk "Tree") [.tvar (.mk "a")],
+            .tvar (.mk "a"),
+            .customTy (.mk "Tree") [.tvar (.mk "a")]])]⟩] => true
+    | _ => false
+  | _ => false)
+#guard (match parseProgram "type Tree a = Leaf | Node a (Tree a) (Tree a)" with
+  | .ok p =>
+    match p.decls with
+    | [⟨.mk "Tree", [.mk "a"],
+        [(.mk "Leaf", []),
+         (.mk "Node",
+           [.tvar (.mk "a"),
+            .customTy (.mk "Tree") [.tvar (.mk "a")],
+            .customTy (.mk "Tree") [.tvar (.mk "a")]])]⟩] => true
+    | _ => false
+  | _ => false)
+#guard (match parseProgram
+    "type Tree a = Leaf | Node a (Tree a) (Tree a)\nlet t = Leaf\nt" with
+  | .ok p => (SurfaceBridge.lowerProgram p).isSome
   | _ => false)
 
 #guard (match parseProgram "let x = 1\nlet y = 2\nx" with
