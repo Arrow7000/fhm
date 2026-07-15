@@ -23,6 +23,11 @@ roots = [
   "FHM.Headlines",
 ]
 
+[[lean_exe]]
+name = "fhm_live"
+root = "FHM.Live"
+# Not part of defaultTargets — build with `lake build fhm_live` or scripts/watch-live.sh
+
 [[require]]
 name = "mathlib"
 scope = "leanprover-community"

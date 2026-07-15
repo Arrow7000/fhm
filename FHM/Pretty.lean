@@ -79,8 +79,13 @@ instance : ToString PolyTy := ⟨PolyTy.pretty⟩
 /-! ## Expressions
 
 `prec` controls parenthesization: `0` = top, `1` = function position of an
-application (wrap lambdas/lets/matches), `2` = argument/atomic position (wrap
-applications too). -/
+application (wrap lambdas/lets/matches) *or* left of `::`, `2` = argument/atomic
+position (wrap applications and `::` too).
+
+List/pair sugar (matching Surface): a proper `Nil`/`Cons` spine prints as
+`[a, b, c]`; an improper `Cons` prints as `h :: t`; `Pair a b` prints as
+`(a, b)`. Uses the same ctor name strings as `SurfaceBridge` (`"Nil"`/`"Cons"`/
+`"Pair"`). -/
 
 def MatchPattern.pretty (names : List String) : MatchPattern → String
   | .named (.mk c) 0 => c
@@ -96,8 +101,20 @@ def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
   | .primBinOp .intLt => "intLt"
   | .primBinOp .charLt => "charLt"
   | .var n _   => (ctx[n]?).getD ("#" ++ toString n)
+  | .ctor (.mk "Nil") => "[]"
   | .ctor (.mk s) => s
-  | .app f x   => prettyParenIf (prec ≥ 2) (Expr.prettyAux ctx 1 f ++ " " ++ Expr.prettyAux ctx 2 x)
+  | .app (.app (.ctor (.mk "Pair")) a) b =>
+      "(" ++ Expr.prettyAux ctx 0 a ++ ", " ++ Expr.prettyAux ctx 0 b ++ ")"
+  | .app (.app (.ctor (.mk "Cons")) h) t =>
+      match Expr.prettyListElems ctx t with
+      | some ts =>
+          "[" ++ String.intercalate ", " (Expr.prettyAux ctx 0 h :: ts) ++ "]"
+      | none =>
+          prettyParenIf (prec ≥ 1)
+            (Expr.prettyAux ctx 2 h ++ " :: " ++ Expr.prettyAux ctx 0 t)
+  | .app f x =>
+      prettyParenIf (prec ≥ 2)
+        (Expr.prettyAux ctx 1 f ++ " " ++ Expr.prettyAux ctx 2 x)
   | .lambda ann body =>
       let name := prettyTermVarName ctx.length
       let annStr := match ann with | none => "" | some t => " : " ++ t.pretty
@@ -119,6 +136,15 @@ def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
       let ctx' := names ++ ctx
       prettyParenIf (prec ≥ 1) ("let rec " ++ Expr.prettyRecGroup ctx' names anns bindings
         ++ " in " ++ Expr.prettyAux ctx' 0 body)
+
+/-- If `e` is a proper `Nil`/`Cons` spine, return pretty-printed elements; else `none`. -/
+def Expr.prettyListElems (ctx : List String) : Expr → Option (List String)
+  | .ctor (.mk "Nil") => some []
+  | .app (.app (.ctor (.mk "Cons")) h) t =>
+      match Expr.prettyListElems ctx t with
+      | some ts => some (Expr.prettyAux ctx 0 h :: ts)
+      | none => none
+  | _ => none
 
 def Expr.prettyBranches (ctx : List String) : List (MatchPattern × Expr) → String
   | [] => ""
@@ -172,6 +198,13 @@ section Examples
 -- `λx. match x with | Cons y z => y | Nil => x | _ => x`
 #eval toString (Expr.lambda none (.match_ (.var 0 [])
   [(.named (.mk "Cons") 2, .var 1 []), (.named (.mk "Nil") 0, .var 0 []), (.wildcard, .var 0 [])]))
+
+-- List/pair sugar: `[1, 2]`, `1 :: x`, `(1, 2)`
+#guard toString (Expr.app (.app (.ctor (.mk "Cons")) (.primLit (.int 1)))
+  (.app (.app (.ctor (.mk "Cons")) (.primLit (.int 2))) (.ctor (.mk "Nil")))) = "[1, 2]"
+#guard toString (Expr.ctor (.mk "Nil")) = "[]"
+#guard toString (Expr.app (.app (.ctor (.mk "Cons")) (.primLit (.int 1))) (.var 0 [])) = "1 :: #0"
+#guard toString (Expr.app (.app (.ctor (.mk "Pair")) (.primLit (.int 1))) (.primLit (.int 2))) = "(1, 2)"
 
 end Examples
 
