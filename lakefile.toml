@@ -12,6 +12,7 @@ roots = [
   "FHM.Decls",
   "FHM.SurfaceLang",
   "FHM.Surface.Lex",
+  "FHM.Surface.Parse",
   "FHM.PatComp",
   "FHM.Pretty",
   "FHM.SpikeC",
