@@ -3949,10 +3949,14 @@ private def tyArgsGuess (ctors : CtorEnv) (T : TyName) : List Ty :=
   | some ⟨_, ctor⟩ => List.replicate ctor.paramCount (.prim .unit)
   | none => []
 
-/-- Top-level ctor name in a pattern, if any. -/
+/-- Top-level ctor name in a pattern, if any (incl. List/Pair sugar). -/
 private def patternTopCtor : Surface.Pattern → Option CtorName
   | .ctor n _ => some n
-  | .pair _ _ | .cons _ _ | .list _ | .name _ | .wildcard => none
+  | .cons _ _ => some cCons
+  | .list [] => some cNil
+  | .list (_ :: _) => some cCons
+  | .pair _ _ => some cPair
+  | .name _ | .wildcard => none
 
 /-- Recover a candidate ADT name from top-level ctor patterns (all must agree). -/
 private def tyNameFromPatterns (ctors : CtorEnv) :
@@ -4469,6 +4473,12 @@ example : checkExhaustive ctorsDemo
 example : checkExhaustive ctorsDemo (.primLit (.int 0)) = true →
     SurfaceCovers ctorsDemo (.primLit (.int 0)) :=
   checkExhaustive_sound _
+
+-- List sugar (`[]` / `h :: t`) recovers `nList` via `patternTopCtor`, not Bool fallback.
+#guard checkExhaustive ctorsDemo
+  (.match_ (.var (.mk "xs"))
+    [(.list [], .primLit (.int 0)),
+     (.cons (.name (.mk "h")) (.name (.mk "t")), .primLit (.int 1))]) = true
 
 /-! ## 6. The `Lowers` relation (spec — B1 behavioural match)
 
