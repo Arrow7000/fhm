@@ -5,7 +5,7 @@ import FHM.SurfaceLang
 namespace Surface.Parse
 
 open Parser
-open Surface.Lex (Token TokenWithSource LexError Punct)
+open Surface.Lex (Token TokenWithSource LexError Punct BinOpToken)
 
 /-! ## Errors -/
 
@@ -131,6 +131,36 @@ def anyIdent : P String :=
     | .ident raw _ => some raw
     | _ => none
 
+def intLitTok : P Int :=
+  tokenMap fun t =>
+    match t.token with
+    | .intLit n => some n
+    | _ => none
+
+def boolLitTok : P Bool :=
+  tokenMap fun t =>
+    match t.token with
+    | .boolLit b => some b
+    | _ => none
+
+def charLitTok : P Char :=
+  tokenMap fun t =>
+    match t.token with
+    | .charLit c => some c
+    | _ => none
+
+def stringLitTok : P String :=
+  tokenMap fun t =>
+    match t.token with
+    | .stringLit s => some s
+    | _ => none
+
+def binOpTok : P BinOpToken :=
+  tokenMap fun t =>
+    match t.token with
+    | .op o => some o
+    | _ => none
+
 /-! ## Type grammar
 
 ASCII only:
@@ -223,6 +253,142 @@ partial def polyTy : P PolyTy :=
       let body ← ty
       return { foralls := [], body }
 
+/-! ## Expression helpers -/
+
+instance : Inhabited Expr := ⟨.primLit .unit⟩
+
+def applyBinOp (op : BinOpToken) (a b : Expr) : Expr :=
+  match op with
+  | .plus => .app (.app (.primBinOp .intAdd) a) b
+  | .minus => .app (.app (.primBinOp .intSub) a) b
+  | .lt => .app (.app (.primBinOp .intLt) a) b
+  | .cons => .cons a b
+
+/-- Simple λ/let binder: name or `_`. No type annotation (avoids `->` ambiguity). -/
+def simpleBinder : P Pattern :=
+  withErrorMessage "expected binder" do
+    skipComments
+    first [
+      do
+        let _ ← punct .underscore
+        return .wildcard,
+      do
+        let name ← lowerIdent
+        return .name (.mk name)
+    ]
+
+/-! ## Expression grammar
+
+ASCII only (no let/if/match layout — Task 7):
+* `atom` — lit, var/ctor, `()`, `(e)`, `(e, e)`, `[es]`, `\ binders -> e`
+* `appExpr` — left-assoc juxtaposition
+* `expr` — `appExpr` with optional single infix (`+`/`-`/`<`/`::`)
+-/
+
+mutual
+
+partial def atom : P Expr :=
+  withErrorMessage "expected expression atom" do
+    skipComments
+    first [
+      -- string lit: reject (no Surface string PrimLitExpr)
+      do
+        let _ ← stringLitTok
+        throwUnexpectedWithMessage none "string literals are not supported in expressions",
+      -- int / bool / char
+      do
+        let n ← intLitTok
+        return .primLit (.int n),
+      do
+        let b ← boolLitTok
+        return .primLit (.bool b),
+      do
+        let c ← charLitTok
+        return .primLit (.char c),
+      -- `()` unit
+      do
+        let _ ← punct .lparen
+        skipComments
+        let _ ← punct .rparen
+        return .primLit .unit,
+      -- `( e )` or `( e , e )`
+      do
+        let _ ← punct .lparen
+        skipComments
+        let a ← expr
+        skipComments
+        match ← option? (punct .comma) with
+        | some _ =>
+          skipComments
+          let b ← expr
+          skipComments
+          let _ ← punct .rparen
+          return .pair a b
+        | none =>
+          let _ ← punct .rparen
+          return a,
+      -- `[ e, … ]`
+      do
+        let _ ← punct .lbrack
+        skipComments
+        match ← option? (punct .rbrack) with
+        | some _ => return .list []
+        | none =>
+          let hd ← expr
+          let tl ← takeMany (withBacktracking do
+            skipComments
+            let _ ← punct .comma
+            skipComments
+            expr)
+          skipComments
+          let _ ← punct .rbrack
+          return .list (hd :: tl.toList),
+      -- `\ binder+ -> expr`
+      do
+        let _ ← punct .backslash
+        skipComments
+        let binders ← takeMany1 (withBacktracking simpleBinder)
+        skipComments
+        let _ ← punct .arrow
+        skipComments
+        let body ← expr
+        return binders.toList.foldr (fun b acc => .lambda b none acc) body,
+      -- lower → var
+      do
+        let name ← lowerIdent
+        return .var (.mk name),
+      -- upper → ctor
+      do
+        let name ← upperIdent
+        return .ctor (.mk name)
+    ]
+
+/-- Left-associative juxtaposition: `f a b` ≡ `(f a) b`. -/
+partial def appExpr : P Expr :=
+  withErrorMessage "expected expression" do
+    let head ← atom
+    let args ← takeMany (withBacktracking atom)
+    return args.foldl (fun f a => .app f a) head
+
+/-- Single optional infix; a second infix at this layer is an error. -/
+partial def expr : P Expr :=
+  withErrorMessage "expected expression" do
+    let left ← appExpr
+    skipComments
+    match ← option? (withBacktracking binOpTok) with
+    | none => return left
+    | some op =>
+      skipComments
+      let right ← appExpr
+      skipComments
+      match ← option? (withBacktracking binOpTok) with
+      | some _ =>
+        throwUnexpectedWithMessage none "infix chaining requires parentheses"
+      | none =>
+        return applyBinOp op left right
+
+end
+
 /-! ## Public API -/
 
 def runTokP (p : P α) (toks : Array Tok) : Except ParseError α :=
@@ -240,6 +406,9 @@ def parseTy (src : String) : Except ParseError Ty :=
 
 def parsePolyTy (src : String) : Except ParseError PolyTy :=
   runLexParse polyTy src
+
+def parseExpr (src : String) : Except ParseError Expr :=
+  runLexParse expr src
 
 /-! ## Inline checks -/
 
@@ -300,5 +469,79 @@ def parsePolyTy (src : String) : Except ParseError PolyTy :=
 -- lex errors surface as ParseError
 #guard (match parseTy "\t" with
   | .error ⟨"tab character", 1, 1⟩ => true | _ => false)
+
+/-! ### Expression checks -/
+
+#guard (parseExpr "1").isOk
+#guard (parseExpr "-3").isOk
+#guard (parseExpr "True").isOk
+#guard (parseExpr "\\x y -> x").isOk
+#guard (parseExpr "f a b").isOk
+#guard (match parseExpr "1 + 2" with
+  | .ok (.app (.app (.primBinOp .intAdd) (.primLit (.int 1))) (.primLit (.int 2))) => true
+  | _ => false)
+#guard (parseExpr "a :: (b :: c)").isOk
+#guard (match parseExpr "a + b + c" with | .error _ => true | _ => false)
+#guard (parseExpr "(a + b) + c").isOk
+
+-- exact shapes
+#guard (match parseExpr "1" with
+  | .ok (.primLit (.int 1)) => true | _ => false)
+#guard (match parseExpr "-3" with
+  | .ok (.primLit (.int (-3))) => true | _ => false)
+#guard (match parseExpr "True" with
+  | .ok (.primLit (.bool true)) => true | _ => false)
+#guard (match parseExpr "False" with
+  | .ok (.primLit (.bool false)) => true | _ => false)
+#guard (match parseExpr "()" with
+  | .ok (.primLit .unit) => true | _ => false)
+#guard (match parseExpr "'a'" with
+  | .ok (.primLit (.char 'a')) => true | _ => false)
+#guard (match parseExpr "x" with
+  | .ok (.var (.mk "x")) => true | _ => false)
+#guard (match parseExpr "Just" with
+  | .ok (.ctor (.mk "Just")) => true | _ => false)
+#guard (match parseExpr "f a b" with
+  | .ok (.app (.app (.var (.mk "f")) (.var (.mk "a"))) (.var (.mk "b"))) => true
+  | _ => false)
+#guard (match parseExpr "\\x y -> x" with
+  | .ok (.lambda (.name (.mk "x")) none
+      (.lambda (.name (.mk "y")) none (.var (.mk "x")))) => true
+  | _ => false)
+#guard (match parseExpr "\\_ -> ()" with
+  | .ok (.lambda .wildcard none (.primLit .unit)) => true
+  | _ => false)
+#guard (match parseExpr "[1, 2]" with
+  | .ok (.list [.primLit (.int 1), .primLit (.int 2)]) => true
+  | _ => false)
+#guard (match parseExpr "[]" with
+  | .ok (.list []) => true | _ => false)
+#guard (match parseExpr "(1, True)" with
+  | .ok (.pair (.primLit (.int 1)) (.primLit (.bool true))) => true
+  | _ => false)
+#guard (match parseExpr "a :: (b :: c)" with
+  | .ok (.cons (.var (.mk "a"))
+      (.cons (.var (.mk "b")) (.var (.mk "c")))) => true
+  | _ => false)
+#guard (match parseExpr "1 - 2" with
+  | .ok (.app (.app (.primBinOp .intSub) (.primLit (.int 1))) (.primLit (.int 2))) => true
+  | _ => false)
+#guard (match parseExpr "1 < 2" with
+  | .ok (.app (.app (.primBinOp .intLt) (.primLit (.int 1))) (.primLit (.int 2))) => true
+  | _ => false)
+#guard (match parseExpr "(a + b) + c" with
+  | .ok (.app (.app (.primBinOp .intAdd)
+      (.app (.app (.primBinOp .intAdd) (.var (.mk "a"))) (.var (.mk "b"))))
+      (.var (.mk "c"))) => true
+  | _ => false)
+
+-- rejects
+#guard (match parseExpr "\"hi\"" with | .error _ => true | _ => false)
+#guard (match parseExpr "a :: b :: c" with | .error _ => true | _ => false)
+
+-- comments skipped
+#guard (match parseExpr "1 {- x -} + 2" with
+  | .ok (.app (.app (.primBinOp .intAdd) (.primLit (.int 1))) (.primLit (.int 2))) => true
+  | _ => false)
 
 end Surface.Parse
