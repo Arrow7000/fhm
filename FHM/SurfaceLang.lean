@@ -68,6 +68,7 @@ inductive Pattern
 /-- An expression in our language -/
 inductive Expr
   | primLit (prim : PrimLitExpr)
+  | primBinOp (op : PrimBinOp)
   | pair (a b : Expr)
   | cons (head tail : Expr)
   | list (items : List Expr)

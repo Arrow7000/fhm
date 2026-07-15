@@ -1751,6 +1751,7 @@ mutual
     match covers (typically from the typing derivation). -/
 inductive AllMatchesExhaustive : CtorEnv → Expr → Prop where
   | primLit : AllMatchesExhaustive ctors (.primLit p)
+  | primBinOp : AllMatchesExhaustive ctors (.primBinOp op)
   | var : AllMatchesExhaustive ctors (.var n tyArgs)
   | ctor : AllMatchesExhaustive ctors (.ctor name)
   | lambda :
@@ -8878,7 +8879,7 @@ theorem AllMatchesExhaustive.shiftFrom {ctors : CtorEnv} :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _ threshold n; exact .primLit
-  | primBinOp op => intro h _ _; exact h
+  | primBinOp op => intro _ _ _; exact .primBinOp
   | var m _ => intro _ threshold n; simp only [Expr.shiftFrom]; split <;> exact .var
   | ctor nm => intro _ threshold n; exact .ctor
   | lambda ann body ih =>
@@ -8947,7 +8948,7 @@ theorem AllMatchesExhaustive.instTyAux {ctors : CtorEnv} (Ts : List Ty) :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _ _; exact .primLit
-  | primBinOp op => intro _ h; exact h
+  | primBinOp op => intro _ _; exact .primBinOp
   | var i tyArgs => intro _ _; exact .var
   | ctor nm => intro _ _; exact .ctor
   | lambda ann body ih => intro d h; cases h with | lambda hb => exact .lambda (ih d hb)
@@ -9026,7 +9027,7 @@ theorem AllMatchesExhaustive.substN {ctors : CtorEnv} {vs : List Expr}
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _ k; exact .primLit
-  | primBinOp op => intro h _; exact h
+  | primBinOp op => intro _ _; exact .primBinOp
   | var m _ =>
     intro _ k
     simp only [Expr.substN]
@@ -9111,7 +9112,7 @@ theorem AllMatchesExhaustive.substTyFvar {ctors : CtorEnv} (Z : Nat) (U : Ty) :
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _; exact .primLit
-  | primBinOp op => intro h; exact h
+  | primBinOp op => intro _; exact .primBinOp
   | var i tyArgs => intro _; exact .var
   | ctor nm => intro _; exact .ctor
   | lambda ann body ih =>

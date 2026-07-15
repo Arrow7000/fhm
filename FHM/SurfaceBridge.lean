@@ -911,6 +911,7 @@ mutual
 /-- Value names occurring free in `e` relative to `bound` (shadowing). -/
 def freeNames (bound : List ValName) : Surface.Expr → List ValName
   | .primLit _ => []
+  | .primBinOp _ => []
   | .ctor _ => []
   | .var n => if n ∈ bound then [] else [n]
   | .pair a b => freeNames bound a ++ freeNames bound b
@@ -961,6 +962,7 @@ def bindingDepEdges (binds : List Surface.Binding) : List (ValName × ValName) :
 
 -- Free-name / dependency `#guard`s
 #guard freeNamesD [] (.var (.mk "x")) = [.mk "x"]
+#guard freeNamesD [] (.primBinOp .intAdd) = []
 #guard freeNamesD [] (.lambda (.name (.mk "x")) none (.var (.mk "x"))) = []
 #guard freeNamesD [] (.lambda (.name (.mk "x")) none (.var (.mk "y"))) = [.mk "y"]
 -- λ-bound name must not count as a free ref to a same-named outer
@@ -3608,6 +3610,7 @@ def lowerExpr (ke : KindEnv) (tvs vs : List ValName) : Surface.Expr → Option E
   | .primLit (.int n)   => some (.primLit (.int n))
   | .primLit (.nat n)   => some (.primLit (.nat n))
   | .primLit (.char c)  => some (.primLit (.char c))
+  | .primBinOp op => some (.primBinOp op)
   | .pair a b =>
     match lowerExpr ke tvs vs a, lowerExpr ke tvs vs b with
     | some a', some b' => some (.app (.app (.ctor cPair) a') b')
@@ -3731,6 +3734,11 @@ private def ctorsDemo : CtorEnv := (elabDecls preludeDecls).getD []
 -- ife and match produce some (structure checked by the pattern-compilation tests)
 #guard (lower ctorsDemo (.ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0)))).isSome
 #guard (lower ctorsDemo (.match_ (.var (.mk "x")) [])).isNone  -- unbound scrutinee
+-- primBinOp leaves lower identity
+#guard match lowerExpr ([] : KindEnv) [] [] (.primBinOp .intAdd) with
+  | some (.primBinOp .intAdd) => true | _ => false
+#guard match lowerExpr ([] : KindEnv) [] [] (.primBinOp .intSub) with
+  | some (.primBinOp .intSub) => true | _ => false
 
 
 /-! ## 5. Surface pattern well-formedness + coverage predicates
@@ -3836,6 +3844,7 @@ def MatchExhaustive (ctors : CtorEnv) (T : TyName) (tyArgs : List Ty)
     from the lowered scrutinee's typing. -/
 inductive SurfaceCovers (ctors : CtorEnv) : Surface.Expr → Prop where
   | primLit {p} : SurfaceCovers ctors (.primLit p)
+  | primBinOp {op} : SurfaceCovers ctors (.primBinOp op)
   | var {n} : SurfaceCovers ctors (.var n)
   | ctor {n} : SurfaceCovers ctors (.ctor n)
   | pair {a b} :
@@ -3964,7 +3973,7 @@ mutual
 
 /-- Structural size for `checkExhaustive` termination (mirrors `Core.Expr.size`). -/
 def surfaceExprSize : Surface.Expr → Nat
-  | .primLit _ | .var _ | .ctor _ => 1
+  | .primLit _ | .primBinOp _ | .var _ | .ctor _ => 1
   | .pair a b => 1 + surfaceExprSize a + surfaceExprSize b
   | .cons h t => 1 + surfaceExprSize h + surfaceExprSize t
   | .list items => 1 + surfaceExprSizeList items
@@ -4019,7 +4028,7 @@ decreasing_by
     patterns when possible and seeds `tyArgs` via `tyArgsGuess` (fail-closed).
     Drivers that already know scrutinee types may call `matchExhaustiveB` directly. -/
 def checkExhaustive (ctors : CtorEnv) : Surface.Expr → Bool
-  | .primLit _ | .var _ | .ctor _ => true
+  | .primLit _ | .primBinOp _ | .var _ | .ctor _ => true
   | .pair a b => checkExhaustive ctors a && checkExhaustive ctors b
   | .cons h t => checkExhaustive ctors h && checkExhaustive ctors t
   | .list items => checkExhaustiveList ctors items
@@ -4359,6 +4368,7 @@ theorem checkExhaustive_sound {ctors : CtorEnv} :
     intro s hsz h
     match s with
     | .primLit _ => exact .primLit
+    | .primBinOp _ => exact .primBinOp
     | .var _ => exact .var
     | .ctor _ => exact .ctor
     | .pair a b =>
@@ -4496,6 +4506,8 @@ inductive LowersExpr (ctors : CtorEnv) (ke : KindEnv) (tvs : List ValName) :
       LowersExpr ctors ke tvs vs (.primLit (.char c)) (.primLit (.char c))
   | primLitBool {vs b} :
       LowersExpr ctors ke tvs vs (.primLit (.bool b)) (.ctor (if b then cTrue else cFalse))
+  | primBinOp {vs op} :
+      LowersExpr ctors ke tvs vs (.primBinOp op) (.primBinOp op)
   | pair {vs a b a' b'} :
       LowersExpr ctors ke tvs vs a a' → LowersExpr ctors ke tvs vs b b' →
       LowersExpr ctors ke tvs vs (.pair a b) (.app (.app (.ctor cPair) a') b')
@@ -4598,7 +4610,7 @@ theorem lowerExpr_isSome_of_LowersExpr {ctors : CtorEnv} {ke : KindEnv} {tvs : L
       LowersExpr ctors ke tvs vs s c → (lowerExpr ke tvs vs s).isSome := by
   intro vs s c h
   cases h with
-  | primLitUnit | primLitInt | primLitNat | primLitChar | primLitBool | ctor =>
+  | primLitUnit | primLitInt | primLitNat | primLitChar | primLitBool | primBinOp | ctor =>
     simp [lowerExpr]
   | pair ha hb =>
     simp only [lowerExpr]
@@ -4750,6 +4762,8 @@ theorem lowerExpr_LowersExpr {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValNam
     simp only [lowerExpr, Option.some.injEq] at h; subst h; exact .primLitChar
   | .primLit (.bool b) =>
     simp only [lowerExpr, Option.some.injEq] at h; subst h; exact .primLitBool
+  | .primBinOp op =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; exact .primBinOp
   | .pair a b =>
     simp only [lowerExpr] at h
     cases ha : lowerExpr ke tvs vs a with
@@ -4989,6 +5003,7 @@ mutual
     match via deterministic `lowerMatch` sugar). -/
 inductive SurfaceExprNoMatch : Surface.Expr → Prop where
   | primLit {p} : SurfaceExprNoMatch (.primLit p)
+  | primBinOp {op} : SurfaceExprNoMatch (.primBinOp op)
   | pair {a b} : SurfaceExprNoMatch a → SurfaceExprNoMatch b → SurfaceExprNoMatch (.pair a b)
   | cons {h t} : SurfaceExprNoMatch h → SurfaceExprNoMatch t → SurfaceExprNoMatch (.cons h t)
   | list {items} : SurfaceExprListNoMatch items → SurfaceExprNoMatch (.list items)
@@ -5030,6 +5045,8 @@ theorem LowersExpr_unique_of_NoMatch (ctors : CtorEnv) (ke : KindEnv) (tvs : Lis
     cases h₁ with
     | primLitUnit | primLitInt | primLitNat | primLitChar | primLitBool =>
       cases h₂; rfl
+  | primBinOp =>
+    cases h₁; cases h₂; rfl
   | pair ha hb =>
     cases h₁; cases h₂
     expose_names
@@ -7679,6 +7696,8 @@ theorem lowerExpr_tyBvarBounded {ke : KindEnv} {tvs vs : List ValName} :
     simp only [lowerExpr, Option.some.injEq] at h; subst h; simp [Expr.TyBvarBounded]
   | .primLit .unit | .primLit (.int _) | .primLit (.nat _) | .primLit (.char _) =>
     simp only [lowerExpr, Option.some.injEq] at h; subst h; simp [Expr.TyBvarBounded]
+  | .primBinOp _ =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; simp [Expr.TyBvarBounded]
   | .pair a b =>
     simp only [lowerExpr] at h
     cases ha : lowerExpr ke tvs vs a with
@@ -8640,6 +8659,8 @@ theorem lowerExpr_tyFreeVars {ke : KindEnv} {tvs vs : List ValName} :
     simp only [lowerExpr, Option.some.injEq] at h; subst h; rfl
   | .primLit .unit | .primLit (.int _) | .primLit (.nat _) | .primLit (.char _) =>
     simp only [lowerExpr, Option.some.injEq] at h; subst h; rfl
+  | .primBinOp _ =>
+    simp only [lowerExpr, Option.some.injEq] at h; subst h; rfl
   | .pair a b =>
     simp only [lowerExpr] at h
     cases ha : lowerExpr ke tvs vs a with
@@ -9103,6 +9124,8 @@ theorem lowerExpr_exhaustive {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValNam
       simp only [lowerExpr, Option.some.injEq] at hlow; subst hlow; exact .primLit
     | char ch =>
       simp only [lowerExpr, Option.some.injEq] at hlow; subst hlow; exact .primLit
+  | @primBinOp op =>
+    simp only [lowerExpr, Option.some.injEq] at hlow; subst hlow; exact .primBinOp
   | @var n =>
     simp only [lowerExpr] at hlow
     cases hi : tvarIndex vs n with
@@ -9320,7 +9343,7 @@ private theorem AllMatchesExhaustive.closeTyVarsAux {ctors : CtorEnv}
   intro e
   induction e using Expr.rec_strong with
   | primLit p => intro _ _; exact .primLit
-  | primBinOp op => intro _ h; exact h
+  | primBinOp op => intro _ _; exact .primBinOp
   | var i tyArgs => intro _ _; exact .var
   | ctor nm => intro _ _; exact .ctor
   | lambda ann body ih =>
@@ -9434,10 +9457,8 @@ theorem infer_preserves_AllMatchesExhaustive {Φ ctx e Φ' S eOut τ}
     AllMatchesExhaustive ctx.ctors eOut := by
   cases h with
   | primLitUnit | primLitInt | primLitNat | primLitChar => exact .primLit
-  | primBinOpIntAdd => exact hexh
-  | primBinOpIntSub => exact hexh
-  | primBinOpIntLt _ _ _ _ => exact hexh
-  | primBinOpCharLt _ _ _ _ => exact hexh
+  | primBinOpIntAdd | primBinOpIntSub | primBinOpIntLt _ _ _ _ | primBinOpCharLt _ _ _ _ =>
+    exact .primBinOp
   | var _ => exact .var
   | ctor _ => exact .ctor
   | lambda _ hbody =>

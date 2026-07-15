@@ -258,6 +258,10 @@ mutual
 
 def Surface.Expr.prettyAux (prec : Nat) : Surface.Expr → String
   | .primLit p => Surface.prettyPrimLit p
+  | .primBinOp .intAdd => "intAdd"
+  | .primBinOp .intSub => "intSub"
+  | .primBinOp .intLt => "intLt"
+  | .primBinOp .charLt => "charLt"
   | .var v     => prettyValName v
   | .ctor (.mk s) => s
   | .pair a b  => "(" ++ Surface.Expr.prettyAux 0 a ++ ", " ++ Surface.Expr.prettyAux 0 b ++ ")"
