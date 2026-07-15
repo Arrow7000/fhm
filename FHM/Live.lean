@@ -58,12 +58,18 @@ def zipBindingTypes (groups : List (List Surface.Binding)) (schemes : List PolyT
       go gs' (ss.drop n) (acc ++ pairs)
   go groups schemes []
 
-/-- Human-readable duration from a millisecond delta. -/
-def formatMs (ms : Nat) : String :=
-  if ms < 1000 then s!"{ms}ms"
+/-- Human-readable duration from a nanosecond delta.
+    Picks ns / µs / ms / s so sub-millisecond runs don't collapse to `0ms`. -/
+def formatDuration (ns : Nat) : String :=
+  if ns < 1000 then
+    s!"{ns}ns"
+  else if ns < 1_000_000 then
+    s!"{ns / 1000}µs"
+  else if ns < 1_000_000_000 then
+    s!"{ns / 1_000_000}ms"
   else
-    let whole := ms / 1000
-    let frac := (ms % 1000) / 10  -- hundredths
+    let whole := ns / 1_000_000_000
+    let frac := (ns % 1_000_000_000) / 10_000_000  -- hundredths of a second
     let pad := if frac < 10 then "0" else ""
     s!"{whole}.{pad}{frac}s"
 
@@ -109,8 +115,8 @@ def formatTypes (a : Ansi) (binds : List (ValName × PolyTy)) (body : PolyTy) : 
 def formatErr (a : Ansi) (st : PipelineStage) (msg : String) : String :=
   s!"{a.boldRed s!"[{st.tag}]"} {a.red msg}"
 
-def formatTiming (a : Ansi) (label : String) (ms : Nat) : String :=
-  a.dim s!"  ({label} in {formatMs ms})"
+def formatTiming (a : Ansi) (label : String) (ns : Nat) : String :=
+  a.dim s!"  ({label} in {formatDuration ns})"
 
 /-- CLI: `fhm_live [path]` — default path `scratch/live.fhm`. -/
 def main (args : List String) : IO UInt32 := do
@@ -118,7 +124,7 @@ def main (args : List String) : IO UInt32 := do
   let ansi ← Ansi.mkIO
   let src ← IO.FS.readFile path
 
-  let tCheck0 ← IO.monoMsNow
+  let tCheck0 ← IO.monoNanosNow
   -- parse (lex + parse)
   let p ← match parseProgram src with
     | .error e =>
@@ -140,7 +146,7 @@ def main (args : List String) : IO UInt32 := do
         IO.eprintln (formatErr ansi .typecheck "typechecking failed")
         return 1
     | some (_, _, eOut, τ) => pure (eOut, τ)
-  let tCheck1 ← IO.monoMsNow
+  let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
   let binds := zipBindingTypes p.groups (collectTopSchemes eOut)
   IO.println (formatTypes ansi binds bodyσ)
@@ -162,13 +168,13 @@ def main (args : List String) : IO UInt32 := do
     | some e => pure e
   IO.println (ansi.yellow "evaluating…")
   (← IO.getStdout).flush
-  let tEval0 ← IO.monoMsNow
+  let tEval0 ← IO.monoNanosNow
   match SmallStep.evaluateUnsafe e with
   | none =>
       IO.eprintln (formatErr ansi .eval "stuck (diverged or no step)")
       return 1
   | some v =>
-      let tEval1 ← IO.monoMsNow
+      let tEval1 ← IO.monoNanosNow
       IO.println s!"{ansi.boldBrightGreen "⟹"}  {ansi.brightCyan v.pretty}"
       IO.println (formatTiming ansi "evaluated" (tEval1 - tEval0))
       return 0
