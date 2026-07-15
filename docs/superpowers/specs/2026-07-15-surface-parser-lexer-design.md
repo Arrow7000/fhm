@@ -120,12 +120,12 @@ let g =
   | True -> f 1
   | False -> 0
 
-g
+g   -- optional; if omitted, body defaults to ()
 ```
 
 
 - `type` decls and `let` bindings are the declaration forms
-- A trailing **body expression** is required (feeds `Program.body`)
+- Trailing **body expression** is **optional**; if absent, `Program.body` is `primLit .unit` (`()`)
 - Binding groups / SCCs: parser may emit a flat binding list; existing `ofFlat` / `sccGroups` (or author groups) remain the mutual-recursion story — no `mutual` keyword
 - Constructor args in `type` decls: allow optional `(name : Ty)` **or** plain `Ty`; **discard names immediately** in the parser — do **not** change `DataDecl` yet (`ctors` stay `List (CtorName × List Ty)`)
 
