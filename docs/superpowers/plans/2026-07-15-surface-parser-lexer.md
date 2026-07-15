@@ -29,10 +29,10 @@
 | `FHM/SurfaceLang.lean` | Add `Expr.primBinOp` |
 | `FHM/Pretty.lean` | Pretty-print `primBinOp` |
 | `FHM/SurfaceBridge.lean` | `lowerExpr` + `LowersExpr` + all `Surface.Expr` cases |
-| `FHM/Surface/Lex.lean` | `Token`, spans, `lex` |
-| `FHM/Surface/Parse.lean` | Parsers + `parseExpr` / `parseProgram` |
-| `FHM/Surface/LexTest.lean` | Lexer `#guard` / examples |
-| `FHM/Surface/ParseTest.lean` | Parser `#guard` / examples |
+| `FHM/Surface/Lex.lean` | `Token`, spans, `lex` + inline `#guard`s / theorems |
+| `FHM/Surface/Parse.lean` | Parsers + `parseExpr` / `parseProgram` + inline `#guard`s / theorems |
+
+**Testing style:** No separate `*Test.lean` files. Put sanity `#guard`s and **theorems where feasible** at the bottom of the same module as the code (same pattern as the rest of FHM).
 
 Module names: `FHM.Surface.Lex`, `FHM.Surface.Parse`, etc.
 
@@ -170,9 +170,8 @@ git commit -m "feat(surface): add Expr.primBinOp and lower to Core"
 ### Task 3: Token type + lexer skeleton
 
 **Files:**
-- Create: `FHM/Surface/Lex.lean`
-- Create: `FHM/Surface/LexTest.lean`
-- Modify: `lakefile.toml` (add roots `FHM.Surface.Lex`, `FHM.Surface.LexTest`)
+- Create: `FHM/Surface/Lex.lean` (implementation + inline `#guard`s / theorems)
+- Modify: `lakefile.toml` (add root `FHM.Surface.Lex`)
 
 **Interfaces:**
 - Consumes: none from Parse yet
@@ -224,18 +223,16 @@ def lex (input : String) : Except LexError (Array TokenWithSource) :=
 
 Replace `sorry` before commit: start with “empty input → `#[]`” and “reject tab”.
 
-- [ ] **Step 2: Failing tests**
+- [ ] **Step 2: Inline guards in `Lex.lean`**
 
-`FHM/Surface/LexTest.lean`:
+At the bottom of the same file:
 
 ```lean
-import FHM.Surface.Lex
-
-open Surface.Lex
-
 #guard (lex "").isOk
 #guard (match lex "\t" with | .error (.tab ..) => true | _ => false)
 ```
+
+Prefer theorems for stable properties once the API settles (e.g. empty input succeeds).
 
 - [ ] **Step 3: Implement empty + tab rejection**
 
@@ -243,13 +240,13 @@ Cursor over input; on `\t` return `.error (.tab line col)`; on EOF return `.ok t
 
 - [ ] **Step 4: Build**
 
-Run: `lake build FHM.Surface.LexTest`  
+Run: `lake build FHM.Surface.Lex`  
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add FHM/Surface/Lex.lean FHM/Surface/LexTest.lean lakefile.toml
+git add FHM/Surface/Lex.lean lakefile.toml
 git commit -m "feat(surface): Token ADT and lex skeleton"
 ```
 
@@ -258,8 +255,7 @@ git commit -m "feat(surface): Token ADT and lex skeleton"
 ### Task 4: Lex comments, idents, keywords, ints, ops, punct
 
 **Files:**
-- Modify: `FHM/Surface/Lex.lean`
-- Modify: `FHM/Surface/LexTest.lean`
+- Modify: `FHM/Surface/Lex.lean` (impl + inline guards/theorems)
 
 **Interfaces:**
 - Consumes: Task 3 API
@@ -283,14 +279,14 @@ Order matters: longest match for ops (`->`, `::` before `-`, `:`); keywords befo
 
 Neg int: when at `-` and next char is digit, consume as intLit (not op minus). When `-` not followed by digit → `op .minus`.
 
-- [ ] **Step 3: Build LexTest**
+- [ ] **Step 3: Build `FHM.Surface.Lex`**
 
-Expected: all `#guard`s pass.
+Expected: all `#guard`s / theorems pass.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add FHM/Surface/Lex.lean FHM/Surface/LexTest.lean
+git add FHM/Surface/Lex.lean
 git commit -m "feat(surface): full lexer for comments, idents, lits, ops"
 ```
 
@@ -299,8 +295,7 @@ git commit -m "feat(surface): full lexer for comments, idents, lits, ops"
 ### Task 5: Parse atoms + types + schemes
 
 **Files:**
-- Create: `FHM/Surface/Parse.lean`
-- Create: `FHM/Surface/ParseTest.lean`
+- Create: `FHM/Surface/Parse.lean` (impl + inline `#guard`s / theorems)
 - Modify: `lakefile.toml` (roots)
 
 **Interfaces:**
@@ -362,7 +357,6 @@ git commit -m "feat(surface): parse types and {a b} schemes"
 
 **Files:**
 - Modify: `FHM/Surface/Parse.lean`
-- Modify: `FHM/Surface/ParseTest.lean`
 
 **Interfaces:**
 - Produces: `parseExpr : String → Except ParseError Surface.Expr`
@@ -405,7 +399,6 @@ git commit -m "feat(surface): parse apps, lambdas, lists, single infix"
 
 **Files:**
 - Modify: `FHM/Surface/Parse.lean`
-- Modify: `FHM/Surface/ParseTest.lean`
 
 **Interfaces:**
 - Extends `parseExpr` with layout-sensitive forms
@@ -446,7 +439,6 @@ git commit -m "feat(surface): layout-sensitive let, if, and match"
 
 **Files:**
 - Modify: `FHM/Surface/Parse.lean`
-- Modify: `FHM/Surface/ParseTest.lean`
 
 **Interfaces:**
 - Produces: `parseProgram : String → Except ParseError Surface.Program`
@@ -496,7 +488,7 @@ git commit -m "feat(surface): parse Program with optional unit body"
 
 - [ ] **Step 1: Full build of new modules + dependent Examples guards**
 
-Run: `lake build FHM.Surface.LexTest FHM.Surface.ParseTest`  
+Run: `lake build FHM.Surface.Lex FHM.Surface.Parse`  
 Expected: green.
 
 - [ ] **Step 2: Spec status**
