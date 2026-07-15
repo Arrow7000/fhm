@@ -1,6 +1,10 @@
--- Insertion sort + polymorphic map/filter.
+-- Custom ADTs + insertion sort + polymorphic map/filter.
 -- No triples yet, so the result is a nested pair:
---   (sorted, (mapped, filtered))
+--   (sorted, (mapped, (filtered, (fromMaybe, treeSum))))
+
+type Maybe a = Just a | Nothing
+
+type Tree a = Leaf | Node a (Tree a) (Tree a)
 
 let map : {a b} (a -> b) -> List a -> List b =
   \f xs ->
@@ -17,6 +21,23 @@ let filter : {a} (a -> Bool) -> List a -> List a =
         h :: (filter p t)
       else
         filter p t
+
+let fromMaybe : {a} a -> Maybe a -> a =
+  \d m ->
+    match m with
+    | Just x -> x
+    | Nothing -> d
+
+let mapMaybe : {a b} (a -> b) -> Maybe a -> Maybe b =
+  \f m ->
+    match m with
+    | Nothing -> Nothing
+    | Just x -> Just (f x)
+
+let treeSum = \t ->
+  match t with
+  | Leaf -> 0
+  | Node x l r -> x + ((treeSum l) + (treeSum r))
 
 let insert = \x xs ->
   match xs with
@@ -40,4 +61,7 @@ let lt10 =
 
 let xs = [9, 38, 1, 0, 4, 83, 2, 5, 2]
 
-(sort xs, (map incr xs, filter lt10 xs))
+let t = Node 1 Leaf (Node 2 Leaf (Node 3 Leaf Leaf))
+
+(sort xs, (map incr xs, (filter lt10 xs,
+  (fromMaybe 0 (mapMaybe incr (Just 40)), treeSum t))))
