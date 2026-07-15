@@ -1,6 +1,7 @@
 import Parser
 import FHM.Surface.Lex
 import FHM.SurfaceLang
+import FHM.SurfaceBridge
 
 namespace Surface.Parse
 
@@ -641,6 +642,104 @@ partial def expr : P Expr :=
 
 end
 
+/-! ## Program grammar (F# style)
+
+* `ctorField` — `(name : ty)` (name discarded) or bare `tyApp`
+* `typeDecl` — `type T a = C ty | D (n : ty) ty`
+* `topLet` — `let name [: scheme] = expr` (no `in`; required `let` at root)
+* `program` — interleaved type/let decls, optional body (default `()`)
+-/
+
+/-- Ctor field: `(name : ty)` discards `name`; bare fields are `tyApp`
+    (arrows need parens, so `C Int -> T` is not one field). -/
+def ctorField : P Ty :=
+  withErrorMessage "expected constructor field" do
+    skipComments
+    first [
+      withBacktracking do
+        let _ ← punct .lparen
+        skipComments
+        let _ ← anyIdent
+        skipComments
+        let _ ← punct .colon
+        skipComments
+        let t ← ty
+        skipComments
+        let _ ← punct .rparen
+        return t,
+      tyApp
+    ]
+
+def dataCtor : P (CtorName × List Ty) :=
+  withErrorMessage "expected constructor" do
+    skipComments
+    let name ← upperIdent
+    let fields ← takeMany (withBacktracking ctorField)
+    return (.mk name, fields.toList)
+
+def typeDecl : P DataDecl :=
+  withErrorMessage "expected type declaration" do
+    skipComments
+    let _ ← keyword .«type»
+    skipComments
+    let name ← upperIdent
+    let params ← takeMany (withBacktracking do
+      skipComments
+      lowerIdent)
+    skipComments
+    let _ ← punct .eq
+    skipComments
+    let _ ← option? (withBacktracking (punct .pipe))
+    skipComments
+    let c0 ← dataCtor
+    let rest ← takeMany (withBacktracking do
+      skipComments
+      let _ ← punct .pipe
+      skipComments
+      dataCtor)
+    return {
+      name := .mk name
+      params := params.toList.map ValName.mk
+      ctors := c0 :: rest.toList
+    }
+
+/-- Top-level `let` binding (F# style — `let` required; no `in`). -/
+def topLet : P Binding :=
+  withErrorMessage "expected top-level let" do
+    skipComments
+    let _ ← keyword .«let»
+    let (_, name, ann, rhs) ← letBinding
+    return ⟨name, ann, rhs⟩
+
+/-- Interleaved `type` / `let`, then optional body expr (default unit).
+    Groups via `SurfaceBridge.Program.ofFlat` (SCC); fails on duplicate names. -/
+def program : P Program :=
+  withErrorMessage "expected program" do
+    skipComments
+    let items ← takeMany (withBacktracking do
+      skipComments
+      first [
+        do
+          let d ← typeDecl
+          return Sum.inl (α := DataDecl) (β := Binding) d,
+        do
+          let b ← topLet
+          return Sum.inr (α := DataDecl) (β := Binding) b
+      ])
+    skipComments
+    let body? ← option? (withBacktracking expr)
+    let body := body?.getD (.primLit .unit)
+    let decls := items.toList.filterMap fun
+      | .inl d => some d
+      | .inr _ => none
+    let binds := items.toList.filterMap fun
+      | .inl _ => none
+      | .inr b => some b
+    match SurfaceBridge.Program.ofFlat decls binds body with
+    | some p => return p
+    | none =>
+      throwUnexpectedWithMessage none "duplicate binding names"
+
 /-! ## Public API -/
 
 def runTokP (p : P α) (toks : Array Tok) : Except ParseError α :=
@@ -661,6 +760,9 @@ def parsePolyTy (src : String) : Except ParseError PolyTy :=
 
 def parseExpr (src : String) : Except ParseError Expr :=
   runLexParse expr src
+
+def parseProgram (src : String) : Except ParseError Program :=
+  runLexParse program src
 
 /-! ## Inline checks -/
 
@@ -842,6 +944,69 @@ def parseExpr (src : String) : Except ParseError Expr :=
   | .ok (.match_ (.var (.mk "v"))
       [(.ctor (.mk "Just") [.name (.mk "x")], .var (.mk "x")),
        (.ctor (.mk "Nothing") [], .primLit (.int 0))]) => true
+  | _ => false)
+
+/-! ### Program: type decls + top-level lets + optional body -/
+
+#guard (parseProgram "let x = 1\n").isOk
+#guard (parseProgram "let x = 1").isOk
+#guard (match parseProgram "let x = 1" with
+  | .ok p =>
+    match p.body with
+    | .primLit .unit => true
+    | _ => false
+  | _ => false)
+
+#guard (parseProgram "type Maybe a = Just a | Nothing\nlet x = Nothing\nx").isOk
+
+#guard (match parseProgram "type T = C (contents : Int)" with
+  | .ok p =>
+    match p.decls with
+    | [⟨.mk "T", [], [(.mk "C", [.prim .int])]⟩] =>
+      match p.body with | .primLit .unit => true | _ => false
+    | _ => false
+  | _ => false)
+
+#guard (match parseProgram "type Maybe a = Just a | Nothing" with
+  | .ok p =>
+    match p.decls with
+    | [⟨.mk "Maybe", [.mk "a"],
+        [(.mk "Just", [.tvar (.mk "a")]), (.mk "Nothing", [])]⟩] => true
+    | _ => false
+  | _ => false)
+
+#guard (match parseProgram "let x = 1\nlet y = 2\nx" with
+  | .ok p =>
+    match p.body with
+    | .var (.mk "x") =>
+      let flat := p.groups.flatten
+      (flat.length == 2) &&
+        flat.any (fun b => match b with
+          | ⟨.mk "x", none, .primLit (.int 1)⟩ => true | _ => false) &&
+        flat.any (fun b => match b with
+          | ⟨.mk "y", none, .primLit (.int 2)⟩ => true | _ => false)
+    | _ => false
+  | _ => false)
+
+#guard (match parseProgram "let f : Int -> Int = \\x -> x" with
+  | .ok p =>
+    match p.groups, p.body with
+    | [[⟨.mk "f", some ⟨[], .arrow (.prim .int) (.prim .int)⟩,
+        .lambda (.name (.mk "x")) none (.var (.mk "x"))⟩]],
+      .primLit .unit => true
+    | _, _ => false
+  | _ => false)
+
+-- duplicate top-level names → error
+#guard (match parseProgram "let x = 1\nlet x = 2" with | .error _ => true | _ => false)
+
+-- end-to-end: parse → lowerProgram
+#guard (match parseProgram "let x = 1\nx" with
+  | .ok p => (SurfaceBridge.lowerProgram p).isSome
+  | _ => false)
+
+#guard (match parseProgram "type Maybe a = Just a | Nothing\nlet x = Nothing\nx" with
+  | .ok p => (SurfaceBridge.lowerProgram p).isSome
   | _ => false)
 
 end Surface.Parse
