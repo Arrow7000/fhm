@@ -55,6 +55,8 @@ def Ty.prettyAux (prec : Nat) : Ty → String
   | .bvar n        => prettyTyVarName n
   | .fvar n        => "?" ++ prettyTyVarName n
   | .arrow a b     => prettyParenIf (prec ≥ 1) (Ty.prettyAux 1 a ++ " → " ++ Ty.prettyAux 0 b)
+  | .customTy (.mk "Pair") [a, b] =>
+      "(" ++ Ty.prettyAux 0 a ++ ", " ++ Ty.prettyAux 0 b ++ ")"
   | .customTy (.mk s) []   => s
   | .customTy (.mk s) args => prettyParenIf (prec ≥ 2) (s ++ " " ++ String.intercalate " " (Ty.prettyArgs args))
 
@@ -205,6 +207,8 @@ section Examples
 #guard toString (Expr.ctor (.mk "Nil")) = "[]"
 #guard toString (Expr.app (.app (.ctor (.mk "Cons")) (.primLit (.int 1))) (.var 0 [])) = "1 :: #0"
 #guard toString (Expr.app (.app (.ctor (.mk "Pair")) (.primLit (.int 1))) (.primLit (.int 2))) = "(1, 2)"
+#guard toString (Ty.customTy (.mk "Pair") [.prim .int, .customTy (.mk "List") [.prim .int]])
+  = "(Int, List Int)"
 
 end Examples
 
