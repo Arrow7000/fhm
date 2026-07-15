@@ -32,6 +32,12 @@ let sort = \xs ->
   | [] -> []
   | h :: t -> insert h (sort t)
 
+let incr =
+  \x -> x + 1
+
+let lt10 =
+  \x -> x < 10
+
 let xs = [9, 38, 1, 0, 4, 83, 2, 5, 2]
 
-(sort xs, (map (\x -> x + 1) xs, filter (\x -> x < 10) xs))
+(sort xs, (map incr xs, filter lt10 xs))
