@@ -71,7 +71,7 @@ Create temporary `FHM/Surface/ParserSmoke.lean`:
 ```lean
 import Parser
 
-#check Parser.SimpleParser
+#check SimpleParser
 ```
 
 Add root `"FHM.Surface.ParserSmoke"` to `lakefile.toml` `roots` (or build via import from an existing root). Run `lake build FHM.Surface.ParserSmoke`.  

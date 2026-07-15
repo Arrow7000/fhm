@@ -1,4 +1,3 @@
-import FHM.SurfaceLang
 import UnicodeBasic
 
 namespace Surface.Lex

@@ -1,7 +1,7 @@
 # Surface lexer & parser design
 
 **Date:** 2026-07-15  
-**Status:** Draft for review  
+**Status:** Accepted  
 **Scope:** Lex + parse the full current Surface language into named `Surface.*` ASTs, then hand off to the existing desugar / resolve / lower pipeline.
 
 ## Goals
