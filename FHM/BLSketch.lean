@@ -41,7 +41,7 @@ Whether the proofs go through is our correctness signal for *both* the statement
 the strategy implementations.
 -/
 
-namespace BLChallenges
+namespace BLSketch
 
 /-! ## 0. The bound language (spec §1) -/
 
@@ -871,4 +871,4 @@ should NOT attempt. Sketch:
   `¬ ∃ f : VQuery → Bool, Computable f ∧ ∀ q, f q = true ↔ q.Valid`
 -/
 
-end BLChallenges
+end BLSketch
