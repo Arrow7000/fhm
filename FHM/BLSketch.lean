@@ -8,11 +8,12 @@ implementor (annotate, commit, error, …).
 
 ## Picture (bound layer on top of ordinary HM)
 
-* **Compare (∀):** subtype / inhabitability via `checkValid`.
-* **Combine:** branch `join` = `min`/`max` (free). Meet is the dual; not needed
-  in the tiny rules below.
-* **Solve (∃ under ∀):** invent/instantiate inferables; when solutions **escape**
-  into an observable type, require **unique outputs** (or an annotation).
+* **Compare (∀):** subtype / inhabitability via `checkValid`, under assumption
+  set `Δ` (first index of `TypeOf` / `Sub`).
+* **Combine:** branch `join` = `min`/`max` (free). **Meet** inhabitability =
+  `checkValid (inhabitProblem Δ (Interval.meet …))`.
+* **Solve (∃ under ∀):** `annoInfer` uses `subtypeProblem Δ ty' ty` as `ψ`, then
+  `solve` + `unique` on `ty'.obsBounds`.
 * **Demand restriction (contravariant bounds):** at most one inferable, affine in
   it, coefficients/offsets rigid-only — see `Count.DemandOK`. Positive / result
   bounds may still use `n*k` (e.g. `flatMap`).
@@ -20,6 +21,9 @@ implementor (annotate, commit, error, …).
   Scheme packing here is **annotated** (`letScheme s …`): `s` is given and the
   binding must inhabit `s.body`. A real checker may infer `s` by generalising
   unconstrained bound inferables (or ask for an annotation / commit if ambiguous).
+
+Term de Bruijn: under `lam`/`let`, extend `Ctx` at the front; bodies are already
+written in that scope (`var 0` = new binding). No `Expr.subst` in `TypeOf`.
 
 Out of scope here: `zip`/`take`/`drop` (need value-level `Nat`s in types),
 `splitAt`-style length splitting on inputs, match refinements, indexing APIs,
@@ -88,14 +92,18 @@ def ForallProblem.Valid (φ : ForallProblem) : Prop :=
 
 structure ExistsProblem where
   inferables : List Var
+  /-- Ambient assumptions (threaded from `Δ` in `TypeOf` / `Sub`). -/
+  prem       : List Constraint := []
   cons       : List Constraint
   deriving Repr
 
 def agreesOn (vs : List Var) (σ τ : Assign) : Prop :=
   ∀ v ∈ vs, σ v = τ v
 
+/-- Witness: for every assignment agreeing on inferables, premises imply goals. -/
 def ExistsProblem.SolvedBy (ψ : ExistsProblem) (σ : Assign) : Prop :=
-  ∀ τ : Assign, agreesOn ψ.inferables σ τ → (∀ c ∈ ψ.cons, c.Holds τ)
+  ∀ τ : Assign, agreesOn ψ.inferables σ τ →
+    (∀ c ∈ ψ.prem, c.Holds τ) → (∀ c ∈ ψ.cons, c.Holds τ)
 
 def ExistsProblem.Sat (ψ : ExistsProblem) : Prop :=
   ∃ σ, ψ.SolvedBy σ
@@ -168,9 +176,17 @@ structure Interval where
   hi : Count
   deriving DecidableEq, Repr
 
-def Interval.subGoals (a b : Interval) : ForallProblem where
-  prem  := []
+def Interval.subGoals (Δ : List Constraint) (a b : Interval) : ForallProblem where
+  prem  := Δ
   goals := [⟨b.lo, a.lo⟩, ⟨a.hi, b.hi⟩]
+
+/-- Candidate meet; inhabitability is a ∀-check (see `inhabitProblem`). -/
+def Interval.meet (a b : Interval) : Interval :=
+  ⟨.max a.lo b.lo, .min a.hi b.hi⟩
+
+def inhabitProblem (Δ : List Constraint) (i : Interval) : ForallProblem where
+  prem  := Δ
+  goals := [⟨i.lo, i.hi⟩]
 
 inductive Ty where
   | unit
@@ -184,6 +200,50 @@ def Ty.obsBounds : Ty → List Count
   | .unit => []
   | .bl lo hi => [lo, hi]
   | .arrow d c => d.obsBounds ++ c.obsBounds
+
+def Count.inferVars : Count → List Var
+  | .lit _ => []
+  | .var v => if v.kind = .inferable then [v] else []
+  | .add a b => a.inferVars ++ b.inferVars
+  | .mul a b => a.inferVars ++ b.inferVars
+  | .min a b => a.inferVars ++ b.inferVars
+  | .max a b => a.inferVars ++ b.inferVars
+  | .pred a => a.inferVars
+
+def Ty.inferVars : Ty → List Var
+  | .unit => []
+  | .bl lo hi => lo.inferVars ++ hi.inferVars
+  | .arrow d c => d.inferVars ++ c.inferVars
+
+def Ty.size : Ty → Nat
+  | .unit => 1
+  | .bl _ _ => 1
+  | .arrow d c => 1 + d.size + c.size
+
+/-- Structural subtype obligations (`none` if shapes mismatch). -/
+def subConstraints (ty' ty : Ty) : Option (List Constraint) :=
+  match ty', ty with
+  | .unit, .unit => some []
+  | .bl lo hi, .bl lo' hi' => some [⟨lo', lo⟩, ⟨hi, hi'⟩]
+  | .arrow a b, .arrow a' b' =>
+      match subConstraints a' a, subConstraints b b' with
+      | some cs₁, some cs₂ => some (cs₁ ++ cs₂)
+      | _, _ => none
+  | _, _ => none
+termination_by ty'.size + ty.size
+decreasing_by all_goals (simp_wf; simp [Ty.size]; omega)
+
+/-- ∃∀ problem for “choose inferables so `ty' <: ty` under assumptions `Δ`. -/
+def subtypeProblem (Δ : List Constraint) (ty' ty : Ty) : Option ExistsProblem :=
+  match subConstraints ty' ty with
+  | none => none
+  | some cs =>
+    let vs := ty'.inferVars ++ ty.inferVars
+    some {
+      inferables := vs.foldl (fun acc v => if v ∈ acc then acc else acc ++ [v]) []
+      prem := Δ
+      cons := cs
+    }
 
 /-- Demanded types: `BL` bounds must be `Count.DemandOK`. -/
 inductive Ty.DemandOK : Ty → Prop where
@@ -257,7 +317,11 @@ inductive Expr where
   | if_  (cond thn els : Expr)
   | anno (e : Expr) (ty : Ty)
   /-- Monomorphic let: bind `e1`, then `e2` under `var 0`. Ctx extension only —
-  no term-level substitution in the typing rules. -/
+  no term-level substitution in the typing rules. Under a new binder, indices in
+  an *already-built* body are already scoped: `var 0` = this binding, `var 1` =
+  previous `var 0`. Lookup in the extended `Ctx` does the “shift”; we do not
+  rewrite the body. (Rewriting would be needed only if you wrapped a term that
+  was typed in the *outer* scope without rebuilding it — not how these ASTs work.) -/
   | let_ (binding body : Expr)
   /-- Pack `binding : s.body` as a bound scheme `s`, then type `body` with that
   scheme at `var 0`. `s` is an annotation (inferred gen is a checker policy). -/
@@ -309,96 +373,91 @@ axiom unique_sound (ψ : ExistsProblem) (outs : List Count) :
     | .multiple => ¬ ψ.UniqueOutputs outs
     | .unknown => True
 
-/-! ## 6. `Sub` and `TypeOf` -/
+/-! ## 6. `Sub` and `TypeOf`
 
-/-- Subtyping. On `BL`, the **supertype** (demand) must be `DemandOK`, then
-`checkValid` on `lo'/≤/lo` and `hi/≤/hi'`. -/
-inductive Sub : Ty → Ty → Prop where
+`Δ` is the ambient assumption set (bound premises): subtype/`lo ≤ hi` checks
+are ∀-validity *under* `Δ`. Empty `Δ` is the closed case used in most examples.
+-/
+
+/-- Subtyping under assumptions `Δ`. -/
+inductive Sub (Δ : List Constraint) : Ty → Ty → Prop where
   | unit :
-    Sub .unit .unit
+    Sub Δ .unit .unit
   | arrow {a a' b b'} :
-    Sub a' a →
-    Sub b b' →
-    Sub (.arrow a b) (.arrow a' b')
+    Sub Δ a' a →
+    Sub Δ b b' →
+    Sub Δ (.arrow a b) (.arrow a' b')
   | bl {lo hi lo' hi'} :
     Count.DemandOK lo' →
     Count.DemandOK hi' →
-    checkValid (Interval.subGoals ⟨lo, hi⟩ ⟨lo', hi'⟩) = .valid →
-    Sub (.bl lo hi) (.bl lo' hi')
+    checkValid (Interval.subGoals Δ ⟨lo, hi⟩ ⟨lo', hi'⟩) = .valid →
+    Sub Δ (.bl lo hi) (.bl lo' hi')
 
-/-- **The judgment to read.** -/
-inductive TypeOf : Ctx → Expr → Ty → Prop where
-  | unit {ctx} :
-    TypeOf ctx .unit .unit
+/-- **The judgment to read.** First index: assumption set `Δ`. -/
+inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
+  | unit {Δ ctx} :
+    TypeOf Δ ctx .unit .unit
 
-  | nil {ctx} :
-    TypeOf ctx .nil (.bl (.lit 0) (.lit 0))
+  | nil {Δ ctx} :
+    TypeOf Δ ctx .nil (.bl (.lit 0) (.lit 0))
 
-  | cons {ctx head tail lo hi} :
-    TypeOf ctx head .unit →
-    TypeOf ctx tail (.bl lo hi) →
-    TypeOf ctx (.cons head tail) (.bl (.add lo (.lit 1)) (.add hi (.lit 1)))
+  | cons {Δ ctx head tail lo hi} :
+    TypeOf Δ ctx head .unit →
+    TypeOf Δ ctx tail (.bl lo hi) →
+    TypeOf Δ ctx (.cons head tail) (.bl (.add lo (.lit 1)) (.add hi (.lit 1)))
 
-  | varMono {ctx i ty} :
+  | varMono {Δ ctx i ty} :
     ctx[i]? = some (.mono ty) →
-    TypeOf ctx (.var i []) ty
+    TypeOf Δ ctx (.var i []) ty
 
-  | varScheme {ctx i s args ty} :
+  | varScheme {Δ ctx i s args ty} :
     ctx[i]? = some (.scheme s) →
     s.InstantiatesTo args ty →
-    TypeOf ctx (.var i args) ty
+    TypeOf Δ ctx (.var i args) ty
 
-  | lam {ctx paramTy body bodyTy} :
+  /-- Body is typed in an extended ctx; de Bruijn indices in `body` are already
+  relative to that scope (`var 0` = param). -/
+  | lam {Δ ctx paramTy body bodyTy} :
     Ty.DemandOK paramTy →
-    TypeOf (.mono paramTy :: ctx) body bodyTy →
-    TypeOf ctx (.lam paramTy body) (.arrow paramTy bodyTy)
+    TypeOf Δ (.mono paramTy :: ctx) body bodyTy →
+    TypeOf Δ ctx (.lam paramTy body) (.arrow paramTy bodyTy)
 
-  /-- App: subtype argument into domain (`DemandOK` + `checkValid` via `Sub`). -/
-  | app {ctx f arg argTy retTy argTy'} :
-    TypeOf ctx f (.arrow argTy retTy) →
-    TypeOf ctx arg argTy' →
-    Sub argTy' argTy →
-    TypeOf ctx (.app f arg) retTy
+  | app {Δ ctx f arg argTy retTy argTy'} :
+    TypeOf Δ ctx f (.arrow argTy retTy) →
+    TypeOf Δ ctx arg argTy' →
+    Sub Δ argTy' argTy →
+    TypeOf Δ ctx (.app f arg) retTy
 
-  /-- Branch join — pure `min`/`max`, no oracle. -/
-  | ifBL {ctx cond thn els lo₁ hi₁ lo₂ hi₂} :
-    TypeOf ctx cond .unit →
-    TypeOf ctx thn (.bl lo₁ hi₁) →
-    TypeOf ctx els (.bl lo₂ hi₂) →
-    TypeOf ctx (.if_ cond thn els) (.bl (.min lo₁ lo₂) (.max hi₁ hi₂))
+  | ifBL {Δ ctx cond thn els lo₁ hi₁ lo₂ hi₂} :
+    TypeOf Δ ctx cond .unit →
+    TypeOf Δ ctx thn (.bl lo₁ hi₁) →
+    TypeOf Δ ctx els (.bl lo₂ hi₂) →
+    TypeOf Δ ctx (.if_ cond thn els) (.bl (.min lo₁ lo₂) (.max hi₁ hi₂))
 
-  /-- Ascription when subtype already holds (demand must be `DemandOK` via `Sub`). -/
-  | anno {ctx e ty ty'} :
-    TypeOf ctx e ty' →
-    Sub ty' ty →
-    TypeOf ctx (.anno e ty) ty
+  | anno {Δ ctx e ty ty'} :
+    TypeOf Δ ctx e ty' →
+    Sub Δ ty' ty →
+    TypeOf Δ ctx (.anno e ty) ty
 
-  /-- Ascription that **solves** inferables in the synthesized type `ty'`.
-  Uniqueness is checked on `ty'.obsBounds` — the bound exprs in the observable
-  synthesized type — **not** on the witness `σ` itself. So `a*b = 12` with
-  obsBounds `[a*b, a*b]` can be unique-as-outputs even when `(a,b)` is not.
-  `ψ` packs the ∃∀ constraints (informal in this sketch). -/
-  | annoInfer {ctx e ty ty' ψ σ} :
-    TypeOf ctx e ty' →
+  /-- Solve inferables so `ty' <: ty` under `Δ`, with unique observable outputs.
+  `ψ` is exactly `subtypeProblem Δ ty' ty`. -/
+  | annoInfer {Δ ctx e ty ty' ψ σ} :
+    TypeOf Δ ctx e ty' →
     Ty.DemandOK ty →
+    subtypeProblem Δ ty' ty = some ψ →
     solve ψ = .witness σ →
     unique ψ ty'.obsBounds = .unique →
-    Sub ty' ty →
-    TypeOf ctx (.anno e ty) ty
+    TypeOf Δ ctx (.anno e ty) ty
 
-  /-- Mono let — extend ctx; body refers to the binding as `var 0`. -/
-  | letMono {ctx e1 e2 ty1 ty2} :
-    TypeOf ctx e1 ty1 →
-    TypeOf (.mono ty1 :: ctx) e2 ty2 →
-    TypeOf ctx (.let_ e1 e2) ty2
+  | letMono {Δ ctx e1 e2 ty1 ty2} :
+    TypeOf Δ ctx e1 ty1 →
+    TypeOf Δ (.mono ty1 :: ctx) e2 ty2 →
+    TypeOf Δ ctx (.let_ e1 e2) ty2
 
-  /-- Pack an annotated bound scheme. Typing uses only ctx extension (de Bruijn
-  for *terms*); Count-level binders in `s.body` are just rigid `Count` vars —
-  no term-subst machinery beyond `InstantiatesTo` at use sites. -/
-  | letScheme {ctx s e1 e2 bodyTy} :
-    TypeOf ctx e1 s.body →
-    TypeOf (.scheme s :: ctx) e2 bodyTy →
-    TypeOf ctx (.letScheme s e1 e2) bodyTy
+  | letScheme {Δ ctx s e1 e2 bodyTy} :
+    TypeOf Δ ctx e1 s.body →
+    TypeOf Δ (.scheme s :: ctx) e2 bodyTy →
+    TypeOf Δ ctx (.letScheme s e1 e2) bodyTy
 
 /-! ## 7. Examples -/
 
@@ -407,10 +466,10 @@ namespace Examples
 def r (i : Nat) : Count := cvar .rigid i
 def x (i : Nat) : Count := cvar .inferable i
 
-example : TypeOf [] .nil (.bl (.lit 0) (.lit 0)) :=
+example : TypeOf [] [] .nil (.bl (.lit 0) (.lit 0)) :=
   .nil
 
-example : TypeOf [] (.cons .unit .nil)
+example : TypeOf [] [] (.cons .unit .nil)
     (.bl (.add (.lit 0) (.lit 1)) (.add (.lit 0) (.lit 1))) :=
   .cons .unit .nil
 
@@ -419,13 +478,13 @@ def idScheme : BScheme where
   binders := 1
   body := .arrow (.bl (r 0) (r 0)) (.bl (r 0) (r 0))
 
-example : TypeOf [.scheme idScheme] (.var 0 [.lit 3])
+example : TypeOf [] [.scheme idScheme] (.var 0 [.lit 3])
     (.arrow (.bl (.lit 3) (.lit 3)) (.bl (.lit 3) (.lit 3))) :=
   .varScheme rfl <| .intro rfl <|
     .arrow (.bl (.var rfl) (.var rfl)) (.bl (.var rfl) (.var rfl))
 
 /-- Create a scheme with `letScheme`, then instantiate — no pre-loaded ctx. -/
-example : TypeOf []
+example : TypeOf [] []
     (.letScheme idScheme
       (.lam (.bl (r 0) (r 0)) (.var 0 []))
       (.var 0 [.lit 3]))
