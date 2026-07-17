@@ -14,11 +14,11 @@ appears as a premise in that derivation:
 | Job | Where it shows up |
 | --- | --- |
 | **Compare (∀)** | `Sub` / inhabitability → `checkValid` under assumptions `Δ` |
-| **Join** | `ifBL`, `matchBL` result bounds via `min`/`max` (free) |
+| **Join** | `ifBL`, `matchBL` (both branches `BL`) via `min`/`max`; non-`BL` branches must be equal |
 | **Meet inhabitability** | not an `Expr` form — when one value faces several BL demands, discharge `checkValid (inhabitProblem Δ (Interval.meet …))` |
-| **Solve + unique outputs** | `annoInfer` via `subtypeProblem Δ ty' ty` |
+| **Solve + unique outputs** | HM-style narrowing at use/ascription: `annoInfer` / `appInfer` / `letSchemeInfer` via `subtypeProblem` |
 | **Demand discipline** | `Count.DemandOK` / `Ty.DemandOK` on demanded types |
-| **Bound schemes** | `letScheme` (annotated pack) + `varScheme` (`InstantiatesTo`); bodies are WF (only rigid binders `0..n-1`) |
+| **Bound schemes** | `letScheme` (pack with `Sub` or solve) + `varScheme` (`InstantiatesTo`); bodies are WF (only rigid binders `0..n-1`) |
 | **Match refinement** | `matchBL` / `matchNil` / `matchCons` extend `Δ`; single-branch forms need a ∀-proof the other case is impossible (`hi ≤ 0` or `1 ≤ lo`) |
 
 Oracle answers other than success (`unknown` / `invalid` / `unsat` / `multiple`)
@@ -541,6 +541,16 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     Sub Δ argTy' argTy →
     TypeOf Δ ctx (.app f arg) retTy
 
+  /-- HM-style narrowing at the call site (mirror of `annoInfer`). -/
+  | appInfer {Δ ctx f arg argTy retTy argTy' ψ σ} :
+    TypeOf Δ ctx f (.arrow argTy retTy) →
+    TypeOf Δ ctx arg argTy' →
+    Ty.DemandOK argTy →
+    subtypeProblem Δ argTy' argTy = some ψ →
+    solve ψ = .witness σ →
+    unique ψ argTy'.obsBounds = .unique →
+    TypeOf Δ ctx (.app f arg) retTy
+
   | ifBL {Δ ctx cond thn els lo₁ hi₁ lo₂ hi₂} :
     TypeOf Δ ctx cond .unit →
     TypeOf Δ ctx thn (.bl lo₁ hi₁) →
@@ -567,13 +577,26 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     TypeOf Δ (.mono ty1 :: ctx) e2 ty2 →
     TypeOf Δ ctx (.let_ e1 e2) ty2
 
-  | letScheme {Δ ctx s e1 e2 bodyTy} :
+  /-- Pack: bind may be a subtype of the scheme body (wider annotation OK). -/
+  | letScheme {Δ ctx s e1 e2 ty1 bodyTy} :
     s.WF →
-    TypeOf Δ ctx e1 s.body →
+    TypeOf Δ ctx e1 ty1 →
+    Sub Δ ty1 s.body →
     TypeOf Δ (.scheme s :: ctx) e2 bodyTy →
     TypeOf Δ ctx (.letScheme s e1 e2) bodyTy
 
-  /-- Exhaustive match on `BL lo hi`.
+  /-- Pack with HM-style hole narrowing (mirror of `annoInfer`). -/
+  | letSchemeInfer {Δ ctx s e1 e2 ty1 bodyTy ψ σ} :
+    s.WF →
+    TypeOf Δ ctx e1 ty1 →
+    Ty.DemandOK s.body →
+    subtypeProblem Δ ty1 s.body = some ψ →
+    solve ψ = .witness σ →
+    unique ψ ty1.obsBounds = .unique →
+    TypeOf Δ (.scheme s :: ctx) e2 bodyTy →
+    TypeOf Δ ctx (.letScheme s e1 e2) bodyTy
+
+  /-- Exhaustive match, equal branch types (non-`BL`, or identical `BL`s).
   * nil: `Δ ++ nilRefine lo hi` (`lo ≤ 0`; `hi` not forced to `0`)
   * cons: `Δ ++ consRefine hi`; `consCtx` binds head / tail -/
   | matchBL {Δ ctx e eNil eCons lo hi ty} :
@@ -581,6 +604,14 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     TypeOf (Δ ++ nilRefine lo hi) ctx eNil ty →
     TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons ty →
     TypeOf Δ ctx (.matchBL e eNil eCons) ty
+
+  /-- Exhaustive match: both branches `BL` → join bounds. -/
+  | matchBL_join {Δ ctx e eNil eCons lo hi lo₁ hi₁ lo₂ hi₂} :
+    TypeOf Δ ctx e (.bl lo hi) →
+    TypeOf (Δ ++ nilRefine lo hi) ctx eNil (.bl lo₁ hi₁) →
+    TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons (.bl lo₂ hi₂) →
+    TypeOf Δ ctx (.matchBL e eNil eCons)
+      (.bl (.min lo₁ lo₂) (.max hi₁ hi₂))
 
   /-- Nil-only: require `hi ≤ 0` under `Δ` (empty is forced). -/
   | matchNil {Δ ctx e eNil lo hi ty} :
@@ -680,13 +711,21 @@ theorem TypeOf.weakenCtx {Δ ctx ctx' e ty}
   | varScheme h hinst => exact .varScheme (ctx_getElem?_append_left h) hinst
   | lam helab hok hbody ih => exact .lam helab hok ih
   | app hf harg hsub ih₁ ih₂ => exact .app ih₁ ih₂ hsub
+  | appInfer hf harg hok hψ hσ huniq ih₁ ih₂ =>
+    exact .appInfer ih₁ ih₂ hok hψ hσ huniq
   | ifBL hcond hthn hels ih₁ ih₂ ih₃ => exact .ifBL ih₁ ih₂ ih₃
   | anno helab he hsub ih => exact .anno helab ih hsub
   | annoInfer helab he hok hψ hσ huniq ih => exact .annoInfer helab ih hok hψ hσ huniq
   | letMono he₁ he₂ ih₁ ih₂ => exact .letMono ih₁ ih₂
-  | letScheme hwf he₁ he₂ ih₁ ih₂ => exact .letScheme hwf ih₁ ih₂
+  | letScheme hwf he₁ hsub he₂ ih₁ ih₂ => exact .letScheme hwf ih₁ hsub ih₂
+  | letSchemeInfer hwf he₁ hok hψ hσ huniq he₂ ih₁ ih₂ =>
+    exact .letSchemeInfer hwf ih₁ hok hψ hσ huniq ih₂
   | matchBL he heNil heCons ih₁ ih₂ ih₃ =>
     refine .matchBL ih₁ ih₂ ?_
+    rw [consCtx_append]
+    exact ih₃
+  | matchBL_join he heNil heCons ih₁ ih₂ ih₃ =>
+    refine .matchBL_join ih₁ ih₂ ?_
     rw [consCtx_append]
     exact ih₃
   | matchNil he hvalid heNil ih₁ ih₂ => exact .matchNil ih₁ hvalid ih₂
@@ -694,6 +733,42 @@ theorem TypeOf.weakenCtx {Δ ctx ctx' e ty}
     refine .matchCons ih₁ hvalid ?_
     rw [consCtx_append]
     exact ih₂
+
+/-- `BinderRigid` counts are rigid-only (hence demand-OK as rigid). -/
+theorem Count.rigidOnly_of_binderRigid {n : Nat} {c : Count}
+    (h : Count.BinderRigid n c) : Count.RigidOnly c := by
+  induction c with
+  | lit => exact .lit
+  | var v =>
+    cases v with | mk kind idx =>
+    cases kind with
+    | rigid => exact .var
+    | inferable => exact False.elim h
+  | add a b iha ihb =>
+    exact .add (iha h.1) (ihb h.2)
+  | mul a b iha ihb =>
+    exact .mul (iha h.1) (ihb h.2)
+  | pred a ih => exact .pred (ih h)
+  | min a b iha ihb => exact .min (iha h.1) (ihb h.2)
+  | max a b iha ihb => exact .max (iha h.1) (ihb h.2)
+
+theorem Ty.demandOK_of_binderRigid {n : Nat} {ty : Ty}
+    (h : Ty.BinderRigid n ty) : Ty.DemandOK ty := by
+  induction ty with
+  | unit => exact .unit
+  | arrow _ _ ih₁ ih₂ => exact .arrow (ih₁ h.1) (ih₂ h.2)
+  | bl lo hi =>
+    exact .bl (.ofRigid (Count.rigidOnly_of_binderRigid h.1))
+      (.ofRigid (Count.rigidOnly_of_binderRigid h.2))
+
+/-- Reflexivity of `Sub` on demand-OK types. The `BL` `checkValid` premise is
+`sorry`'d (opaque oracle; `c ≤ c` holds semantically and Z3 accepts it at runtime). -/
+theorem Sub.refl_of_demandOK {Δ : List Constraint} {ty : Ty}
+    (h : Ty.DemandOK ty) : Sub Δ ty ty := by
+  induction h with
+  | unit => exact .unit
+  | arrow _ _ ih₁ ih₂ => exact .arrow ih₁ ih₂
+  | bl hlo hhi => exact .bl hlo hhi sorry
 
 /-- `ofTy` elaborates to itself (no holes). -/
 theorem AnnoTy.elab_ofTy (t : Ty) : AnnoTy.Elab (AnnoTy.ofTy t) t := by
@@ -708,6 +783,10 @@ Same pattern as `InferW`: thread `Φ : Nat` as the next inferable index.
 `fillHoles` turns `AnnoTy` blanks into `cvar .inferable Φ`.
 Oracle calls are the opaque `checkValid` / `solve` / `unique`; failure/`multiple`/`unknown`
 ⇒ `none` (require annotation).
+
+`forceSubtype` is HM-style narrowing: plain `checkSub` first, else `solve`+`unique`
+on escaping `obsBounds`. Used at `.anno`, `.app`, `.letScheme`, and `check`.
+`matchBL` joins `BL` branch bounds (or requires equal non-`BL` types).
 -/
 
 def Count.isRigidOnly : Count → Bool
@@ -812,7 +891,8 @@ def Expr.size : Expr → Nat
   | .matchCons s c => 1 + s.size + c.size
 
 /-- Force `ty'` into demand `ty`: prefer plain `checkSub`; else `solve`+`unique`.
-Fails on `multiple` / `unknown` / `unsat` (annotation required). -/
+Fails on `multiple` / `unknown` / `unsat` (annotation required).
+Used at ascription and HM-style use sites (app domain, scheme pack, `check`). -/
 def forceSubtype (Δ : List Constraint) (ty' ty : Ty) : Bool :=
   if checkSub Δ ty' ty then true
   else if !ty.isDemandOK then false
@@ -824,85 +904,130 @@ def forceSubtype (Δ : List Constraint) (ty' ty : Ty) : Bool :=
       | .witness _ => unique ψ ty'.obsBounds == .unique
       | _ => false
 
+/-- Join branch types for `matchBL`: both `BL` → join bounds; else require equality. -/
+def joinBranchTy (t u : Ty) : Option Ty :=
+  match t, u with
+  | .bl lo₁ hi₁, .bl lo₂ hi₂ => some (.bl (.min lo₁ lo₂) (.max hi₁ hi₂))
+  | _, _ => if t == u then some t else none
+
 /-- Synthesize a type. Returns updated freshness frontier and type. -/
-partial def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat × Ty)
+def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat × Ty)
   | .unit => some (Φ, .unit)
   | .nil => some (Φ, .bl (.lit 0) (.lit 0))
-  | .cons h t => do
-      let (Φ₁, ht) ← synth Φ Δ ctx h
-      let (Φ₂, tty) ← synth Φ₁ Δ ctx t
-      match ht, tty with
-      | .unit, .bl lo hi => some (Φ₂, .bl (.add lo (.lit 1)) (.add hi (.lit 1)))
-      | _, _ => none
-  | .var i args =>
-      match ctx[i]? with
-      | some (.mono ty) =>
-          if args.isEmpty then some (Φ, ty) else none
-      | some (.scheme s) => (Φ, ·) <$> s.instantiate? args
+  | .cons h t =>
+    match synth Φ Δ ctx h with
+    | none => none
+    | some (Φ₁, ht) =>
+      match synth Φ₁ Δ ctx t with
       | none => none
-  | .lam paramAnn body => do
-      let (Φ₁, paramTy) := fillHoles Φ paramAnn
-      if !paramTy.isDemandOK then none
-      else do
-        let (Φ₂, bodyTy) ← synth Φ₁ Δ (.mono paramTy :: ctx) body
-        some (Φ₂, .arrow paramTy bodyTy)
-  | .app f arg => do
-      let (Φ₁, fty) ← synth Φ Δ ctx f
+      | some (Φ₂, tty) =>
+        match ht, tty with
+        | .unit, .bl lo hi => some (Φ₂, .bl (.add lo (.lit 1)) (.add hi (.lit 1)))
+        | _, _ => none
+  | .var i args =>
+    match ctx[i]? with
+    | some (.mono ty) =>
+        if args.isEmpty then some (Φ, ty) else none
+    | some (.scheme s) =>
+        match s.instantiate? args with
+        | some ty => some (Φ, ty)
+        | none => none
+    | none => none
+  | .lam paramAnn body =>
+    let (Φ₁, paramTy) := fillHoles Φ paramAnn
+    if !paramTy.isDemandOK then none
+    else
+      match synth Φ₁ Δ (.mono paramTy :: ctx) body with
+      | some (Φ₂, bodyTy) => some (Φ₂, .arrow paramTy bodyTy)
+      | none => none
+  | .app f arg =>
+    match synth Φ Δ ctx f with
+    | none => none
+    | some (Φ₁, fty) =>
       match fty with
-      | .arrow dom cod => do
-          let (Φ₂, aty) ← synth Φ₁ Δ ctx arg
+      | .arrow dom cod =>
+        match synth Φ₁ Δ ctx arg with
+        | none => none
+        | some (Φ₂, aty) =>
           if forceSubtype Δ aty dom then some (Φ₂, cod) else none
       | _ => none
-  | .if_ cond thn els => do
-      let (Φ₁, ct) ← synth Φ Δ ctx cond
-      let (Φ₂, tt) ← synth Φ₁ Δ ctx thn
-      let (Φ₃, et) ← synth Φ₂ Δ ctx els
-      match ct, tt, et with
-      | .unit, .bl lo₁ hi₁, .bl lo₂ hi₂ =>
-          some (Φ₃, .bl (.min lo₁ lo₂) (.max hi₁ hi₂))
-      | _, _, _ => none
-  | .anno e ann => do
-      let (Φ₁, ty) := fillHoles Φ ann
-      let (Φ₂, ty') ← synth Φ₁ Δ ctx e
+  | .if_ cond thn els =>
+    match synth Φ Δ ctx cond with
+    | none => none
+    | some (Φ₁, ct) =>
+      match synth Φ₁ Δ ctx thn with
+      | none => none
+      | some (Φ₂, tt) =>
+        match synth Φ₂ Δ ctx els with
+        | none => none
+        | some (Φ₃, et) =>
+          match ct, tt, et with
+          | .unit, .bl lo₁ hi₁, .bl lo₂ hi₂ =>
+            some (Φ₃, .bl (.min lo₁ lo₂) (.max hi₁ hi₂))
+          | _, _, _ => none
+  | .anno e ann =>
+    let (Φ₁, ty) := fillHoles Φ ann
+    match synth Φ₁ Δ ctx e with
+    | none => none
+    | some (Φ₂, ty') =>
       if forceSubtype Δ ty' ty then some (Φ₂, ty) else none
-  | .let_ bind body => do
-      let (Φ₁, ty1) ← synth Φ Δ ctx bind
-      synth Φ₁ Δ (.mono ty1 :: ctx) body
-  | .letScheme s bind body => do
-      if !s.WF_bool then none
-      else do
-        let (Φ₁, tyb) ← synth Φ Δ ctx bind
+  | .let_ bind body =>
+    match synth Φ Δ ctx bind with
+    | none => none
+    | some (Φ₁, ty1) => synth Φ₁ Δ (.mono ty1 :: ctx) body
+  | .letScheme s bind body =>
+    if !s.WF_bool then none
+    else
+      match synth Φ Δ ctx bind with
+      | none => none
+      | some (Φ₁, tyb) =>
         if forceSubtype Δ tyb s.body then
           synth Φ₁ Δ (.scheme s :: ctx) body
         else none
-  | .matchBL scrut eNil eCons => do
-      let (Φ₁, sty) ← synth Φ Δ ctx scrut
-      match sty with
-      | .bl lo hi => do
-          let (Φ₂, tNil) ← synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil
-          let (Φ₃, tCons) ← synth Φ₂ (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons
-          if tNil == tCons then some (Φ₃, tNil) else none
-      | _ => none
-  | .matchNil scrut eNil => do
-      let (Φ₁, sty) ← synth Φ Δ ctx scrut
+  | .matchBL scrut eNil eCons =>
+    match synth Φ Δ ctx scrut with
+    | none => none
+    | some (Φ₁, sty) =>
       match sty with
       | .bl lo hi =>
-          if checkValid (mustBeEmpty Δ hi) != .valid then none
-          else synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil
+        match synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil with
+        | none => none
+        | some (Φ₂, tNil) =>
+          match synth Φ₂ (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons with
+          | none => none
+          | some (Φ₃, tCons) =>
+            match joinBranchTy tNil tCons with
+            | some ty => some (Φ₃, ty)
+            | none => none
       | _ => none
-  | .matchCons scrut eCons => do
-      let (Φ₁, sty) ← synth Φ Δ ctx scrut
+  | .matchNil scrut eNil =>
+    match synth Φ Δ ctx scrut with
+    | none => none
+    | some (Φ₁, sty) =>
       match sty with
       | .bl lo hi =>
-          if checkValid (mustBeNonempty Δ lo) != .valid then none
-          else synth Φ₁ (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons
+        if checkValid (mustBeEmpty Δ hi) != .valid then none
+        else synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil
       | _ => none
+  | .matchCons scrut eCons =>
+    match synth Φ Δ ctx scrut with
+    | none => none
+    | some (Φ₁, sty) =>
+      match sty with
+      | .bl lo hi =>
+        if checkValid (mustBeNonempty Δ lo) != .valid then none
+        else synth Φ₁ (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons
+      | _ => none
+termination_by e => e.size
+decreasing_by all_goals (simp_wf; simp [Expr.size] <;> omega)
 
-/-- Check `e` against expected `ty` (synth then `forceSubtype`). -/
+/-- Check `e` against expected `ty` (synth then force into demand — HM narrowing). -/
 def check (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) (e : Expr) (ty : Ty) :
-    Option Nat := do
-  let (Φ', ty') ← synth Φ Δ ctx e
-  if forceSubtype Δ ty' ty then some Φ' else none
+    Option Nat :=
+  match synth Φ Δ ctx e with
+  | none => none
+  | some (Φ', ty') =>
+    if forceSubtype Δ ty' ty then some Φ' else none
 
 /-- Soundness of synthesis (next session). -/
 theorem synth_sound {Φ Δ ctx e Φ' ty}
@@ -952,6 +1077,7 @@ example : TypeOf [] []
     (.arrow (.bl (.lit 3) (.lit 3)) (.bl (.lit 3) (.lit 3))) :=
   .letScheme idScheme_wf
     (.lam (.bl .known .known) (.bl (.ofRigid .var) (.ofRigid .var)) (.varMono rfl))
+    (Sub.refl_of_demandOK (Ty.demandOK_of_binderRigid idScheme_wf))
     (.varScheme rfl <| .intro idScheme_wf rfl <|
       .arrow (.bl (.var rfl) (.var rfl)) (.bl (.var rfl) (.var rfl)))
 
@@ -987,11 +1113,19 @@ example :
 /-- ### Match refines `Δ`
 
 Scrutinee `BL lo hi`. Nil branch sees `lo ≤ 0` (and `0 ≤ hi`); cons sees `1 ≤ hi`
-and types the tail at `pred`. Example: return `unit` in both branches. -/
+and types the tail at `pred`. Equal non-`BL` branches share a type; both-`BL`
+branches join bounds (`matchBL_join`). -/
 example (lo hi : Count) :
     TypeOf [] [.mono (.bl lo hi)]
       (.matchBL (.var 0 []) .unit .unit) .unit :=
   .matchBL (.varMono rfl) .unit .unit
+
+example (lo hi : Count) :
+    TypeOf [] [.mono (.bl lo hi)]
+      (.matchBL (.var 0 []) .nil (.cons .unit .nil))
+      (.bl (.min (.lit 0) (.add (.lit 0) (.lit 1)))
+        (.max (.lit 0) (.add (.lit 0) (.lit 1)))) :=
+  .matchBL_join (.varMono rfl) .nil (.cons .unit .nil)
 
 /-- Nil refine does **not** set `hi = 0` — only `lo ≤ 0` and `0 ≤ hi`. -/
 example : nilRefine (.lit 0) (.lit 5) =
