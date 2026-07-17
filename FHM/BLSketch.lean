@@ -20,6 +20,7 @@ appears as a premise in that derivation:
 | **Demand discipline** | `Count.DemandOK` / `Ty.DemandOK` on demanded types |
 | **Bound schemes** | `letScheme` (pack with `Sub` or solve) + `varScheme` (`InstantiatesTo`); bodies are WF (only rigid binders `0..n-1`) |
 | **Match refinement** | `matchBL` / `matchNil` / `matchCons` extend `Δ`; single-branch forms need a ∀-proof the other case is impossible (`hi ≤ 0` or `1 ≤ lo`) |
+| **Checking** | separate `Check` judgment (synth type + `Sub` / solve+unique); not a `TypeOf` ctor — keeps `TypeOf` syntax-directed |
 
 Oracle answers other than success (`unknown` / `invalid` / `unsat` / `multiple`)
 simply yield **no** derivation — policy (annotate / commit / error) is outside
@@ -31,7 +32,7 @@ algorithmic checker would invent inferables and compute `σ`.
 
 **Algorithmic layer (§9):** `synth` / `check` thread freshness frontier `Φ`
 (as in `InferW`); `AnnoTy` allows `BL _ _` holes filled by `fillHoles`.
-`synth_sound` is stated and `sorry`'d for the next session.
+`synth_sound` relates synthesis to `TypeOf`; `check_sound` relates checking to `Check`.
 
 **Term binders:** de Bruijn via `Ctx` extension; bodies are already scoped.
 **Scheme binders (story A):** flat rigid indices `0..binders-1` in `s.body` only;
@@ -507,6 +508,10 @@ inductive Sub (Δ : List Constraint) : Ty → Ty → Prop where
     Count.DemandOK hi' →
     checkValid (Interval.subGoals Δ ⟨lo, hi⟩ ⟨lo', hi'⟩) = .valid →
     Sub Δ (.bl lo hi) (.bl lo' hi')
+  | bl_refl {lo hi} :
+    Count.DemandOK lo →
+    Count.DemandOK hi →
+    Sub Δ (.bl lo hi) (.bl lo hi)
 
 inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
   | unit {Δ ctx} :
@@ -626,6 +631,21 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     checkValid (mustBeNonempty Δ lo) = .valid →
     TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons ty →
     TypeOf Δ ctx (.matchCons e eCons) ty
+
+/-- Checking judgment: synthesized type fits a demand (plain `Sub` or solve+unique).
+Keeps `TypeOf` syntax-directed — no general subsumption inside `TypeOf`. -/
+inductive Check (Δ : List Constraint) (ctx : Ctx) : Expr → Ty → Prop where
+  | ofSub {e ty ty'} :
+    TypeOf Δ ctx e ty' →
+    Sub Δ ty' ty →
+    Check Δ ctx e ty
+  | ofInfer {e ty ty' ψ σ} :
+    TypeOf Δ ctx e ty' →
+    Ty.DemandOK ty →
+    subtypeProblem Δ ty' ty = some ψ →
+    solve ψ = .witness σ →
+    unique ψ ty'.obsBounds = .unique →
+    Check Δ ctx e ty
 
 /-! ## 8. Structural lemmas -/
 
@@ -761,14 +781,13 @@ theorem Ty.demandOK_of_binderRigid {n : Nat} {ty : Ty}
     exact .bl (.ofRigid (Count.rigidOnly_of_binderRigid h.1))
       (.ofRigid (Count.rigidOnly_of_binderRigid h.2))
 
-/-- Reflexivity of `Sub` on demand-OK types. The `BL` `checkValid` premise is
-`sorry`'d (opaque oracle; `c ≤ c` holds semantically and Z3 accepts it at runtime). -/
+/-- Reflexivity of `Sub` on demand-OK types. -/
 theorem Sub.refl_of_demandOK {Δ : List Constraint} {ty : Ty}
     (h : Ty.DemandOK ty) : Sub Δ ty ty := by
   induction h with
   | unit => exact .unit
   | arrow _ _ ih₁ ih₂ => exact .arrow ih₁ ih₂
-  | bl hlo hhi => exact .bl hlo hhi sorry
+  | bl hlo hhi => exact .bl_refl hlo hhi
 
 /-- `ofTy` elaborates to itself (no holes). -/
 theorem AnnoTy.elab_ofTy (t : Ty) : AnnoTy.Elab (AnnoTy.ofTy t) t := by
@@ -1029,11 +1048,786 @@ def check (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) (e : Expr) (ty : Ty) :
   | some (Φ', ty') =>
     if forceSubtype Δ ty' ty then some Φ' else none
 
-/-- Soundness of synthesis (next session). -/
+/-! ### Soundness helpers (partial — synth_sound ladder) -/
+
+/-- Bool `&&` characterization (used throughout §9 soundness). -/
+private theorem bool_and_eq_true {a b : Bool} : a && b = true ↔ a = true ∧ b = true := by
+  cases a <;> cases b <;> simp
+
+theorem Count.isRigidOnly_of_rigidOnly {c : Count} (h : Count.RigidOnly c) :
+    c.isRigidOnly = true := by
+  induction h with
+  | lit => rfl
+  | var => rfl
+  | add _ _ iha ihb => simp [Count.isRigidOnly, iha, ihb]
+  | mul _ _ iha ihb => simp [Count.isRigidOnly, iha, ihb]
+  | pred _ ih => simp [Count.isRigidOnly, ih]
+  | min _ _ iha ihb => simp [Count.isRigidOnly, iha, ihb]
+  | max _ _ iha ihb => simp [Count.isRigidOnly, iha, ihb]
+
+theorem Count.rigidOnly_of_isRigidOnly {c : Count} (h : c.isRigidOnly = true) :
+    Count.RigidOnly c := by
+  induction c with
+  | lit => exact .lit
+  | var v =>
+    cases v with | mk kind idx =>
+    cases kind with
+    | rigid => exact .var
+    | inferable => simp [Count.isRigidOnly] at h
+  | add a b iha ihb =>
+    simp [Count.isRigidOnly, bool_and_eq_true] at h
+    exact .add (iha h.1) (ihb h.2)
+  | mul a b iha ihb =>
+    simp [Count.isRigidOnly, bool_and_eq_true] at h
+    exact .mul (iha h.1) (ihb h.2)
+  | pred a ih =>
+    simp [Count.isRigidOnly] at h
+    exact .pred (ih h)
+  | min a b iha ihb =>
+    simp [Count.isRigidOnly, bool_and_eq_true] at h
+    exact .min (iha h.1) (ihb h.2)
+  | max a b iha ihb =>
+    simp [Count.isRigidOnly, bool_and_eq_true] at h
+    exact .max (iha h.1) (ihb h.2)
+
+theorem Count.isRigidOnly_iff {c : Count} :
+    c.isRigidOnly = true ↔ Count.RigidOnly c :=
+  ⟨Count.rigidOnly_of_isRigidOnly, Count.isRigidOnly_of_rigidOnly⟩
+
+/-- Rigid counts never hit a DemandOK special-form arm (those embed an inferable). -/
+theorem Count.isDemandOK_of_isRigidOnly {c : Count} (h : c.isRigidOnly = true) :
+    c.isDemandOK = true := by
+  unfold Count.isDemandOK
+  split <;> try (exact h)
+  · -- `.var inferable` arm
+    rename_i i
+    simp [Count.isRigidOnly] at h
+  · -- `.mul c (var inferable)`
+    rename_i c i
+    simp [Count.isRigidOnly] at h
+  · -- `.mul (var inferable) c`
+    rename_i i c
+    simp [Count.isRigidOnly] at h
+  · -- `.add (var inferable) e`
+    rename_i i e
+    simp [Count.isRigidOnly] at h
+  · -- `.add e (var inferable)`
+    rename_i e i
+    simp [Count.isRigidOnly] at h
+  · -- `.add (.mul c (var inferable)) e`
+    rename_i c i e
+    simp [Count.isRigidOnly] at h
+  · -- `.add (.mul (var inferable) c) e`
+    rename_i i c e
+    simp [Count.isRigidOnly] at h
+
+theorem Count.isDemandOK_of_demandOK {c : Count} (h : Count.DemandOK c) :
+    c.isDemandOK = true := by
+  induction h with
+  | ofRigid h => exact Count.isDemandOK_of_isRigidOnly (Count.isRigidOnly_of_rigidOnly h)
+  | infer => rfl
+  | scale h => simp [Count.isDemandOK, Count.isRigidOnly_of_rigidOnly h]
+  | scaleComm h =>
+    -- Right factor is rigid ⇒ first mul-arm does not match.
+    cases h with
+    | lit => rfl
+    | var => rfl
+    | add ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly,
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | mul ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly,
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | pred ha =>
+      simp [Count.isDemandOK, Count.isRigidOnly, Count.isRigidOnly_of_rigidOnly ha]
+    | min ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly,
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | max ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly,
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+  | offset h => simp [Count.isDemandOK, Count.isRigidOnly_of_rigidOnly h]
+  | offsetComm h =>
+    -- Left is rigid ⇒ first add-arm does not match; second arm fires.
+    cases h with
+    | lit => rfl
+    | var => rfl
+    | add ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly,
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | mul ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly,
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | pred ha =>
+      simp [Count.isDemandOK, Count.isRigidOnly, Count.isRigidOnly_of_rigidOnly ha]
+    | min ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly,
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | max ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly,
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+  | aff hc he =>
+    have hc' := Count.isRigidOnly_of_rigidOnly hc
+    -- Case on offset so `.add _ (var inferable)` cannot match.
+    cases he with
+    | lit => simp [Count.isDemandOK, Count.isRigidOnly, hc']
+    | var => simp [Count.isDemandOK, Count.isRigidOnly, hc']
+    | add ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly, hc',
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | mul ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly, hc',
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | pred ha =>
+      simp [Count.isDemandOK, Count.isRigidOnly, hc', Count.isRigidOnly_of_rigidOnly ha]
+    | min ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly, hc',
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | max ha hb =>
+      simp [Count.isDemandOK, Count.isRigidOnly, hc',
+        Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+  | affComm hc he =>
+    have hc' := Count.isRigidOnly_of_rigidOnly hc
+    have he' := Count.isRigidOnly_of_rigidOnly he
+    -- Case so higher-priority add arms cannot match.
+    cases hc with
+    | lit =>
+      cases he with
+      | lit => rfl
+      | var => rfl
+      | add ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | mul ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | pred ha =>
+        simp [Count.isDemandOK, Count.isRigidOnly, Count.isRigidOnly_of_rigidOnly ha]
+      | min ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | max ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | var =>
+      cases he with
+      | lit => rfl
+      | var => rfl
+      | add ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | mul ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | pred ha =>
+        simp [Count.isDemandOK, Count.isRigidOnly, Count.isRigidOnly_of_rigidOnly ha]
+      | min ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | max ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | add hca hcb =>
+      cases he with
+      | lit =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb]
+      | var =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb]
+      | add ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | mul ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | pred ha =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha]
+      | min ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | max ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | mul hca hcb =>
+      cases he with
+      | lit =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb]
+      | var =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb]
+      | add ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | mul ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | pred ha =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha]
+      | min ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | max ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | pred hca =>
+      cases he with
+      | lit =>
+        simp [Count.isDemandOK, Count.isRigidOnly, Count.isRigidOnly_of_rigidOnly hca]
+      | var =>
+        simp [Count.isDemandOK, Count.isRigidOnly, Count.isRigidOnly_of_rigidOnly hca]
+      | add ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly, Count.isRigidOnly_of_rigidOnly hca,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | mul ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly, Count.isRigidOnly_of_rigidOnly hca,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | pred ha =>
+        simp [Count.isDemandOK, Count.isRigidOnly, Count.isRigidOnly_of_rigidOnly hca,
+          Count.isRigidOnly_of_rigidOnly ha]
+      | min ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly, Count.isRigidOnly_of_rigidOnly hca,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | max ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly, Count.isRigidOnly_of_rigidOnly hca,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | min hca hcb =>
+      cases he with
+      | lit =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb]
+      | var =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb]
+      | add ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | mul ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | pred ha =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha]
+      | min ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | max ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+    | max hca hcb =>
+      cases he with
+      | lit =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb]
+      | var =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb]
+      | add ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | mul ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | pred ha =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha]
+      | min ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+      | max ha hb =>
+        simp [Count.isDemandOK, Count.isRigidOnly,
+          Count.isRigidOnly_of_rigidOnly hca, Count.isRigidOnly_of_rigidOnly hcb,
+          Count.isRigidOnly_of_rigidOnly ha, Count.isRigidOnly_of_rigidOnly hb]
+
+theorem Count.demandOK_of_isDemandOK {c : Count} (h : c.isDemandOK = true) :
+    Count.DemandOK c := by
+  induction c with
+  | lit => exact .ofRigid .lit
+  | var v =>
+    cases v with | mk kind idx =>
+    cases kind with
+    | rigid => exact .ofRigid .var
+    | inferable => exact .infer
+  | add a b iha ihb =>
+    unfold Count.isDemandOK at h
+    split at h
+    · next i heq => nomatch heq
+    · next c i heq => nomatch heq
+    · next i c heq => nomatch heq
+    · next i e heq =>
+      cases heq
+      exact .offset (Count.rigidOnly_of_isRigidOnly h)
+    · next e i heq =>
+      cases heq
+      exact .offsetComm (Count.rigidOnly_of_isRigidOnly h)
+    · next c i e heq =>
+      cases heq
+      simp [bool_and_eq_true] at h
+      exact .aff (Count.rigidOnly_of_isRigidOnly h.1) (Count.rigidOnly_of_isRigidOnly h.2)
+    · next i c e heq =>
+      cases heq
+      simp [bool_and_eq_true] at h
+      exact .affComm (Count.rigidOnly_of_isRigidOnly h.1) (Count.rigidOnly_of_isRigidOnly h.2)
+    · exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
+  | mul a b iha ihb =>
+    unfold Count.isDemandOK at h
+    split at h
+    · next i heq => nomatch heq
+    · next c i heq =>
+      cases heq
+      exact .scale (Count.rigidOnly_of_isRigidOnly h)
+    · next i c heq =>
+      cases heq
+      exact .scaleComm (Count.rigidOnly_of_isRigidOnly h)
+    · next i e heq => nomatch heq
+    · next e i heq => nomatch heq
+    · next c i e heq => nomatch heq
+    · next i c e heq => nomatch heq
+    · exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
+  | pred a ih =>
+    simp [Count.isDemandOK] at h
+    exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
+  | min a b iha ihb =>
+    simp [Count.isDemandOK] at h
+    exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
+  | max a b iha ihb =>
+    simp [Count.isDemandOK] at h
+    exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
+
+theorem Count.isDemandOK_iff {c : Count} : c.isDemandOK = true ↔ Count.DemandOK c :=
+  ⟨Count.demandOK_of_isDemandOK, Count.isDemandOK_of_demandOK⟩
+
+theorem Ty.isDemandOK_of_demandOK {ty : Ty} (h : Ty.DemandOK ty) : ty.isDemandOK = true := by
+  induction h with
+  | unit => rfl
+  | arrow _ _ ihd ihc => simp [Ty.isDemandOK, ihd, ihc]
+  | bl hlo hhi =>
+    simp [Ty.isDemandOK, Count.isDemandOK_of_demandOK hlo, Count.isDemandOK_of_demandOK hhi]
+
+theorem Ty.demandOK_of_isDemandOK {ty : Ty} (h : ty.isDemandOK = true) : Ty.DemandOK ty := by
+  induction ty with
+  | unit => exact Ty.DemandOK.unit
+  | arrow d c ihd ihc =>
+    simp [Ty.isDemandOK] at h
+    obtain ⟨hd, hc⟩ := h
+    exact Ty.DemandOK.arrow (ihd hd) (ihc hc)
+  | bl lo hi =>
+    simp [Ty.isDemandOK] at h
+    obtain ⟨hlo, hhi⟩ := h
+    exact Ty.DemandOK.bl (Count.demandOK_of_isDemandOK hlo) (Count.demandOK_of_isDemandOK hhi)
+
+theorem Ty.isDemandOK_iff {ty : Ty} : ty.isDemandOK = true ↔ Ty.DemandOK ty :=
+  ⟨Ty.demandOK_of_isDemandOK, Ty.isDemandOK_of_demandOK⟩
+
+theorem checkSub_sound {Δ t u} (h : checkSub Δ t u = true) : Sub Δ t u := by
+  match t, u with
+  | .unit, .unit => exact .unit
+  | .arrow a b, .arrow a' b' =>
+    simp [checkSub, bool_and_eq_true] at h
+    exact .arrow (checkSub_sound h.1) (checkSub_sound h.2)
+  | .bl lo hi, .bl lo' hi' =>
+    simp [checkSub, bool_and_eq_true, beq_iff_eq] at h
+    exact .bl (Count.demandOK_of_isDemandOK h.1.1) (Count.demandOK_of_isDemandOK h.1.2) h.2
+  | .unit, .arrow _ _ | .unit, .bl _ _
+  | .arrow _ _, .unit | .arrow _ _, .bl _ _
+  | .bl _ _, .unit | .bl _ _, .arrow _ _ =>
+    simp [checkSub] at h
+termination_by t.size + u.size
+decreasing_by all_goals (simp_wf; simp [Ty.size] <;> omega)
+
+theorem forceSubtype_of_true {Δ ty' ty} (h : forceSubtype Δ ty' ty = true) :
+    checkSub Δ ty' ty = true ∨
+      (Ty.DemandOK ty ∧
+        ∃ ψ σ, subtypeProblem Δ ty' ty = some ψ ∧
+          solve ψ = .witness σ ∧ unique ψ ty'.obsBounds = .unique) := by
+  by_cases hcs : checkSub Δ ty' ty = true
+  · exact Or.inl hcs
+  · have hcsf : checkSub Δ ty' ty = false := eq_false_of_ne_true hcs
+    simp [forceSubtype, hcsf] at h
+    by_cases hok : ty.isDemandOK = true
+    · simp [hok] at h
+      cases hψ : subtypeProblem Δ ty' ty with
+      | none => simp [hψ] at h
+      | some ψ =>
+        simp [hψ] at h
+        cases hσ : solve ψ with
+        | witness σ =>
+          simp [hσ, beq_iff_eq] at h
+          exact Or.inr ⟨Ty.demandOK_of_isDemandOK hok, ψ, σ, rfl, hσ, h⟩
+        | unsat => simp [hσ] at h
+        | unknown => simp [hσ] at h
+    · simp [hok] at h
+
+theorem forceSubtype_sub {Δ ty' ty} (h : forceSubtype Δ ty' ty = true) :
+    Sub Δ ty' ty ∨
+      (Ty.DemandOK ty ∧
+        ∃ ψ σ, subtypeProblem Δ ty' ty = some ψ ∧
+          solve ψ = .witness σ ∧ unique ψ ty'.obsBounds = .unique) := by
+  cases forceSubtype_of_true h with
+  | inl hcs => exact Or.inl (checkSub_sound hcs)
+  | inr hr => exact Or.inr hr
+
+theorem Count.binderRigid_of_bool {n : Nat} {c : Count}
+    (h : Count.binderRigidBool n c = true) : Count.BinderRigid n c := by
+  induction c with
+  | lit => trivial
+  | var v =>
+    cases v with | mk kind idx =>
+    cases kind with
+    | rigid =>
+      simpa [Count.binderRigidBool, decide_eq_true_eq] using h
+    | inferable => simp [Count.binderRigidBool] at h
+  | add a b iha ihb =>
+    simp [Count.binderRigidBool, bool_and_eq_true] at h
+    exact ⟨iha h.1, ihb h.2⟩
+  | mul a b iha ihb =>
+    simp [Count.binderRigidBool, bool_and_eq_true] at h
+    exact ⟨iha h.1, ihb h.2⟩
+  | pred a ih =>
+    simp [Count.binderRigidBool] at h
+    exact ih h
+  | min a b iha ihb =>
+    simp [Count.binderRigidBool, bool_and_eq_true] at h
+    exact ⟨iha h.1, ihb h.2⟩
+  | max a b iha ihb =>
+    simp [Count.binderRigidBool, bool_and_eq_true] at h
+    exact ⟨iha h.1, ihb h.2⟩
+
+theorem Ty.binderRigid_of_bool {n : Nat} {ty : Ty}
+    (h : Ty.binderRigidBool n ty = true) : Ty.BinderRigid n ty := by
+  induction ty with
+  | unit => trivial
+  | arrow d c ihd ihc =>
+    simp [Ty.binderRigidBool, bool_and_eq_true] at h
+    exact ⟨ihd h.1, ihc h.2⟩
+  | bl lo hi =>
+    simp [Ty.binderRigidBool, bool_and_eq_true] at h
+    exact ⟨Count.binderRigid_of_bool h.1, Count.binderRigid_of_bool h.2⟩
+
+theorem BScheme.wf_of_WF_bool {s : BScheme} (h : s.WF_bool = true) : s.WF :=
+  Ty.binderRigid_of_bool (by simpa [BScheme.WF_bool] using h)
+
+theorem fillHoles_elab (Φ : Nat) (ann : AnnoTy) :
+    AnnoTy.Elab ann (fillHoles Φ ann).2 := by
+  induction ann generalizing Φ with
+  | unit => simp [fillHoles]; exact AnnoTy.Elab.unit
+  | arrow d c ih₁ ih₂ =>
+    simp [fillHoles]
+    exact AnnoTy.Elab.arrow (ih₁ _) (ih₂ _)
+  | bl lo hi =>
+    simp [fillHoles, fillBound]
+    apply AnnoTy.Elab.bl
+    · cases lo with | none => exact AnnoTy.ElabBound.hole | some _ => exact AnnoTy.ElabBound.known
+    · cases hi with | none => exact AnnoTy.ElabBound.hole | some _ => exact AnnoTy.ElabBound.known
+
+theorem Count.subst_applyArgs_binderRigid {n args c}
+    (hb : Count.BinderRigid n c) (hlen : args.length = n) :
+    Count.Subst args c (Count.applyArgs args c) := by
+  induction c with
+  | lit => exact .lit
+  | var v =>
+    cases v with | mk kind idx =>
+    cases kind with
+    | rigid =>
+      have hi : idx < args.length := by rw [hlen]; exact hb
+      simp [Count.applyArgs, List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hi]
+      exact .var (List.getElem?_eq_getElem hi)
+    | inferable => exact False.elim hb
+  | add a b iha ihb => exact .add (iha hb.1) (ihb hb.2)
+  | mul a b iha ihb => exact .mul (iha hb.1) (ihb hb.2)
+  | pred a ih => exact .pred (ih hb)
+  | min a b iha ihb => exact .min (iha hb.1) (ihb hb.2)
+  | max a b iha ihb => exact .max (iha hb.1) (ihb hb.2)
+
+theorem subst_applyArgs_binderRigid {n args t}
+    (hb : Ty.BinderRigid n t) (hlen : args.length = n) :
+    (Ty.Subst args t (Ty.applyArgs args t)) := by
+  induction t with
+  | unit => exact .unit
+  | arrow d c ihd ihc => exact .arrow (ihd hb.1) (ihc hb.2)
+  | bl lo hi =>
+    exact .bl (Count.subst_applyArgs_binderRigid hb.1 hlen)
+      (Count.subst_applyArgs_binderRigid hb.2 hlen)
+
+theorem instantiatesOf_instantiate?_sound {s : BScheme} {args : List Count} {ty : Ty}
+    (hlen : args.length = s.binders) (h : s.instantiate? args = some ty) :
+    s.InstantiatesTo args ty := by
+  unfold BScheme.instantiate? at h
+  split at h
+  · rename_i hcond
+    cases h
+    simp [bool_and_eq_true, decide_eq_true_eq] at hcond
+    exact .intro (BScheme.wf_of_WF_bool hcond.1) hlen
+      (subst_applyArgs_binderRigid (BScheme.wf_of_WF_bool hcond.1) hlen)
+  · cases h
+
+theorem joinBranchTy_eq {t u ty} (h : joinBranchTy t u = some ty) :
+    (∃ lo₁ hi₁ lo₂ hi₂, t = .bl lo₁ hi₁ ∧ u = .bl lo₂ hi₂ ∧
+      ty = .bl (.min lo₁ lo₂) (.max hi₁ hi₂)) ∨ (t = ty ∧ u = ty) := by
+  unfold joinBranchTy at h
+  split at h
+  · cases h
+    exact Or.inl ⟨_, _, _, _, rfl, rfl, rfl⟩
+  · split at h
+    · rename_i heq
+      cases h
+      have : t = u := by simpa [beq_iff_eq] using heq
+      exact Or.inr ⟨rfl, this.symm⟩
+    · cases h
+
+/-- Main soundness theorem: algorithmic `synth` implies declarative `TypeOf`. -/
 theorem synth_sound {Φ Δ ctx e Φ' ty}
     (h : synth Φ Δ ctx e = some (Φ', ty)) :
     TypeOf Δ ctx e ty := by
-  sorry
+  induction e generalizing Φ Φ' ty ctx Δ with
+  | unit => simp [synth] at h; obtain ⟨_, hty⟩ := h; subst hty; exact TypeOf.unit
+  | nil => simp [synth] at h; obtain ⟨_, hty⟩ := h; subst hty; exact TypeOf.nil
+  | cons head tail ih_head ih_tail =>
+    cases hhead : synth Φ Δ ctx head with
+    | none => simp [synth, hhead] at h
+    | some Φht =>
+      obtain ⟨Φ₁, ht⟩ := Φht
+      cases htail : synth Φ₁ Δ ctx tail with
+      | none => simp [synth, hhead, htail] at h
+      | some Φtty =>
+        obtain ⟨Φ₂, tty⟩ := Φtty
+        simp [synth, hhead, htail] at h
+        cases ht with
+        | unit =>
+          cases tty with
+          | bl lo hi =>
+            cases h
+            exact .cons (ih_head hhead) (ih_tail htail)
+          | unit | arrow _ _ => simp at h
+        | arrow _ _ | bl _ _ => simp at h
+  | var i args =>
+    cases hctx : ctx[i]? with
+    | none => simp [synth, hctx] at h
+    | some b =>
+      cases b with
+      | mono mty =>
+        simp [synth, hctx] at h
+        obtain ⟨ha, rfl, rfl⟩ := h
+        have ha' : args = [] := by simpa [List.isEmpty_iff] using ha
+        subst ha'
+        exact .varMono hctx
+      | scheme s =>
+        simp [synth, hctx] at h
+        cases hinst : s.instantiate? args with
+        | none => simp [hinst] at h
+        | some ity =>
+          simp [hinst] at h
+          obtain ⟨rfl, rfl⟩ := h
+          have hlen : args.length = s.binders := by
+            unfold BScheme.instantiate? at hinst
+            split at hinst
+            · rename_i hcond
+              simp [bool_and_eq_true, decide_eq_true_eq] at hcond
+              exact hcond.2
+            · cases hinst
+          exact .varScheme hctx (instantiatesOf_instantiate?_sound hlen hinst)
+  | lam paramAnn body ih_body =>
+    cases hfill : fillHoles Φ paramAnn with
+    | mk Φ₁ paramTy =>
+      simp [synth, hfill] at h
+      by_cases hok : paramTy.isDemandOK = true
+      · simp [hok] at h
+        cases hb : synth Φ₁ Δ (.mono paramTy :: ctx) body with
+        | none => simp [hb] at h
+        | some Φb =>
+          obtain ⟨Φ₂, bodyTy⟩ := Φb
+          simp [hb] at h
+          obtain ⟨rfl, rfl⟩ := h
+          have helab : AnnoTy.Elab paramAnn paramTy := by
+            have := fillHoles_elab Φ paramAnn
+            rwa [hfill] at this
+          exact .lam helab (Ty.demandOK_of_isDemandOK hok) (ih_body hb)
+      · simp [hok] at h
+  | app f arg ih_f ih_arg =>
+    cases hf : synth Φ Δ ctx f with
+    | none => simp [synth, hf] at h
+    | some Φf =>
+      obtain ⟨Φ₁, fty⟩ := Φf
+      cases fty with
+      | arrow dom cod =>
+        cases ha : synth Φ₁ Δ ctx arg with
+        | none => simp [synth, hf, ha] at h
+        | some Φa =>
+          obtain ⟨Φ₂, aty⟩ := Φa
+          simp [synth, hf, ha] at h
+          obtain ⟨hfs, rfl, rfl⟩ := h
+          cases forceSubtype_sub hfs with
+          | inl hsub =>
+            exact .app (ih_f hf) (ih_arg ha) hsub
+          | inr hr =>
+            obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
+            exact .appInfer (ih_f hf) (ih_arg ha) hok hψ hσ huniq
+      | unit | bl _ _ => simp [synth, hf] at h
+  | if_ cond thn els ih_c ih_t ih_e =>
+    cases hc : synth Φ Δ ctx cond with
+    | none => simp [synth, hc] at h
+    | some Φc =>
+      obtain ⟨Φ₁, ct⟩ := Φc
+      cases ht : synth Φ₁ Δ ctx thn with
+      | none => simp [synth, hc, ht] at h
+      | some Φt =>
+        obtain ⟨Φ₂, tt⟩ := Φt
+        cases he : synth Φ₂ Δ ctx els with
+        | none => simp [synth, hc, ht, he] at h
+        | some Φe =>
+          obtain ⟨Φ₃, et⟩ := Φe
+          simp [synth, hc, ht, he] at h
+          cases ct with
+          | unit =>
+            cases tt with
+            | bl lo₁ hi₁ =>
+              cases et with
+              | bl lo₂ hi₂ =>
+                cases h
+                exact .ifBL (ih_c hc) (ih_t ht) (ih_e he)
+              | unit | arrow _ _ => simp at h
+            | unit | arrow _ _ => simp at h
+          | arrow _ _ | bl _ _ => simp at h
+  | anno e ann ih_e =>
+    cases hfill : fillHoles Φ ann with
+    | mk Φ₁ aty =>
+      cases he : synth Φ₁ Δ ctx e with
+      | none => simp [synth, hfill, he] at h
+      | some Φe =>
+        obtain ⟨Φ₂, ty'⟩ := Φe
+        simp [synth, hfill, he] at h
+        obtain ⟨hfs, rfl, rfl⟩ := h
+        have helab : AnnoTy.Elab ann aty := by
+          have := fillHoles_elab Φ ann
+          rwa [hfill] at this
+        cases forceSubtype_sub hfs with
+        | inl hsub =>
+          exact .anno helab (ih_e he) hsub
+        | inr hr =>
+          obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
+          exact .annoInfer helab (ih_e he) hok hψ hσ huniq
+  | let_ bind body ih_b ih_body =>
+    cases hb : synth Φ Δ ctx bind with
+    | none => simp [synth, hb] at h
+    | some Φb =>
+      obtain ⟨Φ₁, ty1⟩ := Φb
+      simp [synth, hb] at h
+      exact .letMono (ih_b hb) (ih_body h)
+  | letScheme s bind body ih_b ih_body =>
+    simp [synth] at h
+    by_cases hwf : s.WF_bool = true
+    · simp [hwf] at h
+      cases hb : synth Φ Δ ctx bind with
+      | none => simp [hb] at h
+      | some Φb =>
+        obtain ⟨Φ₁, tyb⟩ := Φb
+        simp [hb] at h
+        obtain ⟨hfs, hbody⟩ := h
+        cases forceSubtype_sub hfs with
+        | inl hsub =>
+          exact .letScheme (BScheme.wf_of_WF_bool hwf) (ih_b hb) hsub (ih_body hbody)
+        | inr hr =>
+          obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
+          exact .letSchemeInfer (BScheme.wf_of_WF_bool hwf) (ih_b hb) hok hψ hσ huniq
+            (ih_body hbody)
+    · simp [hwf] at h
+  | matchBL scrut eNil eCons ih_s ih_n ih_c =>
+    cases hs : synth Φ Δ ctx scrut with
+    | none => simp [synth, hs] at h
+    | some Φs =>
+      obtain ⟨Φ₁, sty⟩ := Φs
+      cases sty with
+      | bl lo hi =>
+        cases hn : synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil with
+        | none => simp [synth, hs, hn] at h
+        | some Φn =>
+          obtain ⟨Φ₂, tNil⟩ := Φn
+          cases hc : synth Φ₂ (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons with
+          | none => simp [synth, hs, hn, hc] at h
+          | some Φc =>
+            obtain ⟨Φ₃, tCons⟩ := Φc
+            simp [synth, hs, hn, hc] at h
+            cases hj : joinBranchTy tNil tCons with
+            | none => simp [hj] at h
+            | some jty =>
+              simp [hj] at h
+              obtain ⟨rfl, rfl⟩ := h
+              cases joinBranchTy_eq hj with
+              | inl hex =>
+                obtain ⟨lo₁, hi₁, lo₂, hi₂, rfl, rfl, rfl⟩ := hex
+                exact .matchBL_join (ih_s hs) (ih_n hn) (ih_c hc)
+              | inr heq =>
+                obtain ⟨rfl, rfl⟩ := heq
+                exact .matchBL (ih_s hs) (ih_n hn) (ih_c hc)
+      | unit | arrow _ _ => simp [synth, hs] at h
+  | matchNil scrut eNil ih_s ih_n =>
+    cases hs : synth Φ Δ ctx scrut with
+    | none => simp [synth, hs] at h
+    | some Φs =>
+      obtain ⟨Φ₁, sty⟩ := Φs
+      cases sty with
+      | bl lo hi =>
+        simp [synth, hs] at h
+        by_cases hv : checkValid (mustBeEmpty Δ hi) = .valid
+        · simp [hv] at h
+          exact .matchNil (ih_s hs) hv (ih_n h)
+        · simp [hv] at h
+      | unit | arrow _ _ => simp [synth, hs] at h
+  | matchCons scrut eCons ih_s ih_c =>
+    cases hs : synth Φ Δ ctx scrut with
+    | none => simp [synth, hs] at h
+    | some Φs =>
+      obtain ⟨Φ₁, sty⟩ := Φs
+      cases sty with
+      | bl lo hi =>
+        simp [synth, hs] at h
+        by_cases hv : checkValid (mustBeNonempty Δ lo) = .valid
+        · simp [hv] at h
+          exact .matchCons (ih_s hs) hv (ih_c h)
+        · simp [hv] at h
+      | unit | arrow _ _ => simp [synth, hs] at h
+
+/-- Algorithmic `check` ⇒ declarative `Check` (not `TypeOf` — no general subsumption). -/
+theorem check_sound {Φ Δ ctx e ty Φ'}
+    (h : check Φ Δ ctx e ty = some Φ') :
+    Check Δ ctx e ty := by
+  unfold check at h
+  cases hs : synth Φ Δ ctx e with
+  | none => simp [hs] at h
+  | some pair =>
+    obtain ⟨Φ'', ty'⟩ := pair
+    by_cases hfs : forceSubtype Δ ty' ty = true
+    · simp [hs, hfs] at h
+      obtain ⟨rfl, rfl⟩ := h
+      cases forceSubtype_sub hfs with
+      | inl hsub =>
+        exact .ofSub (synth_sound hs) hsub
+      | inr hr =>
+        obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
+        exact .ofInfer (synth_sound hs) hok hψ hσ huniq
+    · simp [hs, hfs] at h
 
 /-! ## 10. Tour / examples -/
 
