@@ -26,6 +26,10 @@ this relation.
 scheme args, and solve witnesses; it does not return a substitution. An
 algorithmic checker would invent inferables and compute `σ`.
 
+**Algorithmic layer (§9):** `synth` / `check` thread freshness frontier `Φ`
+(as in `InferW`); `AnnoTy` allows `BL _ _` holes filled by `fillHoles`.
+`synth_sound` is stated and `sorry`'d for the next session.
+
 **Term binders:** de Bruijn via `Ctx` extension; bodies are already scoped.
 **Scheme binders (story A):** flat rigid indices `0..binders-1` in `s.body` only;
 no nested scheme-hygiene / LN. Enough for top-level library schemes in the demo.
@@ -220,6 +224,35 @@ inductive Ty.DemandOK : Ty → Prop where
   | arrow {d c} : Ty.DemandOK d → Ty.DemandOK c → Ty.DemandOK (.arrow d c)
   | bl {lo hi} : Count.DemandOK lo → Count.DemandOK hi → Ty.DemandOK (.bl lo hi)
 
+/-! ### Annotation types — holes only in bound positions
+
+`AnnoTy` mirrors `Ty`, but each BL bound is `Option Count` (`none` = `_`).
+Holes become fresh inferables in the algorithm (`fillHoles`), or any `Count`
+existentially in declarative `AnnoTy.Elab`.
+-/
+
+inductive AnnoTy where
+  | unit
+  | arrow (dom cod : AnnoTy)
+  | bl (lo hi : Option Count)
+  deriving DecidableEq, Repr
+
+def AnnoTy.ofTy : Ty → AnnoTy
+  | .unit => .unit
+  | .arrow d c => .arrow (ofTy d) (ofTy c)
+  | .bl lo hi => .bl (some lo) (some hi)
+
+inductive AnnoTy.ElabBound : Option Count → Count → Prop where
+  | known {c} : ElabBound (some c) c
+  | hole {c} : ElabBound none c
+
+inductive AnnoTy.Elab : AnnoTy → Ty → Prop where
+  | unit : Elab .unit .unit
+  | arrow {d c d' c'} :
+    Elab d d' → Elab c c' → Elab (.arrow d c) (.arrow d' c')
+  | bl {lo hi lo' hi'} :
+    ElabBound lo lo' → ElabBound hi hi' → Elab (.bl lo hi) (.bl lo' hi')
+
 /-- Scheme body may mention only **rigid** vars with `idx < binders` (no inferables). -/
 def Count.BinderRigid (n : Nat) : Count → Prop
   | .lit _ => True
@@ -284,10 +317,10 @@ inductive Expr where
   | nil
   | cons (head tail : Expr)
   | var (idx : Nat) (boundArgs : List Count)
-  | lam (paramTy : Ty) (body : Expr)
+  | lam (paramTy : AnnoTy) (body : Expr)
   | app (fn arg : Expr)
   | if_ (cond thn els : Expr)
-  | anno (e : Expr) (ty : Ty)
+  | anno (e : Expr) (ty : AnnoTy)
   | let_ (binding body : Expr)
   | letScheme (s : BScheme) (binding body : Expr)
   /-- Exhaustive match on `BL`. Nil branch under refined `Δ`; cons branch under
@@ -403,10 +436,11 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     s.InstantiatesTo args ty →
     TypeOf Δ ctx (.var i args) ty
 
-  | lam {Δ ctx paramTy body bodyTy} :
+  | lam {Δ ctx paramAnn paramTy body bodyTy} :
+    AnnoTy.Elab paramAnn paramTy →
     Ty.DemandOK paramTy →
     TypeOf Δ (.mono paramTy :: ctx) body bodyTy →
-    TypeOf Δ ctx (.lam paramTy body) (.arrow paramTy bodyTy)
+    TypeOf Δ ctx (.lam paramAnn body) (.arrow paramTy bodyTy)
 
   | app {Δ ctx f arg argTy retTy argTy'} :
     TypeOf Δ ctx f (.arrow argTy retTy) →
@@ -420,18 +454,20 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     TypeOf Δ ctx els (.bl lo₂ hi₂) →
     TypeOf Δ ctx (.if_ cond thn els) (.bl (.min lo₁ lo₂) (.max hi₁ hi₂))
 
-  | anno {Δ ctx e ty ty'} :
+  | anno {Δ ctx e ann ty ty'} :
+    AnnoTy.Elab ann ty →
     TypeOf Δ ctx e ty' →
     Sub Δ ty' ty →
-    TypeOf Δ ctx (.anno e ty) ty
+    TypeOf Δ ctx (.anno e ann) ty
 
-  | annoInfer {Δ ctx e ty ty' ψ σ} :
+  | annoInfer {Δ ctx e ann ty ty' ψ σ} :
+    AnnoTy.Elab ann ty →
     TypeOf Δ ctx e ty' →
     Ty.DemandOK ty →
     subtypeProblem Δ ty' ty = some ψ →
     solve ψ = .witness σ →
     unique ψ ty'.obsBounds = .unique →
-    TypeOf Δ ctx (.anno e ty) ty
+    TypeOf Δ ctx (.anno e ann) ty
 
   | letMono {Δ ctx e1 e2 ty1 ty2} :
     TypeOf Δ ctx e1 ty1 →
@@ -467,7 +503,321 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons ty →
     TypeOf Δ ctx (.matchCons e eCons) ty
 
-/-! ## 8. Tour / examples -/
+/-! ## 8. Structural lemmas -/
+
+/-- `Count.Subst` is deterministic. -/
+theorem Count.Subst.unique {args c c₁ c₂}
+    (h₁ : Count.Subst args c c₁) (h₂ : Count.Subst args c c₂) : c₁ = c₂ := by
+  induction h₁ with
+  | lit =>
+    cases h₂
+    rfl
+  | var h₁ =>
+    cases h₂ with | var h₂ =>
+    exact Option.some.inj (h₁.symm.trans h₂)
+  | add ha hb =>
+    cases h₂ with | add ha' hb' =>
+    congr 1
+    · exact (Count.Subst.unique ha ha')
+    · exact (Count.Subst.unique hb hb')
+  | mul ha hb =>
+    cases h₂ with | mul ha' hb' =>
+    congr 1
+    · exact (Count.Subst.unique ha ha')
+    · exact (Count.Subst.unique hb hb')
+  | pred ha =>
+    cases h₂ with | pred ha' =>
+    congr 1
+    exact (Count.Subst.unique ha ha')
+  | min ha hb =>
+    cases h₂ with | min ha' hb' =>
+    congr 1
+    · exact (Count.Subst.unique ha ha')
+    · exact (Count.Subst.unique hb hb')
+  | max ha hb =>
+    cases h₂ with | max ha' hb' =>
+    congr 1
+    · exact (Count.Subst.unique ha ha')
+    · exact (Count.Subst.unique hb hb')
+
+/-- `Ty.Subst` is deterministic. -/
+theorem Ty.Subst.unique {args t t₁ t₂}
+    (h₁ : Ty.Subst args t t₁) (h₂ : Ty.Subst args t t₂) : t₁ = t₂ := by
+  induction h₁ with
+  | unit =>
+    cases h₂
+    rfl
+  | arrow hd hc =>
+    cases h₂ with | arrow hd' hc' =>
+    congr 1
+    · exact (Ty.Subst.unique hd hd')
+    · exact (Ty.Subst.unique hc hc')
+  | bl hlo hhi =>
+    cases h₂ with | bl hlo' hhi' =>
+    congr 1
+    · exact (Count.Subst.unique hlo hlo')
+    · exact (Count.Subst.unique hhi hhi')
+
+/-- Instantiation yields at most one type for a given scheme and args. -/
+theorem BScheme.InstantiatesTo.unique {s : BScheme} {args ty₁ ty₂}
+    (h₁ : s.InstantiatesTo args ty₁) (h₂ : s.InstantiatesTo args ty₂) :
+    ty₁ = ty₂ := by
+  cases h₁ with | intro _ _ h₁ =>
+  cases h₂ with | intro _ _ h₂ =>
+  exact (Ty.Subst.unique h₁ h₂)
+
+private theorem ctx_getElem?_append_left {ctx ctx' : Ctx} {i : Nat} {b : Binding}
+    (h : ctx[i]? = some b) : (ctx ++ ctx')[i]? = some b := by
+  obtain ⟨hi, rfl⟩ := List.getElem?_eq_some_iff.1 h
+  rw [List.getElem?_append_left hi, h]
+
+private theorem consCtx_append (ctx ctx' : Ctx) (lo hi : Count) :
+    consCtx (ctx ++ ctx') lo hi = consCtx ctx lo hi ++ ctx' := by
+  simp [consCtx, List.cons_append]
+
+/-- Context weakening by appending unused bindings at the **end**
+(de Bruijn indices in `e` unchanged). -/
+theorem TypeOf.weakenCtx {Δ ctx ctx' e ty}
+    (h : TypeOf Δ ctx e ty) : TypeOf Δ (ctx ++ ctx') e ty := by
+  induction h with
+  | unit => exact .unit
+  | nil => exact .nil
+  | cons hhead htail ih₁ ih₂ => exact .cons ih₁ ih₂
+  | varMono h => exact .varMono (ctx_getElem?_append_left h)
+  | varScheme h hinst => exact .varScheme (ctx_getElem?_append_left h) hinst
+  | lam helab hok hbody ih => exact .lam helab hok ih
+  | app hf harg hsub ih₁ ih₂ => exact .app ih₁ ih₂ hsub
+  | ifBL hcond hthn hels ih₁ ih₂ ih₃ => exact .ifBL ih₁ ih₂ ih₃
+  | anno helab he hsub ih => exact .anno helab ih hsub
+  | annoInfer helab he hok hψ hσ huniq ih => exact .annoInfer helab ih hok hψ hσ huniq
+  | letMono he₁ he₂ ih₁ ih₂ => exact .letMono ih₁ ih₂
+  | letScheme hwf he₁ he₂ ih₁ ih₂ => exact .letScheme hwf ih₁ ih₂
+  | matchBL he heNil heCons ih₁ ih₂ ih₃ =>
+    refine .matchBL ih₁ ih₂ ?_
+    rw [consCtx_append]
+    exact ih₃
+  | matchNil he hvalid heNil ih₁ ih₂ => exact .matchNil ih₁ hvalid ih₂
+  | matchCons he hvalid heCons ih₁ ih₂ =>
+    refine .matchCons ih₁ hvalid ?_
+    rw [consCtx_append]
+    exact ih₂
+
+/-- `ofTy` elaborates to itself (no holes). -/
+theorem AnnoTy.elab_ofTy (t : Ty) : AnnoTy.Elab (AnnoTy.ofTy t) t := by
+  induction t with
+  | unit => exact .unit
+  | arrow _ _ ihd ihc => exact .arrow ihd ihc
+  | bl lo hi => exact .bl .known .known
+
+/-! ## 9. Algorithmic inference (freshness frontier `Φ`)
+
+Same pattern as `InferW`: thread `Φ : Nat` as the next inferable index.
+`fillHoles` turns `AnnoTy` blanks into `cvar .inferable Φ`.
+Oracle calls are the opaque `checkValid` / `solve` / `unique`; failure/`multiple`/`unknown`
+⇒ `none` (require annotation).
+-/
+
+def Count.isRigidOnly : Count → Bool
+  | .lit _ => true
+  | .var ⟨.rigid, _⟩ => true
+  | .var ⟨.inferable, _⟩ => false
+  | .add a b | .mul a b | .min a b | .max a b => a.isRigidOnly && b.isRigidOnly
+  | .pred a => a.isRigidOnly
+
+def Count.isDemandOK : Count → Bool
+  | .var ⟨.inferable, _⟩ => true
+  | .mul c (.var ⟨.inferable, _⟩) => c.isRigidOnly
+  | .mul (.var ⟨.inferable, _⟩) c => c.isRigidOnly
+  | .add (.var ⟨.inferable, _⟩) e => e.isRigidOnly
+  | .add e (.var ⟨.inferable, _⟩) => e.isRigidOnly
+  | .add (.mul c (.var ⟨.inferable, _⟩)) e => c.isRigidOnly && e.isRigidOnly
+  | .add (.mul (.var ⟨.inferable, _⟩) c) e => c.isRigidOnly && e.isRigidOnly
+  | c => c.isRigidOnly
+
+def Ty.isDemandOK : Ty → Bool
+  | .unit => true
+  | .arrow d c => d.isDemandOK && c.isDemandOK
+  | .bl lo hi => lo.isDemandOK && hi.isDemandOK
+
+/-- Algorithmic subtype check (mirrors `Sub`). -/
+def checkSub (Δ : List Constraint) (t u : Ty) : Bool :=
+  match t, u with
+  | .unit, .unit => true
+  | .arrow a b, .arrow a' b' => checkSub Δ a' a && checkSub Δ b b'
+  | .bl lo hi, .bl lo' hi' =>
+      lo'.isDemandOK && hi'.isDemandOK &&
+        checkValid (Interval.subGoals Δ ⟨lo, hi⟩ ⟨lo', hi'⟩) == .valid
+  | _, _ => false
+termination_by t.size + u.size
+decreasing_by all_goals (simp_wf; simp [Ty.size]; omega)
+
+def Count.applyArgs (args : List Count) : Count → Count
+  | .lit n => .lit n
+  | .var ⟨.rigid, i⟩ => args.getD i (.lit 0)
+  | .var v => .var v
+  | .add a b => .add (applyArgs args a) (applyArgs args b)
+  | .mul a b => .mul (applyArgs args a) (applyArgs args b)
+  | .pred a => .pred (applyArgs args a)
+  | .min a b => .min (applyArgs args a) (applyArgs args b)
+  | .max a b => .max (applyArgs args a) (applyArgs args b)
+
+def Ty.applyArgs (args : List Count) : Ty → Ty
+  | .unit => .unit
+  | .arrow d c => .arrow (applyArgs args d) (applyArgs args c)
+  | .bl lo hi => .bl (Count.applyArgs args lo) (Count.applyArgs args hi)
+
+def Count.binderRigidBool (n : Nat) : Count → Bool
+  | .lit _ => true
+  | .var ⟨.rigid, i⟩ => decide (i < n)
+  | .var ⟨.inferable, _⟩ => false
+  | .add a b | .mul a b | .min a b | .max a b =>
+      binderRigidBool n a && binderRigidBool n b
+  | .pred a => binderRigidBool n a
+
+def Ty.binderRigidBool (n : Nat) : Ty → Bool
+  | .unit => true
+  | .bl lo hi => Count.binderRigidBool n lo && Count.binderRigidBool n hi
+  | .arrow d c => binderRigidBool n d && binderRigidBool n c
+
+def BScheme.WF_bool (s : BScheme) : Bool :=
+  Ty.binderRigidBool s.binders s.body
+
+def BScheme.instantiate? (s : BScheme) (args : List Count) : Option Ty :=
+  if s.WF_bool && args.length = s.binders then
+    some (Ty.applyArgs args s.body)
+  else
+    none
+
+/-- Fill `none` bounds with fresh inferables starting at `Φ`. -/
+def fillBound (Φ : Nat) : Option Count → Nat × Count
+  | some c => (Φ, c)
+  | none => (Φ + 1, cvar .inferable Φ)
+
+def fillHoles (Φ : Nat) : AnnoTy → Nat × Ty
+  | .unit => (Φ, .unit)
+  | .arrow d c =>
+      let (Φ₁, d') := fillHoles Φ d
+      let (Φ₂, c') := fillHoles Φ₁ c
+      (Φ₂, .arrow d' c')
+  | .bl lo hi =>
+      let (Φ₁, lo') := fillBound Φ lo
+      let (Φ₂, hi') := fillBound Φ₁ hi
+      (Φ₂, .bl lo' hi')
+
+def Expr.size : Expr → Nat
+  | .unit | .nil => 1
+  | .var _ _ => 1
+  | .cons h t => 1 + h.size + t.size
+  | .lam _ b => 1 + b.size
+  | .app f a => 1 + f.size + a.size
+  | .if_ c t e => 1 + c.size + t.size + e.size
+  | .anno e _ => 1 + e.size
+  | .let_ b e => 1 + b.size + e.size
+  | .letScheme _ b e => 1 + b.size + e.size
+  | .matchBL s n c => 1 + s.size + n.size + c.size
+  | .matchNil s n => 1 + s.size + n.size
+  | .matchCons s c => 1 + s.size + c.size
+
+/-- Force `ty'` into demand `ty`: prefer plain `checkSub`; else `solve`+`unique`.
+Fails on `multiple` / `unknown` / `unsat` (annotation required). -/
+def forceSubtype (Δ : List Constraint) (ty' ty : Ty) : Bool :=
+  if checkSub Δ ty' ty then true
+  else if !ty.isDemandOK then false
+  else
+    match subtypeProblem Δ ty' ty with
+    | none => false
+    | some ψ =>
+      match solve ψ with
+      | .witness _ => unique ψ ty'.obsBounds == .unique
+      | _ => false
+
+/-- Synthesize a type. Returns updated freshness frontier and type. -/
+partial def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat × Ty)
+  | .unit => some (Φ, .unit)
+  | .nil => some (Φ, .bl (.lit 0) (.lit 0))
+  | .cons h t => do
+      let (Φ₁, ht) ← synth Φ Δ ctx h
+      let (Φ₂, tty) ← synth Φ₁ Δ ctx t
+      match ht, tty with
+      | .unit, .bl lo hi => some (Φ₂, .bl (.add lo (.lit 1)) (.add hi (.lit 1)))
+      | _, _ => none
+  | .var i args =>
+      match ctx[i]? with
+      | some (.mono ty) =>
+          if args.isEmpty then some (Φ, ty) else none
+      | some (.scheme s) => (Φ, ·) <$> s.instantiate? args
+      | none => none
+  | .lam paramAnn body => do
+      let (Φ₁, paramTy) := fillHoles Φ paramAnn
+      if !paramTy.isDemandOK then none
+      else do
+        let (Φ₂, bodyTy) ← synth Φ₁ Δ (.mono paramTy :: ctx) body
+        some (Φ₂, .arrow paramTy bodyTy)
+  | .app f arg => do
+      let (Φ₁, fty) ← synth Φ Δ ctx f
+      match fty with
+      | .arrow dom cod => do
+          let (Φ₂, aty) ← synth Φ₁ Δ ctx arg
+          if forceSubtype Δ aty dom then some (Φ₂, cod) else none
+      | _ => none
+  | .if_ cond thn els => do
+      let (Φ₁, ct) ← synth Φ Δ ctx cond
+      let (Φ₂, tt) ← synth Φ₁ Δ ctx thn
+      let (Φ₃, et) ← synth Φ₂ Δ ctx els
+      match ct, tt, et with
+      | .unit, .bl lo₁ hi₁, .bl lo₂ hi₂ =>
+          some (Φ₃, .bl (.min lo₁ lo₂) (.max hi₁ hi₂))
+      | _, _, _ => none
+  | .anno e ann => do
+      let (Φ₁, ty) := fillHoles Φ ann
+      let (Φ₂, ty') ← synth Φ₁ Δ ctx e
+      if forceSubtype Δ ty' ty then some (Φ₂, ty) else none
+  | .let_ bind body => do
+      let (Φ₁, ty1) ← synth Φ Δ ctx bind
+      synth Φ₁ Δ (.mono ty1 :: ctx) body
+  | .letScheme s bind body => do
+      if !s.WF_bool then none
+      else do
+        let (Φ₁, tyb) ← synth Φ Δ ctx bind
+        if forceSubtype Δ tyb s.body then
+          synth Φ₁ Δ (.scheme s :: ctx) body
+        else none
+  | .matchBL scrut eNil eCons => do
+      let (Φ₁, sty) ← synth Φ Δ ctx scrut
+      match sty with
+      | .bl lo hi => do
+          let (Φ₂, tNil) ← synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil
+          let (Φ₃, tCons) ← synth Φ₂ (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons
+          if tNil == tCons then some (Φ₃, tNil) else none
+      | _ => none
+  | .matchNil scrut eNil => do
+      let (Φ₁, sty) ← synth Φ Δ ctx scrut
+      match sty with
+      | .bl lo hi =>
+          if checkValid (mustBeEmpty Δ hi) != .valid then none
+          else synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil
+      | _ => none
+  | .matchCons scrut eCons => do
+      let (Φ₁, sty) ← synth Φ Δ ctx scrut
+      match sty with
+      | .bl lo hi =>
+          if checkValid (mustBeNonempty Δ lo) != .valid then none
+          else synth Φ₁ (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons
+      | _ => none
+
+/-- Check `e` against expected `ty` (synth then `forceSubtype`). -/
+def check (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) (e : Expr) (ty : Ty) :
+    Option Nat := do
+  let (Φ', ty') ← synth Φ Δ ctx e
+  if forceSubtype Δ ty' ty then some Φ' else none
+
+/-- Soundness of synthesis (next session). -/
+theorem synth_sound {Φ Δ ctx e Φ' ty}
+    (h : synth Φ Δ ctx e = some (Φ', ty)) :
+    TypeOf Δ ctx e ty := by
+  sorry
+
+/-! ## 10. Tour / examples -/
 
 namespace Examples
 
@@ -504,13 +854,17 @@ example : TypeOf [] [.scheme idScheme] (.var 0 [.lit 3])
 
 example : TypeOf [] []
     (.letScheme idScheme
-      (.lam (.bl (r 0) (r 0)) (.var 0 []))
+      (.lam (.bl (some (r 0)) (some (r 0))) (.var 0 []))
       (.var 0 [.lit 3]))
     (.arrow (.bl (.lit 3) (.lit 3)) (.bl (.lit 3) (.lit 3))) :=
   .letScheme idScheme_wf
-    (.lam (.bl (.ofRigid .var) (.ofRigid .var)) (.varMono rfl))
+    (.lam (.bl .known .known) (.bl (.ofRigid .var) (.ofRigid .var)) (.varMono rfl))
     (.varScheme rfl <| .intro idScheme_wf rfl <|
       .arrow (.bl (.var rfl) (.var rfl)) (.bl (.var rfl) (.var rfl)))
+
+/-- ### Holes: `BL _ _` fills with fresh inferables via `fillHoles`. -/
+example : fillHoles 0 (.bl none none) =
+    (2, .bl (cvar .inferable 0) (cvar .inferable 1)) := rfl
 
 /-- ### flatMap scheme (positive `n*k`) -/
 def flatMapScheme : BScheme where
