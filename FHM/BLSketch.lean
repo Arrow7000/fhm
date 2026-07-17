@@ -1,38 +1,45 @@
 /-!
-# Bounded Lists: a tiny typing sketch
+# Bounded Lists — rigorous toy sketch
 
-Spine: the declarative judgment `TypeOf` (§5). Each constructor is a usage site;
-premises show which bound obligations fire. Oracle `unknown` never appears in a
-premise — those cases simply fail to inhabit `TypeOf` and are left to the
-implementor (annotate, commit, error, …).
+Declarative bound layer on top of ordinary HM. Judgment: `TypeOf Δ Γ e τ`.
 
-## Picture (bound layer on top of ordinary HM)
+## Contract
 
-* **Compare (∀):** subtype / inhabitability via `checkValid`, under assumption
-  set `Δ` (first index of `TypeOf` / `Sub`).
-* **Combine:** branch `join` = `min`/`max` (free). **Meet** inhabitability =
-  `checkValid (inhabitProblem Δ (Interval.meet …))`.
-* **Solve (∃ under ∀):** `annoInfer` uses `subtypeProblem Δ ty' ty` as `ψ`, then
-  `solve` + `unique` on `ty'.obsBounds`.
-* **Demand restriction (contravariant bounds):** at most one inferable, affine in
-  it, coefficients/offsets rigid-only — see `Count.DemandOK`. Positive / result
-  bounds may still use `n*k` (e.g. `flatMap`).
-* **Generalisation:** HM-style `let` — see `TypeOf.letMono` / `letScheme`.
-  Scheme packing here is **annotated** (`letScheme s …`): `s` is given and the
-  binding must inhabit `s.body`. A real checker may infer `s` by generalising
-  unconstrained bound inferables (or ask for an annotation / commit if ambiguous).
+If `TypeOf Δ Γ e τ` is derivable, every bound obligation for this toy language
+appears as a premise in that derivation:
 
-Term de Bruijn: under `lam`/`let`, extend `Ctx` at the front; bodies are already
-written in that scope (`var 0` = new binding). No `Expr.subst` in `TypeOf`.
+| Job | Where it shows up |
+| --- | --- |
+| **Compare (∀)** | `Sub` / inhabitability → `checkValid` under assumptions `Δ` |
+| **Join** | `ifBL`, `matchBL` result bounds via `min`/`max` (free) |
+| **Meet inhabitability** | not an `Expr` form — when one value faces several BL demands, discharge `checkValid (inhabitProblem Δ (Interval.meet …))` |
+| **Solve + unique outputs** | `annoInfer` via `subtypeProblem Δ ty' ty` |
+| **Demand discipline** | `Count.DemandOK` / `Ty.DemandOK` on demanded types |
+| **Bound schemes** | `letScheme` (annotated pack) + `varScheme` (`InstantiatesTo`); bodies are WF (only rigid binders `0..n-1`) |
+| **Match refinement** | `matchBL` extends `Δ` (nil: `lo ≤ 0`, hi unchanged; cons: `1 ≤ hi`, tail at `pred`) |
 
-Out of scope here: `zip`/`take`/`drop` (need value-level `Nat`s in types),
-`splitAt`-style length splitting on inputs, match refinements, indexing APIs,
-type-level polymorphism, `unknown` UX.
+Oracle answers other than success (`unknown` / `invalid` / `unsat` / `multiple`)
+simply yield **no** derivation — policy (annotate / commit / error) is outside
+this relation.
+
+**Declarative (like Core `TypeOfHM`):** the relation existentially picks types,
+scheme args, and solve witnesses; it does not return a substitution. An
+algorithmic checker would invent inferables and compute `σ`.
+
+**Term binders:** de Bruijn via `Ctx` extension; bodies are already scoped.
+**Scheme binders (story A):** flat rigid indices `0..binders-1` in `s.body` only;
+no nested scheme-hygiene / LN. Enough for top-level library schemes in the demo.
+
+## Non-goals
+
+`zip` / `take` / `drop` / `splitAt`, value-`Nat` in types, recursion, type-level
+`∀`, inferred generalisation algorithm, commit-vs-annotate policy, `unknown` UX,
+opsem / preservation, checker completeness.
 -/
 
 namespace BLSketch
 
-/-! ## 0. Counts and rigid / inferable -/
+/-! ## 0. Counts -/
 
 inductive VarKind where
   | rigid
@@ -54,11 +61,7 @@ inductive Count where
   | max  (a b : Count)
   deriving DecidableEq, Repr
 
-/-- Full `Var → Nat` (rigid **and** inferable). ∀-validity quantifies over every
-slot; ∃∀ fixes inferables via a witness and still ranges over all `Assign`s that
-agree on those slots (`agreesOn`). Restricting the domain to rigid-only would
-need a “no inferables in this `Count`” side condition on every `eval` — extra
-bookkeeping for no real gain in this sketch. -/
+/-- Assignments range over all `Var`s (see `ExistsProblem.SolvedBy` / `agreesOn`). -/
 abbrev Assign := Var → Nat
 
 def cvar (kind : VarKind) (i : Nat) : Count := .var ⟨kind, i⟩
@@ -72,7 +75,7 @@ def Count.eval : Count → Assign → Nat
   | .min a b, σ => Nat.min (a.eval σ) (b.eval σ)
   | .max a b, σ => Nat.max (a.eval σ) (b.eval σ)
 
-/-! ## 1. Constraint problems -/
+/-! ## 1. Constraints -/
 
 structure Constraint where
   lhs : Count
@@ -92,7 +95,6 @@ def ForallProblem.Valid (φ : ForallProblem) : Prop :=
 
 structure ExistsProblem where
   inferables : List Var
-  /-- Ambient assumptions (threaded from `Δ` in `TypeOf` / `Sub`). -/
   prem       : List Constraint := []
   cons       : List Constraint
   deriving Repr
@@ -100,7 +102,6 @@ structure ExistsProblem where
 def agreesOn (vs : List Var) (σ τ : Assign) : Prop :=
   ∀ v ∈ vs, σ v = τ v
 
-/-- Witness: for every assignment agreeing on inferables, premises imply goals. -/
 def ExistsProblem.SolvedBy (ψ : ExistsProblem) (σ : Assign) : Prop :=
   ∀ τ : Assign, agreesOn ψ.inferables σ τ →
     (∀ c ∈ ψ.prem, c.Holds τ) → (∀ c ∈ ψ.cons, c.Holds τ)
@@ -114,54 +115,25 @@ def sameOutputs (outs : List Count) (σ τ : Assign) : Prop :=
 def ExistsProblem.UniqueOutputs (ψ : ExistsProblem) (outs : List Count) : Prop :=
   ∀ σ τ, ψ.SolvedBy σ → ψ.SolvedBy τ → sameOutputs outs σ τ
 
-/-! ## 2. Demand-OK (contravariant bound discipline)
+/-! ## 2. DemandOK (syntactic language restriction on demands) -/
 
-A **demand** bound may mention at most one inferable, **affinely**, with
-rigid-only coefficient/offset.
-
-This predicate is **syntactic / canonical-form**: constructors fix operand order
-(`c*x` not `x*c`, etc.). Commuted variants are included as extra constructors so
-minor surface noise still passes. Deciding whether an *arbitrary* `Count` is
-*semantically* equivalent to some `DemandOK` form means normalising (rearrange,
-fold, cancel) — possible in principle for the affine fragment, but real work,
-and easy to get incomplete. The sketch keeps the cheap syntactic check; a
-checker may normalise first, then match.
--/
-
-/-- Built from literals and **rigid** vars only (any ops). -/
 inductive Count.RigidOnly : Count → Prop where
-  | lit {n} :
-    RigidOnly (.lit n)
-  | var {i} :
-    RigidOnly (.var ⟨.rigid, i⟩)
-  | add {a b} :
-    RigidOnly a → RigidOnly b → RigidOnly (.add a b)
-  | mul {a b} :
-    RigidOnly a → RigidOnly b → RigidOnly (.mul a b)
-  | pred {a} :
-    RigidOnly a → RigidOnly (.pred a)
-  | min {a b} :
-    RigidOnly a → RigidOnly b → RigidOnly (.min a b)
-  | max {a b} :
-    RigidOnly a → RigidOnly b → RigidOnly (.max a b)
+  | lit {n} : RigidOnly (.lit n)
+  | var {i} : RigidOnly (.var ⟨.rigid, i⟩)
+  | add {a b} : RigidOnly a → RigidOnly b → RigidOnly (.add a b)
+  | mul {a b} : RigidOnly a → RigidOnly b → RigidOnly (.mul a b)
+  | pred {a} : RigidOnly a → RigidOnly (.pred a)
+  | min {a b} : RigidOnly a → RigidOnly b → RigidOnly (.min a b)
+  | max {a b} : RigidOnly a → RigidOnly b → RigidOnly (.max a b)
 
-/-- Legal bound expression in a **demand** position. -/
+/-- At most one inferable, affine, rigid coeffs/offsets. Syntactic, not semantic. -/
 inductive Count.DemandOK : Count → Prop where
-  /-- Fully rigid (no inferables). -/
-  | ofRigid {c} :
-    Count.RigidOnly c → DemandOK c
-  /-- Bare inferable `x`. -/
-  | infer {i} :
-    DemandOK (.var ⟨.inferable, i⟩)
-  /-- `c·x` with rigid coefficient. -/
-  | scale {c i} :
-    Count.RigidOnly c → DemandOK (.mul c (.var ⟨.inferable, i⟩))
-  | scaleComm {c i} :
-    Count.RigidOnly c → DemandOK (.mul (.var ⟨.inferable, i⟩) c)
-  | offset {i e} :
-    Count.RigidOnly e → DemandOK (.add (.var ⟨.inferable, i⟩) e)
-  | offsetComm {i e} :
-    Count.RigidOnly e → DemandOK (.add e (.var ⟨.inferable, i⟩))
+  | ofRigid {c} : Count.RigidOnly c → DemandOK c
+  | infer {i} : DemandOK (.var ⟨.inferable, i⟩)
+  | scale {c i} : Count.RigidOnly c → DemandOK (.mul c (.var ⟨.inferable, i⟩))
+  | scaleComm {c i} : Count.RigidOnly c → DemandOK (.mul (.var ⟨.inferable, i⟩) c)
+  | offset {i e} : Count.RigidOnly e → DemandOK (.add (.var ⟨.inferable, i⟩) e)
+  | offsetComm {i e} : Count.RigidOnly e → DemandOK (.add e (.var ⟨.inferable, i⟩))
   | aff {c i e} :
     Count.RigidOnly c → Count.RigidOnly e →
     DemandOK (.add (.mul c (.var ⟨.inferable, i⟩)) e)
@@ -169,7 +141,7 @@ inductive Count.DemandOK : Count → Prop where
     Count.RigidOnly c → Count.RigidOnly e →
     DemandOK (.add (.mul (.var ⟨.inferable, i⟩) c) e)
 
-/-! ## 3. Types, schemes, intervals -/
+/-! ## 3. Types, intervals, schemes -/
 
 structure Interval where
   lo : Count
@@ -180,9 +152,11 @@ def Interval.subGoals (Δ : List Constraint) (a b : Interval) : ForallProblem wh
   prem  := Δ
   goals := [⟨b.lo, a.lo⟩, ⟨a.hi, b.hi⟩]
 
-/-- Candidate meet; inhabitability is a ∀-check (see `inhabitProblem`). -/
 def Interval.meet (a b : Interval) : Interval :=
   ⟨.max a.lo b.lo, .min a.hi b.hi⟩
+
+def Interval.join (a b : Interval) : Interval :=
+  ⟨.min a.lo b.lo, .max a.hi b.hi⟩
 
 def inhabitProblem (Δ : List Constraint) (i : Interval) : ForallProblem where
   prem  := Δ
@@ -194,8 +168,6 @@ inductive Ty where
   | bl (lo hi : Count)
   deriving DecidableEq, Repr
 
-/-- Bound expressions that appear in an observable type (for uniqueness-of-outputs).
-For `BL`, the interval; for arrows, both sides; `unit` contributes nothing. -/
 def Ty.obsBounds : Ty → List Count
   | .unit => []
   | .bl lo hi => [lo, hi]
@@ -220,7 +192,6 @@ def Ty.size : Ty → Nat
   | .bl _ _ => 1
   | .arrow d c => 1 + d.size + c.size
 
-/-- Structural subtype obligations (`none` if shapes mismatch). -/
 def subConstraints (ty' ty : Ty) : Option (List Constraint) :=
   match ty', ty with
   | .unit, .unit => some []
@@ -233,7 +204,6 @@ def subConstraints (ty' ty : Ty) : Option (List Constraint) :=
 termination_by ty'.size + ty.size
 decreasing_by all_goals (simp_wf; simp [Ty.size]; omega)
 
-/-- ∃∀ problem for “choose inferables so `ty' <: ty` under assumptions `Δ`. -/
 def subtypeProblem (Δ : List Constraint) (ty' ty : Ty) : Option ExistsProblem :=
   match subConstraints ty' ty with
   | none => none
@@ -245,51 +215,57 @@ def subtypeProblem (Δ : List Constraint) (ty' ty : Ty) : Option ExistsProblem :
       cons := cs
     }
 
-/-- Demanded types: `BL` bounds must be `Count.DemandOK`. -/
 inductive Ty.DemandOK : Ty → Prop where
-  | unit :
-    Ty.DemandOK .unit
-  | arrow {d c} :
-    Ty.DemandOK d → Ty.DemandOK c → Ty.DemandOK (.arrow d c)
-  | bl {lo hi} :
-    Count.DemandOK lo → Count.DemandOK hi → Ty.DemandOK (.bl lo hi)
+  | unit : Ty.DemandOK .unit
+  | arrow {d c} : Ty.DemandOK d → Ty.DemandOK c → Ty.DemandOK (.arrow d c)
+  | bl {lo hi} : Count.DemandOK lo → Count.DemandOK hi → Ty.DemandOK (.bl lo hi)
 
-/-- Bound-only scheme. Binder `i` appears in the body as `cvar .rigid i`. -/
+/-- Scheme body may mention only **rigid** vars with `idx < binders` (no inferables). -/
+def Count.BinderRigid (n : Nat) : Count → Prop
+  | .lit _ => True
+  | .var ⟨.rigid, i⟩ => i < n
+  | .var ⟨.inferable, _⟩ => False
+  | .add a b | .mul a b | .min a b | .max a b =>
+      Count.BinderRigid n a ∧ Count.BinderRigid n b
+  | .pred a => Count.BinderRigid n a
+
+def Ty.BinderRigid (n : Nat) : Ty → Prop
+  | .unit => True
+  | .bl lo hi => Count.BinderRigid n lo ∧ Count.BinderRigid n hi
+  | .arrow d c => Ty.BinderRigid n d ∧ Ty.BinderRigid n c
+
 structure BScheme where
   binders : Nat
   body    : Ty
   deriving DecidableEq, Repr
 
-/-- Substitution of scheme args for rigid binders `0..args.length`. -/
+def BScheme.WF (s : BScheme) : Prop :=
+  Ty.BinderRigid s.binders s.body
+
 inductive Count.Subst : List Count → Count → Count → Prop where
-  | lit {args n} :
-    Subst args (.lit n) (.lit n)
-  | var {args i c} :
-    args[i]? = some c →
-    Subst args (.var ⟨.rigid, i⟩) c
+  | lit {args n} : Subst args (.lit n) (.lit n)
+  | var {args i c} : args[i]? = some c → Subst args (.var ⟨.rigid, i⟩) c
   | add {args a b a' b'} :
     Subst args a a' → Subst args b b' → Subst args (.add a b) (.add a' b')
   | mul {args a b a' b'} :
     Subst args a a' → Subst args b b' → Subst args (.mul a b) (.mul a' b')
-  | pred {args a a'} :
-    Subst args a a' → Subst args (.pred a) (.pred a')
+  | pred {args a a'} : Subst args a a' → Subst args (.pred a) (.pred a')
   | min {args a b a' b'} :
     Subst args a a' → Subst args b b' → Subst args (.min a b) (.min a' b')
   | max {args a b a' b'} :
     Subst args a a' → Subst args b b' → Subst args (.max a b) (.max a' b')
 
 inductive Ty.Subst : List Count → Ty → Ty → Prop where
-  | unit {args} :
-    Subst args .unit .unit
+  | unit {args} : Subst args .unit .unit
   | arrow {args d c d' c'} :
     Subst args d d' → Subst args c c' → Subst args (.arrow d c) (.arrow d' c')
   | bl {args lo hi lo' hi'} :
     Count.Subst args lo lo' → Count.Subst args hi hi' →
     Subst args (.bl lo hi) (.bl lo' hi')
 
-/-- `s.InstantiatesTo args ty` — scheme applied to `args` yields `ty`. -/
 inductive BScheme.InstantiatesTo : BScheme → List Count → Ty → Prop where
   | intro {s args ty} :
+    s.WF →
     args.length = s.binders →
     Ty.Subst args s.body ty →
     InstantiatesTo s args ty
@@ -301,38 +277,25 @@ inductive Binding where
 
 abbrev Ctx := List Binding
 
-/-! ## 4. Expressions
-
-No built-in `flatMap` primitive — library ops are ordinary `scheme` bindings
-in the context (see `Examples.flatMapScheme`).
--/
+/-! ## 4. Expressions -/
 
 inductive Expr where
   | unit
   | nil
   | cons (head tail : Expr)
-  | var  (idx : Nat) (boundArgs : List Count)
-  | lam  (paramTy : Ty) (body : Expr)
-  | app  (fn arg : Expr)
-  | if_  (cond thn els : Expr)
+  | var (idx : Nat) (boundArgs : List Count)
+  | lam (paramTy : Ty) (body : Expr)
+  | app (fn arg : Expr)
+  | if_ (cond thn els : Expr)
   | anno (e : Expr) (ty : Ty)
-  /-- Monomorphic let: bind `e1`, then `e2` under `var 0`. Ctx extension only —
-  no term-level substitution in the typing rules. Under a new binder, indices in
-  an *already-built* body are already scoped: `var 0` = this binding, `var 1` =
-  previous `var 0`. Lookup in the extended `Ctx` does the “shift”; we do not
-  rewrite the body. (Rewriting would be needed only if you wrapped a term that
-  was typed in the *outer* scope without rebuilding it — not how these ASTs work.) -/
   | let_ (binding body : Expr)
-  /-- Pack `binding : s.body` as a bound scheme `s`, then type `body` with that
-  scheme at `var 0`. `s` is an annotation (inferred gen is a checker policy). -/
   | letScheme (s : BScheme) (binding body : Expr)
+  /-- Match a `BL`. `nilBranch` under refined `Δ`; `consBranch` under
+  `var 0 = head : Unit`, `var 1 = tail : BL (pred lo) (pred hi)`. -/
+  | matchBL (scrut nilBranch consBranch : Expr)
   deriving DecidableEq, Repr
 
-/-! ## 5. Oracles
-
-Soundness axioms for non-`unknown` answers. `TypeOf` only ever requires
-successful answers; `unknown` / failure ⇒ no derivable typing.
--/
+/-! ## 5. Oracles (TCB) -/
 
 inductive ValidVerdict where
   | valid | invalid | unknown
@@ -373,13 +336,20 @@ axiom unique_sound (ψ : ExistsProblem) (outs : List Count) :
     | .multiple => ¬ ψ.UniqueOutputs outs
     | .unknown => True
 
-/-! ## 6. `Sub` and `TypeOf`
+/-! ## 6. Match refinements on `Δ` -/
 
-`Δ` is the ambient assumption set (bound premises): subtype/`lo ≤ hi` checks
-are ∀-validity *under* `Δ`. Empty `Δ` is the closed case used in most examples.
--/
+/-- Nil branch: list is empty ⇒ `lo ≤ 0`. Upper bound `hi` is **unchanged**
+(empty is allowed whenever `lo = 0`, even if `0 < hi`, e.g. `BL 0 5`).
+Also `0 ≤ hi` so the observation sits under the upper bound. -/
+def nilRefine (lo hi : Count) : List Constraint :=
+  [⟨lo, .lit 0⟩, ⟨.lit 0, hi⟩]
 
-/-- Subtyping under assumptions `Δ`. -/
+/-- Cons branch: list non-empty ⇒ `1 ≤ hi`. Tail length bounds are `pred lo/hi`. -/
+def consRefine (hi : Count) : List Constraint :=
+  [⟨.lit 1, hi⟩]
+
+/-! ## 7. `Sub` and `TypeOf` -/
+
 inductive Sub (Δ : List Constraint) : Ty → Ty → Prop where
   | unit :
     Sub Δ .unit .unit
@@ -393,7 +363,6 @@ inductive Sub (Δ : List Constraint) : Ty → Ty → Prop where
     checkValid (Interval.subGoals Δ ⟨lo, hi⟩ ⟨lo', hi'⟩) = .valid →
     Sub Δ (.bl lo hi) (.bl lo' hi')
 
-/-- **The judgment to read.** First index: assumption set `Δ`. -/
 inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
   | unit {Δ ctx} :
     TypeOf Δ ctx .unit .unit
@@ -415,8 +384,6 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     s.InstantiatesTo args ty →
     TypeOf Δ ctx (.var i args) ty
 
-  /-- Body is typed in an extended ctx; de Bruijn indices in `body` are already
-  relative to that scope (`var 0` = param). -/
   | lam {Δ ctx paramTy body bodyTy} :
     Ty.DemandOK paramTy →
     TypeOf Δ (.mono paramTy :: ctx) body bodyTy →
@@ -439,8 +406,6 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     Sub Δ ty' ty →
     TypeOf Δ ctx (.anno e ty) ty
 
-  /-- Solve inferables so `ty' <: ty` under `Δ`, with unique observable outputs.
-  `ψ` is exactly `subtypeProblem Δ ty' ty`. -/
   | annoInfer {Δ ctx e ty ty' ψ σ} :
     TypeOf Δ ctx e ty' →
     Ty.DemandOK ty →
@@ -455,48 +420,68 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     TypeOf Δ ctx (.let_ e1 e2) ty2
 
   | letScheme {Δ ctx s e1 e2 bodyTy} :
+    s.WF →
     TypeOf Δ ctx e1 s.body →
     TypeOf Δ (.scheme s :: ctx) e2 bodyTy →
     TypeOf Δ ctx (.letScheme s e1 e2) bodyTy
 
-/-! ## 7. Examples -/
+  /-- Match on `BL lo hi`.
+  * nil: `Δ ++ nilRefine lo hi` (`lo ≤ 0`; `hi` not forced to `0`)
+  * cons: `Δ ++ consRefine hi`; ctx extends with
+    `var 0 : Unit` (head), `var 1 : BL (pred lo) (pred hi)` (tail) -/
+  | matchBL {Δ ctx e eNil eCons lo hi ty} :
+    TypeOf Δ ctx e (.bl lo hi) →
+    TypeOf (Δ ++ nilRefine lo hi) ctx eNil ty →
+    TypeOf (Δ ++ consRefine hi)
+      (.mono .unit :: .mono (.bl (.pred lo) (.pred hi)) :: ctx) eCons ty →
+    TypeOf Δ ctx (.matchBL e eNil eCons) ty
+
+/-! ## 8. Tour / examples -/
 
 namespace Examples
 
 def r (i : Nat) : Count := cvar .rigid i
 def x (i : Nat) : Count := cvar .inferable i
 
-example : TypeOf [] [] .nil (.bl (.lit 0) (.lit 0)) :=
-  .nil
+/- Need `BinderRigid` proofs for scheme bodies using `r i`. -/
+theorem binderRigid_r {n i : Nat} (h : i < n) :
+    Count.BinderRigid n (r i) := h
+
+theorem idScheme_wf : Ty.BinderRigid 1
+    (.arrow (.bl (r 0) (r 0)) (.bl (r 0) (r 0))) :=
+  ⟨⟨binderRigid_r (Nat.zero_lt_one), binderRigid_r (Nat.zero_lt_one)⟩,
+   ⟨binderRigid_r (Nat.zero_lt_one), binderRigid_r (Nat.zero_lt_one)⟩⟩
+
+/-- ### Build -/
+example : TypeOf [] [] .nil (.bl (.lit 0) (.lit 0)) := .nil
 
 example : TypeOf [] [] (.cons .unit .nil)
     (.bl (.add (.lit 0) (.lit 1)) (.add (.lit 0) (.lit 1))) :=
   .cons .unit .nil
 
-/-- `∀ α. BL α α → BL α α`. -/
+/-- ### Bound scheme: `∀ α. BL α α → BL α α` -/
 def idScheme : BScheme where
   binders := 1
   body := .arrow (.bl (r 0) (r 0)) (.bl (r 0) (r 0))
 
+example : idScheme.WF := idScheme_wf
+
 example : TypeOf [] [.scheme idScheme] (.var 0 [.lit 3])
     (.arrow (.bl (.lit 3) (.lit 3)) (.bl (.lit 3) (.lit 3))) :=
-  .varScheme rfl <| .intro rfl <|
+  .varScheme rfl <| .intro idScheme_wf rfl <|
     .arrow (.bl (.var rfl) (.var rfl)) (.bl (.var rfl) (.var rfl))
 
-/-- Create a scheme with `letScheme`, then instantiate — no pre-loaded ctx. -/
 example : TypeOf [] []
     (.letScheme idScheme
       (.lam (.bl (r 0) (r 0)) (.var 0 []))
       (.var 0 [.lit 3]))
     (.arrow (.bl (.lit 3) (.lit 3)) (.bl (.lit 3) (.lit 3))) :=
-  .letScheme
+  .letScheme idScheme_wf
     (.lam (.bl (.ofRigid .var) (.ofRigid .var)) (.varMono rfl))
-    (.varScheme rfl <| .intro rfl <|
+    (.varScheme rfl <| .intro idScheme_wf rfl <|
       .arrow (.bl (.var rfl) (.var rfl)) (.bl (.var rfl) (.var rfl)))
 
-/-- `∀ n k. BL n n → (Unit → BL k k) → BL (n*k) (n*k)` — library scheme, not a
-language primitive. Positive `n*k` is allowed; a demand of shape `a*b` with two
-inferables would fail `Count.DemandOK`. -/
+/-- ### flatMap scheme (positive `n*k`) -/
 def flatMapScheme : BScheme where
   binders := 2
   body :=
@@ -504,29 +489,51 @@ def flatMapScheme : BScheme where
       (.arrow (.arrow .unit (.bl (r 1) (r 1)))
         (.bl (.mul (r 0) (r 1)) (.mul (r 0) (r 1))))
 
-/-- Instantiate `flatMap` at `n=2`, `k=6`. -/
+theorem flatMapScheme_wf : flatMapScheme.WF := by
+  dsimp [BScheme.WF, flatMapScheme, Ty.BinderRigid, Count.BinderRigid, r, cvar]
+  decide
+
 example :
     flatMapScheme.InstantiatesTo [.lit 2, .lit 6]
       (.arrow (.bl (.lit 2) (.lit 2))
         (.arrow (.arrow .unit (.bl (.lit 6) (.lit 6)))
           (.bl (.mul (.lit 2) (.lit 6)) (.mul (.lit 2) (.lit 6))))) := by
-  refine .intro rfl ?_
+  refine .intro flatMapScheme_wf rfl ?_
   refine .arrow ?_ ?_
   · exact .bl (.var rfl) (.var rfl)
   · refine .arrow ?_ ?_
-    · refine .arrow .unit ?_
-      exact .bl (.var (by native_decide)) (.var (by native_decide))
+    · exact .arrow .unit (.bl (.var (by native_decide)) (.var (by native_decide)))
     · exact .bl (.mul (.var rfl) (.var (by native_decide)))
         (.mul (.var rfl) (.var (by native_decide)))
 
-/-- Escape ambiguity (prose): result `BL x (2x)` under `5 ≤ x` has many
-incomparable outputs — `unique` fails, `annoInfer` does not apply. -/
+/-- ### Match refines `Δ`
+
+Scrutinee `BL lo hi`. Nil branch sees `lo ≤ 0` (and `0 ≤ hi`); cons sees `1 ≤ hi`
+and types the tail at `pred`. Example: return `unit` in both branches. -/
+example (lo hi : Count) :
+    TypeOf [] [.mono (.bl lo hi)]
+      (.matchBL (.var 0 []) .unit .unit) .unit :=
+  .matchBL (.varMono rfl) .unit .unit
+
+/-- Nil refine does **not** set `hi = 0` — only `lo ≤ 0` and `0 ≤ hi`. -/
+example : nilRefine (.lit 0) (.lit 5) =
+    [⟨.lit 0, .lit 0⟩, ⟨.lit 0, .lit 5⟩] := rfl
+
+/-- ### Escape ambiguity (prose)
+
+Synthesizing `BL x (2x)` under weak constraints can yield many incomparable
+`obsBounds`; `unique` fails ⇒ no `annoInfer` derivation ⇒ annotate or commit. -/
 def linearAmbiguousProblem : ExistsProblem where
   inferables := [⟨.inferable, 0⟩]
   cons := [⟨.lit 5, x 0⟩]
 
 def linearAmbiguousOuts : List Count :=
   [x 0, .mul (.lit 2) (x 0)]
+
+/-- Meet inhabitability (side condition, not an `Expr`): -/
+example (Δ : List Constraint) (i j : Interval) :
+    ForallProblem :=
+  inhabitProblem Δ (Interval.meet i j)
 
 end Examples
 
