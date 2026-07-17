@@ -28,6 +28,12 @@ name = "fhm_live"
 root = "FHM.Live"
 # Not part of defaultTargets — build with `lake build fhm_live` or scripts/watch-live.sh
 
+[[lean_lib]]
+name = "FHMZ3"
+# Optional: Z3 subprocess oracle + BLSketch bound layer.
+# Build with `lake build FHMZ3` (requires `z3` on PATH for runtime / #eval).
+roots = ["FHM.Z3", "FHM.BLSketch"]
+
 [[require]]
 name = "mathlib"
 scope = "leanprover-community"
