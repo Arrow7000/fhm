@@ -16,7 +16,7 @@ appears as a premise in that derivation:
 | **Solve + unique outputs** | `annoInfer` via `subtypeProblem Δ ty' ty` |
 | **Demand discipline** | `Count.DemandOK` / `Ty.DemandOK` on demanded types |
 | **Bound schemes** | `letScheme` (annotated pack) + `varScheme` (`InstantiatesTo`); bodies are WF (only rigid binders `0..n-1`) |
-| **Match refinement** | `matchBL` extends `Δ` (nil: `lo ≤ 0`, hi unchanged; cons: `1 ≤ hi`, tail at `pred`) |
+| **Match refinement** | `matchBL` / `matchNil` / `matchCons` extend `Δ`; single-branch forms need a ∀-proof the other case is impossible (`hi ≤ 0` or `1 ≤ lo`) |
 
 Oracle answers other than success (`unknown` / `invalid` / `unsat` / `multiple`)
 simply yield **no** derivation — policy (annotate / commit / error) is outside
@@ -290,9 +290,13 @@ inductive Expr where
   | anno (e : Expr) (ty : Ty)
   | let_ (binding body : Expr)
   | letScheme (s : BScheme) (binding body : Expr)
-  /-- Match a `BL`. `nilBranch` under refined `Δ`; `consBranch` under
+  /-- Exhaustive match on `BL`. Nil branch under refined `Δ`; cons branch under
   `var 0 = head : Unit`, `var 1 = tail : BL (pred lo) (pred hi)`. -/
   | matchBL (scrut nilBranch consBranch : Expr)
+  /-- Nil-only match — allowed when `hi ≤ 0` (list must be empty). -/
+  | matchNil (scrut nilBranch : Expr)
+  /-- Cons-only match — allowed when `1 ≤ lo` (list must be non-empty). -/
+  | matchCons (scrut consBranch : Expr)
   deriving DecidableEq, Repr
 
 /-! ## 5. Oracles (TCB) -/
@@ -347,6 +351,21 @@ def nilRefine (lo hi : Count) : List Constraint :=
 /-- Cons branch: list non-empty ⇒ `1 ≤ hi`. Tail length bounds are `pred lo/hi`. -/
 def consRefine (hi : Count) : List Constraint :=
   [⟨.lit 1, hi⟩]
+
+/-- `hi ≤ 0` under `Δ` — scrutinee must be empty (nil-only match). -/
+def mustBeEmpty (Δ : List Constraint) (hi : Count) : ForallProblem where
+  prem  := Δ
+  goals := [⟨hi, .lit 0⟩]
+
+/-- `1 ≤ lo` under `Δ` — scrutinee must be non-empty (cons-only match).
+(`0 < lo` on `ℕ` is `1 ≤ lo`.) -/
+def mustBeNonempty (Δ : List Constraint) (lo : Count) : ForallProblem where
+  prem  := Δ
+  goals := [⟨.lit 1, lo⟩]
+
+/-- Ctx for a cons branch: `var 0 = head`, `var 1 = tail`. -/
+def consCtx (ctx : Ctx) (lo hi : Count) : Ctx :=
+  .mono .unit :: .mono (.bl (.pred lo) (.pred hi)) :: ctx
 
 /-! ## 7. `Sub` and `TypeOf` -/
 
@@ -425,16 +444,28 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     TypeOf Δ (.scheme s :: ctx) e2 bodyTy →
     TypeOf Δ ctx (.letScheme s e1 e2) bodyTy
 
-  /-- Match on `BL lo hi`.
+  /-- Exhaustive match on `BL lo hi`.
   * nil: `Δ ++ nilRefine lo hi` (`lo ≤ 0`; `hi` not forced to `0`)
-  * cons: `Δ ++ consRefine hi`; ctx extends with
-    `var 0 : Unit` (head), `var 1 : BL (pred lo) (pred hi)` (tail) -/
+  * cons: `Δ ++ consRefine hi`; `consCtx` binds head / tail -/
   | matchBL {Δ ctx e eNil eCons lo hi ty} :
     TypeOf Δ ctx e (.bl lo hi) →
     TypeOf (Δ ++ nilRefine lo hi) ctx eNil ty →
-    TypeOf (Δ ++ consRefine hi)
-      (.mono .unit :: .mono (.bl (.pred lo) (.pred hi)) :: ctx) eCons ty →
+    TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons ty →
     TypeOf Δ ctx (.matchBL e eNil eCons) ty
+
+  /-- Nil-only: require `hi ≤ 0` under `Δ` (empty is forced). -/
+  | matchNil {Δ ctx e eNil lo hi ty} :
+    TypeOf Δ ctx e (.bl lo hi) →
+    checkValid (mustBeEmpty Δ hi) = .valid →
+    TypeOf (Δ ++ nilRefine lo hi) ctx eNil ty →
+    TypeOf Δ ctx (.matchNil e eNil) ty
+
+  /-- Cons-only: require `1 ≤ lo` under `Δ` (non-empty is forced). -/
+  | matchCons {Δ ctx e eCons lo hi ty} :
+    TypeOf Δ ctx e (.bl lo hi) →
+    checkValid (mustBeNonempty Δ lo) = .valid →
+    TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons ty →
+    TypeOf Δ ctx (.matchCons e eCons) ty
 
 /-! ## 8. Tour / examples -/
 
@@ -518,6 +549,15 @@ example (lo hi : Count) :
 /-- Nil refine does **not** set `hi = 0` — only `lo ≤ 0` and `0 ≤ hi`. -/
 example : nilRefine (.lit 0) (.lit 5) =
     [⟨.lit 0, .lit 0⟩, ⟨.lit 0, .lit 5⟩] := rfl
+
+/-- Nil-only / cons-only: impossibility is a `checkValid` premise
+(`mustBeEmpty` / `mustBeNonempty`). Closed proofs need a concrete oracle answer,
+so these are shape reminders only. -/
+example : mustBeEmpty [] (.lit 0) =
+    { prem := [], goals := [⟨.lit 0, .lit 0⟩] } := rfl
+
+example : mustBeNonempty [] (.lit 3) =
+    { prem := [], goals := [⟨.lit 1, .lit 3⟩] } := rfl
 
 /-- ### Escape ambiguity (prose)
 
