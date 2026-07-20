@@ -91,13 +91,13 @@ private def showAnnoWitness (e : Expr) (ann : AnnoTy) (ctx : Ctx := []) : IO Uni
 /-! ## `check` — wider demand via `Sub` / Z3 -/
 
 -- ([] : BL 0 0) => typechecks ✓
-#eval showCheck .nil (.bl (.lit 0) (.lit 0))
+#eval showCheck .nil (.bl (.lit 0) (.lit 0) .unit)
 
 -- ([] : BL 0 5) => typechecks ✓
-#eval showCheck .nil (.bl (.lit 0) (.lit 5))
+#eval showCheck .nil (.bl (.lit 0) (.lit 5) .unit)
 
 -- ([] : BL 1 1) => doesn't typecheck ✗
-#eval showCheck .nil (.bl (.lit 1) (.lit 1))
+#eval showCheck .nil (.bl (.lit 1) (.lit 1) .unit)
 
 /-! ## Annotation holes
 
@@ -108,21 +108,21 @@ demand type as-is (it does not substitute a solved assignment). Separately,
 ascription succeed via `solve`. -/
 
 /-- `nil` ascribed at `BL _ _` (holes filled by `synth`). -/
-private def eAnnoNilHoles : Expr := .anno .nil (.bl none none)
+private def eAnnoNilHoles : Expr := .anno .nil (.bl none none .unit)
 
 -- fillHoles: BL _ _  ↦  BL ?a ?b  (each `_` → a fresh ?var)
-#eval showFillHoles (.bl none none)
+#eval showFillHoles (.bl none none .unit)
 
 -- ([] : BL _ _)  :  BL ?a ?b
 #eval showSynth eAnnoNilHoles
 
 -- can [] inhabit BL _ _?  ⇒  demand holes can be solved as {?a↦0, ?b↦0}
-#eval showAnnoWitness .nil (.bl none none)
+#eval showAnnoWitness .nil (.bl none none .unit)
 
 /-! ## `matchBL` — join bounds -/
 
 /-- Context with a single mono binding `BL 0 5`. -/
-private def ctxBL05 : Ctx := [.mono (.bl (.lit 0) (.lit 5))]
+private def ctxBL05 : Ctx := [.mono (.bl (.lit 0) (.lit 5) .unit)]
 
 /-- Match on that binding: nil → `[]`, cons → `[()]`; join bounds. -/
 private def eMatchJoin : Expr := .matchBL (.var 0 []) .nil (.cons .unit .nil)
@@ -144,10 +144,10 @@ private def eMatchJoin : Expr := .matchBL (.var 0 []) .nil (.cons .unit .nil)
 /-! ## `matchNil` / `matchCons` — ∀ guards -/
 
 /-- Context: empty list type `BL 0 0`. -/
-private def ctxEmpty : Ctx := [.mono (.bl (.lit 0) (.lit 0))]
+private def ctxEmpty : Ctx := [.mono (.bl (.lit 0) (.lit 0) .unit)]
 
 /-- Context: non-empty list type `BL 3 5`. -/
-private def ctxNonempty : Ctx := [.mono (.bl (.lit 3) (.lit 5))]
+private def ctxNonempty : Ctx := [.mono (.bl (.lit 3) (.lit 5) .unit)]
 
 -- x : BL 0 0
 -- ---------
@@ -167,10 +167,10 @@ private def ctxNonempty : Ctx := [.mono (.bl (.lit 3) (.lit 5))]
 /-! ## App — concrete check (no leftover holes) -/
 
 /-- `λ(_ : BL 5 5). ()`. -/
-private def eId5 : Expr := .lam (.bl (some (.lit 5)) (some (.lit 5))) .unit
+private def eId5 : Expr := .lam (.bl (some (.lit 5)) (some (.lit 5)) .unit) .unit
 
 /-- Context: mono `BL 5 5`. -/
-private def ctxFive : Ctx := [.mono (.bl (.lit 5) (.lit 5))]
+private def ctxFive : Ctx := [.mono (.bl (.lit 5) (.lit 5) .unit)]
 
 -- λ(x : BL 5 5). ()  :  BL 5 5 → Unit
 #eval showSynth eId5
@@ -183,17 +183,17 @@ private def ctxFive : Ctx := [.mono (.bl (.lit 5) (.lit 5))]
 -- x : BL 5 5
 -- ---------
 -- (x : BL 5 5) => typechecks ✓
-#eval showCheck (.var 0 []) (.bl (.lit 5) (.lit 5)) ctxFive
+#eval showCheck (.var 0 []) (.bl (.lit 5) (.lit 5) .unit) ctxFive
 
 -- x : BL 5 5
 -- ---------
 -- (x : BL 0 10) => typechecks ✓
-#eval showCheck (.var 0 []) (.bl (.lit 0) (.lit 10)) ctxFive
+#eval showCheck (.var 0 []) (.bl (.lit 0) (.lit 10) .unit) ctxFive
 
 -- x : BL 5 5
 -- ---------
 -- (x : BL 20 20) => doesn't typecheck ✗
-#eval showCheck (.var 0 []) (.bl (.lit 20) (.lit 20)) ctxFive
+#eval showCheck (.var 0 []) (.bl (.lit 20) (.lit 20) .unit) ctxFive
 
 /-! ## Nonlinear — flatMap scheme inst + mul subtype -/
 
@@ -201,9 +201,9 @@ private def ctxFive : Ctx := [.mono (.bl (.lit 5) (.lit 5))]
 private def flatMapScheme : BScheme where
   binders := 4
   body :=
-    .arrow (.bl (r 0) (r 1))
-      (.arrow (.arrow .unit (.bl (r 2) (r 3)))
-        (.bl (.mul (r 0) (r 2)) (.mul (r 1) (r 3))))
+    .arrow (.bl (r 0) (r 1) .unit)
+      (.arrow (.arrow .unit (.bl (r 2) (r 3) .unit))
+        (.bl (.mul (r 0) (r 2)) (.mul (r 1) (r 3)) .unit))
 
 /-- Context whose nearest binder is `flatMapScheme`. -/
 private def ctxFlat : Ctx := [.scheme flatMapScheme]
@@ -218,8 +218,8 @@ private def ctxFlat : Ctx := [.scheme flatMapScheme]
 
 -- (BL (2 * 3) (5 * 4)  <:  BL 6 20) => assignable ✓
 #eval showForceSubtype
-  (.bl (.mul (.lit 2) (.lit 3)) (.mul (.lit 5) (.lit 4)))
-  (.bl (.lit 6) (.lit 20))
+  (.bl (.mul (.lit 2) (.lit 3)) (.mul (.lit 5) (.lit 4)) .unit)
+  (.bl (.lit 6) (.lit 20) .unit)
 
 /-! ## Richer programs — nested `let` / `letScheme`
 
@@ -239,8 +239,8 @@ private def eLetTail : Expr :=
 /-- Pack `∀ a. BL a a → BL a a` (same as library `idScheme`) and instantiate. -/
 private def eLetSchemeId : Expr :=
   .letScheme
-    { binders := 1, body := .arrow (.bl (r 0) (r 0)) (.bl (r 0) (r 0)) }
-    (.lam (.bl (some (r 0)) (some (r 0))) (.var 0 []))
+    { binders := 1, body := .arrow (.bl (r 0) (r 0) .unit) (.bl (r 0) (r 0) .unit) }
+    (.lam (.bl (some (r 0)) (some (r 0)) .unit) (.var 0 []))
     (.app (.var 0 [.lit 3]) (.cons .unit (.cons .unit (.cons .unit .nil))))
 
 -- let x : ∀ a. BL a a → BL a a = λ(y : BL a a). y in
@@ -263,40 +263,40 @@ def consScheme : BScheme where
   binders := 2
   body :=
     .arrow .unit
-      (.arrow (.bl (r 0) (r 1))
-        (.bl (.add (r 0) (.lit 1)) (.add (r 1) (.lit 1))))
+      (.arrow (.bl (r 0) (r 1) .unit)
+        (.bl (.add (r 0) (.lit 1)) (.add (r 1) (.lit 1)) .unit))
 
 /-- Body of `cons`. -/
 def eCons : Expr :=
   .lam .unit
-    (.lam (.bl (some (r 0)) (some (r 1)))
+    (.lam (.bl (some (r 0)) (some (r 1)) .unit)
       (.cons (.var 1 []) (.var 0 [])))
 
 /-- `∀ a b. BL (a+1) b → Unit` — cons-only match (`1 ≤ a+1` always). -/
 def headScheme : BScheme where
   binders := 2
-  body := .arrow (.bl (.add (r 0) (.lit 1)) (r 1)) .unit
+  body := .arrow (.bl (.add (r 0) (.lit 1)) (r 1) .unit) .unit
 
 /-- Body of `head`. -/
 def eHead : Expr :=
-  .lam (.bl (some (.add (r 0) (.lit 1))) (some (r 1)))
+  .lam (.bl (some (.add (r 0) (.lit 1))) (some (r 1)) .unit)
     (.matchCons (.var 0 []) (.var 0 []))
 
 /-- `∀ a b. BL (a+1) (b+1) → BL a b` — `Sub` folds `pred(·+1)`. -/
 def tailScheme : BScheme where
   binders := 2
   body :=
-    .arrow (.bl (.add (r 0) (.lit 1)) (.add (r 1) (.lit 1)))
-      (.bl (r 0) (r 1))
+    .arrow (.bl (.add (r 0) (.lit 1)) (.add (r 1) (.lit 1)) .unit)
+      (.bl (r 0) (r 1) .unit)
 
 /-- Body of `tail`. -/
 def eTail : Expr :=
-  .lam (.bl (some (.add (r 0) (.lit 1))) (some (.add (r 1) (.lit 1))))
+  .lam (.bl (some (.add (r 0) (.lit 1))) (some (.add (r 1) (.lit 1))) .unit)
     (.matchCons (.var 0 []) (.var 1 []))
 
 /-- Defaulting “head”: nil and cons both return `Unit`. -/
 def eHeadOrUnit : Expr :=
-  .lam (.bl (some (.lit 0)) (some (.lit 5)))
+  .lam (.bl (some (.lit 0)) (some (.lit 5)) .unit)
     (.matchBL (.var 0 []) .unit (.var 0 []))
 
 -- λ(x : Unit). [x]  :  Unit → BL (0 + 1) (0 + 1)
@@ -377,22 +377,22 @@ def mapScheme : BScheme where
   binders := 2
   body :=
     .arrow (.arrow .unit .unit)
-      (.arrow (.bl (r 0) (r 1)) (.bl (r 0) (r 1)))
+      (.arrow (.bl (r 0) (r 1) .unit) (.bl (r 0) (r 1) .unit))
 
 /-- Signature-only: filter may shrink to `0..hi`. -/
 def filterScheme : BScheme where
   binders := 2
   body :=
     .arrow (.arrow .unit .unit)
-      (.arrow (.bl (r 0) (r 1)) (.bl (.lit 0) (r 1)))
+      (.arrow (.bl (r 0) (r 1) .unit) (.bl (.lit 0) (r 1) .unit))
 
 /-- Signature-only append. -/
 def appendScheme : BScheme where
   binders := 4
   body :=
-    .arrow (.bl (r 0) (r 1))
-      (.arrow (.bl (r 2) (r 3))
-        (.bl (.add (r 0) (r 2)) (.add (r 1) (r 3))))
+    .arrow (.bl (r 0) (r 1) .unit)
+      (.arrow (.bl (r 2) (r 3) .unit)
+        (.bl (.add (r 0) (r 2)) (.add (r 1) (r 3)) .unit))
 
 -- ∀ a b. (Unit → Unit) → BL a b → BL a b   (needs letRec to implement)
 #eval showScheme mapScheme

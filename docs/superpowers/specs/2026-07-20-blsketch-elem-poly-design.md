@@ -30,5 +30,21 @@ Type inference / generalization · element subtyping · `letRec` · FHM Core/Sur
 ## Soft spots (implementer judgment OK)
 
 - Exact names (`SchemeBinder` vs `BinderKind`, …)
-- Whether `.nil` stays in the AST forever or becomes sugar later
 - How aggressively to farm `synth_sound` case repairs to subagents
+
+## Locked in session (2026-07-20)
+
+- Keep `Expr.nil` for `[]` pretty; bare `.nil` does not synth (Phase C). No special expected-type check in v1 — use `nil @α`. Revisit if demos hurt.
+- `AnnoTy.bl`: bound holes only; **elem is always a concrete `Ty`** (no type inference in this toy).
+- Bool intros: bare `Expr.true` / `Expr.false`.
+- Phase-gate pings after each plan phase (ready vs need input).
+
+## Explicitly deferred (do not “fix” in this stage)
+
+| Item | v1 | Later |
+| --- | --- | --- |
+| Elem subtyping | `Sub` / join / `subConstraints` use **`elem = elem'` only** | Recursive `Sub` on element types |
+| Bare-`nil` under expected type | Fails (synth-then-`Sub` check) | Optional special `Check` rule |
+| Type inference / gen | Explicit `@` | — |
+| `letRec` / recursive stdlib | Axiom signatures only | — |
+| Nested scheme LN | Story A prenex | — |

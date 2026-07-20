@@ -753,9 +753,10 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons ty →
     TypeOf Δ ctx (.matchBL e eNil eCons) ty
 
-  /-- Exhaustive match: both branches `BL` → join bounds. -/
+  /-- Exhaustive match: both branches `BL` → join bounds.
+  Phase A: scrutinee is Unit-hardwired (matches `synth` / `consCtx`); branch elem is free. -/
   | matchBL_join {Δ ctx e eNil eCons lo hi lo₁ hi₁ lo₂ hi₂ elem} :
-    TypeOf Δ ctx e (.bl lo hi elem) →
+    TypeOf Δ ctx e (.bl lo hi .unit) →
     TypeOf (Δ ++ nilRefine lo hi) ctx eNil (.bl lo₁ hi₁ elem) →
     TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons (.bl lo₂ hi₂ elem) →
     TypeOf Δ ctx (.matchBL e eNil eCons)
@@ -1181,7 +1182,7 @@ def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat �
     | none => none
     | some (Φ₁, sty) =>
       match sty with
-      | .bl lo hi elem =>
+      | .bl lo hi .unit =>
         match synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil with
         | none => none
         | some (Φ₂, tNil) =>
@@ -1628,7 +1629,13 @@ theorem checkSub_sound {Δ t u} (h : checkSub Δ t u = true) : Sub Δ t u := by
     simp [checkSub, bool_and_eq_true] at h
     exact .arrow (checkSub_sound h.1) (checkSub_sound h.2)
   | .bl lo hi elem, .bl lo' hi' elem' =>
-    sorry
+    simp [checkSub, beq_iff_eq] at h
+    have helem : elem = elem' := h.1.1.1
+    have hlo' : lo'.isDemandOK = true := h.1.1.2
+    have hhi' : hi'.isDemandOK = true := h.1.2
+    have hvalid : checkValid (Interval.subGoals Δ ⟨lo, hi⟩ ⟨lo', hi'⟩) = .valid := h.2
+    subst helem
+    exact Sub.bl (Count.demandOK_of_isDemandOK hlo') (Count.demandOK_of_isDemandOK hhi') hvalid
   | .unit, .arrow _ _ | .unit, .bl _ _ _ | .unit, .tbind _
   | .arrow _ _, .unit | .arrow _ _, .bl _ _ _ | .arrow _ _, .tbind _
   | .bl _ _ _, .unit | .bl _ _ _, .arrow _ _ | .bl _ _ _, .tbind _
@@ -1750,7 +1757,7 @@ theorem subst_applyArgs_binderRigid {n args t}
   | unit => exact .unit
   | tbind i => exact .tbind
   | arrow d c ihd ihc => exact .arrow (ihd hb.1) (ihc hb.2)
-  | bl lo hi elem =>
+  | bl lo hi _ =>
     exact .bl (Count.subst_applyArgs_binderRigid hb.1 hlen)
       (Count.subst_applyArgs_binderRigid hb.2.1 hlen)
 
@@ -1769,7 +1776,21 @@ theorem instantiatesOf_instantiate?_sound {s : BScheme} {args : List Count} {ty 
 theorem joinBranchTy_eq {t u ty} (h : joinBranchTy t u = some ty) :
     (∃ lo₁ hi₁ lo₂ hi₂ elem, t = .bl lo₁ hi₁ elem ∧ u = .bl lo₂ hi₂ elem ∧
       ty = .bl (.min lo₁ lo₂) (.max hi₁ hi₂) elem) ∨ (t = ty ∧ u = ty) := by
-  sorry
+  unfold joinBranchTy at h
+  split at h
+  · split at h
+    · rename_i heq
+      simp [beq_iff_eq] at heq
+      cases h
+      subst heq
+      exact Or.inl ⟨_, _, _, _, _, rfl, rfl, rfl⟩
+    · cases h
+  · split at h
+    · rename_i heq
+      cases h
+      have : t = u := by simpa [beq_iff_eq] using heq
+      exact Or.inr ⟨rfl, this.symm⟩
+    · cases h
 
 /-- Main soundness theorem: algorithmic `synth` implies declarative `TypeOf`. -/
 theorem synth_sound {Φ Δ ctx e Φ' ty}
@@ -1860,7 +1881,34 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
             exact .appInfer (ih_f hf) (ih_arg ha) hok hψ hσ huniq
       | unit | bl _ _ _ | tbind _ => simp [synth, hf] at h
   | if_ cond thn els ih_c ih_t ih_e =>
-    sorry
+    cases hc : synth Φ Δ ctx cond with
+    | none => simp [synth, hc] at h
+    | some Φc =>
+      obtain ⟨Φ₁, ct⟩ := Φc
+      cases ht : synth Φ₁ Δ ctx thn with
+      | none => simp [synth, hc, ht] at h
+      | some Φt =>
+        obtain ⟨Φ₂, tt⟩ := Φt
+        cases he : synth Φ₂ Δ ctx els with
+        | none => simp [synth, hc, ht, he] at h
+        | some Φe =>
+          obtain ⟨Φ₃, et⟩ := Φe
+          simp [synth, hc, ht, he] at h
+          cases ct with
+          | unit =>
+            cases tt with
+            | bl lo₁ hi₁ elem =>
+              cases et with
+              | bl lo₂ hi₂ elem' =>
+                by_cases heq : elem = elem'
+                · subst heq
+                  simp [beq_iff_eq, synth, hc, ht, he] at h
+                  obtain ⟨rfl, rfl⟩ := h
+                  exact .ifBL (ih_c hc) (ih_t ht) (ih_e he)
+                · simp [beq_iff_eq, heq, synth, hc, ht, he] at h
+              | unit | arrow _ _ | tbind _ => simp at h
+            | unit | arrow _ _ | tbind _ => simp at h
+          | arrow _ _ | bl _ _ _ | tbind _ => simp at h
   | anno e ann ih_e =>
     cases hfill : fillHoles Φ ann with
     | mk Φ₁ aty =>
@@ -1911,28 +1959,30 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
       obtain ⟨Φ₁, sty⟩ := Φs
       cases sty with
       | bl lo hi elem =>
-        cases hn : synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil with
-        | none => simp [synth, hs, hn] at h
-        | some Φn =>
-          obtain ⟨Φ₂, tNil⟩ := Φn
-          cases hc : synth Φ₂ (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons with
-          | none => simp [synth, hs, hn, hc] at h
-          | some Φc =>
-            obtain ⟨Φ₃, tCons⟩ := Φc
-            simp [synth, hs, hn, hc] at h
-            cases hj : joinBranchTy tNil tCons with
-            | none => simp [hj] at h
-            | some jty =>
-              simp [hj] at h
-              obtain ⟨rfl, rfl⟩ := h
-              cases joinBranchTy_eq hj with
-              | inl _ =>
-                sorry
-              | inr hEq =>
-                obtain ⟨rfl, rfl⟩ := hEq
-                cases elem with
-                | unit => sorry
-                | tbind _ | arrow _ _ | bl _ _ _ => sorry
+        cases elem with
+        | unit =>
+          cases hn : synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil with
+          | none => simp [synth, hs, hn] at h
+          | some Φn =>
+            obtain ⟨Φ₂, tNil⟩ := Φn
+            cases hc : synth Φ₂ (Δ ++ consRefine hi) (consCtx ctx lo hi) eCons with
+            | none => simp [synth, hs, hn, hc] at h
+            | some Φc =>
+              obtain ⟨Φ₃, tCons⟩ := Φc
+              simp [synth, hs, hn, hc] at h
+              cases hj : joinBranchTy tNil tCons with
+              | none => simp [hj] at h
+              | some jty =>
+                simp [hj] at h
+                obtain ⟨rfl, rfl⟩ := h
+                cases joinBranchTy_eq hj with
+                | inl hex =>
+                  obtain ⟨lo₁, hi₁, lo₂, hi₂, _, rfl, rfl, rfl⟩ := hex
+                  exact .matchBL_join (ih_s hs) (ih_n hn) (ih_c hc)
+                | inr hEq =>
+                  obtain ⟨rfl, rfl⟩ := hEq
+                  exact .matchBL (ih_s hs) (ih_n hn) (ih_c hc)
+        | tbind _ | arrow _ _ | bl _ _ _ => simp [synth, hs] at h
       | unit | arrow _ _ | tbind _ => simp [synth, hs] at h
   | matchNil scrut eNil ih_s ih_n =>
     cases hs : synth Φ Δ ctx scrut with
