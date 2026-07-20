@@ -83,6 +83,76 @@ def Count.eval : Count → Assign → Nat
   | .min a b, σ => Nat.min (a.eval σ) (b.eval σ)
   | .max a b, σ => Nat.max (a.eval σ) (b.eval σ)
 
+/-- Variable-free count expressions (closed under ops; no `var`). -/
+inductive Count.Ground : Count → Prop where
+  | lit {n} : Ground (.lit n)
+  | add {a b} : Ground a → Ground b → Ground (.add a b)
+  | mul {a b} : Ground a → Ground b → Ground (.mul a b)
+  | pred {a} : Ground a → Ground (.pred a)
+  | min {a b} : Ground a → Ground b → Ground (.min a b)
+  | max {a b} : Ground a → Ground b → Ground (.max a b)
+
+def Count.isGround : Count → Bool
+  | .lit _ => true
+  | .var _ => false
+  | .add a b | .mul a b | .min a b | .max a b => a.isGround && b.isGround
+  | .pred a => a.isGround
+
+theorem Count.isGround_of_ground {c : Count} (h : c.Ground) : c.isGround = true := by
+  induction h <;> simp [Count.isGround, *]
+
+theorem Count.ground_of_isGround {c : Count} (h : c.isGround = true) : c.Ground := by
+  induction c with
+  | lit n => exact .lit
+  | var _ => simp [Count.isGround] at h
+  | add a b iha ihb =>
+      simp [Count.isGround, Bool.and_eq_true] at h
+      exact .add (iha h.1) (ihb h.2)
+  | mul a b iha ihb =>
+      simp [Count.isGround, Bool.and_eq_true] at h
+      exact .mul (iha h.1) (ihb h.2)
+  | pred a ih =>
+      simp [Count.isGround] at h
+      exact .pred (ih h)
+  | min a b iha ihb =>
+      simp [Count.isGround, Bool.and_eq_true] at h
+      exact .min (iha h.1) (ihb h.2)
+  | max a b iha ihb =>
+      simp [Count.isGround, Bool.and_eq_true] at h
+      exact .max (iha h.1) (ihb h.2)
+
+theorem Count.isGround_iff {c : Count} : c.isGround = true ↔ c.Ground :=
+  ⟨Count.ground_of_isGround, Count.isGround_of_ground⟩
+
+instance (c : Count) : Decidable c.Ground :=
+  decidable_of_decidable_of_iff (Count.isGround_iff (c := c))
+
+/-- Evaluate a ground count to a `Nat` (no assignment needed). -/
+def Count.fold (c : Count) (h : c.Ground) : Nat :=
+  match c with
+  | .lit n => n
+  | .var _ => False.elim (by cases h)
+  | .add a b =>
+      a.fold (by cases h; assumption) + b.fold (by cases h; assumption)
+  | .mul a b =>
+      a.fold (by cases h; assumption) * b.fold (by cases h; assumption)
+  | .pred a =>
+      a.fold (by cases h; assumption) - 1
+  | .min a b =>
+      Nat.min (a.fold (by cases h; assumption)) (b.fold (by cases h; assumption))
+  | .max a b =>
+      Nat.max (a.fold (by cases h; assumption)) (b.fold (by cases h; assumption))
+
+theorem Count.fold_eq_eval {c : Count} (h : c.Ground) (σ : Assign) :
+    c.fold h = c.eval σ := by
+  induction h with
+  | lit => rfl
+  | add _ _ iha ihb => simp [Count.fold, Count.eval, iha, ihb]
+  | mul _ _ iha ihb => simp [Count.fold, Count.eval, iha, ihb]
+  | pred _ ih => simp [Count.fold, Count.eval, ih]
+  | min _ _ iha ihb => simp [Count.fold, Count.eval, iha, ihb]
+  | max _ _ iha ihb => simp [Count.fold, Count.eval, iha, ihb]
+
 /-! ## 1. Constraints -/
 
 structure Constraint where
@@ -194,6 +264,49 @@ def Ty.inferVars : Ty → List Var
   | .unit => []
   | .bl lo hi => lo.inferVars ++ hi.inferVars
   | .arrow d c => d.inferVars ++ c.inferVars
+
+/-- Types whose count bounds are all `Count.Ground`. -/
+inductive Ty.Ground : Ty → Prop where
+  | unit : Ground .unit
+  | bl {lo hi} : Count.Ground lo → Count.Ground hi → Ground (.bl lo hi)
+  | arrow {a b} : Ground a → Ground b → Ground (.arrow a b)
+
+def Ty.isGround : Ty → Bool
+  | .unit => true
+  | .bl lo hi => lo.isGround && hi.isGround
+  | .arrow a b => a.isGround && b.isGround
+
+theorem Ty.isGround_of_ground {t : Ty} (h : t.Ground) : t.isGround = true := by
+  induction h with
+  | unit => rfl
+  | bl hlo hhi => simp [Ty.isGround, Count.isGround_of_ground hlo, Count.isGround_of_ground hhi]
+  | arrow _ _ iha ihb => simp [Ty.isGround, iha, ihb]
+
+theorem Ty.ground_of_isGround {t : Ty} (h : t.isGround = true) : t.Ground := by
+  induction t with
+  | unit => exact .unit
+  | bl lo hi =>
+      simp [Ty.isGround, Bool.and_eq_true] at h
+      exact .bl (Count.ground_of_isGround h.1) (Count.ground_of_isGround h.2)
+  | arrow a b iha ihb =>
+      simp [Ty.isGround, Bool.and_eq_true] at h
+      exact .arrow (iha h.1) (ihb h.2)
+
+theorem Ty.isGround_iff {t : Ty} : t.isGround = true ↔ t.Ground :=
+  ⟨Ty.ground_of_isGround, Ty.isGround_of_ground⟩
+
+instance (t : Ty) : Decidable t.Ground :=
+  decidable_of_decidable_of_iff (Ty.isGround_iff (t := t))
+
+/-- Fold ground count structure in a type down to literal bounds. -/
+def Ty.fold (t : Ty) (h : t.Ground) : Ty :=
+  match t with
+  | .unit => .unit
+  | .bl lo hi =>
+      .bl (.lit (lo.fold (by cases h; assumption)))
+        (.lit (hi.fold (by cases h; assumption)))
+  | .arrow a b =>
+      .arrow (a.fold (by cases h; assumption)) (b.fold (by cases h; assumption))
 
 def Ty.size : Ty → Nat
   | .unit => 1
@@ -1901,30 +2014,33 @@ example : TypeOf [] []
 example : fillHoles 0 (.bl none none) =
     (2, .bl (cvar .inferable 0) (cvar .inferable 1)) := rfl
 
-/-- ### flatMap scheme (positive `n*k`) -/
+/-- ### flatMap scheme (positive `lo*lo'` / `hi*hi'`)
+
+Four binders: input list `[a,b]`, per-element lists `[c,d]`; result length
+bounds multiply covariantly. -/
 def flatMapScheme : BScheme where
-  binders := 2
+  binders := 4
   body :=
-    .arrow (.bl (r 0) (r 0))
-      (.arrow (.arrow .unit (.bl (r 1) (r 1)))
-        (.bl (.mul (r 0) (r 1)) (.mul (r 0) (r 1))))
+    .arrow (.bl (r 0) (r 1))
+      (.arrow (.arrow .unit (.bl (r 2) (r 3)))
+        (.bl (.mul (r 0) (r 2)) (.mul (r 1) (r 3))))
 
 theorem flatMapScheme_wf : flatMapScheme.WF := by
   dsimp [BScheme.WF, flatMapScheme, Ty.BinderRigid, Count.BinderRigid, r, cvar]
   decide
 
 example :
-    flatMapScheme.InstantiatesTo [.lit 2, .lit 6]
-      (.arrow (.bl (.lit 2) (.lit 2))
-        (.arrow (.arrow .unit (.bl (.lit 6) (.lit 6)))
-          (.bl (.mul (.lit 2) (.lit 6)) (.mul (.lit 2) (.lit 6))))) := by
+    flatMapScheme.InstantiatesTo [.lit 2, .lit 5, .lit 3, .lit 4]
+      (.arrow (.bl (.lit 2) (.lit 5))
+        (.arrow (.arrow .unit (.bl (.lit 3) (.lit 4)))
+          (.bl (.mul (.lit 2) (.lit 3)) (.mul (.lit 5) (.lit 4))))) := by
   refine .intro flatMapScheme_wf rfl ?_
   refine .arrow ?_ ?_
-  · exact .bl (.var rfl) (.var rfl)
+  · exact .bl (.var rfl) (.var (by native_decide))
   · refine .arrow ?_ ?_
     · exact .arrow .unit (.bl (.var (by native_decide)) (.var (by native_decide)))
     · exact .bl (.mul (.var rfl) (.var (by native_decide)))
-        (.mul (.var rfl) (.var (by native_decide)))
+        (.mul (.var (by native_decide)) (.var (by native_decide)))
 
 /-- ### Match refines `Δ`
 

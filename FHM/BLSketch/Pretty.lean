@@ -13,12 +13,18 @@ Conventions:
   dangling indices print as `#n`.
 * Scheme rigid binders print as `∀ a b. body` (same letter pool as rigid counts;
   separate from term names).
-* Scheme *instantiation* at a var prints as `f⟨2, 6⟩` (not `f[2, 6]`, which
-  looks like an array slice).
+* Scheme *instantiation* at a var prints as `f @2 @6` (Haskell-style type
+  application; not `f[2, 6]`, which looks like an array slice).
 * Annotation holes print as `_`.
 * Lists: a proper `nil`/`cons` spine prints as `[a, b, c]`; improper as `h :: t`.
-* Parentheses are inserted only where precedence requires them (no forced outer
-  wraps in demos).
+* `matchNil` / `matchCons` print as ordinary `match` with only the `[]` or
+  `h :: t` arm respectively.
+* Self-delimiting count forms (`min`/`max`/`pred`) never take outer parens;
+  `+`/`*` do when nested under `BL` or tighter ops.
+* Judgement displays (`e : τ`) use `Expr.prettyJudgement`, which wraps only
+  forms that clash with an outer ` : ` (anno / match / if / let) — not bare
+  lambdas or atoms.
+* Parentheses are otherwise inserted only where precedence requires them.
 -/
 
 namespace BLSketch
@@ -50,13 +56,11 @@ def Count.prettyAux (prec : Nat) : Count → String
       prettyParenIf (prec > 2)
         (Count.prettyAux 2 a ++ " * " ++ Count.prettyAux 2 b)
   | .min a b =>
-      prettyParenIf (prec > 1)
-        ("min(" ++ Count.prettyAux 0 a ++ ", " ++ Count.prettyAux 0 b ++ ")")
+      "min(" ++ Count.prettyAux 0 a ++ ", " ++ Count.prettyAux 0 b ++ ")"
   | .max a b =>
-      prettyParenIf (prec > 1)
-        ("max(" ++ Count.prettyAux 0 a ++ ", " ++ Count.prettyAux 0 b ++ ")")
+      "max(" ++ Count.prettyAux 0 a ++ ", " ++ Count.prettyAux 0 b ++ ")"
   | .pred a =>
-      prettyParenIf (prec > 3) ("pred(" ++ Count.prettyAux 0 a ++ ")")
+      "pred(" ++ Count.prettyAux 0 a ++ ")"
 
 def Count.pretty (c : Count) : String := Count.prettyAux 0 c
 
@@ -109,6 +113,17 @@ def Binding.pretty : Binding → String
   | .scheme s => s.pretty
 
 instance : ToString Binding := ⟨Binding.pretty⟩
+
+/-- De Bruijn name context for `ctx` (nearest binder first: `x`, then `y`, …). -/
+def Ctx.termNames (ctx : Ctx) : List String :=
+  (List.range ctx.length).map prettyTermVarName |>.reverse
+
+/-- Typing context as `x : τ` lines, outermost binder first. -/
+def Ctx.prettyEnv (ctx : Ctx) : String :=
+  let names := Ctx.termNames ctx
+  let lines :=
+    (List.zip names ctx).reverse.map fun (n, b) => n ++ " : " ++ b.pretty
+  String.intercalate "\n" lines
 
 def Ctx.pretty (ctx : Ctx) : String :=
   "[" ++ String.intercalate ", " (ctx.map Binding.pretty) ++ "]"
@@ -179,8 +194,8 @@ partial def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
       let name := (ctx[i]?).getD ("#" ++ toString i)
       if args.isEmpty then name
       else
-        -- Angle brackets: scheme bound-instantiation, not an array slice.
-        name ++ "⟨" ++ String.intercalate ", " (args.map Count.pretty) ++ "⟩"
+        -- Haskell-style type application for scheme bound-instantiation.
+        name ++ String.join (args.map fun a => " @" ++ Count.pretty a)
   | .lam paramAnn body =>
       let x := prettyTermVarName ctx.length
       prettyParenIf (prec ≥ 1)
@@ -216,22 +231,47 @@ partial def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
             Expr.prettyAux (h :: t :: ctx) 0 c)
   | .matchNil s n =>
       prettyParenIf (prec ≥ 1)
-        ("matchNil " ++ Expr.prettyAux ctx 0 s ++ " => " ++
-          Expr.prettyAux ctx 0 n)
+        ("match " ++ Expr.prettyAux ctx 0 s ++ " with" ++
+          " | [] => " ++ Expr.prettyAux ctx 0 n)
   | .matchCons s c =>
       let h := prettyTermVarName ctx.length
       let t := prettyTermVarName (ctx.length + 1)
       prettyParenIf (prec ≥ 1)
-        ("matchCons " ++ Expr.prettyAux ctx 0 s ++ " | " ++
-          h ++ " :: " ++ t ++ " => " ++
+        ("match " ++ Expr.prettyAux ctx 0 s ++ " with" ++
+          " | " ++ h ++ " :: " ++ t ++ " => " ++
           Expr.prettyAux (h :: t :: ctx) 0 c)
 
 end
 
-def Expr.pretty (e : Expr) (ctx : List String := []) : String :=
-  Expr.prettyAux ctx 0 e
+def Expr.pretty (e : Expr) (ctx : List String := []) (prec : Nat := 0) : String :=
+  Expr.prettyAux ctx prec e
+
+/-- Forms whose top constructor should be parenthesized in an `e : τ` judgement
+(so the judgement colon is not read as part of the expression). -/
+def Expr.needsJudgementParens : Expr → Bool
+  | .anno .. | .matchBL .. | .matchNil .. | .matchCons ..
+  | .if_ .. | .let_ .. | .letScheme .. => true
+  | _ => false
+
+/-- Pretty for `e : τ` / check judgements: wraps anno/match/if/let only. -/
+def Expr.prettyJudgement (e : Expr) (ctx : List String := []) : String :=
+  prettyParenIf e.needsJudgementParens (Expr.prettyAux ctx 0 e)
 
 instance : ToString Expr := ⟨fun e => Expr.pretty e⟩
+
+/-- Pretty a *top-level* `BL` with ground bounds folded (`BL (0+1) (0+1)  ↦  BL 1 1`).
+Does not fold when `BL` is nested inside arrows (or other structure) — that obscures
+the surrounding judgement (e.g. subtype comparisons). -/
+def Ty.prettyFolded (t : Ty) : String :=
+  match t with
+  | .bl lo hi =>
+      if hlo : lo.Ground then
+        if hhi : hi.Ground then
+          let t' : Ty := .bl (.lit (lo.fold hlo)) (.lit (hi.fold hhi))
+          if t' = t then t.pretty else t.pretty ++ "  ↦  " ++ t'.pretty
+        else t.pretty
+      else t.pretty
+  | _ => t.pretty
 
 /-- Print an assignment on a fixed list of vars (full `Assign` is a function). -/
 def Assign.prettyOn (σ : Assign) (vs : List Var) : String :=
