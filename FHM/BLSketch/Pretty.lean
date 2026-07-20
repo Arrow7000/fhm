@@ -81,15 +81,23 @@ instance : ToString Count := ⟨Count.pretty⟩
 
 /-! ## Types / annotations / schemes -/
 
+/-- Letters for type-var indices (`α`, `β`, …). -/
+def prettyTypeVarLetter (n : Nat) : String :=
+  let letters := ["α", "β", "γ", "δ", "ε", "ζ", "η", "θ", "ι", "κ",
+    "λ", "μ", "ν", "ξ", "ο", "π", "ρ", "σ", "τ", "υ"]
+  letters.getD n ("τ" ++ toString n)
+
 /-- Precedence: `0` top, `1` left of arrow, `2` atomic. -/
 def Ty.prettyAux (prec : Nat) : Ty → String
   | .unit => "Unit"
+  | .tbind i => prettyTypeVarLetter i
   | .arrow a b =>
       prettyParenIf (prec ≥ 1)
         (Ty.prettyAux 1 a ++ " → " ++ Ty.prettyAux 0 b)
-  | .bl lo hi =>
+  | .bl lo hi elem =>
       prettyParenIf (prec ≥ 2)
-        ("BL " ++ Count.prettyAux 3 lo ++ " " ++ Count.prettyAux 3 hi)
+        ("BL " ++ Count.prettyAux 3 lo ++ " " ++ Count.prettyAux 3 hi ++
+          " " ++ Ty.prettyAux 0 elem)
 
 def Ty.pretty (t : Ty) : String := Ty.prettyAux 0 t
 
@@ -101,12 +109,14 @@ def AnnoTy.prettyBound : Option Count → String
 
 def AnnoTy.prettyAux (prec : Nat) : AnnoTy → String
   | .unit => "Unit"
+  | .tbind i => prettyTypeVarLetter i
   | .arrow a b =>
       prettyParenIf (prec ≥ 1)
         (AnnoTy.prettyAux 1 a ++ " → " ++ AnnoTy.prettyAux 0 b)
-  | .bl lo hi =>
+  | .bl lo hi elem =>
       prettyParenIf (prec ≥ 2)
-        ("BL " ++ AnnoTy.prettyBound lo ++ " " ++ AnnoTy.prettyBound hi)
+        ("BL " ++ AnnoTy.prettyBound lo ++ " " ++ AnnoTy.prettyBound hi ++
+          " " ++ elem.pretty)
 
 def AnnoTy.pretty (t : AnnoTy) : String := AnnoTy.prettyAux 0 t
 
@@ -279,10 +289,10 @@ Does not fold when `BL` is nested inside arrows (or other structure) — that ob
 the surrounding judgement (e.g. subtype comparisons). -/
 def Ty.prettyFolded (t : Ty) : String :=
   match t with
-  | .bl lo hi =>
+  | .bl lo hi elem =>
       if hlo : lo.Ground then
         if hhi : hi.Ground then
-          let t' : Ty := .bl (.lit (lo.fold hlo)) (.lit (hi.fold hhi))
+          let t' : Ty := .bl (.lit (lo.fold hlo)) (.lit (hi.fold hhi)) elem
           if t' = t then t.pretty else t.pretty ++ "  ↦  " ++ t'.pretty
         else t.pretty
       else t.pretty
