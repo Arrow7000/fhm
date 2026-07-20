@@ -84,22 +84,33 @@ private def showAnnoWitness (e : Expr) (ann : AnnoTy) (ctx : Ctx := []) : IO Uni
 
 /-! ## Structural synth (no oracle) -/
 
--- []  :  BL 0 0
+-- []  :  ill-typed  (bare nil does not synth — use nil @α)
 #eval showSynth .nil
 
--- [()]  :  BL (0 + 1) (0 + 1)  ↦  BL 1 1
-#eval showSynth (.cons .unit .nil)
+-- nil @Unit  :  BL 0 0 Unit
+private def ctxNil : Ctx := [.scheme BLSketch.Examples.nilScheme]
+#eval showSynth (.var 0 [.ty .unit]) ctxNil
+
+-- [()]  :  BL 1 1 Unit  (nil @Unit in spine)
+#eval showSynth (.cons .unit (.var 0 [.ty .unit])) ctxNil
+
+-- true / false  :  Bool
+#eval showSynth .true
+#eval showSynth .false
 
 /-! ## `check` — wider demand via `Sub` / Z3 -/
 
--- ([] : BL 0 0) => typechecks ✓
+-- (nil @Unit : BL 0 0) => typechecks ✓
+#eval showCheck (.var 0 [.ty .unit]) (.bl (.lit 0) (.lit 0) .unit) ctxNil
+
+-- (nil @Unit : BL 0 5) => typechecks ✓
+#eval showCheck (.var 0 [.ty .unit]) (.bl (.lit 0) (.lit 5) .unit) ctxNil
+
+-- (nil @Unit : BL 1 1) => doesn't typecheck ✗
+#eval showCheck (.var 0 [.ty .unit]) (.bl (.lit 1) (.lit 1) .unit) ctxNil
+
+-- ([] : BL 0 0) => doesn't typecheck ✗  (bare nil)
 #eval showCheck .nil (.bl (.lit 0) (.lit 0) .unit)
-
--- ([] : BL 0 5) => typechecks ✓
-#eval showCheck .nil (.bl (.lit 0) (.lit 5) .unit)
-
--- ([] : BL 1 1) => doesn't typecheck ✗
-#eval showCheck .nil (.bl (.lit 1) (.lit 1) .unit)
 
 /-! ## Annotation holes
 
@@ -109,30 +120,32 @@ demand type as-is (it does not substitute a solved assignment). Separately,
 `showAnnoWitness` asks whether some assignment to those holes makes the
 ascription succeed via `solve`. -/
 
-/-- `nil` ascribed at `BL _ _` (holes filled by `synth`). -/
-private def eAnnoNilHoles : Expr := .anno .nil (.bl none none .unit)
+/-- `nil` ascribed at `BL _ _` (holes filled by `synth`) — still needs a synthable source. -/
+private def eAnnoNilHoles : Expr := .anno (.var 0 [.ty .unit]) (.bl none none .unit)
 
 -- fillHoles: BL _ _  ↦  BL ?a ?b  (each `_` → a fresh ?var)
 #eval showFillHoles (.bl none none .unit)
 
--- ([] : BL _ _)  :  BL ?a ?b
-#eval showSynth eAnnoNilHoles
+-- (nil @Unit : BL _ _)  :  BL ?a ?b  (with ctxNil)
+#eval showSynth eAnnoNilHoles ctxNil
 
--- can [] inhabit BL _ _?  ⇒  demand holes can be solved as {?a↦0, ?b↦0}
-#eval showAnnoWitness .nil (.bl none none .unit)
+-- can nil @Unit inhabit BL _ _?  ⇒  demand holes can be solved as {?a↦0, ?b↦0}
+#eval showAnnoWitness (.var 0 [.ty .unit]) (.bl none none .unit) ctxNil
 
 /-! ## `matchBL` — join bounds -/
 
 /-- Context with a single mono binding `BL 0 5`. -/
 private def ctxBL05 : Ctx := [.mono (.bl (.lit 0) (.lit 5) .unit)]
 
-/-- Match on that binding: nil → `[]`, cons → `[()]`; join bounds. -/
-private def eMatchJoin : Expr := .matchBL (.var 0 []) .nil (.cons .unit .nil)
+/-- Match on that binding: nil → `nil @Unit`, cons → `[()]`; join bounds. -/
+private def eMatchJoin : Expr :=
+  .matchBL (.var 0 []) (.var 1 [.ty .unit]) (.cons .unit (.var 1 []))
 
 -- x : BL 0 5
+-- nil : ∀ {α}. BL 0 0 α
 -- ---------
--- (match x with | [] => [] | y :: z => [()])  :  BL min(0, 0 + 1) max(0, 0 + 1)  ↦  BL 0 1
-#eval showSynth eMatchJoin ctxBL05
+-- (match x with | [] => nil @Unit | y :: z => [()])  :  BL 0 1
+#eval showSynth eMatchJoin (ctxBL05 ++ ctxNil)
 
 -- Same join bounds, folded explicitly via `Count.fold` + `by decide`.
 #eval IO.println s!"fold min(0, 0+1) = {Count.fold (.min (.lit 0) (.add (.lit 0) (.lit 1))) (by decide)}"
@@ -229,14 +242,12 @@ Non-recursive plumbing: build lists, pack a scheme, use it under a let. -/
 
 /-- `let xs = [(), ()] in let ys = () :: xs in match ys with | _ :: t => t`. -/
 private def eLetTail : Expr :=
-  .let_ (.cons .unit (.cons .unit .nil))
+  .let_ (.cons .unit (.cons .unit (.var 0 [.ty .unit])))
     (.let_ (.cons .unit (.var 0 []))
       (.matchCons (.var 0 []) (.var 1 [])))
 
--- let x = [(), ()] in
--- let y = () :: x in
--- (match y with | z :: u => u)  :  BL pred(0 + 1 + 1 + 1) …  ↦  BL 2 2
-#eval showSynth eLetTail
+-- let x = [(), ()] in …  :  BL 2 2  (needs nil @Unit in ctx)
+#eval showSynth eLetTail ctxNil
 
 /-- Pack `∀ a. BL a a → BL a a` (same as library `idScheme`) and instantiate. -/
 private def eLetSchemeId : Expr :=
@@ -244,109 +255,122 @@ private def eLetSchemeId : Expr :=
     { binders := [.count],
       body := .arrow (.bl (r 0) (r 0) .unit) (.bl (r 0) (r 0) .unit) }
     (.lam (.bl (some (r 0)) (some (r 0)) .unit) (.var 0 []))
-    (.app (.var 0 [.count (.lit 3)]) (.cons .unit (.cons .unit (.cons .unit .nil))))
+    (.app (.var 0 [.count (.lit 3)]) (.cons .unit (.cons .unit (.cons .unit (.var 1 [.ty .unit])))))
 
 -- let x : ∀ a. BL a a → BL a a = λ(y : BL a a). y in
 -- x @3 [(), (), ()]  :  BL 3 3
-#eval showSynth eLetSchemeId
+#eval showSynth eLetSchemeId ctxNil
 
-/-! ## Stdlib — definable **without** recursion
+/-! ## Element mismatch — `Unit` into `BL _ _ Bool` -/
 
-Element type is fixed to `Unit` in this toy. Bounds are the interesting bit.
-Bodies are real `Expr`s packed with `letScheme` where useful. -/
+private def ctxNilBool : Ctx := [.scheme BLSketch.Examples.nilScheme]
+
+-- nil @Bool  :  BL 0 0 Bool
+#eval showSynth (.var 0 [.ty .bool]) ctxNilBool
+
+-- () :: nil @Bool  :  ill-typed  (head is Unit, tail elem is Bool)
+#eval showSynth (.cons .unit (.var 0 [.ty .bool])) ctxNilBool
+
+-- (() :: nil @Bool : BL 1 1 Bool) => doesn't typecheck ✗
+#eval showCheck (.cons .unit (.var 0 [.ty .bool])) (.bl (.lit 1) (.lit 1) .bool) ctxNilBool
+
+/-! ## Stdlib — type-polymorphic nil / cons / head / tail -/
 
 namespace Stdlib
 
-/-- `singleton : Unit → BL 1 1`. -/
+open BLSketch.Examples
+
+/-- `singleton : ∀ {α}. α → BL 1 1 α`. -/
+def singletonScheme : BScheme where
+  binders := [.type]
+  body := .arrow (.tbind 0) (.bl (.lit 1) (.lit 1) (.tbind 0))
+
 def eSingleton : Expr :=
-  .lam .unit (.cons (.var 0 []) .nil)
+  .lam (.tbind 0) (.cons (.var 0 []) (.var 1 [.ty (.tbind 0)]))
 
-/-- `∀ a b. Unit → BL a b → BL (a+1) (b+1)`. -/
+/-- `∀ {a b : Nat, α}. α → BL a b α → BL (a+1) (b+1) α`. -/
 def consScheme : BScheme where
-  binders := [.count, .count]
+  binders := [.count, .count, .type]
   body :=
-    .arrow .unit
-      (.arrow (.bl (r 0) (r 1) .unit)
-        (.bl (.add (r 0) (.lit 1)) (.add (r 1) (.lit 1)) .unit))
+    .arrow (.tbind 0)
+      (.arrow (.bl (r 0) (r 1) (.tbind 0))
+        (.bl (.add (r 0) (.lit 1)) (.add (r 1) (.lit 1)) (.tbind 0)))
 
-/-- Body of `cons`. -/
 def eCons : Expr :=
-  .lam .unit
-    (.lam (.bl (some (r 0)) (some (r 1)) .unit)
+  .lam (.tbind 0)
+    (.lam (.bl (some (r 0)) (some (r 1)) (.tbind 0))
       (.cons (.var 1 []) (.var 0 [])))
 
-/-- `∀ a b. BL (a+1) b → Unit` — cons-only match (`1 ≤ a+1` always). -/
+/-- `∀ {a b : Nat, α}. BL (a+1) b α → α`. -/
 def headScheme : BScheme where
-  binders := [.count, .count]
-  body := .arrow (.bl (.add (r 0) (.lit 1)) (r 1) .unit) .unit
+  binders := [.count, .count, .type]
+  body := .arrow (.bl (.add (r 0) (.lit 1)) (r 1) (.tbind 0)) (.tbind 0)
 
-/-- Body of `head`. -/
 def eHead : Expr :=
-  .lam (.bl (some (.add (r 0) (.lit 1))) (some (r 1)) .unit)
+  .lam (.bl (some (.add (r 0) (.lit 1))) (some (r 1)) (.tbind 0))
     (.matchCons (.var 0 []) (.var 0 []))
 
-/-- `∀ a b. BL (a+1) (b+1) → BL a b` — `Sub` folds `pred(·+1)`. -/
+/-- `∀ {a b : Nat, α}. BL (a+1) (b+1) α → BL a b α`. -/
 def tailScheme : BScheme where
-  binders := [.count, .count]
+  binders := [.count, .count, .type]
   body :=
-    .arrow (.bl (.add (r 0) (.lit 1)) (.add (r 1) (.lit 1)) .unit)
-      (.bl (r 0) (r 1) .unit)
+    .arrow (.bl (.add (r 0) (.lit 1)) (.add (r 1) (.lit 1)) (.tbind 0))
+      (.bl (r 0) (r 1) (.tbind 0))
 
-/-- Body of `tail`. -/
 def eTail : Expr :=
-  .lam (.bl (some (.add (r 0) (.lit 1))) (some (.add (r 1) (.lit 1))) .unit)
+  .lam (.bl (some (.add (r 0) (.lit 1))) (some (.add (r 1) (.lit 1))) (.tbind 0))
     (.matchCons (.var 0 []) (.var 1 []))
+
+/-- Context for stdlib demos: `nil` scheme at 0, user programs use `var 1+`. -/
+private def ctxStd : Ctx := [.scheme nilScheme]
+
+/-- synth context for polymorphic bodies that mention `nil @α` at index 1. -/
+private def ctxPoly (extra : Ctx := []) : Ctx := extra ++ [.scheme nilScheme]
+
+-- λ(x : α). x :: nil @α  :  ∀ {α}. α → BL 1 1 α
+#eval showSynth eSingleton (ctxPoly [])
+
+-- λ(x : α). λ(y : BL a b α). x :: y  :  …
+#eval showSynth eCons
+
+-- λ(x : BL (a + 1) b α). match x with | y :: z => y
+#eval showSynth eHead
+
+-- λ(x : BL (a + 1) (b + 1) α). match x with | y :: z => z
+#eval showSynth eTail
+
+-- Pack + use: `head @0 @5 (cons @2 @3 () [(), ()])` with typed nil in spine
+def eUseConsHead : Expr :=
+  .letScheme consScheme eCons
+    (.letScheme headScheme eHead
+      (.app (.var 0 [.count (.lit 0), .count (.lit 4), .ty .unit])
+        (.app (.app (.var 1 [.count (.lit 2), .count (.lit 3), .ty .unit]) .unit)
+          (.cons .unit (.cons .unit (.var 2 [.ty .unit]))))))
+
+-- nested let cons/head pipeline  :  Unit
+#eval showSynth eUseConsHead (ctxPoly [])
+
+-- Pack tail and strip one cons off a length-3 list
+def eUseTail : Expr :=
+  .letScheme tailScheme eTail
+    (.app (.var 0 [.count (.lit 2), .count (.lit 2), .ty .unit])
+      (.cons .unit (.cons .unit (.cons .unit (.var 1 [.ty .unit])))))
+
+-- let x : ∀ a b α. BL (a+1) (b+1) α → BL a b α = … in x @2 @2 @Unit [(), (), ()]
+#eval showSynth eUseTail (ctxPoly [])
+
+-- Pack + use head on a concrete list
+def eUseHead : Expr :=
+  .letScheme headScheme eHead
+    (.app (.var 0 [.count (.lit 0), .count (.lit 5), .ty .unit])
+      (.cons .unit (.cons .unit (.cons .unit (.var 1 [.ty .unit])))))
+
+#eval showSynth eUseHead (ctxPoly [])
 
 /-- Defaulting “head”: nil and cons both return `Unit`. -/
 def eHeadOrUnit : Expr :=
   .lam (.bl (some (.lit 0)) (some (.lit 5)) .unit)
     (.matchBL (.var 0 []) .unit (.var 0 []))
-
--- λ(x : Unit). [x]  :  Unit → BL (0 + 1) (0 + 1)
-#eval showSynth eSingleton
-
--- λ(x : Unit). λ(y : BL a b). x :: y  :  Unit → BL a b → BL (a + 1) (b + 1)
-#eval showSynth eCons
-
--- λ(x : BL (a + 1) b). match x with | y :: z => y  :  BL (a + 1) b → Unit
-#eval showSynth eHead
-
--- λ(x : BL (a + 1) (b + 1)). match x with | y :: z => z
---   :  BL (a + 1) (b + 1) → BL pred(a + 1) pred(b + 1)
-#eval showSynth eTail
-
--- Pack + use: `head @0 @5 [(), (), ()]`
-def eUseHead : Expr :=
-  .letScheme headScheme eHead
-    (.app (.var 0 [.count (.lit 0), .count (.lit 5)])
-      (.cons .unit (.cons .unit (.cons .unit .nil))))
-
--- let x : ∀ a b. BL (a+1) b → Unit = … in x @0 @5 [(), (), ()]  :  Unit
-#eval showSynth eUseHead
-
--- Pack cons + head: `head @0 @4 (cons @2 @3 () [(), ()])`
-def eUseConsHead : Expr :=
-  .letScheme consScheme eCons
-    (.letScheme headScheme eHead
-      (.app (.var 0 [.count (.lit 0), .count (.lit 4)])
-        (.app (.app (.var 1 [.count (.lit 2), .count (.lit 3)]) .unit)
-          (.cons .unit (.cons .unit .nil)))))
-
--- nested let cons/head pipeline  :  Unit
-#eval showSynth eUseConsHead
-
--- Pack tail and strip one cons off a length-3 list
-def eUseTail : Expr :=
-  .letScheme tailScheme eTail
-    (.app (.var 0 [.count (.lit 2), .count (.lit 2)])
-      (.cons .unit (.cons .unit (.cons .unit .nil))))
-
--- let x : ∀ a b. BL (a+1) (b+1) → BL a b = … in
--- x @2 @2 [(), (), ()]  :  BL 2 2
-#eval showSynth eUseTail
-
--- λ(x : BL 0 5). match x with | [] => () | y :: z => y  :  BL 0 5 → Unit
-#eval showSynth eHeadOrUnit
 
 /-! ### Signatures that need recursion (not yet expressible as bodies)
 

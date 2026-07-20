@@ -90,6 +90,7 @@ def prettyTypeVarLetter (n : Nat) : String :=
 /-- Precedence: `0` top, `1` left of arrow, `2` atomic. -/
 def Ty.prettyAux (prec : Nat) : Ty → String
   | .unit => "Unit"
+  | .bool => "Bool"
   | .tbind i => prettyTypeVarLetter i
   | .arrow a b =>
       prettyParenIf (prec ≥ 1)
@@ -109,6 +110,7 @@ def AnnoTy.prettyBound : Option Count → String
 
 def AnnoTy.prettyAux (prec : Nat) : AnnoTy → String
   | .unit => "Unit"
+  | .bool => "Bool"
   | .tbind i => prettyTypeVarLetter i
   | .arrow a b =>
       prettyParenIf (prec ≥ 1)
@@ -137,10 +139,10 @@ def prettySchemeBinderSection (binders : List SchemeBinder) : String :=
     if nTypes = 0 then ""
     else String.intercalate " " (List.range nTypes |>.map prettyTypeVarLetter)
   match countPart.isEmpty, typePart.isEmpty with
-  | true, true => ""
-  | false, true => countPart
-  | true, false => typePart
-  | false, false => countPart ++ ", " ++ typePart
+  | Bool.true, Bool.true => ""
+  | Bool.false, Bool.true => countPart
+  | Bool.true, Bool.false => typePart
+  | Bool.false, Bool.false => countPart ++ ", " ++ typePart
 
 def BScheme.pretty (s : BScheme) : String :=
   if s.binders.isEmpty then s.body.pretty
@@ -222,6 +224,8 @@ partial def Expr.prettyListElems (ctx : List String) : Expr → Option (List Str
 
 partial def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
   | .unit => "()"
+  | .true => "true"
+  | .false => "false"
   | .nil => "[]"
   | .cons h t =>
       match Expr.prettyListElems ctx t with
@@ -292,8 +296,8 @@ def Expr.pretty (e : Expr) (ctx : List String := []) (prec : Nat := 0) : String 
 (so the judgement colon is not read as part of the expression). -/
 def Expr.needsJudgementParens : Expr → Bool
   | .anno .. | .matchBL .. | .matchNil .. | .matchCons ..
-  | .if_ .. | .let_ .. | .letScheme .. => true
-  | _ => false
+  | .if_ .. | .let_ .. | .letScheme .. => Bool.true
+  | _ => Bool.false
 
 /-- Pretty for `e : τ` / check judgements: wraps anno/match/if/let only. -/
 def Expr.prettyJudgement (e : Expr) (ctx : List String := []) : String :=
