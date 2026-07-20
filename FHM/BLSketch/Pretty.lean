@@ -11,10 +11,10 @@ Conventions:
 * Rigid count vars print as `a`, `b`, `c`, …; inferables as `?a`, `?b`, ….
 * Term de Bruijn indices resolve against a binder name context (`x`, `y`, …);
   dangling indices print as `#n`.
-* Scheme rigid binders print as `∀ a b. body` (same letter pool as rigid counts;
-  separate from term names).
-* Scheme *instantiation* at a var prints as `f @2 @6` (Haskell-style type
-  application; not `f[2, 6]`, which looks like an array slice).
+* Scheme binders print as `∀ {a b : Nat}. …` (count-only), `∀ {α}. …` (type-only),
+  or `∀ {a b : Nat, α β}. …` (mixed); braces mark scheme binders — no `: Type`.
+* Scheme *instantiation* at a var prints as `f @2 @Unit` (Haskell-style `@`;
+  count args print as counts, type args print as types).
 * Annotation holes print as `_`.
 * Lists: a proper `nil`/`cons` spine prints as `[a, b, c]`; improper as `h :: t`.
 * `matchNil` / `matchCons` print as ordinary `match` with only the `[]` or
@@ -122,12 +122,29 @@ def AnnoTy.pretty (t : AnnoTy) : String := AnnoTy.prettyAux 0 t
 
 instance : ToString AnnoTy := ⟨AnnoTy.pretty⟩
 
+def SchemeArg.pretty : SchemeArg → String
+  | .count c => Count.pretty c
+  | .ty t => Ty.pretty t
+
+def prettySchemeBinderSection (binders : List SchemeBinder) : String :=
+  let nCounts := (binders.filter (· == .count)).length
+  let nTypes := (binders.filter (· == .type)).length
+  let countPart :=
+    if nCounts = 0 then ""
+    else
+      String.intercalate " " (List.range nCounts |>.map prettyCountVarLetter) ++ " : Nat"
+  let typePart :=
+    if nTypes = 0 then ""
+    else String.intercalate " " (List.range nTypes |>.map prettyTypeVarLetter)
+  match countPart.isEmpty, typePart.isEmpty with
+  | true, true => ""
+  | false, true => countPart
+  | true, false => typePart
+  | false, false => countPart ++ ", " ++ typePart
+
 def BScheme.pretty (s : BScheme) : String :=
-  if s.binders = 0 then s.body.pretty
-  else
-    let binders :=
-      String.intercalate " " ((List.range s.binders).map prettyCountVarLetter)
-    "∀ " ++ binders ++ ". " ++ s.body.pretty
+  if s.binders.isEmpty then s.body.pretty
+  else "∀ {" ++ prettySchemeBinderSection s.binders ++ "}. " ++ s.body.pretty
 
 instance : ToString BScheme := ⟨BScheme.pretty⟩
 
@@ -218,7 +235,7 @@ partial def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
       if args.isEmpty then name
       else
         -- Haskell-style type application for scheme bound-instantiation.
-        name ++ String.join (args.map fun a => " @" ++ Count.pretty a)
+        name ++ String.join (args.map fun a => " @" ++ SchemeArg.pretty a)
   | .lam paramAnn body =>
       let x := prettyTermVarName ctx.length
       prettyParenIf (prec ≥ 1)

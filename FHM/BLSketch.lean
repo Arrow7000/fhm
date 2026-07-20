@@ -395,20 +395,54 @@ def Count.BinderRigid (n : Nat) : Count → Prop
       Count.BinderRigid n a ∧ Count.BinderRigid n b
   | .pred a => Count.BinderRigid n a
 
-def Ty.BinderRigid (n : Nat) : Ty → Prop
+def Ty.SchemeWF (nCounts nTypes : Nat) : Ty → Prop
   | .unit => True
-  | .tbind _ => False
+  | .tbind i => i < nTypes
   | .bl lo hi elem =>
-    Count.BinderRigid n lo ∧ Count.BinderRigid n hi ∧ Ty.BinderRigid n elem
-  | .arrow d c => Ty.BinderRigid n d ∧ Ty.BinderRigid n c
+    Count.BinderRigid nCounts lo ∧ Count.BinderRigid nCounts hi ∧
+      Ty.SchemeWF nCounts nTypes elem
+  | .arrow d c => Ty.SchemeWF nCounts nTypes d ∧ Ty.SchemeWF nCounts nTypes c
 
-structure BScheme where
-  binders : Nat
-  body    : Ty
+inductive SchemeBinder where
+  | count
+  | type
   deriving DecidableEq, Repr
 
+inductive SchemeArg where
+  | count : Count → SchemeArg
+  | ty : Ty → SchemeArg
+  deriving DecidableEq, Repr
+
+structure BScheme where
+  binders : List SchemeBinder  -- v1: all `.count` then all `.type`
+  body : Ty
+  deriving DecidableEq, Repr
+
+def BScheme.nCounts (s : BScheme) : Nat := (s.binders.filter (· == .count)).length
+
+def BScheme.nTypes (s : BScheme) : Nat := (s.binders.filter (· == .type)).length
+
+/-- v1 telescope discipline: counts then types (no interleaving). -/
+def SchemeBinder.countsThenTypes : List SchemeBinder → Bool
+  | [] => true
+  | .count :: rest => countsThenTypes rest
+  | .type :: rest => rest.all (· == .type)
+
 def BScheme.WF (s : BScheme) : Prop :=
-  Ty.BinderRigid s.binders s.body
+  SchemeBinder.countsThenTypes s.binders = true ∧
+    Ty.SchemeWF s.nCounts s.nTypes s.body
+
+def schemeArgsOK : List SchemeBinder → List SchemeArg → Bool
+  | [], [] => true
+  | .count :: bs, .count _ :: as => schemeArgsOK bs as
+  | .type :: bs, .ty _ :: as => schemeArgsOK bs as
+  | _, _ => false
+
+def schemeCountArgs (args : List SchemeArg) : List Count :=
+  args.filterMap fun | .count c => some c | .ty _ => none
+
+def schemeTyArgs (args : List SchemeArg) : List Ty :=
+  args.filterMap fun | .ty t => some t | .count _ => none
 
 inductive Count.Subst : List Count → Count → Count → Prop where
   | lit {args n} : Subst args (.lit n) (.lit n)
@@ -423,20 +457,22 @@ inductive Count.Subst : List Count → Count → Count → Prop where
   | max {args a b a' b'} :
     Subst args a a' → Subst args b b' → Subst args (.max a b) (.max a' b')
 
-inductive Ty.Subst : List Count → Ty → Ty → Prop where
-  | unit {args} : Subst args .unit .unit
-  | tbind {args i} : Subst args (.tbind i) (.tbind i)
-  | arrow {args d c d' c'} :
-    Subst args d d' → Subst args c c' → Subst args (.arrow d c) (.arrow d' c')
-  | bl {args lo hi lo' hi' elem} :
-    Count.Subst args lo lo' → Count.Subst args hi hi' →
-    Subst args (.bl lo hi elem) (.bl lo' hi' elem)
+inductive Ty.Subst : List Count → List Ty → Ty → Ty → Prop where
+  | unit {cargs targs} : Subst cargs targs .unit .unit
+  | tbind {cargs targs i t} : targs[i]? = some t → Subst cargs targs (.tbind i) t
+  | arrow {cargs targs d c d' c'} :
+    Subst cargs targs d d' → Subst cargs targs c c' →
+    Subst cargs targs (.arrow d c) (.arrow d' c')
+  | bl {cargs targs lo hi lo' hi' elem elem'} :
+    Count.Subst cargs lo lo' → Count.Subst cargs hi hi' →
+    Subst cargs targs elem elem' →
+    Subst cargs targs (.bl lo hi elem) (.bl lo' hi' elem')
 
-inductive BScheme.InstantiatesTo : BScheme → List Count → Ty → Prop where
+inductive BScheme.InstantiatesTo : BScheme → List SchemeArg → Ty → Prop where
   | intro {s args ty} :
     s.WF →
-    args.length = s.binders →
-    Ty.Subst args s.body ty →
+    schemeArgsOK s.binders args = true →
+    Ty.Subst (schemeCountArgs args) (schemeTyArgs args) s.body ty →
     InstantiatesTo s args ty
 
 inductive Binding where
@@ -452,7 +488,7 @@ inductive Expr where
   | unit
   | nil
   | cons (head tail : Expr)
-  | var (idx : Nat) (boundArgs : List Count)
+  | var (idx : Nat) (boundArgs : List SchemeArg)
   | lam (paramTy : AnnoTy) (body : Expr)
   | app (fn arg : Expr)
   | if_ (cond thn els : Expr)
@@ -829,25 +865,26 @@ theorem Count.Subst.unique {args c c₁ c₂}
     · exact (Count.Subst.unique hb hb')
 
 /-- `Ty.Subst` is deterministic. -/
-theorem Ty.Subst.unique {args t t₁ t₂}
-    (h₁ : Ty.Subst args t t₁) (h₂ : Ty.Subst args t t₂) : t₁ = t₂ := by
+theorem Ty.Subst.unique {cargs targs t t₁ t₂}
+    (h₁ : Ty.Subst cargs targs t t₁) (h₂ : Ty.Subst cargs targs t t₂) : t₁ = t₂ := by
   induction h₁ with
   | unit =>
     cases h₂
     rfl
-  | tbind =>
-    cases h₂
-    rfl
+  | tbind hi =>
+    cases h₂ with | tbind hj =>
+    exact Option.some.inj (hi.symm.trans hj)
   | arrow hd hc =>
     cases h₂ with | arrow hd' hc' =>
     congr 1
     · exact (Ty.Subst.unique hd hd')
     · exact (Ty.Subst.unique hc hc')
-  | bl hlo hhi =>
-    cases h₂ with | bl hlo' hhi' =>
+  | bl hlo hhi helem =>
+    cases h₂ with | bl hlo' hhi' helem' =>
     congr 1
     · exact (Count.Subst.unique hlo hlo')
     · exact (Count.Subst.unique hhi hhi')
+    · exact (Ty.Subst.unique helem helem')
 
 /-- Instantiation yields at most one type for a given scheme and args. -/
 theorem BScheme.InstantiatesTo.unique {s : BScheme} {args ty₁ ty₂}
@@ -919,16 +956,19 @@ theorem Count.rigidOnly_of_binderRigid {n : Nat} {c : Count}
   | min a b iha ihb => exact .min (iha h.1) (ihb h.2)
   | max a b iha ihb => exact .max (iha h.1) (ihb h.2)
 
-theorem Ty.demandOK_of_binderRigid {n : Nat} {ty : Ty}
-    (h : Ty.BinderRigid n ty) : Ty.DemandOK ty := by
-  induction ty with
+theorem Ty.demandOK_of_schemeWF {nCounts nTypes : Nat} {ty : Ty}
+    (h : Ty.SchemeWF nCounts nTypes ty) (hTypes : nTypes = 0) : Ty.DemandOK ty := by
+  induction ty generalizing nCounts nTypes with
   | unit => exact .unit
-  | tbind i => exact False.elim h
-  | arrow _ _ ih₁ ih₂ => exact .arrow (ih₁ h.1) (ih₂ h.2)
+  | tbind i =>
+    rw [hTypes] at h
+    exact False.elim (Nat.not_lt_zero i h)
+  | arrow d c ih₁ ih₂ =>
+    exact .arrow (ih₁ h.1 hTypes) (ih₂ h.2 hTypes)
   | bl lo hi elem ih =>
     exact .bl (.ofRigid (Count.rigidOnly_of_binderRigid h.1))
       (.ofRigid (Count.rigidOnly_of_binderRigid h.2.1))
-      (ih h.2.2)
+      (ih h.2.2 hTypes)
 
 /-- Reflexivity of `Sub` on demand-OK types. -/
 theorem Sub.refl_of_demandOK {Δ : List Constraint} {ty : Ty}
@@ -1004,12 +1044,6 @@ def Count.applyArgs (args : List Count) : Count → Count
   | .min a b => .min (applyArgs args a) (applyArgs args b)
   | .max a b => .max (applyArgs args a) (applyArgs args b)
 
-def Ty.applyArgs (args : List Count) : Ty → Ty
-  | .unit => .unit
-  | .tbind i => .tbind i
-  | .arrow d c => .arrow (applyArgs args d) (applyArgs args c)
-  | .bl lo hi elem => .bl (Count.applyArgs args lo) (Count.applyArgs args hi) elem
-
 def Count.binderRigidBool (n : Nat) : Count → Bool
   | .lit _ => true
   | .var ⟨.rigid, i⟩ => decide (i < n)
@@ -1018,19 +1052,28 @@ def Count.binderRigidBool (n : Nat) : Count → Bool
       binderRigidBool n a && binderRigidBool n b
   | .pred a => binderRigidBool n a
 
-def Ty.binderRigidBool (n : Nat) : Ty → Bool
-  | .unit => true
-  | .tbind _ => false
+def Ty.applyArgs (cargs : List Count) (targs : List Ty) : Ty → Ty
+  | .unit => .unit
+  | .tbind i => targs.getD i .unit
+  | .arrow d c => .arrow (applyArgs cargs targs d) (applyArgs cargs targs c)
   | .bl lo hi elem =>
-      Count.binderRigidBool n lo && Count.binderRigidBool n hi && binderRigidBool n elem
-  | .arrow d c => binderRigidBool n d && binderRigidBool n c
+      .bl (Count.applyArgs cargs lo) (Count.applyArgs cargs hi) (applyArgs cargs targs elem)
+
+def Ty.schemeWFBool (nCounts nTypes : Nat) : Ty → Bool
+  | .unit => true
+  | .tbind i => decide (i < nTypes)
+  | .bl lo hi elem =>
+      Count.binderRigidBool nCounts lo && Count.binderRigidBool nCounts hi &&
+        schemeWFBool nCounts nTypes elem
+  | .arrow d c => schemeWFBool nCounts nTypes d && schemeWFBool nCounts nTypes c
 
 def BScheme.WF_bool (s : BScheme) : Bool :=
-  Ty.binderRigidBool s.binders s.body
+  SchemeBinder.countsThenTypes s.binders &&
+    Ty.schemeWFBool s.nCounts s.nTypes s.body
 
-def BScheme.instantiate? (s : BScheme) (args : List Count) : Option Ty :=
-  if s.WF_bool && args.length = s.binders then
-    some (Ty.applyArgs args s.body)
+def BScheme.instantiate? (s : BScheme) (args : List SchemeArg) : Option Ty :=
+  if s.WF_bool && schemeArgsOK s.binders args then
+    some (Ty.applyArgs (schemeCountArgs args) (schemeTyArgs args) s.body)
   else
     none
 
@@ -1700,20 +1743,23 @@ theorem Count.binderRigid_of_bool {n : Nat} {c : Count}
     simp [Count.binderRigidBool] at h
     exact ⟨iha h.1, ihb h.2⟩
 
-theorem Ty.binderRigid_of_bool {n : Nat} {ty : Ty}
-    (h : Ty.binderRigidBool n ty = true) : Ty.BinderRigid n ty := by
+theorem Ty.schemeWF_of_bool {nCounts nTypes : Nat} {ty : Ty}
+    (h : Ty.schemeWFBool nCounts nTypes ty = true) : Ty.SchemeWF nCounts nTypes ty := by
   induction ty with
   | unit => trivial
-  | tbind i => simp [Ty.binderRigidBool] at h
+  | tbind i =>
+    simpa [Ty.schemeWFBool, decide_eq_true_eq] using h
   | arrow d c ihd ihc =>
-    simp [Ty.binderRigidBool] at h
+    simp [Ty.schemeWFBool] at h
     exact ⟨ihd h.1, ihc h.2⟩
   | bl lo hi elem ihelem =>
-    simp [Ty.binderRigidBool] at h
+    simp [Ty.schemeWFBool] at h
     exact ⟨Count.binderRigid_of_bool h.1.1, Count.binderRigid_of_bool h.1.2, ihelem h.2⟩
 
-theorem BScheme.wf_of_WF_bool {s : BScheme} (h : s.WF_bool = true) : s.WF :=
-  Ty.binderRigid_of_bool (by simpa [BScheme.WF_bool] using h)
+
+theorem BScheme.wf_of_WF_bool {s : BScheme} (h : s.WF_bool = true) : s.WF := by
+  simp [BScheme.WF, BScheme.WF_bool] at h ⊢
+  exact ⟨h.1, Ty.schemeWF_of_bool h.2⟩
 
 theorem fillHoles_elab (Φ : Nat) (ann : AnnoTy) :
     AnnoTy.Elab ann (fillHoles Φ ann).2 := by
@@ -1748,27 +1794,95 @@ theorem Count.subst_applyArgs_binderRigid {n args c}
   | min a b iha ihb => exact .min (iha hb.1) (ihb hb.2)
   | max a b iha ihb => exact .max (iha hb.1) (ihb hb.2)
 
-theorem subst_applyArgs_binderRigid {n args t}
-    (hb : Ty.BinderRigid n t) (hlen : args.length = n) :
-    (Ty.Subst args t (Ty.applyArgs args t)) := by
+theorem subst_applyArgs_schemeWF {nCounts nTypes cargs targs t}
+    (hb : Ty.SchemeWF nCounts nTypes t) (hcLen : cargs.length = nCounts)
+    (htLen : targs.length = nTypes) :
+    Ty.Subst cargs targs t (Ty.applyArgs cargs targs t) := by
   induction t with
   | unit => exact .unit
-  | tbind i => exact .tbind
-  | arrow d c ihd ihc => exact .arrow (ihd hb.1) (ihc hb.2)
-  | bl lo hi _ =>
-    exact .bl (Count.subst_applyArgs_binderRigid hb.1 hlen)
-      (Count.subst_applyArgs_binderRigid hb.2.1 hlen)
+  | tbind i =>
+    have hi : i < targs.length := by rw [htLen]; exact hb
+    simp [Ty.applyArgs, List.getD_eq_getElem?_getD, List.getElem?_eq_getElem hi]
+    exact .tbind (List.getElem?_eq_getElem hi)
+  | arrow d c ihd ihc =>
+    exact .arrow (ihd hb.1) (ihc hb.2)
+  | bl lo hi elem ihelem =>
+    exact .bl (Count.subst_applyArgs_binderRigid hb.1 hcLen)
+      (Count.subst_applyArgs_binderRigid hb.2.1 hcLen)
+      (ihelem hb.2.2)
 
-theorem instantiatesOf_instantiate?_sound {s : BScheme} {args : List Count} {ty : Ty}
-    (hlen : args.length = s.binders) (h : s.instantiate? args = some ty) :
+theorem schemeCountArgs_length {bs as}
+    (h : schemeArgsOK bs as = true) :
+    (schemeCountArgs as).length = (bs.filter (· == .count)).length := by
+  induction bs generalizing as with
+  | nil =>
+    cases as with
+    | nil => rfl
+    | cons _ _ => simp [schemeArgsOK] at h
+  | cons b bs ih =>
+    cases b with
+    | count =>
+      cases as with
+      | nil => simp [schemeArgsOK] at h
+      | cons a as =>
+        cases a with
+        | count c =>
+          simp [schemeArgsOK, schemeCountArgs] at h ⊢
+          exact ih h
+        | ty _ => simp [schemeArgsOK] at h
+    | type =>
+      cases as with
+      | nil => simp [schemeArgsOK] at h
+      | cons a as =>
+        cases a with
+        | count _ => simp [schemeArgsOK] at h
+        | ty t =>
+          simp [schemeArgsOK, schemeCountArgs] at h ⊢
+          exact ih h
+
+theorem schemeTyArgs_length {bs as}
+    (h : schemeArgsOK bs as = true) :
+    (schemeTyArgs as).length = (bs.filter (· == .type)).length := by
+  induction bs generalizing as with
+  | nil =>
+    cases as with
+    | nil => rfl
+    | cons _ _ => simp [schemeArgsOK] at h
+  | cons b bs ih =>
+    cases b with
+    | count =>
+      cases as with
+      | nil => simp [schemeArgsOK] at h
+      | cons a as =>
+        cases a with
+        | count c =>
+          simp [schemeArgsOK, schemeTyArgs] at h ⊢
+          exact ih h
+        | ty _ => simp [schemeArgsOK] at h
+    | type =>
+      cases as with
+      | nil => simp [schemeArgsOK] at h
+      | cons a as =>
+        cases a with
+        | count _ => simp [schemeArgsOK] at h
+        | ty t =>
+          simp [schemeArgsOK, schemeTyArgs] at h ⊢
+          exact ih h
+
+theorem instantiatesOf_instantiate?_sound {s : BScheme} {args : List SchemeArg} {ty : Ty}
+    (h : s.instantiate? args = some ty) :
     s.InstantiatesTo args ty := by
   unfold BScheme.instantiate? at h
   split at h
   · rename_i hcond
     cases h
-    simp [decide_eq_true_eq] at hcond
-    exact .intro (BScheme.wf_of_WF_bool hcond.1) hlen
-      (subst_applyArgs_binderRigid (BScheme.wf_of_WF_bool hcond.1) hlen)
+    simp only [Bool.and_eq_true] at hcond
+    obtain ⟨hwfb, hok⟩ := hcond
+    have hwf := BScheme.wf_of_WF_bool hwfb
+    exact .intro hwf hok
+      (subst_applyArgs_schemeWF hwf.2
+        (schemeCountArgs_length hok)
+        (schemeTyArgs_length hok))
   · cases h
 
 theorem joinBranchTy_eq {t u ty} (h : joinBranchTy t u = some ty) :
@@ -1833,14 +1947,7 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
         | some ity =>
           simp [hinst] at h
           obtain ⟨rfl, rfl⟩ := h
-          have hlen : args.length = s.binders := by
-            unfold BScheme.instantiate? at hinst
-            split at hinst
-            · rename_i hcond
-              simp [decide_eq_true_eq] at hcond
-              exact hcond.2
-            · cases hinst
-          exact .varScheme hctx (instantiatesOf_instantiate?_sound hlen hinst)
+          exact .varScheme hctx (instantiatesOf_instantiate?_sound hinst)
   | lam paramAnn body ih_body =>
     cases hfill : fillHoles Φ paramAnn with
     | mk Φ₁ paramTy =>
@@ -2042,11 +2149,11 @@ namespace Examples
 def r (i : Nat) : Count := cvar .rigid i
 def x (i : Nat) : Count := cvar .inferable i
 
-/- Need `BinderRigid` proofs for scheme bodies using `r i`. -/
+/- Need `SchemeWF` proofs for scheme bodies using `r i`. -/
 theorem binderRigid_r {n i : Nat} (h : i < n) :
     Count.BinderRigid n (r i) := h
 
-theorem idScheme_wf : Ty.BinderRigid 1
+theorem idScheme_wf : Ty.SchemeWF 1 0
     (.arrow (.bl (r 0) (r 0) .unit) (.bl (r 0) (r 0) .unit)) := by
   refine And.intro ?_ ?_
   · exact And.intro (binderRigid_r Nat.zero_lt_one)
@@ -2061,28 +2168,27 @@ example : TypeOf [] [] (.cons .unit .nil)
     (.bl (.add (.lit 0) (.lit 1)) (.add (.lit 0) (.lit 1)) .unit) :=
   .cons .unit .nil
 
-/-- ### Bound scheme: `∀ α. BL α α → BL α α` -/
+/-- ### Bound scheme: `∀ {α : Nat}. BL α α → BL α α` -/
 def idScheme : BScheme where
-  binders := 1
+  binders := [.count]
   body := .arrow (.bl (r 0) (r 0) .unit) (.bl (r 0) (r 0) .unit)
 
-example : idScheme.WF := idScheme_wf
+def idScheme_wf' : idScheme.WF :=
+  ⟨by decide, idScheme_wf⟩
 
-example : TypeOf [] [.scheme idScheme] (.var 0 [.lit 3])
+example : TypeOf [] [.scheme idScheme] (.var 0 [.count (.lit 3)])
     (.arrow (.bl (.lit 3) (.lit 3) .unit) (.bl (.lit 3) (.lit 3) .unit)) :=
-  .varScheme rfl <| .intro idScheme_wf rfl <|
-    .arrow (.bl (.var rfl) (.var rfl)) (.bl (.var rfl) (.var rfl))
+  .varScheme rfl (instantiatesOf_instantiate?_sound (by native_decide))
 
 example : TypeOf [] []
     (.letScheme idScheme
       (.lam (.bl (some (r 0)) (some (r 0)) .unit) (.var 0 []))
-      (.var 0 [.lit 3]))
+      (.var 0 [.count (.lit 3)]))
     (.arrow (.bl (.lit 3) (.lit 3) .unit) (.bl (.lit 3) (.lit 3) .unit)) :=
-  .letScheme idScheme_wf
+  .letScheme idScheme_wf'
     (.lam (.bl .known .known) (.bl (.ofRigid .var) (.ofRigid .var) Ty.DemandOK.unit) (.varMono rfl))
-    (Sub.refl_of_demandOK (Ty.demandOK_of_binderRigid idScheme_wf))
-    (.varScheme rfl <| .intro idScheme_wf rfl <|
-      .arrow (.bl (.var rfl) (.var rfl)) (.bl (.var rfl) (.var rfl)))
+    (Sub.refl_of_demandOK (Ty.demandOK_of_schemeWF idScheme_wf (by decide)))
+    (.varScheme rfl (instantiatesOf_instantiate?_sound (by native_decide)))
 
 /-- ### Holes: `BL _ _` fills with fresh inferables via `fillHoles`. -/
 example : fillHoles 0 (.bl none none .unit) =
@@ -2093,28 +2199,23 @@ example : fillHoles 0 (.bl none none .unit) =
 Four binders: input list `[a,b]`, per-element lists `[c,d]`; result length
 bounds multiply covariantly. -/
 def flatMapScheme : BScheme where
-  binders := 4
+  binders := [.count, .count, .count, .count]
   body :=
     .arrow (.bl (r 0) (r 1) .unit)
       (.arrow (.arrow .unit (.bl (r 2) (r 3) .unit))
         (.bl (.mul (r 0) (r 2)) (.mul (r 1) (r 3)) .unit))
 
 theorem flatMapScheme_wf : flatMapScheme.WF := by
-  dsimp [BScheme.WF, flatMapScheme, Ty.BinderRigid, Count.BinderRigid, r, cvar]
+  dsimp [BScheme.WF, flatMapScheme, Ty.SchemeWF, Count.BinderRigid, r, cvar]
   decide
 
 example :
-    flatMapScheme.InstantiatesTo [.lit 2, .lit 5, .lit 3, .lit 4]
+    flatMapScheme.InstantiatesTo
+      [.count (.lit 2), .count (.lit 5), .count (.lit 3), .count (.lit 4)]
       (.arrow (.bl (.lit 2) (.lit 5) .unit)
         (.arrow (.arrow .unit (.bl (.lit 3) (.lit 4) .unit))
-          (.bl (.mul (.lit 2) (.lit 3)) (.mul (.lit 5) (.lit 4)) .unit))) := by
-  refine .intro flatMapScheme_wf rfl ?_
-  refine .arrow ?_ ?_
-  · exact .bl (.var rfl) (.var (by native_decide))
-  · refine .arrow ?_ ?_
-    · exact .arrow .unit (.bl (.var (by native_decide)) (.var (by native_decide)))
-    · exact .bl (.mul (.var rfl) (.var (by native_decide)))
-        (.mul (.var (by native_decide)) (.var (by native_decide)))
+          (.bl (.mul (.lit 2) (.lit 3)) (.mul (.lit 5) (.lit 4)) .unit))) :=
+  instantiatesOf_instantiate?_sound (by native_decide)
 
 /-- ### Match refines `Δ`
 

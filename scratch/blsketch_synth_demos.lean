@@ -18,6 +18,8 @@ for what is expressible today vs what needs recursive lets. -/
 
 namespace BLSketch.Demo
 
+open BLSketch
+
 /-- Rigid count variable `a`/`b`/… (index `i`). -/
 def r (i : Nat) : Count := cvar .rigid i
 
@@ -199,7 +201,7 @@ private def ctxFive : Ctx := [.mono (.bl (.lit 5) (.lit 5) .unit)]
 
 /-- `∀ a b c d. BL a b → (Unit → BL c d) → BL (a*c) (b*d)`. -/
 private def flatMapScheme : BScheme where
-  binders := 4
+  binders := [.count, .count, .count, .count]
   body :=
     .arrow (.bl (r 0) (r 1) .unit)
       (.arrow (.arrow .unit (.bl (r 2) (r 3) .unit))
@@ -214,7 +216,7 @@ private def ctxFlat : Ctx := [.scheme flatMapScheme]
 -- x : ∀ a b c d. BL a b → (Unit → BL c d) → BL (a * c) (b * d)
 -- ---------
 -- x @2 @5 @3 @4  :  BL 2 5 → (Unit → BL 3 4) → BL (2 * 3) (5 * 4)  ↦  …
-#eval showSynth (.var 0 [.lit 2, .lit 5, .lit 3, .lit 4]) ctxFlat
+#eval showSynth (.var 0 [.count (.lit 2), .count (.lit 5), .count (.lit 3), .count (.lit 4)]) ctxFlat
 
 -- (BL (2 * 3) (5 * 4)  <:  BL 6 20) => assignable ✓
 #eval showForceSubtype
@@ -239,9 +241,10 @@ private def eLetTail : Expr :=
 /-- Pack `∀ a. BL a a → BL a a` (same as library `idScheme`) and instantiate. -/
 private def eLetSchemeId : Expr :=
   .letScheme
-    { binders := 1, body := .arrow (.bl (r 0) (r 0) .unit) (.bl (r 0) (r 0) .unit) }
+    { binders := [.count],
+      body := .arrow (.bl (r 0) (r 0) .unit) (.bl (r 0) (r 0) .unit) }
     (.lam (.bl (some (r 0)) (some (r 0)) .unit) (.var 0 []))
-    (.app (.var 0 [.lit 3]) (.cons .unit (.cons .unit (.cons .unit .nil))))
+    (.app (.var 0 [.count (.lit 3)]) (.cons .unit (.cons .unit (.cons .unit .nil))))
 
 -- let x : ∀ a. BL a a → BL a a = λ(y : BL a a). y in
 -- x @3 [(), (), ()]  :  BL 3 3
@@ -260,7 +263,7 @@ def eSingleton : Expr :=
 
 /-- `∀ a b. Unit → BL a b → BL (a+1) (b+1)`. -/
 def consScheme : BScheme where
-  binders := 2
+  binders := [.count, .count]
   body :=
     .arrow .unit
       (.arrow (.bl (r 0) (r 1) .unit)
@@ -274,7 +277,7 @@ def eCons : Expr :=
 
 /-- `∀ a b. BL (a+1) b → Unit` — cons-only match (`1 ≤ a+1` always). -/
 def headScheme : BScheme where
-  binders := 2
+  binders := [.count, .count]
   body := .arrow (.bl (.add (r 0) (.lit 1)) (r 1) .unit) .unit
 
 /-- Body of `head`. -/
@@ -284,7 +287,7 @@ def eHead : Expr :=
 
 /-- `∀ a b. BL (a+1) (b+1) → BL a b` — `Sub` folds `pred(·+1)`. -/
 def tailScheme : BScheme where
-  binders := 2
+  binders := [.count, .count]
   body :=
     .arrow (.bl (.add (r 0) (.lit 1)) (.add (r 1) (.lit 1)) .unit)
       (.bl (r 0) (r 1) .unit)
@@ -315,7 +318,7 @@ def eHeadOrUnit : Expr :=
 -- Pack + use: `head @0 @5 [(), (), ()]`
 def eUseHead : Expr :=
   .letScheme headScheme eHead
-    (.app (.var 0 [.lit 0, .lit 5])
+    (.app (.var 0 [.count (.lit 0), .count (.lit 5)])
       (.cons .unit (.cons .unit (.cons .unit .nil))))
 
 -- let x : ∀ a b. BL (a+1) b → Unit = … in x @0 @5 [(), (), ()]  :  Unit
@@ -325,8 +328,8 @@ def eUseHead : Expr :=
 def eUseConsHead : Expr :=
   .letScheme consScheme eCons
     (.letScheme headScheme eHead
-      (.app (.var 0 [.lit 0, .lit 4])
-        (.app (.app (.var 1 [.lit 2, .lit 3]) .unit)
+      (.app (.var 0 [.count (.lit 0), .count (.lit 4)])
+        (.app (.app (.var 1 [.count (.lit 2), .count (.lit 3)]) .unit)
           (.cons .unit (.cons .unit .nil)))))
 
 -- nested let cons/head pipeline  :  Unit
@@ -335,7 +338,7 @@ def eUseConsHead : Expr :=
 -- Pack tail and strip one cons off a length-3 list
 def eUseTail : Expr :=
   .letScheme tailScheme eTail
-    (.app (.var 0 [.lit 2, .lit 2])
+    (.app (.var 0 [.count (.lit 2), .count (.lit 2)])
       (.cons .unit (.cons .unit (.cons .unit .nil))))
 
 -- let x : ∀ a b. BL (a+1) (b+1) → BL a b = … in
@@ -374,21 +377,21 @@ the context), not a userland definition. -/
 
 /-- Signature-only reminder. -/
 def mapScheme : BScheme where
-  binders := 2
+  binders := [.count, .count]
   body :=
     .arrow (.arrow .unit .unit)
       (.arrow (.bl (r 0) (r 1) .unit) (.bl (r 0) (r 1) .unit))
 
 /-- Signature-only: filter may shrink to `0..hi`. -/
 def filterScheme : BScheme where
-  binders := 2
+  binders := [.count, .count]
   body :=
     .arrow (.arrow .unit .unit)
       (.arrow (.bl (r 0) (r 1) .unit) (.bl (.lit 0) (r 1) .unit))
 
 /-- Signature-only append. -/
 def appendScheme : BScheme where
-  binders := 4
+  binders := [.count, .count, .count, .count]
   body :=
     .arrow (.bl (r 0) (r 1) .unit)
       (.arrow (.bl (r 2) (r 3) .unit)
