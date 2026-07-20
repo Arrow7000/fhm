@@ -1,0 +1,59 @@
+{
+  "name": "fhm",
+  "displayName": "FHM",
+  "description": "FHM surface language — syntax highlighting and parse diagnostics",
+  "version": "0.0.1",
+  "publisher": "fhm",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:fhm"
+  ],
+  "main": "./extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "fhm",
+        "aliases": [
+          "FHM",
+          "fhm"
+        ],
+        "extensions": [
+          ".fhm"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "fhm",
+        "scopeName": "source.fhm",
+        "path": "./syntaxes/fhm.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "FHM",
+      "properties": {
+        "fhm.diagnosePath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to fhm_diagnose. Empty = search workspace .lake/build/bin/fhm_diagnose."
+        },
+        "fhm.diagnostics.debounceMs": {
+          "type": "number",
+          "default": 300,
+          "description": "Debounce for parse diagnostics on document change."
+        },
+        "fhm.diagnostics.enable": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run parse-only diagnostics on didChange."
+        }
+      }
+    }
+  }
+}

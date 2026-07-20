@@ -88,17 +88,58 @@ def isIdentStart (c : Char) : Bool :=
 def isIdentCont (c : Char) : Bool :=
   isIdentStart c || Unicode.GeneralCategory.isMark c || Unicode.isNumeric c || c == '_'
 
+/-- Surface spellings ↔ keywords. Single source of truth for the lexer and the
+    TextMate grammar exporter (`fhm_grammar`). -/
+def keywordEntries : List (String × Keyword) := [
+  ("let", .«let»),
+  ("in", .«in»),
+  ("match", .«match»),
+  ("with", .«with»),
+  ("if", .«if»),
+  ("then", .«then»),
+  ("else", .«else»),
+  ("type", .«type»)
+]
+
 def keywordOf (s : String) : Option Keyword :=
-  match s with
-  | "let" => some .«let»
-  | "in" => some .«in»
-  | "match" => some .«match»
-  | "with" => some .«with»
-  | "if" => some .«if»
-  | "then" => some .«then»
-  | "else" => some .«else»
-  | "type" => some .«type»
-  | _ => none
+  (keywordEntries.find? fun ⟨spelling, _⟩ => spelling == s).map (·.2)
+
+def keywordSurfaces : List String := keywordEntries.map (·.1)
+
+/-- Bool literals recognized by `classifyIdent` (not keywords). -/
+def boolLitSurfaces : List String := ["True", "False"]
+
+/-- Surface spelling of a builtin operator token. -/
+def BinOpToken.surface : BinOpToken → String
+  | .plus => "+"
+  | .minus => "-"
+  | .lt => "<"
+  | .cons => "::"
+
+/-- All builtin operator surface spellings (longest first for TextMate). -/
+def binOpSurfaces : List String :=
+  [BinOpToken.cons, .plus, .minus, .lt].map (·.surface)
+
+/-- Surface spelling of a punctuation token. -/
+def Punct.surface : Punct → String
+  | .lparen => "("
+  | .rparen => ")"
+  | .lbrace => "{"
+  | .rbrace => "}"
+  | .lbrack => "["
+  | .rbrack => "]"
+  | .comma => ","
+  | .colon => ":"
+  | .eq => "="
+  | .pipe => "|"
+  | .arrow => "->"
+  | .backslash => "\\"
+  | .underscore => "_"
+
+/-- All punctuation surface spellings (longest first for TextMate). -/
+def punctSurfaces : List String :=
+  [Punct.arrow, .lparen, .rparen, .lbrace, .rbrace, .lbrack, .rbrack,
+   .comma, .colon, .eq, .pipe, .backslash, .underscore].map (·.surface)
 
 def mkTok (tok : Token) (sl sc el ec : Nat) : TokenWithSource :=
   { token := tok, startLine := sl, startCol := sc, endLine := el, endCol := ec }

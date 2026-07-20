@@ -28,6 +28,16 @@ name = "fhm_live"
 root = "FHM.Live"
 # Not part of defaultTargets — build with `lake build fhm_live` or scripts/watch-live.sh
 
+[[lean_exe]]
+name = "fhm_grammar"
+root = "FHM.GrammarExport"
+# Emits TextMate JSON from Surface.Lex tables. `scripts/gen-fhm-tmgrammar.sh`
+
+[[lean_exe]]
+name = "fhm_diagnose"
+root = "FHM.Diagnose"
+# Parse-only JSON diagnostics for the editor extension.
+
 [[lean_lib]]
 name = "FHMZ3"
 # Optional: Z3 subprocess oracle + BLSketch bound layer.

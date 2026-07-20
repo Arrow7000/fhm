@@ -1,0 +1,49 @@
+{"scopeName": "source.fhm",
+ "repository":
+ {"strings":
+  {"patterns":
+   [{"name": "constant.character.escape.fhm", "match": "\\\\[ntr\\\\\"']"}],
+   "name": "string.quoted.double.fhm",
+   "end": "\"",
+   "begin": "\""},
+  "punctuation":
+  {"name": "punctuation.fhm",
+   "match": "(?:->|\\(|\\)|\\{|\\}|\\[|\\]|,|:|=|\\||\\\\|_)"},
+  "operators": {"name": "keyword.operator.fhm", "match": "(?:::|\\+|-|<)"},
+  "numbers":
+  {"name": "constant.numeric.integer.fhm", "match": "-?\\b[0-9]+\\b"},
+  "keywords":
+  {"name": "keyword.control.fhm",
+   "match": "\\b(?:let|in|match|with|if|then|else|type)\\b"},
+  "identifiers":
+  {"name": "variable.other.fhm", "match": "\\b[\\p{L}][\\p{L}\\p{N}\\p{M}_]*"},
+  "ctors":
+  {"name": "entity.name.type.fhm", "match": "\\b\\p{Lu}[\\p{L}\\p{N}\\p{M}_]*"},
+  "comments":
+  {"patterns":
+   [{"name": "comment.line.double-dash.fhm", "match": "--.*$"},
+    {"patterns":
+     [{"name": "comment.block.fhm", "match": "\\{-"},
+      {"name": "comment.block.fhm", "match": "-\\}"}],
+     "name": "comment.block.fhm",
+     "end": "-\\}",
+     "begin": "\\{-"}]},
+  "chars":
+  {"name": "string.quoted.single.fhm",
+   "match": "'(?:[^'\\\\]|\\\\[ntr\\\\\"'])'"},
+  "booleans":
+  {"name": "constant.language.boolean.fhm", "match": "\\b(?:True|False)\\b"}},
+ "patterns":
+ [{"include": "#comments"},
+  {"include": "#strings"},
+  {"include": "#chars"},
+  {"include": "#keywords"},
+  {"include": "#booleans"},
+  {"include": "#numbers"},
+  {"include": "#ctors"},
+  {"include": "#identifiers"},
+  {"include": "#operators"},
+  {"include": "#punctuation"}],
+ "name": "FHM",
+ "$schema":
+ "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json"}
