@@ -11,7 +11,7 @@ lake env lean scratch/blsketch_synth_demos.lean
 Companion to `blsketch_z3_demos.lean` (raw oracle APIs). Exercises structural
 synth, `check` via `Sub`, hole solving, match join / refine, nonlinear
 scheme / mul, richer `let`/`letScheme`/`letRecScheme` programs, and a small **stdlib** of
-BL helpers including recursive `map` / `filter` / `append` / `flatMap`. Style matches `FHM/Examples.lean`. -/
+BL helpers including recursive `map` / `filter` / `append` / `flatMap` / `reverse`. Style matches `FHM/Examples.lean`. -/
 
 namespace BLSketch.Demo
 
@@ -541,6 +541,41 @@ def eFlatMapDemo : Expr :=
 
 -- flatMap (λx. [x]) [(), ()]  :  BL 2 2 Unit
 #eval showSynth eFlatMapDemo (ctxPoly [])
+
+/-- `∀ {a b : Nat, α}. BL a b α → BL a b α`. -/
+def reverseScheme : BScheme where
+  binders := [.count, .count, .type]
+  body := .arrow (.bl (r 0) (r 1) (.tbind 0)) (.bl (r 0) (r 1) (.tbind 0))
+
+/-- Recursive reverse via append (expects `reverseScheme`, `appendScheme`, and `nilScheme` in ctx). -/
+def eReverse : Expr :=
+  .lam (.bl (some (r 0)) (some (r 1)) (.tbind 0))
+    (.matchBL (.var 0 [])
+      (.anno (.var 3 [.ty (.tbind 0)]) (.bl (some (r 0)) (some (r 1)) (.tbind 0)))
+      (.anno
+        (.app (.app (.var 4 [.count (.pred (r 0)), .count (.pred (r 1)), .count (.lit 1), .count (.lit 1), .ty (.tbind 0)])
+            (.app (.var 3 [.count (.pred (r 0)), .count (.pred (r 1)), .ty (.tbind 0)])
+              (.var 1 [])))
+          (.cons (.var 0 []) (.var 5 [.ty (.tbind 0)])))
+        (.bl (some (r 0)) (some (r 1)) (.tbind 0))))
+
+def eReverseRec : Expr :=
+  .letRecScheme appendScheme eAppend
+    (.letRecScheme reverseScheme eReverse
+      (.var 0 [.count (r 0), .count (r 1), .ty (.tbind 0)]))
+
+-- let rec append … in let rec reverse … in reverse @a @b @α
+--   :  BL a b α → BL a b α
+#eval showSynth eReverseRec (ctxPoly [])
+
+def eReverseDemo : Expr :=
+  .letRecScheme appendScheme eAppend
+    (.letRecScheme reverseScheme eReverse
+      (.app (.var 0 [.count (.lit 3), .count (.lit 3), .ty .unit])
+        (.cons .unit (.cons .unit (.cons .unit (.var 2 [.ty .unit]))))))
+
+-- reverse [(), (), ()]  :  BL 3 3 Unit
+#eval showSynth eReverseDemo (ctxPoly [])
 
 end Stdlib
 

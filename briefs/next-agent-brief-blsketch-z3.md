@@ -106,7 +106,7 @@ Leave these alone unless the user reopens them:
 - Semantic / normalized `DemandOK` (syntactic is enough for the sketch)
 - Commit‑a‑model when non‑unique (sketch fails instead)
 - Inferred let‑generalisation + production commit policy; type-`@` inference
-- Recursive **reverse** bodies (map/filter/append/flatMap landed via `letRecScheme`)
+- ~~Recursive **reverse**~~ — **done** (append + `letRecScheme` in `blsketch_synth_demos.lean`)
 - `unknown` UX / solver timeouts as product features
 - Wiring bounds into real FHM Core / phase‑2 InferW
 - Replacing subprocess with libz3 FFI
