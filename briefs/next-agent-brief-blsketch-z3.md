@@ -79,16 +79,16 @@ lake env lean scratch/blsketch_synth_demos.lean   # needs `z3` on PATH
 | Trust / TCB | Only `.valid` / `.witness` / `.unique` are axiomatized as sound; Encode/Parse/Process unverified; don’t axiomatize `.invalid`/`.unsat`/`.multiple` |
 | Ambiguity | When uniqueness fails on **escaping** outputs → **no derivation** (fail / require annotation). No commit‑a‑model in the core relation |
 | Demand | Negative bounds: ≤1 inferable, affine over rigid (`DemandOK`, syntactic). Positive may use products |
-| Join / meet | Join = free `min`/`max` when elems equal; meet inhabitability = `checkValid` side condition, not a `TypeOf` constructor |
+| Join / meet | Structural join (`joinBranchTy`): same shape; on every `BL`, join bounds and recurse into elems; meet inhabitability = `checkValid` side condition, not a `TypeOf` constructor |
 | Schemes | Prenex **count then type** binders (`SchemeBinder` / `SchemeArg`); **story A** — flat indices + `SchemeWF`; no nested scheme LN; explicit `@` spine (no inference) |
-| `nil` | `nilScheme : ∀ {α}. BL 0 0 α`; bare `Expr.nil` kept for `[]` pretty but **does not synth** |
+| `nil` | `nilScheme : ∀ {α}. BL 0 0 α`; bare `Expr.nil` **does not synth**, but **checks** / ascribes against `BL lo hi α` when `BL 0 0 α <: BL lo hi α` (`Check.nil` / `TypeOf.annoNil`) |
 | Bases | `Unit`, `Bool` (`Expr.true` / `Expr.false`) |
-| `Sub` on elem | **Definitional `elem = elem'` only** (no recursive elem subtyping yet) |
+| `Sub` on elem | **Recursive** `Sub` (bases; arrows contra/co; `BL` = bound obligations + `Sub` on elems) |
 | Annotations | Structure annotated on λ/let; bound holes via `AnnoTy` (`Option Count`) |
-| Match | Refine `Δ`; nil: `lo ≤ 0` (**do not force `hi = 0`**); cons‑only when `1 ≤ lo`; nil‑only when `hi ≤ 0`; **both-`BL` branches join** (same elem); non-`BL` branches must be equal; `consCtx` binds head:`elem`, tail:`BL (pred lo) (pred hi) elem` |
+| Match | Refine `Δ`; nil: `lo ≤ 0` (**do not force `hi = 0`**); cons‑only when `1 ≤ lo`; nil‑only when `hi ≤ 0`; branch types joined structurally; `consCtx` binds head:`elem`, tail:`BL (pred lo) (pred hi) elem` |
 | Freshness | Thread `Φ : Nat` (InferW‑style), not `StateM` |
 | Narrowing sites | HM-style solve+unique at **app / anno / letScheme** (`*Infer` rules) and algorithmic `check`; plain `Sub` at those sites too |
-| Checking vs synth | **`TypeOf` stays syntax-directed** (no general subsumption). Algorithmic `check` is justified by separate **`Check`** (`ofSub` / `ofInfer`) |
+| Checking vs synth | **`TypeOf` stays syntax-directed** (no general subsumption). Algorithmic `check` is justified by separate **`Check`** (`ofSub` / `ofInfer` / `nil`) |
 | `Sub` refl | `Sub.bl_refl` — equal BL intervals without opaque `checkValid` (no completeness axiom) |
 | Z3 plumbing | Subprocess `z3` on PATH; **no** libz3 C shim yet |
 | Deliverable shape | Catalog‑first abandoned; **`TypeOf` is the didactic synth center**; `Check` is the checking dual |
@@ -105,15 +105,13 @@ Leave these alone unless the user reopens them:
 - Scheme binder LN / nested hygiene (stay on story A)
 - Semantic / normalized `DemandOK` (syntactic is enough for the sketch)
 - Commit‑a‑model when non‑unique (sketch fails instead)
-- **Elem subtyping** (recursive `Sub` on element types) — v1 is equality only
-- Bare-`nil` under expected type (special `Check` rule) — use `nil @α`
 - Inferred let‑generalisation + production commit policy; type-`@` inference
 - `letRec` / recursive map/filter/flatMap bodies
 - `unknown` UX / solver timeouts as product features
 - Wiring bounds into real FHM Core / phase‑2 InferW
 - Replacing subprocess with libz3 FFI
 - Completeness of `synth` (non-goal)
-- General `TypeOf` subsumption (rejected — use `Check` instead)
+- General `TypeOf` subsumption (rejected — use `Check` instead; bare-`nil` is a targeted check intro, not full bidirectional checking)
 
 ---
 
@@ -123,7 +121,8 @@ Leave these alone unless the user reopens them:
 
 1. ~~**`synth_sound` / `check_sound`**~~ — **done** (`17c4c16`; kept through elem-poly).
 2. ~~**Element types + mixed Nat/Type schemes**~~ — **done** (see elem-poly brief).
-3. **Soft spots** (document or lightly tighten — see below; **no redesign required** unless user asks):
+3. ~~**Recursive elem `Sub` + bare-`nil` under check**~~ — **done** (`5814e0b`).
+4. **Soft spots** (document or lightly tighten — see below; **no redesign required** unless user asks):
    - Flat scheme hygiene vs real LN (now with mixed binder kinds — still prenex only)
    - Algo does not substitute witnesses into returned types; declarative existentially picks `σ`
    - Escape / `unique` on `obsBounds` — confirm policy is what we want at every `forceSubtype` site
@@ -131,10 +130,10 @@ Leave these alone unless the user reopens them:
 
 ### Later / product
 
-- Elem subtyping / sub-checking
 - InferW / FHM phase‑2 integration of bounds
 - Inferred generalisation + explicit commit‑vs‑annotate policy for production
 - Optional C FFI for Z3
+- Full bidirectional checking (beyond bare-`nil` / ascription)
 
 ---
 
@@ -157,10 +156,8 @@ These are **not blockers**. They are “know the sketch’s corners.”
 **Risk:** Whether “observable escape” is the right output list at every site (e.g. should app uniqueness look at the *codomain* somehow?). Current policy is uniform and locked in the Infer rules.
 **Decision needed?** Only if you notice a concrete weird example where you’d want different outs. Otherwise leave it.
 
-### D. Elem equality vs subtyping
-**What:** `Sub` / join / `subConstraints` require `elem = elem'` only.
-**Risk:** Incomplete as a subtype story (e.g. no `BL _ _ α <: BL _ _ β` via `α <: β`).
-**Decision needed?** Reopen only for a dedicated elem-subtyping session.
+### D. ~~Elem equality vs subtyping~~ — done
+Recursive `Sub` on elems + structural `joinBranchTy` landed (`5814e0b`).
 
 ---
 
@@ -179,7 +176,7 @@ These are **not blockers**. They are “know the sketch’s corners.”
 
 1. Skim module contract + `Check` + §9 `synth` in `BLSketch.lean`.
 2. Run `scratch/blsketch_synth_demos.lean` (and optionally `blsketch_z3_demos.lean`) to confirm `z3` on PATH.
-3. Soft spots / FHM wiring / elem-subtyping — **only if the user asks**.
+3. Soft spots / FHM wiring / full bidirectional checking — **only if the user asks**.
 4. Don’t reopen DemandOK semantics, scheme LN, opsem, general `TypeOf` subsumption, or FHM merge without an explicit ask.
 
 ---
