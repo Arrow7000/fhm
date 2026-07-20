@@ -1,46 +1,40 @@
-<!-- Written 2026-07-20. Handoff for a dedicated session — not a drive-by. -->
+<!-- Written 2026-07-20. Handoff for a dedicated session — landed on main the same day. -->
 
 # Next-agent brief: BLSketch element types + type polymorphism
 
+**Status:** **Done** on `main` (Phases A–D).  
 **Plan:** [`docs/superpowers/plans/2026-07-20-blsketch-elem-poly.md`](../docs/superpowers/plans/2026-07-20-blsketch-elem-poly.md)  
 **Design:** [`docs/superpowers/specs/2026-07-20-blsketch-elem-poly-design.md`](../docs/superpowers/specs/2026-07-20-blsketch-elem-poly-design.md)  
-**Bounds/Z3 context (still authoritative):** [`next-agent-brief-blsketch-z3.md`](next-agent-brief-blsketch-z3.md)
+**Bounds/Z3 context (updated locks):** [`next-agent-brief-blsketch-z3.md`](next-agent-brief-blsketch-z3.md)
 
-## Goal
+## Goal (achieved)
 
-`BL lo hi α` + prenex schemes over `Nat` and `Type` with explicit `@` for both. `nil` becomes a type scheme. Z3 bounds layer unchanged. No inference, no elem-subtyping, no `letRec`.
+`BL lo hi α` + prenex schemes over `Nat` and `Type` with explicit `@` for both. `nil` is a type scheme. Z3 bounds layer unchanged. No inference, no elem-subtyping, no `letRec`.
 
-## Workflow (read this)
-
-1. **Lean feedback:** Prefer **lean-lsp-mcp** (`lean_diagnostic_messages`, `lean_goal`, …) over `lake build`. Full builds / `lake env lean …` only when imports are stale, at the end of a chunky phase, or when you need `#eval` demo output. Same spirit as `.cursor/rules/lean-workflow.mdc`.
-
-2. **Parent designs, subagents prove:** When the work splits cleanly, **you** write the definitions, `Prop`s, and theorem *statements* (and the key API shape). Hand **implementations / proof bodies** to a subagent:
-   - default: **Composer 2.5**
-   - if stuck: **Grok 4.5**
-   - If there’s no clean statement/proof split (tangled API migration, Pretty, demos), keep key design decisions yourself and still farm mechanical fallout when it’s worth it.
-
-3. **Commits:** One commit per phase in the plan (or logical sub-phase). Don’t mix doc churn with proof repairs unless tiny.
-
-## Locked
+## Locked (still)
 
 | | |
 | --- | --- |
 | Element | `Ty.bl lo hi elem` |
 | Type binders | `Ty.tbind i` — separate index space from count rigids |
-| Scheme telescope | **Counts first, then types** (pretty as `∀ {a b : Nat, α β}. …` — no `: Type`; this isn’t dependent types) |
+| Scheme telescope | **Counts first, then types** (pretty as `∀ {a b : Nat, α β}. …` — no `: Type`) |
 | `@` spine | Same order as binders, e.g. `cons @2 @5 @Unit` |
 | `nil` | Scheme `∀ {α}. BL 0 0 α`; bare `Expr.nil` does **not** synth |
 | `Sub` on elem | Definitional equality only |
-| Second base | `Bool` (+ tiny intro forms) — for element-mismatch demos and any future `α → Bool` preds |
+| Second base | `Bool` (`Expr.true` / `Expr.false`) |
 | Out of scope | Inference, elem-subtyping, `letRec`, Surface/Core |
 
-## Starting point on `main`
+## Landed commits (this session)
 
-Bounds spine + soundness; Pretty; `scratch/blsketch_synth_demos.lean` with `Demo.Stdlib` (still Unit-only / count-only schemes).
+| | |
+| --- | --- |
+| `81c6d6a` / `779732c` | Phase A — `elem` + `tbind`, Unit-hardwired; soundness repair |
+| `d426851` | Lint cleanup |
+| `6153a0e` | Phase B — mixed schemes + kinded `@` |
+| `ca1dc54` | `@[simp]` DemandOK / SchemeWF mirrors |
+| `5d5bc6e` | Phase C — typed nil/cons/match; Bool; stdlib |
+| *(Phase D)* | Z3 brief lock update |
 
-## Done when
+## Explicitly still deferred
 
-- Demos show typed `nil`/`cons`/`head`/`tail` with `@`
-- Element mismatch fails visibly (`Unit` into `BL _ _ Bool`)
-- `synth_sound` / `check_sound` still hold for touched rules
-- Z3 brief updated with the new locks
+Elem subtyping · bare-`nil` under expected type · type/`@` inference · `letRec` · nested scheme LN · Surface/Core
