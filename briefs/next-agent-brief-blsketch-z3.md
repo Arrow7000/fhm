@@ -106,7 +106,7 @@ Leave these alone unless the user reopens them:
 - Semantic / normalized `DemandOK` (syntactic is enough for the sketch)
 - Commit‑a‑model when non‑unique (sketch fails instead)
 - Inferred let‑generalisation + production commit policy; type-`@` inference
-- `letRec` / recursive map/filter/flatMap bodies
+- Recursive **flatMap** / **append** / **reverse** bodies (map/filter landed via `letRecScheme`)
 - `unknown` UX / solver timeouts as product features
 - Wiring bounds into real FHM Core / phase‑2 InferW
 - Replacing subprocess with libz3 FFI
@@ -122,7 +122,8 @@ Leave these alone unless the user reopens them:
 1. ~~**`synth_sound` / `check_sound`**~~ — **done** (`17c4c16`; kept through elem-poly).
 2. ~~**Element types + mixed Nat/Type schemes**~~ — **done** (see elem-poly brief).
 3. ~~**Recursive elem `Sub` + bare-`nil` under check**~~ — **done** (`5814e0b`).
-4. **Soft spots** (document or lightly tighten — see below; **no redesign required** unless user asks):
+4. ~~**`letRec` / map / filter**~~ — **done** (`c54add4`).
+5. **Soft spots** (document or lightly tighten — see below; **no redesign required** unless user asks):
    - Flat scheme hygiene vs real LN (now with mixed binder kinds — still prenex only)
    - Algo does not substitute witnesses into returned types; declarative existentially picks `σ`
    - Escape / `unique` on `obsBounds` — confirm policy is what we want at every `forceSubtype` site
