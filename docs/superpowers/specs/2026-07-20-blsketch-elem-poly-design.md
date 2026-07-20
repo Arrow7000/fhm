@@ -1,38 +1,34 @@
 # Design: BLSketch element types + mixed Nat/Type schemes
 
 **Date:** 2026-07-20  
-**Plan:** `docs/superpowers/plans/2026-07-20-blsketch-elem-poly.md`  
-**Status:** Agreed for a dedicated implementation session (not started).
+**Status:** Agreed — implement in a dedicated session  
+**Plan:** [`../plans/2026-07-20-blsketch-elem-poly.md`](../plans/2026-07-20-blsketch-elem-poly.md)
 
-## Problem
+## Why
 
-Today `BL lo hi` hard-wires element type `Unit`. That is enough to demo bounds, but not enough for a believable stdlib (`nil`, `cons`, `map`, …) or for rejecting `cons () xs` when `xs` is not a list of `Unit`.
+`BL lo hi` is secretly `BL lo hi Unit`. Fine for bounds demos; not fine for stdlib or for rejecting a `Unit` consed onto a non-`Unit` list.
 
-We already have **bounds polymorphism** (`BScheme` over `Nat`). We do **not** have type polymorphism.
+We have count/`Nat` schemes. We need type/`Type` binders too — explicitly instantiated, no inference in v1.
 
-## Decision
+## Decisions
 
-Smallest serious step (no inference):
+| Decision | Detail |
+| --- | --- |
+| `BL lo hi elem` | `elem : Ty` (nested BL allowed by grammar; demos stay shallow) |
+| Type vars | `Ty.tbind i`, index space **separate** from count rigids `a,b,…` |
+| Telescope | **All count binders, then all type binders** — keeps subst/pretty simple |
+| Pretty | `∀ {a b : Nat, α β : Type}. body` — braces = scheme binders (≠ term `λ`) |
+| Instantiation | `Expr.var i (args : List SchemeArg)`; `@` spine follows binder order (`f @2 @5 @Unit`) |
+| `nil` | `nilScheme : ∀ {α : Type}. BL 0 0 α`. Keep `Expr.nil` for list-pretty sugar if useful, but **no** `TypeOf`/`synth` success for bare `.nil` |
+| Element `Sub` | `elem = elem'` only |
+| Second base | Add `Bool` (+ intros) so mismatch demos aren’t fake |
 
-1. **`Ty.bl lo hi elem`** with `elem : Ty`.
-2. **Rigid type binders** in schemes (`Ty.tbind i`), parallel to rigid count binders.
-3. **Mixed prenex schemes** — telescope of `Nat` and `Type` binders.
-4. **Explicit instantiation** — one `@`-spine; each arg is a `Count` or a `Ty` according to the next binder.
-5. **`nil` is a scheme** `∀ {α : Type}. BL 0 0 α`, not a synthesizing nullary constant.
-6. **`Sub` on elements = equality** (no elem-subtyping in v1).
+## Deliberately not doing
 
-## Pretty / surface conventions (toy AST, not a parser yet)
+Type inference / generalization · element subtyping · `letRec` · FHM Core/Surface wiring · base-sort hacks without type ∀
 
-- Schemes: `∀ {a b : Nat, α β : Type}. body` — braces mark *scheme* binders (vs term `λ(x : τ)`).
-- Apps: `nil @Unit`, `cons @2 @5 @Unit`, `map @Unit @Bool @0 @3` — same `@` for both sorts.
+## Soft spots (implementer judgment OK)
 
-## Non-goals (this effort)
-
-- Type inference / generalization
-- Element subtyping
-- `letRec` / recursive stdlib bodies
-- Wiring into FHM Core / Surface
-
-## Why not “base sorts only” without type ∀
-
-Annotating every `nil` or monomorphizing `nilInt` / `headInt` works for a tiny demo but will not scale to one `map`/`head`. Prefer real (explicit) type binders from the start.
+- Exact names (`SchemeBinder` vs `BinderKind`, …)
+- Whether `.nil` stays in the AST forever or becomes sugar later
+- How aggressively to farm `synth_sound` case repairs to subagents

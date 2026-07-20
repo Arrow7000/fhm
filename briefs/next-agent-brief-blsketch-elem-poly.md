@@ -1,38 +1,46 @@
-<!-- Written 2026-07-20 after stdlib/let pretty polish; points at elem+type-poly plan. -->
+<!-- Written 2026-07-20. Handoff for a dedicated session — not a drive-by. -->
 
 # Next-agent brief: BLSketch element types + type polymorphism
 
-**Do not start coding in a drive-by chat.** This is a dedicated-session change.
+**Plan:** [`docs/superpowers/plans/2026-07-20-blsketch-elem-poly.md`](../docs/superpowers/plans/2026-07-20-blsketch-elem-poly.md)  
+**Design:** [`docs/superpowers/specs/2026-07-20-blsketch-elem-poly-design.md`](../docs/superpowers/specs/2026-07-20-blsketch-elem-poly-design.md)  
+**Bounds/Z3 context (still authoritative):** [`next-agent-brief-blsketch-z3.md`](next-agent-brief-blsketch-z3.md)
 
-**Plan (execute this):** [`docs/superpowers/plans/2026-07-20-blsketch-elem-poly.md`](../docs/superpowers/plans/2026-07-20-blsketch-elem-poly.md)  
-**Design memo:** [`docs/superpowers/specs/2026-07-20-blsketch-elem-poly-design.md`](../docs/superpowers/specs/2026-07-20-blsketch-elem-poly-design.md)  
-**Prior BL×Z3 brief (still authoritative for bounds/Z3):** [`next-agent-brief-blsketch-z3.md`](next-agent-brief-blsketch-z3.md)
+## Goal
 
-## One-liner
+`BL lo hi α` + prenex schemes over `Nat` and `Type` with explicit `@` for both. `nil` becomes a type scheme. Z3 bounds layer unchanged. No inference, no elem-subtyping, no `letRec`.
 
-Add `BL lo hi α` and prenex schemes over `{Nat, Type}` with explicit `@` for both; make `nil` a type scheme; keep Z3 bounds layer and skip inference / elem-subtyping / `letRec`.
+## Workflow (read this)
 
-## Locked for this effort
+1. **Lean feedback:** Prefer **lean-lsp-mcp** (`lean_diagnostic_messages`, `lean_goal`, …) over `lake build`. Full builds / `lake env lean …` only when imports are stale, at the end of a chunky phase, or when you need `#eval` demo output. Same spirit as `.cursor/rules/lean-workflow.mdc`.
 
-| Area | Decision |
+2. **Parent designs, subagents prove:** When the work splits cleanly, **you** write the definitions, `Prop`s, and theorem *statements* (and the key API shape). Hand **implementations / proof bodies** to a subagent:
+   - default: **Composer 2.5**
+   - if stuck: **Grok 4.5**
+   - If there’s no clean statement/proof split (tangled API migration, Pretty, demos), keep key design decisions yourself and still farm mechanical fallout when it’s worth it.
+
+3. **Commits:** One commit per phase in the plan (or logical sub-phase). Don’t mix doc churn with proof repairs unless tiny.
+
+## Locked
+
+| | |
 | --- | --- |
 | Element | `Ty.bl lo hi elem` |
-| Type poly | Rigid type binders in schemes; **explicit** `@` only |
-| Scheme pretty | `∀ {a b : Nat, α β : Type}. …` (braces = scheme binders) |
-| Instantiation | Single `@` spine; kind matches next binder |
-| `nil` | Scheme `∀ {α}. BL 0 0 α`, not synthesizing bare `.nil` |
-| `Sub` on elem | Equality only |
-| Out of scope | Inference, elem-subtyping, `letRec`, Surface/Core wiring |
+| Type binders | `Ty.tbind i` — separate index space from count rigids |
+| Scheme telescope | **Counts first, then types** (pretty as `∀ {a b : Nat, α β : Type}. …`) |
+| `@` spine | Same order as binders, e.g. `cons @2 @5 @Unit` |
+| `nil` | Scheme `∀ {α : Type}. BL 0 0 α`; bare `Expr.nil` does **not** synth |
+| `Sub` on elem | Definitional equality only |
+| Second base | `Bool` (+ tiny intro forms) required for mismatch demos |
+| Out of scope | Inference, elem-subtyping, `letRec`, Surface/Core |
 
-## Pre-req state (already on `main`)
+## Starting point on `main`
 
-- Bounds spine + `synth_sound` / `check_sound`
-- Pretty + `scratch/blsketch_synth_demos.lean` with `Demo.Stdlib` (Unit-only)
-- Multiline let pretty; `head : ∀ a b. BL (a+1) b → Unit`
+Bounds spine + soundness; Pretty; `scratch/blsketch_synth_demos.lean` with `Demo.Stdlib` (still Unit-only / count-only schemes).
 
-## Verify before / after
+## Done when
 
-```bash
-lake build FHMZ3
-lake env lean scratch/blsketch_synth_demos.lean   # needs z3
-```
+- Demos show typed `nil`/`cons`/`head`/`tail` with `@`
+- Element mismatch fails visibly (`Unit` into `BL _ _ Bool`)
+- `synth_sound` / `check_sound` still hold for touched rules
+- Z3 brief updated with the new locks
