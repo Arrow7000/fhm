@@ -109,8 +109,14 @@ private def ctxNil : Ctx := [.scheme BLSketch.Examples.nilScheme]
 -- (nil @Unit : BL 1 1) => doesn't typecheck ✗
 #eval showCheck (.var 0 [.ty .unit]) (.bl (.lit 1) (.lit 1) .unit) ctxNil
 
--- ([] : BL 0 0) => doesn't typecheck ✗  (bare nil)
+-- ([] : BL 0 0 Unit) => typechecks ✓  (bare nil under check via Check.nil)
 #eval showCheck .nil (.bl (.lit 0) (.lit 0) .unit)
+
+-- ([] : BL 0 5 Unit) => typechecks ✓  (subtype from BL 0 0)
+#eval showCheck .nil (.bl (.lit 0) (.lit 5) .unit)
+
+-- (BL 1 1 Unit : BL 0 5 Unit) => typechecks ✓  (wider bounds; same elem)
+#eval showCheck (.cons .unit (.var 0 [.ty .unit])) (.bl (.lit 0) (.lit 5) .unit) ctxNil
 
 /-! ## Annotation holes
 
@@ -118,9 +124,13 @@ private def ctxNil : Ctx := [.scheme BLSketch.Examples.nilScheme]
 fresh inferable (`?a`, `?b`, …). Synth of `([] : BL _ _)` returns that holey
 demand type as-is (it does not substitute a solved assignment). Separately,
 `showAnnoWitness` asks whether some assignment to those holes makes the
-ascription succeed via `solve`. -/
+ascription succeed via `solve`. Bare `[]` ascribed at a concrete `BL` uses
+`TypeOf.annoNil` (forceSubtype from `BL 0 0 elem`) without calling `check`. -/
 
-/-- `nil` ascribed at `BL _ _` (holes filled by `synth`) — still needs a synthable source. -/
+-- ([] : BL 0 5 Unit)  :  BL 0 5 Unit  (annoNil path)
+#eval showSynth (.anno .nil (.bl (some (.lit 0)) (some (.lit 5)) .unit))
+
+/-- `nil @Unit` ascribed at `BL _ _` (holes filled by `synth`). -/
 private def eAnnoNilHoles : Expr := .anno (.var 0 [.ty .unit]) (.bl none none .unit)
 
 -- fillHoles: BL _ _  ↦  BL ?a ?b  (each `_` → a fresh ?var)

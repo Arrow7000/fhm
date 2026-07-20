@@ -333,7 +333,9 @@ def subConstraints (ty' ty : Ty) : Option (List Constraint) :=
   | .unit, .unit | .bool, .bool => some []
   | .tbind i, .tbind i' => if i = i' then some [] else none
   | .bl lo hi elem, .bl lo' hi' elem' =>
-      if elem = elem' then some [⟨lo', lo⟩, ⟨hi, hi'⟩] else none
+      match subConstraints elem elem' with
+      | some cs => some (cs ++ [⟨lo', lo⟩, ⟨hi, hi'⟩])
+      | none => none
   | .arrow a b, .arrow a' b' =>
       match subConstraints a' a, subConstraints b b' with
       | some cs₁, some cs₂ => some (cs₁ ++ cs₂)
@@ -684,6 +686,24 @@ def mustBeNonempty (Δ : List Constraint) (lo : Count) : ForallProblem where
 def consCtx (ctx : Ctx) (lo hi : Count) (elem : Ty) : Ctx :=
   .mono elem :: .mono (.bl (.pred lo) (.pred hi) elem) :: ctx
 
+/-- Join branch types: same shape; on every `BL`, join bounds and recurse into elems. -/
+def joinBranchTy (t u : Ty) : Option Ty :=
+  match t, u with
+  | .unit, .unit => some .unit
+  | .bool, .bool => some .bool
+  | .tbind i, .tbind j => if i = j then some (.tbind i) else none
+  | .arrow a b, .arrow a' b' =>
+      match joinBranchTy a a', joinBranchTy b b' with
+      | some d, some c => some (.arrow d c)
+      | _, _ => none
+  | .bl lo₁ hi₁ e₁, .bl lo₂ hi₂ e₂ =>
+      match joinBranchTy e₁ e₂ with
+      | some e => some (.bl (.min lo₁ lo₂) (.max hi₁ hi₂) e)
+      | none => none
+  | _, _ => none
+termination_by t.size + u.size
+decreasing_by all_goals (simp_wf; simp [Ty.size]; omega)
+
 /-! ## 7. `Sub` and `TypeOf` -/
 
 inductive Sub (Δ : List Constraint) : Ty → Ty → Prop where
@@ -697,14 +717,16 @@ inductive Sub (Δ : List Constraint) : Ty → Ty → Prop where
     Sub Δ (.arrow a b) (.arrow a' b')
   | tbind {i} :
     Sub Δ (.tbind i) (.tbind i)
-  | bl {lo hi lo' hi' elem} :
+  | bl {lo hi lo' hi' elem elem'} :
     Count.DemandOK lo' →
     Count.DemandOK hi' →
     checkValid (Interval.subGoals Δ ⟨lo, hi⟩ ⟨lo', hi'⟩) = .valid →
-    Sub Δ (.bl lo hi elem) (.bl lo' hi' elem)
+    Sub Δ elem elem' →
+    Sub Δ (.bl lo hi elem) (.bl lo' hi' elem')
   | bl_refl {lo hi elem} :
     Count.DemandOK lo →
     Count.DemandOK hi →
+    Ty.DemandOK elem →
     Sub Δ (.bl lo hi elem) (.bl lo hi elem)
 
 inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
@@ -753,11 +775,12 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     unique ψ argTy'.obsBounds = .unique →
     TypeOf Δ ctx (.app f arg) retTy
 
-  | ifBL {Δ ctx cond thn els lo₁ hi₁ lo₂ hi₂ elem} :
+  | ifBL {Δ ctx cond thn els t u ty} :
     TypeOf Δ ctx cond .unit →
-    TypeOf Δ ctx thn (.bl lo₁ hi₁ elem) →
-    TypeOf Δ ctx els (.bl lo₂ hi₂ elem) →
-    TypeOf Δ ctx (.if_ cond thn els) (.bl (.min lo₁ lo₂) (.max hi₁ hi₂) elem)
+    TypeOf Δ ctx thn t →
+    TypeOf Δ ctx els u →
+    joinBranchTy t u = some ty →
+    TypeOf Δ ctx (.if_ cond thn els) ty
 
   | anno {Δ ctx e ann ty ty'} :
     AnnoTy.Elab ann ty →
@@ -773,6 +796,21 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     solve ψ = .witness σ →
     unique ψ ty'.obsBounds = .unique →
     TypeOf Δ ctx (.anno e ann) ty
+
+  /-- Ascription of bare `[]` under an expected `BL` (checking intro; no synth of `.nil`). -/
+  | annoNil {Δ ctx ann lo hi elem} :
+    AnnoTy.Elab ann (.bl lo hi elem) →
+    Sub Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) →
+    TypeOf Δ ctx (.anno .nil ann) (.bl lo hi elem)
+
+  /-- Bare `[]` ascription via solve+unique when plain `Sub` does not apply. -/
+  | annoNilInfer {Δ ctx ann lo hi elem ψ σ} :
+    AnnoTy.Elab ann (.bl lo hi elem) →
+    Ty.DemandOK (.bl lo hi elem) →
+    subtypeProblem Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = some ψ →
+    solve ψ = .witness σ →
+    unique ψ (Ty.bl (.lit 0) (.lit 0) elem).obsBounds = .unique →
+    TypeOf Δ ctx (.anno .nil ann) (.bl lo hi elem)
 
   | letMono {Δ ctx e1 e2 ty1 ty2} :
     TypeOf Δ ctx e1 ty1 →
@@ -807,13 +845,13 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi elem) eCons ty →
     TypeOf Δ ctx (.matchBL e eNil eCons) ty
 
-  /-- Exhaustive match: both branches `BL` → join bounds (same `elem`). -/
-  | matchBL_join {Δ ctx e eNil eCons lo hi lo₁ hi₁ lo₂ hi₂ elem} :
-    TypeOf Δ ctx e (.bl lo hi elem) →
-    TypeOf (Δ ++ nilRefine lo hi) ctx eNil (.bl lo₁ hi₁ elem) →
-    TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi elem) eCons (.bl lo₂ hi₂ elem) →
-    TypeOf Δ ctx (.matchBL e eNil eCons)
-      (.bl (.min lo₁ lo₂) (.max hi₁ hi₂) elem)
+  /-- Exhaustive match: join branch types structurally (bounds on every `BL`). -/
+  | matchBL_join {Δ ctx e eNil eCons lo hi scrutElem tNil tCons ty} :
+    TypeOf Δ ctx e (.bl lo hi scrutElem) →
+    TypeOf (Δ ++ nilRefine lo hi) ctx eNil tNil →
+    TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi scrutElem) eCons tCons →
+    joinBranchTy tNil tCons = some ty →
+    TypeOf Δ ctx (.matchBL e eNil eCons) ty
 
   /-- Nil-only: require `hi ≤ 0` under `Δ` (empty is forced). -/
   | matchNil {Δ ctx e eNil lo hi elem ty} :
@@ -829,7 +867,8 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi elem) eCons ty →
     TypeOf Δ ctx (.matchCons e eCons) ty
 
-/-- Checking judgment: synthesized type fits a demand (plain `Sub` or solve+unique).
+/-- Checking judgment: synthesized type fits a demand (plain `Sub` or solve+unique),
+or intro forms that only make sense under a demand (bare `nil`).
 Keeps `TypeOf` syntax-directed — no general subsumption inside `TypeOf`. -/
 inductive Check (Δ : List Constraint) (ctx : Ctx) : Expr → Ty → Prop where
   | ofSub {e ty ty'} :
@@ -843,6 +882,18 @@ inductive Check (Δ : List Constraint) (ctx : Ctx) : Expr → Ty → Prop where
     solve ψ = .witness σ →
     unique ψ ty'.obsBounds = .unique →
     Check Δ ctx e ty
+  /-- Bare `[]` checks against `BL lo hi α` when `BL 0 0 α <: BL lo hi α`. -/
+  | nil {lo hi elem} :
+    Sub Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) →
+    Check Δ ctx .nil (.bl lo hi elem)
+
+  /-- Bare `[]` check via solve+unique when plain `Sub` does not apply. -/
+  | nilInfer {lo hi elem ψ σ} :
+    Ty.DemandOK (.bl lo hi elem) →
+    subtypeProblem Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = some ψ →
+    solve ψ = .witness σ →
+    unique ψ (Ty.bl (.lit 0) (.lit 0) elem).obsBounds = .unique →
+    Check Δ ctx .nil (.bl lo hi elem)
 
 /-! ## 8. Structural lemmas -/
 
@@ -938,9 +989,11 @@ theorem TypeOf.weakenCtx {Δ ctx ctx' e ty}
   | app hf harg hsub ih₁ ih₂ => exact .app ih₁ ih₂ hsub
   | appInfer hf harg hok hψ hσ huniq ih₁ ih₂ =>
     exact .appInfer ih₁ ih₂ hok hψ hσ huniq
-  | ifBL hcond hthn hels ih₁ ih₂ ih₃ => exact .ifBL ih₁ ih₂ ih₃
+  | ifBL hcond hthn hels hjoin ih₁ ih₂ ih₃ => exact .ifBL ih₁ ih₂ ih₃ hjoin
   | anno helab he hsub ih => exact .anno helab ih hsub
   | annoInfer helab he hok hψ hσ huniq ih => exact .annoInfer helab ih hok hψ hσ huniq
+  | annoNil helab hsub => exact .annoNil helab hsub
+  | annoNilInfer helab hok hψ hσ huniq => exact .annoNilInfer helab hok hψ hσ huniq
   | letMono he₁ he₂ ih₁ ih₂ => exact .letMono ih₁ ih₂
   | letScheme hwf he₁ hsub he₂ ih₁ ih₂ => exact .letScheme hwf ih₁ hsub ih₂
   | letSchemeInfer hwf he₁ hok hψ hσ huniq he₂ ih₁ ih₂ =>
@@ -949,8 +1002,8 @@ theorem TypeOf.weakenCtx {Δ ctx ctx' e ty}
     refine .matchBL ih₁ ih₂ ?_
     rw [consCtx_append]
     exact ih₃
-  | matchBL_join he heNil heCons ih₁ ih₂ ih₃ =>
-    refine .matchBL_join ih₁ ih₂ ?_
+  | matchBL_join he heNil heCons hjoin ih₁ ih₂ ih₃ =>
+    refine .matchBL_join ih₁ ih₂ ?_ hjoin
     rw [consCtx_append]
     exact ih₃
   | matchNil he hvalid heNil ih₁ ih₂ => exact .matchNil ih₁ hvalid ih₂
@@ -1000,7 +1053,7 @@ theorem Sub.refl_of_demandOK {Δ : List Constraint} {ty : Ty}
   | bool => exact .bool
   | tbind => exact .tbind
   | arrow _ _ ih₁ ih₂ => exact .arrow ih₁ ih₂
-  | bl hlo hhi _ ih => exact .bl_refl hlo hhi
+  | bl hlo hhi helem ih => exact .bl_refl hlo hhi helem
 
 /-- `ofTy` elaborates to itself (no holes). -/
 theorem AnnoTy.elab_ofTy (t : Ty) : AnnoTy.Elab (AnnoTy.ofTy t) t := by
@@ -1052,7 +1105,7 @@ on escaping `obsBounds`. Used at `.anno`, `.app`, `.letScheme`, and `check`.
   | .tbind i, .tbind j => decide (i = j)
   | .arrow a b, .arrow a' b' => checkSub Δ a' a && checkSub Δ b b'
   | .bl lo hi elem, .bl lo' hi' elem' =>
-      elem == elem' && lo'.isDemandOK && hi'.isDemandOK &&
+      checkSub Δ elem elem' && lo'.isDemandOK && hi'.isDemandOK &&
         checkValid (Interval.subGoals Δ ⟨lo, hi⟩ ⟨lo', hi'⟩) == .valid
   | _, _ => false
 termination_by t.size + u.size
@@ -1148,13 +1201,6 @@ def forceSubtype (Δ : List Constraint) (ty' ty : Ty) : Bool :=
       | .witness _ => unique ψ ty'.obsBounds == .unique
       | _ => false
 
-/-- Join branch types for `matchBL`: both `BL` → join bounds; else require equality. -/
-def joinBranchTy (t u : Ty) : Option Ty :=
-  match t, u with
-  | .bl lo₁ hi₁ elem, .bl lo₂ hi₂ elem' =>
-      if elem == elem' then some (.bl (.min lo₁ lo₂) (.max hi₁ hi₂) elem) else none
-  | _, _ => if t == u then some t else none
-
 /-- Synthesize a type for `e`.
 
 Returns `some (Φ', τ)` with updated freshness frontier, or `none` on failure
@@ -1198,11 +1244,11 @@ def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat �
     | none => none
   | .lam paramAnn body =>
     let (Φ₁, paramTy) := fillHoles Φ paramAnn
-    if !paramTy.isDemandOK then none
-    else
+    if paramTy.isDemandOK then
       match synth Φ₁ Δ (.mono paramTy :: ctx) body with
       | some (Φ₂, bodyTy) => some (Φ₂, .arrow paramTy bodyTy)
       | none => none
+    else none
   | .app f arg =>
     match synth Φ Δ ctx f with
     | none => none
@@ -1226,29 +1272,36 @@ def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat �
         | some (Φ₃, et) =>
           match ct, tt, et with
           | .unit, .bl lo₁ hi₁ elem, .bl lo₂ hi₂ elem' =>
-              if elem == elem' then
-                some (Φ₃, .bl (.min lo₁ lo₂) (.max hi₁ hi₂) elem)
-              else none
+              match joinBranchTy (.bl lo₁ hi₁ elem) (.bl lo₂ hi₂ elem') with
+              | some ty => some (Φ₃, ty)
+              | none => none
           | _, _, _ => none
   | .anno e ann =>
     let (Φ₁, ty) := fillHoles Φ ann
-    match synth Φ₁ Δ ctx e with
-    | none => none
-    | some (Φ₂, ty') =>
-      if forceSubtype Δ ty' ty then some (Φ₂, ty) else none
+    if e = .nil then
+      match ty with
+      | .bl lo hi elem =>
+        if forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) then some (Φ₁, ty)
+        else none
+      | _ => none
+    else
+      match synth Φ₁ Δ ctx e with
+      | none => none
+      | some (Φ₂, ty') =>
+        if forceSubtype Δ ty' ty then some (Φ₂, ty) else none
   | .let_ bind body =>
     match synth Φ Δ ctx bind with
     | none => none
     | some (Φ₁, ty1) => synth Φ₁ Δ (.mono ty1 :: ctx) body
   | .letScheme s bind body =>
-    if !s.WF_bool then none
-    else
+    if s.WF_bool then
       match synth Φ Δ ctx bind with
       | none => none
       | some (Φ₁, tyb) =>
         if forceSubtype Δ tyb s.body then
           synth Φ₁ Δ (.scheme s :: ctx) body
         else none
+    else none
   | .matchBL scrut eNil eCons =>
     match synth Φ Δ ctx scrut with
     | none => none
@@ -1261,17 +1314,9 @@ def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat �
           match synth Φ₂ (Δ ++ consRefine hi) (consCtx ctx lo hi elem) eCons with
           | none => none
           | some (Φ₃, tCons) =>
-            match tNil, tCons with
-            | .bl _ _ e1, .bl _ _ e2 =>
-              if e1 == e2 && e1 == elem then
-                match joinBranchTy tNil tCons with
-                | some ty => some (Φ₃, ty)
-                | none => none
-              else none
-            | _, _ =>
-              match joinBranchTy tNil tCons with
-              | some ty => some (Φ₃, ty)
-              | none => none
+            match joinBranchTy tNil tCons with
+            | some ty => some (Φ₃, ty)
+            | none => none
       | _ => none
   | .matchNil scrut eNil =>
     match synth Φ Δ ctx scrut with
@@ -1279,8 +1324,9 @@ def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat �
     | some (Φ₁, sty) =>
       match sty with
       | .bl lo hi _elem =>
-        if checkValid (mustBeEmpty Δ hi) != .valid then none
-        else synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil
+        if checkValid (mustBeEmpty Δ hi) = .valid then
+          synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil
+        else none
       | _ => none
   | .matchCons scrut eCons =>
     match synth Φ Δ ctx scrut with
@@ -1288,19 +1334,26 @@ def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat �
     | some (Φ₁, sty) =>
       match sty with
       | .bl lo hi elem =>
-        if checkValid (mustBeNonempty Δ lo) != .valid then none
-        else synth Φ₁ (Δ ++ consRefine hi) (consCtx ctx lo hi elem) eCons
+        if checkValid (mustBeNonempty Δ lo) = .valid then
+          synth Φ₁ (Δ ++ consRefine hi) (consCtx ctx lo hi elem) eCons
+        else none
       | _ => none
-termination_by e => e.size
-decreasing_by all_goals (simp_wf; simp [Expr.size] <;> omega)
+termination_by e => e.size + 1
+decreasing_by all_goals (simp_wf; simp [Expr.size]; try omega)
 
-/-- Check `e` against expected `ty` (synth then force into demand — HM narrowing). -/
+/-- Check `e` against expected `ty`.
+Bare `nil` is checked directly against a `BL` demand; otherwise synth then force. -/
 def check (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) (e : Expr) (ty : Ty) :
     Option Nat :=
-  match synth Φ Δ ctx e with
-  | none => none
-  | some (Φ', ty') =>
-    if forceSubtype Δ ty' ty then some Φ' else none
+  match e, ty with
+  | .nil, .bl lo hi elem =>
+    if forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) then some Φ
+    else none
+  | _, _ =>
+    match synth Φ Δ ctx e with
+    | none => none
+    | some (Φ', ty') =>
+      if forceSubtype Δ ty' ty then some Φ' else none
 
 /-! ### Soundness helpers (partial — synth_sound ladder) -/
 
@@ -1669,13 +1722,12 @@ theorem checkSub_sound {Δ t u} (h : checkSub Δ t u = true) : Sub Δ t u := by
     simp at h
     exact .arrow (checkSub_sound h.1) (checkSub_sound h.2)
   | .bl lo hi elem, .bl lo' hi' elem' =>
-    simp [beq_iff_eq] at h
-    have helem : elem = elem' := h.1.1.1
-    have hlo' : lo'.isDemandOK = true := h.1.1.2
-    have hhi' : hi'.isDemandOK = true := h.1.2
-    have hvalid : checkValid (Interval.subGoals Δ ⟨lo, hi⟩ ⟨lo', hi'⟩) = .valid := h.2
-    subst helem
+    simp at h
+    obtain ⟨h12, hvalid⟩ := h
+    obtain ⟨h1, hhi'⟩ := h12
+    obtain ⟨helem, hlo'⟩ := h1
     exact Sub.bl (Count.demandOK_of_isDemandOK hlo') (Count.demandOK_of_isDemandOK hhi') hvalid
+      (checkSub_sound helem)
   | .unit, .arrow _ _ | .unit, .bl _ _ _ | .unit, .tbind _ | .unit, .bool
   | .bool, .unit | .bool, .arrow _ _ | .bool, .bl _ _ _ | .bool, .tbind _
   | .arrow _ _, .unit | .arrow _ _, .bl _ _ _ | .arrow _ _, .tbind _ | .arrow _ _, .bool
@@ -1888,25 +1940,6 @@ theorem instantiatesOf_instantiate?_sound {s : BScheme} {args : List SchemeArg} 
         (schemeTyArgs_length hok))
   · cases h
 
-theorem joinBranchTy_eq {t u ty} (h : joinBranchTy t u = some ty) :
-    (∃ lo₁ hi₁ lo₂ hi₂ elem, t = .bl lo₁ hi₁ elem ∧ u = .bl lo₂ hi₂ elem ∧
-      ty = .bl (.min lo₁ lo₂) (.max hi₁ hi₂) elem) ∨ (t = ty ∧ u = ty) := by
-  unfold joinBranchTy at h
-  split at h
-  · split at h
-    · rename_i heq
-      simp [beq_iff_eq] at heq
-      cases h
-      subst heq
-      exact Or.inl ⟨_, _, _, _, _, rfl, rfl, rfl⟩
-    · cases h
-  · split at h
-    · rename_i heq
-      cases h
-      have : t = u := by simpa [beq_iff_eq] using heq
-      exact Or.inr ⟨rfl, this.symm⟩
-    · cases h
-
 /-- Main soundness theorem: algorithmic `synth` implies declarative `TypeOf`. -/
 theorem synth_sound {Φ Δ ctx e Φ' ty}
     (h : synth Φ Δ ctx e = some (Φ', ty)) :
@@ -2009,33 +2042,54 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
             | bl lo₁ hi₁ elem =>
               cases et with
               | bl lo₂ hi₂ elem' =>
-                by_cases heq : elem = elem'
-                · subst heq
-                  simp at h
+                cases hj : joinBranchTy (.bl lo₁ hi₁ elem) (.bl lo₂ hi₂ elem') with
+                | none => simp [hj] at h
+                | some jty =>
+                  simp [hj] at h
                   obtain ⟨rfl, rfl⟩ := h
-                  exact .ifBL (ih_c hc) (ih_t ht) (ih_e he)
-                · simp [heq] at h
+                  exact .ifBL (ih_c hc) (ih_t ht) (ih_e he) hj
               | unit | arrow _ _ | tbind _ | bool => simp at h
             | unit | arrow _ _ | tbind _ | bool => simp at h
           | arrow _ _ | bl _ _ _ | tbind _ | bool => simp at h
   | anno e ann ih_e =>
     cases hfill : fillHoles Φ ann with
     | mk Φ₁ aty =>
-      cases he : synth Φ₁ Δ ctx e with
-      | none => simp [synth, hfill, he] at h
-      | some Φe =>
-        obtain ⟨Φ₂, ty'⟩ := Φe
-        simp [synth, hfill, he] at h
-        obtain ⟨hfs, rfl, rfl⟩ := h
-        have helab : AnnoTy.Elab ann aty := by
-          have := fillHoles_elab Φ ann
-          rwa [hfill] at this
-        cases forceSubtype_sub hfs with
-        | inl hsub =>
-          exact .anno helab (ih_e he) hsub
-        | inr hr =>
-          obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
-          exact .annoInfer helab (ih_e he) hok hψ hσ huniq
+      by_cases hen : e = .nil
+      · subst hen
+        cases aty with
+        | bl lo hi elem =>
+          simp [synth, hfill] at h
+          by_cases hfs : forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = true
+          · simp [hfs] at h
+            obtain ⟨rfl, rfl⟩ := h
+            have helab : AnnoTy.Elab ann (.bl lo hi elem) := by
+              have := fillHoles_elab Φ ann
+              rwa [hfill] at this
+            cases forceSubtype_sub hfs with
+            | inl hsub => exact .annoNil helab hsub
+            | inr hr =>
+              obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
+              exact .annoNilInfer helab hok hψ hσ huniq
+          · simp [hfs] at h
+        | unit | bool | tbind _ | arrow _ _ => simp [synth, hfill] at h
+      · cases he : synth Φ₁ Δ ctx e with
+        | none =>
+          simp [synth, hfill, he] at h
+          exact absurd h.1 hen
+        | some Φe =>
+          have heq : (e = Expr.nil) = false := by simp [hen]
+          simp [synth, hfill, he, heq] at h
+          obtain ⟨hfs, rfl, rfl⟩ := h
+          obtain ⟨Φ₂, ty'⟩ := Φe
+          have helab : AnnoTy.Elab ann aty := by
+            have := fillHoles_elab Φ ann
+            rwa [hfill] at this
+          cases forceSubtype_sub hfs with
+          | inl hsub =>
+            exact .anno helab (ih_e he) hsub
+          | inr hr =>
+            obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
+            exact .annoInfer helab (ih_e he) hok hψ hσ huniq
   | let_ bind body ih_b ih_body =>
     cases hb : synth Φ Δ ctx bind with
     | none => simp [synth, hb] at h
@@ -2076,70 +2130,13 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
           | none => simp [synth, hs, hn, hc] at h
           | some Φc =>
             obtain ⟨Φ₃, tCons⟩ := Φc
-            -- BL+BL: elem-aligned join; otherwise equal non-BL via `joinBranchTy`.
-            cases tNil with
-            | bl lo₁ hi₁ e1 =>
-              cases tCons with
-              | bl lo₂ hi₂ e2 =>
-                simp [synth, hs, hn, hc, beq_iff_eq, Bool.and_eq_true] at h
-                obtain ⟨hcond, hjoin⟩ := h
-                obtain ⟨he12, he1⟩ := hcond
-                subst he1
-                subst he12
-                cases hj : joinBranchTy (.bl lo₁ hi₁ e1) (.bl lo₂ hi₂ e1) with
-                | none => simp [hj] at hjoin
-                | some jty =>
-                  simp [hj] at hjoin
-                  obtain ⟨rfl, rfl⟩ := hjoin
-                  have hjTy : jty = .bl (.min lo₁ lo₂) (.max hi₁ hi₂) e1 := by
-                    unfold joinBranchTy at hj
-                    simp at hj
-                    cases hj
-                    rfl
-                  subst hjTy
-                  exact .matchBL_join (ih_s hs) (ih_n hn) (ih_c hc)
-              | unit | bool | arrow _ _ | tbind _ =>
-                simp [synth, hs, hn, hc, joinBranchTy] at h
-            | unit =>
-              cases tCons with
-              | unit =>
-                simp [synth, hs, hn, hc, joinBranchTy] at h
-                obtain ⟨rfl, rfl⟩ := h
-                exact .matchBL (ih_s hs) (ih_n hn) (ih_c hc)
-              | bool | bl _ _ _ | arrow _ _ | tbind _ =>
-                simp [synth, hs, hn, hc, joinBranchTy] at h
-            | bool =>
-              cases tCons with
-              | bool =>
-                simp [synth, hs, hn, hc, joinBranchTy] at h
-                obtain ⟨rfl, rfl⟩ := h
-                exact .matchBL (ih_s hs) (ih_n hn) (ih_c hc)
-              | unit | bl _ _ _ | arrow _ _ | tbind _ =>
-                simp [synth, hs, hn, hc, joinBranchTy] at h
-            | arrow d₁ c₁ =>
-              cases tCons with
-              | arrow d₂ c₂ =>
-                simp [synth, hs, hn, hc, joinBranchTy, beq_iff_eq] at h
-                by_cases heq : d₁ = d₂ ∧ c₁ = c₂
-                · obtain ⟨rfl, rfl⟩ := heq
-                  simp at h
-                  obtain ⟨rfl, rfl⟩ := h
-                  exact .matchBL (ih_s hs) (ih_n hn) (ih_c hc)
-                · simp [show ¬(d₁ = d₂ ∧ c₁ = c₂) from heq] at h
-              | unit | bool | bl _ _ _ | tbind _ =>
-                simp [synth, hs, hn, hc, joinBranchTy] at h
-            | tbind i =>
-              cases tCons with
-              | tbind j =>
-                simp [synth, hs, hn, hc, joinBranchTy, beq_iff_eq] at h
-                by_cases heq : i = j
-                · subst heq
-                  simp at h
-                  obtain ⟨rfl, rfl⟩ := h
-                  exact .matchBL (ih_s hs) (ih_n hn) (ih_c hc)
-                · simp [heq] at h
-              | unit | bool | bl _ _ _ | arrow _ _ =>
-                simp [synth, hs, hn, hc, joinBranchTy] at h
+            simp [synth, hs, hn, hc] at h
+            cases hj : joinBranchTy tNil tCons with
+            | none => simp [hj] at h
+            | some jty =>
+              simp [hj] at h
+              obtain ⟨rfl, rfl⟩ := h
+              exact .matchBL_join (ih_s hs) (ih_n hn) (ih_c hc) hj
       | unit | arrow _ _ | tbind _ | bool => simp [synth, hs] at h
   | matchNil scrut eNil ih_s ih_n =>
     cases hs : synth Φ Δ ctx scrut with
@@ -2168,25 +2165,99 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
         · simp [hv] at h
       | unit | arrow _ _ | tbind _ | bool => simp [synth, hs] at h
 
+private theorem check_none_of_synth_none
+    (he : e ≠ .nil) (hs : synth Φ Δ ctx e = none) :
+    check Φ Δ ctx e ty = none := by
+  unfold check
+  simp [he, hs]
+
+private theorem check_nil_non_bl_none
+    (hty : ty = .unit ∨ ty = .bool ∨ (∃ i, ty = .tbind i) ∨
+      (∃ dom cod, ty = .arrow dom cod)) :
+    check Φ Δ ctx .nil ty = none := by
+  rcases hty with hty | hty | ⟨i, hty⟩ | ⟨dom, cod, hty⟩ <;> subst hty
+  · unfold check; simp [synth]
+  · unfold check; simp [synth]
+  · unfold check; simp [synth]
+  · unfold check; simp [synth]
+
+private theorem check_some_of_synth_force
+    (he : e ≠ .nil)
+    (hs : synth Φ Δ ctx e = some (Φ', ty'))
+    (hfs : forceSubtype Δ ty' ty = true) :
+    check Φ Δ ctx e ty = some Φ' := by
+  unfold check
+  simp [he, hs, hfs]
+
+private theorem check_none_of_synth_force_false
+    (he : e ≠ .nil)
+    (hs : synth Φ Δ ctx e = some (Φ', ty'))
+    (hfs : ¬ forceSubtype Δ ty' ty = true) :
+    check Φ Δ ctx e ty = none := by
+  unfold check
+  simp [he, hs, hfs]
+
+private theorem check_nil_bl_some
+    (hfs : forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = true) :
+    check Φ Δ ctx .nil (.bl lo hi elem) = some Φ := by
+  unfold check
+  simp [hfs]
+
+private theorem check_nil_bl_none
+    (hfs : ¬ forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = true) :
+    check Φ Δ ctx .nil (.bl lo hi elem) = none := by
+  unfold check
+  simp [hfs]
+
 /-- Algorithmic `check` ⇒ declarative `Check` (not `TypeOf` — no general subsumption). -/
 theorem check_sound {Φ Δ ctx e ty Φ'}
     (h : check Φ Δ ctx e ty = some Φ') :
     Check Δ ctx e ty := by
-  unfold check at h
-  cases hs : synth Φ Δ ctx e with
-  | none => simp [hs] at h
-  | some pair =>
-    obtain ⟨Φ'', ty'⟩ := pair
-    by_cases hfs : forceSubtype Δ ty' ty = true
-    · simp [hs, hfs] at h
-      obtain ⟨rfl, rfl⟩ := h
-      cases forceSubtype_sub hfs with
-      | inl hsub =>
-        exact .ofSub (synth_sound hs) hsub
-      | inr hr =>
-        obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
-        exact .ofInfer (synth_sound hs) hok hψ hσ huniq
-    · simp [hs, hfs] at h
+  by_cases hn : e = .nil
+  · subst hn
+    cases ty with
+    | bl lo hi elem =>
+      by_cases hfs : forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = true
+      · rw [check_nil_bl_some hfs] at h
+        injection h with hΦ
+        subst hΦ
+        cases forceSubtype_sub hfs with
+        | inl hsub => exact .nil hsub
+        | inr hr =>
+          obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
+          exact .nilInfer hok hψ hσ huniq
+      · rw [check_nil_bl_none hfs] at h
+        cases h
+    | unit =>
+      rw [check_nil_non_bl_none (Or.inl rfl)] at h
+      cases h
+    | bool =>
+      rw [check_nil_non_bl_none (Or.inr (Or.inl rfl))] at h
+      cases h
+    | tbind i =>
+      rw [check_nil_non_bl_none (Or.inr (Or.inr (Or.inl ⟨i, rfl⟩)))] at h
+      cases h
+    | arrow dom cod =>
+      rw [check_nil_non_bl_none (Or.inr (Or.inr (Or.inr ⟨dom, cod, rfl⟩)))] at h
+      cases h
+  · cases hs : synth Φ Δ ctx e with
+    | none =>
+      rw [check_none_of_synth_none hn hs] at h
+      cases h
+    | some pair =>
+      obtain ⟨Φ'', ty'⟩ := pair
+      by_cases hfs : forceSubtype Δ ty' ty = true
+      · rw [check_some_of_synth_force hn hs hfs] at h
+        injection h with hΦ
+        subst hΦ
+        cases forceSubtype_sub hfs with
+        | inl hsub =>
+          exact .ofSub (synth_sound hs) hsub
+        | inr hr =>
+          obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
+          exact .ofInfer (synth_sound hs) hok hψ hσ huniq
+      · rw [check_none_of_synth_force_false hn hs hfs] at h
+        cases h
 
 /-! ## 10. Tour / examples -/
 
