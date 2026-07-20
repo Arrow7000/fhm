@@ -42,7 +42,7 @@ structure BScheme where
 - WF: count rigids `< #counts`, `tbind i` with `i < #types`
 - `InstantiatesTo` / `instantiate?` kind-check the spine
 - `Expr.var idx (args : List SchemeArg)`
-- Pretty: `∀ {a b : Nat, α : Type}. …` and `x @2 @Unit`
+- Pretty: `∀ {a b : Nat, α}. …` (no `: Type`) and `x @2 @Unit`
 - Migrate `idScheme` / `flatMapScheme` / demos to `.count …` args
 
 **Gate:** demos green with count-only schemes under the new representation.  
@@ -62,7 +62,7 @@ structure BScheme where
    - `cons : ∀ {a b : Nat, α}. α → BL a b α → BL (a+1) (b+1) α`
    - `head : ∀ {a b : Nat, α}. BL (a+1) b α → α`
    - `tail : ∀ {a b : Nat, α}. BL (a+1) (b+1) α → BL a b α`
-5. **Demos:** positive typed pipeline; negative `cons unit (nil @Bool)` fails.
+5. **Demos:** positive typed pipeline; negative element mismatch `cons unit (nil @Bool)` fails (this is what Bool is for in v1 — not implementing `filter`).
 6. **Proofs:** repair `synth_sound` / `check_sound` for touched rules only — parent states the lemmas, subagent fills proofs when split is clear.
 
 **Gate:** `#eval` demos show the story; soundness OK.  

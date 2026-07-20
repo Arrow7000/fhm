@@ -27,11 +27,11 @@
 | --- | --- |
 | Element | `Ty.bl lo hi elem` |
 | Type binders | `Ty.tbind i` — separate index space from count rigids |
-| Scheme telescope | **Counts first, then types** (pretty as `∀ {a b : Nat, α β : Type}. …`) |
+| Scheme telescope | **Counts first, then types** (pretty as `∀ {a b : Nat, α β}. …` — no `: Type`; this isn’t dependent types) |
 | `@` spine | Same order as binders, e.g. `cons @2 @5 @Unit` |
-| `nil` | Scheme `∀ {α : Type}. BL 0 0 α`; bare `Expr.nil` does **not** synth |
+| `nil` | Scheme `∀ {α}. BL 0 0 α`; bare `Expr.nil` does **not** synth |
 | `Sub` on elem | Definitional equality only |
-| Second base | `Bool` (+ tiny intro forms) required for mismatch demos |
+| Second base | `Bool` (+ tiny intro forms) — for element-mismatch demos and any future `α → Bool` preds |
 | Out of scope | Inference, elem-subtyping, `letRec`, Surface/Core |
 
 ## Starting point on `main`
