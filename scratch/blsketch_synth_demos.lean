@@ -46,10 +46,11 @@ private def showCheck (e : Expr) (ty : Ty) (ctx : Ctx := []) : IO Unit :=
 private def showScheme (s : BScheme) : IO Unit :=
   IO.println (toString s)
 
-/-- Print `ty'  ≤  ty  ✓/✗` for `forceSubtype`. -/
+/-- Print `(τ' <: τ) => assignable ✓` / `not assignable ✗` for `forceSubtype`. -/
 private def showForceSubtype (ty' ty : Ty) : IO Unit :=
   let ok := forceSubtype [] ty' ty
-  IO.println s!"{ty'}  ≤  {ty}  {if ok then "✓" else "✗"}"
+  let verdict := if ok then "assignable ✓" else "not assignable ✗"
+  IO.println s!"({ty'}  <:  {ty}) => {verdict}"
 
 /-- Show how `fillHoles` turns annotation holes into fresh inferables. -/
 private def showFillHoles (ann : AnnoTy) : IO Unit :=
@@ -211,7 +212,7 @@ private def ctxFlat : Ctx := [.scheme flatMapScheme]
 -- x @2 @5 @3 @4  :  BL 2 5 → (Unit → BL 3 4) → BL (2 * 3) (5 * 4)  ↦  …
 #eval showSynth (.var 0 [.lit 2, .lit 5, .lit 3, .lit 4]) ctxFlat
 
--- BL (2 * 3) (5 * 4)  ≤  BL 6 20  ✓
+-- (BL (2 * 3) (5 * 4)  <:  BL 6 20) => assignable ✓
 #eval showForceSubtype
   (.bl (.mul (.lit 2) (.lit 3)) (.mul (.lit 5) (.lit 4)))
   (.bl (.lit 6) (.lit 20))
