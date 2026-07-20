@@ -929,8 +929,6 @@ theorem Ty.demandOK_of_binderRigid {n : Nat} {ty : Ty}
     exact .bl (.ofRigid (Count.rigidOnly_of_binderRigid h.1))
       (.ofRigid (Count.rigidOnly_of_binderRigid h.2.1))
       (ih h.2.2)
-  termination_by ty
-  decreasing_by all_goals (simp [Ty.size]; omega)
 
 /-- Reflexivity of `Sub` on demand-OK types. -/
 theorem Sub.refl_of_demandOK {Δ : List Constraint} {ty : Ty}
@@ -1249,19 +1247,19 @@ theorem Count.rigidOnly_of_isRigidOnly {c : Count} (h : c.isRigidOnly = true) :
     | rigid => exact .var
     | inferable => simp [Count.isRigidOnly] at h
   | add a b iha ihb =>
-    simp [Count.isRigidOnly, bool_and_eq_true] at h
+    simp [Count.isRigidOnly] at h
     exact .add (iha h.1) (ihb h.2)
   | mul a b iha ihb =>
-    simp [Count.isRigidOnly, bool_and_eq_true] at h
+    simp [Count.isRigidOnly] at h
     exact .mul (iha h.1) (ihb h.2)
   | pred a ih =>
     simp [Count.isRigidOnly] at h
     exact .pred (ih h)
   | min a b iha ihb =>
-    simp [Count.isRigidOnly, bool_and_eq_true] at h
+    simp [Count.isRigidOnly] at h
     exact .min (iha h.1) (ihb h.2)
   | max a b iha ihb =>
-    simp [Count.isRigidOnly, bool_and_eq_true] at h
+    simp [Count.isRigidOnly] at h
     exact .max (iha h.1) (ihb h.2)
 
 theorem Count.isRigidOnly_iff {c : Count} :
@@ -1558,11 +1556,11 @@ theorem Count.demandOK_of_isDemandOK {c : Count} (h : c.isDemandOK = true) :
       exact .offsetComm (Count.rigidOnly_of_isRigidOnly h)
     · next c i e heq =>
       cases heq
-      simp [bool_and_eq_true] at h
+      simp at h
       exact .aff (Count.rigidOnly_of_isRigidOnly h.1) (Count.rigidOnly_of_isRigidOnly h.2)
     · next i c e heq =>
       cases heq
-      simp [bool_and_eq_true] at h
+      simp at h
       exact .affComm (Count.rigidOnly_of_isRigidOnly h.1) (Count.rigidOnly_of_isRigidOnly h.2)
     · exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
   | mul a b iha ihb =>
@@ -1605,11 +1603,11 @@ theorem Ty.demandOK_of_isDemandOK {ty : Ty} (h : ty.isDemandOK = true) : Ty.Dema
   | unit => exact Ty.DemandOK.unit
   | tbind i => simp [Ty.isDemandOK] at h
   | arrow d c ihd ihc =>
-    simp [Ty.isDemandOK, bool_and_eq_true] at h
+    simp [Ty.isDemandOK] at h
     obtain ⟨hd, hc⟩ := h
     exact Ty.DemandOK.arrow (ihd hd) (ihc hc)
   | bl lo hi elem ih =>
-    simp [Ty.isDemandOK, bool_and_eq_true] at h
+    simp [Ty.isDemandOK] at h
     obtain ⟨hh, helem⟩ := h
     obtain ⟨hlo, hhi⟩ := hh
     exact Ty.DemandOK.bl (Count.demandOK_of_isDemandOK hlo) (Count.demandOK_of_isDemandOK hhi)
@@ -1626,7 +1624,7 @@ theorem checkSub_sound {Δ t u} (h : checkSub Δ t u = true) : Sub Δ t u := by
     subst h
     exact .tbind
   | .arrow a b, .arrow a' b' =>
-    simp [checkSub, bool_and_eq_true] at h
+    simp [checkSub] at h
     exact .arrow (checkSub_sound h.1) (checkSub_sound h.2)
   | .bl lo hi elem, .bl lo' hi' elem' =>
     simp [checkSub, beq_iff_eq] at h
@@ -1687,19 +1685,19 @@ theorem Count.binderRigid_of_bool {n : Nat} {c : Count}
       simpa [Count.binderRigidBool, decide_eq_true_eq] using h
     | inferable => simp [Count.binderRigidBool] at h
   | add a b iha ihb =>
-    simp [Count.binderRigidBool, bool_and_eq_true] at h
+    simp [Count.binderRigidBool] at h
     exact ⟨iha h.1, ihb h.2⟩
   | mul a b iha ihb =>
-    simp [Count.binderRigidBool, bool_and_eq_true] at h
+    simp [Count.binderRigidBool] at h
     exact ⟨iha h.1, ihb h.2⟩
   | pred a ih =>
     simp [Count.binderRigidBool] at h
     exact ih h
   | min a b iha ihb =>
-    simp [Count.binderRigidBool, bool_and_eq_true] at h
+    simp [Count.binderRigidBool] at h
     exact ⟨iha h.1, ihb h.2⟩
   | max a b iha ihb =>
-    simp [Count.binderRigidBool, bool_and_eq_true] at h
+    simp [Count.binderRigidBool] at h
     exact ⟨iha h.1, ihb h.2⟩
 
 theorem Ty.binderRigid_of_bool {n : Nat} {ty : Ty}
@@ -1708,10 +1706,10 @@ theorem Ty.binderRigid_of_bool {n : Nat} {ty : Ty}
   | unit => trivial
   | tbind i => simp [Ty.binderRigidBool] at h
   | arrow d c ihd ihc =>
-    simp [Ty.binderRigidBool, bool_and_eq_true] at h
+    simp [Ty.binderRigidBool] at h
     exact ⟨ihd h.1, ihc h.2⟩
   | bl lo hi elem ihelem =>
-    simp [Ty.binderRigidBool, bool_and_eq_true] at h
+    simp [Ty.binderRigidBool] at h
     exact ⟨Count.binderRigid_of_bool h.1.1, Count.binderRigid_of_bool h.1.2, ihelem h.2⟩
 
 theorem BScheme.wf_of_WF_bool {s : BScheme} (h : s.WF_bool = true) : s.WF :=
@@ -1768,7 +1766,7 @@ theorem instantiatesOf_instantiate?_sound {s : BScheme} {args : List Count} {ty 
   split at h
   · rename_i hcond
     cases h
-    simp [bool_and_eq_true, decide_eq_true_eq] at hcond
+    simp [decide_eq_true_eq] at hcond
     exact .intro (BScheme.wf_of_WF_bool hcond.1) hlen
       (subst_applyArgs_binderRigid (BScheme.wf_of_WF_bool hcond.1) hlen)
   · cases h
@@ -1839,7 +1837,7 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
             unfold BScheme.instantiate? at hinst
             split at hinst
             · rename_i hcond
-              simp [bool_and_eq_true, decide_eq_true_eq] at hcond
+              simp [decide_eq_true_eq] at hcond
               exact hcond.2
             · cases hinst
           exact .varScheme hctx (instantiatesOf_instantiate?_sound hlen hinst)
@@ -1902,10 +1900,10 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
               | bl lo₂ hi₂ elem' =>
                 by_cases heq : elem = elem'
                 · subst heq
-                  simp [beq_iff_eq, synth, hc, ht, he] at h
+                  simp at h
                   obtain ⟨rfl, rfl⟩ := h
                   exact .ifBL (ih_c hc) (ih_t ht) (ih_e he)
-                · simp [beq_iff_eq, heq, synth, hc, ht, he] at h
+                · simp [heq] at h
               | unit | arrow _ _ | tbind _ => simp at h
             | unit | arrow _ _ | tbind _ => simp at h
           | arrow _ _ | bl _ _ _ | tbind _ => simp at h
