@@ -8,12 +8,17 @@ problems — same spirit as `FHM/Pretty.lean`. Debugging / demo IO only; no
 proofs depend on these.
 
 Conventions:
-* Rigid count vars print as `r0`, `r1`, …; inferables as `?i0`, `?i1`, ….
+* Rigid count vars print as `a`, `b`, `c`, …; inferables as `?a`, `?b`, ….
 * Term de Bruijn indices resolve against a binder name context (`x`, `y`, …);
   dangling indices print as `#n`.
-* Scheme rigid binders print as `∀ r0 … rn-1. body` (separate from term names).
+* Scheme rigid binders print as `∀ a b. body` (same letter pool as rigid counts;
+  separate from term names).
+* Scheme *instantiation* at a var prints as `f⟨2, 6⟩` (not `f[2, 6]`, which
+  looks like an array slice).
 * Annotation holes print as `_`.
 * Lists: a proper `nil`/`cons` spine prints as `[a, b, c]`; improper as `h :: t`.
+* Parentheses are inserted only where precedence requires them (no forced outer
+  wraps in demos).
 -/
 
 namespace BLSketch
@@ -25,13 +30,19 @@ def prettyTermVarName (n : Nat) : String :=
   let letters := ["x", "y", "z", "u", "v", "w", "p", "q", "r", "s", "t"]
   letters.getD n ("v" ++ toString n)
 
+/-- Letters for bound-count indices (rigid `a` / inferable `?a`). -/
+def prettyCountVarLetter (n : Nat) : String :=
+  let letters := ["a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k",
+    "l", "m", "n", "o", "p", "q", "r", "s", "t"]
+  letters.getD n ("t" ++ toString n)
+
 /-! ## Counts -/
 
 /-- Precedence: `0` top, `1` add/min/max, `2` mul, `3` pred/atomic. -/
 def Count.prettyAux (prec : Nat) : Count → String
   | .lit n => toString n
-  | .var ⟨.rigid, i⟩ => "r" ++ toString i
-  | .var ⟨.inferable, i⟩ => "?i" ++ toString i
+  | .var ⟨.rigid, i⟩ => prettyCountVarLetter i
+  | .var ⟨.inferable, i⟩ => "?" ++ prettyCountVarLetter i
   | .add a b =>
       prettyParenIf (prec > 1)
         (Count.prettyAux 1 a ++ " + " ++ Count.prettyAux 1 b)
@@ -88,7 +99,7 @@ def BScheme.pretty (s : BScheme) : String :=
   if s.binders = 0 then s.body.pretty
   else
     let binders :=
-      String.intercalate " " ((List.range s.binders).map fun i => "r" ++ toString i)
+      String.intercalate " " ((List.range s.binders).map prettyCountVarLetter)
     "∀ " ++ binders ++ ". " ++ s.body.pretty
 
 instance : ToString BScheme := ⟨BScheme.pretty⟩
@@ -128,8 +139,8 @@ def ExistsProblem.pretty (ψ : ExistsProblem) : String :=
   let slots :=
     String.intercalate ", " (ψ.inferables.map fun v =>
       match v.kind with
-      | .rigid => "r" ++ toString v.idx
-      | .inferable => "?i" ++ toString v.idx)
+      | .rigid => prettyCountVarLetter v.idx
+      | .inferable => "?" ++ prettyCountVarLetter v.idx)
   let head := if ψ.inferables.isEmpty then "∃." else "∃ " ++ slots ++ "."
   let body :=
     if ψ.prem.isEmpty then prettyConstraintList ψ.cons
@@ -167,7 +178,9 @@ partial def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
   | .var i args =>
       let name := (ctx[i]?).getD ("#" ++ toString i)
       if args.isEmpty then name
-      else name ++ "[" ++ String.intercalate ", " (args.map Count.pretty) ++ "]"
+      else
+        -- Angle brackets: scheme bound-instantiation, not an array slice.
+        name ++ "⟨" ++ String.intercalate ", " (args.map Count.pretty) ++ "⟩"
   | .lam paramAnn body =>
       let x := prettyTermVarName ctx.length
       prettyParenIf (prec ≥ 1)
@@ -224,7 +237,7 @@ instance : ToString Expr := ⟨fun e => Expr.pretty e⟩
 def Assign.prettyOn (σ : Assign) (vs : List Var) : String :=
   "{" ++ String.intercalate ", " (vs.map fun v =>
     match v.kind with
-    | .rigid => "r" ++ toString v.idx ++ "↦" ++ toString (σ v)
-    | .inferable => "?i" ++ toString v.idx ++ "↦" ++ toString (σ v)) ++ "}"
+    | .rigid => prettyCountVarLetter v.idx ++ "↦" ++ toString (σ v)
+    | .inferable => "?" ++ prettyCountVarLetter v.idx ++ "↦" ++ toString (σ v)) ++ "}"
 
 end BLSketch

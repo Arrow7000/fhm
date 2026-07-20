@@ -446,12 +446,21 @@ unsafe def solveImpl (ψ : ExistsProblem) : SolveVerdict :=
 unsafe def uniqueImpl (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
   Z3Bridge.uniqueZ3 ψ outs
 
+/-- Opaque interface for the ∀ oracle. At runtime Lean replaces this with
+`checkValidImpl` (`@[implemented_by]`). The `*Impl` helpers are `unsafe`
+because they perform IO (spawn `z3`); `opaque` keeps the logical interface
+looking pure so proofs can mention `checkValid φ = .valid`. -/
 @[implemented_by checkValidImpl]
 opaque checkValid : ForallProblem → ValidVerdict
 
+/-- Opaque ∃∀ witness oracle (runtime: `solveImpl`). Returns **one** model if
+sat — not an enumeration of all solutions. -/
 @[implemented_by solveImpl]
 opaque solve : ExistsProblem → SolveVerdict
 
+/-- Opaque uniqueness oracle on chosen outputs (runtime: `uniqueImpl`).
+Separate from `solve`: first find a witness, then ask whether those `outs`
+are forced across all solutions. -/
 @[implemented_by uniqueImpl]
 opaque unique (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict
 
@@ -929,7 +938,20 @@ def joinBranchTy (t u : Ty) : Option Ty :=
   | .bl lo₁ hi₁, .bl lo₂ hi₂ => some (.bl (.min lo₁ lo₂) (.max hi₁ hi₂))
   | _, _ => if t == u then some t else none
 
-/-- Synthesize a type. Returns updated freshness frontier and type. -/
+/-- Synthesize a type for `e`.
+
+Returns `some (Φ', τ)` with updated freshness frontier, or `none` on failure
+(including when `forceSubtype` rejects non-unique *escaping* source bounds).
+
+**Uniqueness.** The returned *type shape* is determined by the syntax-directed
+algorithm (one successful path ⇒ one `τ`). That does **not** mean every bound
+expression inside `τ` is a unique solution of an arithmetic problem: after hole
+filling, `τ` may still mention inferables (`?a`, …), and `forceSubtype` only
+demands uniqueness of the *source* type’s `obsBounds` when solving into a
+demand — it does not substitute a witness into `τ`. So you can get a unique
+synthesized type that still contains non-unique / unsolved bound variables in
+the printed form.
+-/
 def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat × Ty)
   | .unit => some (Φ, .unit)
   | .nil => some (Φ, .bl (.lit 0) (.lit 0))

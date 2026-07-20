@@ -1,8 +1,7 @@
 import FHM.BLSketch
 import FHM.BLSketch.Pretty
 
-/-!
-# BLSketch × Z3 demos
+/-! # BLSketch × Z3 demos
 
 Run with `z3` on `PATH`:
 ```
@@ -10,104 +9,134 @@ lake env lean scratch/blsketch_z3_demos.lean
 ```
 
 Shows: validity, invalidity, witness synthesis, uniqueness / multiplicity.
--/
+Style matches `FHM/Examples.lean`. -/
 
-open BLSketch
+namespace BLSketch.OracleDemo
 
-def r (i : Nat) : Count := cvar .rigid i
-def x (i : Nat) : Count := cvar .inferable i
+/-- Rigid count var (`a`, `b`, …). -/
+private def r (i : Nat) : Count := cvar .rigid i
 
-def le (a b : Count) : Constraint := ⟨a, b⟩
+/-- Inferable count var (`?a`, `?b`, …). -/
+private def x (i : Nat) : Count := cvar .inferable i
 
-/-- Pretty-print a solve verdict for a fixed list of inferable slots. -/
-def showSolve (ψ : ExistsProblem) (slots : List Nat) : String :=
+/-- Sugar for a `≤` constraint. -/
+private def le (a b : Count) : Constraint := ⟨a, b⟩
+
+private def validStr : ValidVerdict → String
+  | .valid => "valid"
+  | .invalid => "invalid"
+  | .unknown => "unknown"
+
+/-- Print `φ  ⇒  valid|invalid|unknown` for `checkValid`. -/
+private def showValid (φ : ForallProblem) : IO Unit :=
+  IO.println s!"{φ.pretty}  ⇒  {validStr (checkValid φ)}"
+
+/-- Format one `solve` result. **One** witness model if sat — not all models.
+Use `unique` / `showUnique` to ask whether chosen outputs are forced. -/
+private def solveStr (ψ : ExistsProblem) : String :=
   match solve ψ with
   | .unsat => "unsat"
   | .unknown => "unknown"
-  | .witness σ =>
-      let pairs := slots.map fun i => s!"i_{i}={σ ⟨.inferable, i⟩}"
-      "witness: " ++ String.intercalate ", " pairs
+  | .witness σ => "witness " ++ Assign.prettyOn σ ψ.inferables
 
-def showUnique (ψ : ExistsProblem) (outs : List Count) : String :=
-  match unique ψ outs with
+/-- Print `ψ  ⇒  unsat|unknown|witness …` for `solve`. -/
+private def showSolve (ψ : ExistsProblem) : IO Unit :=
+  IO.println s!"{ψ.pretty}  ⇒  {solveStr ψ}"
+
+private def uniqueStr : UniqueVerdict → String
   | .unique => "unique"
   | .multiple => "multiple"
   | .unknown => "unknown"
 
-/-! ## 1. checkValid — ∀ -/
+/-- Print uniqueness of `outs` under solutions of `ψ`. -/
+private def showUnique (ψ : ExistsProblem) (outs : List Count) : IO Unit :=
+  let outsStr := "[" ++ String.intercalate ", " (outs.map toString) ++ "]"
+  IO.println s!"{ψ.pretty}  outs {outsStr}  ⇒  {uniqueStr (unique ψ outs)}"
 
-/-- `r0 + 0 ≤ r0` — should be `.valid`. -/
-def qAddZero : ForallProblem where
+/-! ## checkValid — ∀ -/
+
+/-- `a + 0 ≤ a` — should be `.valid`. -/
+private def qAddZero : ForallProblem where
   prem := []
   goals := [le (.add (r 0) (.lit 0)) (r 0)]
 
-/-- `r0 + 1 ≤ r0` — should be `.invalid`. -/
-def qAddOneFalse : ForallProblem where
+/-- `a + 1 ≤ a` — should be `.invalid`. -/
+private def qAddOneFalse : ForallProblem where
   prem := []
   goals := [le (.add (r 0) (.lit 1)) (r 0)]
 
-/-- Under premise `r0 ≤ 5`, goal `r0 ≤ 10` — `.valid`. -/
-def qPremises : ForallProblem where
+/-- Under premise `a ≤ 5`, goal `a ≤ 10` — `.valid`. -/
+private def qPremises : ForallProblem where
   prem := [le (r 0) (.lit 5)]
   goals := [le (r 0) (.lit 10)]
 
-/-! ## 2. solve — ∃∀ witnesses -/
+-- ∀σ. a + 0 ≤ a  ⇒  valid
+#eval showValid qAddZero
 
-/-- Find `i0` with `5 ≤ i0` and `i0 ≤ 5` ⇒ witness `i0 = 5`. -/
-def qPinFive : ExistsProblem where
+-- ∀σ. a + 1 ≤ a  ⇒  invalid
+#eval showValid qAddOneFalse
+
+-- ∀σ. (a ≤ 5) ⇒ (a ≤ 10)  ⇒  valid
+#eval showValid qPremises
+
+/-! ## solve — ∃∀ witnesses (one model) -/
+
+/-- Find `?a` with `5 ≤ ?a` and `?a ≤ 5` ⇒ witness `?a = 5`. -/
+private def qPinFive : ExistsProblem where
   inferables := [⟨.inferable, 0⟩]
   cons := [le (.lit 5) (x 0), le (x 0) (.lit 5)]
 
-/-- `i0 + i1 = 7` as two inequalities — some partition of 7. -/
-def qSumSeven : ExistsProblem where
+/-- `?a + ?b = 7` as two inequalities — some partition of 7. -/
+private def qSumSeven : ExistsProblem where
   inferables := [⟨.inferable, 0⟩, ⟨.inferable, 1⟩]
   cons := [
     le (.add (x 0) (x 1)) (.lit 7),
     le (.lit 7) (.add (x 0) (x 1))
   ]
 
-/-- Nonlinear: `i0 * i1 = 12`. -/
-def qProductTwelve : ExistsProblem where
+/-- Nonlinear: `?a * ?b = 12`. -/
+private def qProductTwelve : ExistsProblem where
   inferables := [⟨.inferable, 0⟩, ⟨.inferable, 1⟩]
   cons := [
     le (.mul (x 0) (x 1)) (.lit 12),
     le (.lit 12) (.mul (x 0) (x 1))
   ]
 
-/-- Unsat: `i0 ≤ 3` and `5 ≤ i0`. -/
-def qUnsat : ExistsProblem where
+/-- Unsat: `?a ≤ 3` and `5 ≤ ?a`. -/
+private def qUnsat : ExistsProblem where
   inferables := [⟨.inferable, 0⟩]
   cons := [le (x 0) (.lit 3), le (.lit 5) (x 0)]
 
-/-! ## 3. unique — outputs -/
+-- ∃ ?a. 5 ≤ ?a ∧ ?a ≤ 5  ⇒  witness {?a↦5}
+#eval showSolve qPinFive
 
-/-- Product 12: many factorizations ⇒ `multiple` on `[i0, i1]`. -/
-def qProdOuts : List Count := [x 0, x 1]
+-- ∃ ?a, ?b. ?a + ?b = 7  ⇒  some witness partition
+#eval showSolve qSumSeven
 
-/-- Same product, but uniqueness of the *product* alone (always 12) ⇒ `unique`. -/
-def qProdValueOnly : List Count := [.mul (x 0) (x 1)]
+-- ∃ ?a, ?b. ?a * ?b = 12  ⇒  some factorization
+#eval showSolve qProductTwelve
 
-/-- Pin to 5: only one value ⇒ `unique` on `[i0]`. -/
-def qPinOuts : List Count := [x 0]
+-- ∃ ?a. ?a ≤ 3 ∧ 5 ≤ ?a  ⇒  unsat
+#eval showSolve qUnsat
 
-/-! ## Run -/
+/-! ## unique — outputs under the solution set -/
 
-#eval IO.println "=== checkValid ==="
-#eval IO.println s!"addZero:     {qAddZero.pretty}  ⇒  {repr (checkValid qAddZero)}"
-#eval IO.println s!"addOneFalse: {qAddOneFalse.pretty}  ⇒  {repr (checkValid qAddOneFalse)}"
-#eval IO.println s!"premises:    {qPremises.pretty}  ⇒  {repr (checkValid qPremises)}"
+/-- Product 12: many factorizations ⇒ `multiple` on `[?a, ?b]`. -/
+private def qProdOuts : List Count := [x 0, x 1]
 
-#eval IO.println "=== solve (witnesses) ==="
-#eval IO.println s!"pinFive:        {qPinFive.pretty}"
-#eval IO.println s!"  → {showSolve qPinFive [0]}"
-#eval IO.println s!"sumSeven:       {qSumSeven.pretty}"
-#eval IO.println s!"  → {showSolve qSumSeven [0, 1]}"
-#eval IO.println s!"productTwelve:  {qProductTwelve.pretty}"
-#eval IO.println s!"  → {showSolve qProductTwelve [0, 1]}"
-#eval IO.println s!"unsat:          {qUnsat.pretty}"
-#eval IO.println s!"  → {showSolve qUnsat [0]}"
+/-- Same product, uniqueness of the *product* alone ⇒ `unique`. -/
+private def qProdValueOnly : List Count := [.mul (x 0) (x 1)]
 
-#eval IO.println "=== unique ==="
-#eval IO.println s!"prod factors:   {showUnique qProductTwelve qProdOuts}"
-#eval IO.println s!"prod value:     {showUnique qProductTwelve qProdValueOnly}"
-#eval IO.println s!"pinFive outs:   {showUnique qPinFive qPinOuts}"
+/-- Pin to 5: only one value ⇒ `unique` on `[?a]`. -/
+private def qPinOuts : List Count := [x 0]
+
+-- productTwelve outs [?a, ?b]  ⇒  multiple
+#eval showUnique qProductTwelve qProdOuts
+
+-- productTwelve outs [?a * ?b]  ⇒  unique
+#eval showUnique qProductTwelve qProdValueOnly
+
+-- pinFive outs [?a]  ⇒  unique
+#eval showUnique qPinFive qPinOuts
+
+end BLSketch.OracleDemo
