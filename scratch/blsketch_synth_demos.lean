@@ -10,11 +10,8 @@ lake env lean scratch/blsketch_synth_demos.lean
 
 Companion to `blsketch_z3_demos.lean` (raw oracle APIs). Exercises structural
 synth, `check` via `Sub`, hole solving, match join / refine, nonlinear
-scheme / mul, richer `let`/`letScheme` programs, and a small **stdlib** of
-non-recursive BL helpers. Style matches `FHM/Examples.lean`.
-
-**Recursion:** not supported (`Expr` has no `letRec`). See the stdlib section
-for what is expressible today vs what needs recursive lets. -/
+scheme / mul, richer `let`/`letScheme`/`letRecScheme` programs, and a small **stdlib** of
+BL helpers including recursive `map` / `filter`. Style matches `FHM/Examples.lean`. -/
 
 namespace BLSketch.Demo
 
@@ -382,60 +379,93 @@ def eHeadOrUnit : Expr :=
   .lam (.bl (some (.lit 0)) (some (.lit 5)) .unit)
     (.matchBL (.var 0 []) .unit (.var 0 []))
 
-/-! ### Signatures that need recursion (not yet expressible as bodies)
+/-! ### Recursive stdlib — `map` / `filter` via `letRecScheme` -/
 
-`Expr` has `let_` / `letScheme` but **no `letRec`**. Non-goals in `BLSketch.lean`
-explicitly list recursion. So these stay signature-only until we add annotated
-recursive lets:
-
-| Function | Typical bounds | Why recursion |
-| --- | --- | --- |
-| `map` | `BL a b → BL a b` | walk every cons |
-| `filter` | `BL a b → BL 0 b` | walk + conditional keep |
-| `flatMap` / `concatMap` | mul of lengths | walk + append results |
-| `append` | `BL a b → BL c d → BL (a+c) (b+d)` | walk the left list |
-| `reverse` | `BL a b → BL a b` | walk + cons onto accumulator |
-| `fold` / `length` | needs a value `Nat` or similar | walk |
-
-**What it would take** (minimal path):
-1. Add `Expr.letRec` (single binding is enough for the table above).
-2. Typing: binder in scope in its own body; **require an annotation / scheme**
-   (Mycroft: polymorphic recursion isn’t inferable). Mono recursion can reuse
-   `let_`-style synth; bound-poly recursion should pack like `letScheme` and
-   instantiate at recursive call sites (`f @lo @hi …`).
-3. Reuse existing match refinement (`consCtx` / `pred`) — that part is ready.
-4. Wire `synth` / `TypeOf` / `synth_sound` (and Pretty).
-
-Until then, `flatMapScheme` in the parent demo is a **library axiom** (scheme in
-the context), not a userland definition. -/
-
-/-- Signature-only reminder. -/
+/-- `∀ {a b : Nat, α β}. (α → β) → BL a b α → BL a b β`. -/
 def mapScheme : BScheme where
-  binders := [.count, .count]
+  binders := [.count, .count, .type, .type]
   body :=
-    .arrow (.arrow .unit .unit)
-      (.arrow (.bl (r 0) (r 1) .unit) (.bl (r 0) (r 1) .unit))
+    .arrow (.arrow (.tbind 0) (.tbind 1))
+      (.arrow (.bl (r 0) (r 1) (.tbind 0))
+        (.bl (r 0) (r 1) (.tbind 1)))
 
-/-- Signature-only: filter may shrink to `0..hi`. -/
+/-- Recursive map body (expects `mapScheme` and `nilScheme` in ctx). -/
+def eMap : Expr :=
+  .lam (.arrow (.tbind 0) (.tbind 1))
+    (.lam (.bl (some (r 0)) (some (r 1)) (.tbind 0))
+      (.matchBL (.var 0 [])
+        (.anno (.var 3 [.ty (.tbind 1)]) (.bl (some (r 0)) (some (r 1)) (.tbind 1)))
+        (.anno (.cons (.app (.var 3 []) (.var 0 []))
+            (.app (.app (.var 4 [.count (.pred (r 0)), .count (.pred (r 1)), .ty (.tbind 0), .ty (.tbind 1)])
+                (.var 3 []))
+              (.var 1 [])))
+          (.bl (some (r 0)) (some (r 1)) (.tbind 1)))))
+
+def eMapRec : Expr :=
+  .letRecScheme mapScheme eMap
+    (.var 0 [.count (r 0), .count (r 1), .ty (.tbind 0), .ty (.tbind 1)])
+
+/-- `∀ {a b : Nat, α}. (α → Bool) → BL a b α → BL 0 b α`. -/
 def filterScheme : BScheme where
-  binders := [.count, .count]
+  binders := [.count, .count, .type]
   body :=
-    .arrow (.arrow .unit .unit)
-      (.arrow (.bl (r 0) (r 1) .unit) (.bl (.lit 0) (r 1) .unit))
+    .arrow (.arrow (.tbind 0) .bool)
+      (.arrow (.bl (r 0) (r 1) (.tbind 0))
+        (.bl (.lit 0) (r 1) (.tbind 0)))
 
-/-- Signature-only append. -/
+/-- Recursive filter body (expects `filterScheme` and `nilScheme` in ctx). -/
+def eFilter : Expr :=
+  .lam (.arrow (.tbind 0) .bool)
+    (.lam (.bl (some (r 0)) (some (r 1)) (.tbind 0))
+      (.matchBL (.var 0 [])
+        (.anno (.var 3 [.ty (.tbind 0)]) (.bl (some (.lit 0)) (some (r 1)) (.tbind 0)))
+        (.if_ (.app (.var 3 []) (.var 0 []))
+          (.anno (.cons (.var 0 [])
+              (.app (.app (.var 4 [.count (.pred (r 0)), .count (.pred (r 1)), .ty (.tbind 0)])
+                  (.var 3 []))
+                (.var 1 [])))
+            (.bl (some (.lit 0)) (some (r 1)) (.tbind 0)))
+          (.anno
+            (.app (.app (.var 4 [.count (.pred (r 0)), .count (.pred (r 1)), .ty (.tbind 0)])
+                (.var 3 []))
+              (.var 1 []))
+            (.bl (some (.lit 0)) (some (r 1)) (.tbind 0))))))
+
+def eFilterRec : Expr :=
+  .letRecScheme filterScheme eFilter
+    (.var 0 [.count (r 0), .count (r 1), .ty (.tbind 0)])
+
+-- let rec f : mapScheme = … in f  :  mapScheme
+#eval showSynth eMapRec (ctxPoly [])
+
+-- let rec f : filterScheme = … in f  :  filterScheme
+#eval showSynth eFilterRec (ctxPoly [])
+
+-- map / filter applied to small lists
+def eMapDemo : Expr :=
+  .letRecScheme mapScheme eMap
+    (.app (.app (.var 0 [.count (.lit 0), .count (.lit 2), .ty .unit, .ty .unit])
+        (.lam .unit (.var 0 [])))
+      (.cons .unit (.cons .unit (.var 1 [.ty .unit]))))
+
+#eval showSynth eMapDemo (ctxPoly [])
+
+/-- `filter (λx. true) [(), ()]` at `BL 0 2 Unit`. -/
+def eFilterDemo : Expr :=
+  .letRecScheme filterScheme eFilter
+    (.app (.app (.var 0 [.count (.lit 0), .count (.lit 2), .ty .unit])
+        (.lam .unit .true))
+      (.cons .unit (.cons .unit (.var 1 [.ty .unit]))))
+
+#eval showSynth eFilterDemo (ctxPoly [])
+
+/-- Signature-only append (not implemented). -/
 def appendScheme : BScheme where
   binders := [.count, .count, .count, .count]
   body :=
     .arrow (.bl (r 0) (r 1) .unit)
       (.arrow (.bl (r 2) (r 3) .unit)
         (.bl (.add (r 0) (r 2)) (.add (r 1) (r 3)) .unit))
-
--- ∀ a b. (Unit → Unit) → BL a b → BL a b   (needs letRec to implement)
-#eval showScheme mapScheme
-
--- ∀ a b. (Unit → Unit) → BL a b → BL 0 b   (needs letRec)
-#eval showScheme filterScheme
 
 -- ∀ a b c d. BL a b → BL c d → BL (a + c) (b + d)   (needs letRec)
 #eval showScheme appendScheme

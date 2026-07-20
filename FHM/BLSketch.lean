@@ -14,11 +14,12 @@ appears as a premise in that derivation:
 | Job | Where it shows up |
 | --- | --- |
 | **Compare (∀)** | `Sub` / inhabitability → `checkValid` under assumptions `Δ` |
-| **Join** | `ifBL`, `matchBL` (both branches `BL`) via `min`/`max`; non-`BL` branches must be equal |
+| **Join** | `ifBL` / `ifBool`, `matchBL` (both branches `BL`) via `min`/`max`; non-`BL` branches must be equal |
 | **Meet inhabitability** | not an `Expr` form — when one value faces several BL demands, discharge `checkValid (inhabitProblem Δ (Interval.meet …))` |
 | **Solve + unique outputs** | HM-style narrowing at use/ascription: `annoInfer` / `appInfer` / `letSchemeInfer` via `subtypeProblem` |
 | **Demand discipline** | `Count.DemandOK` / `Ty.DemandOK` on demanded types |
-| **Bound schemes** | `letScheme` (pack with `Sub` or solve) + `varScheme` (`InstantiatesTo`); bodies are WF (only rigid binders `0..n-1`) |
+| **Bound schemes** | `letScheme` / `letRecScheme` (pack with `Sub` or solve) + `varScheme` (`InstantiatesTo`); bodies are WF (only rigid binders `0..n-1`) |
+| **Recursion** | `letRec` (mono, annotated) + `letRecScheme` (scheme in scope for the binding) |
 | **Match refinement** | `matchBL` / `matchNil` / `matchCons` extend `Δ`; single-branch forms need a ∀-proof the other case is impossible (`hi ≤ 0` or `1 ≤ lo`) |
 | **Checking** | separate `Check` judgment (synth type + `Sub` / solve+unique); not a `TypeOf` ctor — keeps `TypeOf` syntax-directed |
 
@@ -40,8 +41,8 @@ no nested scheme-hygiene / LN. Enough for top-level library schemes in the demo.
 
 ## Non-goals
 
-`zip` / `take` / `drop` / `splitAt`, value-`Nat` in types, recursion, type-level
-`∀`, inferred generalisation algorithm, commit-vs-annotate policy, `unknown` UX,
+`zip` / `take` / `drop` / `splitAt`, value-`Nat` in types, inferred generalisation
+algorithm, commit-vs-annotate policy, `unknown` UX,
 opsem / preservation, checker completeness.
 -/
 
@@ -510,6 +511,10 @@ inductive Expr where
   | anno (e : Expr) (ty : AnnoTy)
   | let_ (binding body : Expr)
   | letScheme (s : BScheme) (binding body : Expr)
+  /-- Mono recursive let; `ann` is the type of the recursive binder. -/
+  | letRec (ann : AnnoTy) (binding body : Expr)
+  /-- Like `letScheme`, but the binding is typed with `s` already in scope. -/
+  | letRecScheme (s : BScheme) (binding body : Expr)
   /-- Exhaustive match on `BL`. Nil branch under refined `Δ`; cons branch under
   `var 0 = head : elem`, `var 1 = tail : BL (pred lo) (pred hi) elem`. -/
   | matchBL (scrut nilBranch consBranch : Expr)
@@ -782,6 +787,13 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     joinBranchTy t u = some ty →
     TypeOf Δ ctx (.if_ cond thn els) ty
 
+  | ifBool {Δ ctx cond thn els t u ty} :
+    TypeOf Δ ctx cond .bool →
+    TypeOf Δ ctx thn t →
+    TypeOf Δ ctx els u →
+    joinBranchTy t u = some ty →
+    TypeOf Δ ctx (.if_ cond thn els) ty
+
   | anno {Δ ctx e ann ty ty'} :
     AnnoTy.Elab ann ty →
     TypeOf Δ ctx e ty' →
@@ -835,6 +847,41 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     unique ψ ty1.obsBounds = .unique →
     TypeOf Δ (.scheme s :: ctx) e2 bodyTy →
     TypeOf Δ ctx (.letScheme s e1 e2) bodyTy
+
+  | letRec {Δ ctx ann ty binding body tyB bodyTy} :
+    AnnoTy.Elab ann ty →
+    Ty.DemandOK ty →
+    TypeOf Δ (.mono ty :: ctx) binding tyB →
+    Sub Δ tyB ty →
+    TypeOf Δ (.mono ty :: ctx) body bodyTy →
+    TypeOf Δ ctx (.letRec ann binding body) bodyTy
+
+  | letRecInfer {Δ ctx ann ty binding body tyB bodyTy ψ σ} :
+    AnnoTy.Elab ann ty →
+    Ty.DemandOK ty →
+    TypeOf Δ (.mono ty :: ctx) binding tyB →
+    subtypeProblem Δ tyB ty = some ψ →
+    solve ψ = .witness σ →
+    unique ψ tyB.obsBounds = .unique →
+    TypeOf Δ (.mono ty :: ctx) body bodyTy →
+    TypeOf Δ ctx (.letRec ann binding body) bodyTy
+
+  | letRecScheme {Δ ctx s binding body ty1 bodyTy} :
+    s.WF →
+    TypeOf Δ (.scheme s :: ctx) binding ty1 →
+    Sub Δ ty1 s.body →
+    TypeOf Δ (.scheme s :: ctx) body bodyTy →
+    TypeOf Δ ctx (.letRecScheme s binding body) bodyTy
+
+  | letRecSchemeInfer {Δ ctx s binding body ty1 bodyTy ψ σ} :
+    s.WF →
+    TypeOf Δ (.scheme s :: ctx) binding ty1 →
+    Ty.DemandOK s.body →
+    subtypeProblem Δ ty1 s.body = some ψ →
+    solve ψ = .witness σ →
+    unique ψ ty1.obsBounds = .unique →
+    TypeOf Δ (.scheme s :: ctx) body bodyTy →
+    TypeOf Δ ctx (.letRecScheme s binding body) bodyTy
 
   /-- Exhaustive match, equal branch types (non-`BL`, or identical `BL`s).
   * nil: `Δ ++ nilRefine lo hi` (`lo ≤ 0`; `hi` not forced to `0`)
@@ -990,6 +1037,7 @@ theorem TypeOf.weakenCtx {Δ ctx ctx' e ty}
   | appInfer hf harg hok hψ hσ huniq ih₁ ih₂ =>
     exact .appInfer ih₁ ih₂ hok hψ hσ huniq
   | ifBL hcond hthn hels hjoin ih₁ ih₂ ih₃ => exact .ifBL ih₁ ih₂ ih₃ hjoin
+  | ifBool hcond hthn hels hjoin ih₁ ih₂ ih₃ => exact .ifBool ih₁ ih₂ ih₃ hjoin
   | anno helab he hsub ih => exact .anno helab ih hsub
   | annoInfer helab he hok hψ hσ huniq ih => exact .annoInfer helab ih hok hψ hσ huniq
   | annoNil helab hsub => exact .annoNil helab hsub
@@ -998,6 +1046,14 @@ theorem TypeOf.weakenCtx {Δ ctx ctx' e ty}
   | letScheme hwf he₁ hsub he₂ ih₁ ih₂ => exact .letScheme hwf ih₁ hsub ih₂
   | letSchemeInfer hwf he₁ hok hψ hσ huniq he₂ ih₁ ih₂ =>
     exact .letSchemeInfer hwf ih₁ hok hψ hσ huniq ih₂
+  | letRec helab hok hb hsub hbody ih_b ih_body =>
+    exact .letRec helab hok ih_b hsub ih_body
+  | letRecInfer helab hok hb hψ hσ huniq hbody ih_b ih_body =>
+    exact .letRecInfer helab hok ih_b hψ hσ huniq ih_body
+  | letRecScheme hwf hb hsub hbody ih_b ih_body =>
+    exact .letRecScheme hwf ih_b hsub ih_body
+  | letRecSchemeInfer hwf hb hok hψ hσ huniq hbody ih_b ih_body =>
+    exact .letRecSchemeInfer hwf ih_b hok hψ hσ huniq ih_body
   | matchBL he heNil heCons ih₁ ih₂ ih₃ =>
     refine .matchBL ih₁ ih₂ ?_
     rw [consCtx_append]
@@ -1183,6 +1239,8 @@ def Expr.size : Expr → Nat
   | .anno e _ => 1 + e.size
   | .let_ b e => 1 + b.size + e.size
   | .letScheme _ b e => 1 + b.size + e.size
+  | .letRec _ b e => 1 + b.size + e.size
+  | .letRecScheme _ b e => 1 + b.size + e.size
   | .matchBL s n c => 1 + s.size + n.size + c.size
   | .matchNil s n => 1 + s.size + n.size
   | .matchCons s c => 1 + s.size + c.size
@@ -1270,12 +1328,12 @@ def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat �
         match synth Φ₂ Δ ctx els with
         | none => none
         | some (Φ₃, et) =>
-          match ct, tt, et with
-          | .unit, .bl lo₁ hi₁ elem, .bl lo₂ hi₂ elem' =>
-              match joinBranchTy (.bl lo₁ hi₁ elem) (.bl lo₂ hi₂ elem') with
+          match ct with
+          | .unit | .bool =>
+              match joinBranchTy tt et with
               | some ty => some (Φ₃, ty)
               | none => none
-          | _, _, _ => none
+          | _ => none
   | .anno e ann =>
     let (Φ₁, ty) := fillHoles Φ ann
     if e = .nil then
@@ -1296,6 +1354,25 @@ def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat �
   | .letScheme s bind body =>
     if s.WF_bool then
       match synth Φ Δ ctx bind with
+      | none => none
+      | some (Φ₁, tyb) =>
+        if forceSubtype Δ tyb s.body then
+          synth Φ₁ Δ (.scheme s :: ctx) body
+        else none
+    else none
+  | .letRec ann bind body =>
+    let (Φ₁, ty) := fillHoles Φ ann
+    if ty.isDemandOK then
+      match synth Φ₁ Δ (.mono ty :: ctx) bind with
+      | none => none
+      | some (Φ₂, tyb) =>
+        if forceSubtype Δ tyb ty then
+          synth Φ₂ Δ (.mono ty :: ctx) body
+        else none
+    else none
+  | .letRecScheme s bind body =>
+    if s.WF_bool then
+      match synth Φ Δ (.scheme s :: ctx) bind with
       | none => none
       | some (Φ₁, tyb) =>
         if forceSubtype Δ tyb s.body then
@@ -2038,19 +2115,20 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
           simp [synth, hc, ht, he] at h
           cases ct with
           | unit =>
-            cases tt with
-            | bl lo₁ hi₁ elem =>
-              cases et with
-              | bl lo₂ hi₂ elem' =>
-                cases hj : joinBranchTy (.bl lo₁ hi₁ elem) (.bl lo₂ hi₂ elem') with
-                | none => simp [hj] at h
-                | some jty =>
-                  simp [hj] at h
-                  obtain ⟨rfl, rfl⟩ := h
-                  exact .ifBL (ih_c hc) (ih_t ht) (ih_e he) hj
-              | unit | arrow _ _ | tbind _ | bool => simp at h
-            | unit | arrow _ _ | tbind _ | bool => simp at h
-          | arrow _ _ | bl _ _ _ | tbind _ | bool => simp at h
+            cases hj : joinBranchTy tt et with
+            | none => simp [hj] at h
+            | some jty =>
+              simp [hj] at h
+              obtain ⟨rfl, rfl⟩ := h
+              exact .ifBL (ih_c hc) (ih_t ht) (ih_e he) hj
+          | bool =>
+            cases hj : joinBranchTy tt et with
+            | none => simp [hj] at h
+            | some jty =>
+              simp [hj] at h
+              obtain ⟨rfl, rfl⟩ := h
+              exact .ifBool (ih_c hc) (ih_t ht) (ih_e he) hj
+          | arrow _ _ | bl _ _ _ | tbind _ => simp at h
   | anno e ann ih_e =>
     cases hfill : fillHoles Φ ann with
     | mk Φ₁ aty =>
@@ -2113,6 +2191,47 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
         | inr hr =>
           obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
           exact .letSchemeInfer (BScheme.wf_of_WF_bool hwf) (ih_b hb) hok hψ hσ huniq
+            (ih_body hbody)
+    · simp [hwf] at h
+  | letRec ann bind body ih_b ih_body =>
+    cases hfill : fillHoles Φ ann with
+    | mk Φ₁ ty =>
+      simp [synth, hfill] at h
+      by_cases hok : ty.isDemandOK = true
+      · simp [hok] at h
+        cases hb : synth Φ₁ Δ (.mono ty :: ctx) bind with
+        | none => simp [hb] at h
+        | some Φb =>
+          obtain ⟨Φ₂, tyb⟩ := Φb
+          simp [hb] at h
+          obtain ⟨hfs, hbody⟩ := h
+          have helab : AnnoTy.Elab ann ty := by
+            have := fillHoles_elab Φ ann
+            rwa [hfill] at this
+          have hok' : Ty.DemandOK ty := Ty.demandOK_of_isDemandOK hok
+          cases forceSubtype_sub hfs with
+          | inl hsub =>
+            exact .letRec helab hok' (ih_b hb) hsub (ih_body hbody)
+          | inr hr =>
+            obtain ⟨_, ψ, σ, hψ, hσ, huniq⟩ := hr
+            exact .letRecInfer helab hok' (ih_b hb) hψ hσ huniq (ih_body hbody)
+      · simp [hok] at h
+  | letRecScheme s bind body ih_b ih_body =>
+    simp [synth] at h
+    by_cases hwf : s.WF_bool = true
+    · simp [hwf] at h
+      cases hb : synth Φ Δ (.scheme s :: ctx) bind with
+      | none => simp [hb] at h
+      | some Φb =>
+        obtain ⟨Φ₁, tyb⟩ := Φb
+        simp [hb] at h
+        obtain ⟨hfs, hbody⟩ := h
+        cases forceSubtype_sub hfs with
+        | inl hsub =>
+          exact .letRecScheme (BScheme.wf_of_WF_bool hwf) (ih_b hb) hsub (ih_body hbody)
+        | inr hr =>
+          obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
+          exact .letRecSchemeInfer (BScheme.wf_of_WF_bool hwf) (ih_b hb) hok hψ hσ huniq
             (ih_body hbody)
     · simp [hwf] at h
   | matchBL scrut eNil eCons ih_s ih_n ih_c =>

@@ -267,6 +267,18 @@ partial def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
         ("let " ++ x ++ " : " ++ s.pretty ++ " =\n" ++
           prettyIndentBlock (Expr.prettyAux ctx 0 b) ++ "\nin\n" ++
           Expr.prettyAux (x :: ctx) 0 e)
+  | .letRec ann b e =>
+      let x := prettyTermVarName ctx.length
+      prettyParenIf (prec ≥ 1)
+        ("let rec " ++ x ++ " : " ++ ann.pretty ++ " =\n" ++
+          prettyIndentBlock (Expr.prettyAux ctx 0 b) ++ "\nin\n" ++
+          Expr.prettyAux (x :: ctx) 0 e)
+  | .letRecScheme s b e =>
+      let x := prettyTermVarName ctx.length
+      prettyParenIf (prec ≥ 1)
+        ("let rec " ++ x ++ " : " ++ s.pretty ++ " =\n" ++
+          prettyIndentBlock (Expr.prettyAux ctx 0 b) ++ "\nin\n" ++
+          Expr.prettyAux (x :: ctx) 0 e)
   | .matchBL s n c =>
       let h := prettyTermVarName ctx.length
       let t := prettyTermVarName (ctx.length + 1)
@@ -296,7 +308,7 @@ def Expr.pretty (e : Expr) (ctx : List String := []) (prec : Nat := 0) : String 
 (so the judgement colon is not read as part of the expression). -/
 def Expr.needsJudgementParens : Expr → Bool
   | .anno .. | .matchBL .. | .matchNil .. | .matchCons ..
-  | .if_ .. | .let_ .. | .letScheme .. => Bool.true
+  | .if_ .. | .let_ .. | .letScheme .. | .letRec .. | .letRecScheme .. => Bool.true
   | _ => Bool.false
 
 /-- Pretty for `e : τ` / check judgements: wraps anno/match/if/let only. -/
