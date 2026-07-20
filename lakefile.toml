@@ -32,7 +32,7 @@ root = "FHM.Live"
 name = "FHMZ3"
 # Optional: Z3 subprocess oracle + BLSketch bound layer.
 # Build with `lake build FHMZ3` (requires `z3` on PATH for runtime / #eval).
-roots = ["FHM.Z3", "FHM.BLSketch"]
+roots = ["FHM.Z3", "FHM.BLSketch", "FHM.BLSketch.Pretty"]
 
 [[require]]
 name = "mathlib"

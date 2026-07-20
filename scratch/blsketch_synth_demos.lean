@@ -1,4 +1,5 @@
 import FHM.BLSketch
+import FHM.BLSketch.Pretty
 
 /-!
 # BLSketch — live `synth` / `check` demos (Z3)
@@ -19,7 +20,7 @@ def r (i : Nat) : Count := cvar .rigid i
 
 def showOptTy : Option (Nat × Ty) → String
   | none => "fail"
-  | some (_, ty) => toString (repr ty)
+  | some (_, ty) => ty.pretty
 
 def showCheck : Option Nat → String
   | none => "fail"
@@ -44,9 +45,9 @@ def showAnnoWitness (ctx : Ctx) (e : Expr) (ann : AnnoTy) : String :=
 
 /-! ## 1. Structural synth (no oracle) -/
 
-#eval! IO.println "=== synth (structural) ==="
-#eval! IO.println s!"nil:        {showOptTy (synth 0 [] [] .nil)}"
-#eval! IO.println s!"cons unit:  {showOptTy (synth 0 [] [] (.cons .unit .nil))}"
+#eval IO.println "=== synth (structural) ==="
+#eval IO.println s!"nil:        {showOptTy (synth 0 [] [] .nil)}"
+#eval IO.println s!"cons unit:  {showOptTy (synth 0 [] [] (.cons .unit .nil))}"
 
 /-! ## 2. `check` — wider demand via `Sub` / Z3 -/
 
@@ -64,8 +65,9 @@ still mention inferables — algo does not substitute `σ` (see brief soft spot 
 
 def eAnnoNilHoles : Expr := .anno .nil (.bl none none)
 
-#eval! IO.println "=== anno holes ==="
-#eval! IO.println s!"fillHoles BL _ _: {toString (repr (fillHoles 0 (.bl none none)))}"
+#eval! IO.println "=== fillHoles / anno ==="
+#eval! IO.println s!"fillHoles BL _ _: {AnnoTy.pretty (.bl none none)} ↦ {let (_, ty) := fillHoles 0 (.bl none none); ty.pretty}"
+#eval! IO.println s!"term:             {(eAnnoNilHoles).pretty}"
 #eval! IO.println s!"synth anno:       {showOptTy (synth 0 [] [] eAnnoNilHoles)}"
 #eval! IO.println s!"one witness:      {showAnnoWitness [] .nil (.bl none none)}"
 
@@ -75,6 +77,7 @@ def ctxBL05 : Ctx := [.mono (.bl (.lit 0) (.lit 5))]
 def eMatchJoin : Expr := .matchBL (.var 0 []) .nil (.cons .unit .nil)
 
 #eval! IO.println "=== matchBL join ==="
+#eval! IO.println s!"term:            {eMatchJoin.pretty ["xs"]}"
 #eval! IO.println s!"nil|cons → join: {showOptTy (synth 0 [] ctxBL05 eMatchJoin)}"
 #eval! IO.println s!"unit|unit:       {showOptTy (synth 0 [] ctxBL05 (.matchBL (.var 0 []) .unit .unit))}"
 

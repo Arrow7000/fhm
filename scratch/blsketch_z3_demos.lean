@@ -1,4 +1,5 @@
 import FHM.BLSketch
+import FHM.BLSketch.Pretty
 
 /-!
 # BLSketch × Z3 demos
@@ -92,15 +93,19 @@ def qPinOuts : List Count := [x 0]
 /-! ## Run -/
 
 #eval IO.println "=== checkValid ==="
-#eval IO.println s!"addZero:     {repr (checkValid qAddZero)}"
-#eval IO.println s!"addOneFalse: {repr (checkValid qAddOneFalse)}"
-#eval IO.println s!"premises:    {repr (checkValid qPremises)}"
+#eval IO.println s!"addZero:     {qAddZero.pretty}  ⇒  {repr (checkValid qAddZero)}"
+#eval IO.println s!"addOneFalse: {qAddOneFalse.pretty}  ⇒  {repr (checkValid qAddOneFalse)}"
+#eval IO.println s!"premises:    {qPremises.pretty}  ⇒  {repr (checkValid qPremises)}"
 
 #eval IO.println "=== solve (witnesses) ==="
-#eval IO.println s!"pinFive:        {showSolve qPinFive [0]}"
-#eval IO.println s!"sumSeven:       {showSolve qSumSeven [0, 1]}"
-#eval IO.println s!"productTwelve:  {showSolve qProductTwelve [0, 1]}"
-#eval IO.println s!"unsat:          {showSolve qUnsat [0]}"
+#eval IO.println s!"pinFive:        {qPinFive.pretty}"
+#eval IO.println s!"  → {showSolve qPinFive [0]}"
+#eval IO.println s!"sumSeven:       {qSumSeven.pretty}"
+#eval IO.println s!"  → {showSolve qSumSeven [0, 1]}"
+#eval IO.println s!"productTwelve:  {qProductTwelve.pretty}"
+#eval IO.println s!"  → {showSolve qProductTwelve [0, 1]}"
+#eval IO.println s!"unsat:          {qUnsat.pretty}"
+#eval IO.println s!"  → {showSolve qUnsat [0]}"
 
 #eval IO.println "=== unique ==="
 #eval IO.println s!"prod factors:   {showUnique qProductTwelve qProdOuts}"
