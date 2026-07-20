@@ -11,7 +11,7 @@ lake env lean scratch/blsketch_synth_demos.lean
 Companion to `blsketch_z3_demos.lean` (raw oracle APIs). Exercises structural
 synth, `check` via `Sub`, hole solving, match join / refine, nonlinear
 scheme / mul, richer `let`/`letScheme`/`letRecScheme` programs, and a small **stdlib** of
-BL helpers including recursive `map` / `filter`. Style matches `FHM/Examples.lean`. -/
+BL helpers including recursive `map` / `filter` / `append` / `flatMap`. Style matches `FHM/Examples.lean`. -/
 
 namespace BLSketch.Demo
 
@@ -435,10 +435,14 @@ def eFilterRec : Expr :=
   .letRecScheme filterScheme eFilter
     (.var 0 [.count (r 0), .count (r 1), .ty (.tbind 0)])
 
--- let rec f : mapScheme = … in f  :  mapScheme
+-- let rec f : mapScheme = … in f @a @b @α @β
+--   :  (α → β) → BL a b α → BL a b β
+-- (free `a,b,α,β` — same didactic pattern as free rigid counts elsewhere;
+--  not a returned scheme; quantify by packing / instantiate at use sites)
 #eval showSynth eMapRec (ctxPoly [])
 
--- let rec f : filterScheme = … in f  :  filterScheme
+-- let rec f : filterScheme = … in f @a @b @α
+--   :  (α → Bool) → BL a b α → BL 0 b α
 #eval showSynth eFilterRec (ctxPoly [])
 
 -- map / filter applied to small lists
@@ -459,16 +463,84 @@ def eFilterDemo : Expr :=
 
 #eval showSynth eFilterDemo (ctxPoly [])
 
-/-- Signature-only append (not implemented). -/
+/-- `∀ {a b c d : Nat, α}. BL a b α → BL c d α → BL (a+c) (b+d) α`. -/
 def appendScheme : BScheme where
-  binders := [.count, .count, .count, .count]
+  binders := [.count, .count, .count, .count, .type]
   body :=
-    .arrow (.bl (r 0) (r 1) .unit)
-      (.arrow (.bl (r 2) (r 3) .unit)
-        (.bl (.add (r 0) (r 2)) (.add (r 1) (r 3)) .unit))
+    .arrow (.bl (r 0) (r 1) (.tbind 0))
+      (.arrow (.bl (r 2) (r 3) (.tbind 0))
+        (.bl (.add (r 0) (r 2)) (.add (r 1) (r 3)) (.tbind 0)))
 
--- ∀ a b c d. BL a b → BL c d → BL (a + c) (b + d)   (needs letRec)
-#eval showScheme appendScheme
+/-- Recursive append body (expects `appendScheme` and `nilScheme` in ctx). -/
+def eAppend : Expr :=
+  .lam (.bl (some (r 0)) (some (r 1)) (.tbind 0))
+    (.lam (.bl (some (r 2)) (some (r 3)) (.tbind 0))
+      (.matchBL (.var 1 [])
+        (.anno (.var 0 []) (.bl (some (.add (r 0) (r 2))) (some (.add (r 1) (r 3))) (.tbind 0)))
+        (.anno (.cons (.var 0 [])
+            (.app (.app (.var 4 [.count (.pred (r 0)), .count (.pred (r 1)), .count (r 2), .count (r 3), .ty (.tbind 0)])
+                (.var 1 []))
+              (.var 2 [])))
+          (.bl (some (.add (r 0) (r 2))) (some (.add (r 1) (r 3))) (.tbind 0)))))
+
+def eAppendRec : Expr :=
+  .letRecScheme appendScheme eAppend
+    (.var 0 [.count (r 0), .count (r 1), .count (r 2), .count (r 3), .ty (.tbind 0)])
+
+-- let rec f : appendScheme = … in f @a @b @c @d @α
+--   :  BL a b α → BL c d α → BL (a + c) (b + d) α
+#eval showSynth eAppendRec (ctxPoly [])
+
+def eAppendDemo : Expr :=
+  .letRecScheme appendScheme eAppend
+    (.app (.app (.var 0 [.count (.lit 2), .count (.lit 2), .count (.lit 1), .count (.lit 1), .ty .unit])
+        (.cons .unit (.cons .unit (.var 1 [.ty .unit]))))
+      (.cons .unit (.var 1 [.ty .unit])))
+
+-- append [(), ()] [()]  :  BL 3 3 Unit
+#eval showSynth eAppendDemo (ctxPoly [])
+
+/-- `∀ {a b c d : Nat, α β}. (α → BL c d β) → BL a b α → BL (a*c) (b*d) β`. -/
+def flatMapScheme : BScheme where
+  binders := [.count, .count, .count, .count, .type, .type]
+  body :=
+    .arrow (.arrow (.tbind 0) (.bl (r 2) (r 3) (.tbind 1)))
+      (.arrow (.bl (r 0) (r 1) (.tbind 0))
+        (.bl (.mul (r 0) (r 2)) (.mul (r 1) (r 3)) (.tbind 1)))
+
+/-- Recursive flatMap body (expects `flatMapScheme`, `appendScheme`, and `nilScheme` in ctx). -/
+def eFlatMap : Expr :=
+  .lam (.arrow (.tbind 0) (.bl (some (r 2)) (some (r 3)) (.tbind 1)))
+    (.lam (.bl (some (r 0)) (some (r 1)) (.tbind 0))
+      (.matchBL (.var 0 [])
+        (.anno (.var 4 [.ty (.tbind 1)]) (.bl (some (.mul (r 0) (r 2))) (some (.mul (r 1) (r 3))) (.tbind 1)))
+        (.anno
+          (.app (.app (.var 5 [.count (r 2), .count (r 3), .count (.mul (.pred (r 0)) (r 2)), .count (.mul (.pred (r 1)) (r 3)), .ty (.tbind 1)])
+              (.app (.var 3 []) (.var 0 [])))
+            (.app (.app (.var 4 [.count (.pred (r 0)), .count (.pred (r 1)), .count (r 2), .count (r 3), .ty (.tbind 0), .ty (.tbind 1)])
+                (.var 3 []))
+              (.var 1 [])))
+          (.bl (some (.mul (r 0) (r 2))) (some (.mul (r 1) (r 3))) (.tbind 1)))))
+
+def eFlatMapRec : Expr :=
+  .letRecScheme appendScheme eAppend
+    (.letRecScheme flatMapScheme eFlatMap
+      (.var 0 [.count (r 0), .count (r 1), .count (r 2), .count (r 3), .ty (.tbind 0), .ty (.tbind 1)]))
+
+-- let rec append … in let rec flatMap … in flatMap @a @b @c @d @α @β
+--   :  (α → BL c d β) → BL a b α → BL (a * c) (b * d) β
+#eval showSynth eFlatMapRec (ctxPoly [])
+
+/-- `flatMap (λx. [x]) [(), ()]` at `BL 2 2 Unit` (each element maps to a singleton). -/
+def eFlatMapDemo : Expr :=
+  .letRecScheme appendScheme eAppend
+    (.letRecScheme flatMapScheme eFlatMap
+      (.app (.app (.var 0 [.count (.lit 2), .count (.lit 2), .count (.lit 1), .count (.lit 1), .ty .unit, .ty .unit])
+          (.lam .unit (.cons (.var 0 []) (.var 3 [.ty .unit]))))
+        (.cons .unit (.cons .unit (.var 2 [.ty .unit])))))
+
+-- flatMap (λx. [x]) [(), ()]  :  BL 2 2 Unit
+#eval showSynth eFlatMapDemo (ctxPoly [])
 
 end Stdlib
 
