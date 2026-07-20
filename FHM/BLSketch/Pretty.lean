@@ -24,6 +24,14 @@ Conventions:
 * Judgement displays (`e : τ`) use `Expr.prettyJudgement`, which wraps only
   forms that clash with an outer ` : ` (anno / match / if / let) — not bare
   lambdas or atoms.
+* `let` / scheme-lets print as a vertical telescope:
+  ```
+  let x : σ =
+    binding
+  in
+  body
+  ```
+  Plain `let` omits `: σ`. Binding bodies are indented two spaces.
 * Parentheses are otherwise inserted only where precedence requires them.
 -/
 
@@ -31,6 +39,11 @@ namespace BLSketch
 
 @[inline] def prettyParenIf (b : Bool) (s : String) : String :=
   if b then "(" ++ s ++ ")" else s
+
+/-- Indent every line of `s` by `n` spaces (for let-binding bodies). -/
+def prettyIndentBlock (s : String) (n : Nat := 2) : String :=
+  let pad := String.ofList (List.replicate n ' ')
+  String.intercalate "\n" ((s.splitOn "\n").map (fun line => pad ++ line))
 
 def prettyTermVarName (n : Nat) : String :=
   let letters := ["x", "y", "z", "u", "v", "w", "p", "q", "r", "s", "t"]
@@ -214,13 +227,15 @@ partial def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
   | .let_ b e =>
       let x := prettyTermVarName ctx.length
       prettyParenIf (prec ≥ 1)
-        ("let " ++ x ++ " = " ++ Expr.prettyAux ctx 0 b ++ " in " ++
+        ("let " ++ x ++ " =\n" ++
+          prettyIndentBlock (Expr.prettyAux ctx 0 b) ++ "\nin\n" ++
           Expr.prettyAux (x :: ctx) 0 e)
   | .letScheme s b e =>
       let x := prettyTermVarName ctx.length
       prettyParenIf (prec ≥ 1)
-        ("letScheme " ++ x ++ " : " ++ s.pretty ++ " = " ++
-          Expr.prettyAux ctx 0 b ++ " in " ++ Expr.prettyAux (x :: ctx) 0 e)
+        ("let " ++ x ++ " : " ++ s.pretty ++ " =\n" ++
+          prettyIndentBlock (Expr.prettyAux ctx 0 b) ++ "\nin\n" ++
+          Expr.prettyAux (x :: ctx) 0 e)
   | .matchBL s n c =>
       let h := prettyTermVarName ctx.length
       let t := prettyTermVarName (ctx.length + 1)
