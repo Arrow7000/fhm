@@ -1,5 +1,6 @@
 import FHM.Surface.Parse
 import FHM.Surface.Span
+import FHM.Surface.Lex
 import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Pretty
@@ -14,12 +15,14 @@ Shared collection of hover symbols (bindings + type/ctor decls) for
 helpers from `Live` rather than importing the live exe module.
 
 v3: binder spans + lexical `scope` spans for use-site hover; resolves by
-def-span containment first, else name+innermost scope. Type/ctor use-site
-deferred (`scope := span`).
+def-span containment first, else name+innermost scope. Type/ctor symbols use
+program-wide scope (global names). Lit/op tokens get spanned symbols from Core
+`PrimLitExpr.ty` / `PrimBinOp.ty` / `Ctor.toTy`.
 -/
 
 open Surface.Parse
 open Surface.Span
+open Surface.Lex (BinOpToken)
 open SurfaceBridge
 
 /-- Collect schemes from the outer `letIn (some σ)` spine produced by
@@ -114,11 +117,11 @@ def HoverEnv.extendLets (e : HoverEnv) (ps : List (ValName × PolyTy)) : HoverEn
 /-- Best-effort surface expression type (vars, lits, ctors, apps, pairs, …). -/
 partial def hoverExprTy (ctors : CtorEnv) (env : HoverEnv) : Surface.Expr → Option Ty
   | .var n => env.lookupTy n
-  | .primLit (.int _) => some (.prim .int)
-  | .primLit (.nat _) => some (.prim .nat)
+  | .primLit (.int n) => some (PrimLitExpr.ty (.int n))
+  | .primLit (.nat n) => some (PrimLitExpr.ty (.nat n))
   | .primLit (.bool _) => some (.customTy nBool [])
-  | .primLit (.char _) => some (.prim .char)
-  | .primLit .unit => some (.prim .unit)
+  | .primLit (.char c) => some (PrimLitExpr.ty (.char c))
+  | .primLit .unit => some (PrimLitExpr.ty .unit)
   | .ctor n =>
       match LookupList.get? ctors n with
       | some ctor => some ctor.toTy.body
@@ -162,7 +165,7 @@ partial def hoverExprTy (ctors : CtorEnv) (env : HoverEnv) : Surface.Expr → Op
   | .letIn .. => none
   | .letRecIn .. => none
   | .match_ .. => none
-  | .primBinOp .. => none
+  | .primBinOp op => PrimBinOp.ty ctors op
 
 /-- Slot types for one pattern's binders in `patVars` order (pad with `none`). -/
 def patSlots (ctors : CtorEnv) (pat : Surface.Pattern) (τ? : Option Ty) :
@@ -693,13 +696,13 @@ def takeFirstKind (bs : List BinderSpan) (k : BinderKind) :
   go [] bs
 
 /-- Join parse binder spans with inferred types and scopes.
-    Decl type/ctor: `scope := span` (use-site deferred). Type-decl params get a
-    tyvar label. Leftovers get empty types and `scope := span`. -/
+    Decl type/ctor: `scope := programScope` (global use-site). Type-decl params
+    get a tyvar label. Leftovers get empty types and `scope := span`. -/
 def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
     (valTys : List (ValName × Option PolyTy)) (valScopes : List Span)
     (paramTys : List (ValName × Ty)) (paramScopes : List Span)
     (patTys : List (Option Ty)) (patScopes : List Span)
-    (ctors : CtorEnv) : List RangedSymbol :=
+    (ctors : CtorEnv) (programScope : Span) : List RangedSymbol :=
   Id.run do
     let mut bs := binders
     let mut out : List RangedSymbol := []
@@ -714,7 +717,7 @@ def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
         bs := rest
         out := out ++ [{
           name := b.name, kind := "type", type_ := typeStr,
-          span := b.span, scope := b.span
+          span := b.span, scope := programScope
         }]
       | none => pure ()
       for _ in d.params do
@@ -737,7 +740,7 @@ def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
           bs := rest
           out := out ++ [{
             name := b.name, kind := "ctor", type_ := ctorTy,
-            span := b.span, scope := b.span
+            span := b.span, scope := programScope
           }]
         | none => pure ()
     for ⟨_, σ?⟩ in valTys do
@@ -788,9 +791,95 @@ def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
       }]
     return out
 
+/-- Hull covering decls, binders, and the program body (global type/ctor scope). -/
+def programWideScope (binders : List BinderSpan) (sp : SpannedProgram) : Span :=
+  let spans :=
+    binders.map (·.span) ++
+      sp.groups.flatMap (·.map SpannedExpr.span) ++ [sp.body.span]
+  (Span.hull spans).getD sp.body.span
+
+/-- Pretty-print a Core `DataDecl` (prelude types have no surface binder spans). -/
+def prettyCoreDataDecl (d : DataDecl) : String :=
+  let params := String.intercalate " " ((List.range d.paramCount).map prettyTyVarName)
+  let header :=
+    if d.paramCount == 0 then s!"type {prettyTyName d.name}"
+    else s!"type {prettyTyName d.name} {params}"
+  let ctorStr (c : CtorName × List Ty) : String :=
+    let ⟨cname, fields⟩ := c
+    if fields.isEmpty then prettyCtorName cname
+    else prettyCtorName cname ++ " " ++
+      String.intercalate " " (fields.map (fun τ => Ty.prettyAux 2 τ))
+  header ++ " = " ++ String.intercalate " | " (d.ctors.map ctorStr)
+
+/-- Prelude type/ctor symbols for use-site only (`span` empty so they never
+    steal def-site hits; `scope` is program-wide). -/
+def preludeTypeCtorSymbols (ctors : CtorEnv) (scope : Span) : List RangedSymbol :=
+  preludeDecls.flatMap fun d =>
+    let typeSym : RangedSymbol := {
+      name := prettyTyName d.name, kind := "type",
+      type_ := prettyCoreDataDecl d,
+      span := Span.empty, scope := scope
+    }
+    let ctorSyms := d.ctors.map fun ⟨cname, _⟩ =>
+      let tyStr :=
+        match LookupList.get? ctors cname with
+        | some ctor => ctor.toTy.pretty
+        | none => prettyCtorName cname
+      ({
+        name := prettyCtorName cname, kind := "ctor", type_ := tyStr,
+        span := Span.empty, scope := scope
+      } : RangedSymbol)
+    typeSym :: ctorSyms
+
+/-- Map surface binop token to Core primop (same table as `Parse.applyBinOp`). -/
+def binOpPrimTy (ctors : CtorEnv) : BinOpToken → Option (String × String)
+  | .plus =>
+      (PrimBinOp.ty ctors .intAdd).map fun τ => ("+", τ.pretty)
+  | .minus =>
+      (PrimBinOp.ty ctors .intSub).map fun τ => ("-", τ.pretty)
+  | .lt =>
+      (PrimBinOp.ty ctors .intLt).map fun τ => ("<", τ.pretty)
+  | .cons =>
+      match LookupList.get? ctors cCons with
+      | some ctor => some ("::", ctor.toTy.pretty)
+      | none => none
+
+/-- Lit / op hover symbols from a re-lex of `src` (token spans; Core types). -/
+def collectLitOpSymbols (src : String) (ctors : CtorEnv) : List RangedSymbol :=
+  match Surface.Lex.lex src with
+  | .error _ => []
+  | .ok toks =>
+    toks.toList.filterMap fun t =>
+      let sp := Span.ofTok t
+      match t.token with
+      | .intLit n =>
+          some {
+            name := toString n, kind := "lit",
+            type_ := (PrimLitExpr.ty (.int n)).pretty,
+            span := sp, scope := sp
+          }
+      | .charLit c =>
+          some {
+            name := prettyPrimLit (.char c), kind := "lit",
+            type_ := (PrimLitExpr.ty (.char c)).pretty,
+            span := sp, scope := sp
+          }
+      | .boolLit b =>
+          some {
+            name := if b then "True" else "False", kind := "lit",
+            type_ := (Ty.customTy nBool []).pretty,
+            span := sp, scope := sp
+          }
+      | .op o =>
+          match binOpPrimTy ctors o with
+          | some (nm, tyStr) =>
+              some { name := nm, kind := "op", type_ := tyStr, span := sp, scope := sp }
+          | none => none
+      | _ => none
+
 /-- Full hover report for a parsed program + binder spans + spanned program. -/
-def collectHover (p : Surface.Program) (binders : List BinderSpan) (sp : SpannedProgram) :
-    Option (List RangedSymbol × String) := do
+def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
+    (sp : SpannedProgram) : Option (List RangedSymbol × String) := do
   let userCore ← lowerDataDeclsIn preludeKindEnv p.decls
   let ctors ← elabDecls (preludeDecls ++ userCore)
   let ke := DataDecls.kindEnv (preludeDecls ++ userCore)
@@ -802,7 +891,14 @@ def collectHover (p : Surface.Program) (binders : List BinderSpan) (sp : Spanned
   let valScopes := collectValScopes p sp |>.map (·.2)
   let paramScopes := collectParamScopes p sp |>.map (·.2)
   let patScopes := collectPatScopes p sp
-  let syms := joinRangedSymbols binders p valTys valScopes params paramScopes pats patScopes ctors
+  let progScope := programWideScope binders sp
+  let binderSyms :=
+    joinRangedSymbols binders p valTys valScopes params paramScopes pats patScopes
+      ctors progScope
+  let preludeSyms :=
+    (preludeTypeCtorSymbols ctors progScope).filter fun s =>
+      !(binderSyms.any fun b => b.name == s.name && b.kind == s.kind)
+  let syms := binderSyms ++ collectLitOpSymbols src ctors ++ preludeSyms
   pure (syms, (genScheme [] [] τ).pretty)
 
 /-- Parse-error diagnostic JSON object. -/
@@ -824,7 +920,7 @@ def diagnosePayload (src : String) : Lean.Json :=
       ("symbols", Lean.Json.arr #[])
     ]
   | .ok (p, binders, sp) =>
-    match collectHover p binders sp with
+    match collectHover src p binders sp with
     | none =>
       Lean.Json.mkObj [
         ("version", Lean.Json.num 3),

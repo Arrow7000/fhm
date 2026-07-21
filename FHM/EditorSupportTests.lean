@@ -19,7 +19,7 @@ def hasSub (s needle : String) : Bool :=
 def hoverSyms (src : String) : Option (List RangedSymbol) :=
   match parseProgramWithSpans src with
   | .error _ => none
-  | .ok (p, bs, sp) => (collectHover p bs sp).map (·.1)
+  | .ok (p, bs, sp) => (collectHover src p bs sp).map (·.1)
 
 -- Span.contains / symbolAt edge cases
 #guard (Span.contains ⟨1, 5, 1, 7⟩ 1 5) = true
@@ -214,4 +214,74 @@ def justPatSrc : String :=
   | some syms =>
     match syms.find? (fun s => s.name == "x" && s.kind == "pat") with
     | some x => !x.type_.isEmpty && (hasSub x.type_ "Int" || x.type_ == "Int")
+    | none => false)
+
+-- D1. Lit / op tokens from Core types
+#guard (match hoverSyms "1 + 2\n" with
+  | none => false
+  | some syms =>
+    match symbolAt syms 1 3 with
+    | some s =>
+        s.kind == "op" && s.name == "+" &&
+        hasSub s.type_ "Int" && (hasSub s.type_ "→" || hasSub s.type_ "->")
+    | none => false)
+
+#guard (match hoverSyms "42\n" with
+  | none => false
+  | some syms =>
+    match symbolAt syms 1 1 with
+    | some s => s.kind == "lit" && hasSub s.type_ "Int"
+    | none => false)
+
+#guard (match hoverSyms "True\n" with
+  | none => false
+  | some syms =>
+    match symbolAt syms 1 1 with
+    | some s => s.kind == "lit" && (hasSub s.type_ "Bool" || s.type_ == "Bool")
+    | none => false)
+
+#guard (match hoverSyms "1 :: []\n" with
+  | none => false
+  | some syms =>
+    match symbolAt syms 1 3 with
+    | some s =>
+        s.kind == "op" && s.name == "::" &&
+        hasSub s.type_ "∀" && hasSub s.type_ "List"
+    | none => false)
+
+-- D2. Type / ctor use-site via program-wide scope
+def maybeUseSrc : String :=
+  "type Maybe a = Just a | Nothing\n" ++
+  "let v : Maybe Int = Just 1\n" ++
+  "v\n"
+
+#guard (match hoverSyms maybeUseSrc with
+  | none => false
+  | some syms =>
+    -- `Maybe` in `Maybe Int` annotation (line 2, after `: `)
+    match symbolAtUseSite syms 2 9 "Maybe" with
+    | some s => s.kind == "type" && hasSub s.type_ "Maybe"
+    | none => false)
+
+#guard (match hoverSyms maybeUseSrc with
+  | none => false
+  | some syms =>
+    -- `Just` in `Just 1`
+    match symbolAtUseSite syms 2 21 "Just" with
+    | some s => s.kind == "ctor" && !s.type_.isEmpty
+    | none => false)
+
+-- D3. Prelude `List` / `Bool` use-site (no source def span)
+#guard (match hoverSyms "let xs : List Int = []\nxs\n" with
+  | none => false
+  | some syms =>
+    match symbolAtUseSite syms 1 10 "List" with
+    | some s => s.kind == "type" && hasSub s.type_ "List"
+    | none => false)
+
+#guard (match hoverSyms "let b : Bool = True\nb\n" with
+  | none => false
+  | some syms =>
+    match symbolAtUseSite syms 1 9 "Bool" with
+    | some s => s.kind == "type" && hasSub s.type_ "Bool"
     | none => false)

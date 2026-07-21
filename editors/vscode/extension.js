@@ -204,7 +204,22 @@ function kindBadge(kind) {
   if (kind === "ctor") return "ctor";
   if (kind === "param") return "param";
   if (kind === "pat") return "pat";
+  if (kind === "lit") return "lit";
+  if (kind === "op") return "op";
   return "val";
+}
+
+/**
+ * @param {any} sym
+ * @returns {vscode.Range}
+ */
+function rangeFromSym(sym) {
+  return new vscode.Range(
+    Math.max(0, (sym.startLine || 1) - 1),
+    Math.max(0, (sym.startCol || 1) - 1),
+    Math.max(0, (sym.endLine || 1) - 1),
+    Math.max(0, (sym.endCol || 1) - 1)
+  );
 }
 
 /**
@@ -311,31 +326,42 @@ function activate(context) {
   context.subscriptions.push(
     vscode.languages.registerHoverProvider("fhm", {
       provideHover(doc, position) {
-        const hit = identAtPosition(doc, position);
-        if (!hit) return undefined;
         const cache = symbolCache.get(doc.uri.toString());
-        if (!cache) return undefined;
+        if (!cache || !cache.ranged || cache.ranged.length === 0) {
+          return undefined;
+        }
 
         // VS Code position is 0-based; diagnose spans are 1-based.
         const line = position.line + 1;
         const col = position.character + 1;
 
-        if (!cache.ranged || cache.ranged.length === 0) return undefined;
-
-        // Phase 1: def-site span hit with non-empty type.
+        // Phase 0: any spanned symbol under cursor (lits, ops, def sites).
         let sym = symbolAtRanged(cache.ranged, line, col);
-        if (!sym || typeof sym.type !== "string" || sym.type.length === 0) {
-          // Phase 2: use-site by word + innermost scope.
-          sym = symbolAtUseSite(cache.ranged, line, col, hit.word);
+        /** @type {vscode.Range | undefined} */
+        let hoverRange;
+        if (sym && typeof sym.type === "string" && sym.type.length > 0) {
+          hoverRange = rangeFromSym(sym);
+        } else {
+          // Phase 1–2: ident def/use (name + innermost scope).
+          const hit = identAtPosition(doc, position);
+          if (!hit) return undefined;
+          if (!sym || typeof sym.type !== "string" || sym.type.length === 0) {
+            sym = symbolAtUseSite(cache.ranged, line, col, hit.word);
+          }
+          if (!sym || typeof sym.type !== "string" || sym.type.length === 0) {
+            return undefined;
+          }
+          hoverRange = hit.range;
         }
-        if (!sym || typeof sym.type !== "string" || sym.type.length === 0) {
-          return undefined;
-        }
+
         const badge = kindBadge(sym.kind || "val");
-        const name = typeof sym.name === "string" ? sym.name : hit.word;
+        const name =
+          typeof sym.name === "string"
+            ? sym.name
+            : doc.getText(hoverRange) || "?";
         const md = new vscode.MarkdownString();
         md.appendMarkdown(`\`${badge}\` **${name}** : \`${sym.type}\``);
-        return new vscode.Hover(md, hit.range);
+        return new vscode.Hover(md, hoverRange);
       },
     })
   );

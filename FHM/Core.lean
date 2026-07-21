@@ -188,7 +188,38 @@ inductive PrimBinOp
   | charLt
   deriving DecidableEq, Repr
 
+/-- Type of a primitive literal (`TypeOfHM` / `TypeOfElabHM` primLit rules). -/
+def PrimLitExpr.ty : PrimLitExpr → Ty
+  | .unit => .prim .unit
+  | .int _ => .prim .int
+  | .nat _ => .prim .nat
+  | .char _ => .prim .char
 
+/-- Nullary `Bool` constructor shape (matches `Ctor.isBoolCtor` in InferW). -/
+def Ctor.isNullaryBool (c : Ctor) : Bool :=
+  c.tyName == ⟨"Bool"⟩ && c.paramCount == 0 && c.contents.isEmpty
+
+/-- Type of a primitive binary op. Comparison ops need `True`/`False` Bool
+    ctors in `ctors` (same gate as `inferCore`). -/
+def PrimBinOp.ty (ctors : CtorEnv) : PrimBinOp → Option Ty
+  | .intAdd =>
+      some (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
+  | .intSub =>
+      some (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
+  | .intLt =>
+      match LookupList.get? ctors ⟨"True"⟩, LookupList.get? ctors ⟨"False"⟩ with
+      | some tc, some fc =>
+        if tc.isNullaryBool && fc.isNullaryBool then
+          some (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])))
+        else none
+      | _, _ => none
+  | .charLt =>
+      match LookupList.get? ctors ⟨"True"⟩, LookupList.get? ctors ⟨"False"⟩ with
+      | some tc, some fc =>
+        if tc.isNullaryBool && fc.isNullaryBool then
+          some (.arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ [])))
+        else none
+      | _, _ => none
 
 inductive MatchPattern
   /-- `contents` is basically just a binding range. i.e. if 2 this means we've bound 2 new "names" to the context -/
