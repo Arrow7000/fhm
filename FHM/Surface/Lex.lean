@@ -377,6 +377,25 @@ def lexTokens (input : String) : Except LexError (Array Token) :=
   | .ok a => .ok (a.map (·.token))
   | .error e => .error e
 
+/-- Half-open source span: contains `(line, col)` iff the position is in
+    `[start, end)` in row-major order (1-based line/col, matching the lexer). -/
+def TokenWithSource.contains (t : TokenWithSource) (line col : Nat) : Bool :=
+  let afterStart :=
+    line > t.startLine || (line == t.startLine && col ≥ t.startCol)
+  let beforeEnd :=
+    line < t.endLine || (line == t.endLine && col < t.endCol)
+  afterStart && beforeEnd
+
+/-- Token whose half-open span covers `(line, col)`, if any. -/
+def tokenAt (tokens : Array TokenWithSource) (line col : Nat) : Option TokenWithSource :=
+  tokens.find? (·.contains line col)
+
+/-- Ident text at `(line, col)`, if the covering token is an ident. -/
+def identAt (tokens : Array TokenWithSource) (line col : Nat) : Option String :=
+  match tokenAt tokens line col with
+  | some { token := .ident raw _, .. } => some raw
+  | _ => none
+
 theorem keywordOf_let : keywordOf "let" = some .«let» := rfl
 theorem keywordOf_foo : keywordOf "foo" = none := rfl
 theorem classifyIdent_True : classifyIdent "True" false = .boolLit true := rfl
@@ -396,6 +415,9 @@ private def expectToks (input : String) (expected : Array Token) : Bool :=
 #guard expectToks "foo" #[.ident "foo" false]
 #guard expectToks "Foo" #[.ident "Foo" true]
 #guard expectToks "🎉name" #[.ident "🎉name" false]
+#guard (match lex "map" with
+  | .ok ts => identAt ts 1 1 == some "map" && identAt ts 1 4 == none
+  | .error _ => false)
 
 #guard expectToks "True" #[.boolLit true]
 #guard expectToks "False" #[.boolLit false]

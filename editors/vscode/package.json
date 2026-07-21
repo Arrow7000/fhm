@@ -1,7 +1,7 @@
 {
   "name": "fhm",
   "displayName": "FHM",
-  "description": "FHM surface language — syntax highlighting and parse diagnostics",
+  "description": "FHM surface language — syntax highlighting, parse diagnostics, and type-on-hover",
   "version": "0.0.1",
   "publisher": "fhm",
   "engines": {

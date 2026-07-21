@@ -1,32 +1,25 @@
-import FHM.Surface.Parse
+import FHM.EditorSupport
 import Lean.Data.Json
 
 /-!
-# Parse-only diagnostics driver
+# Editor diagnostics + hover symbols driver
 
-Reads a `.fhm` source file (or stdin) and prints a JSON array of diagnostics:
+Reads a `.fhm` source file (or stdin) and prints a versioned JSON object:
 
 ```
-[{"severity":"error","message":"...","line":1,"col":3}]
+{
+  "version": 1,
+  "diagnostics": [...],
+  "symbols": { "map": { "type": "...", "kind": "val" }, ... },
+  "programTy": "..."
+}
 ```
 
-Line/col are 1-based (same as `ParseError` / the lexer). Intended for the
-VS Code/Cursor extension's `didChange` diagnostic loop — no typechecking.
+On parse failure: diagnostics only, empty `symbols`, no `programTy`.
+Line/col are 1-based (same as `ParseError` / the lexer).
 -/
 
-open Surface.Parse
 open Lean
-
-def diagnose (src : String) : Array Json :=
-  match parseProgram src with
-  | .ok _ => #[]
-  | .error e =>
-    #[Json.mkObj [
-      ("severity", Json.str "error"),
-      ("message", Json.str e.msg),
-      ("line", Json.num e.line),
-      ("col", Json.num e.col)
-    ]]
 
 def usage : String :=
   "usage: fhm_diagnose [path]\n\
@@ -42,6 +35,10 @@ def main (args : List String) : IO UInt32 := do
     | _ =>
       IO.eprintln usage
       return 2
-  let ds := diagnose src
-  IO.println (Json.arr ds).pretty
-  return (if ds.isEmpty then 0 else 1)
+  let payload := diagnosePayload src
+  IO.println payload.pretty
+  let hasDiags :=
+    match payload.getObjVal? "diagnostics" with
+    | .ok (.arr a) => !a.isEmpty
+    | _ => true
+  return (if hasDiags then 1 else 0)

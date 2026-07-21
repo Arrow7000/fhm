@@ -5,8 +5,7 @@
 - **Syntax highlighting** for `.fhm` via a TextMate grammar generated from `Surface.Lex`
 - **Language config** — `--` / `{- -}` comments, brackets, auto-close
 - **Parse diagnostics on `didChange`** (debounced) via `fhm_diagnose` — line/col from the existing parser
-
-Not included yet: type-on-hover, semantic errors, go-to-def (need spanned AST + richer errors).
+- **Type-on-hover** for value bindings (top-level and nested `let`/`let rec`) and type/ctor names — from the same `fhm_diagnose` JSON (`symbols` map). Hover the *name*, not arbitrary expressions.
 
 ## Install via symlink (Cursor)
 
@@ -14,7 +13,7 @@ From the repo root:
 
 ```bash
 scripts/gen-fhm-tmgrammar.sh          # once / when Lex keyword tables change
-lake build fhm_diagnose               # for parse squiggles
+lake build fhm_diagnose               # for parse squiggles + hover types
 scripts/install-fhm-extension.sh      # ln -s into ~/.cursor/extensions
 ```
 

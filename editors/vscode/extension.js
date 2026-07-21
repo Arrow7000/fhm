@@ -12,6 +12,10 @@ let diagnostics;
 const pending = new Map();
 /** @type {Map<string, import("child_process").ChildProcess>} */
 const running = new Map();
+/** @type {Map<string, Record<string, { type: string, kind: string }>>} */
+const symbolCache = new Map();
+
+const IDENT_RE = /[A-Za-z_🎉-💫][A-Za-z0-9_🎉-💫]*/u;
 
 /**
  * @param {vscode.WorkspaceFolder | undefined} folder
@@ -33,6 +37,50 @@ function resolveDiagnoseBin(folder) {
     "fhm_diagnose"
   );
   return fs.existsSync(candidate) ? candidate : undefined;
+}
+
+/**
+ * Normalize diagnose stdout: new `{diagnostics,symbols}` object, or legacy array.
+ * @param {unknown} raw
+ * @returns {{ diagnostics: any[], symbols: Record<string, { type: string, kind: string }> }}
+ */
+function normalizePayload(raw) {
+  if (Array.isArray(raw)) {
+    return { diagnostics: raw, symbols: {} };
+  }
+  if (raw && typeof raw === "object") {
+    const obj = /** @type {Record<string, unknown>} */ (raw);
+    const diags = Array.isArray(obj.diagnostics) ? obj.diagnostics : [];
+    const symbols =
+      obj.symbols && typeof obj.symbols === "object" && !Array.isArray(obj.symbols)
+        ? /** @type {Record<string, { type: string, kind: string }>} */ (obj.symbols)
+        : {};
+    return { diagnostics: diags, symbols };
+  }
+  return { diagnostics: [], symbols: {} };
+}
+
+/**
+ * @param {vscode.TextDocument} doc
+ * @param {vscode.Position} pos
+ * @returns {{ word: string, range: vscode.Range } | undefined}
+ */
+function identAtPosition(doc, pos) {
+  const range = doc.getWordRangeAtPosition(pos, IDENT_RE);
+  if (!range) return undefined;
+  const word = doc.getText(range);
+  if (!word) return undefined;
+  return { word, range };
+}
+
+/**
+ * @param {string} kind
+ * @returns {string}
+ */
+function kindBadge(kind) {
+  if (kind === "type") return "type";
+  if (kind === "ctor") return "ctor";
+  return "val";
 }
 
 /**
@@ -90,10 +138,11 @@ async function refreshDiagnostics(doc) {
       child.stdin.end();
     });
 
-    if (!Array.isArray(raw)) return;
+    const { diagnostics: diagArr, symbols } = normalizePayload(raw);
+    symbolCache.set(key, symbols);
 
     /** @type {vscode.Diagnostic[]} */
-    const diags = raw.map((d) => {
+    const diags = diagArr.map((d) => {
       const line = Math.max(0, (d.line || 1) - 1);
       const col = Math.max(0, (d.col || 1) - 1);
       const range = new vscode.Range(line, col, line, col + 1);
@@ -105,7 +154,7 @@ async function refreshDiagnostics(doc) {
     });
     diagnostics.set(doc.uri, diags);
   } catch (err) {
-    // Keep last good diagnostics; surface once via console for debugging.
+    // Keep last good diagnostics/symbols; surface once via console for debugging.
     console.error("[fhm]", err);
   }
 }
@@ -136,6 +185,23 @@ function activate(context) {
   context.subscriptions.push(diagnostics);
 
   context.subscriptions.push(
+    vscode.languages.registerHoverProvider("fhm", {
+      provideHover(doc, position) {
+        const hit = identAtPosition(doc, position);
+        if (!hit) return undefined;
+        const symbols = symbolCache.get(doc.uri.toString());
+        if (!symbols) return undefined;
+        const sym = symbols[hit.word];
+        if (!sym || typeof sym.type !== "string") return undefined;
+        const badge = kindBadge(sym.kind);
+        const md = new vscode.MarkdownString();
+        md.appendMarkdown(`\`${badge}\` **${hit.word}** : \`${sym.type}\``);
+        return new vscode.Hover(md, hit.range);
+      },
+    })
+  );
+
+  context.subscriptions.push(
     vscode.workspace.onDidChangeTextDocument((e) => {
       scheduleRefresh(e.document);
     }),
@@ -145,6 +211,7 @@ function activate(context) {
     vscode.workspace.onDidCloseTextDocument((doc) => {
       diagnostics.delete(doc.uri);
       const key = doc.uri.toString();
+      symbolCache.delete(key);
       const t = pending.get(key);
       if (t) clearTimeout(t);
       pending.delete(key);
@@ -168,6 +235,7 @@ function deactivate() {
   pending.clear();
   for (const c of running.values()) c.kill();
   running.clear();
+  symbolCache.clear();
 }
 
 module.exports = { activate, deactivate };

@@ -23,6 +23,11 @@ roots = [
   "FHM.Headlines",
 ]
 
+[[lean_lib]]
+name = "FHMEditor"
+# Hover/diagnose helpers — built with `fhm_diagnose`, not default `lake build`.
+roots = ["FHM.EditorSupport"]
+
 [[lean_exe]]
 name = "fhm_live"
 root = "FHM.Live"
@@ -36,7 +41,7 @@ root = "FHM.GrammarExport"
 [[lean_exe]]
 name = "fhm_diagnose"
 root = "FHM.Diagnose"
-# Parse-only JSON diagnostics for the editor extension.
+# Parse + hover-symbol JSON for the editor extension (`FHM.EditorSupport`).
 
 [[lean_lib]]
 name = "FHMZ3"
