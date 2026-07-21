@@ -5,8 +5,9 @@
 #   scripts/watch-live.sh                  # watches scratch/live.fhm
 #   scripts/watch-live.sh path/to/foo.fhm
 #
-# Rebuilds fhm_live when the binary is missing or older than Lean sources
-# under FHM/ / lakefile. After that, only the .fhm file is re-read on save.
+# Rebuilds fhm_live at startup (and when a pipeline Lean source changes) if
+# the binary is missing or stale. Saving the .fhm file only re-runs the exe —
+# it does not scan unrelated FHM/*.lean scratch files.
 
 set -euo pipefail
 
@@ -21,6 +22,19 @@ fi
 FILE="${1:-scratch/live.fhm}"
 BIN=".lake/build/bin/fhm_live"
 
+# Lean sources that actually feed `fhm_live` (not scratch modules under FHM/).
+PIPELINE_SRCS=(
+  FHM/Live.lean
+  FHM/Pretty.lean
+  FHM/EvaluateUnsafe.lean
+  FHM/SurfaceBridge.lean
+  FHM/InferW.lean
+  FHM/Core.lean
+  FHM/SurfaceLang.lean
+  FHM/Surface
+  lakefile.lean
+)
+
 if [[ ! -f "$FILE" ]]; then
   echo "error: file not found: $FILE" >&2
   exit 1
@@ -30,22 +44,20 @@ needs_rebuild() {
   if [[ ! -x "$BIN" ]]; then
     return 0
   fi
-  # Any newer Lean source / lakefile → rebuild so Pretty/Live edits take effect.
   local newest
-  newest="$(find FHM lakefile.lean lake-manifest.json -type f \( -name '*.lean' -o -name 'lakefile.lean' -o -name 'lake-manifest.json' \) -newer "$BIN" 2>/dev/null | head -1)"
+  newest="$(find "${PIPELINE_SRCS[@]}" -type f -name '*.lean' -newer "$BIN" 2>/dev/null | head -1)"
   [[ -n "$newest" ]]
 }
 
-if needs_rebuild; then
-  echo "building fhm_live…"
-  lake build fhm_live
-fi
-
-run_once() {
+ensure_built() {
   if needs_rebuild; then
     echo "building fhm_live…"
     lake build fhm_live
   fi
+}
+
+run_once() {
+  ensure_built
   clear 2>/dev/null || true
   echo "═══ $FILE ═══ $(date '+%H:%M:%S')"
   echo
@@ -66,23 +78,30 @@ echo "watching $FILE — save to re-run (Ctrl-C to stop)"
 run_once
 
 if command -v entr >/dev/null 2>&1; then
-  # Watch the .fhm file *and* Lean sources so Pretty/Live edits trigger a rebuild+rerun.
+  # Watch the .fhm file and pipeline Lean sources only (not all of FHM/).
   {
     printf '%s\n' "$FILE"
-    find FHM -name '*.lean' -type f 2>/dev/null
-    printf '%s\n' lakefile.lean
+    find "${PIPELINE_SRCS[@]}" -type f -name '*.lean' 2>/dev/null
   } | entr -c bash -c "
     cd '$ROOT'
-    if [[ ! -x '$BIN' ]] || find FHM lakefile.lean -type f -name '*.lean' -newer '$BIN' 2>/dev/null | grep -q .; then
+    BIN='$BIN'
+    FILE='$FILE'
+    needs_rebuild() {
+      if [[ ! -x \"\$BIN\" ]]; then return 0; fi
+      local newest
+      newest=\"\$(find ${PIPELINE_SRCS[*]} -type f -name '*.lean' -newer \"\$BIN\" 2>/dev/null | head -1)\"
+      [[ -n \"\$newest\" ]]
+    }
+    if needs_rebuild; then
       echo 'building fhm_live…'
       lake build fhm_live
     fi
-    '$BIN' '$FILE'
+    \"\$BIN\" \"\$FILE\"
     echo
     echo \"(exit \$?)\"
   "
 elif command -v fswatch >/dev/null 2>&1; then
-  fswatch -o "$FILE" FHM | while read -r _; do
+  fswatch -o "$FILE" "${PIPELINE_SRCS[@]}" | while read -r _; do
     run_once
   done
 else
