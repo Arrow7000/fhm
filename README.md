@@ -4,9 +4,9 @@ A formalisation of a language with a Hindley-Milner type system, plus a concrete
 
 - type annotations on let bindings and lambda variables (not part of core HM)
 - annotations can reference [type variables quantified in outer scopes](https://www.microsoft.com/en-us/research/publication/lexically-scoped-type-variables/)
-- pattern matching (with nested patterns and wildcards), compiled down to Core's flat single-level matches
+- nested pattern matching (with wildcards)
 - mutually recursive let bindings with optional type annotations on each (unannotated bindings are assumed to be monomorphic and generalised after typechecking the recursive block)
-- when recursive bindings have annotations they may be polymorphic – which enables fully polymorphic recursion, including *mixed* groups where some members are annotated and others aren't
+- when recursive bindings have annotations they may be polymorphic – which enables fully polymorphic recursion, including _mixed_ groups where some members are annotated and others aren't
 - algebraic data declarations (`type Maybe a = Just a | Nothing`, …)
 - primitive arithmetic and comparison ops (`+`, `-`, `<`), as ordinary curried functions – a partial application is a value; a saturated one δ-reduces on literals
 
@@ -25,9 +25,8 @@ A high-level overview of the pipeline:
     · desugar / name-resolve
     · compile nested matches → flat Core matches
     · group recursive bindings (SCCs)
-→ check exhaustiveness
-→ Infer / elaborate
-→ fully-annotated Core
+→ Infer / elaborate → fully-annotated Core
+  + check exhaustiveness   (separate check; both needed)
 → evaluate
 ```
 
@@ -37,8 +36,8 @@ In a bit more detail:
 - A core language (`Core.lean`'s `Expr`) that surface is lowered into – de Bruijn indices for terms and types, flat matches, explicit constructors
 - The Hindley-Milner typing relation (`TypeOfHM`), defined on the pre-elaboration core language
 - An elaboration (`Infer`) from desugared core to a core language suitable for execution – adds type annotations on all let bindings and applied type parameters on vars (for System F style type-passing semantics)
-  - This doubles as the algorithm-oriented spec for typechecking (as opposed to the `TypeOf*` relations which are non-algorithmic, *declarative* typing relations)
-- The HM typing relation defined on the *post*-elaboration core language (`TypeOfElabHM`)
+  - This doubles as the algorithm-oriented spec for typechecking (as opposed to the `TypeOf*` relations which are non-algorithmic, _declarative_ typing relations)
+- The HM typing relation defined on the _post_-elaboration core language (`TypeOfElabHM`)
 - A small-step, type-passing, operational semantics (`SmallStep.Step`) defined on an elaborated core-language program
 
 Elaboration actually does two things at once: it infers a type for every term, and it writes those types into the program as it goes. The two are inseparable – you can't annotate the bindings and variables without inferring their types first, and there's no point inferring types unless you're also getting the program closer to something runnable. The reason this is needed is that our operational semantics only accepts fully-annotated programs; but because the type system stays within HM (rank-1 prenex polymorphism), inference is still 100% decidable without any annotations. So the source stays annotation-optional, and elaboration is the phase that turns it into the fully-annotated form the evaluator needs.
@@ -69,13 +68,13 @@ This is where we actually work out a program's type, instead of just declaring w
 
 ### [`SurfaceLang.lean`](./FHM/SurfaceLang.lean), [`Surface/Lex.lean`](./FHM/Surface/Lex.lean), [`Surface/Parse.lean`](./FHM/Surface/Parse.lean)
 
-This is what the language looks like to a user: real string names, data declarations, and syntactic sugar for pairs, lists, `if`, and so on. Lex and Parse turn source text into that AST – Elm-flavoured concrete syntax, with F#-style `match` and `{a b} τ` schemes for polymorphism. Infix like `+`/`-`/`<`/`::` and multi-arg lambdas are desugared during parse. Lexer/parser *correctness* is deliberately not proved; the verified story starts at the Surface AST.
+This is what the language looks like to a user: real string names, data declarations, and syntactic sugar for pairs, lists, `if`, and so on. Lex and Parse turn source text into that AST – Elm-flavoured concrete syntax, with F#-style `match` and `{a b} τ` schemes for polymorphism. Infix like `+`/`-`/`<`/`::` and multi-arg lambdas are desugared during parsing. Lexer/parser _correctness_ is deliberately not proven; the verified story starts at the Surface AST.
 
 ### [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean)
 
 The front end proper: lowers Surface into Core, groups flat bindings into SCCs, checks exhaustiveness, and proves the end-to-end claim – a well-typed, exhaustive surface program elaborates to Core that is type-safe and never gets stuck.
 
-- `Lowers` / `lower`: declarative vs executable lowering (one-to-many at `match`, because many behaviourally-equivalent Core renderings of one surface match are fine).
+- `Lowers` / `lower`: declarative vs executable lowering. At match there isn't a unique correct Core term – different decision trees can implement the same surface match equivalently – so the relation allows any of them, and the function picks one.
 - `SurfaceWT` / `SurfaceWTExpr`: a declarative surface typing relation – at match it requires the branches themselves to be well-typed under the binders the patterns introduce, rather than just “whatever Core the lowerer emitted typechecks.”
 - `checkExhaustive`: executable coverage checker, proved sound against the declarative coverage predicate that type safety needs.
 - `program_type_safe` / `surface_type_safe`: the “doesn't go wrong” theorems at program and expression level.
@@ -96,7 +95,7 @@ Data-declaration elaboration: surface `type` decls become the Core constructor e
 
 ### [`Headlines.lean`](./FHM/Headlines.lean)
 
-A single entry point that re-exports the main theorems with plain-English glosses, plus a small safe pipeline that only accepts programs that typecheck *and* are exhaustive – and then can't get stuck. Also keeps a living `#print axioms` guard. Worth reading first if you're new to the project.
+A single entry point that re-exports the main theorems with plain-English glosses, plus the safe pipeline helpers `elaborateSafe` / `runSafe`. Also keeps a living `#print axioms` guard. Worth reading first if you're new to the project.
 
 ### [`EvaluateUnsafe.lean`](./FHM/EvaluateUnsafe.lean), [`Live.lean`](./FHM/Live.lean)
 
@@ -156,7 +155,7 @@ All of these are fully proved. The theorems only use the standard axioms and are
 
 - `TypeOfElabHM.progress`: a well-typed elaborated program is either a finished value or it can take another step.
 - `TypeOfElabHM.preservation`: taking a step never changes a program's type.
-- `TypeOfElabHM.type_safety`: putting those together, a well-typed program never gets stuck.
+- `TypeOfElabHM.type_safety` / `type_safety_star`: putting those together, a well-typed program never gets stuck – including under iterated stepping.
 
 **The elaboration bridge** (`Core.lean`):
 
@@ -164,7 +163,8 @@ All of these are fully proved. The theorems only use the standard axioms and are
 
 **Safe pipeline** (`Headlines.lean`):
 
-- `elaborateSafe` / `runSafe`: only succeed for programs that typecheck and are exhaustive, then evaluate under fuel without getting stuck.
+- `elaborateSafe`: if a surface program typechecks and is exhaustive, returns the elaborated Core term together with proofs of both.
+- `runSafe`: given those proofs, evaluates under fuel. The only thing that can go "wrong" is nontermination – unavoidable in a Turing-complete language.
 
 ## Why type-passing semantics for a Hindley-Milner language
 
@@ -172,9 +172,9 @@ I first implemented a simple language without type annotations at all. Then I wa
 
 Then I wanted to support mutually recursive let bindings. This is manageable as long as you stick to unannotated bindings or keep them all monomorphic.
 
-But then I also wanted *polymorphic* mutual recursion, and that's where it got difficult. Inferring it in general is [undecidable](https://doi.org/10.1145/169701.169692), but it becomes decidable once each binding carries a type annotation. The catch is that those annotations can no longer be erased: erase them and inference has to fall back to the monomorphic case, which would leave the typed language strictly weaker than the annotated one. What used to be two separate valid instantiations of a single polymorphic binding has now become two incompatible applications of a *monomorphic* binding. So erasing types is no longer an option.
+But then I also wanted _polymorphic_ mutual recursion. This was hard, because inferring it in general is [undecidable](https://doi.org/10.1145/169701.169692), but it becomes decidable once each binding carries a type annotation. The catch is that those annotations can no longer be erased: erase them and inference has to fall back to the monomorphic case, which would leave the typed language strictly weaker than the annotated one. What used to be two separate valid instantiations of a single polymorphic binding has now become two incompatible applications of a _monomorphic_ binding. So erasing types is no longer an option.
 
-That's what forced the current evaluation model. Instead of erasing types, the program keeps them and runs under a [type-passing](https://doi.org/10.1017/S0956796801004282) semantics, and inference elaborates each program into fully-annotated form. To show that this is merely an evaluation semantics and type annotations are not required for inference, we maintain two different declarative typing relations as stated above: one for the program *before* elaboration and one for after, with `TypeOfElabHM.faithful` tying them together.
+That's what forced the current evaluation model. Instead of erasing types, the program keeps them and runs under a [type-passing](https://doi.org/10.1017/S0956796801004282) semantics, and inference elaborates each program into fully-annotated form. To show that this is merely an evaluation semantics and type annotations are not required for inference, we maintain two different declarative typing relations as stated above: one for the program _before_ elaboration and one for after, with `TypeOfElabHM.faithful` tying them together.
 
 ## Building
 
@@ -186,7 +186,7 @@ lake exe cache get   # download prebuilt Mathlib oleans (don't recompile Mathlib
 lake build
 ```
 
-For the live driver:
+To run the live watch loop (save a `.fhm` file, see it typecheck and evaluate):
 
 ```bash
 lake build fhm_live
@@ -209,15 +209,15 @@ This workflow has been very fruitful, both in getting this formalisation to the 
 
 ## References
 
-- J. Roger Hindley. *The principal type-scheme of an object in combinatory logic.* Transactions of the American Mathematical Society 146:29–60, 1969. <https://doi.org/10.1090/S0002-9947-1969-0253905-6>
-- Robin Milner. *A theory of type polymorphism in programming.* Journal of Computer and System Sciences 17(3):348–375, 1978. <https://doi.org/10.1016/0022-0000(78)90014-4>
-- Luis Damas and Robin Milner. *Principal type-schemes for functional programs.* POPL 1982, 207–212. <https://doi.org/10.1145/582153.582176>
-- Alan Mycroft. *Polymorphic type schemes and recursive definitions.* International Symposium on Programming, LNCS 167, 217–228, 1984. <https://doi.org/10.1007/3-540-12925-1_41>
-- Fritz Henglein. *Type inference with polymorphic recursion.* ACM TOPLAS 15(2):253–289, 1993. <https://doi.org/10.1145/169701.169692>
-- A. J. Kfoury, J. Tiuryn, and P. Urzyczyn. *Type reconstruction in the presence of polymorphic recursion.* ACM TOPLAS 15(2):290–311, 1993. <https://doi.org/10.1145/169701.169687>
-- Simon Peyton Jones and Mark Shields. *Lexically scoped type variables.* Microsoft Research, 2002. <https://www.microsoft.com/en-us/research/publication/lexically-scoped-type-variables/>
-- Karl Crary, Stephanie Weirich, and Greg Morrisett. *Intensional polymorphism in type-erasure semantics.* Journal of Functional Programming 12(6):567–600, 2002 (ICFP 1998). <https://doi.org/10.1017/S0956796801004282>
-- Luc Maranget. *Compiling pattern matching to good decision trees.* ML Workshop 2008. <https://dl.acm.org/doi/10.1145/1411204.1411211>
-- François Pottier and Didier Rémy. *The essence of ML type inference.* In B. C. Pierce (ed.), Advanced Topics in Types and Programming Languages, ch. 10, 389–489. MIT Press, 2005. <https://pauillac.inria.fr/~fpottier/publis/emlti-final.pdf>
-- Brian Aydemir, Arthur Charguéraud, Benjamin C. Pierce, Randy Pollack, and Stephanie Weirich. *Engineering formal metatheory.* POPL 2008, 3–15. <https://doi.org/10.1145/1328438.1328443>
-- Arthur Charguéraud. *The locally nameless representation.* Journal of Automated Reasoning 49(3):363–408, 2012. <https://doi.org/10.1007/s10817-011-9225-2>. Coq sources: <https://github.com/charguer/formalmetacoq> (the `ln/ML_*` files).
+- J. Roger Hindley. _The principal type-scheme of an object in combinatory logic._ Transactions of the American Mathematical Society 146:29–60, 1969. <https://doi.org/10.1090/S0002-9947-1969-0253905-6>
+- Robin Milner. _A theory of type polymorphism in programming._ Journal of Computer and System Sciences 17(3):348–375, 1978. <https://doi.org/10.1016/0022-0000(78)90014-4>
+- Luis Damas and Robin Milner. _Principal type-schemes for functional programs._ POPL 1982, 207–212. <https://doi.org/10.1145/582153.582176>
+- Alan Mycroft. _Polymorphic type schemes and recursive definitions._ International Symposium on Programming, LNCS 167, 217–228, 1984. <https://doi.org/10.1007/3-540-12925-1_41>
+- Fritz Henglein. _Type inference with polymorphic recursion._ ACM TOPLAS 15(2):253–289, 1993. <https://doi.org/10.1145/169701.169692>
+- A. J. Kfoury, J. Tiuryn, and P. Urzyczyn. _Type reconstruction in the presence of polymorphic recursion._ ACM TOPLAS 15(2):290–311, 1993. <https://doi.org/10.1145/169701.169687>
+- Simon Peyton Jones and Mark Shields. _Lexically scoped type variables._ Microsoft Research, 2002. <https://www.microsoft.com/en-us/research/publication/lexically-scoped-type-variables/>
+- Karl Crary, Stephanie Weirich, and Greg Morrisett. _Intensional polymorphism in type-erasure semantics._ Journal of Functional Programming 12(6):567–600, 2002 (ICFP 1998). <https://doi.org/10.1017/S0956796801004282>
+- Luc Maranget. _Compiling pattern matching to good decision trees._ ML Workshop 2008. <https://dl.acm.org/doi/10.1145/1411204.1411211>
+- François Pottier and Didier Rémy. _The essence of ML type inference._ In B. C. Pierce (ed.), Advanced Topics in Types and Programming Languages, ch. 10, 389–489. MIT Press, 2005. <https://pauillac.inria.fr/~fpottier/publis/emlti-final.pdf>
+- Brian Aydemir, Arthur Charguéraud, Benjamin C. Pierce, Randy Pollack, and Stephanie Weirich. _Engineering formal metatheory._ POPL 2008, 3–15. <https://doi.org/10.1145/1328438.1328443>
+- Arthur Charguéraud. _The locally nameless representation._ Journal of Automated Reasoning 49(3):363–408, 2012. <https://doi.org/10.1007/s10817-011-9225-2>. Coq sources: <https://github.com/charguer/formalmetacoq> (the `ln/ML_*` files).
