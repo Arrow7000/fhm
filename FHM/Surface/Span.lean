@@ -89,13 +89,15 @@ def SpannedExpr.span : SpannedExpr → Span
   | .ife s .. => s
   | .match_ s .. => s
 
-/-- Spanned top-level program: RHS hulls per binding in group order + body. -/
+/-- Spanned top-level program: RHS hulls per binding in group order + body.
+    `declSpans` are full surface extents of each `type` decl (for tyvar scopes). -/
 structure SpannedProgram where
   groups : List (List SpannedExpr)
   body : SpannedExpr
+  declSpans : List Span := []
   deriving Repr
 
-instance : Inhabited SpannedProgram := ⟨⟨[], default⟩⟩
+instance : Inhabited SpannedProgram := ⟨{ groups := [], body := default }⟩
 
 inductive BinderKind
   | val
@@ -109,6 +111,8 @@ structure BinderSpan where
   name : String
   kind : BinderKind
   span : Span
+  /-- If set (e.g. scheme-ann tyvars), use as use-site scope in join. -/
+  scope? : Option Span := none
   deriving Repr, BEq
 
 def BinderKind.toString : BinderKind → String

@@ -285,3 +285,35 @@ def maybeUseSrc : String :=
     match symbolAtUseSite syms 1 9 "Bool" with
     | some s => s.kind == "type" && hasSub s.type_ "Bool"
     | none => false)
+
+-- E1. Tyvar use-site inside data decl field (`Just a`)
+#guard (match hoverSyms maybeSrc with
+  | none => false
+  | some syms =>
+    -- `a` in `Just a` (col 21 of `type Maybe a = Just a | Nothing`)
+    match symbolAtUseSite syms 1 21 "a" with
+    | some s =>
+        s.name == "a" && s.kind == "param" &&
+        hasSub s.type_ "type variable" && hasSub s.type_ "Maybe"
+    | none => false)
+
+-- E2. Unit lit `()` (two punct tokens → one lit span)
+#guard (match hoverSyms "()\n" with
+  | none => false
+  | some syms =>
+    match symbolAt syms 1 1 with
+    | some s =>
+        s.kind == "lit" && s.name == "()" &&
+        (hasSub s.type_ "Unit" || s.type_ == "Unit")
+    | none => false)
+
+-- E3. Scheme-ann tyvar use inside annotation (`List a`)
+#guard (match hoverSyms mapLike with
+  | none => false
+  | some syms =>
+    -- `a` in `List a` on line 1 (col 32 of mapLike)
+    match symbolAtUseSite syms 1 32 "a" with
+    | some s =>
+        s.name == "a" && s.kind == "param" &&
+        hasSub s.type_ "type variable" && hasSub s.type_ "scheme"
+    | none => false)

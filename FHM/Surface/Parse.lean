@@ -278,6 +278,16 @@ def colGt (col : Nat) : P Unit := do
   if t.startCol ≤ col then
     throwUnexpectedWithMessage none s!"expected column > {col}"
 
+/-- Hull of tokens consumed in `[startPos, stopPos)` on the current stream. -/
+def spanOfConsumed (startPos stopPos : Nat) : P Span := do
+  let s ← getStream
+  if stopPos ≤ startPos then
+    return Span.empty
+  else
+    match s.array[startPos]?, s.array[stopPos - 1]? with
+    | some t0, some t1 => return Span.union (Span.ofTok t0) (Span.ofTok t1)
+    | _, _ => return Span.empty
+
 /-! ## Type grammar
 
 ASCII only:
@@ -355,24 +365,32 @@ partial def ty : P Ty :=
 
 end
 
-/-- Scheme: `{a b} body` or bare `ty` (empty foralls). -/
-partial def polyTy : P PolyTy :=
+/-- Scheme: `{a b} body` or bare `ty` (empty foralls).
+    Brace binders emit `.param` spans scoped to the whole polyTy extent. -/
+partial def polyTy : P (PolyTy × List BinderSpan) :=
   withErrorMessage "expected type scheme" do
     skipComments
-    match ← option? (punct .lbrace) with
-    | some _ =>
+    match ← option? (withBacktracking (punct .lbrace)) with
+    | some lb =>
       skipComments
-      let binders ← takeMany1 (withBacktracking do
+      let binderToks ← takeMany1 (withBacktracking do
         skipComments
-        anyIdent)
+        anyIdentTok)
       skipComments
       let _ ← punct .rbrace
       skipComments
+      let startBody ← getPosition
       let body ← ty
-      return { foralls := binders.toList.map ValName.mk, body }
+      let stopBody ← getPosition
+      let bodySpan ← spanOfConsumed startBody stopBody
+      let polySpan := Span.union (Span.ofTok lb) bodySpan
+      let bs := binderToks.toList.map fun (t, n) =>
+        ({ name := n, kind := .param, span := Span.ofTok t, scope? := some polySpan } :
+          BinderSpan)
+      return ({ foralls := binderToks.toList.map fun (_, n) => ValName.mk n, body }, bs)
     | none =>
       let body ← ty
-      return { foralls := [], body }
+      return ({ foralls := [], body }, [])
 
 /-! ## Expression helpers -/
 
@@ -702,7 +720,11 @@ partial def letBinding (indentCol : Nat) :
     if t.startLine > eqTok.startLine then
       colGt indentCol
     let (rhs, bsRhs, sRhs) ← expr
-    return ((blockCol, .mk name, ann, rhs, sRhs), bsName ++ bsRhs)
+    let (annTy, bsAnn) :=
+      match ann with
+      | some (σ, bs) => (some σ, bs)
+      | none => (none, [])
+    return ((blockCol, .mk name, annTy, rhs, sRhs), bsName ++ bsAnn ++ bsRhs)
 
 /-- `let` bindings `in` body → nested `.letIn` (first binder outermost). -/
 partial def letExpr : PE :=
@@ -853,33 +875,37 @@ def dataCtor : P ((CtorName × List Ty) × List BinderSpan) :=
     let fields ← takeMany (withBacktracking ctorField)
     return ((.mk name, fields.toList), [mkBinder .ctor tok name])
 
-def typeDecl : P (DataDecl × List BinderSpan) :=
+/-- `type T a = …` plus binder spans and the full decl source span (tyvar scope). -/
+def typeDecl : P (DataDecl × List BinderSpan × Span) :=
   withErrorMessage "expected type declaration" do
     skipComments
-    let _ ← keyword .«type»
-    skipComments
-    let (tok, name) ← upperIdentTok
-    let bsType := [mkBinder .type tok name]
-    let params ← takeMany (withBacktracking do
+    let ((d, bs), seg) ← withCapture do
+      let _ ← keyword .«type»
       skipComments
-      lowerIdentTok)
-    let bsParams := params.toList.map fun (t, n) => mkBinder .param t n
-    skipComments
-    let _ ← punct .eq
-    skipComments
-    let _ ← option? (withBacktracking (punct .pipe))
-    skipComments
-    let (c0, bsC0) ← dataCtor
-    let rest ← takeMany (withBacktracking do
+      let (tok, name) ← upperIdentTok
+      let bsType := [mkBinder .type tok name]
+      let params ← takeMany (withBacktracking do
+        skipComments
+        lowerIdentTok)
+      let bsParams := params.toList.map fun (t, n) => mkBinder .param t n
       skipComments
-      let _ ← punct .pipe
+      let _ ← punct .eq
       skipComments
-      dataCtor)
-    return ({
-      name := .mk name
-      params := params.toList.map fun (_, n) => ValName.mk n
-      ctors := c0 :: rest.toList.map (·.1)
-    }, bsType ++ bsParams ++ bsC0 ++ concatBinders rest)
+      let _ ← option? (withBacktracking (punct .pipe))
+      skipComments
+      let (c0, bsC0) ← dataCtor
+      let rest ← takeMany (withBacktracking do
+        skipComments
+        let _ ← punct .pipe
+        skipComments
+        dataCtor)
+      return ({
+        name := .mk name
+        params := params.toList.map fun (_, n) => ValName.mk n
+        ctors := c0 :: rest.toList.map (·.1)
+      }, bsType ++ bsParams ++ bsC0 ++ concatBinders rest)
+    let declSpan ← spanOfConsumed seg.1 seg.2
+    return (d, bs, declSpan)
 
 /-- Top-level `let` binding (F# style — `let` required; no `in`). -/
 def topLet : P ((Binding × SpannedExpr) × List BinderSpan) :=
@@ -899,11 +925,11 @@ def program : P (Program × List BinderSpan × SpannedProgram) :=
       skipComments
       first [
         do
-          let (d, bs) ← typeDecl
-          return (Sum.inl (α := DataDecl) (β := Binding × SpannedExpr) d, bs),
+          let (d, bs, dSpan) ← typeDecl
+          return (Sum.inl (α := DataDecl × Span) (β := Binding × SpannedExpr) (d, dSpan), bs),
         do
           let (b, bs) ← topLet
-          return (Sum.inr (α := DataDecl) (β := Binding × SpannedExpr) b, bs)
+          return (Sum.inr (α := DataDecl × Span) (β := Binding × SpannedExpr) b, bs)
       ])
     skipComments
     let body? ← option? (withBacktracking expr)
@@ -912,7 +938,10 @@ def program : P (Program × List BinderSpan × SpannedProgram) :=
       | some (e, bs, s) => (e, bs, s)
       | none => (.primLit .unit, [], .leaf Span.empty)
     let decls := items.toList.filterMap fun
-      | (.inl d, _) => some d
+      | (.inl (d, _), _) => some d
+      | (.inr _, _) => none
+    let declSpans := items.toList.filterMap fun
+      | (.inl (_, sp), _) => some sp
       | (.inr _, _) => none
     let bindsWithSpans := items.toList.filterMap fun
       | (.inl _, _) => none
@@ -925,7 +954,7 @@ def program : P (Program × List BinderSpan × SpannedProgram) :=
       let spanByName := bindsWithSpans.map fun (b, s) => (b.name, s)
       let groupSpans := p.groups.map fun g =>
         g.filterMap fun b => (spanByName.find? fun p => p.1 == b.name).map (·.2)
-      let sp : SpannedProgram := { groups := groupSpans, body := sBody }
+      let sp : SpannedProgram := { groups := groupSpans, body := sBody, declSpans }
       return (p, bsItems ++ bsBody, sp)
     | none =>
       throwUnexpectedWithMessage none "duplicate binding names"
@@ -946,7 +975,7 @@ def parseTy (src : String) : Except ParseError Ty :=
   runLexParse ty src
 
 def parsePolyTy (src : String) : Except ParseError PolyTy :=
-  runLexParse polyTy src
+  (runLexParse polyTy src).map (·.1)
 
 def parseExpr (src : String) : Except ParseError Expr :=
   (runLexParse expr src).map (·.1)

@@ -5,7 +5,7 @@
 - **Syntax highlighting** for `.fhm` via a TextMate grammar generated from `Surface.Lex`
 - **Language config** — `--` / `{- -}` comments, brackets, auto-close
 - **Parse diagnostics on `didChange`** (debounced) via `fhm_diagnose` — line/col from the existing parser
-- **Type-on-hover** via **span + scope** (v3): binder def spans from the parse sidecar, lexical `scope` for use sites, inferred types (vals, λ params, pattern binds, lets in match/if arms). Lit/op tokens and type/ctor use sites included. Def-site / token span hit first; else name + innermost scope. Empty types show no hover — **no name-map fallback**. Tyvar params show `type variable (of T)`.
+- **Type-on-hover** via **span + scope** (v3): binder def spans from the parse sidecar, lexical `scope` for use sites, inferred types (vals, λ params, pattern binds, lets in match/if arms). Lit/op tokens (incl. unit `()`), type/ctor uses, type-decl tyvar uses (decl-hull scope), and scheme-ann `{a}` tyvar uses included. Def-site / token span hit first; else name + innermost scope. Empty types show no hover — **no name-map fallback**. Tyvar params show `type variable (of T)` / `type variable (scheme binder)`.
 
 ## Install via symlink (Cursor)
 

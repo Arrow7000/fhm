@@ -22,7 +22,7 @@ program-wide scope (global names). Lit/op tokens get spanned symbols from Core
 
 open Surface.Parse
 open Surface.Span
-open Surface.Lex (BinOpToken)
+open Surface.Lex (BinOpToken Punct Token)
 open SurfaceBridge
 
 /-- Collect schemes from the outer `letIn (some σ)` spine produced by
@@ -697,21 +697,27 @@ def takeFirstKind (bs : List BinderSpan) (k : BinderKind) :
 
 /-- Join parse binder spans with inferred types and scopes.
     Decl type/ctor: `scope := programScope` (global use-site). Type-decl params
-    get a tyvar label. Leftovers get empty types and `scope := span`. -/
+    get a tyvar label and `scope :=` that data decl’s hull (`declScopes`).
+    Scheme-ann `{a b}` params (parse sets `scope?`) are peeled after each val.
+    Leftovers get empty types and `scope := span` (or `scope?` if set). -/
 def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
     (valTys : List (ValName × Option PolyTy)) (valScopes : List Span)
     (paramTys : List (ValName × Ty)) (paramScopes : List Span)
     (patTys : List (Option Ty)) (patScopes : List Span)
-    (ctors : CtorEnv) (programScope : Span) : List RangedSymbol :=
+    (ctors : CtorEnv) (programScope : Span) (declScopes : List Span) :
+    List RangedSymbol :=
   Id.run do
     let mut bs := binders
     let mut out : List RangedSymbol := []
     let mut vi : Nat := 0
     let mut pi : Nat := 0
     let mut pai : Nat := 0
+    let mut di : Nat := 0
     for d in p.decls do
       let typeStr := prettySurfaceDataDecl d
       let typeName := prettyTyName d.name
+      let declScope := declScopes[di]?.getD programScope
+      di := di + 1
       match takeFirstKind bs .type with
       | some (b, rest) =>
         bs := rest
@@ -727,7 +733,7 @@ def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
           out := out ++ [{
             name := b.name, kind := "param",
             type_ := s!"type variable (of {typeName})",
-            span := b.span, scope := b.span
+            span := b.span, scope := declScope
           }]
         | none => pure ()
       for ⟨cname, _⟩ in d.ctors do
@@ -757,6 +763,22 @@ def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
           name := b.name, kind := "val", type_ := typeStr,
           span := b.span, scope := sc
         }]
+        -- Scheme-ann tyvars sit immediately after the val binder in parse order.
+        let mut peeling := true
+        while peeling do
+          match bs with
+          | b2 :: rest2 =>
+            if b2.kind == .param && b2.scope?.isSome then
+              bs := rest2
+              out := out ++ [{
+                name := b2.name, kind := "param",
+                type_ := "type variable (scheme binder)",
+                span := b2.span, scope := b2.scope?.getD b2.span
+              }]
+            else
+              peeling := false
+          | [] =>
+            peeling := false
       | none => pure ()
     for ⟨_, τ⟩ in paramTys do
       match takeFirstKind bs .param with
@@ -785,9 +807,13 @@ def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
         }]
       | none => pure ()
     for b in bs do
+      let sc := b.scope?.getD b.span
+      let typeStr :=
+        if b.kind == .param && b.scope?.isSome then "type variable (scheme binder)"
+        else ""
       out := out ++ [{
-        name := b.name, kind := b.kind.toString, type_ := "",
-        span := b.span, scope := b.span
+        name := b.name, kind := b.kind.toString, type_ := typeStr,
+        span := b.span, scope := sc
       }]
     return out
 
@@ -844,38 +870,67 @@ def binOpPrimTy (ctors : CtorEnv) : BinOpToken → Option (String × String)
       | some ctor => some ("::", ctor.toTy.pretty)
       | none => none
 
-/-- Lit / op hover symbols from a re-lex of `src` (token spans; Core types). -/
+/-- Lit / op hover symbols from a re-lex of `src` (token spans; Core types).
+    Adjacent `(` `)` tokens become one unit lit (lexer emits two puncts). -/
 def collectLitOpSymbols (src : String) (ctors : CtorEnv) : List RangedSymbol :=
   match Surface.Lex.lex src with
   | .error _ => []
   | .ok toks =>
-    toks.toList.filterMap fun t =>
-      let sp := Span.ofTok t
-      match t.token with
-      | .intLit n =>
-          some {
+    Id.run do
+      let mut out : List RangedSymbol := []
+      let mut i : Nat := 0
+      while h : i < toks.size do
+        let t := toks[i]
+        match t.token with
+        | .punct .lparen =>
+          if h2 : i + 1 < toks.size then
+            let t2 := toks[i + 1]
+            if t2.token == .punct .rparen then
+              let sp := Span.union (Span.ofTok t) (Span.ofTok t2)
+              out := out ++ [{
+                name := "()", kind := "lit",
+                type_ := (PrimLitExpr.ty .unit).pretty,
+                span := sp, scope := sp
+              }]
+              i := i + 2
+            else
+              i := i + 1
+          else
+            i := i + 1
+        | .intLit n =>
+          let sp := Span.ofTok t
+          out := out ++ [{
             name := toString n, kind := "lit",
             type_ := (PrimLitExpr.ty (.int n)).pretty,
             span := sp, scope := sp
-          }
-      | .charLit c =>
-          some {
+          }]
+          i := i + 1
+        | .charLit c =>
+          let sp := Span.ofTok t
+          out := out ++ [{
             name := prettyPrimLit (.char c), kind := "lit",
             type_ := (PrimLitExpr.ty (.char c)).pretty,
             span := sp, scope := sp
-          }
-      | .boolLit b =>
-          some {
+          }]
+          i := i + 1
+        | .boolLit b =>
+          let sp := Span.ofTok t
+          out := out ++ [{
             name := if b then "True" else "False", kind := "lit",
             type_ := (Ty.customTy nBool []).pretty,
             span := sp, scope := sp
-          }
-      | .op o =>
+          }]
+          i := i + 1
+        | .op o =>
+          let sp := Span.ofTok t
           match binOpPrimTy ctors o with
           | some (nm, tyStr) =>
-              some { name := nm, kind := "op", type_ := tyStr, span := sp, scope := sp }
-          | none => none
-      | _ => none
+            out := out ++ [{ name := nm, kind := "op", type_ := tyStr, span := sp, scope := sp }]
+          | none => pure ()
+          i := i + 1
+        | _ =>
+          i := i + 1
+      return out
 
 /-- Full hover report for a parsed program + binder spans + spanned program. -/
 def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
@@ -894,7 +949,7 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
   let progScope := programWideScope binders sp
   let binderSyms :=
     joinRangedSymbols binders p valTys valScopes params paramScopes pats patScopes
-      ctors progScope
+      ctors progScope sp.declSpans
   let preludeSyms :=
     (preludeTypeCtorSymbols ctors progScope).filter fun s =>
       !(binderSyms.any fun b => b.name == s.name && b.kind == s.kind)
