@@ -12,6 +12,7 @@ roots = [
   "FHM.Decls",
   "FHM.SurfaceLang",
   "FHM.Surface.Lex",
+  "FHM.Surface.Span",
   "FHM.Surface.Parse",
   "FHM.PatComp",
   "FHM.Pretty",
@@ -27,6 +28,11 @@ roots = [
 name = "FHMEditor"
 # Hover/diagnose helpers — built with `fhm_diagnose`, not default `lake build`.
 roots = ["FHM.EditorSupport"]
+
+[[lean_lib]]
+name = "FHMEditorTests"
+# Span-hover canaries — `lake build FHMEditorTests`.
+roots = ["FHM.EditorSupportTests"]
 
 [[lean_exe]]
 name = "fhm_live"

@@ -8,15 +8,18 @@ Reads a `.fhm` source file (or stdin) and prints a versioned JSON object:
 
 ```
 {
-  "version": 1,
+  "version": 2,
   "diagnostics": [...],
-  "symbols": { "map": { "type": "...", "kind": "val" }, ... },
+  "symbols": [
+    {"name":"map","kind":"val","type":"...","startLine":…,"startCol":…,"endLine":…,"endCol":…},
+    ...
+  ],
   "programTy": "..."
 }
 ```
 
-On parse failure: diagnostics only, empty `symbols`, no `programTy`.
-Line/col are 1-based (same as `ParseError` / the lexer).
+On parse failure: diagnostics only, empty `symbols` array, no `programTy`.
+Line/col are 1-based half-open spans (same as `ParseError` / the lexer).
 -/
 
 open Lean

@@ -12,7 +12,10 @@ let diagnostics;
 const pending = new Map();
 /** @type {Map<string, import("child_process").ChildProcess>} */
 const running = new Map();
-/** @type {Map<string, Record<string, { type: string, kind: string }>>} */
+/**
+ * Cached v2 ranged symbols (span containment only; no name fallback).
+ * @type {Map<string, { version: number, ranged: any[] }>}
+ */
 const symbolCache = new Map();
 
 const IDENT_RE = /[A-Za-z_🎉-💫][A-Za-z0-9_🎉-💫]*/u;
@@ -40,24 +43,85 @@ function resolveDiagnoseBin(folder) {
 }
 
 /**
- * Normalize diagnose stdout: new `{diagnostics,symbols}` object, or legacy array.
+ * @param {any} sym
+ * @returns {boolean}
+ */
+function isRangedSymbol(sym) {
+  return (
+    sym &&
+    typeof sym === "object" &&
+    typeof sym.name === "string" &&
+    typeof sym.startLine === "number" &&
+    typeof sym.startCol === "number" &&
+    typeof sym.endLine === "number" &&
+    typeof sym.endCol === "number"
+  );
+}
+
+/**
+ * Half-open span containment (1-based), matching lexer / Span.contains.
+ * @param {any} s
+ * @param {number} line
+ * @param {number} col
+ */
+function spanContains(s, line, col) {
+  const afterStart =
+    line > s.startLine || (line === s.startLine && col >= s.startCol);
+  const beforeEnd =
+    line < s.endLine || (line === s.endLine && col < s.endCol);
+  return afterStart && beforeEnd;
+}
+
+/**
+ * @param {any} s
+ * @returns {number}
+ */
+function spanArea(s) {
+  if (s.startLine === s.endLine) return s.endCol - s.startCol;
+  return (
+    (s.endLine - s.startLine) * 10000 + (s.endCol + (10000 - s.startCol))
+  );
+}
+
+/**
+ * @param {any[]} ranged
+ * @param {number} line 1-based
+ * @param {number} col 1-based
+ * @returns {any | undefined}
+ */
+function symbolAtRanged(ranged, line, col) {
+  const hits = ranged.filter((s) => spanContains(s, line, col));
+  if (hits.length === 0) return undefined;
+  let best = hits[0];
+  for (let i = 1; i < hits.length; i++) {
+    const s = hits[i];
+    const aBest = spanArea(best);
+    const aS = spanArea(s);
+    if (aS < aBest || aS === aBest) best = s;
+  }
+  return best;
+}
+
+/**
+ * Normalize diagnose stdout: v2 ranged symbols (legacy v1 name-map ignored for hover).
  * @param {unknown} raw
- * @returns {{ diagnostics: any[], symbols: Record<string, { type: string, kind: string }> }}
+ * @returns {{ diagnostics: any[], version: number, ranged: any[] }}
  */
 function normalizePayload(raw) {
   if (Array.isArray(raw)) {
-    return { diagnostics: raw, symbols: {} };
+    return { diagnostics: raw, version: 0, ranged: [] };
   }
   if (raw && typeof raw === "object") {
     const obj = /** @type {Record<string, unknown>} */ (raw);
     const diags = Array.isArray(obj.diagnostics) ? obj.diagnostics : [];
-    const symbols =
-      obj.symbols && typeof obj.symbols === "object" && !Array.isArray(obj.symbols)
-        ? /** @type {Record<string, { type: string, kind: string }>} */ (obj.symbols)
-        : {};
-    return { diagnostics: diags, symbols };
+    const version = typeof obj.version === "number" ? obj.version : 1;
+    if (Array.isArray(obj.symbols)) {
+      const ranged = obj.symbols.filter(isRangedSymbol);
+      return { diagnostics: diags, version, ranged };
+    }
+    return { diagnostics: diags, version, ranged: [] };
   }
-  return { diagnostics: [], symbols: {} };
+  return { diagnostics: [], version: 0, ranged: [] };
 }
 
 /**
@@ -80,6 +144,8 @@ function identAtPosition(doc, pos) {
 function kindBadge(kind) {
   if (kind === "type") return "type";
   if (kind === "ctor") return "ctor";
+  if (kind === "param") return "param";
+  if (kind === "pat") return "pat";
   return "val";
 }
 
@@ -138,8 +204,8 @@ async function refreshDiagnostics(doc) {
       child.stdin.end();
     });
 
-    const { diagnostics: diagArr, symbols } = normalizePayload(raw);
-    symbolCache.set(key, symbols);
+    const { diagnostics: diagArr, version, ranged } = normalizePayload(raw);
+    symbolCache.set(key, { version, ranged });
 
     /** @type {vscode.Diagnostic[]} */
     const diags = diagArr.map((d) => {
@@ -189,13 +255,23 @@ function activate(context) {
       provideHover(doc, position) {
         const hit = identAtPosition(doc, position);
         if (!hit) return undefined;
-        const symbols = symbolCache.get(doc.uri.toString());
-        if (!symbols) return undefined;
-        const sym = symbols[hit.word];
-        if (!sym || typeof sym.type !== "string") return undefined;
-        const badge = kindBadge(sym.kind);
+        const cache = symbolCache.get(doc.uri.toString());
+        if (!cache) return undefined;
+
+        // VS Code position is 0-based; diagnose spans are 1-based.
+        const line = position.line + 1;
+        const col = position.character + 1;
+
+        if (!cache.ranged || cache.ranged.length === 0) return undefined;
+        const sym = symbolAtRanged(cache.ranged, line, col);
+        // Span hit only; never fill empty types from a name map.
+        if (!sym || typeof sym.type !== "string" || sym.type.length === 0) {
+          return undefined;
+        }
+        const badge = kindBadge(sym.kind || "val");
+        const name = typeof sym.name === "string" ? sym.name : hit.word;
         const md = new vscode.MarkdownString();
-        md.appendMarkdown(`\`${badge}\` **${hit.word}** : \`${sym.type}\``);
+        md.appendMarkdown(`\`${badge}\` **${name}** : \`${sym.type}\``);
         return new vscode.Hover(md, hit.range);
       },
     })
