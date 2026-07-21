@@ -8,7 +8,7 @@ namespace Surface.Parse
 
 open Parser
 open Surface.Lex (Token TokenWithSource LexError Keyword Punct BinOpToken)
-open Surface.Span (Span BinderKind BinderSpan)
+open Surface.Span (Span BinderKind BinderSpan SpannedExpr SpannedProgram)
 
 /-! ## Errors -/
 
@@ -144,10 +144,22 @@ def intLitTok : P Int :=
     | .intLit n => some n
     | _ => none
 
+def intLitTokFull : P (Tok × Int) :=
+  tokenMap fun t =>
+    match t.token with
+    | .intLit n => some (t, n)
+    | _ => none
+
 def boolLitTok : P Bool :=
   tokenMap fun t =>
     match t.token with
     | .boolLit b => some b
+    | _ => none
+
+def boolLitTokFull : P (Tok × Bool) :=
+  tokenMap fun t =>
+    match t.token with
+    | .boolLit b => some (t, b)
     | _ => none
 
 def charLitTok : P Char :=
@@ -156,16 +168,34 @@ def charLitTok : P Char :=
     | .charLit c => some c
     | _ => none
 
+def charLitTokFull : P (Tok × Char) :=
+  tokenMap fun t =>
+    match t.token with
+    | .charLit c => some (t, c)
+    | _ => none
+
 def stringLitTok : P String :=
   tokenMap fun t =>
     match t.token with
     | .stringLit s => some s
     | _ => none
 
+def stringLitTokFull : P (Tok × String) :=
+  tokenMap fun t =>
+    match t.token with
+    | .stringLit s => some (t, s)
+    | _ => none
+
 def binOpTok : P BinOpToken :=
   tokenMap fun t =>
     match t.token with
     | .op o => some o
+    | _ => none
+
+def binOpTokFull : P (Tok × BinOpToken) :=
+  tokenMap fun t =>
+    match t.token with
+    | .op o => some (t, o)
     | _ => none
 
 def keyword (kw : Keyword) : P Tok :=
@@ -195,14 +225,17 @@ def anyIdentTok : P (Tok × String) :=
     | .ident raw _ => some (t, raw)
     | _ => none
 
-/-! ## Binder-span sidecar (Writer-style)
+/-! ## Binder-span + expr-hull sidecar (Writer-style)
 
-Same parse walk records binder locations without changing the Surface AST.
-`PB α` is `P (α × List BinderSpan)`; failed/`withBacktracking` branches discard
-their lists (unlike StateT, which would leak across backtracks).
+Same parse walk records binder locations and a `SpannedExpr` mirror without
+changing the Surface AST. Failed/`withBacktracking` branches discard their
+lists (unlike StateT, which would leak across backtracks).
+
+Expression parsers return `Expr × List BinderSpan × SpannedExpr`.
 -/
 
 abbrev PB (α : Type) := P (α × List BinderSpan)
+abbrev PE := P (Expr × List BinderSpan × SpannedExpr)
 
 def mkBinder (kind : BinderKind) (tok : Tok) (name : String) : BinderSpan :=
   { name, kind, span := Span.ofTok tok }
@@ -222,6 +255,9 @@ def pbMap (f : α → β) (m : P (α × List BinderSpan)) : P (β × List Binder
 /-- Flatten binder lists from an array of Writer results. -/
 def concatBinders {α} (xs : Array (α × List BinderSpan)) : List BinderSpan :=
   xs.toList.flatMap (·.2)
+
+def concatBinders3 {α} (xs : Array (α × List BinderSpan × SpannedExpr)) : List BinderSpan :=
+  xs.toList.flatMap (·.2.1)
 
 /-! ## Layout helpers (Tigris-style column guards) -/
 
@@ -345,7 +381,12 @@ instance : Inhabited Pattern := ⟨.wildcard⟩
 instance : Inhabited ValName := ⟨.mk ""⟩
 instance : Inhabited (Nat × ValName × Option PolyTy × Expr) :=
   ⟨(0, default, none, default)⟩
+instance : Inhabited (Nat × ValName × Option PolyTy × Expr × SpannedExpr) :=
+  ⟨(0, default, none, default, default)⟩
 instance : Inhabited (Pattern × Expr) := ⟨(default, default)⟩
+instance : Inhabited (Pattern × Expr × SpannedExpr) := ⟨(default, default, default)⟩
+instance : Inhabited (Expr × List BinderSpan × SpannedExpr) :=
+  ⟨(default, [], default)⟩
 
 def applyBinOp (op : BinOpToken) (a b : Expr) : Expr :=
   match op with
@@ -354,17 +395,31 @@ def applyBinOp (op : BinOpToken) (a b : Expr) : Expr :=
   | .lt => .app (.app (.primBinOp .intLt) a) b
   | .cons => .cons a b
 
-/-- Simple λ/let binder: name or `_`. No type annotation (avoids `->` ambiguity). -/
-def simpleBinder : P (Pattern × List BinderSpan) :=
+/-- Apply infix, mirroring Core/Surface shape in `SpannedExpr`. -/
+def applyBinOpSpanned (opTok : Tok) (op : BinOpToken)
+    (a : Expr) (sa : SpannedExpr) (b : Expr) (sb : SpannedExpr) :
+    Expr × SpannedExpr :=
+  let spanAll := Span.union sa.span sb.span
+  match op with
+  | .cons => (.cons a b, .cons spanAll sa sb)
+  | .plus | .minus | .lt =>
+      let e := applyBinOp op a b
+      let opS : SpannedExpr := .leaf (Span.ofTok opTok)
+      let spanInner := Span.union opS.span sa.span
+      (e, .app spanAll (.app spanInner opS sa) sb)
+
+/-- Simple λ/let binder: name or `_`. No type annotation (avoids `->` ambiguity).
+    Also returns the binder token span (for λ hulls). -/
+def simpleBinder : P (Pattern × List BinderSpan × Span) :=
   withErrorMessage "expected binder" do
     skipComments
     first [
       do
-        let _ ← punct .underscore
-        return (.wildcard, []),
+        let tok ← punct .underscore
+        return (.wildcard, [], Span.ofTok tok),
       do
         let (tok, name) ← lowerIdentTok
-        return (.name (.mk name), [mkBinder .param tok name])
+        return (.name (.mk name), [mkBinder .param tok name], Span.ofTok tok)
     ]
 
 /-- `True`/`False` bool tokens as ctor patterns (Surface has no lit patterns). -/
@@ -470,7 +525,7 @@ end
 
 mutual
 
-partial def atom : P (Expr × List BinderSpan) :=
+partial def atom : PE :=
   withErrorMessage "expected expression atom" do
     skipComments
     first [
@@ -480,116 +535,155 @@ partial def atom : P (Expr × List BinderSpan) :=
         throwUnexpectedWithMessage none "string literals are not supported in expressions",
       -- int / bool / char
       do
-        let n ← intLitTok
-        return (.primLit (.int n), []),
+        let (tok, n) ← intLitTokFull
+        return (.primLit (.int n), [], .leaf (Span.ofTok tok)),
       do
-        let b ← boolLitTok
-        return (.primLit (.bool b), []),
+        let (tok, b) ← boolLitTokFull
+        return (.primLit (.bool b), [], .leaf (Span.ofTok tok)),
       do
-        let c ← charLitTok
-        return (.primLit (.char c), []),
+        let (tok, c) ← charLitTokFull
+        return (.primLit (.char c), [], .leaf (Span.ofTok tok)),
       -- `()` unit
       do
-        let _ ← punct .lparen
+        let t0 ← punct .lparen
         skipComments
-        let _ ← punct .rparen
-        return (.primLit .unit, []),
+        let t1 ← punct .rparen
+        return (.primLit .unit, [], .leaf (Span.union (Span.ofTok t0) (Span.ofTok t1))),
       -- `( e )` or `( e , e )`
       do
-        let _ ← punct .lparen
+        let t0 ← punct .lparen
         skipComments
-        let (a, bsA) ← expr
+        let (a, bsA, sa) ← expr
         skipComments
         match ← option? (punct .comma) with
         | some _ =>
           skipComments
-          let (b, bsB) ← expr
+          let (b, bsB, sb) ← expr
           skipComments
-          let _ ← punct .rparen
-          return (.pair a b, bsA ++ bsB)
+          let t1 ← punct .rparen
+          let span := Span.union (Span.ofTok t0) (Span.ofTok t1)
+          return (.pair a b, bsA ++ bsB, .pair span sa sb)
         | none =>
-          let _ ← punct .rparen
-          return (a, bsA),
+          let t1 ← punct .rparen
+          let span := Span.union (Span.ofTok t0) (Span.ofTok t1)
+          let sa' :=
+            match sa with
+            | .leaf _ => SpannedExpr.leaf span
+            | .pair _ x y => .pair span x y
+            | .cons _ x y => .cons span x y
+            | .list _ xs => .list span xs
+            | .lambda _ b => .lambda span b
+            | .app _ f x => .app span f x
+            | .letIn _ r b => .letIn span r b
+            | .letRecIn _ rs b => .letRecIn span rs b
+            | .ife _ c t f => .ife span c t f
+            | .match_ _ s arms => .match_ span s arms
+          return (a, bsA, sa'),
       -- `[ e, … ]`
       do
-        let _ ← punct .lbrack
+        let t0 ← punct .lbrack
         skipComments
         match ← option? (punct .rbrack) with
-        | some _ => return (.list [], [])
+        | some t1 =>
+          return (.list [], [], .list (Span.union (Span.ofTok t0) (Span.ofTok t1)) [])
         | none =>
-          let (hd, bsHd) ← expr
+          let (hd, bsHd, sh) ← expr
           let tl ← takeMany (withBacktracking do
             skipComments
             let _ ← punct .comma
             skipComments
             expr)
           skipComments
-          let _ ← punct .rbrack
-          return (.list (hd :: tl.toList.map (·.1)), bsHd ++ concatBinders tl),
+          let t1 ← punct .rbrack
+          let items := hd :: tl.toList.map (·.1)
+          let spans := sh :: tl.toList.map (·.2.2)
+          let bs := bsHd ++ concatBinders3 tl
+          let span := Span.union (Span.ofTok t0) (Span.ofTok t1)
+          return (.list items, bs, .list span spans),
       -- `\ binder+ -> expr`
       do
-        let _ ← punct .backslash
+        let bsTok ← punct .backslash
         skipComments
         let binders ← takeMany1 (withBacktracking simpleBinder)
         skipComments
         let _ ← punct .arrow
         skipComments
-        let (body, bsBody) ← expr
+        let (body, bsBody, sBody) ← expr
         let pats := binders.toList.map (·.1)
-        let bsBind := concatBinders binders
-        return (pats.foldr (fun b acc => .lambda b none acc) body, bsBind ++ bsBody),
+        let binderSpans := binders.toList.map (·.2.2)
+        let bsBind := binders.toList.flatMap (·.2.1)
+        let (e, s) :=
+          (pats.zip binderSpans).foldr
+            (fun (pat, bspan) (acc, accS) =>
+              let sp := Span.union bspan accS.span
+              (Expr.lambda pat none acc, SpannedExpr.lambda sp accS))
+            (body, sBody)
+        let spanAll := Span.union (Span.ofTok bsTok) sBody.span
+        let s' :=
+          match s with
+          | .lambda _ b => SpannedExpr.lambda spanAll b
+          | other => other
+        return (e, bsBind ++ bsBody, s'),
       -- lower → var
       do
-        let name ← lowerIdent
-        return (.var (.mk name), []),
+        let (tok, name) ← lowerIdentTok
+        return (.var (.mk name), [], .leaf (Span.ofTok tok)),
       -- upper → ctor
       do
-        let name ← upperIdent
-        return (.ctor (.mk name), [])
+        let (tok, name) ← upperIdentTok
+        return (.ctor (.mk name), [], .leaf (Span.ofTok tok))
     ]
 
 /-- Left-associative juxtaposition: `f a b` ≡ `(f a) b`.
     Layout: args must share the head's line or start at a greater column
     (so a same-column sibling after a let RHS is not consumed as an app arg). -/
-partial def appExpr : P (Expr × List BinderSpan) :=
+partial def appExpr : PE :=
   withErrorMessage "expected expression" do
     skipComments
     let headTok ← nextTok
-    let (head, bsHead) ← atom
+    let (head, bsHead, sHead) ← atom
     let args ← takeMany (withBacktracking do
       let t ← nextTok
       if t.startLine != headTok.startLine && t.startCol ≤ headTok.startCol then
         throwUnexpectedWithMessage none "app argument must be same line or indented"
       atom)
-    return (args.foldl (fun f (a, _) => .app f a) head, bsHead ++ concatBinders args)
+    let (e, s) :=
+      args.foldl
+        (fun (f, sf) (a, _, sa) =>
+          let sp := Span.union sf.span sa.span
+          (Expr.app f a, SpannedExpr.app sp sf sa))
+        (head, sHead)
+    return (e, bsHead ++ concatBinders3 args, s)
 
 /-- Infix RHS: layout forms or an app — not another infix (keeps single-infix). -/
-partial def infixRhs : P (Expr × List BinderSpan) :=
+partial def infixRhs : PE :=
   first [letExpr, ifExpr, matchExpr, appExpr]
 
 /-- Single optional infix; a second infix at this layer is an error. -/
-partial def infixExpr : P (Expr × List BinderSpan) :=
+partial def infixExpr : PE :=
   withErrorMessage "expected expression" do
-    let (left, bsL) ← appExpr
+    let (left, bsL, sL) ← appExpr
     skipComments
-    match ← option? (withBacktracking binOpTok) with
-    | none => return (left, bsL)
-    | some op =>
+    match ← option? (withBacktracking binOpTokFull) with
+    | none => return (left, bsL, sL)
+    | some (opTok, op) =>
       skipComments
-      let (right, bsR) ← infixRhs
+      let (right, bsR, sR) ← infixRhs
       skipComments
       match ← option? (withBacktracking binOpTok) with
       | some _ =>
         throwUnexpectedWithMessage none "infix chaining requires parentheses"
       | none =>
-        return (applyBinOp op left right, bsL ++ bsR)
+        let (e, s) := applyBinOpSpanned opTok op left sL right sR
+        return (e, bsL ++ bsR, s)
 
 /-- One `let` binding: `name [: polyTy] = expr`. Returns binder column.
     `indentCol` is the column of the introducing `let` (or of the first
     binder, for sibling bindings): a newline RHS must start strictly right of
     it, so `let map =\n  e` works with a 2-space indent even when `map` itself
     sits further right than that indent. -/
-partial def letBinding (indentCol : Nat) : P ((Nat × ValName × Option PolyTy × Expr) × List BinderSpan) :=
+partial def letBinding (indentCol : Nat) :
+    P ((Nat × ValName × Option PolyTy × Expr × SpannedExpr) × List BinderSpan) :=
   withErrorMessage "expected let binding" do
     skipComments
     let (tok, name) ← lowerIdentTok
@@ -607,63 +701,74 @@ partial def letBinding (indentCol : Nat) : P ((Nat × ValName × Option PolyTy �
     let t ← nextTok
     if t.startLine > eqTok.startLine then
       colGt indentCol
-    let (rhs, bsRhs) ← expr
-    return ((blockCol, .mk name, ann, rhs), bsName ++ bsRhs)
+    let (rhs, bsRhs, sRhs) ← expr
+    return ((blockCol, .mk name, ann, rhs, sRhs), bsName ++ bsRhs)
 
 /-- `let` bindings `in` body → nested `.letIn` (first binder outermost). -/
-partial def letExpr : P (Expr × List BinderSpan) :=
+partial def letExpr : PE :=
   withErrorMessage "expected let expression" do
     skipComments
     let letTok ← keyword .«let»
-    let ((blockCol, n0, ann0, rhs0), bs0) ← letBinding letTok.startCol
+    let ((blockCol, n0, ann0, rhs0, s0), bs0) ← letBinding letTok.startCol
     let rest ← takeMany (withBacktracking do
       colEq blockCol
-      pbMap (fun (_, n, ann, rhs) => (n, ann, rhs)) (letBinding blockCol))
+      pbMap (fun (_, n, ann, rhs, s) => (n, ann, rhs, s)) (letBinding blockCol))
     skipComments
     let _ ← keyword .«in»
     skipComments
-    let (body, bsBody) ← expr
-    let binds := (n0, ann0, rhs0) :: rest.toList.map (·.1)
+    let (body, bsBody, sBody) ← expr
+    let binds := (n0, ann0, rhs0, s0) :: rest.toList.map (·.1)
     let bsRest := concatBinders rest
-    return (binds.foldr (fun (n, ann, rhs) acc => .letIn n ann rhs acc) body,
-      bs0 ++ bsRest ++ bsBody)
+    let (e, s) :=
+      binds.foldr
+        (fun (n, ann, rhs, sRhs) (acc, accS) =>
+          let sp := Span.union sRhs.span accS.span
+          (Expr.letIn n ann rhs acc, SpannedExpr.letIn sp sRhs accS))
+        (body, sBody)
+    let spanAll := Span.union (Span.ofTok letTok) sBody.span
+    let s' :=
+      match s with
+      | .letIn _ r b => SpannedExpr.letIn spanAll r b
+      | other => other
+    return (e, bs0 ++ bsRest ++ bsBody, s')
 
 /-- `if e then e else e` → `.ife`. -/
-partial def ifExpr : P (Expr × List BinderSpan) :=
+partial def ifExpr : PE :=
   withErrorMessage "expected if expression" do
     skipComments
-    let _ ← keyword .«if»
+    let ifTok ← keyword .«if»
     skipComments
-    let (c, bsC) ← expr
+    let (c, bsC, sC) ← expr
     skipComments
     let _ ← keyword .«then»
     skipComments
-    let (t, bsT) ← expr
+    let (t, bsT, sT) ← expr
     skipComments
     let _ ← keyword .«else»
     skipComments
-    let (f, bsF) ← expr
-    return (.ife c t f, bsC ++ bsT ++ bsF)
+    let (f, bsF, sF) ← expr
+    let span := Span.union (Span.ofTok ifTok) sF.span
+    return (.ife c t f, bsC ++ bsT ++ bsF, .ife span sC sT sF)
 
 /-- One match arm: `pattern -> expr`. -/
-partial def matchArm : P ((Pattern × Expr) × List BinderSpan) := do
+partial def matchArm : P ((Pattern × Expr × SpannedExpr) × List BinderSpan) := do
   skipComments
   let (pat, bsPat) ← pattern
   skipComments
   let _ ← punct .arrow
   skipComments
-  let (body, bsBody) ← expr
-  return ((pat, body), bsPat ++ bsBody)
+  let (body, bsBody, sBody) ← expr
+  return ((pat, body, sBody), bsPat ++ bsBody)
 
 /-- F#-style `match e with [|] P -> e | Q -> e`.
     Leading `|` optional; later branches use `|`.
     Newline-aligned `|` must share the first branch column. -/
-partial def matchExpr : P (Expr × List BinderSpan) :=
+partial def matchExpr : PE :=
   withErrorMessage "expected match expression" do
     skipComments
-    let _ ← keyword .«match»
+    let matchTok ← keyword .«match»
     skipComments
-    let (scrut, bsScrut) ← expr
+    let (scrut, bsScrut, sScrut) ← expr
     skipComments
     let _ ← keyword .«with»
     skipComments
@@ -688,11 +793,20 @@ partial def matchExpr : P (Expr × List BinderSpan) :=
         throwUnexpectedWithMessage none "match branch misaligned"
       let _ ← punct .pipe
       matchArm)
-    return (.match_ scrut (arm0 :: rest.toList.map (·.1)),
-      bsScrut ++ bs0 ++ concatBinders rest)
+    let arms := arm0 :: rest.toList.map (·.1)
+    let armExprs := arms.map fun ⟨p, e, _⟩ => (p, e)
+    let armSpans := arms.map fun ⟨_, _, s⟩ => s
+    let lastArmSpan :=
+      match armSpans.getLast? with
+      | some s => s.span
+      | none => sScrut.span
+    let span := Span.union (Span.ofTok matchTok) lastArmSpan
+    return (.match_ scrut armExprs,
+      bsScrut ++ bs0 ++ concatBinders rest,
+      .match_ span sScrut armSpans)
 
 /-- Top expression: layout forms or infix/app. -/
-partial def expr : P (Expr × List BinderSpan) :=
+partial def expr : PE :=
   withErrorMessage "expected expression" do
     skipComments
     first [
@@ -768,16 +882,17 @@ def typeDecl : P (DataDecl × List BinderSpan) :=
     }, bsType ++ bsParams ++ bsC0 ++ concatBinders rest)
 
 /-- Top-level `let` binding (F# style — `let` required; no `in`). -/
-def topLet : P (Binding × List BinderSpan) :=
+def topLet : P ((Binding × SpannedExpr) × List BinderSpan) :=
   withErrorMessage "expected top-level let" do
     skipComments
     let letTok ← keyword .«let»
-    let ((_, name, ann, rhs), bs) ← letBinding letTok.startCol
-    return (⟨name, ann, rhs⟩, bs)
+    let ((_, name, ann, rhs, sRhs), bs) ← letBinding letTok.startCol
+    return ((⟨name, ann, rhs⟩, sRhs), bs)
 
 /-- Interleaved `type` / `let`, then optional body expr (default unit).
-    Groups via `SurfaceBridge.Program.ofFlat` (SCC); fails on duplicate names. -/
-def program : P (Program × List BinderSpan) :=
+    Groups via `SurfaceBridge.Program.ofFlat` (SCC); fails on duplicate names.
+    Also returns a `SpannedProgram` aligned with group/body structure. -/
+def program : P (Program × List BinderSpan × SpannedProgram) :=
   withErrorMessage "expected program" do
     skipComments
     let items ← takeMany (withBacktracking do
@@ -785,26 +900,33 @@ def program : P (Program × List BinderSpan) :=
       first [
         do
           let (d, bs) ← typeDecl
-          return (Sum.inl (α := DataDecl) (β := Binding) d, bs),
+          return (Sum.inl (α := DataDecl) (β := Binding × SpannedExpr) d, bs),
         do
           let (b, bs) ← topLet
-          return (Sum.inr (α := DataDecl) (β := Binding) b, bs)
+          return (Sum.inr (α := DataDecl) (β := Binding × SpannedExpr) b, bs)
       ])
     skipComments
     let body? ← option? (withBacktracking expr)
-    let (body, bsBody) :=
+    let (body, bsBody, sBody) :=
       match body? with
-      | some (e, bs) => (e, bs)
-      | none => (.primLit .unit, [])
+      | some (e, bs, s) => (e, bs, s)
+      | none => (.primLit .unit, [], .leaf Span.empty)
     let decls := items.toList.filterMap fun
       | (.inl d, _) => some d
       | (.inr _, _) => none
-    let binds := items.toList.filterMap fun
+    let bindsWithSpans := items.toList.filterMap fun
       | (.inl _, _) => none
       | (.inr b, _) => some b
+    let binds := bindsWithSpans.map (·.1)
     let bsItems := concatBinders items
     match SurfaceBridge.Program.ofFlat decls binds body with
-    | some p => return (p, bsItems ++ bsBody)
+    | some p =>
+      -- SCC may reorder groups; look up RHS spans by unique binding name.
+      let spanByName := bindsWithSpans.map fun (b, s) => (b.name, s)
+      let groupSpans := p.groups.map fun g =>
+        g.filterMap fun b => (spanByName.find? fun p => p.1 == b.name).map (·.2)
+      let sp : SpannedProgram := { groups := groupSpans, body := sBody }
+      return (p, bsItems ++ bsBody, sp)
     | none =>
       throwUnexpectedWithMessage none "duplicate binding names"
 
@@ -827,13 +949,22 @@ def parsePolyTy (src : String) : Except ParseError PolyTy :=
   runLexParse polyTy src
 
 def parseExpr (src : String) : Except ParseError Expr :=
-  (runLexParse expr src).map Prod.fst
+  (runLexParse expr src).map (·.1)
 
 def parseExprWithBinders (src : String) : Except ParseError (Expr × List BinderSpan) :=
+  (runLexParse expr src).map fun (e, bs, _) => (e, bs)
+
+def parseExprWithSpans (src : String) :
+    Except ParseError (Expr × List BinderSpan × SpannedExpr) :=
   runLexParse expr src
 
-def parseProgramWithBinders (src : String) : Except ParseError (Program × List BinderSpan) :=
+/-- Parse with binder spans + spanned program (expr hulls for scopes). -/
+def parseProgramWithSpans (src : String) :
+    Except ParseError (Program × List BinderSpan × SpannedProgram) :=
   runLexParse program src
+
+def parseProgramWithBinders (src : String) : Except ParseError (Program × List BinderSpan) :=
+  parseProgramWithSpans src |>.map fun (p, bs, _) => (p, bs)
 
 def parseProgram (src : String) : Except ParseError Program :=
   parseProgramWithBinders src |>.map Prod.fst

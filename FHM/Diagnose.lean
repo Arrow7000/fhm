@@ -8,10 +8,11 @@ Reads a `.fhm` source file (or stdin) and prints a versioned JSON object:
 
 ```
 {
-  "version": 2,
+  "version": 3,
   "diagnostics": [...],
   "symbols": [
-    {"name":"map","kind":"val","type":"...","startLine":…,"startCol":…,"endLine":…,"endCol":…},
+    {"name":"map","kind":"val","type":"...","startLine":…,"startCol":…,"endLine":…,"endCol":…,
+     "scopeStartLine":…,"scopeStartCol":…,"scopeEndLine":…,"scopeEndCol":…},
     ...
   ],
   "programTy": "..."

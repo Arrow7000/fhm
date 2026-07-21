@@ -5,7 +5,7 @@
 - **Syntax highlighting** for `.fhm` via a TextMate grammar generated from `Surface.Lex`
 - **Language config** — `--` / `{- -}` comments, brackets, auto-close
 - **Parse diagnostics on `didChange`** (debounced) via `fhm_diagnose` — line/col from the existing parser
-- **Type-on-hover** via **span containment** (v2): binder locations from the parse sidecar + inferred types (vals, λ params via expected-type peel / `.app` domain, pattern binds via `patBindTys`). Shadowed names resolve to the innermost binder under the cursor. Empty types show no hover — **no name-map fallback**.
+- **Type-on-hover** via **span + scope** (v3): binder def spans from the parse sidecar, lexical `scope` for use sites, inferred types (vals, λ params, pattern binds, lets in match/if arms). Def-site span hit first; else name + innermost scope. Type/ctor use-site deferred. Empty types show no hover — **no name-map fallback**. Tyvar params show `type variable (of T)`.
 
 ## Install via symlink (Cursor)
 
@@ -21,21 +21,32 @@ Then **Developer: Reload Window**.
 
 The symlink target is `~/.cursor/extensions/fhm.fhm-0.0.1` → `editors/vscode/`. Grammar / `extension.js` edits apply after reload (no reinstall). Bump `version` in `package.json` if you change the folder name contract.
 
-## Diagnose JSON (v2)
+## Diagnose JSON (v3)
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "diagnostics": [],
   "symbols": [
-    {"name":"xs","kind":"param","type":"…","startLine":1,"startCol":10,"endLine":1,"endCol":12},
-    {"name":"xs","kind":"val","type":"Int","startLine":2,"startCol":5,"endLine":2,"endCol":7}
+    {
+      "name": "xs",
+      "kind": "param",
+      "type": "…",
+      "startLine": 1,
+      "startCol": 10,
+      "endLine": 1,
+      "endCol": 12,
+      "scopeStartLine": 1,
+      "scopeStartCol": 13,
+      "scopeEndLine": 1,
+      "scopeEndCol": 20
+    }
   ],
   "programTy": "…"
 }
 ```
 
-Line/col are **1-based**, half-open `[start, end)` (same as the lexer).
+Line/col are **1-based**, half-open `[start, end)` (same as the lexer). Missing `scope*` fields fall back to the def span (v2 compat).
 
 ## Tests
 

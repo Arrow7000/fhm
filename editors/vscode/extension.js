@@ -13,7 +13,7 @@ const pending = new Map();
 /** @type {Map<string, import("child_process").ChildProcess>} */
 const running = new Map();
 /**
- * Cached v2 ranged symbols (span containment only; no name fallback).
+ * Cached v3 ranged symbols (def span + lexical scope for use-site).
  * @type {Map<string, { version: number, ranged: any[] }>}
  */
 const symbolCache = new Map();
@@ -43,6 +43,26 @@ function resolveDiagnoseBin(folder) {
 }
 
 /**
+ * Normalize optional scope fields; missing scope falls back to def span (v2).
+ * @param {any} sym
+ */
+function withScope(sym) {
+  const hasScope =
+    typeof sym.scopeStartLine === "number" &&
+    typeof sym.scopeStartCol === "number" &&
+    typeof sym.scopeEndLine === "number" &&
+    typeof sym.scopeEndCol === "number";
+  if (hasScope) return sym;
+  return {
+    ...sym,
+    scopeStartLine: sym.startLine,
+    scopeStartCol: sym.startCol,
+    scopeEndLine: sym.endLine,
+    scopeEndCol: sym.endCol,
+  };
+}
+
+/**
  * @param {any} sym
  * @returns {boolean}
  */
@@ -60,7 +80,7 @@ function isRangedSymbol(sym) {
 
 /**
  * Half-open span containment (1-based), matching lexer / Span.contains.
- * @param {any} s
+ * @param {{ startLine: number, startCol: number, endLine: number, endCol: number }} s
  * @param {number} line
  * @param {number} col
  */
@@ -73,7 +93,7 @@ function spanContains(s, line, col) {
 }
 
 /**
- * @param {any} s
+ * @param {{ startLine: number, startCol: number, endLine: number, endCol: number }} s
  * @returns {number}
  */
 function spanArea(s) {
@@ -81,6 +101,19 @@ function spanArea(s) {
   return (
     (s.endLine - s.startLine) * 10000 + (s.endCol + (10000 - s.startCol))
   );
+}
+
+/**
+ * @param {any} s
+ * @returns {{ startLine: number, startCol: number, endLine: number, endCol: number }}
+ */
+function scopeSpan(s) {
+  return {
+    startLine: s.scopeStartLine,
+    startCol: s.scopeStartCol,
+    endLine: s.scopeEndLine,
+    endCol: s.scopeEndCol,
+  };
 }
 
 /**
@@ -103,7 +136,32 @@ function symbolAtRanged(ranged, line, col) {
 }
 
 /**
- * Normalize diagnose stdout: v2 ranged symbols (legacy v1 name-map ignored for hover).
+ * Use-site: name match + scope contains + non-empty type; smallest scope wins.
+ * @param {any[]} ranged
+ * @param {number} line
+ * @param {number} col
+ * @param {string} name
+ * @returns {any | undefined}
+ */
+function symbolAtUseSite(ranged, line, col, name) {
+  const hits = ranged.filter((s) => {
+    if (s.name !== name) return false;
+    if (typeof s.type !== "string" || s.type.length === 0) return false;
+    return spanContains(scopeSpan(s), line, col);
+  });
+  if (hits.length === 0) return undefined;
+  let best = hits[0];
+  for (let i = 1; i < hits.length; i++) {
+    const s = hits[i];
+    const aBest = spanArea(scopeSpan(best));
+    const aS = spanArea(scopeSpan(s));
+    if (aS < aBest || aS === aBest) best = s;
+  }
+  return best;
+}
+
+/**
+ * Normalize diagnose stdout: v2/v3 ranged symbols (legacy v1 name-map ignored).
  * @param {unknown} raw
  * @returns {{ diagnostics: any[], version: number, ranged: any[] }}
  */
@@ -116,7 +174,7 @@ function normalizePayload(raw) {
     const diags = Array.isArray(obj.diagnostics) ? obj.diagnostics : [];
     const version = typeof obj.version === "number" ? obj.version : 1;
     if (Array.isArray(obj.symbols)) {
-      const ranged = obj.symbols.filter(isRangedSymbol);
+      const ranged = obj.symbols.filter(isRangedSymbol).map(withScope);
       return { diagnostics: diags, version, ranged };
     }
     return { diagnostics: diags, version, ranged: [] };
@@ -263,8 +321,13 @@ function activate(context) {
         const col = position.character + 1;
 
         if (!cache.ranged || cache.ranged.length === 0) return undefined;
-        const sym = symbolAtRanged(cache.ranged, line, col);
-        // Span hit only; never fill empty types from a name map.
+
+        // Phase 1: def-site span hit with non-empty type.
+        let sym = symbolAtRanged(cache.ranged, line, col);
+        if (!sym || typeof sym.type !== "string" || sym.type.length === 0) {
+          // Phase 2: use-site by word + innermost scope.
+          sym = symbolAtUseSite(cache.ranged, line, col, hit.word);
+        }
         if (!sym || typeof sym.type !== "string" || sym.type.length === 0) {
           return undefined;
         }

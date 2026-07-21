@@ -13,8 +13,9 @@ Shared collection of hover symbols (bindings + type/ctor decls) for
 `fhm_diagnose`. Duplicates the small `collectTopSchemes` / `zipBindingTypes`
 helpers from `Live` rather than importing the live exe module.
 
-v2: binder spans from the parse sidecar joined with inferred types; hover
-resolves by **span containment** (smallest span wins).
+v3: binder spans + lexical `scope` spans for use-site hover; resolves by
+def-span containment first, else name+innermost scope. Type/ctor use-site
+deferred (`scope := span`).
 -/
 
 open Surface.Parse
@@ -110,14 +111,58 @@ def HoverEnv.extendLocals (e : HoverEnv) (ps : List (ValName × Ty)) : HoverEnv 
 def HoverEnv.extendLets (e : HoverEnv) (ps : List (ValName × PolyTy)) : HoverEnv :=
   { e with lets := ps ++ e.lets }
 
-/-- Best-effort surface type for app spines (var + arrow peel). -/
-partial def hoverExprTy (env : HoverEnv) : Surface.Expr → Option Ty
+/-- Best-effort surface expression type (vars, lits, ctors, apps, pairs, …). -/
+partial def hoverExprTy (ctors : CtorEnv) (env : HoverEnv) : Surface.Expr → Option Ty
   | .var n => env.lookupTy n
-  | .app f _ =>
-      match hoverExprTy env f with
-      | some (.arrow _ b) => some b
-      | _ => none
-  | _ => none
+  | .primLit (.int _) => some (.prim .int)
+  | .primLit (.nat _) => some (.prim .nat)
+  | .primLit (.bool _) => some (.customTy nBool [])
+  | .primLit (.char _) => some (.prim .char)
+  | .primLit .unit => some (.prim .unit)
+  | .ctor n =>
+      match LookupList.get? ctors n with
+      | some ctor => some ctor.toTy.body
+      | none => none
+  | .pair a b =>
+      match hoverExprTy ctors env a, hoverExprTy ctors env b with
+      | some ta, some tb => some (.customTy nPair [ta, tb])
+      | _, _ => none
+  | .cons h _ =>
+      match hoverExprTy ctors env h with
+      | some th => some (.customTy nList [th])
+      | none => none
+  | .list (h :: _) =>
+      match hoverExprTy ctors env h with
+      | some th => some (.customTy nList [th])
+      | none => none
+  | .list [] => none
+  | .ife _ t f =>
+      match hoverExprTy ctors env t with
+      | some τ => some τ
+      | none => hoverExprTy ctors env f
+  | .app f x =>
+      match f, hoverExprTy ctors env x with
+      | .ctor n, some τarg =>
+          match LookupList.get? ctors n with
+          | some ctor =>
+              if ctor.paramCount == 1 && ctor.contents.length == 1 then
+                some (.customTy ctor.tyName [τarg])
+              else if ctor.paramCount == 0 && ctor.contents.isEmpty then
+                some (.customTy ctor.tyName [])
+              else
+                match hoverExprTy ctors env f with
+                | some (.arrow _ b) => some b
+                | _ => none
+          | none => none
+      | _, _ =>
+          match hoverExprTy ctors env f with
+          | some (.arrow _ b) => some b
+          | _ => none
+  | .lambda .. => none
+  | .letIn .. => none
+  | .letRecIn .. => none
+  | .match_ .. => none
+  | .primBinOp .. => none
 
 /-- Slot types for one pattern's binders in `patVars` order (pad with `none`). -/
 def patSlots (ctors : CtorEnv) (pat : Surface.Pattern) (τ? : Option Ty) :
@@ -168,7 +213,7 @@ partial def zipExprParamTypesSurface (ctors : CtorEnv) (env : HoverEnv)
         zipExprParamTypesSurface ctors env exp t.2.2) ++
         zipExprParamTypesSurface ctors env expected sBody
   | .app f x =>
-      match hoverExprTy env f with
+      match hoverExprTy ctors env f with
       | some (.arrow a _) =>
           zipExprParamTypesSurface ctors env none f ++
             zipExprParamTypesSurface ctors env (some a) x
@@ -183,10 +228,7 @@ partial def zipExprParamTypesSurface (ctors : CtorEnv) (env : HoverEnv)
         zipExprParamTypesSurface ctors env none t
   | .list items => items.flatMap (zipExprParamTypesSurface ctors env none)
   | .match_ s arms =>
-      let τScrut :=
-        match s with
-        | .var n => env.lookupTy n
-        | _ => none
+      let τScrut := hoverExprTy ctors env s
       zipExprParamTypesSurface ctors env none s ++
         arms.flatMap fun ⟨pat, e⟩ =>
           let envArm :=
@@ -202,7 +244,7 @@ partial def zipExprParamTypesSurface (ctors : CtorEnv) (env : HoverEnv)
 
 /-- Collect pattern-bind types in parse / `patVars` order.
     Always one `Option Ty` per binder so `joinRangedSymbols` stays aligned with
-    `.pat` spans. v1: only **var** scrutinees yield types (`env.lookupTy`). -/
+    `.pat` spans. Scrutinee type via `hoverExprTy` (best effort). -/
 partial def collectPatTypes (ctors : CtorEnv) (env : HoverEnv)
     (expected : Option Ty) : Surface.Expr → List (Option Ty)
   | .lambda (.name n) _ sBody =>
@@ -231,7 +273,7 @@ partial def collectPatTypes (ctors : CtorEnv) (env : HoverEnv)
         collectPatTypes ctors env exp t.2.2) ++
         collectPatTypes ctors env expected sBody
   | .app f x =>
-      match hoverExprTy env f with
+      match hoverExprTy ctors env f with
       | some (.arrow a _) =>
           collectPatTypes ctors env none f ++
             collectPatTypes ctors env (some a) x
@@ -244,10 +286,7 @@ partial def collectPatTypes (ctors : CtorEnv) (env : HoverEnv)
       collectPatTypes ctors env none h ++ collectPatTypes ctors env none t
   | .list items => items.flatMap (collectPatTypes ctors env none)
   | .match_ s arms =>
-      let τScrut :=
-        match s with
-        | .var n => env.lookupTy n
-        | _ => none
+      let τScrut := hoverExprTy ctors env s
       collectPatTypes ctors env none s ++
         arms.flatMap fun ⟨pat, body⟩ =>
           let slots := patSlots ctors pat τScrut
@@ -272,37 +311,162 @@ partial def peelLetRecWrapper : Expr → Expr
       | none => e
   | e => e
 
+/-- Scheme for a surface let: lowered annotation, else synth RHS, else `none`. -/
+def surfaceLetScheme (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv)
+    (ann : Option Surface.PolyTy) (rhs : Surface.Expr) : Option PolyTy :=
+  match ann with
+  | some σs => lowerPoly ke σs
+  | none => (hoverExprTy ctors env rhs).map PolyTy.mkTrivial
+
+/-- All `let`/`let rec` vals inside an expression (surface walk; for match/if arms). -/
+partial def collectAllSurfaceValTypes (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv) :
+    Surface.Expr → List (ValName × Option PolyTy)
+  | .letIn name ann rhs body =>
+      let σ? := surfaceLetScheme ctors ke env ann rhs
+      let envRhs := env
+      let envBody :=
+        match σ? with
+        | some σ => env.extendLets [(name, σ)]
+        | none => env
+      (name, σ?) ::
+        collectAllSurfaceValTypes ctors ke envRhs rhs ++
+        collectAllSurfaceValTypes ctors ke envBody body
+  | .letRecIn binds body =>
+      let pairs : List (ValName × Option PolyTy) :=
+        binds.map fun ⟨n, ann, rhs⟩ => (n, surfaceLetScheme ctors ke env ann rhs)
+      let envBinds :=
+        env.extendLets (pairs.filterMap fun ⟨n, σ?⟩ => σ?.map fun σ => (n, σ))
+      pairs ++
+        binds.flatMap (fun ⟨_, _, rhs⟩ => collectAllSurfaceValTypes ctors ke envBinds rhs) ++
+        collectAllSurfaceValTypes ctors ke envBinds body
+  | .lambda (.name _) _ body =>
+      collectAllSurfaceValTypes ctors ke env body
+  | .lambda _ _ body => collectAllSurfaceValTypes ctors ke env body
+  | .app f x =>
+      collectAllSurfaceValTypes ctors ke env f ++
+        collectAllSurfaceValTypes ctors ke env x
+  | .pair a b =>
+      collectAllSurfaceValTypes ctors ke env a ++
+        collectAllSurfaceValTypes ctors ke env b
+  | .cons h t =>
+      collectAllSurfaceValTypes ctors ke env h ++
+        collectAllSurfaceValTypes ctors ke env t
+  | .list items => items.flatMap (collectAllSurfaceValTypes ctors ke env)
+  | .match_ s arms =>
+      let τScrut := hoverExprTy ctors env s
+      collectAllSurfaceValTypes ctors ke env s ++
+        arms.flatMap fun ⟨pat, body⟩ =>
+          let envArm :=
+            match τScrut with
+            | some τ => env.extendLocals (patLocalPairs ctors pat τ)
+            | none => env
+          collectAllSurfaceValTypes ctors ke envArm body
+  | .ife c t f =>
+      collectAllSurfaceValTypes ctors ke env c ++
+        collectAllSurfaceValTypes ctors ke env t ++
+        collectAllSurfaceValTypes ctors ke env f
+  | _ => []
+
+/-- Zip surface against Core for nested lets; at `match_`/`ife`, surface-walk arms
+    (Core is PatComp-shaped and must not be zipped). -/
+partial def zipExprBindingTypesOpt (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv) :
+    Surface.Expr → Expr → List (ValName × Option PolyTy)
+  | .letIn name _ sRhs sBody, .letIn (some σ) eRhs eBody =>
+      let env' := env.extendLets [(name, σ)]
+      (name, some σ) ::
+        zipExprBindingTypesOpt ctors ke env sRhs eRhs ++
+        zipExprBindingTypesOpt ctors ke env' sBody eBody
+  | .letIn name ann sRhs sBody, .letIn none eRhs eBody =>
+      let σ? := surfaceLetScheme ctors ke env ann sRhs
+      let env' :=
+        match σ? with
+        | some σ => env.extendLets [(name, σ)]
+        | none => env
+      (name, σ?) ::
+        zipExprBindingTypesOpt ctors ke env sRhs eRhs ++
+        zipExprBindingTypesOpt ctors ke env' sBody eBody
+  | .letRecIn binds sBody, e =>
+      let n := binds.length
+      let schemes := (collectTopSchemes e).take n
+      let chunk := schemes.reverse
+      let pairs := binds.map (·.1) |>.zip chunk
+      let eBody := dropAnnotatedLets n e
+      let env' := env.extendLets pairs
+      pairs.map (fun ⟨n, σ⟩ => (n, some σ)) ++
+        zipExprBindingTypesOpt ctors ke env' sBody eBody
+  | .lambda _ _ sBody, .lambda _ eBody =>
+      zipExprBindingTypesOpt ctors ke env sBody eBody
+  | .app sf sx, .app ef ex =>
+      zipExprBindingTypesOpt ctors ke env sf ef ++
+        zipExprBindingTypesOpt ctors ke env sx ex
+  | .pair sa sb, .app (.app (.ctor ⟨"Pair"⟩) ea) eb =>
+      zipExprBindingTypesOpt ctors ke env sa ea ++
+        zipExprBindingTypesOpt ctors ke env sb eb
+  | .cons sh st, .app (.app (.ctor ⟨"Cons"⟩) eh) et =>
+      zipExprBindingTypesOpt ctors ke env sh eh ++
+        zipExprBindingTypesOpt ctors ke env st et
+  | .list items, _ =>
+      items.flatMap (collectAllSurfaceValTypes ctors ke env)
+  | .match_ s arms, _ =>
+      let τScrut := hoverExprTy ctors env s
+      -- scrut may contain lets (rare); surface-walk it
+      collectAllSurfaceValTypes ctors ke env s ++
+        arms.flatMap fun ⟨pat, body⟩ =>
+          let envArm :=
+            match τScrut with
+            | some τ => env.extendLocals (patLocalPairs ctors pat τ)
+            | none => env
+          collectAllSurfaceValTypes ctors ke envArm body
+  | .ife c t f, _ =>
+      collectAllSurfaceValTypes ctors ke env c ++
+        collectAllSurfaceValTypes ctors ke env t ++
+        collectAllSurfaceValTypes ctors ke env f
+  | _, _ => []
+
 /-- Walk Core `letIn` spine in lockstep with flat top bindings, collecting nested
     vals inside each RHS (e.g. `let y = let x = True in x`). -/
-partial def zipTopRhsBindingTypes :
-    List Surface.Binding → Expr → List (ValName × PolyTy)
+partial def zipTopRhsBindingTypesOpt (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv) :
+    List Surface.Binding → Expr → List (ValName × Option PolyTy)
   | [], _ => []
-  | b :: bs, .letIn (some _) eRhs eBody =>
-      zipExprBindingTypes b.rhs (peelLetRecWrapper eRhs) ++
-        zipTopRhsBindingTypes bs eBody
+  | b :: bs, .letIn (some σ) eRhs eBody =>
+      let env' := env.extendLets [(b.name, σ)]
+      zipExprBindingTypesOpt ctors ke env b.rhs (peelLetRecWrapper eRhs) ++
+        zipTopRhsBindingTypesOpt ctors ke env' bs eBody
   | b :: bs, .letIn none eRhs eBody =>
-      zipExprBindingTypes b.rhs (peelLetRecWrapper eRhs) ++
-        zipTopRhsBindingTypes bs eBody
+      zipExprBindingTypesOpt ctors ke env b.rhs (peelLetRecWrapper eRhs) ++
+        zipTopRhsBindingTypesOpt ctors ke env bs eBody
   | _ :: _, _ => []
 
-/-- Collect val binding types (top-level groups + nested lets in RHSs + body). -/
-def collectValTypes (p : Surface.Program) (eOut : Expr) : List (ValName × PolyTy) :=
+/-- Collect val binding types (top-level groups + nested lets, incl. match/if arms). -/
+def collectValTypesOpt (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program) (eOut : Expr) :
+    List (ValName × Option PolyTy) :=
   let flat := p.groups.flatMap id
   let topCount := flat.length
-  let topBinds := zipBindingTypes p.groups (collectTopSchemes eOut)
-  let nestedRhs := zipTopRhsBindingTypes flat eOut
+  let topBinds := (zipBindingTypes p.groups (collectTopSchemes eOut)).map
+    fun ⟨n, σ⟩ => (n, some σ)
+  let env0 : HoverEnv := {
+    lets := topBinds.filterMap fun ⟨n, σ?⟩ => σ?.map fun σ => (n, σ)
+    locals := []
+  }
+  let nestedRhs := zipTopRhsBindingTypesOpt ctors ke env0 flat eOut
   let bodyCore := dropAnnotatedLets topCount eOut
-  let nestedBody := zipExprBindingTypes p.body bodyCore
+  let nestedBody := zipExprBindingTypesOpt ctors ke env0 p.body bodyCore
   topBinds ++ nestedRhs ++ nestedBody
+
+/-- Concrete schemes from `collectValTypesOpt` (drops failed synth). -/
+def collectValTypes (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program) (eOut : Expr) :
+    List (ValName × PolyTy) :=
+  (collectValTypesOpt ctors ke p eOut).filterMap fun ⟨n, σ?⟩ =>
+    σ?.map fun σ => (n, σ)
 
 /-- Collect λ param types in `simpleBinder` emit order (type-decl params are
     consumed earlier in `joinRangedSymbols`). -/
-def collectParamTypes (ctors : CtorEnv) (p : Surface.Program) (eOut : Expr) :
+def collectParamTypes (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program) (eOut : Expr) :
     List (ValName × Ty) :=
   let topPairs := zipBindingTypes p.groups (collectTopSchemes eOut)
   -- All vals (tops + nested) so nested `let` RHS peels can look up schemes;
   -- mutual-rec tops are all present for `.app` domain peel in bodies.
-  let env0 : HoverEnv := { lets := collectValTypes p eOut, locals := [] }
+  let env0 : HoverEnv := { lets := collectValTypes ctors ke p eOut, locals := [] }
   let flatBinds := p.groups.flatMap id
   let fromTops :=
     flatBinds.zip topPairs |>.flatMap fun (b, ⟨_, σ⟩) =>
@@ -311,16 +475,140 @@ def collectParamTypes (ctors : CtorEnv) (p : Surface.Program) (eOut : Expr) :
   fromTops ++ fromBody
 
 /-- Collect pat types for all match binders in program walk order. -/
-def collectPatTypesProg (ctors : CtorEnv) (p : Surface.Program) (eOut : Expr) :
+def collectPatTypesProg (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program) (eOut : Expr) :
     List (Option Ty) :=
   let topPairs := zipBindingTypes p.groups (collectTopSchemes eOut)
-  let env0 : HoverEnv := { lets := collectValTypes p eOut, locals := [] }
+  let env0 : HoverEnv := { lets := collectValTypes ctors ke p eOut, locals := [] }
   let flatBinds := p.groups.flatMap id
   let fromTops :=
     flatBinds.zip topPairs |>.flatMap fun (b, ⟨_, σ⟩) =>
       collectPatTypes ctors env0 (some σ.body) b.rhs
   let fromBody := collectPatTypes ctors env0 none p.body
   fromTops ++ fromBody
+
+/-- Nested val scopes (lockstep with `SpannedExpr`). -/
+partial def collectExprValScopes : Surface.Expr → SpannedExpr → List (ValName × Span)
+  | .letIn name _ sRhs sBody, .letIn _ sRhsS sBodyS =>
+      (name, sBodyS.span) ::
+        collectExprValScopes sRhs sRhsS ++ collectExprValScopes sBody sBodyS
+  | .letRecIn binds sBody, .letRecIn _ rhss sBodyS =>
+      let groupScope :=
+        match Span.hull (rhss.map SpannedExpr.span ++ [sBodyS.span]) with
+        | some s => s
+        | none => sBodyS.span
+      binds.map (fun ⟨n, _, _⟩ => (n, groupScope)) ++
+        ((binds.map (·.2.2)).zip rhss |>.flatMap (fun (e, s) => collectExprValScopes e s)) ++
+        collectExprValScopes sBody sBodyS
+  | .lambda _ _ sBody, .lambda _ sBodyS => collectExprValScopes sBody sBodyS
+  | .app sf sx, .app _ sfS sxS =>
+      collectExprValScopes sf sfS ++ collectExprValScopes sx sxS
+  | .pair a b, .pair _ aS bS =>
+      collectExprValScopes a aS ++ collectExprValScopes b bS
+  | .cons h t, .cons _ hS tS =>
+      collectExprValScopes h hS ++ collectExprValScopes t tS
+  | .list items, .list _ itemSs =>
+      items.zip itemSs |>.flatMap (fun (e, s) => collectExprValScopes e s)
+  | .match_ s arms, .match_ _ sS armSs =>
+      collectExprValScopes s sS ++
+        (arms.zip armSs |>.flatMap fun (⟨_, body⟩, bodyS) =>
+          collectExprValScopes body bodyS)
+  | .ife c t f, .ife _ cS tS fS =>
+      collectExprValScopes c cS ++ collectExprValScopes t tS ++ collectExprValScopes f fS
+  | _, _ => []
+
+/-- Top-level val scopes: each SCC group scopes over its RHSs + remaining program. -/
+def collectTopValScopes (p : Surface.Program) (sp : SpannedProgram) : List (ValName × Span) :=
+  let bodySpan := sp.body.span
+  let rec go (gs : List (List Surface.Binding)) (rss : List (List SpannedExpr)) :
+      List (ValName × Span) :=
+    match gs, rss with
+    | [], _ => []
+    | g :: gs', rhss :: rss' =>
+        let restSpan :=
+          match Span.hull (rss'.flatMap (·.map SpannedExpr.span) ++ [bodySpan]) with
+          | some s => s
+          | none => bodySpan
+        let groupScope :=
+          match Span.hull (rhss.map SpannedExpr.span ++ [restSpan]) with
+          | some s => s
+          | none => restSpan
+        g.map (fun b => (b.name, groupScope)) ++ go gs' rss'
+    | _, _ => []
+  go p.groups sp.groups
+
+/-- All val scopes in program order (tops + nested in RHSs/body, incl. match/if). -/
+def collectValScopes (p : Surface.Program) (sp : SpannedProgram) : List (ValName × Span) :=
+  let tops := collectTopValScopes p sp
+  let nestedRhs :=
+    (p.groups.flatMap id).zip (sp.groups.flatMap id) |>.flatMap fun (b, s) =>
+      collectExprValScopes b.rhs s
+  let nestedBody := collectExprValScopes p.body sp.body
+  tops ++ nestedRhs ++ nestedBody
+
+/-- λ param scopes (body of that λ). -/
+partial def collectExprParamScopes : Surface.Expr → SpannedExpr → List (ValName × Span)
+  | .lambda (.name n) _ sBody, .lambda _ sBodyS =>
+      (n, sBodyS.span) :: collectExprParamScopes sBody sBodyS
+  | .lambda _ _ sBody, .lambda _ sBodyS =>
+      collectExprParamScopes sBody sBodyS
+  | .letIn _ _ sRhs sBody, .letIn _ sRhsS sBodyS =>
+      collectExprParamScopes sRhs sRhsS ++ collectExprParamScopes sBody sBodyS
+  | .letRecIn binds sBody, .letRecIn _ rhss sBodyS =>
+      ((binds.map (·.2.2)).zip rhss |>.flatMap (fun (e, s) => collectExprParamScopes e s)) ++
+        collectExprParamScopes sBody sBodyS
+  | .app sf sx, .app _ sfS sxS =>
+      collectExprParamScopes sf sfS ++ collectExprParamScopes sx sxS
+  | .pair a b, .pair _ aS bS =>
+      collectExprParamScopes a aS ++ collectExprParamScopes b bS
+  | .cons h t, .cons _ hS tS =>
+      collectExprParamScopes h hS ++ collectExprParamScopes t tS
+  | .list items, .list _ itemSs =>
+      items.zip itemSs |>.flatMap (fun (e, s) => collectExprParamScopes e s)
+  | .match_ s arms, .match_ _ sS armSs =>
+      collectExprParamScopes s sS ++
+        (arms.zip armSs |>.flatMap fun (⟨_, body⟩, bodyS) =>
+          collectExprParamScopes body bodyS)
+  | .ife c t f, .ife _ cS tS fS =>
+      collectExprParamScopes c cS ++ collectExprParamScopes t tS ++
+        collectExprParamScopes f fS
+  | _, _ => []
+
+def collectParamScopes (p : Surface.Program) (sp : SpannedProgram) : List (ValName × Span) :=
+  let fromTops :=
+    (p.groups.flatMap id).zip (sp.groups.flatMap id) |>.flatMap fun (b, s) =>
+      collectExprParamScopes b.rhs s
+  fromTops ++ collectExprParamScopes p.body sp.body
+
+/-- Pattern-binder scopes (arm body); one span per `patVars` binder. -/
+partial def collectExprPatScopes : Surface.Expr → SpannedExpr → List Span
+  | .lambda _ _ sBody, .lambda _ sBodyS => collectExprPatScopes sBody sBodyS
+  | .letIn _ _ sRhs sBody, .letIn _ sRhsS sBodyS =>
+      collectExprPatScopes sRhs sRhsS ++ collectExprPatScopes sBody sBodyS
+  | .letRecIn binds sBody, .letRecIn _ rhss sBodyS =>
+      ((binds.map (·.2.2)).zip rhss |>.flatMap (fun (e, s) => collectExprPatScopes e s)) ++
+        collectExprPatScopes sBody sBodyS
+  | .app sf sx, .app _ sfS sxS =>
+      collectExprPatScopes sf sfS ++ collectExprPatScopes sx sxS
+  | .pair a b, .pair _ aS bS =>
+      collectExprPatScopes a aS ++ collectExprPatScopes b bS
+  | .cons h t, .cons _ hS tS =>
+      collectExprPatScopes h hS ++ collectExprPatScopes t tS
+  | .list items, .list _ itemSs =>
+      items.zip itemSs |>.flatMap (fun (e, s) => collectExprPatScopes e s)
+  | .match_ s arms, .match_ _ sS armSs =>
+      collectExprPatScopes s sS ++
+        (arms.zip armSs |>.flatMap fun (⟨pat, body⟩, bodyS) =>
+          let ns := patVars pat
+          ns.map (fun _ => bodyS.span) ++ collectExprPatScopes body bodyS)
+  | .ife c t f, .ife _ cS tS fS =>
+      collectExprPatScopes c cS ++ collectExprPatScopes t tS ++ collectExprPatScopes f fS
+  | _, _ => []
+
+def collectPatScopes (p : Surface.Program) (sp : SpannedProgram) : List Span :=
+  let fromTops :=
+    (p.groups.flatMap id).zip (sp.groups.flatMap id) |>.flatMap fun (b, s) =>
+      collectExprPatScopes b.rhs s
+  fromTops ++ collectExprPatScopes p.body sp.body
 
 def prettyTyName : TyName → String
   | .mk s => s
@@ -341,12 +629,13 @@ def prettySurfaceDataDecl (d : Surface.DataDecl) : String :=
       String.intercalate " " (fields.map (Surface.Ty.prettyAux 2))
   header ++ " = " ++ String.intercalate " | " (d.ctors.map ctorStr)
 
-/-- Spanned hover symbol (v2). -/
+/-- Spanned hover symbol (v3): def `span` + lexical `scope`. -/
 structure RangedSymbol where
   name : String
   kind : String
   type_ : String
   span : Span
+  scope : Span
   deriving Repr, BEq
 
 def RangedSymbol.toJson (s : RangedSymbol) : Lean.Json :=
@@ -357,7 +646,11 @@ def RangedSymbol.toJson (s : RangedSymbol) : Lean.Json :=
     ("startLine", Lean.Json.num s.span.startLine),
     ("startCol", Lean.Json.num s.span.startCol),
     ("endLine", Lean.Json.num s.span.endLine),
-    ("endCol", Lean.Json.num s.span.endCol)
+    ("endCol", Lean.Json.num s.span.endCol),
+    ("scopeStartLine", Lean.Json.num s.scope.startLine),
+    ("scopeStartCol", Lean.Json.num s.scope.startCol),
+    ("scopeEndLine", Lean.Json.num s.scope.endLine),
+    ("scopeEndCol", Lean.Json.num s.scope.endCol)
   ]
 
 /-- Among symbols whose span contains `(line, col)`, pick the **smallest** area;
@@ -374,6 +667,21 @@ def symbolAt (syms : List RangedSymbol) (line col : Nat) : Option RangedSymbol :
       else if aS == aBest then s
       else best) h
 
+/-- Use-site: name match + `scope.contains` + non-empty type; smallest scope wins. -/
+def symbolAtUseSite (syms : List RangedSymbol) (line col : Nat) (name : String) :
+    Option RangedSymbol :=
+  let hits := syms.filter fun s =>
+    s.name == name && !s.type_.isEmpty && s.scope.contains line col
+  match hits with
+  | [] => none
+  | h :: rest =>
+    some <| rest.foldl (fun best s =>
+      let aBest := best.scope.area
+      let aS := s.scope.area
+      if aS < aBest then s
+      else if aS == aBest then s
+      else best) h
+
 /-- Take the first binder of `kind`, preserving relative order of the rest. -/
 def takeFirstKind (bs : List BinderSpan) (k : BinderKind) :
     Option (BinderSpan × List BinderSpan) :=
@@ -384,27 +692,40 @@ def takeFirstKind (bs : List BinderSpan) (k : BinderKind) :
       else go (pref ++ [b]) rest
   go [] bs
 
-/-- Join parse binder spans with inferred types.
-    Decl type/ctor/params consumed first; then vals; then λ params; then pat
-    slots (`Option Ty` — `none` → empty pretty). Leftovers get empty types. -/
+/-- Join parse binder spans with inferred types and scopes.
+    Decl type/ctor: `scope := span` (use-site deferred). Type-decl params get a
+    tyvar label. Leftovers get empty types and `scope := span`. -/
 def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
-    (valTys : List (ValName × PolyTy)) (paramTys : List (ValName × Ty))
-    (patTys : List (Option Ty)) (ctors : CtorEnv) : List RangedSymbol :=
+    (valTys : List (ValName × Option PolyTy)) (valScopes : List Span)
+    (paramTys : List (ValName × Ty)) (paramScopes : List Span)
+    (patTys : List (Option Ty)) (patScopes : List Span)
+    (ctors : CtorEnv) : List RangedSymbol :=
   Id.run do
     let mut bs := binders
     let mut out : List RangedSymbol := []
+    let mut vi : Nat := 0
+    let mut pi : Nat := 0
+    let mut pai : Nat := 0
     for d in p.decls do
       let typeStr := prettySurfaceDataDecl d
+      let typeName := prettyTyName d.name
       match takeFirstKind bs .type with
       | some (b, rest) =>
         bs := rest
-        out := out ++ [{ name := b.name, kind := "type", type_ := typeStr, span := b.span }]
+        out := out ++ [{
+          name := b.name, kind := "type", type_ := typeStr,
+          span := b.span, scope := b.span
+        }]
       | none => pure ()
       for _ in d.params do
         match takeFirstKind bs .param with
         | some (b, rest) =>
           bs := rest
-          out := out ++ [{ name := b.name, kind := "param", type_ := "", span := b.span }]
+          out := out ++ [{
+            name := b.name, kind := "param",
+            type_ := s!"type variable (of {typeName})",
+            span := b.span, scope := b.span
+          }]
         | none => pure ()
       for ⟨cname, _⟩ in d.ctors do
         let ctorTy :=
@@ -414,53 +735,74 @@ def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
         match takeFirstKind bs .ctor with
         | some (b, rest) =>
           bs := rest
-          out := out ++ [{ name := b.name, kind := "ctor", type_ := ctorTy, span := b.span }]
+          out := out ++ [{
+            name := b.name, kind := "ctor", type_ := ctorTy,
+            span := b.span, scope := b.span
+          }]
         | none => pure ()
-    for ⟨_, σ⟩ in valTys do
+    for ⟨_, σ?⟩ in valTys do
       match takeFirstKind bs .val with
       | some (b, rest) =>
         bs := rest
+        let sc := valScopes[vi]?.getD b.span
+        vi := vi + 1
+        let typeStr :=
+          match σ? with
+          | some σ => σ.pretty
+          | none => ""
         out := out ++ [{
-          name := b.name, kind := "val", type_ := σ.pretty, span := b.span
+          name := b.name, kind := "val", type_ := typeStr,
+          span := b.span, scope := sc
         }]
       | none => pure ()
     for ⟨_, τ⟩ in paramTys do
       match takeFirstKind bs .param with
       | some (b, rest) =>
         bs := rest
+        let sc := paramScopes[pi]?.getD b.span
+        pi := pi + 1
         out := out ++ [{
-          name := b.name, kind := "param", type_ := τ.pretty, span := b.span
+          name := b.name, kind := "param", type_ := τ.pretty,
+          span := b.span, scope := sc
         }]
       | none => pure ()
     for ot in patTys do
       match takeFirstKind bs .pat with
       | some (b, rest) =>
         bs := rest
+        let sc := patScopes[pai]?.getD b.span
+        pai := pai + 1
         let typeStr :=
           match ot with
           | some τ => τ.pretty
           | none => ""
         out := out ++ [{
-          name := b.name, kind := "pat", type_ := typeStr, span := b.span
+          name := b.name, kind := "pat", type_ := typeStr,
+          span := b.span, scope := sc
         }]
       | none => pure ()
     for b in bs do
       out := out ++ [{
-        name := b.name, kind := b.kind.toString, type_ := "", span := b.span
+        name := b.name, kind := b.kind.toString, type_ := "",
+        span := b.span, scope := b.span
       }]
     return out
 
-/-- Full hover report for a parsed program + binder spans. -/
-def collectHover (p : Surface.Program) (binders : List BinderSpan) :
+/-- Full hover report for a parsed program + binder spans + spanned program. -/
+def collectHover (p : Surface.Program) (binders : List BinderSpan) (sp : SpannedProgram) :
     Option (List RangedSymbol × String) := do
   let userCore ← lowerDataDeclsIn preludeKindEnv p.decls
   let ctors ← elabDecls (preludeDecls ++ userCore)
+  let ke := DataDecls.kindEnv (preludeDecls ++ userCore)
   let c ← lower ctors p.term
   let (_, _, eOut, τ) ← infer c.freshFloor ⟨[], ctors⟩ c
-  let vals := collectValTypes p eOut
-  let params := collectParamTypes ctors p eOut
-  let pats := collectPatTypesProg ctors p eOut
-  let syms := joinRangedSymbols binders p vals params pats ctors
+  let valTys := collectValTypesOpt ctors ke p eOut
+  let params := collectParamTypes ctors ke p eOut
+  let pats := collectPatTypesProg ctors ke p eOut
+  let valScopes := collectValScopes p sp |>.map (·.2)
+  let paramScopes := collectParamScopes p sp |>.map (·.2)
+  let patScopes := collectPatScopes p sp
+  let syms := joinRangedSymbols binders p valTys valScopes params paramScopes pats patScopes ctors
   pure (syms, (genScheme [] [] τ).pretty)
 
 /-- Parse-error diagnostic JSON object. -/
@@ -474,18 +816,18 @@ def parseDiagJson (e : ParseError) : Lean.Json :=
 
 /-- Diagnose payload: versioned object with diagnostics, symbols, optional programTy. -/
 def diagnosePayload (src : String) : Lean.Json :=
-  match parseProgramWithBinders src with
+  match parseProgramWithSpans src with
   | .error e =>
     Lean.Json.mkObj [
-      ("version", Lean.Json.num 2),
+      ("version", Lean.Json.num 3),
       ("diagnostics", Lean.Json.arr #[parseDiagJson e]),
       ("symbols", Lean.Json.arr #[])
     ]
-  | .ok (p, binders) =>
-    match collectHover p binders with
+  | .ok (p, binders, sp) =>
+    match collectHover p binders sp with
     | none =>
       Lean.Json.mkObj [
-        ("version", Lean.Json.num 2),
+        ("version", Lean.Json.num 3),
         ("diagnostics", Lean.Json.arr #[Lean.Json.mkObj [
           ("severity", Lean.Json.str "error"),
           ("message", Lean.Json.str "lowering or typechecking failed"),
@@ -496,7 +838,7 @@ def diagnosePayload (src : String) : Lean.Json :=
       ]
     | some (syms, programTy) =>
       Lean.Json.mkObj [
-        ("version", Lean.Json.num 2),
+        ("version", Lean.Json.num 3),
         ("diagnostics", Lean.Json.arr #[]),
         ("symbols", Lean.Json.arr (syms.map RangedSymbol.toJson).toArray),
         ("programTy", Lean.Json.str programTy)
