@@ -5,7 +5,7 @@ import {
   normalizePayload,
   resolveHover,
   diagnosticsToMarkers,
-  formatRunOutput,
+  formatRunOutputHtml,
 } from "@fhm/editor-core";
 import langConfig from "../../vscode/language-configuration.json";
 
@@ -226,8 +226,7 @@ async function runProgram() {
   outputEl.textContent = "";
   try {
     const payload = await postJson("/api/run", model.getValue());
-    const text = formatRunOutput(payload);
-    outputEl.textContent = text;
+    outputEl.innerHTML = formatRunOutputHtml(payload);
     if (payload && payload.ok === false) {
       outputEl.classList.add("err");
       setStatus("failed", "err");

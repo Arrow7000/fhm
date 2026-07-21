@@ -143,3 +143,44 @@ body {
 .output.err {
   color: var(--err);
 }
+
+/* Live.lean Ansi palette (terminal-style run output) */
+.output .tok-name {
+  color: #56d4dd;
+  font-weight: 700;
+}
+
+.output .tok-colon {
+  color: #6a737d;
+}
+
+.output .tok-type {
+  color: #6cb6ff;
+}
+
+.output .tok-program {
+  color: #d670d6;
+  font-weight: 700;
+}
+
+.output .tok-dim {
+  color: #6a737d;
+}
+
+.output .tok-arrow {
+  color: #7dcea0;
+  font-weight: 700;
+}
+
+.output .tok-result {
+  color: #89ddff;
+}
+
+.output .tok-stage {
+  color: #ff6b6b;
+  font-weight: 700;
+}
+
+.output .tok-err {
+  color: #f07178;
+}

@@ -509,6 +509,74 @@ function diagnosticsToMarkers(diagArr) {
 }
 
 /**
+ * Escape text for safe HTML insertion.
+ * @param {unknown} s
+ * @returns {string}
+ */
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+/**
+ * Format live `--json` success/failure as coloured HTML (web playground).
+ * @param {any} payload
+ * @returns {string}
+ */
+function formatRunOutputHtml(payload) {
+  if (!payload || typeof payload !== "object") {
+    return escapeHtml("(invalid run response)");
+  }
+  if (!payload.ok) {
+    const stage = payload.stage || "error";
+    const msg = payload.message || "failed";
+    return (
+      `<span class="tok-stage">[${escapeHtml(stage)}]</span> ` +
+      `<span class="tok-err">${escapeHtml(msg)}</span>`
+    );
+  }
+  const lines = [];
+  if (Array.isArray(payload.bindings)) {
+    for (const b of payload.bindings) {
+      if (b && typeof b.name === "string" && typeof b.type === "string") {
+        lines.push(
+          `  <span class="tok-name">${escapeHtml(b.name)}</span>  ` +
+            `<span class="tok-colon">:</span>  ` +
+            `<span class="tok-type">${escapeHtml(b.type)}</span>`
+        );
+      }
+    }
+  }
+  if (typeof payload.programTy === "string") {
+    lines.push(
+      `  <span class="tok-program">&lt;program&gt;</span>  ` +
+        `<span class="tok-colon">:</span>  ` +
+        `<span class="tok-type">${escapeHtml(payload.programTy)}</span>`
+    );
+  }
+  if (payload.timings && typeof payload.timings.checkNs === "number") {
+    lines.push(
+      `<span class="tok-dim">  (checked in ${escapeHtml(formatNs(payload.timings.checkNs))})</span>`
+    );
+  }
+  lines.push("");
+  const result = payload.result ?? "?";
+  lines.push(
+    `<span class="tok-arrow">⟹</span>  ` +
+      `<span class="tok-result">${escapeHtml(result)}</span>`
+  );
+  if (payload.timings && typeof payload.timings.evalNs === "number") {
+    lines.push(
+      `<span class="tok-dim">  (evaluated in ${escapeHtml(formatNs(payload.timings.evalNs))})</span>`
+    );
+  }
+  return lines.join("\n");
+}
+
+/**
  * Format live `--json` success/failure for the output panel.
  * @param {any} payload
  * @returns {string}
@@ -577,5 +645,7 @@ module.exports = {
   resolveHover,
   diagnosticsToMarkers,
   formatRunOutput,
+  formatRunOutputHtml,
   formatNs,
+  escapeHtml,
 };
