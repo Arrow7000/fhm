@@ -22,20 +22,20 @@ const {
 
 const fhmPath = process.argv[2] || path.join(REPO, "scratch/live.fhm");
 const line0 = Number(process.argv[3] ?? 2); // default: `type Maybe a =`
-const bin = path.join(REPO, ".lake/build/bin/fhm_diagnose");
+const bin = path.join(REPO, ".lake/build/bin/fhm");
 
 const src = fs.readFileSync(fhmPath, "utf8");
 const lines = src.split("\n");
 const lineText = lines[line0] ?? "";
 console.log(`Line ${line0 + 1}: ${JSON.stringify(lineText)}`);
 
-const { stdout, status, error } = spawnSync(bin, [], {
+const { stdout, status, error } = spawnSync(bin, ["diagnose"], {
   input: src,
   encoding: "utf8",
   maxBuffer: 10 * 1024 * 1024,
 });
 if (error || status !== 0) {
-  console.error("fhm_diagnose failed", error || stdout);
+  console.error("fhm diagnose failed", error || stdout);
   process.exit(1);
 }
 

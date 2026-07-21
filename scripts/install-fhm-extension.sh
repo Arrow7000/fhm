@@ -8,7 +8,7 @@
 #
 # After install: Developer: Reload Window (or restart Cursor).
 # Highlighting works immediately. Parse squiggles need:
-#   lake build fhm_diagnose
+#   lake build fhm
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -46,4 +46,4 @@ echo "linked $TARGET -> $EXT_SRC"
 echo
 echo "Next: reload the window (Cmd+Shift+P → Developer: Reload Window)."
 echo "Edit editors/vscode/ or regenerate the grammar; reload again to pick up changes."
-echo "Parse diagnostics: lake build fhm_diagnose (binary at .lake/build/bin/fhm_diagnose)."
+echo "Parse diagnostics: lake build fhm (binary at .lake/build/bin/fhm)."

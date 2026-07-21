@@ -2,6 +2,7 @@ import FHM.Surface.Parse
 import FHM.Surface.Span
 import FHM.Surface.Lex
 import FHM.SurfaceBridge
+import FHM.PipelineShared
 import FHM.InferW
 import FHM.Pretty
 import FHM.Decls
@@ -11,8 +12,7 @@ import Lean.Data.Json
 # Editor support helpers
 
 Shared collection of hover symbols (bindings + type/ctor decls) for
-`fhm_diagnose`. Duplicates the small `collectTopSchemes` / `zipBindingTypes`
-helpers from `Live` rather than importing the live exe module.
+`fhm diagnose`. Shared `collectTopSchemes` / `zipBindingTypes` via `PipelineShared`.
 
 v3: binder spans + lexical `scope` spans for use-site hover; resolves by
 def-span containment first, else name+innermost scope. Type/ctor symbols use
@@ -25,34 +25,12 @@ open Surface.Span
 open Surface.Lex (BinOpToken Punct Token)
 open SurfaceBridge
 
-/-- Collect schemes from the outer `letIn (some σ)` spine produced by
-    `letRecElab` (stops at the first non-annotated-let). -/
-partial def collectTopSchemes : Expr → List PolyTy
-  | .letIn (some σ) _ body => σ :: collectTopSchemes body
-  | _ => []
-
 /-- Drop `n` outer annotated `letIn`s (inverse of taking the first `n` from
     `collectTopSchemes`). -/
 def dropAnnotatedLets : Nat → Expr → Expr
   | 0, e => e
   | n + 1, .letIn (some _) _ body => dropAnnotatedLets n body
   | _, e => e
-
-/-- `letRecElab` wraps group members outermost-last, so each group's chunk of
-    schemes from `collectTopSchemes` is reversed relative to binding order.
-    Undo that per SCC group and zip with surface names. -/
-def zipBindingTypes (groups : List (List Surface.Binding)) (schemes : List PolyTy) :
-    List (ValName × PolyTy) :=
-  let rec go (gs : List (List Surface.Binding)) (ss : List PolyTy)
-      (acc : List (ValName × PolyTy)) : List (ValName × PolyTy) :=
-    match gs with
-    | [] => acc
-    | g :: gs' =>
-      let n := g.length
-      let chunk := (ss.take n).reverse
-      let pairs := g.map (·.name) |>.zip chunk
-      go gs' (ss.drop n) (acc ++ pairs)
-  go groups schemes []
 
 /-- Zip a surface list spine against Core `Cons`/`Nil` after infer. -/
 partial def zipExprListBindingTypes (zip : Surface.Expr → Expr → List (ValName × PolyTy)) :

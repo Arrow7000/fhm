@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Exhaustive hover sweep — emulates Monaco/VS Code hover at every source position.
- * Spawns fhm_diagnose on a fixture unless --json is given.
+ * Spawns `fhm diagnose` on a fixture unless --json is given.
  *
  * Fails (exit 1) on: throw, per-position budget overrun, or hard hang (worker timeout).
  *
@@ -29,7 +29,7 @@ const RICH_FIXTURE = path.join(
   REPO_ROOT,
   "editors/web/fixtures/hover-rich.fhm"
 );
-const DIAGNOSE_BIN = path.join(REPO_ROOT, ".lake/build/bin/fhm_diagnose");
+const DIAGNOSE_BIN = path.join(REPO_ROOT, ".lake/build/bin/fhm");
 const BUDGET_MS = Number(process.env.HOVER_BUDGET_MS || 50);
 const HANG_MS = Number(process.env.HOVER_HANG_MS || 2000);
 const args = process.argv.slice(2);
@@ -49,17 +49,17 @@ function runDiagnose(source) {
     if (!fs.existsSync(DIAGNOSE_BIN)) {
       reject(
         new Error(
-          `fhm_diagnose not found at ${DIAGNOSE_BIN} — run lake build fhm_diagnose`
+          `fhm not found at ${DIAGNOSE_BIN} — run lake build fhm`
         )
       );
       return;
     }
-    const child = spawn(DIAGNOSE_BIN, [], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn(DIAGNOSE_BIN, ["diagnose"], { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {
       child.kill("SIGKILL");
-      reject(new Error(`fhm_diagnose timed out after ${HANG_MS * 5}ms`));
+      reject(new Error(`fhm diagnose timed out after ${HANG_MS * 5}ms`));
     }, Math.max(15_000, HANG_MS * 5));
     child.stdout.on("data", (c) => {
       stdout += c.toString("utf8");
@@ -78,7 +78,7 @@ function runDiagnose(source) {
       } catch (err) {
         reject(
           new Error(
-            `fhm_diagnose parse failed (exit ${code}): ${stderr || String(err)}`
+            `fhm diagnose parse failed (exit ${code}): ${stderr || String(err)}`
           )
         );
       }

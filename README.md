@@ -97,11 +97,14 @@ Data-declaration elaboration: surface `type` decls become the Core constructor e
 
 A single entry point that re-exports the main theorems with plain-English glosses, plus the safe pipeline helpers `elaborateSafe` / `runSafe`. Also keeps a living `#print axioms` guard. Worth reading first if you're new to the project.
 
-### [`EvaluateUnsafe.lean`](./FHM/EvaluateUnsafe.lean), [`Live.lean`](./FHM/Live.lean)
+### [`EvaluateUnsafe.lean`](./FHM/EvaluateUnsafe.lean), [`Live.lean`](./FHM/Live.lean), [`Diagnose.lean`](./FHM/Diagnose.lean)
 
-The formal evaluator is fuelled. For actually running programs – including naive recursion that blows past any fixed fuel – there's an unbounded evaluator. `Live.lean` wires the whole stack into an executable (`fhm_live`): parse, lower, infer (printing binding and body types), check exhaustiveness, elaborate, evaluate.
+The formal evaluator is fuelled. For actually running programs – including naive recursion that blows past any fixed fuel – there's an unbounded evaluator. The unified `fhm` CLI (see `FHM/Cli.lean`) exposes:
 
-Pair that with `scripts/watch-live.sh` and a `.fhm` file (see `scratch/live.fhm`) and you get a save-triggered, REPL-like loop.
+- `fhm` / `fhm run` — parse, lower, infer (print binding and body types), exhaustiveness, elaborate, evaluate (`Live.lean`; `--json` for machine output)
+- `fhm diagnose` — parse + hover symbols as JSON for editors (`Diagnose.lean` / `EditorSupport.lean`)
+
+Pair `fhm run` with `scripts/watch-live.sh` and a `.fhm` file (see `scratch/live.fhm`) for a save-triggered, REPL-like loop. The Monaco playground under `editors/web/` talks to the same binary over HTTP.
 
 ### [`Pretty.lean`](./FHM/Pretty.lean), [`Examples.lean`](./FHM/Examples.lean)
 
@@ -186,13 +189,42 @@ lake exe cache get   # download prebuilt Mathlib oleans (don't recompile Mathlib
 lake build
 ```
 
-To run the live watch loop (save a `.fhm` file, see it typecheck and evaluate):
+### Live watch (terminal)
+
+Save a `.fhm` file and re-run the full pipeline (types, then eval) on each save:
 
 ```bash
-lake build fhm_live
+lake build fhm                         # builds .lake/build/bin/fhm
 scripts/watch-live.sh                  # watches scratch/live.fhm by default
 scripts/watch-live.sh path/to/foo.fhm  # or point it at another file
 ```
+
+Needs `entr` (preferred) or `fswatch`; otherwise it falls back to polling. The script only rebuilds `fhm` when pipeline Lean sources change (not every file under `FHM/`).
+
+Manual one-shots without the watcher:
+
+```bash
+.lake/build/bin/fhm scratch/live.fhm           # human Ansi output
+.lake/build/bin/fhm --json scratch/live.fhm    # JSON (same as the web /api/run)
+.lake/build/bin/fhm diagnose scratch/live.fhm  # editor diagnostics / hover JSON
+```
+
+### Web playground
+
+Local Monaco editor + output pane; debounced `fhm diagnose` on edit, Run for `fhm --json`.
+
+```bash
+lake build fhm
+cd editors/web
+npm install
+npm run dev          # http://localhost:5173
+```
+
+If the editor pane stays blank or imports look stale after changing `editors/shared/`, use `npm run dev:clean` (clears Vite’s optimize-deps cache) and hard-refresh the browser.
+
+Optional checks: `npm run hover-sweep`, `npm run verify-playground` (Playwright).
+
+The Cursor/VS Code extension under `editors/vscode/` also talks to `fhm diagnose` (see `scripts/install-fhm-extension.sh`).
 
 ## My motivation
 

@@ -3,6 +3,7 @@ import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Pretty
 import FHM.EvaluateUnsafe
+import FHM.PipelineShared
 import Lean.Data.Json
 
 /-!
@@ -18,7 +19,8 @@ Live uses the unbounded evaluator — naive `fib` blows past any fixed fuel.
 ## CLI
 
 ```
-fhm_live [--json] [path]
+fhm [--json] [path]
+fhm run [--json] [path]
 ```
 
 - No path, human mode: default `scratch/live.fhm` (watch-live).
@@ -47,27 +49,7 @@ def PipelineStage.tag : PipelineStage → String
   | .elaborate => "elaborate"
   | .eval => "eval"
 
-/-- Collect schemes from the outer `letIn (some σ)` spine produced by
-    `letRecElab` (stops at the program body). -/
-partial def collectTopSchemes : Expr → List PolyTy
-  | .letIn (some σ) _ body => σ :: collectTopSchemes body
-  | _ => []
-
-/-- `letRecElab` wraps group members outermost-last, so each group's chunk of
-    schemes from `collectTopSchemes` is reversed relative to binding order.
-    Undo that per SCC group and zip with surface names. -/
-def zipBindingTypes (groups : List (List Surface.Binding)) (schemes : List PolyTy) :
-    List (ValName × PolyTy) :=
-  let rec go (gs : List (List Surface.Binding)) (ss : List PolyTy)
-      (acc : List (ValName × PolyTy)) : List (ValName × PolyTy) :=
-    match gs with
-    | [] => acc
-    | g :: gs' =>
-      let n := g.length
-      let chunk := (ss.take n).reverse
-      let pairs := g.map (·.name) |>.zip chunk
-      go gs' (ss.drop n) (acc ++ pairs)
-  go groups schemes []
+/-! ## ANSI colour (TTY + no `NO_COLOR`) -/
 
 /-- Human-readable duration from a nanosecond delta.
     Picks ns / µs / ms / s so sub-millisecond runs don't collapse to `0ms`. -/
@@ -83,8 +65,6 @@ def formatDuration (ns : Nat) : String :=
     let frac := (ns % 1_000_000_000) / 10_000_000  -- hundredths of a second
     let pad := if frac < 10 then "0" else ""
     s!"{whole}.{pad}{frac}s"
-
-/-! ## ANSI colour (TTY + no `NO_COLOR`) -/
 
 structure Ansi where
   on : Bool
@@ -249,20 +229,20 @@ def parseArgs (args : List String) : Except String (Bool × Option String) :=
         if json then .error "duplicate --json"
         else go rest true path
     | "-h" :: _ | "--help" :: _ =>
-        .error "usage: fhm_live [--json] [path]\n\
+        .error "usage: fhm [--json] [path]\n\
   no path (human): scratch/live.fhm\n\
   no path (--json): read stdin\n\
   path: read that file"
     | flag :: rest =>
         if flag.startsWith "-" then
-          .error s!"unknown flag: {flag}\nusage: fhm_live [--json] [path]"
+          .error s!"unknown flag: {flag}\nusage: fhm [--json] [path]"
         else if path.isSome then
-          .error "usage: fhm_live [--json] [path]"
+          .error "usage: fhm [--json] [path]"
         else
           go rest json (some flag)
   go args false none
 
-def main (args : List String) : IO UInt32 := do
+def runLive (args : List String) : IO UInt32 := do
   let (jsonMode, path?) ← match parseArgs args with
     | .error msg =>
         IO.eprintln msg

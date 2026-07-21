@@ -5,7 +5,7 @@
 #   scripts/watch-live.sh                  # watches scratch/live.fhm
 #   scripts/watch-live.sh path/to/foo.fhm
 #
-# Rebuilds fhm_live at startup (and when a pipeline Lean source changes) if
+# Rebuilds fhm at startup (and when a pipeline Lean source changes) if
 # the binary is missing or stale. Saving the .fhm file only re-runs the exe —
 # it does not scan unrelated FHM/*.lean scratch files.
 
@@ -20,11 +20,14 @@ if [[ -t 1 ]]; then
 fi
 
 FILE="${1:-scratch/live.fhm}"
-BIN=".lake/build/bin/fhm_live"
+BIN=".lake/build/bin/fhm"
 
-# Lean sources that actually feed `fhm_live` (not scratch modules under FHM/).
+# Lean sources that actually feed `fhm` (not scratch modules under FHM/).
 PIPELINE_SRCS=(
+  FHM/PipelineShared.lean
+  FHM/Cli.lean
   FHM/Live.lean
+  FHM/Diagnose.lean
   FHM/Pretty.lean
   FHM/EvaluateUnsafe.lean
   FHM/SurfaceBridge.lean
@@ -51,8 +54,8 @@ needs_rebuild() {
 
 ensure_built() {
   if needs_rebuild; then
-    echo "building fhm_live…"
-    lake build fhm_live
+    echo "building fhm…"
+    lake build fhm
   fi
 }
 
@@ -93,8 +96,8 @@ if command -v entr >/dev/null 2>&1; then
       [[ -n \"\$newest\" ]]
     }
     if needs_rebuild; then
-      echo 'building fhm_live…'
-      lake build fhm_live
+      echo 'building fhm…'
+      lake build fhm
     fi
     \"\$BIN\" \"\$FILE\"
     echo

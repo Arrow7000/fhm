@@ -41,7 +41,7 @@ function resolveDiagnoseBin(folder) {
     ".lake",
     "build",
     "bin",
-    "fhm_diagnose"
+    "fhm"
   );
   return fs.existsSync(candidate) ? candidate : undefined;
 }
@@ -61,7 +61,7 @@ async function refreshDiagnostics(doc) {
   const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
   const bin = resolveDiagnoseBin(folder);
   if (!bin) {
-    // Highlighting still works; diagnostics need `lake build fhm_diagnose`.
+    // Highlighting still works; diagnostics need `lake build fhm`.
     return;
   }
 
@@ -74,7 +74,7 @@ async function refreshDiagnostics(doc) {
 
   try {
     const raw = await new Promise((resolve, reject) => {
-      const child = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
+      const child = spawn(bin, ["diagnose"], { stdio: ["pipe", "pipe", "pipe"] });
       running.set(key, child);
       let stdout = "";
       let stderr = "";
@@ -92,7 +92,7 @@ async function refreshDiagnostics(doc) {
         } catch (err) {
           reject(
             new Error(
-              `fhm_diagnose parse failed (exit ${code}): ${stderr || String(err)}`
+              `fhm diagnose parse failed (exit ${code}): ${stderr || String(err)}`
             )
           );
         }

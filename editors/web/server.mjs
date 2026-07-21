@@ -15,18 +15,15 @@ const RUN_TIMEOUT_MS = 20_000;
 const PORT = Number(process.env.PORT || 5173);
 const STATIC_ONLY = process.env.FHM_WEB_STATIC === "1";
 
-/**
- * @param {string} name
- */
-function resolveBin(name) {
-  const fromEnv =
-    name === "fhm_diagnose"
-      ? process.env.FHM_DIAGNOSE_PATH
-      : name === "fhm_live"
-        ? process.env.FHM_LIVE_PATH
-        : undefined;
-  if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
-  const candidate = path.join(BIN_DIR, name);
+function resolveFhmBin() {
+  for (const fromEnv of [
+    process.env.FHM_PATH,
+    process.env.FHM_DIAGNOSE_PATH,
+    process.env.FHM_LIVE_PATH,
+  ]) {
+    if (fromEnv && fs.existsSync(fromEnv)) return fromEnv;
+  }
+  const candidate = path.join(BIN_DIR, "fhm");
   return fs.existsSync(candidate) ? candidate : null;
 }
 
@@ -108,10 +105,11 @@ async function createApp() {
   app.use(express.json({ limit: "256kb" }));
 
   app.get("/api/health", (_req, res) => {
+    const bin = resolveFhmBin();
     res.json({
       ok: true,
-      diagnose: Boolean(resolveBin("fhm_diagnose")),
-      live: Boolean(resolveBin("fhm_live")),
+      diagnose: Boolean(bin),
+      live: Boolean(bin),
     });
   });
 
@@ -127,18 +125,17 @@ async function createApp() {
   app.post("/api/diagnose", async (req, res) => {
     const source = readSource(req, res);
     if (source === null) return;
-    const bin = resolveBin("fhm_diagnose");
+    const bin = resolveFhmBin();
     if (!bin) {
       res.status(503).json({
-        error:
-          "fhm_diagnose not found — run `lake build fhm_diagnose` in the repo root",
+        error: "fhm not found — run `lake build fhm` in the repo root",
       });
       return;
     }
     try {
       const { stdout, stderr, code } = await runBin(
         bin,
-        [],
+        ["diagnose"],
         source,
         DIAGNOSE_TIMEOUT_MS
       );
@@ -147,7 +144,7 @@ async function createApp() {
         res.json(payload);
       } catch (err) {
         res.status(502).json({
-          error: `fhm_diagnose returned non-JSON (exit ${code})`,
+          error: `fhm diagnose returned non-JSON (exit ${code})`,
           stderr: stderr.slice(0, 2000),
           detail: String(err),
         });
@@ -160,10 +157,10 @@ async function createApp() {
   app.post("/api/run", async (req, res) => {
     const source = readSource(req, res);
     if (source === null) return;
-    const bin = resolveBin("fhm_live");
+    const bin = resolveFhmBin();
     if (!bin) {
       res.status(503).json({
-        error: "fhm_live not found — run `lake build fhm_live` in the repo root",
+        error: "fhm not found — run `lake build fhm` in the repo root",
       });
       return;
     }
@@ -179,7 +176,7 @@ async function createApp() {
         res.json(payload);
       } catch (err) {
         res.status(502).json({
-          error: `fhm_live --json returned non-JSON (exit ${code})`,
+          error: `fhm --json returned non-JSON (exit ${code})`,
           stderr: stderr.slice(0, 2000),
           detail: String(err),
         });
@@ -210,10 +207,10 @@ async function createApp() {
 
 const app = await createApp();
 app.listen(PORT, () => {
+  const bin = resolveFhmBin();
   console.log(`FHM playground  http://localhost:${PORT}`);
-  console.log(`  diagnose: ${resolveBin("fhm_diagnose") || "(missing)"}`);
-  console.log(`  live:     ${resolveBin("fhm_live") || "(missing)"}`);
-  if (!resolveBin("fhm_diagnose") || !resolveBin("fhm_live")) {
-    console.log("  build:    lake build fhm_diagnose fhm_live  (from repo root)");
+  console.log(`  fhm: ${bin || "(missing)"}`);
+  if (!bin) {
+    console.log("  build: lake build fhm  (from repo root)");
   }
 });

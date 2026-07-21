@@ -41,7 +41,7 @@
         "fhm.diagnosePath": {
           "type": "string",
           "default": "",
-          "description": "Absolute path to fhm_diagnose. Empty = search workspace .lake/build/bin/fhm_diagnose."
+          "description": "Absolute path to fhm binary. Empty = search workspace .lake/build/bin/fhm."
         },
         "fhm.diagnostics.debounceMs": {
           "type": "number",
