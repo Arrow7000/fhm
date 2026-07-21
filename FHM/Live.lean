@@ -3,16 +3,27 @@ import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Pretty
 import FHM.EvaluateUnsafe
+import Lean.Data.Json
 
 /-!
 # Live pipeline driver
 
-Read a `.fhm` source file and run:
+Read a `.fhm` source file (or stdin) and run:
 
 `parse → lower → infer (print binding + body types) → exhaustiveness → elaborate → evaluateUnsafe`
 
-Types are printed **before** evaluation, since eval is the slow part.
+Types are printed **before** evaluation in human mode, since eval is the slow part.
 Live uses the unbounded evaluator — naive `fib` blows past any fixed fuel.
+
+## CLI
+
+```
+fhm_live [--json] [path]
+```
+
+- No path, human mode: default `scratch/live.fhm` (watch-live).
+- No path, `--json`: read source from stdin (web playground).
+- With path: read that file (human or JSON).
 -/
 
 open Surface.Parse
@@ -118,63 +129,183 @@ def formatErr (a : Ansi) (st : PipelineStage) (msg : String) : String :=
 def formatTiming (a : Ansi) (label : String) (ns : Nat) : String :=
   a.dim s!"  ({label} in {formatDuration ns})"
 
-/-- CLI: `fhm_live [path]` — default path `scratch/live.fhm`. -/
-def main (args : List String) : IO UInt32 := do
-  let path := args.head?.getD "scratch/live.fhm"
-  let ansi ← Ansi.mkIO
-  let src ← IO.FS.readFile path
+/-! ## Structured pipeline (shared by human + JSON) -/
 
+structure PipelineErr where
+  stage : PipelineStage
+  message : String
+  line : Nat := 1
+  col : Nat := 1
+  deriving Repr
+
+structure CheckedProgram where
+  bindings : List (ValName × PolyTy)
+  programTy : PolyTy
+  checkNs : Nat
+  elaborated : Expr
+
+structure PipelineOk where
+  bindings : List (ValName × PolyTy)
+  programTy : PolyTy
+  checkNs : Nat
+  evalNs : Nat
+  resultPretty : String
+
+/-- Parse → lower → infer → exhaustiveness → elaborate (no eval yet). -/
+def checkPipeline (src : String) : IO (Except PipelineErr CheckedProgram) := do
   let tCheck0 ← IO.monoNanosNow
-  -- parse (lex + parse)
   let p ← match parseProgram src with
     | .error e =>
-        IO.eprintln (formatErr ansi .parse s!"{e.msg} (line {e.line}, col {e.col})")
-        return 1
+        return .error {
+          stage := .parse
+          message := s!"{e.msg} (line {e.line}, col {e.col})"
+          line := e.line
+          col := e.col
+        }
     | .ok p => pure p
 
-  -- lower
   let (ctors, c) ← match lowerProgram p with
     | none =>
-        IO.eprintln (formatErr ansi .lower
-          "lowering failed (unbound name, bad decl, or rejected sugar)")
-        return 1
+        return .error {
+          stage := .lower
+          message := "lowering failed (unbound name, bad decl, or rejected sugar)"
+        }
     | some x => pure x
 
-  -- infer (types before eval)
   let (eOut, τ) ← match infer c.freshFloor ⟨[], ctors⟩ c with
     | none =>
-        IO.eprintln (formatErr ansi .typecheck "typechecking failed")
-        return 1
+        return .error { stage := .typecheck, message := "typechecking failed" }
     | some (_, _, eOut, τ) => pure (eOut, τ)
   let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
   let binds := zipBindingTypes p.groups (collectTopSchemes eOut)
-  IO.println (formatTypes ansi binds bodyσ)
-  IO.println (formatTiming ansi "checked" (tCheck1 - tCheck0))
-  IO.println ""
-  -- Flush so types show up before the (often slow) rest of the pipeline.
-  (← IO.getStdout).flush
 
-  -- exhaustiveness
   if !(checkExhaustive ctors p.term) then
-    IO.eprintln (formatErr ansi .exhaustiveness "match not exhaustive")
-    return 1
+    return .error { stage := .exhaustiveness, message := "match not exhaustive" }
 
-  -- elaborate (cheap) then time evaluation alone
   let e ← match elaborateProgram p with
     | none =>
-        IO.eprintln (formatErr ansi .elaborate "elaboration failed")
-        return 1
+        return .error { stage := .elaborate, message := "elaboration failed" }
     | some e => pure e
-  IO.println (ansi.yellow "evaluating…")
-  (← IO.getStdout).flush
+
+  return .ok {
+    bindings := binds
+    programTy := bodyσ
+    checkNs := tCheck1 - tCheck0
+    elaborated := e
+  }
+
+/-- Evaluate an already-checked program (timed). -/
+def evalCheckedIO (c : CheckedProgram) : IO (Except PipelineErr PipelineOk) := do
   let tEval0 ← IO.monoNanosNow
-  match SmallStep.evaluateUnsafe e with
+  match SmallStep.evaluateUnsafe c.elaborated with
   | none =>
-      IO.eprintln (formatErr ansi .eval "stuck (diverged or no step)")
-      return 1
+      return .error { stage := .eval, message := "stuck (diverged or no step)" }
   | some v =>
       let tEval1 ← IO.monoNanosNow
-      IO.println s!"{ansi.boldBrightGreen "⟹"}  {ansi.brightCyan v.pretty}"
-      IO.println (formatTiming ansi "evaluated" (tEval1 - tEval0))
-      return 0
+      return .ok {
+        bindings := c.bindings
+        programTy := c.programTy
+        checkNs := c.checkNs
+        evalNs := tEval1 - tEval0
+        resultPretty := v.pretty
+      }
+
+def PipelineOk.toJson (r : PipelineOk) : Lean.Json :=
+  let binds := r.bindings.map fun ⟨n, σ⟩ =>
+    Lean.Json.mkObj [
+      ("name", Lean.Json.str (prettyValName n)),
+      ("type", Lean.Json.str σ.pretty)
+    ]
+  Lean.Json.mkObj [
+    ("version", Lean.Json.num 1),
+    ("ok", Lean.Json.bool true),
+    ("bindings", Lean.Json.arr binds.toArray),
+    ("programTy", Lean.Json.str r.programTy.pretty),
+    ("result", Lean.Json.str r.resultPretty),
+    ("timings", Lean.Json.mkObj [
+      ("checkNs", Lean.Json.num r.checkNs),
+      ("evalNs", Lean.Json.num r.evalNs)
+    ])
+  ]
+
+def PipelineErr.toJson (e : PipelineErr) : Lean.Json :=
+  Lean.Json.mkObj [
+    ("version", Lean.Json.num 1),
+    ("ok", Lean.Json.bool false),
+    ("stage", Lean.Json.str e.stage.tag),
+    ("message", Lean.Json.str e.message),
+    ("line", Lean.Json.num e.line),
+    ("col", Lean.Json.num e.col)
+  ]
+
+/-- Parse CLI: optional `--json`, optional path. -/
+def parseArgs (args : List String) : Except String (Bool × Option String) :=
+  let rec go (as : List String) (json : Bool) (path : Option String) :
+      Except String (Bool × Option String) :=
+    match as with
+    | [] => .ok (json, path)
+    | "--json" :: rest =>
+        if json then .error "duplicate --json"
+        else go rest true path
+    | "-h" :: _ | "--help" :: _ =>
+        .error "usage: fhm_live [--json] [path]\n\
+  no path (human): scratch/live.fhm\n\
+  no path (--json): read stdin\n\
+  path: read that file"
+    | flag :: rest =>
+        if flag.startsWith "-" then
+          .error s!"unknown flag: {flag}\nusage: fhm_live [--json] [path]"
+        else if path.isSome then
+          .error "usage: fhm_live [--json] [path]"
+        else
+          go rest json (some flag)
+  go args false none
+
+def main (args : List String) : IO UInt32 := do
+  let (jsonMode, path?) ← match parseArgs args with
+    | .error msg =>
+        IO.eprintln msg
+        return 2
+    | .ok x => pure x
+
+  let src ← match path?, jsonMode with
+    | some path, _ => IO.FS.readFile path
+    | none, true =>
+        let stdin ← IO.getStdin
+        stdin.readToEnd
+    | none, false => IO.FS.readFile "scratch/live.fhm"
+
+  match ← checkPipeline src with
+  | .error e =>
+      if jsonMode then
+        IO.println e.toJson.pretty
+      else
+        let ansi ← Ansi.mkIO
+        IO.eprintln (formatErr ansi e.stage e.message)
+      return 1
+  | .ok checked =>
+      if !jsonMode then
+        let ansi ← Ansi.mkIO
+        IO.println (formatTypes ansi checked.bindings checked.programTy)
+        IO.println (formatTiming ansi "checked" checked.checkNs)
+        IO.println ""
+        (← IO.getStdout).flush
+        IO.println (ansi.yellow "evaluating…")
+        (← IO.getStdout).flush
+      match ← evalCheckedIO checked with
+      | .error e =>
+          if jsonMode then
+            IO.println e.toJson.pretty
+          else
+            let ansi ← Ansi.mkIO
+            IO.eprintln (formatErr ansi e.stage e.message)
+          return 1
+      | .ok r =>
+          if jsonMode then
+            IO.println r.toJson.pretty
+          else
+            let ansi ← Ansi.mkIO
+            IO.println s!"{ansi.boldBrightGreen "⟹"}  {ansi.brightCyan r.resultPretty}"
+            IO.println (formatTiming ansi "evaluated" r.evalNs)
+          return 0

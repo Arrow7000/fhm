@@ -1,0 +1,26 @@
+{
+  "name": "fhm-web",
+  "private": true,
+  "version": "0.0.1",
+  "description": "FHM online playground — Monaco editor + diagnose/run over local binaries",
+  "type": "module",
+  "scripts": {
+    "dev": "node server.mjs",
+    "dev:clean": "rm -rf node_modules/.vite && node server.mjs",
+    "build": "vite build",
+    "preview": "FHM_WEB_STATIC=1 node server.mjs",
+    "hover-sweep": "node scripts/hover-sweep.mjs --all",
+    "hover-sweep:safe": "node scripts/hover-sweep.mjs --all --safe",
+    "verify-playground": "node scripts/verify-playground.mjs"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "monaco-editor": "^0.52.2",
+    "vscode-oniguruma": "^2.0.1",
+    "vscode-textmate": "^9.2.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.61.1",
+    "vite": "^6.0.7"
+  }
+}

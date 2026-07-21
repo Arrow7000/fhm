@@ -1,4 +1,5 @@
--- Custom ADTs in the spotlight — less “lists of ints”, more trees & colours.
+-- Richer hover-sweep fixture: defs, ctors, tyvars, scheme binders,
+-- annotations, λ/pattern binders, use sites, lits, ops.
 
 type Maybe a =
   | Just a
@@ -8,12 +9,9 @@ type Tree a =
   | Leaf
   | Node a (left : Tree a) (right : Tree a)
 
-
-
-
 type Color = Red | Green | Blue
 
-let map : {a b} (a -> b) -> List a -> List b = 
+let map : {a b} (a -> b) -> List a -> List b =
   \f xs ->
     match xs with
     | [] -> []
@@ -27,7 +25,7 @@ let filter : {a} (a -> Bool) -> List a -> List a =
       if p h then
         h :: (filter p t)
       else
-        filter p t 
+        filter p t
 
 let mapMaybe : {a b} (a -> b) -> Maybe a -> Maybe b =
   \f m ->
@@ -59,19 +57,11 @@ let t = Node 1 Leaf (Node 4 Leaf (Node 9 Leaf Leaf))
 
 let xs = [0, 1, 4, 9, 2]
 
-
-
 let listLength = \l ->
   match l with
   | [] -> 0
   | head :: tail -> 1 + listLength tail
 
-
 let addInts : Int -> Int -> Int = \a b -> a + b
-
--- Tree Color, Maybe Color, List Color, List Bool
--- (treeMap colorOf t,
---   (mapMaybe colorOf (Just 4),
---     (map colorOf xs, map warm (map colorOf (filter (\n -> n < 5) xs)))))
 
 addInts (listLength xs) 12
