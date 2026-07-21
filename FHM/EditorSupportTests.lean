@@ -317,3 +317,27 @@ def maybeUseSrc : String :=
         s.name == "a" && s.kind == "param" &&
         hasSub s.type_ "type variable" && hasSub s.type_ "scheme"
     | none => false)
+
+-- E4. Several annotated lets: later λ params must not get empty/stolen types
+-- (regression: takeFirstKind .val reshuffled earlier λ/pats ahead of scheme binders)
+def multiLetParams : String :=
+  "let first : {a} (a -> a) -> List a -> List a =\n" ++
+  "  \\f xs -> xs\n" ++
+  "let second : {a} (a -> a) -> List a -> List a =\n" ++
+  "  \\f ys -> ys\n" ++
+  "let colorOf = \\n -> n\n" ++
+  "colorOf 1\n"
+
+#guard (match hoverSyms multiLetParams with
+  | none => false
+  | some syms =>
+    match symbolAt syms 2 4, symbolAt syms 2 6,
+          symbolAt syms 4 4, symbolAt syms 4 6,
+          symbolAt syms 5 16 with
+    | some f1, some xs, some f2, some ys, some n =>
+        f1.name == "f" && !f1.type_.isEmpty && hasSub f1.type_ "→" &&
+        xs.name == "xs" && hasSub xs.type_ "List" &&
+        f2.name == "f" && !f2.type_.isEmpty &&
+        ys.name == "ys" && hasSub ys.type_ "List" &&
+        n.name == "n" && !n.type_.isEmpty
+    | _, _, _, _, _ => false)

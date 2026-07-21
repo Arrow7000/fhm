@@ -695,11 +695,61 @@ def takeFirstKind (bs : List BinderSpan) (k : BinderKind) :
       else go (pref ++ [b]) rest
   go [] bs
 
+/-- Flush leading λ params (`scope? = none`) and pattern binders from the front
+    of the binder queue. Must run before each subsequent top-level `val`, otherwise
+    searching for the next val reshuffles RHS binders ahead of the next binding’s
+    scheme params and desyncs types. -/
+def flushRhsBinders
+    (bs : List BinderSpan) (out : List RangedSymbol)
+    (paramTys : List (ValName × Ty)) (paramScopes : List Span) (pi : Nat)
+    (patTys : List (Option Ty)) (patScopes : List Span) (pai : Nat) :
+    List BinderSpan × List RangedSymbol × Nat × Nat :=
+  match bs with
+  | b2 :: rest2 =>
+    if b2.kind == .param && b2.scope?.isNone then
+      let sc := paramScopes[pi]?.getD b2.span
+      let τStr :=
+        match paramTys[pi]? with
+        | some ⟨_, τ⟩ => τ.pretty
+        | none => ""
+      flushRhsBinders rest2 (out ++ [{
+        name := b2.name, kind := "param", type_ := τStr,
+        span := b2.span, scope := sc
+      }]) paramTys paramScopes (pi + 1) patTys patScopes pai
+    else if b2.kind == .pat then
+      let sc := patScopes[pai]?.getD b2.span
+      let τStr :=
+        match patTys[pai]? with
+        | some (some τ) => τ.pretty
+        | _ => ""
+      flushRhsBinders rest2 (out ++ [{
+        name := b2.name, kind := "pat", type_ := τStr,
+        span := b2.span, scope := sc
+      }]) paramTys paramScopes pi patTys patScopes (pai + 1)
+    else
+      (bs, out, pi, pai)
+  | [] => (bs, out, pi, pai)
+
+/-- Peel scheme-ann `{a}` params (`scope? = some`) immediately after a val. -/
+def peelSchemeBinders (bs : List BinderSpan) (out : List RangedSymbol) :
+    List BinderSpan × List RangedSymbol :=
+  match bs with
+  | b2 :: rest2 =>
+    if b2.kind == .param && b2.scope?.isSome then
+      peelSchemeBinders rest2 (out ++ [{
+        name := b2.name, kind := "param",
+        type_ := "type variable (scheme binder)",
+        span := b2.span, scope := b2.scope?.getD b2.span
+      }])
+    else
+      (bs, out)
+  | [] => (bs, out)
+
 /-- Join parse binder spans with inferred types and scopes.
     Decl type/ctor: `scope := programScope` (global use-site). Type-decl params
     get a tyvar label and `scope :=` that data decl’s hull (`declScopes`).
     Scheme-ann `{a b}` params (parse sets `scope?`) are peeled after each val.
-    Leftovers get empty types and `scope := span` (or `scope?` if set). -/
+    λ params / pats for each RHS are flushed before the next val (parse order). -/
 def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
     (valTys : List (ValName × Option PolyTy)) (valScopes : List Span)
     (paramTys : List (ValName × Ty)) (paramScopes : List Span)
@@ -750,62 +800,31 @@ def joinRangedSymbols (binders : List BinderSpan) (p : Surface.Program)
           }]
         | none => pure ()
     for ⟨_, σ?⟩ in valTys do
-      match takeFirstKind bs .val with
-      | some (b, rest) =>
-        bs := rest
-        let sc := valScopes[vi]?.getD b.span
-        vi := vi + 1
-        let typeStr :=
-          match σ? with
-          | some σ => σ.pretty
-          | none => ""
-        out := out ++ [{
-          name := b.name, kind := "val", type_ := typeStr,
-          span := b.span, scope := sc
-        }]
-        -- Scheme-ann tyvars sit immediately after the val binder in parse order.
-        let mut peeling := true
-        while peeling do
-          match bs with
-          | b2 :: rest2 =>
-            if b2.kind == .param && b2.scope?.isSome then
-              bs := rest2
-              out := out ++ [{
-                name := b2.name, kind := "param",
-                type_ := "type variable (scheme binder)",
-                span := b2.span, scope := b2.scope?.getD b2.span
-              }]
-            else
-              peeling := false
-          | [] =>
-            peeling := false
-      | none => pure ()
-    for ⟨_, τ⟩ in paramTys do
-      match takeFirstKind bs .param with
-      | some (b, rest) =>
-        bs := rest
-        let sc := paramScopes[pi]?.getD b.span
-        pi := pi + 1
-        out := out ++ [{
-          name := b.name, kind := "param", type_ := τ.pretty,
-          span := b.span, scope := sc
-        }]
-      | none => pure ()
-    for ot in patTys do
-      match takeFirstKind bs .pat with
-      | some (b, rest) =>
-        bs := rest
-        let sc := patScopes[pai]?.getD b.span
-        pai := pai + 1
-        let typeStr :=
-          match ot with
-          | some τ => τ.pretty
-          | none => ""
-        out := out ++ [{
-          name := b.name, kind := "pat", type_ := typeStr,
-          span := b.span, scope := sc
-        }]
-      | none => pure ()
+      let (bs1, out1, pi1, pai1) :=
+        flushRhsBinders bs out paramTys paramScopes pi patTys patScopes pai
+      bs := bs1; out := out1; pi := pi1; pai := pai1
+      match bs with
+      | b :: rest =>
+        if b.kind == .val then
+          bs := rest
+          let sc := valScopes[vi]?.getD b.span
+          vi := vi + 1
+          let typeStr :=
+            match σ? with
+            | some σ => σ.pretty
+            | none => ""
+          out := out ++ [{
+            name := b.name, kind := "val", type_ := typeStr,
+            span := b.span, scope := sc
+          }]
+          let (bs2, out2) := peelSchemeBinders bs out
+          bs := bs2; out := out2
+        else
+          pure ()
+      | [] => pure ()
+    let (bs3, out3, _, _) :=
+      flushRhsBinders bs out paramTys paramScopes pi patTys patScopes pai
+    bs := bs3; out := out3
     for b in bs do
       let sc := b.scope?.getD b.span
       let typeStr :=
