@@ -1,0 +1,36 @@
+---
+description: Lead-agent workflow for working in Lean
+globs: "**/*.lean"
+alwaysApply: false
+---
+
+## Implementing new Props or formulating theorem statements
+
+If you are the lead agent you should do this yourself, ideally in consultation with the user. When you're done, stop to let them review what you've done, especially when it comes to new Props you have defined. This is critical and should require their explicit approval.
+
+When it comes to formulating theorems, you should also do this yourself. Also defer to the user to approve these, but this is less critically important than the Prop definitions. A bad theorem statement might be vacuous or unprovable or doesn't quite capture the intended property. But a bad Prop formulation means that our very definition of what something means is malformed.
+
+## Proving lemmas and theorems
+
+Once a theorem statement has been formulated, unless stated otherwise by the user, you should leave it `sorry`'d out. Then dispatch a subagent to act as your proof workhorse. If the things you're trying to prove live in separate files and one doesn't depend on the other, you may dispatch multiple subs in parallel. Otherwise just stick to one at a time.
+
+You should default to using a small model to act as the prover. Atm this should be Composer 2.5 Fast. The risk of it doing the wrong thing is limited as long as it doesn't modify the props or theorem statements itself. Then it doesn't matter that it's not as capable as larger models, it either gets the job done or it gets stuck.
+
+## Prompting subagents
+
+When dispatching subagents for proof work, make clear that if it finds itself getting stuck or going round in circles it should stop and report back.
+
+If it discovers that the theorem statement is false as stated, that's a valid and valuable finding which we want to know about! In which case it should report back immediately and explain why, and whether the original meaning is still salvageable, and why/why not.
+
+If it finds itself going round in circles, or is embarking on increasingly wild and erratic changes across wider and wider ranges in the file, that's an indication that it's not capable of proving the theorems. Ask it to watch out for this behaviour and to be responsible and stop and report back. If so, if you can easily figure out what the issue is and can guide it back to the correct path, please do so. If not, or if the issue isn't the direction but the problem genuinely being too hard for it – or if you yourself don't have sufficient context to weigh in either way – then dispatch a new subagent with a larger model. Currently default to Grok 4.5 High for this. And then repeat the same workflow.
+
+## Background mode
+
+Always default to running subagents in backgrounded mode. That lets the user message you without interrupting the world. Similarly for commands that you predict will take a long time to run. In the latter case, no need to say the filler "task has been dispatched, will report back when complete" ya we know. No need to say anything. You'll be pinged automatically when the command completes.
+
+## Glossary
+
+- lead: lead agent (the top-level agent in this chat)
+- sub: subagent
+- comp: Composer 2.5 Fast (`composer-2.5-fast`)
+- grok: Grok 4.5 High (`cursor-grok-4.5-high`)

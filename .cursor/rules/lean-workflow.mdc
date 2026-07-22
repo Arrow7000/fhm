@@ -1,8 +1,7 @@
 ---
 description: "Rules for working with Lean files in this project"
-globs:
-  - "**/*.lean"
-alwaysApply: true
+globs: "**/*.lean"
+alwaysApply: false
 ---
 
 <!-- @format -->
