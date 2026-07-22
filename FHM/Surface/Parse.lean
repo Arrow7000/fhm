@@ -397,10 +397,10 @@ partial def polyTy : P (PolyTy × List BinderSpan) :=
 instance : Inhabited Expr := ⟨.primLit .unit⟩
 instance : Inhabited Pattern := ⟨.wildcard⟩
 instance : Inhabited ValName := ⟨.mk ""⟩
-instance : Inhabited (Nat × ValName × Option PolyTy × Expr) :=
-  ⟨(0, default, none, default)⟩
-instance : Inhabited (Nat × ValName × Option PolyTy × Expr × SpannedExpr) :=
-  ⟨(0, default, none, default, default)⟩
+instance : Inhabited (Nat × ValName × List ValName × List (ValName × Option Ty) × Option PolyTy × Expr) :=
+  ⟨(0, default, [], [], none, default)⟩
+instance : Inhabited (Nat × ValName × List ValName × List (ValName × Option Ty) × Option PolyTy × Expr × SpannedExpr) :=
+  ⟨(0, default, [], [], none, default, default)⟩
 instance : Inhabited (Pattern × Expr) := ⟨(default, default)⟩
 instance : Inhabited (Pattern × Expr × SpannedExpr) := ⟨(default, default, default)⟩
 instance : Inhabited (Expr × List BinderSpan × SpannedExpr) :=
@@ -438,6 +438,101 @@ def simpleBinder : P (Pattern × List BinderSpan × Span) :=
       do
         let (tok, name) ← lowerIdentTok
         return (.name (.mk name), [mkBinder .param tok name], Span.ofTok tok)
+    ]
+
+/-- Optional `{ tyParam+ }` after a binding name (nonempty if `{` present). -/
+def tyParamBinders : P (List ValName × List BinderSpan) :=
+  withErrorMessage "expected type parameters" do
+    skipComments
+    match ← option? (withBacktracking (punct .lbrace)) with
+    | none => return ([], [])
+    | some _ =>
+      skipComments
+      let binderToks ← takeMany1 (withBacktracking do
+        skipComments
+        anyIdentTok)
+      skipComments
+      let _ ← punct .rbrace
+      let bs := binderToks.toList.map fun (t, n) => mkBinder .param t n
+      let tps := binderToks.toList.map fun (_, n) => ValName.mk n
+      return (tps, bs)
+
+/-- One value parameter: bare `lowerIdent` or `( lowerIdent : ty )`. -/
+def valueParam : P ((ValName × Option Ty) × List BinderSpan) :=
+  withErrorMessage "expected value parameter" do
+    skipComments
+    first [
+      withBacktracking do
+        let _ ← punct .lparen
+        skipComments
+        first [
+          do
+            let _ ← punct .underscore
+            skipComments
+            let _ ← punct .colon
+            skipComments
+            let t ← ty
+            skipComments
+            let _ ← punct .rparen
+            return ((.mk "_", some t), []),
+          do
+            let (tok, name) ← lowerIdentTok
+            skipComments
+            let _ ← punct .colon
+            skipComments
+            let t ← ty
+            skipComments
+            let _ ← punct .rparen
+            return ((.mk name, some t), [mkBinder .param tok name])
+        ],
+      do
+        let (tok, name) ← lowerIdentTok
+        return ((.mk name, none), [mkBinder .param tok name])
+    ]
+
+/-- Zero or more value params; peek stops at `:` / `=` (ann or RHS). -/
+def valueParams : P (List (ValName × Option Ty) × List BinderSpan) := do
+  let ps ← takeMany (withBacktracking do
+    skipComments
+    let t ← nextTok
+    match t.token with
+    | .punct .colon | .punct .eq => throwUnexpected
+    | _ => pure ()
+    valueParam)
+  return (ps.toList.map (·.1), ps.toList.flatMap (·.2))
+
+/-- λ binder: `(name : ty)` / `(_ : ty)` or simple name / `_`. -/
+def lambdaBinder : P (Pattern × Option Ty × List BinderSpan × Span) :=
+  withErrorMessage "expected lambda binder" do
+    skipComments
+    first [
+      do
+        let t0 ← punct .lparen
+        skipComments
+        first [
+          do
+            let _ ← punct .underscore
+            skipComments
+            let _ ← punct .colon
+            skipComments
+            let τ ← ty
+            skipComments
+            let t1 ← punct .rparen
+            return (.wildcard, some τ, [], Span.union (Span.ofTok t0) (Span.ofTok t1)),
+          do
+            let (tok, name) ← lowerIdentTok
+            skipComments
+            let _ ← punct .colon
+            skipComments
+            let τ ← ty
+            skipComments
+            let t1 ← punct .rparen
+            return (.name (.mk name), some τ, [mkBinder .param tok name],
+              Span.union (Span.ofTok t0) (Span.ofTok t1))
+        ],
+      do
+        let (pat, bs, sp) ← simpleBinder
+        return (pat, none, bs, sp)
     ]
 
 /-- `True`/`False` bool tokens as ctor patterns (Surface has no lit patterns). -/
@@ -622,19 +717,17 @@ partial def atom : PE :=
       do
         let bsTok ← punct .backslash
         skipComments
-        let binders ← takeMany1 (withBacktracking simpleBinder)
+        let binders ← takeMany1 (withBacktracking lambdaBinder)
         skipComments
         let _ ← punct .arrow
         skipComments
         let (body, bsBody, sBody) ← expr
-        let pats := binders.toList.map (·.1)
-        let binderSpans := binders.toList.map (·.2.2)
-        let bsBind := binders.toList.flatMap (·.2.1)
+        let bsBind := binders.toList.flatMap (·.2.2.1)
         let (e, s) :=
-          (pats.zip binderSpans).foldr
-            (fun (pat, bspan) (acc, accS) =>
+          binders.toList.foldr
+            (fun (pat, paramAnn, _, bspan) (acc, accS) =>
               let sp := Span.union bspan accS.span
-              (Expr.lambda pat none acc, SpannedExpr.lambda sp accS))
+              (Expr.lambda pat paramAnn acc, SpannedExpr.lambda sp accS))
             (body, sBody)
         let spanAll := Span.union (Span.ofTok bsTok) sBody.span
         let s' :=
@@ -695,20 +788,24 @@ partial def infixExpr : PE :=
         let (e, s) := applyBinOpSpanned opTok op left sL right sR
         return (e, bsL ++ bsR, s)
 
-/-- One `let` binding: `name [: polyTy] = expr`. Returns binder column.
-    `indentCol` is the column of the introducing `let` (or of the first
-    binder, for sibling bindings): a newline RHS must start strictly right of
-    it, so `let map =\n  e` works with a 2-space indent even when `map` itself
-    sits further right than that indent. -/
+/-- One `let` binding: `name [{tyParams}] [params] [: polyTy] = expr`.
+    Returns binder column. `indentCol` is the column of the introducing `let`
+    (or of the first binder, for sibling bindings): a newline RHS must start
+    strictly right of it. -/
 partial def letBinding (indentCol : Nat) :
-    P ((Nat × ValName × Option PolyTy × Expr × SpannedExpr) × List BinderSpan) :=
+    P ((Nat × ValName × List ValName × List (ValName × Option Ty) × Option PolyTy ×
+        Expr × SpannedExpr) × List BinderSpan) :=
   withErrorMessage "expected let binding" do
     skipComments
     let (tok, name) ← lowerIdentTok
     let blockCol := tok.startCol
     let bsName := [mkBinder .val tok name]
     skipComments
-    let ann ← option? (withBacktracking do
+    let (tyParams, bsTyParams) ← tyParamBinders
+    skipComments
+    let (params, bsParams) ← valueParams
+    skipComments
+    let annRaw ← option? (withBacktracking do
       let _ ← punct .colon
       skipComments
       polyTy)
@@ -720,32 +817,35 @@ partial def letBinding (indentCol : Nat) :
     if t.startLine > eqTok.startLine then
       colGt indentCol
     let (rhs, bsRhs, sRhs) ← expr
-    let (annTy, bsAnn) :=
-      match ann with
+    let (annPoly, bsAnn) :=
+      match annRaw with
       | some (σ, bs) => (some σ, bs)
       | none => (none, [])
-    return ((blockCol, .mk name, annTy, rhs, sRhs), bsName ++ bsAnn ++ bsRhs)
+    let ann := SurfaceBridge.finalizeAnn tyParams params annPoly
+    return ((blockCol, .mk name, tyParams, params, ann, rhs, sRhs),
+      bsName ++ bsTyParams ++ bsParams ++ bsAnn ++ bsRhs)
 
 /-- `let` bindings `in` body → nested `.letIn` (first binder outermost). -/
 partial def letExpr : PE :=
   withErrorMessage "expected let expression" do
     skipComments
     let letTok ← keyword .«let»
-    let ((blockCol, n0, ann0, rhs0, s0), bs0) ← letBinding letTok.startCol
+    let ((blockCol, n0, tyPs0, ps0, ann0, rhs0, s0), bs0) ← letBinding letTok.startCol
     let rest ← takeMany (withBacktracking do
       colEq blockCol
-      pbMap (fun (_, n, ann, rhs, s) => (n, ann, rhs, s)) (letBinding blockCol))
+      pbMap (fun (_, n, tyPs, ps, ann, rhs, s) => (n, tyPs, ps, ann, rhs, s))
+        (letBinding blockCol))
     skipComments
     let _ ← keyword .«in»
     skipComments
     let (body, bsBody, sBody) ← expr
-    let binds := (n0, ann0, rhs0, s0) :: rest.toList.map (·.1)
+    let binds := (n0, tyPs0, ps0, ann0, rhs0, s0) :: rest.toList.map (·.1)
     let bsRest := concatBinders rest
     let (e, s) :=
       binds.foldr
-        (fun (n, ann, rhs, sRhs) (acc, accS) =>
+        (fun (n, tyPs, ps, ann, rhs, sRhs) (acc, accS) =>
           let sp := Span.union sRhs.span accS.span
-          (Expr.letIn n ann rhs acc, SpannedExpr.letIn sp sRhs accS))
+          (Expr.letIn n tyPs ps ann rhs acc, SpannedExpr.letIn sp sRhs accS))
         (body, sBody)
     let spanAll := Span.union (Span.ofTok letTok) sBody.span
     let s' :=
@@ -844,7 +944,7 @@ end
 
 * `ctorField` — `(name : ty)` (name discarded) or bare `tyApp`
 * `typeDecl` — `type T a = C ty | D (n : ty) ty`
-* `topLet` — `let name [: scheme] = expr` (no `in`; required `let` at root)
+* `topLet` — `let name [{tyParams}] [params] [: scheme] = expr` (no `in`)
 * `program` — interleaved type/let decls, optional body (default `()`)
 -/
 
@@ -912,8 +1012,8 @@ def topLet : P ((Binding × SpannedExpr) × List BinderSpan) :=
   withErrorMessage "expected top-level let" do
     skipComments
     let letTok ← keyword .«let»
-    let ((_, name, ann, rhs, sRhs), bs) ← letBinding letTok.startCol
-    return ((⟨name, ann, rhs⟩, sRhs), bs)
+    let ((_, name, tyParams, params, ann, rhs, sRhs), bs) ← letBinding letTok.startCol
+    return (({ name, tyParams, params, ann, rhs }, sRhs), bs)
 
 /-- Interleaved `type` / `let`, then optional body expr (default unit).
     Groups via `SurfaceBridge.Program.ofFlat` (SCC); fails on duplicate names.
@@ -1143,7 +1243,7 @@ def parseProgram (src : String) : Except ParseError Program :=
 #guard (match parseExpr "match xs with | a :: b :: rest -> a" with | .ok _ => true | _ => false)
 
 #guard (match parseExpr "let x = 1 in x" with
-  | .ok (.letIn (.mk "x") none (.primLit (.int 1)) (.var (.mk "x"))) => true
+  | .ok (.letIn (.mk "x") [] [] none (.primLit (.int 1)) (.var (.mk "x"))) => true
   | _ => false)
 #guard (match parseExpr "if True then 1 else 0" with
   | .ok (.ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0))) => true
@@ -1166,13 +1266,40 @@ def parseProgram (src : String) : Except ParseError Program :=
 
 -- multi-line let: same-column sibling bindings → nested letIn
 #guard (match parseExpr "let x = 1\n    y = 2\nin x" with
-  | .ok (.letIn (.mk "x") none (.primLit (.int 1))
-      (.letIn (.mk "y") none (.primLit (.int 2)) (.var (.mk "x")))) => true
+  | .ok (.letIn (.mk "x") [] [] none (.primLit (.int 1))
+      (.letIn (.mk "y") [] [] none (.primLit (.int 2)) (.var (.mk "x")))) => true
   | _ => false)
 
 -- optional `: polyTy` on let binder
 #guard (match parseExpr "let x : Int = 1 in x" with
-  | .ok (.letIn (.mk "x") (some ⟨[], .prim .int⟩) (.primLit (.int 1)) (.var (.mk "x"))) => true
+  | .ok (.letIn (.mk "x") [] [] (some ⟨[], .prim .int⟩) (.primLit (.int 1)) (.var (.mk "x"))) => true
+  | _ => false)
+
+-- let with typed / bare value params, return-type sugar, and tyParams
+#guard (parseExpr "let f (x : Int) = x in f").isOk
+#guard (match parseExpr "let f (x : Int) = x in f" with
+  | .ok (.letIn (.mk "f") [] [(.mk "x", some (.prim .int))] none (.var (.mk "x")) (.var (.mk "f"))) => true
+  | _ => false)
+#guard (parseExpr "let f a b = a in f").isOk
+#guard (match parseExpr "let f a b = a in f" with
+  | .ok (.letIn (.mk "f") [] [(.mk "a", none), (.mk "b", none)] none (.var (.mk "a")) (.var (.mk "f"))) => true
+  | _ => false)
+#guard (parseExpr "let f (x : Int) : Int = x in f").isOk
+#guard (match parseExpr "let f (x : Int) : Int = x in f" with
+  | .ok (.letIn (.mk "f") [] [(.mk "x", some (.prim .int))]
+      (some ⟨[], .arrow (.prim .int) (.prim .int)⟩) (.var (.mk "x")) (.var (.mk "f"))) => true
+  | _ => false)
+#guard (parseExpr "let f {a} (x : a) : a = x in f").isOk
+#guard (match parseExpr "let f {a} (x : a) : a = x in f" with
+  | .ok (.letIn (.mk "f") [.mk "a"] [(.mk "x", some (.tvar (.mk "a")))]
+      (some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩)
+      (.var (.mk "x")) (.var (.mk "f"))) => true
+  | _ => false)
+
+-- typed lambda binder `(n : ty)`
+#guard (parseExpr "\\(n : Int) -> n").isOk
+#guard (match parseExpr "\\(n : Int) -> n" with
+  | .ok (.lambda (.name (.mk "n")) (some (.prim .int)) (.var (.mk "n"))) => true
   | _ => false)
 
 -- ctor pattern with args
@@ -1246,25 +1373,34 @@ def parseProgram (src : String) : Except ParseError Program :=
       let flat := p.groups.flatten
       (flat.length == 2) &&
         flat.any (fun b => match b with
-          | ⟨.mk "x", none, .primLit (.int 1)⟩ => true | _ => false) &&
+          | ⟨.mk "x", [], [], none, .primLit (.int 1)⟩ => true | _ => false) &&
         flat.any (fun b => match b with
-          | ⟨.mk "y", none, .primLit (.int 2)⟩ => true | _ => false)
+          | ⟨.mk "y", [], [], none, .primLit (.int 2)⟩ => true | _ => false)
     | _ => false
   | _ => false)
 
 #guard (match parseProgram "let f : Int -> Int = \\x -> x" with
   | .ok p =>
     match p.groups, p.body with
-    | [[⟨.mk "f", some ⟨[], .arrow (.prim .int) (.prim .int)⟩,
+    | [[⟨.mk "f", [], [], some ⟨[], .arrow (.prim .int) (.prim .int)⟩,
         .lambda (.name (.mk "x")) none (.var (.mk "x"))⟩]],
       .primLit .unit => true
+    | _, _ => false
+  | _ => false)
+
+#guard (match parseProgram "let f {a} (x : a) : a = x\nf" with
+  | .ok p =>
+    match p.groups, p.body with
+    | [[⟨.mk "f", [.mk "a"], [(.mk "x", some (.tvar (.mk "a")))],
+        some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩,
+        .var (.mk "x")⟩]], .var (.mk "f") => true
     | _, _ => false
   | _ => false)
 
 -- newline RHS indented past `let` (not past the binder name)
 #guard (parseProgram "let map : {a} a -> a =\n  \\x -> x\nmap").isOk
 #guard (match parseExpr "let x =\n  1\nin x" with
-  | .ok (.letIn (.mk "x") none (.primLit (.int 1)) (.var (.mk "x"))) => true
+  | .ok (.letIn (.mk "x") [] [] none (.primLit (.int 1)) (.var (.mk "x"))) => true
   | _ => false)
 
 -- duplicate top-level names → error

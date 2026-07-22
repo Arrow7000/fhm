@@ -731,7 +731,7 @@ private def sIdApp : Surface.Program :=
 -- let id : ∀ a. a → a = λx. x in id 41  ⟹  41
 private def sAnnId : Surface.Program :=
   ⟨[], [],
-   .letIn (.mk "id")
+   .letIn (.mk "id") [] []
      (some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩)
      (.lambda (.name (.mk "x")) none (.var (.mk "x")))
      (.app (.var (.mk "id")) (.primLit (.int 41)))⟩

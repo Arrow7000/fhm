@@ -65,6 +65,16 @@ inductive Pattern
 
 
 
+/-- A value binding as written: optional `{tyParams}`, value `params`, optional
+    `: ann`, and `rhs`. Sugar is erased in lowering (→ Core `λ`). -/
+structure Binding' (expr : Type) where
+  name : ValName
+  tyParams : List ValName := []
+  params : List (ValName × Option Ty) := []
+  ann  : Option PolyTy
+  rhs  : expr
+
+
 /-- An expression in our language -/
 inductive Expr
   | primLit (prim : PrimLitExpr)
@@ -74,18 +84,17 @@ inductive Expr
   | list (items : List Expr)
   | lambda (param : Pattern) (paramAnn : Option Ty) (body : Expr)
   | app (f input : Expr)
-  | letIn (binding : ValName) (ann : Option PolyTy) (bindingExpr body : Expr)
-  | letRecIn (bindingsAnns : List (ValName × Option PolyTy × Expr)) (body : Expr)
+  | letIn (binding : ValName) (tyParams : List ValName)
+      (params : List (ValName × Option Ty)) (ann : Option PolyTy)
+      (bindingExpr body : Expr)
+  | letRecIn (bindings : List (Binding' Expr)) (body : Expr)
   | var (binding : ValName)
   | ctor (name : CtorName)
   | ife (cond t f : Expr)
   | match_ (scrutinee : Expr) (branches : List (Pattern × Expr))
 
-/-- A top-level value binding (name, optional scheme annotation, RHS). -/
-structure Binding where
-  name : ValName
-  ann  : Option PolyTy
-  rhs  : Expr
+
+abbrev Binding := Binding' Expr
 
 /-- A surface program: user data declarations, mutual-binding groups
     (author-supplied, or from `SurfaceBridge.Program.ofFlat` / `sccGroups`),
@@ -96,16 +105,13 @@ structure Program where
   groups : List (List Binding)
   body   : Expr
 
-def bindingTriple (b : Binding) : ValName × Option PolyTy × Expr :=
-  (b.name, b.ann, b.rhs)
-
 /-- Nest groups outermost-first as `letRecIn`, then `body`.
     Empty groups are skipped; nonempty → always `letRecIn` (incl. size 1). -/
 def desugarGroups (groups : List (List Binding)) (body : Expr) : Expr :=
   groups.foldr (fun g acc =>
     if g.isEmpty then acc
-    else .letRecIn (g.map bindingTriple) acc) body
+    else .letRecIn g acc) body
 
-/-- The expression a program lowers: desugared groups wrapped around `body`. -/
+/-- The expression a program lowers: group nesting around `body`. -/
 def Program.term (p : Program) : Expr :=
   desugarGroups p.groups p.body

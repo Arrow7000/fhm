@@ -45,13 +45,13 @@ partial def zipExprListBindingTypes (zip : Surface.Expr → Expr → List (ValNa
     not walk into compiler-generated match lets. For `letRecIn`, only the body is
     walked further (RHS Core shape is `letRecElab` wrappers, not the surface RHS). -/
 partial def zipExprBindingTypes : Surface.Expr → Expr → List (ValName × PolyTy)
-  | .letIn name _ sRhs sBody, .letIn (some σ) eRhs eBody =>
+  | .letIn name _ _ sRhs sBody, .letIn (some σ) eRhs eBody =>
       (name, σ) :: zipExprBindingTypes sRhs eRhs ++ zipExprBindingTypes sBody eBody
   | .letRecIn binds sBody, e =>
       let n := binds.length
       let schemes := (collectTopSchemes e).take n
       let chunk := schemes.reverse
-      let pairs := binds.map (·.1) |>.zip chunk
+      let pairs := binds.map (·.name) |>.zip chunk
       let eBody := dropAnnotatedLets n e
       pairs ++ zipExprBindingTypes sBody eBody
   | .lambda _ _ sBody, .lambda _ eBody =>
@@ -176,7 +176,7 @@ partial def zipExprParamTypesSurface (ctors : CtorEnv) (env : HoverEnv)
       | some (.arrow _ b) => zipExprParamTypesSurface ctors env (some b) sBody
       | _ => zipExprParamTypesSurface ctors env none sBody
   | .lambda _ _ sBody => zipExprParamTypesSurface ctors env none sBody
-  | .letIn name _ sRhs sBody =>
+  | .letIn name _ _ sRhs sBody =>
       -- Nested surface annotations are Surface.Ty; schemes come from `env.lets`
       -- (top / nested vals preloaded) or from the caller's `expected` on tops.
       let rhsExpected :=
@@ -186,12 +186,12 @@ partial def zipExprParamTypesSurface (ctors : CtorEnv) (env : HoverEnv)
       zipExprParamTypesSurface ctors env rhsExpected sRhs ++
         zipExprParamTypesSurface ctors env expected sBody
   | .letRecIn binds sBody =>
-      binds.flatMap (fun t =>
+      binds.flatMap (fun b =>
         let exp :=
-          match env.lets.find? (fun p => p.1 == t.1) with
+          match env.lets.find? (fun p => p.1 == b.name) with
           | some ⟨_, σ⟩ => some σ.body
           | none => none
-        zipExprParamTypesSurface ctors env exp t.2.2) ++
+        zipExprParamTypesSurface ctors env exp b.rhs) ++
         zipExprParamTypesSurface ctors env expected sBody
   | .app f x =>
       match hoverExprTy ctors env f with
@@ -238,7 +238,7 @@ partial def collectPatTypes (ctors : CtorEnv) (env : HoverEnv)
       | some (.arrow _ b) => collectPatTypes ctors env (some b) sBody
       | _ => collectPatTypes ctors env none sBody
   | .lambda _ _ sBody => collectPatTypes ctors env none sBody
-  | .letIn name _ sRhs sBody =>
+  | .letIn name _ _ sRhs sBody =>
       let rhsExpected :=
         match env.lets.find? (fun p => p.1 == name) with
         | some ⟨_, σ⟩ => some σ.body
@@ -246,12 +246,12 @@ partial def collectPatTypes (ctors : CtorEnv) (env : HoverEnv)
       collectPatTypes ctors env rhsExpected sRhs ++
         collectPatTypes ctors env expected sBody
   | .letRecIn binds sBody =>
-      binds.flatMap (fun t =>
+      binds.flatMap (fun b =>
         let exp :=
-          match env.lets.find? (fun p => p.1 == t.1) with
+          match env.lets.find? (fun p => p.1 == b.name) with
           | some ⟨_, σ⟩ => some σ.body
           | none => none
-        collectPatTypes ctors env exp t.2.2) ++
+        collectPatTypes ctors env exp b.rhs) ++
         collectPatTypes ctors env expected sBody
   | .app f x =>
       match hoverExprTy ctors env f with
@@ -302,7 +302,7 @@ def surfaceLetScheme (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv)
 /-- All `let`/`let rec` vals inside an expression (surface walk; for match/if arms). -/
 partial def collectAllSurfaceValTypes (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv) :
     Surface.Expr → List (ValName × Option PolyTy)
-  | .letIn name ann rhs body =>
+  | .letIn name _ _ ann rhs body =>
       let σ? := surfaceLetScheme ctors ke env ann rhs
       let envRhs := env
       let envBody :=
@@ -314,11 +314,11 @@ partial def collectAllSurfaceValTypes (ctors : CtorEnv) (ke : KindEnv) (env : Ho
         collectAllSurfaceValTypes ctors ke envBody body
   | .letRecIn binds body =>
       let pairs : List (ValName × Option PolyTy) :=
-        binds.map fun ⟨n, ann, rhs⟩ => (n, surfaceLetScheme ctors ke env ann rhs)
+        binds.map fun b => (b.name, surfaceLetScheme ctors ke env b.ann b.rhs)
       let envBinds :=
         env.extendLets (pairs.filterMap fun ⟨n, σ?⟩ => σ?.map fun σ => (n, σ))
       pairs ++
-        binds.flatMap (fun ⟨_, _, rhs⟩ => collectAllSurfaceValTypes ctors ke envBinds rhs) ++
+        binds.flatMap (fun b => collectAllSurfaceValTypes ctors ke envBinds b.rhs) ++
         collectAllSurfaceValTypes ctors ke envBinds body
   | .lambda (.name _) _ body =>
       collectAllSurfaceValTypes ctors ke env body
@@ -352,12 +352,12 @@ partial def collectAllSurfaceValTypes (ctors : CtorEnv) (ke : KindEnv) (env : Ho
     (Core is PatComp-shaped and must not be zipped). -/
 partial def zipExprBindingTypesOpt (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv) :
     Surface.Expr → Expr → List (ValName × Option PolyTy)
-  | .letIn name _ sRhs sBody, .letIn (some σ) eRhs eBody =>
+  | .letIn name _ _ sRhs sBody, .letIn (some σ) eRhs eBody =>
       let env' := env.extendLets [(name, σ)]
       (name, some σ) ::
         zipExprBindingTypesOpt ctors ke env sRhs eRhs ++
         zipExprBindingTypesOpt ctors ke env' sBody eBody
-  | .letIn name ann sRhs sBody, .letIn none eRhs eBody =>
+  | .letIn name _ _ ann sRhs sBody, .letIn none eRhs eBody =>
       let σ? := surfaceLetScheme ctors ke env ann sRhs
       let env' :=
         match σ? with
@@ -370,7 +370,7 @@ partial def zipExprBindingTypesOpt (ctors : CtorEnv) (ke : KindEnv) (env : Hover
       let n := binds.length
       let schemes := (collectTopSchemes e).take n
       let chunk := schemes.reverse
-      let pairs := binds.map (·.1) |>.zip chunk
+      let pairs := binds.map (·.name) |>.zip chunk
       let eBody := dropAnnotatedLets n e
       let env' := env.extendLets pairs
       pairs.map (fun ⟨n, σ⟩ => (n, some σ)) ++
@@ -469,7 +469,7 @@ def collectPatTypesProg (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program) (
 
 /-- Nested val scopes (lockstep with `SpannedExpr`). -/
 partial def collectExprValScopes : Surface.Expr → SpannedExpr → List (ValName × Span)
-  | .letIn name _ sRhs sBody, .letIn _ sRhsS sBodyS =>
+  | .letIn name _ _ sRhs sBody, .letIn _ sRhsS sBodyS =>
       (name, sBodyS.span) ::
         collectExprValScopes sRhs sRhsS ++ collectExprValScopes sBody sBodyS
   | .letRecIn binds sBody, .letRecIn _ rhss sBodyS =>
@@ -477,8 +477,8 @@ partial def collectExprValScopes : Surface.Expr → SpannedExpr → List (ValNam
         match Span.hull (rhss.map SpannedExpr.span ++ [sBodyS.span]) with
         | some s => s
         | none => sBodyS.span
-      binds.map (fun ⟨n, _, _⟩ => (n, groupScope)) ++
-        ((binds.map (·.2.2)).zip rhss |>.flatMap (fun (e, s) => collectExprValScopes e s)) ++
+      binds.map (fun b => (b.name, groupScope)) ++
+        (binds.map (·.rhs)).zip rhss |>.flatMap (fun (e, s) => collectExprValScopes e s) ++
         collectExprValScopes sBody sBodyS
   | .lambda _ _ sBody, .lambda _ sBodyS => collectExprValScopes sBody sBodyS
   | .app sf sx, .app _ sfS sxS =>
@@ -532,10 +532,10 @@ partial def collectExprParamScopes : Surface.Expr → SpannedExpr → List (ValN
       (n, sBodyS.span) :: collectExprParamScopes sBody sBodyS
   | .lambda _ _ sBody, .lambda _ sBodyS =>
       collectExprParamScopes sBody sBodyS
-  | .letIn _ _ sRhs sBody, .letIn _ sRhsS sBodyS =>
+  | .letIn _ _ _ sRhs sBody, .letIn _ sRhsS sBodyS =>
       collectExprParamScopes sRhs sRhsS ++ collectExprParamScopes sBody sBodyS
   | .letRecIn binds sBody, .letRecIn _ rhss sBodyS =>
-      ((binds.map (·.2.2)).zip rhss |>.flatMap (fun (e, s) => collectExprParamScopes e s)) ++
+      (binds.map (·.rhs)).zip rhss |>.flatMap (fun (e, s) => collectExprParamScopes e s) ++
         collectExprParamScopes sBody sBodyS
   | .app sf sx, .app _ sfS sxS =>
       collectExprParamScopes sf sfS ++ collectExprParamScopes sx sxS
@@ -563,10 +563,10 @@ def collectParamScopes (p : Surface.Program) (sp : SpannedProgram) : List (ValNa
 /-- Pattern-binder scopes (arm body); one span per `patVars` binder. -/
 partial def collectExprPatScopes : Surface.Expr → SpannedExpr → List Span
   | .lambda _ _ sBody, .lambda _ sBodyS => collectExprPatScopes sBody sBodyS
-  | .letIn _ _ sRhs sBody, .letIn _ sRhsS sBodyS =>
+  | .letIn _ _ _ sRhs sBody, .letIn _ sRhsS sBodyS =>
       collectExprPatScopes sRhs sRhsS ++ collectExprPatScopes sBody sBodyS
   | .letRecIn binds sBody, .letRecIn _ rhss sBodyS =>
-      ((binds.map (·.2.2)).zip rhss |>.flatMap (fun (e, s) => collectExprPatScopes e s)) ++
+      (binds.map (·.rhs)).zip rhss |>.flatMap (fun (e, s) => collectExprPatScopes e s) ++
         collectExprPatScopes sBody sBodyS
   | .app sf sx, .app _ sfS sxS =>
       collectExprPatScopes sf sfS ++ collectExprPatScopes sx sxS

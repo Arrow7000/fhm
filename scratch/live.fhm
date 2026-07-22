@@ -41,7 +41,7 @@ let treeMap : {a b} (a -> b) -> Tree a -> Tree b =
     | Leaf -> Leaf
     | Node x l r -> Node (f x) (treeMap f l) (treeMap f r)
 
-let colorOf = \n ->
+let colorOf = \(n : Int) ->
   if n < 2 then
     Red
   else if n < 5 then
