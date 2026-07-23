@@ -359,6 +359,151 @@ example (ctors : CtorEnv) :
           exact ContainsBvarsUpTo.prim)
         (InstantiatesBy.arrow (InstantiatesBy.bvar rfl) (InstantiatesBy.bvar rfl)))
 
+/-! ### Packing B — annotated mono + head binders
+
+Surface-ish:
+```
+let f (x : Int) : Int = x in f
+```
+AST: nonempty `params`, return-type `ann`, open body (not `λ` in the RHS).
+`finalizeAnn` synthesises the full binding scheme `Int → Int` (paramCount 0);
+raw RHS is typed at the return type under the head binder; wrap supplies the
+Core λ. -/
+private theorem packingB_finalize :
+    finalizeAnn [] [(.mk "x", some (.prim .int))] (some ⟨[], .prim .int⟩) =
+      some ⟨[], .arrow (.prim .int) (.prim .int)⟩ := by
+  simp [finalizeAnn, synthScheme, paramsToArrows, paramsToArrows.go]
+
+private theorem packingB_lowerPoly (ctors : CtorEnv) :
+    lowerPolyAnn (kindEnvOfCtors ctors)
+      (finalizeAnn [] [(.mk "x", some (.prim .int))] (some ⟨[], .prim .int⟩)) =
+      some (some ⟨0, .arrow (.prim .int) (.prim .int)⟩) := by
+  rw [packingB_finalize]
+  simp [lowerPolyAnn, lowerPoly, lowerTy]
+
+example (ctors : CtorEnv) :
+    SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] []
+      (.letIn (.mk "f") [] [(.mk "x", some (.prim .int))]
+        (some ⟨[], .prim .int⟩)
+        (.var (.mk "x"))
+        (.var (.mk "f")))
+      (.arrow (.prim .int) (.prim .int)) := by
+  set σ : PolyTy := ⟨0, .arrow (.prim .int) (.prim .int)⟩
+  set paramTys : List Ty := [.prim .int]
+  set τret : Ty := .prim .int
+  refine SurfaceWTExpr.letInAnn (tvs := []) (vs := []) (Γ := [])
+    (ΓRhs := [PolyTy.mkTrivial (.prim .int)])
+    (name := .mk "f") (tyParams := [])
+    (params := [(.mk "x", some (.prim .int))])
+    (σs := ⟨[], .prim .int⟩) (σ := σ)
+    (rhs := _) (body := _) (τ := _) (L := [])
+    (paramTys := paramTys) (τretOf := fun _ => τret)
+    ?htvs ?hσeq ?hσwf ?hLL ?hrhs ?hτbinds ?hbody
+  · rfl
+  · simpa [σ] using packingB_lowerPoly ctors
+  · -- `PolyTy.WF σ` = `ContainsBvarsUpTo 0 (Int → Int)`
+    exact .arrow ContainsBvarsUpTo.prim ContainsBvarsUpTo.prim
+  · refine LowerLetParams.cons rfl (by simp [lowerTy]) ContainsBvarsUpTo.prim LowerLetParams.nil
+  · intro Xs hfresh
+    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hfresh.length)
+    subst hXs
+    exact .of_lowers .var (.var (by rfl))
+      (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.prim .int)) (instArgs := []) rfl
+        (by simp) .prim)
+  · intro Xs hfresh
+    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hfresh.length)
+    subst hXs
+    simp [paramTys, τret, σ, coreParamsToArrows, PolyTy.openVars]
+  · exact .of_lowers .var (.var (by rfl))
+      (TypeOfHM.var (polyTy := σ) (instArgs := []) rfl (by simp)
+        (InstantiatesBy.arrow InstantiatesBy.prim InstantiatesBy.prim))
+
+/-! ### Packing B — annotated mono letrec + head binders
+
+Same packing as a singleton rec group (`RecSpec.poly` with `paramCount = 0`,
+because Core stores annotated schemes via `RecSpec.poly`, not `mono`):
+```
+let f (x : Int) : Int = x in f
+```
+-/
+example (ctors : CtorEnv) :
+    SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] []
+      (.letRecIn
+        [{ name := .mk "f",
+           params := [(.mk "x", some (.prim .int))],
+           ann := some ⟨[], .prim .int⟩,
+           rhs := .var (.mk "x") }]
+        (.var (.mk "f")))
+      (.arrow (.prim .int) (.prim .int)) := by
+  set σ : PolyTy := ⟨0, .arrow (.prim .int) (.prim .int)⟩
+  set binds : List Surface.Binding :=
+    [{ name := .mk "f",
+       params := [(.mk "x", some (.prim .int))],
+       ann := some ⟨[], .prim .int⟩,
+       rhs := .var (.mk "x") }]
+  refine SurfaceWTExpr.letRecInAnn (tvs := []) (vs := []) (Γ := [])
+    (binds := binds) (anns' := [some σ]) (specs := [RecSpec.poly σ])
+    (G := []) (L := []) (paramTysList := [[.prim .int]])
+    (ΓRhsList := [[PolyTy.mkTrivial (.prim .int), σ]])
+    (τretsList := [.prim .int])
+    (τretPolyOf := fun _ _ _ => .prim .int)
+    (body := _) (τ := _)
+    ?htvs ?hann ?hlen ?hparamLen ?hΓRhsLen ?hretsLen ?hanns_eq ?hnodup
+    ?hmono_lc ?hpoly_wf ?hLL ?hτbinds ?hmono ?hτbinds_poly ?hpoly ?hbody
+  · rfl
+  · -- lowerAnnList of finalizeAnn return-type sugar
+    have h1 := packingB_lowerPoly ctors
+    simp [binds, lowerAnnList, h1, σ]
+  · rfl
+  · rfl
+  · rfl
+  · rfl
+  · rfl  -- RecSpec.ann (poly σ) = some σ
+  · exact List.nodup_nil
+  · intro τm h; simp [List.mem_singleton, σ] at h
+  · intro σ' h
+    simp only [List.mem_singleton, σ] at h
+    injection h with h; subst h
+    exact .arrow ContainsBvarsUpTo.prim ContainsBvarsUpTo.prim
+  · intro Xs _ i hi
+    have hi0 : i = 0 := by
+      simp only [binds, List.length_cons, List.length_nil] at hi; omega
+    subst hi0
+    refine LowerLetParams.cons rfl (by simp [lowerTy]) ContainsBvarsUpTo.prim LowerLetParams.nil
+  · intro Xs _ i hi τm hspec
+    have hi0 : i = 0 := by
+      simp only [binds, List.length_cons, List.length_nil] at hi; omega
+    subst hi0
+    simp only [σ, List.getElem_cons_zero] at hspec
+    cases hspec
+  · intro Xs _ i hi τm hspec
+    have hi0 : i = 0 := by
+      simp only [binds, List.length_cons, List.length_nil] at hi; omega
+    subst hi0
+    simp only [σ, List.getElem_cons_zero] at hspec
+    cases hspec
+  · intro Xs _ i hi σ' hspec Ys hfreshY
+    have hi0 : i = 0 := by
+      simp only [binds, List.length_cons, List.length_nil] at hi; omega
+    subst hi0
+    simp only [σ, List.getElem_cons_zero] at hspec
+    injection hspec with hspec; subst hspec
+    have hYs : Ys = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hfreshY.length)
+    subst hYs
+    simp [coreParamsToArrows, PolyTy.openVars, σ]
+  · intro Xs _ i hi σ' hspec Ys hfreshY
+    have hi0 : i = 0 := by
+      simp only [binds, List.length_cons, List.length_nil] at hi; omega
+    subst hi0
+    simp only [σ, List.getElem_cons_zero] at hspec
+    injection hspec with hspec; subst hspec
+    exact .of_lowers .var (.var (by rfl))
+      (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.prim .int)) (instArgs := []) rfl
+        (by simp) .prim)
+  · exact .of_lowers .var (.var (by rfl))
+      (TypeOfHM.var (polyTy := σ) (instArgs := []) rfl (by simp)
+        (InstantiatesBy.arrow InstantiatesBy.prim InstantiatesBy.prim))
+
 
 /-! ## 4. The composable safe pipeline
 
