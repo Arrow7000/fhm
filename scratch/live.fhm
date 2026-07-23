@@ -1,4 +1,5 @@
 -- Custom ADTs in the spotlight — less “lists of ints”, more trees & colours.
+-- Head-binder mix: pure λs, full head binders, and hybrid (some head, rest λ).
 
 type Maybe a =
   | Just a
@@ -13,35 +14,40 @@ type Tree a =
 
 type Color = Red | Green | Blue
 
-let map : {a b} (a -> b) -> List a -> List b = 
-  \f xs ->
-    match xs with
-    | [] -> []
-    | h :: t -> (f h) :: (map f t)
+-- Full head binders (incl. type params + return-type sugar on the last args)
+let map {a b} (f : a -> b) (xs : List a) : List b =
+  match xs with
+  | [] -> []
+  | h :: t -> (f h) :: (map f t)
 
-let filter : {a} (a -> Bool) -> List a -> List a =
-  \p xs ->
+-- Hybrid: head tyParam {a} + residual scheme quantifier {b} on the colon
+-- (b unused in the body — fine; quantifiers don't need to occur)
+let filter {a} (p : a -> Bool) : {b} List a -> List a =
+  \xs ->
     match xs with
     | [] -> []
     | h :: t ->
       if p h then
         h :: (filter p t)
       else
-        filter p t 
+        filter p t
 
+-- Pure value λs (classic style)
 let mapMaybe : {a b} (a -> b) -> Maybe a -> Maybe b =
   \f m ->
     match m with
     | Nothing -> Nothing
     | Just x -> Just (f x)
 
-let treeMap : {a b} (a -> b) -> Tree a -> Tree b =
-  \f t ->
+-- Hybrid: f as head binder, tree as λ
+let treeMap {a b} (f : a -> b) : Tree a -> Tree b =
+  \t ->
     match t with
     | Leaf -> Leaf
     | Node x l r -> Node (f x) (treeMap f l) (treeMap f r)
 
-let colorOf = \(n : Int) ->
+-- Full head binder + annotated param
+let colorOf (n : Int) : Color =
   if n < 2 then
     Red
   else if n < 5 then
@@ -49,6 +55,7 @@ let colorOf = \(n : Int) ->
   else
     Blue
 
+-- Pure λ
 let warm = \c ->
   match c with
   | Red -> True
@@ -61,13 +68,18 @@ let xs = [0, 1, 4, 9, 2]
 
 
 
-let listLength = \l ->
+-- Full head binders + return-type sugar (need `: ret` so `{a}` finalizes into the
+-- prenex scheme; bare `let listLength {a} (l : List a) =` cannot lower — `a` in
+-- the param type has no scheme to bind it yet)
+let listLength {a} (l : List a) : Int =
   match l with
   | [] -> 0
   | head :: tail -> 1 + listLength tail
 
 
-let addInts : Int -> Int -> Int = \a b -> a + b
+-- Hybrid: first arg head, second still λ
+let addInts (a : Int) : Int -> Int =
+  \b -> a + b
 
 -- Tree Color, Maybe Color, List Color, List Bool
 -- (treeMap colorOf t,

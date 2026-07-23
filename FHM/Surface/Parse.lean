@@ -1291,7 +1291,7 @@ def parseProgram (src : String) : Except ParseError Program :=
 #guard (parseExpr "let f {a} (x : a) : a = x in f").isOk
 #guard (match parseExpr "let f {a} (x : a) : a = x in f" with
   | .ok (.letIn (.mk "f") [.mk "a"] [(.mk "x", some (.tvar (.mk "a")))]
-      (some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩)
+      (some ⟨[], .tvar (.mk "a")⟩)
       (.var (.mk "x")) (.var (.mk "f"))) => true
   | _ => false)
 
@@ -1391,7 +1391,7 @@ def parseProgram (src : String) : Except ParseError Program :=
   | .ok p =>
     match p.groups, p.body with
     | [[⟨.mk "f", [.mk "a"], [(.mk "x", some (.tvar (.mk "a")))],
-        some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩,
+        some ⟨[], .tvar (.mk "a")⟩,
         .var (.mk "x")⟩]], .var (.mk "f") => true
     | _, _ => false
   | _ => false)

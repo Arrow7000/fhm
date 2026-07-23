@@ -3639,21 +3639,28 @@ def synthScheme (tyParams : List ValName)
   (paramsToArrows params ret).map fun body =>
     { foralls := tyParams.eraseDups, body }
 
-/-- Coherent scheme for a binding head.
-    * `params = []` — `: polyTy` is the full scheme; just merge `tyParams`.
-    * `params ≠ []` and `: ⟨[], ret⟩` — return-type sugar; synthesize arrows when
-      every param is annotated, else keep `⟨[], ret⟩` merged with `tyParams`.
-    * otherwise merge `tyParams` into the given scheme. -/
+/-- Coherent scheme for a binding head (prenex HM only).
+    Surface may write tyvars in head binders (`{a}`) and/or on `: {b} …`; all are
+    merged to a single prenex quantifier list. With nonempty head value-params and
+    a `: ⟨foralls, ret⟩` ann, fully annotated params become leading arrows on `ret`
+    (the type of the RHS after those params). Incomplete param anns: merge quantifiers
+    only, leave `ret` as written. No ann → stays unannotated
+    (`| _ :: _, none => none` — no fvar holes for missing return/domains).
+
+    @TODO(partial-head-ann): see `LowersExpr` — partial head binder anns
+    (e.g. `let f {a} (x : a) = …` without `: ret`) cannot finalize a scheme, so
+    tyParams never enter scope and lower fails. -/
 def finalizeAnn (tyParams : List ValName)
     (params : List (ValName × Option Surface.Ty)) (ann : Option Surface.PolyTy) :
     Option Surface.PolyTy :=
   match params, ann with
   | [], _ => mergeTyParams tyParams ann
-  | _ :: _, some ⟨[], ret⟩ =>
-      match synthScheme tyParams params ret with
-      | some σ => some σ
+  | _ :: _, some ⟨foralls, ret⟩ =>
+      match paramsToArrows params ret with
+      | some body =>
+          some { foralls := mergeTyParamNames tyParams foralls, body }
       | none => mergeTyParams tyParams ann
-  | _ :: _, other => mergeTyParams tyParams other
+  | _ :: _, none => none
 
 /-- Wrap a Core RHS in λs for surface value-params (outer param = outermost λ).
     Param anns are kind-checked at `tvs` (already including binding tyParams when
@@ -3845,7 +3852,7 @@ def bindingLowerTyScope (b : Surface.Binding) (outerTvs : List ValName) : List V
     (params : List (ValName × Option Surface.Ty)) :
     finalizeAnn tyParams params none = none := by
   simp only [finalizeAnn]
-  rcases params with _ | _ <;> simp [mergeTyParams]
+  rcases params with _ | _ <;> rfl
 
 theorem finalizeAnn_nil_nil_none : finalizeAnn [] [] none = none := by
   simp [finalizeAnn, mergeTyParams]
@@ -4156,37 +4163,29 @@ private theorem finalizeAnn_foralls_merge {tyParams : List ValName}
       rw [eraseDups_append_left_subset (rest := poly.foralls), ValName_list_eraseDups_idem]
   | cons hd tl =>
     cases ann with
-    | none => simp [finalizeAnn, mergeTyParams] at h
+    | none => simp [finalizeAnn] at h
     | some poly =>
       cases poly with
       | mk foralls body =>
-        cases foralls with
-        | nil =>
-          cases hs : synthScheme tyParams (hd :: tl) body with
-          | none =>
-            simp only [finalizeAnn, hs, mergeTyParams, mergeTyParamNames] at h
-            cases h
-            simp only [mergeTyParamNames]
-            rw [eraseDups_append_left_subset (rest := []), ValName_list_eraseDups_idem]
-          | some σ' =>
-            cases hpt : paramsToArrows (hd :: tl) body with
-            | none => simp [synthScheme, hpt] at hs
-            | some body' =>
-              have hσ' : σ' = { foralls := tyParams.eraseDups, body := body' } := by
-                apply Option.some.inj
-                rw [← hs]
-                simp [synthScheme, hpt, Option.map]
-              have hAnn :
-                  finalizeAnn tyParams (hd :: tl) (some { foralls := [], body := body }) = some σ' := by
-                simp [finalizeAnn, synthScheme, hpt, hσ']
-              have hσ : σs = σ' := Option.some.inj (h.symm.trans hAnn)
-              rw [hσ, hσ', mergeTyParamNames]
-              rw [eraseDups_append_eraseDups, ValName_list_eraseDups_idem]
-        | cons a as =>
-          simp only [finalizeAnn, mergeTyParams, mergeTyParamNames] at h
+        cases hpt : paramsToArrows (hd :: tl) body with
+        | none =>
+          have hfin :
+              finalizeAnn tyParams (hd :: tl) (some { foralls := foralls, body := body }) =
+                some { foralls := mergeTyParamNames tyParams foralls, body := body } := by
+            simp [finalizeAnn, hpt, mergeTyParams, mergeTyParamNames]
+          rw [hfin] at h
           cases h
           simp only [mergeTyParamNames]
-          rw [eraseDups_append_left_subset (rest := a :: as), ValName_list_eraseDups_idem]
+          rw [eraseDups_append_left_subset (rest := foralls), ValName_list_eraseDups_idem]
+        | some body' =>
+          have hfin :
+              finalizeAnn tyParams (hd :: tl) (some { foralls := foralls, body := body }) =
+                some { foralls := mergeTyParamNames tyParams foralls, body := body' } := by
+            simp [finalizeAnn, hpt]
+          rw [hfin] at h
+          cases h
+          simp only [mergeTyParamNames]
+          rw [eraseDups_append_left_subset (rest := foralls), ValName_list_eraseDups_idem]
 
 private theorem lowerPolyAnn_finalizeAnn_none {ke : KindEnv} {tyParams : List ValName}
     {params : List (ValName × Option Surface.Ty)} {ann : Option Surface.PolyTy}
@@ -5194,7 +5193,17 @@ mutual
 
     Head binders (`params` on `let`/`let rec`) are **not** restricted here: the
     raw RHS lowers under `paramTermScope`, then `wrapCoreParams` emits Core λs.
-    Pattern-λ is still missing (see `lambda_*` TODOs). -/
+    Pattern-λ is still missing (see `lambda_*` TODOs).
+
+    @TODO(partial-head-ann): no support for *partial* head-binder annotations.
+    `finalizeAnn` only yields a scheme when the residual is fully known
+    (params fully typed **and** `: ret` / scheme present). Forms like
+    `let f {a} (x : a) = …` or `let f (x : Int) = …` (no return type) fail to
+    lower: there is no Core/TypeOfHM story for “λ with only some domains fixed”
+    or “`{a}` in scope without a prenex scheme.” InferW-style fvar holes for
+    missing pieces could fill this *before* a closed Core term exists; TOHM
+    stays all-or-nothing and would only apply after holes are solved. Until
+    then authors need a complete residual (`: Int`, or packing-A full scheme). -/
 inductive LowersExpr (ctors : CtorEnv) (ke : KindEnv) :
     List ValName → List ValName → Surface.Expr → Expr → Prop where
   /-- Unit literal → Core unit. -/
@@ -5258,7 +5267,8 @@ inductive LowersExpr (ctors : CtorEnv) (ke : KindEnv) :
 
   /-- Non-rec let: finalize annotation, lower RHS under ty-param prefix + head
       binders (`paramTermScope`), wrap head binders as Core λs (`wrapCoreParams`),
-      lower body under the bound name. Supports nonempty `params` (head binders). -/
+      lower body under the bound name. Supports nonempty `params` (head binders).
+      Partial head anns are out of scope — see `LowersExpr` @TODO(partial-head-ann). -/
   | letIn {vs name tyParams params ann ann' rhs rhsCore rhs' body body'} :
       lowerPolyAnn ke (finalizeAnn tyParams params ann) = some ann' →
       LowersExpr ctors ke
