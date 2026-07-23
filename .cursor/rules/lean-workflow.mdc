@@ -36,6 +36,19 @@ Even if there are many lint warnings or errors for a file, only address the ones
 
 Avoid running shell commands unless necessary. Cursor agent mode enables you to search in files, grep things, etc., without actually running any commands manually. Use the built-in tools instead.
 
+## Prefer homemade `@[elab_as_elim]` strong recursors for hard induction
+
+Lean’s auto-generated recursors are often painful when:
+
+- the type/prop is **mutually inductive** (you get `motive_1` / `motive_2` and fragile `induction … using X.rec` setups), or
+- a single inductive nests recursion through **lists / `List.Forall` / zip / branches** (the auto IH is a useless motive on the list itself, not `∀ x ∈ xs, motive x`).
+
+**House strategy** (see Core `Ty.rec_strong` / `Expr.rec_strong` / `TypeOfElabHM.rec_strong`, InferW `TypeOfHM.rec_strong`, SurfaceLang `Surface.Ty.rec_strong` / `Surface.Expr.rec_strong`):
+
+1. **Before** grinding mutual `termination_by` blocks or hand-rolling `motive_2`, **search** for an existing `*.rec_strong` (or similar `@[elab_as_elim]`) for that type/prop.
+2. Prefer `induction h using Foo.rec_strong` with a **single** motive and useful list/branch IHs.
+3. If no such elim exists and induction is clearly the bottleneck, **raise creating one** (lead should propose the signature for user approval when it’s a new Prop/API; a recursor on an existing inductive is usually fine to add next to the type). Don’t spend lightyears on mutual proof spaghetti first.
+
 ## Handling Shadowed Variables
 
 Don't be afraid of shadowed variables. You have a tendency to try to work around them by hoping unification will figure out what you mean, e.g. `have p : MyRelation thing _ := ...` but unless the hypothesis body is entirely explicit, this will likely not work because Lean has no idea what you're trying to prove. It only makes sense to have placeholders in _values_ when Lean can likely figure out what you want by unification from other props you are providing that contain references to the value. Like e.g. calling `f _ isin` when `f : ∀ i ∈ v, p i` and `isin : x ∈ v`. But not when the entire thing you are trying to prove is missing. In the earlier example, if you don't even provide the name of the value whose relation to `thing` you are trying to prove, there's no way Lean is going to be able to help you, and there is likely no way around just providing this value by name.
