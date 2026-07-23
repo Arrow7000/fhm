@@ -231,10 +231,12 @@ example (ctors : CtorEnv) :
         (.lambda (.name (.mk "x")) none (.var (.mk "x")))
         (.var (.mk "id")))
       (.arrow (.prim .int) (.prim .int)) := by
-  apply SurfaceWTExpr.letInAnn (L := [])
+  apply SurfaceWTExpr.letInAnn (L := []) (ΓRhs := [])
   · rfl                                   -- tvs = []
-  · rfl                                   -- lowerPoly ke σs = some σ
+  · rw [finalizeAnn_nil_some]
+    exact lowerPolyAnn_finalizeAnn_nil (by rfl)
   · exact .arrow (.bvar (by decide)) (.bvar (by decide))   -- PolyTy.WF σ
+  · exact LowerLetParams.nil
   · -- ∀ Xs, FreshNames [] σ.paramCount Xs → SurfaceWTExpr … rhs (σ.openVars Xs)
     intro Xs hfresh
     obtain ⟨X, hXeq⟩ := List.length_eq_one_iff.mp hfresh.length
@@ -273,10 +275,18 @@ example (ctors : CtorEnv) :
   apply SurfaceWTExpr.letRecInAnn (G := []) (L := [])
     (specs := [RecSpec.poly ⟨1, .arrow (.bvar 0) (.bvar 0)⟩])
     (anns' := [some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩])
+    (paramTysList := [[]])
+    (ΓRhsList := [[RecSpec.poly ⟨1, .arrow (.bvar 0) (.bvar 0)⟩]])
   -- goal order (per `apply`'s dependency-driven ordering):
-  -- htvs, hann, hanns_eq, hnodup, hmono_lc, hpoly_wf, hmono, hpoly, hbody, hlen
+  -- htvs, hparamsEmpty, hann, hlen, hparamLen, hΓRhsLen, hanns_eq, hnodup,
+  -- hmono_lc, hpoly_wf, hLL, hmono, hpoly, hbody
   · rfl                                    -- htvs : tvs = []
-  · rfl                                    -- hann : lowerAnnList …
+  · intro b hb                             -- hparamsEmpty : params = []
+    simp only [List.mem_singleton] at hb; subst hb; rfl
+  · simp [finalizeAnn_nil_some, lowerPolyAnn, lowerAnnList, List.map_cons, List.map_nil]
+  · rfl                                    -- hlen
+  · rfl                                    -- hparamLen
+  · rfl                                    -- hΓRhsLen
   · rfl                                    -- hanns_eq : specs.map RecSpec.ann = anns'
   · exact List.nodup_nil                   -- hnodup : G.Nodup
   · intro τm h; simp at h                  -- hmono_lc (vacuous)
@@ -285,6 +295,11 @@ example (ctors : CtorEnv) :
     injection h with h
     subst h
     exact .arrow (.bvar (by decide)) (.bvar (by decide))
+  · intro Xs hfresh i hi                   -- hLL
+    simp only [List.length_cons, List.length_nil] at hi
+    have hi0 : i = 0 := by omega
+    subst hi0
+    exact LowerLetParams.nil
   · intro Xs hfresh i hi τm hspec          -- hmono (vacuous: specs[0] is .poly)
     simp only [List.length_cons, List.length_nil] at hi
     have hi0 : i = 0 := by omega

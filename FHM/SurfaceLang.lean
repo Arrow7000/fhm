@@ -25,8 +25,37 @@ inductive Ty
   | customTy : TyName → List Ty → Ty
   deriving Repr
 
-
-
+/--
+Strong induction for `Ty` with a useful IH on `customTy`:
+`(∀ t ∈ tys, motive t)` instead of a bare motive on the list.
+-/
+@[elab_as_elim]
+def Ty.rec_strong.{u} {motive : Ty → Sort u}
+    (prim     : ∀ p, motive (.prim p))
+    (pair     : ∀ a b, motive a → motive b → motive (.pair a b))
+    (arrow    : ∀ a b, motive a → motive b → motive (.arrow a b))
+    (tvar     : ∀ n, motive (.tvar n))
+    (customTy : ∀ nm tys, (∀ t ∈ tys, motive t) → motive (.customTy nm tys)) :
+    (ty : Ty) → motive ty
+  | .prim p          => prim p
+  | .pair a b        =>
+      pair a b
+        (Ty.rec_strong prim pair arrow tvar customTy a)
+        (Ty.rec_strong prim pair arrow tvar customTy b)
+  | .arrow a b       =>
+      arrow a b
+        (Ty.rec_strong prim pair arrow tvar customTy a)
+        (Ty.rec_strong prim pair arrow tvar customTy b)
+  | .tvar n          => tvar n
+  | .customTy nm tys =>
+      customTy nm tys
+        (fun t _ht => Ty.rec_strong prim pair arrow tvar customTy t)
+termination_by ty => sizeOf ty
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | omega
+    | (have := List.sizeOf_lt_of_mem _ht; omega)
 
 structure PolyTy where
   foralls : List ValName
@@ -93,6 +122,127 @@ inductive Expr
   | ife (cond t f : Expr)
   | match_ (scrutinee : Expr) (branches : List (Pattern × Expr))
 
+/--
+Strong induction for `Expr` with useful IHs on nested lists:
+- `list`: `(∀ e ∈ items, motive e)`
+- `letRecIn`: `(∀ b ∈ bindings, motive b.rhs)`
+- `match_`: `(∀ pat e, (pat, e) ∈ branches → motive e)`
+
+rather than bare motives on the lists from the auto-generated recursor.
+
+Usage:
+```
+theorem some_property : ∀ e : Expr, P e := by
+  intro e
+  induction e using Expr.rec_strong
+  case primLit p                            => ...
+  case pair a b iha ihb                     => ...
+  case list items ih                        => ...
+  case lambda param paramAnn body ih        => ...
+  case app f input ihf ihi                  => ...
+  case letIn ... ihbe ihbo                  => ...
+  case letRecIn bindings body ihbs ihbo     => ...
+    -- ihbs : ∀ b ∈ bindings, P b.rhs
+  case match_ scrutinee branches ihs ihbs   => ...
+    -- ihbs : ∀ pat e, (pat, e) ∈ branches → P e
+```
+-/
+@[elab_as_elim]
+def Expr.rec_strong.{u} {motive : Expr → Sort u}
+    (primLit   : ∀ p, motive (.primLit p))
+    (primBinOp : ∀ op, motive (.primBinOp op))
+    (pair      : ∀ a b, motive a → motive b → motive (.pair a b))
+    (cons      : ∀ head tail, motive head → motive tail → motive (.cons head tail))
+    (list      : ∀ items, (∀ e ∈ items, motive e) → motive (.list items))
+    (lambda    : ∀ param paramAnn body, motive body → motive (.lambda param paramAnn body))
+    (app       : ∀ f input, motive f → motive input → motive (.app f input))
+    (letIn     : ∀ binding tyParams params ann bindingExpr body,
+                   motive bindingExpr → motive body →
+                   motive (.letIn binding tyParams params ann bindingExpr body))
+    (letRecIn  : ∀ bindings body,
+                   (∀ b ∈ bindings, motive b.rhs) → motive body →
+                   motive (.letRecIn bindings body))
+    (var       : ∀ binding, motive (.var binding))
+    (ctor      : ∀ name, motive (.ctor name))
+    (ife       : ∀ cond t f, motive cond → motive t → motive f → motive (.ife cond t f))
+    (match_    : ∀ scrutinee branches,
+                   motive scrutinee →
+                   (∀ pat e, (pat, e) ∈ branches → motive e) →
+                   motive (.match_ scrutinee branches)) :
+    (e : Expr) → motive e
+  | .primLit p    => primLit p
+  | .primBinOp op => primBinOp op
+  | .pair a b =>
+      pair a b
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ a)
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ b)
+  | .cons head tail =>
+      cons head tail
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ head)
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ tail)
+  | .list items =>
+      list items
+        (fun e _he =>
+          Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+            var ctor ife match_ e)
+  | .lambda param paramAnn body =>
+      lambda param paramAnn body
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ body)
+  | .app f input =>
+      app f input
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ f)
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ input)
+  | .letIn binding tyParams params ann bindingExpr body =>
+      letIn binding tyParams params ann bindingExpr body
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ bindingExpr)
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ body)
+  | .letRecIn bindings body =>
+      letRecIn bindings body
+        (fun b _hb =>
+          Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+            var ctor ife match_ b.rhs)
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ body)
+  | .var binding => var binding
+  | .ctor name   => ctor name
+  | .ife cond t f =>
+      ife cond t f
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ cond)
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ t)
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ f)
+  | .match_ scrutinee branches =>
+      match_ scrutinee branches
+        (Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+          var ctor ife match_ scrutinee)
+        (fun _pat e _hb =>
+          Expr.rec_strong primLit primBinOp pair cons list lambda app letIn letRecIn
+            var ctor ife match_ e)
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | omega
+    | (have h := List.sizeOf_lt_of_mem _he
+       omega)
+    | (have h := List.sizeOf_lt_of_mem _hb
+       simp only [Prod.mk.sizeOf_spec] at h
+       omega)
+    | (have h := List.sizeOf_lt_of_mem _hb
+       cases b
+       simp only [Binding'.mk.sizeOf_spec] at h ⊢
+       omega)
 
 abbrev Binding := Binding' Expr
 

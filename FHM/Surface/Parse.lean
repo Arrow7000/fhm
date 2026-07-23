@@ -821,8 +821,7 @@ partial def letBinding (indentCol : Nat) :
       match annRaw with
       | some (σ, bs) => (some σ, bs)
       | none => (none, [])
-    let ann := SurfaceBridge.finalizeAnn tyParams params annPoly
-    return ((blockCol, .mk name, tyParams, params, ann, rhs, sRhs),
+    return ((blockCol, .mk name, tyParams, params, annPoly, rhs, sRhs),
       bsName ++ bsTyParams ++ bsParams ++ bsAnn ++ bsRhs)
 
 /-- `let` bindings `in` body → nested `.letIn` (first binder outermost). -/
@@ -1287,7 +1286,7 @@ def parseProgram (src : String) : Except ParseError Program :=
 #guard (parseExpr "let f (x : Int) : Int = x in f").isOk
 #guard (match parseExpr "let f (x : Int) : Int = x in f" with
   | .ok (.letIn (.mk "f") [] [(.mk "x", some (.prim .int))]
-      (some ⟨[], .arrow (.prim .int) (.prim .int)⟩) (.var (.mk "x")) (.var (.mk "f"))) => true
+      (some ⟨[], .prim .int⟩) (.var (.mk "x")) (.var (.mk "f"))) => true
   | _ => false)
 #guard (parseExpr "let f {a} (x : a) : a = x in f").isOk
 #guard (match parseExpr "let f {a} (x : a) : a = x in f" with
