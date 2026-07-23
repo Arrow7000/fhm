@@ -513,8 +513,8 @@ private theorem lowerDataDecl_complete {ke : KindEnv} {s : Surface.DataDecl} {d 
     rw [lowerDataDecl, option_guard_bind_pos hp]
     have hbind :
         (sctors.mapM (fun x =>
-          (lowerTyList ke params x.2).map fun fs' => (x.1, fs'))) = some dctors := by
-      simpa [lowerCtorFields] using hmap
+          (lowerTyList ke params x.2).map fun fs' => (x.1, fs'))) = some dctors :=
+      hmap
     rw [hbind, Option.bind_eq_bind, Option.bind_some, Option.pure_def]
 
 private theorem LowersCtors.flatMap_names_eq {ke : KindEnv} {tvs : List ValName}
@@ -6119,7 +6119,8 @@ private theorem defaultRow_body_inv {ctors : CtorEnv} {octx : OccCtx} {Γ_outer 
     | gwild =>
       simp only [defaultRow, Option.some.injEq] at hs
       subst hs
-      simpa [rowBindTys_defaultRow_gwild] using hbody
+      rw [rowBindTys_defaultRow_gwild (τ0 := τ0)]
+      exact hbody
 
 private theorem specializeRow_body_inv_gctor {ctors : CtorEnv} {octx : OccCtx} {Γ_outer : Env}
     {τres : Ty} {occ0 : Occ} {c : CtorName} {τ : Ty} {ttys : List Ty} {bodies : Nat → Expr}
@@ -8156,7 +8157,7 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         have hTyR := ihr hrL
         refine TypeOfHM.letIn (M := PolyTy.mkTrivial τrhs) (L := [])
           (by simpa [PolyTy.WF, PolyTy.mkTrivial] using TypeOfHM.regular hTyR)
-          (fun _ h => Option.noConfusion h)
+          (fun _ h => nomatch h)
           (generalisesTo_of_typeable hTyR) rfl (ihb hbL)
   | letInAnn =>
     rename_i vs Γ name σs σ rhs body τ L htvs hσ hσwf _hrhs_forall _hb ihr ihb

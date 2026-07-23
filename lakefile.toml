@@ -57,11 +57,11 @@ name = "FHMZ3"
 roots = ["FHM.Z3", "FHM.BLSketch", "FHM.BLSketch.Pretty"]
 
 [[require]]
-name = "mathlib"
-scope = "leanprover-community"
-rev = "v4.26.0"
-
-[[require]]
 name = "Parser"
 git = "https://github.com/fgdorais/lean4-parser"
 rev = "b50def30c0b6"
+
+[[require]]
+name = "mathlib"
+scope = "leanprover-community"
+rev = "v4.32.0"

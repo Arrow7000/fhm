@@ -126,7 +126,7 @@ theorem TypeOfElabHM.onSubst {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
     (h_lc : ∀ p ∈ S, p.2.IsLC) (h : TypeOfElabHM ctx e τ) :
     TypeOfElabHM (S.onCtx ctx) (e.substTyFvars S) (S.onTy τ) := by
   induction S generalizing ctx e τ with
-  | nil => simpa [Expr.substTyFvars] using h
+  | nil => simpa [Expr.substTyFvars, Subst.onTy, Ty.substFvars] using h
   | cons hd S' ih =>
     obtain ⟨Z, U⟩ := hd
     have hU : U.IsLC := h_lc (Z, U) (List.mem_cons_self ..)
@@ -2530,7 +2530,7 @@ theorem Ty.mem_freeVars_substFvar {Z : Nat} {U x : Ty} {v : Nat}
 theorem Subst.mem_freeVars_onTy {S : Subst} {x : Ty} {v : Nat}
     (hv : v ∈ (S.onTy x).freeVars) : v ∈ x.freeVars ∨ ∃ p ∈ S, v ∈ p.2.freeVars := by
   induction S generalizing x with
-  | nil => exact Or.inl (by simpa [Subst.onTy] using hv)
+  | nil => exact Or.inl (by simpa [Subst.onTy, Ty.substFvars] using hv)
   | cons hd tl ih =>
     obtain ⟨Z, U⟩ := hd
     rw [show ((Z, U) :: tl) = [(Z, U)] ++ tl from rfl, Subst.onTy_append] at hv
@@ -5607,7 +5607,7 @@ theorem Expr.closeTyVarsAux_tyBvarBounded {Xs : List Nat} :
 theorem Expr.closeTyVars_tyBvarBounded {Xs : List Nat} {e : Expr}
     (he : e.TyBvarBounded 0) : (e.closeTyVars Xs).TyBvarBounded Xs.length := by
   have := Expr.closeTyVarsAux_tyBvarBounded (Xs := Xs) e 0 he
-  simpa using this
+  simpa [Expr.closeTyVars] using this
 
 /-- Term-var shifting preserves `TyBvarBounded` (it only renames term `bvar`s, never
     touching type annotations). (Re-based off `NoRecAnn`: shifting recurses through
@@ -6864,7 +6864,7 @@ private theorem letRecElabNest_sound {ctx : Ctx} {Lp G : List Nat}
         have hi : i < specs.length := by
           by_contra hc
           rw [List.getElem?_eq_none (by omega)] at hs_eq
-          exact Option.noConfusion hs_eq
+          exact nomatch hs_eq
         refine TypeOfElabHM.var (polyTy := PolyTy.mkTrivial τ) ?_ ⟨rfl, by simp⟩
           (InstantiatesBy.refl_of_closed hτlc)
         rw [List.getElem?_append_left (by rw [List.length_map]; exact hi),
@@ -6895,7 +6895,8 @@ private theorem letRecElabNest_sound {ctx : Ctx} {Lp G : List Nat}
             ⟨(rest.map (fun p => RecSpec.bodyScheme G p.2)).reverse
                 ++ (PolyTy.genGroup G τ :: acc) ++ ctx.env, ctx.ctors⟩ body ρ := by
           rw [List.map_cons, List.reverse_cons] at hbody
-          simpa only [List.append_assoc, List.singleton_append, List.cons_append] using hbody
+          simpa only [List.append_assoc, List.singleton_append, List.cons_append,
+            List.nil_append, RecSpec.bodyScheme] using hbody
         have key := ih (PolyTy.genGroup G τ :: acc) hacc'_genG (hcard' _) (hms' _) hbody'
         simpa only [List.cons_append] using key
     | poly σ =>
@@ -6911,7 +6912,7 @@ private theorem letRecElabNest_sound {ctx : Ctx} {Lp G : List Nat}
       have hi : i < specs.length := by
         by_contra hc
         rw [List.getElem?_eq_none (by omega)] at hs_eq
-        exact Option.noConfusion hs_eq
+        exact nomatch hs_eq
       simp only [Expr.letRecElabNest]
       refine TypeOfElabHM.letIn (M := σ) (L := Lp) hσwf
         (fun a h => Option.some.inj h) ?gen rfl ?hbodyP
@@ -6938,7 +6939,8 @@ private theorem letRecElabNest_sound {ctx : Ctx} {Lp G : List Nat}
             ⟨(rest.map (fun p => RecSpec.bodyScheme G p.2)).reverse
                 ++ (σ :: acc) ++ ctx.env, ctx.ctors⟩ body ρ := by
           rw [List.map_cons, List.reverse_cons] at hbody
-          simpa only [List.append_assoc, List.singleton_append, List.cons_append] using hbody
+          simpa only [List.append_assoc, List.singleton_append, List.cons_append,
+            List.nil_append, RecSpec.bodyScheme] using hbody
         have key := ih (σ :: acc) hacc'_genG (hcard' _) (hms' _) hbody'
         simpa only [List.cons_append] using key
 
@@ -9616,7 +9618,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
     · intro Xs hfresh
       have hZ_notin : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
       have hXs_freshL : FreshNames L M.paramCount Xs :=
-        ⟨by simpa using hfresh.length, hfresh.nodup,
+        ⟨by simpa [PolyTy.substFvar] using hfresh.length, hfresh.nodup,
          fun x hx hc => hfresh.avoid x hx (List.mem_cons_of_mem _ hc)⟩
       have hbe := ihcofin Xs hXs_freshL
       rw [Expr.substTyFvar_openBoundTyVars h_U_lc hZ_notin] at hbe
@@ -13204,7 +13206,8 @@ theorem TypeOfHM.weaken_schemes {ctors : CtorEnv} {env : Env} {e : Expr} {τ : T
           List.singleton_append] using h
       have h2 := ih (ep ++ [M]) h1
       have h3 := TypeOfHM.weaken_scheme (env_post := ep) (env := Mt' ++ env) hM
-        (by simpa only [List.append_assoc, List.singleton_append] using h2)
+        (by simpa only [List.append_assoc, List.cons_append, List.nil_append,
+          List.singleton_append] using h2)
       simpa only [List.append_assoc, List.cons_append, List.nil_append,
         List.singleton_append] using h3
   have hfin := H hgen [] (by simpa using h)
@@ -14669,7 +14672,7 @@ private theorem letRecFused_residual_setup
     have hja : j < anns.length := by
       by_contra hc
       rw [List.getElem?_eq_none (by omega)] at hsj
-      exact Option.noConfusion hsj
+      exact nomatch hsj
     have hjd : j < dspecs.length := by omega
     -- the position must be unannotated, with a matching declarative mono spec
     have hann_j : RecSpec.ann (dspecs[j]'hjd) = anns[j]'hja := by
@@ -14707,7 +14710,7 @@ private theorem letRecFused_residual_setup
     have hja : j < anns.length := by
       by_contra hc
       rw [List.getElem?_eq_none (by omega)] at hsj
-      exact Option.noConfusion hsj
+      exact nomatch hsj
     have hjd : j < dspecs.length := by omega
     have hann_j : RecSpec.ann (dspecs[j]'hjd) = anns[j]'hja := by
       have h := congrArg (fun l => l[j]?) hwfD.anns_eq
@@ -18011,7 +18014,8 @@ theorem nodup_length_lt {l₁ l₂ : List Nat} (h : l₁.Nodup) (hsub : l₁ ⊆
   have hcons : (z :: l₁).Nodup := List.nodup_cons.mpr ⟨hz1, h⟩
   have hsub2 : (z :: l₁) ⊆ l₂ := List.cons_subset.mpr ⟨hz2, hsub⟩
   have := nodup_length_le hcons hsub2
-  simpa using this
+  simp only [List.length_cons] at this
+  omega
 
 theorem lexLt_left {a₁ a₂ b₁ b₂ : Nat} (h : a₁ < a₂) :
     Prod.Lex (· < ·) (· < ·) (a₁, b₁) (a₂, b₂) := Prod.Lex.left _ _ h
@@ -21373,7 +21377,7 @@ namespace AuditCapstone
 def polyId : Expr := .lambda none (.var 0 [])
 
 theorem polyId_typeable : TypeOfHM ⟨[], []⟩ polyId (.arrow (.fvar 0) (.fvar 0)) :=
-  TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
+  TypeOfHM.lambda .fvar (fun _ h => nomatch h) rfl
     (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .fvar)
 
 /-- `typecheck` succeeds, produces a genuine declarative type (soundness), and that
@@ -21448,7 +21452,7 @@ theorem idid_typeable : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 0) (.fvar 0)) 
       have htype : (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy).openVars [X]
             = .arrow (.fvar X) (.fvar X) := rfl
       rw [hterm, htype]
-      exact TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
+      exact TypeOfHM.lambda .fvar (fun _ h => nomatch h) rfl
         (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .fvar)
     · simp at hlen
   · rfl
@@ -21477,7 +21481,7 @@ def appIdFive : Expr := .app (.lambda none (.var 0 [])) (.primLit (.int 5))
 
 theorem appIdFive_typeable : TypeOfHM ⟨[], []⟩ appIdFive (.prim .int) :=
   TypeOfHM.app
-    (TypeOfHM.lambda .prim (fun _ h => Option.noConfusion h) rfl
+    (TypeOfHM.lambda .prim (fun _ h => nomatch h) rfl
       (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .prim))
     TypeOfHM.primLitInt
 
@@ -21494,7 +21498,7 @@ theorem appIdFive_typeable : TypeOfHM ⟨[], []⟩ appIdFive (.prim .int) :=
 def matchWild : Expr := .lambda none (.match_ (.var 0 []) [(.wildcard, .primLit (.int 0))])
 
 theorem matchWild_typeable : TypeOfHM ⟨[], []⟩ matchWild (.arrow (.fvar 0) (.prim .int)) := by
-  refine TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl ?_
+  refine TypeOfHM.lambda .fvar (fun _ h => nomatch h) rfl ?_
   refine TypeOfHM.match_ (scrutTy := .fvar 0)
     (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .fvar) (by simp) ?_
   intro branch hbr

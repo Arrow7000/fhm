@@ -634,7 +634,7 @@ decreasing_by
   all_goals first
     | omega
     | (have h := List.sizeOf_lt_of_mem _hb
-       simp only [Prod.mk.sizeOf_spec] at h
+       try simp only [Prod.mk.sizeOf_spec] at h
        omega)
 
 
@@ -4865,7 +4865,7 @@ theorem TypeOfElabHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc :
     · intro Xs hfresh
       have hZ_notin : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
       have hXs_freshL : FreshNames L M.paramCount Xs :=
-        ⟨by simpa using hfresh.length, hfresh.nodup,
+        ⟨by simpa [PolyTy.substFvar] using hfresh.length, hfresh.nodup,
          fun x hx hc => hfresh.avoid x hx (List.mem_cons_of_mem _ hc)⟩
       have hbe := ihcofin Xs hXs_freshL
       rw [Expr.substTyFvar_openBoundTyVars h_U_lc hZ_notin] at hbe
@@ -6752,7 +6752,7 @@ theorem TypeOfElabHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
       have hMσ : M = σ := hann σ hann_ann
       subst hMσ
       simp only [Expr.TyBvarBounded]
-      refine ⟨by simpa using hwf, ?_, ihbody⟩
+      refine ⟨by simpa [PolyTy.WF] using hwf, ?_, ihbody⟩
       obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L M.paramCount
       have hc := ihcofin Xs ⟨hXlen, hXnodup, hXavoid⟩
       rw [hann_ann] at hc
@@ -6770,7 +6770,7 @@ theorem TypeOfElabHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
       rw [← hwf.anns_eq] at hσ
       obtain ⟨s, hs, hsa⟩ := List.mem_map.mp hσ
       cases RecSpec.ann_eq_some hsa
-      simpa using hwf.poly_wf σ hs
+      simpa [PolyTy.WF] using hwf.poly_wf σ hs
     · -- per-binding boundedness at the shield depths
       rw [← hwf.anns_eq]
       refine Expr.TyBvarBounded.RecGroup_of_zip (by simpa using hwf.length) (fun p hp => ?_)
@@ -7667,7 +7667,7 @@ theorem TypeOfElabHM.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
     cases h_ty with
     | ctor hlook htyargs hinst =>
       exact ⟨name, [], _, _, [], _, .base name, hlook, htyargs, rfl, .nil,
-        by simpa [Ctor.toTy] using hinst⟩
+        by simpa [Ctor.toTy, PolyTy.InstantiatesTo] using hinst⟩
   | app f arg ihf _ =>
     cases h_chain with
     | app hchainf hvarg =>
@@ -9353,9 +9353,9 @@ def polyRecRhs : Expr :=
     (polymorphic recursion: `f` is used at `Int → Int` AND at `Unit → Unit`). -/
 theorem polyRecRhs_typeable (X : Nat) :
     TypeOfElabHM ⟨[selfSig], []⟩ polyRecRhs (.arrow (.fvar X) (.fvar X)) := by
-  refine TypeOfElabHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.lambda .fvar (fun T h => nomatch h) rfl ?_
   refine TypeOfElabHM.letIn (M := PolyTy.mkTrivial (.prim .int)) (L := [])
-    .prim (fun σ h => Option.noConfusion h) ?_ rfl ?_
+    .prim (fun σ h => nomatch h) ?_ rfl ?_
   · intro Xs hfresh
     obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
     refine TypeOfElabHM.app ?_ TypeOfElabHM.primLitInt
@@ -9363,7 +9363,7 @@ theorem polyRecRhs_typeable (X : Nat) :
       ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim⟩
       (.arrow (.bvar rfl) (.bvar rfl))
   refine TypeOfElabHM.letIn (M := PolyTy.mkTrivial (.prim .unit)) (L := [])
-    .prim (fun σ h => Option.noConfusion h) ?_ rfl ?_
+    .prim (fun σ h => nomatch h) ?_ rfl ?_
   · intro Xs hfresh
     obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
     refine TypeOfElabHM.app ?_ TypeOfElabHM.primLitUnit
@@ -9428,9 +9428,9 @@ theorem ownVarRhs_opened_typeable (X : Nat) :
         (.app (.var 1 [.arrow (.fvar X) (.fvar X)]) (.lambda none (.var 0 [])))
         (.var 1 [])))
     ((Ty.fvar X).arrow (Ty.fvar X))
-  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => nomatch h) rfl ?_
   refine TypeOfElabHM.letIn (M := PolyTy.mkTrivial ((Ty.fvar X).arrow (.fvar X))) (L := [])
-    (.arrow .fvar .fvar) (fun σ h => Option.noConfusion h) ?_ rfl ?_
+    (.arrow .fvar .fvar) (fun σ h => nomatch h) ?_ rfl ?_
   · intro Xs hfresh
     obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
     show TypeOfElabHM ⟨[PolyTy.mkTrivial (.fvar X), selfSig], []⟩
@@ -9440,7 +9440,7 @@ theorem ownVarRhs_opened_typeable (X : Nat) :
     · exact TypeOfElabHM.var (polyTy := selfSig) rfl
         ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar⟩
         (.arrow (.bvar rfl) (.bvar rfl))
-    · refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+    · refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => nomatch h) rfl ?_
       exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
         ⟨rfl, by intro t ht; cases ht⟩ .fvar
   · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
@@ -9480,7 +9480,7 @@ def scopedRhs : Expr := .lambda none (.app (.var 1 []) (.var 0 []))
 
 theorem scopedRhs_typeable (Z : Nat) :
     TypeOfElabHM ⟨[rigidSig Z], []⟩ scopedRhs (.arrow (.fvar Z) (.fvar Z)) := by
-  refine TypeOfElabHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.lambda .fvar (fun T h => nomatch h) rfl ?_
   refine TypeOfElabHM.app (argTy := .fvar Z) ?_ ?_
   · exact TypeOfElabHM.var (polyTy := rigidSig Z) (tyArgs := []) rfl
       ⟨rfl, by intro t ht; cases ht⟩ (.arrow .fvar .fvar)
@@ -10160,7 +10160,7 @@ theorem TypeOfElabHM.varsBelow {ctx : Ctx} {e : Expr} {τ : Ty}
     by_contra hle
     push_neg at hle
     rw [List.getElem?_eq_none hle] at hlook
-    exact Option.noConfusion hlook
+    exact nomatch hlook
   | lambda hpc hann heq hbody ihbody =>
     subst heq
     simpa only [Expr.varsBelow, List.length_cons] using ihbody
