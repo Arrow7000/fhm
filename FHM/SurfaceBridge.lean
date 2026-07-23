@@ -1088,8 +1088,8 @@ def sccBeforeEdges (succ : Nat → List Nat) (comps : List (List Nat)) :
           if compDependsOn succ ca cb then some (b, a) else none
         | _, _ => none
 
-/-- Read `indeg[i]` (0 if OOB). -/
-private def indegGet (indeg : List Nat) (i : Nat) : Nat :=
+/-- Read `indeg[i]` (0 if OOB). Public for `FHM.Scc.BindingGlue` Kahn staging. -/
+def indegGet (indeg : List Nat) (i : Nat) : Nat :=
   indeg[i]?.getD 0
 
 /-- Set `indeg[i] := v`. -/
@@ -1097,7 +1097,7 @@ private def indegSet (indeg : List Nat) (i v : Nat) : List Nat :=
   indeg.mapIdx fun j x => if j = i then v else x
 
 /-- Extracted Kahn loop body for induction. -/
-private def kahnGo (beforeEdges : List (Nat × Nat)) :
+def kahnGo (beforeEdges : List (Nat × Nat)) :
     Nat → List Nat → List Nat → List Nat → List Nat
   | 0, _indeg, _ready, acc => acc
   | _fuel + 1, _indeg, [], acc => acc
@@ -1743,7 +1743,7 @@ private theorem sccIndexSets_nonempty_comp (binds : List Surface.Binding) :
     (fun i => mutuallyReachable_refl _ _ i) _ _ _
     (by intro g hg; cases hg)
 
-private theorem flatten_map_filterMap {α β}
+theorem flatten_map_filterMap {α β}
     (f : α → Option β) (sets : List (List α)) :
     (sets.map (fun idxs => idxs.filterMap f)).flatten =
       sets.flatten.filterMap f := by
@@ -1752,7 +1752,7 @@ private theorem flatten_map_filterMap {α β}
   | cons s sets ih =>
     simp only [List.map_cons, List.flatten_cons, List.filterMap_append, ih]
 
-private theorem range_filterMap_getElem? {α} (l : List α) :
+theorem range_filterMap_getElem? {α} (l : List α) :
     (List.range l.length).filterMap (fun i => l[i]?) = l := by
   induction l with
   | nil => simp
@@ -1765,7 +1765,7 @@ private theorem range_filterMap_getElem? {α} (l : List α) :
       (l := List.range xs.length) (fun i _ => List.getElem?_cons_succ)
     rw [h, ih]
 
-private theorem indexSetsToBindings_flatten_of_perm
+theorem indexSetsToBindings_flatten_of_perm
     {binds : List Surface.Binding} {sets : List (List Nat)}
     (hperm : sets.flatten.Perm (List.range binds.length)) :
     (indexSetsToBindings binds sets).flatten.Perm binds := by
@@ -1784,7 +1784,7 @@ private theorem sccIndexSets_mem_lt (binds : List Surface.Binding) :
   have : i ∈ List.range binds.length := (List.Perm.mem_iff hperm).1 himem
   exact List.mem_range.mp this
 
-private theorem DepReach_trans {binds : List Surface.Binding} {a b c : ValName}
+theorem DepReach_trans {binds : List Surface.Binding} {a b c : ValName}
     (hab : DepReach binds a b) (hbc : DepReach binds b c) :
     DepReach binds a c := by
   induction hab with
@@ -1897,7 +1897,7 @@ private theorem filterMap_getElem?_of_perm {α} {l : List α} {order : List Nat}
   have h' := h.filterMap (fun i => l[i]?)
   rwa [range_filterMap_getElem?] at h'
 
-private theorem perm_range_of_nodup_length {l : List Nat} {n : Nat}
+theorem perm_range_of_nodup_length {l : List Nat} {n : Nat}
     (hn : l.Nodup) (hbound : ∀ x ∈ l, x < n) (hlen : l.length = n) :
     l.Perm (List.range n) := by
   refine (List.perm_ext_iff_of_nodup hn List.nodup_range).2 ?_
@@ -1924,7 +1924,7 @@ private theorem perm_range_of_nodup_length {l : List Nat} {n : Nat}
 below assume every before-edge endpoint lies in `0 .. n-1`. -/
 
 /-- Edges into `v` whose source is not yet emitted. -/
-private def remInDeg (beforeEdges : List (Nat × Nat)) (acc : List Nat) (v : Nat) : Nat :=
+def remInDeg (beforeEdges : List (Nat × Nat)) (acc : List Nat) (v : Nat) : Nat :=
   (beforeEdges.filter (fun e => e.2 = v && e.1 ∉ acc)).length
 
 private theorem indegSet_length (indeg : List Nat) (i v : Nat) :
@@ -1957,7 +1957,7 @@ private theorem indegGet_indegSet_ne (indeg : List Nat) (i j v : Nat)
       List.getElem?_eq_none_iff.mpr (by rwa [List.length_mapIdx] : (indeg.mapIdx fun k x =>
         if k = i then v else x).length ≤ j)]
 
-private theorem remInDeg_nil_acc (beforeEdges : List (Nat × Nat)) (v : Nat) :
+theorem remInDeg_nil_acc (beforeEdges : List (Nat × Nat)) (v : Nat) :
     remInDeg beforeEdges [] v =
       (beforeEdges.filter (fun e => e.2 = v)).length := by
   simp only [remInDeg]
@@ -1966,7 +1966,7 @@ private theorem remInDeg_nil_acc (beforeEdges : List (Nat × Nat)) (v : Nat) :
   intro e _
   simp
 
-private theorem remInDeg_eq_zero_preds (beforeEdges : List (Nat × Nat))
+theorem remInDeg_eq_zero_preds (beforeEdges : List (Nat × Nat))
     (acc : List Nat) {u v : Nat}
     (he : (u, v) ∈ beforeEdges)
     (hz : remInDeg beforeEdges acc v = 0) :
@@ -1990,7 +1990,7 @@ private theorem filter_length_split {α} (p q : α → Bool) (l : List α) :
     cases hp : p a <;> cases hq : q a <;> simp <;> omega
 
 /-- Emitting `u` (not already in `acc`) removes exactly the `(u, v)` edges. -/
-private theorem remInDeg_append (beforeEdges : List (Nat × Nat)) (acc : List Nat)
+theorem remInDeg_append (beforeEdges : List (Nat × Nat)) (acc : List Nat)
     (u v : Nat) (hu : u ∉ acc) :
     remInDeg beforeEdges (acc ++ [u]) v +
         (beforeEdges.filter (fun e => e.1 = u && e.2 = v)).length =
@@ -2018,7 +2018,7 @@ private theorem remInDeg_append (beforeEdges : List (Nat × Nat)) (acc : List Na
   rw [← hp]
   exact Nat.add_comm _ _ ▸ filter_length_split p q beforeEdges
 
-private theorem kahnTopo_indeg0_eq (n : Nat) (beforeEdges : List (Nat × Nat))
+theorem kahnTopo_indeg0_eq (n : Nat) (beforeEdges : List (Nat × Nat))
     {v : Nat} (hv : v < n) :
     indegGet
       ((List.range n).map fun w =>
@@ -2033,8 +2033,9 @@ private theorem kahnTopo_indeg0_eq (n : Nat) (beforeEdges : List (Nat × Nat))
   rw [List.getElem?_eq_getElem (by omega)]
   simp only [Option.getD_some, List.getElem_map, List.getElem_range]
 
-/-- Bounded edges: every endpoint is `< n`. -/
-private def edgesBounded (n : Nat) (edges : List (Nat × Nat)) : Prop :=
+/-- Bounded edges: every endpoint is `< n`.
+    Generic Kahn/condensation helpers below are public for `FHM.Scc.BindingGlue` staging. -/
+def edgesBounded (n : Nat) (edges : List (Nat × Nat)) : Prop :=
   ∀ e ∈ edges, e.1 < n ∧ e.2 < n
 
 private theorem filterMap_nbrs_count (beforeEdges : List (Nat × Nat)) (u w : Nat) :
@@ -2126,7 +2127,7 @@ private theorem filterMap_succ_nodup (beforeEdges : List (Nat × Nat))
 /-- Core order invariant of `kahnGo` under bounded edges.
     Needs `beforeEdges.Nodup` so successor lists stay Nodup (multi-edges can
     duplicate `ready` and break `b ∉ acc`). Also tracks `remInDeg = 0` on `acc`. -/
-private theorem kahnGo_edge_before_of_bounded (beforeEdges : List (Nat × Nat))
+theorem kahnGo_edge_before_of_bounded (beforeEdges : List (Nat × Nat))
     (n : Nat) (hn : edgesBounded n beforeEdges) (hedges_nodup : beforeEdges.Nodup) :
     ∀ (fuel : Nat) (indeg ready acc : List Nat),
       indeg.length = n →
@@ -2273,7 +2274,7 @@ private theorem kahnGo_edge_before_of_bounded (beforeEdges : List (Nat × Nat))
 
 /-- Kahn emits sources before dependents, when all edge endpoints are `< n`
     and `edges` has no duplicates. -/
-private theorem kahnTopo_edge_before (n : Nat) (edges : List (Nat × Nat))
+theorem kahnTopo_edge_before (n : Nat) (edges : List (Nat × Nat))
     (hb : edgesBounded n edges) (hnodup : edges.Nodup)
     {u v : Nat} (he : (u, v) ∈ edges)
     {i j : Nat}
@@ -2306,7 +2307,7 @@ private theorem kahnTopo_edge_before (n : Nat) (edges : List (Nat × Nat))
     simp at hi'
 
 /-- `sccBeforeEdges` only emits component-index pairs. -/
-private theorem sccBeforeEdges_bounded (succ : Nat → List Nat)
+theorem sccBeforeEdges_bounded (succ : Nat → List Nat)
     (comps : List (List Nat)) :
     edgesBounded comps.length (sccBeforeEdges succ comps) := by
   intro e he
@@ -2333,7 +2334,7 @@ private theorem sccBeforeEdges_bounded (succ : Nat → List Nat)
         · simp at hopt
 
 /-- Each `(dependency, dependent)` pair appears at most once. -/
-private theorem sccBeforeEdges_nodup (succ : Nat → List Nat)
+theorem sccBeforeEdges_nodup (succ : Nat → List Nat)
     (comps : List (List Nat)) :
     (sccBeforeEdges succ comps).Nodup := by
   simp only [sccBeforeEdges]
@@ -2415,7 +2416,7 @@ private theorem exists_pred_of_remInDeg_pos (beforeEdges : List (Nat × Nat))
   exact ⟨u, hem, hu⟩
 
 /-- Length bound from Nodup + range membership. -/
-private theorem length_le_of_nodup_lt {l : List Nat} {n : Nat}
+theorem length_le_of_nodup_lt {l : List Nat} {n : Nat}
     (hn : l.Nodup) (hbound : ∀ x ∈ l, x < n) :
     l.length ≤ n := by
   have hsub : l.toFinset ⊆ Finset.range n := by
@@ -2425,7 +2426,7 @@ private theorem length_le_of_nodup_lt {l : List Nat} {n : Nat}
   rwa [List.toFinset_card_of_nodup hn, Finset.card_range] at this
 
 /-- Zero-closed ready invariant: every `remInDeg = 0` vertex is queued or emitted. -/
-private theorem kahnGo_zero_closed (beforeEdges : List (Nat × Nat))
+theorem kahnGo_zero_closed (beforeEdges : List (Nat × Nat))
     (n : Nat) (hn : edgesBounded n beforeEdges) (hedges_nodup : beforeEdges.Nodup) :
     ∀ (fuel : Nat) (indeg ready acc : List Nat),
       indeg.length = n →
@@ -2623,7 +2624,7 @@ private theorem kahnGo_zero_closed (beforeEdges : List (Nat × Nat))
 
 /-- Stuck remainder with a predecessor in the remainder ⇒ a before-edge cycle
     (two distinct vertices mutually reachable by `TransGen`). -/
-private theorem exists_edge_cycle_of_pred_closed (beforeEdges : List (Nat × Nat))
+theorem exists_edge_cycle_of_pred_closed (beforeEdges : List (Nat × Nat))
     {n : Nat} {out : List Nat}
     (hout_nodup : out.Nodup)
     (hlen : out.length < n)
@@ -2736,7 +2737,7 @@ private theorem exists_edge_cycle_of_pred_closed (beforeEdges : List (Nat × Nat
     exact (Relation.reflTransGen_iff_eq_or_transGen.mp hrt').resolve_left huv
 
 /-- No self-loops in `sccBeforeEdges`. -/
-private theorem sccBeforeEdges_no_loop (succ : Nat → List Nat)
+theorem sccBeforeEdges_no_loop (succ : Nat → List Nat)
     (comps : List (List Nat)) (u : Nat) :
     (u, u) ∉ sccBeforeEdges succ comps := by
   intro he
@@ -2762,7 +2763,7 @@ private theorem sccBeforeEdges_no_loop (succ : Nat → List Nat)
         · simp at hopt
 
 /-- Unpack a condensation before-edge into a concrete `bindSucc` hop. -/
-private theorem exists_succ_of_mem_sccBeforeEdges (succ : Nat → List Nat)
+theorem exists_succ_of_mem_sccBeforeEdges (succ : Nat → List Nat)
     (comps : List (List Nat)) {u v : Nat}
     (he : (u, v) ∈ sccBeforeEdges succ comps) :
     u ≠ v ∧ u < comps.length ∧ v < comps.length ∧
@@ -3324,7 +3325,7 @@ private theorem kahnGo_nodup (beforeEdges : List (Nat × Nat))
           exact hcond.1.2
       exact ih indeg' (us ++ newReady) acc' hready' hacc' hdisj'
 
-private theorem kahnTopo_nodup (n : Nat) (edges : List (Nat × Nat))
+theorem kahnTopo_nodup (n : Nat) (edges : List (Nat × Nat))
     (hnodup : edges.Nodup) :
     (kahnTopo n edges).Nodup := by
   simp only [kahnTopo]
@@ -3375,7 +3376,7 @@ private theorem kahnGo_lt (beforeEdges : List (Nat × Nat)) (n : Nat)
         | inl h => exact hacc y h
         | inr h => exact h ▸ hready u List.mem_cons_self
 
-private theorem kahnTopo_lt (n : Nat) (edges : List (Nat × Nat))
+theorem kahnTopo_lt (n : Nat) (edges : List (Nat × Nat))
     (hb : edgesBounded n edges) :
     ∀ x ∈ kahnTopo n edges, x < n := by
   simp only [kahnTopo]
@@ -3384,7 +3385,7 @@ private theorem kahnTopo_lt (n : Nat) (edges : List (Nat × Nat))
   exact List.mem_range.mp (List.mem_of_mem_filter hb')
 
 /-- `filterMap` of always-`some` is `map` of the forced values. -/
-private theorem filterMap_getElem?_eq_map {α β} (f : α → Option β) (l : List α)
+theorem filterMap_getElem?_eq_map {α β} (f : α → Option β) (l : List α)
     (h : ∀ x ∈ l, (f x).isSome) (i : Nat) :
     (l.filterMap f)[i]? = l[i]? >>= f := by
   induction l generalizing i with
@@ -3401,7 +3402,7 @@ private theorem filterMap_getElem?_eq_map {α β} (f : α → Option β) (l : Li
         simp only [List.getElem?_cons_succ]
         exact ih (fun x hx => h x (List.mem_cons_of_mem _ hx)) i
 
-private theorem mem_sccBeforeEdges_of_compDependsOn (succ : Nat → List Nat)
+theorem mem_sccBeforeEdges_of_compDependsOn (succ : Nat → List Nat)
     (comps : List (List Nat)) {a b : Nat}
     (ha : a < comps.length) (hb : b < comps.length) (hne : a ≠ b)
     (hdep : compDependsOn succ (comps[a]) (comps[b]) = true) :
@@ -3412,7 +3413,7 @@ private theorem mem_sccBeforeEdges_of_compDependsOn (succ : Nat → List Nat)
   refine ⟨b, List.mem_range.mpr hb, ?_⟩
   simp [hne, List.getElem?_eq_getElem ha, List.getElem?_eq_getElem hb, hdep]
 
-private theorem compDependsOn_of_succ_mem (succ : Nat → List Nat)
+theorem compDependsOn_of_succ_mem (succ : Nat → List Nat)
     {ca cb : List Nat} {p q : Nat}
     (hp : p ∈ ca) (hq : q ∈ cb) (hs : q ∈ succ p) :
     compDependsOn succ ca cb = true := by
