@@ -19,6 +19,7 @@ roots = [
   "FHM.SpikeC",
   "FHM.InferW",
   "FHM.SurfaceBridge",
+  "FHM.Scc.Kosaraju",
   "FHM.Examples",
   "FHM.EvaluateUnsafe",
   "FHM.Headlines",
