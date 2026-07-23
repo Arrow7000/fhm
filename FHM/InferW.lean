@@ -18434,15 +18434,14 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
         match inferCore K Φ ctx rhs with
         | none => none
         | some ⟨(Φ₁, S₁, rhsOut, τ₁), hrhs, hav₁⟩ =>
-        match inferCore K Φ₁
-            { (S₁.onCtx ctx) with
-              env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
-            body with
+        let ctx' := S₁.onCtx ctx
+        let gs := genScheme rhs.tyFreeVars ctx'.env τ₁
+        match inferCore K Φ₁ { ctx' with env := gs :: ctx'.env } body with
         | none => none
         | some ⟨(Φ₂, S₂, bodyOut, τ₂), hbody, hav₂⟩ =>
           some ⟨(Φ₂, S₁ ++ S₂,
-              .letIn (some (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁))
-                ((rhsOut.substTyFvars S₁).closeTyVars (genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁)) bodyOut, τ₂),
+              .letIn (some gs)
+                ((rhsOut.substTyFvars S₁).closeTyVars (genVars rhs.tyFreeVars ctx'.env τ₁)) bodyOut, τ₂),
             .letIn hrhs hbody, by
             intro p hp; rcases List.mem_append.mp hp with h | h
             · exact hav₁ p h
@@ -18456,25 +18455,22 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
         -- scoped type variables — no closedness requirement. The output closes the
         -- elaborated rhs back over the skolems.
         if hσwf : Ty.bvarsBelow σ.paramCount σ.body then
-          match inferCore (K ++ freshVars Φ σ.paramCount) (Φ + σ.paramCount) ctx
-              (rhs.openTyVars (freshVars Φ σ.paramCount)) with
+          let ys := freshVars Φ σ.paramCount
+          match inferCore (K ++ ys) (Φ + σ.paramCount) ctx (rhs.openTyVars ys) with
           | none => none
           | some ⟨(Φ₁, S₁, rhsOut, τ₁), hrhs, hav₁⟩ =>
-            match unifyCoreK (K ++ freshVars Φ σ.paramCount) τ₁
-                (σ.openVars (freshVars Φ σ.paramCount)) with
+            match unifyCoreK (K ++ ys) τ₁ (σ.openVars ys) with
             | none => none
             | some ⟨Schk, hSchk, havS⟩ =>
-              if hesc1 : (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) then
-                if hesc2 : (∀ y ∈ freshVars Φ σ.paramCount,
-                    y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
-                  match inferCore K Φ₁
-                      { (Schk.onCtx (S₁.onCtx ctx)) with
-                        env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
-                      body with
+              let S1Schk := S₁ ++ Schk
+              if hesc1 : (∀ y ∈ ys, y ∉ S1Schk.map Prod.fst) then
+                let ctx' := Schk.onCtx (S₁.onCtx ctx)
+                if hesc2 : (∀ y ∈ ys, y ∉ ctx'.env.freeVars) then
+                  match inferCore K Φ₁ { ctx' with env := σ :: ctx'.env } body with
                   | none => none
                   | some ⟨(Φ₂, S₂, bodyOut, τ₂), hbody, hav₂⟩ =>
-                    some ⟨(Φ₂, S₁ ++ Schk ++ S₂,
-                        .letIn (some σ) ((rhsOut.substTyFvars (S₁ ++ Schk)).closeTyVars (freshVars Φ σ.paramCount)) bodyOut, τ₂),
+                    some ⟨(Φ₂, S1Schk ++ S₂,
+                        .letIn (some σ) ((rhsOut.substTyFvars S1Schk).closeTyVars ys) bodyOut, τ₂),
                       .letInAnn (PolyTy.wf_iff_bvarsBelow.mp hσwf) (Nat.le_refl Φ)
                         hrhs hSchk hesc1 hesc2 hbody, by
                       intro p hp; rcases List.mem_append.mp hp with h | h
@@ -18507,27 +18503,24 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
       -- fused `inferRecGroupCore`, generalise the SOLVED specs over the pool, and
       -- emit the mixed `Λ`-nest.
       if hwf : (∀ a ∈ anns, ∀ σ, a = some σ → Ty.bvarsBelow σ.paramCount σ.body = true) then
+        let rspec0 := RecSpec.init Φ anns
         match inferRecGroupCore K (Φ + bindings.length)
-            { ctx with env := (RecSpec.init Φ anns).map (RecSpec.rhsEntry [] []) ++ ctx.env }
-            bindings (RecSpec.init Φ anns) with
+            { ctx with env := rspec0.map (RecSpec.rhsEntry [] []) ++ ctx.env }
+            bindings rspec0 with
         | none => none
         | some ⟨(Φ₁, S₁, bindingsOut), hgroup, hav₁⟩ =>
+          let ctx' := S₁.onCtx ctx
+          let specsSub := rspec0.map (RecSpec.onSubst S₁)
+          let rigid := RecGroup.rigidVars anns bindings
+          let monoTys := RecSpecs.monoTys specsSub
+          let gv := genGroupVars rigid ctx'.env monoTys
           match inferCore K Φ₁
-              { (S₁.onCtx ctx) with
-                env := ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)).map
-                         (RecSpec.bodyScheme (genGroupVars (RecGroup.rigidVars anns bindings)
-                           (S₁.onCtx ctx).env
-                           (RecSpecs.monoTys ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)))))
-                       ++ (S₁.onCtx ctx).env }
+              { ctx' with env := specsSub.map (RecSpec.bodyScheme gv) ++ ctx'.env }
               body with
           | none => none
           | some ⟨(Φ₂, S₂, bodyOut, τ₂), hbody, hav₂⟩ =>
             some ⟨(Φ₂, S₁ ++ S₂,
-                Expr.letRecElab
-                  (genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
-                    (RecSpecs.monoTys ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))))
-                  anns (bindingsOut.map (·.substTyFvars S₁))
-                  ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)) bodyOut, τ₂),
+                Expr.letRecElab gv anns (bindingsOut.map (·.substTyFvars S₁)) specsSub bodyOut, τ₂),
               .letRec (fun σ hσ => PolyTy.wf_iff_bvarsBelow.mp (hwf (some σ) hσ σ rfl))
                 hgroup hbody, by
               intro p hp; rcases List.mem_append.mp hp with h | h
@@ -18567,15 +18560,15 @@ def inferBranchesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) (ρ :
       | none => none
       | some ctorr =>
         if hcont : n = ctorr.contents.length then
-          match unifyCoreK K scrutTy
-              (.customTy ctorr.tyName ((freshVars Φ ctorr.paramCount).map (Ty.fvar ·))) with
+          let xs := (freshVars Φ ctorr.paramCount).map (Ty.fvar ·)
+          match unifyCoreK K scrutTy (.customTy ctorr.tyName xs) with
           | none => none
           | some ⟨S₀, huni0, hav0⟩ =>
+            let ctx0 := S₀.onCtx ctx
             match inferCore K (Φ + ctorr.paramCount)
-                { (S₀.onCtx ctx) with
-                  env := (ctorr.contents.map (Ty.openWith
-                      (((freshVars Φ ctorr.paramCount).map (Ty.fvar ·)).map S₀.onTy))).map PolyTy.mkTrivial
-                    ++ (S₀.onCtx ctx).env }
+                { ctx0 with
+                  env := (ctorr.contents.map (Ty.openWith (xs.map S₀.onTy))).map PolyTy.mkTrivial
+                    ++ ctx0.env }
                 body with
             | none => none
             | some ⟨(Φ₁, S₁, bodyOut, τb), hbody, hav₁⟩ =>
@@ -18629,23 +18622,22 @@ def inferRecGroupCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (bindings : List Exp
                 · exact hav₂ p h
               · exact hav₃ p h⟩
   | e :: rest, .poly σ :: specs' =>
-      match inferCore (K ++ freshVars Φ σ.paramCount) (Φ + σ.paramCount) ctx
-          (e.openTyVars (freshVars Φ σ.paramCount)) with
+      let ys := freshVars Φ σ.paramCount
+      match inferCore (K ++ ys) (Φ + σ.paramCount) ctx (e.openTyVars ys) with
       | none => none
       | some ⟨(Φ₁, S₁, eOut, τ), he, hav₁⟩ =>
-        match unifyCoreK (K ++ freshVars Φ σ.paramCount) τ
-            (σ.openVars (freshVars Φ σ.paramCount)) with
+        match unifyCoreK (K ++ ys) τ (σ.openVars ys) with
         | none => none
         | some ⟨Schk, hSchk, havS⟩ =>
-          if hesc1 : (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) then
-            if hesc2 : (∀ y ∈ freshVars Φ σ.paramCount,
-                y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
-              match inferRecGroupCore K Φ₁ (Schk.onCtx (S₁.onCtx ctx)) rest
-                  (specs'.map (RecSpec.onSubst (S₁ ++ Schk))) with
+          let S1Schk := S₁ ++ Schk
+          if hesc1 : (∀ y ∈ ys, y ∉ S1Schk.map Prod.fst) then
+            let ctx' := Schk.onCtx (S₁.onCtx ctx)
+            if hesc2 : (∀ y ∈ ys, y ∉ ctx'.env.freeVars) then
+              match inferRecGroupCore K Φ₁ ctx' rest (specs'.map (RecSpec.onSubst S1Schk)) with
               | none => none
               | some ⟨(Φ₂, S₂, restOut), hrest, hav₃⟩ =>
-                some ⟨(Φ₂, S₁ ++ Schk ++ S₂,
-                    ((eOut.substTyFvars (S₁ ++ Schk)).closeTyVars (freshVars Φ σ.paramCount)) :: restOut),
+                some ⟨(Φ₂, S1Schk ++ S₂,
+                    ((eOut.substTyFvars S1Schk).closeTyVars ys) :: restOut),
                   .consPoly (Nat.le_refl Φ) he hSchk hesc1 hesc2 hrest, by
                   intro p hp; rcases List.mem_append.mp hp with h | h
                   · rcases List.mem_append.mp h with h | h

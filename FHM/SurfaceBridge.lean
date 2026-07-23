@@ -1302,6 +1302,24 @@ def bindSucc (binds : List Surface.Binding) (i : Nat) : List Nat :=
       | some b' => if Binding.refersTo b b'.name then some j else none
       | none => none
 
+/-- Precomputed `bindSucc binds i` for every `i < binds.length`, indexed in O(1) via
+    `Array.getElem?`. `sccIndexSets` looks up successors here instead of re-deriving
+    `bindSucc binds i` (an O(n) scan) at every step of its pairwise-reachability DFS. -/
+def bindSuccTable (binds : List Surface.Binding) : Array (List Nat) :=
+  Array.ofFn (fun i : Fin binds.length => bindSucc binds i.val)
+
+/-- `bindSuccTable binds` looked up at `i` agrees with `bindSucc binds i`. Callers build
+    the table once (as a local `let`) and use this to bridge back to `bindSucc`-stated
+    lemmas — going through a separately-called wrapper function here would let the
+    compiler re-derive the table per call instead of sharing it, defeating the point. -/
+theorem bindSuccTable_get_eq (binds : List Surface.Binding) (i : Nat) :
+    ((bindSuccTable binds)[i]?).getD [] = bindSucc binds i := by
+  unfold bindSuccTable
+  rw [Array.getElem?_ofFn]
+  by_cases h : i < binds.length
+  · rw [dif_pos h, Option.getD_some]
+  · rw [dif_neg h, Option.getD_none, bindSucc, List.getElem?_eq_none (Nat.le_of_not_lt h)]
+
 /-- Reachability in the index graph (empty path ⇒ `src = dst`). -/
 def canReach (succ : Nat → List Nat) (fuel : Nat) (seen : List Nat)
     (src dst : Nat) : Bool :=
@@ -1318,7 +1336,8 @@ def mutuallyReachable (succ : Nat → List Nat) (fuel : Nat) (i j : Nat) : Bool 
 /-- Partition indices `0..n-1` into mutual-reachability classes (stable: seed order). -/
 def sccIndexSets (binds : List Surface.Binding) : List (List Nat) :=
   let n := binds.length
-  let succ := bindSucc binds
+  let table := bindSuccTable binds
+  let succ := fun i => (table[i]?).getD []
   let fuelN := n
   let mutReach (i j : Nat) := mutuallyReachable succ fuelN i j
   let rec go (fuel : Nat) (todo : List Nat) (acc : List (List Nat)) : List (List Nat) :=
@@ -1901,6 +1920,9 @@ private theorem sccIndexSets_eq_partitionGo (binds : List Surface.Binding) :
         (binds.length + 1) (List.range binds.length) [] := by
   unfold sccIndexSets
   rw [sccIndexSets.go_eq_partitionGo]
+  have hsucc : (fun i => ((bindSuccTable binds)[i]?).getD []) = bindSucc binds :=
+    funext (bindSuccTable_get_eq binds)
+  rw [hsucc]
 
 private theorem mutuallyReachable_refl (succ : Nat → List Nat) (fuel i : Nat) :
     mutuallyReachable succ fuel i i = true := by
