@@ -6114,15 +6114,35 @@ inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
       SurfaceWTExpr ctors ke tvs (name :: vs) (PolyTy.mkTrivial τbind :: Γ) body τ →
       SurfaceWTExpr ctors ke tvs vs Γ (.letIn name tyParams params (none : Option Surface.PolyTy) rhs body) τ
   /-- Annotated let (mono or poly). Cofinite RHS openings mirror Core
-      `GeneralisesTo`; `finalizeAnn` supplies the binding scheme. Requires
-      `tvs = []` for the `openBoundTyVars` / ladder collapse.
+      `GeneralisesTo`; `finalizeAnn` supplies the binding scheme.
       Value-param head binders are allowed: type the *raw* RHS under
       `paramTermScope` at `τretOf Xs`, and require
       `coreParamsToArrows paramTys (τretOf Xs) = σ.openVars Xs` so that
       `wrapCoreParams` yields a term typeable at the scheme opening
       (packing-B return-type sugar is the mono special case
       `τretOf = fun _ => τret`, `paramTys` the domains; poly with `params = []`
-      is `τretOf = σ.openVars`, wrap identity). -/
+      is `τretOf = σ.openVars`, wrap identity).
+
+      @TODO(ann-open-tvs): premise `tvs = []` is a **metatheory** restriction on this
+      *constructor*, not a SurfaceLang authoring ban. The executable pipeline
+      (`lower` / `typecheck` / `surface_type_safe`) does **not** consult it.
+
+      What it blocks: inhabiting `SurfaceWTExpr` *via this structural rule* when the
+      ambient open tyvar index `tvs` is already non-empty — e.g. while typing the RHS
+      of an outer binding that extended `tvs` with `{a}`:
+
+      ```
+      -- surface (may still lower + Core-typecheck fine)
+      let outer {a} : a → a =
+        (\\x -> let inner (y : Int) : Int = y in x) in outer
+      ```
+
+      Here a structural proof of the *inner* annotated let would need
+      `letInAnn` under `tvs` containing `a`, which this premise forbids. Closed
+      top-level `SurfaceWT` still starts at `tvs = []`. Workarounds for the
+      declarative relation: `of_lowers` (match-free + Lowers + TypeOfHM), or
+      unannotated `letIn` for the inner binding. Fix: generalise ann transfer past
+      `TyBvarBounded 0` / empty ambient `tvs` (open ladder under `n`). -/
   | letInAnn {tvs vs : List ValName} {Γ ΓRhs : Env}
       {name : ValName} {tyParams : List ValName}
       {params : List (ValName × Option Surface.Ty)}
@@ -6171,14 +6191,25 @@ inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
           (τs.map PolyTy.mkTrivial ++ Γ) body τ) :
       SurfaceWTExpr ctors ke tvs vs Γ (.letRecIn binds body) τ
   /-- Annotated / mixed / poly-recursion `letRecIn`. Surface analogue of Core
-      `TypeOfHM.letRec` + `RecSpecs.MonoTyped`/`PolyTyped`. Requires `tvs = []`
-      (same openBoundTyVars / `TyBvarBounded 0` reason as `letInAnn`).
+      `TypeOfHM.letRec` + `RecSpecs.MonoTyped`/`PolyTyped`.
       Mono members mirror unannotated `letRecIn`: raw RHS at `τretsList[i]`,
       `coreParamsToArrows paramTys τret = renameG G Xs τm` after wrap.
       Poly members mirror poly `letInAnn`: raw RHS at `τretPolyOf i Xs Ys` under
       params; `coreParamsToArrows paramTys (τretPolyOf i Xs Ys) = σ.openVars Ys`
       so wrap + `openTyVars` collapse yields what `PolyTyped` wants
-      (`params = []` is the special case `τretPolyOf = fun _ _ => σ.openVars`). -/
+      (`params = []` is the special case `τretPolyOf = fun _ _ => σ.openVars`).
+
+      @TODO(ann-open-tvs): same `tvs = []` metatheory caveat as `letInAnn` (see
+      that ctor). Not a surface compile ban; blocks structural `letRecInAnn` under
+      non-empty ambient open tyvar index. Example sketch:
+
+      ```
+      let outer {a} : a → a =
+        (\\x -> let rec g (y : Int) : Int = y in x) in outer
+      ```
+
+      Structural WT of the *inner* annotated group would need `letRecInAnn` with
+      `tvs` extended by `a`. Fix: generalise ann transfer past empty ambient `tvs`. -/
   | letRecInAnn {tvs vs : List ValName} {Γ : Env}
       {binds : List Surface.Binding}
       {anns' : List (Option PolyTy)}
