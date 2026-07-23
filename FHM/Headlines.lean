@@ -231,26 +231,39 @@ example (ctors : CtorEnv) :
         (.lambda (.name (.mk "x")) none (.var (.mk "x")))
         (.var (.mk "id")))
       (.arrow (.prim .int) (.prim .int)) := by
-  apply SurfaceWTExpr.letInAnn (L := []) (ΓRhs := [])
-  · rfl                                   -- tvs = []
-  · rw [finalizeAnn_nil_some]
-    exact lowerPolyAnn_finalizeAnn_nil (by rfl)
-  · exact .arrow (.bvar (by decide)) (.bvar (by decide))   -- PolyTy.WF σ
+  set σ : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
+  have hlowσ : lowerPoly (kindEnvOfCtors ctors)
+      ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩ = some σ := by
+    simp only [lowerPoly, σ]
+    have h : ([.mk "a"] : List ValName).eraseDups = [.mk "a"] := rfl
+    simp [h, lowerTy, tvarIndex]
+  refine SurfaceWTExpr.letInAnn (tvs := []) (vs := []) (Γ := []) (ΓRhs := [])
+    (name := .mk "id") (tyParams := []) (params := [])
+    (σs := ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩)
+    (σ := σ) (rhs := _) (body := _) (τ := _) (L := []) (paramTys := [])
+    (τretOf := fun Xs => σ.openVars Xs) ?htvs ?hσeq ?hσwf ?hLL ?hrhs ?hτbinds ?hbody
+  · rfl
+  · exact lowerPolyAnn_finalizeAnn_nil hlowσ
+  · exact .arrow (.bvar (by decide)) (.bvar (by decide))
   · exact LowerLetParams.nil
-  · -- ∀ Xs, FreshNames [] σ.paramCount Xs → SurfaceWTExpr … rhs (σ.openVars Xs)
-    intro Xs hfresh
-    obtain ⟨X, hXeq⟩ := List.length_eq_one_iff.mp hfresh.length
+  · intro Xs hfresh
+    have hlen : Xs.length = 1 := by simpa [σ] using hfresh.length
+    obtain ⟨X, hXeq⟩ := List.length_eq_one_iff.mp hlen
     subst hXeq
-    show SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] []
-      (.lambda (.name (.mk "x")) none (.var (.mk "x"))) (.arrow (.fvar X) (.fvar X))
-    apply SurfaceWTExpr.lambda_name
+    have hed : ([.mk "a"] : List ValName).eraseDups = [.mk "a"] := rfl
+    have hscope : letRhsTyScope [] []
+        (some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩) [] = [.mk "a"] := by
+      simp [letRhsTyScope, letAnnTyPrefix, finalizeAnn, mergeTyParams, mergeTyParamNames, hed]
+    simp only [hscope, letRhsTermScope, paramTermScope, List.map_nil, List.reverse_nil,
+      List.nil_append]
+    apply SurfaceWTExpr.lambda_name (paramTy := .fvar X) (bodyTy := .fvar X)
     · exact ContainsBvarsUpTo.fvar
     · trivial
     · exact .of_lowers .var (.var (by rfl))
         (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl (by simp) .fvar)
-  · -- body: `id` used at `int → int`, instantiating σ's bvar at `.prim .int`.
-    exact .of_lowers .var (.var (by rfl))
-      (TypeOfHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (instArgs := [Ty.prim .int]) rfl
+  · intro Xs _; rfl
+  · exact .of_lowers .var (.var (by rfl))
+      (TypeOfHM.var (polyTy := σ) (instArgs := [Ty.prim .int]) rfl
         (by
           intro t ht
           simp only [List.mem_singleton] at ht
@@ -262,8 +275,8 @@ example (ctors : CtorEnv) :
 
 Same shape one level up: `let rec (id : ∀a. a→a) = λx. x in id`, single-member
 recursive group, annotated (so `RecSpec.poly`). No `RecSpec.mono` member, so
-`hmono_lc`/`hmono` are vacuous; `hpoly` is the substantive premise and gets
-the identical specialise-at-one-fresh-skolem treatment as `letInAnn` above. -/
+`hmono_lc`/`hmono`/`hτbinds` are vacuous; `hpoly` is the substantive premise and
+gets the identical specialise-at-one-fresh-skolem treatment as `letInAnn` above. -/
 example (ctors : CtorEnv) :
     SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] []
       (.letRecIn
@@ -272,67 +285,75 @@ example (ctors : CtorEnv) :
            rhs := .lambda (.name (.mk "x")) none (.var (.mk "x")) }]
         (.var (.mk "id")))
       (.arrow (.prim .int) (.prim .int)) := by
-  apply SurfaceWTExpr.letRecInAnn (G := []) (L := [])
-    (specs := [RecSpec.poly ⟨1, .arrow (.bvar 0) (.bvar 0)⟩])
-    (anns' := [some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩])
-    (paramTysList := [[]])
-    (ΓRhsList := [[RecSpec.poly ⟨1, .arrow (.bvar 0) (.bvar 0)⟩]])
-  -- goal order (per `apply`'s dependency-driven ordering):
-  -- htvs, hparamsEmpty, hann, hlen, hparamLen, hΓRhsLen, hanns_eq, hnodup,
-  -- hmono_lc, hpoly_wf, hLL, hmono, hpoly, hbody
-  · rfl                                    -- htvs : tvs = []
-  · intro b hb                             -- hparamsEmpty : params = []
-    simp only [List.mem_singleton] at hb; subst hb; rfl
-  · simp [finalizeAnn_nil_some, lowerPolyAnn, lowerAnnList, List.map_cons, List.map_nil]
-  · rfl                                    -- hlen
-  · rfl                                    -- hparamLen
-  · rfl                                    -- hΓRhsLen
-  · rfl                                    -- hanns_eq : specs.map RecSpec.ann = anns'
-  · exact List.nodup_nil                   -- hnodup : G.Nodup
-  · intro τm h; simp at h                  -- hmono_lc (vacuous)
-  · intro σ' h                             -- hpoly_wf
-    simp only [List.mem_singleton] at h
+  set σ : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
+  have hed : ([.mk "a"] : List ValName).eraseDups = [.mk "a"] := rfl
+  refine SurfaceWTExpr.letRecInAnn (tvs := []) (vs := []) (Γ := [])
+    (binds := _) (anns' := [some σ]) (specs := [RecSpec.poly σ])
+    (G := []) (L := []) (paramTysList := [[]]) (ΓRhsList := [[σ]])
+    (τretsList := [σ.body]) (body := _) (τ := _)
+    ?htvs ?hann ?hlen ?hparamLen ?hΓRhsLen ?hretsLen ?hanns_eq ?hnodup
+    ?hmono_lc ?hpoly_wf ?hLL ?hτbinds ?hmono ?hpoly_paramsEmpty ?hpoly ?hbody
+  · rfl
+  · -- `hed` discharges the `eraseDups` redex inside `lowerPoly`/`finalizeAnn`.
+    simp [finalizeAnn, mergeTyParams, mergeTyParamNames, lowerAnnList, lowerPolyAnn,
+      lowerPoly, hed, lowerTy, tvarIndex, σ, List.map_cons, List.map_nil]
+  · rfl
+  · rfl
+  · rfl
+  · rfl
+  · rfl
+  · exact List.nodup_nil
+  · intro τm h; simp [σ] at h
+  · intro σ' h
+    simp only [σ, List.mem_singleton] at h
     injection h with h
     subst h
     exact .arrow (.bvar (by decide)) (.bvar (by decide))
-  · intro Xs hfresh i hi                   -- hLL
-    simp only [List.length_cons, List.length_nil] at hi
-    have hi0 : i = 0 := by omega
+  · intro Xs _ i hi
+    have hi0 : i = 0 := by
+      simp only [List.length_cons, List.length_nil] at hi; omega
     subst hi0
     exact LowerLetParams.nil
-  · intro Xs hfresh i hi τm hspec          -- hmono (vacuous: specs[0] is .poly)
-    simp only [List.length_cons, List.length_nil] at hi
-    have hi0 : i = 0 := by omega
+  · intro Xs _ i hi τm hspec
+    have hi0 : i = 0 := by
+      simp only [List.length_cons, List.length_nil] at hi; omega
     subst hi0
-    simp only [List.getElem_cons_zero] at hspec
+    simp only [σ, List.getElem_cons_zero] at hspec
     cases hspec
-  · intro Xs hfreshG i hi σ' hspec Ys hfreshY   -- hpoly
-    simp only [List.length_cons, List.length_nil] at hi
-    have hi0 : i = 0 := by omega
+  · intro Xs _ i hi τm hspec
+    have hi0 : i = 0 := by
+      simp only [List.length_cons, List.length_nil] at hi; omega
     subst hi0
-    simp only [List.getElem_cons_zero] at hspec
+    simp only [σ, List.getElem_cons_zero] at hspec
+    cases hspec
+  · intro i hi σ' hspec
+    have hi0 : i = 0 := by
+      simp only [List.length_cons, List.length_nil] at hi; omega
+    subst hi0
+    rfl
+  · intro Xs _ i hi σ' hspec Ys hfreshY
+    have hi0 : i = 0 := by
+      simp only [List.length_cons, List.length_nil] at hi; omega
+    subst hi0
+    simp only [σ, List.getElem_cons_zero] at hspec
     injection hspec with hspec
     subst hspec
-    obtain ⟨Y, hYeq⟩ := List.length_eq_one_iff.mp hfreshY.length
+    have hlenY : Ys.length = 1 := by simpa [σ] using hfreshY.length
+    obtain ⟨Y, hYeq⟩ := List.length_eq_one_iff.mp hlenY
     subst hYeq
-    show SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [.mk "id"]
-      [RecSpec.rhsEntry [] Xs (RecSpec.poly ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)]
-      (.lambda (.name (.mk "x")) none (.var (.mk "x"))) (.arrow (.fvar Y) (.fvar Y))
-    apply SurfaceWTExpr.lambda_name
+    apply SurfaceWTExpr.lambda_name (paramTy := .fvar Y) (bodyTy := .fvar Y)
     · exact ContainsBvarsUpTo.fvar
     · trivial
     · exact .of_lowers .var (.var (by rfl))
         (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar Y)) (instArgs := []) rfl (by simp) .fvar)
-  · -- hbody: id : int→int under (id ↦ σ)
-    exact .of_lowers .var (.var (by rfl))
-      (TypeOfHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (instArgs := [Ty.prim .int]) rfl
+  · exact .of_lowers .var (.var (by rfl))
+      (TypeOfHM.var (polyTy := σ) (instArgs := [Ty.prim .int]) rfl
         (by
           intro t ht
           simp only [List.mem_singleton] at ht
           subst ht
           exact ContainsBvarsUpTo.prim)
         (InstantiatesBy.arrow (InstantiatesBy.bvar rfl) (InstantiatesBy.bvar rfl)))
-  · rfl                                    -- hlen : binds.length = specs.length
 
 
 /-! ## 4. The composable safe pipeline

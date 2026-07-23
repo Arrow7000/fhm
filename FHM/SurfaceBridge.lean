@@ -3937,7 +3937,8 @@ private theorem lowerPoly_eraseDups_scheme {ke : KindEnv} (σ : Surface.PolyTy) 
     lowerPoly ke σ = lowerPoly ke { foralls := σ.foralls.eraseDups, body := σ.body } := by
   simp only [lowerPoly, ValName_list_eraseDups_idem]
 
-private theorem lowerPolyAnn_finalizeAnn_nil {ke : KindEnv} {σ : Surface.PolyTy} {σ' : PolyTy}
+/-- `finalizeAnn [] [] (some σ)` lowers exactly when `σ` does (after `eraseDups`). -/
+theorem lowerPolyAnn_finalizeAnn_nil {ke : KindEnv} {σ : Surface.PolyTy} {σ' : PolyTy}
     (hσ : lowerPoly ke σ = some σ') :
     lowerPolyAnn ke (finalizeAnn [] [] (some σ)) = some (some σ') := by
   rw [finalizeAnn_nil_some, lowerPolyAnn, ← lowerPoly_eraseDups_scheme, hσ]
@@ -6115,22 +6116,30 @@ inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
   /-- Annotated let (mono or poly). Cofinite RHS openings mirror Core
       `GeneralisesTo`; `finalizeAnn` supplies the binding scheme. Requires
       `tvs = []` for the `openBoundTyVars` / ladder collapse.
-      Value-param spines belong on the mono `letIn` path (`τbind = arrows`);
-      annotated poly lets fix `params = []` so wrap is identity and
-      `GeneralisesTo` meets `σ.openVars` (see Headlines). -/
+      Value-param head binders are allowed: type the *raw* RHS under
+      `paramTermScope` at `τretOf Xs`, and require
+      `coreParamsToArrows paramTys (τretOf Xs) = σ.openVars Xs` so that
+      `wrapCoreParams` yields a term typeable at the scheme opening
+      (packing-B return-type sugar is the mono special case
+      `τretOf = fun _ => τret`, `paramTys` the domains; poly with `params = []`
+      is `τretOf = σ.openVars`, wrap identity). -/
   | letInAnn {tvs vs : List ValName} {Γ ΓRhs : Env}
       {name : ValName} {tyParams : List ValName}
+      {params : List (ValName × Option Surface.Ty)}
       {σs : Surface.PolyTy} {σ : PolyTy}
-      {rhs body : Surface.Expr} {τ : Ty} {L : List Nat} {paramTys : List Ty} :
+      {rhs body : Surface.Expr} {τ : Ty} {L : List Nat}
+      {paramTys : List Ty} {τretOf : List Nat → Ty} :
       tvs = [] →
-      lowerPolyAnn ke (finalizeAnn tyParams [] (some σs)) = some (some σ) →
+      lowerPolyAnn ke (finalizeAnn tyParams params (some σs)) = some (some σ) →
       PolyTy.WF σ →
-      LowerLetParams ke (letRhsTyScope tyParams [] (some σs) tvs) [] Γ ΓRhs paramTys →
+      LowerLetParams ke (letRhsTyScope tyParams params (some σs) tvs) params Γ ΓRhs paramTys →
       (∀ (Xs : List Nat), FreshNames L σ.paramCount Xs →
-        SurfaceWTExpr ctors ke (letRhsTyScope tyParams [] (some σs) tvs)
-          (letRhsTermScope [] vs) ΓRhs rhs (σ.openVars Xs)) →
+        SurfaceWTExpr ctors ke (letRhsTyScope tyParams params (some σs) tvs)
+          (letRhsTermScope params vs) ΓRhs rhs (τretOf Xs)) →
+      (∀ (Xs : List Nat), FreshNames L σ.paramCount Xs →
+        coreParamsToArrows paramTys (τretOf Xs) = σ.openVars Xs) →
       SurfaceWTExpr ctors ke tvs (name :: vs) (σ :: Γ) body τ →
-      SurfaceWTExpr ctors ke tvs vs Γ (.letIn name tyParams [] (some σs) rhs body) τ
+      SurfaceWTExpr ctors ke tvs vs Γ (.letIn name tyParams params (some σs) rhs body) τ
   /-- Unannotated monomorphic `letRecIn`. Each binding's `τs[i]` is the full
       binding type after value-param arrows, not the raw RHS result type. -/
   | letRecIn {tvs vs : List ValName} {Γ : Env}
@@ -6164,24 +6173,26 @@ inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
   /-- Annotated / mixed / poly-recursion `letRecIn`. Surface analogue of Core
       `TypeOfHM.letRec` + `RecSpecs.MonoTyped`/`PolyTyped`. Requires `tvs = []`
       (same openBoundTyVars / `TyBvarBounded 0` reason as `letInAnn`).
-      Core `PolyTyped` opens the RHS with `openTyVars Ys`; surface types the
-      unopened RHS at `σ.openVars Ys` and the ladder collapses opening. -/
+      Mono members mirror unannotated `letRecIn`: raw RHS at `τretsList[i]`,
+      `coreParamsToArrows paramTys τret = renameG G Xs τm` after wrap.
+      Poly members keep the cofinite `σ.openVars Ys` story; head-binder sugar on
+      poly members is restricted (`hpoly_paramsEmpty`) so wrap stays identity
+      (put value-params on the RHS λ instead — packing-B poly is rare). -/
   | letRecInAnn {tvs vs : List ValName} {Γ : Env}
       {binds : List Surface.Binding}
       {anns' : List (Option PolyTy)}
       {specs : List RecSpec}
       {G L : List Nat}
       {paramTysList : List (List Ty)} {ΓRhsList : List Env}
+      {τretsList : List Ty}
       {body : Surface.Expr} {τ : Ty}
       (htvs : tvs = [])
-      -- Annotated path: empty value-param sugar (nonempty spines use unannotated
-      -- `letRecIn` + `hτbinds`). Keeps MonoTyped/PolyTyped transfer aligned with wrap.
-      (hparamsEmpty : ∀ b ∈ binds, b.params = [])
       (hann : lowerAnnList ke (binds.map fun b =>
           finalizeAnn b.tyParams b.params b.ann) = some anns')
       (hlen : binds.length = specs.length)
       (hparamLen : binds.length = paramTysList.length)
       (hΓRhsLen : binds.length = ΓRhsList.length)
+      (hretsLen : binds.length = τretsList.length)
       (hanns_eq : specs.map RecSpec.ann = anns')
       (hnodup : G.Nodup)
       (hmono_lc : ∀ τm, RecSpec.mono τm ∈ specs → τm.IsLC)
@@ -6192,6 +6203,12 @@ inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
           (binds[i]'hi).params (specs.map (RecSpec.rhsEntry G Xs) ++ Γ)
           (ΓRhsList[i]'(Nat.lt_of_lt_of_eq hi hΓRhsLen))
           (paramTysList[i]'(Nat.lt_of_lt_of_eq hi hparamLen)))
+      (hτbinds : ∀ (Xs : List Nat), FreshNames L G.length Xs →
+        ∀ (i : Nat) (hi : i < binds.length) (τm : Ty),
+          specs[i]'(Nat.lt_of_lt_of_eq hi hlen) = .mono τm →
+          coreParamsToArrows (paramTysList[i]'(Nat.lt_of_lt_of_eq hi hparamLen))
+              (τretsList[i]'(Nat.lt_of_lt_of_eq hi hretsLen)) =
+            Ty.renameG G Xs τm)
       (hmono : ∀ (Xs : List Nat), FreshNames L G.length Xs →
         ∀ (i : Nat) (hi : i < binds.length) (τm : Ty),
           specs[i]'(Nat.lt_of_lt_of_eq hi hlen) = .mono τm →
@@ -6199,7 +6216,9 @@ inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
             (letRhsTyScope (binds[i]'hi).tyParams (binds[i]'hi).params (binds[i]'hi).ann tvs)
             (letRhsTermScope (binds[i]'hi).params (binds.map (·.name) ++ vs))
             (ΓRhsList[i]'(Nat.lt_of_lt_of_eq hi hΓRhsLen))
-            (binds[i]'hi).rhs (Ty.renameG G Xs τm))
+            (binds[i]'hi).rhs (τretsList[i]'(Nat.lt_of_lt_of_eq hi hretsLen)))
+      (hpoly_paramsEmpty : ∀ (i : Nat) (hi : i < binds.length) (σ : PolyTy),
+        specs[i]'(Nat.lt_of_lt_of_eq hi hlen) = .poly σ → (binds[i]'hi).params = [])
       (hpoly : ∀ (Xs : List Nat), FreshNames L G.length Xs →
         ∀ (i : Nat) (hi : i < binds.length) (σ : PolyTy),
           specs[i]'(Nat.lt_of_lt_of_eq hi hlen) = .poly σ →
@@ -10477,21 +10496,27 @@ theorem lowerExpr_isSome_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       | some σ =>
         simp [finalizeAnn_none, lowerPolyAnn] at hann
   | letInAnn =>
-    rename_i tvs' vs' Γ ΓRhs name tyParams σs σ rhs body τ L paramTys htvs hσeq hσwf
-      hLL hrhs hbody hrhs_ih hbody_ih
+    rename_i tvs' vs' Γ ΓRhs name tyParams params σs σ rhs body τ L paramTys τretOf
+      htvs hσeq hσwf hLL hrhs hτbinds hbody hrhs_ih hbody_ih
     subst htvs
     obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L σ.paramCount
     have hfresh : FreshNames L σ.paramCount Xs := ⟨hXlen, hXnodup, hXavoid⟩
     obtain ⟨rhsCore, hr⟩ := Option.isSome_iff_exists.mp (hrhs_ih Xs hfresh)
     obtain ⟨bodyCore, hb⟩ := Option.isSome_iff_exists.mp hbody_ih
-    cases hLL
-    -- params = []; wrap is identity. Align scopes with `lowerExpr`'s unfold.
+    have hwrap_some := wrapCoreParams_isSome_of_LowerLetParams hLL rhsCore
+    obtain ⟨rhs', hwrap⟩ := Option.isSome_iff_exists.mp hwrap_some
+    -- `lowerExpr` uses `letAnnTyPrefix ++ tvs` with `tvs = []`; same as `letRhsTyScope`.
     have hr' :
-        lowerExpr ke (letAnnTyPrefix tyParams (finalizeAnn tyParams [] (some σs)))
-          (paramTermScope [] vs') rhs = some rhsCore := by
+        lowerExpr ke
+            (letAnnTyPrefix tyParams (finalizeAnn tyParams params (some σs)) ++ [])
+          (paramTermScope params vs') rhs = some rhsCore := by
       simpa [letRhsTyScope, letRhsTermScope] using hr
-    simp only [lowerExpr, hσeq, List.append_nil, wrapCoreParams, hr', hb,
-      Option.isSome_some]
+    have hwrap' :
+        wrapCoreParams ke
+            (letAnnTyPrefix tyParams (finalizeAnn tyParams params (some σs)) ++ [])
+          params rhsCore = some rhs' := by
+      simpa [letRhsTyScope] using hwrap
+    simp only [lowerExpr, hσeq, hr', hwrap', hb, Option.isSome_some]
   | letRecIn =>
     rename_i tvs' vs' Γ binds τs τrets paramTysList ΓRhsList body τ hlen hrets hparamLen hΓRhsLen
       hann hLL hτbinds hrhs hbody hrhs_ih hbody_ih
@@ -10520,8 +10545,9 @@ theorem lowerExpr_isSome_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       (lowerRecBinds_isSome_of_forall hbinds_forall)
     simp [hann', hbinds', hb]
   | letRecInAnn =>
-    rename_i tvs' vs' Γ binds anns' specs G L paramTysList ΓRhsList body τ htvs hparamsEmpty
-      hann hlen hparamLen hΓRhsLen hanns_eq hnodup hmono_lc hpoly_wf hLL hmono hpoly hbody
+    rename_i tvs' vs' Γ binds anns' specs G L paramTysList ΓRhsList τretsList body τ
+      htvs hann hlen hparamLen hΓRhsLen hretsLen hanns_eq hnodup hmono_lc hpoly_wf
+      hLL hτbinds hmono hpoly_paramsEmpty hpoly hbody
       hmono_ih hpoly_ih hbody_ih
     simp only [lowerExpr]
     obtain ⟨bodyCore, hb⟩ := Option.isSome_iff_exists.mp hbody_ih
@@ -11295,8 +11321,8 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       (TypeOfHM.regular hTyW) (fun _ h => Option.noConfusion h)
       (generalisesTo_of_typeable hTyW) rfl (hbody_ih hbL)
   | letInAnn =>
-    rename_i tvs' vs' Γ ΓRhs name tyParams σs σ rhs body τ L paramTys htvs hσeq hσwf
-      hLL hrhs hbody hrhs_ih hbody_ih
+    rename_i tvs' vs' Γ ΓRhs name tyParams params σs σ rhs body τ L paramTys τretOf
+      htvs hσeq hσwf hLL hrhs hτbinds hbody hrhs_ih hbody_ih
     subst htvs
     obtain ⟨ann', rhsCore, rhsL, bodyL, hann, hrL, hwrap, hbL, rfl⟩ :=
       lowerExpr_letIn_decomp hlow
@@ -11306,13 +11332,20 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     refine TypeOfHM.letIn (M := σ) (L := L) hσwf hpins ?_ rfl (hbody_ih hbL)
     intro Xs hfresh
     have hTyR := hrhs_ih Xs hfresh hrL
-    -- `params = []` on `letInAnn`, so wrap is identity.
-    cases hLL
-    simp only [wrapCoreParams, Option.some.injEq] at hwrap
-    subst hwrap
+    have hTyW : TypeOfHM ⟨Γ, ctors⟩ rhsL (coreParamsToArrows paramTys (τretOf Xs)) :=
+      wrapCoreParams_TypeOfHM hLL hwrap hTyR
+    have hTyOpen : TypeOfHM ⟨Γ, ctors⟩ rhsL (σ.openVars Xs) :=
+      (hτbinds Xs hfresh) ▸ hTyW
+    -- Wrapped RHS is a lowerExpr subterm of the let, so empty var-tyargs + TypeOfHM
+    -- give `TyBvarBounded 0`, collapsing `openBoundTyVars`.
+    have hempty : Expr.EmptyVarTyArgs rhsL := by
+      have h := lowerExpr_emptyVarTyArgs hlow
+      simp only [Expr.EmptyVarTyArgs] at h
+      exact h.1
+    have hb0 : rhsL.TyBvarBounded 0 :=
+      TypeOfHM_tyBvarBounded_of_emptyVarTyArgs hTyOpen hempty
     simp only [Expr.openBoundTyVars, Expr.openTyVars]
-    have hb0 := TyBvarBounded_zero_of_lowerExpr_of_TypeOfHM hrL hTyR
-    rwa [Expr.openTyVarsAux_eq_self_of_tyBvarBounded Xs rhsCore 0 hb0]
+    rwa [Expr.openTyVarsAux_eq_self_of_tyBvarBounded Xs rhsL 0 hb0]
   | letRecIn =>
     rename_i tvs' vs' Γ binds τs τrets paramTysList ΓRhsList body τ
       hlen hrets hparamLen hΓRhsLen hann hLL hτbinds hrhs hbody hrhs_ih hbody_ih
@@ -11409,8 +11442,9 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       rw [hmap]
       exact hbody_ih hbL
   | letRecInAnn =>
-    rename_i tvs' vs' Γ binds anns' specs G L paramTysList ΓRhsList body τ htvs hparamsEmpty
-      hann hlen hparamLen hΓRhsLen hanns_eq hnodup hmono_lc hpoly_wf hLL hmono hpoly hbody
+    rename_i tvs' vs' Γ binds anns' specs G L paramTysList ΓRhsList τretsList body τ
+      htvs hann hlen hparamLen hΓRhsLen hretsLen hanns_eq hnodup hmono_lc hpoly_wf
+      hLL hτbinds hmono hpoly_paramsEmpty hpoly hbody
       hmono_ih hpoly_ih hbody_ih
     subst htvs
     obtain ⟨annsL, bindings', bodyL, hannL, hbindsL, hbL, hc⟩ :=
@@ -11427,8 +11461,6 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       obtain ⟨i, hi, hb_eq, hs_eq⟩ := List.mem_zip_getElem hzip_len hp
       have hiB : i < binds.length := Nat.lt_of_lt_of_eq hi hlenB
       have hspec_i : specs[i] = .mono τ := hs_eq.trans hτ
-      have hpEmpty : (binds[i]'hiB).params = [] :=
-        hparamsEmpty _ (List.getElem_mem hiB)
       obtain ⟨rhsCore, hr, hwrap⟩ := hgetB i hiB
       have hr' :
           lowerExpr ke (letRhsTyScope (binds[i]'hiB).tyParams (binds[i]'hiB).params
@@ -11436,28 +11468,29 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
             (letRhsTermScope (binds[i]'hiB).params (binds.map (·.name) ++ vs'))
             (binds[i]'hiB).rhs = some rhsCore := by
         simpa [bindingLowerTyScope, letRhsTyScope, letRhsTermScope, paramTermScope] using hr
-      have hTy := hmono_ih Xs hfresh i hiB τ (by simpa using hspec_i) hr'
-      have hwrap_id : bindings'[i]'hi = rhsCore := by
-        simp only [hpEmpty, wrapCoreParams, Option.some.injEq] at hwrap
-        exact hwrap.symm
-      have hp1 : p.1 = rhsCore := hb_eq.symm.trans hwrap_id
-      have henv : ΓRhsList[i]'(Nat.lt_of_lt_of_eq hiB hΓRhsLen) =
-          specs.map (RecSpec.rhsEntry G Xs) ++ Γ := by
-        have hLL_i := hLL Xs hfresh i hiB
-        simp only [hpEmpty] at hLL_i
-        generalize hE : (specs.map (RecSpec.rhsEntry G Xs) ++ Γ) = E at hLL_i ⊢
-        generalize hR : (ΓRhsList[i]'(Nat.lt_of_lt_of_eq hiB hΓRhsLen)) = R at hLL_i ⊢
-        generalize hP : (paramTysList[i]'(Nat.lt_of_lt_of_eq hiB hparamLen)) = P at hLL_i
-        cases hLL_i
-        rfl
-      simpa [RecSpecs.rhsCtx, hp1, henv] using hTy
+      have hwrap' :
+          wrapCoreParams ke (letRhsTyScope (binds[i]'hiB).tyParams (binds[i]'hiB).params
+              (binds[i]'hiB).ann []) (binds[i]'hiB).params rhsCore =
+            some (bindings'[i]'hi) := by
+        simpa [bindingLowerTyScope, letRhsTyScope] using hwrap
+      have hTyR := hmono_ih Xs hfresh i hiB τ (by simpa using hspec_i) hr'
+      -- wrapCoreParams_TypeOfHM types the wrapped term under the *outer* env of hLL
+      -- (the rhsCtx), at arrows paramTys τret.
+      have hTyW := wrapCoreParams_TypeOfHM (hLL Xs hfresh i hiB) hwrap' hTyR
+      have harr :
+          coreParamsToArrows (paramTysList[i]'(Nat.lt_of_lt_of_eq hiB hparamLen))
+              (τretsList[i]'(Nat.lt_of_lt_of_eq hiB hretsLen)) =
+            Ty.renameG G Xs τ :=
+        hτbinds Xs hfresh i hiB τ (by simpa using hspec_i)
+      have hp1 : p.1 = bindings'[i]'hi := hb_eq.symm
+      simpa [RecSpecs.rhsCtx, hp1, ← harr] using hTyW
     · intro Xs hfresh p hp σ hσ Ys hYs
       have hzip_len : bindings'.length = specs.length := hwf.length
       obtain ⟨i, hi, hb_eq, hs_eq⟩ := List.mem_zip_getElem hzip_len hp
       have hiB : i < binds.length := Nat.lt_of_lt_of_eq hi hlenB
       have hspec_i : specs[i] = .poly σ := hs_eq.trans hσ
       have hpEmpty : (binds[i]'hiB).params = [] :=
-        hparamsEmpty _ (List.getElem_mem hiB)
+        hpoly_paramsEmpty i hiB σ (by simpa using hspec_i)
       obtain ⟨rhsCore, hr, hwrap⟩ := hgetB i hiB
       have hr' :
           lowerExpr ke (letRhsTyScope (binds[i]'hiB).tyParams (binds[i]'hiB).params
