@@ -47,7 +47,7 @@ theorem cTerm_typeable (Z : Nat) :
     subst hσσ
     obtain rfl : Ys = [] := List.eq_nil_of_length_eq_zero hYs.length
     show TypeOfElabHM ⟨[sigZ Z], []⟩ (rhs.openTyVars []) ((Ty.fvar Z).arrow (Ty.fvar Z))
-    refine TypeOfElabHM.lambda .fvar (fun T h => Option.noConfusion h) rfl ?_
+    refine TypeOfElabHM.lambda .fvar nofun rfl ?_
     refine TypeOfElabHM.app (argTy := .fvar Z) ?_ ?_
     · exact TypeOfElabHM.var (polyTy := sigZ Z) (tyArgs := []) rfl
         ⟨rfl, by intro t ht; cases ht⟩ (.arrow .fvar .fvar)
@@ -126,13 +126,13 @@ theorem fRhs_opened_types (X : Nat) :
       (.app (.app (.var 2 [.arrow (.fvar X) (.fvar X)]) (.lambda none (.var 0 [])))
         (.var 0 [])))
     ((Ty.fvar X).arrow (Ty.fvar X))
-  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar nofun rfl ?_
   refine TypeOfElabHM.app (argTy := .fvar X) ?_ ?_
   · refine TypeOfElabHM.app (argTy := .arrow (.fvar X) (.fvar X)) ?_ ?_
     · exact TypeOfElabHM.var (polyTy := selfSig) rfl
         ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar⟩
         (.arrow (.bvar rfl) (.bvar rfl))
-    · refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+    · refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar nofun rfl ?_
       exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
         ⟨rfl, by intro t ht; cases ht⟩ .fvar
   · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
@@ -145,13 +145,13 @@ theorem gRhs_opened_types (X : Nat) :
       (.app (.app (.var 1 [.arrow (.fvar X) (.fvar X)]) (.lambda none (.var 0 [])))
         (.var 0 [])))
     ((Ty.fvar X).arrow (Ty.fvar X))
-  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar nofun rfl ?_
   refine TypeOfElabHM.app (argTy := .fvar X) ?_ ?_
   · refine TypeOfElabHM.app (argTy := .arrow (.fvar X) (.fvar X)) ?_ ?_
     · exact TypeOfElabHM.var (polyTy := selfSig) rfl
         ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar⟩
         (.arrow (.bvar rfl) (.bvar rfl))
-    · refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+    · refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar nofun rfl ?_
       exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
         ⟨rfl, by intro t ht; cases ht⟩ .fvar
   · exact TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) rfl
@@ -224,7 +224,7 @@ theorem elabRhs_opened_typeable (X : Nat) :
   show TypeOfElabHM ⟨[polyId], []⟩
     (.lambda none (.app (.var 1 [.fvar X]) (.var 0 [])))
     ((Ty.fvar X).arrow (.fvar X))
-  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar (fun T h => Option.noConfusion h) rfl ?_
+  refine TypeOfElabHM.lambda (paramTy := .fvar X) .fvar nofun rfl ?_
   refine TypeOfElabHM.app (argTy := .fvar X) ?_ ?_
   · exact TypeOfElabHM.var (polyTy := polyId) rfl
       ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar⟩

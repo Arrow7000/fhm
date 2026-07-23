@@ -59,7 +59,12 @@ roots = ["FHM.Z3", "FHM.BLSketch", "FHM.BLSketch.Pretty"]
 [[require]]
 name = "Parser"
 git = "https://github.com/fgdorais/lean4-parser"
-rev = "b50def30c0b6"
+rev = "afcde96c3f"
+
+[[require]]
+name = "UnicodeBasic"
+git = "https://github.com/fgdorais/lean4-unicode-basic"
+rev = "947120c179"
 
 [[require]]
 name = "mathlib"

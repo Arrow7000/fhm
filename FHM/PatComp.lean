@@ -1,5 +1,12 @@
-import FHM.Core
-import FHM.SurfaceLang
+module
+
+public import FHM.Core
+public import FHM.SurfaceLang
+meta import FHM.Core
+meta import FHM.SurfaceLang
+
+@[expose] public section
+
 
 /-! # Verified pattern-match compilation (definitions + executable pipeline)
 
@@ -559,7 +566,7 @@ def GPat.headCtor : GPat → Option (CtorName × Nat)
 /-- The distinct `(ctor, arity)` tests appearing in column 0. Empty iff the
     column is all-irrefutable (⇒ the pop rule applies). -/
 def colHeads (M : Matrix) : List (CtorName × Nat) :=
-  (M.filterMap (fun r => r.pats.head? >>= GPat.headCtor)).dedup
+  dedupBy (M.filterMap (fun r => r.pats.head? >>= GPat.headCtor))
 
 /-- The sub-occurrences (fields) of `occ` at arity `arity`. -/
 def subOccs (occ : Occ) (arity : Nat) : List Occ :=
@@ -728,7 +735,7 @@ private theorem specializeRow_ctorCount_le (c : CtorName) (arity : Nat) (occ0 : 
 private theorem colHeads_mem_witness (M : Matrix) (c : CtorName) (arity : Nat)
     (h : (c, arity) ∈ colHeads M) :
     ∃ r ∈ M, ∃ args rest, r.pats = GPat.gctor c args :: rest ∧ args.length = arity := by
-  simp only [colHeads, List.mem_dedup, List.mem_filterMap] at h
+  simp only [colHeads, mem_dedupBy, List.mem_filterMap] at h
   obtain ⟨r, hrmem, hgr⟩ := h
   refine ⟨r, hrmem, ?_⟩
   cases hpats : r.pats with
@@ -749,7 +756,7 @@ private theorem colHeads_ne_nil_witness (M : Matrix) (h : colHeads M ≠ []) :
   obtain ⟨hd, tl, hcons⟩ := List.exists_cons_of_ne_nil h
   have hmem : hd ∈ colHeads M := by rw [hcons]; exact List.mem_cons_self ..
   obtain ⟨r, hrmem, args, rest, hpats, _⟩ :=
-    colHeads_mem_witness M hd.1 hd.2 (by rw [Prod.mk.eta]; exact hmem)
+    colHeads_mem_witness M hd.1 hd.2 hmem
   exact ⟨r, hrmem, hd.1, args, rest, hpats⟩
 
 /-- Dropping / shrinking rows never grows the count. -/
@@ -908,7 +915,7 @@ private theorem mapM_isSome {f : Occ → Option Expr} :
 private theorem head_mem_colHeads {M : Matrix} {r : Row} {c : CtorName}
     {pats rest : List GPat} (hr : r ∈ M) (hp : r.pats = .gctor c pats :: rest) :
     (c, pats.length) ∈ colHeads M := by
-  simp only [colHeads, List.mem_dedup, List.mem_filterMap]
+  simp only [colHeads, mem_dedupBy, List.mem_filterMap]
   exact ⟨r, hr, by rw [hp]; rfl⟩
 
 /-- Row-level width bookkeeping for `specializeRow`. -/
@@ -2377,7 +2384,8 @@ private theorem mapM_idxOf {f : Occ → Option Expr} :
     · subst heq
       rw [List.idxOf_cons_self]
       simpa using hfe.symm
-    · rw [List.idxOf_cons_ne _ heq]
+    · have hne : (e == o) = false := by simpa using heq
+      rw [List.idxOf_cons, hne, cond_false]
       have ho' : o ∈ rest := by
         rcases List.mem_cons.mp ho with rfl | h'
         · exact absurd rfl heq
@@ -2588,7 +2596,7 @@ private theorem firstMatchingBranch_found {name : CtorName} {arity : Nat}
     · rw [List.find?_cons_of_neg (by simpa using hp)] at h
       refine .there ?_ (ih x h)
       simp only [MatchPattern.matchesCtor, Bool.and_eq_false_iff, beq_eq_false_iff_ne, ne_eq]
-      tauto
+      grind
 
 /-- A miss on every case falls through to the trailing wildcard branch. -/
 private theorem firstMatchingBranch_default {name : CtorName} {arity : Nat}
@@ -2607,7 +2615,7 @@ private theorem firstMatchingBranch_default {name : CtorName} {arity : Nat}
     refine .there ?_ (ih (fun x hx => hall x (List.mem_cons_of_mem _ hx)))
     have := hall hd List.mem_cons_self
     simp only [MatchPattern.matchesCtor, Bool.and_eq_false_iff, beq_eq_false_iff_ne, ne_eq]
-    tauto
+    grind
 
 /-- Occurrence paths compose (re-derivation of PatComp's private
     `fetch_append`). -/
@@ -2930,7 +2938,7 @@ inductive GPatWF (ctors : CtorEnv) : GPat → Ty → Prop
   | gctor {c args T tyArgs ctor fieldTys} :
       LookupList.get? ctors c = some ctor →
       ctor.tyName = T →
-      List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys →
+      List.Forall₂Fhm (InstantiatesBy tyArgs) ctor.contents fieldTys →
       GPatWFList ctors args fieldTys →
       GPatWF ctors (.gctor c args) (.customTy T tyArgs)
 /-- Pointwise `GPatWF` of a pattern vector against a column-type vector. -/
@@ -2955,24 +2963,24 @@ These thread `GPatWF`/`OccTyped` through `compile`'s matrix reshaping
 a `gctor` pattern's instantiated field types (the crux of the `hit` case). -/
 
 private theorem GPatWFList.forall₂ {ctors : CtorEnv} {l t} :
-    GPatWFList ctors l t → List.Forall₂ (GPatWF ctors) l t
+    GPatWFList ctors l t → List.Forall₂Fhm (GPatWF ctors) l t
   | .nil => .nil
   | .cons hp htl => .cons hp htl.forall₂
 
 private theorem GPatWFList.of_forall₂ {ctors : CtorEnv} : ∀ {l t},
-    List.Forall₂ (GPatWF ctors) l t → GPatWFList ctors l t
+    List.Forall₂Fhm (GPatWF ctors) l t → GPatWFList ctors l t
   | _, _, .nil => .nil
   | _, _, .cons hp htl => .cons hp (GPatWFList.of_forall₂ htl)
 
 private theorem Forall₂_append {α β : Type _} (R : α → β → Prop) {l1 t1 l2 t2}
-    (h1 : List.Forall₂ R l1 t1) (h2 : List.Forall₂ R l2 t2) :
-    List.Forall₂ R (l1 ++ l2) (t1 ++ t2) := by
+    (h1 : List.Forall₂Fhm R l1 t1) (h2 : List.Forall₂Fhm R l2 t2) :
+    List.Forall₂Fhm R (l1 ++ l2) (t1 ++ t2) := by
   induction h1 with
   | nil => simp only [List.nil_append]; exact h2
   | cons hp hps ih => simp only [List.cons_append]; exact .cons hp ih
 
 private theorem Forall₂_length {α β : Type _} (R : α → β → Prop) :
-    ∀ {l1 l2}, List.Forall₂ R l1 l2 → l1.length = l2.length := by
+    ∀ {l1 l2}, List.Forall₂Fhm R l1 l2 → l1.length = l2.length := by
   intro l1 l2 h
   induction h with
   | nil => rfl
@@ -2988,7 +2996,7 @@ private theorem GPatWFList_append {ctors : CtorEnv} {l1 t1 l2 t2}
 private theorem GPatWF.gctor_inv {ctors : CtorEnv} {c : CtorName} {cargs : List GPat} {τ : Ty}
     (h : GPatWF ctors (.gctor c cargs) τ) :
     ∃ T tyArgs ctor fieldTys, τ = .customTy T tyArgs ∧ LookupList.get? ctors c = some ctor ∧
-      ctor.tyName = T ∧ List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys ∧
+      ctor.tyName = T ∧ List.Forall₂Fhm (InstantiatesBy tyArgs) ctor.contents fieldTys ∧
       GPatWFList ctors cargs fieldTys := by
   cases h with
   | gctor hlook hname hinst hwfargs => exact ⟨_, _, _, _, rfl, hlook, hname, hinst, hwfargs⟩
@@ -3030,8 +3038,8 @@ private theorem InstantiatesBy_forall2_det_agree {tyArgs1 tyArgs2 : List Ty} {n 
     (hag : ∀ k, k < n → tyArgs1[k]? = tyArgs2[k]?)
     {tys l1 l2 : List Ty}
     (hbound : ∀ c ∈ tys, ContainsBvarsUpTo n c)
-    (h1 : List.Forall₂ (InstantiatesBy tyArgs1) tys l1)
-    (h2 : List.Forall₂ (InstantiatesBy tyArgs2) tys l2) : l1 = l2 := by
+    (h1 : List.Forall₂Fhm (InstantiatesBy tyArgs1) tys l1)
+    (h2 : List.Forall₂Fhm (InstantiatesBy tyArgs2) tys l2) : l1 = l2 := by
   induction h1 generalizing l2 with
   | nil => cases h2; rfl
   | cons hi1 h1tl ih =>
@@ -3045,11 +3053,11 @@ private theorem get?_cons_zero {α : Type _} (a : α) (l : List α) : (a :: l)[0
 private theorem get?_cons_succ {α : Type _} (a : α) (l : List α) (n : Nat) :
     (a :: l)[n + 1]? = l[n]? := rfl
 
-/-- From `Forall₂ (InstantiatesBy tyArgs') (bvarRangeFrom start n) tyArgs`: the
+/-- From `Forall₂Fhm (InstantiatesBy tyArgs') (bvarRangeFrom start n) tyArgs`: the
     `k`-th entry (k < n) forces `tyArgs[k]? = tyArgs'[start + k]?`. -/
 private theorem bvarRangeFrom_forall₂_agreement {tyArgs tyArgs' : List Ty} :
     ∀ {start n : Nat},
-      List.Forall₂ (InstantiatesBy tyArgs') (Ty.bvarRangeFrom start n) tyArgs →
+      List.Forall₂Fhm (InstantiatesBy tyArgs') (Ty.bvarRangeFrom start n) tyArgs →
       ∀ k, k < n → tyArgs[k]? = tyArgs'[start + k]?
   | start, 0, h, k, hk => by simp [Ty.bvarRangeFrom] at h; cases h; omega
   | start, n + 1, h, k, hk => by
@@ -3065,15 +3073,15 @@ private theorem bvarRangeFrom_forall₂_agreement {tyArgs tyArgs' : List Ty} :
             show (start + 1) + k = start + (k + 1) from by omega]
 
 private theorem bvarRange_forall₂_agreement {tyArgs tyArgs' : List Ty} {n : Nat}
-    (h : List.Forall₂ (InstantiatesBy tyArgs') (Ty.bvarRange n) tyArgs) (k : Nat) (hk : k < n) :
+    (h : List.Forall₂Fhm (InstantiatesBy tyArgs') (Ty.bvarRange n) tyArgs) (k : Nat) (hk : k < n) :
     tyArgs[k]? = tyArgs'[k]? := by
   have := bvarRangeFrom_forall₂_agreement h k hk
   rwa [Nat.zero_add] at this
 
-/-- A successful `mapM` gives a pointwise `Forall₂` of `f a = some b`. -/
+/-- A successful `mapM` gives a pointwise `Forall₂Fhm` of `f a = some b`. -/
 private theorem mapM_forall₂_of_eq {α β : Type _} (f : α → Option β) :
     ∀ {l : List α} {vs : List β}, l.mapM f = some vs →
-      List.Forall₂ (fun a b => f a = some b) l vs
+      List.Forall₂Fhm (fun a b => f a = some b) l vs
   | [], vs => by
     intro h; rw [List.mapM_nil] at h; injection h with hvs; subst hvs; exact .nil
   | a :: l, vs => by
@@ -3091,21 +3099,21 @@ private theorem mapM_forall₂_of_eq {α β : Type _} (f : α → Option β) :
         obtain rfl := h.symm
         exact .cons hfa (mapM_forall₂_of_eq f hrest)
 
-/-- Combine `Forall₂ R` with a pointwise `P` over the left list. -/
+/-- Combine `Forall₂Fhm R` with a pointwise `P` over the left list. -/
 private theorem Forall₂_and_of_forall {α β : Type _} (R : α → β → Prop) (P : α → Prop)
-    {l1 l2} (hR : List.Forall₂ R l1 l2) (hP : ∀ a ∈ l1, P a) :
-    List.Forall₂ (fun a b => P a ∧ R a b) l1 l2 := by
+    {l1 l2} (hR : List.Forall₂Fhm R l1 l2) (hP : ∀ a ∈ l1, P a) :
+    List.Forall₂Fhm (fun a b => P a ∧ R a b) l1 l2 := by
   induction hR with
   | nil => exact .nil
   | cons hhd htl ih =>
     exact .cons ⟨hP _ List.mem_cons_self, hhd⟩
       (ih (fun a ha => hP a (List.mem_cons_of_mem _ ha)))
 
-/-- Relay two `Forall₂`s through a shared middle list. -/
+/-- Relay two `Forall₂Fhm`s through a shared middle list. -/
 private theorem Forall₂_relay {α β γ : Type _} (R : α → β → Prop) (S : β → γ → Prop)
     (T : α → γ → Prop) (hrel : ∀ a b c, R a b → S b c → T a c)
-    {l1 l2 l3} (h1 : List.Forall₂ R l1 l2) (h2 : List.Forall₂ S l2 l3) :
-    List.Forall₂ T l1 l3 := by
+    {l1 l2 l3} (h1 : List.Forall₂Fhm R l1 l2) (h2 : List.Forall₂Fhm S l2 l3) :
+    List.Forall₂Fhm T l1 l3 := by
   induction h1 generalizing l3 with
   | nil => cases h2; exact .nil
   | cons hr h1tl ih =>
@@ -3120,12 +3128,12 @@ private theorem Forall₂_relay {α β γ : Type _} (R : α → β → Prop) (S 
 private theorem args_typed_fieldTys {ctors : CtorEnv} {ctor : Ctor}
     {tyArgs tyArgs' : List Ty} {fieldTys : List Ty} {args : List Expr}
     (hbound : ∀ c ∈ ctor.contents, ContainsBvarsUpTo ctor.paramCount c)
-    (hinst : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys)
-    (hfor : List.Forall₂
+    (hinst : List.Forall₂Fhm (InstantiatesBy tyArgs) ctor.contents fieldTys)
+    (hfor : List.Forall₂Fhm
       (fun a c => ∃ ct, InstantiatesBy tyArgs' c ct ∧ TypeOfElabHM ⟨[], ctors⟩ a ct)
       args ctor.contents)
-    (hagr : List.Forall₂ (InstantiatesBy tyArgs') (Ty.bvarRange ctor.paramCount) tyArgs) :
-    List.Forall₂ (fun a ft => TypeOfElabHM ⟨[], ctors⟩ a ft) args fieldTys := by
+    (hagr : List.Forall₂Fhm (InstantiatesBy tyArgs') (Ty.bvarRange ctor.paramCount) tyArgs) :
+    List.Forall₂Fhm (fun a ft => TypeOfElabHM ⟨[], ctors⟩ a ft) args fieldTys := by
   revert hbound hinst hfor
   generalize ctor.contents = c
   intro hbound hinst hfor
@@ -3149,12 +3157,12 @@ private theorem occTyped_subOccs {ctors : CtorEnv} {root v : Expr} {name : CtorN
     (hfetch : fetch root occ0 = some v)
     (hget : getCtorArgs v = some (name, args))
     (hvals : ∀ a ∈ args, IsValue a)
-    (htyped : List.Forall₂ (fun a ft => TypeOfElabHM ⟨[], ctors⟩ a ft) args fieldTys) :
-    List.Forall₂ (OccTyped ctors root) (subOccs occ0 args.length) fieldTys := by
-  have hfetch₂ : List.Forall₂ (fun o a => fetch root o = some a)
+    (htyped : List.Forall₂Fhm (fun a ft => TypeOfElabHM ⟨[], ctors⟩ a ft) args fieldTys) :
+    List.Forall₂Fhm (OccTyped ctors root) (subOccs occ0 args.length) fieldTys := by
+  have hfetch₂ : List.Forall₂Fhm (fun o a => fetch root o = some a)
       (subOccs occ0 args.length) args :=
     mapM_forall₂_of_eq (fetch root) (fetch_subOccs root occ0 hfetch hget)
-  have hboth : List.Forall₂ (fun a ft => IsValue a ∧ TypeOfElabHM ⟨[], ctors⟩ a ft)
+  have hboth : List.Forall₂Fhm (fun a ft => IsValue a ∧ TypeOfElabHM ⟨[], ctors⟩ a ft)
       args fieldTys :=
     Forall₂_and_of_forall (fun (a : Expr) (ft : Ty) => TypeOfElabHM ⟨[], ctors⟩ a ft)
       IsValue htyped hvals
@@ -3169,7 +3177,7 @@ private theorem occTyped_subOccs {ctors : CtorEnv} {root v : Expr} {name : CtorN
 private theorem specializeRow_wf {ctors : CtorEnv} {c : CtorName} {arity : Nat} {occ0 : Occ}
     {T : TyName} {tyArgs : List Ty} {ctor : Ctor} {fieldTys ttys : List Ty} {r r' : Row}
     (hlook : LookupList.get? ctors c = some ctor)
-    (hinst : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys)
+    (hinst : List.Forall₂Fhm (InstantiatesBy tyArgs) ctor.contents fieldTys)
     (hlen : fieldTys.length = arity)
     (hwf : GPatWFList ctors r.pats (.customTy T tyArgs :: ttys))
     (hs : specializeRow c arity occ0 r = some r') :
@@ -3216,7 +3224,7 @@ private theorem specializeRow_wf {ctors : CtorEnv} {c : CtorName} {arity : Nat} 
     `compile`; a `switch` fires `hit`/`miss` per `root`'s actual ctor. -/
 theorem compile_ctorSwitches_aux {ctors : CtorEnv} {root : Expr} (_hrootval : IsValue root)
     (occs : List Occ) (M : Matrix) (tys : List Ty)
-    (hocctys : List.Forall₂ (OccTyped ctors root) occs tys)
+    (hocctys : List.Forall₂Fhm (OccTyped ctors root) occs tys)
     (hMwf : ∀ r ∈ M, GPatWFList ctors r.pats tys) :
     CtorSwitches root (compile occs M) := by
   revert tys hocctys hMwf
@@ -3310,7 +3318,7 @@ theorem compile_ctorSwitches_aux {ctors : CtorEnv} {root : Expr} (_hrootval : Is
                   rw [← hcc] at hforInv
                   have hargTyped := args_typed_fieldTys ctorInv.bound hinstN hforInv hbv2
                   have hoccSub := occTyped_subOccs hfetch hget hvals hargTyped
-                  have hoccAll : List.Forall₂ (OccTyped ctors root)
+                  have hoccAll : List.Forall₂Fhm (OccTyped ctors root)
                       (subOccs occ0 args.length ++ orest) (fieldTysN ++ ttys) :=
                     Forall₂_append _ hoccSub hoccRest
                   have h1 := Forall₂_length _ hforInv
@@ -3345,7 +3353,7 @@ theorem compile_ctorSwitches {ctors : CtorEnv} {root : Expr} {T : TyName} {tyArg
     (hwf : ∀ r ∈ initMatrix ps, GPatWFList ctors r.pats [.customTy T tyArgs]) :
     CtorSwitches root (compile [[]] (initMatrix ps)) := by
   refine compile_ctorSwitches_aux hval [[]] (initMatrix ps) [.customTy T tyArgs] ?_ hwf
-  exact List.Forall₂.cons ⟨root, rfl, hval, hty⟩ List.Forall₂.nil
+  exact List.Forall₂Fhm.cons ⟨root, rfl, hval, hty⟩ List.Forall₂Fhm.nil
 
 /-- **Unconditional adequacy** — the final form the bridge consumes. With the
     scrutinee typed at an ADT type and the patterns well-formed, the compiled-

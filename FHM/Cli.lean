@@ -1,5 +1,9 @@
-import FHM.Live
-import FHM.Diagnose
+module
+
+public import FHM.Live
+public import FHM.Diagnose
+
+@[expose] public section
 
 /-!
 # Unified FHM CLI
@@ -26,7 +30,7 @@ def usage : String :=
      fhm diagnose < program.fhm\n\
      fhm run --json < program.fhm"
 
-def main (args : List String) : IO UInt32 := do
+public def main (args : List String) : IO UInt32 := do
   match args with
   | "-h" :: _ | "--help" :: _ =>
       IO.eprintln usage

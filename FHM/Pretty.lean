@@ -1,5 +1,11 @@
-import FHM.Core
-import FHM.SurfaceLang
+module
+
+public import FHM.Core
+public import FHM.SurfaceLang
+meta import FHM.Core
+meta import FHM.SurfaceLang
+
+@[expose] public section
 
 /-! # Pretty-printers for the Core language
 

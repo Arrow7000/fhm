@@ -1,8 +1,18 @@
-import FHM.Core
-import FHM.SurfaceLang
-import FHM.Decls
-import FHM.PatComp
-import FHM.InferW
+module
+
+public import FHM.Core
+public import FHM.SurfaceLang
+public import FHM.Decls
+public import FHM.PatComp
+public import FHM.InferW
+meta import FHM.Core
+meta import FHM.SurfaceLang
+meta import FHM.Decls
+meta import FHM.PatComp
+meta import FHM.InferW
+
+@[expose] public section
+
 
 /-! # The surface → Core bridge
 
@@ -119,6 +129,265 @@ def lowerTyList (ke : KindEnv) (tvs : List ValName) : List Surface.Ty → Option
 end
 
 /-- A resolved tyvar index is in range (feeds `Ty.WellKinded.bvar`). -/
+private theorem length_le_of_nodup_lt {l : List Nat} {n : Nat}
+    (hn : l.Nodup) (hbound : ∀ x ∈ l, x < n) :
+    l.length ≤ n := by
+  induction n generalizing l with
+  | zero =>
+    match l with
+    | [] => simp
+    | a :: l' => exact absurd (hbound a List.mem_cons_self) (by omega)
+  | succ n ih =>
+    by_cases hmem : n ∈ l
+    · have hlen : (l.erase n).length = l.length - 1 := List.length_erase_of_mem hmem
+      have hbound' : ∀ x ∈ l.erase n, x < n := by
+        intro x hx
+        have hxl : x ∈ l := List.mem_of_mem_erase hx
+        have hxne : x ≠ n := by rintro rfl; exact hn.not_mem_erase hx
+        have := hbound x hxl
+        omega
+      have hle := ih (hn.erase n) hbound'
+      omega
+    · have hbound' : ∀ x ∈ l, x < n := by
+        intro x hx
+        have hxne : x ≠ n := fun heq => hmem (heq ▸ hx)
+        have := hbound x hx
+        omega
+      exact Nat.le_succ_of_le (ih hn hbound')
+
+/-- Converse pigeonhole: a duplicate-free list containing every natural `< n`
+    has at least `n` entries. -/
+private theorem length_ge_of_nodup_of_forall_lt_mem {l : List Nat} {n : Nat}
+    (hn : l.Nodup) (hall : ∀ v, v < n → v ∈ l) :
+    n ≤ l.length := by
+  induction n generalizing l with
+  | zero => omega
+  | succ n ih =>
+    have hnmem : n ∈ l := hall n (by omega)
+    have hle : n ≤ (l.erase n).length := by
+      apply ih (hn.erase n)
+      intro v hv
+      have hvne : v ≠ n := by omega
+      exact (List.mem_erase_of_ne hvne).mpr (hall v (by omega))
+    have hlen : (l.erase n).length = l.length - 1 := List.length_erase_of_mem hnmem
+    have hpos : 0 < l.length := List.length_pos_of_mem hnmem
+    omega
+
+/-- Two `Nodup` lists with the same elements are permutations of each other.
+    Proved by induction, peeling the head off with `List.perm_cons_erase`. -/
+private theorem nodup_perm_of_mem_iff {l1 l2 : List Nat}
+    (hn1 : l1.Nodup) (hn2 : l2.Nodup) (hmem : ∀ x, x ∈ l1 ↔ x ∈ l2) :
+    l1.Perm l2 := by
+  induction l1 generalizing l2 with
+  | nil =>
+    match l2 with
+    | [] => exact .refl _
+    | b :: t => exact absurd ((hmem b).mpr List.mem_cons_self) List.not_mem_nil
+  | cons a t ih =>
+    have ha2 : a ∈ l2 := (hmem a).mp List.mem_cons_self
+    have hnodup_t : t.Nodup := (List.nodup_cons.mp hn1).2
+    have hane : a ∉ t := (List.nodup_cons.mp hn1).1
+    have hperm2 : l2.Perm (a :: l2.erase a) := List.perm_cons_erase ha2
+    have hnodup_erase : (l2.erase a).Nodup := hn2.erase a
+    have ht : t.Perm (l2.erase a) := by
+      apply ih hnodup_t hnodup_erase
+      intro x
+      constructor
+      · intro hx
+        have hxne : x ≠ a := fun h => hane (h ▸ hx)
+        have hxl2 : x ∈ l2 := (hmem x).mp (List.mem_cons_of_mem a hx)
+        exact (List.mem_erase_of_ne hxne).mpr hxl2
+      · intro hx
+        have hxne : x ≠ a := by rintro rfl; exact hn2.not_mem_erase hx
+        have hxl2 : x ∈ l2 := List.mem_of_mem_erase hx
+        have hxcons : x ∈ a :: t := (hmem x).mpr hxl2
+        rcases List.mem_cons.mp hxcons with rfl | h
+        · exact absurd rfl hxne
+        · exact h
+    exact (ht.cons a).trans hperm2.symm
+
+/-- Pigeonhole (membership form): a duplicate-free list of length `n`, all of
+    whose elements are `< n`, contains every natural below `n`. Proved by
+    contradiction: adding a missing `a < n` would push the length over `n`. -/
+private theorem mem_of_nodup_length_eq_lt {l : List Nat} {n : Nat}
+    (hn : l.Nodup) (hbound : ∀ x ∈ l, x < n) (hlen : l.length = n) :
+    ∀ a, a < n → a ∈ l := by
+  intro a ha
+  apply Classical.byContradiction
+  intro hna
+  have hnodup' : (a :: l).Nodup := List.nodup_cons.mpr ⟨hna, hn⟩
+  have hbound' : ∀ x ∈ a :: l, x < n := by
+    intro x hx
+    rcases List.mem_cons.mp hx with rfl | h
+    · exact ha
+    · exact hbound x h
+  have hle := length_le_of_nodup_lt hnodup' hbound'
+  simp only [List.length_cons, hlen] at hle
+  omega
+
+private theorem perm_range_of_nodup_length {l : List Nat} {n : Nat}
+    (hn : l.Nodup) (hbound : ∀ x ∈ l, x < n) (hlen : l.length = n) :
+    l.Perm (List.range n) := by
+  apply nodup_perm_of_mem_iff hn List.nodup_range
+  intro a
+  constructor
+  · intro ha; exact List.mem_range.mpr (hbound a ha)
+  · intro ha; exact mem_of_nodup_length_eq_lt hn hbound hlen a (List.mem_range.mp ha)
+
+/-- Two lists share no elements. Local replacement for `Mathlib`'s
+    `List.DisjointFhm` (not in core Lean). -/
+def _root_.List.DisjointFhm {α} (l₁ l₂ : List α) : Prop := ∀ ⦃a⦄, a ∈ l₁ → a ∈ l₂ → False
+
+/-- Appending two disjoint `Nodup` lists gives a `Nodup` list. Local
+    replacement for `Mathlib`'s `List.Nodup.append` (not in core Lean). -/
+theorem _root_.List.Nodup.append {α} {l₁ l₂ : List α} (h₁ : l₁.Nodup) (h₂ : l₂.Nodup)
+    (hd : l₁.DisjointFhm l₂) : (l₁ ++ l₂).Nodup :=
+  List.nodup_append.mpr ⟨h₁, h₂, fun a ha b hb heq => hd ha (heq ▸ hb)⟩
+
+/-- `filter` never introduces a duplicate that wasn't already there: it only
+    drops elements. Local replacement for `Mathlib`'s `List.Nodup.filter`. -/
+theorem _root_.List.Nodup.filter {α} {l : List α} (p : α → Bool) (h : l.Nodup) :
+    (l.filter p).Nodup :=
+  List.filter_sublist.nodup h
+
+/-- `filterMap` preserves `Nodup` when `f` never sends two distinct source
+    elements to the same kept value. Local replacement for `Mathlib`'s
+    `List.Nodup.filterMap`. -/
+theorem _root_.List.Nodup.filterMap {α β : Type} {f : α → Option β} {l : List α}
+    (hf : ∀ a a' b, b ∈ f a → b ∈ f a' → a = a') (h : l.Nodup) :
+    (l.filterMap f).Nodup := by
+  induction l with
+  | nil => simp
+  | cons x xs ih =>
+    have hxs : xs.Nodup := (List.nodup_cons.mp h).2
+    have hxnotin : x ∉ xs := (List.nodup_cons.mp h).1
+    cases hfx : f x with
+    | none => simpa [List.filterMap_cons, hfx] using ih hxs
+    | some b =>
+      simp only [List.filterMap_cons, hfx]
+      refine List.nodup_cons.mpr ⟨?_, ih hxs⟩
+      intro hb
+      obtain ⟨y, hy, hfy⟩ := List.mem_filterMap.mp hb
+      have hxy : x = y := hf x y b (by simp [hfx]) (by simp [hfy])
+      exact hxnotin (hxy ▸ hy)
+
+theorem _root_.List.nodup_singleton {α} (a : α) : [a].Nodup :=
+  List.nodup_cons.mpr ⟨List.not_mem_nil, List.nodup_nil⟩
+
+/-- A list that isn't `Nodup` has a repeated value at two distinct indices.
+    Proved by induction: either the head recurs later in the tail (giving
+    indices `0` and `k+1`), or the tail itself isn't `Nodup` (recurse, then
+    shift both indices by one). -/
+private theorem exists_dup_indices {α : Type} [DecidableEq α] {l : List α}
+    (h : ¬ l.Nodup) :
+    ∃ i j, i < j ∧ ∃ (_ : i < l.length) (hj : j < l.length), l[i]'(by omega) = l[j] := by
+  induction l with
+  | nil => exact absurd (List.nodup_nil) h
+  | cons a l ih =>
+    by_cases ha : a ∈ l
+    · obtain ⟨k, hk, hka⟩ := List.mem_iff_getElem.mp ha
+      refine ⟨0, k + 1, by omega, by simp only [List.length_cons]; omega,
+        by simp only [List.length_cons]; omega, ?_⟩
+      simpa using hka.symm
+    · have hl : ¬ l.Nodup := fun hl => h (List.nodup_cons.mpr ⟨ha, hl⟩)
+      obtain ⟨i, j, hij, hi, hj, heq⟩ := ih hl
+      refine ⟨i + 1, j + 1, by omega, by simp only [List.length_cons]; omega,
+        by simp only [List.length_cons]; omega, ?_⟩
+      simpa using heq
+
+/-- `l[l.idxOf a]` recovers `a`, given a proof that the index is in bounds
+    (equivalently, that `a ∈ l`). Local replacement for `Mathlib`'s
+    `List.getElem_idxOf` (not in core Lean). -/
+private theorem _root_.List.getElem_idxOf {α} [BEq α] [LawfulBEq α] {l : List α} {a : α}
+    (hi : l.idxOf a < l.length) : l[l.idxOf a]'hi = a := by
+  have key : ∀ (l : List α) (i : Nat) (hi : i < l.length), l.idxOf a = i → l[i]'hi = a := by
+    intro l
+    induction l with
+    | nil => intro i hi _; simp at hi
+    | cons x xs ih =>
+      intro i hi hidx
+      by_cases hxa : x = a
+      · subst hxa
+        simp only [List.idxOf_cons_self] at hidx
+        subst hidx
+        rfl
+      · have hxa' : (x == a) = false := by simpa using hxa
+        rw [List.idxOf_cons, hxa', cond_false] at hidx
+        cases i with
+        | zero => omega
+        | succ i =>
+          simp only [List.getElem_cons_succ]
+          exact ih i (by simp only [List.length_cons] at hi; omega) (by omega)
+  exact key l (l.idxOf a) hi rfl
+
+/-- Two functions agreeing pointwise on a list give equal `filterMap`s. Local
+    replacement for `Mathlib`'s `List.filterMap_congr`. -/
+private theorem _root_.List.filterMap_congr {α β} {f g : α → Option β} {l : List α}
+    (h : ∀ x ∈ l, f x = g x) : l.filterMap f = l.filterMap g := by
+  induction l with
+  | nil => rfl
+  | cons a l ih =>
+    simp only [List.filterMap_cons, h a List.mem_cons_self,
+      ih (fun x hx => h x (List.mem_cons_of_mem a hx))]
+
+/-- Splitting a list's length by a Boolean predicate. Local replacement for
+    `Mathlib`'s `List.length_eq_length_filter_add`. -/
+private theorem _root_.List.length_eq_length_filter_add {α} {f : α → Bool} {l : List α} :
+    l.length = (l.filter f).length + (l.filter (fun x => !f x)).length := by
+  induction l with
+  | nil => rfl
+  | cons a l ih =>
+    simp only [List.length_cons, List.filter_cons]
+    cases f a <;> simp [ih] <;> omega
+
+/-- `Pairwise` at two indices in increasing order. Local replacement for
+    `Mathlib`'s `List.Pairwise.rel_get_of_lt`. -/
+private theorem _root_.List.Pairwise.rel_get_of_lt {α} {R : α → α → Prop} {l : List α}
+    (h : l.Pairwise R) {i j : Fin l.length} (hij : i < j) : R (l[i.1]'i.2) (l[j.1]'j.2) := by
+  have key : ∀ (l : List α), l.Pairwise R → ∀ (i j : Nat) (hi : i < l.length) (hj : j < l.length),
+      i < j → R (l[i]'hi) (l[j]'hj) := by
+    intro l
+    induction l with
+    | nil => intro _ i _ hi _ _; simp at hi
+    | cons a l ih =>
+      intro h i j hi hj hij
+      rw [List.pairwise_cons] at h
+      cases i with
+      | zero =>
+        cases j with
+        | zero => omega
+        | succ j =>
+          have hjl : j < l.length := by simp only [List.length_cons] at hj; omega
+          simpa using h.1 (l[j]'hjl) (List.getElem_mem hjl)
+      | succ i =>
+        cases j with
+        | zero => omega
+        | succ j =>
+          have hil : i < l.length := by simp only [List.length_cons] at hi; omega
+          have hjl : j < l.length := by simp only [List.length_cons] at hj; omega
+          simpa using ih h.2 i j hil hjl (by omega)
+  exact key l h i.1 j.1 i.2 j.2 hij
+
+/-- `flatMap` is `Nodup` when every image is `Nodup` and images of distinct
+    source elements are disjoint. Local replacement for the `.mpr` direction
+    of `Mathlib`'s `List.nodup_flatMap`. -/
+private theorem _root_.List.nodup_flatMap_of {α β} {f : α → List β} {l : List α}
+    (h1 : ∀ a ∈ l, (f a).Nodup) (h2 : l.Pairwise (fun a b => (f a).DisjointFhm (f b))) :
+    (l.flatMap f).Nodup := by
+  rw [List.flatMap_def]
+  induction l with
+  | nil => simp
+  | cons a l ih =>
+    simp only [List.map_cons, List.flatten_cons]
+    rw [List.pairwise_cons] at h2
+    refine List.Nodup.append (h1 a List.mem_cons_self)
+      (ih (fun b hb => h1 b (List.mem_cons_of_mem a hb)) h2.2) ?_
+    intro x hx hx'
+    obtain ⟨b, hb, hxb⟩ := List.mem_flatten.mp hx'
+    obtain ⟨b0, hb0, rfl⟩ := List.mem_map.mp hb
+    exact h2.1 b0 hb0 hx hxb
+
+
 theorem tvarIndex_lt {tvs : List ValName} {n : ValName} {i : Nat}
     (h : tvarIndex tvs n = some i) : i < tvs.length := by
   induction tvs generalizing i with
@@ -305,7 +574,7 @@ structure LowersDataDeclsIn (ke₀ : KindEnv)
   ctorNamesNodup :
     (sdecls.flatMap (fun d => d.ctors.map Prod.fst)).Nodup
   lowers :
-    List.Forall₂ (LowersDataDecl (declKindEnv ke₀ sdecls)) sdecls decls
+    List.Forall₂Fhm (LowersDataDecl (declKindEnv ke₀ sdecls)) sdecls decls
 
 /-- Closed-group specialization (`ke₀ = []`). -/
 abbrev LowersDataDecls (sdecls : List Surface.DataDecl) (decls : List DataDecl) : Prop :=
@@ -332,7 +601,7 @@ def lowerDataDecls (sdecls : List Surface.DataDecl) : Option (List DataDecl) :=
 
 /-- A successful `mapM` yields pointwise `f a = some b`. -/
 private theorem mapM_forall₂_of_eq {α β : Type} (f : α → Option β) :
-    ∀ {l vs}, l.mapM f = some vs → List.Forall₂ (fun a b => f a = some b) l vs
+    ∀ {l vs}, l.mapM f = some vs → List.Forall₂Fhm (fun a b => f a = some b) l vs
   | [], vs => by
     intro h; rw [List.mapM_nil] at h; injection h with hvs; subst hvs; exact .nil
   | a :: l, vs => by
@@ -352,7 +621,7 @@ private theorem mapM_forall₂_of_eq {α β : Type} (f : α → Option β) :
 
 /-- Converse: pointwise `f a = some b` makes `mapM` succeed. -/
 private theorem mapM_of_forall₂_of_eq {α β : Type} (f : α → Option β) :
-    ∀ {l vs}, List.Forall₂ (fun a b => f a = some b) l vs → l.mapM f = some vs
+    ∀ {l vs}, List.Forall₂Fhm (fun a b => f a = some b) l vs → l.mapM f = some vs
   | [], vs => by
     intro h; cases h; simp [List.mapM_nil]
   | a :: l, b :: vs => by
@@ -364,14 +633,14 @@ private theorem mapM_of_forall₂_of_eq {α β : Type} (f : α → Option β) :
     intro h; cases h
 
 private theorem Forall₂_length {α β : Type} (R : α → β → Prop) :
-    ∀ {l1 l2}, List.Forall₂ R l1 l2 → l1.length = l2.length := by
+    ∀ {l1 l2}, List.Forall₂Fhm R l1 l2 → l1.length = l2.length := by
   intro l1 l2 h
   induction h with
   | nil => rfl
   | cons _ htl ih => simp only [List.length_cons, ih]
 
 private theorem Forall₂_mem_right {α β : Type} {R : α → β → Prop} :
-    ∀ {l1 l2}, List.Forall₂ R l1 l2 → ∀ {b}, b ∈ l2 → ∃ a, a ∈ l1 ∧ R a b := by
+    ∀ {l1 l2}, List.Forall₂Fhm R l1 l2 → ∀ {b}, b ∈ l2 → ∃ a, a ∈ l1 ∧ R a b := by
   intro l1 l2 h
   induction h with
   | nil => intro b hb; simp at hb
@@ -384,7 +653,7 @@ private theorem Forall₂_mem_right {α β : Type} {R : α → β → Prop} :
       exact ⟨a, List.mem_cons_of_mem _ ha, hr⟩
 
 private theorem Forall₂_imp {α β : Type} {R S : α → β → Prop} (himp : ∀ {a b}, R a b → S a b) :
-    ∀ {l1 l2}, List.Forall₂ R l1 l2 → List.Forall₂ S l1 l2 := by
+    ∀ {l1 l2}, List.Forall₂Fhm R l1 l2 → List.Forall₂Fhm S l1 l2 := by
   intro l1 l2 h
   induction h with
   | nil => exact .nil
@@ -435,7 +704,7 @@ private theorem LowersFields.mem_lowerTy {ke : KindEnv} {tvs : List ValName}
 
 private theorem LowersCtors.of_forall₂' {ke : KindEnv} {tvs : List ValName}
     {ss : List (CtorName × List Surface.Ty)} {cs : List (CtorName × List Ty)}
-    (h : List.Forall₂
+    (h : List.Forall₂Fhm
       (fun (nc, fs) (nc', fs') => nc = nc' ∧ LowersFields ke tvs fs fs') ss cs) :
     LowersCtors ke tvs ss cs := by
   revert cs
@@ -451,7 +720,7 @@ private theorem LowersCtors.of_forall₂' {ke : KindEnv} {tvs : List ValName}
     | [] => cases h
     | b :: cs =>
       match h with
-      | List.Forall₂.cons hr htl =>
+      | List.Forall₂Fhm.cons hr htl =>
         rcases a with ⟨nc, fs⟩
         rcases b with ⟨nc', fs'⟩
         obtain ⟨hn, hfs⟩ := hr
@@ -461,7 +730,7 @@ private theorem LowersCtors.of_forall₂' {ke : KindEnv} {tvs : List ValName}
 private theorem LowersCtors.to_forall₂ {ke : KindEnv} {tvs : List ValName}
     {ss : List (CtorName × List Surface.Ty)} {cs : List (CtorName × List Ty)}
     (h : LowersCtors ke tvs ss cs) :
-    List.Forall₂ (fun (nc, fs) (nc', fs') => nc = nc' ∧ LowersFields ke tvs fs fs') ss cs := by
+    List.Forall₂Fhm (fun (nc, fs) (nc', fs') => nc = nc' ∧ LowersFields ke tvs fs fs') ss cs := by
   induction h with
   | nil => exact .nil
   | cons hfs htl ih => exact .cons ⟨rfl, hfs⟩ ih
@@ -513,8 +782,8 @@ private theorem lowerDataDecl_complete {ke : KindEnv} {s : Surface.DataDecl} {d 
     rw [lowerDataDecl, option_guard_bind_pos hp]
     have hbind :
         (sctors.mapM (fun x =>
-          (lowerTyList ke params x.2).map fun fs' => (x.1, fs'))) = some dctors :=
-      hmap
+          (lowerTyList ke params x.2).map fun fs' => (x.1, fs'))) = some dctors := by
+      exact hmap
     rw [hbind, Option.bind_eq_bind, Option.bind_some, Option.pure_def]
 
 private theorem LowersCtors.flatMap_names_eq {ke : KindEnv} {tvs : List ValName}
@@ -527,7 +796,7 @@ private theorem LowersCtors.flatMap_names_eq {ke : KindEnv} {tvs : List ValName}
 
 private theorem LowersDataDeclsIn.map_names_eq {ke : KindEnv}
     {sdecls : List Surface.DataDecl} {decls : List DataDecl}
-    (h : List.Forall₂ (LowersDataDecl ke) sdecls decls) :
+    (h : List.Forall₂Fhm (LowersDataDecl ke) sdecls decls) :
     sdecls.map (·.name) = decls.map (·.name) := by
   induction h with
   | nil => rfl
@@ -537,7 +806,7 @@ private theorem LowersDataDeclsIn.map_names_eq {ke : KindEnv}
 
 private theorem LowersDataDeclsIn.flatMap_ctorNames_eq {ke : KindEnv}
     {sdecls : List Surface.DataDecl} {decls : List DataDecl}
-    (h : List.Forall₂ (LowersDataDecl ke) sdecls decls) :
+    (h : List.Forall₂Fhm (LowersDataDecl ke) sdecls decls) :
     (sdecls.flatMap (fun d => d.ctors.map Prod.fst)) =
       (decls.flatMap (fun d => d.ctors.map Prod.fst)) := by
   induction h with
@@ -550,7 +819,7 @@ private theorem LowersDataDeclsIn.flatMap_ctorNames_eq {ke : KindEnv}
 
 private theorem LowersDataDeclsIn.kindEnv_eq {ke : KindEnv}
     {sdecls : List Surface.DataDecl} {decls : List DataDecl}
-    (h : List.Forall₂ (LowersDataDecl ke) sdecls decls) :
+    (h : List.Forall₂Fhm (LowersDataDecl ke) sdecls decls) :
     surfaceKindEnv sdecls = DataDecls.kindEnv decls := by
   have hmap :
       sdecls.map (fun d => (d.name, d.params.length)) =
@@ -599,7 +868,7 @@ private theorem LookupList.get?_append_left {k v : Type} [DecidableEq k]
         simp only [LookupList.get?] at h
         cases h
         simp only [LookupList.get?, List.cons_append]
-        split_ifs <;> rfl
+        split <;> simp_all
       · have htl : LookupList.get? tl key = some val := by
           simp [LookupList.get?, hk] at h
           exact h
@@ -1083,15 +1352,15 @@ def sccBeforeEdges (succ : Nat → List Nat) (comps : List (List Nat)) :
         | _, _ => none
 
 /-- Read `indeg[i]` (0 if OOB). -/
-private def indegGet (indeg : List Nat) (i : Nat) : Nat :=
+def indegGet (indeg : List Nat) (i : Nat) : Nat :=
   indeg[i]?.getD 0
 
 /-- Set `indeg[i] := v`. -/
-private def indegSet (indeg : List Nat) (i v : Nat) : List Nat :=
+def indegSet (indeg : List Nat) (i v : Nat) : List Nat :=
   indeg.mapIdx fun j x => if j = i then v else x
 
 /-- Extracted Kahn loop body for induction. -/
-private def kahnGo (beforeEdges : List (Nat × Nat)) :
+def kahnGo (beforeEdges : List (Nat × Nat)) :
     Nat → List Nat → List Nat → List Nat → List Nat
   | 0, _indeg, _ready, acc => acc
   | _fuel + 1, _indeg, [], acc => acc
@@ -1130,7 +1399,7 @@ def sccGroups (binds : List Surface.Binding) :
 
 /-! #### SCC adequacy helpers -/
 
-private def sccOrderedIndexSets (binds : List Surface.Binding) : List (List Nat) :=
+def sccOrderedIndexSets (binds : List Surface.Binding) : List (List Nat) :=
   let comps := sccIndexSets binds
   (kahnTopo comps.length (sccBeforeEdges (bindSucc binds) comps)).filterMap
     fun k => comps[k]?
@@ -1143,8 +1412,12 @@ theorem sccGroups_eq_some_iff {binds : List Surface.Binding}
   constructor
   · intro h
     have hn : (binds.map (·.name)).Nodup := by
-      by_contra hdup
-      simp [sccGroups, guard, hdup] at h
+      apply Classical.byContradiction
+      intro hdup
+      simp only [sccGroups, guard] at h
+      rw [if_neg hdup] at h
+      change (none : Option (List (List Surface.Binding))) = some groups at h
+      simp at h
     refine ⟨hn, ?_⟩
     simp [sccGroups, guard, hn] at h
     exact h.symm
@@ -1166,10 +1439,8 @@ private theorem name_inj_of_nodup {binds : List Surface.Binding}
     (h : (binds[i]).name = (binds[j]).name) : i = j := by
   have hi' : i < (binds.map (·.name)).length := by simpa [map_name_length] using hi
   have hj' : j < (binds.map (·.name)).length := by simpa [map_name_length] using hj
-  have hinj := List.nodup_iff_injective_getElem.mp hn
-  have hfin : (⟨i, hi'⟩ : Fin (binds.map (·.name)).length) = ⟨j, hj'⟩ :=
-    hinj (by simpa [map_name_getElem hi, map_name_getElem hj] using h)
-  exact congrArg Fin.val hfin
+  exact (List.getElem_inj (h₀ := hi') (h₁ := hj') hn).mp
+    (by simpa [map_name_getElem hi, map_name_getElem hj] using h)
 
 private theorem bind_eq_of_name_eq {binds : List Surface.Binding}
     (hn : (binds.map (·.name)).Nodup) {bdg : Surface.Binding} {i : Nat}
@@ -1467,11 +1738,10 @@ private theorem exists_nodup_bindChain (binds : List Surface.Binding) :
     by_cases hn : vs.Nodup
     · exact ⟨vs, hchain, hn, hne, rfl, rfl, hbound⟩
     · have hrep : ∃ (i j : Nat), i < j ∧ j < vs.length ∧ vs[i]? = vs[j]? := by
-        have := mt (List.nodup_iff_getElem?_ne_getElem? (l := vs)).2 hn
-        push_neg at this
-        exact this
+        obtain ⟨i, j, hij, hi, hj, heq⟩ := exists_dup_indices hn
+        exact ⟨i, j, hij, hj, by rw [List.getElem?_eq_getElem hi, List.getElem?_eq_getElem hj, heq]⟩
       obtain ⟨i, j, hij, hjlen, hget⟩ := hrep
-      set ws := vs.take (i + 1) ++ vs.drop (j + 1)
+      let ws := vs.take (i + 1) ++ vs.drop (j + 1)
       have hi1 : i + 1 ≤ vs.length := Nat.succ_le_of_lt (Nat.lt_trans hij hjlen)
       have hj1 : j + 1 ≤ vs.length := Nat.succ_le_of_lt hjlen
       have hlen' : ws.length < vs.length := by
@@ -1578,6 +1848,9 @@ private theorem canReach_of_nodup_chain {binds : List Surface.Binding}
               exact havoid v (List.mem_cons_of_mem _ hv) hs)
           (by have := hfuel; simp at this ⊢; omega)
 
+/-- Length bound from Nodup + range membership (pigeonhole: a duplicate-free list
+    whose entries are all `< n` has at most `n` entries). Proved by induction on
+    `n`, peeling off `n` itself via `List.erase` when present. -/
 theorem canReach_complete {binds : List Surface.Binding} {i j : Nat}
     (hn : (binds.map (·.name)).Nodup)
     (hi : i < binds.length) (hj : j < binds.length)
@@ -1588,14 +1861,7 @@ theorem canReach_complete {binds : List Surface.Binding} {i j : Nat}
   obtain ⟨ws, hchain', hnodup, _hne', hhead, hlast, hbound'⟩ :=
     exists_nodup_bindChain binds vs hchain hne hbound
   have hfuel : ws.length - 1 ≤ binds.length := by
-    have hle : ws.length ≤ binds.length := by
-      have hcard := List.toFinset_card_of_nodup hnodup
-      have hsub : ws.toFinset ⊆ Finset.range binds.length := by
-        intro x hx
-        simp [Finset.mem_range]
-        exact hbound' x (List.mem_toFinset.mp hx)
-      have := Finset.card_le_card hsub
-      simpa [hcard, Finset.card_range] using this
+    have hle : ws.length ≤ binds.length := length_le_of_nodup_lt hnodup hbound'
     omega
   exact canReach_of_nodup_chain hchain' hnodup
     (hhead.trans hvsh) (hlast.trans hvsl) (fun _ _ => by simp) hfuel
@@ -1817,7 +2083,7 @@ private theorem sccPartitionGo_depMutual (binds : List Surface.Binding) :
       have htodo_bound : ∀ x ∈ seed :: rest, x < binds.length := hbound
       refine ih _ _ ?_ ?_ g hg
       · intro x hx
-        exact htodo_bound x (List.mem_of_mem_filter hx)
+        exact htodo_bound x ((List.mem_filter.mp hx).1)
       · intro g' hg' a ha b hb ha_lt hb_lt
         simp only [List.mem_append, List.mem_singleton] at hg'
         cases hg' with
@@ -1891,26 +2157,6 @@ private theorem filterMap_getElem?_of_perm {α} {l : List α} {order : List Nat}
   have h' := h.filterMap (fun i => l[i]?)
   rwa [range_filterMap_getElem?] at h'
 
-private theorem perm_range_of_nodup_length {l : List Nat} {n : Nat}
-    (hn : l.Nodup) (hbound : ∀ x ∈ l, x < n) (hlen : l.length = n) :
-    l.Perm (List.range n) := by
-  refine (List.perm_ext_iff_of_nodup hn List.nodup_range).2 ?_
-  intro a
-  constructor
-  · intro ha
-    exact List.mem_range.mpr (hbound a ha)
-  · intro ha
-    have hsub : l.toFinset ⊆ Finset.range n := by
-      intro x hx
-      exact Finset.mem_range.mpr (hbound x (List.mem_toFinset.mp hx))
-    have hcard : l.toFinset.card = n := by
-      rw [List.toFinset_card_of_nodup hn, hlen]
-    have hEq : l.toFinset = Finset.range n :=
-      Finset.eq_of_subset_of_card_le hsub (by simp [hcard])
-    exact List.mem_toFinset.mp (by
-      rw [hEq]
-      simpa [Finset.mem_range] using List.mem_range.mp ha)
-
 /-! ##### Abstract Kahn invariants
 
 `kahnTopo_edge_before` is false for arbitrary edges: targets `≥ n` always read
@@ -1965,7 +2211,8 @@ private theorem remInDeg_eq_zero_preds (beforeEdges : List (Nat × Nat))
     (he : (u, v) ∈ beforeEdges)
     (hz : remInDeg beforeEdges acc v = 0) :
     u ∈ acc := by
-  by_contra hnotin
+  apply Classical.byContradiction
+  intro hnotin
   have hmem : (u, v) ∈ beforeEdges.filter (fun e => e.2 = v && e.1 ∉ acc) := by
     simp only [List.mem_filter, he, true_and]
     simp [hnotin]
@@ -2073,7 +2320,7 @@ private theorem foldl_indeg_remInDeg (beforeEdges : List (Nat × Nat))
           (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg)
         w =
       remInDeg beforeEdges (acc ++ [u]) w := by
-  set nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+  let nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
   have hsub := foldl_indegSet_sub indeg nbrs w hw
   have hcnt : nbrs.count w =
       (beforeEdges.filter fun e => e.1 = u && e.2 = w).length :=
@@ -2147,10 +2394,10 @@ private theorem kahnGo_edge_before_of_bounded (beforeEdges : List (Nat × Nat))
       exact hedge he hi hj
     | cons u us =>
       simp only [kahnGo] at hi hj
-      set acc' := acc ++ [u]
-      set nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
-      set indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
-      set newReady := nbrs.filter fun b =>
+      let acc' := acc ++ [u]
+      let nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+      let indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
+      let newReady := nbrs.filter fun b =>
         indegGet indeg' b = 0 && b ∉ acc' && b ∉ us
       have hu_ready := hready u List.mem_cons_self
       have hu : u ∉ acc := hu_ready.2.2
@@ -2331,8 +2578,8 @@ private theorem sccBeforeEdges_nodup (succ : Nat → List Nat)
     (comps : List (List Nat)) :
     (sccBeforeEdges succ comps).Nodup := by
   simp only [sccBeforeEdges]
-  set nc := comps.length
-  refine (List.nodup_flatMap).2 ⟨?_, ?_⟩
+  let nc := comps.length
+  refine List.nodup_flatMap_of ?_ ?_
   · intro a ha
     refine List.Nodup.filterMap ?_ List.nodup_range
     intro b1 b2 e he1 he2
@@ -2408,16 +2655,6 @@ private theorem exists_pred_of_remInDeg_pos (beforeEdges : List (Nat × Nat))
   subst hv
   exact ⟨u, hem, hu⟩
 
-/-- Length bound from Nodup + range membership. -/
-private theorem length_le_of_nodup_lt {l : List Nat} {n : Nat}
-    (hn : l.Nodup) (hbound : ∀ x ∈ l, x < n) :
-    l.length ≤ n := by
-  have hsub : l.toFinset ⊆ Finset.range n := by
-    intro x hx
-    exact Finset.mem_range.mpr (hbound x (List.mem_toFinset.mp hx))
-  have := Finset.card_le_card hsub
-  rwa [List.toFinset_card_of_nodup hn, Finset.card_range] at this
-
 /-- Zero-closed ready invariant: every `remInDeg = 0` vertex is queued or emitted. -/
 private theorem kahnGo_zero_closed (beforeEdges : List (Nat × Nat))
     (n : Nat) (hn : edgesBounded n beforeEdges) (hedges_nodup : beforeEdges.Nodup) :
@@ -2457,19 +2694,17 @@ private theorem kahnGo_zero_closed (beforeEdges : List (Nat × Nat))
           omega
         refine Or.inr ?_
         have hex : ∃ v, v < n ∧ v ∉ acc := by
-          by_contra hnone
-          push_neg at hnone
-          have hsub : Finset.range n ⊆ acc.toFinset := by
-            intro v hv
-            exact List.mem_toFinset.mpr (hnone v (Finset.mem_range.mp hv))
-          have hcard := Finset.card_le_card hsub
-          simp only [Finset.card_range, List.toFinset_card_of_nodup hnodup_a] at hcard
+          apply Classical.byContradiction
+          intro hnone
+          simp only [not_exists, not_and, Classical.not_not] at hnone
+          have hcard := length_ge_of_nodup_of_forall_lt_mem hnodup_a hnone
           omega
         obtain ⟨v0, hv0, hv0n⟩ := hex
         refine ⟨v0, hv0, hv0n, ?_⟩
         intro w hw hwn
         have hpos : 0 < remInDeg beforeEdges acc w := by
-          by_contra hnp
+          apply Classical.byContradiction
+          intro hnp
           have hz : remInDeg beforeEdges acc w = 0 := by omega
           have := hclosed w hw hz
           simp only [List.mem_nil_iff, or_false] at this
@@ -2478,10 +2713,10 @@ private theorem kahnGo_zero_closed (beforeEdges : List (Nat × Nat))
         exact ⟨u, (hn _ he).1, hu, he⟩
     | cons u us =>
       simp only [kahnGo]
-      set acc' := acc ++ [u]
-      set nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
-      set indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
-      set newReady := nbrs.filter fun b =>
+      let acc' := acc ++ [u]
+      let nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+      let indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
+      let newReady := nbrs.filter fun b =>
         indegGet indeg' b = 0 && b ∉ acc' && b ∉ us
       have hu_ready := hready u List.mem_cons_self
       have hu : u ∉ acc := hu_ready.2.2
@@ -2637,15 +2872,12 @@ private theorem exists_edge_cycle_of_pred_closed (beforeEdges : List (Nat × Nat
     intro hempty
     have hall : ∀ v < n, v ∈ out := by
       intro v hv
-      by_contra hnotin
+      apply Classical.byContradiction
+      intro hnotin
       have : v ∈ rem :=
         List.mem_filter.mpr ⟨List.mem_range.mpr hv, decide_eq_true hnotin⟩
       simp [hempty] at this
-    have hsub : Finset.range n ⊆ out.toFinset := by
-      intro v hv
-      exact List.mem_toFinset.mpr (hall v (Finset.mem_range.mp hv))
-    have hcard := Finset.card_le_card hsub
-    simp only [Finset.card_range, List.toFinset_card_of_nodup hout_nodup] at hcard
+    have hcard := length_ge_of_nodup_of_forall_lt_mem hout_nodup hall
     omega
   have pred_spec : ∀ v ∈ rem, ∃ u ∈ rem, (u, v) ∈ beforeEdges := by
     intro v hv
@@ -2679,26 +2911,19 @@ private theorem exists_edge_cycle_of_pred_closed (beforeEdges : List (Nat × Nat
     exact walk_mem _
   have hws_not_nodup : ¬ws.Nodup := by
     intro hnodup
-    have hsub : ws.toFinset ⊆ rem.toFinset := by
-      intro x hx
-      exact List.mem_toFinset.mpr (hws_mem x (List.mem_toFinset.mp hx))
-    have hcard := Finset.card_le_card hsub
-    rw [List.toFinset_card_of_nodup hnodup, List.toFinset_card_of_nodup hrem_nodup,
-      hws_len] at hcard
+    have hcard := nodup_length_le hnodup (fun x hx => hws_mem x hx)
+    rw [hws_len] at hcard
     omega
-  obtain ⟨d, hd⟩ := (List.exists_duplicate_iff_not_nodup).2 hws_not_nodup
-  obtain ⟨i, j, hij, hx_i, hx_j⟩ := (List.duplicate_iff_exists_distinct_get).1 hd
-  have hwi : ws[i.1] = walk i.1 := by
+  obtain ⟨i, j, hij, hi, hj, hdup⟩ := exists_dup_indices hws_not_nodup
+  have hwi : ws[i] = walk i := by
     simp only [ws, List.getElem_map, List.getElem_range]
-  have hwj : ws[j.1] = walk j.1 := by
+  have hwj : ws[j] = walk j := by
     simp only [ws, List.getElem_map, List.getElem_range]
-  have heq : walk i.1 = walk j.1 := by
-    have ei : ws[i.1] = d := by simpa [List.get_eq_getElem] using hx_i.symm
-    have ej : ws[j.1] = d := by simpa [List.get_eq_getElem] using hx_j.symm
-    rw [hwi] at ei; rw [hwj] at ej; exact ei.trans ej.symm
-  have hlt : i.1 < j.1 := hij
-  let ilo := i.1
-  let j0 := j.1
+  have heq : walk i = walk j := by
+    rw [← hwi, ← hwj]; exact hdup
+  have hlt : i < j := hij
+  let ilo := i
+  let j0 := j
   have hj0_ge : ilo + 2 ≤ j0 := by
     have hne1 : j0 ≠ ilo + 1 := by
       intro h
@@ -2727,7 +2952,7 @@ private theorem exists_edge_cycle_of_pred_closed (beforeEdges : List (Nat × Nat
     have hrt' : Relation.ReflTransGen (fun a b => (a, b) ∈ beforeEdges)
         (walk ilo) (walk (ilo + 1)) := by
       rwa [← hj0_eq]
-    exact (Relation.reflTransGen_iff_eq_or_transGen.mp hrt').resolve_left huv
+    exact (Relation.reflTransGen_iff_eq_or_transGen.mp hrt').resolve_left huv.symm
 
 /-- No self-loops in `sccBeforeEdges`. -/
 private theorem sccBeforeEdges_no_loop (succ : Nat → List Nat)
@@ -2801,7 +3026,7 @@ private theorem DepReach_of_sccBeforeEdge (binds : List Surface.Binding)
     (hx : x ∈ ca) (hy : y ∈ cb)
     (hx_lt : x < binds.length) (hy_lt : y < binds.length) :
     DepReach binds (binds[x]).name (binds[y]).name := by
-  set comps := sccIndexSets binds
+  let comps := sccIndexSets binds
   obtain ⟨_hne, _hu_lt, _hv_lt, ca', cb', hca', hcb', p, hp, q, hq, hsucc⟩ :=
     exists_succ_of_mem_sccBeforeEdges (bindSucc binds) comps he
   have hca_eq : ca' = ca := by
@@ -2875,8 +3100,22 @@ private theorem DepReach_of_sccBeforeReach (binds : List Surface.Binding)
       ih hcw hcb hq hy hq_lt hy_lt
     exact DepReach_trans h_to_q h_from_q
 
+/-- If a flattened list of lists is `Nodup`, the lists are pairwise disjoint
+    (the converse half of Mathlib's `List.nodup_flatten`, all that's needed
+    here; derived from `List.nodup_append` by induction on the outer list). -/
+private theorem nodup_flatten_pairwise_disjoint {α} {L : List (List α)}
+    (h : L.flatten.Nodup) : L.Pairwise List.DisjointFhm := by
+  induction L with
+  | nil => exact List.Pairwise.nil
+  | cons hd tl ih =>
+    simp only [List.flatten_cons, List.nodup_append] at h
+    obtain ⟨_hdnd, htlnd, hsep⟩ := h
+    refine List.pairwise_cons.mpr ⟨?_, ih htlnd⟩
+    intro g' hg' a hahd hag'
+    exact hsep a hahd a (List.mem_flatten.mpr ⟨g', hg', hag'⟩) rfl
+
 private theorem eq_of_mem_of_mem_of_pairwise_disjoint {α} {L : List (List α)}
-    (hdisj : List.Pairwise List.Disjoint L)
+    (hdisj : List.Pairwise List.DisjointFhm L)
     {g g' : List α} (hg : g ∈ L) (hg' : g' ∈ L) {x : α}
     (hx : x ∈ g) (hx' : x ∈ g') : g = g' := by
   induction L with
@@ -2909,8 +3148,8 @@ private theorem sccIndexSets_unique_comp (binds : List Surface.Binding) {i : Nat
   intro g' hg' hi''
   have hnodup : (sccIndexSets binds).flatten.Nodup :=
     (List.Perm.nodup_iff hperm).2 List.nodup_range
-  have hdisj : List.Pairwise List.Disjoint (sccIndexSets binds) :=
-    (List.nodup_flatten.mp hnodup).2
+  have hdisj : List.Pairwise List.DisjointFhm (sccIndexSets binds) :=
+    nodup_flatten_pairwise_disjoint hnodup
   exact (eq_of_mem_of_mem_of_pairwise_disjoint hdisj hg hg' hi' hi'').symm
 
 /-- Partition components are pairwise `mutReach`-separated (needs Bool-trans / Nodup). -/
@@ -2944,11 +3183,11 @@ private theorem sccPartitionGo_separated (binds : List Surface.Binding)
       have hseed_lt : seed < binds.length := hbound seed (by simp)
       have hcomp_lt : ∀ x ∈ (seed :: rest).filter (mutReach seed), x < binds.length := by
         intro x hx
-        exact hbound x (List.mem_of_mem_filter hx)
+        exact hbound x ((List.mem_filter.mp hx).1)
       have hrest'_lt : ∀ x ∈ (seed :: rest).filter (fun j => !mutReach seed j),
           x < binds.length := by
         intro x hx
-        exact hbound x (List.mem_of_mem_filter hx)
+        exact hbound x ((List.mem_filter.mp hx).1)
       have hcomp_clique : ∀ x ∈ (seed :: rest).filter (mutReach seed),
           mutReach seed x = true := by
         intro x hx; exact (List.mem_filter.mp hx).2
@@ -3022,7 +3261,7 @@ private theorem sccPartitionGo_separated (binds : List Surface.Binding)
         simp only [List.mem_append, List.mem_singleton] at hg
         cases hg with
         | inl h =>
-          exact hacc_todo g h a ha b (List.mem_of_mem_filter hb)
+          exact hacc_todo g h a ha b ((List.mem_filter.mp hb).1)
         | inr h =>
           subst h; exact hcross_comp_rest a ha b hb
       exact ih ((seed :: rest).filter (fun j => !mutReach seed j))
@@ -3067,7 +3306,7 @@ private theorem sccBeforeEdges_acyclic (binds : List Surface.Binding)
     (hvu : Relation.TransGen
       (fun a b => (a, b) ∈ sccBeforeEdges (bindSucc binds) (sccIndexSets binds)) v u) :
     False := by
-  set comps := sccIndexSets binds
+  let comps := sccIndexSets binds
   have ⟨hu_lt, hv_lt⟩ := sccBeforeReach_lt binds huv
   have hcu : comps[u]? = some comps[u] := List.getElem?_eq_getElem hu_lt
   have hcv : comps[v]? = some comps[v] := List.getElem?_eq_getElem hv_lt
@@ -3077,16 +3316,16 @@ private theorem sccBeforeEdges_acyclic (binds : List Surface.Binding)
   have hv_ne : comps[v] ≠ [] := sccIndexSets_nonempty_comp binds _ hv_mem
   have hx := List.head_mem hu_ne
   have hy := List.head_mem hv_ne
-  set x := comps[u].head hu_ne
-  set y := comps[v].head hv_ne
+  let x := comps[u].head hu_ne
+  let y := comps[v].head hv_ne
   have hx_lt := sccIndexSets_mem_lt binds _ hu_mem x hx
   have hy_lt := sccIndexSets_mem_lt binds _ hv_mem y hy
   have hne_g : comps[u] ≠ comps[v] := by
     intro heq
     have hnodup : comps.flatten.Nodup :=
       (List.Perm.nodup_iff (sccIndexSets_flatten_perm binds)).2 List.nodup_range
-    have hdisj : List.Pairwise List.Disjoint comps :=
-      (List.nodup_flatten.mp hnodup).2
+    have hdisj : List.Pairwise List.DisjointFhm comps :=
+      nodup_flatten_pairwise_disjoint hnodup
     have hlt : (⟨u, hu_lt⟩ : Fin comps.length) < ⟨v, hv_lt⟩ ∨
         (⟨v, hv_lt⟩ : Fin comps.length) < ⟨u, hu_lt⟩ := by
       rcases Nat.lt_or_gt_of_ne hne with h | h
@@ -3118,15 +3357,15 @@ private theorem kahnTopo_scc_perm (binds : List Surface.Binding)
     let comps := sccIndexSets binds
     let edges := sccBeforeEdges (bindSucc binds) comps
     (kahnTopo comps.length edges).Perm (List.range comps.length) := by
-  set comps := sccIndexSets binds
-  set edges := sccBeforeEdges (bindSucc binds) comps
+  let comps := sccIndexSets binds
+  let edges := sccBeforeEdges (bindSucc binds) comps
   have hb := sccBeforeEdges_bounded (bindSucc binds) comps
   have hnodup_e := sccBeforeEdges_nodup (bindSucc binds) comps
   simp only [kahnTopo]
-  set indeg0 := (List.range comps.length).map fun w =>
+  let indeg0 := (List.range comps.length).map fun w =>
     (edges.filter (fun e => e.2 = w)).length
-  set ready0 := (List.range comps.length).filter fun w => indegGet indeg0 w = 0
-  set out := kahnGo edges (comps.length + 1) indeg0 ready0 []
+  let ready0 := (List.range comps.length).filter fun w => indegGet indeg0 w = 0
+  let out := kahnGo edges (comps.length + 1) indeg0 ready0 []
   have hres := kahnGo_zero_closed edges comps.length hb hnodup_e
     (comps.length + 1) indeg0 ready0 []
     (by simp [indeg0, List.length_map, List.length_range])
@@ -3159,7 +3398,8 @@ private theorem kahnTopo_scc_perm (binds : List Surface.Binding)
     obtain ⟨v0, hv0, hv0n, hpred⟩ := hstuck
     have hlen_lt : out.length < comps.length := by
       have hle := length_le_of_nodup_lt hnodup_out hlt_out
-      by_contra hnge
+      apply Classical.byContradiction
+      intro hnge
       have heq : out.length = comps.length := Nat.le_antisymm hle (by omega)
       have hperm := perm_range_of_nodup_length hnodup_out hlt_out heq
       exact hv0n ((List.Perm.mem_iff hperm).2 (List.mem_range.mpr hv0))
@@ -3172,9 +3412,9 @@ private theorem sccOrderedIndexSets_flatten_perm (binds : List Surface.Binding)
     (hn : (binds.map (·.name)).Nodup) :
     (sccOrderedIndexSets binds).flatten.Perm (List.range binds.length) := by
   simp only [sccOrderedIndexSets]
-  set comps := sccIndexSets binds
-  set edges := sccBeforeEdges (bindSucc binds) comps
-  set order := kahnTopo comps.length edges
+  let comps := sccIndexSets binds
+  let edges := sccBeforeEdges (bindSucc binds) comps
+  let order := kahnTopo comps.length edges
   have hord := kahnTopo_scc_perm binds hn
   have hcomps : (order.filterMap (fun k => comps[k]?)).Perm comps :=
     filterMap_getElem?_of_perm hord
@@ -3191,7 +3431,8 @@ private theorem sccIndexSets_mem_of_mutReach (binds : List Surface.Binding)
     j ∈ g := by
   obtain ⟨g', hg', hj', _⟩ := sccIndexSets_unique_comp binds hj
   suffices g' = g by rwa [← this]
-  by_contra hne
+  apply Classical.byContradiction
+  intro hne
   have hsep : mutuallyReachable (bindSucc binds) binds.length i j = false :=
     sccIndexSets_separated binds hn hg hg' (Ne.symm hne) hi hj'
   simp [hmut] at hsep
@@ -3281,10 +3522,10 @@ private theorem kahnGo_nodup (beforeEdges : List (Nat × Nat))
     | nil => simpa [kahnGo] using ha
     | cons u us =>
       simp only [kahnGo]
-      set acc' := acc ++ [u]
-      set nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
-      set indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
-      set newReady := nbrs.filter fun b =>
+      let acc' := acc ++ [u]
+      let nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+      let indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
+      let newReady := nbrs.filter fun b =>
         indegGet indeg' b = 0 && b ∉ acc' && b ∉ us
       have hu_us : u ∉ us := (List.nodup_cons.mp hr).1
       have hu_acc : u ∉ acc := hdisj u List.mem_cons_self
@@ -3344,10 +3585,10 @@ private theorem kahnGo_lt (beforeEdges : List (Nat × Nat)) (n : Nat)
       simp only [kahnGo] at hx; exact hacc x hx
     | cons u us =>
       simp only [kahnGo] at hx
-      set acc' := acc ++ [u]
-      set nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
-      set indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
-      set newReady := nbrs.filter fun b =>
+      let acc' := acc ++ [u]
+      let nbrs := beforeEdges.filterMap fun ⟨a, b⟩ => if a = u then some b else none
+      let indeg' := nbrs.foldl (fun ig b => indegSet ig b (indegGet ig b - 1)) indeg
+      let newReady := nbrs.filter fun b =>
         indegGet indeg' b = 0 && b ∉ acc' && b ∉ us
       refine ih indeg' (us ++ newReady) acc' ?_ ?_ x hx
       · intro b hb
@@ -3375,7 +3616,7 @@ private theorem kahnTopo_lt (n : Nat) (edges : List (Nat × Nat))
   simp only [kahnTopo]
   refine kahnGo_lt edges n hb (n + 1) _ _ [] ?_ (by intro y hy; cases hy)
   intro b hb'
-  exact List.mem_range.mp (List.mem_of_mem_filter hb')
+  exact List.mem_range.mp (List.mem_filter.mp hb').1
 
 /-- `filterMap` of always-`some` is `map` of the forced values. -/
 private theorem filterMap_getElem?_eq_map {α β} (f : α → Option β) (l : List α)
@@ -3421,9 +3662,9 @@ theorem sccOrderedIndexSets_topo (binds : List Surface.Binding) :
       ∀ b1 ∈ gi, ∀ b2 ∈ gj,
         Binding.refersTo b1 b2.name = true → j < i := by
   intro groups i j gi gj hgi hgj _hne b1 hb1 b2 hb2 href
-  set comps := sccIndexSets binds
-  set edges := sccBeforeEdges (bindSucc binds) comps
-  set order := kahnTopo comps.length edges
+  let comps := sccIndexSets binds
+  let edges := sccBeforeEdges (bindSucc binds) comps
+  let order := kahnTopo comps.length edges
   have hb := sccBeforeEdges_bounded (bindSucc binds) comps
   have hnodup := sccBeforeEdges_nodup (bindSucc binds) comps
   simp only [groups, indexSetsToBindings, sccOrderedIndexSets] at hgi hgj
@@ -3485,7 +3726,8 @@ theorem sccOrderedIndexSets_topo (binds : List Surface.Binding) :
             have hj_lt : j < order.length := (List.getElem?_eq_some_iff.mp hj_o).1
             have hei : order[i] = ki := (List.getElem?_eq_some_iff.mp hi_o).2
             have hej : order[j] = ki := (List.getElem?_eq_some_iff.mp hj_o).2
-            exact _hne ((List.Nodup.getElem_inj_iff hnodup_ord).1 (hei.trans hej.symm))
+            exact _hne ((List.getElem_inj (h₀ := hi_lt) (h₁ := hj_lt) hnodup_ord).mp
+              (hei.trans hej.symm))
           have hdep := compDependsOn_of_succ_mem (bindSucc binds) hp' hq' hsucc
           have hedge := mem_sccBeforeEdges_of_compDependsOn (bindSucc binds) comps
             hki_lt hkj_lt hne_kj hdep
@@ -3944,13 +4186,13 @@ def matchExhaustiveB (ctors : CtorEnv) (T : TyName) (tyArgs : List Ty)
 
 /-- Guess `tyArgs` length from any ctor of `T` (placeholders; fail-closed for nested ADTs
     when placeholders don't instantiate field ADTs — soundness still holds). -/
-private def tyArgsGuess (ctors : CtorEnv) (T : TyName) : List Ty :=
+def tyArgsGuess (ctors : CtorEnv) (T : TyName) : List Ty :=
   match ctors.find? fun ⟨_, ctor⟩ => ctor.tyName == T with
   | some ⟨_, ctor⟩ => List.replicate ctor.paramCount (.prim .unit)
   | none => []
 
 /-- Top-level ctor name in a pattern, if any (incl. List/Pair sugar). -/
-private def patternTopCtor : Surface.Pattern → Option CtorName
+def patternTopCtor : Surface.Pattern → Option CtorName
   | .ctor n _ => some n
   | .cons _ _ => some cCons
   | .list [] => some cNil
@@ -3959,7 +4201,7 @@ private def patternTopCtor : Surface.Pattern → Option CtorName
   | .name _ | .wildcard => none
 
 /-- Recover a candidate ADT name from top-level ctor patterns (all must agree). -/
-private def tyNameFromPatterns (ctors : CtorEnv) :
+def tyNameFromPatterns (ctors : CtorEnv) :
     List Surface.Pattern → Option TyName
   | [] => none
   | p :: ps =>
@@ -4140,7 +4382,7 @@ private theorem mem_of_get?_eq_some {k v : Type} [DecidableEq k]
     simp only [LookupList.get?] at h
     cases hd with
     | mk k₀ v₀ =>
-      split_ifs at h with hk
+      split at h
       · simp only [List.mem_cons]; left; simp_all
       · exact List.mem_cons_of_mem _ (ih h)
 
@@ -4195,7 +4437,7 @@ theorem dTreeExhaustiveB_sound {ctors : CtorEnv} {octx : OccCtx} {t : DTree}
     DTreeExhaustive ctors octx t := by
   suffices hgoal : ∀ (n : Nat) (t : DTree) (octx : OccCtx), sizeOf t ≤ n →
       dTreeExhaustiveB ctors octx t = true → DTreeExhaustive ctors octx t by
-    exact hgoal (sizeOf t) t octx le_rfl h
+    exact hgoal (sizeOf t) t octx (Nat.le_refl _) h
   intro n
   induction n with
   | zero =>
@@ -4361,7 +4603,7 @@ theorem checkExhaustive_sound {ctors : CtorEnv} :
   suffices hgoal : ∀ (n : Nat) (s : Surface.Expr), surfaceExprSize s ≤ n →
       checkExhaustive ctors s = true → SurfaceCovers ctors s by
     intro s h
-    exact hgoal (surfaceExprSize s) s le_rfl h
+    exact hgoal (surfaceExprSize s) s (Nat.le_refl _) h
   intro n
   induction n with
   | zero =>
@@ -5609,7 +5851,8 @@ theorem emitLets_typeable {ctors : CtorEnv} {Γ_env Γ_outer : Env}
         congr 1; omega
       obtain ⟨hlookb, hlcb⟩ := hbind_look rest.length (by omega)
       rw [hb_eq] at hlookb
-      set τb : Ty := bindTys[rest.length]'hi with hτb
+      let τb := bindTys[rest.length]'hi
+      have hτb : τb = bindTys[rest.length]'hi := rfl
       have hdrop_cons :
           bindTys.drop rest.length =
             τb :: bindTys.drop (rest.length + 1) := by
@@ -5634,8 +5877,8 @@ theorem emitLets_typeable {ctors : CtorEnv} {Γ_env Γ_outer : Env}
           ⟨(τb :: bindTys.drop (rest.length + 1)).map PolyTy.mkTrivial ++ Γ_env ++ Γ_outer,
             ctors⟩
           (emitLets.go env binds body rest (k + 1)) τ := by
-        convert hih using 2
         rw [← hdrop_cons]
+        exact hih
       simpa only [List.map_cons, List.cons_append, List.length_cons] using hih'
   have hgo := go_ty binds.reverse 0 (by simp [List.length_reverse]) (by simp [List.drop_zero])
   simpa only [List.length_reverse, hlen_binds, List.drop_length, List.map_nil,
@@ -5698,9 +5941,9 @@ private theorem emitCases_ne_nil (env : List Occ) (bodies : Nat → Expr) (occ :
   | nil => exact (hne rfl).elim
   | cons _ _ => simp [emitCases]
 
-/-- `List.Forall₂` for a pointwise map (local copy of InferW's private lemma). -/
+/-- `List.Forall₂Fhm` for a pointwise map (local copy of InferW's private lemma). -/
 private theorem List.forall₂_self_map {α β} {R : α → β → Prop} {f : α → β} :
-    ∀ {l : List α}, (∀ x ∈ l, R x (f x)) → List.Forall₂ R l (l.map f)
+    ∀ {l : List α}, (∀ x ∈ l, R x (f x)) → List.Forall₂Fhm R l (l.map f)
   | [], _ => .nil
   | _ :: _, h =>
     .cons (h _ (List.mem_cons_self ..))
@@ -5710,7 +5953,7 @@ private theorem List.forall₂_self_map {α β} {R : α → β → Prop} {f : α
 private theorem instFieldTys_forall₂ {ctors : CtorEnv} {c : CtorName} {tyArgs : List Ty}
     {ctor : Ctor} (hlook : LookupList.get? ctors c = some ctor)
     (hpc : ctor.paramCount = tyArgs.length) :
-    List.Forall₂ (InstantiatesBy tyArgs) ctor.contents (instFieldTys ctors c tyArgs) := by
+    List.Forall₂Fhm (InstantiatesBy tyArgs) ctor.contents (instFieldTys ctors c tyArgs) := by
   unfold instFieldTys
   simp only [hlook, Option.map_some, Option.getD]
   exact List.forall₂_self_map (fun c0 hc0 =>
@@ -5745,7 +5988,7 @@ theorem emit_DTreeTypeable {ctors : CtorEnv} {Γ_outer : Env} {ectx : EmitTyCtx 
   induction hdt with
   | @leaf ectx act binds bindTys hag hlen hbnds hbody =>
     obtain ⟨τs, hlen_occ, hΓ, hlook_agrees⟩ := hag
-    set Γ_env := τs.map PolyTy.mkTrivial
+    let Γ_env := τs.map PolyTy.mkTrivial
     have hlen_env : Γ_env.length = ectx.occEnv.length := by simp [Γ_env, hlen_occ]
     have hbound : ∀ o ∈ binds, o ∈ ectx.occEnv := fun o ho => by
       have hi := List.idxOf_lt_length_of_mem ho
@@ -5788,7 +6031,7 @@ theorem emit_DTreeTypeable {ctors : CtorEnv} {Γ_outer : Env} {ectx : EmitTyCtx 
     | named c n =>
       obtain ⟨t, ht, rfl⟩ := mem_cases_of_mem_emitCases ectx.occEnv bodies occ hmem
       obtain ⟨ctor, hctor, hty, ha, hpc⟩ := htyped _ _ _ ht
-      have hfields : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents
+      have hfields : List.Forall₂Fhm (InstantiatesBy tyArgs) ctor.contents
           (instFieldTys ctors _ tyArgs) :=
         instFieldTys_forall₂ hctor hpc
       refine TypeOfMatchBranch.mk
@@ -5825,7 +6068,7 @@ theorem emit_DTreeTypeable {ctors : CtorEnv} {Γ_outer : Env} {ectx : EmitTyCtx 
       | named c n =>
         obtain ⟨t, ht, rfl⟩ := mem_cases_of_mem_emitCases ectx.occEnv bodies occ hmem
         obtain ⟨ctor, hctor, hty, ha, hpc⟩ := htyped _ _ _ ht
-        have hfields : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents
+        have hfields : List.Forall₂Fhm (InstantiatesBy tyArgs) ctor.contents
             (instFieldTys ctors _ tyArgs) :=
           instFieldTys_forall₂ hctor hpc
         refine TypeOfMatchBranch.mk
@@ -5846,18 +6089,18 @@ theorem emit_DTreeTypeable {ctors : CtorEnv} {Γ_outer : Env} {ectx : EmitTyCtx 
 Private WF helpers (copied from `PatComp` — originals are `private` there). -/
 
 private def compile_GPatWFList_forall₂ {ctors : CtorEnv} {l t} :
-    GPatWFList ctors l t → List.Forall₂ (GPatWF ctors) l t
+    GPatWFList ctors l t → List.Forall₂Fhm (GPatWF ctors) l t
   | .nil => .nil
   | .cons hp htl => .cons hp (compile_GPatWFList_forall₂ htl)
 
 private theorem compile_GPatWFList_of_forall₂ {ctors : CtorEnv} :
-    ∀ {l t}, List.Forall₂ (GPatWF ctors) l t → GPatWFList ctors l t
+    ∀ {l t}, List.Forall₂Fhm (GPatWF ctors) l t → GPatWFList ctors l t
   | _, _, .nil => .nil
   | _, _, .cons hp htl => .cons hp (compile_GPatWFList_of_forall₂ htl)
 
 private theorem compile_Forall₂_append {α β : Type _} (R : α → β → Prop) {l1 t1 l2 t2}
-    (h1 : List.Forall₂ R l1 t1) (h2 : List.Forall₂ R l2 t2) :
-    List.Forall₂ R (l1 ++ l2) (t1 ++ t2) := by
+    (h1 : List.Forall₂Fhm R l1 t1) (h2 : List.Forall₂Fhm R l2 t2) :
+    List.Forall₂Fhm R (l1 ++ l2) (t1 ++ t2) := by
   induction h1 with
   | nil => simp only [List.nil_append]; exact h2
   | cons hp hps ih => simp only [List.cons_append]; exact .cons hp ih
@@ -5877,7 +6120,7 @@ private theorem compile_GPatWFList_length {ctors : CtorEnv} {l t} (h : GPatWFLis
 private theorem compile_GPatWF.gctor_inv {ctors : CtorEnv} {c : CtorName} {cargs : List GPat} {τ : Ty}
     (h : GPatWF ctors (.gctor c cargs) τ) :
     ∃ T tyArgs ctor fieldTys, τ = .customTy T tyArgs ∧ LookupList.get? ctors c = some ctor ∧
-      ctor.tyName = T ∧ List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys ∧
+      ctor.tyName = T ∧ List.Forall₂Fhm (InstantiatesBy tyArgs) ctor.contents fieldTys ∧
       GPatWFList ctors cargs fieldTys := by
   cases h with
   | gctor hlook hname hinst hwfargs => exact ⟨_, _, _, _, rfl, hlook, hname, hinst, hwfargs⟩
@@ -5897,8 +6140,8 @@ private theorem compile_InstantiatesBy_forall2_det_agree {tyArgs1 tyArgs2 : List
     (hag : ∀ k, k < n → tyArgs1[k]? = tyArgs2[k]?)
     {tys l1 l2 : List Ty}
     (hbound : ∀ c ∈ tys, ContainsBvarsUpTo n c)
-    (h1 : List.Forall₂ (InstantiatesBy tyArgs1) tys l1)
-    (h2 : List.Forall₂ (InstantiatesBy tyArgs2) tys l2) : l1 = l2 := by
+    (h1 : List.Forall₂Fhm (InstantiatesBy tyArgs1) tys l1)
+    (h2 : List.Forall₂Fhm (InstantiatesBy tyArgs2) tys l2) : l1 = l2 := by
   induction h1 generalizing l2 with
   | nil => cases h2; rfl
   | cons hi1 h1tl ih =>
@@ -5929,7 +6172,7 @@ private theorem compile_defaultRow_wf {ctors : CtorEnv} {occ0 : Occ} {τ0 : Ty} 
 private theorem compile_specializeRow_wf {ctors : CtorEnv} {c : CtorName} {arity : Nat} {occ0 : Occ}
     {T : TyName} {tyArgs : List Ty} {ctor : Ctor} {fieldTys ttys : List Ty} {r r' : Row}
     (hlook : LookupList.get? ctors c = some ctor)
-    (hinst : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys)
+    (hinst : List.Forall₂Fhm (InstantiatesBy tyArgs) ctor.contents fieldTys)
     (hlen : fieldTys.length = arity)
     (hwf : GPatWFList ctors r.pats (.customTy T tyArgs :: ttys))
     (hs : specializeRow c arity occ0 r = some r') :
@@ -5975,7 +6218,7 @@ private theorem compile_specializeRow_wf {ctors : CtorEnv} {c : CtorName} {arity
 private theorem compile_colHeads_mem_witness (M : Matrix) (c : CtorName) (arity : Nat)
     (h : (c, arity) ∈ colHeads M) :
     ∃ r ∈ M, ∃ args rest, r.pats = GPat.gctor c args :: rest ∧ args.length = arity := by
-  simp only [colHeads, List.mem_dedup, List.mem_filterMap] at h
+  simp only [colHeads, mem_dedupBy, List.mem_filterMap] at h
   obtain ⟨r, hrmem, hgr⟩ := h
   refine ⟨r, hrmem, ?_⟩
   cases hpats : r.pats with
@@ -6020,11 +6263,12 @@ private theorem compile_specializeRow_captured_sub {c : CtorName} {a : Nat} {occ
     cases p with
     | gctor c' args =>
       simp only [specializeRow] at hs
-      split_ifs at hs
-      simp only [Option.some.injEq] at hs
-      subst hs
-      intro o ho
-      exact Or.inl ho
+      split at hs
+      · simp only [Option.some.injEq] at hs
+        subst hs
+        intro o ho
+        exact Or.inl ho
+      · simp at hs
     | gbind =>
       simp only [specializeRow, Option.some.injEq] at hs
       subst hs
@@ -6119,8 +6363,7 @@ private theorem defaultRow_body_inv {ctors : CtorEnv} {octx : OccCtx} {Γ_outer 
     | gwild =>
       simp only [defaultRow, Option.some.injEq] at hs
       subst hs
-      rw [rowBindTys_defaultRow_gwild (τ0 := τ0)]
-      exact hbody
+      simpa [← rowBindTys_defaultRow_gwild] using hbody
 
 private theorem specializeRow_body_inv_gctor {ctors : CtorEnv} {octx : OccCtx} {Γ_outer : Env}
     {τres : Ty} {occ0 : Occ} {c : CtorName} {τ : Ty} {ttys : List Ty} {bodies : Nat → Expr}
@@ -6374,7 +6617,7 @@ private theorem instFieldTys_eq_of_inst {ctors : CtorEnv} {c : CtorName} {ctor :
     {tyArgs fieldTys : List Ty}
     (hlook : LookupList.get? ctors c = some ctor)
     (hpc : ctor.paramCount = tyArgs.length)
-    (hinst : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys) :
+    (hinst : List.Forall₂Fhm (InstantiatesBy tyArgs) ctor.contents fieldTys) :
     fieldTys = instFieldTys ctors c tyArgs :=
   compile_InstantiatesBy_forall2_det_agree (fun _ _ => rfl) ctor.bound hinst
     (instFieldTys_forall₂ hlook hpc)
@@ -6454,11 +6697,11 @@ mutual
     `i < tyArgs.length`) — so the *source* type is automatically
     `ContainsBvarsUpTo tyArgs.length`, with NO separate arity/`paramCount`
     hypothesis needed. This lets us recover `instFieldTys ctors c tyArgs =
-    fieldTys` from a `GPatWF`-derived `Forall₂` alone (via
+    fieldTys` from a `GPatWF`-derived `Forall₂Fhm` alone (via
     `InstantiatesBy.eq_openWith`), independently of the (possibly false, see
     `compile_initMatrix_typeable`'s `harity`) `ctor.paramCount = tyArgs.length`
     fact. -/
-private theorem InstantiatesBy.containsBvarsUpTo_length {tyArgs : List Ty} :
+theorem InstantiatesBy.containsBvarsUpTo_length {tyArgs : List Ty} :
     ∀ {ty τ : Ty}, InstantiatesBy tyArgs ty τ → ContainsBvarsUpTo tyArgs.length ty
   | _, _, .prim => .prim
   | _, _, .fvar => .fvar
@@ -6469,8 +6712,8 @@ private theorem InstantiatesBy.containsBvarsUpTo_length {tyArgs : List Ty} :
   | _, _, .customTy hforall =>
       .customTy (InstantiatesBy_forall₂_containsBvarsUpTo hforall)
 
-private theorem InstantiatesBy_forall₂_containsBvarsUpTo {tyArgs : List Ty} :
-    ∀ {tys instTys : List Ty}, List.Forall₂ (InstantiatesBy tyArgs) tys instTys →
+theorem InstantiatesBy_forall₂_containsBvarsUpTo {tyArgs : List Ty} :
+    ∀ {tys instTys : List Ty}, List.Forall₂Fhm (InstantiatesBy tyArgs) tys instTys →
       ∀ t ∈ tys, ContainsBvarsUpTo tyArgs.length t
   | _, _, .nil => by simp
   | _, _, .cons hhd htl => fun t ht => by
@@ -6489,7 +6732,7 @@ private theorem InstantiatesBy.eq_openWith_self {tyArgs : List Ty} {ty τ : Ty}
 
 private theorem instFieldTys_eq_of_forall₂' {tyArgs : List Ty} :
     ∀ {contents fieldTys : List Ty},
-      List.Forall₂ (InstantiatesBy tyArgs) contents fieldTys →
+      List.Forall₂Fhm (InstantiatesBy tyArgs) contents fieldTys →
       contents.map (Ty.openWith tyArgs) = fieldTys
   | _, _, .nil => rfl
   | _, _, .cons hhd htl => by
@@ -6499,7 +6742,7 @@ private theorem instFieldTys_eq_of_forall₂' {tyArgs : List Ty} :
 private theorem instFieldTys_eq_of_forall₂ {ctors : CtorEnv} {c : CtorName} {ctor : Ctor}
     {tyArgs fieldTys : List Ty}
     (hctor : LookupList.get? ctors c = some ctor)
-    (hinst : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys) :
+    (hinst : List.Forall₂Fhm (InstantiatesBy tyArgs) ctor.contents fieldTys) :
     instFieldTys ctors c tyArgs = fieldTys := by
   unfold instFieldTys
   simp only [hctor, Option.map_some, Option.getD]
@@ -6593,8 +6836,9 @@ private theorem compile_typeable_aux {ctors : CtorEnv} {Γ_outer : Env} {bodies 
           r1.captured[i]'hi := List.getElem_idxOf hj
       rw [hocceq] at hτ
       simp [hτ]
-    · convert hbody1
-      simp only [rowBindTys, hpats, patBindTysGList, List.append_nil]
+    · have hbody1' := hbody1
+      simp only [rowBindTys, hpats, patBindTysGList, List.append_nil] at hbody1'
+      exact hbody1'
   | case3 r1 rest occ0 orest hh ih =>
     intro tys hlen hnodup hoccs htys hnochild hoctx_kinded hMwf hexh hcap hbody
     rw [compile]
@@ -6672,7 +6916,7 @@ private theorem compile_typeable_aux {ctors : CtorEnv} {Γ_outer : Env} {bodies 
         rw [hh] at heq
         injection heq with h1 h2
         subst h1; subst h2
-        set cases : List (CtorName × Nat × DTree) :=
+        let cases : List (CtorName × Nat × DTree) :=
           (hhd :: htl).attach.map (fun x =>
             (x.1.1, x.1.2,
               compile (subOccs occ0 x.1.2 ++ orest)
@@ -6721,7 +6965,7 @@ private theorem compile_typeable_aux {ctors : CtorEnv} {Γ_outer : Env} {bodies 
             injection hTyN with hTN hTyArgsN
             subst hTN; subst hTyArgsN
             have hlen_c := compile_GPatWFList_length hwfargsN
-            have hlen_f := List.Forall₂.length_eq hinstN
+            have hlen_f := List.Forall₂Fhm.length_eq hinstN
             refine ⟨ctorN, hlookN, hnameN, ?_,
               CtorEnv.paramCount_eq_of_arityConsistent hcons hkind0 hlookN hnameN⟩
             omega
@@ -6756,20 +7000,20 @@ private theorem compile_typeable_aux {ctors : CtorEnv} {Γ_outer : Env} {bodies 
             subst hTN; subst hTyArgsN
             have hpcN : ctorN.paramCount = tyArgs0.length :=
               CtorEnv.paramCount_eq_of_arityConsistent hcons hkind0 hlookN hnameN
-            have hfields_eq : fieldTysN = instFieldTys ctors x.val.1 tyArgs0 :=
+            let fieldTys := instFieldTys ctors x.val.1 tyArgs0
+            have hfields_eq : fieldTysN = fieldTys :=
               instFieldTys_eq_of_inst hlookN hpcN hinstN
             have hlen_c := compile_GPatWFList_length hwfargsN
-            have hlen_f := List.Forall₂.length_eq hinstN
-            have hlen_inst : (instFieldTys ctors x.val.1 tyArgs0).length = x.val.2 := by
+            have hlen_f := List.Forall₂Fhm.length_eq hinstN
+            have hlen_inst : fieldTys.length = x.val.2 := by
               rw [← hfields_eq]; omega
-            set fieldTys := instFieldTys ctors x.val.1 tyArgs0
             have hlc_f : ∀ ty ∈ fieldTys, ty.IsLC := by
               intro ty hty
               obtain ⟨c0, hc0, heqTy⟩ :
                   ∃ c0 ∈ ctorN.contents, Ty.openWith tyArgs0 c0 = ty := by
                 simpa [fieldTys, instFieldTys, hlookN, Option.map_some, Option.getD] using hty
               exact heqTy ▸
-                Ty.openWith_isLC htyArgs_lc (hpcN ▸ ctorN.bound c0 hc0) (le_of_eq hpcN)
+                Ty.openWith_isLC htyArgs_lc (hpcN ▸ ctorN.bound c0 hc0) (Nat.le_of_eq hpcN)
             have hwk_f : ∀ ty ∈ fieldTys, Ty.WellKinded (kindEnvOfCtors ctors) 0 ty := by
               intro ty hty
               obtain ⟨c0, hc0, heqTy⟩ :
@@ -6777,12 +7021,12 @@ private theorem compile_typeable_aux {ctors : CtorEnv} {Γ_outer : Env} {bodies 
                 simpa [fieldTys, instFieldTys, hlookN, Option.map_some, Option.getD] using hty
               exact heqTy ▸
                 Ty.WellKinded_openWith (hpcN ▸ hfields _ _ hlookN c0 hc0)
-                  htyArgs_wk (le_of_eq hpcN)
+                  htyArgs_wk (Nat.le_of_eq hpcN)
             have hdisj_env : ∀ o ∈ ectx.occEnv, o ∉ subOccs occ0 fieldTys.length :=
               fun o ho => hdisj_frontier o ho fieldTys.length
             have hag' :=
               EmitTyCtx.agrees_switch_sub ctors hag hlc_f hdisj_env
-            set ectx' : EmitTyCtx ctors :=
+            let ectx' : EmitTyCtx ctors :=
               { Γ := fieldTys.map PolyTy.mkTrivial ++ ectx.Γ
                 occEnv := subOccs occ0 fieldTys.length ++ ectx.occEnv
                 octx := OccCtx.extend ectx.octx occ0 fieldTys }
@@ -6879,7 +7123,7 @@ private theorem compile_typeable_aux {ctors : CtorEnv} {Γ_outer : Env} {bodies 
                 have hlenEq := congrArg List.length heq
                 simp [List.length_append] at hlenEq
                 have hle : occ.length ≤ occ0.length := by
-                  have := List.length_pos_of_ne_nil hsuf; omega
+                  have := List.length_pos_iff.mpr hsuf; omega
                 have htake : (occ0 ++ [i]).take occ.length = occ := by
                   simpa [List.take_left' (by omega)] using
                     (congrArg (fun l : List Nat => l.take occ.length) heq.symm).symm
@@ -6922,7 +7166,7 @@ private theorem compile_typeable_aux {ctors : CtorEnv} {Γ_outer : Env} {bodies 
                 GPatWFList ctors r.pats (fieldTys ++ ttys) := by
               intro r' hr'
               obtain ⟨r, hr, hs⟩ := List.mem_filterMap.mp hr'
-              have hinst' : List.Forall₂ (InstantiatesBy tyArgs0) ctorN.contents fieldTys := by
+              have hinst' : List.Forall₂Fhm (InstantiatesBy tyArgs0) ctorN.contents fieldTys := by
                 simpa [fieldTys, ← hfields_eq] using hinstN
               exact compile_specializeRow_wf hlookN hinst' hlen_inst
                 (hMwf r hr) hs
@@ -7008,7 +7252,7 @@ private theorem compile_typeable_aux {ctors : CtorEnv} {Γ_outer : Env} {bodies 
               ihcases x ectx' hag' (fieldTys ++ ttys) hlen_child hnodup_child
                 hoccs_child htys_child hnochild_child hoctx_kinded_child hwf_child hexh_child
                 hcap_child hbody_child
-            convert hgoal using 1 <;> first | rfl | simp [ectx', fieldTys, hlen_inst]
+            simpa [ectx', fieldTys, hlen_inst] using hgoal
         cases hdef : compile orest (defaultMatrix occ0 (r1 :: rest)) with
         | fail =>
           have hexhF : DTreeExhaustive ctors ectx.octx (.switch occ0 cases .fail) := by
@@ -7190,11 +7434,12 @@ theorem compile_initMatrix_typeable {ctors : CtorEnv} {Γ : Env} {pats : List Su
       have hlook' : LookupList.get? ([([], Ty.customTy T tyArgs)] : OccCtx) occ =
           some (.customTy T' args) := hlook
       simp only [LookupList.get?] at hlook'
-      split_ifs at hlook'
-      injection hlook' with htyeq
-      injection htyeq with hT hArgs
-      subst hT; subst hArgs
-      exact hkind)
+      split at hlook'
+      · injection hlook' with htyeq
+        injection htyeq with hT hArgs
+        subst hT; subst hArgs
+        exact hkind
+      · exact absurd hlook' (by simp))
     (initMatrix_GPatWFList hpats)
     (by simpa [MatchExhaustive] using hexh)
     (fun r hr o ho => by
@@ -7631,7 +7876,7 @@ private theorem emitLets_tyBvarBounded (n : Nat) (env : List Occ) (binds : List 
     intro t ht; cases ht
 
 mutual
-private theorem emit_tyBvarBounded (n : Nat) (env : List Occ) (bodies : Nat → Expr)
+theorem emit_tyBvarBounded (n : Nat) (env : List Occ) (bodies : Nat → Expr)
     (t : DTree) (hb : ∀ i, (bodies i).TyBvarBounded n) :
     (emit env bodies t).TyBvarBounded n := by
   match t with
@@ -7666,7 +7911,7 @@ private theorem emit_tyBvarBounded (n : Nat) (env : List Occ) (bodies : Nat → 
       intro t ht; cases ht
       intro h; cases h
 
-private theorem emitCases_tyBvarBounded (n : Nat) (env : List Occ) (bodies : Nat → Expr)
+theorem emitCases_tyBvarBounded (n : Nat) (env : List Occ) (bodies : Nat → Expr)
     (occ : Occ) (cases : List (CtorName × Nat × DTree))
     (hb : ∀ i, (bodies i).TyBvarBounded n) :
     Expr.TyBvarBounded.BranchList n (emitCases env bodies occ cases) := by
@@ -8157,7 +8402,7 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         have hTyR := ihr hrL
         refine TypeOfHM.letIn (M := PolyTy.mkTrivial τrhs) (L := [])
           (by simpa [PolyTy.WF, PolyTy.mkTrivial] using TypeOfHM.regular hTyR)
-          (fun _ h => nomatch h)
+          nofun
           (generalisesTo_of_typeable hTyR) rfl (ihb hbL)
   | letInAnn =>
     rename_i vs Γ name σs σ rhs body τ L htvs hσ hσwf _hrhs_forall _hb ihr ihb
@@ -8195,7 +8440,8 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         simp only [hann', hbindsL, hbL, Option.some.injEq] at hlow; subst hlow
         have hlenB := lowerRecBinds_length hbindsL
         have hgetB := lowerRecBinds_get hbindsL
-        set specs : List RecSpec := τs.map RecSpec.mono with hspecs
+        let specs : List RecSpec := τs.map RecSpec.mono
+        have hspecs : specs = τs.map RecSpec.mono := rfl
         have hanns_eq : specs.map RecSpec.ann =
             List.replicate binds.length (none : Option PolyTy) := by
           simpa [specs, hlen] using RecSpec.map_ann_mono τs
@@ -8594,7 +8840,7 @@ private theorem emitLets_tyFreeVars (env : List Occ) (binds : List Occ) (body : 
     exact ⟨⟨rfl, rfl⟩, ih (depth + 1)⟩
 
 mutual
-private theorem emit_tyFreeVars (env : List Occ) (bodies : Nat → Expr) (t : DTree)
+theorem emit_tyFreeVars (env : List Occ) (bodies : Nat → Expr) (t : DTree)
     (hb : ∀ i, (bodies i).tyFreeVars = []) :
     (emit env bodies t).tyFreeVars = [] := by
   match t with
@@ -8635,7 +8881,7 @@ private theorem emit_tyFreeVars (env : List Occ) (bodies : Nat → Expr) (t : DT
       intro h; cases h
 
 
-private theorem emitCases_tyFreeVars (env : List Occ) (bodies : Nat → Expr) (occ : Occ) :
+theorem emitCases_tyFreeVars (env : List Occ) (bodies : Nat → Expr) (occ : Occ) :
     ∀ (cases : List (CtorName × Nat × DTree)),
       (∀ i, (bodies i).tyFreeVars = []) →
       Expr.tyFreeVars.BranchList.tyFreeVars (emitCases env bodies occ cases) = []

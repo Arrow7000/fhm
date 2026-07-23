@@ -1,4 +1,8 @@
-import FHM.Core
+module
+
+public import FHM.Core
+
+@[expose] public section
 
 namespace Surface
 

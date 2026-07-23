@@ -1,4 +1,9 @@
-import FHM.Core
+module
+
+public import FHM.Core
+
+@[expose] public section
+
 
 /-!
 # Unbounded evaluator driver + fuel bridges

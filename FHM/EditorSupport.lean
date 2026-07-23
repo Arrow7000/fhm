@@ -1,12 +1,16 @@
-import FHM.Surface.Parse
-import FHM.Surface.Span
-import FHM.Surface.Lex
-import FHM.SurfaceBridge
-import FHM.PipelineShared
-import FHM.InferW
-import FHM.Pretty
-import FHM.Decls
-import Lean.Data.Json
+module
+
+public import FHM.Surface.Parse
+public import FHM.Surface.Span
+public import FHM.Surface.Lex
+public import FHM.SurfaceBridge
+public import FHM.PipelineShared
+public import FHM.InferW
+public import FHM.Pretty
+public import FHM.Decls
+public import Lean.Data.Json
+
+@[expose] public section
 
 /-!
 # Editor support helpers

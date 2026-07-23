@@ -1,10 +1,14 @@
-import FHM.Surface.Parse
-import FHM.SurfaceBridge
-import FHM.InferW
-import FHM.Pretty
-import FHM.EvaluateUnsafe
-import FHM.PipelineShared
-import Lean.Data.Json
+module
+
+public import FHM.Surface.Parse
+public import FHM.SurfaceBridge
+public import FHM.InferW
+public import FHM.Pretty
+public import FHM.EvaluateUnsafe
+public import FHM.PipelineShared
+public import Lean.Data.Json
+
+@[expose] public section
 
 /-!
 # Live pipeline driver

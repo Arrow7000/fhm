@@ -1,4 +1,9 @@
-import UnicodeBasic
+module
+
+public import UnicodeBasic
+
+@[expose] public section
+
 
 namespace Surface.Lex
 

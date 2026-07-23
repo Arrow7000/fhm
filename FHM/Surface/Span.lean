@@ -1,4 +1,8 @@
-import FHM.Surface.Lex
+module
+
+public import FHM.Surface.Lex
+
+@[expose] public section
 
 namespace Surface.Span
 

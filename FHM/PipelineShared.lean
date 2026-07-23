@@ -1,4 +1,8 @@
-import FHM.SurfaceBridge
+module
+
+public import FHM.SurfaceBridge
+
+@[expose] public section
 
 /-!
 Shared pipeline helpers used by `Live` and `EditorSupport`.

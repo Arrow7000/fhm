@@ -1,8 +1,18 @@
-import Parser
-import FHM.Surface.Lex
-import FHM.Surface.Span
-import FHM.SurfaceLang
-import FHM.SurfaceBridge
+module
+
+public import Parser
+public import FHM.Surface.Lex
+public import FHM.Surface.Span
+public import FHM.SurfaceLang
+public import FHM.SurfaceBridge
+meta import Parser
+meta import FHM.Core
+meta import FHM.Surface.Lex
+meta import FHM.Surface.Span
+meta import FHM.SurfaceLang
+meta import FHM.SurfaceBridge
+
+@[expose] public section
 
 namespace Surface.Parse
 

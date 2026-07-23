@@ -1,4 +1,9 @@
-import FHM.Core
+module
+
+public import FHM.Core
+meta import FHM.Core
+
+@[expose] public section
 
 /-! # Type declarations → `CtorEnv`  (well-formedness SPEC)
 
@@ -272,7 +277,11 @@ theorem option_guard_bind {P : Prop} [Decidable P] {β : Type} {k : Unit → Opt
     {b : β} (h : (guard P >>= k) = some b) : P ∧ k () = some b := by
   by_cases hP : P
   · exact ⟨hP, by simpa [guard, hP] using h⟩
-  · simp [guard, hP] at h
+  · exfalso
+    unfold guard at h
+    rw [if_neg hP] at h
+    change (none : Option β) = some b at h
+    simp at h
 
 /-- **Elaborate a declaration group into a `CtorEnv`.** Two passes: build the
     `KindEnv` (names + arities), then — after checking type/constructor names are

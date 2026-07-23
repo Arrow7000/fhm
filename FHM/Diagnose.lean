@@ -1,5 +1,9 @@
-import FHM.EditorSupport
-import Lean.Data.Json
+module
+
+public import FHM.EditorSupport
+public import Lean.Data.Json
+
+@[expose] public section
 
 /-!
 # Editor diagnostics + hover symbols driver
