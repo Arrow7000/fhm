@@ -275,8 +275,8 @@ example (ctors : CtorEnv) :
 
 Same shape one level up: `let rec (id : ∀a. a→a) = λx. x in id`, single-member
 recursive group, annotated (so `RecSpec.poly`). No `RecSpec.mono` member, so
-`hmono_lc`/`hmono`/`hτbinds` are vacuous; `hpoly` is the substantive premise and
-gets the identical specialise-at-one-fresh-skolem treatment as `letInAnn` above. -/
+`hmono_lc`/`hmono`/`hτbinds` are vacuous; `hpoly`/`hτbinds_poly` are the
+substantive premises (empty head-binders: wrap identity, `τretPolyOf = σ.openVars`). -/
 example (ctors : CtorEnv) :
     SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] []
       (.letRecIn
@@ -290,9 +290,10 @@ example (ctors : CtorEnv) :
   refine SurfaceWTExpr.letRecInAnn (tvs := []) (vs := []) (Γ := [])
     (binds := _) (anns' := [some σ]) (specs := [RecSpec.poly σ])
     (G := []) (L := []) (paramTysList := [[]]) (ΓRhsList := [[σ]])
-    (τretsList := [σ.body]) (body := _) (τ := _)
+    (τretsList := [σ.body]) (τretPolyOf := fun _ _ Ys => σ.openVars Ys)
+    (body := _) (τ := _)
     ?htvs ?hann ?hlen ?hparamLen ?hΓRhsLen ?hretsLen ?hanns_eq ?hnodup
-    ?hmono_lc ?hpoly_wf ?hLL ?hτbinds ?hmono ?hpoly_paramsEmpty ?hpoly ?hbody
+    ?hmono_lc ?hpoly_wf ?hLL ?hτbinds ?hmono ?hτbinds_poly ?hpoly ?hbody
   · rfl
   · -- `hed` discharges the `eraseDups` redex inside `lowerPoly`/`finalizeAnn`.
     simp [finalizeAnn, mergeTyParams, mergeTyParamNames, lowerAnnList, lowerPolyAnn,
@@ -326,10 +327,13 @@ example (ctors : CtorEnv) :
     subst hi0
     simp only [σ, List.getElem_cons_zero] at hspec
     cases hspec
-  · intro i hi σ' hspec
+  · intro Xs _ i hi σ' hspec Ys _
     have hi0 : i = 0 := by
       simp only [List.length_cons, List.length_nil] at hi; omega
     subst hi0
+    simp only [σ, List.getElem_cons_zero] at hspec
+    injection hspec with hspec
+    subst hspec
     rfl
   · intro Xs _ i hi σ' hspec Ys hfreshY
     have hi0 : i = 0 := by
