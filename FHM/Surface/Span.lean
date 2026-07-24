@@ -90,11 +90,14 @@ def SpannedExpr.span : SpannedExpr → Span
   | .match_ s .. => s
 
 /-- Spanned top-level program: RHS hulls per binding in group order + body.
-    `declSpans` are full surface extents of each `type` decl (for tyvar scopes). -/
+    `declSpans` are full surface extents of each `type` decl (for tyvar scopes).
+    `sourceNames` is top-level binding names in **parse / source order** (pre-SCC);
+    hover walks that order so binder spans stay aligned with the AST that emitted them. -/
 structure SpannedProgram where
   groups : List (List SpannedExpr)
   body : SpannedExpr
   declSpans : List Span := []
+  sourceNames : List String := []
   deriving Repr
 
 instance : Inhabited SpannedProgram := ⟨{ groups := [], body := default }⟩

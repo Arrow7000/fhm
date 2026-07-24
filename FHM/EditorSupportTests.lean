@@ -341,3 +341,38 @@ def multiLetParams : String :=
         ys.name == "ys" && hasSub ys.type_ "List" &&
         n.name == "n" && !n.type_.isEmpty
     | _, _, _, _, _ => false)
+
+-- E5. SCC topo order ≠ source order must not steal types (live.fhm class bug).
+-- Independent tops elaborate callees-outer (often reverse source); hover walks
+-- source order and looks up schemes by name.
+def sccOrderSrc : String :=
+  "type Maybe a = Just a | Nothing\n" ++
+  "type Tree a = Leaf | Node a (Tree a) (Tree a)\n" ++
+  "let mapMaybe : {a b} (a -> b) -> Maybe a -> Maybe b =\n" ++
+  "  \\f m -> match m with | Nothing -> Nothing | Just x -> Just (f x)\n" ++
+  "let treeMap {a b} (f : a -> b) : Tree a -> Tree b =\n" ++
+  "  \\t -> match t with | Leaf -> Leaf | Node x l r -> Node (f x) (treeMap f l) (treeMap f r)\n" ++
+  "let addInts (a : Int) : Int -> Int = \\b -> a + b\n" ++
+  "addInts 1 2\n"
+
+#guard (match hoverSyms sccOrderSrc with
+  | none => false
+  | some syms =>
+    let mm := syms.find? (fun s => s.name == "mapMaybe" && s.kind == "val")
+    let tm := syms.find? (fun s => s.name == "treeMap" && s.kind == "val")
+    let ai := syms.find? (fun s => s.name == "addInts" && s.kind == "val")
+    let mParam := syms.find? (fun s =>
+      s.name == "m" && s.kind == "param" && hasSub s.type_ "Maybe")
+    let tParam := syms.find? (fun s =>
+      s.name == "t" && s.kind == "param" && hasSub s.type_ "Tree")
+    match mm, tm, ai, mParam, tParam with
+    | some mm, some tm, some ai, some m, some t =>
+        hasSub mm.type_ "Maybe" && hasSub tm.type_ "Tree" &&
+        hasSub ai.type_ "Int" &&
+        !(hasSub mm.type_ "Int → Int") &&  -- not stolen from addInts
+        !m.type_.isEmpty && !t.type_.isEmpty &&
+        -- use-site: `m` in `match m` on line 4 (`  \f m -> match m with…`, col 17)
+        match symbolAtUseSite syms 4 17 "m" with
+        | some u => u.kind == "param" && hasSub u.type_ "Maybe"
+        | none => false
+    | _, _, _, _, _ => false)

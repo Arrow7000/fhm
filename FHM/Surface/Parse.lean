@@ -1053,7 +1053,12 @@ def program : P (Program × List BinderSpan × SpannedProgram) :=
       let spanByName := bindsWithSpans.map fun (b, s) => (b.name, s)
       let groupSpans := p.groups.map fun g =>
         g.filterMap fun b => (spanByName.find? fun p => p.1 == b.name).map (·.2)
-      let sp : SpannedProgram := { groups := groupSpans, body := sBody, declSpans }
+      -- Source order (pre-SCC) for hover: binder spans were emitted in this order.
+      let sourceNames := binds.map fun b =>
+        match b.name with | .mk s => s
+      let sp : SpannedProgram := {
+        groups := groupSpans, body := sBody, declSpans, sourceNames
+      }
       return (p, bsItems ++ bsBody, sp)
     | none =>
       throwUnexpectedWithMessage none "duplicate binding names"
