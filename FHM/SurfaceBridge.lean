@@ -1037,9 +1037,10 @@ def bindSucc (binds : List Surface.Binding) (i : Nat) : List Nat :=
   match binds[i]? with
   | none => []
   | some b =>
+    let fv := freeNames (b.params.map (·.1)) b.rhs
     (List.range binds.length).filterMap fun j =>
       match binds[j]? with
-      | some b' => if Binding.refersTo b b'.name then some j else none
+      | some b' => if b'.name ∈ fv then some j else none
       | none => none
 
 /-- Reachability in the index graph (empty path ⇒ `src = dst`). -/
@@ -1052,11 +1053,27 @@ def canReach (succ : Nat → List Nat) (fuel : Nat) (seen : List Nat)
     if src ∈ seen then false
     else (succ src).any fun n => canReach succ fuel (src :: seen) n dst
 
-/-- Binding dependency digraph on indices `Fin binds.length`. -/
-def bindDigraph (binds : List Surface.Binding) : Digraph (Fin binds.length) where
-  succ := fun i =>
-    ((bindSucc binds i.val).filterMap fun j =>
-      if h : j < binds.length then some ⟨j, h⟩ else none).toFinset
+/-- Successor table: `bindSucc binds` precomputed once per index, so repeated
+    `Digraph.succ` queries (Kosaraju visits each vertex, `sccBeforeEdges` visits
+    each component pair) do O(1) lookups instead of rescanning `bindSucc`. -/
+def bindSuccTable (binds : List Surface.Binding) : Array (List Nat) :=
+  Array.ofFn (fun i : Fin binds.length => bindSucc binds i.val)
+
+/-- The table agrees with `bindSucc` pointwise, including OOB (`[]` on both sides). -/
+theorem bindSuccTable_get (binds : List Surface.Binding) (i : Nat) :
+    (bindSuccTable binds)[i]?.getD [] = bindSucc binds i := by
+  simp only [bindSuccTable, Array.getElem?_ofFn]
+  by_cases h : i < binds.length
+  · simp [h]
+  · simp [h, bindSucc]
+
+/-- Binding dependency digraph on indices `Fin binds.length`. Builds the
+    successor table once (`let`, shared by the closure below) rather than per query. -/
+def bindDigraph (binds : List Surface.Binding) : Digraph (Fin binds.length) :=
+  let tbl := bindSuccTable binds
+  { succ := fun i =>
+      ((tbl[i.val]?.getD []).filterMap fun j =>
+        if h : j < binds.length then some ⟨j, h⟩ else none).toFinset }
 
 /-- Kosaraju partition of binding indices, projected to `Nat` for Kahn. -/
 def sccIndexSets (binds : List Surface.Binding) : List (List Nat) :=
@@ -1120,7 +1137,8 @@ def indexSetsToBindings (binds : List Surface.Binding) (sets : List (List Nat)) 
 def sccGroups (binds : List Surface.Binding) :
     Option (List (List Surface.Binding)) := do
   guard (binds.map (·.name)).Nodup
-  let succ := bindSucc binds
+  let tbl := bindSuccTable binds
+  let succ := fun i => tbl[i]?.getD []
   let comps := sccIndexSets binds
   let order := kahnTopo comps.length (sccBeforeEdges succ comps)
   let ordered := order.filterMap fun k => comps[k]?
@@ -1138,16 +1156,20 @@ theorem sccGroups_eq_some_iff {binds : List Surface.Binding}
     sccGroups binds = some groups ↔
       (binds.map (·.name)).Nodup ∧
         groups = indexSetsToBindings binds (sccOrderedIndexSets binds) := by
+  -- `sccGroups`'s table-backed `succ` agrees with `bindSucc` pointwise, so the
+  -- `sccBeforeEdges` call inside `sccGroups` matches the one in `sccOrderedIndexSets`.
+  have hsucc : (fun i => (bindSuccTable binds)[i]?.getD ([] : List Nat)) = bindSucc binds :=
+    funext (bindSuccTable_get binds)
   constructor
   · intro h
     have hn : (binds.map (·.name)).Nodup := by
       by_contra hdup
       simp [sccGroups, guard, hdup] at h
     refine ⟨hn, ?_⟩
-    simp [sccGroups, guard, hn] at h
+    simp [sccGroups, guard, hn, hsucc] at h
     exact h.symm
   · intro ⟨hn, hg⟩
-    simp [sccGroups, guard, hn, sccOrderedIndexSets, hg]
+    simp [sccGroups, guard, hn, sccOrderedIndexSets, hg, hsucc]
 
 private theorem map_name_length (binds : List Surface.Binding) :
     (binds.map (·.name)).length = binds.length := by
@@ -1212,15 +1234,17 @@ theorem bindSucc_mem {binds : List Surface.Binding} {i j : Nat} :
       | none => simp [hbj] at hj
       | some b' =>
         simp only [hbj] at hj
-        by_cases href : Binding.refersTo b b'.name = true
-        · simp [href] at hj
-          cases hj
-          exact ⟨b, b', rfl, hbj, href⟩
+        by_cases href : b'.name ∈ freeNames (b.params.map (·.1)) b.rhs
+        · simp only [href, if_true] at hj
+          obtain rfl := Option.some.inj hj
+          exact ⟨b, b', rfl, hbj, by simpa [Binding.refersTo] using href⟩
         · simp [href] at hj
     · intro ⟨b, b', hb, hj, hrt⟩
       obtain ⟨rfl⟩ := hb
       refine ⟨j, (List.getElem?_eq_some_iff.mp hj).1, ?_⟩
-      simp [hj, hrt]
+      have href : b'.name ∈ freeNames (b.params.map (·.1)) b.rhs := by
+        simpa [Binding.refersTo] using hrt
+      simp [hj, href]
 
 theorem DepEdge_of_bindSucc {binds : List Surface.Binding} {i j : Nat}
     (h : j ∈ bindSucc binds i) :
@@ -1606,7 +1630,8 @@ theorem mem_bindDigraph_succ {binds : List Surface.Binding}
     j ∈ (bindDigraph binds).succ i ↔ j.val ∈ bindSucc binds i.val := by
   constructor
   · intro h
-    simp only [bindDigraph, List.mem_toFinset, List.mem_filterMap] at h
+    simp only [bindDigraph, bindSuccTable_get binds i.val, List.mem_toFinset,
+      List.mem_filterMap] at h
     obtain ⟨j', hj', hj⟩ := h
     by_cases hlt : j' < binds.length
     · simp only [hlt, ↓reduceDIte, Option.some.injEq] at hj
@@ -1615,7 +1640,7 @@ theorem mem_bindDigraph_succ {binds : List Surface.Binding}
     · simp only [hlt, ↓reduceDIte] at hj
       cases hj
   · intro hj
-    simp only [bindDigraph, List.mem_toFinset, List.mem_filterMap]
+    simp only [bindDigraph, bindSuccTable_get binds i.val, List.mem_toFinset, List.mem_filterMap]
     exact ⟨j.val, hj, by simp [j.isLt]⟩
 
 theorem bindDigraph_succ_of_bindSucc {binds : List Surface.Binding}
