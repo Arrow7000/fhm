@@ -20,7 +20,6 @@ roots = [
   "FHM.InferW",
   "FHM.SurfaceBridge",
   "FHM.Scc.Kosaraju",
-  "FHM.Scc.BindingGlue",
   "FHM.Examples",
   "FHM.EvaluateUnsafe",
   "FHM.Headlines",

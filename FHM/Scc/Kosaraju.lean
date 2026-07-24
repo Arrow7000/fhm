@@ -12,8 +12,9 @@ Executable Kosaraju on a finite digraph `Digraph α`, with declarative
 `Reach` / `Mutual` / `ValidSccPartition`. Adequacy: `kosaraju_sound` /
 `ValidSccPartition.eqv_mutual` (axiom-clean aside from standard classical axioms).
 
-**Not yet wired** into `SurfaceBridge` — later glue instantiates
-`α := Fin binds.length`, maps components through `Fin.val`, and reuses Kahn.
+Wired into `SurfaceBridge.sccGroups` via `bindDigraph` / `sccIndexSets`
+(`α := Fin binds.length`, components mapped through `Fin.val`, Kahn on the
+condensation).
 
 Design notes:
 - Vertices are `α` with `[Fintype α] [DecidableEq α]` (no explicit `verts` list).

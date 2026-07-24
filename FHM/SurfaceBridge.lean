@@ -3,6 +3,7 @@ import FHM.SurfaceLang
 import FHM.Decls
 import FHM.PatComp
 import FHM.InferW
+import FHM.Scc.Kosaraju
 
 /-! # The surface → Core bridge
 
@@ -13,7 +14,7 @@ program elaborates to a Core program that is type-safe and never gets stuck*.
 **Status: expression headline + DataDecl + Program groups + freeNames + sccGroups
 (+ `Program.ofFlat`) + executable exhaustiveness (`dTreeExhaustiveB` /
 `matchExhaustiveB` / `checkExhaustive` with Bool→Prop soundness).**
-`sccGroups` (naive mutual-reachability SCC) feeds `Program.groups`;
+`sccGroups` (Kosaraju SCCs + Kahn condensation topo) feeds `Program.groups`;
 `ValidBindingGroups` is the non-det spec (`sccGroups_sound` / `_complete` proved).
 See `briefs/next-agent-brief-surface-bridge-followups.md`.
 
@@ -990,12 +991,14 @@ def bindingDepEdges (binds : List Surface.Binding) : List (ValName × ValName) :
   { name := .mk "g", ann := none, rhs := .var (.mk "f") }]).contains ((.mk "f", .mk "f"))
 
 
-/-! ### C1 — naive SCC groups (mutual reachability + condensation topo)
+/-! ### C1 — SCC groups (Kosaraju + condensation topo)
 
 Non-deterministic spec `ValidBindingGroups`: partition into SCCs of the
 dependency graph, topo-ordered so callees are outer. Executable `sccGroups`
-uses pairwise reachability (fine for small binding lists) + Kahn on the
-condensation. Adequacy (`sccGroups_sound` / `_complete`) is proved. -/
+uses Kosaraju on `bindDigraph` + Kahn on the condensation. Adequacy
+(`sccGroups_sound` / `_complete`) is proved. -/
+
+open Scc
 
 /-- Direct edge: some binding named `a` refers to `b`. -/
 def DepEdge (binds : List Surface.Binding) (a b : ValName) : Prop :=
@@ -1049,26 +1052,15 @@ def canReach (succ : Nat → List Nat) (fuel : Nat) (seen : List Nat)
     if src ∈ seen then false
     else (succ src).any fun n => canReach succ fuel (src :: seen) n dst
 
-def mutuallyReachable (succ : Nat → List Nat) (fuel : Nat) (i j : Nat) : Bool :=
-  canReach succ fuel [] i j && canReach succ fuel [] j i
+/-- Binding dependency digraph on indices `Fin binds.length`. -/
+def bindDigraph (binds : List Surface.Binding) : Digraph (Fin binds.length) where
+  succ := fun i =>
+    ((bindSucc binds i.val).filterMap fun j =>
+      if h : j < binds.length then some ⟨j, h⟩ else none).toFinset
 
-/-- Partition indices `0..n-1` into mutual-reachability classes (stable: seed order). -/
+/-- Kosaraju partition of binding indices, projected to `Nat` for Kahn. -/
 def sccIndexSets (binds : List Surface.Binding) : List (List Nat) :=
-  let n := binds.length
-  let succ := bindSucc binds
-  let fuelN := n
-  let mutReach (i j : Nat) := mutuallyReachable succ fuelN i j
-  let rec go (fuel : Nat) (todo : List Nat) (acc : List (List Nat)) : List (List Nat) :=
-    match fuel with
-    | 0 => acc
-    | fuel + 1 =>
-      match todo with
-      | [] => acc
-      | i :: _ =>
-        let comp := todo.filter (mutReach i)
-        let rest := todo.filter (fun j => !(mutReach i j))
-        go fuel rest (acc ++ [comp])
-  go (n + 1) (List.range n) []
+  (kosaraju (bindDigraph binds)).map fun c => c.map Fin.val
 
 /-- Does component `ca` directly depend on component `cb`? -/
 def compDependsOn (succ : Nat → List Nat) (ca cb : List Nat) : Bool :=
@@ -1088,7 +1080,7 @@ def sccBeforeEdges (succ : Nat → List Nat) (comps : List (List Nat)) :
           if compDependsOn succ ca cb then some (b, a) else none
         | _, _ => none
 
-/-- Read `indeg[i]` (0 if OOB). Public for `FHM.Scc.BindingGlue` Kahn staging. -/
+/-- Read `indeg[i]` (0 if OOB). Public for reuse (Kahn / condensation). -/
 def indegGet (indeg : List Nat) (i : Nat) : Nat :=
   indeg[i]?.getD 0
 
@@ -1606,142 +1598,132 @@ theorem canReach_complete {binds : List Surface.Binding} {i j : Nat}
   exact canReach_of_nodup_chain hchain' hnodup
     (hhead.trans hvsh) (hlast.trans hvsl) (fun _ _ => by simp) hfuel
 
+/-! ##### Binding digraph ↔ DepReach (Kosaraju bridge) -/
+
+/-- `j` is a successor of `i` in `bindDigraph` iff it is in `bindSucc`. -/
+theorem mem_bindDigraph_succ {binds : List Surface.Binding}
+    {i j : Fin binds.length} :
+    j ∈ (bindDigraph binds).succ i ↔ j.val ∈ bindSucc binds i.val := by
+  constructor
+  · intro h
+    simp only [bindDigraph, List.mem_toFinset, List.mem_filterMap] at h
+    obtain ⟨j', hj', hj⟩ := h
+    by_cases hlt : j' < binds.length
+    · simp only [hlt, ↓reduceDIte, Option.some.injEq] at hj
+      subst hj
+      exact hj'
+    · simp only [hlt, ↓reduceDIte] at hj
+      cases hj
+  · intro hj
+    simp only [bindDigraph, List.mem_toFinset, List.mem_filterMap]
+    exact ⟨j.val, hj, by simp [j.isLt]⟩
+
+theorem bindDigraph_succ_of_bindSucc {binds : List Surface.Binding}
+    {i : Fin binds.length} {j : Nat} (hj : j < binds.length)
+    (h : j ∈ bindSucc binds i.val) :
+    (⟨j, hj⟩ : Fin binds.length) ∈ (bindDigraph binds).succ i :=
+  (mem_bindDigraph_succ (i := i) (j := ⟨j, hj⟩)).mpr h
+
+/-- Direct edge on the Fin digraph ⇒ `DepEdge` on binding names. -/
+theorem DepEdge_of_bindDigraph_succ {binds : List Surface.Binding}
+    {i j : Fin binds.length} (h : j ∈ (bindDigraph binds).succ i) :
+    ∃ b b', binds[i.val]? = some b ∧ binds[j.val]? = some b' ∧
+      DepEdge binds b.name b'.name :=
+  DepEdge_of_bindSucc ((mem_bindDigraph_succ (i := i) (j := j)).mp h)
+
+/-- `Reach` on `bindDigraph` ⇒ `DepReach` on the corresponding names. -/
+theorem DepReach_of_Reach {binds : List Surface.Binding}
+    {i j : Fin binds.length}
+    (h : Reach (bindDigraph binds) i j) :
+    DepReach binds (binds[i.val]).name (binds[j.val]).name := by
+  induction h with
+  | refl => exact DepReach.refl
+  | @tail a b c hab _rbc ih =>
+    obtain ⟨ba, bb, hai, hbj, hedge⟩ := DepEdge_of_bindDigraph_succ hab
+    have hai' : binds[a.val] = ba := (List.getElem?_eq_some_iff.mp hai).2
+    have hbj' : binds[b.val] = bb := (List.getElem?_eq_some_iff.mp hbj).2
+    rw [hai']
+    refine DepReach.tail (by simpa [hai', hbj'] using hedge) ?_
+    simpa [hbj'] using ih
+
+/-- `canReach` on `bindSucc` ⇒ `Reach` on `bindDigraph` (seen stays in-range). -/
+private theorem Reach_of_canReach_go (binds : List Surface.Binding) :
+    ∀ (fuel : Nat) (seen : List Nat) (src dst : Fin binds.length),
+      (∀ s ∈ seen, s < binds.length) →
+      canReach (bindSucc binds) fuel seen src.val dst.val = true →
+        Reach (bindDigraph binds) src dst := by
+  intro fuel
+  induction fuel with
+  | zero =>
+    intro seen src dst _hseen h
+    unfold canReach at h
+    by_cases heq : src.val = dst.val
+    · have : src = dst := Fin.ext heq
+      subst this
+      exact Reach.refl
+    · simp [heq] at h
+  | succ fuel ih =>
+    intro seen src dst hseen h
+    unfold canReach at h
+    by_cases heq : src.val = dst.val
+    · have : src = dst := Fin.ext heq
+      subst this
+      exact Reach.refl
+    · by_cases hmem : src.val ∈ seen
+      · simp [heq, hmem] at h
+      · simp [heq, hmem, List.any_eq_true] at h
+        obtain ⟨n, hnmem, hn⟩ := h
+        have hnlt : n < binds.length := bindSucc_lt hnmem
+        have hsucc :
+            (⟨n, hnlt⟩ : Fin binds.length) ∈ (bindDigraph binds).succ src :=
+          bindDigraph_succ_of_bindSucc hnlt hnmem
+        refine Reach.tail hsucc (ih (src.val :: seen) ⟨n, hnlt⟩ dst ?_ hn)
+        intro s hs
+        cases List.mem_cons.mp hs with
+        | inl hseq => cases hseq; exact src.isLt
+        | inr hs' => exact hseen s hs'
+
+theorem Reach_of_canReach {binds : List Surface.Binding} {fuel : Nat}
+    {i j : Fin binds.length}
+    (h : canReach (bindSucc binds) fuel [] i.val j.val = true) :
+    Reach (bindDigraph binds) i j :=
+  Reach_of_canReach_go binds fuel [] i j (by simp) h
+
+/-- `DepReach` between in-range indexed names ⇒ `Reach` on `bindDigraph`. -/
+theorem Reach_of_DepReach {binds : List Surface.Binding}
+    (hn : (binds.map (·.name)).Nodup)
+    {i j : Fin binds.length}
+    (h : DepReach binds (binds[i.val]).name (binds[j.val]).name) :
+    Reach (bindDigraph binds) i j :=
+  Reach_of_canReach (canReach_complete hn i.isLt j.isLt h)
+
+theorem Reach_iff_DepReach {binds : List Surface.Binding}
+    (hn : (binds.map (·.name)).Nodup)
+    {i j : Fin binds.length} :
+    Reach (bindDigraph binds) i j ↔
+      DepReach binds (binds[i.val]).name (binds[j.val]).name :=
+  ⟨DepReach_of_Reach, Reach_of_DepReach hn⟩
+
+theorem Mutual_iff_DepMutual {binds : List Surface.Binding}
+    (hn : (binds.map (·.name)).Nodup)
+    {i j : Fin binds.length} :
+    Mutual (bindDigraph binds) i j ↔
+      DepMutual binds (binds[i.val]).name (binds[j.val]).name := by
+  simp only [Mutual, DepMutual, Reach_iff_DepReach hn]
+
+/-- Kosaraju on the binding digraph is a valid abstract SCC partition. -/
+theorem bindDigraph_kosaraju_sound (binds : List Surface.Binding) :
+    ValidSccPartition (bindDigraph binds) (kosaraju (bindDigraph binds)) :=
+  kosaraju_sound _
+
 /-! ##### Partition / Kahn helpers for `sccOrderedIndexSets` -/
 
-/-- Same algorithm as the `let rec go` inside `sccIndexSets`, extracted for induction. -/
-private def sccPartitionGo (mutReach : Nat → Nat → Bool) :
-    Nat → List Nat → List (List Nat) → List (List Nat)
-  | 0, _todo, acc => acc
-  | _fuel + 1, [], acc => acc
-  | fuel + 1, i :: rest, acc =>
-    let todo := i :: rest
-    let comp := todo.filter (mutReach i)
-    let rest' := todo.filter (fun j => !mutReach i j)
-    sccPartitionGo mutReach fuel rest' (acc ++ [comp])
-
-private theorem sccIndexSets.go_eq_partitionGo
-    (mutReach : Nat → Nat → Bool) :
-    ∀ fuel todo acc,
-      sccIndexSets.go mutReach fuel todo acc =
-        sccPartitionGo mutReach fuel todo acc := by
-  intro fuel
-  induction fuel with
-  | zero => intros; rfl
-  | succ fuel ih =>
-    intro todo acc
-    cases todo with
-    | nil => rfl
-    | cons i rest =>
-      simp only [sccIndexSets.go, sccPartitionGo, ih]
-
-private theorem sccIndexSets_eq_partitionGo (binds : List Surface.Binding) :
-    sccIndexSets binds =
-      sccPartitionGo
-        (fun i j => mutuallyReachable (bindSucc binds) binds.length i j)
-        (binds.length + 1) (List.range binds.length) [] := by
-  unfold sccIndexSets
-  rw [sccIndexSets.go_eq_partitionGo]
-
-private theorem mutuallyReachable_refl (succ : Nat → List Nat) (fuel i : Nat) :
-    mutuallyReachable succ fuel i i = true := by
-  simp only [mutuallyReachable, Bool.and_self]
-  unfold canReach
-  simp
-
-private theorem filter_append_filter_not_perm {α} (p : α → Bool) (l : List α) :
-    (l.filter p ++ l.filter (fun x => !p x)).Perm l := by
-  induction l with
-  | nil => simp
-  | cons a l ih =>
-    cases hp : p a
-    · simp only [List.filter_cons, hp, Bool.not_false]
-      exact (List.perm_middle).trans (ih.cons a)
-    · simp only [List.filter_cons, hp, Bool.not_true]
-      exact ih.cons a
-
-/-- Needs reflexivity so each step removes the seed (otherwise fuel can run out
-    with `todo` nonempty and the unconstrained claim is false). -/
-private theorem sccPartitionGo_flatten_perm (mutReach : Nat → Nat → Bool)
-    (hrefl : ∀ i, mutReach i i = true) :
-    ∀ (fuel : Nat) (todo : List Nat) (accs : List (List Nat)),
-      todo.length ≤ fuel →
-      (sccPartitionGo mutReach fuel todo accs).flatten.Perm
-        (accs.flatten ++ todo) := by
-  intro fuel
-  induction fuel with
-  | zero =>
-    intro todo accs hlen
-    have : todo = [] := by
-      cases todo with
-      | nil => rfl
-      | cons _ _ => simp at hlen
-    subst this
-    simp [sccPartitionGo]
-  | succ fuel ih =>
-    intro todo accs hlen
-    cases todo with
-    | nil => simp [sccPartitionGo]
-    | cons i rest =>
-      simp only [sccPartitionGo]
-      have hsplit := filter_append_filter_not_perm (mutReach i) (i :: rest)
-      have himem : i ∈ (i :: rest).filter (mutReach i) := by
-        simp [List.mem_filter, hrefl]
-      have hlen' : ((i :: rest).filter (fun j => !mutReach i j)).length ≤ fuel := by
-        have hsum := List.length_eq_length_filter_add (f := mutReach i) (l := i :: rest)
-        have hpos : 0 < ((i :: rest).filter (mutReach i)).length :=
-          List.length_pos_of_mem himem
-        have htodo : (i :: rest).length ≤ fuel + 1 := hlen
-        omega
-      have hih := ih _ (accs ++ [(i :: rest).filter (mutReach i)]) hlen'
-      refine hih.trans ?_
-      simp only [List.flatten_append, List.flatten_cons, List.flatten_nil, List.append_assoc,
-        List.nil_append]
-      exact List.Perm.append_left accs.flatten hsplit
-
-private theorem sccPartitionGo_nonempty (mutReach : Nat → Nat → Bool)
-    (hrefl : ∀ i, mutReach i i = true) :
-    ∀ (fuel : Nat) (todo : List Nat) (accs : List (List Nat)),
-      (∀ g ∈ accs, g ≠ []) →
-      (∀ g ∈ sccPartitionGo mutReach fuel todo accs, g ≠ []) := by
-  intro fuel
-  induction fuel with
-  | zero =>
-    intro todo accs hacc g hg; exact hacc g hg
-  | succ fuel ih =>
-    intro todo accs hacc g hg
-    cases todo with
-    | nil =>
-      simp [sccPartitionGo] at hg; exact hacc g hg
-    | cons i rest =>
-      simp only [sccPartitionGo] at hg
-      refine ih _ _ ?_ g hg
-      intro g' hg'
-      simp only [List.mem_append, List.mem_singleton] at hg'
-      cases hg' with
-      | inl h => exact hacc g' h
-      | inr h =>
-        subst h
-        intro hempty
-        have : i ∈ (i :: rest).filter (mutReach i) := by
-          simp [List.mem_filter, hrefl]
-        simp [hempty] at this
-
-private theorem sccIndexSets_flatten_perm (binds : List Surface.Binding) :
-    (sccIndexSets binds).flatten.Perm (List.range binds.length) := by
-  rw [sccIndexSets_eq_partitionGo]
-  have h := sccPartitionGo_flatten_perm
-    (fun i j => mutuallyReachable (bindSucc binds) binds.length i j)
-    (fun i => mutuallyReachable_refl _ _ i)
-    (binds.length + 1) (List.range binds.length) []
-    (by simp [List.length_range])
-  simpa using h
-
-private theorem sccIndexSets_nonempty_comp (binds : List Surface.Binding) :
-    ∀ g ∈ sccIndexSets binds, g ≠ [] := by
-  rw [sccIndexSets_eq_partitionGo]
-  exact sccPartitionGo_nonempty _
-    (fun i => mutuallyReachable_refl _ _ i) _ _ _
-    (by intro g hg; cases hg)
+theorem DepReach_trans {binds : List Surface.Binding} {a b c : ValName}
+    (hab : DepReach binds a b) (hbc : DepReach binds b c) :
+    DepReach binds a c := by
+  induction hab with
+  | refl => exact hbc
+  | tail hedge _ ih => exact DepReach.tail hedge (ih hbc)
 
 theorem flatten_map_filterMap {α β}
     (f : α → Option β) (sets : List (List α)) :
@@ -1775,89 +1757,6 @@ theorem indexSetsToBindings_flatten_of_perm
   rw [range_filterMap_getElem?] at h
   exact h
 
-private theorem sccIndexSets_mem_lt (binds : List Surface.Binding) :
-    ∀ g ∈ sccIndexSets binds, ∀ i ∈ g, i < binds.length := by
-  intro g hg i hi
-  have hperm := sccIndexSets_flatten_perm binds
-  have himem : i ∈ (sccIndexSets binds).flatten :=
-    List.mem_flatten.mpr ⟨g, hg, hi⟩
-  have : i ∈ List.range binds.length := (List.Perm.mem_iff hperm).1 himem
-  exact List.mem_range.mp this
-
-theorem DepReach_trans {binds : List Surface.Binding} {a b c : ValName}
-    (hab : DepReach binds a b) (hbc : DepReach binds b c) :
-    DepReach binds a c := by
-  induction hab with
-  | refl => exact hbc
-  | tail hedge _ ih => exact DepReach.tail hedge (ih hbc)
-
-private theorem mutuallyReachable_sym (succ : Nat → List Nat) (fuel i j : Nat) :
-    mutuallyReachable succ fuel i j = mutuallyReachable succ fuel j i := by
-  simp only [mutuallyReachable, Bool.and_comm]
-
-/-- Seed-filter components are pairwise `DepMutual` (no Bool-trans / Nodup needed). -/
-private theorem sccPartitionGo_depMutual (binds : List Surface.Binding) :
-    let mutReach := fun i j =>
-      mutuallyReachable (bindSucc binds) binds.length i j
-    ∀ (fuel : Nat) (todo : List Nat) (accs : List (List Nat)),
-      (∀ x ∈ todo, x < binds.length) →
-      (∀ g ∈ accs, ∀ a ∈ g, ∀ b ∈ g,
-        ∀ (ha : a < binds.length) (hb : b < binds.length),
-          DepMutual binds (binds[a]).name (binds[b]).name) →
-      (∀ g ∈ sccPartitionGo mutReach fuel todo accs,
-        ∀ a ∈ g, ∀ b ∈ g,
-          ∀ (ha : a < binds.length) (hb : b < binds.length),
-            DepMutual binds (binds[a]).name (binds[b]).name) := by
-  intro mutReach fuel
-  induction fuel with
-  | zero =>
-    intro todo accs _hbound hacc g hg; exact hacc g hg
-  | succ fuel ih =>
-    intro todo accs hbound hacc g hg
-    cases todo with
-    | nil =>
-      simp [sccPartitionGo] at hg; exact hacc g hg
-    | cons seed rest =>
-      simp only [sccPartitionGo] at hg
-      have hseed_lt : seed < binds.length := hbound seed (by simp)
-      have htodo_bound : ∀ x ∈ seed :: rest, x < binds.length := hbound
-      refine ih _ _ ?_ ?_ g hg
-      · intro x hx
-        exact htodo_bound x (List.mem_of_mem_filter hx)
-      · intro g' hg' a ha b hb ha_lt hb_lt
-        simp only [List.mem_append, List.mem_singleton] at hg'
-        cases hg' with
-        | inl h => exact hacc g' h a ha b hb ha_lt hb_lt
-        | inr h =>
-          subst h
-          have hsa : mutReach seed a = true := (List.mem_filter.mp ha).2
-          have hsb : mutReach seed b = true := (List.mem_filter.mp hb).2
-          have ⟨hsa1, hsa2⟩ := Bool.and_eq_true_iff.mp hsa
-          have ⟨hsb1, hsb2⟩ := Bool.and_eq_true_iff.mp hsb
-          have dsa := canReach_sound hsa1 hseed_lt ha_lt
-          have das := canReach_sound hsa2 ha_lt hseed_lt
-          have dsb := canReach_sound hsb1 hseed_lt hb_lt
-          have dbs := canReach_sound hsb2 hb_lt hseed_lt
-          exact ⟨DepReach_trans das dsb, DepReach_trans dbs dsa⟩
-
-private theorem sccIndexSets_comp_depMutual (binds : List Surface.Binding)
-    {g : List Nat} (hg : g ∈ sccIndexSets binds)
-    {i j : Nat} (hi : i ∈ g) (hj : j ∈ g) :
-    DepMutual binds (binds[i]'(sccIndexSets_mem_lt binds g hg i hi)).name
-      (binds[j]'(sccIndexSets_mem_lt binds g hg j hj)).name := by
-  have hi_lt := sccIndexSets_mem_lt binds g hg i hi
-  have hj_lt := sccIndexSets_mem_lt binds g hg j hj
-  have hg' : g ∈
-      sccPartitionGo
-        (fun i j => mutuallyReachable (bindSucc binds) binds.length i j)
-        (binds.length + 1) (List.range binds.length) [] := by
-    rwa [← sccIndexSets_eq_partitionGo]
-  exact sccPartitionGo_depMutual binds (binds.length + 1)
-    (List.range binds.length) []
-    (fun x hx => List.mem_range.mp hx)
-    (fun g hg => by cases hg)
-    g hg' i hi j hj hi_lt hj_lt
-
 private theorem filterMap_ne_nil_of_isSome {α β}
     (f : α → Option β) {l : List α} (hne : l ≠ [])
     (h : ∀ x ∈ l, (f x).isSome) : l.filterMap f ≠ [] := by
@@ -1868,20 +1767,6 @@ private theorem filterMap_ne_nil_of_isSome {α β}
     cases hf : f a with
     | none => simp [hf] at ha
     | some b => simp [hf]
-
-private theorem mutuallyReachable_trans_of_nodup {binds : List Surface.Binding}
-    (hn : (binds.map (·.name)).Nodup)
-    {i j k : Nat}
-    (hi : i < binds.length) (hj : j < binds.length) (hk : k < binds.length)
-    (hij : mutuallyReachable (bindSucc binds) binds.length i j = true)
-    (hjk : mutuallyReachable (bindSucc binds) binds.length j k = true) :
-    mutuallyReachable (bindSucc binds) binds.length i k = true := by
-  obtain ⟨hij1, hij2⟩ := Bool.and_eq_true_iff.mp hij
-  obtain ⟨hjk1, hjk2⟩ := Bool.and_eq_true_iff.mp hjk
-  have dik := DepReach_trans (canReach_sound hij1 hi hj) (canReach_sound hjk1 hj hk)
-  have dki := DepReach_trans (canReach_sound hjk2 hk hj) (canReach_sound hij2 hj hi)
-  exact Bool.and_eq_true_iff.mpr ⟨canReach_complete hn hi hk dik,
-    canReach_complete hn hk hi dki⟩
 
 private theorem sccOrderedIndexSets_mem_of_getElem
     (binds : List Surface.Binding) {idxs : List Nat}
@@ -1916,6 +1801,95 @@ theorem perm_range_of_nodup_length {l : List Nat} {n : Nat}
     exact List.mem_toFinset.mp (by
       rw [hEq]
       simpa [Finset.mem_range] using List.mem_range.mp ha)
+
+theorem sccIndexSets_nonempty_comp (binds : List Surface.Binding) :
+    ∀ c ∈ sccIndexSets binds, c ≠ [] := by
+  intro c hc
+  simp only [sccIndexSets, List.mem_map] at hc
+  obtain ⟨cFin, hcFin, rfl⟩ := hc
+  have hne := kosaraju_nonempty (bindDigraph binds) cFin hcFin
+  intro hempty
+  have : cFin = [] := by
+    cases cFin with
+    | nil => rfl
+    | cons _ _ => simp [List.map] at hempty
+  exact hne this
+
+theorem sccIndexSets_flatten_nodup (binds : List Surface.Binding) :
+    (sccIndexSets binds).flatten.Nodup := by
+  simpa [sccIndexSets, ← List.map_flatten] using
+    (kosaraju_flatten_nodup (bindDigraph binds)).map Fin.val_injective
+
+/-- Every in-range index appears in some Kosaraju component. -/
+theorem sccIndexSets_cover (binds : List Surface.Binding) :
+    ∀ i, i < binds.length → ∃ c ∈ sccIndexSets binds, i ∈ c := by
+  intro i hi
+  obtain ⟨cFin, hcFin, hmem⟩ :=
+    (bindDigraph_kosaraju_sound binds).cover ⟨i, hi⟩
+  refine ⟨cFin.map Fin.val, ?_, ?_⟩
+  · simp only [sccIndexSets, List.mem_map]
+    exact ⟨cFin, hcFin, rfl⟩
+  · exact List.mem_map.mpr ⟨⟨i, hi⟩, hmem, rfl⟩
+
+theorem sccIndexSets_mem_lt (binds : List Surface.Binding) :
+    ∀ c ∈ sccIndexSets binds, ∀ i ∈ c, i < binds.length := by
+  intro c hc i hi
+  simp only [sccIndexSets, List.mem_map] at hc
+  obtain ⟨cFin, _, rfl⟩ := hc
+  obtain ⟨⟨j, hj⟩, _, rfl⟩ := List.mem_map.mp hi
+  exact hj
+
+/-- Flatten of Kosaraju index sets is a permutation of `0 .. n-1`. -/
+theorem sccIndexSets_flatten_perm (binds : List Surface.Binding) :
+    (sccIndexSets binds).flatten.Perm (List.range binds.length) := by
+  have hnodup := sccIndexSets_flatten_nodup binds
+  have hbound : ∀ x ∈ (sccIndexSets binds).flatten, x < binds.length := by
+    intro x hx
+    obtain ⟨c, hc, hx'⟩ := List.mem_flatten.mp hx
+    exact sccIndexSets_mem_lt binds c hc x hx'
+  have hlen : (sccIndexSets binds).flatten.length = binds.length := by
+    have hsub : ((sccIndexSets binds).flatten).toFinset ⊆ Finset.range binds.length := by
+      intro x hx
+      exact Finset.mem_range.mpr (hbound x (List.mem_toFinset.mp hx))
+    have hsup : Finset.range binds.length ⊆ ((sccIndexSets binds).flatten).toFinset := by
+      intro x hx
+      have hx' : x < binds.length := Finset.mem_range.mp hx
+      obtain ⟨c, hc, hxmem⟩ := sccIndexSets_cover binds x hx'
+      exact List.mem_toFinset.mpr (List.mem_flatten.mpr ⟨c, hc, hxmem⟩)
+    have hEq : ((sccIndexSets binds).flatten).toFinset = Finset.range binds.length :=
+      Finset.Subset.antisymm hsub hsup
+    have hcard := congrArg Finset.card hEq
+    rwa [List.toFinset_card_of_nodup hnodup, Finset.card_range] at hcard
+  exact perm_range_of_nodup_length hnodup hbound hlen
+
+/-- Length hyps are explicit so `binds[a]` elaborates without `binds[a]'…`. -/
+theorem sccIndexSets_sameScc (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup)
+    {c : List Nat} (hc : c ∈ sccIndexSets binds)
+    {a b : Nat} (ha : a ∈ c) (hb : b ∈ c)
+    (ha_lt : a < binds.length) (hb_lt : b < binds.length) :
+    DepMutual binds (binds[a]).name (binds[b]).name := by
+  simp only [sccIndexSets, List.mem_map] at hc
+  obtain ⟨cFin, hcFin, rfl⟩ := hc
+  obtain ⟨ia, hia, rfl⟩ := List.mem_map.mp ha
+  obtain ⟨ib, hib, rfl⟩ := List.mem_map.mp hb
+  have hmut := (bindDigraph_kosaraju_sound binds).sameScc cFin hcFin ia hia ib hib
+  exact (Mutual_iff_DepMutual hn (i := ia) (j := ib)).mp hmut
+
+theorem sccIndexSets_maxScc (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup)
+    {a b : Nat} (ha : a < binds.length) (hb : b < binds.length)
+    (hmut : DepMutual binds (binds[a]).name (binds[b]).name) :
+    ∃ c ∈ sccIndexSets binds, a ∈ c ∧ b ∈ c := by
+  have hR : Mutual (bindDigraph binds) ⟨a, ha⟩ ⟨b, hb⟩ :=
+    (Mutual_iff_DepMutual hn).mpr hmut
+  obtain ⟨cFin, hcFin, ha', hb'⟩ :=
+    (bindDigraph_kosaraju_sound binds).maxScc _ _ hR
+  refine ⟨cFin.map Fin.val, ?_, ?_, ?_⟩
+  · simp only [sccIndexSets, List.mem_map]
+    exact ⟨cFin, hcFin, rfl⟩
+  · exact List.mem_map.mpr ⟨⟨a, ha⟩, ha', rfl⟩
+  · exact List.mem_map.mpr ⟨⟨b, hb⟩, hb', rfl⟩
 
 /-! ##### Abstract Kahn invariants
 
@@ -2034,7 +2008,7 @@ theorem kahnTopo_indeg0_eq (n : Nat) (beforeEdges : List (Nat × Nat))
   simp only [Option.getD_some, List.getElem_map, List.getElem_range]
 
 /-- Bounded edges: every endpoint is `< n`.
-    Generic Kahn/condensation helpers below are public for `FHM.Scc.BindingGlue` staging. -/
+    Generic Kahn/condensation helpers below are public for reuse. -/
 def edgesBounded (n : Nat) (edges : List (Nat × Nat)) : Prop :=
   ∀ e ∈ edges, e.1 < n ∧ e.2 < n
 
@@ -2798,8 +2772,9 @@ theorem exists_succ_of_mem_sccBeforeEdges (succ : Nat → List Nat)
             exact ⟨p, hp, q, by simpa using hqmem, hqsucc⟩
         · simp at hopt
 
-/-- One condensation before-edge ⇒ `DepReach` from dependent component into dependency. -/
+/-- One condensation before-edge ⇒ `DepReach` from dependent into dependency. -/
 private theorem DepReach_of_sccBeforeEdge (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup)
     {u v x y : Nat}
     (he : (u, v) ∈ sccBeforeEdges (bindSucc binds) (sccIndexSets binds))
     {ca cb : List Nat}
@@ -2827,12 +2802,11 @@ private theorem DepReach_of_sccBeforeEdge (binds : List Surface.Binding)
     rw [List.getElem?_eq_getElem hq_lt] at hb'; exact Option.some.inj hb'.symm
   rw [hb1, hb2] at hedge
   have hxp : DepMutual binds (binds[x]).name (binds[p]).name :=
-    sccIndexSets_comp_depMutual binds hv_mem hx hp
+    sccIndexSets_sameScc binds hn hv_mem hx hp hx_lt hp_lt
   have hqy : DepMutual binds (binds[q]).name (binds[y]).name :=
-    sccIndexSets_comp_depMutual binds hu_mem hq hy
+    sccIndexSets_sameScc binds hn hu_mem hq hy hq_lt hy_lt
   exact DepReach_trans hxp.1 (DepReach.tail hedge hqy.1)
 
-/-- Endpoints of a condensation path are valid component indices. -/
 private theorem sccBeforeReach_lt (binds : List Surface.Binding)
     {u v : Nat}
     (h : Relation.TransGen
@@ -2845,8 +2819,9 @@ private theorem sccBeforeReach_lt (binds : List Surface.Binding)
   | tail _hab hbc ih =>
     exact ⟨ih.1, (exists_succ_of_mem_sccBeforeEdges (bindSucc binds) _ hbc).2.2.1⟩
 
-/-- Condensation path ⇒ `DepReach` from the path end's component back to the start's. -/
+/-- Condensation path ⇒ `DepReach` from path-end component back to start. -/
 private theorem DepReach_of_sccBeforeReach (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup)
     {u v : Nat}
     (h : Relation.TransGen
       (fun a b => (a, b) ∈ sccBeforeEdges (bindSucc binds) (sccIndexSets binds)) u v)
@@ -2858,9 +2833,8 @@ private theorem DepReach_of_sccBeforeReach (binds : List Surface.Binding)
     DepReach binds (binds[x]).name (binds[y]).name := by
   induction h generalizing ca cb x y with
   | single he =>
-    exact DepReach_of_sccBeforeEdge binds he hca hcb hx hy hx_lt hy_lt
+    exact DepReach_of_sccBeforeEdge binds hn he hca hcb hx hy hx_lt hy_lt
   | tail hab hbc ih =>
-    -- hab : TransGen u w, hbc : (w, v) ∈ edges
     obtain ⟨_hne, _hw_lt, _hv_lt, cv, cw, hcv, hcw, p, hp, q, hq, hsucc⟩ :=
       exists_succ_of_mem_sccBeforeEdges (bindSucc binds) (sccIndexSets binds) hbc
     have hcv_eq : cv = ca := by
@@ -2876,7 +2850,7 @@ private theorem DepReach_of_sccBeforeReach (binds : List Surface.Binding)
         rw [List.getElem?_eq_getElem hq_lt] at hb'; exact Option.some.inj hb'.symm
       rw [hb1, hb2] at hedge
       have hxp : DepMutual binds (binds[x]).name (binds[p]).name :=
-        sccIndexSets_comp_depMutual binds (List.mem_of_getElem? hca) hx hp
+        sccIndexSets_sameScc binds hn (List.mem_of_getElem? hca) hx hp hx_lt hp_lt
       exact DepReach_trans hxp.1 (DepReach.tail hedge DepReach.refl)
     have h_from_q : DepReach binds (binds[q]).name (binds[y]).name :=
       ih hcw hcb hq hy hq_lt hy_lt
@@ -2903,7 +2877,7 @@ private theorem eq_of_mem_of_mem_of_pairwise_disjoint {α} {L : List (List α)}
         exact (hdisj'.1 g h hx' hx).elim
       | inr h' => exact ih hdisj'.2 h h'
 
-/-- Each index appears in exactly one `sccIndexSets` component. -/
+/-- Each index appears in exactly one Kosaraju component. -/
 private theorem sccIndexSets_unique_comp (binds : List Surface.Binding) {i : Nat}
     (hi : i < binds.length) :
     ∃ g ∈ sccIndexSets binds, i ∈ g ∧
@@ -2920,150 +2894,24 @@ private theorem sccIndexSets_unique_comp (binds : List Surface.Binding) {i : Nat
     (List.nodup_flatten.mp hnodup).2
   exact (eq_of_mem_of_mem_of_pairwise_disjoint hdisj hg hg' hi' hi'').symm
 
-/-- Partition components are pairwise `mutReach`-separated (needs Bool-trans / Nodup). -/
-private theorem sccPartitionGo_separated (binds : List Surface.Binding)
-    (hn : (binds.map (·.name)).Nodup) :
-    let mutReach := fun i j =>
-      mutuallyReachable (bindSucc binds) binds.length i j
-    ∀ (fuel : Nat) (todo : List Nat) (accs : List (List Nat)),
-      (∀ x ∈ todo, x < binds.length) →
-      (∀ g ∈ accs, ∀ x ∈ g, x < binds.length) →
-      (∀ g1 ∈ accs, ∀ g2 ∈ accs, g1 ≠ g2 →
-        ∀ a ∈ g1, ∀ b ∈ g2, mutReach a b = false) →
-      (∀ g ∈ accs, ∀ a ∈ g, ∀ b ∈ todo, mutReach a b = false) →
-      (∀ g1 ∈ sccPartitionGo mutReach fuel todo accs,
-        ∀ g2 ∈ sccPartitionGo mutReach fuel todo accs, g1 ≠ g2 →
-          ∀ a ∈ g1, ∀ b ∈ g2, mutReach a b = false) := by
-  intro mutReach fuel
-  induction fuel with
-  | zero =>
-    intro todo accs _hbound _haccBound hacc_sep _hacc_todo g1 hg1 g2 hg2 hne a ha b hb
-    simp only [sccPartitionGo] at hg1 hg2
-    exact hacc_sep g1 hg1 g2 hg2 hne a ha b hb
-  | succ fuel ih =>
-    intro todo accs hbound haccbound hacc_sep hacc_todo g1 hg1 g2 hg2 hne a ha b hb
-    cases todo with
-    | nil =>
-      simp only [sccPartitionGo] at hg1 hg2
-      exact hacc_sep g1 hg1 g2 hg2 hne a ha b hb
-    | cons seed rest =>
-      simp only [sccPartitionGo] at hg1 hg2
-      have hseed_lt : seed < binds.length := hbound seed (by simp)
-      have hcomp_lt : ∀ x ∈ (seed :: rest).filter (mutReach seed), x < binds.length := by
-        intro x hx
-        exact hbound x (List.mem_of_mem_filter hx)
-      have hrest'_lt : ∀ x ∈ (seed :: rest).filter (fun j => !mutReach seed j),
-          x < binds.length := by
-        intro x hx
-        exact hbound x (List.mem_of_mem_filter hx)
-      have hcomp_clique : ∀ x ∈ (seed :: rest).filter (mutReach seed),
-          mutReach seed x = true := by
-        intro x hx; exact (List.mem_filter.mp hx).2
-      have hrest'_sep_seed : ∀ x ∈ (seed :: rest).filter (fun j => !mutReach seed j),
-          mutReach seed x = false := by
-        intro x hx
-        cases hmr : mutReach seed x
-        · rfl
-        · have hnot : (!mutReach seed x) = true := (List.mem_filter.mp hx).2
-          simp [hmr] at hnot
-      have hmut_sym : ∀ x y, mutReach x y = mutReach y x := by
-        intro x y
-        simpa [mutReach] using mutuallyReachable_sym (bindSucc binds) binds.length x y
-      have hcross_comp_rest :
-          ∀ x ∈ (seed :: rest).filter (mutReach seed),
-            ∀ y ∈ (seed :: rest).filter (fun j => !mutReach seed j),
-              mutReach x y = false := by
-        intro x hx y hy
-        cases hxy : mutReach x y with
-        | false => rfl
-        | true =>
-          have hsx := hcomp_clique x hx
-          have hsy := hrest'_sep_seed y hy
-          have hx_lt := hcomp_lt x hx
-          have hy_lt := hrest'_lt y hy
-          have hsy' : mutReach seed y = true :=
-            mutuallyReachable_trans_of_nodup hn hseed_lt hx_lt hy_lt hsx hxy
-          simp [hsy] at hsy'
-      have hcross_acc_comp :
-          ∀ g ∈ accs, ∀ x ∈ g, ∀ y ∈ (seed :: rest).filter (mutReach seed),
-            mutReach x y = false := by
-        intro g hg x hx y hy
-        cases hxy : mutReach x y with
-        | false => rfl
-        | true =>
-          have hsy := hcomp_clique y hy
-          have hx_lt := haccbound g hg x hx
-          have hy_lt := hcomp_lt y hy
-          have hxs : mutReach x seed = false :=
-            hacc_todo g hg x hx seed (by simp)
-          have hys : mutReach y seed = true := by
-            rw [hmut_sym]; exact hsy
-          have hxs' : mutReach x seed = true :=
-            mutuallyReachable_trans_of_nodup hn hx_lt hy_lt hseed_lt hxy hys
-          simp [hxs] at hxs'
-      have hacc'_sep :
-          ∀ g1 ∈ accs ++ [(seed :: rest).filter (mutReach seed)],
-            ∀ g2 ∈ accs ++ [(seed :: rest).filter (mutReach seed)], g1 ≠ g2 →
-              ∀ a ∈ g1, ∀ b ∈ g2, mutReach a b = false := by
-        intro g1' hg1' g2' hg2' hne' a' ha' b' hb'
-        simp only [List.mem_append, List.mem_singleton] at hg1' hg2'
-        cases hg1' with
-        | inl h1 =>
-          cases hg2' with
-          | inl h2 => exact hacc_sep g1' h1 g2' h2 hne' a' ha' b' hb'
-          | inr h2 =>
-            subst h2; exact hcross_acc_comp g1' h1 a' ha' b' hb'
-        | inr h1 =>
-          subst h1
-          cases hg2' with
-          | inl h2 =>
-            have h := hcross_acc_comp g2' h2 b' hb' a' ha'
-            rwa [hmut_sym] at h
-          | inr h2 =>
-            subst h2; exact (hne' rfl).elim
-      have hacc'_todo :
-          ∀ g ∈ accs ++ [(seed :: rest).filter (mutReach seed)],
-            ∀ a ∈ g, ∀ b ∈ (seed :: rest).filter (fun j => !mutReach seed j),
-              mutReach a b = false := by
-        intro g hg a ha b hb
-        simp only [List.mem_append, List.mem_singleton] at hg
-        cases hg with
-        | inl h =>
-          exact hacc_todo g h a ha b (List.mem_of_mem_filter hb)
-        | inr h =>
-          subst h; exact hcross_comp_rest a ha b hb
-      exact ih ((seed :: rest).filter (fun j => !mutReach seed j))
-        (accs ++ [(seed :: rest).filter (mutReach seed)]) hrest'_lt
-        (by
-          intro g hg x hx
-          simp only [List.mem_append, List.mem_singleton] at hg
-          cases hg with
-          | inl h => exact haccbound g h x hx
-          | inr h => subst h; exact hcomp_lt x hx)
-        hacc'_sep hacc'_todo g1 hg1 g2 hg2 hne a ha b hb
-
+/-- Distinct components are mutual-reachability separated. -/
 private theorem sccIndexSets_separated (binds : List Surface.Binding)
     (hn : (binds.map (·.name)).Nodup)
-    {g1 g2 : List Nat} (hg1 : g1 ∈ sccIndexSets binds) (hg2 : g2 ∈ sccIndexSets binds)
-    (hne : g1 ≠ g2) {a b : Nat} (ha : a ∈ g1) (hb : b ∈ g2) :
-    mutuallyReachable (bindSucc binds) binds.length a b = false := by
-  have hg1' : g1 ∈
-      sccPartitionGo
-        (fun i j => mutuallyReachable (bindSucc binds) binds.length i j)
-        (binds.length + 1) (List.range binds.length) [] := by
-    rwa [← sccIndexSets_eq_partitionGo]
-  have hg2' : g2 ∈
-      sccPartitionGo
-        (fun i j => mutuallyReachable (bindSucc binds) binds.length i j)
-        (binds.length + 1) (List.range binds.length) [] := by
-    rwa [← sccIndexSets_eq_partitionGo]
-  exact sccPartitionGo_separated binds hn (binds.length + 1)
-    (List.range binds.length) []
-    (fun x hx => List.mem_range.mp hx)
-    (fun g hg => by cases hg)
-    (fun g1 hg => by cases hg)
-    (fun g hg => by cases hg)
-    g1 hg1' g2 hg2' hne a ha b hb
+    {c₁ c₂ : List Nat} (hc₁ : c₁ ∈ sccIndexSets binds)
+    (hc₂ : c₂ ∈ sccIndexSets binds) (hne : c₁ ≠ c₂)
+    {a b : Nat} (ha : a ∈ c₁) (hb : b ∈ c₂)
+    (ha_lt : a < binds.length) (hb_lt : b < binds.length) :
+    ¬DepMutual binds (binds[a]).name (binds[b]).name := by
+  intro hmut
+  obtain ⟨c, hc, ha', hb'⟩ := sccIndexSets_maxScc binds hn ha_lt hb_lt hmut
+  have hnodup := sccIndexSets_flatten_nodup binds
+  have hdisj : List.Pairwise List.Disjoint (sccIndexSets binds) :=
+    (List.nodup_flatten.mp hnodup).2
+  have hc₁c : c₁ = c :=
+    eq_of_mem_of_mem_of_pairwise_disjoint hdisj hc₁ hc ha ha'
+  have hc₂c : c₂ = c :=
+    eq_of_mem_of_mem_of_pairwise_disjoint hdisj hc₂ hc hb hb'
+  exact hne (hc₁c.trans hc₂c.symm)
 
 /-- A before-edge cycle among distinct SCC indices contradicts separation. -/
 private theorem sccBeforeEdges_acyclic (binds : List Surface.Binding)
@@ -3107,19 +2955,13 @@ private theorem sccBeforeEdges_acyclic (binds : List Surface.Binding)
       have hd := List.Pairwise.rel_get_of_lt hdisj h
       exact hd (by simpa [heq] using hx) hx
   have dxy : DepReach binds (binds[y]).name (binds[x]).name :=
-    DepReach_of_sccBeforeReach binds huv hcv hcu hy hx hy_lt hx_lt
+    DepReach_of_sccBeforeReach binds hn huv hcv hcu hy hx hy_lt hx_lt
   have dyx : DepReach binds (binds[x]).name (binds[y]).name :=
-    DepReach_of_sccBeforeReach binds hvu hcu hcv hx hy hx_lt hy_lt
-  have hmut : mutuallyReachable (bindSucc binds) binds.length x y = true :=
-    Bool.and_eq_true_iff.mpr ⟨canReach_complete hn hx_lt hy_lt dyx,
-      canReach_complete hn hy_lt hx_lt dxy⟩
-  have hsep : mutuallyReachable (bindSucc binds) binds.length x y = false :=
-    sccIndexSets_separated binds hn hu_mem hv_mem hne_g hx hy
-  simp [hmut] at hsep
+    DepReach_of_sccBeforeReach binds hn hvu hcu hcv hx hy hx_lt hy_lt
+  have hmut : DepMutual binds (binds[x]).name (binds[y]).name := ⟨dyx, dxy⟩
+  exact sccIndexSets_separated binds hn hu_mem hv_mem hne_g hx hy hx_lt hy_lt hmut
 
-/-- Critical Kahn gap: condensation of `sccIndexSets` is a DAG, so Kahn returns a
-    full permutation of `0 .. comps.length - 1`.
-    Needs name-Nodup so Bool mutual-reachability is transitive (condensation acyclic). -/
+/-- Critical Kahn gap: condensation of Kosaraju comps is a DAG. -/
 private theorem kahnTopo_scc_perm (binds : List Surface.Binding)
     (hn : (binds.map (·.name)).Nodup) :
     let comps := sccIndexSets binds
@@ -3188,20 +3030,17 @@ private theorem sccOrderedIndexSets_flatten_perm (binds : List Surface.Binding)
   have hflat := hcomps.flatten
   exact hflat.trans (sccIndexSets_flatten_perm binds)
 
-/-- If `mutReach i j` and `i` lies in an `sccIndexSets` component, so does `j`. -/
-private theorem sccIndexSets_mem_of_mutReach (binds : List Surface.Binding)
+private theorem sccIndexSets_mem_of_DepMutual (binds : List Surface.Binding)
     (hn : (binds.map (·.name)).Nodup)
     {g : List Nat} (hg : g ∈ sccIndexSets binds)
     {i j : Nat} (hi : i ∈ g)
-    (hmut : mutuallyReachable (bindSucc binds) binds.length i j = true)
-    (hj : j < binds.length) :
+    (hi_lt : i < binds.length) (hj : j < binds.length)
+    (hmut : DepMutual binds (binds[i]).name (binds[j]).name) :
     j ∈ g := by
   obtain ⟨g', hg', hj', _⟩ := sccIndexSets_unique_comp binds hj
   suffices g' = g by rwa [← this]
   by_contra hne
-  have hsep : mutuallyReachable (bindSucc binds) binds.length i j = false :=
-    sccIndexSets_separated binds hn hg hg' (Ne.symm hne) hi hj'
-  simp [hmut] at hsep
+  exact sccIndexSets_separated binds hn hg hg' (Ne.symm hne) hi hj' hi_lt hj hmut
 
 theorem sccOrderedIndexSets_flatPerm (binds : List Surface.Binding)
     (hn : (binds.map (·.name)).Nodup) :
@@ -3220,24 +3059,23 @@ theorem sccOrderedIndexSets_nonempty (binds : List Surface.Binding) :
   have hlt := sccIndexSets_mem_lt binds idxs hcomp i hi
   simp [List.getElem?_eq_getElem hlt]
 
-theorem sccOrderedIndexSets_sameScc (binds : List Surface.Binding) :
+theorem sccOrderedIndexSets_sameScc (binds : List Surface.Binding)
+    (hn : (binds.map (·.name)).Nodup) :
     ∀ g ∈ indexSetsToBindings binds (sccOrderedIndexSets binds),
       ∀ b1 ∈ g, ∀ b2 ∈ g, DepMutual binds b1.name b2.name := by
   intro g hg b1 hb1 b2 hb2
   simp only [indexSetsToBindings, List.mem_map] at hg
   obtain ⟨idxs, hidxs, rfl⟩ := hg
   have hcomp := sccOrderedIndexSets_mem_of_getElem binds hidxs
-  have hb1' := List.mem_filterMap.mp hb1
-  have hb2' := List.mem_filterMap.mp hb2
-  obtain ⟨i, hi, hbi⟩ := hb1'
-  obtain ⟨j, hj, hbj⟩ := hb2'
+  obtain ⟨i, hi, hbi⟩ := List.mem_filterMap.mp hb1
+  obtain ⟨j, hj, hbj⟩ := List.mem_filterMap.mp hb2
   have hi_lt := sccIndexSets_mem_lt binds idxs hcomp i hi
   have hj_lt := sccIndexSets_mem_lt binds idxs hcomp j hj
   have hbi' : binds[i] = b1 := by
     rw [List.getElem?_eq_getElem hi_lt] at hbi; exact Option.some.inj hbi
   have hbj' : binds[j] = b2 := by
     rw [List.getElem?_eq_getElem hj_lt] at hbj; exact Option.some.inj hbj
-  have hmut := sccIndexSets_comp_depMutual binds hcomp hi hj
+  have hmut := sccIndexSets_sameScc binds hn hcomp hi hj hi_lt hj_lt
   simpa [hbi', hbj'] using hmut
 
 theorem sccOrderedIndexSets_maxScc (binds : List Surface.Binding)
@@ -3246,17 +3084,13 @@ theorem sccOrderedIndexSets_maxScc (binds : List Surface.Binding)
       DepMutual binds b1.name b2.name →
         ∃ g ∈ indexSetsToBindings binds (sccOrderedIndexSets binds),
           b1 ∈ g ∧ b2 ∈ g := by
-  intro b1 hb1 b2 hb2 ⟨hab, hba⟩
+  intro b1 hb1 b2 hb2 hmut
   obtain ⟨i, hi, hib⟩ := List.mem_iff_getElem.mp hb1
   obtain ⟨j, hj, hjb⟩ := List.mem_iff_getElem.mp hb2
   subst hib; subst hjb
-  have hmut : mutuallyReachable (bindSucc binds) binds.length i j = true :=
-    Bool.and_eq_true_iff.mpr ⟨canReach_complete hn hi hj hab,
-      canReach_complete hn hj hi hba⟩
   obtain ⟨gIdxs, hgIdxs, hi_mem, _huniq⟩ := sccIndexSets_unique_comp binds hi
   have hj_mem : j ∈ gIdxs :=
-    sccIndexSets_mem_of_mutReach binds hn hgIdxs hi_mem hmut hj
-  -- Kahn perm ⇒ gIdxs appears in ordered index sets
+    sccIndexSets_mem_of_DepMutual binds hn hgIdxs hi_mem hi hj hmut
   have hord := kahnTopo_scc_perm binds hn
   obtain ⟨k, hklt, rfl⟩ := List.mem_iff_getElem.mp hgIdxs
   have hk_ord : k ∈
@@ -3507,7 +3341,7 @@ theorem sccGroups_sound {binds : List Surface.Binding}
   exact ⟨hn,
     sccOrderedIndexSets_flatPerm binds hn,
     sccOrderedIndexSets_nonempty binds,
-    sccOrderedIndexSets_sameScc binds,
+    sccOrderedIndexSets_sameScc binds hn,
     sccOrderedIndexSets_maxScc binds hn,
     sccOrderedIndexSets_topo binds⟩
 
@@ -3571,9 +3405,10 @@ private def bK : Surface.Binding :=
       g.length = 2 && (g.map (·.name)).contains (.mk "h") &&
         (g.map (·.name)).contains (.mk "k")
   | _ => false
--- independent a, b ⇒ two singleton groups (stable by seed order)
+-- independent a, b ⇒ two singleton groups (intra-order free under Kosaraju)
 #guard match sccGroups [bA, bB] with
   | some [[{ name := .mk "a", .. }], [{ name := .mk "b", .. }]] => true
+  | some [[{ name := .mk "b", .. }], [{ name := .mk "a", .. }]] => true
   | _ => false
 -- duplicate names rejected
 #guard (sccGroups [bA, { name := .mk "a", ann := none, rhs := .primLit (.int 0) }]).isNone
