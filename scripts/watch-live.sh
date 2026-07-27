@@ -69,9 +69,10 @@ run_once() {
   "$BIN" "$FILE"
   local code=$?
   set -e
-  echo
+  # echo
   if [[ $code -eq 0 ]]; then
-    echo "(ok)"
+    # echo "(ok)"
+  :
   else
     echo "(failed, exit $code)"
   fi
