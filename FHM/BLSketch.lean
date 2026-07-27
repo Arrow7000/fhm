@@ -16,16 +16,22 @@ appears as a premise in that derivation:
 | **Compare (∀)** | `Sub` / inhabitability → `checkValid` under assumptions `Δ` |
 | **Join** | `ifBL` / `ifBool`, `matchBL` (both branches `BL`) via `min`/`max`; non-`BL` branches must be equal |
 | **Meet inhabitability** | not an `Expr` form — when one value faces several BL demands, discharge `checkValid (inhabitProblem Δ (Interval.meet …))` |
-| **Solve + unique outputs** | HM-style narrowing at use/ascription: `annoInfer` / `appInfer` / `letSchemeInfer` via `subtypeProblem` |
+| **Solve (∃ witness)** | HM-style narrowing at use/ascription: `annoInfer` / `appInfer` / `letSchemeInfer` via `subtypeProblem` + `solve = .witness` |
 | **Demand discipline** | `Count.DemandOK` / `Ty.DemandOK` on demanded types |
 | **Bound schemes** | `letScheme` / `letRecScheme` (pack with `Sub` or solve) + `varScheme` (`InstantiatesTo`); bodies are WF (only rigid binders `0..n-1`) |
 | **Recursion** | `letRec` (mono, annotated) + `letRecScheme` (scheme in scope for the binding) |
 | **Match refinement** | `matchBL` / `matchNil` / `matchCons` extend `Δ`; single-branch forms need a ∀-proof the other case is impossible (`hi ≤ 0` or `1 ≤ lo`) |
-| **Checking** | separate `Check` judgment (synth type + `Sub` / solve+unique); not a `TypeOf` ctor — keeps `TypeOf` syntax-directed |
+| **Checking** | separate `Check` judgment (synth type + `Sub` / solve existence); not a `TypeOf` ctor — keeps `TypeOf` syntax-directed |
+
+**Uniqueness is not well-typedness.** A non-unique model means several assignments
+work (commit / printed bounds are ambiguous). Declarative `TypeOf` / `Check` require
+only existence of a solve witness. The algorithmic layer may still gate on
+`unique` (elaborator policy); that is stricter than the relation and does not
+affect soundness of `synth_sound` / `check_sound`.
 
 Oracle answers other than success (`unknown` / `invalid` / `unsat` / `multiple`)
-simply yield **no** derivation — policy (annotate / commit / error) is outside
-this relation.
+simply yield **no** algorithmic derivation — policy (annotate / commit / error)
+is outside the declarative relation.
 
 **Declarative (like Core `TypeOfHM`):** the relation existentially picks types,
 scheme args, and solve witnesses; it does not return a substitution. An
@@ -777,7 +783,6 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     Ty.DemandOK argTy →
     subtypeProblem Δ argTy' argTy = some ψ →
     solve ψ = .witness σ →
-    unique ψ argTy'.obsBounds = .unique →
     TypeOf Δ ctx (.app f arg) retTy
 
   | ifBL {Δ ctx cond thn els t u ty} :
@@ -806,7 +811,6 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     Ty.DemandOK ty →
     subtypeProblem Δ ty' ty = some ψ →
     solve ψ = .witness σ →
-    unique ψ ty'.obsBounds = .unique →
     TypeOf Δ ctx (.anno e ann) ty
 
   /-- Ascription of bare `[]` under an expected `BL` (checking intro; no synth of `.nil`). -/
@@ -815,13 +819,12 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     Sub Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) →
     TypeOf Δ ctx (.anno .nil ann) (.bl lo hi elem)
 
-  /-- Bare `[]` ascription via solve+unique when plain `Sub` does not apply. -/
+  /-- Bare `[]` ascription via solve when plain `Sub` does not apply. -/
   | annoNilInfer {Δ ctx ann lo hi elem ψ σ} :
     AnnoTy.Elab ann (.bl lo hi elem) →
     Ty.DemandOK (.bl lo hi elem) →
     subtypeProblem Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = some ψ →
     solve ψ = .witness σ →
-    unique ψ (Ty.bl (.lit 0) (.lit 0) elem).obsBounds = .unique →
     TypeOf Δ ctx (.anno .nil ann) (.bl lo hi elem)
 
   | letMono {Δ ctx e1 e2 ty1 ty2} :
@@ -844,7 +847,6 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     Ty.DemandOK s.body →
     subtypeProblem Δ ty1 s.body = some ψ →
     solve ψ = .witness σ →
-    unique ψ ty1.obsBounds = .unique →
     TypeOf Δ (.scheme s :: ctx) e2 bodyTy →
     TypeOf Δ ctx (.letScheme s e1 e2) bodyTy
 
@@ -862,7 +864,6 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     TypeOf Δ (.mono ty :: ctx) binding tyB →
     subtypeProblem Δ tyB ty = some ψ →
     solve ψ = .witness σ →
-    unique ψ tyB.obsBounds = .unique →
     TypeOf Δ (.mono ty :: ctx) body bodyTy →
     TypeOf Δ ctx (.letRec ann binding body) bodyTy
 
@@ -879,7 +880,6 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     Ty.DemandOK s.body →
     subtypeProblem Δ ty1 s.body = some ψ →
     solve ψ = .witness σ →
-    unique ψ ty1.obsBounds = .unique →
     TypeOf Δ (.scheme s :: ctx) body bodyTy →
     TypeOf Δ ctx (.letRecScheme s binding body) bodyTy
 
@@ -914,9 +914,10 @@ inductive TypeOf : List Constraint → Ctx → Expr → Ty → Prop where
     TypeOf (Δ ++ consRefine hi) (consCtx ctx lo hi elem) eCons ty →
     TypeOf Δ ctx (.matchCons e eCons) ty
 
-/-- Checking judgment: synthesized type fits a demand (plain `Sub` or solve+unique),
+/-- Checking judgment: synthesized type fits a demand (plain `Sub` or solve existence),
 or intro forms that only make sense under a demand (bare `nil`).
-Keeps `TypeOf` syntax-directed — no general subsumption inside `TypeOf`. -/
+Keeps `TypeOf` syntax-directed — no general subsumption inside `TypeOf`.
+Uniqueness of models is elaborator policy (`forceSubtype`), not a premise here. -/
 inductive Check (Δ : List Constraint) (ctx : Ctx) : Expr → Ty → Prop where
   | ofSub {e ty ty'} :
     TypeOf Δ ctx e ty' →
@@ -927,19 +928,17 @@ inductive Check (Δ : List Constraint) (ctx : Ctx) : Expr → Ty → Prop where
     Ty.DemandOK ty →
     subtypeProblem Δ ty' ty = some ψ →
     solve ψ = .witness σ →
-    unique ψ ty'.obsBounds = .unique →
     Check Δ ctx e ty
   /-- Bare `[]` checks against `BL lo hi α` when `BL 0 0 α <: BL lo hi α`. -/
   | nil {lo hi elem} :
     Sub Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) →
     Check Δ ctx .nil (.bl lo hi elem)
 
-  /-- Bare `[]` check via solve+unique when plain `Sub` does not apply. -/
+  /-- Bare `[]` check via solve when plain `Sub` does not apply. -/
   | nilInfer {lo hi elem ψ σ} :
     Ty.DemandOK (.bl lo hi elem) →
     subtypeProblem Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = some ψ →
     solve ψ = .witness σ →
-    unique ψ (Ty.bl (.lit 0) (.lit 0) elem).obsBounds = .unique →
     Check Δ ctx .nil (.bl lo hi elem)
 
 /-! ## 8. Structural lemmas -/
@@ -1034,26 +1033,26 @@ theorem TypeOf.weakenCtx {Δ ctx ctx' e ty}
   | varScheme h hinst => exact .varScheme (ctx_getElem?_append_left h) hinst
   | lam helab hok hbody ih => exact .lam helab hok ih
   | app hf harg hsub ih₁ ih₂ => exact .app ih₁ ih₂ hsub
-  | appInfer hf harg hok hψ hσ huniq ih₁ ih₂ =>
-    exact .appInfer ih₁ ih₂ hok hψ hσ huniq
+  | appInfer hf harg hok hψ hσ ih₁ ih₂ =>
+    exact .appInfer ih₁ ih₂ hok hψ hσ
   | ifBL hcond hthn hels hjoin ih₁ ih₂ ih₃ => exact .ifBL ih₁ ih₂ ih₃ hjoin
   | ifBool hcond hthn hels hjoin ih₁ ih₂ ih₃ => exact .ifBool ih₁ ih₂ ih₃ hjoin
   | anno helab he hsub ih => exact .anno helab ih hsub
-  | annoInfer helab he hok hψ hσ huniq ih => exact .annoInfer helab ih hok hψ hσ huniq
+  | annoInfer helab he hok hψ hσ ih => exact .annoInfer helab ih hok hψ hσ
   | annoNil helab hsub => exact .annoNil helab hsub
-  | annoNilInfer helab hok hψ hσ huniq => exact .annoNilInfer helab hok hψ hσ huniq
+  | annoNilInfer helab hok hψ hσ => exact .annoNilInfer helab hok hψ hσ
   | letMono he₁ he₂ ih₁ ih₂ => exact .letMono ih₁ ih₂
   | letScheme hwf he₁ hsub he₂ ih₁ ih₂ => exact .letScheme hwf ih₁ hsub ih₂
-  | letSchemeInfer hwf he₁ hok hψ hσ huniq he₂ ih₁ ih₂ =>
-    exact .letSchemeInfer hwf ih₁ hok hψ hσ huniq ih₂
+  | letSchemeInfer hwf he₁ hok hψ hσ he₂ ih₁ ih₂ =>
+    exact .letSchemeInfer hwf ih₁ hok hψ hσ ih₂
   | letRec helab hok hb hsub hbody ih_b ih_body =>
     exact .letRec helab hok ih_b hsub ih_body
-  | letRecInfer helab hok hb hψ hσ huniq hbody ih_b ih_body =>
-    exact .letRecInfer helab hok ih_b hψ hσ huniq ih_body
+  | letRecInfer helab hok hb hψ hσ hbody ih_b ih_body =>
+    exact .letRecInfer helab hok ih_b hψ hσ ih_body
   | letRecScheme hwf hb hsub hbody ih_b ih_body =>
     exact .letRecScheme hwf ih_b hsub ih_body
-  | letRecSchemeInfer hwf hb hok hψ hσ huniq hbody ih_b ih_body =>
-    exact .letRecSchemeInfer hwf ih_b hok hψ hσ huniq ih_body
+  | letRecSchemeInfer hwf hb hok hψ hσ hbody ih_b ih_body =>
+    exact .letRecSchemeInfer hwf ih_b hok hψ hσ ih_body
   | matchBL he heNil heCons ih₁ ih₂ ih₃ =>
     refine .matchBL ih₁ ih₂ ?_
     rw [consCtx_append]
@@ -1128,7 +1127,9 @@ Oracle calls are the opaque `checkValid` / `solve` / `unique`; failure/`multiple
 ⇒ `none` (require annotation).
 
 `forceSubtype` is HM-style narrowing: plain `checkSub` first, else `solve`+`unique`
-on escaping `obsBounds`. Used at `.anno`, `.app`, `.letScheme`, and `check`.
+on escaping `obsBounds`. The uniqueness gate is **elaborator policy** (stricter than
+declarative `TypeOf` / `Check`, which only require a solve witness). Used at `.anno`,
+`.app`, `.letScheme`, and `check`.
 `matchBL` joins `BL` branch bounds (or requires equal non-`BL` types).
 -/
 
@@ -1247,6 +1248,7 @@ def Expr.size : Expr → Nat
 
 /-- Force `ty'` into demand `ty`: prefer plain `checkSub`; else `solve`+`unique`.
 Fails on `multiple` / `unknown` / `unsat` (annotation required).
+Uniqueness is elaborator policy: declarative `*Infer` rules need only a witness.
 Used at ascription and HM-style use sites (app domain, scheme pack, `check`). -/
 def forceSubtype (Δ : List Constraint) (ty' ty : Ty) : Bool :=
   if checkSub Δ ty' ty then true
@@ -1262,7 +1264,8 @@ def forceSubtype (Δ : List Constraint) (ty' ty : Ty) : Bool :=
 /-- Synthesize a type for `e`.
 
 Returns `some (Φ', τ)` with updated freshness frontier, or `none` on failure
-(including when `forceSubtype` rejects non-unique *escaping* source bounds).
+(including when `forceSubtype` rejects non-unique *escaping* source bounds —
+algo policy, stricter than declarative `TypeOf`).
 
 **Uniqueness.** The returned *type shape* is determined by the syntax-directed
 algorithm (one successful path ⇒ one `τ`). That does **not** mean every bound
@@ -2096,8 +2099,8 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
           | inl hsub =>
             exact .app (ih_f hf) (ih_arg ha) hsub
           | inr hr =>
-            obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
-            exact .appInfer (ih_f hf) (ih_arg ha) hok hψ hσ huniq
+            obtain ⟨hok, ψ, σ, hψ, hσ, _huniq⟩ := hr
+            exact .appInfer (ih_f hf) (ih_arg ha) hok hψ hσ
       | unit | bl _ _ _ | tbind _ | bool => simp [synth, hf] at h
   | if_ cond thn els ih_c ih_t ih_e =>
     cases hc : synth Φ Δ ctx cond with
@@ -2146,8 +2149,8 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
             cases forceSubtype_sub hfs with
             | inl hsub => exact .annoNil helab hsub
             | inr hr =>
-              obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
-              exact .annoNilInfer helab hok hψ hσ huniq
+              obtain ⟨hok, ψ, σ, hψ, hσ, _huniq⟩ := hr
+              exact .annoNilInfer helab hok hψ hσ
           · simp [hfs] at h
         | unit | bool | tbind _ | arrow _ _ => simp [synth, hfill] at h
       · cases he : synth Φ₁ Δ ctx e with
@@ -2166,8 +2169,8 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
           | inl hsub =>
             exact .anno helab (ih_e he) hsub
           | inr hr =>
-            obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
-            exact .annoInfer helab (ih_e he) hok hψ hσ huniq
+            obtain ⟨hok, ψ, σ, hψ, hσ, _huniq⟩ := hr
+            exact .annoInfer helab (ih_e he) hok hψ hσ
   | let_ bind body ih_b ih_body =>
     cases hb : synth Φ Δ ctx bind with
     | none => simp [synth, hb] at h
@@ -2189,8 +2192,8 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
         | inl hsub =>
           exact .letScheme (BScheme.wf_of_WF_bool hwf) (ih_b hb) hsub (ih_body hbody)
         | inr hr =>
-          obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
-          exact .letSchemeInfer (BScheme.wf_of_WF_bool hwf) (ih_b hb) hok hψ hσ huniq
+          obtain ⟨hok, ψ, σ, hψ, hσ, _huniq⟩ := hr
+          exact .letSchemeInfer (BScheme.wf_of_WF_bool hwf) (ih_b hb) hok hψ hσ
             (ih_body hbody)
     · simp [hwf] at h
   | letRec ann bind body ih_b ih_body =>
@@ -2213,8 +2216,8 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
           | inl hsub =>
             exact .letRec helab hok' (ih_b hb) hsub (ih_body hbody)
           | inr hr =>
-            obtain ⟨_, ψ, σ, hψ, hσ, huniq⟩ := hr
-            exact .letRecInfer helab hok' (ih_b hb) hψ hσ huniq (ih_body hbody)
+            obtain ⟨_, ψ, σ, hψ, hσ, _huniq⟩ := hr
+            exact .letRecInfer helab hok' (ih_b hb) hψ hσ (ih_body hbody)
       · simp [hok] at h
   | letRecScheme s bind body ih_b ih_body =>
     simp [synth] at h
@@ -2230,8 +2233,8 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
         | inl hsub =>
           exact .letRecScheme (BScheme.wf_of_WF_bool hwf) (ih_b hb) hsub (ih_body hbody)
         | inr hr =>
-          obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
-          exact .letRecSchemeInfer (BScheme.wf_of_WF_bool hwf) (ih_b hb) hok hψ hσ huniq
+          obtain ⟨hok, ψ, σ, hψ, hσ, _huniq⟩ := hr
+          exact .letRecSchemeInfer (BScheme.wf_of_WF_bool hwf) (ih_b hb) hok hψ hσ
             (ih_body hbody)
     · simp [hwf] at h
   | matchBL scrut eNil eCons ih_s ih_n ih_c =>
@@ -2343,8 +2346,8 @@ theorem check_sound {Φ Δ ctx e ty Φ'}
         cases forceSubtype_sub hfs with
         | inl hsub => exact .nil hsub
         | inr hr =>
-          obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
-          exact .nilInfer hok hψ hσ huniq
+          obtain ⟨hok, ψ, σ, hψ, hσ, _huniq⟩ := hr
+          exact .nilInfer hok hψ hσ
       · rw [check_nil_bl_none hfs] at h
         cases h
     | unit =>
@@ -2373,8 +2376,8 @@ theorem check_sound {Φ Δ ctx e ty Φ'}
         | inl hsub =>
           exact .ofSub (synth_sound hs) hsub
         | inr hr =>
-          obtain ⟨hok, ψ, σ, hψ, hσ, huniq⟩ := hr
-          exact .ofInfer (synth_sound hs) hok hψ hσ huniq
+          obtain ⟨hok, ψ, σ, hψ, hσ, _huniq⟩ := hr
+          exact .ofInfer (synth_sound hs) hok hψ hσ
       · rw [check_none_of_synth_force_false hn hs hfs] at h
         cases h
 
@@ -2496,8 +2499,10 @@ example : mustBeNonempty [] (.lit 3) =
 
 /-- ### Escape ambiguity (prose)
 
-Synthesizing `BL x (2x)` under weak constraints can yield many incomparable
-`obsBounds`; `unique` fails ⇒ no `annoInfer` derivation ⇒ annotate or commit. -/
+Synthesizing `BL x (2x)` under weak constraints can yield many models for
+escaping `obsBounds`. Declarative `TypeOf` still allows `*Infer` if some witness
+exists. Algorithmic `forceSubtype` may reject on `unique` failure (elaborator
+policy: annotate or commit) — stricter than the relation. -/
 def linearAmbiguousProblem : ExistsProblem where
   inferables := [⟨.inferable, 0⟩]
   cons := [⟨.lit 5, x 0⟩]
