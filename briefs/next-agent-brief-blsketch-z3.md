@@ -14,13 +14,13 @@
 
 FHM’s usual story is Hindley–Milner with a principality / InferW pipeline. **Bounded lists are a different axis:** lengths as *refinement bounds* on list type `BL lo hi α`, sitting **on top of ordinary HM**, not a System‑F redesign.
 
-The hard work is **subtyping + arithmetic obligations** (DML / Liquid / HM(X) territory): compare, join, meet inhabitability, solve for annotation holes, demand that outputs are unique when ambiguity would escape. Principality of *bounds* is not free; the sketch accepts that and uses Z3 as a **best‑effort trusted oracle**.
+The hard work is **subtyping + arithmetic obligations** (DML / Liquid / HM(X) territory): compare, join, meet inhabitability, solve for annotation holes. Principality of *bounds* is not free; uniqueness of models is **elaborator policy** (`forceSubtype`), not a premise of declarative `TypeOf` / `Check`. The sketch uses Z3 as a **best‑effort trusted oracle**.
 
 What we built is a **didactic end‑to‑end spine**, not production FHM:
 
 1. Count language + constraint problems (`ForallProblem` / `ExistsProblem`)
 2. Toy terms/types with `TypeOf Δ Γ e τ` (declarative **synthesis** center — syntax-directed)
-3. Separate `Check Δ Γ e τ` for checking (synth type + `Sub` / solve+unique) — **not** general subsumption inside `TypeOf`
+3. Separate `Check Δ Γ e τ` for checking (synth type + `Sub` / solve existence) — **not** general subsumption inside `TypeOf`
 4. Algorithmic `synth` / `check` with `AnnoTy` holes and freshness frontier `Φ`
 5. Real Z3 behind `checkValid` / `solve` / `unique` via `@[implemented_by]`
 6. **Proved:** `synth_sound` (`synth` ⇒ `TypeOf`) and `check_sound` (`check` ⇒ `Check`)
@@ -77,7 +77,7 @@ lake env lean scratch/blsketch_synth_demos.lean   # needs `z3` on PATH
 | Nonlinear | Keep `mul` including var×var (`flatMap`); undecidable in theory, Z3 in practice |
 | Oracles | **Three** 3‑valued APIs: `checkValid`, `solve`, `unique`; `unknown` never proves |
 | Trust / TCB | Only `.valid` / `.witness` / `.unique` are axiomatized as sound; Encode/Parse/Process unverified; don’t axiomatize `.invalid`/`.unsat`/`.multiple` |
-| Ambiguity | When uniqueness fails on **escaping** outputs → **no derivation** (fail / require annotation). No commit‑a‑model in the core relation |
+| Ambiguity | Declarative: existence of a solve witness is enough (non-unique ≠ ill-typed). Algo: `forceSubtype` may still require `unique` on escaping `obsBounds` (fail / annotate). No commit‑a‑model yet |
 | Demand | Negative bounds: ≤1 inferable, affine over rigid (`DemandOK`, syntactic). Positive may use products |
 | Join / meet | Structural join (`joinBranchTy`): same shape; on every `BL`, join bounds and recurse into elems; meet inhabitability = `checkValid` side condition, not a `TypeOf` constructor |
 | Schemes | Prenex **count then type** binders (`SchemeBinder` / `SchemeArg`); **story A** — flat indices + `SchemeWF`; no nested scheme LN; explicit `@` spine (no inference) |
@@ -87,7 +87,7 @@ lake env lean scratch/blsketch_synth_demos.lean   # needs `z3` on PATH
 | Annotations | Structure annotated on λ/let; bound holes via `AnnoTy` (`Option Count`) |
 | Match | Refine `Δ`; nil: `lo ≤ 0` (**do not force `hi = 0`**); cons‑only when `1 ≤ lo`; nil‑only when `hi ≤ 0`; branch types joined structurally; `consCtx` binds head:`elem`, tail:`BL (pred lo) (pred hi) elem` |
 | Freshness | Thread `Φ : Nat` (InferW‑style), not `StateM` |
-| Narrowing sites | HM-style solve+unique at **app / anno / letScheme** (`*Infer` rules) and algorithmic `check`; plain `Sub` at those sites too |
+| Narrowing sites | HM-style solve (∃) at **app / anno / letScheme** (`*Infer` rules) and algorithmic `check`; plain `Sub` at those sites too. Algo may add `unique` via `forceSubtype` |
 | Checking vs synth | **`TypeOf` stays syntax-directed** (no general subsumption). Algorithmic `check` is justified by separate **`Check`** (`ofSub` / `ofInfer` / `nil`) |
 | `Sub` refl | `Sub.bl_refl` — equal BL intervals without opaque `checkValid` (no completeness axiom) |
 | Z3 plumbing | Subprocess `z3` on PATH; **no** libz3 C shim yet |
@@ -104,7 +104,7 @@ Leave these alone unless the user reopens them:
 - Opsem, preservation, progress
 - Scheme binder LN / nested hygiene (stay on story A)
 - Semantic / normalized `DemandOK` (syntactic is enough for the sketch)
-- Commit‑a‑model when non‑unique (sketch fails instead)
+- Commit‑a‑model / chooser when non‑unique (algo currently fails via `unique` gate; declarative allows any witness)
 - Inferred let‑generalisation + production commit policy; type-`@` inference
 - ~~Recursive **reverse**~~ — **done** (append + `letRecScheme` in `blsketch_synth_demos.lean`)
 - `unknown` UX / solver timeouts as product features
@@ -126,7 +126,7 @@ Leave these alone unless the user reopens them:
 5. **Soft spots** (document or lightly tighten — see below; **no redesign required** unless user asks):
    - Flat scheme hygiene vs real LN (now with mixed binder kinds — still prenex only)
    - Algo does not substitute witnesses into returned types; declarative existentially picks `σ`
-   - Escape / `unique` on `obsBounds` — confirm policy is what we want at every `forceSubtype` site
+   - Escape / `unique` on `obsBounds` — **algo-only** policy at `forceSubtype` (left declarative TypeOf in `2426eb1`); confirm outs list per site if weird examples appear
    - Standalone `tail` synth prints `pred(·+1)` until packed under `letScheme`+`Sub`
 
 ### Later / product
@@ -153,9 +153,9 @@ These are **not blockers**. They are “know the sketch’s corners.”
 **Decision needed?** Only if you want “normalize types under `σ` before returning” as UX/product. Optional polish, not a foundation fork.
 
 ### C. Escape / uniqueness policy
-**What:** `unique` is checked on the **source** type’s `obsBounds`. Fail ⇒ no derivation. Same helper (`forceSubtype`) at app, anno, letScheme, and `check`.
-**Risk:** Whether “observable escape” is the right output list at every site (e.g. should app uniqueness look at the *codomain* somehow?). Current policy is uniform and locked in the Infer rules.
-**Decision needed?** Only if you notice a concrete weird example where you’d want different outs. Otherwise leave it.
+**What:** Declarative `TypeOf` / `Check` `*Infer` rules require only `solve = .witness` (no unique premise; `2426eb1`). Algorithmic `forceSubtype` still checks `unique` on the **source** type’s `obsBounds`; fail ⇒ synth/check `none` (stricter than TypeOf). Same helper at app, anno, letScheme, and `check`. `unique_sound` kept for future algo theorems.
+**Risk:** Whether “observable escape” is the right output list at every site (e.g. should app uniqueness look at the *codomain* somehow?). Also: algo gap (TypeOf accepts some programs synth rejects). Completeness not claimed.
+**Decision needed?** Only if you want to drop/relax the algo gate, introduce a chooser, or change outs. Otherwise leave it.
 
 ### D. ~~Elem equality vs subtyping~~ — done
 Recursive `Sub` on elems + structural `joinBranchTy` landed (`5814e0b`).
