@@ -1154,8 +1154,10 @@ equal non-`BL` types).
 
 /-- Elaborator decision after narrowing evidence is gathered. -/
 inductive Commit where
-  /-- Accept; `σ` should be the witness from evidence (forceSubtype uses evidence's `σ`). -/
+  /-- Accept auto-commit; `σ` is the witness from evidence (forceSubtype reuses it). -/
   | accept (σ : Assign)
+
+  /-- Refuse auto-commit for this evidence under the current policy. -/
   | reject
 
 /-- Oracle-shaped evidence for one solve+unique probe (exclusive cases).
@@ -1164,10 +1166,12 @@ once uniqueness is honest — see TODO(unique-honesty). -/
 inductive NarrowingEvidence (ψ : ExistsProblem) (outs : List Count) where
   /-- No usable witness (`unsat` or `unknown`). -/
   | none
+
   /-- Witness plus oracle `.unique` on `outs`. -/
   | unique (σ : Assign)
       (hσ : solve ψ = .witness σ)
       (hu : unique ψ outs = .unique)
+
   /-- Witness without uniqueness (oracle `.multiple` or `.unknown`). -/
   | some_ (σ : Assign)
       (hσ : solve ψ = .witness σ)
@@ -1177,6 +1181,7 @@ inductive NarrowingEvidence (ψ : ExistsProblem) (outs : List Count) where
 inductive PolicyKind where
   /-- Auto-commit only when oracle reports unique (historical default). -/
   | uniqueOnly
+
   /-- Auto-commit any solve witness; ignore uniqueness. -/
   | anyWitness
   deriving DecidableEq, Repr
@@ -1185,16 +1190,27 @@ inductive PolicyKind where
 inductive Commits :
     PolicyKind → {ψ : ExistsProblem} → {outs : List Count} →
       NarrowingEvidence ψ outs → Commit → Prop where
+  /-- `uniqueOnly` accepts a unique solve witness. -/
   | uniqueOnly_accept {ψ outs σ hσ hu} :
       Commits .uniqueOnly (ψ := ψ) (outs := outs) (.unique σ hσ hu) (.accept σ)
+
+  /-- `uniqueOnly` rejects when there is no witness. -/
   | uniqueOnly_reject_none {ψ outs} :
       Commits .uniqueOnly (ψ := ψ) (outs := outs) .none .reject
+
+  /-- `uniqueOnly` rejects a non-unique witness. -/
   | uniqueOnly_reject_some {ψ outs σ hσ hnot} :
       Commits .uniqueOnly (ψ := ψ) (outs := outs) (.some_ σ hσ hnot) .reject
+
+  /-- `anyWitness` accepts a unique solve witness. -/
   | anyWitness_accept_unique {ψ outs σ hσ hu} :
       Commits .anyWitness (ψ := ψ) (outs := outs) (.unique σ hσ hu) (.accept σ)
+
+  /-- `anyWitness` accepts any solve witness (even non-unique). -/
   | anyWitness_accept_some {ψ outs σ hσ hnot} :
       Commits .anyWitness (ψ := ψ) (outs := outs) (.some_ σ hσ hnot) (.accept σ)
+
+  /-- `anyWitness` rejects when there is no witness. -/
   | anyWitness_reject_none {ψ outs} :
       Commits .anyWitness (ψ := ψ) (outs := outs) .none .reject
 
@@ -1248,7 +1264,10 @@ def gatherNarrowingEvidence (ψ : ExistsProblem) (outs : List Count) :
 
 /-- Success of `forceSubtype`: plain `Sub` or a solve witness (not yet applied to types). -/
 inductive ForceOk where
+  /-- Plain algorithmic subtype (`checkSub`) succeeded; no solve needed. -/
   | plainSub
+
+  /-- Narrowing via solve; `σ` is the evidence witness (not yet applied to types — PR3b). -/
   | solved (σ : Assign)
 
 @[simp] def Count.isRigidOnly : Count → Bool
