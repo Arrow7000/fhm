@@ -699,7 +699,7 @@ def WellBound (ctors : CtorEnv) (e : Expr) (τ : Ty) (β : BoundInfo) : Prop :=
 
 /-! ## P3: BoundCovers — List match coverage under path conditions
 
-**Status:** shapes for sign-off (defaults approved 2026-07-28).
+**Status:** P3 theorems proved (branch detectors + `BoundCovers.only_list`).
 
 Independent of Core `AllMatchesExhaustive`. Pipeline (BL mode):
 * List scrutinee with refined `β` → require `BoundCovers Δ β branches`
@@ -763,7 +763,7 @@ def BoundCoversMatch (Δ : List Constraint) (β : BoundInfo)
 def BoundCoversClosed (β : BoundInfo) (brs : List (MatchPattern × Expr)) : Prop :=
   BoundCovers [] β brs
 
-/-! ### P3 theorem statements (prove after sign-off) -/
+/-! ### P3 theorems -/
 
 /-- Executable detectors for branch presence (mirrors of the Props). -/
 def hasNilBranchB (brs : List (MatchPattern × Expr)) : Bool :=
@@ -783,15 +783,42 @@ def hasWildcardBranchB (brs : List (MatchPattern × Expr)) : Bool :=
 
 theorem hasNilBranch_iff (brs : List (MatchPattern × Expr)) :
     hasNilBranchB brs = true ↔ hasNilBranch brs := by
-  sorry
+  constructor
+  · intro h
+    obtain ⟨x, hx, hp⟩ := List.any_eq_true.mp h
+    match x with
+    | (.named c n, body) =>
+        simp only [Bool.and_eq_true, beq_iff_eq] at hp
+        obtain ⟨rfl, rfl⟩ := hp
+        exact ⟨body, hx⟩
+    | (.wildcard, _) => simp at hp
+  · intro ⟨body, hmem⟩
+    exact List.any_eq_true.mpr ⟨(.named nilCtorName 0, body), hmem, by simp⟩
 
 theorem hasConsBranch_iff (brs : List (MatchPattern × Expr)) :
     hasConsBranchB brs = true ↔ hasConsBranch brs := by
-  sorry
+  constructor
+  · intro h
+    obtain ⟨x, hx, hp⟩ := List.any_eq_true.mp h
+    match x with
+    | (.named c n, body) =>
+        simp only [Bool.and_eq_true, beq_iff_eq] at hp
+        obtain ⟨rfl, rfl⟩ := hp
+        exact ⟨body, hx⟩
+    | (.wildcard, _) => simp at hp
+  · intro ⟨body, hmem⟩
+    exact List.any_eq_true.mpr ⟨(.named consCtorName 2, body), hmem, by simp⟩
 
 theorem hasWildcardBranch_iff (brs : List (MatchPattern × Expr)) :
     hasWildcardBranchB brs = true ↔ hasWildcardBranch brs := by
-  sorry
+  constructor
+  · intro h
+    obtain ⟨x, hx, hp⟩ := List.any_eq_true.mp h
+    match x with
+    | (.named _ _, _) => simp at hp
+    | (.wildcard, body) => exact ⟨body, hx⟩
+  · intro ⟨body, hmem⟩
+    exact List.any_eq_true.mpr ⟨(.wildcard, body), hmem, rfl⟩
 
 /-- Full List match is always covered (no Z3). -/
 theorem BoundCovers.listFull_of_both {Δ lo hi βe brs}
@@ -809,6 +836,10 @@ theorem BoundCovers.listWild_of {Δ lo hi βe brs}
 theorem BoundCovers.only_list {Δ β brs}
     (h : BoundCovers Δ β brs) :
     ∃ lo hi βe, β = .list lo hi βe := by
-  sorry
+  cases h with
+  | listFull => exact ⟨_, _, _, rfl⟩
+  | listNilOnly => exact ⟨_, _, _, rfl⟩
+  | listConsOnly => exact ⟨_, _, _, rfl⟩
+  | listWild => exact ⟨_, _, _, rfl⟩
 
 end FHM.Bounds
