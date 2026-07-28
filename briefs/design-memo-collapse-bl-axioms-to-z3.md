@@ -1,9 +1,9 @@
 # Design memo: collapse BLSketch oracle axioms onto the Z3 layer
 
-**Status:** proposal (not implemented)  
-**Date:** 2026-07-27  
+**Status:** partially implemented — definitional BL oracles landed; soundness still BL axioms  
+**Date:** 2026-07-28  
 **Scope:** `FHM/BLSketch.lean` oracle interface + `FHM/Z3/Oracle.lean`  
-**Related:** uniqueness leaving declarative `TypeOf`/`Check` (see below); dual-stack HM+bounds merge investigation
+**Related:** uniqueness leaving declarative `TypeOf`/`Check`; unique-honesty on `uniqueZ3`; dual-stack HM+bounds layer
 
 ---
 
@@ -274,9 +274,10 @@ Headlines / docs should say: bound-layer theorems that open `Valid`/`SolvedBy` d
 
 ### Phase B — Definitional bridge
 
-1. Change `checkValid`/`solve`/(optional)`unique` from `opaque`+`implemented_by` to `def` = `Z3Bridge.*`.
+1. ~~Change `checkValid`/`solve`/`unique` from `opaque`+`implemented_by` to `def` = `Z3Bridge.*`.~~ **done**
 2. Confirm `#eval` / scratch demos still hit Z3 via `decide`→`z3Run`.
-3. Grep for remaining `opaque` at BL layer; should be none for oracles.
+3. ~~Grep for remaining `opaque` at BL layer; should be none for oracles.~~ **done** (only `z3Run` remains)
+4. **Remaining:** prove `checkValid_sound` / `solve_sound` / (honest) `unique_sound` from Z3 positives + encoding lemmas; then delete the three BL axioms.
 
 ### Phase C — Encoding lemmas
 

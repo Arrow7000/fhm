@@ -645,45 +645,39 @@ def uniqueZ3 (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
 
 end Z3Bridge
 
-unsafe def checkValidImpl (φ : ForallProblem) : ValidVerdict :=
+/-! ### Definitional BL oracles (no second opacity layer)
+
+`checkValid` / `solve` / `unique` are plain wrappers over `Z3Bridge.*`, which
+call pure `decide` / `decideGoals` on top of `opaque z3Run`. **One** IO fiction
+(no `@[implemented_by]` / `unsafe` re-shim at the BL layer).
+
+Soundness axioms below still sit at the BL problem-language level. Proving them
+from `decide_*_sound` needs encoding lemmas (`countToExpr` ↔ `Count.eval`, etc.);
+that is the remaining PR4 proof work. Removing the second opacity layer is the
+structural half: Lean can now unfold BL oracles to the Z3 bridge. -/
+
+/-- ∀ oracle: every goal verified under premises (runtime: Z3 via `decide`). -/
+def checkValid (φ : ForallProblem) : ValidVerdict :=
   Z3Bridge.checkValidZ3 φ
 
-unsafe def solveImpl (ψ : ExistsProblem) : SolveVerdict :=
+/-- ∃∀ witness oracle. Returns **one** model if sat — not all solutions. -/
+def solve (ψ : ExistsProblem) : SolveVerdict :=
   Z3Bridge.solveZ3 ψ
 
-unsafe def uniqueImpl (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
+/-- Uniqueness oracle on chosen outputs (block-and-recheck after a witness).
+`.unique` only after strong unsat on every alternative. -/
+def unique (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
   Z3Bridge.uniqueZ3 ψ outs
 
-/-- Opaque interface for the ∀ oracle. At runtime Lean replaces this with
-`checkValidImpl` (`@[implemented_by]`). The `*Impl` helpers are `unsafe`
-because they perform IO (spawn `z3`); `opaque` keeps the logical interface
-looking pure so proofs can mention `checkValid φ = .valid`. -/
-@[implemented_by checkValidImpl]
-opaque checkValid : ForallProblem → ValidVerdict
-
-/-- Opaque ∃∀ witness oracle (runtime: `solveImpl`). Returns **one** model if
-sat — not an enumeration of all solutions. -/
-@[implemented_by solveImpl]
-opaque solve : ExistsProblem → SolveVerdict
-
-/-- Opaque uniqueness oracle on chosen outputs (runtime: `uniqueImpl`).
-Separate from `solve`: first find a witness, then ask whether those `outs`
-are forced across all solutions. `.unique` requires strong unsat on every
-alternative (see `Z3Bridge.uniqueZ3`); inconclusive solver answers ⇒ `.unknown`. -/
-@[implemented_by uniqueImpl]
-opaque unique (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict
-
-/-- Soundness: only `.valid` is axiomatised (mirrors `decide_verified_sound`). -/
+/-- Soundness: only `.valid` is axiomatised (to be proved from `decide_verified_sound`). -/
 axiom checkValid_sound (φ : ForallProblem) :
     checkValid φ = .valid → φ.Valid
 
-/-- Soundness: only `.witness` is axiomatised (mirrors `decide_witness_sound`). -/
+/-- Soundness: only `.witness` is axiomatised (multi-goal witness bridge TBD). -/
 axiom solve_sound (ψ : ExistsProblem) (σ : Assign) :
     solve ψ = .witness σ → ψ.SolvedBy σ
 
-/-- Soundness: only `.unique` is axiomatised. `.multiple` / `.unknown` carry no theorems.
-Implementation only returns `.unique` after strong unsat on alternatives
-(`uniqueZ3`); still an axiom until proved from Z3 positives (PR4). -/
+/-- Soundness: only `.unique` is axiomatised (block-and-recheck bridge TBD). -/
 axiom unique_sound (ψ : ExistsProblem) (outs : List Count) :
     unique ψ outs = .unique → ψ.UniqueOutputs outs
 
