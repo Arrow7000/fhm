@@ -609,7 +609,14 @@ def solveZ3 (ψ : ExistsProblem) : SolveVerdict :=
     | .unknown "z3 reports no witness exists" => .unsat
     | _ => .unknown
 
-/-- After a witness, try to find another solution with a different output value. -/
+/-- After a witness, try to find another solution with a different output value.
+
+TODO(unique-honesty): `.unique` must mean “no other model on `outs`”, not
+“didn’t find one.” Today any non-`.witness` on the block/recheck query
+(including `.unknown` / timeout) is treated as “no other” and yields `.unique`.
+Require a genuine strong negative (e.g. unsat / verified impossibility of an
+alternative) before returning `.unique`; map solver `unknown` → `.unknown`.
+Until then `unique_sound` overclaims relative to true `UniqueOutputs`. -/
 def uniqueZ3 (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
   match solveZ3 ψ with
   | .unsat => .unknown
@@ -621,6 +628,8 @@ def uniqueZ3 (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
     let goals := constraintsToAssumptions ψ.cons
     let differs (c : Count) (v : Nat) : List Assumptions :=
       [[.lt (countToExpr c) (.lit v)], [.lt (.lit v) (countToExpr c)]]
+    -- TODO(unique-honesty): distinguish unsat (no other) vs unknown (inconclusive);
+    -- only unsat on all alternative queries should yield `.unique` below.
     let anyOther :=
       (outs.zip vals).any fun (c, v) =>
         (differs c v).any fun extra =>
@@ -654,7 +663,10 @@ opaque solve : ExistsProblem → SolveVerdict
 
 /-- Opaque uniqueness oracle on chosen outputs (runtime: `uniqueImpl`).
 Separate from `solve`: first find a witness, then ask whether those `outs`
-are forced across all solutions. -/
+are forced across all solutions.
+
+TODO(unique-honesty): see `Z3Bridge.uniqueZ3` — `.unique` is not yet an honest
+“no other model” verdict (unknown-on-alternative can become `.unique`). -/
 @[implemented_by uniqueImpl]
 opaque unique (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict
 
@@ -666,7 +678,11 @@ axiom checkValid_sound (φ : ForallProblem) :
 axiom solve_sound (ψ : ExistsProblem) (σ : Assign) :
     solve ψ = .witness σ → ψ.SolvedBy σ
 
-/-- Soundness: only `.unique` is axiomatised. `.multiple` / `.unknown` carry no theorems. -/
+/-- Soundness: only `.unique` is axiomatised. `.multiple` / `.unknown` carry no theorems.
+
+TODO(unique-honesty): safe only once `uniqueZ3` returns `.unique` solely when
+alternatives are strongly refuted (unsat/verified), never on solver `unknown`.
+Until then this axiom overclaims `UniqueOutputs` relative to the implementation. -/
 axiom unique_sound (ψ : ExistsProblem) (outs : List Count) :
     unique ψ outs = .unique → ψ.UniqueOutputs outs
 
