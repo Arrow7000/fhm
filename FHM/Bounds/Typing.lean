@@ -842,4 +842,223 @@ theorem BoundCovers.only_list {Δ β brs}
   | listConsOnly => exact ⟨_, _, _, rfl⟩
   | listWild => exact ⟨_, _, _, rfl⟩
 
+/-! ## P3.5b — BoundAnn + pipeline contract (shapes for sign-off)
+
+**Status:** API review — not yet used by Surface/Live.
+
+After Infer we have Core `e`, HM type `τ`, and synthesized `β` from `HasBounds`.
+Surface erase will also produce **ascriptions** (user-written `BL lo hi t` on
+bindings). Those ascriptions are checked with `Sub`, not re-inferred.
+
+### Design locks (memo)
+
+* Key ascriptions by **binding de Bruijn index** after lower (parallel to env),
+  plus optional body ascription — avoid expression-path maps through PatComp.
+* Holes in bound slots: `Option Count` (`none` = hole) until `Count.inf` / solve.
+* Pipeline coverage: List `β` → `BoundCovers`; non-List → HM exhaustiveness (external).
+-/
+
+/-- A single count slot from surface: concrete or hole (to be solved / defaulted). -/
+inductive AnnoCount where
+  | hole
+  | solid (c : Count)
+  deriving Repr
+
+/-- Bound ascription with holes, same spine as `BoundInfo`.
+List is the only place `AnnoCount` appears; everything else mirrors `BoundInfo`. -/
+inductive BoundAnn where
+  | prim (p : PrimTy)
+  | arrow (dom cod : BoundAnn)
+  | bvar (i : Nat)
+  | fvar (i : Nat)
+  | list (lo hi : AnnoCount) (elem : BoundAnn)
+  | custom (name : TyName) (args : List BoundAnn)
+  deriving Repr
+
+/-- Solid ascription (no holes) is already a `BoundInfo`; `none` if any hole remains. -/
+def BoundAnn.toBoundInfo? : BoundAnn → Option BoundInfo
+  | .prim p => some (.prim p)
+  | .bvar i => some (.bvar i)
+  | .fvar i => some (.fvar i)
+  | .arrow d c =>
+      match BoundAnn.toBoundInfo? d, BoundAnn.toBoundInfo? c with
+      | some βd, some βc => some (.arrow βd βc)
+      | _, _ => none
+  | .list (.solid lo) (.solid hi) e =>
+      match BoundAnn.toBoundInfo? e with
+      | some βe => some (.list lo hi βe)
+      | none => none
+  | .list _ _ _ => none
+  | .custom n as =>
+      if n = listTyName then none
+      else
+        let rec go : (as : List BoundAnn) → Option (List BoundInfo)
+          | [] => some []
+          | a :: rest =>
+              match BoundAnn.toBoundInfo? a, go rest with
+              | some β, some bs => some (β :: bs)
+              | _, _ => none
+            termination_by as => sizeOf as
+        (go as).map (fun bs => .custom n bs)
+termination_by a => sizeOf a
+
+/-- Pointwise solid conversion of annotation argument lists. -/
+def BoundAnnList.toBoundInfo? : List BoundAnn → Option (List BoundInfo)
+  | [] => some []
+  | a :: rest =>
+      match BoundAnn.toBoundInfo? a, BoundAnnList.toBoundInfo? rest with
+      | some β, some bs => some (β :: bs)
+      | _, _ => none
+termination_by as => sizeOf as
+
+/-- `ElabCount Φ a c Φ'` — elaborate annotation count; holes allocate inferables from frontier `Φ`. -/
+inductive ElabCount : Nat → AnnoCount → Count → Nat → Prop where
+  | hole {Φ} :
+      ElabCount Φ .hole (.var ⟨.inferable, Φ⟩) (Φ + 1)
+  | solid {Φ c} :
+      ElabCount Φ (.solid c) c Φ
+
+/-- `ElabAnn Φ ann β Φ'` — fill holes in a bound ascription to a concrete `BoundInfo`.
+
+v1: holes only in **list** `lo`/`hi` (and nested lists via `elem`).
+`custom` args must already be solid (`toBoundInfo?`). -/
+inductive ElabAnn : Nat → BoundAnn → BoundInfo → Nat → Prop where
+  | prim {Φ p} :
+      ElabAnn Φ (.prim p) (.prim p) Φ
+  | bvar {Φ i} :
+      ElabAnn Φ (.bvar i) (.bvar i) Φ
+  | fvar {Φ i} :
+      ElabAnn Φ (.fvar i) (.fvar i) Φ
+  | arrow {Φ a b βa βb Φ₁ Φ₂} :
+      ElabAnn Φ a βa Φ₁ →
+      ElabAnn Φ₁ b βb Φ₂ →
+      ElabAnn Φ (.arrow a b) (.arrow βa βb) Φ₂
+  | list {Φ lo hi e clo chi βe Φ₁ Φ₂ Φ₃} :
+      ElabCount Φ lo clo Φ₁ →
+      ElabCount Φ₁ hi chi Φ₂ →
+      ElabAnn Φ₂ e βe Φ₃ →
+      ElabAnn Φ (.list lo hi e) (.list clo chi βe) Φ₃
+  | custom {Φ name as bs} :
+      name ≠ listTyName →
+      BoundAnnList.toBoundInfo? as = some bs →
+      ElabAnn Φ (.custom name as) (.custom name bs) Φ
+
+/-- Program-level bound ascriptions after lower (de Bruijn parallel to value env).
+
+`binderAnns[i] = some ann` means binding `i` was surface-ascribed; the body of
+the program may carry `bodyAnn`. Missing entries = no ascription (pure synth). -/
+structure ProgramBoundAnns where
+  /-- Parallel to Core `env` after lower: index 0 = innermost binder. -/
+  binderAnns : List (Option BoundAnn) := []
+  /-- Optional expected bounds on the whole expression / program body. -/
+  bodyAnn : Option BoundAnn := none
+  deriving Repr
+
+/-- Lookup ascription for de Bruijn index `i`. -/
+def ProgramBoundAnns.get? (a : ProgramBoundAnns) (i : Nat) : Option BoundAnn :=
+  a.binderAnns[i]? |>.join
+
+/-- Empty ascriptions (HM-only or no surface bounds). -/
+def ProgramBoundAnns.empty : ProgramBoundAnns := {}
+
+/-! ### Checking ascriptions against synthesized bounds -/
+
+/-- Synthesized `β` satisfies surface ascription `ann` under `Δ` (after elab of holes). -/
+inductive MeetsAscription (Δ : List Constraint) : BoundInfo → BoundAnn → Prop where
+  | solid {β ann β'} :
+      BoundAnn.toBoundInfo? ann = some β' →
+      Sub Δ β β' →
+      MeetsAscription Δ β ann
+  | elab {β ann β' Φ Φ'} :
+      ElabAnn Φ ann β' Φ' →
+      Sub Δ β β' →
+      MeetsAscription Δ β ann
+
+/-- Env of synthesized bound infos (from walking HasBounds under binders).
+Same length/discipline as `BoundEnv`. -/
+abbrev SynthBoundEnv := BoundEnv
+
+/-- Every present binder ascription is met by the synthesized binder bounds. -/
+def MeetsBinderAnns (Δ : List Constraint)
+    (syn : SynthBoundEnv) (anns : ProgramBoundAnns) : Prop :=
+  ∀ (i : Nat) (ann : BoundAnn),
+    anns.binderAnns[i]? = some (some ann) →
+      ∃ β : BoundInfo, syn[i]? = some β ∧ MeetsAscription Δ β ann
+
+/-! ### Pipeline coverage contract -/
+
+/-- Does this bound view require `BoundCovers` (List) vs HM exhaustiveness? -/
+def BoundInfo.needsBoundCovers : BoundInfo → Bool
+  | .list _ _ _ => true
+  | _ => false
+
+/-- BL-mode match safety side condition, parameterized by external HM exhaustiveness.
+
+`hmExh brs` is intended to be `AllMatchesExhaustive` (or surface check) on the
+match when bounds do not refine List coverage. Kept abstract so Bounds does not
+import SurfaceBridge. -/
+inductive MatchSafe
+    (Δ : List Constraint)
+    (hmExh : List (MatchPattern × Expr) → Prop) :
+    BoundInfo → List (MatchPattern × Expr) → Prop where
+  /-- List scrutinee bounds: use BoundCovers. -/
+  | list {lo hi βe brs} :
+      BoundCovers Δ (.list lo hi βe) brs →
+      MatchSafe Δ hmExh (.list lo hi βe) brs
+  /-- Non-List: fall back to ordinary exhaustiveness. -/
+  | nonList {β brs} :
+      BoundInfo.needsBoundCovers β = false →
+      hmExh brs →
+      MatchSafe Δ hmExh β brs
+
+/-- Top-level BL-mode judgment sketch (empty path, closed program).
+
+`hmExh` plugs in Core/Surface exhaustiveness for non-List matches.
+Full progress composition remains a later theorem. -/
+structure BoundProgramOK
+    (ctors : CtorEnv)
+    (hmExh : List (MatchPattern × Expr) → Prop)
+    (e : Expr) (τ : Ty) (β : BoundInfo)
+    (anns : ProgramBoundAnns) : Prop where
+  hm : TypeOfElabHM ⟨[], ctors⟩ e τ
+  bounds : HasBounds [] [] e τ β
+  agrees : Agrees β τ
+  /-- Body ascription, if any. -/
+  body_ann :
+      match anns.bodyAnn with
+      | none => True
+      | some ann => MeetsAscription [] β ann
+  /-- If `e` is a match, coverage per `MatchSafe`; otherwise True.
+  Nested matches: require a separate walk (algo/pipeline), not this top-level Prop.
+  v1 demos may only check the outer match. -/
+  match_ok :
+      match e with
+      | .match_ _ brs => MatchSafe [] hmExh β brs
+      | _ => True
+
+/-! ### P3.5b theorem statements (after sign-off) -/
+
+theorem ElabCount.frontier_le {Φ a c Φ'} (h : ElabCount Φ a c Φ') : Φ ≤ Φ' := by
+  sorry
+
+theorem ElabAnn.frontier_le {Φ ann β Φ'} (h : ElabAnn Φ ann β Φ') : Φ ≤ Φ' := by
+  sorry
+
+/-- After elaboration, β is a solid BoundInfo; agreement with τ is a pipeline
+duty (erase produces ann aligned with τ). Stated for the solid-ascription path. -/
+theorem MeetsAscription.sub {Δ β ann β'}
+    (h : BoundAnn.toBoundInfo? ann = some β')
+    (hs : Sub Δ β β') :
+    MeetsAscription Δ β ann :=
+  .solid h hs
+
+theorem BoundInfo.needsBoundCovers_iff (β : BoundInfo) :
+    BoundInfo.needsBoundCovers β = true ↔ ∃ lo hi e, β = .list lo hi e := by
+  sorry
+
+theorem MatchSafe.list_of_covers {Δ hmExh lo hi βe brs}
+    (h : BoundCovers Δ (.list lo hi βe) brs) :
+    MatchSafe Δ hmExh (.list lo hi βe) brs :=
+  .list h
+
 end FHM.Bounds

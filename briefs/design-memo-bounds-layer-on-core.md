@@ -1,9 +1,18 @@
 # Design memo: bounds layer on Core (B′ plan)
 
-**Status:** agreed direction — implement in phases  
-**Date:** 2026-07-28  
+**Status:** living plan — P1–P3 done; reshuffled residual work  
+**Updated:** 2026-07-29  
 **Repo:** `/Users/aron/dev/blt` (sandbox; merge back into `fhm` later as optional package)  
-**Supersedes / builds on:** dual-stack investigation; uniqueness-out-of-TypeOf; axiom-collapse (partial); type-holes research (orthogonal)
+**Canonical doc for this integration** (plus satellite briefs below)
+
+**Related briefs (not replaced):**
+
+| Doc | Role |
+|-----|------|
+| `design-memo-collapse-bl-axioms-to-z3.md` | Oracle TCB / prove BL axioms from Z3 |
+| `design-p1-bounds-kernel-api.md` | P1 conceptual (API now in Lean) |
+| `next-agent-brief-remove-unique-from-typeof.md` | BLSketch uniqueness exit (done) |
+| `next-agent-brief-type-holes.md` | HM type holes / head-binder packing (**orthogonal**) |
 
 ---
 
@@ -30,15 +39,21 @@ Add a **BoundedList refinement layer** on top of the existing FHM Hindley–Miln
 | D2 | **Core `Ty` / `Expr` / InferW / TypeOf\***: **no** bound constructors, no Infer changes for v1 |
 | D3 | **List as ADT:** refinements of `customTy "List" [α]` + `Nil`/`Cons`, not Core primitive `BL` |
 | D4 | **Surface: B′ (same AST)** — extend `Surface.Ty` (etc.) with bounds; **one** grammar |
-| D5 | **`eraseBounds`** rewrites `BL lo hi t` → surface `List t` (or equivalent sugar that lowers to List); **bound holes `_` only in BoundAnn** — HM side always knows “list of `t`” |
-| D6 | **`DoesntContainBounds`** on erased programs; SurfaceBridge (and other exhaustive `Surface.Ty` matches) get **absurd `.bl` arms** via that proof — **no** bound semantics in the bridge |
-| D7 | **No second SurfaceBridge / PatComp / SCC** — existing lower runs on bounds-free surface |
-| D8 | **Coverage:** keep `AllMatchesExhaustive` / `checkExhaustive`; add **`BoundCovers`** in Bounds package; compose at pipeline |
-| D9 | **Uniqueness:** not a premise of declarative `HasBounds`; algo/commit policy only (port BLSketch `CommitHandler` ideas) |
-| D10 | **Oracles:** Z3 behind optional target; BL-level axioms OK initially; collapse-to-Z3 later |
-| D11 | **Containment:** all new logic under `FHM/Bounds/` (or equivalent); lake lib e.g. `FHMBounds`; default `FHM` roots stay pure |
-| D12 | **Work here in `blt` for now**; no merge-back/dir housekeeping required yet |
-| D13 | **BLSketch toy Expr/TypeOf:** reference + demos; do not deepen; extract mechanisms into Bounds |
+| D5 | **`eraseBounds`** rewrites `BL lo hi t` → surface `List t`; **bound holes `_` only in BoundAnn** |
+| D6 | **`DoesntContainBounds`** on erased programs; SurfaceBridge absurd `.bl` arms only |
+| D7 | **No second SurfaceBridge / PatComp / SCC** |
+| D8 | **Coverage:** `AllMatchesExhaustive` for non-List; **`BoundCovers`** for List under bounds (Core flat patterns) |
+| D9 | **Uniqueness:** not a premise of declarative `HasBounds`; Commit policy only |
+| D10 | **Oracles:** Z3 optional target; BL axioms OK initially; collapse later |
+| D11 | **Containment:** `FHM/Bounds/`; lake `FHMBounds`; default `FHM` pure |
+| D12 | **Work in `blt` for now**; merge to `fhm` later |
+| D13 | **BLSketch:** reference/demos; kernel extracted into Bounds |
+| D14 | **BoundInfo mirrors Core `Ty`** (prim/arrow/bvar/fvar/list/custom); intervals only on `list` |
+| D15 | **Match join bounds:** min lo / max hi (not equality) |
+| D16 | **HM mode:** reject BL syntax at frontend (not silent erase); Core never sees BL either way |
+| D17 | **Count ∀ syntax (direction):** `{n m : Nat, a b}` — only `: Nat` + bare type vars lower in v1 |
+| D18 | **Surface nested BoundCovers:** **not** for v1 — check **after lower** on Core `BoundCovers` |
+| D19 | **File budget:** prefer few large modules (current: Kernel, Oracle, Commit, Typing) |
 
 ---
 
@@ -51,11 +66,11 @@ Add a **BoundedList refinement layer** on top of the existing FHM Hindley–Miln
 Parse (bounds-aware Surface)          [SurfaceLang + Parse — B]
     │
     ▼
-eraseBounds                           [FHM/Bounds/Erase.lean]
+eraseBounds                           [FHM/Bounds — future Erase]
     │
-    ├──────────────────► BoundAnn     (intervals, holes, count schemes, paths)
+    ├──────────────────► BoundAnn
     ▼
-{ program // DoesntContainBounds }    // BL → List t; no bl left in tree
+{ program // DoesntContainBounds }    // BL → List t
     │
     ▼
 lower / SCC / PatComp                 [SurfaceBridge — absurd .bl only]
@@ -67,204 +82,159 @@ Core.Expr
 Infer / elaborate                     [InferW — UNCHANGED]
     │  τ_HM
     ▼
-boundCheck / HasBounds                [FHM/Bounds — parasitic on τ_HM]
-    │
+HasBounds                             [FHM/Bounds/Typing.lean]
+    │  β
     ▼
-BoundCovers  (BL mode)                [FHM/Bounds/Covers.lean]
-  vs checkExhaustive (HM mode / non-List)
+BoundCovers (List β)                  [same file]
+  vs AllMatchesExhaustive (non-List / HM mode)
     │
     ▼
 evaluate                              [UNCHANGED]
 ```
 
-### Parasitic bound judgment
-
-```text
-HasBounds Δ Γ e τ β
-```
-
-- `e` : Core `Expr`
-- `τ` : HM type **already known** (Infer / TypeOfElabHM)
-- `β` : bound info at that shape (payload on List leaves; structural on arrows)
-- **No** `TypeOfHM` premise inside each ctor; outer theorems conjoin HM typing
-
-### Outer safety (BL mode)
+### Outer safety (BL mode) — target theorem
 
 ```text
 TypeOfElabHM Γ e τ
 ∧ HasBounds … e τ β
-∧ BoundCovers …
+∧ (BoundCovers … β branches  ∨  non-List exhaustiveness)
 ⇒  never stuck
 ∧  (optional later) closed values satisfy length intervals
 ```
 
-`TypeOfElabHM.progress` stays as-is; composite lemmas live in Bounds/Pipeline.
+`TypeOfElabHM.progress` unchanged; composite lemmas in Bounds/Pipeline.
 
 ---
 
-## 4. Surface & erase (detail)
-
-### Surface extensions (minimal v1)
-
-- `Surface.Ty`: `bl (lo hi : BoundCount) (elem : Ty)` (names flexible)
-- `BoundCount`: lit / var / ops / **hole** (`_`)
-- Schemes: optional **count binders** then type binders (story A at surface); erase strips counts into BoundAnn, leaves type-only `PolyTy` for HM
-- Parse/Pretty/editor: BL syntax + holes in **bound** slots only for v1
-
-### `eraseBounds`
-
-| Input | HM-facing output | BoundAnn |
-|-------|------------------|----------|
-| `BL lo hi t` | `List t` (surface form that lowers to List) | record `lo`, `hi` at path |
-| `BL _ hi t` | `List t` | `lo = hole`, `hi = …` |
-| Arrow / pair / custom | recurse | recurse |
-| No BL | identity | empty / none |
-
-**Invariant:** `DoesntContainBounds (erase p).1`
-
-### SurfaceBridge edits
-
-- Thread bounds-free programs (subtype or proof argument), **or** match on `Surface.Ty` with:
-
-  ```lean
-  | .bl .. => nomatch hFree   -- absurd
-  ```
-
-- **Do not** implement Sub, Z3, or BoundAnn filling in the bridge
-- Prefer a single shared `Ty` recursor helper that packages absurd-bl for Pretty/Bridge/WT
-
----
-
-## 5. Bounds package layout (target)
+## 4. Current codebase (as of 2026-07-29)
 
 ```text
 FHM/Bounds/
-  Count.lean          # Count, Constraint, Forall/Exists problems (from BLSketch)
-  Oracle.lean         # checkValid / solve / unique defs + axioms (or re-export Z3)
-  Commit.lean         # PolicyKind, CommitHandler (from BLSketch PR3a)
-  BoundInfo.lean      # β structure over Core.Ty shapes
-  Sub.lean            # Sub Δ on BoundInfo / List intervals
-  Erase.lean          # eraseBounds, DoesntContainBounds
-  HasBounds.lean      # parasitic judgment + Check dual
-  Covers.lean         # BoundCovers (List nil-only / cons-only / full)
-  Synth.lean          # algorithmic bound pass (optional early)
-  Pipeline.lean       # glue: Infer + boundCheck + covers
-  Pretty.lean         # bounds display
+  Kernel.lean    # Count, constraints, DemandOK, Interval, path helpers
+  Oracle.lean    # checkValid / solve / unique + axioms + Z3 bridge
+  Commit.lean    # NarrowingEvidence, PolicyKind, decideCommit
+  Typing.lean    # BoundInfo, Agrees, Sub, HasBounds, CheckBounds, BoundCovers
 ```
 
-Extract from `FHM/BLSketch.lean` rather than rewrite arithmetic/oracle from scratch where possible.
-
-Lake (later / when convenient):
-
-```toml
-[[lean_lib]]
-name = "FHMBounds"
-# not in defaultTargets
-roots = ["FHM.Bounds..."]
-```
-
-Default `FHM` roots: **no** Bounds (or only Bounds-free modules if we temporarily put Erase proofs that depend on Surface without Z3 — prefer Bounds imports Surface, not the reverse for Z3).
-
-**Import rule:** `FHM.Core` / `InferW` never import Bounds. Bounds imports Core/InferW/Surface as needed.
+| Area | Status |
+|------|--------|
+| P1 kernel + BLSketch rewire | **Done** |
+| P2 BoundInfo ≅ Core Ty + HasBounds (List rules) | **Done** |
+| P3 BoundCovers (Core flat patterns) | **Done** |
+| Surface / erase / BoundAnn / CLI | **Not started** |
+| Pipeline glue + composite progress | **Not started** |
+| Bound schemes / stdlib | **Not started** |
+| `Count.inf` | **TODO only** |
+| Axiom collapse to Z3 | **Partial** (definitional oracles; axioms remain) |
 
 ---
 
-## 6. Phased plan
+## 5. Does the reshuffle cover everything?
 
-### Phase 0 — Spec freeze (this memo)
+### 5.1 Original plan → reshuffle mapping
 
-- [x] Dual-stack, B′, erase, DoesntContainBounds, BoundCovers, package shape  
-- [ ] Optional: one-page README pointer / Headlines note “Bounds experimental”
+| Original | Reshuffle | Status |
+|----------|-----------|--------|
+| P0 design freeze | P0 | Done (this memo) |
+| P1 kernel extract | P1 | Done |
+| P2 HasBounds on Core | P2 | Done (stronger: full BoundInfo mirror) |
+| P3 BoundCovers + **progress composition** | P3 covers **done**; **progress split to P3.5/P4c** | Partial |
+| P4 Surface B′ + erase + CLI | P4 | Pending |
+| P5 schemes + stdlib | P5 | Pending |
+| P6 polish / merge / axiom collapse / apply-σ / toggle | P6 | Pending |
 
-**Exit:** implementers treat D1–D13 as locked unless reopened.
+### 5.2 Emergent work folded into reshuffle
 
----
+| Emergent item | Where it sits now |
+|---------------|-------------------|
+| BoundInfo must track **composites** (not list/arrow-only POC) | **Done** in P2 (`custom` + `Agrees`) |
+| `Count.inf` + default list `hi = inf` | **P3.5a** (before/with honest defaults; before polished UX) |
+| `HasBounds.weaken_Δ` unprovable (`checkValid` not mono) | **On-demand** — drop until induction needs it; then semantic `Valid` or mono hyp |
+| BoundAnn keying (post-Infer / bindings) | **P3.5b design lock** before P4 erase |
+| HM mode = frontend reject | **P4 / Live** |
+| `{n : Nat, a}` scheme syntax | **P4 surface + P5** |
+| Core BoundCovers only; surface nested later | **D18** — after-lower check for v1 |
+| Pair/`custom` **intro rules** for HasBounds | **When first composite demo needs them** (shape already exists) |
+| Sub/join proof tweaks (`joinMin`, `ListShapeOK`, …) | **Locked** as implemented unless reopened |
+| unique out of TypeOf / Commit policy / honest uniqueZ3 | **Done** (BLSketch + Bounds.Commit) |
+| Definitional oracles | **Done**; full axiom collapse → **P6** |
 
-### Phase 1 — Kernel extract (no Core Expr yet)
+### 5.3 Worth noting: **not** fully covered / still external
 
-**Deliverable:** `FHM/Bounds/{Count,Oracle,Commit,Sub}` (or single file initially) ported from BLSketch; builds under optional target; demos/oracles still work.
+| Item | Notes |
+|------|-------|
+| **Head-binder packing / HM type holes** (`next-agent-brief-type-holes.md`) | Orthogonal HM UX; not required for bound `_`; not in reshuffle critical path |
+| **Surface nested BoundCovers ⟷ SurfaceCovers mutual** | Explicitly deferred (D18); only if pre-lower diagnostics needed |
+| **Semantic length safety** (`length(v) ∈ [lo,hi]`) | Named in outer safety; no phase owns implementation yet → **P6 or P3.5c optional** |
+| **README / Headlines “Bounds experimental”** | Original P0 checkbox still open |
+| **BLSketch retirement / Core-only demos** | Implied by D13; no explicit “delete BLSketch TypeOf” milestone |
+| **libz3 FFI vs subprocess** | Never in plan; stays out |
+| **zip/take/drop, value-Nat in types** | BLSketch non-goals; still out |
+| **Inferred count generalisation / principal bounds** | Still non-goals |
+| **ConstraintTypeSystem.lean revival** | Still out |
+| **Playground/editor hover for bounds** | Only under P6 “toggle/polish”; thin |
+| **CI job for FHMBounds** | Not specified |
+| **Proving `checkValid_sound` from Z3** | In collapse memo / P6, not blocking Surface |
 
-- Port Count / constraints / problems / Sub on intervals  
-- Port definitional oracles + soundness axioms  
-- Port Commit policy types (default `uniqueOnly`)  
-- Leave toy `TypeOf` in BLSketch as-is or thin-wrap  
-
-**Exit:** `lake build FHMBounds` (or `FHMZ3` roots extended); no Surface changes yet.
-
-**Estimate:** small–medium (mostly move/split + fix imports).
-
----
-
-### Phase 2 — BoundInfo + HasBounds on Core fragment
-
-**Deliverable:** parasitic judgment for **List-heavy fragment** on hand-built Core terms.
-
-- `BoundInfo` / β for `List α` intervals; structural arrows  
-- Rules: Nil, Cons, var mono, app (Sub/force), lambda, let mono, match Nil/Cons with Δ refine  
-- Algorithmic check optional; declarative first  
-- Theorems: local soundness relative to oracles (synth ⇒ HasBounds) if algo exists  
-
-**Exit:** `#eval` / demos: `Cons x (Cons y Nil)` @ `List Int` ⇒ `BL 2 2`; simple Sub.
-
-**Estimate:** medium (new judgment, not 20k InferW).
-
----
-
-### Phase 3 — BoundCovers + progress composition
-
-**Deliverable:** nil-only / cons-only / full List match coverage under Δ + Z3 `checkValid`.
-
-- `BoundCovers` independent of `AllMatchesExhaustive`  
-- Pipeline lemma: HM typed + BoundCovers (+ HasBounds) ⇒ never stuck for fragment  
-- Do **not** edit Core.progress  
-
-**Exit:** killer UX feature formal + runnable on Core terms.
-
-**Estimate:** medium; highest user-visible dual-stack win.
+If something must not fall through cracks: add explicit owners for **semantic length lemmas** and **README pointer** (below).
 
 ---
 
-### Phase 4 — Surface B′ (erase + absurd-bl)
+## 6. Reshuffled residual plan
 
-**Deliverable:** users can write BL types; existing lower stack accepts erased programs.
+### Done
 
-1. Extend `Surface.Ty` (+ Parse, Pretty)  
-2. `eraseBounds` + `DoesntContainBounds` + lemmas (subterms inherit)  
-3. SurfaceBridge / Pretty / WT: absurd `.bl` (or subtype signatures)  
-4. Wire BoundAnn paths through lower **reindexing** if paths are surface-based — prefer **post-Infer** ascriptions keyed by binding identity where possible to avoid path hell  
-5. Live/CLI: `--bl` / mode flag  
+- **P0** — Dual-stack / B′ locks (living memo)  
+- **P1** — `Kernel` / `Oracle` / `Commit`; BLSketch rewire  
+- **P2** — `Typing`: BoundInfo, Agrees, Sub, HasBounds, CheckBounds  
+- **P3** — `BoundCovers` + branch detectors (Core only)
 
-**Binding / path strategy (prefer):**
+### Next (reshuffled)
 
-- BoundAnn primarily on **binding ascriptions** and explicit type annotations (stable names/indices after lower), not every intermediate expr path  
-- After Infer, check elaborated Core at known τ against those ascriptions  
+#### P3.5a — `Count.inf` (small, recommended before polished defaults)
 
-**Exit:** `.fhm` with `BL 0 5 Int` lowers, infers as `List Int`, bound-checks.
+- Add `Count.inf`; eval / DemandOK / Z3 encode / `defaultBounds` list hi = inf  
+- Unblocks honest “unknown length” without lying with `[0,0]`
 
-**Estimate:** medium–large (Surface + bridge exhaustiveness + path/ascription design).
+#### P3.5b — BoundAnn + pipeline contract
 
----
+- **Shapes in** `FHM/Bounds/Typing.lean` (awaiting sign-off): `AnnoCount`, `BoundAnn`,
+  `ElabCount`/`ElabAnn`, `ProgramBoundAnns`, `MeetsAscription`, `MatchSafe`, `BoundProgramOK`
+- Binding-level ascriptions / post-Infer check (avoid path reindexing hell)
+- List `β` → `BoundCovers`; non-List → abstract `hmExh` (AllMatchesExhaustive)
+#### P3.5c — Core-only vertical demos / optional composite safety (before Surface)
 
-### Phase 5 — Bound schemes + stdlib
+- Hand-built Core: Nil/Cons, full match, nil-only / cons-only under `checkValid`  
+- Optional: state (not necessarily prove) composite progress lemma  
+- Proves stack without parse work  
 
-**Deliverable:** length-polymorphic APIs with explicit surface binders / `@` or ann packs.
+#### P4 — Surface B′
 
-- erase strips count telescope into BoundAnn scheme  
-- HasBounds pack/instantiate with Sub/solve + commit policy  
-- Demos: map, filter, append, etc.  
+1. `Surface.Ty` + Parse + Pretty (`bl`, bound holes, optional Nat binders in schemes)  
+2. `eraseBounds` + `DoesntContainBounds` + absurd-`.bl` in SurfaceBridge/Pretty  
+3. HM mode reject BL syntax; BL mode flag (`--bl` candidate)  
+4. Wire HasBounds + BoundCovers after Infer  
 
-**Exit:** annotated stdlib demos through full pipeline.
+**Exit:** `.fhm` with `BL 0 5 Int` → List + bound check + smarter List matches.
 
----
+#### P5 — Bound schemes + stdlib
 
-### Phase 6 — Product polish (optional, parallelisable)
+- `{n m : Nat, a b}` erase → BoundAnn schemes  
+- Pack/instantiate with Sub/solve + Commit  
+- Demos: map, filter, append, …
 
-- Axiom collapse Phases C–D (encoding lemmas; delete BL triple axioms)  
-- Apply-σ into BoundInfo for pretty  
+#### P6 — Polish / hygiene / merge
+
+- Axiom collapse (encoding lemmas; delete BL triple axioms) — see collapse memo  
+- Apply-σ / normalise BoundInfo for pretty  
 - Default commit policy product choice  
-- Playground toggle  
-- Head-binder packing (HM-only; orthogonal brief)  
-- Merge Bounds into `fhm` as optional lib; retire `blt` when ready  
+- Composite progress + optional semantic length lemmas  
+- Playground toggle; README/Headlines note  
+- Merge `FHM/Bounds` into `fhm`; retire `blt` when ready  
+- Optional: head-binder packing (type-holes brief)  
+- Optional: Surface nested BoundCovers if pre-lower UX demands it  
+- Optional: HasBounds rules for Pair.Mk etc. when demos need them  
+- Optional: restated `weaken_Δ` if proofs demand it  
 
 ---
 
@@ -272,96 +242,66 @@ Default `FHM` roots: **no** Bounds (or only Bounds-free modules if we temporaril
 
 | Mode | Front | Coverage | Bound pass |
 |------|-------|----------|------------|
-| **HM (default)** | Parse; reject or ignore BL syntax | `checkExhaustive` | skip |
-| **BL** | Parse BL; erase; lower | `BoundCovers` (+ ctor coverage for non-List as needed) | HasBounds / boundCheck |
+| **HM (default)** | Parse; **reject** BL syntax | `checkExhaustive` / AllMatchesExhaustive | skip |
+| **BL** | Parse BL; erase; lower | `BoundCovers` for List β; ctor exhaustiveness for non-List | HasBounds |
 
 Shared: Infer, elaborate, evaluate.
 
 ---
 
-## 8. Explicitly deferred
+## 8. Explicitly deferred (still)
 
 | Item | Why |
 |------|-----|
-| Core `Ty.bl` | Destroys dual-stack value |
-| InferW completeness for bounds | False / research |
-| Unique in HasBounds | Wrong (policy only) |
-| Full axiom collapse before Phase 1–3 | Hygiene, not blocker |
-| Structural HM type holes (`Int → _ → Int`) | Separate brief; not required for bound `_` |
-| Second full surface language | B′ rejects this |
-| Deep BLSketch refactors (semantic NarrowingEvidence, etc.) | Extract what we need; don’t polish the toy |
+| Core `Ty.bl` | Dual-stack |
+| InferW bound completeness / principal bounds | False / research |
+| Unique in HasBounds | Policy only |
+| Full axiom collapse before Surface | Hygiene |
+| HM structural type holes | Separate brief |
+| Second surface language | B′ |
+| Deep BLSketch polish | Extract done |
+| Surface nested BoundCovers mutual with SurfaceCovers | After-lower Core check first |
+| `HasBounds.weaken_Δ` as originally stated | False for oracle equality |
 
 ---
 
-## 9. Risk register
+## 9. Risk register (updated)
 
 | Risk | Mitigation |
 |------|------------|
-| Path-keyed BoundAnn breaks under lower/elab | Prefer binding-level ascriptions; check post-Infer |
-| `DoesntContainBounds` boilerplate | Shared recursor; erase lemmas once |
-| SurfaceBridge 13k LOC touch radius | Only absurd-bl / signature; no logic |
-| Z3 in default proof cone | Optional lake target; Live may link binary with flag |
-| Scope creep into unify | Hard no in review |
-| BoundCovers vs AllMatchesExhaustive confusion | Docs + separate names; compose only in Pipeline |
+| BoundAnn paths break under lower/elab | Binding-level + post-Infer (P3.5b) |
+| Default `[0,0]` misleads | P3.5a `Count.inf` |
+| SurfaceBridge touch radius | Absurd-bl only |
+| Z3 in default proof cone | Optional `FHMBounds` |
+| Scope creep into unify | Hard no |
+| BoundCovers vs AllMatchesExhaustive | Pipeline contract P3.5b |
+| `checkValid` non-monotonicity | Don’t state weaken_Δ; use Valid if mono needed |
 
 ---
 
-## 10. Success criteria (program-level)
+## 10. Success criteria
 
-- [ ] Default `lake build` (FHM): still pure HM; Headlines axiom guard green  
-- [ ] Optional Bounds build: HasBounds + BoundCovers demos green (z3 on PATH)  
-- [ ] Core/InferW: no bound-related feature work (diff review)  
-- [ ] `BL _ 5 t` erases to List; hole only in BoundAnn  
-- [ ] Nil-only match accepted under proved empty upper bound  
-- [ ] REPL/CLI can run same file path in HM vs BL mode without Core fork  
-
----
-
-## 11. Suggested first implementation PR sequence
-
-| PR | Content | Depends |
-|----|---------|---------|
-| **P0** | This memo landed; optional README one-liner | — |
-| **P1** | Create `FHM/Bounds/` skeleton; move Count/Oracle/Commit from BLSketch | P0 |
-| **P2** | BoundInfo + HasBounds Nil/Cons/app fragment + demos | P1 |
-| **P3** | BoundCovers + composite safety for fragment | P2 |
-| **P4a** | Surface `bl` + Parse + Pretty | P1 |
-| **P4b** | eraseBounds + DoesntContainBounds + absurd-bl in bridge | P4a |
-| **P4c** | Pipeline + CLI `--bl` | P2, P4b |
-| **P5** | Schemes / stdlib | P4c |
-
-P4a can overlap P2 once Surface deps are clear.
+- [x] Optional Bounds build: kernel + Typing (HasBounds, BoundCovers)  
+- [x] Core/InferW free of bound feature work  
+- [ ] Default `lake build` FHM pure; Headlines guard (still true; document Bounds as optional)  
+- [ ] `BL _ 5 t` erases to List; hole in BoundAnn  
+- [ ] Nil-only match under proved empty upper bound (Core demo and/or surface)  
+- [ ] REPL/CLI HM vs BL mode  
+- [ ] Composite never-stuck under HasBounds + BoundCovers (or documented partial)  
 
 ---
 
-## 12. Open / resolved product points
+## 11. One-liner
 
-1. **Surface syntax for count ∀ (resolved direction):** extend `{a b}` schemes to  
-   `{n m : Nat, a b}` — `n`/`m` are Nat (bound) binders; `a`/`b` remain type vars.  
-   Parser may accept other annotations on forall binders later; **lowering only** for  
-   `: Nat` (and bare type vars as today). No lowering for other kinds in v1.
-
-2. **BoundAnn keying:** de Bruijn after lower vs surface names vs post-elab only — still open when Phase 4 lands.
-
-3. **HM mode vs BL mode (clarified):**  
-   Core/`TypeOf*HM` never see `BL` either way — bounds are erased before Core.  
-   The mode choice is **frontend policy** only:  
-   - **HM mode:** if source uses BL syntax (`BL …`, Nat scheme binders, …), **reject at parse/validate** (“enable BL mode”) instead of erase-and-forget.  
-   - **BL mode:** erase → lower → Infer → boundCheck + BoundCovers.  
-   “Silent erase without bound-check” = accept `BL 0 5 Int`, drop the interval, succeed as `List Int` under pure HM — looks fine, never checked bounds. Not a Core typing issue; a product/UX footgun.
-4. **Join of match branch bounds (resolved):** **min lo / max hi** (as in BLSketch `Interval.join` / `joinBranchTy`). Requiring equal bounds is too strict.
-
-5. **Lake / CLI names:** `FHMBounds` target; CLI flag name still open (`--bl` candidate).
-
-6. **Bounds package file budget:** start with **≤3–4 files** (P1 uses exactly three: Kernel, Oracle, Commit). Split later only when stable.
----
-
-## 13. One-liner
-
-> **B′ dual-stack:** one bounds-aware surface; erase `BL … t` to `List t` + BoundAnn; prove `DoesntContainBounds` so the existing lower stack only needs absurd `.bl` cases; run unchanged Infer on Core; check bounds and BoundCovers in `FHM/Bounds/`; never put intervals in Core or InferW.
+> **B′ dual-stack:** BoundInfo mirrors Core Ty with intervals on List; HasBounds + BoundCovers on Core are in; next is inf defaults, BoundAnn contract, Core demos, then Surface erase + pipeline — never put intervals in Core or InferW.
 
 ---
 
-## 14. Next action
+## 12. Next action
 
-Start **P1** (Bounds skeleton + extract from BLSketch) unless a syntax bikeshed on P4a is preferred first for demos — **recommend P1 → P2** so Core-attached judgments exist before Surface noise.
+1. **P3.5b** quick BoundAnn/pipeline lock (or skip if jumping straight to Surface with binding-level BoundAnn only)  
+2. **P3.5a** `Count.inf` if defaults matter before UX  
+3. **P3.5c** Core demos  
+4. **P4** Surface + erase + `--bl`  
+
+Recommend: **P3.5b (short) → P3.5c demos → P4**, with **P3.5a** either before P4 pretty or immediately when printing bounds.
