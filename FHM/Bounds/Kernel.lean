@@ -28,6 +28,10 @@ inductive Count where
   | pred (a : Count)
   | min  (a b : Count)
   | max  (a b : Count)
+  -- TODO(bounds-inf): add `| inf` (unbounded upper/lower as needed). Semantics:
+  --   eval inf = none / ⊤ on ℕ∪{∞}; min/max/add absorb as usual; Z3 encode as
+  --   unconstrained or a dedicated large sort. Then default list hi can be `.inf`
+  --   instead of `.lit 0` (see `defaultBounds` in Typing.lean).
   deriving DecidableEq, Repr
 
 /-- Assignments range over all `Var`s (see `ExistsProblem.SolvedBy` / `agreesOn`). -/
