@@ -37,6 +37,9 @@ Conventions:
 
 namespace BLSketch
 
+open FHM.Bounds
+
+
 @[inline] def prettyParenIf (b : Bool) (s : String) : String :=
   if b then "(" ++ s ++ ")" else s
 
@@ -58,24 +61,24 @@ def prettyCountVarLetter (n : Nat) : String :=
 /-! ## Counts -/
 
 /-- Precedence: `0` top, `1` add/min/max, `2` mul, `3` pred/atomic. -/
-def Count.prettyAux (prec : Nat) : Count → String
+def _root_.FHM.Bounds.Count.prettyAux (prec : Nat) : Count → String
   | .lit n => toString n
   | .var ⟨.rigid, i⟩ => prettyCountVarLetter i
   | .var ⟨.inferable, i⟩ => "?" ++ prettyCountVarLetter i
   | .add a b =>
       prettyParenIf (prec > 1)
-        (Count.prettyAux 1 a ++ " + " ++ Count.prettyAux 1 b)
+        (prettyAux 1 a ++ " + " ++ prettyAux 1 b)
   | .mul a b =>
       prettyParenIf (prec > 2)
-        (Count.prettyAux 2 a ++ " * " ++ Count.prettyAux 2 b)
+        (prettyAux 2 a ++ " * " ++ prettyAux 2 b)
   | .min a b =>
-      "min(" ++ Count.prettyAux 0 a ++ ", " ++ Count.prettyAux 0 b ++ ")"
+      "min(" ++ prettyAux 0 a ++ ", " ++ prettyAux 0 b ++ ")"
   | .max a b =>
-      "max(" ++ Count.prettyAux 0 a ++ ", " ++ Count.prettyAux 0 b ++ ")"
+      "max(" ++ prettyAux 0 a ++ ", " ++ prettyAux 0 b ++ ")"
   | .pred a =>
-      "pred(" ++ Count.prettyAux 0 a ++ ")"
+      "pred(" ++ prettyAux 0 a ++ ")"
 
-def Count.pretty (c : Count) : String := Count.prettyAux 0 c
+def _root_.FHM.Bounds.Count.pretty (c : Count) : String := Count.prettyAux 0 c
 
 instance : ToString Count := ⟨Count.pretty⟩
 
@@ -174,7 +177,7 @@ instance : ToString Ctx := ⟨Ctx.pretty⟩
 
 /-! ## Constraints / problems -/
 
-def Constraint.pretty (c : Constraint) : String :=
+def _root_.FHM.Bounds.Constraint.pretty (c : Constraint) : String :=
   c.lhs.pretty ++ " ≤ " ++ c.rhs.pretty
 
 instance : ToString Constraint := ⟨Constraint.pretty⟩
@@ -183,7 +186,7 @@ def prettyConstraintList (cs : List Constraint) : String :=
   if cs.isEmpty then "⊤"
   else String.intercalate " ∧ " (cs.map Constraint.pretty)
 
-def ForallProblem.pretty (φ : ForallProblem) : String :=
+def _root_.FHM.Bounds.ForallProblem.pretty (φ : ForallProblem) : String :=
   if φ.prem.isEmpty then
     "∀σ. " ++ prettyConstraintList φ.goals
   else
@@ -192,7 +195,7 @@ def ForallProblem.pretty (φ : ForallProblem) : String :=
 
 instance : ToString ForallProblem := ⟨ForallProblem.pretty⟩
 
-def ExistsProblem.pretty (ψ : ExistsProblem) : String :=
+def _root_.FHM.Bounds.ExistsProblem.pretty (ψ : ExistsProblem) : String :=
   let slots :=
     String.intercalate ", " (ψ.inferables.map fun v =>
       match v.kind with
@@ -332,7 +335,7 @@ def Ty.prettyFolded (t : Ty) : String :=
   | _ => t.pretty
 
 /-- Print an assignment on a fixed list of vars (full `Assign` is a function). -/
-def Assign.prettyOn (σ : Assign) (vs : List Var) : String :=
+def _root_.FHM.Bounds.Assign.prettyOn (σ : Assign) (vs : List Var) : String :=
   "{" ++ String.intercalate ", " (vs.map fun v =>
     match v.kind with
     | .rigid => prettyCountVarLetter v.idx ++ "↦" ++ toString (σ v)

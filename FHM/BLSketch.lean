@@ -1,5 +1,4 @@
-import FHM.Z3.Oracle
-import FHM.Z3.Encode
+import FHM.Bounds.Commit
 
 /-!
 # Bounded Lists — rigorous toy sketch
@@ -54,198 +53,39 @@ opsem / preservation, checker completeness.
 
 namespace BLSketch
 
-/-! ## 0. Counts -/
+/-! Bound-layer arithmetic, problems, oracles, and commit policy live in `FHM.Bounds`
+(Kernel / Oracle / Commit). Re-exported here so `open BLSketch` still finds them. -/
 
-inductive VarKind where
-  | rigid
-  | inferable
-  deriving DecidableEq, Repr
+open FHM.Bounds
 
-structure Var where
-  kind : VarKind
-  idx  : Nat
-  deriving DecidableEq, Repr
+export FHM.Bounds (
+  VarKind Var Count Assign cvar
+  Constraint ForallProblem ExistsProblem
+  agreesOn sameOutputs
+  Interval inhabitProblem nilRefine consRefine mustBeEmpty mustBeNonempty
+  ValidVerdict SolveVerdict UniqueVerdict
+  checkValid solve unique
+  checkValid_sound solve_sound unique_sound
+  Commit NarrowingEvidence PolicyKind Commits
+  decideCommit gatherNarrowingEvidence
+  ForceOk
+  evidence_solvedBy_of_unique evidence_uniqueOutputs_of_unique
+  evidence_solvedBy_of_some evidence_semantic_of_unique
+  decideCommit_sound decideCommit_complete decideCommit_iff
+)
 
-inductive Count where
-  | lit  (n : Nat)
-  | var  (v : Var)
-  | add  (a b : Count)
-  | mul  (a b : Count)
-  | pred (a : Count)
-  | min  (a b : Count)
-  | max  (a b : Count)
-  deriving DecidableEq, Repr
+/-- Local abbrev so `CommitHandler.ofKind` can be a `BLSketch` nested def (export alone does not). -/
+abbrev CommitHandler := FHM.Bounds.CommitHandler
 
-/-- Assignments range over all `Var`s (see `ExistsProblem.SolvedBy` / `agreesOn`). -/
-abbrev Assign := Var → Nat
-
-def cvar (kind : VarKind) (i : Nat) : Count := .var ⟨kind, i⟩
-
-@[simp] def Count.eval : Count → Assign → Nat
-  | .lit n,   _ => n
-  | .var v,   σ => σ v
-  | .add a b, σ => a.eval σ + b.eval σ
-  | .mul a b, σ => a.eval σ * b.eval σ
-  | .pred a,  σ => a.eval σ - 1
-  | .min a b, σ => Nat.min (a.eval σ) (b.eval σ)
-  | .max a b, σ => Nat.max (a.eval σ) (b.eval σ)
-
-/-- Variable-free count expressions (closed under ops; no `var`). -/
-inductive Count.Ground : Count → Prop where
-  | lit {n} : Ground (.lit n)
-  | add {a b} : Ground a → Ground b → Ground (.add a b)
-  | mul {a b} : Ground a → Ground b → Ground (.mul a b)
-  | pred {a} : Ground a → Ground (.pred a)
-  | min {a b} : Ground a → Ground b → Ground (.min a b)
-  | max {a b} : Ground a → Ground b → Ground (.max a b)
-
-@[simp] def Count.isGround : Count → Bool
-  | .lit _ => true
-  | .var _ => false
-  | .add a b | .mul a b | .min a b | .max a b => a.isGround && b.isGround
-  | .pred a => a.isGround
-
-@[simp] theorem Count.isGround_of_ground {c : Count} (h : c.Ground) : c.isGround = true := by
-  induction h <;> simp [*]
-
-theorem Count.ground_of_isGround {c : Count} (h : c.isGround = true) : c.Ground := by
-  induction c with
-  | lit n => exact .lit
-  | var _ => simp at h
-  | add a b iha ihb =>
-      simp [Bool.and_eq_true] at h
-      exact .add (iha h.1) (ihb h.2)
-  | mul a b iha ihb =>
-      simp [Bool.and_eq_true] at h
-      exact .mul (iha h.1) (ihb h.2)
-  | pred a ih =>
-      simp at h
-      exact .pred (ih h)
-  | min a b iha ihb =>
-      simp [Bool.and_eq_true] at h
-      exact .min (iha h.1) (ihb h.2)
-  | max a b iha ihb =>
-      simp [Bool.and_eq_true] at h
-      exact .max (iha h.1) (ihb h.2)
-
-theorem Count.isGround_iff {c : Count} : c.isGround = true ↔ c.Ground :=
-  ⟨Count.ground_of_isGround, Count.isGround_of_ground⟩
-
-instance (c : Count) : Decidable c.Ground :=
-  decidable_of_decidable_of_iff (Count.isGround_iff (c := c))
-
-/-- Evaluate a ground count to a `Nat` (no assignment needed). -/
-def Count.fold (c : Count) (h : c.Ground) : Nat :=
-  match c with
-  | .lit n => n
-  | .var _ => False.elim (by cases h)
-  | .add a b =>
-      a.fold (by cases h; assumption) + b.fold (by cases h; assumption)
-  | .mul a b =>
-      a.fold (by cases h; assumption) * b.fold (by cases h; assumption)
-  | .pred a =>
-      a.fold (by cases h; assumption) - 1
-  | .min a b =>
-      Nat.min (a.fold (by cases h; assumption)) (b.fold (by cases h; assumption))
-  | .max a b =>
-      Nat.max (a.fold (by cases h; assumption)) (b.fold (by cases h; assumption))
-
-theorem Count.fold_eq_eval {c : Count} (h : c.Ground) (σ : Assign) :
-    c.fold h = c.eval σ := by
-  induction h with
-  | lit => rfl
-  | add _ _ iha ihb => simp [Count.fold, iha, ihb]
-  | mul _ _ iha ihb => simp [Count.fold, iha, ihb]
-  | pred _ ih => simp [Count.fold, ih]
-  | min _ _ iha ihb => simp [Count.fold, iha, ihb]
-  | max _ _ iha ihb => simp [Count.fold, iha, ihb]
-
-/-! ## 1. Constraints -/
-
-structure Constraint where
-  lhs : Count
-  rhs : Count
-  deriving DecidableEq, Repr
-
-def Constraint.Holds (c : Constraint) (σ : Assign) : Prop :=
-  c.lhs.eval σ ≤ c.rhs.eval σ
-
-structure ForallProblem where
-  prem  : List Constraint
-  goals : List Constraint
-  deriving Repr
-
-def ForallProblem.Valid (φ : ForallProblem) : Prop :=
-  ∀ σ : Assign, (∀ c ∈ φ.prem, c.Holds σ) → (∀ g ∈ φ.goals, g.Holds σ)
-
-structure ExistsProblem where
-  inferables : List Var
-  prem       : List Constraint := []
-  cons       : List Constraint
-  deriving Repr
-
-def agreesOn (vs : List Var) (σ τ : Assign) : Prop :=
-  ∀ v ∈ vs, σ v = τ v
-
-def ExistsProblem.SolvedBy (ψ : ExistsProblem) (σ : Assign) : Prop :=
-  ∀ τ : Assign, agreesOn ψ.inferables σ τ →
-    (∀ c ∈ ψ.prem, c.Holds τ) → (∀ c ∈ ψ.cons, c.Holds τ)
-
-def ExistsProblem.Sat (ψ : ExistsProblem) : Prop :=
-  ∃ σ, ψ.SolvedBy σ
-
-def sameOutputs (outs : List Count) (σ τ : Assign) : Prop :=
-  outs.map (·.eval σ) = outs.map (·.eval τ)
-
-def ExistsProblem.UniqueOutputs (ψ : ExistsProblem) (outs : List Count) : Prop :=
-  ∀ σ τ, ψ.SolvedBy σ → ψ.SolvedBy τ → sameOutputs outs σ τ
-
-/-! ## 2. DemandOK (syntactic language restriction on demands) -/
-
-inductive Count.RigidOnly : Count → Prop where
-  | lit {n} : RigidOnly (.lit n)
-  | var {i} : RigidOnly (.var ⟨.rigid, i⟩)
-  | add {a b} : RigidOnly a → RigidOnly b → RigidOnly (.add a b)
-  | mul {a b} : RigidOnly a → RigidOnly b → RigidOnly (.mul a b)
-  | pred {a} : RigidOnly a → RigidOnly (.pred a)
-  | min {a b} : RigidOnly a → RigidOnly b → RigidOnly (.min a b)
-  | max {a b} : RigidOnly a → RigidOnly b → RigidOnly (.max a b)
-
-/-- At most one inferable, affine, rigid coeffs/offsets. Syntactic, not semantic. -/
-inductive Count.DemandOK : Count → Prop where
-  | ofRigid {c} : Count.RigidOnly c → DemandOK c
-  | infer {i} : DemandOK (.var ⟨.inferable, i⟩)
-  | scale {c i} : Count.RigidOnly c → DemandOK (.mul c (.var ⟨.inferable, i⟩))
-  | scaleComm {c i} : Count.RigidOnly c → DemandOK (.mul (.var ⟨.inferable, i⟩) c)
-  | offset {i e} : Count.RigidOnly e → DemandOK (.add (.var ⟨.inferable, i⟩) e)
-  | offsetComm {i e} : Count.RigidOnly e → DemandOK (.add e (.var ⟨.inferable, i⟩))
-  | aff {c i e} :
-    Count.RigidOnly c → Count.RigidOnly e →
-    DemandOK (.add (.mul c (.var ⟨.inferable, i⟩)) e)
-  | affComm {c i e} :
-    Count.RigidOnly c → Count.RigidOnly e →
-    DemandOK (.add (.mul (.var ⟨.inferable, i⟩) c) e)
+/-- Same as `FHM.Bounds.CommitHandler.ofKind`. -/
+def CommitHandler.ofKind (k : PolicyKind) : CommitHandler :=
+  fun _ψ _outs e => decideCommit k e
 
 /-! ## 3. Types, intervals, schemes -/
 
-structure Interval where
-  lo : Count
-  hi : Count
-  deriving DecidableEq, Repr
-
-def Interval.subGoals (Δ : List Constraint) (a b : Interval) : ForallProblem where
-  prem  := Δ
-  goals := [⟨b.lo, a.lo⟩, ⟨a.hi, b.hi⟩]
-
-def Interval.meet (a b : Interval) : Interval :=
-  ⟨.max a.lo b.lo, .min a.hi b.hi⟩
-
-def Interval.join (a b : Interval) : Interval :=
-  ⟨.min a.lo b.lo, .max a.hi b.hi⟩
-
-def inhabitProblem (Δ : List Constraint) (i : Interval) : ForallProblem where
-  prem  := Δ
-  goals := [⟨i.lo, i.hi⟩]
+/-- Decidable `Count.Ground` via the Bounds `isGround` mirror (may be sorry in Kernel). -/
+instance (c : Count) : Decidable c.Ground :=
+  decidable_of_decidable_of_iff (Count.isGround_iff (c := c))
 
 inductive Ty where
   | unit
@@ -261,7 +101,7 @@ def Ty.obsBounds : Ty → List Count
   | .bl lo hi elem => [lo, hi] ++ elem.obsBounds
   | .arrow d c => d.obsBounds ++ c.obsBounds
 
-def Count.inferVars : Count → List Var
+def _root_.FHM.Bounds.Count.inferVars : Count → List Var
   | .lit _ => []
   | .var v => if v.kind = .inferable then [v] else []
   | .add a b => a.inferVars ++ b.inferVars
@@ -301,7 +141,7 @@ inductive Ty.Ground : Ty → Prop where
   | unit => rfl
   | bool => rfl
   | bl hlo hhi helem ih =>
-    simp [Count.isGround_of_ground hlo, Count.isGround_of_ground hhi, ih]
+    simp [(Count.isGround_iff.mpr) hlo, (Count.isGround_iff.mpr) hhi, ih]
   | arrow _ _ iha ihb => simp [iha, ihb]
 
 theorem Ty.ground_of_isGround {t : Ty} (h : t.isGround = true) : t.Ground := by
@@ -311,7 +151,7 @@ theorem Ty.ground_of_isGround {t : Ty} (h : t.isGround = true) : t.Ground := by
   | tbind i => simp at h
   | bl lo hi elem ih =>
       simp [Bool.and_eq_true] at h
-      exact .bl (Count.ground_of_isGround h.1.1) (Count.ground_of_isGround h.1.2) (ih h.2)
+      exact .bl ((Count.isGround_iff.mp) h.1.1) ((Count.isGround_iff.mp) h.1.2) (ih h.2)
   | arrow a b iha ihb =>
       simp [Bool.and_eq_true] at h
       exact .arrow (iha h.1) (ihb h.2)
@@ -406,13 +246,13 @@ inductive AnnoTy.Elab : AnnoTy → Ty → Prop where
     ElabBound lo lo' → ElabBound hi hi' → Elab (.bl lo hi elem) (.bl lo' hi' elem)
 
 /-- Scheme body may mention only **rigid** vars with `idx < binders` (no inferables). -/
-def Count.BinderRigid (n : Nat) : Count → Prop
+def _root_.FHM.Bounds.Count.BinderRigid (n : Nat) : Count → Prop
   | .lit _ => True
   | .var ⟨.rigid, i⟩ => i < n
   | .var ⟨.inferable, _⟩ => False
   | .add a b | .mul a b | .min a b | .max a b =>
-      Count.BinderRigid n a ∧ Count.BinderRigid n b
-  | .pred a => Count.BinderRigid n a
+      BinderRigid n a ∧ BinderRigid n b
+  | .pred a => BinderRigid n a
 
 def Ty.SchemeWF (nCounts nTypes : Nat) : Ty → Prop
   | .unit | .bool => True
@@ -463,7 +303,7 @@ def BScheme.WF (s : BScheme) : Prop :=
 @[simp] def schemeTyArgs (args : List SchemeArg) : List Ty :=
   args.filterMap fun | .ty t => some t | .count _ => none
 
-inductive Count.Subst : List Count → Count → Count → Prop where
+inductive _root_.FHM.Bounds.Count.Subst : List Count → Count → Count → Prop where
   | lit {args n} : Subst args (.lit n) (.lit n)
   | var {args i c} : args[i]? = some c → Subst args (.var ⟨.rigid, i⟩) c
   | add {args a b a' b'} :
@@ -530,181 +370,11 @@ inductive Expr where
   | matchCons (scrut consBranch : Expr)
   deriving DecidableEq, Repr
 
-/-! ## 5. Oracles (Z3-backed; see `FHM/Z3/` for TCB)
+/-! ## 6. Match refinements on `Δ`
 
-Bridge: `BLSketch.Count` → `FHM.Z3.Expr`, constraints → `Atom.le`.
-`checkValid` = ∀ over prem ⇒ goals (UNSAT of negation).
-`solve` = ∃∀ over inferables with prem/cons.
-`unique` = block-and-recheck on output counts after a witness.
+`nilRefine` / `consRefine` / `mustBeEmpty` / `mustBeNonempty` are in `FHM.Bounds.Kernel`.
 -/
 
-inductive ValidVerdict where
-  | valid | invalid | unknown
-  deriving DecidableEq, Repr
-
-inductive SolveVerdict where
-  | witness (σ : Assign)
-  | unsat
-  | unknown
-
-inductive UniqueVerdict where
-  | unique | multiple | unknown
-  deriving DecidableEq, Repr
-
-instance : Inhabited ValidVerdict := ⟨.unknown⟩
-instance : Inhabited SolveVerdict := ⟨.unknown⟩
-instance : Inhabited UniqueVerdict := ⟨.unknown⟩
-
-namespace Z3Bridge
-
-open FHM.Z3 (Atom Assumptions Config Verdict decide decideGoals)
-open FHM.Z3
-
-def varName (v : Var) : String :=
-  match v.kind with
-  | .rigid     => s!"r_{v.idx}"
-  | .inferable => s!"i_{v.idx}"
-
-def countToExpr : Count → FHM.Z3.Expr
-  | .lit n   => .lit n
-  | .var v   => .name (varName v)
-  | .add a b => .add (countToExpr a) (countToExpr b)
-  | .mul a b => .mul (countToExpr a) (countToExpr b)
-  | .pred a  => .pred (countToExpr a)
-  | .min a b => .min (countToExpr a) (countToExpr b)
-  | .max a b => .max (countToExpr a) (countToExpr b)
-
-def constraintToAtom (c : Constraint) : Atom :=
-  .le (countToExpr c.lhs) (countToExpr c.rhs)
-
-def constraintsToAssumptions (cs : List Constraint) : Assumptions :=
-  cs.map constraintToAtom
-
-def inferableNames (vs : List Var) : List String :=
-  vs.filter (·.kind = .inferable) |>.map varName |>.eraseDups
-
-def modelToAssign (model : List (String × Nat)) : Assign :=
-  fun v =>
-    model.find? (fun p => p.1 = varName v) |>.map (·.2) |>.getD 0
-
-def checkValidZ3 (φ : ForallProblem) : ValidVerdict :=
-  let as := constraintsToAssumptions φ.prem
-  let goals := φ.goals.map constraintToAtom
-  if goals.isEmpty then .valid
-  else
-    let results := goals.map fun g => decide { assumptions := as, goal := g }
-    if results.any Verdict.isRefuted then .invalid
-    else if results.all Verdict.isVerified then .valid
-    else .unknown
-
-def solveZ3 (ψ : ExistsProblem) : SolveVerdict :=
-  let unknowns := inferableNames ψ.inferables
-  let as := constraintsToAssumptions ψ.prem
-  let goals := constraintsToAssumptions ψ.cons
-  if unknowns.isEmpty && goals.isEmpty then
-    .witness (fun _ => 0)
-  else
-    match decideGoals unknowns as goals with
-    | .witness b => .witness (modelToAssign b)
-    | .unknown "z3 reports no witness exists" => .unsat
-    | _ => .unknown
-
-/-- Strong negative on a witness-mode `decideGoals` query: no model exists.
-Matches `solveZ3`'s mapping of this parse tag to `.unsat`. -/
-def isWitnessUnsat : FHM.Z3.Verdict → Bool
-  | .unknown "z3 reports no witness exists" => true
-  | _ => false
-
-/-- After a witness, try to find another solution with a different output value.
-
-Honesty: `.unique` only if **every** “outs differ from σ” alternative query is
-strongly unsat (no witness exists). Solver `unknown` / timeout / partial results
-yield `.unknown`, never `.unique`. A `.witness` on any alternative ⇒ `.multiple`. -/
-def uniqueZ3 (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
-  match solveZ3 ψ with
-  | .unsat => .unknown
-  | .unknown => .unknown
-  | .witness σ =>
-    let vals := outs.map (·.eval σ)
-    let unknowns := inferableNames ψ.inferables
-    let baseAs := constraintsToAssumptions (ψ.prem ++ ψ.cons)
-    let goals := constraintsToAssumptions ψ.cons
-    let differs (c : Count) (v : Nat) : List Assumptions :=
-      [[.lt (countToExpr c) (.lit v)], [.lt (.lit v) (countToExpr c)]]
-    -- Classify each alternative: found other / no other / inconclusive.
-    let statuses : List (Option Bool) :=
-      (outs.zip vals).flatMap fun (c, v) =>
-        (differs c v).map fun extra =>
-          match decideGoals unknowns (baseAs ++ extra) goals with
-          | .witness _ => some true           -- found another model
-          | v => if isWitnessUnsat v then some false  -- strong unsat
-                 else none                    -- unknown / inconclusive
-    if statuses.any (· == some true) then .multiple
-    else if statuses.any (· == none) then .unknown
-    else .unique  -- all some false, or no alternatives (empty outs)
-
-end Z3Bridge
-
-/-! ### Definitional BL oracles (no second opacity layer)
-
-`checkValid` / `solve` / `unique` are plain wrappers over `Z3Bridge.*`, which
-call pure `decide` / `decideGoals` on top of `opaque z3Run`. **One** IO fiction
-(no `@[implemented_by]` / `unsafe` re-shim at the BL layer).
-
-Soundness axioms below still sit at the BL problem-language level. Proving them
-from `decide_*_sound` needs encoding lemmas (`countToExpr` ↔ `Count.eval`, etc.);
-that is the remaining PR4 proof work. Removing the second opacity layer is the
-structural half: Lean can now unfold BL oracles to the Z3 bridge. -/
-
-/-- ∀ oracle: every goal verified under premises (runtime: Z3 via `decide`). -/
-def checkValid (φ : ForallProblem) : ValidVerdict :=
-  Z3Bridge.checkValidZ3 φ
-
-/-- ∃∀ witness oracle. Returns **one** model if sat — not all solutions. -/
-def solve (ψ : ExistsProblem) : SolveVerdict :=
-  Z3Bridge.solveZ3 ψ
-
-/-- Uniqueness oracle on chosen outputs (block-and-recheck after a witness).
-`.unique` only after strong unsat on every alternative. -/
-def unique (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
-  Z3Bridge.uniqueZ3 ψ outs
-
-/-- Soundness: only `.valid` is axiomatised (to be proved from `decide_verified_sound`). -/
-axiom checkValid_sound (φ : ForallProblem) :
-    checkValid φ = .valid → φ.Valid
-
-/-- Soundness: only `.witness` is axiomatised (multi-goal witness bridge TBD). -/
-axiom solve_sound (ψ : ExistsProblem) (σ : Assign) :
-    solve ψ = .witness σ → ψ.SolvedBy σ
-
-/-- Soundness: only `.unique` is axiomatised (block-and-recheck bridge TBD). -/
-axiom unique_sound (ψ : ExistsProblem) (outs : List Count) :
-    unique ψ outs = .unique → ψ.UniqueOutputs outs
-
-/-! ## 6. Match refinements on `Δ` -/
-
-/-- Nil branch: list is empty ⇒ `lo ≤ 0`. Upper bound `hi` is **unchanged**
-(empty is allowed whenever `lo = 0`, even if `0 < hi`, e.g. `BL 0 5`).
-Also `0 ≤ hi` so the observation sits under the upper bound. -/
-def nilRefine (lo hi : Count) : List Constraint :=
-  [⟨lo, .lit 0⟩, ⟨.lit 0, hi⟩]
-
-/-- Cons branch: list non-empty ⇒ `1 ≤ hi`. Tail length bounds are `pred lo/hi`. -/
-def consRefine (hi : Count) : List Constraint :=
-  [⟨.lit 1, hi⟩]
-
-/-- `hi ≤ 0` under `Δ` — scrutinee must be empty (nil-only match). -/
-def mustBeEmpty (Δ : List Constraint) (hi : Count) : ForallProblem where
-  prem  := Δ
-  goals := [⟨hi, .lit 0⟩]
-
-/-- `1 ≤ lo` under `Δ` — scrutinee must be non-empty (cons-only match).
-(`0 < lo` on `ℕ` is `1 ≤ lo`.) -/
-def mustBeNonempty (Δ : List Constraint) (lo : Count) : ForallProblem where
-  prem  := Δ
-  goals := [⟨.lit 1, lo⟩]
-
-/-- Ctx for a cons branch: `var 0 = head : elem`, `var 1 = tail`. -/
 def consCtx (ctx : Ctx) (lo hi : Count) (elem : Ty) : Ctx :=
   .mono elem :: .mono (.bl (.pred lo) (.pred hi) elem) :: ctx
 
@@ -955,39 +625,39 @@ inductive Check (Δ : List Constraint) (ctx : Ctx) : Expr → Ty → Prop where
 /-! ## 8. Structural lemmas -/
 
 /-- `Count.Subst` is deterministic. -/
-theorem Count.Subst.unique {args c c₁ c₂}
+theorem _root_.FHM.Bounds.Count.Subst.unique {args c c₁ c₂}
     (h₁ : Count.Subst args c c₁) (h₂ : Count.Subst args c c₂) : c₁ = c₂ := by
-  induction h₁ with
+  induction h₁ generalizing c₂ with
   | lit =>
     cases h₂
     rfl
   | var h₁ =>
     cases h₂ with | var h₂ =>
     exact Option.some.inj (h₁.symm.trans h₂)
-  | add ha hb =>
+  | add ha hb iha ihb =>
     cases h₂ with | add ha' hb' =>
     congr 1
-    · exact (Count.Subst.unique ha ha')
-    · exact (Count.Subst.unique hb hb')
-  | mul ha hb =>
+    · exact iha ha'
+    · exact ihb hb'
+  | mul ha hb iha ihb =>
     cases h₂ with | mul ha' hb' =>
     congr 1
-    · exact (Count.Subst.unique ha ha')
-    · exact (Count.Subst.unique hb hb')
-  | pred ha =>
+    · exact iha ha'
+    · exact ihb hb'
+  | pred ha iha =>
     cases h₂ with | pred ha' =>
     congr 1
-    exact (Count.Subst.unique ha ha')
-  | min ha hb =>
+    exact iha ha'
+  | min ha hb iha ihb =>
     cases h₂ with | min ha' hb' =>
     congr 1
-    · exact (Count.Subst.unique ha ha')
-    · exact (Count.Subst.unique hb hb')
-  | max ha hb =>
+    · exact iha ha'
+    · exact ihb hb'
+  | max ha hb iha ihb =>
     cases h₂ with | max ha' hb' =>
     congr 1
-    · exact (Count.Subst.unique ha ha')
-    · exact (Count.Subst.unique hb hb')
+    · exact iha ha'
+    · exact ihb hb'
 
 /-- `Ty.Subst` is deterministic. -/
 theorem Ty.Subst.unique {cargs targs t t₁ t₂}
@@ -1079,7 +749,7 @@ theorem TypeOf.weakenCtx {Δ ctx ctx' e ty}
     exact ih₂
 
 /-- `BinderRigid` counts are rigid-only (hence demand-OK as rigid). -/
-theorem Count.rigidOnly_of_binderRigid {n : Nat} {c : Count}
+theorem _root_.FHM.Bounds.Count.rigidOnly_of_binderRigid {n : Nat} {c : Count}
     (h : Count.BinderRigid n c) : Count.RigidOnly c := by
   induction c with
   | lit => exact .lit
@@ -1145,159 +815,8 @@ declarative `TypeOf` / `Check`, which only require a solve witness). Used at `.a
 equal non-`BL` types).
 -/
 
-/-! ### Commit policy (pluggable elaborator uniqueness / accept) -/
-
-/-- Elaborator decision after narrowing evidence is gathered. -/
-inductive Commit where
-  /-- Accept auto-commit; `σ` is the witness from evidence (forceSubtype reuses it). -/
-  | accept (σ : Assign)
-
-  /-- Refuse auto-commit for this evidence under the current policy. -/
-  | reject
-
-/-- Evidence for one solve+unique probe (exclusive cases).
-
-**Certificates** are oracle equalities (computable; needed by TypeOf `*Infer` and
-`#eval`). **Semantic** content is recovered by the theorems below via
-`solve_sound` / `unique_sound` — embedding those props as ctor fields would make
-`gather` (and thus `synth`) noncomputable while soundness is still axiomatic. -/
-inductive NarrowingEvidence (ψ : ExistsProblem) (outs : List Count) where
-  /-- No usable witness (`unsat` or `unknown`). -/
-  | none
-
-  /-- Witness plus oracle `.unique` on `outs` (implies `SolvedBy` ∧ `UniqueOutputs`). -/
-  | unique (σ : Assign)
-      (hσ : solve ψ = .witness σ)
-      (hu : unique ψ outs = .unique)
-
-  /-- Witness without uniqueness (implies `SolvedBy` only). -/
-  | some_ (σ : Assign)
-      (hσ : solve ψ = .witness σ)
-
-/-- Math: `.unique` evidence certificates ⇒ σ solves the exists-problem. -/
-theorem evidence_solvedBy_of_unique {ψ : ExistsProblem} {outs : List Count}
-    {σ : Assign} (hσ : solve ψ = .witness σ) (_hu : unique ψ outs = .unique) :
-    ψ.SolvedBy σ :=
-  solve_sound ψ σ hσ
-
-/-- Math: `.unique` evidence certificates ⇒ outs agree on all solutions. -/
-theorem evidence_uniqueOutputs_of_unique {ψ : ExistsProblem} {outs : List Count}
-    {σ : Assign} (_hσ : solve ψ = .witness σ) (hu : unique ψ outs = .unique) :
-    ψ.UniqueOutputs outs :=
-  unique_sound ψ outs hu
-
-/-- Math: `.some_` evidence certificate ⇒ σ solves the exists-problem. -/
-theorem evidence_solvedBy_of_some {ψ : ExistsProblem} {σ : Assign}
-    (hσ : solve ψ = .witness σ) :
-    ψ.SolvedBy σ :=
-  solve_sound ψ σ hσ
-
-/-- Package both semantic facts from `.unique` certificates. -/
-theorem evidence_semantic_of_unique {ψ : ExistsProblem} {outs : List Count}
-    {σ : Assign} (hσ : solve ψ = .witness σ) (hu : unique ψ outs = .unique) :
-    ψ.SolvedBy σ ∧ ψ.UniqueOutputs outs :=
-  ⟨evidence_solvedBy_of_unique hσ hu, evidence_uniqueOutputs_of_unique hσ hu⟩
-
-/-- Named policies (declarative source of truth via `Commits`). -/
-inductive PolicyKind where
-  /-- Auto-commit only when oracle reports unique (historical default). -/
-  | uniqueOnly
-
-  /-- Auto-commit any solve witness; ignore uniqueness. -/
-  | anyWitness
-  deriving DecidableEq, Repr
-
-/-- Declarative: which commits each policy allows on each evidence shape. -/
-inductive Commits :
-    PolicyKind → {ψ : ExistsProblem} → {outs : List Count} →
-      NarrowingEvidence ψ outs → Commit → Prop where
-  /-- `uniqueOnly` accepts a unique solve witness. -/
-  | uniqueOnly_accept {ψ outs σ hσ hu} :
-      Commits .uniqueOnly (ψ := ψ) (outs := outs) (.unique σ hσ hu) (.accept σ)
-
-  /-- `uniqueOnly` rejects when there is no witness. -/
-  | uniqueOnly_reject_none {ψ outs} :
-      Commits .uniqueOnly (ψ := ψ) (outs := outs) .none .reject
-
-  /-- `uniqueOnly` rejects a non-unique witness. -/
-  | uniqueOnly_reject_some {ψ outs σ hσ} :
-      Commits .uniqueOnly (ψ := ψ) (outs := outs) (.some_ σ hσ) .reject
-
-  /-- `anyWitness` accepts a unique solve witness. -/
-  | anyWitness_accept_unique {ψ outs σ hσ hu} :
-      Commits .anyWitness (ψ := ψ) (outs := outs) (.unique σ hσ hu) (.accept σ)
-
-  /-- `anyWitness` accepts any solve witness (even non-unique). -/
-  | anyWitness_accept_some {ψ outs σ hσ} :
-      Commits .anyWitness (ψ := ψ) (outs := outs) (.some_ σ hσ) (.accept σ)
-
-  /-- `anyWitness` rejects when there is no witness. -/
-  | anyWitness_reject_none {ψ outs} :
-      Commits .anyWitness (ψ := ψ) (outs := outs) .none .reject
-
-/-- Executable policy. Opaque to `synth`/`check` (pass as `CommitHandler`). -/
-def decideCommit (k : PolicyKind) {ψ : ExistsProblem} {outs : List Count} :
-    NarrowingEvidence ψ outs → Commit
-  | .none => .reject
-  | .unique σ _ _ => .accept σ
-  | .some_ σ _ =>
-    match k with
-    | .uniqueOnly => .reject
-    | .anyWitness => .accept σ
-
-/-- Handler type threaded through algo inference (stable if policies change). -/
-abbrev CommitHandler : Type :=
-  (ψ : ExistsProblem) → (outs : List Count) → NarrowingEvidence ψ outs → Commit
-
-def CommitHandler.ofKind (k : PolicyKind) : CommitHandler :=
-  fun _ψ _outs e => decideCommit k e
-
-theorem decideCommit_sound {k ψ outs} (e : NarrowingEvidence ψ outs) :
-    Commits k e (decideCommit k e) := by
-  cases k <;> cases e <;> constructor
-
-theorem decideCommit_complete {k ψ outs} (e : NarrowingEvidence ψ outs) {c : Commit}
-    (h : Commits k e c) : decideCommit k e = c := by
-  cases h <;> rfl
-
-theorem decideCommit_iff {k ψ outs} (e : NarrowingEvidence ψ outs) (c : Commit) :
-    Commits k e c ↔ decideCommit k e = c :=
-  ⟨decideCommit_complete e, fun h => h ▸ decideCommit_sound e⟩
-
-/-- Build exclusive evidence for `ψ` / `outs` (oracle certificates; math via theorems). -/
-def gatherNarrowingEvidence (ψ : ExistsProblem) (outs : List Count) :
-    NarrowingEvidence ψ outs :=
-  match hσ : solve ψ with
-  | .unsat | .unknown => .none
-  | .witness σ =>
-    match hu : unique ψ outs with
-    | .unique => .unique σ hσ hu
-    | .multiple | .unknown => .some_ σ hσ
-
-/-- Success of `forceSubtype`: plain `Sub` or a solve witness (not yet applied to types). -/
-inductive ForceOk where
-  /-- Plain algorithmic subtype (`checkSub`) succeeded; no solve needed. -/
-  | plainSub
-
-  /-- Narrowing via solve; `σ` is the evidence witness (not yet applied to types — PR3b). -/
-  | solved (σ : Assign)
-
-@[simp] def Count.isRigidOnly : Count → Bool
-  | .lit _ => true
-  | .var ⟨.rigid, _⟩ => true
-  | .var ⟨.inferable, _⟩ => false
-  | .add a b | .mul a b | .min a b | .max a b => a.isRigidOnly && b.isRigidOnly
-  | .pred a => a.isRigidOnly
-
-@[simp] def Count.isDemandOK : Count → Bool
-  | .var ⟨.inferable, _⟩ => true
-  | .mul c (.var ⟨.inferable, _⟩) => c.isRigidOnly
-  | .mul (.var ⟨.inferable, _⟩) c => c.isRigidOnly
-  | .add (.var ⟨.inferable, _⟩) e => e.isRigidOnly
-  | .add e (.var ⟨.inferable, _⟩) => e.isRigidOnly
-  | .add (.mul c (.var ⟨.inferable, _⟩)) e => c.isRigidOnly && e.isRigidOnly
-  | .add (.mul (.var ⟨.inferable, _⟩) c) e => c.isRigidOnly && e.isRigidOnly
-  | c => c.isRigidOnly
+/-! Commit policy (`Commit`, `NarrowingEvidence`, `decideCommit`, `CommitHandler`,
+`gatherNarrowingEvidence`, `ForceOk`) is in `FHM.Bounds.Commit`. -/
 
 @[simp] def Ty.isDemandOK : Ty → Bool
   | .unit | .bool | .tbind _ => true
@@ -1317,7 +836,7 @@ inductive ForceOk where
 termination_by t.size + u.size
 decreasing_by all_goals (simp_wf; simp [Ty.size]; omega)
 
-@[simp] def Count.applyArgs (args : List Count) : Count → Count
+@[simp] def _root_.FHM.Bounds.Count.applyArgs (args : List Count) : Count → Count
   | .lit n => .lit n
   | .var ⟨.rigid, i⟩ => args.getD i (.lit 0)
   | .var v => .var v
@@ -1327,7 +846,7 @@ decreasing_by all_goals (simp_wf; simp [Ty.size]; omega)
   | .min a b => .min (applyArgs args a) (applyArgs args b)
   | .max a b => .max (applyArgs args a) (applyArgs args b)
 
-@[simp] def Count.binderRigidBool (n : Nat) : Count → Bool
+@[simp] def _root_.FHM.Bounds.Count.binderRigidBool (n : Nat) : Count → Bool
   | .lit _ => true
   | .var ⟨.rigid, i⟩ => decide (i < n)
   | .var ⟨.inferable, _⟩ => false
@@ -1599,327 +1118,6 @@ def check (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) (e : Expr) (ty : Ty) : O
 private theorem bool_and_eq_true {a b : Bool} : a && b = true ↔ a = true ∧ b = true := by
   cases a <;> cases b <;> simp
 
-@[simp] theorem Count.isRigidOnly_of_rigidOnly {c : Count} (h : Count.RigidOnly c) :
-    c.isRigidOnly = true := by
-  induction h with
-  | lit => rfl
-  | var => rfl
-  | add _ _ iha ihb => simp [iha, ihb]
-  | mul _ _ iha ihb => simp [iha, ihb]
-  | pred _ ih => simp [ih]
-  | min _ _ iha ihb => simp [iha, ihb]
-  | max _ _ iha ihb => simp [iha, ihb]
-
-theorem Count.rigidOnly_of_isRigidOnly {c : Count} (h : c.isRigidOnly = true) :
-    Count.RigidOnly c := by
-  induction c with
-  | lit => exact .lit
-  | var v =>
-    cases v with | mk kind idx =>
-    cases kind with
-    | rigid => exact .var
-    | inferable => simp at h
-  | add a b iha ihb =>
-    simp at h
-    exact .add (iha h.1) (ihb h.2)
-  | mul a b iha ihb =>
-    simp at h
-    exact .mul (iha h.1) (ihb h.2)
-  | pred a ih =>
-    simp at h
-    exact .pred (ih h)
-  | min a b iha ihb =>
-    simp at h
-    exact .min (iha h.1) (ihb h.2)
-  | max a b iha ihb =>
-    simp at h
-    exact .max (iha h.1) (ihb h.2)
-
-theorem Count.isRigidOnly_iff {c : Count} :
-    c.isRigidOnly = true ↔ Count.RigidOnly c :=
-  ⟨Count.rigidOnly_of_isRigidOnly, Count.isRigidOnly_of_rigidOnly⟩
-
-/-- Rigid counts never hit a DemandOK special-form arm (those embed an inferable). -/
-@[simp] theorem Count.isDemandOK_of_isRigidOnly {c : Count} (h : c.isRigidOnly = true) :
-    c.isDemandOK = true := by
-  unfold Count.isDemandOK
-  split <;> try (exact h)
-  · -- `.var inferable` arm
-    rename_i i
-    simp at h
-  · -- `.mul c (var inferable)`
-    rename_i c i
-    simp at h
-  · -- `.mul (var inferable) c`
-    rename_i i c
-    simp at h
-  · -- `.add (var inferable) e`
-    rename_i i e
-    simp at h
-  · -- `.add e (var inferable)`
-    rename_i e i
-    simp at h
-  · -- `.add (.mul c (var inferable)) e`
-    rename_i c i e
-    simp at h
-  · -- `.add (.mul (var inferable) c) e`
-    rename_i i c e
-    simp at h
-
-@[simp] theorem Count.isDemandOK_of_demandOK {c : Count} (h : Count.DemandOK c) :
-    c.isDemandOK = true := by
-  induction h with
-  | ofRigid h => exact Count.isDemandOK_of_isRigidOnly (Count.isRigidOnly_of_rigidOnly h)
-  | infer => rfl
-  | scale h => simp [h]
-  | scaleComm h =>
-    -- Right factor is rigid ⇒ first mul-arm does not match.
-    cases h with
-    | lit => rfl
-    | var => rfl
-    | add ha hb =>
-      simp [ha, hb]
-    | mul ha hb =>
-      simp [ha, hb]
-    | pred ha =>
-      simp [ha]
-    | min ha hb =>
-      simp [ha, hb]
-    | max ha hb =>
-      simp [ha, hb]
-  | offset h => simp [h]
-  | offsetComm h =>
-    -- Left is rigid ⇒ first add-arm does not match; second arm fires.
-    cases h with
-    | lit => rfl
-    | var => rfl
-    | add ha hb =>
-      simp [ha, hb]
-    | mul ha hb =>
-      simp [ha, hb]
-    | pred ha =>
-      simp [ha]
-    | min ha hb =>
-      simp [ha, hb]
-    | max ha hb =>
-      simp [ha, hb]
-  | aff hc he =>
-    have hc' := Count.isRigidOnly_of_rigidOnly hc
-    -- Case on offset so `.add _ (var inferable)` cannot match.
-    cases he with
-    | lit => simp [hc']
-    | var => simp [hc']
-    | add ha hb =>
-      simp [hc',
-        ha, hb]
-    | mul ha hb =>
-      simp [hc',
-        ha, hb]
-    | pred ha =>
-      simp [hc', ha]
-    | min ha hb =>
-      simp [hc',
-        ha, hb]
-    | max ha hb =>
-      simp [hc',
-        ha, hb]
-  | affComm hc he =>
-    have hc' := Count.isRigidOnly_of_rigidOnly hc
-    have he' := Count.isRigidOnly_of_rigidOnly he
-    -- Case so higher-priority add arms cannot match.
-    cases hc with
-    | lit =>
-      cases he with
-      | lit => rfl
-      | var => rfl
-      | add ha hb =>
-        simp [ha, hb]
-      | mul ha hb =>
-        simp [ha, hb]
-      | pred ha =>
-        simp [ha]
-      | min ha hb =>
-        simp [ha, hb]
-      | max ha hb =>
-        simp [ha, hb]
-    | var =>
-      cases he with
-      | lit => rfl
-      | var => rfl
-      | add ha hb =>
-        simp [ha, hb]
-      | mul ha hb =>
-        simp [ha, hb]
-      | pred ha =>
-        simp [ha]
-      | min ha hb =>
-        simp [ha, hb]
-      | max ha hb =>
-        simp [ha, hb]
-    | add hca hcb =>
-      cases he with
-      | lit =>
-        simp [hca, hcb]
-      | var =>
-        simp [hca, hcb]
-      | add ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | mul ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | pred ha =>
-        simp [hca, hcb,
-          ha]
-      | min ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | max ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-    | mul hca hcb =>
-      cases he with
-      | lit =>
-        simp [hca, hcb]
-      | var =>
-        simp [hca, hcb]
-      | add ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | mul ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | pred ha =>
-        simp [hca, hcb,
-          ha]
-      | min ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | max ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-    | pred hca =>
-      cases he with
-      | lit =>
-        simp [hca]
-      | var =>
-        simp [hca]
-      | add ha hb =>
-        simp [hca,
-          ha, hb]
-      | mul ha hb =>
-        simp [hca,
-          ha, hb]
-      | pred ha =>
-        simp [hca,
-          ha]
-      | min ha hb =>
-        simp [hca,
-          ha, hb]
-      | max ha hb =>
-        simp [hca,
-          ha, hb]
-    | min hca hcb =>
-      cases he with
-      | lit =>
-        simp [hca, hcb]
-      | var =>
-        simp [hca, hcb]
-      | add ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | mul ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | pred ha =>
-        simp [hca, hcb,
-          ha]
-      | min ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | max ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-    | max hca hcb =>
-      cases he with
-      | lit =>
-        simp [hca, hcb]
-      | var =>
-        simp [hca, hcb]
-      | add ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | mul ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | pred ha =>
-        simp [hca, hcb,
-          ha]
-      | min ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-      | max ha hb =>
-        simp [hca, hcb,
-          ha, hb]
-
-theorem Count.demandOK_of_isDemandOK {c : Count} (h : c.isDemandOK = true) :
-    Count.DemandOK c := by
-  induction c with
-  | lit => exact .ofRigid .lit
-  | var v =>
-    cases v with | mk kind idx =>
-    cases kind with
-    | rigid => exact .ofRigid .var
-    | inferable => exact .infer
-  | add a b iha ihb =>
-    unfold Count.isDemandOK at h
-    split at h
-    · next i heq => nomatch heq
-    · next c i heq => nomatch heq
-    · next i c heq => nomatch heq
-    · next i e heq =>
-      cases heq
-      exact .offset (Count.rigidOnly_of_isRigidOnly h)
-    · next e i heq =>
-      cases heq
-      exact .offsetComm (Count.rigidOnly_of_isRigidOnly h)
-    · next c i e heq =>
-      cases heq
-      simp at h
-      exact .aff (Count.rigidOnly_of_isRigidOnly h.1) (Count.rigidOnly_of_isRigidOnly h.2)
-    · next i c e heq =>
-      cases heq
-      simp at h
-      exact .affComm (Count.rigidOnly_of_isRigidOnly h.1) (Count.rigidOnly_of_isRigidOnly h.2)
-    · exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
-  | mul a b iha ihb =>
-    unfold Count.isDemandOK at h
-    split at h
-    · next i heq => nomatch heq
-    · next c i heq =>
-      cases heq
-      exact .scale (Count.rigidOnly_of_isRigidOnly h)
-    · next i c heq =>
-      cases heq
-      exact .scaleComm (Count.rigidOnly_of_isRigidOnly h)
-    · next i e heq => nomatch heq
-    · next e i heq => nomatch heq
-    · next c i e heq => nomatch heq
-    · next i c e heq => nomatch heq
-    · exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
-  | pred a ih =>
-    simp at h
-    exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
-  | min a b iha ihb =>
-    simp only [Count.isDemandOK] at h
-    exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
-  | max a b iha ihb =>
-    simp only [Count.isDemandOK] at h
-    exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
-
-theorem Count.isDemandOK_iff {c : Count} : c.isDemandOK = true ↔ Count.DemandOK c :=
-  ⟨Count.demandOK_of_isDemandOK, Count.isDemandOK_of_demandOK⟩
-
 @[simp] theorem Ty.isDemandOK_of_demandOK {ty : Ty} (h : Ty.DemandOK ty) : ty.isDemandOK = true := by
   induction h with
   | unit => rfl
@@ -1927,7 +1125,7 @@ theorem Count.isDemandOK_iff {c : Count} : c.isDemandOK = true ↔ Count.DemandO
   | tbind => rfl
   | arrow _ _ ihd ihc => simp [ihd, ihc]
   | bl hlo hhi helem ih =>
-    simp only [Ty.isDemandOK, Count.isDemandOK_of_demandOK hlo, Count.isDemandOK_of_demandOK hhi, ih]; simp
+    simp only [Ty.isDemandOK, (Count.isDemandOK_iff.mpr) hlo, (Count.isDemandOK_iff.mpr) hhi, ih]; simp
 
 theorem Ty.demandOK_of_isDemandOK {ty : Ty} (h : ty.isDemandOK = true) : Ty.DemandOK ty := by
   induction ty with
@@ -1942,7 +1140,7 @@ theorem Ty.demandOK_of_isDemandOK {ty : Ty} (h : ty.isDemandOK = true) : Ty.Dema
     simp at h
     obtain ⟨hh, helem⟩ := h
     obtain ⟨hlo, hhi⟩ := hh
-    exact Ty.DemandOK.bl (Count.demandOK_of_isDemandOK hlo) (Count.demandOK_of_isDemandOK hhi)
+    exact Ty.DemandOK.bl ((Count.isDemandOK_iff.mp) hlo) ((Count.isDemandOK_iff.mp) hhi)
       (ih helem)
 
 theorem Ty.isDemandOK_iff {ty : Ty} : ty.isDemandOK = true ↔ Ty.DemandOK ty :=
@@ -1964,7 +1162,7 @@ theorem checkSub_sound {Δ t u} (h : checkSub Δ t u = true) : Sub Δ t u := by
     obtain ⟨h12, hvalid⟩ := h
     obtain ⟨h1, hhi'⟩ := h12
     obtain ⟨helem, hlo'⟩ := h1
-    exact Sub.bl (Count.demandOK_of_isDemandOK hlo') (Count.demandOK_of_isDemandOK hhi') hvalid
+    exact Sub.bl ((Count.isDemandOK_iff.mp) hlo') ((Count.isDemandOK_iff.mp) hhi') hvalid
       (checkSub_sound helem)
   | .unit, .arrow _ _ | .unit, .bl _ _ _ | .unit, .tbind _ | .unit, .bool
   | .bool, .unit | .bool, .arrow _ _ | .bool, .bl _ _ _ | .bool, .tbind _
@@ -2090,7 +1288,7 @@ theorem forceSubtype_sub {Δ ty' ty}
           exact Or.inr ⟨hDem, ψ, σ, hψ, hσ, hu⟩
       · simp [forceSubtype, hcsf, hokb] at hfs
 
-theorem Count.binderRigid_of_bool {n : Nat} {c : Count}
+theorem _root_.FHM.Bounds.Count.binderRigid_of_bool {n : Nat} {c : Count}
     (h : Count.binderRigidBool n c = true) : Count.BinderRigid n c := by
   induction c with
   | lit => trivial
@@ -2150,7 +1348,7 @@ theorem fillHoles_elab (Φ : Nat) (ann : AnnoTy) :
     · cases lo with | none => exact AnnoTy.ElabBound.hole | some _ => exact AnnoTy.ElabBound.known
     · cases hi with | none => exact AnnoTy.ElabBound.hole | some _ => exact AnnoTy.ElabBound.known
 
-theorem Count.subst_applyArgs_binderRigid {n args c}
+theorem _root_.FHM.Bounds.Count.subst_applyArgs_binderRigid {n args c}
     (hb : Count.BinderRigid n c) (hlen : args.length = n) :
     Count.Subst args c (Count.applyArgs args c) := by
   induction c with

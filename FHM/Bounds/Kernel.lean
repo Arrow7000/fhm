@@ -60,14 +60,31 @@ inductive Count.Ground : Count → Prop where
   | .pred a => a.isGround
 
 /-- Executable mirror of `Ground`. -/
-theorem Count.isGround_of_ground {c : Count} (h : c.Ground) : c.isGround = true := by
-  sorry
+@[simp] theorem Count.isGround_of_ground {c : Count} (h : c.Ground) : c.isGround = true := by
+  induction h <;> simp [*]
 
 theorem Count.ground_of_isGround {c : Count} (h : c.isGround = true) : c.Ground := by
-  sorry
+  induction c with
+  | lit n => exact .lit
+  | var _ => simp at h
+  | add a b iha ihb =>
+      simp [Bool.and_eq_true] at h
+      exact .add (iha h.1) (ihb h.2)
+  | mul a b iha ihb =>
+      simp [Bool.and_eq_true] at h
+      exact .mul (iha h.1) (ihb h.2)
+  | pred a ih =>
+      simp at h
+      exact .pred (ih h)
+  | min a b iha ihb =>
+      simp [Bool.and_eq_true] at h
+      exact .min (iha h.1) (ihb h.2)
+  | max a b iha ihb =>
+      simp [Bool.and_eq_true] at h
+      exact .max (iha h.1) (ihb h.2)
 
-theorem Count.isGround_iff {c : Count} : c.isGround = true ↔ c.Ground := by
-  sorry
+theorem Count.isGround_iff {c : Count} : c.isGround = true ↔ c.Ground :=
+  ⟨Count.ground_of_isGround, Count.isGround_of_ground⟩
 
 /-- Evaluate a ground count to a `Nat` (no assignment needed). -/
 def Count.fold (c : Count) (h : c.Ground) : Nat :=
@@ -87,7 +104,13 @@ def Count.fold (c : Count) (h : c.Ground) : Nat :=
 
 theorem Count.fold_eq_eval {c : Count} (h : c.Ground) (σ : Assign) :
     c.fold h = c.eval σ := by
-  sorry
+  induction h with
+  | lit => rfl
+  | add _ _ iha ihb => simp [Count.fold, iha, ihb]
+  | mul _ _ iha ihb => simp [Count.fold, iha, ihb]
+  | pred _ ih => simp [Count.fold, ih]
+  | min _ _ iha ihb => simp [Count.fold, iha, ihb]
+  | max _ _ iha ihb => simp [Count.fold, iha, ihb]
 
 /-! ## Constraints and problems -/
 
@@ -169,27 +192,338 @@ inductive Count.DemandOK : Count → Prop where
   | .add a b | .mul a b | .min a b | .max a b => a.isRigidOnly && b.isRigidOnly
   | .pred a => a.isRigidOnly
 
-/-- Executable mirror; exact clauses match BLSketch (to be shared after rewire). -/
-def Count.isDemandOK : Count → Bool :=
-  fun c =>
-    c.isRigidOnly ||
-    match c with
-    | .var ⟨.inferable, _⟩ => true
-    | .mul c (.var ⟨.inferable, _⟩) => c.isRigidOnly
-    | .mul (.var ⟨.inferable, _⟩) c => c.isRigidOnly
-    | .add (.var ⟨.inferable, _⟩) e => e.isRigidOnly
-    | .add e (.var ⟨.inferable, _⟩) => e.isRigidOnly
-    | .add (.mul c (.var ⟨.inferable, _⟩)) e => c.isRigidOnly && e.isRigidOnly
-    | .add (.mul (.var ⟨.inferable, _⟩) c) e => c.isRigidOnly && e.isRigidOnly
-    | _ => false
+/-- Executable mirror of `DemandOK` (clauses match BLSketch). -/
+@[simp] def Count.isDemandOK : Count → Bool
+  | .var ⟨.inferable, _⟩ => true
+  | .mul c (.var ⟨.inferable, _⟩) => c.isRigidOnly
+  | .mul (.var ⟨.inferable, _⟩) c => c.isRigidOnly
+  | .add (.var ⟨.inferable, _⟩) e => e.isRigidOnly
+  | .add e (.var ⟨.inferable, _⟩) => e.isRigidOnly
+  | .add (.mul c (.var ⟨.inferable, _⟩)) e => c.isRigidOnly && e.isRigidOnly
+  | .add (.mul (.var ⟨.inferable, _⟩) c) e => c.isRigidOnly && e.isRigidOnly
+  | c => c.isRigidOnly
 
-theorem Count.isDemandOK_iff {c : Count} :
-    c.isDemandOK = true ↔ Count.DemandOK c := by
-  sorry
+@[simp] theorem Count.isRigidOnly_of_rigidOnly {c : Count} (h : Count.RigidOnly c) :
+    c.isRigidOnly = true := by
+  induction h with
+  | lit => rfl
+  | var => rfl
+  | add _ _ iha ihb => simp [iha, ihb]
+  | mul _ _ iha ihb => simp [iha, ihb]
+  | pred _ ih => simp [ih]
+  | min _ _ iha ihb => simp [iha, ihb]
+  | max _ _ iha ihb => simp [iha, ihb]
+
+theorem Count.rigidOnly_of_isRigidOnly {c : Count} (h : c.isRigidOnly = true) :
+    Count.RigidOnly c := by
+  induction c with
+  | lit => exact .lit
+  | var v =>
+    cases v with | mk kind idx =>
+    cases kind with
+    | rigid => exact .var
+    | inferable => simp at h
+  | add a b iha ihb =>
+    simp at h
+    exact .add (iha h.1) (ihb h.2)
+  | mul a b iha ihb =>
+    simp at h
+    exact .mul (iha h.1) (ihb h.2)
+  | pred a ih =>
+    simp at h
+    exact .pred (ih h)
+  | min a b iha ihb =>
+    simp at h
+    exact .min (iha h.1) (ihb h.2)
+  | max a b iha ihb =>
+    simp at h
+    exact .max (iha h.1) (ihb h.2)
 
 theorem Count.isRigidOnly_iff {c : Count} :
-    c.isRigidOnly = true ↔ Count.RigidOnly c := by
-  sorry
+    c.isRigidOnly = true ↔ Count.RigidOnly c :=
+  ⟨Count.rigidOnly_of_isRigidOnly, Count.isRigidOnly_of_rigidOnly⟩
+
+/-- Rigid counts never hit a DemandOK special-form arm (those embed an inferable). -/
+@[simp] theorem Count.isDemandOK_of_isRigidOnly {c : Count} (h : c.isRigidOnly = true) :
+    c.isDemandOK = true := by
+  unfold Count.isDemandOK
+  split <;> try (exact h)
+  · -- `.var inferable` arm
+    rename_i i
+    simp at h
+  · -- `.mul c (var inferable)`
+    rename_i c i
+    simp at h
+  · -- `.mul (var inferable) c`
+    rename_i i c
+    simp at h
+  · -- `.add (var inferable) e`
+    rename_i i e
+    simp at h
+  · -- `.add e (var inferable)`
+    rename_i e i
+    simp at h
+  · -- `.add (.mul c (var inferable)) e`
+    rename_i c i e
+    simp at h
+  · -- `.add (.mul (var inferable) c) e`
+    rename_i i c e
+    simp at h
+
+@[simp] theorem Count.isDemandOK_of_demandOK {c : Count} (h : Count.DemandOK c) :
+    c.isDemandOK = true := by
+  induction h with
+  | ofRigid h => exact Count.isDemandOK_of_isRigidOnly (Count.isRigidOnly_of_rigidOnly h)
+  | infer => rfl
+  | scale h => simp [h]
+  | scaleComm h =>
+    -- Right factor is rigid ⇒ first mul-arm does not match.
+    cases h with
+    | lit => rfl
+    | var => rfl
+    | add ha hb =>
+      simp [ha, hb]
+    | mul ha hb =>
+      simp [ha, hb]
+    | pred ha =>
+      simp [ha]
+    | min ha hb =>
+      simp [ha, hb]
+    | max ha hb =>
+      simp [ha, hb]
+  | offset h => simp [h]
+  | offsetComm h =>
+    -- Left is rigid ⇒ first add-arm does not match; second arm fires.
+    cases h with
+    | lit => rfl
+    | var => rfl
+    | add ha hb =>
+      simp [ha, hb]
+    | mul ha hb =>
+      simp [ha, hb]
+    | pred ha =>
+      simp [ha]
+    | min ha hb =>
+      simp [ha, hb]
+    | max ha hb =>
+      simp [ha, hb]
+  | aff hc he =>
+    have hc' := Count.isRigidOnly_of_rigidOnly hc
+    -- Case on offset so `.add _ (var inferable)` cannot match.
+    cases he with
+    | lit => simp [hc']
+    | var => simp [hc']
+    | add ha hb =>
+      simp [hc',
+        ha, hb]
+    | mul ha hb =>
+      simp [hc',
+        ha, hb]
+    | pred ha =>
+      simp [hc', ha]
+    | min ha hb =>
+      simp [hc',
+        ha, hb]
+    | max ha hb =>
+      simp [hc',
+        ha, hb]
+  | affComm hc he =>
+    have hc' := Count.isRigidOnly_of_rigidOnly hc
+    have he' := Count.isRigidOnly_of_rigidOnly he
+    -- Case so higher-priority add arms cannot match.
+    cases hc with
+    | lit =>
+      cases he with
+      | lit => rfl
+      | var => rfl
+      | add ha hb =>
+        simp [ha, hb]
+      | mul ha hb =>
+        simp [ha, hb]
+      | pred ha =>
+        simp [ha]
+      | min ha hb =>
+        simp [ha, hb]
+      | max ha hb =>
+        simp [ha, hb]
+    | var =>
+      cases he with
+      | lit => rfl
+      | var => rfl
+      | add ha hb =>
+        simp [ha, hb]
+      | mul ha hb =>
+        simp [ha, hb]
+      | pred ha =>
+        simp [ha]
+      | min ha hb =>
+        simp [ha, hb]
+      | max ha hb =>
+        simp [ha, hb]
+    | add hca hcb =>
+      cases he with
+      | lit =>
+        simp [hca, hcb]
+      | var =>
+        simp [hca, hcb]
+      | add ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | mul ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | pred ha =>
+        simp [hca, hcb,
+          ha]
+      | min ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | max ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+    | mul hca hcb =>
+      cases he with
+      | lit =>
+        simp [hca, hcb]
+      | var =>
+        simp [hca, hcb]
+      | add ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | mul ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | pred ha =>
+        simp [hca, hcb,
+          ha]
+      | min ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | max ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+    | pred hca =>
+      cases he with
+      | lit =>
+        simp [hca]
+      | var =>
+        simp [hca]
+      | add ha hb =>
+        simp [hca,
+          ha, hb]
+      | mul ha hb =>
+        simp [hca,
+          ha, hb]
+      | pred ha =>
+        simp [hca,
+          ha]
+      | min ha hb =>
+        simp [hca,
+          ha, hb]
+      | max ha hb =>
+        simp [hca,
+          ha, hb]
+    | min hca hcb =>
+      cases he with
+      | lit =>
+        simp [hca, hcb]
+      | var =>
+        simp [hca, hcb]
+      | add ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | mul ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | pred ha =>
+        simp [hca, hcb,
+          ha]
+      | min ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | max ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+    | max hca hcb =>
+      cases he with
+      | lit =>
+        simp [hca, hcb]
+      | var =>
+        simp [hca, hcb]
+      | add ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | mul ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | pred ha =>
+        simp [hca, hcb,
+          ha]
+      | min ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+      | max ha hb =>
+        simp [hca, hcb,
+          ha, hb]
+
+theorem Count.demandOK_of_isDemandOK {c : Count} (h : c.isDemandOK = true) :
+    Count.DemandOK c := by
+  induction c with
+  | lit => exact .ofRigid .lit
+  | var v =>
+    cases v with | mk kind idx =>
+    cases kind with
+    | rigid => exact .ofRigid .var
+    | inferable => exact .infer
+  | add a b iha ihb =>
+    unfold Count.isDemandOK at h
+    split at h
+    · next i heq => nomatch heq
+    · next c i heq => nomatch heq
+    · next i c heq => nomatch heq
+    · next i e heq =>
+      cases heq
+      exact .offset (Count.rigidOnly_of_isRigidOnly h)
+    · next e i heq =>
+      cases heq
+      exact .offsetComm (Count.rigidOnly_of_isRigidOnly h)
+    · next c i e heq =>
+      cases heq
+      simp at h
+      exact .aff (Count.rigidOnly_of_isRigidOnly h.1) (Count.rigidOnly_of_isRigidOnly h.2)
+    · next i c e heq =>
+      cases heq
+      simp at h
+      exact .affComm (Count.rigidOnly_of_isRigidOnly h.1) (Count.rigidOnly_of_isRigidOnly h.2)
+    · exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
+  | mul a b iha ihb =>
+    unfold Count.isDemandOK at h
+    split at h
+    · next i heq => nomatch heq
+    · next c i heq =>
+      cases heq
+      exact .scale (Count.rigidOnly_of_isRigidOnly h)
+    · next i c heq =>
+      cases heq
+      exact .scaleComm (Count.rigidOnly_of_isRigidOnly h)
+    · next i e heq => nomatch heq
+    · next e i heq => nomatch heq
+    · next c i e heq => nomatch heq
+    · next i c e heq => nomatch heq
+    · exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
+  | pred a ih =>
+    simp at h
+    exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
+  | min a b iha ihb =>
+    simp only [Count.isDemandOK] at h
+    exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
+  | max a b iha ihb =>
+    simp only [Count.isDemandOK] at h
+    exact .ofRigid (Count.rigidOnly_of_isRigidOnly h)
+
+theorem Count.isDemandOK_iff {c : Count} :
+    c.isDemandOK = true ↔ Count.DemandOK c :=
+  ⟨Count.demandOK_of_isDemandOK, Count.isDemandOK_of_demandOK⟩
 
 /-! ## Intervals and path-condition helpers -/
 
