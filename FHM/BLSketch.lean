@@ -609,14 +609,17 @@ def solveZ3 (ψ : ExistsProblem) : SolveVerdict :=
     | .unknown "z3 reports no witness exists" => .unsat
     | _ => .unknown
 
+/-- Strong negative on a witness-mode `decideGoals` query: no model exists.
+Matches `solveZ3`'s mapping of this parse tag to `.unsat`. -/
+def isWitnessUnsat : FHM.Z3.Verdict → Bool
+  | .unknown "z3 reports no witness exists" => true
+  | _ => false
+
 /-- After a witness, try to find another solution with a different output value.
 
-TODO(unique-honesty): `.unique` must mean “no other model on `outs`”, not
-“didn’t find one.” Today any non-`.witness` on the block/recheck query
-(including `.unknown` / timeout) is treated as “no other” and yields `.unique`.
-Require a genuine strong negative (e.g. unsat / verified impossibility of an
-alternative) before returning `.unique`; map solver `unknown` → `.unknown`.
-Until then `unique_sound` overclaims relative to true `UniqueOutputs`. -/
+Honesty: `.unique` only if **every** “outs differ from σ” alternative query is
+strongly unsat (no witness exists). Solver `unknown` / timeout / partial results
+yield `.unknown`, never `.unique`. A `.witness` on any alternative ⇒ `.multiple`. -/
 def uniqueZ3 (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
   match solveZ3 ψ with
   | .unsat => .unknown
@@ -628,15 +631,17 @@ def uniqueZ3 (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
     let goals := constraintsToAssumptions ψ.cons
     let differs (c : Count) (v : Nat) : List Assumptions :=
       [[.lt (countToExpr c) (.lit v)], [.lt (.lit v) (countToExpr c)]]
-    -- TODO(unique-honesty): distinguish unsat (no other) vs unknown (inconclusive);
-    -- only unsat on all alternative queries should yield `.unique` below.
-    let anyOther :=
-      (outs.zip vals).any fun (c, v) =>
-        (differs c v).any fun extra =>
+    -- Classify each alternative: found other / no other / inconclusive.
+    let statuses : List (Option Bool) :=
+      (outs.zip vals).flatMap fun (c, v) =>
+        (differs c v).map fun extra =>
           match decideGoals unknowns (baseAs ++ extra) goals with
-          | .witness _ => true
-          | _ => false
-    if anyOther then .multiple else .unique
+          | .witness _ => some true           -- found another model
+          | v => if isWitnessUnsat v then some false  -- strong unsat
+                 else none                    -- unknown / inconclusive
+    if statuses.any (· == some true) then .multiple
+    else if statuses.any (· == none) then .unknown
+    else .unique  -- all some false, or no alternatives (empty outs)
 
 end Z3Bridge
 
@@ -663,10 +668,8 @@ opaque solve : ExistsProblem → SolveVerdict
 
 /-- Opaque uniqueness oracle on chosen outputs (runtime: `uniqueImpl`).
 Separate from `solve`: first find a witness, then ask whether those `outs`
-are forced across all solutions.
-
-TODO(unique-honesty): see `Z3Bridge.uniqueZ3` — `.unique` is not yet an honest
-“no other model” verdict (unknown-on-alternative can become `.unique`). -/
+are forced across all solutions. `.unique` requires strong unsat on every
+alternative (see `Z3Bridge.uniqueZ3`); inconclusive solver answers ⇒ `.unknown`. -/
 @[implemented_by uniqueImpl]
 opaque unique (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict
 
@@ -679,10 +682,8 @@ axiom solve_sound (ψ : ExistsProblem) (σ : Assign) :
     solve ψ = .witness σ → ψ.SolvedBy σ
 
 /-- Soundness: only `.unique` is axiomatised. `.multiple` / `.unknown` carry no theorems.
-
-TODO(unique-honesty): safe only once `uniqueZ3` returns `.unique` solely when
-alternatives are strongly refuted (unsat/verified), never on solver `unknown`.
-Until then this axiom overclaims `UniqueOutputs` relative to the implementation. -/
+Implementation only returns `.unique` after strong unsat on alternatives
+(`uniqueZ3`); still an axiom until proved from Z3 positives (PR4). -/
 axiom unique_sound (ψ : ExistsProblem) (outs : List Count) :
     unique ψ outs = .unique → ψ.UniqueOutputs outs
 
