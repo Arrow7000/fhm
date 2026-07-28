@@ -1039,10 +1039,21 @@ structure BoundProgramOK
 /-! ### P3.5b theorem statements (after sign-off) -/
 
 theorem ElabCount.frontier_le {Φ a c Φ'} (h : ElabCount Φ a c Φ') : Φ ≤ Φ' := by
-  sorry
+  cases h with
+  | hole => omega
+  | solid => omega
 
 theorem ElabAnn.frontier_le {Φ ann β Φ'} (h : ElabAnn Φ ann β Φ') : Φ ≤ Φ' := by
-  sorry
+  induction h with
+  | prim => omega
+  | bvar => omega
+  | fvar => omega
+  | arrow _ _ iha ihb => omega
+  | list hlo hhi _ ihe =>
+      have := ElabCount.frontier_le hlo
+      have := ElabCount.frontier_le hhi
+      omega
+  | custom => omega
 
 /-- After elaboration, β is a solid BoundInfo; agreement with τ is a pipeline
 duty (erase produces ann aligned with τ). Stated for the solid-ascription path. -/
@@ -1054,7 +1065,14 @@ theorem MeetsAscription.sub {Δ β ann β'}
 
 theorem BoundInfo.needsBoundCovers_iff (β : BoundInfo) :
     BoundInfo.needsBoundCovers β = true ↔ ∃ lo hi e, β = .list lo hi e := by
-  sorry
+  constructor
+  · intro h
+    cases β <;> simp [BoundInfo.needsBoundCovers] at h
+    exact ⟨_, _, _, rfl⟩
+  · intro ⟨lo, hi, e, he⟩
+    subst he
+    rfl
+
 
 theorem MatchSafe.list_of_covers {Δ hmExh lo hi βe brs}
     (h : BoundCovers Δ (.list lo hi βe) brs) :
