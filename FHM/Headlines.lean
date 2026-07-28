@@ -372,7 +372,7 @@ Core λ. -/
 private theorem packingB_finalize :
     finalizeAnn [] [(.mk "x", some (.prim .int))] (some ⟨[], .prim .int⟩) =
       some ⟨[], .arrow (.prim .int) (.prim .int)⟩ := by
-  simp [finalizeAnn, synthScheme, paramsToArrows, paramsToArrows.go]
+  simp [finalizeAnn, paramsToArrows, paramsToArrows.go, mergeTyParamNames]
 
 private theorem packingB_lowerPoly (ctors : CtorEnv) :
     lowerPolyAnn (kindEnvOfCtors ctors)
@@ -460,7 +460,7 @@ example (ctors : CtorEnv) :
   · rfl
   · rfl  -- RecSpec.ann (poly σ) = some σ
   · exact List.nodup_nil
-  · intro τm h; simp [List.mem_singleton, σ] at h
+  · intro τm h; simp [σ] at h
   · intro σ' h
     simp only [List.mem_singleton, σ] at h
     injection h with h; subst h
@@ -490,7 +490,7 @@ example (ctors : CtorEnv) :
     injection hspec with hspec; subst hspec
     have hYs : Ys = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hfreshY.length)
     subst hYs
-    simp [coreParamsToArrows, PolyTy.openVars, σ]
+    simp [coreParamsToArrows, PolyTy.openVars]
   · intro Xs _ i hi σ' hspec Ys hfreshY
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega

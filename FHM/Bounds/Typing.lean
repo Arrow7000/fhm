@@ -183,7 +183,7 @@ private theorem kn_inj {k k' : VarKind} (h : kindNat k = kindNat k') : k = k' :=
 
 theorem Count.encode_inj {a b : Count} (h : Count.encode a = Count.encode b) : a = b := by
   induction a generalizing b with
-  | lit n => cases b <;> simp at h <;> try exact congrArg Count.lit h
+  | lit n => cases b <;> (simp at h; try exact congrArg Count.lit h)
   | var v =>
     cases b with
     | var w =>
@@ -356,7 +356,7 @@ theorem joinBoundInfo_comm (β₁ β₂ : BoundInfo) :
     have hcond' : (decide (n2 = n1) && decide (as2.length = as1.length)) = true := by
       simp [hn.1.symm, hn.2.symm]
     have hargs' : joinBoundInfoArgs as2 as1 = some args := ihas.symm ▸ hargs
-    simp [hcond, hcond', hargs, hargs', hn.1, hn.2]
+    simp [hargs, hargs', hn.1, hn.2]
   case c12 =>
     intro n1 as1 n2 as2 hcond hargs ihas
     rw [joinBoundInfo.eq_def (β₁ := .custom n1 as1) (β₂ := .custom n2 as2),
@@ -612,7 +612,7 @@ mutual
               have := List.Forall₂.length_eq hargs
               have := List.Forall₂.length_eq hargs'
               omega
-            simp only [↓reduceIte, hl, decide_true, Bool.true_and, Bool.and_self] at hj
+            simp only [↓reduceIte, hl, decide_true, Bool.and_self] at hj
             cases hjs : joinBoundInfoArgs args args' with
             | none => simp [hjs] at hj
             | some zs =>
