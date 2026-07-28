@@ -1142,12 +1142,114 @@ Same pattern as `InferW`: thread `Φ : Nat` as the next inferable index.
 Oracle calls are the opaque `checkValid` / `solve` / `unique`; failure/`multiple`/`unknown`
 ⇒ `none` (require annotation).
 
-`forceSubtype` is HM-style narrowing: plain `checkSub` first, else `solve`+`unique`
-on escaping `obsBounds`. The uniqueness gate is **elaborator policy** (stricter than
+`forceSubtype` is HM-style narrowing: plain `checkSub` first, else gather solve/unique
+**evidence** and consult a pluggable **commit handler** (elaborator policy; stricter than
 declarative `TypeOf` / `Check`, which only require a solve witness). Used at `.anno`,
-`.app`, `.letScheme`, and `check`.
-`matchBL` joins `BL` branch bounds (or requires equal non-`BL` types).
+`.app`, `.letScheme`, and `check`. PR3a: policy gates success and may return a witness
+`σ`; PR3b will apply `σ` into types. `matchBL` joins `BL` branch bounds (or requires
+equal non-`BL` types).
 -/
+
+/-! ### Commit policy (pluggable elaborator uniqueness / accept) -/
+
+/-- Elaborator decision after narrowing evidence is gathered. -/
+inductive Commit where
+  /-- Accept; `σ` should be the witness from evidence (forceSubtype uses evidence's `σ`). -/
+  | accept (σ : Assign)
+  | reject
+
+/-- Oracle-shaped evidence for one solve+unique probe (exclusive cases).
+Payloads are oracle equalities (v1); semantic `SolvedBy` / `UniqueOutputs` later
+once uniqueness is honest — see TODO(unique-honesty). -/
+inductive NarrowingEvidence (ψ : ExistsProblem) (outs : List Count) where
+  /-- No usable witness (`unsat` or `unknown`). -/
+  | none
+  /-- Witness plus oracle `.unique` on `outs`. -/
+  | unique (σ : Assign)
+      (hσ : solve ψ = .witness σ)
+      (hu : unique ψ outs = .unique)
+  /-- Witness without uniqueness (oracle `.multiple` or `.unknown`). -/
+  | some_ (σ : Assign)
+      (hσ : solve ψ = .witness σ)
+      (hnot : unique ψ outs ≠ .unique)
+
+/-- Named policies (declarative source of truth via `Commits`). -/
+inductive PolicyKind where
+  /-- Auto-commit only when oracle reports unique (historical default). -/
+  | uniqueOnly
+  /-- Auto-commit any solve witness; ignore uniqueness. -/
+  | anyWitness
+  deriving DecidableEq, Repr
+
+/-- Declarative: which commits each policy allows on each evidence shape. -/
+inductive Commits :
+    PolicyKind → {ψ : ExistsProblem} → {outs : List Count} →
+      NarrowingEvidence ψ outs → Commit → Prop where
+  | uniqueOnly_accept {ψ outs σ hσ hu} :
+      Commits .uniqueOnly (ψ := ψ) (outs := outs) (.unique σ hσ hu) (.accept σ)
+  | uniqueOnly_reject_none {ψ outs} :
+      Commits .uniqueOnly (ψ := ψ) (outs := outs) .none .reject
+  | uniqueOnly_reject_some {ψ outs σ hσ hnot} :
+      Commits .uniqueOnly (ψ := ψ) (outs := outs) (.some_ σ hσ hnot) .reject
+  | anyWitness_accept_unique {ψ outs σ hσ hu} :
+      Commits .anyWitness (ψ := ψ) (outs := outs) (.unique σ hσ hu) (.accept σ)
+  | anyWitness_accept_some {ψ outs σ hσ hnot} :
+      Commits .anyWitness (ψ := ψ) (outs := outs) (.some_ σ hσ hnot) (.accept σ)
+  | anyWitness_reject_none {ψ outs} :
+      Commits .anyWitness (ψ := ψ) (outs := outs) .none .reject
+
+/-- Executable policy. Opaque to `synth`/`check` (pass as `CommitHandler`). -/
+def decideCommit (k : PolicyKind) {ψ : ExistsProblem} {outs : List Count} :
+    NarrowingEvidence ψ outs → Commit
+  | .none => .reject
+  | .unique σ _ _ => .accept σ
+  | .some_ σ _ _ =>
+    match k with
+    | .uniqueOnly => .reject
+    | .anyWitness => .accept σ
+
+/-- Handler type threaded through algo inference (stable if policies change). -/
+abbrev CommitHandler : Type :=
+  (ψ : ExistsProblem) → (outs : List Count) → NarrowingEvidence ψ outs → Commit
+
+def CommitHandler.ofKind (k : PolicyKind) : CommitHandler :=
+  fun _ψ _outs e => decideCommit k e
+
+theorem decideCommit_sound {k ψ outs} (e : NarrowingEvidence ψ outs) :
+    Commits k e (decideCommit k e) := by
+  cases k <;> cases e <;> constructor
+
+theorem decideCommit_complete {k ψ outs} (e : NarrowingEvidence ψ outs) {c : Commit}
+    (h : Commits k e c) : decideCommit k e = c := by
+  cases h <;> rfl
+
+theorem decideCommit_iff {k ψ outs} (e : NarrowingEvidence ψ outs) (c : Commit) :
+    Commits k e c ↔ decideCommit k e = c :=
+  ⟨decideCommit_complete e, fun h => h ▸ decideCommit_sound e⟩
+
+/-- Build exclusive oracle evidence for `ψ` / `outs`. -/
+def gatherNarrowingEvidence (ψ : ExistsProblem) (outs : List Count) :
+    NarrowingEvidence ψ outs :=
+  match hσ : solve ψ with
+  | .unsat | .unknown => .none
+  | .witness σ =>
+    match hu : unique ψ outs with
+    | .unique => .unique σ hσ hu
+    | .multiple =>
+      .some_ σ hσ (by
+        intro h
+        rw [hu] at h
+        exact (nomatch h))
+    | .unknown =>
+      .some_ σ hσ (by
+        intro h
+        rw [hu] at h
+        exact (nomatch h))
+
+/-- Success of `forceSubtype`: plain `Sub` or a solve witness (not yet applied to types). -/
+inductive ForceOk where
+  | plainSub
+  | solved (σ : Assign)
 
 @[simp] def Count.isRigidOnly : Count → Bool
   | .lit _ => true
@@ -1262,46 +1364,45 @@ def Expr.size : Expr → Nat
   | .matchNil s n => 1 + s.size + n.size
   | .matchCons s c => 1 + s.size + c.size
 
-/-- Force `ty'` into demand `ty`: prefer plain `checkSub`; else `solve`+`unique`.
-Fails on `multiple` / `unknown` / `unsat` (annotation required).
-Uniqueness is elaborator policy: declarative `*Infer` rules need only a witness.
-Used at ascription and HM-style use sites (app domain, scheme pack, `check`). -/
-def forceSubtype (Δ : List Constraint) (ty' ty : Ty) : Bool :=
-  if checkSub Δ ty' ty then true
-  else if !ty.isDemandOK then false
+/-- Force `ty'` into demand `ty`: prefer plain `checkSub`; else gather evidence and
+consult `policy`. Returns `none` on failure; on success either `.plainSub` or
+`.solved σ` (PR3a does **not** apply `σ` to types yet — PR3b).
+`σ` always comes from evidence; a handler that `.accept`s on `.none` is ignored. -/
+def forceSubtype (policy : CommitHandler) (Δ : List Constraint) (ty' ty : Ty) :
+    Option ForceOk :=
+  if checkSub Δ ty' ty then some .plainSub
+  else if !ty.isDemandOK then none
   else
     match subtypeProblem Δ ty' ty with
-    | none => false
+    | none => none
     | some ψ =>
-      match solve ψ with
-      | .witness _ => unique ψ ty'.obsBounds == .unique
-      | _ => false
+      let outs := ty'.obsBounds
+      let e := gatherNarrowingEvidence ψ outs
+      match e, policy ψ outs e with
+      | .unique σ _ _, .accept _ => some (.solved σ)
+      | .some_ σ _ _, .accept _ => some (.solved σ)
+      | _, _ => none
 
-/-- Synthesize a type for `e`.
+/-- Synthesize a type for `e` under commit `policy`.
 
 Returns `some (Φ', τ)` with updated freshness frontier, or `none` on failure
-(including when `forceSubtype` rejects non-unique *escaping* source bounds —
-algo policy, stricter than declarative `TypeOf`).
+(including when `forceSubtype` rejects per policy — e.g. non-unique under
+`uniqueOnly`).
 
-**Uniqueness.** The returned *type shape* is determined by the syntax-directed
-algorithm (one successful path ⇒ one `τ`). That does **not** mean every bound
-expression inside `τ` is a unique solution of an arithmetic problem: after hole
-filling, `τ` may still mention inferables (`?a`, …), and `forceSubtype` only
-demands uniqueness of the *source* type’s `obsBounds` when solving into a
-demand — it does not substitute a witness into `τ`. So you can get a unique
-synthesized type that still contains non-unique / unsolved bound variables in
-the printed form.
+**Uniqueness / commit.** Policy is elaborator-only. Returned `τ` is still not
+rewritten under solve witnesses (PR3b); holes may remain in printed types.
 -/
-def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat × Ty)
+def synthWith (policy : CommitHandler) (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) :
+    Expr → Option (Nat × Ty)
   | .unit => some (Φ, .unit)
   | .true => some (Φ, .bool)
   | .false => some (Φ, .bool)
   | .nil => none
   | .cons h t =>
-    match synth Φ Δ ctx h with
+    match synthWith policy Φ Δ ctx h with
     | none => none
     | some (Φ₁, ht) =>
-      match synth Φ₁ Δ ctx t with
+      match synthWith policy Φ₁ Δ ctx t with
       | none => none
       | some (Φ₂, tty) =>
         match tty with
@@ -1322,29 +1423,29 @@ def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat �
   | .lam paramAnn body =>
     let (Φ₁, paramTy) := fillHoles Φ paramAnn
     if paramTy.isDemandOK then
-      match synth Φ₁ Δ (.mono paramTy :: ctx) body with
+      match synthWith policy Φ₁ Δ (.mono paramTy :: ctx) body with
       | some (Φ₂, bodyTy) => some (Φ₂, .arrow paramTy bodyTy)
       | none => none
     else none
   | .app f arg =>
-    match synth Φ Δ ctx f with
+    match synthWith policy Φ Δ ctx f with
     | none => none
     | some (Φ₁, fty) =>
       match fty with
       | .arrow dom cod =>
-        match synth Φ₁ Δ ctx arg with
+        match synthWith policy Φ₁ Δ ctx arg with
         | none => none
         | some (Φ₂, aty) =>
-          if forceSubtype Δ aty dom then some (Φ₂, cod) else none
+          if (forceSubtype policy Δ aty dom).isSome then some (Φ₂, cod) else none
       | _ => none
   | .if_ cond thn els =>
-    match synth Φ Δ ctx cond with
+    match synthWith policy Φ Δ ctx cond with
     | none => none
     | some (Φ₁, ct) =>
-      match synth Φ₁ Δ ctx thn with
+      match synthWith policy Φ₁ Δ ctx thn with
       | none => none
       | some (Φ₂, tt) =>
-        match synth Φ₂ Δ ctx els with
+        match synthWith policy Φ₂ Δ ctx els with
         | none => none
         | some (Φ₃, et) =>
           match ct with
@@ -1358,56 +1459,57 @@ def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat �
     if e = .nil then
       match ty with
       | .bl lo hi elem =>
-        if forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) then some (Φ₁, ty)
+        if (forceSubtype policy Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem)).isSome then
+          some (Φ₁, ty)
         else none
       | _ => none
     else
-      match synth Φ₁ Δ ctx e with
+      match synthWith policy Φ₁ Δ ctx e with
       | none => none
       | some (Φ₂, ty') =>
-        if forceSubtype Δ ty' ty then some (Φ₂, ty) else none
+        if (forceSubtype policy Δ ty' ty).isSome then some (Φ₂, ty) else none
   | .let_ bind body =>
-    match synth Φ Δ ctx bind with
+    match synthWith policy Φ Δ ctx bind with
     | none => none
-    | some (Φ₁, ty1) => synth Φ₁ Δ (.mono ty1 :: ctx) body
+    | some (Φ₁, ty1) => synthWith policy Φ₁ Δ (.mono ty1 :: ctx) body
   | .letScheme s bind body =>
     if s.WF_bool then
-      match synth Φ Δ ctx bind with
+      match synthWith policy Φ Δ ctx bind with
       | none => none
       | some (Φ₁, tyb) =>
-        if forceSubtype Δ tyb s.body then
-          synth Φ₁ Δ (.scheme s :: ctx) body
+        if (forceSubtype policy Δ tyb s.body).isSome then
+          synthWith policy Φ₁ Δ (.scheme s :: ctx) body
         else none
     else none
   | .letRec ann bind body =>
     let (Φ₁, ty) := fillHoles Φ ann
     if ty.isDemandOK then
-      match synth Φ₁ Δ (.mono ty :: ctx) bind with
+      match synthWith policy Φ₁ Δ (.mono ty :: ctx) bind with
       | none => none
       | some (Φ₂, tyb) =>
-        if forceSubtype Δ tyb ty then
-          synth Φ₂ Δ (.mono ty :: ctx) body
+        if (forceSubtype policy Δ tyb ty).isSome then
+          synthWith policy Φ₂ Δ (.mono ty :: ctx) body
         else none
     else none
   | .letRecScheme s bind body =>
     if s.WF_bool then
-      match synth Φ Δ (.scheme s :: ctx) bind with
+      match synthWith policy Φ Δ (.scheme s :: ctx) bind with
       | none => none
       | some (Φ₁, tyb) =>
-        if forceSubtype Δ tyb s.body then
-          synth Φ₁ Δ (.scheme s :: ctx) body
+        if (forceSubtype policy Δ tyb s.body).isSome then
+          synthWith policy Φ₁ Δ (.scheme s :: ctx) body
         else none
     else none
   | .matchBL scrut eNil eCons =>
-    match synth Φ Δ ctx scrut with
+    match synthWith policy Φ Δ ctx scrut with
     | none => none
     | some (Φ₁, sty) =>
       match sty with
       | .bl lo hi elem =>
-        match synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil with
+        match synthWith policy Φ₁ (Δ ++ nilRefine lo hi) ctx eNil with
         | none => none
         | some (Φ₂, tNil) =>
-          match synth Φ₂ (Δ ++ consRefine hi) (consCtx ctx lo hi elem) eCons with
+          match synthWith policy Φ₂ (Δ ++ consRefine hi) (consCtx ctx lo hi elem) eCons with
           | none => none
           | some (Φ₃, tCons) =>
             match joinBranchTy tNil tCons with
@@ -1415,41 +1517,50 @@ def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) : Expr → Option (Nat �
             | none => none
       | _ => none
   | .matchNil scrut eNil =>
-    match synth Φ Δ ctx scrut with
+    match synthWith policy Φ Δ ctx scrut with
     | none => none
     | some (Φ₁, sty) =>
       match sty with
       | .bl lo hi _elem =>
         if checkValid (mustBeEmpty Δ hi) = .valid then
-          synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil
+          synthWith policy Φ₁ (Δ ++ nilRefine lo hi) ctx eNil
         else none
       | _ => none
   | .matchCons scrut eCons =>
-    match synth Φ Δ ctx scrut with
+    match synthWith policy Φ Δ ctx scrut with
     | none => none
     | some (Φ₁, sty) =>
       match sty with
       | .bl lo hi elem =>
         if checkValid (mustBeNonempty Δ lo) = .valid then
-          synth Φ₁ (Δ ++ consRefine hi) (consCtx ctx lo hi elem) eCons
+          synthWith policy Φ₁ (Δ ++ consRefine hi) (consCtx ctx lo hi elem) eCons
         else none
       | _ => none
 termination_by e => e.size + 1
 decreasing_by all_goals (simp_wf; simp [Expr.size]; try omega)
 
-/-- Check `e` against expected `ty`.
+/-- Default synth: `uniqueOnly` commit policy (historical elaborator behavior). -/
+def synth (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) (e : Expr) : Option (Nat × Ty) :=
+  synthWith (CommitHandler.ofKind .uniqueOnly) Φ Δ ctx e
+
+/-- Check `e` against expected `ty` under `policy`.
 Bare `nil` is checked directly against a `BL` demand; otherwise synth then force. -/
-def check (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) (e : Expr) (ty : Ty) :
-    Option Nat :=
+def checkWith (policy : CommitHandler) (Φ : Nat) (Δ : List Constraint) (ctx : Ctx)
+    (e : Expr) (ty : Ty) : Option Nat :=
   match e, ty with
   | .nil, .bl lo hi elem =>
-    if forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) then some Φ
+    if (forceSubtype policy Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem)).isSome then
+      some Φ
     else none
   | _, _ =>
-    match synth Φ Δ ctx e with
+    match synthWith policy Φ Δ ctx e with
     | none => none
     | some (Φ', ty') =>
-      if forceSubtype Δ ty' ty then some Φ' else none
+      if (forceSubtype policy Δ ty' ty).isSome then some Φ' else none
+
+/-- Default check: `uniqueOnly` commit policy. -/
+def check (Φ : Nat) (Δ : List Constraint) (ctx : Ctx) (e : Expr) (ty : Ty) : Option Nat :=
+  checkWith (CommitHandler.ofKind .uniqueOnly) Φ Δ ctx e ty
 
 /-! ### Soundness helpers (partial — synth_sound ladder) -/
 
@@ -1833,37 +1944,120 @@ theorem checkSub_sound {Δ t u} (h : checkSub Δ t u = true) : Sub Δ t u := by
 termination_by t.size + u.size
 decreasing_by all_goals (simp_wf; simp [Ty.size] <;> omega)
 
-theorem forceSubtype_of_true {Δ ty' ty} (h : forceSubtype Δ ty' ty = true) :
-    checkSub Δ ty' ty = true ∨
-      (Ty.DemandOK ty ∧
-        ∃ ψ σ, subtypeProblem Δ ty' ty = some ψ ∧
-          solve ψ = .witness σ ∧ unique ψ ty'.obsBounds = .unique) := by
-  by_cases hcs : checkSub Δ ty' ty = true
-  · exact Or.inl hcs
-  · have hcsf : checkSub Δ ty' ty = false := eq_false_of_ne_true hcs
-    simp [forceSubtype, hcsf] at h
-    by_cases hok : ty.isDemandOK = true
-    · simp [hok] at h
-      cases hψ : subtypeProblem Δ ty' ty with
-      | none => simp [hψ] at h
-      | some ψ =>
-        simp [hψ] at h
-        cases hσ : solve ψ with
-        | witness σ =>
-          simp [hσ, beq_iff_eq] at h
-          exact Or.inr ⟨Ty.demandOK_of_isDemandOK hok, ψ, σ, rfl, hσ, h⟩
-        | unsat => simp [hσ] at h
-        | unknown => simp [hσ] at h
-    · simp [hok] at h
+/-- After plain `checkSub` fails and demand is OK, a successful force is a solve witness. -/
+private theorem forceSubtype_of_some_aux {policy : CommitHandler} {Δ ty' ty ok}
+    (hcsf : checkSub Δ ty' ty = false) (hok : ty.isDemandOK = true)
+    (h : forceSubtype policy Δ ty' ty = some ok) :
+    ∃ σ, ok = ForceOk.solved σ ∧ Ty.DemandOK ty ∧
+      ∃ ψ, subtypeProblem Δ ty' ty = some ψ ∧ solve ψ = .witness σ := by
+  unfold forceSubtype at h
+  have hcs_ne : ¬ checkSub Δ ty' ty = true := by simp [hcsf]
+  have hdem_ne : ¬ (!ty.isDemandOK) = true := by simp [hok]
+  rw [if_neg hcs_ne, if_neg hdem_ne] at h
+  generalize hsp : subtypeProblem Δ ty' ty = sp at h
+  cases sp with
+  | none => simp at h
+  | some ψ =>
+    cases hg : gatherNarrowingEvidence ψ ty'.obsBounds with
+    | none =>
+      simp [hg] at h
+    | unique σ hσ hu =>
+      cases hpol : policy ψ ty'.obsBounds (NarrowingEvidence.unique σ hσ hu) with
+      | accept _ =>
+        simp [hg, hpol] at h
+        exact ⟨σ, h.symm, Ty.demandOK_of_isDemandOK hok, ψ, rfl, hσ⟩
+      | reject =>
+        simp [hg, hpol] at h
+    | some_ σ hσ hnot =>
+      cases hpol : policy ψ ty'.obsBounds (NarrowingEvidence.some_ σ hσ hnot) with
+      | accept _ =>
+        simp [hg, hpol] at h
+        exact ⟨σ, h.symm, Ty.demandOK_of_isDemandOK hok, ψ, rfl, hσ⟩
+      | reject =>
+        simp [hg, hpol] at h
 
-theorem forceSubtype_sub {Δ ty' ty} (h : forceSubtype Δ ty' ty = true) :
+/-- Success of `forceSubtype` under any handler: plain sub, or a solve witness
+from evidence (handler may only accept on `unique` / `some_`; `σ` from evidence). -/
+theorem forceSubtype_of_some {policy : CommitHandler} {Δ ty' ty ok}
+    (h : forceSubtype policy Δ ty' ty = some ok) :
+    (ok = ForceOk.plainSub ∧ checkSub Δ ty' ty = true) ∨
+      (∃ σ, ok = ForceOk.solved σ ∧ Ty.DemandOK ty ∧
+        ∃ ψ, subtypeProblem Δ ty' ty = some ψ ∧ solve ψ = .witness σ) := by
+  by_cases hcs : checkSub Δ ty' ty = true
+  · simp [forceSubtype, hcs] at h
+    cases h
+    exact Or.inl ⟨rfl, hcs⟩
+  · have hcsf : checkSub Δ ty' ty = false := eq_false_of_ne_true hcs
+    by_cases hokb : ty.isDemandOK = true
+    · exact Or.inr (forceSubtype_of_some_aux hcsf hokb h)
+    · simp [forceSubtype, hcsf, hokb] at h
+
+theorem forceSubtype_isSome_sub {policy : CommitHandler} {Δ ty' ty}
+    (h : (forceSubtype policy Δ ty' ty).isSome = true) :
+    Sub Δ ty' ty ∨
+      (Ty.DemandOK ty ∧
+        ∃ ψ σ, subtypeProblem Δ ty' ty = some ψ ∧ solve ψ = .witness σ) := by
+  cases hfs : forceSubtype policy Δ ty' ty with
+  | none => simp [hfs] at h
+  | some ok =>
+    cases forceSubtype_of_some hfs with
+    | inl hp =>
+      obtain ⟨rfl, hcs⟩ := hp
+      exact Or.inl (checkSub_sound hcs)
+    | inr hr =>
+      obtain ⟨σ, _, hDem, ψ, hψ, hσ⟩ := hr
+      exact Or.inr ⟨hDem, ψ, σ, hψ, hσ⟩
+
+/-- uniqueOnly accepts only `.unique` evidence; a solved result carries oracle unique. -/
+private theorem forceSubtype_uniqueOnly_solved {Δ ty' ty σ}
+    (hcsf : checkSub Δ ty' ty = false) (hok : ty.isDemandOK = true)
+    (h : forceSubtype (CommitHandler.ofKind .uniqueOnly) Δ ty' ty = some (ForceOk.solved σ)) :
+    Ty.DemandOK ty ∧
+      ∃ ψ, subtypeProblem Δ ty' ty = some ψ ∧
+        solve ψ = .witness σ ∧ unique ψ ty'.obsBounds = .unique := by
+  unfold forceSubtype at h
+  have hcs_ne : ¬ checkSub Δ ty' ty = true := by simp [hcsf]
+  have hdem_ne : ¬ (!ty.isDemandOK) = true := by simp [hok]
+  rw [if_neg hcs_ne, if_neg hdem_ne] at h
+  generalize hsp : subtypeProblem Δ ty' ty = sp at h
+  cases sp with
+  | none => simp at h
+  | some ψ =>
+    cases hg : gatherNarrowingEvidence ψ ty'.obsBounds with
+    | none =>
+      simp [hg, CommitHandler.ofKind, decideCommit] at h
+    | unique σ' hσ hu =>
+      simp [hg, CommitHandler.ofKind, decideCommit] at h
+      subst h
+      exact ⟨Ty.demandOK_of_isDemandOK hok, ψ, rfl, hσ, hu⟩
+    | some_ σ' hσ hnot =>
+      simp [hg, CommitHandler.ofKind, decideCommit] at h
+
+/-- Default-policy (`uniqueOnly`) characterization: solve path implies oracle unique. -/
+theorem forceSubtype_sub {Δ ty' ty}
+    (h : (forceSubtype (CommitHandler.ofKind .uniqueOnly) Δ ty' ty).isSome = true) :
     Sub Δ ty' ty ∨
       (Ty.DemandOK ty ∧
         ∃ ψ σ, subtypeProblem Δ ty' ty = some ψ ∧
           solve ψ = .witness σ ∧ unique ψ ty'.obsBounds = .unique) := by
-  cases forceSubtype_of_true h with
-  | inl hcs => exact Or.inl (checkSub_sound hcs)
-  | inr hr => exact Or.inr hr
+  cases hfs : forceSubtype (CommitHandler.ofKind .uniqueOnly) Δ ty' ty with
+  | none => simp [hfs] at h
+  | some ok =>
+    by_cases hcs : checkSub Δ ty' ty = true
+    · simp [forceSubtype, hcs] at hfs
+      cases hfs
+      exact Or.inl (checkSub_sound hcs)
+    · have hcsf : checkSub Δ ty' ty = false := eq_false_of_ne_true hcs
+      by_cases hokb : ty.isDemandOK = true
+      · match ok with
+        | ForceOk.plainSub =>
+          have := forceSubtype_of_some_aux (policy := CommitHandler.ofKind .uniqueOnly) hcsf hokb hfs
+          obtain ⟨_, hsolved, _⟩ := this
+          cases hsolved
+        | ForceOk.solved σ =>
+          obtain ⟨hDem, ψ, hψ, hσ, hu⟩ := forceSubtype_uniqueOnly_solved hcsf hokb hfs
+          exact Or.inr ⟨hDem, ψ, σ, hψ, hσ, hu⟩
+      · simp [forceSubtype, hcsf, hokb] at hfs
 
 theorem Count.binderRigid_of_bool {n : Nat} {c : Count}
     (h : Count.binderRigidBool n c = true) : Count.BinderRigid n c := by
@@ -2040,41 +2234,52 @@ theorem instantiatesOf_instantiate?_sound {s : BScheme} {args : List SchemeArg} 
 theorem synth_sound {Φ Δ ctx e Φ' ty}
     (h : synth Φ Δ ctx e = some (Φ', ty)) :
     TypeOf Δ ctx e ty := by
+  -- Work under the default uniqueOnly policy (`synth` is a thin wrapper).
+  simp only [synth] at h
   induction e generalizing Φ Φ' ty ctx Δ with
-  | unit => simp [synth] at h; obtain ⟨_, hty⟩ := h; subst hty; exact TypeOf.unit
-  | true => simp [synth] at h; obtain ⟨_, hty⟩ := h; subst hty; exact TypeOf.true
-  | false => simp [synth] at h; obtain ⟨_, hty⟩ := h; subst hty; exact TypeOf.false
-  | nil => simp [synth] at h
+  | unit =>
+    simp [synthWith] at h
+    obtain ⟨rfl, rfl⟩ := h
+    exact TypeOf.unit
+  | true =>
+    simp [synthWith] at h
+    obtain ⟨rfl, rfl⟩ := h
+    exact TypeOf.true
+  | false =>
+    simp [synthWith] at h
+    obtain ⟨rfl, rfl⟩ := h
+    exact TypeOf.false
+  | nil => simp [synthWith] at h
   | cons head tail ih_head ih_tail =>
-    cases hhead : synth Φ Δ ctx head with
-    | none => simp [synth, hhead] at h
+    cases hhead : synthWith (CommitHandler.ofKind .uniqueOnly) Φ Δ ctx head with
+    | none => simp [synthWith, hhead] at h
     | some Φht =>
       obtain ⟨Φ₁, ht⟩ := Φht
-      cases htail : synth Φ₁ Δ ctx tail with
-      | none => simp [synth, hhead, htail] at h
+      cases htail : synthWith (CommitHandler.ofKind .uniqueOnly) Φ₁ Δ ctx tail with
+      | none => simp [synthWith, hhead, htail] at h
       | some Φtty =>
         obtain ⟨Φ₂, tty⟩ := Φtty
         cases tty with
         | bl lo hi elem =>
-          simp [synth, hhead, htail, beq_iff_eq] at h
+          simp [synthWith, hhead, htail, beq_iff_eq] at h
           obtain ⟨heq, rfl, rfl⟩ := h
           subst heq
           exact .cons (ih_head hhead) (ih_tail htail)
         | unit | bool | arrow _ _ | tbind _ =>
-          simp [synth, hhead, htail] at h
+          simp [synthWith, hhead, htail] at h
   | var i args =>
     cases hctx : ctx[i]? with
-    | none => simp [synth, hctx] at h
+    | none => simp [synthWith, hctx] at h
     | some b =>
       cases b with
       | mono mty =>
-        simp [synth, hctx] at h
+        simp [synthWith, hctx] at h
         obtain ⟨ha, rfl, rfl⟩ := h
         have ha' : args = [] := by simpa [List.isEmpty_iff] using ha
         subst ha'
         exact .varMono hctx
       | scheme s =>
-        simp [synth, hctx] at h
+        simp [synthWith, hctx] at h
         cases hinst : s.instantiate? args with
         | none => simp [hinst] at h
         | some ity =>
@@ -2084,10 +2289,10 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
   | lam paramAnn body ih_body =>
     cases hfill : fillHoles Φ paramAnn with
     | mk Φ₁ paramTy =>
-      simp [synth, hfill] at h
+      simp [synthWith, hfill] at h
       by_cases hok : paramTy.isDemandOK = true
       · simp [hok] at h
-        cases hb : synth Φ₁ Δ (.mono paramTy :: ctx) body with
+        cases hb : synthWith (CommitHandler.ofKind .uniqueOnly) Φ₁ Δ (.mono paramTy :: ctx) body with
         | none => simp [hb] at h
         | some Φb =>
           obtain ⟨Φ₂, bodyTy⟩ := Φb
@@ -2099,17 +2304,17 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
           exact .lam helab (Ty.demandOK_of_isDemandOK hok) (ih_body hb)
       · simp [hok] at h
   | app f arg ih_f ih_arg =>
-    cases hf : synth Φ Δ ctx f with
-    | none => simp [synth, hf] at h
+    cases hf : synthWith (CommitHandler.ofKind .uniqueOnly) Φ Δ ctx f with
+    | none => simp [synthWith, hf] at h
     | some Φf =>
       obtain ⟨Φ₁, fty⟩ := Φf
       cases fty with
       | arrow dom cod =>
-        cases ha : synth Φ₁ Δ ctx arg with
-        | none => simp [synth, hf, ha] at h
+        cases ha : synthWith (CommitHandler.ofKind .uniqueOnly) Φ₁ Δ ctx arg with
+        | none => simp [synthWith, hf, ha] at h
         | some Φa =>
           obtain ⟨Φ₂, aty⟩ := Φa
-          simp [synth, hf, ha] at h
+          simp [synthWith, hf, ha] at h
           obtain ⟨hfs, rfl, rfl⟩ := h
           cases forceSubtype_sub hfs with
           | inl hsub =>
@@ -2117,21 +2322,21 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
           | inr hr =>
             obtain ⟨hok, ψ, σ, hψ, hσ, _huniq⟩ := hr
             exact .appInfer (ih_f hf) (ih_arg ha) hok hψ hσ
-      | unit | bl _ _ _ | tbind _ | bool => simp [synth, hf] at h
+      | unit | bl _ _ _ | tbind _ | bool => simp [synthWith, hf] at h
   | if_ cond thn els ih_c ih_t ih_e =>
-    cases hc : synth Φ Δ ctx cond with
-    | none => simp [synth, hc] at h
+    cases hc : synthWith (CommitHandler.ofKind .uniqueOnly) Φ Δ ctx cond with
+    | none => simp [synthWith, hc] at h
     | some Φc =>
       obtain ⟨Φ₁, ct⟩ := Φc
-      cases ht : synth Φ₁ Δ ctx thn with
-      | none => simp [synth, hc, ht] at h
+      cases ht : synthWith (CommitHandler.ofKind .uniqueOnly) Φ₁ Δ ctx thn with
+      | none => simp [synthWith, hc, ht] at h
       | some Φt =>
         obtain ⟨Φ₂, tt⟩ := Φt
-        cases he : synth Φ₂ Δ ctx els with
-        | none => simp [synth, hc, ht, he] at h
+        cases he : synthWith (CommitHandler.ofKind .uniqueOnly) Φ₂ Δ ctx els with
+        | none => simp [synthWith, hc, ht, he] at h
         | some Φe =>
           obtain ⟨Φ₃, et⟩ := Φe
-          simp [synth, hc, ht, he] at h
+          simp [synthWith, hc, ht, he] at h
           cases ct with
           | unit =>
             cases hj : joinBranchTy tt et with
@@ -2155,8 +2360,10 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
       · subst hen
         cases aty with
         | bl lo hi elem =>
-          simp [synth, hfill] at h
-          by_cases hfs : forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = true
+          simp [synthWith, hfill] at h
+          by_cases hfs :
+            (forceSubtype (CommitHandler.ofKind .uniqueOnly) Δ
+              (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem)).isSome = true
           · simp [hfs] at h
             obtain ⟨rfl, rfl⟩ := h
             have helab : AnnoTy.Elab ann (.bl lo hi elem) := by
@@ -2168,14 +2375,14 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
               obtain ⟨hok, ψ, σ, hψ, hσ, _huniq⟩ := hr
               exact .annoNilInfer helab hok hψ hσ
           · simp [hfs] at h
-        | unit | bool | tbind _ | arrow _ _ => simp [synth, hfill] at h
-      · cases he : synth Φ₁ Δ ctx e with
+        | unit | bool | tbind _ | arrow _ _ => simp [synthWith, hfill] at h
+      · cases he : synthWith (CommitHandler.ofKind .uniqueOnly) Φ₁ Δ ctx e with
         | none =>
-          simp [synth, hfill, he] at h
+          simp [synthWith, hfill, he] at h
           exact absurd h.1 hen
         | some Φe =>
           have heq : (e = Expr.nil) = false := by simp [hen]
-          simp [synth, hfill, he, heq] at h
+          simp [synthWith, hfill, he, heq] at h
           obtain ⟨hfs, rfl, rfl⟩ := h
           obtain ⟨Φ₂, ty'⟩ := Φe
           have helab : AnnoTy.Elab ann aty := by
@@ -2188,17 +2395,17 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
             obtain ⟨hok, ψ, σ, hψ, hσ, _huniq⟩ := hr
             exact .annoInfer helab (ih_e he) hok hψ hσ
   | let_ bind body ih_b ih_body =>
-    cases hb : synth Φ Δ ctx bind with
-    | none => simp [synth, hb] at h
+    cases hb : synthWith (CommitHandler.ofKind .uniqueOnly) Φ Δ ctx bind with
+    | none => simp [synthWith, hb] at h
     | some Φb =>
       obtain ⟨Φ₁, ty1⟩ := Φb
-      simp [synth, hb] at h
+      simp [synthWith, hb] at h
       exact .letMono (ih_b hb) (ih_body h)
   | letScheme s bind body ih_b ih_body =>
-    simp [synth] at h
+    simp [synthWith] at h
     by_cases hwf : s.WF_bool = true
     · simp [hwf] at h
-      cases hb : synth Φ Δ ctx bind with
+      cases hb : synthWith (CommitHandler.ofKind .uniqueOnly) Φ Δ ctx bind with
       | none => simp [hb] at h
       | some Φb =>
         obtain ⟨Φ₁, tyb⟩ := Φb
@@ -2215,10 +2422,10 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
   | letRec ann bind body ih_b ih_body =>
     cases hfill : fillHoles Φ ann with
     | mk Φ₁ ty =>
-      simp [synth, hfill] at h
+      simp [synthWith, hfill] at h
       by_cases hok : ty.isDemandOK = true
       · simp [hok] at h
-        cases hb : synth Φ₁ Δ (.mono ty :: ctx) bind with
+        cases hb : synthWith (CommitHandler.ofKind .uniqueOnly) Φ₁ Δ (.mono ty :: ctx) bind with
         | none => simp [hb] at h
         | some Φb =>
           obtain ⟨Φ₂, tyb⟩ := Φb
@@ -2236,10 +2443,10 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
             exact .letRecInfer helab hok' (ih_b hb) hψ hσ (ih_body hbody)
       · simp [hok] at h
   | letRecScheme s bind body ih_b ih_body =>
-    simp [synth] at h
+    simp [synthWith] at h
     by_cases hwf : s.WF_bool = true
     · simp [hwf] at h
-      cases hb : synth Φ Δ (.scheme s :: ctx) bind with
+      cases hb : synthWith (CommitHandler.ofKind .uniqueOnly) Φ Δ (.scheme s :: ctx) bind with
       | none => simp [hb] at h
       | some Φb =>
         obtain ⟨Φ₁, tyb⟩ := Φb
@@ -2254,98 +2461,114 @@ theorem synth_sound {Φ Δ ctx e Φ' ty}
             (ih_body hbody)
     · simp [hwf] at h
   | matchBL scrut eNil eCons ih_s ih_n ih_c =>
-    cases hs : synth Φ Δ ctx scrut with
-    | none => simp [synth, hs] at h
+    cases hs : synthWith (CommitHandler.ofKind .uniqueOnly) Φ Δ ctx scrut with
+    | none => simp [synthWith, hs] at h
     | some Φs =>
       obtain ⟨Φ₁, sty⟩ := Φs
       cases sty with
       | bl lo hi elem₀ =>
-        cases hn : synth Φ₁ (Δ ++ nilRefine lo hi) ctx eNil with
-        | none => simp [synth, hs, hn] at h
+        cases hn : synthWith (CommitHandler.ofKind .uniqueOnly) Φ₁
+            (Δ ++ nilRefine lo hi) ctx eNil with
+        | none => simp [synthWith, hs, hn] at h
         | some Φn =>
           obtain ⟨Φ₂, tNil⟩ := Φn
-          cases hc : synth Φ₂ (Δ ++ consRefine hi) (consCtx ctx lo hi elem₀) eCons with
-          | none => simp [synth, hs, hn, hc] at h
+          cases hc : synthWith (CommitHandler.ofKind .uniqueOnly) Φ₂
+              (Δ ++ consRefine hi) (consCtx ctx lo hi elem₀) eCons with
+          | none => simp [synthWith, hs, hn, hc] at h
           | some Φc =>
             obtain ⟨Φ₃, tCons⟩ := Φc
-            simp [synth, hs, hn, hc] at h
+            simp [synthWith, hs, hn, hc] at h
             cases hj : joinBranchTy tNil tCons with
             | none => simp [hj] at h
             | some jty =>
               simp [hj] at h
               obtain ⟨rfl, rfl⟩ := h
               exact .matchBL_join (ih_s hs) (ih_n hn) (ih_c hc) hj
-      | unit | arrow _ _ | tbind _ | bool => simp [synth, hs] at h
+      | unit | arrow _ _ | tbind _ | bool => simp [synthWith, hs] at h
   | matchNil scrut eNil ih_s ih_n =>
-    cases hs : synth Φ Δ ctx scrut with
-    | none => simp [synth, hs] at h
+    cases hs : synthWith (CommitHandler.ofKind .uniqueOnly) Φ Δ ctx scrut with
+    | none => simp [synthWith, hs] at h
     | some Φs =>
       obtain ⟨Φ₁, sty⟩ := Φs
       cases sty with
       | bl lo hi elem =>
-        simp [synth, hs] at h
+        simp [synthWith, hs] at h
         by_cases hv : checkValid (mustBeEmpty Δ hi) = .valid
         · simp [hv] at h
           exact .matchNil (ih_s hs) hv (ih_n h)
         · simp [hv] at h
-      | unit | arrow _ _ | tbind _ | bool => simp [synth, hs] at h
+      | unit | arrow _ _ | tbind _ | bool => simp [synthWith, hs] at h
   | matchCons scrut eCons ih_s ih_c =>
-    cases hs : synth Φ Δ ctx scrut with
-    | none => simp [synth, hs] at h
+    cases hs : synthWith (CommitHandler.ofKind .uniqueOnly) Φ Δ ctx scrut with
+    | none => simp [synthWith, hs] at h
     | some Φs =>
       obtain ⟨Φ₁, sty⟩ := Φs
       cases sty with
       | bl lo hi elem =>
-        simp [synth, hs] at h
+        simp [synthWith, hs] at h
         by_cases hv : checkValid (mustBeNonempty Δ lo) = .valid
         · simp [hv] at h
           exact .matchCons (ih_s hs) hv (ih_c h)
         · simp [hv] at h
-      | unit | arrow _ _ | tbind _ | bool => simp [synth, hs] at h
+      | unit | arrow _ _ | tbind _ | bool => simp [synthWith, hs] at h
+
+/-- Non-`nil` check is synth-then-force (default uniqueOnly policy). -/
+private theorem check_eq_of_ne_nil (he : e ≠ .nil) :
+    check Φ Δ ctx e ty =
+      match synth Φ Δ ctx e with
+      | none => none
+      | some (Φ', ty') =>
+        if (forceSubtype (CommitHandler.ofKind .uniqueOnly) Δ ty' ty).isSome then some Φ'
+        else none := by
+  cases e with
+  | nil => exact absurd rfl he
+  | unit | true | false | cons _ _ | var _ _ | lam _ _ | app _ _ | if_ _ _ _
+    | anno _ _ | let_ _ _ | letScheme _ _ _ | letRec _ _ _ | letRecScheme _ _ _
+    | matchBL _ _ _ | matchNil _ _ | matchCons _ _ =>
+      cases ty <;> simp [check, checkWith, synth]
 
 private theorem check_none_of_synth_none
     (he : e ≠ .nil) (hs : synth Φ Δ ctx e = none) :
     check Φ Δ ctx e ty = none := by
-  unfold check
-  simp [he, hs]
+  rw [check_eq_of_ne_nil he, hs]
 
 private theorem check_nil_non_bl_none
     (hty : ty = .unit ∨ ty = .bool ∨ (∃ i, ty = .tbind i) ∨
       (∃ dom cod, ty = .arrow dom cod)) :
     check Φ Δ ctx .nil ty = none := by
   rcases hty with hty | hty | ⟨i, hty⟩ | ⟨dom, cod, hty⟩ <;> subst hty
-  · unfold check; simp [synth]
-  · unfold check; simp [synth]
-  · unfold check; simp [synth]
-  · unfold check; simp [synth]
+  · simp [check, checkWith, synthWith]
+  · simp [check, checkWith, synthWith]
+  · simp [check, checkWith, synthWith]
+  · simp [check, checkWith, synthWith]
 
 private theorem check_some_of_synth_force
     (he : e ≠ .nil)
     (hs : synth Φ Δ ctx e = some (Φ', ty'))
-    (hfs : forceSubtype Δ ty' ty = true) :
+    (hfs : (forceSubtype (CommitHandler.ofKind .uniqueOnly) Δ ty' ty).isSome = true) :
     check Φ Δ ctx e ty = some Φ' := by
-  unfold check
-  simp [he, hs, hfs]
+  rw [check_eq_of_ne_nil he, hs]
+  simp [hfs]
 
 private theorem check_none_of_synth_force_false
     (he : e ≠ .nil)
     (hs : synth Φ Δ ctx e = some (Φ', ty'))
-    (hfs : ¬ forceSubtype Δ ty' ty = true) :
+    (hfs : ¬ (forceSubtype (CommitHandler.ofKind .uniqueOnly) Δ ty' ty).isSome = true) :
     check Φ Δ ctx e ty = none := by
-  unfold check
-  simp [he, hs, hfs]
+  rw [check_eq_of_ne_nil he, hs]
+  simp [hfs]
 
 private theorem check_nil_bl_some
-    (hfs : forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = true) :
+    (hfs : (forceSubtype (CommitHandler.ofKind .uniqueOnly) Δ
+      (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem)).isSome = true) :
     check Φ Δ ctx .nil (.bl lo hi elem) = some Φ := by
-  unfold check
-  simp [hfs]
+  simp [check, checkWith, hfs]
 
 private theorem check_nil_bl_none
-    (hfs : ¬ forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = true) :
+    (hfs : ¬ (forceSubtype (CommitHandler.ofKind .uniqueOnly) Δ
+      (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem)).isSome = true) :
     check Φ Δ ctx .nil (.bl lo hi elem) = none := by
-  unfold check
-  simp [hfs]
+  simp [check, checkWith, hfs]
 
 /-- Algorithmic `check` ⇒ declarative `Check` (not `TypeOf` — no general subsumption). -/
 theorem check_sound {Φ Δ ctx e ty Φ'}
@@ -2355,7 +2578,9 @@ theorem check_sound {Φ Δ ctx e ty Φ'}
   · subst hn
     cases ty with
     | bl lo hi elem =>
-      by_cases hfs : forceSubtype Δ (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem) = true
+      by_cases hfs :
+        (forceSubtype (CommitHandler.ofKind .uniqueOnly) Δ
+          (.bl (.lit 0) (.lit 0) elem) (.bl lo hi elem)).isSome = true
       · rw [check_nil_bl_some hfs] at h
         injection h with hΦ
         subst hΦ
@@ -2384,7 +2609,8 @@ theorem check_sound {Φ Δ ctx e ty Φ'}
       cases h
     | some pair =>
       obtain ⟨Φ'', ty'⟩ := pair
-      by_cases hfs : forceSubtype Δ ty' ty = true
+      by_cases hfs :
+        (forceSubtype (CommitHandler.ofKind .uniqueOnly) Δ ty' ty).isSome = true
       · rw [check_some_of_synth_force hn hs hfs] at h
         injection h with hΦ
         subst hΦ
