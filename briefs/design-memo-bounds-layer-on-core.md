@@ -202,11 +202,11 @@ If something must not fall through cracks: add explicit owners for **semantic le
   `ElabCount`/`ElabAnn`, `ProgramBoundAnns`, `MeetsAscription`, `MatchSafe`, `BoundProgramOK`
 - Binding-level ascriptions / post-Infer check (avoid path reindexing hell)
 - List `β` → `BoundCovers`; non-List → abstract `hmExh` (AllMatchesExhaustive)
-#### P3.5c — Core-only vertical demos / optional composite safety (before Surface)
+#### P3.5c — Core-only vertical demos (before Surface)
 
-- Hand-built Core: Nil/Cons, full match, nil-only / cons-only under `checkValid`  
-- Optional: state (not necessarily prove) composite progress lemma  
-- Proves stack without parse work  
+- **Done:** `FHM/Bounds/Examples.lean` — HasBounds Nil/Cons, BoundCovers full/wild,
+  nil-only/cons-only under `checkValid` hyp, MatchSafe  
+- Optional later: composite progress lemma; full `WellBound` with List `CtorEnv`  
 
 #### P4 — Surface B′
 
