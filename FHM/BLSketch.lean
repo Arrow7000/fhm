@@ -1155,22 +1155,48 @@ inductive Commit where
   /-- Refuse auto-commit for this evidence under the current policy. -/
   | reject
 
-/-- Oracle-shaped evidence for one solve+unique probe (exclusive cases).
-Payloads are oracle equalities (v1); semantic `SolvedBy` / `UniqueOutputs` later
-once uniqueness is honest — see TODO(unique-honesty). -/
+/-- Evidence for one solve+unique probe (exclusive cases).
+
+**Certificates** are oracle equalities (computable; needed by TypeOf `*Infer` and
+`#eval`). **Semantic** content is recovered by the theorems below via
+`solve_sound` / `unique_sound` — embedding those props as ctor fields would make
+`gather` (and thus `synth`) noncomputable while soundness is still axiomatic. -/
 inductive NarrowingEvidence (ψ : ExistsProblem) (outs : List Count) where
   /-- No usable witness (`unsat` or `unknown`). -/
   | none
 
-  /-- Witness plus oracle `.unique` on `outs`. -/
+  /-- Witness plus oracle `.unique` on `outs` (implies `SolvedBy` ∧ `UniqueOutputs`). -/
   | unique (σ : Assign)
       (hσ : solve ψ = .witness σ)
       (hu : unique ψ outs = .unique)
 
-  /-- Witness without uniqueness (oracle `.multiple` or `.unknown`). -/
+  /-- Witness without uniqueness (implies `SolvedBy` only). -/
   | some_ (σ : Assign)
       (hσ : solve ψ = .witness σ)
-      (hnot : unique ψ outs ≠ .unique)
+
+/-- Math: `.unique` evidence certificates ⇒ σ solves the exists-problem. -/
+theorem evidence_solvedBy_of_unique {ψ : ExistsProblem} {outs : List Count}
+    {σ : Assign} (hσ : solve ψ = .witness σ) (_hu : unique ψ outs = .unique) :
+    ψ.SolvedBy σ :=
+  solve_sound ψ σ hσ
+
+/-- Math: `.unique` evidence certificates ⇒ outs agree on all solutions. -/
+theorem evidence_uniqueOutputs_of_unique {ψ : ExistsProblem} {outs : List Count}
+    {σ : Assign} (_hσ : solve ψ = .witness σ) (hu : unique ψ outs = .unique) :
+    ψ.UniqueOutputs outs :=
+  unique_sound ψ outs hu
+
+/-- Math: `.some_` evidence certificate ⇒ σ solves the exists-problem. -/
+theorem evidence_solvedBy_of_some {ψ : ExistsProblem} {σ : Assign}
+    (hσ : solve ψ = .witness σ) :
+    ψ.SolvedBy σ :=
+  solve_sound ψ σ hσ
+
+/-- Package both semantic facts from `.unique` certificates. -/
+theorem evidence_semantic_of_unique {ψ : ExistsProblem} {outs : List Count}
+    {σ : Assign} (hσ : solve ψ = .witness σ) (hu : unique ψ outs = .unique) :
+    ψ.SolvedBy σ ∧ ψ.UniqueOutputs outs :=
+  ⟨evidence_solvedBy_of_unique hσ hu, evidence_uniqueOutputs_of_unique hσ hu⟩
 
 /-- Named policies (declarative source of truth via `Commits`). -/
 inductive PolicyKind where
@@ -1194,16 +1220,16 @@ inductive Commits :
       Commits .uniqueOnly (ψ := ψ) (outs := outs) .none .reject
 
   /-- `uniqueOnly` rejects a non-unique witness. -/
-  | uniqueOnly_reject_some {ψ outs σ hσ hnot} :
-      Commits .uniqueOnly (ψ := ψ) (outs := outs) (.some_ σ hσ hnot) .reject
+  | uniqueOnly_reject_some {ψ outs σ hσ} :
+      Commits .uniqueOnly (ψ := ψ) (outs := outs) (.some_ σ hσ) .reject
 
   /-- `anyWitness` accepts a unique solve witness. -/
   | anyWitness_accept_unique {ψ outs σ hσ hu} :
       Commits .anyWitness (ψ := ψ) (outs := outs) (.unique σ hσ hu) (.accept σ)
 
   /-- `anyWitness` accepts any solve witness (even non-unique). -/
-  | anyWitness_accept_some {ψ outs σ hσ hnot} :
-      Commits .anyWitness (ψ := ψ) (outs := outs) (.some_ σ hσ hnot) (.accept σ)
+  | anyWitness_accept_some {ψ outs σ hσ} :
+      Commits .anyWitness (ψ := ψ) (outs := outs) (.some_ σ hσ) (.accept σ)
 
   /-- `anyWitness` rejects when there is no witness. -/
   | anyWitness_reject_none {ψ outs} :
@@ -1214,7 +1240,7 @@ def decideCommit (k : PolicyKind) {ψ : ExistsProblem} {outs : List Count} :
     NarrowingEvidence ψ outs → Commit
   | .none => .reject
   | .unique σ _ _ => .accept σ
-  | .some_ σ _ _ =>
+  | .some_ σ _ =>
     match k with
     | .uniqueOnly => .reject
     | .anyWitness => .accept σ
@@ -1238,7 +1264,7 @@ theorem decideCommit_iff {k ψ outs} (e : NarrowingEvidence ψ outs) (c : Commit
     Commits k e c ↔ decideCommit k e = c :=
   ⟨decideCommit_complete e, fun h => h ▸ decideCommit_sound e⟩
 
-/-- Build exclusive oracle evidence for `ψ` / `outs`. -/
+/-- Build exclusive evidence for `ψ` / `outs` (oracle certificates; math via theorems). -/
 def gatherNarrowingEvidence (ψ : ExistsProblem) (outs : List Count) :
     NarrowingEvidence ψ outs :=
   match hσ : solve ψ with
@@ -1246,16 +1272,7 @@ def gatherNarrowingEvidence (ψ : ExistsProblem) (outs : List Count) :
   | .witness σ =>
     match hu : unique ψ outs with
     | .unique => .unique σ hσ hu
-    | .multiple =>
-      .some_ σ hσ (by
-        intro h
-        rw [hu] at h
-        exact (nomatch h))
-    | .unknown =>
-      .some_ σ hσ (by
-        intro h
-        rw [hu] at h
-        exact (nomatch h))
+    | .multiple | .unknown => .some_ σ hσ
 
 /-- Success of `forceSubtype`: plain `Sub` or a solve witness (not yet applied to types). -/
 inductive ForceOk where
@@ -1394,7 +1411,7 @@ def forceSubtype (policy : CommitHandler) (Δ : List Constraint) (ty' ty : Ty) :
       let e := gatherNarrowingEvidence ψ outs
       match e, policy ψ outs e with
       | .unique σ _ _, .accept _ => some (.solved σ)
-      | .some_ σ _ _, .accept _ => some (.solved σ)
+      | .some_ σ _, .accept _ => some (.solved σ)
       | _, _ => none
 
 /-- Synthesize a type for `e` under commit `policy`.
@@ -1982,8 +1999,8 @@ private theorem forceSubtype_of_some_aux {policy : CommitHandler} {Δ ty' ty ok}
         exact ⟨σ, h.symm, Ty.demandOK_of_isDemandOK hok, ψ, rfl, hσ⟩
       | reject =>
         simp [hg, hpol] at h
-    | some_ σ hσ hnot =>
-      cases hpol : policy ψ ty'.obsBounds (NarrowingEvidence.some_ σ hσ hnot) with
+    | some_ σ hσ =>
+      cases hpol : policy ψ ty'.obsBounds (NarrowingEvidence.some_ σ hσ) with
       | accept _ =>
         simp [hg, hpol] at h
         exact ⟨σ, h.symm, Ty.demandOK_of_isDemandOK hok, ψ, rfl, hσ⟩
@@ -2044,7 +2061,7 @@ private theorem forceSubtype_uniqueOnly_solved {Δ ty' ty σ}
       simp [hg, CommitHandler.ofKind, decideCommit] at h
       subst h
       exact ⟨Ty.demandOK_of_isDemandOK hok, ψ, rfl, hσ, hu⟩
-    | some_ σ' hσ hnot =>
+    | some_ σ' hσ =>
       simp [hg, CommitHandler.ofKind, decideCommit] at h
 
 /-- Default-policy (`uniqueOnly`) characterization: solve path implies oracle unique. -/
