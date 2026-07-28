@@ -697,4 +697,118 @@ refinements (interesting direction is branch strengthening, not thinning).
 def WellBound (ctors : CtorEnv) (e : Expr) (τ : Ty) (β : BoundInfo) : Prop :=
   TypeOfElabHM ⟨[], ctors⟩ e τ ∧ HasBounds [] [] e τ β
 
+/-! ## P3: BoundCovers — List match coverage under path conditions
+
+**Status:** shapes for sign-off (defaults approved 2026-07-28).
+
+Independent of Core `AllMatchesExhaustive`. Pipeline (BL mode):
+* List scrutinee with refined `β` → require `BoundCovers Δ β branches`
+* Other scrutinees → existing ctor exhaustiveness
+
+`β` is an **input** (from `HasBounds`); Covers does not re-synthesize bounds.
+Oracle side conditions use `checkValid … = .valid` (same as `HasBounds` match rules).
+-/
+
+/-- Branch list contains a `Nil` pattern with arity 0. -/
+def hasNilBranch (brs : List (MatchPattern × Expr)) : Prop :=
+  ∃ body, (MatchPattern.named nilCtorName 0, body) ∈ brs
+
+/-- Branch list contains a `Cons` pattern with arity 2. -/
+def hasConsBranch (brs : List (MatchPattern × Expr)) : Prop :=
+  ∃ body, (MatchPattern.named consCtorName 2, body) ∈ brs
+
+/-- Branch list contains a wildcard (covers every remaining case). -/
+def hasWildcardBranch (brs : List (MatchPattern × Expr)) : Prop :=
+  ∃ body, (MatchPattern.wildcard, body) ∈ brs
+
+/-- Under path conditions `Δ`, match `branches` cover every case allowed by
+scrutinee bound info `β`.
+
+**Only List `β` has introduction rules.** For non-List `β`, `BoundCovers` is
+simply not derivable — the pipeline should use `AllMatchesExhaustive` instead.
+Wildcards cover List scrutinees without arithmetic side conditions. -/
+inductive BoundCovers (Δ : List Constraint) :
+    BoundInfo → List (MatchPattern × Expr) → Prop where
+  /-- Both Nil and Cons present (order irrelevant). No arithmetic side condition. -/
+  | listFull {lo hi βe brs} :
+      hasNilBranch brs →
+      hasConsBranch brs →
+      BoundCovers Δ (.list lo hi βe) brs
+
+  /-- Nil-only: upper bound forces empty under `Δ`. -/
+  | listNilOnly {lo hi βe brs} :
+      checkValid (mustBeEmpty Δ hi) = .valid →
+      hasNilBranch brs →
+      BoundCovers Δ (.list lo hi βe) brs
+
+  /-- Cons-only: lower bound forces non-empty under `Δ`. -/
+  | listConsOnly {lo hi βe brs} :
+      checkValid (mustBeNonempty Δ lo) = .valid →
+      hasConsBranch brs →
+      BoundCovers Δ (.list lo hi βe) brs
+
+  /-- Wildcard covers all List lengths/cases. -/
+  | listWild {lo hi βe brs} :
+      hasWildcardBranch brs →
+      BoundCovers Δ (.list lo hi βe) brs
+
+/-- Match expression covered given scrutinee bounds (expression shape not required). -/
+def BoundCoversMatch (Δ : List Constraint) (β : BoundInfo)
+    (m : Expr) : Prop :=
+  match m with
+  | .match_ _ brs => BoundCovers Δ β brs
+  | _ => False
+
+/-- Pipeline-facing: empty path, list bounds from `HasBounds`. -/
+def BoundCoversClosed (β : BoundInfo) (brs : List (MatchPattern × Expr)) : Prop :=
+  BoundCovers [] β brs
+
+/-! ### P3 theorem statements (prove after sign-off) -/
+
+/-- Executable detectors for branch presence (mirrors of the Props). -/
+def hasNilBranchB (brs : List (MatchPattern × Expr)) : Bool :=
+  brs.any fun
+    | (.named c n, _) => c == nilCtorName && n == 0
+    | _ => false
+
+def hasConsBranchB (brs : List (MatchPattern × Expr)) : Bool :=
+  brs.any fun
+    | (.named c n, _) => c == consCtorName && n == 2
+    | _ => false
+
+def hasWildcardBranchB (brs : List (MatchPattern × Expr)) : Bool :=
+  brs.any fun
+    | (.wildcard, _) => true
+    | _ => false
+
+theorem hasNilBranch_iff (brs : List (MatchPattern × Expr)) :
+    hasNilBranchB brs = true ↔ hasNilBranch brs := by
+  sorry
+
+theorem hasConsBranch_iff (brs : List (MatchPattern × Expr)) :
+    hasConsBranchB brs = true ↔ hasConsBranch brs := by
+  sorry
+
+theorem hasWildcardBranch_iff (brs : List (MatchPattern × Expr)) :
+    hasWildcardBranchB brs = true ↔ hasWildcardBranch brs := by
+  sorry
+
+/-- Full List match is always covered (no Z3). -/
+theorem BoundCovers.listFull_of_both {Δ lo hi βe brs}
+    (hN : hasNilBranch brs) (hC : hasConsBranch brs) :
+    BoundCovers Δ (.list lo hi βe) brs :=
+  .listFull hN hC
+
+/-- Wildcard List match is always covered (no Z3). -/
+theorem BoundCovers.listWild_of {Δ lo hi βe brs}
+    (h : hasWildcardBranch brs) :
+    BoundCovers Δ (.list lo hi βe) brs :=
+  .listWild h
+
+/-- Non-List bound info never satisfies `BoundCovers` (by constructors). -/
+theorem BoundCovers.only_list {Δ β brs}
+    (h : BoundCovers Δ β brs) :
+    ∃ lo hi βe, β = .list lo hi βe := by
+  sorry
+
 end FHM.Bounds
