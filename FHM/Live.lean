@@ -4,6 +4,10 @@ import FHM.InferW
 import FHM.Pretty
 import FHM.EvaluateUnsafe
 import FHM.PipelineShared
+import FHM.Bounds.Erase
+import FHM.Bounds.Pipeline
+import FHM.Bounds.Ann
+import FHM.Bounds.Check
 import Lean.Data.Json
 
 /-!
@@ -11,7 +15,11 @@ import Lean.Data.Json
 
 Read a `.fhm` source file (or stdin) and run:
 
-`parse → lower → infer (print binding + body types) → exhaustiveness → elaborate → evaluateUnsafe`
+`parse → [hmRequireNoBl] → eraseProgram → lower → infer → exhaustiveness → elaborate → evaluateUnsafe`
+
+`--bl` selects `BoundsMode.bl` (allow `BL` syntax). Default is HM: reject BL with a
+clear error (D16). Erase always runs; binder anns are on `ErasedProgram` but not
+yet checked via HasBounds.
 
 Types are printed **before** evaluation in human mode, since eval is the slow part.
 Live uses the unbounded evaluator — naive `fib` blows past any fixed fuel.
@@ -19,21 +27,26 @@ Live uses the unbounded evaluator — naive `fib` blows past any fixed fuel.
 ## CLI
 
 ```
-fhm [--json] [path]
-fhm run [--json] [path]
+blt [--json] [--bl] [path]
+blt run [--json] [--bl] [path]
 ```
 
 - No path, human mode: default `scratch/live.fhm` (watch-live).
 - No path, `--json`: read source from stdin (web playground).
 - With path: read that file (human or JSON).
+- `--bl`: allow bounded-list syntax; erase keeps binder anns for a later pass.
 -/
 
 open Surface.Parse
 open SurfaceBridge
+open FHM.Bounds (ProgramBoundsAnns)
+open FHM.Bounds.Erase
+open FHM.Bounds.Pipeline
 
 /-- Which pipeline stage rejected the program. -/
 inductive PipelineStage
   | parse
+  | bounds
   | lower
   | typecheck
   | exhaustiveness
@@ -43,6 +56,7 @@ inductive PipelineStage
 
 def PipelineStage.tag : PipelineStage → String
   | .parse => "parse"
+  | .bounds => "bounds"
   | .lower => "lower"
   | .typecheck => "typecheck"
   | .exhaustiveness => "exhaustiveness"
@@ -103,6 +117,19 @@ def formatTypes (a : Ansi) (binds : List (ValName × PolyTy)) (body : PolyTy) : 
     else String.intercalate "\n" bindLines ++ "\n"
   bindsBlock ++ s!"  {a.boldMagenta "<program>"}  {a.dim ":"}  {a.blue body.pretty}"
 
+/-- Bound ascriptions from erase/`ofLower` (BL mode report). -/
+def formatBoundsAnns (a : Ansi) (env : List ValName) (anns : ProgramBoundsAnns) : String :=
+  let lines := ProgramBoundsAnns.prettyLines anns env
+  if lines.isEmpty then ""
+  else
+    let body :=
+      match anns.bodyAnn with
+      | none => ""
+      | some ann => s!"\n  {a.boldMagenta "<body>"}  {a.dim ":"}  {a.blue ann.pretty}"
+    "  " ++ a.dim "bounds:" ++ "\n" ++
+      String.intercalate "\n" (lines.map fun l => s!"    {a.blue l}") ++
+      body ++ "\n"
+
 def formatErr (a : Ansi) (st : PipelineStage) (msg : String) : String :=
   s!"{a.boldRed s!"[{st.tag}]"} {a.red msg}"
 
@@ -123,6 +150,13 @@ structure CheckedProgram where
   programTy : PolyTy
   checkNs : Nat
   elaborated : Expr
+  mode : BoundsMode := .default
+  /-- Erase package (anns on binders). -/
+  erased : ErasedProgram
+  /-- De Bruijn projection of erase anns (demo binder spine for now). -/
+  boundsAnns : ProgramBoundsAnns := {}
+  /-- Names used for `ofLower` (0 = innermost). Demo: `binderEnvFromErased`. -/
+  binderEnv : List ValName := []
 
 structure PipelineOk where
   bindings : List (ValName × PolyTy)
@@ -130,9 +164,18 @@ structure PipelineOk where
   checkNs : Nat
   evalNs : Nat
   resultPretty : String
+  mode : BoundsMode := .default
+  boundsAnns : ProgramBoundsAnns := {}
+  binderEnv : List ValName := []
 
-/-- Parse → lower → infer → exhaustiveness → elaborate (no eval yet). -/
-def checkPipeline (src : String) : IO (Except PipelineErr CheckedProgram) := do
+structure LiveArgs where
+  json : Bool := false
+  bl : Bool := false
+  path : Option String := none
+
+/-- Parse → HM gate → erase → lower → infer → exhaustiveness → elaborate. -/
+def checkPipeline (mode : BoundsMode) (src : String) :
+    IO (Except PipelineErr CheckedProgram) := do
   let tCheck0 ← IO.monoNanosNow
   let p ← match parseProgram src with
     | .error e =>
@@ -143,6 +186,21 @@ def checkPipeline (src : String) : IO (Except PipelineErr CheckedProgram) := do
           col := e.col
         }
     | .ok p => pure p
+
+  if mode == .hm then
+    match hmRequireNoBl p with
+    | .error msg =>
+        return .error { stage := .bounds, message := msg }
+    | .ok _ => pure ()
+
+  let ep := eraseProgram p
+  let p := ep.toProgram
+  -- Demo spine (outermost-first groups → reverse). Live must replace with the
+  -- real post-lower Core env names when wiring HasBounds (P4c-hasbounds).
+  let binderEnv := binderEnvFromErased ep
+  let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
+  -- P4c-hasbounds: under `--bl`, `checkProgramAnns` (Z3 via `checkValid`) runs
+  -- after Infer. Synth β is still `defaultBounds` until HasBounds synthesis exists.
 
   let (ctors, c) ← match lowerProgram p with
     | none =>
@@ -160,6 +218,12 @@ def checkPipeline (src : String) : IO (Except PipelineErr CheckedProgram) := do
   let bodyσ := genScheme [] [] τ
   let binds := zipBindingTypes p.groups (collectTopSchemes eOut)
 
+  if mode == .bl then
+    match FHM.Bounds.Check.checkProgramAnns binds binderEnv boundsAnns bodyσ with
+    | .error msg =>
+        return .error { stage := .bounds, message := msg }
+    | .ok () => pure ()
+
   if !(checkExhaustive ctors p.term) then
     return .error { stage := .exhaustiveness, message := "match not exhaustive" }
 
@@ -173,6 +237,10 @@ def checkPipeline (src : String) : IO (Except PipelineErr CheckedProgram) := do
     programTy := bodyσ
     checkNs := tCheck1 - tCheck0
     elaborated := e
+    mode := mode
+    erased := ep
+    boundsAnns := boundsAnns
+    binderEnv := binderEnv
   }
 
 /-- Evaluate an already-checked program (timed). -/
@@ -189,6 +257,9 @@ def evalCheckedIO (c : CheckedProgram) : IO (Except PipelineErr PipelineOk) := d
         checkNs := c.checkNs
         evalNs := tEval1 - tEval0
         resultPretty := v.pretty
+        mode := c.mode
+        boundsAnns := c.boundsAnns
+        binderEnv := c.binderEnv
       }
 
 def PipelineOk.toJson (r : PipelineOk) : Lean.Json :=
@@ -197,11 +268,14 @@ def PipelineOk.toJson (r : PipelineOk) : Lean.Json :=
       ("name", Lean.Json.str (prettyValName n)),
       ("type", Lean.Json.str σ.pretty)
     ]
+  let boundLines := ProgramBoundsAnns.prettyLines r.boundsAnns r.binderEnv
   Lean.Json.mkObj [
     ("version", Lean.Json.num 1),
     ("ok", Lean.Json.bool true),
+    ("mode", Lean.Json.str (if r.mode == .bl then "bl" else "hm")),
     ("bindings", Lean.Json.arr binds.toArray),
     ("programTy", Lean.Json.str r.programTy.pretty),
+    ("boundsAnns", Lean.Json.arr (boundLines.map Lean.Json.str).toArray),
     ("result", Lean.Json.str r.resultPretty),
     ("timings", Lean.Json.mkObj [
       ("checkNs", Lean.Json.num r.checkNs),
@@ -219,55 +293,63 @@ def PipelineErr.toJson (e : PipelineErr) : Lean.Json :=
     ("col", Lean.Json.num e.col)
   ]
 
-/-- Parse CLI: optional `--json`, optional path. -/
-def parseArgs (args : List String) : Except String (Bool × Option String) :=
-  let rec go (as : List String) (json : Bool) (path : Option String) :
-      Except String (Bool × Option String) :=
+/-- Parse CLI: optional `--json`, `--bl`, optional path. -/
+def parseArgs (args : List String) : Except String LiveArgs :=
+  let rec go (as : List String) (acc : LiveArgs) : Except String LiveArgs :=
     match as with
-    | [] => .ok (json, path)
+    | [] => .ok acc
     | "--json" :: rest =>
-        if json then .error "duplicate --json"
-        else go rest true path
+        if acc.json then .error "duplicate --json"
+        else go rest { acc with json := true }
+    | "--bl" :: rest =>
+        if acc.bl then .error "duplicate --bl"
+        else go rest { acc with bl := true }
     | "-h" :: _ | "--help" :: _ =>
-        .error "usage: fhm [--json] [path]\n\
+        .error "usage: blt [--json] [--bl] [path]\n\
   no path (human): scratch/live.fhm\n\
   no path (--json): read stdin\n\
-  path: read that file"
+  path: read that file\n\
+  --bl: allow BL syntax (erase + run; bounds check later)"
     | flag :: rest =>
         if flag.startsWith "-" then
-          .error s!"unknown flag: {flag}\nusage: fhm [--json] [path]"
-        else if path.isSome then
-          .error "usage: fhm [--json] [path]"
+          .error s!"unknown flag: {flag}\nusage: blt [--json] [--bl] [path]"
+        else if acc.path.isSome then
+          .error "usage: blt [--json] [--bl] [path]"
         else
-          go rest json (some flag)
-  go args false none
+          go rest { acc with path := some flag }
+  go args {}
 
 def runLive (args : List String) : IO UInt32 := do
-  let (jsonMode, path?) ← match parseArgs args with
+  let liveArgs ← match parseArgs args with
     | .error msg =>
         IO.eprintln msg
         return 2
     | .ok x => pure x
 
-  let src ← match path?, jsonMode with
+  let mode : BoundsMode := if liveArgs.bl then .bl else .default
+
+  let src ← match liveArgs.path, liveArgs.json with
     | some path, _ => IO.FS.readFile path
     | none, true =>
         let stdin ← IO.getStdin
         stdin.readToEnd
     | none, false => IO.FS.readFile "scratch/live.fhm"
 
-  match ← checkPipeline src with
+  match ← checkPipeline mode src with
   | .error e =>
-      if jsonMode then
+      if liveArgs.json then
         IO.println e.toJson.pretty
       else
         let ansi ← Ansi.mkIO
         IO.eprintln (formatErr ansi e.stage e.message)
       return 1
   | .ok checked =>
-      if !jsonMode then
+      if !liveArgs.json then
         let ansi ← Ansi.mkIO
         IO.println (formatTypes ansi checked.bindings checked.programTy)
+        if checked.mode == .bl then
+          let b := formatBoundsAnns ansi checked.binderEnv checked.boundsAnns
+          if b.length > 0 then IO.println b
         IO.println (formatTiming ansi "checked" checked.checkNs)
         IO.println ""
         (← IO.getStdout).flush
@@ -275,14 +357,14 @@ def runLive (args : List String) : IO UInt32 := do
         (← IO.getStdout).flush
       match ← evalCheckedIO checked with
       | .error e =>
-          if jsonMode then
+          if liveArgs.json then
             IO.println e.toJson.pretty
           else
             let ansi ← Ansi.mkIO
             IO.eprintln (formatErr ansi e.stage e.message)
           return 1
       | .ok r =>
-          if jsonMode then
+          if liveArgs.json then
             IO.println r.toJson.pretty
           else
             let ansi ← Ansi.mkIO

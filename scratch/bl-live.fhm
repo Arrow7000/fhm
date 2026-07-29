@@ -1,0 +1,6 @@
+-- Minimal BL demo for Live `--bl` wiring.
+-- Without `--bl`: fail-fast (D16).
+-- With `--bl`: erase BL → List, then ordinary lower/infer/eval.
+
+let xs : BL 0 3 Int = [1, 2]
+xs

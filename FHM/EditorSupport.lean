@@ -6,6 +6,7 @@ import FHM.PipelineShared
 import FHM.InferW
 import FHM.Pretty
 import FHM.Decls
+import FHM.Bounds.Erase
 import Lean.Data.Json
 
 /-!
@@ -684,9 +685,13 @@ def collectLitOpSymbols (src : String) (ctors : CtorEnv) : List RangedSymbol :=
           i := i + 1
       return out
 
-/-- Full hover report for a parsed program + binder spans + spanned program. -/
+/-- Full hover report for a parsed program + binder spans + spanned program.
+
+Always erases surface `BL` → `List` before lower/infer (same as Live under `--bl`),
+so BL buffers get symbols. Types still pretty as `List …` until bounds report. -/
 def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
     (sp : SpannedProgram) : Option (List RangedSymbol × String) := do
+  let p := (FHM.Bounds.Erase.eraseProgram p).toProgram
   let userCore ← lowerDataDeclsIn preludeKindEnv p.decls
   let ctors ← elabDecls (preludeDecls ++ userCore)
   let ke := DataDecls.kindEnv (preludeDecls ++ userCore)
