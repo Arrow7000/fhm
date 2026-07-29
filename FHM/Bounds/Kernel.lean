@@ -11,11 +11,8 @@ syntax). **Not** a default stamp on bare `List` (D22).
 Counts evaluate in `ExtNat` (ℕ ∪ {∞}). `Constraint.Holds` uses `ExtNat.le`.
 Finite programs that never mention `inf` behave as before (`.ofNat` path).
 
-Z3 encoding of `inf`: **normalize in Lean before SMT** — do not put ∞ in Z3.
-`Assign` / inferables stay finite (`Var → Nat`, Z3 `Int`). Only ground `Count.inf`
-(and ops that absorb it) produce `ExtNat.inf`. E.g. `_ ≤ inf` ⇒ drop; `inf ≤ lit _`
-⇒ unsat; `inf ≤ inf` ⇒ true. The Oracle `countToExpr .inf ↦ .lit 0` placeholder is
-wrong if reached — normalization must erase `inf` first.
+Z3 encoding of `inf`: normalize in Lean to taut/absurd/`FiniteConstraint`
+(`Count.NoInf` proofs); only `NoInf` counts reach `countToExpr` (total).
 -/
 
 namespace FHM.Bounds

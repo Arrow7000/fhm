@@ -70,18 +70,21 @@ def modelToAssign (model : List (String × Nat)) : Assign :=
     model.find? (fun p => p.1 = varName v) |>.map (·.2) |>.getD 0
 
 def checkValidZ3 (φ : ForallProblem) : ValidVerdict :=
-  let n := normalizeForall φ
-  if n.vacuous then .valid
-  else if n.stuck then .unknown
-  else if n.absurdGoal then .invalid
-  else if n.goals.isEmpty then .valid
+  -- Empty goals ⇒ `ForallProblem.Valid` holds regardless of prem (incl. stuck `inf`).
+  if φ.goals.isEmpty then .valid
   else
-    let as := constraintsToAssumptions n.prem
-    let goals := n.goals.map constraintToAtom
-    let results := goals.map fun g => decide { assumptions := as, goal := g }
-    if results.any Verdict.isRefuted then .invalid
-    else if results.all Verdict.isVerified then .valid
-    else .unknown
+    let n := normalizeForall φ
+    if n.vacuous then .valid
+    else if n.absurdGoal then .invalid
+    else if n.goals.isEmpty then .valid  -- all goals were tauts after normalize
+    else if n.stuck then .unknown
+    else
+      let as := constraintsToAssumptions n.prem
+      let goals := n.goals.map constraintToAtom
+      let results := goals.map fun g => decide { assumptions := as, goal := g }
+      if results.any Verdict.isRefuted then .invalid
+      else if results.all Verdict.isVerified then .valid
+      else .unknown
 
 def solveZ3 (ψ : ExistsProblem) : SolveVerdict :=
   let n := normalizeExists ψ

@@ -184,39 +184,44 @@ private theorem enc_bin (tag : Nat) (a1 a2 b1 b2 : Count)
 private theorem kn_inj {k k' : VarKind} (h : kindNat k = kindNat k') : k = k' := by
   cases k <;> cases k' <;> simp [kindNat] at h ⊢
 
+@[simp] private theorem enc_inf : Count.encode .inf = [7] := rfl
+
 theorem Count.encode_inj {a b : Count} (h : Count.encode a = Count.encode b) : a = b := by
   induction a generalizing b with
-  | lit n => cases b <;> (simp at h; try exact congrArg Count.lit h)
+  | lit n =>
+    cases b with
+    | lit m => simp at h; exact congrArg Count.lit h
+    | _ => simp [Count.encode] at h
   | var v =>
     cases b with
     | var w =>
       simp at h; obtain ⟨hk, hi⟩ := h
       have hk' := kn_inj hk; cases v; cases w; simp_all
-    | _ => simp at h
+    | _ => simp [Count.encode] at h
   | add a1 a2 ih1 ih2 =>
     cases b with
     | add b1 b2 => have ⟨e1, e2⟩ := enc_bin 2 a1 a2 b1 b2 ih1 ih2 (by simpa using h); simp [e1, e2]
-    | _ => simp at h
+    | _ => simp [Count.encode] at h
   | mul a1 a2 ih1 ih2 =>
     cases b with
     | mul b1 b2 => have ⟨e1, e2⟩ := enc_bin 3 a1 a2 b1 b2 ih1 ih2 (by simpa using h); simp [e1, e2]
-    | _ => simp at h
+    | _ => simp [Count.encode] at h
   | pred a ih =>
     cases b with
     | pred b => simp at h; exact congrArg _ (ih h.2)
-    | _ => simp at h
+    | _ => simp [Count.encode] at h
   | min a1 a2 ih1 ih2 =>
     cases b with
     | min b1 b2 => have ⟨e1, e2⟩ := enc_bin 5 a1 a2 b1 b2 ih1 ih2 (by simpa using h); simp [e1, e2]
-    | _ => simp at h
+    | _ => simp [Count.encode] at h
   | max a1 a2 ih1 ih2 =>
     cases b with
     | max b1 b2 => have ⟨e1, e2⟩ := enc_bin 6 a1 a2 b1 b2 ih1 ih2 (by simpa using h); simp [e1, e2]
-    | _ => simp at h
+    | _ => simp [Count.encode] at h
   | inf =>
     cases b with
     | inf => rfl
-    | _ => simp at h
+    | _ => simp [Count.encode] at h
 
 def joinMin (a b : Count) : Count :=
   if Count.encode a ≤ Count.encode b then .min a b else .min b a
