@@ -638,6 +638,77 @@ def Count.containsInf : Count → Bool
   | .pred a => a.containsInf
   | .add a b | .mul a b | .min a b | .max a b => a.containsInf || b.containsInf
 
+/-- Count expression with no `inf` subterm — safe for Z3 encoding. -/
+inductive Count.NoInf : Count → Prop where
+  | lit {n} : NoInf (.lit n)
+  | var {v} : NoInf (.var v)
+  | add {a b} : NoInf a → NoInf b → NoInf (.add a b)
+  | mul {a b} : NoInf a → NoInf b → NoInf (.mul a b)
+  | pred {a} : NoInf a → NoInf (.pred a)
+  | min {a b} : NoInf a → NoInf b → NoInf (.min a b)
+  | max {a b} : NoInf a → NoInf b → NoInf (.max a b)
+
+@[simp] def Count.noInf : Count → Bool
+  | .inf => false
+  | .lit _ | .var _ => true
+  | .add a b | .mul a b | .min a b | .max a b => a.noInf && b.noInf
+  | .pred a => a.noInf
+
+@[simp] theorem Count.noInf_of_noInf {c : Count} (h : c.NoInf) : c.noInf = true := by
+  induction h <;> simp [*]
+
+theorem Count.noInf_of_not_containsInf {c : Count} (h : c.containsInf = false) : c.NoInf := by
+  induction c with
+  | lit => exact .lit
+  | var => exact .var
+  | inf => simp [containsInf] at h
+  | pred a ih =>
+      simp [containsInf] at h
+      exact .pred (ih h)
+  | add a b iha ihb =>
+      simp [containsInf, Bool.or_eq_false_iff] at h
+      exact .add (iha h.1) (ihb h.2)
+  | mul a b iha ihb =>
+      simp [containsInf, Bool.or_eq_false_iff] at h
+      exact .mul (iha h.1) (ihb h.2)
+  | min a b iha ihb =>
+      simp [containsInf, Bool.or_eq_false_iff] at h
+      exact .min (iha h.1) (ihb h.2)
+  | max a b iha ihb =>
+      simp [containsInf, Bool.or_eq_false_iff] at h
+      exact .max (iha h.1) (ihb h.2)
+
+theorem Count.noInf_of_isNoInf {c : Count} (h : c.noInf = true) : c.NoInf := by
+  induction c with
+  | lit => exact .lit
+  | var => exact .var
+  | inf => simp at h
+  | pred a ih =>
+      simp at h
+      exact .pred (ih h)
+  | add a b iha ihb =>
+      simp [Bool.and_eq_true] at h
+      exact .add (iha h.1) (ihb h.2)
+  | mul a b iha ihb =>
+      simp [Bool.and_eq_true] at h
+      exact .mul (iha h.1) (ihb h.2)
+  | min a b iha ihb =>
+      simp [Bool.and_eq_true] at h
+      exact .min (iha h.1) (ihb h.2)
+  | max a b iha ihb =>
+      simp [Bool.and_eq_true] at h
+      exact .max (iha h.1) (ihb h.2)
+
+theorem Count.noInf_iff {c : Count} : c.noInf = true ↔ c.NoInf :=
+  ⟨Count.noInf_of_isNoInf, Count.noInf_of_noInf⟩
+
+theorem Count.noInf_eq_not_containsInf (c : Count) : c.noInf = !c.containsInf := by
+  induction c with
+  | lit | var | inf => simp [noInf, containsInf]
+  | pred a ih => simp [noInf, containsInf, ih]
+  | add a b iha ihb | mul a b iha ihb | min a b iha ihb | max a b iha ihb =>
+      simp [noInf, containsInf, iha, ihb, Bool.not_or]
+
 /-- Push `inf` through ops. Conservative: `inf * non-lit` stays (var may be 0). -/
 def Count.simplify : Count → Count
   | .lit n => .lit n
@@ -674,6 +745,13 @@ def Count.simplify : Count → Count
       | .lit n, .lit m => .lit (Nat.max n m)
       | a', b' => .max a' b'
 
+/-- Residual constraint with `NoInf` proofs for Z3 encoding. -/
+structure FiniteConstraint where
+  c : Constraint
+  hl : Count.NoInf c.lhs
+  hr : Count.NoInf c.rhs
+  deriving Repr
+
 /-- Outcome of simplifying a ≤-constraint for the oracle. -/
 inductive ConstraintNorm where
   /-- Holds for every assignment. -/
@@ -681,10 +759,10 @@ inductive ConstraintNorm where
   /-- Holds for no assignment. -/
   | absurd
   /-- Finite `lhs ≤ rhs` (no `inf`); safe for Z3. -/
-  | finite (c : Constraint)
+  | finite (fc : FiniteConstraint)
   /-- Still involves `inf` with vars; do not encode. -/
   | stuck
-  deriving DecidableEq, Repr
+  deriving Repr
 
 /-- Normalize one constraint. Prefer taut/absurd/finite; `stuck` ⇒ oracle `.unknown`. -/
 def Constraint.normalize (c : Constraint) : ConstraintNorm :=
@@ -698,16 +776,24 @@ def Constraint.normalize (c : Constraint) : ConstraintNorm :=
         -- ∞ ≤ rhs: only if rhs simplifies to ∞ (already handled); else rhs finite ⇒ absurd
         if rhs.containsInf then .stuck else .absurd
     | _ =>
-        if lhs.containsInf || rhs.containsInf then .stuck
-        else .finite ⟨lhs, rhs⟩
+        match hl : lhs.containsInf, hr : rhs.containsInf with
+        | false, false =>
+            .finite ⟨⟨lhs, rhs⟩,
+              Count.noInf_of_not_containsInf (by simp [hl]),
+              Count.noInf_of_not_containsInf (by simp [hr])⟩
+        | _, _ => .stuck
+
+def ConstraintNorm.finiteConstraint? : ConstraintNorm → Option Constraint
+  | .finite fc => some fc.c
+  | _ => none
 
 /-- Premises + goals after dropping taunts; `none` ⇒ problem is vacuously valid
 (absurd premise) or trivially invalid handling is on the goals side. -/
 structure ProblemNorm where
   /-- Finite premises (tauts dropped). -/
-  prem : List Constraint := []
+  prem : List FiniteConstraint := []
   /-- Finite goals (tauts dropped). -/
-  goals : List Constraint := []
+  goals : List FiniteConstraint := []
   /-- Some constraint still stuck on `inf`. -/
   stuck : Bool := false
   /-- A premise is absurd ⇒ ∀-Valid holds vacuously. -/
@@ -718,62 +804,72 @@ structure ProblemNorm where
 
 def normalizeForall (φ : ForallProblem) : ProblemNorm :=
   Id.run do
-    let mut prem : List Constraint := []
+    let mut prem : List FiniteConstraint := []
     let mut vacuous := false
     let mut stuck := false
     for c in φ.prem do
       match Constraint.normalize c with
       | .taut => pure ()
       | .absurd => vacuous := true
-      | .finite c' => prem := prem ++ [c']
+      | .finite fc => prem := prem ++ [fc]
       | .stuck => stuck := true
-    let mut goals : List Constraint := []
+    let mut goals : List FiniteConstraint := []
     let mut absurdGoal := false
     for g in φ.goals do
       match Constraint.normalize g with
       | .taut => pure ()
       | .absurd => absurdGoal := true
-      | .finite g' => goals := goals ++ [g']
+      | .finite fc => goals := goals ++ [fc]
       | .stuck => stuck := true
     pure { prem, goals, stuck, vacuous, absurdGoal }
 
 /-- Exists problems: absurd cons ⇒ unsat; absurd prem is just dropped (never helps). -/
 structure ExistsNorm where
-  prem : List Constraint := []
-  cons : List Constraint := []
+  prem : List FiniteConstraint := []
+  cons : List FiniteConstraint := []
   stuck : Bool := false
   unsat : Bool := false
   deriving Repr
 
 def normalizeExists (ψ : ExistsProblem) : ExistsNorm :=
   Id.run do
-    let mut prem : List Constraint := []
-    let mut cons : List Constraint := []
+    let mut prem : List FiniteConstraint := []
+    let mut cons : List FiniteConstraint := []
     let mut stuck := false
     let mut unsat := false
     for c in ψ.prem do
       match Constraint.normalize c with
       | .taut | .absurd => pure ()  -- absurd prem never holds; drop
-      | .finite c' => prem := prem ++ [c']
+      | .finite fc => prem := prem ++ [fc]
       | .stuck => stuck := true
     for c in ψ.cons do
       match Constraint.normalize c with
       | .taut => pure ()
       | .absurd => unsat := true
-      | .finite c' => cons := cons ++ [c']
+      | .finite fc => cons := cons ++ [fc]
       | .stuck => stuck := true
     pure { prem, cons, stuck, unsat }
 
 /-! ## Guards (`inf` normalize) -/
 
+def ConstraintNorm.isTaut : ConstraintNorm → Bool
+  | .taut => true
+  | _ => false
+
+def ConstraintNorm.isAbsurd : ConstraintNorm → Bool
+  | .absurd => true
+  | _ => false
+
 #guard Count.simplify (.min .inf (.lit 3)) == .lit 3
 #guard Count.simplify (.max .inf (.lit 3)) == .inf
 #guard Count.simplify (.add .inf (.var ⟨.inferable, 0⟩)) == .inf
-#guard decide (Constraint.normalize ⟨.lit 0, .inf⟩ == .taut)
-#guard decide (Constraint.normalize ⟨.inf, .lit 0⟩ == .absurd)
-#guard decide (Constraint.normalize ⟨.lit 0, .lit 5⟩ == .finite ⟨.lit 0, .lit 5⟩)
+#guard (Constraint.normalize ⟨.lit 0, .inf⟩).isTaut
+#guard (Constraint.normalize ⟨.inf, .lit 0⟩).isAbsurd
+#guard (Constraint.normalize ⟨.lit 0, .lit 5⟩).finiteConstraint? == some ⟨.lit 0, .lit 5⟩
 #guard (normalizeForall ⟨[], [⟨.var ⟨.rigid, 0⟩, .inf⟩]⟩).goals.isEmpty
 #guard (normalizeForall ⟨[], [⟨.inf, .lit 0⟩]⟩).absurdGoal
 #guard (normalizeForall ⟨[⟨.inf, .lit 0⟩], [⟨.lit 0, .lit 1⟩]⟩).vacuous
+#guard Count.noInf (.lit 3) && !Count.noInf .inf
+#guard decide (Count.noInf (.add (.lit 1) (.var ⟨.rigid, 0⟩)))
 
 end FHM.Bounds

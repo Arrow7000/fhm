@@ -40,22 +40,26 @@ def varName (v : Var) : String :=
   | .rigid     => s!"r_{v.idx}"
   | .inferable => s!"i_{v.idx}"
 
-def countToExpr : Count → FHM.Z3.Expr
-  | .lit n   => .lit n
-  | .var v   => .name (varName v)
-  | .add a b => .add (countToExpr a) (countToExpr b)
-  | .mul a b => .mul (countToExpr a) (countToExpr b)
-  | .pred a  => .pred (countToExpr a)
-  | .min a b => .min (countToExpr a) (countToExpr b)
-  | .max a b => .max (countToExpr a) (countToExpr b)
-  | .inf     =>
-      -- Unreachable if `Constraint.normalize` ran; do not treat as SMT ∞.
-      panic! "Bounds.Z3Bridge.countToExpr: Count.inf survived normalization"
+def countToExpr (c : Count) (h : Count.NoInf c) : FHM.Z3.Expr :=
+  match c with
+  | .lit n => .lit n
+  | .var v => .name (varName v)
+  | .add a b =>
+      .add (countToExpr a (by cases h; assumption)) (countToExpr b (by cases h; assumption))
+  | .mul a b =>
+      .mul (countToExpr a (by cases h; assumption)) (countToExpr b (by cases h; assumption))
+  | .pred a =>
+      .pred (countToExpr a (by cases h; assumption))
+  | .min a b =>
+      .min (countToExpr a (by cases h; assumption)) (countToExpr b (by cases h; assumption))
+  | .max a b =>
+      .max (countToExpr a (by cases h; assumption)) (countToExpr b (by cases h; assumption))
+  | .inf => False.elim (by cases h)
 
-def constraintToAtom (c : Constraint) : Atom :=
-  .le (countToExpr c.lhs) (countToExpr c.rhs)
+def constraintToAtom (fc : FiniteConstraint) : Atom :=
+  .le (countToExpr fc.c.lhs fc.hl) (countToExpr fc.c.rhs fc.hr)
 
-def constraintsToAssumptions (cs : List Constraint) : Assumptions :=
+def constraintsToAssumptions (cs : List FiniteConstraint) : Assumptions :=
   cs.map constraintToAtom
 
 def inferableNames (vs : List Var) : List String :=
@@ -117,8 +121,11 @@ def uniqueZ3 (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
       let differs (c : Count) (v : Nat) : List Assumptions :=
         -- differ probes are finite lits; skip outs that still contain inf after simplify
         let c' := Count.simplify c
-        if c'.containsInf then []
-        else [[.lt (countToExpr c') (.lit v)], [.lt (.lit v) (countToExpr c')]]
+        match hci : c'.containsInf with
+        | true => []
+        | false =>
+          let hc := Count.noInf_of_not_containsInf (by simp [hci])
+          [[.lt (countToExpr c' hc) (.lit v)], [.lt (.lit v) (countToExpr c' hc)]]
       let statuses : List (Option Bool) :=
         (outs.zip vals).flatMap fun (c, vE) =>
           match vE with
