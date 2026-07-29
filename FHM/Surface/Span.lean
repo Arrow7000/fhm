@@ -108,6 +108,8 @@ inductive BinderKind
   | ctor
   | param
   | pat
+  /-- Count binder from `{n : Nat,…}` (bounds sidecar; not an HM type forall). -/
+  | count
   deriving Repr, DecidableEq, BEq, Inhabited
 
 structure BinderSpan where
@@ -124,6 +126,7 @@ def BinderKind.toString : BinderKind → String
   | .ctor => "ctor"
   | .param => "param"
   | .pat => "pat"
+  | .count => "count"
 
 instance : ToString BinderKind := ⟨BinderKind.toString⟩
 

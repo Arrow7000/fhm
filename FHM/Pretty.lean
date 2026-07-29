@@ -328,17 +328,13 @@ def Surface.prettySchemeAnn (nats : List ValName) (σ : Surface.PolyTy) : String
   | ns, fs =>
       let natPart :=
         if ns.isEmpty then none
-        else some (String.intercalate " " (ns.map prettyValName) ++ " : Nat")
+        else some ("(" ++ String.intercalate " " (ns.map prettyValName) ++ " : Nat)")
       let tyPart :=
         if fs.isEmpty then none
         else some (String.intercalate " " (fs.map prettyValName))
-      let inner :=
-        match natPart, tyPart with
-        | none, none => ""
-        | some n, none => n
-        | none, some t => t
-        | some n, some t => n ++ ", " ++ t
-      "{" ++ inner ++ "} " ++ body
+      let binders := natPart.toList ++ tyPart.toList
+      if binders.isEmpty then body
+      else "∀ " ++ String.intercalate " " binders ++ ". " ++ body
 
 /-- Binding name with optional `{tyParams}`, value `params`, and `: ann`. -/
 def Surface.prettyBindingHead (name : ValName) (tyParams : List ValName)

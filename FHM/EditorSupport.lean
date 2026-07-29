@@ -274,20 +274,30 @@ def optPolyStr : Option PolyTy → String
   | some σ => σ.pretty
   | none => ""
 
+/-- Emit `n` leading binders of kind `k` with a fixed hover label. -/
+def takeLabeledBinders (k : BinderKind) (n : Nat) (scope : Span) (label : String)
+    (bs : List BinderSpan) : List BinderSpan × List RangedSymbol :=
+  let rec go (m : Nat) (bs : List BinderSpan) (acc : List RangedSymbol) :
+      List BinderSpan × List RangedSymbol :=
+    match m, bs with
+    | 0, _ => (bs, acc)
+    | m' + 1, _ =>
+      match takeKind bs k with
+      | some (b, rest) =>
+          let sc := b.scope?.getD scope
+          go m' rest (acc ++ [mkSym b.name k.toString label b.span sc])
+      | none => (bs, acc)
+  go n bs []
+
 /-- Emit `n` leading `.param` binders as scheme tyvars. -/
 def takeTyVarParams (n : Nat) (scope : Span) (label : String) (bs : List BinderSpan) :
     List BinderSpan × List RangedSymbol :=
-  let rec go (k : Nat) (bs : List BinderSpan) (acc : List RangedSymbol) :
-      List BinderSpan × List RangedSymbol :=
-    match k, bs with
-    | 0, _ => (bs, acc)
-    | k' + 1, _ =>
-      match takeKind bs .param with
-      | some (b, rest) =>
-          let sc := b.scope?.getD scope
-          go k' rest (acc ++ [mkSym b.name "param" label b.span sc])
-      | none => (bs, acc)
-  go n bs []
+  takeLabeledBinders .param n scope label bs
+
+/-- Emit `n` leading `.count` binders from `{n : Nat,…}`. -/
+def takeCountParams (n : Nat) (scope : Span) (bs : List BinderSpan) :
+    List BinderSpan × List RangedSymbol :=
+  takeLabeledBinders .count n scope "count variable (Nat)" bs
 
 /-- Emit head value-params with types from arrow domains (pad short peels). -/
 def takeHeadValueParams (doms : List Ty) (scope : Span) (bs : List BinderSpan) :
@@ -313,8 +323,10 @@ def hoverBindingHead (env : HoverEnv) (b : Surface.Binding) (σ? : Option PolyTy
   | some (vb, bs1) =>
       let valSym := mkSym vb.name "val" (optPolyStr σ?) vb.span valScope
       let nAnn := match b.ann with | some σ => σ.foralls.length | none => 0
+      -- Nat sidecar binders come first in parse order (before colon foralls).
+      let (bs1c, countSyms) := takeCountParams b.natBinders.length valScope bs1
       let (bs2, tySyms) :=
-        takeTyVarParams b.tyParams.length valScope "type variable (scheme binder)" bs1
+        takeTyVarParams b.tyParams.length valScope "type variable (scheme binder)" bs1c
       let doms :=
         match σ? with
         | some σ => peelArrowDoms b.params.length σ.body
@@ -335,7 +347,7 @@ def hoverBindingHead (env : HoverEnv) (b : Surface.Binding) (σ? : Option PolyTy
         match σ? with
         | some σ => env'.extendLets [(b.name, σ)]
         | none => env'
-      (bs4, valSym :: tySyms ++ headSyms ++ annSyms, env'')
+      (bs4, valSym :: countSyms ++ tySyms ++ headSyms ++ annSyms, env'')
 
 /-- Structural walk: each binder site emits a full symbol. Consumes `bs` in parse order. -/
 partial def hoverWalkExpr (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv)
@@ -525,6 +537,7 @@ def hoverLeftoverBinders (bs : List BinderSpan) : List RangedSymbol :=
     let sc := b.scope?.getD b.span
     let typeStr :=
       if b.kind == .param && b.scope?.isSome then "type variable (scheme binder)"
+      else if b.kind == .count && b.scope?.isSome then "count variable (Nat)"
       else ""
     mkSym b.name b.kind.toString typeStr b.span sc
 

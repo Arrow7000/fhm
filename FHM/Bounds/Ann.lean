@@ -175,11 +175,14 @@ def BoundsAnnTy.prettyWith (nats : List ValName) (tvars : List ValName := []) :
 
 def BoundsAnnTy.pretty (a : BoundsAnnTy) : String := BoundsAnnTy.prettyWith [] [] a
 
-/-- `∀ (n : Nat) a b. body` — Nat binders annotated, type foralls bare. -/
+/-- `∀ (lo hi : Nat) a b. body` — Nat binders combined Lean-style; type foralls bare. -/
 def BoundsSchemeAnn.pretty (s : BoundsSchemeAnn) : String :=
-  let natParts := s.natBinders.map fun n => s!"({prettyValName n} : Nat)"
+  let natPart : Option String :=
+    if s.natBinders.isEmpty then none
+    else
+      some ("(" ++ String.intercalate " " (s.natBinders.map prettyValName) ++ " : Nat)")
   let tyParts := s.tyBinders.map prettyValName
-  let binders := natParts ++ tyParts
+  let binders := natPart.toList ++ tyParts
   let quant :=
     if binders.isEmpty then ""
     else "∀ " ++ String.intercalate " " binders ++ ". "
@@ -209,6 +212,16 @@ def ProgramBoundsAnns.prettyLines
   } == "∀ (n : Nat) a. BL n n a → BL n n a"
 #guard
   BoundsSchemeAnn.pretty {
+    natBinders := [⟨"lo"⟩, ⟨"hi"⟩]
+    tyBinders := [⟨"a"⟩, ⟨"b"⟩]
+    body := .arrow
+      (.arrow (.fvar 0) (.fvar 1))
+      (.arrow
+        (.list (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 1⟩)) (.fvar 0))
+        (.list (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 1⟩)) (.fvar 1)))
+  } == "∀ (lo hi : Nat) a b. (a → b) → BL lo hi a → BL lo hi b"
+#guard
+  BoundsSchemeAnn.pretty {
     natBinders := [⟨"a"⟩, ⟨"b"⟩, ⟨"c"⟩, ⟨"d"⟩]
     tyBinders := [⟨"e"⟩]
     body := .arrow
@@ -217,6 +230,6 @@ def ProgramBoundsAnns.prettyLines
         (.list (.solid (.var ⟨.rigid, 2⟩)) (.solid (.var ⟨.rigid, 3⟩)) (.fvar 0))
         (.list (.solid (.add (.var ⟨.rigid, 0⟩) (.var ⟨.rigid, 2⟩)))
           (.solid (.add (.var ⟨.rigid, 1⟩) (.var ⟨.rigid, 3⟩))) (.fvar 0)))
-  } == "∀ (a : Nat) (b : Nat) (c : Nat) (d : Nat) e. BL a b e → BL c d e → BL (a + c) (b + d) e"
+  } == "∀ (a b c d : Nat) e. BL a b e → BL c d e → BL (a + c) (b + d) e"
 
 end FHM.Bounds

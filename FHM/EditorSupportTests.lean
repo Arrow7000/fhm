@@ -318,6 +318,21 @@ def maybeUseSrc : String :=
         hasSub s.type_ "type variable" && hasSub s.type_ "scheme"
     | none => false)
 
+-- E3b. `{n : Nat, a}` — `n` is count, not the next type forall
+def natSchemeHover : String :=
+  "let id : {n : Nat, a} BL n n a -> BL n n a =\n" ++
+  "  \\xs -> xs\nid\n"
+
+#guard (match hoverSyms natSchemeHover with
+  | none => false
+  | some syms =>
+    match symbolAtUseSite syms 1 11 "n",
+          symbolAtUseSite syms 1 20 "a" with
+    | some n, some a =>
+        n.name == "n" && n.kind == "count" && hasSub n.type_ "count" &&
+        a.name == "a" && a.kind == "param" && hasSub a.type_ "type variable"
+    | _, _ => false)
+
 -- E4. Several annotated lets: later λ params must not get empty/stolen types
 -- (regression: takeFirstKind .val reshuffled earlier λ/pats ahead of scheme binders)
 def multiLetParams : String :=

@@ -476,8 +476,8 @@ partial def ty (nats : List String := []) : P Ty :=
 end
 
 /-- Scheme: `{n m : Nat, a b} body`, `{a b} body`, or bare `ty`.
-Returns `(poly, natBinders, binderSpans)`. Nat names are a Bounds sidecar
-(not on `PolyTy`). Brace binders emit `.param` spans over the scheme extent. -/
+Returns `(poly, natBinders, binderSpans)`. Nat binders emit `.count`; type
+foralls emit `.param` (both scoped over the scheme extent). -/
 partial def polyTy : P (PolyTy × List ValName × List BinderSpan) :=
   withErrorMessage "expected type scheme" do
     skipComments
@@ -490,7 +490,7 @@ partial def polyTy : P (PolyTy × List ValName × List BinderSpan) :=
         anyIdentTok)
       skipComments
       -- Optional `: Nat` → those names are count binders; then `,` type binders.
-      let (natNames, tyNames, binderToks) ← do
+      let (natToks, tyToks) ← do
         match ← option? (withBacktracking (do
             let _ ← punct .colon
             skipComments
@@ -499,7 +499,6 @@ partial def polyTy : P (PolyTy × List ValName × List BinderSpan) :=
               throwUnexpectedWithMessage none "expected Nat after count binders"
             pure ())) with
         | some _ =>
-            let nats := firstToks.toList.map (·.2)
             skipComments
             match ← option? (withBacktracking (punct .comma)) with
             | some _ =>
@@ -507,27 +506,32 @@ partial def polyTy : P (PolyTy × List ValName × List BinderSpan) :=
                 let tyToks ← takeMany1 (withBacktracking do
                   skipComments
                   anyIdentTok)
-                pure (nats, tyToks.toList.map (·.2), firstToks.toList ++ tyToks.toList)
+                pure (firstToks.toList, tyToks.toList)
             | none =>
-                pure (nats, [], firstToks.toList)
+                pure (firstToks.toList, [])
         | none =>
             -- No `: Nat` — all type foralls (legacy `{a b}`).
-            pure ([], firstToks.toList.map (·.2), firstToks.toList)
+            pure ([], firstToks.toList)
       skipComments
       let _ ← punct .rbrace
       skipComments
+      let natNames := natToks.map (·.2)
+      let tyNames := tyToks.map (·.2)
       let startBody ← getPosition
       let body ← ty natNames
       let stopBody ← getPosition
       let bodySpan ← spanOfConsumed startBody stopBody
       let polySpan := Span.union (Span.ofTok lb) bodySpan
-      let bs := binderToks.map fun (t, n) =>
+      let bsNats := natToks.map fun (t, n) =>
+        ({ name := n, kind := .count, span := Span.ofTok t, scope? := some polySpan } :
+          BinderSpan)
+      let bsTys := tyToks.map fun (t, n) =>
         ({ name := n, kind := .param, span := Span.ofTok t, scope? := some polySpan } :
           BinderSpan)
       return (
         { foralls := tyNames.map ValName.mk, body },
         natNames.map ValName.mk,
-        bs)
+        bsNats ++ bsTys)
     | none =>
       let body ← ty
       return ({ foralls := [], body }, [], [])
@@ -1617,6 +1621,13 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
           ann := some ⟨[.mk "a"], .arrow (.bl (.solid (.var (.mk "n"))) (.solid (.var (.mk "n"))) (.tvar (.mk "a")))
             (.bl (.solid (.var (.mk "n"))) (.solid (.var (.mk "n"))) (.tvar (.mk "a")))⟩, .. }]] => true
     | _ => false
+  | _ => false)
+
+-- Nat binders are `.count`; type foralls stay `.param` (hover must not confuse them)
+#guard (match parseProgramWithBinders "let id : {n : Nat, a} BL n n a -> BL n n a = \\x -> x\nid" with
+  | .ok (_, bs) =>
+      (bs.find? (·.name == "n")).map (·.kind) == some .count &&
+      (bs.find? (·.name == "a")).map (·.kind) == some .param
   | _ => false)
 
 -- newline RHS indented past `let` (not past the binder name)
