@@ -8,6 +8,8 @@ alwaysApply: false
 
 If you are the lead agent you should do this yourself, ideally in consultation with the user. When you're done, stop to let them review what you've done, especially when it comes to new Props you have defined. This is critical and should require their explicit approval.
 
+**Review in Lean, not chat.** Put new inductives / structures / Props (and similarly new theorem *statements*) into the actual `.lean` file, then stop and wait for the user to ✅. Do **not** propose constructor lists as dead text in the conversation — reviewing in-editor (go-to-def, hover, click-through) is the workflow. Chat may briefly name what you added and where; the source of truth for approval is the Lean.
+
 When it comes to formulating theorems, you should also do this yourself. Also defer to the user to approve these, but this is less critically important than the Prop definitions. A bad theorem statement might be vacuous or unprovable or doesn't quite capture the intended property. But a bad Prop formulation means that our very definition of what something means is malformed.
 
 ## Proving lemmas and theorems

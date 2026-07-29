@@ -8,6 +8,11 @@ alwaysApply: false
 
 # Lean Workflow Rules
 
+## `#guard` style
+
+Prefer direct equality (or `#eval` / printed-form compare when there is no `DecidableEq`) over
+`match … with | … => true | _ => false`. The match-to-Bool pattern is hard to read at a glance.
+
 ## Don't Run Lean Builds
 
 Don't try to run a Lean build yourself unless it is to check a full project, or at the end of a large chunk of work. Looking at lints and errors, either via Cursor itself or via the lean-lsp-mcp, should be all you need in the course of regular proving.

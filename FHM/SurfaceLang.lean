@@ -22,12 +22,16 @@ indices here). Erase (P4b) maps these into `FHM.Bounds` + `BoundAnn`.
 `hole` is surface `_` in a bound slot only (e.g. `BL _ 5 a`).
 -/
 
-/-- Surface syntax for list length bounds. -/
+/-- Surface syntax for list length bounds.
+
+v1 parse: `lit` / `var` / `hole` only. Kernel-shaped ops (`add`/`mul`/`pred`/
+`min`/`max`) are deferred — see design memo **P4a-count-ops** (before any
+surface demo that needs `n+1` / `pred`, and no later than P5 scheme demos).
+Erase (P4b) maps these into `FHM.Bounds.Count` + `BoundAnn`. -/
 inductive Count where
   | lit (n : Nat)
   | var (name : ValName)
   | hole
-  -- TODO(surface-count): add/mul/min/max/pred when syntax needs them; map to Bounds.Count
   deriving DecidableEq, Repr
 
 inductive Ty

@@ -16,7 +16,7 @@ structure ParseError where
   msg : String
   line : Nat
   col : Nat
-  deriving Repr
+  deriving DecidableEq, Repr
 
 def lexToParse : LexError → ParseError
   | .tab line col => { msg := "tab character", line, col }
@@ -292,14 +292,38 @@ def spanOfConsumed (startPos stopPos : Nat) : P Span := do
 /-! ## Type grammar
 
 ASCII only:
-* `tyAtom` — `()`, names, `(ty)`, `(ty, ty)`
+* `count`  — bound slot: Nat lit, lower-ident var, or `_` (P4a-parse; ops later)
+* `tyAtom` — `()`, names, `(ty)`, `(ty, ty)`, `BL lo hi elem`
 * `tyApp`  — juxtaposition (`Maybe Int`); only `customTy` may take args
 * `ty`     — right-assoc `tyApp -> ty`
 * `polyTy` — `{ binders } ty` or bare `ty`
+
+`BL` is not a lexer keyword: an upper ident spelling `BL` is parsed as a
+bounded list former (then two counts + elem atom). Elem is `tyAtom` so
+applied customs / nested BL / arrows need parens — matches Pretty prec.
 -/
 
 instance : Inhabited Ty := ⟨.prim .unit⟩
 instance : Inhabited PolyTy := ⟨⟨[], .prim .unit⟩⟩
+instance : Inhabited Count := ⟨.lit 0⟩
+
+/-- Bound-slot count (`BL` lo/hi). v1: lit / var / `_` only. -/
+def count : P Count :=
+  withErrorMessage "expected count (Nat, name, or _)" do
+    skipComments
+    first [
+      do
+        let _ ← punct .underscore
+        return .hole,
+      do
+        let name ← lowerIdent
+        return .var (.mk name),
+      do
+        let n ← intLitTok
+        if n < 0 then
+          throwUnexpectedWithMessage none "count literal must be non-negative"
+        return .lit n.toNat
+    ]
 
 mutual
 
@@ -329,10 +353,19 @@ partial def tyAtom : P Ty :=
         | none =>
           let _ ← punct .rparen
           return a,
-      -- upper name → prim or customTy
+      -- `BL lo hi elem` (upper ident, not a keyword) or prim / customTy
       do
         let name ← upperIdent
-        return tyOfUpperName name,
+        if name == "BL" then
+          skipComments
+          let lo ← count
+          skipComments
+          let hi ← count
+          skipComments
+          let elem ← tyAtom
+          return .bl lo hi elem
+        else
+          return tyOfUpperName name,
       -- lower name → tvar
       do
         let name ← lowerIdent
@@ -1149,6 +1182,28 @@ def parseProgram (src : String) : Except ParseError Program :=
   | .ok (.arrow (.prim .int) (.prim .bool)) => true | _ => false)
 #guard (match parseTy "-- c\nInt" with
   | .ok (.prim .int) => true | _ => false)
+
+/-- `true` iff `parseTy src` is `.ok expected` (compare via `repr`; `Ty` has no `DecidableEq`). -/
+def parseTyEq (src : String) (expected : Ty) : Bool :=
+  reprStr (parseTy src) == reprStr (Except.ok (ε := ParseError) expected)
+
+-- P4a-parse: `BL lo hi elem` + bound `_`
+#guard parseTyEq "BL 0 5 Int" (.bl (.lit 0) (.lit 5) (.prim .int))
+#guard parseTyEq "BL _ 5 a" (.bl .hole (.lit 5) (.tvar (.mk "a")))
+#guard parseTyEq "BL n m Int" (.bl (.var (.mk "n")) (.var (.mk "m")) (.prim .int))
+#guard parseTyEq "BL 0 1 (Maybe Int)"
+  (.bl (.lit 0) (.lit 1) (.customTy (.mk "Maybe") [.prim .int]))
+#guard parseTyEq "BL 0 0 (BL 1 2 Int)"
+  (.bl (.lit 0) (.lit 0) (.bl (.lit 1) (.lit 2) (.prim .int)))
+#guard parseTyEq "BL 0 5 Int -> Bool"
+  (.arrow (.bl (.lit 0) (.lit 5) (.prim .int)) (.prim .bool))
+#guard parseTyEq "BL 0 5 (Int -> Bool)"
+  (.bl (.lit 0) (.lit 5) (.arrow (.prim .int) (.prim .bool)))
+-- incomplete / wrong BL forms
+#guard !(parseTy "BL").isOk
+#guard !(parseTy "BL 0").isOk
+#guard !(parseTy "BL 0 5").isOk
+#guard !(parseTy "BL -1 5 Int").isOk
 
 #guard (match parsePolyTy "{a} a -> a" with
   | .ok ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩ => true
