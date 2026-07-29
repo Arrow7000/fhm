@@ -453,9 +453,9 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 
 ## 12. Next action
 
-1. **Slice 8 — Stdlib demos:** honest `map` / `filter` / `append` under `--bl` with bound schemes.  
-2. Then **9** E2E suite.  
-3. **Whenever convenient:** §2.3 residuals — hole anns push pinned template; head-binder `(xs : BL …)` fold into demand; fuller Commit `uniqueOnly` (Live uses rank-1 `checkSubInst` today).
+1. **Slice 9 — E2E gate suite** over the scratch `bl-*` demos (esp. `bl-stdlib.fhm`).  
+2. **Display unification (design first):** under `--bl`, hover / Live should show one bounds-aware type line (`BL` / `∀ (n : Nat) a. …`), not HM `List` plus a separate “bounds:” dump — without changing the dual-stack erase/check pipeline.  
+3. **Whenever convenient:** §2.3 residuals — hole anns push pinned template; head-binder `(xs : BL …)` fold into demand; fuller Commit `uniqueOnly` (Live uses rank-1 `checkSubInst` today); Pair-match demand peel (flatMap-on-pairs).
 
 Thin erase (`Ann.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path uses Z3 via `FHM.Bounds.Check`.
 
