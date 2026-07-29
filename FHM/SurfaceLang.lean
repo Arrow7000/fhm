@@ -159,13 +159,18 @@ inductive Pattern
 
 
 /-- A value binding as written: optional `{tyParams}`, value `params`, optional
-    `: ann`, and `rhs`. Sugar is erased in lowering (→ Core `λ`). -/
+    `: ann`, Nat-binder sidecar, and `rhs`. Sugar is erased in lowering (→ Core `λ`).
+
+`natBinders` is the Bounds sidecar for `{n : Nat,…}` (not on `PolyTy`). Empty =
+pure HM ascription. -/
 structure Binding' (expr : Type) where
   name : ValName
   tyParams : List ValName := []
   params : List (ValName × Option Ty) := []
   ann  : Option PolyTy
   rhs  : expr
+  /-- Nat binders from `: {n : Nat, a} …` — sidecar beside `ann`. -/
+  natBinders : List ValName := []
 
 
 /-- An expression in our language -/

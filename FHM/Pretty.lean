@@ -320,16 +320,38 @@ def Surface.prettyValueParams (params : List (ValName × Option Surface.Ty)) : S
   | [] => ""
   | ps => " " ++ String.intercalate " " (ps.map fun (x, a) => Surface.prettyValueParam x a)
 
+/-- Pretty `{n : Nat, a} body` — Nat sidecar + type foralls (not on PolyTy). -/
+def Surface.prettySchemeAnn (nats : List ValName) (σ : Surface.PolyTy) : String :=
+  let body := σ.body.pretty
+  match nats, σ.foralls with
+  | [], [] => body
+  | ns, fs =>
+      let natPart :=
+        if ns.isEmpty then none
+        else some (String.intercalate " " (ns.map prettyValName) ++ " : Nat")
+      let tyPart :=
+        if fs.isEmpty then none
+        else some (String.intercalate " " (fs.map prettyValName))
+      let inner :=
+        match natPart, tyPart with
+        | none, none => ""
+        | some n, none => n
+        | none, some t => t
+        | some n, some t => n ++ ", " ++ t
+      "{" ++ inner ++ "} " ++ body
+
 /-- Binding name with optional `{tyParams}`, value `params`, and `: ann`. -/
 def Surface.prettyBindingHead (name : ValName) (tyParams : List ValName)
-    (params : List (ValName × Option Surface.Ty)) (ann : Option Surface.PolyTy) : String :=
+    (params : List (ValName × Option Surface.Ty)) (ann : Option Surface.PolyTy)
+    (natBinders : List ValName := []) : String :=
+  let annPretty := ann.map (Surface.prettySchemeAnn natBinders)
   if tyParams.isEmpty && params.isEmpty then
-    match ann with
+    match annPretty with
     | none => prettyValName name
-    | some σ => "(" ++ prettyValName name ++ " : " ++ σ.pretty ++ ")"
+    | some s => "(" ++ prettyValName name ++ " : " ++ s ++ ")"
   else
     let tyPsSp := if tyParams.isEmpty then "" else Surface.prettyTyParamBraces tyParams ++ " "
-    let annStr := match ann with | none => "" | some σ => " : " ++ σ.pretty
+    let annStr := match annPretty with | none => "" | some s => " : " ++ s
     tyPsSp ++ prettyValName name ++ Surface.prettyValueParams params ++ annStr
 
 /-! ## Surface patterns -/
@@ -408,7 +430,7 @@ def Surface.Expr.prettyBranches : List (Surface.Pattern × Surface.Expr) → Str
 def Surface.Expr.prettyRecGroup : List Surface.Binding → String
   | [] => ""
   | b :: rest =>
-      Surface.prettyBindingHead b.name b.tyParams b.params b.ann
+      Surface.prettyBindingHead b.name b.tyParams b.params b.ann b.natBinders
         ++ " = " ++ Surface.Expr.prettyAux 0 b.rhs
         ++ (match rest with | [] => "" | _ :: _ => " and ")
         ++ Surface.Expr.prettyRecGroup rest

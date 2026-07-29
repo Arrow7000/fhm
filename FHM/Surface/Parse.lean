@@ -296,7 +296,7 @@ def spanOfConsumed (startPos stopPos : Nat) : P Span := do
 * `tyAtom` — `()`, names, `(ty)`, `(ty, ty)`, `BL lo hi elem`
 * `tyApp`  — juxtaposition (`Maybe Int`); only `customTy` may take args
 * `ty`     — right-assoc `tyApp -> ty`
-* `polyTy` — `{ binders } ty` or bare `ty`
+* `polyTy` — `{n : Nat, a} ty` / `{a} ty` / bare `ty` (+ Nat sidecar)
 
 `BL` is not a lexer keyword: an upper ident spelling `BL` is parsed as a
 bounded list former (then two counts + elem atom). Elem is `tyAtom` so
@@ -309,8 +309,8 @@ instance : Inhabited Count := ⟨.lit 0⟩
 instance : Inhabited CountSlot := ⟨.hole⟩
 
 mutual
-/-- Bound-slot count atom: Nat, inf, infty, parens; no holes. -/
-partial def countAtom : P Count :=
+/-- Bound-slot count atom. `nats` = in-scope Nat binder names (scheme sidecar). -/
+partial def countAtom (nats : List String) : P Count :=
   withErrorMessage "expected count atom" do
     skipComments
     first [
@@ -328,13 +328,13 @@ partial def countAtom : P Count :=
       do
         let _ ← punct .lparen
         skipComments
-        let c ← countExpr
+        let c ← countExpr nats
         skipComments
         let _ ← punct .rparen
         return c
     ]
 
-partial def countApp : P Count :=
+partial def countApp (nats : List String) : P Count :=
   withErrorMessage "expected count" do
     skipComments
     first [
@@ -342,38 +342,40 @@ partial def countApp : P Count :=
         let name ← lowerIdent
         if name == "pred" then
           skipComments
-          return .pred (← countAtom)
+          return .pred (← countAtom nats)
         else if name == "min" then
           skipComments
-          let a ← countAtom
+          let a ← countAtom nats
           skipComments
-          let b ← countAtom
+          let b ← countAtom nats
           return .min a b
         else if name == "max" then
           skipComments
-          let a ← countAtom
+          let a ← countAtom nats
           skipComments
-          let b ← countAtom
+          let b ← countAtom nats
           return .max a b
+        else if name ∈ nats then
+          return .var (.mk name)
         else
           throwUnexpectedWithMessage none
             s!"unexpected count ident `{name}` (vars need Nat binders)",
-      countAtom
+      countAtom nats
     ]
 
-partial def countMul : P Count := do
-  let a ← countApp
+partial def countMul (nats : List String) : P Count := do
+  let a ← countApp nats
   let rec go (left : Count) : P Count := do
     skipComments
     match ← option? (withBacktracking (punct .star)) with
     | none => return left
     | some _ =>
         skipComments
-        go (.mul left (← countApp))
+        go (.mul left (← countApp nats))
   go a
 
-partial def countExpr : P Count := do
-  let a ← countMul
+partial def countExpr (nats : List String) : P Count := do
+  let a ← countMul nats
   let rec go (left : Count) : P Count := do
     skipComments
     match ← option? (withBacktracking (do
@@ -383,13 +385,12 @@ partial def countExpr : P Count := do
     | none => return left
     | some _ =>
         skipComments
-        go (.add left (← countMul))
+        go (.add left (← countMul nats))
   go a
 end
 
-/-- Bound-slot for BL lo/hi: `_` or solid count.
-Solid: Nat, `inf`/`∞`, parens; FP `pred`/`min`/`max` (atom args); infix `+`/`*`. -/
-def count : P CountSlot :=
+/-- Bound-slot for BL lo/hi: `_` or solid count. -/
+def count (nats : List String := []) : P CountSlot :=
   withErrorMessage "expected count (expression, inf/∞, or _)" do
     skipComments
     first [
@@ -397,12 +398,12 @@ def count : P CountSlot :=
         let _ ← punct .underscore
         return .hole,
       do
-        return .solid (← countExpr)
+        return .solid (← countExpr nats)
     ]
 
 mutual
 
-partial def tyAtom : P Ty :=
+partial def tyAtom (nats : List String) : P Ty :=
   withErrorMessage "expected type atom" do
     skipComments
     first [
@@ -416,12 +417,12 @@ partial def tyAtom : P Ty :=
       do
         let _ ← punct .lparen
         skipComments
-        let a ← ty
+        let a ← ty nats
         skipComments
         match ← option? (punct .comma) with
         | some _ =>
           skipComments
-          let b ← ty
+          let b ← ty nats
           skipComments
           let _ ← punct .rparen
           return .pair a b
@@ -433,11 +434,11 @@ partial def tyAtom : P Ty :=
         let name ← upperIdent
         if name == "BL" then
           skipComments
-          let lo ← count
+          let lo ← count nats
           skipComments
-          let hi ← count
+          let hi ← count nats
           skipComments
-          let elem ← tyAtom
+          let elem ← tyAtom nats
           return .bl lo hi elem
         else
           return tyOfUpperName name,
@@ -450,66 +451,98 @@ partial def tyAtom : P Ty :=
 /-- One or more atoms; fold juxtaposition onto a *bare* customTy head only.
     Already-applied heads (`(Tree a)`), tvars, and prims do not absorb trailing
     atoms — so ctor fields like `Node (Tree a) a` stay two fields. -/
-partial def tyApp : P Ty :=
+partial def tyApp (nats : List String) : P Ty :=
   withErrorMessage "expected type" do
-    let head ← tyAtom
+    let head ← tyAtom nats
     match head with
     | .customTy name [] =>
-        let args ← takeMany (withBacktracking tyAtom)
+        let args ← takeMany (withBacktracking (tyAtom nats))
         return .customTy name args.toList
     | _ =>
         return head
 
 /-- Right-associative arrows: `A -> B -> C` ≡ `A -> (B -> C)`. -/
-partial def ty : P Ty :=
+partial def ty (nats : List String := []) : P Ty :=
   withErrorMessage "expected type" do
-    let left ← tyApp
+    let left ← tyApp nats
     skipComments
     match ← option? (punct .arrow) with
     | some _ =>
       skipComments
-      let right ← ty
+      let right ← ty nats
       return .arrow left right
     | none => return left
 
 end
 
-/-- Scheme: `{a b} body` or bare `ty` (empty foralls).
-    Brace binders emit `.param` spans scoped to the whole polyTy extent. -/
-partial def polyTy : P (PolyTy × List BinderSpan) :=
+/-- Scheme: `{n m : Nat, a b} body`, `{a b} body`, or bare `ty`.
+Returns `(poly, natBinders, binderSpans)`. Nat names are a Bounds sidecar
+(not on `PolyTy`). Brace binders emit `.param` spans over the scheme extent. -/
+partial def polyTy : P (PolyTy × List ValName × List BinderSpan) :=
   withErrorMessage "expected type scheme" do
     skipComments
     match ← option? (withBacktracking (punct .lbrace)) with
     | some lb =>
       skipComments
-      let binderToks ← takeMany1 (withBacktracking do
+      -- First binder group (required if `{` present).
+      let firstToks ← takeMany1 (withBacktracking do
         skipComments
         anyIdentTok)
+      skipComments
+      -- Optional `: Nat` → those names are count binders; then `,` type binders.
+      let (natNames, tyNames, binderToks) ← do
+        match ← option? (withBacktracking (do
+            let _ ← punct .colon
+            skipComments
+            let nm ← upperIdent
+            unless nm == "Nat" do
+              throwUnexpectedWithMessage none "expected Nat after count binders"
+            pure ())) with
+        | some _ =>
+            let nats := firstToks.toList.map (·.2)
+            skipComments
+            match ← option? (withBacktracking (punct .comma)) with
+            | some _ =>
+                skipComments
+                let tyToks ← takeMany1 (withBacktracking do
+                  skipComments
+                  anyIdentTok)
+                pure (nats, tyToks.toList.map (·.2), firstToks.toList ++ tyToks.toList)
+            | none =>
+                pure (nats, [], firstToks.toList)
+        | none =>
+            -- No `: Nat` — all type foralls (legacy `{a b}`).
+            pure ([], firstToks.toList.map (·.2), firstToks.toList)
       skipComments
       let _ ← punct .rbrace
       skipComments
       let startBody ← getPosition
-      let body ← ty
+      let body ← ty natNames
       let stopBody ← getPosition
       let bodySpan ← spanOfConsumed startBody stopBody
       let polySpan := Span.union (Span.ofTok lb) bodySpan
-      let bs := binderToks.toList.map fun (t, n) =>
+      let bs := binderToks.map fun (t, n) =>
         ({ name := n, kind := .param, span := Span.ofTok t, scope? := some polySpan } :
           BinderSpan)
-      return ({ foralls := binderToks.toList.map fun (_, n) => ValName.mk n, body }, bs)
+      return (
+        { foralls := tyNames.map ValName.mk, body },
+        natNames.map ValName.mk,
+        bs)
     | none =>
       let body ← ty
-      return ({ foralls := [], body }, [])
+      return ({ foralls := [], body }, [], [])
 
 /-! ## Expression helpers -/
 
 instance : Inhabited Expr := ⟨.primLit .unit⟩
 instance : Inhabited Pattern := ⟨.wildcard⟩
 instance : Inhabited ValName := ⟨.mk ""⟩
-instance : Inhabited (Nat × ValName × List ValName × List (ValName × Option Ty) × Option PolyTy × Expr) :=
-  ⟨(0, default, [], [], none, default)⟩
-instance : Inhabited (Nat × ValName × List ValName × List (ValName × Option Ty) × Option PolyTy × Expr × SpannedExpr) :=
-  ⟨(0, default, [], [], none, default, default)⟩
+instance : Inhabited (Nat × ValName × List ValName × List (ValName × Option Ty) ×
+    Option PolyTy × List ValName × Expr) :=
+  ⟨(0, default, [], [], none, [], default)⟩
+instance : Inhabited (Nat × ValName × List ValName × List (ValName × Option Ty) ×
+    Option PolyTy × List ValName × Expr × SpannedExpr) :=
+  ⟨(0, default, [], [], none, [], default, default)⟩
 instance : Inhabited (Pattern × Expr) := ⟨(default, default)⟩
 instance : Inhabited (Pattern × Expr × SpannedExpr) := ⟨(default, default, default)⟩
 instance : Inhabited (Expr × List BinderSpan × SpannedExpr) :=
@@ -903,7 +936,7 @@ partial def infixExpr : PE :=
     strictly right of it. -/
 partial def letBinding (indentCol : Nat) :
     P ((Nat × ValName × List ValName × List (ValName × Option Ty) × Option PolyTy ×
-        Expr × SpannedExpr) × List BinderSpan) :=
+        List ValName × Expr × SpannedExpr) × List BinderSpan) :=
   withErrorMessage "expected let binding" do
     skipComments
     let (tok, name) ← lowerIdentTok
@@ -926,39 +959,47 @@ partial def letBinding (indentCol : Nat) :
     if t.startLine > eqTok.startLine then
       colGt indentCol
     let (rhs, bsRhs, sRhs) ← expr
-    let (annPoly, bsAnn) :=
+    let (annPoly, natBinders, bsAnn) :=
       match annRaw with
-      | some (σ, bs) => (some σ, bs)
-      | none => (none, [])
-    return ((blockCol, .mk name, tyParams, params, annPoly, rhs, sRhs),
+      | some (σ, nats, bs) => (some σ, nats, bs)
+      | none => (none, [], [])
+    return ((blockCol, .mk name, tyParams, params, annPoly, natBinders, rhs, sRhs),
       bsName ++ bsTyParams ++ bsParams ++ bsAnn ++ bsRhs)
 
-/-- `let` bindings `in` body → nested `.letIn` (first binder outermost). -/
+/-- `let` bindings `in` body → nested `.letIn` (first binder outermost).
+When a binder has Nat-scheme binders, emit a singleton `letRecIn` so the
+sidecar lives on `Binding.natBinders` (dual-stack; `letIn` stays type-only). -/
 partial def letExpr : PE :=
   withErrorMessage "expected let expression" do
     skipComments
     let letTok ← keyword .«let»
-    let ((blockCol, n0, tyPs0, ps0, ann0, rhs0, s0), bs0) ← letBinding letTok.startCol
+    let ((blockCol, n0, tyPs0, ps0, ann0, nats0, rhs0, s0), bs0) ← letBinding letTok.startCol
     let rest ← takeMany (withBacktracking do
       colEq blockCol
-      pbMap (fun (_, n, tyPs, ps, ann, rhs, s) => (n, tyPs, ps, ann, rhs, s))
+      pbMap (fun (_, n, tyPs, ps, ann, nats, rhs, s) => (n, tyPs, ps, ann, nats, rhs, s))
         (letBinding blockCol))
     skipComments
     let _ ← keyword .«in»
     skipComments
     let (body, bsBody, sBody) ← expr
-    let binds := (n0, tyPs0, ps0, ann0, rhs0, s0) :: rest.toList.map (·.1)
+    let binds := (n0, tyPs0, ps0, ann0, nats0, rhs0, s0) :: rest.toList.map (·.1)
     let bsRest := concatBinders rest
     let (e, s) :=
       binds.foldr
-        (fun (n, tyPs, ps, ann, rhs, sRhs) (acc, accS) =>
+        (fun (n, tyPs, ps, ann, nats, rhs, sRhs) (acc, accS) =>
           let sp := Span.union sRhs.span accS.span
-          (Expr.letIn n tyPs ps ann rhs acc, SpannedExpr.letIn sp sRhs accS))
+          if nats.isEmpty then
+            (Expr.letIn n tyPs ps ann rhs acc, SpannedExpr.letIn sp sRhs accS)
+          else
+            let b : Binding :=
+              { name := n, tyParams := tyPs, params := ps, ann, rhs, natBinders := nats }
+            (Expr.letRecIn [b] acc, SpannedExpr.letRecIn sp [sRhs] accS))
         (body, sBody)
     let spanAll := Span.union (Span.ofTok letTok) sBody.span
     let s' :=
       match s with
       | .letIn _ r b => SpannedExpr.letIn spanAll r b
+      | .letRecIn _ rs b => SpannedExpr.letRecIn spanAll rs b
       | other => other
     return (e, bs0 ++ bsRest ++ bsBody, s')
 
@@ -1073,7 +1114,7 @@ def ctorField : P Ty :=
         skipComments
         let _ ← punct .rparen
         return t,
-      tyApp
+      tyApp []
     ]
 
 def dataCtor : P ((CtorName × List Ty) × List BinderSpan) :=
@@ -1120,8 +1161,9 @@ def topLet : P ((Binding × SpannedExpr) × List BinderSpan) :=
   withErrorMessage "expected top-level let" do
     skipComments
     let letTok ← keyword .«let»
-    let ((_, name, tyParams, params, ann, rhs, sRhs), bs) ← letBinding letTok.startCol
-    return (({ name, tyParams, params, ann, rhs }, sRhs), bs)
+    let ((_, name, tyParams, params, ann, natBinders, rhs, sRhs), bs) ←
+      letBinding letTok.startCol
+    return (({ name, tyParams, params, ann, rhs, natBinders }, sRhs), bs)
 
 /-- Interleaved `type` / `let`, then optional body expr (default unit).
     Groups via `SurfaceBridge.Program.ofFlat` (SCC); fails on duplicate names.
@@ -1189,6 +1231,11 @@ def parseTy (src : String) : Except ParseError Ty :=
 
 def parsePolyTy (src : String) : Except ParseError PolyTy :=
   (runLexParse polyTy src).map (·.1)
+
+/-- Parse scheme + Nat-binder sidecar. -/
+def parsePolyTyWithNats (src : String) :
+    Except ParseError (PolyTy × List ValName) :=
+  (runLexParse polyTy src).map fun (σ, nats, _) => (σ, nats)
 
 def parseExpr (src : String) : Except ParseError Expr :=
   (runLexParse expr src).map (·.1)
@@ -1288,7 +1335,7 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 #guard !(parseTy "BL 0").isOk
 #guard !(parseTy "BL 0 5").isOk
 #guard !(parseTy "BL -1 5 Int").isOk
--- count vars deferred to P5 (Nat binders)
+-- count vars still need Nat binders (see polyTyWithNats guards below)
 #guard !(parseTy "BL n m Int").isOk
 -- nested hole forbidden
 #guard !(parseTy "BL (_ + 1) 5 Int").isOk
@@ -1303,6 +1350,18 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
   | .ok ⟨[], .arrow (.prim .int) (.prim .bool)⟩ => true
   | _ => false)
 #guard (match parsePolyTy "{}" with | .error _ => true | _ => false)
+
+-- Nat binders sidecar: `{n : Nat, a} BL n n a`
+#guard (match parsePolyTyWithNats "{n : Nat, a} BL n n a" with
+  | .ok (⟨[.mk "a"], .bl (.solid (.var (.mk "n"))) (.solid (.var (.mk "n"))) (.tvar (.mk "a"))⟩,
+         [.mk "n"]) => true
+  | _ => false)
+#guard (match parsePolyTyWithNats "{n m : Nat} BL n m Int" with
+  | .ok (⟨[], .bl (.solid (.var (.mk "n"))) (.solid (.var (.mk "m"))) (.prim .int)⟩,
+         [.mk "n", .mk "m"]) => true
+  | _ => false)
+-- count vars still rejected outside Nat binders
+#guard !(parseTy "BL n m Int").isOk
 
 -- lex errors surface as ParseError
 #guard (match parseTy "\t" with
@@ -1521,17 +1580,21 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
       let flat := p.groups.flatten
       (flat.length == 2) &&
         flat.any (fun b => match b with
-          | ⟨.mk "x", [], [], none, .primLit (.int 1)⟩ => true | _ => false) &&
+          | { name := .mk "x", tyParams := [], params := [], ann := none,
+              rhs := .primLit (.int 1), natBinders := [] } => true | _ => false) &&
         flat.any (fun b => match b with
-          | ⟨.mk "y", [], [], none, .primLit (.int 2)⟩ => true | _ => false)
+          | { name := .mk "y", tyParams := [], params := [], ann := none,
+              rhs := .primLit (.int 2), natBinders := [] } => true | _ => false)
     | _ => false
   | _ => false)
 
 #guard (match parseProgram "let f : Int -> Int = \\x -> x" with
   | .ok p =>
     match p.groups, p.body with
-    | [[⟨.mk "f", [], [], some ⟨[], .arrow (.prim .int) (.prim .int)⟩,
-        .lambda (.name (.mk "x")) none (.var (.mk "x"))⟩]],
+    | [[{ name := .mk "f", tyParams := [], params := [],
+          ann := some ⟨[], .arrow (.prim .int) (.prim .int)⟩,
+          rhs := .lambda (.name (.mk "x")) none (.var (.mk "x")),
+          natBinders := [] }]],
       .primLit .unit => true
     | _, _ => false
   | _ => false)
@@ -1539,10 +1602,21 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 #guard (match parseProgram "let f {a} (x : a) : a = x\nf" with
   | .ok p =>
     match p.groups, p.body with
-    | [[⟨.mk "f", [.mk "a"], [(.mk "x", some (.tvar (.mk "a")))],
-        some ⟨[], .tvar (.mk "a")⟩,
-        .var (.mk "x")⟩]], .var (.mk "f") => true
+    | [[{ name := .mk "f", tyParams := [.mk "a"],
+          params := [(.mk "x", some (.tvar (.mk "a")))],
+          ann := some ⟨[], .tvar (.mk "a")⟩,
+          rhs := .var (.mk "x"), natBinders := [] }]], .var (.mk "f") => true
     | _, _ => false
+  | _ => false)
+
+-- Nat binders on top-level binding sidecar
+#guard (match parseProgram "let id : {n : Nat, a} BL n n a -> BL n n a = \\x -> x\nid" with
+  | .ok p =>
+    match p.groups with
+    | [[{ natBinders := [.mk "n"],
+          ann := some ⟨[.mk "a"], .arrow (.bl (.solid (.var (.mk "n"))) (.solid (.var (.mk "n"))) (.tvar (.mk "a")))
+            (.bl (.solid (.var (.mk "n"))) (.solid (.var (.mk "n"))) (.tvar (.mk "a")))⟩, .. }]] => true
+    | _ => false
   | _ => false)
 
 -- newline RHS indented past `let` (not past the binder name)

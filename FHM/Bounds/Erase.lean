@@ -243,9 +243,14 @@ def eraseExpr : Surface.Expr → Surface.Expr :=
     (fun bindings _body ihbs ebody =>
       .letRecIn
         (bindings.attach.map fun ⟨b, hb⟩ =>
+          let ann' :=
+            match b.ann with
+            | some σ => some (erasePolyTy σ b.natBinders).1
+            | none => none
           { b with
             params := eraseParams b.params
-            ann := (eraseOptPolyTy b.ann).1
+            ann := ann'
+            natBinders := []
             rhs := ihbs b hb })
         ebody)
     (fun n => .var n)
@@ -257,19 +262,28 @@ def eraseExpr : Surface.Expr → Surface.Expr :=
 
 /-- Erase one binding, producing its bounds ann in the same package.
 
-`schemeAnn` stays `none` until Binding carries a Nat-binder sidecar (parse of
-`{n : Nat,…}`); then call `eraseSchemeAnn nats σ`. Mono `BL` path unchanged. -/
+When `b.natBinders` is nonempty, package `schemeAnn` via `eraseSchemeAnn` and
+leave mono `ann` empty (scheme body carries the intervals). -/
 def eraseBinding (b : Binding) : ErasedBinding :=
+  let nats := b.natBinders
   let hadBl := match b.ann with | some σ => tyContainsBl σ.body | none => false
-  let (ann', annOut) := eraseOptPolyTy b.ann
+  let (ann', annOut, schemeOut) :=
+    match b.ann with
+    | some σ =>
+        let (σ', bodyAnn) := erasePolyTy σ nats
+        (some σ', some bodyAnn, eraseSchemeAnn nats σ)
+    | none => (none, none, none)
   let b' : Binding :=
     { b with
       params := eraseParams b.params
       ann := ann'
+      natBinders := []
       rhs := eraseExpr b.rhs }
   { binding := b'
-    ann := if hadBl then annOut else none
-    schemeAnn := none }
+    ann :=
+      if schemeOut.isSome then none
+      else if hadBl then annOut else none
+    schemeAnn := schemeOut }
 
 def eraseDataDecl (d : DataDecl) : DataDecl :=
   { d with
