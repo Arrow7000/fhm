@@ -69,7 +69,8 @@ inductive Agrees : BoundsTy → Ty → Prop where
 Used when inventing β without annotations (e.g. `nil` elem). Not principal.
 
 TODO(bounds-inf): `Count.inf` exists (Kernel). Do **not** stamp bare `List` as
-`[0,inf]` (D22) — `defaultBounds` List invention is scaffold debt for Check only. -/
+`[0,inf]` (D22). Live Check no longer uses this for ascriptions (slice 4);
+remaining uses are Agrees templates (Nil elem, non-List structure). -/
 def defaultBounds : Ty → BoundsTy
   | .prim p => .prim p
   | .arrow a b => .arrow (defaultBounds a) (defaultBounds b)

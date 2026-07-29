@@ -1,0 +1,5 @@
+-- Slice 4 negative: [1,2] does not meet BL 0 0.
+-- Expect: bounds ascription not met.
+
+let xs : BL 0 0 Int = [1, 2]
+xs

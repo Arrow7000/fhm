@@ -19,7 +19,7 @@ Read a `.fhm` source file (or stdin) and run:
 
 `--bl` selects `BoundsMode.bl` (allow `BL` syntax). Default is HM: reject BL with a
 clear error (D16). Erase always runs. Under `--bl`, `ofLower` (post-infer binder
-spine) + `checkProgramAnns` run (scaffold: synth = `defaultBounds` until slice 4).
+spine) + origin `synthBounds` / `checkProgramAnns` (slice 4; no `defaultBounds`).
 Exhaustiveness is still HM (BoundCovers = slice 6).
 
 Types / bounds lines print **before** evaluation in human mode (eval is slow).
@@ -217,7 +217,7 @@ def checkPipeline (mode : BoundsMode) (src : String) :
   let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
 
   if mode == .bl then
-    match FHM.Bounds.Check.checkProgramAnns binds binderEnv boundsAnns bodyσ with
+    match FHM.Bounds.Check.checkProgramAnns eOut τ binderEnv boundsAnns with
     | .error msg =>
         return .error { stage := .bounds, message := msg }
     | .ok () => pure ()

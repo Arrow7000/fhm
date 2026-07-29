@@ -6,8 +6,8 @@ import FHM.Bounds.Ann
 # P4c — pipeline contract (mode gate + ofLower)
 
 Wired from Live/`--bl`. Gate and erase are **separate**: `hmRequireNoBl` is D16
-only; `eraseProgram` always runs. Under `--bl`, Live runs `ofLower` + Check
-(scaffold: `defaultBounds` until origin HasBounds synth — D22/D24).
+only; `eraseProgram` always runs. Under `--bl`, Live runs `ofLower` + origin
+HasBounds synth / ascription check (slice 4; D22).
 
 ## Architecture
 
@@ -22,7 +22,7 @@ surface Program
                           │
          lower erased.toProgram
                           │
-              .bl: ofLower → Check (→ HasBounds synth next)
+              .bl: ofLower → origin synth + MeetsAscription
 ```
 
 ## Design locks

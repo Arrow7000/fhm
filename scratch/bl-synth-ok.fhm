@@ -1,0 +1,5 @@
+-- Slice 4: length-honest ascription under `--bl`.
+-- Synth from Nil/Cons origins; MeetsAscription via Z3 Sub.
+
+let xs : BL 2 2 Int = [1, 2]
+xs

@@ -62,7 +62,8 @@ roots = [
   "FHM.Bounds.Oracle",
   "FHM.Bounds.Commit",
   "FHM.Bounds.Typing",
-  "FHM.Bounds.Check",     # P4c-hasbounds: executable Sub / MeetsAscription (Z3)
+  "FHM.Bounds.Check",     # Live ascription checks (uses Synth)
+  "FHM.Bounds.Synth",     # Slice 4: origin HasBounds synthesizer
   "FHM.Bounds.Erase",     # P4b surface BL → List + BoundsAnnTy
   "FHM.Bounds.Pipeline",  # P4c mode / ofLower / prepare (shapes)
   "FHM.Bounds.Examples",  # P3.5c Core demos
