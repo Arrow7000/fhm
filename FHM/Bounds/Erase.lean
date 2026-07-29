@@ -1,5 +1,5 @@
 import FHM.SurfaceLang
-import FHM.Bounds.Typing
+import FHM.Bounds.Ann
 
 /-!
 # P4b — eraseBounds

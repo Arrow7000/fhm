@@ -2,6 +2,7 @@ import FHM.Core
 import FHM.Bounds.Kernel
 import FHM.Bounds.Oracle
 import FHM.Bounds.Commit
+import FHM.Bounds.Ann
 
 /-!
 # Bounds typing on Core — BoundsTy + parasitic HasBounds (P2 API)
@@ -21,9 +22,7 @@ open Std
 
 /-! ## Prelude names (align with SurfaceBridge) -/
 
-def listTyName : TyName := ⟨"List"⟩
-def boolTyName : TyName := ⟨"Bool"⟩
-def pairTyName : TyName := ⟨"Pair"⟩
+-- `listTyName` / `boolTyName` / `pairTyName` live in `Ann.lean` (Z3-free).
 def nilCtorName : CtorName := ⟨"Nil"⟩
 def consCtorName : CtorName := ⟨"Cons"⟩
 
@@ -845,39 +844,11 @@ theorem BoundCovers.only_list {Δ β brs}
   | listConsOnly => exact ⟨_, _, _, rfl⟩
   | listWild => exact ⟨_, _, _, rfl⟩
 
-/-! ## P3.5b — BoundsAnnTy + pipeline contract (shapes for sign-off)
+/-! ## P3.5b — BoundsAnnTy elaboration + pipeline contract
 
-**Status:** API review — not yet used by Surface/Live.
-
-After Infer we have Core `e`, HM type `τ`, and synthesized `β` from `HasBounds`.
-Surface erase will also produce **ascriptions** (user-written `BL lo hi t` on
-bindings). Those ascriptions are checked with `Sub`, not re-inferred.
-
-### Design locks (memo)
-
-* Key ascriptions by **binding de Bruijn index** after lower (parallel to env),
-  plus optional body ascription — avoid expression-path maps through PatComp.
-* Holes in bound slots: `Option Count` (`none` = hole) until `Count.inf` / solve.
-* Pipeline coverage: List `β` → `BoundCovers`; non-List → HM exhaustiveness (external).
+`AnnoCount` / `BoundsAnnTy` / `ProgramBoundsAnns` live in `Ann.lean` (Z3-free).
+This section is elaboration + checking against `BoundsTy` / `HasBounds`.
 -/
-
-/-- A single count slot from surface: concrete or hole (to be solved / defaulted). -/
-inductive AnnoCount where
-  | hole
-  | solid (c : Count)
-  deriving DecidableEq, Repr
-
-/-- Bound ascription with holes, same spine as `BoundsTy`.
-List is the only place `AnnoCount` appears; everything else mirrors `BoundsTy`.
-Renamed from `BoundAnn` so the name reads as an annotated `Ty`. -/
-inductive BoundsAnnTy where
-  | prim (p : PrimTy)
-  | arrow (dom cod : BoundsAnnTy)
-  | bvar (i : Nat)
-  | fvar (i : Nat)
-  | list (lo hi : AnnoCount) (elem : BoundsAnnTy)
-  | custom (name : TyName) (args : List BoundsAnnTy)
-  deriving Repr
 
 /-- Solid ascription (no holes) is already a `BoundsTy`; `none` if any hole remains. -/
 def BoundsAnnTy.toBoundsTy? : BoundsAnnTy → Option BoundsTy
@@ -946,26 +917,6 @@ inductive ElabAnn : Nat → BoundsAnnTy → BoundsTy → Nat → Prop where
       name ≠ listTyName →
       BoundsAnnTyList.toBoundsTy? as = some bs →
       ElabAnn Φ (.custom name as) (.custom name bs) Φ
-
-/-- Program-level bound ascriptions after lower (de Bruijn parallel to value env).
-
-`binderAnns[i] = some ann` means binding `i` was surface-ascribed; the body of
-the program may carry `bodyAnn`. Missing entries = no ascription (pure synth). -/
-structure ProgramBoundsAnns where
-  /-- Parallel to Core `env` after lower: index 0 = innermost binder. -/
-  binderAnns : List (Option BoundsAnnTy) := []
-  /-- Optional expected bounds on the whole expression / program body. -/
-  bodyAnn : Option BoundsAnnTy := none
-  deriving Repr
-
-/-- Lookup ascription for de Bruijn index `i`. -/
-def ProgramBoundsAnns.get? (a : ProgramBoundsAnns) (i : Nat) : Option BoundsAnnTy :=
-  a.binderAnns[i]? |>.join
-
-/-- Empty ascriptions (HM-only or no surface bounds). -/
-def ProgramBoundsAnns.empty : ProgramBoundsAnns := {}
-
-/-! ### Checking ascriptions against synthesized bounds -/
 
 /-- Synthesized `β` satisfies surface ascription `ann` under `Δ` (after elab of holes). -/
 inductive MeetsAscription (Δ : List Constraint) : BoundsTy → BoundsAnnTy → Prop where

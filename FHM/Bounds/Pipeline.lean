@@ -1,6 +1,6 @@
 import FHM.SurfaceLang
 import FHM.Bounds.Erase
-import FHM.Bounds.Typing
+import FHM.Bounds.Ann
 
 /-!
 # P4c — pipeline contract (shapes for sign-off)
