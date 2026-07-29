@@ -51,7 +51,7 @@ erase ascription against origin-synth of its RHS, then the body.
 
 `binderEnv` / `anns.binderAnns` are 0 = innermost; the spine is outermost-first,
 so the k-th outer binder group occupies the next high indices. -/
-partial def checkLetSpine
+def checkLetSpine
     (binderEnv : List ValName)
     (anns : ProgramBoundsAnns)
     (Δ : List Constraint)
@@ -113,6 +113,8 @@ partial def checkLetSpine
                 throw s!"bounds: body ascription not met \
 (synth {BoundsTy.pretty β} ≰ {ann.pretty})"
               pure β
+termination_by e.size
+decreasing_by all_goals (try simp only [Expr.size, Expr.sizeRecGroup]; omega)
 
 /-- Origin-synth Core `e` at HM `τ`, checking erase/`ofLower` ascriptions.
 

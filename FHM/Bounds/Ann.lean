@@ -58,31 +58,50 @@ def ProgramBoundsAnns.empty : ProgramBoundsAnns := {}
 
 /-! ## Pretty (Live / diagnose; no Typing import) -/
 
-partial def AnnoCount.pretty : AnnoCount → String
-  | .hole => "_"
-  | .solid (.lit n) => toString n
-  | .solid .inf => "∞"
-  | .solid (.add a b) => s!"({AnnoCount.pretty (.solid a)} + {AnnoCount.pretty (.solid b)})"
-  | .solid (.mul a b) => s!"({AnnoCount.pretty (.solid a)} * {AnnoCount.pretty (.solid b)})"
-  | .solid (.pred a) => s!"(pred {AnnoCount.pretty (.solid a)})"
-  | .solid (.min a b) =>
-      s!"(min {AnnoCount.pretty (.solid a)} {AnnoCount.pretty (.solid b)})"
-  | .solid (.max a b) =>
-      s!"(max {AnnoCount.pretty (.solid a)} {AnnoCount.pretty (.solid b)})"
-  | .solid (.var v) => reprStr (Count.var v)
+def Count.pretty : Count → String
+  | .lit n => toString n
+  | .inf => "∞"
+  | .add a b =>
+      let sa := Count.pretty a
+      let sb := Count.pretty b
+      s!"({sa} + {sb})"
+  | .mul a b =>
+      let sa := Count.pretty a
+      let sb := Count.pretty b
+      s!"({sa} * {sb})"
+  | .pred a => s!"(pred {Count.pretty a})"
+  | .min a b =>
+      let sa := Count.pretty a
+      let sb := Count.pretty b
+      s!"(min {sa} {sb})"
+  | .max a b =>
+      let sa := Count.pretty a
+      let sb := Count.pretty b
+      s!"(max {sa} {sb})"
+  | .var v => reprStr (Count.var v)
 
-partial def BoundsAnnTy.pretty : BoundsAnnTy → String
+def AnnoCount.pretty : AnnoCount → String
+  | .hole => "_"
+  | .solid c => Count.pretty c
+
+def BoundsAnnTy.pretty : BoundsAnnTy → String
   | .prim p =>
       match p with
       | .unit => "Unit"
       | .int => "Int"
       | .nat => "Nat"
       | .char => "Char"
-  | .arrow d c => s!"{BoundsAnnTy.pretty d} → {BoundsAnnTy.pretty c}"
+  | .arrow d c =>
+      let sd := BoundsAnnTy.pretty d
+      let sc := BoundsAnnTy.pretty c
+      s!"{sd} → {sc}"
   | .bvar i => s!"β{i}"
   | .fvar i => s!"?β{i}"
   | .list lo hi e =>
-      s!"BL {AnnoCount.pretty lo} {AnnoCount.pretty hi} {BoundsAnnTy.pretty e}"
+      let slo := AnnoCount.pretty lo
+      let shi := AnnoCount.pretty hi
+      let se := BoundsAnnTy.pretty e
+      s!"BL {slo} {shi} {se}"
   | .custom n args =>
       let nm := match n with | .mk s => s
       if args.isEmpty then nm
