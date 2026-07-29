@@ -7,7 +7,7 @@ import FHM.Pretty
 Walk Infer’s Core `eOut` with origin `synthBounds`, then
 `checkMeetsAscription` against erase/`ofLower` solid anns.
 
-No `defaultBounds τ` on the Live path (D22).
+No `agreesTemplate τ` ascription synth on the Live path (D22).
 -/
 
 namespace FHM.Bounds.Check

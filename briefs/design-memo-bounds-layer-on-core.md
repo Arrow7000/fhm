@@ -29,7 +29,7 @@ Add a **BoundedList refinement layer** on top of the existing FHM Hindley–Miln
 
 **Non-goals (v1):** fuse `bl` into Core `Ty`; teach Unify/Infer about intervals; principal bounds / full inferred count gen; type-passing counts; full dual surface frontend; finish BLSketch axiom collapse before the layer exists.
 
-**Origin lock (D22):** list intervals are **never invented from bare `List` / HM `Ty` alone**. Every `β = .list lo hi _` comes from an origin (see §2.1). `defaultBounds` / erase `defaultListAnn` are **scaffold debt** — not the end model. `Count.inf` is vocabulary for “unbounded as a *result* of analysis or an explicit surface count,” not a stamp on every unascribed `List`.
+**Origin lock (D22):** list intervals are **never invented from bare `List` / HM `Ty` alone**. Every `β = .list lo hi _` comes from an origin (see §2.1). `agreesTemplate` (ex-`defaultBounds`) / erase `defaultListAnn` remain **scaffold debt** for nested List-as-elem shapes — not Live ascription synth. `Count.inf` is vocabulary for “unbounded as a *result* of analysis or an explicit surface count,” not a stamp on every unascribed `List`.
 
 ---
 
@@ -58,7 +58,7 @@ Add a **BoundedList refinement layer** on top of the existing FHM Hindley–Miln
 | D19 | **File budget:** prefer few large modules (Kernel, Oracle, Commit, Ann, Typing, Erase, Pipeline, Check) |
 | D20 | **Erase packages anns with binders** (`ErasedTy` / `ErasedBinding`); not a free-floating map beside an unrelated program |
 | D21 | **Gate ≠ erase:** `hmRequireNoBl` is D16 only; `eraseProgram` always erases; Live composes them |
-| D22 | **Origin-based bounds:** intervals flow from constructors / ascriptions / env / apps / joins — never from `defaultBounds τ` |
+| D22 | **Origin-based bounds:** intervals flow from constructors / ascriptions / env / apps / joins — never from `agreesTemplate τ` as Live synth |
 | D23 | **Surface Count ↔ Kernel Count:** ground ops + `inf` early; `Count.var` with schemes — do not forget ops by bundling them with schemes |
 | D24 | **Unascribed List params:** fresh `?lo`/`?hi`; constrain by uses; else generalise (scheme-quantify); mid-case → Commit on **output-visible** outs (`uniqueOnly` = annotate-or-fail; swappable) |
 
@@ -318,6 +318,8 @@ Reject bare idents (`n`) until slice 7. Reject nested holes (`BL (_ + 1) 5 t`).
 **Exit demos:** `scratch/bl-synth-ok.fhm` (`BL 2 2` ← `[1,2]` OK); `scratch/bl-synth-fail.fhm` (`BL 0 0` ← `[1,2]` fail).
 
 **Deferred:** D24 fresh `?lo`/`?hi` (slice 5/7); BoundCovers (slice 6); List λ-params without ascription still fail-annotate.
+
+**Editor follow-up (not blocking):** under `--bl`, hover/diagnose still show HM `List` — should prefer erase/synth `BL …` (or ann sidecar) when bounds mode is on. Track with diagnose/`EditorSupport` once hole elab is in.
 4. HM mode still D16-rejects any `BL …`.
 
 **Out of scope:** `Count.var`; scheme quantifiers; changing Check synth off `defaultBounds`.

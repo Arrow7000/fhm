@@ -65,26 +65,26 @@ inductive Agrees : BoundsTy → Ty → Prop where
       List.Forall₂ Agrees args tys →
       Agrees (.custom name args) (.customTy name tys)
 
-/-- Default bound view of a monotype.
-Used when inventing β without annotations (e.g. `nil` elem). Not principal.
+/-- Structural `Agrees` template for a monotype when no expression origin supplies β
+(Nil’s element type, non-List λ params, prim ops, non-List ctors).
 
-TODO(bounds-inf): `Count.inf` exists (Kernel). Do **not** stamp bare `List` as
-`[0,inf]` (D22). Live Check no longer uses this for ascriptions (slice 4);
-remaining uses are Agrees templates (Nil elem, non-List structure). -/
-def defaultBounds : Ty → BoundsTy
+Not a Live ascription synth (D22 / slice 4). The `List` arm still invents
+`[0,0]` for nested list-shaped elems — remaining scaffold if Nil’s `α` is itself
+a List; do not call this to “default” a bare List binder. -/
+def agreesTemplate : Ty → BoundsTy
   | .prim p => .prim p
-  | .arrow a b => .arrow (defaultBounds a) (defaultBounds b)
+  | .arrow a b => .arrow (agreesTemplate a) (agreesTemplate b)
   | .bvar i => .bvar i
   | .fvar i => .fvar i
   | .customTy n [α] =>
       if n = listTyName then
-        -- Scaffold only (D22): not the origin-based end model.
-        .list (.lit 0) (.lit 0) (defaultBounds α)
-      else .custom n [defaultBounds α]
-  | .customTy n tys => .custom n (tys.map defaultBounds)
+        -- Nested List-as-elem only (D22 debt if α is List).
+        .list (.lit 0) (.lit 0) (agreesTemplate α)
+      else .custom n [agreesTemplate α]
+  | .customTy n tys => .custom n (tys.map agreesTemplate)
 
-/-- Well-formed List arities for `Agrees` / `defaultBounds`.
-Unrestricted `∀ τ, Agrees (defaultBounds τ) τ` is **false**:
+/-- Well-formed List arities for `Agrees` / `agreesTemplate`.
+Unrestricted `∀ τ, Agrees (agreesTemplate τ) τ` is **false**:
 `customTy "List" []` has no `Agrees` witness. -/
 inductive ListShapeOK : Ty → Prop where
   | prim {p} : ListShapeOK (.prim p)
@@ -97,33 +97,33 @@ inductive ListShapeOK : Ty → Prop where
       (∀ t ∈ tys, ListShapeOK t) →
       ListShapeOK (.customTy n tys)
 
-private theorem forall₂_defaultBounds
-    {tys : List Ty} (h : ∀ t ∈ tys, Agrees (defaultBounds t) t) :
-    List.Forall₂ Agrees (tys.map defaultBounds) tys := by
+private theorem forall₂_agreesTemplate
+    {tys : List Ty} (h : ∀ t ∈ tys, Agrees (agreesTemplate t) t) :
+    List.Forall₂ Agrees (tys.map agreesTemplate) tys := by
   induction tys with
   | nil => exact .nil
   | cons t ts ih =>
       exact .cons (h t (by simp)) (ih (fun u hu => h u (List.mem_cons_of_mem _ hu)))
 
-theorem defaultBounds_agrees {τ : Ty} (h : ListShapeOK τ) :
-    Agrees (defaultBounds τ) τ := by
+theorem agreesTemplate_agrees {τ : Ty} (h : ListShapeOK τ) :
+    Agrees (agreesTemplate τ) τ := by
   induction h with
-  | prim => simp only [defaultBounds]; exact .prim
-  | arrow _ _ iha ihb => simp only [defaultBounds]; exact .arrow iha ihb
-  | bvar => simp only [defaultBounds]; exact .bvar
-  | fvar => simp only [defaultBounds]; exact .fvar
+  | prim => simp only [agreesTemplate]; exact .prim
+  | arrow _ _ iha ihb => simp only [agreesTemplate]; exact .arrow iha ihb
+  | bvar => simp only [agreesTemplate]; exact .bvar
+  | fvar => simp only [agreesTemplate]; exact .fvar
   | list _ ih =>
-      simp only [listTy, defaultBounds, ↓reduceIte]
+      simp only [listTy, agreesTemplate, ↓reduceIte]
       exact .list ih
   | @custom n tys hne htys ih =>
-      have hmap := forall₂_defaultBounds ih
+      have hmap := forall₂_agreesTemplate ih
       match tys with
-      | [] => simpa [defaultBounds] using Agrees.custom hne .nil
+      | [] => simpa [agreesTemplate] using Agrees.custom hne .nil
       | [α] =>
-          simp only [defaultBounds, hne, ↓reduceIte]
+          simp only [agreesTemplate, hne, ↓reduceIte]
           cases hmap with | cons ha _ => exact .custom hne (.cons ha .nil)
       | _ :: _ :: _ =>
-          simpa [defaultBounds] using Agrees.custom hne hmap
+          simpa [agreesTemplate] using Agrees.custom hne hmap
 
 abbrev BoundEnv := List BoundsTy
 

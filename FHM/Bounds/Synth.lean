@@ -22,11 +22,6 @@ def BoundsTy.toTy : BoundsTy → Ty
   | .list _ _ e => listTy (BoundsTy.toTy e)
   | .custom n as => .customTy n (as.map BoundsTy.toTy)
 
-/-- Structural Agrees template for non-origin positions (Nil elem, non-List λ
-params, prim ops). List intervals here are still scaffold — only used when an
-origin does not supply them (e.g. Nil’s element type). -/
-def elemBounds : Ty → BoundsTy := defaultBounds
-
 mutual
 /-- Executable `Sub Δ β β'`. List proper-subtype uses `checkValid` (Z3). -/
 def checkSub (Δ : List Constraint) (a b : BoundsTy) : Bool :=
@@ -252,7 +247,7 @@ def inferBounds (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) :
         | none => throw "bounds: lambda param needs a type ascription for synth"
       if (isListTy τp).isSome then
         throw "bounds: unascribed List λ-param (annotate with BL, or wait for D24)"
-      let βp := elemBounds τp
+      let βp := agreesTemplate τp
       let (τb, βb) ← inferBounds Δ (βp :: bctx) body
       pure (.arrow τp τb, .arrow βp βb)
   | .letIn ann? rhs body => do
@@ -299,16 +294,16 @@ def checkBounds (Δ : List Constraint) (bctx : BoundEnv)
   | .ctor name => do
       if name == nilCtorName then
         match isListTy τ with
-        | some α => pure (.list (.lit 0) (.lit 0) (elemBounds α))
+        | some α => pure (.list (.lit 0) (.lit 0) (agreesTemplate α))
         | none => throw "bounds: Nil at non-List type"
       else if name == consCtorName then
         throw "bounds: bare Cons ctor (expected saturated Cons apps)"
       else
         if (isListTy τ).isSome then
           throw "bounds: non-Nil ctor at List type"
-        pure (elemBounds τ)
+        pure (agreesTemplate τ)
   | .primBinOp _op =>
-      pure (elemBounds τ)
+      pure (agreesTemplate τ)
   | .app (.app (.ctor c) h) arg =>
       match isListTy τ with
       | some α =>
@@ -332,7 +327,7 @@ def checkBounds (Δ : List Constraint) (bctx : BoundEnv)
       | .arrow τp τb => do
           if (isListTy τp).isSome then
             throw "bounds: unascribed List λ-param (annotate with BL, or wait for D24)"
-          let βp := elemBounds τp
+          let βp := agreesTemplate τp
           let βb ← checkBounds Δ (βp :: bctx) body τb
           pure (.arrow βp βb)
       | _ => throw "bounds: lambda at non-arrow type"
