@@ -115,8 +115,11 @@ def erasePolyTy (σ : Surface.PolyTy) : Surface.PolyTy × BoundsAnnTy :=
   let e := eraseTy σ.body
   ({ σ with body := e.ty }, e.ann)
 
-/-! ## Name-keyed sidecar (pre–de Bruijn) -/
+/-! ## Erased packages (bounds produced alongside erase) -/
 
+/-- Flattened name→ann view for `ofLower` (derived from `ErasedProgram`, not a
+second store). Prefer reading anns from `ErasedBinding` when you have the
+package. -/
 structure SurfaceBoundsAnns where
   byName : List (ValName × BoundsAnnTy) := []
   bodyAnn : Option BoundsAnnTy := none
@@ -124,9 +127,39 @@ structure SurfaceBoundsAnns where
 
 def SurfaceBoundsAnns.empty : SurfaceBoundsAnns := {}
 
+/-- One binder after erase — parallel to `ErasedTy`: erased binding **plus**
+its bounds ascription from the same erase step.
+
+`ann = some _` iff the surface ascription contained `BL` (bare `List` / no ann
+→ `none`, so defaults don’t pollute keyed ascriptions). -/
+structure ErasedBinding where
+  binding : Binding
+  ann : Option BoundsAnnTy
+
+/-- Erase package for a whole program (parallel to `ErasedTy`).
+
+Bounds anns live **on the binders** (`ErasedBinding.ann`), not as a free-floating
+map beside an unrelated `Program`. `toProgram` forgets anns for HM lower;
+`toSurfaceAnns` / `ofLower` re-key for Core env after lower. -/
 structure ErasedProgram where
-  program : Program
-  anns : SurfaceBoundsAnns
+  decls : List DataDecl
+  groups : List (List ErasedBinding)
+  body : Surface.Expr
+  bodyAnn : Option BoundsAnnTy := none
+  noBl : Program.DoesntContainBounds
+    { decls := decls, groups := groups.map (·.map (·.binding)), body := body }
+
+/-- HM / lower spine: drop per-binder anns. -/
+def ErasedProgram.toProgram (ep : ErasedProgram) : Program where
+  decls := ep.decls
+  groups := ep.groups.map (·.map (·.binding))
+  body := ep.body
+
+/-- Name-keyed view of binder anns (for `ofLower`). -/
+def ErasedProgram.toSurfaceAnns (ep : ErasedProgram) : SurfaceBoundsAnns where
+  byName := ep.groups.flatMap fun g =>
+    g.filterMap fun eb => eb.ann.map (eb.binding.name, ·)
+  bodyAnn := ep.bodyAnn
 
 /-! ## Expressions / programs -/
 
@@ -173,8 +206,8 @@ def eraseExpr : Surface.Expr → Surface.Expr :=
       .match_ es
         (brs.attach.map fun ⟨⟨p, e⟩, h⟩ => (p, ihb p e h)))
 
-/-- Erase one binding; record `byName` only if the surface ann contained `BL`. -/
-def eraseBinding (b : Binding) : Binding × Option (ValName × BoundsAnnTy) :=
+/-- Erase one binding, producing its bounds ann in the same package. -/
+def eraseBinding (b : Binding) : ErasedBinding :=
   let hadBl := match b.ann with | some σ => tyContainsBl σ.body | none => false
   let (ann', annOut) := eraseOptPolyTy b.ann
   let b' : Binding :=
@@ -182,9 +215,8 @@ def eraseBinding (b : Binding) : Binding × Option (ValName × BoundsAnnTy) :=
       params := eraseParams b.params
       ann := ann'
       rhs := eraseExpr b.rhs }
-  let keyed :=
-    if hadBl then annOut.map fun a => (b.name, a) else none
-  (b', keyed)
+  { binding := b'
+    ann := if hadBl then annOut else none }
 
 def eraseDataDecl (d : DataDecl) : DataDecl :=
   { d with
@@ -193,20 +225,14 @@ def eraseDataDecl (d : DataDecl) : DataDecl :=
 
 def eraseProgram (p : Program) : ErasedProgram :=
   let decls' := p.decls.map eraseDataDecl
-  let (groups', keyed) :=
-    p.groups.foldl
-      (fun (accG, keyed) g =>
-        let (g', keyed') :=
-          g.foldl
-            (fun (accB, keyed) b =>
-              let (b', k?) := eraseBinding b
-              (accB ++ [b'],
-                match k? with | some k => k :: keyed | none => keyed))
-            ([], keyed)
-        (accG ++ [g'], keyed'))
-      ([], ([] : List (ValName × BoundsAnnTy)))
-  { program := { decls := decls', groups := groups', body := eraseExpr p.body }
-    anns := { byName := keyed.reverse, bodyAnn := none } }
+  let groups' : List (List ErasedBinding) :=
+    p.groups.map fun g => g.map eraseBinding
+  { decls := decls'
+    groups := groups'
+    body := eraseExpr p.body
+    bodyAnn := none
+    -- prove after shape ✅ (`eraseProgram_noBl`)
+    noBl := by sorry }
 
 /-! ## Theorems -/
 

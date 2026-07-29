@@ -96,6 +96,9 @@ structure PolyTy where
   foralls : List ValName
   body : Ty
 
+/-- No `bl` in a scheme body. -/
+inductive PolyTy.DoesntContainBounds : PolyTy → Prop where
+  | mk {σ} : Ty.DoesntContainBounds σ.body → PolyTy.DoesntContainBounds σ
 
 /-- Surface algebraic data declaration: named type params, named ctors,
     positional field types (no field names in this slice). -/
@@ -104,6 +107,12 @@ structure DataDecl where
   params : List ValName
   ctors  : List (CtorName × List Ty)
   deriving Repr
+
+/-- No `bl` in any ctor field type. -/
+inductive DataDecl.DoesntContainBounds : DataDecl → Prop where
+  | mk {d} :
+      (∀ c fs, (c, fs) ∈ d.ctors → ∀ t ∈ fs, Ty.DoesntContainBounds t) →
+      DataDecl.DoesntContainBounds d
 
 
 /-- Primitive literals -/
@@ -281,6 +290,49 @@ decreasing_by
 
 abbrev Binding := Binding' Expr
 
+/-- No `bl` in type annotations of a surface expression. -/
+inductive Expr.DoesntContainBounds : Expr → Prop where
+  | primLit {p} : DoesntContainBounds (.primLit p)
+  | primBinOp {op} : DoesntContainBounds (.primBinOp op)
+  | pair {a b} :
+      DoesntContainBounds a → DoesntContainBounds b → DoesntContainBounds (.pair a b)
+  | cons {h t} :
+      DoesntContainBounds h → DoesntContainBounds t → DoesntContainBounds (.cons h t)
+  | list {items} :
+      (∀ e ∈ items, DoesntContainBounds e) → DoesntContainBounds (.list items)
+  | lambda {param paramAnn body} :
+      (∀ t, paramAnn = some t → Ty.DoesntContainBounds t) →
+      DoesntContainBounds body →
+      DoesntContainBounds (.lambda param paramAnn body)
+  | app {f a} :
+      DoesntContainBounds f → DoesntContainBounds a → DoesntContainBounds (.app f a)
+  | letIn {name tyParams params ann rhs body} :
+      (∀ n t, (n, some t) ∈ params → Ty.DoesntContainBounds t) →
+      (∀ σ, ann = some σ → PolyTy.DoesntContainBounds σ) →
+      DoesntContainBounds rhs → DoesntContainBounds body →
+      DoesntContainBounds (.letIn name tyParams params ann rhs body)
+  | letRecIn {bindings body} :
+      (∀ b ∈ bindings, ∀ n t, (n, some t) ∈ b.params → Ty.DoesntContainBounds t) →
+      (∀ b ∈ bindings, ∀ σ, b.ann = some σ → PolyTy.DoesntContainBounds σ) →
+      (∀ b ∈ bindings, DoesntContainBounds b.rhs) →
+      DoesntContainBounds body →
+      DoesntContainBounds (.letRecIn bindings body)
+  | var {n} : DoesntContainBounds (.var n)
+  | ctor {n} : DoesntContainBounds (.ctor n)
+  | ife {c t f} :
+      DoesntContainBounds c → DoesntContainBounds t → DoesntContainBounds f →
+      DoesntContainBounds (.ife c t f)
+  | match_ {s brs} :
+      DoesntContainBounds s →
+      (∀ p e, (p, e) ∈ brs → DoesntContainBounds e) →
+      DoesntContainBounds (.match_ s brs)
+
+/-- No `bl` in binder params / ann / rhs. -/
+structure Binding.DoesntContainBounds (b : Binding) : Prop where
+  params : ∀ n t, (n, some t) ∈ b.params → Ty.DoesntContainBounds t
+  ann : ∀ σ, b.ann = some σ → PolyTy.DoesntContainBounds σ
+  rhs : Expr.DoesntContainBounds b.rhs
+
 /-- A surface program: user data declarations, mutual-binding groups
     (author-supplied, or from `SurfaceBridge.Program.ofFlat` / `sccGroups`),
     and a body. Each nonempty group desugars to `letRecIn` (including size 1 —
@@ -289,6 +341,14 @@ structure Program where
   decls  : List DataDecl
   groups : List (List Binding)
   body   : Expr
+
+/-- No `bl` anywhere in decls / groups / body. -/
+inductive Program.DoesntContainBounds : Program → Prop where
+  | mk {p} :
+      (∀ d ∈ p.decls, DataDecl.DoesntContainBounds d) →
+      (∀ g ∈ p.groups, ∀ b ∈ g, Binding.DoesntContainBounds b) →
+      Expr.DoesntContainBounds p.body →
+      Program.DoesntContainBounds p
 
 /-- Nest groups outermost-first as `letRecIn`, then `body`.
     Empty groups are skipped; nonempty → always `letRecIn` (incl. size 1). -/

@@ -1,6 +1,6 @@
 # Design memo: bounds layer on Core (B′ plan)
 
-**Status:** living plan — P1–P3 / P3.5b–c / P4a / P4a-parse done; **P4b erase in review**  
+**Status:** living plan — P1–P3 / P3.5b–c / P4a / P4a-parse / P4b done; **P4c pipeline shapes in review**  
 **Updated:** 2026-07-29  
 **Repo:** `/Users/aron/dev/blt` (sandbox; merge back into `fhm` later as optional package)  
 **Canonical doc for this integration** (plus satellite briefs below)
@@ -137,7 +137,7 @@ Surface (P4a / P4a-parse):
 | P4a-parse `BL` / `_` | **Done** |
 | P4a-count-ops (Surface.Count add/mul/…) | **Deferred** — see §6 |
 | P4b erase / BoundsAnnTy production | **In review** (`Erase.lean`) |
-| P4c pipeline + HM fail-fast + `--bl` | **Not started** |
+| P4c pipeline + HM fail-fast + `--bl` | **Shapes in review** (`FHM/Bounds/Pipeline.lean`) |
 | Bound schemes / stdlib | **Not started** |
 | `Count.inf` (kernel) | **TODO only** |
 | Axiom collapse to Z3 | **Partial** (definitional oracles; axioms remain) |
@@ -222,8 +222,8 @@ If something must not fall through cracks: add explicit owners for **semantic le
 | **P4a** | `Surface.Count`, `Ty.bl`, `Ty.DoesntContainBounds`; `rec_strong`; Pretty; `lowerTy` → `none` for bl; applyTyArgs reject | **Done** |
 | **P4a-parse** | Lexer unchanged; parser for `BL lo hi t` and `_` in bound slots (lit/hole; **no count vars**) | **Done** |
 | **P4a-count-ops** | Extend `Surface.Count` with `add`/`mul`/`pred`/`min`/`max`; Pretty + parse to match BLSketch spellings (`+`, `*`, `min(,)`, …); erase maps 1:1 into `Bounds.Count` | **Deferred** — pull forward when a surface demo needs `n+1`/`pred`; **no later than P5**. |
-| **P4b** | `eraseTy` / `eraseProgram`: total; always `BoundsAnnTy`; `ErasedTy` carries `DoesntContainBounds`; name-keyed `SurfaceBoundsAnns`; `ProgramBoundsAnns` remap is P4c | **In review** (`FHM/Bounds/Erase.lean`) |
-| **P4c** | Pipeline: Infer → HasBounds / BoundCovers; **HM fail-fast** on BL (D16); `--bl`; `ProgramBoundsAnns.ofLower` | Not started |
+| **P4b** | `eraseTy` / `eraseProgram`: total; `ErasedTy` / `ErasedBinding` / `ErasedProgram` carry bounds alongside erase; `DoesntContainBounds` on erased program | **Done** (`FHM/Bounds/Erase.lean`) |
+| **P4c** | Pipeline shapes: `hmRequireNoBl` (D16 gate) + `eraseProgram` + `ErasedSurface`; `ofLower` post-lower; Live/`--bl` after ✅ | **Shapes in review** (`FHM/Bounds/Pipeline.lean`) |
 
 **Note:** `PolyTy.natBinders` / `{n : Nat, a}` + **`Surface.Count.var`** deferred to **P5** (count names need Nat binders; keep surface Count lit/hole until then).
 
