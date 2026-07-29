@@ -242,6 +242,7 @@ FP apps take atom args so compounds parenthesize. -/
 def Surface.Count.prettyAux (prec : Nat) : Surface.Count → String
   | .lit n => toString n
   | .inf => "∞"
+  | .var n => prettyValName n
   | .add a b =>
       prettyParenIf (prec > 1)
         (Surface.Count.prettyAux 1 a ++ " + " ++ Surface.Count.prettyAux 2 b)
@@ -271,6 +272,7 @@ def Surface.CountSlot.pretty : Surface.CountSlot → String
 #guard Surface.Count.pretty (.min (.add (.lit 1) (.lit 2)) (.lit 3)) == "min (1 + 2) 3"
 #guard Surface.Count.pretty (.pred (.lit 5)) == "pred 5"
 #guard Surface.Count.pretty (.pred (.add (.lit 1) (.lit 2))) == "pred (1 + 2)"
+#guard Surface.Count.pretty (.var (.mk "n")) == "n"
 #guard Surface.CountSlot.pretty .hole == "_"
 #guard Surface.CountSlot.pretty (.solid .inf) == "∞"
 

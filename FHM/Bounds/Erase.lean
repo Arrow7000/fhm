@@ -9,8 +9,9 @@ Strip surface `BL lo hi t` → `List t`, producing a mirrored `BoundsAnnTy`
 default `[0,0]` for bare `List`). Name-keyed sidecar for binder ascriptions;
 de Bruijn `ProgramBoundsAnns` is **P4c**.
 
-`Surface.Count` is solid ground arithmetic; `CountSlot` is hole | solid
-(vars return at P5 / slice 7). Erase is total.
+`Surface.Count` is solid arithmetic + named vars; `CountSlot` is hole | solid.
+Named vars resolve against a Nat-binder telescope at erase (slice 7). Erase is
+total on ground counts; open vars need `nats`.
 -/
 
 namespace FHM.Bounds.Erase
@@ -20,19 +21,29 @@ open FHM.Bounds (AnnoCount BoundsAnnTy listTyName boolTyName pairTyName)
 
 /-! ## Counts -/
 
-/-- Erase solid surface count into Kernel `Count` (total; no hole case). -/
-def eraseCountSolid : Surface.Count → FHM.Bounds.Count
+/-- Erase solid surface count into Kernel `Count`.
+
+`nats` is the enclosing scheme’s Nat-binder telescope (index 0 = first / outermost).
+Unbound names become rigid 0 as a temporary scaffold — pack/erase wiring will
+reject them via `Except`. -/
+def eraseCountSolid (c : Surface.Count) (nats : List ValName := []) : FHM.Bounds.Count :=
+  match c with
   | .lit n => .lit n
   | .inf => .inf
-  | .add a b => .add (eraseCountSolid a) (eraseCountSolid b)
-  | .mul a b => .mul (eraseCountSolid a) (eraseCountSolid b)
-  | .pred a => .pred (eraseCountSolid a)
-  | .min a b => .min (eraseCountSolid a) (eraseCountSolid b)
-  | .max a b => .max (eraseCountSolid a) (eraseCountSolid b)
+  | .var n =>
+      match nats.findIdx? (· == n) with
+      | some i => .var ⟨.rigid, i⟩
+      | none => .var ⟨.rigid, 0⟩
+  | .add a b => .add (eraseCountSolid a nats) (eraseCountSolid b nats)
+  | .mul a b => .mul (eraseCountSolid a nats) (eraseCountSolid b nats)
+  | .pred a => .pred (eraseCountSolid a nats)
+  | .min a b => .min (eraseCountSolid a nats) (eraseCountSolid b nats)
+  | .max a b => .max (eraseCountSolid a nats) (eraseCountSolid b nats)
 
-def eraseCount : Surface.CountSlot → AnnoCount
+def eraseCount (c : Surface.CountSlot) (nats : List ValName := []) : AnnoCount :=
+  match c with
   | .hole => .hole
-  | .solid c => .solid (eraseCountSolid c)
+  | .solid c => .solid (eraseCountSolid c nats)
 
 /-! ## Prim / List helpers -/
 
@@ -85,7 +96,8 @@ def tyContainsBl : Surface.Ty → Bool :=
 
 /-! ## Types (total via `Ty.rec_strong`) -/
 
-def eraseTy : Surface.Ty → ErasedTy :=
+/-- Erase a surface type. `nats` resolves `Count.var` under an enclosing scheme. -/
+def eraseTy (t : Surface.Ty) (nats : List ValName := []) : ErasedTy :=
   Surface.Ty.rec_strong
     (fun p => ⟨.prim p, .prim, erasePrimTy p⟩)
     (fun _a _b ea eb =>
@@ -120,11 +132,25 @@ def eraseTy : Surface.Ty → ErasedTy :=
           have : t = ee.ty := List.mem_singleton.mp ht
           subst this
           exact ee.noBl),
-        .list (eraseCount lo) (eraseCount hi) ee.ann⟩)
+        .list (eraseCount lo nats) (eraseCount hi nats) ee.ann⟩)
+    t
 
-def erasePolyTy (σ : Surface.PolyTy) : Surface.PolyTy × BoundsAnnTy :=
-  let e := eraseTy σ.body
-  ({ σ with body := e.ty }, e.ann)
+/-- Erase scheme body under optional Nat-binder telescope (sidecar, not on PolyTy). -/
+def erasePolyTy (σ : Surface.PolyTy) (nats : List ValName := []) :
+    Surface.PolyTy × BoundsAnnTy :=
+  let e := eraseTy σ.body nats
+  ({ foralls := σ.foralls, body := e.ty }, e.ann)
+
+/-- Package Nat-binder sidecar + erased body ann → `BoundsSchemeAnn`.
+Empty `nats` → `none` (mono path uses `ErasedBinding.ann` only). -/
+def eraseSchemeAnn (nats : List ValName) (σ : Surface.PolyTy) :
+    Option FHM.Bounds.BoundsSchemeAnn :=
+  if nats.isEmpty then none
+  else
+    some {
+      natBinders := nats
+      body := (eraseTy σ.body nats).ann
+    }
 
 /-! ## Erased packages (bounds produced alongside erase) -/
 
@@ -139,13 +165,25 @@ structure SurfaceBoundsAnns where
 def SurfaceBoundsAnns.empty : SurfaceBoundsAnns := {}
 
 /-- One binder after erase — parallel to `ErasedTy`: erased binding **plus**
-its bounds ascription from the same erase step.
+bounds ascription from the same erase step.
 
-`ann = some _` iff the surface ascription contained `BL` (bare `List` / no ann
-→ `none`, so defaults don’t pollute keyed ascriptions). -/
+* `ann = some _` — mono surface ascription contained `BL` (no Nat binders)
+* `schemeAnn = some _` — surface had `{n : Nat,…}` (body may still mention `BL`)
+* bare `List` / no ann → both `none`
+
+Prefer `BinderAnn` (Ann.lean) once `ProgramBoundsAnns` migrates off bare
+`Option BoundsAnnTy`. -/
 structure ErasedBinding where
   binding : Binding
   ann : Option BoundsAnnTy
+  schemeAnn : Option FHM.Bounds.BoundsSchemeAnn := none
+
+/-- Combined view for migration / ofLower (mono or scheme). -/
+def ErasedBinding.binderAnn (eb : ErasedBinding) : Option FHM.Bounds.BinderAnn :=
+  match eb.schemeAnn, eb.ann with
+  | some s, _ => some (.scheme s)
+  | none, some a => some (.mono a)
+  | none, none => none
 
 /-- Erase package for a whole program (parallel to `ErasedTy`).
 
@@ -217,7 +255,10 @@ def eraseExpr : Surface.Expr → Surface.Expr :=
       .match_ es
         (brs.attach.map fun ⟨⟨p, e⟩, h⟩ => (p, ihb p e h)))
 
-/-- Erase one binding, producing its bounds ann in the same package. -/
+/-- Erase one binding, producing its bounds ann in the same package.
+
+`schemeAnn` stays `none` until Binding carries a Nat-binder sidecar (parse of
+`{n : Nat,…}`); then call `eraseSchemeAnn nats σ`. Mono `BL` path unchanged. -/
 def eraseBinding (b : Binding) : ErasedBinding :=
   let hadBl := match b.ann with | some σ => tyContainsBl σ.body | none => false
   let (ann', annOut) := eraseOptPolyTy b.ann
@@ -227,7 +268,8 @@ def eraseBinding (b : Binding) : ErasedBinding :=
       ann := ann'
       rhs := eraseExpr b.rhs }
   { binding := b'
-    ann := if hadBl then annOut else none }
+    ann := if hadBl then annOut else none
+    schemeAnn := none }
 
 def eraseDataDecl (d : DataDecl) : DataDecl :=
   { d with
@@ -257,6 +299,11 @@ theorem eraseTy_bl (lo hi : Surface.CountSlot) (elem : Surface.Ty) (e : ErasedTy
     e.ann = .list (eraseCount lo) (eraseCount hi) (eraseTy elem).ann := by
   subst he
   simp only [eraseTy]; simp only [Surface.Ty.rec_strong, surfaceListTy]; trivial
+
+#guard decide
+  (eraseCountSolid (.var (.mk "n")) [.mk "n"] = .var ⟨.rigid, 0⟩)
+#guard decide
+  (eraseCountSolid (.var (.mk "m")) [.mk "n", .mk "m"] = .var ⟨.rigid, 1⟩)
 
 /-! ## Guards -/
 

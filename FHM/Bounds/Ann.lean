@@ -36,6 +36,33 @@ inductive BoundsAnnTy where
   | custom (name : TyName) (args : List BoundsAnnTy)
   deriving Repr
 
+/-! ## Bound schemes — erase-side sidecar (slice 7 shapes)
+
+Dual-stack packaging (same strategy as mono `BoundsAnnTy`):
+
+* HM `PolyTy` / Core schemes stay **type-only** (`{a} body`) — do not extend them
+* Surface `{n : Nat, a} body` → type foralls in `PolyTy` + Nat names in a
+  **sidecar** (Binding-level telescope at parse; erase → `BoundsSchemeAnn`)
+* Type polymorphism = InferW; length polymorphism = Bounds-only
+* Packed `BScheme` + InstantiatesTo live in `Typing.lean` (need `BoundsTy`)
+-/
+
+/-- Erase-side scheme ascription: named Nat binders + annotated body.
+Names are ordered (0 = first / outermost); erase maps name → rigid `Count.var`.
+Parallel to mono `BoundsAnnTy` on `ErasedBinding.ann`. -/
+structure BoundsSchemeAnn where
+  natBinders : List ValName
+  body : BoundsAnnTy
+  deriving Repr
+
+/-- Binder ascription after erase: mono `BL` or a Nat-quantified scheme.
+Intended upgrade path for `ErasedBinding` / `ProgramBoundsAnns` (mono today;
+`scheme` when Nat binders present). -/
+inductive BinderAnn where
+  | mono (a : BoundsAnnTy)
+  | scheme (s : BoundsSchemeAnn)
+  deriving Repr
+
 /-! ## De Bruijn ascriptions (post-lower) -/
 
 /-- Program-level bound ascriptions after lower (de Bruijn parallel to value env).
@@ -106,6 +133,17 @@ def BoundsAnnTy.pretty : BoundsAnnTy → String
       let nm := match n with | .mk s => s
       if args.isEmpty then nm
       else nm ++ " " ++ String.intercalate " " (args.map BoundsAnnTy.pretty)
+
+def BoundsSchemeAnn.pretty (s : BoundsSchemeAnn) : String :=
+  let ns := s.natBinders.map fun | .mk n => n
+  let natPart :=
+    if ns.isEmpty then ""
+    else String.intercalate " " ns ++ " : Nat"
+  "{" ++ natPart ++ "} " ++ s.body.pretty
+
+def BinderAnn.pretty : BinderAnn → String
+  | .mono a => a.pretty
+  | .scheme s => s.pretty
 
 /-- Human lines for present binder ascriptions (`name : ann`). -/
 def ProgramBoundsAnns.prettyLines

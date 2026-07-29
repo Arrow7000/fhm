@@ -951,6 +951,84 @@ def MeetsBinderAnns (Δ : List Constraint)
     anns.binderAnns[i]? = some (some ann) →
       ∃ β : BoundsTy, syn[i]? = some β ∧ MeetsAscription Δ β ann
 
+/-! ## Bound schemes (slice 7 shapes — review before wiring Live)
+
+Count-only telescope sidecar (type poly stays Core / HM `PolyTy`).
+See `BoundsSchemeAnn` / `BinderAnn` in Ann — same dual-stack pattern as mono anns.
+-/
+
+/-- Packed bounds scheme: solid body; rigid count vars `i < nCounts`. -/
+structure BScheme where
+  nCounts : Nat
+  body : BoundsTy
+  deriving Repr
+
+/-- Scheme body may mention only **rigid** vars with `idx < n` (no inferables). -/
+def Count.BinderRigid (n : Nat) : Count → Prop
+  | .lit _ | .inf => True
+  | .var ⟨.rigid, i⟩ => i < n
+  | .var ⟨.inferable, _⟩ => False
+  | .add a b | .mul a b | .min a b | .max a b =>
+      BinderRigid n a ∧ BinderRigid n b
+  | .pred a => BinderRigid n a
+
+def BoundsTy.SchemeWF (nCounts : Nat) : BoundsTy → Prop
+  | .prim _ | .bvar _ | .fvar _ => True
+  | .arrow d c => SchemeWF nCounts d ∧ SchemeWF nCounts c
+  | .list lo hi elem =>
+      Count.BinderRigid nCounts lo ∧ Count.BinderRigid nCounts hi ∧
+        SchemeWF nCounts elem
+  | .custom _ args => ∀ β ∈ args, SchemeWF nCounts β
+
+def BScheme.WF (s : BScheme) : Prop :=
+  BoundsTy.SchemeWF s.nCounts s.body
+
+/-- Substitute count args for rigid binders (`args[i]` replaces `⟨.rigid, i⟩`). -/
+inductive Count.Subst : List Count → Count → Count → Prop where
+  | lit {args n} : Subst args (.lit n) (.lit n)
+  | inf {args} : Subst args .inf .inf
+  | var {args i c} : args[i]? = some c → Subst args (.var ⟨.rigid, i⟩) c
+  | add {args a b a' b'} :
+      Subst args a a' → Subst args b b' → Subst args (.add a b) (.add a' b')
+  | mul {args a b a' b'} :
+      Subst args a a' → Subst args b b' → Subst args (.mul a b) (.mul a' b')
+  | pred {args a a'} : Subst args a a' → Subst args (.pred a) (.pred a')
+  | min {args a b a' b'} :
+      Subst args a a' → Subst args b b' → Subst args (.min a b) (.min a' b')
+  | max {args a b a' b'} :
+      Subst args a a' → Subst args b b' → Subst args (.max a b) (.max a' b')
+
+inductive BoundsTy.Subst : List Count → BoundsTy → BoundsTy → Prop where
+  | prim {args p} : Subst args (.prim p) (.prim p)
+  | bvar {args i} : Subst args (.bvar i) (.bvar i)
+  | fvar {args i} : Subst args (.fvar i) (.fvar i)
+  | arrow {args d c d' c'} :
+      Subst args d d' → Subst args c c' →
+      Subst args (.arrow d c) (.arrow d' c')
+  | list {args lo hi lo' hi' e e'} :
+      Count.Subst args lo lo' → Count.Subst args hi hi' →
+      Subst args e e' →
+      Subst args (.list lo hi e) (.list lo' hi' e')
+  | custom {args name as bs} :
+      List.Forall₂ (Subst args) as bs →
+      Subst args (.custom name as) (.custom name bs)
+
+/-- `s` at count args `cs` yields monotype bounds `β`. Arity must match `nCounts`. -/
+inductive BScheme.InstantiatesTo : BScheme → List Count → BoundsTy → Prop where
+  | intro {s cs β} :
+      s.WF →
+      cs.length = s.nCounts →
+      BoundsTy.Subst cs s.body β →
+      InstantiatesTo s cs β
+
+/-- Output-visible count slots for Commit uniqueness (D24 / soft spot C).
+Arrow: domain + codomain; List: `lo`/`hi` then elem; mirrors BLSketch `obsBounds`. -/
+def BoundsTy.obsBounds : BoundsTy → List Count
+  | .prim _ | .bvar _ | .fvar _ => []
+  | .arrow d c => d.obsBounds ++ c.obsBounds
+  | .list lo hi e => [lo, hi] ++ e.obsBounds
+  | .custom _ args => args.flatMap BoundsTy.obsBounds
+
 /-! ### Pipeline coverage contract -/
 
 /-- Does this bound view require `BoundCovers` (List) vs HM exhaustiveness? -/

@@ -20,17 +20,21 @@ Surface counts are **syntax**, not the Bounds kernel `Count` (no rigid/inferable
 indices here). Erase maps into `FHM.Bounds.Count` + `BoundsAnnTy`.
 
 Hygienic split (mirrors `AnnoCount`):
-* `Count` — solid ground arithmetic only (no hole)
+* `Count` — solid arithmetic + named vars (no hole)
 * `CountSlot` — whole lo/hi atom: `_` or solid `Count`
 
-Count **vars** return with schemes / slice 7 (`{n : Nat,…}`).
+`Count.var` is in scope under a Nat-binder **sidecar** telescope
+(`BoundsSchemeAnn.natBinders` after erase; Binding-level list at parse — not
+on `PolyTy`). Erase resolves names → kernel rigid indices against that telescope.
 -/
 
-/-- Solid surface count — ground arithmetic matching Kernel
-(`lit`/`inf`/`add`/`mul`/`pred`/`min`/`max`). No holes. -/
+/-- Solid surface count — ground arithmetic + named vars matching Kernel ops
+(`lit`/`inf`/`var`/`add`/`mul`/`pred`/`min`/`max`). No holes. -/
 inductive Count where
   | lit (n : Nat)
   | inf
+  /-- Named count var (scheme Nat binder). Erase → `Count.var ⟨.rigid, i⟩`. -/
+  | var (n : ValName)
   | add (a b : Count)
   | mul (a b : Count)
   | pred (a : Count)
@@ -105,8 +109,9 @@ inductive Ty.DoesntContainBounds : Ty → Prop where
   | customTy {nm tys} :
       (∀ t ∈ tys, DoesntContainBounds t) → DoesntContainBounds (.customTy nm tys)
 
-/-- Scheme as today: `{a b} body`. Nat binders `{n : Nat, a}` deferred to P5
-(adding a field breaks every positional `⟨foralls, body⟩` in the tree). -/
+/-- Scheme as today: `{a b} body`. Nat binders are **not** on `PolyTy` —
+they ride a Bounds sidecar (`BoundsSchemeAnn` / Binding-level telescope at
+parse), same dual-stack move as `BoundsAnnTy` beside erased HM types. -/
 structure PolyTy where
   foralls : List ValName
   body : Ty
