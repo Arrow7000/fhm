@@ -103,6 +103,7 @@ def Ty.obsBounds : Ty → List Count
 
 def _root_.FHM.Bounds.Count.inferVars : Count → List Var
   | .lit _ => []
+  | .inf => []
   | .var v => if v.kind = .inferable then [v] else []
   | .add a b => a.inferVars ++ b.inferVars
   | .mul a b => a.inferVars ++ b.inferVars
@@ -248,6 +249,7 @@ inductive AnnoTy.Elab : AnnoTy → Ty → Prop where
 /-- Scheme body may mention only **rigid** vars with `idx < binders` (no inferables). -/
 def _root_.FHM.Bounds.Count.BinderRigid (n : Nat) : Count → Prop
   | .lit _ => True
+  | .inf => True
   | .var ⟨.rigid, i⟩ => i < n
   | .var ⟨.inferable, _⟩ => False
   | .add a b | .mul a b | .min a b | .max a b =>
@@ -305,6 +307,7 @@ def BScheme.WF (s : BScheme) : Prop :=
 
 inductive _root_.FHM.Bounds.Count.Subst : List Count → Count → Count → Prop where
   | lit {args n} : Subst args (.lit n) (.lit n)
+  | inf {args} : Subst args .inf .inf
   | var {args i c} : args[i]? = some c → Subst args (.var ⟨.rigid, i⟩) c
   | add {args a b a' b'} :
     Subst args a a' → Subst args b b' → Subst args (.add a b) (.add a' b')
@@ -631,6 +634,9 @@ theorem _root_.FHM.Bounds.Count.Subst.unique {args c c₁ c₂}
   | lit =>
     cases h₂
     rfl
+  | inf =>
+    cases h₂
+    rfl
   | var h₁ =>
     cases h₂ with | var h₂ =>
     exact Option.some.inj (h₁.symm.trans h₂)
@@ -753,6 +759,7 @@ theorem _root_.FHM.Bounds.Count.rigidOnly_of_binderRigid {n : Nat} {c : Count}
     (h : Count.BinderRigid n c) : Count.RigidOnly c := by
   induction c with
   | lit => exact .lit
+  | inf => exact .inf
   | var v =>
     cases v with | mk kind idx =>
     cases kind with
@@ -838,6 +845,7 @@ decreasing_by all_goals (simp_wf; simp [Ty.size]; omega)
 
 @[simp] def _root_.FHM.Bounds.Count.applyArgs (args : List Count) : Count → Count
   | .lit n => .lit n
+  | .inf => .inf
   | .var ⟨.rigid, i⟩ => args.getD i (.lit 0)
   | .var v => .var v
   | .add a b => .add (applyArgs args a) (applyArgs args b)
@@ -847,7 +855,7 @@ decreasing_by all_goals (simp_wf; simp [Ty.size]; omega)
   | .max a b => .max (applyArgs args a) (applyArgs args b)
 
 @[simp] def _root_.FHM.Bounds.Count.binderRigidBool (n : Nat) : Count → Bool
-  | .lit _ => true
+  | .lit _ | .inf => true
   | .var ⟨.rigid, i⟩ => decide (i < n)
   | .var ⟨.inferable, _⟩ => false
   | .add a b | .mul a b | .min a b | .max a b =>
@@ -1292,6 +1300,7 @@ theorem _root_.FHM.Bounds.Count.binderRigid_of_bool {n : Nat} {c : Count}
     (h : Count.binderRigidBool n c = true) : Count.BinderRigid n c := by
   induction c with
   | lit => trivial
+  | inf => trivial
   | var v =>
     cases v with | mk kind idx =>
     cases kind with
@@ -1353,6 +1362,7 @@ theorem _root_.FHM.Bounds.Count.subst_applyArgs_binderRigid {n args c}
     Count.Subst args c (Count.applyArgs args c) := by
   induction c with
   | lit => exact .lit
+  | inf => exact .inf
   | var v =>
     cases v with | mk kind idx =>
     cases kind with

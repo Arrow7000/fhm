@@ -1,6 +1,6 @@
 # Design memo: bounds layer on Core (B′ plan)
 
-**Status:** living plan — P1–P3 / P3.5b–c / P4a–P4b done; **P4c Live `--bl` through ann-visible + v1 Z3 ascription check** (`defaultBounds` synth)  
+**Status:** living plan — P1–P4c scaffold done; **next = origin-based HasBounds synth + full Surface↔Kernel Count** (see §6 linear list)  
 **Updated:** 2026-07-29  
 **Repo:** `/Users/aron/dev/blt` (sandbox; merge back into `fhm` later as optional package)  
 **Canonical doc for this integration** (plus satellite briefs below)
@@ -27,7 +27,9 @@ Add a **BoundedList refinement layer** on top of the existing FHM Hindley–Miln
 | REPL toggle BL on/off | Pipeline flag; HM spine identical after erase |
 | Pure HM product still exists | Default lake target never imports Bounds/Z3 axioms |
 
-**Non-goals (v1):** fuse `bl` into Core `Ty`; teach Unify/Infer about intervals; principal bounds; inferred count gen; type-passing counts; full dual surface frontend; finish BLSketch axiom collapse before the layer exists.
+**Non-goals (v1):** fuse `bl` into Core `Ty`; teach Unify/Infer about intervals; principal bounds / full inferred count gen; type-passing counts; full dual surface frontend; finish BLSketch axiom collapse before the layer exists.
+
+**Origin lock (D22):** list intervals are **never invented from bare `List` / HM `Ty` alone**. Every `β = .list lo hi _` comes from an origin (see §2.1). `defaultBounds` / erase `defaultListAnn` are **scaffold debt** — not the end model. `Count.inf` is vocabulary for “unbounded as a *result* of analysis or an explicit surface count,” not a stamp on every unascribed `List`.
 
 ---
 
@@ -53,11 +55,40 @@ Add a **BoundedList refinement layer** on top of the existing FHM Hindley–Miln
 | D16 | **HM mode:** reject BL syntax at frontend (not silent erase); Core never sees BL either way |
 | D17 | **Count ∀ syntax (direction):** `{n m : Nat, a b}` — only `: Nat` + bare type vars lower in v1 |
 | D18 | **Surface nested BoundCovers:** **not** for v1 — check **after lower** on Core `BoundCovers` |
-| D19 | **File budget:** prefer few large modules (current: Kernel, Oracle, Commit, Typing, Erase, Pipeline) |
+| D19 | **File budget:** prefer few large modules (Kernel, Oracle, Commit, Ann, Typing, Erase, Pipeline, Check) |
 | D20 | **Erase packages anns with binders** (`ErasedTy` / `ErasedBinding`); not a free-floating map beside an unrelated program |
 | D21 | **Gate ≠ erase:** `hmRequireNoBl` is D16 only; `eraseProgram` always erases; Live composes them |
+| D22 | **Origin-based bounds:** intervals flow from constructors / ascriptions / env / apps / joins — never from `defaultBounds τ` |
+| D23 | **Surface Count ↔ Kernel Count:** ground ops + `inf` early; `Count.var` with schemes — do not forget ops by bundling them with schemes |
+| D24 | **Unascribed List params:** fresh `?lo`/`?hi`; constrain by uses; else generalise (scheme-quantify); mid-case → Commit on **output-visible** outs (`uniqueOnly` = annotate-or-fail; swappable) |
 
 **D16 clarified:** “reject” is **UX fail-fast** when BL mode is off (`--bl` absent): clear error after parse, not silent erase. It is *not* about Core `TypeOf*` — Core `Ty` has no `.bl`, so HM typing never sees bounds. Without erase, `lowerTy .bl = none` already fails; D16 is the intentional HM-mode message.
+
+### 2.1 Where list bounds come from (end model)
+
+| Origin | How `lo`/`hi` arise |
+|--------|---------------------|
+| Concrete Nil / Cons spine | HasBounds `nil` / `cons` (`[0,0]`, then `+1`) |
+| Surface ascription `BL …` | Erase → `BoundsAnnTy`; check synth ⊆ / meets ascription (`MeetsAscription`) |
+| Bound variable | Lookup in `bctx` (put there by let RHS synth or λ param policy) |
+| Application | Function arrow’s result `βr`; arg must `Sub` into domain `βa` |
+| Match branches | `joinBoundsTy` — min lo / max hi (D15) |
+| Scheme / Nat binder | Slice 7: instantiate `{n : Nat,…}`; counts mention `n` |
+
+**Not an origin:** “this HM type is `List α`, so invent `[0,0]` or `[0,inf]`.”
+
+### 2.2 Unascribed `List` λ-params / binders (D24)
+
+When `ErasedBinding.ann = none` (bare `List` or no ascription):
+
+1. **Allocate** fresh inferable counts `?lo`, `?hi` for that parameter (not a concrete default interval).
+2. **Constrain** them by every use (args passed to functions whose domains demand intervals; match refinements; etc.).
+3. **If unconstrained** (e.g. ignored `l`): **generalise** — quantify the function’s bound scheme over those count vars (polymorphic in `lo`/`hi`). Same family as slice 7 Nat binders; v1 may only fully shine once schemes exist.
+4. **Mid-case** — constraints sat but not unique on some outs:
+   - Ambiguity is a **product problem only when those outs are output-visible** (escape into the exported/return bounds). Internal witnesses that all agree on the observable type are harmless (classic: factorizations of `12` when only `BL 12 12` is exported).
+   - Then **Commit**: product default **`uniqueOnly`** — accept only a unique solution on those outs; otherwise **reject** (annotate-or-fail / just fail until the user ascribes). **`anyWitness`** (pick any model) stays available and swappable via `PolicyKind` / `CommitHandler` — not hard-wired into `HasBounds`.
+
+This is D9 applied at λ-params: uniqueness ∉ declarative typing; elaborator policy only. Still **never** invent `[0,inf]` from `Ty`.
 
 ---
 
@@ -86,15 +117,15 @@ Core.Expr
     │
     ▼
 Infer / elaborate                     [InferW — UNCHANGED]
-    │  τ_HM   (pretty still shows List, not BL — expected until bounds report)
+    │  τ_HM   (pretty: List; under --bl also print/JSON bounds: BL …)
     ▼
-ofLower (binderEnv)                   [Bounds/Pipeline — next]
+ofLower (binderEnv)                   [Bounds/Pipeline — demo spine today]
     │  ProgramBoundsAnns
     ▼
-HasBounds + BoundProgramOK            [Bounds/Typing — not wired to Live yet]
-    │  β
+HasBounds synth + MeetsAscription     [Check/Typing — **target**; today: scaffold]
+    │  β from origins (D22), not defaultBounds
     ▼
-BoundCovers (List β)                  [same file]
+BoundCovers / MatchSafe               [Typing — not wired to Live yet]
   vs AllMatchesExhaustive (non-List / HM mode / current --bl)
     │
     ▼
@@ -104,10 +135,11 @@ evaluate                              [UNCHANGED]
 ### Live today (2026-07-29)
 
 ```text
-parse → [hmRequireNoBl if not --bl] → eraseProgram → lower/infer/exh/elab/eval
+parse → [hmRequireNoBl if not --bl] → eraseProgram → lower/infer/exh/elab
+      → [if --bl: ofLower + checkProgramAnns] → eval
 ```
 
-Anns are produced but **not consumed**. Exhaustiveness is still the HM checker under `--bl`. REPL types print as `List Int` after erase — correct for this slice.
+**Scaffold only:** anns visible; `checkProgramAnns` uses `defaultBounds τ` (lies for Lists). Exhaustiveness still HM. Binder env still demo spine. This is **not** the HasBounds pass.
 
 ### Outer safety (BL mode) — target theorem
 
@@ -130,19 +162,21 @@ FHM/Bounds/
   Kernel.lean    # Count, constraints, DemandOK, Interval, path helpers
   Oracle.lean    # checkValid / solve / unique + axioms + Z3 bridge
   Commit.lean    # NarrowingEvidence, PolicyKind, decideCommit
+  Ann.lean       # AnnoCount, BoundsAnnTy, ProgramBoundsAnns (Z3-free)
   Typing.lean    # BoundsTy, Agrees, Sub, HasBounds, CheckBounds, BoundCovers
-                 # + BoundsAnnTy / Elab* / MatchSafe / BoundProgramOK
+                 # + Elab* / MatchSafe / BoundProgramOK (imports Ann)
   Erase.lean     # ErasedTy / ErasedBinding / ErasedProgram (anns with erase)
   Pipeline.lean  # BoundsMode, hmRequireNoBl, ofLower, Bool detectors
+  Check.lean     # checkProgramAnns (Live --bl; pulls Oracle/Z3)
   Examples.lean  # Core-only HasBounds / BoundCovers / MatchSafe demos
 
-Live / CLI:
-  --bl flag; D16 gate; erase before lower; scratch/bl-live.fhm
-  watch-live.sh --bl
+Live / CLI / editor:
+  --bl flag; D16 gate; erase before lower; ofLower + Check; scratch/bl-live.fhm
+  watch-live.sh --bl; diagnose erases; editors try `blt` then `fhm`
 
 Surface:
-  Count lit/hole; Ty.bl; DoesntContainBounds (Ty/Expr/Program);
-  Parse BL / _; Pretty; lowerTy .bl → none
+  Count lit/hole today → ground ops + inf (slice 3), var (slice 7);
+  Ty.bl; DoesntContainBounds; Parse BL / _; Pretty; lowerTy .bl → none
 ```
 
 | Area | Status |
@@ -156,10 +190,11 @@ Surface:
 | P4a-parse `BL` / `_` | **Done** |
 | P4a-count-ops (Surface.Count add/mul/…) | **Deferred** — see §6 |
 | P4b erase / ErasedBinding | **Done** (`Erase.lean`; `noBl` proof still `sorry`) |
-| P4c shapes + Live `--bl` + D16 + erase-run | **Done enough to run** — anns unused; HasBounds unwired |
-| P4c-follow (see §6 next) | **Next** |
-| Bound schemes / stdlib | **Not started** (P5) |
-| `Count.inf` (kernel) | **TODO only** (P3.5a) |
+| P4c shapes + Live `--bl` + D16 + erase-run | **Done** |
+| P4c-thin / diagnose / ann-visible / check scaffold | **Done** — `defaultBounds` synth is scaffold only (D22) |
+| Origin HasBounds synth + full Surface Count + BoundCovers | **Next** (§6 linear list) |
+| Bound schemes / stdlib | **Not started** (slices 7–8) |
+| `Count.inf` (kernel vocabulary) | **TODO** (slice 1 — not a List default) |
 | Axiom collapse to Z3 | **Partial** |
 
 ---
@@ -174,8 +209,8 @@ Surface:
 | P1 kernel extract | P1 | Done |
 | P2 HasBounds on Core | P2 | Done (stronger: full BoundsTy mirror) |
 | P3 BoundCovers + **progress composition** | P3 covers **done**; **progress still open** | Partial |
-| P4 Surface B′ + erase + CLI | P4 | **Parse/erase/CLI gate done**; bounds check pass open |
-| P5 schemes + stdlib | P5 | Pending |
+| P4 Surface B′ + erase + CLI | P4 | **Parse/erase/CLI/`--bl` + scaffold check**; origin synth + BoundCovers + Count open |
+| P5 schemes + stdlib | P5 | Pending (after Count ops + synth) |
 | P6 polish / merge / axiom collapse / apply-σ / toggle | P6 | Pending |
 
 ### 5.2 Emergent work folded into reshuffle
@@ -183,16 +218,17 @@ Surface:
 | Emergent item | Where it sits now |
 |---------------|-------------------|
 | BoundsTy must track **composites** (not list/arrow-only POC) | **Done** in P2 (`custom` + `Agrees`) |
-| `Count.inf` + default list `hi = inf` | **P3.5a** |
+| `Count.inf` as Kernel vocabulary (not List default) | **Slice 1** (§6) |
 | `HasBounds.weaken_Δ` unprovable (`checkValid` not mono) | **On-demand** |
-| BoundsAnnTy keying (post-Infer / bindings) | **P3.5b** shapes; **P4b** producers; **ofLower** still demo-spine |
+| BoundsAnnTy keying (post-Infer / bindings) | **P3.5b** shapes; **P4b** producers; **ofLower** still **demo spine** |
 | HM mode = frontend fail-fast | **Done** in Live (`hmRequireNoBl` / `--bl`) |
-| `{n : Nat, a}` scheme syntax | **P5** |
+| `{n : Nat, a}` scheme syntax | **Slice 7** |
 | Core BoundCovers only; surface nested later | **D18** |
-| **Live imports Bounds → Oracle → Z3 just to erase** | **P4c-thin** (emergent; see §6) |
-| Diagnose path does not erase (BL buffers fail hover) | **P4c-diagnose** |
-| REPL prints `List` not `BL` after erase | **Expected** until bounds report / pretty (P4c-ann-visible or P6) |
+| **Live imports Bounds → Oracle → Z3 just to erase** | **Fixed** by **P4c-thin** (`Ann.lean`); Check still pulls Z3 |
+| Diagnose path does not erase (BL buffers fail hover) | **Fixed** by **P4c-diagnose** |
+| REPL prints `List` not `BL` after erase | HM types stay `List`; under `--bl`, **bounds:** lines show `BL …` |
 | Editor dual `blt`/`fhm` binary lookup | Sandbox artifact; `@TODO(merge-to-fhm)` in editors |
+| **`defaultBounds` / erase `defaultListAnn` invent intervals** | **D22 debt** — remove from end-model path when synth ships |
 
 ### 5.3 Worth noting: **not** fully covered / still external
 
@@ -202,88 +238,68 @@ Surface:
 | **Surface nested BoundCovers** | D18 deferred |
 | **Semantic length safety** | P6 or later |
 | **README / Headlines “Bounds experimental”** | Still open |
-| **Playground/editor hover for bounds anns** | After anns are visible in pipeline |
+| **Playground/editor hover for bounds anns** | Diagnose erases (List hover); bounds report is CLI/JSON today — richer hover later |
 | **CI job for FHMBounds** | Not specified |
 | **Proving `checkValid_sound` from Z3** | Collapse memo / P6 |
 
 ---
 
-## 6. Reshuffled residual plan
+## 6. Residual plan — linear path to E2E BL experience
 
-### Done
+**E2E means runtime product:** `.fhm` with `BL`, full ground Count language, origin-based HasBounds check, smarter List matches, schemes for map/filter/append. Metatheory (progress composition, axiom collapse, erase `noBl` proofs) is **post-E2E hygiene**, not a blocker.
 
-- **P0** — Dual-stack / B′ locks (living memo)  
-- **P1** — `Kernel` / `Oracle` / `Commit`; BLSketch rewire  
-- **P2** — `Typing`: BoundsTy, Agrees, Sub, HasBounds, CheckBounds  
-- **P3** — `BoundCovers` + branch detectors (Core only)  
-- **P3.5b** — BoundsAnnTy / Elab* / MatchSafe / BoundProgramOK shapes  
-- **P3.5c** — `FHM/Bounds/Examples.lean`  
-- **P4a** / **P4a-parse** — surface `BL` + parse  
-- **P4b** — erase packages (`ErasedTy` / `ErasedBinding` / `ErasedProgram`)  
-- **P4c (partial)** — `hmRequireNoBl`, Live `--bl`, erase-then-run end-to-end  
+### Done (scaffold)
 
-### Next (ordered; pressure from Live wire)
+- **P0–P3.5c** — Dual-stack locks; Kernel/Oracle/Commit; BoundsTy/HasBounds/BoundCovers; Ann shapes; Examples  
+- **P4a / P4a-parse** — Surface `BL` + lit/hole parse  
+- **P4b** — Erase packages (`ErasedBinding.ann = none` for bare List — already D22-aligned for binders)  
+- **P4c** — Gate + Live `--bl` + erase-run + thin Ann + diagnose + ann-visible  
+- **Check scaffold** — Z3 `checkValid` path exists; synth = `defaultBounds` (**replace**, do not polish)
 
-These four are the immediate follow-ons from wiring `--bl`. They sit under **P4c residual** / early **P6 hygiene**, not a new top-level phase:
+### Linear slices (do in order)
 
-| Slice | Fits as | Content |
-|-------|---------|---------|
-| **P4c-thin** | P4c / D11 hygiene | Thin Erase so `blt` does not pull Typing→Oracle→Z3 just to strip `BL`→`List`. Biggest structural smell from the Live wire. |
-| **P4c-diagnose** | P4c / editor | Diagnose always erases (like Live under `--bl`) so BL buffers get hover/symbols (still as `List …` until ann report). |
-| **P4c-ann-visible** | P4c | Carry `ErasedProgram` through check; first real `ofLower` (honest binder spine) + something visible (print/JSON anns). Forces binder-spine honesty without full HasBounds. |
-| **P4c-hasbounds** | P4c exit / progress | Live bounds check pass: Core `e`+`τ`+`ProgramBoundsAnns` → HasBounds / ascriptions / MatchSafe; BoundCovers for List under `--bl`. |
+| # | Slice | Delivers | Exit |
+|---|--------|----------|------|
+| **0** | Docs / status honesty | Memo + Pipeline/Live headers match reality; D22–D23 locked | No “HasBounds wired” claims |
+| **1** | `Count.inf` + `ExtNat` | Kernel vocabulary; eval/Holds in ℕ∪{∞}; **not** List default | **Done** — normalize before Z3; DemandOK sorries may remain |
+| **2** | Honest binder spine | `groups.reverse.flatMap` (0=innermost); `ofLower` after infer | **Done** |
+| **2** | Honest binder spine | Real post-lower Core env → `ofLower` | Multi-binder / SCC demos key anns correctly |
+| **3** | Surface ground Count | `add`/`mul`/`pred`/`min`/`max` (+ surface `inf` if wanted); parse / pretty / erase → `Bounds.Count` | Solver sees real Kernel counts from source (D23) |
+| **4** | HasBounds synth | Executable Core→`β` from origins (D22/D24); Check uses synth; kill List-inventing `defaultBounds` on Live path | `[1,2] : BL 0 3` checked vs length-2 synth; unascribed params → fresh holes / generalise / Commit |
+| **5** | Elab holes + solve | Executable `ElabAnn` + oracle fill `_` | `BL _ 5` / `BL 0 _` work under `--bl` |
+| **6** | BoundCovers in Live | List matches → BoundCovers/MatchSafe; else HM exh | Nil-only when `hi=0`; Cons-only when `lo≥1` |
+| **7** | Bound schemes | `{n m : Nat, a b}` + `Surface.Count.var`; pack/inst/Commit; **D24 generalise path** | Scheme parses, erases, instantiates; unconstrained param bounds quantify |
+| **8** | Stdlib demos | map / filter / append with bound schemes | Scratch demos typecheck+eval under `--bl` |
+| **9** | E2E gate suite | Fixed demos: D16 reject; ascription fail/pass; smarter exh; scheme demo | One checklist = BL experience green |
 
-Recommended order: **thin → diagnose → ann-visible → hasbounds**.
+**Before slice 4:** D24 locked (above). Soft spot: `outs` for uniqueness = **output-visible** bound slots (escape into returned/exported type), not necessarily every count in a source ascription — align with `UniqueOutputs` / BLSketch `obsBounds` intent when wiring synth.
 
-#### P3.5a — `Count.inf` (when defaults / pretty matter)
+### Post-E2E hygiene (do not block product)
 
-- Kernel `Count.inf`; eval / DemandOK / Z3 encode / `defaultBounds` list hi = inf  
-
-#### P4 — Surface B′ (slice table)
-
-| Slice | Content | Status |
-|-------|---------|--------|
-| **P4a** | Surface AST / Pretty / bridge stubs | **Done** |
-| **P4a-parse** | Parse `BL` / `_` | **Done** |
-| **P4a-count-ops** | Count `add`/`mul`/… | **Deferred** ≤ P5 |
-| **P4b** | Erase packages | **Done** (prove `noBl` later) |
-| **P4c** | Gate + Live `--bl` + erase-run | **Done** (run works) |
-| **P4c-thin** | Erase without Oracle/Z3 (`Ann.lean`) | **Done** |
-| **P4c-diagnose** | Diagnose erase | **Done** |
-| **P4c-ann-visible** | ofLower + print/JSON `BL …` anns | **Done** (demo binder spine) |
-| **P4c-hasbounds** | Bound pass in Live | **Done (v1)** — `Check.checkProgramAnns` via Z3 `checkValid`; synth β = `defaultBounds` until HasBounds synthesis |
-
-**Exit (full P4):** `.fhm` with `BL 0 5 Int` → List + bound check + smarter List matches.
-
-#### P5 — Bound schemes + stdlib
-
-- `{n m : Nat, a b}` erase → BoundsAnnTy schemes  
-- Re-add `Surface.Count.var` + parse/pretty/erase wiring  
-- Pack/instantiate with Sub/solve + Commit  
-- Demos: map, filter, append, …  
-- **Must include P4a-count-ops if not done earlier**
-
-#### P6 — Polish / hygiene / merge
-
-- Axiom collapse (encoding lemmas; delete BL triple axioms)  
-- Apply-σ / normalise BoundsTy for pretty  
-- Default commit policy product choice  
+- Prove erase `noBl` / Pipeline Bool↔Prop sorries  
+- Axiom collapse; apply-σ / pretty normalise; commit policy product choice  
 - Composite progress + optional semantic length lemmas  
-- Playground toggle; README/Headlines note  
-- Merge `FHM/Bounds` into `fhm`; retire `blt` when ready  
-- Drop editor dual `blt`/`fhm` binary lookup (`@TODO(merge-to-fhm)`)  
-- Optional: head-binder packing; Surface nested BoundCovers; Pair HasBounds intros; restated `weaken_Δ`  
+- README/Headlines; merge `FHM/Bounds` → `fhm`; drop editor dual lookup  
+- Optional: head-binder packing; surface nested BoundCovers; Pair HasBounds; restated `weaken_Δ`  
+- Remove remaining `defaultListAnn` / `defaultBounds` List invention from Erase/Typing if still present  
 
----
+### Old P4 slice table (historical)
+
+| Slice | Status |
+|-------|--------|
+| P4a / P4a-parse | **Done** |
+| P4a-count-ops | → **slice 3** (elevated; not deferred to P5) |
+| P4b / P4c / thin / diagnose / ann-visible | **Done** |
+| P4c-hasbounds “v1” | **Scaffold only** → replaced by slices **4–6** |
 
 ## 7. Pipeline / REPL toggle
 
 | Mode | Front | Coverage | Bound pass |
 |------|-------|----------|------------|
-| **HM (default)** | Parse; **`hmRequireNoBl`** (D16) | `checkExhaustive` | skip (erase still runs; anns unused) |
-| **BL (`--bl`)** | Parse BL; erase; lower | still HM exh today → **BoundCovers** at P4c-hasbounds | HasBounds at P4c-hasbounds |
+| **HM (default)** | Parse; **`hmRequireNoBl`** (D16) | `checkExhaustive` | skip (erase still runs; anns not reported) |
+| **BL (`--bl`)** | Parse BL; erase; lower | HM exh → **BoundCovers** (slice 6) | scaffold Check today → origin HasBounds synth (slices 4–5) |
 
-Shared: Infer, elaborate, evaluate.
+Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 
 ---
 
@@ -300,8 +316,8 @@ Shared: Infer, elaborate, evaluate.
 | Deep BLSketch polish | Extract done |
 | Surface nested BoundCovers mutual with SurfaceCovers | After-lower Core check first |
 | `HasBounds.weaken_Δ` as originally stated | False for oracle equality |
-| Surface.Count arithmetic (until P4a-count-ops) | Parse v1 = lit/hole; ops have an owned slice |
-| Surface.Count.var | Returns with P5 Nat binders |
+| Inventing `[0,inf]` / `[0,0]` for bare `List` as end model | **Rejected (D22)** — scaffold only |
+| Surface.Count.var | Slice 7 with Nat binders (ops are slice 3) |
 
 ---
 
@@ -309,14 +325,17 @@ Shared: Infer, elaborate, evaluate.
 
 | Risk | Mitigation |
 |------|------------|
-| BoundsAnnTy paths break under lower/elab | Binding-level + post-Infer; **ann-visible** forces spine |
-| Default `[0,0]` misleads | P3.5a `Count.inf` |
+| BoundsAnnTy paths break under lower/elab | Binding-level + post-Infer; spine slice 2 |
+| Scaffold `defaultBounds` mistaken for product | D22; slice 4 removes Live use |
 | SurfaceBridge touch radius | Absurd-bl only |
-| Z3 in default / CLI proof cone | **P4c-thin**; keep `FHMBounds` optional for Typing |
+| Z3 in default / CLI proof cone | **P4c-thin**; Check may pull Z3 |
 | Scope creep into unify | Hard no |
-| BoundCovers vs AllMatchesExhaustive | P4c-hasbounds pipeline contract |
+| BoundCovers vs AllMatchesExhaustive | Slice 6; HM exh otherwise |
 | `checkValid` non-monotonicity | Don’t state weaken_Δ; use Valid if mono needed |
-| Surface count ops forgotten | **P4a-count-ops** owned; deadline ≤ P5 |
+| Surface count ops forgotten | **D23 / slice 3** — before schemes |
+| Unascribed List λ-param policy undecided | **Locked D24** |
+| Synth hardness (oracle + join + Commit) | Approve executable API in Lean before proving |
+| `outs` list too wide/narrow for uniqueness | Soft spot C — prefer output-visible / escape bounds |
 | Editor looks for wrong CLI binary | Relink + dual lookup; revert on merge |
 
 ---
@@ -327,22 +346,24 @@ Shared: Infer, elaborate, evaluate.
 - [x] Core/InferW free of bound feature work  
 - [ ] Default `lake build` FHM pure; Headlines guard (document Bounds as optional)  
 - [x] `BL _ 5 t` / lit erases to List (hole in BoundsAnnTy on erase path)  
-- [ ] Nil-only match under proved empty upper bound (Core demo and/or surface)  
-- [x] REPL/CLI HM vs BL mode (fail-fast vs erase+run) — **partial:** run works; bound pass open  
-- [ ] Composite never-stuck under HasBounds + BoundCovers (or documented partial)  
+- [ ] Surface ground Count ops erase into Kernel `Count` (slice 3)  
+- [ ] Origin-based HasBounds synth in Live (no List-inventing defaults) (slice 4)  
+- [ ] Nil-only match under proved empty upper bound (surface under `--bl`)  
+- [ ] REPL/CLI HM vs BL: fail-fast vs erase + origin check + BoundCovers  
+- [ ] Scheme demos (map/filter/append) under `--bl`  
+- [ ] Composite never-stuck under HasBounds + BoundCovers (or documented partial — post-E2E OK)  
 
 ---
 
 ## 11. One-liner
 
-> **B′ dual-stack:** BoundsTy mirrors Core Ty with intervals on List; surface `BL` parses and erases under Live `--bl`; next is consume anns (ofLower → HasBounds) without dragging Z3 into erase — never put intervals in Core or InferW.
+> **B′ dual-stack:** BoundsTy mirrors Core Ty with intervals on List; surface `BL` erases under `--bl`; intervals come from origins (constructors, ascriptions, env, apps, joins) — never from inventing a default BL for bare `List`; next is honest spine + full Surface Count + HasBounds synth + BoundCovers.
 
 ---
 
 ## 12. Next action
 
-1. **HasBounds synthesis** (replace `defaultBounds` in Live check) + real post-lower binder spine.  
-2. BoundCovers / MatchSafe under `--bl` for List matches (still HM exh today).  
-3. Pull **P3.5a** / **P4a-count-ops** when demos demand.  
+1. **Slice 3** — Surface ground Count ops (`add`/`mul`/…).  
+2. Then **4** HasBounds synth (D22/D24) → **5** holes → **6** BoundCovers…
 
 Thin erase (`Ann.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path uses Z3 via `FHM.Bounds.Check`.

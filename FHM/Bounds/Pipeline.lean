@@ -3,10 +3,11 @@ import FHM.Bounds.Erase
 import FHM.Bounds.Ann
 
 /-!
-# P4c — pipeline contract (shapes for sign-off)
+# P4c — pipeline contract (mode gate + ofLower)
 
-Wire mode gate + erase + de Bruijn ascriptions. **Not** yet hooked to Live/`--bl`
-(that is the implementation pass after ✅).
+Wired from Live/`--bl`. Gate and erase are **separate**: `hmRequireNoBl` is D16
+only; `eraseProgram` always runs. Under `--bl`, Live runs `ofLower` + Check
+(scaffold: `defaultBounds` until origin HasBounds synth — D22/D24).
 
 ## Architecture
 
@@ -14,30 +15,22 @@ Wire mode gate + erase + de Bruijn ascriptions. **Not** yet hooked to Live/`--bl
 surface Program
     │
     ├─ .hm: hmRequireNoBl          ← D16 gate only (no erase)
-    │         │
-    │         ▼
-    │      HmProgram
-    │         │
-    ├─────────┴──► eraseProgram    ← Erase.lean (total; always)
-    │                     │
-    └─ .bl ───────────────┘
+    │
+    └─ both modes ─► eraseProgram  ← Erase.lean (total; always)
                           ▼
               ErasedSurface { mode, erased }
                           │
          lower erased.toProgram
                           │
-              .bl only: ofLower → HasBounds
+              .bl: ofLower → Check (→ HasBounds synth next)
 ```
 
-Gate and erase are **separate**. `eraseProgram` always erases. The mode gate only
-decides whether BL syntax is allowed before that.
-
-## Design locks (review here)
+## Design locks
 
 * **M1** `.hm` — `hmRequireNoBl` fail-fast on BL (D16). Does not erase.
-* **M2** Both modes then `eraseProgram` → `ErasedSurface`; lower `erased.toProgram`.
+* **M2** Both modes then `eraseProgram`; lower `erased.toProgram`.
 * **M3** Bounds on `ErasedBinding` (from erase); `ofLower` after lower.
-* **M4** `binderEnvFromGroups` is demo-only; Live supplies the real spine.
+* **M4** `binderEnvFromGroups` = `groups.reverse.flatMap` (0 = innermost; within-group order preserved).
 -/
 
 namespace FHM.Bounds.Pipeline
@@ -150,13 +143,13 @@ def ProgramBoundsAnns.ofLower
       (surf.byName.find? fun ⟨n', _⟩ => n' = n).map (·.2)
     bodyAnn := surf.bodyAnn }
 
-/-- Best-effort demo helper: flatten groups outermost-first, reverse so
-index 0 is innermost.
+/-- Core env names for the program body: index **0 = innermost**.
 
-**Not** proven equal to Core env after lower/PatComp/SCC — Live must pass the
-real post-lower spine when wiring `--bl`. -/
+`letRecElab` puts member 0 of the innermost SCC group at de Bruijn 0, then the
+rest of that group, then outer groups. So: reverse the group list, preserve
+within-group binding order (do **not** reverse the flattened name list). -/
 def binderEnvFromGroups (groups : List (List Binding)) : List ValName :=
-  (groups.flatMap (·.map (·.name))).reverse
+  groups.reverse.flatMap (·.map (·.name))
 
 def binderEnvFromErased (ep : ErasedProgram) : List ValName :=
   binderEnvFromGroups ep.toProgram.groups
@@ -243,5 +236,15 @@ private def progXsBl : Program :=
 -- Missing names become `none`; `xs` lands at index 1 when env is `[ys, xs]`.
 #guard annsEq (ProgramBoundsAnns.ofLower [⟨"ys"⟩, ⟨"xs"⟩] (eraseProgram progXsBl)).binderAnns
   [none, some (BoundsAnnTy.list (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int))]
+
+-- Slice 2: within-group order preserved; groups reversed for innermost-first.
+private def progAB : Program :=
+  ⟨[], [[{ name := ⟨"a"⟩, ann := none, rhs := .primLit (.int 0) },
+         { name := ⟨"b"⟩, ann := none, rhs := .primLit (.int 1) }]], .var ⟨"a"⟩⟩
+#guard binderEnvFromGroups progAB.groups == [⟨"a"⟩, ⟨"b"⟩]
+private def progNested : Program :=
+  ⟨[], [[{ name := ⟨"outer"⟩, ann := none, rhs := .primLit (.int 0) }],
+        [{ name := ⟨"inner"⟩, ann := none, rhs := .primLit (.int 1) }]], .var ⟨"inner"⟩⟩
+#guard binderEnvFromGroups progNested.groups == [⟨"inner"⟩, ⟨"outer"⟩]
 
 end FHM.Bounds.Pipeline

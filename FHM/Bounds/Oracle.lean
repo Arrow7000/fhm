@@ -48,6 +48,9 @@ def countToExpr : Count → FHM.Z3.Expr
   | .pred a  => .pred (countToExpr a)
   | .min a b => .min (countToExpr a) (countToExpr b)
   | .max a b => .max (countToExpr a) (countToExpr b)
+  | .inf     =>
+      -- Unreachable if `Constraint.normalize` ran; do not treat as SMT ∞.
+      panic! "Bounds.Z3Bridge.countToExpr: Count.inf survived normalization"
 
 def constraintToAtom (c : Constraint) : Atom :=
   .le (countToExpr c.lhs) (countToExpr c.rhs)
@@ -63,52 +66,71 @@ def modelToAssign (model : List (String × Nat)) : Assign :=
     model.find? (fun p => p.1 = varName v) |>.map (·.2) |>.getD 0
 
 def checkValidZ3 (φ : ForallProblem) : ValidVerdict :=
-  let as := constraintsToAssumptions φ.prem
-  let goals := φ.goals.map constraintToAtom
-  if goals.isEmpty then .valid
+  let n := normalizeForall φ
+  if n.vacuous then .valid
+  else if n.stuck then .unknown
+  else if n.absurdGoal then .invalid
+  else if n.goals.isEmpty then .valid
   else
+    let as := constraintsToAssumptions n.prem
+    let goals := n.goals.map constraintToAtom
     let results := goals.map fun g => decide { assumptions := as, goal := g }
     if results.any Verdict.isRefuted then .invalid
     else if results.all Verdict.isVerified then .valid
     else .unknown
 
 def solveZ3 (ψ : ExistsProblem) : SolveVerdict :=
-  let unknowns := inferableNames ψ.inferables
-  let as := constraintsToAssumptions ψ.prem
-  let goals := constraintsToAssumptions ψ.cons
-  if unknowns.isEmpty && goals.isEmpty then
-    .witness (fun _ => 0)
+  let n := normalizeExists ψ
+  if n.unsat then .unsat
+  else if n.stuck then .unknown
   else
-    match decideGoals unknowns as goals with
-    | .witness b => .witness (modelToAssign b)
-    | .unknown "z3 reports no witness exists" => .unsat
-    | _ => .unknown
+    let unknowns := inferableNames ψ.inferables
+    let as := constraintsToAssumptions n.prem
+    let goals := constraintsToAssumptions n.cons
+    if unknowns.isEmpty && goals.isEmpty then
+      .witness (fun _ => 0)
+    else
+      match decideGoals unknowns as goals with
+      | .witness b => .witness (modelToAssign b)
+      | .unknown "z3 reports no witness exists" => .unsat
+      | _ => .unknown
 
 def isWitnessUnsat : FHM.Z3.Verdict → Bool
   | .unknown "z3 reports no witness exists" => true
   | _ => false
 
-/-- Honesty: `.unique` only if every alternative is strong unsat; unknown ≠ unique. -/
+/-- Honesty: `.unique` only if every alternative is strong unsat; unknown ≠ unique.
+
+`outs` that evaluate to `ExtNat.inf` are treated as already fixed (no differ goals). -/
 def uniqueZ3 (ψ : ExistsProblem) (outs : List Count) : UniqueVerdict :=
   match solveZ3 ψ with
   | .unsat => .unknown
   | .unknown => .unknown
   | .witness σ =>
-    let vals := outs.map (·.eval σ)
-    let unknowns := inferableNames ψ.inferables
-    let baseAs := constraintsToAssumptions (ψ.prem ++ ψ.cons)
-    let goals := constraintsToAssumptions ψ.cons
-    let differs (c : Count) (v : Nat) : List Assumptions :=
-      [[.lt (countToExpr c) (.lit v)], [.lt (.lit v) (countToExpr c)]]
-    let statuses : List (Option Bool) :=
-      (outs.zip vals).flatMap fun (c, v) =>
-        (differs c v).map fun extra =>
-          match decideGoals unknowns (baseAs ++ extra) goals with
-          | .witness _ => some true
-          | v => if isWitnessUnsat v then some false else none
-    if statuses.any (· == some true) then .multiple
-    else if statuses.any (· == none) then .unknown
-    else .unique
+    let n := normalizeExists ψ
+    if n.stuck then .unknown
+    else
+      let vals := outs.map (·.eval σ)
+      let unknowns := inferableNames ψ.inferables
+      let baseAs := constraintsToAssumptions (n.prem ++ n.cons)
+      let goals := constraintsToAssumptions n.cons
+      let differs (c : Count) (v : Nat) : List Assumptions :=
+        -- differ probes are finite lits; skip outs that still contain inf after simplify
+        let c' := Count.simplify c
+        if c'.containsInf then []
+        else [[.lt (countToExpr c') (.lit v)], [.lt (.lit v) (countToExpr c')]]
+      let statuses : List (Option Bool) :=
+        (outs.zip vals).flatMap fun (c, vE) =>
+          match vE with
+          | .inf => []
+          | .ofNat v =>
+            (differs c v).map fun extra =>
+              match decideGoals unknowns (baseAs ++ extra) goals with
+              | .witness _ => some true
+              | v => if isWitnessUnsat v then some false else none
+      if statuses.any (· == some true) then .multiple
+      else if statuses.any (· == none) then .unknown
+      else .unique
 
 end Z3Bridge
 

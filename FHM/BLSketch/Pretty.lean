@@ -63,6 +63,7 @@ def prettyCountVarLetter (n : Nat) : String :=
 /-- Precedence: `0` top, `1` add/min/max, `2` mul, `3` pred/atomic. -/
 def _root_.FHM.Bounds.Count.prettyAux (prec : Nat) : Count → String
   | .lit n => toString n
+  | .inf => "∞"
   | .var ⟨.rigid, i⟩ => prettyCountVarLetter i
   | .var ⟨.inferable, i⟩ => "?" ++ prettyCountVarLetter i
   | .add a b =>

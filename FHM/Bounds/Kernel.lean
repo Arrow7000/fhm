@@ -1,12 +1,69 @@
 /-!
 # Bounds kernel — counts, constraints, demand, intervals
 
-**Status:** P1 API for sign-off (not yet wired through BLSketch).
-
 Arithmetic and constraint language shared by the bound layer. No Core/Surface/Ty.
+
+## Slice 1 — `ExtNat` + `Count.inf` (API for ✅)
+
+`inf` is **vocabulary** for unbounded counts (analysis result or explicit surface
+syntax). **Not** a default stamp on bare `List` (D22).
+
+Counts evaluate in `ExtNat` (ℕ ∪ {∞}). `Constraint.Holds` uses `ExtNat.le`.
+Finite programs that never mention `inf` behave as before (`.ofNat` path).
+
+Z3 encoding of `inf`: **normalize in Lean before SMT** — do not put ∞ in Z3.
+`Assign` / inferables stay finite (`Var → Nat`, Z3 `Int`). Only ground `Count.inf`
+(and ops that absorb it) produce `ExtNat.inf`. E.g. `_ ≤ inf` ⇒ drop; `inf ≤ lit _`
+⇒ unsat; `inf ≤ inf` ⇒ true. The Oracle `countToExpr .inf ↦ .lit 0` placeholder is
+wrong if reached — normalization must erase `inf` first.
 -/
 
 namespace FHM.Bounds
+
+/-! ## Extended naturals (ℕ ∪ {∞}) -/
+
+/-- Semiring-ish top for count evaluation / interval endpoints. -/
+inductive ExtNat where
+  | ofNat (n : Nat)
+  | inf
+  deriving DecidableEq, Repr, Inhabited
+
+namespace ExtNat
+
+/-- `a ≤ b` on ℕ∪{∞}: everything ≤ ∞; ∞ ≰ finite. -/
+def le : ExtNat → ExtNat → Prop
+  | _, .inf => True
+  | .inf, .ofNat _ => False
+  | .ofNat a, .ofNat b => a ≤ b
+
+def add : ExtNat → ExtNat → ExtNat
+  | .inf, _ => .inf
+  | _, .inf => .inf
+  | .ofNat a, .ofNat b => .ofNat (a + b)
+
+def mul : ExtNat → ExtNat → ExtNat
+  | .ofNat 0, _ => .ofNat 0
+  | _, .ofNat 0 => .ofNat 0
+  | .inf, _ => .inf
+  | _, .inf => .inf
+  | .ofNat a, .ofNat b => .ofNat (a * b)
+
+/-- Truncated predecessor; `pred ∞ = ∞`. -/
+def pred : ExtNat → ExtNat
+  | .inf => .inf
+  | .ofNat n => .ofNat (n - 1)
+
+def min : ExtNat → ExtNat → ExtNat
+  | .inf, b => b
+  | a, .inf => a
+  | .ofNat a, .ofNat b => .ofNat (Nat.min a b)
+
+def max : ExtNat → ExtNat → ExtNat
+  | .inf, _ => .inf
+  | _, .inf => .inf
+  | .ofNat a, .ofNat b => .ofNat (Nat.max a b)
+
+end ExtNat
 
 /-! ## Variables and counts -/
 
@@ -28,10 +85,8 @@ inductive Count where
   | pred (a : Count)
   | min  (a b : Count)
   | max  (a b : Count)
-  -- TODO(bounds-inf): add `| inf` (unbounded upper/lower as needed). Semantics:
-  --   eval inf = none / ⊤ on ℕ∪{∞}; min/max/add absorb as usual; Z3 encode as
-  --   unconstrained or a dedicated large sort. Then default list hi can be `.inf`
-  --   instead of `.lit 0` (see `defaultBounds` in Typing.lean).
+  /-- Unbounded count (⊤). Not a List default — see module docstring / D22. -/
+  | inf
   deriving DecidableEq, Repr
 
 /-- Assignments range over all `Var`s (see `ExistsProblem.SolvedBy` / `agreesOn`). -/
@@ -39,18 +94,21 @@ abbrev Assign := Var → Nat
 
 def cvar (kind : VarKind) (i : Nat) : Count := .var ⟨kind, i⟩
 
-@[simp] def Count.eval : Count → Assign → Nat
-  | .lit n,   _ => n
-  | .var v,   σ => σ v
-  | .add a b, σ => a.eval σ + b.eval σ
-  | .mul a b, σ => a.eval σ * b.eval σ
-  | .pred a,  σ => a.eval σ - 1
-  | .min a b, σ => Nat.min (a.eval σ) (b.eval σ)
-  | .max a b, σ => Nat.max (a.eval σ) (b.eval σ)
+/-- Evaluate a count in ℕ∪{∞}. -/
+@[simp] def Count.eval : Count → Assign → ExtNat
+  | .lit n,   _ => .ofNat n
+  | .var v,   σ => .ofNat (σ v)
+  | .inf,     _ => .inf
+  | .add a b, σ => ExtNat.add (a.eval σ) (b.eval σ)
+  | .mul a b, σ => ExtNat.mul (a.eval σ) (b.eval σ)
+  | .pred a,  σ => ExtNat.pred (a.eval σ)
+  | .min a b, σ => ExtNat.min (a.eval σ) (b.eval σ)
+  | .max a b, σ => ExtNat.max (a.eval σ) (b.eval σ)
 
-/-- Variable-free count expressions (closed under ops; no `var`). -/
+/-- Variable-free count expressions (closed under ops; no `var`). Includes `inf`. -/
 inductive Count.Ground : Count → Prop where
   | lit {n} : Ground (.lit n)
+  | inf : Ground .inf
   | add {a b} : Ground a → Ground b → Ground (.add a b)
   | mul {a b} : Ground a → Ground b → Ground (.mul a b)
   | pred {a} : Ground a → Ground (.pred a)
@@ -58,7 +116,7 @@ inductive Count.Ground : Count → Prop where
   | max {a b} : Ground a → Ground b → Ground (.max a b)
 
 @[simp] def Count.isGround : Count → Bool
-  | .lit _ => true
+  | .lit _ | .inf => true
   | .var _ => false
   | .add a b | .mul a b | .min a b | .max a b => a.isGround && b.isGround
   | .pred a => a.isGround
@@ -71,6 +129,7 @@ theorem Count.ground_of_isGround {c : Count} (h : c.isGround = true) : c.Ground 
   induction c with
   | lit n => exact .lit
   | var _ => simp at h
+  | inf => exact .inf
   | add a b iha ihb =>
       simp [Bool.and_eq_true] at h
       exact .add (iha h.1) (ihb h.2)
@@ -90,26 +149,28 @@ theorem Count.ground_of_isGround {c : Count} (h : c.isGround = true) : c.Ground 
 theorem Count.isGround_iff {c : Count} : c.isGround = true ↔ c.Ground :=
   ⟨Count.ground_of_isGround, Count.isGround_of_ground⟩
 
-/-- Evaluate a ground count to a `Nat` (no assignment needed). -/
-def Count.fold (c : Count) (h : c.Ground) : Nat :=
+/-- Evaluate a ground count (no assignment needed). -/
+def Count.fold (c : Count) (h : c.Ground) : ExtNat :=
   match c with
-  | .lit n => n
+  | .lit n => .ofNat n
+  | .inf => .inf
   | .var _ => False.elim (by cases h)
   | .add a b =>
-      a.fold (by cases h; assumption) + b.fold (by cases h; assumption)
+      ExtNat.add (a.fold (by cases h; assumption)) (b.fold (by cases h; assumption))
   | .mul a b =>
-      a.fold (by cases h; assumption) * b.fold (by cases h; assumption)
+      ExtNat.mul (a.fold (by cases h; assumption)) (b.fold (by cases h; assumption))
   | .pred a =>
-      a.fold (by cases h; assumption) - 1
+      ExtNat.pred (a.fold (by cases h; assumption))
   | .min a b =>
-      Nat.min (a.fold (by cases h; assumption)) (b.fold (by cases h; assumption))
+      ExtNat.min (a.fold (by cases h; assumption)) (b.fold (by cases h; assumption))
   | .max a b =>
-      Nat.max (a.fold (by cases h; assumption)) (b.fold (by cases h; assumption))
+      ExtNat.max (a.fold (by cases h; assumption)) (b.fold (by cases h; assumption))
 
 theorem Count.fold_eq_eval {c : Count} (h : c.Ground) (σ : Assign) :
     c.fold h = c.eval σ := by
   induction h with
   | lit => rfl
+  | inf => rfl
   | add _ _ iha ihb => simp [Count.fold, iha, ihb]
   | mul _ _ iha ihb => simp [Count.fold, iha, ihb]
   | pred _ ih => simp [Count.fold, ih]
@@ -123,9 +184,9 @@ structure Constraint where
   rhs : Count
   deriving DecidableEq, Repr
 
-/-- Semantic meaning: `lhs ≤ rhs` under assignment. -/
+/-- Semantic meaning: `lhs ≤ rhs` under assignment (ℕ∪{∞}). -/
 def Constraint.Holds (c : Constraint) (σ : Assign) : Prop :=
-  c.lhs.eval σ ≤ c.rhs.eval σ
+  ExtNat.le (c.lhs.eval σ) (c.rhs.eval σ)
 
 structure ForallProblem where
   prem  : List Constraint
@@ -167,6 +228,7 @@ theorem ForallProblem.valid_empty_goals (prem : List Constraint) :
 
 inductive Count.RigidOnly : Count → Prop where
   | lit {n} : RigidOnly (.lit n)
+  | inf : RigidOnly .inf
   | var {i} : RigidOnly (.var ⟨.rigid, i⟩)
   | add {a b} : RigidOnly a → RigidOnly b → RigidOnly (.add a b)
   | mul {a b} : RigidOnly a → RigidOnly b → RigidOnly (.mul a b)
@@ -190,7 +252,7 @@ inductive Count.DemandOK : Count → Prop where
     DemandOK (.add (.mul (.var ⟨.inferable, i⟩) c) e)
 
 @[simp] def Count.isRigidOnly : Count → Bool
-  | .lit _ => true
+  | .lit _ | .inf => true
   | .var ⟨.rigid, _⟩ => true
   | .var ⟨.inferable, _⟩ => false
   | .add a b | .mul a b | .min a b | .max a b => a.isRigidOnly && b.isRigidOnly
@@ -211,6 +273,7 @@ inductive Count.DemandOK : Count → Prop where
     c.isRigidOnly = true := by
   induction h with
   | lit => rfl
+  | inf => rfl
   | var => rfl
   | add _ _ iha ihb => simp [iha, ihb]
   | mul _ _ iha ihb => simp [iha, ihb]
@@ -222,6 +285,7 @@ theorem Count.rigidOnly_of_isRigidOnly {c : Count} (h : c.isRigidOnly = true) :
     Count.RigidOnly c := by
   induction c with
   | lit => exact .lit
+  | inf => exact .inf
   | var v =>
     cases v with | mk kind idx =>
     cases kind with
@@ -252,26 +316,19 @@ theorem Count.isRigidOnly_iff {c : Count} :
     c.isDemandOK = true := by
   unfold Count.isDemandOK
   split <;> try (exact h)
-  · -- `.var inferable` arm
-    rename_i i
+  · rename_i i
     simp at h
-  · -- `.mul c (var inferable)`
-    rename_i c i
+  · rename_i c i
     simp at h
-  · -- `.mul (var inferable) c`
-    rename_i i c
+  · rename_i i c
     simp at h
-  · -- `.add (var inferable) e`
-    rename_i i e
+  · rename_i i e
     simp at h
-  · -- `.add e (var inferable)`
-    rename_i e i
+  · rename_i e i
     simp at h
-  · -- `.add (.mul c (var inferable)) e`
-    rename_i c i e
+  · rename_i c i e
     simp at h
-  · -- `.add (.mul (var inferable) c) e`
-    rename_i i c e
+  · rename_i i c e
     simp at h
 
 @[simp] theorem Count.isDemandOK_of_demandOK {c : Count} (h : Count.DemandOK c) :
@@ -281,9 +338,9 @@ theorem Count.isRigidOnly_iff {c : Count} :
   | infer => rfl
   | scale h => simp [h]
   | scaleComm h =>
-    -- Right factor is rigid ⇒ first mul-arm does not match.
     cases h with
     | lit => rfl
+    | inf => rfl
     | var => rfl
     | add ha hb =>
       simp [ha, hb]
@@ -297,9 +354,9 @@ theorem Count.isRigidOnly_iff {c : Count} :
       simp [ha, hb]
   | offset h => simp [h]
   | offsetComm h =>
-    -- Left is rigid ⇒ first add-arm does not match; second arm fires.
     cases h with
     | lit => rfl
+    | inf => rfl
     | var => rfl
     | add ha hb =>
       simp [ha, hb]
@@ -313,32 +370,43 @@ theorem Count.isRigidOnly_iff {c : Count} :
       simp [ha, hb]
   | aff hc he =>
     have hc' := Count.isRigidOnly_of_rigidOnly hc
-    -- Case on offset so `.add _ (var inferable)` cannot match.
     cases he with
     | lit => simp [hc']
+    | inf => simp [hc']
     | var => simp [hc']
     | add ha hb =>
-      simp [hc',
-        ha, hb]
+      simp [hc', ha, hb]
     | mul ha hb =>
-      simp [hc',
-        ha, hb]
+      simp [hc', ha, hb]
     | pred ha =>
       simp [hc', ha]
     | min ha hb =>
-      simp [hc',
-        ha, hb]
+      simp [hc', ha, hb]
     | max ha hb =>
-      simp [hc',
-        ha, hb]
+      simp [hc', ha, hb]
   | affComm hc he =>
     have hc' := Count.isRigidOnly_of_rigidOnly hc
     have he' := Count.isRigidOnly_of_rigidOnly he
-    -- Case so higher-priority add arms cannot match.
     cases hc with
     | lit =>
       cases he with
       | lit => rfl
+      | inf => rfl
+      | var => rfl
+      | add ha hb =>
+        simp [ha, hb]
+      | mul ha hb =>
+        simp [ha, hb]
+      | pred ha =>
+        simp [ha]
+      | min ha hb =>
+        simp [ha, hb]
+      | max ha hb =>
+        simp [ha, hb]
+    | inf =>
+      cases he with
+      | lit => rfl
+      | inf => rfl
       | var => rfl
       | add ha hb =>
         simp [ha, hb]
@@ -353,6 +421,7 @@ theorem Count.isRigidOnly_iff {c : Count} :
     | var =>
       cases he with
       | lit => rfl
+      | inf => rfl
       | var => rfl
       | add ha hb =>
         simp [ha, hb]
@@ -368,112 +437,98 @@ theorem Count.isRigidOnly_iff {c : Count} :
       cases he with
       | lit =>
         simp [hca, hcb]
+      | inf =>
+        simp [hca, hcb]
       | var =>
         simp [hca, hcb]
       | add ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | mul ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | pred ha =>
-        simp [hca, hcb,
-          ha]
+        simp [hca, hcb, ha]
       | min ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | max ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
     | mul hca hcb =>
       cases he with
       | lit =>
         simp [hca, hcb]
+      | inf =>
+        simp [hca, hcb]
       | var =>
         simp [hca, hcb]
       | add ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | mul ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | pred ha =>
-        simp [hca, hcb,
-          ha]
+        simp [hca, hcb, ha]
       | min ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | max ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
     | pred hca =>
       cases he with
       | lit =>
         simp [hca]
+      | inf =>
+        simp [hca]
       | var =>
         simp [hca]
       | add ha hb =>
-        simp [hca,
-          ha, hb]
+        simp [hca, ha, hb]
       | mul ha hb =>
-        simp [hca,
-          ha, hb]
+        simp [hca, ha, hb]
       | pred ha =>
-        simp [hca,
-          ha]
+        simp [hca, ha]
       | min ha hb =>
-        simp [hca,
-          ha, hb]
+        simp [hca, ha, hb]
       | max ha hb =>
-        simp [hca,
-          ha, hb]
+        simp [hca, ha, hb]
     | min hca hcb =>
       cases he with
       | lit =>
         simp [hca, hcb]
+      | inf =>
+        simp [hca, hcb]
       | var =>
         simp [hca, hcb]
       | add ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | mul ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | pred ha =>
-        simp [hca, hcb,
-          ha]
+        simp [hca, hcb, ha]
       | min ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | max ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
     | max hca hcb =>
       cases he with
       | lit =>
         simp [hca, hcb]
+      | inf =>
+        simp [hca, hcb]
       | var =>
         simp [hca, hcb]
       | add ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | mul ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | pred ha =>
-        simp [hca, hcb,
-          ha]
+        simp [hca, hcb, ha]
       | min ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
       | max ha hb =>
-        simp [hca, hcb,
-          ha, hb]
+        simp [hca, hcb, ha, hb]
 
 theorem Count.demandOK_of_isDemandOK {c : Count} (h : c.isDemandOK = true) :
     Count.DemandOK c := by
   induction c with
   | lit => exact .ofRigid .lit
+  | inf => exact .ofRigid .inf
   | var v =>
     cases v with | mk kind idx =>
     cases kind with
@@ -569,5 +624,156 @@ def mustBeEmpty (Δ : List Constraint) (hi : Count) : ForallProblem where
 def mustBeNonempty (Δ : List Constraint) (lo : Count) : ForallProblem where
   prem  := Δ
   goals := [⟨.lit 1, lo⟩]
+
+/-! ## `inf` normalization (before Z3)
+
+Inferables stay finite (`Assign := Var → Nat`). Ground `Count.inf` is simplified
+away in Lean; residual constraints must be `inf`-free before `countToExpr`.
+-/
+
+/-- Does this count mention `inf` (pre-simplify)? -/
+def Count.containsInf : Count → Bool
+  | .inf => true
+  | .lit _ | .var _ => false
+  | .pred a => a.containsInf
+  | .add a b | .mul a b | .min a b | .max a b => a.containsInf || b.containsInf
+
+/-- Push `inf` through ops. Conservative: `inf * non-lit` stays (var may be 0). -/
+def Count.simplify : Count → Count
+  | .lit n => .lit n
+  | .var v => .var v
+  | .inf => .inf
+  | .pred a =>
+      match simplify a with
+      | .inf => .inf
+      | .lit n => .lit (n - 1)
+      | a' => .pred a'
+  | .add a b =>
+      match simplify a, simplify b with
+      | .inf, _ | _, .inf => .inf
+      | .lit n, .lit m => .lit (n + m)
+      | a', b' => .add a' b'
+  | .mul a b =>
+      match simplify a, simplify b with
+      | .lit 0, _ | _, .lit 0 => .lit 0
+      | .inf, .lit n | .lit n, .inf => if n = 0 then .lit 0 else .inf
+      | .inf, .inf => .inf
+      | .inf, b' => .mul .inf b'  -- keep; do not assume b' ≠ 0
+      | a', .inf => .mul a' .inf
+      | .lit n, .lit m => .lit (n * m)
+      | a', b' => .mul a' b'
+  | .min a b =>
+      match simplify a, simplify b with
+      | .inf, b' => b'
+      | a', .inf => a'
+      | .lit n, .lit m => .lit (Nat.min n m)
+      | a', b' => .min a' b'
+  | .max a b =>
+      match simplify a, simplify b with
+      | .inf, _ | _, .inf => .inf
+      | .lit n, .lit m => .lit (Nat.max n m)
+      | a', b' => .max a' b'
+
+/-- Outcome of simplifying a ≤-constraint for the oracle. -/
+inductive ConstraintNorm where
+  /-- Holds for every assignment. -/
+  | taut
+  /-- Holds for no assignment. -/
+  | absurd
+  /-- Finite `lhs ≤ rhs` (no `inf`); safe for Z3. -/
+  | finite (c : Constraint)
+  /-- Still involves `inf` with vars; do not encode. -/
+  | stuck
+  deriving DecidableEq, Repr
+
+/-- Normalize one constraint. Prefer taut/absurd/finite; `stuck` ⇒ oracle `.unknown`. -/
+def Constraint.normalize (c : Constraint) : ConstraintNorm :=
+  let lhs := Count.simplify c.lhs
+  let rhs := Count.simplify c.rhs
+  match rhs with
+  | .inf => .taut  -- everything ≤ ∞
+  | _ =>
+    match lhs with
+    | .inf =>
+        -- ∞ ≤ rhs: only if rhs simplifies to ∞ (already handled); else rhs finite ⇒ absurd
+        if rhs.containsInf then .stuck else .absurd
+    | _ =>
+        if lhs.containsInf || rhs.containsInf then .stuck
+        else .finite ⟨lhs, rhs⟩
+
+/-- Premises + goals after dropping taunts; `none` ⇒ problem is vacuously valid
+(absurd premise) or trivially invalid handling is on the goals side. -/
+structure ProblemNorm where
+  /-- Finite premises (tauts dropped). -/
+  prem : List Constraint := []
+  /-- Finite goals (tauts dropped). -/
+  goals : List Constraint := []
+  /-- Some constraint still stuck on `inf`. -/
+  stuck : Bool := false
+  /-- A premise is absurd ⇒ ∀-Valid holds vacuously. -/
+  vacuous : Bool := false
+  /-- A goal is absurd (and not vacuous) ⇒ invalid if we can confirm. -/
+  absurdGoal : Bool := false
+  deriving Repr
+
+def normalizeForall (φ : ForallProblem) : ProblemNorm :=
+  Id.run do
+    let mut prem : List Constraint := []
+    let mut vacuous := false
+    let mut stuck := false
+    for c in φ.prem do
+      match Constraint.normalize c with
+      | .taut => pure ()
+      | .absurd => vacuous := true
+      | .finite c' => prem := prem ++ [c']
+      | .stuck => stuck := true
+    let mut goals : List Constraint := []
+    let mut absurdGoal := false
+    for g in φ.goals do
+      match Constraint.normalize g with
+      | .taut => pure ()
+      | .absurd => absurdGoal := true
+      | .finite g' => goals := goals ++ [g']
+      | .stuck => stuck := true
+    pure { prem, goals, stuck, vacuous, absurdGoal }
+
+/-- Exists problems: absurd cons ⇒ unsat; absurd prem is just dropped (never helps). -/
+structure ExistsNorm where
+  prem : List Constraint := []
+  cons : List Constraint := []
+  stuck : Bool := false
+  unsat : Bool := false
+  deriving Repr
+
+def normalizeExists (ψ : ExistsProblem) : ExistsNorm :=
+  Id.run do
+    let mut prem : List Constraint := []
+    let mut cons : List Constraint := []
+    let mut stuck := false
+    let mut unsat := false
+    for c in ψ.prem do
+      match Constraint.normalize c with
+      | .taut | .absurd => pure ()  -- absurd prem never holds; drop
+      | .finite c' => prem := prem ++ [c']
+      | .stuck => stuck := true
+    for c in ψ.cons do
+      match Constraint.normalize c with
+      | .taut => pure ()
+      | .absurd => unsat := true
+      | .finite c' => cons := cons ++ [c']
+      | .stuck => stuck := true
+    pure { prem, cons, stuck, unsat }
+
+/-! ## Guards (`inf` normalize) -/
+
+#guard Count.simplify (.min .inf (.lit 3)) == .lit 3
+#guard Count.simplify (.max .inf (.lit 3)) == .inf
+#guard Count.simplify (.add .inf (.var ⟨.inferable, 0⟩)) == .inf
+#guard decide (Constraint.normalize ⟨.lit 0, .inf⟩ == .taut)
+#guard decide (Constraint.normalize ⟨.inf, .lit 0⟩ == .absurd)
+#guard decide (Constraint.normalize ⟨.lit 0, .lit 5⟩ == .finite ⟨.lit 0, .lit 5⟩)
+#guard (normalizeForall ⟨[], [⟨.var ⟨.rigid, 0⟩, .inf⟩]⟩).goals.isEmpty
+#guard (normalizeForall ⟨[], [⟨.inf, .lit 0⟩]⟩).absurdGoal
+#guard (normalizeForall ⟨[⟨.inf, .lit 0⟩], [⟨.lit 0, .lit 1⟩]⟩).vacuous
 
 end FHM.Bounds

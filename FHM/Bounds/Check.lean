@@ -23,6 +23,7 @@ private partial def BoundsTy.pretty : BoundsTy → String
   | .list lo hi e =>
       let p : Count → String
         | .lit n => toString n
+        | .inf => "∞"
         | c => reprStr c
       s!"BL {p lo} {p hi} {BoundsTy.pretty e}"
   | .custom n as =>

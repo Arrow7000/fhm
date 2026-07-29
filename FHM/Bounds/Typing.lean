@@ -68,8 +68,8 @@ inductive Agrees : BoundsTy → Ty → Prop where
 /-- Default bound view of a monotype.
 Used when inventing β without annotations (e.g. `nil` elem). Not principal.
 
-TODO(bounds-inf): lists currently default to interval `[0,0]`. Once `Count.inf`
-exists (see Kernel `Count`), default should be `[0, inf]` (unbounded length). -/
+TODO(bounds-inf): `Count.inf` exists (Kernel). Do **not** stamp bare `List` as
+`[0,inf]` (D22) — `defaultBounds` List invention is scaffold debt for Check only. -/
 def defaultBounds : Ty → BoundsTy
   | .prim p => .prim p
   | .arrow a b => .arrow (defaultBounds a) (defaultBounds b)
@@ -77,7 +77,7 @@ def defaultBounds : Ty → BoundsTy
   | .fvar i => .fvar i
   | .customTy n [α] =>
       if n = listTyName then
-        -- TODO(bounds-inf): hi should be `.inf`, not `.lit 0`
+        -- Scaffold only (D22): not the origin-based end model.
         .list (.lit 0) (.lit 0) (defaultBounds α)
       else .custom n [defaultBounds α]
   | .customTy n tys => .custom n (tys.map defaultBounds)
@@ -142,6 +142,7 @@ def Count.encode : Count → List Nat
   | .pred a => [4, (encode a).length] ++ encode a
   | .min a b => [5, (encode a).length] ++ encode a ++ encode b
   | .max a b => [6, (encode a).length] ++ encode a ++ encode b
+  | .inf => [7]
 
 @[simp] private theorem enc_lit (n : Nat) : Count.encode (.lit n) = [0, n] := rfl
 @[simp] private theorem enc_var (v : Var) : Count.encode (.var v) = [1, kindNat v.kind, v.idx] := rfl
@@ -211,6 +212,10 @@ theorem Count.encode_inj {a b : Count} (h : Count.encode a = Count.encode b) : a
   | max a1 a2 ih1 ih2 =>
     cases b with
     | max b1 b2 => have ⟨e1, e2⟩ := enc_bin 6 a1 a2 b1 b2 ih1 ih2 (by simpa using h); simp [e1, e2]
+    | _ => simp at h
+  | inf =>
+    cases b with
+    | inf => rfl
     | _ => simp at h
 
 def joinMin (a b : Count) : Count :=

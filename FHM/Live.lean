@@ -15,13 +15,14 @@ import Lean.Data.Json
 
 Read a `.fhm` source file (or stdin) and run:
 
-`parse → [hmRequireNoBl] → eraseProgram → lower → infer → exhaustiveness → elaborate → evaluateUnsafe`
+`parse → [hmRequireNoBl] → eraseProgram → lower → infer → [Check if --bl] → exh → elaborate → evaluateUnsafe`
 
 `--bl` selects `BoundsMode.bl` (allow `BL` syntax). Default is HM: reject BL with a
-clear error (D16). Erase always runs; binder anns are on `ErasedProgram` but not
-yet checked via HasBounds.
+clear error (D16). Erase always runs. Under `--bl`, `ofLower` (post-infer binder
+spine) + `checkProgramAnns` run (scaffold: synth = `defaultBounds` until slice 4).
+Exhaustiveness is still HM (BoundCovers = slice 6).
 
-Types are printed **before** evaluation in human mode, since eval is the slow part.
+Types / bounds lines print **before** evaluation in human mode (eval is slow).
 Live uses the unbounded evaluator — naive `fib` blows past any fixed fuel.
 
 ## CLI
@@ -34,7 +35,7 @@ blt run [--json] [--bl] [path]
 - No path, human mode: default `scratch/live.fhm` (watch-live).
 - No path, `--json`: read source from stdin (web playground).
 - With path: read that file (human or JSON).
-- `--bl`: allow bounded-list syntax; erase keeps binder anns for a later pass.
+- `--bl`: allow BL syntax; erase + ann report + scaffold bounds check (HasBounds synth next).
 -/
 
 open Surface.Parse
@@ -155,7 +156,7 @@ structure CheckedProgram where
   erased : ErasedProgram
   /-- De Bruijn projection of erase anns (demo binder spine for now). -/
   boundsAnns : ProgramBoundsAnns := {}
-  /-- Names used for `ofLower` (0 = innermost). Demo: `binderEnvFromErased`. -/
+  /-- Names for `ofLower` (0 = innermost). From `binderEnvFromGroups` post-infer. -/
   binderEnv : List ValName := []
 
 structure PipelineOk where
@@ -195,12 +196,6 @@ def checkPipeline (mode : BoundsMode) (src : String) :
 
   let ep := eraseProgram p
   let p := ep.toProgram
-  -- Demo spine (outermost-first groups → reverse). Live must replace with the
-  -- real post-lower Core env names when wiring HasBounds (P4c-hasbounds).
-  let binderEnv := binderEnvFromErased ep
-  let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
-  -- P4c-hasbounds: under `--bl`, `checkProgramAnns` (Z3 via `checkValid`) runs
-  -- after Infer. Synth β is still `defaultBounds` until HasBounds synthesis exists.
 
   let (ctors, c) ← match lowerProgram p with
     | none =>
@@ -217,6 +212,9 @@ def checkPipeline (mode : BoundsMode) (src : String) :
   let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
   let binds := zipBindingTypes p.groups (collectTopSchemes eOut)
+  -- Slice 2: Core body env order (0 = innermost) from the same groups Infer used.
+  let binderEnv := binderEnvFromGroups p.groups
+  let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
 
   if mode == .bl then
     match FHM.Bounds.Check.checkProgramAnns binds binderEnv boundsAnns bodyσ with
