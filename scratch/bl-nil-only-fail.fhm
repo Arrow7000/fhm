@@ -1,0 +1,7 @@
+-- Slice 6: Nil-only must fail when synth hi > 0 (BL 2 2 = [1,2] ⇒ hi=2).
+-- Note: BL 0 5 with [] keeps origin [0,0] in bctx, so nil-only passes there;
+-- this demo uses a non-empty list so hi=2 and nil-only is rejected.
+
+let xs : BL 2 2 Int = [1, 2]
+match xs with
+| [] -> 0

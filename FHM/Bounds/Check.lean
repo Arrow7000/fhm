@@ -2,10 +2,13 @@ import FHM.Bounds.Synth
 import FHM.Pretty
 
 /-!
-# Computational bounds checks for Live (slice 4)
+# Computational bounds checks for Live (slices 4–6)
 
 Walk Infer’s Core `eOut` with origin `synthBounds`, then
 `checkMeetsAscriptionPinned` against erase/`ofLower` anns (pin `_` to synth).
+
+Under `--bl`, `checkProgramMatches` replaces surface `checkExhaustive`: List
+scrutinees use `checkBoundCovers`; other types use `coreCtorCoverage`.
 -/
 
 namespace FHM.Bounds.Check
@@ -71,12 +74,14 @@ def checkLetSpine
   match e with
   | .letIn (some σ) rhs body => do
       let nBind := binderEnv.length
-      if outerIdx ≥ nBind then
-        throw "bounds: let spine longer than binderEnv"
-      let i := nBind - 1 - outerIdx
       let β1 ← checkBounds Δ bctx rhs σ.body
-      meetBinder i β1
-      checkLetSpine binderEnv anns Δ (β1 :: bctx) (outerIdx + 1) body τBody
+      if outerIdx ≥ nBind then
+        -- Infer-inserted let (not a surface group binder); extend bctx only.
+        checkLetSpine binderEnv anns Δ (β1 :: bctx) outerIdx body τBody
+      else
+        let i := nBind - 1 - outerIdx
+        meetBinder i β1
+        checkLetSpine binderEnv anns Δ (β1 :: bctx) (outerIdx + 1) body τBody
   | .letIn none rhs body => do
       let β1 ← Prod.snd <$> inferBounds Δ bctx rhs
       checkLetSpine binderEnv anns Δ (β1 :: bctx) outerIdx body τBody
@@ -120,9 +125,155 @@ def checkProgramAnns
   let _ ← checkLetSpine binderEnv anns [] [] 0 e τ
   pure ()
 
+/-! ## Slice 6 — BoundCovers / ctor coverage on Core matches -/
+
+/-- Executable List match coverage under scrutinee bounds `β`. -/
+def checkBoundCovers (Δ : List Constraint) (β : BoundsTy)
+    (brs : List (MatchPattern × Expr)) : Bool :=
+  match β with
+  | .list lo hi _ =>
+      hasWildcardBranchB brs ||
+        (hasNilBranchB brs && hasConsBranchB brs) ||
+        (hasNilBranchB brs && checkValid (mustBeEmpty Δ hi) == .valid) ||
+        (hasConsBranchB brs && checkValid (mustBeNonempty Δ lo) == .valid)
+  | _ => false
+
+private def instFieldTys (ctors : CtorEnv) (c : CtorName) (tyArgs : List Ty) : List Ty :=
+  ((LookupList.get? ctors c).map (fun ctor => ctor.contents.map (Ty.openWith tyArgs))).getD []
+
+private theorem size_lt_sizeBranches_one {p : MatchPattern} {e : Expr} :
+    e.size < Expr.sizeBranches [(p, e)] := by
+  simp [Expr.sizeBranches]
+
+private theorem size_lt_sizeBranches_tail {p : MatchPattern} {e : Expr} {rest : List (MatchPattern × Expr)} :
+    Expr.sizeBranches rest < Expr.sizeBranches ((p, e) :: rest) := by
+  simp [Expr.sizeBranches, Expr.size_pos]
+
+private theorem size_lt_app_fn {f arg : Expr} : f.size < (f.app arg).size := by
+  simp [Expr.size]
+  have := Expr.size_pos arg
+  omega
+
+private theorem size_lt_app_arg {f arg : Expr} : arg.size < (f.app arg).size := by
+  simp [Expr.size]
+
+private theorem body_size_lt_letRec {anns : List (Option PolyTy)} {bindings : List Expr}
+    {body : Expr} :
+    body.size < (Expr.letRec anns bindings body).size := by
+  simp [Expr.size]
+
+private theorem sizeRecGroup_lt_letRec {anns : List (Option PolyTy)} {bindings : List Expr}
+    {body : Expr} :
+    Expr.sizeRecGroup bindings < (Expr.letRec anns bindings body).size := by
+  simp [Expr.size]
+  have := Expr.size_pos body
+  omega
+
+private theorem sizeBranches_lt_match {scrut : Expr} {brs : List (MatchPattern × Expr)} :
+    Expr.sizeBranches brs < (Expr.match_ scrut brs).size := by
+  simp [Expr.size, Expr.size_pos]
+
+/-- Non-List flat ctor coverage: every env ctor of `τ`'s ADT appears in `brs`. -/
+def coreCtorCoverage (ctors : CtorEnv) (τ : Ty) (brs : List (MatchPattern × Expr)) : Bool :=
+  if hasWildcardBranchB brs then true
+  else if (isListTy τ).isSome then false
+  else match τ with
+  | .customTy T _ =>
+      ctors.all fun ⟨cName, ctor⟩ =>
+        if ctor.tyName != T then true
+        else brs.any fun
+          | (.named c n, _) => c == cName && n == ctor.contents.length
+          | (.wildcard, _) => false
+  | _ => false
+
+private def branchBctx (ctors : CtorEnv) (τs : Ty) (βs : BoundsTy) (bctx : BoundEnv)
+    (lo hi : Count) (βe : BoundsTy) (pat : MatchPattern) : BoundEnv :=
+  match βs with
+  | .list _ _ _ =>
+      match pat with
+      | .named c 2 => if c == consCtorName then consBoundEnv bctx lo hi βe else bctx
+      | _ => bctx
+  | _ =>
+      match pat with
+      | .wildcard => bctx
+      | .named c n =>
+          match τs with
+          | .customTy _ tyArgs =>
+              let fieldTys := (instFieldTys ctors c tyArgs).take n
+              (fieldTys.map agreesTemplate).reverse ++ bctx
+          | _ => bctx
+
+mutual
+/-- Recurse into match branch bodies (mutual with `checkProgramMatchesGo`). -/
+def checkProgramMatchesBranches (ctors : CtorEnv) (Δ : List Constraint) (bctx : BoundEnv)
+    (τs : Ty) (βs : BoundsTy) (lo hi : Count) (βe : BoundsTy)
+    (brs : List (MatchPattern × Expr)) : Except String Unit :=
+  match brs with
+  | [] => pure ()
+  | (pat, body) :: rest => do
+      let bctx' := branchBctx ctors τs βs bctx lo hi βe pat
+      checkProgramMatchesGo ctors Δ bctx' body
+      checkProgramMatchesBranches ctors Δ bctx τs βs lo hi βe rest
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (first | exact size_lt_sizeBranches_one | exact size_lt_sizeBranches_tail | (simp only [Expr.sizeBranches]; omega))
+
+/-- Walk Core for nested matches; check coverage at each `match_`. -/
+def checkProgramMatchesGo (ctors : CtorEnv) (Δ : List Constraint) (bctx : BoundEnv)
+    (e : Expr) : Except String Unit :=
+  match e with
+  | .primLit _ | .primBinOp _ | .var _ _ | .ctor _ => pure ()
+  | .lambda ann body =>
+      match ann with
+      | some τp => checkProgramMatchesGo ctors Δ (agreesTemplate τp :: bctx) body
+      | none => checkProgramMatchesGo ctors Δ bctx body
+  | .app f arg => do
+      checkProgramMatchesGo ctors Δ bctx f
+      checkProgramMatchesGo ctors Δ bctx arg
+  | .letIn ann? rhs body => do
+      let β1 ← match ann? with
+        | some σ => checkBounds Δ bctx rhs σ.body
+        | none => Prod.snd <$> inferBounds Δ bctx rhs
+      checkProgramMatchesGo ctors Δ (β1 :: bctx) body
+  | .letRec anns bindings body => do
+      if anns.length != bindings.length then
+        throw "bounds: letRec anns/bindings length mismatch"
+      let βs ← inferLetRecGroup Δ bctx anns bindings
+      checkProgramMatchesGo ctors Δ (βs ++ bctx) body
+  | .match_ scrut brs => do
+      let (τs, βs) ← inferBounds Δ bctx scrut
+      -- @TODO(bounds-path-Δ): Δ stays `[]` at Live v1; nested “tail empty ⇒ inner
+      -- Nil-only” needs `nilRefine`/`consRefine` stacked along match paths later.
+      match βs with
+      | .list lo hi βe =>
+          unless checkBoundCovers Δ βs brs do
+            throw "bounds: list match does not cover scrutinee bounds"
+          checkProgramMatchesBranches ctors Δ bctx τs βs lo hi βe brs
+      | _ =>
+          unless coreCtorCoverage ctors τs brs do
+            throw "bounds: match not exhaustive for scrutinee type"
+          checkProgramMatchesBranches ctors Δ bctx τs βs (.lit 0) (.lit 0) βs brs
+  termination_by e.size
+  decreasing_by all_goals (
+    first
+    | exact sizeBranches_lt_match
+    | exact size_lt_app_fn
+    | exact size_lt_app_arg
+    | exact body_size_lt_letRec
+    | exact sizeRecGroup_lt_letRec
+    | (simp only [Expr.size]; omega))
+
+end
+
+/-- Top-level Core match coverage walk for Live `--bl`. -/
+def checkProgramMatches (ctors : CtorEnv) (e : Expr) (_τ : Ty) : Except String Unit := do
+  checkProgramMatchesGo ctors [] [] e
+  pure ()
+
 /-! ## Guards (Core Nil/Cons origin synth + pin-to-synth holes) -/
 
 private def nilE : Expr := .ctor nilCtorName
+private def unitE : Expr := .primLit .unit
 private def consE (h t : Expr) : Expr :=
   .app (.app (.ctor consCtorName) h) t
 private def tyInt : Ty := .prim .int
@@ -189,5 +340,31 @@ private def twoInts : Expr :=
       !(checkMeetsAscriptionPinned [] β
           (.list .hole (.solid (.lit 0)) (.prim .int))).isOk
   | _ => false
+
+/-! ## BoundCovers guards (slice 6) -/
+
+private def brNilOnly (e : Expr) : List (MatchPattern × Expr) :=
+  [(.named nilCtorName 0, e)]
+
+private def brConsOnly (e : Expr) : List (MatchPattern × Expr) :=
+  [(.named consCtorName 2, e)]
+
+private def brNilCons (eNil eCons : Expr) : List (MatchPattern × Expr) :=
+  [(.named nilCtorName 0, eNil), (.named consCtorName 2, eCons)]
+
+private def brWild (e : Expr) : List (MatchPattern × Expr) :=
+  [(.wildcard, e)]
+
+private def βListAny : BoundsTy := .list (.lit 0) (.lit 5) (.prim .int)
+
+#guard checkBoundCovers [] βListAny (brNilCons unitE unitE)
+
+#guard checkBoundCovers [] βListAny (brWild unitE)
+
+#guard checkBoundCovers [] (.list (.lit 0) (.lit 0) (.prim .int)) (brNilOnly unitE)
+
+#guard checkBoundCovers [] (.list (.lit 1) (.lit 1) (.prim .int)) (brConsOnly unitE)
+
+#guard !(checkBoundCovers [] βListAny (brNilOnly unitE))
 
 end FHM.Bounds.Check

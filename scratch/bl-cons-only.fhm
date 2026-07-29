@@ -1,0 +1,5 @@
+-- Slice 6: Cons-only match OK when lo = 1 (BL 1 1 = singleton list).
+
+let xs : BL 1 1 Int = [1]
+match xs with
+| h :: t -> h

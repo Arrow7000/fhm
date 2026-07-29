@@ -1,0 +1,5 @@
+-- Slice 6: Nil-only match OK when hi = 0 (BL 0 0 = empty list only).
+
+let xs : BL 0 0 Int = []
+match xs with
+| [] -> 0
