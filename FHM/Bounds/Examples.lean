@@ -36,17 +36,17 @@ def twoUnits : Expr := consE unitE singletonUnit
 def tyUnit : Ty := .prim .unit
 def tyListUnit : Ty := listTy tyUnit
 
-def βUnit : BoundInfo := .prim .unit
+def βUnit : BoundsTy := .prim .unit
 
 /-- Interval produced by one `cons` step from `[n,n]`. -/
-def βAfterCons (lo hi : Count) : BoundInfo :=
+def βAfterCons (lo hi : Count) : BoundsTy :=
   .list (.add lo (.lit 1)) (.add hi (.lit 1)) βUnit
 
-def βList00 : BoundInfo := .list (.lit 0) (.lit 0) βUnit
+def βList00 : BoundsTy := .list (.lit 0) (.lit 0) βUnit
 /-- After one cons from empty: lo/hi are `0+1` (as in the typing rule). -/
-def βList11 : BoundInfo := βAfterCons (.lit 0) (.lit 0)
+def βList11 : BoundsTy := βAfterCons (.lit 0) (.lit 0)
 /-- After two cons: `(0+1)+1`. -/
-def βList22 : BoundInfo := βAfterCons (.add (.lit 0) (.lit 1)) (.add (.lit 0) (.lit 1))
+def βList22 : BoundsTy := βAfterCons (.add (.lit 0) (.lit 1)) (.add (.lit 0) (.lit 1))
 
 /-! ## 1. HasBounds on Nil / Cons -/
 
@@ -83,13 +83,13 @@ def matchNilOnly (eNil : Expr) : List (MatchPattern × Expr) :=
 def matchConsOnly (eCons : Expr) : List (MatchPattern × Expr) :=
   [(.named consCtorName 2, eCons)]
 
-theorem covers_full_any (lo hi : Count) (βe : BoundInfo) :
+theorem covers_full_any (lo hi : Count) (βe : BoundsTy) :
     BoundCovers [] (.list lo hi βe) (matchNilCons unitE unitE) := by
   refine BoundCovers.listFull_of_both ?N ?C
   · exact ⟨unitE, by simp [matchNilCons]⟩
   · exact ⟨unitE, by simp [matchNilCons]⟩
 
-theorem covers_wild_any (lo hi : Count) (βe : BoundInfo) :
+theorem covers_wild_any (lo hi : Count) (βe : BoundsTy) :
     BoundCovers [] (.list lo hi βe) (matchWild unitE) :=
   BoundCovers.listWild_of ⟨unitE, by simp [matchWild]⟩
 

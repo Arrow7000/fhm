@@ -60,6 +60,7 @@ roots = [
   "FHM.Bounds.Oracle",
   "FHM.Bounds.Commit",
   "FHM.Bounds.Typing",
+  "FHM.Bounds.Erase",     # P4b surface BL → List + BoundAnn
   "FHM.Bounds.Examples",  # P3.5c Core demos
 ]
 

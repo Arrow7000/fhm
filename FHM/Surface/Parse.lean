@@ -292,7 +292,7 @@ def spanOfConsumed (startPos stopPos : Nat) : P Span := do
 /-! ## Type grammar
 
 ASCII only:
-* `count`  — bound slot: Nat lit, lower-ident var, or `_` (P4a-parse; ops later)
+* `count`  — bound slot: Nat lit or `_` (P4a-parse; vars/ops later)
 * `tyAtom` — `()`, names, `(ty)`, `(ty, ty)`, `BL lo hi elem`
 * `tyApp`  — juxtaposition (`Maybe Int`); only `customTy` may take args
 * `ty`     — right-assoc `tyApp -> ty`
@@ -305,19 +305,15 @@ applied customs / nested BL / arrows need parens — matches Pretty prec.
 
 instance : Inhabited Ty := ⟨.prim .unit⟩
 instance : Inhabited PolyTy := ⟨⟨[], .prim .unit⟩⟩
-instance : Inhabited Count := ⟨.lit 0⟩
 
-/-- Bound-slot count (`BL` lo/hi). v1: lit / var / `_` only. -/
+/-- Bound-slot count (`BL` lo/hi). v1: Nat lit or `_` only. -/
 def count : P Count :=
-  withErrorMessage "expected count (Nat, name, or _)" do
+  withErrorMessage "expected count (Nat literal or _)" do
     skipComments
     first [
       do
         let _ ← punct .underscore
         return .hole,
-      do
-        let name ← lowerIdent
-        return .var (.mk name),
       do
         let n ← intLitTok
         if n < 0 then
@@ -1190,7 +1186,6 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 -- P4a-parse: `BL lo hi elem` + bound `_`
 #guard parseTyEq "BL 0 5 Int" (.bl (.lit 0) (.lit 5) (.prim .int))
 #guard parseTyEq "BL _ 5 a" (.bl .hole (.lit 5) (.tvar (.mk "a")))
-#guard parseTyEq "BL n m Int" (.bl (.var (.mk "n")) (.var (.mk "m")) (.prim .int))
 #guard parseTyEq "BL 0 1 (Maybe Int)"
   (.bl (.lit 0) (.lit 1) (.customTy (.mk "Maybe") [.prim .int]))
 #guard parseTyEq "BL 0 0 (BL 1 2 Int)"
@@ -1204,6 +1199,8 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 #guard !(parseTy "BL 0").isOk
 #guard !(parseTy "BL 0 5").isOk
 #guard !(parseTy "BL -1 5 Int").isOk
+-- count vars deferred to P5 (Nat binders)
+#guard !(parseTy "BL n m Int").isOk
 
 #guard (match parsePolyTy "{a} a -> a" with
   | .ok ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩ => true

@@ -240,7 +240,6 @@ mutual
 
 def Surface.Count.pretty : Surface.Count → String
   | .lit n => toString n
-  | .var v => prettyValName v
   | .hole => "_"
 
 def Surface.Ty.prettyAux (prec : Nat) : Surface.Ty → String

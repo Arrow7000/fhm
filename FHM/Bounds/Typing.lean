@@ -4,7 +4,7 @@ import FHM.Bounds.Oracle
 import FHM.Bounds.Commit
 
 /-!
-# Bounds typing on Core — BoundInfo + parasitic HasBounds (P2 API)
+# Bounds typing on Core — BoundsTy + parasitic HasBounds (P2 API)
 
 **Status:** P2 theorems filled (see end for `HasBounds.weaken_Δ` report).
 
@@ -22,6 +22,8 @@ open Std
 /-! ## Prelude names (align with SurfaceBridge) -/
 
 def listTyName : TyName := ⟨"List"⟩
+def boolTyName : TyName := ⟨"Bool"⟩
+def pairTyName : TyName := ⟨"Pair"⟩
 def nilCtorName : CtorName := ⟨"Nil"⟩
 def consCtorName : CtorName := ⟨"Cons"⟩
 
@@ -31,20 +33,21 @@ def isListTy : Ty → Option Ty
   | .customTy n [α] => if n = listTyName then some α else none
   | _ => none
 
-/-! ## BoundInfo -/
+/-! ## BoundsTy -/
 
-/-- Bound-layer view of a Core monotype — same spine as `Ty`, intervals only on List. -/
-inductive BoundInfo where
+/-- Bound-layer view of a Core monotype — same spine as `Ty`, intervals only on List.
+Renamed from `BoundInfo` so the name reads as a `Ty` variant. -/
+inductive BoundsTy where
   | prim (p : PrimTy)
-  | arrow (dom cod : BoundInfo)
+  | arrow (dom cod : BoundsTy)
   | bvar (i : Nat)
   | fvar (i : Nat)
-  | list (lo hi : Count) (elem : BoundInfo)
-  | custom (name : TyName) (args : List BoundInfo)
+  | list (lo hi : Count) (elem : BoundsTy)
+  | custom (name : TyName) (args : List BoundsTy)
   deriving Repr
 
 /-- `β` matches HM type `τ` (constructors / arities; List uses `list`, not `custom`). -/
-inductive Agrees : BoundInfo → Ty → Prop where
+inductive Agrees : BoundsTy → Ty → Prop where
   | prim {p} :
       Agrees (.prim p) (.prim p)
   | arrow {βd βc τd τc} :
@@ -68,7 +71,7 @@ Used when inventing β without annotations (e.g. `nil` elem). Not principal.
 
 TODO(bounds-inf): lists currently default to interval `[0,0]`. Once `Count.inf`
 exists (see Kernel `Count`), default should be `[0, inf]` (unbounded length). -/
-def defaultBounds : Ty → BoundInfo
+def defaultBounds : Ty → BoundsTy
   | .prim p => .prim p
   | .arrow a b => .arrow (defaultBounds a) (defaultBounds b)
   | .bvar i => .bvar i
@@ -122,12 +125,12 @@ theorem defaultBounds_agrees {τ : Ty} (h : ListShapeOK τ) :
       | _ :: _ :: _ =>
           simpa [defaultBounds] using Agrees.custom hne hmap
 
-abbrev BoundEnv := List BoundInfo
+abbrev BoundEnv := List BoundsTy
 
-def consBoundEnv (bctx : BoundEnv) (lo hi : Count) (βe : BoundInfo) : BoundEnv :=
+def consBoundEnv (bctx : BoundEnv) (lo hi : Count) (βe : BoundsTy) : BoundEnv :=
   βe :: .list (.pred lo) (.pred hi) βe :: bctx
 
-/-! ## Canonical min/max + joinBoundInfo (WF) -/
+/-! ## Canonical min/max + joinBoundsTy (WF) -/
 
 private def kindNat : VarKind → Nat
   | .rigid => 0 | .inferable => 1
@@ -241,132 +244,132 @@ theorem joinMax_comm (a b : Count) : joinMax a b = joinMax b a := by
     · simp [hab', hba]
 
 mutual
-  def joinBoundInfo (β₁ β₂ : BoundInfo) : Option BoundInfo :=
+  def joinBoundsTy (β₁ β₂ : BoundsTy) : Option BoundsTy :=
     match β₁, β₂ with
     | .prim p, .prim q => if p = q then some (.prim p) else none
     | .bvar i, .bvar j => if i = j then some (.bvar i) else none
     | .fvar i, .fvar j => if i = j then some (.fvar i) else none
     | .arrow a b, .arrow a' b' =>
-        match joinBoundInfo a a', joinBoundInfo b b' with
+        match joinBoundsTy a a', joinBoundsTy b b' with
         | some d, some c => some (.arrow d c)
         | _, _ => none
     | .list lo₁ hi₁ e₁, .list lo₂ hi₂ e₂ =>
-        match joinBoundInfo e₁ e₂ with
+        match joinBoundsTy e₁ e₂ with
         | some e => some (.list (joinMin lo₁ lo₂) (joinMax hi₁ hi₂) e)
         | none => none
     | .custom n₁ as₁, .custom n₂ as₂ =>
         if n₁ = n₂ && as₁.length = as₂.length then
-          match joinBoundInfoArgs as₁ as₂ with
+          match joinBoundsTyArgs as₁ as₂ with
           | some args => some (.custom n₁ args)
           | none => none
         else none
     | _, _ => none
   termination_by sizeOf β₁ + sizeOf β₂
 
-  def joinBoundInfoArgs (as₁ as₂ : List BoundInfo) : Option (List BoundInfo) :=
+  def joinBoundsTyArgs (as₁ as₂ : List BoundsTy) : Option (List BoundsTy) :=
     match as₁, as₂ with
     | [], [] => some []
     | x :: xs, y :: ys =>
-        match joinBoundInfo x y, joinBoundInfoArgs xs ys with
+        match joinBoundsTy x y, joinBoundsTyArgs xs ys with
         | some z, some zs => some (z :: zs)
         | _, _ => none
     | _, _ => none
   termination_by sizeOf as₁ + sizeOf as₂
 end
 
-theorem joinBoundInfo_comm (β₁ β₂ : BoundInfo) :
-    joinBoundInfo β₁ β₂ = joinBoundInfo β₂ β₁ := by
-  refine joinBoundInfo.induct
-    (motive1 := fun a b => joinBoundInfo a b = joinBoundInfo b a)
-    (motive2 := fun as bs => joinBoundInfoArgs as bs = joinBoundInfoArgs bs as)
+theorem joinBoundsTy_comm (β₁ β₂ : BoundsTy) :
+    joinBoundsTy β₁ β₂ = joinBoundsTy β₂ β₁ := by
+  refine joinBoundsTy.induct
+    (motive1 := fun a b => joinBoundsTy a b = joinBoundsTy b a)
+    (motive2 := fun as bs => joinBoundsTyArgs as bs = joinBoundsTyArgs bs as)
     ?c1 ?c2 ?c3 ?c4 ?c5 ?c6 ?c7 ?c8 ?c9 ?c10 ?c11 ?c12 ?c13 ?c14
     ?c15 ?c16 ?c17 ?c18 β₁ β₂
-  case c1 => intro q; rw [joinBoundInfo.eq_def (β₁ := .prim q) (β₂ := .prim q)]
+  case c1 => intro q; rw [joinBoundsTy.eq_def (β₁ := .prim q) (β₂ := .prim q)]
   case c2 =>
     intro p q hne
     have hne' : q ≠ p := (hne ·.symm)
-    rw [joinBoundInfo.eq_def (β₁ := .prim p) (β₂ := .prim q),
-        joinBoundInfo.eq_def (β₁ := .prim q) (β₂ := .prim p)]
+    rw [joinBoundsTy.eq_def (β₁ := .prim p) (β₂ := .prim q),
+        joinBoundsTy.eq_def (β₁ := .prim q) (β₂ := .prim p)]
     simp [hne, hne']
-  case c3 => intro j; rw [joinBoundInfo.eq_def (β₁ := .bvar j) (β₂ := .bvar j)]
+  case c3 => intro j; rw [joinBoundsTy.eq_def (β₁ := .bvar j) (β₂ := .bvar j)]
   case c4 =>
     intro i j hne
     have hne' : j ≠ i := (hne ·.symm)
-    rw [joinBoundInfo.eq_def (β₁ := .bvar i) (β₂ := .bvar j),
-        joinBoundInfo.eq_def (β₁ := .bvar j) (β₂ := .bvar i)]
+    rw [joinBoundsTy.eq_def (β₁ := .bvar i) (β₂ := .bvar j),
+        joinBoundsTy.eq_def (β₁ := .bvar j) (β₂ := .bvar i)]
     simp [hne, hne']
-  case c5 => intro j; rw [joinBoundInfo.eq_def (β₁ := .fvar j) (β₂ := .fvar j)]
+  case c5 => intro j; rw [joinBoundsTy.eq_def (β₁ := .fvar j) (β₂ := .fvar j)]
   case c6 =>
     intro i j hne
     have hne' : j ≠ i := (hne ·.symm)
-    rw [joinBoundInfo.eq_def (β₁ := .fvar i) (β₂ := .fvar j),
-        joinBoundInfo.eq_def (β₁ := .fvar j) (β₂ := .fvar i)]
+    rw [joinBoundsTy.eq_def (β₁ := .fvar i) (β₂ := .fvar j),
+        joinBoundsTy.eq_def (β₁ := .fvar j) (β₂ := .fvar i)]
     simp [hne, hne']
   case c7 =>
     intro a b a' b' d c hc hd iha ihb
-    rw [joinBoundInfo.eq_def (β₁ := a.arrow b) (β₂ := a'.arrow b'),
-        joinBoundInfo.eq_def (β₁ := a'.arrow b') (β₂ := a.arrow b)]
-    have hd' : joinBoundInfo a' a = some d := iha.symm ▸ hd
-    have hc' : joinBoundInfo b' b = some c := ihb.symm ▸ hc
+    rw [joinBoundsTy.eq_def (β₁ := a.arrow b) (β₂ := a'.arrow b'),
+        joinBoundsTy.eq_def (β₁ := a'.arrow b') (β₂ := a.arrow b)]
+    have hd' : joinBoundsTy a' a = some d := iha.symm ▸ hd
+    have hc' : joinBoundsTy b' b = some c := ihb.symm ▸ hc
     simp [iha, ihb, hd', hc']
   case c8 =>
     intro a b a' b' hfail iha ihb
-    rw [joinBoundInfo.eq_def (β₁ := a.arrow b) (β₂ := a'.arrow b'),
-        joinBoundInfo.eq_def (β₁ := a'.arrow b') (β₂ := a.arrow b)]
+    rw [joinBoundsTy.eq_def (β₁ := a.arrow b) (β₂ := a'.arrow b'),
+        joinBoundsTy.eq_def (β₁ := a'.arrow b') (β₂ := a.arrow b)]
     simp only []
-    cases h1 : joinBoundInfo a a' with
+    cases h1 : joinBoundsTy a a' with
     | none =>
-      have h1' : joinBoundInfo a' a = none := iha.symm ▸ h1
-      cases h2 : joinBoundInfo b b' with
+      have h1' : joinBoundsTy a' a = none := iha.symm ▸ h1
+      cases h2 : joinBoundsTy b b' with
       | none =>
-        have h2' : joinBoundInfo b' b = none := ihb.symm ▸ h2
+        have h2' : joinBoundsTy b' b = none := ihb.symm ▸ h2
         simp [h1', h2']
       | some c =>
-        have h2' : joinBoundInfo b' b = some c := ihb.symm ▸ h2
+        have h2' : joinBoundsTy b' b = some c := ihb.symm ▸ h2
         simp [h1', h2']
     | some d =>
-      cases h2 : joinBoundInfo b b' with
+      cases h2 : joinBoundsTy b b' with
       | none =>
-        have h1' : joinBoundInfo a' a = some d := iha.symm ▸ h1
-        have h2' : joinBoundInfo b' b = none := ihb.symm ▸ h2
+        have h1' : joinBoundsTy a' a = some d := iha.symm ▸ h1
+        have h2' : joinBoundsTy b' b = none := ihb.symm ▸ h2
         simp [h1', h2']
       | some c =>
           exact False.elim (hfail d c h1 h2)
   case c9 =>
     intro lo1 hi1 e1 lo2 hi2 e2 e he ihe
-    rw [joinBoundInfo.eq_def (β₁ := .list lo1 hi1 e1) (β₂ := .list lo2 hi2 e2),
-        joinBoundInfo.eq_def (β₁ := .list lo2 hi2 e2) (β₂ := .list lo1 hi1 e1)]
+    rw [joinBoundsTy.eq_def (β₁ := .list lo1 hi1 e1) (β₂ := .list lo2 hi2 e2),
+        joinBoundsTy.eq_def (β₁ := .list lo2 hi2 e2) (β₂ := .list lo1 hi1 e1)]
     simp only []
-    have he' : joinBoundInfo e2 e1 = some e := ihe.symm ▸ he
+    have he' : joinBoundsTy e2 e1 = some e := ihe.symm ▸ he
     simp [he, he', joinMin_comm lo1 lo2, joinMax_comm hi1 hi2]
   case c10 =>
     intro lo1 hi1 e1 lo2 hi2 e2 he ihe
-    rw [joinBoundInfo.eq_def (β₁ := .list lo1 hi1 e1) (β₂ := .list lo2 hi2 e2),
-        joinBoundInfo.eq_def (β₁ := .list lo2 hi2 e2) (β₂ := .list lo1 hi1 e1)]
+    rw [joinBoundsTy.eq_def (β₁ := .list lo1 hi1 e1) (β₂ := .list lo2 hi2 e2),
+        joinBoundsTy.eq_def (β₁ := .list lo2 hi2 e2) (β₂ := .list lo1 hi1 e1)]
     simp only []
-    have he' : joinBoundInfo e2 e1 = none := ihe.symm ▸ he
+    have he' : joinBoundsTy e2 e1 = none := ihe.symm ▸ he
     simp [he, he']
   case c11 =>
     intro n1 as1 n2 as2 hcond args hargs ihas
-    rw [joinBoundInfo.eq_def (β₁ := .custom n1 as1) (β₂ := .custom n2 as2),
-        joinBoundInfo.eq_def (β₁ := .custom n2 as2) (β₂ := .custom n1 as1)]
+    rw [joinBoundsTy.eq_def (β₁ := .custom n1 as1) (β₂ := .custom n2 as2),
+        joinBoundsTy.eq_def (β₁ := .custom n2 as2) (β₂ := .custom n1 as1)]
     simp only []
     have hn : n1 = n2 ∧ as1.length = as2.length := by
       simpa [Bool.and_eq_true, decide_eq_true_eq] using hcond
     have hcond' : (decide (n2 = n1) && decide (as2.length = as1.length)) = true := by
       simp [hn.1.symm, hn.2.symm]
-    have hargs' : joinBoundInfoArgs as2 as1 = some args := ihas.symm ▸ hargs
+    have hargs' : joinBoundsTyArgs as2 as1 = some args := ihas.symm ▸ hargs
     simp [hargs, hargs', hn.1, hn.2]
   case c12 =>
     intro n1 as1 n2 as2 hcond hargs ihas
-    rw [joinBoundInfo.eq_def (β₁ := .custom n1 as1) (β₂ := .custom n2 as2),
-        joinBoundInfo.eq_def (β₁ := .custom n2 as2) (β₂ := .custom n1 as1)]
+    rw [joinBoundsTy.eq_def (β₁ := .custom n1 as1) (β₂ := .custom n2 as2),
+        joinBoundsTy.eq_def (β₁ := .custom n2 as2) (β₂ := .custom n1 as1)]
     simp only []
     have hn : n1 = n2 ∧ as1.length = as2.length := by
       simpa [Bool.and_eq_true, decide_eq_true_eq] using hcond
     have hcond' : (decide (n2 = n1) && decide (as2.length = as1.length)) = true := by
       simp [hn.1.symm, hn.2.symm]
-    have hargs' : joinBoundInfoArgs as2 as1 = none := ihas.symm ▸ hargs
+    have hargs' : joinBoundsTyArgs as2 as1 = none := ihas.symm ▸ hargs
     simp [hcond, hcond', hargs, hargs']
   case c13 =>
     intro n1 as1 n2 as2 hcond
@@ -374,13 +377,13 @@ theorem joinBoundInfo_comm (β₁ β₂ : BoundInfo) :
       intro h
       simp only [Bool.and_eq_true, decide_eq_true_eq] at h hcond
       exact hcond ⟨h.1.symm, h.2.symm⟩
-    rw [joinBoundInfo.eq_def (β₁ := .custom n1 as1) (β₂ := .custom n2 as2),
-        joinBoundInfo.eq_def (β₁ := .custom n2 as2) (β₂ := .custom n1 as1)]
+    rw [joinBoundsTy.eq_def (β₁ := .custom n1 as1) (β₂ := .custom n2 as2),
+        joinBoundsTy.eq_def (β₁ := .custom n2 as2) (β₂ := .custom n1 as1)]
     simp [hcond, hcond']
   case c14 =>
     intro a b hp hbv hfv har hli hcu
-    rw [joinBoundInfo.eq_def (β₁ := a) (β₂ := b),
-        joinBoundInfo.eq_def (β₁ := b) (β₂ := a)]
+    rw [joinBoundsTy.eq_def (β₁ := a) (β₂ := b),
+        joinBoundsTy.eq_def (β₁ := b) (β₂ := a)]
     cases a <;> cases b <;> first
       | rfl
       | exact False.elim (hp _ _ rfl rfl)
@@ -392,39 +395,39 @@ theorem joinBoundInfo_comm (β₁ β₂ : BoundInfo) :
   case c15 => rfl
   case c16 =>
     intro x xs y ys z zs hys hx ihx ihys
-    rw [joinBoundInfoArgs.eq_def (as₁ := x::xs) (as₂ := y::ys),
-        joinBoundInfoArgs.eq_def (as₁ := y::ys) (as₂ := x::xs)]
+    rw [joinBoundsTyArgs.eq_def (as₁ := x::xs) (as₂ := y::ys),
+        joinBoundsTyArgs.eq_def (as₁ := y::ys) (as₂ := x::xs)]
     simp only []
-    have hx' : joinBoundInfo y x = some z := ihx.symm ▸ hx
-    have hys' : joinBoundInfoArgs ys xs = some zs := ihys.symm ▸ hys
+    have hx' : joinBoundsTy y x = some z := ihx.symm ▸ hx
+    have hys' : joinBoundsTyArgs ys xs = some zs := ihys.symm ▸ hys
     simp [hx, hx', hys, hys']
   case c17 =>
     intro x xs y ys hfail ihx ihys
-    rw [joinBoundInfoArgs.eq_def (as₁ := x::xs) (as₂ := y::ys),
-        joinBoundInfoArgs.eq_def (as₁ := y::ys) (as₂ := x::xs)]
+    rw [joinBoundsTyArgs.eq_def (as₁ := x::xs) (as₂ := y::ys),
+        joinBoundsTyArgs.eq_def (as₁ := y::ys) (as₂ := x::xs)]
     simp only []
-    cases h1 : joinBoundInfo x y with
+    cases h1 : joinBoundsTy x y with
     | none =>
-      have h1' : joinBoundInfo y x = none := ihx.symm ▸ h1
-      cases h2 : joinBoundInfoArgs xs ys with
+      have h1' : joinBoundsTy y x = none := ihx.symm ▸ h1
+      cases h2 : joinBoundsTyArgs xs ys with
       | none =>
-        have h2' : joinBoundInfoArgs ys xs = none := ihys.symm ▸ h2
+        have h2' : joinBoundsTyArgs ys xs = none := ihys.symm ▸ h2
         simp [h1', h2']
       | some zs =>
-        have h2' : joinBoundInfoArgs ys xs = some zs := ihys.symm ▸ h2
+        have h2' : joinBoundsTyArgs ys xs = some zs := ihys.symm ▸ h2
         simp [h1', h2']
     | some z =>
-      cases h2 : joinBoundInfoArgs xs ys with
+      cases h2 : joinBoundsTyArgs xs ys with
       | none =>
-        have h1' : joinBoundInfo y x = some z := ihx.symm ▸ h1
-        have h2' : joinBoundInfoArgs ys xs = none := ihys.symm ▸ h2
+        have h1' : joinBoundsTy y x = some z := ihx.symm ▸ h1
+        have h2' : joinBoundsTyArgs ys xs = none := ihys.symm ▸ h2
         simp [h1', h2']
       | some zs =>
           exact False.elim (hfail z zs h1 h2)
   case c18 =>
     intro as bs hnil hcons
-    rw [joinBoundInfoArgs.eq_def (as₁ := as) (as₂ := bs),
-        joinBoundInfoArgs.eq_def (as₁ := bs) (as₂ := as)]
+    rw [joinBoundsTyArgs.eq_def (as₁ := as) (as₂ := bs),
+        joinBoundsTyArgs.eq_def (as₁ := bs) (as₂ := as)]
     cases as <;> cases bs <;> first
       | rfl
       | exact False.elim (hnil rfl rfl)
@@ -436,8 +439,8 @@ theorem joinBoundInfo_comm (β₁ β₂ : BoundInfo) :
 
 `list_refl` omits `DemandOK` so unrestricted `Sub.refl` holds; `DemandOK` stays on
 the proper-subtype `list` rule. `custom` allows any name so `Sub.refl` covers all
-`BoundInfo`s. -/
-inductive Sub (Δ : List Constraint) : BoundInfo → BoundInfo → Prop where
+`BoundsTy`s. -/
+inductive Sub (Δ : List Constraint) : BoundsTy → BoundsTy → Prop where
   | prim {p} :
       Sub Δ (.prim p) (.prim p)
   | bvar {i} :
@@ -463,7 +466,7 @@ inductive Sub (Δ : List Constraint) : BoundInfo → BoundInfo → Prop where
 
 /-! ## HasBounds -/
 
-def boundInfoOfPrimLit : PrimLitExpr → BoundInfo
+def boundInfoOfPrimLit : PrimLitExpr → BoundsTy
   | .unit => .prim .unit
   | .int _ => .prim .int
   | .nat _ => .prim .nat
@@ -475,7 +478,7 @@ private theorem boundInfoOfPrimLit_agrees (p : PrimLitExpr) :
 
 /-- Parasitic bound assignment. Every conclusion should satisfy `Agrees β τ`. -/
 inductive HasBounds :
-    List Constraint → BoundEnv → Expr → Ty → BoundInfo → Prop where
+    List Constraint → BoundEnv → Expr → Ty → BoundsTy → Prop where
   | primLit {Δ bctx p} :
       HasBounds Δ bctx (.primLit p) (PrimLitExpr.ty p) (boundInfoOfPrimLit p)
   | primBinOp {Δ bctx op τ β} :
@@ -513,7 +516,7 @@ inductive HasBounds :
       HasBounds Δ bctx scrut (listTy α) (.list lo hi βe) →
       HasBounds (Δ ++ nilRefine lo hi) bctx eNil τ βnil →
       HasBounds (Δ ++ consRefine hi) (consBoundEnv bctx lo hi βe) eCons τ βcons →
-      joinBoundInfo βnil βcons = some β →
+      joinBoundsTy βnil βcons = some β →
       HasBounds Δ bctx
         (.match_ scrut [
           (.named nilCtorName 0, eNil),
@@ -541,7 +544,7 @@ inductive HasBounds :
 /-! ## CheckBounds -/
 
 inductive CheckBounds :
-    List Constraint → BoundEnv → Expr → Ty → BoundInfo → Prop where
+    List Constraint → BoundEnv → Expr → Ty → BoundsTy → Prop where
   | ofSub {Δ bctx e τ β β'} :
       HasBounds Δ bctx e τ β' →
       Sub Δ β' β →
@@ -549,8 +552,8 @@ inductive CheckBounds :
 
 /-! ## Theorems -/
 
-theorem Sub.refl (Δ : List Constraint) (β : BoundInfo) : Sub Δ β β := by
-  refine BoundInfo.rec
+theorem Sub.refl (Δ : List Constraint) (β : BoundsTy) : Sub Δ β β := by
+  refine BoundsTy.rec
     (motive_1 := fun β => Sub Δ β β)
     (motive_2 := fun as => List.Forall₂ (Sub Δ) as as)
     (fun _ => .prim)
@@ -565,39 +568,39 @@ theorem Sub.refl (Δ : List Constraint) (β : BoundInfo) : Sub Δ β β := by
 
 mutual
 /-- Join of two bounds that both agree with `τ` still agrees with `τ`. -/
-  theorem joinBoundInfo_agrees {β₁ : BoundInfo} {τ : Ty} (h1 : Agrees β₁ τ) :
-      ∀ {β₂ β}, joinBoundInfo β₁ β₂ = some β → Agrees β₂ τ → Agrees β τ := by
+  theorem joinBoundsTy_agrees {β₁ : BoundsTy} {τ : Ty} (h1 : Agrees β₁ τ) :
+      ∀ {β₂ β}, joinBoundsTy β₁ β₂ = some β → Agrees β₂ τ → Agrees β τ := by
     intro β₂ β hj h2
     cases h1 with
     | @prim p =>
-        cases h2; simp [joinBoundInfo.eq_def] at hj; cases hj; exact .prim
+        cases h2; simp [joinBoundsTy.eq_def] at hj; cases hj; exact .prim
     | @arrow βd βc τd τc hd hc =>
         cases h2 with
         | @arrow βd' βc' _ _ hd' hc' =>
-            rw [joinBoundInfo.eq_def] at hj
-            cases hdj : joinBoundInfo βd βd' with
+            rw [joinBoundsTy.eq_def] at hj
+            cases hdj : joinBoundsTy βd βd' with
             | none =>
-                cases hcj : joinBoundInfo βc βc' <;> simp [hdj, hcj] at hj
+                cases hcj : joinBoundsTy βc βc' <;> simp [hdj, hcj] at hj
             | some d =>
-                cases hcj : joinBoundInfo βc βc' with
+                cases hcj : joinBoundsTy βc βc' with
                 | none => simp [hdj, hcj] at hj
                 | some c =>
                     simp [hdj, hcj] at hj; cases hj
-                    exact .arrow (joinBoundInfo_agrees hd hdj hd')
-                      (joinBoundInfo_agrees hc hcj hc')
+                    exact .arrow (joinBoundsTy_agrees hd hdj hd')
+                      (joinBoundsTy_agrees hc hcj hc')
     | @bvar i =>
-        cases h2; simp [joinBoundInfo.eq_def] at hj; cases hj; exact .bvar
+        cases h2; simp [joinBoundsTy.eq_def] at hj; cases hj; exact .bvar
     | @fvar i =>
-        cases h2; simp [joinBoundInfo.eq_def] at hj; cases hj; exact .fvar
+        cases h2; simp [joinBoundsTy.eq_def] at hj; cases hj; exact .fvar
     | @list lo hi βe α he =>
         cases h2 with
         | @list lo' hi' βe' _ he' =>
-            rw [joinBoundInfo.eq_def] at hj
-            cases hej : joinBoundInfo βe βe' with
+            rw [joinBoundsTy.eq_def] at hj
+            cases hej : joinBoundsTy βe βe' with
             | none => simp [hej] at hj
             | some e =>
                 simp [hej] at hj; cases hj
-                exact .list (joinBoundInfo_agrees he hej he')
+                exact .list (joinBoundsTy_agrees he hej he')
         | @custom n _ _ hne _ =>
             -- τ = listTy α = customTy listTyName [_], so n = listTyName, contradicts hne
             exact absurd rfl hne
@@ -607,44 +610,44 @@ mutual
             -- τ = customTy name _ with name ≠ listTyName, can't be listTy
             exact absurd rfl hne
         | @custom _ args' _ _ hargs' =>
-            rw [joinBoundInfo.eq_def] at hj
+            rw [joinBoundsTy.eq_def] at hj
             have hl : args.length = args'.length := by
               have := List.Forall₂.length_eq hargs
               have := List.Forall₂.length_eq hargs'
               omega
             simp only [↓reduceIte, hl, decide_true, Bool.and_self] at hj
-            cases hjs : joinBoundInfoArgs args args' with
+            cases hjs : joinBoundsTyArgs args args' with
             | none => simp [hjs] at hj
             | some zs =>
                 simp [hjs] at hj; cases hj
-                exact .custom hne (joinBoundInfoArgs_agrees hargs hjs hargs')
+                exact .custom hne (joinBoundsTyArgs_agrees hargs hjs hargs')
   termination_by sizeOf β₁
 
-  theorem joinBoundInfoArgs_agrees
-      {as : List BoundInfo} {tys : List Ty}
+  theorem joinBoundsTyArgs_agrees
+      {as : List BoundsTy} {tys : List Ty}
       (hargs : List.Forall₂ Agrees as tys) :
-      ∀ {bs zs}, joinBoundInfoArgs as bs = some zs →
+      ∀ {bs zs}, joinBoundsTyArgs as bs = some zs →
         List.Forall₂ Agrees bs tys → List.Forall₂ Agrees zs tys := by
     cases hargs with
     | nil =>
         intro bs zs hj hb
         cases hb
-        simp [joinBoundInfoArgs.eq_def] at hj; cases hj; exact .nil
+        simp [joinBoundsTyArgs.eq_def] at hj; cases hj; exact .nil
     | @cons a τ as tys ha has =>
         intro bs zs hj hb
         cases hb with
         | @cons b _ bs' _ hb hbs =>
-            rw [joinBoundInfoArgs.eq_def] at hj
-            cases hx : joinBoundInfo a b with
+            rw [joinBoundsTyArgs.eq_def] at hj
+            cases hx : joinBoundsTy a b with
             | none =>
-                cases hxs : joinBoundInfoArgs as bs' <;> simp [hx, hxs] at hj
+                cases hxs : joinBoundsTyArgs as bs' <;> simp [hx, hxs] at hj
             | some z =>
-                cases hxs : joinBoundInfoArgs as bs' with
+                cases hxs : joinBoundsTyArgs as bs' with
                 | none => simp [hx, hxs] at hj
                 | some zs' =>
                     simp [hx, hxs] at hj; cases hj
-                    exact .cons (joinBoundInfo_agrees ha hx hb)
-                      (joinBoundInfoArgs_agrees has hxs hbs)
+                    exact .cons (joinBoundsTy_agrees ha hx hb)
+                      (joinBoundsTyArgs_agrees has hxs hbs)
   termination_by sizeOf as
 end
 
@@ -664,7 +667,7 @@ theorem HasBounds.agrees {Δ bctx e τ β}
   | lambda hA _ ihb => exact .arrow hA ihb
   | letMono _ _ _ ih2 => exact ih2
   | matchList _ _ _ hj _ih_s ihnil ihcons =>
-      exact joinBoundInfo_agrees ihnil hj ihcons
+      exact joinBoundsTy_agrees ihnil hj ihcons
   | matchNil _ _ _ _ ih => exact ih
   | matchCons _ _ _ _ ih => exact ih
   | ctor _ hA => exact hA
@@ -694,7 +697,7 @@ refinements (interesting direction is branch strengthening, not thinning).
 3. Drop until a path-condition algebra is designed.
 -/
 
-def WellBound (ctors : CtorEnv) (e : Expr) (τ : Ty) (β : BoundInfo) : Prop :=
+def WellBound (ctors : CtorEnv) (e : Expr) (τ : Ty) (β : BoundsTy) : Prop :=
   TypeOfElabHM ⟨[], ctors⟩ e τ ∧ HasBounds [] [] e τ β
 
 /-! ## P3: BoundCovers — List match coverage under path conditions
@@ -728,7 +731,7 @@ scrutinee bound info `β`.
 simply not derivable — the pipeline should use `AllMatchesExhaustive` instead.
 Wildcards cover List scrutinees without arithmetic side conditions. -/
 inductive BoundCovers (Δ : List Constraint) :
-    BoundInfo → List (MatchPattern × Expr) → Prop where
+    BoundsTy → List (MatchPattern × Expr) → Prop where
   /-- Both Nil and Cons present (order irrelevant). No arithmetic side condition. -/
   | listFull {lo hi βe brs} :
       hasNilBranch brs →
@@ -753,14 +756,14 @@ inductive BoundCovers (Δ : List Constraint) :
       BoundCovers Δ (.list lo hi βe) brs
 
 /-- Match expression covered given scrutinee bounds (expression shape not required). -/
-def BoundCoversMatch (Δ : List Constraint) (β : BoundInfo)
+def BoundCoversMatch (Δ : List Constraint) (β : BoundsTy)
     (m : Expr) : Prop :=
   match m with
   | .match_ _ brs => BoundCovers Δ β brs
   | _ => False
 
 /-- Pipeline-facing: empty path, list bounds from `HasBounds`. -/
-def BoundCoversClosed (β : BoundInfo) (brs : List (MatchPattern × Expr)) : Prop :=
+def BoundCoversClosed (β : BoundsTy) (brs : List (MatchPattern × Expr)) : Prop :=
   BoundCovers [] β brs
 
 /-! ### P3 theorems -/
@@ -842,7 +845,7 @@ theorem BoundCovers.only_list {Δ β brs}
   | listConsOnly => exact ⟨_, _, _, rfl⟩
   | listWild => exact ⟨_, _, _, rfl⟩
 
-/-! ## P3.5b — BoundAnn + pipeline contract (shapes for sign-off)
+/-! ## P3.5b — BoundsAnnTy + pipeline contract (shapes for sign-off)
 
 **Status:** API review — not yet used by Surface/Live.
 
@@ -862,40 +865,41 @@ bindings). Those ascriptions are checked with `Sub`, not re-inferred.
 inductive AnnoCount where
   | hole
   | solid (c : Count)
-  deriving Repr
+  deriving DecidableEq, Repr
 
-/-- Bound ascription with holes, same spine as `BoundInfo`.
-List is the only place `AnnoCount` appears; everything else mirrors `BoundInfo`. -/
-inductive BoundAnn where
+/-- Bound ascription with holes, same spine as `BoundsTy`.
+List is the only place `AnnoCount` appears; everything else mirrors `BoundsTy`.
+Renamed from `BoundAnn` so the name reads as an annotated `Ty`. -/
+inductive BoundsAnnTy where
   | prim (p : PrimTy)
-  | arrow (dom cod : BoundAnn)
+  | arrow (dom cod : BoundsAnnTy)
   | bvar (i : Nat)
   | fvar (i : Nat)
-  | list (lo hi : AnnoCount) (elem : BoundAnn)
-  | custom (name : TyName) (args : List BoundAnn)
+  | list (lo hi : AnnoCount) (elem : BoundsAnnTy)
+  | custom (name : TyName) (args : List BoundsAnnTy)
   deriving Repr
 
-/-- Solid ascription (no holes) is already a `BoundInfo`; `none` if any hole remains. -/
-def BoundAnn.toBoundInfo? : BoundAnn → Option BoundInfo
+/-- Solid ascription (no holes) is already a `BoundsTy`; `none` if any hole remains. -/
+def BoundsAnnTy.toBoundsTy? : BoundsAnnTy → Option BoundsTy
   | .prim p => some (.prim p)
   | .bvar i => some (.bvar i)
   | .fvar i => some (.fvar i)
   | .arrow d c =>
-      match BoundAnn.toBoundInfo? d, BoundAnn.toBoundInfo? c with
+      match BoundsAnnTy.toBoundsTy? d, BoundsAnnTy.toBoundsTy? c with
       | some βd, some βc => some (.arrow βd βc)
       | _, _ => none
   | .list (.solid lo) (.solid hi) e =>
-      match BoundAnn.toBoundInfo? e with
+      match BoundsAnnTy.toBoundsTy? e with
       | some βe => some (.list lo hi βe)
       | none => none
   | .list _ _ _ => none
   | .custom n as =>
       if n = listTyName then none
       else
-        let rec go : (as : List BoundAnn) → Option (List BoundInfo)
+        let rec go : (as : List BoundsAnnTy) → Option (List BoundsTy)
           | [] => some []
           | a :: rest =>
-              match BoundAnn.toBoundInfo? a, go rest with
+              match BoundsAnnTy.toBoundsTy? a, go rest with
               | some β, some bs => some (β :: bs)
               | _, _ => none
             termination_by as => sizeOf as
@@ -903,10 +907,10 @@ def BoundAnn.toBoundInfo? : BoundAnn → Option BoundInfo
 termination_by a => sizeOf a
 
 /-- Pointwise solid conversion of annotation argument lists. -/
-def BoundAnnList.toBoundInfo? : List BoundAnn → Option (List BoundInfo)
+def BoundsAnnTyList.toBoundsTy? : List BoundsAnnTy → Option (List BoundsTy)
   | [] => some []
   | a :: rest =>
-      match BoundAnn.toBoundInfo? a, BoundAnnList.toBoundInfo? rest with
+      match BoundsAnnTy.toBoundsTy? a, BoundsAnnTyList.toBoundsTy? rest with
       | some β, some bs => some (β :: bs)
       | _, _ => none
 termination_by as => sizeOf as
@@ -918,11 +922,11 @@ inductive ElabCount : Nat → AnnoCount → Count → Nat → Prop where
   | solid {Φ c} :
       ElabCount Φ (.solid c) c Φ
 
-/-- `ElabAnn Φ ann β Φ'` — fill holes in a bound ascription to a concrete `BoundInfo`.
+/-- `ElabAnn Φ ann β Φ'` — fill holes in a bound ascription to a concrete `BoundsTy`.
 
 v1: holes only in **list** `lo`/`hi` (and nested lists via `elem`).
-`custom` args must already be solid (`toBoundInfo?`). -/
-inductive ElabAnn : Nat → BoundAnn → BoundInfo → Nat → Prop where
+`custom` args must already be solid (`toBoundsTy?`). -/
+inductive ElabAnn : Nat → BoundsAnnTy → BoundsTy → Nat → Prop where
   | prim {Φ p} :
       ElabAnn Φ (.prim p) (.prim p) Φ
   | bvar {Φ i} :
@@ -940,33 +944,33 @@ inductive ElabAnn : Nat → BoundAnn → BoundInfo → Nat → Prop where
       ElabAnn Φ (.list lo hi e) (.list clo chi βe) Φ₃
   | custom {Φ name as bs} :
       name ≠ listTyName →
-      BoundAnnList.toBoundInfo? as = some bs →
+      BoundsAnnTyList.toBoundsTy? as = some bs →
       ElabAnn Φ (.custom name as) (.custom name bs) Φ
 
 /-- Program-level bound ascriptions after lower (de Bruijn parallel to value env).
 
 `binderAnns[i] = some ann` means binding `i` was surface-ascribed; the body of
 the program may carry `bodyAnn`. Missing entries = no ascription (pure synth). -/
-structure ProgramBoundAnns where
+structure ProgramBoundsAnns where
   /-- Parallel to Core `env` after lower: index 0 = innermost binder. -/
-  binderAnns : List (Option BoundAnn) := []
+  binderAnns : List (Option BoundsAnnTy) := []
   /-- Optional expected bounds on the whole expression / program body. -/
-  bodyAnn : Option BoundAnn := none
+  bodyAnn : Option BoundsAnnTy := none
   deriving Repr
 
 /-- Lookup ascription for de Bruijn index `i`. -/
-def ProgramBoundAnns.get? (a : ProgramBoundAnns) (i : Nat) : Option BoundAnn :=
+def ProgramBoundsAnns.get? (a : ProgramBoundsAnns) (i : Nat) : Option BoundsAnnTy :=
   a.binderAnns[i]? |>.join
 
 /-- Empty ascriptions (HM-only or no surface bounds). -/
-def ProgramBoundAnns.empty : ProgramBoundAnns := {}
+def ProgramBoundsAnns.empty : ProgramBoundsAnns := {}
 
 /-! ### Checking ascriptions against synthesized bounds -/
 
 /-- Synthesized `β` satisfies surface ascription `ann` under `Δ` (after elab of holes). -/
-inductive MeetsAscription (Δ : List Constraint) : BoundInfo → BoundAnn → Prop where
+inductive MeetsAscription (Δ : List Constraint) : BoundsTy → BoundsAnnTy → Prop where
   | solid {β ann β'} :
-      BoundAnn.toBoundInfo? ann = some β' →
+      BoundsAnnTy.toBoundsTy? ann = some β' →
       Sub Δ β β' →
       MeetsAscription Δ β ann
   | elab {β ann β' Φ Φ'} :
@@ -976,19 +980,19 @@ inductive MeetsAscription (Δ : List Constraint) : BoundInfo → BoundAnn → Pr
 
 /-- Env of synthesized bound infos (from walking HasBounds under binders).
 Same length/discipline as `BoundEnv`. -/
-abbrev SynthBoundEnv := BoundEnv
+abbrev SynthBoundsEnv := BoundEnv
 
 /-- Every present binder ascription is met by the synthesized binder bounds. -/
 def MeetsBinderAnns (Δ : List Constraint)
-    (syn : SynthBoundEnv) (anns : ProgramBoundAnns) : Prop :=
-  ∀ (i : Nat) (ann : BoundAnn),
+    (syn : SynthBoundsEnv) (anns : ProgramBoundsAnns) : Prop :=
+  ∀ (i : Nat) (ann : BoundsAnnTy),
     anns.binderAnns[i]? = some (some ann) →
-      ∃ β : BoundInfo, syn[i]? = some β ∧ MeetsAscription Δ β ann
+      ∃ β : BoundsTy, syn[i]? = some β ∧ MeetsAscription Δ β ann
 
 /-! ### Pipeline coverage contract -/
 
 /-- Does this bound view require `BoundCovers` (List) vs HM exhaustiveness? -/
-def BoundInfo.needsBoundCovers : BoundInfo → Bool
+def BoundsTy.needsBoundCovers : BoundsTy → Bool
   | .list _ _ _ => true
   | _ => false
 
@@ -1000,14 +1004,14 @@ import SurfaceBridge. -/
 inductive MatchSafe
     (Δ : List Constraint)
     (hmExh : List (MatchPattern × Expr) → Prop) :
-    BoundInfo → List (MatchPattern × Expr) → Prop where
+    BoundsTy → List (MatchPattern × Expr) → Prop where
   /-- List scrutinee bounds: use BoundCovers. -/
   | list {lo hi βe brs} :
       BoundCovers Δ (.list lo hi βe) brs →
       MatchSafe Δ hmExh (.list lo hi βe) brs
   /-- Non-List: fall back to ordinary exhaustiveness. -/
   | nonList {β brs} :
-      BoundInfo.needsBoundCovers β = false →
+      BoundsTy.needsBoundCovers β = false →
       hmExh brs →
       MatchSafe Δ hmExh β brs
 
@@ -1018,8 +1022,8 @@ Full progress composition remains a later theorem. -/
 structure BoundProgramOK
     (ctors : CtorEnv)
     (hmExh : List (MatchPattern × Expr) → Prop)
-    (e : Expr) (τ : Ty) (β : BoundInfo)
-    (anns : ProgramBoundAnns) : Prop where
+    (e : Expr) (τ : Ty) (β : BoundsTy)
+    (anns : ProgramBoundsAnns) : Prop where
   hm : TypeOfElabHM ⟨[], ctors⟩ e τ
   bounds : HasBounds [] [] e τ β
   agrees : Agrees β τ
@@ -1055,19 +1059,19 @@ theorem ElabAnn.frontier_le {Φ ann β Φ'} (h : ElabAnn Φ ann β Φ') : Φ ≤
       omega
   | custom => omega
 
-/-- After elaboration, β is a solid BoundInfo; agreement with τ is a pipeline
+/-- After elaboration, β is a solid BoundsTy; agreement with τ is a pipeline
 duty (erase produces ann aligned with τ). Stated for the solid-ascription path. -/
 theorem MeetsAscription.sub {Δ β ann β'}
-    (h : BoundAnn.toBoundInfo? ann = some β')
+    (h : BoundsAnnTy.toBoundsTy? ann = some β')
     (hs : Sub Δ β β') :
     MeetsAscription Δ β ann :=
   .solid h hs
 
-theorem BoundInfo.needsBoundCovers_iff (β : BoundInfo) :
-    BoundInfo.needsBoundCovers β = true ↔ ∃ lo hi e, β = .list lo hi e := by
+theorem BoundsTy.needsBoundCovers_iff (β : BoundsTy) :
+    BoundsTy.needsBoundCovers β = true ↔ ∃ lo hi e, β = .list lo hi e := by
   constructor
   · intro h
-    cases β <;> simp [BoundInfo.needsBoundCovers] at h
+    cases β <;> simp [BoundsTy.needsBoundCovers] at h
     exact ⟨_, _, _, rfl⟩
   · intro ⟨lo, hi, e, he⟩
     subst he

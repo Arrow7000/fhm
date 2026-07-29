@@ -109,7 +109,7 @@ def lowerTy (ke : KindEnv) (tvs : List ValName) : Surface.Ty → Option Ty
       | some args' =>
           if LookupList.get? ke T = some args'.length then some (.customTy T args') else none
       | none => none
-  -- `BL` not Core-lowerable until erase (P4b) rewrites to `List` + BoundAnn.
+  -- `BL` not Core-lowerable until erase (P4b) rewrites to `List` + BoundsAnnTy.
   | .bl _ _ _ => none
 /-- Pointwise lowering of a type-argument list (mutual to make termination
     structural, mirroring `Decls.TyList.wellKindedB`). -/

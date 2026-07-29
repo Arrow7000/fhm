@@ -17,20 +17,18 @@ inductive PrimTy
 /-! ## P4a — bound counts in surface types (shapes for sign-off / integration)
 
 Surface counts are **syntax**, not the Bounds kernel `Count` (no rigid/inferable
-indices here). Erase (P4b) maps these into `FHM.Bounds` + `BoundAnn`.
+indices here). Erase (P4b) maps these into `FHM.Bounds` + `BoundsAnnTy`.
 
 `hole` is surface `_` in a bound slot only (e.g. `BL _ 5 a`).
 -/
 
 /-- Surface syntax for list length bounds.
 
-v1 parse: `lit` / `var` / `hole` only. Kernel-shaped ops (`add`/`mul`/`pred`/
-`min`/`max`) are deferred — see design memo **P4a-count-ops** (before any
-surface demo that needs `n+1` / `pred`, and no later than P5 scheme demos).
-Erase (P4b) maps these into `FHM.Bounds.Count` + `BoundAnn`. -/
+v1: `lit` / `hole` only. Count **vars** return with P5 Nat binders
+(`{n : Nat, …}`); ops (`add`/`mul`/`pred`/`min`/`max`) are **P4a-count-ops**
+(no later than P5). Erase maps into `FHM.Bounds.Count` + `BoundsAnnTy`. -/
 inductive Count where
   | lit (n : Nat)
-  | var (name : ValName)
   | hole
   deriving DecidableEq, Repr
 

@@ -1,0 +1,259 @@
+import FHM.SurfaceLang
+import FHM.Bounds.Typing
+
+/-!
+# P4b — eraseBounds
+
+Strip surface `BL lo hi t` → `List t`, producing a mirrored `BoundsAnnTy`
+(always — same spine as the erased type; list nodes carry user counts or
+default `[0,0]` for bare `List`). Name-keyed sidecar for binder ascriptions;
+de Bruijn `ProgramBoundsAnns` is **P4c**.
+
+`Surface.Count` is lit/hole only (vars return at P5). Erase is total.
+-/
+
+namespace FHM.Bounds.Erase
+
+open Surface (Pattern Binding DataDecl Program Binding')
+open FHM.Bounds (AnnoCount BoundsAnnTy listTyName boolTyName pairTyName)
+
+/-! ## Counts -/
+
+def eraseCount : Surface.Count → AnnoCount
+  | .lit n => .solid (.lit n)
+  | .hole => .hole
+
+/-! ## Prim / List helpers -/
+
+def erasePrimTy : Surface.PrimTy → BoundsAnnTy
+  | .unit => .prim .unit
+  | .int  => .prim .int
+  | .nat  => .prim .nat
+  | .char => .prim .char
+  | .bool => .custom boolTyName []
+
+def surfaceListTy (elem : Surface.Ty) : Surface.Ty :=
+  .customTy listTyName [elem]
+
+/-- Default list interval when the surface wrote bare `List`, not `BL`. -/
+def defaultListAnn (elem : BoundsAnnTy) : BoundsAnnTy :=
+  .list (.solid (.lit 0)) (.solid (.lit 0)) elem
+
+/-! ## Erased type package -/
+
+structure ErasedTy where
+  ty : Surface.Ty
+  noBl : Surface.Ty.DoesntContainBounds ty
+  ann : BoundsAnnTy
+
+def eraseTyList (tys : List Surface.Ty)
+    (ih : ∀ t ∈ tys, ErasedTy) : List ErasedTy :=
+  tys.attach.map fun ⟨t, ht⟩ => ih t ht
+
+theorem eraseTyList_noBl (tys : List Surface.Ty)
+    (ih : ∀ t ∈ tys, ErasedTy) :
+    ∀ t ∈ (eraseTyList tys ih).map (·.ty), Surface.Ty.DoesntContainBounds t := by
+  intro t ht
+  unfold eraseTyList at ht
+  rw [List.mem_map] at ht
+  obtain ⟨e, he, rfl⟩ := ht
+  rw [List.mem_map] at he
+  obtain ⟨⟨u, hu⟩, _, rfl⟩ := he
+  exact (ih u hu).noBl
+
+/-- Pre-erase: does this type mention `BL`? (for `byName` recording.) -/
+def tyContainsBl : Surface.Ty → Bool :=
+  Surface.Ty.rec_strong
+    (fun _ => false)
+    (fun _ _ ca cb => ca || cb)
+    (fun _ _ ca cb => ca || cb)
+    (fun _ => false)
+    (fun _nm tys ih =>
+      (tys.attach.map fun ⟨t, ht⟩ => ih t ht).any id)
+    (fun _lo _hi _e _ee => true)
+
+/-! ## Types (total via `Ty.rec_strong`) -/
+
+def eraseTy : Surface.Ty → ErasedTy :=
+  Surface.Ty.rec_strong
+    (fun p => ⟨.prim p, .prim, erasePrimTy p⟩)
+    (fun _a _b ea eb =>
+      ⟨.pair ea.ty eb.ty, .pair ea.noBl eb.noBl,
+        .custom pairTyName [ea.ann, eb.ann]⟩)
+    (fun _a _b ea eb =>
+      ⟨.arrow ea.ty eb.ty, .arrow ea.noBl eb.noBl, .arrow ea.ann eb.ann⟩)
+    (fun n =>
+      -- Named tvars: stub `.fvar 0` until P4c remap.
+      ⟨.tvar n, .tvar, .fvar 0⟩)
+    (fun nm tys ih =>
+      let erased := eraseTyList tys ih
+      let args' := erased.map (·.ty)
+      let anns := erased.map (·.ann)
+      let noBlArgs := eraseTyList_noBl tys ih
+      if nm = listTyName then
+        match erased with
+        | [eα] =>
+            ⟨surfaceListTy eα.ty,
+              .customTy (fun t ht => by
+                have : t = eα.ty := List.mem_singleton.mp ht
+                subst this
+                exact eα.noBl),
+              defaultListAnn eα.ann⟩
+        | _ =>
+            ⟨.customTy nm args', .customTy noBlArgs, .custom nm anns⟩
+      else
+        ⟨.customTy nm args', .customTy noBlArgs, .custom nm anns⟩)
+    (fun lo hi _e ee =>
+      ⟨surfaceListTy ee.ty,
+        .customTy (fun t ht => by
+          have : t = ee.ty := List.mem_singleton.mp ht
+          subst this
+          exact ee.noBl),
+        .list (eraseCount lo) (eraseCount hi) ee.ann⟩)
+
+def erasePolyTy (σ : Surface.PolyTy) : Surface.PolyTy × BoundsAnnTy :=
+  let e := eraseTy σ.body
+  ({ σ with body := e.ty }, e.ann)
+
+/-! ## Name-keyed sidecar (pre–de Bruijn) -/
+
+structure SurfaceBoundsAnns where
+  byName : List (ValName × BoundsAnnTy) := []
+  bodyAnn : Option BoundsAnnTy := none
+  deriving Repr
+
+def SurfaceBoundsAnns.empty : SurfaceBoundsAnns := {}
+
+structure ErasedProgram where
+  program : Program
+  anns : SurfaceBoundsAnns
+
+/-! ## Expressions / programs -/
+
+def eraseOptTy : Option Surface.Ty → Option Surface.Ty × Option BoundsAnnTy
+  | none => (none, none)
+  | some t =>
+      let e := eraseTy t
+      (some e.ty, some e.ann)
+
+def eraseOptPolyTy : Option Surface.PolyTy → Option Surface.PolyTy × Option BoundsAnnTy
+  | none => (none, none)
+  | some σ =>
+      let (σ', ann) := erasePolyTy σ
+      (some σ', some ann)
+
+def eraseParams (ps : List (ValName × Option Surface.Ty)) :
+    List (ValName × Option Surface.Ty) :=
+  ps.map fun (n, t?) => (n, (eraseOptTy t?).1)
+
+def eraseExpr : Surface.Expr → Surface.Expr :=
+  Surface.Expr.rec_strong
+    (fun p => .primLit p)
+    (fun op => .primBinOp op)
+    (fun _a _b ea eb => .pair ea eb)
+    (fun _h _t eh et => .cons eh et)
+    (fun items ih => .list (items.attach.map fun ⟨e, he⟩ => ih e he))
+    (fun param paramAnn _body eb =>
+      .lambda param (eraseOptTy paramAnn).1 eb)
+    (fun _f _a ef ea => .app ef ea)
+    (fun name tyParams params ann _rhs _body erhs ebody =>
+      .letIn name tyParams (eraseParams params) (eraseOptPolyTy ann).1 erhs ebody)
+    (fun bindings _body ihbs ebody =>
+      .letRecIn
+        (bindings.attach.map fun ⟨b, hb⟩ =>
+          { b with
+            params := eraseParams b.params
+            ann := (eraseOptPolyTy b.ann).1
+            rhs := ihbs b hb })
+        ebody)
+    (fun n => .var n)
+    (fun n => .ctor n)
+    (fun _c _t _f ec et ef => .ife ec et ef)
+    (fun _s brs es ihb =>
+      .match_ es
+        (brs.attach.map fun ⟨⟨p, e⟩, h⟩ => (p, ihb p e h)))
+
+/-- Erase one binding; record `byName` only if the surface ann contained `BL`. -/
+def eraseBinding (b : Binding) : Binding × Option (ValName × BoundsAnnTy) :=
+  let hadBl := match b.ann with | some σ => tyContainsBl σ.body | none => false
+  let (ann', annOut) := eraseOptPolyTy b.ann
+  let b' : Binding :=
+    { b with
+      params := eraseParams b.params
+      ann := ann'
+      rhs := eraseExpr b.rhs }
+  let keyed :=
+    if hadBl then annOut.map fun a => (b.name, a) else none
+  (b', keyed)
+
+def eraseDataDecl (d : DataDecl) : DataDecl :=
+  { d with
+    ctors := d.ctors.map fun (cn, fs) =>
+      (cn, fs.map fun t => (eraseTy t).ty) }
+
+def eraseProgram (p : Program) : ErasedProgram :=
+  let decls' := p.decls.map eraseDataDecl
+  let (groups', keyed) :=
+    p.groups.foldl
+      (fun (accG, keyed) g =>
+        let (g', keyed') :=
+          g.foldl
+            (fun (accB, keyed) b =>
+              let (b', k?) := eraseBinding b
+              (accB ++ [b'],
+                match k? with | some k => k :: keyed | none => keyed))
+            ([], keyed)
+        (accG ++ [g'], keyed'))
+      ([], ([] : List (ValName × BoundsAnnTy)))
+  { program := { decls := decls', groups := groups', body := eraseExpr p.body }
+    anns := { byName := keyed.reverse, bodyAnn := none } }
+
+/-! ## Theorems -/
+
+theorem eraseTy_doesntContainBounds (t : Surface.Ty) :
+    Surface.Ty.DoesntContainBounds (eraseTy t).ty :=
+  (eraseTy t).noBl
+
+theorem eraseTy_bl (lo hi : Surface.Count) (elem : Surface.Ty) (e : ErasedTy)
+    (he : e = eraseTy (.bl lo hi elem)) :
+    e.ty = surfaceListTy (eraseTy elem).ty ∧
+    e.ann = .list (eraseCount lo) (eraseCount hi) (eraseTy elem).ann := by
+  subst he
+  simp only [eraseTy]; simp only [Surface.Ty.rec_strong, surfaceListTy]; trivial
+
+/-! ## Guards -/
+
+def eraseTyEq (t expectedTy : Surface.Ty) (expectedAnn : BoundsAnnTy) : Bool :=
+  let e := eraseTy t
+  reprStr e.ty == reprStr expectedTy && reprStr e.ann == reprStr expectedAnn
+
+#guard decide (eraseCount (.lit 3) = .solid (.lit 3))
+#guard decide (eraseCount .hole = .hole)
+
+#guard eraseTyEq
+  (.bl (.lit 0) (.lit 5) (.prim .int))
+  (surfaceListTy (.prim .int))
+  (.list (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int))
+
+#guard eraseTyEq
+  (.bl .hole (.lit 5) (.tvar (.mk "a")))
+  (surfaceListTy (.tvar (.mk "a")))
+  (.list .hole (.solid (.lit 5)) (.fvar 0))
+
+#guard eraseTyEq (.prim .int) (.prim .int) (.prim .int)
+
+#guard eraseTyEq
+  (.arrow (.bl (.lit 0) (.lit 1) (.prim .int)) (.prim .bool))
+  (.arrow (surfaceListTy (.prim .int)) (.prim .bool))
+  (.arrow
+    (.list (.solid (.lit 0)) (.solid (.lit 1)) (.prim .int))
+    (.custom boolTyName []))
+
+#guard eraseTyEq
+  (.pair (.bl (.lit 0) (.lit 2) (.prim .int)) (.prim .bool))
+  (.pair (surfaceListTy (.prim .int)) (.prim .bool))
+  (.custom pairTyName [
+    .list (.solid (.lit 0)) (.solid (.lit 2)) (.prim .int),
+    .custom boolTyName []])
+
+end FHM.Bounds.Erase
