@@ -1,0 +1,8 @@
+-- D24: bare List λ-param still hard-fails under --bl (no BL ascription to peel).
+
+let head2 : List Int -> Int =
+  \xs ->
+    match xs with
+    | h :: t -> h
+    | [] -> 0
+head2 [1, 2]

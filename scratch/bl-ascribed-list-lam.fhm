@@ -1,0 +1,9 @@
+-- A+B: solid colon ascription peels through Infer’s singleton letRec + λ into bctx.
+-- Cons-only match is OK under demanded BL 2 2 (not agreesTemplate [0,0]).
+
+let head2 : BL 2 2 Int -> Int =
+  \xs ->
+    match xs with
+    | h :: t -> h
+
+head2 [1, 2]

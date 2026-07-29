@@ -50,10 +50,18 @@ def tyOfBinder (binds : List (ValName × PolyTy)) (n : ValName) : Option Ty :=
   (binds.find? fun ⟨n', _⟩ => n' = n).map fun ⟨_, σ⟩ => σ.body
 
 /-- Walk the outer `letIn` / `letRec` spine from Infer, checking each binder’s
-erase ascription against origin-synth of its RHS, then the body.
+erase ascription, then the body.
 
 `binderEnv` / `anns.binderAnns` are 0 = innermost; the spine is outermost-first,
-so the k-th outer binder group occupies the next high indices. -/
+so the k-th outer binder group occupies the next high indices.
+
+**Solid ascriptions** (`BoundsAnnTy.toBoundsTy?`): `checkAgainst` the RHS at the
+ascribed `β`, then push that **ascription** `β` into `bctx` (not a tighter
+origin). List λ-params thus take domain bounds from the binder ann — dual-stack
+origin for params; same rule as §2.3 (ascription wins in env).
+
+**Holes / no ann:** origin-synth (`checkBounds` / `inferBounds`), then pin-meet
+when an ann with holes is present. Unascribed List λs still fail (D24). -/
 def checkLetSpine
     (binderEnv : List ValName)
     (anns : ProgramBoundsAnns)
@@ -71,16 +79,30 @@ def checkLetSpine
             let n := binderEnv[i]?.getD ⟨"?"⟩
             throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
     | _ => pure ()
+  -- RHS of surface binder `i` at HM `τ`. Solid ann → against + return ascribed β.
+  let checkBinderRhs (i : Nat) (rhs : Expr) (τ : Ty) : Except String BoundsTy := do
+    match anns.binderAnns[i]? with
+    | some (some ann) =>
+        match BoundsAnnTy.toBoundsTy? ann with
+        | some βWant => do
+            checkAgainst Δ bctx rhs τ βWant
+            pure βWant
+        | none => do
+            let β1 ← checkBounds Δ bctx rhs τ
+            meetBinder i β1
+            pure β1
+    | _ =>
+        checkBounds Δ bctx rhs τ
   match e with
   | .letIn (some σ) rhs body => do
       let nBind := binderEnv.length
-      let β1 ← checkBounds Δ bctx rhs σ.body
       if outerIdx ≥ nBind then
         -- Infer-inserted let (not a surface group binder); extend bctx only.
+        let β1 ← checkBounds Δ bctx rhs σ.body
         checkLetSpine binderEnv anns Δ (β1 :: bctx) outerIdx body τBody
       else
         let i := nBind - 1 - outerIdx
-        meetBinder i β1
+        let β1 ← checkBinderRhs i rhs σ.body
         checkLetSpine binderEnv anns Δ (β1 :: bctx) (outerIdx + 1) body τBody
   | .letIn none rhs body => do
       let β1 ← Prod.snd <$> inferBounds Δ bctx rhs
@@ -93,14 +115,11 @@ def checkLetSpine
       if outerIdx + k > nBind then
         throw "bounds: letRec group longer than remaining binderEnv"
       let start := nBind - outerIdx - k
-      -- Non-recursive synth under current bctx (list literals / non-mutual).
-      let βs ← recAnns.zip bindings |>.mapM fun ⟨ann?, rhs⟩ => do
+      let βs ← (List.range k).zip (recAnns.zip bindings) |>.mapM fun ⟨j, (ann?, rhs)⟩ => do
         let τj ← match ann? with
           | some σ => pure σ.body
           | none => throw "bounds: letRec member needs scheme ascription from Infer"
-        checkBounds Δ bctx rhs τj
-      for pair in (List.range k).zip βs do
-        meetBinder (start + pair.1) pair.2
+        checkBinderRhs (start + j) rhs τj
       checkLetSpine binderEnv anns Δ (βs ++ bctx) (outerIdx + k) body τBody
   | _ => do
       let β ← checkBounds Δ bctx e τBody
@@ -169,6 +188,14 @@ private theorem sizeRecGroup_lt_letRec {anns : List (Option PolyTy)} {bindings :
   have := Expr.size_pos body
   omega
 
+/-- Singleton Infer wrapper: RHS size is strictly below the `letRec`. -/
+private theorem size_lt_letRec_singleton_binding {anns : List (Option PolyTy)}
+    {rhs body : Expr} :
+    rhs.size < (Expr.letRec anns [rhs] body).size := by
+  simp [Expr.size, Expr.sizeRecGroup]
+  have := Expr.size_pos body
+  omega
+
 private theorem sizeBranches_lt_match {scrut : Expr} {brs : List (MatchPattern × Expr)} :
     Expr.sizeBranches brs < (Expr.match_ scrut brs).size := by
   simp [Expr.size, Expr.size_pos]
@@ -207,40 +234,63 @@ mutual
 /-- Recurse into match branch bodies (mutual with `checkProgramMatchesGo`). -/
 def checkProgramMatchesBranches (ctors : CtorEnv) (Δ : List Constraint) (bctx : BoundEnv)
     (τs : Ty) (βs : BoundsTy) (lo hi : Count) (βe : BoundsTy)
+    (demand : Option BoundsTy)
     (brs : List (MatchPattern × Expr)) : Except String Unit :=
   match brs with
   | [] => pure ()
   | (pat, body) :: rest => do
       let bctx' := branchBctx ctors τs βs bctx lo hi βe pat
-      checkProgramMatchesGo ctors Δ bctx' body
-      checkProgramMatchesBranches ctors Δ bctx τs βs lo hi βe rest
+      checkProgramMatchesGo ctors Δ bctx' demand body
+      checkProgramMatchesBranches ctors Δ bctx τs βs lo hi βe demand rest
 termination_by Expr.sizeBranches brs
 decreasing_by
   all_goals (first | exact size_lt_sizeBranches_one | exact size_lt_sizeBranches_tail | (simp only [Expr.sizeBranches]; omega))
 
-/-- Walk Core for nested matches; check coverage at each `match_`. -/
+/-- Walk a Core subterm for nested matches under `bctx` and optional β-demand.
+
+Demand peels through λ the same way as `checkAgainst`: ascribed domain bounds
+enter `bctx` so List scrutinees / BoundCovers see the ascription story, not
+`agreesTemplate` inventing `[0,0]`. Unascribed List λs still hard-fail (D24). -/
 def checkProgramMatchesGo (ctors : CtorEnv) (Δ : List Constraint) (bctx : BoundEnv)
-    (e : Expr) : Except String Unit :=
+    (demand : Option BoundsTy) (e : Expr) : Except String Unit :=
   match e with
   | .primLit _ | .primBinOp _ | .var _ _ | .ctor _ => pure ()
   | .lambda ann body =>
-      match ann with
-      | some τp => checkProgramMatchesGo ctors Δ (agreesTemplate τp :: bctx) body
-      | none => checkProgramMatchesGo ctors Δ bctx body
+      match demand with
+      | some (.arrow βp βb) =>
+          checkProgramMatchesGo ctors Δ (βp :: bctx) (some βb) body
+      | _ =>
+          match ann with
+          | some τp => do
+              if (isListTy τp).isSome then
+                throw "bounds: unascribed List λ-param (annotate with BL, or wait for D24)"
+              checkProgramMatchesGo ctors Δ (agreesTemplate τp :: bctx) none body
+          | none =>
+              checkProgramMatchesGo ctors Δ bctx none body
   | .app f arg => do
-      checkProgramMatchesGo ctors Δ bctx f
-      checkProgramMatchesGo ctors Δ bctx arg
+      checkProgramMatchesGo ctors Δ bctx none f
+      checkProgramMatchesGo ctors Δ bctx none arg
   | .letIn ann? rhs body => do
+      -- Nested Core lets (not the outer binder spine): synth RHS, pass demand to body.
       let β1 ← match ann? with
         | some σ => checkBounds Δ bctx rhs σ.body
         | none => Prod.snd <$> inferBounds Δ bctx rhs
-      checkProgramMatchesGo ctors Δ (β1 :: bctx) body
+      checkProgramMatchesGo ctors Δ bctx none rhs
+      checkProgramMatchesGo ctors Δ (β1 :: bctx) demand body
   | .letRec anns bindings body => do
       if anns.length != bindings.length then
         throw "bounds: letRec anns/bindings length mismatch"
-      let βs ← inferLetRecGroup Δ bctx anns bindings
-      checkProgramMatchesGo ctors Δ (βs ++ bctx) body
+      match demand, bindings with
+      | some β', [rhs] => do
+          -- Same singleton-letRec peel as `checkAgainst`: ascribed β for the
+          -- rec binder, walk RHS under demand (List λ peels into bctx).
+          checkProgramMatchesGo ctors Δ (β' :: bctx) (some β') rhs
+          checkProgramMatchesGo ctors Δ (β' :: bctx) demand body
+      | _, _ => do
+          let βs ← inferLetRecGroup Δ bctx anns bindings
+          checkProgramMatchesGo ctors Δ (βs ++ bctx) demand body
   | .match_ scrut brs => do
+      checkProgramMatchesGo ctors Δ bctx none scrut
       let (τs, βs) ← inferBounds Δ bctx scrut
       -- @TODO(bounds-path-Δ): Δ stays `[]` at Live v1; nested “tail empty ⇒ inner
       -- Nil-only” needs `nilRefine`/`consRefine` stacked along match paths later.
@@ -248,26 +298,95 @@ def checkProgramMatchesGo (ctors : CtorEnv) (Δ : List Constraint) (bctx : Bound
       | .list lo hi βe =>
           unless checkBoundCovers Δ βs brs do
             throw "bounds: list match does not cover scrutinee bounds"
-          checkProgramMatchesBranches ctors Δ bctx τs βs lo hi βe brs
+          checkProgramMatchesBranches ctors Δ bctx τs βs lo hi βe demand brs
       | _ =>
           unless coreCtorCoverage ctors τs brs do
             throw "bounds: match not exhaustive for scrutinee type"
-          checkProgramMatchesBranches ctors Δ bctx τs βs (.lit 0) (.lit 0) βs brs
+          checkProgramMatchesBranches ctors Δ bctx τs βs (.lit 0) (.lit 0) βs demand brs
   termination_by e.size
   decreasing_by all_goals (
     first
     | exact sizeBranches_lt_match
     | exact size_lt_app_fn
     | exact size_lt_app_arg
+    | exact size_lt_letRec_singleton_binding
     | exact body_size_lt_letRec
     | exact sizeRecGroup_lt_letRec
-    | (simp only [Expr.size]; omega))
+    | (simp only [Expr.size, Expr.sizeRecGroup]; omega))
 
 end
 
+/-- Outer `letIn` / `letRec` spine for match coverage — same ascription/`bctx`
+story as `checkLetSpine`. Solid anns push ascribed β and walk the RHS under
+demand (so λ peels into `bctx`); do **not** `checkBounds` a solid List λ. -/
+def checkProgramMatchesSpine
+    (ctors : CtorEnv)
+    (binderEnv : List ValName)
+    (anns : ProgramBoundsAnns)
+    (Δ : List Constraint)
+    (bctx : BoundEnv)
+    (outerIdx : Nat)
+    (e : Expr) : Except String Unit := do
+  let rhsDemand (i : Nat) : Option BoundsTy :=
+    match anns.binderAnns[i]? with
+    | some (some ann) => BoundsAnnTy.toBoundsTy? ann
+    | _ => none
+  match e with
+  | .letIn (some σ) rhs body => do
+      let nBind := binderEnv.length
+      if outerIdx ≥ nBind then
+        let β1 ← checkBounds Δ bctx rhs σ.body
+        checkProgramMatchesGo ctors Δ bctx none rhs
+        checkProgramMatchesSpine ctors binderEnv anns Δ (β1 :: bctx) outerIdx body
+      else
+        let i := nBind - 1 - outerIdx
+        match rhsDemand i with
+        | some βWant => do
+            checkProgramMatchesGo ctors Δ bctx (some βWant) rhs
+            checkProgramMatchesSpine ctors binderEnv anns Δ (βWant :: bctx) (outerIdx + 1) body
+        | none => do
+            let β1 ← checkBounds Δ bctx rhs σ.body
+            checkProgramMatchesGo ctors Δ bctx none rhs
+            checkProgramMatchesSpine ctors binderEnv anns Δ (β1 :: bctx) (outerIdx + 1) body
+  | .letIn none rhs body => do
+      let β1 ← Prod.snd <$> inferBounds Δ bctx rhs
+      checkProgramMatchesGo ctors Δ bctx none rhs
+      checkProgramMatchesSpine ctors binderEnv anns Δ (β1 :: bctx) outerIdx body
+  | .letRec recAnns bindings body => do
+      let k := bindings.length
+      unless recAnns.length == k do
+        throw "bounds: letRec anns/bindings length mismatch"
+      let nBind := binderEnv.length
+      if outerIdx + k > nBind then
+        throw "bounds: letRec group longer than remaining binderEnv"
+      let start := nBind - outerIdx - k
+      let βs ← (List.range k).zip (recAnns.zip bindings) |>.mapM fun ⟨j, (ann?, rhs)⟩ => do
+        let τj ← match ann? with
+          | some σ => pure σ.body
+          | none => throw "bounds: letRec member needs scheme ascription from Infer"
+        match rhsDemand (start + j) with
+        | some βWant => do
+            checkProgramMatchesGo ctors Δ bctx (some βWant) rhs
+            pure βWant
+        | none => do
+            let β1 ← checkBounds Δ bctx rhs τj
+            checkProgramMatchesGo ctors Δ bctx none rhs
+            pure β1
+      checkProgramMatchesSpine ctors binderEnv anns Δ (βs ++ bctx) (outerIdx + k) body
+  | _ =>
+      let demand :=
+        match anns.bodyAnn with
+        | some ann => BoundsAnnTy.toBoundsTy? ann
+        | none => none
+      checkProgramMatchesGo ctors Δ bctx demand e
+termination_by e.size
+decreasing_by all_goals (try simp only [Expr.size, Expr.sizeRecGroup]; omega)
+
 /-- Top-level Core match coverage walk for Live `--bl`. -/
-def checkProgramMatches (ctors : CtorEnv) (e : Expr) (_τ : Ty) : Except String Unit := do
-  checkProgramMatchesGo ctors [] [] e
+def checkProgramMatches
+    (ctors : CtorEnv) (e : Expr) (_τ : Ty)
+    (binderEnv : List ValName) (anns : ProgramBoundsAnns) : Except String Unit := do
+  checkProgramMatchesSpine ctors binderEnv anns [] [] 0 e
   pure ()
 
 /-! ## Guards (Core Nil/Cons origin synth + pin-to-synth holes) -/

@@ -221,7 +221,7 @@ def checkPipeline (mode : BoundsMode) (src : String) :
     | .error msg =>
         return .error { stage := .bounds, message := msg }
     | .ok () => pure ()
-    match FHM.Bounds.Check.checkProgramMatches ctors eOut τ with
+    match FHM.Bounds.Check.checkProgramMatches ctors eOut τ binderEnv boundsAnns with
     | .error msg =>
         return .error { stage := .exhaustiveness, message := msg }
     | .ok () => pure ()

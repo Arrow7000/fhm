@@ -423,7 +423,8 @@ def synthBounds (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) (τ : Ty) :
 
 /-- Check against demanded β (executable `CheckBounds.ofSub`).
 
-For λ with demanded `.arrow βp βb`, push `βp` from ascription (no List invention). -/
+For λ with demanded `.arrow βp βb`, push `βp` from ascription (no List invention).
+Peels Infer’s singleton `letRec` wrapper (`let f = (let rec f = λ… in f)`). -/
 def checkAgainst (Δ : List Constraint) (bctx : BoundEnv)
     (e : Expr) (τ : Ty) (β : BoundsTy) : Except String Unit := do
   match e, τ, β with
@@ -434,11 +435,23 @@ def checkAgainst (Δ : List Constraint) (bctx : BoundEnv)
         | some σ => checkBounds Δ bctx rhs σ.body
         | none => Prod.snd <$> inferBounds Δ bctx rhs
       checkAgainst Δ (β1 :: bctx) body τ' β'
+  | .letRec _anns bindings body, τ', β' => do
+      -- Infer often wraps a surface λ RHS as singleton `letRec`. Under solid
+      -- demand, push the ascribed β for the rec binder and checkAgainst the RHS
+      -- (so List λ peels) rather than origin-synth (which hard-fails D24).
+      match bindings with
+      | [rhs] => do
+          checkAgainst Δ (β' :: bctx) rhs τ' β'
+          checkAgainst Δ (β' :: bctx) body τ' β'
+      | _ => do
+          let β₀ ← checkBounds Δ bctx e τ'
+          unless checkSub Δ β₀ β' do
+            throw s!"bounds: synthesized {prettyβ β₀} does not meet demand {prettyβ β'}"
   | _, _, _ => do
       let β' ← checkBounds Δ bctx e τ
       unless checkSub Δ β' β do
         throw s!"bounds: synthesized {prettyβ β'} does not meet demand {prettyβ β}"
 termination_by e.size
-decreasing_by all_goals (try simp only [Expr.size]; omega)
+decreasing_by all_goals (try simp only [Expr.size, Expr.sizeRecGroup]; omega)
 
 end FHM.Bounds.Synth

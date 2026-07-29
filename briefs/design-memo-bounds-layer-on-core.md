@@ -1,6 +1,6 @@
 # Design memo: bounds layer on Core (B′ plan)
 
-**Status:** living plan — slices **0–6 Done**; **next = slice 7 bound schemes**  
+**Status:** living plan — slices **0–6 Done**; **§2.3 solid ascription→bctx / demand peel (A+B) Done**; **next = slice 7 bound schemes**  
 **Updated:** 2026-07-29 (session handoff)  
 **Repo:** `/Users/aron/dev/blt` (sandbox; merge back into `fhm` later as optional package)  
 **Canonical doc for this integration** (plus satellite briefs below)
@@ -72,7 +72,7 @@ Add a **BoundedList refinement layer** on top of the existing FHM Hindley–Miln
 |--------|---------------------|
 | Concrete Nil / Cons spine | HasBounds `nil` / `cons` (`[0,0]`, then `+1`) |
 | Surface ascription `BL …` | Erase → `BoundsAnnTy`; check synth ⊆ / meets ascription (`MeetsAscription`) |
-| Bound variable | Lookup in `bctx` — **today:** origin-synth of let RHS (see §2.3); **target UX:** pinned ascription when present |
+| Bound variable | Lookup in `bctx` — **solid ann:** ascribed β (§2.3 A+B); else origin-synth |
 | Application | Function arrow’s result `βr`; arg must `Sub` into domain `βa` |
 | Match branches | `joinBoundsTy` — min lo / max hi (D15) |
 | Scheme / Nat binder | Slice 7: instantiate `{n : Nat,…}`; counts mention `n` |
@@ -92,30 +92,13 @@ When `ErasedBinding.ann = none` (bare `List` or no ascription):
 
 This is D9 applied at λ-params: uniqueness ∉ declarative typing; elaborator policy only. Still **never** invent `[0,inf]` from `Ty`.
 
-### 2.3 Ascription vs `bctx` (important follow-up — not urgent)
+### 2.3 Ascription vs `bctx` (important follow-up)
 
-**Today (slices 4–6):** two jobs diverge:
+**Was (slices 4–6):** Meet used origin ⊆ ascription, but `bctx` stored the **tighter origin**. Same surface `BL 0 5` matched differently depending on RHS — leaky BL abstraction.
 
-| Job | What happens |
-|-----|----------------|
-| **Meet** | Synth RHS origin β; require `Sub β ⊆ ascription` (holes pin-to-synth first) |
-| **Env** | Push **origin β** into `bctx` for later `var` / match scrutinees |
+**Now (A+B, solid anns):** when `BoundsAnnTy.toBoundsTy?` succeeds, Live pushes the **ascribed** `β` into `bctx` (`checkLetSpine` / `checkProgramMatchesSpine`) and walks the RHS under demand (`checkAgainst` / matches peel). List λ-params take domain bounds from the binder ascription; Infer’s singleton `letRec` wrapper is peeled the same way. Holes / missing anns still synth-then-pin and push origin (D24 for unascribed List λs).
 
-So `let xs : BL 0 5 Int = []` **checks** `[0,0] ⊆ [0,5]`, but `bctx[xs] = [0,0]`. BoundCovers then sees `[0,0]` → Nil-only OK. Another `BL 0 5` bound to `[1,2]` gets `bctx = [2,2]` → Nil-only fails. Same surface type, different match behaviour — **leaky BL abstraction**.
-
-**Desired product rule (locked direction, implement later):** when a binder has a BL ascription, **`bctx` stores the pinned ascription** (what the user wrote), not the tighter origin. Meet still uses origin ⊆ ascription. Then every `BL 0 5` matches the same way; Nil-only requires ascribed/`_`-pinned empty upper (`BL 0 0`), not “RHS happened to be Nil.”
-
-**Blast radius (small code, real product/demo shift):**
-
-| Area | Change |
-|------|--------|
-| [`Check.checkLetSpine`](FHM/Bounds/Check.lean) | After successful pin+Sub, push `β_ann` when ann present; else origin |
-| [`Check.checkProgramMatchesGo`](FHM/Bounds/Check.lean) let arms | Same push policy (keep walk consistent) |
-| Scratch demos | `bl-nil-only` stays `BL 0 0`; any demo relying on “wide ann + empty RHS ⇒ Nil-only” must be rewritten |
-| Declarative `HasBounds.letMono` | Optional later align; Live can adopt env policy without changing the Prop on day one |
-| Not in blast | Parse/erase/InferW/Core; pinHoles; BoundCovers predicates themselves |
-
-**Do not block slice 7** on this — schemes matter more — but do not forget it (UX intuition).
+**Still open:** hole-bearing anns pin-to-synth then push origin (not the pinned ascription template); head-binder `(xs : BL …)` params are not yet folded into binder demand (colon `BL → …` works); declarative `HasBounds.letMono` optional later align.
 
 ---
 
@@ -151,7 +134,7 @@ ofLower (binderEnv)                   [Bounds/Pipeline — demo spine today]
     ▼
 HasBounds synth + MeetsAscription     [Synth/Check — slices 4–5]
     │  origin β; meet ⊆ ann; `_` pin-to-synth
-    │  **bctx ← origin today** (§2.3 follow-up: bctx ← ann)
+    │  **bctx ← ascribed β when solid** (§2.3 A+B); else origin
     ▼
 BoundCovers / MatchSafe               [Check.checkProgramMatches — slice 6]
   vs checkExhaustive (HM mode / non-List under bl via coreCtorCoverage)
@@ -171,7 +154,7 @@ parse → [hmRequireNoBl if not --bl] → eraseProgram → lower/infer
   → elab → eval
 ```
 
-**Slices 4–6 in Live.** Open: §2.3 ascription-in-bctx; `@TODO(bounds-path-Δ)` nested refine; D24/schemes = slice 7; hover still prints HM `List`.
+**Slices 4–6 in Live.** Open: §2.3 residuals (holes / head-binder params); `@TODO(bounds-path-Δ)` nested refine; D24/schemes = slice 7; hover still prints HM `List`.
 
 ### Outer safety (BL mode) — target theorem
 
@@ -225,7 +208,7 @@ Surface:
 | Slice 6 BoundCovers in Live | **Done** |
 | Slice 7 bound schemes / D24 | **Next** |
 | Slice 8–9 stdlib + E2E suite | **Not started** |
-| §2.3 ascription wins in `bctx` | **Follow-up** (not urgent) |
+| §2.3 ascription wins in `bctx` | **Done** for solid anns (A+B); holes/head-binders still open |
 | Axiom collapse to Z3 | **Partial** / post-E2E |
 
 ---
@@ -260,7 +243,7 @@ Surface:
 | REPL prints `List` not `BL` after erase | HM types stay `List`; under `--bl`, **bounds:** lines show `BL …` |
 | Editor dual `blt`/`fhm` binary lookup | Sandbox artifact; `@TODO(merge-to-fhm)` in editors |
 | **`defaultBounds` / erase `defaultListAnn` invent intervals** | Live synth **done**; residual `agreesTemplate` / `defaultListAnn` = nested-elem debt |
-| **Ascription vs `bctx` (origin vs ann)** | **§2.3 follow-up** — not urgent; after or parallel to schemes OK |
+| **Ascription vs `bctx` (origin vs ann)** | **§2.3** — solid Done (A+B); holes / head-binder params still open |
 
 ### 5.3 Worth noting: **not** fully covered / still external
 
@@ -272,7 +255,7 @@ Surface:
 | **README / Headlines “Bounds experimental”** | Still open |
 | **Playground/editor hover for bounds anns** | Still HM `List` under `--bl` — prefer synth/erase `BL` later |
 | **CI job for FHMBounds** | Not specified |
-| **Ascription-in-`bctx` (§2.3)** | Important UX follow-up; small blast; after schemes OK |
+| **Ascription-in-`bctx` (§2.3)** | Solid Done (A+B); residual: holes, head-binder params |
 | **Proving `checkValid_sound` from Z3** | Collapse memo / P6 |
 
 ---
@@ -374,7 +357,7 @@ Reject bare idents (`n`) until slice 7. Reject nested holes (`BL (_ + 1) 5 t`).
 
 **Exit demos:** `scratch/bl-nil-only.fhm`, `bl-cons-only.fhm`, `bl-nil-only-fail.fhm` (fail on `BL 2 2`).
 
-**Deferred:** nested `nilRefine`/`consRefine` path-Δ stacking (`@TODO(bounds-path-Δ)`); §2.3 ascription-in-bctx.
+**Deferred:** nested `nilRefine`/`consRefine` path-Δ stacking (`@TODO(bounds-path-Δ)`); §2.3 residuals (holes / head-binder params).
 
 ### Post-E2E hygiene (do not block product)
 
@@ -420,7 +403,7 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 | `HasBounds.weaken_Δ` as originally stated | False for oracle equality |
 | Inventing `[0,inf]` / `[0,0]` for bare `List` as end model | **Rejected (D22)** — scaffold only |
 | Surface.Count.var | Slice 7 with Nat binders (ops are slice 3) |
-| Ascription wins in `bctx` | **§2.3** — important UX; not urgent; small code blast |
+| Ascription wins in `bctx` | **§2.3** — solid Done (A+B); holes / head-binder params open |
 | Nested BoundCovers path-Δ | `@TODO(bounds-path-Δ)` in Check/Typing |
 | `--bl` hover shows `BL` | Editor/diagnose still print HM `List` |
 
@@ -432,7 +415,7 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 |------|------------|
 | BoundsAnnTy paths break under lower/elab | Binding-level + post-Infer; spine slice 2 |
 | Scaffold `defaultBounds` mistaken for product | D22; Live path uses origin synth |
-| Ascription meet ≠ env (`bctx` origin-tight) | **§2.3** — document; fix later; demos use tight anns today |
+| Ascription meet ≠ env (`bctx` origin-tight) | **§2.3** — solid anns push ascription (A+B); holes still origin |
 | SurfaceBridge touch radius | Absurd-bl only |
 | Z3 in default / CLI proof cone | **P4c-thin**; Check may pull Z3 |
 | Scope creep into unify | Hard no |
@@ -464,7 +447,7 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 
 ## 11. One-liner
 
-> **B′ dual-stack:** surface `BL` erases under `--bl`; intervals from origins; `_` pins to synth; BoundCovers on Core List matches; **next = bound schemes (slice 7)**. Important later: ascription wins in `bctx` (§2.3).
+> **B′ dual-stack:** surface `BL` erases under `--bl`; intervals from origins; `_` pins to synth; BoundCovers on Core List matches; solid ascriptions win in `bctx` / demand-peel λ (A+B); **next = bound schemes (slice 7)**.
 
 ---
 
@@ -472,7 +455,7 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 
 1. **Slice 7 — Bound schemes** (the planned next work): `{n m : Nat, a b}`, `Surface.Count.var`, pack/inst/Commit, D24 generalise for unascribed List λ-params. **This is the big one.**  
 2. Then **8** stdlib demos (map/filter/append), **9** E2E suite.  
-3. **Whenever convenient:** §2.3 ascription → `bctx` (small Check change; retarget demos if needed).
+3. **Whenever convenient:** §2.3 residuals — hole anns push pinned template; head-binder `(xs : BL …)` fold into demand.
 
 Thin erase (`Ann.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path uses Z3 via `FHM.Bounds.Check`.
 
@@ -482,7 +465,7 @@ Thin erase (`Ann.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path
 
 1. Read this memo §§1–2 (esp. D22–D24, **§2.3**), §3 Live today, §6 table + 6.1–6.4.  
 2. Build: `lake build FHMBounds blt` (or project’s usual target).  
-3. Smoke: `scratch/bl-synth-ok.fhm`, `bl-hole-ok.fhm`, `bl-nil-only.fhm` under `--bl`.  
-4. Implement **slice 7** — schemes; do **not** start with §2.3 unless user asks.  
+3. Smoke: `scratch/bl-synth-ok.fhm`, `bl-hole-ok.fhm`, `bl-nil-only.fhm`, `bl-ascribed-list-lam.fhm` under `--bl`.  
+4. Implement **slice 7** — schemes / pack-inst / D24; map demo only after that is honest.  
 5. Key files: `SurfaceLang` / Parse / Pretty / Erase; `Bounds/{Synth,Check,Typing,Ann,Kernel}`; `Live.lean`.  
 6. Do not invent List intervals from bare HM `List` (D22). Do not fuse bounds into Core Ty.
