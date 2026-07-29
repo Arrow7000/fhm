@@ -14,23 +14,38 @@ inductive PrimTy
   | char
   deriving DecidableEq, Repr
 
-/-! ## P4a — bound counts in surface types (shapes for sign-off / integration)
+/-! ## Bound counts in surface types
 
 Surface counts are **syntax**, not the Bounds kernel `Count` (no rigid/inferable
-indices here). Erase (P4b) maps these into `FHM.Bounds` + `BoundsAnnTy`.
+indices here). Erase maps into `FHM.Bounds.Count` + `BoundsAnnTy`.
 
-`hole` is surface `_` in a bound slot only (e.g. `BL _ 5 a`).
+Hygienic split (mirrors `AnnoCount`):
+* `Count` — solid ground arithmetic only (no hole)
+* `CountSlot` — whole lo/hi atom: `_` or solid `Count`
+
+Count **vars** return with schemes / slice 7 (`{n : Nat,…}`).
 -/
 
-/-- Surface syntax for list length bounds.
-
-v1: `lit` / `hole` only. Count **vars** return with P5 Nat binders
-(`{n : Nat, …}`); ops (`add`/`mul`/`pred`/`min`/`max`) are **P4a-count-ops**
-(no later than P5). Erase maps into `FHM.Bounds.Count` + `BoundsAnnTy`. -/
+/-- Solid surface count — ground arithmetic matching Kernel
+(`lit`/`inf`/`add`/`mul`/`pred`/`min`/`max`). No holes. -/
 inductive Count where
   | lit (n : Nat)
-  | hole
+  | inf
+  | add (a b : Count)
+  | mul (a b : Count)
+  | pred (a : Count)
+  | min (a b : Count)
+  | max (a b : Count)
   deriving DecidableEq, Repr
+
+/-- Bound slot in `BL lo hi elem`: hole (`_`) or solid count. -/
+inductive CountSlot where
+  | hole
+  | solid (c : Count)
+  deriving DecidableEq, Repr
+
+instance : Coe Count CountSlot where
+  coe := .solid
 
 inductive Ty
   | prim : PrimTy → Ty
@@ -41,7 +56,7 @@ inductive Ty
   /-- A custom type with its type params -/
   | customTy : TyName → List Ty → Ty
   /-- Bounded list type `BL lo hi elem` (refines `List elem` after erase). -/
-  | bl (lo hi : Count) (elem : Ty)
+  | bl (lo hi : CountSlot) (elem : Ty)
   deriving Repr
 
 /--

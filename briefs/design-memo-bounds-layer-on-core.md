@@ -261,18 +261,54 @@ Surface:
 | # | Slice | Delivers | Exit |
 |---|--------|----------|------|
 | **0** | Docs / status honesty | Memo + Pipeline/Live headers match reality; D22–D23 locked | No “HasBounds wired” claims |
-| **1** | `Count.inf` + `ExtNat` | Kernel vocabulary; eval/Holds in ℕ∪{∞}; **not** List default | **Done** — normalize before Z3; DemandOK sorries may remain |
+| **1** | `Count.inf` + `ExtNat` + NoInf→Z3 | Kernel ℕ∪{∞}; normalize; total `countToExpr` under `NoInf` | **Done** |
 | **2** | Honest binder spine | `groups.reverse.flatMap` (0=innermost); `ofLower` after infer | **Done** |
-| **2** | Honest binder spine | Real post-lower Core env → `ofLower` | Multi-binder / SCC demos key anns correctly |
-| **3** | Surface ground Count | `add`/`mul`/`pred`/`min`/`max` (+ surface `inf` if wanted); parse / pretty / erase → `Bounds.Count` | Solver sees real Kernel counts from source (D23) |
-| **4** | HasBounds synth | Executable Core→`β` from origins (D22/D24); Check uses synth; kill List-inventing `defaultBounds` on Live path | `[1,2] : BL 0 3` checked vs length-2 synth; unascribed params → fresh holes / generalise / Commit |
-| **5** | Elab holes + solve | Executable `ElabAnn` + oracle fill `_` | `BL _ 5` / `BL 0 _` work under `--bl` |
+| **3** | Surface ground Count | ops + `inf`/`∞`; parse / pretty / erase → Kernel | **Done** |
+| **4** | HasBounds synth | Executable Core→`β` from origins (D22/D24); kill Live `defaultBounds` | length-honest ascription check |
+| **5** | Elab holes + solve | Executable `ElabAnn` + oracle fill `_` | `BL _ 5` works under `--bl` |
 | **6** | BoundCovers in Live | List matches → BoundCovers/MatchSafe; else HM exh | Nil-only when `hi=0`; Cons-only when `lo≥1` |
-| **7** | Bound schemes | `{n m : Nat, a b}` + `Surface.Count.var`; pack/inst/Commit; **D24 generalise path** | Scheme parses, erases, instantiates; unconstrained param bounds quantify |
-| **8** | Stdlib demos | map / filter / append with bound schemes | Scratch demos typecheck+eval under `--bl` |
-| **9** | E2E gate suite | Fixed demos: D16 reject; ascription fail/pass; smarter exh; scheme demo | One checklist = BL experience green |
+| **7** | Bound schemes | `{n m : Nat, a b}` + `Surface.Count.var`; pack/inst/Commit; D24 generalise | Scheme round-trip |
+| **8** | Stdlib demos | map / filter / append with bound schemes | Scratch demos under `--bl` |
+| **9** | E2E gate suite | Fixed demos checklist | BL experience green |
 
-**Before slice 4:** D24 locked (above). Soft spot: `outs` for uniqueness = **output-visible** bound slots (escape into returned/exported type), not necessarily every count in a source ascription — align with `UniqueOutputs` / BLSketch `obsBounds` intent when wiring synth.
+### 6.1 Slice 3 — Surface ground Count (D23) ✅
+
+**Goal:** surface bound slots speak the same ground arithmetic as Kernel (minus `var` → slice 7).
+
+**AST** (`SurfaceLang`):
+
+```text
+Count     ::= lit Nat | inf
+            | add Count Count | mul Count Count | pred Count
+            | min Count Count | max Count Count
+CountSlot ::= hole | solid Count     -- BL lo/hi only; mirrors AnnoCount
+```
+
+- **`inf` keyword + `∞` punct** — both parse; pretty prints **`∞`**.
+- **Exclude `var`** — still P5 / slice 7 with `{n : Nat,…}`.
+- Hygienic: holes cannot nest under ops (not inhabitable in `Count`).
+
+**Parse** (`Surface.Parse.count`; prec: `+` < `*` < FP app < atom):
+
+| Form | Notes |
+|------|--------|
+| `0`, `5`, `_` | `_` only as whole lo/hi atom |
+| `inf` / `∞` | both; `inf` reserved keyword |
+| `pred c`, `min c d`, `max c d` | FP-style; atom args (parens on compounds) |
+| `c + c`, `c * c` | infix (`*` is `Punct.star`, not expr binop) |
+
+Reject bare idents (`n`) until slice 7. Reject nested holes (`BL (_ + 1) 5 t`).
+
+**Pretty** — `Surface.Count.prettyAux` with prec (left-assoc `+`/`*`; FP apps take atom prec).
+
+**Erase** (`eraseCount : Surface.Count → AnnoCount`): `hole` → `.hole`; else `.solid` (Kernel `Count`).
+
+**DoesntContainBounds / detectors:** unchanged (BL is still the bounds marker; count ops live only inside `Ty.bl`).
+4. HM mode still D16-rejects any `BL …`.
+
+**Out of scope:** `Count.var`; scheme quantifiers; changing Check synth off `defaultBounds`.
+
+**Before slice 4:** D24 locked (above). Soft spot: `outs` for uniqueness = **output-visible** bound slots when wiring synth.
 
 ### Post-E2E hygiene (do not block product)
 
@@ -346,7 +382,7 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 - [x] Core/InferW free of bound feature work  
 - [ ] Default `lake build` FHM pure; Headlines guard (document Bounds as optional)  
 - [x] `BL _ 5 t` / lit erases to List (hole in BoundsAnnTy on erase path)  
-- [ ] Surface ground Count ops erase into Kernel `Count` (slice 3)  
+- [x] Surface ground Count ops erase into Kernel `Count` (slice 3)  
 - [ ] Origin-based HasBounds synth in Live (no List-inventing defaults) (slice 4)  
 - [ ] Nil-only match under proved empty upper bound (surface under `--bl`)  
 - [ ] REPL/CLI HM vs BL: fail-fast vs erase + origin check + BoundCovers  
@@ -357,13 +393,13 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 
 ## 11. One-liner
 
-> **B′ dual-stack:** BoundsTy mirrors Core Ty with intervals on List; surface `BL` erases under `--bl`; intervals come from origins (constructors, ascriptions, env, apps, joins) — never from inventing a default BL for bare `List`; next is honest spine + full Surface Count + HasBounds synth + BoundCovers.
+> **B′ dual-stack:** BoundsTy mirrors Core Ty with intervals on List; surface `BL` erases under `--bl`; intervals come from origins (constructors, ascriptions, env, apps, joins) — never from inventing a default BL for bare `List`; next is HasBounds synth + BoundCovers.
 
 ---
 
 ## 12. Next action
 
-1. **Slice 3** — Surface ground Count ops (`add`/`mul`/…).  
-2. Then **4** HasBounds synth (D22/D24) → **5** holes → **6** BoundCovers…
+1. **Slice 4** — HasBounds synth (D22/D24).  
+2. Then **5** holes → **6** BoundCovers → **7** schemes…
 
 Thin erase (`Ann.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path uses Z3 via `FHM.Bounds.Check`.

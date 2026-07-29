@@ -236,11 +236,45 @@ def Surface.prettyPrimLit : Surface.PrimLitExpr → String
 
 /-! ## Surface types -/
 
-mutual
-
-def Surface.Count.pretty : Surface.Count → String
+/-- Precedence: `+` (1) < `*` (2) < FP app (3) < atom (4).
+Left-assoc +/*: left keeps op prec; right is tighter so `a+(b+c)` keeps parens.
+FP apps take atom args so compounds parenthesize. -/
+def Surface.Count.prettyAux (prec : Nat) : Surface.Count → String
   | .lit n => toString n
+  | .inf => "∞"
+  | .add a b =>
+      prettyParenIf (prec > 1)
+        (Surface.Count.prettyAux 1 a ++ " + " ++ Surface.Count.prettyAux 2 b)
+  | .mul a b =>
+      prettyParenIf (prec > 2)
+        (Surface.Count.prettyAux 2 a ++ " * " ++ Surface.Count.prettyAux 3 b)
+  | .min a b =>
+      prettyParenIf (prec > 3)
+        ("min " ++ Surface.Count.prettyAux 4 a ++ " " ++ Surface.Count.prettyAux 4 b)
+  | .max a b =>
+      prettyParenIf (prec > 3)
+        ("max " ++ Surface.Count.prettyAux 4 a ++ " " ++ Surface.Count.prettyAux 4 b)
+  | .pred a =>
+      prettyParenIf (prec > 3)
+        ("pred " ++ Surface.Count.prettyAux 4 a)
+
+def Surface.Count.pretty (c : Surface.Count) : String := Surface.Count.prettyAux 0 c
+
+def Surface.CountSlot.pretty : Surface.CountSlot → String
   | .hole => "_"
+  | .solid c => Surface.Count.pretty c
+
+#guard Surface.Count.pretty .inf == "∞"
+#guard Surface.Count.pretty (.add (.lit 1) (.lit 2)) == "1 + 2"
+#guard Surface.Count.pretty (.add (.lit 1) (.add (.lit 2) (.lit 3))) == "1 + (2 + 3)"
+#guard Surface.Count.pretty (.mul (.add (.lit 1) (.lit 2)) (.lit 3)) == "(1 + 2) * 3"
+#guard Surface.Count.pretty (.min (.add (.lit 1) (.lit 2)) (.lit 3)) == "min (1 + 2) 3"
+#guard Surface.Count.pretty (.pred (.lit 5)) == "pred 5"
+#guard Surface.Count.pretty (.pred (.add (.lit 1) (.lit 2))) == "pred (1 + 2)"
+#guard Surface.CountSlot.pretty .hole == "_"
+#guard Surface.CountSlot.pretty (.solid .inf) == "∞"
+
+mutual
 
 def Surface.Ty.prettyAux (prec : Nat) : Surface.Ty → String
   | .prim p        => Surface.prettyPrimTy p
@@ -251,7 +285,7 @@ def Surface.Ty.prettyAux (prec : Nat) : Surface.Ty → String
   | .customTy (.mk s) args => prettyParenIf (prec ≥ 2) (s ++ " " ++ String.intercalate " " (Surface.Ty.prettyArgs args))
   | .bl lo hi e =>
       prettyParenIf (prec ≥ 2)
-        ("BL " ++ Surface.Count.pretty lo ++ " " ++ Surface.Count.pretty hi ++ " " ++
+        ("BL " ++ Surface.CountSlot.pretty lo ++ " " ++ Surface.CountSlot.pretty hi ++ " " ++
           Surface.Ty.prettyAux 2 e)
 
 def Surface.Ty.prettyArgs : List Surface.Ty → List String

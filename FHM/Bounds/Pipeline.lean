@@ -187,7 +187,7 @@ theorem ofLower_get_of_find (env : List ValName) (ep : ErasedProgram)
 
 /-! ## Guards -/
 
-private def tyBl : Surface.Ty := .bl (.lit 0) (.lit 5) (.prim .int)
+private def tyBl : Surface.Ty := .bl (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int)
 private def tyList : Surface.Ty := .customTy ⟨"List"⟩ [.prim .int]
 
 -- `BL 0 5 Int` is detected as containing BL.

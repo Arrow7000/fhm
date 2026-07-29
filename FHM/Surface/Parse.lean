@@ -291,8 +291,8 @@ def spanOfConsumed (startPos stopPos : Nat) : P Span := do
 
 /-! ## Type grammar
 
-ASCII only:
-* `count`  — bound slot: Nat lit or `_` (P4a-parse; vars/ops later)
+* `count`  — bound slot: `CountSlot` = `_` | solid `Count`
+  (`Nat`, `inf`/`∞`, FP `pred`/`min`/`max`, infix `+`/`*`; vars → slice 7)
 * `tyAtom` — `()`, names, `(ty)`, `(ty, ty)`, `BL lo hi elem`
 * `tyApp`  — juxtaposition (`Maybe Int`); only `customTy` may take args
 * `ty`     — right-assoc `tyApp -> ty`
@@ -305,20 +305,99 @@ applied customs / nested BL / arrows need parens — matches Pretty prec.
 
 instance : Inhabited Ty := ⟨.prim .unit⟩
 instance : Inhabited PolyTy := ⟨⟨[], .prim .unit⟩⟩
+instance : Inhabited Count := ⟨.lit 0⟩
+instance : Inhabited CountSlot := ⟨.hole⟩
 
-/-- Bound-slot count (`BL` lo/hi). v1: Nat lit or `_` only. -/
-def count : P Count :=
-  withErrorMessage "expected count (Nat literal or _)" do
+mutual
+/-- Bound-slot count atom: Nat, inf, infty, parens; no holes. -/
+partial def countAtom : P Count :=
+  withErrorMessage "expected count atom" do
+    skipComments
+    first [
+      do
+        let _ ← keyword .«inf»
+        return .inf,
+      do
+        let _ ← punct .infty
+        return .inf,
+      do
+        let n ← intLitTok
+        if n < 0 then
+          throwUnexpectedWithMessage none "count literal must be non-negative"
+        return .lit n.toNat,
+      do
+        let _ ← punct .lparen
+        skipComments
+        let c ← countExpr
+        skipComments
+        let _ ← punct .rparen
+        return c
+    ]
+
+partial def countApp : P Count :=
+  withErrorMessage "expected count" do
+    skipComments
+    first [
+      do
+        let name ← lowerIdent
+        if name == "pred" then
+          skipComments
+          return .pred (← countAtom)
+        else if name == "min" then
+          skipComments
+          let a ← countAtom
+          skipComments
+          let b ← countAtom
+          return .min a b
+        else if name == "max" then
+          skipComments
+          let a ← countAtom
+          skipComments
+          let b ← countAtom
+          return .max a b
+        else
+          throwUnexpectedWithMessage none
+            s!"unexpected count ident `{name}` (vars need Nat binders)",
+      countAtom
+    ]
+
+partial def countMul : P Count := do
+  let a ← countApp
+  let rec go (left : Count) : P Count := do
+    skipComments
+    match ← option? (withBacktracking (punct .star)) with
+    | none => return left
+    | some _ =>
+        skipComments
+        go (.mul left (← countApp))
+  go a
+
+partial def countExpr : P Count := do
+  let a ← countMul
+  let rec go (left : Count) : P Count := do
+    skipComments
+    match ← option? (withBacktracking (do
+        let op ← binOpTok
+        unless op == .plus do throwUnexpected
+        pure ())) with
+    | none => return left
+    | some _ =>
+        skipComments
+        go (.add left (← countMul))
+  go a
+end
+
+/-- Bound-slot for BL lo/hi: `_` or solid count.
+Solid: Nat, `inf`/`∞`, parens; FP `pred`/`min`/`max` (atom args); infix `+`/`*`. -/
+def count : P CountSlot :=
+  withErrorMessage "expected count (expression, inf/∞, or _)" do
     skipComments
     first [
       do
         let _ ← punct .underscore
         return .hole,
       do
-        let n ← intLitTok
-        if n < 0 then
-          throwUnexpectedWithMessage none "count literal must be non-negative"
-        return .lit n.toNat
+        return .solid (← countExpr)
     ]
 
 mutual
@@ -1184,16 +1263,26 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
   reprStr (parseTy src) == reprStr (Except.ok (ε := ParseError) expected)
 
 -- P4a-parse: `BL lo hi elem` + bound `_`
-#guard parseTyEq "BL 0 5 Int" (.bl (.lit 0) (.lit 5) (.prim .int))
-#guard parseTyEq "BL _ 5 a" (.bl .hole (.lit 5) (.tvar (.mk "a")))
+#guard parseTyEq "BL 0 5 Int" (.bl (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int))
+#guard parseTyEq "BL _ 5 a" (.bl .hole (.solid (.lit 5)) (.tvar (.mk "a")))
 #guard parseTyEq "BL 0 1 (Maybe Int)"
-  (.bl (.lit 0) (.lit 1) (.customTy (.mk "Maybe") [.prim .int]))
+  (.bl (.solid (.lit 0)) (.solid (.lit 1)) (.customTy (.mk "Maybe") [.prim .int]))
 #guard parseTyEq "BL 0 0 (BL 1 2 Int)"
-  (.bl (.lit 0) (.lit 0) (.bl (.lit 1) (.lit 2) (.prim .int)))
+  (.bl (.solid (.lit 0)) (.solid (.lit 0)) (.bl (.solid (.lit 1)) (.solid (.lit 2)) (.prim .int)))
 #guard parseTyEq "BL 0 5 Int -> Bool"
-  (.arrow (.bl (.lit 0) (.lit 5) (.prim .int)) (.prim .bool))
+  (.arrow (.bl (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int)) (.prim .bool))
 #guard parseTyEq "BL 0 5 (Int -> Bool)"
-  (.bl (.lit 0) (.lit 5) (.arrow (.prim .int) (.prim .bool)))
+  (.bl (.solid (.lit 0)) (.solid (.lit 5)) (.arrow (.prim .int) (.prim .bool)))
+-- slice 3: ground count ops + inf/∞
+#guard parseTyEq "BL 0 (1 + 2) Int" (.bl (.solid (.lit 0)) (.solid (.add (.lit 1) (.lit 2))) (.prim .int))
+#guard parseTyEq "BL 0 (1 * 2 + 3) Int"
+  (.bl (.solid (.lit 0)) (.solid (.add (.mul (.lit 1) (.lit 2)) (.lit 3))) (.prim .int))
+#guard parseTyEq "BL 0 (min 3 5) Int" (.bl (.solid (.lit 0)) (.solid (.min (.lit 3) (.lit 5))) (.prim .int))
+#guard parseTyEq "BL 0 (pred 5) Int" (.bl (.solid (.lit 0)) (.solid (.pred (.lit 5))) (.prim .int))
+#guard parseTyEq "BL 0 inf Int" (.bl (.solid (.lit 0)) (.solid .inf) (.prim .int))
+#guard parseTyEq "BL 0 ∞ Int" (.bl (.solid (.lit 0)) (.solid .inf) (.prim .int))
+#guard parseTyEq "BL 0 (min (1 + 2) 3) Int"
+  (.bl (.solid (.lit 0)) (.solid (.min (.add (.lit 1) (.lit 2)) (.lit 3))) (.prim .int))
 -- incomplete / wrong BL forms
 #guard !(parseTy "BL").isOk
 #guard !(parseTy "BL 0").isOk
@@ -1201,6 +1290,8 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 #guard !(parseTy "BL -1 5 Int").isOk
 -- count vars deferred to P5 (Nat binders)
 #guard !(parseTy "BL n m Int").isOk
+-- nested hole forbidden
+#guard !(parseTy "BL (_ + 1) 5 Int").isOk
 
 #guard (match parsePolyTy "{a} a -> a" with
   | .ok ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩ => true

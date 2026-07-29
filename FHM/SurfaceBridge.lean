@@ -249,7 +249,7 @@ private def keDemo : KindEnv := [(nBool, 0), (nPair, 2), (nList, 1), (.mk "Maybe
 -- wrong arity fails (List is unary)
 #guard (lowerTy keDemo [] (.customTy nList [])).isNone
 -- BL not lowerable until erase (P4b)
-#guard (lowerTy keDemo [] (.bl (.lit 0) (.lit 5) (.prim .int))).isNone
+#guard (lowerTy keDemo [] (.bl (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int))).isNone
 -- pair without a Pair declaration fails
 #guard (lowerTy [] [] (.pair (.prim .int) (.prim .int))).isNone
 -- pair with the prelude present desugars to customTy Pair

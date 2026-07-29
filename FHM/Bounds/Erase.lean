@@ -9,7 +9,8 @@ Strip surface `BL lo hi t` → `List t`, producing a mirrored `BoundsAnnTy`
 default `[0,0]` for bare `List`). Name-keyed sidecar for binder ascriptions;
 de Bruijn `ProgramBoundsAnns` is **P4c**.
 
-`Surface.Count` is lit/hole only (vars return at P5). Erase is total.
+`Surface.Count` is solid ground arithmetic; `CountSlot` is hole | solid
+(vars return at P5 / slice 7). Erase is total.
 -/
 
 namespace FHM.Bounds.Erase
@@ -19,9 +20,19 @@ open FHM.Bounds (AnnoCount BoundsAnnTy listTyName boolTyName pairTyName)
 
 /-! ## Counts -/
 
-def eraseCount : Surface.Count → AnnoCount
-  | .lit n => .solid (.lit n)
+/-- Erase solid surface count into Kernel `Count` (total; no hole case). -/
+def eraseCountSolid : Surface.Count → FHM.Bounds.Count
+  | .lit n => .lit n
+  | .inf => .inf
+  | .add a b => .add (eraseCountSolid a) (eraseCountSolid b)
+  | .mul a b => .mul (eraseCountSolid a) (eraseCountSolid b)
+  | .pred a => .pred (eraseCountSolid a)
+  | .min a b => .min (eraseCountSolid a) (eraseCountSolid b)
+  | .max a b => .max (eraseCountSolid a) (eraseCountSolid b)
+
+def eraseCount : Surface.CountSlot → AnnoCount
   | .hole => .hole
+  | .solid c => .solid (eraseCountSolid c)
 
 /-! ## Prim / List helpers -/
 
@@ -240,7 +251,7 @@ theorem eraseTy_doesntContainBounds (t : Surface.Ty) :
     Surface.Ty.DoesntContainBounds (eraseTy t).ty :=
   (eraseTy t).noBl
 
-theorem eraseTy_bl (lo hi : Surface.Count) (elem : Surface.Ty) (e : ErasedTy)
+theorem eraseTy_bl (lo hi : Surface.CountSlot) (elem : Surface.Ty) (e : ErasedTy)
     (he : e = eraseTy (.bl lo hi elem)) :
     e.ty = surfaceListTy (eraseTy elem).ty ∧
     e.ann = .list (eraseCount lo) (eraseCount hi) (eraseTy elem).ann := by
@@ -253,30 +264,33 @@ def eraseTyEq (t expectedTy : Surface.Ty) (expectedAnn : BoundsAnnTy) : Bool :=
   let e := eraseTy t
   reprStr e.ty == reprStr expectedTy && reprStr e.ann == reprStr expectedAnn
 
-#guard decide (eraseCount (.lit 3) = .solid (.lit 3))
+#guard decide (eraseCount (.solid (.lit 3)) = .solid (.lit 3))
 #guard decide (eraseCount .hole = .hole)
+#guard decide (eraseCount (.solid .inf) = .solid .inf)
+#guard decide (eraseCount (.solid (.add (.lit 1) (.lit 2))) = .solid (.add (.lit 1) (.lit 2)))
+#guard decide (eraseCount (.solid (.min (.lit 3) (.lit 5))) = .solid (.min (.lit 3) (.lit 5)))
 
 #guard eraseTyEq
-  (.bl (.lit 0) (.lit 5) (.prim .int))
+  (.bl (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int))
   (surfaceListTy (.prim .int))
   (.list (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int))
 
 #guard eraseTyEq
-  (.bl .hole (.lit 5) (.tvar (.mk "a")))
+  (.bl .hole (.solid (.lit 5)) (.tvar (.mk "a")))
   (surfaceListTy (.tvar (.mk "a")))
   (.list .hole (.solid (.lit 5)) (.fvar 0))
 
 #guard eraseTyEq (.prim .int) (.prim .int) (.prim .int)
 
 #guard eraseTyEq
-  (.arrow (.bl (.lit 0) (.lit 1) (.prim .int)) (.prim .bool))
+  (.arrow (.bl (.solid (.lit 0)) (.solid (.lit 1)) (.prim .int)) (.prim .bool))
   (.arrow (surfaceListTy (.prim .int)) (.prim .bool))
   (.arrow
     (.list (.solid (.lit 0)) (.solid (.lit 1)) (.prim .int))
     (.custom boolTyName []))
 
 #guard eraseTyEq
-  (.pair (.bl (.lit 0) (.lit 2) (.prim .int)) (.prim .bool))
+  (.pair (.bl (.solid (.lit 0)) (.solid (.lit 2)) (.prim .int)) (.prim .bool))
   (.pair (surfaceListTy (.prim .int)) (.prim .bool))
   (.custom pairTyName [
     .list (.solid (.lit 0)) (.solid (.lit 2)) (.prim .int),

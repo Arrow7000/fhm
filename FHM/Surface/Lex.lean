@@ -12,6 +12,7 @@ inductive Keyword
   | «then»
   | «else»
   | «type»
+  | «inf»
   deriving Repr, DecidableEq, BEq, Inhabited
 
 /-- Builtin binary / cons operator tokens (not punctuation). -/
@@ -37,6 +38,9 @@ inductive Punct
   | arrow
   | backslash
   | underscore
+  | star
+  /-- `∞` — count infinity (same meaning as keyword `inf`). -/
+  | infty
   deriving Repr, DecidableEq, BEq, Inhabited
 
 /-- Lexical tokens. Whitespace is skipped (positions still tracked). -/
@@ -98,7 +102,8 @@ def keywordEntries : List (String × Keyword) := [
   ("if", .«if»),
   ("then", .«then»),
   ("else", .«else»),
-  ("type", .«type»)
+  ("type", .«type»),
+  ("inf", .«inf»)
 ]
 
 def keywordOf (s : String) : Option Keyword :=
@@ -135,11 +140,13 @@ def Punct.surface : Punct → String
   | .arrow => "->"
   | .backslash => "\\"
   | .underscore => "_"
+  | .star => "*"
+  | .infty => "∞"
 
 /-- All punctuation surface spellings (longest first for TextMate). -/
 def punctSurfaces : List String :=
   [Punct.arrow, .lparen, .rparen, .lbrace, .rbrace, .lbrack, .rbrack,
-   .comma, .colon, .eq, .pipe, .backslash, .underscore].map (·.surface)
+   .comma, .colon, .eq, .pipe, .backslash, .underscore, .star, .infty].map (·.surface)
 
 def mkTok (tok : Token) (sl sc el ec : Nat) : TokenWithSource :=
   { token := tok, startLine := sl, startCol := sc, endLine := el, endCol := ec }
@@ -356,6 +363,12 @@ partial def lex (input : String) : Except LexError (Array TokenWithSource) :=
         | '_' =>
           go rest line (col + 1)
             (acc.push (mkTok (.punct .underscore) line col line (col + 1)))
+        | '*' =>
+          go rest line (col + 1)
+            (acc.push (mkTok (.punct .star) line col line (col + 1)))
+        | '∞' =>
+          go rest line (col + 1)
+            (acc.push (mkTok (.punct .infty) line col line (col + 1)))
         | '\'' =>
           match takeCharLit rest line (col + 1) line col with
           | .error e => .error e
@@ -430,6 +443,9 @@ private def expectToks (input : String) (expected : Array Token) : Bool :=
 #guard expectToks "+" #[.op .plus]
 #guard expectToks "-" #[.op .minus]
 #guard expectToks "<" #[.op .lt]
+#guard expectToks "*" #[.punct .star]
+#guard expectToks "inf" #[.keyword .«inf»]
+#guard expectToks "∞" #[.punct .infty]
 
 #guard expectToks "= | : \\ _ ( ) [ ] { } ," #[
   .punct .eq, .punct .pipe, .punct .colon, .punct .backslash, .punct .underscore,

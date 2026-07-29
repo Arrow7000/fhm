@@ -58,10 +58,18 @@ def ProgramBoundsAnns.empty : ProgramBoundsAnns := {}
 
 /-! ## Pretty (Live / diagnose; no Typing import) -/
 
-def AnnoCount.pretty : AnnoCount → String
+partial def AnnoCount.pretty : AnnoCount → String
   | .hole => "_"
   | .solid (.lit n) => toString n
-  | .solid c => reprStr c
+  | .solid .inf => "∞"
+  | .solid (.add a b) => s!"({AnnoCount.pretty (.solid a)} + {AnnoCount.pretty (.solid b)})"
+  | .solid (.mul a b) => s!"({AnnoCount.pretty (.solid a)} * {AnnoCount.pretty (.solid b)})"
+  | .solid (.pred a) => s!"(pred {AnnoCount.pretty (.solid a)})"
+  | .solid (.min a b) =>
+      s!"(min {AnnoCount.pretty (.solid a)} {AnnoCount.pretty (.solid b)})"
+  | .solid (.max a b) =>
+      s!"(max {AnnoCount.pretty (.solid a)} {AnnoCount.pretty (.solid b)})"
+  | .solid (.var v) => reprStr (Count.var v)
 
 partial def BoundsAnnTy.pretty : BoundsAnnTy → String
   | .prim p =>
