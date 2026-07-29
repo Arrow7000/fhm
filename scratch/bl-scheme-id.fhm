@@ -1,0 +1,4 @@
+-- Slice 7: pack/inst round-trip for {n : Nat, a} count scheme.
+let id : {n : Nat, a} BL n n a -> BL n n a =
+  \xs -> xs
+id [1, 2]

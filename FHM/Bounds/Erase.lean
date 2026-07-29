@@ -158,7 +158,7 @@ def eraseSchemeAnn (nats : List ValName) (σ : Surface.PolyTy) :
 second store). Prefer reading anns from `ErasedBinding` when you have the
 package. -/
 structure SurfaceBoundsAnns where
-  byName : List (ValName × BoundsAnnTy) := []
+  byName : List (ValName × FHM.Bounds.BinderAnn) := []
   bodyAnn : Option BoundsAnnTy := none
   deriving Repr
 
@@ -207,7 +207,7 @@ def ErasedProgram.toProgram (ep : ErasedProgram) : Program where
 /-- Name-keyed view of binder anns (for `ofLower`). -/
 def ErasedProgram.toSurfaceAnns (ep : ErasedProgram) : SurfaceBoundsAnns where
   byName := ep.groups.flatMap fun g =>
-    g.filterMap fun eb => eb.ann.map (eb.binding.name, ·)
+    g.filterMap fun eb => eb.binderAnn.map (eb.binding.name, ·)
   bodyAnn := ep.bodyAnn
 
 /-! ## Expressions / programs -/

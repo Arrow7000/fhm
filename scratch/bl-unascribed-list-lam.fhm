@@ -1,5 +1,4 @@
--- D24: bare List λ-param still hard-fails under --bl (no BL ascription to peel).
-
+-- D24: bare List λ-param gets fresh ?lo/?hi (no inventing [0,0]); may generalise.
 let head2 : List Int -> Int =
   \xs ->
     match xs with

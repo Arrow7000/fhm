@@ -1,6 +1,6 @@
 # Design memo: bounds layer on Core (B′ plan)
 
-**Status:** living plan — slices **0–6 Done**; **§2.3 solid ascription→bctx / demand peel (A+B) Done**; **next = slice 7 bound schemes**  
+**Status:** living plan — slices **0–7 Done** (pack/inst + D24 fresh List λ); **next = slice 8 stdlib demos**  
 **Updated:** 2026-07-29 (session handoff)  
 **Repo:** `/Users/aron/dev/blt` (sandbox; merge back into `fhm` later as optional package)  
 **Canonical doc for this integration** (plus satellite briefs below)
@@ -154,7 +154,7 @@ parse → [hmRequireNoBl if not --bl] → eraseProgram → lower/infer
   → elab → eval
 ```
 
-**Slices 4–6 in Live.** Open: §2.3 residuals (holes / head-binder params); `@TODO(bounds-path-Δ)` nested refine; D24/schemes = slice 7; hover still prints HM `List`.
+**Slices 4–7 in Live.** Open: §2.3 residuals (holes / head-binder params); `@TODO(bounds-path-Δ)` nested refine; fuller Commit on escape (rank-1 `checkSubInst` today); hover still prints HM `List`.
 
 ### Outer safety (BL mode) — target theorem
 
@@ -206,8 +206,8 @@ Surface:
 | Slice 4 origin HasBounds synth | **Done** |
 | Slice 5 hole pin-to-synth | **Done** |
 | Slice 6 BoundCovers in Live | **Done** |
-| Slice 7 bound schemes / D24 | **Next** |
-| Slice 8–9 stdlib + E2E suite | **Not started** |
+| Slice 7 bound schemes / D24 | **Done** (pack/inst + fresh `?lo`/`?hi`; rank-1 `checkSubInst`) |
+| Slice 8–9 stdlib + E2E suite | **Next** / not started |
 | §2.3 ascription wins in `bctx` | **Done** for solid anns (A+B); holes/head-binders still open |
 | Axiom collapse to Z3 | **Partial** / post-E2E |
 
@@ -285,7 +285,7 @@ Surface:
 | **4** | HasBounds synth | Executable Core→`β` from origins (D22); kill Live `defaultBounds` | **Done** |
 | **5** | Elab holes + solve | Pin `_` to synth Counts, then `Sub` | **Done** |
 | **6** | BoundCovers in Live | List matches → BoundCovers/MatchSafe; else HM exh | Nil-only when `hi=0`; Cons-only when `lo≥1` | **Done** |
-| **7** | Bound schemes | `{n m : Nat, a b}` + `Surface.Count.var`; pack/inst/Commit; D24 generalise | Scheme round-trip |
+| **7** | Bound schemes | `{n m : Nat, a b}` + pack/inst; D24 fresh `?lo`/`?hi` + generalise | `bl-scheme-id`, `bl-unascribed-list-lam` | **Done** |
 | **8** | Stdlib demos | map / filter / append with bound schemes | Scratch demos under `--bl` |
 | **9** | E2E gate suite | Fixed demos checklist | BL experience green |
 
@@ -447,15 +447,15 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 
 ## 11. One-liner
 
-> **B′ dual-stack:** surface `BL` erases under `--bl`; intervals from origins; `_` pins to synth; BoundCovers on Core List matches; solid ascriptions win in `bctx` / demand-peel λ (A+B); **next = bound schemes (slice 7)**.
+> **B′ dual-stack:** surface `BL` erases under `--bl`; origins + hole pin; BoundCovers; solid ascriptions win in `bctx`; `{n:Nat}` schemes pack/inst; D24 fresh List λ; **next = slice 8 map/filter/append**.
 
 ---
 
 ## 12. Next action
 
-1. **Slice 7 — Bound schemes** (the planned next work): `{n m : Nat, a b}`, `Surface.Count.var`, pack/inst/Commit, D24 generalise for unascribed List λ-params. **This is the big one.**  
-2. Then **8** stdlib demos (map/filter/append), **9** E2E suite.  
-3. **Whenever convenient:** §2.3 residuals — hole anns push pinned template; head-binder `(xs : BL …)` fold into demand.
+1. **Slice 8 — Stdlib demos:** honest `map` / `filter` / `append` under `--bl` with bound schemes.  
+2. Then **9** E2E suite.  
+3. **Whenever convenient:** §2.3 residuals — hole anns push pinned template; head-binder `(xs : BL …)` fold into demand; fuller Commit `uniqueOnly` (Live uses rank-1 `checkSubInst` today).
 
 Thin erase (`Ann.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path uses Z3 via `FHM.Bounds.Check`.
 
@@ -465,7 +465,7 @@ Thin erase (`Ann.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path
 
 1. Read this memo §§1–2 (esp. D22–D24, **§2.3**), §3 Live today, §6 table + 6.1–6.4.  
 2. Build: `lake build FHMBounds blt` (or project’s usual target).  
-3. Smoke: `scratch/bl-synth-ok.fhm`, `bl-hole-ok.fhm`, `bl-nil-only.fhm`, `bl-ascribed-list-lam.fhm` under `--bl`.  
-4. Implement **slice 7** — schemes / pack-inst / D24; map demo only after that is honest.  
+3. Smoke: `scratch/bl-synth-ok.fhm`, `bl-hole-ok.fhm`, `bl-nil-only.fhm`, `bl-ascribed-list-lam.fhm`, `bl-scheme-id.fhm`, `bl-unascribed-list-lam.fhm` under `--bl`.  
+4. Implement **slice 8** — map/filter/append demos; keep pack/inst honest (no List-interval invention).  
 5. Key files: `SurfaceLang` / Parse / Pretty / Erase; `Bounds/{Synth,Check,Typing,Ann,Kernel}`; `Live.lean`.  
 6. Do not invent List intervals from bare HM `List` (D22). Do not fuse bounds into Core Ty.

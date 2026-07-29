@@ -2,11 +2,12 @@ import FHM.Bounds.Typing
 import FHM.Pretty
 
 /-!
-# Executable HasBounds synthesizer (slice 4)
+# Executable HasBounds synthesizer (slices 4–7)
 
 Origin-based Core → `BoundsTy` walk mirroring declarative `HasBounds`.
 Does **not** invent list intervals from bare `List` (D22). Nil’s `[0,0]` is an
-origin. Unascribed List λ-params fail (D24 deferred).
+origin. Unascribed List λ-params get fresh `?lo`/`?hi` (D24). Schemes
+instantiate at var use via `BoundBinding.scheme`.
 -/
 
 namespace FHM.Bounds.Synth
@@ -43,6 +44,25 @@ def checkSub (Δ : List Constraint) (a b : BoundsTy) : Bool :=
       n == m && as.length == bs.length && checkSubAll Δ as bs
   | _, _ => false
 termination_by sizeOf a + sizeOf b
+
+/-- Rank-1 app meet: when `checkSub` ∀ fails, still accept concrete intervals into
+fresh inferable demands (`BL ?i ?j` / `BL ?n ?n`), and prims into HM type stubs. -/
+def checkSubInst (Δ : List Constraint) (got want : BoundsTy) : Bool :=
+  if checkSub Δ got want then true
+  else
+    match got, want with
+    | .prim _, .fvar _ => true
+    | .prim _, .bvar _ => true
+    | .list glo ghi ge, .list wlo whi we =>
+        checkSubInst Δ ge we &&
+          match wlo, whi with
+          | .var ⟨.inferable, i⟩, .var ⟨.inferable, j⟩ =>
+              if i == j then glo == ghi else true
+          | _, _ => false
+    | .arrow da ca, .arrow db cb =>
+        checkSubInst Δ db da && checkSubInst Δ ca cb
+    | _, _ => false
+termination_by sizeOf got + sizeOf want
 
 def checkSubAll (Δ : List Constraint) (as bs : List BoundsTy) : Bool :=
   match as, bs with
@@ -202,80 +222,111 @@ private theorem sizeRecGroup_lt_letRec {anns : List (Option PolyTy)} {bindings :
   have := Expr.size_pos body
   omega
 
+/-- Look up env slot; schemes instantiate at fresh inferables from `Φ`,
+then fill HM type stubs from Core `tyArgs`. -/
+def lookupBound (bctx : BoundEnv) (Φ : Nat) (i : Nat) (tyArgs : List Ty) :
+    Except String (Nat × BoundsTy) :=
+  match bctx[i]? with
+  | none => throw s!"bounds: unbound var {i}"
+  | some (.mono β) =>
+      -- Mono: only fill leftover erase fvar stubs; keep real bvars.
+      pure (Φ, β.instTyArgs [])
+  | some (.scheme s) =>
+      let (Φ', β) := s.openFresh Φ
+      pure (Φ', β.instTyArgs tyArgs)
+
+/-- D24: List param gets fresh `?lo`/`?hi`; non-List uses `agreesTemplate`. -/
+def freshParamBounds (Φ : Nat) (τp : Ty) : Nat × BoundsTy :=
+  match isListTy τp with
+  | some α =>
+      (Φ + 2,
+        .list (.var ⟨.inferable, Φ⟩) (.var ⟨.inferable, Φ + 1⟩) (agreesTemplate α))
+  | none => (Φ, agreesTemplate τp)
+
 mutual
 
 /-- Synth letRec binders under outer `bctx` (list-structural on `bindings`). -/
-def inferLetRecGroup (Δ : List Constraint) (bctx : BoundEnv)
+def inferLetRecGroup (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
     (anns : List (Option PolyTy)) (bindings : List Expr) :
-    Except String (List BoundsTy) :=
+    Except String (Nat × List BoundsTy) :=
   match anns, bindings with
-  | [], [] => pure []
+  | [], [] => pure (Φ, [])
   | ann? :: anns', rhs :: bindings' => do
-      let β ← match ann? with
-        | some σ => checkBounds Δ bctx rhs σ.body
-        | none => Prod.snd <$> inferBounds Δ bctx rhs
-      let βs ← inferLetRecGroup Δ bctx anns' bindings'
-      pure (β :: βs)
+      let (Φ1, β) ← match ann? with
+        | some σ => checkBoundsΦ Δ bctx Φ rhs σ.body
+        | none => do
+            let (Φ', _, β) ← inferBoundsΦ Δ bctx Φ rhs
+            pure (Φ', β)
+      let (Φ2, βs) ← inferLetRecGroup Δ bctx Φ1 anns' bindings'
+      pure (Φ2, β :: βs)
   | _, _ => throw "bounds: letRec anns/bindings length mismatch"
 termination_by Expr.sizeRecGroup bindings
 decreasing_by all_goals (simp_wf; simp [Expr.sizeRecGroup, Expr.size]; try omega)
 
-/-- List match: Nil+Cons join, or single-branch under oracle emptiness. -/
-def synthMatch (Δ : List Constraint) (bctx : BoundEnv)
+/-- List match: Nil+Cons join (either arm order), or single-branch under oracle. -/
+def synthMatch (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
     (_α : Ty) (lo hi : Count) (βe : BoundsTy)
-    (brs : List (MatchPattern × Expr)) : Except String (Ty × BoundsTy) :=
+    (brs : List (MatchPattern × Expr)) : Except String (Nat × Ty × BoundsTy) :=
   match brs with
   | [(.named n 0, eNil), (.named c 2, eCons)] => do
       unless n == nilCtorName && c == consCtorName do
         throw "bounds: expected Nil/Cons match arms"
       let Δnil := Δ ++ nilRefine lo hi
-      let (τ, βnil) ← inferBounds Δnil bctx eNil
+      let (Φ1, τ, βnil) ← inferBoundsΦ Δnil bctx Φ eNil
       let Δcons := Δ ++ consRefine hi
-      let βcons ← checkBounds Δcons (consBoundEnv bctx lo hi βe) eCons τ
+      let (Φ2, βcons) ← checkBoundsΦ Δcons (consBoundEnv bctx lo hi βe) Φ1 eCons τ
       match joinBoundsTy βnil βcons with
-      | some β => pure (τ, β)
+      | some β => pure (Φ2, τ, β)
+      | none => throw "bounds: match branches have incompatible bounds"
+  | [(.named c 2, eCons), (.named n 0, eNil)] => do
+      unless n == nilCtorName && c == consCtorName do
+        throw "bounds: expected Nil/Cons match arms"
+      let Δnil := Δ ++ nilRefine lo hi
+      let (Φ1, τ, βnil) ← inferBoundsΦ Δnil bctx Φ eNil
+      let Δcons := Δ ++ consRefine hi
+      let (Φ2, βcons) ← checkBoundsΦ Δcons (consBoundEnv bctx lo hi βe) Φ1 eCons τ
+      match joinBoundsTy βnil βcons with
+      | some β => pure (Φ2, τ, β)
       | none => throw "bounds: match branches have incompatible bounds"
   | [(.named n 0, eNil)] => do
       unless n == nilCtorName do throw "bounds: expected Nil-only arm"
       unless checkValid (mustBeEmpty Δ hi) == .valid do
         throw "bounds: Nil-only match but upper bound not proved empty"
-      inferBounds (Δ ++ nilRefine lo hi) bctx eNil
+      inferBoundsΦ (Δ ++ nilRefine lo hi) bctx Φ eNil
   | [(.named c 2, eCons)] => do
       unless c == consCtorName do throw "bounds: expected Cons-only arm"
       unless checkValid (mustBeNonempty Δ lo) == .valid do
         throw "bounds: Cons-only match but lower bound not proved nonempty"
-      inferBounds (Δ ++ consRefine hi) (consBoundEnv bctx lo hi βe) eCons
+      inferBoundsΦ (Δ ++ consRefine hi) (consBoundEnv bctx lo hi βe) Φ eCons
   | _ =>
       throw "bounds: unsupported match shape (want Nil+Cons or single arm)"
 termination_by Expr.sizeBranches brs
 decreasing_by all_goals (first | exact size_lt_sizeBranches_two | exact size_lt_sizeBranches_two_snd | exact size_lt_sizeBranches_one | (try simp only [Expr.size, Expr.sizeBranches]; omega))
 
 /-- Check mode for generic `f arg` (infer fn spine, check arg). -/
-def checkBoundsApp (Δ : List Constraint) (bctx : BoundEnv) (f arg : Expr) (τ : Ty) :
-    Except String BoundsTy := do
-  let (τf, βf) ← inferBounds Δ bctx f
+def checkBoundsApp (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
+    (f arg : Expr) (τ : Ty) : Except String (Nat × BoundsTy) := do
+  let (Φ1, τf, βf) ← inferBoundsΦ Δ bctx Φ f
   match τf, βf with
   | .arrow τa τr, .arrow βa βr => do
-      unless tyEq τr τ do
-        throw "bounds: app result type mismatch"
-      let βa' ← checkBounds Δ bctx arg τa
-      unless checkSub Δ βa' βa do
+      -- HM types already checked by Infer; bounds spine may use bvar/fvar stubs.
+      let (Φ2, βa') ← checkBoundsΦ Δ bctx Φ1 arg τa
+      unless checkSubInst Δ βa' βa do
         throw "bounds: argument does not meet function domain"
-      pure βr
+      pure (Φ2, βr)
   | _, _ => throw "bounds: applying a non-function"
 termination_by f.size + arg.size
 decreasing_by all_goals (simp_wf; have := Expr.size_pos arg; have := Expr.size_pos f; omega)
 
-/-- Infer mode: synthesize both HM spine and bounds. -/
-def inferBounds (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) :
-    Except String (Ty × BoundsTy) :=
+/-- Infer mode: synthesize both HM spine and bounds; thread freshness `Φ`. -/
+def inferBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (e : Expr) :
+    Except String (Nat × Ty × BoundsTy) :=
   match e with
   | .primLit p =>
-      pure (PrimLitExpr.ty p, boundInfoOfPrimLit p)
-  | .var i _tyArgs =>
-      match bctx[i]? with
-      | none => .error s!"bounds: unbound var {i}"
-      | some β => pure (BoundsTy.toTy β, β)
+      pure (Φ, PrimLitExpr.ty p, boundInfoOfPrimLit p)
+  | .var i tyArgs => do
+      let (Φ', β) ← lookupBound bctx Φ i tyArgs
+      pure (Φ', BoundsTy.toTy β, β)
   | .ctor name =>
       if name == nilCtorName then
         .error "bounds: Nil needs an expected List type"
@@ -284,39 +335,39 @@ def inferBounds (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) :
   | .primBinOp op =>
       .error s!"bounds: primBinOp {repr op} needs expected type"
   | .app f arg => do
-      let (τf, βf) ← inferBounds Δ bctx f
+      let (Φ1, τf, βf) ← inferBoundsΦ Δ bctx Φ f
       match τf, βf with
       | .arrow τa τr, .arrow βa βr => do
-          let βa' ← checkBounds Δ bctx arg τa
-          unless checkSub Δ βa' βa do
+          let (Φ2, βa') ← checkBoundsΦ Δ bctx Φ1 arg τa
+          unless checkSubInst Δ βa' βa do
             throw "bounds: argument does not meet function domain"
-          pure (τr, βr)
+          pure (Φ2, τr, βr)
       | _, _ =>
           throw "bounds: applying a non-function"
   | .lambda paramAnn body => do
       let τp ← match paramAnn with
         | some t => pure t
         | none => throw "bounds: lambda param needs a type ascription for synth"
-      if (isListTy τp).isSome then
-        throw "bounds: unascribed List λ-param (annotate with BL, or wait for D24)"
-      let βp := agreesTemplate τp
-      let (τb, βb) ← inferBounds Δ (βp :: bctx) body
-      pure (.arrow τp τb, .arrow βp βb)
+      let (Φ1, βp) := freshParamBounds Φ τp
+      let (Φ2, τb, βb) ← inferBoundsΦ Δ (BoundEnv.extend bctx βp) Φ1 body
+      pure (Φ2, .arrow τp τb, .arrow βp βb)
   | .letIn ann? rhs body => do
-      let β1 ← match ann? with
-        | some σ => checkBounds Δ bctx rhs σ.body
-        | none => Prod.snd <$> inferBounds Δ bctx rhs
-      inferBounds Δ (β1 :: bctx) body
+      let (Φ1, β1) ← match ann? with
+        | some σ => checkBoundsΦ Δ bctx Φ rhs σ.body
+        | none => do
+            let (Φ', _, β) ← inferBoundsΦ Δ bctx Φ rhs
+            pure (Φ', β)
+      inferBoundsΦ Δ (BoundEnv.extend bctx β1) Φ1 body
   | .letRec anns bindings body => do
       if anns.length != bindings.length then
         throw "bounds: letRec anns/bindings length mismatch"
-      let βs ← inferLetRecGroup Δ bctx anns bindings
-      inferBounds Δ (βs ++ bctx) body
+      let (Φ1, βs) ← inferLetRecGroup Δ bctx Φ anns bindings
+      inferBoundsΦ Δ (BoundEnv.extendMany bctx βs) Φ1 body
   | .match_ scrut brs => do
-      let (τs, βs) ← inferBounds Δ bctx scrut
+      let (Φ1, τs, βs) ← inferBoundsΦ Δ bctx Φ scrut
       match isListTy τs, βs with
       | some α, .list lo hi βe =>
-          synthMatch Δ bctx α lo hi βe brs
+          synthMatch Δ bctx Φ1 α lo hi βe brs
       | _, _ =>
           throw "bounds: match on non-List (HM exh covers these; BoundCovers later)"
 termination_by e.size
@@ -329,77 +380,75 @@ decreasing_by all_goals (
   | exact sizeRecGroup_lt_letRec
   | (simp only [Expr.size, Expr.sizeBranches, Expr.sizeRecGroup]; omega))
 
-/-- Check mode: given expected `τ`, synthesize `β`. -/
-def checkBounds (Δ : List Constraint) (bctx : BoundEnv)
-    (e : Expr) (τ : Ty) : Except String BoundsTy := do
+/-- Check mode: given expected `τ`, synthesize `β`; thread freshness `Φ`. -/
+def checkBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
+    (e : Expr) (τ : Ty) : Except String (Nat × BoundsTy) := do
   match e with
   | .primLit p => do
-      unless tyEq (PrimLitExpr.ty p) τ do
-        throw "bounds: prim lit type mismatch"
-      pure (boundInfoOfPrimLit p)
-  | .var i _tyArgs => do
-      match bctx[i]? with
-      | none => throw s!"bounds: unbound var {i}"
-      | some β =>
-          let _ := τ
-          pure β
+      -- HM type already checked by Infer; bounds are prim-shaped.
+      let _ := τ
+      pure (Φ, boundInfoOfPrimLit p)
+  | .var i tyArgs => do
+      let (Φ', β) ← lookupBound bctx Φ i tyArgs
+      let _ := τ
+      pure (Φ', β)
   | .ctor name => do
       if name == nilCtorName then
         match isListTy τ with
-        | some α => pure (.list (.lit 0) (.lit 0) (agreesTemplate α))
+        | some α => pure (Φ, .list (.lit 0) (.lit 0) (agreesTemplate α))
         | none => throw "bounds: Nil at non-List type"
       else if name == consCtorName then
         throw "bounds: bare Cons ctor (expected saturated Cons apps)"
       else
         if (isListTy τ).isSome then
           throw "bounds: non-Nil ctor at List type"
-        pure (agreesTemplate τ)
+        pure (Φ, agreesTemplate τ)
   | .primBinOp _op =>
-      pure (agreesTemplate τ)
+      pure (Φ, agreesTemplate τ)
   | .app (.app (.ctor c) h) arg =>
       match isListTy τ with
       | some α =>
           if c == consCtorName then do
-            let βh ← checkBounds Δ bctx h α
-            let βt ← checkBounds Δ bctx arg (listTy α)
+            let (Φ1, βh) ← checkBoundsΦ Δ bctx Φ h α
+            let (Φ2, βt) ← checkBoundsΦ Δ bctx Φ1 arg (listTy α)
             match βt with
             | .list lo hi βe => do
-                unless checkSub Δ βh βe do
+                unless checkSubInst Δ βh βe do
                   throw "bounds: Cons head does not meet element bounds"
-                pure (.list (.add lo (.lit 1)) (.add hi (.lit 1)) βe)
+                pure (Φ2, .list (.add lo (.lit 1)) (.add hi (.lit 1)) βe)
             | _ => throw "bounds: Cons tail is not a list bounds"
           else
-            checkBoundsApp Δ bctx (.app (.ctor c) h) arg τ
+            checkBoundsApp Δ bctx Φ (.app (.ctor c) h) arg τ
       | none =>
-          checkBoundsApp Δ bctx (.app (.ctor c) h) arg τ
+          checkBoundsApp Δ bctx Φ (.app (.ctor c) h) arg τ
   | .app f arg =>
-      checkBoundsApp Δ bctx f arg τ
+      checkBoundsApp Δ bctx Φ f arg τ
   | .lambda _paramAnn body => do
       match τ with
       | .arrow τp τb => do
-          if (isListTy τp).isSome then
-            throw "bounds: unascribed List λ-param (annotate with BL, or wait for D24)"
-          let βp := agreesTemplate τp
-          let βb ← checkBounds Δ (βp :: bctx) body τb
-          pure (.arrow βp βb)
+          let (Φ1, βp) := freshParamBounds Φ τp
+          let (Φ2, βb) ← checkBoundsΦ Δ (BoundEnv.extend bctx βp) Φ1 body τb
+          pure (Φ2, .arrow βp βb)
       | _ => throw "bounds: lambda at non-arrow type"
   | .letIn ann? rhs body => do
-      let β1 ← match ann? with
-        | some σ => checkBounds Δ bctx rhs σ.body
-        | none => Prod.snd <$> inferBounds Δ bctx rhs
-      checkBounds Δ (β1 :: bctx) body τ
+      let (Φ1, β1) ← match ann? with
+        | some σ => checkBoundsΦ Δ bctx Φ rhs σ.body
+        | none => do
+            let (Φ', _, β) ← inferBoundsΦ Δ bctx Φ rhs
+            pure (Φ', β)
+      checkBoundsΦ Δ (BoundEnv.extend bctx β1) Φ1 body τ
   | .letRec anns bindings body => do
       if anns.length != bindings.length then
         throw "bounds: letRec anns/bindings length mismatch"
-      let βs ← inferLetRecGroup Δ bctx anns bindings
-      checkBounds Δ (βs ++ bctx) body τ
+      let (Φ1, βs) ← inferLetRecGroup Δ bctx Φ anns bindings
+      checkBoundsΦ Δ (BoundEnv.extendMany bctx βs) Φ1 body τ
   | .match_ scrut brs => do
-      let (τs, βs) ← inferBounds Δ bctx scrut
+      let (Φ1, τs, βs) ← inferBoundsΦ Δ bctx Φ scrut
       match isListTy τs, βs with
       | some α, .list lo hi βe => do
-          let (_τ, β) ← synthMatch Δ bctx α lo hi βe brs
+          let (Φ2, _τ, β) ← synthMatch Δ bctx Φ1 α lo hi βe brs
           let _ := τ
-          pure β
+          pure (Φ2, β)
       | _, _ =>
           throw "bounds: match on non-List"
 termination_by e.size
@@ -416,6 +465,17 @@ decreasing_by all_goals (
 
 end
 
+/-- Infer without exposing freshness (starts at `Φ = 0`). -/
+def inferBounds (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) :
+    Except String (Ty × BoundsTy) := do
+  let (_, τ, β) ← inferBoundsΦ Δ bctx 0 e
+  pure (τ, β)
+
+/-- Check without exposing freshness (starts at `Φ = 0`). -/
+def checkBounds (Δ : List Constraint) (bctx : BoundEnv)
+    (e : Expr) (τ : Ty) : Except String BoundsTy := do
+  Prod.snd <$> checkBoundsΦ Δ bctx 0 e τ
+
 /-- Top-level entry: synth `β` for `e` at HM type `τ`. -/
 def synthBounds (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) (τ : Ty) :
     Except String BoundsTy :=
@@ -425,33 +485,37 @@ def synthBounds (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) (τ : Ty) :
 
 For λ with demanded `.arrow βp βb`, push `βp` from ascription (no List invention).
 Peels Infer’s singleton `letRec` wrapper (`let f = (let rec f = λ… in f)`). -/
-def checkAgainst (Δ : List Constraint) (bctx : BoundEnv)
-    (e : Expr) (τ : Ty) (β : BoundsTy) : Except String Unit := do
+def checkAgainstΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
+    (e : Expr) (τ : Ty) (β : BoundsTy) : Except String Nat := do
   match e, τ, β with
   | .lambda _ body, .arrow _τp τb, .arrow βp βb =>
-      checkAgainst Δ (βp :: bctx) body τb βb
+      checkAgainstΦ Δ (BoundEnv.extend bctx βp) Φ body τb βb
   | .letIn ann? rhs body, τ', β' => do
-      let β1 ← match ann? with
-        | some σ => checkBounds Δ bctx rhs σ.body
-        | none => Prod.snd <$> inferBounds Δ bctx rhs
-      checkAgainst Δ (β1 :: bctx) body τ' β'
+      let (Φ1, β1) ← match ann? with
+        | some σ => checkBoundsΦ Δ bctx Φ rhs σ.body
+        | none => do
+            let (Φ', _, β) ← inferBoundsΦ Δ bctx Φ rhs
+            pure (Φ', β)
+      checkAgainstΦ Δ (BoundEnv.extend bctx β1) Φ1 body τ' β'
   | .letRec _anns bindings body, τ', β' => do
-      -- Infer often wraps a surface λ RHS as singleton `letRec`. Under solid
-      -- demand, push the ascribed β for the rec binder and checkAgainst the RHS
-      -- (so List λ peels) rather than origin-synth (which hard-fails D24).
       match bindings with
       | [rhs] => do
-          checkAgainst Δ (β' :: bctx) rhs τ' β'
-          checkAgainst Δ (β' :: bctx) body τ' β'
+          let Φ1 ← checkAgainstΦ Δ (BoundEnv.extend bctx β') Φ rhs τ' β'
+          checkAgainstΦ Δ (BoundEnv.extend bctx β') Φ1 body τ' β'
       | _ => do
-          let β₀ ← checkBounds Δ bctx e τ'
+          let (Φ1, β₀) ← checkBoundsΦ Δ bctx Φ e τ'
           unless checkSub Δ β₀ β' do
             throw s!"bounds: synthesized {prettyβ β₀} does not meet demand {prettyβ β'}"
+          pure Φ1
   | _, _, _ => do
-      let β' ← checkBounds Δ bctx e τ
-      unless checkSub Δ β' β do
+      let (Φ1, β') ← checkBoundsΦ Δ bctx Φ e τ
+      unless checkSubInst Δ β' β do
         throw s!"bounds: synthesized {prettyβ β'} does not meet demand {prettyβ β}"
+      pure Φ1
 termination_by e.size
 decreasing_by all_goals (try simp only [Expr.size, Expr.sizeRecGroup]; omega)
 
-end FHM.Bounds.Synth
+def checkAgainst (Δ : List Constraint) (bctx : BoundEnv)
+    (e : Expr) (τ : Ty) (β : BoundsTy) : Except String Unit := do
+  let _ ← checkAgainstΦ Δ bctx 0 e τ β
+  pure ()

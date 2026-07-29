@@ -125,10 +125,178 @@ theorem agreesTemplate_agrees {τ : Ty} (h : ListShapeOK τ) :
       | _ :: _ :: _ =>
           simpa [agreesTemplate] using Agrees.custom hne hmap
 
-abbrev BoundEnv := List BoundsTy
+/-- Packed bounds scheme: solid body; rigid count vars `i < nCounts`. -/
+structure BScheme where
+  nCounts : Nat
+  body : BoundsTy
+  deriving Repr
+
+/-- Live / Check env entry: monotype bounds or a packed count scheme. -/
+inductive BoundBinding where
+  | mono (β : BoundsTy)
+  | scheme (s : BScheme)
+  deriving Repr
+
+abbrev BoundEnv := List BoundBinding
+
+/-- Push a monotype binding (most HasBounds / synth extends). -/
+def BoundEnv.extend (bctx : BoundEnv) (β : BoundsTy) : BoundEnv :=
+  .mono β :: bctx
+
+/-- Push many monotype bindings (outermost last in `βs`, same as former `βs ++ bctx`). -/
+def BoundEnv.extendMany (bctx : BoundEnv) (βs : List BoundsTy) : BoundEnv :=
+  βs.map BoundBinding.mono ++ bctx
+
+def BoundBinding.getMono? : BoundBinding → Option BoundsTy
+  | .mono β => some β
+  | .scheme _ => none
 
 def consBoundEnv (bctx : BoundEnv) (lo hi : Count) (βe : BoundsTy) : BoundEnv :=
-  βe :: .list (.pred lo) (.pred hi) βe :: bctx
+  BoundEnv.extend (BoundEnv.extend bctx (.list (.pred lo) (.pred hi) βe)) βe
+
+/-- Substitute count args for rigid binders (`args[i]` replaces `⟨.rigid, i⟩`). -/
+def Count.applyArgs (args : List Count) : Count → Count
+  | .lit n => .lit n
+  | .inf => .inf
+  | .var ⟨.rigid, i⟩ => args.getD i (.lit 0)
+  | .var v => .var v
+  | .add a b => .add (applyArgs args a) (applyArgs args b)
+  | .mul a b => .mul (applyArgs args a) (applyArgs args b)
+  | .pred a => .pred (applyArgs args a)
+  | .min a b => .min (applyArgs args a) (applyArgs args b)
+  | .max a b => .max (applyArgs args a) (applyArgs args b)
+
+def BoundsTy.applyArgs (args : List Count) : BoundsTy → BoundsTy
+  | .prim p => .prim p
+  | .bvar i => .bvar i
+  | .fvar i => .fvar i
+  | .arrow d c => .arrow (applyArgs args d) (applyArgs args c)
+  | .list lo hi e =>
+      .list (Count.applyArgs args lo) (Count.applyArgs args hi) (applyArgs args e)
+  | .custom n as => .custom n (as.map (applyArgs args))
+
+/-- Scheme body may mention only **rigid** vars with `idx < n` (no inferables). -/
+def Count.binderRigidBool (n : Nat) : Count → Bool
+  | .lit _ | .inf => true
+  | .var ⟨.rigid, i⟩ => decide (i < n)
+  | .var ⟨.inferable, _⟩ => false
+  | .add a b | .mul a b | .min a b | .max a b =>
+      binderRigidBool n a && binderRigidBool n b
+  | .pred a => binderRigidBool n a
+
+def BoundsTy.schemeWFBool (nCounts : Nat) : BoundsTy → Bool
+  | .prim _ | .bvar _ | .fvar _ => true
+  | .arrow d c => schemeWFBool nCounts d && schemeWFBool nCounts c
+  | .list lo hi e =>
+      Count.binderRigidBool nCounts lo && Count.binderRigidBool nCounts hi &&
+        schemeWFBool nCounts e
+  -- custom args: structural fold (size decreases on each head)
+  | .custom _ [] => true
+  | .custom n (a :: as) =>
+      schemeWFBool nCounts a && schemeWFBool nCounts (.custom n as)
+termination_by β => sizeOf β
+
+def BScheme.WF_bool (s : BScheme) : Bool :=
+  BoundsTy.schemeWFBool s.nCounts s.body
+
+/-- Instantiate a count scheme at concrete count args (arity + WF). -/
+def BScheme.instantiate? (s : BScheme) (args : List Count) : Option BoundsTy :=
+  if s.WF_bool && args.length = s.nCounts then
+    some (BoundsTy.applyArgs args s.body)
+  else
+    none
+
+/-- Open a scheme at fresh inferables starting at frontier `Φ`. -/
+def BScheme.openFresh (s : BScheme) (Φ : Nat) : Nat × BoundsTy :=
+  let args := (List.range s.nCounts).map fun i => Count.var ⟨.inferable, Φ + i⟩
+  (Φ + s.nCounts, BoundsTy.applyArgs args s.body)
+
+/-- Replace stub `.fvar i` / scheme `.bvar i` with `agreesTemplate` of HM `tyArgs[i]`. -/
+def BoundsTy.instTyArgs (tyArgs : List Ty) : BoundsTy → BoundsTy
+  | .prim p => .prim p
+  | .bvar i =>
+      match tyArgs[i]? with
+      | some τ => agreesTemplate τ
+      | none => .bvar i
+  | .fvar i =>
+      match tyArgs[i]? with
+      | some τ => agreesTemplate τ
+      | none => .fvar i
+  | .arrow d c => .arrow (instTyArgs tyArgs d) (instTyArgs tyArgs c)
+  | .list lo hi e => .list lo hi (instTyArgs tyArgs e)
+  | .custom n as => .custom n (as.map (instTyArgs tyArgs))
+
+/-- Erase stubs type params as `.fvar`; Infer opens schemes with `.bvar`. Align for meet. -/
+def BoundsTy.fvarsToBVars : BoundsTy → BoundsTy
+  | .prim p => .prim p
+  | .bvar i => .bvar i
+  | .fvar i => .bvar i
+  | .arrow d c => .arrow (fvarsToBVars d) (fvarsToBVars c)
+  | .list lo hi e => .list lo hi (fvarsToBVars e)
+  | .custom n as => .custom n (as.map fvarsToBVars)
+
+/-- Free inferable indices appearing in a count (order-preserving, deduped). -/
+def Count.freeInferables : Count → List Nat
+  | .lit _ | .inf => []
+  | .var ⟨.inferable, i⟩ => [i]
+  | .var ⟨.rigid, _⟩ => []
+  | .add a b | .mul a b | .min a b | .max a b =>
+      let fa := freeInferables a
+      fa ++ (freeInferables b).filter (· ∉ fa)
+  | .pred a => freeInferables a
+
+def BoundsTy.freeInferables : BoundsTy → List Nat
+  | .prim _ | .bvar _ | .fvar _ => []
+  | .arrow d c =>
+      let fd := freeInferables d
+      fd ++ (freeInferables c).filter (· ∉ fd)
+  | .list lo hi e =>
+      let flo := Count.freeInferables lo
+      let fhi := (Count.freeInferables hi).filter (· ∉ flo)
+      let fe := (freeInferables e).filter fun i => i ∉ flo && i ∉ fhi
+      flo ++ fhi ++ fe
+  | .custom _ as =>
+      as.foldl (fun acc β => acc ++ (freeInferables β).filter (· ∉ acc)) []
+
+/-- Remap inferable indices via `oldIdx → rigid newIdx` (`table` is old→new). -/
+def Count.generaliseInferables (table : List (Nat × Nat)) : Count → Count
+  | .lit n => .lit n
+  | .inf => .inf
+  | .var ⟨.inferable, i⟩ =>
+      match table.find? fun ⟨old, _⟩ => old = i with
+      | some ⟨_, j⟩ => .var ⟨.rigid, j⟩
+      | none => .var ⟨.inferable, i⟩
+  | .var v => .var v
+  | .add a b => .add (generaliseInferables table a) (generaliseInferables table b)
+  | .mul a b => .mul (generaliseInferables table a) (generaliseInferables table b)
+  | .pred a => .pred (generaliseInferables table a)
+  | .min a b => .min (generaliseInferables table a) (generaliseInferables table b)
+  | .max a b => .max (generaliseInferables table a) (generaliseInferables table b)
+
+def BoundsTy.generaliseInferables (table : List (Nat × Nat)) : BoundsTy → BoundsTy
+  | .prim p => .prim p
+  | .bvar i => .bvar i
+  | .fvar i => .fvar i
+  | .arrow d c =>
+      .arrow (generaliseInferables table d) (generaliseInferables table c)
+  | .list lo hi e =>
+      .list (Count.generaliseInferables table lo) (Count.generaliseInferables table hi)
+        (generaliseInferables table e)
+  | .custom n as => .custom n (as.map (generaliseInferables table))
+
+/-- Pack free inferables in `β` as a count scheme (identity if none). -/
+def BoundsTy.packScheme? (β : BoundsTy) : BoundBinding :=
+  let frees := β.freeInferables
+  if frees.isEmpty then .mono β
+  else
+    let table := (List.range frees.length).zip frees |>.map fun ⟨j, old⟩ => (old, j)
+    .scheme ⟨frees.length, β.generaliseInferables table⟩
+
+#guard
+  match BScheme.instantiate? ⟨1, .list (.var ⟨.rigid, 0⟩) (.var ⟨.rigid, 0⟩) (.prim .int)⟩
+      [.lit 2] with
+  | some (.list (.lit 2) (.lit 2) (.prim .int)) => true
+  | _ => false
 
 /-! ## Canonical min/max + joinBoundsTy (WF) -/
 
@@ -506,7 +674,7 @@ inductive HasBounds :
         (listTy α)
         (.list (.add lo (.lit 1)) (.add hi (.lit 1)) βe)
   | var {Δ bctx i tyArgs τ β} :
-      bctx[i]? = some β →
+      bctx[i]? = some (.mono β) →
       Agrees β τ →
       HasBounds Δ bctx (.var i tyArgs) τ β
   | app {Δ bctx f arg τa τr βa βr βa'} :
@@ -516,11 +684,11 @@ inductive HasBounds :
       HasBounds Δ bctx (.app f arg) τr βr
   | lambda {Δ bctx ann body τp τb βp βb} :
       Agrees βp τp →
-      HasBounds Δ (βp :: bctx) body τb βb →
+      HasBounds Δ (BoundEnv.extend bctx βp) body τb βb →
       HasBounds Δ bctx (.lambda ann body) (.arrow τp τb) (.arrow βp βb)
   | letMono {Δ bctx ann e1 e2 τ1 τ2 β1 β2} :
       HasBounds Δ bctx e1 τ1 β1 →
-      HasBounds Δ (β1 :: bctx) e2 τ2 β2 →
+      HasBounds Δ (BoundEnv.extend bctx β1) e2 τ2 β2 →
       HasBounds Δ bctx (.letIn ann e1 e2) τ2 β2
   | matchList {Δ bctx scrut eNil eCons α lo hi βe τ βnil βcons β} :
       HasBounds Δ bctx scrut (listTy α) (.list lo hi βe) →
@@ -944,24 +1112,25 @@ inductive MeetsAscription (Δ : List Constraint) : BoundsTy → BoundsAnnTy → 
 Same length/discipline as `BoundEnv`. -/
 abbrev SynthBoundsEnv := BoundEnv
 
-/-- Every present binder ascription is met by the synthesized binder bounds. -/
+/-- Every present mono binder ascription is met by the synthesized binder bounds. -/
 def MeetsBinderAnns (Δ : List Constraint)
     (syn : SynthBoundsEnv) (anns : ProgramBoundsAnns) : Prop :=
   ∀ (i : Nat) (ann : BoundsAnnTy),
-    anns.binderAnns[i]? = some (some ann) →
-      ∃ β : BoundsTy, syn[i]? = some β ∧ MeetsAscription Δ β ann
+    anns.binderAnns[i]? = some (some (.mono ann)) →
+      ∃ β : BoundsTy, syn[i]? = some (.mono β) ∧ MeetsAscription Δ β ann
 
-/-! ## Bound schemes (slice 7 shapes — review before wiring Live)
+/-- Pack a surface scheme ascription into a `BScheme` (solid body required). -/
+def BoundsSchemeAnn.toBScheme? (s : BoundsSchemeAnn) : Option BScheme :=
+  match BoundsAnnTy.toBoundsTy? s.body with
+  | some β =>
+      let sch : BScheme := ⟨s.natBinders.length, β.fvarsToBVars⟩
+      if sch.WF_bool then some sch else none
+  | none => none
 
-Count-only telescope sidecar (type poly stays Core / HM `PolyTy`).
-See `BoundsSchemeAnn` / `BinderAnn` in Ann — same dual-stack pattern as mono anns.
+/-! ## Bound schemes — Prop layer (executable `applyArgs` / `instantiate?` above)
+
+`BScheme` structure lives with `BoundEnv` (early). Here: WF Prop, Subst, InstantiatesTo.
 -/
-
-/-- Packed bounds scheme: solid body; rigid count vars `i < nCounts`. -/
-structure BScheme where
-  nCounts : Nat
-  body : BoundsTy
-  deriving Repr
 
 /-- Scheme body may mention only **rigid** vars with `idx < n` (no inferables). -/
 def Count.BinderRigid (n : Nat) : Count → Prop

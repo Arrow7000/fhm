@@ -135,7 +135,7 @@ def hmRequireNoBl (p : Program) : Except String HmProgram :=
 /-- Map erase binder anns onto a de Bruijn spine.
 
 `binderEnv[i]` is the name of Core env slot `i` (**0 = innermost**).
-Names with no `ErasedBinding.ann` get `none`. Call **after** lower. -/
+Names with no `ErasedBinding` ann/scheme get `none`. Call **after** lower. -/
 def ProgramBoundsAnns.ofLower
     (binderEnv : List ValName) (ep : ErasedProgram) : ProgramBoundsAnns :=
   let surf := ep.toSurfaceAnns
@@ -179,7 +179,7 @@ theorem ofLower_bodyAnn (env : List ValName) (ep : ErasedProgram) :
   rfl
 
 theorem ofLower_get_of_find (env : List ValName) (ep : ErasedProgram)
-    {n : ValName} {ann : BoundsAnnTy} {i : Nat}
+    {n : ValName} {ann : BinderAnn} {i : Nat}
     (hi : env[i]? = some n)
     (hf : ep.toSurfaceAnns.byName.find? (fun ⟨n', _⟩ => n' = n) = some (n, ann)) :
     ProgramBoundsAnns.get? (ProgramBoundsAnns.ofLower env ep) i = some ann := by
@@ -215,7 +215,7 @@ private def tyList : Surface.Ty := .customTy ⟨"List"⟩ [.prim .int]
 -- HM gate accepts a program with no BL.
 #guard (hmRequireNoBl ⟨[], [], .primLit (.int 0)⟩).isOk
 
-private def annsEq (a b : List (Option BoundsAnnTy)) : Bool :=
+private def annsEq (a b : List (Option BinderAnn)) : Bool :=
   reprStr a == reprStr b
 
 private def progXsBl : Program :=
@@ -232,10 +232,10 @@ private def progXsBl : Program :=
 
 -- `ofLower` maps that binder ann onto de Bruijn slot 0.
 #guard annsEq (ProgramBoundsAnns.ofLower [⟨"xs"⟩] (eraseProgram progXsBl)).binderAnns
-  [some (BoundsAnnTy.list (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int))]
+  [some (BinderAnn.mono (BoundsAnnTy.list (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int)))]
 -- Missing names become `none`; `xs` lands at index 1 when env is `[ys, xs]`.
 #guard annsEq (ProgramBoundsAnns.ofLower [⟨"ys"⟩, ⟨"xs"⟩] (eraseProgram progXsBl)).binderAnns
-  [none, some (BoundsAnnTy.list (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int))]
+  [none, some (BinderAnn.mono (BoundsAnnTy.list (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int)))]
 
 -- Slice 2: within-group order preserved; groups reversed for innermost-first.
 private def progAB : Program :=

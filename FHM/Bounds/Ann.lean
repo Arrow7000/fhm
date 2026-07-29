@@ -1,5 +1,6 @@
 import FHM.Core
 import FHM.Bounds.Kernel
+import FHM.Pretty
 
 /-!
 # Bounds annotations (Z3-free)
@@ -67,17 +68,24 @@ inductive BinderAnn where
 
 /-- Program-level bound ascriptions after lower (de Bruijn parallel to value env).
 
-`binderAnns[i] = some ann` means binding `i` was surface-ascribed; the body of
-the program may carry `bodyAnn`. Missing entries = no ascription (pure synth). -/
+`binderAnns[i] = some ann` means binding `i` was surface-ascribed (mono `BL` or
+`{n : Nat,…}` scheme); the body of the program may carry `bodyAnn`.
+Missing entries = no ascription (pure synth / D24). -/
 structure ProgramBoundsAnns where
   /-- Parallel to Core `env` after lower: index 0 = innermost binder. -/
-  binderAnns : List (Option BoundsAnnTy) := []
+  binderAnns : List (Option BinderAnn) := []
   /-- Optional expected bounds on the whole expression / program body. -/
   bodyAnn : Option BoundsAnnTy := none
   deriving Repr
 
-/-- Lookup ascription for de Bruijn index `i`. -/
-def ProgramBoundsAnns.get? (a : ProgramBoundsAnns) (i : Nat) : Option BoundsAnnTy :=
+/-- Lookup mono ascription for de Bruijn index `i` (schemes → `none` here). -/
+def ProgramBoundsAnns.getMono? (a : ProgramBoundsAnns) (i : Nat) : Option BoundsAnnTy :=
+  match a.binderAnns[i]? |>.join with
+  | some (.mono ann) => some ann
+  | _ => none
+
+/-- Lookup any binder ascription. -/
+def ProgramBoundsAnns.get? (a : ProgramBoundsAnns) (i : Nat) : Option BinderAnn :=
   a.binderAnns[i]? |>.join
 
 /-- Empty ascriptions (HM-only or no surface bounds). -/
@@ -85,33 +93,54 @@ def ProgramBoundsAnns.empty : ProgramBoundsAnns := {}
 
 /-! ## Pretty (Live / diagnose; no Typing import) -/
 
-def Count.pretty : Count → String
+/-- Default letters when no Nat-binder name is in scope. -/
+private def prettyRigidIdx (i : Nat) : String :=
+  let letters := ["n", "m", "k", "p", "q", "r", "s", "t"]
+  letters.getD i ("n" ++ toString i)
+
+private def prettyInferableIdx (i : Nat) : String :=
+  "?" ++ prettyRigidIdx i
+
+private def prettyTyVarIdx (i : Nat) : String :=
+  -- Same letters as `prettyTyVarName` in `FHM/Pretty.lean` (a, b, c, …).
+  prettyTyVarName i
+
+/-- Pretty a count; `nats[i]` names rigid binder `i` when present (scheme bodies). -/
+def Count.prettyWith (nats : List ValName) : Count → String
   | .lit n => toString n
   | .inf => "∞"
   | .add a b =>
-      let sa := Count.pretty a
-      let sb := Count.pretty b
+      let sa := Count.prettyWith nats a
+      let sb := Count.prettyWith nats b
       s!"({sa} + {sb})"
   | .mul a b =>
-      let sa := Count.pretty a
-      let sb := Count.pretty b
+      let sa := Count.prettyWith nats a
+      let sb := Count.prettyWith nats b
       s!"({sa} * {sb})"
-  | .pred a => s!"(pred {Count.pretty a})"
+  | .pred a => s!"(pred {Count.prettyWith nats a})"
   | .min a b =>
-      let sa := Count.pretty a
-      let sb := Count.pretty b
+      let sa := Count.prettyWith nats a
+      let sb := Count.prettyWith nats b
       s!"(min {sa} {sb})"
   | .max a b =>
-      let sa := Count.pretty a
-      let sb := Count.pretty b
+      let sa := Count.prettyWith nats a
+      let sb := Count.prettyWith nats b
       s!"(max {sa} {sb})"
-  | .var v => reprStr (Count.var v)
+  | .var ⟨.rigid, i⟩ =>
+      match nats[i]? with
+      | some ⟨name⟩ => name
+      | none => prettyRigidIdx i
+  | .var ⟨.inferable, i⟩ => prettyInferableIdx i
 
-def AnnoCount.pretty : AnnoCount → String
+def Count.pretty (c : Count) : String := Count.prettyWith [] c
+
+def AnnoCount.prettyWith (nats : List ValName) : AnnoCount → String
   | .hole => "_"
-  | .solid c => Count.pretty c
+  | .solid c => Count.prettyWith nats c
 
-def BoundsAnnTy.pretty : BoundsAnnTy → String
+def AnnoCount.pretty (a : AnnoCount) : String := AnnoCount.prettyWith [] a
+
+def BoundsAnnTy.prettyWith (nats : List ValName) : BoundsAnnTy → String
   | .prim p =>
       match p with
       | .unit => "Unit"
@@ -119,27 +148,29 @@ def BoundsAnnTy.pretty : BoundsAnnTy → String
       | .nat => "Nat"
       | .char => "Char"
   | .arrow d c =>
-      let sd := BoundsAnnTy.pretty d
-      let sc := BoundsAnnTy.pretty c
+      let sd := BoundsAnnTy.prettyWith nats d
+      let sc := BoundsAnnTy.prettyWith nats c
       s!"{sd} → {sc}"
-  | .bvar i => s!"β{i}"
-  | .fvar i => s!"?β{i}"
+  | .bvar i => prettyTyVarIdx i
+  | .fvar i => prettyTyVarIdx i
   | .list lo hi e =>
-      let slo := AnnoCount.pretty lo
-      let shi := AnnoCount.pretty hi
-      let se := BoundsAnnTy.pretty e
+      let slo := AnnoCount.prettyWith nats lo
+      let shi := AnnoCount.prettyWith nats hi
+      let se := BoundsAnnTy.prettyWith nats e
       s!"BL {slo} {shi} {se}"
   | .custom n args =>
       let nm := match n with | .mk s => s
       if args.isEmpty then nm
-      else nm ++ " " ++ String.intercalate " " (args.map BoundsAnnTy.pretty)
+      else nm ++ " " ++ String.intercalate " " (args.map (BoundsAnnTy.prettyWith nats))
+
+def BoundsAnnTy.pretty (a : BoundsAnnTy) : String := BoundsAnnTy.prettyWith [] a
 
 def BoundsSchemeAnn.pretty (s : BoundsSchemeAnn) : String :=
   let ns := s.natBinders.map fun | .mk n => n
   let natPart :=
     if ns.isEmpty then ""
     else String.intercalate " " ns ++ " : Nat"
-  "{" ++ natPart ++ "} " ++ s.body.pretty
+  "{" ++ natPart ++ "} " ++ BoundsAnnTy.prettyWith s.natBinders s.body
 
 def BinderAnn.pretty : BinderAnn → String
   | .mono a => a.pretty
@@ -151,6 +182,16 @@ def ProgramBoundsAnns.prettyLines
   binderEnv.zip anns.binderAnns |>.filterMap fun ⟨n, a?⟩ =>
     a?.map fun a =>
       let nm := match n with | .mk s => s
-      s!"{nm} : {a.pretty}"
+      s!"{nm} : {BinderAnn.pretty a}"
+
+#guard Count.pretty (.var ⟨.rigid, 0⟩) == "n"
+#guard Count.pretty (.var ⟨.inferable, 1⟩) == "?m"
+#guard
+  BoundsSchemeAnn.pretty {
+    natBinders := [⟨"n"⟩]
+    body := .arrow
+      (.list (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 0⟩)) (.fvar 0))
+      (.list (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 0⟩)) (.fvar 0))
+  } == "{n : Nat} BL n n a → BL n n a"
 
 end FHM.Bounds

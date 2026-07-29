@@ -19,8 +19,9 @@ Read a `.fhm` source file (or stdin) and run:
 
 `--bl` selects `BoundsMode.bl` (allow `BL` syntax). Default is HM: reject BL with a
 clear error (D16). Erase always runs. Under `--bl`, `ofLower` (post-infer binder
-spine) + origin `synthBounds` / `checkProgramAnns` (slices 4–5) then Core
-`checkProgramMatches` / BoundCovers (slice 6). HM mode keeps surface `checkExhaustive`.
+spine, mono or scheme) + origin `synthBounds` / `checkProgramAnns` then Core
+`checkProgramMatches` / BoundCovers. Schemes pack/inst; D24 fresh List λ-params.
+HM mode keeps surface `checkExhaustive`.
 
 Types / bounds lines print **before** evaluation in human mode (eval is slow).
 Live uses the unbounded evaluator — naive `fib` blows past any fixed fuel.
