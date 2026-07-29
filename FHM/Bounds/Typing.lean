@@ -25,6 +25,7 @@ open Std
 -- `listTyName` / `boolTyName` / `pairTyName` live in `Ann.lean` (Z3-free).
 def nilCtorName : CtorName := ⟨"Nil"⟩
 def consCtorName : CtorName := ⟨"Cons"⟩
+def pairCtorName : CtorName := ⟨"Pair"⟩
 
 def listTy (α : Ty) : Ty := .customTy listTyName [α]
 
@@ -283,6 +284,30 @@ def BoundsTy.generaliseInferables (table : List (Nat × Nat)) : BoundsTy → Bou
       .list (Count.generaliseInferables table lo) (Count.generaliseInferables table hi)
         (generaliseInferables table e)
   | .custom n as => .custom n (as.map (generaliseInferables table))
+
+/-- Substitute concrete counts for inferable indices (scheme app pinning). -/
+def Count.substInferables (σ : List (Nat × Count)) : Count → Count
+  | .lit n => .lit n
+  | .inf => .inf
+  | .var ⟨.inferable, i⟩ =>
+      match σ.find? fun ⟨j, _⟩ => j = i with
+      | some ⟨_, c⟩ => c
+      | none => .var ⟨.inferable, i⟩
+  | .var v => .var v
+  | .add a b => .add (substInferables σ a) (substInferables σ b)
+  | .mul a b => .mul (substInferables σ a) (substInferables σ b)
+  | .pred a => .pred (substInferables σ a)
+  | .min a b => .min (substInferables σ a) (substInferables σ b)
+  | .max a b => .max (substInferables σ a) (substInferables σ b)
+
+def BoundsTy.substInferables (σ : List (Nat × Count)) : BoundsTy → BoundsTy
+  | .prim p => .prim p
+  | .bvar i => .bvar i
+  | .fvar i => .fvar i
+  | .arrow d c => .arrow (substInferables σ d) (substInferables σ c)
+  | .list lo hi e =>
+      .list (Count.substInferables σ lo) (Count.substInferables σ hi) (substInferables σ e)
+  | .custom n as => .custom n (as.map (substInferables σ))
 
 /-- Pack free inferables in `β` as a count scheme (identity if none). -/
 def BoundsTy.packScheme? (β : BoundsTy) : BoundBinding :=

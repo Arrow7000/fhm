@@ -1,6 +1,6 @@
 # Design memo: bounds layer on Core (B′ plan)
 
-**Status:** living plan — slices **0–7 Done** (pack/inst + D24 fresh List λ); **next = slice 8 stdlib demos**  
+**Status:** living plan — slices **0–8 Done** (stdlib map/filter/append + friends); **next = slice 9 E2E gate suite**
 **Updated:** 2026-07-29 (session handoff)  
 **Repo:** `/Users/aron/dev/blt` (sandbox; merge back into `fhm` later as optional package)  
 **Canonical doc for this integration** (plus satellite briefs below)
@@ -286,7 +286,7 @@ Surface:
 | **5** | Elab holes + solve | Pin `_` to synth Counts, then `Sub` | **Done** |
 | **6** | BoundCovers in Live | List matches → BoundCovers/MatchSafe; else HM exh | Nil-only when `hi=0`; Cons-only when `lo≥1` | **Done** |
 | **7** | Bound schemes | `{n m : Nat, a b}` + pack/inst; D24 fresh `?lo`/`?hi` + generalise | `bl-scheme-id`, `bl-unascribed-list-lam` | **Done** |
-| **8** | Stdlib demos | map / filter / append with bound schemes | Scratch demos under `--bl` |
+| **8** | Stdlib demos | map / filter / append with bound schemes | `scratch/bl-stdlib.fhm` | **Done** |
 | **9** | E2E gate suite | Fixed demos checklist | BL experience green |
 
 ### 6.1 Slice 3 — Surface ground Count (D23) ✅
@@ -440,14 +440,14 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 - [x] `BL _ 5` pin-to-synth meets under `--bl` (slice 5)  
 - [x] Nil-only match under proved empty upper bound (surface under `--bl`) (slice 6)  
 - [x] REPL/CLI HM vs BL: fail-fast vs erase + origin check + BoundCovers (slice 6)  
-- [ ] Scheme demos (map/filter/append) under `--bl`  
+- [x] Scheme demos (map/filter/append) under `--bl`  
 - [ ] Composite never-stuck under HasBounds + BoundCovers (or documented partial — post-E2E OK)  
 
 ---
 
 ## 11. One-liner
 
-> **B′ dual-stack:** surface `BL` erases under `--bl`; origins + hole pin; BoundCovers; solid ascriptions win in `bctx`; `{n:Nat}` schemes pack/inst; D24 fresh List λ; **next = slice 8 map/filter/append**.
+> **B′ dual-stack:** surface `BL` erases under `--bl`; origins + hole pin; BoundCovers; solid ascriptions win in `bctx`; `{n:Nat}` schemes pack/inst; D24 fresh List λ; stdlib map/filter/append; **next = slice 9 E2E gate**.
 
 ---
 
@@ -466,6 +466,6 @@ Thin erase (`Ann.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path
 1. Read this memo §§1–2 (esp. D22–D24, **§2.3**), §3 Live today, §6 table + 6.1–6.4.  
 2. Build: `lake build FHMBounds blt` (or project’s usual target).  
 3. Smoke: `scratch/bl-synth-ok.fhm`, `bl-hole-ok.fhm`, `bl-nil-only.fhm`, `bl-ascribed-list-lam.fhm`, `bl-scheme-id.fhm`, `bl-unascribed-list-lam.fhm` under `--bl`.  
-4. Implement **slice 8** — map/filter/append demos; keep pack/inst honest (no List-interval invention).  
+4. Implement **slice 9** — E2E gate suite over the scratch `bl-*` demos.
 5. Key files: `SurfaceLang` / Parse / Pretty / Erase; `Bounds/{Synth,Check,Typing,Ann,Kernel}`; `Live.lean`.  
 6. Do not invent List intervals from bare HM `List` (D22). Do not fuse bounds into Core Ty.

@@ -96,8 +96,10 @@ def tyContainsBl : Surface.Ty → Bool :=
 
 /-! ## Types (total via `Ty.rec_strong`) -/
 
-/-- Erase a surface type. `nats` resolves `Count.var` under an enclosing scheme. -/
-def eraseTy (t : Surface.Ty) (nats : List ValName := []) : ErasedTy :=
+/-- Erase a surface type. `nats` resolves `Count.var` under an enclosing scheme.
+`tvars` maps scheme type foralls to `.fvar i` (0 = first forall / `a`). -/
+def eraseTy (t : Surface.Ty) (nats : List ValName := []) (tvars : List ValName := []) :
+    ErasedTy :=
   Surface.Ty.rec_strong
     (fun p => ⟨.prim p, .prim, erasePrimTy p⟩)
     (fun _a _b ea eb =>
@@ -106,8 +108,8 @@ def eraseTy (t : Surface.Ty) (nats : List ValName := []) : ErasedTy :=
     (fun _a _b ea eb =>
       ⟨.arrow ea.ty eb.ty, .arrow ea.noBl eb.noBl, .arrow ea.ann eb.ann⟩)
     (fun n =>
-      -- Named tvars: stub `.fvar 0` until P4c remap.
-      ⟨.tvar n, .tvar, .fvar 0⟩)
+      let i := (tvars.findIdx? (· == n)).getD 0
+      ⟨.tvar n, .tvar, .fvar i⟩)
     (fun nm tys ih =>
       let erased := eraseTyList tys ih
       let args' := erased.map (·.ty)
@@ -135,10 +137,11 @@ def eraseTy (t : Surface.Ty) (nats : List ValName := []) : ErasedTy :=
         .list (eraseCount lo nats) (eraseCount hi nats) ee.ann⟩)
     t
 
-/-- Erase scheme body under optional Nat-binder telescope (sidecar, not on PolyTy). -/
+/-- Erase scheme body under optional Nat-binder telescope (sidecar, not on PolyTy).
+Type foralls become `.fvar i` aligned with HM `bvar i`. -/
 def erasePolyTy (σ : Surface.PolyTy) (nats : List ValName := []) :
     Surface.PolyTy × BoundsAnnTy :=
-  let e := eraseTy σ.body nats
+  let e := eraseTy σ.body nats σ.foralls
   ({ foralls := σ.foralls, body := e.ty }, e.ann)
 
 /-- Package Nat-binder sidecar + erased body ann → `BoundsSchemeAnn`.
@@ -149,7 +152,8 @@ def eraseSchemeAnn (nats : List ValName) (σ : Surface.PolyTy) :
   else
     some {
       natBinders := nats
-      body := (eraseTy σ.body nats).ann
+      tyBinders := σ.foralls
+      body := (eraseTy σ.body nats σ.foralls).ann
     }
 
 /-! ## Erased packages (bounds produced alongside erase) -/
@@ -340,6 +344,13 @@ def eraseTyEq (t expectedTy : Surface.Ty) (expectedAnn : BoundsAnnTy) : Bool :=
   (.bl .hole (.solid (.lit 5)) (.tvar (.mk "a")))
   (surfaceListTy (.tvar (.mk "a")))
   (.list .hole (.solid (.lit 5)) (.fvar 0))
+
+/-- Two type foralls → distinct fvar indices (map/filter schemes). -/
+def eraseTy_ab_guard : Bool :=
+  let e := eraseTy (.arrow (.tvar (.mk "a")) (.tvar (.mk "b")))
+    (nats := []) (tvars := [.mk "a", .mk "b"])
+  reprStr e.ann == reprStr (BoundsAnnTy.arrow (.fvar 0) (.fvar 1))
+#guard eraseTy_ab_guard
 
 #guard eraseTyEq (.prim .int) (.prim .int) (.prim .int)
 

@@ -48,11 +48,12 @@ Dual-stack packaging (same strategy as mono `BoundsAnnTy`):
 * Packed `BScheme` + InstantiatesTo live in `Typing.lean` (need `BoundsTy`)
 -/
 
-/-- Erase-side scheme ascription: named Nat binders + annotated body.
-Names are ordered (0 = first / outermost); erase maps name → rigid `Count.var`.
-Parallel to mono `BoundsAnnTy` on `ErasedBinding.ann`. -/
+/-- Erase-side scheme ascription: named Nat binders + type foralls + annotated body.
+Names are ordered (0 = first / outermost); erase maps name → rigid `Count.var`
+and type forall → `.fvar i`. Parallel to mono `BoundsAnnTy` on `ErasedBinding.ann`. -/
 structure BoundsSchemeAnn where
   natBinders : List ValName
+  tyBinders : List ValName := []
   body : BoundsAnnTy
   deriving Repr
 
@@ -140,7 +141,8 @@ def AnnoCount.prettyWith (nats : List ValName) : AnnoCount → String
 
 def AnnoCount.pretty (a : AnnoCount) : String := AnnoCount.prettyWith [] a
 
-def BoundsAnnTy.prettyWith (nats : List ValName) : BoundsAnnTy → String
+def BoundsAnnTy.prettyWith (nats : List ValName) (tvars : List ValName := []) :
+    BoundsAnnTy → String
   | .prim p =>
       match p with
       | .unit => "Unit"
@@ -148,29 +150,40 @@ def BoundsAnnTy.prettyWith (nats : List ValName) : BoundsAnnTy → String
       | .nat => "Nat"
       | .char => "Char"
   | .arrow d c =>
-      let sd := BoundsAnnTy.prettyWith nats d
-      let sc := BoundsAnnTy.prettyWith nats c
-      s!"{sd} → {sc}"
-  | .bvar i => prettyTyVarIdx i
-  | .fvar i => prettyTyVarIdx i
+      let sd := BoundsAnnTy.prettyWith nats tvars d
+      let sc := BoundsAnnTy.prettyWith nats tvars c
+      match d with
+      | .arrow _ _ => s!"({sd}) → {sc}"
+      | _ => s!"{sd} → {sc}"
+  | .bvar i =>
+      match tvars[i]? with
+      | some ⟨name⟩ => name
+      | none => prettyTyVarIdx i
+  | .fvar i =>
+      match tvars[i]? with
+      | some ⟨name⟩ => name
+      | none => prettyTyVarIdx i
   | .list lo hi e =>
       let slo := AnnoCount.prettyWith nats lo
       let shi := AnnoCount.prettyWith nats hi
-      let se := BoundsAnnTy.prettyWith nats e
+      let se := BoundsAnnTy.prettyWith nats tvars e
       s!"BL {slo} {shi} {se}"
   | .custom n args =>
       let nm := match n with | .mk s => s
       if args.isEmpty then nm
-      else nm ++ " " ++ String.intercalate " " (args.map (BoundsAnnTy.prettyWith nats))
+      else nm ++ " " ++ String.intercalate " " (args.map (BoundsAnnTy.prettyWith nats tvars))
 
-def BoundsAnnTy.pretty (a : BoundsAnnTy) : String := BoundsAnnTy.prettyWith [] a
+def BoundsAnnTy.pretty (a : BoundsAnnTy) : String := BoundsAnnTy.prettyWith [] [] a
 
+/-- `∀ (n : Nat) a b. body` — Nat binders annotated, type foralls bare. -/
 def BoundsSchemeAnn.pretty (s : BoundsSchemeAnn) : String :=
-  let ns := s.natBinders.map fun | .mk n => n
-  let natPart :=
-    if ns.isEmpty then ""
-    else String.intercalate " " ns ++ " : Nat"
-  "{" ++ natPart ++ "} " ++ BoundsAnnTy.prettyWith s.natBinders s.body
+  let natParts := s.natBinders.map fun n => s!"({prettyValName n} : Nat)"
+  let tyParts := s.tyBinders.map prettyValName
+  let binders := natParts ++ tyParts
+  let quant :=
+    if binders.isEmpty then ""
+    else "∀ " ++ String.intercalate " " binders ++ ". "
+  quant ++ BoundsAnnTy.prettyWith s.natBinders s.tyBinders s.body
 
 def BinderAnn.pretty : BinderAnn → String
   | .mono a => a.pretty
@@ -189,9 +202,21 @@ def ProgramBoundsAnns.prettyLines
 #guard
   BoundsSchemeAnn.pretty {
     natBinders := [⟨"n"⟩]
+    tyBinders := [⟨"a"⟩]
     body := .arrow
       (.list (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 0⟩)) (.fvar 0))
       (.list (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 0⟩)) (.fvar 0))
-  } == "{n : Nat} BL n n a → BL n n a"
+  } == "∀ (n : Nat) a. BL n n a → BL n n a"
+#guard
+  BoundsSchemeAnn.pretty {
+    natBinders := [⟨"a"⟩, ⟨"b"⟩, ⟨"c"⟩, ⟨"d"⟩]
+    tyBinders := [⟨"e"⟩]
+    body := .arrow
+      (.list (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 1⟩)) (.fvar 0))
+      (.arrow
+        (.list (.solid (.var ⟨.rigid, 2⟩)) (.solid (.var ⟨.rigid, 3⟩)) (.fvar 0))
+        (.list (.solid (.add (.var ⟨.rigid, 0⟩) (.var ⟨.rigid, 2⟩)))
+          (.solid (.add (.var ⟨.rigid, 1⟩) (.var ⟨.rigid, 3⟩))) (.fvar 0)))
+  } == "∀ (a : Nat) (b : Nat) (c : Nat) (d : Nat) e. BL a b e → BL c d e → BL (a + c) (b + d) e"
 
 end FHM.Bounds

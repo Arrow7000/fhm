@@ -1,0 +1,70 @@
+-- Slice 8 showcase: bound-scheme stdlib + one pipeline that uses a chunk of it.
+-- Run: .lake/build/bin/blt --bl scratch/bl-stdlib.fhm
+
+let singleton : {a} a -> BL 1 1 a =
+  \x -> [x]
+
+let cons : {n : Nat, a} a -> BL n n a -> BL (n + 1) (n + 1) a =
+  \x xs -> x :: xs
+
+let map : {lo hi : Nat, a b} (a -> b) -> BL lo hi a -> BL lo hi b =
+  \f xs ->
+    match xs with
+    | [] -> []
+    | h :: t -> (f h) :: (map f t)
+
+let filter : {lo hi : Nat, a} (a -> Bool) -> BL lo hi a -> BL 0 hi a =
+  \p xs ->
+    match xs with
+    | [] -> []
+    | h :: t ->
+      if p h then
+        h :: (filter p t)
+      else
+        filter p t
+
+let append : {a b c d : Nat, e} BL a b e -> BL c d e -> BL (a + c) (b + d) e =
+  \xs ys ->
+    match xs with
+    | [] -> ys
+    | h :: t -> h :: (append t ys)
+
+let revAppend : {a b c d : Nat, e} BL a b e -> BL c d e -> BL (a + c) (b + d) e =
+  \xs ys ->
+    match xs with
+    | [] -> ys
+    | h :: t -> revAppend t (h :: ys)
+
+let reverse : {lo hi : Nat, a} BL lo hi a -> BL lo hi a =
+  \xs -> revAppend xs []
+
+let flatMap : {a b c d : Nat, e f}
+    (e -> BL c d f) -> BL a b e -> BL (a * c) (b * d) f =
+  \g xs ->
+    match xs with
+    | [] -> []
+    | h :: t -> append (g h) (flatMap g t)
+
+let zip : {n : Nat, a b} BL n n a -> BL n n b -> BL n n (a, b) =
+  \xs ys ->
+    match xs with
+    | [] -> []
+    | x :: xt ->
+      match ys with
+      | [] -> []
+      | y :: yt -> (x, y) :: (zip xt yt)
+
+-- Pipeline: filter → map → reverse → append tip; zip beside; flatMap doubles.
+--
+--   [1,6,2,8,3]
+--     |> filter (< 5)              -- [1,2,3]     : BL 0 5
+--     |> map (+1)                 -- [2,3,4]     : BL 0 5
+--     |> reverse                  -- [4,3,2]     : BL 0 5
+--     |> append (cons 0 [99])     -- [4,3,2,0,99]: BL 2 7
+--   zip [10,20] [30,40]           -- [(10,30),(20,40)] : BL 2 2
+--   flatMap (\x -> [x, x+1]) [7,8]-- [7,8,8,9] : BL 4 4
+(append
+  (reverse (map (\x -> x + 1) (filter (\n -> n < 5) [1, 6, 2, 8, 3])))
+  (cons 0 (singleton 99)),
+ (zip [10, 20] [30, 40],
+  flatMap (\x -> cons x (singleton (x + 1))) [7, 8]))
