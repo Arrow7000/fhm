@@ -101,6 +101,7 @@ def applyTyArgs (head : Ty) (args : List Ty) : Except String Ty :=
     | .tvar _ => .error "type variable cannot take arguments"
     | .arrow _ _ => .error "function type cannot take arguments"
     | .pair _ _ => .error "pair type cannot take arguments"
+    | .bl _ _ _ => .error "bounded list type cannot take arguments"
 
 theorem applyTyArgs_empty (t : Ty) : applyTyArgs t [] = .ok t := by
   simp [applyTyArgs]

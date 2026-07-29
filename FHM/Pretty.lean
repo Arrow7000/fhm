@@ -238,6 +238,11 @@ def Surface.prettyPrimLit : Surface.PrimLitExpr → String
 
 mutual
 
+def Surface.Count.pretty : Surface.Count → String
+  | .lit n => toString n
+  | .var v => prettyValName v
+  | .hole => "_"
+
 def Surface.Ty.prettyAux (prec : Nat) : Surface.Ty → String
   | .prim p        => Surface.prettyPrimTy p
   | .tvar v        => prettyValName v
@@ -245,6 +250,10 @@ def Surface.Ty.prettyAux (prec : Nat) : Surface.Ty → String
   | .arrow a b     => prettyParenIf (prec ≥ 1) (Surface.Ty.prettyAux 1 a ++ " → " ++ Surface.Ty.prettyAux 0 b)
   | .customTy (.mk s) []   => s
   | .customTy (.mk s) args => prettyParenIf (prec ≥ 2) (s ++ " " ++ String.intercalate " " (Surface.Ty.prettyArgs args))
+  | .bl lo hi e =>
+      prettyParenIf (prec ≥ 2)
+        ("BL " ++ Surface.Count.pretty lo ++ " " ++ Surface.Count.pretty hi ++ " " ++
+          Surface.Ty.prettyAux 2 e)
 
 def Surface.Ty.prettyArgs : List Surface.Ty → List String
   | []      => []

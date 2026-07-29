@@ -210,12 +210,16 @@ If something must not fall through cracks: add explicit owners for **semantic le
 
 #### P4 — Surface B′
 
-1. `Surface.Ty` + Parse + Pretty (`bl`, bound holes, optional Nat binders in schemes)  
-2. `eraseBounds` + `DoesntContainBounds` + absurd-`.bl` in SurfaceBridge/Pretty  
-3. HM mode reject BL syntax; BL mode flag (`--bl` candidate)  
-4. Wire HasBounds + BoundCovers after Infer  
+| Slice | Content | Status |
+|-------|---------|--------|
+| **P4a** | `Surface.Count`, `Ty.bl`, `Ty.DoesntContainBounds`; `rec_strong`; Pretty; `lowerTy` → `none` for bl; applyTyArgs reject | **Done** (signed off) |
+| **P4a-parse** | Lexer/parser for `BL lo hi t` and `_` in bound slots | **Next** |
+| **P4b** | `eraseBounds` + DoesntContainBounds proofs; absurd-`.bl` where needed; produce `ProgramBoundAnns` | Not started |
+| **P4c** | Pipeline: Infer → HasBounds / BoundCovers; HM reject BL; `--bl` | Not started |
 
-**Exit:** `.fhm` with `BL 0 5 Int` → List + bound check + smarter List matches.
+**Note:** `PolyTy.natBinders` / `{n : Nat, a}` deferred to **P5** (avoids breaking every `⟨foralls, body⟩`).
+
+**Exit (full P4):** `.fhm` with `BL 0 5 Int` → List + bound check + smarter List matches.
 
 #### P5 — Bound schemes + stdlib
 

@@ -14,6 +14,21 @@ inductive PrimTy
   | char
   deriving DecidableEq, Repr
 
+/-! ## P4a — bound counts in surface types (shapes for sign-off / integration)
+
+Surface counts are **syntax**, not the Bounds kernel `Count` (no rigid/inferable
+indices here). Erase (P4b) maps these into `FHM.Bounds` + `BoundAnn`.
+
+`hole` is surface `_` in a bound slot only (e.g. `BL _ 5 a`).
+-/
+
+/-- Surface syntax for list length bounds. -/
+inductive Count where
+  | lit (n : Nat)
+  | var (name : ValName)
+  | hole
+  -- TODO(surface-count): add/mul/min/max/pred when syntax needs them; map to Bounds.Count
+  deriving DecidableEq, Repr
 
 inductive Ty
   | prim : PrimTy → Ty
@@ -23,10 +38,12 @@ inductive Ty
   | tvar : ValName → Ty
   /-- A custom type with its type params -/
   | customTy : TyName → List Ty → Ty
+  /-- Bounded list type `BL lo hi elem` (refines `List elem` after erase). -/
+  | bl (lo hi : Count) (elem : Ty)
   deriving Repr
 
 /--
-Strong induction for `Ty` with a useful IH on `customTy`:
+Strong induction for `Ty` with a useful IH on `customTy` / `bl`:
 `(∀ t ∈ tys, motive t)` instead of a bare motive on the list.
 -/
 @[elab_as_elim]
@@ -35,21 +52,24 @@ def Ty.rec_strong.{u} {motive : Ty → Sort u}
     (pair     : ∀ a b, motive a → motive b → motive (.pair a b))
     (arrow    : ∀ a b, motive a → motive b → motive (.arrow a b))
     (tvar     : ∀ n, motive (.tvar n))
-    (customTy : ∀ nm tys, (∀ t ∈ tys, motive t) → motive (.customTy nm tys)) :
+    (customTy : ∀ nm tys, (∀ t ∈ tys, motive t) → motive (.customTy nm tys))
+    (bl       : ∀ lo hi e, motive e → motive (.bl lo hi e)) :
     (ty : Ty) → motive ty
   | .prim p          => prim p
   | .pair a b        =>
       pair a b
-        (Ty.rec_strong prim pair arrow tvar customTy a)
-        (Ty.rec_strong prim pair arrow tvar customTy b)
+        (Ty.rec_strong prim pair arrow tvar customTy bl a)
+        (Ty.rec_strong prim pair arrow tvar customTy bl b)
   | .arrow a b       =>
       arrow a b
-        (Ty.rec_strong prim pair arrow tvar customTy a)
-        (Ty.rec_strong prim pair arrow tvar customTy b)
+        (Ty.rec_strong prim pair arrow tvar customTy bl a)
+        (Ty.rec_strong prim pair arrow tvar customTy bl b)
   | .tvar n          => tvar n
   | .customTy nm tys =>
       customTy nm tys
-        (fun t _ht => Ty.rec_strong prim pair arrow tvar customTy t)
+        (fun t _ht => Ty.rec_strong prim pair arrow tvar customTy bl t)
+  | .bl lo hi e      =>
+      bl lo hi e (Ty.rec_strong prim pair arrow tvar customTy bl e)
 termination_by ty => sizeOf ty
 decreasing_by
   all_goals simp_wf
@@ -57,6 +77,19 @@ decreasing_by
     | omega
     | (have := List.sizeOf_lt_of_mem _ht; omega)
 
+/-- No `bl` constructors (post-erase invariant for the HM lower stack). -/
+inductive Ty.DoesntContainBounds : Ty → Prop where
+  | prim {p} : DoesntContainBounds (.prim p)
+  | tvar {n} : DoesntContainBounds (.tvar n)
+  | pair {a b} :
+      DoesntContainBounds a → DoesntContainBounds b → DoesntContainBounds (.pair a b)
+  | arrow {a b} :
+      DoesntContainBounds a → DoesntContainBounds b → DoesntContainBounds (.arrow a b)
+  | customTy {nm tys} :
+      (∀ t ∈ tys, DoesntContainBounds t) → DoesntContainBounds (.customTy nm tys)
+
+/-- Scheme as today: `{a b} body`. Nat binders `{n : Nat, a}` deferred to P5
+(adding a field breaks every positional `⟨foralls, body⟩` in the tree). -/
 structure PolyTy where
   foralls : List ValName
   body : Ty

@@ -109,6 +109,8 @@ def lowerTy (ke : KindEnv) (tvs : List ValName) : Surface.Ty → Option Ty
       | some args' =>
           if LookupList.get? ke T = some args'.length then some (.customTy T args') else none
       | none => none
+  -- `BL` not Core-lowerable until erase (P4b) rewrites to `List` + BoundAnn.
+  | .bl _ _ _ => none
 /-- Pointwise lowering of a type-argument list (mutual to make termination
     structural, mirroring `Decls.TyList.wellKindedB`). -/
 def lowerTyList (ke : KindEnv) (tvs : List ValName) : List Surface.Ty → Option (List Ty)
@@ -223,6 +225,9 @@ theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} 
       · rename_i hg; simp only [Option.some.injEq] at h; subst h
         exact .customTy hg (lowerTyList_wellKinded hargs)
       · cases h
+  | bl _ _ _ =>
+    simp only [lowerTy] at h
+    cases h
 end
 
 -- Adversarial `#guard`s (per the house lesson: eval the executable side on
@@ -243,6 +248,8 @@ private def keDemo : KindEnv := [(nBool, 0), (nPair, 2), (nList, 1), (.mk "Maybe
 #guard (lowerTy keDemo [] (.customTy (.mk "Nope") [])).isNone
 -- wrong arity fails (List is unary)
 #guard (lowerTy keDemo [] (.customTy nList [])).isNone
+-- BL not lowerable until erase (P4b)
+#guard (lowerTy keDemo [] (.bl (.lit 0) (.lit 5) (.prim .int))).isNone
 -- pair without a Pair declaration fails
 #guard (lowerTy [] [] (.pair (.prim .int) (.prim .int))).isNone
 -- pair with the prelude present desugars to customTy Pair
@@ -8493,6 +8500,9 @@ theorem lowerTy_isSome_appendTyScope {ke : KindEnv} {tvs tvs' : List ValName}
           (lowerTyList_length_of_some hlowered).trans (lowerTyList_length_of_some hargs).symm
         simp only [lowerTy, hlowered, hg, hlen, ↓reduceIte, Option.isSome_some]
       · simp at h
+  | bl _ _ _ _ =>
+    intro h
+    simp [lowerTy] at h
 
 theorem lowerTy_isSome_appendTyScopeMid {ke : KindEnv} {A tvs' B : List ValName}
     {τ : Surface.Ty} (h : (lowerTy ke (A ++ B) τ).isSome) :
@@ -8569,7 +8579,9 @@ theorem lowerTy_isSome_appendTyScopeMid {ke : KindEnv} {A tvs' B : List ValName}
           (lowerTyList_length_of_some hlowered).trans (lowerTyList_length_of_some hargs).symm
         simp only [lowerTy, hlowered, hg, hlen, ↓reduceIte, Option.isSome_some]
       · simp at h
-
+  | bl _ _ _ _ =>
+    intro h
+    simp [lowerTy] at h
 
 private theorem wrapCoreParams_isSome_invariant {ke : KindEnv} {tvs : List ValName}
     {params : List (ValName × Option Surface.Ty)} {e e' : Expr}
