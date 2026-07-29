@@ -5,9 +5,7 @@ import FHM.Pretty
 # Computational bounds checks for Live (slice 4)
 
 Walk Infer’s Core `eOut` with origin `synthBounds`, then
-`checkMeetsAscription` against erase/`ofLower` solid anns.
-
-No `agreesTemplate τ` ascription synth on the Live path (D22).
+`checkMeetsAscriptionPinned` against erase/`ofLower` anns (pin `_` to synth).
 -/
 
 namespace FHM.Bounds.Check
@@ -18,6 +16,8 @@ open FHM.Bounds.Synth
 /-- Re-export for callers that imported Check for Sub / Meets. -/
 abbrev checkSub := Synth.checkSub
 abbrev checkMeetsAscription := Synth.checkMeetsAscription
+abbrev checkMeetsAscriptionPinned := Synth.checkMeetsAscriptionPinned
+abbrev pinHoles := Synth.pinHoles
 
 private def BoundsTy.pretty : BoundsTy → String
   | .prim p =>
@@ -62,14 +62,11 @@ def checkLetSpine
   let meetBinder (i : Nat) (β1 : BoundsTy) : Except String Unit := do
     match anns.binderAnns[i]? with
     | some (some ann) => do
-        match BoundsAnnTy.toBoundsTy? ann with
-        | none =>
-            throw s!"bounds: ascription on binder {i} has holes (elab not in Live yet)"
-        | some _ =>
-            unless checkMeetsAscription Δ β1 ann do
-              let n := binderEnv[i]?.getD ⟨"?"⟩
-              throw s!"bounds: ascription not met for {prettyValName n} \
-(synth {BoundsTy.pretty β1} ≰ {ann.pretty})"
+        match checkMeetsAscriptionPinned Δ β1 ann with
+        | .ok () => pure ()
+        | .error msg =>
+            let n := binderEnv[i]?.getD ⟨"?"⟩
+            throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
     | _ => pure ()
   match e with
   | .letIn (some σ) rhs body => do
@@ -105,20 +102,16 @@ def checkLetSpine
       match anns.bodyAnn with
       | none => pure β
       | some ann => do
-          match BoundsAnnTy.toBoundsTy? ann with
-          | none =>
-              throw "bounds: body ascription has holes (elab not in Live yet)"
-          | some _ =>
-              unless checkMeetsAscription Δ β ann do
-                throw s!"bounds: body ascription not met \
-(synth {BoundsTy.pretty β} ≰ {ann.pretty})"
-              pure β
+          match checkMeetsAscriptionPinned Δ β ann with
+          | .ok () => pure β
+          | .error msg =>
+              throw s!"bounds: body ascription not met ({msg})"
 termination_by e.size
 decreasing_by all_goals (try simp only [Expr.size, Expr.sizeRecGroup]; omega)
 
 /-- Origin-synth Core `e` at HM `τ`, checking erase/`ofLower` ascriptions.
 
-Fails on holes or when synth β ≰ ann. Under `--bl` only. -/
+Holes in anns are pinned to synth Counts, then `Sub`. Under `--bl` only. -/
 def checkProgramAnns
     (e : Expr)
     (τ : Ty)
@@ -127,13 +120,16 @@ def checkProgramAnns
   let _ ← checkLetSpine binderEnv anns [] [] 0 e τ
   pure ()
 
-/-! ## Guards (Core Nil/Cons origin synth) -/
+/-! ## Guards (Core Nil/Cons origin synth + pin-to-synth holes) -/
 
 private def nilE : Expr := .ctor nilCtorName
 private def consE (h t : Expr) : Expr :=
   .app (.app (.ctor consCtorName) h) t
 private def tyInt : Ty := .prim .int
 private def tyListInt : Ty := listTy tyInt
+
+private def twoInts : Expr :=
+  consE (.primLit (.int 1)) (consE (.primLit (.int 2)) nilE)
 
 #guard match synthBounds [] [] nilE tyListInt with
   | .ok (.list (.lit 0) (.lit 0) _) => true | _ => false
@@ -142,23 +138,20 @@ private def tyListInt : Ty := listTy tyInt
   | .ok (.list (.add (.lit 0) (.lit 1)) (.add (.lit 0) (.lit 1)) _) => true
   | _ => false
 
-#guard match synthBounds [] []
-    (consE (.primLit (.int 1)) (consE (.primLit (.int 2)) nilE)) tyListInt with
+#guard match synthBounds [] [] twoInts tyListInt with
   | .ok (.list (.add (.add (.lit 0) (.lit 1)) (.lit 1))
                (.add (.add (.lit 0) (.lit 1)) (.lit 1)) _) => true
   | _ => false
 
 -- `[1,2]` meets `BL 2 2 Int` via Z3 Sub on add-normal form.
-#guard match synthBounds [] []
-    (consE (.primLit (.int 1)) (consE (.primLit (.int 2)) nilE)) tyListInt with
+#guard match synthBounds [] [] twoInts tyListInt with
   | .ok β =>
       checkMeetsAscription [] β
         (.list (.solid (.lit 2)) (.solid (.lit 2)) (.prim .int))
   | _ => false
 
 -- `[1,2]` does not meet `BL 0 0 Int`.
-#guard match synthBounds [] []
-    (consE (.primLit (.int 1)) (consE (.primLit (.int 2)) nilE)) tyListInt with
+#guard match synthBounds [] [] twoInts tyListInt with
   | .ok β =>
       !(checkMeetsAscription [] β
           (.list (.solid (.lit 0)) (.solid (.lit 0)) (.prim .int)))
@@ -169,6 +162,32 @@ private def tyListInt : Ty := listTy tyInt
   | .ok β =>
       checkMeetsAscription [] β
         (.list (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int))
+  | _ => false
+
+-- Slice 5: pin `_` to synth, then Sub.
+#guard match synthBounds [] [] twoInts tyListInt with
+  | .ok β =>
+      (checkMeetsAscriptionPinned [] β
+        (.list .hole (.solid (.lit 5)) (.prim .int))).isOk
+  | _ => false
+
+#guard match synthBounds [] [] twoInts tyListInt with
+  | .ok β =>
+      (checkMeetsAscriptionPinned [] β
+        (.list (.solid (.lit 0)) .hole (.prim .int))).isOk
+  | _ => false
+
+#guard match synthBounds [] [] twoInts tyListInt with
+  | .ok β =>
+      (checkMeetsAscriptionPinned [] β
+        (.list .hole .hole (.prim .int))).isOk
+  | _ => false
+
+-- Hole cannot rescue solid conflict: pin `_` in `BL _ 0` still fails Sub.
+#guard match synthBounds [] [] twoInts tyListInt with
+  | .ok β =>
+      !(checkMeetsAscriptionPinned [] β
+          (.list .hole (.solid (.lit 0)) (.prim .int))).isOk
   | _ => false
 
 end FHM.Bounds.Check

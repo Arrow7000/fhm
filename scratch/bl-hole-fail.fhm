@@ -1,0 +1,4 @@
+-- Slice 5 negative: pin cannot rescue hi=0 against length 2.
+
+let xs : BL _ 0 Int = [1, 2]
+xs

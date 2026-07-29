@@ -54,7 +54,7 @@ decreasing_by
   all_goals (simp_wf; try omega)
 end
 
-/-- Solid ascription only (holes fail until Live runs `ElabAnn`). -/
+/-- Solid ascription only (no hole fill). Prefer `checkMeetsAscriptionPinned` under `--bl`. -/
 def checkMeetsAscription (Δ : List Constraint) (β : BoundsTy) (ann : BoundsAnnTy) : Bool :=
   match BoundsAnnTy.toBoundsTy? ann with
   | none => false
@@ -93,16 +93,68 @@ private def prettyβ : BoundsTy → String
   | .bvar i => s!"β{i}"
   | .fvar i => s!"?β{i}"
   | .list lo hi e =>
-      let rec p : Count → String
-        | .lit n => toString n
-        | .inf => "∞"
-        | c => reprStr c
       let se := prettyβ e
-      s!"BL {p lo} {p hi} {se}"
+      s!"BL {Count.pretty lo} {Count.pretty hi} {se}"
   | .custom n as =>
       let nm := match n with | .mk s => s
       if as.isEmpty then nm
       else nm ++ " " ++ String.intercalate " " (as.map prettyβ)
+
+/-- Pin ascription count hole to the synth Count; keep solid ascription counts. -/
+def pinCount : AnnoCount → Count → Count
+  | .hole, c => c
+  | .solid c, _ => c
+
+mutual
+/-- Fill `_` holes in `ann` from matching slots of origin-synth `β` (pin-to-synth).
+
+Spine of `ann` must match `β`. Solid counts are kept from the ascription; holes
+copy the corresponding `Count` from `β`. Then caller checks `Sub β (pin …)`. -/
+def pinHoles (ann : BoundsAnnTy) (β : BoundsTy) : Except String BoundsTy :=
+  match ann, β with
+  | .prim p, .prim q =>
+      if p == q then pure (.prim p)
+      else throw "bounds: pinHoles prim mismatch"
+  | .bvar i, .bvar j =>
+      if i == j then pure (.bvar i)
+      else throw "bounds: pinHoles bvar mismatch"
+  | .fvar i, .fvar j =>
+      if i == j then pure (.fvar i)
+      else throw "bounds: pinHoles fvar mismatch"
+  | .arrow d c, .arrow βd βc => do
+      let d' ← pinHoles d βd
+      let c' ← pinHoles c βc
+      pure (.arrow d' c')
+  | .list lo hi e, .list loβ hiβ eβ => do
+      let e' ← pinHoles e eβ
+      pure (.list (pinCount lo loβ) (pinCount hi hiβ) e')
+  | .custom n as, .custom m bs => do
+      if n != m then throw "bounds: pinHoles custom name mismatch"
+      if as.length != bs.length then throw "bounds: pinHoles custom arity mismatch"
+      let args ← pinHolesAll as bs
+      pure (.custom n args)
+  | _, _ => throw "bounds: pinHoles shape mismatch"
+termination_by sizeOf ann
+
+def pinHolesAll (as : List BoundsAnnTy) (bs : List BoundsTy) : Except String (List BoundsTy) :=
+  match as, bs with
+  | [], [] => pure []
+  | a :: as, b :: bs => do
+      let a' ← pinHoles a b
+      let rest ← pinHolesAll as bs
+      pure (a' :: rest)
+  | _, _ => throw "bounds: pinHoles custom args length mismatch"
+termination_by sizeOf as
+decreasing_by
+  all_goals (simp_wf; try omega)
+end
+
+/-- Synth `β` meets ascription `ann` after pin-to-synth hole fill. -/
+def checkMeetsAscriptionPinned (Δ : List Constraint) (β : BoundsTy) (ann : BoundsAnnTy) :
+    Except String Unit := do
+  let βann ← pinHoles ann β
+  unless checkSub Δ β βann do
+    throw s!"bounds: synthesized {prettyβ β} ≰ pinned ascription {prettyβ βann}"
 
 private theorem size_lt_sizeBranches_one {p : MatchPattern} {e : Expr} :
     e.size < Expr.sizeBranches [(p, e)] := by

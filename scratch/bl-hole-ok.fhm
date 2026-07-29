@@ -1,0 +1,5 @@
+-- Slice 5: pin `_` to synth length, then Sub against solid hi.
+-- `BL _ 5` ← `[1, 2]` ⇒ pin lo=2, check [2,2] ⊆ [2,5].
+
+let xs : BL _ 5 Int = [1, 2]
+xs

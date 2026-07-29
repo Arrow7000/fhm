@@ -1,6 +1,6 @@
 # Design memo: bounds layer on Core (B′ plan)
 
-**Status:** living plan — P1–P4c + surface Count + origin HasBounds synth done; **next = hole elab + BoundCovers** (see §6 linear list)  
+**Status:** living plan — through slice 5 (pin-to-synth holes); **next = BoundCovers** (see §6)  
 **Updated:** 2026-07-29  
 **Repo:** `/Users/aron/dev/blt` (sandbox; merge back into `fhm` later as optional package)  
 **Canonical doc for this integration** (plus satellite briefs below)
@@ -139,7 +139,7 @@ parse → [hmRequireNoBl if not --bl] → eraseProgram → lower/infer
       → [if --bl: ofLower + origin synthBounds + MeetsAscription] → exh/elab → eval
 ```
 
-**Slice 4:** ascriptions checked against Nil/Cons/… synth (not `defaultBounds`). Exhaustiveness still HM (BoundCovers = slice 6). Holes / D24 = slice 5–7.
+**Slice 4–5:** ascriptions checked against Nil/Cons/… synth; `_` pinned to synth then Sub. Exhaustiveness still HM (BoundCovers = slice 6). D24 λ fresh vars = slice 7.
 
 ### Outer safety (BL mode) — target theorem
 
@@ -192,8 +192,8 @@ Surface:
 | P4b erase / ErasedBinding | **Done** (`Erase.lean`; `noBl` proof still `sorry`) |
 | P4c shapes + Live `--bl` + D16 + erase-run | **Done** |
 | P4c-thin / diagnose / ann-visible / check scaffold | **Done** — `defaultBounds` synth is scaffold only (D22) |
-| Origin HasBounds synth + full Surface Count | **Done** (slices 3–4) |
-| BoundCovers in Live + hole elab + schemes | **Next** (§6) |
+| Origin HasBounds synth + full Surface Count + hole pin | **Done** (slices 3–5) |
+| BoundCovers in Live + schemes | **Next** (§6) |
 | Bound schemes / stdlib | **Not started** (slices 7–8) |
 | `Count.inf` (kernel vocabulary) | **TODO** (slice 1 — not a List default) |
 | Axiom collapse to Z3 | **Partial** |
@@ -266,7 +266,7 @@ Surface:
 | **2** | Honest binder spine | `groups.reverse.flatMap` (0=innermost); `ofLower` after infer | **Done** |
 | **3** | Surface ground Count | ops + `inf`/`∞`; parse / pretty / erase → Kernel | **Done** |
 | **4** | HasBounds synth | Executable Core→`β` from origins (D22); kill Live `defaultBounds` | **Done** |
-| **5** | Elab holes + solve | Executable `ElabAnn` + oracle fill `_` | `BL _ 5` works under `--bl` |
+| **5** | Elab holes + solve | Pin `_` to synth Counts, then `Sub` | **Done** |
 | **6** | BoundCovers in Live | List matches → BoundCovers/MatchSafe; else HM exh | Nil-only when `hi=0`; Cons-only when `lo≥1` |
 | **7** | Bound schemes | `{n m : Nat, a b}` + `Surface.Count.var`; pack/inst/Commit; D24 generalise | Scheme round-trip |
 | **8** | Stdlib demos | map / filter / append with bound schemes | Scratch demos under `--bl` |
@@ -317,14 +317,17 @@ Reject bare idents (`n`) until slice 7. Reject nested holes (`BL (_ + 1) 5 t`).
 
 **Exit demos:** `scratch/bl-synth-ok.fhm` (`BL 2 2` ← `[1,2]` OK); `scratch/bl-synth-fail.fhm` (`BL 0 0` ← `[1,2]` fail).
 
-**Deferred:** D24 fresh `?lo`/`?hi` (slice 5/7); BoundCovers (slice 6); List λ-params without ascription still fail-annotate.
+**Deferred:** D24 fresh `?lo`/`?hi` for unascribed List λs (slice 7); BoundCovers (slice 6); nested-Nil `agreesTemplate` List-elem debt.
 
-**Editor follow-up (not blocking):** under `--bl`, hover/diagnose still show HM `List` — should prefer erase/synth `BL …` (or ann sidecar) when bounds mode is on. Track with diagnose/`EditorSupport` once hole elab is in.
-4. HM mode still D16-rejects any `BL …`.
+**Editor follow-up (not blocking):** under `--bl`, hover/diagnose still show HM `List` — should prefer erase/synth `BL …` when bounds mode is on.
 
-**Out of scope:** `Count.var`; scheme quantifiers; changing Check synth off `defaultBounds`.
+### 6.3 Slice 5 — Hole elab pin-to-synth ✅
 
-**Before slice 4:** D24 locked (above). Soft spot: `outs` for uniqueness = **output-visible** bound slots when wiring synth.
+**Policy:** each ascription `_` copies the Count from the matching slot of origin-synth `β`, then `checkSub β β_pinned`. Not Z3 `anyWitness` / `uniqueOnly`.
+
+**Delivered:** `pinHoles` / `checkMeetsAscriptionPinned` in Synth; Live binder/body anns use pinned meet.
+
+**Exit demos:** `scratch/bl-hole-ok.fhm` (`BL _ 5` ← `[1,2]`); `scratch/bl-hole-fail.fhm` (`BL _ 0` ← `[1,2]` fail).
 
 ### Post-E2E hygiene (do not block product)
 
@@ -349,7 +352,7 @@ Reject bare idents (`n`) until slice 7. Reject nested holes (`BL (_ + 1) 5 t`).
 | Mode | Front | Coverage | Bound pass |
 |------|-------|----------|------------|
 | **HM (default)** | Parse; **`hmRequireNoBl`** (D16) | `checkExhaustive` | skip (erase still runs; anns not reported) |
-| **BL (`--bl`)** | Parse BL; erase; lower | HM exh → **BoundCovers** (slice 6) | origin HasBounds synth (slice 4); holes = slice 5 |
+| **BL (`--bl`)** | Parse BL; erase; lower | HM exh → **BoundCovers** (slice 6) | origin synth + pin holes (slices 4–5) |
 
 Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 
@@ -400,6 +403,7 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 - [x] `BL _ 5 t` / lit erases to List (hole in BoundsAnnTy on erase path)  
 - [x] Surface ground Count ops erase into Kernel `Count` (slice 3)  
 - [x] Origin-based HasBounds synth in Live (no List-inventing defaults) (slice 4)  
+- [x] `BL _ 5` pin-to-synth meets under `--bl` (slice 5)  
 - [ ] Nil-only match under proved empty upper bound (surface under `--bl`)  
 - [ ] REPL/CLI HM vs BL: fail-fast vs erase + origin check + BoundCovers  
 - [ ] Scheme demos (map/filter/append) under `--bl`  
@@ -409,13 +413,13 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases (hover as `List`).
 
 ## 11. One-liner
 
-> **B′ dual-stack:** BoundsTy mirrors Core Ty with intervals on List; surface `BL` erases under `--bl`; intervals come from origins (constructors, ascriptions, env, apps, joins) — never from inventing a default BL for bare `List`; next is hole elab + BoundCovers.
+> **B′ dual-stack:** BoundsTy mirrors Core Ty with intervals on List; surface `BL` erases under `--bl`; intervals come from origins; ascription `_` pins to synth; next is BoundCovers.
 
 ---
 
 ## 12. Next action
 
-1. **Slice 5** — Elab holes + solve (`BL _ 5`).  
-2. Then **6** BoundCovers → **7** schemes…
+1. **Slice 6** — BoundCovers in Live (Nil-only when `hi=0`, etc.).  
+2. Then **7** schemes / D24…
 
 Thin erase (`Ann.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path uses Z3 via `FHM.Bounds.Check`.
