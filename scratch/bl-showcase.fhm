@@ -2,8 +2,8 @@
 -- match/if joins, compound counts, and (for R3) underdetermined length export.
 --
 -- Run:  .lake/build/bin/fhm run --bl scratch/bl-showcase.fhm
--- Most demos are ground. `listId` demos hole ascription + free-length generalisation
--- (not a multi-model mid-case — see comment at listId).
+-- Most demos are ground. `listId` demos hole ascription → free lengths **generalise**
+-- (`∀ n m. …`). Multi-model R3 canary: see `scratch/bl-r3-canary.fhm`.
 --
 -- Known gaps (triage / residuals):
 --   * head/tail-style domains `BL (n+1) m` do not yet pin `n` from a concrete arg
@@ -143,17 +143,10 @@ let doubled : BL 4 4 Int =
 -- snoc0 instantiates n from a concrete exact list
 let grown = snoc0 [1, 2]
 
--- ── Free length holes (generalise, not multi-model) ────────────────────────
---
--- `BL _ _` means "I did not write the counts." Body `\xs -> xs` never pins them
--- to ground. Dual-stack **generalises** free length vars (scheme / `?n ?m`),
--- it does **not** pick among a finite set of solutions like {2, 7, 13}.
---
--- "Non-unique" in the R3/Commit sense = several *distinct* models under real
--- constraints, not "any Nat is fine." This binder is unconstrained lengths →
--- parametric. A true multi-model mid-case canary still needs R3's solve path.
---
--- Display: hole ascriptions should show pin/pack synth (not literal `_ _`).
+-- ── Free length holes → generalise (unconstrained, not multi-model) ────────
+-- `BL _ _` + body `xs`: counts stay free. Escape **packs** them:
+--   listId : ∀ n m. BL n m Int → BL n m Int
+-- That is "any length" parametric, not "solutions {2,7,13}".
 
 let listId : BL _ _ Int -> BL _ _ Int =
   \xs -> xs

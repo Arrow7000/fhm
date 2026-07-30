@@ -92,10 +92,12 @@ def checkLetSpine
                 throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
         | none => do
             -- R1: pin holes from synth, meet, push **pinned** interface (not β1).
+            -- Then pack free inferables (same as unascribed) so `?n` never leaks
+            -- as mono — unconstrained frees generalise to a scheme.
             let β1 ← checkBounds Δ bctx' rhs' τ
             meetMono i β1 ann
             let βPinned ← pinHoles ann β1
-            pure (.mono βPinned)
+            pure (BoundsTy.packScheme? βPinned)
     | _ => do
         let β1 ← checkBounds Δ bctx' rhs' τ
         pure (BoundsTy.packScheme? β1)
@@ -141,7 +143,8 @@ decreasing_by all_goals (try simp only [Expr.size, Expr.sizeRecGroup]; omega)
 /-- Origin-synth Core `e` at HM `τ`, checking erase/`ofLower` ascriptions.
 
 Holes in anns are pinned to synth Counts, then `Sub`. Under `--bl` only.
-Returns binder `BoundEnv` (0 = innermost ‖ `binderEnv`) and body `β`. -/
+Returns binder `BoundEnv` (0 = innermost ‖ `binderEnv`) and body `β`.
+Hole/unascribed binders **pack** free inferables (no bare `?n` mono in env). -/
 def checkProgramAnns
     (e : Expr)
     (τ : Ty)

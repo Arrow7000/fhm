@@ -1,0 +1,33 @@
+-- R3 canary notes — multi-model (non-unique) vs unconstrained free.
+-- Run: .lake/build/bin/fhm run --bl scratch/bl-r3-canary.fhm
+--
+-- Terminology:
+--   * Unconstrained free `?n`  → generalise to `∀ n. …` (OK; not R3's target)
+--   * Unique ground             → pin/fold to `BL 2 2` (OK)
+--   * Multi-model mid-case      → constraints leave several ground models
+--       e.g. outs with sat models {2,7,13} only — Commit uniqueOnly should REJECT
+--       if we try to auto-commit one witness. Dual-stack Live does not yet solve
+--       free outs at escape, so a failing multi-model demo is not surface-expressible
+--       until R3 wires gatherNarrowingEvidence at pack/export.
+--
+-- Below: (1) unconstrained → scheme. (2) unique interval *type* from join
+-- (runtime length in 1..3, but the exported type is uniquely BL 1 3 — still OK).
+-- (3) placeholder for mid-case once R3 lands.
+
+-- (1) Unconstrained frees → generalise (should stay OK after R3 if pack-not-solve)
+let listId : BL _ _ Int -> BL _ _ Int =
+  \xs -> xs
+
+-- (2) Join of concrete arms → unique type BL 1 3 (range, not free ?n)
+let eitherLen =
+  \b ->
+    if b then
+      [1]
+    else
+      [1, 2, 3]
+
+-- (3) After R3: replace with a case that leaves free outs under non-unique
+-- constraints and expects: bounds error "non-unique … on escape".
+-- Until then this file only documents (1)+(2).
+
+(listId [1, 2], (eitherLen True, eitherLen False))

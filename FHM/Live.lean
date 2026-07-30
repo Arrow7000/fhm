@@ -210,8 +210,9 @@ def checkPipeline (mode : BoundsMode) (src : String) :
       | .error msg =>
           return .error { stage := .bounds, message := msg }
       | .ok (bctx, βBody) =>
+          -- Pretty body via packScheme so free inferables generalise (∀ …), not `?n`.
           pure (report0.enrichFromSynth binderEnv (bctx.map BoundBinding.pretty)
-            (some (BoundsTy.pretty βBody)))
+            (some (BoundBinding.pretty (BoundsTy.packScheme? βBody))))
     else
       pure report0
 
