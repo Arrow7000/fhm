@@ -65,6 +65,19 @@ def peelHeadDoms (n : Nat) : BinderAnn → List BoundsAnnTy
   | .mono a => peelBoundsArrowDoms n a
   | .scheme s => peelBoundsArrowDoms n s.body
 
+/-- Drop `n` leading arrows from a bounds ascription body (residual codomain). -/
+def dropBoundsArrows : Nat → BoundsAnnTy → BoundsAnnTy
+  | 0, t => t
+  | n + 1, .arrow _ r => dropBoundsArrows n r
+  | _, t => t
+
+/-- Residual bounds type of a binding RHS after `n` head value-params.
+So `\xs -> …` under `let f : BL … → … = …` can hover `xs` as `BL …`, not `List`. -/
+def BindingReport.rhsBoundsAfterHead (b : BindingReport) (nHead : Nat) : Option BoundsAnnTy :=
+  b.bounds?.map fun ann =>
+    let body := match ann with | .mono a => a | .scheme s => s.body
+    dropBoundsArrows nHead body
+
 /-- Domains for head params: bounds ann when present, else HM arrow peel. -/
 def BindingReport.headParamDoms (b : BindingReport) (nHead : Nat) : List String :=
   match b.bounds? with

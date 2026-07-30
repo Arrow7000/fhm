@@ -29,7 +29,7 @@ open Surface.Parse
 open Surface.Span
 open Surface.Lex (BinOpToken Punct Token)
 open SurfaceBridge
-open FHM.Bounds (BoundBinding BoundsTy ProgramBoundsAnns)
+open FHM.Bounds (BoundBinding BoundsTy ProgramBoundsAnns BoundsAnnTy)
 open FHM.Bounds.Report
 open FHM.Bounds.Pipeline
 
@@ -383,28 +383,47 @@ def hoverBindingHead (env : HoverEnv) (b : Surface.Binding)
         | none => env'
       (bs4, valSym :: countSyms ++ tySyms ++ headSyms ++ annSyms, env'')
 
-/-- Structural walk: each binder site emits a full symbol. Consumes `bs` in parse order. -/
+/-- Structural walk: each binder site emits a full symbol. Consumes `bs` in parse order.
+
+`expectedβ`: optional bounds ascription residual (after head-param peel). When set,
+λ params prefer `BL …` display over HM `List …` (T1 / colon-form `\xs ->`). -/
 partial def hoverWalkExpr (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv)
-    (expected : Option Ty) :
+    (expected : Option Ty) (expectedβ : Option BoundsAnnTy) :
     Surface.Expr → SpannedExpr → List BinderSpan → List BinderSpan × List RangedSymbol
   | .lambda (.name n) _ body, .lambda _ bodyS, bs =>
       let τDom := match expected with | some (.arrow a _) => some a | _ => none
       let τCod := match expected with | some (.arrow _ b) => some b | _ => none
+      let βDomPretty :=
+        match expectedβ with
+        | some (.arrow d _) => some (BoundsAnnTy.pretty d)
+        | _ => none
+      let βCod :=
+        match expectedβ with
+        | some (.arrow _ c) => some c
+        | _ => none
       match takeKind bs .param with
       | some (b, rest) =>
-          let sym := mkSym b.name "param" (optTyStr τDom) b.span bodyS.span
+          let tyStr :=
+            match βDomPretty with
+            | some s => s
+            | none => optTyStr τDom
+          let sym := mkSym b.name "param" tyStr b.span bodyS.span
           let env' :=
             match τDom with
             | some τ => env.extendLocal n τ
             | none => env
-          let (rest', syms) := hoverWalkExpr ctors ke env' τCod body bodyS rest
+          let (rest', syms) := hoverWalkExpr ctors ke env' τCod βCod body bodyS rest
           (rest', sym :: syms)
-      | none => hoverWalkExpr ctors ke env none body bodyS bs
+      | none => hoverWalkExpr ctors ke env none none body bodyS bs
   | .lambda .wildcard _ body, .lambda _ bodyS, bs =>
       let τCod := match expected with | some (.arrow _ b) => some b | _ => none
-      hoverWalkExpr ctors ke env τCod body bodyS bs
+      let βCod :=
+        match expectedβ with
+        | some (.arrow _ c) => some c
+        | _ => none
+      hoverWalkExpr ctors ke env τCod βCod body bodyS bs
   | .lambda _ _ body, .lambda _ bodyS, bs =>
-      hoverWalkExpr ctors ke env none body bodyS bs
+      hoverWalkExpr ctors ke env none none body bodyS bs
   | .letIn name tyParams params ann rhs body, .letIn _ rhsS bodyS, bs =>
       -- Always synth this binding (ann / RHS). Do **not** look up `name` in
       -- `env.lets` — an outer same-named let would steal the scheme (shadowing).
@@ -416,12 +435,13 @@ partial def hoverWalkExpr (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv)
         match σ? with
         | some σ => rhsExpectedAfterHead σ params.length
         | none => none
-      let (bs2, rhsSyms) := hoverWalkExpr ctors ke envRhs rhsExp rhs rhsS bs1
+      let (bs2, rhsSyms) := hoverWalkExpr ctors ke envRhs rhsExp none rhs rhsS bs1
       let envBody :=
         match σ? with
         | some σ => env.extendLets [(name, σ)]
         | none => env
-      let (bs3, bodySyms) := hoverWalkExpr ctors ke envBody expected body bodyS bs2
+      let (bs3, bodySyms) :=
+        hoverWalkExpr ctors ke envBody expected expectedβ body bodyS bs2
       (bs3, headSyms ++ rhsSyms ++ bodySyms)
   | .letRecIn binds body, .letRecIn _ rhss bodyS, bs =>
       -- Synthesize schemes for the group, extend env, then each binding head+RHS.
@@ -449,27 +469,28 @@ partial def hoverWalkExpr (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv)
               | some σ => rhsExpectedAfterHead σ b.params.length
               | none => none
             let (bs2, rhsSyms) :=
-              hoverWalkExpr ctors ke envRhs rhsExp b.rhs sRhs bs1
+              hoverWalkExpr ctors ke envRhs rhsExp none b.rhs sRhs bs1
             goBinds bs2 bs' rss' (acc ++ headSyms ++ rhsSyms)
         | _, _ => (bsLeft, acc)
       let (bs1, bindSyms) := goBinds bs binds rhss []
-      let (bs2, bodySyms) := hoverWalkExpr ctors ke envBinds expected body bodyS bs1
+      let (bs2, bodySyms) :=
+        hoverWalkExpr ctors ke envBinds expected expectedβ body bodyS bs1
       (bs2, bindSyms ++ bodySyms)
   | .app f x, .app _ fS xS, bs =>
-      let (bs1, fSyms) := hoverWalkExpr ctors ke env none f fS bs
+      let (bs1, fSyms) := hoverWalkExpr ctors ke env none none f fS bs
       let xExp :=
         match hoverExprTy ctors env f with
         | some (.arrow a _) => some a
         | _ => none
-      let (bs2, xSyms) := hoverWalkExpr ctors ke env xExp x xS bs1
+      let (bs2, xSyms) := hoverWalkExpr ctors ke env xExp none x xS bs1
       (bs2, fSyms ++ xSyms)
   | .pair a b, .pair _ aS bS, bs =>
-      let (bs1, aSyms) := hoverWalkExpr ctors ke env none a aS bs
-      let (bs2, bSyms) := hoverWalkExpr ctors ke env none b bS bs1
+      let (bs1, aSyms) := hoverWalkExpr ctors ke env none none a aS bs
+      let (bs2, bSyms) := hoverWalkExpr ctors ke env none none b bS bs1
       (bs2, aSyms ++ bSyms)
   | .cons h t, .cons _ hS tS, bs =>
-      let (bs1, hSyms) := hoverWalkExpr ctors ke env none h hS bs
-      let (bs2, tSyms) := hoverWalkExpr ctors ke env none t tS bs1
+      let (bs1, hSyms) := hoverWalkExpr ctors ke env none none h hS bs
+      let (bs2, tSyms) := hoverWalkExpr ctors ke env none none t tS bs1
       (bs2, hSyms ++ tSyms)
   | .list items, .list _ itemSs, bs =>
       let rec go (bs : List BinderSpan) (es : List Surface.Expr)
@@ -477,12 +498,12 @@ partial def hoverWalkExpr (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv)
           List BinderSpan × List RangedSymbol :=
         match es, ss with
         | e :: es', s :: ss' =>
-            let (bs', syms) := hoverWalkExpr ctors ke env none e s bs
+            let (bs', syms) := hoverWalkExpr ctors ke env none none e s bs
             go bs' es' ss' (acc ++ syms)
         | _, _ => (bs, acc)
       go bs items itemSs []
   | .match_ scrut arms, .match_ _ scrutS armSs, bs =>
-      let (bs1, scrutSyms) := hoverWalkExpr ctors ke env none scrut scrutS bs
+      let (bs1, scrutSyms) := hoverWalkExpr ctors ke env none none scrut scrutS bs
       let τScrut := hoverExprTy ctors env scrut
       let rec goArms (bs : List BinderSpan)
           (as : List (Surface.Pattern × Surface.Expr))
@@ -515,15 +536,15 @@ partial def hoverWalkExpr (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv)
               | some τ => env.extendLocals (patLocalPairs ctors pat τ)
               | none => env
             let (bs3, bodySyms) :=
-              hoverWalkExpr ctors ke envArm none body bodyS bs2
+              hoverWalkExpr ctors ke envArm none none body bodyS bs2
             goArms bs3 as' ss' (acc ++ patSyms ++ bodySyms)
         | _, _ => (bs, acc)
       let (bs2, armSyms) := goArms bs1 arms armSs []
       (bs2, scrutSyms ++ armSyms)
   | .ife c t f, .ife _ cS tS fS, bs =>
-      let (bs1, cSyms) := hoverWalkExpr ctors ke env none c cS bs
-      let (bs2, tSyms) := hoverWalkExpr ctors ke env none t tS bs1
-      let (bs3, fSyms) := hoverWalkExpr ctors ke env none f fS bs2
+      let (bs1, cSyms) := hoverWalkExpr ctors ke env none none c cS bs
+      let (bs2, tSyms) := hoverWalkExpr ctors ke env none none t tS bs1
+      let (bs3, fSyms) := hoverWalkExpr ctors ke env none none f fS bs2
       (bs3, cSyms ++ tSyms ++ fSyms)
   | _, _, bs => (bs, [])
 
@@ -598,7 +619,7 @@ def buildHoverSymbols (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program)
     match names with
     | [] =>
         let (bs', bodySyms) :=
-          hoverWalkExpr ctors ke env0 none p.body sp.body bs
+          hoverWalkExpr ctors ke env0 none none p.body sp.body bs
         (bs', acc ++ bodySyms)
     | nm :: nms =>
         let n : ValName := .mk nm
@@ -615,8 +636,9 @@ def buildHoverSymbols (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program)
               match σ? with
               | some σ => rhsExpectedAfterHead σ b.params.length
               | none => none
+            let rhsβ := br?.bind fun br => br.rhsBoundsAfterHead b.params.length
             let (bsR, rhsSyms) :=
-              hoverWalkExpr ctors ke envRhs rhsExp b.rhs sRhs bsH
+              hoverWalkExpr ctors ke envRhs rhsExp rhsβ b.rhs sRhs bsH
             goTops nms bsR (acc ++ headSyms ++ rhsSyms)
   let (bs2, restSyms) := goTops sourceNames bs1 []
   declSyms ++ restSyms ++ hoverLeftoverBinders bs2

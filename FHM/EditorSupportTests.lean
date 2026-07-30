@@ -70,7 +70,8 @@ def mapLike : String :=
         f.kind == "param" && xs.kind == "param" &&
         !f.type_.isEmpty && !xs.type_.isEmpty &&
         (hasSub f.type_ "→" || hasSub f.type_ "->") &&
-        hasSub xs.type_ "List"
+        -- bare `List` in schemes displays as default `BL 0 0` under bounds report
+        (hasSub xs.type_ "List" || hasSub xs.type_ "BL")
     | _, _ => false)
 
 -- 3. Type / ctor spans + tyvar label (D)
@@ -165,7 +166,9 @@ def filterLamSrc : String :=
   | some syms =>
     -- `\f xs -> xs` — use of xs at end of line 2
     match symbolAtUseSite syms 2 12 "xs" with
-    | some s => s.name == "xs" && s.kind == "param" && hasSub s.type_ "List"
+    | some s =>
+        s.name == "xs" && s.kind == "param" &&
+        (hasSub s.type_ "List" || hasSub s.type_ "BL")
     | none => false)
 
 -- A2. Shadowed use: `f xs` on line 3 resolves to val xs, not param
@@ -401,9 +404,9 @@ def multiLetParams : String :=
           symbolAt syms 5 16 with
     | some f1, some xs, some f2, some ys, some n =>
         f1.name == "f" && !f1.type_.isEmpty && hasSub f1.type_ "→" &&
-        xs.name == "xs" && hasSub xs.type_ "List" &&
+        xs.name == "xs" && (hasSub xs.type_ "List" || hasSub xs.type_ "BL") &&
         f2.name == "f" && !f2.type_.isEmpty &&
-        ys.name == "ys" && hasSub ys.type_ "List" &&
+        ys.name == "ys" && (hasSub ys.type_ "List" || hasSub ys.type_ "BL") &&
         n.name == "n" && !n.type_.isEmpty
     | _, _, _, _, _ => false)
 

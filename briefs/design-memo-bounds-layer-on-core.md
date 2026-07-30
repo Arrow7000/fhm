@@ -119,7 +119,7 @@ Sticky notes from day-to-day use. Promote into §5 B/C only when tackling that t
 
 | ID | Item | Notes / likely home |
 |----|------|---------------------|
-| **T1** | **λ/head param hover shows HM `List`, not binder `BL`** | e.g. `summarize`’s `xs` → `List Int` not `BL 2 2 Int`. Report peels ascription for head domains incompletely, or hover uses HM peel. Related **R2** / display. |
+| **T1** | **λ/head param hover shows HM `List`, not binder `BL`** | **Done** (with R2 + RHS `expectedβ`): colon-form `\xs` and head binders both show `BL …`. |
 | **T2** | Match/coverage diagnostic spans often file-top | No binder name in message. **C** localized errors. |
 | **T3** | Non-List **ctor apps** under bounds (`Some 1`, etc.) | Nullary `None` / ascribed check OK; saturated non-List ctor apps still `cannot infer bounds for ctor`. Blocks Option demos with `Some`. Synth/checkBounds ctor app path (Pair/Cons special-cased today). |
 | **T4** | Hole ascription pretty keeps `_` on hover/report | Ascription wins over pin-fill. **D1** display honesty. |
