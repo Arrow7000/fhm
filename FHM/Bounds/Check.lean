@@ -49,7 +49,7 @@ private def BoundsTy.pretty : BoundsTy → String
 /-- Infer wraps recursive binders as `let rec f = rhs in f`. Expose `rhs` so a
 scheme ascription can sit in `bctx` for honest self-application (openFresh+pin). -/
 def unwrapLetRecId : Expr → Expr
-  | .letRec _ [rhs] _ => rhs
+  | .letRec _ [rhs] (.var _ _) => rhs
   | e => e
 
 /-- Look up a binder’s HM monotype body by name. -/
@@ -86,6 +86,12 @@ def checkLetSpine
         throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
   -- RHS of surface binder `i` at HM `τ` → env binding to push.
   let checkBinderRhs (i : Nat) (rhs : Expr) (τ : Ty) : Except String BoundBinding := do
+    let rhs' := unwrapLetRecId rhs
+    -- Infer's `letRecElab` singleton wrapper shifts free vars up by one; scheme
+    -- checking prepends `scheme s` to compensate — mirror that for mono/inferred.
+    let bctx' := match rhs with
+      | .letRec _ [_] (.var _ _) => BoundEnv.extend bctx (agreesTemplate τ)
+      | _ => bctx
     match anns.binderAnns[i]? with
     | some (some (.scheme sAnn)) =>
         match BoundsSchemeAnn.toBScheme? sAnn with
@@ -94,19 +100,19 @@ def checkLetSpine
             throw s!"bounds: scheme ascription for {prettyValName n} not solid/WF"
         | some s => do
             -- Rigid scheme body + scheme self in env (not mono openFresh).
-            checkAgainst Δ (.scheme s :: bctx) (unwrapLetRecId rhs) τ s.body
+            checkAgainst Δ (.scheme s :: bctx) rhs' τ s.body
             pure (.scheme s)
     | some (some (.mono ann)) =>
         match BoundsAnnTy.toBoundsTy? ann with
         | some βWant => do
-            checkAgainst Δ bctx rhs τ βWant
+            checkAgainst Δ bctx' rhs' τ βWant
             pure (.mono βWant)
         | none => do
-            let β1 ← checkBounds Δ bctx rhs τ
+            let β1 ← checkBounds Δ bctx' rhs' τ
             meetMono i β1 ann
             pure (.mono β1)
     | _ => do
-        let β1 ← checkBounds Δ bctx rhs τ
+        let β1 ← checkBounds Δ bctx' rhs' τ
         pure (BoundsTy.packScheme? β1)
   match e with
   | .letIn (some σ) rhs body => do
@@ -352,7 +358,7 @@ def checkProgramMatchesSpine
               | some βWant => (BoundBinding.mono βWant, some βWant)
               | none => (BoundBinding.mono (agreesTemplate σ.body), none)
           | _ => (BoundBinding.mono (agreesTemplate σ.body), none)
-        let rhs' := match bb with | .scheme _ => unwrapLetRecId rhs | _ => rhs
+        let rhs' := unwrapLetRecId rhs
         checkProgramMatchesGo ctors Δ (bb :: bctx) dem rhs'
         checkProgramMatchesSpine ctors binderEnv anns Δ (bb :: bctx) (outerIdx + 1) body
   | .letIn none rhs body => do
@@ -384,8 +390,7 @@ def checkProgramMatchesSpine
               | some βWant => (BoundBinding.mono βWant, some βWant)
               | none => (BoundBinding.mono (agreesTemplate τj), none)
           | _ => (BoundBinding.mono (agreesTemplate τj), none)
-        checkProgramMatchesGo ctors Δ (bb :: bctx) dem
-          (match bb with | .scheme _ => unwrapLetRecId rhs | _ => rhs)
+        checkProgramMatchesGo ctors Δ (bb :: bctx) dem (unwrapLetRecId rhs)
         pure bb
       checkProgramMatchesSpine ctors binderEnv anns Δ (bbs ++ bctx) (outerIdx + k) body
   | _ =>

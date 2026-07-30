@@ -38,8 +38,8 @@ let revAppend : {a b c d : Nat, e} BL a b e -> BL c d e -> BL (a + c) (b + d) e 
 let reverse : {lo hi : Nat, a} BL lo hi a -> BL lo hi a =
   \xs -> revAppend xs []
 
-let flatMap : {a b c d : Nat, e f}
-    (e -> BL c d f) -> BL a b e -> BL (a * c) (b * d) f =
+let flatMap : {l1 l2 h1 h2 : Nat, a b}
+    (a -> BL l1 h1 b) -> BL l2 h2 a -> BL (l1 * l2) (h1 * h2) b =
   \g xs ->
     match xs with
     | [] -> []
@@ -63,8 +63,11 @@ let zip : {n : Nat, a b} BL n n a -> BL n n b -> BL n n (a, b) =
 --     |> append (cons 0 [99])     -- [4,3,2,0,99]: BL 2 7
 --   zip [10,20] [30,40]           -- [(10,30),(20,40)] : BL 2 2
 --   flatMap (\x -> [x, x+1]) [7,8]-- [7,8,8,9] : BL 4 4
-(append
-  (reverse (map (\x -> x + 1) (filter (\n -> n < 5) [1, 6, 2, 8, 3])))
-  (cons 0 (singleton 99)),
- (zip [10, 20] [30, 40],
-  flatMap (\x -> cons x (singleton (x + 1))) [7, 8]))
+let result =
+  (append
+    (reverse (map (\x -> x + 1) (filter (\n -> n < 5) [1, 6, 2, 8, 3])))
+    (cons 0 (singleton 99)),
+  (zip [10, 20] [30, 40],
+    flatMap (\x -> cons x (singleton (x + 1))) [7, 8]))
+
+result

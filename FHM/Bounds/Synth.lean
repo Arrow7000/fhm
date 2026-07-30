@@ -306,21 +306,35 @@ def freshParamBounds (Φ : Nat) (τp : Ty) : Nat × BoundsTy :=
         .list (.var ⟨.inferable, Φ⟩) (.var ⟨.inferable, Φ + 1⟩) (agreesTemplate α))
   | none => (Φ, agreesTemplate τp)
 
+/-- Provisional env slot for a letRec member (de Bruijn index = position in group).
+
+Infer’s `letRec` / `letRecElab` puts the group at indices `0 … k-1` while checking
+each RHS; outer binders start at `k`. Without these slots, lookups are off-by-one
+(map reads filter’s scheme, etc.). Use the ascribed HM type’s template; the
+real `β` is synthesized by `inferLetRecGroupCore`. -/
+private def letRecProvisional (ann? : Option PolyTy) : BoundBinding :=
+  match ann? with
+  | some σ => .mono (agreesTemplate σ.body)
+  | none => .mono (.fvar 0)
+
 mutual
 
-/-- Synth letRec binders under outer `bctx` (list-structural on `bindings`). -/
-def inferLetRecGroup (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
+/-- Synth letRec binders under `bctxRec` (list-structural on `bindings`).
+
+`bctxRec` must already include provisional slots for every group member; see
+`inferLetRecGroup`. -/
+def inferLetRecGroupCore (Δ : List Constraint) (bctxRec : BoundEnv) (Φ : Nat)
     (anns : List (Option PolyTy)) (bindings : List Expr) :
     Except String (Nat × List BoundsTy) :=
   match anns, bindings with
   | [], [] => pure (Φ, [])
   | ann? :: anns', rhs :: bindings' => do
       let (Φ1, β) ← match ann? with
-        | some σ => checkBoundsΦ Δ bctx Φ rhs σ.body
+        | some σ => checkBoundsΦ Δ bctxRec Φ rhs σ.body
         | none => do
-            let (Φ', _, β) ← inferBoundsΦ Δ bctx Φ rhs
+            let (Φ', _, β) ← inferBoundsΦ Δ bctxRec Φ rhs
             pure (Φ', β)
-      let (Φ2, βs) ← inferLetRecGroup Δ bctx Φ1 anns' bindings'
+      let (Φ2, βs) ← inferLetRecGroupCore Δ bctxRec Φ1 anns' bindings'
       pure (Φ2, β :: βs)
   | _, _ => throw "bounds: letRec anns/bindings length mismatch"
 termination_by Expr.sizeRecGroup bindings
@@ -449,7 +463,7 @@ def inferBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (e : Expr)
   | .letRec anns bindings body => do
       if anns.length != bindings.length then
         throw "bounds: letRec anns/bindings length mismatch"
-      let (Φ1, βs) ← inferLetRecGroup Δ bctx Φ anns bindings
+      let (Φ1, βs) ← inferLetRecGroupCore Δ (anns.map letRecProvisional ++ bctx) Φ anns bindings
       inferBoundsΦ Δ (BoundEnv.extendMany bctx βs) Φ1 body
   | .match_ scrut brs => do
       let (Φ1, τs, βs) ← inferBoundsΦ Δ bctx Φ scrut
@@ -539,7 +553,7 @@ def checkBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
   | .letRec anns bindings body => do
       if anns.length != bindings.length then
         throw "bounds: letRec anns/bindings length mismatch"
-      let (Φ1, βs) ← inferLetRecGroup Δ bctx Φ anns bindings
+      let (Φ1, βs) ← inferLetRecGroupCore Δ (anns.map letRecProvisional ++ bctx) Φ anns bindings
       checkBoundsΦ Δ (BoundEnv.extendMany bctx βs) Φ1 body τ
   | .match_ scrut brs => do
       let (Φ1, τs, βs) ← inferBoundsΦ Δ bctx Φ scrut
@@ -563,6 +577,13 @@ decreasing_by all_goals (
   | (simp only [Expr.size, Expr.sizeBranches, Expr.sizeRecGroup]; omega))
 
 end
+
+/-- Synth letRec binders: check every RHS under provisional group slots plus outer
+`bctx`, then return real `β`s for `extendMany` on the body. -/
+def inferLetRecGroup (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
+    (anns : List (Option PolyTy)) (bindings : List Expr) :
+    Except String (Nat × List BoundsTy) :=
+  inferLetRecGroupCore Δ (anns.map letRecProvisional ++ bctx) Φ anns bindings
 
 /-- Infer without exposing freshness (starts at `Φ = 0`). -/
 def inferBounds (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) :
