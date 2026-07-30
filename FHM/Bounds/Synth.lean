@@ -2,12 +2,16 @@ import FHM.Bounds.Typing
 import FHM.Pretty
 
 /-!
-# Executable HasBounds synthesizer (slices 4–7)
+# Executable HasBounds synthesizer (slices 4–7 + J1)
 
 Origin-based Core → `BoundsTy` walk mirroring declarative `HasBounds`.
 Does **not** invent list intervals from bare `List` (D22). Nil’s `[0,0]` is an
 origin. Unascribed List λ-params get fresh `?lo`/`?hi` (D24). Schemes
 instantiate at var use via `BoundBinding.scheme`.
+
+**Match results:** List scrutinees use `synthMatch` (path refine + join). Non-List
+multi-arm (`if`/Bool/…) uses `synthJoinArms` / `synthJoinArmsAt` — synth/check
+each arm, `joinBoundsTy` (min lo / max hi). Coverage stays HM / `coreCtorCoverage`.
 -/
 
 namespace FHM.Bounds.Synth
@@ -229,6 +233,16 @@ private theorem size_lt_sizeBranches_two_snd {p1 p2 : MatchPattern} {e1 e2 : Exp
   have := Expr.size_pos e1
   omega
 
+private theorem size_lt_sizeBranches_cons_head {p : MatchPattern} {e : Expr}
+    {rest : List (MatchPattern × Expr)} :
+    e.size < Expr.sizeBranches ((p, e) :: rest) := by
+  simp only [Expr.sizeBranches]; omega
+
+private theorem size_lt_sizeBranches_cons_tail {p : MatchPattern} {e : Expr}
+    {rest : List (MatchPattern × Expr)} :
+    Expr.sizeBranches rest < Expr.sizeBranches ((p, e) :: rest) := by
+  simp only [Expr.sizeBranches]; omega
+
 private theorem expr_size_lt_double_app_ctor {c : CtorName} {h arg : Expr} :
     h.size < (((Expr.ctor c).app h).app arg).size := by
   simp [Expr.size]
@@ -380,6 +394,57 @@ def synthMatch (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
 termination_by Expr.sizeBranches brs
 decreasing_by all_goals (first | exact size_lt_sizeBranches_two | exact size_lt_sizeBranches_two_snd | exact size_lt_sizeBranches_one | (try simp only [Expr.size, Expr.sizeBranches]; omega))
 
+/-- Non-List match arm env: no path-Δ refine (that is List/BoundCovers only).
+Nullary / wildcard leave `bctx` alone. `named _ n` pushes `n` stub slots so
+de Bruijn field binders resolve; field βs are not origin-precise (HM typed). -/
+def nonListArmEnv (bctx : BoundEnv) : MatchPattern → BoundEnv
+  | .wildcard => bctx
+  | .named _ n => BoundEnv.extendMany bctx (List.replicate n (.fvar 0))
+
+/-- Non-List multi-arm: synth each arm body, join βs (`joinBoundsTy` / min-lo max-hi).
+Coverage is HM exhaustiveness (and `checkProgramMatches` ctor coverage) — not BoundCovers.
+
+First arm is inferred (anchors result τ); remaining arms are checked at that τ
+then joined — same discipline as List `synthMatch` Nil+Cons. -/
+def synthJoinArms (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
+    (brs : List (MatchPattern × Expr)) : Except String (Nat × Ty × BoundsTy) :=
+  match brs with
+  | [] => throw "bounds: empty match"
+  | [(pat, e)] =>
+      inferBoundsΦ Δ (nonListArmEnv bctx pat) Φ e
+  | (pat, e) :: rest => do
+      let (Φ1, τ, β1) ← inferBoundsΦ Δ (nonListArmEnv bctx pat) Φ e
+      let (Φ2, βrest) ← synthJoinArmsAt Δ bctx Φ1 τ rest
+      match joinBoundsTy β1 βrest with
+      | some β => pure (Φ2, τ, β)
+      | none => throw "bounds: match branches have incompatible bounds"
+termination_by Expr.sizeBranches brs
+decreasing_by all_goals (first
+  | exact size_lt_sizeBranches_cons_head
+  | exact size_lt_sizeBranches_one
+  | (try simp only [Expr.sizeBranches]; omega))
+
+/-- Check remaining non-List arms at fixed `τ`, joining their βs. -/
+def synthJoinArmsAt (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (τ : Ty)
+    (brs : List (MatchPattern × Expr)) : Except String (Nat × BoundsTy) :=
+  match brs with
+  | [] => throw "bounds: empty match arms"
+  | [(pat, e)] => do
+      let (Φ1, β) ← checkBoundsΦ Δ (nonListArmEnv bctx pat) Φ e τ
+      pure (Φ1, β)
+  | (pat, e) :: rest => do
+      let (Φ1, β1) ← checkBoundsΦ Δ (nonListArmEnv bctx pat) Φ e τ
+      let (Φ2, βrest) ← synthJoinArmsAt Δ bctx Φ1 τ rest
+      match joinBoundsTy β1 βrest with
+      | some β => pure (Φ2, β)
+      | none => throw "bounds: match branches have incompatible bounds"
+termination_by Expr.sizeBranches brs
+decreasing_by all_goals (first
+  | exact size_lt_sizeBranches_cons_head
+  | exact size_lt_sizeBranches_cons_tail
+  | exact size_lt_sizeBranches_one
+  | (try simp only [Expr.sizeBranches]; omega))
+
 /-- Check mode for generic `f arg` (infer fn spine, check arg). -/
 def checkBoundsApp (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
     (f arg : Expr) (τ : Ty) : Except String (Nat × BoundsTy) := do
@@ -471,7 +536,8 @@ def inferBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (e : Expr)
       | some α, .list lo hi βe =>
           synthMatch Δ bctx Φ1 α lo hi βe brs
       | _, _ =>
-          throw "bounds: match on non-List (HM exh covers these; BoundCovers later)"
+          -- Non-List: no path refine; join arm results (Bool `if`, Maybe, …).
+          synthJoinArms Δ bctx Φ1 brs
 termination_by e.size
 decreasing_by all_goals (
   simp_wf
@@ -562,8 +628,11 @@ def checkBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
           let (Φ2, _τ, β) ← synthMatch Δ bctx Φ1 α lo hi βe brs
           let _ := τ
           pure (Φ2, β)
-      | _, _ =>
-          throw "bounds: match on non-List"
+      | _, _ => do
+          -- Expected `τ` from check mode: check every arm at `τ`, join βs.
+          -- (Infer-first fails on list literals — Nil/Cons need a List demand.)
+          let (Φ2, β) ← synthJoinArmsAt Δ bctx Φ1 τ brs
+          pure (Φ2, β)
 termination_by e.size
 decreasing_by all_goals (
   simp_wf

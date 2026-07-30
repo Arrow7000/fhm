@@ -1,0 +1,163 @@
+-- BL showcase: stdlib-ish schemes, hole ascriptions, multi-use constraints,
+-- match/if joins, and compound count expressions that exercise Sub / Z3.
+--
+-- Run:  .lake/build/bin/fhm run --bl scratch/bl-showcase.fhm
+-- All binders here are intentionally solvable (one bounds error fails the file).
+--
+-- Known gaps this file steers around (see design memo R1–R3 / residual notes):
+--   * head/tail-style domains `BL (n+1) m` do not yet pin `n` from a concrete arg
+--   * hole ascriptions still pretty as written (`BL _ _` / `BL _ 5`), not pin-filled
+--   * diagnose/LSP swallows bounds failures (hover shows ascription; REPL rejects)
+
+-- ── small stdlib (schemes with compound count arithmetic) ──────────────────
+
+let singleton : {a} a -> BL 1 1 a =
+  \x -> [x]
+
+let cons : {n : Nat, a} a -> BL n n a -> BL (n + 1) (n + 1) a =
+  \x xs -> x :: xs
+
+let map : {lo hi : Nat, a b} (a -> b) -> BL lo hi a -> BL lo hi b =
+  \f xs ->
+    match xs with
+    | [] -> []
+    | h :: t -> f h :: map f t
+
+let filter : {lo hi : Nat, a} (a -> Bool) -> BL lo hi a -> BL 0 hi a =
+  \p xs ->
+    match xs with
+    | [] -> []
+    | h :: t ->
+      if p h then
+        h :: (filter p t)
+      else
+        filter p t
+
+let append : {a b c d : Nat, e} BL a b e -> BL c d e -> BL (a + c) (b + d) e =
+  \xs ys ->
+    match xs with
+    | [] -> ys
+    | h :: t -> h :: (append t ys)
+
+let revAppend : {a b c d : Nat, e} BL a b e -> BL c d e -> BL (a + c) (b + d) e =
+  \xs ys ->
+    match xs with
+    | [] -> ys
+    | h :: t -> revAppend t (h :: ys)
+
+let reverse : {lo hi : Nat, a} BL lo hi a -> BL lo hi a =
+  \xs -> revAppend xs []
+
+let flatMap : {l1 l2 h1 h2 : Nat, a b}
+    (a -> BL l1 h1 b) -> BL l2 h2 a -> BL (l1 * l2) (h1 * h2) b =
+  \g xs ->
+    match xs with
+    | [] -> []
+    | h :: t -> append (g h) (flatMap g t)
+
+let zip : {n : Nat, a b} BL n n a -> BL n n b -> BL n n (a, b) =
+  \xs ys ->
+    match xs with
+    | [] -> []
+    | x :: xt ->
+      match ys with
+      | [] -> []
+      | y :: yt -> (x, y) :: (zip xt yt)
+
+-- snoc via append: domain exact length, codomain `n+1` (compound scheme body)
+let snoc0 : {n : Nat} BL n n Int -> BL (n + 1) (n + 1) Int =
+  \xs -> append xs [0]
+
+-- ── match / if joins (min lo / max hi across branches) ─────────────────────
+
+-- Unascribed Bool `if`: synth joins arm results [1] ⊔ [1,2,3] ⇒ BL 1 3
+-- (no ascription needed — J1 non-List multi-arm result join)
+let pick =
+  \b ->
+    if b then
+      [1]
+    else
+      [1, 2, 3]
+
+-- List match under exact length-2 scrutinee: empty-ish vs singleton
+let firstOrEmpty : BL 0 2 Int -> BL 0 1 Int =
+  \xs ->
+    match xs with
+    | [] -> []
+    | h :: t -> [h]
+
+-- Nested match + if: branches BL 1 1 vs BL 3 3 under BL 2 2 scrutinee
+let summarize : BL 2 2 Int -> BL 1 3 Int =
+  \xs ->
+    match xs with
+    | a :: rest ->
+      match rest with
+      | b :: tail ->
+        if a < b then
+          [a]
+        else
+          [a, b, 0]
+
+-- ── hole ascriptions ───────────────────────────────────────────────────────
+
+-- Pin lo from spine; solid hi must cover synth (Sub [3,3] ≤ [3,5])
+let holeHi : BL _ 5 Int = [1, 2, 3]
+
+-- Both ends holes: pin from concrete Nil/Cons spine
+let holeBoth : BL _ _ Int = [7, 8]
+
+-- Shared unknown-bound list: several consumers, each imposing its own story.
+-- map / reverse preserve length; zip demands equal exact length on both sides;
+-- filter widens lo to 0; append adds the tip length.
+let data : BL _ _ Int = [1, 2, 3, 4]
+let mapped = map (\x -> x + 1) data
+let revd = reverse data
+let zipped = zip data [10, 20, 30, 40]
+let filtered = filter (\n -> n < 3) data
+let appended = append data [99]
+
+-- ── compound count expressions (solver / simplify work) ────────────────────
+
+-- Surface ops in ascription: (2*2)/(1+3) folds; Sub against spine [4,4]
+let mulAdd : BL (2 * 2) (1 + 3) Int = [1, 2, 3, 4]
+
+-- Nested + in both ends; RHS builds the same length via append chain
+let sumLens : BL (1 + 2 + 1) (4 + 0) Int =
+  append (append [1] [2, 3]) [4]
+
+-- Exact compound demand on append of two equal lists
+let both : BL (2 + 2) (2 + 2) Int = append [1, 2] [3, 4]
+
+-- Wider result ascription than origin synth: filter→map→reverse→append tip
+--   filter [1,6,2,8,3] : BL 0 5
+--   map / reverse preserve
+--   append (cons 0 (singleton 99)) : + BL 2 2  ⇒  synth BL 2 7 ⊆ BL 2 8
+let pipeline : BL 2 8 Int =
+  append
+    (reverse (map (\x -> x + 1) (filter (\n -> n < 5) [1, 6, 2, 8, 3])))
+    (cons 0 (singleton 99))
+
+-- flatMap length product: 2 inputs × 2 outputs each ⇒ BL 4 4
+let doubled : BL 4 4 Int =
+  flatMap (\x -> cons x (singleton (x + 1))) [7, 8]
+
+-- snoc0 instantiates n from a concrete exact list
+let grown = snoc0 [1, 2]
+
+-- ── pack results so every demo is evaluated ────────────────────────────────
+
+(pick True,
+  (firstOrEmpty [1, 2],
+    (summarize [3, 1],
+      (holeHi,
+        (holeBoth,
+          (mapped,
+            (revd,
+              (zipped,
+                (filtered,
+                  (appended,
+                    (mulAdd,
+                      (sumLens,
+                        (both,
+                          (pipeline,
+                            (doubled, grown)))))))))))))))

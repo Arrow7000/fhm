@@ -1,6 +1,6 @@
 # Design memo: bounds layer on Core (B′)
 
-**Status:** product-ready dual-stack BL under `--bl` (slices 0–8 + display + synth report). **Merged back into `fhm`.** Next: §2.3 residuals (R1–R3), then E2E gate, then editor/LSP + playground/CI.  
+**Status:** product-ready dual-stack BL under `--bl` (slices 0–8 + display + synth report + **J1** non-List arm join). **Merged back into `fhm`.** Next: §5 R1–R3, then E2E gate, then editor/LSP + playground/CI.  
 **Updated:** 2026-07-30  
 **Repo:** `/Users/aron/dev/fhm` (optional `FHMBounds` package; default FHM stays pure).  
 **This doc’s job:** living plan for work yet to do + locked design. History is compacted below; detail lives in git.
@@ -113,6 +113,18 @@ Display priority: erase ascription → Check synth β → HM `PolyTy`.
 
 ## 5. What’s next (ordered)
 
+### Triage (park here; don’t reorder the spine for these)
+
+Sticky notes from day-to-day use. Promote into §5 B/C only when tackling that tier; otherwise leave here so we don’t thrash the main order.
+
+| ID | Item | Notes / likely home |
+|----|------|---------------------|
+| **T1** | **λ/head param hover shows HM `List`, not binder `BL`** | e.g. `summarize`’s `xs` → `List Int` not `BL 2 2 Int`. Report peels ascription for head domains incompletely, or hover uses HM peel. Related **R2** / display. |
+| **T2** | Match/coverage diagnostic spans often file-top | No binder name in message. **C** localized errors. |
+| **T3** | Non-List **ctor apps** under bounds (`Some 1`, etc.) | Nullary `None` / ascribed check OK; saturated non-List ctor apps still `cannot infer bounds for ctor`. Blocks Option demos with `Some`. Synth/checkBounds ctor app path (Pair/Cons special-cased today). |
+| **T4** | Hole ascription pretty keeps `_` on hover/report | Ascription wins over pin-fill. **D1** display honesty. |
+| **T5** | Compound scheme **domains** (`BL (n+1) m`) don’t pin from concrete args | `head`/`tail` define but don’t call. **I1**. |
+
 ### A. Reintegrate `blt` → `fhm` ✅
 
 **Done.** Bounds lives here as optional `FHMBounds`; default `lake build` FHM stays pure. See header **BL sandbox history** for where to find Jul 2026 chat transcripts.
@@ -121,7 +133,8 @@ Display priority: erase ascription → Check synth β → HM `PolyTy`.
 
 | ID | Item | Importance |
 |----|------|------------|
-| **R1** | Hole anns → push **pinned** template into `bctx` | **High** |
+| **J1** | Non-List multi-arm **result join** in origin synth (`if`/Bool/… → join arm βs) | **Done** — `synthJoinArms` / `synthJoinArmsAt`; unascribed `pick` → `BL 1 3`; see `scratch/bl-join-if.fhm` |
+| **R1** | Hole anns → push **pinned** template into `bctx` | **High** (**next**) |
 | **R2** | Head-binder `(xs : BL …)` fold into demand | **High** |
 | **R3** | Commit **`uniqueOnly`** on output-visible escape | **High** |
 | **R4** | Pair-match demand peel | Medium |
@@ -185,6 +198,7 @@ No full design yet — spike after R1–R3 / E2E, or a thin “error span” pas
 - [x] Dual-stack BL under `--bl` with schemes + stdlib + unified display  
 - [x] Core/Infer free of bound feature work  
 - [x] Merged into `fhm` as optional Bounds  
+- [x] J1 non-List multi-arm result join (unascribed `if` → join)  
 - [ ] R1–R3 Done (or explicitly waived here)  
 - [ ] Slice 9 E2E gate in CI  
 - [ ] Localized diagnostic spans (MVP)  
@@ -203,7 +217,7 @@ No full design yet — spike after R1–R3 / E2E, or a thin “error span” pas
 
 1. Read §§1–2 and **§5**.  
 2. `lake build blt FHMBounds` · `blt --bl scratch/bl-stdlib.fhm`.  
-3. Work the **§5** item in order (currently **B / R1**).  
+3. Work the **§5** item in order (currently **B / R1**; J1 Done).  
 4. Do not invent List intervals (D22). Do not fuse bounds into Core Ty.  
 5. Update **§5** when closing an item.
 

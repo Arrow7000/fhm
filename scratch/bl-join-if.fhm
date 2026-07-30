@@ -1,0 +1,28 @@
+-- J1: non-List multi-arm result join (Bool `if` / ADT match).
+-- Run: .lake/build/bin/fhm run --bl scratch/bl-join-if.fhm
+--
+-- Arms synth independently; joinBoundsTy (min lo / max hi). Scrutinee is not
+-- List — BoundCovers is not involved; HM exhaustiveness covers the ADT.
+
+type Option a = Some a | None
+
+-- Bool `if` → join BL 1 1 ⊔ BL 3 3 = BL 1 3
+let pick =
+  \b ->
+    if b then
+      [1]
+    else
+      [1, 2, 3]
+
+-- Option match → same join. Call sites must be Option values (not True/False).
+-- `None` is a nullary ctor (check mode OK). `Some 1` is a ctor *app* — bounds
+-- still cannot origin-synth non-List ctor apps (triage T3); use ascribed None.
+let pickMatch =
+  \m ->
+    match m with
+    | Some aa -> [10]
+    | None -> [10, 20, 30]
+
+let oNone : Option Int = None
+
+(pick True, (pick False, pickMatch oNone))

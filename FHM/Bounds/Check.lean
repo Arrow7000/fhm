@@ -266,13 +266,22 @@ def checkProgramMatchesGo (ctors : CtorEnv) (Δ : List Constraint) (bctx : Bound
               let (_, βp) := freshParamBounds 0 τp
               checkProgramMatchesGo ctors Δ (BoundEnv.extend bctx βp) none body
           | none =>
-              checkProgramMatchesGo ctors Δ bctx none body
+              -- Infer often emits unannotated `λ` (e.g. `λy. let z : Bool = y in …`).
+              -- Still push a stub so de Bruijn indices in the body line up.
+              checkProgramMatchesGo ctors Δ (BoundEnv.extend bctx (.fvar 0)) none body
   | .app f arg => do
       checkProgramMatchesGo ctors Δ bctx none f
       checkProgramMatchesGo ctors Δ bctx none arg
   | .letIn ann? rhs body => do
+      -- Env slot for the binder: List keeps origin-synth β (BoundCovers); non-List
+      -- uses the HM ascription template so ADT matches (Bool `if`) see a real
+      -- `customTy` scrutinee even when the RHS var was a λ-stub (unascribed λ).
       let β1 ← match ann? with
-        | some σ => checkBounds Δ bctx rhs σ.body
+        | some σ =>
+            if (isListTy σ.body).isSome then
+              checkBounds Δ bctx rhs σ.body
+            else
+              pure (agreesTemplate σ.body)
         | none => Prod.snd <$> inferBounds Δ bctx rhs
       checkProgramMatchesGo ctors Δ bctx none rhs
       checkProgramMatchesGo ctors Δ (BoundEnv.extend bctx β1) demand body
