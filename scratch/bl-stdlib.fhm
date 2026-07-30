@@ -7,11 +7,21 @@ let singleton : {a} a -> BL 1 1 a =
 let cons : {n : Nat, a} a -> BL n n a -> BL (n + 1) (n + 1) a =
   \x xs -> x :: xs
 
+let head : {n m : Nat, a} BL (n + 1) m a -> a =
+  \xs ->
+    match xs with
+    | h :: t -> h
+
+let tail : {n m : Nat, a} BL (n + 1) (m + 1) a -> BL n m a =
+  \xs ->
+    match xs with
+    | h :: t -> t
+
 let map : {lo hi : Nat, a b} (a -> b) -> BL lo hi a -> BL lo hi b =
   \f xs ->
     match xs with
     | [] -> []
-    | h :: t -> (f h) :: (map f t)
+    | h :: t -> f h :: map f t
 
 let filter : {lo hi : Nat, a} (a -> Bool) -> BL lo hi a -> BL 0 hi a =
   \p xs ->
