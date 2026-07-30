@@ -472,7 +472,9 @@ Shared: Infer, elaborate, evaluate. Diagnose/Live display under `--bl` uses `Pro
 
 ### #1 — Display unification ✅
 
-**Done (2026-07-30):** [`FHM/Bounds/Report.lean`](FHM/Bounds/Report.lean) — `BindingReport` / `ProgramReport` / `assembleProgramReport` after erase+infer. Live, JSON, and hover pretty-print only the report (ascription wins; else HM). No parallel `bounds:` dump. Check still uses `ofLower` (de Bruijn projection of the same erase package).
+**Done (2026-07-30):** [`FHM/Bounds/Report.lean`](FHM/Bounds/Report.lean) — `BindingReport` / `ProgramReport` / `assembleProgramReport` after erase+infer. Live, JSON, and hover pretty-print only the report (ascription → Check synth → HM). No parallel `bounds:` dump. Check still uses `ofLower` (de Bruijn projection of the same erase package). Unascribed binders (e.g. `result`) get synth β via `enrichFromSynth`. Display pretty constant-folds ground `Count`s (`Count.simplify` in Kernel; used only by `Count.pretty*`).
+
+**Open design note — Count folding in the real pipeline:** today folding is **display-only**. Worth deciding later whether Check/Synth should simplify counts in-core (one post-synth pass vs fold-at-each-op), for smaller Z3 queries / cleaner `bctx` / BoundCovers. Do **not** silently change solver inputs without an explicit decision — see §12 “Later / design”.
 
 ### #2 — §2.3 / D24 residuals (**next**, High → Medium)
 
@@ -502,6 +504,8 @@ Correctness holes after solid A+B. Details also in §2.3 table (R1–R5).
 ### Explicitly later (do not steal focus from #2–#3)
 
 Post-E2E hygiene in §6; axiom collapse memo; merge to `fhm`; HM type-holes brief; inventing intervals from bare `List` (**rejected**, D22).
+
+**Count constant folding in Check/Synth (design later):** display already folds via `Count.simplify` at pretty time. Open questions: (1) fold once after binder synth before push to `bctx`? (2) fold at every `add`/`mul`/`pred` constructor in Synth? (3) fold only before Oracle/`checkSubInst`? Trade-offs: Z3 size vs keeping provenance vs risk of changing when constraints fire. Record a decision before wiring into the judgment path.
 
 Thin erase (`Ann.lean` / `Report.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path uses Z3 via `FHM.Bounds.Check`.
 

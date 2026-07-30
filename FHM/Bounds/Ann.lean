@@ -106,32 +106,35 @@ private def prettyTyVarIdx (i : Nat) : String :=
   -- Same letters as `prettyTyVarName` in `FHM/Pretty.lean` (a, b, c, …).
   prettyTyVarName i
 
-/-- Pretty a count; `nats[i]` names rigid binder `i` when present (scheme bodies). -/
-def Count.prettyWith (nats : List ValName) : Count → String
-  | .lit n => toString n
-  | .inf => "∞"
-  | .add a b =>
-      let sa := Count.prettyWith nats a
-      let sb := Count.prettyWith nats b
-      s!"({sa} + {sb})"
-  | .mul a b =>
-      let sa := Count.prettyWith nats a
-      let sb := Count.prettyWith nats b
-      s!"({sa} * {sb})"
-  | .pred a => s!"(pred {Count.prettyWith nats a})"
-  | .min a b =>
-      let sa := Count.prettyWith nats a
-      let sb := Count.prettyWith nats b
-      s!"(min {sa} {sb})"
-  | .max a b =>
-      let sa := Count.prettyWith nats a
-      let sb := Count.prettyWith nats b
-      s!"(max {sa} {sb})"
-  | .var ⟨.rigid, i⟩ =>
-      match nats[i]? with
-      | some ⟨name⟩ => name
-      | none => prettyRigidIdx i
-  | .var ⟨.inferable, i⟩ => prettyInferableIdx i
+/-- Pretty a count; `nats[i]` names rigid binder `i` when present (scheme bodies).
+Constant-folds ground arithmetic first (display-layer only). -/
+def Count.prettyWith (nats : List ValName) (c : Count) : String :=
+  let rec go : Count → String
+    | .lit n => toString n
+    | .inf => "∞"
+    | .add a b =>
+        let sa := go a
+        let sb := go b
+        s!"({sa} + {sb})"
+    | .mul a b =>
+        let sa := go a
+        let sb := go b
+        s!"({sa} * {sb})"
+    | .pred a => s!"(pred {go a})"
+    | .min a b =>
+        let sa := go a
+        let sb := go b
+        s!"(min {sa} {sb})"
+    | .max a b =>
+        let sa := go a
+        let sb := go b
+        s!"(max {sa} {sb})"
+    | .var ⟨.rigid, i⟩ =>
+        match nats[i]? with
+        | some ⟨name⟩ => name
+        | none => prettyRigidIdx i
+    | .var ⟨.inferable, i⟩ => prettyInferableIdx i
+  go (Count.simplify c)
 
 def Count.pretty (c : Count) : String := Count.prettyWith [] c
 

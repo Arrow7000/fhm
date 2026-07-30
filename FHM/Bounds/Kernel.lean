@@ -706,7 +706,9 @@ theorem Count.noInf_eq_not_containsInf (c : Count) : c.noInf = !c.containsInf :=
   | add a b iha ihb | mul a b iha ihb | min a b iha ihb | max a b iha ihb =>
       simp [noInf, containsInf, iha, ihb, Bool.not_or]
 
-/-- Push `inf` through ops. Conservative: `inf * non-lit` stays (var may be 0). -/
+/-- Push `inf` through ops and fold ground arithmetic. Used by Oracle normalize
+and by display pretty (`Count.pretty*`). Check/Synth leave counts unsimplified
+in `bctx` (see memo §12 — pipeline folding is an open design). -/
 def Count.simplify : Count → Count
   | .lit n => .lit n
   | .var v => .var v
@@ -720,10 +722,14 @@ def Count.simplify : Count → Count
       match simplify a, simplify b with
       | .inf, _ | _, .inf => .inf
       | .lit n, .lit m => .lit (n + m)
+      | .lit 0, b' => b'
+      | a', .lit 0 => a'
       | a', b' => .add a' b'
   | .mul a b =>
       match simplify a, simplify b with
       | .lit 0, _ | _, .lit 0 => .lit 0
+      | .lit 1, b' => b'
+      | a', .lit 1 => a'
       | .inf, .lit n | .lit n, .inf => if n = 0 then .lit 0 else .inf
       | .inf, .inf => .inf
       | .inf, b' => .mul .inf b'  -- keep; do not assume b' ≠ 0
@@ -741,6 +747,10 @@ def Count.simplify : Count → Count
       | .inf, _ | _, .inf => .inf
       | .lit n, .lit m => .lit (Nat.max n m)
       | a', b' => .max a' b'
+
+#guard Count.simplify (.add (.lit 0) (.add (.lit 1) (.lit 1))) == .lit 2
+#guard Count.simplify (.mul (.add (.lit 1) (.lit 1)) (.add (.lit 0) (.lit 1))) == .lit 2
+#guard Count.simplify (.add (.var ⟨.rigid, 0⟩) (.lit 0)) == .var ⟨.rigid, 0⟩
 
 /-- Residual constraint with `NoInf` proofs for Z3 encoding. -/
 structure FiniteConstraint where
