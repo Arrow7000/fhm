@@ -144,11 +144,11 @@ def erasePolyTy (σ : Surface.PolyTy) (nats : List ValName := []) :
   let e := eraseTy σ.body nats σ.foralls
   ({ foralls := σ.foralls, body := e.ty }, e.ann)
 
-/-- Package Nat-binder sidecar + erased body ann → `BoundsSchemeAnn`.
-Empty `nats` → `none` (mono path uses `ErasedBinding.ann` only). -/
+/-- Package Nat-binder sidecar + type foralls + erased body ann → `BoundsSchemeAnn`.
+Pure mono (no Nat binders, no type foralls) → `none` (uses `ErasedBinding.ann`). -/
 def eraseSchemeAnn (nats : List ValName) (σ : Surface.PolyTy) :
     Option FHM.Bounds.BoundsSchemeAnn :=
-  if nats.isEmpty then none
+  if nats.isEmpty && σ.foralls.isEmpty then none
   else
     some {
       natBinders := nats
@@ -172,7 +172,7 @@ def SurfaceBoundsAnns.empty : SurfaceBoundsAnns := {}
 bounds ascription from the same erase step.
 
 * `ann = some _` — mono surface ascription contained `BL` (no Nat binders)
-* `schemeAnn = some _` — surface had `{n : Nat,…}` (body may still mention `BL`)
+* `schemeAnn = some _` — surface had `{n : Nat,…}` and/or type foralls `{a,…}`
 * bare `List` / no ann → both `none`
 
 Prefer `BinderAnn` (Ann.lean) once `ProgramBoundsAnns` migrates off bare
@@ -266,8 +266,8 @@ def eraseExpr : Surface.Expr → Surface.Expr :=
 
 /-- Erase one binding, producing its bounds ann in the same package.
 
-When `b.natBinders` is nonempty, package `schemeAnn` via `eraseSchemeAnn` and
-leave mono `ann` empty (scheme body carries the intervals). -/
+When `eraseSchemeAnn` returns `some` (Nat and/or type foralls), leave mono `ann`
+empty — scheme body carries the intervals and `∀` pretty-printing. -/
 def eraseBinding (b : Binding) : ErasedBinding :=
   let nats := b.natBinders
   let hadBl := match b.ann with | some σ => tyContainsBl σ.body | none => false
@@ -351,6 +351,23 @@ def eraseTy_ab_guard : Bool :=
     (nats := []) (tvars := [.mk "a", .mk "b"])
   reprStr e.ann == reprStr (BoundsAnnTy.arrow (.fvar 0) (.fvar 1))
 #guard eraseTy_ab_guard
+
+/-- `{a} a → BL 1 1 a` → scheme sidecar (not mono fvar ann). -/
+private def eraseSingletonSchemeGuard : Bool :=
+  let σ : Surface.PolyTy :=
+    ⟨[⟨"a"⟩],
+      .arrow (.tvar (.mk "a"))
+        (.bl (.solid (.lit 1)) (.solid (.lit 1)) (.tvar (.mk "a")))⟩
+  let eb := eraseBinding
+    { name := ⟨"singleton"⟩, ann := some σ, rhs := .list [], natBinders := [] }
+  match eb.schemeAnn, eb.ann, eb.binderAnn with
+  | some s, none, some (.scheme s') =>
+      s.natBinders.isEmpty &&
+      s.tyBinders == [⟨"a"⟩] &&
+      reprStr s == reprStr s' &&
+      BinderAnn.pretty (.scheme s) == "∀ a. a → BL 1 1 a"
+  | _, _, _ => false
+#guard eraseSingletonSchemeGuard
 
 #guard eraseTyEq (.prim .int) (.prim .int) (.prim .int)
 

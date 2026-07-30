@@ -145,13 +145,25 @@ def ProgramReport.enrichFromSynth
 #guard
   let σ : PolyTy := ⟨1, .arrow (.bvar 0) (.customTy ⟨"List"⟩ [.bvar 0])⟩
   let ann : BinderAnn := .scheme {
+    natBinders := []
+    tyBinders := [⟨"a"⟩]
+    body := .arrow
+      (.fvar 0)
+      (.list (.solid (.lit 1)) (.solid (.lit 1)) (.fvar 0))
+  }
+  let br : BindingReport := { name := ⟨"singleton"⟩, hm := σ, bounds? := some ann }
+  BindingReport.pretty br == "∀ a. a → BL 1 1 a"
+
+#guard
+  let σ : PolyTy := ⟨1, .arrow (.bvar 0) (.customTy ⟨"List"⟩ [.bvar 0])⟩
+  let ann : BinderAnn := .scheme {
     natBinders := [⟨"n"⟩]
     tyBinders := [⟨"a"⟩]
     body := .arrow
       (.fvar 0)
       (.list (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 0⟩)) (.fvar 0))
   }
-  let br : BindingReport := { name := ⟨"singleton"⟩, hm := σ, bounds? := some ann }
+  let br : BindingReport := { name := ⟨"cons"⟩, hm := σ, bounds? := some ann }
   BindingReport.pretty br == "∀ (n : Nat) a. a → BL n n a"
 
 end FHM.Bounds.Report

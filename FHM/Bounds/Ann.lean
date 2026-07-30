@@ -59,7 +59,7 @@ structure BoundsSchemeAnn where
 
 /-- Binder ascription after erase: mono `BL` or a Nat-quantified scheme.
 Intended upgrade path for `ErasedBinding` / `ProgramBoundsAnns` (mono today;
-`scheme` when Nat binders present). -/
+`scheme` when Nat and/or type foralls present). -/
 inductive BinderAnn where
   | mono (a : BoundsAnnTy)
   | scheme (s : BoundsSchemeAnn)
@@ -202,6 +202,15 @@ def ProgramBoundsAnns.prettyLines
     a?.map fun a =>
       let nm := match n with | .mk s => s
       s!"{nm} : {BinderAnn.pretty a}"
+
+#guard
+  BoundsSchemeAnn.pretty {
+    natBinders := []
+    tyBinders := [⟨"a"⟩]
+    body := .arrow
+      (.fvar 0)
+      (.list (.solid (.lit 1)) (.solid (.lit 1)) (.fvar 0))
+  } == "∀ a. a → BL 1 1 a"
 
 #guard Count.pretty (.var ⟨.rigid, 0⟩) == "n"
 #guard Count.pretty (.var ⟨.inferable, 1⟩) == "?m"
