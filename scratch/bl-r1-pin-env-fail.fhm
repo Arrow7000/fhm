@@ -1,0 +1,12 @@
+-- R1 negative: pinned hole interface BL 2 5 is not a subtype of demand BL 2 2.
+-- (Old bug: env kept synth BL 2 2, so this wrongly succeeded.)
+-- Run: .lake/build/bin/fhm run --bl scratch/bl-r1-pin-env-fail.fhm
+-- Expect: bounds error (argument does not meet domain).
+
+let needExact : BL 2 2 Int -> Int =
+  \ys ->
+    match ys with
+    | h :: t -> h
+
+let xs : BL _ 5 Int = [1, 2]
+needExact xs

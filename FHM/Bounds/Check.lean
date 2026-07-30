@@ -44,8 +44,9 @@ ascribed `β`, then push that **ascription** `β` into `bctx` (§2.3).
 **Scheme ascriptions** (`{n : Nat,…}`): open body at fresh `?`s, `checkAgainst`,
 push packed `BoundBinding.scheme` (inst at later var uses).
 
-**Holes / no ann:** origin-synth, then pin-meet for holes; bare synth packs
-free inferables into a scheme (D24 generalise). -/
+**Holes (R1):** origin-synth, pin-meet (`Sub β₁ (pinHoles ann β₁)`), then push the
+**pinned template** into `bctx` — same interface story as solid ascriptions, not
+the tight origin-synth β. Bare / no ann: synth packs free inferables (D24). -/
 def checkLetSpine
     (binderEnv : List ValName)
     (anns : ProgramBoundsAnns)
@@ -90,9 +91,11 @@ def checkLetSpine
                 let n := binderEnv[i]?.getD ⟨"?"⟩
                 throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
         | none => do
+            -- R1: pin holes from synth, meet, push **pinned** interface (not β1).
             let β1 ← checkBounds Δ bctx' rhs' τ
             meetMono i β1 ann
-            pure (.mono β1)
+            let βPinned ← pinHoles ann β1
+            pure (.mono βPinned)
     | _ => do
         let β1 ← checkBounds Δ bctx' rhs' τ
         pure (BoundsTy.packScheme? β1)

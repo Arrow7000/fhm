@@ -1,0 +1,15 @@
+-- R1: hole ascription pushes **pinned** template into bctx (interface), not
+-- origin-synth alone. Solid `BL 2 5` and hole `BL _ 5` should agree on uses.
+-- Run: .lake/build/bin/fhm run --bl scratch/bl-r1-pin-env.fhm
+--
+-- After pin: xs : BL 2 5 Int. Pass to demand BL 0 5 (OK). Exact BL 2 2 must fail
+-- — same as solid ascription BL 2 5 (see bl-r1-pin-env-fail.fhm).
+
+let needWide : BL 0 5 Int -> Int =
+  \ys ->
+    match ys with
+    | h :: t -> h
+    | [] -> 0
+
+let xs : BL _ 5 Int = [1, 2]
+needWide xs
