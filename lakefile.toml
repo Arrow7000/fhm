@@ -59,6 +59,7 @@ name = "FHMBounds"
 roots = [
   "FHM.Bounds.Kernel",
   "FHM.Bounds.Ann",       # Z3-free AnnoCount / BoundsAnnTy / ProgramBoundsAnns
+  "FHM.Bounds.Report",    # Display ProgramReport (assemble after erase+infer)
   "FHM.Bounds.Oracle",
   "FHM.Bounds.Commit",
   "FHM.Bounds.Typing",

@@ -1,4 +1,5 @@
 import FHM.Core
+import FHM.Pretty
 import FHM.Bounds.Kernel
 import FHM.Bounds.Oracle
 import FHM.Bounds.Commit
@@ -151,6 +152,41 @@ def BoundEnv.extendMany (bctx : BoundEnv) (βs : List BoundsTy) : BoundEnv :=
 def BoundBinding.getMono? : BoundBinding → Option BoundsTy
   | .mono β => some β
   | .scheme _ => none
+
+/-- Display pretty for synthesized bounds (Live/hover report). -/
+def BoundsTy.pretty : BoundsTy → String
+  | .prim p =>
+      match p with
+      | .unit => "Unit" | .int => "Int" | .nat => "Nat" | .char => "Char"
+  | .arrow a b =>
+      let sa := BoundsTy.pretty a
+      let sb := BoundsTy.pretty b
+      match a with
+      | .arrow _ _ => s!"({sa}) → {sb}"
+      | _ => s!"{sa} → {sb}"
+  | .bvar i => prettyTyVarName i
+  | .fvar i => prettyTyVarName i
+  | .list lo hi e =>
+      s!"BL {Count.pretty lo} {Count.pretty hi} {BoundsTy.pretty e}"
+  | .custom (.mk "Pair") [a, b] =>
+      s!"({BoundsTy.pretty a}, {BoundsTy.pretty b})"
+  | .custom n as =>
+      let nm := match n with | .mk s => s
+      if as.isEmpty then nm
+      else nm ++ " " ++ String.intercalate " " (as.map BoundsTy.pretty)
+
+/-- Packed scheme: `∀ n m. body` with rigid count slots as `n0`, `n1`, …. -/
+def BScheme.pretty (s : BScheme) : String :=
+  let names := (List.range s.nCounts).map fun i =>
+    Count.pretty (.var ⟨.rigid, i⟩)
+  let quant :=
+    if names.isEmpty then ""
+    else "∀ " ++ String.intercalate " " names ++ ". "
+  quant ++ BoundsTy.pretty s.body
+
+def BoundBinding.pretty : BoundBinding → String
+  | .mono β => BoundsTy.pretty β
+  | .scheme s => BScheme.pretty s
 
 def consBoundEnv (bctx : BoundEnv) (lo hi : Count) (βe : BoundsTy) : BoundEnv :=
   BoundEnv.extend (BoundEnv.extend bctx (.list (.pred lo) (.pred hi) βe)) βe

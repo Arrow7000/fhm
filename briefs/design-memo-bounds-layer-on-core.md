@@ -1,6 +1,6 @@
 # Design memo: bounds layer on Core (B′ plan)
 
-**Status:** living plan — slices **0–8 Done** (stdlib + schemes); **next = display unification → §2.3 residuals → slice 9 E2E gate**  
+**Status:** living plan — slices **0–8 Done**; **display unification Done**; **next = §2.3 residuals → slice 9 E2E gate**  
 **Updated:** 2026-07-30  
 **Repo:** `/Users/aron/dev/blt` (sandbox; merge back into `fhm` later as optional package)  
 **Canonical doc for this integration** (plus satellite briefs below)
@@ -14,7 +14,7 @@
 | `next-agent-brief-remove-unique-from-typeof.md` | BLSketch uniqueness exit (done) |
 | `next-agent-brief-type-holes.md` | HM type holes / head-binder packing (**orthogonal**) |
 
-**Handoff tip:** remaining work lives in **§12** (ordered backlog). Historical path: §6 table + §§6.1–6.4. Demos: `scratch/bl-*.fhm` (esp. `bl-stdlib.fhm`). Build: `lake build FHMBounds blt`.
+**Handoff tip:** remaining work lives in **§12** (ordered backlog; next = §2.3 residuals). Historical path: §6 table + §§6.1–6.4. Demos: `scratch/bl-*.fhm` (esp. `bl-stdlib.fhm`). Build: `lake build FHMBounds blt`.
 
 ---
 
@@ -137,7 +137,7 @@ Core.Expr
     │
     ▼
 Infer / elaborate                     [InferW — UNCHANGED]
-    │  τ_HM   (pretty: List today; **display unification** → one BL-aware line under --bl)
+    │  τ_HM + erase → **ProgramReport** (pretty: BL when ascribed; else List)
     ▼
 ofLower (binderEnv)                   [Bounds/Pipeline — demo spine today]
     │  ProgramBoundsAnns
@@ -166,7 +166,7 @@ parse → [hmRequireNoBl if not --bl] → eraseProgram → lower/infer
 
 **Slices 0–8 in Live** (schemes, D24, stdlib map/filter/append/flatMap/…).  
 **Post-slice-8 fixes (2026-07-30):** Infer `letRec` id-sugar self-slot (named binding de Bruijn); hover walk on pre-erase surface + count-binder consume order.  
-**Open product work:** see **§12** (display unification → R1–R4 → slice 9).
+**Open product work:** see **§12** (§2.3 residuals → slice 9). Display: `ProgramReport` (one type line; no `bounds:` dump).
 
 ### Outer safety (BL mode) — target theorem
 
@@ -190,6 +190,7 @@ FHM/Bounds/
   Oracle.lean    # checkValid / solve / unique + axioms + Z3 bridge
   Commit.lean    # NarrowingEvidence, PolicyKind, decideCommit
   Ann.lean       # AnnoCount, BoundsAnnTy, ProgramBoundsAnns (Z3-free)
+  Report.lean    # ProgramReport / assembleProgramReport (display; Z3-free)
   Typing.lean    # BoundsTy, Agrees, Sub, HasBounds, CheckBounds, BoundCovers
                  # + Elab* / MatchSafe / BoundProgramOK (imports Ann)
   Synth.lean     # checkBounds / inferBounds / synthBounds / pinHoles (executable)
@@ -202,8 +203,9 @@ FHM/Bounds/
 
 Live / CLI / editor:
   --bl: D16 gate; erase; ofLower; checkProgramAnns; checkProgramMatches
-  scratch/bl-*.fhm demos; watch-live.sh --bl; diagnose erases to List
-  hover: pre-erase walk for natBinders; still prints HM List + separate bounds:
+  display: ProgramReport (ascription BL pretty; else HM); no bounds: dump
+  scratch/bl-*.fhm demos; watch-live.sh --bl
+  hover: ProgramReport types; pre-erase walk for natBinders
   editors try `blt` then `fhm`
 
 Surface:
@@ -218,8 +220,8 @@ Surface:
 | P4a–P4c Surface BL + erase + Live `--bl` + diagnose | **Done** |
 | Slices 1–8 (inf → schemes → stdlib) | **Done** |
 | §2.3 solid ascriptions win in `bctx` (A+B) | **Done**; residuals R1–R5 in §12 |
-| Display unification (one BL-aware type line) | **Next** (§12 #1) |
-| Slice 9 E2E gate suite | **Queued last** (§12 #3) |
+| Display unification (one BL-aware type line) | **Done** — `FHM/Bounds/Report.lean` `ProgramReport` |
+| Slice 9 E2E gate suite | **Queued** after §12 #2 (§2.3 residuals) |
 | Axiom collapse to Z3 | **Partial** / post-E2E |
 
 ---
@@ -251,7 +253,7 @@ Surface:
 | Core BoundCovers only; surface nested later | **D18**; BoundCovers **wired in Live** (slice 6) |
 | **Live imports Bounds → Oracle → Z3 just to erase** | **Fixed** by **P4c-thin** (`Ann.lean`); Check still pulls Z3 |
 | Diagnose path does not erase (BL buffers fail hover) | **Fixed** by **P4c-diagnose** |
-| REPL/hover print `List` + separate `bounds:` dump | **§12 #1 display unification** (do next) |
+| REPL/hover print `List` + separate `bounds:` dump | **Done** — `ProgramReport` / `assembleProgramReport` |
 | Editor dual `blt`/`fhm` binary lookup | Sandbox artifact; `@TODO(merge-to-fhm)` in editors |
 | **`defaultBounds` / erase `defaultListAnn` invent intervals** | Live synth **done**; residual `agreesTemplate` / `defaultListAnn` = nested-elem debt |
 | **Ascription vs `bctx` (origin vs ann)** | **§2.3** — solid Done (A+B); residuals R1–R5 in §12 |
@@ -347,7 +349,7 @@ Reject bare idents (`n`) until slice 7. Reject nested holes (`BL (_ + 1) 5 t`).
 
 **Deferred at the time:** D24 (now slice 7 ✅); nested-Nil `agreesTemplate` List-elem debt; path-Δ refine threading (`@TODO(bounds-path-Δ)` — §12 R6).
 
-**Display:** under `--bl`, hover/Live still show HM `List` + separate `bounds:` — **§12 #1** (next).
+**Display:** under `--bl`, Live/hover use `ProgramReport` (ascription/`BL`; else HM) — §12 #1 ✅.
 
 ### 6.3 Slice 5 — Hole elab pin-to-synth ✅
 
@@ -395,7 +397,7 @@ Reject bare idents (`n`) until slice 7. Reject nested holes (`BL (_ + 1) 5 t`).
 | **HM (default)** | Parse; **`hmRequireNoBl`** (D16) | `checkExhaustive` | skip (erase still runs; anns not reported) |
 | **BL (`--bl`)** | Parse BL; erase; lower | **BoundCovers** on Core (slice 6) | origin synth + pin holes + match coverage (slices 4–6) |
 
-Shared: Infer, elaborate, evaluate. Diagnose always erases for HM spine; **display** under `--bl` is §12 #1 (today: HM `List` + separate `bounds:`).
+Shared: Infer, elaborate, evaluate. Diagnose/Live display under `--bl` uses `ProgramReport` (ascription pretty; else HM).
 
 ---
 
@@ -435,7 +437,7 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases for HM spine; **displ
 | Synth hardness (oracle + join + Commit) | Approve executable API in Lean before proving |
 | `outs` list too wide/narrow for uniqueness | Soft spot C — prefer output-visible / escape bounds |
 | Editor looks for wrong CLI binary | Relink + dual lookup; revert on merge |
-| Dual type display (List + bounds:) confuses UX | **§12 #1** display unification |
+| Dual type display (List + bounds:) confuses UX | **Mitigated** — `ProgramReport` single line |
 
 ---
 
@@ -451,7 +453,7 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases for HM spine; **displ
 - [x] Nil-only match under proved empty upper bound (surface under `--bl`) (slice 6)  
 - [x] REPL/CLI HM vs BL: fail-fast vs erase + origin check + BoundCovers (slice 6)  
 - [x] Scheme demos (map/filter/append) under `--bl`  
-- [ ] Under `--bl`, one bounds-aware type line (no separate `bounds:` dump) — §12 #1  
+- [x] Under `--bl`, one bounds-aware type line (no separate `bounds:` dump) — `ProgramReport`  
 - [ ] §2.3 residuals R1–R3 (holes / head-binder demand / Commit) — §12 #2  
 - [ ] Slice 9 E2E gate suite green — §12 #3  
 - [ ] Composite never-stuck under HasBounds + BoundCovers (or documented partial — post-E2E OK)  
@@ -460,7 +462,7 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases for HM spine; **displ
 
 ## 11. One-liner
 
-> **B′ dual-stack:** surface `BL` erases under `--bl`; origins + hole pin; BoundCovers; solid ascriptions win in `bctx`; `{n:Nat}` schemes + stdlib; **next = display unification → §2.3 residuals → slice 9 E2E gate**.
+> **B′ dual-stack:** surface `BL` erases under `--bl`; origins + hole pin; BoundCovers; solid ascriptions win in `bctx`; `{n:Nat}` schemes + stdlib; **`ProgramReport` display**; **next = §2.3 residuals → slice 9 E2E gate**.
 
 ---
 
@@ -468,18 +470,11 @@ Shared: Infer, elaborate, evaluate. Diagnose always erases for HM spine; **displ
 
 **Do in this order.** Slice numbers stay historical; this list is what is left for a green BL product.
 
-### #1 — Display unification (**next**, High)
+### #1 — Display unification ✅
 
-**Goal:** under `--bl`, hover / Live / diagnose show **one** bounds-aware type line (`BL …` / `∀ (lo hi : Nat) a. …`), not HM `List` plus a separate `bounds:` dump.
+**Done (2026-07-30):** [`FHM/Bounds/Report.lean`](FHM/Bounds/Report.lean) — `BindingReport` / `ProgramReport` / `assembleProgramReport` after erase+infer. Live, JSON, and hover pretty-print only the report (ascription wins; else HM). No parallel `bounds:` dump. Check still uses `ofLower` (de Bruijn projection of the same erase package).
 
-| | |
-|--|--|
-| **Importance** | **High** — UX truth of the feature; unblocks treating bounds as “the” type under `--bl` |
-| **Constraint** | Do **not** fuse bounds into Core `Ty` or change dual-stack erase/check (D1–D2). Display/report layer only. |
-| **Design first** | Decide source of truth for the line (ascribed scheme / packed synth β / pretty of `BoundsSchemeAnn`); how holes print; how HM-only bindings look when no bounds ann. |
-| **Exit** | REPL binder lines + hover val symbols use unified BL pretty; no parallel `bounds:` section required. |
-
-### #2 — §2.3 / D24 residuals (High → Medium)
+### #2 — §2.3 / D24 residuals (**next**, High → Medium)
 
 Correctness holes after solid A+B. Details also in §2.3 table (R1–R5).
 
@@ -494,7 +489,7 @@ Correctness holes after solid A+B. Details also in §2.3 table (R1–R5).
 
 **Exit for #2:** R1–R3 done (or explicitly waived with memo note); R4 if demos need it; R5/R6 as capacity allows.
 
-### #3 — Slice 9 E2E gate suite (**last**, High once #1–#2 settle)
+### #3 — Slice 9 E2E gate suite (**last**, High once #2 settles)
 
 **Goal:** fixed checklist over `scratch/bl-*` (esp. `bl-stdlib.fhm`) that must stay green under `--bl` — regression gate, not adversarial research suite.
 
@@ -504,11 +499,11 @@ Correctness holes after solid A+B. Details also in §2.3 table (R1–R5).
 | **Delivers** | Runnable smoke (script or lake target); named-binding + scheme + match demos covered |
 | **Not in scope** | Metatheory progress proofs; axiom collapse; inventing new language features |
 
-### Explicitly later (do not steal focus from #1–#3)
+### Explicitly later (do not steal focus from #2–#3)
 
 Post-E2E hygiene in §6; axiom collapse memo; merge to `fhm`; HM type-holes brief; inventing intervals from bare `List` (**rejected**, D22).
 
-Thin erase (`Ann.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path uses Z3 via `FHM.Bounds.Check`.
+Thin erase (`Ann.lean` / `Report.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path uses Z3 via `FHM.Bounds.Check`.
 
 ---
 
@@ -517,6 +512,6 @@ Thin erase (`Ann.lean`) stays Z3-free for diagnose/hover; Live `--bl` check path
 1. Read this memo §§1–2 (esp. D22–D24, **§2.3**), §3 Live today, **§12 backlog**.  
 2. Build: `lake build FHMBounds blt` (or project’s usual target).  
 3. Smoke: `scratch/bl-synth-ok.fhm`, `bl-hole-ok.fhm`, `bl-nil-only.fhm`, `bl-ascribed-list-lam.fhm`, `bl-scheme-id.fhm`, `bl-unascribed-list-lam.fhm`, `bl-stdlib.fhm` under `--bl`.  
-4. Work the **§12** item in order (currently **#1 display unification** — design first).  
-5. Key files: `SurfaceLang` / Parse / Pretty / Erase; `Bounds/{Synth,Check,Typing,Ann,Kernel,Commit}`; `Live.lean`; `EditorSupport.lean`.  
+4. Work the **§12** item in order (currently **#2 §2.3 residuals** — start R1–R3).  
+5. Key files: `SurfaceLang` / Parse / Pretty / Erase / Report; `Bounds/{Synth,Check,Typing,Ann,Kernel,Commit}`; `Live.lean`; `EditorSupport.lean`.  
 6. Do not invent List intervals from bare HM `List` (D22). Do not fuse bounds into Core Ty.

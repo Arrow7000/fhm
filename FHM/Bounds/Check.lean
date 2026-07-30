@@ -22,30 +22,6 @@ abbrev checkMeetsAscription := Synth.checkMeetsAscription
 abbrev checkMeetsAscriptionPinned := Synth.checkMeetsAscriptionPinned
 abbrev pinHoles := Synth.pinHoles
 
-private def BoundsTy.pretty : BoundsTy → String
-  | .prim p =>
-      match p with
-      | .unit => "Unit" | .int => "Int" | .nat => "Nat" | .char => "Char"
-  | .arrow a b => s!"{BoundsTy.pretty a} → {BoundsTy.pretty b}"
-  | .bvar i => s!"β{i}"
-  | .fvar i => s!"?β{i}"
-  | .list lo hi e =>
-      let rec p : Count → String
-        | .lit n => toString n
-        | .inf => "∞"
-        | .add a b => s!"({p a} + {p b})"
-        | .mul a b => s!"({p a} * {p b})"
-        | .pred a => s!"(pred {p a})"
-        | .min a b => s!"(min {p a} {p b})"
-        | .max a b => s!"(max {p a} {p b})"
-        | .var ⟨.rigid, i⟩ => s!"r{i}"
-        | .var ⟨.inferable, i⟩ => s!"?{i}"
-      s!"BL {p lo} {p hi} {BoundsTy.pretty e}"
-  | .custom n as =>
-      let nm := match n with | .mk s => s
-      if as.isEmpty then nm
-      else nm ++ " " ++ String.intercalate " " (as.map BoundsTy.pretty)
-
 /-- Infer wraps recursive binders as `let rec f = rhs in f`. Expose `rhs` so a
 scheme ascription can sit in `bctx` for honest self-application (openFresh+pin). -/
 def unwrapLetRecId : Expr → Expr
@@ -77,7 +53,7 @@ def checkLetSpine
     (bctx : BoundEnv)
     (outerIdx : Nat)
     (e : Expr)
-    (τBody : Ty) : Except String BoundsTy := do
+    (τBody : Ty) : Except String (BoundEnv × BoundsTy) := do
   let meetMono (i : Nat) (β1 : BoundsTy) (ann : BoundsAnnTy) : Except String Unit := do
     match checkMeetsAscriptionPinned Δ β1 ann with
     | .ok () => pure ()
@@ -144,10 +120,10 @@ def checkLetSpine
   | _ => do
       let β ← checkBounds Δ bctx e τBody
       match anns.bodyAnn with
-      | none => pure β
+      | none => pure (bctx, β)
       | some ann => do
           match checkMeetsAscriptionPinned Δ β ann with
-          | .ok () => pure β
+          | .ok () => pure (bctx, β)
           | .error msg =>
               throw s!"bounds: body ascription not met ({msg})"
 termination_by e.size
@@ -155,14 +131,14 @@ decreasing_by all_goals (try simp only [Expr.size, Expr.sizeRecGroup]; omega)
 
 /-- Origin-synth Core `e` at HM `τ`, checking erase/`ofLower` ascriptions.
 
-Holes in anns are pinned to synth Counts, then `Sub`. Under `--bl` only. -/
+Holes in anns are pinned to synth Counts, then `Sub`. Under `--bl` only.
+Returns binder `BoundEnv` (0 = innermost ‖ `binderEnv`) and body `β`. -/
 def checkProgramAnns
     (e : Expr)
     (τ : Ty)
     (binderEnv : List ValName)
-    (anns : ProgramBoundsAnns) : Except String Unit := do
-  let _ ← checkLetSpine binderEnv anns [] [] 0 e τ
-  pure ()
+    (anns : ProgramBoundsAnns) : Except String (BoundEnv × BoundsTy) :=
+  checkLetSpine binderEnv anns [] [] 0 e τ
 
 /-! ## Slice 6 — BoundCovers / ctor coverage on Core matches -/
 

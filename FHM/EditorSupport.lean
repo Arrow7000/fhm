@@ -7,13 +7,16 @@ import FHM.InferW
 import FHM.Pretty
 import FHM.Decls
 import FHM.Bounds.Erase
+import FHM.Bounds.Report
+import FHM.Bounds.Pipeline
+import FHM.Bounds.Check
 import Lean.Data.Json
 
 /-!
 # Editor support helpers
 
 Shared collection of hover symbols (bindings + type/ctor decls) for
-`fhm diagnose`. Shared `collectTopSchemes` / `zipBindingTypes` via `PipelineShared`.
+`fhm diagnose`. Display types come from `ProgramReport` (same assemble as Live).
 
 v3: structural walk emits complete `RangedSymbol`s (span + type + scope) at each
 binder site — no parallel-stream zip. Top schemes are a name map from inference
@@ -26,6 +29,9 @@ open Surface.Parse
 open Surface.Span
 open Surface.Lex (BinOpToken Punct Token)
 open SurfaceBridge
+open FHM.Bounds (BoundBinding BoundsTy ProgramBoundsAnns)
+open FHM.Bounds.Report
+open FHM.Bounds.Pipeline
 
 /-- Hover typing environment: let schemes + λ/pattern locals (prepend = shadow). -/
 structure HoverEnv where
@@ -299,50 +305,77 @@ def takeCountParams (n : Nat) (scope : Span) (bs : List BinderSpan) :
     List BinderSpan × List RangedSymbol :=
   takeLabeledBinders .count n scope "count variable (Nat)" bs
 
-/-- Emit head value-params with types from arrow domains (pad short peels). -/
-def takeHeadValueParams (doms : List Ty) (scope : Span) (bs : List BinderSpan) :
+/-- Emit head value-params with already-pretty domain strings. -/
+def takeHeadValueParamsStr (domStrs : List String) (scope : Span) (bs : List BinderSpan) :
     List BinderSpan × List RangedSymbol :=
-  let rec go (ds : List Ty) (bs : List BinderSpan) (acc : List RangedSymbol) :
+  let rec go (ds : List String) (bs : List BinderSpan) (acc : List RangedSymbol) :
       List BinderSpan × List RangedSymbol :=
     match ds, bs with
     | [], _ => (bs, acc)
-    | τ :: rest, _ =>
+    | tyStr :: rest, _ =>
       match takeKind bs .param with
       | some (b, bs') =>
-          go rest bs' (acc ++ [mkSym b.name "param" τ.pretty b.span scope])
+          go rest bs' (acc ++ [mkSym b.name "param" tyStr b.span scope])
       | none => (bs, acc)
-  go doms bs []
+  go domStrs bs []
 
-/-- Head binders of one `Binding` (tyParams, value params, colon foralls) + val def.
-    Returns remaining binders, symbols, and env extended with head value-params. -/
-def hoverBindingHead (env : HoverEnv) (b : Surface.Binding) (σ? : Option PolyTy)
+/-- Emit head value-params with types from arrow domains (pad short peels). -/
+def takeHeadValueParams (doms : List Ty) (scope : Span) (bs : List BinderSpan) :
+    List BinderSpan × List RangedSymbol :=
+  takeHeadValueParamsStr (doms.map (·.pretty)) scope bs
+
+/-- Head binders of one `Binding` + val def.
+
+`br?` is the assembled `BindingReport` for top-level binders (display + HM).
+Nested lets pass `none` and supply `σ?` from surface/Infer synthesis. -/
+def hoverBindingHead (env : HoverEnv) (b : Surface.Binding)
+    (br? : Option BindingReport) (σ? : Option PolyTy)
     (valScope : Span) (bs : List BinderSpan) :
     List BinderSpan × List RangedSymbol × HoverEnv :=
   match takeKind bs .val with
   | none => (bs, [], env)
   | some (vb, bs1) =>
-      let valSym := mkSym vb.name "val" (optPolyStr σ?) vb.span valScope
+      let σ? := match br? with | some br => some br.hm | none => σ?
+      let valTy :=
+        match br? with
+        | some br => br.pretty
+        | none => optPolyStr σ?
+      let valSym := mkSym vb.name "val" valTy vb.span valScope
       let nAnn := match b.ann with | some σ => σ.foralls.length | none => 0
       -- Parse order: val, tyParams, header value-params, scheme ann (count then type
       -- foralls), then RHS binders — see `letBinding` in Surface/Parse.
       let (bs2, tySyms) :=
         takeTyVarParams b.tyParams.length valScope "type variable (scheme binder)" bs1
-      let doms :=
-        match σ? with
-        | some σ => peelArrowDoms b.params.length σ.body
-        | none => []
-      let doms' :=
+      -- Display domains from report when present; HM peel for env locals always.
+      let domStrs :=
+        match br? with
+        | some br => br.headParamDoms b.params.length
+        | none =>
+            let doms :=
+              match σ? with
+              | some σ => peelArrowDoms b.params.length σ.body
+              | none => []
+            let doms' :=
+              if doms.length < b.params.length then
+                doms ++ List.replicate (b.params.length - doms.length) (.prim .unit)
+              else
+                doms.take b.params.length
+            doms'.map (·.pretty)
+      let domsTy : List Ty :=
+        let doms :=
+          match σ? with
+          | some σ => peelArrowDoms b.params.length σ.body
+          | none => []
         if doms.length < b.params.length then
           doms ++ List.replicate (b.params.length - doms.length) (.prim .unit)
         else
           doms.take b.params.length
-      let (bs3, headSyms) := takeHeadValueParams doms' valScope bs2
+      let (bs3, headSyms) := takeHeadValueParamsStr domStrs valScope bs2
       let (bs3c, countSyms) := takeCountParams b.natBinders.length valScope bs3
       let (bs4, annSyms) :=
         takeTyVarParams nAnn valScope "type variable (scheme binder)" bs3c
-      -- Locals for RHS: head value-params (for scrut/pat hover inside the body).
       let headLocals : List (ValName × Ty) :=
-        b.params.map (·.1) |>.zip doms'
+        b.params.map (·.1) |>.zip domsTy
       let env' := env.extendLocals headLocals
       let env'' :=
         match σ? with
@@ -378,7 +411,7 @@ partial def hoverWalkExpr (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv)
       let σ? := surfaceLetScheme ctors ke env ann rhs
       let bind : Surface.Binding := { name, tyParams, params, ann, rhs }
       let (bs1, headSyms, envRhs) :=
-        hoverBindingHead env bind σ? bodyS.span bs
+        hoverBindingHead env bind none σ? bodyS.span bs
       let rhsExp :=
         match σ? with
         | some σ => rhsExpectedAfterHead σ params.length
@@ -410,7 +443,7 @@ partial def hoverWalkExpr (ctors : CtorEnv) (ke : KindEnv) (env : HoverEnv)
         | b :: bs', sRhs :: rss' =>
             let σ? := (pairs.find? (fun p => p.1 == b.name)).bind (·.2)
             let (bs1, headSyms, envRhs) :=
-              hoverBindingHead envBinds b σ? groupScope bsLeft
+              hoverBindingHead envBinds b none σ? groupScope bsLeft
             let rhsExp :=
               match σ? with
               | some σ => rhsExpectedAfterHead σ b.params.length
@@ -545,11 +578,14 @@ def hoverLeftoverBinders (bs : List BinderSpan) : List RangedSymbol :=
 /-- Build all binder hover symbols by walking decls + **source-order** tops + body. -/
 def buildHoverSymbols (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program)
     (sp : SpannedProgram) (binders : List BinderSpan)
-    (topSchemes : List (ValName × PolyTy)) (programScope : Span) :
+    (report : ProgramReport) (programScope : Span) :
     List RangedSymbol :=
   let flatBinds := p.groups.flatMap id
   let topScopes := collectTopValScopes p sp
-  let env0 : HoverEnv := { lets := topSchemes, locals := [] }
+  let env0 : HoverEnv := {
+    lets := report.bindings.map fun b => (b.name, b.hm)
+    locals := []
+  }
   let (bs1, declSyms) := hoverDecls ctors p.decls sp.declSpans programScope binders
   -- Source-order top bindings (pre-SCC). Fall back to group flatten if missing.
   let sourceNames :=
@@ -569,11 +605,12 @@ def buildHoverSymbols (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program)
         match lookupBinding flatBinds n with
         | none => goTops nms bs acc
         | some b =>
-            let σ? := lookupScheme topSchemes n
+            let br? := report.find? n
+            let σ? := br?.map (·.hm)
             let valScope := (lookupSpan topScopes n).getD programScope
             let sRhs := (topRhsSpan p sp n).getD (.leaf Span.empty)
             let (bsH, headSyms, envRhs) :=
-              hoverBindingHead env0 b σ? valScope bs
+              hoverBindingHead env0 b br? σ? valScope bs
             let rhsExp :=
               match σ? with
               | some σ => rhsExpectedAfterHead σ b.params.length
@@ -702,26 +739,36 @@ def collectLitOpSymbols (src : String) (ctors : CtorEnv) : List RangedSymbol :=
 /-- Full hover report for a parsed program + binder spans + spanned program.
 
 Always erases surface `BL` → `List` before lower/infer (same as Live under `--bl`),
-so BL buffers get symbols. Types still pretty as `List …` until bounds report. -/
+so BL buffers get symbols. Display types come from `assembleProgramReport`. -/
 def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
     (sp : SpannedProgram) : Option (List RangedSymbol × String) := do
   -- Pre-erase program for the structural walk: `eraseProgram` clears `natBinders`
   -- but parse binder spans still emit `.count` entries.
   let pSurface := p
-  let pErased := (FHM.Bounds.Erase.eraseProgram p).toProgram
+  let ep := FHM.Bounds.Erase.eraseProgram p
+  let pErased := ep.toProgram
   let userCore ← lowerDataDeclsIn preludeKindEnv pErased.decls
   let ctors ← elabDecls (preludeDecls ++ userCore)
   let ke := DataDecls.kindEnv (preludeDecls ++ userCore)
   let c ← lower ctors pErased.term
   let (_, _, eOut, τ) ← infer c.freshFloor ⟨[], ctors⟩ c
-  let topSchemes := zipBindingTypes pErased.groups (collectTopSchemes eOut)
+  let bodyσ := genScheme [] [] τ
+  let report0 := assembleProgramReport pErased.groups (collectTopSchemes eOut) bodyσ ep
+  let binderEnv := binderEnvFromGroups pErased.groups
+  let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
+  let report :=
+    match FHM.Bounds.Check.checkProgramAnns eOut τ binderEnv boundsAnns with
+    | .ok (bctx, βBody) =>
+        report0.enrichFromSynth binderEnv (bctx.map BoundBinding.pretty)
+          (some (BoundsTy.pretty βBody))
+    | .error _ => report0
   let progScope := programWideScope binders sp
-  let binderSyms := buildHoverSymbols ctors ke pSurface sp binders topSchemes progScope
+  let binderSyms := buildHoverSymbols ctors ke pSurface sp binders report progScope
   let preludeSyms :=
     (preludeTypeCtorSymbols ctors progScope).filter fun s =>
       !(binderSyms.any fun b => b.name == s.name && b.kind == s.kind)
   let syms := binderSyms ++ collectLitOpSymbols src ctors ++ preludeSyms
-  pure (syms, (genScheme [] [] τ).pretty)
+  pure (syms, report.programPretty)
 
 /-- Parse-error diagnostic JSON object. -/
 def parseDiagJson (e : ParseError) : Lean.Json :=

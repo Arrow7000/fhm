@@ -333,6 +333,15 @@ def natSchemeHover : String :=
         a.name == "a" && a.kind == "param" && hasSub a.type_ "type variable"
     | _, _ => false)
 
+-- E3b2. Val hover type is ProgramReport pretty (BL scheme), not HM List.
+#guard (match hoverSyms natSchemeHover with
+  | none => false
+  | some syms =>
+    match syms.find? (fun s => s.name == "id" && s.kind == "val") with
+    | some id =>
+        hasSub id.type_ "BL" && hasSub id.type_ "Nat" && !hasSub id.type_ "List"
+    | none => false)
+
 -- E3c. Multiple tops with `{n : Nat, …}`: erase must not zero `natBinders` for
 -- the hover walk (regression: unconsumed `.count` at head blocks later `.val`).
 def natMultiTop : String :=

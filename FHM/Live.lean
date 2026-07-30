@@ -7,6 +7,7 @@ import FHM.PipelineShared
 import FHM.Bounds.Erase
 import FHM.Bounds.Pipeline
 import FHM.Bounds.Ann
+import FHM.Bounds.Report
 import FHM.Bounds.Check
 import Lean.Data.Json
 
@@ -15,7 +16,8 @@ import Lean.Data.Json
 
 Read a `.fhm` source file (or stdin) and run:
 
-`parse → [hmRequireNoBl] → eraseProgram → lower → infer → [Check if --bl] → exh → elaborate → evaluateUnsafe`
+`parse → [hmRequireNoBl] → eraseProgram → lower → infer → assembleProgramReport
+ → [Check if --bl] → exh → elaborate → evaluateUnsafe`
 
 `--bl` selects `BoundsMode.bl` (allow `BL` syntax). Default is HM: reject BL with a
 clear error (D16). Erase always runs. Under `--bl`, `ofLower` (post-infer binder
@@ -23,8 +25,8 @@ spine, mono or scheme) + origin `synthBounds` / `checkProgramAnns` then Core
 `checkProgramMatches` / BoundCovers. Schemes pack/inst; D24 fresh List λ-params.
 HM mode keeps surface `checkExhaustive`.
 
-Types / bounds lines print **before** evaluation in human mode (eval is slow).
-Live uses the unbounded evaluator — naive `fib` blows past any fixed fuel.
+Display types come from `ProgramReport` (assembled once after erase+infer) —
+one type line per binder; no parallel `bounds:` dump.
 
 ## CLI
 
@@ -36,14 +38,15 @@ blt run [--json] [--bl] [path]
 - No path, human mode: default `scratch/live.fhm` (watch-live).
 - No path, `--json`: read source from stdin (web playground).
 - With path: read that file (human or JSON).
-- `--bl`: allow BL syntax; erase + ann report + scaffold bounds check (HasBounds synth next).
+- `--bl`: allow BL syntax; erase + report + bounds check.
 -/
 
 open Surface.Parse
 open SurfaceBridge
-open FHM.Bounds (ProgramBoundsAnns)
+open FHM.Bounds (ProgramBoundsAnns BoundBinding BoundsTy)
 open FHM.Bounds.Erase
 open FHM.Bounds.Pipeline
+open FHM.Bounds.Report
 
 /-- Which pipeline stage rejected the program. -/
 inductive PipelineStage
@@ -109,28 +112,16 @@ def Ansi.boldMagenta (a : Ansi) (s : String) : String := a.wrap "1;35" s
 def Ansi.boldRed (a : Ansi) (s : String) : String := a.wrap "1;31" s
 def Ansi.boldBrightGreen (a : Ansi) (s : String) : String := a.wrap "1;92" s
 
-/-- Binding / program type report with light syntax colour. -/
-def formatTypes (a : Ansi) (binds : List (ValName × PolyTy)) (body : PolyTy) : String :=
+/-- Binding / program type report with light syntax colour (from `ProgramReport`). -/
+def formatReport (a : Ansi) (r : ProgramReport) : String :=
   let bindLines :=
-    binds.map fun ⟨n, σ⟩ =>
-      s!"  {a.boldCyan (prettyValName n)}  {a.dim ":"}  {a.blue σ.pretty}"
+    r.bindings.map fun b =>
+      s!"  {a.boldCyan (prettyValName b.name)}  {a.dim ":"}  {a.blue b.pretty}"
   let bindsBlock :=
-    if binds.isEmpty then ""
+    if r.bindings.isEmpty then ""
     else String.intercalate "\n" bindLines ++ "\n"
-  bindsBlock ++ s!"  {a.boldMagenta "<program>"}  {a.dim ":"}  {a.blue body.pretty}"
-
-/-- Bound ascriptions from erase/`ofLower` (BL mode report). -/
-def formatBoundsAnns (a : Ansi) (env : List ValName) (anns : ProgramBoundsAnns) : String :=
-  let lines := ProgramBoundsAnns.prettyLines anns env
-  if lines.isEmpty then ""
-  else
-    let body :=
-      match anns.bodyAnn with
-      | none => ""
-      | some ann => s!"\n  {a.boldMagenta "<body>"}  {a.dim ":"}  {a.blue ann.pretty}"
-    "  " ++ a.dim "bounds:" ++ "\n" ++
-      String.intercalate "\n" (lines.map fun l => s!"    {a.blue l}") ++
-      body ++ "\n"
+  bindsBlock ++
+    s!"  {a.boldMagenta "<program>"}  {a.dim ":"}  {a.blue r.programPretty}"
 
 def formatErr (a : Ansi) (st : PipelineStage) (msg : String) : String :=
   s!"{a.boldRed s!"[{st.tag}]"} {a.red msg}"
@@ -148,27 +139,24 @@ structure PipelineErr where
   deriving Repr
 
 structure CheckedProgram where
-  bindings : List (ValName × PolyTy)
-  programTy : PolyTy
+  /-- Unified display types (ascription wins when present). -/
+  report : ProgramReport
   checkNs : Nat
   elaborated : Expr
   mode : BoundsMode := .default
   /-- Erase package (anns on binders). -/
   erased : ErasedProgram
-  /-- De Bruijn projection of erase anns (demo binder spine for now). -/
+  /-- De Bruijn projection of erase anns (Check spine only). -/
   boundsAnns : ProgramBoundsAnns := {}
   /-- Names for `ofLower` (0 = innermost). From `binderEnvFromGroups` post-infer. -/
   binderEnv : List ValName := []
 
 structure PipelineOk where
-  bindings : List (ValName × PolyTy)
-  programTy : PolyTy
+  report : ProgramReport
   checkNs : Nat
   evalNs : Nat
   resultPretty : String
   mode : BoundsMode := .default
-  boundsAnns : ProgramBoundsAnns := {}
-  binderEnv : List ValName := []
 
 structure LiveArgs where
   json : Bool := false
@@ -212,16 +200,22 @@ def checkPipeline (mode : BoundsMode) (src : String) :
     | some (_, _, eOut, τ) => pure (eOut, τ)
   let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
-  let binds := zipBindingTypes p.groups (collectTopSchemes eOut)
   -- Slice 2: Core body env order (0 = innermost) from the same groups Infer used.
   let binderEnv := binderEnvFromGroups p.groups
   let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
+  let report0 := assembleProgramReport p.groups (collectTopSchemes eOut) bodyσ ep
+  let report ←
+    if mode == .bl then
+      match FHM.Bounds.Check.checkProgramAnns eOut τ binderEnv boundsAnns with
+      | .error msg =>
+          return .error { stage := .bounds, message := msg }
+      | .ok (bctx, βBody) =>
+          pure (report0.enrichFromSynth binderEnv (bctx.map BoundBinding.pretty)
+            (some (BoundsTy.pretty βBody)))
+    else
+      pure report0
 
   if mode == .bl then
-    match FHM.Bounds.Check.checkProgramAnns eOut τ binderEnv boundsAnns with
-    | .error msg =>
-        return .error { stage := .bounds, message := msg }
-    | .ok () => pure ()
     match FHM.Bounds.Check.checkProgramMatches ctors eOut τ binderEnv boundsAnns with
     | .error msg =>
         return .error { stage := .exhaustiveness, message := msg }
@@ -236,8 +230,7 @@ def checkPipeline (mode : BoundsMode) (src : String) :
     | some e => pure e
 
   return .ok {
-    bindings := binds
-    programTy := bodyσ
+    report := report
     checkNs := tCheck1 - tCheck0
     elaborated := e
     mode := mode
@@ -255,30 +248,25 @@ def evalCheckedIO (c : CheckedProgram) : IO (Except PipelineErr PipelineOk) := d
   | some v =>
       let tEval1 ← IO.monoNanosNow
       return .ok {
-        bindings := c.bindings
-        programTy := c.programTy
+        report := c.report
         checkNs := c.checkNs
         evalNs := tEval1 - tEval0
         resultPretty := v.pretty
         mode := c.mode
-        boundsAnns := c.boundsAnns
-        binderEnv := c.binderEnv
       }
 
 def PipelineOk.toJson (r : PipelineOk) : Lean.Json :=
-  let binds := r.bindings.map fun ⟨n, σ⟩ =>
+  let binds := r.report.bindings.map fun b =>
     Lean.Json.mkObj [
-      ("name", Lean.Json.str (prettyValName n)),
-      ("type", Lean.Json.str σ.pretty)
+      ("name", Lean.Json.str (prettyValName b.name)),
+      ("type", Lean.Json.str b.pretty)
     ]
-  let boundLines := ProgramBoundsAnns.prettyLines r.boundsAnns r.binderEnv
   Lean.Json.mkObj [
     ("version", Lean.Json.num 1),
     ("ok", Lean.Json.bool true),
     ("mode", Lean.Json.str (if r.mode == .bl then "bl" else "hm")),
     ("bindings", Lean.Json.arr binds.toArray),
-    ("programTy", Lean.Json.str r.programTy.pretty),
-    ("boundsAnns", Lean.Json.arr (boundLines.map Lean.Json.str).toArray),
+    ("programTy", Lean.Json.str r.report.programPretty),
     ("result", Lean.Json.str r.resultPretty),
     ("timings", Lean.Json.mkObj [
       ("checkNs", Lean.Json.num r.checkNs),
@@ -349,10 +337,7 @@ def runLive (args : List String) : IO UInt32 := do
   | .ok checked =>
       if !liveArgs.json then
         let ansi ← Ansi.mkIO
-        IO.println (formatTypes ansi checked.bindings checked.programTy)
-        if checked.mode == .bl then
-          let b := formatBoundsAnns ansi checked.binderEnv checked.boundsAnns
-          if b.length > 0 then IO.println b
+        IO.println (formatReport ansi checked.report)
         IO.println (formatTiming ansi "checked" checked.checkNs)
         IO.println ""
         (← IO.getStdout).flush
