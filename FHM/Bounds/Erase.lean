@@ -144,16 +144,39 @@ def erasePolyTy (σ : Surface.PolyTy) (nats : List ValName := []) :
   let e := eraseTy σ.body nats σ.foralls
   ({ foralls := σ.foralls, body := e.ty }, e.ann)
 
+/-- True if any head-param monotype mentions `BL`. -/
+def paramsContainBl (ps : List (ValName × Option Surface.Ty)) : Bool :=
+  ps.any fun
+    | (_, some t) => tyContainsBl t
+    | _ => false
+
+/-- Fold head-param domain anns as arrows onto a result ann (R2).
+
+Surface `params` are outermost-first; `BoundsAnnTy.arrow` is right-nested, so
+`foldr`. Unannotated params are skipped (no domain slot).
+
+Example: `(xs : BL 2 2 Int) : Int` → `BL 2 2 Int → Int`. -/
+def foldHeadParamAnns (nats : List ValName) (tvars : List ValName)
+    (params : List (ValName × Option Surface.Ty)) (ret : BoundsAnnTy) : BoundsAnnTy :=
+  params.foldr (fun (_, t?) acc =>
+    match t? with
+    | none => acc
+    | some t => .arrow (eraseTy t nats tvars).ann acc) ret
+
 /-- Package Nat-binder sidecar + type foralls + erased body ann → `BoundsSchemeAnn`.
-Pure mono (no Nat binders, no type foralls) → `none` (uses `ErasedBinding.ann`). -/
-def eraseSchemeAnn (nats : List ValName) (σ : Surface.PolyTy) :
+Pure mono (no Nat binders, no type foralls) → `none` (uses `ErasedBinding.ann`).
+
+`params`: optional head-binder domains folded as arrows onto `σ.body` (R2). -/
+def eraseSchemeAnn (nats : List ValName) (σ : Surface.PolyTy)
+    (params : List (ValName × Option Surface.Ty) := []) :
     Option FHM.Bounds.BoundsSchemeAnn :=
   if nats.isEmpty && σ.foralls.isEmpty then none
   else
+    let ret := (eraseTy σ.body nats σ.foralls).ann
     some {
       natBinders := nats
       tyBinders := σ.foralls
-      body := (eraseTy σ.body nats σ.foralls).ann
+      body := foldHeadParamAnns nats σ.foralls params ret
     }
 
 /-! ## Erased packages (bounds produced alongside erase) -/
@@ -267,16 +290,26 @@ def eraseExpr : Surface.Expr → Surface.Expr :=
 /-- Erase one binding, producing its bounds ann in the same package.
 
 When `eraseSchemeAnn` returns `some` (Nat and/or type foralls), leave mono `ann`
-empty — scheme body carries the intervals and `∀` pretty-printing. -/
+empty — scheme body carries the intervals and `∀` pretty-printing.
+
+**R2:** head-param types `(xs : BL …)` are folded as arrow domains onto the
+return ascription so `ofLower` / `checkAgainst` see the same demand spine as
+`let f : BL … → … = \xs → …`. -/
 def eraseBinding (b : Binding) : ErasedBinding :=
   let nats := b.natBinders
-  let hadBl := match b.ann with | some σ => tyContainsBl σ.body | none => false
+  let hadBlRet := match b.ann with | some σ => tyContainsBl σ.body | none => false
+  let hadBlParams := paramsContainBl b.params
+  let hadBl := hadBlRet || hadBlParams
   let (ann', annOut, schemeOut) :=
     match b.ann with
     | some σ =>
         let (σ', bodyAnn) := erasePolyTy σ nats
-        (some σ', some bodyAnn, eraseSchemeAnn nats σ)
-    | none => (none, none, none)
+        let fullAnn := foldHeadParamAnns nats σ.foralls b.params bodyAnn
+        (some σ', some fullAnn, eraseSchemeAnn nats σ b.params)
+    | none =>
+        -- Head params with BL but no return ascription: cannot build a full
+        -- arrow interface without a codomain; leave bounds ann empty.
+        (none, none, none)
   let b' : Binding :=
     { b with
       params := eraseParams b.params
@@ -351,6 +384,22 @@ def eraseTy_ab_guard : Bool :=
     (nats := []) (tvars := [.mk "a", .mk "b"])
   reprStr e.ann == reprStr (BoundsAnnTy.arrow (.fvar 0) (.fvar 1))
 #guard eraseTy_ab_guard
+
+/-- R2: `(xs : BL 2 2 Int) : Int` folds to mono `BL 2 2 Int → Int`. -/
+private def eraseHeadBinderGuard : Bool :=
+  let ret : Surface.PolyTy := ⟨[], .prim .int⟩
+  let eb := eraseBinding {
+    name := ⟨"head2"⟩
+    params := [(⟨"xs"⟩, some (.bl (.solid (.lit 2)) (.solid (.lit 2)) (.prim .int)))]
+    ann := some ret
+    rhs := .list []
+    natBinders := []
+  }
+  match eb.ann, eb.schemeAnn with
+  | some (.arrow (.list (.solid (.lit 2)) (.solid (.lit 2)) (.prim .int)) (.prim .int)), none =>
+      true
+  | _, _ => false
+#guard eraseHeadBinderGuard
 
 /-- `{a} a → BL 1 1 a` → scheme sidecar (not mono fvar ann). -/
 private def eraseSingletonSchemeGuard : Bool :=

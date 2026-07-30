@@ -1,0 +1,15 @@
+-- R2: head-binder BL domains fold into erase ascription / checkAgainst demand.
+-- Run: .lake/build/bin/fhm run --bl scratch/bl-r2-head-binder.fhm
+--
+-- Same Cons-only story as colon form `let f : BL 2 2 Int -> Int = \xs -> …`
+-- but written with surface head params.
+
+let head2 (xs : BL 2 2 Int) : Int =
+  match xs with
+  | h :: t -> h
+
+let addHead (xs : BL 1 1 Int) (n : Int) : Int =
+  match xs with
+  | h :: t -> h + n
+
+(head2 [1, 2], addHead [9] 1)

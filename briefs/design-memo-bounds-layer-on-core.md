@@ -1,6 +1,6 @@
 # Design memo: bounds layer on Core (B′)
 
-**Status:** product-ready dual-stack BL under `--bl` (slices 0–8 + display + **J1** join + **R1** pin-env). **Merged back into `fhm`.** Next: §5 R2–R3, then E2E gate, then editor/LSP + playground/CI.  
+**Status:** product-ready dual-stack BL under `--bl` (slices 0–8 + display + **J1** join + **R1** pin-env + **R2** head-binder fold). **Merged back into `fhm`.** Next: §5 R3, then E2E gate, then editor/LSP + playground/CI.  
 **Updated:** 2026-07-30  
 **Repo:** `/Users/aron/dev/fhm` (optional `FHMBounds` package; default FHM stays pure).  
 **This doc’s job:** living plan for work yet to do + locked design. History is compacted below; detail lives in git.
@@ -135,7 +135,7 @@ Sticky notes from day-to-day use. Promote into §5 B/C only when tackling that t
 |----|------|------------|
 | **J1** | Non-List multi-arm **result join** in origin synth (`if`/Bool/… → join arm βs) | **Done** — `synthJoinArms` / `synthJoinArmsAt`; unascribed `pick` → `BL 1 3`; see `scratch/bl-join-if.fhm` |
 | **R1** | Hole anns → push **pinned** template into `bctx` | **Done** — pin-meet then `pinHoles` into env (same interface as solid); `scratch/bl-r1-pin-env*.fhm` |
-| **R2** | Head-binder `(xs : BL …)` fold into demand | **High** |
+| **R2** | Head-binder `(xs : BL …)` fold into demand | **Done** — `foldHeadParamAnns` in erase; ofLower gets full arrow; `scratch/bl-r2-head-binder.fhm` |
 | **R3** | Commit **`uniqueOnly`** on output-visible escape | **High** |
 | **R4** | Pair-match demand peel | Medium |
 | **R5** | Declarative `HasBounds.letMono` align | Low |
@@ -200,7 +200,8 @@ No full design yet — spike after R1–R3 / E2E, or a thin “error span” pas
 - [x] Merged into `fhm` as optional Bounds  
 - [x] J1 non-List multi-arm result join (unascribed `if` → join)  
 - [x] R1 hole anns → pinned template in `bctx`  
-- [ ] R2–R3 Done (or explicitly waived here)  
+- [x] R2 head-binder BL fold into demand  
+- [ ] R3 Done (or explicitly waived here)  
 - [ ] Slice 9 E2E gate in CI  
 - [ ] Localized diagnostic spans (MVP)  
 - [ ] Hosted playground + share story decided and shipped  
@@ -218,7 +219,7 @@ No full design yet — spike after R1–R3 / E2E, or a thin “error span” pas
 
 1. Read §§1–2 and **§5**.  
 2. `lake build blt FHMBounds` · `blt --bl scratch/bl-stdlib.fhm`.  
-3. Work the **§5** item in order (currently **B / R2**; J1+R1 Done).  
+3. Work the **§5** item in order (currently **B / R3**; J1+R1+R2 Done).  
 4. Do not invent List intervals (D22). Do not fuse bounds into Core Ty.  
 5. Update **§5** when closing an item.
 
