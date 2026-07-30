@@ -153,27 +153,37 @@ def BoundBinding.getMono? : BoundBinding → Option BoundsTy
   | .mono β => some β
   | .scheme _ => none
 
-/-- Display pretty for synthesized bounds (Live/hover report). -/
-def BoundsTy.pretty : BoundsTy → String
+mutual
+/-- Display pretty for synthesized bounds (Live/hover report).
+`prec`: `0` = top, `1` = left of `→`, `2` = BL/custom argument position. -/
+def BoundsTy.prettyAux (prec : Nat) : BoundsTy → String
   | .prim p =>
       match p with
       | .unit => "Unit" | .int => "Int" | .nat => "Nat" | .char => "Char"
   | .arrow a b =>
-      let sa := BoundsTy.pretty a
-      let sb := BoundsTy.pretty b
-      match a with
-      | .arrow _ _ => s!"({sa}) → {sb}"
-      | _ => s!"{sa} → {sb}"
+      prettyParenIf (prec ≥ 1)
+        (BoundsTy.prettyAux 1 a ++ " → " ++ BoundsTy.prettyAux 0 b)
   | .bvar i => prettyTyVarName i
   | .fvar i => prettyTyVarName i
   | .list lo hi e =>
-      s!"BL {Count.pretty lo} {Count.pretty hi} {BoundsTy.pretty e}"
+      prettyParenIf (prec ≥ 2)
+        ("BL " ++ Count.pretty lo ++ " " ++ Count.pretty hi ++ " " ++ BoundsTy.prettyAux 2 e)
   | .custom (.mk "Pair") [a, b] =>
-      s!"({BoundsTy.pretty a}, {BoundsTy.pretty b})"
+      "(" ++ BoundsTy.prettyAux 0 a ++ ", " ++ BoundsTy.prettyAux 0 b ++ ")"
   | .custom n as =>
       let nm := match n with | .mk s => s
       if as.isEmpty then nm
-      else nm ++ " " ++ String.intercalate " " (as.map BoundsTy.pretty)
+      else
+        prettyParenIf (prec ≥ 2)
+          (nm ++ " " ++ String.intercalate " " (BoundsTy.prettyArgs as))
+
+def BoundsTy.prettyArgs : List BoundsTy → List String
+  | [] => []
+  | t :: ts => BoundsTy.prettyAux 2 t :: BoundsTy.prettyArgs ts
+
+end
+
+def BoundsTy.pretty (t : BoundsTy) : String := BoundsTy.prettyAux 0 t
 
 /-- Packed scheme: `∀ n m. body` with rigid count slots as `n0`, `n1`, …. -/
 def BScheme.pretty (s : BScheme) : String :=

@@ -736,12 +736,63 @@ def collectLitOpSymbols (src : String) (ctors : CtorEnv) : List RangedSymbol :=
           i := i + 1
       return out
 
+/-- One editor diagnostic (1-based line/col, same as parse errors). -/
+structure HoverDiag where
+  message : String
+  line : Nat := 1
+  col : Nat := 1
+  deriving Repr
+
+def HoverDiag.toJson (d : HoverDiag) : Lean.Json :=
+  Lean.Json.mkObj [
+    ("severity", Lean.Json.str "error"),
+    ("message", Lean.Json.str d.message),
+    ("line", Lean.Json.num d.line),
+    ("col", Lean.Json.num d.col)
+  ]
+
+/-- Successful lower+infer hover report. Bounds failures stay here as diagnostics
+so symbols remain available (ascription/HM pretty) while LSP surfaces the error. -/
+structure HoverReport where
+  symbols : List RangedSymbol
+  programTy : String
+  diagnostics : List HoverDiag := []
+  deriving Repr
+
+/-- Pull a binder name from Check/Synth messages shaped like
+`bounds: ascription not met for xs (…)` or `… for xs not solid/WF`. -/
+def binderNameFromBoundsMsg (msg : String) : Option String :=
+  match msg.splitOn " for " with
+  | _ :: rest :: _ =>
+      -- First token; strip a trailing `(` if the message is `xs (…`.
+      let tok := (rest.splitOn " ").headD ""
+      let name := (tok.splitOn "(").headD ""
+      if name.isEmpty then none else some name
+  | _ => none
+
+/-- Best-effort span for a bounds message: val binder def site, else file top. -/
+def spanForBoundsMsg (binders : List BinderSpan) (msg : String) : Nat × Nat :=
+  match binderNameFromBoundsMsg msg with
+  | none => (1, 1)
+  | some n =>
+      match binders.find? fun b => b.kind == .val && b.name == n with
+      | some b => (b.span.startLine, b.span.startCol)
+      | none => (1, 1)
+
+def boundsDiag (binders : List BinderSpan) (msg : String) : HoverDiag :=
+  let (line, col) := spanForBoundsMsg binders msg
+  { message := msg, line, col }
+
 /-- Full hover report for a parsed program + binder spans + spanned program.
 
 Always erases surface `BL` → `List` before lower/infer (same as Live under `--bl`),
-so BL buffers get symbols. Display types come from `assembleProgramReport`. -/
+so BL buffers get symbols. Display types come from `assembleProgramReport`.
+
+Bounds checks (`checkProgramAnns` + `checkProgramMatches`) mirror Live `--bl`.
+On failure: keep symbols from the pre-check report (ascription/HM) and return a
+diagnostic — do **not** silently swallow errors (diagnose reliability). -/
 def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
-    (sp : SpannedProgram) : Option (List RangedSymbol × String) := do
+    (sp : SpannedProgram) : Option HoverReport := do
   -- Pre-erase program for the structural walk: `eraseProgram` clears `natBinders`
   -- but parse binder spans still emit `.count` entries.
   let pSurface := p
@@ -756,19 +807,27 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
   let report0 := assembleProgramReport pErased.groups (collectTopSchemes eOut) bodyσ ep
   let binderEnv := binderEnvFromGroups pErased.groups
   let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
-  let report :=
+  let (report, diags) :=
     match FHM.Bounds.Check.checkProgramAnns eOut τ binderEnv boundsAnns with
+    | .error msg =>
+        (report0, [boundsDiag binders msg])
     | .ok (bctx, βBody) =>
-        report0.enrichFromSynth binderEnv (bctx.map BoundBinding.pretty)
+        let report1 := report0.enrichFromSynth binderEnv (bctx.map BoundBinding.pretty)
           (some (BoundsTy.pretty βBody))
-    | .error _ => report0
+        match FHM.Bounds.Check.checkProgramMatches ctors eOut τ binderEnv boundsAnns with
+        | .error msg => (report1, [boundsDiag binders msg])
+        | .ok () => (report1, [])
   let progScope := programWideScope binders sp
   let binderSyms := buildHoverSymbols ctors ke pSurface sp binders report progScope
   let preludeSyms :=
     (preludeTypeCtorSymbols ctors progScope).filter fun s =>
       !(binderSyms.any fun b => b.name == s.name && b.kind == s.kind)
   let syms := binderSyms ++ collectLitOpSymbols src ctors ++ preludeSyms
-  pure (syms, report.programPretty)
+  pure {
+    symbols := syms
+    programTy := report.programPretty
+    diagnostics := diags
+  }
 
 /-- Parse-error diagnostic JSON object. -/
 def parseDiagJson (e : ParseError) : Lean.Json :=
@@ -801,12 +860,12 @@ def diagnosePayload (src : String) : Lean.Json :=
         ]]),
         ("symbols", Lean.Json.arr #[])
       ]
-    | some (syms, programTy) =>
+    | some r =>
       Lean.Json.mkObj [
         ("version", Lean.Json.num 3),
-        ("diagnostics", Lean.Json.arr #[]),
-        ("symbols", Lean.Json.arr (syms.map RangedSymbol.toJson).toArray),
-        ("programTy", Lean.Json.str programTy)
+        ("diagnostics", Lean.Json.arr (r.diagnostics.map HoverDiag.toJson).toArray),
+        ("symbols", Lean.Json.arr (r.symbols.map RangedSymbol.toJson).toArray),
+        ("programTy", Lean.Json.str r.programTy)
       ]
 
 def binderNames (bs : List BinderSpan) : List String :=

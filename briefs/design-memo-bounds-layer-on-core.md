@@ -157,6 +157,7 @@ No full design yet — spike after R1–R3 / E2E, or a thin “error span” pas
 
 | Topic | Note |
 |-------|------|
+| **Pretty-printer spine duplication** | Display sugar/prec (`→`, `(a,b)`, `BL …`) is implemented separately on `Ty`, `Surface.Ty`, `BoundsAnnTy`, and `BoundsTy` (`FHM/Pretty.lean`, `FHM/Bounds/Ann.lean`, `FHM/Bounds/Typing.lean`); Synth still has a debug-only `prettyβ` without prec/Pair sugar. Parallel ASTs explain some of it; `BoundsAnnTy`/`BoundsTy` are nearly copy-paste. Low priority: unify via shared spine (count-slot + var-name params) or a single display IR — not blocking product work. |
 | **Count folding in Check/Synth** | Display folds via `Count.simplify`. Open: fold once post-synth into `bctx`? at each op? only pre-Oracle? Don’t change solver inputs casually. |
 | Axiom collapse to Z3 | Collapse memo; post-E2E |
 | Progress under HasBounds+BoundCovers | Post-E2E |

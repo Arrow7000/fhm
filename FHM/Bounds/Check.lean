@@ -76,13 +76,19 @@ def checkLetSpine
             throw s!"bounds: scheme ascription for {prettyValName n} not solid/WF"
         | some s => do
             -- Rigid scheme body + scheme self in env (not mono openFresh).
-            checkAgainst Δ (.scheme s :: bctx) rhs' τ s.body
-            pure (.scheme s)
+            match checkAgainst Δ (.scheme s :: bctx) rhs' τ s.body with
+            | .ok () => pure (.scheme s)
+            | .error msg =>
+                let n := binderEnv[i]?.getD ⟨"?"⟩
+                throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
     | some (some (.mono ann)) =>
         match BoundsAnnTy.toBoundsTy? ann with
         | some βWant => do
-            checkAgainst Δ bctx' rhs' τ βWant
-            pure (.mono βWant)
+            match checkAgainst Δ bctx' rhs' τ βWant with
+            | .ok () => pure (.mono βWant)
+            | .error msg =>
+                let n := binderEnv[i]?.getD ⟨"?"⟩
+                throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
         | none => do
             let β1 ← checkBounds Δ bctx' rhs' τ
             meetMono i β1 ann

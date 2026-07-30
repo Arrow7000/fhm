@@ -19,7 +19,7 @@ def hasSub (s needle : String) : Bool :=
 def hoverSyms (src : String) : Option (List RangedSymbol) :=
   match parseProgramWithSpans src with
   | .error _ => none
-  | .ok (p, bs, sp) => (collectHover src p bs sp).map (·.1)
+  | .ok (p, bs, sp) => (collectHover src p bs sp).map (·.symbols)
 
 -- Span.contains / symbolAt edge cases
 #guard (Span.contains ⟨1, 5, 1, 7⟩ 1 5) = true
@@ -441,3 +441,66 @@ def sccOrderSrc : String :=
         | some u => u.kind == "param" && hasSub u.type_ "Maybe"
         | none => false
     | _, _, _, _, _ => false)
+
+/-! ## Bounds diagnostics (must not be swallowed — diagnose ≡ Live `--bl`) -/
+
+/-- Helper: parse + full hover report (symbols + bounds diags). -/
+def hoverReport (src : String) : Option HoverReport :=
+  match parseProgramWithSpans src with
+  | .error _ => none
+  | .ok (p, bs, sp) => collectHover src p bs sp
+
+-- E6. Ascription fail: diagnostic present, pointed at binder `xs`, symbols kept.
+def holeFailSrc : String :=
+  "let xs : BL _ 0 Int = [1, 2]\nxs\n"
+
+#guard (match hoverReport holeFailSrc with
+  | none => false
+  | some r =>
+      match r.diagnostics with
+      | [d] =>
+          hasSub d.message "ascription" &&
+          d.line == 1 &&
+          d.col == 5 &&  -- `xs` def site
+          (r.symbols.any fun s => s.name == "xs" && s.kind == "val")
+      | _ => false)
+
+-- E6b. Happy-path BL: no diagnostics.
+def holeOkSrc : String :=
+  "let xs : BL _ 5 Int = [1, 2]\nxs\n"
+
+#guard (match hoverReport holeOkSrc with
+  | none => false
+  | some r => r.diagnostics.isEmpty &&
+      (r.symbols.any fun s => s.name == "xs" && s.kind == "val"))
+
+-- E6c. BoundCovers / Nil-only fail surfaces as a diagnostic (not silent).
+def nilOnlyFailSrc : String :=
+  "let xs : BL 2 2 Int = [1, 2]\n" ++
+  "match xs with\n" ++
+  "| [] -> 0\n"
+
+#guard (match hoverReport nilOnlyFailSrc with
+  | none => false
+  | some r =>
+      match r.diagnostics with
+      | [d] =>
+          hasSub d.message "Nil-only" ||
+          hasSub d.message "cover" ||
+          hasSub d.message "empty"
+      | _ => false)
+
+-- E6d. Solid demand fail.
+def synthFailSrc : String :=
+  "let xs : BL 0 0 Int = [1, 2]\nxs\n"
+
+#guard (match hoverReport synthFailSrc with
+  | none => false
+  | some r =>
+      match r.diagnostics with
+      | [d] =>
+          hasSub d.message "bounds" &&
+          hasSub d.message "ascription" &&
+          d.line == 1 &&
+          d.col == 5
+      | _ => false)

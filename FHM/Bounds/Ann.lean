@@ -144,7 +144,9 @@ def AnnoCount.prettyWith (nats : List ValName) : AnnoCount → String
 
 def AnnoCount.pretty (a : AnnoCount) : String := AnnoCount.prettyWith [] a
 
-def BoundsAnnTy.prettyWith (nats : List ValName) (tvars : List ValName := []) :
+mutual
+/-- `prec`: `0` = top, `1` = left of `→`, `2` = BL/custom argument position. -/
+def BoundsAnnTy.prettyAux (nats : List ValName) (tvars : List ValName) (prec : Nat) :
     BoundsAnnTy → String
   | .prim p =>
       match p with
@@ -153,11 +155,8 @@ def BoundsAnnTy.prettyWith (nats : List ValName) (tvars : List ValName := []) :
       | .nat => "Nat"
       | .char => "Char"
   | .arrow d c =>
-      let sd := BoundsAnnTy.prettyWith nats tvars d
-      let sc := BoundsAnnTy.prettyWith nats tvars c
-      match d with
-      | .arrow _ _ => s!"({sd}) → {sc}"
-      | _ => s!"{sd} → {sc}"
+      prettyParenIf (prec ≥ 1)
+        (BoundsAnnTy.prettyAux nats tvars 1 d ++ " → " ++ BoundsAnnTy.prettyAux nats tvars 0 c)
   | .bvar i =>
       match tvars[i]? with
       | some ⟨name⟩ => name
@@ -167,14 +166,28 @@ def BoundsAnnTy.prettyWith (nats : List ValName) (tvars : List ValName := []) :
       | some ⟨name⟩ => name
       | none => prettyTyVarIdx i
   | .list lo hi e =>
-      let slo := AnnoCount.prettyWith nats lo
-      let shi := AnnoCount.prettyWith nats hi
-      let se := BoundsAnnTy.prettyWith nats tvars e
-      s!"BL {slo} {shi} {se}"
+      prettyParenIf (prec ≥ 2)
+        ("BL " ++ AnnoCount.prettyWith nats lo ++ " " ++ AnnoCount.prettyWith nats hi ++ " " ++
+          BoundsAnnTy.prettyAux nats tvars 2 e)
+  | .custom (.mk "Pair") [a, b] =>
+      "(" ++ BoundsAnnTy.prettyAux nats tvars 0 a ++ ", " ++ BoundsAnnTy.prettyAux nats tvars 0 b ++ ")"
   | .custom n args =>
       let nm := match n with | .mk s => s
       if args.isEmpty then nm
-      else nm ++ " " ++ String.intercalate " " (args.map (BoundsAnnTy.prettyWith nats tvars))
+      else
+        prettyParenIf (prec ≥ 2)
+          (nm ++ " " ++ String.intercalate " " (BoundsAnnTy.prettyArgs nats tvars args))
+
+def BoundsAnnTy.prettyArgs (nats : List ValName) (tvars : List ValName) :
+    List BoundsAnnTy → List String
+  | [] => []
+  | t :: ts => BoundsAnnTy.prettyAux nats tvars 2 t :: BoundsAnnTy.prettyArgs nats tvars ts
+
+end
+
+def BoundsAnnTy.prettyWith (nats : List ValName) (tvars : List ValName := [])
+    (a : BoundsAnnTy) : String :=
+  BoundsAnnTy.prettyAux nats tvars 0 a
 
 def BoundsAnnTy.pretty (a : BoundsAnnTy) : String := BoundsAnnTy.prettyWith [] [] a
 
@@ -243,5 +256,21 @@ def ProgramBoundsAnns.prettyLines
         (.list (.solid (.add (.var ⟨.rigid, 0⟩) (.var ⟨.rigid, 2⟩)))
           (.solid (.add (.var ⟨.rigid, 1⟩) (.var ⟨.rigid, 3⟩))) (.fvar 0)))
   } == "∀ (a b c d : Nat) e. BL a b e → BL c d e → BL (a + c) (b + d) e"
+
+#guard BoundsAnnTy.pretty (.custom pairTyName [.fvar 0, .fvar 1]) == "(a, b)"
+#guard
+  BoundsAnnTy.pretty (.list (.solid (.lit 1)) (.solid (.lit 1)) (.arrow (.fvar 0) (.fvar 1))) ==
+    "BL 1 1 (a → b)"
+#guard
+  BoundsSchemeAnn.pretty {
+    natBinders := [⟨"n"⟩]
+    tyBinders := [⟨"a"⟩, ⟨"b"⟩]
+    body := .arrow
+      (.list (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 0⟩)) (.fvar 0))
+      (.arrow
+        (.list (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 0⟩)) (.fvar 1))
+        (.list (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 0⟩))
+          (.custom pairTyName [.fvar 0, .fvar 1])))
+  } == "∀ (n : Nat) a b. BL n n a → BL n n b → BL n n (a, b)"
 
 end FHM.Bounds
