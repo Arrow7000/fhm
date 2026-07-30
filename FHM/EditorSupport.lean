@@ -323,10 +323,10 @@ def hoverBindingHead (env : HoverEnv) (b : Surface.Binding) (σ? : Option PolyTy
   | some (vb, bs1) =>
       let valSym := mkSym vb.name "val" (optPolyStr σ?) vb.span valScope
       let nAnn := match b.ann with | some σ => σ.foralls.length | none => 0
-      -- Nat sidecar binders come first in parse order (before colon foralls).
-      let (bs1c, countSyms) := takeCountParams b.natBinders.length valScope bs1
+      -- Parse order: val, tyParams, header value-params, scheme ann (count then type
+      -- foralls), then RHS binders — see `letBinding` in Surface/Parse.
       let (bs2, tySyms) :=
-        takeTyVarParams b.tyParams.length valScope "type variable (scheme binder)" bs1c
+        takeTyVarParams b.tyParams.length valScope "type variable (scheme binder)" bs1
       let doms :=
         match σ? with
         | some σ => peelArrowDoms b.params.length σ.body
@@ -337,8 +337,9 @@ def hoverBindingHead (env : HoverEnv) (b : Surface.Binding) (σ? : Option PolyTy
         else
           doms.take b.params.length
       let (bs3, headSyms) := takeHeadValueParams doms' valScope bs2
+      let (bs3c, countSyms) := takeCountParams b.natBinders.length valScope bs3
       let (bs4, annSyms) :=
-        takeTyVarParams nAnn valScope "type variable (scheme binder)" bs3
+        takeTyVarParams nAnn valScope "type variable (scheme binder)" bs3c
       -- Locals for RHS: head value-params (for scrut/pat hover inside the body).
       let headLocals : List (ValName × Ty) :=
         b.params.map (·.1) |>.zip doms'
@@ -704,15 +705,18 @@ Always erases surface `BL` → `List` before lower/infer (same as Live under `--
 so BL buffers get symbols. Types still pretty as `List …` until bounds report. -/
 def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
     (sp : SpannedProgram) : Option (List RangedSymbol × String) := do
-  let p := (FHM.Bounds.Erase.eraseProgram p).toProgram
-  let userCore ← lowerDataDeclsIn preludeKindEnv p.decls
+  -- Pre-erase program for the structural walk: `eraseProgram` clears `natBinders`
+  -- but parse binder spans still emit `.count` entries.
+  let pSurface := p
+  let pErased := (FHM.Bounds.Erase.eraseProgram p).toProgram
+  let userCore ← lowerDataDeclsIn preludeKindEnv pErased.decls
   let ctors ← elabDecls (preludeDecls ++ userCore)
   let ke := DataDecls.kindEnv (preludeDecls ++ userCore)
-  let c ← lower ctors p.term
+  let c ← lower ctors pErased.term
   let (_, _, eOut, τ) ← infer c.freshFloor ⟨[], ctors⟩ c
-  let topSchemes := zipBindingTypes p.groups (collectTopSchemes eOut)
+  let topSchemes := zipBindingTypes pErased.groups (collectTopSchemes eOut)
   let progScope := programWideScope binders sp
-  let binderSyms := buildHoverSymbols ctors ke p sp binders topSchemes progScope
+  let binderSyms := buildHoverSymbols ctors ke pSurface sp binders topSchemes progScope
   let preludeSyms :=
     (preludeTypeCtorSymbols ctors progScope).filter fun s =>
       !(binderSyms.any fun b => b.name == s.name && b.kind == s.kind)

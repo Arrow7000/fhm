@@ -333,6 +333,47 @@ def natSchemeHover : String :=
         a.name == "a" && a.kind == "param" && hasSub a.type_ "type variable"
     | _, _ => false)
 
+-- E3c. Multiple tops with `{n : Nat, …}`: erase must not zero `natBinders` for
+-- the hover walk (regression: unconsumed `.count` at head blocks later `.val`).
+def natMultiTop : String :=
+  "let id : {n : Nat, a} BL n n a -> BL n n a =\n" ++
+  "  \\xs -> xs\n" ++
+  "let id2 : {m : Nat, b} BL m m b -> BL m m b =\n" ++
+  "  \\ys -> ys\n" ++
+  "id\n"
+
+#guard (match hoverSyms natMultiTop with
+  | none => false
+  | some syms =>
+    let id2Vals := syms.filter fun s => s.name == "id2" && s.kind == "val"
+    match symbolAt syms 3 5, symbolAt syms 3 12, id2Vals.length with
+    | some id2, some m, 1 =>
+        id2.kind == "val" && m.kind == "count" && hasSub m.type_ "count" &&
+        -- proper def (not leftover): val scope extends past the name line
+        id2.scope.endLine > id2.span.startLine
+    | _, _, _ => false)
+
+-- E3d. `{n : Nat, …}` after header tyParams / value-params (parse order).
+def natAfterHeaderParams : String :=
+  "let f {a} (x : a) : {n : Nat, b} BL n n b -> BL n n b =\n" ++
+  "  \\y -> y\n" ++
+  "f\n"
+
+#guard (match hoverSyms natAfterHeaderParams with
+  | none => false
+  | some syms =>
+    let a? := syms.find? (fun s => s.name == "a" && s.kind == "param" && s.span.startLine == 1)
+    let x? := syms.find? (fun s => s.name == "x" && s.kind == "param" && s.span.startLine == 1)
+    let n? := syms.find? (fun s => s.name == "n" && s.kind == "count")
+    match a?, x?, n? with
+    | some a, some x, some n =>
+        hasSub a.type_ "type variable" &&
+        !x.type_.isEmpty &&
+        hasSub n.type_ "count" &&
+        -- count binders must follow header tyParams / value-params in the walk
+        a.span.startCol < x.span.startCol && x.span.startCol < n.span.startCol
+    | _, _, _ => false)
+
 -- E4. Several annotated lets: later λ params must not get empty/stolen types
 -- (regression: takeFirstKind .val reshuffled earlier λ/pats ahead of scheme binders)
 def multiLetParams : String :=
