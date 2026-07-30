@@ -1,11 +1,13 @@
 # Design memo: bounds layer on Core (B′)
 
-**Status:** product-ready dual-stack BL under `--bl` (slices 0–8 + display + synth report). **Next after merge to `fhm`:** §2.3 residuals (R1–R3), then E2E gate, then editor/LSP + playground/CI.  
+**Status:** product-ready dual-stack BL under `--bl` (slices 0–8 + display + synth report). **Merged back into `fhm`.** Next: §2.3 residuals (R1–R3), then E2E gate, then editor/LSP + playground/CI.  
 **Updated:** 2026-07-30  
-**Repo:** sandbox `/Users/aron/dev/blt` — **reintegrate into `fhm` next** (optional `FHMBounds` package; default FHM stays pure).  
+**Repo:** `/Users/aron/dev/fhm` (optional `FHMBounds` package; default FHM stays pure).  
 **This doc’s job:** living plan for work yet to do + locked design. History is compacted below; detail lives in git.
 
-**Handoff:** §5 backlog first. Smoke: `lake build blt FHMBounds` · `blt --bl scratch/bl-stdlib.fhm`. Key dirs: `FHM/Bounds/`, `FHM/Live.lean`, `FHM/EditorSupport.lean`, `editors/`.
+**BL sandbox history:** Jul 2026 bounds work was done in a temporary clone `/Users/aron/dev/blt`, then merged back here. Code/docs in `fhm` are current. For *chat* context (design debates, false starts), search Cursor/Grok conversations / agent transcripts from the **`blt` workspace** (`~/.cursor/projects/Users-aron-dev-blt/agent-transcripts/`), not only `fhm`. Prefer this memo + git for decisions; use blt chats when reconstructing “why.”
+
+**Handoff:** §5 backlog first (start at **B**). Smoke: `lake build fhm FHMBounds` · `fhm run --bl scratch/bl-stdlib.fhm` (or project’s usual `blt`/`fhm` binary). Key dirs: `FHM/Bounds/`, `FHM/Live.lean`, `FHM/EditorSupport.lean`, `editors/`.
 
 **Related:** `design-memo-collapse-bl-axioms-to-z3.md` · `design-p1-bounds-kernel-api.md` · `next-agent-brief-type-holes.md` (orthogonal)
 
@@ -56,7 +58,7 @@ FHM is a **verified Hindley–Milner** stack (Core, InferW, PatComp, …) — pe
 | D9 | Uniqueness = Commit policy, not HasBounds |
 | D10 | Z3 optional; axioms OK; collapse later |
 | D11 | `FHM/Bounds/`; lake `FHMBounds`; default FHM pure |
-| D12 | **Sandbox → merge to `fhm`** (in progress) |
+| D12 | Sandbox `blt` → **merged into `fhm`** (Done) |
 | D14–D15 | BoundsTy mirrors Ty; match join = min lo / max hi |
 | D16 | HM mode: fail-fast on BL syntax |
 | D17 | `{n : Nat, a}` — Nat + type foralls |
@@ -111,9 +113,9 @@ Display priority: erase ascription → Check synth β → HM `PolyTy`.
 
 ## 5. What’s next (ordered)
 
-### A. Reintegrate `blt` → `fhm` (**imminent**)
+### A. Reintegrate `blt` → `fhm` ✅
 
-Merge Bounds as optional package; keep default `lake build` FHM pure. Docs/CI paths retargeted. Conversation history in this sandbox is secondary — **this memo + git** are canonical; tell agents “BL work lived in `blt` then merged” if needed.
+**Done.** Bounds lives here as optional `FHMBounds`; default `lake build` FHM stays pure. See header **BL sandbox history** for where to find Jul 2026 chat transcripts.
 
 ### B. BL correctness residuals (**next product work**)
 
@@ -181,7 +183,7 @@ No full design yet — spike after R1–R3 / E2E, or a thin “error span” pas
 
 - [x] Dual-stack BL under `--bl` with schemes + stdlib + unified display  
 - [x] Core/Infer free of bound feature work  
-- [ ] Merged into `fhm` as optional Bounds  
+- [x] Merged into `fhm` as optional Bounds  
 - [ ] R1–R3 Done (or explicitly waived here)  
 - [ ] Slice 9 E2E gate in CI  
 - [ ] Localized diagnostic spans (MVP)  
@@ -192,7 +194,7 @@ No full design yet — spike after R1–R3 / E2E, or a thin “error span” pas
 
 ## 8. One-liner
 
-> **B′:** erase BL to List; origin HasBounds + BoundCovers; schemes; `ProgramReport` display — **merge to fhm, then R1–R3 → E2E → LSP/playground.**
+> **B′:** erase BL to List; origin HasBounds + BoundCovers; schemes; `ProgramReport` display — **next R1–R3 → E2E → LSP/playground.**
 
 ---
 
@@ -200,7 +202,7 @@ No full design yet — spike after R1–R3 / E2E, or a thin “error span” pas
 
 1. Read §§1–2 and **§5**.  
 2. `lake build blt FHMBounds` · `blt --bl scratch/bl-stdlib.fhm`.  
-3. Work the **§5** item in order (post-merge: **B / R1**).  
+3. Work the **§5** item in order (currently **B / R1**).  
 4. Do not invent List intervals (D22). Do not fuse bounds into Core Ty.  
 5. Update **§5** when closing an item.
 

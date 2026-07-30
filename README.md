@@ -127,6 +127,11 @@ A work-in-progress experiment in a different approach. Instead of Algorithm W, i
 
 Separate lake targets (`FHMBounds`, `FHMZ3`; not in the default build): bounded-list types with count/index schemes, Z3-backed bound oracles, and a Core-attached typing layer (`BoundInfo`, `BoundCovers`, erase/synth/check). `fhm run --bl` enables BL surface syntax and runs the bounds pipeline alongside HM inference. `BLSketch.lean` retains the original standalone sketch and soundness proofs.
 
+<!-- Agents: Jul 2026 BL work was in temporary clone /Users/aron/dev/blt then merged back.
+     For Cursor/Grok chat search about that arc, use blt workspace transcripts:
+     ~/.cursor/projects/Users-aron-dev-blt/agent-transcripts/
+     Living plan: briefs/design-memo-bounds-layer-on-core.md (memo + git are canonical). -->
+
 ### Proven theorems
 
 All of these are fully proved. The theorems only use the standard axioms and are completely free of `sorry`s. `Headlines.lean` gathers them in one place if you want a single entry point.
