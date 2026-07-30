@@ -5,7 +5,7 @@ A formalisation of a language with a Hindley-Milner type system, plus a concrete
 - type annotations on let bindings and lambda variables (not part of core HM)
 - annotations can reference [type variables quantified in outer scopes](https://www.microsoft.com/en-us/research/publication/lexically-scoped-type-variables/)
 - nested pattern matching (with wildcards)
-- mutually recursive let bindings with optional type annotations on each (unannotated bindings are assumed to be monomorphic and generalised after typechecking the recursive block)
+- mutually recursive let bindings with optional type annotations on each (unannotated bindings are assumed to be monomorphic and generalised after typechecking the recursive block); dependency grouping uses a verified Kosaraju SCC pass plus Kahn ordering on the condensation
 - when recursive bindings have annotations they may be polymorphic – which enables fully polymorphic recursion, including _mixed_ groups where some members are annotated and others aren't
 - algebraic data declarations (`type Maybe a = Just a | Nothing`, …)
 - primitive arithmetic and comparison ops (`+`, `-`, `<`), as ordinary curried functions – a partial application is a value; a saturated one δ-reduces on literals
@@ -24,7 +24,7 @@ A high-level overview of the pipeline:
 → lower
     · desugar / name-resolve
     · compile nested matches → flat Core matches
-    · group recursive bindings (SCCs)
+    · group recursive bindings (Kosaraju SCCs + condensation topo)
 → Infer / elaborate → fully-annotated Core
   + check exhaustiveness   (separate check; both needed)
 → evaluate
@@ -79,6 +79,15 @@ The front end proper: lowers Surface into Core, groups flat bindings into SCCs, 
 - `checkExhaustive`: executable coverage checker, proved sound against the declarative coverage predicate that type safety needs.
 - `program_type_safe` / `surface_type_safe`: the “doesn't go wrong” theorems at program and expression level.
 
+### [`Scc/Kosaraju.lean`](./FHM/Scc/Kosaraju.lean)
+
+Verified Kosaraju strongly-connected-components on abstract finite digraphs (`Digraph α` with `succ : α → Finset α`).
+
+- Declarative spec: `Reach`, `Mutual`, `ValidSccPartition` (partition + same-SCC + maximal-SCC properties).
+- Executable `kosaraju` (fuelled DFS on the graph and its transpose).
+- Main adequacy theorems: `kosaraju_sound` and `ValidSccPartition.eqv_mutual` (any two valid partitions agree up to reordering).
+- Wired into `SurfaceBridge.sccGroups` for letrec dependency grouping (`bindDigraph` on binding indices, then Kahn topo on the condensation). `sccGroups_sound` / `_complete` prove the pipeline matches the declarative `ValidBindingGroups` spec.
+
 ### [`PatComp.lean`](./FHM/PatComp.lean)
 
 Verified pattern-match compilation. Surface has nested patterns; Core only has flat single-constructor switches.
@@ -113,6 +122,10 @@ Pair `fhm run` with `scripts/watch-live.sh` and a `.fhm` file (see `scratch/live
 ### [`ConstraintTypeSystem.lean`](./FHM/ConstraintTypeSystem.lean) 🚧
 
 A work-in-progress experiment in a different approach. Instead of Algorithm W, it tries the constraint-based style (Wand; Pottier and Rémy), where inference generates a constraint and then solves it, using guarded constraint schemes `∀ᾱ[C].τ`. It's currently out of date against `Core`, excluded from the default build, and may be getting discarded.
+
+### [`Bounds/`](./FHM/Bounds/) + [`BLSketch.lean`](./FHM/BLSketch.lean) + [`Z3/`](./FHM/Z3/) (optional)
+
+Separate lake targets (`FHMBounds`, `FHMZ3`; not in the default build): bounded-list types with count/index schemes, Z3-backed bound oracles, and a Core-attached typing layer (`BoundInfo`, `BoundCovers`, erase/synth/check). `fhm run --bl` enables BL surface syntax and runs the bounds pipeline alongside HM inference. `BLSketch.lean` retains the original standalone sketch and soundness proofs.
 
 ### Proven theorems
 
@@ -153,6 +166,11 @@ All of these are fully proved. The theorems only use the standard axioms and are
 
 - `lowerDataDecls_sound` / `_complete`, `elabDecls_sound` / `_complete`: surface data decls elaborate exactly as the declarative specs allow.
 - `sccGroups_sound` / `_complete`: the SCC grouping of a flat binding list matches the declarative validity predicate for binding groups.
+
+**Kosaraju SCC** (`Scc/Kosaraju.lean`):
+
+- `kosaraju_sound`: the executable Kosaraju partition satisfies `ValidSccPartition`.
+- `ValidSccPartition.eqv_mutual`: any two valid SCC partitions of the same graph agree (components are mutual-reachability classes, up to reordering).
 
 **Runtime safety** (`Core.lean`):
 
@@ -224,7 +242,7 @@ If the editor pane stays blank or imports look stale after changing `editors/sha
 
 Optional checks: `npm run hover-sweep`, `npm run verify-playground` (Playwright).
 
-The Cursor/VS Code extension under `editors/vscode/` also talks to `fhm diagnose` (see `scripts/install-fhm-extension.sh`).
+The Cursor/VS Code extension under `editors/vscode/` also talks to `fhm diagnose` (see `scripts/install-fhm-extension.sh`). Syntax highlighting is generated from the live lexer tables via `fhm_grammar` (`scripts/gen-fhm-tmgrammar.sh`).
 
 ## My motivation
 
