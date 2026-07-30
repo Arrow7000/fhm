@@ -1,13 +1,12 @@
 -- BL showcase: stdlib-ish schemes, hole ascriptions, multi-use constraints,
--- match/if joins, and compound count expressions that exercise Sub / Z3.
+-- match/if joins, compound counts, and (for R3) underdetermined length export.
 --
 -- Run:  .lake/build/bin/fhm run --bl scratch/bl-showcase.fhm
--- All binders here are intentionally solvable (one bounds error fails the file).
+-- Most demos are ground. `listId` demos hole ascription + free-length generalisation
+-- (not a multi-model mid-case — see comment at listId).
 --
--- Known gaps this file steers around (see design memo R1–R3 / residual notes):
+-- Known gaps (triage / residuals):
 --   * head/tail-style domains `BL (n+1) m` do not yet pin `n` from a concrete arg
---   * hole ascriptions still pretty as written (`BL _ _` / `BL _ 5`), not pin-filled
---   * diagnose/LSP swallows bounds failures (hover shows ascription; REPL rejects)
 
 -- ── small stdlib (schemes with compound count arithmetic) ──────────────────
 
@@ -144,6 +143,23 @@ let doubled : BL 4 4 Int =
 -- snoc0 instantiates n from a concrete exact list
 let grown = snoc0 [1, 2]
 
+-- ── Free length holes (generalise, not multi-model) ────────────────────────
+--
+-- `BL _ _` means "I did not write the counts." Body `\xs -> xs` never pins them
+-- to ground. Dual-stack **generalises** free length vars (scheme / `?n ?m`),
+-- it does **not** pick among a finite set of solutions like {2, 7, 13}.
+--
+-- "Non-unique" in the R3/Commit sense = several *distinct* models under real
+-- constraints, not "any Nat is fine." This binder is unconstrained lengths →
+-- parametric. A true multi-model mid-case canary still needs R3's solve path.
+--
+-- Display: hole ascriptions should show pin/pack synth (not literal `_ _`).
+
+let listId : BL _ _ Int -> BL _ _ Int =
+  \xs -> xs
+
+let listIdAt = listId [1, 2, 3]
+
 -- ── pack results so every demo is evaluated ────────────────────────────────
 
 (pick True,
@@ -160,4 +176,4 @@ let grown = snoc0 [1, 2]
                       (sumLens,
                         (both,
                           (pipeline,
-                            (doubled, grown)))))))))))))))
+                            (doubled, (grown, listIdAt))))))))))))))))

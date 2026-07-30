@@ -122,7 +122,7 @@ Sticky notes from day-to-day use. Promote into §5 B/C only when tackling that t
 | **T1** | **λ/head param hover shows HM `List`, not binder `BL`** | **Done** (with R2 + RHS `expectedβ`): colon-form `\xs` and head binders both show `BL …`. |
 | **T2** | Match/coverage diagnostic spans often file-top | No binder name in message. **C** localized errors. |
 | **T3** | Non-List **ctor apps** under bounds (`Some 1`, etc.) | Nullary `None` / ascribed check OK; saturated non-List ctor apps still `cannot infer bounds for ctor`. Blocks Option demos with `Some`. Synth/checkBounds ctor app path (Pair/Cons special-cased today). |
-| **T4** | Hole ascription pretty keeps `_` on hover/report | Ascription wins over pin-fill. **D1** display honesty. |
+| **T4** | Hole ascription pretty keeps `_` on hover/report | **Partial:** binder/program pretty prefer synth when ann has holes; λ-domain hover may still peel holey ascription. |
 | **T5** | Compound scheme **domains** (`BL (n+1) m`) don’t pin from concrete args | `head`/`tail` define but don’t call. **I1**. |
 
 ### A. Reintegrate `blt` → `fhm` ✅

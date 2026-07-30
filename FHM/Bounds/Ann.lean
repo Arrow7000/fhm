@@ -208,6 +208,22 @@ def BinderAnn.pretty : BinderAnn → String
   | .mono a => a.pretty
   | .scheme s => s.pretty
 
+/-- Count slot is a surface hole `_`. -/
+def AnnoCount.isHole : AnnoCount → Bool
+  | .hole => true
+  | .solid _ => false
+
+/-- Ascription still contains unfilled `_` (display should prefer synth when present). -/
+partial def BoundsAnnTy.hasHoles : BoundsAnnTy → Bool
+  | .prim _ | .bvar _ | .fvar _ => false
+  | .arrow d c => d.hasHoles || c.hasHoles
+  | .list lo hi e => lo.isHole || hi.isHole || e.hasHoles
+  | .custom _ as => as.any BoundsAnnTy.hasHoles
+
+def BinderAnn.hasHoles : BinderAnn → Bool
+  | .mono a => a.hasHoles
+  | .scheme s => s.body.hasHoles
+
 /-- Human lines for present binder ascriptions (`name : ann`). -/
 def ProgramBoundsAnns.prettyLines
     (anns : ProgramBoundsAnns) (binderEnv : List ValName) : List String :=

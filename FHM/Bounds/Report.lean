@@ -29,10 +29,13 @@ structure BindingReport where
   /-- Origin-synth pretty from Check when `bounds?` is none. -/
   synthPretty? : Option String := none
 
-/-- Prefer erase ascription, else Check synth, else HM. -/
+/-- Prefer solid ascription; if ascription still has `_` holes, prefer Check synth
+when present (pin/pack story); else ascription text; else HM. -/
 def BindingReport.pretty (b : BindingReport) : String :=
   match b.bounds?, b.synthPretty? with
-  | some a, _ => BinderAnn.pretty a
+  | some a, some s =>
+      if a.hasHoles then s else BinderAnn.pretty a
+  | some a, none => BinderAnn.pretty a
   | none, some s => s
   | none, none => b.hm.pretty
 
@@ -46,7 +49,9 @@ structure ProgramReport where
 
 def ProgramReport.programPretty (r : ProgramReport) : String :=
   match r.bodyBounds?, r.programSynthPretty? with
-  | some a, _ => BoundsAnnTy.pretty a
+  | some a, some s =>
+      if a.hasHoles then s else BoundsAnnTy.pretty a
+  | some a, none => BoundsAnnTy.pretty a
   | none, some s => s
   | none, none => r.programHm.pretty
 
@@ -133,22 +138,30 @@ def assembleProgramReport
     (ep : ErasedProgram) : ProgramReport :=
   assembleFromBindings (zipBindingTypes groups hmSchemes) programHm ep
 
-/-- Fill `synthPretty?` for unascribed binders / body from Check
-(`bctx` ‖ `binderEnv`, 0 = innermost; `bodyPretty` = program body synth). -/
+/-- Fill `synthPretty?` from Check (`bctx` ‖ `binderEnv`, 0 = innermost).
+Also fills when ascription is present but still has `_` holes (so pretty can
+prefer pin/pack over literal underscores). -/
 def ProgramReport.enrichFromSynth
     (r : ProgramReport) (binderEnv : List ValName) (bctx : List String)
     (bodyPretty : Option String := none) : ProgramReport :=
   let byName : List (ValName × String) := binderEnv.zip bctx
   { r with
     bindings := r.bindings.map fun b =>
-      if b.bounds?.isSome then b
+      let wantSynth :=
+        match b.bounds? with
+        | none => true
+        | some a => a.hasHoles
+      if !wantSynth then b
       else
         match (byName.find? fun ⟨n, _⟩ => n == b.name).map (·.2) with
         | some s => { b with synthPretty? := some s }
         | none => b
     programSynthPretty? :=
-      if r.bodyBounds?.isSome then r.programSynthPretty?
-      else bodyPretty }
+      let bodyHasHoles :=
+        match r.bodyBounds? with
+        | some a => a.hasHoles
+        | none => true
+      if bodyHasHoles then bodyPretty else r.programSynthPretty? }
 
 #guard
   let σ : PolyTy := ⟨0, .prim .int⟩
