@@ -63,6 +63,7 @@ roots = [
   "FHM.Bounds.Oracle",
   "FHM.Bounds.Commit",
   "FHM.Bounds.Typing",
+  "FHM.Bounds.Escape",    # R3 escape classification (uniqueOnly at pack)
   "FHM.Bounds.Check",     # Live ascription checks (uses Synth)
   "FHM.Bounds.Synth",     # Slice 4: origin HasBounds synthesizer
   "FHM.Bounds.Erase",     # P4b surface BL → List + BoundsAnnTy
