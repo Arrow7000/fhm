@@ -430,6 +430,29 @@ private def letRecProvisional (ann? : Option PolyTy) : BoundBinding :=
   | some σ => .mono (agreesTemplate σ.body)
   | none => .mono (.fvar 0)
 
+/-- Head of a saturated ctor app spine: `Ctor a₁ … aₙ` → `(Ctor, [a₁,…,aₙ])`. -/
+def peelCtorSpine : Expr → Option (CtorName × List Expr)
+  | .ctor c => some (c, [])
+  | .app f a =>
+      match peelCtorSpine f with
+      | some (c, as) => some (c, as ++ [a])
+      | none => none
+  | _ => none
+
+/-- Pack ADT result bounds from expected HM `τ` and field βs (T3).
+
+Unary `Option a` / similar: embed the field β in the single type argument.
+Binary: embed both field βs when `τ` has two args. Else `agreesTemplate τ`. -/
+def packCtorResult (τ : Ty) (fieldβs : List BoundsTy) : BoundsTy :=
+  match τ, fieldβs with
+  | .customTy n [_], [β] =>
+      if n == listTyName then agreesTemplate τ
+      else .custom n [β]
+  | .customTy n [_, _], [βa, βb] =>
+      if n == listTyName then agreesTemplate τ
+      else .custom n [βa, βb]
+  | _, _ => agreesTemplate τ
+
 mutual
 
 /-- Synth letRec binders under `bctxRec` (list-structural on `bindings`).
@@ -550,7 +573,6 @@ def checkBoundsApp (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
   let (Φ1, τf, βf) ← inferBoundsΦ Δ bctx Φ f
   match τf, βf with
   | .arrow τa τr, .arrow βa βr => do
-      -- HM types already checked by Infer; bounds spine may use bvar/fvar stubs.
       let (Φ2, βa') ← checkBoundsΦ Δ bctx Φ1 arg τa
       let pins ← meetForAppM Δ βa' βa
       pure (Φ2, βr.substInferables pins)
@@ -691,10 +713,29 @@ def checkBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
                 let (Φ1, βa) ← checkBoundsΦ Δ bctx Φ h τa
                 let (Φ2, βb) ← checkBoundsΦ Δ bctx Φ1 arg τb
                 pure (Φ2, .custom pairTyName [βa, βb])
+              else if c != nilCtorName && c != consCtorName then do
+                -- T3 binary non-List ctor (non-Pair ADTs).
+                let (Φ1, _, βa) ← inferBoundsΦ Δ bctx Φ h
+                let (Φ2, _, βb) ← inferBoundsΦ Δ bctx Φ1 arg
+                pure (Φ2, packCtorResult τ [βa, βb])
               else
                 checkBoundsApp Δ bctx Φ (.app (.ctor c) h) arg τ
           | _ =>
-              checkBoundsApp Δ bctx Φ (.app (.ctor c) h) arg τ
+              if c != nilCtorName && c != consCtorName && c != pairCtorName then do
+                let (Φ1, _, βa) ← inferBoundsΦ Δ bctx Φ h
+                let (Φ2, _, βb) ← inferBoundsΦ Δ bctx Φ1 arg
+                pure (Φ2, packCtorResult τ [βa, βb])
+              else
+                checkBoundsApp Δ bctx Φ (.app (.ctor c) h) arg τ
+  | .app (.ctor c) arg =>
+      -- T3 unary non-List ctor (`Some 1`, etc.) at expected ADT type.
+      if c == nilCtorName || c == consCtorName || c == pairCtorName then
+        checkBoundsApp Δ bctx Φ (.ctor c) arg τ
+      else if (isListTy τ).isSome then
+        throw "bounds: non-List ctor at List type"
+      else do
+        let (Φ1, _, β) ← inferBoundsΦ Δ bctx Φ arg
+        pure (Φ1, packCtorResult τ [β])
   | .app f arg =>
       checkBoundsApp Δ bctx Φ f arg τ
   | .lambda _paramAnn body => do

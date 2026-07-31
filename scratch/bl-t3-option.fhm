@@ -1,0 +1,11 @@
+-- T3: non-List ctor apps under --bl (Some / None).
+-- Run: .lake/build/bin/fhm run --bl scratch/bl-t3-option.fhm
+
+type Option a = None | Some a
+
+let noneInt : Option Int = None
+let some1 : Option Int = Some 1
+let xs : BL 2 2 Int = [1, 2]
+let someList : Option (BL 2 2 Int) = Some xs
+
+(noneInt, (some1, someList))

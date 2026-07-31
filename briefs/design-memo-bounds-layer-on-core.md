@@ -125,7 +125,7 @@ Sticky notes from day-to-day use. Promote into §5 B/C only when tackling that t
 |----|------|---------------------|
 | **T1** | **λ/head param hover shows HM `List`, not binder `BL`** | **Done** (with R2 + RHS `expectedβ`): colon-form `\xs` and head binders both show `BL …`. |
 | **T2** | Match/coverage diagnostic spans often file-top | **Mostly Done** — Check tags binder in match/pack errors; diagnose points at def span (+ endCol). Body-level match (no binder) still file-top. |
-| **T3** | Non-List **ctor apps** under bounds (`Some 1`, etc.) | Nullary `None` / ascribed check OK; saturated non-List ctor apps still `cannot infer bounds for ctor`. Blocks Option demos with `Some`. Synth/checkBounds ctor app path (Pair/Cons special-cased today). |
+| **T3** | Non-List **ctor apps** under bounds (`Some 1`, etc.) | **Done** — unary/binary non-List ctor apps at expected τ (`packCtorResult`); `scratch/bl-t3-option.fhm`. Pair/Cons still dedicated. |
 | **T4** | Hole ascription pretty keeps `_` on hover/report | **Partial:** binder/program pretty prefer synth when ann has holes; λ-domain hover may still peel holey ascription. |
 | **T5** | Compound scheme **domains** (`BL (n+1) m`) don’t pin from concrete args | **Done** — `tryExactCountPin` / meet pins `n+1`←ground; `scratch/bl-t5-head-tail.fhm` + stdlib calls. |
 
@@ -268,8 +268,9 @@ idExact : {n} BL n n α → BL n n α   -- instantiate n ↦ ?n  (lo and hi shar
 - [x] R3 residual mid-case factory + uniqueOnly reject demo (`bl-r3-mid-fail.fhm`)  
 - [x] R3 `EscapeClassifies` full spec + sound/complete vs `classifyEscape`  
 - [x] T5 compound domain pin (`head`/`tail` callable; `bl-t5-head-tail.fhm`)  
+- [x] T2/T3 diagnostic binder spans + non-List ctor apps (`Some`)  
 - [ ] E2E gate suite in CI (`scratch/bl-*`)
-- [ ] Localized diagnostic spans (MVP)  
+- [ ] Localized diagnostic spans (full match-expr spans; body-level)  
 - [ ] Hosted playground + share story decided and shipped  
 - [ ] Default `lake build` FHM pure documented  
 
