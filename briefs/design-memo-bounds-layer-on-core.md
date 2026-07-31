@@ -136,7 +136,7 @@ Sticky notes from day-to-day use. Promote into §5 B/C only when tackling that t
 | **J1** | Non-List multi-arm **result join** in origin synth (`if`/Bool/… → join arm βs) | **Done** — `synthJoinArms` / `synthJoinArmsAt`; unascribed `pick` → `BL 1 3`; see `scratch/bl-join-if.fhm` |
 | **R1** | Hole anns → push **pinned** template into `bctx` | **Done** — pin-meet then `pinHoles` into env (same interface as solid); `scratch/bl-r1-pin-env*.fhm` |
 | **R2** | Head-binder `(xs : BL …)` fold into demand | **Done** — `foldHeadParamAnns` in erase; ofLower gets full arrow; `scratch/bl-r2-head-binder.fhm` |
-| **R3** | Detect **non-vacuous multi-model** free counts at escape; **reject + ask for let-ascription** (uniqueOnly) | **High** — see §5 F |
+| **R3** | Detect **non-vacuous multi-model** free counts at escape; **reject + ask for let-ascription** (uniqueOnly) | **Partial** — `Escape.classify` + `packAtEscape` on Check pack path; residual cons best-effort; mid-case (affine app band) not fully producing residual yet. §5 F |
 | **R4** | Pair-match demand peel | Medium |
 | **R5** | Declarative `HasBounds.letMono` align | Low |
 | **R6** | Nested BoundCovers path-Δ | Medium |
