@@ -796,20 +796,34 @@ def binderNameFromBoundsMsg (msg : String) : Option String :=
       if name.isEmpty then none else some name
   | _ => none
 
-/-- Best-effort span for a bounds message: val binder def site, else file top.
+/-- Shallow: body is a top-level `match`, else full body hull (body-level diags). -/
+def bodyDiagSpan (body : SpannedExpr) : Span :=
+  match body with
+  | .match_ s _ _ => s
+  | _ => body.span
+
+/-- Best-effort span for a bounds message: val binder def site, else program body
+hull (or top-level match span), else file top.
 Returns half-open `(startLine, startCol, endLine, endCol)`. -/
-def spanForBoundsMsg (binders : List BinderSpan) (msg : String) :
-    Nat × Nat × Nat × Nat :=
+def spanForBoundsMsg (binders : List BinderSpan) (msg : String)
+    (fallback : Option Span := none) : Nat × Nat × Nat × Nat :=
   match binderNameFromBoundsMsg msg with
-  | none => (1, 1, 1, 2)
   | some n =>
       match binders.find? fun b => b.kind == .val && b.name == n with
       | some b =>
           (b.span.startLine, b.span.startCol, b.span.endLine, b.span.endCol)
+      | none =>
+          match fallback with
+          | some s => (s.startLine, s.startCol, s.endLine, s.endCol)
+          | none => (1, 1, 1, 2)
+  | none =>
+      match fallback with
+      | some s => (s.startLine, s.startCol, s.endLine, s.endCol)
       | none => (1, 1, 1, 2)
 
-def boundsDiag (binders : List BinderSpan) (msg : String) : HoverDiag :=
-  let (line, col, endLine, endCol) := spanForBoundsMsg binders msg
+def boundsDiag (binders : List BinderSpan) (msg : String)
+    (fallback : Option Span := none) : HoverDiag :=
+  let (line, col, endLine, endCol) := spanForBoundsMsg binders msg fallback
   { message := msg, line, col, endLine, endCol }
 
 /-- Full hover report for a parsed program + binder spans + spanned program.
@@ -836,15 +850,17 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
   let report0 := assembleProgramReport pErased.groups (collectTopSchemes eOut) bodyσ ep
   let binderEnv := binderEnvFromGroups pErased.groups
   let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
+  -- Body-level match / ascription errors (no binder name): body/match hull.
+  let bodyFallback : Option Span := some (bodyDiagSpan sp.body)
   let (report, diags) :=
     match FHM.Bounds.Check.checkProgramAnns eOut τ binderEnv boundsAnns with
     | .error msg =>
-        (report0, [boundsDiag binders msg])
+        (report0, [boundsDiag binders msg bodyFallback])
     | .ok (bctx, βBody) =>
         let report1 := report0.enrichFromSynth binderEnv (bctx.map BoundBinding.pretty)
           (some (BoundsTy.pretty βBody))
         match FHM.Bounds.Check.checkProgramMatches ctors eOut τ binderEnv boundsAnns with
-        | .error msg => (report1, [boundsDiag binders msg])
+        | .error msg => (report1, [boundsDiag binders msg bodyFallback])
         | .ok () => (report1, [])
   let progScope := programWideScope binders sp
   let binderSyms := buildHoverSymbols ctors ke pSurface sp binders report progScope

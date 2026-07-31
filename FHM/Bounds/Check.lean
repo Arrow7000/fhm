@@ -243,6 +243,46 @@ private def branchBctx (ctors : CtorEnv) (τs : Ty) (βs : BoundsTy) (bctx : Bou
       match pat with
       | .named c 2 => if c == consCtorName then consBoundEnv bctx lo hi βe else bctx
       | _ => bctx
+  | .custom n [βa, βb] =>
+      -- R4: peel Pair (and other binary) field bounds into arm env — not agreesTemplate.
+      -- De Bruijn 0 = first pattern field (same as consBoundEnv head-at-0).
+      match pat with
+      | .wildcard => bctx
+      | .named c 2 =>
+          if n == pairTyName && c == pairCtorName then
+            BoundEnv.extendMany bctx [βa, βb]
+          else if c != nilCtorName && c != consCtorName then
+            BoundEnv.extendMany bctx [βa, βb]
+          else
+            match τs with
+            | .customTy _ tyArgs =>
+                let fieldTys := (instFieldTys ctors c tyArgs).take 2
+                BoundEnv.extendMany bctx (fieldTys.map agreesTemplate).reverse
+            | _ => bctx
+      | .named c k =>
+          match τs with
+          | .customTy _ tyArgs =>
+              let fieldTys := (instFieldTys ctors c tyArgs).take k
+              BoundEnv.extendMany bctx (fieldTys.map agreesTemplate).reverse
+          | _ => bctx
+  | .custom n [βa] =>
+      match pat with
+      | .named c 1 =>
+          if c != nilCtorName && c != consCtorName then
+            BoundEnv.extendMany bctx [βa]
+          else
+            match τs with
+            | .customTy _ tyArgs =>
+                let fieldTys := (instFieldTys ctors c tyArgs).take 1
+                BoundEnv.extendMany bctx (fieldTys.map agreesTemplate).reverse
+            | _ => bctx
+      | .wildcard => bctx
+      | .named c k =>
+          match τs with
+          | .customTy _ tyArgs =>
+              let fieldTys := (instFieldTys ctors c tyArgs).take k
+              BoundEnv.extendMany bctx (fieldTys.map agreesTemplate).reverse
+          | _ => bctx
   | _ =>
       match pat with
       | .wildcard => bctx
@@ -302,7 +342,16 @@ def checkProgramMatchesGo (ctors : CtorEnv) (Δ : List Constraint) (bctx : Bound
             if (isListTy σ.body).isSome then
               checkBounds Δ bctx rhs σ.body
             else
-              pure (agreesTemplate σ.body)
+              match σ.body with
+              | .customTy n [_, _] =>
+                  -- R4: product binders (Pair) need origin-synth field intervals.
+                  if n == pairTyName then
+                    match checkBounds Δ bctx rhs σ.body with
+                    | .ok β => pure β
+                    | .error _ => pure (agreesTemplate σ.body)
+                  else
+                    pure (agreesTemplate σ.body)
+              | _ => pure (agreesTemplate σ.body)
         | none => Prod.snd <$> inferBounds Δ bctx rhs
       checkProgramMatchesGo ctors Δ bctx none rhs
       checkProgramMatchesGo ctors Δ (BoundEnv.extend bctx β1) demand body

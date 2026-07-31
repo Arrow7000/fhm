@@ -500,6 +500,21 @@ def nilOnlyFailSrc : String :=
           d.col == 5  -- `bad` def site
       | _ => false)
 
+-- E6c1. Body-level Nil-only (no binder): point at the match expression, not (1,1).
+def nilOnlyBodySrc : String :=
+  "let xs : BL 2 2 Int = [1, 2]\n" ++
+  "match xs with\n" ++
+  "| [] -> 0\n"
+
+#guard (match hoverReport nilOnlyBodySrc with
+  | none => false
+  | some r =>
+      match r.diagnostics with
+      | [d] =>
+          (hasSub d.message "Nil-only" || hasSub d.message "empty") &&
+          d.line == 2  -- match line, not file-top comment/line 1
+      | _ => false)
+
 -- E6c2. R3 multi-model escape: diagnostic on binder `bad`, not (1,1).
 def r3MidFailSrc : String :=
   "let f : {x : Nat} BL x (2 * x) Int -> BL x (2 * x) Int =\n" ++

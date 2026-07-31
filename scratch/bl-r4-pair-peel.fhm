@@ -1,0 +1,14 @@
+-- R4: Pair match peels field bounds into arm env (nested List BoundCovers).
+-- Run: .lake/build/bin/fhm run --bl scratch/bl-r4-pair-peel.fhm
+--
+-- Domain (BL 2 2, Int): after match (xs, y), Cons-only on xs is OK (lo=2).
+-- Without peel, xs would be agreesTemplate List ⇒ BL 0 0 and Cons-only fails.
+
+let headFst : (BL 2 2 Int, Int) -> Int =
+  \p ->
+    match p with
+    | (xs, y) ->
+      match xs with
+      | h :: t -> h
+
+headFst ([1, 2], 0)

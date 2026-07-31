@@ -516,11 +516,31 @@ def synthMatch (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
 termination_by Expr.sizeBranches brs
 decreasing_by all_goals (first | exact size_lt_sizeBranches_two | exact size_lt_sizeBranches_two_snd | exact size_lt_sizeBranches_one | (try simp only [Expr.size, Expr.sizeBranches]; omega))
 
-/-- Non-List match arm env: no path-Δ refine (that is List/BoundCovers only).
-Nullary / wildcard leave `bctx` alone. `named _ n` pushes `n` stub slots so
-de Bruijn field binders resolve; field βs are not origin-precise (HM typed). -/
-def nonListArmEnv (bctx : BoundEnv) : MatchPattern → BoundEnv
+/-- Non-List match arm env. Nullary / wildcard leave `bctx` alone.
+
+When the scrutinee β is a Pair (or other product) with field bounds, peel those
+into the arm (R4) so nested List BoundCovers see real intervals. Otherwise push
+stub slots so de Bruijn field binders resolve. -/
+def nonListArmEnv (bctx : BoundEnv) (scrutβ : BoundsTy := .fvar 0) :
+    MatchPattern → BoundEnv
   | .wildcard => bctx
+  | .named c 2 =>
+      match scrutβ with
+      | .custom n [βa, βb] =>
+          if n == pairTyName || (c != nilCtorName && c != consCtorName) then
+            -- De Bruijn 0 = first field (xs in `(xs, ys)`).
+            BoundEnv.extendMany bctx [βa, βb]
+          else
+            BoundEnv.extendMany bctx (List.replicate 2 (.fvar 0))
+      | _ => BoundEnv.extendMany bctx (List.replicate 2 (.fvar 0))
+  | .named c 1 =>
+      match scrutβ with
+      | .custom n [βa] =>
+          if c != nilCtorName && c != consCtorName then
+            BoundEnv.extendMany bctx [βa]
+          else
+            BoundEnv.extendMany bctx [(.fvar 0 : BoundsTy)]
+      | _ => BoundEnv.extendMany bctx [(.fvar 0 : BoundsTy)]
   | .named _ n => BoundEnv.extendMany bctx (List.replicate n (.fvar 0))
 
 /-- Non-List multi-arm: synth each arm body, join βs (`joinBoundsTy` / min-lo max-hi).
@@ -529,14 +549,15 @@ Coverage is HM exhaustiveness (and `checkProgramMatches` ctor coverage) — not 
 First arm is inferred (anchors result τ); remaining arms are checked at that τ
 then joined — same discipline as List `synthMatch` Nil+Cons. -/
 def synthJoinArms (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
-    (brs : List (MatchPattern × Expr)) : ResM (Nat × Ty × BoundsTy) :=
+    (scrutβ : BoundsTy) (brs : List (MatchPattern × Expr)) :
+    ResM (Nat × Ty × BoundsTy) :=
   match brs with
   | [] => throw "bounds: empty match"
   | [(pat, e)] =>
-      inferBoundsΦ Δ (nonListArmEnv bctx pat) Φ e
+      inferBoundsΦ Δ (nonListArmEnv bctx scrutβ pat) Φ e
   | (pat, e) :: rest => do
-      let (Φ1, τ, β1) ← inferBoundsΦ Δ (nonListArmEnv bctx pat) Φ e
-      let (Φ2, βrest) ← synthJoinArmsAt Δ bctx Φ1 τ rest
+      let (Φ1, τ, β1) ← inferBoundsΦ Δ (nonListArmEnv bctx scrutβ pat) Φ e
+      let (Φ2, βrest) ← synthJoinArmsAt Δ bctx Φ1 τ scrutβ rest
       match joinBoundsTy β1 βrest with
       | some β => pure (Φ2, τ, β)
       | none => throw "bounds: match branches have incompatible bounds"
@@ -548,15 +569,15 @@ decreasing_by all_goals (first
 
 /-- Check remaining non-List arms at fixed `τ`, joining their βs. -/
 def synthJoinArmsAt (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (τ : Ty)
-    (brs : List (MatchPattern × Expr)) : ResM (Nat × BoundsTy) :=
+    (scrutβ : BoundsTy) (brs : List (MatchPattern × Expr)) : ResM (Nat × BoundsTy) :=
   match brs with
   | [] => throw "bounds: empty match arms"
   | [(pat, e)] => do
-      let (Φ1, β) ← checkBoundsΦ Δ (nonListArmEnv bctx pat) Φ e τ
+      let (Φ1, β) ← checkBoundsΦ Δ (nonListArmEnv bctx scrutβ pat) Φ e τ
       pure (Φ1, β)
   | (pat, e) :: rest => do
-      let (Φ1, β1) ← checkBoundsΦ Δ (nonListArmEnv bctx pat) Φ e τ
-      let (Φ2, βrest) ← synthJoinArmsAt Δ bctx Φ1 τ rest
+      let (Φ1, β1) ← checkBoundsΦ Δ (nonListArmEnv bctx scrutβ pat) Φ e τ
+      let (Φ2, βrest) ← synthJoinArmsAt Δ bctx Φ1 τ scrutβ rest
       match joinBoundsTy β1 βrest with
       | some β => pure (Φ2, β)
       | none => throw "bounds: match branches have incompatible bounds"
@@ -653,8 +674,8 @@ def inferBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (e : Expr)
       | some α, .list lo hi βe =>
           synthMatch Δ bctx Φ1 α lo hi βe brs
       | _, _ =>
-          -- Non-List: no path refine; join arm results (Bool `if`, Maybe, …).
-          synthJoinArms Δ bctx Φ1 brs
+          -- Non-List: peel Pair fields (R4); join arm results (Bool `if`, Maybe, …).
+          synthJoinArms Δ bctx Φ1 βs brs
 termination_by e.size
 decreasing_by all_goals (
   simp_wf
@@ -767,7 +788,7 @@ def checkBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
       | _, _ => do
           -- Expected `τ` from check mode: check every arm at `τ`, join βs.
           -- (Infer-first fails on list literals — Nil/Cons need a List demand.)
-          let (Φ2, β) ← synthJoinArmsAt Δ bctx Φ1 τ brs
+          let (Φ2, β) ← synthJoinArmsAt Δ bctx Φ1 τ βs brs
           pure (Φ2, β)
 termination_by e.size
 decreasing_by all_goals (
