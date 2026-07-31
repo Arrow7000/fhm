@@ -213,12 +213,21 @@ def AnnoCount.isHole : AnnoCount → Bool
   | .hole => true
   | .solid _ => false
 
-/-- Ascription still contains unfilled `_` (display should prefer synth when present). -/
-partial def BoundsAnnTy.hasHoles : BoundsAnnTy → Bool
-  | .prim _ | .bvar _ | .fvar _ => false
-  | .arrow d c => d.hasHoles || c.hasHoles
-  | .list lo hi e => lo.isHole || hi.isHole || e.hasHoles
-  | .custom _ as => as.any BoundsAnnTy.hasHoles
+-- Ascription still contains unfilled `_` (prefer synth when present in Report.pretty).
+mutual
+  /-- True if any count hole `_` remains in the ascription spine. -/
+  def BoundsAnnTy.hasHoles : BoundsAnnTy → Bool
+    | .prim _ | .bvar _ | .fvar _ => false
+    | .arrow d c => BoundsAnnTy.hasHoles d || BoundsAnnTy.hasHoles c
+    | .list lo hi e => lo.isHole || hi.isHole || BoundsAnnTy.hasHoles e
+    | .custom _ as => BoundsAnnTy.hasHolesList as
+  termination_by t => sizeOf t
+
+  def BoundsAnnTy.hasHolesList : List BoundsAnnTy → Bool
+    | [] => false
+    | a :: as => BoundsAnnTy.hasHoles a || BoundsAnnTy.hasHolesList as
+  termination_by as => sizeOf as
+end
 
 def BinderAnn.hasHoles : BinderAnn → Bool
   | .mono a => a.hasHoles

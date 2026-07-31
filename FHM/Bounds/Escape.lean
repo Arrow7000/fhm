@@ -201,7 +201,7 @@ theorem classifyEscape_sound_vacuous (k : PolicyKind) (ψ : ExistsProblem)
 
 mutual
 /-- Interval/element Sub goals when demand `β'` accepts synth `β` (mirrors `subConstraints`). -/
-partial def BoundsTy.subConstraints? (β' β : BoundsTy) : Option (List Constraint) :=
+def BoundsTy.subConstraints? (β' β : BoundsTy) : Option (List Constraint) :=
   match β', β with
   | .prim p, .prim q => if p == q then some [] else none
   | .bvar i, .bvar j => if i == j then some [] else none
@@ -226,8 +226,9 @@ partial def BoundsTy.subConstraints? (β' β : BoundsTy) : Option (List Constrai
       else
         none
   | _, _ => none
+termination_by sizeOf β' + sizeOf β
 
-partial def subConstraintsAll? (as bs : List BoundsTy) : Option (List Constraint) :=
+def subConstraintsAll? (as bs : List BoundsTy) : Option (List Constraint) :=
   match as, bs with
   | [], [] => some []
   | a :: as, b :: bs =>
@@ -235,6 +236,7 @@ partial def subConstraintsAll? (as bs : List BoundsTy) : Option (List Constraint
       | some cs₁, some cs₂ => some (cs₁ ++ cs₂)
       | _, _ => none
   | _, _ => none
+termination_by sizeOf as + sizeOf bs
 end
 
 /-- Best-effort residual goals when pinned demand `β'` meets origin-synth `β`.
