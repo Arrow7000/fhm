@@ -7,7 +7,7 @@ import FHM.Bounds.Typing
 **Status:** wired on `Check` pack path via `packAtEscape`; vacuous residual
 (`cons = []`) preserves today’s `packScheme?` behaviour. Residual construction
 from pinned ascriptions is best-effort (`escapeResidualCons?`); full affine-app
-mid-case bands are follow-up.
+mid-case bands are follow-up — **see design memo §5 B “R3 handoff”.**
 
 At **output-visible escape** (top binder β / program body β), free inferable counts
 must be classified before we print or generalise them (design memo §5 F):
