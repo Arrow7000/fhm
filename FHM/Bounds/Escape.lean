@@ -137,29 +137,33 @@ theorem classifyEscape_vacuous_empty_outs (k : PolicyKind) (ψ : ExistsProblem) 
   simp [classifyEscape]
 
 theorem classifyEscape_vacuous_empty_cons (k : PolicyKind) (ψ : ExistsProblem)
-    (outs : List Count) (_houts : outs ≠ []) (hcons : ψ.cons = []) :
+    (outs : List Count) (houts : outs ≠ []) (hcons : ψ.cons = []) :
     classifyEscape k ψ outs = .vacuousGeneralise := by
-  sorry
+  simp [classifyEscape, hcons, List.isEmpty_iff, houts]
 
 /-- Under `uniqueOnly`, a non-unique solve witness is multi-model reject. -/
 theorem classifyEscape_uniqueOnly_of_some
     {ψ : ExistsProblem} {outs : List Count} {σ : Assign}
-    (_hσ : solve ψ = .witness σ)
-    (_hcons : ψ.cons ≠ [])
-    (_houts : outs ≠ [])
-    (_hmult : unique ψ outs = .multiple ∨ unique ψ outs = .unknown) :
+    (hσ : solve ψ = .witness σ)
+    (hcons : ψ.cons ≠ [])
+    (houts : outs ≠ [])
+    (hmult : unique ψ outs = .multiple ∨ unique ψ outs = .unknown) :
     classifyEscape .uniqueOnly ψ outs = .multiModelReject := by
-  sorry
+  simp only [classifyEscape, List.isEmpty_iff, hcons, houts]
+  rw [gatherNarrowingEvidence_witness_some hσ hmult]
+  simp [decideCommit]
 
 /-- Under `uniqueOnly`, unique solve witness commits. -/
 theorem classifyEscape_uniqueOnly_of_unique
     {ψ : ExistsProblem} {outs : List Count} {σ : Assign}
-    (_hσ : solve ψ = .witness σ)
-    (_hu : unique ψ outs = .unique)
-    (_hcons : ψ.cons ≠ [])
-    (_houts : outs ≠ []) :
+    (hσ : solve ψ = .witness σ)
+    (hu : unique ψ outs = .unique)
+    (hcons : ψ.cons ≠ [])
+    (houts : outs ≠ []) :
     classifyEscape .uniqueOnly ψ outs = .uniqueCommit σ := by
-  sorry
+  simp only [classifyEscape, List.isEmpty_iff, hcons, houts]
+  rw [gatherNarrowingEvidence_witness_unique hσ hu]
+  simp [decideCommit]
 
 /-- `uniqueOnly` rejects non-unique evidence (`Commits` link). -/
 theorem decideCommit_uniqueOnly_some_reject
@@ -179,7 +183,17 @@ theorem classifyEscape_sound_vacuous (k : PolicyKind) (ψ : ExistsProblem)
     (outs : List Count) :
     (outs = [] ∨ ψ.cons = []) →
     EscapeClassifies k ψ outs (classifyEscape k ψ outs) := by
-  sorry
+  intro h
+  rcases h with h | h
+  · subst h
+    rw [classifyEscape_vacuous_empty_outs]
+    exact EscapeClassifies.vacuous_empty_outs
+  · by_cases houts : outs = []
+    · subst houts
+      rw [classifyEscape_vacuous_empty_outs]
+      exact EscapeClassifies.vacuous_empty_outs
+    · rw [classifyEscape_vacuous_empty_cons k ψ outs houts h]
+      exact EscapeClassifies.vacuous_empty_cons houts h
 
 /-! ## Check integration contract (not wired)
 

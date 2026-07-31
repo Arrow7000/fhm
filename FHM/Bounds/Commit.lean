@@ -102,14 +102,45 @@ theorem decideCommit_iff {k ψ outs} (e : NarrowingEvidence ψ outs) (c : Commit
     Commits k e c ↔ decideCommit k e = c :=
   ⟨decideCommit_complete e, fun h => h ▸ decideCommit_sound e⟩
 
-def gatherNarrowingEvidence (ψ : ExistsProblem) (outs : List Count) :
+def gatherNarrowingEvidenceCore (ψ : ExistsProblem) (outs : List Count) (sv : SolveVerdict)
+    (hσ : solve ψ = sv) (uv : UniqueVerdict) (hu : unique ψ outs = uv) :
     NarrowingEvidence ψ outs :=
-  match hσ : solve ψ with
+  match sv with
   | .unsat | .unknown => .none
   | .witness σ =>
-    match hu : unique ψ outs with
+    match uv with
     | .unique => .unique σ hσ hu
     | .multiple | .unknown => .some_ σ hσ
+
+def gatherNarrowingEvidence (ψ : ExistsProblem) (outs : List Count) :
+    NarrowingEvidence ψ outs :=
+  gatherNarrowingEvidenceCore ψ outs (solve ψ) rfl (unique ψ outs) rfl
+
+theorem gatherNarrowingEvidenceCore_eq {sv : SolveVerdict} {uv : UniqueVerdict}
+    (hσ : solve ψ = sv) (hu : unique ψ outs = uv) :
+    gatherNarrowingEvidenceCore ψ outs (solve ψ) rfl (unique ψ outs) rfl =
+    gatherNarrowingEvidenceCore ψ outs sv hσ uv hu := by
+  subst hσ
+  subst hu
+  rfl
+
+theorem gatherNarrowingEvidence_witness_some {ψ : ExistsProblem} {outs : List Count} {σ : Assign}
+    (hσ : solve ψ = .witness σ)
+    (hu : unique ψ outs = .multiple ∨ unique ψ outs = .unknown) :
+    gatherNarrowingEvidence ψ outs = .some_ σ hσ := by
+  unfold gatherNarrowingEvidence
+  rcases hu with hu | hu
+  · rw [gatherNarrowingEvidenceCore_eq hσ hu]
+    rfl
+  · rw [gatherNarrowingEvidenceCore_eq hσ hu]
+    rfl
+
+theorem gatherNarrowingEvidence_witness_unique {ψ : ExistsProblem} {outs : List Count} {σ : Assign}
+    (hσ : solve ψ = .witness σ) (hu : unique ψ outs = .unique) :
+    gatherNarrowingEvidence ψ outs = .unique σ hσ hu := by
+  unfold gatherNarrowingEvidence
+  rw [gatherNarrowingEvidenceCore_eq hσ hu]
+  rfl
 
 /-- Success of force-subtype style narrowing (no Core/toy Ty here). -/
 inductive ForceOk where
