@@ -1,4 +1,5 @@
 import FHM.Bounds.Synth
+import FHM.Bounds.Escape
 import FHM.Pretty
 
 /-!
@@ -97,10 +98,11 @@ def checkLetSpine
             let β1 ← checkBounds Δ bctx' rhs' τ
             meetMono i β1 ann
             let βPinned ← pinHoles ann β1
-            pure (BoundsTy.packScheme? βPinned)
+            let residual := BoundsTy.escapeResidualCons? βPinned β1
+            BoundsTy.packAtEscape Δ βPinned residual
     | _ => do
         let β1 ← checkBounds Δ bctx' rhs' τ
-        pure (BoundsTy.packScheme? β1)
+        BoundsTy.packAtEscape Δ β1 []
   match e with
   | .letIn (some σ) rhs body => do
       let nBind := binderEnv.length

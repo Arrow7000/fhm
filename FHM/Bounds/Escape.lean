@@ -4,8 +4,10 @@ import FHM.Bounds.Typing
 /-!
 # R3 — Escape classification for free count outs (API / props)
 
-**Status:** executable skeleton + theorem *statements* (proofs: fill next).
-Wire residual construction + `Check` pack path after this API is green.
+**Status:** wired on `Check` pack path via `packAtEscape`; vacuous residual
+(`cons = []`) preserves today’s `packScheme?` behaviour. Residual construction
+from pinned ascriptions is best-effort (`escapeResidualCons?`); full affine-app
+mid-case bands are follow-up.
 
 At **output-visible escape** (top binder β / program body β), free inferable counts
 must be classified before we print or generalise them (design memo §5 F):
@@ -195,22 +197,66 @@ theorem classifyEscape_sound_vacuous (k : PolicyKind) (ψ : ExistsProblem)
     · rw [classifyEscape_vacuous_empty_cons k ψ outs houts h]
       exact EscapeClassifies.vacuous_empty_cons houts h
 
-/-! ## Check integration contract (not wired)
+/-! ## Sub residual goals (BLSketch-style; BoundsTy) -/
 
-After pin/synth of a top binder β, with residual goals `cons` from mid-case sites:
+mutual
+/-- Interval/element Sub goals when demand `β'` accepts synth `β` (mirrors `subConstraints`). -/
+partial def BoundsTy.subConstraints? (β' β : BoundsTy) : Option (List Constraint) :=
+  match β', β with
+  | .prim p, .prim q => if p == q then some [] else none
+  | .bvar i, .bvar j => if i == j then some [] else none
+  | .fvar i, .fvar j => if i == j then some [] else none
+  | .list lo hi e, .list lo' hi' e' =>
+      match BoundsTy.subConstraints? e' e with
+      | none => none
+      | some cs =>
+        if lo == lo' && hi == hi' then
+          some cs
+        else if lo'.isDemandOK && hi'.isDemandOK then
+          some (cs ++ [⟨lo', lo⟩, ⟨hi, hi'⟩])
+        else
+          none
+  | .arrow a b, .arrow a' b' =>
+      match BoundsTy.subConstraints? a' a, BoundsTy.subConstraints? b b' with
+      | some cs₁, some cs₂ => some (cs₁ ++ cs₂)
+      | _, _ => none
+  | .custom n as, .custom m bs =>
+      if n == m && as.length == bs.length then
+        subConstraintsAll? as bs
+      else
+        none
+  | _, _ => none
 
-```
-let outs := β.escapeOuts
-let ψ := β.escapeProblem Δ cons
-match classifyEscapeDefault ψ outs with
-| .vacuousGeneralise => packScheme? β
-| .uniqueCommit σ => … apply σ …
-| .multiModelReject => throw "bounds: non-unique lengths on escape; add a let ascription"
-| .unsatReject => throw "bounds: unsatisfiable bounds on escape"
-```
+partial def subConstraintsAll? (as bs : List BoundsTy) : Option (List Constraint) :=
+  match as, bs with
+  | [], [] => some []
+  | a :: as, b :: bs =>
+      match BoundsTy.subConstraints? a b, subConstraintsAll? as bs with
+      | some cs₁, some cs₂ => some (cs₁ ++ cs₂)
+      | _, _ => none
+  | _, _ => none
+end
 
-**Gap:** Check does not yet accumulate `cons` for free outs (affine app bands,
-exact-length inst bands). R3 wire = produce those constraints + call classify.
--/
+/-- Best-effort residual goals when pinned demand `β'` meets origin-synth `β`.
+    Empty when intervals agree or demand bounds are not `DemandOK`. -/
+def BoundsTy.escapeResidualCons? (β' β : BoundsTy) : List Constraint :=
+  (BoundsTy.subConstraints? β' β).getD []
+
+/-! ## Check pack path -/
+
+/-- Classify free outs under residual goals, then pack or reject.
+    Empty residual cons ⇒ vacuousGeneralise ⇒ `packScheme?` (today's behaviour).
+    multiModelReject / unsatReject ⇒ `Except.error` with clear message. -/
+def BoundsTy.packAtEscape (Δ : List Constraint) (β : BoundsTy)
+    (residualCons : List Constraint := []) : Except String BoundBinding :=
+  let outs := β.escapeOuts
+  let ψ := β.escapeProblem Δ residualCons
+  match classifyEscapeDefault ψ outs with
+  | .vacuousGeneralise => pure (packScheme? β)
+  | .uniqueCommit _ => pure (packScheme? β)
+  | .multiModelReject =>
+      throw "bounds: non-unique lengths on escape; add a let ascription with solid BL bounds"
+  | .unsatReject =>
+      throw "bounds: unsatisfiable bounds on escape"
 
 end FHM.Bounds
