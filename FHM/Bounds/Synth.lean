@@ -1,8 +1,9 @@
 import FHM.Bounds.Typing
+import FHM.Bounds.Escape
 import FHM.Pretty
 
 /-!
-# Executable HasBounds synthesizer (slices 4–7 + J1)
+# Executable HasBounds synthesizer (slices 4–7 + J1 + R3 residual)
 
 Origin-based Core → `BoundsTy` walk mirroring declarative `HasBounds`.
 Does **not** invent list intervals from bare `List` (D22). Nil’s `[0,0]` is an
@@ -12,11 +13,23 @@ instantiate at var use via `BoundBinding.scheme`.
 **Match results:** List scrutinees use `synthMatch` (path refine + join). Non-List
 multi-arm (`if`/Bool/…) uses `synthJoinArms` / `synthJoinArmsAt` — synth/check
 each arm, `joinBoundsTy` (min lo / max hi). Coverage stays HM / `coreCtorCoverage`.
+
+**R3 residual:** app meets may accumulate Exists Sub goals (`meetForApp`) into a
+`ResM` state; Check pack feeds them to `packAtEscape` for uniqueOnly.
 -/
 
 namespace FHM.Bounds.Synth
 
 open FHM.Bounds
+
+/-- Residual accumulator for app-meet Exists goals (R3). -/
+abbrev ResM := StateT (List Constraint) (Except String)
+
+def emitResidual (cs : List Constraint) : ResM Unit :=
+  if cs.isEmpty then pure () else modify (fun r => r ++ cs)
+
+def runRes (x : ResM α) : Except String (α × List Constraint) :=
+  StateT.run x []
 
 /-- Forget intervals — recover an HM spine from `BoundsTy` (for app domain types). -/
 def BoundsTy.toTy : BoundsTy → Ty
@@ -160,6 +173,44 @@ private def prettyβ : BoundsTy → String
       let nm := match n with | .mk s => s
       if as.isEmpty then nm
       else nm ++ " " ++ String.intercalate " " (as.map prettyβ)
+
+/-- App domain meet: pin exact fresh demands, else Exists residual (R3 mid-case).
+
+* `checkSub` / `checkSubInst` success → pins (may be empty), residual `[]`.
+* Else `subConstraints?` + `solve` sat → **no pin**, residual goals (free outs
+  stay free until `packAtEscape` uniqueOnly).
+* Unsat / shape fail → error.
+-/
+def meetForApp (Δ : List Constraint) (got want : BoundsTy) :
+    Except String (List (Nat × Count) × List Constraint) := do
+  let pins := collectInstPins got want
+  if checkSub Δ got want then
+    pure (pins, [])
+  else if checkSubInst Δ got want then
+    pure (pins, [])
+  else
+    match BoundsTy.subConstraints? want got with
+    | none =>
+        throw s!"bounds: argument {prettyβ got} does not meet function domain {prettyβ want}"
+    | some cs =>
+        if cs.isEmpty then
+          throw s!"bounds: argument {prettyβ got} does not meet function domain {prettyβ want}"
+        else
+          let vs := constraintsInferVars cs
+          let ψ := mkEscapeProblem Δ vs cs
+          match solve ψ with
+          | .witness _ => pure ([], cs)
+          | .unsat | .unknown =>
+              throw s!"bounds: argument {prettyβ got} does not meet function domain {prettyβ want}"
+
+/-- ResM wrapper: emit residual, return pins. -/
+def meetForAppM (Δ : List Constraint) (got want : BoundsTy) :
+    ResM (List (Nat × Count)) := do
+  match meetForApp Δ got want with
+  | .error e => throw e
+  | .ok (pins, res) => do
+      emitResidual res
+      pure pins
 
 /-- Pin ascription count hole to the synth Count; keep solid ascription counts. -/
 def pinCount : AnnoCount → Count → Count
@@ -339,7 +390,7 @@ mutual
 `inferLetRecGroup`. -/
 def inferLetRecGroupCore (Δ : List Constraint) (bctxRec : BoundEnv) (Φ : Nat)
     (anns : List (Option PolyTy)) (bindings : List Expr) :
-    Except String (Nat × List BoundsTy) :=
+    ResM (Nat × List BoundsTy) :=
   match anns, bindings with
   | [], [] => pure (Φ, [])
   | ann? :: anns', rhs :: bindings' => do
@@ -357,7 +408,7 @@ decreasing_by all_goals (simp_wf; simp [Expr.sizeRecGroup, Expr.size]; try omega
 /-- List match: Nil+Cons join (either arm order), or single-branch under oracle. -/
 def synthMatch (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
     (_α : Ty) (lo hi : Count) (βe : BoundsTy)
-    (brs : List (MatchPattern × Expr)) : Except String (Nat × Ty × BoundsTy) :=
+    (brs : List (MatchPattern × Expr)) : ResM (Nat × Ty × BoundsTy) :=
   match brs with
   | [(.named n 0, eNil), (.named c 2, eCons)] => do
       unless n == nilCtorName && c == consCtorName do
@@ -407,7 +458,7 @@ Coverage is HM exhaustiveness (and `checkProgramMatches` ctor coverage) — not 
 First arm is inferred (anchors result τ); remaining arms are checked at that τ
 then joined — same discipline as List `synthMatch` Nil+Cons. -/
 def synthJoinArms (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
-    (brs : List (MatchPattern × Expr)) : Except String (Nat × Ty × BoundsTy) :=
+    (brs : List (MatchPattern × Expr)) : ResM (Nat × Ty × BoundsTy) :=
   match brs with
   | [] => throw "bounds: empty match"
   | [(pat, e)] =>
@@ -426,7 +477,7 @@ decreasing_by all_goals (first
 
 /-- Check remaining non-List arms at fixed `τ`, joining their βs. -/
 def synthJoinArmsAt (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (τ : Ty)
-    (brs : List (MatchPattern × Expr)) : Except String (Nat × BoundsTy) :=
+    (brs : List (MatchPattern × Expr)) : ResM (Nat × BoundsTy) :=
   match brs with
   | [] => throw "bounds: empty match arms"
   | [(pat, e)] => do
@@ -445,25 +496,23 @@ decreasing_by all_goals (first
   | exact size_lt_sizeBranches_one
   | (try simp only [Expr.sizeBranches]; omega))
 
-/-- Check mode for generic `f arg` (infer fn spine, check arg). -/
+/-- Check mode for generic `f arg` (infer fn spine, check arg). R3 residual via meetForAppM. -/
 def checkBoundsApp (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
-    (f arg : Expr) (τ : Ty) : Except String (Nat × BoundsTy) := do
+    (f arg : Expr) (τ : Ty) : ResM (Nat × BoundsTy) := do
   let (Φ1, τf, βf) ← inferBoundsΦ Δ bctx Φ f
   match τf, βf with
   | .arrow τa τr, .arrow βa βr => do
       -- HM types already checked by Infer; bounds spine may use bvar/fvar stubs.
       let (Φ2, βa') ← checkBoundsΦ Δ bctx Φ1 arg τa
-      unless checkSubInst Δ βa' βa do
-        throw s!"bounds: argument {prettyβ βa'} does not meet function domain {prettyβ βa}"
-      -- Pin fresh scheme counts from the arg meet into the result spine.
-      pure (Φ2, βr.substInferables (collectInstPins βa' βa))
+      let pins ← meetForAppM Δ βa' βa
+      pure (Φ2, βr.substInferables pins)
   | _, _ => throw "bounds: applying a non-function"
 termination_by f.size + arg.size
 decreasing_by all_goals (simp_wf; have := Expr.size_pos arg; have := Expr.size_pos f; omega)
 
 /-- Infer mode: synthesize both HM spine and bounds; thread freshness `Φ`. -/
 def inferBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (e : Expr) :
-    Except String (Nat × Ty × BoundsTy) :=
+    ResM (Nat × Ty × BoundsTy) :=
   match e with
   | .primLit p =>
       pure (Φ, PrimLitExpr.ty p, boundInfoOfPrimLit p)
@@ -496,9 +545,8 @@ def inferBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (e : Expr)
         match τf, βf with
         | .arrow τa τr, .arrow βa βr => do
             let (Φ2, βa') ← checkBoundsΦ Δ bctx Φ1 y τa
-            unless checkSubInst Δ βa' βa do
-              throw s!"bounds: argument {prettyβ βa'} does not meet function domain {prettyβ βa}"
-            pure (Φ2, τr, βr.substInferables (collectInstPins βa' βa))
+            let pins ← meetForAppM Δ βa' βa
+            pure (Φ2, τr, βr.substInferables pins)
         | _, _ =>
             throw "bounds: applying a non-function"
   | .app f arg => do
@@ -506,9 +554,8 @@ def inferBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (e : Expr)
       match τf, βf with
       | .arrow τa τr, .arrow βa βr => do
           let (Φ2, βa') ← checkBoundsΦ Δ bctx Φ1 arg τa
-          unless checkSubInst Δ βa' βa do
-            throw s!"bounds: argument {prettyβ βa'} does not meet function domain {prettyβ βa}"
-          pure (Φ2, τr, βr.substInferables (collectInstPins βa' βa))
+          let pins ← meetForAppM Δ βa' βa
+          pure (Φ2, τr, βr.substInferables pins)
       | _, _ =>
           throw "bounds: applying a non-function"
   | .lambda paramAnn body => do
@@ -552,7 +599,7 @@ decreasing_by all_goals (
 
 /-- Check mode: given expected `τ`, synthesize `β`; thread freshness `Φ`. -/
 def checkBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
-    (e : Expr) (τ : Ty) : Except String (Nat × BoundsTy) := do
+    (e : Expr) (τ : Ty) : ResM (Nat × BoundsTy) := do
   match e with
   | .primLit p => do
       -- HM type already checked by Infer; bounds are prim-shaped.
@@ -652,18 +699,32 @@ end
 def inferLetRecGroup (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
     (anns : List (Option PolyTy)) (bindings : List Expr) :
     Except String (Nat × List BoundsTy) :=
-  inferLetRecGroupCore Δ (anns.map letRecProvisional ++ bctx) Φ anns bindings
+  match runRes (inferLetRecGroupCore Δ (anns.map letRecProvisional ++ bctx) Φ anns bindings) with
+  | .error e => .error e
+  | .ok (x, _) => .ok x
+
+/-- Infer with residual (R3). -/
+def inferBoundsWithRes (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) :
+    Except String (Ty × BoundsTy × List Constraint) := do
+  let ((_, τ, β), res) ← runRes (inferBoundsΦ Δ bctx 0 e)
+  pure (τ, β, res)
 
 /-- Infer without exposing freshness (starts at `Φ = 0`). -/
 def inferBounds (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) :
     Except String (Ty × BoundsTy) := do
-  let (_, τ, β) ← inferBoundsΦ Δ bctx 0 e
+  let (τ, β, _) ← inferBoundsWithRes Δ bctx e
   pure (τ, β)
+
+/-- Check with residual Exists goals from app meets (R3 pack path). -/
+def checkBoundsWithRes (Δ : List Constraint) (bctx : BoundEnv)
+    (e : Expr) (τ : Ty) : Except String (BoundsTy × List Constraint) := do
+  let ((_, β), res) ← runRes (checkBoundsΦ Δ bctx 0 e τ)
+  pure (β, res)
 
 /-- Check without exposing freshness (starts at `Φ = 0`). -/
 def checkBounds (Δ : List Constraint) (bctx : BoundEnv)
     (e : Expr) (τ : Ty) : Except String BoundsTy := do
-  Prod.snd <$> checkBoundsΦ Δ bctx 0 e τ
+  Prod.fst <$> checkBoundsWithRes Δ bctx e τ
 
 /-- Top-level entry: synth `β` for `e` at HM type `τ`. -/
 def synthBounds (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) (τ : Ty) :
@@ -673,11 +734,10 @@ def synthBounds (Δ : List Constraint) (bctx : BoundEnv) (e : Expr) (τ : Ty) :
 /-- Check against demanded β (executable `CheckBounds.ofSub`).
 
 For λ with demanded `.arrow βp βb`, push `βp` from ascription (no List invention).
-Peels Infer’s singleton `letRec` wrapper (`let f = (let rec f = λ… in f)`).
-Peels List match arms under path-Δ / `consBoundEnv`, and nullary 2-arm matches
-(Bool `if`) under the same demand. -/
+Peels Infer’s singleton `letRec` wrapper. Residual from nested apps is accumulated
+in `ResM` (usually discarded by `checkAgainst`). -/
 def checkAgainstΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
-    (e : Expr) (τ : Ty) (β : BoundsTy) : Except String Nat := do
+    (e : Expr) (τ : Ty) (β : BoundsTy) : ResM Nat := do
   match e, τ, β with
   | .lambda _ body, .arrow _τp τb, .arrow βp βb =>
       checkAgainstΦ Δ (BoundEnv.extend bctx βp) Φ body τb βb
@@ -732,8 +792,8 @@ def checkAgainstΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
           pure Φ2
   | _, _, _ => do
       let (Φ1, β') ← checkBoundsΦ Δ bctx Φ e τ
-      unless checkSubInst Δ β' β do
-        throw s!"bounds: synthesized {prettyβ β'} does not meet demand {prettyβ β}"
+      -- Prefer residual meet at final Sub (same as app); pin when possible.
+      let _pins ← meetForAppM Δ β' β
       pure Φ1
 termination_by e.size
 decreasing_by all_goals (first
@@ -744,5 +804,5 @@ decreasing_by all_goals (first
 
 def checkAgainst (Δ : List Constraint) (bctx : BoundEnv)
     (e : Expr) (τ : Ty) (β : BoundsTy) : Except String Unit := do
-  let _ ← checkAgainstΦ Δ bctx 0 e τ β
+  let _ ← runRes (checkAgainstΦ Δ bctx 0 e τ β)
   pure ()

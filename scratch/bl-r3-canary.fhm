@@ -1,92 +1,29 @@
 -- R3 canary — multi-model vs unconstrained free vs unique interval type.
 -- Run: .lake/build/bin/fhm run --bl scratch/bl-r3-canary.fhm
+-- Fail mid-case: .lake/build/bin/fhm run --bl scratch/bl-r3-mid-fail.fhm
 --
--- Sources: original BL spec gist §3.3 / §4.5; BLSketch forceSubtype + uniqueOnly.
+-- Policy (memo §5 F): uniqueness is elaborator policy (uniqueOnly at escape).
 --
--- ═══════════════════════════════════════════════════════════════════════════
--- Three cases (gist §4.5 “Ambiguous synthesis”)
--- ═══════════════════════════════════════════════════════════════════════════
+--   Vacuous free     residual empty → generalise ∀                              OK
+--   Unique ground    residual sat + unique outs → commit σ                     OK
+--   Mid-case multi   residual sat, |models| > 1 → reject + ask let-ascription  FAIL
 --
---   Vacuous free     residual tautology / no residual → generalise ∀        OK
---   Unique ground    exactly one model of outs → pin/commit                 OK
---   Mid-case multi   residual sat, |models| > 1 → NOT bare ∀, NOT silent pick
---                    uniqueOnly reject / demand annotation / chooser
+-- NOT mid-case: join → unique *range type* BL 1 3 (endpoints determined).
 --
--- NOT mid-case: join → unique *range type* BL 1 3 (type determined; no free outs).
+-- Residual factory: Synth app meet (`meetForApp`) accumulates Exists Sub goals
+-- when demand is DemandOK but not exact-pin (e.g. affine BL x (2*x)). Check pack
+-- passes them to `packAtEscape`. Empty residual ⇒ still vacuous generalise.
 --
--- Declarative typing only needs *some* witness. Uniqueness = elaborator policy.
---
--- ═══════════════════════════════════════════════════════════════════════════
--- Why dual-stack doesn’t show mid-case yet
--- ═══════════════════════════════════════════════════════════════════════════
---
--- Live Check at escape: Sub (∀) / pin concrete / join / packScheme all frees → ∀.
--- No ExistsProblem on residual free outs, no solve+unique at pack.
--- That *hides* mid-case; it does not erase it from the vision (gist §4.5).
---
--- Expressible after R3: residual Δ + classify free outs at escape + Commit.uniqueOnly.
---
--- ═══════════════════════════════════════════════════════════════════════════
--- Multi-model examples (vision / sketch; not all runnable as Live surface today)
--- ═══════════════════════════════════════════════════════════════════════════
---
--- --- Example A: free source interval into solid domain (forceSubtype / app) ---
---
---   f   : BL 3 5 α → β
---   arg : BL ?lo ?hi α          -- free from prior holes / unascribed synth
---   app f arg
---
---   Residual (from BL ?lo ?hi <: BL 3 5):
---     3 ≤ ?lo  ∧  ?hi ≤ 5  (+ interval hygiene)
---   Models for outs [?lo,?hi]: e.g. (3,3),(3,4),(3,5),(4,4),(4,5),(5,5), …
---   uniqueOnly on those outs → REJECT (multiple)
---   Bare ∀ lo hi → would drop the residual band (unsound if residual non-vacuous)
---   Alternative elaborator product: retype arg as hull BL 3 5 (unique *range type*,
---   different from committing one model of ?lo,?hi)
---
--- --- Example B: ascription with affine holes (BLSketch linearAmbiguous spirit) ---
---
---   e ↝ BL 10 10 α
---   (e : BL ?x (2 * ?x))
---
---   Residual: BL 10 10 <: BL ?x (2*?x)  ⇒  ?x ≤ 10 ∧ 10 ≤ 2*?x  ⇒  5 ≤ ?x ≤ 10
---   Models for ?x: {5,6,7,8,9,10}  — finite, >1
---   uniqueOnly on escape outs [?x, 2*?x] → REJECT
---   ∀ x loses the band; hull BL 5 10 is a different type than BL x (2x)
---
--- --- Example C: product factors (oracle already demos multiple on [?a,?b]) ---
---
---   ∃ ?a ?b.  ?a * ?b = 12
---   outs = [?a,?b]  → models factor pairs (1,12),(2,6),(3,4),… → multiple
---   outs = [?a*?b]  → always 12 → unique
---   Interval hull on each factor alone loses the product coupling.
---
--- --- Example D: mid-band exact length at escape (R3 primary canary) ---
---
---   free out k with residual  1 ≤ k ≤ 5
---   export mono exact BL k k  (commit one k)
---   models {1,2,3,4,5} → uniqueOnly REJECT
---   Contrast: export range type BL 1 5 = unique type (OK); ∀ k = drops band (unsound)
---
---   -- fantasy surface once residual Δ survives to escape:
---   -- let midEscape = \xs -> fantasyReturnExactLengthInBand xs 1 5
---   -- midEscape
---   -- expect: [bounds] non-unique length(s) on escape
---
--- --- Example E: sum partition ---
---
---   ∃ ?p ?q.  ?p + ?q = 7
---   outs = [?p,?q] → many partitions → multiple
---
--- ═══════════════════════════════════════════════════════════════════════════
--- Runnable today (not multi-model commit)
--- ═══════════════════════════════════════════════════════════════════════════
+-- Canonical mid-case (memo §5 F example 1) lives in bl-r3-mid-fail.fhm:
+--   f : {x} BL x (2*x) Int → BL x (2*x) Int
+--   e : BL 10 10 Int
+--   f e  ⇒  5 ≤ ?x ≤ 10 on free result  ⇒  uniqueOnly reject
 
--- (1) Vacuous free → generalise (should stay OK after R3)
+-- (1) Vacuous free → generalise (must stay OK)
 let listId : BL _ _ Int -> BL _ _ Int =
   \xs -> xs
 
--- (2) Join → unique range type BL 1 3 (not free ?n; not multi-model commit)
+-- (2) Join → unique range type BL 1 3 (not multi-model commit)
 let eitherLen =
   \b ->
     if b then

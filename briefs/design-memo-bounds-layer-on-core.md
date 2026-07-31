@@ -1,6 +1,6 @@
 # Design memo: bounds layer on Core (B′)
 
-**Status:** dual-stack BL under `--bl` product-usable (J1–R2 Done; **R3 partial** — pack path wired, residual factory open). **Merged into `fhm`.** Next: **finish R3 residual mid-case** (§5 B handoff), then E2E gate, then editor/LSP + playground/CI.  
+**Status:** dual-stack BL under `--bl` product-usable (J1–**R3 Done**). **Merged into `fhm`.** Next: **Slice 9 E2E gate**, then editor/LSP + playground/CI.  
 **Updated:** 2026-07-31  
 **Repo:** `/Users/aron/dev/fhm` (optional `FHMBounds` package; default FHM stays pure).  
 **This doc’s job:** living plan for work yet to do + locked design. History is compacted below; detail lives in git.
@@ -8,10 +8,10 @@
 **BL sandbox history:** Jul 2026 bounds work was done in a temporary clone `/Users/aron/dev/blt`, then merged back here. Code/docs in `fhm` are current. For *chat* context (design debates, false starts), search Cursor/Grok conversations / agent transcripts from the **`blt` workspace** (`~/.cursor/projects/Users-aron-dev-blt/agent-transcripts/`), not only `fhm`. Prefer this memo + git for decisions; use blt chats when reconstructing “why.”
 
 **Handoff (cold start):**
-1. Read §§1–2 (hard nos), **§5 B + F** (R3 policy + mid-case examples), then `FHM/Bounds/Escape.lean` module header.  
-2. Smoke: `lake build fhm FHMBounds` · `.lake/build/bin/fhm run --bl scratch/bl-stdlib.fhm` · `… bl-showcase.fhm` (expect `listId : ∀ n m. …`).  
-3. **Next work = finish R3** — residual factory + mid-case reject (see §5 B “R3 handoff” below). Do not reopen D1–D2/D22.  
-4. Key code: `FHM/Bounds/Escape.lean`, `Check.lean` (`packAtEscape`), `Commit.lean`, `Synth.lean` (app/inst); Live display in `Live.lean` / `Report.lean`.
+1. Read §§1–2 (hard nos), **§5 B + F** (R3 policy), then `FHM/Bounds/Escape.lean` / `Synth.meetForApp`.  
+2. Smoke: `lake build fhm FHMBounds` · `.lake/build/bin/fhm run --bl scratch/bl-stdlib.fhm` · `… bl-showcase.fhm` · `… bl-r3-canary.fhm` (green) · `… bl-r3-mid-fail.fhm` (expect non-unique escape reject).  
+3. **Next work = Slice 9 E2E gate** over `scratch/bl-*`. Do not reopen D1–D2/D22.  
+4. Key code: `Synth.meetForApp` / `ResM`, `Escape.packAtEscape`, `Check` binder pack; Live/Report display.
 
 **Related:** `design-memo-collapse-bl-axioms-to-z3.md` · `design-p1-bounds-kernel-api.md` · `next-agent-brief-type-holes.md` (orthogonal)
 
@@ -140,52 +140,31 @@ Sticky notes from day-to-day use. Promote into §5 B/C only when tackling that t
 | **J1** | Non-List multi-arm **result join** in origin synth (`if`/Bool/… → join arm βs) | **Done** — `synthJoinArms` / `synthJoinArmsAt`; unascribed `pick` → `BL 1 3`; see `scratch/bl-join-if.fhm` |
 | **R1** | Hole anns → push **pinned** template into `bctx` | **Done** — pin-meet then `pinHoles` into env (same interface as solid); `scratch/bl-r1-pin-env*.fhm` |
 | **R2** | Head-binder `(xs : BL …)` fold into demand | **Done** — `foldHeadParamAnns` in erase; ofLower gets full arrow; `scratch/bl-r2-head-binder.fhm` |
-| **R3** | Detect **non-vacuous multi-model** free counts at escape; **reject + ask for let-ascription** (uniqueOnly) | **Partial** — see **R3 handoff** below + §5 F |
+| **R3** | Detect **non-vacuous multi-model** free counts at escape; **reject + ask for let-ascription** (uniqueOnly) | **Done** — see below + §5 F |
 | **R4** | Pair-match demand peel | Medium |
 | **R5** | Declarative `HasBounds.letMono` align | Low |
 | **R6** | Nested BoundCovers path-Δ | Medium |
 
-#### R3 handoff (for the next agent)
+#### R3 (Done 2026-07-31)
 
-**Done:**
-- Policy locked in **§5 F** (what is / isn’t mid-case; reject + let-ascription).
-- `FHM/Bounds/Commit.lean` — `uniqueOnly`, `gatherNarrowingEvidence`, `decideCommit` (+ witness lemmas).
-- `FHM/Bounds/Escape.lean` — `EscapeVerdict`, `classifyEscape` / `classifyEscapeDefault`, theorems; **`packAtEscape`**; best-effort `subConstraints?` / `escapeResidualCons?`.
-- `Check.checkBinderRhs` calls `packAtEscape` (unascribed: residual `[]`; hole pin: residual from pin-vs-synth when available).
-- Vacuous path unchanged: free lengths still pack to `∀` (e.g. showcase `listId`).
+**Product:**
+- `Synth.meetForApp` — pin exact fresh demands, else Exists residual via `subConstraints?` + `solve` (affine / DemandOK bands).
+- Residual threaded in `ResM` (`StateT (List Constraint)`); `checkBoundsWithRes` → `packAtEscape`.
+- `uniqueOnly` multi → clear reject; `uniqueCommit σ` applies `σ` then packs.
+- Demos: `scratch/bl-r3-mid-fail.fhm` (reject); `bl-r3-canary.fhm` vacuous+join green; stdlib/showcase green.
 
-**Not done (this is the work):**
-1. **Residual factory for real mid-case** — non-empty `cons` when free outs sit under a non-vacuous band, especially:
-   - Affine app / scheme inst: `f : {x} BL x (2*x) _ → BL x (2*x) _`, `e : BL 10 10 _`, result of `f e` mentions `?x` with `5 ≤ ?x ≤ 10` (§5 F example 1).
-   - Exact-length inst + residual band on shared `?n` (§5 F example 2).
-   - Pattern: BLSketch `subtypeProblem` / `forceSubtype` — dual-stack needs an equivalent that **accumulates or re-derives** residual constraints at app/ascription, not only pin-vs-synth at binder pack.
-2. **Thread residual into `packAtEscape`** at those sites (API already takes `residualCons`; Check often passes `[]` today → always vacuous → never multi-reject).
-3. **Surface demo** that **fails** uniqueOnly for the right reason; keep green: stdlib, showcase, `listId` ∀, join `BL 1 3`.
-4. Optional: apply `uniqueCommit σ` to ground β (today unique still packs); expand `EscapeClassifies` beyond vacuous constructors.
-
-**Call sites today:**
-| Location | Behaviour |
-|----------|-----------|
-| `Check` hole-pin pack | `escapeResidualCons? βPinned β1` then `packAtEscape` |
-| `Check` unascribed pack | `packAtEscape Δ β1 []` |
-| App / scheme-inst result export | **no residual yet** — main gap |
+**Prop-first note:** `EscapeClassifies` remains **partial** (vacuous constructors only). Multi/unique completeness vs `classifyEscape` is post-product hygiene — extend when proving, not before.
 
 **Smoke:**
 ```bash
 lake build fhm FHMBounds
 .lake/build/bin/fhm run --bl scratch/bl-stdlib.fhm
 .lake/build/bin/fhm run --bl scratch/bl-showcase.fhm   # listId : ∀ n m. …
-.lake/build/bin/fhm run --bl scratch/bl-r1-pin-env.fhm
-.lake/build/bin/fhm run --bl scratch/bl-r1-pin-env-fail.fhm  # expect bounds error
+.lake/build/bin/fhm run --bl scratch/bl-r3-canary.fhm
+.lake/build/bin/fhm run --bl scratch/bl-r3-mid-fail.fhm  # expect non-unique escape
 ```
 
-**Done when:**
-- [ ] Mid-case residual non-empty for §5 F example (1) or (2) at escape
-- [ ] `uniqueOnly` rejects with clear “non-unique…; add a let ascription…” message
-- [ ] Vacuous `listId` / stdlib / showcase still green
-- [ ] Memo §5 B R3 marked Done; §7 R3 checkbox ticked
-
-**Then:** **Slice 9 — E2E gate suite** over `scratch/bl-*` (CI smoke; locks the fixed surface). Not an adversarial research suite.
+**Next:** **Slice 9 — E2E gate suite** over `scratch/bl-*` (CI smoke; locks the fixed surface).
 
 ### C. Editor / LSP quality (after B spine)
 
@@ -260,7 +239,7 @@ idExact : {n} BL n n α → BL n n α   -- instantiate n ↦ ?n  (lo and hi shar
 
 **R3 = implement that policy on Live Check escape** (detect non-vacuous multi-model free outs → uniqueOnly-style error + let-ascription hatch).
 
-**Today (R3 partial):** classifier + `packAtEscape` are on the binder pack path, but residual `cons` is usually empty → still **vacuous generalise**. Mid-case is not yet *rejected*; it is still mostly *invisible*. Full R3 = residual factory + reject (above).
+**Today (R3 Done):** residual factory at app meet + `packAtEscape` uniqueOnly. Mid-case (1) rejects; vacuous free still generalises.
 
 ---
 
@@ -285,8 +264,8 @@ idExact : {n} BL n n α → BL n n α   -- instantiate n ↦ ?n  (lo and hi shar
 - [x] J1 non-List multi-arm result join (unascribed `if` → join)  
 - [x] R1 hole anns → pinned template in `bctx`  
 - [x] R2 head-binder BL fold into demand  
-- [x] R3 Escape API + `packAtEscape` on Check pack path (vacuous path)  
-- [ ] R3 residual mid-case factory + uniqueOnly reject demo (or explicitly waived)  
+- [x] R3 Escape API + `packAtEscape` on Check pack path  
+- [x] R3 residual mid-case factory + uniqueOnly reject demo (`bl-r3-mid-fail.fhm`)  
 - [ ] Slice 9 E2E gate in CI  
 - [ ] Localized diagnostic spans (MVP)  
 - [ ] Hosted playground + share story decided and shipped  
@@ -296,15 +275,15 @@ idExact : {n} BL n n α → BL n n α   -- instantiate n ↦ ?n  (lo and hi shar
 
 ## 8. One-liner
 
-> **B′:** erase BL to List; origin HasBounds + BoundCovers; schemes; `ProgramReport` display — **next finish R3 residual mid-case → E2E → LSP/playground.**
+> **B′:** erase BL to List; origin HasBounds + BoundCovers; schemes; `ProgramReport` display; R3 uniqueOnly at escape — **next E2E → LSP/playground.**
 
 ---
 
 ## 9. New-agent checklist
 
-1. Read §§1–2 (hard nos), **§5 B + F** (R3 policy + examples), **§5 B “R3 handoff”**, `FHM/Bounds/Escape.lean` header.  
-2. Smoke: `lake build fhm FHMBounds` · `.lake/build/bin/fhm run --bl scratch/bl-stdlib.fhm` · `… bl-showcase.fhm`.  
-3. Work **R3 residual factory** next (not R4+ until R3 Done or waived).  
+1. Read §§1–2 (hard nos), **§5 B + F**, `Synth.meetForApp` / `Escape.packAtEscape`.  
+2. Smoke: `lake build fhm FHMBounds` · bl-stdlib · bl-showcase · bl-r3-canary · bl-r3-mid-fail (expect reject).  
+3. Work **Slice 9 E2E gate** next (then C editor / D playground).  
 4. Do not invent List intervals (D22). Do not fuse bounds into Core Ty. Bounds defs stay **total** (no `partial` under `FHM/Bounds/`).  
 5. Update **§5** / §7 when closing an item.
 

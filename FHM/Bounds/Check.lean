@@ -95,14 +95,15 @@ def checkLetSpine
             -- R1: pin holes from synth, meet, push **pinned** interface (not β1).
             -- Then pack free inferables (same as unascribed) so `?n` never leaks
             -- as mono — unconstrained frees generalise to a scheme.
-            let β1 ← checkBounds Δ bctx' rhs' τ
+            -- Residual: app meets (R3) ++ pin-vs-synth Sub goals.
+            let (β1, appRes) ← checkBoundsWithRes Δ bctx' rhs' τ
             meetMono i β1 ann
             let βPinned ← pinHoles ann β1
-            let residual := BoundsTy.escapeResidualCons? βPinned β1
+            let residual := appRes ++ BoundsTy.escapeResidualCons? βPinned β1
             BoundsTy.packAtEscape Δ βPinned residual
     | _ => do
-        let β1 ← checkBounds Δ bctx' rhs' τ
-        BoundsTy.packAtEscape Δ β1 []
+        let (β1, residual) ← checkBoundsWithRes Δ bctx' rhs' τ
+        BoundsTy.packAtEscape Δ β1 residual
   match e with
   | .letIn (some σ) rhs body => do
       let nBind := binderEnv.length

@@ -1,0 +1,15 @@
+-- R3 mid-case fail canary (memo §5 F example 1).
+-- Expect: bounds error — non-unique lengths on escape; add a let ascription…
+-- Run: .lake/build/bin/fhm run --bl scratch/bl-r3-mid-fail.fhm
+--
+-- f's domain is affine DemandOK (not exact pin). e is exact length 10.
+-- Inst x ↦ ?x yields residual 5 ≤ ?x ≤ 10; result BL ?x (2*?x) free → multi.
+
+let f : {x : Nat} BL x (2 * x) Int -> BL x (2 * x) Int =
+  \xs -> xs
+
+let e : BL 10 10 Int =
+  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+let bad = f e
+bad

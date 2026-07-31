@@ -2,20 +2,24 @@ import FHM.Bounds.Commit
 import FHM.Bounds.Typing
 
 /-!
-# R3 — Escape classification for free count outs (API / props)
+# R3 — Escape classification for free count outs
 
-**Status:** wired on `Check` pack path via `packAtEscape`; vacuous residual
-(`cons = []`) preserves today’s `packScheme?` behaviour. Residual construction
-from pinned ascriptions is best-effort (`escapeResidualCons?`); full affine-app
-mid-case bands are follow-up — **see design memo §5 B “R3 handoff”.**
+**Status:** classifier + `packAtEscape` on Check binder pack. Mid-case needs a
+**non-empty residual** from Synth app/inst meet (`Synth.meetForApp`); empty
+`cons` ⇒ always `vacuousGeneralise` ⇒ same as bare `packScheme?`.
 
-At **output-visible escape** (top binder β / program body β), free inferable counts
-must be classified before we print or generalise them (design memo §5 F):
+**Prop-first:** `EscapeClassifies` is the **partial** declarative spec — only the
+vacuous fragment is filled in so far. Multi / unique / unsat constructors (and
+completeness w.r.t. `classifyEscape`) land once residual mid-case is real.
+Executable `classifyEscape` is the implementation of that (growing) spec.
+
+At **output-visible escape** (binder pack), free inferable counts are classified
+before generalise/print (design memo §5 F):
 
 | Class | Residual on free outs | Dual-stack action |
 |-------|----------------------|-------------------|
 | **vacuous** | no free outs, or residual goals empty | `packScheme?` → `∀` OK |
-| **unique** | sat + unique on outs | may commit witness `σ` |
+| **unique** | sat + unique on outs | commit witness `σ` into β, then pack |
 | **multi** | sat + not unique | **`uniqueOnly` reject** + let-ascription |
 | **unsat** | no witness | reject |
 
@@ -23,10 +27,7 @@ must be classified before we print or generalise them (design memo §5 F):
 `BL 3 5`; vacuous free → `∀`.
 
 Canonical mid-case: `f : {x} BL x (2*x) α → BL x (2*x) β`, `e : BL 10 10 α`, `f e`
-⇒ `5 ≤ ?x ≤ 10`, result mentions `x` → multi models for printed result.
-
-Building residual `ExistsProblem` from dual-stack synth (affine app, exact-length
-inst + band) is **follow-up**; this module defines policy on a **given** `ψ` + `outs`.
+⇒ residual `5 ≤ ?x ≤ 10`, result mentions `x` → multi → reject at pack.
 -/
 
 namespace FHM.Bounds
@@ -120,9 +121,14 @@ def classifyEscape (k : PolicyKind) (ψ : ExistsProblem) (outs : List Count) :
 def classifyEscapeDefault (ψ : ExistsProblem) (outs : List Count) : EscapeVerdict :=
   classifyEscape .uniqueOnly ψ outs
 
-/-! ## Declarative classification (partial; extend with evidence cases) -/
+/-! ## Declarative classification (partial spec)
 
-/-- Spec for vacuous branches of `classifyEscape`. Full evidence cases via theorems. -/
+Only vacuous constructors for now — that is intentional, not complete.
+Once Synth emits non-empty residual at mid-case, extend with multi/unique/unsat
+and prove `classifyEscape` sound/complete against this inductive.
+-/
+
+/-- Partial spec: vacuous fragment of escape classification (see module header). -/
 inductive EscapeClassifies :
     PolicyKind → ExistsProblem → List Count → EscapeVerdict → Prop where
   | vacuous_empty_outs {k ψ} :
@@ -197,27 +203,59 @@ theorem classifyEscape_sound_vacuous (k : PolicyKind) (ψ : ExistsProblem)
     · rw [classifyEscape_vacuous_empty_cons k ψ outs houts h]
       exact EscapeClassifies.vacuous_empty_cons houts h
 
-/-! ## Sub residual goals (BLSketch-style; BoundsTy) -/
+/-! ## Sub residual goals (BLSketch `subtypeProblem` style) -/
+
+/-- Ground inferable slots of `β` under assignment `σ` (unique-commit path). -/
+def Count.applyAssign (σ : Assign) : Count → Count
+  | .lit n => .lit n
+  | .inf => .inf
+  | .var ⟨.inferable, i⟩ => .lit (σ ⟨.inferable, i⟩)
+  | .var v => .var v
+  | .add a b => .add (applyAssign σ a) (applyAssign σ b)
+  | .mul a b => .mul (applyAssign σ a) (applyAssign σ b)
+  | .pred a => .pred (applyAssign σ a)
+  | .min a b => .min (applyAssign σ a) (applyAssign σ b)
+  | .max a b => .max (applyAssign σ a) (applyAssign σ b)
+
+def BoundsTy.applyAssign (σ : Assign) : BoundsTy → BoundsTy
+  | .prim p => .prim p
+  | .bvar i => .bvar i
+  | .fvar i => .fvar i
+  | .arrow d c => .arrow (applyAssign σ d) (applyAssign σ c)
+  | .list lo hi e =>
+      .list (Count.applyAssign σ lo) (Count.applyAssign σ hi) (applyAssign σ e)
+  | .custom n as => .custom n (as.map (applyAssign σ))
 
 mutual
-/-- Interval/element Sub goals when demand `β'` accepts synth `β` (mirrors `subConstraints`). -/
-def BoundsTy.subConstraints? (β' β : BoundsTy) : Option (List Constraint) :=
-  match β', β with
+/-- Exists-style Sub goals: demand `want` accepts synth `got`.
+
+Mirrors `Interval.subGoals` on list endpoints:
+`want.lo ≤ got.lo` and `got.hi ≤ want.hi` when endpoints differ and demand is
+`DemandOK`. Element/arrow walk is the same polarity as `checkSub` (got <: want).
+
+`none` = shape mismatch; `some []` = equal / no residual goals. -/
+def BoundsTy.subConstraints? (want got : BoundsTy) : Option (List Constraint) :=
+  match want, got with
   | .prim p, .prim q => if p == q then some [] else none
   | .bvar i, .bvar j => if i == j then some [] else none
   | .fvar i, .fvar j => if i == j then some [] else none
-  | .list lo hi e, .list lo' hi' e' =>
-      match BoundsTy.subConstraints? e' e with
+  | .list wlo whi we, .list glo ghi ge =>
+      match BoundsTy.subConstraints? we ge with
       | none => none
       | some cs =>
-        if lo == lo' && hi == hi' then
+        if wlo == glo && whi == ghi then
           some cs
-        else if lo'.isDemandOK && hi'.isDemandOK then
-          some (cs ++ [⟨lo', lo⟩, ⟨hi, hi'⟩])
+        else if wlo.isDemandOK && whi.isDemandOK then
+          -- Same inequalities as `Interval.subGoals Δ ⟨glo,ghi⟩ ⟨wlo,whi⟩`.
+          some (cs ++ [⟨wlo, glo⟩, ⟨ghi, whi⟩])
         else
           none
-  | .arrow a b, .arrow a' b' =>
-      match BoundsTy.subConstraints? a' a, BoundsTy.subConstraints? b b' with
+  | .arrow wd wc, .arrow gd gc =>
+      -- Contravariant domain: got.dom accepts want.dom? Sub domain: want.dom <: got.dom
+      -- residual for domain: got is demand for the domain position of want... 
+      -- checkSub: checkSub want.dom got.dom is wrong; checkSub is got <: want overall
+      -- for arrows: checkSub Δ gd wd && checkSub Δ gc wc  i.e. domain flipped.
+      match BoundsTy.subConstraints? gd wd, BoundsTy.subConstraints? wc gc with
       | some cs₁, some cs₂ => some (cs₁ ++ cs₂)
       | _, _ => none
   | .custom n as, .custom m bs =>
@@ -226,36 +264,35 @@ def BoundsTy.subConstraints? (β' β : BoundsTy) : Option (List Constraint) :=
       else
         none
   | _, _ => none
-termination_by sizeOf β' + sizeOf β
+termination_by sizeOf want + sizeOf got
 
-def subConstraintsAll? (as bs : List BoundsTy) : Option (List Constraint) :=
-  match as, bs with
+def subConstraintsAll? (wants gots : List BoundsTy) : Option (List Constraint) :=
+  match wants, gots with
   | [], [] => some []
-  | a :: as, b :: bs =>
-      match BoundsTy.subConstraints? a b, subConstraintsAll? as bs with
+  | w :: ws, g :: gs =>
+      match BoundsTy.subConstraints? w g, subConstraintsAll? ws gs with
       | some cs₁, some cs₂ => some (cs₁ ++ cs₂)
       | _, _ => none
   | _, _ => none
-termination_by sizeOf as + sizeOf bs
+termination_by sizeOf wants + sizeOf gots
 end
 
-/-- Best-effort residual goals when pinned demand `β'` meets origin-synth `β`.
-    Empty when intervals agree or demand bounds are not `DemandOK`. -/
-def BoundsTy.escapeResidualCons? (β' β : BoundsTy) : List Constraint :=
-  (BoundsTy.subConstraints? β' β).getD []
+/-- Residual goals when demand `want` meets synth `got` (`[]` if unavailable). -/
+def BoundsTy.escapeResidualCons? (want got : BoundsTy) : List Constraint :=
+  (BoundsTy.subConstraints? want got).getD []
 
 /-! ## Check pack path -/
 
 /-- Classify free outs under residual goals, then pack or reject.
-    Empty residual cons ⇒ vacuousGeneralise ⇒ `packScheme?` (today's behaviour).
-    multiModelReject / unsatReject ⇒ `Except.error` with clear message. -/
+    Empty residual cons ⇒ vacuousGeneralise ⇒ `packScheme?`.
+    multiModelReject / unsatReject ⇒ clear product error. -/
 def BoundsTy.packAtEscape (Δ : List Constraint) (β : BoundsTy)
     (residualCons : List Constraint := []) : Except String BoundBinding :=
   let outs := β.escapeOuts
   let ψ := β.escapeProblem Δ residualCons
   match classifyEscapeDefault ψ outs with
   | .vacuousGeneralise => pure (packScheme? β)
-  | .uniqueCommit _ => pure (packScheme? β)
+  | .uniqueCommit σ => pure (packScheme? (β.applyAssign σ))
   | .multiModelReject =>
       throw "bounds: non-unique lengths on escape; add a let ascription with solid BL bounds"
   | .unsatReject =>
