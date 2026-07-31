@@ -1,33 +1,97 @@
--- R3 canary notes — multi-model (non-unique) vs unconstrained free.
+-- R3 canary — multi-model vs unconstrained free vs unique interval type.
 -- Run: .lake/build/bin/fhm run --bl scratch/bl-r3-canary.fhm
 --
--- Terminology:
---   * Unconstrained free `?n`  → generalise to `∀ n. …` (OK; not R3's target)
---   * Unique ground             → pin/fold to `BL 2 2` (OK)
---   * Multi-model mid-case      → constraints leave several ground models
---       e.g. outs with sat models {2,7,13} only — Commit uniqueOnly should REJECT
---       if we try to auto-commit one witness. Dual-stack Live does not yet solve
---       free outs at escape, so a failing multi-model demo is not surface-expressible
---       until R3 wires gatherNarrowingEvidence at pack/export.
+-- Sources: original BL spec gist §3.3 / §4.5; BLSketch forceSubtype + uniqueOnly.
 --
--- Below: (1) unconstrained → scheme. (2) unique interval *type* from join
--- (runtime length in 1..3, but the exported type is uniquely BL 1 3 — still OK).
--- (3) placeholder for mid-case once R3 lands.
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Three cases (gist §4.5 “Ambiguous synthesis”)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+--   Vacuous free     residual tautology / no residual → generalise ∀        OK
+--   Unique ground    exactly one model of outs → pin/commit                 OK
+--   Mid-case multi   residual sat, |models| > 1 → NOT bare ∀, NOT silent pick
+--                    uniqueOnly reject / demand annotation / chooser
+--
+-- NOT mid-case: join → unique *range type* BL 1 3 (type determined; no free outs).
+--
+-- Declarative typing only needs *some* witness. Uniqueness = elaborator policy.
+--
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Why dual-stack doesn’t show mid-case yet
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- Live Check at escape: Sub (∀) / pin concrete / join / packScheme all frees → ∀.
+-- No ExistsProblem on residual free outs, no solve+unique at pack.
+-- That *hides* mid-case; it does not erase it from the vision (gist §4.5).
+--
+-- Expressible after R3: residual Δ + classify free outs at escape + Commit.uniqueOnly.
+--
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Multi-model examples (vision / sketch; not all runnable as Live surface today)
+-- ═══════════════════════════════════════════════════════════════════════════
+--
+-- --- Example A: free source interval into solid domain (forceSubtype / app) ---
+--
+--   f   : BL 3 5 α → β
+--   arg : BL ?lo ?hi α          -- free from prior holes / unascribed synth
+--   app f arg
+--
+--   Residual (from BL ?lo ?hi <: BL 3 5):
+--     3 ≤ ?lo  ∧  ?hi ≤ 5  (+ interval hygiene)
+--   Models for outs [?lo,?hi]: e.g. (3,3),(3,4),(3,5),(4,4),(4,5),(5,5), …
+--   uniqueOnly on those outs → REJECT (multiple)
+--   Bare ∀ lo hi → would drop the residual band (unsound if residual non-vacuous)
+--   Alternative elaborator product: retype arg as hull BL 3 5 (unique *range type*,
+--   different from committing one model of ?lo,?hi)
+--
+-- --- Example B: ascription with affine holes (BLSketch linearAmbiguous spirit) ---
+--
+--   e ↝ BL 10 10 α
+--   (e : BL ?x (2 * ?x))
+--
+--   Residual: BL 10 10 <: BL ?x (2*?x)  ⇒  ?x ≤ 10 ∧ 10 ≤ 2*?x  ⇒  5 ≤ ?x ≤ 10
+--   Models for ?x: {5,6,7,8,9,10}  — finite, >1
+--   uniqueOnly on escape outs [?x, 2*?x] → REJECT
+--   ∀ x loses the band; hull BL 5 10 is a different type than BL x (2x)
+--
+-- --- Example C: product factors (oracle already demos multiple on [?a,?b]) ---
+--
+--   ∃ ?a ?b.  ?a * ?b = 12
+--   outs = [?a,?b]  → models factor pairs (1,12),(2,6),(3,4),… → multiple
+--   outs = [?a*?b]  → always 12 → unique
+--   Interval hull on each factor alone loses the product coupling.
+--
+-- --- Example D: mid-band exact length at escape (R3 primary canary) ---
+--
+--   free out k with residual  1 ≤ k ≤ 5
+--   export mono exact BL k k  (commit one k)
+--   models {1,2,3,4,5} → uniqueOnly REJECT
+--   Contrast: export range type BL 1 5 = unique type (OK); ∀ k = drops band (unsound)
+--
+--   -- fantasy surface once residual Δ survives to escape:
+--   -- let midEscape = \xs -> fantasyReturnExactLengthInBand xs 1 5
+--   -- midEscape
+--   -- expect: [bounds] non-unique length(s) on escape
+--
+-- --- Example E: sum partition ---
+--
+--   ∃ ?p ?q.  ?p + ?q = 7
+--   outs = [?p,?q] → many partitions → multiple
+--
+-- ═══════════════════════════════════════════════════════════════════════════
+-- Runnable today (not multi-model commit)
+-- ═══════════════════════════════════════════════════════════════════════════
 
--- (1) Unconstrained frees → generalise (should stay OK after R3 if pack-not-solve)
+-- (1) Vacuous free → generalise (should stay OK after R3)
 let listId : BL _ _ Int -> BL _ _ Int =
   \xs -> xs
 
--- (2) Join of concrete arms → unique type BL 1 3 (range, not free ?n)
+-- (2) Join → unique range type BL 1 3 (not free ?n; not multi-model commit)
 let eitherLen =
   \b ->
     if b then
       [1]
     else
       [1, 2, 3]
-
--- (3) After R3: replace with a case that leaves free outs under non-unique
--- constraints and expects: bounds error "non-unique … on escape".
--- Until then this file only documents (1)+(2).
 
 (listId [1, 2], (eitherLen True, eitherLen False))

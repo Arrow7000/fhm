@@ -70,7 +70,7 @@ FHM is a **verified Hindley–Milner** stack (Core, InferW, PatComp, …) — pe
 
 **Origins of `lo`/`hi`:** Nil/Cons spine · surface ascription · `bctx` · app result · match join · scheme inst. **Not** “HM says List.”
 
-**§2.3 ascription vs `bctx`:** solid anns push **ascribed** β (A+B Done). Residuals R1–R5 in §5.
+**§2.3 ascription vs `bctx`:** solid anns push **ascribed** β (A+B Done). Residuals R1–R2 Done; R3 = multi-model at escape (§5 F).
 
 ---
 
@@ -136,7 +136,7 @@ Sticky notes from day-to-day use. Promote into §5 B/C only when tackling that t
 | **J1** | Non-List multi-arm **result join** in origin synth (`if`/Bool/… → join arm βs) | **Done** — `synthJoinArms` / `synthJoinArmsAt`; unascribed `pick` → `BL 1 3`; see `scratch/bl-join-if.fhm` |
 | **R1** | Hole anns → push **pinned** template into `bctx` | **Done** — pin-meet then `pinHoles` into env (same interface as solid); `scratch/bl-r1-pin-env*.fhm` |
 | **R2** | Head-binder `(xs : BL …)` fold into demand | **Done** — `foldHeadParamAnns` in erase; ofLower gets full arrow; `scratch/bl-r2-head-binder.fhm` |
-| **R3** | Commit **`uniqueOnly`** on output-visible escape | **High** |
+| **R3** | Detect **non-vacuous multi-model** free counts at escape; **reject + ask for let-ascription** (uniqueOnly) | **High** — see §5 F |
 | **R4** | Pair-match demand peel | Medium |
 | **R5** | Declarative `HasBounds.letMono` align | Low |
 | **R6** | Nested BoundCovers path-Δ | Medium |
@@ -177,6 +177,46 @@ No full design yet — spike after R1–R3 / E2E, or a thin “error span” pas
 | Surface nested BoundCovers | D18 |
 | HM type holes / head-binder packing | Separate brief |
 | README “Bounds experimental” | Hygiene |
+
+### F. Multi-model / uniqueness (locked 2026-07-31)
+
+Original gist §4.5 + BLSketch: uniqueness is elaborator policy, not declarative typing. Below is the dual-stack product reading.
+
+**Not multi-model (do not treat as R3):**
+
+| Situation | Why OK |
+|-----------|--------|
+| Join → `BL 1 3` | Unique **range type** (endpoints determined) |
+| Free `BL ?lo ?hi` into demand `BL 3 5` | Principal product is usually hull `BL 3 5` |
+| Vacuous free → `∀ n m. …` | Any Nat; generalise |
+
+**Two concrete mid-cases** (result type depends on which model you commit):
+
+```text
+-- (1) Affine demand + free in result  (canonical; DemandOK-legal)
+e  : BL 10 10 α                    -- concrete length 10
+f  : {x} BL x (2*x) α → BL x (2*x) β   -- e.g. map-shaped; demand is Sub not exact-eq
+f e
+-- instantiate x ↦ ?x; need BL 10 10 <: BL ?x (2*?x)
+-- ⇒ 5 ≤ ?x ≤ 10  (many models)
+-- result type is BL ?x (2*?x) β  →  BL 5 10 vs BL 10 20 vs …  all sound, mutually exclusive prints
+```
+
+```text
+-- (2) Exact-length scheme inst + residual band on shared ?n
+idExact : {n} BL n n α → BL n n α   -- instantiate n ↦ ?n  (lo and hi share ?n)
+-- after use, residual only e.g. 1 ≤ ?n ≤ 5  (band, not a single n)
+-- export mono BL ?n ?n  → models {1,2,3,4,5}; bare ∀ n would drop the band (unsound)
+-- (How ?n appears: scheme inst, not a user rigid ∀ being "solved".)
+```
+
+**Policy (product):** on mid-case at output-visible escape → **reject + ask for let-ascription** (no expr-level `(e : τ)` AST). Do not silent-pick. Vacuous free still generalises. Unique range types still OK.
+
+**DemandOK:** bans multi-inferable-in-one-count on *demands* (`?a*?b`); does not remove mid-case (1).
+
+**R3 = implement that policy on Live Check escape** (detect non-vacuous multi-model free outs → uniqueOnly-style error + let-ascription hatch).
+
+**Today (pre-R3):** dual-stack **does not surface mid-case**. Escape does Sub (∀), pin from concrete, join, or `packScheme?` vacuous frees → `∀`. It never builds an exists-problem over residual free outs and never solve+unique-commits (unlike BLSketch `forceSubtype`). So output-visible ambiguity in the §5 F sense is **not handled** — it is **avoided / invisible**, not rejected with a clear error.
 
 ---
 
