@@ -106,7 +106,12 @@ async function refreshDiagnostics(doc) {
 
     /** @type {vscode.Diagnostic[]} */
     const diags = diagnosticsToMarkers(diagArr).map((m) => {
-      const range = new vscode.Range(m.line0, m.col0, m.line0, m.col0 + 1);
+      const range = new vscode.Range(
+        m.line0,
+        m.col0,
+        m.endLine0,
+        m.endCol0
+      );
       const severity =
         m.severity === "warning"
           ? vscode.DiagnosticSeverity.Warning

@@ -489,19 +489,31 @@ function resolveHover(ranged, line0, col0, lineText) {
 }
 
 /**
- * Map diagnose diagnostics to 0-based marker-like objects.
+ * Map diagnose diagnostics to 0-based marker-like objects (half-open span).
  * @param {any[]} diagArr
- * @returns {{ line0: number, col0: number, message: string, severity: "error" | "warning" }[]}
+ * @returns {{ line0: number, col0: number, endLine0: number, endCol0: number, message: string, severity: "error" | "warning" }[]}
  */
 function diagnosticsToMarkers(diagArr) {
   if (!Array.isArray(diagArr)) return [];
   return diagArr.map((d) => {
     const line0 = Math.max(0, (d.line || 1) - 1);
     const col0 = Math.max(0, (d.col || 1) - 1);
+    let endLine0 = Math.max(0, (d.endLine || d.line || 1) - 1);
+    let endCol0 = Math.max(0, (d.endCol || (d.col || 1) + 1) - 1);
+    // Degenerate / missing end → at least one column.
+    if (
+      endLine0 < line0 ||
+      (endLine0 === line0 && endCol0 <= col0)
+    ) {
+      endLine0 = line0;
+      endCol0 = col0 + 1;
+    }
     const severity = d.severity === "warning" ? "warning" : "error";
     return {
       line0,
       col0,
+      endLine0,
+      endCol0,
       message: d.message || "error",
       severity,
     };

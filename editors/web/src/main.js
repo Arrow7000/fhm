@@ -200,8 +200,8 @@ async function refreshDiagnostics() {
       message: m.message,
       startLineNumber: m.line0 + 1,
       startColumn: m.col0 + 1,
-      endLineNumber: m.line0 + 1,
-      endColumn: m.col0 + 2,
+      endLineNumber: m.endLine0 + 1,
+      endColumn: m.endCol0 + 1,
     }));
     monaco.editor.setModelMarkers(model, "fhm", markers);
     setStatus(markers.length ? `${markers.length} issue(s)` : "ok", markers.length ? "err" : "ok");

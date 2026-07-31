@@ -758,11 +758,13 @@ def collectLitOpSymbols (src : String) (ctors : CtorEnv) : List RangedSymbol :=
           i := i + 1
       return out
 
-/-- One editor diagnostic (1-based line/col, same as parse errors). -/
+/-- One editor diagnostic (1-based half-open span, same as parse / hover symbols). -/
 structure HoverDiag where
   message : String
   line : Nat := 1
   col : Nat := 1
+  endLine : Nat := 1
+  endCol : Nat := 2
   deriving Repr
 
 def HoverDiag.toJson (d : HoverDiag) : Lean.Json :=
@@ -770,7 +772,9 @@ def HoverDiag.toJson (d : HoverDiag) : Lean.Json :=
     ("severity", Lean.Json.str "error"),
     ("message", Lean.Json.str d.message),
     ("line", Lean.Json.num d.line),
-    ("col", Lean.Json.num d.col)
+    ("col", Lean.Json.num d.col),
+    ("endLine", Lean.Json.num d.endLine),
+    ("endCol", Lean.Json.num d.endCol)
   ]
 
 /-- Successful lower+infer hover report. Bounds failures stay here as diagnostics
@@ -792,18 +796,21 @@ def binderNameFromBoundsMsg (msg : String) : Option String :=
       if name.isEmpty then none else some name
   | _ => none
 
-/-- Best-effort span for a bounds message: val binder def site, else file top. -/
-def spanForBoundsMsg (binders : List BinderSpan) (msg : String) : Nat × Nat :=
+/-- Best-effort span for a bounds message: val binder def site, else file top.
+Returns half-open `(startLine, startCol, endLine, endCol)`. -/
+def spanForBoundsMsg (binders : List BinderSpan) (msg : String) :
+    Nat × Nat × Nat × Nat :=
   match binderNameFromBoundsMsg msg with
-  | none => (1, 1)
+  | none => (1, 1, 1, 2)
   | some n =>
       match binders.find? fun b => b.kind == .val && b.name == n with
-      | some b => (b.span.startLine, b.span.startCol)
-      | none => (1, 1)
+      | some b =>
+          (b.span.startLine, b.span.startCol, b.span.endLine, b.span.endCol)
+      | none => (1, 1, 1, 2)
 
 def boundsDiag (binders : List BinderSpan) (msg : String) : HoverDiag :=
-  let (line, col) := spanForBoundsMsg binders msg
-  { message := msg, line, col }
+  let (line, col, endLine, endCol) := spanForBoundsMsg binders msg
+  { message := msg, line, col, endLine, endCol }
 
 /-- Full hover report for a parsed program + binder spans + spanned program.
 

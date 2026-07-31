@@ -33,6 +33,21 @@ def unwrapLetRecId : Expr → Expr
 def tyOfBinder (binds : List (ValName × PolyTy)) (n : ValName) : Option Ty :=
   (binds.find? fun ⟨n', _⟩ => n' = n).map fun ⟨_, σ⟩ => σ.body
 
+/-- Tag a bounds error with the surface binder so diagnose can point at its def span.
+Messages that already contain ` for <name>` are left unchanged (ascription path). -/
+def tagBinderErr (n : ValName) (msg : String) : String :=
+  if (msg.splitOn " for ").length > 1 then msg
+  else
+    let core :=
+      if msg.startsWith "bounds: " then msg.drop "bounds: ".length else msg
+    s!"bounds: error for {prettyValName n} ({core})"
+
+/-- Run `act`, tagging any error with binder `n` for editor spans. -/
+def withBinder (n : ValName) (act : Except String α) : Except String α :=
+  match act with
+  | .ok a => .ok a
+  | .error msg => .error (tagBinderErr n msg)
+
 /-- Walk the outer `letIn` / `letRec` spine from Infer, checking each binder’s
 erase ascription, then the body.
 
@@ -64,46 +79,43 @@ def checkLetSpine
         throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
   -- RHS of surface binder `i` at HM `τ` → env binding to push.
   let checkBinderRhs (i : Nat) (rhs : Expr) (τ : Ty) : Except String BoundBinding := do
+    let n := binderEnv[i]?.getD ⟨"?"⟩
     let rhs' := unwrapLetRecId rhs
     -- Infer's `letRecElab` singleton wrapper shifts free vars up by one; scheme
     -- checking prepends `scheme s` to compensate — mirror that for mono/inferred.
     let bctx' := match rhs with
       | .letRec _ [_] (.var _ _) => BoundEnv.extend bctx (agreesTemplate τ)
       | _ => bctx
-    match anns.binderAnns[i]? with
-    | some (some (.scheme sAnn)) =>
-        match BoundsSchemeAnn.toBScheme? sAnn with
-        | none =>
-            let n := binderEnv[i]?.getD ⟨"?"⟩
-            throw s!"bounds: scheme ascription for {prettyValName n} not solid/WF"
-        | some s => do
-            -- Rigid scheme body + scheme self in env (not mono openFresh).
-            match checkAgainst Δ (.scheme s :: bctx) rhs' τ s.body with
-            | .ok () => pure (.scheme s)
-            | .error msg =>
-                let n := binderEnv[i]?.getD ⟨"?"⟩
-                throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
-    | some (some (.mono ann)) =>
-        match BoundsAnnTy.toBoundsTy? ann with
-        | some βWant => do
-            match checkAgainst Δ bctx' rhs' τ βWant with
-            | .ok () => pure (.mono βWant)
-            | .error msg =>
-                let n := binderEnv[i]?.getD ⟨"?"⟩
-                throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
-        | none => do
-            -- R1: pin holes from synth, meet, push **pinned** interface (not β1).
-            -- Then pack free inferables (same as unascribed) so `?n` never leaks
-            -- as mono — unconstrained frees generalise to a scheme.
-            -- Residual: app meets (R3) ++ pin-vs-synth Sub goals.
-            let (β1, appRes) ← checkBoundsWithRes Δ bctx' rhs' τ
-            meetMono i β1 ann
-            let βPinned ← pinHoles ann β1
-            let residual := appRes ++ BoundsTy.escapeResidualCons? βPinned β1
-            BoundsTy.packAtEscape Δ βPinned residual
-    | _ => do
-        let (β1, residual) ← checkBoundsWithRes Δ bctx' rhs' τ
-        BoundsTy.packAtEscape Δ β1 residual
+    withBinder n do
+      match anns.binderAnns[i]? with
+      | some (some (.scheme sAnn)) =>
+          match BoundsSchemeAnn.toBScheme? sAnn with
+          | none =>
+              throw s!"bounds: scheme ascription for {prettyValName n} not solid/WF"
+          | some s => do
+              -- Rigid scheme body + scheme self in env (not mono openFresh).
+              match checkAgainst Δ (.scheme s :: bctx) rhs' τ s.body with
+              | .ok () => pure (.scheme s)
+              | .error msg =>
+                  throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
+      | some (some (.mono ann)) =>
+          match BoundsAnnTy.toBoundsTy? ann with
+          | some βWant => do
+              match checkAgainst Δ bctx' rhs' τ βWant with
+              | .ok () => pure (.mono βWant)
+              | .error msg =>
+                  throw s!"bounds: ascription not met for {prettyValName n} ({msg})"
+          | none => do
+              -- R1: pin holes from synth, meet, push **pinned** interface (not β1).
+              -- Residual: app meets (R3) ++ pin-vs-synth Sub goals.
+              let (β1, appRes) ← checkBoundsWithRes Δ bctx' rhs' τ
+              meetMono i β1 ann
+              let βPinned ← pinHoles ann β1
+              let residual := appRes ++ BoundsTy.escapeResidualCons? βPinned β1
+              BoundsTy.packAtEscape Δ βPinned residual
+      | _ => do
+          let (β1, residual) ← checkBoundsWithRes Δ bctx' rhs' τ
+          BoundsTy.packAtEscape Δ β1 residual
   match e with
   | .letIn (some σ) rhs body => do
       let nBind := binderEnv.length
@@ -359,7 +371,8 @@ def checkProgramMatchesSpine
               | none => (BoundBinding.mono (agreesTemplate σ.body), none)
           | _ => (BoundBinding.mono (agreesTemplate σ.body), none)
         let rhs' := unwrapLetRecId rhs
-        checkProgramMatchesGo ctors Δ (bb :: bctx) dem rhs'
+        let n := binderEnv[i]?.getD ⟨"?"⟩
+        withBinder n (checkProgramMatchesGo ctors Δ (bb :: bctx) dem rhs')
         checkProgramMatchesSpine ctors binderEnv anns Δ (bb :: bctx) (outerIdx + 1) body
   | .letIn none rhs body => do
       let β1 ← Prod.snd <$> inferBounds Δ bctx rhs
@@ -378,6 +391,7 @@ def checkProgramMatchesSpine
           | some σ => pure σ.body
           | none => throw "bounds: letRec member needs scheme ascription from Infer"
         let i := start + j
+        let n := binderEnv[i]?.getD ⟨"?"⟩
         let (bb, dem) :=
           match anns.binderAnns[i]? with
           | some (some (.scheme sAnn)) =>
@@ -390,7 +404,7 @@ def checkProgramMatchesSpine
               | some βWant => (BoundBinding.mono βWant, some βWant)
               | none => (BoundBinding.mono (agreesTemplate τj), none)
           | _ => (BoundBinding.mono (agreesTemplate τj), none)
-        checkProgramMatchesGo ctors Δ (bb :: bctx) dem (unwrapLetRecId rhs)
+        withBinder n (checkProgramMatchesGo ctors Δ (bb :: bctx) dem (unwrapLetRecId rhs))
         pure bb
       checkProgramMatchesSpine ctors binderEnv anns Δ (bbs ++ bctx) (outerIdx + k) body
   | _ =>

@@ -478,19 +478,46 @@ def holeOkSrc : String :=
       (r.symbols.any fun s => s.name == "xs" && s.kind == "val"))
 
 -- E6c. BoundCovers / Nil-only fail surfaces as a diagnostic (not silent).
+-- When the match sits in a named binder, point at that binder (not file-top).
 def nilOnlyFailSrc : String :=
   "let xs : BL 2 2 Int = [1, 2]\n" ++
-  "match xs with\n" ++
-  "| [] -> 0\n"
+  "let bad =\n" ++
+  "  match xs with\n" ++
+  "  | [] -> 0\n" ++
+  "bad\n"
 
 #guard (match hoverReport nilOnlyFailSrc with
   | none => false
   | some r =>
       match r.diagnostics with
       | [d] =>
-          hasSub d.message "Nil-only" ||
-          hasSub d.message "cover" ||
-          hasSub d.message "empty"
+          (hasSub d.message "Nil-only" ||
+            hasSub d.message "cover" ||
+            hasSub d.message "empty" ||
+            hasSub d.message "error for bad") &&
+          hasSub d.message "bad" &&
+          d.line == 2 &&
+          d.col == 5  -- `bad` def site
+      | _ => false)
+
+-- E6c2. R3 multi-model escape: diagnostic on binder `bad`, not (1,1).
+def r3MidFailSrc : String :=
+  "let f : {x : Nat} BL x (2 * x) Int -> BL x (2 * x) Int =\n" ++
+  "  \\xs -> xs\n" ++
+  "let e : BL 10 10 Int =\n" ++
+  "  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]\n" ++
+  "let bad = f e\n" ++
+  "bad\n"
+
+#guard (match hoverReport r3MidFailSrc with
+  | none => false
+  | some r =>
+      match r.diagnostics with
+      | [d] =>
+          hasSub d.message "non-unique" &&
+          hasSub d.message "bad" &&
+          d.line ≥ 5 &&
+          d.col == 5
       | _ => false)
 
 -- E6d. Solid demand fail.
