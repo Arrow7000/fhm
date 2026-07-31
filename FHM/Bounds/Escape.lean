@@ -8,10 +8,9 @@ import FHM.Bounds.Typing
 **non-empty residual** from Synth app/inst meet (`Synth.meetForApp`); empty
 `cons` ⇒ always `vacuousGeneralise` ⇒ same as bare `packScheme?`.
 
-**Prop-first:** `EscapeClassifies` is the **partial** declarative spec — only the
-vacuous fragment is filled in so far. Multi / unique / unsat constructors (and
-completeness w.r.t. `classifyEscape`) land once residual mid-case is real.
-Executable `classifyEscape` is the implementation of that (growing) spec.
+**Prop-first:** `EscapeClassifies` is the full declarative north-star for escape
+verdicts (vacuous + evidence under policy). `classifyEscape` is proved sound and
+complete against it (`classifyEscape_iff`).
 
 At **output-visible escape** (binder pack), free inferable counts are classified
 before generalise/print (design memo §5 F):
@@ -121,14 +120,32 @@ def classifyEscape (k : PolicyKind) (ψ : ExistsProblem) (outs : List Count) :
 def classifyEscapeDefault (ψ : ExistsProblem) (outs : List Count) : EscapeVerdict :=
   classifyEscape .uniqueOnly ψ outs
 
-/-! ## Declarative classification (partial spec)
+/-! ## Declarative classification (north-star spec)
 
-Only vacuous constructors for now — that is intentional, not complete.
-Once Synth emits non-empty residual at mid-case, extend with multi/unique/unsat
-and prove `classifyEscape` sound/complete against this inductive.
+`EscapeClassifies` is the full prop-level story for escape under a `PolicyKind`.
+Executable `classifyEscape` is defined to match it; soundness/completeness below.
 -/
 
-/-- Partial spec: vacuous fragment of escape classification (see module header). -/
+/-- How `decideCommit` on non-vacuous evidence becomes an `EscapeVerdict`. -/
+inductive EscapeVerdictOf :
+    PolicyKind → {ψ : ExistsProblem} → {outs : List Count} →
+      NarrowingEvidence ψ outs → EscapeVerdict → Prop where
+  | unsat {k ψ outs} :
+      EscapeVerdictOf k (ψ := ψ) (outs := outs) .none .unsatReject
+  | unique_accept {k ψ outs σ hσ hu} :
+      decideCommit k (ψ := ψ) (outs := outs) (.unique σ hσ hu) = .accept σ →
+      EscapeVerdictOf k (ψ := ψ) (outs := outs) (.unique σ hσ hu) (.uniqueCommit σ)
+  | unique_reject {k ψ outs σ hσ hu} :
+      decideCommit k (ψ := ψ) (outs := outs) (.unique σ hσ hu) = .reject →
+      EscapeVerdictOf k (ψ := ψ) (outs := outs) (.unique σ hσ hu) .unsatReject
+  | some_accept {k ψ outs σ hσ} :
+      decideCommit k (ψ := ψ) (outs := outs) (.some_ σ hσ) = .accept σ →
+      EscapeVerdictOf k (ψ := ψ) (outs := outs) (.some_ σ hσ) (.uniqueCommit σ)
+  | some_reject {k ψ outs σ hσ} :
+      decideCommit k (ψ := ψ) (outs := outs) (.some_ σ hσ) = .reject →
+      EscapeVerdictOf k (ψ := ψ) (outs := outs) (.some_ σ hσ) .multiModelReject
+
+/-- Full escape classification spec (vacuous + evidence under policy). -/
 inductive EscapeClassifies :
     PolicyKind → ExistsProblem → List Count → EscapeVerdict → Prop where
   | vacuous_empty_outs {k ψ} :
@@ -137,8 +154,14 @@ inductive EscapeClassifies :
       outs ≠ [] →
       ψ.cons = [] →
       EscapeClassifies k ψ outs .vacuousGeneralise
+  | of_evidence {k ψ outs e v} :
+      outs ≠ [] →
+      ψ.cons ≠ [] →
+      e = gatherNarrowingEvidence ψ outs →
+      EscapeVerdictOf k (ψ := ψ) (outs := outs) e v →
+      EscapeClassifies k ψ outs v
 
-/-! ## Theorems -/
+/-! ## Theorems: executable ↔ spec -/
 
 theorem classifyEscape_vacuous_empty_outs (k : PolicyKind) (ψ : ExistsProblem) :
     classifyEscape k ψ [] = .vacuousGeneralise := by
@@ -173,7 +196,6 @@ theorem classifyEscape_uniqueOnly_of_unique
   rw [gatherNarrowingEvidence_witness_unique hσ hu]
   simp [decideCommit]
 
-/-- `uniqueOnly` rejects non-unique evidence (`Commits` link). -/
 theorem decideCommit_uniqueOnly_some_reject
     {ψ : ExistsProblem} {outs : List Count} {σ : Assign}
     (hσ : solve ψ = .witness σ) :
@@ -186,22 +208,63 @@ theorem decideCommit_uniqueOnly_unique_accept
     decideCommit .uniqueOnly (ψ := ψ) (outs := outs) (.unique σ hσ hu) = .accept σ := by
   rfl
 
-/-- Soundness target for vacuous fragment of `EscapeClassifies`. -/
-theorem classifyEscape_sound_vacuous (k : PolicyKind) (ψ : ExistsProblem)
-    (outs : List Count) :
-    (outs = [] ∨ ψ.cons = []) →
+/-- Soundness: executable verdict always matches the declarative spec. -/
+theorem classifyEscape_sound (k : PolicyKind) (ψ : ExistsProblem) (outs : List Count) :
     EscapeClassifies k ψ outs (classifyEscape k ψ outs) := by
-  intro h
-  rcases h with h | h
-  · subst h
-    rw [classifyEscape_vacuous_empty_outs]
-    exact EscapeClassifies.vacuous_empty_outs
-  · by_cases houts : outs = []
-    · subst houts
-      rw [classifyEscape_vacuous_empty_outs]
-      exact EscapeClassifies.vacuous_empty_outs
-    · rw [classifyEscape_vacuous_empty_cons k ψ outs houts h]
-      exact EscapeClassifies.vacuous_empty_cons houts h
+  by_cases houts : outs = []
+  · subst houts
+    simp only [classifyEscape]
+    exact .vacuous_empty_outs
+  · by_cases hcons : ψ.cons = []
+    · simp only [classifyEscape, List.isEmpty_iff, houts, hcons]
+      exact .vacuous_empty_cons houts hcons
+    · simp only [classifyEscape, List.isEmpty_iff, houts, hcons]
+      -- Non-vacuous: case on oracle evidence.
+      cases he : gatherNarrowingEvidence ψ outs with
+      | none =>
+          exact .of_evidence houts hcons he.symm .unsat
+      | unique σ hσ hu =>
+          -- `decideCommit` always accepts unique evidence.
+          have hdec : decideCommit k (ψ := ψ) (outs := outs) (.unique σ hσ hu) = .accept σ := by
+            cases k <;> rfl
+          simp only [hdec]
+          exact .of_evidence houts hcons he.symm (.unique_accept hdec)
+      | some_ σ hσ =>
+          cases k with
+          | uniqueOnly =>
+              have hdec :
+                  decideCommit .uniqueOnly (ψ := ψ) (outs := outs) (.some_ σ hσ) = .reject := rfl
+              simp only [decideCommit]
+              exact .of_evidence houts hcons he.symm (.some_reject hdec)
+          | anyWitness =>
+              have hdec :
+                  decideCommit .anyWitness (ψ := ψ) (outs := outs) (.some_ σ hσ) = .accept σ := rfl
+              simp only [decideCommit]
+              exact .of_evidence houts hcons he.symm (.some_accept hdec)
+
+/-- Completeness: any declarative classification is realized by `classifyEscape`. -/
+theorem classifyEscape_complete {k ψ outs v}
+    (h : EscapeClassifies k ψ outs v) :
+    classifyEscape k ψ outs = v := by
+  cases h with
+  | vacuous_empty_outs =>
+      simp [classifyEscape]
+  | vacuous_empty_cons houts hcons =>
+      simp [classifyEscape, List.isEmpty_iff, houts, hcons]
+  | of_evidence houts hcons he hvo =>
+      simp only [classifyEscape, List.isEmpty_iff, houts, hcons]
+      rw [← he]
+      cases hvo with
+      | unsat => rfl
+      | unique_accept hdec => simp [hdec]
+      | unique_reject hdec => simp [hdec]
+      | some_accept hdec => simp [hdec]
+      | some_reject hdec => simp [hdec]
+
+theorem classifyEscape_iff (k : PolicyKind) (ψ : ExistsProblem) (outs : List Count)
+    (v : EscapeVerdict) :
+    EscapeClassifies k ψ outs v ↔ classifyEscape k ψ outs = v :=
+  ⟨classifyEscape_complete, fun h => h ▸ classifyEscape_sound k ψ outs⟩
 
 /-! ## Sub residual goals (BLSketch `subtypeProblem` style) -/
 
@@ -239,6 +302,11 @@ def BoundsTy.subConstraints? (want got : BoundsTy) : Option (List Constraint) :=
   | .prim p, .prim q => if p == q then some [] else none
   | .bvar i, .bvar j => if i == j then some [] else none
   | .fvar i, .fvar j => if i == j then some [] else none
+  -- HM erase stubs (fvar/bvar) soft-match like `checkSubInst` — no residual goals.
+  | .fvar _, _ => some []
+  | .bvar _, _ => some []
+  | _, .fvar _ => some []
+  | _, .bvar _ => some []
   | .list wlo whi we, .list glo ghi ge =>
       match BoundsTy.subConstraints? we ge with
       | none => none
@@ -251,10 +319,7 @@ def BoundsTy.subConstraints? (want got : BoundsTy) : Option (List Constraint) :=
         else
           none
   | .arrow wd wc, .arrow gd gc =>
-      -- Contravariant domain: got.dom accepts want.dom? Sub domain: want.dom <: got.dom
-      -- residual for domain: got is demand for the domain position of want... 
-      -- checkSub: checkSub want.dom got.dom is wrong; checkSub is got <: want overall
-      -- for arrows: checkSub Δ gd wd && checkSub Δ gc wc  i.e. domain flipped.
+      -- Arrow Sub: want.dom <: got.dom (contravariant) and got.cod <: want.cod.
       match BoundsTy.subConstraints? gd wd, BoundsTy.subConstraints? wc gc with
       | some cs₁, some cs₂ => some (cs₁ ++ cs₂)
       | _, _ => none

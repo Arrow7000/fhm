@@ -65,6 +65,7 @@ let zip : {n : Nat, a b} BL n n a -> BL n n b -> BL n n (a, b) =
       | y :: yt -> (x, y) :: (zip xt yt)
 
 -- Pipeline: filter → map → reverse → append tip; zip beside; flatMap doubles.
+-- head/tail: T5 exact pin of compound domains BL (n+1) m from concrete args.
 --
 --   [1,6,2,8,3]
 --     |> filter (< 5)              -- [1,2,3]     : BL 0 5
@@ -73,11 +74,14 @@ let zip : {n : Nat, a b} BL n n a -> BL n n b -> BL n n (a, b) =
 --     |> append (cons 0 [99])     -- [4,3,2,0,99]: BL 2 7
 --   zip [10,20] [30,40]           -- [(10,30),(20,40)] : BL 2 2
 --   flatMap (\x -> [x, x+1]) [7,8]-- [7,8,8,9] : BL 4 4
+--   head/tail [1,2,3,4]           -- (1, [2,3,4])
+let data4 : BL 4 4 Int = [1, 2, 3, 4]
 let result =
   (append
     (reverse (map (\x -> x + 1) (filter (\n -> n < 5) [1, 6, 2, 8, 3])))
     (cons 0 (singleton 99)),
   (zip [10, 20] [30, 40],
-    flatMap (\x -> cons x (singleton (x + 1))) [7, 8]))
+    (flatMap (\x -> cons x (singleton (x + 1))) [7, 8],
+      (head data4, tail data4))))
 
 result

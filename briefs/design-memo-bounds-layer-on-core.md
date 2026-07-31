@@ -127,7 +127,7 @@ Sticky notes from day-to-day use. Promote into §5 B/C only when tackling that t
 | **T2** | Match/coverage diagnostic spans often file-top | No binder name in message. **C** localized errors. |
 | **T3** | Non-List **ctor apps** under bounds (`Some 1`, etc.) | Nullary `None` / ascribed check OK; saturated non-List ctor apps still `cannot infer bounds for ctor`. Blocks Option demos with `Some`. Synth/checkBounds ctor app path (Pair/Cons special-cased today). |
 | **T4** | Hole ascription pretty keeps `_` on hover/report | **Partial:** binder/program pretty prefer synth when ann has holes; λ-domain hover may still peel holey ascription. |
-| **T5** | Compound scheme **domains** (`BL (n+1) m`) don’t pin from concrete args | `head`/`tail` define but don’t call. **I1**. |
+| **T5** | Compound scheme **domains** (`BL (n+1) m`) don’t pin from concrete args | **Done** — `tryExactCountPin` / meet pins `n+1`←ground; `scratch/bl-t5-head-tail.fhm` + stdlib calls. |
 
 ### A. Reintegrate `blt` → `fhm` ✅
 
@@ -153,7 +153,7 @@ Sticky notes from day-to-day use. Promote into §5 B/C only when tackling that t
 - `uniqueOnly` multi → clear reject; `uniqueCommit σ` applies `σ` then packs.
 - Demos: `scratch/bl-r3-mid-fail.fhm` (reject); `bl-r3-canary.fhm` vacuous+join green; stdlib/showcase green.
 
-**Prop-first note:** `EscapeClassifies` remains **partial** (vacuous constructors only). Multi/unique completeness vs `classifyEscape` is post-product hygiene — extend when proving, not before.
+**Prop-first:** `EscapeClassifies` is the full north-star (vacuous + evidence via `EscapeVerdictOf`); `classifyEscape_sound` / `_complete` / `_iff` proved.
 
 **Smoke:**
 ```bash
@@ -266,7 +266,9 @@ idExact : {n} BL n n α → BL n n α   -- instantiate n ↦ ?n  (lo and hi shar
 - [x] R2 head-binder BL fold into demand  
 - [x] R3 Escape API + `packAtEscape` on Check pack path  
 - [x] R3 residual mid-case factory + uniqueOnly reject demo (`bl-r3-mid-fail.fhm`)  
-- [ ] Slice 9 E2E gate in CI  
+- [x] R3 `EscapeClassifies` full spec + sound/complete vs `classifyEscape`  
+- [x] T5 compound domain pin (`head`/`tail` callable; `bl-t5-head-tail.fhm`)  
+- [ ] E2E gate suite in CI (`scratch/bl-*`)
 - [ ] Localized diagnostic spans (MVP)  
 - [ ] Hosted playground + share story decided and shipped  
 - [ ] Default `lake build` FHM pure documented  

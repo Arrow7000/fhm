@@ -1,0 +1,22 @@
+-- T5: compound scheme domains pin from concrete args.
+-- Run: .lake/build/bin/fhm run --bl scratch/bl-t5-head-tail.fhm
+--
+-- head : {n m} BL (n+1) m a → a
+--   BL 3 3 <: BL (n+1) m  pins n↦2, m↦3 (exact endpoint inversion)
+-- tail : {n m} BL (n+1)(m+1) a → BL n m a
+--   BL 3 3 pins n↦2, m↦2 → result BL 2 2 (not multi residual on free n,m)
+
+let head : {n m : Nat, a} BL (n + 1) m a -> a =
+  \xs ->
+    match xs with
+    | h :: t -> h
+
+let tail : {n m : Nat, a} BL (n + 1) (m + 1) a -> BL n m a =
+  \xs ->
+    match xs with
+    | h :: t -> t
+
+let xs : BL 3 3 Int = [1, 2, 3]
+let h = head xs
+let t = tail xs
+(h, t)

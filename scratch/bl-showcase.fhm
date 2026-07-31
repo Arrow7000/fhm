@@ -5,8 +5,7 @@
 -- Most demos are ground. `listId` demos hole ascription → free lengths **generalise**
 -- (`∀ n m. …`). Multi-model R3 canary: see `scratch/bl-r3-canary.fhm`.
 --
--- Known gaps (triage / residuals):
---   * head/tail-style domains `BL (n+1) m` do not yet pin `n` from a concrete arg
+-- head/tail compound-domain pin: see scratch/bl-t5-head-tail.fhm (T5 Done).
 
 -- ── small stdlib (schemes with compound count arithmetic) ──────────────────
 

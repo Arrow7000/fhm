@@ -110,7 +110,45 @@ decreasing_by
   all_goals (simp_wf; try omega)
 end
 
-/-- Pins from a successful `checkSubInst` meet: fresh demand intervals ← concrete got. -/
+/-- Invert a DemandOK demand count against a ground synth count (T5).
+
+Examples: `?i` ← `3`; `?i+1` ← `3` pins `?i ↦ 2`; `2*?i` ← `10` pins `?i ↦ 5`.
+Used so `head`/`tail` domains `BL (n+1) m` pin from concrete args. -/
+def tryExactCountPin (got want : Count) : Option (List (Nat × Count)) :=
+  match want, got with
+  | .var ⟨.inferable, i⟩, c =>
+      some [(i, c)]
+  | .add (.var ⟨.inferable, i⟩) (.lit k), .lit n =>
+      if n ≥ k then some [(i, .lit (n - k))] else none
+  | .add (.lit k) (.var ⟨.inferable, i⟩), .lit n =>
+      if n ≥ k then some [(i, .lit (n - k))] else none
+  | .mul (.var ⟨.inferable, i⟩) (.lit k), .lit n =>
+      if k ≠ 0 && n % k == 0 then some [(i, .lit (n / k))] else none
+  | .mul (.lit k) (.var ⟨.inferable, i⟩), .lit n =>
+      if k ≠ 0 && n % k == 0 then some [(i, .lit (n / k))] else none
+  | .add (.mul (.var ⟨.inferable, i⟩) (.lit k)) (.lit e), .lit n =>
+      if k ≠ 0 && n ≥ e && (n - e) % k == 0 then
+        some [(i, .lit ((n - e) / k))]
+      else none
+  | .add (.mul (.lit k) (.var ⟨.inferable, i⟩)) (.lit e), .lit n =>
+      if k ≠ 0 && n ≥ e && (n - e) % k == 0 then
+        some [(i, .lit ((n - e) / k))]
+      else none
+  | w, g =>
+      if w == g then some [] else none
+
+/-- Merge pin lists; conflicting pins for the same index ⇒ none. -/
+def mergePins (a b : List (Nat × Count)) : Option (List (Nat × Count)) :=
+  b.foldl (fun acc? ⟨i, c⟩ =>
+    match acc? with
+    | none => none
+    | some acc =>
+        match acc.find? fun ⟨j, _⟩ => j = i with
+        | some ⟨_, c'⟩ => if c == c' then some acc else none
+        | none => some (acc ++ [(i, c)])) (some a)
+
+/-- Pins from a successful meet: bare fresh intervals, **or** exact inversion of
+DemandOK compound endpoints (T5: `BL (n+1) m` ← `BL 3 3` pins `n↦2, m↦3`). -/
 def collectInstPins (got want : BoundsTy) : List (Nat × Count) :=
   match got, want with
   | .list glo ghi ge, .list wlo whi we =>
@@ -121,7 +159,14 @@ def collectInstPins (got want : BoundsTy) : List (Nat × Count) :=
               if glo == ghi then [(i, glo)] else []
             else
               [(i, glo), (j, ghi)]
-        | _, _ => []
+        | _, _ =>
+            -- T5 exact endpoint inversion (both ends must pin).
+            match tryExactCountPin glo wlo, tryExactCountPin ghi whi with
+            | some pl, some ph =>
+                match mergePins pl ph with
+                | some ps => ps
+                | none => []
+            | _, _ => []
       head ++ collectInstPins ge we
   | .arrow da ca, .arrow db cb =>
       collectInstPins db da ++ collectInstPins ca cb
@@ -174,17 +219,20 @@ private def prettyβ : BoundsTy → String
       if as.isEmpty then nm
       else nm ++ " " ++ String.intercalate " " (as.map prettyβ)
 
-/-- App domain meet: pin exact fresh demands, else Exists residual (R3 mid-case).
+/-- App domain meet: pin exact/compound demands, else Exists residual (R3 mid-case).
 
-* `checkSub` / `checkSubInst` success → pins (may be empty), residual `[]`.
-* Else `subConstraints?` + `solve` sat → **no pin**, residual goals (free outs
-  stay free until `packAtEscape` uniqueOnly).
+* Prefer `collectInstPins` (bare + T5 exact inversion); accept if Sub holds after pin.
+* Else `checkSub` / `checkSubInst` with those pins.
+* Else `subConstraints?` + `solve` sat → residual (no pin) for escape uniqueOnly.
 * Unsat / shape fail → error.
 -/
 def meetForApp (Δ : List Constraint) (got want : BoundsTy) :
     Except String (List (Nat × Count) × List Constraint) := do
   let pins := collectInstPins got want
-  if checkSub Δ got want then
+  let want' := want.substInferables pins
+  if !pins.isEmpty && checkSubInst Δ got want' then
+    pure (pins, [])
+  else if checkSub Δ got want then
     pure (pins, [])
   else if checkSubInst Δ got want then
     pure (pins, [])
