@@ -136,6 +136,8 @@ structure PipelineErr where
   message : String
   line : Nat := 1
   col : Nat := 1
+  endLine : Nat := line
+  endCol : Nat := col + 1
   deriving Repr
 
 structure CheckedProgram where
@@ -174,6 +176,8 @@ def checkPipeline (mode : BoundsMode) (src : String) :
           message := s!"{e.msg} (line {e.line}, col {e.col})"
           line := e.line
           col := e.col
+          endLine := e.endLine
+          endCol := e.endCol
         }
     | .ok p => pure p
 
@@ -188,15 +192,22 @@ def checkPipeline (mode : BoundsMode) (src : String) :
 
   let (ctors, c) ← match lowerProgram p with
     | none =>
-        return .error {
-          stage := .lower
-          message := "lowering failed (unbound name, bad decl, or rejected sugar)"
-        }
+        -- Prefer a concrete free-name message when possible (editor path has spans).
+        let free := freeNamesD [] p.term
+        let message :=
+          match free with
+          | ⟨n⟩ :: _ => s!"unbound name `{n}`"
+          | [] =>
+              "lowering failed (unbound name, bad decl, or rejected sugar)"
+        return .error { stage := .lower, message }
     | some x => pure x
 
   let (eOut, τ) ← match infer c.freshFloor ⟨[], ctors⟩ c with
     | none =>
-        return .error { stage := .typecheck, message := "typechecking failed" }
+        return .error {
+          stage := .typecheck
+          message := "typechecking failed"
+        }
     | some (_, _, eOut, τ) => pure (eOut, τ)
   let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
@@ -282,7 +293,9 @@ def PipelineErr.toJson (e : PipelineErr) : Lean.Json :=
     ("stage", Lean.Json.str e.stage.tag),
     ("message", Lean.Json.str e.message),
     ("line", Lean.Json.num e.line),
-    ("col", Lean.Json.num e.col)
+    ("col", Lean.Json.num e.col),
+    ("endLine", Lean.Json.num e.endLine),
+    ("endCol", Lean.Json.num e.endCol)
   ]
 
 /-- Parse CLI: optional `--json`, `--bl`, optional path. -/

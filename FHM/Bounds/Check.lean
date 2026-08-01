@@ -33,10 +33,17 @@ def unwrapLetRecId : Expr → Expr
 def tyOfBinder (binds : List (ValName × PolyTy)) (n : ValName) : Option Ty :=
   (binds.find? fun ⟨n', _⟩ => n' = n).map fun ⟨_, σ⟩ => σ.body
 
+/-- True if `msg` already carries a structured binder tag for diagnose spans. -/
+def alreadyTaggedBinder (msg : String) : Bool :=
+  msg.startsWith "bounds: error for " ||
+  msg.startsWith "bounds: ascription not met for " ||
+  msg.startsWith "bounds: scheme ascription for "
+
 /-- Tag a bounds error with the surface binder so diagnose can point at its def span.
-Messages that already contain ` for <name>` are left unchanged (ascription path). -/
+Only skip messages that already use the structured binder prefixes (not any
+`" for "` — e.g. `"… for scrutinee type"` / `"… for synth"` still get tagged). -/
 def tagBinderErr (n : ValName) (msg : String) : String :=
-  if (msg.splitOn " for ").length > 1 then msg
+  if alreadyTaggedBinder msg then msg
   else
     let core :=
       if msg.startsWith "bounds: " then msg.drop "bounds: ".length else msg
@@ -153,7 +160,7 @@ def checkLetSpine
           | .error msg =>
               throw s!"bounds: body ascription not met ({msg})"
 termination_by e.size
-decreasing_by all_goals (try simp only [Expr.size, Expr.sizeRecGroup]; omega)
+decreasing_by all_goals (try simp only [Expr.size]; omega)
 
 /-- Origin-synth Core `e` at HM `τ`, checking erase/`ofLower` ascriptions.
 
@@ -265,7 +272,7 @@ private def branchBctx (ctors : CtorEnv) (τs : Ty) (βs : BoundsTy) (bctx : Bou
               let fieldTys := (instFieldTys ctors c tyArgs).take k
               BoundEnv.extendMany bctx (fieldTys.map agreesTemplate).reverse
           | _ => bctx
-  | .custom n [βa] =>
+  | .custom _ [βa] =>
       match pat with
       | .named c 1 =>
           if c != nilCtorName && c != consCtorName then
@@ -386,7 +393,7 @@ def checkProgramMatchesGo (ctors : CtorEnv) (Δ : List Constraint) (bctx : Bound
     | exact size_lt_letRec_singleton_binding
     | exact body_size_lt_letRec
     | exact sizeRecGroup_lt_letRec
-    | (simp only [Expr.size, Expr.sizeRecGroup]; omega))
+    | (simp only [Expr.size]; omega))
 
 end
 
@@ -463,7 +470,7 @@ def checkProgramMatchesSpine
         | none => none
       checkProgramMatchesGo ctors Δ bctx demand e
 termination_by e.size
-decreasing_by all_goals (try simp only [Expr.size, Expr.sizeRecGroup]; omega)
+decreasing_by all_goals (try simp only [Expr.size]; omega)
 
 /-- Top-level Core match coverage walk for Live `--bl`. -/
 def checkProgramMatches

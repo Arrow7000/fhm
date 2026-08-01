@@ -16,13 +16,20 @@ structure ParseError where
   msg : String
   line : Nat
   col : Nat
+  endLine : Nat := line
+  endCol : Nat := col + 1
   deriving DecidableEq, Repr
 
 def lexToParse : LexError → ParseError
-  | .tab line col => { msg := "tab character", line, col }
-  | .unexpectedChar c line col => { msg := s!"unexpected character {repr c}", line, col }
-  | .unfinishedBlockComment line col => { msg := "unfinished block comment", line, col }
-  | .badEscape line col => { msg := "bad escape sequence", line, col }
+  | .tab line col =>
+      { msg := "tab character", line, col, endLine := line, endCol := col + 1 }
+  | .unexpectedChar c line col =>
+      { msg := s!"unexpected character {repr c}", line, col, endLine := line, endCol := col + 1 }
+  | .unfinishedBlockComment line col =>
+      -- Point at `/*` start; half-open end covers two columns when possible.
+      { msg := "unfinished block comment", line, col, endLine := line, endCol := col + 2 }
+  | .badEscape line col =>
+      { msg := "bad escape sequence", line, col, endLine := line, endCol := col + 1 }
 
 /-! ## Token stream plumbing
 
@@ -41,24 +48,28 @@ def isComment : Token → Bool
 def skipComments : P Unit :=
   dropMany <| tokenFilter (isComment ·.token)
 
-/-- Map a stream index to source line/col (1-based). -/
-def posOf (toks : Array Tok) (idx : Nat) : Nat × Nat :=
+/-- Map a stream index to a full source span (1-based half-open).
+    In-range: the token's span. Past EOF: last token's end, width 1. Empty: (1,1)–(1,2). -/
+def spanOfIdx (toks : Array Tok) (idx : Nat) : Span :=
   if h : idx < toks.size then
-    let t := toks[idx]
-    (t.startLine, t.startCol)
+    Span.ofTok toks[idx]
   else
     match toks.back? with
-    | some t => (t.endLine, t.endCol)
-    | none => (1, 1)
+    | some t =>
+        { startLine := t.endLine, startCol := t.endCol
+          endLine := t.endLine, endCol := t.endCol + 1 }
+    | none => { startLine := 1, startCol := 1, endLine := 1, endCol := 2 }
 
 def simpleErrToParse (toks : Array Tok) (e : Parser.Error.Simple TokStream Tok) : ParseError :=
   let rec go : Parser.Error.Simple TokStream Tok → ParseError
     | .unexpected idx _ =>
-      let (line, col) := posOf toks idx
-      { msg := "unexpected token", line, col }
+      let s := spanOfIdx toks idx
+      { msg := "unexpected token", line := s.startLine, col := s.startCol
+        endLine := s.endLine, endCol := s.endCol }
     | .addMessage _ idx msg =>
-      let (line, col) := posOf toks idx
-      { msg := msg, line, col }
+      let s := spanOfIdx toks idx
+      { msg := msg, line := s.startLine, col := s.startCol
+        endLine := s.endLine, endCol := s.endCol }
   go e
 
 /-! ## Builtin type names (must match SurfaceBridge lowering) -/
@@ -1369,7 +1380,8 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 
 -- lex errors surface as ParseError
 #guard (match parseTy "\t" with
-  | .error ⟨"tab character", 1, 1⟩ => true | _ => false)
+  | .error { msg := "tab character", line := 1, col := 1, endLine := 1, endCol := 2 } => true
+  | _ => false)
 
 /-! ### Expression checks -/
 

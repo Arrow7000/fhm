@@ -785,16 +785,30 @@ structure HoverReport where
   diagnostics : List HoverDiag := []
   deriving Repr
 
-/-- Pull a binder name from Check/Synth messages shaped like
-`bounds: ascription not met for xs (…)` or `… for xs not solid/WF`. -/
+/-- Ident-shaped binder name (surface value names; reject prose like `scrutinee`). -/
+def isBinderIdentName (s : String) : Bool :=
+  match s.toList with
+  | [] => false
+  | c :: cs =>
+      (c.isAlpha || c == '_') &&
+        cs.all fun d => d.isAlphanum || d == '_' || d == '\''
+
+/-- Extract binder name from structured Check prefixes only.
+Do **not** split on arbitrary `" for "` (false positives: `scrutinee`, `synth`). -/
 def binderNameFromBoundsMsg (msg : String) : Option String :=
-  match msg.splitOn " for " with
-  | _ :: rest :: _ =>
-      -- First token; strip a trailing `(` if the message is `xs (…`.
+  let tryPref (pref : String) : Option String :=
+    if msg.startsWith pref then
+      let rest := msg.drop pref.length
       let tok := (rest.splitOn " ").headD ""
       let name := (tok.splitOn "(").headD ""
-      if name.isEmpty then none else some name
-  | _ => none
+      if isBinderIdentName name then some name else none
+    else none
+  match tryPref "bounds: error for " with
+  | some n => some n
+  | none =>
+    match tryPref "bounds: ascription not met for " with
+    | some n => some n
+    | none => tryPref "bounds: scheme ascription for "
 
 /-- Shallow: body is a top-level `match`, else full body hull (body-level diags). -/
 def bodyDiagSpan (body : SpannedExpr) : Span :=
@@ -802,16 +816,49 @@ def bodyDiagSpan (body : SpannedExpr) : Span :=
   | .match_ s _ _ => s
   | _ => body.span
 
-/-- Best-effort span for a bounds message: val binder def site, else program body
-hull (or top-level match span), else file top.
+/-- Val binder def-site span by surface name. -/
+def valBinderSpan (binders : List BinderSpan) (n : String) : Option Span :=
+  (binders.find? fun b => b.kind == .val && b.name == n).map (·.span)
+
+/-- Diagnostic extent for a top binding: prefer the **RHS** expression span
+(`f e`, not `baaaad : … = f e`). Fall back to the binder name if RHS missing. -/
+def bindingExtentSpan (binders : List BinderSpan) (p : Surface.Program)
+    (sp : SpannedProgram) (n : String) : Option Span :=
+  match (topRhsSpan p sp (.mk n)).map (·.span) with
+  | some s => some s
+  | none => valBinderSpan binders n
+
+/-- First source occurrence of identifier `name` (1-based half-open token span). -/
+def firstIdentSpan (src : String) (name : String) : Option Span :=
+  match Surface.Lex.lex src with
+  | .error _ => none
+  | .ok toks =>
+    Id.run do
+      for t in toks do
+        match t.token with
+        | .ident raw _ =>
+          if raw == name then return some (Span.ofTok t)
+        | _ => pure ()
+      return none
+
+/-- Diagnostic covering a `Span` (or a single-column file-top fallback). -/
+def diagAtSpan (msg : String) (s? : Option Span) : HoverDiag :=
+  match s? with
+  | some s =>
+      { message := msg, line := s.startLine, col := s.startCol,
+        endLine := s.endLine, endCol := s.endCol }
+  | none => { message := msg, line := 1, col := 1, endLine := 1, endCol := 2 }
+
+/-- Best-effort span for a bounds message: binding extent (name∪RHS), else body
+hull / match, else file top.
 Returns half-open `(startLine, startCol, endLine, endCol)`. -/
-def spanForBoundsMsg (binders : List BinderSpan) (msg : String)
+def spanForBoundsMsg (binders : List BinderSpan) (p : Surface.Program)
+    (sp : SpannedProgram) (msg : String)
     (fallback : Option Span := none) : Nat × Nat × Nat × Nat :=
   match binderNameFromBoundsMsg msg with
   | some n =>
-      match binders.find? fun b => b.kind == .val && b.name == n with
-      | some b =>
-          (b.span.startLine, b.span.startCol, b.span.endLine, b.span.endCol)
+      match bindingExtentSpan binders p sp n with
+      | some s => (s.startLine, s.startCol, s.endLine, s.endCol)
       | none =>
           match fallback with
           | some s => (s.startLine, s.startCol, s.endLine, s.endCol)
@@ -821,10 +868,71 @@ def spanForBoundsMsg (binders : List BinderSpan) (msg : String)
       | some s => (s.startLine, s.startCol, s.endLine, s.endCol)
       | none => (1, 1, 1, 2)
 
-def boundsDiag (binders : List BinderSpan) (msg : String)
+def boundsDiag (binders : List BinderSpan) (p : Surface.Program)
+    (sp : SpannedProgram) (msg : String)
     (fallback : Option Span := none) : HoverDiag :=
-  let (line, col, endLine, endCol) := spanForBoundsMsg binders msg fallback
+  let (line, col, endLine, endCol) := spanForBoundsMsg binders p sp msg fallback
   { message := msg, line, col, endLine, endCol }
+
+/-- Does lower + InferW succeed on this surface term under `ctors`? -/
+def hmSucceeds (ctors : CtorEnv) (term : Surface.Expr) : Bool :=
+  match lower ctors term with
+  | none => false
+  | some c =>
+    match infer c.freshFloor ⟨[], ctors⟩ c with
+    | some _ => true
+    | none => false
+
+/-- Pretty surface name. -/
+def prettySurfaceName : ValName → String
+  | .mk s => s
+
+/-- Progressive HM location: first top-level group that fails when added, else body.
+Each probe uses `desugarGroups acc (var firstName)` so prior bindings stay in scope. -/
+def locateTypecheckFail (ctors : CtorEnv) (p : Surface.Program)
+    (binders : List BinderSpan) (sp : SpannedProgram) : HoverDiag :=
+  let rec go (acc : List (List Surface.Binding))
+      (rest : List (List Surface.Binding)) : HoverDiag :=
+    match rest with
+    | [] =>
+        diagAtSpan "typechecking failed" (some (bodyDiagSpan sp.body))
+    | g :: gs =>
+        match g with
+        | [] => go (acc ++ [g]) gs
+        | b :: _ =>
+            let acc' := acc ++ [g]
+            let probe := Surface.desugarGroups acc' (.var b.name)
+            if hmSucceeds ctors probe then
+              go acc' gs
+            else
+              let nm := prettySurfaceName b.name
+              let msg := s!"typechecking failed in `{nm}`"
+              match bindingExtentSpan binders p sp nm with
+              | some s => diagAtSpan msg (some s)
+              | none => diagAtSpan msg (some (bodyDiagSpan sp.body))
+  go [] p.groups
+
+/-- Lowering failure: prefer first free name’s use-site token; else body hull. -/
+def locateLowerFail (src : String) (p : Surface.Program) (sp : SpannedProgram) :
+    HoverDiag :=
+  let free := freeNamesD [] p.term
+  match free with
+  | n :: _ =>
+      let nm := prettySurfaceName n
+      let msg := s!"unbound name `{nm}`"
+      match firstIdentSpan src nm with
+      | some s => diagAtSpan msg (some s)
+      | none => diagAtSpan msg (some (bodyDiagSpan sp.body))
+  | [] =>
+      diagAtSpan
+        "expression lowering failed (rejected sugar, bad annotation, or pattern λ)"
+        (some (bodyDiagSpan sp.body))
+
+/-- Declaration lower / elab failure: first data-decl span if any. -/
+def locateDeclFail (sp : SpannedProgram) (msg : String) : HoverDiag :=
+  match sp.declSpans with
+  | s :: _ => diagAtSpan msg (some s)
+  | [] => diagAtSpan msg none
 
 /-- Full hover report for a parsed program + binder spans + spanned program.
 
@@ -833,46 +941,62 @@ so BL buffers get symbols. Display types come from `assembleProgramReport`.
 
 Bounds checks (`checkProgramAnns` + `checkProgramMatches`) mirror Live `--bl`.
 On failure: keep symbols from the pre-check report (ascription/HM) and return a
-diagnostic — do **not** silently swallow errors (diagnose reliability). -/
+diagnostic — do **not** silently swallow errors (diagnose reliability).
+
+Lower / typecheck failures now return a diagnostic with a best-effort span
+(unbound use site, progressive binder, or body) instead of collapsing to (1,1). -/
 def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
-    (sp : SpannedProgram) : Option HoverReport := do
+    (sp : SpannedProgram) : HoverReport :=
   -- Pre-erase program for the structural walk: `eraseProgram` clears `natBinders`
   -- but parse binder spans still emit `.count` entries.
   let pSurface := p
   let ep := FHM.Bounds.Erase.eraseProgram p
   let pErased := ep.toProgram
-  let userCore ← lowerDataDeclsIn preludeKindEnv pErased.decls
-  let ctors ← elabDecls (preludeDecls ++ userCore)
-  let ke := DataDecls.kindEnv (preludeDecls ++ userCore)
-  let c ← lower ctors pErased.term
-  let (_, _, eOut, τ) ← infer c.freshFloor ⟨[], ctors⟩ c
-  let bodyσ := genScheme [] [] τ
-  let report0 := assembleProgramReport pErased.groups (collectTopSchemes eOut) bodyσ ep
-  let binderEnv := binderEnvFromGroups pErased.groups
-  let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
-  -- Body-level match / ascription errors (no binder name): body/match hull.
-  let bodyFallback : Option Span := some (bodyDiagSpan sp.body)
-  let (report, diags) :=
-    match FHM.Bounds.Check.checkProgramAnns eOut τ binderEnv boundsAnns with
-    | .error msg =>
-        (report0, [boundsDiag binders msg bodyFallback])
-    | .ok (bctx, βBody) =>
-        let report1 := report0.enrichFromSynth binderEnv (bctx.map BoundBinding.pretty)
-          (some (BoundsTy.pretty βBody))
-        match FHM.Bounds.Check.checkProgramMatches ctors eOut τ binderEnv boundsAnns with
-        | .error msg => (report1, [boundsDiag binders msg bodyFallback])
-        | .ok () => (report1, [])
-  let progScope := programWideScope binders sp
-  let binderSyms := buildHoverSymbols ctors ke pSurface sp binders report progScope
-  let preludeSyms :=
-    (preludeTypeCtorSymbols ctors progScope).filter fun s =>
-      !(binderSyms.any fun b => b.name == s.name && b.kind == s.kind)
-  let syms := binderSyms ++ collectLitOpSymbols src ctors ++ preludeSyms
-  pure {
-    symbols := syms
-    programTy := report.programPretty
-    diagnostics := diags
-  }
+  let fail (d : HoverDiag) : HoverReport :=
+    { symbols := [], programTy := "", diagnostics := [d] }
+  match lowerDataDeclsIn preludeKindEnv pErased.decls with
+  | none =>
+      fail (locateDeclFail sp
+        "declaration lowering failed (duplicate type/ctor, bad field, or unknown type)")
+  | some userCore =>
+    match elabDecls (preludeDecls ++ userCore) with
+    | none =>
+        fail (locateDeclFail sp "declaration elaboration failed (ill-formed data decls)")
+    | some ctors =>
+      let ke := DataDecls.kindEnv (preludeDecls ++ userCore)
+      match lower ctors pErased.term with
+      | none => fail (locateLowerFail src pErased sp)
+      | some c =>
+        match infer c.freshFloor ⟨[], ctors⟩ c with
+        | none => fail (locateTypecheckFail ctors pErased binders sp)
+        | some (_, _, eOut, τ) =>
+          let bodyσ := genScheme [] [] τ
+          let report0 :=
+            assembleProgramReport pErased.groups (collectTopSchemes eOut) bodyσ ep
+          let binderEnv := binderEnvFromGroups pErased.groups
+          let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
+          -- Body-level match / ascription errors (no binder name): body/match hull.
+          let bodyFallback : Option Span := some (bodyDiagSpan sp.body)
+          let (report, diags) :=
+            match FHM.Bounds.Check.checkProgramAnns eOut τ binderEnv boundsAnns with
+            | .error msg =>
+                (report0, [boundsDiag binders pSurface sp msg bodyFallback])
+            | .ok (bctx, βBody) =>
+                let report1 :=
+                  report0.enrichFromSynth binderEnv (bctx.map BoundBinding.pretty)
+                    (some (BoundsTy.pretty βBody))
+                match FHM.Bounds.Check.checkProgramMatches ctors eOut τ binderEnv boundsAnns with
+                | .error msg =>
+                    (report1, [boundsDiag binders pSurface sp msg bodyFallback])
+                | .ok () => (report1, [])
+          let progScope := programWideScope binders sp
+          let binderSyms :=
+            buildHoverSymbols ctors ke pSurface sp binders report progScope
+          let preludeSyms :=
+            (preludeTypeCtorSymbols ctors progScope).filter fun s =>
+              !(binderSyms.any fun b => b.name == s.name && b.kind == s.kind)
+          let syms := binderSyms ++ collectLitOpSymbols src ctors ++ preludeSyms
+          { symbols := syms, programTy := report.programPretty, diagnostics := diags }
 
 /-- Parse-error diagnostic JSON object. -/
 def parseDiagJson (e : ParseError) : Lean.Json :=
@@ -880,7 +1004,9 @@ def parseDiagJson (e : ParseError) : Lean.Json :=
     ("severity", Lean.Json.str "error"),
     ("message", Lean.Json.str e.msg),
     ("line", Lean.Json.num e.line),
-    ("col", Lean.Json.num e.col)
+    ("col", Lean.Json.num e.col),
+    ("endLine", Lean.Json.num e.endLine),
+    ("endCol", Lean.Json.num e.endCol)
   ]
 
 /-- Diagnose payload: versioned object with diagnostics, symbols, optional programTy. -/
@@ -893,25 +1019,13 @@ def diagnosePayload (src : String) : Lean.Json :=
       ("symbols", Lean.Json.arr #[])
     ]
   | .ok (p, binders, sp) =>
-    match collectHover src p binders sp with
-    | none =>
-      Lean.Json.mkObj [
-        ("version", Lean.Json.num 3),
-        ("diagnostics", Lean.Json.arr #[Lean.Json.mkObj [
-          ("severity", Lean.Json.str "error"),
-          ("message", Lean.Json.str "lowering or typechecking failed"),
-          ("line", Lean.Json.num 1),
-          ("col", Lean.Json.num 1)
-        ]]),
-        ("symbols", Lean.Json.arr #[])
-      ]
-    | some r =>
-      Lean.Json.mkObj [
-        ("version", Lean.Json.num 3),
-        ("diagnostics", Lean.Json.arr (r.diagnostics.map HoverDiag.toJson).toArray),
-        ("symbols", Lean.Json.arr (r.symbols.map RangedSymbol.toJson).toArray),
-        ("programTy", Lean.Json.str r.programTy)
-      ]
+    let r := collectHover src p binders sp
+    Lean.Json.mkObj [
+      ("version", Lean.Json.num 3),
+      ("diagnostics", Lean.Json.arr (r.diagnostics.map HoverDiag.toJson).toArray),
+      ("symbols", Lean.Json.arr (r.symbols.map RangedSymbol.toJson).toArray),
+      ("programTy", Lean.Json.str r.programTy)
+    ]
 
 def binderNames (bs : List BinderSpan) : List String :=
   bs.map (·.name)

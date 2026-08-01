@@ -19,7 +19,7 @@ def hasSub (s needle : String) : Bool :=
 def hoverSyms (src : String) : Option (List RangedSymbol) :=
   match parseProgramWithSpans src with
   | .error _ => none
-  | .ok (p, bs, sp) => (collectHover src p bs sp).map (·.symbols)
+  | .ok (p, bs, sp) => some (collectHover src p bs sp).symbols
 
 -- Span.contains / symbolAt edge cases
 #guard (Span.contains ⟨1, 5, 1, 7⟩ 1 5) = true
@@ -451,7 +451,7 @@ def sccOrderSrc : String :=
 def hoverReport (src : String) : Option HoverReport :=
   match parseProgramWithSpans src with
   | .error _ => none
-  | .ok (p, bs, sp) => collectHover src p bs sp
+  | .ok (p, bs, sp) => some (collectHover src p bs sp)
 
 -- E6. Ascription fail: diagnostic present, pointed at binder `xs`, symbols kept.
 def holeFailSrc : String :=
@@ -464,7 +464,8 @@ def holeFailSrc : String :=
       | [d] =>
           hasSub d.message "ascription" &&
           d.line == 1 &&
-          d.col == 5 &&  -- `xs` def site
+          d.col ≥ 20 &&  -- RHS `[1, 2]`, not binder `xs`
+          d.endCol > d.col &&
           (r.symbols.any fun s => s.name == "xs" && s.kind == "val")
       | _ => false)
 
@@ -496,8 +497,8 @@ def nilOnlyFailSrc : String :=
             hasSub d.message "empty" ||
             hasSub d.message "error for bad") &&
           hasSub d.message "bad" &&
-          d.line == 2 &&
-          d.col == 5  -- `bad` def site
+          d.line ≥ 3 &&  -- match RHS, not binder name line
+          d.endLine ≥ 4
       | _ => false)
 
 -- E6c1. Body-level Nil-only (no binder): point at the match expression, not (1,1).
@@ -532,7 +533,9 @@ def r3MidFailSrc : String :=
           hasSub d.message "non-unique" &&
           hasSub d.message "bad" &&
           d.line ≥ 5 &&
-          d.col == 5
+          -- RHS `f e`, not binder name `bad`
+          d.col > 5 &&
+          d.endCol > d.col
       | _ => false)
 
 -- E6d. Solid demand fail.
@@ -547,5 +550,75 @@ def synthFailSrc : String :=
           hasSub d.message "bounds" &&
           hasSub d.message "ascription" &&
           d.line == 1 &&
-          d.col == 5
+          d.col ≥ 20  -- RHS list, not `xs`
       | _ => false)
+
+/-! ## HM / lower diagnostics (must not collapse to file-top (1,1)) -/
+
+-- E7. Unbound name: point at the free use site, message names it.
+def unboundSrc : String :=
+  "let x = y\nx\n"
+
+#guard (match hoverReport unboundSrc with
+  | none => false
+  | some r =>
+      match r.diagnostics with
+      | [d] =>
+          hasSub d.message "unbound" &&
+          hasSub d.message "y" &&
+          d.line == 1 &&
+          d.col == 9  -- `y` in `let x = y`
+      | _ => false)
+
+-- E8. Type error on second binding: progressive probe points at `bad`, not (1,1).
+def typeSecondSrc : String :=
+  "let ok = 1\nlet bad : Int = True\nbad\n"
+
+#guard (match hoverReport typeSecondSrc with
+  | none => false
+  | some r =>
+      match r.diagnostics with
+      | [d] =>
+          hasSub d.message "typechecking failed" &&
+          hasSub d.message "bad" &&
+          d.line == 2 &&
+          -- RHS `True`, not binder `bad`
+          d.col ≥ 17 &&
+          d.endCol > d.col
+      | _ => false)
+
+-- E9. Type error only in body: point at body, not first line.
+def typeBodySrc : String :=
+  "let a = 1\na + True\n"
+
+#guard (match hoverReport typeBodySrc with
+  | none => false
+  | some r =>
+      match r.diagnostics with
+      | [d] =>
+          hasSub d.message "typechecking failed" &&
+          d.line == 2 &&  -- body line, not file top
+          d.endCol > d.col + 1  -- full `a + True`, not one column
+      | _ => false)
+
+-- E11. Unbound multi-char name underlines the whole identifier.
+def unboundLongSrc : String :=
+  "let x = missingName\nx\n"
+
+#guard (match hoverReport unboundLongSrc with
+  | none => false
+  | some r =>
+      match r.diagnostics with
+      | [d] =>
+          hasSub d.message "missingName" &&
+          d.line == 1 &&
+          d.col == 9 &&
+          d.endCol == 20  -- full `missingName`
+      | _ => false)
+
+-- E10. Parse error has a real end span covering the unexpected token when present.
+#guard (match parseProgramWithSpans "let x = \n" with
+  | .error e =>
+      e.line ≥ 1 && e.col ≥ 1 &&
+      (e.endLine > e.line || e.endCol > e.col)
+  | .ok _ => false)
