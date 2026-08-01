@@ -128,6 +128,11 @@ Sticky notes from day-to-day use. Promote into §5 B/C only when tackling that t
 | **T3** | Non-List **ctor apps** under bounds (`Some 1`, etc.) | **Done** — unary/binary non-List ctor apps at expected τ (`packCtorResult`); `scratch/bl-t3-option.fhm`. Pair/Cons still dedicated. |
 | **T4** | Hole ascription pretty keeps `_` on hover/report | **Partial:** binder/program pretty prefer synth when ann has holes; λ-domain hover may still peel holey ascription. |
 | **T5** | Compound scheme **domains** (`BL (n+1) m`) don’t pin from concrete args | **Done** — `tryExactCountPin` / meet pins `n+1`←ground; `scratch/bl-t5-head-tail.fhm` + stdlib calls. |
+| **T6** | **Symbolic Count simplify for display** | **Parked.** Keep Lean `Count.simplify` when the expr is constant-only (current fold). If any symbol/`?` remains, farm out to **Z3 `simplify`** for pretty (e.g. `(((n+1)+n)+1)` → `2*n+2`). **Display layer only** — `Ann`/`ProgramReport` pretty path; do **not** rewrite Check/Synth/`bctx`/`BoundsTy` internals yet. See §3 `Count.simplify`; §5 E “Count folding in Check/Synth”. |
+| **T7** | **`intMul` primop + surface `*`** | **Parked.** Mirror `intAdd`/`intSub` end-to-end (`Core` enum + δ-rule, `InferW`, bounds `inferBoundsΦ`, editor/pretty/grammar). **Blocker:** `*` already lexes as `Punct.star` for BL count mul — reconcile with a `BinOpToken.times` or dual-parse in `infixExpr`. ~70 proof-site boilerplate; no new metatheory. Previously deferred as userland. |
+| **T8** | **String literals in expressions** | **Parked.** Lexer already emits `stringLit`; parser rejects in `atom`. Desugar parse-time: `"s"` → `.list (s.toList.map (.primLit ∘ .char))` — no new AST; lowers to `List Char` via existing `Cons`/`Nil` path. Small (~20 LOC + guards). Follow-ups: pretty round-trip, empty `""` polymorphism (same as bare `[]`), string patterns. |
+| **T9** | **List append `++` surface binop** | **Parked.** Not in lex/parse today; `append` lives in `scratch/bl-stdlib.fhm` only. **Two designs:** (A) desugar `xs ++ ys` → `append xs ys` (minimal — needs `append` in scope); (B) new `Surface.Expr.append` + match-lowering like `.list` (prelude-independent, dedicated bounds rule). Lex `++` before lone `+`. Not a `PrimBinOp` — append is polymorphic/recursive. |
+| **T10** | **Binop fixity / infix chaining** | **Parked.** Expr parser allows **one** infix per layer (`a + b` OK; `a + b + c` rejected); BL **count** parser already has left-assoc `+`/`*` precedence — reuse that pattern. **Scope A (small–medium):** hardcode fixity for `+`/`-`/`<`/`::`, update `Pretty` to re-infix primop apps. **Scope B (large, defer):** user `infix`/`infixl`/`infixr` decls — explicitly cut from v1 surface spec; needs `Program` AST + parser env. |
 
 ### A. Reintegrate `blt` → `fhm` ✅
 
@@ -194,7 +199,7 @@ No full design yet — spike after R1–R3 / E2E, or a thin “error span” pas
 | Topic | Note |
 |-------|------|
 | **Pretty-printer spine duplication** | Display sugar/prec (`→`, `(a,b)`, `BL …`) is implemented separately on `Ty`, `Surface.Ty`, `BoundsAnnTy`, and `BoundsTy` (`FHM/Pretty.lean`, `FHM/Bounds/Ann.lean`, `FHM/Bounds/Typing.lean`); Synth still has a debug-only `prettyβ` without prec/Pair sugar. Parallel ASTs explain some of it; `BoundsAnnTy`/`BoundsTy` are nearly copy-paste. Low priority: unify via shared spine (count-slot + var-name params) or a single display IR — not blocking product work. |
-| **Count folding in Check/Synth** | Display folds via `Count.simplify`. Open: fold once post-synth into `bctx`? at each op? only pre-Oracle? Don’t change solver inputs casually. |
+| **Count folding in Check/Synth** | Display folds via `Count.simplify`. **T6:** symbolic pretty via Z3 (display-only). Open: fold once post-synth into `bctx`? at each op? only pre-Oracle? Don’t change solver inputs casually. |
 | Axiom collapse to Z3 | Collapse memo; post-E2E |
 | Progress under HasBounds+BoundCovers | Post-E2E |
 | Surface nested BoundCovers | D18 |
