@@ -474,7 +474,7 @@ def inferLetRecGroupCore (Δ : List Constraint) (bctxRec : BoundEnv) (Φ : Nat)
       pure (Φ2, β :: βs)
   | _, _ => throw "bounds: letRec anns/bindings length mismatch"
 termination_by Expr.sizeRecGroup bindings
-decreasing_by all_goals (simp_wf; simp [Expr.sizeRecGroup, Expr.size]; try omega)
+decreasing_by all_goals (simp [Expr.sizeRecGroup]; try omega)
 
 /-- List match: Nil+Cons join (either arm order), or single-branch under oracle. -/
 def synthMatch (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
@@ -514,7 +514,7 @@ def synthMatch (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
   | _ =>
       throw "bounds: unsupported match shape (want Nil+Cons or single arm)"
 termination_by Expr.sizeBranches brs
-decreasing_by all_goals (first | exact size_lt_sizeBranches_two | exact size_lt_sizeBranches_two_snd | exact size_lt_sizeBranches_one | (try simp only [Expr.size, Expr.sizeBranches]; omega))
+decreasing_by all_goals (first | exact size_lt_sizeBranches_two | exact size_lt_sizeBranches_two_snd | exact size_lt_sizeBranches_one)
 
 /-- Non-List match arm env. Nullary / wildcard leave `bctx` alone.
 
@@ -535,7 +535,7 @@ def nonListArmEnv (bctx : BoundEnv) (scrutβ : BoundsTy := .fvar 0) :
       | _ => BoundEnv.extendMany bctx (List.replicate 2 (.fvar 0))
   | .named c 1 =>
       match scrutβ with
-      | .custom n [βa] =>
+      | .custom _ [βa] =>
           if c != nilCtorName && c != consCtorName then
             BoundEnv.extendMany bctx [βa]
           else
@@ -584,16 +584,14 @@ def synthJoinArmsAt (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (τ : Ty
 termination_by Expr.sizeBranches brs
 decreasing_by all_goals (first
   | exact size_lt_sizeBranches_cons_head
-  | exact size_lt_sizeBranches_cons_tail
-  | exact size_lt_sizeBranches_one
-  | (try simp only [Expr.sizeBranches]; omega))
+  | exact size_lt_sizeBranches_cons_tail)
 
 /-- Check mode for generic `f arg` (infer fn spine, check arg). R3 residual via meetForAppM. -/
 def checkBoundsApp (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
-    (f arg : Expr) (τ : Ty) : ResM (Nat × BoundsTy) := do
+    (f arg : Expr) (_τ : Ty) : ResM (Nat × BoundsTy) := do
   let (Φ1, τf, βf) ← inferBoundsΦ Δ bctx Φ f
   match τf, βf with
-  | .arrow τa τr, .arrow βa βr => do
+  | .arrow τa _, .arrow βa βr => do
       let (Φ2, βa') ← checkBoundsΦ Δ bctx Φ1 arg τa
       let pins ← meetForAppM Δ βa' βa
       pure (Φ2, βr.substInferables pins)
@@ -678,7 +676,6 @@ def inferBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (e : Expr)
           synthJoinArms Δ bctx Φ1 βs brs
 termination_by e.size
 decreasing_by all_goals (
-  simp_wf
   first
   | exact size_lt_app_fn
   | exact size_lt_app_arg
@@ -686,7 +683,7 @@ decreasing_by all_goals (
   | exact expr_size_lt_double_app_ctor_arg
   | exact body_size_lt_letRec
   | exact sizeRecGroup_lt_letRec
-  | (simp only [Expr.size, Expr.sizeBranches, Expr.sizeRecGroup]; omega))
+  | (simp only [Expr.size]; omega))
 
 /-- Check mode: given expected `τ`, synthesize `β`; thread freshness `Φ`. -/
 def checkBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
@@ -792,7 +789,6 @@ def checkBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
           pure (Φ2, β)
 termination_by e.size
 decreasing_by all_goals (
-  simp_wf
   first
   | exact size_lt_app_fn
   | exact size_lt_app_arg
@@ -800,7 +796,7 @@ decreasing_by all_goals (
   | exact add_sizes_lt_app
   | exact body_size_lt_letRec
   | exact sizeRecGroup_lt_letRec
-  | (simp only [Expr.size, Expr.sizeBranches, Expr.sizeRecGroup]; omega))
+  | (simp only [Expr.size]; omega))
 
 end
 
