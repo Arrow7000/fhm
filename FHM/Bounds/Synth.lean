@@ -239,17 +239,19 @@ def meetForApp (Δ : List Constraint) (got want : BoundsTy) :
   else
     match BoundsTy.subConstraints? want got with
     | none =>
-        throw s!"bounds: argument {prettyβ got} does not meet function domain {prettyβ want}"
+        -- Neutral wording: used for app domain meet *and* ascription Sub
+        -- (avoid "argument/function domain" — reads like HM mismatch).
+        throw s!"bounds: synthesized {prettyβ got} does not meet demand {prettyβ want}"
     | some cs =>
         if cs.isEmpty then
-          throw s!"bounds: argument {prettyβ got} does not meet function domain {prettyβ want}"
+          throw s!"bounds: synthesized {prettyβ got} does not meet demand {prettyβ want}"
         else
           let vs := constraintsInferVars cs
           let ψ := mkEscapeProblem Δ vs cs
           match solve ψ with
           | .witness _ => pure ([], cs)
           | .unsat | .unknown =>
-              throw s!"bounds: argument {prettyβ got} does not meet function domain {prettyβ want}"
+              throw s!"bounds: synthesized {prettyβ got} does not meet demand {prettyβ want}"
 
 /-- ResM wrapper: emit residual, return pins. -/
 def meetForAppM (Δ : List Constraint) (got want : BoundsTy) :
@@ -476,41 +478,51 @@ def inferLetRecGroupCore (Δ : List Constraint) (bctxRec : BoundEnv) (Φ : Nat)
 termination_by Expr.sizeRecGroup bindings
 decreasing_by all_goals (simp [Expr.sizeRecGroup]; try omega)
 
-/-- List match: Nil+Cons join (either arm order), or single-branch under oracle. -/
+/-- List match: Nil+Cons join (either arm order), or single-branch under oracle.
+
+Both arms are **checked** at `List α` (from the scrutinee’s HM type). Pure
+`infer` of `[]`/`Nil` fails (`Nil needs an expected List type`); HM already
+solved the list element — use it, same as check-mode Nil. -/
 def synthMatch (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
-    (_α : Ty) (lo hi : Count) (βe : BoundsTy)
+    (α : Ty) (lo hi : Count) (βe : BoundsTy)
     (brs : List (MatchPattern × Expr)) : ResM (Nat × Ty × BoundsTy) :=
+  let τList := listTy α
   match brs with
   | [(.named n 0, eNil), (.named c 2, eCons)] => do
       unless n == nilCtorName && c == consCtorName do
         throw "bounds: expected Nil/Cons match arms"
       let Δnil := Δ ++ nilRefine lo hi
-      let (Φ1, τ, βnil) ← inferBoundsΦ Δnil bctx Φ eNil
+      let (Φ1, βnil) ← checkBoundsΦ Δnil bctx Φ eNil τList
       let Δcons := Δ ++ consRefine hi
-      let (Φ2, βcons) ← checkBoundsΦ Δcons (consBoundEnv bctx lo hi βe) Φ1 eCons τ
+      let (Φ2, βcons) ←
+        checkBoundsΦ Δcons (consBoundEnv bctx lo hi βe) Φ1 eCons τList
       match joinBoundsTy βnil βcons with
-      | some β => pure (Φ2, τ, β)
+      | some β => pure (Φ2, τList, β)
       | none => throw "bounds: match branches have incompatible bounds"
   | [(.named c 2, eCons), (.named n 0, eNil)] => do
       unless n == nilCtorName && c == consCtorName do
         throw "bounds: expected Nil/Cons match arms"
       let Δnil := Δ ++ nilRefine lo hi
-      let (Φ1, τ, βnil) ← inferBoundsΦ Δnil bctx Φ eNil
+      let (Φ1, βnil) ← checkBoundsΦ Δnil bctx Φ eNil τList
       let Δcons := Δ ++ consRefine hi
-      let (Φ2, βcons) ← checkBoundsΦ Δcons (consBoundEnv bctx lo hi βe) Φ1 eCons τ
+      let (Φ2, βcons) ←
+        checkBoundsΦ Δcons (consBoundEnv bctx lo hi βe) Φ1 eCons τList
       match joinBoundsTy βnil βcons with
-      | some β => pure (Φ2, τ, β)
+      | some β => pure (Φ2, τList, β)
       | none => throw "bounds: match branches have incompatible bounds"
   | [(.named n 0, eNil)] => do
       unless n == nilCtorName do throw "bounds: expected Nil-only arm"
       unless checkValid (mustBeEmpty Δ hi) == .valid do
         throw "bounds: Nil-only match but upper bound not proved empty"
-      inferBoundsΦ (Δ ++ nilRefine lo hi) bctx Φ eNil
+      let (Φ1, β) ← checkBoundsΦ (Δ ++ nilRefine lo hi) bctx Φ eNil τList
+      pure (Φ1, τList, β)
   | [(.named c 2, eCons)] => do
       unless c == consCtorName do throw "bounds: expected Cons-only arm"
       unless checkValid (mustBeNonempty Δ lo) == .valid do
         throw "bounds: Cons-only match but lower bound not proved nonempty"
-      inferBoundsΦ (Δ ++ consRefine hi) (consBoundEnv bctx lo hi βe) Φ eCons
+      let (Φ1, β) ←
+        checkBoundsΦ (Δ ++ consRefine hi) (consBoundEnv bctx lo hi βe) Φ eCons τList
+      pure (Φ1, τList, β)
   | _ =>
       throw "bounds: unsupported match shape (want Nil+Cons or single arm)"
 termination_by Expr.sizeBranches brs

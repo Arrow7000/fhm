@@ -344,21 +344,30 @@ def checkProgramMatchesGo (ctors : CtorEnv) (Δ : List Constraint) (bctx : Bound
       -- Env slot for the binder: List keeps origin-synth β (BoundCovers); non-List
       -- uses the HM ascription template so ADT matches (Bool `if`) see a real
       -- `customTy` scrutinee even when the RHS var was a λ-stub (unascribed λ).
+      --
+      -- Infer often elaborates `match xs` as `λy. let z : List a = y in match z`.
+      -- Unascribed `λ` pushes a `?β` stub; `checkBounds` of that stub at `List a`
+      -- still returns the stub (var lookup ignores demand). Fall back to D24
+      -- fresh `?lo`/`?hi` so BoundCovers sees a real list interval.
       let β1 ← match ann? with
         | some σ =>
-            if (isListTy σ.body).isSome then
-              checkBounds Δ bctx rhs σ.body
-            else
-              match σ.body with
-              | .customTy n [_, _] =>
-                  -- R4: product binders (Pair) need origin-synth field intervals.
-                  if n == pairTyName then
-                    match checkBounds Δ bctx rhs σ.body with
-                    | .ok β => pure β
-                    | .error _ => pure (agreesTemplate σ.body)
-                  else
-                    pure (agreesTemplate σ.body)
-              | _ => pure (agreesTemplate σ.body)
+            match isListTy σ.body with
+            | some _ =>
+                match checkBounds Δ bctx rhs σ.body with
+                | .ok β@(.list ..) => pure β
+                | _ =>
+                    pure (freshParamBounds 0 σ.body).2
+            | none =>
+                match σ.body with
+                | .customTy n [_, _] =>
+                    -- R4: product binders (Pair) need origin-synth field intervals.
+                    if n == pairTyName then
+                      match checkBounds Δ bctx rhs σ.body with
+                      | .ok β => pure β
+                      | .error _ => pure (agreesTemplate σ.body)
+                    else
+                      pure (agreesTemplate σ.body)
+                | _ => pure (agreesTemplate σ.body)
         | none => Prod.snd <$> inferBounds Δ bctx rhs
       checkProgramMatchesGo ctors Δ bctx none rhs
       checkProgramMatchesGo ctors Δ (BoundEnv.extend bctx β1) demand body
