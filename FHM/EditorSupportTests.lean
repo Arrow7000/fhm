@@ -571,6 +571,7 @@ def unboundSrc : String :=
       | _ => false)
 
 -- E8. Type error on second binding: progressive probe points at `bad`, not (1,1).
+-- Prefer expected/got when ascription is the problem.
 def typeSecondSrc : String :=
   "let ok = 1\nlet bad : Int = True\nbad\n"
 
@@ -579,12 +580,31 @@ def typeSecondSrc : String :=
   | some r =>
       match r.diagnostics with
       | [d] =>
-          hasSub d.message "typechecking failed" &&
           hasSub d.message "bad" &&
+          (hasSub d.message "type mismatch" || hasSub d.message "typechecking failed") &&
+          (hasSub d.message "Int" || hasSub d.message "Bool" || hasSub d.message "True") &&
           d.line == 2 &&
           -- RHS `True`, not binder `bad`
           d.col ≥ 17 &&
           d.endCol > d.col
+      | _ => false)
+
+-- E8b. map vs list→list ascription: show expected vs got (not bare "typechecking failed").
+def typeMapMismatchSrc : String :=
+  "let map : {a b} (a -> b) -> List a -> List b =\n" ++
+  "  \\f xs -> match xs with | [] -> [] | h :: t -> f h :: map f t\n" ++
+  "let asdfs : List Int -> List Int = map\n" ++
+  "asdfs\n"
+
+#guard (match hoverReport typeMapMismatchSrc with
+  | none => false
+  | some r =>
+      match r.diagnostics with
+      | [d] =>
+          hasSub d.message "asdfs" &&
+          hasSub d.message "expected" &&
+          hasSub d.message "got" &&
+          hasSub d.message "List Int"
       | _ => false)
 
 -- E9. Type error only in body: point at body, not first line.

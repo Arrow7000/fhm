@@ -60,17 +60,43 @@ def spanOfIdx (toks : Array Tok) (idx : Nat) : Span :=
           endLine := t.endLine, endCol := t.endCol + 1 }
     | none => { startLine := 1, startCol := 1, endLine := 1, endCol := 2 }
 
+/-- Specificity for choosing among `first` alternatives: real reject messages win
+over bare `unexpected` and over generic `expected …` wrappers. -/
+def errSpecificity : Parser.Error.Simple TokStream Tok → Nat
+  | .unexpected _ (some _) => 2
+  | .unexpected _ none => 1
+  | .addMessage inner _ msg =>
+      if msg.startsWith "expected " then errSpecificity inner
+      else 100 + msg.length
+
+/-- Prefer the more specific of two errors (`first` default keeps only the last). -/
+def preferErr (e f : Parser.Error.Simple TokStream Tok) :
+    Parser.Error.Simple TokStream Tok :=
+  if errSpecificity f > errSpecificity e then f else e
+
+/-- Prefer the **innermost** unexpected site and the innermost non-generic
+`addMessage` text. When `unexpected` carries the rejected token, use **that
+token's span** (stream position is often already past a consume-and-fail). -/
 def simpleErrToParse (toks : Array Tok) (e : Parser.Error.Simple TokStream Tok) : ParseError :=
-  let rec go : Parser.Error.Simple TokStream Tok → ParseError
-    | .unexpected idx _ =>
-      let s := spanOfIdx toks idx
-      { msg := "unexpected token", line := s.startLine, col := s.startCol
-        endLine := s.endLine, endCol := s.endCol }
-    | .addMessage _ idx msg =>
-      let s := spanOfIdx toks idx
-      { msg := msg, line := s.startLine, col := s.startCol
-        endLine := s.endLine, endCol := s.endCol }
-  go e
+  let rec dig : Parser.Error.Simple TokStream Tok →
+      Nat × Option Tok × Option String
+    | .unexpected idx t? => (idx, t?, none)
+    | .addMessage inner _idx msg =>
+        let (i, t?, m?) := dig inner
+        let m?' :=
+          match m? with
+          | some m => some m
+          | none =>
+              if msg.startsWith "expected " then none else some msg
+        (i, t?, m?')
+  let (idx, t?, msg?) := dig e
+  let s :=
+    match t? with
+    | some t => Span.ofTok t
+    | none => spanOfIdx toks idx
+  { msg := msg?.getD "unexpected token"
+    line := s.startLine, col := s.startCol
+    endLine := s.endLine, endCol := s.endCol }
 
 /-! ## Builtin type names (must match SurfaceBridge lowering) -/
 
@@ -324,7 +350,7 @@ mutual
 partial def countAtom (nats : List String) : P Count :=
   withErrorMessage "expected count atom" do
     skipComments
-    first [
+    first (combine := preferErr) [
       do
         let _ ← keyword .«inf»
         return .inf,
@@ -348,9 +374,9 @@ partial def countAtom (nats : List String) : P Count :=
 partial def countApp (nats : List String) : P Count :=
   withErrorMessage "expected count" do
     skipComments
-    first [
+    first (combine := preferErr) [
       do
-        let name ← lowerIdent
+        let (tok, name) ← lowerIdentTok
         if name == "pred" then
           skipComments
           return .pred (← countAtom nats)
@@ -369,7 +395,8 @@ partial def countApp (nats : List String) : P Count :=
         else if name ∈ nats then
           return .var (.mk name)
         else
-          throwUnexpectedWithMessage none
+          -- Attach `tok` so the squiggle is on `n`, not the following `*`.
+          throwUnexpectedWithMessage (some tok)
             s!"unexpected count ident `{name}` (vars need Nat binders)",
       countAtom nats
     ]
@@ -404,7 +431,7 @@ end
 def count (nats : List String := []) : P CountSlot :=
   withErrorMessage "expected count (expression, inf/∞, or _)" do
     skipComments
-    first [
+    first (combine := preferErr) [
       do
         let _ ← punct .underscore
         return .hole,
@@ -417,7 +444,7 @@ mutual
 partial def tyAtom (nats : List String) : P Ty :=
   withErrorMessage "expected type atom" do
     skipComments
-    first [
+    first (combine := preferErr) [
       -- `()` unit
       do
         let _ ← punct .lparen
@@ -795,14 +822,19 @@ end
 
 mutual
 
-partial def atom : PE :=
+partial def atom : PE := do
+  skipComments
+  -- Reject strings *before* `first`: later branches consume-and-fail past the
+  -- lit and `first`'s default combine would keep that worse error.
+  let t0 ← nextTok
+  match t0.token with
+  | .stringLit _ =>
+      throwUnexpectedWithMessage (some t0)
+        "string literals are not supported in expressions"
+  | _ => pure ()
   withErrorMessage "expected expression atom" do
-    skipComments
-    first [
-      -- string lit: reject (no Surface string PrimLitExpr)
-      do
-        let _ ← stringLitTok
-        throwUnexpectedWithMessage none "string literals are not supported in expressions",
+    -- Prefer specific reject messages (e.g. value-level `*`) over later bare fails.
+    first (combine := preferErr) [
       -- int / bool / char
       do
         let (tok, n) ← intLitTokFull
@@ -915,6 +947,18 @@ partial def appExpr : PE :=
       if t.startLine != headTok.startLine && t.startCol ≤ headTok.startCol then
         throwUnexpectedWithMessage none "app argument must be same line or indented"
       atom)
+    -- Soft `takeMany` swallows a failed arg; re-surface common rejects so
+    -- `f "bla"` points at the string instead of a generic leftover error.
+    skipComments
+    match ← option? (withBacktracking do
+        let t ← nextTok
+        match t.token with
+        | .stringLit _ => pure t
+        | _ => throwUnexpected) with
+    | some t =>
+        throwUnexpectedWithMessage (some t)
+          "string literals are not supported in expressions"
+    | none => pure ()
     let (e, s) :=
       args.foldl
         (fun (f, sf) (a, _, sa) =>
@@ -933,7 +977,19 @@ partial def infixExpr : PE :=
     let (left, bsL, sL) ← appExpr
     skipComments
     match ← option? (withBacktracking binOpTokFull) with
-    | none => return (left, bsL, sL)
+    | none =>
+      -- `*` is a count punct (bounds), not a value binop — reject explicitly so
+      -- the squiggle sits on `*` with a clear message (not a parent `let`).
+      -- Soft-peek only (must not fail at EOF after a bare atom).
+      match ← option? (withBacktracking do
+          let t ← nextTok
+          match t.token with
+          | .punct .star => pure t
+          | _ => throwUnexpected) with
+      | some t =>
+          throwUnexpectedWithMessage (some t)
+            "value-level `*` is not supported (use + / - / < / ::, or bounds counts)"
+      | none => return (left, bsL, sL)
     | some (opTok, op) =>
       skipComments
       let (right, bsR, sR) ← infixRhs
@@ -962,10 +1018,15 @@ partial def letBinding (indentCol : Nat) :
     skipComments
     let (params, bsParams) ← valueParams
     skipComments
-    let annRaw ← option? (withBacktracking do
-      let _ ← punct .colon
-      skipComments
-      polyTy)
+    -- Once `:` is seen, commit to `polyTy` so a bad scheme (e.g. `{n m}` without
+    -- `: Nat` then `BL (n * m)`) surfaces at the count/binders — not as
+    -- `unexpected token` on the colon after soft-failing the whole annotation.
+    let annRaw ←
+      match ← option? (withBacktracking (punct .colon)) with
+      | none => pure none
+      | some _ =>
+          skipComments
+          some <$> polyTy
     skipComments
     let eqTok ← punct .eq
     skipComments
@@ -1180,28 +1241,55 @@ def topLet : P ((Binding × SpannedExpr) × List BinderSpan) :=
       letBinding letTok.startCol
     return (({ name, tyParams, params, ann, rhs, natBinders }, sRhs), bs)
 
+/-- One top-level `type` / `let` item. Soft-fails only when the next token is
+**not** `type`/`let` (so `takeMany` can stop). Once the keyword is seen, the
+item parse is **committed** — RHS errors keep their real site/message instead of
+being swallowed by `foldl`/`takeMany` and re-reported as `unexpected` on `let`. -/
+def programItem : P (Sum (DataDecl × Span) (Binding × SpannedExpr) × List BinderSpan) := do
+  skipComments
+  let t ← nextTok
+  match t.token with
+  | .keyword .«type» =>
+      let (d, bs, dSpan) ← typeDecl
+      return (Sum.inl (d, dSpan), bs)
+  | .keyword .«let» =>
+      let (b, bs) ← topLet
+      return (Sum.inr b, bs)
+  | _ => throwUnexpected
+
+/-- Zero or more committed top-level items. Stops at the first non-`type`/`let`
+token (or EOF) without discarding a real item error. -/
+partial def programItems : P (Array (Sum (DataDecl × Span) (Binding × SpannedExpr) × List BinderSpan)) :=
+  go #[]
+where
+  go (acc : Array (Sum (DataDecl × Span) (Binding × SpannedExpr) × List BinderSpan)) := do
+    skipComments
+    -- EOF → done (peek/nextTok fails only if stream empty after skipComments).
+    match ← option? (withBacktracking do
+      let t ← nextTok
+      match t.token with
+      | .keyword .«type» | .keyword .«let» => pure t
+      | _ => throwUnexpected) with
+    | none => return acc
+    | some _ =>
+        -- Keyword present: parse committed (errors propagate with true site).
+        let item ← programItem
+        go (acc.push item)
+
 /-- Interleaved `type` / `let`, then optional body expr (default unit).
     Groups via `SurfaceBridge.Program.ofFlat` (SCC); fails on duplicate names.
     Also returns a `SpannedProgram` aligned with group/body structure. -/
 def program : P (Program × List BinderSpan × SpannedProgram) :=
   withErrorMessage "expected program" do
     skipComments
-    let items ← takeMany (withBacktracking do
-      skipComments
-      first [
-        do
-          let (d, bs, dSpan) ← typeDecl
-          return (Sum.inl (α := DataDecl × Span) (β := Binding × SpannedExpr) (d, dSpan), bs),
-        do
-          let (b, bs) ← topLet
-          return (Sum.inr (α := DataDecl × Span) (β := Binding × SpannedExpr) b, bs)
-      ])
+    let items ← programItems
     skipComments
-    let body? ← option? (withBacktracking expr)
-    let (body, bsBody, sBody) :=
-      match body? with
-      | some (e, bs, s) => (e, bs, s)
-      | none => (.primLit .unit, [], .leaf Span.empty)
+    -- If anything remains, parse body **committed** so body errors aren't soft-
+    -- failed into a generic endOfInput at the wrong token. EOF → unit body.
+    let (body, bsBody, sBody) ←
+      match ← option? (withBacktracking (endOfInput *> pure ())) with
+      | some _ => pure (.primLit .unit, [], .leaf Span.empty)
+      | none => expr
     let decls := items.toList.filterMap fun
       | (.inl (d, _), _) => some d
       | (.inr _, _) => none
@@ -1382,6 +1470,27 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 #guard (match parseTy "\t" with
   | .error { msg := "tab character", line := 1, col := 1, endLine := 1, endCol := 2 } => true
   | _ => false)
+
+-- Parse diagnostics: string / value-`*` must not soft-fail to parent `let`
+#guard (match parseProgramWithSpans "let y = \"bla\"\ny\n" with
+  | .error e =>
+      (e.msg.splitOn "string").length > 1 && e.line == 1 && e.col == 9 && e.endCol == 14
+  | .ok _ => false)
+#guard (match parseProgramWithSpans "let y = 3 * 4\ny\n" with
+  | .error e =>
+      (e.msg.splitOn "`*`").length > 1 && e.line == 1 && e.col == 11 && e.endCol == 12
+  | .ok _ => false)
+#guard (match parseProgramWithSpans "let xs = [3 * 4]\nxs\n" with
+  | .error e =>
+      (e.msg.splitOn "`*`").length > 1 && e.col == 13
+  | .ok _ => false)
+-- Ascription commit: `{n m}` without `: Nat` then count use → Nat-binder msg on `n`.
+#guard (match parseProgramWithSpans
+    "let f : {n m} BL (n * m) (n * m) Int = \\x -> x\nf\n" with
+  | .error e =>
+      (e.msg.splitOn "Nat binder").length > 1 &&
+        e.col == 19 && e.endCol == 20  -- the first `n` in `(n * m)`, not `:` or `*`
+  | .ok _ => false)
 
 /-! ### Expression checks -/
 

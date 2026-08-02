@@ -874,22 +874,58 @@ def boundsDiag (binders : List BinderSpan) (p : Surface.Program)
   let (line, col, endLine, endCol) := spanForBoundsMsg binders p sp msg fallback
   { message := msg, line, col, endLine, endCol }
 
-/-- Does lower + InferW succeed on this surface term under `ctors`? -/
-def hmSucceeds (ctors : CtorEnv) (term : Surface.Expr) : Bool :=
+/-- Infer Core spine + body type for a surface term under `ctors`, if possible. -/
+def hmInfer (ctors : CtorEnv) (term : Surface.Expr) : Option (Expr × Ty) :=
   match lower ctors term with
-  | none => false
+  | none => none
   | some c =>
     match infer c.freshFloor ⟨[], ctors⟩ c with
-    | some _ => true
-    | none => false
+    | some (_, _, eOut, τ) => some (eOut, τ)
+    | none => none
+
+/-- Does lower + InferW succeed on this surface term under `ctors`? -/
+def hmSucceeds (ctors : CtorEnv) (term : Surface.Expr) : Bool :=
+  (hmInfer ctors term).isSome
 
 /-- Pretty surface name. -/
 def prettySurfaceName : ValName → String
   | .mk s => s
 
+/-- Clear a binding's HM ascription (keep params / RHS) for mismatch recovery. -/
+def stripBindingAnn (b : Surface.Binding) : Surface.Binding :=
+  { b with ann := none }
+
+/-- Best-effort "expected vs got" when a binder with an ascription fails HM.
+Strip that binder's ann, re-infer; if the RHS types, compare schemes. -/
+def explainTypeMismatch (ctors : CtorEnv) (ke : KindEnv)
+    (acc : List (List Surface.Binding)) (g : List Surface.Binding)
+    (b : Surface.Binding) : String :=
+  let nm := prettySurfaceName b.name
+  match b.ann with
+  | none => s!"typechecking failed in `{nm}`"
+  | some σs =>
+      let wantStr :=
+        match lowerPoly ke σs with
+        | some σ => σ.pretty
+        | none => Surface.PolyTy.pretty σs
+      let g' := g.map fun b' =>
+        if b'.name == b.name then stripBindingAnn b' else b'
+      let probe := Surface.desugarGroups (acc ++ [g']) (.var b.name)
+      match hmInfer ctors probe with
+      | none =>
+          s!"typechecking failed in `{nm}` (ascribed {wantStr}; RHS also fails without ascription)"
+      | some (eOut, _) =>
+          let pairs := zipBindingTypes (acc ++ [g']) (collectTopSchemes eOut)
+          match pairs.find? (fun p => p.1 == b.name) with
+          | some (_, got) =>
+              s!"type mismatch in `{nm}`: expected {wantStr}, got {got.pretty}"
+          | none =>
+              s!"typechecking failed in `{nm}` (ascribed {wantStr})"
+
 /-- Progressive HM location: first top-level group that fails when added, else body.
-Each probe uses `desugarGroups acc (var firstName)` so prior bindings stay in scope. -/
-def locateTypecheckFail (ctors : CtorEnv) (p : Surface.Program)
+Each probe uses `desugarGroups acc (var firstName)` so prior bindings stay in scope.
+On ascription failure, try to report expected vs inferred RHS type. -/
+def locateTypecheckFail (ctors : CtorEnv) (ke : KindEnv) (p : Surface.Program)
     (binders : List BinderSpan) (sp : SpannedProgram) : HoverDiag :=
   let rec go (acc : List (List Surface.Binding))
       (rest : List (List Surface.Binding)) : HoverDiag :=
@@ -906,7 +942,7 @@ def locateTypecheckFail (ctors : CtorEnv) (p : Surface.Program)
               go acc' gs
             else
               let nm := prettySurfaceName b.name
-              let msg := s!"typechecking failed in `{nm}`"
+              let msg := explainTypeMismatch ctors ke acc g b
               match bindingExtentSpan binders p sp nm with
               | some s => diagAtSpan msg (some s)
               | none => diagAtSpan msg (some (bodyDiagSpan sp.body))
@@ -968,7 +1004,7 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
       | none => fail (locateLowerFail src pErased sp)
       | some c =>
         match infer c.freshFloor ⟨[], ctors⟩ c with
-        | none => fail (locateTypecheckFail ctors pErased binders sp)
+        | none => fail (locateTypecheckFail ctors ke pErased binders sp)
         | some (_, _, eOut, τ) =>
           let bodyσ := genScheme [] [] τ
           let report0 :=
