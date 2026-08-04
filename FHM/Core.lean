@@ -88,16 +88,52 @@ inductive Ty
 def bareListTy (α : Ty) : Ty :=
   .customTy listTyName [α]
 
-/-- Drop BL intervals for an HM view (`bl _ _ α` → bare `List α`). Pure function. -/
+mutual
+/-- Drop BL intervals for an HM view (`bl _ _ α` → bare `List α`). Pure function.
+    Mutual with list walker so equations are definitional (`rfl` simp lemmas). -/
 def Ty.eraseBounds : Ty → Ty
   | .prim p => .prim p
-  | .arrow a b => .arrow a.eraseBounds b.eraseBounds
+  | .arrow a b => .arrow (Ty.eraseBounds a) (Ty.eraseBounds b)
   | .bvar i => .bvar i
   | .fvar i => .fvar i
-  | .customTy n as => .customTy n (as.map Ty.eraseBounds)
-  | .bl _ _ α => bareListTy α.eraseBounds
+  | .customTy n as => .customTy n (TyList.eraseBounds as)
+  | .bl _ _ α => bareListTy (Ty.eraseBounds α)
+def TyList.eraseBounds : List Ty → List Ty
+  | [] => []
+  | a :: as => Ty.eraseBounds a :: TyList.eraseBounds as
+end
 
+@[simp] theorem Ty.eraseBounds_bl (lo hi : FHM.Bounds.CountSlot) (α : Ty) :
+    Ty.eraseBounds (.bl lo hi α) = bareListTy (Ty.eraseBounds α) := rfl
 
+@[simp] theorem Ty.eraseBounds_bareList (α : Ty) :
+    Ty.eraseBounds (bareListTy α) = bareListTy (Ty.eraseBounds α) := rfl
+
+@[simp] theorem Ty.eraseBounds_prim (p : PrimTy) :
+    Ty.eraseBounds (.prim p) = .prim p := rfl
+
+@[simp] theorem Ty.eraseBounds_arrow (a b : Ty) :
+    Ty.eraseBounds (.arrow a b) = .arrow (Ty.eraseBounds a) (Ty.eraseBounds b) := rfl
+
+@[simp] theorem Ty.eraseBounds_fvar (i : Nat) :
+    Ty.eraseBounds (.fvar i) = .fvar i := rfl
+
+@[simp] theorem Ty.eraseBounds_bvar (i : Nat) :
+    Ty.eraseBounds (.bvar i) = .bvar i := rfl
+
+@[simp] theorem Ty.eraseBounds_customTy (n : TyName) (as : List Ty) :
+    Ty.eraseBounds (.customTy n as) = .customTy n (TyList.eraseBounds as) := rfl
+
+@[simp] theorem TyList.eraseBounds_nil : TyList.eraseBounds [] = [] := rfl
+
+@[simp] theorem TyList.eraseBounds_cons (a : Ty) (as : List Ty) :
+    TyList.eraseBounds (a :: as) = Ty.eraseBounds a :: TyList.eraseBounds as := rfl
+
+theorem TyList.eraseBounds_eq_map (as : List Ty) :
+    TyList.eraseBounds as = as.map Ty.eraseBounds := by
+  induction as with
+  | nil => rfl
+  | cons a as ih => simp [ih]
 
 structure PolyTy where
   paramCount : Nat
@@ -523,6 +559,25 @@ decreasing_by
   all_goals first
     | omega
     | (have := List.sizeOf_lt_of_mem _ht; omega)
+
+/-- Erasing intervals twice is idempotent. -/
+@[simp] theorem Ty.eraseBounds_idem (τ : Ty) :
+    Ty.eraseBounds (Ty.eraseBounds τ) = Ty.eraseBounds τ := by
+  induction τ using Ty.rec_strong with
+  | prim p => rfl
+  | arrow a b iha ihb => simp only [Ty.eraseBounds, iha, ihb]
+  | bvar i => rfl
+  | fvar i => rfl
+  | customTy nm tys ih =>
+    simp only [Ty.eraseBounds]
+    refine congrArg (Ty.customTy nm) ?_
+    induction tys with
+    | nil => rfl
+    | cons hd tl ih_tl =>
+      simp only [TyList.eraseBounds, List.cons.injEq]
+      exact ⟨ih hd List.mem_cons_self, ih_tl fun t ht => ih t (List.mem_cons_of_mem _ ht)⟩
+  | bl lo hi e ih =>
+    simp only [bareListTy, Ty.eraseBounds, TyList.eraseBounds, ih]
 
 /-- Closing doesn't add any more bvars than it is expected to -/
 theorem Ty.closeOver_preserves_bvars : ContainsBvarsUpTo 0 ty → ContainsBvarsUpTo vars.length (ty.closeOver vars) := by
