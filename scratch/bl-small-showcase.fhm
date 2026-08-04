@@ -1,0 +1,31 @@
+
+-- BL = BoundedList
+
+
+let myList = [1, 2, 105]
+
+
+let myList2 =
+  if True then
+    [1]
+  else
+    [1, 2, 105]
+
+
+
+
+let head : {hi : Nat, a} BL 1 hi a -> a =
+  \xs ->
+    match xs with
+    | head :: _ -> head
+
+
+
+let tail : {lo hi : Nat, a} BL (lo+1) (hi+1) a -> BL lo hi a =
+  \xs ->
+    match xs with
+    | _ :: tail_ -> tail_
+
+
+
+
