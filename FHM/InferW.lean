@@ -179,6 +179,9 @@ theorem Ty.instantiate_eq_self_of_bvars_lt {σ : Nat → Ty} {d : Nat} {t : Ty}
         exact ⟨ih hd List.mem_cons_self (hall hd List.mem_cons_self),
                ihtl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
                     (fun t ht => hall t (List.mem_cons_of_mem _ ht))⟩
+  | bl lo hi e ih =>
+    cases h with
+    | bl he => simp only [Ty.instantiate, Ty.bl.injEq, true_and]; exact ih he
 
 /-- Offset opening (`Ty.openVarsFrom d`) fixes any type whose bvars are all `< d`
     — the opener only touches bvars `≥ d`. Used by the `openTyVars`-identity
@@ -249,6 +252,12 @@ inductive UnifyRel : Ty → Ty → Subst → Prop
     UnifyRelList tys₁ tys₂ S →
     UnifyRel (.customTy nm tys₁) (.customTy nm tys₂) S
 
+  /-- Bounds-blind element unify for equal `BL` intervals (lengths are not
+      unifs; HM never solves them). Walk element only. -/
+  | bl {lo hi e₁ e₂ S} :
+    UnifyRel e₁ e₂ S →
+    UnifyRel (.bl lo hi e₁) (.bl lo hi e₂) S
+
 /-- Pairwise unification of equal-length type lists, threading the substitution
     left-to-right. Used for the arguments of a custom type constructor. -/
 inductive UnifyRelList : List Ty → List Ty → Subst → Prop
@@ -277,6 +286,9 @@ end
 
 @[simp] theorem Subst.onTy_customTy {S : Subst} {nm : TyName} {tys : List Ty} :
     S.onTy (.customTy nm tys) = .customTy nm (tys.map S.onTy) := Ty.substFvars_customTy
+
+@[simp] theorem Subst.onTy_bl {S : Subst} {lo hi : FHM.Bounds.CountSlot} {e : Ty} :
+    S.onTy (.bl lo hi e) = .bl lo hi (S.onTy e) := Ty.substFvars_bl
 
 /-- Mapping a composed substitution over a list = mapping each factor in turn. -/
 theorem Subst.map_onTy_append (S T : Subst) (ts : List Ty) :
@@ -309,6 +321,10 @@ theorem UnifyRel.unifies : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁
   | _, _, _, .customTy hl => by
     have el := UnifyRelList.unifies hl
     simp only [Unifies, Subst.onTy_customTy, el]
+  | _, _, _, .bl h => by
+    have e := UnifyRel.unifies h
+    simp only [Unifies, Subst.onTy_bl] at e ⊢
+    exact congrArg (Ty.bl _ _) e
 
 /-- The list version: a list-unifier equalises the two lists pointwise. -/
 theorem UnifyRelList.unifies : {ts₁ ts₂ : List Ty} → {S : Subst} →
@@ -349,6 +365,8 @@ theorem Subst.onTy_substFvar {S' : Subst} {n : Nat} {U : Ty}
     apply List.map_congr_left
     intro t ht
     exact ih t ht
+  | bl lo hi e ih =>
+    simp only [Ty.substFvar, Subst.onTy_bl, ih]
 
 /-! Every substitution produced by `UnifyRel` is a *most general* unifier: any
     other unifier `S'` factors through it. The compound cases thread the
@@ -377,6 +395,9 @@ theorem UnifyRel.greatest : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ�
   | _, _, _, .customTy hl, S', hS' => by
     simp only [Unifies, Subst.onTy_customTy, Ty.customTy.injEq, true_and] at hS'
     exact UnifyRelList.greatest hl S' hS'
+  | _, _, _, .bl h, S', hS' => by
+    simp only [Unifies, Subst.onTy_bl, Ty.bl.injEq, true_and] at hS'
+    exact UnifyRel.greatest h S' hS'
 
 theorem UnifyRelList.greatest : {ts₁ ts₂ : List Ty} → {S : Subst} →
     UnifyRelList ts₁ ts₂ S → ∀ S' : Subst, ts₁.map S'.onTy = ts₂.map S'.onTy →
@@ -443,6 +464,9 @@ theorem UnifyRel.lc : {a b : Ty} → {S : Subst} → UnifyRel a b S →
   | _, _, _, .customTy hl, ha, hb => by
     cases ha with | customTy ha_all => cases hb with | customTy hb_all =>
     exact UnifyRelList.lc hl ha_all hb_all
+  | _, _, _, .bl h, ha, hb => by
+    cases ha with | bl hae => cases hb with | bl hbe =>
+    exact UnifyRel.lc h hae hbe
 
 /-- List version: unifying two LC type lists yields an LC substitution. -/
 theorem UnifyRelList.lc : {ts₁ ts₂ : List Ty} → {S : Subst} → UnifyRelList ts₁ ts₂ S →
@@ -520,6 +544,7 @@ theorem Ty.freeVars_nodup {τ : Ty} : τ.freeVars.Nodup := by
     cases tys with
     | nil => simp [Ty.freeVars, TyList.freeVars]
     | cons hd tl => simp [Ty.freeVars, TyList.freeVars, List.nodup_dedup]
+  | bl _ _ e => exact Ty.freeVars_nodup (τ := e)
 
 /-- The generalization candidates are duplicate-free. -/
 theorem genVars_nodup {rigid : List Nat} {env : Env} {τ : Ty} : (genVars rigid env τ).Nodup :=
@@ -772,6 +797,7 @@ def Ty.bvarsBelow (n : Nat) : Ty → Bool
   | .fvar _          => true
   | .bvar i          => decide (i < n)
   | .customTy _ tys  => TyList.bvarsBelow n tys
+  | .bl _ _ e        => Ty.bvarsBelow n e
 def TyList.bvarsBelow (n : Nat) : List Ty → Bool
   | []      => true
   | t :: ts => Ty.bvarsBelow n t && TyList.bvarsBelow n ts
@@ -809,6 +835,9 @@ theorem Ty.bvarsBelow_iff {n : Nat} (t : Ty) :
     · intro h
       cases h with
       | customTy hall => exact fun t' ht' => (ih t' ht').mpr (hall t' ht')
+  | bl lo hi e ih =>
+    simp only [Ty.bvarsBelow, ih]
+    exact ⟨fun he => .bl he, fun h => by cases h with | bl he => exact he⟩
 
 /-- Decidability of scheme well-formedness, via `Ty.bvarsBelow`. -/
 theorem PolyTy.wf_iff_bvarsBelow {M : PolyTy} :
@@ -828,6 +857,9 @@ theorem Ty.noFreeVars_of_forall_not_mem {t : Ty} (h : ∀ z, z ∉ t.freeVars) :
   | customTy nm tys ih =>
     refine .customTy (fun t' ht' => ih t' ht' fun z hz => ?_)
     exact h z (by rw [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht' hz)
+  | bl lo hi e ih =>
+    refine .bl (ih fun z hz => ?_)
+    exact h z (by simpa only [Ty.freeVars] using hz)
 
 /-- A type has no free vars iff its `freeVars` list is empty (decidable bridge). -/
 theorem Ty.noFreeVars_iff_freeVars_nil {t : Ty} :
@@ -884,6 +916,7 @@ def Ty.closeOverFrom (d : Nat) (vars : List Nat) : Ty → Ty
   | .arrow a b       => .arrow (a.closeOverFrom d vars) (b.closeOverFrom d vars)
   | .bvar i          => .bvar i
   | .customTy nm tys => .customTy nm (TyList.closeOverFrom d vars tys)
+  | .bl lo hi e      => .bl lo hi (e.closeOverFrom d vars)
   | .fvar n          =>
       match vars.idxOf? n with
       | some i => .bvar (d + i)
@@ -1054,6 +1087,11 @@ theorem Ty.openVarsFrom_closeOverFrom_self {d : Nat} {Ys : List Nat} :
       intro t ht_mem
       have hres := ih t ht_mem (hall t ht_mem)
       simpa only [Ty.openVarsFrom, Function.comp_apply, id_eq] using hres
+  | bl lo hi e ih =>
+    cases ht with
+    | bl he =>
+      simp only [Ty.closeOverFrom, Ty.openVarsFrom, Ty.instantiate] at ih ⊢
+      rw [ih he]
 
 /-- Depth-general close-then-open-at-different-names = rename `Ys ↦ Xs`. -/
 theorem Ty.openVarsFrom_closeOverFrom_rename {d : Nat} {Ys Xs : List Nat}
@@ -1113,6 +1151,11 @@ theorem Ty.openVarsFrom_closeOverFrom_rename {d : Nat} {Ys Xs : List Nat}
       intro t ht_mem
       have hres := ih t ht_mem (hall t ht_mem)
       simpa only [Ty.openVarsFrom, Function.comp_apply] using hres
+  | bl lo hi e ih =>
+    cases ht with
+    | bl he =>
+      simp only [Ty.closeOverFrom, Ty.openVarsFrom, Ty.instantiate, Ty.substFvars_bl] at ih ⊢
+      rw [ih he]
 
 /-- Closing over `Ys` removes every `Ys` from a type's free vars (depth-general
     analog of Core's `Ty.not_mem_closeOver_freeVars`). -/
@@ -1138,6 +1181,9 @@ theorem Ty.not_mem_closeOverFrom_freeVars {d : Nat} {Ys : List Nat} {g : Nat} (h
     intro t ht
     obtain ⟨t'', _, rfl⟩ := List.mem_map.mp ht
     exact ih t'' (by assumption)
+  | bl lo hi e ih =>
+    simp only [Ty.closeOverFrom, Ty.freeVars] at * 
+    exact ih
 
 /-- `RecGroup.closeTyVarsAux` characterised by `RecGroup.shieldDepths` (the fused
     anns-keyed analogue of Core's `RecGroup.openTyVarsAux_eq_zip`). -/
@@ -2107,6 +2153,11 @@ theorem Ty.instantiate_isLC {σ : Nat → Ty} {n : Nat}
       intro t ht
       obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
       exact ih t0 ht0 (hall t0 ht0)
+  | bl lo hi e ih =>
+    cases hty with
+    | bl he =>
+      simp only [Ty.instantiate]
+      exact .bl (ih he)
 
 /-- Opening a type whose bvars are `< Xs.length` with fresh names is LC. -/
 theorem Ty.openVars_isLC {Xs : List Nat} {n : Nat} {ty : Ty}
@@ -2388,6 +2439,11 @@ theorem InstantiatesBy.openVars {Xs : List Nat} {n : Nat} {ty : Ty}
     | customTy hball =>
       simp only [Ty.openVars, Ty.instantiate, TyList.instantiate_eq_map]
       exact .customTy (List.forall₂_self_map (fun t ht => ih t ht (hball t ht)))
+  | bl lo hi e ih =>
+    cases hty with
+    | bl he =>
+      simp only [Ty.openVars, Ty.instantiate]
+      exact .bl (ih he)
 
 
 /-! ### Cofinite-generalization machinery for the `letIn` soundness case -/
@@ -2466,6 +2522,10 @@ theorem Ty.freeVars_openVars_subset {Xs : List Nat} {t : Ty} :
     rcases ih t0 ht0 z hzt' with h | h
     · exact .inl (by rw [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht0 h)
     · exact .inr h
+  | bl lo hi e ih =>
+    intro z hz
+    simp only [Ty.openVars, Ty.instantiate, Ty.freeVars] at hz ⊢
+    exact ih z hz
 
 /-- A closed type's opening has free vars only among the opening names. -/
 theorem Ty.freeVars_openVars_closed {Xs : List Nat} {t : Ty} (hcl : NoFreeVars t)
@@ -2524,6 +2584,11 @@ theorem Ty.mem_freeVars_substFvar {Z : Nat} {U x : Ty} {v : Nat}
     rcases ih t0 ht0 hvt' with h | h
     · exact Or.inl (by simp only [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht0 h)
     · exact Or.inr h
+  | bl lo hi e ih =>
+    simp only [Ty.substFvar, Ty.freeVars] at hv
+    rcases ih hv with h | h
+    · exact Or.inl (by simpa only [Ty.freeVars] using h)
+    · exact Or.inr h
 
 /-- Free vars introduced by a whole substitution come from the input or from
     one of the substitution's replacements. -/
@@ -2553,6 +2618,9 @@ theorem Ty.mem_freeVars_arrowR {a b : Ty} {v : Nat} (h : v ∈ b.freeVars) :
 theorem Ty.mem_freeVars_customTy {nm : TyName} {tys : List Ty} {t : Ty} {v : Nat}
     (ht : t ∈ tys) (h : v ∈ t.freeVars) : v ∈ (Ty.customTy nm tys).freeVars := by
   simp only [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht h
+theorem Ty.mem_freeVars_bl {lo hi : FHM.Bounds.CountSlot} {e : Ty} {v : Nat}
+    (h : v ∈ e.freeVars) : v ∈ (Ty.bl lo hi e).freeVars := by
+  simpa only [Ty.freeVars] using h
 
 /-- A variable not occurring in the replacement does not survive substituting it. -/
 theorem Ty.not_mem_freeVars_substFvar_self {n : Nat} {U x : Ty}
@@ -2575,6 +2643,9 @@ theorem Ty.not_mem_freeVars_substFvar_self {n : Nat} {U x : Ty}
     obtain ⟨t', ht', hvt'⟩ := hc
     obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
     exact ih t0 ht0 hvt'
+  | bl lo hi e ih =>
+    simp only [Ty.substFvar, Ty.freeVars]
+    exact ih
 
 /-! The range of a `UnifyRel`-substitution lies within the inputs' free vars. -/
 mutual
@@ -2609,6 +2680,11 @@ theorem UnifyRel.range_mem : {a b : Ty} → {S : Subst} → UnifyRel a b S →
     rcases UnifyRelList.range_mem hl p hp v hv with ⟨t, ht, h⟩ | ⟨t, ht, h⟩
     · exact Or.inl (Ty.mem_freeVars_customTy ht h)
     · exact Or.inr (Ty.mem_freeVars_customTy ht h)
+  | _, _, _, .bl h => by
+    intro p hp v hv
+    rcases UnifyRel.range_mem h p hp v hv with h' | h'
+    · exact Or.inl (Ty.mem_freeVars_bl h')
+    · exact Or.inr (Ty.mem_freeVars_bl h')
 theorem UnifyRelList.range_mem : {as bs : List Ty} → {S : Subst} → UnifyRelList as bs S →
     ∀ p ∈ S, ∀ v ∈ p.2.freeVars,
       (∃ t ∈ as, v ∈ t.freeVars) ∨ (∃ t ∈ bs, v ∈ t.freeVars)
@@ -2668,6 +2744,11 @@ theorem UnifyRel.dom_mem : {a b : Ty} → {S : Subst} → UnifyRel a b S →
     rcases UnifyRelList.dom_mem hl p hp with ⟨t, ht, h⟩ | ⟨t, ht, h⟩
     · exact Or.inl (Ty.mem_freeVars_customTy ht h)
     · exact Or.inr (Ty.mem_freeVars_customTy ht h)
+  | _, _, _, .bl h => by
+    intro p hp
+    rcases UnifyRel.dom_mem h p hp with h' | h'
+    · exact Or.inl (Ty.mem_freeVars_bl h')
+    · exact Or.inr (Ty.mem_freeVars_bl h')
 theorem UnifyRelList.dom_mem : {as bs : List Ty} → {S : Subst} → UnifyRelList as bs S →
     ∀ p ∈ S, (∃ t ∈ as, p.1 ∈ t.freeVars) ∨ (∃ t ∈ bs, p.1 ∈ t.freeVars)
   | _, _, _, .nil => by simp
@@ -2720,6 +2801,9 @@ theorem UnifyRel.eliminates : {a b : Ty} → {S : Subst} → UnifyRel a b S →
   | _, _, _, .customTy hl => by
     intro p hp x hc
     exact UnifyRelList.eliminates hl p hp x hc
+  | _, _, _, .bl h => by
+    intro p hp x hc
+    exact UnifyRel.eliminates h p hp x hc
 theorem UnifyRelList.eliminates : {as bs : List Ty} → {S : Subst} → UnifyRelList as bs S →
     ∀ p ∈ S, ∀ (x : Ty), p.1 ∉ (S.onTy x).freeVars
   | _, _, _, .nil => by simp
@@ -2832,6 +2916,9 @@ theorem Ty.freeVars_closeOverFrom_subset {d : Nat} {vars : List Nat} :
     obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
     rw [Ty.freeVars]
     exact TyList.mem_freeVars_of_mem ht0 (ih t0 ht0 hgt')
+  | bl lo hi e ih =>
+    simp only [Ty.closeOverFrom, Ty.freeVars] at * 
+    exact ih
 
 /-- The fused-group close keeps free-var subset per binding (depth-shifted by its
     annotation), so a `g` in the closed group's free vars came from some binding's. -/
@@ -2966,6 +3053,7 @@ inductive Ty.BelowFvars (Φ : Nat) : Ty → Prop
   | bvar : Ty.BelowFvars Φ (.bvar i)
   | fvar : i < Φ → Ty.BelowFvars Φ (.fvar i)
   | customTy : (∀ t ∈ tys, Ty.BelowFvars Φ t) → Ty.BelowFvars Φ (.customTy nm tys)
+  | bl : Ty.BelowFvars Φ e → Ty.BelowFvars Φ (.bl lo hi e)
 
 theorem Ty.BelowFvars.mono {Φ Φ' : Nat} {τ : Ty} (hle : Φ ≤ Φ')
     (h : Ty.BelowFvars Φ τ) : Ty.BelowFvars Φ' τ := by
@@ -2975,6 +3063,7 @@ theorem Ty.BelowFvars.mono {Φ Φ' : Nat} {τ : Ty} (hle : Φ ≤ Φ')
   | bvar => exact .bvar
   | fvar hlt => exact .fvar (by omega)
   | customTy _ ih => exact .customTy (fun t ht => ih t ht)
+  | bl _ ih => exact .bl ih
 
 /-- `substFvar` by a below-`Φ` type preserves below-`Φ`. -/
 theorem Ty.BelowFvars.substFvar {Φ Z : Nat} {U τ : Ty}
@@ -2998,6 +3087,11 @@ theorem Ty.BelowFvars.substFvar {Φ Z : Nat} {U τ : Ty}
       intro t ht
       obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
       exact ih t0 ht0 (hall t0 ht0)
+  | bl lo hi e ih =>
+    cases h with
+    | bl he =>
+      simp only [Ty.substFvar]
+      exact .bl (ih he)
 
 /-- A whole substitution with below-`Φ` replacements preserves below-`Φ`. -/
 theorem Subst.onTy_belowFvars {Φ : Nat} {S : Subst} (hS : ∀ p ∈ S, Ty.BelowFvars Φ p.2) :
@@ -3032,6 +3126,11 @@ theorem Ty.BelowFvars.mem_lt {Φ : Nat} {τ : Ty} (h : Ty.BelowFvars Φ τ) :
     refine (TyList.not_mem_freeVars_iff.mpr ?_) hv
     intro t ht hc
     exact hge (ih t ht v hc)
+  | bl _ ih =>
+    intro v hv
+    simp only [Ty.freeVars] at hv
+    exact ih v hv
+
 
 /-- Every scheme body of `ctx` has its free type vars below the frontier `Φ`
     (the "new_tv" discipline: vars `Infer` allocates `≥ Φ` are genuinely fresh). -/
@@ -3096,6 +3195,11 @@ theorem Ty.openVars_belowFvars {Φ : Nat} {Xs : List Nat} {τ : Ty}
       intro t' ht'
       obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
       exact ih t ht (hall t ht)
+  | bl lo hi e ih =>
+    cases hτ with
+    | bl he =>
+      simp only [Ty.openVars, Ty.instantiate]
+      exact .bl (ih he)
 
 /-- A type with no free variables is below any frontier. -/
 theorem Ty.BelowFvars.of_noFreeVars {Φ : Nat} {τ : Ty} (h : NoFreeVars τ) :
@@ -3105,6 +3209,7 @@ theorem Ty.BelowFvars.of_noFreeVars {Φ : Nat} {τ : Ty} (h : NoFreeVars τ) :
   | arrow _ _ iha ihb => exact .arrow iha ihb
   | bvar => exact .bvar
   | customTy _ ih => exact .customTy (fun t ht => ih t ht)
+  | bl _ ih => exact .bl ih
 
 /-- Converse of `Ty.BelowFvars.mem_lt`: all free vars `< Φ` gives `BelowFvars Φ`. -/
 theorem Ty.BelowFvars.of_freeVars_lt {Φ : Nat} {τ : Ty}
@@ -3121,6 +3226,9 @@ theorem Ty.BelowFvars.of_freeVars_lt {Φ : Nat} {τ : Ty}
     refine .customTy fun t ht => ih t ht (fun v hv => h v ?_)
     simp only [Ty.freeVars]
     exact TyList.mem_freeVars_of_mem ht hv
+  | bl lo hi e ih =>
+    refine .bl (ih fun v hv => h v ?_)
+    simpa only [Ty.freeVars] using hv
 
 /-- Opening with below-`Φ` args preserves below-`Φ`-ness. -/
 theorem Ty.openWith_belowFvars {Φ : Nat} {Vs : List Ty} {X : Ty}
@@ -3141,6 +3249,11 @@ theorem Ty.openWith_belowFvars {Φ : Nat} {Vs : List Ty} {X : Ty}
       simp only [Ty.openWith, Ty.instantiate, TyList.instantiate_eq_map]
       exact .customTy (fun t' ht' => by
         obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'; exact ih t ht (hall t ht))
+  | bl lo hi e ih =>
+    cases hX with
+    | bl he =>
+      simp only [Ty.openWith, Ty.instantiate]
+      exact .bl (ih he)
 
 /-- A `match_` branch's pattern bindings stay below `Φ` (ctor contents are closed,
     so opening with below-`Φ` type args yields below-`Φ` bindings). -/
@@ -3179,6 +3292,9 @@ theorem UnifyRel.belowFvars {Φ : Nat} : {a b : Ty} → {S : Subst} → UnifyRel
   | _, _, _, .customTy hl, ha, hb => by
     cases ha with | customTy ha_all => cases hb with | customTy hb_all =>
     exact UnifyRelList.belowFvars hl ha_all hb_all
+  | _, _, _, .bl h, ha, hb => by
+    cases ha with | bl hae => cases hb with | bl hbe =>
+    exact UnifyRel.belowFvars h hae hbe
 
 /-- List version: unifying two below-`Φ` type lists yields a below-`Φ` substitution. -/
 theorem UnifyRelList.belowFvars {Φ : Nat} : {ts₁ ts₂ : List Ty} → {S : Subst} → UnifyRelList ts₁ ts₂ S →
@@ -3210,7 +3326,7 @@ theorem Ty.BelowFvars.closeOver {Φ : Nat} {gs : List Nat} :
   | prim p => exact .prim
   | bvar i => exact .bvar
   | fvar n =>
-    rw [Ty.closeOver.eq_5]
+    rw [Ty.closeOver.eq_6]
     cases h_idx : gs.idxOf? n with
     | none => cases h with | fvar hlt => exact .fvar hlt
     | some i => exact .bvar
@@ -3222,6 +3338,11 @@ theorem Ty.BelowFvars.closeOver {Φ : Nat} {gs : List Nat} :
       apply Ty.BelowFvars.customTy
       intro t' ht'; obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
       exact ih t ht (hall t ht)
+  | bl lo hi e ih =>
+    cases h with
+    | bl he =>
+      simp only [Ty.closeOver]
+      exact .bl (ih he)
 
 /-- A body scheme's body is frontier-bounded when its spec is (mono: closing only
     removes free vars). -/
@@ -4127,6 +4248,10 @@ theorem Ty.not_mem_freeVars_openWith {Vs : List Ty} {w : Nat} (hVs : ∀ v ∈ V
     obtain ⟨t', ht', hwt'⟩ := hc
     obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
     exact ih t0 ht0 (hX' t0 ht0) hwt'
+  | bl lo hi e ih =>
+    intro hX
+    simp only [Ty.openWith, Ty.instantiate, Ty.freeVars]
+    exact ih (fun hc => hX (by simpa only [Ty.freeVars] using hc))
 
 /-- `RecGroup.tyFreeVars` membership reconstruction (`_of` direction). -/
 theorem Expr.mem_recGroupTyFreeVars_of {L : List Expr} {e : Expr} {w : Nat}
@@ -5485,6 +5610,11 @@ theorem Ty.closeOverFrom_preserves_bvars {d : Nat} {Xs : List Nat} :
       exact .customTy (fun t' ht' => by
         obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
         exact ih t0 ht0 (hall t0 ht0))
+  | bl lo hi e ih =>
+    cases ht with
+    | bl he =>
+      simp only [Ty.closeOverFrom]
+      exact .bl (ih he)
 
 /-- Closing a fused group's scheme-annotation bodies over `Xs` raises each present
     body's bvar bound by `Xs.length` (at its shielded depth). -/
@@ -6069,6 +6199,10 @@ theorem Ty.closeOverFrom_eq_self_of_fresh {d : Nat} {gs : List Nat} {τ : Ty}
     apply List.map_congr_left
     intro t ht
     exact ih t ht (fun g hg hc => h g hg (TyList.mem_freeVars_of_mem ht hc))
+  | bl lo hi e ih =>
+    have he : ∀ g ∈ gs, g ∉ e.freeVars := fun g hg hc =>
+      h g hg (by simpa only [Ty.freeVars] using hc)
+    simp only [Ty.closeOverFrom, ih he]
 
 /-- `substFvar` commutes with offset closing (`Ty.closeOverFrom`) when the
     substituted variable `Z` and every free var of the replacement `U` avoid the
@@ -6101,6 +6235,8 @@ theorem Ty.substFvar_closeOverFrom_comm {Z : Nat} {U : Ty} {gs : List Nat} {d : 
     apply List.map_congr_left
     intro t ht
     simpa using ih t ht
+  | bl lo hi e ih =>
+    simp only [Ty.closeOverFrom, Ty.substFvar, ih]
 
 /-- Iterated `substFvars` commutes with offset closing, lifting
     `Ty.substFvar_closeOverFrom_comm` over the substitution `S` (which must avoid
@@ -6398,6 +6534,8 @@ theorem List.zip_map_left_eq {α β γ : Type _} (f : α → γ) :
     Ty.openWith Vs (.fvar n) = .fvar n := rfl
 @[simp] private theorem Ty.openWith_arrow {Vs : List Ty} {a b : Ty} :
     Ty.openWith Vs (.arrow a b) = .arrow (Ty.openWith Vs a) (Ty.openWith Vs b) := rfl
+@[simp] private theorem Ty.openWith_bl {Vs : List Ty} {lo hi : FHM.Bounds.CountSlot} {e : Ty} :
+    Ty.openWith Vs (.bl lo hi e) = .bl lo hi (Ty.openWith Vs e) := rfl
 @[simp] private theorem Ty.openWith_customTy {Vs : List Ty} {nm : TyName} {tys : List Ty} :
     Ty.openWith Vs (.customTy nm tys) = .customTy nm (tys.map (Ty.openWith Vs)) := by
   unfold Ty.openWith
@@ -6422,6 +6560,11 @@ theorem InstantiatesBy.openWith {Vs : List Ty} {n : Nat} {ty : Ty}
     | customTy hball =>
       simp only [Ty.openWith_customTy]
       exact .customTy (List.forall₂_self_map (fun t ht => ih t ht (hball t ht)))
+  | bl lo hi e ih =>
+    cases hbv with
+    | bl he =>
+      simp only [Ty.openWith, Ty.instantiate]
+      exact .bl (ih he)
 
 /-- Applying an LC substitution commutes with bvar-instantiation. -/
 theorem Subst.onTy_instantiate {S : Subst} (hS : ∀ p ∈ S, p.2.IsLC) (σ : Nat → Ty) (X : Ty) :
@@ -6440,6 +6583,8 @@ theorem Subst.onTy_instantiate {S : Subst} (hS : ∀ p ∈ S, p.2.IsLC) (σ : Na
     intro t ht
     simp only [Function.comp_apply]
     exact ih t ht
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate, Subst.onTy_bl, ih]
 
 /-- `onTy` (LC) commutes with `openWith`. -/
 theorem Subst.onTy_openWith {S : Subst} (hS : ∀ p ∈ S, p.2.IsLC) (Vs : List Ty) (X : Ty) :
@@ -9280,6 +9425,9 @@ theorem Subst.onTy_congr {Φ : Nat} {S T : Subst}
       apply List.map_congr_left
       intro t ht
       exact ih t ht (hall t ht)
+  | bl lo hi e ih =>
+    cases hτ with
+    | bl he => simp only [Subst.onTy_bl, ih he]
 
 /-- Agreeing substitutions act identically on a below-`Φ` context. -/
 theorem Subst.onCtx_congr {Φ : Nat} {S T : Subst} {ctx : Ctx}
@@ -11334,6 +11482,7 @@ def Ty.rename (f : Nat → Nat) : Ty → Ty
   | .bvar i          => .bvar i
   | .fvar n          => .fvar (f n)
   | .customTy nm tys => .customTy nm (TyList.rename f tys)
+  | .bl lo hi e      => .bl lo hi (e.rename f)
 
 private def TyList.rename (f : Nat → Nat) : List Ty → List Ty
   | []       => []
@@ -11357,6 +11506,8 @@ theorem TyList.rename_eq_map (f : Nat → Nat) (tys : List Ty) :
 @[simp] theorem Ty.rename_customTy {f : Nat → Nat} {nm : TyName} {tys : List Ty} :
     Ty.rename f (.customTy nm tys) = .customTy nm (tys.map (Ty.rename f)) := by
   simp [Ty.rename, TyList.rename_eq_map]
+@[simp] theorem Ty.rename_bl {f : Nat → Nat} {lo hi : FHM.Bounds.CountSlot} {e : Ty} :
+    Ty.rename f (.bl lo hi e) = .bl lo hi (Ty.rename f e) := rfl
 
 /-- Renaming by a function that fixes `τ`'s free vars is the identity. -/
 theorem Ty.rename_eq_self {f : Nat → Nat} {τ : Ty}
@@ -11378,6 +11529,9 @@ theorem Ty.rename_eq_self {f : Nat → Nat} {τ : Ty}
     apply List.map_congr_left
     intro t ht
     exact ih t ht (fun v hv => h v (TyList.mem_freeVars_of_mem ht hv))
+  | bl lo hi e ih =>
+    simp only [Ty.rename_bl, Ty.bl.injEq, true_and]
+    exact ih (fun v hv => h v (by simpa only [Ty.freeVars] using hv))
 
 /-- Renaming preserves the bvar bound (it only touches `fvar`s). -/
 theorem Ty.rename_containsBvars {f : Nat → Nat} {n : Nat} {τ : Ty}
@@ -11395,6 +11549,11 @@ theorem Ty.rename_containsBvars {f : Nat → Nat} {n : Nat} {τ : Ty}
       intro t ht
       obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
       exact ih t0 ht0 (hall t0 ht0)
+  | bl lo hi e ih =>
+    cases h with
+    | bl he =>
+      simp only [Ty.rename_bl]
+      exact .bl (ih he)
 
 /-- Renaming preserves local-closedness. -/
 theorem Ty.rename_isLC {f : Nat → Nat} {τ : Ty} (h : τ.IsLC) :
@@ -11420,6 +11579,8 @@ theorem Ty.rename_substFvar {f : Nat → Nat} (hf : Function.Injective f)
     apply List.map_congr_left
     intro t0 ht0
     exact ih t0 ht0
+  | bl lo hi e ih =>
+    simp only [Ty.substFvar, Ty.rename_bl, ih]
 
 /-- Swap two naturals. -/
 def swapNat (a b n : Nat) : Nat := if n = a then b else if n = b then a else n
@@ -11500,6 +11661,9 @@ theorem swapSubst_onTy {a b c : Nat} (hab : a ≠ b) (hac : a ≠ c) (hbc : b �
     apply List.map_congr_left
     intro t ht
     exact ih t ht (fun hct => hc (TyList.mem_freeVars_of_mem ht hct))
+  | bl lo hi e ih =>
+    simp only [Ty.freeVars] at hc
+    simp only [Subst.onTy_bl, Ty.rename_bl, ih hc]
 
 /-- After swapping `Φ ↔ W`, the var `Φ` is absent provided `W` was absent
     (the only source of `Φ` would have been a pre-existing `W`). -/
@@ -11523,6 +11687,10 @@ theorem Ty.rename_swap_not_mem_left {Φ W : Nat} {Y : Ty} (h : W ∉ Y.freeVars)
     intro t' ht'
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
     exact ih t ht (fun hct => h (TyList.mem_freeVars_of_mem ht hct))
+  | bl lo hi e ih =>
+    simp only [Ty.freeVars] at h
+    simp only [Ty.rename_bl, Ty.freeVars]
+    exact ih h
 
 /-- Map-back: substituting `W ↦ Φ` undoes the swap `Φ ↔ W` on a `W`-free type. -/
 theorem Ty.substFvar_rename_swap {Φ W : Nat} {X : Ty} (h : W ∉ X.freeVars) :
@@ -11547,6 +11715,9 @@ theorem Ty.substFvar_rename_swap {Φ W : Nat} {X : Ty} (h : W ∉ X.freeVars) :
     apply List.map_congr_left
     intro t ht
     exact ih t ht (fun hct => h (TyList.mem_freeVars_of_mem ht hct))
+  | bl lo hi e ih =>
+    simp only [Ty.freeVars] at h
+    simp only [Ty.rename_bl, Ty.substFvar, ih h]
 
 /-- Two distinct fresh names, both `≥ Φ` and avoiding a given finite set. -/
 theorem exists_fresh_two_ge (Φ : Nat) (avoid : List Nat) :
@@ -11591,6 +11762,10 @@ theorem Ty.not_mem_freeVars_substFvar {Z W : Nat} {U τ : Ty}
     intro t' ht'
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
     exact ih t ht (fun hct => hτ (TyList.mem_freeVars_of_mem ht hct))
+  | bl lo hi e ih =>
+    simp only [Ty.freeVars] at hτ
+    simp only [Ty.substFvar, Ty.freeVars]
+    exact ih hτ
 
 /-- A whole substitution keeps `W` fresh when `W` avoids its range and the input. -/
 theorem Subst.not_mem_onTy_freeVars {S : Subst} {W : Nat} {τ : Ty}
@@ -11630,6 +11805,10 @@ theorem Subst.onTy_eq_self_of_fixes {S : Subst} :
     intro t ht
     exact ih t ht (fun v hv => h v (by
       simp only [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht hv))
+  | bl lo hi e ih =>
+    intro h
+    simp only [Subst.onTy_bl, Ty.bl.injEq, true_and]
+    exact ih (fun v hv => h v (by simpa only [Ty.freeVars] using hv))
 
 theorem Infer.complete_lambda_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
     {S₀ : Subst} {paramTy bodyTy : Ty} {K : List Nat}
@@ -11950,6 +12129,9 @@ theorem blockList_onTy {Φ W k : Nat} (hd : Φ + k ≤ W) {τ : Ty}
     apply List.map_congr_left
     intro t ht
     exact ih t ht (fun v hv => hτ v (TyList.mem_freeVars_of_mem ht hv))
+  | bl lo hi e ih =>
+    simp only [Subst.onTy_bl, Ty.rename_bl, Ty.bl.injEq, true_and]
+    exact ih (fun v hv => hτ v (by simpa only [Ty.freeVars] using hv))
 
 /-- Map-back: the backward list undoes `blockSwap` on `W`-block-avoiding types. -/
 theorem blockListBack_onTy_rename {Φ W k : Nat} (hd : Φ + k ≤ W) {X : Ty}
@@ -11977,6 +12159,9 @@ theorem blockListBack_onTy_rename {Φ W k : Nat} (hd : Φ + k ≤ W) {X : Ty}
     apply List.map_congr_left
     intro t ht
     exact ih t ht (fun v hv => hX v (TyList.mem_freeVars_of_mem ht hv))
+  | bl lo hi e ih =>
+    simp only [Ty.rename_bl, Subst.onTy_bl, Ty.bl.injEq, true_and]
+    exact ih (fun v hv => hX v (by simpa only [Ty.freeVars] using hv))
 
 /-- The `Φ`-block is absent after renaming a `W`-block-avoiding type. -/
 theorem blockSwap_rename_not_mem {Φ W k : Nat} (hd : Φ + k ≤ W) {Y : Ty}
@@ -12004,6 +12189,10 @@ theorem blockSwap_rename_not_mem {Φ W k : Nat} (hd : Φ + k ≤ W) {Y : Ty}
     intro t' ht'
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
     exact ih t ht (fun w hw => hY w (TyList.mem_freeVars_of_mem ht hw)) v hv1 hv2
+  | bl lo hi e ih =>
+    intro v hv1 hv2
+    simp only [Ty.rename_bl, Ty.freeVars]
+    exact ih (fun w hw => hY w (by simpa only [Ty.freeVars] using hw)) v hv1 hv2
 
 /-- Refinement of `Ty.substFvars_zip_fvar_eq` needing freshness only of the
     *selected* value `v` (not all of `Vs`), and no length condition. Substituting
@@ -12099,6 +12288,14 @@ theorem InstantiatesBy.onTy_openVars_zip {Xs : List Nat} {ty τ : Ty} {tyArgs : 
             apply hXfresh x hx
             simp only [Ty.freeVars, TyList.freeVars, List.mem_dedup, List.mem_append] at hc ⊢
             exact Or.inr hc
+  | bl lo hi e ih =>
+    cases hinst with
+    | bl he =>
+      cases hbv with
+      | bl hbe =>
+        simp only [Ty.openVars, Ty.instantiate, Subst.onTy_bl]
+        refine congrArg (Ty.bl lo hi) (ih he hbe ?_)
+        intro x hx hc; exact hXfresh x hx (by simpa only [Ty.freeVars] using hc)
 
 /-- A single fresh name `W` starting a block `[W,W+k)` disjoint from `[Φ,Φ+k)`
     and above a finite `avoid` set. -/
@@ -12388,6 +12585,9 @@ theorem UnifyRel.greatest_lc : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel �
   | _, _, _, .fvarRefl, S', hlc, _ => ⟨S', fun τ => by simp only [Subst.onTy_nil], hlc⟩
   | _, _, _, .fvarL _ _, S', hlc, hS' => ⟨S', fun τ => (Subst.onTy_substFvar hS' τ).symm, hlc⟩
   | _, _, _, .fvarR _ _, S', hlc, hS' => ⟨S', fun τ => (Subst.onTy_substFvar (Eq.symm hS') τ).symm, hlc⟩
+  | _, _, _, .bl h, S', hlc, hS' => by
+    simp only [Unifies, Subst.onTy_bl, Ty.bl.injEq, true_and] at hS'
+    exact UnifyRel.greatest_lc h S' hlc hS'
   | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, S', hlc, hS' => by
     simp only [Unifies, Subst.onTy_arrow, Ty.arrow.injEq] at hS'
     obtain ⟨hac, hbd⟩ := hS'
@@ -12457,6 +12657,9 @@ theorem UnifyRel.greatest_K {K : List Nat} :
   | _, _, _, .customTy hl, S', hlc, hS', hK => by
     simp only [Unifies, Subst.onTy_customTy, Ty.customTy.injEq, true_and] at hS'
     exact UnifyRelList.greatest_K hl S' hlc hS' hK
+  | _, _, _, .bl h, S', hlc, hS', hK => by
+    simp only [Unifies, Subst.onTy_bl, Ty.bl.injEq, true_and] at hS'
+    exact UnifyRel.greatest_K h S' hlc hS' hK
 theorem UnifyRelList.greatest_K {K : List Nat} :
     {ts₁ ts₂ : List Ty} → {S : Subst} → UnifyRelList ts₁ ts₂ S →
     ∀ S' : Subst, (∀ p ∈ S', p.2.IsLC) → ts₁.map S'.onTy = ts₂.map S'.onTy →
@@ -12485,6 +12688,7 @@ def Ty.size : Ty → Nat
   | .fvar _ => 1
   | .arrow a b => 1 + a.size + b.size
   | .customTy _ tys => 1 + TyList.size tys
+  | .bl _ _ e => 1 + e.size
 def TyList.size : List Ty → Nat
   | [] => 0
   | hd :: tl => hd.size + TyList.size tl
@@ -12505,6 +12709,7 @@ theorem TyList.size_mem_le {t : Ty} {tys : List Ty} (h : t ∈ tys) :
   | .fvar _ => by simp only [Ty.size]; omega
   | .arrow _ _ => by simp only [Ty.size]; omega
   | .customTy _ _ => by simp only [Ty.size]; omega
+  | .bl _ _ e => by simp only [Ty.size]; have := @Ty.size_pos e; omega
 
 /-- Occurs-check via size: applying any substitution, a variable's image is no
     bigger than the image of any type containing it. -/
@@ -12533,6 +12738,11 @@ theorem Ty.size_onTy_fvar_le {S : Subst} {n : Nat} :
     have h2 : (S.onTy t).size ≤ TyList.size (tys.map S.onTy) :=
       TyList.size_mem_le (List.mem_map.mpr ⟨t, ht, rfl⟩)
     omega
+  | bl lo hi e ih =>
+    intro h
+    simp only [Ty.freeVars] at h
+    simp only [Subst.onTy_bl, Ty.size]
+    have := ih h; omega
 
 /-- The strict occurs-check: a variable's image is strictly smaller than the
     image of a *compound* type containing it. -/
@@ -12558,6 +12768,11 @@ theorem Ty.size_onTy_fvar_lt {S : Subst} {n : Nat} {b : Ty}
     have h1 := Ty.size_onTy_fvar_le (S := S) (n := n) hnt
     have h2 : (S.onTy t).size ≤ TyList.size (tys.map S.onTy) :=
       TyList.size_mem_le (List.mem_map.mpr ⟨t, ht, rfl⟩)
+    omega
+  | bl lo hi e =>
+    simp only [Ty.freeVars] at hmem
+    simp only [Subst.onTy_bl, Ty.size]
+    have := Ty.size_onTy_fvar_le (S := S) (n := n) hmem
     omega
 
 /-- Unification completeness (+ the list version), bounded by the measure
@@ -12589,6 +12804,7 @@ theorem UnifyRel.complete_aux : ∀ (N : Nat),
         | fvar m => exact ⟨[(m, .prim p)], .fvarR (by simp) (by simp [Ty.freeVars])⟩
         | arrow b₁ b₂ => simp [Unifies] at hU
         | customTy nm bs => simp [Unifies] at hU
+        | bl _ _ _ => simp [Unifies] at hU
       | fvar n =>
         cases b with
         | bvar i => cases hb with | bvar h => omega
@@ -12612,6 +12828,11 @@ theorem UnifyRel.complete_aux : ∀ (N : Nat),
           · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
             simp only [Unifies] at hU; rw [hU] at hlt; omega
           · exact ⟨[(n, .customTy nm bs)], .fvarL (by simp) hocc⟩
+        | bl lo hi e =>
+          by_cases hocc : n ∈ (Ty.bl lo hi e).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · exact ⟨[(n, .bl lo hi e)], .fvarL (by simp) hocc⟩
       | arrow a₁ a₂ =>
         cases ha with
         | arrow ha₁ ha₂ =>
@@ -12624,6 +12845,7 @@ theorem UnifyRel.complete_aux : ∀ (N : Nat),
           · exact ⟨[(m, .arrow a₁ a₂)], .fvarR (by simp) hocc⟩
         | prim q => simp [Unifies] at hU
         | customTy nm bs => simp [Unifies] at hU
+        | bl _ _ _ => simp [Unifies] at hU
         | arrow b₁ b₂ =>
           cases hb with
           | arrow hb₁ hb₂ =>
@@ -12649,6 +12871,7 @@ theorem UnifyRel.complete_aux : ∀ (N : Nat),
           · exact ⟨[(m, .customTy nm tys₁)], .fvarR (by simp) hocc⟩
         | prim q => simp [Unifies] at hU
         | arrow b₁ b₂ => simp [Unifies] at hU
+        | bl _ _ _ => simp [Unifies] at hU
         | customTy nm' tys₂ =>
           have hcsz : (U.onTy (.customTy nm tys₁)).size
               = 1 + TyList.size (tys₁.map U.onTy) := by simp [Subst.onTy_customTy, Ty.size]
@@ -12662,6 +12885,29 @@ theorem UnifyRel.complete_aux : ∀ (N : Nat),
             (fun t ht => by cases hb with | customTy h => exact h t ht)
             hlen hmapeq
           exact ⟨S, .customTy hS⟩
+      | bl lo hi e₁ =>
+        cases ha with
+        | bl hae =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | fvar m =>
+          by_cases hocc : m ∈ (Ty.bl lo hi e₁).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · exact ⟨[(m, .bl lo hi e₁)], .fvarR (by simp) hocc⟩
+        | prim q => simp [Unifies] at hU
+        | arrow b₁ b₂ => simp [Unifies] at hU
+        | customTy nm bs => simp [Unifies] at hU
+        | bl lo' hi' e₂ =>
+          cases hb with
+          | bl hbe =>
+          have hbsz : (U.onTy (.bl lo hi e₁)).size = 1 + (U.onTy e₁).size := by
+            simp [Subst.onTy_bl, Ty.size]
+          simp only [Unifies, Subst.onTy_bl, Ty.bl.injEq] at hU
+          obtain ⟨rfl, rfl, heq⟩ := hU
+          obtain ⟨S, hS⟩ := ihU (a := e₁) (b := e₂) (U := U)
+            (by rw [hbsz] at hsz; omega) hae hbe heq
+          exact ⟨S, .bl hS⟩
     · -- UnifyRelList
       intro as bs U hsz has hbs hlen hmap
       cases as with
@@ -12749,6 +12995,7 @@ theorem UnifyRel.complete_K_aux {K : List Nat} : ∀ (N : Nat),
             by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
         | arrow b₁ b₂ => simp [Unifies] at hU
         | customTy nm bs => simp [Unifies] at hU
+        | bl _ _ _ => simp [Unifies] at hU
       | fvar n =>
         cases b with
         | bvar i => cases hb with | bvar h => omega
@@ -12796,6 +13043,16 @@ theorem UnifyRel.complete_K_aux {K : List Nat} : ∀ (N : Nat),
               rw [hUK n hnK, Subst.onTy_customTy] at h1; exact absurd h1 (by simp)
             · exact ⟨[(n, .customTy nm bs)], .fvarL (by simp) hocc,
                 by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hnK⟩
+        | bl lo hi e =>
+          by_cases hocc : n ∈ (Ty.bl lo hi e).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hnK : n ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.bl lo hi e) := hU
+              rw [hUK n hnK, Subst.onTy_bl] at h1; exact absurd h1 (by simp)
+            · exact ⟨[(n, .bl lo hi e)], .fvarL (by simp) hocc,
+                by intro p' hp; rw [List.mem_singleton] at hp; subst hp; exact hnK⟩
       | arrow a₁ a₂ =>
         cases ha with
         | arrow ha₁ ha₂ =>
@@ -12813,6 +13070,7 @@ theorem UnifyRel.complete_K_aux {K : List Nat} : ∀ (N : Nat),
                 by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
         | prim q => simp [Unifies] at hU
         | customTy nm bs => simp [Unifies] at hU
+        | bl _ _ _ => simp [Unifies] at hU
         | arrow b₁ b₂ =>
           cases hb with
           | arrow hb₁ hb₂ =>
@@ -12846,6 +13104,7 @@ theorem UnifyRel.complete_K_aux {K : List Nat} : ∀ (N : Nat),
                 by intro p' hp'; rw [List.mem_singleton] at hp'; subst hp'; exact hmK⟩
         | prim q => simp [Unifies] at hU
         | arrow b₁ b₂ => simp [Unifies] at hU
+        | bl _ _ _ => simp [Unifies] at hU
         | customTy nm' tys₂ =>
           have hcsz : (U.onTy (.customTy nm tys₁)).size = 1 + TyList.size (tys₁.map U.onTy) := by
             simp [Subst.onTy_customTy, Ty.size]
@@ -12859,6 +13118,34 @@ theorem UnifyRel.complete_K_aux {K : List Nat} : ∀ (N : Nat),
             (fun t ht => by cases hb with | customTy h => exact h t ht)
             hUlc hlen hmapeq hUK
           exact ⟨S, .customTy hS, hSK⟩
+      | bl lo hi e₁ =>
+        cases ha with
+        | bl hae =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | fvar m =>
+          by_cases hocc : m ∈ (Ty.bl lo hi e₁).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hmK : m ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.bl lo hi e₁) = U.onTy (Ty.fvar m) := hU
+              rw [hUK m hmK, Subst.onTy_bl] at h1; exact absurd h1 (by simp)
+            · exact ⟨[(m, .bl lo hi e₁)], .fvarR (by simp) hocc,
+                by intro p' hp; rw [List.mem_singleton] at hp; subst hp; exact hmK⟩
+        | prim q => simp [Unifies] at hU
+        | arrow b₁ b₂ => simp [Unifies] at hU
+        | customTy nm bs => simp [Unifies] at hU
+        | bl lo' hi' e₂ =>
+          cases hb with
+          | bl hbe =>
+          have hbsz : (U.onTy (.bl lo hi e₁)).size = 1 + (U.onTy e₁).size := by
+            simp [Subst.onTy_bl, Ty.size]
+          simp only [Unifies, Subst.onTy_bl, Ty.bl.injEq] at hU
+          obtain ⟨rfl, rfl, heq⟩ := hU
+          obtain ⟨S, hS, hSK⟩ := ihU (a := e₁) (b := e₂) (U := U)
+            (by rw [hbsz] at hsz; omega) hae hbe hUlc heq hUK
+          exact ⟨S, .bl hS, hSK⟩
     · intro as bs U hsz has hbs hUlc hlen hmap hUK
       cases as with
       | nil =>
@@ -13406,7 +13693,7 @@ theorem Ty.closeOver_openWith_comm {Xs : List Nat} {Vs : List Ty} {X : Ty}
   | fvar n =>
     have hn : n ∉ Xs := fun h => hfresh n h (by simp [Ty.freeVars])
     simp only [Ty.openWith_fvar]
-    rw [Ty.closeOver.eq_5, List.idxOf?_eq_none_iff.mpr hn]
+    rw [Ty.closeOver.eq_6, List.idxOf?_eq_none_iff.mpr hn]
   | arrow a b iha ihb =>
     have hfa : ∀ x ∈ Xs, x ∉ a.freeVars := fun x hx hc =>
       hfresh x hx (List.mem_dedup.mpr (List.mem_append.mpr (Or.inl hc)))
@@ -13420,6 +13707,10 @@ theorem Ty.closeOver_openWith_comm {Xs : List Nat} {Vs : List Ty} {X : Ty}
     intro t ht
     simp only [Function.comp_apply]
     exact ih t ht (fun x hx hc => hfresh x hx (TyList.mem_freeVars_of_mem ht hc))
+  | bl lo hi e ih =>
+    have he : ∀ x ∈ Xs, x ∉ e.freeVars := fun x hx hc =>
+      hfresh x hx (by simpa only [Ty.freeVars] using hc)
+    simp only [Ty.openWith_bl, Ty.closeOver, ih he]
 
 /-- Composition of openings (when `X`'s bvars are covered by the inner args). -/
 theorem Ty.openWith_openWith {Vs Ws : List Ty} {X : Ty}
@@ -13451,6 +13742,10 @@ theorem Ty.openWith_openWith {Vs Ws : List Ty} {X : Ty}
       intro t ht
       simp only [Function.comp_apply]
       exact ih t ht (hball t ht)
+  | bl lo hi e ih =>
+    cases hbv with
+    | bl he =>
+      simp only [Ty.openWith_bl, ih he]
 
 /-! ### Free-var bounds (for the `letIn` principality freshness obligation) -/
 
@@ -13482,6 +13777,9 @@ theorem Ty.mem_freeVars_onTy_iff {S : Subst} {x : Nat} {Z : Ty} :
     · rintro ⟨v, hv, hx⟩
       obtain ⟨t, ht, hvt⟩ := TyList.mem_freeVars_iff.mp hv
       exact ⟨S.onTy t, List.mem_map.mpr ⟨t, ht, rfl⟩, (ih t ht).mpr ⟨v, hvt, hx⟩⟩
+  | bl lo hi e ih =>
+    simp only [Subst.onTy_bl, Ty.freeVars]
+    exact ih
 
 /-- Closing over vars only removes free vars. -/
 theorem Ty.closeOver_freeVars_subset {gs : List Nat} {τ : Ty} :
@@ -13490,7 +13788,7 @@ theorem Ty.closeOver_freeVars_subset {gs : List Nat} {τ : Ty} :
   | prim p => simp [Ty.closeOver, Ty.freeVars]
   | bvar i => simp [Ty.closeOver, Ty.freeVars]
   | fvar n =>
-    rw [Ty.closeOver.eq_5]
+    rw [Ty.closeOver.eq_6]
     cases gs.idxOf? n with
     | none => exact fun x hx => hx
     | some i => simp [Ty.freeVars]
@@ -13506,6 +13804,10 @@ theorem Ty.closeOver_freeVars_subset {gs : List Nat} {τ : Ty} :
     obtain ⟨t', ht', hxt⟩ := TyList.mem_freeVars_iff.mp hx
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
     exact TyList.mem_freeVars_iff.mpr ⟨t, ht, ih t ht hxt⟩
+  | bl lo hi e ih =>
+    intro x hx
+    simp only [Ty.closeOver, Ty.freeVars] at hx ⊢
+    exact ih hx
 
 
 /-! ### Principal generalization generalizes the declarative scheme -/
@@ -18095,6 +18397,20 @@ theorem unifyDec_customTy {n₁ n₂ : TyName} {ts₁ ts₂ : List Ty} :
     · exact Or.inr (Ty.mem_freeVars_customTy ht h)
   · simp only [Ty.size]; omega
 
+/-- `bl` subcall: strictly smaller by size (walk element only). -/
+theorem unifyDec_bl {lo₁ hi₁ lo₂ hi₂ : FHM.Bounds.CountSlot} {e₁ e₂ : Ty} :
+    Prod.Lex (· < ·) (· < ·)
+      ((pairVars e₁ e₂).length, e₁.size + e₂.size)
+      ((pairVars (.bl lo₁ hi₁ e₁) (.bl lo₂ hi₂ e₂)).length,
+        (Ty.bl lo₁ hi₁ e₁).size + (Ty.bl lo₂ hi₂ e₂).size) := by
+  apply lexLt_of_le_of_lt
+  · refine nodup_length_le pairVars_nodup (fun v hv => ?_)
+    rw [mem_pairVars] at hv ⊢
+    rcases hv with h | h
+    · exact Or.inl (Ty.mem_freeVars_bl h)
+    · exact Or.inr (Ty.mem_freeVars_bl h)
+  · simp only [Ty.size]; omega
+
 /-- First subcall of `unifyList`'s `cons` (the head element). -/
 theorem unifyDec_cons1 {t₁ t₂ : Ty} {ts₁ ts₂ : List Ty} :
     Prod.Lex (· < ·) (· < ·)
@@ -18204,6 +18520,15 @@ def unifyCoreK (K : List Nat) (a b : Ty) :
         | none => none
         | some ⟨S, hS, hav⟩ => some ⟨S, by subst h; exact .customTy hS, hav⟩
       else none
+  | .bl lo₁ hi₁ e₁, .bl lo₂ hi₂ e₂ =>
+      if hlo : lo₁ = lo₂ then
+        if hhi : hi₁ = hi₂ then
+          match unifyCoreK K e₁ e₂ with
+          | none => none
+          | some ⟨S, hS, hav⟩ =>
+              some ⟨S, by subst hlo; subst hhi; exact .bl hS, hav⟩
+        else none
+      else none
   | .fvar n, b =>
       if hnK : n ∈ K then none
       else if h : n ∈ b.freeVars then none
@@ -18222,6 +18547,7 @@ decreasing_by
   · exact unifyDec_arrow1
   · exact unifyDec_arrow2 hS₁
   · exact unifyDec_customTy
+  · exact unifyDec_bl
 
 def unifyListCoreK (K : List Nat) (as bs : List Ty) :
     Option { S : Subst // UnifyRelList as bs S ∧ (∀ p ∈ S, p.1 ∉ K) } :=
@@ -18682,6 +19008,7 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
           simp [unifyCoreK, hmK, Ty.freeVars]
         | arrow b₁ b₂ => simp [Unifies] at hU
         | customTy nm bs => simp [Unifies] at hU
+        | bl _ _ _ => simp [Unifies] at hU
       | fvar n =>
         cases b with
         | bvar i => cases hb with | bvar h => omega
@@ -18721,6 +19048,15 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
               have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.customTy nm bs) := hU
               rw [hUK n hnK, Subst.onTy_customTy] at h1; exact absurd h1 (by simp)
             · simp [unifyCoreK, hnK, hocc]
+        | bl lo hi e =>
+          by_cases hocc : n ∈ (Ty.bl lo hi e).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hnK : n ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.fvar n) = U.onTy (Ty.bl lo hi e) := hU
+              rw [hUK n hnK, Subst.onTy_bl] at h1; exact absurd h1 (by simp)
+            · simp [unifyCoreK, hnK, hocc]
       | arrow a₁ a₂ =>
         cases ha with
         | arrow ha₁ ha₂ =>
@@ -18737,6 +19073,7 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
             · simp [unifyCoreK, hmK, hocc]
         | prim q => simp [Unifies] at hU
         | customTy nm bs => simp [Unifies] at hU
+        | bl _ _ _ => simp [Unifies] at hU
         | arrow b₁ b₂ =>
           cases hb with
           | arrow hb₁ hb₂ =>
@@ -18766,6 +19103,7 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
             · simp [unifyCoreK, hmK, hocc]
         | prim q => simp [Unifies] at hU
         | arrow b₁ b₂ => simp [Unifies] at hU
+        | bl _ _ _ => simp [Unifies] at hU
         | customTy nm' tys₂ =>
           have hcsz : (U.onTy (.customTy nm tys₁)).size = 1 + TyList.size (tys₁.map U.onTy) := by
             simp [Subst.onTy_customTy, Ty.size]
@@ -18779,6 +19117,33 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
               (fun t ht => by cases hb with | customTy h => exact h t ht)
               hUlc hlen hmapeq hUK)
           rw [unifyCoreK]; simp [heL]
+      | bl lo hi e₁ =>
+        cases ha with
+        | bl hae =>
+        cases b with
+        | bvar i => cases hb with | bvar h => omega
+        | fvar m =>
+          by_cases hocc : m ∈ (Ty.bl lo hi e₁).freeVars
+          · have hlt := Ty.size_onTy_fvar_lt (S := U) hocc (by simp)
+            simp only [Unifies] at hU; rw [hU] at hlt; omega
+          · by_cases hmK : m ∈ K
+            · exfalso
+              have h1 : U.onTy (Ty.bl lo hi e₁) = U.onTy (Ty.fvar m) := hU
+              rw [hUK m hmK, Subst.onTy_bl] at h1; exact absurd h1 (by simp)
+            · simp [unifyCoreK, hmK, hocc]
+        | prim q => simp [Unifies] at hU
+        | arrow b₁ b₂ => simp [Unifies] at hU
+        | customTy nm bs => simp [Unifies] at hU
+        | bl lo' hi' e₂ =>
+          cases hb with
+          | bl hbe =>
+          have hbsz : (U.onTy (.bl lo hi e₁)).size = 1 + (U.onTy e₁).size := by
+            simp [Subst.onTy_bl, Ty.size]
+          simp only [Unifies, Subst.onTy_bl, Ty.bl.injEq] at hU
+          obtain ⟨rfl, rfl, heq⟩ := hU
+          obtain ⟨⟨S, hS, _⟩, he⟩ := Option.isSome_iff_exists.mp
+            (ihU (a := e₁) (b := e₂) (U := U) (by rw [hbsz] at hsz; omega) hae hbe hUlc heq hUK)
+          simp [unifyCoreK, he]
     · intro as bs U hsz has hbs hUlc hlen hmap hUK
       cases as with
       | nil =>
@@ -18919,6 +19284,10 @@ theorem Ty.openWith_avoidsItv {lo hi : Nat} {Vs : List Ty}
     obtain ⟨t', ht', hvt'⟩ := TyList.mem_freeVars_iff.mp hv
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
     exact ih t ht (fun w hw => hX w (by rw [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht hw)) v hvt'
+  | bl lo hi e ih =>
+    intro hX v hv
+    simp only [Ty.openWith, Ty.instantiate, Ty.freeVars] at hv
+    exact ih (fun w hw => hX w (by simpa only [Ty.freeVars] using hw)) v hv
 
 mutual
 /-- Unifying interval-avoiding monotypes yields an interval-avoiding substitution
@@ -18958,6 +19327,10 @@ theorem UnifyRel.gap_avoid {lo hi : Nat} : {a b : Ty} → {S : Subst} → UnifyR
     exact UnifyRelList.gap_avoid hl
       (fun t ht v hv => ha v (by rw [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht hv))
       (fun t ht v hv => hb v (by rw [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht hv))
+  | _, _, _, .bl h, ha, hb => by
+    exact UnifyRel.gap_avoid h
+      (fun v hv => ha v (by simpa only [Ty.freeVars] using hv))
+      (fun v hv => hb v (by simpa only [Ty.freeVars] using hv))
 
 theorem UnifyRelList.gap_avoid {lo hi : Nat} : {as bs : List Ty} → {S : Subst} → UnifyRelList as bs S →
     (∀ t ∈ as, ∀ v ∈ t.freeVars, v < lo ∨ hi ≤ v) → (∀ t ∈ bs, ∀ v ∈ t.freeVars, v < lo ∨ hi ≤ v) →
@@ -21156,6 +21529,9 @@ theorem NoFreeVars.of_forall_not_mem {τ : Ty} (h : ∀ Z, Z ∉ τ.freeVars) :
   | customTy nm tys ih =>
       refine .customTy fun t ht => ih t ht ?_
       intro Z hZ; exact h Z (mem_TyList_freeVars.mpr ⟨t, ht, hZ⟩)
+  | bl lo hi e ih =>
+    refine .bl (ih fun z hz => ?_)
+    exact h z (by simpa only [Ty.freeVars] using hz)
 
 /-- A strict upper bound for a list of `fvar` indices: every member is `< this`. -/
 def tyVarCeil : List Nat → Nat
