@@ -5,6 +5,7 @@ import Mathlib.Algebra.Order.ZeroLEOne
 import Mathlib.Data.List.Pairwise
 import Mathlib.Data.List.NodupEquivFin
 import Mathlib.Data.Finset.Card
+import FHM.Bounds.Kernel
 
 /-- Name of a type -/
 inductive TyName
@@ -66,6 +67,9 @@ inductive PrimTy
   deriving DecidableEq, Repr
 
 
+/-- Prelude List ADT name (Nil/Cons). Bare `List t` is `customTy listTyName [t]`. -/
+def listTyName : TyName := ⟨"List"⟩
+
 inductive Ty
   | prim : PrimTy → Ty
   | arrow : (from_ to_ : Ty) → Ty
@@ -75,7 +79,23 @@ inductive Ty
   | fvar : Nat → Ty
   /-- A custom type with its type params -/
   | customTy : TyName → List Ty → Ty
+  /-- Bounded list `BL lo hi elem`. Length intervals are part of the type.
+  Not the List ADT (`customTy listTyName […]`); see `bareListTy`. -/
+  | bl : (lo hi : FHM.Bounds.CountSlot) → (elem : Ty) → Ty
   deriving Repr
+
+/-- Bare HM list (no length demand): user `List t` or Infer-filled list shape. -/
+def bareListTy (α : Ty) : Ty :=
+  .customTy listTyName [α]
+
+/-- Drop BL intervals for an HM view (`bl _ _ α` → bare `List α`). Pure function. -/
+def Ty.eraseBounds : Ty → Ty
+  | .prim p => .prim p
+  | .arrow a b => .arrow a.eraseBounds b.eraseBounds
+  | .bvar i => .bvar i
+  | .fvar i => .fvar i
+  | .customTy n as => .customTy n (as.map Ty.eraseBounds)
+  | .bl _ _ α => bareListTy α.eraseBounds
 
 
 
@@ -83,6 +103,10 @@ structure PolyTy where
   paramCount : Nat
   /-- May reference params by `.bvar`s in range of `paramCount`  -/
   body : Ty
+  -- TODO(bounds-preserving Phase 1 follow-up): Nat/count telescope for schemes
+  -- like `{n : Nat, a} BL n n a → …`. Surface already has `natBinders` on
+  -- bindings; Infer must ignore count binders. Do not leave length polymorphism
+  -- only in a sidecar forever — extend PolyTy when monotype `Ty.bl` is green.
 
 /-- Make a polytype with no type vars -/
 def PolyTy.mkTrivial (bodyTy : Ty) : PolyTy :=
@@ -109,6 +133,10 @@ inductive ContainsBvarsUpTo (n : Nat) : (ty : Ty) → Prop
     (∀ ty ∈ tys, ContainsBvarsUpTo n ty) →
     ContainsBvarsUpTo n (.customTy name tys)
 
+  | bl :
+    ContainsBvarsUpTo n elem →
+    ContainsBvarsUpTo n (.bl lo hi elem)
+
   | bvar :
     i < n →
     ContainsBvarsUpTo n (.bvar i)
@@ -128,6 +156,10 @@ inductive NoFreeVars : (ty : Ty) → Prop
   | customTy :
     (∀ ty ∈ tys, NoFreeVars ty) →
     NoFreeVars (.customTy name tys)
+
+  | bl :
+    NoFreeVars elem →
+    NoFreeVars (.bl lo hi elem)
 
   | bvar :
     NoFreeVars (.bvar i)
@@ -360,6 +392,7 @@ def Ty.freeVars : Ty → List Nat
   | .fvar n => [n]
   | .bvar _ => []
   | .customTy _ tys => TyList.freeVars tys
+  | .bl _ _ e => e.freeVars
 
 def TyList.freeVars : List Ty → List Nat
   | [] => []
@@ -378,6 +411,7 @@ def Ty.isClosed : Ty → Bool
   | .fvar _          => false
   | .bvar _          => false
   | .customTy _ tys  => TyList.isClosed tys
+  | .bl _ _ e        => e.isClosed
 def TyList.isClosed : List Ty → Bool
   | []      => true
   | t :: ts => t.isClosed && TyList.isClosed ts
@@ -415,6 +449,7 @@ def Ty.closeOver (vars : List Nat) : Ty → Ty
   | .arrow a b       => .arrow (a.closeOver vars) (b.closeOver vars)
   | .bvar i          => .bvar i
   | .customTy nm tys => .customTy nm (TyList.closeOver vars tys)
+  | .bl lo hi e      => .bl lo hi (e.closeOver vars)
   | .fvar n          =>
       match vars.idxOf? n with
       | some i => .bvar i
@@ -444,52 +479,6 @@ private lemma List.idxOf?_lt_length {a : α} [BEq α] {l : List α} {i : Nat}
   have := List.findIdx?_go_lt (n := 0) h
   omega
 
-/-- Closing doesn't add any more bvars than it is expected to -/
-theorem Ty.closeOver_preserves_bvars : ContainsBvarsUpTo 0 ty → ContainsBvarsUpTo vars.length (ty.closeOver vars) := by
-  intro prem
-  induction ty using Ty.closeOver.induct vars (motive_2 := fun tys ↦ (∀ t ∈ tys, ContainsBvarsUpTo 0 t) → ∀ t ∈ tys, ContainsBvarsUpTo vars.length (t.closeOver vars)) with
-  | case1 =>
-    simp [closeOver]
-    constructor
-  | case2 a b aih bih =>
-    cases prem
-    tauto
-  | case3 =>
-    simp [closeOver]
-    constructor
-    cases prem
-    omega
-  | case4 nm tys ih =>
-    cases prem
-    constructor
-    intro ty tyin
-    have : ∀ l, TyList.closeOver vars l = l.map (Ty.closeOver vars) := by
-      intro l; induction l with
-      | nil => simp [TyList.closeOver]
-      | cons hd tl ihl => simp [TyList.closeOver, ihl]
-    rw [this] at tyin
-    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp tyin
-    exact ih (by assumption) t ht
-  | case5 n i hsome =>
-    rw [Ty.closeOver.eq_5]
-    simp [hsome]
-    refine .bvar ?_
-    exact List.idxOf?_lt_length hsome
-  | case6 n hnone =>
-    rw [Ty.closeOver.eq_5]
-    simp [hnone]
-    exact .fvar
-  | case7 =>
-    rename_i h
-    simp at h
-  | case8 arg rest ih_arg ih_rest =>
-    rename_i hall t ht
-    simp [List.mem_cons] at ht
-    rcases ht with rfl | ht
-    · exact ih_arg (hall _ (by simp))
-    · exact ih_rest (fun t ht => hall t (List.mem_cons_of_mem _ ht)) t ht
-
-
 /--
 Strong induction principle for `Ty` that gives a useful IH for the `customTy`
 case: `(∀ t ∈ tys, motive t)`, rather than the bare `motive tys` you'd get from
@@ -513,24 +502,58 @@ def Ty.rec_strong.{u} {motive : Ty → Sort u}
     (arrow    : ∀ a b, motive a → motive b → motive (.arrow a b))
     (bvar     : ∀ n, motive (.bvar n))
     (fvar     : ∀ n, motive (.fvar n))
-    (customTy : ∀ nm tys, (∀ t ∈ tys, motive t) → motive (.customTy nm tys)) :
+    (customTy : ∀ nm tys, (∀ t ∈ tys, motive t) → motive (.customTy nm tys))
+    (bl       : ∀ lo hi e, motive e → motive (.bl lo hi e)) :
     (ty : Ty) → motive ty
   | .prim p          => prim p
   | .arrow a b       =>
       arrow a b
-        (Ty.rec_strong prim arrow bvar fvar customTy a)
-        (Ty.rec_strong prim arrow bvar fvar customTy b)
+        (Ty.rec_strong prim arrow bvar fvar customTy bl a)
+        (Ty.rec_strong prim arrow bvar fvar customTy bl b)
   | .bvar n          => bvar n
   | .fvar n          => fvar n
   | .customTy nm tys =>
       customTy nm tys
-        (fun t _ht => Ty.rec_strong prim arrow bvar fvar customTy t)
+        (fun t _ht => Ty.rec_strong prim arrow bvar fvar customTy bl t)
+  | .bl lo hi e      =>
+      bl lo hi e (Ty.rec_strong prim arrow bvar fvar customTy bl e)
 termination_by ty => sizeOf ty
 decreasing_by
   all_goals simp_wf
   all_goals first
     | omega
     | (have := List.sizeOf_lt_of_mem _ht; omega)
+
+/-- Closing doesn't add any more bvars than it is expected to -/
+theorem Ty.closeOver_preserves_bvars : ContainsBvarsUpTo 0 ty → ContainsBvarsUpTo vars.length (ty.closeOver vars) := by
+  intro prem
+  induction ty using Ty.rec_strong with
+  | prim p => exact .prim
+  | arrow a b iha ihb =>
+    cases prem with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+  | bvar i =>
+    cases prem with | bvar h => exact .bvar (by omega)
+  | fvar n =>
+    -- After `bl` was added, the fvar equation is `closeOver.eq_6`.
+    rw [Ty.closeOver.eq_6]
+    cases h : vars.idxOf? n with
+    | some i => exact .bvar (List.idxOf?_lt_length h)
+    | none => exact .fvar
+  | customTy nm tys ih =>
+    cases prem with
+    | customTy hall =>
+      have hmap : ∀ l, TyList.closeOver vars l = l.map (Ty.closeOver vars) := by
+        intro l; induction l with
+        | nil => rfl
+        | cons hd tl ihl => simp [TyList.closeOver, ihl]
+      simp only [Ty.closeOver]
+      rw [hmap]
+      exact .customTy (fun t ht => by
+        obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+        exact ih t0 ht0 (hall t0 ht0))
+  | bl lo hi e ih =>
+    cases prem with | bl he => exact .bl (ih he)
+
 
 theorem Ty.isClosed_iff (t : Ty) :
     t.isClosed = true ↔ NoFreeVars t ∧ ContainsBvarsUpTo 0 t := by
@@ -560,6 +583,13 @@ theorem Ty.isClosed_iff (t : Ty) :
       cases hn with
       | customTy hn' => cases hc with
         | customTy hc' => exact (ih t ht).mpr ⟨hn' t ht, hc' t ht⟩
+  | bl lo hi e ih =>
+    simp only [Ty.isClosed]
+    rw [ih]
+    constructor
+    · intro ⟨nf, cb⟩; exact ⟨.bl nf, .bl cb⟩
+    · rintro ⟨hn, hc⟩
+      cases hn with | bl nf => cases hc with | bl cb => exact ⟨nf, cb⟩
 
 
 /--
@@ -649,6 +679,7 @@ def Ty.instantiate (subst : Nat → Ty) : Ty → Ty
   | .bvar n => subst n
   | .fvar n => .fvar n
   | .customTy name tys => .customTy name (TyList.instantiate subst tys)
+  | .bl lo hi e => .bl lo hi (e.instantiate subst)
 
 def TyList.instantiate (subst : Nat → Ty) : List Ty → List Ty
   | [] => []
@@ -683,6 +714,10 @@ inductive InstantiatesBy (tyArgs : List Ty) : Ty → Ty → Prop
   | customTy :
     List.Forall₂ (InstantiatesBy tyArgs) tys instTys →
     InstantiatesBy tyArgs (.customTy name tys) (.customTy name instTys)
+
+  | bl :
+    InstantiatesBy tyArgs elem instElem →
+    InstantiatesBy tyArgs (.bl lo hi elem) (.bl lo hi instElem)
 
   | bvar :
     tyArgs[i]? = some ty →
@@ -795,6 +830,8 @@ def Ty.shiftBvarsBy (d : Nat) (ty : Ty) : Ty :=
     | cons hd tl ih_tl =>
       simp only [TyList.instantiate, List.cons.injEq]
       exact ⟨ih hd List.mem_cons_self, ih_tl (fun t ht => ih t (List.mem_cons_of_mem _ ht))⟩
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate, Ty.bl.injEq, true_and]; exact ih
 
 def Ty.openTyFrom (d : Nat) (Ts : List Ty) (ty : Ty) : Ty :=
   ty.instantiate (fun i =>
@@ -812,6 +849,9 @@ def Ty.openTyFrom (d : Nat) (Ts : List Ty) (ty : Ty) : Ty :=
   induction tys with
   | nil => rfl
   | cons hd tl ih => simp only [TyList.instantiate, List.map_cons]; rw [ih]
+
+@[simp] theorem Ty.openTyFrom_bl {d : Nat} {Ts : List Ty} {lo hi : FHM.Bounds.CountSlot} {e : Ty} :
+    Ty.openTyFrom d Ts (.bl lo hi e) = .bl lo hi (Ty.openTyFrom d Ts e) := rfl
 
 /-- The type-binder count a recursion-group annotation contributes: an annotated
     member's binding (and scheme body) sits under its scheme's `paramCount` extra
@@ -967,6 +1007,8 @@ theorem Ty.openTyFrom_nil (d : Nat) (ty : Ty) : Ty.openTyFrom d [] ty = ty := by
     | cons hd tl ih_tl =>
       simp only [TyList.instantiate, List.cons.injEq]
       exact ⟨ih hd List.mem_cons_self, ih_tl (fun t ht => ih t (List.mem_cons_of_mem _ ht))⟩
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate, Ty.bl.injEq, true_and]; exact ih
 
 /-- Type-beta with empty arguments is the identity on group annotations. -/
 theorem RecGroup.instAnns_nil (d : Nat) (anns : List (Option PolyTy)) :
@@ -1704,6 +1746,8 @@ theorem InstantiatesBy.preserves_bvars : (∀ tyArg ∈ tyArgs, ContainsBvarsUpT
     have hlen := rels.length_eq
     have := List.Forall₂.get rels (by omega) hi
     exact this.preserves_bvars prem
+  | bl h =>
+    exact .bl (h.preserves_bvars prem)
 
 
 
@@ -1926,6 +1970,7 @@ def Ty.substFvar (Z : Nat) (U : Ty) : Ty → Ty
   | .bvar n          => .bvar n
   | .fvar n          => if n = Z then U else .fvar n
   | .customTy nm tys => .customTy nm (TyList.substFvar Z U tys)
+  | .bl lo hi e      => .bl lo hi (Ty.substFvar Z U e)
 
 private def TyList.substFvar (Z : Nat) (U : Ty) : List Ty → List Ty
   | []        => []
@@ -2884,6 +2929,10 @@ theorem Ty.substFvar_fresh {Z : Nat} {U ty : Ty}
       TyList.not_mem_freeVars_iff.mp h
     simp only [Ty.substFvar, Ty.customTy.injEq, true_and]
     exact TyList.substFvar_eq_self_of_all (fun t ht => ih t ht (h' t ht))
+  | bl lo hi e ih =>
+    simp only [Ty.freeVars] at h
+    simp only [Ty.substFvar, Ty.bl.injEq, true_and]
+    exact ih h
 
 /-- A block of type-fvar substitutions whose keys all avoid a scheme's body free
     vars leaves the scheme fixed. -/
@@ -2935,6 +2984,11 @@ theorem Ty.instantiate_eq_self_of_lc {σ : Nat → Ty} {ty : Ty}
     | customTy h_all =>
       simp only [Ty.instantiate, Ty.customTy.injEq, true_and]
       exact TyList.instantiate_eq_self_of_all_lc h_all ih
+  | bl lo hi e ih =>
+    cases h with
+    | bl he =>
+      simp only [Ty.instantiate, Ty.bl.injEq, true_and]
+      exact ih he
 
 /-- `substFvar` swaps with `instantiate` element-wise on a list, given the
     pointwise swap on each element. -/
@@ -2987,6 +3041,9 @@ theorem Ty.substFvar_openVars
   | customTy nm tys ih =>
     simp only [Ty.instantiate, Ty.substFvar, Ty.customTy.injEq, true_and]
     exact TyList.substFvar_instantiate_swap (fun t ht => ih t ht)
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate, Ty.substFvar, Ty.bl.injEq, true_and]
+    exact ih
 
 /-- `substFvar` commutes with offset opening (`Ty.openVarsFrom`), mirroring
     `Ty.substFvar_openVars`: the only new wrinkle is the `i < d` guard. -/
@@ -3018,6 +3075,9 @@ theorem Ty.substFvar_openVarsFrom
   | customTy nm tys ih =>
     simp only [Ty.instantiate, Ty.substFvar, Ty.customTy.injEq, true_and]
     exact TyList.substFvar_instantiate_swap (fun t ht => ih t ht)
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate, Ty.substFvar, Ty.bl.injEq, true_and]
+    exact ih
 
 /-- `substFvar` commutes with annotation-body opening (the ann-list analogue of
     `Ty.substFvar_openVarsFrom`): needed for the `letRec` case of
@@ -3263,6 +3323,12 @@ theorem Ty.substFvars_customTy {pairs : List (Nat × Ty)} {nm : TyName} {tys : L
     rw [ih, List.map_map]
     rfl
 
+theorem Ty.substFvars_bl {pairs : List (Nat × Ty)} {lo hi : FHM.Bounds.CountSlot} {e : Ty} :
+    Ty.substFvars pairs (.bl lo hi e) = .bl lo hi (Ty.substFvars pairs e) := by
+  induction pairs generalizing e with
+  | nil => rfl
+  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simpa only [Ty.substFvars, Ty.substFvar] using ih
+
 /-- Free vars of a single type are contained in the free vars of any list
     containing it (`Ty.freeVarsList` flavour, used for the `Vs` freshness). -/
 private theorem Ty.freeVars_subset_freeVarsList {V : Ty} {Vs : List Ty}
@@ -3416,7 +3482,12 @@ theorem Ty.openWith_eq_substFvars_openVars
     have ht_fresh : ∀ X ∈ Xs, X ∉ t.freeVars := fun X hX hc =>
       h_Xs_fresh_ty X hX (TyList.mem_freeVars_of_mem ht hc)
     simpa using ih t ht ht_fresh
-
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate]
+    rw [Ty.substFvars_bl]
+    have he : ∀ X ∈ Xs, X ∉ e.freeVars := fun X hX hc =>
+      h_Xs_fresh_ty X hX (by simp only [Ty.freeVars]; exact hc)
+    rw [ih he]
 
 /-! ### `openVars` / `closeOver` round-trip lemmas (copied from `InferW`)
 
@@ -3431,6 +3502,9 @@ theorem Ty.openVars_customTy {Xs : List Nat} {nm : TyName} {tys : List Ty} :
     Ty.openVars Xs (.customTy nm tys) = .customTy nm (tys.map (Ty.openVars Xs)) := by
   unfold Ty.openVars
   simp only [Ty.instantiate, TyList.instantiate_eq_map]
+
+theorem Ty.openVars_bl {Xs : List Nat} {lo hi : FHM.Bounds.CountSlot} {e : Ty} :
+    Ty.openVars Xs (.bl lo hi e) = .bl lo hi (Ty.openVars Xs e) := rfl
 
 /-- Opening with fresh *names* `Xs` is opening with those names as `fvar` types. -/
 theorem Ty.openVars_eq_openWith {Xs : List Nat} {ty : Ty} :
@@ -3472,7 +3546,7 @@ theorem Ty.openVars_closeOver_self {gs : List Nat} :
   | prim p => rfl
   | bvar i => cases hτ with | bvar h => omega
   | fvar n =>
-    rw [Ty.closeOver.eq_5]
+    rw [Ty.closeOver.eq_6]
     cases h_idx : gs.idxOf? n with
     | none => simp [Ty.openVars, Ty.instantiate]
     | some i =>
@@ -3489,6 +3563,10 @@ theorem Ty.openVars_closeOver_self {gs : List Nat} :
       apply List.map_congr_left
       intro t ht
       exact ih t ht (hall t ht)
+  | bl lo hi e ih =>
+    cases hτ with
+    | bl he =>
+      simp only [Ty.closeOver, Ty.openVars_bl, ih he]
 
 /-- The free vars of a list of `fvar`s are exactly the names. -/
 theorem Ty.mem_freeVarsList_map_fvar {Xs : List Nat} {g : Nat} :
@@ -3506,7 +3584,7 @@ theorem Ty.not_mem_closeOver_freeVars {gs : List Nat} {g : Nat} (hg : g ∈ gs) 
   | prim p => simp [Ty.closeOver, Ty.freeVars]
   | bvar i => simp [Ty.closeOver, Ty.freeVars]
   | fvar n =>
-    rw [Ty.closeOver.eq_5]
+    rw [Ty.closeOver.eq_6]
     cases h_idx : gs.idxOf? n with
     | none =>
       have hn : n ∉ gs := List.idxOf?_eq_none_iff.mp h_idx
@@ -3520,6 +3598,9 @@ theorem Ty.not_mem_closeOver_freeVars {gs : List Nat} {g : Nat} (hg : g ∈ gs) 
     intro t' ht'
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
     exact ih t ht
+  | bl lo hi e ih =>
+    simp only [Ty.closeOver, Ty.freeVars]
+    exact ih
 
 /-- The full round-trip: closing over `gs` then opening with fresh `Xs` renames
     each `gs[i]` to `Xs[i]`. -/
@@ -3567,11 +3648,11 @@ theorem Ty.closeOver_openVars_self {Xs : List Nat} {ty : Ty}
     cases hbv with
     | bvar hlt =>
       simp only [Ty.openVars, Ty.instantiate, List.getElem?_eq_getElem hlt, Option.elim_some]
-      rw [Ty.closeOver.eq_5, List.idxOf?_getElem_self hnodup hlt]
+      rw [Ty.closeOver.eq_6, List.idxOf?_getElem_self hnodup hlt]
   | fvar n =>
     have hn : n ∉ Xs := fun h => hfresh n h (by simp [Ty.freeVars])
     simp only [Ty.openVars, Ty.instantiate]
-    rw [Ty.closeOver.eq_5, List.idxOf?_eq_none_iff.mpr hn]
+    rw [Ty.closeOver.eq_6, List.idxOf?_eq_none_iff.mpr hn]
   | arrow a b iha ihb =>
     cases hbv with
     | arrow hba hbb =>
@@ -3590,7 +3671,12 @@ theorem Ty.closeOver_openVars_self {Xs : List Nat} {ty : Ty}
       intro t ht
       exact ih t ht (hball t ht)
         (fun x hx hc => hfresh x hx (TyList.mem_freeVars_of_mem ht hc))
-
+  | bl lo hi e ih =>
+    cases hbv with
+    | bl he =>
+      have hf : ∀ x ∈ Xs, x ∉ e.freeVars := fun x hx hc =>
+        hfresh x hx (by simp only [Ty.freeVars]; exact hc)
+      simp only [Ty.openVars_bl, Ty.closeOver, ih he hf]
 
 /-! ### `letRec` generalisation helpers: `Ty.renameG`, `Ty.genFilter`,
     `PolyTy.genGroup` (pure `Ty`/`PolyTy`-level lemmas). -/
@@ -3622,7 +3708,7 @@ theorem Ty.freeVars_closeOver_subset {gs : List Nat} {τ : Ty} {g : Nat} :
   | prim p => simp [Ty.closeOver, Ty.freeVars]
   | bvar i => simp [Ty.closeOver, Ty.freeVars]
   | fvar n =>
-    rw [Ty.closeOver.eq_5]
+    rw [Ty.closeOver.eq_6]
     cases h_idx : gs.idxOf? n with
     | some i => simp [Ty.freeVars]
     | none => simp [Ty.freeVars]
@@ -3637,6 +3723,10 @@ theorem Ty.freeVars_closeOver_subset {gs : List Nat} {τ : Ty} {g : Nat} :
     obtain ⟨t', ht', hg⟩ := h
     obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
     exact ⟨t, ht, ih t ht hg⟩
+  | bl lo hi e ih =>
+    intro h
+    simp only [Ty.closeOver, Ty.freeVars] at h ⊢
+    exact ih h
 
 /-- **Lemma 2.** Closing over the *renamed* gen-vars `gs'` after renaming
     `gs ↦ gs'` recovers closing over the original `gs`: `closeOver` is invariant
@@ -3659,7 +3749,7 @@ theorem Ty.closeOver_eq_self_of_fresh {gs : List Nat} {τ : Ty}
   | bvar i => simp [Ty.closeOver]
   | fvar n =>
     have hn : n ∉ gs := fun hmem => h n hmem (by simp [Ty.freeVars])
-    rw [Ty.closeOver.eq_5, List.idxOf?_eq_none_iff.mpr hn]
+    rw [Ty.closeOver.eq_6, List.idxOf?_eq_none_iff.mpr hn]
   | arrow a b iha ihb =>
     have ha : ∀ g ∈ gs, g ∉ a.freeVars := fun g hg hc =>
       h g hg (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hc)
@@ -3673,6 +3763,10 @@ theorem Ty.closeOver_eq_self_of_fresh {gs : List Nat} {τ : Ty}
     apply List.map_congr_left
     intro t ht
     exact ih t ht (fun g hg hc => h g hg (TyList.mem_freeVars_of_mem ht hc))
+  | bl lo hi e ih =>
+    have he : ∀ g ∈ gs, g ∉ e.freeVars := fun g hg hc =>
+      h g hg (by simp only [Ty.freeVars]; exact hc)
+    simp only [Ty.closeOver, ih he]
 
 /-- `substFvar` commutes with `closeOver` when the substituted variable `Z` and
     all free vars of the replacement `U` avoid the closed-over pool `gs`. -/
@@ -3683,18 +3777,18 @@ theorem Ty.substFvar_closeOver_comm {Z : Nat} {U : Ty} {gs : List Nat} {τ : Ty}
   | prim p => simp [Ty.closeOver, Ty.substFvar]
   | bvar i => simp [Ty.closeOver, Ty.substFvar]
   | fvar n =>
-    rw [Ty.closeOver.eq_5]
+    rw [Ty.closeOver.eq_6]
     cases h_idx : gs.idxOf? n with
     | some i =>
       have hn : n ∈ gs := List.mem_of_getElem? (List.getElem?_of_idxOf? h_idx)
       have hnz : ¬ n = Z := fun h => hZ (h ▸ hn)
-      simp only [Ty.substFvar, if_neg hnz, Ty.closeOver.eq_5, h_idx]
+      simp only [Ty.substFvar, if_neg hnz, Ty.closeOver.eq_6, h_idx]
     | none =>
       have hn : n ∉ gs := List.idxOf?_eq_none_iff.mp h_idx
       by_cases hnz : n = Z
       · simp only [Ty.substFvar, if_pos hnz]
         exact (Ty.closeOver_eq_self_of_fresh hU).symm
-      · simp only [Ty.substFvar, if_neg hnz, Ty.closeOver.eq_5, List.idxOf?_eq_none_iff.mpr hn]
+      · simp only [Ty.substFvar, if_neg hnz, Ty.closeOver.eq_6, List.idxOf?_eq_none_iff.mpr hn]
   | arrow a b iha ihb =>
     simp only [Ty.closeOver, Ty.substFvar, iha, ihb]
   | customTy nm tys ih =>
@@ -3704,6 +3798,8 @@ theorem Ty.substFvar_closeOver_comm {Z : Nat} {U : Ty} {gs : List Nat} {τ : Ty}
     apply List.map_congr_left
     intro t ht
     simpa using ih t ht
+  | bl lo hi e ih =>
+    simp only [Ty.closeOver, Ty.substFvar, ih]
 
 /-- For `g ≠ Z` and `g ∉ U.freeVars`, substituting `Z ↦ U` neither adds nor
     removes `g` from the free-var set. -/
@@ -3730,6 +3826,9 @@ theorem Ty.mem_freeVars_substFvar_of {Z g : Nat} {U τ : Ty}
       exact ⟨t, ht, (ih t ht).mp hg⟩
     · rintro ⟨t, ht, hg⟩
       exact ⟨Ty.substFvar Z U t, ⟨t, ht, rfl⟩, (ih t ht).mpr hg⟩
+  | bl lo hi e ih =>
+    simp only [Ty.substFvar, Ty.freeVars]
+    exact ih
 
 /-- `genFilter` is unaffected by substituting a variable `Z` that avoids the pool
     `G` with a `U` whose free vars also avoid `G`. -/
@@ -3799,6 +3898,10 @@ theorem Ty.mem_freeVars_substFvars_image {s : List (Nat × Ty)} {τ : Ty} {v : N
       exact ⟨m, ⟨t, ht, hm⟩, hvm⟩
     · rintro ⟨m, ⟨t, ht, hm⟩, hvm⟩
       exact ⟨Ty.substFvars s t, ⟨t, ht, rfl⟩, (ih t ht).mpr ⟨m, hm, hvm⟩⟩
+  | bl lo hi e ih =>
+    rw [Ty.substFvars_bl]
+    simp only [Ty.freeVars]
+    exact ih
 
 /-- Substituting the renaming `G ↦ W` into `fvar G[i]` yields `fvar W[i]`. -/
 theorem Ty.substFvars_zip_fvar_renameG {G W : List Nat} {i a b : Nat}
@@ -4063,6 +4166,11 @@ theorem Ty.substFvars_zip_openVarsFrom {d : Nat} {t : Ty} {Ys Xs : List Nat}
     have ht_fresh : ∀ y ∈ Ys, y ∉ t.freeVars := fun y hy hc =>
       h_Ys_t y hy (by simp only [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht hc)
     simpa using ih t ht ht_fresh
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate, Ty.substFvars_bl]
+    have he : ∀ y ∈ Ys, y ∉ e.freeVars := fun y hy hc =>
+      h_Ys_t y hy (by simp only [Ty.freeVars]; exact hc)
+    rw [ih he]
 
 /-- **Concrete-instantiation version** of `Ty.substFvars_zip_openVarsFrom`: opening
     at fresh `Ys` then substituting `Ys ↦ Vs` (arbitrary types) equals type-beta
@@ -4114,7 +4222,11 @@ theorem Ty.substFvars_zip_openVarsFrom_concrete {d : Nat} {t : Ty} {Ys : List Na
     have ht_fresh : ∀ y ∈ Ys, y ∉ t.freeVars := fun y hy hc =>
       h_Ys_t y hy (by simp only [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht hc)
     simpa using ih t ht ht_fresh
-
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate, Ty.substFvars_bl]
+    have he : ∀ y ∈ Ys, y ∉ e.freeVars := fun y hy hc =>
+      h_Ys_t y hy (by simp only [Ty.freeVars]; exact hc)
+    rw [ih he]
 
 /-! ### `substFvar` interaction with the typing-side predicates.
 
@@ -4143,6 +4255,11 @@ theorem Ty.IsLC.substFvar {Z : Nat} {U ty : Ty}
       intro t ht
       obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
       exact ih t0 ht0 (hall t0 ht0)
+  | bl lo hi e ih =>
+    cases h with
+    | bl he =>
+      simp only [Ty.substFvar]
+      exact .bl (ih he)
 
 /-- Instantiation is the identity on locally-closed types (reverse of
     `InstantiatesBy.eq_of_closed`): if `ty` has no bvars, it instantiates to
@@ -4170,6 +4287,9 @@ theorem InstantiatesBy.refl_of_closed {tyArgs : List Ty} {ty : Ty}
             (ihts (fun t ht => hall' t (List.mem_cons_of_mem _ ht))
                   (fun t ht => hinst' t (List.mem_cons_of_mem _ ht)))
       exact aux tys hall (fun t ht => ih t ht (hall t ht))
+  | bl lo hi e ih =>
+    cases h with
+    | bl he => exact .bl (ih he)
 
 /-- `substFvar` commutes with `InstantiatesBy` (when the replacement `U` is
     LC): substituting fvars then instantiating bvars equals instantiating
@@ -4208,6 +4328,11 @@ theorem InstantiatesBy.substFvar {Z : Nat} {U : Ty}
         rename_i hd_ty hd_it tl_tys tl_it
         refine .cons (ih hd_ty List.mem_cons_self hhd) ?_
         exact ihtl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
+  | bl lo hi e ih =>
+    cases h with
+    | bl he =>
+      simp only [Ty.substFvar]
+      exact .bl (ih he)
 
 /-- `Env.substFvar` by a fresh `Z` is the identity. -/
 theorem Env.substFvar_fresh {Z : Nat} {U : Ty} {env : Env}
@@ -4238,6 +4363,7 @@ theorem ContainsBvarsUpTo.mono {m n : Nat} {ty : Ty} (hle : m ≤ n)
   | arrow _ _ iha ihb => exact .arrow iha ihb
   | fvar => exact .fvar
   | customTy _ ih => exact .customTy (fun t ht => ih t ht)
+  | bl _ ih => exact .bl ih
   | bvar hlt => exact .bvar (by omega)
 
 /-- `substFvar` by an LC type preserves any bvar bound (the replacement adds no
@@ -4266,6 +4392,11 @@ theorem ContainsBvarsUpTo.substFvar {n Z : Nat} {U ty : Ty}
       intro t ht
       obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
       exact ih t0 ht0 (hall t0 ht0)
+  | bl lo hi e ih =>
+    cases h with
+    | bl he =>
+      simp only [Ty.substFvar]
+      exact .bl (ih he)
 
 /-- Well-formedness of a scheme is preserved by `substFvar` (with LC
     replacement). -/
@@ -4285,6 +4416,9 @@ theorem NoFreeVars.not_mem_freeVars {ty : Ty} (h : NoFreeVars ty) (Z : Nat) :
   | customTy _ ih =>
     simp only [Ty.freeVars]
     exact TyList.not_mem_freeVars_iff.mpr (fun t ht => ih t ht)
+  | bl _ ih =>
+    simp only [Ty.freeVars]
+    exact ih
 
 /-- Substituting a type-fvar is a no-op on a *closed* scheme (one whose body has
     no free type vars). Used to keep annotated-`let` schemes stable under
@@ -5919,6 +6053,9 @@ through terms (the match-branch reasoning lives here in `Core`, where the privat
   unfold Ty.openVarsFrom
   simp only [Ty.instantiate, TyList.instantiate_eq_map]
 
+@[simp] theorem Ty.openVarsFrom_bl {d : Nat} {Xs : List Nat} {lo hi : FHM.Bounds.CountSlot} {e : Ty} :
+    Ty.openVarsFrom d Xs (.bl lo hi e) = .bl lo hi (Ty.openVarsFrom d Xs e) := rfl
+
 /-- The free vars of an offset opening are among the original free vars or the
     opening names (depth-general form; `Ty.freeVars_openVars_subset` is `d = 0`). -/
 theorem Ty.freeVars_openVarsFrom_subset {d : Nat} {Xs : List Nat} {t : Ty} :
@@ -5961,6 +6098,10 @@ theorem Ty.freeVars_openVarsFrom_subset {d : Nat} {Xs : List Nat} {t : Ty} :
     rcases ih t0 ht0 z hzt' with h | h
     · exact .inl (by rw [Ty.freeVars]; exact TyList.mem_freeVars_of_mem ht0 h)
     · exact .inr h
+  | bl lo hi e ih =>
+    intro z hz
+    simp only [Ty.openVarsFrom_bl, Ty.freeVars] at hz ⊢
+    exact ih z hz
 
 /-- A free var of an opened annotation list was either original or a skolem in
     `Xs` (the ann-list analogue of `Ty.freeVars_openVarsFrom_subset`). -/
@@ -6204,6 +6345,8 @@ private theorem Ty.instantiate_bvar_id {ty : Ty} :
       simp only [TyList.instantiate, List.cons.injEq]
       refine ⟨ih hd List.mem_cons_self, ?_⟩
       exact ih_tl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate, Ty.bl.injEq, true_and]; exact ih
 
 /-- Opening with the empty list of types is identity: nothing to instantiate. -/
 theorem Ty.openWith_nil {ty : Ty} : Ty.openWith [] ty = ty := by
@@ -6294,7 +6437,13 @@ theorem InstantiatesBy.eq_openWith_range {tyArgs : List Ty} {n : Nat} {ty τ : T
           simp only [List.map_cons]
           simp only [Ty.openWith] at h_hd
           rw [← h_hd, h_tl]
-
+  | bl lo hi e ih =>
+    cases h_bv with
+    | bl he_bv =>
+      cases h with
+      | bl he =>
+        simp only [Ty.openWith, Ty.instantiate, Ty.bl.injEq, true_and]
+        exact ih he he_bv
 
 /-! ### Type-beta / scoped-opening commutation infrastructure.
 
@@ -6336,6 +6485,9 @@ theorem Ty.openVarsFrom_shiftBvarsBy (ℓ d : Nat) (Ys : List Nat) (t : Ty) :
     apply List.map_congr_left
     intro t ht
     simpa only [Ty.shiftBvarsBy, Ty.openVarsFrom, Function.comp_def] using ih t ht
+  | bl lo hi e ih =>
+    simp only [Ty.shiftBvarsBy, Ty.openVarsFrom, Ty.instantiate, Ty.bl.injEq, true_and]
+    exact ih
 
 /-- Offset opening is the identity on types whose bvars are all `< d`. -/
 theorem Ty.openVarsFrom_eq_self_of_bvars {d : Nat} {Xs : List Nat} {t : Ty}
@@ -6353,6 +6505,9 @@ theorem Ty.openVarsFrom_eq_self_of_bvars {d : Nat} {Xs : List Nat} {t : Ty}
       simp only [Ty.openVarsFrom_customTy, Ty.customTy.injEq, true_and]
       conv_rhs => rw [← List.map_id tys]
       exact List.map_congr_left (fun t ht => by rw [id_eq]; exact ih t ht (hall t ht))
+  | bl lo hi e ih =>
+    cases h with
+    | bl he => simp only [Ty.openVarsFrom_bl, ih he]
 
 /-- Type-beta is a no-op on a type whose `bvar`s are all `< d` (nothing in range to
     instantiate). The companion of `openVarsFrom_eq_self_of_bvars` for `openTyFrom`. -/
@@ -6371,6 +6526,9 @@ theorem Ty.openTyFrom_eq_self_of_bvars {d : Nat} {Ts : List Ty} {t : Ty}
       simp only [Ty.openTyFrom_customTy, Ty.customTy.injEq, true_and]
       conv_rhs => rw [← List.map_id tys]
       exact List.map_congr_left (fun t ht => by rw [id_eq]; exact ih t ht (hall t ht))
+  | bl lo hi e ih =>
+    cases h with
+    | bl he => simp only [Ty.openTyFrom_bl, ih he]
 
 /-- **Type-beta / opening commute (Ty level).** Opening (offset `d+ℓ`) the result
     of a depth-`ℓ` type-beta equals type-betaing with the opened arguments,
@@ -6410,6 +6568,10 @@ theorem Ty.openVarsFrom_openTyFrom (ℓ d : Nat) (Ys : List Nat) (Ts : List Ty) 
       apply List.map_congr_left
       intro t ht
       simpa only [Function.comp_def] using ih t ht (hall t ht)
+  | bl lo hi e ih =>
+    cases h with
+    | bl he =>
+      simp only [Ty.openTyFrom_bl, Ty.openVarsFrom_bl, ih he]
 
 /-- Opening is a no-op on group annotation bodies already bounded by
     `d + σ.paramCount` (self-contained schemes are the `d`-independent case). -/
@@ -6616,6 +6778,10 @@ theorem Ty.containsBvars_of_openVarsFrom (m : Nat) (Xs : List Nat) {t : Ty}
     | customTy hall =>
       refine .customTy (fun t ht => ih t ht ?_)
       exact hall _ (List.mem_map_of_mem ht)
+  | bl lo hi e ih =>
+    rw [Ty.openVarsFrom_bl] at h
+    cases h with
+    | bl he => exact .bl (ih he)
 
 /-- **Reflection (term level):** if `e` opened at depth `d` is `TyBvarBounded d`,
     then `e` is `TyBvarBounded (d + Xs.length)`. Used to recover a value's scoped
@@ -7959,6 +8125,16 @@ theorem InstantiatesBy.det_agree {n : Nat} {tyArgs1 tyArgs2 : List Ty}
           congr 1
           exact InstantiatesBy.forall2_det
             (fun t ht {_ _} ha hb => ih t ht (hall t ht) ha hb) hf1 hf2
+  | bl lo hi e ih =>
+    intro t1 t2 hbv h1 h2
+    cases hbv with
+    | bl he_bv =>
+      cases h1 with
+      | bl he1 =>
+        cases h2 with
+        | bl he2 =>
+          congr 1
+          exact ih he_bv he1 he2
 
 /-- Assemble the per-argument `HasScheme` list for the `match` reduction: each
     matched argument is well-typed at the corresponding instantiated field type
@@ -8191,6 +8367,11 @@ theorem Ty.openVars_lc {ty : Ty} {Xs : List Nat}
       intro t ht
       obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
       exact ih t0 ht0 (hall t0 ht0)
+  | bl lo hi e ih =>
+    cases h with
+    | bl he =>
+      simp only [Ty.instantiate]
+      exact .bl (ih he)
 
 /-- Opening with no names is the identity. -/
 theorem Ty.openVars_nil (ty : Ty) : Ty.openVars [] ty = ty := by

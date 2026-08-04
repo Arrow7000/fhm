@@ -86,6 +86,21 @@ inductive Count where
   | inf
   deriving DecidableEq, Repr
 
+/-! ## Count slots (BL endpoints)
+
+Shared by Core `Ty.bl` and surface/bounds ascriptions. Same shape as historical
+`AnnoCount` / `Surface.CountSlot`.
+-/
+
+/-- One endpoint of a bounded list: `_` or a solid count expression. -/
+inductive CountSlot where
+  | hole
+  | solid (c : Count)
+  deriving DecidableEq, Repr
+
+instance : Coe Count CountSlot where
+  coe := .solid
+
 /-- Assignments range over all `Var`s (see `ExistsProblem.SolvedBy` / `agreesOn`). -/
 abbrev Assign := Var → Nat
 
