@@ -45,6 +45,22 @@ def prettyPrimLit : PrimLitExpr → String
 
 /-! ## Types -/
 
+/-- Minimal count pretty for Core `Ty.bl` (no Z3). -/
+def FHM.Bounds.Count.prettyCore : FHM.Bounds.Count → String
+  | .lit n => toString n
+  | .inf => "inf"
+  | .var ⟨.rigid, i⟩ => "n" ++ toString i
+  | .var ⟨.inferable, i⟩ => "?n" ++ toString i
+  | .add a b => "(" ++ a.prettyCore ++ " + " ++ b.prettyCore ++ ")"
+  | .mul a b => "(" ++ a.prettyCore ++ " * " ++ b.prettyCore ++ ")"
+  | .pred a => "pred(" ++ a.prettyCore ++ ")"
+  | .min a b => "min(" ++ a.prettyCore ++ ", " ++ b.prettyCore ++ ")"
+  | .max a b => "max(" ++ a.prettyCore ++ ", " ++ b.prettyCore ++ ")"
+
+def FHM.Bounds.CountSlot.pretty : FHM.Bounds.CountSlot → String
+  | .hole => "_"
+  | .solid c => c.prettyCore
+
 mutual
 
 /-- `prec` controls parenthesization: `0` = top, `1` = left of an arrow (wrap
@@ -55,6 +71,9 @@ def Ty.prettyAux (prec : Nat) : Ty → String
   | .bvar n        => prettyTyVarName n
   | .fvar n        => "?" ++ prettyTyVarName n
   | .arrow a b     => prettyParenIf (prec ≥ 1) (Ty.prettyAux 1 a ++ " → " ++ Ty.prettyAux 0 b)
+  | .bl lo hi e    =>
+      prettyParenIf (prec ≥ 2)
+        ("BL " ++ lo.pretty ++ " " ++ hi.pretty ++ " " ++ Ty.prettyAux 2 e)
   | .customTy (.mk "Pair") [a, b] =>
       "(" ++ Ty.prettyAux 0 a ++ ", " ++ Ty.prettyAux 0 b ++ ")"
   | .customTy (.mk s) []   => s

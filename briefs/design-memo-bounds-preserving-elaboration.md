@@ -465,12 +465,9 @@ Park head binders until holes are real.
 
 These follow from the architecture above; they are not menu options.
 
-1. **`Ty.list lo hi elem`** — intervals live **in** `Ty`, same as surface `BL`.
-   No parallel count payload beside `customTy "List"`. That would reintroduce
-   dual representation and desync. Bare HM list shape is `list` with no solid
-   interval obligation after Infer (or a dedicated “unbounded/erased” form only
-   if we need a constructor for “List with no counts yet”; prefer one ctor and
-   treat Infer-filled list anns as shape-only until bounds elab writes lo/hi).
+1. **`Ty.bl lo hi elem`** — intervals live **in** `Ty`, same as surface `BL`.
+   No parallel count payload beside `customTy "List"`. Bare HM list stays
+   `customTy "List" [α]` (no length demand) until bounds elab writes a `bl`.
 
 2. **`Count` without Z3 on the Core import path** — Core may depend on count
    syntax/eval, never on Oracle/Z3. Split or thin the kernel if needed so

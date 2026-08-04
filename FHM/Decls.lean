@@ -79,6 +79,10 @@ inductive Ty.WellKinded (ke : KindEnv) (pc : Nat) : Ty → Prop
       LookupList.get? ke T = some args.length →
       (∀ arg ∈ args, Ty.WellKinded ke pc arg) →
       Ty.WellKinded ke pc (.customTy T args)
+  /-- BL: only the element type is kind-checked (counts are not types). -/
+  | bl {lo hi elem} :
+      Ty.WellKinded ke pc elem →
+      Ty.WellKinded ke pc (.bl lo hi elem)
 
 
 /-- Pass 1: the kind env induced by a declaration group (names + arities). -/
@@ -123,6 +127,7 @@ def Ty.wellKindedB (ke : KindEnv) (pc : Nat) : Ty → Bool
   | .fvar _        => false
   | .arrow a b     => Ty.wellKindedB ke pc a && Ty.wellKindedB ke pc b
   | .customTy T args => decide (LookupList.get? ke T = some args.length) && TyList.wellKindedB ke pc args
+  | .bl _ _ e      => Ty.wellKindedB ke pc e
 /-- Pointwise kind-check of a list of field types. -/
 def TyList.wellKindedB (ke : KindEnv) (pc : Nat) : List Ty → Bool
   | []      => true
@@ -179,6 +184,12 @@ theorem Ty.wellKindedB_iff {ke : KindEnv} {pc : Nat} (ty : Ty) :
       cases h with
       | customTy harity hargs =>
         exact ⟨harity, fun t ht => (ih t ht).mpr (hargs t ht)⟩
+  | bl lo hi e ih =>
+    simp only [Ty.wellKindedB]
+    rw [ih]
+    constructor
+    · intro h; exact .bl h
+    · intro h; cases h with | bl he => exact he
 
 /-- **Reflection for a list of types**, phrased directly against the spec (the
     form the elaborator consumes). -/
@@ -204,6 +215,7 @@ theorem Ty.WellKinded.toContainsBvars {ke : KindEnv} {pc : Nat} {ty : Ty}
   | bvar hlt => exact .bvar hlt
   | arrow _ _ iha ihb => exact .arrow iha ihb
   | customTy _ _ ih => exact .customTy ih
+  | bl _ ih => exact .bl ih
 
 /-- A well-kinded type has no free type vars (`Ctor.closed`). -/
 theorem Ty.WellKinded.toNoFreeVars {ke : KindEnv} {pc : Nat} {ty : Ty}
@@ -213,6 +225,7 @@ theorem Ty.WellKinded.toNoFreeVars {ke : KindEnv} {pc : Nat} {ty : Ty}
   | bvar _ => exact .bvar
   | arrow _ _ iha ihb => exact .arrow iha ihb
   | customTy _ _ ih => exact .customTy ih
+  | bl _ ih => exact .bl ih
 
 
 /-! ### 4. Building one `Ctor` from a constructor's checked field list. -/
