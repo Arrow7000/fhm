@@ -604,9 +604,9 @@ def inhabitProblem (Δ : List Constraint) (i : Interval) : ForallProblem where
   prem  := Δ
   goals := [⟨i.lo, i.hi⟩]
 
-/-- Nil branch refine: `lo ≤ 0` and `0 ≤ hi` (hi not forced to 0). -/
-def nilRefine (lo hi : Count) : List Constraint :=
-  [⟨lo, .lit 0⟩, ⟨.lit 0, hi⟩]
+/-- Nil branch refine: `lo ≤ 0` -/
+def nilRefine (lo : Count) : List Constraint :=
+  [⟨lo, .lit 0⟩]
 
 /-- Cons branch refine: `1 ≤ hi`. -/
 def consRefine (hi : Count) : List Constraint :=

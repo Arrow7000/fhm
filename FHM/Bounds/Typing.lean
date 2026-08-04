@@ -28,6 +28,7 @@ def nilCtorName : CtorName := ⟨"Nil"⟩
 def consCtorName : CtorName := ⟨"Cons"⟩
 def pairCtorName : CtorName := ⟨"Pair"⟩
 
+@[reducible]
 def listTy (α : Ty) : Ty := .customTy listTyName [α]
 
 def isListTy : Ty → Option Ty
@@ -81,7 +82,7 @@ def agreesTemplate : Ty → BoundsTy
   | .customTy n [α] =>
       if n = listTyName then
         -- Nested List-as-elem only (D22 debt if α is List).
-        .list (.lit 0) (.lit 0) (agreesTemplate α)
+        .list (.lit 0) .inf (agreesTemplate α)
       else .custom n [agreesTemplate α]
   | .customTy n tys => .custom n (tys.map agreesTemplate)
 
@@ -763,7 +764,7 @@ inductive HasBounds :
       HasBounds Δ bctx (.letIn ann e1 e2) τ2 β2
   | matchList {Δ bctx scrut eNil eCons α lo hi βe τ βnil βcons β} :
       HasBounds Δ bctx scrut (listTy α) (.list lo hi βe) →
-      HasBounds (Δ ++ nilRefine lo hi) bctx eNil τ βnil →
+      HasBounds (Δ ++ nilRefine lo) bctx eNil τ βnil →
       HasBounds (Δ ++ consRefine hi) (consBoundEnv bctx lo hi βe) eCons τ βcons →
       joinBoundsTy βnil βcons = some β →
       HasBounds Δ bctx
@@ -774,7 +775,7 @@ inductive HasBounds :
   | matchNil {Δ bctx scrut eNil α lo hi βe τ β} :
       HasBounds Δ bctx scrut (listTy α) (.list lo hi βe) →
       checkValid (mustBeEmpty Δ hi) = .valid →
-      HasBounds (Δ ++ nilRefine lo hi) bctx eNil τ β →
+      HasBounds (Δ ++ nilRefine lo) bctx eNil τ β →
       HasBounds Δ bctx
         (.match_ scrut [(.named nilCtorName 0, eNil)])
         τ β

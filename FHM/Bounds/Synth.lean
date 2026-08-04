@@ -491,7 +491,7 @@ def synthMatch (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
   | [(.named n 0, eNil), (.named c 2, eCons)] => do
       unless n == nilCtorName && c == consCtorName do
         throw "bounds: expected Nil/Cons match arms"
-      let Δnil := Δ ++ nilRefine lo hi
+      let Δnil := Δ ++ nilRefine lo
       let (Φ1, βnil) ← checkBoundsΦ Δnil bctx Φ eNil τList
       let Δcons := Δ ++ consRefine hi
       let (Φ2, βcons) ←
@@ -502,7 +502,7 @@ def synthMatch (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
   | [(.named c 2, eCons), (.named n 0, eNil)] => do
       unless n == nilCtorName && c == consCtorName do
         throw "bounds: expected Nil/Cons match arms"
-      let Δnil := Δ ++ nilRefine lo hi
+      let Δnil := Δ ++ nilRefine lo
       let (Φ1, βnil) ← checkBoundsΦ Δnil bctx Φ eNil τList
       let Δcons := Δ ++ consRefine hi
       let (Φ2, βcons) ←
@@ -514,7 +514,7 @@ def synthMatch (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
       unless n == nilCtorName do throw "bounds: expected Nil-only arm"
       unless checkValid (mustBeEmpty Δ hi) == .valid do
         throw "bounds: Nil-only match but upper bound not proved empty"
-      let (Φ1, β) ← checkBoundsΦ (Δ ++ nilRefine lo hi) bctx Φ eNil τList
+      let (Φ1, β) ← checkBoundsΦ (Δ ++ nilRefine lo) bctx Φ eNil τList
       pure (Φ1, τList, β)
   | [(.named c 2, eCons)] => do
       unless c == consCtorName do throw "bounds: expected Cons-only arm"
@@ -882,18 +882,18 @@ def checkAgainstΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
       | .list lo hi βe, [(.named n 0, eNil), (.named c 2, eCons)] => do
           unless n == nilCtorName && c == consCtorName do
             throw "bounds: expected Nil/Cons match arms"
-          let Φ2 ← checkAgainstΦ (Δ ++ nilRefine lo hi) bctx Φ1 eNil τ' β'
+          let Φ2 ← checkAgainstΦ (Δ ++ nilRefine lo) bctx Φ1 eNil τ' β'
           checkAgainstΦ (Δ ++ consRefine hi) (consBoundEnv bctx lo hi βe) Φ2 eCons τ' β'
       | .list lo hi βe, [(.named c 2, eCons), (.named n 0, eNil)] => do
           unless n == nilCtorName && c == consCtorName do
             throw "bounds: expected Nil/Cons match arms"
-          let Φ2 ← checkAgainstΦ (Δ ++ nilRefine lo hi) bctx Φ1 eNil τ' β'
+          let Φ2 ← checkAgainstΦ (Δ ++ nilRefine lo) bctx Φ1 eNil τ' β'
           checkAgainstΦ (Δ ++ consRefine hi) (consBoundEnv bctx lo hi βe) Φ2 eCons τ' β'
       | .list lo hi _βe, [(.named n 0, eNil)] => do
           unless n == nilCtorName do throw "bounds: expected Nil-only arm"
           unless checkValid (mustBeEmpty Δ hi) == .valid do
             throw "bounds: Nil-only match but upper bound not proved empty"
-          checkAgainstΦ (Δ ++ nilRefine lo hi) bctx Φ1 eNil τ' β'
+          checkAgainstΦ (Δ ++ nilRefine lo) bctx Φ1 eNil τ' β'
       | .list lo hi βe, [(.named c 2, eCons)] => do
           unless c == consCtorName do throw "bounds: expected Cons-only arm"
           unless checkValid (mustBeNonempty Δ lo) == .valid do
