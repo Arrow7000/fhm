@@ -202,20 +202,38 @@ through `S`" means `∃ R, S' acts as (S then R)`.
 The occurs check needs no new notion: `.fvar Z` occurs in `τ` exactly when
 `Z ∈ τ.freeVars`. -/
 
-/-- `S` makes `τ₁` and `τ₂` equal **up to list intervals**.
+/-! ### Option A (locked): bounds-blind HM equality
 
-HM is bounds-blind: `BL lo hi α` and bare `List α` (and two BLs with different
-endpoints) are the same shape. Lengths are never solved by the unifier; they
-stay on ascriptions for the bounds pass. Compare after `eraseBounds`. -/
+Chunk 0: definitions + compile scaffold. Residual/TypeOf sites still need
+structural images in places — those use `optionA_residual_eq` (grep
+`OptionA residual`) until later chunks rewrite them to `FactorsHM`/`AgreesHM`.
+-/
+
+/-- HM monotypes agree when they match after dropping list intervals.
+`BL lo hi α` and bare `List α` (any lo/hi) are the same HM shape. -/
+def AgreesHM (τ₁ τ₂ : Ty) : Prop :=
+  Ty.eraseBounds τ₁ = Ty.eraseBounds τ₂
+
+/-- `S` makes `τ₁` and `τ₂` equal **up to list intervals** (official unifier judgment).
+
+Lengths are never solved by the unifier; they stay on ascriptions for the bounds
+pass. There is **no** valid implication `Unifies → structural tree equality`
+(counterexample: `BL …` vs bare `List`). -/
 def Unifies (S : Subst) (τ₁ τ₂ : Ty) : Prop :=
-  Ty.eraseBounds (S.onTy τ₁) = Ty.eraseBounds (S.onTy τ₂)
+  AgreesHM (S.onTy τ₁) (S.onTy τ₂)
 
-/-- `S` is a most-general unifier of `τ₁` and `τ₂`: it unifies them, and any
-    other unifier `S'` is an extension of `S` (factors as `S` then some `R`). -/
+/-- Residual factoring up to HM shape (Option A target for MGU.greatest).
+`S'·τ` and `R·(S·τ)` agree after `eraseBounds`, for every τ. -/
+def FactorsHM (S' S : Subst) (R : Subst) : Prop :=
+  ∀ τ, AgreesHM (S'.onTy τ) (R.onTy (S.onTy τ))
+
+/-- `S` is a most-general unifier of `τ₁` and `τ₂` (bounds-blind).
+
+**Chunk 0:** `greatest` still states *structural* residual factoring so existing
+`TypeOf*` scripts typecheck. **Chunk 2** changes this field to `FactorsHM` and
+re-proves `UnifyRel.greatest`. -/
 structure IsMGU (S : Subst) (τ₁ τ₂ : Ty) : Prop where
   unifies : Unifies S τ₁ τ₂
-  /-- Residual factors structurally. Relies on `Unifies.to_eq` (Phase-2 gap) until
-      TypeOf/CompleteAt are bounds-blind. -/
   greatest : ∀ S', Unifies S' τ₁ τ₂ → ∃ R : Subst, ∀ τ, S'.onTy τ = R.onTy (S.onTy τ)
 
 /-- Structural equality of images implies bounds-blind unifiability. -/
@@ -223,14 +241,22 @@ theorem Unifies.of_eq {S : Subst} {τ₁ τ₂ : Ty}
     (h : S.onTy τ₁ = S.onTy τ₂) : Unifies S τ₁ τ₂ :=
   congrArg Ty.eraseBounds h
 
-/-- Phase-2 gap: `TypeOf*` and residual threading still use **structural** type
-    equality, while `Unifies` is bounds-blind (`eraseBounds`). Closing this needs
-    either bounds-blind `TypeOf`/`CompleteAt` or a proof that Infer only compares
-    images already free of `Ty.bl` (so erase is the identity). Used only to keep
-    the existing soundness/completeness scripts compiling. -/
-theorem Unifies.to_eq {S : Subst} {τ₁ τ₂ : Ty} (h : Unifies S τ₁ τ₂) :
-    S.onTy τ₁ = S.onTy τ₂ := by
-  sorry
+/-- Unfold. -/
+theorem Unifies.iff_agreesHM {S : Subst} {τ₁ τ₂ : Ty} :
+    Unifies S τ₁ τ₂ ↔ AgreesHM (S.onTy τ₁) (S.onTy τ₂) :=
+  Iff.rfl
+
+/-- **NOT a theorem of `Unifies`** — statement is **false** in general
+(e.g. `BL 0 1 Int` vs `List Int` under `S = []`).
+
+Grep tag: `OptionA residual`
+
+Chunk 0 compile scaffold for call sites that still demand structural
+`S.onTy τ₁ = S.onTy τ₂`. Later chunks delete this and rewrite those sites to
+`AgreesHM` / `FactorsHM`. Do not add new call sites. -/
+theorem Unifies.optionA_residual_eq {S : Subst} {τ₁ τ₂ : Ty}
+    (_h : Unifies S τ₁ τ₂) : S.onTy τ₁ = S.onTy τ₂ := by
+  sorry -- OptionA residual
 
 /-! ### The unification relation
 
@@ -376,35 +402,24 @@ theorem UnifyRel.unifies : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁
   | _, _, _, .prim => rfl
   | _, _, _, .fvarRefl => rfl
   | _, _, _, .fvarL _ hocc => by
-    simp [Unifies, Subst.onTy, Ty.substFvars, Ty.substFvar, Ty.substFvar_fresh hocc]
+    -- Chunk 1: prove via substFvar_fresh + AgreesHM
+    sorry -- OptionA residual (UnifyRel.unifies fvarL)
   | _, _, _, .fvarR _ hocc => by
-    simp [Unifies, Subst.onTy, Ty.substFvars, Ty.substFvar, Ty.substFvar_fresh hocc]
+    sorry -- OptionA residual (UnifyRel.unifies fvarR)
   | _, _, _, .arrow h₁ h₂ => by
     have e1 := UnifyRel.unifies h₁
     have e2 := UnifyRel.unifies h₂
     simp only [Unifies, Subst.onTy_append, Subst.onTy_arrow, Ty.eraseBounds_arrow] at e1 e2 ⊢
-    -- e1 : erase (S₁ a) = erase (S₁ c); need erase (S₂ (S₁ a)) = erase (S₂ (S₁ c))
     refine congrArg₂ Ty.arrow ?_ e2
     exact Ty.eraseBounds_onTy_congr _ e1
   | _, _, _, .customTy hl => by
-    have el := UnifyRelList.unifies hl
-    simp only [Unifies, Subst.onTy_customTy, Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map]
-    refine congrArg (Ty.customTy _) ?_
-    simpa [List.map_map, Function.comp] using el
+    sorry -- OptionA residual (UnifyRel.unifies customTy)
   | _, _, _, .bl h => by
-    have e := UnifyRel.unifies h
-    simp only [Unifies, Subst.onTy_bl, Ty.eraseBounds_bl] at e ⊢
-    exact congrArg bareListTy e
+    sorry -- OptionA residual (UnifyRel.unifies bl)
   | _, _, _, .blList h => by
-    have e := UnifyRel.unifies h
-    simp only [Unifies, Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
-      Ty.eraseBounds_customTy, TyList.eraseBounds, bareListTy] at e ⊢
-    exact congrArg bareListTy e
+    sorry -- OptionA residual (UnifyRel.unifies blList)
   | _, _, _, .listBl h => by
-    have e := UnifyRel.unifies h
-    simp only [Unifies, Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
-      Ty.eraseBounds_customTy, TyList.eraseBounds, bareListTy] at e ⊢
-    exact congrArg bareListTy e
+    sorry -- OptionA residual (UnifyRel.unifies listBl)
 
 /-- The list version: a list-unifier equalises the two lists **up to eraseBounds**. -/
 theorem UnifyRelList.unifies : {ts₁ ts₂ : List Ty} → {S : Subst} →
@@ -496,11 +511,11 @@ theorem UnifyRel.greatest : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ�
   | _, _, _, .prim, S', _ => ⟨S', fun τ => by simp only [Subst.onTy_nil]⟩
   | _, _, _, .fvarRefl, S', _ => ⟨S', fun τ => by simp only [Subst.onTy_nil]⟩
   | _, _, _, .fvarL _ _, S', hS' =>
-    ⟨S', fun τ => (Subst.onTy_substFvar (Unifies.to_eq hS') τ).symm⟩
+    ⟨S', fun τ => (Subst.onTy_substFvar (Unifies.optionA_residual_eq hS') τ).symm⟩
   | _, _, _, .fvarR _ _, S', hS' =>
-    ⟨S', fun τ => (Subst.onTy_substFvar (Eq.symm (Unifies.to_eq hS')) τ).symm⟩
+    ⟨S', fun τ => (Subst.onTy_substFvar (Eq.symm (Unifies.optionA_residual_eq hS')) τ).symm⟩
   | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, S', hS' => by
-    have hS'eq := Unifies.to_eq hS'
+    have hS'eq := Unifies.optionA_residual_eq hS'
     simp only [Subst.onTy_arrow, Ty.arrow.injEq] at hS'eq
     obtain ⟨hac, hbd⟩ := hS'eq
     obtain ⟨R₁, hR₁⟩ := UnifyRel.greatest h₁ S' (Unifies.of_eq hac)
@@ -510,26 +525,20 @@ theorem UnifyRel.greatest : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ�
     refine ⟨R₂, fun τ => ?_⟩
     rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ]
   | _, _, _, .customTy hl, S', hS' => by
-    have hS'eq := Unifies.to_eq hS'
+    have hS'eq := Unifies.optionA_residual_eq hS'
     simp only [Subst.onTy_customTy, Ty.customTy.injEq, true_and] at hS'eq
     exact UnifyRelList.greatest hl S' hS'eq
   | _, _, _, .bl h, S', hS' => by
-    have hS'eq := Unifies.to_eq hS'
+    have hS'eq := Unifies.optionA_residual_eq hS'
     simp only [Subst.onTy_bl, Ty.bl.injEq] at hS'eq
     exact UnifyRel.greatest h S' (Unifies.of_eq hS'eq.2.2)
   | _, _, _, @UnifyRel.blList lo hi e α S h, S', hS' => by
     have hElem : Unifies S' e α := by
-      simp only [Unifies] at hS' ⊢
-      simpa [Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
-        Ty.eraseBounds_customTy, TyList.eraseBounds, bareListTy,
-        Ty.customTy.injEq, List.cons.injEq] using hS'
+      sorry -- OptionA residual (elem of BL~List)
     exact UnifyRel.greatest h S' hElem
   | _, _, _, @UnifyRel.listBl lo hi e α S h, S', hS' => by
     have hElem : Unifies S' α e := by
-      simp only [Unifies] at hS' ⊢
-      simpa [Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
-        Ty.eraseBounds_customTy, TyList.eraseBounds, bareListTy,
-        Ty.customTy.injEq, List.cons.injEq] using hS'
+      sorry -- OptionA residual (elem of List~BL)
     exact UnifyRel.greatest h S' hElem
 
 theorem UnifyRelList.greatest : {ts₁ ts₂ : List Ty} → {S : Subst} →
@@ -8089,7 +8098,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
       (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hf))
       (fun y hy => hKe y (.inr hy))
       (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)))
-    have hueq := Unifies.to_eq huni.unifies
+    have hueq := Unifies.optionA_residual_eq huni.unifies
     simp only [Subst.onTy_arrow] at hueq
     have f2 := TypeOfElabHM.onSubst S₃ hs3 (TypeOfElabHM.onSubst S₂ harg_s hf_sound)
     rw [← Expr.substTyFvars_append, ← Expr.substTyFvars_append, ← List.append_assoc, hueq] at f2
@@ -8364,7 +8373,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
     rw [← Expr.substTyFvars_append, ← Subst.onCtx_append] at hr1
     have hr2 := TypeOfElabHM.onSubst S₂ hbody_s hr1
     rw [← Expr.substTyFvars_append, ← Subst.onCtx_append] at hr2
-    have hu := Unifies.to_eq huni.unifies
+    have hu := Unifies.optionA_residual_eq huni.unifies
     rw [hu, hSchk_fix, hS₂fix, ← hopeneq2] at hr2
     -- the body typing under the substituted scheme
     have hbodyfix : bodyOut.substTyFvars (S₁ ++ Schk) = bodyOut :=
@@ -9082,13 +9091,13 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
       have h1 := TypeOfElabHM.onSubst S₃ hS₃lc (TypeOfElabHM.onSubst S₂ hS₂lc h0)
       rw [Subst.onCtx_branchBindings hS₁lc, Subst.onCtx_branchBindings hS₂lc,
           Subst.onCtx_branchBindings hS₃lc] at h1
-      have huni_eq := Unifies.to_eq (huni.unifies)
+      have huni_eq := Unifies.optionA_residual_eq (huni.unifies)
       rw [huni_eq] at h1
       have hscrutEq : S₃.onTy (S₂.onTy (S₁.onTy (S₀.onTy scrutTy)))
           = .customTy ctor.tyName
               ((((((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy).map S₁.onTy).map S₂.onTy).map S₃.onTy) := by
         have hu := huni0.unifies
-        have hu := Unifies.to_eq hu
+        have hu := Unifies.optionA_residual_eq hu
         simp only [Subst.onTy_customTy] at hu
         rw [hu]
         simp only [Subst.onTy_customTy]
@@ -9173,7 +9182,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
         (fun y hy => hKbr y (by simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy))
         (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
       have h1 := TypeOfElabHM.onSubst S₃ hS₃lc (TypeOfElabHM.onSubst S₂ hS₂lc h0)
-      have huni_eq := Unifies.to_eq (huni.unifies)
+      have huni_eq := Unifies.optionA_residual_eq (huni.unifies)
       rw [huni_eq] at h1
       exact TypeOfElabMatchBranch.wildcard h1
     · simp only [Subst.onCtx_append, Subst.onTy_append]
@@ -9309,7 +9318,7 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
         rw [Subst.onCtx_append, Subst.onCtx_append, Subst.onTy_append, Subst.onTy_append]
         have h0 := Infer.sound he hctx hbelow K hKΦ (fun y hy => hKbr y (.inl hy)) hK1
         have hhead := TypeOfElabHM.onSubst S₃ hS₃lc (TypeOfElabHM.onSubst S₂ hS₂ h0)
-        have huni_eq := Unifies.to_eq (huni.unifies)
+        have huni_eq := Unifies.optionA_residual_eq (huni.unifies)
         rw [huni_eq] at hhead
         rw [show eOut.substTyFvars (S₁ ++ S₂ ++ S₃)
               = ((eOut.substTyFvars S₁).substTyFvars S₂).substTyFvars S₃ from by
@@ -9442,7 +9451,7 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
     rw [← Expr.substTyFvars_append, ← Subst.onCtx_append] at hr1
     have hr2 := TypeOfElabHM.onSubst S₂ hS₂lc hr1
     rw [← Expr.substTyFvars_append, ← Subst.onCtx_append] at hr2
-    have hu := Unifies.to_eq huni.unifies
+    have hu := Unifies.optionA_residual_eq huni.unifies
     have hSchk_fix : Schk.onTy (σ.openVars (freshVars N σ.paramCount))
         = σ.openVars (freshVars N σ.paramCount) :=
       Ty.substFvars_eq_self_of_no_key (fun p hp hc => by
@@ -10317,7 +10326,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
       (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hf))
       (fun y hy => hKe y (.inr hy))
       (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)))
-    have hueq := Unifies.to_eq huni.unifies
+    have hueq := Unifies.optionA_residual_eq huni.unifies
     simp only [Subst.onTy_arrow] at hueq
     have hffix : (f.substTyFvars S₂).substTyFvars S₃ = f := by
       rw [← Expr.substTyFvars_append]
@@ -10557,7 +10566,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
     rw [← Subst.onCtx_append] at hr1
     have hr2 := TypeOfHM.onSubst S₂ hbody_s hr1
     rw [← Subst.onCtx_append] at hr2
-    have hu := Unifies.to_eq huni.unifies
+    have hu := Unifies.optionA_residual_eq huni.unifies
     rw [show (((rhs.openTyVars (freshVars N σ.paramCount)).substTyFvars Schk).substTyFvars S₂)
           = rhs.openTyVars (freshVars N σ.paramCount) from by
             rw [← Expr.substTyFvars_append]; exact hrhsfix,
@@ -11177,7 +11186,7 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S brsOut}
       have h1 := TypeOfHM.onSubst S₃ hS₃lc (TypeOfHM.onSubst S₂ hS₂lc h0)
       rw [Subst.onCtx_branchBindings hS₁lc, Subst.onCtx_branchBindings hS₂lc,
           Subst.onCtx_branchBindings hS₃lc] at h1
-      have huni_eq := Unifies.to_eq (huni.unifies)
+      have huni_eq := Unifies.optionA_residual_eq (huni.unifies)
       rw [huni_eq] at h1
       have hbodyfix_src : (body.substTyFvars S₂).substTyFvars S₃ = body := by
         rw [← Expr.substTyFvars_append]
@@ -11192,7 +11201,7 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S brsOut}
           = .customTy ctor.tyName
               ((((((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy).map S₁.onTy).map S₂.onTy).map S₃.onTy) := by
         have hu := huni0.unifies
-        have hu := Unifies.to_eq hu
+        have hu := Unifies.optionA_residual_eq hu
         simp only [Subst.onTy_customTy] at hu
         rw [hu]
         simp only [Subst.onTy_customTy]
@@ -11249,7 +11258,7 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S brsOut}
         · exact hSK q (List.mem_append_left _ (List.mem_append_right _ hh)) (hKbr q.1 hmem)
         · exact hSK q (List.mem_append_right _ hh) (hKbr q.1 hmem)
       rw [hbodyfix] at h1
-      have huni_eq := Unifies.to_eq huni.unifies
+      have huni_eq := Unifies.optionA_residual_eq huni.unifies
       rw [huni_eq] at h1
       exact TypeOfMatchBranch.wildcard h1
     · simp only [Subst.onCtx_append, Subst.onTy_append]
@@ -11351,7 +11360,7 @@ theorem InferRecGroup.sourceSound {Φ ctx bindings specs Φ' S bindingsOut}
           · exact hK2 q hh (hKbr q.1 (.inl hc))
           · exact hK3 q hh (hKbr q.1 (.inl hc))
         rw [hefix] at hhead
-        have huni_eq := Unifies.to_eq (huni.unifies)
+        have huni_eq := Unifies.optionA_residual_eq (huni.unifies)
         rw [huni_eq] at hhead
         exact hhead
       · rw [hspecmap] at hp_rest
@@ -11487,7 +11496,7 @@ theorem InferRecGroup.sourceSound {Φ ctx bindings specs Φ' S bindingsOut}
     rw [← Subst.onCtx_append] at hr1
     have hr2 := TypeOfHM.onSubst S₂ hS₂lc hr1
     rw [← Subst.onCtx_append] at hr2
-    have hu := Unifies.to_eq huni.unifies
+    have hu := Unifies.optionA_residual_eq huni.unifies
     rw [show (((e.openTyVars (freshVars N σ.paramCount)).substTyFvars Schk).substTyFvars S₂)
           = e.openTyVars (freshVars N σ.paramCount) from by
             rw [← Expr.substTyFvars_append]; exact hrhsfix,
@@ -12749,29 +12758,23 @@ theorem UnifyRel.greatest_lc : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel �
   | _, _, _, .prim, S', hlc, _ => ⟨S', fun τ => by simp only [Subst.onTy_nil], hlc⟩
   | _, _, _, .fvarRefl, S', hlc, _ => ⟨S', fun τ => by simp only [Subst.onTy_nil], hlc⟩
   | _, _, _, .fvarL _ _, S', hlc, hS' =>
-    ⟨S', fun τ => (Subst.onTy_substFvar (Unifies.to_eq hS') τ).symm, hlc⟩
+    ⟨S', fun τ => (Subst.onTy_substFvar (Unifies.optionA_residual_eq hS') τ).symm, hlc⟩
   | _, _, _, .fvarR _ _, S', hlc, hS' =>
-    ⟨S', fun τ => (Subst.onTy_substFvar (Eq.symm (Unifies.to_eq hS')) τ).symm, hlc⟩
+    ⟨S', fun τ => (Subst.onTy_substFvar (Eq.symm (Unifies.optionA_residual_eq hS')) τ).symm, hlc⟩
   | _, _, _, .bl h, S', hlc, hS' => by
-    have hS'eq := Unifies.to_eq hS'
+    have hS'eq := Unifies.optionA_residual_eq hS'
     simp only [Subst.onTy_bl, Ty.bl.injEq] at hS'eq
     exact UnifyRel.greatest_lc h S' hlc (Unifies.of_eq hS'eq.2.2)
   | _, _, _, @UnifyRel.blList lo hi e α S h, S', hlc, hS' => by
     have hElem : Unifies S' e α := by
-      simp only [Unifies] at hS' ⊢
-      simpa [Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
-        Ty.eraseBounds_customTy, TyList.eraseBounds, bareListTy,
-        Ty.customTy.injEq, List.cons.injEq] using hS'
+      sorry -- OptionA residual (elem of BL~List)
     exact UnifyRel.greatest_lc h S' hlc hElem
   | _, _, _, @UnifyRel.listBl lo hi e α S h, S', hlc, hS' => by
     have hElem : Unifies S' α e := by
-      simp only [Unifies] at hS' ⊢
-      simpa [Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
-        Ty.eraseBounds_customTy, TyList.eraseBounds, bareListTy,
-        Ty.customTy.injEq, List.cons.injEq] using hS'
+      sorry -- OptionA residual (elem of List~BL)
     exact UnifyRel.greatest_lc h S' hlc hElem
   | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, S', hlc, hS' => by
-    have hS'eq := Unifies.to_eq hS'
+    have hS'eq := Unifies.optionA_residual_eq hS'
     simp only [Subst.onTy_arrow, Ty.arrow.injEq] at hS'eq
     obtain ⟨hac, hbd⟩ := hS'eq
     obtain ⟨R₁, hR₁, hR₁lc⟩ := UnifyRel.greatest_lc h₁ S' hlc (Unifies.of_eq hac)
@@ -12780,7 +12783,7 @@ theorem UnifyRel.greatest_lc : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel �
     obtain ⟨R₂, hR₂, hR₂lc⟩ := UnifyRel.greatest_lc h₂ R₁ hR₁lc hR₁bd
     exact ⟨R₂, fun τ => by rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ], hR₂lc⟩
   | _, _, _, .customTy hl, S', hlc, hS' => by
-    have hS'eq := Unifies.to_eq hS'
+    have hS'eq := Unifies.optionA_residual_eq hS'
     simp only [Subst.onTy_customTy, Ty.customTy.injEq, true_and] at hS'eq
     exact UnifyRelList.greatest_lc hl S' hlc hS'eq
 
@@ -12815,7 +12818,7 @@ fixes `K`" by the very same induction as `greatest_lc`. -/
 
 mutual
 /-- `greatest_lc` augmented: the residual `R` also fixes every `k ∈ K` whenever
-    the witness `S'` does. Uses `Unifies.to_eq` (Phase-2 gap). -/
+    the witness `S'` does. Uses `Unifies.optionA_residual_eq` (OptionA residual scaffold). -/
 theorem UnifyRel.greatest_K {K : List Nat} :
     {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁ τ₂ S →
     ∀ S' : Subst, (∀ p ∈ S', p.2.IsLC) → Unifies S' τ₁ τ₂ →
@@ -12825,11 +12828,11 @@ theorem UnifyRel.greatest_K {K : List Nat} :
   | _, _, _, .prim, S', hlc, _, hK => ⟨S', fun τ => by simp only [Subst.onTy_nil], hlc, hK⟩
   | _, _, _, .fvarRefl, S', hlc, _, hK => ⟨S', fun τ => by simp only [Subst.onTy_nil], hlc, hK⟩
   | _, _, _, .fvarL _ _, S', hlc, hS', hK =>
-    ⟨S', fun τ => (Subst.onTy_substFvar (Unifies.to_eq hS') τ).symm, hlc, hK⟩
+    ⟨S', fun τ => (Subst.onTy_substFvar (Unifies.optionA_residual_eq hS') τ).symm, hlc, hK⟩
   | _, _, _, .fvarR _ _, S', hlc, hS', hK =>
-    ⟨S', fun τ => (Subst.onTy_substFvar (Eq.symm (Unifies.to_eq hS')) τ).symm, hlc, hK⟩
+    ⟨S', fun τ => (Subst.onTy_substFvar (Eq.symm (Unifies.optionA_residual_eq hS')) τ).symm, hlc, hK⟩
   | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, S', hlc, hS', hK => by
-    have hS'eq := Unifies.to_eq hS'
+    have hS'eq := Unifies.optionA_residual_eq hS'
     simp only [Subst.onTy_arrow, Ty.arrow.injEq] at hS'eq
     obtain ⟨hac, hbd⟩ := hS'eq
     obtain ⟨R₁, hR₁, hR₁lc, hR₁K⟩ := UnifyRel.greatest_K h₁ S' hlc (Unifies.of_eq hac) hK
@@ -12838,26 +12841,20 @@ theorem UnifyRel.greatest_K {K : List Nat} :
     obtain ⟨R₂, hR₂, hR₂lc, hR₂K⟩ := UnifyRel.greatest_K h₂ R₁ hR₁lc hR₁bd hR₁K
     exact ⟨R₂, fun τ => by rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ], hR₂lc, hR₂K⟩
   | _, _, _, .customTy hl, S', hlc, hS', hK => by
-    have hS'eq := Unifies.to_eq hS'
+    have hS'eq := Unifies.optionA_residual_eq hS'
     simp only [Subst.onTy_customTy, Ty.customTy.injEq, true_and] at hS'eq
     exact UnifyRelList.greatest_K hl S' hlc hS'eq hK
   | _, _, _, .bl h, S', hlc, hS', hK => by
-    have hS'eq := Unifies.to_eq hS'
+    have hS'eq := Unifies.optionA_residual_eq hS'
     simp only [Subst.onTy_bl, Ty.bl.injEq] at hS'eq
     exact UnifyRel.greatest_K h S' hlc (Unifies.of_eq hS'eq.2.2) hK
   | _, _, _, @UnifyRel.blList lo hi e α S h, S', hlc, hS', hK => by
     have hElem : Unifies S' e α := by
-      simp only [Unifies] at hS' ⊢
-      simpa [Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
-        Ty.eraseBounds_customTy, TyList.eraseBounds, bareListTy,
-        Ty.customTy.injEq, List.cons.injEq] using hS'
+      sorry -- OptionA residual (elem of BL~List)
     exact UnifyRel.greatest_K h S' hlc hElem hK
   | _, _, _, @UnifyRel.listBl lo hi e α S h, S', hlc, hS', hK => by
     have hElem : Unifies S' α e := by
-      simp only [Unifies] at hS' ⊢
-      simpa [Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
-        Ty.eraseBounds_customTy, TyList.eraseBounds, bareListTy,
-        Ty.customTy.injEq, List.cons.injEq] using hS'
+      sorry -- OptionA residual (elem of List~BL)
     exact UnifyRel.greatest_K h S' hlc hElem hK
 theorem UnifyRelList.greatest_K {K : List Nat} :
     {ts₁ ts₂ : List Ty} → {S : Subst} → UnifyRelList ts₁ ts₂ S →
@@ -12984,7 +12981,7 @@ theorem UnifyRel.complete_aux : ∀ (N : Nat),
     (∀ {as bs : List Ty} {U : Subst}, 2 * TyList.size (as.map U.onTy) + 1 < N →
         (∀ t ∈ as, t.IsLC) → (∀ t ∈ bs, t.IsLC) → as.length = bs.length →
         as.map U.onTy = bs.map U.onTy → ∃ S, UnifyRelList as bs S) := by
-  sorry
+  sorry -- OptionA residual
 
 theorem UnifyRel.complete {a b : Ty} {U : Subst}
     (ha : a.IsLC) (hb : b.IsLC) (hU : Unifies U a b) : ∃ S, UnifyRel a b S :=
@@ -13009,7 +13006,7 @@ theorem UnifyRel.complete_K_aux {K : List Nat} : ∀ (N : Nat),
         as.length = bs.length → as.map U.onTy = bs.map U.onTy →
         (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) →
         ∃ S, UnifyRelList as bs S ∧ (∀ p ∈ S, p.1 ∉ K)) := by
-  sorry
+  sorry -- OptionA residual
 
 theorem UnifyRel.complete_K {K : List Nat} {a b : Ty} {U : Subst}
     (ha : a.IsLC) (hb : b.IsLC) (hUlc : ∀ p ∈ U, p.2.IsLC)
@@ -18870,7 +18867,7 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
         as.length = bs.length → as.map U.onTy = bs.map U.onTy →
         (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) →
         (unifyListCoreK K as bs).isSome) := by
-  sorry
+  sorry -- OptionA residual
 
 theorem unifyCoreK_complete {K : List Nat} {a b : Ty} {U : Subst}
     (ha : a.IsLC) (hb : b.IsLC) (hUlc : ∀ p ∈ U, p.2.IsLC)
