@@ -9,7 +9,13 @@ Wired from Live/`--bl`. Gate and erase are **separate**: `hmRequireNoBl` is D16
 only; `eraseProgram` always runs. Under `--bl`, Live runs `ofLower` + origin
 HasBounds synth / ascription check (slice 4; D22).
 
-## Architecture
+**Deprecated packaging path (2026-08-04):** `eraseProgram` / `ofLower` are **not**
+the live product contract going forward. See
+`briefs/design-memo-bounds-preserving-elaboration.md`. Replacement: keep BL on
+Core through Infer; bounds second elab. Do not extend this erase/`ofLower` API;
+may remain until Phase 5.
+
+## Architecture (legacy dual-walk packaging; still wired today)
 
 ```text
 surface Program
@@ -135,7 +141,11 @@ def hmRequireNoBl (p : Program) : Except String HmProgram :=
 /-- Map erase binder anns onto a de Bruijn spine.
 
 `binderEnv[i]` is the name of Core env slot `i` (**0 = innermost**).
-Names with no `ErasedBinding` ann/scheme get `none`. Call **after** lower. -/
+Names with no `ErasedBinding` ann/scheme get `none`. Call **after** lower.
+
+**Deprecated for product path (2026-08-04).** See
+`briefs/design-memo-bounds-preserving-elaboration.md`. Keep BL on Core through
+Infer; bounds second elab. Do not extend this API; may remain until Phase 5. -/
 def ProgramBoundsAnns.ofLower
     (binderEnv : List ValName) (ep : ErasedProgram) : ProgramBoundsAnns :=
   let surf := ep.toSurfaceAnns

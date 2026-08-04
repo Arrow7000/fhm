@@ -12,6 +12,10 @@ de Bruijn `ProgramBoundsAnns` is **P4c**.
 `Surface.Count` is solid arithmetic + named vars; `CountSlot` is hole | solid.
 Named vars resolve against a Nat-binder telescope at erase (slice 7). Erase is
 total on ground counts; open vars need `nats`.
+
+**Deprecated for product path (2026-08-04).** See
+`briefs/design-memo-bounds-preserving-elaboration.md`. Replacement: keep BL on
+Core through Infer; bounds second elab. May remain until Phase 5; do not extend.
 -/
 
 namespace FHM.Bounds.Erase
@@ -199,7 +203,11 @@ bounds ascription from the same erase step.
 * bare `List` / no ann → both `none`
 
 Prefer `BinderAnn` (Ann.lean) once `ProgramBoundsAnns` migrates off bare
-`Option BoundsAnnTy`. -/
+`Option BoundsAnnTy`.
+
+**Deprecated for product path (2026-08-04).** See
+`briefs/design-memo-bounds-preserving-elaboration.md`. Keep BL on Core through
+Infer; bounds second elab. Do not extend this API; may remain until Phase 5. -/
 structure ErasedBinding where
   binding : Binding
   ann : Option BoundsAnnTy
@@ -216,7 +224,11 @@ def ErasedBinding.binderAnn (eb : ErasedBinding) : Option FHM.Bounds.BinderAnn :
 
 Bounds anns live **on the binders** (`ErasedBinding.ann`), not as a free-floating
 map beside an unrelated `Program`. `toProgram` forgets anns for HM lower;
-`toSurfaceAnns` / `ofLower` re-key for Core env after lower. -/
+`toSurfaceAnns` / `ofLower` re-key for Core env after lower.
+
+**Deprecated for product path (2026-08-04).** See
+`briefs/design-memo-bounds-preserving-elaboration.md`. Keep BL on Core through
+Infer; bounds second elab. Do not extend this API; may remain until Phase 5. -/
 structure ErasedProgram where
   decls : List DataDecl
   groups : List (List ErasedBinding)
@@ -327,6 +339,11 @@ def eraseDataDecl (d : DataDecl) : DataDecl :=
     ctors := d.ctors.map fun (cn, fs) =>
       (cn, fs.map fun t => (eraseTy t).ty) }
 
+/-- **Deprecated for product path (2026-08-04).**
+
+See `briefs/design-memo-bounds-preserving-elaboration.md`. Replacement: keep BL
+on Core through Infer; bounds second elab. Do not extend this API or add new
+call sites. May remain until Phase 5 removal. -/
 def eraseProgram (p : Program) : ErasedProgram :=
   let decls' := p.decls.map eraseDataDecl
   let groups' : List (List ErasedBinding) :=

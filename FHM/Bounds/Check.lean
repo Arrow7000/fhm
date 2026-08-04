@@ -10,6 +10,11 @@ Walk Infer’s Core `eOut` with origin `synthBounds`, then
 
 Under `--bl`, `checkProgramMatches` replaces surface `checkExhaustive`: List
 scrutinees use `checkBoundCovers`; other types use `coreCtorCoverage`.
+
+**Deprecated packaging authority (2026-08-04):** dual-walk
+`checkProgramAnns` + `checkProgramMatches` is not the long-term product contract.
+See `briefs/design-memo-bounds-preserving-elaboration.md`. Replacement: boundsElab
+on Core with BL. Still runs today; do not extend; may remain until Phase 5.
 -/
 
 namespace FHM.Bounds.Check
@@ -166,7 +171,11 @@ decreasing_by all_goals (try simp only [Expr.size]; omega)
 
 Holes in anns are pinned to synth Counts, then `Sub`. Under `--bl` only.
 Returns binder `BoundEnv` (0 = innermost ‖ `binderEnv`) and body `β`.
-Hole/unascribed binders **pack** free inferables (no bare `?n` mono in env). -/
+Hole/unascribed binders **pack** free inferables (no bare `?n` mono in env).
+
+**Deprecated as packaging authority (2026-08-04)** — still runs today as the
+dual-walk half. See `briefs/design-memo-bounds-preserving-elaboration.md`.
+To be replaced by boundsElab on Core with BL. Do not extend; Phase 5 removal. -/
 def checkProgramAnns
     (e : Expr)
     (τ : Ty)
@@ -319,7 +328,11 @@ decreasing_by
 /-- Walk a Core subterm for nested matches under `bctx` and optional β-demand.
 
 Demand peels through λ the same way as `checkAgainst`. Unascribed List λs get
-fresh `?lo`/`?hi` (D24) so BoundCovers can see parametric intervals. -/
+fresh `?lo`/`?hi` (D24) so BoundCovers can see parametric intervals.
+
+**Deprecated for product path (2026-08-04).** See
+`briefs/design-memo-bounds-preserving-elaboration.md`. Dual-walk half; replace
+with boundsElab on Core with BL. Do not extend; may remain until Phase 5. -/
 def checkProgramMatchesGo (ctors : CtorEnv) (Δ : List Constraint) (bctx : BoundEnv)
     (demand : Option BoundsTy) (e : Expr) : Except String Unit :=
   match e with
@@ -406,6 +419,10 @@ def checkProgramMatchesGo (ctors : CtorEnv) (Δ : List Constraint) (bctx : Bound
 
 end
 
+/-- **Deprecated for product path (2026-08-04).**
+
+See `briefs/design-memo-bounds-preserving-elaboration.md`. Dual-walk packaging;
+replace with boundsElab on Core with BL. Do not extend; may remain until Phase 5. -/
 def checkProgramMatchesSpine
     (ctors : CtorEnv)
     (binderEnv : List ValName)
@@ -481,7 +498,11 @@ def checkProgramMatchesSpine
 termination_by e.size
 decreasing_by all_goals (try simp only [Expr.size]; omega)
 
-/-- Top-level Core match coverage walk for Live `--bl`. -/
+/-- Top-level Core match coverage walk for Live `--bl`.
+
+**Deprecated for product path (2026-08-04).** See
+`briefs/design-memo-bounds-preserving-elaboration.md`. Dual-walk packaging;
+replace with boundsElab on Core with BL. Do not extend; may remain until Phase 5. -/
 def checkProgramMatches
     (ctors : CtorEnv) (e : Expr) (_τ : Ty)
     (binderEnv : List ValName) (anns : ProgramBoundsAnns) : Except String Unit := do
