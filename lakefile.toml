@@ -58,7 +58,6 @@ name = "FHMBounds"
 # Build with `lake build FHMBounds` (Z3 for oracles; Core for Typing).
 roots = [
   "FHM.Bounds.Kernel",
-  "FHM.Bounds.Phase1CoreTy",  # draft Core Ty+BL under review; merge into Core after approval
   "FHM.Bounds.Ann",       # Z3-free AnnoCount / BoundsAnnTy / ProgramBoundsAnns
   "FHM.Bounds.Report",    # Display ProgramReport (assemble after erase+infer)
   "FHM.Bounds.Oracle",
