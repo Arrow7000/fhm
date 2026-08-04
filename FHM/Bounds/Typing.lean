@@ -494,6 +494,7 @@ theorem joinMax_comm (a b : Count) : joinMax a b = joinMax b a := by
     · simp [hab', hba]
 
 mutual
+  /-- @TODO: can we make this a relation first and then make this function the implementation of that relation (with sound/complete theorems)? im not against referencing functions in props in principle, but only up to a maximum level of implementation complexity. imo this function is above that complexity threshold so i'd like to make this a relation first. -/
   def joinBoundsTy (β₁ β₂ : BoundsTy) : Option BoundsTy :=
     match β₁, β₂ with
     | .prim p, .prim q => if p = q then some (.prim p) else none
@@ -698,12 +699,16 @@ inductive Sub (Δ : List Constraint) : BoundsTy → BoundsTy → Prop where
   | fvar {i} :
       Sub Δ (.fvar i) (.fvar i)
   | arrow {a a' b b'} :
-      Sub Δ a' a →
+      Sub Δ a' a → -- contravariance, babyyyy.
       Sub Δ b b' →
       Sub Δ (.arrow a b) (.arrow a' b')
   | list {lo hi lo' hi' e e'} :
+      -- @TODO: hm not sure why we need DemandOK in this relation? sure, in practice this may not be decidable if ¬DemandOK but does it need to be in the relation itself?
+      -- and i think if we remove these then we may not need `list_refl` as a separate constructor here? bc the `checkValid` would be trivially resolvable to `.valid`?
       Count.DemandOK lo' →
       Count.DemandOK hi' →
+
+      -- @TODO: i'd like to use a prop here about the validity of the interval inclusion rather than a function that calls z3 under the hood. we should talk about what we actually mean rather than about how we're doing it. because of our axioms we can then convert a `checkValid ... = .valid` to that prop. But our prop itself should only talk about meanings, not implementations.
       checkValid (Interval.subGoals Δ ⟨lo, hi⟩ ⟨lo', hi'⟩) = .valid →
       Sub Δ e e' →
       Sub Δ (.list lo hi e) (.list lo' hi' e')
@@ -757,11 +762,12 @@ inductive HasBounds :
   | lambda {Δ bctx ann body τp τb βp βb} :
       Agrees βp τp →
       HasBounds Δ (BoundEnv.extend bctx βp) body τb βb →
-      HasBounds Δ bctx (.lambda ann body) (.arrow τp τb) (.arrow βp βb)
+      HasBounds Δ bctx (.lambda ann body) (.arrow τp τb) (.arrow βp βb) -- @TODO: shouldn't we be doing something with the `ann?!` see my comment on `letMono` too
   | letMono {Δ bctx ann e1 e2 τ1 τ2 β1 β2} :
       HasBounds Δ bctx e1 τ1 β1 →
       HasBounds Δ (BoundEnv.extend bctx β1) e2 τ2 β2 →
-      HasBounds Δ bctx (.letIn ann e1 e2) τ2 β2
+      HasBounds Δ bctx (.letIn ann e1 e2) τ2 β2 -- @TODO: why don't we do anything with `ann` here? shouldn't we be doing a `Sub` with it vs `β1`?...! i.e. that the actual type is a subtype of the annotation? or stated differently, that the annotation includes the actual type, so we may broaden the more specific inferred type to be the annotation if the user wants to do so?
+
   | matchList {Δ bctx scrut eNil eCons α lo hi βe τ βnil βcons β} :
       HasBounds Δ bctx scrut (listTy α) (.list lo hi βe) →
       HasBounds (Δ ++ nilRefine lo) bctx eNil τ βnil →
@@ -772,6 +778,8 @@ inductive HasBounds :
           (.named nilCtorName 0, eNil),
           (.named consCtorName 2, eCons)])
         τ β
+
+  /-- @TODO: i don't really understand why `matchNil` and `matchCons` need to be separate constructors here? what are we actually expressing with these? that a match expr only has these bounds if... it has these patterns? feels a bit like putting the cart before the horse, no? why should `HasBounds` talk about what constructors a match expr has rather than a match expr only being well-formed if all of its possible ctors are matched on? like, isn't `HasBounds` about "given this expr, here are its inferred bounds"? and not "here's what makes an expr exhaustively matched?" -/
   | matchNil {Δ bctx scrut eNil α lo hi βe τ β} :
       HasBounds Δ bctx scrut (listTy α) (.list lo hi βe) →
       checkValid (mustBeEmpty Δ hi) = .valid →
