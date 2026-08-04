@@ -1,18 +1,53 @@
 # Design memo: bounds-preserving double elaboration
 
-**Status:** Agreed direction (2026-08-04). Supersedes the erase → name-sidecar →
-`ofLower` → dual Bounds walk packaging for product architecture.  
-**Does not** reopen dual-stack *semantics* (HM owns shape; bounds owns intervals).  
-**Does** change *how* bounds ascriptions and elaborated types are carried.
+**Status:** Agreed direction (2026-08-04). **Authoritative** product architecture for
+bounds packaging.  
+**Supersedes (packaging only):** erase → name-sidecar → `ofLower` → dual Bounds
+walk (`design-memo-bounds-elaborator.md`, elaborator architecture brief).  
+**Does not** reopen dual-stack *meaning* (HM owns shape; bounds owns list lengths).  
+**Does** change *how* length ascriptions and elaborated types are carried on Core.
 
-**Related (historical / still useful pieces):**
+**Related:**
 
-- `design-memo-bounds-layer-on-core.md` — locked product rules (D22/D24/R3, dual stack intent)
-- `design-memo-bounds-elaborator.md` — deletion-first coverage (one authority); still relevant *after* reattachment is fixed
-- `next-agent-brief-bounds-elaborator-architecture.md` — diagnosis of dual Matches walk
+- `design-memo-bounds-layer-on-core.md` — product rules still in force (D22/D24/R3, …)
+- `design-memo-bounds-elaborator.md` — **historical**; coverage-authority diagnosis only
+- `next-agent-brief-bounds-elaborator-architecture.md` — **historical** failure taxonomy
 
-**This doc’s job:** record the agreed pipeline, Core/Infer blast radius, what to
-scrap vs keep in Bounds, and theorem targets for double elaboration.
+**This doc’s job:** pipeline, Core/Infer blast radius, what to scrap vs keep,
+theorem targets, work phases.
+
+### Glossary (plain language)
+
+| Term | Meaning |
+|------|---------|
+| **BL / bounded list** | List type with length interval `lo…hi` (surface `BL lo hi t`, Core `Ty.list lo hi t`) |
+| **Bare List** | List shape with **no** user length demand (Infer-filled or user wrote `List`) |
+| **HM pass** | InferW: ordinary Hindley–Milner; treats every list as the same shape regardless of lengths |
+| **Bounds pass** | Second elaboration: assign/check length intervals; rewrite bare List to concrete BL where synth succeeds |
+| **Semi-elaborated Core** | After HM only: structure fixed; user BL still on binders; bare Lists not yet filled with lengths |
+| **Fully bounds-elaborated Core** | After bounds pass: list types carry intervals where known; ready for length-aware match coverage |
+| **Demand** | Expected bounds type when checking a term (from ascription or function domain) |
+| **Demand peel** | If checking a λ against `domain → codomain`, bind the param at `domain` and check the body at `codomain` |
+| **Binder discipline** | Ascribed binder → check RHS meets ann, env gets the **ann**; unascribed → synth RHS, env gets that result |
+| **Bounds-blind unify** | Unification ignores `lo`/`hi`; two BLs unify like two Lists; HM never picks lengths |
+| **BoundAwareCovers** | Match exhaustiveness that uses length intervals (and ordinary ADT ctors); under `--bl` this replaces HM-only exhaustiveness |
+
+### Phase status (2026-08-04)
+
+| Phase | Content | Status |
+|-------|---------|--------|
+| **0** | Agree design; supersede old memos; deprecate old packaging entry points; list acceptance cases | **In progress** (design agreed; banners + deprecations; thin G0 list) |
+| **1** | `Ty.list` in Core; Count without Z3 on Core path; lower preserves BL | **Next** |
+| **2** | Infer bounds-blind + ann preservation | Pending |
+| **3** | Bounds elaboration driver → rewrite AST | Pending |
+| **4** | BoundAwareCovers; delete Matches dual walk | Pending |
+| **5** | Remove erase/ofLower product path | Pending |
+| **6** | Theorems (preservation, ascription soundness) | Pending |
+
+**Phase 0 exit (enough to start Phase 1):** this memo stable; old architecture docs
+bannered; key packaging symbols marked deprecated in code comments. A full green
+new-world e2e gate is **not** a Phase 0 blocker (nothing implements the new path
+yet); keep a short written acceptance list and grow programs as Phase 1–3 land.
 
 ---
 
@@ -45,41 +80,42 @@ that parasitic bounds is impossible.
 ```text
 Surface (may contain BL)
   │
-  │  lower — preserve BL in Core types / binder anns
-  │  (temporarily: no head-binder sugar until holes are first-class)
+  │  lower — keep BL on Core types / binder annotations
+  │  (park head-binder sugar until `_` holes work properly)
   ▼
-Core₀  (BL may appear only in user ascriptions; else bare / open)
+Core after lower
+  │  user ascriptions may still say BL …; other lists are bare List shape
   │
-  │  InferW — HM only
-  │  • unify / equality ignore intervals (BL ~ List on spine)
-  │  • HM solutions are List-spine (no lo/hi choice)
-  │  • empty ann slots filled with HM-only types (List / schemes)
-  │  • user BL ascriptions never overwritten with List
-  │  • every rebuild of let / λ / letRec copies anns through
+  │  InferW (HM only)
+  │  • unify ignores lengths (BL same shape as List)
+  │  • HM never chooses lo/hi
+  │  • empty annotations filled with bare List / HM schemes only
+  │  • never overwrite a user BL annotation with List
+  │  • when rebuilding let/λ/letRec, copy annotations through
   ▼
-Core_HM  (“semi-elaborated”: HM-complete, bounds not solved)
+Semi-elaborated Core   (HM done; lengths not solved)
   │
-  │  Bounds elaboration (synth + check)
-  │  • user BL ann → demand; check Sub / pin holes; keep interface
-  │  • bare List / Infer-filled List → no length demand;
-  │      synth β from term + bctx + outer demands; write BL back
-  │  • binder pack / R3 at escape
-  │  • demand peel on λ under arrow demand
+  │  Bounds elaboration
+  │  • user BL annotation → demand; check; keep that interface on the binder
+  │  • bare List → synth lengths from the term; write BL back
+  │  • pack / multi-model escape policy (R3) at binders
+  │  • under arrow demand, enter λ by binding the domain (demand peel)
   ▼
-Core_BL  (“fully elaborated” for types: lists carry intervals where known)
+Fully bounds-elaborated Core   (list types carry intervals where known)
   │
-  │  BoundAwareCovers (bounds-aware exhaustiveness only under --bl)
+  │  BoundAwareCovers  (under --bl: only length-aware + ADT coverage)
   ▼
 accept / reject
   │
   ▼
-eval on HM spine (intervals ignored at runtime)
+evaluate  (runtime ignores length intervals)
 ```
 
-Under `--bl`, **do not** sandwich HM exhaustiveness with a partial BoundCovers.
-One coverage story owns Core matches (list intervals + ordinary ADT ctors).
+Under `--bl`, do **not** mix HM-only exhaustiveness with a shallow list-only
+coverage pass. One coverage story owns Core matches.
 
-HM-only mode: reject surface BL (D16); no bounds elab; existing HM exhaustiveness.
+HM-only mode: reject surface BL (D16); skip bounds pass; use existing HM
+exhaustiveness.
 
 ### 2.2 One annotation slot (no dual hm/bl fields)
 
@@ -228,7 +264,7 @@ if hygiene holds.
 | `ProgramBoundsAnns.ofLower` | Remove |
 | Dual walk `checkProgramAnns` + `checkProgramMatches` as two authorities | Replace with one bounds elab + coverage discharge |
 | λ `.fvar 0` coverage stub / List-let D24 coverage-only fallback | Delete with Matches authority |
-| Report paths that zip erase names vs Core by hope | Rebuild from `Core_BL` anns |
+| Report paths that zip erase names vs Core by hope | Rebuild from bounds-elaborated anns |
 
 #### Keep / rehome (semantics)
 
@@ -250,15 +286,29 @@ Synth/Typing/Kernel/Escape are the reusable center (with edits).
 ### 3.5 Live / EditorSupport / demos
 
 - Pipeline order: lower → infer → bounds elab → BoundAwareCovers → eval.  
-- Hover/report: prefer anns on `Core_BL`.  
-- E2E gate: freeze G0-style cases including nested `: BL` ascriptions once supported.
+- Hover/report: prefer types on the fully bounds-elaborated Core term.  
+- E2E: grow acceptance programs (including nested `: BL`) as Phases 1–3 land.
+
+### Acceptance cases to track (thin G0 list)
+
+Write dedicated small programs over time (not only the dirty showcase):
+
+| # | Intent | Notes |
+|---|--------|--------|
+| A1 | Nested `let ys : BL … =` inside λ | **New** — fails packaging today |
+| A2 | Top-level solid BL ascription | Regression |
+| A3 | Infer-filled bare List gets lengths from term | Write-back story |
+| A4 | Nil-only / Cons-only under exact empty/nonempty | Coverage |
+| A5 | D22: bare List does not invent intervals without origin | |
+| A6 | D24: unascribed list λ generalises | |
+| A7 | R3 unique / multi-model canaries | Existing scratch files |
 
 ---
 
 ## 4. Theorem targets (faithfulness of double elaboration)
 
-Goal: say something precise about surface → Core_HM → Core_BL without boiling the
-ocean. Prefer a **tower of projections**.
+Goal: say something precise about surface → semi-elaborated Core → fully
+bounds-elaborated Core without boiling the ocean. Prefer a **tower of projections**.
 
 ### 4.1 Projections
 
@@ -305,15 +355,15 @@ Connects dual-stack to the pure HM path (recovery of today’s erase-then-infer)
 **Prop (sketch): Ascription soundness**
 
 ```text
-BoundsElab e_HM = some e_BL
-  →  for each binder with user BL ann β_ann in e_BL,
+BoundsElab e_semi = some e_full
+  →  for each binder with user BL ann β_ann in e_full,
        CheckBounds / Sub holds for the RHS against β_ann
 ```
 
 **Prop (sketch): Agrees**
 
 ```text
-anns/βs on e_BL satisfy Agrees β (eraseBounds β)   -- shape match HM
+anns on e_full satisfy Agrees β (eraseBounds β)   -- shape matches HM List spine
 ```
 
 **Prop (sketch): Origin discipline (D22)**
@@ -329,8 +379,8 @@ Infer-filled List without a synth derivation.”
 ### 4.4 Coverage
 
 ```text
-BoundsElab e_HM = some e_BL
-  →  BoundAwareCovers e_BL
+BoundsElab e_semi = some e_full
+  →  BoundAwareCovers e_full
   →  (semantic) every value inhabiting scrutinee β matches some branch
 ```
 
@@ -432,6 +482,6 @@ These follow from the architecture above; they are not menu options.
    generalise them). Bounds elaboration owns Nat telescopes, inst, and pack.
    Same dual-stack rule as mono: one AST, two consumers.
 
-4. **Bounds elab rewrites the AST** — like Infer, produce `Core_BL` with BL
-   written onto anns/types. No parallel β-map as the product truth (internal
-   temps OK during a walk).
+4. **Bounds elab rewrites the AST** — like Infer, produce a fully
+   bounds-elaborated Core term with BL written onto annotations/types. No
+   parallel side map as the product truth (temps during a walk are fine).

@@ -1,21 +1,34 @@
 <!-- Written 2026-08-03: handoff from a long diagnostics/LSP + BL authoring session.
-   Revised after an independent code/runtime audit: read this before more
-   case-patches on Bounds Check/Synth or starting a broad rewrite. -->
+   Revised after an independent code/runtime audit.
+   Superseded for product direction 2026-08-04. -->
 
 # Next-agent brief: Bounds elaborator architecture (one semantic authority, staged migration)
 
-**Status:** Investigation and independent audit complete; **no redesign started**. The diagnosis below is accepted, but the original “large P1, then type direction” proposal was too coarse. This revision separates the root authority problem from independent refinement and diagnostics work, and replaces a monolithic rewrite with deletion-driven vertical slices.
+> **Superseded (product architecture):** 2026-08-04 by
+> [`design-memo-bounds-preserving-elaboration.md`](design-memo-bounds-preserving-elaboration.md).
+>
+> **Keep for history:** failure taxonomy (Class A split authority vs B count
+> discharge vs C legitimate rejects vs D diagnostics), concrete Infer Core
+> exhibits (`λ` + List-let match encoding), and why one-off patches failed.
+>
+> **Do not** start the V1/V2 staged migration or further Matches case-patches as
+> the main line. New work follows the bounds-preserving double-elaboration plan.
+> Coverage still must not be a second environment-rebuilding interpreter — that
+> diagnosis stands; the packaging fix is “BL on Core through Infer,” not
+> ofLower+record-on-Anns alone.
 
-**Related:**
-- `briefs/design-memo-bounds-layer-on-core.md` — product dual-stack design, backlog (R1–R3 Done, Slice 9 E2E, editor)
-- Recent commits (diagnostics + local bounds patches; see §6)
-- Session theme: editor diagnostics UX, then showcase authoring exposed **systemic** bounds/Core friction
+**Status:** Historical investigation (complete). Product redesign documented elsewhere.  
+**Related (current):** `briefs/design-memo-bounds-preserving-elaboration.md`  
+**Related (product rules):** `briefs/design-memo-bounds-layer-on-core.md`  
+**Related (historical next step that is also superseded):** `briefs/design-memo-bounds-elaborator.md`
 
-**User stance (2026-08-03):**
+**User stance (2026-08-03, context only):**
 - Reluctant to divert from **main BL integration** (still incomplete).
 - Concerned about **size / blast radius** and **forever-refactor**.
 - Wants findings written for **fresh eyes**; interested in principled fix **if** derisked.
 - Preference: right architecture over more one-off patches — but **not** at the cost of stalling BL product indefinitely.
+
+**(2026-08-04 update):** Principled packaging agreed; see superseding memo. Implementation starts at Core `Ty.list` + preserve-BL lower, not Matches migration.
 
 ---
 

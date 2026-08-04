@@ -1,18 +1,32 @@
 # Design memo: deletion-first bounds elaborator
 
-**Status:** Proposed execution plan; no implementation started.  
-**Date:** 2026-08-03  
-**Scope:** Bounds-side executable architecture only.  
-**Supersedes:** The broad V1/V2 “migrate the second walk” execution plan in
-`briefs/next-agent-brief-bounds-elaborator-architecture.md`. That brief remains
-useful for investigation history and exhibits.
+> **Superseded (product architecture):** 2026-08-04 by
+> [`design-memo-bounds-preserving-elaboration.md`](design-memo-bounds-preserving-elaboration.md).
+> That memo is the agreed direction: keep BL on Core through Infer; bounds is a
+> second elaboration that rewrites types; then bounds-aware exhaustiveness.
+>
+> **Still useful:** diagnosis that coverage must not be a second Core interpreter
+> with stub environments; one semantic authority for match coverage; G0-style
+> acceptance discipline. Those ideas fold into Phases 3–4 of the new plan after
+> ascriptions are preserved on the term.
+>
+> Do **not** implement this memo’s erase/sidecar/`ofLower` + “record coverage on
+> current Anns walk” stack as the product path without re-reading the superseding
+> memo.
+
+**Status:** Historical / partial (coverage-authority ideas only).  
+**Date:** 2026-08-03 (superseded 2026-08-04).  
+**Scope (original):** Bounds-side executable architecture only.  
+**Superseded for packaging by:** `design-memo-bounds-preserving-elaboration.md`.  
+**Originally superseded:** V1/V2 migration plan in
+`next-agent-brief-bounds-elaborator-architecture.md` (that brief is also historical).
 
 **Related:**
 
-- `briefs/design-memo-bounds-layer-on-core.md` — locked BL-on-Core product design.
-- `briefs/next-agent-brief-bounds-elaborator-architecture.md` — diagnosis,
-  failure taxonomy, and original staged-migration proposal.
-- `scripts/bl-e2e-smoke.sh` — current local product gate.
+- `briefs/design-memo-bounds-preserving-elaboration.md` — **current** architecture.
+- `briefs/design-memo-bounds-layer-on-core.md` — locked BL product rules (D22/D24/R3).
+- `briefs/next-agent-brief-bounds-elaborator-architecture.md` — investigation history.
+- `scripts/bl-e2e-smoke.sh` — legacy local product gate (old packaging).
 
 ---
 
