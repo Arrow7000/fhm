@@ -264,11 +264,90 @@ theorem shift_typeOf {ctx : Ctx} {e : Expr} {τ : Ty}
         apply TypeOf.var
         simpa [hc] using shift_lookup _ inserted cutoff i _ hlookup
 
+theorem subst_var_typeOf_at {pre : Ctx} {suffix : Ctx} {value : Expr} {τ σ : Ty}
+    (i : Nat) (he : TypeOf (pre ++ τ :: suffix) (.var i) σ)
+    (hv : TypeOf (pre ++ suffix) value τ) :
+    TypeOf (pre ++ suffix)
+      (Expr.subst pre.length value (.var i)) σ := by
+  cases he with
+  | var i hlookup =>
+      by_cases hi : i < pre.length
+      · have hprefix : (pre ++ suffix)[i]? = some σ := by
+          rw [List.getElem?_append]
+          rw [List.getElem?_append] at hlookup
+          simp [hi] at hlookup ⊢
+          exact hlookup
+        have hne : i ≠ pre.length := Nat.ne_of_lt hi
+        have hnot : ¬pre.length < i := by
+          intro hli
+          exact (Nat.lt_asymm hi hli).elim
+        simp [Expr.subst, hne, hnot]
+        exact TypeOf.var i hprefix
+      · have hle : pre.length ≤ i := Nat.le_of_not_gt hi
+        by_cases heq : i = pre.length
+        · subst i
+          simp at hlookup
+          cases hlookup
+          simpa [Expr.subst] using hv
+        · have hgt : pre.length < i := Nat.lt_of_le_of_ne hle (Ne.symm heq)
+          have hlookup' := hlookup
+          rw [List.getElem?_append] at hlookup'
+          simp [Expr.subst, hgt, heq]
+          apply TypeOf.var (i - 1)
+          rw [List.getElem?_append]
+          have hpre : pre.length ≤ i - 1 := Nat.le_sub_one_of_lt hgt
+          simp only [if_neg (Nat.not_lt_of_ge hpre)]
+          have hjpos : 0 < i - pre.length := Nat.sub_pos_of_lt hgt
+          cases hj : i - pre.length with
+          | zero =>
+              simp [hj] at hjpos
+          | succ j =>
+              have hlookup'' := hlookup'
+              simp only [if_neg (Nat.not_lt_of_ge hle), hj,
+                List.getElem?_cons_succ] at hlookup''
+              have hidx : i - 1 - pre.length = j := by
+                rw [Nat.sub_sub, Nat.add_comm, ← Nat.sub_sub, hj]
+                simp
+              simpa [hidx] using hlookup''
+
+theorem subst_typeOf_at {pre : Ctx} {suffix : Ctx} {e value : Expr} {τ σ : Ty}
+    (he : TypeOf (pre ++ τ :: suffix) e σ)
+    (hv : TypeOf (pre ++ suffix) value τ) :
+    TypeOf (pre ++ suffix) (Expr.subst pre.length value e) σ := by
+  induction e generalizing pre suffix value τ σ with
+  | primLit _ =>
+      cases he with
+      | primLitUnit => exact TypeOf.primLitUnit .unit
+      | primLitInt => exact TypeOf.primLitInt (.int 0)
+  | lambda ann no_scopes body ih =>
+      cases he with
+      | lambda h =>
+          apply TypeOf.lambda
+          simpa [Expr.subst] using
+            ih (pre := _ :: pre) (suffix := suffix) (τ := τ)
+              (value := Expr.shift 1 0 value) h
+              (shift_typeOf hv 0 [_])
+  | app f input ihf ihi =>
+      cases he with
+      | app hf hi =>
+          simpa [Expr.subst] using TypeOf.app (ihf hf hv) (ihi hi hv)
+  | letIn bindingExpr body ihb ihbody =>
+      cases he with
+      | letIn hb hbody =>
+          apply TypeOf.letIn
+          · exact ihb hb hv
+          · simpa [Expr.subst] using
+              ihbody (pre := _ :: pre) (suffix := suffix) (τ := τ)
+                (value := Expr.shift 1 0 value) hbody
+                (shift_typeOf hv 0 [_])
+  | var i =>
+      exact subst_var_typeOf_at i he hv
+
 /-- Well-typed substitution preserves the type of the substituted expression. -/
 theorem subst_typeOf {ctx : Ctx} {e value : Expr} {τ σ : Ty}
     (he : TypeOf (τ :: ctx) e σ) (hv : TypeOf ctx value τ) :
     TypeOf ctx (Expr.subst 0 value e) σ := by
-  sorry
+  simpa using (subst_typeOf_at (pre := []) (suffix := ctx) he hv)
 
 /-- A complete evaluation always ends at a value. -/
 theorem StepsToValue.isValue {e value : Expr} :
