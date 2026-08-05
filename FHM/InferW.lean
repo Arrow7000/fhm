@@ -422,31 +422,31 @@ theorem UnifyRel.unifies : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁
     Unifies S τ₁ τ₂
   | _, _, _, .prim => rfl
   | _, _, _, .fvarRefl => rfl
-  | _, _, _, .fvarL _ hocc => by
+  | _, _, _, @UnifyRel.fvarL n τ _ hocc => by
     -- [(n, τ)] maps both sides to τ (occurs-check ⇒ right side fixed).
     simp only [Unifies, AgreesHM, Subst.onTy]
     -- left: substFvars [(n,τ)] (.fvar n) = substFvar n τ (.fvar n) = τ
     -- right: substFvars [(n,τ)] τ = substFvar n τ τ = τ  (n fresh in τ)
-    change Ty.eraseBounds (Ty.substFvar n _ (.fvar n)) =
-      Ty.eraseBounds (Ty.substFvar n _ _)
+    change Ty.eraseBounds (Ty.substFvar n τ (.fvar n)) =
+      Ty.eraseBounds (Ty.substFvar n τ τ)
     simp only [Ty.substFvar, if_true]
     rw [Ty.substFvar_fresh hocc]
-  | _, _, _, .fvarR _ hocc => by
+  | _, _, _, @UnifyRel.fvarR n τ _ hocc => by
     simp only [Unifies, AgreesHM, Subst.onTy]
-    change Ty.eraseBounds (Ty.substFvar n _ _) =
-      Ty.eraseBounds (Ty.substFvar n _ (.fvar n))
+    change Ty.eraseBounds (Ty.substFvar n τ τ) =
+      Ty.eraseBounds (Ty.substFvar n τ (.fvar n))
     simp only [Ty.substFvar, if_true]
     rw [Ty.substFvar_fresh hocc]
   | _, _, _, .arrow h₁ h₂ => by
     have e1 := UnifyRel.unifies h₁
     have e2 := UnifyRel.unifies h₂
-    simp only [Unifies, Subst.onTy_append, Subst.onTy_arrow, Ty.eraseBounds_arrow] at e1 e2 ⊢
+    simp only [Unifies, AgreesHM, Subst.onTy_append, Subst.onTy_arrow, Ty.eraseBounds_arrow] at e1 e2 ⊢
     refine congrArg₂ Ty.arrow ?_ e2
     exact Ty.eraseBounds_onTy_congr _ e1
   | _, _, _, .customTy hl => by
     have el := UnifyRelList.unifies hl
     simp only [Unifies, AgreesHM, Subst.onTy_customTy, Ty.eraseBounds_customTy,
-      TyList.eraseBounds_eq_map]
+      TyList.eraseBounds_eq_map, List.map_map]
     exact congrArg (Ty.customTy _) el
   | _, _, _, .bl h => by
     have e := UnifyRel.unifies h
