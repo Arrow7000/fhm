@@ -57,3 +57,39 @@ inductive Expr
   | letIn (bindingExpr body : Expr)
   /-- A variable use -/
   | var (deBruijnIndex : Nat)
+
+-- def PrimLitExpr.ty : PrimLitExpr → Ty
+--   | .unit => .prim .unit
+--   | .int _ => .prim .int
+
+/-- Value typing context: de Bruijn index `i` looks up `ctx[i]`. -/
+abbrev Ctx := List Ty
+
+/-- Declarative typing. `uniqueScope` / `uniqueTy` appear only in `Ty`; this
+    relation does not enforce uniqueness yet — it is ordinary structural typing. -/
+inductive TypeOf : Ctx → Expr → Ty → Prop
+  | primLitUnit (prim : PrimLitExpr) :
+      TypeOf ctx (.primLit .unit) (.prim .unit)
+
+  | primLitInt (prim : PrimLitExpr) :
+      TypeOf ctx (.primLit (.int _)) (.prim .int)
+
+  | lambda {paramTy bodyTy : Ty} :
+      TypeOf (paramTy :: ctx) body bodyTy →
+      TypeOf ctx (.lambda body) (.arrow paramTy bodyTy)
+
+  | app {argTy retTy : Ty} :
+      TypeOf ctx f (.arrow argTy retTy) →
+      TypeOf ctx input argTy →
+      TypeOf ctx (.app f input) retTy
+
+  | letIn {bindingTy bodyTy : Ty} :
+      TypeOf ctx bindingExpr bindingTy →
+      TypeOf (bindingTy :: ctx) body bodyTy →
+      TypeOf ctx (.letIn bindingExpr body) bodyTy
+
+  | var {τ : Ty} (i : Nat) :
+      ctx[i]? = some τ →
+      TypeOf ctx (.var i) τ
+
+end QuantitativeExperiments
