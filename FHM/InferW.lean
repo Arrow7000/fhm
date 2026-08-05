@@ -250,9 +250,9 @@ end FactorsHM
 
 /-- `S` is a most-general unifier of `τ₁` and `τ₂` (bounds-blind).
 
-**Chunk 0:** `greatest` still states *structural* residual factoring so existing
-`TypeOf*` scripts typecheck. **Chunk 2** changes this field to `FactorsHM` and
-re-proves `UnifyRel.greatest`. -/
+`greatest` is still *structural* residual factoring so existing `TypeOf*` scripts
+typecheck (via `AgreesHM.optionA_to_eq`). The real residual is
+`UnifyRel.greatest_factors` (`FactorsHM`). -/
 structure IsMGU (S : Subst) (τ₁ τ₂ : Ty) : Prop where
   unifies : Unifies S τ₁ τ₂
   greatest : ∀ S', Unifies S' τ₁ τ₂ → ∃ R : Subst, ∀ τ, S'.onTy τ = R.onTy (S.onTy τ)
@@ -555,65 +555,138 @@ Grep: `OptionA residual`. Chunk 4 deletes uses. -/
 theorem AgreesHM.optionA_to_eq {τ₁ τ₂ : Ty} (_h : AgreesHM τ₁ τ₂) : τ₁ = τ₂ := by
   sorry -- OptionA residual (FALSE in general)
 
-/-! Every substitution produced by `UnifyRel` is a *most general* unifier: any
-    other (bounds-blind) unifier `S'` factors through it **up to eraseBounds**.
-    Compound cases thread sub-problem unifiers; var cases use
-    `onTy_substFvar_erase`. -/
+/-! ### Most-general unifier factoring (`FactorsHM`)
+
+Every substitution produced by `UnifyRel` is a *most general* unifier: any other
+bounds-blind unifier `S'` factors through it **up to `eraseBounds`**
+(`FactorsHM`). Var cases use `onTy_substFvar_agreesHM`; compound cases thread
+sub-problem residuals. The structural wrappers `UnifyRel.greatest` /
+`UnifyRelList.greatest` recover tree equality via the false scaffold
+`AgreesHM.optionA_to_eq` so existing `TypeOf*` scripts still typecheck.
+
+`IsMGU.greatest` remains structural for now; the real residual is
+`UnifyRel.greatest_factors`. -/
 mutual
 
-theorem UnifyRel.greatest : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁ τ₂ S →
-    ∀ S' : Subst, Unifies S' τ₁ τ₂ → ∃ R : Subst, ∀ τ, S'.onTy τ = R.onTy (S.onTy τ)
-  | _, _, _, .prim, S', _ => ⟨S', fun τ => by simp only [Subst.onTy_nil]⟩
-  | _, _, _, .fvarRefl, S', _ => ⟨S', fun τ => by simp only [Subst.onTy_nil]⟩
-  | _, _, _, .fvarL _ _, S', hS' =>
-    ⟨S', fun τ => (Subst.onTy_substFvar (Unifies.optionA_residual_eq hS') τ).symm⟩
-  | _, _, _, .fvarR _ _, S', hS' =>
-    ⟨S', fun τ => (Subst.onTy_substFvar (Eq.symm (Unifies.optionA_residual_eq hS')) τ).symm⟩
+/-- Real MGU residual: factors through `S` up to HM shape (`FactorsHM`). -/
+theorem UnifyRel.greatest_factors : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁ τ₂ S →
+    ∀ S' : Subst, Unifies S' τ₁ τ₂ → ∃ R : Subst, FactorsHM S' S R
+  | _, _, _, .prim, S', _ =>
+    ⟨S', fun τ => by simp only [AgreesHM, Subst.onTy_nil]⟩
+  | _, _, _, .fvarRefl, S', _ =>
+    ⟨S', fun τ => by simp only [AgreesHM, Subst.onTy_nil]⟩
+  | _, _, _, @UnifyRel.fvarL n U _ _, S', hS' => by
+    refine ⟨S', fun τ => ?_⟩
+    -- S = [(n, U)]; R = S'. Need erase(S' τ) = erase(S' (subst n U τ)).
+    simp only [FactorsHM, AgreesHM, Subst.onTy] at hS' ⊢
+    -- hS' : erase (S' (.fvar n)) = erase (S' U)
+    have h := Subst.onTy_substFvar_erase hS' τ
+    -- h : erase (S' (subst n U τ)) = erase (S' τ)
+    simpa [Subst.onTy] using h.symm
+  | _, _, _, @UnifyRel.fvarR n U _ _, S', hS' => by
+    refine ⟨S', fun τ => ?_⟩
+    simp only [FactorsHM, AgreesHM, Subst.onTy] at hS' ⊢
+    -- hS' : erase (S' U) = erase (S' (.fvar n)); flip for onTy_substFvar_erase
+    have h := Subst.onTy_substFvar_erase hS'.symm τ
+    simpa [Subst.onTy] using h.symm
   | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, S', hS' => by
-    have hS'eq := Unifies.optionA_residual_eq hS'
-    simp only [Subst.onTy_arrow, Ty.arrow.injEq] at hS'eq
-    obtain ⟨hac, hbd⟩ := hS'eq
-    obtain ⟨R₁, hR₁⟩ := UnifyRel.greatest h₁ S' (Unifies.of_eq hac)
-    have hR₁bd : Unifies R₁ (S₁.onTy b) (S₁.onTy d) :=
-      Unifies.of_eq (by rw [← hR₁ b, ← hR₁ d]; exact hbd)
-    obtain ⟨R₂, hR₂⟩ := UnifyRel.greatest h₂ R₁ hR₁bd
+    -- Split arrow unifier into domain/codomain up to eraseBounds.
+    have hac : Unifies S' a c := by
+      simp only [Unifies, AgreesHM, Subst.onTy_arrow, Ty.eraseBounds_arrow] at hS'
+      exact (Ty.arrow.inj hS').1
+    have hbd : Unifies S' b d := by
+      simp only [Unifies, AgreesHM, Subst.onTy_arrow, Ty.eraseBounds_arrow] at hS'
+      exact (Ty.arrow.inj hS').2
+    obtain ⟨R₁, hR₁⟩ := UnifyRel.greatest_factors h₁ S' hac
+    have hR₁bd : Unifies R₁ (S₁.onTy b) (S₁.onTy d) := by
+      -- erase (R₁ (S₁ b)) ~ erase (S' b) ~ erase (S' d) ~ erase (R₁ (S₁ d))
+      simp only [Unifies, AgreesHM] at hbd ⊢
+      exact (hR₁ b).symm.trans (hbd.trans (hR₁ d))
+    obtain ⟨R₂, hR₂⟩ := UnifyRel.greatest_factors h₂ R₁ hR₁bd
     refine ⟨R₂, fun τ => ?_⟩
-    rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ]
-  | _, _, _, .customTy hl, S', hS' => by
-    have hS'eq := Unifies.optionA_residual_eq hS'
-    simp only [Subst.onTy_customTy, Ty.customTy.injEq, true_and] at hS'eq
-    exact UnifyRelList.greatest hl S' hS'eq
-  | _, _, _, .bl h, S', hS' => by
-    have hS'eq := Unifies.optionA_residual_eq hS'
-    simp only [Subst.onTy_bl, Ty.bl.injEq] at hS'eq
-    exact UnifyRel.greatest h S' (Unifies.of_eq hS'eq.2.2)
+    -- erase (S' τ) ~ erase (R₁ (S₁ τ)) ~ erase (R₂ (S₂ (S₁ τ)))
+    simp only [FactorsHM, AgreesHM, Subst.onTy_append] at hR₁ hR₂ ⊢
+    exact (hR₁ τ).trans (hR₂ (S₁.onTy τ))
+  | _, _, _, @UnifyRel.customTy nm tys₁ tys₂ S hl, S', hS' => by
+    have hlist :
+        tys₁.map (fun t => Ty.eraseBounds (S'.onTy t)) =
+          tys₂.map (fun t => Ty.eraseBounds (S'.onTy t)) := by
+      simp only [Unifies, AgreesHM, Subst.onTy_customTy, Ty.eraseBounds_customTy,
+        TyList.eraseBounds_eq_map, List.map_map] at hS'
+      -- hS' : customTy nm (map erase (map S' tys₁)) = same for tys₂
+      exact (Ty.customTy.inj hS').2
+    exact UnifyRelList.greatest_factors hl S' hlist
+  | _, _, _, @UnifyRel.bl lo₁ hi₁ lo₂ hi₂ e₁ e₂ S h, S', hS' => by
+    have hElem : Unifies S' e₁ e₂ := by
+      simp only [Unifies, AgreesHM, Subst.onTy_bl, Ty.eraseBounds_bl, bareListTy,
+        Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map, List.map_cons, List.map_nil] at hS' ⊢
+      -- bareList (erase (S' e₁)) = bareList (erase (S' e₂))
+      simpa [bareListTy, Ty.customTy.injEq, List.cons.injEq] using hS'
+    exact UnifyRel.greatest_factors h S' hElem
   | _, _, _, @UnifyRel.blList lo hi e α S h, S', hS' => by
     have hElem : Unifies S' e α := by
-      sorry -- OptionA residual (elem of BL~List)
-    exact UnifyRel.greatest h S' hElem
+      simp only [Unifies, AgreesHM, Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
+        Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map, List.map_cons, List.map_nil,
+        bareListTy] at hS' ⊢
+      simpa [bareListTy, Ty.customTy.injEq, List.cons.injEq] using hS'
+    exact UnifyRel.greatest_factors h S' hElem
   | _, _, _, @UnifyRel.listBl lo hi e α S h, S', hS' => by
     have hElem : Unifies S' α e := by
-      sorry -- OptionA residual (elem of List~BL)
-    exact UnifyRel.greatest h S' hElem
+      simp only [Unifies, AgreesHM, Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
+        Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map, List.map_cons, List.map_nil,
+        bareListTy] at hS' ⊢
+      simpa [bareListTy, Ty.customTy.injEq, List.cons.injEq] using hS'
+    exact UnifyRel.greatest_factors h S' hElem
+
+theorem UnifyRelList.greatest_factors : {ts₁ ts₂ : List Ty} → {S : Subst} →
+    UnifyRelList ts₁ ts₂ S → ∀ S' : Subst,
+      ts₁.map (fun t => Ty.eraseBounds (S'.onTy t)) =
+        ts₂.map (fun t => Ty.eraseBounds (S'.onTy t)) →
+      ∃ R : Subst, FactorsHM S' S R
+  | _, _, _, .nil, S', _ =>
+    ⟨S', fun τ => by simp only [AgreesHM, Subst.onTy_nil]⟩
+  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht, S', hS' => by
+    simp only [List.map_cons, List.cons.injEq] at hS'
+    obtain ⟨ht1t2, htail⟩ := hS'
+    -- ht1t2 : erase (S' t₁) = erase (S' t₂)
+    obtain ⟨R₁, hR₁⟩ := UnifyRel.greatest_factors h₁ S' ht1t2
+    have hlist :
+        (ts₁.map S₁.onTy).map (fun t => Ty.eraseBounds (R₁.onTy t)) =
+          (ts₂.map S₁.onTy).map (fun t => Ty.eraseBounds (R₁.onTy t)) := by
+      -- erase (R₁ (S₁ t)) = erase (S' t) via FactorsHM; rewrite both sides to S'-erasure
+      have key (l : List Ty) :
+          (l.map S₁.onTy).map (fun t => Ty.eraseBounds (R₁.onTy t)) =
+            l.map (fun t => Ty.eraseBounds (S'.onTy t)) := by
+        rw [List.map_map]
+        apply List.map_congr_left
+        intro t _
+        exact (hR₁ t).symm
+      rw [key, key, htail]
+    obtain ⟨R₂, hR₂⟩ := UnifyRelList.greatest_factors ht R₁ hlist
+    refine ⟨R₂, fun τ => ?_⟩
+    simp only [FactorsHM, AgreesHM, Subst.onTy_append] at hR₁ hR₂ ⊢
+    exact (hR₁ τ).trans (hR₂ (S₁.onTy τ))
+
+end
+
+/-- Structural residual factoring (Option A scaffold via `optionA_to_eq`).
+Prefer `greatest_factors` for new proofs. -/
+theorem UnifyRel.greatest : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁ τ₂ S →
+    ∀ S' : Subst, Unifies S' τ₁ τ₂ → ∃ R : Subst, ∀ τ, S'.onTy τ = R.onTy (S.onTy τ)
+  | τ₁, τ₂, S, h, S', hS' => by
+    obtain ⟨R, hF⟩ := UnifyRel.greatest_factors h S' hS'
+    exact ⟨R, fun τ => AgreesHM.optionA_to_eq (hF τ)⟩
 
 theorem UnifyRelList.greatest : {ts₁ ts₂ : List Ty} → {S : Subst} →
     UnifyRelList ts₁ ts₂ S → ∀ S' : Subst, ts₁.map S'.onTy = ts₂.map S'.onTy →
       ∃ R : Subst, ∀ τ, S'.onTy τ = R.onTy (S.onTy τ)
-  | _, _, _, .nil, S', _ => ⟨S', fun τ => by simp only [Subst.onTy_nil]⟩
-  | _, _, _, @UnifyRelList.cons t₁ t₂ ts₁ ts₂ S₁ S₂ h₁ ht, S', hS' => by
-    simp only [List.map_cons, List.cons.injEq] at hS'
-    obtain ⟨ht1t2, htail⟩ := hS'
-    obtain ⟨R₁, hR₁⟩ := UnifyRel.greatest h₁ S' (Unifies.of_eq ht1t2)
-    have key : ∀ (l : List Ty), l.map (R₁.onTy ∘ S₁.onTy) = l.map S'.onTy := by
-      intro l; apply List.map_congr_left; intro t _; exact (hR₁ t).symm
-    have hlist : (ts₁.map S₁.onTy).map R₁.onTy = (ts₂.map S₁.onTy).map R₁.onTy := by
-      rw [List.map_map, List.map_map, key, key]; exact htail
-    obtain ⟨R₂, hR₂⟩ := UnifyRelList.greatest ht R₁ hlist
-    refine ⟨R₂, fun τ => ?_⟩
-    rw [Subst.onTy_append, ← hR₂ (S₁.onTy τ), hR₁ τ]
-
-end
-
+  | ts₁, ts₂, S, h, S', hS' => by
+    have hEr :
+        ts₁.map (fun t => Ty.eraseBounds (S'.onTy t)) =
+          ts₂.map (fun t => Ty.eraseBounds (S'.onTy t)) := by
+      simpa [List.map_map, Function.comp] using congrArg (List.map Ty.eraseBounds) hS'
+    obtain ⟨R, hF⟩ := UnifyRelList.greatest_factors h S' hEr
+    exact ⟨R, fun τ => AgreesHM.optionA_to_eq (hF τ)⟩
 
 /-- Unification soundness, assembled: a derivation yields a most-general unifier. -/
 theorem UnifyRel.isMGU {τ₁ τ₂ : Ty} {S : Subst} (h : UnifyRel τ₁ τ₂ S) :
