@@ -214,6 +214,19 @@ structural images in places — those use `optionA_residual_eq` (grep
 def AgreesHM (τ₁ τ₂ : Ty) : Prop :=
   Ty.eraseBounds τ₁ = Ty.eraseBounds τ₂
 
+namespace AgreesHM
+
+theorem refl (τ : Ty) : AgreesHM τ τ := rfl
+
+theorem symm {τ₁ τ₂ : Ty} (h : AgreesHM τ₁ τ₂) : AgreesHM τ₂ τ₁ :=
+  Eq.symm h
+
+theorem trans {τ₁ τ₂ τ₃ : Ty} (h₁₂ : AgreesHM τ₁ τ₂) (h₂₃ : AgreesHM τ₂ τ₃) :
+    AgreesHM τ₁ τ₃ :=
+  Eq.trans h₁₂ h₂₃
+
+end AgreesHM
+
 /-- `S` makes `τ₁` and `τ₂` equal **up to list intervals** (official unifier judgment).
 
 Lengths are never solved by the unifier; they stay on ascriptions for the bounds
@@ -226,6 +239,14 @@ def Unifies (S : Subst) (τ₁ τ₂ : Ty) : Prop :=
 `S'·τ` and `R·(S·τ)` agree after `eraseBounds`, for every τ. -/
 def FactorsHM (S' S : Subst) (R : Subst) : Prop :=
   ∀ τ, AgreesHM (S'.onTy τ) (R.onTy (S.onTy τ))
+
+namespace FactorsHM
+
+theorem of_structural {S' S R : Subst}
+    (h : ∀ τ, S'.onTy τ = R.onTy (S.onTy τ)) : FactorsHM S' S R :=
+  fun τ => congrArg Ty.eraseBounds (h τ)
+
+end FactorsHM
 
 /-- `S` is a most-general unifier of `τ₁` and `τ₂` (bounds-blind).
 
@@ -402,10 +423,20 @@ theorem UnifyRel.unifies : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁
   | _, _, _, .prim => rfl
   | _, _, _, .fvarRefl => rfl
   | _, _, _, .fvarL _ hocc => by
-    -- Chunk 1: prove via substFvar_fresh + AgreesHM
-    sorry -- OptionA residual (UnifyRel.unifies fvarL)
+    -- [(n, τ)] maps both sides to τ (occurs-check ⇒ right side fixed).
+    simp only [Unifies, AgreesHM, Subst.onTy]
+    -- left: substFvars [(n,τ)] (.fvar n) = substFvar n τ (.fvar n) = τ
+    -- right: substFvars [(n,τ)] τ = substFvar n τ τ = τ  (n fresh in τ)
+    change Ty.eraseBounds (Ty.substFvar n _ (.fvar n)) =
+      Ty.eraseBounds (Ty.substFvar n _ _)
+    simp only [Ty.substFvar, if_true]
+    rw [Ty.substFvar_fresh hocc]
   | _, _, _, .fvarR _ hocc => by
-    sorry -- OptionA residual (UnifyRel.unifies fvarR)
+    simp only [Unifies, AgreesHM, Subst.onTy]
+    change Ty.eraseBounds (Ty.substFvar n _ _) =
+      Ty.eraseBounds (Ty.substFvar n _ (.fvar n))
+    simp only [Ty.substFvar, if_true]
+    rw [Ty.substFvar_fresh hocc]
   | _, _, _, .arrow h₁ h₂ => by
     have e1 := UnifyRel.unifies h₁
     have e2 := UnifyRel.unifies h₂
@@ -413,13 +444,26 @@ theorem UnifyRel.unifies : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁
     refine congrArg₂ Ty.arrow ?_ e2
     exact Ty.eraseBounds_onTy_congr _ e1
   | _, _, _, .customTy hl => by
-    sorry -- OptionA residual (UnifyRel.unifies customTy)
+    have el := UnifyRelList.unifies hl
+    simp only [Unifies, AgreesHM, Subst.onTy_customTy, Ty.eraseBounds_customTy,
+      TyList.eraseBounds_eq_map]
+    exact congrArg (Ty.customTy _) el
   | _, _, _, .bl h => by
-    sorry -- OptionA residual (UnifyRel.unifies bl)
+    have e := UnifyRel.unifies h
+    simp only [Unifies, AgreesHM, Subst.onTy_bl, Ty.eraseBounds_bl] at e ⊢
+    exact congrArg bareListTy e
   | _, _, _, .blList h => by
-    sorry -- OptionA residual (UnifyRel.unifies blList)
+    have e := UnifyRel.unifies h
+    simp only [Unifies, AgreesHM, Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
+      Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map, List.map_cons, List.map_nil,
+      bareListTy] at e ⊢
+    exact congrArg bareListTy e
   | _, _, _, .listBl h => by
-    sorry -- OptionA residual (UnifyRel.unifies listBl)
+    have e := UnifyRel.unifies h
+    simp only [Unifies, AgreesHM, Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
+      Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map, List.map_cons, List.map_nil,
+      bareListTy] at e ⊢
+    exact congrArg bareListTy e
 
 /-- The list version: a list-unifier equalises the two lists **up to eraseBounds**. -/
 theorem UnifyRelList.unifies : {ts₁ ts₂ : List Ty} → {S : Subst} →
@@ -499,6 +543,17 @@ theorem Subst.onTy_substFvar_erase {S' : Subst} {n : Nat} {U : Ty}
     exact ih t ht
   | bl lo hi e ih =>
     simp only [Ty.substFvar, Subst.onTy_bl, Ty.eraseBounds_bl, ih]
+
+/-- `AgreesHM` form of `onTy_substFvar_erase` (Chunk 1). -/
+theorem Subst.onTy_substFvar_agreesHM {S' : Subst} {n : Nat} {U : Ty}
+    (h : AgreesHM (S'.onTy (.fvar n)) (S'.onTy U)) (τ : Ty) :
+    AgreesHM (S'.onTy (Ty.substFvar n U τ)) (S'.onTy τ) :=
+  Subst.onTy_substFvar_erase h τ
+
+/-- Scaffold: `AgreesHM` does **not** imply tree equality (false in general).
+Grep: `OptionA residual`. Chunk 4 deletes uses. -/
+theorem AgreesHM.optionA_to_eq {τ₁ τ₂ : Ty} (_h : AgreesHM τ₁ τ₂) : τ₁ = τ₂ := by
+  sorry -- OptionA residual (FALSE in general)
 
 /-! Every substitution produced by `UnifyRel` is a *most general* unifier: any
     other (bounds-blind) unifier `S'` factors through it **up to eraseBounds**.
