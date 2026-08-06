@@ -57,6 +57,7 @@ inductive DataTy
   | entity : EntityName → DataTy
   | product : DataTy → DataTy → DataTy
   | list : DataTy → DataTy
+  | choice : DataTy → DataTy → DataTy
   | unique (scope : Nat) (key : KeyPath) (inner : DataTy) : DataTy
   deriving Repr, DecidableEq
 
@@ -79,6 +80,10 @@ inductive DataTy.NoUnique : DataTy → Prop
   | list :
     DataTy.NoUnique elem →
     DataTy.NoUnique (.list elem)
+  | choice :
+    DataTy.NoUnique left →
+    DataTy.NoUnique right →
+    DataTy.NoUnique (.choice left right)
 
 /-- Every uniqueness index must refer to an enclosing `uniqueScope`. -/
 inductive DataTy.WellScopedUnder : Nat → DataTy → Prop
@@ -91,6 +96,10 @@ inductive DataTy.WellScopedUnder : Nat → DataTy → Prop
   | list :
     DataTy.WellScopedUnder depth elem →
     DataTy.WellScopedUnder depth (.list elem)
+  | choice :
+    DataTy.WellScopedUnder depth left →
+    DataTy.WellScopedUnder depth right →
+    DataTy.WellScopedUnder depth (.choice left right)
   | unique :
     scope < depth →
     DataTy.WellScopedUnder depth inner →
@@ -122,16 +131,111 @@ inductive Ty.NoScopes : Ty → Prop
     Ty.NoScopes to_ →
     Ty.NoScopes (.arrow from_ to_)
 
-
-
-
-
-
 /-- Primitive literals -/
 inductive PrimLitExpr
   | unit : PrimLitExpr
   | int : Int → PrimLitExpr
   deriving Repr, DecidableEq
+
+/-- A schema field. The `injective` bit is a trusted schema fact for this toy:
+    if true, equal field values imply equal owning entities. -/
+structure FieldDecl where
+  owner : EntityName
+  name : FieldName
+  result : DataTy
+  result_noUnique : result.NoUnique
+  injective : Bool
+  deriving Repr, DecidableEq
+
+/-- Closed data terms for the first keyed-distinctness fragment.
+
+    This is deliberately separate from the full `Expr` language while the data
+    rules are being designed. A later embedding into `Expr` will let functions
+    consume and produce this fragment. -/
+inductive DataExpr
+  | primLit (prim : PrimLitExpr)
+  | entity (name : EntityName) (id : Nat)
+  | pair (fst snd : DataExpr)
+  | nil
+  | cons (head tail : DataExpr)
+  | project (field : FieldDecl) (input : DataExpr)
+  | choiceLeft (value : DataExpr)
+  | choiceRight (value : DataExpr)
+  deriving Repr, DecidableEq
+
+/-- A particular entity occurrence exported under one scoped key. -/
+structure UniqueRef where
+  scope : Nat
+  key : KeyPath
+  origin : EntityName
+  id : Nat
+  deriving Repr, DecidableEq
+
+namespace UniqueRef
+
+/-- Transport an occurrence through a key-preserving field projection. -/
+def underField (field : FieldName) (ref : UniqueRef) : UniqueRef :=
+  { ref with key := .field ref.key field }
+
+end UniqueRef
+
+/-- The keyed entity occurrences contained in a data result. -/
+abbrev UniqCtx := List UniqueRef
+
+namespace UniqCtx
+
+/-- Two data results can be combined only when they export no same keyed entity. -/
+def Disjoint (left right : UniqCtx) : Prop :=
+  ∀ ref, ref ∈ left → ref ∉ right
+
+end UniqCtx
+
+/-- Data typing with the keyed occurrences carried by the resulting data.
+
+    An entity literal may be viewed as ordinary data, or (inside an enclosing
+    scope) as unique under its table identity key. Construction combines the
+    occurrence sets only when they are disjoint. Injective projections transport
+    the key witness to the projected field. -/
+inductive DataTypeOf : Nat → DataExpr → DataTy → UniqCtx → Prop
+  | primLitUnit :
+    DataTypeOf depth (.primLit .unit) (.prim .unit) []
+  | primLitInt :
+    DataTypeOf depth (.primLit (.int _)) (.prim .int) []
+  | entity {depth : Nat} {name : EntityName} {entityId : Nat} :
+    DataTypeOf depth (.entity name entityId) (.entity name) []
+  | uniqueEntity {depth scope : Nat} {name : EntityName} {entityId : Nat} :
+    scope < depth →
+    DataTypeOf depth (.entity name entityId)
+      (.unique scope (.entity name) (.entity name))
+      [{ scope, key := .entity name, origin := name, id := entityId }]
+  | pair :
+    DataTypeOf depth fst fstTy fstRefs →
+    DataTypeOf depth snd sndTy sndRefs →
+    UniqCtx.Disjoint fstRefs sndRefs →
+    DataTypeOf depth (.pair fst snd) (.product fstTy sndTy) (fstRefs ++ sndRefs)
+  | nil :
+    DataTypeOf depth .nil (.list elemTy) []
+  | cons :
+    DataTypeOf depth head elemTy headRefs →
+    DataTypeOf depth tail (.list elemTy) tailRefs →
+    UniqCtx.Disjoint headRefs tailRefs →
+    DataTypeOf depth (.cons head tail) (.list elemTy) (headRefs ++ tailRefs)
+  | project :
+    field.injective = true →
+    DataTypeOf depth input (.unique scope key (.entity field.owner)) refs →
+    DataTypeOf depth (.project field input)
+      (.unique scope (.field key field.name) field.result)
+      (refs.map (UniqueRef.underField field.name))
+  | choiceLeft :
+    DataTypeOf depth value left refs →
+    DataTypeOf depth (.choiceLeft value) (.choice left right) refs
+  | choiceRight :
+    DataTypeOf depth value right refs →
+    DataTypeOf depth (.choiceRight value) (.choice left right) refs
+
+
+
+
 
 
 /-- An expression in our language -/
@@ -231,14 +335,9 @@ abbrev Ctx := List Ty
 def Ctx.insertAt (cutoff : Nat) (inserted ctx : Ctx) : Ctx :=
   ctx.take cutoff ++ inserted ++ ctx.drop cutoff
 
-/-- Which exprs already exist in this uniqueness scope – keyed by uniqueness-scope de bruijn index. This only makes sense to do when we are within a uniqueness scope -/
-abbrev UniqCtx := List (Expr × Nat)
-
-
-
-
-/-- Declarative typing. `uniqueScope` / `uniqueTy` appear only in `Ty`; this
-    relation does not enforce uniqueness yet — it is ordinary structural typing. -/
+/-- Baseline typing for the full lambda calculus. The separate `DataTypeOf`
+    relation above is the keyed-distinctness experiment; this relation does not
+    enforce uniqueness yet. -/
 inductive TypeOf : Ctx → Expr → Ty → Prop
   | primLitUnit (prim : PrimLitExpr) :
       TypeOf ctx (.primLit .unit) (.data (.prim .unit))
