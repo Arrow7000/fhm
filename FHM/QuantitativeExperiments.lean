@@ -25,32 +25,102 @@ inductive PrimTy
   deriving DecidableEq, Repr
 
 
-inductive Ty
-  | prim : PrimTy → Ty
-  | arrow : (from_ to_ : Ty) → Ty
+/-! ## Data shapes, full types, and uniqueness scopes -/
 
-  /-- This demarcates a new uniqueness scope, which means `contents` may contain `.uniqueTy`s where a `uniqBinder` of 0 denotes that those values must be unique inside this scope. This goes under binders though so if there is another `.uniqueScope` inside `contents`, a `uniqBinder` of 0 denotes that it is scoped inside that inner scope, so a `uniqBinder` of 1 will reference back to _this_ scope. -/
-  | uniqueScope (contents : Ty) : Ty
-
-  /-- Values of this type may appear up to once in any data structure under uniqueness scope `uniqBinder` -/
-  | uniqueTy (uniqBinder : Nat) (inner : Ty)
+/-- Nominal name of a persistable entity table. -/
+inductive EntityName
+  | mk (str : String)
   deriving Repr, DecidableEq
 
+/-- Name of a field of an entity. -/
+inductive FieldName
+  | mk (str : String)
+  deriving Repr, DecidableEq
 
+/-- A provenance path through an entity graph.
 
+    These paths name *which database key is being used to distinguish values*.
+    They do not yet encode the later, stronger resource/footprint discipline
+    where a path and one of its descendants cannot both be exported. -/
+inductive KeyPath
+  | entity (name : EntityName)
+  | field (parent : KeyPath) (field : FieldName)
+  deriving Repr, DecidableEq
 
-/-- The ty in question does not open up any new scopes -/
+/-- Persistable data shapes. Unlike `Ty`, these have no functions.
+
+    A `unique` annotation says that occurrences of `inner` in the referenced
+    scope are pairwise distinct under `key`. `scope = 0` denotes the
+    innermost enclosing `Ty.uniqueScope`. -/
+inductive DataTy
+  | prim : PrimTy → DataTy
+  | entity : EntityName → DataTy
+  | product : DataTy → DataTy → DataTy
+  | list : DataTy → DataTy
+  | unique (scope : Nat) (key : KeyPath) (inner : DataTy) : DataTy
+  deriving Repr, DecidableEq
+
+/-- Full types. Persistable data embeds into the full language; arrows do not. -/
+inductive Ty
+  | data : DataTy → Ty
+  | arrow : (from_ to_ : Ty) → Ty
+  /-- Binds a fresh database-key uniqueness scope in `contents`. -/
+  | uniqueScope (contents : Ty) : Ty
+  deriving Repr, DecidableEq
+
+/-- A persistable type with no uniqueness annotation. -/
+inductive DataTy.NoUnique : DataTy → Prop
+  | prim : DataTy.NoUnique (.prim _)
+  | entity : DataTy.NoUnique (.entity _)
+  | product :
+    DataTy.NoUnique fst →
+    DataTy.NoUnique snd →
+    DataTy.NoUnique (.product fst snd)
+  | list :
+    DataTy.NoUnique elem →
+    DataTy.NoUnique (.list elem)
+
+/-- Every uniqueness index must refer to an enclosing `uniqueScope`. -/
+inductive DataTy.WellScopedUnder : Nat → DataTy → Prop
+  | prim : DataTy.WellScopedUnder depth (.prim _)
+  | entity : DataTy.WellScopedUnder depth (.entity _)
+  | product :
+    DataTy.WellScopedUnder depth fst →
+    DataTy.WellScopedUnder depth snd →
+    DataTy.WellScopedUnder depth (.product fst snd)
+  | list :
+    DataTy.WellScopedUnder depth elem →
+    DataTy.WellScopedUnder depth (.list elem)
+  | unique :
+    scope < depth →
+    DataTy.WellScopedUnder depth inner →
+    DataTy.WellScopedUnder depth (.unique scope key inner)
+
+/-- Every uniqueness index in a full type is bound by an enclosing scope. -/
+inductive Ty.WellScopedUnder : Nat → Ty → Prop
+  | data {depth : Nat} {contents : DataTy} :
+    DataTy.WellScopedUnder depth contents →
+    Ty.WellScopedUnder depth (.data contents)
+  | arrow :
+    Ty.WellScopedUnder depth from_ →
+    Ty.WellScopedUnder depth to_ →
+    Ty.WellScopedUnder depth (.arrow from_ to_)
+  | uniqueScope :
+    Ty.WellScopedUnder (depth + 1) contents →
+    Ty.WellScopedUnder depth (.uniqueScope contents)
+
+/-- A type which does not open a scope and cannot mention a scoped key.
+
+    Lambda annotations use this initial conservative restriction: functions do
+    not yet take or return scoped data. -/
 inductive Ty.NoScopes : Ty → Prop
-  | prim : Ty.NoScopes (.prim _)
-
+  | data {contents : DataTy} :
+    DataTy.NoUnique contents →
+    Ty.NoScopes (.data contents)
   | arrow :
     Ty.NoScopes from_ →
     Ty.NoScopes to_ →
     Ty.NoScopes (.arrow from_ to_)
-
-  | uniqueTy :
-    Ty.NoScopes inner →
-    Ty.NoScopes (.uniqueTy _ inner)
 
 
 
@@ -151,8 +221,8 @@ inductive StepsToValue : Expr → Expr → Prop
 
 
 -- def PrimLitExpr.ty : PrimLitExpr → Ty
---   | .unit => .prim .unit
---   | .int _ => .prim .int
+--   | .unit => .data (.prim .unit)
+--   | .int _ => .data (.prim .int)
 
 /-- Value typing context: de Bruijn index `i` looks up `ctx[i]`. -/
 abbrev Ctx := List Ty
@@ -164,18 +234,21 @@ def Ctx.insertAt (cutoff : Nat) (inserted ctx : Ctx) : Ctx :=
 /-- Which exprs already exist in this uniqueness scope – keyed by uniqueness-scope de bruijn index. This only makes sense to do when we are within a uniqueness scope -/
 abbrev UniqCtx := List (Expr × Nat)
 
+
+
+
 /-- Declarative typing. `uniqueScope` / `uniqueTy` appear only in `Ty`; this
     relation does not enforce uniqueness yet — it is ordinary structural typing. -/
 inductive TypeOf : Ctx → Expr → Ty → Prop
   | primLitUnit (prim : PrimLitExpr) :
-      TypeOf ctx (.primLit .unit) (.prim .unit)
+      TypeOf ctx (.primLit .unit) (.data (.prim .unit))
 
   | primLitInt (prim : PrimLitExpr) :
-      TypeOf ctx (.primLit (.int _)) (.prim .int)
+      TypeOf ctx (.primLit (.int _)) (.data (.prim .int))
 
-  | lambda {paramTy bodyTy : Ty} :
-      TypeOf (paramTy :: ctx) body bodyTy →
-      TypeOf ctx (.lambda ann prf body) (.arrow paramTy bodyTy)
+  | lambda {ann bodyTy : Ty} {prf : ann.NoScopes} :
+      TypeOf (ann :: ctx) body bodyTy →
+      TypeOf ctx (.lambda ann prf body) (.arrow ann bodyTy)
 
   | app {argTy retTy : Ty} :
       TypeOf ctx f (.arrow argTy retTy) →
@@ -190,6 +263,19 @@ inductive TypeOf : Ctx → Expr → Ty → Prop
   | var {τ : Ty} (i : Nat) :
       ctx[i]? = some τ →
       TypeOf ctx (.var i) τ
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 /-! ## Shifting and substitution -/
 
