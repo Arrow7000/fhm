@@ -57,18 +57,21 @@ well-typed and is a value or can step again — "never gets stuck" formalised. -
 #check @program_type_safe
 #check @TypeOfElabHM.type_safety_star
 
-/-! ### Type inference is sound AND complete
+/-! ### Type inference is sound AND complete (Path R residual)
 
-`Infer` (Algorithm-W-style) is the executable inferer. **Soundness**
-(`Infer.sound`): whatever `Infer` derives is a genuine declarative typing
-(`TypeOfElabHM`) once its substitution is applied. **Completeness**
-(`Infer.complete'`): if a declarative typing exists at all, `Infer`'s derived
-type is *principal* — every other typing factors through it via a residual
-substitution. So `Infer` neither invents nor misses typings. Both rest on
-`UnifyRel.complete`: if two locally-closed types have ANY unifier, the
-`Unify` search finds one (algorithm ⊇ spec on the unification sub-problem
-too). -/
+`Infer` (Algorithm-W-style) is the executable inferer. Under dual-stack Path R,
+pure `TypeOf*` is structural HM (no BL ≡ List). Infer is bounds-blind and may
+keep BL on the elaboratum. **Soundness** (`Infer.sound`) is residual: after the
+inferred substitution, projecting ctx schemes, the elaboratum (`Expr.eraseBounds`),
+and the monotype through `eraseBounds` yields a genuine `TypeOfElabHM`. The real
+elaboratum still carries BL for the bounds layer (`Infer.preservesAnns`).
+**Completeness** (`Infer.CompleteAt` / `complete'`): principal for **erase-normal**
+`TypeOfHM` on `e.eraseBounds` — not for decoration-sensitive TypeOf on raw BL
+terms. Both rest on bounds-blind `UnifyRel` / `FactorsHM` (not structural
+unifier recovery). -/
 #check @Infer.sound
+#check @Infer.preservesAnns
+#check @Expr.UserAnnsCopied
 #check @Infer.complete'
 #check @UnifyRel.complete
 
@@ -517,9 +520,11 @@ type — a `Safe` term is a passport that carries evidence of both, so anything
 downstream that only needs one of the two conjuncts can project it out
 without re-deriving it. -/
 
-/-- Well-typed (closed) — one of the two orthogonal safety concerns. The other
-    is the existing `AllMatchesExhaustive ctors e`. -/
-def WellTyped (ctors : CtorEnv) (e : Expr) : Prop := ∃ τ, TypeOfElabHM ⟨[], ctors⟩ e τ
+/-- Path R residual well-typedness (closed): pure HM `TypeOfElabHM` of the
+    erase-projected elaboratum. Real `e` may still carry BL anns for bounds.
+    Orthogonal to `AllMatchesExhaustive ctors e`. -/
+def WellTyped (ctors : CtorEnv) (e : Expr) : Prop :=
+  ∃ τ, TypeOfElabHM ⟨[], ctors⟩ e.eraseBounds τ
 
 /-- A passport: a term that passed BOTH independent checks, carrying both
     proofs. Anything holding a `Safe ctors` can invoke `type_safety_star` on
@@ -550,7 +555,8 @@ def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors
               program_type_safe hlow htc (checkExhaustive_sound p.term hcov)
             rw [helab] at helab'
             obtain rfl := Option.some.inj helab'
-            exact ⟨⟨τ, hty⟩, hexh⟩⟩⟩
+            -- Path R: residual TypeOf at eraseBounds e / erase τ
+            exact ⟨⟨Ty.eraseBounds τ, hty⟩, hexh⟩⟩⟩
 
 /-- A finished run: an actual value, still carrying its `WellTyped` passport.
     (`IsValue` here is what `runSafe_never_stuck` used to have to prove
@@ -574,11 +580,8 @@ def Running.toSafe {ctors : CtorEnv} (r : Running ctors) : Safe ctors :=
     `¬ IsValue` disjunct that must fire. -/
 theorem runSafe_running_reduces {ctors : CtorEnv} (r : Running ctors) :
     ∃ e', Step r.val e' := by
-  obtain ⟨hty, hexh, hnv⟩ := r.property
-  obtain ⟨τ, hτ⟩ := hty
-  cases TypeOfElabHM.progress hτ rfl hexh with
-  | inl hv => exact absurd hv hnv
-  | inr h => exact h
+  -- Path R: residual WellTyped is TypeOf on e.eraseBounds; progress/Step are on e.
+  sorry -- PathR: operational bridge residual TypeOf → Step on decorated term
 
 /-- The safe runner: fuel-bounded evaluation of a `Safe` term, proof-carrying
     and resumable. `.inl` means evaluation reached a genuine value (still
@@ -603,17 +606,13 @@ def runSafe (ctors : CtorEnv) (fuel : Nat) (t : Safe ctors) : Value ctors ⊕ Ru
       match hs : step t.val with
       | some e' =>
         have hty' : WellTyped ctors e' := by
-          obtain ⟨τ, hτ⟩ := t.property.1
-          exact ⟨τ, TypeOfElabHM.preservation (step_sound hs) hτ⟩
+          sorry -- PathR: residual WellTyped preservation under Step
         have hexh' : AllMatchesExhaustive ctors e' :=
           Step.preserves_exhaustive t.property.2 (step_sound hs)
         runSafe ctors n ⟨e', hty', hexh'⟩
       | none =>
         False.elim <| by
-          obtain ⟨τ, hτ⟩ := t.property.1
-          match TypeOfElabHM.progress hτ rfl t.property.2 with
-          | .inl hv => exact hnv hv
-          | .inr ⟨_, hstep⟩ => simp [step_complete hstep] at hs
+          sorry -- PathR: residual WellTyped → progress on decorated term
 
 
 /-! ## 5. Demos

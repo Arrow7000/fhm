@@ -12,6 +12,8 @@ walk (`design-memo-bounds-elaborator.md`, elaborator architecture brief).
 - `design-memo-bounds-layer-on-core.md` — product rules still in force (D22/D24/R3, …)
 - `design-memo-bounds-elaborator.md` — **historical**; coverage-authority diagnosis only
 - `next-agent-brief-bounds-elaborator-architecture.md` — **historical** failure taxonomy
+- **`next-agent-brief-path-r-dual-stack.md`** — **active (2026-08-11):** Path R formalization,
+  residual Infer soundness/completeness statements, proof order, session handoff
 
 **This doc’s job:** pipeline, Core/Infer blast radius, what to scrap vs keep,
 theorem targets, work phases.
@@ -32,17 +34,17 @@ theorem targets, work phases.
 | **Bounds-blind unify** | Unification ignores `lo`/`hi`; two BLs unify like two Lists; HM never picks lengths |
 | **BoundAwareCovers** | Match exhaustiveness that uses length intervals (and ordinary ADT ctors); under `--bl` this replaces HM-only exhaustiveness |
 
-### Phase status (2026-08-04)
+### Phase status (updated 2026-08-11)
 
 | Phase | Content | Status |
 |-------|---------|--------|
-| **0** | Agree design; supersede old memos; deprecate old packaging entry points; list acceptance cases | **In progress** (design agreed; banners + deprecations; thin G0 list) |
-| **1** | `Ty.list` in Core; Count without Z3 on Core path; lower preserves BL | **Next** |
-| **2** | Infer bounds-blind + ann preservation | Pending |
-| **3** | Bounds elaboration driver → rewrite AST | Pending |
+| **0** | Agree design; supersede old memos; deprecate old packaging entry points; list acceptance cases | **Mostly done** (design agreed; banners + deprecations) |
+| **1** | `Ty.bl` in Core; lower preserves BL | **Largely done** (committed) |
+| **2** | Infer bounds-blind + ann preservation + **Path R residual metatheory** | **In progress** — statements mostly Path R; proofs fenced; see path-r brief |
+| **3** | Bounds elab driver → rewrite AST | Pending (product; after metatheory checkpoint) |
 | **4** | BoundAwareCovers; delete Matches dual walk | Pending |
-| **5** | Remove erase/ofLower product path | Pending |
-| **6** | Theorems (preservation, ascription soundness) | Pending |
+| **5** | Remove erase/ofLower product path (Live) | Pending — **Live may stay broken** until metatheory lands |
+| **6** | Theorems: residual soundness → completeness → ann preserve → bounds ascription | **Soundness next** after §6 checklist in path-r brief |
 
 **Phase 0 exit (enough to start Phase 1):** this memo stable; old architecture docs
 bannered; key packaging symbols marked deprecated in code comments. A full green
@@ -314,34 +316,58 @@ bounds-elaborated Core without boiling the ocean. Prefer a **tower of projection
 
 ```text
 eraseBounds : Ty → Ty          -- drop intervals; BL lo hi α ↦ List α
-eraseExpr   : Expr → Expr      -- map anns through eraseBounds (optional)
+eraseExpr   : Expr → Expr      -- map binder anns + tyArgs through eraseBounds
+eraseCtx    : Ctx → Ctx        -- erase env schemes
 ```
+
+Implemented on Core as `Ty.eraseBounds` / `Expr.eraseBounds` / `Ctx.eraseBounds`.
+**Pipeline must not run erase as packaging.** Residual theorems only.
+
+### 4.1.1 Path R formalization (locked 2026-08-11)
+
+**Path R (chosen):** pure declarative `TypeOf*` stays **structural HM** (structural
+`Option.Pins`; no BL ≡ List inside TypeOf). Infer is bounds-blind and may keep BL
+on the elaboratum. Soundness/completeness bridges are **residual**:
+
+```text
+Infer … eOut, τ
+  ⇒  TypeOfElabHM (S·ctx).eraseBounds  (eOut[S]).eraseBounds  (erase τ)
+
+CompleteAt / complete': hyp is TypeOfHM (S₀·ctx).eraseBounds e.eraseBounds τ₀
+```
+
+**Path B (rejected for TypeOf):** make TypeOf itself bounds-blind (weak Pins).
+Simpler Infer↔TypeOf slogans; contaminates the golden HM judgment with BL-world.
+
+**Ann preservation ≠ residual TypeOf.** Separate relation (`UserAnnsCopied` /
+`Infer.preservesAnns`) on the real elaboratum. Note: Infer `letRec` elaboratum is
+`Expr.letRecElab` (Λ-outside nest), not bare `.letRec`.
+
+**Quotients:** use `AgreesHM` / erase predicates (moral quotient). No Lean `Quot Ty`.
+
+Details, proof order, greps: `next-agent-brief-path-r-dual-stack.md`.
 
 ### 4.2 HM faithfulness (first elaboration)
 
-**Prop (sketch): Infer sees only erased shape**
+**Prop (Path R residual soundness)** — primary Infer faithfulness theorem:
 
 ```text
-TypeOfElabHM Γ e τ
-  →  (user anns in e may contain BL)
-  →  the judgment only depends on eraseBounds of those anns
+Infer Φ ctx e ↝ eOut, S, τ
+  ⇒  TypeOfElabHM (S.onCtx ctx).eraseBounds
+        (eOut.substTyFvars S).eraseBounds
+        (Ty.eraseBounds τ)
 ```
 
-More operationally: if `e₀` and `e₁` agree after `eraseBounds` on all anns and
-term structure, Infer accepts one iff the other (for HM), with erased results.
-
-**Prop (sketch): User BL not destroyed**
+**Prop: User BL not destroyed** (ann preservation; independent of TypeOf residual):
 
 ```text
-Infer Γ e = some eOut
-  →  every user BL ascription site in e has a corresponding site in eOut
-     with the same bounds ann (up to type-var subst Infer already applies
-     to the *type* spine, not inventing lo/hi)
+Infer … e ↝ eOut
+  ⇒  UserAnnsCopied e eOut
+  -- λ / annotated let: same ascription option; letRec: same anns inside letRecElab;
+  -- unannotated let may gain genScheme; let RHS may be closeTyVars∘subst
 ```
 
-This is the formal content of “ann preservation hygiene.”
-
-**Prop (sketch): Erased elaboratum is an HM elaboratum of the erased program**
+**Prop (sketch): Erased elaboratum relates to pure-HM Infer of erased program**
 
 ```text
 Infer (with BL) e = eOut
@@ -349,6 +375,7 @@ Infer (with BL) e = eOut
 ```
 
 Connects dual-stack to the pure HM path (recovery of today’s erase-then-infer).
+Optional after residual soundness.
 
 ### 4.3 Bounds faithfulness (second elaboration)
 
