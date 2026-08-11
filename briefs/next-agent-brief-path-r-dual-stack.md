@@ -205,5 +205,5 @@ next” section here rather than a new memo.
 
 ```bash
 rg -n "sorry -- PathR|PathR completeness|UserAnnsCopied|letRecElab|CompleteAt|Infer.sound " FHM/
-rg -n "FactorsHM.to_structural|greatest_structural_FALSE" FHM/InferW.lean
+rg -n "FactorsHM.to_structural|greatest_factors|structural residual factoring" FHM/InferW.lean
 ```

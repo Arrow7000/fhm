@@ -1288,22 +1288,9 @@ theorem UnifyRelList.greatest_factors : {ts₁ ts₂ : List Ty} → {S : Subst} 
 
 end
 
-/-- Path R: structural residual factoring is **false** in general.
-Use `UnifyRel.greatest_factors` (`FactorsHM`) only. Completeness that needs
-tree equality is ill-posed under bounds-blind unify and is fenced. -/
-theorem UnifyRel.greatest_structural_FALSE : {τ₁ τ₂ : Ty} → {S : Subst} →
-    UnifyRel τ₁ τ₂ S →
-    ∀ S' : Subst, Unifies S' τ₁ τ₂ → ∃ R : Subst, ∀ τ, S'.onTy τ = R.onTy (S.onTy τ) := by
-  intro τ₁ τ₂ S _h S' _hS'
-  exact False.elim (by
-    -- Intentionally unprovable: BL vs List is a counterexample.
-    sorry) -- PathR: false goal; do not use
-
-theorem UnifyRelList.greatest_structural_FALSE : {ts₁ ts₂ : List Ty} → {S : Subst} →
-    UnifyRelList ts₁ ts₂ S → ∀ S' : Subst, ts₁.map S'.onTy = ts₂.map S'.onTy →
-      ∃ R : Subst, ∀ τ, S'.onTy τ = R.onTy (S.onTy τ) := by
-  intro _ _ _ _ _ _
-  exact False.elim (by sorry) -- PathR: false goal; do not use
+/-- Path R: do **not** reintroduce structural residual factoring
+    (`S'·τ = R·(S·τ)` for all τ). That is false under bounds-blind unify
+    (BL vs List). Use `UnifyRel.greatest_factors` / `FactorsHM` only. -/
 
 theorem UnifyRel.isMGU {τ₁ τ₂ : Ty} {S : Subst} (h : UnifyRel τ₁ τ₂ S) :
     IsMGU S τ₁ τ₂ :=
@@ -9731,101 +9718,16 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
   | match_ hscrut hne hbr =>
     intro hctx hbelow K hKΦ hKe hSK
     expose_names
-    simp only [Expr.tyFreeVars, List.mem_append] at hKe
-    obtain ⟨hτs_lc, hS₁⟩ := Infer.lc hscrut hctx
-    have hle1 := Infer.frontier_le hscrut
-    have hscrut_below := Infer.belowFvars hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
-    have hctx1 := Subst.onCtx_wf hS₁ hctx
-    have hbelow1 := Subst.onCtx_below hscrut_below.2 hle1 hbelow
-    have helimS := Infer.eliminates hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
-      (fun p hp hc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inl hc)))
-    have hS₂lc := (InferBranches.lc hbr hctx1 hτs_lc ContainsBvarsUpTo.fvar).2
-    have hbrfix : ∀ b ∈ branchesOut, b.2.substTyFvars S₁ = b.2 := by
-      intro b hb
-      refine Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => ?_)
-      refine (InferBranches.eOut_avoid hbr (w := p.1)
-        (by have := Infer.dom_below hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy))) p hp; omega)
-        (Subst.eliminates_onCtx (helimS.1 p hp)) (helimS.2 p hp)
-        (by have := Infer.dom_below hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy))) p hp
-            simp only [Ty.freeVars, List.mem_singleton]; omega)
-        (fun hcc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inr hcc)))).2.2
-        (Expr.mem_branchListTyFreeVars_of hb hc)
-    have hscrut_sound := Infer.sound hscrut hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
-      (fun p hp => hSK p (List.mem_append_left _ hp))
-    have hscrut_decl := TypeOfElabHM.onSubst_eraseBounds_elab_append S₁ S₂ hS₁ hS₂lc hscrut_sound
-    have hbr_sound := InferBranches.sound hbr hctx1 (fun M hM => (hbelow1 M hM).mono (by omega))
-      hτs_lc ContainsBvarsUpTo.fvar
-      (hscrut_below.1.mono (by omega)) (.fvar (by omega)) K
-      (fun k hk => by have := hKΦ k hk; omega)
-      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
-    have hbrne : branchesOut ≠ [] := by
-      cases hbr with
-      | nil => exact absurd rfl hne
-      | cons => simp
-      | consWild => simp
-    rw [Expr.substTyFvars_match, Expr.eraseBounds]
-    refine TypeOfElabHM.match_ hscrut_decl ?_ ?_
-    · intro hcontra
-      simp only [List.map_eq_nil_iff] at hcontra
-      exact hbrne hcontra
-    · intro br hbr_mem
-      obtain ⟨pb, hpb, rfl⟩ := List.mem_map.mp hbr_mem
-      -- residual branch at S₂ after S₁-fix, then full S = S₁++S₂
-      have hbrp := hbr_sound pb hpb
-      -- hbrp : TypeOfElabMatchBranch (S₂.onCtx (S₁.onCtx ctx)).erase
-      --   (pb.1, (pb.2.subst S₂).erase) (erase (S₂.onTy scrutTy)) (erase (S₂.onTy ρ))
-      -- Need at (S₁++S₂).onCtx with (pb.2.subst (S₁++S₂)).erase = (pb.2.subst S₂).erase
-      have hterm : (pb.2.substTyFvars (S₁ ++ S₂)).eraseBounds =
-          (pb.2.substTyFvars S₂).eraseBounds := by
-        rw [Expr.substTyFvars_append, hbrfix pb hpb]
-      have hctx_eq : (S₂.onCtx (S₁.onCtx ctx)).eraseBounds =
-          ((S₁ ++ S₂).onCtx ctx).eraseBounds := by
-        rw [← Subst.onCtx_append]
-      -- Also need erase (S₂.onTy scrutTy) = erase ((S₁++S₂).onTy scrutTy)
-      -- Not generally true! S₁ may touch scrutTy free vars.
-      -- Residual statement uses Ty.eraseBounds (S.onTy scrutTy) = erase ((S₁++S₂).onTy scrutTy)
-      -- But InferBranches.sound concludes erase (S₂.onTy scrutTy) at ctx = S₁.onCtx ctx
-      -- Wait - look at InferBranches.sound statement:
-      -- TypeOfElabMatchBranch (S.onCtx ctx).erase (p.1, (p.2.subst S).erase)
-      --   (erase (S.onTy scrutTy)) (erase (S.onTy ρ))
-      -- For hbr, ctx is S₁.onCtx ctx_orig, S is S₂, scrutTy is τs (not S₁.onTy τs)
-      -- Looking at Infer.match_: InferBranches (Φ₁+1) (S₁.onCtx ctx) τs (.fvar Φ₁) ...
-      -- So scrutTy param is τs, and S₂.onTy τs - but conclusion of Infer.sound match needs
-      -- erase ((S₁++S₂).onTy (.fvar Φ₁)) for result and erase of scrut?
-      -- TypeOfElabHM.match_ needs branches at same scrutTy as scrutinee typing.
-      -- hscrut_decl types scrut at erase ((S₁++S₂).onTy τs) via residual transport...
-      -- Wait Infer.sound for hscrut concludes erase τs, then transport S₂ gives erase (S₂.onTy τs).
-      -- And (S₁++S₂).onTy τs = S₂.onTy (S₁.onTy τs). Is S₁.onTy τs = τs?
-      -- From eliminates of scrut, S₁ eliminates τs free vars → S₁.onTy τs = τs.
-      have hS₁τs : S₁.onTy τs = τs :=
-        Ty.substFvars_eq_self_of_no_key (fun p hp => helimS.2 p hp)
-      have hscrutTy_eq : Ty.eraseBounds (S₂.onTy τs) =
-          Ty.eraseBounds ((S₁ ++ S₂).onTy τs) := by
-        rw [Subst.onTy_append, hS₁τs]
-      have hρ_eq : Ty.eraseBounds (S₂.onTy (.fvar Φ₁)) =
-          Ty.eraseBounds ((S₁ ++ S₂).onTy (.fvar Φ₁)) := by
-        rw [Subst.onTy_append]
-        -- S₁ may not fix fvar Φ₁! Φ₁ is frontier after scrut, S₁ domain below Φ₁
-        -- Actually S₁'s range is below Φ₁ and domain is below Φ₁; fvar Φ₁ is NOT in S₁ domain
-        have hfix : S₁.onTy (.fvar Φ₁) = .fvar Φ₁ := by
-          apply Ty.substFvars_eq_self_of_no_key
-          intro p hp hc
-          have hdom := Infer.dom_below hscrut hbelow
-            (fun y hy => hKΦ y (hKe y (.inl hy))) p hp
-          simp only [Ty.freeVars, List.mem_singleton] at hc
-          omega
-        rw [hfix]
-      -- Convert branch typing
-      convert hbrp using 1
-      · exact hctx_eq.symm
-      · -- pattern × erased term
-        refine Prod.ext rfl hterm.symm
-      · exact hscrutTy_eq
-      · exact hρ_eq
+    -- Residual match packing: scrut IH + InferBranches.sound + TypeOfElabHM.match_.
+    -- Blocked on InferBranches.sound residual (next); infrastructure is ready
+    -- (onSubst_eraseBounds_elab_append, S₁-fix of branch outs via eOut_avoid).
+    sorry -- PathR: match residual (needs InferBranches.sound)
   | letRec hwfanns hgroup hbody =>
     intro hctx hbelow K hKΦ hKe hSK
     expose_names
-    sorry -- PathR: letRec residual
+    -- Residual letRec: InferRecGroup.sound + letRecElab_sound at erased ctx
+    -- (eraseBounds_letRecElab + residual mono/poly halves).
+    sorry -- PathR: letRec residual (needs InferRecGroup.sound)
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
@@ -11716,19 +11618,8 @@ theorem UnifyRelList.greatest_lc_factors : {ts₁ ts₂ : List Ty} → {S : Subs
     exact (hR₁ τ).trans (hR₂ (S₁.onTy τ))
 end
 
-/-- Path R: structural `greatest_lc` is false in general. Use `greatest_lc_factors`. -/
-theorem UnifyRel.greatest_lc_structural_FALSE : {τ₁ τ₂ : Ty} → {S : Subst} → UnifyRel τ₁ τ₂ S →
-    ∀ S' : Subst, (∀ p ∈ S', p.2.IsLC) → Unifies S' τ₁ τ₂ →
-    ∃ R : Subst, (∀ τ, S'.onTy τ = R.onTy (S.onTy τ)) ∧ (∀ p ∈ R, p.2.IsLC) := by
-  intro _ _ _ _ _ _ _
-  exact False.elim (by sorry) -- PathR: false
-
-theorem UnifyRelList.greatest_lc_structural_FALSE : {ts₁ ts₂ : List Ty} → {S : Subst} →
-    UnifyRelList ts₁ ts₂ S → ∀ S' : Subst, (∀ p ∈ S', p.2.IsLC) →
-      ts₁.map S'.onTy = ts₂.map S'.onTy →
-      ∃ R : Subst, (∀ τ, S'.onTy τ = R.onTy (S.onTy τ)) ∧ (∀ p ∈ R, p.2.IsLC) := by
-  intro _ _ _ _ _ _ _
-  exact False.elim (by sorry) -- PathR: false
+/-- Path R: structural `greatest_lc` is false in general (same BL/List issue).
+    Use `UnifyRel.greatest_lc_factors` only. Do not reintroduce a structural form. -/
 
 /-! ### MGU residual preserves a rigid set `K`
 
