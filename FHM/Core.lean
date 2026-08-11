@@ -603,8 +603,8 @@ def PolyTy.eraseBounds (σ : PolyTy) : PolyTy :=
     is unchanged; only type-shaped payloads (binder anns, var tyArgs) are erased.
     Pipeline Infer/bounds never call this — residual HM bridge theorems only.
 
-    Termination is structural on `Expr` (match/letRec recurse into subterms);
-    discharge left to the proof agent if the default measure fails on branch lists. -/
+    Termination is structural on `Expr` via `sizeOf` (match uses pair projection
+    so the recursive arg stays under list membership). -/
 def Expr.eraseBounds : Expr → Expr
   | .primLit p => .primLit p
   | .primBinOp op => .primBinOp op
@@ -615,27 +615,32 @@ def Expr.eraseBounds : Expr → Expr
   | .var i tyArgs => .var i (tyArgs.map Ty.eraseBounds)
   | .ctor c => .ctor c
   | .match_ scrut brs =>
-      .match_ scrut.eraseBounds (brs.map fun (p, e) => (p, e.eraseBounds))
+      .match_ scrut.eraseBounds (brs.map fun pe => (pe.1, pe.2.eraseBounds))
   | .letRec anns bindings body =>
       .letRec (anns.map (Option.map PolyTy.eraseBounds))
         (bindings.map Expr.eraseBounds) body.eraseBounds
-termination_by e => e
-decreasing_by all_goals sorry
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | omega
+    | (have h := List.sizeOf_lt_of_mem ‹_›; omega)
+    | (have h := List.sizeOf_lt_of_mem ‹_›
+       have : sizeOf pe.2 < sizeOf pe := by
+         cases pe; simp only [Prod.mk.sizeOf_spec]; omega
+       omega)
+
+
+
+
 
 /-- Pointwise erase of schemes in a value environment. -/
 def Env.eraseBounds (env : Env) : Env := env.map PolyTy.eraseBounds
-
-/-- Erase schemes in a typing context (ctors unchanged; prelude/NoBL assumed). -/
-def Ctx.eraseBounds (ctx : Ctx) : Ctx :=
-  { env := ctx.env.eraseBounds, ctors := ctx.ctors }
 
 @[simp] theorem Env.eraseBounds_nil : Env.eraseBounds [] = [] := rfl
 
 @[simp] theorem Env.eraseBounds_cons (σ : PolyTy) (env : Env) :
     Env.eraseBounds (σ :: env) = PolyTy.eraseBounds σ :: Env.eraseBounds env := rfl
-
-@[simp] theorem Ctx.eraseBounds_mk (env : Env) (ctors : CtorEnv) :
-    Ctx.eraseBounds ⟨env, ctors⟩ = ⟨Env.eraseBounds env, ctors⟩ := rfl
 
 theorem Env.eraseBounds_getElem? (env : Env) (i : Nat) :
     (Env.eraseBounds env)[i]? = (env[i]?).map PolyTy.eraseBounds := by
@@ -692,6 +697,82 @@ theorem ContainsBvarsUpTo.of_eraseBounds {n : Nat} {τ : Ty}
       have he : ContainsBvarsUpTo n (Ty.eraseBounds e) :=
         hall _ (by simp only [List.mem_singleton])
       exact .bl (ih he)
+
+/-- `eraseBounds` preserves freeness of type variables (BL → List keeps the element). -/
+theorem NoFreeVars.eraseBounds {τ : Ty} (h : NoFreeVars τ) :
+    NoFreeVars (Ty.eraseBounds τ) := by
+  induction h with
+  | prim => exact .prim
+  | arrow _ _ iha ihb => exact .arrow iha ihb
+  | customTy hall ih =>
+    simp only [Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map]
+    refine .customTy ?_
+    intro t ht
+    obtain ⟨t₀, ht₀, rfl⟩ := List.mem_map.mp ht
+    exact ih t₀ ht₀
+  | bl he ih =>
+    simp only [Ty.eraseBounds_bl, bareListTy]
+    exact .customTy (by
+      intro t ht
+      simp only [List.mem_singleton] at ht
+      subst ht
+      exact ih)
+  | bvar => exact .bvar
+
+/-- Path R: project intervals out of constructor field types (and thus `toTy`). -/
+def Ctor.eraseBounds (c : Ctor) : Ctor where
+  paramCount := c.paramCount
+  tyName := c.tyName
+  contents := c.contents.map Ty.eraseBounds
+  bound := by
+    intro ty hty
+    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hty
+    exact ContainsBvarsUpTo.eraseBounds (c.bound t ht)
+  closed := by
+    intro ty hty
+    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hty
+    exact NoFreeVars.eraseBounds (c.closed t ht)
+
+/-- Pointwise erase of every constructor's field types. -/
+def CtorEnv.eraseBounds (ctors : CtorEnv) : CtorEnv :=
+  ctors.map fun p => (p.1, Ctor.eraseBounds p.2)
+
+/-- Path R residual context: erase schemes **and** ctor field types.
+    (Earlier "ctors unchanged; prelude/NoBL assumed" made residual `TypeOf*`
+    false when a field carries `BL` — structural `InstantiatesBy` cannot
+    relate a BL template to an erased List instance.) -/
+def Ctx.eraseBounds (ctx : Ctx) : Ctx :=
+  { env := ctx.env.eraseBounds, ctors := ctx.ctors.eraseBounds }
+
+@[simp] theorem Ctor.eraseBounds_paramCount (c : Ctor) :
+    (Ctor.eraseBounds c).paramCount = c.paramCount := rfl
+
+@[simp] theorem Ctor.eraseBounds_tyName (c : Ctor) :
+    (Ctor.eraseBounds c).tyName = c.tyName := rfl
+
+@[simp] theorem Ctor.eraseBounds_contents (c : Ctor) :
+    (Ctor.eraseBounds c).contents = c.contents.map Ty.eraseBounds := rfl
+
+@[simp] theorem CtorEnv.eraseBounds_nil : CtorEnv.eraseBounds [] = [] := rfl
+
+@[simp] theorem CtorEnv.eraseBounds_cons (name : CtorName) (c : Ctor) (rest : CtorEnv) :
+    CtorEnv.eraseBounds ((name, c) :: rest) =
+      (name, Ctor.eraseBounds c) :: CtorEnv.eraseBounds rest := rfl
+
+@[simp] theorem Ctx.eraseBounds_mk (env : Env) (ctors : CtorEnv) :
+    Ctx.eraseBounds ⟨env, ctors⟩ = ⟨Env.eraseBounds env, CtorEnv.eraseBounds ctors⟩ := rfl
+
+theorem CtorEnv.eraseBounds_get? (ctors : CtorEnv) (name : CtorName) :
+    LookupList.get? (CtorEnv.eraseBounds ctors) name =
+      (LookupList.get? ctors name).map Ctor.eraseBounds := by
+  induction ctors with
+  | nil => rfl
+  | cons hd tl ih =>
+    cases hd with | mk n c =>
+    simp only [CtorEnv.eraseBounds_cons, LookupList.get?]
+    by_cases h : name = n
+    · simp only [h, ↓reduceIte, Option.map_some]
+    · simp only [h, ↓reduceIte, ih]
 
 /-- Closing doesn't add any more bvars than it is expected to -/
 theorem Ty.closeOver_preserves_bvars : ContainsBvarsUpTo 0 ty → ContainsBvarsUpTo vars.length (ty.closeOver vars) := by
@@ -2486,52 +2567,292 @@ def Expr.openBoundTyVars : Option PolyTy → List Nat → Expr → Expr
   | none,   _,  e => e
   | some _, Xs, e => e.openTyVars Xs
 
-/-! ### Path R: `Expr.eraseBounds` commutation (statements; proofs fenced)
+/-! ### Path R: `Expr.eraseBounds` commutation
 
 Residual soundness needs erase to pass through Infer's type-spine rewrites.
-Placed after `substTyFvars` / `openTyVars` / `openBoundTyVars`. Bodies `sorry`
-for the proof agent once `eraseBounds` termination is solid. -/
+Placed after `substTyFvars` / `openTyVars` / `openBoundTyVars`. -/
 
 theorem Expr.eraseBounds_idem (e : Expr) :
     e.eraseBounds.eraseBounds = e.eraseBounds := by
-  sorry -- PathR
+  induction e using Expr.rec_strong with
+  | primLit _ | primBinOp _ | ctor _ | var _ _ => simp [Expr.eraseBounds]
+  | app _ _ ihf iharg => simp [Expr.eraseBounds, ihf, iharg]
+  | lambda ann body ih =>
+    simp [Expr.eraseBounds, ih]
+    cases ann <;> simp [Ty.eraseBounds_idem]
+  | letIn ann rhs body ihr ihb =>
+    simp [Expr.eraseBounds, ihr, ihb]
+    cases ann <;> simp [PolyTy.eraseBounds_idem]
+  | match_ scrut branches ihs ihbs =>
+    simp [Expr.eraseBounds, ihs]
+    intro p b hpb
+    exact ihbs p b hpb
+  | letRec anns bindings body ihbs ihb =>
+    simp [Expr.eraseBounds, ihb]
+    refine And.intro ?_ ihbs
+    intro a ha
+    cases a <;> simp [PolyTy.eraseBounds_idem]
+
+/-- Local (pre-`Ty.eraseBounds_substFvar`) helper for Path R term commutation. -/
+private theorem eraseBounds_substFvar_ty (Z : Nat) (U : Ty) (τ : Ty) :
+    Ty.eraseBounds (Ty.substFvar Z U τ) =
+      Ty.substFvar Z (Ty.eraseBounds U) (Ty.eraseBounds τ) := by
+  induction τ using Ty.rec_strong with
+  | prim _ => rfl
+  | arrow a b iha ihb =>
+    simp only [Ty.substFvar, Ty.eraseBounds_arrow, iha, ihb]
+  | bvar i => rfl
+  | fvar n =>
+    by_cases hn : n = Z
+    · simp only [Ty.substFvar, if_pos hn, Ty.eraseBounds_fvar]
+    · simp only [Ty.substFvar, if_neg hn, Ty.eraseBounds_fvar]
+  | customTy nm tys ih =>
+    simp only [Ty.substFvar, Ty.eraseBounds_customTy]
+    refine congrArg (Ty.customTy nm) ?_
+    have hsub (V : Ty) (ts : List Ty) :
+        TyList.substFvar Z V ts = ts.map (Ty.substFvar Z V) := by
+      induction ts with
+      | nil => rfl
+      | cons hd tl iht => simp only [TyList.substFvar, List.map_cons, iht]
+    rw [hsub, TyList.eraseBounds_eq_map, TyList.eraseBounds_eq_map, hsub, List.map_map,
+      List.map_map]
+    exact List.map_congr_left fun t ht => ih t ht
+  | bl lo hi e ih =>
+    simp only [Ty.substFvar, Ty.eraseBounds_bl, bareListTy, TyList.substFvar, ih]
+
+private theorem eraseBounds_substFvar_poly (Z : Nat) (U : Ty) (σ : PolyTy) :
+    PolyTy.eraseBounds (PolyTy.substFvar Z U σ) =
+      PolyTy.substFvar Z (Ty.eraseBounds U) (PolyTy.eraseBounds σ) := by
+  cases σ with
+  | mk n b =>
+    simp only [PolyTy.eraseBounds, PolyTy.substFvar, eraseBounds_substFvar_ty]
+
+private theorem BranchList.substTyFvar_eq_map_local (Z : Nat) (U : Ty)
+    (brs : List (MatchPattern × Expr)) :
+    BranchList.substTyFvar Z U brs = brs.map (fun pb => (pb.1, pb.2.substTyFvar Z U)) := by
+  induction brs with
+  | nil => rfl
+  | cons hd tl ih =>
+    obtain ⟨p, b⟩ := hd
+    simp only [BranchList.substTyFvar, List.map_cons, ih]
 
 theorem Expr.eraseBounds_substTyFvar (Z : Nat) (U : Ty) (e : Expr) :
     (e.substTyFvar Z U).eraseBounds =
       e.eraseBounds.substTyFvar Z (Ty.eraseBounds U) := by
-  sorry -- PathR
+  induction e using Expr.rec_strong with
+  | primLit _ | primBinOp _ | ctor _ => simp [Expr.eraseBounds, Expr.substTyFvar]
+  | var n tyArgs =>
+    simp only [Expr.eraseBounds, Expr.substTyFvar, Expr.var.injEq, true_and, List.map_map]
+    exact List.map_congr_left fun t _ => eraseBounds_substFvar_ty Z U t
+  | app _ _ ihf iharg => simp [Expr.eraseBounds, Expr.substTyFvar, ihf, iharg]
+  | lambda ann body ih =>
+    simp [Expr.eraseBounds, Expr.substTyFvar, ih]
+    cases ann with
+    | none => rfl
+    | some t =>
+      simp only [Option.map_some, Option.some.injEq]
+      exact eraseBounds_substFvar_ty Z U t
+  | letIn ann rhs body ihr ihb =>
+    simp [Expr.eraseBounds, Expr.substTyFvar, ihr, ihb]
+    cases ann with
+    | none => rfl
+    | some σ =>
+      simp only [Option.map_some, Option.some.injEq]
+      exact eraseBounds_substFvar_poly Z U σ
+  | match_ scrut branches ihs ihbs =>
+    simp only [Expr.eraseBounds, Expr.substTyFvar, ihs,
+      BranchList.substTyFvar_eq_map_local, List.map_map]
+    simp [Expr.match_.injEq]
+    intro p b hpb
+    exact ihbs p b hpb
+  | letRec anns bindings body ihbs ihb =>
+    simp only [Expr.eraseBounds, Expr.substTyFvar, ihb,
+      RecGroup.substTyFvar_eq_map, List.map_map]
+    simp [Expr.letRec.injEq]
+    constructor
+    · intro a ha
+      cases a with
+      | none => rfl
+      | some σ =>
+        simp only [Option.map_some, Function.comp_def, Option.some.injEq]
+        exact eraseBounds_substFvar_poly Z U σ
+    · exact ihbs
 
 theorem Expr.eraseBounds_substTyFvars (pairs : List (Nat × Ty)) (e : Expr) :
     (e.substTyFvars pairs).eraseBounds =
       e.eraseBounds.substTyFvars (pairs.map fun p => (p.1, Ty.eraseBounds p.2)) := by
-  sorry -- PathR
+  induction pairs generalizing e with
+  | nil => simp only [Expr.substTyFvars, List.map_nil]
+  | cons hd tl ih =>
+    obtain ⟨Z, U⟩ := hd
+    simp only [Expr.substTyFvars, List.map_cons]
+    -- LHS: erase (substFvars tl (substTyFvar Z U e))
+    --     = substFvars (map erase tl) (erase (substTyFvar Z U e))   [ih]
+    --     = substFvars (map erase tl) (substTyFvar Z (erase U) (erase e))
+    rw [ih, Expr.eraseBounds_substTyFvar]
+
+/-- `eraseBounds` fixes the bvar/fvar-only payload of `openVarsFrom`. -/
+private theorem eraseBounds_openVarsFrom_ty (d : Nat) (Xs : List Nat) (τ : Ty) :
+    Ty.eraseBounds (Ty.openVarsFrom d Xs τ) =
+      Ty.openVarsFrom d Xs (Ty.eraseBounds τ) := by
+  unfold Ty.openVarsFrom
+  induction τ using Ty.rec_strong with
+  | prim _ => rfl
+  | arrow a b iha ihb =>
+    simp only [Ty.instantiate, Ty.eraseBounds_arrow, iha, ihb]
+  | bvar i =>
+    simp only [Ty.instantiate, Ty.eraseBounds_bvar]
+    by_cases hi : i < d
+    · simp only [if_pos hi, Ty.eraseBounds_bvar]
+    · simp only [if_neg hi]
+      cases Xs[i - d]? with
+      | none => rfl
+      | some _ => rfl
+  | fvar n => rfl
+  | customTy nm tys ih =>
+    simp only [Ty.instantiate, Ty.eraseBounds_customTy]
+    refine congrArg (Ty.customTy nm) ?_
+    have hinst (σ : Nat → Ty) (ts : List Ty) :
+        TyList.instantiate σ ts = ts.map (Ty.instantiate σ) := by
+      induction ts with
+      | nil => rfl
+      | cons hd tl iht => simp only [TyList.instantiate, List.map_cons, iht]
+    rw [hinst, TyList.eraseBounds_eq_map, TyList.eraseBounds_eq_map, hinst, List.map_map,
+      List.map_map]
+    exact List.map_congr_left fun t ht => ih t ht
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate, Ty.eraseBounds_bl, bareListTy, TyList.instantiate, ih]
+
+private theorem RecAnn.params_eraseBounds (a : Option PolyTy) :
+    RecAnn.params (Option.map PolyTy.eraseBounds a) = RecAnn.params a := by
+  cases a with
+  | none => rfl
+  | some σ => simp only [RecAnn.params, Option.map_some, PolyTy.eraseBounds_paramCount]
+
+private theorem RecGroup.shieldDepths_eraseBounds (d : Nat) (anns : List (Option PolyTy))
+    (bs : List Expr) :
+    RecGroup.shieldDepths d (anns.map (Option.map PolyTy.eraseBounds)) bs =
+      RecGroup.shieldDepths d anns bs := by
+  induction bs generalizing anns with
+  | nil => cases anns <;> rfl
+  | cons hd tl ih =>
+    cases anns with
+    | nil => simp only [List.map_nil, RecGroup.shieldDepths]
+    | cons a as =>
+      simp only [List.map_cons, RecGroup.shieldDepths, RecAnn.params_eraseBounds, ih]
+
+private theorem RecGroup.openAnns_eraseBounds (d : Nat) (Xs : List Nat)
+    (anns : List (Option PolyTy)) :
+    (RecGroup.openAnns d Xs anns).map (Option.map PolyTy.eraseBounds) =
+      RecGroup.openAnns d Xs (anns.map (Option.map PolyTy.eraseBounds)) := by
+  simp only [RecGroup.openAnns, List.map_map]
+  apply List.map_congr_left
+  intro a _
+  cases a with
+  | none => rfl
+  | some σ =>
+    simp only [Option.map_some, Function.comp_def, PolyTy.eraseBounds,
+      eraseBounds_openVarsFrom_ty]
+
+private theorem BranchList.openTyVarsAux_eq_map_local (d : Nat) (Xs : List Nat)
+    (brs : List (MatchPattern × Expr)) :
+    BranchList.openTyVarsAux d Xs brs =
+      brs.map (fun pb => (pb.1, pb.2.openTyVarsAux d Xs)) := by
+  induction brs with
+  | nil => rfl
+  | cons hd tl ih =>
+    obtain ⟨p, b⟩ := hd
+    simp only [BranchList.openTyVarsAux, List.map_cons, ih]
+
+private theorem Expr.eraseBounds_openTyVarsAux (Xs : List Nat) :
+    ∀ (e : Expr) (d : Nat),
+      (e.openTyVarsAux d Xs).eraseBounds = e.eraseBounds.openTyVarsAux d Xs := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit _ | primBinOp _ | ctor _ => intro d; simp [Expr.eraseBounds, Expr.openTyVarsAux]
+  | var n tyArgs =>
+    intro d
+    simp only [Expr.eraseBounds, Expr.openTyVarsAux, Expr.var.injEq, true_and, List.map_map]
+    exact List.map_congr_left fun t _ => eraseBounds_openVarsFrom_ty d Xs t
+  | app _ _ ihf iharg =>
+    intro d; simp [Expr.eraseBounds, Expr.openTyVarsAux, ihf d, iharg d]
+  | lambda ann body ih =>
+    intro d
+    simp [Expr.eraseBounds, Expr.openTyVarsAux, ih d]
+    cases ann with
+    | none => rfl
+    | some t =>
+      simp only [Option.map_some, Option.some.injEq]
+      exact eraseBounds_openVarsFrom_ty d Xs t
+  | letIn ann rhs body ihr ihb =>
+    intro d
+    cases ann with
+    | none =>
+      simp [Expr.eraseBounds, Expr.openTyVarsAux, ihr d, ihb d]
+    | some σ =>
+      simp only [Expr.eraseBounds, Expr.openTyVarsAux, Option.map_some,
+        ihr (d + σ.paramCount), ihb d]
+      -- residual goal is scheme-body equality (paramCount preserved by erase)
+      cases σ with
+      | mk n b =>
+        simp only [PolyTy.eraseBounds, eraseBounds_openVarsFrom_ty]
+  | match_ scrut branches ihs ihbs =>
+    intro d
+    simp only [Expr.eraseBounds, Expr.openTyVarsAux, ihs d,
+      BranchList.openTyVarsAux_eq_map_local, List.map_map]
+    simp [Expr.match_.injEq]
+    intro p b hpb
+    exact ihbs p b hpb d
+  | letRec anns bindings body ihbs ihb =>
+    intro d
+    simp only [Expr.eraseBounds, Expr.openTyVarsAux, ihb d,
+      RecGroup.openTyVarsAux_eq_zip, RecGroup.shieldDepths_map,
+      RecGroup.shieldDepths_eraseBounds, List.map_map]
+    simp only [Expr.letRec.injEq]
+    refine ⟨?anns, ?binds, trivial⟩
+    case anns =>
+      exact RecGroup.openAnns_eraseBounds d Xs anns
+    case binds =>
+      -- (map erase bindings).zip depths = map (Prod.map erase id) (bindings.zip depths)
+      rw [List.zip_map_left]
+      simp only [List.map_map]
+      apply List.map_congr_left
+      intro p hp
+      obtain ⟨e, de⟩ := p
+      have he : e ∈ bindings := (List.of_mem_zip hp).1
+      -- erase (open de Xs e) = open de Xs (erase e)
+      simpa [Function.comp_def, Prod.map_apply] using ihbs e he de
 
 theorem Expr.eraseBounds_openTyVars (Xs : List Nat) (e : Expr) :
-    (e.openTyVars Xs).eraseBounds = e.eraseBounds.openTyVars Xs := by
-  sorry -- PathR
+    (e.openTyVars Xs).eraseBounds = e.eraseBounds.openTyVars Xs :=
+  Expr.eraseBounds_openTyVarsAux Xs e 0
 
 theorem Expr.eraseBounds_openBoundTyVars (ann : Option PolyTy) (Xs : List Nat) (e : Expr) :
     (Expr.openBoundTyVars ann Xs e).eraseBounds =
       Expr.openBoundTyVars (ann.map PolyTy.eraseBounds) Xs e.eraseBounds := by
-  sorry -- PathR
+  cases ann with
+  | none => simp only [Expr.openBoundTyVars, Option.map_none]
+  | some σ =>
+    simp only [Expr.openBoundTyVars, Option.map_some]
+    exact Expr.eraseBounds_openTyVars Xs e
 
 theorem Expr.eraseBounds_lambda (ann : Option Ty) (body : Expr) :
     (Expr.lambda ann body).eraseBounds =
       .lambda (ann.map Ty.eraseBounds) body.eraseBounds := by
-  sorry -- PathR
+  simp only [Expr.eraseBounds]
 
 theorem Expr.eraseBounds_letIn (ann : Option PolyTy) (rhs body : Expr) :
     (Expr.letIn ann rhs body).eraseBounds =
       .letIn (ann.map PolyTy.eraseBounds) rhs.eraseBounds body.eraseBounds := by
-  sorry -- PathR
+  simp only [Expr.eraseBounds]
 
 theorem Expr.eraseBounds_app (f arg : Expr) :
     (Expr.app f arg).eraseBounds = .app f.eraseBounds arg.eraseBounds := by
-  sorry -- PathR
+  simp only [Expr.eraseBounds]
 
 theorem Expr.eraseBounds_var (i : Nat) (tyArgs : List Ty) :
     (Expr.var i tyArgs).eraseBounds = .var i (tyArgs.map Ty.eraseBounds) := by
-  sorry -- PathR
+  simp only [Expr.eraseBounds]
 
 /-! ### Locally-closed-ness. -/
 

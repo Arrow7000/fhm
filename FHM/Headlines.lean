@@ -521,10 +521,11 @@ downstream that only needs one of the two conjuncts can project it out
 without re-deriving it. -/
 
 /-- Path R residual well-typedness (closed): pure HM `TypeOfElabHM` of the
-    erase-projected elaboratum. Real `e` may still carry BL anns for bounds.
-    Orthogonal to `AllMatchesExhaustive ctors e`. -/
+    erase-projected elaboratum **and** erased ctor field types. Real `e` / real
+    `ctors` may still carry BL; residual judgment does not. Orthogonal to
+    `AllMatchesExhaustive ctors e` (ops coverage on the decorated program). -/
 def WellTyped (ctors : CtorEnv) (e : Expr) : Prop :=
-  ∃ τ, TypeOfElabHM ⟨[], ctors⟩ e.eraseBounds τ
+  ∃ τ, TypeOfElabHM ⟨[], CtorEnv.eraseBounds ctors⟩ e.eraseBounds τ
 
 /-- A passport: a term that passed BOTH independent checks, carrying both
     proofs. Anything holding a `Safe ctors` can invoke `type_safety_star` on

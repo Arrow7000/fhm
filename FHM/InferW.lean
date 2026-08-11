@@ -454,6 +454,124 @@ theorem RecSpec.eraseBounds_bodyScheme (G : List Nat) (s : RecSpec) :
   | poly σ =>
     rfl
 
+/-- Annotation projection of a recursion-group spec under `eraseBounds`. -/
+theorem RecSpec.ann_eraseBounds (s : RecSpec) :
+    RecSpec.ann (RecSpec.eraseBounds s) =
+      (RecSpec.ann s).map PolyTy.eraseBounds := by
+  cases s <;> rfl
+
+theorem Ty.AreLC.eraseBounds {n : Nat} {Vs : List Ty} (h : Ty.AreLC n Vs) :
+    Ty.AreLC n (Vs.map Ty.eraseBounds) :=
+  ⟨by simpa using h.1, fun V hmem => by
+    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hmem
+    exact Ty.IsLC.eraseBounds (h.2 t ht)⟩
+
+theorem Ty.eraseBounds_wrapArrows (result : Ty) (args : List Ty) :
+    Ty.eraseBounds (Ty.wrapArrows result args) =
+      Ty.wrapArrows (Ty.eraseBounds result) (args.map Ty.eraseBounds) := by
+  induction args generalizing result with
+  | nil => rfl
+  | cons a as ih =>
+    simp only [Ty.wrapArrows, Ty.eraseBounds_arrow, List.map_cons, ih]
+
+private theorem Ty.map_eraseBounds_bvarRangeFrom' :
+    ∀ (s k : Nat), (Ty.bvarRangeFrom s k).map Ty.eraseBounds = Ty.bvarRangeFrom s k
+  | _, 0 => rfl
+  | s, k + 1 => by
+    simp only [Ty.bvarRangeFrom, List.map_cons, Ty.eraseBounds_bvar,
+      Ty.map_eraseBounds_bvarRangeFrom' (s + 1) k]
+
+private theorem Ty.map_eraseBounds_bvarRange' (k : Nat) :
+    (Ty.bvarRange k).map Ty.eraseBounds = Ty.bvarRange k :=
+  Ty.map_eraseBounds_bvarRangeFrom' 0 k
+
+/-- Erasing ctor fields projects through `Ctor.toTy` (wrapArrows + bvarRange). -/
+theorem Ctor.eraseBounds_toTy (c : Ctor) :
+    (Ctor.eraseBounds c).toTy = PolyTy.eraseBounds c.toTy := by
+  cases c with | mk pc tn contents _ _ =>
+  change
+    ({ paramCount := pc,
+       body := Ty.wrapArrows (.customTy tn (Ty.bvarRange pc))
+         (contents.map Ty.eraseBounds) } : PolyTy) =
+    { paramCount := pc,
+      body := Ty.eraseBounds
+        (Ty.wrapArrows (.customTy tn (Ty.bvarRange pc)) contents) }
+  simp only [Ty.eraseBounds_wrapArrows, Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map,
+    Ty.map_eraseBounds_bvarRange']
+
+theorem Env.eraseBounds_append (env₁ env₂ : Env) :
+    Env.eraseBounds (env₁ ++ env₂) =
+      Env.eraseBounds env₁ ++ Env.eraseBounds env₂ := by
+  simp only [Env.eraseBounds, List.map_append]
+
+theorem Env.eraseBounds_map_mkTrivial (ts : List Ty) :
+    Env.eraseBounds (ts.map PolyTy.mkTrivial) =
+      (ts.map Ty.eraseBounds).map PolyTy.mkTrivial := by
+  simp only [Env.eraseBounds, List.map_map, Function.comp_def, PolyTy.eraseBounds_mkTrivial]
+
+theorem RecSpecs.rhsCtx_eraseBounds (ctx : Ctx) (specs : List RecSpec) (G Xs : List Nat) :
+    (RecSpecs.rhsCtx ctx specs G Xs).eraseBounds =
+      RecSpecs.rhsCtx ctx.eraseBounds (specs.map RecSpec.eraseBounds) G Xs := by
+  simp only [RecSpecs.rhsCtx, Ctx.eraseBounds, Env.eraseBounds, List.map_append, List.map_map]
+  refine congrArg₂ Ctx.mk ?_ rfl
+  refine congrArg₂ List.append ?_ rfl
+  exact List.map_congr_left fun s _ => RecSpec.eraseBounds_rhsEntry G Xs s
+
+theorem RecSpecs.bodyCtx_eraseBounds (ctx : Ctx) (specs : List RecSpec) (G : List Nat) :
+    (RecSpecs.bodyCtx ctx specs G).eraseBounds =
+      RecSpecs.bodyCtx ctx.eraseBounds (specs.map RecSpec.eraseBounds) G := by
+  simp only [RecSpecs.bodyCtx, Ctx.eraseBounds, Env.eraseBounds, List.map_append, List.map_map]
+  refine congrArg₂ Ctx.mk ?_ rfl
+  refine congrArg₂ List.append ?_ rfl
+  exact List.map_congr_left fun s _ => RecSpec.eraseBounds_bodyScheme G s
+
+theorem RecSpecs.WF.eraseBounds {anns : List (Option PolyTy)} {bindings : List Expr}
+    {specs : List RecSpec} {G : List Nat} (hwf : RecSpecs.WF anns bindings specs G) :
+    RecSpecs.WF (anns.map (Option.map PolyTy.eraseBounds))
+      (bindings.map Expr.eraseBounds) (specs.map RecSpec.eraseBounds) G where
+  anns_eq := by
+    rw [List.map_map, ← hwf.anns_eq, List.map_map]
+    exact List.map_congr_left fun s _ => RecSpec.ann_eraseBounds s
+  length := by simpa [List.length_map] using hwf.length
+  nodup := hwf.nodup
+  mono_lc := by
+    intro τ hτ
+    obtain ⟨s, hs, heq⟩ := List.mem_map.mp hτ
+    cases s with
+    | mono τ₀ =>
+      injection heq with hττ
+      rw [← hττ]
+      exact Ty.IsLC.eraseBounds (hwf.mono_lc τ₀ hs)
+    | poly _ => exact RecSpec.noConfusion heq
+  poly_wf := by
+    intro σ hσ
+    obtain ⟨s, hs, heq⟩ := List.mem_map.mp hσ
+    cases s with
+    | mono _ => exact RecSpec.noConfusion heq
+    | poly σ₀ =>
+      injection heq with hσσ
+      rw [← hσσ]
+      exact PolyTy.WF.eraseBounds (hwf.poly_wf σ₀ hs)
+/-- Membership of an erased pair in a pointwise-erased zip. -/
+private theorem List.mem_zip_map_eraseBounds
+    {bindings : List Expr} {specs : List RecSpec} {p : Expr × RecSpec}
+    (hp : p ∈ (bindings.map Expr.eraseBounds).zip (specs.map RecSpec.eraseBounds)) :
+    ∃ e s, (e, s) ∈ bindings.zip specs ∧
+      p = (e.eraseBounds, RecSpec.eraseBounds s) := by
+  induction bindings generalizing specs with
+  | nil =>
+    cases specs <;> simp at hp
+  | cons e es ih =>
+    cases specs with
+    | nil => simp at hp
+    | cons s ss =>
+      simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at hp
+      cases hp with
+      | inl heq => exact ⟨e, s, List.mem_cons_self, heq⟩
+      | inr h' =>
+        obtain ⟨e', s', hmem, heq⟩ := ih h'
+        exact ⟨e', s', List.mem_cons_of_mem _ hmem, heq⟩
+
 /-- Path R: structural TypeOf projects to pure HM on erased ctx, term, and result.
 
 Same judgment family; subject is `e.eraseBounds` (binder anns / tyArgs erased).
@@ -461,7 +579,155 @@ Not a pipeline step — residual bridge only. -/
 theorem TypeOfElabHM.eraseBounds_of {ctx : Ctx} {e : Expr} {τ : Ty}
     (h : TypeOfElabHM ctx e τ) :
     TypeOfElabHM ctx.eraseBounds e.eraseBounds (Ty.eraseBounds τ) := by
-  sorry -- PathR
+  induction h using TypeOfElabHM.rec_strong with
+  | primLitUnit =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_prim]; exact .primLitUnit
+  | primLitInt =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_prim]; exact .primLitInt
+  | primLitNat =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_prim]; exact .primLitNat
+  | primLitChar =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_prim]; exact .primLitChar
+  | primBinOpIntAdd =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow, Ty.eraseBounds_prim]
+    exact .primBinOpIntAdd
+  | primBinOpIntSub =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow, Ty.eraseBounds_prim]
+    exact .primBinOpIntSub
+  | primBinOpIntLt _ _ ihtrue ihfalse =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow, Ty.eraseBounds_prim,
+      Ty.eraseBounds_customTy, TyList.eraseBounds_nil] at ihtrue ihfalse ⊢
+    exact .primBinOpIntLt ihtrue ihfalse
+  | primBinOpCharLt _ _ ihtrue ihfalse =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow, Ty.eraseBounds_prim,
+      Ty.eraseBounds_customTy, TyList.eraseBounds_nil] at ihtrue ihfalse ⊢
+    exact .primBinOpCharLt ihtrue ihfalse
+  | app _ _ ihf ihinput =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow] at ihf ⊢
+    exact .app ihf ihinput
+  | @lambda paramTy ann bodyCtx ctx body bodyTy hpc hann heq hbody ihbody =>
+    subst heq
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow]
+    refine TypeOfElabHM.lambda (Ty.IsLC.eraseBounds hpc)
+      (Option.Pins.map_eraseBounds hann) rfl ?_
+    simpa only [Ctx.eraseBounds, Env.eraseBounds_cons, PolyTy.eraseBounds_mkTrivial]
+      using ihbody
+  | @var dbl polyTy tyArgs ty ctx hlook hlc hinst =>
+    simp only [Expr.eraseBounds, Ctx.eraseBounds]
+    refine TypeOfElabHM.var (polyTy := PolyTy.eraseBounds polyTy) ?_
+      (Ty.AreLC.eraseBounds hlc) ?_
+    · -- env lookup projects through Env.eraseBounds
+      have hlook' := congrArg (Option.map PolyTy.eraseBounds) hlook
+      simpa [Env.eraseBounds_getElem?, Option.map_some] using hlook'
+    · change InstantiatesBy (tyArgs.map Ty.eraseBounds)
+        (PolyTy.eraseBounds polyTy).body (Ty.eraseBounds ty)
+      simpa [PolyTy.eraseBounds_body] using InstantiatesBy.eraseBounds hinst
+  | @ctor name ctorr tyArgs ty ctx hlook htyargs hinst =>
+    simp only [Expr.eraseBounds, Ctx.eraseBounds]
+    refine TypeOfElabHM.ctor (ctor := Ctor.eraseBounds ctorr)
+      (tyArgs := tyArgs.map Ty.eraseBounds) ?_ ?_ ?_
+    · have hlook' := congrArg (Option.map Ctor.eraseBounds) hlook
+      simpa [CtorEnv.eraseBounds_get?, Option.map_some] using hlook'
+    · intro tyArg hmem
+      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hmem
+      exact Ty.IsLC.eraseBounds (htyargs t ht)
+    · change InstantiatesBy (tyArgs.map Ty.eraseBounds)
+        (Ctor.eraseBounds ctorr).toTy.body (Ty.eraseBounds ty)
+      rw [Ctor.eraseBounds_toTy, PolyTy.eraseBounds_body]
+      exact InstantiatesBy.eraseBounds hinst
+  | @letIn ann ctx boundExpr bodyCtx body bodyTy M L hwf hann hcofin heq hbody ihcofin ihbody =>
+    subst heq
+    simp only [Expr.eraseBounds]
+    refine TypeOfElabHM.letIn (M := PolyTy.eraseBounds M) (L := L)
+      (PolyTy.WF.eraseBounds hwf) (Option.Pins.map_eraseBounds_poly hann) ?_ rfl ?_
+    · intro Xs hf
+      have hf' : FreshNames L M.paramCount Xs := by
+        simpa [PolyTy.eraseBounds_paramCount] using hf
+      have hbe := ihcofin Xs hf'
+      rw [Expr.eraseBounds_openBoundTyVars, PolyTy.eraseBounds_openVars] at hbe
+      exact hbe
+    · simpa only [Ctx.eraseBounds, Env.eraseBounds_cons] using ihbody
+  | @match_ ctx scrutinee scrutTy branches resultTy hscrut hne hbrs ihscrut ihbrs =>
+    simp only [Expr.eraseBounds]
+    refine TypeOfElabHM.match_ ihscrut ?_ ?_
+    · intro hcontra
+      obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil hne
+      simp [hb] at hcontra
+    · intro branch' hmem'
+      obtain ⟨⟨pat, body⟩, hmem, rfl⟩ := List.mem_map.mp hmem'
+      rcases ihbrs (pat, body) hmem with
+        ⟨ct, c, n, tyArgs, instContents, hpat, hspec, _, hbodyIH⟩ | ⟨hpat, _, hbodyIH⟩
+      · subst hpat
+        have hlook' :
+            LookupList.get? ctx.eraseBounds.ctors c = some (Ctor.eraseBounds ct) := by
+          have := congrArg (Option.map Ctor.eraseBounds) hspec.lookup
+          simpa [Ctx.eraseBounds, CtorEnv.eraseBounds_get?, Option.map_some] using this
+        have hscrut' :
+            Ty.eraseBounds scrutTy =
+              .customTy (Ctor.eraseBounds ct).tyName (tyArgs.map Ty.eraseBounds) := by
+          rw [hspec.scrut_eq]
+          simp only [Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map,
+            Ctor.eraseBounds_tyName]
+        have hfields' :
+            List.Forall₂ (InstantiatesBy (tyArgs.map Ty.eraseBounds))
+              (Ctor.eraseBounds ct).contents (instContents.map Ty.eraseBounds) := by
+          simpa [Ctor.eraseBounds_contents] using
+            InstantiatesBy.forall2_eraseBounds hspec.fields
+        have hbody' :
+            TypeOfElabHM
+              ⟨(instContents.map Ty.eraseBounds).map PolyTy.mkTrivial ++
+                  ctx.eraseBounds.env,
+                ctx.eraseBounds.ctors⟩
+              body.eraseBounds (Ty.eraseBounds resultTy) := by
+          simpa only [Ctx.eraseBounds, Env.eraseBounds_append,
+            Env.eraseBounds_map_mkTrivial] using hbodyIH
+        refine TypeOfElabMatchBranch.mk
+          ⟨hlook', hscrut',
+            by simpa [Ctor.eraseBounds_paramCount, List.length_map] using hspec.arity,
+            by simpa [Ctor.eraseBounds_contents, List.length_map] using hspec.bind_count,
+            hfields'⟩
+          rfl hbody'
+      · subst hpat
+        exact TypeOfElabMatchBranch.wildcard hbodyIH
+  | @letRec ctx bodyCtx anns bindings specs G L body ρ hwf hmono hpoly heq hbody
+      ihmono ihpoly ihbody =>
+    subst heq
+    simp only [Expr.eraseBounds]
+    refine TypeOfElabHM.letRec
+      (bodyCtx := RecSpecs.bodyCtx ctx.eraseBounds (specs.map RecSpec.eraseBounds) G)
+      (specs := specs.map RecSpec.eraseBounds) (G := G) (L := L)
+      (RecSpecs.WF.eraseBounds hwf) ?_ ?_ ?_ ?_
+    · intro Xs hf p hp τ hτ
+      obtain ⟨e₀, s₀, hmem₀, hpEq⟩ := List.mem_zip_map_eraseBounds hp
+      subst hpEq
+      cases s₀ with
+      | mono τ₀ =>
+        injection hτ with hττ
+        subst hττ
+        have hmono₀ := ihmono Xs hf (e₀, .mono τ₀) hmem₀ τ₀ rfl
+        rw [Ty.eraseBounds_renameG, RecSpecs.rhsCtx_eraseBounds] at hmono₀
+        exact hmono₀
+      | poly _ =>
+        simp only [RecSpec.eraseBounds] at hτ
+        exact RecSpec.noConfusion hτ
+    · intro Xs hf p hp σ hσ Ys hfY
+      obtain ⟨e₀, s₀, hmem₀, hpEq⟩ := List.mem_zip_map_eraseBounds hp
+      subst hpEq
+      cases s₀ with
+      | mono _ =>
+        simp only [RecSpec.eraseBounds] at hσ
+        exact RecSpec.noConfusion hσ
+      | poly σ₀ =>
+        injection hσ with hσσ
+        subst hσσ
+        have hfY' : FreshNames (L ++ Xs) σ₀.paramCount Ys := by
+          simpa [PolyTy.eraseBounds_paramCount] using hfY
+        have hpoly₀ := ihpoly Xs hf (e₀, .poly σ₀) hmem₀ σ₀ rfl Ys hfY'
+        rw [Expr.eraseBounds_openTyVars, PolyTy.eraseBounds_openVars,
+          RecSpecs.rhsCtx_eraseBounds] at hpoly₀
+        exact hpoly₀
+    · rfl
+    · rwa [RecSpecs.bodyCtx_eraseBounds] at ihbody
 
 theorem Ty.instantiate_eq_self_of_bvars_lt {σ : Nat → Ty} {d : Nat} {t : Ty}
     (hσ : ∀ i, i < d → σ i = .bvar i) (h : ContainsBvarsUpTo d t) :
@@ -710,7 +976,14 @@ theorem TypeOfElabHM.onSubst_eraseBounds {ctx : Ctx} {e : Expr} {τ : Ty} (S : S
     TypeOfElabHM (S.onCtx ctx.eraseBounds).eraseBounds
       ((e.eraseBounds).substTyFvars S).eraseBounds
       (Ty.eraseBounds (S.onTy τ)) := by
-  sorry -- PathR
+  -- Residual typing → structural onSubst on already-erased subject → re-erase.
+  have hS := TypeOfElabHM.onSubst S h_lc h
+  -- hS : TypeOfElabHM (S.onCtx ctx.eraseBounds)
+  --        ((e.eraseBounds).substTyFvars S) (S.onTy (Ty.eraseBounds τ))
+  have herase := TypeOfElabHM.eraseBounds_of hS
+  -- herase concludes at Ty.eraseBounds (S.onTy (Ty.eraseBounds τ));
+  -- collapse to Ty.eraseBounds (S.onTy τ) via the onTy/erase commute.
+  rwa [Ty.eraseBounds_onTy_erase] at herase
 
 /-- `erase` after `onPolyTy` ignores BL already present in the scheme body. -/
 theorem PolyTy.eraseBounds_onPolyTy_erase (S : Subst) (σ : PolyTy) :
@@ -726,10 +999,29 @@ theorem Env.eraseBounds_onEnv_erase (S : Subst) (env : Env) :
   refine List.map_congr_left fun σ _ => ?_
   simpa [Function.comp] using PolyTy.eraseBounds_onPolyTy_erase S σ
 
+/-- Double-erase of a constructor is a no-op (field types are already bare). -/
+theorem Ctor.eraseBounds_idem (c : Ctor) :
+    Ctor.eraseBounds (Ctor.eraseBounds c) = Ctor.eraseBounds c := by
+  cases h : Ctor.eraseBounds c with | mk pc tn contents bound closed =>
+  have hc : contents.map Ty.eraseBounds = contents := by
+    have := congrArg Ctor.contents h
+    simp only [Ctor.eraseBounds_contents] at this
+    rw [← this, List.map_map]
+    exact List.map_congr_left fun _ _ => Ty.eraseBounds_idem _
+  simp only [Ctor.eraseBounds, hc]
+
+theorem CtorEnv.eraseBounds_idem (ctors : CtorEnv) :
+    CtorEnv.eraseBounds (CtorEnv.eraseBounds ctors) = CtorEnv.eraseBounds ctors := by
+  induction ctors with
+  | nil => rfl
+  | cons hd tl ih =>
+    cases hd
+    simp only [CtorEnv.eraseBounds_cons, Ctor.eraseBounds_idem, ih]
+
 /-- Ctx form: double-erase after `onCtx` collapses to single erase on the image. -/
 theorem Ctx.eraseBounds_onCtx_erase (S : Subst) (ctx : Ctx) :
     (S.onCtx ctx.eraseBounds).eraseBounds = (S.onCtx ctx).eraseBounds := by
-  simp only [Ctx.eraseBounds, Subst.onCtx, Env.eraseBounds_onEnv_erase]
+  simp only [Ctx.eraseBounds, Subst.onCtx, Env.eraseBounds_onEnv_erase, CtorEnv.eraseBounds_idem]
 
 /-- Preferred residual transport: conclude at `(S.onCtx ctx).eraseBounds`. -/
 theorem TypeOfElabHM.onSubst_eraseBounds' {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
@@ -738,7 +1030,8 @@ theorem TypeOfElabHM.onSubst_eraseBounds' {ctx : Ctx} {e : Expr} {τ : Ty} (S : 
     TypeOfElabHM (S.onCtx ctx).eraseBounds
       ((e.eraseBounds).substTyFvars S).eraseBounds
       (Ty.eraseBounds (S.onTy τ)) := by
-  sorry -- PathR
+  have key := TypeOfElabHM.onSubst_eraseBounds S h_lc h
+  rwa [Ctx.eraseBounds_onCtx_erase] at key
 
 theorem Unifies.congr_onTy {S R : Subst} {τ₁ τ₂ : Ty}
     (h : Unifies S τ₁ τ₂) : Unifies R (S.onTy τ₁) (S.onTy τ₂) := by
@@ -2141,15 +2434,239 @@ def Expr.letRecElab (G : List Nat) (anns : List (Option PolyTy)) (rawBindings : 
   Expr.letRecElabNest G anns rawBindings.length rawBindings
     (((List.range rawBindings.length).zip specs).reverse) body
 
-/-! ### Path R: erase commutes with Infer-local term rewrites (statements)
+/-! ### Path R: erase commutes with Infer-local term rewrites
 
 Needed by residual packing / `Infer.sound` for let and letRec elaborata.
-Proofs fenced for the soundness workhorse. -/
+Mirrors Core's `eraseBounds_openTyVarsAux` for the close direction. -/
+
+/-- `closeOverFrom` only rewrites fvars→bvars; commutes with erase. -/
+private theorem Ty.eraseBounds_closeOverFrom (d : Nat) (Xs : List Nat) (τ : Ty) :
+    Ty.eraseBounds (Ty.closeOverFrom d Xs τ) =
+      Ty.closeOverFrom d Xs (Ty.eraseBounds τ) := by
+  induction τ using Ty.rec_strong with
+  | prim _ => rfl
+  | arrow a b iha ihb =>
+    simp only [Ty.closeOverFrom, Ty.eraseBounds_arrow, iha, ihb]
+  | bvar i => rfl
+  | fvar n =>
+    simp only [Ty.closeOverFrom, Ty.eraseBounds_fvar]
+    cases Xs.idxOf? n with
+    | none => rfl
+    | some _ => rfl
+  | customTy nm tys ih =>
+    simp only [Ty.closeOverFrom, Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map,
+      TyList.closeOverFrom_eq_map, List.map_map]
+    congr 1
+    exact List.map_congr_left fun t ht => ih t ht
+  | bl lo hi e ih =>
+    simp only [Ty.closeOverFrom, Ty.eraseBounds_bl, bareListTy, TyList.closeOverFrom, ih]
+
+/-- Local copy of Core's private `RecAnn.params_eraseBounds` (paramCount fixed). -/
+private theorem RecAnn.params_eraseBounds' (a : Option PolyTy) :
+    RecAnn.params (Option.map PolyTy.eraseBounds a) = RecAnn.params a := by
+  cases a with
+  | none => rfl
+  | some σ => simp only [RecAnn.params, Option.map_some, PolyTy.eraseBounds_paramCount]
+
+/-- Local copy of Core's private `RecGroup.shieldDepths_eraseBounds`. -/
+private theorem RecGroup.shieldDepths_eraseBounds' (d : Nat) (anns : List (Option PolyTy))
+    (bs : List Expr) :
+    RecGroup.shieldDepths d (anns.map (Option.map PolyTy.eraseBounds)) bs =
+      RecGroup.shieldDepths d anns bs := by
+  induction bs generalizing anns with
+  | nil => cases anns <;> rfl
+  | cons hd tl ih =>
+    cases anns with
+    | nil => simp only [List.map_nil, RecGroup.shieldDepths]
+    | cons a as =>
+      simp only [List.map_cons, RecGroup.shieldDepths, RecAnn.params_eraseBounds', ih]
+
+/-- `closeAnns` then pointwise erase = erase anns then closeAnns. -/
+private theorem RecGroup.closeAnns_eraseBounds (d : Nat) (Xs : List Nat)
+    (anns : List (Option PolyTy)) :
+    (RecGroup.closeAnns d Xs anns).map (Option.map PolyTy.eraseBounds) =
+      RecGroup.closeAnns d Xs (anns.map (Option.map PolyTy.eraseBounds)) := by
+  simp only [RecGroup.closeAnns, List.map_map]
+  apply List.map_congr_left
+  intro a _
+  cases a with
+  | none => rfl
+  | some σ =>
+    cases σ with
+    | mk pc b =>
+      simp only [Option.map_some, Function.comp_def, PolyTy.eraseBounds,
+        Ty.eraseBounds_closeOverFrom]
+
+private theorem Expr.eraseBounds_closeTyVarsAux (Xs : List Nat) :
+    ∀ (e : Expr) (d : Nat),
+      (e.closeTyVarsAux d Xs).eraseBounds = e.eraseBounds.closeTyVarsAux d Xs := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit _ | primBinOp _ | ctor _ =>
+    intro d; simp [Expr.closeTyVarsAux, Expr.eraseBounds]
+  | var n tyArgs =>
+    intro d
+    simp only [Expr.closeTyVarsAux, Expr.eraseBounds, Expr.var.injEq, true_and, List.map_map]
+    exact List.map_congr_left fun t _ => Ty.eraseBounds_closeOverFrom d Xs t
+  | app _ _ ihf iharg =>
+    intro d; simp [Expr.closeTyVarsAux, Expr.eraseBounds, ihf d, iharg d]
+  | lambda ann body ih =>
+    intro d
+    simp [Expr.closeTyVarsAux, Expr.eraseBounds, ih d]
+    cases ann with
+    | none => rfl
+    | some t =>
+      simp only [Option.map_some, Option.some.injEq]
+      exact Ty.eraseBounds_closeOverFrom d Xs t
+  | letIn ann rhs body ihr ihb =>
+    intro d
+    cases ann with
+    | none =>
+      simp [Expr.closeTyVarsAux, Expr.eraseBounds, ihr d, ihb d]
+    | some σ =>
+      cases σ with
+      | mk pc b =>
+        simp only [Expr.closeTyVarsAux, Expr.eraseBounds, Option.map_some,
+          PolyTy.eraseBounds, ihr (d + pc), ihb d, Ty.eraseBounds_closeOverFrom]
+  | match_ scrut branches ihs ihbs =>
+    intro d
+    simp only [Expr.closeTyVarsAux, Expr.eraseBounds, ihs d,
+      BranchList.closeTyVarsAux_eq_map, List.map_map]
+    -- match_.injEq leaves a pointwise goal on branch bodies
+    simp [Expr.match_.injEq]
+    intro p b hpb
+    exact ihbs p b hpb d
+  | letRec anns bindings body ihbs ihb =>
+    intro d
+    simp only [Expr.closeTyVarsAux, Expr.eraseBounds, ihb d,
+      RecGroup.closeTyVarsAux_eq_zip, RecGroup.shieldDepths_map,
+      RecGroup.shieldDepths_eraseBounds', List.map_map]
+    simp only [Expr.letRec.injEq]
+    refine ⟨?anns, ?binds, trivial⟩
+    case anns =>
+      exact RecGroup.closeAnns_eraseBounds d Xs anns
+    case binds =>
+      -- zip (map erase bindings) depths = map (Prod.map erase id) (zip bindings depths)
+      rw [List.zip_map_left]
+      simp only [List.map_map]
+      apply List.map_congr_left
+      intro p hp
+      obtain ⟨e, de⟩ := p
+      have he : e ∈ bindings := (List.of_mem_zip hp).1
+      simpa [Function.comp_def, Prod.map_apply] using ihbs e he de
 
 /-- Closing scoped fvars then erase = erase then close (same name list). -/
 theorem Expr.eraseBounds_closeTyVars (Xs : List Nat) (e : Expr) :
-    (e.closeTyVars Xs).eraseBounds = e.eraseBounds.closeTyVars Xs := by
-  sorry -- PathR
+    (e.closeTyVars Xs).eraseBounds = e.eraseBounds.closeTyVars Xs :=
+  Expr.eraseBounds_closeTyVarsAux Xs e 0
+
+/-- Term-var shifting never touches type payloads, so it commutes with erase. -/
+private theorem Expr.eraseBounds_shiftFrom (threshold n : Nat) :
+    ∀ (e : Expr), (e.shiftFrom threshold n).eraseBounds =
+      e.eraseBounds.shiftFrom threshold n := by
+  intro e
+  induction e using Expr.rec_strong generalizing threshold with
+  | primLit _ | primBinOp _ | ctor _ =>
+    simp [Expr.shiftFrom, Expr.eraseBounds]
+  | var i tyArgs =>
+    by_cases h : i < threshold
+    · simp [Expr.shiftFrom, Expr.eraseBounds, h]
+    · simp [Expr.shiftFrom, Expr.eraseBounds, h]
+  | app _ _ ihf iharg =>
+    simp [Expr.shiftFrom, Expr.eraseBounds, ihf, iharg]
+  | lambda ann body ih =>
+    simp [Expr.shiftFrom, Expr.eraseBounds, ih]
+  | letIn ann rhs body ihr ihb =>
+    simp [Expr.shiftFrom, Expr.eraseBounds, ihr, ihb]
+  | match_ scrut branches ihs ihbs =>
+    simp only [Expr.shiftFrom, Expr.eraseBounds, ihs]
+    congr 1
+    induction branches with
+    | nil => rfl
+    | cons hd tl ihtl =>
+      obtain ⟨p, b⟩ := hd
+      change (p, (b.shiftFrom (threshold + p.bindCount) n).eraseBounds)
+          :: _ = (p, b.eraseBounds.shiftFrom (threshold + p.bindCount) n) :: _
+      rw [ihbs p b List.mem_cons_self,
+        ihtl (fun p' b' hmem => ihbs p' b' (List.mem_cons_of_mem _ hmem))]
+  | letRec anns bindings body ihbs ihb =>
+    simp only [Expr.shiftFrom, Expr.eraseBounds, ihb, RecGroup.shiftFrom_eq_map,
+      List.map_map, List.length_map]
+    -- residual: map (erase ∘ shift thr) = map (shift thr ∘ erase) on bindings
+    refine congrArg
+      (fun bs =>
+        Expr.letRec (anns.map (Option.map PolyTy.eraseBounds)) bs
+          (body.eraseBounds.shiftFrom (threshold + bindings.length) n)) ?_
+    apply List.map_congr_left
+    intro e he
+    exact ihbs e he (threshold + bindings.length)
+
+/-- `bvarRange` is pure bvars; erase is a no-op pointwise. -/
+private theorem Ty.map_eraseBounds_bvarRangeFrom :
+    ∀ (s k : Nat), (Ty.bvarRangeFrom s k).map Ty.eraseBounds = Ty.bvarRangeFrom s k
+  | _, 0 => rfl
+  | s, k + 1 => by
+    simp only [Ty.bvarRangeFrom, List.map_cons, Ty.eraseBounds_bvar,
+      Ty.map_eraseBounds_bvarRangeFrom (s + 1) k]
+
+private theorem Ty.map_eraseBounds_bvarRange (k : Nat) :
+    (Ty.bvarRange k).map Ty.eraseBounds = Ty.bvarRange k :=
+  Ty.map_eraseBounds_bvarRangeFrom 0 k
+
+/-- Nest-level erase commute for the Λ-outside elaboratum. -/
+private theorem Expr.eraseBounds_letRecElabNest (G : List Nat) (anns : List (Option PolyTy))
+    (n : Nat) (rawBindings : List Expr) (members : List (Nat × RecSpec)) (body : Expr) :
+    (Expr.letRecElabNest G anns n rawBindings members body).eraseBounds =
+      Expr.letRecElabNest G (anns.map (Option.map PolyTy.eraseBounds)) n
+        (rawBindings.map Expr.eraseBounds)
+        (members.map fun p => (p.1, RecSpec.eraseBounds p.2))
+        body.eraseBounds := by
+  induction members with
+  | nil =>
+    simp only [Expr.letRecElabNest, List.map_nil]
+  | cons hd rest ih =>
+    obtain ⟨i, s⟩ := hd
+    cases s with
+    | mono τ =>
+      -- Unfold both sides to a letIn of genGroup / closeTyVars-of-letRec / nest-rest.
+      simp only [Expr.letRecElabNest, List.map_cons, RecSpec.eraseBounds,
+        Expr.eraseBounds_letIn, Option.map_some, PolyTy.eraseBounds_genGroup, ih]
+      have hgf : Ty.genFilter G (Ty.eraseBounds τ) = Ty.genFilter G τ :=
+        Ty.genFilter_eraseBounds G τ
+      -- Peel letIn to the bound expression (ann/body already agree via simp+ih).
+      refine congrArg
+        (fun r =>
+          Expr.letIn (some (PolyTy.genGroup G (Ty.eraseBounds τ))) r
+            (Expr.letRecElabNest G (anns.map (Option.map PolyTy.eraseBounds)) n
+              (rawBindings.map Expr.eraseBounds)
+              (rest.map fun p => (p.1, RecSpec.eraseBounds p.2)) body.eraseBounds)) ?_
+      -- erase (closeTyVars Xs e) = closeTyVars Xs (erase e); genFilter invariant
+      rw [Expr.eraseBounds_closeTyVars, hgf]
+      refine congrArg (Expr.closeTyVars (Ty.genFilter G τ)) ?_
+      simp only [Expr.eraseBounds, List.map_map, Expr.eraseBounds_var, List.map_nil]
+      refine congrArg (fun bs =>
+          Expr.letRec (anns.map (Option.map PolyTy.eraseBounds)) bs (Expr.var i [])) ?_
+      apply List.map_congr_left
+      intro e _
+      exact Expr.eraseBounds_shiftFrom n (n - 1 - i) e
+    | poly σ =>
+      simp only [Expr.letRecElabNest, List.map_cons, RecSpec.eraseBounds,
+        Expr.eraseBounds_letIn, Option.map_some, ih]
+      -- Peel letIn to the bound expression.
+      refine congrArg
+        (fun r =>
+          Expr.letIn (some (PolyTy.eraseBounds σ)) r
+            (Expr.letRecElabNest G (anns.map (Option.map PolyTy.eraseBounds)) n
+              (rawBindings.map Expr.eraseBounds)
+              (rest.map fun p => (p.1, RecSpec.eraseBounds p.2)) body.eraseBounds)) ?_
+      simp only [Expr.eraseBounds, List.map_map, Expr.eraseBounds_var,
+        PolyTy.eraseBounds_paramCount, Ty.map_eraseBounds_bvarRange]
+      refine congrArg (fun bs =>
+          Expr.letRec (anns.map (Option.map PolyTy.eraseBounds)) bs
+            (Expr.var i (Ty.bvarRange σ.paramCount))) ?_
+      apply List.map_congr_left
+      intro e _
+      exact Expr.eraseBounds_shiftFrom n (n - 1 - i) e
 
 /-- Erase of the Λ-outside letRec elaboratum is the elaboratum of erased pieces. -/
 theorem Expr.eraseBounds_letRecElab (G : List Nat) (anns : List (Option PolyTy))
@@ -2158,7 +2675,17 @@ theorem Expr.eraseBounds_letRecElab (G : List Nat) (anns : List (Option PolyTy))
       Expr.letRecElab G (anns.map (Option.map PolyTy.eraseBounds))
         (rawBindings.map Expr.eraseBounds)
         (specs.map RecSpec.eraseBounds) body.eraseBounds := by
-  sorry -- PathR
+  simp only [Expr.letRecElab, List.length_map]
+  -- members-map of erase = reverse of (range.zip (specs.map erase))
+  have hmem :
+      (((List.range rawBindings.length).zip specs).reverse).map
+          (fun p => (p.1, RecSpec.eraseBounds p.2)) =
+        ((List.range rawBindings.length).zip (specs.map RecSpec.eraseBounds)).reverse := by
+    rw [List.map_reverse, List.reverse_inj]
+    -- zip_map_right: l₁.zip (l₂.map f) = (l₁.zip l₂).map (Prod.map id f)
+    exact (List.zip_map_right (f := RecSpec.eraseBounds)
+      (l₁ := List.range rawBindings.length) (l₂ := specs)).symm
+  rw [Expr.eraseBounds_letRecElabNest, hmem]
 
 /-- Term-var shifting leaves all *type* annotations untouched, so it preserves the
     set of free type variables. -/
@@ -7136,10 +7663,10 @@ theorem Infer.sound_letInAnn {ctx : Ctx} {σ : PolyTy} {rhsElab bodyElab : Expr}
 /-- Path R residual packing for unannotated `letIn`: pure TypeOf on erased term. -/
 theorem Infer.sound_letIn_erase {ctx : Ctx} {rhsElab bodyElab : Expr}
     {τ₁ τ₂ : Ty} {genV : List Nat}
-    (_hrhs_ty : TypeOfElabHM ctx.eraseBounds rhsElab.eraseBounds (Ty.eraseBounds τ₁))
-    (_hrhs_lc : τ₁.IsLC)
-    (_hgenV_nodup : genV.Nodup) (_hgenV_env : ∀ g ∈ genV, g ∉ ctx.env.freeVars)
-    (_hbody_ty : TypeOfElabHM
+    (hrhs_ty : TypeOfElabHM ctx.eraseBounds rhsElab.eraseBounds (Ty.eraseBounds τ₁))
+    (hrhs_lc : τ₁.IsLC)
+    (hgenV_nodup : genV.Nodup) (hgenV_env : ∀ g ∈ genV, g ∉ ctx.env.freeVars)
+    (hbody_ty : TypeOfElabHM
       { ctx.eraseBounds with
           env := PolyTy.eraseBounds ⟨genV.length, Ty.closeOver genV τ₁⟩
             :: ctx.env.eraseBounds }
@@ -7149,23 +7676,47 @@ theorem Infer.sound_letIn_erase {ctx : Ctx} {rhsElab bodyElab : Expr}
         (.letIn (some ⟨genV.length, Ty.closeOver genV τ₁⟩)
           (rhsElab.closeTyVars genV) bodyElab))
       (Ty.eraseBounds τ₂) := by
-  sorry -- PathR
+  rw [Expr.eraseBounds_letIn, Option.map_some, Expr.eraseBounds_closeTyVars]
+  have hscheme :
+      PolyTy.eraseBounds ⟨genV.length, Ty.closeOver genV τ₁⟩ =
+        ⟨genV.length, Ty.closeOver genV (Ty.eraseBounds τ₁)⟩ := by
+    simp only [PolyTy.eraseBounds, Ty.eraseBounds_closeOver]
+  rw [hscheme]
+  refine Infer.sound_letIn (ctx := ctx.eraseBounds) (rhsElab := rhsElab.eraseBounds)
+    (bodyElab := bodyElab.eraseBounds) (genV := genV) hrhs_ty
+    (Ty.IsLC.eraseBounds hrhs_lc) hgenV_nodup ?_ ?_
+  · intro g hg hc
+    exact hgenV_env g hg
+      ((Env.mem_freeVars_eraseBounds ctx.env g).mp (by simpa [Ctx.eraseBounds] using hc))
+  · simpa [Ctx.eraseBounds, hscheme] using hbody_ty
 
 /-- Path R residual packing for annotated `letIn`: pure TypeOf on erased term. -/
 theorem Infer.sound_letInAnn_erase {ctx : Ctx} {σ : PolyTy} {rhsElab bodyElab : Expr}
     {Ys : List Nat} {τ₂ : Ty}
-    (_hrhs_at_Ys : TypeOfElabHM ctx.eraseBounds rhsElab.eraseBounds
+    (hrhs_at_Ys : TypeOfElabHM ctx.eraseBounds rhsElab.eraseBounds
       (Ty.eraseBounds (σ.openVars Ys)))
-    (_hσwf : σ.WF) (_hYnodup : Ys.Nodup) (_hYlen : Ys.length = σ.paramCount)
-    (_hYs_env : ∀ y ∈ Ys, y ∉ ctx.env.freeVars)
-    (_hYs_σ : ∀ y ∈ Ys, y ∉ σ.body.freeVars)
-    (_hbody_ty : TypeOfElabHM
+    (hσwf : σ.WF) (hYnodup : Ys.Nodup) (hYlen : Ys.length = σ.paramCount)
+    (hYs_env : ∀ y ∈ Ys, y ∉ ctx.env.freeVars)
+    (hYs_σ : ∀ y ∈ Ys, y ∉ σ.body.freeVars)
+    (hbody_ty : TypeOfElabHM
       { ctx.eraseBounds with env := PolyTy.eraseBounds σ :: ctx.env.eraseBounds }
         bodyElab.eraseBounds (Ty.eraseBounds τ₂)) :
     TypeOfElabHM ctx.eraseBounds
       (Expr.eraseBounds (.letIn (some σ) (rhsElab.closeTyVars Ys) bodyElab))
       (Ty.eraseBounds τ₂) := by
-  sorry -- PathR
+  rw [Expr.eraseBounds_letIn, Option.map_some, Expr.eraseBounds_closeTyVars]
+  refine Infer.sound_letInAnn (ctx := ctx.eraseBounds) (σ := PolyTy.eraseBounds σ)
+    (rhsElab := rhsElab.eraseBounds) (bodyElab := bodyElab.eraseBounds) (Ys := Ys)
+    (τ₂ := Ty.eraseBounds τ₂)
+    ?_ (PolyTy.WF.eraseBounds hσwf) hYnodup ?_ ?_ ?_ ?_
+  · rwa [← PolyTy.eraseBounds_openVars]
+  · simpa [PolyTy.eraseBounds_paramCount] using hYlen
+  · intro y hy hc
+    exact hYs_env y hy
+      ((Env.mem_freeVars_eraseBounds ctx.env y).mp (by simpa [Ctx.eraseBounds] using hc))
+  · intro y hy hc
+    exact hYs_σ y hy ((Ty.mem_freeVars_eraseBounds σ.body y).mp hc)
+  · simpa [Ctx.eraseBounds] using hbody_ty
 
 theorem TypeOfElabHM.closeBack_cofinite {ctx : Ctx} {σ : PolyTy} {rhsElab : Expr} {Ys : List Nat}
     (hrhs_at_Ys : TypeOfElabHM ctx rhsElab (σ.openVars Ys))
@@ -8517,7 +9068,7 @@ theorem Expr.substTyFvars_letRecElab {S : Subst} {G : List Nat} {anns : List (Op
   rw [hzip, List.map_reverse]
 
 
-/-! ### Path R residual Infer soundness (statements; proofs fenced)
+/-! ### Path R residual Infer soundness
 
 Bridge: Infer elaboratum + monotype, after subst, projected by `eraseBounds` on
 ctx schemes, term annotations (`Expr.eraseBounds`), and result monotype, is a
@@ -8525,13 +9076,759 @@ pure structural `TypeOfElabHM` derivation. Real dual-stack elaboratum keeps BL;
 only the theorem erases.
 -/
 
+/-- Residual subject commute: erasing before/after a substitution agrees after a
+    final erase (BL in the subst range is re-erased either way). -/
+theorem Expr.eraseBounds_substTyFvars_comm (S : Subst) (e : Expr) :
+    ((e.eraseBounds).substTyFvars S).eraseBounds = (e.substTyFvars S).eraseBounds := by
+  calc ((e.eraseBounds).substTyFvars S).eraseBounds
+      = (e.eraseBounds).eraseBounds.substTyFvars
+          (S.map fun p => (p.1, Ty.eraseBounds p.2)) :=
+        Expr.eraseBounds_substTyFvars S e.eraseBounds
+    _ = e.eraseBounds.substTyFvars
+          (S.map fun p => (p.1, Ty.eraseBounds p.2)) := by
+        rw [Expr.eraseBounds_idem]
+    _ = (e.substTyFvars S).eraseBounds :=
+        (Expr.eraseBounds_substTyFvars S e).symm
+
+/-- Residual transport concluding at the honest elaboratum subject
+    `(e.substTyFvars S).eraseBounds` (not `e.eraseBounds.substTyFvars S`). -/
+theorem TypeOfElabHM.onSubst_eraseBounds_elab {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
+    (h_lc : ∀ p ∈ S, p.2.IsLC)
+    (h : TypeOfElabHM ctx.eraseBounds e.eraseBounds (Ty.eraseBounds τ)) :
+    TypeOfElabHM (S.onCtx ctx).eraseBounds
+      ((e.substTyFvars S).eraseBounds)
+      (Ty.eraseBounds (S.onTy τ)) := by
+  have key := TypeOfElabHM.onSubst_eraseBounds' S h_lc h
+  rwa [Expr.eraseBounds_substTyFvars_comm] at key
+
+/-- Residual fixed-term transport (annotations rigid under `S`). -/
+theorem TypeOfElabHM.onSubst_eraseBounds_fixed {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
+    (h_lc : ∀ p ∈ S, p.2.IsLC) (h_fix : e.substTyFvars S = e)
+    (h : TypeOfElabHM ctx.eraseBounds e.eraseBounds (Ty.eraseBounds τ)) :
+    TypeOfElabHM (S.onCtx ctx).eraseBounds e.eraseBounds (Ty.eraseBounds (S.onTy τ)) := by
+  have key := TypeOfElabHM.onSubst_eraseBounds_elab S h_lc h
+  rwa [h_fix] at key
+
+/-- Append form of residual elaboratum transport. -/
+theorem TypeOfElabHM.onSubst_eraseBounds_elab_append {ctx : Ctx} {e : Expr} {τ : Ty}
+    (S₁ S₂ : Subst)
+    (h₁ : ∀ p ∈ S₁, p.2.IsLC) (h₂ : ∀ p ∈ S₂, p.2.IsLC)
+    (h : TypeOfElabHM (S₁.onCtx ctx).eraseBounds
+      ((e.substTyFvars S₁).eraseBounds) (Ty.eraseBounds τ)) :
+    TypeOfElabHM ((S₁ ++ S₂).onCtx ctx).eraseBounds
+      ((e.substTyFvars (S₁ ++ S₂)).eraseBounds) (Ty.eraseBounds (S₂.onTy τ)) := by
+  have key := TypeOfElabHM.onSubst_eraseBounds_elab (ctx := S₁.onCtx ctx)
+    (e := e.substTyFvars S₁) (τ := τ) S₂ h₂ h
+  simpa only [Subst.onCtx_append, Expr.substTyFvars_append] using key
+
+private theorem Ctor.IsBoolCtor.typeOfElabHM_erase {ctx : Ctx} {name : CtorName} {c : Ctor}
+    (hlook : LookupList.get? ctx.ctors name = some c) (hb : c.IsBoolCtor) :
+    TypeOfElabHM ctx.eraseBounds (.ctor name) (.customTy ⟨"Bool"⟩ []) := by
+  have hlook' : LookupList.get? ctx.eraseBounds.ctors name = some (Ctor.eraseBounds c) := by
+    have := congrArg (Option.map Ctor.eraseBounds) hlook
+    simpa [Ctx.eraseBounds, CtorEnv.eraseBounds_get?, Option.map_some] using this
+  have hb' : (Ctor.eraseBounds c).IsBoolCtor := by
+    -- Bool ctors are nullary with empty contents; erase is identity on that shape.
+    obtain ⟨hname, hpc, hcont⟩ := hb
+    refine ⟨?_, ?_, ?_⟩
+    · simpa [Ctor.eraseBounds_tyName] using hname
+    · simpa [Ctor.eraseBounds_paramCount] using hpc
+    · simpa [Ctor.eraseBounds_contents, hcont]
+  exact Ctor.IsBoolCtor.typeOfElabHM hlook' hb'
+
+mutual
 /-- Path R residual soundness of `Infer` against pure `TypeOfElabHM`. -/
 theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
     TypeOfElabHM (S.onCtx ctx).eraseBounds
       ((eOut.substTyFvars S).eraseBounds) (Ty.eraseBounds τ) := by
-  sorry -- PathR
+  cases h with
+  | primLitUnit =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil, Expr.substTyFvars, Expr.eraseBounds, Ty.eraseBounds_prim]
+    exact .primLitUnit
+  | primLitInt =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil, Expr.substTyFvars, Expr.eraseBounds, Ty.eraseBounds_prim]
+    exact .primLitInt
+  | primLitNat =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil, Expr.substTyFvars, Expr.eraseBounds, Ty.eraseBounds_prim]
+    exact .primLitNat
+  | primLitChar =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil, Expr.substTyFvars, Expr.eraseBounds, Ty.eraseBounds_prim]
+    exact .primLitChar
+  | primBinOpIntAdd =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil, Expr.substTyFvars, Expr.eraseBounds,
+      Ty.eraseBounds_arrow, Ty.eraseBounds_prim]
+    exact .primBinOpIntAdd
+  | primBinOpIntSub =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil, Expr.substTyFvars, Expr.eraseBounds,
+      Ty.eraseBounds_arrow, Ty.eraseBounds_prim]
+    exact .primBinOpIntSub
+  | primBinOpIntLt hlookT hbT hlookF hbF =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil, Expr.substTyFvars, Expr.eraseBounds,
+      Ty.eraseBounds_arrow, Ty.eraseBounds_prim, Ty.eraseBounds_customTy, TyList.eraseBounds_nil]
+    exact .primBinOpIntLt (Ctor.IsBoolCtor.typeOfElabHM_erase hlookT hbT)
+      (Ctor.IsBoolCtor.typeOfElabHM_erase hlookF hbF)
+  | primBinOpCharLt hlookT hbT hlookF hbF =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil, Expr.substTyFvars, Expr.eraseBounds,
+      Ty.eraseBounds_arrow, Ty.eraseBounds_prim, Ty.eraseBounds_customTy, TyList.eraseBounds_nil]
+    exact .primBinOpCharLt (Ctor.IsBoolCtor.typeOfElabHM_erase hlookT hbT)
+      (Ctor.IsBoolCtor.typeOfElabHM_erase hlookF hbF)
+  | lambda hseed hbody =>
+    intro hctx hbelow K hKΦ hKe hSK
+    rw [Expr.substTyFvars_lambda, Expr.eraseBounds_lambda]
+    cases hseed
+    case none =>
+      simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at hKe
+      have hbodyWF : CtxWF { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact ContainsBvarsUpTo.fvar
+        · exact hctx M hM
+      have hbodyBelow : CtxBelow (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact .fvar (by omega)
+        · exact (hbelow M hM).mono (by omega)
+      have ih := Infer.sound hbody hbodyWF hbodyBelow K
+        (fun k hk => by have := hKΦ k hk; omega) hKe hSK
+      refine TypeOfElabHM.lambda
+        (Ty.IsLC.eraseBounds (Subst.onTy_lc (Infer.lc hbody hbodyWF).2 ContainsBvarsUpTo.fvar))
+        (fun T hT => by simp only [Option.map_none] at hT; cases hT) rfl ?_
+      simpa only [Ctx.eraseBounds, Subst.onCtx, Env.eraseBounds_cons,
+        PolyTy.eraseBounds_mkTrivial, Subst.onEnv, List.map_cons, Ty.eraseBounds_arrow]
+        using ih
+    case some hcl =>
+      expose_names
+      simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at hKe
+      have hbodyWF : CtxWF { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } := by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact hcl
+        · exact hctx M hM
+      have hbodyBelow : CtxBelow Φ { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } := by
+        intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+        · exact Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hKe v (.inl hv)))
+        · exact hbelow M hM
+      have ih := Infer.sound hbody hbodyWF hbodyBelow K
+        (fun k hk => by have := hKΦ k hk; omega)
+        (fun y hy => hKe y (.inr hy)) hSK
+      refine TypeOfElabHM.lambda
+        (Ty.IsLC.eraseBounds (Subst.onTy_lc (Infer.lc hbody hbodyWF).2 hcl))
+        (fun T hT => by
+          simp only [Option.map_some, Option.map_map, Function.comp_def, Option.some.injEq] at hT
+          exact hT) rfl ?_
+      simpa only [Ctx.eraseBounds, Subst.onCtx, Env.eraseBounds_cons,
+        PolyTy.eraseBounds_mkTrivial, Subst.onEnv, List.map_cons, Ty.eraseBounds_arrow]
+        using ih
+  | app hf harg huni =>
+    intro hctx hbelow K hKΦ hKe hSK
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append] at hKe
+    obtain ⟨hf_lc, hf_s⟩ := Infer.lc hf hctx
+    have hctx1 := Subst.onCtx_wf hf_s hctx
+    obtain ⟨harg_lc, harg_s⟩ := Infer.lc harg hctx1
+    have hf_below := Infer.belowFvars hf hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+    have hbelow1 := Subst.onCtx_below hf_below.2 (Infer.frontier_le hf) hbelow
+    have hs3 := huni.lc (Subst.onTy_lc harg_s hf_lc) (.arrow harg_lc ContainsBvarsUpTo.fvar)
+    have helim := Infer.eliminates hf hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+      (fun p hp hc => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)) (hKe p.1 (.inl hc)))
+    have hargfix : argOut.substTyFvars S₁ = argOut := Infer.eOut_substTyFvars_eq harg
+      (fun p hp => Infer.dom_below hf hbelow (fun y hy => hKΦ y (hKe y (.inl hy))) p hp)
+      (fun p hp M hM => by
+        obtain ⟨M₀, _, rfl⟩ := List.mem_map.mp hM
+        exact helim.1 p hp M₀.body)
+      (fun p hp hc => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)) (hKe p.1 (.inr hc)))
+    have hf_sound := Infer.sound hf hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+      (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
+    have harg_sound := Infer.sound harg hctx1 hbelow1 K
+      (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hf))
+      (fun y hy => hKe y (.inr hy))
+      (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)))
+    have hf2 := TypeOfElabHM.onSubst_eraseBounds_elab_append S₁ S₂ hf_s harg_s hf_sound
+    have hf3 := TypeOfElabHM.onSubst_eraseBounds_elab (ctx := (S₁ ++ S₂).onCtx ctx)
+      (e := fOut.substTyFvars (S₁ ++ S₂)) (τ := S₂.onTy τf) S₃ hs3
+      (by simpa only [Subst.onCtx_append] using hf2)
+    have hueq : Ty.eraseBounds (S₃.onTy (S₂.onTy τf)) =
+        Ty.eraseBounds (S₃.onTy (.arrow τa (.fvar Φ₂))) := huni.unifies
+    have hf_arr : TypeOfElabHM ((S₁ ++ S₂ ++ S₃).onCtx ctx).eraseBounds
+        ((fOut.substTyFvars (S₁ ++ S₂ ++ S₃)).eraseBounds)
+        (.arrow (Ty.eraseBounds (S₃.onTy τa)) (Ty.eraseBounds (S₃.onTy (.fvar Φ₂)))) := by
+      have key := hf3
+      rw [hueq, Subst.onTy_arrow, Ty.eraseBounds_arrow] at key
+      have hctx_eq : (S₃.onCtx ((S₁ ++ S₂).onCtx ctx)).eraseBounds =
+          ((S₁ ++ S₂ ++ S₃).onCtx ctx).eraseBounds := by
+        rw [← Subst.onCtx_append]
+      have hterm_eq :
+          ((fOut.substTyFvars (S₁ ++ S₂)).substTyFvars S₃).eraseBounds =
+            (fOut.substTyFvars (S₁ ++ S₂ ++ S₃)).eraseBounds := by
+        rw [← Expr.substTyFvars_append]
+      rwa [hctx_eq, hterm_eq] at key
+    have harg3 := TypeOfElabHM.onSubst_eraseBounds_elab
+      (ctx := S₂.onCtx (S₁.onCtx ctx)) (e := argOut.substTyFvars S₂) (τ := τa) S₃ hs3 harg_sound
+    have hargterm : argOut.substTyFvars (S₁ ++ S₂ ++ S₃) =
+        (argOut.substTyFvars S₂).substTyFvars S₃ := by
+      rw [show S₁ ++ S₂ ++ S₃ = S₁ ++ (S₂ ++ S₃) from List.append_assoc ..,
+        Expr.substTyFvars_append, hargfix, Expr.substTyFvars_append]
+    have harg_arr : TypeOfElabHM ((S₁ ++ S₂ ++ S₃).onCtx ctx).eraseBounds
+        ((argOut.substTyFvars (S₁ ++ S₂ ++ S₃)).eraseBounds)
+        (Ty.eraseBounds (S₃.onTy τa)) := by
+      have hctx_eq : (S₃.onCtx (S₂.onCtx (S₁.onCtx ctx))).eraseBounds =
+          ((S₁ ++ S₂ ++ S₃).onCtx ctx).eraseBounds := by
+        simp only [← Subst.onCtx_append, List.append_assoc]
+      have hterm_eq :
+          ((argOut.substTyFvars S₂).substTyFvars S₃).eraseBounds =
+            (argOut.substTyFvars (S₁ ++ S₂ ++ S₃)).eraseBounds := by
+        rw [← hargterm]
+      rwa [hctx_eq, hterm_eq] at harg3
+    rw [Expr.substTyFvars_app, Expr.eraseBounds_app]
+    change TypeOfElabHM ((S₁ ++ S₂ ++ S₃).onCtx ctx).eraseBounds
+      (.app ((fOut.substTyFvars (S₁ ++ S₂ ++ S₃)).eraseBounds)
+        ((argOut.substTyFvars (S₁ ++ S₂ ++ S₃)).eraseBounds))
+      (Ty.eraseBounds (S₃.onTy (.fvar Φ₂)))
+    exact TypeOfElabHM.app hf_arr harg_arr
+  | @var Φ ctx i tyArgsIn polyTy hlook =>
+    intro hctx _ _ _ _ _
+    simp only [Subst.onCtx_nil, Expr.substTyFvars, Expr.eraseBounds]
+    refine TypeOfElabHM.var (polyTy := PolyTy.eraseBounds polyTy) ?_
+      ⟨by simp [freshVars_length, PolyTy.eraseBounds_paramCount], fun tyArg ht => ?_⟩ ?_
+    · have hlook' := congrArg (Option.map PolyTy.eraseBounds) hlook
+      simpa [Ctx.eraseBounds, Env.eraseBounds_getElem?, Option.map_some] using hlook'
+    · simp only [List.map_map, Function.comp_def, Ty.eraseBounds_fvar] at ht
+      obtain ⟨n, _, rfl⟩ := List.mem_map.mp ht
+      exact ContainsBvarsUpTo.fvar
+    · change (PolyTy.eraseBounds polyTy).InstantiatesTo
+        (((freshVars Φ polyTy.paramCount).map Ty.fvar).map Ty.eraseBounds)
+        (Ty.eraseBounds (polyTy.openVars (freshVars Φ polyTy.paramCount)))
+      simp only [List.map_map, Function.comp_def, Ty.eraseBounds_fvar]
+      rw [PolyTy.eraseBounds_openVars]
+      exact InstantiatesBy.openVars
+        (PolyTy.WF.eraseBounds (hctx _ (List.mem_of_getElem? hlook)))
+        (by simp [freshVars_length, PolyTy.eraseBounds_paramCount])
+  | @ctor Φ ctx name ctor hlook =>
+    intro _ _ _ _ _ _
+    simp only [Subst.onCtx_nil, Expr.substTyFvars, Expr.eraseBounds]
+    refine TypeOfElabHM.ctor (ctor := Ctor.eraseBounds ctor)
+      (tyArgs := (freshVars Φ ctor.paramCount).map Ty.fvar) ?_ ?_ ?_
+    · have hlook' := congrArg (Option.map Ctor.eraseBounds) hlook
+      simpa [Ctx.eraseBounds, CtorEnv.eraseBounds_get?, Option.map_some] using hlook'
+    · intro tyArg ht
+      obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht
+      exact ContainsBvarsUpTo.fvar
+    · change (Ctor.eraseBounds ctor).toTy.InstantiatesTo
+        ((freshVars Φ ctor.paramCount).map Ty.fvar)
+        (Ty.eraseBounds (ctor.toTy.openVars (freshVars Φ ctor.paramCount)))
+      rw [Ctor.eraseBounds_toTy, PolyTy.eraseBounds_openVars]
+      exact InstantiatesBy.openVars
+        (PolyTy.WF.eraseBounds (Ctor.toTy_wf ctor))
+        (by simp [Ctor.toTy, freshVars_length, PolyTy.eraseBounds_paramCount])
+  | letIn hrhs hbody =>
+    intro hctx hbelow K hKΦ hKe hSK
+    expose_names
+    simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append] at hKe
+    obtain ⟨hrhs_lc, hrhs_s⟩ := Infer.lc hrhs hctx
+    have hrhs_below := Infer.belowFvars hrhs hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+    have hbelow1 := Subst.onCtx_below hrhs_below.2 (Infer.frontier_le hrhs) hbelow
+    have helimR := Infer.eliminates hrhs hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+      (fun p hp hc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inl hc)))
+    have hS₁τ₁ : S₁.onTy τ₁ = τ₁ := Ty.substFvars_eq_self_of_no_key (fun p hp => helimR.2 p hp)
+    have hbodyWF : CtxWF { (S₁.onCtx ctx) with
+        env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env } := by
+      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+      · exact genScheme_wf hrhs_lc
+      · exact (Subst.onCtx_wf hrhs_s hctx) M hM
+    have hbodyBelow : CtxBelow Φ₁ { (S₁.onCtx ctx) with
+        env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env } := by
+      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+      · exact hrhs_below.1.closeOver
+      · exact hbelow1 M hM
+    have hbody_s := (Infer.lc hbody hbodyWF).2
+    set genV := genVars rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ with hgenV_def
+    have hgenV_τ₁ : ∀ g ∈ genV, g ∈ τ₁.freeVars :=
+      fun g hg => by simp only [genV, genVars, List.mem_filter] at hg; exact hg.1
+    have hgenV_env : ∀ g ∈ genV, g ∉ (S₁.onCtx ctx).env.freeVars :=
+      fun g hg => by simp only [genV] at hg; exact genVars_not_mem hg
+    have hgenV_lt : ∀ g ∈ genV, g < Φ₁ :=
+      fun g hg => hrhs_below.1.mem_lt g (hgenV_τ₁ g hg)
+    have hgenV_ge : ∀ g ∈ genV, Φ ≤ g := by
+      intro g hg
+      by_contra hlt; push_neg at hlt
+      have hg_S₁dom : ∀ p ∈ S₁, p.1 ≠ g := fun p hp hpeq => helimR.2 p hp (hpeq ▸ hgenV_τ₁ g hg)
+      have hg_ctxenv : ∀ M ∈ ctx.env, g ∉ M.body.freeVars := by
+        intro M₀ hM₀ hgM
+        exact hgenV_env g hg (Env.mem_freeVars_iff.mpr ⟨S₁.onPolyTy M₀,
+          List.mem_map.mpr ⟨M₀, hM₀, rfl⟩, Ty.mem_freeVars_onTy_of_not_dom hgM hg_S₁dom⟩)
+      have hg_rigid : g ∉ rhs.tyFreeVars := by
+        simp only [genV] at hg; exact genVars_not_mem_rigid hg
+      exact (Infer.eOut_avoid hrhs (w := g) hlt hg_ctxenv hg_rigid).2.1 (hgenV_τ₁ g hg)
+    have hgenV_body : ∀ g ∈ genV, g ∉ body.tyFreeVars :=
+      fun g hg hc => by have := hKΦ g (hKe g (.inr hc)); have := hgenV_ge g hg; omega
+    have hbodyCtxAvoid : ∀ g ∈ genV,
+        ∀ M ∈ (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env),
+          g ∉ M.body.freeVars := by
+      intro g hg M hM
+      rcases List.mem_cons.mp hM with rfl | hM
+      · exact Ty.not_mem_closeOver_freeVars (by simpa [genV] using hg)
+      · exact fun hc2 => hgenV_env g hg (Env.mem_freeVars_iff.mpr ⟨M, hM, hc2⟩)
+    have hS₂genV : ∀ p ∈ S₂, p.1 ∉ genV := by
+      intro p hp hc
+      exact Infer.dom_avoid hbody (hgenV_lt p.1 hc) (hbodyCtxAvoid p.1 hc)
+        (fun hc2 => hSK p (List.mem_append_right _ hp) (hKe p.1 (.inr hc2)))
+        (List.mem_map.mpr ⟨p, hp, rfl⟩)
+    have hS₂genVran : ∀ p ∈ S₂, ∀ u ∈ p.2.freeVars, u ∉ genV := by
+      intro p hp u hu hc
+      exact (Infer.eOut_avoid hbody (w := u) (hgenV_lt u hc) (hbodyCtxAvoid u hc)
+        (hgenV_body u hc)).1 p hp hu
+    have hbodyfix : bodyOut.substTyFvars S₁ = bodyOut :=
+      Infer.eOut_substTyFvars_eq hbody
+        (fun p hp => Infer.dom_below hrhs hbelow (fun y hy => hKΦ y (hKe y (.inl hy))) p hp)
+        (fun p hp M hM => by
+          rcases List.mem_cons.mp hM with rfl | hM
+          · exact fun hc2 => helimR.2 p hp (Ty.freeVars_closeOver_subset hc2)
+          · obtain ⟨M₀, _, rfl⟩ := List.mem_map.mp hM; exact helimR.1 p hp M₀.body)
+        (fun p hp hc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inr hc)))
+    have hS₁fixE : ∀ p ∈ S₁, p.1 ∉ (rhsOut.substTyFvars S₁).tyFreeVars :=
+      fun p hp => Expr.dom_notMem_substTyFvars (fun x => helimR.1 p hp x)
+    have hbound :
+        ((rhsOut.substTyFvars S₁).closeTyVars genV).substTyFvars (S₁ ++ S₂)
+          = (rhsOut.substTyFvars (S₁ ++ S₂)).closeTyVars genV := by
+      rw [Expr.substTyFvars_append,
+          Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+            (fun p hp hc => hS₁fixE p hp (Expr.tyFreeVars_closeTyVars_subset hc)),
+          Expr.substTyFvars_closeTyVars hS₂genV hS₂genVran,
+          ← Expr.substTyFvars_append]
+    have hSτ₁ : (S₁ ++ S₂).onTy τ₁ = S₂.onTy τ₁ := by rw [Subst.onTy_append, hS₁τ₁]
+    have hschemebody : S₂.onTy (Ty.closeOver genV τ₁) =
+        Ty.closeOver genV ((S₁ ++ S₂).onTy τ₁) := by
+      have h1 : S₂.onTy (Ty.closeOver genV τ₁) = Ty.closeOver genV (S₂.onTy τ₁) :=
+        Ty.substFvars_closeOver hS₂genV hS₂genVran
+      rw [h1, ← hSτ₁]
+    have hann : (S₁ ++ S₂).onTy (Ty.closeOver genV τ₁) =
+        Ty.closeOver genV ((S₁ ++ S₂).onTy τ₁) := by
+      rw [Subst.onTy_append,
+        show S₁.onTy (Ty.closeOver genV τ₁) = Ty.closeOver genV τ₁ from
+          Ty.substFvars_eq_self_of_no_key
+            (fun p hp hc => helimR.2 p hp (Ty.freeVars_closeOver_subset hc)),
+        hschemebody]
+    have hgenV_env' : ∀ g ∈ genV, g ∉ ((S₁ ++ S₂).onCtx ctx).env.freeVars := by
+      intro g hg hc
+      rw [Subst.onCtx_append, Env.mem_freeVars_iff] at hc
+      obtain ⟨M, hM, hgM⟩ := hc
+      simp only [Subst.onCtx, Subst.onEnv] at hM
+      obtain ⟨M₀, hM₀, rfl⟩ := List.mem_map.mp hM
+      exact Subst.notMemOnTy (fun p hp hgp => hS₂genVran p hp g hgp hg)
+        (fun hc2 => hgenV_env g hg (Env.mem_freeVars_iff.mpr ⟨M₀, hM₀, hc2⟩)) hgM
+    have hrhs_sound := Infer.sound hrhs hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+      (fun p hp => hSK p (List.mem_append_left _ hp))
+    have hr2 := TypeOfElabHM.onSubst_eraseBounds_elab_append S₁ S₂ hrhs_s hbody_s hrhs_sound
+    -- hr2 : TypeOf at erase((S1++S2).onCtx) erase(rhsOut.subst (S1++S2)) erase(S2.onTy τ1)
+    have hr2' : TypeOfElabHM ((S₁ ++ S₂).onCtx ctx).eraseBounds
+        ((rhsOut.substTyFvars (S₁ ++ S₂)).eraseBounds)
+        (Ty.eraseBounds ((S₁ ++ S₂).onTy τ₁)) := by
+      rwa [← hSτ₁] at hr2
+    have hbodyterm : bodyOut.substTyFvars (S₁ ++ S₂) = bodyOut.substTyFvars S₂ := by
+      rw [Expr.substTyFvars_append, hbodyfix]
+    have hschemeeq : Subst.onPolyTy S₂ (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁)
+        = ⟨genV.length, Ty.closeOver genV ((S₁ ++ S₂).onTy τ₁)⟩ := by
+      simp only [Subst.onPolyTy, genScheme, ← hgenV_def]
+      exact congrArg (fun b => PolyTy.mk genV.length b) hschemebody
+    have heqbodyctx : Subst.onCtx S₂ { (S₁.onCtx ctx) with
+          env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
+        = { (S₁ ++ S₂).onCtx ctx with
+          env := Subst.onPolyTy S₂ (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁)
+            :: ((S₁ ++ S₂).onCtx ctx).env } := by
+      rw [Subst.onCtx_append]
+      simp only [Subst.onCtx, Subst.onEnv, List.map_cons]
+    have hbody_sound := Infer.sound hbody hbodyWF hbodyBelow K
+      (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hrhs))
+      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+    -- residual body at packed env (overall result monotype is `τ`)
+    have hbody_pack : TypeOfElabHM
+        { ((S₁ ++ S₂).onCtx ctx).eraseBounds with
+          env := PolyTy.eraseBounds ⟨genV.length, Ty.closeOver genV ((S₁ ++ S₂).onTy τ₁)⟩
+            :: ((S₁ ++ S₂).onCtx ctx).env.eraseBounds }
+        ((bodyOut.substTyFvars (S₁ ++ S₂)).eraseBounds) (Ty.eraseBounds τ) := by
+      have key := hbody_sound
+      have hctx_eq :
+          (S₂.onCtx { (S₁.onCtx ctx) with
+              env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env
+            }).eraseBounds
+          = { ((S₁ ++ S₂).onCtx ctx).eraseBounds with
+              env := PolyTy.eraseBounds
+                  (S₂.onPolyTy (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁))
+                :: ((S₁ ++ S₂).onCtx ctx).env.eraseBounds } := by
+        rw [heqbodyctx]
+        simp only [Ctx.eraseBounds, Env.eraseBounds, List.map_cons]
+      rw [hctx_eq, hschemeeq, ← hbodyterm] at key
+      exact key
+    have hgoal_e :
+        ((Expr.letIn (some (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁))
+            ((rhsOut.substTyFvars S₁).closeTyVars genV) bodyOut).substTyFvars (S₁ ++ S₂))
+        = Expr.letIn (some ⟨genV.length, Ty.closeOver genV ((S₁ ++ S₂).onTy τ₁)⟩)
+            ((rhsOut.substTyFvars (S₁ ++ S₂)).closeTyVars genV)
+            (bodyOut.substTyFvars (S₁ ++ S₂)) := by
+      rw [Expr.substTyFvars_letIn]
+      simp only [Option.map_some, genScheme, Subst.onPolyTy, ← hgenV_def]
+      refine congrArg₂ (fun a b => Expr.letIn a b (bodyOut.substTyFvars (S₁ ++ S₂))) ?_ hbound
+      exact congrArg some (congrArg (PolyTy.mk genV.length) hann)
+    rw [hgoal_e]
+    exact Infer.sound_letIn_erase (ctx := (S₁ ++ S₂).onCtx ctx)
+      (rhsElab := rhsOut.substTyFvars (S₁ ++ S₂))
+      (bodyElab := bodyOut.substTyFvars (S₁ ++ S₂))
+      (τ₁ := (S₁ ++ S₂).onTy τ₁) (τ₂ := τ) (genV := genV)
+      hr2'
+      (Subst.onTy_lc (fun p hp => by
+        rcases List.mem_append.mp hp with h | h
+        · exact hrhs_s p h
+        · exact hbody_s p h) hrhs_lc)
+      (by simp only [genV]; exact genVars_nodup)
+      hgenV_env' hbody_pack
+  | letInAnn hσwf hΦN hrhs huni hesc1 hesc2 hbody =>
+    intro hctx hbelow K hKΦ hKe hSK
+    expose_names
+    simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at hKe
+    have hrle := Infer.frontier_le hrhs
+    have hctx_pc : CtxBelow (N + σ.paramCount) ctx := fun M hM => (hbelow M hM).mono (by omega)
+    have hσbody : Ty.BelowFvars Φ σ.body :=
+      Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hKe v (.inl (.inl hv))))
+    obtain ⟨hrhs_lc, hrhs_s⟩ := Infer.lc hrhs hctx
+    have hΦ_rhs : ∀ y ∈ (rhs.openTyVars (freshVars N σ.paramCount)).tyFreeVars,
+        y < N + σ.paramCount := by
+      intro y hy
+      rcases Expr.tyFreeVars_openTyVars hy with h | h
+      · have := hKΦ y (hKe y (.inl (.inr h))); have := hΦN; omega
+      · have := freshVars_lt y h; omega
+    have hSe_rhs : ∀ p ∈ S₁, p.1 ∉ (rhs.openTyVars (freshVars N σ.paramCount)).tyFreeVars := by
+      intro p hp hc
+      rcases Expr.tyFreeVars_openTyVars hc with h | h
+      · exact hSK p (List.mem_append_left _ (List.mem_append_left _ hp)) (hKe p.1 (.inl (.inr h)))
+      · exact hesc1 p.1 h (List.mem_map.mpr ⟨p, List.mem_append_left _ hp, rfl⟩)
+    obtain ⟨hr_τ, hr_s⟩ := Infer.belowFvars hrhs hctx_pc hΦ_rhs
+    have hσopen : Ty.BelowFvars Φ₁ (σ.openVars (freshVars N σ.paramCount)) :=
+      Ty.openVars_belowFvars (hσbody.mono (by omega))
+        (fun x hx => by have := freshVars_lt x hx; omega)
+    have hSchk_below : ∀ p ∈ Schk, Ty.BelowFvars Φ₁ p.2 := UnifyRel.belowFvars huni hr_τ hσopen
+    have hSchk_lc : ∀ p ∈ Schk, p.2.IsLC :=
+      UnifyRel.lc huni hrhs_lc (PolyTy.openVars_isLC hσwf (by simp))
+    have hbodyWF : CtxWF { (Schk.onCtx (S₁.onCtx ctx)) with
+        env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env } := by
+      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+      · exact hσwf
+      · exact (Subst.onCtx_wf hSchk_lc (Subst.onCtx_wf hrhs_s hctx)) M hM
+    have hbodyBelow : CtxBelow Φ₁ { (Schk.onCtx (S₁.onCtx ctx)) with
+        env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env } := by
+      intro M hM; rcases List.mem_cons.mp hM with rfl | hM
+      · exact hσbody.mono (by omega)
+      · exact (Subst.onCtx_below hSchk_below (le_refl _)
+          (Subst.onCtx_below hr_s hrle hctx_pc)) M hM
+    have hbody_s := (Infer.lc hbody hbodyWF).2
+    have hSlc : ∀ p ∈ S₁ ++ Schk ++ S₂, p.2.IsLC := by
+      intro p hp
+      rcases List.mem_append.mp hp with hp | hp
+      · rcases List.mem_append.mp hp with hp | hp
+        · exact hrhs_s p hp
+        · exact hSchk_lc p hp
+      · exact hbody_s p hp
+    have helimR := Infer.eliminates hrhs hctx_pc hΦ_rhs hSe_rhs
+    have hcross : ∀ p ∈ S₁, ∀ q ∈ Schk, p.1 ∉ q.2.freeVars := by
+      intro p hp q hq hwq
+      rcases UnifyRel.range_mem huni q hq p.1 hwq with h | h
+      · exact helimR.2 p hp h
+      · rcases Ty.freeVars_openVars_subset p.1 h with h | h
+        · exact hSK p (List.mem_append_left _ (List.mem_append_left _ hp))
+            (hKe p.1 (.inl (.inl h)))
+        · exact hesc1 p.1 h (List.mem_map.mpr ⟨p, List.mem_append_left _ hp, rfl⟩)
+    have hcombelim := Subst.eliminates_append helimR.1 (UnifyRel.eliminates huni) hcross
+    set Ys := freshVars N σ.paramCount with hYs_def
+    have hYs_lt : ∀ y ∈ Ys, y < Φ₁ :=
+      fun y hy => by simp only [Ys] at hy; have := freshVars_lt y hy; have := hrle; omega
+    have hYs_bodyCtx : ∀ y ∈ Ys,
+        ∀ M ∈ (σ :: (Schk.onCtx (S₁.onCtx ctx)).env), y ∉ M.body.freeVars := by
+      intro y hy M hM
+      rcases List.mem_cons.mp hM with rfl | hM
+      · exact fun hc => by
+          have := hKΦ y (hKe y (.inl (.inl hc)))
+          simp only [Ys] at hy; have := freshVars_ge y hy; omega
+      · exact fun hc => by
+          simp only [Ys] at hy
+          exact hesc2 y hy (Env.mem_freeVars_iff.mpr ⟨M, hM, hc⟩)
+    have hYs_body : ∀ y ∈ Ys, y ∉ body.tyFreeVars :=
+      fun y hy hc => by
+        have := hKΦ y (hKe y (.inr hc))
+        simp only [Ys] at hy; have := freshVars_ge y hy; omega
+    have hS₂Ys : ∀ p ∈ S₂, p.1 ∉ Ys := by
+      intro p hp hc
+      exact Infer.dom_avoid hbody (hYs_lt p.1 hc) (hYs_bodyCtx p.1 hc) (hYs_body p.1 hc)
+        (List.mem_map.mpr ⟨p, hp, rfl⟩)
+    have hS₂Ysran : ∀ p ∈ S₂, ∀ u ∈ p.2.freeVars, u ∉ Ys := by
+      intro p hp u hu hc
+      exact (Infer.eOut_avoid hbody (w := u) (hYs_lt u hc) (hYs_bodyCtx u hc)
+        (hYs_body u hc)).1 p hp hu
+    have hSYs : ∀ p ∈ S₁ ++ Schk ++ S₂, p.1 ∉ Ys := by
+      intro p hp
+      rcases List.mem_append.mp hp with hp | hp
+      · exact fun hc => by
+          simp only [Ys] at hc
+          exact hesc1 p.1 hc (List.mem_map.mpr ⟨p, hp, rfl⟩)
+      · exact hS₂Ys p hp
+    have hRfixE : ∀ p ∈ S₁ ++ Schk, p.1 ∉ (rhsOut.substTyFvars (S₁ ++ Schk)).tyFreeVars :=
+      fun p hp => Expr.dom_notMem_substTyFvars (fun x => hcombelim p hp x)
+    have hSσbody : (S₁ ++ Schk ++ S₂).onTy σ.body = σ.body :=
+      Ty.substFvars_eq_self_of_no_key
+        (fun p hp hc => hSK p hp (hKe p.1 (.inl (.inl hc))))
+    have hSfix_σopen : ∀ p ∈ S₁ ++ Schk ++ S₂, p.1 ∉ (σ.openVars Ys).freeVars := by
+      intro p hp hc
+      rcases Ty.freeVars_openVars_subset p.1 hc with h | h
+      · exact hSK p hp (hKe p.1 (.inl (.inl h)))
+      · exact hSYs p hp h
+    have hSchk_fix : Schk.onTy (σ.openVars Ys) = σ.openVars Ys :=
+      Ty.substFvars_eq_self_of_no_key
+        (fun p hp => hSfix_σopen p (List.mem_append_left _ (List.mem_append_right _ hp)))
+    have hS₂fix : S₂.onTy (σ.openVars Ys) = σ.openVars Ys :=
+      Ty.substFvars_eq_self_of_no_key (fun p hp => hSfix_σopen p (List.mem_append_right _ hp))
+    have hbound :
+        ((rhsOut.substTyFvars (S₁ ++ Schk)).closeTyVars Ys).substTyFvars (S₁ ++ Schk ++ S₂)
+          = (rhsOut.substTyFvars (S₁ ++ Schk ++ S₂)).closeTyVars Ys := by
+      rw [show (S₁ ++ Schk ++ S₂) = (S₁ ++ Schk) ++ S₂ from rfl, Expr.substTyFvars_append,
+          Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
+            (fun p hp hc => hRfixE p hp (Expr.tyFreeVars_closeTyVars_subset hc)),
+          Expr.substTyFvars_closeTyVars hS₂Ys hS₂Ysran,
+          ← Expr.substTyFvars_append]
+    -- residual rhs under K ++ Ys
+    have hrhs_sound := Infer.sound hrhs hctx hctx_pc (K ++ Ys)
+      (fun k hk => by
+        rcases List.mem_append.mp hk with h | h
+        · have := hKΦ k h; have := hΦN; omega
+        · simp only [Ys] at h; have := freshVars_lt k h; omega)
+      (fun y hy => by
+        rcases Expr.tyFreeVars_openTyVars hy with h | h
+        · exact List.mem_append_left _ (hKe y (.inl (.inr h)))
+        · simp only [Ys]; exact List.mem_append_right _ h)
+      (fun p hp hc => by
+        rcases List.mem_append.mp hc with h | h
+        · exact hSK p (List.mem_append_left _ (List.mem_append_left _ hp)) h
+        · simp only [Ys] at h
+          exact hesc1 p.1 h (List.mem_map.mpr ⟨p, List.mem_append_left _ hp, rfl⟩))
+    have hr1 := TypeOfElabHM.onSubst_eraseBounds_elab_append S₁ Schk hrhs_s hSchk_lc hrhs_sound
+    -- residual unifier: erase (Schk · τ₁) = erase (Schk · σ.openVars Ys) = erase (σ.openVars Ys)
+    have hu : Ty.eraseBounds (Schk.onTy τ₁) = Ty.eraseBounds (Schk.onTy (σ.openVars Ys)) :=
+      huni.unifies
+    have hr1' : TypeOfElabHM ((S₁ ++ Schk).onCtx ctx).eraseBounds
+        ((rhsOut.substTyFvars (S₁ ++ Schk)).eraseBounds)
+        (Ty.eraseBounds (σ.openVars Ys)) := by
+      have key := hr1
+      rwa [hu, hSchk_fix] at key
+    have hr2 := TypeOfElabHM.onSubst_eraseBounds_elab
+      (ctx := (S₁ ++ Schk).onCtx ctx) (e := rhsOut.substTyFvars (S₁ ++ Schk))
+      (τ := σ.openVars Ys) S₂ hbody_s hr1'
+    have hr2' : TypeOfElabHM ((S₁ ++ Schk ++ S₂).onCtx ctx).eraseBounds
+        ((rhsOut.substTyFvars (S₁ ++ Schk ++ S₂)).eraseBounds)
+        (Ty.eraseBounds (σ.openVars Ys)) := by
+      have key := hr2
+      rw [hS₂fix] at key
+      convert key using 1
+      · rw [← Subst.onCtx_append]
+      · rw [← Expr.substTyFvars_append]
+    have hbodyfix : bodyOut.substTyFvars (S₁ ++ Schk) = bodyOut :=
+      Infer.eOut_substTyFvars_eq hbody
+        (fun p hp => by
+          rcases List.mem_append.mp hp with hp | hp
+          · exact Infer.dom_below hrhs hctx_pc hΦ_rhs p hp
+          · rcases UnifyRel.dom_mem huni p hp with h | h
+            · exact hr_τ.mem_lt p.1 h
+            · exact hσopen.mem_lt p.1 h)
+        (fun p hp M hM => by
+          rcases List.mem_cons.mp hM with rfl | hM
+          · exact fun hc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inl (.inl hc)))
+          · rw [show (Schk.onCtx (S₁.onCtx ctx)) = (S₁ ++ Schk).onCtx ctx
+                  from (Subst.onCtx_append S₁ Schk ctx).symm] at hM
+            exact Subst.eliminates_onCtx (hcombelim p hp) M hM)
+        (fun p hp hc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inr hc)))
+    have hbodyterm : bodyOut.substTyFvars (S₁ ++ Schk ++ S₂) = bodyOut.substTyFvars S₂ := by
+      rw [show (S₁ ++ Schk ++ S₂) = (S₁ ++ Schk) ++ S₂ from rfl, Expr.substTyFvars_append,
+        hbodyfix]
+    have hS₁Schk_σbody : (S₁ ++ Schk).onTy σ.body = σ.body :=
+      Ty.substFvars_eq_self_of_no_key (fun p hp hc => hSK p (List.mem_append_left _ hp)
+        (hKe p.1 (.inl (.inl hc))))
+    have hSσ : Subst.onPolyTy (S₁ ++ Schk) σ = σ := by
+      simp only [Subst.onPolyTy, hS₁Schk_σbody]
+    have hschemeeq : Subst.onPolyTy S₂ σ = Subst.onPolyTy (S₁ ++ Schk ++ S₂) σ := by
+      rw [show (S₁ ++ Schk ++ S₂) = (S₁ ++ Schk) ++ S₂ from rfl, Subst.onPolyTy_append, hSσ]
+    have heqbodyctx : Subst.onCtx S₂ { (Schk.onCtx (S₁.onCtx ctx)) with
+          env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
+        = { (S₁ ++ Schk ++ S₂).onCtx ctx with
+          env := Subst.onPolyTy S₂ σ :: ((S₁ ++ Schk ++ S₂).onCtx ctx).env } := by
+      rw [show (S₁ ++ Schk ++ S₂) = (S₁ ++ Schk) ++ S₂ from rfl, Subst.onCtx_append,
+        Subst.onCtx_append]
+      simp only [Subst.onCtx, Subst.onEnv, List.map_cons]
+    have hbody_sound := Infer.sound hbody hbodyWF hbodyBelow K
+      (fun k hk => by have := hKΦ k hk; have := hΦN; have := hrle; omega)
+      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+    have hSσ_full : Subst.onPolyTy (S₁ ++ Schk ++ S₂) σ = σ := by
+      simp only [Subst.onPolyTy, hSσbody]
+    have hbody_pack : TypeOfElabHM
+        { ((S₁ ++ Schk ++ S₂).onCtx ctx).eraseBounds with
+          env := PolyTy.eraseBounds σ
+            :: ((S₁ ++ Schk ++ S₂).onCtx ctx).env.eraseBounds }
+        ((bodyOut.substTyFvars (S₁ ++ Schk ++ S₂)).eraseBounds) (Ty.eraseBounds τ) := by
+      have key := hbody_sound
+      have hctx_eq :
+          (S₂.onCtx { (Schk.onCtx (S₁.onCtx ctx)) with
+              env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }).eraseBounds
+          = { ((S₁ ++ Schk ++ S₂).onCtx ctx).eraseBounds with
+              env := PolyTy.eraseBounds (S₂.onPolyTy σ)
+                :: ((S₁ ++ Schk ++ S₂).onCtx ctx).env.eraseBounds } := by
+        rw [heqbodyctx]
+        simp only [Ctx.eraseBounds, Env.eraseBounds, List.map_cons]
+      rw [hctx_eq, ← hbodyterm] at key
+      -- S₂ · σ = (S1++Schk++S2) · σ = σ
+      have hsch : S₂.onPolyTy σ = σ := by
+        rw [hschemeeq, hSσ_full]
+      rwa [hsch] at key
+    have hYs_σ : ∀ y ∈ Ys, y ∉ σ.body.freeVars := by
+      intro y hy hc
+      have := hKΦ y (hKe y (.inl (.inl hc)))
+      simp only [Ys] at hy; have := freshVars_ge y hy; omega
+    have hYs_env : ∀ y ∈ Ys, y ∉ ((S₁ ++ Schk ++ S₂).onCtx ctx).env.freeVars := by
+      intro y hy hc
+      rw [show (S₁ ++ Schk ++ S₂).onCtx ctx = S₂.onCtx ((S₁ ++ Schk).onCtx ctx) from by
+            rw [show (S₁ ++ Schk ++ S₂) = (S₁ ++ Schk) ++ S₂ from rfl, Subst.onCtx_append],
+          Env.mem_freeVars_iff] at hc
+      obtain ⟨M, hM, hyM⟩ := hc
+      rw [show (S₂.onCtx ((S₁ ++ Schk).onCtx ctx)).env
+            = ((S₁ ++ Schk).onCtx ctx).env.map (Subst.onPolyTy S₂) from rfl,
+        List.mem_map] at hM
+      obtain ⟨M₀, hM₀, rfl⟩ := hM
+      refine Subst.notMemOnTy (fun p hp hyp => hS₂Ysran p hp y hyp hy) (fun hc2 => ?_) hyM
+      rw [Subst.onCtx_append] at hM₀
+      simp only [Ys] at hy
+      exact hesc2 y hy (Env.mem_freeVars_iff.mpr ⟨M₀, hM₀, hc2⟩)
+    have hgoal_e :
+        ((Expr.letIn (some σ)
+            ((rhsOut.substTyFvars (S₁ ++ Schk)).closeTyVars Ys) bodyOut).substTyFvars
+          (S₁ ++ Schk ++ S₂))
+        = Expr.letIn (some σ)
+            ((rhsOut.substTyFvars (S₁ ++ Schk ++ S₂)).closeTyVars Ys)
+            (bodyOut.substTyFvars (S₁ ++ Schk ++ S₂)) := by
+      rw [Expr.substTyFvars_letIn]
+      simp only [Option.map_some]
+      refine congrArg₂ (fun a b => Expr.letIn a b
+        (bodyOut.substTyFvars (S₁ ++ Schk ++ S₂))) ?_ hbound
+      exact congrArg some hSσ_full
+    rw [hgoal_e]
+    refine Infer.sound_letInAnn_erase (ctx := (S₁ ++ Schk ++ S₂).onCtx ctx)
+      (σ := σ) (rhsElab := rhsOut.substTyFvars (S₁ ++ Schk ++ S₂))
+      (bodyElab := bodyOut.substTyFvars (S₁ ++ Schk ++ S₂))
+      (Ys := Ys) (τ₂ := τ)
+      hr2' hσwf (by simp only [Ys]; exact freshVars_nodup)
+      (by simp only [Ys]; rw [freshVars_length])
+      hYs_env hYs_σ hbody_pack
+  | match_ hscrut hne hbr =>
+    intro hctx hbelow K hKΦ hKe hSK
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append] at hKe
+    obtain ⟨hτs_lc, hS₁⟩ := Infer.lc hscrut hctx
+    have hle1 := Infer.frontier_le hscrut
+    have hscrut_below := Infer.belowFvars hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+    have hctx1 := Subst.onCtx_wf hS₁ hctx
+    have hbelow1 := Subst.onCtx_below hscrut_below.2 hle1 hbelow
+    have helimS := Infer.eliminates hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy)))
+      (fun p hp hc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inl hc)))
+    have hS₂lc := (InferBranches.lc hbr hctx1 hτs_lc ContainsBvarsUpTo.fvar).2
+    have hbrfix : ∀ b ∈ branchesOut, b.2.substTyFvars S₁ = b.2 := by
+      intro b hb
+      refine Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => ?_)
+      refine (InferBranches.eOut_avoid hbr (w := p.1)
+        (by have := Infer.dom_below hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy))) p hp; omega)
+        (Subst.eliminates_onCtx (helimS.1 p hp)) (helimS.2 p hp)
+        (by have := Infer.dom_below hscrut hbelow (fun y hy => hKΦ y (hKe y (.inl hy))) p hp
+            simp only [Ty.freeVars, List.mem_singleton]; omega)
+        (fun hcc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inr hcc)))).2.2
+        (Expr.mem_branchListTyFreeVars_of hb hc)
+    have hscrut_sound := Infer.sound hscrut hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+      (fun p hp => hSK p (List.mem_append_left _ hp))
+    have hscrut_decl := TypeOfElabHM.onSubst_eraseBounds_elab_append S₁ S₂ hS₁ hS₂lc hscrut_sound
+    have hbr_sound := InferBranches.sound hbr hctx1 (fun M hM => (hbelow1 M hM).mono (by omega))
+      hτs_lc ContainsBvarsUpTo.fvar
+      (hscrut_below.1.mono (by omega)) (.fvar (by omega)) K
+      (fun k hk => by have := hKΦ k hk; omega)
+      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+    have hbrne : branchesOut ≠ [] := by
+      cases hbr with
+      | nil => exact absurd rfl hne
+      | cons => simp
+      | consWild => simp
+    rw [Expr.substTyFvars_match, Expr.eraseBounds]
+    refine TypeOfElabHM.match_ hscrut_decl ?_ ?_
+    · intro hcontra
+      simp only [List.map_eq_nil_iff] at hcontra
+      exact hbrne hcontra
+    · intro br hbr_mem
+      obtain ⟨pb, hpb, rfl⟩ := List.mem_map.mp hbr_mem
+      -- residual branch at S₂ after S₁-fix, then full S = S₁++S₂
+      have hbrp := hbr_sound pb hpb
+      -- hbrp : TypeOfElabMatchBranch (S₂.onCtx (S₁.onCtx ctx)).erase
+      --   (pb.1, (pb.2.subst S₂).erase) (erase (S₂.onTy scrutTy)) (erase (S₂.onTy ρ))
+      -- Need at (S₁++S₂).onCtx with (pb.2.subst (S₁++S₂)).erase = (pb.2.subst S₂).erase
+      have hterm : (pb.2.substTyFvars (S₁ ++ S₂)).eraseBounds =
+          (pb.2.substTyFvars S₂).eraseBounds := by
+        rw [Expr.substTyFvars_append, hbrfix pb hpb]
+      have hctx_eq : (S₂.onCtx (S₁.onCtx ctx)).eraseBounds =
+          ((S₁ ++ S₂).onCtx ctx).eraseBounds := by
+        rw [← Subst.onCtx_append]
+      -- Also need erase (S₂.onTy scrutTy) = erase ((S₁++S₂).onTy scrutTy)
+      -- Not generally true! S₁ may touch scrutTy free vars.
+      -- Residual statement uses Ty.eraseBounds (S.onTy scrutTy) = erase ((S₁++S₂).onTy scrutTy)
+      -- But InferBranches.sound concludes erase (S₂.onTy scrutTy) at ctx = S₁.onCtx ctx
+      -- Wait - look at InferBranches.sound statement:
+      -- TypeOfElabMatchBranch (S.onCtx ctx).erase (p.1, (p.2.subst S).erase)
+      --   (erase (S.onTy scrutTy)) (erase (S.onTy ρ))
+      -- For hbr, ctx is S₁.onCtx ctx_orig, S is S₂, scrutTy is τs (not S₁.onTy τs)
+      -- Looking at Infer.match_: InferBranches (Φ₁+1) (S₁.onCtx ctx) τs (.fvar Φ₁) ...
+      -- So scrutTy param is τs, and S₂.onTy τs - but conclusion of Infer.sound match needs
+      -- erase ((S₁++S₂).onTy (.fvar Φ₁)) for result and erase of scrut?
+      -- TypeOfElabHM.match_ needs branches at same scrutTy as scrutinee typing.
+      -- hscrut_decl types scrut at erase ((S₁++S₂).onTy τs) via residual transport...
+      -- Wait Infer.sound for hscrut concludes erase τs, then transport S₂ gives erase (S₂.onTy τs).
+      -- And (S₁++S₂).onTy τs = S₂.onTy (S₁.onTy τs). Is S₁.onTy τs = τs?
+      -- From eliminates of scrut, S₁ eliminates τs free vars → S₁.onTy τs = τs.
+      have hS₁τs : S₁.onTy τs = τs :=
+        Ty.substFvars_eq_self_of_no_key (fun p hp => helimS.2 p hp)
+      have hscrutTy_eq : Ty.eraseBounds (S₂.onTy τs) =
+          Ty.eraseBounds ((S₁ ++ S₂).onTy τs) := by
+        rw [Subst.onTy_append, hS₁τs]
+      have hρ_eq : Ty.eraseBounds (S₂.onTy (.fvar Φ₁)) =
+          Ty.eraseBounds ((S₁ ++ S₂).onTy (.fvar Φ₁)) := by
+        rw [Subst.onTy_append]
+        -- S₁ may not fix fvar Φ₁! Φ₁ is frontier after scrut, S₁ domain below Φ₁
+        -- Actually S₁'s range is below Φ₁ and domain is below Φ₁; fvar Φ₁ is NOT in S₁ domain
+        have hfix : S₁.onTy (.fvar Φ₁) = .fvar Φ₁ := by
+          apply Ty.substFvars_eq_self_of_no_key
+          intro p hp hc
+          have hdom := Infer.dom_below hscrut hbelow
+            (fun y hy => hKΦ y (hKe y (.inl hy))) p hp
+          simp only [Ty.freeVars, List.mem_singleton] at hc
+          omega
+        rw [hfix]
+      -- Convert branch typing
+      convert hbrp using 1
+      · exact hctx_eq.symm
+      · -- pattern × erased term
+        refine Prod.ext rfl hterm.symm
+      · exact hscrutTy_eq
+      · exact hρ_eq
+  | letRec hwfanns hgroup hbody =>
+    intro hctx hbelow K hKΦ hKe hSK
+    expose_names
+    sorry -- PathR: letRec residual
+termination_by e.size
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
 /-- Path R residual soundness of branch inference. -/
 theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
@@ -8546,7 +9843,17 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
       TypeOfElabMatchBranch (S.onCtx ctx).eraseBounds
         (p.1, (p.2.substTyFvars S).eraseBounds)
         (Ty.eraseBounds (S.onTy scrutTy)) (Ty.eraseBounds (S.onTy ρ)) := by
-  sorry -- PathR
+  cases h with
+  | nil => intro p hp; simp at hp
+  | cons hlook hn huni0 hbody huni hrest =>
+    expose_names
+    sorry -- PathR: InferBranches.cons
+  | consWild hbody huni hrest =>
+    expose_names
+    sorry -- PathR: InferBranches.consWild
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches, Expr.size, Expr.size_openTyVars]; omega)
 
 /-- Path R residual soundness of recursive-group inference. -/
 theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
@@ -8566,8 +9873,21 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
             TypeOfElabHM (S.onCtx ctx).eraseBounds
               (((p.1.substTyFvars S).openTyVars Xs).eraseBounds)
               (Ty.eraseBounds (σ.openVars Xs))) := by
-  sorry -- PathR
-
+  cases h with
+  | nil =>
+    refine ⟨?_, [], ?_⟩
+    · intro p hp; simp at hp
+    · intro p hp; simp at hp
+  | consMono he huni hrest =>
+    expose_names
+    sorry -- PathR: InferRecGroup.consMono
+  | consPoly hN he huni hesc1 hesc2 hrest =>
+    expose_names
+    sorry -- PathR: InferRecGroup.consPoly
+termination_by Expr.sizeRecGroup bindings
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size, Expr.size_openTyVars]; omega)
+end
 
 /-- Path R closed-program residual soundness (`K := []`). -/
 theorem Infer.sound_closed {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ)
@@ -8623,9 +9943,11 @@ inductive Expr.UserAnnsCopied : Expr → Expr → Prop
     Expr.UserAnnsCopiedBranches brs brsOut →
     Expr.UserAnnsCopied (.match_ scrut brs) (.match_ scrutOut brsOut)
   /-- Infer emits `letRecElab` (Λ-outside nest of `letIn` over an **inner**
-      `.letRec anns …`), not a bare `.letRec` elaboratum. -/
+      `.letRec anns …`), not a bare `.letRec` elaboratum. Group-level `anns` are
+      copied exactly. Bindings may be `substTyFvars` / `closeTyVars` of the raw
+      group elaborata (same discipline as let RHS — not a pure same-shape zip of
+      nested binder ascriptions after those rewrites); only the body is zipped. -/
   | letRec {G anns bindings body specs bindingsOut bodyOut} :
-    Expr.UserAnnsCopiedList bindings bindingsOut →
     Expr.UserAnnsCopied body bodyOut →
     Expr.UserAnnsCopied (.letRec anns bindings body)
       (Expr.letRecElab G anns bindingsOut specs bodyOut)
@@ -8639,7 +9961,7 @@ inductive Expr.UserAnnsCopiedBranches :
     Expr.UserAnnsCopiedBranches rest restOut →
     Expr.UserAnnsCopiedBranches ((p, e) :: rest) ((p, eOut) :: restOut)
 
-/-- Binding list zip. -/
+/-- Binding list zip (raw `InferRecGroup` elaborata; pre outer `map substTyFvars`). -/
 inductive Expr.UserAnnsCopiedList : List Expr → List Expr → Prop
   | nil : Expr.UserAnnsCopiedList [] []
   | cons {e eOut rest restOut} :
@@ -8648,18 +9970,54 @@ inductive Expr.UserAnnsCopiedList : List Expr → List Expr → Prop
     Expr.UserAnnsCopiedList (e :: rest) (eOut :: restOut)
 end
 
-/-- Infer's elaboratum copies user binder ascriptions (pre-`substTyFvars`). -/
+/-! ### Ann preservation (`Infer.preservesAnns`)
+
+Mutual with `InferBranches`. `letRec` elaboratum is `letRecElab` (not bare
+`.letRec`); group-level anns + body are zipped by `UserAnnsCopied.letRec`.
+Bindings of a rec group are not fully zipped at the `letRecElab` layer (they
+may be `substTyFvars` / `closeTyVars` of raw group elaborata — same discipline
+as let RHS). -/
+
+mutual
+/-- Infer's elaboratum copies user binder ascriptions (pre-outer-`substTyFvars`). -/
 theorem Infer.preservesAnns {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
     Expr.UserAnnsCopied e eOut := by
-  sorry -- PathR
+  cases h with
+  | primLitUnit => exact .primLit
+  | primLitInt => exact .primLit
+  | primLitNat => exact .primLit
+  | primLitChar => exact .primLit
+  | primBinOpIntAdd => exact .primBinOp
+  | primBinOpIntSub => exact .primBinOp
+  | primBinOpIntLt _ _ _ _ => exact .primBinOp
+  | primBinOpCharLt _ _ _ _ => exact .primBinOp
+  | lambda _ hbody => exact .lambda (Infer.preservesAnns hbody)
+  | app hf harg _ => exact .app (Infer.preservesAnns hf) (Infer.preservesAnns harg)
+  | var => exact .var
+  | ctor => exact .ctor
+  | letIn _ hbody => exact .letIn_none (Infer.preservesAnns hbody)
+  | letInAnn _ _ _ _ _ _ hbody => exact .letIn_some (Infer.preservesAnns hbody)
+  | match_ hscrut _ hbr =>
+    exact .match_ (Infer.preservesAnns hscrut) (InferBranches.preservesAnns hbr)
+  | letRec _ _ hbody =>
+    exact .letRec (Infer.preservesAnns hbody)
+termination_by e.size
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.size]; omega)
 
-/-- After applying Infer's substitution, monotype/scheme **payloads** on copied
-    user anns are only rewritten by type-fvar subst (spine), never by inventing
-    new `lo`/`hi` CountSlots. Stated via erase on the ascription types. -/
-theorem Expr.UserAnnsCopied.eraseBounds_ann_payloads {e eOut : Expr}
-    (h : Expr.UserAnnsCopied e eOut) (S : Subst) :
-    True := by
-  sorry -- PathR: refine to zip λ/let anns: erase (S · ann) = erase (S · annOut) when both some
+theorem InferBranches.preservesAnns {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut) :
+    Expr.UserAnnsCopiedBranches brs brsOut := by
+  cases h with
+  | nil => exact .nil
+  | cons _ _ _ hbody _ hrest =>
+    exact .cons (Infer.preservesAnns hbody) (InferBranches.preservesAnns hrest)
+  | consWild hbody _ hrest =>
+    exact .cons (Infer.preservesAnns hbody) (InferBranches.preservesAnns hrest)
+termination_by Expr.sizeBranches brs
+decreasing_by
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
+end
 
 /-! ## Algorithmic phase, step 2b: completeness (principality) scaffolding
 
@@ -8997,7 +10355,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
       · simp only [Option.map_some, Option.some.injEq] at hT
         subst hT
         have hpin := hann T₀ rfl
-        simp only [Ty.eraseBounds_substFvar, hpin]
+        simp only [hpin]
     · simpa only [Env.substFvar, List.map_cons, PolyTy.substFvar, PolyTy.mkTrivial] using ihbody
   | var hlook htyargs hinst =>
     simp only [Expr.substTyFvar]
@@ -9028,7 +10386,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
       · simp only [Option.map_some, Option.some.injEq] at hσ
         subst hσ
         have hpin := hann σ₀ rfl
-        simp only [PolyTy.eraseBounds_substFvar, hpin]
+        simp only [hpin]
     · intro Xs hfresh
       have hZ_notin : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
       have hXs_freshL : FreshNames L M.paramCount Xs :=
@@ -9266,7 +10624,160 @@ theorem TypeOfHM.onSubst_fixed {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
 theorem TypeOfHM.eraseBounds_of {ctx : Ctx} {e : Expr} {τ : Ty}
     (h : TypeOfHM ctx e τ) :
     TypeOfHM ctx.eraseBounds e.eraseBounds (Ty.eraseBounds τ) := by
-  sorry -- PathR
+  induction h using TypeOfHM.rec_strong with
+  | primLitUnit =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_prim]; exact .primLitUnit
+  | primLitInt =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_prim]; exact .primLitInt
+  | primLitNat =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_prim]; exact .primLitNat
+  | primLitChar =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_prim]; exact .primLitChar
+  | primBinOpIntAdd =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow, Ty.eraseBounds_prim]
+    exact .primBinOpIntAdd
+  | primBinOpIntSub =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow, Ty.eraseBounds_prim]
+    exact .primBinOpIntSub
+  | primBinOpIntLt _ _ ihtrue ihfalse =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow, Ty.eraseBounds_prim,
+      Ty.eraseBounds_customTy, TyList.eraseBounds_nil] at ihtrue ihfalse ⊢
+    exact .primBinOpIntLt ihtrue ihfalse
+  | primBinOpCharLt _ _ ihtrue ihfalse =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow, Ty.eraseBounds_prim,
+      Ty.eraseBounds_customTy, TyList.eraseBounds_nil] at ihtrue ihfalse ⊢
+    exact .primBinOpCharLt ihtrue ihfalse
+  | app _ _ ihf ihinput =>
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow] at ihf ⊢
+    exact .app ihf ihinput
+  | @lambda paramTy ann bodyCtx ctx body bodyTy hpc hann heq hbody ihbody =>
+    subst heq
+    simp only [Expr.eraseBounds, Ty.eraseBounds_arrow]
+    refine TypeOfHM.lambda (Ty.IsLC.eraseBounds hpc)
+      (Option.Pins.map_eraseBounds hann) rfl ?_
+    simpa only [Ctx.eraseBounds, Env.eraseBounds_cons, PolyTy.eraseBounds_mkTrivial]
+      using ihbody
+  | @var dbl polyTy instArgs tyArgs ty ctx hlook htyargs hinst =>
+    -- decoration-blind: stored tyArgs erased, instantiation via erased instArgs
+    simp only [Expr.eraseBounds, Ctx.eraseBounds]
+    refine TypeOfHM.var (polyTy := PolyTy.eraseBounds polyTy)
+      (instArgs := instArgs.map Ty.eraseBounds) ?_ ?_ ?_
+    · have hlook' := congrArg (Option.map PolyTy.eraseBounds) hlook
+      simpa [Env.eraseBounds_getElem?, Option.map_some] using hlook'
+    · intro tyArg hmem
+      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hmem
+      exact Ty.IsLC.eraseBounds (htyargs t ht)
+    · change InstantiatesBy (instArgs.map Ty.eraseBounds)
+        (PolyTy.eraseBounds polyTy).body (Ty.eraseBounds ty)
+      simpa [PolyTy.eraseBounds_body] using InstantiatesBy.eraseBounds hinst
+  | @ctor name ctorr tyArgs ty ctx hlook htyargs hinst =>
+    simp only [Expr.eraseBounds, Ctx.eraseBounds]
+    refine TypeOfHM.ctor (ctor := Ctor.eraseBounds ctorr)
+      (tyArgs := tyArgs.map Ty.eraseBounds) ?_ ?_ ?_
+    · have hlook' := congrArg (Option.map Ctor.eraseBounds) hlook
+      simpa [CtorEnv.eraseBounds_get?, Option.map_some] using hlook'
+    · intro tyArg hmem
+      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hmem
+      exact Ty.IsLC.eraseBounds (htyargs t ht)
+    · change InstantiatesBy (tyArgs.map Ty.eraseBounds)
+        (Ctor.eraseBounds ctorr).toTy.body (Ty.eraseBounds ty)
+      rw [Ctor.eraseBounds_toTy, PolyTy.eraseBounds_body]
+      exact InstantiatesBy.eraseBounds hinst
+  | @letIn ann ctx boundExpr bodyCtx body bodyTy M L hwf hann hcofin heq hbody ihcofin ihbody =>
+    subst heq
+    simp only [Expr.eraseBounds]
+    refine TypeOfHM.letIn (M := PolyTy.eraseBounds M) (L := L)
+      (PolyTy.WF.eraseBounds hwf) (Option.Pins.map_eraseBounds_poly hann) ?_ rfl ?_
+    · intro Xs hf
+      have hf' : FreshNames L M.paramCount Xs := by
+        simpa [PolyTy.eraseBounds_paramCount] using hf
+      have hbe := ihcofin Xs hf'
+      rw [Expr.eraseBounds_openBoundTyVars, PolyTy.eraseBounds_openVars] at hbe
+      exact hbe
+    · simpa only [Ctx.eraseBounds, Env.eraseBounds_cons] using ihbody
+  | @match_ ctx scrutinee scrutTy branches resultTy hscrut hne hbrs ihscrut ihbrs =>
+    simp only [Expr.eraseBounds]
+    refine TypeOfHM.match_ ihscrut ?_ ?_
+    · intro hcontra
+      obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil hne
+      simp [hb] at hcontra
+    · intro branch' hmem'
+      obtain ⟨⟨pat, body⟩, hmem, rfl⟩ := List.mem_map.mp hmem'
+      rcases ihbrs (pat, body) hmem with
+        ⟨ct, c, n, tyArgs, instContents, hpat, hlook, hScrutEq, hpc, hcontents, hinstC,
+          _, hbodyIH⟩ |
+        ⟨hpat, _, hbodyIH⟩
+      · subst hpat
+        have hlook' :
+            LookupList.get? ctx.eraseBounds.ctors c = some (Ctor.eraseBounds ct) := by
+          have := congrArg (Option.map Ctor.eraseBounds) hlook
+          simpa [Ctx.eraseBounds, CtorEnv.eraseBounds_get?, Option.map_some] using this
+        have hscrut' :
+            Ty.eraseBounds scrutTy =
+              .customTy (Ctor.eraseBounds ct).tyName (tyArgs.map Ty.eraseBounds) := by
+          rw [hScrutEq]
+          simp only [Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map,
+            Ctor.eraseBounds_tyName]
+        have hfields' :
+            List.Forall₂ (InstantiatesBy (tyArgs.map Ty.eraseBounds))
+              (Ctor.eraseBounds ct).contents (instContents.map Ty.eraseBounds) := by
+          simpa [Ctor.eraseBounds_contents] using
+            InstantiatesBy.forall2_eraseBounds hinstC
+        have hbody' :
+            TypeOfHM
+              ⟨(instContents.map Ty.eraseBounds).map PolyTy.mkTrivial ++
+                  ctx.eraseBounds.env,
+                ctx.eraseBounds.ctors⟩
+              body.eraseBounds (Ty.eraseBounds resultTy) := by
+          simpa only [Ctx.eraseBounds, Env.eraseBounds_append,
+            Env.eraseBounds_map_mkTrivial] using hbodyIH
+        refine TypeOfMatchBranch.mk
+          ⟨hlook', hscrut',
+            by simpa [Ctor.eraseBounds_paramCount, List.length_map] using hpc,
+            by simpa [Ctor.eraseBounds_contents, List.length_map] using hcontents,
+            hfields'⟩
+          rfl hbody'
+      · subst hpat
+        exact TypeOfMatchBranch.wildcard hbodyIH
+  | @letRec ctx bodyCtx anns bindings specs G L body ρ hwf hmono hpoly heq hbody
+      ihmono ihpoly ihbody =>
+    subst heq
+    simp only [Expr.eraseBounds]
+    refine TypeOfHM.letRec
+      (bodyCtx := RecSpecs.bodyCtx ctx.eraseBounds (specs.map RecSpec.eraseBounds) G)
+      (specs := specs.map RecSpec.eraseBounds) (G := G) (L := L)
+      (RecSpecs.WF.eraseBounds hwf) ?_ ?_ ?_ ?_
+    · intro Xs hf p hp τ hτ
+      obtain ⟨e₀, s₀, hmem₀, hpEq⟩ := List.mem_zip_map_eraseBounds hp
+      subst hpEq
+      cases s₀ with
+      | mono τ₀ =>
+        injection hτ with hττ
+        subst hττ
+        have hmono₀ := ihmono Xs hf (e₀, .mono τ₀) hmem₀ τ₀ rfl
+        rw [Ty.eraseBounds_renameG, RecSpecs.rhsCtx_eraseBounds] at hmono₀
+        exact hmono₀
+      | poly _ =>
+        simp only [RecSpec.eraseBounds] at hτ
+        exact RecSpec.noConfusion hτ
+    · intro Xs hf p hp σ hσ Ys hfY
+      obtain ⟨e₀, s₀, hmem₀, hpEq⟩ := List.mem_zip_map_eraseBounds hp
+      subst hpEq
+      cases s₀ with
+      | mono _ =>
+        simp only [RecSpec.eraseBounds] at hσ
+        exact RecSpec.noConfusion hσ
+      | poly σ₀ =>
+        injection hσ with hσσ
+        subst hσσ
+        have hfY' : FreshNames (L ++ Xs) σ₀.paramCount Ys := by
+          simpa [PolyTy.eraseBounds_paramCount] using hfY
+        have hpoly₀ := ihpoly Xs hf (e₀, .poly σ₀) hmem₀ σ₀ rfl Ys hfY'
+        rw [Expr.eraseBounds_openTyVars, PolyTy.eraseBounds_openVars,
+          RecSpecs.rhsCtx_eraseBounds] at hpoly₀
+        exact hpoly₀
+    · rfl
+    · rwa [RecSpecs.bodyCtx_eraseBounds] at ihbody
 
 theorem TypeOfHM.onSubst_eraseBounds {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
     (h_lc : ∀ p ∈ S, p.2.IsLC)
@@ -9274,7 +10785,9 @@ theorem TypeOfHM.onSubst_eraseBounds {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst
     TypeOfHM (S.onCtx ctx.eraseBounds).eraseBounds
       ((e.eraseBounds).substTyFvars S).eraseBounds
       (Ty.eraseBounds (S.onTy τ)) := by
-  sorry -- PathR
+  have hS := TypeOfHM.onSubst S h_lc h
+  have herase := TypeOfHM.eraseBounds_of hS
+  rwa [Ty.eraseBounds_onTy_erase] at herase
 
 /-- Preferred residual transport: conclude at `(S.onCtx ctx).eraseBounds`. -/
 theorem TypeOfHM.onSubst_eraseBounds' {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
@@ -9283,15 +10796,34 @@ theorem TypeOfHM.onSubst_eraseBounds' {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subs
     TypeOfHM (S.onCtx ctx).eraseBounds
       ((e.eraseBounds).substTyFvars S).eraseBounds
       (Ty.eraseBounds (S.onTy τ)) := by
-  sorry -- PathR
+  have key := TypeOfHM.onSubst_eraseBounds S h_lc h
+  rwa [Ctx.eraseBounds_onCtx_erase] at key
 
 /-- Fixed-ann residual transport: when `S` fixes annotation free vars of `e`,
     residual TypeOf is at `e.eraseBounds` (Path R subject is always erased). -/
 theorem TypeOfHM.onSubst_eraseBounds_fixed {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
-    (h_lc : ∀ p ∈ S, p.2.IsLC) (_h_fix : e.substTyFvars S = e)
+    (h_lc : ∀ p ∈ S, p.2.IsLC) (h_fix : e.substTyFvars S = e)
     (h : TypeOfHM ctx.eraseBounds e.eraseBounds (Ty.eraseBounds τ)) :
     TypeOfHM (S.onCtx ctx).eraseBounds e.eraseBounds (Ty.eraseBounds (S.onTy τ)) := by
-  sorry -- PathR
+  have key := TypeOfHM.onSubst_eraseBounds' S h_lc h
+  -- Collapse the residual subject back to `e.eraseBounds` under `h_fix`.
+  -- (e.eraseBounds).substTyFvars S, then erase
+  --   = e.eraseBounds.substTyFvars (S.map erase)     [eraseBounds_substTyFvars + idem]
+  --   = (e.substTyFvars S).eraseBounds               [eraseBounds_substTyFvars]
+  --   = e.eraseBounds                                [h_fix]
+  have hterm :
+      ((e.eraseBounds).substTyFvars S).eraseBounds = e.eraseBounds := by
+    calc ((e.eraseBounds).substTyFvars S).eraseBounds
+        = (e.eraseBounds).eraseBounds.substTyFvars
+            (S.map fun p => (p.1, Ty.eraseBounds p.2)) :=
+          Expr.eraseBounds_substTyFvars S e.eraseBounds
+      _ = e.eraseBounds.substTyFvars
+            (S.map fun p => (p.1, Ty.eraseBounds p.2)) := by
+          rw [Expr.eraseBounds_idem]
+      _ = (e.substTyFvars S).eraseBounds :=
+          (Expr.eraseBounds_substTyFvars S e).symm
+      _ = e.eraseBounds := by rw [h_fix]
+  rwa [hterm] at key
 
 /-- **Iterated fixed-env substitution preservation for `TypeOfHM`.** When the
     substitution keys avoid the context env's free vars, the env is unchanged;
@@ -9352,24 +10884,54 @@ end
 Source `e` may carry BL anns; pure `TypeOfHM` judges `e.eraseBounds` only.
 -/
 
-/-- Path R residual backward soundness: Infer implies pure source `TypeOfHM`. -/
+/-- Path R residual backward soundness: Infer implies pure source `TypeOfHM`.
+    Source may carry BL anns; judgment is on `e.eraseBounds` only. -/
 theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
     TypeOfHM (S.onCtx ctx).eraseBounds e.eraseBounds (Ty.eraseBounds τ) := by
   sorry -- PathR
 
-/-- Branch residual source-soundness (Path R; body fenced). -/
+/-- Path R residual source soundness of branch inference (mutual with
+    `Infer.sourceSound`). Source branch bodies, after erase; mirrors
+    `InferBranches.sound` but `TypeOfMatchBranch` / source `brs` rather than
+    elaboratum `brsOut`. -/
 theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S brsOut}
-    (_h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut) :
-    ∀ _p ∈ brsOut, True := by
-  intro _ _; trivial
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
+    (hscrutB : Ty.BelowFvars Φ scrutTy) (hρB : Ty.BelowFvars Φ ρ) (K : List Nat)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    ∀ p ∈ brs,
+      TypeOfMatchBranch (S.onCtx ctx).eraseBounds
+        (p.1, p.2.eraseBounds)
+        (Ty.eraseBounds (S.onTy scrutTy)) (Ty.eraseBounds (S.onTy ρ)) := by
+  sorry -- PathR
 
-/-- Rec-group residual source-soundness (Path R; body fenced). -/
+/-- Path R residual source soundness of recursive-group inference (mutual with
+    `Infer.sourceSound`). Source bindings after erase; mirrors
+    `InferRecGroup.sound` but `TypeOfHM` on source `bindings` rather than
+    elaboratum `bindingsOut`. -/
 theorem InferRecGroup.sourceSound {Φ ctx bindings specs Φ' S bindingsOut}
-    (_h : InferRecGroup Φ ctx bindings specs Φ' S bindingsOut) :
-    True := by
-  trivial
+    (h : InferRecGroup Φ ctx bindings specs Φ' S bindingsOut)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
+    (hspecs_env : ∀ s ∈ specs, ∀ y ∈ s.freeVars, y ∈ ctx.env.freeVars)
+    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hKsch : ∀ σ, RecSpec.poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    (∀ p ∈ bindings.zip (specs.map (RecSpec.onSubst S)), ∀ τ, p.2 = RecSpec.mono τ →
+        TypeOfHM (S.onCtx ctx).eraseBounds
+          p.1.eraseBounds (Ty.eraseBounds τ))
+      ∧ (∃ L : List Nat, ∀ p ∈ bindings.zip (specs.map (RecSpec.onSubst S)),
+          ∀ σ, p.2 = RecSpec.poly σ → ∀ Xs, FreshNames L σ.paramCount Xs →
+            TypeOfHM (S.onCtx ctx).eraseBounds
+              ((p.1.openTyVars Xs).eraseBounds)
+              (Ty.eraseBounds (σ.openVars Xs))) := by
+  sorry -- PathR
 
 
 /-- Path R principality at `e`: any **erase-normal** declarative typing of
@@ -14643,18 +16205,19 @@ def principalType (ctors : CtorEnv) (e : Expr) : Option Ty :=
   (inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e).map (·.val.2.2.2)
 
 /-- Monotype soundness (erase-normal): a computed principal type is a genuine
-    residual declarative type. Holds for *any* `e`: free top-level annotation
-    variables stay rigid (`K := e.tyFreeVars`). -/
+    residual declarative type (ctx ctors projected through `CtorEnv.eraseBounds`).
+    Holds for *any* `e`: free top-level annotation variables stay rigid
+    (`K := e.tyFreeVars`). -/
 theorem principalType_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
     (h : principalType ctors e = some τ) :
-    TypeOfHM ⟨[], ctors⟩ e.eraseBounds (Ty.eraseBounds τ) := by
+    TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) := by
   rw [principalType] at h
   rcases hc : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with _ | ⟨⟨Φ', S, eOut, τ'⟩, hInfer, hSK⟩ <;>
     rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
-    -- empty env: (S.onCtx empty).eraseBounds = empty
+    -- empty env: (S.onCtx empty).eraseBounds has empty env + erased ctors
     simpa [Subst.onCtx, Subst.onEnv, Ctx.eraseBounds, Env.eraseBounds] using
       Infer.sourceSound hInfer CtxWF.empty (fun M hM => by simp at hM)
         e.tyFreeVars (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) hSK
@@ -14663,14 +16226,16 @@ theorem principalType_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
     substitution instance of the computed principal type. -/
 theorem principalType_principal {ctors : CtorEnv} {e : Expr} {τ : Ty}
     (h : principalType ctors e = some τ) :
-    ∀ τ₀, TypeOfHM ⟨[], ctors⟩ e.eraseBounds τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+    ∀ τ₀, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ₀ →
+      ∃ R : Subst, τ₀ = R.onTy τ := by
   intro τ₀ hτ₀
   exact sorry -- PathR: complete' over erase-normal TypeOfHM
 
 /-- Monotype decidability (Path R): `principalType` succeeds iff the program's
     erase-projection is declaratively typeable. -/
 theorem principalType_iff {ctors : CtorEnv} {e : Expr} :
-    (principalType ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e.eraseBounds τ := by
+    (principalType ctors e).isSome ↔
+      ∃ τ, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ := by
   constructor
   · intro h
     obtain ⟨τ, hτ⟩ := Option.isSome_iff_exists.mp h
@@ -14710,7 +16275,8 @@ theorem typecheck_closed {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     a pure-HM type of the erase-projected program. -/
 theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     (h : typecheck ctors e = some σ) :
-    ∃ τ, TypeOfHM ⟨[], ctors⟩ e.eraseBounds (Ty.eraseBounds τ) ∧ σ = genScheme [] [] τ := by
+    ∃ τ, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
+      σ = genScheme [] [] τ := by
   rw [typecheck] at h
   rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
   · simp at h
@@ -14721,8 +16287,9 @@ theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
 theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     (h : typecheck ctors e = some σ) :
     ∃ τ, σ = genScheme [] [] τ ∧
-      TypeOfHM ⟨[], ctors⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
-      ∀ τ₀, TypeOfHM ⟨[], ctors⟩ e.eraseBounds τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
+      TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
+      ∀ τ₀, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ₀ →
+        ∃ R : Subst, τ₀ = R.onTy τ := by
   rw [typecheck] at h
   rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
   · simp at h
@@ -14732,7 +16299,8 @@ theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
 /-- Whole-program decidability (Path R): `typecheck` succeeds iff erase-projection
     is declaratively typeable. -/
 theorem typecheck_iff {ctors : CtorEnv} {e : Expr} :
-    (typecheck ctors e).isSome ↔ ∃ τ, TypeOfHM ⟨[], ctors⟩ e.eraseBounds τ := by
+    (typecheck ctors e).isSome ↔
+      ∃ τ, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ := by
   simp only [typecheck, Option.isSome_map]
   exact principalType_iff
 

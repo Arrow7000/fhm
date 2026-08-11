@@ -133,10 +133,29 @@ From 2026-08-11 audit + follow-up:
   - Core: `eraseBounds_idem`, `eraseBounds_substTyFvar(s)`, `eraseBounds_openTyVars`,
     `eraseBounds_openBoundTyVars`, ctor unfolds  
   - InferW: `eraseBounds_closeTyVars`, `eraseBounds_letRecElab`  
-- [ ] **`Expr.eraseBounds` termination** — still `decreasing_by sorry` in Core; proof agent  
-- [ ] Optional: real residual `InferBranches.sourceSound` / `InferRecGroup.sourceSound` if needed  
+- [x] **Branch/rec residual `sourceSound` statements** — real (mirror `.sound`; TypeOfHM /
+  TypeOfMatchBranch on **source** after erase). No vacuous `True` stubs.  
+- [x] **Deleted** `UserAnnsCopied.eraseBounds_ann_payloads` — vacuous; under
+  `UserAnnsCopied`, shared anns are definitionally equal, so post-subst erase
+  agreement is congruence. Product honesty is `Infer.preservesAnns` alone.  
+- [x] **`Expr.eraseBounds` termination** — `sizeOf`; match uses `pe.2` under list mem  
+- [x] **Expr erase commute proofs** — Core (`idem`/`subst`/`open*`/ctors) + InferW
+  (`closeTyVars`/`letRecElab`); sequential farm (Core before InferW)
+- [x] **`Ctx.eraseBounds` projects `CtorEnv` too** — earlier "ctors unchanged /
+  prelude NoBL" made residual `TypeOf*.eraseBounds_of` **false** when a ctor
+  field carries `BL` (structural `InstantiatesBy` cannot relate BL template to
+  erased List). Now `Ctor.eraseBounds` / `CtorEnv.eraseBounds`; `WellTyped`
+  uses erased ctors.  
 
-**Ready to farm residual soundness proofs** (not completeness, not runSafe).
+- [x] **`TypeOfElabHM.eraseBounds_of` / `TypeOfHM.eraseBounds_of`** proved (after CtorEnv erase)
+- [x] **`onSubst_eraseBounds*`** (Elab + HM, primed + fixed) proved
+- [x] **Packing** `sound_letIn_erase` / `sound_letInAnn_erase` proved
+- [x] **`Infer.preservesAnns`** proved (+ `InferBranches.preservesAnns`). `UserAnnsCopied.letRec`
+  restated: group `anns` + body only (bindings not full zip after subst/close — same as let RHS)
+
+**Farm residual soundness proofs next** (InferW only; sequential — no parallel Core):
+`Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound` → then `sourceSound` trio.
+Not completeness, not runSafe / operational residual `WellTyped`.
 
 ---
 
