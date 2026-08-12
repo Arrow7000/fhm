@@ -15314,7 +15314,284 @@ theorem UnifyRel.complete_aux : ∀ (N : Nat),
         (∀ t ∈ as, t.IsLC) → (∀ t ∈ bs, t.IsLC) → as.length = bs.length →
         as.map (fun t => Ty.eraseBounds (U.onTy t)) =
           bs.map (fun t => Ty.eraseBounds (U.onTy t)) → ∃ S, UnifyRelList as bs S) := by
-  sorry -- OptionA residual
+  have esz : ∀ τ : Ty, (Ty.eraseBounds τ).size = τ.size := by
+    intro τ
+    induction τ using Ty.rec_strong with
+    | prim p => simp [Ty.size]
+    | bvar i => simp [Ty.size]
+    | fvar n => simp [Ty.size]
+    | arrow a b iha ihb => simp [Ty.size, iha, ihb]
+    | customTy nm tys ih =>
+        simp [Ty.size]
+        induction tys with
+        | nil => rfl
+        | cons hd tl ihtl =>
+            simp [TyList.size, ih hd List.mem_cons_self,
+              ihtl (fun t ht => ih t (List.mem_cons_of_mem _ ht))]
+    | bl lo hi e ih => simp [Ty.size, bareListTy, TyList.size, ih]
+  intro N
+  induction N using Nat.strong_induction_on with
+  | h N ih =>
+    have ihT : ∀ m, m < N → ∀ {a b : Ty} {U : Subst}, 2 * (U.onTy a).size < m → a.IsLC → b.IsLC →
+        Unifies U a b → ∃ S, UnifyRel a b S := by
+      intro m hm
+      rcases ih m hm with ⟨hty, hl⟩
+      exact hty
+    have ihL : ∀ m, m < N → ∀ {as bs : List Ty} {U : Subst}, 2 * TyList.size (as.map U.onTy) + 1 < m →
+        (∀ t ∈ as, t.IsLC) → (∀ t ∈ bs, t.IsLC) → as.length = bs.length →
+        as.map (fun t => Ty.eraseBounds (U.onTy t)) =
+          bs.map (fun t => Ty.eraseBounds (U.onTy t)) → ∃ S, UnifyRelList as bs S := by
+      intro m hm
+      rcases ih m hm with ⟨hty, hl⟩
+      exact hl
+    constructor
+    · intro a b U hlt ha hb hU
+      have occ : ∀ (n : Nat) {B : Ty}, B ≠ .fvar n → Unifies U (.fvar n) B → n ∉ B.freeVars := by
+        intro n B hne hUn
+        intro hmem
+        have hltz := Ty.size_onTy_fvar_lt (S := U) (n := n) (b := B) hmem hne
+        have hsz : (Ty.eraseBounds (U.onTy (.fvar n))).size = (Ty.eraseBounds (U.onTy B)).size :=
+          congrArg Ty.size hUn
+        rw [esz (U.onTy (.fvar n)), esz (U.onTy B)] at hsz
+        omega
+      have occR : ∀ (n : Nat) {A : Ty}, A ≠ .fvar n → Unifies U A (.fvar n) → n ∉ A.freeVars := by
+        intro n A hne hUn
+        intro hmem
+        have hltz := Ty.size_onTy_fvar_lt (S := U) (n := n) (b := A) hmem hne
+        have hsz : (Ty.eraseBounds (U.onTy (.fvar n))).size = (Ty.eraseBounds (U.onTy A)).size :=
+          (congrArg Ty.size hUn).symm
+        rw [esz (U.onTy (.fvar n)), esz (U.onTy A)] at hsz
+        omega
+      cases a with
+      | prim p =>
+          cases b with
+          | prim q =>
+              have hpq : p = q := by
+                cases p <;> cases q <;> simp [Unifies, AgreesHM] at hU ⊢
+              subst q
+              exact ⟨[], .prim⟩
+          | arrow c d => simp [Unifies, AgreesHM] at hU
+          | bvar i => cases hb with | bvar h0 => omega
+          | fvar m => exact ⟨[(m, .prim p)], .fvarR (by simp) (occR m (by simp) hU)⟩
+          | customTy nm tys => simp [Unifies, AgreesHM] at hU
+          | bl lo hi e => simp [Unifies, AgreesHM, bareListTy] at hU
+      | arrow a₁ a₂ =>
+          cases b with
+          | prim q => simp [Unifies, AgreesHM] at hU
+          | arrow c₁ c₂ =>
+              simp only [Unifies, AgreesHM, Subst.onTy_arrow, Ty.eraseBounds_arrow] at hU
+              have hU₁ : Unifies U a₁ c₁ := by simpa [Unifies, AgreesHM] using (Ty.arrow.inj hU).1
+              have hU₂ : Unifies U a₂ c₂ := by simpa [Unifies, AgreesHM] using (Ty.arrow.inj hU).2
+              have ha₁ : a₁.IsLC := by cases ha with | arrow ha₁ ha₂ => exact ha₁
+              have ha₂ : a₂.IsLC := by cases ha with | arrow ha₁ ha₂ => exact ha₂
+              have hc₁ : c₁.IsLC := by cases hb with | arrow hc₁ hc₂ => exact hc₁
+              have hc₂ : c₂.IsLC := by cases hb with | arrow hc₁ hc₂ => exact hc₂
+              have hlt' : 2 * (1 + (U.onTy a₁).size + (U.onTy a₂).size) < N := by
+                simpa [Subst.onTy_arrow, Ty.size] using hlt
+              have hm₁ : 2 * (U.onTy a₁).size + 1 < N := by omega
+              obtain ⟨S₁, hS₁⟩ := ihT (2 * (U.onTy a₁).size + 1) hm₁ (a := a₁) (b := c₁) (U := U) (by omega) ha₁ hc₁ hU₁
+              obtain ⟨R, hR⟩ := UnifyRel.greatest_factors hS₁ U hU₁
+              have hRbd : Unifies R (S₁.onTy a₂) (S₁.onTy c₂) := by
+                simp only [Unifies, AgreesHM, FactorsHM] at hU₂ hR ⊢
+                exact (hR a₂).symm.trans (hU₂.trans (hR c₂))
+              have hRsz : (R.onTy (S₁.onTy a₂)).size = (U.onTy a₂).size := by
+                calc
+                  (R.onTy (S₁.onTy a₂)).size = (Ty.eraseBounds (R.onTy (S₁.onTy a₂))).size := (esz (R.onTy (S₁.onTy a₂))).symm
+                  _ = (Ty.eraseBounds (U.onTy a₂)).size := (congrArg Ty.size (hR a₂)).symm
+                  _ = (U.onTy a₂).size := esz (U.onTy a₂)
+              have hm₂ : 2 * (R.onTy (S₁.onTy a₂)).size + 1 < N := by
+                rw [hRsz]
+                omega
+              have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := UnifyRel.lc hS₁ ha₁ hc₁
+              have hS₁a₂ : (S₁.onTy a₂).IsLC := Subst.onTy_lc hS₁lc ha₂
+              have hS₁c₂ : (S₁.onTy c₂).IsLC := Subst.onTy_lc hS₁lc hc₂
+              obtain ⟨S₂, hS₂⟩ := ihT (2 * (R.onTy (S₁.onTy a₂)).size + 1) hm₂ (a := S₁.onTy a₂) (b := S₁.onTy c₂) (U := R) (by omega) hS₁a₂ hS₁c₂ hRbd
+              exact ⟨S₁ ++ S₂, .arrow hS₁ hS₂⟩
+          | bvar i => cases hb with | bvar h0 => omega
+          | fvar m => exact ⟨[(m, .arrow a₁ a₂)], .fvarR (by simp) (occR m (by simp) hU)⟩
+          | customTy nm tys => simp [Unifies, AgreesHM] at hU
+          | bl lo hi e => simp [Unifies, AgreesHM, bareListTy] at hU
+      | bvar i => cases ha with | bvar h0 => omega
+      | fvar n =>
+          cases b with
+          | prim q => exact ⟨[(n, .prim q)], .fvarL (by simp) (occ n (by simp) hU)⟩
+          | arrow c d => exact ⟨[(n, .arrow c d)], .fvarL (by simp) (occ n (by simp) hU)⟩
+          | bvar i => cases hb with | bvar h0 => omega
+          | fvar m =>
+              by_cases hnm : n = m
+              · subst hnm
+                exact ⟨[], .fvarRefl⟩
+              · exact ⟨[(n, .fvar m)], .fvarL (by intro h; simp at h; exact hnm h.symm) (by simp [Ty.freeVars, hnm])⟩
+          | customTy nm tys => exact ⟨[(n, .customTy nm tys)], .fvarL (by simp) (occ n (by simp) hU)⟩
+          | bl lo hi e => exact ⟨[(n, .bl lo hi e)], .fvarL (by simp) (occ n (by simp) hU)⟩
+      | customTy nm tys =>
+          cases b with
+          | prim q => simp [Unifies, AgreesHM] at hU
+          | arrow c d => simp [Unifies, AgreesHM] at hU
+          | bvar i => cases hb with | bvar h0 => omega
+          | fvar m => exact ⟨[(m, .customTy nm tys)], .fvarR (by simp) (occR m (by simp) hU)⟩
+          | customTy nm' tys' =>
+              simp only [Unifies, AgreesHM, Subst.onTy_customTy, Ty.eraseBounds_customTy,
+                TyList.eraseBounds_eq_map, List.map_map] at hU
+              have hnm : nm' = nm := (Ty.customTy.inj hU).1.symm
+              have hlist :
+                  tys.map (fun t => Ty.eraseBounds (U.onTy t)) =
+                    tys'.map (fun t => Ty.eraseBounds (U.onTy t)) :=
+                (Ty.customTy.inj hU).2
+              have hty : ∀ t ∈ tys, t.IsLC := by
+                intro t ht
+                cases ha with | customTy h => exact h t ht
+              have hty' : ∀ t ∈ tys', t.IsLC := by
+                intro t ht
+                cases hb with | customTy h => exact h t ht
+              have hlen : tys.length = tys'.length := by
+                simpa using (congrArg List.length hlist)
+              have hlt' : 2 * (1 + TyList.size (tys.map U.onTy)) < N := by
+                simpa [Subst.onTy_customTy, Ty.size] using hlt
+              have hm : 2 * TyList.size (tys.map U.onTy) + 2 < N := by omega
+              obtain ⟨S, hS⟩ := ihL (2 * TyList.size (tys.map U.onTy) + 2) hm (as := tys) (bs := tys') (U := U) (by omega) hty hty' hlen hlist
+              subst hnm
+              exact ⟨S, .customTy hS⟩
+          | bl lo hi e =>
+              simp only [Unifies, AgreesHM, Subst.onTy_customTy, Subst.onTy_bl, Ty.eraseBounds_customTy,
+                Ty.eraseBounds_bl, TyList.eraseBounds_eq_map, List.map_map, bareListTy] at hU
+              have hnm : nm = listTyName := (Ty.customTy.inj hU).1
+              have hU2 : tys.map (fun t => Ty.eraseBounds (U.onTy t)) = [Ty.eraseBounds (U.onTy e)] :=
+                (Ty.customTy.inj hU).2
+              cases tys with
+              | nil => simp at hU2
+              | cons α rest =>
+                  cases rest with
+                  | nil =>
+                      have hE : Unifies U α e := by
+                        simpa [Unifies, AgreesHM, List.cons.injEq] using hU2
+                      have hlcα : α.IsLC := by
+                        cases ha with | customTy h => exact h α (List.mem_cons_self ..)
+                      have hlce : e.IsLC := by cases hb with | bl h => exact h
+                      have hm : 2 * (U.onTy α).size + 1 < N := by
+                        have h' : 2 * (1 + (U.onTy α).size) < N := by
+                          simpa [Subst.onTy_customTy, Ty.size, TyList.size] using hlt
+                        omega
+                      obtain ⟨S, hS⟩ := ihT (2 * (U.onTy α).size + 1) hm (a := α) (b := e) (U := U) (by omega) hlcα hlce hE
+                      subst hnm
+                      exact ⟨S, .listBl hS⟩
+                  | cons α' rest' => simp at hU2
+      | bl lo hi e =>
+          cases b with
+          | prim q => simp [Unifies, AgreesHM, bareListTy] at hU
+          | arrow c d => simp [Unifies, AgreesHM, bareListTy] at hU
+          | bvar i => cases hb with | bvar h0 => omega
+          | fvar m => exact ⟨[(m, .bl lo hi e)], .fvarR (by simp) (occR m (by simp) hU)⟩
+          | customTy nm' tys' =>
+              simp only [Unifies, AgreesHM, Subst.onTy_bl, Subst.onTy_customTy, Ty.eraseBounds_bl,
+                Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map, List.map_map, bareListTy] at hU
+              have hnm : nm' = listTyName := (Ty.customTy.inj hU).1.symm
+              have hU2 : [Ty.eraseBounds (U.onTy e)] = tys'.map (fun t => Ty.eraseBounds (U.onTy t)) :=
+                (Ty.customTy.inj hU).2
+              cases tys' with
+              | nil => simp at hU2
+              | cons α rest =>
+                  cases rest with
+                  | nil =>
+                      have hE : Unifies U e α := by
+                        simpa [Unifies, AgreesHM, List.cons.injEq] using hU2
+                      have hlce : e.IsLC := by cases ha with | bl h => exact h
+                      have hlcα : α.IsLC := by
+                        cases hb with | customTy h => exact h α (List.mem_cons_self ..)
+                      have hm : 2 * (U.onTy e).size + 1 < N := by
+                        have h' : 2 * (1 + (U.onTy e).size) < N := by
+                          simpa [Subst.onTy_bl, Ty.size] using hlt
+                        omega
+                      obtain ⟨S, hS⟩ := ihT (2 * (U.onTy e).size + 1) hm (a := e) (b := α) (U := U) (by omega) hlce hlcα hE
+                      subst hnm
+                      exact ⟨S, .blList hS⟩
+                  | cons α' rest' => simp at hU2
+          | bl lo' hi' e' =>
+              have hE : Unifies U e e' := by
+                simp only [Unifies, AgreesHM, Subst.onTy_bl, Ty.eraseBounds_bl, bareListTy] at hU ⊢
+                simpa [bareListTy, Ty.customTy.injEq, List.cons.injEq] using hU
+              have hle : e.IsLC := by cases ha with | bl h => exact h
+              have hle' : e'.IsLC := by cases hb with | bl h => exact h
+              have hm : 2 * (U.onTy e).size + 1 < N := by
+                have h' : 2 * (1 + (U.onTy e).size) < N := by
+                  simpa [Subst.onTy_bl, Ty.size] using hlt
+                omega
+              obtain ⟨S, hS⟩ := ihT (2 * (U.onTy e).size + 1) hm (a := e) (b := e') (U := U) (by omega) hle hle' hE
+              exact ⟨S, .bl hS⟩
+    · intro as bs U hlt hlas hlbs hlen heq
+      cases as with
+      | nil =>
+          cases bs with
+          | nil => exact ⟨[], .nil⟩
+          | cons t₂ ts₂ => simp at heq
+      | cons t₁ ts₁ =>
+          cases bs with
+          | nil => simp at heq
+          | cons t₂ ts₂ =>
+              simp only [List.map_cons, List.cons.injEq] at heq
+              obtain ⟨ht₁t₂, htail⟩ := heq
+              have ht₁ : t₁.IsLC := hlas t₁ (List.mem_cons_self ..)
+              have ht₂ : t₂.IsLC := hlbs t₂ (List.mem_cons_self ..)
+              have hts₁ : ∀ t ∈ ts₁, t.IsLC := fun t ht => hlas t (List.mem_cons_of_mem _ ht)
+              have hts₂ : ∀ t ∈ ts₂, t.IsLC := fun t ht => hlbs t (List.mem_cons_of_mem _ ht)
+              have hlen_tail : ts₁.length = ts₂.length := by
+                have h1 : (t₁ :: ts₁).length = ts₁.length + 1 := rfl
+                have h2 : (t₂ :: ts₂).length = ts₂.length + 1 := rfl
+                rw [h1, h2] at hlen
+                omega
+              have hlt' : 2 * ((U.onTy t₁).size + TyList.size (ts₁.map U.onTy)) + 1 < N := by
+                simpa [TyList.size] using hlt
+              have hm₁ : 2 * (U.onTy t₁).size + 1 < N := by omega
+              obtain ⟨S₁, hS₁⟩ := ihT (2 * (U.onTy t₁).size + 1) hm₁ (a := t₁) (b := t₂) (U := U) (by omega) ht₁ ht₂ ht₁t₂
+              obtain ⟨R, hR⟩ := UnifyRel.greatest_factors hS₁ U ht₁t₂
+              have htail' :
+                  (ts₁.map S₁.onTy).map (fun t => Ty.eraseBounds (R.onTy t)) =
+                    (ts₂.map S₁.onTy).map (fun t => Ty.eraseBounds (R.onTy t)) := by
+                have key (l : List Ty) :
+                    (l.map S₁.onTy).map (fun t => Ty.eraseBounds (R.onTy t)) =
+                      l.map (fun t => Ty.eraseBounds (U.onTy t)) := by
+                  rw [List.map_map]
+                  apply List.map_congr_left
+                  intro t _
+                  exact (hR t).symm
+                rw [key, key, htail]
+              have hsz_tail :
+                  TyList.size ((ts₁.map S₁.onTy).map R.onTy) = TyList.size (ts₁.map U.onTy) := by
+                have list_size_eq : ∀ (l : List Ty) (f g : Ty → Ty),
+                    (∀ t ∈ l, (f t).size = (g t).size) →
+                    TyList.size (l.map f) = TyList.size (l.map g) := by
+                  intro l
+                  induction l with
+                  | nil => intro f g h; rfl
+                  | cons hd tl ihtl =>
+                      intro f g h
+                      have hh : (f hd).size = (g hd).size := h hd (List.mem_cons_self ..)
+                      have ih := ihtl f g (fun t ht => h t (List.mem_cons_of_mem _ ht))
+                      simp [TyList.size, hh, ih]
+                have key (t : Ty) : (R.onTy (S₁.onTy t)).size = (U.onTy t).size := by
+                  calc
+                    (R.onTy (S₁.onTy t)).size = (Ty.eraseBounds (R.onTy (S₁.onTy t))).size := (esz (R.onTy (S₁.onTy t))).symm
+                    _ = (Ty.eraseBounds (U.onTy t)).size := (congrArg Ty.size (hR t)).symm
+                    _ = (U.onTy t).size := esz (U.onTy t)
+                rw [List.map_map]
+                apply list_size_eq ts₁ (fun t => R.onTy (S₁.onTy t)) (fun t => U.onTy t)
+                intro t ht
+                exact key t
+              have hpos : 0 < (U.onTy t₁).size := Ty.size_pos
+              have hm₂ : 2 * TyList.size ((ts₁.map S₁.onTy).map R.onTy) + 2 < N := by
+                rw [hsz_tail]
+                omega
+              have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := UnifyRel.lc hS₁ ht₁ ht₂
+              have hmap₁ : ∀ t ∈ ts₁.map S₁.onTy, t.IsLC := by
+                intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
+                exact Subst.onTy_lc hS₁lc (hts₁ t0 ht0)
+              have hmap₂ : ∀ t ∈ ts₂.map S₁.onTy, t.IsLC := by
+                intro t htm; obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp htm
+                exact Subst.onTy_lc hS₁lc (hts₂ t0 ht0)
+              have hlen' : (ts₁.map S₁.onTy).length = (ts₂.map S₁.onTy).length := by
+                simp [hlen_tail]
+              obtain ⟨S₂, hS₂⟩ := ihL (2 * TyList.size ((ts₁.map S₁.onTy).map R.onTy) + 2) hm₂ (as := ts₁.map S₁.onTy) (bs := ts₂.map S₁.onTy) (U := R) (by omega) hmap₁ hmap₂ hlen' htail'
+              exact ⟨S₁ ++ S₂, .cons hS₁ hS₂⟩
 
 theorem UnifyRel.complete {a b : Ty} {U : Subst}
     (ha : a.IsLC) (hb : b.IsLC) (hU : Unifies U a b) : ∃ S, UnifyRel a b S :=
