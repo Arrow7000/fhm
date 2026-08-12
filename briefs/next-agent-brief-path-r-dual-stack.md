@@ -6,56 +6,118 @@
 
 ---
 
-## 0. Where we are (2026-08-12) — start here
+## 0. Where we are (2026-08-12, later) — start here
 
-### Done (proved, no PathR sorry)
-
-| Cluster | Status |
-|---------|--------|
-| `Expr.eraseBounds` termination (`sizeOf`) | ✅ |
-| Expr erase commute (Core + InferW, incl. `closeTyVars` / `letRecElab`) | ✅ |
-| `Ctor.eraseBounds` / `CtorEnv.eraseBounds`; `Ctx.eraseBounds` erases **env + ctors** | ✅ |
-| `TypeOfElabHM.eraseBounds_of` / `TypeOfHM.eraseBounds_of` | ✅ |
-| `onSubst_eraseBounds*` (Elab + HM) | ✅ |
-| Packing `Infer.sound_letIn_erase` / `sound_letInAnn_erase` | ✅ |
-| `Infer.preservesAnns` (+ `InferBranches.preservesAnns`) | ✅ |
-| **`Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound`** residual mutual | ✅ **fully closed** |
-| **`InferBranches.sourceSound`** (cons + consWild) | ✅ |
-| **`InferRecGroup.sourceSound`** (consMono + consPoly) | ✅ |
-| Most of **`Infer.sourceSound`** (prims…match_) | ✅ |
-
-### In progress — **one sorry left for residual soundness**
+### ✅ Path R residual soundness is CLOSED, both stacks, axiom-clean
 
 ```text
-Infer.sourceSound  | letRec   —  sorry -- PathR letRec
-  FHM/InferW.lean  ~line 12966 (grep: "sorry -- PathR letRec")
+Infer.sound                InferBranches.sound                InferRecGroup.sound
+Infer.sourceSound          InferBranches.sourceSound          InferRecGroup.sourceSound
+TypeOfHM.letRec_of_emptyPool
 ```
 
-All other residual **soundness** PathR work is done. Completeness / runSafe still fenced (out of scope).
+All seven verified `[propext, Classical.choice, Quot.sound]` — **no `sorryAx`**.
+`FHM/InferW.lean` and `FHM/Headlines.lean` both compile.
+
+Verify with:
+
+```bash
+lake build FHM.InferW            # 0 errors; only "declaration uses 'sorry'" warnings
+lake env lean FHM/Headlines.lean # 0 errors; §6 guard prints the axiom status
+```
+
+### ⚠️ Correction to the previous version of this brief
+
+The previous §0 said “one sorry left for residual soundness”. **That was wrong
+in both directions**, and cost a session to discover:
+
+* `HEAD` (`2020f3d`) **did not compile** — ~30 errors: `maxRecDepth` in both
+  mutual blocks, a stray `/--` docstring attached to no declaration, and proof
+  bodies in `letIn` / `letInAnn` / `consPoly` that had **never been checked**.
+* Two “theorems” were **false statements** with `sorry` bodies, and two more
+  were `: True` placeholders. Neither is “work remaining”; both are noise that
+  reads as work.
+
+**Rule added: never commit a checkpoint that does not compile.** A broken
+checkpoint plus an optimistic brief is worse than no checkpoint — the next
+agent trusts the brief and debugs the wrong thing. If you must checkpoint WIP,
+say `DOES NOT COMPILE: <n> errors` in the commit subject.
+
+### What landed this session
+
+```text
+5a0c65c Repair residual sourceSound letIn/letInAnn and RecGroup consPoly.  (21 errors -> 0)
+239919e Add TypeOfHM.letRec_of_emptyPool: source rebuild of letRec at shared pool.
+17ccfca Close residual Infer.sourceSound letRec; Path R soundness is complete.
+054e0d8 Delete false greatest_K lemmas, their dead callers, and two vacuous stubs.
+320d0fd Make the Headlines facade honest, and fix its one real error.
+```
+
+Key new lemma — **`TypeOfHM.letRec_of_emptyPool`** (just above the `sourceSound`
+mutual). `Expr.letRecElab_sound` types the elaboratum, whose inner group sits at
+the EMPTY pool with pool-`G` generalisation in the outer `letIn` wrappers. The
+source node has no such nest: `TypeOfHM.letRec` wants cofinite
+`MonoTyped`/`PolyTyped` at the shared opening `G ↦ Xs` with monotypes renamed.
+Since `Ty.renameG G Xs τ` **is** `Ty.substFvars (G.zip (Xs.map Ty.fvar)) τ`, the
+gap is one `TypeOfHM.onSubst_fixed` transport, given `G` avoids the ambient env,
+the annotated schemes, and the bindings' annotations — exactly the
+`genGroupVars` side conditions `Infer.sound`'s scaffolding already proves.
+
+The three `sourceSound` theorems share ONE mutual block, so they cleared
+`sorryAx` **together** when `letRec` closed. Do not read any one of them as done
+while another has a sorry.
+
+### Honest sorry inventory (43 declarations in InferW, 3 in Headlines)
+
+| Group | Count | Verdict |
+|-------|-------|---------|
+| Completeness (`Infer.complete_*`, `complete'`, `completeAt`, `principal`, `isPrincipal`, `output_unique`, `iff_typeable`, Branches/RecGroup) | ~24 | real campaign, see §5 |
+| PhaseC-C2 executable bridge (`inferCore_complete_*`, `principalType_*`) | 8 | blocked on completeness |
+| OptionA residual unify completeness (`UnifyRel.complete_aux`, `complete_K_aux`, `unifyCoreK_complete_aux`) | 3 | blocked on completeness |
+| Headline demos (`*_headlines_fire`, `*_untypeable`) | 6 | `*_untypeable` are self-contained; `*_fire` need principality |
+| Operational bridge (`Headlines.lean`: `runSafe`, preservation, progress) | 3 | separate axis |
+| `SurfaceBridge.lean` (`surface_type_safe`, `..._of_SurfaceWT`, `program_type_safe`) | 3 | why `elaborateSafe` shows `sorryAx` |
+
+### ⚠️ Completeness statements need REPAIR before any proof farming
+
+`Infer.complete'` and `Infer.principal` are **false as currently stated**:
+
+```lean
+∃ R, … ∧ τ₀ = R.onTy τ ∧ …          -- WRONG
+```
+
+`LamSeed.some T : LamSeed Φ (some T) T Φ` copies a binder annotation verbatim
+into `paramTy`, so `Infer` keeps `BL` in its **output** type, while `τ₀` comes
+from typing the **erased** term and is bare-`List`. `Ty.bl` is a distinct
+constructor from `customTy listTyName [_]`, and `Ty.substFvars_bl` shows
+substitution rewrites `fvar`s only — so a `bl` head survives every `R`.
+
+Counterexample: `λ (x : BL 3 5 Int). x` gives `τ = BL 3 5 Int → BL 3 5 Int` but
+`τ₀ = List Int → List Int`. Machine-checked.
+
+Wants `τ₀ = R.onTy (Ty.eraseBounds τ)`. Tell-tale: `Infer.principal` already
+carries the erase in its *soundness* conjunct but not its *principality* one —
+one statement, inconsistent with itself.
+
+Second layer: classical HM completeness needs unify to return an MGU. Under
+Path R it returns only a factoring up to `AgreesHM` (`*_factors`) — which is
+why `greatest_K` was false and got deleted. Principality is pinned only up to
+erasure. This is probably what the “erase-normal” qualifier in the sorry
+comments is gesturing at; settle it before farming.
+
+**Existence is the easy half** and is very likely true: `Infer` unifies
+bounds-blind, so it accepts strictly more than structural `TypeOfHM` and cannot
+reject what the erased term types.
 
 ### Next farm (in order)
 
-1. **Finish `Infer.sourceSound` `letRec`** — only open residual soundness goal.  
-   Mirror dual of `Infer.sound` letRec, but **`TypeOfHM.letRec` on source** (not elaboratum `letRecElab`):
-   - Use `InferRecGroup.sourceSound` mono/poly halves on **source** bindings (already residual).
-   - Body: `Infer.sourceSound` under residual bodyCtx / bodyScheme.
-   - Pack with `TypeOfHM.letRec` + residual `RecSpecs.WF` / `MonoTyped` / `PolyTyped` on **erased source** bindings (renameG G↦Xs etc. as structural letRec needs).
-   - Comment at sorry: “dual of Infer.sound's letRecElab residual packing.”
-2. Optional: thin corollaries that say `via sourceSound` if still sorry after (1).
-3. **Defer:** completeness (`sorry -- PathR completeness`), runSafe / residual `WellTyped` ops bridge (Headlines).
-
-### Recent commits (git log)
-
-```text
-3bccd84 Close residual Infer.sound mutual (letRec packing).
-a500f0b Prove residual InferRecGroup.sound (consMono/consPoly).
-9185101 Prove residual InferBranches.sound and Infer.sound match_.
-9e51bbf Advance residual Infer.sound; drop false structural MGU stubs.
-7d0ebb7 Land Path R residual soundness infrastructure …
-c021091 Restate dual-stack Infer metatheory as Path R residual bridge.
-```
-
-Plus any WIP commit of `sourceSound` after this brief update.
+1. `appFiveFive_untypeable` / `openMisuse_untypeable` — self-contained
+   inversion on the erased term, no completeness needed. These are what make
+   soundness non-vacuous.
+2. Repair the completeness statements (above), then farm bottom-up:
+   `UnifyRel.complete_*` → `Infer.complete_*` → `complete'` →
+   `completeAt`/`complete`/`principal`/`iff_typeable` → PhaseC-C2 → demos.
+3. Operational bridge (`runSafe`) — independent axis, can go in parallel.
 
 ### Sequential-edit rule
 
@@ -66,7 +128,20 @@ Plus any WIP commit of `sourceSound` after this brief update.
 - `Unifies` ⇒ structural tree equality  
 - `FactorsHM.to_structural` (deleted)  
 - Structural `UnifyRel.greatest` / `greatest_lc` — use `*_factors` / `FactorsHM` only  
+- Structural `UnifyRel.greatest_K` / `UnifyRelList.greatest_K` — **deleted** (`054e0d8`).
+  They had survived an earlier purge by keeping their plain names instead of a
+  `_FALSE` suffix, and carried `exact False.elim (by sorry)`, which made their
+  callers *look* proved while resting on `False`. Use `*_greatest_K_factors`.
+- `customTy_unify_dodge` / `customTy_factor_dodge` — **deleted** with them; restate
+  residually on `greatest_K_factors` when branch completeness needs them
+  (`customTy_dodge_unifier` is still live and reusable)  
 - Intentionally unprovable `*_structural_FALSE` theorems were **deleted**; comments remain  
+
+**Hygiene rule.** A false statement with a `sorry` body is not a TODO — it is a
+trap, because everything downstream of it typechecks. If a statement turns out
+false under Path R, **delete it** and leave a comment saying what replaced it.
+Same for `: True` placeholders: they assert nothing while counting as work.
+Audit with `#print axioms`, not by grepping for `sorry`.
 
 ---
 
@@ -129,17 +204,27 @@ Infer … e ↝ eOut, τ
 | Structural `Option.Pins` | `FHM/Core.lean` | ✅ |
 | `AgreesHM` / `Unifies` / `FactorsHM` / `UnifyRel.*_factors` | `FHM/InferW.lean` | ✅ |
 | Residual `Infer.sound` mutual | `FHM/InferW.lean` ~9128+ | ✅ proved |
-| Residual `sourceSound` mutual | `FHM/InferW.lean` ~12287+ | ⚠️ **letRec only open** |
+| Residual `sourceSound` mutual | `FHM/InferW.lean` | ✅ proved (one mutual — all three clear together) |
+| `TypeOfHM.letRec_of_emptyPool` | `FHM/InferW.lean`, just above that mutual | ✅ proved |
 | `UserAnnsCopied` / `Infer.preservesAnns` | `FHM/InferW.lean` | ✅ |
 | Packing / eraseBounds_of / onSubst residual | `FHM/InferW.lean` | ✅ |
-| Completeness residual hyps | `FHM/InferW.lean` | statements OK; bodies fenced |
-| Residual `WellTyped` / runSafe | `FHM/Headlines.lean` | deferred (ops bridge) |
+| Completeness residual hyps | `FHM/InferW.lean` | ⚠️ **statements need repair** (see §0) |
+| Residual `WellTyped` / runSafe | `FHM/Headlines.lean` | deferred (ops bridge, 3 sorries) |
+| `surface_type_safe` / `program_type_safe` | `FHM/SurfaceBridge.lean` | deferred — why `elaborateSafe` shows `sorryAx` |
 | Product architecture | `briefs/design-memo-bounds-preserving-elaboration.md` | — |
 
+`Headlines.lean` is **not** in `lakefile.toml`, so `lake build` never elaborates
+it. Check it explicitly or errors there go unseen (one had, for a while).
+
 ```bash
-rg -n "sorry -- PathR letRec|sorry -- PathR$|PathR completeness" FHM/InferW.lean
+rg -n "sorry -- PathR$|PathR completeness" FHM/InferW.lean
 rg -n "theorem Infer\.sourceSound|theorem Infer\.sound " FHM/InferW.lean
+lake build FHM.InferW 2>&1 | grep -c "declaration uses 'sorry'"   # authoritative count
+lake env lean FHM/Headlines.lean                                   # facade + axiom guard
 ```
+
+Do **not** count sorries with `grep -c sorry` — several explanatory comments
+now contain the word. Use the compiler's warning count above.
 
 ---
 
@@ -158,14 +243,17 @@ Source soundness types the **source** `.letRec` after erase, not the elaboratum 
 
 ## 5. Proof farm order
 
-### Residual soundness (almost done)
+### Residual soundness — **COMPLETE**
 
 1. ~~Core eraseBounds termination~~ ✅  
 2. ~~Erase commute~~ ✅  
 3. ~~`TypeOf*.eraseBounds_of` / onSubst / packing / preservesAnns~~ ✅  
 4. ~~`Infer.sound` mutual~~ ✅  
-5. **`Infer.sourceSound` letRec** ← **you are here**  
-6. (Branches/RecGroup sourceSound already ✅)
+5. ~~`TypeOfHM.letRec_of_emptyPool`~~ ✅  
+6. ~~`Infer.sourceSound` letRec~~ ✅ — whole `sourceSound` mutual axiom-clean  
+
+Nothing left here. **You are now in §5's completeness track — but read the
+statement-repair warning in §0 before proving anything.**
 
 ### Defer
 
@@ -221,7 +309,7 @@ Prefer updating *this* brief over creating `next-agent-brief-path-r-part-2.md`.
 
 ## 9. One-paragraph resume prompt
 
-> Continue Path R dual-stack metatheory in FHM. Read `briefs/next-agent-brief-path-r-dual-stack.md` §0 first. Residual **Infer.sound** mutual is fully proved. Residual **sourceSound** is almost done: only `Infer.sourceSound` **letRec** remains (`sorry -- PathR letRec` in `FHM/InferW.lean`). Close that via `TypeOfHM.letRec` on erased **source** (use `InferRecGroup.sourceSound` mono/poly + body IH). Do **not** farm completeness or runSafe yet. Structural Pins; residual TypeOf via `eraseBounds` on ctx (incl. CtorEnv)/term/result; no structural MGU recovery. Live ofLower out of scope.
+> Continue Path R dual-stack metatheory in FHM. Read `briefs/next-agent-brief-path-r-dual-stack.md` §0 first, and **verify its claims before trusting them** (`lake build FHM.InferW`; `lake env lean FHM/Headlines.lean`) — a previous version of this brief was badly out of date. Residual soundness is **CLOSED**: all six `Infer.*sound*` theorems plus `TypeOfHM.letRec_of_emptyPool` are axiom-clean. Next: the two `*_untypeable` demos (self-contained inversion), then **repair the completeness statements before proving them** — `Infer.complete'` / `Infer.principal` say `τ₀ = R.onTy τ`, which is false when `τ` carries a `bl` head, and want `Ty.eraseBounds τ`; principality is pinned only up to `AgreesHM`, never structurally. Structural Pins; residual TypeOf via `eraseBounds` on ctx (incl. CtorEnv)/term/result; no structural MGU recovery. Live ofLower out of scope. Never commit a checkpoint that does not compile.
 
 ---
 
