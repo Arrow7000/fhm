@@ -19687,7 +19687,11 @@ theorem polyId_headlines_fire :
 def appFiveFive : Expr := .app (.primLit (.int 5)) (.primLit (.int 5))
 
 theorem appFiveFive_untypeable : ¬ ∃ τ, TypeOfHM ⟨[], []⟩ appFiveFive.eraseBounds τ := by
-  sorry -- PathR
+  rintro ⟨τ, h⟩
+  simp [Expr.eraseBounds, appFiveFive] at h
+  cases h with
+  | app hf hx =>
+    cases hf
 
 theorem appFiveFive_rejected : ¬ (typecheck [] appFiveFive).isSome := by
   rw [typecheck_iff]; exact appFiveFive_untypeable
@@ -19709,8 +19713,15 @@ theorem openId_typeable : TypeOfHM ⟨[], []⟩ openId (.arrow (.fvar 5) (.fvar 
 def openMisuse : Expr := .app openId (.primLit (.int 5))
 
 theorem openMisuse_untypeable : ¬ ∃ τ, TypeOfHM ⟨[], []⟩ openMisuse.eraseBounds τ := by
-  -- Path R: erase-projected openMisuse still has rigid `α` domain vs `Int` arg.
-  sorry -- PathR: re-discharge cases on erased term (α ≠ Int)
+  rintro ⟨τ, h⟩
+  simp [Expr.eraseBounds, openMisuse, openId] at h
+  cases h with
+  | app hf hx =>
+    cases hf with
+    | lambda hlc hpins heq hbody =>
+      have hpin := hpins (.fvar 5) rfl
+      rw [hpin] at hx
+      cases hx
 
 theorem openMisuse_rejected : ¬ (typecheck [] openMisuse).isSome := by
   rw [typecheck_iff]; exact openMisuse_untypeable
