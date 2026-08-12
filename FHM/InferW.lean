@@ -15297,13 +15297,23 @@ theorem Ty.size_onTy_fvar_lt {S : Subst} {n : Nat} {b : Ty}
 /-- Unification completeness (+ the list version), bounded by the measure
     `2 * (size of the unified result) + flag` so a single strong induction on the
     bound `N` covers all recursive calls (`flag = 0` for `UnifyRel`, `1` for the
-    list — the offset makes the singleton-list ↔ element step strictly decrease). -/
+    list — the offset makes the singleton-list ↔ element step strictly decrease).
+
+    REPAIRED 2026-08-12. The list branch used to demand *structural*
+    `as.map U.onTy = bs.map U.onTy`, which is **unsuppliable** by the `Ty` branch:
+    its hypothesis is `Unifies U a b = AgreesHM (U.onTy a) (U.onTy b)`, so the
+    `customTy` case yields only erase-level list equality. The list hypothesis is
+    now the erase-level one, matching the already-proved twin
+    `UnifyRelList.greatest_factors`. Note `UnifyRel` really is bounds-blind
+    (`bl`, `blList`, `listBl` constructors), so existence at erase-level agreement
+    is the right claim — do not strengthen either branch back to structural. -/
 theorem UnifyRel.complete_aux : ∀ (N : Nat),
     (∀ {a b : Ty} {U : Subst}, 2 * (U.onTy a).size < N → a.IsLC → b.IsLC →
         Unifies U a b → ∃ S, UnifyRel a b S) ∧
     (∀ {as bs : List Ty} {U : Subst}, 2 * TyList.size (as.map U.onTy) + 1 < N →
         (∀ t ∈ as, t.IsLC) → (∀ t ∈ bs, t.IsLC) → as.length = bs.length →
-        as.map U.onTy = bs.map U.onTy → ∃ S, UnifyRelList as bs S) := by
+        as.map (fun t => Ty.eraseBounds (U.onTy t)) =
+          bs.map (fun t => Ty.eraseBounds (U.onTy t)) → ∃ S, UnifyRelList as bs S) := by
   sorry -- OptionA residual
 
 theorem UnifyRel.complete {a b : Ty} {U : Subst}
@@ -15326,7 +15336,8 @@ theorem UnifyRel.complete_K_aux {K : List Nat} : ∀ (N : Nat),
         ∃ S, UnifyRel a b S ∧ (∀ p ∈ S, p.1 ∉ K)) ∧
     (∀ {as bs : List Ty} {U : Subst}, 2 * TyList.size (as.map U.onTy) + 1 < N →
         (∀ t ∈ as, t.IsLC) → (∀ t ∈ bs, t.IsLC) → (∀ p ∈ U, p.2.IsLC) →
-        as.length = bs.length → as.map U.onTy = bs.map U.onTy →
+        as.length = bs.length → as.map (fun t => Ty.eraseBounds (U.onTy t)) =
+          bs.map (fun t => Ty.eraseBounds (U.onTy t)) →
         (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) →
         ∃ S, UnifyRelList as bs S ∧ (∀ p ∈ S, p.1 ∉ K)) := by
   sorry -- OptionA residual
@@ -18316,7 +18327,8 @@ theorem unifyCoreK_complete_aux {K : List Nat} : ∀ (N : Nat),
         (unifyCoreK K a b).isSome) ∧
     (∀ {as bs : List Ty} {U : Subst}, 2 * TyList.size (as.map U.onTy) + 1 < N →
         (∀ t ∈ as, t.IsLC) → (∀ t ∈ bs, t.IsLC) → (∀ p ∈ U, p.2.IsLC) →
-        as.length = bs.length → as.map U.onTy = bs.map U.onTy →
+        as.length = bs.length → as.map (fun t => Ty.eraseBounds (U.onTy t)) =
+          bs.map (fun t => Ty.eraseBounds (U.onTy t)) →
         (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) →
         (unifyListCoreK K as bs).isSome) := by
   sorry -- OptionA residual
