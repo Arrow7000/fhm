@@ -12327,6 +12327,114 @@ theorem TypeOfHM.onSubst_eraseBounds_fixed_append {ctx : Ctx} {e : Expr} {τ : T
     S₂ h₂ h_fix₂ h
   simpa only [Subst.onCtx_append] using key
 
+/-! ### Source-side rebuild of the fused `letRec` rule at the shared pool.
+
+`Expr.letRecElab_sound` types the ELABORATUM: a Λ-outside nest whose inner
+mixed group sits at the EMPTY pool, with the pool-`G` generalisation carried by
+the outer `letIn` wrappers. The source node has no such nest — the declarative
+`TypeOfHM.letRec` wants its cofinite `MonoTyped` / `PolyTyped` premises stated
+at the shared opening `G ↦ Xs`, with each unannotated member's monotype renamed
+(`Ty.renameG G Xs`).
+
+Inference, however, only ever delivers the group's members at the empty pool
+with their SOLVED monotypes. The gap is exactly the renaming substitution
+`G.zip (Xs.map Ty.fvar)` — which is what `Ty.renameG` unfolds to — so
+`TypeOfHM.onSubst_fixed` transports the empty-pool premises to the pool-`G`
+ones, provided `G` is disjoint from everything the renaming must not disturb:
+the ambient env, the annotated members' declared schemes, and the bindings'
+own annotation free variables. Those three are precisely the `genGroupVars`
+side conditions `Infer`'s `letRec` scaffolding already establishes. -/
+
+/-- **Source dual of `Expr.letRecElab_sound`.** Rebuild the declarative source
+    `TypeOfHM.letRec` at the shared gen-pool `G` from group premises stated at
+    the EMPTY pool (`RecSpec.rhsEntry [] []`, un-renamed monotypes).
+
+    `hG_env` / `hG_specs` / `hG_bs` say the pool is fresh for the ambient env,
+    for the annotated members' schemes, and for the bindings' annotations —
+    so renaming `G ↦ Xs` moves only the shared monotypes. -/
+theorem TypeOfHM.letRec_of_emptyPool {ctx : Ctx} {Lp G : List Nat}
+    {anns : List (Option PolyTy)} {bs : List Expr} {specs : List RecSpec}
+    {body : Expr} {ρ : Ty}
+    (hwf : RecSpecs.WF anns bs specs G)
+    (hG_env : ∀ g ∈ G, g ∉ ctx.env.freeVars)
+    (hG_specs : ∀ g ∈ G, ∀ σ, RecSpec.poly σ ∈ specs → g ∉ σ.body.freeVars)
+    (hG_bs : ∀ g ∈ G, ∀ e ∈ bs, g ∉ e.tyFreeVars)
+    (hmono : ∀ p ∈ bs.zip specs, ∀ τ, p.2 = RecSpec.mono τ →
+      TypeOfHM ⟨specs.map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩ p.1 τ)
+    (hpoly : ∀ p ∈ bs.zip specs, ∀ σ, p.2 = RecSpec.poly σ →
+      ∀ Ys, FreshNames Lp σ.paramCount Ys →
+        TypeOfHM ⟨specs.map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩
+          (p.1.openTyVars Ys) (σ.openVars Ys))
+    (hbody : TypeOfHM (RecSpecs.bodyCtx ctx specs G) body ρ) :
+    TypeOfHM ctx (Expr.letRec anns bs body) ρ := by
+  have hctx_eq : ∀ Xs : List Nat,
+      Subst.onCtx (G.zip (Xs.map (Ty.fvar ·)))
+          ⟨specs.map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩
+        = RecSpecs.rhsCtx ctx specs G Xs := by
+    intro Xs
+    simp only [Subst.onCtx, Subst.onEnv, RecSpecs.rhsCtx, List.map_append]
+    congr 1
+    congr 1
+    · rw [List.map_map]
+      apply List.map_congr_left
+      intro s hs
+      cases s with
+      | mono τ =>
+        simp only [Function.comp_apply, RecSpec.rhsEntry]
+        rw [Ty.renameG_nil_pool]
+        rfl
+      | poly σ =>
+        have hfix : Subst.onTy (G.zip (Xs.map (Ty.fvar ·))) σ.body = σ.body :=
+          Ty.substFvars_eq_self_of_no_key (fun p hp hc =>
+            hG_specs p.1 (List.of_mem_zip hp).1 σ hs hc)
+        simp only [Function.comp_apply, RecSpec.rhsEntry]
+        rw [Subst.onPolyTy, hfix]
+    · simpa only [Subst.onEnv] using
+        Subst.onEnv_eq_self_of_fresh (fun p hp => hG_env p.1 (List.of_mem_zip hp).1)
+  refine TypeOfHM.letRec (specs := specs) (G := G) (L := Lp ++ G)
+    hwf ?mono ?poly rfl hbody
+  · intro Xs hXs p hp τ hτ
+    have hctx := hctx_eq Xs
+    have hsrc := hmono p hp τ hτ
+    have hLC : ∀ q ∈ G.zip (Xs.map (Ty.fvar ·)), q.2.IsLC := by
+      intro q hq
+      obtain ⟨x, hx, hxeq⟩ := List.mem_map.mp (List.of_mem_zip hq).2
+      rw [← hxeq]; exact ContainsBvarsUpTo.fvar
+    have hfix : p.1.substTyFvars (G.zip (Xs.map (Ty.fvar ·))) = p.1 :=
+      Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun q hq hc =>
+        hG_bs q.1 (List.of_mem_zip hq).1 p.1 (List.of_mem_zip hp).1 hc)
+    have hren := TypeOfHM.onSubst_fixed (G.zip (Xs.map (Ty.fvar ·))) hLC hfix hsrc
+    rw [hctx] at hren
+    simpa [Subst.onTy, Ty.renameG] using hren
+  · intro Xs hXs p hp σ hσ Ys hYs
+    have hctx := hctx_eq Xs
+    have hYs' : FreshNames Lp σ.paramCount Ys := by
+      refine ⟨hYs.length, hYs.nodup, ?_⟩
+      intro y hy hc
+      exact hYs.avoid y hy (List.mem_append_left Xs (List.mem_append_left G hc))
+    have hG_Ys : ∀ g ∈ G, g ∉ Ys := by
+      intro g hg hc
+      exact hYs.avoid g hc (List.mem_append_left Xs (List.mem_append_right Lp hg))
+    have hsrc := hpoly p hp σ hσ Ys hYs'
+    have hLC : ∀ q ∈ G.zip (Xs.map (Ty.fvar ·)), q.2.IsLC := by
+      intro q hq
+      obtain ⟨x, hx, hxeq⟩ := List.mem_map.mp (List.of_mem_zip hq).2
+      rw [← hxeq]; exact ContainsBvarsUpTo.fvar
+    have hfix : (p.1.openTyVars Ys).substTyFvars (G.zip (Xs.map (Ty.fvar ·))) = p.1.openTyVars Ys :=
+      Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun q hq hc => by
+        rcases Expr.tyFreeVars_openTyVars hc with h | h
+        · exact hG_bs q.1 (List.of_mem_zip hq).1 p.1 (List.of_mem_zip hp).1 h
+        · exact hG_Ys q.1 (List.of_mem_zip hq).1 h)
+    have htyfix : Subst.onTy (G.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys) = σ.openVars Ys := by
+      simp only [Subst.onTy]
+      exact Ty.substFvars_eq_self_of_no_key (fun q hq hc => by
+        rcases Ty.freeVars_openVars_subset q.1 hc with h | h
+        · exact hG_specs q.1 (List.of_mem_zip hq).1 σ (by simpa [hσ] using (List.of_mem_zip hp).2) h
+        · exact hG_Ys q.1 (List.of_mem_zip hq).1 h)
+    have hren := TypeOfHM.onSubst_fixed (G.zip (Xs.map (Ty.fvar ·))) hLC hfix hsrc
+    rw [hctx, htyfix] at hren
+    exact hren
+
 set_option maxRecDepth 10_000 in
 mutual
 /-- Path R residual backward soundness: Infer implies pure source `TypeOfHM`.
