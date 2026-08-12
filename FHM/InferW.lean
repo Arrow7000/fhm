@@ -15190,26 +15190,13 @@ theorem UnifyRelList.greatest_K_factors {K : List Nat} :
     exact (hR₁ τ).trans (hR₂ (S₁.onTy τ))
 end
 
-/-- Path R: structural `greatest_K` is false in general. Use `greatest_K_factors`.
-Completeness that still calls this is fenced / to be restated residual. -/
-theorem UnifyRel.greatest_K {K : List Nat} : {τ₁ τ₂ : Ty} → {S : Subst} →
-    UnifyRel τ₁ τ₂ S →
-    ∀ S' : Subst, (∀ p ∈ S', p.2.IsLC) → Unifies S' τ₁ τ₂ →
-      (∀ k ∈ K, S'.onTy (.fvar k) = .fvar k) →
-    ∃ R : Subst, (∀ τ, S'.onTy τ = R.onTy (S.onTy τ)) ∧
-      (∀ p ∈ R, p.2.IsLC) ∧ (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
-  intro _ _ _ _ _ _ _ _
-  exact False.elim (by sorry) -- PathR: structural residual false
-
-theorem UnifyRelList.greatest_K {K : List Nat} : {ts₁ ts₂ : List Ty} → {S : Subst} →
-    UnifyRelList ts₁ ts₂ S →
-    ∀ S' : Subst, (∀ p ∈ S', p.2.IsLC) →
-      ts₁.map S'.onTy = ts₂.map S'.onTy →
-      (∀ k ∈ K, S'.onTy (.fvar k) = .fvar k) →
-    ∃ R : Subst, (∀ τ, S'.onTy τ = R.onTy (S.onTy τ)) ∧
-      (∀ p ∈ R, p.2.IsLC) ∧ (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
-  intro _ _ _ _ _ _ _ _
-  exact False.elim (by sorry) -- PathR: structural residual false
+/- Path R: the structural `UnifyRel.greatest_K` / `UnifyRelList.greatest_K` were
+   DELETED, not deferred. They are **false**: `UnifyRel.unifies` only yields
+   erase-equality (`AgreesHM`), never tree equality, so a structural MGU cannot
+   be recovered. They previously carried `exact False.elim (by sorry)`, which
+   made their two (dead) callers *look* proved while resting on `False`.
+   Use `UnifyRel.greatest_K_factors` / `UnifyRelList.greatest_K_factors` above,
+   which factor up to `AgreesHM` — the honest Path R statement. -/
 
 /-! A structural size on types (own measure; cleaner than `sizeOf` for the
     unification termination argument). -/
@@ -16469,68 +16456,16 @@ private theorem customTy_dodge_unifier {Φ : Nat} {scrutTy : Ty} {R : Subst}
     (hUeqR k (hKΦ k hk)).trans (hKfix k hk)
   exact ⟨U, hUni, hUlc, hUK, hUeqR, hmap_eq⟩
 
-/-- **The named-branch `customTy` unification dodge (producing form).** -/
-private theorem customTy_unify_dodge {Φ : Nat} {scrutTy : Ty} {R : Subst}
-    {K : List Nat} {ctor : Ctor} {tyArgs : List Ty}
-    (hscrutLC : scrutTy.IsLC) (hbscrut : Ty.BelowFvars Φ scrutTy)
-    (hR : ∀ p ∈ R, p.2.IsLC) (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKfix : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
-    (htyArgs_lc : ∀ t ∈ tyArgs, t.IsLC) (hpc : ctor.paramCount = tyArgs.length)
-    (hscrutEq : R.onTy scrutTy = .customTy ctor.tyName tyArgs) :
-    ∃ (S₀ R₀ : Subst),
-      UnifyRel scrutTy
-        (.customTy ctor.tyName ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))) S₀ ∧
-      (∀ p ∈ S₀, p.2.IsLC) ∧
-      (∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2) ∧
-      (∀ p ∈ S₀, p.1 ∉ K) ∧
-      (∀ p ∈ R₀, p.2.IsLC) ∧
-      (∀ k ∈ K, R₀.onTy (.fvar k) = .fvar k) ∧
-      (∀ v, v < Φ → R.onTy (Ty.fvar v) = R₀.onTy (S₀.onTy (Ty.fvar v))) ∧
-      (((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy).map R₀.onTy = tyArgs := by
-  obtain ⟨U, hUni, hUlc, hUK, hUeqR, hmap_eq⟩ :=
-    customTy_dodge_unifier hbscrut hR hKΦ hKfix htyArgs_lc hpc hscrutEq
-  have hcustomTy_lc : (Ty.customTy ctor.tyName
-      ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))).IsLC :=
-    ContainsBvarsUpTo.customTy (fun t ht => by
-      obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht; exact ContainsBvarsUpTo.fvar)
-  obtain ⟨S₀, h₀, hS₀K⟩ := UnifyRel.complete_K hscrutLC hcustomTy_lc hUlc hUni hUK
-  obtain ⟨R₀, hR₀eq, hR₀lc, hR₀K⟩ := UnifyRel.greatest_K h₀ U hUlc hUni hUK
-  have hS₀ : ∀ p ∈ S₀, p.2.IsLC := UnifyRel.lc h₀ hscrutLC hcustomTy_lc
-  have hS₀below : ∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2 := by
-    apply UnifyRel.belowFvars h₀ (hbscrut.mono (by omega))
-    apply Ty.BelowFvars.customTy
-    intro t ht
-    obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
-    exact Ty.BelowFvars.fvar (by have := freshVars_lt x hx; omega)
-  refine ⟨S₀, R₀, h₀, hS₀, hS₀below, hS₀K, hR₀lc, hR₀K, ?_, ?_⟩
-  · intro v hv; rw [← hR₀eq, hUeqR v hv]
-  · rw [List.map_map]
-    exact Eq.trans (List.map_congr_left (fun t _ => (hR₀eq t).symm)) hmap_eq
-
-/-- **The named-branch `customTy` factoring dodge (given-MGU form).** Given the
-    branch's own MGU `S₀` (from a *given* `InferBranches.cons` derivation), the
-    declarative residual `R` factors through it via `R₀`. -/
-private theorem customTy_factor_dodge {Φ : Nat} {scrutTy : Ty} {R S₀ : Subst}
-    {K : List Nat} {ctor : Ctor} {tyArgs : List Ty}
-    (h₀ : UnifyRel scrutTy
-      (.customTy ctor.tyName ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))) S₀)
-    (hbscrut : Ty.BelowFvars Φ scrutTy)
-    (hR : ∀ p ∈ R, p.2.IsLC) (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKfix : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
-    (htyArgs_lc : ∀ t ∈ tyArgs, t.IsLC) (hpc : ctor.paramCount = tyArgs.length)
-    (hscrutEq : R.onTy scrutTy = .customTy ctor.tyName tyArgs) :
-    ∃ R₀ : Subst,
-      (∀ p ∈ R₀, p.2.IsLC) ∧
-      (∀ k ∈ K, R₀.onTy (.fvar k) = .fvar k) ∧
-      (∀ v, v < Φ → R.onTy (Ty.fvar v) = R₀.onTy (S₀.onTy (Ty.fvar v))) ∧
-      (((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy).map R₀.onTy = tyArgs := by
-  obtain ⟨U, hUni, hUlc, hUK, hUeqR, hmap_eq⟩ :=
-    customTy_dodge_unifier hbscrut hR hKΦ hKfix htyArgs_lc hpc hscrutEq
-  obtain ⟨R₀, hR₀eq, hR₀lc, hR₀K⟩ := UnifyRel.greatest_K h₀ U hUlc hUni hUK
-  refine ⟨R₀, hR₀lc, hR₀K, ?_, ?_⟩
-  · intro v hv; rw [← hR₀eq, hUeqR v hv]
-  · rw [List.map_map]
-    exact Eq.trans (List.map_congr_left (fun t _ => (hR₀eq t).symm)) hmap_eq
+/- Path R: `customTy_unify_dodge` and `customTy_factor_dodge` were DELETED
+   alongside the false `UnifyRel.greatest_K` they were built on (see the note
+   at the `greatest_K_factors` section above). They were the named-branch
+   `customTy` dodges used by branch completeness: given a declarative residual
+   `R` sending the scrutinee type to `customTy ctor.tyName tyArgs`, produce (or
+   factor through) the branch's own MGU. Both were dead — nothing referenced
+   them — and both inherited `sorryAx`, so they read as proved while resting on
+   `False`. When the completeness campaign needs them, restate them residually
+   on `UnifyRel.greatest_K_factors` (factoring up to `AgreesHM`, not tree
+   equality); `customTy_dodge_unifier` above is still live and reusable. -/
 
 
 /-- Index extraction from a `zip` membership. -/
@@ -16967,8 +16902,10 @@ private theorem letRecFused_residual_setup
     `InferBranches` succeeds and the declarative typing factors through it via an
     LC residual `R'` (`R = R' ∘ S` below `Φ`). The companion to `match_`
     principality. With Core v2 the named-branch `customTy` unification is realised
-    *inside* each `cons` via `customTy_unify_dodge`; the wildcard case leaves
-    `scrutTy` free. -/
+    *inside* each `cons` via a `customTy` dodge; the wildcard case leaves
+    `scrutTy` free. (Path R: the old `customTy_unify_dodge` was deleted with the
+    false `greatest_K` it rested on — it needs restating on
+    `UnifyRel.greatest_K_factors` before this proof can use it.) -/
 theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
     ∀ {Φ : Nat} {ctx : Ctx} {scrutTy : Ty} {ρ : Ty} {R : Subst} (K : List Nat),
     (∀ br ∈ branches, Infer.CompleteAt br.2) →
@@ -17069,16 +17006,18 @@ theorem Infer.complete' {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
   sorry -- PathR
 
-/-- Path R residual branch completeness (fenced). -/
-theorem InferBranches.complete' {Φ ctx scrutTy ρ branches Φ' S brsOut}
-    (_h : InferBranches Φ ctx scrutTy ρ branches Φ' S brsOut) :
-    True := by
-  sorry -- PathR completeness
+/- Path R: `InferBranches.complete'` and `InferRecGroup.complete'` were DELETED.
+   They were stated as `… → True` with a `sorry` body — vacuous placeholders
+   that asserted nothing while counting as outstanding work, which the Path R
+   brief forbids ("no vacuous `True` theorem statements"). Nothing referenced
+   them.
 
-theorem InferRecGroup.complete' {Φ ctx bindings specs Φ' S bindingsOut}
-    (_h : InferRecGroup Φ ctx bindings specs Φ' S bindingsOut) :
-    True := by
-  sorry -- PathR completeness
+   When the completeness campaign restates them, mirror `Infer.complete'`
+   above, which IS honestly stated: hypothesis `TypeOfHM (S₀.onCtx ctx).eraseBounds
+   e.eraseBounds τ₀`, conclusion factoring the residual through `S`. Note
+   `Infer.complete'`'s own conclusion still needs repair first — `τ₀ = R.onTy τ`
+   is false when `τ` carries a `bl` head (substitution rewrites `fvar`s only, so
+   no `R` maps `bl` to a bare list); it wants `τ₀ = R.onTy (Ty.eraseBounds τ)`. -/
 
 /-! ### Source↔elaborated bridges (Phase 5 step 2)
 
