@@ -392,6 +392,46 @@ theorem Env.mem_freeVars_eraseBounds (env : Env) (x : Nat) :
     simp only [Env.eraseBounds_cons, Env.freeVars, List.mem_dedup, List.mem_append,
       PolyTy.eraseBounds, Ty.mem_freeVars_eraseBounds, ih]
 
+private theorem Expr.mem_tyFreeVars_BranchList_eraseBounds
+    (branches : List (MatchPattern × Expr)) (x : Nat)
+    (ih : ∀ p b, (p, b) ∈ branches → (x ∈ b.eraseBounds.tyFreeVars ↔ x ∈ b.tyFreeVars)) :
+    x ∈ Expr.tyFreeVars.BranchList.tyFreeVars (branches.map fun pe => (pe.1, pe.2.eraseBounds)) ↔
+      x ∈ Expr.tyFreeVars.BranchList.tyFreeVars branches := by
+  induction branches with
+  | nil => simp [Expr.tyFreeVars.BranchList.tyFreeVars]
+  | cons hd tl ihtl =>
+    obtain ⟨p, b⟩ := hd
+    have hb := ih p b List.mem_cons_self
+    have htl := ihtl (fun p' b' hm => ih p' b' (List.mem_cons_of_mem _ hm))
+    simp only [List.map_cons, Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, hb, htl]
+
+private theorem Expr.mem_tyFreeVars_RecGroup_eraseBounds
+    (bindings : List Expr) (x : Nat)
+    (ih : ∀ e, e ∈ bindings → (x ∈ e.eraseBounds.tyFreeVars ↔ x ∈ e.tyFreeVars)) :
+    x ∈ Expr.tyFreeVars.RecGroup.tyFreeVars (bindings.map Expr.eraseBounds) ↔
+      x ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings := by
+  induction bindings with
+  | nil => simp [Expr.tyFreeVars.RecGroup.tyFreeVars]
+  | cons hd tl ihtl =>
+    have hhd := ih hd List.mem_cons_self
+    have htl := ihtl (fun e' he' => ih e' (List.mem_cons_of_mem _ he'))
+    simp only [List.map_cons, Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, hhd, htl]
+
+private theorem Expr.mem_tyFreeVars_AnnList_eraseBounds
+    (anns : List (Option PolyTy)) (x : Nat) :
+    x ∈ Expr.tyFreeVars.AnnList.tyFreeVars (anns.map (Option.map PolyTy.eraseBounds)) ↔
+      x ∈ Expr.tyFreeVars.AnnList.tyFreeVars anns := by
+  induction anns with
+  | nil => simp [Expr.tyFreeVars.AnnList.tyFreeVars]
+  | cons a as iha =>
+    cases a with
+    | none =>
+      simp only [List.map_cons, Option.map_none, Expr.tyFreeVars.AnnList.tyFreeVars,
+        Option.elim_none, List.nil_append, iha]
+    | some _σ =>
+      simp only [List.map_cons, Option.map_some, Expr.tyFreeVars.AnnList.tyFreeVars,
+        Option.elim_some, List.mem_append, PolyTy.eraseBounds, Ty.mem_freeVars_eraseBounds, iha]
+
 /-- Annotation free type vars are invariant under `Expr.eraseBounds`. -/
 theorem Expr.mem_tyFreeVars_eraseBounds (e : Expr) (x : Nat) :
     x ∈ e.eraseBounds.tyFreeVars ↔ x ∈ e.tyFreeVars := by
@@ -424,41 +464,12 @@ theorem Expr.mem_tyFreeVars_eraseBounds (e : Expr) (x : Nat) :
       simp only [Expr.eraseBounds, Expr.tyFreeVars, Option.map_some, Option.elim_some,
         List.mem_append, PolyTy.eraseBounds, Ty.mem_freeVars_eraseBounds, ihr, ihb]
   | match_ _scrut branches ihs ihbs =>
-    simp only [Expr.eraseBounds, Expr.tyFreeVars, List.mem_append]
-    rw [ihs]
-    induction branches with
-    | nil => simp [Expr.tyFreeVars.BranchList.tyFreeVars]
-    | cons hd tl ihtl =>
-      obtain ⟨p, b⟩ := hd
-      have hb := ihbs p b List.mem_cons_self
-      have htl := ihtl (fun p' b' hm => ihbs p' b' (List.mem_cons_of_mem _ hm))
-      simpa only [List.map_cons, Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append,
-        hb, htl]
+    simp only [Expr.eraseBounds, Expr.tyFreeVars, List.mem_append, ihs]
+    exact or_congr_right (Expr.mem_tyFreeVars_BranchList_eraseBounds branches x ihbs)
   | letRec anns bindings _body ihbs ihb =>
-    simp only [Expr.eraseBounds, Expr.tyFreeVars, List.mem_append]
-    rw [ihb]
-    have hann : x ∈ Expr.tyFreeVars.AnnList.tyFreeVars
-        (anns.map (Option.map PolyTy.eraseBounds)) ↔
-        x ∈ Expr.tyFreeVars.AnnList.tyFreeVars anns := by
-      induction anns with
-      | nil => simp [Expr.tyFreeVars.AnnList.tyFreeVars]
-      | cons a as iha =>
-        cases a with
-        | none =>
-          simp only [List.map_cons, Option.map_none, Expr.tyFreeVars.AnnList.tyFreeVars,
-            Option.elim_none, List.nil_append, iha]
-        | some _σ =>
-          simp only [List.map_cons, Option.map_some, Expr.tyFreeVars.AnnList.tyFreeVars,
-            Option.elim_some, List.mem_append, PolyTy.eraseBounds, Ty.mem_freeVars_eraseBounds, iha]
-    have hbind : x ∈ Expr.tyFreeVars.RecGroup.tyFreeVars (bindings.map Expr.eraseBounds) ↔
-        x ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings := by
-      induction bindings with
-      | nil => simp [Expr.tyFreeVars.RecGroup.tyFreeVars]
-      | cons hd tl ihtl =>
-        have hhd := ihbs hd List.mem_cons_self
-        have htl := ihtl (fun e' he' => ihbs e' (List.mem_cons_of_mem _ he'))
-        simpa only [List.map_cons, Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, hhd, htl]
-    simp only [hann, hbind]
+    simp only [Expr.eraseBounds, Expr.tyFreeVars, List.mem_append, ihb]
+    rw [Expr.mem_tyFreeVars_AnnList_eraseBounds,
+      Expr.mem_tyFreeVars_RecGroup_eraseBounds bindings x ihbs]
 
 theorem Ty.genFilter_eraseBounds (G : List Nat) (τ : Ty) :
     Ty.genFilter G (Ty.eraseBounds τ) = Ty.genFilter G τ := by
@@ -9167,7 +9178,7 @@ theorem TypeOfElabHM.onSubst_eraseBounds_fixed {ctx : Ctx} {e : Expr} {τ : Ty} 
 /-- Append form of residual elaboratum transport. -/
 theorem TypeOfElabHM.onSubst_eraseBounds_elab_append {ctx : Ctx} {e : Expr} {τ : Ty}
     (S₁ S₂ : Subst)
-    (h₁ : ∀ p ∈ S₁, p.2.IsLC) (h₂ : ∀ p ∈ S₂, p.2.IsLC)
+    (_h₁ : ∀ p ∈ S₁, p.2.IsLC) (h₂ : ∀ p ∈ S₂, p.2.IsLC)
     (h : TypeOfElabHM (S₁.onCtx ctx).eraseBounds
       ((e.substTyFvars S₁).eraseBounds) (Ty.eraseBounds τ)) :
     TypeOfElabHM ((S₁ ++ S₂).onCtx ctx).eraseBounds
@@ -9188,9 +9199,10 @@ private theorem Ctor.IsBoolCtor.typeOfElabHM_erase {ctx : Ctx} {name : CtorName}
     refine ⟨?_, ?_, ?_⟩
     · simpa [Ctor.eraseBounds_tyName] using hname
     · simpa [Ctor.eraseBounds_paramCount] using hpc
-    · simpa [Ctor.eraseBounds_contents, hcont]
+    · simp [Ctor.eraseBounds_contents, hcont]
   exact Ctor.IsBoolCtor.typeOfElabHM hlook' hb'
 
+set_option maxRecDepth 10_000 in
 mutual
 /-- Path R residual soundness of `Infer` against pure `TypeOfElabHM`. -/
 theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
@@ -9276,7 +9288,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
       refine TypeOfElabHM.lambda
         (Ty.IsLC.eraseBounds (Subst.onTy_lc (Infer.lc hbody hbodyWF).2 hcl))
         (fun T hT => by
-          simp only [Option.map_some, Option.map_map, Function.comp_def, Option.some.injEq] at hT
+          simp only [Option.map_some, Option.some.injEq] at hT
           exact hT) rfl ?_
       simpa only [Ctx.eraseBounds, Subst.onCtx, Env.eraseBounds_cons,
         PolyTy.eraseBounds_mkTrivial, Subst.onEnv, List.map_cons, Ty.eraseBounds_arrow]
@@ -9528,7 +9540,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
             ((rhsOut.substTyFvars (S₁ ++ S₂)).closeTyVars genV)
             (bodyOut.substTyFvars (S₁ ++ S₂)) := by
       rw [Expr.substTyFvars_letIn]
-      simp only [Option.map_some, genScheme, Subst.onPolyTy, ← hgenV_def]
+      simp only [Option.map_some, genScheme, ← hgenV_def]
       refine congrArg₂ (fun a b => Expr.letIn a b (bodyOut.substTyFvars (S₁ ++ S₂))) ?_ hbound
       exact congrArg some (congrArg (PolyTy.mk genV.length) hann)
     rw [hgoal_e]
@@ -10618,7 +10630,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
         have hb3 := Subst.onCtx_branchBindings (ctorr := ctor)
           (ta := (taS₀.map S₁.onTy).map S₂.onTy)
           (ctx := S₂.onCtx (S₁.onCtx (S₀.onCtx ctx))) hS₃lc
-        simp only [bodyCtx] at hb1
+        simp only at hb1
         have step1 : S₁.onCtx bodyCtx =
             { (S₁.onCtx (S₀.onCtx ctx)) with
               env := (ctor.contents.map (Ty.openWith (taS₀.map S₁.onTy))).map
@@ -10712,7 +10724,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
         (instContents := instContents.map Ty.eraseBounds)
         ⟨hlook', hscrut',
           by simp [Ctor.eraseBounds_paramCount, taFull, ta0, List.length_map, freshVars_length],
-          by simpa [Ctor.eraseBounds_contents, List.length_map, hn, instContents],
+          by simp [Ctor.eraseBounds_contents, List.length_map, hn],
           hfields'⟩
         rfl hbody_final
     · -- rest branches
@@ -10847,7 +10859,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
       exact key
 termination_by Expr.sizeBranches brs
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeBranches, Expr.size, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 
 /-- Path R residual soundness of recursive-group inference. -/
 theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
@@ -11289,7 +11301,7 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
         rwa [hctx_eq, hterm_eq] at htail
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
 /-- Path R closed-program residual soundness (`K := []`). -/
@@ -12300,14 +12312,14 @@ private theorem Ctor.IsBoolCtor.typeOfHM_erase {ctx : Ctx} {name : CtorName} {c 
     refine ⟨?_, ?_, ?_⟩
     · simpa [Ctor.eraseBounds_tyName] using hname
     · simpa [Ctor.eraseBounds_paramCount] using hpc
-    · simpa [Ctor.eraseBounds_contents, hcont]
+    · simp [Ctor.eraseBounds_contents, hcont]
   exact Ctor.IsBoolCtor.typeOfHM hlook' hb'
 
 /-- Append form of residual fixed-term transport for source subjects. -/
 theorem TypeOfHM.onSubst_eraseBounds_fixed_append {ctx : Ctx} {e : Expr} {τ : Ty}
     (S₁ S₂ : Subst)
-    (h₁ : ∀ p ∈ S₁, p.2.IsLC) (h₂ : ∀ p ∈ S₂, p.2.IsLC)
-    (h_fix₁ : e.substTyFvars S₁ = e) (h_fix₂ : e.substTyFvars S₂ = e)
+    (_h₁ : ∀ p ∈ S₁, p.2.IsLC) (h₂ : ∀ p ∈ S₂, p.2.IsLC)
+    (_h_fix₁ : e.substTyFvars S₁ = e) (h_fix₂ : e.substTyFvars S₂ = e)
     (h : TypeOfHM (S₁.onCtx ctx).eraseBounds e.eraseBounds (Ty.eraseBounds τ)) :
     TypeOfHM ((S₁ ++ S₂).onCtx ctx).eraseBounds e.eraseBounds
       (Ty.eraseBounds (S₂.onTy τ)) := by
@@ -12315,6 +12327,7 @@ theorem TypeOfHM.onSubst_eraseBounds_fixed_append {ctx : Ctx} {e : Expr} {τ : T
     S₂ h₂ h_fix₂ h
   simpa only [Subst.onCtx_append] using key
 
+set_option maxRecDepth 10_000 in
 mutual
 /-- Path R residual backward soundness: Infer implies pure source `TypeOfHM`.
     Source may carry BL anns; judgment is on `e.eraseBounds` only. -/
@@ -12624,10 +12637,13 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
     have hMres_eq : Mres = ⟨genV.length, Ty.closeOver genV (Ty.eraseBounds ((S₁ ++ S₂).onTy τ₁))⟩ := by
       simp only [Mres, PolyTy.eraseBounds, Ty.eraseBounds_closeOver]
     refine TypeOfHM.letIn (M := Mres) (L := genV)
-      (by simpa [Mres, hMres_eq] using
-        PolyTy.WF.eraseBounds (Ty.closeOver_preserves_bvars
-          (Subst.onTy_lc hS₁S₂lc hrhs_lc)))
-      (fun σ' h => by simp only [Option.map_none] at h; cases h) ?_ rfl ?_
+      (by
+        change (PolyTy.eraseBounds ⟨genV.length, Ty.closeOver genV ((S₁ ++ S₂).onTy τ₁)⟩).WF
+        exact PolyTy.WF.eraseBounds
+          (σ := ⟨genV.length, Ty.closeOver genV ((S₁ ++ S₂).onTy τ₁)⟩)
+          (Ty.closeOver_preserves_bvars (vars := genV)
+            (Subst.onTy_lc hS₁S₂lc hrhs_lc)))
+      (fun σ' h => by cases h) ?_ rfl ?_
     · intro Xs hXfresh
       -- openBoundTyVars none = id; type is Mres.openVars Xs
       simp only [Expr.openBoundTyVars]
@@ -12776,7 +12792,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
       (e := rhs.openTyVars Ys) (τ := τ₁) Schk hSchk_lc
       (Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => by
         rcases Expr.tyFreeVars_openTyVars hc with h | h
-        · exact hSK p (List.mem_append_left _ (List.mem_append_left _ (List.mem_append_right _ hp)))
+        · exact hSK p (List.mem_append_left S₂ (List.mem_append_right S₁ hp))
             (hKe p.1 (.inl (.inr h)))
         · simp only [Ys] at h
           exact hesc1 p.1 h (List.mem_map.mpr ⟨p, List.mem_append_right _ hp, rfl⟩)))
@@ -12790,9 +12806,15 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
     have hr2 := TypeOfHM.onSubst_eraseBounds_fixed (ctx := (S₁ ++ Schk).onCtx ctx)
       (e := rhs.openTyVars Ys) (τ := σ.openVars Ys) S₂ hbody_s
       (by
-        have h := hrhsfix
-        rw [Expr.substTyFvars_append] at h
-        exact h) hr1'
+        have hSchk_rhs : (rhs.openTyVars Ys).substTyFvars Schk = rhs.openTyVars Ys :=
+          Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => by
+            rcases Expr.tyFreeVars_openTyVars hc with h | h
+            · exact hSK p (List.mem_append_left S₂ (List.mem_append_right S₁ hp))
+                (hKe p.1 (.inl (.inr h)))
+            · simp only [Ys] at h
+              exact hesc1 p.1 h (List.mem_map.mpr ⟨p, List.mem_append_right _ hp, rfl⟩))
+        rw [Expr.substTyFvars_append, hSchk_rhs] at hrhsfix
+        exact hrhsfix) hr1'
     have hr2' : TypeOfHM ((S₁ ++ Schk ++ S₂).onCtx ctx).eraseBounds
         ((rhs.openTyVars Ys).eraseBounds) (Ty.eraseBounds (σ.openVars Ys)) := by
       have key := hr2
@@ -12886,6 +12908,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
       -- h : openWith Xs σ.body = substFvars (Ys.zip fvars Xs) (openVars Ys σ)
       have h' : PolyTy.openVars Xs σ =
           Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys) := by
+        simp only [PolyTy.openVars]
         rw [Ty.openVars_eq_openWith]; exact h
       -- residual: erase both sides; subst of fvars commutes with erase
       have hcomm := Ty.eraseBounds_substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys)
@@ -12894,18 +12917,12 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
           = Ty.eraseBounds (Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys)) :=
             hcomm.symm
         _ = Ty.eraseBounds (σ.openVars Xs) := by rw [← h']
-        _ = Ty.eraseBounds ((PolyTy.eraseBounds σ).openVars Xs) := by
-            rw [PolyTy.eraseBounds_openVars]
-    have hren := TypeOfHM.onSubst_fixed (Ys.zip (Xs.map (Ty.fvar ·)))
+    have hren := TypeOfHM.onSubst (Ys.zip (Xs.map (Ty.fvar ·)))
       (fun p hp => by
         obtain ⟨_, hp2⟩ := List.of_mem_zip hp
         obtain ⟨x, _, hxeq⟩ := List.mem_map.mp hp2
         rw [← hxeq]; exact ContainsBvarsUpTo.fvar)
-      htermeq
-      (by
-        -- residual at openVars Ys: convert erase(σ.openVars Ys) form
-        have key := hr2'
-        rwa [← PolyTy.eraseBounds_openVars] at key)
+      hr2'
     have hctxfix : Subst.onCtx (Ys.zip (Xs.map (Ty.fvar ·)))
           ((S₁ ++ Schk ++ S₂).onCtx ctx).eraseBounds =
           ((S₁ ++ Schk ++ S₂).onCtx ctx).eraseBounds := by
@@ -12919,7 +12936,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
     have hgoal_ty : (PolyTy.eraseBounds σ).openVars Xs =
         Ty.eraseBounds (σ.openVars Xs) := (PolyTy.eraseBounds_openVars Xs σ).symm
     rw [← Expr.eraseBounds_openTyVars, hgoal_ty]
-    rwa [hctxfix, htypeeq] at hren
+    rwa [hctxfix, htermeq, htypeeq] at hren
   | match_ hscrut hne hbr =>
     intro hctx hbelow K hKΦ hKe hSK
     expose_names
@@ -12948,7 +12965,11 @@ theorem Infer.sourceSound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOu
       (by
         have hctx_eq : (S₂.onCtx (S₁.onCtx ctx)).eraseBounds =
             ((S₁ ++ S₂).onCtx ctx).eraseBounds := by rw [← Subst.onCtx_append]
-        rwa [hctx_eq] at hscrut_decl) hne ?_
+        rwa [hctx_eq] at hscrut_decl)
+      (by
+        intro hcontra
+        obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil hne
+        simp [hb] at hcontra) ?_
     intro br hbr_mem
     obtain ⟨pb, hpb, rfl⟩ := List.mem_map.mp hbr_mem
     have hbrp := hbr_sound pb hpb
@@ -13095,7 +13116,7 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S brsOut}
         have hb3 := Subst.onCtx_branchBindings (ctorr := ctor)
           (ta := (taS₀.map S₁.onTy).map S₂.onTy)
           (ctx := S₂.onCtx (S₁.onCtx (S₀.onCtx ctx))) hS₃lc
-        simp only [bodyCtx] at hb1
+        simp only at hb1
         have step1 : S₁.onCtx bodyCtx =
             { (S₁.onCtx (S₀.onCtx ctx)) with
               env := (ctor.contents.map (Ty.openWith (taS₀.map S₁.onTy))).map
@@ -13175,7 +13196,7 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S brsOut}
         (instContents := instContents.map Ty.eraseBounds)
         ⟨hlook', hscrut',
           by simp [Ctor.eraseBounds_paramCount, taFull, ta0, List.length_map, freshVars_length],
-          by simpa [Ctor.eraseBounds_contents, List.length_map, hn, instContents],
+          by simp [Ctor.eraseBounds_contents, List.length_map, hn],
           hfields'⟩
         rfl hbody_final
     · -- rest source branches
@@ -13267,7 +13288,7 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S brsOut}
       rwa [hctx_eq, hscrut_eq, hρ_eq] at key
 termination_by Expr.sizeBranches brs
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeBranches, Expr.size, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 
 /-- Path R residual source soundness of recursive-group inference (mutual with
     `Infer.sourceSound`). Source bindings after erase. -/
@@ -13582,9 +13603,9 @@ theorem InferRecGroup.sourceSound {Φ ctx bindings specs Φ' S bindingsOut}
       simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at hp
       rcases hp with rfl | hp_rest
       · -- head poly: source e, rename Ys→Xs of residual open at Ys
-        have hσeq : σ0 = σ := by
+        have hσeq : σ = σ0 := by
           simp only [RecSpec.onSubst] at hσ0
-          injection hσ0 with h; exact h.symm
+          injection hσ0
         subst hσeq
         have hYsX : ∀ y ∈ Ys, y ∉ Xs := fun y hy hc => hXs.avoid y hc (List.mem_append_left _ hy)
         have hXlen : Xs.length = Ys.length := by
@@ -13616,6 +13637,7 @@ theorem InferRecGroup.sourceSound {Φ ctx bindings specs Φ' S bindingsOut}
             (fun y hy hc => hYsX y hy (Ty.mem_freeVarsList_map_fvar.mp hc))
           have h' : PolyTy.openVars Xs σ =
               Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys) := by
+            simp only [PolyTy.openVars]
             rw [Ty.openVars_eq_openWith]; exact h
           have hcomm := Ty.eraseBounds_substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys)
           rw [List.map_eraseBounds_zip_fvar] at hcomm
@@ -13623,12 +13645,12 @@ theorem InferRecGroup.sourceSound {Φ ctx bindings specs Φ' S bindingsOut}
               = Ty.eraseBounds (Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys)) :=
                 hcomm.symm
             _ = Ty.eraseBounds (σ.openVars Xs) := by rw [← h']
-        have hren := TypeOfHM.onSubst_fixed (Ys.zip (Xs.map (Ty.fvar ·)))
+        have hren := TypeOfHM.onSubst (Ys.zip (Xs.map (Ty.fvar ·)))
           (fun p hp => by
             obtain ⟨_, hp2⟩ := List.of_mem_zip hp
             obtain ⟨x, _, hxeq⟩ := List.mem_map.mp hp2
             rw [← hxeq]; exact ContainsBvarsUpTo.fvar)
-          htermeq hr2'
+          hr2'
         have hctxfix : Subst.onCtx (Ys.zip (Xs.map (Ty.fvar ·)))
               ((S₁ ++ Schk ++ S₂).onCtx ctx).eraseBounds =
               ((S₁ ++ Schk ++ S₂).onCtx ctx).eraseBounds := by
@@ -13638,7 +13660,10 @@ theorem InferRecGroup.sourceSound {Φ ctx bindings specs Φ' S bindingsOut}
           exact Subst.onEnv_eq_self_of_fresh (fun p hp hc =>
             hYs_env p.1 (List.of_mem_zip hp).1
               ((Env.mem_freeVars_eraseBounds _ p.1).mp (by simpa [Ctx.eraseBounds] using hc)))
-        rwa [hctxfix, htypeeq] at hren
+        have htypeeq' : Subst.onTy (Ys.zip (Xs.map (Ty.fvar ·)))
+            ((PolyTy.openVars Ys σ).eraseBounds) = (PolyTy.openVars Xs σ).eraseBounds := by
+          simpa only [PolyTy.openVars] using htypeeq
+        rwa [hctxfix, htermeq, htypeeq'] at hren
       · rw [hspecmap] at hp_rest
         have htail := hpoly_tail p hp_rest σ0 hσ0 Xs
           ⟨hXs.length, hXs.nodup, fun x hx hc => hXs.avoid x hx (List.mem_append_right _ hc)⟩
@@ -13647,7 +13672,7 @@ theorem InferRecGroup.sourceSound {Φ ctx bindings specs Φ' S bindingsOut}
         rwa [hctx_eq] at htail
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size, Expr.size_openTyVars]; omega)
+  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 end
 
 
@@ -14435,7 +14460,7 @@ theorem UnifyRelList.greatest_lc_factors : {ts₁ ts₂ : List Ty} → {S : Subs
     exact (hR₁ τ).trans (hR₂ (S₁.onTy τ))
 end
 
-/-- Path R: structural `greatest_lc` is false in general (same BL/List issue).
+/- Path R: structural `greatest_lc` is false in general (same BL/List issue).
     Use `UnifyRel.greatest_lc_factors` only. Do not reintroduce a structural form. -/
 
 /-! ### MGU residual preserves a rigid set `K`
