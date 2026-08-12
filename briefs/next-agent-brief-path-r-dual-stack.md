@@ -69,12 +69,16 @@ while another has a sorry.
 
 ### Honest sorry inventory (41 declarations in InferW, 3 in Headlines, 3 in SurfaceBridge)
 
+Exact, from the compiler's warning count (41 in InferW), not from grepping `sorry`:
+
 | Group | Count | Verdict |
 |-------|-------|---------|
-| Completeness (`Infer.complete_*`, `complete'`, `completeAt`, `principal`, `isPrincipal`, `output_unique`, `iff_typeable`, Branches/RecGroup) | ~24 | real campaign, see §5 |
-| PhaseC-C2 executable bridge (`inferCore_complete_*`, `principalType_*`) | 8 | blocked on completeness |
-| OptionA residual unify completeness (`UnifyRel.complete_aux`, `complete_K_aux`, `unifyCoreK_complete_aux`) | 3 | blocked on completeness |
-| Headline demos (`*_headlines_fire`) | 4 | need principality, so blocked on completeness |
+| `CompleteAt`-shaped `Infer.complete_*` (incl. Branches/RecGroup) | 22 | real campaign, see §5 |
+| `complete'` / `output_unique` / `isPrincipal` / `iff_typeable` | 4 | real campaign |
+| Headline demos (`*_headlines_fire`) | 4 | ✅ **unblocked** — standalone inversions, do NOT need completeness |
+| PhaseC-C2 executable bridge (`inferCore_complete_*`) | 6 | blocked on completeness |
+| OptionA residual unify (`UnifyRel.complete_aux`, `complete_K_aux`, `unifyCoreK_complete_aux`) | 3 | blocked on completeness |
+| `principalType_principal` / `principalType_iff` | 2 | blocked on completeness |
 | ~~`appFiveFive_untypeable` / `openMisuse_untypeable`~~ | 0 | ✅ proved (`8a076ff`), axiom-clean |
 | Operational bridge (`Headlines.lean`: `runSafe`, preservation, progress) | 3 | separate axis |
 | `SurfaceBridge.lean` (`surface_type_safe`, `..._of_SurfaceWT`, `program_type_safe`) | 3 | why `elaborateSafe` shows `sorryAx` |
@@ -138,13 +142,35 @@ reject what the erased term types.
 
 ### Next farm (in order)
 
-1. `appFiveFive_untypeable` / `openMisuse_untypeable` — self-contained
-   inversion on the erased term, no completeness needed. These are what make
-   soundness non-vacuous.
-2. Repair the completeness statements (above), then farm bottom-up:
-   `UnifyRel.complete_*` → `Infer.complete_*` → `complete'` →
-   `completeAt`/`complete`/`principal`/`iff_typeable` → PhaseC-C2 → demos.
-3. Operational bridge (`runSafe`) — independent axis, can go in parallel.
+1. ~~`appFiveFive_untypeable` / `openMisuse_untypeable`~~ ✅ done (`8a076ff`).
+2. ~~Repair the completeness statements~~ ✅ done (`948cb12`) — see the repair
+   section above and design memo §4.1.2.
+3. **The four `*_headlines_fire` demos** (in `namespace AuditCapstone`) — standalone
+   `TypeOfHM` inversions on tiny closed terms; they do NOT need `complete'` and are
+   the cheapest way to make the product headline non-vacuous. Computed principal
+   types (measured, via `FHM.Pretty`'s `ToString Ty`):
+
+   | term | `principalType [] X` |
+   |---|---|
+   | `polyId` | `?a → ?a` |
+   | `idid` | `?e → ?e` |
+   | `matchWild` | `?a → Int` |
+   | `mutualRec` | `?d` — a **bare** type variable |
+
+   All four are erase-normal with no `List`/`bl` rigid structure, which is exactly
+   why exact equality (not `AgreesHM`) is correct in these four statements. If a
+   decoration/erasure argument seems needed in the principality conjunct, it's the
+   wrong path — use plain inversion.
+
+   `mutualRec` splits: its **principality conjunct is the easiest of the four**
+   (τ is a bare `.fvar d`, so `R := [(d, τ₀)]`, no inversion at all); only its
+   *derivation* conjunct is real work (letRec through
+   `RecSpecs.WF`/`MonoTyped`/`PolyTyped`).
+4. Then farm bottom-up: `UnifyRel.complete_*` → `Infer.complete_*` → `complete'` →
+   `completeAt`/`complete`/`principal`/`iff_typeable` → PhaseC-C2.
+   Every one of these now concludes `AgreesHM`, so the induction never needs to
+   recover exact equality — do not reintroduce a structural pin.
+5. Operational bridge (`runSafe`) — independent axis, can go in parallel.
 
 ### Sequential-edit rule
 
@@ -354,7 +380,7 @@ Prefer updating *this* brief over creating `next-agent-brief-path-r-part-2.md`.
 
 ## 9. One-paragraph resume prompt
 
-> Continue Path R dual-stack metatheory in FHM. Read `briefs/next-agent-brief-path-r-dual-stack.md` §0 first, and **verify its claims before trusting them** (`lake build FHM.InferW`; `lake env lean FHM/Headlines.lean`) — an earlier version of this brief was badly out of date, which cost a session. Residual soundness is **CLOSED**: all six `Infer.*sound*` theorems plus `TypeOfHM.letRec_of_emptyPool` are axiom-clean, as are both `*_untypeable` demos. **Your job is completeness, and it starts with a statement-repair pass, not a proof.** `Infer.complete'` / `Infer.principal` currently say `τ₀ = R.onTy τ`, which is FALSE whenever `τ` carries a `bl` head (`LamSeed.some` copies binder annotations verbatim into the output type, while `τ₀` comes from typing the *erased* term; `Ty.substFvars_bl` shows substitution can never rewrite a `bl` head). They want `Ty.eraseBounds τ`. Then settle the deeper question: unification only factors up to `AgreesHM`, never structurally, so principality is pinned only up to erasure — decide whether the honest theorem is unrestricted or genuinely needs the "erase-normal" restriction the sorry comments keep mentioning, and say so in the design memo before farming ~34 goals. Existence is the easy half (Infer is bounds-blind, so it accepts strictly more than structural `TypeOfHM`). Structural Pins; residual TypeOf via `eraseBounds` on ctx (incl. CtorEnv)/term/result; no structural MGU recovery. Live ofLower out of scope. Never commit a checkpoint that does not compile.
+> Continue Path R dual-stack metatheory in FHM. Read `briefs/next-agent-brief-path-r-dual-stack.md` §0 first, and **verify its claims before trusting them** (`lake build FHM.InferW` — expect 0 errors / 41 sorry warnings; `lake env lean FHM/Headlines.lean` — expect 0 errors). Residual soundness is **CLOSED**: all six `Infer.*sound*` theorems plus `TypeOfHM.letRec_of_emptyPool` are axiom-clean, as are both `*_untypeable` demos. **The completeness statement-repair pass is also DONE** (`948cb12`): principality is now stated **up to erasure** — core theorems conclude `AgreesHM τ₀ (R.onTy τ)` unrestricted, and exact equality is a corollary under `hnorm : Ty.eraseBounds τ₀ = τ₀`. Read design memo **§4.1.2** for the three machine-checked facts behind that decision; the short version is that `TypeOfHM.var` is decoration-blind (existential `instArgs`), so `bl`-carrying `τ₀` is derivable even from an erase-normal ctx and an unannotated term, which makes "erase-normal" a real restriction that must not sit on the engine — and `FactorsHM` only ever gives erase-level equality, so exact pins are unreachable anyway. **Your job is the farm.** Start with the four `*_headlines_fire` demos (in `namespace AuditCapstone`): they keep exact equality, are correct as stated, and are standalone `TypeOfHM` inversions that do NOT need `complete'` — see §0 for their computed principal types and why `mutualRec`'s principality conjunct is trivial while only its derivation conjunct is hard. Then go bottom-up: `UnifyRel.complete_*` → `Infer.complete_*` → `complete'` → `completeAt`/`complete`/`principal`/`iff_typeable` → PhaseC-C2. Do not reintroduce a structural MGU pin anywhere. Existence is the easy half (Infer is bounds-blind, so it accepts strictly more than structural `TypeOfHM`). Structural Pins; residual TypeOf via `eraseBounds` on ctx (incl. CtorEnv)/term/result. Live ofLower out of scope. Never commit a checkpoint that does not compile.
 
 ---
 
