@@ -19,8 +19,13 @@ compound, and `letRec` is where all three meet:
 3. `letRec`'s **shape-changing elaboratum** (`Expr.letRecElab`) — which is what makes (2)
    cost a second full induction instead of a corollary.
 
-Fixing (3) is the highest-leverage move and — per §3.4 — appears **not to require changing
-`Expr`**.
+Fixing (3) is the highest-leverage move and — per §3.4 — does **not require changing `Expr`**.
+
+**Status (2026-08-13):** spiked over three rounds in `FHM/SpikeLetRecPromote.lean`. The gate —
+the general transport `MonoTyped → PolyTyped` at the promoted schemes — is **proved and
+axiom-clean** (§3.6). What remains is bookkeeping-shaped, not existential: the stored-form
+retarget traversal, rewiring `Infer.letRec`, preservation, and the Path R erase-commutes. The
+effort estimate remains the weak part of this brief; the *viability* question is settled.
 
 ---
 
@@ -217,7 +222,12 @@ Honest accounting — this is a sketch, not a verified plan.
 4. **Completeness is unaffected** — it is stated against `TypeOfHM` on the *source* term,
    whose `anns` are still `none`.
 
-### 3.6 Spike result (2026-08-12) — partial green
+### 3.6 Spike results — three rounds (`FHM/SpikeLetRecPromote.lean`, 2026-08-12/13)
+
+Round 1 validated shape, round 2 the discriminating configurations, round 3 the transport.
+Rounds 1–2 below; round 3 (the gate) and the honest remaining scope are at the end.
+
+#### Round 1 (2026-08-12) — partial green
 
 `FHM/SpikeLetRecPromote.lean` (not in `defaultTargets`). All goals proved, no `sorry`, no
 added axioms, statements unweakened.
@@ -270,13 +280,49 @@ arity check but is never consulted.
    regime has no analogue**: `promoteScheme`'s body is pre-closed and opened by direct bvar
    index lookup, never by sequential fvar substitution. An unanticipated point in favour.
 
-### Status
+### Round 3 — the transport (`T1`/`T2`). Green, axiom-clean.
 
-The **encoding** is validated at the configurations that discriminate it. Still open, and
-still the real risk: the **general transport** `MonoTyped … → PolyTyped … (promoteSpecs G specs) []`.
-D1/D2 exhibit mono and promoted derivations *independently* for concrete programs; they do not
-derive one from the other. Attempt the transport next — that is what turns this from "the
-encoding is expressible" into "§3.4 is a valid refactor".
+The gate identified above. Both proved; `#print axioms` guard in the file reports
+`[propext, Classical.choice, Quot.sound]` for `T1`, `T2`, `P1`, `P2`, `S2'`, `D1'`, `D2'` —
+no `sorryAx`. Independently verified: single additive diff hunk (nothing above the T section
+touched), statements byte-identical to as authored, `retargetVars`' window condition intact
+(an identity retarget would have made `T1` vacuous).
+
+- **`T1_retarget_transport`** — the mathematical core. The `TypeOfElabHM` analogue of
+  `TypeOfHM.weaken_schemes`, *with the term rewrite that the type-passing `var` rule forces*.
+  Swapping an env prefix of `PolyTy.mkTrivial μₖ` (arity 0) for schemes `Mₖ` with
+  `Mₖ.InstantiatesTo Vs μₖ` preserves typing, provided uses in the window are retargeted to
+  `Vs`. Proved by `TypeOfElabHM.rec_strong` on the `weaken_schemes` template, with the `ep`
+  accumulator and invariant `b = ep.length`.
+- **`T2_monoTyped_to_polyTyped`** — the letRec corollary: `MonoTyped` at shared monotypes
+  yields `PolyTyped` at the full-pool promoted schemes. The pool quantifier forces `Xs = []`,
+  confirming in the proof that `rhsCtx` stops depending on the pool opening once every member
+  is `poly`.
+
+Cost datum: the whole T section is **565 lines**, including `retargetVars`/`Branches`/`Group`,
+their commute lemmas with `openTyVars`/`openBoundTyVars`, and length/membership plumbing.
+
+### Status: gate passed, refactor not done
+
+`§3.4`'s core claim is established — no structural obstruction, and the transport is real
+rather than a repackaging (nothing in the codebase did this before, because `letRecElab`
+exists precisely to avoid needing it). Remaining, in rough order:
+
+1. **The stored retarget and its commute — `T2`'s `hopen` is still a hypothesis.** The spike
+   works on *opened* terms, where `Vs` are concrete `fvar`s and depth-independent.
+   `retargetVars_openTyVars` commutes that with `openTyVars` at the *same* `Vs` — it is **not**
+   the stored-vs-opened fact. The stored form puts `Ty.bvarRangeFrom d |G|` in the term, so it
+   needs type-binder depth tracking, and `hopen` needs
+   `(storedRetarget e).openTyVars Ys = retargetVars n (Ys.map Ty.fvar) b (e.openTyVars Ys)`.
+   This is the "depth-tracking traversal" §3.4 estimated at 200–400 lines; still unwritten.
+2. **Rewire `Infer.letRec`** to emit the promoted node, and rewrite `Infer.sound`'s letRec case
+   (574 lines) against it. The claimed collapse is untested.
+3. **Preservation for the promoted node** — still untested. Argued easier (uniform depth `|G|`,
+   and promotion removes the `renameG` sequential-substitution hazard), not checked.
+4. **Path R erase-commute lemmas** for the new traversal — a real cost not yet estimated;
+   InferW's existing erase-commute block is 577 lines for the operations it already has.
+5. **Completeness interaction** — unknown, and per the Path R brief the completeness
+   statements need repair before anything is farmed against them.
 
 ---
 
@@ -444,15 +490,22 @@ map — so the declarative relations are stated once, on `Ty Unit`.
 
 ## 6. Suggested order
 
-1. Finish the current Path R `sourceSound` letRec `sorry` — do not stall the active farm on a
-   redesign.
-2. Spike §3.4 standalone: a mixed group, promoted to all-poly over the full pool, checked
-   against `TypeOfElabHM.letRec`. Confirms or kills risk 2 cheaply.
-3. If green: land the promotion, delete `letRecElab` and its cast, then replace
-   `Infer.sourceSound` with the strengthened faithfulness lemma.
-4. Then middle path 2 (cofinite freshness), then middle path 1 (drop eager context
-   substitution) — in that order, since 2 is lower-risk and larger.
-5. Revisit the `Ty`-parameterisation (§5) only after all of the above.
+1. ~~Spike §3.4 standalone.~~ **Done** — three rounds, gate passed (§3.6).
+2. Do not stall the active Path R farm on this. Per the Path R brief the next items there are
+   the `*_untypeable` demos and repairing the false completeness statements; that repair
+   should land before anything is farmed against completeness either way.
+3. Write the **stored-form retarget** (type-binder depth `d`, emitting `Ty.bvarRangeFrom d |G|`)
+   and its commute with `openTyVars` — this discharges `T2`'s `hopen` and is the last piece
+   before the refactor is mechanical.
+4. Land the promotion: rewire `Infer.letRec`, rewrite `Infer.sound`'s letRec case, delete
+   `letRecElab` and its cast, check preservation.
+5. Then replace `Infer.sourceSound` with the strengthened faithfulness lemma
+   (`Decorates e e' → TypeOfElabHM ctx e' τ → TypeOfHM ctx e τ`) — the §2.2 payoff, which only
+   becomes available once elaboration is shape-preserving everywhere.
+6. Then middle path 2 (cofinite freshness), then middle path 1 (drop eager context
+   substitution) — in that order, since 2 is lower-risk and larger. Spike 2's cost first; §5's
+   estimate for it is explicitly untrustworthy.
+7. Revisit the `Ty`-parameterisation (§5) only after all of the above.
 
 **Note the independence:** §4 finds that `letRecElab` and its support (~800 lines) would
 survive *verbatim* under a constraint architecture, because it is pure elaboration. So §3.4 is
