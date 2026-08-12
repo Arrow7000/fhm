@@ -6,9 +6,30 @@ import FHM.Pretty
 
 This module is a **façade**: it proves almost no new mathematics. Its job is to
 let a newcomer read ONE file and come away knowing exactly what this language's
-type system guarantees, what those guarantees *mean* in plain terms, and that
-the whole edifice is genuinely axiom-clean (no `sorry`, no custom axioms, no
-`native_decide`). Every name below already exists in `FHM.Core` /
+type system guarantees, what those guarantees *mean* in plain terms, and
+precisely how far the machine-checking currently reaches.
+
+**Status (Path R).** Type safety and *inference soundness* are closed and
+axiom-clean: `Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound` and
+their source duals `Infer.sourceSound` / `InferBranches.sourceSound` /
+`InferRecGroup.sourceSound` depend on nothing but `propext`,
+`Classical.choice`, `Quot.sound`. Two things are NOT yet closed and are
+honestly marked below:
+
+* **Inference completeness** (no spurious rejections, principal types,
+  `typecheck` succeeds ⟺ typeable) — an open campaign in `FHM.InferW`.
+  Note its statements still need repair before proving: under Path R
+  `Infer` keeps `BL` on its output type while the residual judgement types the
+  *erased* term, so principality must read `τ₀ = R.onTy (Ty.eraseBounds τ)`,
+  not `τ₀ = R.onTy τ`.
+* **The operational bridge** — `runSafe` and residual `WellTyped` versus
+  `Step` on decorated terms. The three `sorry`s in this file are all here.
+
+So: do not read this file as "everything below is proved". Read section 6's
+`#print axioms` output, which is the actual, unfakeable status report — it will
+show `sorryAx` for exactly the things above and nothing else.
+
+Every name below already exists in `FHM.Core` /
 `FHM.SurfaceBridge`; this file re-exports (via doc-comments + `#check`, which
 double as a compiler-checked "this name still exists with this shape" guard),
 adds a handful of small inversion lemmas, witnesses that the type system's
@@ -556,8 +577,13 @@ def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors
               program_type_safe hlow htc (checkExhaustive_sound p.term hcov)
             rw [helab] at helab'
             obtain rfl := Option.some.inj helab'
-            -- Path R: residual TypeOf at eraseBounds e / erase τ
-            exact ⟨⟨Ty.eraseBounds τ, hty⟩, hexh⟩⟩⟩
+            -- Path R: residual TypeOf at eraseBounds e / erase τ. `WellTyped`
+            -- erases the CtorEnv too, so project `hty` once more and collapse
+            -- the doubled erases by idempotence.
+            refine ⟨⟨Ty.eraseBounds (Ty.eraseBounds τ), ?_⟩, hexh⟩
+            have h := TypeOfElabHM.eraseBounds_of hty
+            simpa only [Ctx.eraseBounds, Env.eraseBounds, List.map_nil,
+              Expr.eraseBounds_idem] using h⟩⟩
 
 /-- A finished run: an actual value, still carrying its `WellTyped` passport.
     (`IsValue` here is what `runSafe_never_stuck` used to have to prove
@@ -668,24 +694,47 @@ private def runSafeStr (p : Surface.Program) (fuel : Nat := 100) : String :=
 
 /-! ## 6. Living axiom-budget guard
 
-Every theorem in this file — including ones that FOLD IN the whole campaign
-(`elaborateSafe` composes `program_type_safe` with `checkExhaustive_sound`;
-`runSafe` composes `TypeOfElabHM.progress`/`.preservation` with
-`Step.preserves_exhaustive` at every step) — rests on nothing but the three
-standard classical axioms mathlib itself depends on. No `sorry`, no
-project-specific axiom, no `native_decide` leakage (a `native_decide` would
-show up here as `Lean.ofReduceBool` or similar). If this ever prints anything
-OUTSIDE `{propext, Classical.choice, Quot.sound}`, something upstream started
-cheating — that's precisely why this guard is `#print axioms`, not a comment.
-(Not every theorem needs all three; a strict subset — e.g. `[propext,
-Quot.sound]` with no `Classical.choice` — is just as clean.) -/
+The unfakeable status report. A `native_decide` would show up as
+`Lean.ofReduceBool` or similar; an unfinished proof shows up as `sorryAx`.
+Nothing here is aspirational — the expectations below record what this actually
+prints TODAY, so a regression (or a repair) changes the file.
 
-#print axioms TypeOfHM_app_inv          -- expect ⊆ {propext, Classical.choice, Quot.sound}
-#print axioms TypeOfHM_lambda_inv        -- expect ⊆ {propext, Classical.choice, Quot.sound}
-#print axioms TypeOfHM_pair_inv          -- expect ⊆ {propext, Classical.choice, Quot.sound}
-#print axioms TypeOfHM_letIn_inv         -- expect ⊆ {propext, Classical.choice, Quot.sound}
-#print axioms runSafe                    -- expect ⊆ {propext, Classical.choice, Quot.sound}  (= here)
-#print axioms runSafe_running_reduces    -- expect ⊆ {propext, Classical.choice, Quot.sound}  (= here)
-#print axioms elaborateSafe              -- expect ⊆ {propext, Classical.choice, Quot.sound}  (= here)
+The clean baseline is `{propext, Classical.choice, Quot.sound}`, the three
+standard classical axioms mathlib itself depends on. Not every theorem needs
+all three; a strict subset (e.g. `[propext, Quot.sound]`) is just as clean.
+
+**Where `sorryAx` still appears, and why.** Two distinct gaps, neither in
+inference soundness:
+
+* `runSafe` / `runSafe_running_reduces` — the operational bridge. The three
+  `sorry`s in THIS file: residual `WellTyped` versus `Step` on decorated terms
+  (progress and preservation both need re-siting on the erase-projected term).
+* `elaborateSafe` — inherits it from `FHM.SurfaceBridge`, NOT from this file.
+  `surface_type_safe`, `surface_type_safe_of_SurfaceWT` and `program_type_safe`
+  are still fenced there pending the same residual packaging.
+
+Inference soundness itself is closed, and the guard below shows it: the six
+`Infer.*sound*` theorems come out clean. That is the load-bearing result this
+façade exists to advertise, and it is the one you can currently rely on. -/
+
+-- Closed and clean: Path R residual inference soundness (both stacks).
+#print axioms Infer.sound                -- expect {propext, Classical.choice, Quot.sound}
+#print axioms InferBranches.sound        -- expect {propext, Classical.choice, Quot.sound}
+#print axioms InferRecGroup.sound        -- expect {propext, Classical.choice, Quot.sound}
+#print axioms Infer.sourceSound          -- expect {propext, Classical.choice, Quot.sound}
+#print axioms InferBranches.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
+#print axioms InferRecGroup.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
+
+-- Clean: this file's own inversion lemmas.
+#print axioms TypeOfHM_app_inv           -- expect {propext, Quot.sound}
+#print axioms TypeOfHM_lambda_inv        -- expect {propext, Quot.sound}
+#print axioms TypeOfHM_pair_inv          -- expect {propext, Quot.sound}
+#print axioms TypeOfHM_letIn_inv         -- expect {propext, Quot.sound}
+
+-- OPEN: operational bridge (3 sorries in this file). Expect `sorryAx` until closed.
+#print axioms runSafe                    -- expect sorryAx + the three
+#print axioms runSafe_running_reduces    -- expect sorryAx + the three
+-- OPEN: inherited from FHM.SurfaceBridge (surface_type_safe / program_type_safe).
+#print axioms elaborateSafe              -- expect sorryAx + the three
 
 end Headlines
