@@ -153,9 +153,13 @@ From 2026-08-11 audit + follow-up:
 - [x] **`Infer.preservesAnns`** proved (+ `InferBranches.preservesAnns`). `UserAnnsCopied.letRec`
   restated: group `anns` + body only (bindings not full zip after subst/close — same as let RHS)
 
-**Farm residual soundness proofs next** (InferW only; sequential — no parallel Core):
-`Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound` → then `sourceSound` trio.
-Not completeness, not runSafe / operational residual `WellTyped`.
+- [x] **`Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound`** residual mutual **proved**
+  (prims…letInAnn, match/branches, RecGroup mono/poly, letRec packing via
+  `letRecElab_sound` at erased ctx)
+
+**Farm next** (InferW only; sequential): residual **`sourceSound` trio**
+(`Infer` / `InferBranches` / `InferRecGroup`). Not completeness, not runSafe /
+operational residual `WellTyped`.
 
 ---
 
