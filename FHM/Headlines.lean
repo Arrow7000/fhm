@@ -86,10 +86,16 @@ keep BL on the elaboratum. **Soundness** (`Infer.sound`) is residual: after the
 inferred substitution, projecting ctx schemes, the elaboratum (`Expr.eraseBounds`),
 and the monotype through `eraseBounds` yields a genuine `TypeOfElabHM`. The real
 elaboratum still carries BL for the bounds layer (`Infer.preservesAnns`).
-**Completeness** (`Infer.CompleteAt` / `complete'`): principal for **erase-normal**
-`TypeOfHM` on `e.eraseBounds` — not for decoration-sensitive TypeOf on raw BL
-terms. Both rest on bounds-blind `UnifyRel` / `FactorsHM` (not structural
-unifier recovery). -/
+**Completeness** (`Infer.CompleteAt` / `complete'`): principal for `TypeOfHM` on
+`e.eraseBounds` — **unrestricted, but concluded up to erasure**
+(`AgreesHM τ₀ (R.onTy τ)`), not for decoration-sensitive TypeOf on raw BL terms.
+Exact equality `τ₀ = erase (R · τ)` is the corollary `Infer.complete_instance`,
+which takes `hnorm : Ty.eraseBounds τ₀ = τ₀`; that hypothesis is a real
+restriction, since `TypeOfHM.var` is decoration-blind (existential `instArgs`) and
+derives `bl`-carrying types even from an erase-normal ctx and an unannotated term.
+Both rest on bounds-blind `UnifyRel` / `FactorsHM` (not structural unifier
+recovery) — which is exactly why the honest pin is `AgreesHM`. See design memo
+§4.1.2. -/
 #check @Infer.sound
 #check @Infer.preservesAnns
 #check @Expr.UserAnnsCopied

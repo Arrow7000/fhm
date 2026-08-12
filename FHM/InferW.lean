@@ -14312,7 +14312,7 @@ def Infer.CompleteAt (e : Expr) : Prop :=
     ∃ Φ' S eOut τ R,
       Infer Φ ctx e Φ' S eOut τ ∧
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
-      τ₀ = R.onTy τ ∧
+      AgreesHM τ₀ (R.onTy τ) ∧
       (∀ p ∈ R, p.2.IsLC) ∧
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       (∀ p ∈ S, p.1 ∉ K)
@@ -14684,7 +14684,7 @@ theorem Infer.complete_lambda_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
     ∃ Φ' S eOut τ R,
       Infer Φ ctx (.lambda none body) Φ' S eOut τ ∧
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
-      Ty.arrow paramTy bodyTy = R.onTy τ ∧
+      AgreesHM (Ty.arrow paramTy bodyTy) (R.onTy τ) ∧
       (∀ p ∈ R, p.2.IsLC) ∧
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       (∀ p ∈ S, p.1 ∉ K) := by
@@ -14702,7 +14702,7 @@ theorem Infer.complete_lambda_ann_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
     ∃ Φ' S eOut τ R,
       Infer Φ ctx (.lambda (some T) body) Φ' S eOut τ ∧
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
-      Ty.arrow T bodyTy = R.onTy τ ∧
+      AgreesHM (Ty.arrow T bodyTy) (R.onTy τ) ∧
       (∀ p ∈ R, p.2.IsLC) ∧
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       (∀ p ∈ S, p.1 ∉ K) := by
@@ -15355,7 +15355,7 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
     ∃ Φ' S eOut τ R,
       Infer Φ ctx (.app f arg) Φ' S eOut τ ∧
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
-      τ₀ = R.onTy τ ∧
+      AgreesHM τ₀ (R.onTy τ) ∧
       (∀ p ∈ R, p.2.IsLC) ∧
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       (∀ p ∈ S, p.1 ∉ K) := by
@@ -16211,7 +16211,7 @@ theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     ∃ Φ' S eOut τ R,
       Infer Φ ctx (.letIn none rhs body) Φ' S eOut τ ∧
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
-      τ₀ = R.onTy τ ∧
+      AgreesHM τ₀ (R.onTy τ) ∧
       (∀ p ∈ R, p.2.IsLC) ∧
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       (∀ p ∈ S, p.1 ∉ K) := by
@@ -16967,7 +16967,7 @@ theorem Infer.complete_match_aux {scrut : Expr} {branches : List (MatchPattern �
     ∃ Φ' S eOut τ R,
       Infer Φ ctx (.match_ scrut branches) Φ' S eOut τ ∧
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
-      τ₀ = R.onTy τ ∧ (∀ p ∈ R, p.2.IsLC) ∧
+      AgreesHM τ₀ (R.onTy τ) ∧ (∀ p ∈ R, p.2.IsLC) ∧
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       (∀ p ∈ S, p.1 ∉ K) := by
   sorry -- PathR completeness
@@ -17002,7 +17002,7 @@ theorem Infer.complete' {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
     (hKΦ : ∀ k ∈ K, k < Φ) (hKe : ∀ y ∈ e.tyFreeVars, y ∈ K)
     (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
     (hty : TypeOfHM (S₀.onCtx ctx).eraseBounds e.eraseBounds τ₀) :
-    ∃ R, Subst.AgreesBelow Φ S₀ (S ++ R) ∧ τ₀ = R.onTy τ ∧ (∀ p ∈ R, p.2.IsLC) ∧
+    ∃ R, Subst.AgreesBelow Φ S₀ (S ++ R) ∧ AgreesHM τ₀ (R.onTy τ) ∧ (∀ p ∈ R, p.2.IsLC) ∧
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
   sorry -- PathR
 
@@ -17013,11 +17013,19 @@ theorem Infer.complete' {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
    them.
 
    When the completeness campaign restates them, mirror `Infer.complete'`
-   above, which IS honestly stated: hypothesis `TypeOfHM (S₀.onCtx ctx).eraseBounds
-   e.eraseBounds τ₀`, conclusion factoring the residual through `S`. Note
-   `Infer.complete'`'s own conclusion still needs repair first — `τ₀ = R.onTy τ`
-   is false when `τ` carries a `bl` head (substitution rewrites `fvar`s only, so
-   no `R` maps `bl` to a bare list); it wants `τ₀ = R.onTy (Ty.eraseBounds τ)`. -/
+   above: hypothesis `TypeOfHM (S₀.onCtx ctx).eraseBounds e.eraseBounds τ₀`,
+   conclusion factoring the residual through `S` at the erasure level
+   (`AgreesHM τ₀ (R.onTy τ)`).
+
+   REPAIRED 2026-08-12 (design memo §4.1.2). `complete'` used to conclude
+   `τ₀ = R.onTy τ`, which is false when `τ` carries a `bl` head: `Subst.onTy_bl`
+   keeps a `bl` head stable under every substitution, and `bl` is a distinct
+   constructor from `customTy listTyName [_]`. The fix is NOT `τ₀ = R.onTy
+   (Ty.eraseBounds τ)` — that is unreachable from `FactorsHM`, which gives only
+   erase-level equality, and recovering exact equality needs a decoration-lifting
+   step that is itself false (`σ = List Int` rigid vs `τ₀ = bl 3 5 Int`). The core
+   theorems therefore conclude `AgreesHM`; exact equality is a corollary under
+   `hnorm : Ty.eraseBounds τ₀ = τ₀` (see `Infer.complete_instance`). -/
 
 /-! ### Source↔elaborated bridges (Phase 5 step 2)
 
@@ -17355,12 +17363,14 @@ theorem AllMatchesExhaustive.eraseVarTyArgs_iff {ctors : CtorEnv} {e : Expr} :
   ⟨AllMatchesExhaustive.eraseVarTyArgs, AllMatchesExhaustive.of_eraseVarTyArgs⟩
 
 /-- Output-uniqueness up to instance: any two `Infer` results on the same input
-    are mutual substitution-instances. (From `complete'` of the first applied to
-    the `sound` typing of the second.) -/
+    are mutual substitution-instances **up to erasure** (`AgreesHM`). Exact
+    equality is unavailable by design — `τ₁`/`τ₂` may carry `bl` heads copied from
+    binder annotations, and no substitution rewrites a `bl` head (`Subst.onTy_bl`).
+    (From `complete'` of the first applied to the `sound` typing of the second.) -/
 theorem Infer.output_unique {Φ ctx e Φ'₁ S₁ eOut₁ τ₁ Φ'₂ S₂ eOut₂ τ₂}
     (h₁ : Infer Φ ctx e Φ'₁ S₁ eOut₁ τ₁) (h₂ : Infer Φ ctx e Φ'₂ S₂ eOut₂ τ₂)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hclosed : e.tyFreeVars = []) :
-    ∃ R, τ₂ = Subst.onTy R τ₁ ∧ (∀ p ∈ R, p.2.IsLC) := by
+    ∃ R : Subst, AgreesHM τ₂ (Subst.onTy R τ₁) ∧ (∀ p ∈ R, p.2.IsLC) := by
   sorry -- PathR: via complete' + sourceSound residual
 
 /-- `(S, τ)` is a *principal typing* of `e` in `ctx`: a valid declarative typing
@@ -17368,8 +17378,13 @@ theorem Infer.output_unique {Φ ctx e Φ'₁ S₁ eOut₁ τ₁ Φ'₂ S₂ eOut
     substitution instance. -/
 structure Infer.IsPrincipal (ctx : Ctx) (e : Expr) (S : Subst) (τ : Ty) : Prop where
   typing : TypeOfHM (S.onCtx ctx).eraseBounds e.eraseBounds (Ty.eraseBounds τ)
+  /-- Principality holds **up to erasure**, matching the `typing` field's own
+      `Ty.eraseBounds`. See §4.1.2 of the design memo: `AgreesHM` is what Path R's
+      bounds-blind unification delivers (`FactorsHM`), and exact equality is false
+      whenever `τ` carries a `bl` head. -/
   principal : ∀ {S₀ : Subst} {τ₀ : Ty}, (∀ p ∈ S₀, p.2.IsLC) →
-    TypeOfHM (S₀.onCtx ctx).eraseBounds e.eraseBounds τ₀ → ∃ R, τ₀ = Subst.onTy R τ
+    TypeOfHM (S₀.onCtx ctx).eraseBounds e.eraseBounds τ₀ →
+      ∃ R : Subst, AgreesHM τ₀ (Subst.onTy R τ)
 
 /-- Every `Infer` result is a principal typing (Path R residual). -/
 theorem Infer.isPrincipal {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ)
@@ -17432,7 +17447,7 @@ theorem Infer.complete_letIn_ann_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     ∃ Φ' S eOut τ R,
       Infer Φ ctx (.letIn (some σ) rhs body) Φ' S eOut τ ∧
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
-      τ₀ = R.onTy τ ∧
+      AgreesHM τ₀ (R.onTy τ) ∧
       (∀ p ∈ R, p.2.IsLC) ∧
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       (∀ p ∈ S, p.1 ∉ K) := by
@@ -17470,31 +17485,47 @@ theorem Infer.complete {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ :
     ∃ Φ' S eOut τ R,
       Infer Φ ctx e Φ' S eOut τ ∧
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
-      τ₀ = R.onTy τ ∧
+      AgreesHM τ₀ (R.onTy τ) ∧
       (∀ p ∈ R, p.2.IsLC) := by
   sorry -- PathR completeness
 
 /-! ### Cleaner corollaries of principality
 
-`Infer.complete` carries two extra side-conclusions beyond `τ₀ = R.onTy τ` — the
-agreement clause `S₀ = R ∘ S` (below `Φ`) and `R` locally-closed — purely to
+`Infer.complete` carries two extra side-conclusions beyond `AgreesHM τ₀ (R.onTy τ)`
+— the agreement clause `S₀ = R ∘ S` (below `Φ`) and `R` locally-closed — purely to
 sustain the induction (the `app`/`pair`/`letIn` cases compose specialisations and
 reuse `R` as an inner `S₀`). The corollaries below project that engine down to the
-parts a caller usually wants. -/
+parts a caller usually wants.
 
-/-- Path R principality, type-only form (residual TypeOf on `e.eraseBounds`). -/
+**Exact-equality corollaries take `hnorm : Ty.eraseBounds τ₀ = τ₀`.** This is the
+one place the "erase-normal" restriction genuinely belongs (design memo §4.1.2):
+the *core* theorems above are unrestricted and conclude at the erasure level,
+because `TypeOfHM.var` is decoration-blind (existential `instArgs`, `IsLC` only) and
+so a `bl`-carrying `τ₀` is derivable even from an erase-normal ctx and a
+zero-annotation term — `hnorm` is therefore a real restriction, not a tidying one,
+and must not be imposed on the engine. Given `hnorm`, `AgreesHM τ₀ (R.onTy τ)`
+unfolds to exactly the conclusion below; `Ty.eraseBounds_substFvars` further
+rewrites it to `τ₀ = R'.onTy (Ty.eraseBounds τ)` for
+`R' = R.map fun p => (p.1, Ty.eraseBounds p.2)` if a caller prefers that shape. -/
+
+/-- Path R principality, type-only form (residual TypeOf on `e.eraseBounds`), at an
+    erase-normal declarative type. -/
 theorem Infer.complete_instance {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty}
     (K : List Nat) (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
     (hKΦ : ∀ k ∈ K, k < Φ) (hKe : ∀ y ∈ e.tyFreeVars, y ∈ K)
     (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
+    (hnorm : Ty.eraseBounds τ₀ = τ₀)
     (hty : TypeOfHM (S₀.onCtx ctx).eraseBounds e.eraseBounds τ₀) :
-    ∃ Φ' S eOut τ R, Infer Φ ctx e Φ' S eOut τ ∧ τ₀ = Subst.onTy R τ := by
+    ∃ Φ' S eOut τ R,
+      Infer Φ ctx e Φ' S eOut τ ∧ τ₀ = Ty.eraseBounds (Subst.onTy R τ) := by
   sorry -- PathR completeness
 
 theorem Infer.complete_id {Φ : Nat} {ctx : Ctx} {e : Expr} {τ₀ : Ty}
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hΦe : ∀ y ∈ e.tyFreeVars, y < Φ)
+    (hnorm : Ty.eraseBounds τ₀ = τ₀)
     (hty : TypeOfHM ctx.eraseBounds e.eraseBounds τ₀) :
-    ∃ Φ' S eOut τ R, Infer Φ ctx e Φ' S eOut τ ∧ τ₀ = Subst.onTy R τ := by
+    ∃ Φ' S eOut τ R,
+      Infer Φ ctx e Φ' S eOut τ ∧ τ₀ = Ty.eraseBounds (Subst.onTy R τ) := by
   sorry -- PathR completeness
 
 theorem Infer.iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
@@ -17510,17 +17541,23 @@ theorem Infer.iff_typeable {Φ : Nat} {ctx : Ctx} {e : Expr}
       Infer.sourceSound hInfer hwf hbelow [] (by simp) (by rw [hclosed]; simp) (by simp)⟩
 
 /-- Path R: Algorithm W computes principal types for residual TypeOf.
-    From any erase-normal typing of `e.eraseBounds`, Infer succeeds with `(S, τ)`
-    that is residual-sound and subsumes the given typing (`τ₀ = R · τ`). -/
+    From any **erase-normal** typing of `e.eraseBounds`, Infer succeeds with
+    `(S, τ)` that is residual-sound and subsumes the given typing
+    (`τ₀ = erase (R · τ)`). Both conjuncts now sit at the same erasure level; the
+    previous statement was self-inconsistent, carrying `Ty.eraseBounds` in the
+    soundness conjunct but bare `τ` in the principality one. For the unrestricted
+    form (no `hnorm`), use `Infer.complete'` / `Infer.complete`, which conclude
+    `AgreesHM τ₀ (R.onTy τ)`. -/
 theorem Infer.principal {Φ : Nat} {ctx : Ctx} {e : Expr} {S₀ : Subst} {τ₀ : Ty} (K : List Nat)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
     (hKΦ : ∀ k ∈ K, k < Φ) (hKe : ∀ y ∈ e.tyFreeVars, y ∈ K)
     (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
+    (hnorm : Ty.eraseBounds τ₀ = τ₀)
     (hty : TypeOfHM (S₀.onCtx ctx).eraseBounds e.eraseBounds τ₀) :
     ∃ Φ' S eOut τ R,
       Infer Φ ctx e Φ' S eOut τ ∧
         TypeOfHM (S.onCtx ctx).eraseBounds e.eraseBounds (Ty.eraseBounds τ) ∧
-        τ₀ = Subst.onTy R τ := by
+        τ₀ = Ty.eraseBounds (Subst.onTy R τ) := by
   sorry -- PathR completeness
 
 /-! (`UnifyRel.eliminates` / `UnifyRelList.eliminates` relocated to the
@@ -19516,13 +19553,16 @@ theorem principalType_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
         e.tyFreeVars (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) hSK
 
 /-- Monotype principality: every declarative type of the program is a
-    substitution instance of the computed principal type. -/
+    substitution instance of the computed principal type, **up to erasure**.
+    `e` may carry `bl` binder annotations, which `principalType` copies into `τ`,
+    so exact equality is false here (design memo §4.1.2); `AgreesHM` matches the
+    `Ty.eraseBounds τ` already used by `principalType_sound`. -/
 theorem principalType_principal {ctors : CtorEnv} {e : Expr} {τ : Ty}
     (h : principalType ctors e = some τ) :
     ∀ τ₀, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ₀ →
-      ∃ R : Subst, τ₀ = R.onTy τ := by
+      ∃ R : Subst, AgreesHM τ₀ (R.onTy τ) := by
   intro τ₀ hτ₀
-  exact sorry -- PathR: complete' over erase-normal TypeOfHM
+  exact sorry -- PathR: complete' at the erasure level
 
 /-- Monotype decidability (Path R): `principalType` succeeds iff the program's
     erase-projection is declaratively typeable. -/
@@ -19582,7 +19622,7 @@ theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     ∃ τ, σ = genScheme [] [] τ ∧
       TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
       ∀ τ₀, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ₀ →
-        ∃ R : Subst, τ₀ = R.onTy τ := by
+        ∃ R : Subst, AgreesHM τ₀ (R.onTy τ) := by
   rw [typecheck] at h
   rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
   · simp at h
@@ -19672,6 +19712,21 @@ def polyId : Expr := .lambda none (.var 0 [])
 theorem polyId_typeable : TypeOfHM ⟨[], []⟩ polyId (.arrow (.fvar 0) (.fvar 0)) :=
   TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
     (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .fvar)
+
+/-! ### Headline demos keep EXACT principality (`τ₀ = R.onTy τ`)
+
+Unlike the general theorems above, the four `*_headlines_fire` demos are stated
+with exact equality and that is **correct, not an oversight**. Their terms carry no
+`bl` anywhere, so the computed `τ` is erase-normal *and* all-variable (`polyId` ⇒
+`.fvar 0 → .fvar 0`); every `τ₀` agreeing up to erasure is then a genuine
+substitution instance, including the `bl`-decorated ones that
+`TypeOfHM.var`'s existential `instArgs` makes derivable.
+
+Consequence for the farm: these four do **not** depend on the completeness engine.
+Like `appFiveFive_untypeable`, each is a direct inversion of `TypeOfHM` on a
+closed, tiny term — `polyId`'s inversion gives `τ₀ = paramTy → paramTy`, so
+`R = [(0, paramTy)]`. Prove them standalone and early; do not block them on
+`complete'`. -/
 
 /-- `typecheck` succeeds, produces a genuine residual declarative type (Path R
     soundness), and that type is principal. -/

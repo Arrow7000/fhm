@@ -79,34 +79,60 @@ while another has a sorry.
 | Operational bridge (`Headlines.lean`: `runSafe`, preservation, progress) | 3 | separate axis |
 | `SurfaceBridge.lean` (`surface_type_safe`, `..._of_SurfaceWT`, `program_type_safe`) | 3 | why `elaborateSafe` shows `sorryAx` |
 
-### ⚠️ Completeness statements need REPAIR before any proof farming
+### ✅ Completeness statement-repair pass — DONE (2026-08-12, later still)
 
-`Infer.complete'` and `Infer.principal` are **false as currently stated**:
+The repair landed. **Decision: principality is stated UP TO ERASURE, unrestricted.**
+Full rationale in `design-memo-bounds-preserving-elaboration.md` **§4.1.2**; read
+that before farming. Summary and the three machine-checked facts behind it:
 
-```lean
-∃ R, … ∧ τ₀ = R.onTy τ ∧ …          -- WRONG
+| Fact | Statement | Status |
+|---|---|---|
+| 1 | `τ₀ = R.onTy τ` is false: `Subst.onTy_bl` keeps a `bl` head stable under every substitution | ✅ proved, axiom-clean |
+| 2 | Decoration lifting is false: `σ = List Int` rigid, `τ₀ = bl 3 5 Int` erases into it but no `R'` lifts back | ✅ proved |
+| 3 | An erase-normal ctx + a **zero-annotation** term still derives `BL 3 5 Int → BL 3 5 Int` | ✅ proved |
+
+Fact 3 is the decisive one: `TypeOfHM.var` (`Core.lean:3369`) is decoration-blind
+— it ignores stored `tyArgs` and instantiates at an **existential** `instArgs`
+constrained only by `IsLC`, which does not exclude `bl`. Same for `ctor` and
+match-branch `tyArgs`. So "erased ctx + erased term ⟹ erase-normal `τ₀`" is
+**false**, and `hnorm : Ty.eraseBounds τ₀ = τ₀` is a *real* restriction. It must
+therefore NOT sit on the engine.
+
+Fact 2 kills the repair the previous brief proposed (`τ₀ = R.onTy (Ty.eraseBounds τ)`):
+it is unreachable from `FactorsHM`, which delivers only erase-level equality for
+every `τ`. Recovering exact equality needs an alignment invariant ("every `bl` in
+`τ₀` sits at a variable position of `τ`") threaded through all ~34 goals as a
+strengthened IH, for zero product value.
+
+**Statement discipline now in the file:**
+
+```text
+core   CompleteAt, complete', complete, complete_*_aux, output_unique,
+       IsPrincipal.principal, principalType_principal, typecheck_principal
+         ⊢ AgreesHM τ₀ (R.onTy τ)              -- unrestricted, no new hypothesis
+
+exact  complete_instance, complete_id, principal
+         hnorm : Ty.eraseBounds τ₀ = τ₀
+         ⊢ τ₀ = Ty.eraseBounds (R.onTy τ)
 ```
 
-`LamSeed.some T : LamSeed Φ (some T) T Φ` copies a binder annotation verbatim
-into `paramTy`, so `Infer` keeps `BL` in its **output** type, while `τ₀` comes
-from typing the **erased** term and is bare-`List`. `Ty.bl` is a distinct
-constructor from `customTy listTyName [_]`, and `Ty.substFvars_bl` shows
-substitution rewrites `fvar`s only — so a `bl` head survives every `R`.
+`AgreesHM` (`InferW:864`) is this file's own name for "same HM shape" — the exact
+relation unification is proved to respect — and it composes through the induction
+via `Ty.eraseBounds_onTy_congr`, the pattern already used in
+`UnifyRel.greatest_K_factors`. This is not a hedge: Infer unifies bounds-blind, so
+demanding structural principality demands principality in a lattice Infer
+deliberately does not observe.
 
-Counterexample: `λ (x : BL 3 5 Int). x` gives `τ = BL 3 5 Int → BL 3 5 Int` but
-`τ₀ = List Int → List Int`. Machine-checked.
+`InferBranches.complete` / `InferRecGroup.complete` needed **no** repair — they
+carry substitution-agreement clauses only, no type equation.
 
-Wants `τ₀ = R.onTy (Ty.eraseBounds τ)`. Tell-tale: `Infer.principal` already
-carries the erase in its *soundness* conjunct but not its *principality* one —
-one statement, inconsistent with itself.
+**The four `*_headlines_fire` demos keep EXACT equality and are unblocked.**
+Their terms carry no `bl`, so `τ` is erase-normal *and* all-variable (`polyId` ⇒
+`.fvar 0 → .fvar 0`) and every agreeing `τ₀` is a real instance. Like
+`appFiveFive_untypeable`, each is a direct `TypeOfHM` inversion on a tiny closed
+term — **prove them standalone and early; they do not need `complete'`.**
 
-Second layer: classical HM completeness needs unify to return an MGU. Under
-Path R it returns only a factoring up to `AgreesHM` (`*_factors`) — which is
-why `greatest_K` was false and got deleted. Principality is pinned only up to
-erasure. This is probably what the “erase-normal” qualifier in the sorry
-comments is gesturing at; settle it before farming.
-
-**Existence is the easy half** and is very likely true: `Infer` unifies
+**Existence is still the easy half** and is very likely true: `Infer` unifies
 bounds-blind, so it accepts strictly more than structural `TypeOfHM` and cannot
 reject what the erased term types.
 

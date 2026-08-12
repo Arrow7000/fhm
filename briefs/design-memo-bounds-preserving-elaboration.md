@@ -347,6 +347,72 @@ Simpler Infer↔TypeOf slogans; contaminates the golden HM judgment with BL-worl
 
 Details, proof order, greps: `next-agent-brief-path-r-dual-stack.md`.
 
+### 4.1.2 Path R principality is stated **up to erasure** (locked 2026-08-12)
+
+**Decision: the honest completeness theorem is UNRESTRICTED, but its conclusion
+lives at the erasure level.** The "erase-normal" restriction the old `sorry`
+comments kept gesturing at does *not* belong on the core theorem; it belongs on
+an exact-equality corollary. Three machine-checked facts force this.
+
+**Fact 1 — the shipped statement was false.** `Infer.complete'` / `Infer.principal`
+/ `Infer.CompleteAt` concluded `τ₀ = R.onTy τ`. `Subst.onTy_bl` (InferW:1004) says
+a `bl` head is stable under *every* substitution, and `bl` is a distinct
+constructor from `customTy listTyName [_]`. So whenever a binder annotation puts a
+`bl` head on Infer's output type (`LamSeed.some` copies annotations verbatim),
+no `R` exists. `λ (x : BL 3 5 Int). x` is the witness: `τ = BL 3 5 Int → BL 3 5 Int`,
+`τ₀ = List Int → List Int`. Note the failure is *head-level*; a substitution can of
+course turn an `fvar` into a bare list, which is why the variable positions are fine.
+
+**Fact 2 — "decoration lifting" is false, so the obvious repair is not reachable.**
+The natural fix `τ₀ = R.onTy (Ty.eraseBounds τ)` cannot be recovered from what Path
+R's unification actually delivers. `FactorsHM S' S R := ∀ τ, eraseBounds (S'.onTy τ)
+= eraseBounds (R.onTy (S.onTy τ))` (InferW:890) is erase-level equality, for every
+`τ`. Turning that back into exact equality needs the step: *given erase-normal `σ`
+and `eraseBounds τ₀ = R.onTy σ`, produce `R'` with `τ₀ = R'.onTy σ`.* That is
+**false**: take `σ = List Int` (rigid, erase-normal) and `τ₀ = bl 3 5 Int`. It holds
+only under an alignment invariant — "every `bl` in `τ₀` sits at a variable position
+of `σ`" — which is *not* implied by the erasure equation and would have to be
+threaded as a strengthened IH through all ~34 completeness goals.
+
+**Fact 3 — `τ₀` is genuinely not erase-normal, so restricting the core would
+narrow it for real.** `TypeOfHM.var` (Core:3369) is decoration-blind: it ignores
+the stored `tyArgs` and instantiates at an **existential** `instArgs` constrained
+only by `IsLC`, which does not exclude `bl`. Same for `ctor` and match-branch
+`tyArgs`. Machine-checked: the erase-normal ctx `⟨[∀a. a → a], []⟩` and the
+zero-annotation term `.var 0 []` derive `BL 3 5 Int → BL 3 5 Int`. So "erased ctx +
+erased term ⟹ erase-normal result" is **false**, and any Path R argument shaped
+that way is unsound.
+
+**Resulting statement discipline:**
+
+```text
+core  (CompleteAt, complete', complete, all complete_*_aux):
+        AgreesHM τ₀ (R.onTy τ)                        -- unrestricted, no new hypothesis
+
+exact (complete_instance, complete_id, principal,
+       IsPrincipal.principal, principalType_principal):
+        hnorm : Ty.eraseBounds τ₀ = τ₀
+        ⊢ τ₀ = Ty.eraseBounds (R.onTy τ)
+        (equivalently τ₀ = R'.onTy (Ty.eraseBounds τ),
+         R' = R.map fun p => (p.1, Ty.eraseBounds p.2), via Ty.eraseBounds_substFvars)
+```
+
+`AgreesHM` is not a hedge — it is this file's own name for "same HM shape"
+(InferW:864), the exact relation unification is proved to respect, and it composes
+through the induction by `Ty.eraseBounds_onTy_congr` (the pattern already used in
+`UnifyRel.greatest_K_factors`).
+
+**Why this is the right theorem, not a weakened one.** Path R's thesis is that
+`TypeOf*` is pure HM *on shapes* and BL is decoration. Infer unifies bounds-blind —
+it deliberately does not observe the BL lattice. Demanding structural principality
+would demand that Infer be principal in a lattice it does not look at. Principality
+up to erasure is the strongest true statement of the right kind.
+
+**Not weakened:** the four `*_headlines_fire` demos keep exact equality. Their `τ`
+is erase-normal *and* all-variable (`polyId` ⇒ `fvar 0 → fvar 0`), so every
+agreeing `τ₀` is a genuine instance; they are provable by direct inversion and do
+**not** depend on the completeness engine.
+
 ### 4.2 HM faithfulness (first elaboration)
 
 **Prop (Path R residual soundness)** — primary Infer faithfulness theorem:
