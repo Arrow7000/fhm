@@ -17204,7 +17204,16 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
     (∀ k ∈ K, k < Φ) →
     (∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars branches, y ∈ K) →
     (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) →
-    (∀ br ∈ branches, TypeOfMatchBranch (R.onCtx ctx) br (R.onTy scrutTy) (R.onTy ρ)) →
+    -- REPAIRED 2026-08-12: residual (erased) declarative premise. This used to read
+    -- `TypeOfMatchBranch (R.onCtx ctx) br (R.onTy scrutTy) (R.onTy ρ)` — structural,
+    -- which the Path R caller `Infer.complete_match_aux` can NEVER supply: it holds
+    -- only `TypeOfMatchBranch (S₀.onCtx ctx).eraseBounds (br.1, br.2.eraseBounds) …`,
+    -- and `TypeOfHM.eraseBounds_of` runs un-erased → erased only (no converse exists;
+    -- erasure loses information). Nothing called this theorem, so the level mismatch
+    -- went unnoticed. Same bug class as `948cb12` / `e3f12ff`.
+    (∀ br ∈ branches, TypeOfMatchBranch (R.onCtx ctx).eraseBounds
+        (br.1, br.2.eraseBounds)
+        (Ty.eraseBounds (R.onTy scrutTy)) (Ty.eraseBounds (R.onTy ρ))) →
     ∃ Φ' S brsOut R',
       InferBranches Φ ctx scrutTy ρ branches Φ' S brsOut ∧
       Subst.AgreesBelow Φ R (S ++ R') ∧
@@ -17225,11 +17234,18 @@ theorem InferRecGroup.complete {bindings : List Expr} :
     (∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K) →
     (∀ σ, RecSpec.poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K) →
     (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) →
+    -- REPAIRED 2026-08-12: residual (erased) declarative premises, for the same
+    -- reason as `InferBranches.complete` just above — the Path R caller
+    -- (`Infer.complete_letRec`) only ever holds erased typings, so the previous
+    -- structural `TypeOfHM (R.onCtx ctx) p.1 (R.onTy τ)` was unsuppliable.
+    -- Poly members carry no `R` because rigid poly specs are fixed by the residual.
     (∀ p ∈ bindings.zip specs, ∀ τ, p.2 = RecSpec.mono τ →
-        TypeOfHM (R.onCtx ctx) p.1 (R.onTy τ)) →
+        TypeOfHM (R.onCtx ctx).eraseBounds p.1.eraseBounds
+          (Ty.eraseBounds (R.onTy τ))) →
     (∀ p ∈ bindings.zip specs, ∀ σ, p.2 = RecSpec.poly σ →
         ∀ Xs, FreshNames L σ.paramCount Xs →
-          TypeOfHM (R.onCtx ctx) (p.1.openTyVars Xs) (σ.openVars Xs)) →
+          TypeOfHM (R.onCtx ctx).eraseBounds (p.1.openTyVars Xs).eraseBounds
+            (Ty.eraseBounds (σ.openVars Xs))) →
     ∃ Φ' S bindingsOut R',
       InferRecGroup Φ ctx bindings specs Φ' S bindingsOut ∧
       Subst.AgreesBelow Φ R (S ++ R') ∧
