@@ -67,14 +67,15 @@ The three `sourceSound` theorems share ONE mutual block, so they cleared
 `sorryAx` **together** when `letRec` closed. Do not read any one of them as done
 while another has a sorry.
 
-### Honest sorry inventory (43 declarations in InferW, 3 in Headlines)
+### Honest sorry inventory (41 declarations in InferW, 3 in Headlines, 3 in SurfaceBridge)
 
 | Group | Count | Verdict |
 |-------|-------|---------|
 | Completeness (`Infer.complete_*`, `complete'`, `completeAt`, `principal`, `isPrincipal`, `output_unique`, `iff_typeable`, Branches/RecGroup) | ~24 | real campaign, see §5 |
 | PhaseC-C2 executable bridge (`inferCore_complete_*`, `principalType_*`) | 8 | blocked on completeness |
 | OptionA residual unify completeness (`UnifyRel.complete_aux`, `complete_K_aux`, `unifyCoreK_complete_aux`) | 3 | blocked on completeness |
-| Headline demos (`*_headlines_fire`, `*_untypeable`) | 6 | `*_untypeable` are self-contained; `*_fire` need principality |
+| Headline demos (`*_headlines_fire`) | 4 | need principality, so blocked on completeness |
+| ~~`appFiveFive_untypeable` / `openMisuse_untypeable`~~ | 0 | ✅ proved (`8a076ff`), axiom-clean |
 | Operational bridge (`Headlines.lean`: `runSafe`, preservation, progress) | 3 | separate axis |
 | `SurfaceBridge.lean` (`surface_type_safe`, `..._of_SurfaceWT`, `program_type_safe`) | 3 | why `elaborateSafe` shows `sorryAx` |
 
@@ -271,9 +272,27 @@ statement-repair warning in §0 before proving anything.**
 - **`UnifyRel.unifies`** only gives **erase-equality** (`AgreesHM`), never tree equality.
 - **Match / branches (elaboratum):** residual `BranchCtorSpec` via `CtorEnv.eraseBounds_get?` + `InstantiatesBy.forall2_eraseBounds`.
 - **letRec elaboratum sound:** residual mono/poly from `InferRecGroup.sound` → `Expr.letRecElab_sound` at **erased ctx** → `Expr.eraseBounds_letRecElab`.
-- **sourceSound letRec (open):** dual packing but `TypeOfHM.letRec` on **source** erased bindings; use already-proved `InferRecGroup.sourceSound`.
-- Farm **one case at a time** when context is large; commit checkpoints often.
-- **No vacuous `True` theorem statements.**
+- **letRec sourceSound (done):** `TypeOfHM.letRec_of_emptyPool` on **source** erased bindings + `InferRecGroup.sourceSound`. ~400 lines of `Infer.sound`'s scaffolding port **verbatim** — none of it depends on elaboratum vs source.
+- Farm **one case at a time** when context is large; commit checkpoints often — **but only compiling ones**.
+- **No vacuous `True` theorem statements.** No false statements with `sorry` bodies either (see §0's hygiene rule).
+
+### What worked well for delegating (2026-08-12)
+
+- **Isolate the one new idea into a standalone helper first.** `letRec` looked
+  like a 500-line monster; factoring out `TypeOfHM.letRec_of_emptyPool` (the
+  renaming transport) left the big case as pure mechanical porting, and both
+  halves went first-time-ish.
+- **Write the statement yourself, farm the proof.** Every failure this session
+  traced to a wrong *statement*, never a wrong proof.
+- **Give the subagent the working twin's location.** "`Infer.sound`'s letRec case
+  is your template, lines X–Y, and here are the six places it differs" is worth
+  more than any amount of tactic advice.
+- **Point proof subagents at `lean-lsp` MCP, not `lake build`.** A full build of
+  `InferW.lean` is ~60s; `lean_diagnostic_messages` / `lean_goal` are far faster.
+  Warn them the first call has a slow cold start so they don't retry in a loop.
+- **Verify with `#print axioms`, independently.** Do not take a subagent's
+  "0 errors" on trust; several theorems live in `namespace AuditCapstone`, so
+  qualify the names.
 
 ---
 
@@ -309,14 +328,36 @@ Prefer updating *this* brief over creating `next-agent-brief-path-r-part-2.md`.
 
 ## 9. One-paragraph resume prompt
 
-> Continue Path R dual-stack metatheory in FHM. Read `briefs/next-agent-brief-path-r-dual-stack.md` §0 first, and **verify its claims before trusting them** (`lake build FHM.InferW`; `lake env lean FHM/Headlines.lean`) — a previous version of this brief was badly out of date. Residual soundness is **CLOSED**: all six `Infer.*sound*` theorems plus `TypeOfHM.letRec_of_emptyPool` are axiom-clean. Next: the two `*_untypeable` demos (self-contained inversion), then **repair the completeness statements before proving them** — `Infer.complete'` / `Infer.principal` say `τ₀ = R.onTy τ`, which is false when `τ` carries a `bl` head, and want `Ty.eraseBounds τ`; principality is pinned only up to `AgreesHM`, never structurally. Structural Pins; residual TypeOf via `eraseBounds` on ctx (incl. CtorEnv)/term/result; no structural MGU recovery. Live ofLower out of scope. Never commit a checkpoint that does not compile.
+> Continue Path R dual-stack metatheory in FHM. Read `briefs/next-agent-brief-path-r-dual-stack.md` §0 first, and **verify its claims before trusting them** (`lake build FHM.InferW`; `lake env lean FHM/Headlines.lean`) — an earlier version of this brief was badly out of date, which cost a session. Residual soundness is **CLOSED**: all six `Infer.*sound*` theorems plus `TypeOfHM.letRec_of_emptyPool` are axiom-clean, as are both `*_untypeable` demos. **Your job is completeness, and it starts with a statement-repair pass, not a proof.** `Infer.complete'` / `Infer.principal` currently say `τ₀ = R.onTy τ`, which is FALSE whenever `τ` carries a `bl` head (`LamSeed.some` copies binder annotations verbatim into the output type, while `τ₀` comes from typing the *erased* term; `Ty.substFvars_bl` shows substitution can never rewrite a `bl` head). They want `Ty.eraseBounds τ`. Then settle the deeper question: unification only factors up to `AgreesHM`, never structurally, so principality is pinned only up to erasure — decide whether the honest theorem is unrestricted or genuinely needs the "erase-normal" restriction the sorry comments keep mentioning, and say so in the design memo before farming ~34 goals. Existence is the easy half (Infer is bounds-blind, so it accepts strictly more than structural `TypeOfHM`). Structural Pins; residual TypeOf via `eraseBounds` on ctx (incl. CtorEnv)/term/result; no structural MGU recovery. Live ofLower out of scope. Never commit a checkpoint that does not compile.
 
 ---
 
 ## 10. Related greps
 
 ```bash
-rg -n "sorry -- PathR letRec|sorry -- PathR$|PathR completeness" FHM/InferW.lean
+# authoritative sorry count (grep -c sorry now over-counts: explanatory comments
+# mention the word). touch first, or lake caches away the warnings.
+touch FHM/InferW.lean && lake build FHM.InferW 2>&1 | grep -c "declaration uses 'sorry'"
+
+rg -n "sorry -- PathR$|PathR completeness|OptionA residual|PhaseC-C2" FHM/InferW.lean
 rg -n "theorem Infer\.(sound|sourceSound) |theorem InferBranches\.(sound|sourceSound)|theorem InferRecGroup\.(sound|sourceSound)" FHM/InferW.lean
+rg -n "theorem Infer\.complete'|theorem Infer\.principal|theorem Infer\.isPrincipal" FHM/InferW.lean
 rg -n "FactorsHM.to_structural|structural residual factoring" FHM/InferW.lean
+rg -n "letRec_of_emptyPool" FHM/InferW.lean
+```
+
+Axiom audit (note the `AuditCapstone` namespace on the demo theorems):
+
+```bash
+cat > /tmp/ax.lean <<'EOF'
+import FHM.InferW
+#print axioms Infer.sound
+#print axioms Infer.sourceSound
+#print axioms InferBranches.sourceSound
+#print axioms InferRecGroup.sourceSound
+#print axioms TypeOfHM.letRec_of_emptyPool
+#print axioms AuditCapstone.appFiveFive_untypeable
+#print axioms AuditCapstone.openMisuse_untypeable
+EOF
+lake env lean /tmp/ax.lean   # all should be [propext, Classical.choice, Quot.sound]
 ```
