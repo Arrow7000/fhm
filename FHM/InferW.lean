@@ -19728,13 +19728,100 @@ closed, tiny term — `polyId`'s inversion gives `τ₀ = paramTy → paramTy`, 
 `R = [(0, paramTy)]`. Prove them standalone and early; do not block them on
 `complete'`. -/
 
+/-! #### Shared machinery for the four demos
+
+Two ingredients recur.
+
+* **Computing the principal type.** `inferCore`/`unifyCoreK`/… are well-founded
+  recursions, so they do **not** reduce by `rfl`/`decide` (and we deliberately do
+  not reach for `native_decide`). Instead we unfold their *equation lemmas* with
+  `simp only [inferCore, …]` — which fires because each recursive call sits at a
+  syntactically concrete `Expr` — and then discharge the residual pure-`Prop`-free
+  arithmetic/matching with `with_unfolding_all rfl`. `unifyCoreK`'s arguments are
+  bound by the surrounding `match`es, so its equations cannot fire; one syntactic
+  `unfold unifyCoreK` per unification depth exposes the body, after which
+  `with_unfolding_all rfl` finishes.
+
+* **Inverting the derivation.** Each demo's principal type is all-variable (plus,
+  for `matchWild`, a rigid `Int`), so ordinary `cases` inversion on `TypeOfHM`
+  pins `τ₀`'s shape exactly and the witness substitution reads off directly. The
+  only supporting lemma needed is that instantiation is trivial on a
+  locally-closed body. -/
+
+/-- Instantiation is the identity on a locally-closed type: this is the converse
+    of `InstantiatesBy.refl_of_closed`, and it is what turns a `lambda`'s
+    `paramTy.IsLC` premise into "the bound variable's use has type `paramTy`". -/
+theorem instBy_eq_of_lc {tyArgs : List Ty} :
+    ∀ {ty : Ty}, ty.IsLC → ∀ (τ : Ty), InstantiatesBy tyArgs ty τ → τ = ty := by
+  intro ty
+  induction ty using Ty.rec_strong with
+  | prim p => intro _ τ h; cases h; rfl
+  | arrow a b iha ihb =>
+      intro hlc τ h
+      cases hlc with
+      | arrow ha hb => cases h with | arrow h1 h2 => rw [iha ha _ h1, ihb hb _ h2]
+  | bvar n => intro hlc τ h; cases hlc with | bvar hlt => omega
+  | fvar n => intro _ τ h; cases h; rfl
+  | customTy nm tys ih =>
+      intro hlc τ h
+      cases hlc with
+      | customTy hall =>
+        cases h with
+        | customTy hf =>
+          refine congrArg _ ?_
+          have aux : ∀ (ts is : List Ty), (∀ t ∈ ts, t.IsLC) →
+              (∀ t ∈ ts, ∀ u, InstantiatesBy tyArgs t u → u = t) →
+              List.Forall₂ (InstantiatesBy tyArgs) ts is → is = ts := by
+            intro ts
+            induction ts with
+            | nil => intro is _ _ hff; cases hff; rfl
+            | cons hd tl iht =>
+              intro is hall' ih' hff
+              cases hff with
+              | cons hhd htl =>
+                rw [iht _ (fun t ht => hall' t (List.mem_cons_of_mem _ ht))
+                      (fun t ht => ih' t (List.mem_cons_of_mem _ ht)) htl,
+                    ih' hd (List.mem_cons_self ..) _ hhd]
+          exact aux tys _ hall (fun t ht => ih t ht (hall t ht)) hf
+  | bl lo hi e ihe =>
+      intro hlc τ h
+      cases hlc with | bl he => cases h with | bl h1 => rw [ihe he _ h1]
+
+set_option maxRecDepth 100_000 in
+/-- `λx. x` has principal monotype `α → α` (computed, not postulated). -/
+theorem polyId_principalType : principalType [] polyId = some (.arrow (.fvar 0) (.fvar 0)) := by
+  show (inferCore [] 0 ⟨[], []⟩ (Expr.lambda none (Expr.var 0 []))).map (·.val.2.2.2) = _
+  simp only [inferCore, List.getElem?_cons_zero]
+  with_unfolding_all rfl
+
+/-- `polyId` carries no `bl`, so erase-projection is the identity. -/
+theorem polyId_eraseBounds : polyId.eraseBounds = polyId := by
+  simp [Expr.eraseBounds, polyId]
+
 /-- `typecheck` succeeds, produces a genuine residual declarative type (Path R
     soundness), and that type is principal. -/
 theorem polyId_headlines_fire :
     ∃ σ τ, typecheck [] polyId = some σ ∧ σ = genScheme [] [] τ ∧
       TypeOfHM ⟨[], []⟩ polyId.eraseBounds (Ty.eraseBounds τ) ∧
       ∀ τ₀, TypeOfHM ⟨[], []⟩ polyId.eraseBounds τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
-  sorry -- PathR
+  refine ⟨genScheme [] [] (.arrow (.fvar 0) (.fvar 0)), .arrow (.fvar 0) (.fvar 0),
+    ?_, rfl, ?_, ?_⟩
+  · show (principalType [] polyId).map (genScheme [] []) = _
+    rw [polyId_principalType]; rfl
+  · rw [polyId_eraseBounds]; exact polyId_typeable
+  · rw [polyId_eraseBounds]
+    intro τ₀ h
+    -- Inversion: `λx. x`'s only derivations are `paramTy → paramTy`.
+    cases h with
+    | lambda hlc hpins heq hbody =>
+      subst heq
+      cases hbody with
+      | var hlook hargs hinst =>
+        simp only [List.getElem?_cons_zero, Option.some.injEq] at hlook
+        subst hlook
+        have hb := instBy_eq_of_lc hlc _ hinst
+        subst hb
+        exact ⟨[(0, _)], rfl⟩
 
 /-! ### An ill-typed program — completeness's contrapositive is not vacuous -/
 
@@ -19816,11 +19903,96 @@ theorem idid_typeable : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 0) (.fvar 0)) 
         (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
         (.arrow (.bvar rfl) (.bvar rfl)))
 
+set_option maxRecDepth 100_000 in
+/-- `idid`'s principal monotype. The seeded rigid set is `idid.tyFreeVars = [0,0]`
+    and the frontier `idid.freshFloor = 1`, so the residual variable is `4`. -/
+theorem idid_principalType : principalType [] idid = some (.arrow (.fvar 4) (.fvar 4)) := by
+  show (inferCore [0, 0] 1 ⟨[], []⟩
+      (Expr.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (Expr.lambda none (Expr.var 0 []))
+        ((Expr.var 0 [Ty.arrow (.fvar 0) (.fvar 0)]).app (Expr.var 0 [Ty.fvar 0])))).map
+      (·.val.2.2.2) = _
+  simp only [inferCore, Expr.openTyVars, Expr.openTyVarsAux, freshVars, List.range,
+    List.range.loop, List.map, PolyTy.openVars, List.getElem?_cons_zero, Option.map_none]
+  unfold unifyCoreK
+  unfold unifyCoreK
+  with_unfolding_all rfl
+
+theorem idid_eraseBounds : idid.eraseBounds = idid := by
+  simp [Expr.eraseBounds, idid, PolyTy.eraseBounds, Ty.eraseBounds]
+
+/-- `idid_typeable` at the computed principal variable `4` (the `var` rule is
+    decoration-blind, so the stored `tyArgs` need not match `instArgs`). -/
+theorem idid_typeable_fvar4 : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 4) (.fvar 4)) := by
+  apply TypeOfHM.letIn (M := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (L := [])
+  · show ContainsBvarsUpTo 1 (Ty.arrow (Ty.bvar 0) (Ty.bvar 0))
+    exact .arrow (.bvar (by omega)) (.bvar (by omega))
+  · intro σ' h; cases h; rfl
+  · intro Xs hfresh
+    have hlen : Xs.length = 1 := hfresh.length
+    rcases Xs with _ | ⟨X, _ | ⟨Y, tl⟩⟩
+    · simp at hlen
+    · have hterm : Expr.openBoundTyVars (some (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy)) [X]
+            (.lambda none (.var 0 [])) = .lambda none (.var 0 []) := rfl
+      have htype : (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy).openVars [X]
+            = .arrow (.fvar X) (.fvar X) := rfl
+      rw [hterm, htype]
+      exact TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
+        (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .fvar)
+    · simp at hlen
+  · rfl
+  · exact TypeOfHM.app
+      (TypeOfHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+        (instArgs := [.arrow (.fvar 4) (.fvar 4)]) rfl
+        (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar)
+        (.arrow (.bvar rfl) (.bvar rfl)))
+      (TypeOfHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
+        (instArgs := [.fvar 4]) rfl
+        (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
+        (.arrow (.bvar rfl) (.bvar rfl)))
+
 theorem idid_headlines_fire :
     ∃ σ τ, typecheck [] idid = some σ ∧ σ = genScheme [] [] τ ∧
       TypeOfHM ⟨[], []⟩ idid.eraseBounds (Ty.eraseBounds τ) ∧
       ∀ τ₀, TypeOfHM ⟨[], []⟩ idid.eraseBounds τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
-  sorry -- PathR
+  refine ⟨genScheme [] [] (.arrow (.fvar 4) (.fvar 4)), .arrow (.fvar 4) (.fvar 4),
+    ?_, rfl, ?_, ?_⟩
+  · show (principalType [] idid).map (genScheme [] []) = _
+    rw [idid_principalType]; rfl
+  · rw [idid_eraseBounds]; exact idid_typeable_fvar4
+  · rw [idid_eraseBounds]
+    intro τ₀ h
+    -- Inversion: the annotation pins `M = ∀a. a → a`; the two uses then force
+    -- `τ₀ = A → A` where `A` is the argument's own instantiation witness.
+    cases h with
+    | letIn hwf hpins hgen heq hbody =>
+      have hM := hpins _ rfl
+      subst hM
+      subst heq
+      cases hbody with
+      | app hf hx =>
+        cases hf with
+        | var hlook1 hargs1 hinst1 =>
+          cases hx with
+          | var hlook2 hargs2 hinst2 =>
+            simp only [List.getElem?_cons_zero, Option.some.injEq] at hlook1 hlook2
+            subst hlook1; subst hlook2
+            cases hinst2 with
+            | arrow g1 g2 =>
+              cases g1 with
+              | bvar e1 =>
+                cases g2 with
+                | bvar e2 =>
+                  have hAB : _ = _ := Option.some.inj (e1.symm.trans e2)
+                  subst hAB
+                  cases hinst1 with
+                  | arrow f1 f2 =>
+                    cases f1 with
+                    | bvar d1 =>
+                      cases f2 with
+                      | bvar d2 =>
+                        have hτ : _ = _ := Option.some.inj (d2.symm.trans d1)
+                        subst hτ
+                        exact ⟨[(4, _)], rfl⟩
 
 /-! ### Progress / preservation fire on a concrete erased program -/
 
@@ -19853,13 +20025,44 @@ theorem matchWild_typeable : TypeOfHM ⟨[], []⟩ matchWild (.arrow (.fvar 0) (
   rw [List.mem_singleton] at hbr; subst hbr
   exact TypeOfMatchBranch.wildcard TypeOfHM.primLitInt
 
+set_option maxRecDepth 100_000 in
+theorem matchWild_principalType :
+    principalType [] matchWild = some (.arrow (.fvar 0) (.prim .int)) := by
+  show (inferCore [] 0 ⟨[], []⟩
+      (Expr.lambda none ((Expr.var 0 []).match_
+        [(MatchPattern.wildcard, Expr.primLit (.int 0))]))).map (·.val.2.2.2) = _
+  simp only [inferCore, inferBranchesCore, List.getElem?_cons_zero]
+  unfold unifyCoreK
+  with_unfolding_all rfl
+
+theorem matchWild_eraseBounds : matchWild.eraseBounds = matchWild := by
+  simp [Expr.eraseBounds, matchWild]
+
 /-- All three headlines fire on the all-wildcard match: it typechecks, the produced
     type is a genuine declarative type (soundness), and it is principal. -/
 theorem matchWild_headlines_fire :
     ∃ σ τ, typecheck [] matchWild = some σ ∧ σ = genScheme [] [] τ ∧
       TypeOfHM ⟨[], []⟩ matchWild.eraseBounds (Ty.eraseBounds τ) ∧
       ∀ τ₀, TypeOfHM ⟨[], []⟩ matchWild.eraseBounds τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
-  sorry -- PathR
+  refine ⟨genScheme [] [] (.arrow (.fvar 0) (.prim .int)), .arrow (.fvar 0) (.prim .int),
+    ?_, rfl, ?_, ?_⟩
+  · show (principalType [] matchWild).map (genScheme [] []) = _
+    rw [matchWild_principalType]; rfl
+  · rw [matchWild_eraseBounds]; exact matchWild_typeable
+  · rw [matchWild_eraseBounds]
+    intro τ₀ h
+    -- Inversion: the wildcard branch imposes nothing on the scrutinee, and its
+    -- body is `0`, so the result is `Int` and the parameter stays free.
+    cases h with
+    | lambda hlc hpins heq hbody =>
+      subst heq
+      cases hbody with
+      | match_ hscrut hne hbr =>
+        have hb := hbr (MatchPattern.wildcard, Expr.primLit (.int 0)) (by simp)
+        cases hb with
+        | wildcard hbody2 =>
+          cases hbody2
+          exact ⟨[(0, _)], rfl⟩
 
 /-! ### A recursive program — `letRec` typechecks at its principal type
 
@@ -19916,6 +20119,53 @@ theorem mutualRec_typeable : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 0) := by
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
       (.bvar rfl)
 
+set_option maxRecDepth 100_000 in
+/-- The group's principal monotype is a bare variable (`∀a. a` after
+    generalisation); with `mutualRec.tyFreeVars = [0]` and frontier `1` the
+    residual variable is `3`. -/
+theorem mutualRec_principalType : principalType [] mutualRec = some (.fvar 3) := by
+  show (inferCore [0] 1 ⟨[], []⟩
+      (Expr.letRec [none, none] [Expr.var 1 [], Expr.var 0 []] (Expr.var 0 [Ty.fvar 0]))).map
+      (·.val.2.2.2) = _
+  simp only [inferCore, inferRecGroupCore, RecSpec.init, RecSpec.onSubst, RecSpec.rhsEntry,
+    freshVars, List.range, List.map, PolyTy.openVars]
+  unfold unifyCoreK
+  with_unfolding_all rfl
+
+theorem mutualRec_eraseBounds : mutualRec.eraseBounds = mutualRec := by
+  simp [Expr.eraseBounds, mutualRec]
+
+/-- `mutualRec_typeable` at the computed principal variable `3`. -/
+theorem mutualRec_typeable_fvar3 : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 3) := by
+  refine TypeOfHM.letRec (specs := [.mono (.fvar 100), .mono (.fvar 100)]) (G := [100])
+    (L := []) ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
+  · intro τ hτ
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hτ
+    rcases hτ with h | h <;> (injection h with h'; rw [h']; exact .fvar)
+  · intro σ hσ
+    simp only [List.mem_cons, List.not_mem_nil, reduceCtorEq, or_self] at hσ
+  · intro Xs hfresh p hp τ hτ
+    obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
+    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
+      or_false] at hp
+    rcases hp with rfl | rfl <;> (injection hτ with h'; rw [← h'])
+    · show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
+        (.var 1 []) (.fvar X)
+      exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl
+        (by intro t ht; cases ht) .fvar
+    · show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
+        (.var 0 []) (.fvar X)
+      exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl
+        (by intro t ht; cases ht) .fvar
+  · intro Xs hfresh p hp σ hσ
+    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
+      or_false] at hp
+    rcases hp with rfl | rfl <;> exact RecSpec.noConfusion hσ
+  · show TypeOfHM ⟨[⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩], []⟩ (.var 0 [.fvar 0]) (.fvar 3)
+    exact TypeOfHM.var (polyTy := ⟨1, .bvar 0⟩) (instArgs := [.fvar 3]) rfl
+      (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
+      (.bvar rfl)
+
 /-- All headlines fire on the recursive group: `typecheck` succeeds, the produced
     type is a genuine residual declarative type (erase-normal soundness), and it
     is principal. -/
@@ -19923,6 +20173,14 @@ theorem mutualRec_headlines_fire :
     ∃ σ τ, typecheck [] mutualRec = some σ ∧ σ = genScheme [] [] τ ∧
       TypeOfHM ⟨[], []⟩ mutualRec.eraseBounds (Ty.eraseBounds τ) ∧
       ∀ τ₀, TypeOfHM ⟨[], []⟩ mutualRec.eraseBounds τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
-  sorry -- PathR
+  refine ⟨genScheme [] [] (.fvar 3), .fvar 3, ?_, rfl, ?_, ?_⟩
+  · show (principalType [] mutualRec).map (genScheme [] []) = _
+    rw [mutualRec_principalType]; rfl
+  · rw [mutualRec_eraseBounds]; exact mutualRec_typeable_fvar3
+  · -- The principal type is a *bare* variable, so every `τ₀` is trivially an
+    -- instance: no inversion needed.
+    rw [mutualRec_eraseBounds]
+    intro τ₀ _
+    exact ⟨[(3, τ₀)], rfl⟩
 
 end AuditCapstone
