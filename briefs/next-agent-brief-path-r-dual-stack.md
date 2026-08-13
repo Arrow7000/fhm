@@ -214,10 +214,37 @@ SUPERSEDED in-file. Don't build on them; use the `*_erase` variants.
    New reusable lemma: `AuditCapstone.instBy_eq_of_lc` — instantiation is the
    identity on a locally-closed body (converse of `InstantiatesBy.refl_of_closed`;
    the `eq_of_closed` named in a `Core.lean` comment does **not** exist).
-4. Then farm bottom-up: `UnifyRel.complete_*` → `Infer.complete_*` → `complete'` →
-   `completeAt`/`complete`/`principal`/`iff_typeable` → PhaseC-C2.
-   Every one of these now concludes `AgreesHM`, so the induction never needs to
+4. ~~`UnifyRel.complete_*`~~ ✅ **the whole unify layer is closed** — `UnifyRel.complete`
+   (`8b10d61`), `UnifyRel.complete_K` (`12e840e`), `unifyCoreK_complete` (`5159add`),
+   all axiom-clean, relational and executable.
+5. `Infer.complete_*` — **in progress**. Done and axiom-clean: `complete_prim`,
+   `complete_var`, `complete_ctor`, `complete_primBinOp` (`c275367`); the whole
+   lambda tier (`2bc12b7`); `complete_app_aux` + `complete_app` (`aa2c2bc`,
+   `22cad8c`); `complete_letIn_aux` (`90fb873`, the cofinite generalisation case).
+
+   **Next, in dependency order — this chain was discovered, not guessed:**
+   1. Restate the `customTy` unification dodge on `UnifyRel.greatest_K_factors`.
+      The old `customTy_unify_dodge` / `customTy_factor_dodge` were deleted along
+      with the false `greatest_K` in `054e0d8`; **`customTy_dodge_unifier` is still
+      live and reusable**. This is a *statement-authoring* job — do it yourself,
+      at the erase level, before farming.
+   2. `InferBranches.complete` (already restated at the erased level in `40e61b1`)
+      — needs (1).
+   3. `Infer.complete_match_aux` / `complete_match` — need (2). A proof agent
+      correctly declined `complete_match_aux` for exactly this reason rather than
+      forcing it.
+   4. `complete_letIn` / `complete_letIn_ann_aux`, then `InferRecGroup.complete`
+      and `complete_letRec`, then `complete'` → `completeAt`/`complete`/
+      `principal`/`iff_typeable` → PhaseC-C2.
+
+   Every one of these concludes `AgreesHM`, so the induction never needs to
    recover exact equality — do not reintroduce a structural pin.
+
+**The move that makes these proofs work** (used in `complete_app_aux` and
+`complete_letIn_aux`, and the reason the erase-level statements are *sufficient*
+rather than merely true): substitutions that differ structurally but agree up to
+erasure produce **equal erased contexts**, so an IH stated at `(…).eraseBounds` can
+be re-entered at a new residual. `Subst.onTy_congr_hm` is the lemma.
 5. Operational bridge (`runSafe`) — independent axis, can go in parallel.
 
 ### Sequential-edit rule
