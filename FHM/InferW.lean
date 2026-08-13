@@ -18221,14 +18221,22 @@ private theorem freshVars_getElem? {Φ k i : Nat} (hi : i < k) :
     `scrutTy` against `customTy ctor.tyName (freshVars Φ ctor.paramCount)`
     succeeds, and `R` factors through the resulting MGU `S₀` via a fresh residual
     `R₀` (sending the fresh block to `tyArgs`). Mirrors the old up-front match
-    dodge, now relocated to each named branch. -/
+    dodge, now relocated to each named branch.
+
+    WEAKENED 2026-08-13 to an **erase-level** scrutinee premise. The Path R
+    caller inverts a `BranchCtorSpec` living at `(R.onCtx ctx).eraseBounds`, so
+    all it ever holds is `Ty.eraseBounds (R.onTy scrutTy) = customTy …` — never
+    the structural equation, since `R.onTy scrutTy` may legitimately be a `bl`
+    head that only *erases* into `customTy listTyName [_]` (`Subst.onTy_bl`).
+    The conclusion is unchanged: `Unifies` was already erase-level, and the
+    fresh-block image `hmap_eq` is structural by construction. -/
 private theorem customTy_dodge_unifier {Φ : Nat} {scrutTy : Ty} {R : Subst}
     {K : List Nat} {ctor : Ctor} {tyArgs : List Ty}
     (hbscrut : Ty.BelowFvars Φ scrutTy)
     (hR : ∀ p ∈ R, p.2.IsLC) (hKΦ : ∀ k ∈ K, k < Φ)
     (hKfix : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
     (htyArgs_lc : ∀ t ∈ tyArgs, t.IsLC) (hpc : ctor.paramCount = tyArgs.length)
-    (hscrutEq : R.onTy scrutTy = .customTy ctor.tyName tyArgs) :
+    (hscrutEq : AgreesHM (R.onTy scrutTy) (.customTy ctor.tyName tyArgs)) :
     ∃ U : Subst,
       Unifies U scrutTy
         (.customTy ctor.tyName ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))) ∧
@@ -18316,14 +18324,16 @@ private theorem customTy_dodge_unifier {Φ : Nat} {scrutTy : Ty} {R : Subst}
     have hge := freshVars_ge p.1 hp1
     have hcb : Ty.BelowFvars W₀ (Ty.customTy ctor.tyName tyArgs) := .customTy htyArgs_belowW₀
     have hlt := hcb.mem_lt p.1 hc; omega
-  have hUL : U.onTy scrutTy = Ty.customTy ctor.tyName tyArgs := by
-    rw [hUonTy, hA_id_scrut, hscrutEq]; exact hC_id_custom
+  have hUL : AgreesHM (U.onTy scrutTy) (Ty.customTy ctor.tyName tyArgs) := by
+    rw [hUonTy, hA_id_scrut]
+    exact (Ty.eraseBounds_onTy_congr _ hscrutEq).trans (congrArg Ty.eraseBounds hC_id_custom)
   have hUR : U.onTy (Ty.customTy ctor.tyName ((freshVars Φ ctor.paramCount).map (Ty.fvar ·)))
       = Ty.customTy ctor.tyName tyArgs := by
     rw [Subst.onTy_customTy, hmap_eq]
   have hUni : Unifies U scrutTy
-      (Ty.customTy ctor.tyName ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))) :=
-    Unifies.of_eq (by rw [hUL, hUR])
+      (Ty.customTy ctor.tyName ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))) := by
+    show AgreesHM _ _
+    rw [hUR]; exact hUL
   have hUlc : ∀ p ∈ U, p.2.IsLC := by
     rw [hUdef]
     intro p hp
@@ -18356,16 +18366,72 @@ private theorem customTy_dodge_unifier {Φ : Nat} {scrutTy : Ty} {R : Subst}
     (hUeqR k (hKΦ k hk)).trans (hKfix k hk)
   exact ⟨U, hUni, hUlc, hUK, hUeqR, hmap_eq⟩
 
-/- Path R: `customTy_unify_dodge` and `customTy_factor_dodge` were DELETED
-   alongside the false `UnifyRel.greatest_K` they were built on (see the note
-   at the `greatest_K_factors` section above). They were the named-branch
-   `customTy` dodges used by branch completeness: given a declarative residual
-   `R` sending the scrutinee type to `customTy ctor.tyName tyArgs`, produce (or
-   factor through) the branch's own MGU. Both were dead — nothing referenced
-   them — and both inherited `sorryAx`, so they read as proved while resting on
-   `False`. When the completeness campaign needs them, restate them residually
-   on `UnifyRel.greatest_K_factors` (factoring up to `AgreesHM`, not tree
-   equality); `customTy_dodge_unifier` above is still live and reusable. -/
+/-- **The named-branch `customTy` unification dodge (producing form).**
+
+    RESTATED 2026-08-13 on `UnifyRel.greatest_K_factors`. The original
+    `customTy_unify_dodge` was deleted in `054e0d8` alongside the **false**
+    structural `UnifyRel.greatest_K` it rested on. Two clauses move to the erase
+    level, and nothing else changes:
+
+    * the scrutinee premise is `AgreesHM (R.onTy scrutTy) (customTy …)`, because
+      the caller only ever inverts a `BranchCtorSpec` at
+      `(R.onCtx ctx).eraseBounds` (see `customTy_dodge_unifier`);
+    * the factoring clause is `Subst.AgreesBelow Φ R (S₀ ++ R₀)` and the
+      recovered fresh-block image matches `tyArgs` **after `eraseBounds`**,
+      because `greatest_K_factors` delivers `FactorsHM`, never a structural
+      residual — `FactorsHM.to_structural` is false and was deleted.
+
+    Erase-level is exactly enough downstream: the branch body context built from
+    `freshBlock.map S₀.onTy` and the declarative one built from `tyArgs` have
+    EQUAL erasures, which is all `Infer.CompleteAt` for the body consumes.
+
+    (The old given-MGU twin `customTy_factor_dodge` is NOT restated here: its
+    only consumer would be an `InferBranches.complete'`, which does not exist.
+    Restate it when `Infer.complete'` needs it, not before.) -/
+private theorem customTy_unify_dodge {Φ : Nat} {scrutTy : Ty} {R : Subst}
+    {K : List Nat} {ctor : Ctor} {tyArgs : List Ty}
+    (hscrutLC : scrutTy.IsLC) (hbscrut : Ty.BelowFvars Φ scrutTy)
+    (hR : ∀ p ∈ R, p.2.IsLC) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKfix : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
+    (htyArgs_lc : ∀ t ∈ tyArgs, t.IsLC) (hpc : ctor.paramCount = tyArgs.length)
+    (hscrutEq : AgreesHM (R.onTy scrutTy) (.customTy ctor.tyName tyArgs)) :
+    ∃ (S₀ R₀ : Subst),
+      UnifyRel scrutTy
+        (.customTy ctor.tyName ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))) S₀ ∧
+      (∀ p ∈ S₀, p.2.IsLC) ∧
+      (∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2) ∧
+      (∀ p ∈ S₀, p.1 ∉ K) ∧
+      (∀ p ∈ R₀, p.2.IsLC) ∧
+      (∀ k ∈ K, R₀.onTy (.fvar k) = .fvar k) ∧
+      Subst.AgreesBelow Φ R (S₀ ++ R₀) ∧
+      ((((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy).map R₀.onTy).map
+          Ty.eraseBounds
+        = tyArgs.map Ty.eraseBounds := by
+  obtain ⟨U, hUni, hUlc, hUK, hUeqR, hmap_eq⟩ :=
+    customTy_dodge_unifier hbscrut hR hKΦ hKfix htyArgs_lc hpc hscrutEq
+  have hcustomTy_lc : (Ty.customTy ctor.tyName
+      ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))).IsLC :=
+    ContainsBvarsUpTo.customTy (fun t ht => by
+      obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht; exact ContainsBvarsUpTo.fvar)
+  obtain ⟨S₀, h₀, hS₀K⟩ := UnifyRel.complete_K hscrutLC hcustomTy_lc hUlc hUni hUK
+  obtain ⟨R₀, hR₀eq, hR₀lc, hR₀K⟩ := UnifyRel.greatest_K_factors h₀ U hUlc hUni hUK
+  have hS₀ : ∀ p ∈ S₀, p.2.IsLC := UnifyRel.lc h₀ hscrutLC hcustomTy_lc
+  have hS₀below : ∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2 := by
+    apply UnifyRel.belowFvars h₀ (hbscrut.mono (by omega))
+    apply Ty.BelowFvars.customTy
+    intro t ht
+    obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+    exact Ty.BelowFvars.fvar (by have := freshVars_lt x hx; omega)
+  refine ⟨S₀, R₀, h₀, hS₀, hS₀below, hS₀K, hR₀lc, hR₀K, ?_, ?_⟩
+  · intro v hv
+    simp only [Subst.onTy_append]
+    exact (congrArg Ty.eraseBounds (hUeqR v hv)).symm.trans (hR₀eq (Ty.fvar v))
+  · rw [← hmap_eq]
+    simp only [List.map_map]
+    apply List.map_congr_left
+    intro x _
+    simp only [Function.comp_apply]
+    exact (hR₀eq (Ty.fvar x)).symm
 
 
 /-- Index extraction from a `zip` membership. -/
@@ -18802,10 +18868,9 @@ private theorem letRecFused_residual_setup
     `InferBranches` succeeds and the declarative typing factors through it via an
     LC residual `R'` (`R = R' ∘ S` below `Φ`). The companion to `match_`
     principality. With Core v2 the named-branch `customTy` unification is realised
-    *inside* each `cons` via a `customTy` dodge; the wildcard case leaves
-    `scrutTy` free. (Path R: the old `customTy_unify_dodge` was deleted with the
-    false `greatest_K` it rested on — it needs restating on
-    `UnifyRel.greatest_K_factors` before this proof can use it.) -/
+    *inside* each `cons` via `customTy_unify_dodge` (restated 2026-08-13 on
+    `UnifyRel.greatest_K_factors`, erase-level in both the scrutinee premise and
+    the recovered type-argument block); the wildcard case leaves `scrutTy` free. -/
 theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
     ∀ {Φ : Nat} {ctx : Ctx} {scrutTy : Ty} {ρ : Ty} {R : Subst} (K : List Nat),
     (∀ br ∈ branches, Infer.CompleteAt br.2) →
