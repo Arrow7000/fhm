@@ -16998,7 +16998,90 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
       (∀ p ∈ R, p.2.IsLC) ∧
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       (∀ p ∈ S, p.1 ∉ K) := by
-  sorry -- PathR completeness
+  obtain ⟨Φ₁, S₁, fOut, τf, R₁, hInferF, hAgreeF, hAgreeFty, hR₁lc, hR₁K, hS₁K⟩ :=
+    ihf K hwf hbelow hS₀ hKΦ hKf hKfix hf
+  have hΦf : ∀ y ∈ f.tyFreeVars, y < Φ := fun y hy => hKΦ y (hKf y hy)
+  have hfle : Φ ≤ Φ₁ := Infer.frontier_le hInferF
+  have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := (Infer.lc hInferF hwf).2
+  have hτf_lc : τf.IsLC := (Infer.lc hInferF hwf).1
+  have hτf_bel : Ty.BelowFvars Φ₁ τf := (Infer.belowFvars hInferF hbelow hΦf).1
+  have hf_sbel : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 := (Infer.belowFvars hInferF hbelow hΦf).2
+  have hctxWF₁ : CtxWF (S₁.onCtx ctx) := Subst.onCtx_wf hS₁lc hwf
+  have hctxBelow₁ : CtxBelow Φ₁ (S₁.onCtx ctx) := Subst.onCtx_below hf_sbel hfle hbelow
+  have hKΦ₁ : ∀ k ∈ K, k < Φ₁ := fun k hk => lt_of_lt_of_le (hKΦ k hk) hfle
+  have hΦa : ∀ y ∈ arg.tyFreeVars, y < Φ₁ := fun y hy => lt_of_lt_of_le (hKΦ y (hKa y hy)) hfle
+  have hctxBridge : (R₁.onCtx (S₁.onCtx ctx)).eraseBounds = (S₀.onCtx ctx).eraseBounds := by
+    simp only [Ctx.eraseBounds, Subst.onCtx, Subst.onEnv, Env.eraseBounds, List.map_map]
+    congr 1
+    apply List.map_congr_left
+    intro M hM
+    cases M with
+    | mk n b =>
+      have hbody : Ty.eraseBounds (R₁.onTy (S₁.onTy b)) = Ty.eraseBounds (S₀.onTy b) := by
+        rw [← Subst.onTy_append]
+        exact AgreesHM.symm (Subst.onTy_congr_hm hAgreeF (hbelow ⟨n, b⟩ hM))
+      simp [Subst.onPolyTy, PolyTy.eraseBounds, hbody]
+  have harg' : TypeOfHM (R₁.onCtx (S₁.onCtx ctx)).eraseBounds arg.eraseBounds argTy := by
+    rwa [← hctxBridge] at harg
+  obtain ⟨Φ₂, S₂, argOut, τa, R₂, hInferArg, hAgreeArg, hAgreeArgty, hR₂lc, hR₂K, hS₂K⟩ :=
+    iharg K hctxWF₁ hctxBelow₁ hR₁lc hKΦ₁ hKa hR₁K harg'
+  have hargle : Φ₁ ≤ Φ₂ := Infer.frontier_le hInferArg
+  have hKΦ₂ : ∀ k ∈ K, k < Φ₂ := fun k hk => lt_of_lt_of_le (hKΦ₁ k hk) hargle
+  have hS₂lc : ∀ p ∈ S₂, p.2.IsLC := (Infer.lc hInferArg hctxWF₁).2
+  have hτa_lc : τa.IsLC := (Infer.lc hInferArg hctxWF₁).1
+  have hS₂_bel : ∀ p ∈ S₂, Ty.BelowFvars Φ₂ p.2 := (Infer.belowFvars hInferArg hctxBelow₁ hΦa).2
+  have hτa_bel : Ty.BelowFvars Φ₂ τa := (Infer.belowFvars hInferArg hctxBelow₁ hΦa).1
+  have hτ₀_lc : τ₀.IsLC := by
+    have := TypeOfHM.regular hf
+    cases this with | arrow _ hret => exact hret
+  have hAgreeFty' : AgreesHM (R₁.onTy τf) (R₂.onTy (S₂.onTy τf)) := by
+    have h := Subst.onTy_congr_hm hAgreeArg hτf_bel
+    simpa [Subst.onTy_append] using h
+  have hP : AgreesHM (Ty.arrow argTy τ₀) (R₂.onTy (S₂.onTy τf)) :=
+    AgreesHM.trans hAgreeFty hAgreeFty'
+  have hτf_bel₂ : Ty.BelowFvars Φ₂ (S₂.onTy τf) := by
+    apply Subst.onTy_belowFvars hS₂_bel
+    exact hτf_bel.mono hargle
+  have hΦ₂A : Φ₂ ∉ (S₂.onTy τf).freeVars := by
+    intro hc
+    have := Ty.BelowFvars.mem_lt hτf_bel₂ Φ₂ hc
+    omega
+  have hΦ₂τa : Φ₂ ∉ τa.freeVars := by
+    intro hc
+    have := Ty.BelowFvars.mem_lt hτa_bel Φ₂ hc
+    omega
+  obtain ⟨U, hU, hUlc, hUK, hUΦ₂, hUbelow⟩ :=
+    exists_app_unifier_erase (A := S₂.onTy τf) hP hAgreeArgty hΦ₂A hΦ₂τa
+      hR₂lc hτ₀_lc hR₂K hKΦ₂
+  have hAlc : (S₂.onTy τf).IsLC := Subst.onTy_lc hS₂lc hτf_lc
+  have hBlc : (Ty.arrow τa (Ty.fvar Φ₂)).IsLC := ContainsBvarsUpTo.arrow hτa_lc ContainsBvarsUpTo.fvar
+  obtain ⟨S₃, hS₃uni, hS₃K⟩ := UnifyRel.complete_K hAlc hBlc hUlc hU hUK
+  obtain ⟨R₃, hR₃, hR₃lc, hR₃K⟩ := UnifyRel.greatest_K_factors hS₃uni U hUlc hU hUK
+  have hAgree₃ : Subst.AgreesBelow Φ₂ R₂ (S₃ ++ R₃) := by
+    intro v hv
+    rw [Subst.onTy_append]
+    have h := hR₃ (Ty.fvar v)
+    rwa [hUbelow v hv] at h
+  have hAgree₂ : Subst.AgreesBelow Φ₁ R₁ ((S₂ ++ S₃) ++ R₃) :=
+    @Subst.AgreesBelow.trans_append Φ₁ Φ₂ R₁ S₂ R₂ S₃ R₃ hargle hAgreeArg hS₂_bel hAgree₃
+  have hAgree : Subst.AgreesBelow Φ S₀ ((S₁ ++ (S₂ ++ S₃)) ++ R₃) :=
+    @Subst.AgreesBelow.trans_append Φ Φ₁ S₀ S₁ R₁ (S₂ ++ S₃) R₃ hfle hAgreeF hf_sbel hAgree₂
+  have hAgreeOut : AgreesHM τ₀ (R₃.onTy (S₃.onTy (.fvar Φ₂))) := by
+    have h := hR₃ (Ty.fvar Φ₂)
+    rwa [hUΦ₂] at h
+  refine ⟨Φ₂ + 1, S₁ ++ S₂ ++ S₃, .app fOut argOut, S₃.onTy (.fvar Φ₂), R₃,
+    ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · exact .app hInferF hInferArg hS₃uni
+  · simpa [List.append_assoc] using hAgree
+  · exact hAgreeOut
+  · exact hR₃lc
+  · exact hR₃K
+  · intro p hp
+    rw [List.mem_append, List.mem_append] at hp
+    rcases hp with (hp | hp) | hp
+    · exact hS₁K p hp
+    · exact hS₂K p hp
+    · exact hS₃K p hp
 
 theorem Infer.complete_app {f arg : Expr}
     (ihf : Infer.CompleteAt f) (iharg : Infer.CompleteAt arg) :
