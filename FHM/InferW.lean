@@ -16845,6 +16845,91 @@ theorem UnifyRel.complete_K {K : List Nat} {a b : Ty} {U : Subst}
     ∃ S, UnifyRel a b S ∧ (∀ p ∈ S, p.1 ∉ K) :=
   (UnifyRel.complete_K_aux (2 * (U.onTy a).size + 1)).1 (by omega) ha hb hUlc hU hUK
 
+/-- Erase-level twin of `exists_app_unifier`: with `R₂`'s images agreeing with
+    `argTy` and `.arrow argTy τ₀` up to erasure, and `Φ₂` fresh for `A`/`τa`, the
+    explicit `[(Φ₂,.fvar W)] ++ R₂ ++ [(W,τ₀)]` (`W` fresh) unifies `A` against
+    `.arrow τa (.fvar Φ₂)`, is LC, fixes `K`, sends `Φ₂` to `τ₀`, and agrees with
+    `R₂` below `Φ₂`. -/
+lemma exists_app_unifier_erase {A τa τ₀ argTy : Ty} {Φ₂ : Nat} {R₂ : Subst} {K : List Nat}
+    (hP : AgreesHM (Ty.arrow argTy τ₀) (R₂.onTy A))
+    (htya : AgreesHM argTy (R₂.onTy τa))
+    (hΦ₂A : Φ₂ ∉ A.freeVars) (hΦ₂τa : Φ₂ ∉ τa.freeVars)
+    (hR₂ : ∀ p ∈ R₂, p.2.IsLC) (hτ₀LC : τ₀.IsLC)
+    (hR₂K : ∀ k ∈ K, R₂.onTy (.fvar k) = .fvar k) (hΦ₂K : ∀ k ∈ K, k < Φ₂) :
+    ∃ U, Unifies U A (Ty.arrow τa (Ty.fvar Φ₂)) ∧ (∀ p ∈ U, p.2.IsLC) ∧
+      (∀ k ∈ K, U.onTy (.fvar k) = .fvar k) ∧
+      U.onTy (Ty.fvar Φ₂) = τ₀ ∧
+      (∀ v, v < Φ₂ → U.onTy (.fvar v) = R₂.onTy (.fvar v)) := by
+  obtain ⟨W, hWge, hWfresh⟩ := exists_fresh_block
+    (R₂.map Prod.fst ++ R₂.flatMap (fun p => p.2.freeVars) ++ argTy.freeVars ++ τ₀.freeVars) Φ₂ 1
+  have hWdom : ∀ p ∈ R₂, p.1 ≠ W := by
+    intro p hp he
+    have := hWfresh p.1 (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_append_left _ (List.mem_map.mpr ⟨p, hp, rfl⟩))))
+    omega
+  have hWrange : ∀ p ∈ R₂, W ∉ p.2.freeVars := by
+    intro p hp hc
+    have := hWfresh W (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_append_right _ (List.mem_flatMap.mpr ⟨p, hp, hc⟩))))
+    omega
+  have hWargTy : W ∉ argTy.freeVars := fun hc => by
+    have := hWfresh W (List.mem_append_left _ (List.mem_append_right _ hc)); omega
+  have hWτ₀ : W ∉ τ₀.freeVars := fun hc => by
+    have := hWfresh W (List.mem_append_right _ hc); omega
+  have hWargTyE : W ∉ (Ty.eraseBounds argTy).freeVars := fun hc =>
+    hWargTy ((Ty.mem_freeVars_eraseBounds argTy W).mp hc)
+  have hWτ₀E : W ∉ (Ty.eraseBounds τ₀).freeVars := fun hc =>
+    hWτ₀ ((Ty.mem_freeVars_eraseBounds τ₀ W).mp hc)
+  have hR₂Wfvar : R₂.onTy (Ty.fvar W) = Ty.fvar W := by
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    exact hWdom p hp hc
+  obtain ⟨U, hUdef⟩ : ∃ U : Subst, U = [(Φ₂, Ty.fvar W)] ++ R₂ ++ [(W, τ₀)] := ⟨_, rfl⟩
+  have hsingle : ∀ (Z : Nat) (V y : Ty), Subst.onTy [(Z, V)] y = Ty.substFvar Z V y :=
+    fun _ _ _ => rfl
+  have hsubArrow : ∀ (Z : Nat) (V a b : Ty),
+      Ty.substFvar Z V (Ty.arrow a b) = Ty.arrow (Ty.substFvar Z V a) (Ty.substFvar Z V b) :=
+    fun _ _ _ _ => rfl
+  have hUonTy : ∀ x, U.onTy x = Ty.substFvar W τ₀ (R₂.onTy (Ty.substFvar Φ₂ (Ty.fvar W) x)) := by
+    intro x
+    rw [hUdef, Subst.onTy_append, Subst.onTy_append, hsingle, hsingle]
+  have e1 : Ty.substFvar Φ₂ (Ty.fvar W) (Ty.fvar Φ₂) = Ty.fvar W := by simp [Ty.substFvar]
+  have e2 : Ty.substFvar W τ₀ (Ty.fvar W) = τ₀ := by simp [Ty.substFvar]
+  have hUniL : Ty.eraseBounds (U.onTy A) = Ty.arrow (Ty.eraseBounds argTy) (Ty.eraseBounds τ₀) := by
+    rw [hUonTy, Ty.substFvar_fresh hΦ₂A, Ty.eraseBounds_substFvar]
+    rw [← hP, Ty.eraseBounds_arrow, hsubArrow, Ty.substFvar_fresh hWargTyE, Ty.substFvar_fresh hWτ₀E]
+  have hUniR : Ty.eraseBounds (U.onTy (Ty.arrow τa (Ty.fvar Φ₂))) = Ty.arrow (Ty.eraseBounds argTy) (Ty.eraseBounds τ₀) := by
+    rw [hUonTy, hsubArrow, Ty.substFvar_fresh hΦ₂τa, e1, Subst.onTy_arrow, hR₂Wfvar, hsubArrow, e2]
+    rw [Ty.eraseBounds_arrow, Ty.eraseBounds_substFvar]
+    rw [← htya, Ty.substFvar_fresh hWargTyE]
+  refine ⟨U, ?_, ?_, ?_, ?_, ?_⟩
+  · show Ty.eraseBounds (U.onTy A) = Ty.eraseBounds (U.onTy (Ty.arrow τa (Ty.fvar Φ₂)))
+    rw [hUniL, hUniR]
+  · rw [hUdef]
+    intro p hp
+    rcases List.mem_append.mp hp with hp' | hp'
+    · rcases List.mem_append.mp hp' with hp'' | hp''
+      · obtain rfl := List.mem_singleton.mp hp''
+        exact ContainsBvarsUpTo.fvar
+      · exact hR₂ p hp''
+    · obtain rfl := List.mem_singleton.mp hp'
+      exact hτ₀LC
+  · intro k hk
+    rw [hUonTy, Ty.substFvar_fresh (show Φ₂ ∉ (Ty.fvar k).freeVars by
+        simp only [Ty.freeVars, List.mem_singleton]; have := hΦ₂K k hk; omega), hR₂K k hk]
+    exact Ty.substFvar_fresh (show W ∉ (Ty.fvar k).freeVars by
+        simp only [Ty.freeVars, List.mem_singleton]; have := hWge; have := hΦ₂K k hk; omega)
+  · rw [hUonTy, e1, hR₂Wfvar, e2]
+  · intro v hv
+    have hWv : W ∉ (Ty.fvar v).freeVars := by
+      simp only [Ty.freeVars, List.mem_singleton]
+      omega
+    have hWR₂v : W ∉ (R₂.onTy (Ty.fvar v)).freeVars :=
+      Subst.not_mem_onTy_freeVars hWrange hWv
+    rw [hUonTy, Ty.substFvar_fresh (show Φ₂ ∉ (Ty.fvar v).freeVars by
+        simp only [Ty.freeVars, List.mem_singleton]; omega), Ty.substFvar_fresh hWR₂v]
+
 /-- Principality, application case (factored with named binders). Recurse on `f`
     then `arg`; the declarative typing yields a unifier of `S₂.onTy τf` and
     `arrow τa (.fvar Φ₂)` — exhibited explicitly as `[(Φ₂,.fvar W)] ++ R₂ ++ [(W,τ₀)]`
@@ -16872,7 +16957,16 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
 theorem Infer.complete_app {f arg : Expr}
     (ihf : Infer.CompleteAt f) (iharg : Infer.CompleteAt arg) :
     Infer.CompleteAt (.app f arg) := by
-  sorry -- PathR completeness
+  intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
+  simp only [Expr.eraseBounds] at hty
+  cases hty with
+  | app hf harg_ty =>
+    rename_i argTy
+    have hKf : ∀ y ∈ f.tyFreeVars, y ∈ K := fun y hy =>
+      hKtv y (by simpa [Expr.tyFreeVars] using (Or.inl hy))
+    have hKa : ∀ y ∈ arg.tyFreeVars, y ∈ K := fun y hy =>
+      hKtv y (by simpa [Expr.tyFreeVars] using (Or.inr hy))
+    exact Infer.complete_app_aux ihf iharg hwf hbelow hS₀ hKΦ hKf hKa hKfix hf harg_ty
 
 /-! ### Scheme weakening (for the `letIn` principality case)
 
