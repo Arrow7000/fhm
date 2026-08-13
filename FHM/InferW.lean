@@ -7964,6 +7964,34 @@ theorem Subst.onCtx_branchBindings {S : Subst} {ctorr : Ctor} {ta : List Ty} {ct
   simp only [Subst.onCtx, Subst.onEnv, List.map_append]
   rw [henv]
 
+/-- Erase-level twin of `Subst.onCtx_branchBindings`: `eraseBounds` pushes
+    straight through a branch's pattern-binding prefix, landing on the branch
+    context built from the ERASED constructor at the ERASED type args. No
+    hypotheses — it is pure commutation (`Ty.eraseBounds_openWith` plus
+    `Env.eraseBounds_map_mkTrivial`).
+
+    This is what lets the branch tier of Path R completeness line the algorithm's
+    body context (built from `freshBlock.map S₀.onTy`, residualised by `R₀`) up
+    against the declarative one (built from the `BranchCtorSpec`'s `tyArgs`):
+    rewrite with this, then discharge the remaining `ta.map Ty.eraseBounds =
+    tyArgs` from `customTy_unify_dodge`'s last clause. -/
+theorem Ctx.eraseBounds_branchBindings (ctorr : Ctor) (ta : List Ty) (ctx : Ctx) :
+    Ctx.eraseBounds { ctx with
+        env := (ctorr.contents.map (Ty.openWith ta)).map PolyTy.mkTrivial ++ ctx.env }
+      = { ctx.eraseBounds with
+        env := ((Ctor.eraseBounds ctorr).contents.map
+            (Ty.openWith (ta.map Ty.eraseBounds))).map PolyTy.mkTrivial
+          ++ ctx.eraseBounds.env } := by
+  have henv : Env.eraseBounds ((ctorr.contents.map (Ty.openWith ta)).map PolyTy.mkTrivial)
+      = ((Ctor.eraseBounds ctorr).contents.map
+          (Ty.openWith (ta.map Ty.eraseBounds))).map PolyTy.mkTrivial := by
+    simp only [Env.eraseBounds, List.map_map, Ctor.eraseBounds_contents]
+    apply List.map_congr_left
+    intro c hc
+    simp only [Function.comp_apply, PolyTy.eraseBounds_mkTrivial, Ty.eraseBounds_openWith]
+  simp only [Ctx.eraseBounds, Env.eraseBounds_append]
+  rw [henv]
+
 /-! ### Helper lemmas for the `letRec` soundness case -/
 
 /-- Reverse of mapping the right component of a `zip`: a member of `l.zip (r.map g)`
@@ -11596,6 +11624,28 @@ theorem Subst.AgreesBelow.trans_append {Φ Φ₁ : Nat} {S₀ S₁ R₁ S₂ R�
   apply AgreesHM.trans
   · exact Subst.onTy_congr_hm hag2 hbv
   · simp [AgreesHM, Subst.onTy_append]
+
+/-- Erase-level twin of `Subst.onCtx_congr`, and **the** move that makes the
+    Path R completeness statements *sufficient* rather than merely true:
+    substitutions that differ structurally but agree only up to erasure below `Φ`
+    produce EQUAL erased contexts, so an IH stated at `(…).eraseBounds` can be
+    re-entered at a new residual (design memo §4.1.2).
+
+    Was inlined verbatim in `Infer.complete_app_aux` (`hctxBridge`) and
+    `Infer.complete_letIn_aux` before being named here; the branch/match tier
+    needs it once per branch, where inlining it three times would not pay. -/
+theorem Subst.onCtx_congr_hm {Φ : Nat} {S T : Subst} {ctx : Ctx}
+    (hag : Subst.AgreesBelow Φ S T) (hb : CtxBelow Φ ctx) :
+    (S.onCtx ctx).eraseBounds = (T.onCtx ctx).eraseBounds := by
+  simp only [Ctx.eraseBounds, Subst.onCtx, Subst.onEnv, Env.eraseBounds, List.map_map]
+  congr 1
+  apply List.map_congr_left
+  intro M hM
+  cases M with
+  | mk n b =>
+    have hbody : Ty.eraseBounds (S.onTy b) = Ty.eraseBounds (T.onTy b) :=
+      Subst.onTy_congr_hm hag (hb ⟨n, b⟩ hM)
+    simp [Subst.onPolyTy, PolyTy.eraseBounds, hbody]
 
 
 /-! ### Principality (completeness) — per-expression statement + case lemmas
