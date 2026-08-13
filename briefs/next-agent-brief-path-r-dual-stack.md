@@ -161,6 +161,9 @@ hypothesis is not merely inconvenient, it is *unsuppliable*.
 | `InferBranches`/`InferRecGroup.complete` | un-erased declarative hypotheses | `40e61b1` |
 | `complete_lambda_aux` / `_ann_aux` | un-erased `hbodyty` | superseded by `*_erase` |
 | **`Subst.AgreesBelow`** | **structural `S.onTy v = T.onTy v` — FALSE** | `1c17c0a` |
+| `customTy_dodge_unifier` + restated `customTy_unify_dodge` | structural scrutinee premise `R.onTy scrutTy = customTy …` | `d6bb45f` |
+| `complete_letIn_ann_aux` | `hcofin` at un-erased `σ.openVars Xs` | `ae72f59` |
+| `letRecFused_body_retype` / `_residual_setup` | un-erased `TypeOfHM` + **structural `onCtx` equality**; proved but dead | flagged `97b0bad`, **not yet repaired** |
 
 ⚠️ **The `AgreesBelow` one is the cautionary tale.** The `948cb12` sweep repaired the
 *type* equation and declared the statements fixed — but the *substitution agreement*
@@ -254,12 +257,57 @@ SUPERSEDED in-file. Don't build on them; use the `*_erase` variants.
       second unification with the body residual `R₁`, and re-enters its own IH on
       `rest` because the composed residual still agrees with `R` below `Φ` up to
       erasure.
-   3. `Infer.complete_match_aux` / `complete_match` — need (2). A proof agent
-      correctly declined `complete_match_aux` for exactly this reason rather than
-      forcing it.
-   4. `complete_letIn` / `complete_letIn_ann_aux`, then `InferRecGroup.complete`
-      and `complete_letRec`, then `complete'` → `completeAt`/`complete`/
-      `principal`/`iff_typeable` → PhaseC-C2.
+   3. ~~`Infer.complete_match_aux` / `complete_match`~~ ✅ **done** (`285e11e`),
+      axiom-clean, together with the new `exists_residual_at_fresh`
+      (`exists_app_unifier_erase` minus its `Unifies` clause — the `match_` rule
+      allocates its result type as a fresh `.fvar Φ₁`, so the residual handed to
+      `InferBranches.complete` must send that variable to `τ₀`).
+
+      **The instructive part:** discharging `InferBranches.complete`'s branch
+      premise by rewriting the declarative hypothesis *wholesale* would need
+      `Ty.eraseBounds τ₀ = τ₀` and `Ty.eraseBounds scrutTy = scrutTy` — i.e. the
+      erase-normality restriction §4.1.2 says must not sit on the engine. It does
+      not hold: both are arbitrary declarative types. The proof instead inverts
+      each branch and **rebuilds it at the erased level through
+      `TypeOfHM.eraseBounds_of`** (the only direction that exists), re-wrapping
+      the ctor fields with `InstantiatesBy.forall2_eraseBounds` and the
+      erased-ctor identity from `CtorEnv.eraseBounds_get?`. Remember this move:
+      when an erase-level rewrite is one step short, rebuild rather than
+      strengthen.
+   4. ~~`complete_letIn` / `complete_letIn_ann_aux`~~ ✅ **done** (`97e12a3`),
+      axiom-clean — **after repairing `complete_letIn_ann_aux`'s statement**
+      (`ae72f59`), see the defect table below. `R₁` fixes `K ∪ Ys`, so it is a
+      witness unifier of `τ₁` against `σ.openVars Ys` at the erase level;
+      `complete_K` then yields `Schk` avoiding `K ∪ Ys`, which IS the first escape
+      condition, and the second is the docstring's `V`-fixes-`Ys` leak chase.
+   5. `InferRecGroup.complete` — farming. Not blocked on the two dead helpers
+      below: it concerns the group *given* specs, while they connect the outer
+      `letRec` node's declarative data to the algorithm's initial specs.
+   6. ⚠️ **`complete_letRec` IS BLOCKED — on statements, not proofs.**
+      `letRecFused_body_retype` and `letRecFused_residual_setup` are **proved**,
+      have **zero callers**, and are **stated structurally**, so the Path R caller
+      cannot use either (`97b0bad` marks both in-file). They predate the
+      `948cb12` / `40e61b1` sweeps and survived them for the usual reason: a level
+      defect is invisible until something calls the theorem.
+
+      * `letRecFused_body_retype` types the un-erased `body` in an un-erased
+        context, and carries `hctxS₁ : R₁.onCtx (S₁.onCtx ctx) = S₀.onCtx ctx` — a
+        **structural context equality**, exactly what `Subst.AgreesBelow` was
+        weakened away from in `1c17c0a` as FALSE. The Path R form is
+        `Subst.onCtx_congr_hm`'s erase-level equality.
+      * `letRecFused_residual_setup`'s `MonoTyped` / `PolyTyped` hypotheses sit at
+        un-erased `(S₀.onCtx ctx)` over un-erased `bindings`; both output typings
+        are un-erased.
+
+      They were **not deleted** — unlike the `054e0d8` casualties they are true,
+      and their proof bodies are the real work. `RecSpecs.MonoTyped`/`PolyTyped`
+      are relation-parametric, so the restatement re-instantiates them at erased
+      ctx/bindings/types. **Sequencing advice:** write `complete_letRec`'s skeleton
+      FIRST and read off the exact shapes its inversion produces, then restate the
+      helpers to match — do not guess the target form, or you will repair to the
+      wrong level twice.
+   7. Then `complete'` → `completeAt`/`complete`/`principal`/`iff_typeable` →
+      PhaseC-C2.
 
    Every one of these concludes `AgreesHM`, so the induction never needs to
    recover exact equality — do not reintroduce a structural pin.
