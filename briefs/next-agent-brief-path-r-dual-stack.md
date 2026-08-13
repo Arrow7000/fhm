@@ -160,6 +160,15 @@ hypothesis is not merely inconvenient, it is *unsuppliable*.
 | 3 OptionA unify statements | list branch structural, Ty branch erase-level | `e3f12ff` |
 | `InferBranches`/`InferRecGroup.complete` | un-erased declarative hypotheses | `40e61b1` |
 | `complete_lambda_aux` / `_ann_aux` | un-erased `hbodyty` | superseded by `*_erase` |
+| **`Subst.AgreesBelow`** | **structural `S.onTy v = T.onTy v` — FALSE** | `1c17c0a` |
+
+⚠️ **The `AgreesBelow` one is the cautionary tale.** The `948cb12` sweep repaired the
+*type* equation and declared the statements fixed — but the *substitution agreement*
+in the very same conjunction was false for exactly the same reason, and was looked
+straight past. It stayed hidden because every case proved up to that point returns
+`S = []` with `R := S₀`, making the conjunct reflexive; **only cases that actually
+unify reach it**. Seven axiom-clean theorems were resting on a definition false in
+general. When you repair one conjunct of a statement, check *every* conjunct.
 
 **Checklist when authoring a Path R statement:**
 1. Does every `TypeOf*` hypothesis sit at `(…).eraseBounds` on `….eraseBounds`?
