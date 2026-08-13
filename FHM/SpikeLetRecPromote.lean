@@ -1031,6 +1031,548 @@ theorem T1_retarget_transport
             hwf.length, Nat.add_comm] using hb
   exact H h [] (by simp)
 
+/-! ### T1' machinery — the forgetting direction
+
+`T1` transports a derivation UP (mono env, `tyArgs = []` → scheme env, `tyArgs = Vs`). The
+converse — the `T3'` forgetting map — must go DOWN: the scheme env's `var` rule pins
+`tyArgs = Vs` (the term is the retarget), the instantiation is deterministic (`det_same`), so
+each use collapses to the shared monotype and the `var` becomes `tyArgs = []`. -/
+
+/-- Same-`tyArgs` instantiation is deterministic: one scheme body instantiated at the same
+    arguments gives one result type. No boundedness side condition (unlike `det_agree`) — the
+    recursion is pointwise on the proof. -/
+theorem InstantiatesBy.det_same {tyArgs : List Ty} : ∀ {ty t1 t2 : Ty},
+    InstantiatesBy tyArgs ty t1 → InstantiatesBy tyArgs ty t2 → t1 = t2 := by
+  intro ty
+  induction ty using Ty.rec_strong with
+  | prim p => intro t1 t2 h1 h2; cases h1; cases h2; rfl
+  | fvar n => intro t1 t2 h1 h2; cases h1; cases h2; rfl
+  | bvar i =>
+      intro t1 t2 h1 h2
+      cases h1 with
+      | bvar hs1 => cases h2 with | bvar hs2 => exact Option.some.inj (hs1.symm.trans hs2)
+  | arrow a b iha ihb =>
+      intro t1 t2 h1 h2
+      cases h1 with
+      | arrow h1a h1b =>
+          cases h2 with
+          | arrow h2a h2b => rw [iha h1a h2a, ihb h1b h2b]
+  | customTy nm tys ih =>
+      intro t1 t2 h1 h2
+      cases h1 with
+      | customTy hf1 =>
+          cases h2 with
+          | customTy hf2 =>
+              congr 1
+              rename_i inst1 inst2
+              have hdet : ∀ (i1 i2 : List Ty),
+                  List.Forall₂ (InstantiatesBy tyArgs) tys i1 →
+                  List.Forall₂ (InstantiatesBy tyArgs) tys i2 → i1 = i2 := by
+                intro i1 i2 hg1 hg2
+                apply List.ext_getElem
+                · exact hg1.length_eq.symm.trans hg2.length_eq
+                · intro i hi1 hi2
+                  have hiTys : i < tys.length := by
+                    rw [← hg1.length_eq] at hi1
+                    exact hi1
+                  have h1 : InstantiatesBy tyArgs (tys[i]) (i1[i]) :=
+                    List.Forall₂.get hg1 hiTys hi1
+                  have h2 : InstantiatesBy tyArgs (tys[i]) (i2[i]) :=
+                    List.Forall₂.get hg2 hiTys hi2
+                  exact ih (tys[i]) (List.getElem_mem hiTys) h1 h2
+              exact hdet inst1 inst2 hf1 hf2
+  | bl lo hi e ih =>
+      intro t1 t2 h1 h2
+      cases h1 with
+      | bl he1 => cases h2 with | bl he2 => rw [ih he1 he2]
+
+/-- Iterated `substFvar` by LC replacements preserves local-closedness (public copy of the
+    private `Ty.IsLC.substFvars`). -/
+theorem Ty.substFvars_lc {s : List (Nat × Ty)} {τ : Ty}
+    (hs : ∀ p ∈ s, p.2.IsLC) (hτ : τ.IsLC) : (Ty.substFvars s τ).IsLC := by
+  induction s generalizing τ with
+  | nil => exact hτ
+  | cons hd tl ih =>
+      obtain ⟨Z, U⟩ := hd
+      simp only [Ty.substFvars]
+      exact ih (fun p hp => hs p (List.mem_cons_of_mem _ hp))
+        (Ty.IsLC.substFvar (hs (Z, U) List.mem_cons_self) hτ)
+
+/-- `renameG` (a renaming to fresh `fvar`s) preserves local-closedness. Public copy of the
+    private `Ty.renameG_isLC` (`Core.lean:5477`), which `T3'` needs for the forgetting map's
+    `hmonoLC` hypothesis. -/
+theorem Ty.renameG_lc {G Xs : List Nat} {τ : Ty} (hτ : τ.IsLC) : (Ty.renameG G Xs τ).IsLC := by
+  unfold Ty.renameG
+  exact Ty.substFvars_lc (fun p hp => by
+    obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+    rw [← hx]; exact .fvar) hτ
+
+/-- The retargeted image of a branch is a member of the retargeted branch list. -/
+theorem retargetBranches_mem_map {n b : Nat} {Vs : List Ty}
+    {brs : List (MatchPattern × Expr)} {pat : MatchPattern} {body : Expr}
+    (h : (pat, body) ∈ brs) :
+    (pat, retargetVars n Vs (b + pat.bindCount) body) ∈ retargetBranches n Vs b brs := by
+  induction brs with
+  | nil => exact absurd h List.not_mem_nil
+  | cons hd tl ih =>
+      cases hd with
+      | mk pat' body' =>
+          simp only [retargetBranches, List.mem_cons] at h ⊢
+          cases h with
+          | inl heq =>
+              simp only [Prod.mk.injEq] at heq
+              obtain ⟨rfl, rfl⟩ := heq
+              exact Or.inl rfl
+          | inr h' => exact Or.inr (ih h')
+
+/-- The retargeted image of a zip member is a member of the retargeted-zip. -/
+theorem retargetGroup_zip_mem_map {n b : Nat} {Vs : List Ty} :
+    ∀ (bs : List Expr) (specs : List RecSpec) (p : Expr × RecSpec),
+      p ∈ bs.zip specs →
+        ∃ q, q ∈ (retargetGroup n Vs b bs).zip specs ∧ q.1 = retargetVars n Vs b p.1 ∧ q.2 = p.2 := by
+  intro bs specs p hp
+  revert hp specs
+  induction bs with
+  | nil =>
+      intro specs hp
+      simp [List.zip_nil_left] at hp
+  | cons e tl ih =>
+      intro specs hp
+      cases specs with
+      | nil =>
+          simp [List.zip_nil_right] at hp
+      | cons s ss =>
+          simp only [List.zip_cons_cons, List.mem_cons] at hp
+          rcases hp with hp | hp
+          · subst hp
+            exact ⟨(retargetVars n Vs b e, s), List.mem_cons_self .., rfl, rfl⟩
+          · rcases ih ss hp with ⟨q, hq, h1, h2⟩
+            exact ⟨q, List.mem_cons_of_mem _ hq, h1, h2⟩
+
+/-- **T1' — the forgetting direction.** A `TypeOfElabHM` derivation over a promoted (scheme) env
+    prefix, on a term whose group-window `var`s carry `Vs`, degrades to a derivation over the
+    same source term with those `var`s carrying `[]`, in the monomorphic env prefix — provided
+    each scheme instantiated at `Vs` yields the monotype (`hinst`) and the monotypes are locally
+    closed. The exact reverse of `T1_retarget_transport`; this is the `T3'` forgetting map.
+
+    Proof mirrors `T1` case-by-case, with the roles of the env prefixes swapped and an extra
+    hypothesis threading the SOURCE term `e₁` (the hypothesis derivation is over the retarget
+    of `e₁`), so the `var` case knows the pinned `tyArgs` are `Vs`. -/
+theorem retargetUntransport
+    {ctors : CtorEnv} {env : Env} {e : Expr} {τ : Ty}
+    {monos : List Ty} {Ms : List PolyTy} {Vs : List Ty}
+    (hmonoLC : ∀ μ ∈ monos, μ.IsLC)
+    (hVsLC : ∀ V ∈ Vs, V.IsLC)
+    (hinst : List.Forall₂
+      (fun (M : PolyTy) (μ : Ty) => M.paramCount = Vs.length ∧ M.InstantiatesTo Vs μ) Ms monos)
+    (h : TypeOfElabHM ⟨Ms ++ env, ctors⟩ (retargetVars Ms.length Vs 0 e) τ) :
+    TypeOfElabHM ⟨monos.map PolyTy.mkTrivial ++ env, ctors⟩ (retargetVars Ms.length [] 0 e) τ := by
+  have hlen : Ms.length = monos.length := List.Forall₂.length_eq hinst
+  have H : ∀ {ctx : Ctx} {e₀ : Expr} {τ₀ : Ty}, TypeOfElabHM ctx e₀ τ₀ →
+      ∀ (ep : Env) (e₁ : Expr), ctx.env = ep ++ Ms ++ env →
+      e₀ = retargetVars Ms.length Vs ep.length e₁ →
+      TypeOfElabHM ⟨ep ++ monos.map PolyTy.mkTrivial ++ env, ctx.ctors⟩
+        (retargetVars Ms.length [] ep.length e₁) τ₀ := by
+    intro ctx e₀ τ₀ hd
+    induction hd using TypeOfElabHM.rec_strong with
+    | primLitUnit =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | primLit p =>
+            simp only [retargetVars] at heq'
+            injection heq' with hp
+            subst hp
+            exact .primLitUnit
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | primLitInt =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | primLit p =>
+            simp only [retargetVars] at heq'
+            injection heq' with hp
+            subst hp
+            exact .primLitInt
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | primLitNat =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | primLit p =>
+            simp only [retargetVars] at heq'
+            injection heq' with hp
+            subst hp
+            exact .primLitNat
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | primLitChar =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | primLit p =>
+            simp only [retargetVars] at heq'
+            injection heq' with hp
+            subst hp
+            exact .primLitChar
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | primBinOpIntAdd =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | primBinOp op =>
+            simp only [retargetVars] at heq'
+            injection heq' with hop
+            subst hop
+            exact .primBinOpIntAdd
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | primBinOpIntSub =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | primBinOp op =>
+            simp only [retargetVars] at heq'
+            injection heq' with hop
+            subst hop
+            exact .primBinOpIntSub
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | primBinOpIntLt htrue hfalse ihtrue ihfalse =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | primBinOp op =>
+            simp only [retargetVars] at heq'
+            injection heq' with hop
+            subst hop
+            exact .primBinOpIntLt (ihtrue ep (.ctor ⟨"True"⟩) heq (by rfl))
+              (ihfalse ep (.ctor ⟨"False"⟩) heq (by rfl))
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | primBinOpCharLt htrue hfalse ihtrue ihfalse =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | primBinOp op =>
+            simp only [retargetVars] at heq'
+            injection heq' with hop
+            subst hop
+            exact .primBinOpCharLt (ihtrue ep (.ctor ⟨"True"⟩) heq (by rfl))
+              (ihfalse ep (.ctor ⟨"False"⟩) heq (by rfl))
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | @lambda paramTy ann bodyCtx ctx body bodyTy hpc hann heqctx hbody ihbody =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | lambda ann' body' =>
+            simp only [retargetVars] at heq'
+            injection heq' with hann' hbody'
+            subst hann'
+            refine TypeOfElabHM.lambda hpc hann rfl ?_
+            have hbc := ihbody (PolyTy.mkTrivial paramTy :: ep) body'
+              (by simp only [heqctx, heq, List.cons_append, List.append_assoc])
+              (by rw [hbody']; simp)
+            simpa only [heqctx, List.cons_append, List.append_assoc, List.length_cons] using hbc
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | app hf hinput ihf ihinput =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | app f' arg' =>
+            simp only [retargetVars] at heq'
+            injection heq' with hf' harg'
+            exact .app (ihf ep f' heq hf') (ihinput ep arg' heq harg')
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | @letIn ann ctx boundExpr bodyCtx body bodyTy M L hwf hann hcofin heqctx hbody ihcofin ihbody =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | letIn ann' boundExpr' body' =>
+            simp only [retargetVars] at heq'
+            injection heq' with hann' hbound' hbody'
+            subst hann'
+            refine TypeOfElabHM.letIn (L := L) hwf hann ?_ rfl ?_
+            · intro Xs hf
+              have hc := ihcofin Xs hf ep (Expr.openBoundTyVars ann Xs boundExpr')
+                (by simp only [heq, List.append_assoc])
+                (by
+                  rw [hbound']
+                  exact (retargetVars_openBoundTyVars (hVsLC := hVsLC)).symm)
+              rw [← retargetVars_openBoundTyVars (Vs := ([] : List Ty))
+                (hVsLC := by intro V hV; simp at hV)]
+              exact hc
+            · have hb := ihbody (M :: ep) body'
+                (by simp only [heqctx, heq, List.cons_append, List.append_assoc])
+                (by rw [hbody']; simp)
+              simpa only [heqctx, List.cons_append, List.append_assoc, List.length_cons] using hb
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | @var dbl polyTy tyArgs ty ctx hlook hlc hinst' =>
+        intro ep e₁ heq heq'
+        rw [heq] at hlook
+        cases e₁ with
+        | var dbl' tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ dbl' ∧ dbl' < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'
+              injection heq' with hdbl htyArgs
+              subst hdbl
+              subst htyArgs
+              have hwin_mono : ep.length ≤ dbl ∧ dbl < ep.length + monos.length := by
+                rcases hwin with ⟨h1, h2⟩
+                exact ⟨h1, by simpa [hlen] using h2⟩
+              let k : Nat := dbl - ep.length
+              have hk : k < monos.length := by
+                dsimp [k]
+                omega
+              have hkM : k < Ms.length := by
+                rw [hlen]
+                exact hk
+              have hdbl : dbl - ep.length = k := rfl
+              have hlook_prom : (ep ++ Ms ++ env)[dbl]? = some (Ms[k]) := by
+                rw [List.append_assoc, List.getElem?_append_right (by omega : ep.length ≤ dbl)]
+                rw [hdbl]
+                rw [List.getElem?_append_left hkM]
+                rw [List.getElem?_eq_getElem hkM]
+              have hpoly_eq : polyTy = Ms[k] :=
+                Option.some.inj (hlook.symm.trans hlook_prom)
+              subst hpoly_eq
+              have hkMap : k < (monos.map PolyTy.mkTrivial).length := by
+                simpa using hk
+              have hlook_mono : (ep ++ monos.map PolyTy.mkTrivial ++ env)[dbl]? =
+                  some (PolyTy.mkTrivial (monos[k])) := by
+                rw [List.append_assoc, List.getElem?_append_right (by omega : ep.length ≤ dbl)]
+                rw [hdbl]
+                rw [List.getElem?_append_left hkMap]
+                rw [List.getElem?_eq_getElem hkMap]
+                simp
+              have hrel := List.Forall₂.get hinst hkM hk
+              have htyEq : ty = monos[k] :=
+                InstantiatesBy.det_same (ty := Ms[k].body)
+                  (by simpa [PolyTy.InstantiatesTo] using hinst')
+                  (by simpa [PolyTy.InstantiatesTo] using hrel.2)
+              simp only [retargetVars]
+              rw [if_pos hwin]
+              refine TypeOfElabHM.var (polyTy := PolyTy.mkTrivial (monos[k])) ?_ ?_ ?_
+              · show (ep ++ monos.map PolyTy.mkTrivial ++ env)[dbl]? = some (PolyTy.mkTrivial (monos[k]))
+                exact hlook_mono
+              · show Ty.AreLC (PolyTy.mkTrivial (monos[k])).paramCount []
+                simp [Ty.AreLC, PolyTy.mkTrivial]
+              · show (PolyTy.mkTrivial (monos[k])).InstantiatesTo [] ty
+                rw [htyEq]
+                show InstantiatesBy [] (monos[k]) (monos[k])
+                exact InstantiatesBy.refl_of_closed (hmonoLC (monos[k]) (List.getElem_mem hk))
+            · rw [if_neg hwin] at heq'
+              injection heq' with hdbl htyArgs
+              subst hdbl
+              subst htyArgs
+              have hnotwin : ¬ (ep.length ≤ dbl ∧ dbl < ep.length + monos.length) := by
+                intro h
+                rcases h with ⟨h1, h2⟩
+                exact hwin ⟨h1, by simpa [hlen] using h2⟩
+              by_cases hlt : dbl < ep.length
+              · simp only [retargetVars]
+                rw [if_neg hwin]
+                refine TypeOfElabHM.var ?_ hlc hinst'
+                show (ep ++ monos.map PolyTy.mkTrivial ++ env)[dbl]? = some polyTy
+                rw [List.append_assoc, List.getElem?_append_left hlt]
+                rw [List.append_assoc, List.getElem?_append_left hlt] at hlook
+                exact hlook
+              · have hle : ep.length ≤ dbl := by omega
+                have hnlt : ¬ dbl < ep.length + Ms.length := by
+                  intro h
+                  exact hwin ⟨hle, h⟩
+                have hge : ep.length + Ms.length ≤ dbl := by omega
+                have hge_mono : ep.length + monos.length ≤ dbl := by simpa [hlen] using hge
+                simp only [retargetVars]
+                rw [if_neg hwin]
+                refine TypeOfElabHM.var ?_ hlc hinst'
+                show (ep ++ monos.map PolyTy.mkTrivial ++ env)[dbl]? = some polyTy
+                rw [List.append_assoc, List.getElem?_append_right hle]
+                rw [List.append_assoc, List.getElem?_append_right hle] at hlook
+                have hdM : Ms.length ≤ dbl - ep.length := by omega
+                have hdm : monos.length ≤ dbl - ep.length := by omega
+                have hdm' : (monos.map PolyTy.mkTrivial).length ≤ dbl - ep.length := by
+                  simpa [List.length_map] using hdm
+                rw [List.getElem?_append_right hdm']
+                rw [show (dbl - ep.length) - (monos.map PolyTy.mkTrivial).length
+                    = (dbl - ep.length) - monos.length from by simp]
+                rw [List.getElem?_append_right hdM] at hlook
+                have hidx : (dbl - ep.length) - Ms.length = (dbl - ep.length) - monos.length := by
+                  rw [hlen]
+                rw [hidx] at hlook
+                exact hlook
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | ctor hlook htyargs hinst' =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | ctor name =>
+            simp only [retargetVars] at heq'
+            injection heq' with hname
+            subst hname
+            exact .ctor hlook htyargs hinst'
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | @match_ ctx scrutinee scrutTy branches resultTy hscrut hne hbrs ihscrut ihbrs =>
+        intro ep e₁ heq heq'
+        cases e₁ with
+        | match_ scrut' branches' =>
+            simp only [retargetVars] at heq'
+            injection heq' with hsc heqbr
+            have hne' : branches' ≠ [] := by
+              intro hnil
+              subst hnil
+              simp [retargetBranches] at heqbr
+              exact hne heqbr
+            refine TypeOfElabHM.match_ (ihscrut ep scrut' heq hsc) (retargetBranches_ne_nil hne') ?_
+            intro br' hmem'
+            rcases retargetBranches_mem branches' br' hmem' with ⟨pat, body, hmemb, heqbr'⟩
+            subst heqbr'
+            have hmemVs : (pat, retargetVars Ms.length Vs (ep.length + pat.bindCount) body) ∈ branches := by
+              rw [heqbr]
+              exact retargetBranches_mem_map (n := Ms.length) (b := ep.length) (Vs := Vs) hmemb
+            rcases ihbrs (pat, retargetVars Ms.length Vs (ep.length + pat.bindCount) body) hmemVs with
+              ⟨ctorr, c, m, tyArgs, instContents, hpat, hspec, hbody, ihbody⟩ |
+              ⟨hpat, hbody, ihbody⟩
+            · subst hpat
+              refine TypeOfElabMatchBranch.mk hspec rfl ?_
+              have hlenInst : instContents.length = (MatchPattern.named c m).bindCount := by
+                rw [hspec.fields.length_eq.symm, hspec.bind_count]
+                rfl
+              have hbc := ihbody (instContents.map PolyTy.mkTrivial ++ ep) body
+                (by simp only [List.append_assoc, heq])
+                (by simp [hlenInst, List.length_append, List.length_map, Nat.add_comm])
+              simpa only [List.append_assoc, List.length_append, List.length_map,
+                hlenInst, Nat.add_comm] using hbc
+            · subst hpat
+              have hw : TypeOfElabHM ⟨ep ++ monos.map PolyTy.mkTrivial ++ env, ctx.ctors⟩
+                  (retargetVars Ms.length [] (ep.length + (MatchPattern.wildcard).bindCount) body) resultTy := by
+                simpa [MatchPattern.bindCount] using ihbody ep body heq
+                  (by simp [MatchPattern.bindCount])
+              exact TypeOfElabMatchBranch.wildcard hw
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+    | @letRec ctx bodyCtx anns bindings specs G L body ρ hwf hmono hpoly heqctx hbody ihmono ihpoly ihbody =>
+        intro ep e₁ heq heq'
+        subst heqctx
+        cases e₁ with
+        | letRec anns' bindings' body' =>
+            simp only [retargetVars] at heq'
+            injection heq' with hanns hbindings hbody
+            subst hanns
+            have hlenb : bindings'.length = specs.length := by
+              calc
+                bindings'.length = (retargetGroup Ms.length Vs (ep.length + bindings'.length) bindings').length :=
+                  (retargetGroup_length (n := Ms.length) (Vs := Vs) (b := ep.length + bindings'.length) bindings').symm
+                _ = bindings.length := (congrArg List.length hbindings).symm
+                _ = specs.length := hwf.length
+            refine TypeOfElabHM.letRec (specs := specs) (G := G) (L := L) ?_ ?_ ?_ rfl ?_
+            · exact ⟨hwf.anns_eq, by
+                rw [retargetGroup_length (n := Ms.length) (Vs := ([] : List Ty))
+                  (b := ep.length + bindings'.length) bindings']
+                exact hlenb, hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩
+            · intro Xs hf p hp τ hτ
+              rcases retargetGroup_zip_mem (Vs := []) (b := ep.length + bindings'.length)
+                  bindings' specs p hp with ⟨q, hq, hp1, hp2⟩
+              rw [hp2] at hτ
+              rcases retargetGroup_zip_mem_map (n := Ms.length) (Vs := Vs)
+                  (b := ep.length + bindings'.length) bindings' specs q hq with ⟨p', hp', hp1', hp2'⟩
+              rw [← hbindings] at hp'
+              rw [← hp2'] at hτ
+              have hc := ihmono Xs hf p' hp' τ hτ
+              have hcc := hc (specs.map (RecSpec.rhsEntry G Xs) ++ ep) q.1
+                (by simp only [RecSpecs.rhsCtx, heq, List.append_assoc])
+                (by
+                  rw [hp1']
+                  rw [hlenb]
+                  simp [List.length_append, List.length_map, Nat.add_comm])
+              rw [hp1]
+              simpa only [RecSpecs.rhsCtx, List.append_assoc, List.length_append, List.length_map,
+                hlenb, Nat.add_comm] using hcc
+            · intro Xs hf p hp σ hσ Ys hfY
+              rcases retargetGroup_zip_mem (Vs := []) (b := ep.length + bindings'.length)
+                  bindings' specs p hp with ⟨q, hq, hp1, hp2⟩
+              rw [hp2] at hσ
+              rcases retargetGroup_zip_mem_map (n := Ms.length) (Vs := Vs)
+                  (b := ep.length + bindings'.length) bindings' specs q hq with ⟨p', hp', hp1', hp2'⟩
+              rw [← hbindings] at hp'
+              rw [← hp2'] at hσ
+              have hc := ihpoly Xs hf p' hp' σ hσ Ys hfY
+              have hcc := hc (specs.map (RecSpec.rhsEntry G Xs) ++ ep) (q.1.openTyVars Ys)
+                (by simp only [RecSpecs.rhsCtx, heq, List.append_assoc])
+                (by
+                  rw [hp1']
+                  rw [retargetVars_openTyVars (hVsLC := hVsLC)]
+                  rw [hlenb]
+                  simp [List.length_append, List.length_map, Nat.add_comm])
+              rw [hp1]
+              rw [retargetVars_openTyVars (hVsLC := by intro V hV; simp at hV)]
+              simpa only [RecSpecs.rhsCtx, List.append_assoc, List.length_append, List.length_map,
+                hlenb, Nat.add_comm] using hcc
+            · have hb := ihbody (specs.map (RecSpec.bodyScheme G) ++ ep) body'
+                (by simp only [RecSpecs.bodyCtx, heq, List.append_assoc])
+                (by
+                  rw [hbody]
+                  rw [hlenb]
+                  simp [List.length_append, List.length_map, Nat.add_comm])
+              simpa only [RecSpecs.bodyCtx, List.append_assoc, List.length_append, List.length_map,
+                hlenb, Nat.add_comm] using hb
+        | var i tyArgs₁ =>
+            simp only [retargetVars] at heq'
+            by_cases hwin : ep.length ≤ i ∧ i < ep.length + Ms.length
+            · rw [if_pos hwin] at heq'; cases heq'
+            · rw [if_neg hwin] at heq'; cases heq'
+        | _ => simp only [retargetVars] at heq'; cases heq'
+  exact H h [] e (by simp) (by rfl)
+
 /-! ### T2 machinery -/
 
 /-- A member of a zip is the pair of the two lists' `getElem`s at a common index. -/
@@ -1165,6 +1707,342 @@ theorem T2_monoTyped_to_polyTyped
   rw [promoteScheme_openVars (hmonoLC (monos[k]) hmonoLCmem) hGnodup hfYs'.length hdisj]
   simpa only [RecSpecs.rhsCtx, RecSpec.rhsEntry, List.map_map, List.length_map] using hT1
 
+/-! ## T3 — the CONVERSE, and whether the §2.2 payoff is real
+
+`T2` promotes mono → poly. The headline reason to do this refactor is §2.2 of the brief: with
+elaboration shape-preserving, `Infer.sourceSound` should stop being a second 656-line induction
+and become a corollary of `Infer.sound` via a decoration-forgetting faithfulness lemma
+`Decorates e e' → TypeOfElabHM ctx e' τ → TypeOfHM ctx e τ`.
+
+**That lemma needs the CONVERSE of `T2` at `letRec`, and the converse looks false.** The source
+node keeps `anns = none` for unannotated members, and `RecSpecs.WF.anns_eq` forces those specs
+to be `.mono` — so a source derivation *must* use `MonoTyped`, where every sibling use sits at
+one shared monotype. An arbitrary elaborated derivation of the promoted (all-`poly`) node may
+instantiate a sibling at *different* types in different places, which `MonoTyped` cannot
+express. Promotion is sound because we *construct* the poly derivation from a mono one; nothing
+constrains an arbitrary one.
+
+If that is right, the §2.2 payoff needs qualifying: `sourceSound` would still need
+`Infer`-specific information at `letRec` rather than falling out of a pure term relation. It
+may still be much cheaper than today (same tree shape), but "it becomes a corollary" would be
+too strong.
+
+`T3` states the converse directly. **A failure here is the expected and useful outcome** — the
+asymmetry between `T2` (proved) and `T3` is itself the finding. Do not contort to force it. -/
+
+/-- **T3 — expected to FAIL.** The converse of `T2`: does an arbitrary `PolyTyped` derivation
+    at the promoted schemes yield the `MonoTyped` derivation the *source* node requires?
+
+    If this is false, report the obstruction precisely: the case, the goal, and whether the
+    blocker is what §T3's docstring predicts (a sibling instantiated at two different types,
+    inexpressible in `MonoTyped`). A concrete counterexample would be ideal but the obstruction
+    alone is enough. -/
+theorem T3_polyTyped_to_monoTyped
+    {ctx : Ctx} {bindings bindings' : List Expr} {monos : List Ty} {G L : List Nat}
+    (hGnodup : G.Nodup)
+    (hmonoLC : ∀ μ ∈ monos, μ.IsLC)
+    (hlen : bindings.length = monos.length)
+    (hpoly : RecSpecs.PolyTyped TypeOfElabHM ctx bindings'
+      (monos.map (fun μ => RecSpec.poly (promoteScheme G μ))) [] (L ++ G))
+    (hopen : ∀ Ys, FreshNames (L ++ G) G.length Ys →
+      ∀ p ∈ bindings.zip bindings',
+        p.2.openTyVars Ys
+          = retargetVars monos.length (Ys.map Ty.fvar) 0 p.1) :
+    RecSpecs.MonoTyped TypeOfElabHM ctx bindings (monos.map RecSpec.mono) G (L ++ G) := by
+  sorry
+
+/-! ## T3' — the converse, with the hypotheses `T3` was missing
+
+The `T3` probe found `T3` false, but for two **statement bugs of mine**, not for the predicted
+reason:
+
+- **(A)** nothing related `bindings'.length` to `bindings.length`, so `hpoly` could not even be
+  indexed at member `k`;
+- **(B)** `retargetVars` *overwrites* `tyArgs`, so `hopen` left the **source**'s group-use
+  `tyArgs` unconstrained — a source binding carrying `.var 1 [int]` maps to the same retargeted
+  term as one carrying `.var 1 []`, but only the latter can be `MonoTyped` (arity 0).
+
+More importantly it refuted the predicted obstruction. I argued an arbitrary poly derivation
+could instantiate a sibling at different types at different sites, which `MonoTyped` cannot
+express. **It cannot** — `TypeOfElabHM` reads `tyArgs` from the *term*, `hopen` pins the term
+to be the retarget, and `retargetVars` assigns *every* in-window use the *same* `Vs`. So the
+term itself forces one shared instance per sibling, which is exactly what `MonoTyped` says.
+Type-passing — the feature that causes so much of the complexity elsewhere — is what rescues
+this.
+
+`T3'` restores both hypotheses. **If it holds, the §2.2 payoff is real** and `Infer.sourceSound`
+can become a corollary via a decoration-forgetting lemma, provided that lemma's `Decorates`
+relation is *tight* at `letRec` (uniform `tyArgs` on group-member uses — which is what `Infer`
+produces). (B) is expressed with the existing machinery: retargeting to `[]` is the identity
+exactly when every in-window use already carries `[]`. -/
+
+theorem T3'_polyTyped_to_monoTyped
+    {ctx : Ctx} {bindings bindings' : List Expr} {monos : List Ty} {G L : List Nat}
+    (hGnodup : G.Nodup)
+    (hmonoLC : ∀ μ ∈ monos, μ.IsLC)
+    (hlen : bindings.length = monos.length)
+    (hlen' : bindings'.length = bindings.length)
+    (hsrcNil : ∀ e ∈ bindings, retargetVars monos.length [] 0 e = e)
+    (hpoly : RecSpecs.PolyTyped TypeOfElabHM ctx bindings'
+      (monos.map (fun μ => RecSpec.poly (promoteScheme G μ))) [] (L ++ G))
+    (hopen : ∀ Ys, FreshNames (L ++ G) G.length Ys →
+      ∀ p ∈ bindings.zip bindings',
+        p.2.openTyVars Ys
+          = retargetVars monos.length (Ys.map Ty.fvar) 0 p.1) :
+    RecSpecs.MonoTyped TypeOfElabHM ctx bindings (monos.map RecSpec.mono) G (L ++ G) := by
+  intro Xs hfXs p hp τ hτ
+  rcases List.zip_mem_getElem hp with ⟨k, hkBind, hkSpec, hp1, hp2⟩
+  have hkMonos : k < monos.length := by simpa [List.length_map] using hkSpec
+  have hkbs' : k < bindings'.length := by rw [hlen']; exact hkBind
+  have hτk : τ = monos[k] := by
+    apply RecSpec.mono.inj
+    calc
+      .mono τ = p.2 := hτ.symm
+      _ = (monos.map RecSpec.mono)[k] := hp2
+      _ = .mono (monos[k]) := by simp
+  subst hτk
+  have hmemMonos : monos[k] ∈ monos := List.getElem_mem hkMonos
+  have hkPoly : k < (monos.map (fun μ => RecSpec.poly (promoteScheme G μ))).length := by
+    simpa [List.length_map] using hkMonos
+  have hpairPoly : (bindings'[k], RecSpec.poly (promoteScheme G (monos[k]))) ∈
+      bindings'.zip (monos.map (fun μ => RecSpec.poly (promoteScheme G μ))) := by
+    simpa [List.getElem_map] using List.getElem_mem_zip hkbs' hkPoly
+  have hpair : (bindings[k], bindings'[k]) ∈ bindings.zip bindings' :=
+    List.getElem_mem_zip hkBind hkbs'
+  have hfXs' : FreshNames (L ++ G) 0 [] := ⟨rfl, List.nodup_nil, by intro x hx; simp at hx⟩
+  have hfYs : FreshNames ((L ++ G) ++ []) G.length Xs :=
+    ⟨hfXs.length, hfXs.nodup, fun x hx hc => hfXs.avoid x hx (by simpa using hc)⟩
+  have hpolyD : TypeOfElabHM (RecSpecs.rhsCtx ctx
+      (monos.map (fun μ => RecSpec.poly (promoteScheme G μ))) [] [])
+      (bindings'[k].openTyVars Xs) ((promoteScheme G (monos[k])).openVars Xs) :=
+    hpoly [] hfXs' (bindings'[k], RecSpec.poly (promoteScheme G (monos[k]))) hpairPoly
+      (promoteScheme G (monos[k])) rfl Xs hfYs
+  have hdisj : ∀ g ∈ G, g ∉ Xs := by
+    intro g hg gx
+    have hgX : g ∈ L ++ G := List.mem_append_right _ hg
+    exact hfXs.avoid g gx hgX
+  have hopenD : (bindings'[k]).openTyVars Xs
+      = retargetVars monos.length (Xs.map Ty.fvar) 0 (bindings[k]) :=
+    hopen Xs hfXs (bindings[k], bindings'[k]) hpair
+  have hpolyD' : TypeOfElabHM ⟨monos.map (promoteScheme G ·) ++ ctx.env, ctx.ctors⟩
+      (retargetVars monos.length (Xs.map Ty.fvar) 0 (bindings[k])) (Ty.renameG G Xs (monos[k])) := by
+    simpa only [RecSpecs.rhsCtx, RecSpec.rhsEntry, List.map_map, hopenD,
+      promoteScheme_openVars (hmonoLC (monos[k]) hmemMonos) hGnodup hfXs.length hdisj] using hpolyD
+  have hinst_list : List.Forall₂
+      (fun (M : PolyTy) (μ : Ty) =>
+        M.paramCount = (Xs.map Ty.fvar).length ∧ M.InstantiatesTo (Xs.map Ty.fvar) μ)
+      (monos.map (promoteScheme G ·)) (monos.map (Ty.renameG G Xs ·)) := by
+    apply Forall₂_map_of_forall
+    intro μ hμ
+    exact promoteScheme_instantiatesTo (hmonoLC μ hμ) hGnodup hfXs.length hdisj
+  have hVsLC : ∀ V ∈ Xs.map Ty.fvar, V.IsLC := by
+    intro V hV
+    rcases List.mem_map.mp hV with ⟨x, _, rfl⟩
+    exact .fvar
+  have hmonoLC' : ∀ μ ∈ monos.map (Ty.renameG G Xs ·), μ.IsLC := by
+    intro μ hμ
+    rcases List.mem_map.mp hμ with ⟨μ₀, hμ₀, rfl⟩
+    exact Ty.renameG_lc (hmonoLC μ₀ hμ₀)
+  have hT1' := retargetUntransport (Ms := monos.map (promoteScheme G ·))
+    (monos := monos.map (Ty.renameG G Xs ·)) (Vs := Xs.map Ty.fvar) (env := ctx.env)
+    (ctors := ctx.ctors) (e := bindings[k]) (τ := Ty.renameG G Xs (monos[k]))
+    hmonoLC' hVsLC hinst_list (by simpa [List.length_map] using hpolyD')
+  have hsrc : retargetVars monos.length [] 0 (bindings[k]) = bindings[k] :=
+    hsrcNil (bindings[k]) (List.getElem_mem hkBind)
+  rw [hp1]
+  simpa only [RecSpecs.rhsCtx, RecSpec.rhsEntry, List.map_map, List.length_map, hsrc] using hT1'
+
+/-! ## PRES — preservation for the promoted node costs nothing
+
+The promotion changes neither `Expr`, nor `SmallStep.Step`, nor `TypeOfElabHM`. A promoted
+`letRec` is an ordinary well-typed term of the existing language, so the *already-proved*
+`TypeOfElabHM.preservation` (`Core.lean:9442`) applies to it directly — no new metatheory.
+
+This was listed as an open risk in `briefs/complexity-budget.md` §3.6 three times. It is not a
+risk; it is a corollary. This theorem exists to make that concrete rather than asserted. -/
+
+open SmallStep (Step) in
+
+theorem PRES_D1_promoted {e' : Expr}
+    (hstep : Step
+      (.letRec [some σA, some σA]
+        [.lambda none (.app (.var 2 [.bvar 0, .bvar 1]) (.var 0 [])),
+         .lambda none (.app (.var 1 [.bvar 0, .bvar 1]) (.var 0 []))]
+        (.var 0 [.prim .int, .prim .int])) e') :
+    TypeOfElabHM ⟨[], []⟩ e' (.arrow (.prim .int) (.prim .int)) :=
+  TypeOfElabHM.preservation hstep D1_promoted
+
+/-! ## STORED — the stored-form retarget, and the last missing link
+
+`retargetVars` works on *opened* terms (`Vs` concrete, depth-independent). The real elaborator
+must emit the **stored** form, with `Ty.bvarRangeFrom d |G|` at type-binder depth `d`. The
+commute below is exactly what discharges `T2`/`T3'`'s `hopen` hypothesis, after which the
+transport chain is closed end to end.
+
+This is the "200–400 line depth-tracking traversal" §3.4 estimated. Its actual size is the
+best available proxy for whether the remaining refactor is mechanical or a slog — so if you
+prove it, **report the line count**. -/
+
+mutual
+
+def retargetStored (n gLen : Nat) (d b : Nat) : Expr → Expr
+  | .primLit p          => .primLit p
+  | .primBinOp op       => .primBinOp op
+  | .lambda ann body    => .lambda ann (retargetStored n gLen d (b + 1) body)
+  | .app f arg          => .app (retargetStored n gLen d b f) (retargetStored n gLen d b arg)
+  | .letIn (some σ) rhs body =>
+      .letIn (some σ) (retargetStored n gLen (d + σ.paramCount) b rhs)
+        (retargetStored n gLen d (b + 1) body)
+  | .letIn none rhs body =>
+      .letIn none (retargetStored n gLen d b rhs) (retargetStored n gLen d (b + 1) body)
+  | .var i tyArgs       =>
+      if b ≤ i ∧ i < b + n then .var i (Ty.bvarRangeFrom d gLen) else .var i tyArgs
+  | .ctor c             => .ctor c
+  | .match_ scrut brs   =>
+      .match_ (retargetStored n gLen d b scrut) (retargetStoredBranches n gLen d b brs)
+  | .letRec anns bs body =>
+      .letRec anns (retargetStoredGroup n gLen d (b + bs.length) anns bs)
+        (retargetStored n gLen d (b + bs.length) body)
+
+def retargetStoredBranches (n gLen : Nat) (d b : Nat) :
+    List (MatchPattern × Expr) → List (MatchPattern × Expr)
+  | []                  => []
+  | (pat, body) :: rest =>
+      (pat, retargetStored n gLen d (b + pat.bindCount) body)
+        :: retargetStoredBranches n gLen d b rest
+
+/-- The stored-form retarget of a recursion group's bindings, each binding descended at
+    `d + RecAnn.params aⱼ` (shielding its own scheme's variables when annotated), the `anns`
+    consumed in lockstep — mirroring `RecGroup.openTyVarsAux`. This is the stored-form analogue
+    of `retargetGroup`.
+
+    NOTE: the annotations must shield, so that the pool `bvar`s placed at type-depth `d` inside
+    an ANNOTATED binding are opened at `d + σ.paramCount` (where the enclosing scope's vars sit
+    per `Expr.openTyVarsAux`), exactly as `letIn (some σ)` shields its rhs. Without the shield
+    `retargetStored_openTyVars` fails: the pool `bvar`s stay unopened. -/
+def retargetStoredGroup (n gLen d b : Nat) :
+    List (Option PolyTy) → List Expr → List Expr
+  | _,       []        => []
+  | [],      e :: rest => retargetStored n gLen d b e :: retargetStoredGroup n gLen d b [] rest
+  | a :: as, e :: rest => retargetStored n gLen (d + RecAnn.params a) b e
+      :: retargetStoredGroup n gLen d b as rest
+
+end
+
+/-- Opening `bvarRangeFrom d gLen` at `d ↦ Ys` recovers `Ys` as `fvar`s — the stored-form
+    retarget's `tyArgs` become exactly the opened-form retarget's `Vs`. -/
+theorem bvarRangeFrom_length {d n : Nat} : (Ty.bvarRangeFrom d n).length = n := by
+  induction n generalizing d with
+  | zero => simp [Ty.bvarRangeFrom]
+  | succ n ih => simp [Ty.bvarRangeFrom, ih (d := d + 1)]
+
+/-- Opening the `k`-th pool binder at the same depth reads back `Ys[k]`. -/
+theorem openVarsFrom_bvar_add {d k : Nat} {Ys : List Nat} (hk : k < Ys.length) :
+    Ty.openVarsFrom d Ys (.bvar (d + k)) = .fvar (Ys[k]) := by
+  simp [Ty.openVarsFrom, Ty.instantiate, List.getElem?_eq_getElem (by simpa using hk),
+    Option.elim_some]
+
+theorem bvarRangeFrom_openVarsFrom_map {d : Nat} {Ys : List Nat} {gLen : Nat}
+    (hYsLen : Ys.length = gLen) :
+    (Ty.bvarRangeFrom d gLen).map (Ty.openVarsFrom d Ys) = Ys.map Ty.fvar := by
+  subst gLen
+  apply List.ext_getElem
+  · simp [List.length_map, bvarRangeFrom_length]
+  · intro i hiL hiR
+    have hiYs : i < Ys.length := by simpa using hiR
+    have hbLen : i < (Ty.bvarRangeFrom d Ys.length).length := by
+      simpa [List.length_map] using hiL
+    have hb : (Ty.bvarRangeFrom d Ys.length)[i] = Ty.bvar (d + i) := by
+      have h1 := Ty.bvarRangeFrom_getElem? Ys.length d i hiYs
+      have h2 := List.getElem?_eq_getElem hbLen
+      exact Option.some.inj (h2.symm.trans h1)
+    rw [List.getElem_map (Ty.openVarsFrom d Ys) (h := hiL)]
+    rw [hb]
+    rw [List.getElem_map Ty.fvar (h := hiR)]
+    exact openVarsFrom_bvar_add hiYs
+
+/-- The general stored-form commute: at type-binder depth `d`, opening the stored retarget at
+    `d ↦ Ys` is the opened retarget at `Ys`-as-`fvar`s. The mutual `retargetStored*` family is
+    handled by the per-`letRec`/`match_` sub-inductions, mirroring `retargetVars_openTyVarsAux`. -/
+theorem retargetStored_openTyVarsAux {n gLen d b : Nat} {Ys : List Nat} {e : Expr}
+    (hYsLen : Ys.length = gLen) :
+    (retargetStored n gLen d b e).openTyVarsAux d Ys
+      = retargetVars n (Ys.map Ty.fvar) b (e.openTyVarsAux d Ys) := by
+  induction e using Expr.rec_strong generalizing b d with
+  | primLit p => rfl
+  | primBinOp op => rfl
+  | ctor nm => rfl
+  | var i tyArgs =>
+      by_cases hwin : b ≤ i ∧ i < b + n
+      · simp [retargetStored, retargetVars, Expr.openTyVarsAux, hwin,
+          bvarRangeFrom_openVarsFrom_map hYsLen]
+      · simp [retargetStored, retargetVars, Expr.openTyVarsAux, hwin]
+  | lambda ann body ih =>
+      simp only [retargetStored, retargetVars, Expr.openTyVarsAux,
+        ih (b := b + 1) (d := d)]
+  | app f arg ihf iharg =>
+      simp only [retargetStored, retargetVars, Expr.openTyVarsAux,
+        ihf (b := b) (d := d), iharg (b := b) (d := d)]
+  | letIn ann rhs body ihr ihb =>
+      cases ann with
+      | none =>
+          simp only [retargetStored, retargetVars, Expr.openTyVarsAux,
+            ihr (b := b) (d := d), ihb (b := b + 1) (d := d)]
+      | some σ =>
+          simp only [retargetStored, retargetVars, Expr.openTyVarsAux,
+            ihr (b := b) (d := d + σ.paramCount), ihb (b := b + 1) (d := d)]
+  | match_ scrut brs ihscrut ihbrs =>
+      simp only [retargetStored, retargetVars, Expr.openTyVarsAux, ihscrut (b := b) (d := d)]
+      have hbrs : BranchList.openTyVarsAux d Ys (retargetStoredBranches n gLen d b brs)
+          = retargetBranches n (Ys.map Ty.fvar) b (BranchList.openTyVarsAux d Ys brs) := by
+        induction brs with
+        | nil => rfl
+        | cons br rest ih =>
+            cases br with
+            | mk pat body =>
+                have hhead : (retargetStored n gLen d (b + pat.bindCount) body).openTyVarsAux d Ys
+                    = retargetVars n (Ys.map Ty.fvar) (b + pat.bindCount)
+                        (body.openTyVarsAux d Ys) :=
+                  ihbrs pat body (List.mem_cons_self ..) (b := b + pat.bindCount) (d := d)
+                simp only [retargetStoredBranches, retargetBranches, BranchList.openTyVarsAux]
+                rw [hhead]
+                congr 1
+                exact ih (fun pat' e' he' => ihbrs pat' e' (List.mem_cons_of_mem _ he'))
+      rw [hbrs]
+  | letRec anns bs body ihbs ihbody =>
+      simp only [retargetStored, retargetVars, Expr.openTyVarsAux,
+        ihbody (b := b + bs.length) (d := d)]
+      have hbs' : ∀ (D : Nat) (anns' : List (Option PolyTy)),
+          RecGroup.openTyVarsAux d Ys anns' (retargetStoredGroup n gLen d D anns' bs)
+            = retargetGroup n (Ys.map Ty.fvar) D (RecGroup.openTyVarsAux d Ys anns' bs) := by
+        intro D anns'
+        revert anns'
+        induction bs with
+        | nil => intro anns'; rfl
+        | cons e tl ih =>
+            intro anns'
+            cases anns' with
+            | nil =>
+                simp only [retargetStoredGroup, retargetGroup, RecGroup.openTyVarsAux]
+                rw [ihbs e (List.mem_cons_self ..) (b := D) (d := d)]
+                congr 1
+                exact ih (fun e' he' => ihbs e' (List.mem_cons_of_mem _ he')) []
+            | cons a as =>
+                simp only [retargetStoredGroup, retargetGroup, RecGroup.openTyVarsAux]
+                rw [ihbs e (List.mem_cons_self ..) (b := D) (d := d + RecAnn.params a)]
+                congr 1
+                exact ih (fun e' he' => ihbs e' (List.mem_cons_of_mem _ he')) as
+      rw [RecGroup.openTyVarsAux_length]
+      rw [hbs' (b + bs.length) anns]
+
+/-- **STORED — the last missing link.** Opening the stored-form retarget at `Ys` gives the
+    opened-form retarget at `Ys`-as-fvars. Discharges `hopen`. -/
+theorem retargetStored_openTyVars {n gLen b : Nat} {Ys : List Nat} {e : Expr}
+    (hYsLen : Ys.length = gLen) :
+    (retargetStored n gLen 0 b e).openTyVars Ys
+      = retargetVars n (Ys.map Ty.fvar) b (e.openTyVars Ys) := by
+  simpa only [Expr.openTyVars] using retargetStored_openTyVarsAux (d := 0) (hYsLen := hYsLen) (e := e)
+
 /-! ## Axiom guard
 
 Living check that the spike's conclusions rest only on the standard axioms — in particular
@@ -1173,6 +2051,9 @@ that neither the gate (`T1`) nor the concrete derivations smuggle in `sorryAx`. 
 
 #print axioms T1_retarget_transport
 #print axioms T2_monoTyped_to_polyTyped
+#print axioms T3'_polyTyped_to_monoTyped
+#print axioms retargetStored_openTyVars
+#print axioms PRES_D1_promoted
 #print axioms promoteScheme_wf
 #print axioms promoteScheme_openVars
 #print axioms S2_promoted

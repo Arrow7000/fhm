@@ -302,6 +302,41 @@ touched), statements byte-identical to as authored, `retargetVars`' window condi
 Cost datum: the whole T section is **565 lines**, including `retargetVars`/`Branches`/`Group`,
 their commute lemmas with `openTyVars`/`openBoundTyVars`, and length/membership plumbing.
 
+### Rounds 4–5 (2026-08-13) — the converse, preservation, and the traversal
+
+**`T3` — the converse of `T2` — was stated false, and the probe refuted the reasoning behind
+it.** The brief previously argued that §2.2's payoff might not hold, because an arbitrary
+elaborated derivation of the promoted node could instantiate a sibling at different types at
+different sites, which `MonoTyped` cannot express. **That cannot happen.** `TypeOfElabHM` reads
+`tyArgs` from the *term*; the retarget assigns every in-window use the *same* `Vs`; so the term
+itself pins one shared instance per sibling — exactly what `MonoTyped` requires. Type-passing,
+the feature responsible for much of the complexity elsewhere, is what rescues this. The earlier
+pessimism was reasoning as if instantiation were chosen by the derivation (`TypeOfHM` style).
+
+The two genuine blockers in `T3` were **statement bugs**, both restored in `T3'`: nothing
+related `bindings'.length` to `bindings.length`, and `hopen` left the *source*'s group-use
+`tyArgs` unconstrained (since `retargetVars` overwrites them). The false `T3` is retained in
+the file with its `sorry` as a record.
+
+- **`T3'_polyTyped_to_monoTyped` — PROVED.** Via `retargetUntransport`, the mirror of `T1`.
+  **Both directions of the letRec correspondence now hold**, which is the prerequisite for
+  `sourceSound` as a decoration-forgetting corollary — provided that lemma's `Decorates`
+  relation is *tight* at `letRec` (uniform `tyArgs` on group-member uses, which is what `Infer`
+  emits).
+- **`PRES_D1_promoted` — preservation costs nothing.** Listed as an open risk three times in
+  earlier drafts; that was a category error. The promotion changes neither `Expr` nor
+  `SmallStep.Step` nor `TypeOfElabHM`, so a promoted `letRec` is an ordinary well-typed term
+  and the already-proved general `TypeOfElabHM.preservation` (`Core.lean:9442`) applies
+  directly. The theorem is a one-liner. `progress` and `type_safety` likewise.
+- **`retargetStored_openTyVars` — PROVED, after fixing a bug in the definition.** The
+  stored-form retarget must be **`anns`-aware**: `Expr.openTyVarsAux` opens each group binding
+  at `d + RecAnn.params aⱼ` (annotated bindings are scheme-shielded), so retargeting at uniform
+  `d` is wrong. Machine-checked counterexample found. Note this is *simpler* in the promoted
+  design, where every member is annotated at arity `|G|` and the shielding is uniform.
+  **The STORED section is 170 lines**, against §3.4's 200–400 estimate.
+
+All ten guarded declarations report `[propext, Classical.choice, Quot.sound]`.
+
 ### Status: gate passed, refactor not done
 
 `§3.4`'s core claim is established — no structural obstruction, and the transport is real
@@ -488,17 +523,79 @@ map — so the declarative relations are stated once, on `Ty Unit`.
 
 ---
 
+## 5.5 Expected payoff, by dimension, with confidence
+
+Bands are honest rather than flattering. "Measured" means counted in the tree; "estimated"
+means my judgement, which has been wrong twice in this investigation — both times by being
+optimistic about things I had argued rather than tested.
+
+### A. Net line count — **≈ break-even, ±500. Confidence: medium.**
+
+**Do not do this for the line count.**
+
+| | lines | basis |
+|---|---:|---|
+| `letRecElab` family, deleted outright | −1,045 | **measured** (15 decls) |
+| `Infer.sourceSound`, replaced by a faithfulness corollary | −656 | measured deletion, replacement estimated |
+| `Infer.sound`'s letRec case, collapsing to a structural application | −350 ± 200 | **estimated** — largest open number |
+| Transport machinery moving from spike into InferW | +1,450 | **measured** (T + T3' + STORED, excluding spike-only concrete tests) |
+| Faithfulness lemma (`Decorates` + the induction) | +300 ± 150 | estimated; not attempted |
+| Path R erase-commutes for the two new traversals | +250 ± 150 | **unmeasured** — the existing erase-commute block is 577 lines for the operations it already has |
+
+Earlier drafts of this brief cited "4,113 lines of letRec machinery" as the deletion
+opportunity. **That was wrong** — most of `RecSpec`/`RecSpecs` in Core is the *declarative
+spec* and survives; the mono/poly collapse trims it rather than deleting it.
+
+### B. Future-refactor cost — **large reduction. Confidence: high** (was low yesterday).
+
+The real case for the change. Elaboration becomes shape-preserving everywhere, so
+`Infer.sourceSound` stops being a second full induction that must be re-run whenever `Infer`
+changes, and becomes a corollary proved once. Path R is the worked example of the cost: its
+residual campaign had to mirror `sourceSound` precisely because of the shape divergence.
+
+Upgraded from "architectural argument" to "high" because `T2` **and** `T3'` are both proved:
+the letRec correspondence holds in *both* directions, which is exactly what the corollary
+needs. The residual caveat is that `Decorates` must be tight at `letRec`; that is a term-level
+condition, structurally checkable, and is what `Infer` emits.
+
+### C. Refactor effort — **2–4 focused farming sessions. Confidence: medium-high.**
+
+Not a day; not a week of untying knots. Evidence: the transport — the hardest identified piece
+— was one farm; STORED came in at 170 lines against a 200–400 estimate; preservation turned
+out free. The remaining wildcard is `Infer.sound`'s letRec case, which is also line item 3 in
+table A. The tedium risk is Path R erase-commutes, historically where this codebase's grind
+lives.
+
+### D. Showstopper risk — **low. Confidence: high.**
+
+Every predicted obstruction has now been probed and either discharged (`T1`, `T2`, `T3'`,
+preservation) or shown to be a bug in my statement rather than in the design (`T3`'s two
+blockers, `retargetStored`'s missing `anns` shielding). `Expr`, `Step` and `TypeOfElabHM` are
+untouched throughout, which is what keeps the blast radius small.
+
+### Still unmeasured
+
+`Infer.sound`'s letRec collapse; the faithfulness lemma itself (only its letRec prerequisite,
+`T3'`, is done); Path R erase-commutes for `retargetVars`/`retargetStored`.
+
+---
+
 ## 6. Suggested order
 
-1. ~~Spike §3.4 standalone.~~ **Done** — three rounds, gate passed (§3.6).
-2. Do not stall the active Path R farm on this. Per the Path R brief the next items there are
-   the `*_untypeable` demos and repairing the false completeness statements; that repair
-   should land before anything is farmed against completeness either way.
-3. Write the **stored-form retarget** (type-binder depth `d`, emitting `Ty.bvarRangeFrom d |G|`)
-   and its commute with `openTyVars` — this discharges `T2`'s `hopen` and is the last piece
-   before the refactor is mechanical.
-4. Land the promotion: rewire `Infer.letRec`, rewrite `Infer.sound`'s letRec case, delete
-   `letRecElab` and its cast, check preservation.
+**Do not interleave this with Path R.** Pausing one refactor mid-flight to start another in the
+same 30k-line development is how you get an unrecoverable mess. Rework exposure is currently
+**zero** — of 2,218 lines added by the concurrent completeness campaign, exactly **one**
+mentions `letRec`/`RecSpec`/`RecGroup` — and it stays zero until that campaign reaches the
+letRec completeness case *specifically*. That is a natural decision point which arrives on its
+own; it is not a reason to pause. Finish Path R.
+
+1. ~~Spike §3.4 standalone.~~ **Done** — five rounds (§3.6). Gate passed, converse proved,
+   preservation free, traversal written.
+2. Finish Path R. Per that brief: the `*_untypeable` demos, then repairing the false
+   completeness statements — which must land before anything is farmed against completeness
+   regardless of what happens here.
+3. Land the promotion: rewire `Infer.letRec`, rewrite `Infer.sound`'s letRec case, delete
+   `letRecElab` and its cast, port the transport machinery from the spike.
 5. Then replace `Infer.sourceSound` with the strengthened faithfulness lemma
    (`Decorates e e' → TypeOfElabHM ctx e' τ → TypeOfHM ctx e τ`) — the §2.2 payoff, which only
    becomes available once elaboration is shape-preserving everywhere.
