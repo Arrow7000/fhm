@@ -302,10 +302,51 @@ SUPERSEDED in-file. Don't build on them; use the `*_erase` variants.
       They were **not deleted** — unlike the `054e0d8` casualties they are true,
       and their proof bodies are the real work. `RecSpecs.MonoTyped`/`PolyTyped`
       are relation-parametric, so the restatement re-instantiates them at erased
-      ctx/bindings/types. **Sequencing advice:** write `complete_letRec`'s skeleton
-      FIRST and read off the exact shapes its inversion produces, then restate the
-      helpers to match — do not guess the target form, or you will repair to the
-      wrong level twice.
+      ctx/bindings/types.
+
+      **The inversion shapes, read off (2026-08-13) so the next agent need not
+      re-derive them.** `Expr.eraseBounds` on a `letRec` (`Core.lean:619`) is
+
+      ```text
+      (.letRec anns bindings body).eraseBounds
+        = .letRec (anns.map (Option.map PolyTy.eraseBounds))
+                  (bindings.map Expr.eraseBounds) body.eraseBounds
+      ```
+
+      so `complete_letRec`'s `TypeOfHM.letRec` inversion delivers exactly:
+
+      ```text
+      RecSpecs.WF   (anns.map (Option.map PolyTy.eraseBounds))
+                    (bindings.map Expr.eraseBounds) dspecs G
+      RecSpecs.MonoTyped TypeOfHM (S₀.onCtx ctx).eraseBounds
+                    (bindings.map Expr.eraseBounds) dspecs G L
+      RecSpecs.PolyTyped TypeOfHM (S₀.onCtx ctx).eraseBounds
+                    (bindings.map Expr.eraseBounds) dspecs G L
+      TypeOfHM (RecSpecs.bodyCtx (S₀.onCtx ctx).eraseBounds dspecs G) body.eraseBounds τ₀
+      ```
+
+      The two setups' output typings must then land on **exactly**
+      `InferRecGroup.complete`'s premises (which are already correct and proved
+      against): `TypeOfHM (R₀.onCtx {ctx with env := …}).eraseBounds p.1.eraseBounds
+      (Ty.eraseBounds (R₀.onTy τ))`, and the poly twin at
+      `(p.1.openTyVars Ys).eraseBounds` / `Ty.eraseBounds (σ.openVars Ys)`.
+
+      ⚠️ **The non-mechanical part — do not miss it.** `hwfD.anns_eq` now reads
+      `dspecs.map RecSpec.ann = anns.map (Option.map PolyTy.eraseBounds)`, so the
+      declarative poly specs carry `σ.eraseBounds` while `RecSpec.init Φ anns`
+      carries the un-erased `σ`. Therefore **`hconn` can no longer hold
+      structurally** in either helper:
+
+      ```text
+      (RecSpec.init Φ anns).map (RecSpec.onSubst R₀) = dspecs.map (RecSpec.openAt G Xs)
+      ```
+
+      has un-erased `σ` on the left and erased `σ` on the right. It has to become
+      an erase-level equality (`RecSpec.eraseBounds` exists — see `InferW:522`),
+      and that is a genuine statement decision, not a re-instantiation: it changes
+      what the proof bodies have to establish. Settle `hconn`'s new form FIRST,
+      against a `complete_letRec` skeleton, before touching either helper — and do
+      not assume the existing proofs carry over across it.
    7. Then `complete'` → `completeAt`/`complete`/`principal`/`iff_typeable` →
       PhaseC-C2.
 
