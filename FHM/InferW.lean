@@ -2861,6 +2861,37 @@ theorem Ctor.isBoolCtor_of_typeOfHM {ctx : Ctx} {name : CtorName}
   cases h with
   | ctor hlook _ hinst => exact ⟨_, hlook, Ctor.IsBoolCtor.of_instantiatesTo hinst⟩
 
+/-- A raw ctor is a Bool ctor iff its erased image is (tyName/paramCount survive
+    erase and `contents = []` iff `contents.map erase = []`). -/
+private theorem Ctor.IsBoolCtor.of_eraseBounds {c : Ctor}
+    (h : (Ctor.eraseBounds c).IsBoolCtor) : c.IsBoolCtor := by
+  obtain ⟨hname, hpc, hcont⟩ := h
+  refine ⟨?_, ?_, ?_⟩
+  · simpa [Ctor.eraseBounds_tyName] using hname
+  · simpa [Ctor.eraseBounds_paramCount] using hpc
+  · simpa [Ctor.eraseBounds_contents] using hcont
+
+/-- Lookup transport for the primBinOp `Bool` ctors: a `TypeOfHM` Bool typing of
+    `name` under an *erased* context yields the **raw** ctor lookup together with
+    its `IsBoolCtor` shape (contrapositive of `Ctor.IsBoolCtor.typeOfHM_erase`). -/
+private theorem Ctor.isBoolCtor_of_typeOfHM_erase {ctx : Ctx} {name : CtorName}
+    (h : TypeOfHM ctx.eraseBounds (.ctor name) (.customTy ⟨"Bool"⟩ [])) :
+    ∃ c, LookupList.get? ctx.ctors name = some c ∧ c.IsBoolCtor := by
+  obtain ⟨cE, hlookE, hbE⟩ := Ctor.isBoolCtor_of_typeOfHM h
+  have hlookE' : LookupList.get? (CtorEnv.eraseBounds ctx.ctors) name = some cE := by
+    simpa [Ctx.eraseBounds] using hlookE
+  rw [CtorEnv.eraseBounds_get?] at hlookE'
+  obtain ⟨c, hlk, hceq⟩ :
+      ∃ c, LookupList.get? ctx.ctors name = some c ∧ Ctor.eraseBounds c = cE := by
+    cases hlk : LookupList.get? ctx.ctors name with
+    | none => simp [hlk] at hlookE'
+    | some c =>
+      rw [hlk] at hlookE'
+      simp only [Option.map_some, Option.some.injEq] at hlookE'
+      exact ⟨c, rfl, hlookE'⟩
+  refine ⟨c, hlk, ?_⟩
+  exact Ctor.IsBoolCtor.of_eraseBounds (by simpa [hceq] using hbE)
+
 /-! Algorithm W as a type-directed **elaboration** relation: the subject `eIn` is
     the unelaborated skeleton and the new output index `eOut` carries the elaborated
     (type-passing) term. The runnable term is `eOut.substTyFvars S`. Mutually defined
@@ -14320,10 +14351,104 @@ def Infer.CompleteAt (e : Expr) : Prop :=
 /-- Principality, primitive-literal case: `Infer` returns the literal's type
     with the empty substitution; the residual is `S₀` unchanged. -/
 theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) := by
-  sorry -- PathR completeness
+  intro Φ ctx S₀ τ₀ K _ _ hS₀ _ _ hKfix hty
+  cases p with
+  | unit =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primLitUnit =>
+      refine ⟨Φ, [], .primLit .unit, .prim .unit, S₀, .primLitUnit, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | int n =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primLitInt =>
+      refine ⟨Φ, [], .primLit (.int n), .prim .int, S₀, .primLitInt, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | nat n =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primLitNat =>
+      refine ⟨Φ, [], .primLit (.nat n), .prim .nat, S₀, .primLitNat, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | char c =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primLitChar =>
+      refine ⟨Φ, [], .primLit (.char c), .prim .char, S₀, .primLitChar, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
 
 theorem Infer.complete_primBinOp {op : PrimBinOp} : Infer.CompleteAt (.primBinOp op) := by
-  sorry -- PathR completeness
+  intro Φ ctx S₀ τ₀ K _ _ hS₀ _ _ hKfix hty
+  cases op with
+  | intAdd =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primBinOpIntAdd =>
+      refine ⟨Φ, [], .primBinOp .intAdd,
+        .arrow (.prim .int) (.arrow (.prim .int) (.prim .int)), S₀,
+        .primBinOpIntAdd, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | intSub =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primBinOpIntSub =>
+      refine ⟨Φ, [], .primBinOp .intSub,
+        .arrow (.prim .int) (.arrow (.prim .int) (.prim .int)), S₀,
+        .primBinOpIntSub, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | intLt =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primBinOpIntLt hT hF =>
+      obtain ⟨trueC, hlookT, hbT⟩ := Ctor.isBoolCtor_of_typeOfHM_erase (ctx := S₀.onCtx ctx) hT
+      obtain ⟨falseC, hlookF, hbF⟩ := Ctor.isBoolCtor_of_typeOfHM_erase (ctx := S₀.onCtx ctx) hF
+      refine ⟨Φ, [], .primBinOp .intLt,
+        .arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])), S₀,
+        .primBinOpIntLt hlookT hbT hlookF hbF, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | charLt =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primBinOpCharLt hT hF =>
+      obtain ⟨trueC, hlookT, hbT⟩ := Ctor.isBoolCtor_of_typeOfHM_erase (ctx := S₀.onCtx ctx) hT
+      obtain ⟨falseC, hlookF, hbF⟩ := Ctor.isBoolCtor_of_typeOfHM_erase (ctx := S₀.onCtx ctx) hF
+      refine ⟨Φ, [], .primBinOp .charLt,
+        .arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ [])), S₀,
+        .primBinOpCharLt hlookT hbT hlookF hbF, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
 
 /-! ### Injective renaming of free type variables (principality binder cases)
 
@@ -14975,6 +15100,180 @@ theorem exists_fresh_block (avoid : List Nat) (Φ k : Nat) :
   have := List.le_foldr_max hv
   omega
 
+/-- Opening a scheme body at `[Φ,Φ+k)` then renaming by the block swap
+    `[Φ,Φ+k) ↔ [W,W+k)` re-opens at `[W,W+k)`, provided the body's own free vars
+    are all below `Φ` (so the swap fixes them). -/
+theorem Ty.rename_openVars_blockSwap {Φ W k : Nat} (hd : Φ + k ≤ W) (ty : Ty)
+    (hty : ∀ v ∈ ty.freeVars, v < Φ) :
+    Ty.rename (blockSwap Φ W k) (Ty.openVars (freshVars Φ k) ty) =
+      Ty.openVars (freshVars W k) ty := by
+  induction ty using Ty.rec_strong with
+  | prim p => simp only [Ty.openVars_prim, Ty.rename_prim]
+  | bvar i =>
+    simp only [Ty.openVars, Ty.instantiate]
+    by_cases hi : i < k
+    · have hf : (freshVars Φ k)[i]? = some (Φ + i) := by
+        simp only [freshVars, List.getElem?_map, List.getElem?_range hi, Option.map_some]
+      have hw : (freshVars W k)[i]? = some (W + i) := by
+        simp only [freshVars, List.getElem?_map, List.getElem?_range hi, Option.map_some]
+      simp only [hf, hw, Option.elim_some, Ty.rename_fvar, Ty.fvar.injEq, blockSwap]
+      split_ifs <;> omega
+    · have hf : (freshVars Φ k)[i]? = none := List.getElem?_eq_none (by simp [freshVars_length]; omega)
+      have hw : (freshVars W k)[i]? = none := List.getElem?_eq_none (by simp [freshVars_length]; omega)
+      simp only [hf, hw, Option.elim_none, Ty.rename_bvar]
+  | fvar n =>
+    have hn : n < Φ := hty n (by simp [Ty.freeVars])
+    simp only [Ty.openVars, Ty.instantiate, Ty.rename_fvar, Ty.fvar.injEq]
+    rw [blockSwap_lt (by omega) hn]
+  | arrow a b iha ihb =>
+    simp only [Ty.openVars_arrow, Ty.rename_arrow]
+    refine congrArg₂ Ty.arrow (iha ?_) (ihb ?_)
+    · intro v hv; exact hty v (by
+        simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inl hv)
+    · intro v hv; exact hty v (by
+        simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact Or.inr hv)
+  | customTy nm tys ih =>
+    simp only [Ty.openVars_customTy, Ty.rename_customTy, List.map_map]
+    congr 1
+    apply List.map_congr_left
+    intro t ht
+    exact ih t ht (fun v hv => hty v (TyList.mem_freeVars_of_mem ht hv))
+  | bl lo hi e ih =>
+    simp only [Ty.openVars_bl, Ty.rename_bl]
+    refine congrArg (Ty.bl lo hi) (ih ?_)
+    intro v hv; exact hty v (by simpa only [Ty.freeVars] using hv)
+
+/-- The shared `var`/`ctor` leaf residual: with `ty` a scheme body of `k` params
+    whose free vars sit below `Φ`, and `hinst` the declarative instantiation of
+    the `S₀`-substituted (erased) body at `instArgs`, there is a residual `R`
+    that is LC, fixes `K`, agrees with `S₀` below `Φ`, and agrees with `τ₀` up to
+    erasure on `ty` opened at the fresh block `freshVars Φ k`. Realised as
+    `blockList Φ W k ++ S₀ ++ (freshVars W k).zip instArgs` with `W` fresh
+    (avoiding `S₀`'s domain/range and `τ₀`), so the block never clashes. -/
+theorem Infer.exists_var_residual {Φ k : Nat} {S₀ : Subst} {K : List Nat}
+    {ty : Ty} {instArgs : List Ty} {τ₀ : Ty}
+    (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKfix : ∀ k ∈ K, S₀.onTy (Ty.fvar k) = Ty.fvar k)
+    (hinst : InstantiatesBy instArgs (Ty.eraseBounds (S₀.onTy ty)) τ₀)
+    (hbv : ContainsBvarsUpTo k ty)
+    (htyfree : ∀ v ∈ ty.freeVars, v < Φ)
+    (hinstLC : ∀ t ∈ instArgs, t.IsLC) :
+    ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧ (∀ k ∈ K, R.onTy (Ty.fvar k) = Ty.fvar k) ∧
+      (∀ v, v < Φ → R.onTy (Ty.fvar v) = S₀.onTy (Ty.fvar v)) ∧
+      AgreesHM τ₀ (R.onTy (Ty.openVars (freshVars Φ k) ty)) := by
+  obtain ⟨W, hWge, hWfresh⟩ := exists_fresh_block
+    (S₀.map Prod.fst ++ S₀.flatMap (fun p => p.2.freeVars) ++ τ₀.freeVars) Φ k
+  set proxy : Subst := blockList Φ W k with hproxy_def
+  set breal : Subst := (freshVars W k).zip instArgs with hbreal_def
+  set R : Subst := proxy ++ S₀ ++ breal with hR_def
+  have hWΦ : Φ ≤ W := by omega
+  have hW_S₀key : ∀ p ∈ S₀, p.1 < W := by
+    intro p hp
+    exact hWfresh p.1 (List.mem_append_left _ (List.mem_append_left _
+      (List.mem_map.mpr ⟨p, hp, rfl⟩)))
+  have hW_S₀ran : ∀ p ∈ S₀, ∀ u ∈ p.2.freeVars, u < W := by
+    intro p hp u hu
+    exact hWfresh u (List.mem_append_left _ (List.mem_append_right _
+      (List.mem_flatMap.mpr ⟨p, hp, hu⟩)))
+  have hW_τ₀ : ∀ u ∈ τ₀.freeVars, u < W := by
+    intro u hu
+    exact hWfresh u (List.mem_append_right _ hu)
+  have hproxyfix : ∀ m, m < Φ → proxy.onTy (Ty.fvar m) = Ty.fvar m := by
+    intro m hm
+    rw [hproxy_def]
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    simp only [blockList, List.mem_map] at hp
+    obtain ⟨i, _, rfl⟩ := hp
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    omega
+  have hτW : ∀ v ∈ (Ty.openVars (freshVars Φ k) ty).freeVars,
+      ¬ (W ≤ v ∧ v < W + k) := by
+    intro v hv
+    rcases Ty.freeVars_openVars_subset v hv with h | h
+    · have hvW : v < W := lt_of_lt_of_le (htyfree v h) hWΦ
+      omega
+    · have hge : Φ ≤ v := freshVars_ge v h
+      have hlt : v < Φ + k := freshVars_lt v h
+      omega
+  have hproxy : proxy.onTy (Ty.openVars (freshVars Φ k) ty) = Ty.openVars (freshVars W k) ty := by
+    rw [hproxy_def]
+    rw [blockList_onTy (Φ := Φ) (W := W) (k := k) hWge hτW]
+    exact Ty.rename_openVars_blockSwap hWge ty htyfree
+  have hS₀comm : S₀.onTy (Ty.openVars (freshVars W k) ty) = Ty.openVars (freshVars W k) (S₀.onTy ty) :=
+    Subst.onTy_openVars hS₀ (fun p hp hc => by
+      have hlt : p.1 < W := hW_S₀key p hp
+      simp only [freshVars, List.mem_map, List.mem_range] at hc
+      obtain ⟨i, _, hpq⟩ := hc
+      omega)
+  have hbv' : ContainsBvarsUpTo k (Ty.eraseBounds (S₀.onTy ty)) :=
+    ContainsBvarsUpTo.eraseBounds (ContainsBvarsUpTo.substFvars hS₀ hbv)
+  have hzip := InstantiatesBy.onTy_openVars_zip (Xs := freshVars W k)
+    (ty := Ty.eraseBounds (S₀.onTy ty)) (τ := τ₀) (tyArgs := instArgs) hinst
+    (by simpa [freshVars_length] using hbv') (by exact freshVars_nodup)
+    (fun x hx hu => by
+      have hge : W ≤ x := freshVars_ge x hx
+      have hlt : x < W := hW_τ₀ x hu
+      omega)
+  have hXdef : Ty.openVars (freshVars W k) (Ty.eraseBounds (S₀.onTy ty)) =
+      Ty.eraseBounds (Ty.openVars (freshVars W k) (S₀.onTy ty)) :=
+    (Ty.eraseBounds_openVars (freshVars W k) (S₀.onTy ty)).symm
+  have hzip' : breal.onTy (Ty.eraseBounds (Ty.openVars (freshVars W k) (S₀.onTy ty))) = τ₀ := by
+    simpa [hbreal_def, hXdef] using hzip
+  refine ⟨R, ?_, ?_, ?_, ?_⟩
+  · intro p hp
+    rw [hR_def] at hp
+    rcases List.mem_append.mp hp with hp' | hp'
+    · rcases List.mem_append.mp hp' with hp'' | hp''
+      · rw [hproxy_def] at hp''
+        exact blockList_lc Φ W k p hp''
+      · exact hS₀ p hp''
+    · rw [hbreal_def] at hp'
+      exact hinstLC p.2 (List.of_mem_zip hp').2
+  · intro k hk
+    have hklt := hKΦ k hk
+    calc R.onTy (Ty.fvar k)
+        = breal.onTy (S₀.onTy (proxy.onTy (Ty.fvar k))) := by
+            rw [hR_def, Subst.onTy_append, Subst.onTy_append]
+      _ = breal.onTy (S₀.onTy (Ty.fvar k)) := by rw [hproxyfix k hklt]
+      _ = breal.onTy (Ty.fvar k) := by rw [hKfix k hk]
+      _ = Ty.fvar k := by
+        rw [hbreal_def]
+        apply Ty.substFvars_eq_self_of_no_key
+        intro p hp hc
+        have hge : W ≤ p.1 := freshVars_ge p.1 (List.of_mem_zip hp).1
+        simp only [Ty.freeVars, List.mem_singleton] at hc
+        omega
+  · intro v hv
+    calc R.onTy (Ty.fvar v)
+        = breal.onTy (S₀.onTy (proxy.onTy (Ty.fvar v))) := by
+            rw [hR_def, Subst.onTy_append, Subst.onTy_append]
+      _ = breal.onTy (S₀.onTy (Ty.fvar v)) := by rw [hproxyfix v hv]
+      _ = S₀.onTy (Ty.fvar v) := by
+        rw [hbreal_def]
+        apply Ty.substFvars_eq_self_of_no_key
+        intro p hp hc
+        have hge : W ≤ p.1 := freshVars_ge p.1 (List.of_mem_zip hp).1
+        have hp_notmem : p.1 ∉ (S₀.onTy (Ty.fvar v)).freeVars :=
+          Subst.not_mem_onTy_freeVars
+            (fun q hq hcq => by have := hW_S₀ran q hq p.1 hcq; omega)
+            (by simp only [Ty.freeVars, List.mem_singleton]; omega)
+        exact hp_notmem hc
+  · show Ty.eraseBounds τ₀ = Ty.eraseBounds (R.onTy (Ty.openVars (freshVars Φ k) ty))
+    rw [hR_def, Subst.onTy_append, Subst.onTy_append, hproxy, hS₀comm]
+    have hz := congrArg Ty.eraseBounds hzip'
+    rw [← hz]
+    calc
+      Ty.eraseBounds (breal.onTy (Ty.eraseBounds (Ty.openVars (freshVars W k) (S₀.onTy ty))))
+          = Subst.onTy (breal.map (fun p => (p.1, Ty.eraseBounds p.2)))
+              (Ty.eraseBounds (Ty.eraseBounds (Ty.openVars (freshVars W k) (S₀.onTy ty))))
+              := Ty.eraseBounds_substFvars breal (Ty.eraseBounds (Ty.openVars (freshVars W k) (S₀.onTy ty)))
+      _ = Subst.onTy (breal.map (fun p => (p.1, Ty.eraseBounds p.2)))
+              (Ty.eraseBounds (Ty.openVars (freshVars W k) (S₀.onTy ty))) := by simp
+      _ = Ty.eraseBounds (breal.onTy (Ty.openVars (freshVars W k) (S₀.onTy ty))) :=
+          (Ty.eraseBounds_substFvars breal (Ty.openVars (freshVars W k) (S₀.onTy ty))).symm
+
 /-- Principality, variable case. The algorithm opens the looked-up scheme with a
     fresh block `[Φ,Φ+pc)`; these may clash with `S₀`'s range or the declarative
     instantiation `tyArgs`, so we α-rename the derivation by the block-swap
@@ -14982,10 +15281,88 @@ theorem exists_fresh_block (avoid : List Nat) (Φ k : Nat) :
     (block-avoiding) renamed instantiation via `InstantiatesBy.onTy_openVars_zip`,
     then map back with `blockListBack`. -/
 theorem Infer.complete_var {i : Nat} {tyArgs : List Ty} : Infer.CompleteAt (.var i tyArgs) := by
-  sorry -- PathR completeness
+  intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
+  simp only [Expr.eraseBounds] at hty
+  cases hty with
+  | var hlook hlc hinst =>
+    rename_i polyTy instArgs
+    have hlookE : (Env.eraseBounds (S₀.onEnv ctx.env))[i]? = some polyTy := by
+      simpa [Ctx.eraseBounds, Subst.onCtx] using hlook
+    have hmap : ((S₀.onEnv ctx.env)[i]?).map PolyTy.eraseBounds = some polyTy := by
+      rw [Env.eraseBounds_getElem?] at hlookE
+      exact hlookE
+    obtain ⟨σ₀, hlk0, hσ₀⟩ : ∃ σ₀, (S₀.onEnv ctx.env)[i]? = some σ₀ ∧ σ₀.eraseBounds = polyTy := by
+      rcases hlk : (S₀.onEnv ctx.env)[i]? with _ | s
+      · simp [hlk] at hmap
+      · rw [hlk] at hmap
+        simp only [Option.map_some, Option.some.injEq] at hmap
+        exact ⟨s, rfl, hmap⟩
+    have hmap2 : (ctx.env[i]?).map (Subst.onPolyTy S₀) = some σ₀ := by
+      simpa [Subst.onEnv] using hlk0
+    obtain ⟨σ, hlkσ, hσ₀'⟩ : ∃ σ, ctx.env[i]? = some σ ∧ Subst.onPolyTy S₀ σ = σ₀ := by
+      rcases hlk : ctx.env[i]? with _ | s
+      · simp [hlk] at hmap2
+      · rw [hlk] at hmap2
+        simp only [Option.map_some, Option.some.injEq] at hmap2
+        exact ⟨s, rfl, hmap2⟩
+    have hbody : polyTy.body = Ty.eraseBounds (S₀.onTy σ.body) := by
+      rw [← hσ₀, PolyTy.eraseBounds, ← congrArg PolyTy.body hσ₀', Subst.onPolyTy]
+    have hinst' : InstantiatesBy instArgs (Ty.eraseBounds (S₀.onTy σ.body)) τ₀ := by
+      rw [← hbody]
+      exact hinst
+    have hbv : ContainsBvarsUpTo σ.paramCount σ.body := hwf σ (List.mem_of_getElem? hlkσ)
+    have htyfree : ∀ v ∈ σ.body.freeVars, v < Φ :=
+      (hbelow σ (List.mem_of_getElem? hlkσ)).mem_lt
+    obtain ⟨R, hRlc, hRK, hRag, hRagree⟩ :=
+      Infer.exists_var_residual (Φ := Φ) (k := σ.paramCount) (S₀ := S₀) (K := K)
+        (ty := σ.body) (instArgs := instArgs) (τ₀ := τ₀)
+        hS₀ hKΦ hKfix hinst' hbv htyfree hlc
+    refine ⟨Φ + σ.paramCount, [], .var i ((freshVars Φ σ.paramCount).map Ty.fvar),
+      σ.openVars (freshVars Φ σ.paramCount), R, .var hlkσ, ?_, ?_, ?_, ?_, ?_⟩
+    · intro v hv; simpa using (hRag v hv).symm
+    · exact hRagree
+    · exact hRlc
+    · exact hRK
+    · simp
 
 theorem Infer.complete_ctor {name : CtorName} : Infer.CompleteAt (.ctor name) := by
-  sorry -- PathR completeness
+  intro Φ ctx S₀ τ₀ K _ _ hS₀ hKΦ _ hKfix hty
+  simp only [Expr.eraseBounds] at hty
+  cases hty with
+  | ctor hlook hlc hinst =>
+    rename_i ctorE tyArgs
+    have hlookE : LookupList.get? (CtorEnv.eraseBounds ctx.ctors) name = some ctorE := by
+      simpa [Ctx.eraseBounds, Subst.onCtx] using hlook
+    have hraw : ∃ c, LookupList.get? ctx.ctors name = some c ∧ Ctor.eraseBounds c = ctorE := by
+      rw [CtorEnv.eraseBounds_get?] at hlookE
+      cases hlk : LookupList.get? ctx.ctors name with
+      | none => simp [hlk] at hlookE
+      | some c =>
+        rw [hlk] at hlookE
+        simp only [Option.map_some, Option.some.injEq] at hlookE
+        exact ⟨c, rfl, hlookE⟩
+    obtain ⟨ctor, hlookR, hctorEq⟩ := hraw
+    have hinst' : InstantiatesBy tyArgs (Ty.eraseBounds (S₀.onTy ctor.toTy.body)) τ₀ := by
+      have hclosed : S₀.onTy ctor.toTy.body = ctor.toTy.body :=
+        Ty.substFvars_eq_self_of_no_key
+          (fun p _ hc => NoFreeVars.not_mem_freeVars (Ctor.toTy_body_noFreeVars ctor) p.1 hc)
+      rw [hclosed]
+      change InstantiatesBy tyArgs (Ty.eraseBounds ctor.toTy.body) τ₀
+      rw [← hctorEq] at hinst
+      simpa [Ctor.eraseBounds_toTy, PolyTy.eraseBounds] using hinst
+    obtain ⟨R, hRlc, hRK, hRag, hRagree⟩ :=
+      Infer.exists_var_residual (Φ := Φ) (k := ctor.paramCount) (S₀ := S₀) (K := K)
+        (ty := ctor.toTy.body) (instArgs := tyArgs) (τ₀ := τ₀)
+        hS₀ hKΦ hKfix hinst' (Ctor.toTy_wf ctor)
+        (fun v hv => absurd hv (NoFreeVars.not_mem_freeVars (Ctor.toTy_body_noFreeVars ctor) v))
+        hlc
+    refine ⟨Φ + ctor.paramCount, [], .ctor name,
+      ctor.toTy.openVars (freshVars Φ ctor.paramCount), R, .ctor hlookR, ?_, ?_, ?_, ?_, ?_⟩
+    · intro v hv; simpa using (hRag v hv).symm
+    · exact hRagree
+    · exact hRlc
+    · exact hRK
+    · simp
 
 /-! ### Unification: MGU residual is LC, and unification completeness
 
