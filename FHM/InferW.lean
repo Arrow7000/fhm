@@ -18591,7 +18591,27 @@ private theorem RecSpecs.monoTy_mem_monoTys {specs : List RecSpec} {τ : Ty}
     `genGroup_generalizes_renameG`, through the spec-level connection `hconn`),
     and each rigid poly scheme is FIXED by `R₁` (its body variables live in the
     widened rigid set `RecGroup.rigidVars`, which is `K`-rigid) so it generalizes
-    itself. Shared by the `complete'` and producing `completeAt` `letRec` cases. -/
+    itself. Shared by the `complete'` and producing `completeAt` `letRec` cases.
+
+    ⚠️ **STRUCTURAL — NOT USABLE BY THE PATH R CALLER AS STATED** (found 2026-08-13).
+    Proved, but **dead**: nothing references it, and `Infer.complete_letRec` cannot
+    supply its hypotheses. Three of them sit at the structural level:
+
+    * `hbodydecl` types the un-erased `body` in an un-erased context, while the
+      caller inverts `TypeOfHM.letRec` at the ERASED subject and so only ever holds
+      `TypeOfHM (…).eraseBounds body.eraseBounds τ₀`;
+    * `hctxS₁ : R₁.onCtx (S₁.onCtx ctx) = S₀.onCtx ctx` is a *structural* context
+      equality. Path R gives only the erase-level `Subst.onCtx_congr_hm` form —
+      structural agreement is exactly what `Subst.AgreesBelow` was weakened away
+      from in `1c17c0a` because it is FALSE in general;
+    * the conclusion is likewise un-erased, and `TypeOfHM.eraseBounds_of` runs
+      un-erased → erased ONLY, so it cannot be fixed up after the fact.
+
+    This predates the `948cb12` / `40e61b1` repair sweeps and was missed because it
+    has no caller — precisely the brief's "invisible until something calls it".
+    Restate it (and `letRecFused_residual_setup` below) at the erase level when
+    `Infer.complete_letRec` is attacked; its proof body should largely survive, but
+    the statement must move first. Do NOT build on it as it stands. -/
 theorem letRecFused_body_retype
     {Φ : Nat} {ctx : Ctx} {S₁ R₁ S₀ : Subst} {anns : List (Option PolyTy)}
     {bindings : List Expr} {body : Expr} {dspecs : List RecSpec} {G Xs : List Nat}
@@ -18766,7 +18786,20 @@ private theorem RecSpec.map_rhsEntry_openAt' (G Xs : List Nat) (specs : List Rec
     pool opening `Xs` and build an LC residual `R₀` (agreeing with `S₀` below `Φ`,
     fixing `K`) that connects the algorithm's initial specs to the pool-opened
     declarative specs (`init.map (onSubst R₀) = dspecs.map (openAt G Xs)`) and
-    transports both cofinite premises to the algorithm's group context. -/
+    transports both cofinite premises to the algorithm's group context.
+
+    ⚠️ **STRUCTURAL — NOT USABLE BY THE PATH R CALLER AS STATED** (found 2026-08-13).
+    Same verdict as `letRecFused_body_retype` above: proved, dead, and stated at the
+    wrong level. Its `RecSpecs.MonoTyped` / `PolyTyped` hypotheses sit at the
+    un-erased `(S₀.onCtx ctx)` over un-erased `bindings`, while `Infer.complete_letRec`
+    inverts `TypeOfHM.letRec` at the ERASED subject and holds them only at
+    `(S₀.onCtx ctx).eraseBounds` over `bindings.map Expr.eraseBounds`. Its two output
+    typings are un-erased for the same reason.
+
+    The repair is mechanical in shape — `RecSpecs.MonoTyped`/`PolyTyped` are
+    relation-parametric, so both hypotheses and conclusions just re-instantiate at
+    the erased context/bindings/types — but it is a statement change, so it must be
+    authored deliberately and its proof re-checked, not assumed to carry over. -/
 private theorem letRecFused_residual_setup
     {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {anns : List (Option PolyTy)}
     {bindings : List Expr} {dspecs : List RecSpec} {G L : List Nat} {K : List Nat}
