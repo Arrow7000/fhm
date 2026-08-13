@@ -1,58 +1,63 @@
 import FHM.InferW
 
-/-! # Spike: promote unannotated `letRec` members to annotated ones
+/-! # Promoting unannotated `letRec` members to annotated ones
 
-**Not in `defaultTargets`.** Companion to `briefs/complexity-budget.md` §3.4. Style follows
-the retired `SpikeLetRecMixed` (declarative derivations, no `Infer` involvement).
+Reference proof that the letRec promotion described in `briefs/complexity-budget.md` §3 is
+viable. Not part of the built library (not in `defaultTargets`); imported nowhere, it exists to
+be read alongside the brief by whoever lands the promotion. Derivations are declarative
+(`TypeOfElabHM`); `Infer` itself is deliberately not involved.
 
-## The question
+## The encoding
 
-`Infer.letRec` currently elaborates a mixed group into `Expr.letRecElab`: an `n`-deep nest of
-`letIn`s, each wrapping a whole copy of the group projected at one member. It does that
+`Infer.letRec` currently elaborates a mixed recursion group into `Expr.letRecElab`: an `n`-deep
+nest of `letIn`s, each wrapping a whole copy of the group projected at one member. It does that
 because an unannotated member is generalised for the body but has **no Λ-binder in the term**
-for `.var j tyArgs` to instantiate — so the Λ is hoisted outside as a `letIn` scheme.
+for `.var j tyArgs` to instantiate — so the Λ is hoisted outside as a `letIn` scheme. The nest
+changes the elaboratum's *shape*, which is what forces `Infer.sourceSound` to be a second full
+induction rather than a corollary of `Infer.sound`.
 
-The nest changes the elaboratum's *shape*, which is what forces `Infer.sourceSound` to be a
-second full induction rather than a corollary of `Infer.sound`.
+The alternative proved here puts the Λ *inside* the node, using the `anns` slot that is already
+there: promote each `.mono τ` member to `.poly ⟨|G|, Ty.closeOver G τ⟩` — generalising over the
+**full pool `G`**, not `Ty.genFilter G τ` — and retarget group-internal uses from `.var j []`
+to `.var j (Ty.bvarRangeFrom d |G|)`.
 
-**Proposed alternative:** put the Λ *inside* the node, using the `anns` slot that is already
-there. Promote each `.mono τ` member to `.poly ⟨|G|, Ty.closeOver G τ⟩` — generalising over
-the **full pool `G`**, not `Ty.genFilter G τ` — and retarget group-internal uses from
-`.var j []` to `.var j (Ty.bvarRangeFrom d |G|)`.
+The full pool is used rather than the filter so that every promoted member has the *same* arity
+`|G|` and the same binder positions: a sibling reference `.var j (bvarRange |G|)` then uniformly
+means "instantiate sibling `j` at **my** pool binders", which is exactly what reconstitutes the
+shared-monotype link that `RecSpecs.MonoTyped`'s "same `Xs` for the whole group" enforces. Under
+`genFilter` the arities differ per member and the indices would not line up.
 
-Full pool rather than the filter, because then every promoted member has the *same* arity
-`|G|` and the same binder positions, so a sibling reference `.var j (bvarRange |G|)` uniformly
-means "instantiate sibling `j` at **my** pool binders" — which is exactly what reconstitutes
-the shared-monotype link that `RecSpecs.MonoTyped`'s "same `Xs` for the whole group" enforces.
-Under `genFilter` the arities differ per member and the indices would not line up.
+This is legal because `PolyTy.WF M := ContainsBvarsUpTo M.paramCount M.body` is an *upper
+bound*, not a usage requirement — vacuous binders are well-formed. **`Expr` is unchanged
+throughout**: this is slot-filling, the same kind elaboration already does for `letIn`.
 
-Legal because `PolyTy.WF M := ContainsBvarsUpTo M.paramCount M.body` is an *upper bound*, not
-a usage requirement — vacuous binders are well-formed.
+## What this file contains
 
-**`Expr` is unchanged throughout.** This is slot-filling, the same kind elaboration already
-does for `letIn`.
+- `promoteScheme` / `promoteSpecs` / `promoteAnns` and their basic facts (well-formedness, every
+  slot filled). `promoteScheme_wf` and `promoteScheme_openVars` are the type-level core; the
+  latter shows that opening the promoted scheme at fresh `Ys` recovers exactly the shared-pool
+  opening the mono regime types members at.
+- Concrete derivations, mono and promoted, covering: no self-reference (`smoke_*_noref`),
+  self-reference (`smoke_*_selfref`), mutual recursion with a vacuous binder (`mutual_*`), and
+  index alignment across members using different pool slots (`mutual_mixed_*`).
+- The transport lemmas that make the promotion a *sound* transform rather than a syntactic
+  reshuffle:
+  - `retarget_transport`: a `TypeOfElabHM` derivation over a monomorphic env prefix carries to
+    one over the promoted schemes, with group-variable uses retargeted to `Vs`.
+  - `retarget_untransport`: the reverse ("forgetting") direction.
+  - `monoTyped_to_polyTyped` / `polyTyped_to_monoTyped`: the letRec-shaped corollaries, proving
+    the two `RecSpec` regimes are interchangeable at the promoted schemes. Together they are the
+    prerequisite for `Infer.sourceSound` becoming a decoration-forgetting corollary.
+- `promoted_preservation`: preservation for a promoted group, shown to be a corollary of the
+  general `TypeOfElabHM.preservation` (the promotion touches neither `Expr`, `SmallStep.Step`,
+  nor `TypeOfElabHM`).
+- `retargetStored` and its commute lemma `retargetStored_openTyVars`: the *stored*-form
+  traversal the real elaborator emits (with `Ty.bvarRangeFrom d |G|` at type-binder depth `d`),
+  and its commute with `openTyVars` — this discharges the `hopen` hypothesis that the transport
+  corollaries leave open.
 
-## Scope of this spike
-
-Deliberately narrow: does the **encoding** work at all? `P1`/`P2` are the type-level core;
-`S1`–`S2'` are concrete derivations, and `S2'` is make-or-break.
-
-Explicitly **out of scope**, and only worth writing if `S2'` goes through:
-
-- the general retarget traversal (a depth-tracking map over all `Expr` cases — `d` for
-  type-binder depth, `b` for term depth). `Expr.openTyVarsAux` already descends into `var`'s
-  `tyArgs` (`Core.lean:2344`) and `Ty.bvarRangeFrom` (`Core.lean:367`) is the depth-shifted
-  builder, so the pieces exist.
-- the general transport `MonoTyped … → PolyTyped … (promoteSpecs G specs) []`. Sketch: fix a
-  fresh `Ys`; rename `G ↦ Ys` through the mono derivation
-  (`TypeOfElabHM.typ_subst_preservation_uniform`); sibling `k`'s env entry changes from
-  `PolyTy.mkTrivial (Ty.renameG G Ys τₖ)` to `promoteScheme G τₖ`, and by `P2` the latter
-  opened at `Ys` *is* the former's body — so each sibling use is reconstituted by the `var`
-  rule at `tyArgs = Ys`, which is what the retarget put in the term.
-
-Note that once every member is `poly`, `RecSpecs.rhsCtx` stops depending on the pool opening,
-so `MonoTyped` becomes vacuous and `PolyTyped`'s outer `Xs` quantifier collapses — which is
-where the `RecSpec` mono/poly split goes away.
+A `#print axioms` guard at the bottom records that every headline result is axiom-clean
+(`propext`, `Classical.choice`, `Quot.sound` — no `sorryAx`).
 -/
 
 namespace SpikeLetRecPromote
@@ -99,20 +104,20 @@ theorem promoteAnns_all_some {G : List Nat} {specs : List RecSpec} :
   obtain ⟨σ, rfl⟩ := promoteSpecs_all_poly s hs
   exact ⟨σ, rfl⟩
 
-/-! ## P1 / P2 — the type-level core
+/-! ## The type-level core
 
-If these are one-liners, the brief's "full pool is *cheaper* than `genFilter`" claim holds:
-`PolyTy.genGroup`'s analogues (`Ty.renameG_eq_genFilter`, `PolyTy.genGroup_renameG`) have to
-route through filter-nodup / filter-disjointness bookkeeping to reach the same place — that
-is roughly half of `TypeOfElabHM.rewrap_hasScheme_mono`'s 79 lines. -/
+These two facts carry the whole encoding. They are one-liners, and their brevity is the point:
+the full-pool promotion needs none of the filter-nodup / filter-disjointness bookkeeping that
+`PolyTy.genGroup`'s analogues (`Ty.renameG_eq_genFilter`, `PolyTy.genGroup_renameG`) route
+through — roughly half of `TypeOfElabHM.rewrap_hasScheme_mono`'s 79 lines. -/
 
-/-- **P1.** The promoted scheme is well-formed even when `τ` mentions only part of `G`
-    (i.e. even with vacuous binders). The fact the whole encoding rests on. -/
+/-- The promoted scheme is well-formed even when `τ` mentions only part of `G` (i.e. even with
+    vacuous binders). The fact the whole encoding rests on. -/
 theorem promoteScheme_wf {G : List Nat} {τ : Ty} (hτ : τ.IsLC) :
     (promoteScheme G τ).WF :=
   Ty.closeOver_preserves_bvars hτ
 
-/-- **P2 — the pivotal type-level fact.** Opening the promoted scheme at `Xs` recovers exactly
+/-- The pivotal type-level fact. Opening the promoted scheme at `Xs` recovers exactly
     the shared pool opening the mono regime types members at. So `RecSpecs.PolyTyped`'s
     conclusion type for a promoted member is *literally* `RecSpecs.MonoTyped`'s conclusion
     type, with `Ys` playing the role of `Xs`.
@@ -125,10 +130,10 @@ theorem promoteScheme_openVars {G Xs : List Nat} {τ : Ty}
     (promoteScheme G τ).openVars Xs = Ty.renameG G Xs τ :=
   Ty.openVars_closeOver_rename hτ hG hlen hdisj
 
-/-! ## S1 / S2 — concrete smoke tests
+/-! ## Concrete derivations (warm-up)
 
-`S1` has no group-internal reference (so no retarget is needed); `S2` does, and is the
-retarget in miniature. Both use the empty context `⟨[], []⟩`.
+Mono and promoted derivations of the same programs, in the empty context `⟨[], []⟩`. They
+establish the encoding on concrete terms before the transport lemmas generalise it.
 
 In `.letRec anns bindings body`, `bindings` and `body` are in scope of the group's binders —
 member `j` at index `j`. Inside `bindings[0] = .lambda none e`, index `0` is the lambda
@@ -145,9 +150,10 @@ private def sσ : PolyTy := promoteScheme sG sτ
 example : sσ = ⟨1, .arrow (.bvar 0) (.bvar 0)⟩ := by
   rfl
 
-/-- **S1 (mono, as today).** The member is typed monomorphically at `fvar 0 → fvar 0` inside
-    the group and generalised for the body, which uses it at `int`. -/
-theorem S1_mono :
+/-- No group-internal reference, mono regime (as today): the member is typed monomorphically
+    at `fvar 0 → fvar 0` inside the group and generalised for the body, which uses it at
+    `int`. -/
+theorem smoke_mono_noref :
     TypeOfElabHM ⟨[], []⟩
       (.letRec [none] [.lambda none (.var 0 [])] (.var 0 [.prim .int]))
       (.arrow (.prim .int) (.prim .int)) := by
@@ -185,9 +191,9 @@ theorem S1_mono :
       ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim⟩
       (.arrow (.bvar rfl) (.bvar rfl))
 
-/-- **S1' (promoted).** The same program with the generalised scheme written into the `anns`
-    slot. Same constructor, same shape, same body — only the slot is filled. -/
-theorem S1_promoted :
+/-- The same program with the generalised scheme written into the `anns` slot. Same
+    constructor, same shape, same body — only the slot is filled. -/
+theorem smoke_promoted_noref :
     TypeOfElabHM ⟨[], []⟩
       (.letRec [some sσ] [.lambda none (.var 0 [])] (.var 0 [.prim .int]))
       (.arrow (.prim .int) (.prim .int)) := by
@@ -220,10 +226,9 @@ theorem S1_promoted :
       ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim⟩
       (.arrow (.bvar rfl) (.bvar rfl))
 
-/-- **S2 (mono, with self-reference).** `λx. self x`. Inside the binding, index `1` is the
-    group member; in the mono regime it is bound at `mkTrivial`, so its use carries
-    `tyArgs = []`. -/
-theorem S2_mono :
+/-- Self-reference, mono regime: `λx. self x`. Inside the binding, index `1` is the group
+    member; in the mono regime it is bound at `mkTrivial`, so its use carries `tyArgs = []`. -/
+theorem smoke_mono_selfref :
     TypeOfElabHM ⟨[], []⟩
       (.letRec [none] [.lambda none (.app (.var 1 []) (.var 0 []))] (.var 0 [.prim .int]))
       (.arrow (.prim .int) (.prim .int)) := by
@@ -265,14 +270,11 @@ theorem S2_mono :
       ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim⟩
       (.arrow (.bvar rfl) (.bvar rfl))
 
-/-- **S2' (promoted, retargeted) — the make-or-break test.** Same program, scheme in the slot,
-    and the self-reference retargeted from `.var 1 []` to `.var 1 [.bvar 0]`: the member
-    instantiating its own `1`-ary scheme at its own pool binder
-    (`Ty.bvarRangeFrom 0 1 = [.bvar 0]`).
-
-    If this goes through, the encoding works and §3.4 of the brief is viable. If it does not,
-    §3.4 is dead and the brief needs restating — **report rather than working around it.** -/
-theorem S2_promoted :
+/-- Self-reference, promoted: the same program, scheme in the slot, and the self-reference
+    retargeted from `.var 1 []` to `.var 1 [.bvar 0]` — the member instantiating its own `1`-ary
+    scheme at its own pool binder (`Ty.bvarRangeFrom 0 1 = [.bvar 0]`). This is the smallest
+    derivation that exercises the retarget, and the make-or-break case for the encoding. -/
+theorem smoke_promoted_selfref :
     TypeOfElabHM ⟨[], []⟩
       (.letRec [some sσ] [.lambda none (.app (.var 1 [.bvar 0]) (.var 0 []))]
         (.var 0 [.prim .int]))
@@ -311,27 +313,25 @@ theorem S2_promoted :
       ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim⟩
       (.arrow (.bvar rfl) (.bvar rfl))
 
-/-! ## D1 / D2 — the discriminating tests
+/-! ## Mutual recursion: the cases the warm-ups miss
 
-`S1`–`S2'` above are warm-ups: they use `n = 1` and a monotype that mentions **all** of `G`,
-so `Ty.genFilter G τ = G` and the full-pool choice is indistinguishable from the filtered one.
-They also have no siblings, so the mechanism that motivates the full pool — uniform arity, so
-that a *sibling* reference `.var j (bvarRange |G|)` lines up — is never exercised.
+The warm-ups use `n = 1` and a monotype that mentions **all** of `G`, so `Ty.genFilter G τ = G`
+and the full-pool choice is indistinguishable from the filtered one. They also have no
+siblings, so the mechanism that motivates the full pool — uniform arity, so that a *sibling*
+reference `.var j (bvarRange |G|)` lines up — is never exercised. These two do exercise it.
+Pool `G₂ = [0, 1]` throughout.
 
-These two do exercise it. Pool `G₂ = [0, 1]` throughout.
-
-- **D1** — genuine *mutual* reference, both members at `τA = fvar 0 → fvar 0`. Neither
+- `mutual_*` — genuine mutual reference, both members at `τA = fvar 0 → fvar 0`. Neither
   mentions pool var `1`, so each promoted scheme carries a **vacuous** second binder. Under
   `genFilter` both would be arity 1; under the full pool both are arity 2.
-- **D2** — members at `τA` and `τB = fvar 1 → fvar 1`. Under the full pool these are
+- `mutual_mixed_*` — members at `τA` and `τB = fvar 1 → fvar 1`. Under the full pool these are
   `⟨2, bvar 0 → bvar 0⟩` and `⟨2, bvar 1 → bvar 1⟩` — same arity, **different binder
   positions**, each vacuous in the other's slot. Under `genFilter` both would collapse to
   `⟨1, bvar 0 → bvar 0⟩` and member 1's index would *shift*. This is the index-alignment test.
 
-Note a consequence surfaced while writing these: promotion changes the **body**'s `tyArgs`
-arity too (mono body sees `PolyTy.genGroup G τ` at filtered arity; promoted body sees the
-full-pool scheme), so the retarget applies to the body as well as to the bindings. Record that
-in the brief if D1/D2 pass — it slightly widens the traversal described in §3.4.
+Consequence to carry into the implementation: promotion changes the **body**'s `tyArgs` arity
+too (the mono body sees `PolyTy.genGroup G τ` at filtered arity; the promoted body sees the
+full-pool scheme), so the retarget applies to the body as well as to the bindings.
 
 De Bruijn reminder: with `n = 2`, at group level member `j` is at index `j`; under one lambda,
 member 0 is at index 1 and member 1 at index 2. -/
@@ -352,8 +352,8 @@ example : σB = ⟨2, .arrow (.bvar 1) (.bvar 1)⟩ := by rfl
 example : PolyTy.genGroup G₂ τA = ⟨1, .arrow (.bvar 0) (.bvar 0)⟩ ∧
           PolyTy.genGroup G₂ τB = ⟨1, .arrow (.bvar 0) (.bvar 0)⟩ := by exact ⟨rfl, rfl⟩
 
-/-- **D1 (mono).** Mutually recursive pair, both at `τA`; body uses member 0 at `int`. -/
-theorem D1_mono :
+/-- Mutually recursive pair, both at `τA`, mono regime; body uses member 0 at `int`. -/
+theorem mutual_mono :
     TypeOfElabHM ⟨[], []⟩
       (.letRec [none, none]
         [.lambda none (.app (.var 2 []) (.var 0 [])),
@@ -415,10 +415,10 @@ theorem D1_mono :
       ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim⟩
       (.arrow (.bvar rfl) (.bvar rfl))
 
-/-- **D1' (promoted).** Same group, schemes in the slots, sibling references retargeted to
-    `[.bvar 0, .bvar 1]`, body at the full-pool arity. Exercises: mutual sibling reference,
-    a vacuous binder, uniform arity 2, and a 2-element retargeted `tyArgs`. -/
-theorem D1_promoted :
+/-- Same group, promoted: schemes in the slots, sibling references retargeted to
+    `[.bvar 0, .bvar 1]`, body at the full-pool arity. Exercises: mutual sibling reference, a
+    vacuous binder, uniform arity 2, and a 2-element retargeted `tyArgs`. -/
+theorem mutual_promoted :
     TypeOfElabHM ⟨[], []⟩
       (.letRec [some σA, some σA]
         [.lambda none (.app (.var 2 [.bvar 0, .bvar 1]) (.var 0 [])),
@@ -473,8 +473,8 @@ theorem D1_promoted :
       ⟨rfl, by intro t ht; simp only [List.mem_cons, List.not_mem_nil, or_false] at ht; rcases ht with rfl | rfl <;> exact .prim⟩
       (.arrow (.bvar rfl) (.bvar rfl))
 
-/-- **D2 (mono).** Members at `τA` and `τB` — different pool usage, self-recursive each. -/
-theorem D2_mono :
+/-- Members at `τA` and `τB`, mono regime — different pool usage, self-recursive each. -/
+theorem mutual_mixed_mono :
     TypeOfElabHM ⟨[], []⟩
       (.letRec [none, none]
         [.lambda none (.app (.var 1 []) (.var 0 [])),
@@ -538,14 +538,11 @@ theorem D2_mono :
       ⟨rfl, by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .prim⟩
       (.arrow (.bvar rfl) (.bvar rfl))
 
-/-- **D2' (promoted) — the index-alignment test.** `σA` and `σB` are vacuous in *opposite*
-    binder slots but share arity 2, so the single uniform retarget `[.bvar 0, .bvar 1]` must
-    work for both. Under `genFilter` it could not: the two schemes would have different binder
-    positions at the same index.
-
-    If this fails, the full-pool choice does not do what §3.4 claims and the brief needs
-    restating — **report the obstruction, do not weaken the statement.** -/
-theorem D2_promoted :
+/-- The index-alignment test, promoted: `σA` and `σB` are vacuous in *opposite* binder slots
+    but share arity 2, so the single uniform retarget `[.bvar 0, .bvar 1]` must work for both.
+    Under `genFilter` it could not: the two schemes would have different binder positions at
+    the same index. -/
+theorem mutual_mixed_promoted :
     TypeOfElabHM ⟨[], []⟩
       (.letRec [some σA, some σB]
         [.lambda none (.app (.var 1 [.bvar 0, .bvar 1]) (.var 0 [])),
@@ -600,11 +597,11 @@ theorem D2_promoted :
       ⟨rfl, by intro t ht; simp only [List.mem_cons, List.not_mem_nil, or_false] at ht; rcases ht with rfl | rfl <;> exact .prim⟩
       (.arrow (.bvar rfl) (.bvar rfl))
 
-/-! ## T — the transport (THE GATE)
+/-! ## The transport
 
-`D1`/`D2` exhibit mono and promoted derivations *independently* for concrete programs. This
-section attempts the general claim they do not establish: that a mono-regime derivation can be
-**converted** into a promoted one.
+The concrete derivations above exhibit mono and promoted derivations *independently*. This
+section proves the general claim they do not establish: that a mono-regime derivation can be
+**converted** into a promoted one (and back).
 
 ### Why this is new work
 
@@ -617,14 +614,11 @@ today, because `letRecElab` sidesteps it by hoisting the Λ outside instead.
 
 ### Scope
 
-Stated on **opened** terms: `Vs` are concrete `Ty`s (the pool opening as `fvar`s), not `bvar`s.
-That removes type-binder depth tracking from the retarget entirely — `Vs` is depth-independent
-— leaving only term-binder depth `b`. The stored-vs-opened commute
-(`(storedRetarget e).openTyVars Ys = retargetVars … (e.openTyVars Ys)`) is bookkeeping for
-later; it is not the gate.
-
-**`T1` is the gate.** If it holds, the promotion is a valid refactor modulo bookkeeping. If it
-fails, §3.4 of the brief is dead and should be struck. -/
+The transport is stated on **opened** terms: `Vs` are concrete `Ty`s (the pool opening as
+`fvar`s), not `bvar`s. That removes type-binder depth tracking from the retarget entirely —
+`Vs` is depth-independent — leaving only term-binder depth `b`. The stored-vs-opened commute
+(`(retargetStored … e).openTyVars Ys = retargetVars … (e.openTyVars Ys)`) is a separate lemma
+at the end of the file. -/
 
 mutual
 
@@ -657,7 +651,7 @@ def retargetGroup (n : Nat) (Vs : List Ty) (b : Nat) : List Expr → List Expr
 
 end
 
-/-! ### T1 machinery: retarget bookkeeping -/
+/-! ### Retarget bookkeeping -/
 
 /-- Instantiating a type with the empty argument list recovers the type itself
     (impossible for any body containing a `bvar`). -/
@@ -831,9 +825,9 @@ theorem retargetBranches_mem {n b : Nat} {Vs : List Ty} :
           · rcases ih hmem with ⟨pat', body', hmem', heq⟩
             exact ⟨pat', body', List.mem_cons_of_mem _ hmem', heq⟩
 
-/-- **T1 — THE GATE.** A `TypeOfElabHM` derivation over an env prefix of *monomorphic* entries
-    transports to one over promoted **schemes**, provided each scheme instantiated at `Vs`
-    yields the corresponding monotype, and group-variable uses are retargeted to `Vs`.
+/-- A `TypeOfElabHM` derivation over an env prefix of *monomorphic* entries transports to one
+    over promoted **schemes**, provided each scheme instantiated at `Vs` yields the
+    corresponding monotype, and group-variable uses are retargeted to `Vs`.
 
     This is the `TypeOfElabHM` analogue of `TypeOfHM.weaken_schemes`, with the term rewrite
     that the type-passing `var` rule forces.
@@ -843,7 +837,7 @@ theorem retargetBranches_mem {n b : Nat} {Vs : List Ty} :
     push `b`. The `var` case is where the content is: in the mono env the entry is
     `PolyTy.mkTrivial μₖ` with `InstantiatesTo [] μₖ`; in the promoted env it is `Mₖ` with
     `InstantiatesTo Vs μₖ` — the same result type, which is exactly `hinst`. -/
-theorem T1_retarget_transport
+theorem retarget_transport
     {ctors : CtorEnv} {env : Env} {e : Expr} {τ : Ty}
     {monos : List Ty} {Ms : List PolyTy} {Vs : List Ty}
     (hVsLC : ∀ V ∈ Vs, V.IsLC)
@@ -1031,12 +1025,13 @@ theorem T1_retarget_transport
             hwf.length, Nat.add_comm] using hb
   exact H h [] (by simp)
 
-/-! ### T1' machinery — the forgetting direction
+/-! ### The forgetting direction
 
-`T1` transports a derivation UP (mono env, `tyArgs = []` → scheme env, `tyArgs = Vs`). The
-converse — the `T3'` forgetting map — must go DOWN: the scheme env's `var` rule pins
-`tyArgs = Vs` (the term is the retarget), the instantiation is deterministic (`det_same`), so
-each use collapses to the shared monotype and the `var` becomes `tyArgs = []`. -/
+`retarget_transport` transports a derivation UP (mono env, `tyArgs = []` → scheme env,
+`tyArgs = Vs`). The converse — used by `polyTyped_to_monoTyped` below — must go DOWN: the scheme
+env's `var` rule pins `tyArgs = Vs` (the term is the retarget), the instantiation is
+deterministic (`det_same`), so each use collapses to the shared monotype and the `var` becomes
+`tyArgs = []`. -/
 
 /-- Same-`tyArgs` instantiation is deterministic: one scheme body instantiated at the same
     arguments gives one result type. No boundedness side condition (unlike `det_agree`) — the
@@ -1099,8 +1094,8 @@ theorem Ty.substFvars_lc {s : List (Nat × Ty)} {τ : Ty}
         (Ty.IsLC.substFvar (hs (Z, U) List.mem_cons_self) hτ)
 
 /-- `renameG` (a renaming to fresh `fvar`s) preserves local-closedness. Public copy of the
-    private `Ty.renameG_isLC` (`Core.lean:5477`), which `T3'` needs for the forgetting map's
-    `hmonoLC` hypothesis. -/
+    private `Ty.renameG_isLC` (`Core.lean:5477`), which `polyTyped_to_monoTyped` needs for the
+    forgetting map's `hmonoLC` hypothesis. -/
 theorem Ty.renameG_lc {G Xs : List Nat} {τ : Ty} (hτ : τ.IsLC) : (Ty.renameG G Xs τ).IsLC := by
   unfold Ty.renameG
   exact Ty.substFvars_lc (fun p hp => by
@@ -1149,16 +1144,16 @@ theorem retargetGroup_zip_mem_map {n b : Nat} {Vs : List Ty} :
           · rcases ih ss hp with ⟨q, hq, h1, h2⟩
             exact ⟨q, List.mem_cons_of_mem _ hq, h1, h2⟩
 
-/-- **T1' — the forgetting direction.** A `TypeOfElabHM` derivation over a promoted (scheme) env
-    prefix, on a term whose group-window `var`s carry `Vs`, degrades to a derivation over the
-    same source term with those `var`s carrying `[]`, in the monomorphic env prefix — provided
-    each scheme instantiated at `Vs` yields the monotype (`hinst`) and the monotypes are locally
-    closed. The exact reverse of `T1_retarget_transport`; this is the `T3'` forgetting map.
+/-- The forgetting direction: a `TypeOfElabHM` derivation over a promoted (scheme) env prefix,
+    on a term whose group-window `var`s carry `Vs`, degrades to a derivation over the same
+    source term with those `var`s carrying `[]`, in the monomorphic env prefix — provided each
+    scheme instantiated at `Vs` yields the monotype (`hinst`) and the monotypes are locally
+    closed. The exact reverse of `retarget_transport`.
 
-    Proof mirrors `T1` case-by-case, with the roles of the env prefixes swapped and an extra
-    hypothesis threading the SOURCE term `e₁` (the hypothesis derivation is over the retarget
-    of `e₁`), so the `var` case knows the pinned `tyArgs` are `Vs`. -/
-theorem retargetUntransport
+    Proof mirrors `retarget_transport` case-by-case, with the roles of the env prefixes swapped
+    and an extra hypothesis threading the SOURCE term `e₁` (the hypothesis derivation is over
+    the retarget of `e₁`), so the `var` case knows the pinned `tyArgs` are `Vs`. -/
+theorem retarget_untransport
     {ctors : CtorEnv} {env : Env} {e : Expr} {τ : Ty}
     {monos : List Ty} {Ms : List PolyTy} {Vs : List Ty}
     (hmonoLC : ∀ μ ∈ monos, μ.IsLC)
@@ -1573,7 +1568,7 @@ theorem retargetUntransport
         | _ => simp only [retargetVars] at heq'; cases heq'
   exact H h [] e (by simp) (by rfl)
 
-/-! ### T2 machinery -/
+/-! ### The letRec corollary (mono → poly) -/
 
 /-- A member of a zip is the pair of the two lists' `getElem`s at a common index. -/
 theorem List.zip_mem_getElem {α β : Type} {l1 : List α} {l2 : List β} {p : α × β}
@@ -1619,8 +1614,9 @@ theorem Forall₂_map_of_forall {α β γ : Type} {P : β → γ → Prop} {f : 
       exact List.Forall₂.cons (h a (List.mem_cons_self ..))
         (ih (fun x hx => h x (List.mem_cons_of_mem _ hx)))
 
-/-- The pivotal fact for T2: a promoted scheme instantiated at the fresh `Ys` recovers the
-    `G ↦ Ys` renaming of its monotype — exactly `T1`'s `hinst` hypothesis at each member. -/
+/-- The pivotal fact for `monoTyped_to_polyTyped`: a promoted scheme instantiated at the fresh
+    `Ys` recovers the `G ↦ Ys` renaming of its monotype — exactly `retarget_transport`'s
+    `hinst` hypothesis at each member. -/
 theorem promoteScheme_instantiatesTo {G Ys : List Nat} {μ : Ty}
     (hμ : μ.IsLC) (hG : G.Nodup) (hlen : Ys.length = G.length)
     (hdisj : ∀ g ∈ G, g ∉ Ys) :
@@ -1633,17 +1629,18 @@ theorem promoteScheme_instantiatesTo {G Ys : List Nat} {μ : Ty}
       (Ty.openVars_closeOver_rename hμ hG hlen hdisj).symm]
     exact InstantiatesBy.openVars (Ty.closeOver_preserves_bvars hμ) (Nat.le_of_eq hlen.symm)
 
-/-- **T2.** The letRec-shaped corollary: a mono group's `RecSpecs.MonoTyped` premise yields the
-    promoted group's `RecSpecs.PolyTyped` premise at the full-pool schemes.
+/-- The letRec-shaped corollary, mono → poly: a mono group's `RecSpecs.MonoTyped` premise yields
+    the promoted group's `RecSpecs.PolyTyped` premise at the full-pool schemes.
 
-    Given `T1`, the remaining content is `promoteScheme_openVars` (P2) to see that
+    Given `retarget_transport`, the remaining content is `promoteScheme_openVars` to see that
     `(promoteScheme G τ).openVars Ys` **is** `Ty.renameG G Ys τ` — so the promoted member's
     target type is literally the mono member's — plus the observation that once every spec is
     `poly`, `RecSpecs.rhsCtx` no longer depends on the pool opening.
 
-    `bindings'` is left universally quantified with its defining equation as a hypothesis, so
-    T2 does not depend on the stored-vs-opened commute. -/
-theorem T2_monoTyped_to_polyTyped
+    `bindings'` is left universally quantified with its defining equation as a hypothesis
+    (`hopen`), so this lemma does not depend on the stored-vs-opened commute
+    (`retargetStored_openTyVars`). -/
+theorem monoTyped_to_polyTyped
     {ctx : Ctx} {bindings bindings' : List Expr} {monos : List Ty} {G L : List Nat}
     (hGnodup : G.Nodup)
     (hmonoLC : ∀ μ ∈ monos, μ.IsLC)
@@ -1698,85 +1695,55 @@ theorem T2_monoTyped_to_polyTyped
     intro V hV
     rcases List.mem_map.mp hV with ⟨y, _, rfl⟩
     exact .fvar
-  have hT1 := T1_retarget_transport (Ms := monos.map (promoteScheme G ·))
+  have htrans := retarget_transport (Ms := monos.map (promoteScheme G ·))
     (monos := monos.map (Ty.renameG G Ys ·)) (Vs := Ys.map Ty.fvar) (env := ctx.env)
     (ctors := ctx.ctors) (e := bindings[k]) (τ := Ty.renameG G Ys (monos[k]))
     hVsLC hinst_list hmono_der
   rw [hp1, hσ']
   rw [hopen Ys hfYs' (bindings[k], bindings'[k]) hpair]
   rw [promoteScheme_openVars (hmonoLC (monos[k]) hmonoLCmem) hGnodup hfYs'.length hdisj]
-  simpa only [RecSpecs.rhsCtx, RecSpec.rhsEntry, List.map_map, List.length_map] using hT1
+  simpa only [RecSpecs.rhsCtx, RecSpec.rhsEntry, List.map_map, List.length_map] using htrans
 
-/-! ## T3 — the CONVERSE, and whether the §2.2 payoff is real
+/-! ## The converse (poly → mono)
 
-`T2` promotes mono → poly. The headline reason to do this refactor is §2.2 of the brief: with
-elaboration shape-preserving, `Infer.sourceSound` should stop being a second 656-line induction
+`monoTyped_to_polyTyped` promotes mono → poly. The headline reason to do this refactor is that
+with elaboration shape-preserving, `Infer.sourceSound` should stop being a second full induction
 and become a corollary of `Infer.sound` via a decoration-forgetting faithfulness lemma
 `Decorates e e' → TypeOfElabHM ctx e' τ → TypeOfHM ctx e τ`.
 
-**That lemma needs the CONVERSE of `T2` at `letRec`, and the converse looks false.** The source
-node keeps `anns = none` for unannotated members, and `RecSpecs.WF.anns_eq` forces those specs
-to be `.mono` — so a source derivation *must* use `MonoTyped`, where every sibling use sits at
-one shared monotype. An arbitrary elaborated derivation of the promoted (all-`poly`) node may
-instantiate a sibling at *different* types in different places, which `MonoTyped` cannot
-express. Promotion is sound because we *construct* the poly derivation from a mono one; nothing
-constrains an arbitrary one.
+That lemma needs the CONVERSE of `monoTyped_to_polyTyped` at `letRec`. The converse is true, but
+it is not automatic: it requires two hypotheses that a first attempt will omit, so they are
+stated explicitly and documented here.
 
-If that is right, the §2.2 payoff needs qualifying: `sourceSound` would still need
-`Infer`-specific information at `letRec` rather than falling out of a pure term relation. It
-may still be much cheaper than today (same tree shape), but "it becomes a corollary" would be
-too strong.
+**Why the converse is not vacuous.** The source node keeps `anns = none` for unannotated
+members, and `RecSpecs.WF.anns_eq` forces those specs to be `.mono` — so a source derivation
+*must* use `MonoTyped`, where every sibling use sits at one shared monotype. An arbitrary
+elaborated derivation of the promoted (all-`poly`) node looks as though it could instantiate a
+sibling at *different* types in different places, which `MonoTyped` cannot express. That
+objection does not in fact bite, for a reason worth recording: `TypeOfElabHM` reads `tyArgs`
+from the *term*, and `retargetVars` assigns *every* in-window use the *same* `Vs`, so the term
+itself pins one shared instance per sibling — exactly what `MonoTyped` says. Type-passing, the
+feature that causes much of the complexity elsewhere, is what makes the converse hold.
 
-`T3` states the converse directly. **A failure here is the expected and useful outcome** — the
-asymmetry between `T2` (proved) and `T3` is itself the finding. Do not contort to force it. -/
+Two hypotheses are still needed, both easy to miss:
 
-/-- **T3 — expected to FAIL.** The converse of `T2`: does an arbitrary `PolyTyped` derivation
-    at the promoted schemes yield the `MonoTyped` derivation the *source* node requires?
+- **(length)** the promoted and source binding lists must have equal length
+  (`hlen' : bindings'.length = bindings.length`); otherwise the poly derivation cannot be
+  indexed at member `k`.
+- **(source `tyArgs`)** `retargetVars` *overwrites* `tyArgs`, so the retarget does not constrain
+  the *source*'s group-use `tyArgs` at all: a source binding carrying `.var 1 [int]` maps to the
+  same retargeted term as one carrying `.var 1 []`, but only the latter can be `MonoTyped`
+  (arity 0). This is expressed by requiring that retargeting to `[]` is the identity on the
+  source bindings (`hsrcNil`), i.e. every in-window use already carries `[]`.
 
-    If this is false, report the obstruction precisely: the case, the goal, and whether the
-    blocker is what §T3's docstring predicts (a sibling instantiated at two different types,
-    inexpressible in `MonoTyped`). A concrete counterexample would be ideal but the obstruction
-    alone is enough. -/
-theorem T3_polyTyped_to_monoTyped
-    {ctx : Ctx} {bindings bindings' : List Expr} {monos : List Ty} {G L : List Nat}
-    (hGnodup : G.Nodup)
-    (hmonoLC : ∀ μ ∈ monos, μ.IsLC)
-    (hlen : bindings.length = monos.length)
-    (hpoly : RecSpecs.PolyTyped TypeOfElabHM ctx bindings'
-      (monos.map (fun μ => RecSpec.poly (promoteScheme G μ))) [] (L ++ G))
-    (hopen : ∀ Ys, FreshNames (L ++ G) G.length Ys →
-      ∀ p ∈ bindings.zip bindings',
-        p.2.openTyVars Ys
-          = retargetVars monos.length (Ys.map Ty.fvar) 0 p.1) :
-    RecSpecs.MonoTyped TypeOfElabHM ctx bindings (monos.map RecSpec.mono) G (L ++ G) := by
-  sorry
+Provided the faithfulness lemma's `Decorates` relation is *tight* at `letRec` (uniform `tyArgs`
+on group-member uses — which is what `Infer` produces), the converse makes `Infer.sourceSound` a
+decoration-forgetting corollary. -/
 
-/-! ## T3' — the converse, with the hypotheses `T3` was missing
-
-The `T3` probe found `T3` false, but for two **statement bugs of mine**, not for the predicted
-reason:
-
-- **(A)** nothing related `bindings'.length` to `bindings.length`, so `hpoly` could not even be
-  indexed at member `k`;
-- **(B)** `retargetVars` *overwrites* `tyArgs`, so `hopen` left the **source**'s group-use
-  `tyArgs` unconstrained — a source binding carrying `.var 1 [int]` maps to the same retargeted
-  term as one carrying `.var 1 []`, but only the latter can be `MonoTyped` (arity 0).
-
-More importantly it refuted the predicted obstruction. I argued an arbitrary poly derivation
-could instantiate a sibling at different types at different sites, which `MonoTyped` cannot
-express. **It cannot** — `TypeOfElabHM` reads `tyArgs` from the *term*, `hopen` pins the term
-to be the retarget, and `retargetVars` assigns *every* in-window use the *same* `Vs`. So the
-term itself forces one shared instance per sibling, which is exactly what `MonoTyped` says.
-Type-passing — the feature that causes so much of the complexity elsewhere — is what rescues
-this.
-
-`T3'` restores both hypotheses. **If it holds, the §2.2 payoff is real** and `Infer.sourceSound`
-can become a corollary via a decoration-forgetting lemma, provided that lemma's `Decorates`
-relation is *tight* at `letRec` (uniform `tyArgs` on group-member uses — which is what `Infer`
-produces). (B) is expressed with the existing machinery: retargeting to `[]` is the identity
-exactly when every in-window use already carries `[]`. -/
-
-theorem T3'_polyTyped_to_monoTyped
+/-- The converse of `monoTyped_to_polyTyped`: a `PolyTyped` derivation at the promoted schemes
+    yields the `MonoTyped` derivation the source node requires, given the length relation
+    (`hlen'`) and the source-`tyArgs` condition (`hsrcNil`) documented above. -/
+theorem polyTyped_to_monoTyped
     {ctx : Ctx} {bindings bindings' : List Expr} {monos : List Ty} {G L : List Nat}
     (hGnodup : G.Nodup)
     (hmonoLC : ∀ μ ∈ monos, μ.IsLC)
@@ -1843,45 +1810,41 @@ theorem T3'_polyTyped_to_monoTyped
     intro μ hμ
     rcases List.mem_map.mp hμ with ⟨μ₀, hμ₀, rfl⟩
     exact Ty.renameG_lc (hmonoLC μ₀ hμ₀)
-  have hT1' := retargetUntransport (Ms := monos.map (promoteScheme G ·))
+  have huntrans := retarget_untransport (Ms := monos.map (promoteScheme G ·))
     (monos := monos.map (Ty.renameG G Xs ·)) (Vs := Xs.map Ty.fvar) (env := ctx.env)
     (ctors := ctx.ctors) (e := bindings[k]) (τ := Ty.renameG G Xs (monos[k]))
     hmonoLC' hVsLC hinst_list (by simpa [List.length_map] using hpolyD')
   have hsrc : retargetVars monos.length [] 0 (bindings[k]) = bindings[k] :=
     hsrcNil (bindings[k]) (List.getElem_mem hkBind)
   rw [hp1]
-  simpa only [RecSpecs.rhsCtx, RecSpec.rhsEntry, List.map_map, List.length_map, hsrc] using hT1'
+  simpa only [RecSpecs.rhsCtx, RecSpec.rhsEntry, List.map_map, List.length_map, hsrc] using huntrans
 
-/-! ## PRES — preservation for the promoted node costs nothing
+/-! ## Preservation for a promoted group
 
 The promotion changes neither `Expr`, nor `SmallStep.Step`, nor `TypeOfElabHM`. A promoted
 `letRec` is an ordinary well-typed term of the existing language, so the *already-proved*
-`TypeOfElabHM.preservation` (`Core.lean:9442`) applies to it directly — no new metatheory.
-
-This was listed as an open risk in `briefs/complexity-budget.md` §3.6 three times. It is not a
-risk; it is a corollary. This theorem exists to make that concrete rather than asserted. -/
+`TypeOfElabHM.preservation` (`Core.lean:9442`) applies to it directly — no new metatheory. The
+theorem here makes that concrete: preservation for a promoted group is a one-line application of
+the general lemma. -/
 
 open SmallStep (Step) in
 
-theorem PRES_D1_promoted {e' : Expr}
+theorem promoted_preservation {e' : Expr}
     (hstep : Step
       (.letRec [some σA, some σA]
         [.lambda none (.app (.var 2 [.bvar 0, .bvar 1]) (.var 0 [])),
          .lambda none (.app (.var 1 [.bvar 0, .bvar 1]) (.var 0 []))]
         (.var 0 [.prim .int, .prim .int])) e') :
     TypeOfElabHM ⟨[], []⟩ e' (.arrow (.prim .int) (.prim .int)) :=
-  TypeOfElabHM.preservation hstep D1_promoted
+  TypeOfElabHM.preservation hstep mutual_promoted
 
-/-! ## STORED — the stored-form retarget, and the last missing link
+/-! ## The stored-form retarget
 
 `retargetVars` works on *opened* terms (`Vs` concrete, depth-independent). The real elaborator
 must emit the **stored** form, with `Ty.bvarRangeFrom d |G|` at type-binder depth `d`. The
-commute below is exactly what discharges `T2`/`T3'`'s `hopen` hypothesis, after which the
-transport chain is closed end to end.
-
-This is the "200–400 line depth-tracking traversal" §3.4 estimated. Its actual size is the
-best available proxy for whether the remaining refactor is mechanical or a slog — so if you
-prove it, **report the line count**. -/
+commute lemma at the end of this section is exactly what discharges `monoTyped_to_polyTyped` /
+`polyTyped_to_monoTyped`'s `hopen` hypothesis, after which the transport chain is closed end to
+end. -/
 
 mutual
 
@@ -2035,8 +1998,8 @@ theorem retargetStored_openTyVarsAux {n gLen d b : Nat} {Ys : List Nat} {e : Exp
       rw [RecGroup.openTyVarsAux_length]
       rw [hbs' (b + bs.length) anns]
 
-/-- **STORED — the last missing link.** Opening the stored-form retarget at `Ys` gives the
-    opened-form retarget at `Ys`-as-fvars. Discharges `hopen`. -/
+/-- The stored/open commute: opening the stored-form retarget at `Ys` gives the opened-form
+    retarget at `Ys`-as-fvars. This discharges `hopen`. -/
 theorem retargetStored_openTyVars {n gLen b : Nat} {Ys : List Nat} {e : Expr}
     (hYsLen : Ys.length = gLen) :
     (retargetStored n gLen 0 b e).openTyVars Ys
@@ -2045,19 +2008,18 @@ theorem retargetStored_openTyVars {n gLen b : Nat} {Ys : List Nat} {e : Expr}
 
 /-! ## Axiom guard
 
-Living check that the spike's conclusions rest only on the standard axioms — in particular
-that neither the gate (`T1`) nor the concrete derivations smuggle in `sorryAx`. Should print
-`[propext, Classical.choice, Quot.sound]` for every entry. -/
+Records that the results rest only on the standard axioms (`propext`, `Classical.choice`,
+`Quot.sound`) — no `sorryAx`. -/
 
-#print axioms T1_retarget_transport
-#print axioms T2_monoTyped_to_polyTyped
-#print axioms T3'_polyTyped_to_monoTyped
+#print axioms retarget_transport
+#print axioms monoTyped_to_polyTyped
+#print axioms polyTyped_to_monoTyped
 #print axioms retargetStored_openTyVars
-#print axioms PRES_D1_promoted
+#print axioms promoted_preservation
 #print axioms promoteScheme_wf
 #print axioms promoteScheme_openVars
-#print axioms S2_promoted
-#print axioms D1_promoted
-#print axioms D2_promoted
+#print axioms smoke_promoted_selfref
+#print axioms mutual_promoted
+#print axioms mutual_mixed_promoted
 
 end SpikeLetRecPromote

@@ -1,10 +1,11 @@
 # Where FHM's complexity budget goes
 
-**Status:** Analysis, 2026-08-12. Written to answer "why is Core 10k and InferW 20k, and can we
-make this simpler before the next big proof campaign?"
+This document explains why the type-inference stack is the size it is (`Core.lean` ~11k lines,
+`InferW.lean` ~19k), identifies the single highest-leverage simplification — the `letRec`
+promotion described in §3 — and lays out the work to land it. It is written for whoever carries
+out that refactor.
 
-Companion to `next-agent-brief-path-r-dual-stack.md` (active work) — this brief is about
-*design*, not the current farm.
+Companion reference: `FHM/SpikeLetRecPromote.lean`, which proves the encoding is viable.
 
 ---
 
@@ -21,11 +22,11 @@ compound, and `letRec` is where all three meet:
 
 Fixing (3) is the highest-leverage move and — per §3.4 — does **not require changing `Expr`**.
 
-**Status (2026-08-13):** spiked over three rounds in `FHM/SpikeLetRecPromote.lean`. The gate —
-the general transport `MonoTyped → PolyTyped` at the promoted schemes — is **proved and
-axiom-clean** (§3.6). What remains is bookkeeping-shaped, not existential: the stored-form
-retarget traversal, rewiring `Infer.letRec`, preservation, and the Path R erase-commutes. The
-effort estimate remains the weak part of this brief; the *viability* question is settled.
+The viability of (3) is settled: the general transport `MonoTyped → PolyTyped` at the promoted
+schemes is proved and axiom-clean in `FHM/SpikeLetRecPromote.lean` (see §3.5). What remains is
+bookkeeping-shaped, not existential: the stored-form retarget traversal, rewiring `Infer.letRec`,
+preservation, and the Path R erase-commutes (§3.6). The effort estimate is the weak part of this
+document; the *viability* is not in question.
 
 ---
 
@@ -149,7 +150,7 @@ Bruijn `shiftFrom` renumbering. O(n²).
 
 ### 3.4 The fix, and whether it touches `Expr`
 
-**It appears not to.** Put the Λ *inside* the node by using the `anns` slot that is already
+**It does not.** Put the Λ *inside* the node by using the `anns` slot that is already
 there — promote every unannotated member to an annotated one at its generalised scheme:
 
 > Elaborate a mono member with `anns[j] := some (∀G. τⱼ)` — generalising over the **full
@@ -175,7 +176,7 @@ renaming-lemma set — but it should come out **shorter**, not longer. Roughly h
 `Ty.mem_of_mem_genFilter`). With a full pool, `(∀G.τ).openVars Ws` is just `Ty.renameG G Ws τ`
 and all of that vanishes.
 
-Consequences if it holds:
+Consequences:
 
 - The elaboratum is a plain `.letRec` with filled-in `anns`. **`Expr` unchanged** — this is
   ordinary slot-filling, the same kind elaboration already does for `letIn`.
@@ -193,171 +194,117 @@ Consequences if it holds:
 - Operationally this is the *existing annotated path* (`Step.letRecUnfold` +
   `RecGroup.shieldDepths`/`instTyAux`), now uniform in depth instead of mixed.
 
-### 3.5 Known costs and open risks
+### 3.5 What the reference proof establishes
 
-Honest accounting — this is a sketch, not a verified plan.
+`FHM/SpikeLetRecPromote.lean` proves the encoding works. It is a standalone reference, not part
+of the built library, with derivations stated declaratively (`TypeOfElabHM`, no `Infer`). The
+headline results, by role:
 
-1. **New term rewrite.** Group-internal references inside mono RHSs are currently `var j []`,
-   valid because `rhsEntry` binds siblings at `mkTrivial` (paramCount 0). After promotion the
-   sibling has paramCount `|G|`, so `Ty.AreLC polyTy.paramCount tyArgs` forces
-   `var j (bvarRange |G|)`. That needs a depth-tracking `RecGroup`-level map plus its commute
-   lemmas with `substTyFvars` / `eraseBounds`. Estimate 200–400 lines. It is shape-preserving,
-   so it does not cost the §2.2 win.
-2. **Soundness transport.** `Infer.sound`'s letRec case must derive `PolyTyped` for promoted
-   members: rename `G ↦ Ys` through W's mono derivation, then reconstitute each sibling use as
-   `var j` instantiated at `Ys`. The ammunition exists —
-   `TypeOfElabHM.typ_subst_preservation_uniform` for the renaming, and the whole
-   `renameG`/`closeOver`/`openVars` transport kit exercised by
-   `rewrap_hasScheme_mono` (`Core.lean:9247`). Not yet checked end to end.
-3. **Preservation.** Expected *easier*, and there is direct evidence.
-   `TypeOfElabHM.rewrap_hasScheme_mono` / `_poly` (`Core.lean:9247`, `9326`) already prove the
-   load-bearing semantic fact — a member of the re-wrapped group
-   `.letRec anns bindings eⱼ` **has its body scheme, at arbitrary instantiation `Vs`**. That
-   is exactly what `letRecElab` is encoding syntactically, which is good evidence the
-   promotion is semantically right rather than a reshuffle. And `rewrap_hasScheme_poly`'s key
-   step — `instTy Vs` is a no-op on the inner group because every member is `TyBvarBounded`
-   at its own annotation's arity — carries over directly: promoted mono members are closed
-   over `G`, hence bounded at `|G|`, hence the same argument applies with *uniform* depth
-   instead of the current mixed `shieldDepths`.
-4. **Completeness is unaffected** — it is stated against `TypeOfHM` on the *source* term,
-   whose `anns` are still `none`.
+**The encoding.**
 
-### 3.6 Spike results — three rounds (`FHM/SpikeLetRecPromote.lean`, 2026-08-12/13)
+- `promoteScheme_wf` — the promoted scheme is well-formed even with vacuous binders (one line,
+  via `Ty.closeOver_preserves_bvars`). This is the fact the whole design rests on.
+- `promoteScheme_openVars` — opening the promoted scheme at fresh `Ys` recovers exactly
+  `Ty.renameG G Ys τ` (one line, via `Ty.openVars_closeOver_rename`), with no
+  filter-nodup / filter-disjointness round-trip. Direct support for "full pool is cheaper than
+  `genFilter`": compare the ~40 lines of filter bookkeeping inside `rewrap_hasScheme_mono`.
+- Concrete derivations (`smoke_*_noref`, `smoke_*_selfref`, `mutual_*`, `mutual_mixed_*`)
+  typecheck the promoted node as a plain `.letRec` with the slot filled, covering no
+  self-reference, self-reference, mutual recursion with a vacuous binder, and index alignment
+  across members using different pool slots. A shape check also records that `PolyTy.genGroup`
+  collapses the two distinct schemes of the index-alignment case to the same arity-1 scheme, so
+  the full-pool choice is what keeps that case distinguishable.
 
-Round 1 validated shape, round 2 the discriminating configurations, round 3 the transport.
-Rounds 1–2 below; round 3 (the gate) and the honest remaining scope are at the end.
+**The transport.**
 
-#### Round 1 (2026-08-12) — partial green
+- `retarget_transport` — the core lemma: a `TypeOfElabHM` derivation over a monomorphic env
+  prefix carries to one over the promoted schemes, with group-variable uses retargeted to `Vs`.
+  The `TypeOfElabHM` analogue of `TypeOfHM.weaken_schemes`, *with the term rewrite the
+  type-passing `var` rule forces* (swapping a `PolyTy.mkTrivial μₖ` entry for a scheme `Mₖ`
+  with `Mₖ.InstantiatesTo Vs μₖ` preserves typing, provided in-window uses are retargeted to
+  `Vs`). Proved by `TypeOfElabHM.rec_strong` on the `weaken_schemes` template, with an `ep`
+  accumulator and the invariant `b = ep.length`.
+- `retarget_untransport` — the reverse ("forgetting") direction.
+- `monoTyped_to_polyTyped` — the letRec corollary, mono → poly: a mono group's `MonoTyped`
+  premise yields the promoted group's `PolyTyped` premise at the full-pool schemes. The pool
+  quantifier forces `Xs = []`, confirming that `rhsCtx` stops depending on the pool opening
+  once every member is `poly`.
+- `polyTyped_to_monoTyped` — the converse, poly → mono, which is what lets `Infer.sourceSound`
+  become a decoration-forgetting corollary.
 
-`FHM/SpikeLetRecPromote.lean` (not in `defaultTargets`). All goals proved, no `sorry`, no
-added axioms, statements unweakened.
+  The converse is true but not automatic. It needs two hypotheses that are easy to miss, and
+  that the file documents:
 
-**Confirmed:**
+  - a length relation `bindings'.length = bindings.length`, needed to index the poly derivation
+    at member `k`;
+  - the condition that retargeting to `[]` is the identity on the source bindings, needed
+    because `retargetVars` *overwrites* `tyArgs` — the retarget alone does not constrain the
+    source's group-use `tyArgs` (a source `.var 1 [int]` retargets to the same term as
+    `.var 1 []`, but only the latter can be `MonoTyped`).
 
-- `promoteScheme_wf` — `Ty.closeOver_preserves_bvars hτ`, one term. Vacuous binders are fine,
-  as §3.4 requires.
-- `promoteScheme_openVars` — `Ty.openVars_closeOver_rename hτ hG hlen hdisj`, one term, no
-  filter round-trip. This is direct support for "full pool is cheaper than `genFilter`":
-  compare the ~40 lines of filter bookkeeping inside `rewrap_hasScheme_mono`.
-- `S1_mono` / `S1_promoted` / `S2_mono` / `S2_promoted` all typecheck. The promoted node is a
-  plain `.letRec` with the slot filled — `Expr` untouched, as claimed.
+  A tempting objection is that an arbitrary poly derivation could instantiate a sibling at
+  *different* types at different sites, which `MonoTyped` cannot express. It cannot happen:
+  `TypeOfElabHM` reads `tyArgs` from the *term*, and the retarget assigns every in-window use
+  the *same* `Vs`, so the term itself pins one shared instance per sibling — exactly what
+  `MonoTyped` requires. Type-passing, the feature responsible for much of the complexity
+  elsewhere, is what makes the converse hold.
 
-**What round 1 did NOT test:** `n = 1` (no siblings, so the mechanism the full pool exists for
-was untouched) and `τ` mentioning all of `G` (so `genFilter G τ = G` and the full-pool choice
-was indistinguishable). `sσ` was also literally `LetRecAnnSmokeTest.selfSig`, so `S2_promoted`
-partly re-trod the already-working *annotated* path.
+**Preservation.** `promoted_preservation` shows that preservation for a promoted group is a
+one-line application of the already-proved general `TypeOfElabHM.preservation`
+(`Core.lean:9442`): the promotion changes neither `Expr`, `SmallStep.Step`, nor `TypeOfElabHM`,
+so a promoted `letRec` is an ordinary well-typed term. `progress` and `type_safety` follow the
+same way.
 
-### Round 2 — the discriminating tests (`D1`/`D2`). Green.
+**The stored-form retarget.** `retargetStored` is the *stored*-form traversal the real
+elaborator emits (with `Ty.bvarRangeFrom d |G|` at type-binder depth `d`), and
+`retargetStored_openTyVars` is its commute with `openTyVars`, discharging the `hopen` hypothesis
+the transport corollaries leave open. Two points to carry into the implementation:
 
-Both on pool `G₂ = [0,1]`, both proved, no `sorry`, statements unweakened.
+- The stored retarget must be **`anns`-aware**: `Expr.openTyVarsAux` opens each group binding at
+  `d + RecAnn.params aⱼ` (annotated bindings are scheme-shielded), so retargeting at uniform
+  `d` is wrong — the pool `bvar`s would stay unopened. In the promoted design this shielding is
+  uniform, since every member is annotated at arity `|G|`.
+- The retarget covers the **body** as well as the bindings: the mono body sees
+  `PolyTy.genGroup G τ` at filtered arity, the promoted body the full-pool scheme, so the body's
+  `var` `tyArgs` arity changes too.
 
-- **`D1`** — genuinely *mutual* pair, both at `τA = fvar 0 → fvar 0`. Neither mentions pool
-  var 1, so each promoted scheme carries a **vacuous** binder (arity 2, where `genFilter`
-  would give 1). Both directions of the mutual call type against the same uniform
-  `tyArgs = [.bvar 0, .bvar 1]`.
-- **`D2`** — members at `τA` and `τB = fvar 1 → fvar 1`, promoting to `⟨2, bvar 0 → bvar 0⟩`
-  and `⟨2, bvar 1 → bvar 1⟩`: same arity, **vacuous in opposite slots**. One uniform retarget
-  serves both — `σA`'s instantiation reads index 0, `σB`'s reads index 1.
-- A machine-checked confirmation that the tests actually discriminate:
-  `PolyTy.genGroup G₂ τA = PolyTy.genGroup G₂ τB = ⟨1, arrow (bvar 0) (bvar 0)⟩` — `genFilter`
-  really does collapse the two distinct schemes to the same arity-1 scheme, losing `σB`'s
-  binder position.
+A further point in favour: **promotion removes a `renameG` hazard.** `Ty.renameG` is a
+*sequential* `substFvars` over `G.zip Xs`, so with `|G| ≥ 2` it can self-capture unless `Xs` is
+disjoint from `G` — which `RecSpecs.MonoTyped` only guarantees when its `L` includes `G`
+(existing Core callers pass `G` into the avoid set; see `rewrap_hasScheme_mono`). The promoted
+regime has no analogue: `promoteScheme`'s body is pre-closed and opened by direct bvar index
+lookup, never by sequential fvar substitution.
 
-Vacuous binders caused no trouble anywhere: `poly_wf` falls to `promoteScheme_wf` (upper
-bound), and in `InstantiatesBy` an unused slot's `tyArgs` entry must be *present* for the
-arity check but is never consulted.
+Every headline result is axiom-clean (`propext`, `Classical.choice`, `Quot.sound` — no
+`sorryAx`), recorded by a `#print axioms` guard in the file.
 
-### Two findings from round 2 to carry into the design
+### 3.6 Remaining work and estimated costs
 
-1. **The retarget covers the body, not just the bindings.** The mono body sees
-   `PolyTy.genGroup G τ` at *filtered* arity; the promoted body sees the full-pool scheme. So
-   the body's `var` `tyArgs` arity changes too. Slightly widens the traversal in §3.4.
-2. **Promotion removes a `renameG` hazard.** `Ty.renameG` is a *sequential* `substFvars` over
-   `G.zip Xs`, so with `|G| ≥ 2` it can self-capture unless `Xs` is disjoint from `G` — which
-   `RecSpecs.MonoTyped` only guarantees when its `L` includes `G`. Existing Core callers do
-   pass `G` into the avoid set (see `rewrap_hasScheme_mono`), so this is a latent sharp edge
-   rather than a bug, and it is a usability wart rather than a soundness hole. **The promoted
-   regime has no analogue**: `promoteScheme`'s body is pre-closed and opened by direct bvar
-   index lookup, never by sequential fvar substitution. An unanticipated point in favour.
+The reference proof is a proof of viability, not an implementation; the refactor has not been
+landed. Remaining, in rough order:
 
-### Round 3 — the transport (`T1`/`T2`). Green, axiom-clean.
-
-The gate identified above. Both proved; `#print axioms` guard in the file reports
-`[propext, Classical.choice, Quot.sound]` for `T1`, `T2`, `P1`, `P2`, `S2'`, `D1'`, `D2'` —
-no `sorryAx`. Independently verified: single additive diff hunk (nothing above the T section
-touched), statements byte-identical to as authored, `retargetVars`' window condition intact
-(an identity retarget would have made `T1` vacuous).
-
-- **`T1_retarget_transport`** — the mathematical core. The `TypeOfElabHM` analogue of
-  `TypeOfHM.weaken_schemes`, *with the term rewrite that the type-passing `var` rule forces*.
-  Swapping an env prefix of `PolyTy.mkTrivial μₖ` (arity 0) for schemes `Mₖ` with
-  `Mₖ.InstantiatesTo Vs μₖ` preserves typing, provided uses in the window are retargeted to
-  `Vs`. Proved by `TypeOfElabHM.rec_strong` on the `weaken_schemes` template, with the `ep`
-  accumulator and invariant `b = ep.length`.
-- **`T2_monoTyped_to_polyTyped`** — the letRec corollary: `MonoTyped` at shared monotypes
-  yields `PolyTyped` at the full-pool promoted schemes. The pool quantifier forces `Xs = []`,
-  confirming in the proof that `rhsCtx` stops depending on the pool opening once every member
-  is `poly`.
-
-Cost datum: the whole T section is **565 lines**, including `retargetVars`/`Branches`/`Group`,
-their commute lemmas with `openTyVars`/`openBoundTyVars`, and length/membership plumbing.
-
-### Rounds 4–5 (2026-08-13) — the converse, preservation, and the traversal
-
-**`T3` — the converse of `T2` — was stated false, and the probe refuted the reasoning behind
-it.** The brief previously argued that §2.2's payoff might not hold, because an arbitrary
-elaborated derivation of the promoted node could instantiate a sibling at different types at
-different sites, which `MonoTyped` cannot express. **That cannot happen.** `TypeOfElabHM` reads
-`tyArgs` from the *term*; the retarget assigns every in-window use the *same* `Vs`; so the term
-itself pins one shared instance per sibling — exactly what `MonoTyped` requires. Type-passing,
-the feature responsible for much of the complexity elsewhere, is what rescues this. The earlier
-pessimism was reasoning as if instantiation were chosen by the derivation (`TypeOfHM` style).
-
-The two genuine blockers in `T3` were **statement bugs**, both restored in `T3'`: nothing
-related `bindings'.length` to `bindings.length`, and `hopen` left the *source*'s group-use
-`tyArgs` unconstrained (since `retargetVars` overwrites them). The false `T3` is retained in
-the file with its `sorry` as a record.
-
-- **`T3'_polyTyped_to_monoTyped` — PROVED.** Via `retargetUntransport`, the mirror of `T1`.
-  **Both directions of the letRec correspondence now hold**, which is the prerequisite for
-  `sourceSound` as a decoration-forgetting corollary — provided that lemma's `Decorates`
-  relation is *tight* at `letRec` (uniform `tyArgs` on group-member uses, which is what `Infer`
-  emits).
-- **`PRES_D1_promoted` — preservation costs nothing.** Listed as an open risk three times in
-  earlier drafts; that was a category error. The promotion changes neither `Expr` nor
-  `SmallStep.Step` nor `TypeOfElabHM`, so a promoted `letRec` is an ordinary well-typed term
-  and the already-proved general `TypeOfElabHM.preservation` (`Core.lean:9442`) applies
-  directly. The theorem is a one-liner. `progress` and `type_safety` likewise.
-- **`retargetStored_openTyVars` — PROVED, after fixing a bug in the definition.** The
-  stored-form retarget must be **`anns`-aware**: `Expr.openTyVarsAux` opens each group binding
-  at `d + RecAnn.params aⱼ` (annotated bindings are scheme-shielded), so retargeting at uniform
-  `d` is wrong. Machine-checked counterexample found. Note this is *simpler* in the promoted
-  design, where every member is annotated at arity `|G|` and the shielding is uniform.
-  **The STORED section is 170 lines**, against §3.4's 200–400 estimate.
-
-All ten guarded declarations report `[propext, Classical.choice, Quot.sound]`.
-
-### Status: gate passed, refactor not done
-
-`§3.4`'s core claim is established — no structural obstruction, and the transport is real
-rather than a repackaging (nothing in the codebase did this before, because `letRecElab`
-exists precisely to avoid needing it). Remaining, in rough order:
-
-1. **The stored retarget and its commute — `T2`'s `hopen` is still a hypothesis.** The spike
-   works on *opened* terms, where `Vs` are concrete `fvar`s and depth-independent.
-   `retargetVars_openTyVars` commutes that with `openTyVars` at the *same* `Vs` — it is **not**
-   the stored-vs-opened fact. The stored form puts `Ty.bvarRangeFrom d |G|` in the term, so it
-   needs type-binder depth tracking, and `hopen` needs
-   `(storedRetarget e).openTyVars Ys = retargetVars n (Ys.map Ty.fvar) b (e.openTyVars Ys)`.
-   This is the "depth-tracking traversal" §3.4 estimated at 200–400 lines; still unwritten.
-2. **Rewire `Infer.letRec`** to emit the promoted node, and rewrite `Infer.sound`'s letRec case
-   (574 lines) against it. The claimed collapse is untested.
-3. **Preservation for the promoted node** — still untested. Argued easier (uniform depth `|G|`,
-   and promotion removes the `renameG` sequential-substitution hazard), not checked.
-4. **Path R erase-commute lemmas** for the new traversal — a real cost not yet estimated;
-   InferW's existing erase-commute block is 577 lines for the operations it already has.
-5. **Completeness interaction** — unknown, and per the Path R brief the completeness
-   statements need repair before anything is farmed against them.
+1. **Rewire `Infer.letRec`** to emit the promoted node, and rewrite `Infer.sound`'s letRec case
+   (574 lines) against it. The claimed collapse — a structural application of
+   `TypeOfElabHM.letRec` instead of the dedicated support cast — is untested.
+2. **Delete `letRecElab` and its support** (`letRecElab`, `letRecElabNest`,
+   `letRecElabNest_sound`, `letRec_body_retype`, `letRecFused_body_retype`,
+   `letRecFused_residual_setup`, the `shiftFrom` plumbing) — ~1,045 lines, 15 decls.
+3. **Port the transport machinery** from the reference proof into `InferW` — ~1,450 lines
+   measured, including `retargetVars`/`retargetBranches`/`retargetGroup` and their commute
+   lemmas with `openTyVars`/`openBoundTyVars`.
+4. **Strengthen the faithfulness lemma.** Replace `Infer.sourceSound` (~656 lines) with
+   `Decorates e e' → TypeOfElabHM ctx e' τ → TypeOfHM ctx e τ`, proved once by structural
+   induction and stable against future changes to `Infer`. Its letRec prerequisite —
+   `polyTyped_to_monoTyped` — is already proved; `Infer.preservesAnns` is most of the other
+   half. Residual caveat: `Decorates` must be tight at `letRec` (uniform `tyArgs` on
+   group-member uses, which is what `Infer` emits).
+5. **Path R erase-commute lemmas** for the two new traversals (`retargetVars`/
+   `retargetStored`) — unmeasured; the existing erase-commute block is 577 lines for the
+   operations it already has.
+6. **Completeness interaction** — completeness is stated against `TypeOfHM` on the *source*
+   term (whose `anns` are still `none`), so the promotion itself does not affect it; but per
+   the Path R brief the completeness statements need repair before anything is farmed against
+   them.
 
 ---
 
@@ -523,60 +470,58 @@ map — so the declarative relations are stated once, on `Ty Unit`.
 
 ---
 
-## 5.5 Expected payoff, by dimension, with confidence
+## 5.5 Expected payoff, by dimension
 
-Bands are honest rather than flattering. "Measured" means counted in the tree; "estimated"
-means my judgement, which has been wrong twice in this investigation — both times by being
-optimistic about things I had argued rather than tested.
+"Measured" means counted in the tree; "estimated" means judgement, and is where the bands are
+widest.
 
-### A. Net line count — **≈ break-even, ±500. Confidence: medium.**
+### A. Net line count — **≈ break-even, ±500.**
 
 **Do not do this for the line count.**
 
 | | lines | basis |
 |---|---:|---|
-| `letRecElab` family, deleted outright | −1,045 | **measured** (15 decls) |
+| `letRecElab` family, deleted outright | −1,045 | measured (15 decls) |
 | `Infer.sourceSound`, replaced by a faithfulness corollary | −656 | measured deletion, replacement estimated |
-| `Infer.sound`'s letRec case, collapsing to a structural application | −350 ± 200 | **estimated** — largest open number |
-| Transport machinery moving from spike into InferW | +1,450 | **measured** (T + T3' + STORED, excluding spike-only concrete tests) |
+| `Infer.sound`'s letRec case, collapsing to a structural application | −350 ± 200 | estimated — largest open number |
+| Transport machinery moving from the reference proof into InferW | +1,450 | measured (`retarget_transport` + `retarget_untransport` + the two corollaries + `retargetStored`, excluding the concrete tests) |
 | Faithfulness lemma (`Decorates` + the induction) | +300 ± 150 | estimated; not attempted |
-| Path R erase-commutes for the two new traversals | +250 ± 150 | **unmeasured** — the existing erase-commute block is 577 lines for the operations it already has |
+| Path R erase-commutes for the two new traversals | +250 ± 150 | unmeasured — the existing erase-commute block is 577 lines for the operations it already has |
 
-Earlier drafts of this brief cited "4,113 lines of letRec machinery" as the deletion
-opportunity. **That was wrong** — most of `RecSpec`/`RecSpecs` in Core is the *declarative
-spec* and survives; the mono/poly collapse trims it rather than deleting it.
+Note: "4,113 lines of letRec machinery" is **not** the deletion opportunity — most of
+`RecSpec`/`RecSpecs` in Core is the *declarative spec* and survives; the mono/poly collapse
+trims it rather than deleting it.
 
-### B. Future-refactor cost — **large reduction. Confidence: high** (was low yesterday).
+### B. Future-refactor cost — large reduction.
 
 The real case for the change. Elaboration becomes shape-preserving everywhere, so
 `Infer.sourceSound` stops being a second full induction that must be re-run whenever `Infer`
 changes, and becomes a corollary proved once. Path R is the worked example of the cost: its
-residual campaign had to mirror `sourceSound` precisely because of the shape divergence.
+residual campaign had to mirror `sourceSound` precisely because of the shape divergence. The
+letRec correspondence holds in *both* directions (`monoTyped_to_polyTyped` and
+`polyTyped_to_monoTyped`), which is exactly what the corollary needs. The residual caveat is
+that `Decorates` must be tight at `letRec` — a term-level, structurally checkable condition,
+and what `Infer` emits.
 
-Upgraded from "architectural argument" to "high" because `T2` **and** `T3'` are both proved:
-the letRec correspondence holds in *both* directions, which is exactly what the corollary
-needs. The residual caveat is that `Decorates` must be tight at `letRec`; that is a term-level
-condition, structurally checkable, and is what `Infer` emits.
+### C. Refactor effort — a handful of focused sessions.
 
-### C. Refactor effort — **2–4 focused farming sessions. Confidence: medium-high.**
+The transport — the hardest identified piece — is already proved; the stored-form retarget came
+in at 170 lines against a 200–400 estimate; preservation turned out free. The remaining wildcard
+is `Infer.sound`'s letRec case, and the tedium risk is Path R erase-commutes, historically where
+this codebase's grind lives.
 
-Not a day; not a week of untying knots. Evidence: the transport — the hardest identified piece
-— was one farm; STORED came in at 170 lines against a 200–400 estimate; preservation turned
-out free. The remaining wildcard is `Infer.sound`'s letRec case, which is also line item 3 in
-table A. The tedium risk is Path R erase-commutes, historically where this codebase's grind
-lives.
+### D. Showstopper risk — low.
 
-### D. Showstopper risk — **low. Confidence: high.**
-
-Every predicted obstruction has now been probed and either discharged (`T1`, `T2`, `T3'`,
-preservation) or shown to be a bug in my statement rather than in the design (`T3`'s two
-blockers, `retargetStored`'s missing `anns` shielding). `Expr`, `Step` and `TypeOfElabHM` are
-untouched throughout, which is what keeps the blast radius small.
+Every predicted obstruction has been probed and either discharged (transport in both
+directions, preservation) or shown to be a statement bug rather than a design flaw (the two
+hypotheses the converse needs, the stored retarget's missing `anns` shielding). `Expr`, `Step`
+and `TypeOfElabHM` are untouched throughout, which is what keeps the blast radius small.
 
 ### Still unmeasured
 
 `Infer.sound`'s letRec collapse; the faithfulness lemma itself (only its letRec prerequisite,
-`T3'`, is done); Path R erase-commutes for `retargetVars`/`retargetStored`.
+`polyTyped_to_monoTyped`, is done); Path R erase-commutes for
+`retargetVars`/`retargetStored`.
 
 ---
 
@@ -589,20 +534,18 @@ mentions `letRec`/`RecSpec`/`RecGroup` — and it stays zero until that campaign
 letRec completeness case *specifically*. That is a natural decision point which arrives on its
 own; it is not a reason to pause. Finish Path R.
 
-1. ~~Spike §3.4 standalone.~~ **Done** — five rounds (§3.6). Gate passed, converse proved,
-   preservation free, traversal written.
-2. Finish Path R. Per that brief: the `*_untypeable` demos, then repairing the false
+1. Finish Path R. Per that brief: the `*_untypeable` demos, then repairing the false
    completeness statements — which must land before anything is farmed against completeness
    regardless of what happens here.
-3. Land the promotion: rewire `Infer.letRec`, rewrite `Infer.sound`'s letRec case, delete
-   `letRecElab` and its cast, port the transport machinery from the spike.
-5. Then replace `Infer.sourceSound` with the strengthened faithfulness lemma
+2. Land the promotion: rewire `Infer.letRec`, rewrite `Infer.sound`'s letRec case, delete
+   `letRecElab` and its cast, port the transport machinery from the reference proof.
+3. Then replace `Infer.sourceSound` with the strengthened faithfulness lemma
    (`Decorates e e' → TypeOfElabHM ctx e' τ → TypeOfHM ctx e τ`) — the §2.2 payoff, which only
    becomes available once elaboration is shape-preserving everywhere.
-6. Then middle path 2 (cofinite freshness), then middle path 1 (drop eager context
+4. Then middle path 2 (cofinite freshness), then middle path 1 (drop eager context
    substitution) — in that order, since 2 is lower-risk and larger. Spike 2's cost first; §5's
    estimate for it is explicitly untrustworthy.
-7. Revisit the `Ty`-parameterisation (§5) only after all of the above.
+5. Revisit the `Ty`-parameterisation (§5) only after all of the above.
 
 **Note the independence:** §4 finds that `letRecElab` and its support (~800 lines) would
 survive *verbatim* under a constraint architecture, because it is pure elaboration. So §3.4 is
