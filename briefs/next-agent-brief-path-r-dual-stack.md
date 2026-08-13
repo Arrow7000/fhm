@@ -140,6 +140,37 @@ term — **prove them standalone and early; they do not need `complete'`.**
 bounds-blind, so it accepts strictly more than structural `TypeOfHM` and cannot
 reject what the erased term types.
 
+### ⚠️ THE dominant failure mode: statements sitting at the structural level
+
+Hit **five** times now. Before writing or farming ANY Path R statement, check it.
+
+> A hypothesis or conclusion mentions un-erased `ctx` / term / type where the
+> Path R caller only ever holds **erased** data — or demands *structural*
+> equality where bounds-blind machinery only delivers **`AgreesHM`**.
+
+It is invisible until something calls the theorem, so it survives review: every
+instance below was found by *tracing a caller*, never by reading the statement.
+And `TypeOfHM.eraseBounds_of` runs **un-erased → erased only** — there is no
+converse and there cannot be one, since erasure loses information. So a structural
+hypothesis is not merely inconvenient, it is *unsuppliable*.
+
+| Where | Defect | Fixed in |
+|---|---|---|
+| `complete'` / `principal` / `CompleteAt` + 11 more | conclusion `τ₀ = R.onTy τ` | `948cb12` |
+| 3 OptionA unify statements | list branch structural, Ty branch erase-level | `e3f12ff` |
+| `InferBranches`/`InferRecGroup.complete` | un-erased declarative hypotheses | `40e61b1` |
+| `complete_lambda_aux` / `_ann_aux` | un-erased `hbodyty` | superseded by `*_erase` |
+
+**Checklist when authoring a Path R statement:**
+1. Does every `TypeOf*` hypothesis sit at `(…).eraseBounds` on `….eraseBounds`?
+2. Is every type equation `AgreesHM`, not `=`? (Exact `=` only where the type is
+   erase-normal AND List/bl-free — e.g. the four demos.)
+3. Trace one intended caller and check it can actually *supply* the hypotheses.
+   Do this before farming, not after.
+
+Note the two `complete_lambda_aux*` lemmas are **proved but dead** — marked
+SUPERSEDED in-file. Don't build on them; use the `*_erase` variants.
+
 ### Next farm (in order)
 
 1. ~~`appFiveFive_untypeable` / `openMisuse_untypeable`~~ ✅ done (`8a076ff`).

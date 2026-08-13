@@ -14804,6 +14804,18 @@ theorem Subst.onTy_eq_self_of_fixes {S : Subst} :
     simp only [Subst.onTy_bl, Ty.bl.injEq, true_and]
     exact ih (fun v hv => h v (by simpa only [Ty.freeVars] using hv))
 
+/-- ⚠️ **SUPERSEDED — do not build on this.** Proved and axiom-clean, but DEAD: no
+    Path R caller can supply its hypothesis. `hbodyty` below is stated at the RAW
+    context typing the RAW `body`, whereas inverting the erased lambda (which is
+    what `Infer.complete_lambda` actually holds) yields a body typing at the
+    ERASED context on `body.eraseBounds`. `TypeOfHM.eraseBounds_of` runs
+    un-erased → erased only; there is no converse. Use
+    `Infer.complete_lambda_aux_erase` instead — `complete_lambda` does.
+
+    Same bug class as the `InferBranches`/`InferRecGroup.complete` restatement
+    (`40e61b1`) and the OptionA list branches (`e3f12ff`): a Path R statement
+    sitting at the structural level where only erased data exists. Kept rather than
+    deleted only because it is a true theorem; it is not work-in-progress. -/
 theorem Infer.complete_lambda_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
     {S₀ : Subst} {paramTy bodyTy : Ty} {K : List Nat}
     (ih : Infer.CompleteAt body)
@@ -15141,6 +15153,10 @@ theorem Infer.complete_lambda_aux_erase {body : Expr} {Φ : Nat} {ctx : Ctx}
   · exact hR₁K
   · exact hSK
 
+/-- ⚠️ **SUPERSEDED — do not build on this.** The annotated twin of
+    `Infer.complete_lambda_aux`; see that theorem's note. Proved and axiom-clean but
+    DEAD — its `hbodyty` is at the raw context on the raw `body`, which no Path R
+    caller holds. Use `Infer.complete_lambda_ann_aux_erase` instead. -/
 theorem Infer.complete_lambda_ann_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
     {S₀ : Subst} {T bodyTy : Ty} {K : List Nat}
     (ih : Infer.CompleteAt body)
