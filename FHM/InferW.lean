@@ -11516,11 +11516,65 @@ theorem Subst.onCtx_congr {Φ : Nat} {S T : Subst} {ctx : Ctx}
   intro M hM
   simp only [Subst.onPolyTy, Subst.onTy_congr hag (hb M hM)]
 
-/-- `S` and `T` agree (act identically on every `fvar`) below frontier `Φ`. This
-    is the "`S₀ = R ∘ S` below `Φ`" agreement clause threaded through the
-    principality proofs; a reducible abbreviation so it is defeq to the raw `∀`. -/
+/-- Erase-level analogue of `Subst.onTy_congr`: if two substitutions agree up to
+    erasure on every fvar below `Φ`, and `τ` has all free vars below `Φ`, then
+    `S.onTy τ` and `T.onTy τ` agree up to erasure. -/
+theorem Subst.onTy_congr_hm {Φ : Nat} {S T : Subst}
+    (hag : ∀ v, v < Φ → AgreesHM (S.onTy (.fvar v)) (T.onTy (.fvar v))) :
+    ∀ {τ : Ty}, Ty.BelowFvars Φ τ → AgreesHM (S.onTy τ) (T.onTy τ) := by
+  intro τ hτ
+  induction τ using Ty.rec_strong with
+  | prim p => simp [AgreesHM]
+  | bvar i => simp [AgreesHM]
+  | fvar n => cases hτ with | fvar hlt => exact hag n hlt
+  | arrow a b iha ihb =>
+    cases hτ with
+    | arrow ha hb =>
+      simp only [AgreesHM, Subst.onTy_arrow, Ty.eraseBounds_arrow]
+      rw [Ty.arrow.injEq]
+      exact ⟨iha ha, ihb hb⟩
+  | customTy nm tys ih =>
+    cases hτ with
+    | customTy hall =>
+      simp only [AgreesHM, Subst.onTy_customTy, Ty.eraseBounds_customTy,
+        TyList.eraseBounds_eq_map]
+      apply congrArg (Ty.customTy nm)
+      rw [List.map_map, List.map_map]
+      apply List.map_congr_left
+      intro t ht
+      exact ih t ht (hall t ht)
+  | bl lo hi e ih =>
+    cases hτ with
+    | bl he =>
+      simp only [AgreesHM, Subst.onTy_bl, Ty.eraseBounds_bl]
+      apply congrArg bareListTy
+      exact ih he
+
+/-- `S` and `T` agree below frontier `Φ` **up to erasure** (`AgreesHM` on every
+    `fvar` below `Φ`). This is the "`S₀ = R ∘ S` below `Φ`" agreement clause
+    threaded through the principality proofs; a reducible abbreviation so it is
+    defeq to the raw `∀`.
+
+    REPAIRED 2026-08-12. This used to demand *structural* equality
+    `S.onTy (.fvar v) = T.onTy (.fvar v)`, which is **FALSE** under Path R for any
+    case that unifies. Counterexample: `(λ (x : BL 3 5 Int). x) y` with `y : .fvar v`
+    and `v < Φ`. `Infer` unifies `.fvar v` against the verbatim-copied annotation
+    and binds `v ↦ BL 3 5 Int`, while the declarative side sees only the *erased*
+    annotation and needs `S₀.onTy (.fvar v) = List Int`. A `bl` head survives every
+    substitution (`Subst.onTy_bl`), so the two agree up to erasure and NOT exactly.
+    Equivalently: recovering exact agreement through a unification step IS
+    structural factoring, and `FactorsHM.to_structural` / structural `greatest_K`
+    were deleted as false in `054e0d8`.
+
+    Erase-level agreement is *exactly enough*: every declarative premise in the
+    completeness statements sits at `(…).eraseBounds`, and contexts that agree up to
+    erasure have EQUAL erasures — so the induction can still re-enter the IH at the
+    new residual. See design memo §4.1.2.
+
+    Used only by the completeness track (and `trans_append` below); the soundness
+    layer does not mention it, so weakening it here is contained. -/
 abbrev Subst.AgreesBelow (Φ : Nat) (S T : Subst) : Prop :=
-  ∀ v, v < Φ → S.onTy (.fvar v) = T.onTy (.fvar v)
+  ∀ v, v < Φ → AgreesHM (S.onTy (.fvar v)) (T.onTy (.fvar v))
 
 /-- The recurring agreement-threading step: if `S₀` agrees with `S₁ ++ R₁` below
     `Φ`, and the residual `R₁` agrees with `S₂ ++ R₂` below the larger frontier
@@ -11536,12 +11590,12 @@ theorem Subst.AgreesBelow.trans_append {Φ Φ₁ : Nat} {S₀ S₁ R₁ S₂ R�
   intro v hv
   have hbv : Ty.BelowFvars Φ₁ (S₁.onTy (.fvar v)) :=
     Subst.onTy_belowFvars hbelowS₁ (.fvar (by omega))
-  calc S₀.onTy (.fvar v)
-      = (S₁ ++ R₁).onTy (.fvar v) := hag1 v hv
-    _ = R₁.onTy (S₁.onTy (.fvar v)) := by rw [Subst.onTy_append]
-    _ = (S₂ ++ R₂).onTy (S₁.onTy (.fvar v)) := Subst.onTy_congr hag2 hbv
-    _ = ((S₁ ++ S₂) ++ R₂).onTy (.fvar v) := by
-          rw [List.append_assoc, Subst.onTy_append S₁ (S₂ ++ R₂)]
+  apply AgreesHM.trans (hag1 v hv)
+  rw [List.append_assoc]
+  simp only [Subst.onTy_append]
+  apply AgreesHM.trans
+  · exact Subst.onTy_congr_hm hag2 hbv
+  · simp [AgreesHM, Subst.onTy_append]
 
 
 /-! ### Principality (completeness) — per-expression statement + case lemmas
@@ -14958,22 +15012,17 @@ theorem Infer.complete_lambda_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
     ?_, ?_, ?_, ?_, ?_, ?_⟩
   · exact .lambda .none hInferBody
   · intro v hv
-    calc S₀.onTy (Ty.fvar v)
-        = S₀'.onTy (Ty.fvar v) := (hS₀'below v hv).symm
-      _ = (S ++ R₁).onTy (Ty.fvar v) := hAgreeBody v (by omega)
+    exact AgreesHM.trans (AgreesHM.symm (congrArg Ty.eraseBounds (hS₀'below v hv)))
+      (hAgreeBody v (by omega))
   · change Ty.eraseBounds (Ty.arrow paramTy bodyTy) =
         Ty.eraseBounds (R₁.onTy (.arrow (S.onTy (Ty.fvar Φ)) τb))
     rw [Ty.eraseBounds_arrow, Subst.onTy_arrow, Ty.eraseBounds_arrow]
-    have hdom : R₁.onTy (S.onTy (Ty.fvar Φ)) = paramTy := by
+    have hdom : Ty.eraseBounds (R₁.onTy (S.onTy (Ty.fvar Φ))) = Ty.eraseBounds paramTy := by
       have hΦ := hAgreeBody Φ (by omega)
-      rw [← Subst.onTy_append]
-      rw [← hΦ]
-      rw [Subst.onTy_append, Subst.onTy_append]
-      rw [show Subst.onTy [(Φ, Ty.fvar W)] (Ty.fvar Φ) = Ty.fvar W by
-        simp [Subst.onTy, Ty.substFvars, Ty.substFvar]]
-      rw [hS₀'W]
-      rw [show Subst.onTy [(W, paramTy)] (Ty.fvar W) = paramTy by
-        simp [Subst.onTy, Ty.substFvars, Ty.substFvar]]
+      calc Ty.eraseBounds (R₁.onTy (S.onTy (Ty.fvar Φ)))
+          = Ty.eraseBounds ((S ++ R₁).onTy (Ty.fvar Φ)) := by rw [Subst.onTy_append]
+        _ = Ty.eraseBounds (S₀'.onTy (Ty.fvar Φ)) := hΦ.symm
+        _ = Ty.eraseBounds paramTy := congrArg Ty.eraseBounds hS₀'fvar
     rw [hdom]
     have hcod : Ty.eraseBounds (R₁.onTy τb) = Ty.eraseBounds bodyTy := by
       simpa [AgreesHM] using hAgreeTy.symm
@@ -15129,22 +15178,17 @@ theorem Infer.complete_lambda_aux_erase {body : Expr} {Φ : Nat} {ctx : Ctx}
     ?_, ?_, ?_, ?_, ?_, ?_⟩
   · exact .lambda .none hInferBody
   · intro v hv
-    calc S₀.onTy (Ty.fvar v)
-        = S₀'.onTy (Ty.fvar v) := (hS₀'below v hv).symm
-      _ = (S ++ R₁).onTy (Ty.fvar v) := hAgreeBody v (by omega)
+    exact AgreesHM.trans (AgreesHM.symm (congrArg Ty.eraseBounds (hS₀'below v hv)))
+      (hAgreeBody v (by omega))
   · change Ty.eraseBounds (Ty.arrow paramTy bodyTy) =
         Ty.eraseBounds (R₁.onTy (.arrow (S.onTy (Ty.fvar Φ)) τb))
     rw [Ty.eraseBounds_arrow, Subst.onTy_arrow, Ty.eraseBounds_arrow]
-    have hdom : R₁.onTy (S.onTy (Ty.fvar Φ)) = paramTy := by
+    have hdom : Ty.eraseBounds (R₁.onTy (S.onTy (Ty.fvar Φ))) = Ty.eraseBounds paramTy := by
       have hΦ := hAgreeBody Φ (by omega)
-      rw [← Subst.onTy_append]
-      rw [← hΦ]
-      rw [Subst.onTy_append, Subst.onTy_append]
-      rw [show Subst.onTy [(Φ, Ty.fvar W)] (Ty.fvar Φ) = Ty.fvar W by
-        simp [Subst.onTy, Ty.substFvars, Ty.substFvar]]
-      rw [hS₀'W]
-      rw [show Subst.onTy [(W, paramTy)] (Ty.fvar W) = paramTy by
-        simp [Subst.onTy, Ty.substFvars, Ty.substFvar]]
+      calc Ty.eraseBounds (R₁.onTy (S.onTy (Ty.fvar Φ)))
+          = Ty.eraseBounds ((S ++ R₁).onTy (Ty.fvar Φ)) := by rw [Subst.onTy_append]
+        _ = Ty.eraseBounds (S₀'.onTy (Ty.fvar Φ)) := hΦ.symm
+        _ = Ty.eraseBounds paramTy := congrArg Ty.eraseBounds hS₀'fvar
     rw [hdom]
     have hcod : Ty.eraseBounds (R₁.onTy τb) = Ty.eraseBounds bodyTy := by
       simpa [AgreesHM] using hAgreeTy.symm
@@ -15198,11 +15242,12 @@ theorem Infer.complete_lambda_ann_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
   obtain ⟨Φ', S, eOut, τb, R₁, hInferBody, hAgreeBody, hAgreeTy, hR₁lc, hR₁K, hSK⟩ :=
     @ih Φ bodyCtx S₀ (Ty.eraseBounds bodyTy) K
       hbodyCtxWF hbodyCtxBelow hS₀ hKΦ hbodyK hKfix hbodyty_erase
-  have hST : (S ++ R₁).onTy T = T := by
-    exact Subst.onTy_eq_self_of_fixes (fun v hv => by
-      have hle := hAgreeBody v (hKΦ v (hTK v hv))
-      exact hle.symm.trans (hKfix v (hTK v hv)))
-  have hdom : R₁.onTy (S.onTy T) = T := by
+  have hST : AgreesHM ((S ++ R₁).onTy T) T := by
+    have hbT : Ty.BelowFvars Φ T := Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hTK v hv))
+    calc Ty.eraseBounds ((S ++ R₁).onTy T)
+        = Ty.eraseBounds (S₀.onTy T) := (Subst.onTy_congr_hm hAgreeBody hbT).symm
+      _ = Ty.eraseBounds T := congrArg Ty.eraseBounds hS₀T
+  have hdom : Ty.eraseBounds (R₁.onTy (S.onTy T)) = Ty.eraseBounds T := by
     rwa [Subst.onTy_append] at hST
   refine ⟨Φ', S, .lambda (some T) eOut, .arrow (S.onTy T) τb, R₁,
     ?_, ?_, ?_, ?_, ?_, ?_⟩
@@ -15263,11 +15308,12 @@ theorem Infer.complete_lambda_ann_aux_erase {body : Expr} {Φ : Nat} {ctx : Ctx}
   obtain ⟨Φ', S, eOut, τb, R₁, hInferBody, hAgreeBody, hAgreeTy, hR₁lc, hR₁K, hSK⟩ :=
     @ih Φ bodyCtx S₀ (Ty.eraseBounds bodyTy) K
       hbodyCtxWF hbodyCtxBelow hS₀ hKΦ hbodyK hKfix hbodyty_erase
-  have hST : (S ++ R₁).onTy T = T := by
-    exact Subst.onTy_eq_self_of_fixes (fun v hv => by
-      have hle := hAgreeBody v (hKΦ v (hTK v hv))
-      exact hle.symm.trans (hKfix v (hTK v hv)))
-  have hdom : R₁.onTy (S.onTy T) = T := by
+  have hST : AgreesHM ((S ++ R₁).onTy T) T := by
+    have hbT : Ty.BelowFvars Φ T := Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hTK v hv))
+    calc Ty.eraseBounds ((S ++ R₁).onTy T)
+        = Ty.eraseBounds (S₀.onTy T) := (Subst.onTy_congr_hm hAgreeBody hbT).symm
+      _ = Ty.eraseBounds T := congrArg Ty.eraseBounds hS₀T
+  have hdom : Ty.eraseBounds (R₁.onTy (S.onTy T)) = Ty.eraseBounds T := by
     rwa [Subst.onTy_append] at hST
   refine ⟨Φ', S, .lambda (some T) eOut, .arrow (S.onTy T) τb, R₁,
     ?_, ?_, ?_, ?_, ?_, ?_⟩
@@ -15809,7 +15855,7 @@ theorem Infer.complete_var {i : Nat} {tyArgs : List Ty} : Infer.CompleteAt (.var
         hS₀ hKΦ hKfix hinst' hbv htyfree hlc
     refine ⟨Φ + σ.paramCount, [], .var i ((freshVars Φ σ.paramCount).map Ty.fvar),
       σ.openVars (freshVars Φ σ.paramCount), R, .var hlkσ, ?_, ?_, ?_, ?_, ?_⟩
-    · intro v hv; simpa using (hRag v hv).symm
+    · intro v hv; exact congrArg Ty.eraseBounds (hRag v hv).symm
     · exact hRagree
     · exact hRlc
     · exact hRK
@@ -15848,7 +15894,7 @@ theorem Infer.complete_ctor {name : CtorName} : Infer.CompleteAt (.ctor name) :=
         hlc
     refine ⟨Φ + ctor.paramCount, [], .ctor name,
       ctor.toTy.openVars (freshVars Φ ctor.paramCount), R, .ctor hlookR, ?_, ?_, ?_, ?_, ?_⟩
-    · intro v hv; simpa using (hRag v hv).symm
+    · intro v hv; exact congrArg Ty.eraseBounds (hRag v hv).symm
     · exact hRagree
     · exact hRlc
     · exact hRK
