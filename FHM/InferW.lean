@@ -17026,6 +17026,26 @@ lemma exists_app_unifier_erase {A τa τ₀ argTy : Ty} {Φ₂ : Nat} {R₂ : Su
     rw [hUonTy, Ty.substFvar_fresh (show Φ₂ ∉ (Ty.fvar v).freeVars by
         simp only [Ty.freeVars, List.mem_singleton]; omega), Ty.substFvar_fresh hWR₂v]
 
+/-- Extend a residual to a fresh variable. `exists_app_unifier_erase` with the
+    unification clause dropped: the same `[(Φ,.fvar W)] ++ R ++ [(W,τ₀)]`
+    construction (`W` fresh), which agrees with `R` below `Φ` precisely because
+    `W` avoids `R`'s domain and range.
+
+    Used by `Infer.complete_match_aux`: the `Infer.match_` rule allocates the
+    running result type as the FRESH `.fvar Φ₁` and hands it to `InferBranches`
+    as `ρ`, so the residual fed to `InferBranches.complete` must be the
+    scrutinee's residual extended to send `.fvar Φ₁ ↦ τ₀`. Recovering
+    `AgreesHM τ₀ (R.onTy (S₂.onTy (.fvar Φ₁)))` at the end is then just that
+    theorem's `AgreesBelow (Φ₁ + 1)` clause instantiated at `v := Φ₁`. -/
+lemma exists_residual_at_fresh {τ₀ : Ty} {Φ : Nat} {R : Subst} {K : List Nat}
+    (hR : ∀ p ∈ R, p.2.IsLC) (hτ₀LC : τ₀.IsLC)
+    (hRK : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k) (hΦK : ∀ k ∈ K, k < Φ) :
+    ∃ R' : Subst, (∀ p ∈ R', p.2.IsLC) ∧
+      (∀ k ∈ K, R'.onTy (Ty.fvar k) = Ty.fvar k) ∧
+      R'.onTy (Ty.fvar Φ) = τ₀ ∧
+      (∀ v, v < Φ → R'.onTy (Ty.fvar v) = R.onTy (Ty.fvar v)) := by
+  sorry -- PathR completeness (match tier helper)
+
 /-- Principality, application case (factored with named binders). Recurse on `f`
     then `arg`; the declarative typing yields a unifier of `S₂.onTy τf` and
     `arrow τa (.fvar Φ₂)` — exhibited explicitly as `[(Φ₂,.fvar W)] ++ R₂ ++ [(W,τ₀)]`

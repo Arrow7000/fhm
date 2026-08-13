@@ -223,13 +223,37 @@ SUPERSEDED in-file. Don't build on them; use the `*_erase` variants.
    `22cad8c`); `complete_letIn_aux` (`90fb873`, the cofinite generalisation case).
 
    **Next, in dependency order — this chain was discovered, not guessed:**
-   1. Restate the `customTy` unification dodge on `UnifyRel.greatest_K_factors`.
-      The old `customTy_unify_dodge` / `customTy_factor_dodge` were deleted along
-      with the false `greatest_K` in `054e0d8`; **`customTy_dodge_unifier` is still
-      live and reusable**. This is a *statement-authoring* job — do it yourself,
-      at the erase level, before farming.
+   1. ~~Restate the `customTy` unification dodge on `UnifyRel.greatest_K_factors`~~
+      ✅ **done** (`d6bb45f`), axiom-clean. `customTy_unify_dodge` is back in the
+      file, erase-level in exactly two places:
+      * premise `AgreesHM (R.onTy scrutTy) (.customTy ctor.tyName tyArgs)` — the
+        caller inverts a `BranchCtorSpec` at `(R.onCtx ctx).eraseBounds`, so the
+        structural equation is **unsuppliable**: `R.onTy scrutTy` may be a `bl`
+        head that only *erases* into `customTy listTyName [_]`;
+      * conclusion `Subst.AgreesBelow Φ R (S₀ ++ R₀)` plus a fresh-block image
+        matching `tyArgs` **after `eraseBounds`**.
+
+      `customTy_dodge_unifier` was weakened to the same erase-level premise; its
+      conclusion did not move (`Unifies` was already erase-level). The given-MGU
+      twin `customTy_factor_dodge` was deliberately **not** restated — its only
+      consumer would be an `InferBranches.complete'`, which does not exist.
+
+      Also landed (`060b2e1`), both axiom-clean, both prerequisites factored out
+      **ahead** of the big case per the letRec lesson:
+      * `Ctx.eraseBounds_branchBindings` — hypothesis-free commutation, pushes
+        `eraseBounds` through a branch's pattern-binding prefix onto the ERASED
+        constructor at the ERASED type args;
+      * `Subst.onCtx_congr_hm` — substitutions agreeing only up to erasure below
+        `Φ` give EQUAL erased contexts. This had been inlined verbatim as
+        `hctxBridge` in `complete_app_aux` / `complete_letIn_aux`; the inline
+        copies are left alone deliberately (no churn in proved code).
    2. `InferBranches.complete` (already restated at the erased level in `40e61b1`)
-      — needs (1).
+      — needs (1). **Statement traced end-to-end before farming** and it is
+      self-supporting: the cons case feeds `customTy_unify_dodge`, applies the
+      body's `CompleteAt` at `Φ + ctor.paramCount`, witnesses the algorithm's
+      second unification with the body residual `R₁`, and re-enters its own IH on
+      `rest` because the composed residual still agrees with `R` below `Φ` up to
+      erasure.
    3. `Infer.complete_match_aux` / `complete_match` — need (2). A proof agent
       correctly declined `complete_match_aux` for exactly this reason rather than
       forcing it.
