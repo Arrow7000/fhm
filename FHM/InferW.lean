@@ -20110,9 +20110,24 @@ theorem Infer.complete_letIn_ann_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     (hKσ : ∀ y ∈ σ.body.freeVars, y ∈ K)
     (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
     (hσwf : σ.WF)
+    -- REPAIRED 2026-08-13: residual (erased) result type on the cofinite premise.
+    -- This used to read `… (σ.openVars Xs)` — structural, and the Path R caller
+    -- `Infer.complete_letIn` can NEVER supply it. The caller inverts `TypeOfHM.letIn`
+    -- at the ERASED subject `(.letIn (some σ) rhs body).eraseBounds`, whose annotation
+    -- is `σ.eraseBounds`; `Option.Pins` then forces the rule's scheme `M` to be exactly
+    -- `σ.eraseBounds`, so `GeneralisesTo` concludes at `(PolyTy.eraseBounds σ).openVars Xs`
+    -- — i.e. `Ty.eraseBounds (σ.openVars Xs)` by `PolyTy.eraseBounds_openVars`. The two
+    -- differ precisely when the user's annotation carries a `bl`, which under Path R it
+    -- may, and `TypeOfHM.eraseBounds_of` runs un-erased → erased only (no converse
+    -- exists; erasure loses information).
+    -- Same bug class as `948cb12` / `e3f12ff` / `40e61b1`, and the same lesson as
+    -- `1c17c0a`: this statement's TYPE equation and `hbody` were both repaired while
+    -- `hcofin` — the conjunct right between them — was looked straight past. `hbody` is
+    -- and was correct: it erases the whole extended context, so its env entry is already
+    -- `σ.eraseBounds`. Nothing called this theorem, so the mismatch went unnoticed.
     (hcofin : ∀ Xs : List Nat, FreshNames L σ.paramCount Xs →
       TypeOfHM (S₀.onCtx ctx).eraseBounds (rhs.openTyVars Xs).eraseBounds
-        (σ.openVars Xs))
+        (Ty.eraseBounds (σ.openVars Xs)))
     (hbody : TypeOfHM
         ({ (S₀.onCtx ctx) with env := σ :: (S₀.onCtx ctx).env }).eraseBounds
         body.eraseBounds τ₀) :
