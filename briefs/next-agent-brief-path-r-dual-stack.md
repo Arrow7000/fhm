@@ -1,12 +1,40 @@
 # Next-agent brief: Path R dual-stack metatheory
 
-**Status:** Active (2026-08-12). Read this first when resuming FHM dual-stack / InferW work.  
+**Status:** Metatheory COMPLETE — `FHM/InferW.lean` is sorry-free (2026-08-14). Remaining:
+operational bridge (`Headlines.lean`, 3 sorries) + surface bridge (`SurfaceBridge.lean`,
+3 sorries), both deferred.  
 **Authoritative product packaging:** `design-memo-bounds-preserving-elaboration.md`  
 **This brief:** formalization *choice* Path R, WIP state, proof order, do-nots.
 
 ---
 
-## 0. Where we are (2026-08-12, later) — start here
+## 0. Where we are (2026-08-14) — start here
+
+### ✅ Path R completeness is CLOSED: InferW is sorry-free and axiom-clean
+
+`lake build FHM.InferW` → **0 errors / 0 sorries**. The full principality tower is
+axiom-clean (`[propext, Classical.choice, Quot.sound]`, no `sorryAx`): soundness,
+`Infer.complete'` (mutual, with `InferBranches.complete'` / `InferRecGroup.complete'`),
+`completeAt`/`complete`/`complete_letRec`, `InferBranches`/`InferRecGroup.complete`,
+the corollaries (`complete_instance`, `complete_id`, `iff_typeable`, `principal`,
+`output_unique`, `isPrincipal`), the PhaseC-C2 executable bridge (`inferCore_complete_*`),
+and `principalType_principal`/`principalType_iff`.
+
+**Statement decision worth remembering** (the last real obstacle, 2026-08-14): the
+letRec helpers' `hconn` erases the *declarative* specs —
+`(dspecs.map RecSpec.eraseBounds).map (openAt G Xs)` — not the solved ones, because
+declarative mono types may be `bl`-headed (memo Fact 3), so
+`erase (R₁.onTy τinf) = renameG G Xs τdecl` is unsuppliable. Consequently
+`letRecFused_body_retype` concludes at `erase τ₀`, recovered to
+`AgreesHM τ₀ (R₂.onTy τ₂)` by transitivity with `AgreesHM τ₀ (erase τ₀)`.
+
+**Remaining (deferred, separate axes — NOT part of the metatheory farm):**
+
+- `FHM/Headlines.lean` — 3 sorries: operational bridge (`runSafe`,
+  `runSafe_running_reduces`, `elaborateSafe`). These are why `runSafe`/`elaborateSafe`
+  still report `sorryAx`.
+- `FHM/SurfaceBridge.lean` — 3 sorries: surface bridge (`surface_type_safe`,
+  `..._of_SurfaceWT`, `program_type_safe`).
 
 ### ✅ Path R residual soundness is CLOSED, both stacks, axiom-clean
 
