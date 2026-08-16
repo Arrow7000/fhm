@@ -28,13 +28,40 @@ declarative mono types may be `bl`-headed (memo Fact 3), so
 `letRecFused_body_retype` concludes at `erase τ₀`, recovered to
 `AgreesHM τ₀ (R₂.onTy τ₂)` by transitivity with `AgreesHM τ₀ (erase τ₀)`.
 
-**Remaining (deferred, separate axes — NOT part of the metatheory farm):**
+**Remaining (one focused axis: the residual operational bridge):**
 
-- `FHM/Headlines.lean` — 3 sorries: operational bridge (`runSafe`,
-  `runSafe_running_reduces`, `elaborateSafe`). These are why `runSafe`/`elaborateSafe`
-  still report `sorryAx`.
-- `FHM/SurfaceBridge.lean` — 3 sorries: surface bridge (`surface_type_safe`,
-  `..._of_SurfaceWT`, `program_type_safe`).
+All 6 sorries (3 in `Headlines.lean`, 3 in `SurfaceBridge.lean`) reduce to ONE
+missing piece — the **residual operational bridge**: residual `progress` +
+`preservation` at the ERASED level, connecting the residual typing
+`WellTyped ctors e := ∃ τ, TypeOfElabHM ⟨[], CtorEnv.eraseBounds ctors⟩ e.eraseBounds τ`
+(`Headlines.lean:554`) to `Step`/`IsValue` on the DECORATED `e`.
+
+The two lemmas everything needs (neither is proved yet):
+
+1. **residual progress**: `WellTyped ctors e → ¬ IsValue e → ∃ e', Step e e'`.
+2. **residual preservation**: `WellTyped ctors e → Step e e' → WellTyped ctors e'`.
+
+Ingredients (all already proved, axiom-clean): `TypeOfElabHM.progress` (Core:8471),
+`TypeOfElabHM.preservation` (Core:9442), `TypeOfElabHM.type_safety(_star)` (Core:10074),
+`Step.preserves_exhaustive` (Core:10004), `step_sound`, `isValue_iff_IsValue`, and the
+erase-commute lemmas (`Expr.eraseBounds_letRecElab` (InferW:2745), etc.). **NOT blocked
+on the letRec promotion**: erasure preserves the `letRecElab` head shape, so the lift
+`Step (e.eraseBounds) e'' → ∃ e', Step e e'` (and `IsValue (e.eraseBounds) → IsValue e`)
+is provable directly.
+
+The 6 sorries concretely:
+
+- `Headlines.lean`:
+  - `runSafe_running_reduces` (:614) = residual progress.
+  - `runSafe` (:642 preservation, :648 progress) = the two residual lemmas.
+- `SurfaceBridge.lean`:
+  - `surface_type_safe` (:13002) — the typing conjunct is `Infer.sound` residual +
+    exhaustiveness; the progress conjunct `∀ e', ReflTransGen Step e e' → IsValue e' ∨
+    ∃ e'', Step e' e''` is residual progress + preservation_star (the "safety of
+    decorated e fenced" comment).
+  - `surface_type_safe_of_SurfaceWT` (:13035) = corollary via
+    `typecheck_of_lower_of_SurfaceWT` + `surface_type_safe`.
+  - `program_type_safe` (:13048) = program-level packaging of `surface_type_safe`.
 
 ### ✅ Path R residual soundness is CLOSED, both stacks, axiom-clean
 
