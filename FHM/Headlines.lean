@@ -23,7 +23,11 @@ honestly marked below:
   *erased* term, so principality must read `τ₀ = R.onTy (Ty.eraseBounds τ)`,
   not `τ₀ = R.onTy τ`.
 * **The operational bridge** — `runSafe` and residual `WellTyped` versus
-  `Step` on decorated terms. The three `sorry`s in this file are all here.
+  `Step` on decorated terms. This file's own statements are now sorry-free;
+  the bridge lives as seven `sorry`'d lemmas in `FHM.Core`
+  (`SmallStep.Step.eraseBounds` / `.of_eraseBounds`, `IsValue.of_eraseBounds`,
+  `AllMatchesExhaustive.eraseBounds`, `TypeOfElabHM.residual_progress` /
+  `residual_preservation` / `residual_preservation_star`).
 
 So: do not read this file as "everything below is proved". Read section 6's
 `#print axioms` output, which is the actual, unfakeable status report — it will
@@ -583,13 +587,10 @@ def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors
               program_type_safe hlow htc (checkExhaustive_sound p.term hcov)
             rw [helab] at helab'
             obtain rfl := Option.some.inj helab'
-            -- Path R: residual TypeOf at eraseBounds e / erase τ. `WellTyped`
-            -- erases the CtorEnv too, so project `hty` once more and collapse
-            -- the doubled erases by idempotence.
-            refine ⟨⟨Ty.eraseBounds (Ty.eraseBounds τ), ?_⟩, hexh⟩
-            have h := TypeOfElabHM.eraseBounds_of hty
-            simpa only [Ctx.eraseBounds, Env.eraseBounds, List.map_nil,
-              Expr.eraseBounds_idem] using h⟩⟩
+            -- Path R: `program_type_safe` already concludes at the residual
+            -- erased level (`ctors.eraseBounds` / `e.eraseBounds` / `erase τ`),
+            -- which is exactly `WellTyped`.
+            exact ⟨⟨Ty.eraseBounds τ, hty⟩, hexh⟩⟩⟩
 
 /-- A finished run: an actual value, still carrying its `WellTyped` passport.
     (`IsValue` here is what `runSafe_never_stuck` used to have to prove
@@ -608,13 +609,30 @@ abbrev Running (ctors : CtorEnv) :=
 def Running.toSafe {ctors : CtorEnv} (r : Running ctors) : Safe ctors :=
   ⟨r.val, r.property.1, r.property.2.1⟩
 
+/-- Residual progress for a closed, exhaustive `WellTyped` term: it is a value
+    or steps. Lifts `TypeOfElabHM.residual_progress` through the `WellTyped`
+    erasure. -/
+theorem WellTyped.progress {ctors : CtorEnv} {e : Expr}
+    (hwt : WellTyped ctors e) (hexh : AllMatchesExhaustive ctors e) :
+    IsValue e ∨ ∃ e', Step e e' := by
+  obtain ⟨τ, hty⟩ := hwt
+  exact TypeOfElabHM.residual_progress hty hexh
+
+/-- Residual preservation for `WellTyped`: a decorated step preserves
+    well-typedness. -/
+theorem WellTyped.preservation {ctors : CtorEnv} {e e' : Expr}
+    (hwt : WellTyped ctors e) (hstep : Step e e') : WellTyped ctors e' := by
+  obtain ⟨τ, hty⟩ := hwt
+  exact ⟨τ, TypeOfElabHM.residual_preservation hty hstep⟩
+
 /-- **Genuinely more to do.** A `Running` term isn't stuck — it's merely out of
     fuel — so it always has a next step. Progress, specialised to the
     `¬ IsValue` disjunct that must fire. -/
 theorem runSafe_running_reduces {ctors : CtorEnv} (r : Running ctors) :
     ∃ e', Step r.val e' := by
-  -- Path R: residual WellTyped is TypeOf on e.eraseBounds; progress/Step are on e.
-  sorry -- PathR: operational bridge residual TypeOf → Step on decorated term
+  obtain hval | ⟨e', hstep⟩ := WellTyped.progress r.property.1 r.property.2.1
+  · exact False.elim (absurd hval r.property.2.2)
+  · exact ⟨e', hstep⟩
 
 /-- The safe runner: fuel-bounded evaluation of a `Safe` term, proof-carrying
     and resumable. `.inl` means evaluation reached a genuine value (still
@@ -638,14 +656,20 @@ def runSafe (ctors : CtorEnv) (fuel : Nat) (t : Safe ctors) : Value ctors ⊕ Ru
       have hnv : ¬ IsValue t.val := fun hv => h (isValue_iff_IsValue.mpr hv)
       match hs : step t.val with
       | some e' =>
-        have hty' : WellTyped ctors e' := by
-          sorry -- PathR: residual WellTyped preservation under Step
+        have hty' : WellTyped ctors e' :=
+          WellTyped.preservation t.property.1 (step_sound hs)
         have hexh' : AllMatchesExhaustive ctors e' :=
           Step.preserves_exhaustive t.property.2 (step_sound hs)
         runSafe ctors n ⟨e', hty', hexh'⟩
       | none =>
         False.elim <| by
-          sorry -- PathR: residual WellTyped → progress on decorated term
+          have hprog : IsValue t.val ∨ ∃ e', Step t.val e' :=
+            WellTyped.progress t.property.1 t.property.2
+          obtain hval | ⟨e', hstep⟩ := hprog
+          · exact absurd hval hnv
+          · have hsc := step_complete hstep
+            rw [hs] at hsc
+            cases hsc
 
 
 /-! ## 5. Demos
@@ -712,9 +736,12 @@ all three; a strict subset (e.g. `[propext, Quot.sound]`) is just as clean.
 **Where `sorryAx` still appears, and why.** Two distinct gaps, neither in
 inference soundness:
 
-* `runSafe` / `runSafe_running_reduces` — the operational bridge. The three
-  `sorry`s in THIS file: residual `WellTyped` versus `Step` on decorated terms
-  (progress and preservation both need re-siting on the erase-projected term).
+* `runSafe` / `runSafe_running_reduces` — the operational bridge. This file's
+  proofs are complete, but they rest on the seven residual-bridge lemmas in
+  `FHM.Core` (erase-commutation for `Step` / `IsValue` /
+  `AllMatchesExhaustive`, plus `TypeOfElabHM.residual_progress` /
+  `residual_preservation` / `residual_preservation_star`), which are still
+  `sorry`'d. Closing those seven closes this file entirely.
 * `elaborateSafe` — inherits it from `FHM.SurfaceBridge`, NOT from this file.
   `surface_type_safe`, `surface_type_safe_of_SurfaceWT` and `program_type_safe`
   are still fenced there pending the same residual packaging.

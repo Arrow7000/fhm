@@ -10094,6 +10094,828 @@ theorem TypeOfElabHM.type_safety_star {ctors : CtorEnv} {e : Expr} {τ : Ty}
   obtain ⟨h_ty', h_exh'⟩ := TypeOfElabHM.preservation_star h_rtc h_ty h_exh
   exact ⟨h_ty', TypeOfElabHM.progress h_ty' rfl h_exh'⟩
 
+/-! ## Residual operational bridge (Path R)
+
+Erase-commutation for the small-step semantics, and the residual `progress` /
+`preservation` lemmas they unlock: the erased typing
+`TypeOfElabHM ⟨[], CtorEnv.eraseBounds ctors⟩ e.eraseBounds τ` implies the
+DECORATED runtime term `e` is safe (`IsValue` or steps). `Headlines.runSafe`
+and `SurfaceBridge.surface_type_safe` consume exactly these.
+
+The four erase-commute lemmas are the bridge: erasure only drops *type*
+annotations, so the `Step` / `IsValue` / `AllMatchesExhaustive` structure of
+the runtime term is preserved, and the closed-term safety tower
+(`TypeOfElabHM.progress` / `preservation` / `preservation_star`) lifts from
+`e.eraseBounds` back to `e`.
+
+Proof-internal sub-lemmas (do not need to be top-level): `IsValue.eraseBounds`
+(forward), `IsCtorChain` / `CtorAppliedTo` / `FirstMatchingBranch`
+erase-commutation, and `Expr.eraseBounds_substN` / `Expr.eraseBounds_instTy`
+(cf. `Expr.eraseBounds_substTyFvar`; the private `Expr.eraseBounds_shiftFrom`
+in `FHM.InferW` is the shifting twin). -/
+
+namespace SmallStep
+
+/-! ### Path R erase-commutation helpers (proof-internal to the residual bridge) -/
+
+/-- `eraseBounds` reflects the `app` head. -/
+private theorem Expr.eraseBounds_eq_app {x y : Expr} {e : Expr} :
+    e.eraseBounds = .app x y → ∃ f a, e = .app f a ∧ f.eraseBounds = x ∧ a.eraseBounds = y := by
+  intro h
+  cases e with
+  | app f a =>
+      simp only [Expr.eraseBounds, Expr.app.injEq] at h
+      exact ⟨f, a, rfl, h.1, h.2⟩
+  | _ =>
+      simp only [Expr.eraseBounds] at h
+      contradiction
+
+/-- `eraseBounds` reflects the `lambda` head. -/
+private theorem Expr.eraseBounds_eq_lambda {ann : Option Ty} {body : Expr} {e : Expr} :
+    e.eraseBounds = .lambda ann body → ∃ ann' body', e = .lambda ann' body' := by
+  intro h
+  cases e with
+  | lambda ann' body' => exact ⟨ann', body', rfl⟩
+  | _ =>
+      simp only [Expr.eraseBounds] at h
+      contradiction
+
+/-- `eraseBounds` reflects the `primLit` head. -/
+private theorem Expr.eraseBounds_eq_primLit {p : PrimLitExpr} {e : Expr} :
+    e.eraseBounds = .primLit p → e = .primLit p := by
+  intro h
+  cases e with
+  | primLit q =>
+      simp only [Expr.eraseBounds, Expr.primLit.injEq] at h
+      exact congrArg Expr.primLit h
+  | _ =>
+      simp only [Expr.eraseBounds] at h
+      contradiction
+
+/-- `eraseBounds` reflects the `primBinOp` head. -/
+private theorem Expr.eraseBounds_eq_primBinOp {op : PrimBinOp} {e : Expr} :
+    e.eraseBounds = .primBinOp op → e = .primBinOp op := by
+  intro h
+  cases e with
+  | primBinOp q =>
+      simp only [Expr.eraseBounds, Expr.primBinOp.injEq] at h
+      exact congrArg Expr.primBinOp h
+  | _ =>
+      simp only [Expr.eraseBounds] at h
+      contradiction
+
+/-- `eraseBounds` reflects the `ctor` head. -/
+private theorem Expr.eraseBounds_eq_ctor {c : CtorName} {e : Expr} :
+    e.eraseBounds = .ctor c → e = .ctor c := by
+  intro h
+  cases e with
+  | ctor c' =>
+      simp only [Expr.eraseBounds, Expr.ctor.injEq] at h
+      exact congrArg Expr.ctor h
+  | _ =>
+      simp only [Expr.eraseBounds] at h
+      contradiction
+
+/-- `eraseBounds` reflects the `match_` head. -/
+private theorem Expr.eraseBounds_eq_match {scrut : Expr} {branches : List (MatchPattern × Expr)}
+    {e : Expr} :
+    e.eraseBounds = .match_ scrut branches →
+      ∃ scrut' branches', e = .match_ scrut' branches' ∧
+        scrut'.eraseBounds = scrut ∧
+        branches'.map (fun pe => (pe.1, pe.2.eraseBounds)) = branches := by
+  intro h
+  cases e with
+  | match_ s bs =>
+      simp only [Expr.eraseBounds, Expr.match_.injEq] at h
+      exact ⟨s, bs, rfl, h.1, h.2⟩
+  | _ =>
+      simp only [Expr.eraseBounds] at h
+      contradiction
+
+/-- `eraseBounds` reflects the `letIn` head. -/
+private theorem Expr.eraseBounds_eq_letIn {ann : Option PolyTy} {rhs body : Expr} {e : Expr} :
+    e.eraseBounds = .letIn ann rhs body →
+      ∃ ann' rhs' body', e = .letIn ann' rhs' body' := by
+  intro h
+  cases e with
+  | letIn a r b =>
+      simp only [Expr.eraseBounds, Expr.letIn.injEq] at h
+      exact ⟨a, r, b, rfl⟩
+  | _ =>
+      simp only [Expr.eraseBounds] at h
+      contradiction
+
+/-- `eraseBounds` reflects the `letRec` head. -/
+private theorem Expr.eraseBounds_eq_letRec {anns : List (Option PolyTy)}
+    {bindings : List Expr} {body : Expr} {e : Expr} :
+    e.eraseBounds = .letRec anns bindings body →
+      ∃ anns' bindings' body', e = .letRec anns' bindings' body' := by
+  intro h
+  cases e with
+  | letRec a b bd =>
+      simp only [Expr.eraseBounds, Expr.letRec.injEq] at h
+      exact ⟨a, b, bd, rfl⟩
+  | _ =>
+      simp only [Expr.eraseBounds] at h
+      contradiction
+
+/-- `eraseBounds` reflects the beta redex shape (app of lambda). -/
+private theorem Expr.eraseBounds_eq_app_lambda {ann : Option Ty} {body v : Expr} {e : Expr}
+    (h : e.eraseBounds = .app (.lambda ann body) v) :
+    ∃ ann' body' v', e = .app (.lambda ann' body') v' ∧ v'.eraseBounds = v := by
+  obtain ⟨f, a, rfl, hf, ha⟩ := Expr.eraseBounds_eq_app h
+  obtain ⟨ann', body', rfl⟩ := Expr.eraseBounds_eq_lambda hf
+  exact ⟨ann', body', a, rfl, ha⟩
+
+/-- `eraseBounds` does not change the term head structure, so the decidable value
+    checks agree on `e` and `e.eraseBounds`. -/
+private theorem isValue_isCtorChain_eraseBounds :
+    ∀ e : Expr, isValue e = isValue e.eraseBounds ∧ isCtorChain e = isCtorChain e.eraseBounds
+  | .primLit p => by simp [isValue, isCtorChain, Expr.eraseBounds]
+  | .primBinOp op => by simp [isValue, isCtorChain, Expr.eraseBounds]
+  | .lambda ann body => by simp [isValue, isCtorChain, Expr.eraseBounds]
+  | .var i tyArgs => by simp [isValue, isCtorChain, Expr.eraseBounds]
+  | .ctor c => by simp [isValue, isCtorChain, Expr.eraseBounds]
+  | .letIn ann rhs body => by
+      simp [isValue, isCtorChain, Expr.eraseBounds]
+  | .match_ scrut branches => by
+      simp [isValue, isCtorChain, Expr.eraseBounds]
+  | .letRec anns bindings body => by
+      simp [isValue, isCtorChain, Expr.eraseBounds]
+  | .app f v => by
+      constructor
+      · cases f with
+        | primBinOp op =>
+            simp [isValue, Expr.eraseBounds, (isValue_isCtorChain_eraseBounds v).1]
+        | app f1 v1 =>
+            simp [isValue, isCtorChain, Expr.eraseBounds,
+              (isValue_isCtorChain_eraseBounds f1).2, (isValue_isCtorChain_eraseBounds v1).1,
+              (isValue_isCtorChain_eraseBounds v).1]
+        | primLit p =>
+            simp [isValue, isCtorChain, Expr.eraseBounds, (isValue_isCtorChain_eraseBounds v).1]
+        | lambda ann body =>
+            simp [isValue, isCtorChain, Expr.eraseBounds, (isValue_isCtorChain_eraseBounds v).1]
+        | var i tyArgs =>
+            simp [isValue, isCtorChain, Expr.eraseBounds, (isValue_isCtorChain_eraseBounds v).1]
+        | ctor c =>
+            simp [isValue, isCtorChain, Expr.eraseBounds, (isValue_isCtorChain_eraseBounds v).1]
+        | letIn ann rhs body =>
+            simp [isValue, isCtorChain, Expr.eraseBounds, (isValue_isCtorChain_eraseBounds v).1]
+        | match_ scrut branches =>
+            simp [isValue, isCtorChain, Expr.eraseBounds, (isValue_isCtorChain_eraseBounds v).1]
+        | letRec anns bindings body =>
+            simp [isValue, isCtorChain, Expr.eraseBounds, (isValue_isCtorChain_eraseBounds v).1]
+      · simp [isCtorChain, Expr.eraseBounds, (isValue_isCtorChain_eraseBounds f).2,
+          (isValue_isCtorChain_eraseBounds v).1]
+
+private theorem isValue_eraseBounds (e : Expr) : isValue e = isValue e.eraseBounds :=
+  (isValue_isCtorChain_eraseBounds e).1
+
+private theorem isCtorChain_eraseBounds (e : Expr) :
+    isCtorChain e = isCtorChain e.eraseBounds :=
+  (isValue_isCtorChain_eraseBounds e).2
+
+/-- Forward: `eraseBounds` preserves value shape (decidable-check route). -/
+private theorem IsValue.eraseBounds {e : Expr} (h : IsValue e) : IsValue e.eraseBounds := by
+  apply isValue_iff_IsValue.mp
+  rw [← isValue_eraseBounds e]
+  exact isValue_iff_IsValue.mpr h
+
+/-- Forward: `eraseBounds` preserves ctor-chain shape (decidable-check route). -/
+private theorem IsCtorChain.eraseBounds {e : Expr} (h : IsCtorChain e) :
+    IsCtorChain e.eraseBounds := by
+  apply (isValue_isCtorChain_correct e.eraseBounds).2.mp
+  rw [← isCtorChain_eraseBounds e]
+  exact (isValue_isCtorChain_correct e).2.mpr h
+
+/-- Lift a value's erasure back (decidable-check route). -/
+private theorem liftIsValue {e : Expr} (h : IsValue e.eraseBounds) : IsValue e := by
+  apply isValue_iff_IsValue.mp
+  rw [isValue_eraseBounds e]
+  exact isValue_iff_IsValue.mpr h
+
+/-- Lift a ctor-chain's erasure back (decidable-check route). -/
+private theorem liftIsCtorChain {e : Expr} (h : IsCtorChain e.eraseBounds) : IsCtorChain e := by
+  apply (isValue_isCtorChain_correct e).2.mp
+  rw [isCtorChain_eraseBounds e]
+  exact (isValue_isCtorChain_correct e.eraseBounds).2.mpr h
+
+/-- `shiftBvarsBy` only renumbers bvars, so it commutes with erasure. -/
+private theorem Ty.eraseBounds_shiftBvarsBy (d : Nat) (τ : Ty) :
+    Ty.eraseBounds (Ty.shiftBvarsBy d τ) = Ty.shiftBvarsBy d (Ty.eraseBounds τ) := by
+  unfold Ty.shiftBvarsBy
+  induction τ using Ty.rec_strong with
+  | prim _ => rfl
+  | arrow a b iha ihb =>
+    simp only [Ty.instantiate, Ty.eraseBounds_arrow, iha, ihb]
+  | bvar i => rfl
+  | fvar n => rfl
+  | customTy nm tys ih =>
+    simp only [Ty.instantiate, Ty.eraseBounds_customTy]
+    refine congrArg (Ty.customTy nm) ?_
+    rw [TyList.instantiate_eq_map, TyList.eraseBounds_eq_map, TyList.eraseBounds_eq_map,
+      TyList.instantiate_eq_map, List.map_map, List.map_map]
+    exact List.map_congr_left fun t ht => ih t ht
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate, Ty.eraseBounds_bl, bareListTy, TyList.instantiate, ih]
+
+/-- `eraseBounds` commutes with type-beta `openTyFrom` (instantiating erased args
+    into an erased template). -/
+private theorem Ty.eraseBounds_openTyFrom (d : Nat) (Ts : List Ty) (τ : Ty) :
+    Ty.eraseBounds (Ty.openTyFrom d Ts τ) =
+      Ty.openTyFrom d (Ts.map Ty.eraseBounds) (Ty.eraseBounds τ) := by
+  unfold Ty.openTyFrom
+  induction τ using Ty.rec_strong with
+  | prim _ => rfl
+  | arrow a b iha ihb =>
+    simp only [Ty.instantiate, Ty.eraseBounds_arrow, iha, ihb]
+  | bvar i =>
+    simp only [Ty.instantiate, Ty.eraseBounds_bvar]
+    by_cases hi : i < d
+    · simp only [if_pos hi, Ty.eraseBounds_bvar]
+    · simp only [if_neg hi]
+      rw [List.getElem?_map]
+      cases Ts[i - d]? with
+      | none => simp
+      | some t =>
+        simp only [Option.map_some, Option.getD_some]
+        exact Ty.eraseBounds_shiftBvarsBy d t
+  | fvar n => rfl
+  | customTy nm tys ih =>
+    simp only [Ty.instantiate, Ty.eraseBounds_customTy]
+    refine congrArg (Ty.customTy nm) ?_
+    rw [TyList.instantiate_eq_map, TyList.eraseBounds_eq_map, TyList.eraseBounds_eq_map,
+      TyList.instantiate_eq_map, List.map_map, List.map_map]
+    exact List.map_congr_left fun t ht => ih t ht
+  | bl lo hi e ih =>
+    simp only [Ty.instantiate, Ty.eraseBounds_bl, bareListTy, TyList.instantiate, ih]
+
+/-- Term-var shifting never touches type payloads, so it commutes with erase. -/
+private theorem Expr.eraseBounds_shiftFrom (threshold n : Nat) :
+    ∀ (e : Expr), (e.shiftFrom threshold n).eraseBounds =
+      e.eraseBounds.shiftFrom threshold n := by
+  intro e
+  induction e using Expr.rec_strong generalizing threshold with
+  | primLit _ | primBinOp _ | ctor _ =>
+    simp only [Expr.shiftFrom, Expr.eraseBounds]
+  | var i tyArgs =>
+    by_cases h : i < threshold
+    · simp only [Expr.shiftFrom, Expr.eraseBounds, h, ↓reduceIte]
+    · simp only [Expr.shiftFrom, Expr.eraseBounds, h, ↓reduceIte]
+  | app _ _ ihf iharg =>
+    simp only [Expr.shiftFrom, Expr.eraseBounds, ihf, iharg]
+  | lambda ann body ih =>
+    simp only [Expr.shiftFrom, Expr.eraseBounds, ih]
+  | letIn ann rhs body ihr ihb =>
+    simp only [Expr.shiftFrom, Expr.eraseBounds, ihr, ihb]
+  | match_ scrut branches ihs ihbs =>
+    simp only [Expr.shiftFrom, Expr.eraseBounds, ihs]
+    congr 1
+    induction branches with
+    | nil => rfl
+    | cons hd tl ihtl =>
+      obtain ⟨p, b⟩ := hd
+      change (p, (b.shiftFrom (threshold + p.bindCount) n).eraseBounds)
+          :: _ = (p, b.eraseBounds.shiftFrom (threshold + p.bindCount) n) :: _
+      rw [ihbs p b List.mem_cons_self,
+        ihtl (fun p' b' hmem => ihbs p' b' (List.mem_cons_of_mem _ hmem))]
+  | letRec anns bindings body ihbs ihb =>
+    simp only [Expr.shiftFrom, Expr.eraseBounds, ihb, RecGroup.shiftFrom_eq_map,
+      List.map_map, List.length_map]
+    refine congrArg
+      (fun bs =>
+        Expr.letRec (anns.map (Option.map PolyTy.eraseBounds)) bs
+          (body.eraseBounds.shiftFrom (threshold + bindings.length) n)) ?_
+    apply List.map_congr_left
+    intro e he
+    exact ihbs e he (threshold + bindings.length)
+
+/-- Erasing a recursion group's re-instantiated annotation list is the
+    re-instantiation of the erased annotation list. -/
+private theorem RecGroup.instAnns_eraseBounds (d : Nat) (Ts : List Ty)
+    (anns : List (Option PolyTy)) :
+    (RecGroup.instAnns d Ts anns).map (Option.map PolyTy.eraseBounds) =
+      RecGroup.instAnns d (Ts.map Ty.eraseBounds) (anns.map (Option.map PolyTy.eraseBounds)) := by
+  simp only [RecGroup.instAnns, List.map_map]
+  apply List.map_congr_left
+  intro a _
+  cases a with
+  | none => rfl
+  | some σ =>
+    simp only [Option.map_some, Function.comp_apply, PolyTy.eraseBounds]
+    congr 1
+    congr 1
+    exact Ty.eraseBounds_openTyFrom (d + σ.paramCount) Ts σ.body
+
+/-- Erasing a recursion group's type-beta'd bindings is the type-beta of the
+    erased bindings (depths unchanged: `shieldDepths` only reads `RecAnn.params`). -/
+private theorem RecGroup.instTyAux_eraseBounds (d : Nat) (Ts : List Ty)
+    (anns : List (Option PolyTy)) (bs : List Expr)
+    (ihbs : ∀ e, e ∈ bs → ∀ depth, (e.instTyAux depth Ts).eraseBounds =
+      e.eraseBounds.instTyAux depth (Ts.map Ty.eraseBounds)) :
+    (RecGroup.instTyAux d Ts anns bs).map Expr.eraseBounds =
+      RecGroup.instTyAux d (Ts.map Ty.eraseBounds) (anns.map (Option.map PolyTy.eraseBounds))
+        (bs.map Expr.eraseBounds) := by
+  induction bs generalizing anns with
+  | nil =>
+      simp only [RecGroup.instTyAux, List.map_nil]
+  | cons hd tl ih =>
+      cases anns with
+      | nil =>
+          simp only [RecGroup.instTyAux, List.map_cons, List.map_nil]
+          simp only [List.cons.injEq]
+          constructor
+          · exact ihbs hd List.mem_cons_self d
+          · exact ih [] (fun e he depth => ihbs e (List.mem_cons_of_mem _ he) depth)
+      | cons a as =>
+          simp only [RecGroup.instTyAux, List.map_cons]
+          simp only [List.cons.injEq]
+          constructor
+          · simp only [RecAnn.params_eraseBounds]
+            exact ihbs hd List.mem_cons_self (d + RecAnn.params a)
+          · exact ih as (fun e he depth => ihbs e (List.mem_cons_of_mem _ he) depth)
+
+/-- Type-beta (instTy) commutes with erasure at every depth. -/
+private theorem Expr.eraseBounds_instTyAux (Ts : List Ty) :
+    ∀ (e : Expr) (d : Nat), (e.instTyAux d Ts).eraseBounds =
+      e.eraseBounds.instTyAux d (Ts.map Ty.eraseBounds) := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro d; simp only [Expr.instTyAux, Expr.eraseBounds]
+  | primBinOp op => intro d; simp only [Expr.instTyAux, Expr.eraseBounds]
+  | ctor nm => intro d; simp only [Expr.instTyAux, Expr.eraseBounds]
+  | var n tyArgs =>
+    intro d
+    simp only [Expr.instTyAux, Expr.eraseBounds, Expr.var.injEq, true_and, List.map_map]
+    exact List.map_congr_left fun t _ => Ty.eraseBounds_openTyFrom d Ts t
+  | app f arg ihf iharg =>
+    intro d; simp only [Expr.instTyAux, Expr.eraseBounds, ihf d, iharg d]
+  | lambda ann body ih =>
+    intro d
+    simp only [Expr.instTyAux, Expr.eraseBounds]
+    cases ann with
+    | none => simp [ih d]
+    | some t =>
+      simpa [Expr.lambda.injEq, Option.map_some, ih d] using Ty.eraseBounds_openTyFrom d Ts t
+  | letIn ann rhs body ihr ihb =>
+    intro d
+    cases ann with
+    | none =>
+      simp [Expr.instTyAux, Expr.eraseBounds, ihr d, ihb d]
+    | some σ =>
+      simp only [Expr.instTyAux, Expr.eraseBounds, ihr (d + σ.paramCount), ihb d,
+        Option.map_some]
+      simp [PolyTy.eraseBounds, Ty.eraseBounds_openTyFrom (d + σ.paramCount) Ts σ.body]
+  | match_ scrut branches ihs ihbs =>
+    intro d
+    simp only [Expr.instTyAux, Expr.eraseBounds, ihs d]
+    rw [BranchList.instTyAux_eq_map d Ts]
+    rw [BranchList.instTyAux_eq_map d (Ts.map Ty.eraseBounds)]
+    simp only [List.map_map]
+    simp only [Expr.match_.injEq, true_and]
+    apply List.map_congr_left
+    intro p b
+    obtain ⟨pat, body⟩ := p
+    simp only [Function.comp_apply, Prod.mk.injEq, true_and]
+    exact ihbs pat body b d
+  | letRec anns bindings body ihbs ihb =>
+    intro d
+    simp only [Expr.instTyAux, Expr.eraseBounds, ihb d]
+    simp only [Expr.letRec.injEq, and_true]
+    constructor
+    · exact RecGroup.instAnns_eraseBounds d Ts anns
+    · exact RecGroup.instTyAux_eraseBounds d Ts anns bindings (fun e he depth => ihbs e he depth)
+
+/-- `instTy` (outermost type-beta) commutes with erasure. -/
+private theorem Expr.eraseBounds_instTy (Ts : List Ty) (e : Expr) :
+    (e.instTy Ts).eraseBounds = e.eraseBounds.instTy (Ts.map Ty.eraseBounds) := by
+  exact Expr.eraseBounds_instTyAux Ts e 0
+
+/-- Erasing a substituted branch list is the substitution of the erased branch
+    list (patterns carry no type info). -/
+private theorem BranchList.substN_eraseBounds (k : Nat) (vs : List Expr)
+    (brs : List (MatchPattern × Expr))
+    (ihbs : ∀ p b, (p, b) ∈ brs → ∀ k, (b.substN k vs).eraseBounds =
+      b.eraseBounds.substN k (vs.map Expr.eraseBounds)) :
+    (BranchList.substN k vs brs).map (fun pe => (pe.1, pe.2.eraseBounds)) =
+      BranchList.substN k (vs.map Expr.eraseBounds)
+        (brs.map (fun pe => (pe.1, pe.2.eraseBounds))) := by
+  induction brs with
+  | nil => rfl
+  | cons hd tl ih =>
+    obtain ⟨p, b⟩ := hd
+    simp only [BranchList.substN, List.map_cons]
+    simp only [List.cons.injEq, Prod.mk.injEq, true_and]
+    constructor
+    · exact ihbs p b List.mem_cons_self (k + p.bindCount)
+    · exact ih (fun p b hm k => ihbs p b (List.mem_cons_of_mem _ hm) k)
+
+/-- Erasing a substituted recursion group is the substitution of the erased
+    group. -/
+private theorem RecGroup.substN_eraseBounds (k : Nat) (vs : List Expr) (bs : List Expr)
+    (ihbs : ∀ e, e ∈ bs → ∀ k, (e.substN k vs).eraseBounds =
+      e.eraseBounds.substN k (vs.map Expr.eraseBounds)) :
+    (RecGroup.substN k vs bs).map Expr.eraseBounds =
+      RecGroup.substN k (vs.map Expr.eraseBounds) (bs.map Expr.eraseBounds) := by
+  induction bs with
+  | nil => rfl
+  | cons hd tl ih =>
+    simp only [RecGroup.substN, List.map_cons]
+    simp only [List.cons.injEq]
+    constructor
+    · exact ihbs hd List.mem_cons_self k
+    · exact ih (fun e hm k => ihbs e (List.mem_cons_of_mem _ hm) k)
+
+/-- Multi-substitution commutes with erasure: the erased image of a substitution
+    is the substitution by erased values. -/
+private theorem Expr.eraseBounds_substN (k : Nat) (vs : List Expr) (e : Expr) :
+    (e.substN k vs).eraseBounds = e.eraseBounds.substN k (vs.map Expr.eraseBounds) := by
+  induction e using Expr.rec_strong generalizing k with
+  | primLit p => simp [Expr.substN, Expr.eraseBounds]
+  | primBinOp op => simp [Expr.substN, Expr.eraseBounds]
+  | ctor nm => simp [Expr.substN, Expr.eraseBounds]
+  | var i tyArgs =>
+    by_cases hk : i < k
+    · simp [Expr.substN, Expr.eraseBounds, hk]
+    · by_cases hl : i - k < vs.length
+      · simp [Expr.substN, Expr.eraseBounds, hk, hl]
+        rw [Expr.eraseBounds_shiftFrom, Expr.eraseBounds_instTy]
+      · simp [Expr.substN, Expr.eraseBounds, hk, hl]
+  | lambda ann body ih =>
+    simp [Expr.substN, Expr.eraseBounds, ih (k + 1)]
+  | app f arg ihf iharg =>
+    simp [Expr.substN, Expr.eraseBounds, ihf k, iharg k]
+  | letIn ann rhs body ihr ihb =>
+    simp [Expr.substN, Expr.eraseBounds, ihr k, ihb (k + 1)]
+  | match_ scrut branches ihs ihbs =>
+    simp [Expr.substN, Expr.eraseBounds, ihs k]
+    exact BranchList.substN_eraseBounds k vs branches ihbs
+  | letRec anns bindings body ihbs ihb =>
+    simp [Expr.substN, Expr.eraseBounds, ihb (k + bindings.length)]
+    exact RecGroup.substN_eraseBounds (k + bindings.length) vs bindings ihbs
+
+/-- Forward: `eraseBounds` preserves ctor-chain decomposition (args erased
+    pointwise). -/
+private theorem CtorAppliedTo.eraseBounds {e : Expr} {name : CtorName} {args : List Expr}
+    (h : CtorAppliedTo e name args) :
+    CtorAppliedTo e.eraseBounds name (args.map Expr.eraseBounds) := by
+  induction h with
+  | base name =>
+      simp only [Expr.eraseBounds, List.map_nil]
+      exact .base name
+  | step hf ih =>
+      simp only [Expr.eraseBounds, List.map_append, List.map_cons, List.map_nil]
+      exact .step ih
+
+/-- Lift a decomposition back: `CtorAppliedTo e.eraseBounds name args` comes from
+    a decomposition of `e` with the same number of arguments. -/
+private theorem CtorAppliedTo.of_eraseBounds {e : Expr} {name : CtorName} {args : List Expr}
+    (h : CtorAppliedTo e.eraseBounds name args) :
+    ∃ args', CtorAppliedTo e name args' ∧ args'.length = args.length := by
+  generalize hx : e.eraseBounds = e0 at h
+  induction h generalizing e with
+  | base name =>
+      have he' : e = .ctor name := Expr.eraseBounds_eq_ctor hx
+      rw [he']
+      exact ⟨[], .base name, rfl⟩
+  | step hf ih =>
+      obtain ⟨f0, a0, rfl, hf0, ha0⟩ := Expr.eraseBounds_eq_app hx
+      obtain ⟨args', hargs', hlen⟩ := ih hf0
+      exact ⟨args' ++ [a0], .step hargs', by simp [hlen]⟩
+
+/-- Forward: `eraseBounds` preserves which branch fires (patterns are type-free;
+    the body is erased). -/
+private theorem FirstMatchingBranch.eraseBounds {name : CtorName} {arity : Nat}
+    {branches : List (MatchPattern × Expr)} {pat : MatchPattern} {body : Expr}
+    (h : FirstMatchingBranch name arity branches pat body) :
+    FirstMatchingBranch name arity
+      (branches.map (fun pe => (pe.1, pe.2.eraseBounds))) pat body.eraseBounds := by
+  induction h with
+  | here hm =>
+      simp only [List.map_cons]
+      exact .here hm
+  | there hn ht ih =>
+      simp only [List.map_cons]
+      exact .there hn ih
+
+/-- Lift a firing branch back: the same pattern fires in the decorated branch
+    list (patterns carry no type info; bodies may differ). -/
+private theorem FirstMatchingBranch.of_eraseBounds {name : CtorName} {arity : Nat}
+    {branches : List (MatchPattern × Expr)} {pat : MatchPattern} {body : Expr}
+    (h : FirstMatchingBranch name arity
+      (branches.map (fun pe => (pe.1, pe.2.eraseBounds))) pat body) :
+    ∃ pat' body', FirstMatchingBranch name arity branches pat' body' := by
+  generalize hb : branches.map (fun pe => (pe.1, pe.2.eraseBounds)) = brs at h
+  revert branches
+  induction h with
+  | here hm =>
+      intro branches hb
+      cases branches with
+      | nil =>
+          simp only [List.map_nil] at hb
+          contradiction
+      | cons hd tl =>
+          obtain ⟨p, b⟩ := hd
+          simp only [List.map_cons] at hb
+          simp only [List.cons.injEq, Prod.mk.injEq] at hb
+          rcases hb with ⟨⟨hp, hb2⟩, hrest⟩
+          subst hp
+          exact ⟨_, b, .here hm⟩
+  | there hn ht ih =>
+      intro branches hb
+      cases branches with
+      | nil =>
+          simp only [List.map_nil] at hb
+          contradiction
+      | cons hd tl =>
+          obtain ⟨p, b⟩ := hd
+          simp only [List.map_cons] at hb
+          simp only [List.cons.injEq, Prod.mk.injEq] at hb
+          rcases hb with ⟨⟨hp, hb2⟩, hrest⟩
+          subst hp
+          obtain ⟨pat0, body0, htl⟩ := ih hrest
+          exact ⟨pat0, body0, .there hn htl⟩
+
+/-- A branch of the erased branch list comes from a branch of the decorated list
+    with the same pattern. -/
+private theorem BranchList.mem_map_eraseBounds {branches : List (MatchPattern × Expr)}
+    {pat : MatchPattern} {body : Expr}
+    (h : (pat, body) ∈ branches.map (fun pe => (pe.1, pe.2.eraseBounds))) :
+    ∃ body', (pat, body') ∈ branches ∧ body'.eraseBounds = body := by
+  obtain ⟨pe, hpe, heq⟩ := List.mem_map.mp h
+  cases pe with | mk p b =>
+  simp only [Prod.mk.injEq] at heq
+  obtain ⟨hp, hb⟩ := heq
+  subst hp
+  exact ⟨b, hpe, hb⟩
+
+/-- `eraseBounds` preserves branch-body exhaustiveness (companion to
+    `AllMatchesExhaustive.eraseBounds`). -/
+private theorem AllBranchBodiesExhaustive.eraseBounds {ctors : CtorEnv}
+    {branches : List (MatchPattern × Expr)}
+    (ih : ∀ pat e, (pat, e) ∈ branches →
+      AllMatchesExhaustive ctors e →
+      AllMatchesExhaustive (CtorEnv.eraseBounds ctors) e.eraseBounds)
+    (h : AllBranchBodiesExhaustive ctors branches) :
+    AllBranchBodiesExhaustive (CtorEnv.eraseBounds ctors)
+      (branches.map (fun pe => (pe.1, pe.2.eraseBounds))) := by
+  induction branches with
+  | nil => exact .nil
+  | cons hd tl ih_tl =>
+    obtain ⟨pat, body⟩ := hd
+    cases h with
+    | cons hbody hrest =>
+      simp only [List.map_cons]
+      exact .cons (ih pat body List.mem_cons_self hbody)
+        (ih_tl (fun p e hm hae => ih p e (List.mem_cons_of_mem _ hm) hae) hrest)
+
+/-- `Step` commutes with `eraseBounds`: erasing the redex gives a step on the
+    erased terms. Every `Step` rule is structure-determined (types never gate a
+    reduction), so the same rule fires on `e.eraseBounds`. -/
+theorem Step.eraseBounds {e e' : Expr} (h : Step e e') :
+    Step e.eraseBounds e'.eraseBounds := by
+  induction h with
+  | beta hv =>
+      simp only [Expr.eraseBounds]
+      rw [Expr.eraseBounds_substN]
+      exact .beta (IsValue.eraseBounds hv)
+  | letReduce =>
+      simp only [Expr.eraseBounds]
+      rw [Expr.eraseBounds_substN]
+      exact .letReduce
+  | matchReduce hval hcat hfirst =>
+      simp only [Expr.eraseBounds]
+      rw [Expr.eraseBounds_substN, List.map_take]
+      exact .matchReduce (IsValue.eraseBounds hval) (CtorAppliedTo.eraseBounds hcat)
+        (by simpa [List.length_map] using FirstMatchingBranch.eraseBounds hfirst)
+  | matchWildReduce hval hnot =>
+      simp only [Expr.eraseBounds]
+      exact .matchWildReduce (IsValue.eraseBounds hval) (by
+        intro hcc
+        exact hnot (liftIsCtorChain hcc))
+  | letRecUnfold =>
+      rename_i anns bindings body
+      simp only [Expr.eraseBounds]
+      rw [Expr.eraseBounds_substN]
+      have hlist : (bindings.map (fun e => Expr.letRec anns bindings e)).map Expr.eraseBounds =
+          (bindings.map Expr.eraseBounds).map
+            (fun e => Expr.letRec (anns.map (Option.map PolyTy.eraseBounds))
+              (bindings.map Expr.eraseBounds) e) := by
+        rw [List.map_map, List.map_map]
+        apply List.map_congr_left
+        intro e he
+        simp only [Expr.eraseBounds, Function.comp_apply]
+      rw [hlist]
+      exact .letRecUnfold
+  | deltaIntAdd =>
+      simp only [Expr.eraseBounds]
+      exact .deltaIntAdd
+  | deltaIntSub =>
+      simp only [Expr.eraseBounds]
+      exact .deltaIntSub
+  | deltaIntLt =>
+      simp only [Expr.eraseBounds]
+      exact .deltaIntLt
+  | deltaCharLt =>
+      simp only [Expr.eraseBounds]
+      exact .deltaCharLt
+  | appFn hf ih =>
+      simp only [Expr.eraseBounds]
+      exact .appFn ih
+  | appArg hv ha ih =>
+      simp only [Expr.eraseBounds]
+      exact .appArg (IsValue.eraseBounds hv) ih
+  | matchScrut hs ih =>
+      simp only [Expr.eraseBounds]
+      exact .matchScrut ih
+
+/-- Erasing a step lifts back: if the erased term steps, the decorated term
+    steps. (The reducts need not literally match — only existence is asserted.) -/
+theorem Step.of_eraseBounds {e e'' : Expr} (h : Step e.eraseBounds e'') :
+    ∃ e', Step e e' := by
+  generalize hx : e.eraseBounds = e0 at h
+  induction h generalizing e with
+  | beta hv =>
+      obtain ⟨ann', body', v', rfl, hv'e⟩ := Expr.eraseBounds_eq_app_lambda hx
+      have hv' : IsValue v' := liftIsValue (by simpa [hv'e] using hv)
+      exact ⟨body'.substN 0 [v'], .beta hv'⟩
+  | letReduce =>
+      obtain ⟨ann', rhs', body', rfl⟩ := Expr.eraseBounds_eq_letIn hx
+      exact ⟨body'.substN 0 [rhs'], .letReduce⟩
+  | matchReduce hval hcat hfirst =>
+      obtain ⟨scrut', branches', rfl, hse, hbe⟩ := Expr.eraseBounds_eq_match hx
+      have hval' : IsValue scrut' := liftIsValue (by simpa [hse] using hval)
+      obtain ⟨args', hcat', hlen⟩ :=
+        CtorAppliedTo.of_eraseBounds (e := scrut') (by simpa [hse] using hcat)
+      obtain ⟨pat', body', hfb⟩ :=
+        FirstMatchingBranch.of_eraseBounds (branches := branches') (by simpa [hbe] using hfirst)
+      exact ⟨body'.substN 0 (args'.take pat'.bindCount),
+        .matchReduce hval' hcat' (by simpa [hlen] using hfb)⟩
+  | matchWildReduce hval hnot =>
+      obtain ⟨scrut', branches', rfl, hse, hbe⟩ := Expr.eraseBounds_eq_match hx
+      have hval' : IsValue scrut' := liftIsValue (by simpa [hse] using hval)
+      have hnot' : ¬ IsCtorChain scrut' := by
+        intro hcc
+        exact hnot (by simpa [hse] using IsCtorChain.eraseBounds hcc)
+      cases branches' with
+      | nil =>
+          simp only [List.map_nil] at hbe
+          contradiction
+      | cons hd tl =>
+          obtain ⟨p, b⟩ := hd
+          simp only [List.map_cons] at hbe
+          simp only [List.cons.injEq, Prod.mk.injEq] at hbe
+          rcases hbe with ⟨⟨hp, hb2⟩, _⟩
+          subst hp
+          exact ⟨b, .matchWildReduce hval' hnot'⟩
+  | letRecUnfold =>
+      obtain ⟨anns', bindings', body', rfl⟩ := Expr.eraseBounds_eq_letRec hx
+      exact ⟨body'.substN 0 (bindings'.map (fun e => Expr.letRec anns' bindings' e)),
+        .letRecUnfold⟩
+  | deltaIntAdd =>
+      rename_i m n
+      obtain ⟨f0, a0, rfl, hf0, ha0⟩ := Expr.eraseBounds_eq_app hx
+      obtain ⟨g0, b0, rfl, hg0, hb0⟩ := Expr.eraseBounds_eq_app hf0
+      rw [Expr.eraseBounds_eq_primBinOp hg0, Expr.eraseBounds_eq_primLit hb0,
+        Expr.eraseBounds_eq_primLit ha0]
+      exact ⟨.primLit (.int (m + n)), .deltaIntAdd⟩
+  | deltaIntSub =>
+      rename_i m n
+      obtain ⟨f0, a0, rfl, hf0, ha0⟩ := Expr.eraseBounds_eq_app hx
+      obtain ⟨g0, b0, rfl, hg0, hb0⟩ := Expr.eraseBounds_eq_app hf0
+      rw [Expr.eraseBounds_eq_primBinOp hg0, Expr.eraseBounds_eq_primLit hb0,
+        Expr.eraseBounds_eq_primLit ha0]
+      exact ⟨.primLit (.int (m - n)), .deltaIntSub⟩
+  | deltaIntLt =>
+      rename_i m n
+      obtain ⟨f0, a0, rfl, hf0, ha0⟩ := Expr.eraseBounds_eq_app hx
+      obtain ⟨g0, b0, rfl, hg0, hb0⟩ := Expr.eraseBounds_eq_app hf0
+      rw [Expr.eraseBounds_eq_primBinOp hg0, Expr.eraseBounds_eq_primLit hb0,
+        Expr.eraseBounds_eq_primLit ha0]
+      exact ⟨.ctor (if m < n then ⟨"True"⟩ else ⟨"False"⟩), .deltaIntLt⟩
+  | deltaCharLt =>
+      rename_i a b
+      obtain ⟨f0, a0, rfl, hf0, ha0⟩ := Expr.eraseBounds_eq_app hx
+      obtain ⟨g0, b0, rfl, hg0, hb0⟩ := Expr.eraseBounds_eq_app hf0
+      rw [Expr.eraseBounds_eq_primBinOp hg0, Expr.eraseBounds_eq_primLit hb0,
+        Expr.eraseBounds_eq_primLit ha0]
+      exact ⟨.ctor (if a.toNat < b.toNat then ⟨"True"⟩ else ⟨"False"⟩), .deltaCharLt⟩
+  | appFn hf ih =>
+      obtain ⟨f0, a0, rfl, hf0, ha0⟩ := Expr.eraseBounds_eq_app hx
+      obtain ⟨e', he'⟩ := ih hf0
+      exact ⟨.app e' a0, .appFn he'⟩
+  | appArg hv ha ih =>
+      obtain ⟨f0, a0, rfl, hf0, ha0⟩ := Expr.eraseBounds_eq_app hx
+      have hf0' : IsValue f0 := liftIsValue (by simpa [hf0] using hv)
+      obtain ⟨e', he'⟩ := ih ha0
+      exact ⟨.app f0 e', .appArg hf0' he'⟩
+  | matchScrut hs ih =>
+      obtain ⟨scrut', branches', rfl, hse, hbe⟩ := Expr.eraseBounds_eq_match hx
+      obtain ⟨e', he'⟩ := ih hse
+      exact ⟨.match_ e' branches', .matchScrut he'⟩
+
+/-- Erasing a value lifts back: a value's erasure is a value of the same head
+    shape. -/
+theorem IsValue.of_eraseBounds {e : Expr} (h : IsValue e.eraseBounds) : IsValue e := by
+  exact liftIsValue h
+
+/-- Exhaustiveness erases: an exhaustive decorated term is exhaustive on its
+    erasure against the erased ctor env (`CtorEnv.eraseBounds_get?` preserves
+    `tyName` / `contents.length`). -/
+theorem AllMatchesExhaustive.eraseBounds {ctors : CtorEnv} {e : Expr}
+    (h : AllMatchesExhaustive ctors e) :
+    AllMatchesExhaustive (CtorEnv.eraseBounds ctors) e.eraseBounds := by
+  induction e using Expr.rec_strong with
+  | primLit p => simp only [Expr.eraseBounds]; exact .primLit
+  | primBinOp op => simp only [Expr.eraseBounds]; exact .primBinOp
+  | var m tyArgs => simp only [Expr.eraseBounds]; exact .var
+  | ctor nm => simp only [Expr.eraseBounds]; exact .ctor
+  | lambda ann body ih =>
+    cases h with
+    | lambda hb => simp only [Expr.eraseBounds]; exact .lambda (ih hb)
+  | app f arg ihf iharg =>
+    cases h with
+    | app hf ha => simp only [Expr.eraseBounds]; exact .app (ihf hf) (iharg ha)
+  | letIn ann rhs body ihr ihb =>
+    cases h with
+    | letIn hr hb => simp only [Expr.eraseBounds]; exact .letIn (ihr hr) (ihb hb)
+  | match_ scrut branches ihs ihbr =>
+    cases h with
+    | match_ h_scrut h_bodies h_cover1 h_cover2 =>
+        rename_i tyName
+        simp only [Expr.eraseBounds]
+        exact AllMatchesExhaustive.match_ (ihs h_scrut)
+          (AllBranchBodiesExhaustive.eraseBounds ihbr h_bodies)
+          (fun c n body hmem => by
+            obtain ⟨body', hmem', hb'⟩ := BranchList.mem_map_eraseBounds hmem
+            obtain ⟨ctor, hget, hty⟩ := h_cover1 c n body' hmem'
+            refine ⟨Ctor.eraseBounds ctor, ?_, ?_⟩
+            · rw [CtorEnv.eraseBounds_get?]
+              simp [hget]
+            · simpa [Ctor.eraseBounds_tyName] using hty)
+          (fun ctorName ctor' hlook htyName => by
+            rw [CtorEnv.eraseBounds_get?] at hlook
+            cases hg : LookupList.get? ctors ctorName with
+            | none =>
+                simp [hg] at hlook
+            | some ctor =>
+                simp [hg] at hlook
+                have hty : ctor.tyName = tyName := by
+                  rw [← Ctor.eraseBounds_tyName, hlook]
+                  exact htyName
+                obtain ⟨pat, body, hmem, hcov⟩ := h_cover2 ctorName ctor hg hty
+                refine ⟨pat, body.eraseBounds, ?_, ?_⟩
+                · exact List.mem_map_of_mem (f := fun pe => (pe.1, pe.2.eraseBounds)) hmem
+                · rw [← hlook, Ctor.eraseBounds_contents, List.length_map]
+                  exact hcov)
+  | letRec anns bindings body ih_bindings ih_body =>
+    cases h with
+    | letRec hbindings hbody =>
+        simp only [Expr.eraseBounds]
+        refine .letRec ?_ (ih_body hbody)
+        intro e' he'
+        obtain ⟨e₀, he₀, rfl⟩ := List.mem_map.mp he'
+        exact ih_bindings e₀ he₀ (hbindings e₀ he₀)
+
+end SmallStep
+
+open SmallStep in
+/-- Residual progress: an erased-typed, exhaustive decorated term is a value or
+    steps. Lifts `TypeOfElabHM.progress` from the erased term via the
+    erase-commute lemmas. -/
+theorem TypeOfElabHM.residual_progress {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h_ty : TypeOfElabHM ⟨[], CtorEnv.eraseBounds ctors⟩ e.eraseBounds τ)
+    (h_exh : AllMatchesExhaustive ctors e) :
+    IsValue e ∨ ∃ e', Step e e' := by
+  have h := TypeOfElabHM.progress h_ty rfl (AllMatchesExhaustive.eraseBounds h_exh)
+  rcases h with hv | ⟨e'', hs⟩
+  · exact .inl (IsValue.of_eraseBounds hv)
+  · exact .inr (Step.of_eraseBounds hs)
+
+open SmallStep in
+/-- Residual preservation: a decorated step preserves the erased typing. -/
+theorem TypeOfElabHM.residual_preservation {ctors : CtorEnv} {e e' : Expr} {τ : Ty}
+    (h_ty : TypeOfElabHM ⟨[], CtorEnv.eraseBounds ctors⟩ e.eraseBounds τ)
+    (h_step : Step e e') :
+    TypeOfElabHM ⟨[], CtorEnv.eraseBounds ctors⟩ e'.eraseBounds τ := by
+  exact TypeOfElabHM.preservation (Step.eraseBounds h_step) h_ty
+
+open SmallStep in
+/-- Residual iterated preservation: reachable decorated terms stay erased-typed
+    and exhaustive. -/
+theorem TypeOfElabHM.residual_preservation_star {ctors : CtorEnv} {e e' : Expr} {τ : Ty}
+    (h_rtc : Relation.ReflTransGen Step e e')
+    (h_ty : TypeOfElabHM ⟨[], CtorEnv.eraseBounds ctors⟩ e.eraseBounds τ)
+    (h_exh : AllMatchesExhaustive ctors e) :
+    TypeOfElabHM ⟨[], CtorEnv.eraseBounds ctors⟩ e'.eraseBounds τ ∧
+      AllMatchesExhaustive ctors e' := by
+  induction h_rtc with
+  | refl => exact ⟨h_ty, h_exh⟩
+  | tail _ h_step ih =>
+    obtain ⟨h_ty', h_exh'⟩ := ih
+    exact ⟨TypeOfElabHM.residual_preservation h_ty' h_step,
+      Step.preserves_exhaustive h_exh' h_step⟩
+
 /-! ## Annotated-recursion correctness smoke test (ported from `SpikeLetRecAnn`)
 
 A genuine *polymorphic*-recursion witness types under the fused rule (all-`some`

@@ -12996,15 +12996,15 @@ Approach A / 1a: strong open `SurfaceWTExpr` + coverage ⇒ the concrete `lower`
 output typechecks, then reuse `surface_type_safe`. -/
 
 /-- Path R residual: well-typed surface programs elaborate to Core that is
-    residual-HM-typed (`e.eraseBounds` / `erase τ`), match-exhaustive on the
-    real elaboratum, and non-stuck (safety of decorated `e` fenced until dual-stack
-    safety is restated). -/
+    residual-HM-typed (`e.eraseBounds` / `erase τ`, against the erased ctor env
+    `ctors.eraseBounds`), match-exhaustive on the real elaboratum, and non-stuck
+    (safety of decorated `e` via the residual operational bridge in `Core`). -/
 theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     (hlow : lower ctors s = some c)
     (htc : (typecheck ctors c).isSome)
     (hcov : SurfaceCovers ctors s) :
     ∃ e τ, elaborate ctors s = some e ∧
-      TypeOfElabHM ⟨[], ctors⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
+      TypeOfElabHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
       AllMatchesExhaustive ctors e ∧
       ∀ e', Relation.ReflTransGen Step e e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
@@ -13037,7 +13037,7 @@ theorem surface_type_safe_of_SurfaceWT {ctors : CtorEnv} {s : Surface.Expr}
     (hcons : CtorEnv.arityConsistent ctors)
     (hfields : CtorEnv.fieldsKinded ctors) :
     ∃ e τ, elaborate ctors s = some e ∧
-      TypeOfElabHM ⟨[], ctors⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
+      TypeOfElabHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
       AllMatchesExhaustive ctors e ∧
       ∀ e', Relation.ReflTransGen Step e e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
@@ -13050,7 +13050,7 @@ theorem program_type_safe {p : Surface.Program} {ctors : CtorEnv} {c : Expr}
     (htc : (typecheck ctors c).isSome)
     (hcov : SurfaceCovers ctors p.term) :
     ∃ e τ, elaborateProgram p = some e ∧
-      TypeOfElabHM ⟨[], ctors⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
+      TypeOfElabHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
       AllMatchesExhaustive ctors e ∧
       ∀ e', Relation.ReflTransGen Step e e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
