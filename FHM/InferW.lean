@@ -21007,7 +21007,7 @@ theorem Infer.complete' {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut 
           simpa [Expr.eraseBounds_openTyVars, PolyTy.eraseBounds_openVars] using hcofin' Xs hf
         have hblk := @typeOfHM_at_block _ (rhs.eraseBounds) (PolyTy.eraseBounds σ)
           (L ++ freshVars N σ.paramCount) (freshVars N σ.paramCount)
-          (by simpa [PolyTy.eraseBounds_paramCount] using (freshVars_length N σ.paramCount)) hcofin_at
+          (by simp [PolyTy.eraseBounds_paramCount]) hcofin_at
         simpa [Expr.eraseBounds_openTyVars, PolyTy.eraseBounds_openVars] using hblk
       -- Recurse on the *opened* rhs at rigid set `K ∪ Ys`.
       have hbelowN : CtxBelow (N + σ.paramCount) ctx := fun M hM => (hbelow M hM).mono (by omega)
