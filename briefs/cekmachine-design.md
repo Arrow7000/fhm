@@ -1,8 +1,30 @@
 # CEK machine migration — design + living status
 
-**Status (2026-08-18): PLANNING.** No code written yet. This doc is the plan, the
-living status log, and the handover artifact for the migration. The decision is made
-and the base is reset; the work starts here.
+**Status (2026-08-18): Stage 1 IN PROGRESS.** The machine is defined and building
+(`FHM/CekMachine.lean`, commit `9fdc746`): `Val`/`VEnv`/`Kont`/`State`/`StepM` + the
+typing invariant (`ValTyped`/`EnvOK`/`KontTyped`/`StateOK`) + the exhaustiveness
+lifting (`ExhaustiveVal/Env/Kont/State`), with `progress`/`preservation`/
+`preservation_star`/`preservation_exhaustive`/`type_safety`/`type_safety_closed`/
+`stepM_deterministic`/`ValTyped_inst` stated as `sorry`s ready for farming.
+Additive only — `TypeOfElabHM`, the old `SmallStep.Step`, and elaboration are all
+still intact, and `lake build` is green.
+
+Two design points settled *while* writing the definitions (they refine §3, not
+contradict it):
+
+1. **CBN thunks and rec-closures carry their annotations** (`thunk ann e E`,
+   `recclo anns bindings E j`) — inert at reduction time, but needed so `ValTyped`
+   can type a CBN binding at its *generalised* scheme (`GeneralisesTo` / the
+   `letRec` group premises). A value at a generalised scheme is *used* at a monotype
+   via the `ValTyped_inst` instantiation lemma; `StateOK (.ret v k)` types `v` at a
+   monotype, which is exactly how a polymorphic value is consumed by a continuation.
+2. **Evaluation order is unchanged from the old `Step`** — CBV `app`/`match_`,
+   CBN `letIn`/`letRec` (thunks forced on use). This is faithful to the current
+   observable behaviour *and* it is what makes non-value recursive RHSs (e.g.
+   `letRec [var 0] (var 0)`) diverge correctly via thunk-forcing loops, so no
+   separate "recursive values" restriction is needed.
+
+This doc remains the plan, living status log, and handover artifact.
 
 **Git state at migration start:**
 - `main` = `62b20aa` ("Prove the SurfaceBridge headline: surface_type_safe and its
