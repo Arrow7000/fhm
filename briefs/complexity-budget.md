@@ -105,7 +105,7 @@ change, no call-site change, no `hG_bs`.
 
 **Honest scope.** Stage 1 makes the elaboratum shape-preserving for **all-mono** groups only; mixed
 groups still use the Λ-outside `letRecElab`, so `Infer.sourceSound` is still a full second induction
-and `letRecElab` is not deleted (net-additive ~2.9k lines). The §2.2 payoff (sourceSound as a
+and `letRecElab` is not deleted (net-additive ~4.9k lines). The §2.2 payoff (sourceSound as a
 corollary) is **not yet** realised — it is Part 3.
 
 ### Remaining (future — **not** required for a green build)
@@ -595,7 +595,7 @@ widest.
 ⚠️ This table predates the "mixed groups out of scope" correction. As landed, `letRecElab` is
 **kept** (mixed branch), the `RecSpec` mono/poly split survives, and `sourceSound`'s mixed case
 stays — so the −1,045 / −656 deletions below are **not** realised by Option A alone; the near term
-is net-additive (~2.9k lines of `LetRecPromote` + the `...Out` mirrors + the all-mono sound branch).
+is net-additive (~4.9k lines of `LetRecPromote` + the `...Out` mirrors + the all-mono sound branch).
 The deletion and the §2.2 shape-preservation payoff are contingent on Option B (below), which is
 future research.
 

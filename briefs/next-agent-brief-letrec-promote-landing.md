@@ -54,7 +54,7 @@ into the §2.2 payoff (sourceSound as a corollary, not a second induction). Not 
 
 Note the honest scope: Stage 1 makes the elaboratum shape-preserving for **all-mono** groups only;
 mixed groups still use the Λ-outside `letRecElab`, so `Infer.sourceSound` is still a full second
-induction and `letRecElab` is not deleted. The near term is net-additive (~2.9k lines). The deletion
+induction and `letRecElab` is not deleted. The near term is net-additive (~4.9k lines). The deletion
 and the sourceSound collapse remain contingent on Part 3, and on the Option-B mixed-group promotion
 (`complexity-budget.md` §Status) which is open research.
 
