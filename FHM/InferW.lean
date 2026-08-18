@@ -1,4 +1,5 @@
 import FHM.Core
+import FHM.LetRecPromote
 
 -- These pure `Ty`-level lemmas now live in `Core` (they were originally developed
 -- here). Core declares them without `@[simp]`, but the InferW proofs below rely on
@@ -2507,6 +2508,130 @@ def Expr.letRecElab (G : List Nat) (anns : List (Option PolyTy)) (rawBindings : 
   Expr.letRecElabNest G anns rawBindings.length rawBindings
     (((List.range rawBindings.length).zip specs).reverse) body
 
+/-- Are all recursion-group annotations `none` (i.e. the group is all-monomorphic)? -/
+def allNone (anns : List (Option PolyTy)) : Bool :=
+  anns.all (fun a => a.isNone)
+
+/-- The `letRec` elaboratum after the promotion (`briefs/complexity-budget.md` §3.4): for an
+    **all-mono** group, a plain `.letRec` with the mono members promoted to `promoteScheme G τ`
+    (the Λ written into the `anns` slot), their RHSs closed over the pool `G` and their
+    group-internal `.var j []` references retargeted to the pool binders, and the body extended to
+    the full-pool arity. For a **mixed** group (some annotated member), the Λ-outside nest
+    `Expr.letRecElab` (unchanged). -/
+def Expr.letRecElabOut (G : List Nat) (anns : List (Option PolyTy)) (rawBindings : List Expr)
+    (specs : List RecSpec) (body : Expr) : Expr :=
+  if allNone anns then
+    .letRec (LetRecPromote.promoteAnns G specs)
+      (rawBindings.map (fun e =>
+        LetRecPromote.retargetStored (LetRecPromote.specsMono specs) G.length 0 0
+          (Expr.closeTyVars G e)))
+      (LetRecPromote.bodyExtend (RecSpecs.monoTys specs) G 0 body)
+  else
+    Expr.letRecElab G anns rawBindings specs body
+
+/-! ### Promotion-stability facts for the `letRecElabOut` mirrors
+
+`promoteAnns` / `specsMono` / `monoTys` are stable under `RecSpec.eraseBounds` / `RecSpec.onSubst`,
+so the `…Out` erase/subst mirrors reduce the promoted node's erased/substituted form to the
+promotion of the erased/substituted specs. (These reference `RecSpec.eraseBounds`/`onSubst`, so
+they live here, not in `LetRecPromote`.) -/
+
+/-- `promoteAnns` distributes over `RecSpec.eraseBounds` (erase commutes with `promoteScheme`). -/
+theorem promoteAnns_eraseBounds (G : List Nat) (specs : List RecSpec) :
+    (LetRecPromote.promoteAnns G specs).map (Option.map PolyTy.eraseBounds)
+      = LetRecPromote.promoteAnns G (specs.map RecSpec.eraseBounds) := by
+  simp only [LetRecPromote.promoteAnns, LetRecPromote.promoteSpecs, List.map_map]
+  apply List.map_congr_left
+  intro s hs
+  cases s with
+  | mono τ =>
+    simp [RecSpec.eraseBounds, RecSpec.ann]
+    rw [LetRecPromote.promoteScheme_eraseBounds]
+  | poly σ =>
+    simp [RecSpec.eraseBounds, RecSpec.ann]
+
+/-- `promoteAnns` distributes over `RecSpec.onSubst` (the mono case via
+    `promoteScheme_substFvars` with `hSG`/`hSran`; the poly case is rigid under `S` by `hSpoly`,
+    since `RecSpec.onSubst` leaves schemes untouched). -/
+theorem promoteAnns_substFvars {S : Subst} {G : List Nat} {specs : List RecSpec}
+    (hSG : ∀ p ∈ S, p.1 ∉ G) (hSran : ∀ p ∈ S, ∀ u ∈ p.2.freeVars, u ∉ G)
+    (hSpoly : ∀ σ, RecSpec.poly σ ∈ specs → ∀ q ∈ S, q.1 ∉ σ.body.freeVars) :
+    (LetRecPromote.promoteAnns G specs).map (RecAnn.substFvars S)
+      = LetRecPromote.promoteAnns G (specs.map (RecSpec.onSubst S)) := by
+  simp only [LetRecPromote.promoteAnns, LetRecPromote.promoteSpecs, List.map_map]
+  apply List.map_congr_left
+  intro s hs
+  cases s with
+  | mono τ =>
+    simp [RecSpec.onSubst, RecSpec.ann, RecAnn.substFvars_some]
+    rw [Subst.onTy]
+    exact LetRecPromote.promoteScheme_substFvars hSG hSran
+  | poly σ =>
+    simp [RecSpec.onSubst, RecSpec.ann, RecAnn.substFvars_some]
+    exact PolyTy.substFvars_eq_self_of_fresh (fun p hp => hSpoly σ hs p hp)
+
+/-- `specsMono` is stable under `RecSpec.eraseBounds` (mono/poly shape is preserved). -/
+theorem specsMono_eraseBounds (specs : List RecSpec) :
+    LetRecPromote.specsMono (specs.map RecSpec.eraseBounds) = LetRecPromote.specsMono specs := by
+  funext k
+  induction specs generalizing k with
+  | nil => simp [LetRecPromote.specsMono]
+  | cons s tl ih =>
+      cases k with
+      | zero =>
+          simp [LetRecPromote.specsMono]
+          cases s <;> rfl
+      | succ k' =>
+          simp only [LetRecPromote.specsMono, List.map_cons, List.getElem?_cons_succ]
+          exact ih k'
+
+/-- `specsMono` is stable under `RecSpec.onSubst` (mono/poly shape is preserved). -/
+theorem specsMono_onSubst (S : Subst) (specs : List RecSpec) :
+    LetRecPromote.specsMono (specs.map (RecSpec.onSubst S)) = LetRecPromote.specsMono specs := by
+  funext k
+  induction specs generalizing k with
+  | nil => simp [LetRecPromote.specsMono]
+  | cons s tl ih =>
+      cases k with
+      | zero =>
+          simp [LetRecPromote.specsMono]
+          cases s <;> rfl
+      | succ k' =>
+          simp only [LetRecPromote.specsMono, List.map_cons, List.getElem?_cons_succ]
+          exact ih k'
+
+/-- `monoTys` distributes over `RecSpec.eraseBounds`. -/
+theorem monoTys_eraseBounds (specs : List RecSpec) :
+    RecSpecs.monoTys (specs.map RecSpec.eraseBounds) = (RecSpecs.monoTys specs).map Ty.eraseBounds := by
+  induction specs with
+  | nil => rfl
+  | cons s tl ih =>
+      cases s with
+      | mono τ =>
+          simp [RecSpecs.monoTys, RecSpec.eraseBounds, RecSpec.monoTy?]
+          rw [← List.filterMap_map]
+          exact ih
+      | poly σ =>
+          simp [RecSpecs.monoTys, RecSpec.eraseBounds, RecSpec.monoTy?]
+          rw [← List.filterMap_map]
+          exact ih
+
+/-- `monoTys` distributes over `RecSpec.onSubst`. -/
+theorem monoTys_onSubst (S : Subst) (specs : List RecSpec) :
+    RecSpecs.monoTys (specs.map (RecSpec.onSubst S)) = (RecSpecs.monoTys specs).map (Subst.onTy S) := by
+  induction specs with
+  | nil => rfl
+  | cons s tl ih =>
+      cases s with
+      | mono τ =>
+          simp [RecSpecs.monoTys, RecSpec.onSubst, RecSpec.monoTy?, Subst.onTy]
+          rw [← List.filterMap_map]
+          exact ih
+      | poly σ =>
+          simp [RecSpecs.monoTys, RecSpec.onSubst, RecSpec.monoTy?, Subst.onTy]
+          rw [← List.filterMap_map]
+          exact ih
+
 /-! ### Path R: erase commutes with Infer-local term rewrites
 
 Needed by residual packing / `Infer.sound` for let and letRec elaborata.
@@ -2759,6 +2884,63 @@ theorem Expr.eraseBounds_letRecElab (G : List Nat) (anns : List (Option PolyTy))
     exact (List.zip_map_right (f := RecSpec.eraseBounds)
       (l₁ := List.range rawBindings.length) (l₂ := specs)).symm
   rw [Expr.eraseBounds_letRecElabNest, hmem]
+
+/-- `allNone` is stable under erasing the annotations' schemes. -/
+private theorem allNone_map_eraseBounds (anns : List (Option PolyTy)) :
+    allNone (anns.map (Option.map PolyTy.eraseBounds)) = allNone anns := by
+  unfold allNone
+  induction anns with
+  | nil => rfl
+  | cons a as ih =>
+      simp only [List.map_cons, List.all]
+      rw [ih]
+      cases a <;> rfl
+
+/-- `allNone` is stable under substituting the annotations' schemes. -/
+private theorem allNone_map_substFvars (S : Subst) (anns : List (Option PolyTy)) :
+    allNone (anns.map (RecAnn.substFvars S)) = allNone anns := by
+  unfold allNone
+  induction anns with
+  | nil => rfl
+  | cons a as ih =>
+      simp only [List.map_cons, List.all]
+      rw [ih]
+      cases a with
+      | none => simp [RecAnn.substFvars_none]
+      | some σ => simp [RecAnn.substFvars_some]
+
+/-- Erase of the `letRecElabOut` elaboratum is the `letRecElabOut` of erased pieces.
+    Structure: `by_cases hAllNone : allNone anns` (note `allNone` is stable under
+    `Option.map PolyTy.eraseBounds`). all-mono needs `promoteAnns`-erase, the
+    `retargetStored ∘ closeTyVars` erase (via `retargetStored_eraseBounds` +
+    `Expr.eraseBounds_closeTyVars`), the `bodyExtend`-erase, and `monoTys`/`specsMono`
+    erase stability. -/
+theorem Expr.eraseBounds_letRecElabOut (G : List Nat) (anns : List (Option PolyTy))
+    (rawBindings : List Expr) (specs : List RecSpec) (body : Expr) :
+    (Expr.letRecElabOut G anns rawBindings specs body).eraseBounds =
+      Expr.letRecElabOut G (anns.map (Option.map PolyTy.eraseBounds))
+        (rawBindings.map Expr.eraseBounds)
+        (specs.map RecSpec.eraseBounds) body.eraseBounds := by
+  by_cases hAllNone : allNone anns = true
+  · have hall' : allNone (anns.map (Option.map PolyTy.eraseBounds)) = true := by
+      rw [allNone_map_eraseBounds, hAllNone]
+    simp only [Expr.letRecElabOut, hAllNone, hall', ↓reduceIte, Expr.eraseBounds]
+    rw [promoteAnns_eraseBounds]
+    congr 1
+    · rw [List.map_map, List.map_map, specsMono_eraseBounds]
+      apply List.map_congr_left
+      intro e _
+      simp only [Function.comp_apply]
+      rw [LetRecPromote.retargetStored_eraseBounds, Expr.eraseBounds_closeTyVars]
+    · rw [LetRecPromote.bodyExtend_eraseBounds, monoTys_eraseBounds]
+  · have hf : allNone anns = false := by
+      cases hAllNone' : allNone anns with
+      | false => rfl
+      | true => simp_all
+    have hf' : allNone (anns.map (Option.map PolyTy.eraseBounds)) = false := by
+      rw [allNone_map_eraseBounds, hf]
+    simp only [Expr.letRecElabOut, hf, hf', ↓reduceIte]
+    exact Expr.eraseBounds_letRecElab G anns rawBindings specs body
 
 /-- Term-var shifting leaves all *type* annotations untouched, so it preserves the
     set of free type variables. -/
@@ -3031,7 +3213,7 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Expr → Ty → Pro
                ++ (S₁.onCtx ctx).env }
       body Φ₂ S₂ bodyOut τ₂ →
     Infer Φ ctx (.letRec anns bindings body) Φ₂ (S₁ ++ S₂)
-      (Expr.letRecElab
+      (Expr.letRecElabOut
         (genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
           (RecSpecs.monoTys ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))))
         anns
@@ -5486,6 +5668,51 @@ theorem Expr.mem_tyFreeVars_letRecElab {G : List Nat} {anns : List (Option PolyT
   · exact .inr (.inl h)
   · exact .inr (.inr h)
 
+/-- Mixed-nest free-var locality for `letRecElabOut` (the `letRecElabOut` mirror of
+    `Expr.mem_tyFreeVars_letRecElab`). Structure: `by_cases hAllNone : allNone anns`.
+    - all-mono: the elaboratum is `.letRec (promoteAnns G specs)
+      (bs.map (retargetStored … (closeTyVars G ·))) (bodyExtend … body)`; use
+      `promoteScheme`'s free vars ⊆ `τ.freeVars` (`Ty.freeVars_closeOver_subset`), the
+      `retargetStored_tyFreeVars_subset` / `bodyExtend_tyFreeVars_subset` lemmas, and
+      `Expr.tyFreeVars_closeTyVars_subset`.
+    - mixed: `letRecElabOut` reduces to `letRecElab`; apply the existing lemma with `hanns`. -/
+theorem Expr.mem_tyFreeVars_letRecElabOut {G : List Nat} {anns : List (Option PolyTy)}
+    {rawBindings : List Expr} {specs : List RecSpec}
+    {body : Expr} {y : Nat}
+    (hanns : specs.map RecSpec.ann = anns)
+    (hy : y ∈ (Expr.letRecElabOut G anns rawBindings specs body).tyFreeVars) :
+    (∃ s ∈ specs, y ∈ s.freeVars) ∨ (∃ e ∈ rawBindings, y ∈ e.tyFreeVars) ∨ y ∈ body.tyFreeVars := by
+  by_cases hAllNone : allNone anns = true
+  · simp only [Expr.letRecElabOut, hAllNone, ↓reduceIte] at hy ⊢
+    simp only [Expr.tyFreeVars, List.mem_append] at hy
+    rcases hy with h | h
+    · rcases h with h | h
+      · obtain ⟨σ, hσ, hyσ⟩ := Expr.mem_annList_tyFreeVars_ex h
+        simp only [LetRecPromote.promoteAnns, LetRecPromote.promoteSpecs, List.mem_map] at hσ
+        obtain ⟨a, hmem, hsa⟩ := hσ
+        obtain ⟨s, hs, hsf⟩ := hmem
+        rw [← hsf] at hsa
+        cases s with
+        | mono τ =>
+            simp [RecSpec.ann] at hsa
+            subst σ
+            exact .inl ⟨.mono τ, hs, Ty.freeVars_closeOver_subset hyσ⟩
+        | poly σ' =>
+            simp [RecSpec.ann] at hsa
+            subst σ
+            exact .inl ⟨.poly σ', hs, hyσ⟩
+      · obtain ⟨e', he', hye'⟩ := Expr.mem_recGroupTyFreeVars h
+        obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he'
+        exact .inr (.inl ⟨e0, he0,
+          Expr.tyFreeVars_closeTyVars_subset (LetRecPromote.retargetStored_tyFreeVars_subset hye')⟩)
+    · exact .inr (.inr (LetRecPromote.bodyExtend_tyFreeVars_subset h))
+  · have hf : allNone anns = false := by
+      cases hAllNone' : allNone anns with
+      | false => rfl
+      | true => simp_all
+    simp only [Expr.letRecElabOut, hf] at hy ⊢
+    exact Expr.mem_tyFreeVars_letRecElab hanns hy
+
 /-- Push a var-avoidance through a substitution (avoid form of `Subst.onTy`). -/
 theorem Subst.notMemOnTy {S : Subst} {w : Nat} {τ : Ty}
     (hS : ∀ p ∈ S, w ∉ p.2.freeVars) (hτ : w ∉ τ.freeVars) : w ∉ (S.onTy τ).freeVars := by
@@ -5941,7 +6168,7 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut
       · exact hgS p hp
       · exact hbS p hp
     · intro hc
-      rcases Expr.mem_tyFreeVars_letRecElab
+      rcases Expr.mem_tyFreeVars_letRecElabOut
         ((RecSpec.map_ann_onSubst S₁ (RecSpec.init Φ anns)).trans (RecSpec.map_ann_init Φ anns))
         hc with ⟨s', hs', hws'⟩ | ⟨e', he', hwe'⟩ | hpbody
       · exact hsolvedA s' hs' hws'
@@ -7210,6 +7437,238 @@ theorem Expr.letRecElab_tyBvarBounded {G : List Nat} {anns : List (Option PolyTy
   Expr.letRecElabNest_tyBvarBounded hrawb hanns _
     (fun p hp => hspecs p.2 (List.of_mem_zip (List.mem_reverse.mp hp)).2) hbody
 
+/-- `retargetStored` preserves the bound `d + gLen` (the retargeted `bvarRangeFrom d gLen`
+    tyArgs are bounded by `d + gLen`, and the `closeTyVars`-introduced binders are already at
+    depth `d + gLen`): the input's own bound suffices, no extra lowering. -/
+private theorem retargetStored_tyBvarBounded_preserves {mono : Nat → Bool} {gLen d b : Nat}
+    {e : Expr} :
+    e.TyBvarBounded (d + gLen) → (LetRecPromote.retargetStored mono gLen d b e).TyBvarBounded (d + gLen) := by
+  induction e using Expr.rec_strong generalizing b d with
+  | primLit p => simp [LetRecPromote.retargetStored, Expr.TyBvarBounded]
+  | primBinOp op => simp [LetRecPromote.retargetStored, Expr.TyBvarBounded]
+  | ctor nm => simp [LetRecPromote.retargetStored, Expr.TyBvarBounded]
+  | var i tyArgs =>
+      intro h
+      by_cases hwin : b ≤ i ∧ mono (i - b)
+      · simp [LetRecPromote.retargetStored, Expr.TyBvarBounded, hwin]
+        exact LetRecPromote.bvarRangeFrom_ContainsBvarsUpTo d gLen
+      · simp [LetRecPromote.retargetStored, Expr.TyBvarBounded, hwin]
+        intro t ht
+        exact h t ht
+  | lambda ann body ih =>
+      intro h
+      rcases h with ⟨hann, hbody⟩
+      simp only [LetRecPromote.retargetStored, Expr.TyBvarBounded]
+      constructor
+      · intro t ht; exact hann t ht
+      · exact ih (b := b + 1) (d := d) hbody
+  | app f arg ihf iharg =>
+      intro h
+      rcases h with ⟨hf, harg⟩
+      simp only [LetRecPromote.retargetStored, Expr.TyBvarBounded]
+      exact ⟨ihf (b := b) (d := d) hf, iharg (b := b) (d := d) harg⟩
+  | letIn ann rhs body ihr ihb =>
+      intro h
+      cases ann with
+      | none =>
+          rcases h with ⟨hr, hb⟩
+          simp only [LetRecPromote.retargetStored, Expr.TyBvarBounded]
+          exact ⟨ihr (b := b) (d := d) hr, ihb (b := b + 1) (d := d) hb⟩
+      | some σ =>
+          rcases h with ⟨hσ, hr, hb⟩
+          simp only [LetRecPromote.retargetStored, Expr.TyBvarBounded]
+          constructor
+          · exact hσ
+          · constructor
+            · have hd : (d + σ.paramCount) + gLen = (d + gLen) + σ.paramCount := by omega
+              rw [← hd] at hr
+              rw [← hd]
+              exact ihr (b := b) (d := d + σ.paramCount) hr
+            · exact ihb (b := b + 1) (d := d) hb
+  | match_ scrut brs ihscrut ihbrs =>
+      have hbrs' : Expr.TyBvarBounded.BranchList (d + gLen) brs →
+          Expr.TyBvarBounded.BranchList (d + gLen) (LetRecPromote.retargetStoredBranches mono gLen d b brs) := by
+        induction brs with
+        | nil => simp [Expr.TyBvarBounded.BranchList, LetRecPromote.retargetStoredBranches]
+        | cons br rest ih =>
+            cases br with
+            | mk pat body =>
+                intro hb0
+                simp only [Expr.TyBvarBounded.BranchList, LetRecPromote.retargetStoredBranches] at hb0 ⊢
+                rcases hb0 with ⟨hb, htail⟩
+                constructor
+                · exact ihbrs pat body (List.mem_cons_self ..) (b := b + pat.bindCount) (d := d) hb
+                · exact ih (fun pat' e' he' => ihbrs pat' e' (List.mem_cons_of_mem _ he')) htail
+      intro h
+      rcases h with ⟨hscrut, hbrs0⟩
+      simp only [LetRecPromote.retargetStored, Expr.TyBvarBounded]
+      exact ⟨ihscrut (b := b) (d := d) hscrut, hbrs' hbrs0⟩
+  | letRec anns bs body ihbs ihbody =>
+      have hbs' : ∀ (D : Nat) (anns' : List (Option PolyTy)),
+          Expr.TyBvarBounded.RecGroup (d + gLen) anns' bs →
+          Expr.TyBvarBounded.RecGroup (d + gLen) anns'
+            (LetRecPromote.retargetStoredGroup mono gLen d D anns' bs) := by
+        intro D anns'
+        revert anns'
+        induction bs with
+        | nil => intro anns' h'; simp [Expr.TyBvarBounded.RecGroup, LetRecPromote.retargetStoredGroup]
+        | cons e tl ih =>
+            intro anns' h'
+            cases anns' with
+            | nil =>
+                simp only [LetRecPromote.retargetStoredGroup, Expr.TyBvarBounded.RecGroup] at h' ⊢
+                rcases h' with ⟨he, htl⟩
+                constructor
+                · exact ihbs e (List.mem_cons_self ..) (b := D) (d := d) he
+                · exact ih (fun e' he' => ihbs e' (List.mem_cons_of_mem _ he')) [] htl
+            | cons a as =>
+                simp only [LetRecPromote.retargetStoredGroup, Expr.TyBvarBounded.RecGroup] at h' ⊢
+                rcases h' with ⟨he, htl⟩
+                constructor
+                · have hd : (d + RecAnn.params a) + gLen = (d + gLen) + RecAnn.params a := by omega
+                  rw [← hd] at he
+                  rw [← hd]
+                  exact ihbs e (List.mem_cons_self ..) (b := D) (d := d + RecAnn.params a) he
+                · exact ih (fun e' he' => ihbs e' (List.mem_cons_of_mem _ he')) as htl
+      intro h
+      rcases h with ⟨hann, hrec, hbody⟩
+      simp only [LetRecPromote.retargetStored, Expr.TyBvarBounded]
+      constructor
+      · intro σ hσ
+        exact hann σ hσ
+      · constructor
+        · exact hbs' (b + bs.length) anns hrec
+        · exact ihbody (b := b + bs.length) (d := d) hbody
+
+/-- Top-level type-bvar boundedness for `letRecElabOut`. Structure:
+    `by_cases hAllNone : allNone anns`.
+    - all-mono: the promoted `.letRec` node needs (a) `promoteAnns G specs` well-formed
+      (`promoteScheme_wf` from `hspecs`), (b) `TyBvarBounded.RecGroup 0 (promoteAnns G specs)
+      (bs.map (retargetStored … (closeTyVars G ·)))` — from `hrawb` via the `closeTyVars` +
+      `retargetStored` boundedness discipline (each binding is `TyBvarBounded G.length`, matching
+      `promoteScheme G τ`'s arity), (c) `bodyExtend … body` bounded.
+    - mixed: `letRecElabOut` reduces to `letRecElab`; apply the existing lemma.
+    NOTE: the all-mono branch's `RecGroup` claim needs the group to be genuinely all-monomorphic
+    (`hanns_eq` so `allNone` implies every spec is `.mono`) and the bindings to match the specs
+    positionally (`hlen`), since the retargeted bindings are `TyBvarBounded G.length` and the
+    promoted schemes all have arity `G.length`. -/
+theorem Expr.letRecElabOut_tyBvarBounded {G : List Nat} {anns : List (Option PolyTy)}
+    {rawBindings : List Expr} {specs : List RecSpec}
+    {body : Expr} (hrawb : Expr.TyBvarBounded.RecGroup 0 anns rawBindings)
+    (hanns : ∀ σ, some σ ∈ anns → σ.WF)
+    (hspecs : ∀ s ∈ specs, s.LC) (hbody : body.TyBvarBounded 0)
+    (hanns_eq : specs.map RecSpec.ann = anns) (hlen : specs.length = rawBindings.length) :
+    (Expr.letRecElabOut G anns rawBindings specs body).TyBvarBounded 0 := by
+  by_cases hAllNone : allNone anns = true
+  · simp only [Expr.letRecElabOut, hAllNone, ↓reduceIte]
+    simp only [Expr.TyBvarBounded, Nat.zero_add]
+    refine ⟨?_, ?_, ?_⟩
+    · -- (a) the promoted anns are well-formed
+      intro σ hσ
+      have hσwf : σ.WF := by
+        simp only [LetRecPromote.promoteAnns, LetRecPromote.promoteSpecs, List.mem_map] at hσ
+        obtain ⟨a, ha, hann⟩ := hσ
+        obtain ⟨s', hs', hsa⟩ := ha
+        rw [← hsa] at hann
+        cases s' with
+        | mono τ =>
+            simp only [RecSpec.ann] at hann
+            simp at hann
+            rw [← hann]
+            exact LetRecPromote.promoteScheme_wf (hspecs (.mono τ) hs')
+        | poly σ'' =>
+            simp only [RecSpec.ann] at hann
+            simp at hann
+            rw [← hann]
+            exact hspecs (.poly σ'') hs'
+      exact hσwf
+    · -- (b) RecGroup over the promoted anns and the retargeted bindings
+      have hspecs_mono : ∀ s ∈ specs, ∃ τ, s = .mono τ := by
+        intro s hs
+        have hmem : RecSpec.ann s ∈ anns := by
+          rw [← hanns_eq]
+          exact List.mem_map.mpr ⟨s, hs, rfl⟩
+        have hIsNone : (RecSpec.ann s).isNone = true := by
+          have hA : anns.all (fun a => a.isNone) = true := by
+            simpa [allNone] using hAllNone
+          exact (List.all_eq_true.mp hA) (RecSpec.ann s) hmem
+        have hann_none : RecSpec.ann s = none := by
+          cases h : RecSpec.ann s with
+          | none => rfl
+          | some σ => simp [h] at hIsNone
+        exact RecSpec.ann_eq_none hann_none
+      have hanns_none : ∀ a ∈ anns, a = none := by
+        intro a ha
+        rw [← hanns_eq] at ha
+        obtain ⟨s, hs, rfl⟩ := List.mem_map.mp ha
+        obtain ⟨τ, rfl⟩ := hspecs_mono s hs
+        rfl
+      have hbs0 : ∀ e ∈ rawBindings, e.TyBvarBounded 0 := by
+        have hgen : ∀ {anns : List (Option PolyTy)} {bs : List Expr},
+            (∀ a ∈ anns, a = none) → Expr.TyBvarBounded.RecGroup 0 anns bs →
+            ∀ e ∈ bs, e.TyBvarBounded 0 := by
+          intro anns bs hall hrec
+          induction bs generalizing anns with
+          | nil => intro e he; simp at he
+          | cons b tl ih =>
+              intro e he
+              rcases List.mem_cons.mp he with rfl | he
+              · cases anns with
+                | nil => exact hrec.1
+                | cons a as =>
+                    have ha : a = none := hall a List.mem_cons_self
+                    simpa [ha, RecAnn.params] using hrec.1
+              · cases anns with
+                | nil => exact ih (fun a ha => by simp at ha) hrec.2 e he
+                | cons a as =>
+                    exact ih (fun a' ha' => hall a' (List.mem_cons_of_mem _ ha')) hrec.2 e he
+        intro e he
+        exact hgen hanns_none hrawb e he
+      have hrec_gen : ∀ (mono : Nat → Bool) (specs : List RecSpec) (rawBindings : List Expr),
+          rawBindings.length = specs.length →
+          (∀ s ∈ specs, ∃ τ, s = .mono τ) →
+          (∀ e ∈ rawBindings, e.TyBvarBounded 0) →
+          Expr.TyBvarBounded.RecGroup 0 (LetRecPromote.promoteAnns G specs)
+            (rawBindings.map (fun e => LetRecPromote.retargetStored mono G.length 0 0 (Expr.closeTyVars G e))) := by
+        intro mono specs
+        induction specs with
+        | nil =>
+            intro rawBindings hlen _ _
+            cases rawBindings with
+            | nil => simp [Expr.TyBvarBounded.RecGroup]
+            | cons e tl =>
+                simp only [List.length_cons, List.length_nil] at hlen
+                omega
+        | cons s specs' ih =>
+            intro rawBindings hlen hmono hb0
+            cases rawBindings with
+            | nil =>
+                simp only [List.length_cons, List.length_nil] at hlen
+                omega
+            | cons e tl =>
+                have hlen' : tl.length = specs'.length := by
+                  simp only [List.length_cons] at hlen
+                  omega
+                obtain ⟨τ, rfl⟩ := hmono s (List.mem_cons_self ..)
+                simp only [LetRecPromote.promoteAnns, LetRecPromote.promoteSpecs, List.map_cons,
+                  RecSpec.ann]
+                constructor
+                · have hclose : (Expr.closeTyVars G e).TyBvarBounded (0 + G.length) := by
+                    simpa using (Expr.closeTyVars_tyBvarBounded (Xs := G) (hb0 e (List.mem_cons_self ..)))
+                  simpa [RecAnn.params, LetRecPromote.promoteScheme, Nat.zero_add] using
+                    (retargetStored_tyBvarBounded_preserves (d := 0) (gLen := G.length) (b := 0) hclose)
+                · exact ih tl hlen'
+                    (fun s' hs' => hmono s' (List.mem_cons_of_mem _ hs'))
+                    (fun e' he' => hb0 e' (List.mem_cons_of_mem _ he'))
+      exact hrec_gen (LetRecPromote.specsMono specs) specs rawBindings hlen.symm hspecs_mono hbs0
+    · exact LetRecPromote.bodyExtend_tyBvarBounded hbody
+  · have hf : allNone anns = false := by
+      cases hAllNone' : allNone anns with
+      | false => rfl
+      | true => simp_all
+    simp only [Expr.letRecElabOut, hf]
+    exact Expr.letRecElab_tyBvarBounded hrawb hanns hspecs hbody
+
 mutual
 /-- The elaborated output has no dangling type `bvar`s (`TyBvarBounded 0`): every
     generalised binder is an annotated `letIn (some Mⱼ)` whose scheme depth absorbs
@@ -7307,9 +7766,11 @@ theorem Infer.eOut_tyBvarBounded {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ
       · exact (Subst.onCtx_wf hS₁lc hctx) M hM
     have hgroupBB := InferRecGroup.eOut_tyBvarBounded hgroup hctxg hinitLC
     rw [RecSpec.map_ann_init] at hgroupBB
-    exact Expr.letRecElab_tyBvarBounded
+    exact Expr.letRecElabOut_tyBvarBounded
       (Expr.TyBvarBounded.RecGroup_map_substTyFvars hS₁lc hgroupBB)
       hwfanns hsolvedLC (Infer.eOut_tyBvarBounded hbody hbodyWF)
+      ((RecSpec.map_ann_onSubst S₁ (RecSpec.init Φ anns)).trans (RecSpec.map_ann_init Φ anns))
+      (by simpa using ((InferRecGroup.bindingsOut_length hgroup).trans (InferRecGroup.length_eq hgroup)).symm)
 termination_by e.size
 decreasing_by all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.eOut_tyBvarBounded {Φ ctx scrutTy ρ brs Φ' S brsOut}
@@ -8527,6 +8988,295 @@ theorem Expr.letRecElab_sound {ctx : Ctx} {Lp G : List Nat} {anns : List (Option
     (((List.range bs.length).zip specs).reverse) [] (by simp) hcard hvalid hbodyctx
   simpa only [List.nil_append] using key
 
+/-- An all-mono spec list is exactly `(monoTys specs).map RecSpec.mono` (the mono monotypes
+    in order). Standalone so the `letRecElabOut_sound` all-mono branch can prove it by plain
+    list induction without generalising the branch's whole context. -/
+private theorem monoTys_mono_map_eq {specs : List RecSpec}
+    (h : ∀ s ∈ specs, ∃ τ, s = .mono τ) :
+    specs = (RecSpecs.monoTys specs).map RecSpec.mono := by
+  induction specs with
+  | nil => rfl
+  | cons s ss ih =>
+    cases s with
+    | mono τ =>
+      change .mono τ :: ss = List.map RecSpec.mono (List.filterMap RecSpec.monoTy? (.mono τ :: ss))
+      simp only [List.filterMap_cons, RecSpec.monoTy?, List.map_cons]
+      exact congrArg (fun l => RecSpec.mono τ :: l) (ih (fun s' hs' => h s' (List.mem_cons_of_mem _ hs')))
+    | poly σ =>
+      obtain ⟨τ, hτ⟩ := h (.poly σ) (List.mem_cons_self ..)
+      cases hτ
+
+/-- `letRecElabOut` mirror of `Expr.letRecElab_sound`: an all-mono group elaborates to the
+    promoted `.letRec` node (structural `TypeOfElabHM.letRec` at the empty pool, via a
+    term-renaming bridge `TypeOfElabHM.onSubst` + `LetRecPromote.retarget_transport` +
+    `LetRecPromote.bodyScheme_weaken`); a mixed group keeps the Λ-outside nest
+    (`Expr.letRecElab_sound`). This isolates the all-mono promotion away from the `Infer.sound`
+    residual packing, and keeps the `by_cases allNone anns` out of the `Infer.sound` mutual block.
+
+    NOTE (all-mono branch): the gen-pool vars `G` genuinely occur in the solved bindings
+    (`let f = id in f` elaborates `f` to `.var id [fvar a]` with `a ∈ G`), so the empty-pool →
+    pool-`G` bridge must RENAME the term (`TypeOfElabHM.onSubst`, not `onSubst_fixed`), and the
+    promoted RHS premise is built directly via `retarget_transport` — not via
+    `monoTyped_to_polyTyped` (whose `MonoTyped` premise fixes the term and so would need the
+    false `∀ g ∈ G, g ∉ bindings`). -/
+theorem Expr.letRecElabOut_sound {ctx : Ctx} {Lp G : List Nat} {anns : List (Option PolyTy)}
+    {bs : List Expr} {specs : List RecSpec} {body : Expr} {ρ : Ty}
+    (hwf : RecSpecs.WF anns bs specs G)
+    (hG_env : ∀ g ∈ G, g ∉ ctx.env.freeVars)
+    (hG_specs : ∀ g ∈ G, ∀ σ, RecSpec.poly σ ∈ specs → g ∉ σ.body.freeVars)
+    (hmono : ∀ p ∈ bs.zip specs, ∀ τ, p.2 = RecSpec.mono τ →
+      TypeOfElabHM ⟨specs.map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩ p.1 τ)
+    (hpoly : ∀ p ∈ bs.zip specs, ∀ σ, p.2 = RecSpec.poly σ →
+      ∀ Ys, FreshNames Lp σ.paramCount Ys →
+        TypeOfElabHM ⟨specs.map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩
+          (p.1.openTyVars Ys) (σ.openVars Ys))
+    (hbody : TypeOfElabHM (RecSpecs.bodyCtx ctx specs G) body ρ) :
+    TypeOfElabHM ctx (Expr.letRecElabOut G anns bs specs body) ρ := by
+  by_cases hallNone : allNone anns
+  · -- all-mono: promoted `.letRec` node (structural `TypeOfElabHM.letRec` at the empty pool)
+    simp only [Expr.letRecElabOut, hallNone, ↓reduceIte]
+    set bindings' : List Expr := bs.map (fun e =>
+      LetRecPromote.retargetStored (LetRecPromote.specsMono specs) G.length 0 0 (Expr.closeTyVars G e))
+      with hbindings'
+    have hspecs_mono : ∀ s ∈ specs, ∃ τ, s = .mono τ := by
+      intro s hs
+      have hmem : RecSpec.ann s ∈ anns := by
+        rw [← hwf.anns_eq]
+        exact List.mem_map.mpr ⟨s, hs, rfl⟩
+      have hIsNone : (RecSpec.ann s).isNone = true := by
+        have hA : anns.all (fun a => a.isNone) = true := by
+          simpa [allNone] using hallNone
+        exact (List.all_eq_true.mp hA) (RecSpec.ann s) hmem
+      have hann_none : RecSpec.ann s = none := by
+        cases h : RecSpec.ann s with
+        | none => rfl
+        | some σ => simp [h] at hIsNone
+      exact RecSpec.ann_eq_none hann_none
+    have hspecs_mono_map : specs = (RecSpecs.monoTys specs).map RecSpec.mono :=
+      monoTys_mono_map_eq hspecs_mono
+    have hlen : bs.length = (RecSpecs.monoTys specs).length := by
+      rw [hwf.length]
+      nth_rewrite 1 [hspecs_mono_map]
+      simp only [List.length_map]
+    have hmonoLC_monoTys : ∀ μ ∈ RecSpecs.monoTys specs, μ.IsLC := by
+      intro μ hμ
+      obtain ⟨s, hs, hso⟩ := List.mem_filterMap.mp (by simpa [RecSpecs.monoTys] using hμ)
+      cases s with
+      | mono τ =>
+        injection hso with hso'
+        rw [← hso']
+        exact hwf.mono_lc τ hs
+      | poly σ => cases hso
+    have hpromote_specs : (RecSpecs.monoTys specs).map (fun μ => RecSpec.poly (LetRecPromote.promoteScheme G μ))
+        = LetRecPromote.promoteSpecs G specs := by
+      rw [LetRecPromote.promoteSpecs]
+      conv_rhs => rw [hspecs_mono_map]
+      simp only [List.map_map]
+      rfl
+    -- bvar-bounded bindings (for the close/open rename round-trip)
+    have hbnd_zip : ∀ p ∈ bs.zip specs, p.1.TyBvarBounded (RecAnn.params p.2.ann) := by
+      intro p hp
+      cases hspec : p.2 with
+      | mono τ =>
+        exact TypeOfElabHM.tyBvarBounded (hmono p hp τ hspec)
+      | poly σ =>
+        obtain ⟨τ, hτ⟩ := hspecs_mono p.2 (List.of_mem_zip hp).2
+        have hbad : RecSpec.poly σ = RecSpec.mono τ := by rw [← hspec]; exact hτ
+        cases hbad
+    have hbnd : Expr.TyBvarBounded.RecGroup 0 anns bs := by
+      refine Expr.TyBvarBounded.RecGroup_of_zip
+        (by rw [← hwf.anns_eq, List.length_map]; exact hwf.length) (fun p hp => ?_)
+      rw [← hwf.anns_eq, List.zip_map_right_eq'] at hp
+      obtain ⟨⟨a, b⟩, hab, rfl⟩ := List.mem_map.mp hp
+      simpa only [Nat.zero_add] using hbnd_zip (a, b) hab
+    have hanns_none : ∀ a ∈ anns, a = none := by
+      intro a ha
+      rw [← hwf.anns_eq] at ha
+      obtain ⟨s, hs, rfl⟩ := List.mem_map.mp ha
+      obtain ⟨τ, rfl⟩ := hspecs_mono s hs
+      rfl
+    have hbs0 : ∀ e ∈ bs, e.TyBvarBounded 0 := by
+      have hgen : ∀ {anns : List (Option PolyTy)} {bs : List Expr},
+          (∀ a ∈ anns, a = none) → Expr.TyBvarBounded.RecGroup 0 anns bs →
+          ∀ e ∈ bs, e.TyBvarBounded 0 := by
+        intro anns bs hall hrec
+        induction bs generalizing anns with
+        | nil => intro e he; simp at he
+        | cons b tl ih =>
+            intro e he
+            rcases List.mem_cons.mp he with rfl | he
+            · cases anns with
+              | nil => exact hrec.1
+              | cons a as =>
+                  have ha : a = none := hall a List.mem_cons_self
+                  simpa [ha, RecAnn.params] using hrec.1
+            · cases anns with
+              | nil => exact ih (fun a ha => by simp at ha) hrec.2 e he
+              | cons a as =>
+                  exact ih (fun a' ha' => hall a' (List.mem_cons_of_mem _ ha')) hrec.2 e he
+      intro e he
+      exact hgen hanns_none hbnd e he
+    -- ctx equality for the onSubst rename bridge (empty-pool -> pool-G)
+    have hctx_eq : ∀ Ys : List Nat,
+        Subst.onCtx (G.zip (Ys.map (Ty.fvar ·)))
+            ⟨specs.map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩
+          = RecSpecs.rhsCtx ctx specs G Ys := by
+      intro Ys
+      simp only [Subst.onCtx, Subst.onEnv, RecSpecs.rhsCtx, List.map_append]
+      congr 1
+      congr 1
+      · rw [List.map_map]
+        apply List.map_congr_left
+        intro s hs
+        cases s with
+        | mono τ0 =>
+          simp only [Function.comp_apply, RecSpec.rhsEntry]
+          rw [Ty.renameG_nil_pool]
+          rfl
+        | poly σ =>
+          have hfix' : Subst.onTy (G.zip (Ys.map (Ty.fvar ·))) σ.body = σ.body :=
+            Ty.substFvars_eq_self_of_no_key (fun q hq hc =>
+              hG_specs q.1 (List.of_mem_zip hq).1 σ hs hc)
+          simp only [Function.comp_apply, RecSpec.rhsEntry]
+          rw [Subst.onPolyTy, hfix']
+      · simpa only [Subst.onEnv] using
+          Subst.onEnv_eq_self_of_fresh (fun q hq => hG_env q.1 (List.of_mem_zip hq).1)
+    -- the promoted RHS derivation, directly via onSubst + retarget_transport
+    have hpoly' : RecSpecs.PolyTyped TypeOfElabHM ctx bindings'
+        (LetRecPromote.promoteSpecs G specs) [] (Lp ++ G) := by
+      intro Xs hfXs p hp σ hσ Ys hfYs
+      obtain rfl : Xs = [] := List.eq_nil_of_length_eq_zero hfXs.length
+      rcases LetRecPromote.List.zip_mem_getElem hp with ⟨k, hkbs, hks, hp1, hp2⟩
+      rw [hp1]
+      have hkbs' : k < bs.length := by simpa [hbindings', List.length_map] using hkbs
+      have hσk : (LetRecPromote.promoteSpecs G specs)[k]'hks = RecSpec.poly σ := hp2.symm.trans hσ
+      have hkMonos : k < (RecSpecs.monoTys specs).length := by
+        simpa [hlen] using hkbs'
+      have hspec_k : (LetRecPromote.promoteSpecs G specs)[k]'hks
+          = RecSpec.poly (LetRecPromote.promoteScheme G ((RecSpecs.monoTys specs)[k]'hkMonos)) := by
+        simp only [← hpromote_specs, List.getElem_map]
+      have hσ' : σ = LetRecPromote.promoteScheme G ((RecSpecs.monoTys specs)[k]'hkMonos) := by
+        exact (RecSpec.poly.inj (hspec_k.symm.trans hσk)).symm
+      have hfYs' : FreshNames (Lp ++ G) G.length Ys := by
+        simpa [hσ', LetRecPromote.promoteScheme] using hfYs
+      have hdisj : ∀ g ∈ G, g ∉ Ys := fun g hg hc =>
+        hfYs'.avoid g hc (List.mem_append_right Lp hg)
+      -- the empty-pool mono typing at index k
+      have hkSpecs : k < specs.length := by
+        rw [hspecs_mono_map]
+        simpa only [List.length_map] using hkMonos
+      have hmem' : (bs[k]'hkbs', specs[k]'hkSpecs) ∈ bs.zip specs :=
+        LetRecPromote.List.getElem_mem_zip hkbs' hkSpecs
+      obtain ⟨τk, hτk⟩ := hspecs_mono (specs[k]'hkSpecs) (List.getElem_mem hkSpecs)
+      have hτk_eq : τk = (RecSpecs.monoTys specs)[k]'hkMonos := by
+        have h1 : specs[k]? = some (RecSpec.mono τk) := by
+          rw [List.getElem?_eq_getElem hkSpecs, hτk]
+        have h2 : specs[k]? = some (RecSpec.mono ((RecSpecs.monoTys specs)[k]'hkMonos)) := by
+          conv_lhs => rw [hspecs_mono_map]
+          simp only [List.getElem?_map, List.getElem?_eq_getElem hkMonos]
+          rfl
+        exact RecSpec.mono.inj (Option.some.inj (h1.symm.trans h2))
+      have hmono_k := hτk_eq ▸ hmono (bs[k]'hkbs', specs[k]'hkSpecs) hmem' τk hτk
+      -- rename bridge: onSubst (term-renaming)
+      have hLC : ∀ q ∈ G.zip (Ys.map (Ty.fvar ·)), q.2.IsLC := by
+        intro q hq
+        obtain ⟨x, _, hx⟩ := List.mem_map.mp (List.of_mem_zip hq).2
+        rw [← hx]; exact ContainsBvarsUpTo.fvar
+      have hren := TypeOfElabHM.onSubst (G.zip (Ys.map (Ty.fvar ·))) hLC hmono_k
+      have hctx := hctx_eq Ys
+      rw [hctx] at hren
+      have htrans := LetRecPromote.retarget_transport (specs := specs) (G := G) (Xs := Ys)
+        hwf.nodup hfYs'.length hdisj hwf.mono_lc hren
+      -- rewrite the retarget_transport conclusion into the goal shape
+      have hopen_k : (bindings'[k]'hkbs).openTyVars Ys
+          = LetRecPromote.retargetVars (LetRecPromote.specsMono specs) (Ys.map Ty.fvar) 0
+              ((bs[k]'hkbs').substTyFvars (G.zip (Ys.map (Ty.fvar ·)))) := by
+        simp only [hbindings', List.getElem_map]
+        rw [LetRecPromote.retargetStored_openTyVars (mono := LetRecPromote.specsMono specs)
+          (gLen := G.length) (b := 0) (Ys := Ys) (e := Expr.closeTyVars G (bs[k]'hkbs'))
+          (hYsLen := hfYs'.length)]
+        rw [Expr.openTyVars_closeTyVars_rename_of_fresh (he := hbs0 (bs[k]'hkbs') (List.getElem_mem hkbs'))
+          (h_len := hfYs'.length.symm) (h_Ys_nodup := hwf.nodup)
+          (h_Ys_Xs := fun y hy hc => hfYs'.avoid y hc (List.mem_append_right Lp hy))]
+      have hopen_type : (σ.openVars Ys) = Ty.renameG G Ys ((RecSpecs.monoTys specs)[k]'hkMonos) := by
+        rw [hσ']
+        exact LetRecPromote.promoteScheme_openVars (hmonoLC_monoTys ((RecSpecs.monoTys specs)[k]'hkMonos)
+          (List.getElem_mem hkMonos)) hwf.nodup hfYs'.length hdisj
+      rw [hopen_k, hopen_type]
+      convert htrans using 1
+      · -- ctx equality: promoteSpecs' rhsEntry [] [] = promoteSpecs' rhsEntry G Ys
+        rw [RecSpecs.rhsCtx]
+        congr 1
+        congr 1
+        rw [LetRecPromote.promoteSpecs_rhsEntry (Xs := Ys)]
+        rw [LetRecPromote.promoteSpecs, List.map_map]
+        apply List.map_congr_left
+        intro s hs
+        cases s with
+        | mono τ => rfl
+        | poly σ => rfl
+    have hwf' : RecSpecs.WF (LetRecPromote.promoteAnns G specs) bindings'
+        (LetRecPromote.promoteSpecs G specs) [] := by
+      refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · rfl
+      · rw [hbindings', List.length_map, hwf.length, LetRecPromote.promoteSpecs_length]
+      · exact List.nodup_nil
+      · intro τ hτ
+        obtain ⟨σ, hσ⟩ := LetRecPromote.promoteSpecs_all_poly (.mono τ) hτ
+        cases hσ
+      · intro σ hσ
+        obtain ⟨s, hs, hse⟩ := List.mem_map.mp (by simpa [LetRecPromote.promoteSpecs] using hσ)
+        cases s with
+        | mono τ =>
+          change RecSpec.poly (LetRecPromote.promoteScheme G τ) = RecSpec.poly σ at hse
+          have hse' : LetRecPromote.promoteScheme G τ = σ := RecSpec.poly.inj hse
+          rw [← hse']
+          exact LetRecPromote.promoteScheme_wf (hwf.mono_lc τ hs)
+        | poly σ' =>
+          change RecSpec.poly σ' = RecSpec.poly σ at hse
+          have hse' : σ' = σ := RecSpec.poly.inj hse
+          rw [← hse']
+          exact hwf.poly_wf σ' hs
+    have hbody_scheme_eq : (RecSpecs.monoTys specs).map (PolyTy.genGroup G) = specs.map (RecSpec.bodyScheme G) := by
+      conv_rhs => rw [hspecs_mono_map]
+      simp only [List.map_map]
+      rfl
+    have hbody_mono : TypeOfElabHM ⟨(RecSpecs.monoTys specs).map (PolyTy.genGroup G) ++ ctx.env, ctx.ctors⟩ body ρ := by
+      simpa [RecSpecs.bodyCtx, ← hbody_scheme_eq] using hbody
+    have hbody' : TypeOfElabHM (RecSpecs.bodyCtx ctx (LetRecPromote.promoteSpecs G specs) [])
+        (LetRecPromote.bodyExtend (RecSpecs.monoTys specs) G 0 body) ρ := by
+      have hbodyW := LetRecPromote.bodyScheme_weaken (ctors := ctx.ctors) (env := ctx.env)
+        (monos := RecSpecs.monoTys specs) (G := G) hwf.nodup hmonoLC_monoTys hbody_mono
+      have hbodyctx_eq : (LetRecPromote.promoteSpecs G specs).map (RecSpec.bodyScheme [])
+          = (RecSpecs.monoTys specs).map (LetRecPromote.promoteScheme G) := by
+        calc
+          (LetRecPromote.promoteSpecs G specs).map (RecSpec.bodyScheme [])
+              = specs.map (LetRecPromote.promoteSpec G) := by
+                  rw [LetRecPromote.promoteSpecs, List.map_map]
+                  apply List.map_congr_left
+                  intro s hs
+                  cases s with
+                  | mono τ => rfl
+                  | poly σ => rfl
+          _ = (RecSpecs.monoTys specs).map (LetRecPromote.promoteScheme G) := by
+                  conv_lhs => rw [hspecs_mono_map]
+                  simp only [List.map_map]
+                  rfl
+      simpa [RecSpecs.bodyCtx, ← hbodyctx_eq] using hbodyW
+    refine TypeOfElabHM.letRec (specs := LetRecPromote.promoteSpecs G specs) (G := []) (L := Lp ++ G)
+      hwf' ?_ hpoly' rfl hbody'
+    · intro Xs hXs p hp τ hτ
+      obtain ⟨σ, hσ⟩ := LetRecPromote.promoteSpecs_all_poly p.2 (List.of_mem_zip hp).2
+      rw [hσ] at hτ
+      cases hτ
+  · -- mixed: Λ-outside nest
+    have hf : allNone anns = false := by
+      cases hAllNone' : allNone anns with
+      | false => rfl
+      | true => simp_all
+    simp only [Expr.letRecElabOut, hf]
+    exact Expr.letRecElab_sound hwf hG_env hG_specs hmono hpoly hbody
+
 /-- Iterated `substFvars` commutes with `closeOver` when `S` avoids the closed-over
     pool `gs` in domain and range. Plural lift of `Ty.substFvar_closeOver_comm`
     (the `d = 0` companion of Step A's `Ty.substFvars_closeOverFrom`). Used by the
@@ -9198,6 +9948,42 @@ theorem Expr.substTyFvars_letRecElab {S : Subst} {G : List Nat} {anns : List (Op
         exact hpσ ▸ this))]
   congr 1
   rw [hzip, List.map_reverse]
+
+/-- Distribution of a `G`-avoiding substitution over `letRecElabOut` (the `letRecElabOut`
+    mirror of `Expr.substTyFvars_letRecElab`). Structure: `by_cases hAllNone : allNone anns`
+    (`allNone` stable under `RecAnn.substFvars S`). all-mono needs `promoteAnns`-subst, the
+    `retargetStored ∘ closeTyVars` subst (`retargetStored_substTyFvars` +
+    `Expr.substTyFvars_closeTyVars` with `hSG`/`hSran`), the `bodyExtend`-subst, and
+    `monoTys`/`specsMono` subst stability. -/
+theorem Expr.substTyFvars_letRecElabOut {S : Subst} {G : List Nat} {anns : List (Option PolyTy)}
+    {bs : List Expr} {specs : List RecSpec} {body : Expr}
+    (hSG : ∀ p ∈ S, p.1 ∉ G) (hSran : ∀ p ∈ S, ∀ u ∈ p.2.freeVars, u ∉ G)
+    (hSpoly : ∀ σ, RecSpec.poly σ ∈ specs → ∀ q ∈ S, q.1 ∉ σ.body.freeVars) :
+    (Expr.letRecElabOut G anns bs specs body).substTyFvars S
+      = Expr.letRecElabOut G (anns.map (RecAnn.substFvars S)) (bs.map (·.substTyFvars S))
+          (specs.map (RecSpec.onSubst S)) (body.substTyFvars S) := by
+  by_cases hAllNone : allNone anns = true
+  · have hall' : allNone (anns.map (RecAnn.substFvars S)) = true := by
+      rw [allNone_map_substFvars, hAllNone]
+    simp only [Expr.letRecElabOut, hAllNone, hall', ↓reduceIte]
+    rw [Expr.substTyFvars_letRec]
+    rw [promoteAnns_substFvars hSG hSran hSpoly]
+    congr 1
+    · rw [List.map_map, List.map_map, specsMono_onSubst]
+      apply List.map_congr_left
+      intro e _
+      simp only [Function.comp_apply]
+      rw [LetRecPromote.retargetStored_substTyFvars, Expr.substTyFvars_closeTyVars hSG hSran]
+    · rw [LetRecPromote.bodyExtend_substTyFvars hSG hSran, monoTys_onSubst]
+      rfl
+  · have hf : allNone anns = false := by
+      cases hAllNone' : allNone anns with
+      | false => rfl
+      | true => simp_all
+    have hf' : allNone (anns.map (RecAnn.substFvars S)) = false := by
+      rw [allNone_map_substFvars, hf]
+    simp only [Expr.letRecElabOut, hf, hf']
+    exact Expr.substTyFvars_letRecElab hSG hSran hSpoly
 
 
 /-! ### Path R residual Infer soundness
@@ -10177,13 +10963,13 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
         obtain ⟨M₀, hM₀, rfl⟩ := List.mem_map.mp hM
         exact helimG p hp M₀.body hc
     -- `S₁` fixes the elaborated output
-    have hEoutS₁ : (Expr.letRecElab G anns (bindingsOut.map (·.substTyFvars S₁))
+    have hEoutS₁ : (Expr.letRecElabOut G anns (bindingsOut.map (·.substTyFvars S₁))
           ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)) bodyOut).substTyFvars S₁
-        = Expr.letRecElab G anns (bindingsOut.map (·.substTyFvars S₁))
+        = Expr.letRecElabOut G anns (bindingsOut.map (·.substTyFvars S₁))
             ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)) bodyOut := by
       apply Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars
       intro p hp hc
-      rcases Expr.mem_tyFreeVars_letRecElab
+      rcases Expr.mem_tyFreeVars_letRecElabOut
         ((RecSpec.map_ann_onSubst S₁ (RecSpec.init Φ anns)).trans (RecSpec.map_ann_init Φ anns))
         hc with ⟨s', hs', hws'⟩ | ⟨e', he', hwe'⟩ | hpbody
       · obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hs'
@@ -10214,13 +11000,13 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
         = bindingsOut.map (·.substTyFvars (S₁ ++ S₂)) := by
       rw [List.map_map]
       exact List.map_congr_left (fun e0 _ => (Expr.substTyFvars_append S₁ S₂ e0).symm)
-    have hEoutS : (Expr.letRecElab G anns (bindingsOut.map (·.substTyFvars S₁))
+    have hEoutS : (Expr.letRecElabOut G anns (bindingsOut.map (·.substTyFvars S₁))
           ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)) bodyOut).substTyFvars (S₁ ++ S₂)
-        = Expr.letRecElab G anns (bindingsOut.map (·.substTyFvars (S₁ ++ S₂)))
+        = Expr.letRecElabOut G anns (bindingsOut.map (·.substTyFvars (S₁ ++ S₂)))
             (((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)).map (RecSpec.onSubst S₂))
             (bodyOut.substTyFvars S₂) := by
       rw [Expr.substTyFvars_append, hEoutS₁,
-          Expr.substTyFvars_letRecElab hS₂G hS₂Gran
+          Expr.substTyFvars_letRecElabOut hS₂G hS₂Gran
             (fun σ0 hσs q hq hc => hS₂K q hq (hKsch σ0 (hpoly_mem_anns σ0 hσs) q.1 hc)),
           hannsfix, hbmap]
     -- rigidity of schemes under S₂ and the two bridges
@@ -10261,7 +11047,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
       (fun k hk => by have := hKΦ k hk; omega)
       (fun y hy => hKe y (.inr hy)) hS₂K
     -- assemble residual packing via `Expr.letRecElab_sound` at the residual ctx
-    rw [hEoutS, Expr.eraseBounds_letRecElab]
+    rw [hEoutS, Expr.eraseBounds_letRecElabOut]
     set init0 : List RecSpec := RecSpec.init Φ anns with hinit0
     set specsS₁ : List RecSpec := init0.map (RecSpec.onSubst S₁) with hspecsS₁
     set specsS : List RecSpec := specsS₁.map (RecSpec.onSubst S₂) with hspecsS
@@ -10331,7 +11117,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
       simpa only [rhsS₁, rhsS, specsS₁, specsS] using hbridge2
     -- Lp for poly: L₀ plus S₂ domain so FreshNames avoids S₂ keys (open/subst commute)
     set Lp : List Nat := L₀ ++ S₂.map (·.1) with hLp
-    refine Expr.letRecElab_sound (ctx := ((S₁ ++ S₂).onCtx ctx).eraseBounds)
+    refine Expr.letRecElabOut_sound (ctx := ((S₁ ++ S₂).onCtx ctx).eraseBounds)
       (Lp := Lp) (G := G)
       (anns := anns.map (Option.map PolyTy.eraseBounds))
       (bs := bsS.map Expr.eraseBounds)
@@ -11423,15 +12209,17 @@ inductive Expr.UserAnnsCopied : Expr → Expr → Prop
     Expr.UserAnnsCopied scrut scrutOut →
     Expr.UserAnnsCopiedBranches brs brsOut →
     Expr.UserAnnsCopied (.match_ scrut brs) (.match_ scrutOut brsOut)
-  /-- Infer emits `letRecElab` (Λ-outside nest of `letIn` over an **inner**
-      `.letRec anns …`), not a bare `.letRec` elaboratum. Group-level `anns` are
-      copied exactly. Bindings may be `substTyFvars` / `closeTyVars` of the raw
-      group elaborata (same discipline as let RHS — not a pure same-shape zip of
-      nested binder ascriptions after those rewrites); only the body is zipped. -/
+  /-- Infer emits `letRecElabOut`: for an **all-mono** group, a bare `.letRec` with
+      the `anns` slot *filled* (every `none` promoted to `some (promoteScheme G τ)`); for a
+      mixed group, the Λ-outside nest `Expr.letRecElab`. Group-level `anns` are therefore
+      copied exactly only in the mixed case, and filled in the all-mono case. Bindings may be
+      `substTyFvars` / `closeTyVars` of the raw group elaborata (same discipline as let RHS —
+      not a pure same-shape zip of nested binder ascriptions after those rewrites); only the
+      body is zipped. -/
   | letRec {G anns bindings body specs bindingsOut bodyOut} :
     Expr.UserAnnsCopied body bodyOut →
     Expr.UserAnnsCopied (.letRec anns bindings body)
-      (Expr.letRecElab G anns bindingsOut specs bodyOut)
+      (Expr.letRecElabOut G anns bindingsOut specs bodyOut)
 
 /-- Branch list zip (patterns equal; bodies ann-copied). -/
 inductive Expr.UserAnnsCopiedBranches :
@@ -23976,7 +24764,7 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
           | none => none
           | some ⟨(Φ₂, S₂, bodyOut, τ₂), hbody, hav₂⟩ =>
             some ⟨(Φ₂, S₁ ++ S₂,
-                Expr.letRecElab
+                Expr.letRecElabOut
                   (genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
                     (RecSpecs.monoTys ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))))
                   anns (bindingsOut.map (·.substTyFvars S₁))

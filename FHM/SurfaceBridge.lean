@@ -12701,6 +12701,239 @@ private theorem letRecElab_AllMatchesExhaustive {ctors : CtorEnv}
   simp only [Expr.letRecElab]
   exact letRecElabNest_AllMatchesExhaustive G anns _ rawBindings hraw _ body hbody
 
+/-- `retargetStoredBranches` is the pointwise map of `retargetStored` over branch bodies. -/
+private theorem retargetStoredBranches_eq_map {mono : Nat → Bool} {gLen d b : Nat} :
+    ∀ (brs : List (MatchPattern × Expr)),
+      LetRecPromote.retargetStoredBranches mono gLen d b brs =
+        brs.map (fun pb => (pb.1, LetRecPromote.retargetStored mono gLen d (b + pb.1.bindCount) pb.2)) := by
+  intro brs
+  induction brs with
+  | nil => rfl
+  | cons hd tl ih =>
+    obtain ⟨p, body⟩ := hd
+    simp only [LetRecPromote.retargetStoredBranches, List.map_cons, ih]
+
+/-- `retargetStoredGroup` preserves exhaustiveness (the `anns`-lockstep group helper). -/
+private theorem retargetStoredGroup_exh {ctors : CtorEnv} {mono : Nat → Bool} {gLen d b : Nat} :
+    ∀ (anns : List (Option PolyTy)) (bs : List Expr),
+      (∀ e ∈ bs, ∀ d', AllMatchesExhaustive ctors e →
+        AllMatchesExhaustive ctors (LetRecPromote.retargetStored mono gLen d' b e)) →
+      (∀ e ∈ bs, AllMatchesExhaustive ctors e) →
+      ∀ e' ∈ LetRecPromote.retargetStoredGroup mono gLen d b anns bs,
+        AllMatchesExhaustive ctors e' := by
+  intro anns bs ihB hbs e' he'
+  induction bs generalizing anns with
+  | nil => cases anns <;> cases he'
+  | cons hd tl ih =>
+    cases anns with
+    | nil =>
+      change e' ∈ (LetRecPromote.retargetStored mono gLen d b hd ::
+        LetRecPromote.retargetStoredGroup mono gLen d b [] tl) at he'
+      simp only [List.mem_cons] at he'
+      rcases he' with rfl | he'
+      · exact ihB hd List.mem_cons_self d (hbs hd List.mem_cons_self)
+      · exact ih [] (fun e he => ihB e (List.mem_cons_of_mem _ he))
+          (fun e he => hbs e (List.mem_cons_of_mem _ he)) he'
+    | cons a as =>
+      change e' ∈ (LetRecPromote.retargetStored mono gLen (d + RecAnn.params a) b hd ::
+        LetRecPromote.retargetStoredGroup mono gLen d b as tl) at he'
+      simp only [List.mem_cons] at he'
+      rcases he' with rfl | he'
+      · exact ihB hd List.mem_cons_self (d + RecAnn.params a) (hbs hd List.mem_cons_self)
+      · exact ih as (fun e he => ihB e (List.mem_cons_of_mem _ he))
+          (fun e he => hbs e (List.mem_cons_of_mem _ he)) he'
+
+/-- Branch-list companion of `AllMatchesExhaustive.retargetStored` (map form). -/
+private theorem AllBranchBodiesExhaustive.retargetStored_map {ctors : CtorEnv}
+    {mono : Nat → Bool} {gLen d b : Nat} :
+    ∀ (brs : List (MatchPattern × Expr)),
+      (∀ p body, (p, body) ∈ brs → AllMatchesExhaustive ctors body →
+        AllMatchesExhaustive ctors (LetRecPromote.retargetStored mono gLen d (b + p.bindCount) body)) →
+      AllBranchBodiesExhaustive ctors brs →
+      AllBranchBodiesExhaustive ctors
+        (brs.map fun pb => (pb.1, LetRecPromote.retargetStored mono gLen d (b + pb.1.bindCount) pb.2)) := by
+  intro brs
+  induction brs with
+  | nil => intro _ _; exact .nil
+  | cons hd tl ih =>
+    obtain ⟨p, body⟩ := hd
+    intro hstep h
+    cases h with
+    | cons hbody hrest =>
+      simp only [List.map_cons]
+      exact .cons (hstep p body List.mem_cons_self hbody)
+        (ih (fun p' body' hm hb => hstep p' body' (List.mem_cons_of_mem _ hm) hb) hrest)
+
+/-- `retargetStored` preserves exhaustiveness (it only rewrites in-window `var` tyArgs). -/
+private theorem AllMatchesExhaustive.retargetStored {ctors : CtorEnv} {mono : Nat → Bool} {gLen : Nat} :
+    ∀ (e : Expr) (d b : Nat), AllMatchesExhaustive ctors e →
+      AllMatchesExhaustive ctors (LetRecPromote.retargetStored mono gLen d b e) := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro _ _ _; exact .primLit
+  | primBinOp op => intro _ _ _; exact .primBinOp
+  | var i tyArgs =>
+    intro d b h
+    change AllMatchesExhaustive ctors (if b ≤ i ∧ mono (i - b) then .var i (Ty.bvarRangeFrom d gLen) else .var i tyArgs)
+    by_cases hc : b ≤ i ∧ mono (i - b) <;> simp [hc] <;> exact AllMatchesExhaustive.var
+  | ctor nm => intro _ _ _; exact .ctor
+  | lambda ann body ih =>
+    intro d b h; cases h with | lambda hb => exact .lambda (ih d (b + 1) hb)
+  | app f arg ihf iharg =>
+    intro d b h; cases h with | app hf ha => exact .app (ihf d b hf) (iharg d b ha)
+  | letIn ann rhs body ihr ihb =>
+    intro d b h; cases h with
+    | letIn hr hb =>
+      cases ann with
+      | none => exact .letIn (ihr d b hr) (ihb d (b + 1) hb)
+      | some σ => exact .letIn (ihr (d + σ.paramCount) b hr) (ihb d (b + 1) hb)
+  | match_ scrut brs ihs ihbrs =>
+    intro d b h
+    cases h with
+    | match_ hscrut hbranches hpinned hcover =>
+      expose_names
+      change AllMatchesExhaustive ctors (.match_ (LetRecPromote.retargetStored mono gLen d b scrut)
+        (LetRecPromote.retargetStoredBranches mono gLen d b brs))
+      rw [retargetStoredBranches_eq_map]
+      refine .match_ (tyName := tyName) (ihs d b hscrut)
+        (AllBranchBodiesExhaustive.retargetStored_map brs
+          (fun p body hm hb => ihbrs p body hm d (b + p.bindCount) hb) hbranches) ?_ ?_
+      · intro c n body' hmem
+        obtain ⟨⟨p, body0⟩, hmem0, heq⟩ := List.mem_map.mp hmem
+        simp only [Prod.mk.injEq] at heq; obtain ⟨rfl, rfl⟩ := heq
+        exact hpinned c n body0 hmem0
+      · intro ctorName ctor hlook htyn
+        obtain ⟨pat, body0, hmem, hcov⟩ := hcover ctorName ctor hlook htyn
+        exact ⟨pat, LetRecPromote.retargetStored mono gLen d (b + pat.bindCount) body0,
+          List.mem_map.mpr ⟨(pat, body0), hmem, rfl⟩, hcov⟩
+  | letRec anns bindings body ihbs ihb =>
+    intro d b h
+    cases h with
+    | letRec hbs hb =>
+      refine .letRec
+        (retargetStoredGroup_exh (d := d) (b := b + bindings.length) anns bindings
+          (fun e he d' => ihbs e he d' (b + bindings.length)) hbs)
+        (ihb d (b + bindings.length) hb)
+
+/-- `bodyExtendGroup` is the pointwise map of `bodyExtend`. -/
+private theorem bodyExtendGroup_eq_map {monos : List Ty} {G : List Nat} {b : Nat} :
+    ∀ (bs : List Expr),
+      LetRecPromote.bodyExtendGroup monos G b bs = bs.map (LetRecPromote.bodyExtend monos G b) := by
+  intro bs
+  induction bs with
+  | nil => rfl
+  | cons e rest ih => simp only [LetRecPromote.bodyExtendGroup, List.map_cons, ih]
+
+/-- `bodyExtendBranches` is the pointwise map of `bodyExtend` over branch bodies. -/
+private theorem bodyExtendBranches_eq_map {monos : List Ty} {G : List Nat} {b : Nat} :
+    ∀ (brs : List (MatchPattern × Expr)),
+      LetRecPromote.bodyExtendBranches monos G b brs =
+        brs.map (fun pb => (pb.1, LetRecPromote.bodyExtend monos G (b + pb.1.bindCount) pb.2)) := by
+  intro brs
+  induction brs with
+  | nil => rfl
+  | cons hd tl ih =>
+    obtain ⟨p, body⟩ := hd
+    simp only [LetRecPromote.bodyExtendBranches, List.map_cons, ih]
+
+/-- Branch-list companion of `AllMatchesExhaustive.bodyExtend` (map form). -/
+private theorem AllBranchBodiesExhaustive.bodyExtend_map {ctors : CtorEnv}
+    {monos : List Ty} {G : List Nat} {b : Nat} :
+    ∀ (brs : List (MatchPattern × Expr)),
+      (∀ p body, (p, body) ∈ brs → AllMatchesExhaustive ctors body →
+        AllMatchesExhaustive ctors (LetRecPromote.bodyExtend monos G (b + p.bindCount) body)) →
+      AllBranchBodiesExhaustive ctors brs →
+      AllBranchBodiesExhaustive ctors
+        (brs.map fun pb => (pb.1, LetRecPromote.bodyExtend monos G (b + pb.1.bindCount) pb.2)) := by
+  intro brs
+  induction brs with
+  | nil => intro _ _; exact .nil
+  | cons hd tl ih =>
+    obtain ⟨p, body⟩ := hd
+    intro hstep h
+    cases h with
+    | cons hbody hrest =>
+      simp only [List.map_cons]
+      exact .cons (hstep p body List.mem_cons_self hbody)
+        (ih (fun p' body' hm hb => hstep p' body' (List.mem_cons_of_mem _ hm) hb) hrest)
+
+/-- `bodyExtend` preserves exhaustiveness (it only spreads `var` tyArgs). -/
+private theorem AllMatchesExhaustive.bodyExtend {ctors : CtorEnv}
+    {monos : List Ty} {G : List Nat} :
+    ∀ (e : Expr) (b : Nat), AllMatchesExhaustive ctors e →
+      AllMatchesExhaustive ctors (LetRecPromote.bodyExtend monos G b e) := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit p => intro _ _; exact .primLit
+  | primBinOp op => intro _ _; exact .primBinOp
+  | var i tyArgs =>
+    intro b h
+    change AllMatchesExhaustive ctors (if b ≤ i ∧ i < b + monos.length then .var i (LetRecPromote.spreadTyArgs G (monos.getD (i - b) (Ty.prim .unit)) tyArgs) else .var i tyArgs)
+    by_cases hc : b ≤ i ∧ i < b + monos.length <;> simp [hc] <;> exact AllMatchesExhaustive.var
+  | ctor nm => intro _ _; exact .ctor
+  | lambda ann body ih =>
+    intro b h; cases h with | lambda hb => exact .lambda (ih (b + 1) hb)
+  | app f arg ihf iharg =>
+    intro b h; cases h with | app hf ha => exact .app (ihf b hf) (iharg b ha)
+  | letIn ann rhs body ihr ihb =>
+    intro b h; cases h with
+    | letIn hr hb => exact .letIn (ihr b hr) (ihb (b + 1) hb)
+  | match_ scrut brs ihs ihbrs =>
+    intro b h
+    cases h with
+    | match_ hscrut hbranches hpinned hcover =>
+      expose_names
+      change AllMatchesExhaustive ctors (.match_ (LetRecPromote.bodyExtend monos G b scrut)
+        (LetRecPromote.bodyExtendBranches monos G b brs))
+      rw [bodyExtendBranches_eq_map]
+      refine .match_ (tyName := tyName) (ihs b hscrut)
+        (AllBranchBodiesExhaustive.bodyExtend_map brs
+          (fun p body hm hb => ihbrs p body hm (b + p.bindCount) hb) hbranches) ?_ ?_
+      · intro c n body' hmem
+        obtain ⟨⟨p, body0⟩, hmem0, heq⟩ := List.mem_map.mp hmem
+        simp only [Prod.mk.injEq] at heq; obtain ⟨rfl, rfl⟩ := heq
+        exact hpinned c n body0 hmem0
+      · intro ctorName ctor hlook htyn
+        obtain ⟨pat, body0, hmem, hcov⟩ := hcover ctorName ctor hlook htyn
+        exact ⟨pat, LetRecPromote.bodyExtend monos G (b + pat.bindCount) body0,
+          List.mem_map.mpr ⟨(pat, body0), hmem, rfl⟩, hcov⟩
+  | letRec anns bindings body ihbs ihb =>
+    intro b h
+    cases h with
+    | letRec hbs hb =>
+      change AllMatchesExhaustive ctors (.letRec anns
+        (LetRecPromote.bodyExtendGroup monos G (b + bindings.length) bindings)
+        (LetRecPromote.bodyExtend monos G (b + bindings.length) body))
+      rw [bodyExtendGroup_eq_map]
+      refine .letRec ?_ (ihb (b + bindings.length) hb)
+      intro e he
+      obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
+      exact ihbs e0 he0 (b + bindings.length) (hbs e0 he0)
+
+/-- `letRecElabOut` preserves exhaustiveness: the all-mono promoted node is a plain
+    `.letRec` (bindings `retargetStored ∘ closeTyVars`, body `bodyExtend`-ed), the mixed
+    branch the Λ-outside nest. -/
+private theorem letRecElabOut_AllMatchesExhaustive {ctors : CtorEnv}
+    (G : List Nat) (anns : List (Option PolyTy)) (rawBindings : List Expr)
+    (specs : List RecSpec) (body : Expr)
+    (hraw : ∀ e ∈ rawBindings, AllMatchesExhaustive ctors e)
+    (hbody : AllMatchesExhaustive ctors body) :
+    AllMatchesExhaustive ctors (Expr.letRecElabOut G anns rawBindings specs body) := by
+  by_cases hallNone : allNone anns
+  · simp only [Expr.letRecElabOut, hallNone, ↓reduceIte]
+    refine AllMatchesExhaustive.letRec ?_ ?_
+    · intro e he
+      obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
+      exact AllMatchesExhaustive.retargetStored (Expr.closeTyVars G e0) 0 0
+        (AllMatchesExhaustive.closeTyVars G (hraw e0 he0))
+    · exact AllMatchesExhaustive.bodyExtend body 0 hbody
+  · have hf : allNone anns = false := by
+      cases hAllNone' : allNone anns with
+      | false => rfl
+      | true => simp_all
+    simp only [Expr.letRecElabOut, hf]
+    exact letRecElab_AllMatchesExhaustive G anns rawBindings specs body hraw hbody
+
 /-- Transfer `(a, _)` membership across a branch list whose first projections
     (patterns) agree — the key fact letting a `match`'s pinned/cover clauses
     survive inference (which preserves patterns, only rewriting branch bodies). -/
@@ -12779,7 +13012,7 @@ theorem infer_preserves_AllMatchesExhaustive {Φ ctx e Φ' S eOut τ}
     | letRec hbs hbe =>
       have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
       have hraw := inferRecGroup_preserves_exh hgroup hbs
-      exact letRecElab_AllMatchesExhaustive _ _ _ _ _
+      exact letRecElabOut_AllMatchesExhaustive _ _ _ _ _
         (fun e he => by
           obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
           exact AllMatchesExhaustive.substTyFvars _ (hraw e0 he0))

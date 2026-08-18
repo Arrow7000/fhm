@@ -30,6 +30,104 @@ document; the *viability* is not in question.
 
 ---
 
+## Status (2026-08-17): landing in progress
+
+The promotion is **partially landed**. This section records where things stand so the work can be
+resumed without re-derivation; it supersedes §5.5/§3.6 estimates where they conflict.
+
+### Two corrections to §3, learned while landing
+
+1. **Mixed groups are out of scope for the promotion (option A).** §3.4's "uniform arity `|G|`"
+   only works when *every* member is promoted to arity `|G|` — i.e. all-mono groups. A user-annotated
+   poly member has its own arbitrary arity `σ.paramCount` and cannot supply `|G|` type args when
+   referencing a promoted mono sibling (the pool has no per-member binder in a mixed group). So:
+   **all-`none` group → promoted `.letRec` node**; **mixed group (any `some`) → keep `Expr.letRecElab`**.
+   Consequence: `letRecElab` is *not* deleted, and `sourceSound` keeps a mixed-group case.
+
+2. **The body transport is a SPREAD, not an append.** `genGroup G μ` binds the *filtered* pool
+   (a subsequence of `G`); `promoteScheme G μ` binds the *full* pool. Filtered→full inserts the
+   vacuous `unit` fillers at the **gap positions** of `G`, not at the end. (`G=[0,1,2], μ=fvar 2`
+   is a counterexample to appending: `closeOver [2] (fvar 2)=bvar 0` but `closeOver [0,1,2] (fvar 2)=bvar 2`.)
+
+### Done
+
+- **`FHM/LetRecPromote.lean`** (new, untracked; imports `FHM.Core`; imported by `FHM.InferW`; in
+  `lakefile.toml` roots). Axiom-clean. Holds the promotion + transport machinery, generalized to
+  target-aware `mono : Nat → Bool`:
+  - `promoteScheme`/`promoteSpecs`/`promoteAnns`/`promoteSpec`/`RecSpec.isMono`/`specsMono`,
+    `promoteScheme_wf`/`openVars`/`instantiatesTo`.
+  - `retargetVars`/`retargetBranches`/`retargetGroup` (opened) and `retargetStored`/`...Branches`/`...Group`
+    (stored), all `mono : Nat → Bool`.
+  - `retarget_transport`/`retarget_untransport` (**mixed** prefixes, `specs : List RecSpec` + `G Xs`).
+  - `monoTyped_to_polyTyped`/`polyTyped_to_monoTyped` (**homogeneous**, all-mono):
+    `monoTyped_to_polyTyped (hGnodup) (hmonoLC : ∀ μ ∈ monos, μ.IsLC) (hlen : bindings.length = monos.length)
+      (hmono : RecSpecs.MonoTyped TypeOfElabHM ctx bindings (monos.map RecSpec.mono) G L)
+      (hopen : ∀ Ys, FreshNames (L++G) G.length Ys → ∀ p ∈ bindings.zip bindings',
+         p.2.openTyVars Ys = retargetVars (specsMono (monos.map RecSpec.mono)) (Ys.map Ty.fvar) 0 p.1)
+      : RecSpecs.PolyTyped … bindings' (monos.map (fun μ => RecSpec.poly (promoteScheme G μ))) [] (L++G)`.
+  - `spreadTyArgs`/`bodyExtend`/`bodyScheme_weaken` (the body transport):
+    `bodyScheme_weaken (hGnodup) (hmonoLC) (h : TypeOfElabHM ⟨monos.map (PolyTy.genGroup G) ++ env, ctors⟩ e τ)
+      : TypeOfElabHM ⟨monos.map (promoteScheme G) ++ env, ctors⟩ (bodyExtend monos G 0 e) τ`.
+  - `retargetStored_openTyVars` + the structural/commute lemmas.
+- **`FHM/InferW.lean`** (modified, uncommitted): `Infer.letRec` and `inferCore` now emit
+  `Expr.letRecElabOut G anns (bindingsOut.map (·.substTyFvars S₁)) solvedSpecs bodyOut`, where
+  `solvedSpecs = (RecSpec.init Φ anns).map (RecSpec.onSubst S₁)`, `G = genGroupVars …`, and
+  `allNone anns := anns.all (·.isNone)`; `letRecElabOut` branches all-mono → promoted node
+  (`.letRec (promoteAnns G specs) (bindings retargetStored∘closeTyVars G) (bodyExtend (monoTys specs) G 0 body)`)
+  else → `Expr.letRecElab`.
+
+### Remaining (the downstream repair in `InferW.lean` — the subtle part)
+
+`lake build FHM.LetRecPromote` is green; `lake build FHM.InferW` has **4 errors**: `:5968`
+(`eOut_avoid`/`dom_avoid` calls `mem_tyFreeVars_letRecElab`), `:7332` (`eOut_tyBvarBounded` calls
+`letRecElab_tyBvarBounded`), `:10286` (`Infer.sound` letRec case), `:11506` (`preservesAnns` calls
+`UserAnnsCopied.letRec`). `Infer.sourceSound` (now ~12606) does **not** need touching to land the
+promotion: it types the *source* node via `TypeOfHM.letRec_of_emptyPool` and never mentions the
+elaboratum, and it sits in a `mutual` block separate from `preservesAnns`. Its all-mono letRec case
+only collapses in the Part-3 faithfulness refactor — future work, not a build blocker.
+
+Repair: (Part 1) add `letRecElabOut` mirrors of the `letRecElab` lemmas (`mem_tyFreeVars`,
+`tyBvarBounded`, `eraseBounds`, `substTyFvars`, `UserAnnsCopied`), each `by_cases allNone anns`; the
+all-mono branches need small facts that `promoteScheme`/`closeOver`/`retargetStored`/`bodyExtend`/
+`closeTyVars` don't leak free vars/bvars (`promoteScheme G τ`'s free vars = `τ.freeVars` minus `G`).
+(Part 2) `Infer.sound`'s letRec case: `by_cases hallNone : allNone anns`; all-mono → structural
+`TypeOfElabHM.letRec` via `monoTyped_to_polyTyped` (discharge `hopen` via `retargetStored_openTyVars`)
++ `bodyScheme_weaken` + `eraseBounds`/`substTyFvars` threading; mixed → keep `Expr.letRecElab_sound`.
+(Part 3, future — **not** required for a green build) swap in the `...Out` lemmas and add the
+`UserAnnsCopied` fact for the promoted node; replace `sourceSound`'s structural cases with the
+faithfulness corollary (all-mono letRec via `polyTyped_to_monoTyped`; the mixed letRec case keeps
+`TypeOfHM.letRec_of_emptyPool`). Goal for **landing**: `lake build FHM.InferW`/`FHM.Headlines` clean
+from Parts 1–2 alone. (2 pre-existing
+`termination_by` warnings at `:7421`/`:11392` — leave them.)
+
+### Tooling discipline (learned the hard way)
+
+Edit `.lean` only via Read/Edit (never Python/`sed`). The lean-lsp MCP tools are `lean_goal`,
+`lean_diagnostic_messages`, `lean_multi_attempt`, `lean_build`, `lean_local_search`, …; after editing,
+the LSP goes stale ("diagnostics_unavailable / not known clean", or hangs) — on that signal (or
+>~120s) call **`lean_build`** (runs `lake build` + restarts LSP) then re-query. `lake build
+FHM.LetRecPromote` ~4s; `lake build FHM.InferW` ~2min. deepseek-v4-flash is fine for the mechanical
+`LetRecPromote` lemmas but has corrupted the `InferW` sound-case repair 4× — do Part 2 by hand (or a
+stronger model).
+
+### Option B (future, not started)
+
+Can typeable mixed groups hit the arity mismatch? The claim to pin down is *sharper than the original
+§3.4 wording*. The pool `G` is **group-wide** (the union of every mono member's solved-type free
+vars), so "referenced members have `|G| = 0`" is false on its face: `f : ∀a. a→a = fun x → g x`,
+`g = fun x → x`, `h = fun x y → y` is typeable with `G = {β,γ}` (from `h`) while `f` references `g`.
+
+What is conjectured instead: an annotated member referencing a mono member pins that mono's *filtered*
+pool empty — `genFilter G τ = []` — because annotated members' variables are **rigid skolems** (they
+cannot unify with a compound type), so the reference forces the mono's type to equal the skolems
+exactly. The encoding would then be "promote the mono members with **nonempty** filtered pool (not
+referenced by any poly member, so the uniform full-pool retarget is safe); leave pinned monos mono
+(their `bodyScheme` is already monomorphic — no Λ needed)". Both halves need proof: the rigidity
+pinning lemma, and a mixed-group `monoTyped_to_polyTyped` split. If both hold, option A's mixed branch
+is replaced by the promotion and `letRecElab` fully deleted; otherwise option A stands as the boundary.
+
+---
+
 ## 1. Measured distribution
 
 ### `Infer.sound` — 1,223 lines, by case
@@ -475,9 +573,16 @@ map — so the declarative relations are stated once, on `Ty Unit`.
 "Measured" means counted in the tree; "estimated" means judgement, and is where the bands are
 widest.
 
-### A. Net line count — **≈ break-even, ±500.**
+### A. Net line count — **≈ break-even, ±500** — ⚠️ *stale after correction #1*
 
 **Do not do this for the line count.**
+
+⚠️ This table predates the "mixed groups out of scope" correction. As landed, `letRecElab` is
+**kept** (mixed branch), the `RecSpec` mono/poly split survives, and `sourceSound`'s mixed case
+stays — so the −1,045 / −656 deletions below are **not** realised by Option A alone; the near term
+is net-additive (~2.9k lines of `LetRecPromote` + the `...Out` mirrors + the all-mono sound branch).
+The deletion and the §2.2 shape-preservation payoff are contingent on Option B (below), which is
+future research.
 
 | | lines | basis |
 |---|---:|---|
