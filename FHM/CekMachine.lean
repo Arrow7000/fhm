@@ -99,6 +99,20 @@ def IsNonCtorVal : Val → Prop
   | .recclo _ _ _ _ => False
   | .ctorV _ _ => False
 
+/-- A *machine value* — an already-evaluated value, i.e. NOT a thunk or rec-closure.
+    Thunks/rec-closures are suspended computations, forced by `force`/`forceRecclo`
+    *before* any value-consuming rule (`appArgStep`/`beta`/`ctorApp`/`primOpPart`)
+    sees them; this is what keeps `StepM` deterministic and sound (a thunk can
+    never leak into a function/argument/constructor position unforced). -/
+def IsVal : Val → Prop
+  | .prim _ => True
+  | .primOp _ => True
+  | .primOpApp _ _ => True
+  | .lam _ _ => True
+  | .thunk _ _ _ => False
+  | .recclo _ _ _ _ => False
+  | .ctorV _ _ => True
+
 /-! ## Reduction -/
 
 /-- Small-step reduction of the CEK machine. Call-by-value for `app`/`match_`;
@@ -116,15 +130,15 @@ inductive StepM : State → State → Prop
       StepM (.eval E (.var i tyArgs) k) (.ret (E.get ⟨i, h⟩) k)
   | app {E f a k} :
       StepM (.eval E (.app f a) k) (.eval E f (.appArg E a k))
-  | appArgStep {fv E a k} :
+  | appArgStep {fv E a k} (h : IsVal fv) :
       StepM (.ret fv (.appArg E a k)) (.eval E a (.appFun fv k))
-  | beta {body E av k} :
+  | beta {body E av k} (h : IsVal av) :
       StepM (.ret av (.appFun (.lam body E) k)) (.eval (av :: E) body k)
-  | primOpPart {op av k} :
+  | primOpPart {op av k} (h : IsVal av) :
       StepM (.ret av (.appFun (.primOp op) k)) (.ret (.primOpApp op av) k)
   | primOpDelta {op a b r k} (h : PrimBinOp.delta op a b = some r) :
       StepM (.ret (.prim b) (.appFun (.primOpApp op (.prim a)) k)) (.ret r k)
-  | ctorApp {name args av k} :
+  | ctorApp {name args av k} (h : IsVal av) :
       StepM (.ret av (.appFun (.ctorV name args) k)) (.ret (.ctorV name (args ++ [av])) k)
   | letIn {E ann rhs body k} :
       StepM (.eval E (.letIn ann rhs body) k) (.eval (.thunk ann rhs E :: E) body k)
@@ -298,11 +312,157 @@ theorem preservation {ctors : CtorEnv} {s s' : State} {ρ : Ty}
     StateOK ctors s' ρ := by
   sorry
 
+/-- Every value stored in an exhaustive environment is itself exhaustive. -/
+private theorem exhaustiveEnv_get {ctors : CtorEnv} {E : VEnv} (hE : ExhaustiveEnv ctors E) :
+    ∀ i (h : i < E.length), ExhaustiveVal ctors (E.get ⟨i, h⟩) := by
+  induction E with
+  | nil =>
+      intro i h
+      simp at h
+  | cons v E' ih =>
+      intro i h
+      cases i with
+      | zero =>
+          simp [ExhaustiveEnv] at hE
+          exact hE.1
+      | succ i =>
+          simp [ExhaustiveEnv] at hE
+          exact ih hE.2 i (Nat.lt_of_succ_lt_succ h)
+
+/-- An exhaustive tail environment appended to a list of exhaustive values is
+    exhaustive (the list's elements are all covered by `ExhaustiveVal`). -/
+private theorem exhaustiveEnv_append {ctors : CtorEnv} {E : VEnv} (hE : ExhaustiveEnv ctors E) :
+    ∀ (xs : VEnv), (∀ x ∈ xs, ExhaustiveVal ctors x) → ExhaustiveEnv ctors (xs ++ E) := by
+  intro xs hxs
+  induction xs with
+  | nil => simp [hE]
+  | cons x xs ih =>
+      simp [ExhaustiveEnv, hxs x (List.mem_cons_self ..),
+        ih (fun y hy => hxs y (List.mem_cons_of_mem x hy))]
+
+/-- A `bindGroup` environment is exhaustive when every binding and the captured
+    environment are (each group member is a `recclo` built from them). -/
+private theorem exhaustiveEnv_bindGroup {ctors : CtorEnv} {anns : List (Option PolyTy)}
+    {bindings : List Expr} {E : VEnv}
+    (hbind : ∀ b ∈ bindings, AllMatchesExhaustive ctors b) (hE : ExhaustiveEnv ctors E) :
+    ExhaustiveEnv ctors (bindGroup anns bindings E) := by
+  unfold bindGroup
+  apply exhaustiveEnv_append hE
+  intro x hx
+  rcases List.mem_map.mp hx with ⟨j, _, rfl⟩
+  simp [ExhaustiveVal, hE]
+  exact hbind
+
 /-- Stepping preserves exhaustiveness. -/
 theorem preservation_exhaustive {ctors : CtorEnv} {s s' : State}
     (hexh : ExhaustiveState ctors s) (hstep : StepM s s') :
     ExhaustiveState ctors s' := by
-  sorry
+  cases hstep
+  case primLit =>
+      simp only [ExhaustiveState, ExhaustiveVal] at hexh ⊢
+      exact ⟨trivial, hexh.2.2⟩
+  case primBinOp =>
+      simp only [ExhaustiveState, ExhaustiveVal] at hexh ⊢
+      exact ⟨trivial, hexh.2.2⟩
+  case ctor =>
+      simp only [ExhaustiveState, ExhaustiveVal] at hexh ⊢
+      refine ⟨?_, hexh.2.2⟩
+      simp
+  case lambda =>
+      simp only [ExhaustiveState, ExhaustiveVal] at hexh ⊢
+      rcases hexh with ⟨hE, hlam, hk⟩
+      cases hlam with
+      | lambda hbody => exact ⟨⟨hbody, hE⟩, hk⟩
+  case var =>
+      rename_i E i tyArgs k hlt
+      simp only [ExhaustiveState] at hexh ⊢
+      rcases hexh with ⟨hE, _, hk⟩
+      exact ⟨exhaustiveEnv_get hE i hlt, hk⟩
+  case app =>
+      simp only [ExhaustiveState, ExhaustiveKont] at hexh ⊢
+      rcases hexh with ⟨hE, happ, hk⟩
+      cases happ with
+      | app hf ha => exact ⟨hE, hf, hE, ha, hk⟩
+  case appArgStep =>
+      simp only [ExhaustiveState, ExhaustiveKont] at hexh ⊢
+      rcases hexh with ⟨hfv, hE, ha, hk⟩
+      exact ⟨hE, ha, hfv, hk⟩
+  case beta =>
+      simp only [ExhaustiveState, ExhaustiveVal, ExhaustiveKont] at hexh ⊢
+      rcases hexh with ⟨hav, hlam, hk⟩
+      rcases hlam with ⟨hbody, hE⟩
+      unfold ExhaustiveEnv at ⊢
+      exact ⟨⟨hav, hE⟩, hbody, hk⟩
+  case primOpPart =>
+      simp only [ExhaustiveState, ExhaustiveVal, ExhaustiveKont] at hexh ⊢
+      rcases hexh with ⟨hav, hprim, hk⟩
+      exact ⟨hav, hk⟩
+  case primOpDelta =>
+      rename_i op a b r k hd
+      simp only [ExhaustiveState, ExhaustiveVal, ExhaustiveKont] at hexh ⊢
+      rcases hexh with ⟨hpb, hpa, hk⟩
+      have hrv : ExhaustiveVal ctors r := by
+        cases op <;> cases a <;> cases b <;> simp [PrimBinOp.delta] at hd
+        all_goals
+          cases hd
+          simp [ExhaustiveVal]
+      exact ⟨hrv, hk⟩
+  case ctorApp =>
+      simp only [ExhaustiveState, ExhaustiveVal, ExhaustiveKont] at hexh ⊢
+      rcases hexh with ⟨hav, hargs, hk⟩
+      refine ⟨?_, hk⟩
+      intro a ha
+      rw [List.mem_append] at ha
+      rcases ha with ha | ha
+      · exact hargs a ha
+      · rw [List.mem_singleton] at ha
+        subst a
+        exact hav
+  case letIn =>
+      simp only [ExhaustiveState] at hexh ⊢
+      rcases hexh with ⟨hE, hlet, hk⟩
+      cases hlet with
+      | letIn hrhs hbody =>
+          unfold ExhaustiveEnv at ⊢
+          unfold ExhaustiveVal at ⊢
+          exact ⟨⟨⟨hrhs, hE⟩, hE⟩, hbody, hk⟩
+  case letRec =>
+      simp only [ExhaustiveState] at hexh ⊢
+      rcases hexh with ⟨hE, hrec, hk⟩
+      cases hrec with
+      | letRec hbind hbody => exact ⟨exhaustiveEnv_bindGroup hbind hE, hbody, hk⟩
+  case matchScrut =>
+      simp only [ExhaustiveState, ExhaustiveKont] at hexh ⊢
+      rcases hexh with ⟨hE, hmatch, hk⟩
+      cases hmatch with
+      | match_ hscrut hbodies _ _ =>
+          refine ⟨hE, hscrut, hE, ?_, hk⟩
+          intro pb hpb
+          rcases pb with ⟨pat, body⟩
+          exact hbodies.mem hpb
+  case matchCtor =>
+      rename_i name args E branches k pat body hfirst
+      simp only [ExhaustiveState, ExhaustiveVal, ExhaustiveKont] at hexh ⊢
+      rcases hexh with ⟨hargs, hE, hbranches, hk⟩
+      refine ⟨exhaustiveEnv_append hE _ (fun a ha => hargs a (List.mem_of_mem_take ha)), ?_, hk⟩
+      exact hbranches (pat, body) (FirstMatchingBranch.mem hfirst)
+  case matchWild =>
+      rename_i v E branches k body hnon
+      simp only [ExhaustiveState, ExhaustiveKont] at hexh ⊢
+      rcases hexh with ⟨hv, hE, hbranches, hk⟩
+      exact ⟨hE, hbranches (.wildcard, body) (List.mem_cons_self ..), hk⟩
+  case force =>
+      simp only [ExhaustiveState, ExhaustiveVal] at hexh ⊢
+      rcases hexh with ⟨hthunk, hk⟩
+      rcases hthunk with ⟨he, hE⟩
+      exact ⟨hE, he, hk⟩
+  case forceRecclo =>
+      rename_i anns bindings E j k hlt
+      simp only [ExhaustiveState, ExhaustiveVal] at hexh ⊢
+      rcases hexh with ⟨hrec, hk⟩
+      rcases hrec with ⟨hbind, hE⟩
+      exact ⟨exhaustiveEnv_bindGroup hbind hE,
+        hbind (bindings.get ⟨j, hlt⟩) (List.get_mem bindings ⟨j, hlt⟩), hk⟩
 
 /-- Multi-step preservation. -/
 theorem preservation_star {ctors : CtorEnv} {s s' : State} {ρ : Ty}
