@@ -30,10 +30,11 @@ document; the *viability* is not in question.
 
 ---
 
-## Status (2026-08-17): landing in progress
+## Status (2026-08-18): Stage 1 landed
 
-The promotion is **partially landed**. This section records where things stand so the work can be
-resumed without re-derivation; it supersedes §5.5/§3.6 estimates where they conflict.
+Stage 1 (the all-mono promotion) is **landed**: `Expr.letRecElabOut` is wired and sound, and
+`lake build` is green with `InferW`/`SurfaceBridge`/`Headlines` sorry-free (commit `f252fab`). This
+section records what landed and what remains; it supersedes §5.5/§3.6 estimates where they conflict.
 
 ### Two corrections to §3, learned while landing
 
@@ -76,29 +77,43 @@ resumed without re-derivation; it supersedes §5.5/§3.6 estimates where they co
   (`.letRec (promoteAnns G specs) (bindings retargetStored∘closeTyVars G) (bodyExtend (monoTys specs) G 0 body)`)
   else → `Expr.letRecElab`.
 
-### Remaining (the downstream repair in `InferW.lean` — the subtle part)
+### Landed (2026-08-18): Parts 1–2 + the SurfaceBridge repair
 
-`lake build FHM.LetRecPromote` is green; `lake build FHM.InferW` has **4 errors**: `:5968`
-(`eOut_avoid`/`dom_avoid` calls `mem_tyFreeVars_letRecElab`), `:7332` (`eOut_tyBvarBounded` calls
-`letRecElab_tyBvarBounded`), `:10286` (`Infer.sound` letRec case), `:11506` (`preservesAnns` calls
-`UserAnnsCopied.letRec`). `Infer.sourceSound` (now ~12606) does **not** need touching to land the
-promotion: it types the *source* node via `TypeOfHM.letRec_of_emptyPool` and never mentions the
-elaboratum, and it sits in a `mutual` block separate from `preservesAnns`. Its all-mono letRec case
-only collapses in the Part-3 faithfulness refactor — future work, not a build blocker.
+`lake build` is green (831 jobs); `FHM.InferW`, `FHM.SurfaceBridge`, `FHM.Headlines` are sorry-free.
+Committed as `f252fab`.
 
-Repair: (Part 1) add `letRecElabOut` mirrors of the `letRecElab` lemmas (`mem_tyFreeVars`,
-`tyBvarBounded`, `eraseBounds`, `substTyFvars`, `UserAnnsCopied`), each `by_cases allNone anns`; the
-all-mono branches need small facts that `promoteScheme`/`closeOver`/`retargetStored`/`bodyExtend`/
-`closeTyVars` don't leak free vars/bvars (`promoteScheme G τ`'s free vars = `τ.freeVars` minus `G`).
-(Part 2) `Infer.sound`'s letRec case: `by_cases hallNone : allNone anns`; all-mono → structural
-`TypeOfElabHM.letRec` via `monoTyped_to_polyTyped` (discharge `hopen` via `retargetStored_openTyVars`)
-+ `bodyScheme_weaken` + `eraseBounds`/`substTyFvars` threading; mixed → keep `Expr.letRecElab_sound`.
-(Part 3, future — **not** required for a green build) swap in the `...Out` lemmas and add the
-`UserAnnsCopied` fact for the promoted node; replace `sourceSound`'s structural cases with the
-faithfulness corollary (all-mono letRec via `polyTyped_to_monoTyped`; the mixed letRec case keeps
-`TypeOfHM.letRec_of_emptyPool`). Goal for **landing**: `lake build FHM.InferW`/`FHM.Headlines` clean
-from Parts 1–2 alone. (2 pre-existing
-`termination_by` warnings at `:7421`/`:11392` — leave them.)
+The downstream repair landed in three pieces:
+
+- **(Part 1)** `letRecElabOut` mirrors of the `letRecElab` lemmas (`mem_tyFreeVars`, `tyBvarBounded`,
+  `eraseBounds`, `substTyFvars`, `UserAnnsCopied`), each `by_cases allNone anns`.
+- **(Part 2)** `Expr.letRecElabOut_sound` (both branches). The all-mono branch is structural
+  `TypeOfElabHM.letRec` at the empty pool, **but NOT via `monoTyped_to_polyTyped` as the plan above
+  proposed** — see the correction below.
+- **(SurfaceBridge — not in the original plan, but required for a green build)** the `Infer.letRec`
+  rewire had broken `infer_preserves_AllMatchesExhaustive` (its letRec case still called
+  `letRecElab_AllMatchesExhaustive`). Fixed with `letRecElabOut_AllMatchesExhaustive` +
+  `AllMatchesExhaustive.retargetStored`/`.bodyExtend` preservation lemmas.
+
+**Correction to the plan's all-mono recipe.** The plan's "rename bridge" was
+`TypeOfElabHM.onSubst_fixed` + `openTyVars_closeTyVars_self`, which would have required
+`hG_bs : ∀ g ∈ G, ∀ e ∈ bs, g ∉ e.tyFreeVars`. That hypothesis is **false**: the gen pool genuinely
+occurs in the solved bindings (`let f = id in f` elaborates `f` to `.var id [fvar a]` with `a ∈ G`).
+The correct proof renames the **term** (`TypeOfElabHM.onSubst`), builds `hpoly'` directly via
+`retarget_transport` (not `monoTyped_to_polyTyped`, whose `MonoTyped` premise fixes the term), and
+closes/reopens via `openTyVars_closeTyVars_rename_of_fresh` (the rename, not `_self`). No signature
+change, no call-site change, no `hG_bs`.
+
+**Honest scope.** Stage 1 makes the elaboratum shape-preserving for **all-mono** groups only; mixed
+groups still use the Λ-outside `letRecElab`, so `Infer.sourceSound` is still a full second induction
+and `letRecElab` is not deleted (net-additive ~2.9k lines). The §2.2 payoff (sourceSound as a
+corollary) is **not yet** realised — it is Part 3.
+
+### Remaining (future — **not** required for a green build)
+
+**Part 3**: the faithfulness corollary `Decorates e e' → TypeOfElabHM ctx e' τ → TypeOfHM ctx e τ`
+replacing `Infer.sourceSound`'s structural cases (all-mono letRec via `polyTyped_to_monoTyped`; the
+mixed case keeps `TypeOfHM.letRec_of_emptyPool`). This is what converts the all-mono
+shape-preservation into the §2.2 simplification. Not started.
 
 ### Tooling discipline (learned the hard way)
 
