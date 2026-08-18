@@ -23,6 +23,19 @@ contradict it):
    observable behaviour *and* it is what makes non-value recursive RHSs (e.g.
    `letRec [var 0] (var 0)`) diverge correctly via thunk-forcing loops, so no
    separate "recursive values" restriction is needed.
+3. **Value consumption is gated on `IsVal`** (found by the first proof farm, not by
+   design). `appArgStep`/`beta`/`ctorApp`/`primOpPart` must require the consumed
+   value to be *already forced* (`IsVal`, i.e. not a thunk/rec-closure); otherwise a
+   thunk leaks into a function/argument/ctor position unforced and `(let f = λx.x in
+   f) 3` can get **stuck** (the `appArgStep` path puts the thunk in `appFun`, where
+   no rule fires). This was caught as a *failed* `stepM_deterministic` proof, and is
+   a genuine soundness bug, not just non-determinism.
+
+**Proof status (farmed):** `preservation_exhaustive` ✅ (structural, over all 18
+`StepM` cases, + 3 private helpers `exhaustiveEnv_get/_append/_bindGroup`).
+`stepM_deterministic` re-farming after the `IsVal` fix. Remaining sorrys:
+`ValTyped_inst`, `GeneralisesTo_inst`, `progress`, `preservation`,
+`preservation_star`, `type_safety`, `type_safety_closed`.
 
 This doc remains the plan, living status log, and handover artifact.
 
