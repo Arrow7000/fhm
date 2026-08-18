@@ -33,9 +33,33 @@ contradict it):
 
 **Proof status (farmed):** `preservation_exhaustive` ✅ (structural, over all 18
 `StepM` cases, + 3 private helpers `exhaustiveEnv_get/_append/_bindGroup`).
-`stepM_deterministic` re-farming after the `IsVal` fix. Remaining sorrys:
-`ValTyped_inst`, `GeneralisesTo_inst`, `progress`, `preservation`,
-`preservation_star`, `type_safety`, `type_safety_closed`.
+`stepM_deterministic` ✅ (after the `IsVal` fix; + `FirstMatchingBranch_unique`).
+Remaining sorrys: `ValTyped_inst_of_isVal`, `GeneralisesTo_inst`, `progress`,
+`preservation`, `preservation_star`, `type_safety`, `type_safety_closed`.
+
+## ⚠️ One real "hidden complexity monster": scoped type variables vs erasure
+
+Found while reasoning through the `force`-case of `preservation`, not by the farm.
+The language's *lexically-scoped type variables* feature (`let f : ∀a. a→a =
+λ(x : a). x in …`) stores an annotated `letIn`'s rhs **closed** — `a` appears as a
+*dangling type `bvar`* in the term's annotations. `TypeOfHM` only types such a rhs
+by **opening** it (`GeneralisesTo`/`openBoundTyVars`); it rejects the closed term
+outright (`λ(x : bvar 0). x` fails `paramTy.IsLC`).
+
+The erasing machine forces a `thunk (some σ) e E` by evaluating `e` *closed*, and
+its typing invariant (`StateOK (.eval E e k)`) demands `TypeOfHM ⟨Γ⟩ e τ` on the
+closed term — which is unprovable. So annotated `letIn`/`letRec` do **not** go
+through the current invariant. This is the one place erasure genuinely conflicts
+with FHM's term representation; the old `Step` hid it inside the type-passing
+`instTyAux`/`openTyVarsAux` depth-shielding.
+
+Three ways forward (decision deferred until the `preservation` farm reaches the
+`force` case): (a) `force` opens the rhs at fresh names (adds cofinite type-freshness
+to the machine — the locally-nameless opening machinery, standard but real work);
+(b) a separate erased-term language + a `TypeOfHM`-to-erased coherence lemma (the
+Crary–Weirich–Morrisett architecture); (c) drop/restrict the feature. The
+annotation-free fragment (unannotated `letIn`/`letRec`, which is the go/no-go for
+the metatheory) is unaffected and can be proved first.
 
 This doc remains the plan, living status log, and handover artifact.
 
