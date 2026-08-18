@@ -173,6 +173,7 @@ mutual
         ValTyped ctors (.lam body E) (PolyTy.mkTrivial (.arrow τ₁ τ₂))
     | thunk {ann e E} {M : PolyTy} {L : List Nat} {Γ : Env}
         (hE : EnvOK ctors E Γ)
+        (hpin : ann.Pins M)
         (hgen : GeneralisesTo TypeOfHM ⟨Γ, ctors⟩ ann e M L) :
         ValTyped ctors (.thunk ann e E) M
     | recclo {anns bindings E j} {σ : PolyTy} {specs : List RecSpec} {G L : List Nat} {Γ : Env}
@@ -208,6 +209,14 @@ def Instantiates (σ : PolyTy) (τ : Ty) : Prop :=
 theorem ValTyped_inst {ctors : CtorEnv} {v : Val} {σ : PolyTy} {τ : Ty}
     (hv : ValTyped ctors v σ) (hinst : Instantiates σ τ) :
     ValTyped ctors v (PolyTy.mkTrivial τ) := by
+  sorry
+
+/-- If a term types at every opening of scheme `M`, and `M` instantiates to `τ`,
+    then the term types at `τ` (the `GeneralisesTo`-instantiation lemma, the
+    unannotated case — the annotated case collapses via `ann.Pins M`). -/
+theorem GeneralisesTo_inst {ctx : Ctx} {e : Expr} {M : PolyTy} {L : List Nat} {τ : Ty}
+    (hgen : GeneralisesTo TypeOfHM ctx none e M L) (hinst : Instantiates M τ) :
+    TypeOfHM ctx e τ := by
   sorry
 
 /-- Continuation `k` awaits a value of type `τ` (its "hole") and produces a result
