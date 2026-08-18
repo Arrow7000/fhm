@@ -9,6 +9,7 @@ name = "FHM"
 #   FHM.ConstraintTypeSystem  -- stale vs current Core (pre-fst/snd refactor); kept for reference
 roots = [
   "FHM.Core",
+  "FHM.CekMachine",
   "FHM.Decls",
   "FHM.SurfaceLang",
   "FHM.Surface.Lex",
