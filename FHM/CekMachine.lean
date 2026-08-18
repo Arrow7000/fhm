@@ -218,10 +218,13 @@ end
 def Instantiates (σ : PolyTy) (τ : Ty) : Prop :=
   ∃ instArgs, (∀ a ∈ instArgs, a.IsLC) ∧ σ.InstantiatesTo instArgs τ
 
-/-- A value at scheme `σ` is also at any monotype `τ` that `σ` instantiates to
-    (instantiation closes `ValTyped` downward). -/
-theorem ValTyped_inst {ctors : CtorEnv} {v : Val} {σ : PolyTy} {τ : Ty}
-    (hv : ValTyped ctors v σ) (hinst : Instantiates σ τ) :
+/-- An already-forced value at scheme `σ` is also at any monotype `τ` that `σ`
+    instantiates to. (This closes `ValTyped` downward only for `IsVal` values —
+    the ones consumed at a monotype without being forced first; thunks and
+    rec-closures are instead consumed via the `Instantiates` premise in
+    `StateOK`/`KontTyped`, never through this lemma.) -/
+theorem ValTyped_inst_of_isVal {ctors : CtorEnv} {v : Val} {σ : PolyTy} {τ : Ty}
+    (hvIsVal : IsVal v) (hv : ValTyped ctors v σ) (hinst : Instantiates σ τ) :
     ValTyped ctors v (PolyTy.mkTrivial τ) := by
   sorry
 
@@ -244,7 +247,7 @@ inductive KontTyped (ctors : CtorEnv) : Kont → Ty → Ty → Prop
       (hk : KontTyped ctors k B ρ) :
       KontTyped ctors (.appArg E arg k) (.arrow A B) ρ
   | appFun {fv k} {A B ρ : Ty}
-      (hv : ValTyped ctors fv (PolyTy.mkTrivial (.arrow A B)))
+      (hv : ∃ σ, ValTyped ctors fv σ ∧ Instantiates σ (.arrow A B))
       (hk : KontTyped ctors k B ρ) :
       KontTyped ctors (.appFun fv k) A ρ
   | matchSel {E branches k} {τ ρ : Ty} {Γ : Env}
@@ -257,7 +260,7 @@ inductive KontTyped (ctors : CtorEnv) : Kont → Ty → Ty → Prop
 def StateOK (ctors : CtorEnv) (s : State) (ρ : Ty) : Prop :=
   match s with
   | .eval E e k => ∃ Γ τ, EnvOK ctors E Γ ∧ TypeOfHM ⟨Γ, ctors⟩ e τ ∧ KontTyped ctors k τ ρ
-  | .ret v k => ∃ τ, ValTyped ctors v (PolyTy.mkTrivial τ) ∧ KontTyped ctors k τ ρ
+  | .ret v k => ∃ σ τ, ValTyped ctors v σ ∧ Instantiates σ τ ∧ KontTyped ctors k τ ρ
 
 /-! ## Exhaustiveness of a machine state
 
@@ -486,9 +489,105 @@ theorem type_safety_closed {ctors : CtorEnv} {e : Expr} {τ : Ty}
       (∃ v, s' = .ret v .nil) ∨ ∃ s'', StepM s' s'' := by
   sorry
 
+/-- The first branch of `brs` matching `(name, arity)` is unique. -/
+private theorem FirstMatchingBranch_unique {name : CtorName} {arity : Nat}
+    {brs : List (MatchPattern × Expr)} {p₁ p₂ : MatchPattern} {b₁ b₂ : Expr}
+    (h₁ : FirstMatchingBranch name arity brs p₁ b₁)
+    (h₂ : FirstMatchingBranch name arity brs p₂ b₂) : p₁ = p₂ ∧ b₁ = b₂ := by
+  induction h₁ generalizing p₂ b₂ with
+  | here hmatch =>
+      cases h₂ with
+      | here _ => simp
+      | there hnmatch _ => simp [hmatch] at hnmatch
+  | there hnmatch htail ih =>
+      cases h₂ with
+      | here hmatch₂ => simp [hnmatch] at hmatch₂
+      | there hnmatch₂ htail₂ => exact ih htail₂
+
 /-- The machine is deterministic. -/
 theorem stepM_deterministic {s s₁ s₂ : State}
     (h₁ : StepM s s₁) (h₂ : StepM s s₂) : s₁ = s₂ := by
-  sorry
+  induction h₁ generalizing s₂ with
+  | primLit =>
+      cases h₂
+      rfl
+  | primBinOp =>
+      cases h₂
+      rfl
+  | ctor =>
+      cases h₂
+      rfl
+  | lambda =>
+      cases h₂
+      rfl
+  | var h =>
+      cases h₂
+      simp
+  | app =>
+      cases h₂
+      rfl
+  | appArgStep h =>
+      cases h₂ with
+      | appArgStep => rfl
+      | force => simp [IsVal] at h
+      | forceRecclo => simp [IsVal] at h
+  | beta h =>
+      cases h₂ with
+      | beta => rfl
+      | force => simp [IsVal] at h
+      | forceRecclo => simp [IsVal] at h
+  | primOpPart h =>
+      cases h₂ with
+      | primOpPart => rfl
+      | force => simp [IsVal] at h
+      | forceRecclo => simp [IsVal] at h
+  | primOpDelta h =>
+      cases h₂ with
+      | primOpDelta hδ =>
+          rw [h] at hδ
+          cases hδ
+          rfl
+  | ctorApp h =>
+      cases h₂ with
+      | ctorApp => rfl
+      | force => simp [IsVal] at h
+      | forceRecclo => simp [IsVal] at h
+  | letIn =>
+      cases h₂
+      rfl
+  | letRec =>
+      cases h₂
+      rfl
+  | matchScrut =>
+      cases h₂
+      rfl
+  | matchCtor h =>
+      cases h₂ with
+      | matchCtor h₂first =>
+          simp [FirstMatchingBranch_unique h h₂first]
+      | matchWild h₂non =>
+          simp [IsNonCtorVal] at h₂non
+  | matchWild h =>
+      cases h₂ with
+      | matchWild => rfl
+      | matchCtor => simp [IsNonCtorVal] at h
+      | force => simp [IsNonCtorVal] at h
+      | forceRecclo => simp [IsNonCtorVal] at h
+  | force =>
+      cases h₂ with
+      | force => rfl
+      | appArgStep h₂v => simp [IsVal] at h₂v
+      | beta h₂v => simp [IsVal] at h₂v
+      | primOpPart h₂v => simp [IsVal] at h₂v
+      | ctorApp h₂v => simp [IsVal] at h₂v
+      | matchWild h₂v => simp [IsNonCtorVal] at h₂v
+  | forceRecclo h =>
+      cases h₂ with
+      | forceRecclo => rfl
+      | appArgStep h₂v => simp [IsVal] at h₂v
+      | beta h₂v => simp [IsVal] at h₂v
+      | primOpPart h₂v => simp [IsVal] at h₂v
+      | ctorApp h₂v => simp [IsVal] at h₂v
+      | matchWild h₂v => simp [IsNonCtorVal] at h₂v
 
 end CekMachine
