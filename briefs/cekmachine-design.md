@@ -1,41 +1,38 @@
 # CEK machine migration — design + living status
 
-**Status (2026-08-18): Stage 1 IN PROGRESS.** The machine is defined and building
-(`FHM/CekMachine.lean`, commit `9fdc746`): `Val`/`VEnv`/`Kont`/`State`/`StepM` + the
-typing invariant (`ValTyped`/`EnvOK`/`KontTyped`/`StateOK`) + the exhaustiveness
-lifting (`ExhaustiveVal/Env/Kont/State`), with `progress`/`preservation`/
-`preservation_star`/`preservation_exhaustive`/`type_safety`/`type_safety_closed`/
-`stepM_deterministic`/`ValTyped_inst` stated as `sorry`s ready for farming.
-Additive only — `TypeOfElabHM`, the old `SmallStep.Step`, and elaboration are all
-still intact, and `lake build` is green.
+**Status (2026-08-19): Stage 1 COMPLETE.** The CEK machine (`FHM/CekMachine.lean`,
+commit `0c0aa32`) is fully proved: `progress`, `preservation`,
+`preservation_erased`, `preservation_exhaustive`, `preservation_star`,
+`type_safety`, `type_safety_closed`, `stepM_deterministic`, and all the helper
+lemmas (`GeneralisesTo_inst`, `GeneralisesTo_inst_ann`, `EnvOK_bindGroup`,
+`recclo_body_typed` mono+poly, `ValTyped_inst_of_isVal`,
+`Expr.openTyVars_eq_self_of_erased`, …) are sorry-free. `#print axioms` is clean
+(`propext`/`Classical.choice`/`Quot.sound` only). Additive only — `TypeOfElabHM`,
+the old `SmallStep.Step`, and elaboration are all still intact; `lake build` green.
+**The go/no-go that motivated the migration is answered: the CEK invariant is
+tractable AND sound.**
 
-Two design points settled *while* writing the definitions (they refine §3, not
-contradict it):
+The farming loop caught and fixed **six** definition-level soundness bugs along the
+way (each would have been a false theorem):
 
-1. **CBN thunks and rec-closures carry their annotations** (`thunk ann e E`,
-   `recclo anns bindings E j`) — inert at reduction time, but needed so `ValTyped`
-   can type a CBN binding at its *generalised* scheme (`GeneralisesTo` / the
-   `letRec` group premises). A value at a generalised scheme is *used* at a monotype
-   via the `ValTyped_inst` instantiation lemma; `StateOK (.ret v k)` types `v` at a
-   monotype, which is exactly how a polymorphic value is consumed by a continuation.
-2. **Evaluation order is unchanged from the old `Step`** — CBV `app`/`match_`,
-   CBN `letIn`/`letRec` (thunks forced on use). This is faithful to the current
-   observable behaviour *and* it is what makes non-value recursive RHSs (e.g.
-   `letRec [var 0] (var 0)`) diverge correctly via thunk-forcing loops, so no
-   separate "recursive values" restriction is needed.
-3. **Value consumption is gated on `IsVal`** (found by the first proof farm, not by
-   design). `appArgStep`/`beta`/`ctorApp`/`primOpPart` must require the consumed
-   value to be *already forced* (`IsVal`, i.e. not a thunk/rec-closure); otherwise a
-   thunk leaks into a function/argument/ctor position unforced and `(let f = λx.x in
-   f) 3` can get **stuck** (the `appArgStep` path puts the thunk in `appFun`, where
-   no rule fires). This was caught as a *failed* `stepM_deterministic` proof, and is
-   a genuine soundness bug, not just non-determinism.
+1. `StepM` let a thunk leak unforced into a function position — gated value
+   consumption on `IsVal` (`appArgStep`/`beta`/`ctorApp`/`primOpPart`).
+2. `ValTyped.lam`/`ctorV`/`thunk` missing local-closedness/WF premises.
+3. `Expr.IsErased` kept non-self-contained scheme annotations (opening wasn't a no-op).
+4. `ValTyped.ctorV` couldn't type *partial* ctor chains (`wrapArrows … remContents`);
+   `KontTyped.matchSel` conflated the match's result type with the outer result.
+5. `KontTyped.appFun`/`ValTyped.primOpApp` accepted unforced values (a thunk typable
+   at any arrow scheme could sit in the function slot — `progress` was false).
+6. Match *coverage* was dropped at the `matchSel` frame (only branch-body
+   exhaustiveness survived) — fixed by `MatchCovered` (existential `tyName` + the
+   "named branch pins `tyName`" fact + per-ctor coverage) on `ExhaustiveKont.matchSel`
+   + `branches ≠ []` on `KontTyped.matchSel`, mirroring `AllMatchesExhaustive.match_`.
 
-**Proof status (farmed):** `preservation_exhaustive` ✅ (structural, over all 18
-`StepM` cases, + 3 private helpers `exhaustiveEnv_get/_append/_bindGroup`).
-`stepM_deterministic` ✅ (after the `IsVal` fix; + `FirstMatchingBranch_unique`).
-Remaining sorrys: `ValTyped_inst_of_isVal`, `GeneralisesTo_inst`, `progress`,
-`preservation`, `preservation_star`, `type_safety`, `type_safety_closed`.
+Design points settled while writing the definitions:
+- CBN thunks/rec-closures carry their annotations (inert at reduction, needed for typing).
+- Evaluation order unchanged from the old `Step` (CBV `app`/`match_`, CBN `letIn`/`letRec`).
+- The machine types via the declarative `TypeOfHM`; polymorphic values are consumed
+  at a monotype via the `Instantiates` existential (no parametric continuation needed).
 
 ## ⚠️ One real "hidden complexity monster": scoped type variables vs erasure
 
@@ -74,18 +71,23 @@ existential at each use. *Scoped type variables* (`λ(x : a). x`) put a dangling
 `bvar` in an **inner** annotation (`lambda paramAnn`, `var tyArgs`) — that is the
 only thing the erasing machine cannot type.
 
-**The resolution — erase inner annotations, keep binding annotations.** Erase
-`var tyArgs → []` and `lambda paramAnn → none`; KEEP `letIn ann`/`letRec anns` (they
-carry polymorphic recursion). Then the machine runs on erased terms: every rhs is
-closed, `openTyVars` is a no-op, so the `recclo_body_typed` poly half is provable
-(the type-substitution instantiation touches only the type, never the closed term)
-— **no opening at force, no fresh-floor invariant; the already-proven mono machine
-IS the machine.** A coherence theorem `TypeOfHM e τ → TypeOfHM (erase e) τ` connects
-the source typing (with scoped vars) to the erased typing the machine uses — the
-README's original "erase before running", now sound because the CEK environment
-captures closures (so the orphaned-skolem problem no longer arises). Both features
-are preserved: the source typechecker honors scoped vars; the runtime erases them
-(Haskell `ScopedTypeVariables` style).
+**The resolution — erase lambda parameter annotations, keep binding annotations.**
+The *only* erasure needed is `lambda paramAnn → none` (drop the param ascription).
+This is what removes the dangling `bvar`; it is a purely structural, ~20-line
+function, **not elaboration** (no second term language, no type-passing). The
+`var tyArgs → []` clause is trivially the identity once elaboration is gone (the
+source term's `var` nodes are always `[]`), and it disappears entirely when Stage 4
+deletes the field. `letIn ann`/`letRec anns` are KEPT (they carry polymorphic
+recursion). Then the machine runs on erased terms: every rhs is closed, `openTyVars`
+is a no-op, so the `recclo_body_typed` poly half is provable — **no opening at
+force, no fresh-floor invariant; the already-proven machine IS the machine.** A
+coherence theorem `TypeOfHM e τ → TypeOfHM (erase e) τ` connects the source typing
+(with scoped vars) to the erased typing the machine uses. Both features are
+preserved: the source typechecker honors scoped vars; the runtime erases them
+(Haskell `ScopedTypeVariables` style). **Programs with no scoped type variables need
+no erasure step at all** — the machine runs directly on the source term (`e.IsErased`
+holds trivially). The erase + coherence is a *separate follow-up slice*, not a core
+part of the migration.
 
 This doc remains the plan, living status log, and handover artifact.
 
@@ -264,20 +266,20 @@ untouched.
 The migration is **big**, so it is staged so the risky novel part (machine
 metatheory) lands first and additively, and the rest is deletion + rewiring.
 
-### Stage 1 — the machine, additively (THE risky stage)
+### Stage 1 — the machine, additively (THE risky stage) — ✅ DONE
 
-New file `FHM/CekMachine.lean` (imports `FHM.Core`, in lakefile roots): define
-`Val`/`Env`/`Kont`/`State`/`StepM`, the computable `stepM` + fuelled `evalM`, and
-prove against the **existing** `TypeOfHM` (with `var.tyArgs` still present, ignored):
-
-- `WellTypedEnv`, `ValTyped`, `KontTyped`, `StateOK`;
-- `progress`, `preservation`, `preservation_star`, `type_safety`, `type_safety_star`;
-- `stepM_sound`/`stepM_complete`, `StepM.preserves_exhaustive`;
-- the erase-commutation lemmas (D6).
+Landed and proved (commit `0c0aa32`): `Val`/`VEnv`/`Kont`/`State`/`StepM`, the typing
+invariant (`ValTyped`/`EnvOK`/`KontTyped`/`StateOK`), the exhaustiveness + erased-ness
+liftings, and the full headline set (`progress`/`preservation`/`preservation_*`/
+`type_safety`/`type_safety_closed`/`stepM_deterministic`) — sorry-free, axiom-clean.
+**Deferred within Stage 1** (not needed for the metatheory, picked up with the
+surface rewire): the *computable* evaluator (`stepM`/`evalM` + fuel bridges), the
+erase-commutation lemmas (D6), and the `erase` + coherence lemma for scoped type
+variables (a separate small slice, §"scoped type variables" above).
 
 Nothing is deleted. `lake build` stays green; the old `Step`/`TypeOfElabHM` coexist
-with the new machine. **This stage de-risks the whole migration**: if the machine
-metatheory is tractable, Stages 2–4 are mostly mechanical deletion.
+with the new machine. **The stage's purpose — de-risking the migration — is achieved:
+the machine metatheory is tractable AND sound.**
 
 ### Stage 2 — rewire `Infer` (drop `eOut`)
 
