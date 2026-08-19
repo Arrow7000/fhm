@@ -61,6 +61,20 @@ Crary–Weirich–Morrisett architecture); (c) drop/restrict the feature. The
 annotation-free fragment (unannotated `letIn`/`letRec`, which is the go/no-go for
 the metatheory) is unaffected and can be proved first.
 
+**Decision: (a), now concretely located.** The wall is exactly two `preservation`
+cases — `force` with `ann = some σ`, and `forceRecclo` with `anns[j] = some σ`
+(i.e. `recclo_body_typed`'s POLY half; its mono half is proved). Both need the same
+fix: the reduction must *open* the forced term's scoped vars, because `TypeOfHM`
+only types such a rhs opened (`GeneralisesTo`/`PolyTyped`), and the machine
+otherwise evaluates a closed term with dangling `Ty.bvar`s that no typing judgment
+accepts. Two implementations: **(a-canonical, recommended)** open at `freshFloor + i`
+(canonical names above the term's fresh floor) and thread a small fresh-floor
+invariant into `StateOK` (`all fvars in the state < B`) — keeps `stepM_deterministic`
+literal, and FHM's InferW already threads exactly this (`belowFvars`/`eOut_avoid`);
+or **(a-cofinite)** `force`/`forceRecclo` carry a `FreshNames` premise, weakening
+determinism to "up to α-renaming". Self-contained slice: 2 reduction rules + the
+poly half + one `StateOK` component. Does not touch the proved mono core.
+
 This doc remains the plan, living status log, and handover artifact.
 
 **Git state at migration start:**
