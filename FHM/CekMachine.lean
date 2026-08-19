@@ -222,11 +222,140 @@ end
 def Instantiates (σ : PolyTy) (τ : Ty) : Prop :=
   ∃ instArgs, (∀ a ∈ instArgs, a.IsLC) ∧ σ.InstantiatesTo instArgs τ
 
+/-- Instantiation is the identity on locally-closed types: if `ty` has no
+    bvars, `InstantiatesBy tyArgs ty τ` forces `τ = ty` (reverse of
+    `InstantiatesBy.refl_of_closed`). -/
+private theorem InstantiatesBy.eq_of_closed {tyArgs : List Ty} {ty τ : Ty}
+    (h : ContainsBvarsUpTo 0 ty) (hinst : InstantiatesBy tyArgs ty τ) : τ = ty := by
+  induction ty using Ty.rec_strong generalizing τ with
+  | prim p =>
+      cases hinst
+      rfl
+  | arrow a b iha ihb =>
+      cases h with
+      | arrow ha hb =>
+          cases hinst with
+          | arrow hinstA hinstB =>
+              rw [iha ha hinstA, ihb hb hinstB]
+  | bvar i =>
+      cases h with
+      | bvar hlt => exact absurd hlt (by omega)
+  | fvar n =>
+      cases hinst
+      rfl
+  | customTy nm tys ih =>
+      cases h with
+      | customTy hall =>
+          cases hinst with
+          | customTy hforall =>
+              refine congrArg (Ty.customTy nm) ?_
+              revert hall
+              induction hforall with
+              | nil => intro hall; rfl
+              | cons hhd htl ihtl =>
+                  rename_i a b l₁ l₂
+                  intro hall
+                  rw [List.cons.injEq]
+                  constructor
+                  · exact ih a List.mem_cons_self (hall a List.mem_cons_self) hhd
+                  · exact ihtl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
+                      (fun ty hty => hall ty (List.mem_cons_of_mem _ hty))
+  | bl lo hi e ih =>
+      cases h with
+      | bl he =>
+          cases hinst with
+          | bl hinstElem =>
+              exact congrArg (Ty.bl lo hi) (ih he hinstElem)
+
+/-- Appending a list of typed values (pointwise) to a typed environment keeps
+    `EnvOK`. -/
+private theorem EnvOK_append {ctors : CtorEnv} {E : VEnv} {Γ : Env}
+    (hE : EnvOK ctors E Γ) :
+    ∀ (xs : VEnv) (schemes : List PolyTy),
+      List.Forall₂ (fun v σ => ValTyped ctors v σ) xs schemes →
+      EnvOK ctors (xs ++ E) (schemes ++ Γ) := by
+  intro xs
+  induction xs with
+  | nil =>
+      intro schemes h
+      cases schemes with
+      | nil => simpa using hE
+      | cons σ schemes_tl => cases h
+  | cons v xs ih =>
+      intro schemes h
+      cases schemes with
+      | nil => cases h
+      | cons σ schemes_tl =>
+          cases h with
+          | cons hv htl => exact EnvOK.cons hv (ih schemes_tl htl)
+
+/-- The prefix-general form of `EnvOK_bindGroup`: `(preA, preB, preS)` is the
+    already-consumed prefix of the group (each step adds one binding and one
+    spec), and position `j` of the value list stores a `recclo` of the WHOLE
+    group at index `preS.length + j`, typed at `bodyScheme G (specs[j])` via
+    the full group's cofinite premises. -/
+private theorem EnvOK_bindGroup_pre {ctors : CtorEnv} {Γ : Env}
+    {preA : List (Option PolyTy)} {preB : List Expr} {preS : List RecSpec}
+    {anns : List (Option PolyTy)} {bindings : List Expr} {specs : List RecSpec}
+    {G L : List Nat} {E : VEnv}
+    (hE : EnvOK ctors E Γ)
+    (hpre : preB.length = preS.length)
+    (hwf : RecSpecs.WF (preA ++ anns) (preB ++ bindings) (preS ++ specs) G)
+    (hmono : RecSpecs.MonoTyped TypeOfHM ⟨Γ, ctors⟩ (preB ++ bindings) (preS ++ specs) G L)
+    (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨Γ, ctors⟩ (preB ++ bindings) (preS ++ specs) G L) :
+    EnvOK ctors ((List.range bindings.length).map
+        (fun j => .recclo (preA ++ anns) (preB ++ bindings) E (preS.length + j)) ++ E)
+      (specs.map (RecSpec.bodyScheme G) ++ Γ) := by
+  induction specs generalizing anns bindings preA preB preS with
+  | nil =>
+      have hb : bindings = [] := by
+        apply List.eq_nil_of_length_eq_zero
+        have h : preB.length + bindings.length = preS.length := by
+          simpa [List.length_append] using hwf.length
+        omega
+      subst bindings
+      simpa using hE
+  | cons spec specs_tl ih =>
+      cases bindings with
+      | nil =>
+          have hcontra : preS.length = preS.length + (specs_tl.length + 1) := by
+            simpa [List.length_append, hpre] using hwf.length
+          omega
+      | cons b bindings_tl =>
+          rw [List.length_cons, List.range_succ_eq_map, List.map_cons, List.map_map]
+          refine EnvOK.cons ?_ ?_
+          · refine ValTyped.recclo (specs := preS ++ spec :: specs_tl) (j := preS.length) ?_ hE hwf hmono hpoly ?_
+            · rw [List.length_append, List.length_cons]
+              omega
+            · apply congrArg (RecSpec.bodyScheme G)
+              simp
+          · have hpre' : (preB ++ [b]).length = (preS ++ [spec]).length := by simp [hpre]
+            have hwf' : RecSpecs.WF (preA ++ anns) ((preB ++ [b]) ++ bindings_tl)
+                ((preS ++ [spec]) ++ specs_tl) G := by
+              simpa [List.append_assoc] using hwf
+            have hmono' : RecSpecs.MonoTyped TypeOfHM ⟨Γ, ctors⟩ ((preB ++ [b]) ++ bindings_tl)
+                ((preS ++ [spec]) ++ specs_tl) G L := by
+              simpa [List.append_assoc] using hmono
+            have hpoly' : RecSpecs.PolyTyped TypeOfHM ⟨Γ, ctors⟩ ((preB ++ [b]) ++ bindings_tl)
+                ((preS ++ [spec]) ++ specs_tl) G L := by
+              simpa [List.append_assoc] using hpoly
+            simpa [List.append_assoc, Function.comp_def, Nat.succ_eq_add_one,
+              Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+              ih (anns := anns) (bindings := bindings_tl) (preA := preA)
+                (preB := preB ++ [b]) (preS := preS ++ [spec]) hpre' hwf' hmono' hpoly'
+
 /-- An already-forced value at scheme `σ` is also at any monotype `τ` that `σ`
     instantiates to. (This closes `ValTyped` downward only for `IsVal` values —
     the ones consumed at a monotype without being forced first; thunks and
     rec-closures are instead consumed via the `Instantiates` premise in
     `StateOK`/`KontTyped`, never through this lemma.) -/
+-- NOTE: UNPROVABLE AS STATED. The `mutual`-compiled `ValTyped` drops the
+-- `.IsLC` premises of the `lam`/`ctorV` constructors (Lean 4's mutual-Prop
+-- recursor prunes them), so `ValTyped ctors (.lam body E) σ` can hold for a
+-- non-locally-closed parameter type; then `hinst` may instantiate its bvars to
+-- a type `τ` whose `ValTyped`-at-`mkTrivial τ` conclusion is not derivable.
+-- Concrete witness: `v = .lam (.var 0 []) []`, `σ = mkTrivial (.arrow (.bvar 0)
+-- (.fvar 5))`, `τ = .arrow (.prim .unit) (.fvar 5)`.
 theorem ValTyped_inst_of_isVal {ctors : CtorEnv} {v : Val} {σ : PolyTy} {τ : Ty}
     (hvIsVal : IsVal v) (hv : ValTyped ctors v σ) (hinst : Instantiates σ τ) :
     ValTyped ctors v (PolyTy.mkTrivial τ) := by
@@ -242,21 +371,8 @@ theorem EnvOK_bindGroup {ctors : CtorEnv} {Γ : Env} {anns : List (Option PolyTy
     (hmono : RecSpecs.MonoTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L)
     (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L) :
     EnvOK ctors (bindGroup anns bindings E) (specs.map (RecSpec.bodyScheme G) ++ Γ) := by
-  sorry
-
-/-- Each recursive-group member's RHS types, in the BODY context, at any instance
-    of its body scheme. The machine analogue of `TypeOfElabHM.rewrap_hasScheme_*`;
-    needed by `preservation`'s `forceRecclo` case. -/
-theorem recclo_body_typed {ctors : CtorEnv} {Γ : Env} {anns : List (Option PolyTy)}
-    {bindings : List Expr} {specs : List RecSpec} {G L : List Nat}
-    {e : Expr} {spec : RecSpec} {τ : Ty}
-    (hwf : RecSpecs.WF anns bindings specs G)
-    (hmono : RecSpecs.MonoTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L)
-    (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L)
-    (hmem : (e, spec) ∈ bindings.zip specs)
-    (hinst : Instantiates (RecSpec.bodyScheme G spec) τ) :
-    TypeOfHM (RecSpecs.bodyCtx ⟨Γ, ctors⟩ specs G) e τ := by
-  sorry
+  unfold bindGroup
+  simpa using (EnvOK_bindGroup_pre (preA := []) (preB := []) (preS := []) hE rfl hwf hmono hpoly)
 
 /-- A length-free variant of `Ty.substFvars_zip_fvar_eq`: the `i`-th pair
     `(Xs[i], Vs[i])` is present in `Xs.zip Vs` and fires on `.fvar (Xs[i])`,
@@ -445,6 +561,195 @@ theorem GeneralisesTo_inst {ctx : Ctx} {e : Expr} {M : PolyTy} {L : List Nat} {�
       hXnodup hXVs M.body τ hinstTo hXM hreg
   rw [hfix, hty] at hsub
   exact hsub
+
+/-- The BODY scheme of a mono member (`genGroup G τ`) is at least as general as
+    its RHS entry (`mkTrivial (renameG G Xs τ)`): every instance of the opened
+    shared monotype is an instance of the generalised scheme. -/
+private theorem genGroup_generalizes_mkTrivial {G Xs : List Nat} {τ : Ty}
+    (hτ : τ.IsLC) (hG : G.Nodup) (hX : Xs.Nodup) (hlen : Xs.length = G.length)
+    (hdisj : ∀ g ∈ G, g ∉ Xs) (hXsτ : ∀ x ∈ Xs, x ∉ τ.freeVars) :
+    PolyTy.Generalizes (PolyTy.genGroup G τ) (PolyTy.mkTrivial (Ty.renameG G Xs τ)) := by
+  intro tyArgs ty hlc hinstTo
+  have hLC : (Ty.renameG G Xs τ).IsLC := by
+    unfold Ty.renameG
+    refine ContainsBvarsUpTo.substFvars (fun p hp => ?_) hτ
+    obtain ⟨x, _, heq⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+    rw [← heq]
+    exact .fvar
+  have hty : ty = Ty.renameG G Xs τ := InstantiatesBy.eq_of_closed hLC hinstTo
+  subst ty
+  set Xs' := Ty.genFilter Xs (Ty.renameG G Xs τ) with hXsdef
+  refine ⟨Xs'.map (Ty.fvar ·), ?_, ?_⟩
+  · intro t ht
+    rcases List.mem_map.mp ht with ⟨x, _, rfl⟩
+    exact .fvar
+  · show InstantiatesBy (Xs'.map (Ty.fvar ·)) (Ty.closeOver (Ty.genFilter G τ) τ) (Ty.renameG G Xs τ)
+    have hXlen' : Xs'.length = (Ty.genFilter G τ).length := by
+      have h := congrArg PolyTy.paramCount (PolyTy.genGroup_renameG hτ hlen hG hX hdisj hXsτ)
+      simp only [PolyTy.genGroup] at h
+      rw [hXsdef]
+      exact h.symm
+    have hXnodup' : Xs'.Nodup := by rw [hXsdef]; unfold Ty.genFilter; exact hX.filter _
+    have hGFnodup : (Ty.genFilter G τ).Nodup := by unfold Ty.genFilter; exact hG.filter _
+    have hGFdisj : ∀ g ∈ Ty.genFilter G τ, g ∉ Xs' := by
+      intro g hg hc
+      exact hdisj g (Ty.mem_of_mem_genFilter hg) (by rw [hXsdef] at hc; exact Ty.mem_of_mem_genFilter hc)
+    have hiv := InstantiatesBy.openVars (ty := Ty.closeOver (Ty.genFilter G τ) τ) (Xs := Xs')
+      (Ty.closeOver_preserves_bvars hτ) (by rw [hXlen'])
+    rw [Ty.openVars_closeOver_rename hτ hGFnodup hXlen' hGFdisj] at hiv
+    rw [hXsdef] at hiv
+    change InstantiatesBy ((Ty.genFilter Xs (Ty.renameG G Xs τ)).map (Ty.fvar ·))
+      (Ty.closeOver (Ty.genFilter G τ) τ)
+      (Ty.renameG (Ty.genFilter G τ) (Ty.genFilter Xs (Ty.renameG G Xs τ)) τ) at hiv
+    rw [← Ty.renameG_eq_genFilter hlen hG hX hdisj hXsτ] at hiv
+    exact hiv
+
+/-- Pointwise: the BODY env entry of each member is at least as general as its
+    RHS env entry (identical for poly members; `genGroup`-generalised for mono
+    members). -/
+private theorem bodyScheme_generalizes_rhsEntry {anns : List (Option PolyTy)}
+    {bindings : List Expr} {specs : List RecSpec} {G Xs : List Nat}
+    (hwf : RecSpecs.WF anns bindings specs G)
+    (hX : Xs.Nodup) (hlen : Xs.length = G.length)
+    (hdisj : ∀ g ∈ G, g ∉ Xs)
+    (hXs : ∀ s ∈ specs, ∀ x ∈ Xs, x ∉ RecSpec.monoFreeVars s) :
+    List.Forall₂ (PolyTy.Generalizes)
+      (specs.map (RecSpec.bodyScheme G))
+      (specs.map (RecSpec.rhsEntry G Xs)) := by
+  have hone : ∀ s ∈ specs,
+      (RecSpec.bodyScheme G s).Generalizes (RecSpec.rhsEntry G Xs s) := by
+    intro s hs
+    cases s with
+    | mono τ =>
+        simpa [RecSpec.bodyScheme, RecSpec.rhsEntry] using
+          genGroup_generalizes_mkTrivial (hwf.mono_lc τ hs) hwf.nodup hX hlen hdisj
+            (fun x hx => hXs (RecSpec.mono τ) hs x hx)
+    | poly σ =>
+        simpa [RecSpec.bodyScheme, RecSpec.rhsEntry] using
+          (show PolyTy.Generalizes σ σ from fun tyArgs ty hlc hinstTo => ⟨tyArgs, hlc, hinstTo⟩)
+  apply List.forall₂_of_mem_zip
+  · rw [List.length_map, List.length_map]
+  · intro p hp
+    obtain ⟨a, b, ha, hab, hpEq⟩ := List.mem_zip_map_left hp
+    have hself : ∀ {l : List RecSpec} {a : RecSpec} {b : PolyTy},
+        (a, b) ∈ l.zip (l.map (RecSpec.rhsEntry G Xs)) → b = RecSpec.rhsEntry G Xs a := by
+      intro l
+      induction l with
+      | nil => intro a b h; simp at h
+      | cons hd tl ih =>
+          intro a b h
+          simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at h
+          cases h with
+          | inl heq =>
+              injection heq with h1 h2
+              subst a
+              subst b
+              rfl
+          | inr h' => exact ih h'
+    rw [hself hab] at hpEq
+    subst hpEq
+    exact hone a ha
+
+/-- Each recursive-group member's RHS types, in the BODY context, at any instance
+    of its body scheme. The machine analogue of `TypeOfElabHM.rewrap_hasScheme_*`;
+    needed by `preservation`'s `forceRecclo` case. -/
+theorem recclo_body_typed {ctors : CtorEnv} {Γ : Env} {anns : List (Option PolyTy)}
+    {bindings : List Expr} {specs : List RecSpec} {G L : List Nat}
+    {e : Expr} {spec : RecSpec} {τ : Ty}
+    (hwf : RecSpecs.WF anns bindings specs G)
+    (hmono : RecSpecs.MonoTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L)
+    (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L)
+    (hmem : (e, spec) ∈ bindings.zip specs)
+    (hinst : Instantiates (RecSpec.bodyScheme G spec) τ) :
+    TypeOfHM (RecSpecs.bodyCtx ⟨Γ, ctors⟩ specs G) e τ := by
+  cases spec with
+  | mono τ₀ =>
+      have hτlc : τ₀.IsLC := hwf.mono_lc τ₀ (List.of_mem_zip hmem).2
+      rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+      obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
+        exists_fresh_names
+          (L ++ G ++ (specs.map RecSpec.monoFreeVars).flatten
+            ++ Env.freeVars (specs.map (RecSpec.bodyScheme G) ++ Γ)
+            ++ e.tyFreeVars ++ Ty.freeVarsList instArgs ++ ((PolyTy.genGroup G τ₀).body).freeVars)
+          G.length
+      have hXL : ∀ x ∈ Xs, x ∉ L := fun x hx hc =>
+        hXavoid x hx (by
+          simp [List.mem_append]
+          tauto)
+      have hXfresh : FreshNames L G.length Xs := ⟨hXlen, hXnodup, hXL⟩
+      have hdisj : ∀ g ∈ G, g ∉ Xs := fun g hg hc =>
+        hXavoid g hc (by
+          simp [List.mem_append]
+          tauto)
+      have hXs_monos : ∀ s ∈ specs, ∀ x ∈ Xs, x ∉ RecSpec.monoFreeVars s := fun s hs x hx hc =>
+        hXavoid x hx (by
+          have hflat : x ∈ (specs.map RecSpec.monoFreeVars).flatten :=
+            List.mem_flatten.mpr ⟨RecSpec.monoFreeVars s, List.mem_map.mpr ⟨s, hs, rfl⟩, hc⟩
+          simp [List.mem_append, hflat])
+      have hXsτ₀ : ∀ x ∈ Xs, x ∉ τ₀.freeVars := hXs_monos (RecSpec.mono τ₀) (List.of_mem_zip hmem).2
+      have hXs_env : ∀ x ∈ Xs, x ∉ Env.freeVars (specs.map (RecSpec.bodyScheme G) ++ Γ) := fun x hx hc =>
+        hXavoid x hx (by
+          simp [List.mem_append]
+          tauto)
+      have hXs_e : ∀ x ∈ Xs, x ∉ e.tyFreeVars := fun x hx hc =>
+        hXavoid x hx (by
+          simp [List.mem_append]
+          tauto)
+      have hXs_Vs : ∀ x ∈ Xs, x ∉ Ty.freeVarsList instArgs := fun x hx hc =>
+        hXavoid x hx (by
+          simp [List.mem_append]
+          tauto)
+      have hXs_M : ∀ x ∈ Xs, x ∉ ((PolyTy.genGroup G τ₀).body).freeVars := fun x hx hc =>
+        hXavoid x hx (by
+          simp [List.mem_append]
+          tauto)
+      have he : TypeOfHM (RecSpecs.rhsCtx ⟨Γ, ctors⟩ specs G Xs) e (Ty.renameG G Xs τ₀) :=
+        hmono Xs hXfresh (e, .mono τ₀) hmem τ₀ rfl
+      have hb : TypeOfHM ⟨specs.map (RecSpec.bodyScheme G) ++ Γ, ctors⟩ e (Ty.renameG G Xs τ₀) :=
+        TypeOfHM.weaken_schemes
+          (bodyScheme_generalizes_rhsEntry hwf hXnodup hXlen hdisj hXs_monos) he
+      set Xs' := Ty.genFilter Xs (Ty.renameG G Xs τ₀) with hXsdef
+      have hXlen' : Xs'.length = (Ty.genFilter G τ₀).length := by
+        have h := congrArg PolyTy.paramCount (PolyTy.genGroup_renameG hτlc hXlen hwf.nodup hXnodup hdisj hXsτ₀)
+        simp only [PolyTy.genGroup] at h
+        rw [hXsdef]
+        exact h.symm
+      have hXnodup' : Xs'.Nodup := by rw [hXsdef]; unfold Ty.genFilter; exact hXnodup.filter _
+      have hGFnodup : (Ty.genFilter G τ₀).Nodup := by unfold Ty.genFilter; exact hwf.nodup.filter _
+      have hGFdisj : ∀ g ∈ Ty.genFilter G τ₀, g ∉ Xs' := by
+        intro g hg hc
+        exact hdisj g (Ty.mem_of_mem_genFilter hg) (by rw [hXsdef] at hc; exact Ty.mem_of_mem_genFilter hc)
+      have hrewrite : Ty.renameG G Xs τ₀ = Ty.openVars Xs' (Ty.closeOver (Ty.genFilter G τ₀) τ₀) := by
+        rw [Ty.renameG_eq_genFilter hXlen hwf.nodup hXnodup hdisj hXsτ₀]
+        exact (Ty.openVars_closeOver_rename hτlc hGFnodup hXlen' hGFdisj).symm
+      rw [hrewrite] at hb
+      have h_lc : ∀ p ∈ Xs'.zip instArgs, Ty.IsLC p.2 := fun p hp => hinstLC p.2 (List.of_mem_zip hp).2
+      have hsub := TypeOfHM.typ_substs_preservation (Xs'.zip instArgs)
+        (fun p hp => hXs_env p.1 (Ty.mem_of_mem_genFilter (List.of_mem_zip hp).1)) h_lc hb
+      have hfix : e.substTyFvars (Xs'.zip instArgs) = e :=
+        Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by
+          intro p hp
+          exact hXs_e p.1 (Ty.mem_of_mem_genFilter (List.of_mem_zip hp).1))
+      have hreg : (((PolyTy.genGroup G τ₀).body).openVars Xs').IsLC := TypeOfHM.regular hb
+      have hty : Ty.substFvars (Xs'.zip instArgs) (Ty.openVars Xs' (Ty.closeOver (Ty.genFilter G τ₀) τ₀)) = τ := by
+        exact substFvars_zip_openVars_eq (Xs := Xs') (Vs := instArgs) hXnodup'
+          (fun X hX => hXs_Vs X (Ty.mem_of_mem_genFilter hX))
+          (Ty.closeOver (Ty.genFilter G τ₀) τ₀) τ hinstTo
+          (fun X hX => hXs_M X (Ty.mem_of_mem_genFilter hX)) hreg
+      rw [hfix, hty] at hsub
+      exact hsub
+  | poly σ =>
+      -- STUCK: the conclusion needs the UNOPENED member RHS `e`, but the only
+      -- premise about a poly member (`hpoly`) types `e.openTyVars Ys` — the member
+      -- with its scoped type variables opened. Un-opening requires substituting
+      -- the skolems `Ys` back into `e`, which is only possible when `e`'s
+      -- annotations are closed (`e.TyBvarBounded 0`); for a member whose
+      -- annotation carries a `bvar`, e.g. `e = .lambda (some (.bvar 0)) _` with
+      -- `spec = .poly ⟨1, .fvar 0⟩`, the premises are all satisfiable while
+      -- `TypeOfHM bodyCtx e τ` is NOT derivable (the `lambda` rule demands
+      -- `paramTy.IsLC` for `.bvar 0`). So the poly half is unprovable AS STATED;
+      -- the mono half above is proved in full.
+      sorry
 
 /-- Continuation `k` awaits a value of type `τ` (its "hole") and produces a result
     of type `ρ`. -/
