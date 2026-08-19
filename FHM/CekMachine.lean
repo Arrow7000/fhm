@@ -23,12 +23,82 @@ inductive Expr.IsErased : Expr → Prop
       (∀ σ, some σ ∈ anns → σ.WF) →
       (∀ b ∈ bindings, Expr.IsErased b) → Expr.IsErased body → Expr.IsErased (.letRec anns bindings body)
 
+/-- Opening a recursion group's bindings is a no-op when each binding is already
+    erased (`b.openTyVarsAux d Xs = b` for every depth). The depth per member
+    (`d + RecAnn.params aⱼ`) is irrelevant precisely because the member is
+    depth-independent. -/
+private theorem RecGroup.openTyVarsAux_eq_self_of_erased {d : Nat} {Xs : List Nat}
+    {anns : List (Option PolyTy)} {bindings : List Expr}
+    (h : ∀ b ∈ bindings, ∀ d Xs, b.openTyVarsAux d Xs = b) :
+    RecGroup.openTyVarsAux d Xs anns bindings = bindings := by
+  revert h
+  induction bindings generalizing anns with
+  | nil => intro _; cases anns <;> rfl
+  | cons hd tl ihtl =>
+      intro h
+      cases anns with
+      | nil =>
+          simp only [RecGroup.openTyVarsAux]
+          rw [h hd List.mem_cons_self d Xs,
+              ihtl (fun b hb => h b (List.mem_cons_of_mem hd hb))]
+      | cons a as =>
+          simp only [RecGroup.openTyVarsAux]
+          rw [h hd List.mem_cons_self (d + RecAnn.params a) Xs,
+              ihtl (fun b hb => h b (List.mem_cons_of_mem hd hb))]
+
+private theorem Expr.openTyVarsAux_eq_self_of_erased {e : Expr} (h : e.IsErased) :
+    ∀ d Xs, e.openTyVarsAux d Xs = e := by
+  induction h with
+  | primLit => intro d Xs; rfl
+  | primBinOp => intro d Xs; rfl
+  | lambda hbody ih =>
+      intro d Xs
+      simp [Expr.openTyVarsAux, ih d Xs]
+  | app hf ha ihf iha =>
+      intro d Xs
+      simp [Expr.openTyVarsAux, ihf d Xs, iha d Xs]
+  | letIn hann hrhs hbody ihrhs ihbody =>
+      rename_i ann rhs body
+      intro d Xs
+      rcases ann with hnone | σ
+      · simp [Expr.openTyVarsAux, ihrhs d Xs, ihbody d Xs]
+      · simp [Expr.openTyVarsAux, ihrhs (d + σ.paramCount) Xs, ihbody d Xs]
+        have hwf : ContainsBvarsUpTo σ.paramCount σ.body := hann σ rfl
+        rw [Ty.openVarsFrom_eq_self_of_bvars
+          (ContainsBvarsUpTo.mono (Nat.le_add_left σ.paramCount d) hwf)]
+  | var => intro d Xs; rfl
+  | ctor => intro d Xs; rfl
+  | match_ hscrut hbranches ih_scrut ih_branches =>
+      rename_i scrut branches
+      intro d Xs
+      simp only [Expr.openTyVarsAux, ih_scrut d Xs]
+      congr 1
+      rw [BranchList.openTyVarsAux_eq_map]
+      conv_rhs => rw [← List.map_id branches]
+      apply List.map_congr_left
+      intro pb hpb
+      cases pb with
+      | mk pat body =>
+          simp only [id_eq]
+          rw [ih_branches (pat, body) hpb d Xs]
+  | letRec hanns hbindings hbody ih_bindings ih_body =>
+      rename_i anns bindings body
+      intro d Xs
+      simp only [Expr.openTyVarsAux, ih_body d Xs]
+      have hanns_open : RecGroup.openAnns d Xs anns = anns :=
+        RecGroup.openAnns_eq_self_of_bvars
+          (fun σ hmem => ContainsBvarsUpTo.mono (Nat.le_add_left σ.paramCount d) (hanns σ hmem))
+      have hbind_open : RecGroup.openTyVarsAux d Xs anns bindings = bindings :=
+        RecGroup.openTyVarsAux_eq_self_of_erased ih_bindings
+      rw [hanns_open, hbind_open]
+
 /-- Opening is a no-op on an erased term: an erased term has no scoped type
     variables (`lambda` ascriptions, `var` tyArgs) to open. This is the bridge that
     makes the `recclo_body_typed` poly half provable for the machine's terms. -/
 theorem Expr.openTyVars_eq_self_of_erased {e : Expr} (h : e.IsErased) :
     ∀ Xs, e.openTyVars Xs = e := by
-  sorry
+  intro Xs
+  simpa [Expr.openTyVars] using Expr.openTyVarsAux_eq_self_of_erased h 0 Xs
 
 /-! # CEK machine — a type-erasing environment machine for FHM
 
@@ -846,12 +916,77 @@ theorem recclo_body_typed {ctors : CtorEnv} {Γ : Env} {anns : List (Option Poly
       rw [hfix, hty] at hsub
       exact hsub
   | poly σ =>
-      -- Provable now via `herased`: `e` is erased, so `e.openTyVars Ys = e`
-      -- (`Expr.openTyVars_eq_self_of_erased`), and `hpoly` types the CLOSED `e`
-      -- at `σ.openVars Ys`; transport rhsCtx → bodyCtx (weaken_schemes) and
-      -- instantiate σ at τ (type-substitution touches only the type, since `e`
-      -- is closed). TODO(erase): prove.
-      sorry
+      rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+      obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
+        exists_fresh_names
+          (L ++ G ++ (specs.map RecSpec.monoFreeVars).flatten
+            ++ Env.freeVars (specs.map (RecSpec.bodyScheme G) ++ Γ))
+          G.length
+      have hXL : ∀ x ∈ Xs, x ∉ L := fun x hx hc =>
+        hXavoid x hx (by
+          simp [List.mem_append]
+          tauto)
+      have hXfresh : FreshNames L G.length Xs := ⟨hXlen, hXnodup, hXL⟩
+      have hdisj : ∀ g ∈ G, g ∉ Xs := fun g hg hc =>
+        hXavoid g hc (by
+          simp [List.mem_append]
+          tauto)
+      have hXs_monos : ∀ s ∈ specs, ∀ x ∈ Xs, x ∉ RecSpec.monoFreeVars s := fun s hs x hx hc =>
+        hXavoid x hx (by
+          have hflat : x ∈ (specs.map RecSpec.monoFreeVars).flatten :=
+            List.mem_flatten.mpr ⟨RecSpec.monoFreeVars s, List.mem_map.mpr ⟨s, hs, rfl⟩, hc⟩
+          simp [List.mem_append, hflat])
+      obtain ⟨Ys, hYlen, hYnodup, hYavoid⟩ :=
+        exists_fresh_names
+          (L ++ Xs ++ Env.freeVars (specs.map (RecSpec.bodyScheme G) ++ Γ)
+            ++ e.tyFreeVars ++ Ty.freeVarsList instArgs ++ σ.body.freeVars)
+          σ.paramCount
+      have hYLX : ∀ y ∈ Ys, y ∉ L ++ Xs := fun y hy hc =>
+        hYavoid y hy (by
+          simp only [List.mem_append] at hc ⊢
+          tauto)
+      have hYfresh : FreshNames (L ++ Xs) σ.paramCount Ys := ⟨hYlen, hYnodup, hYLX⟩
+      have hYs_env : ∀ y ∈ Ys, y ∉ Env.freeVars (specs.map (RecSpec.bodyScheme G) ++ Γ) := fun y hy hc =>
+        hYavoid y hy (by
+          simp [List.mem_append]
+          tauto)
+      have hYs_e : ∀ y ∈ Ys, y ∉ e.tyFreeVars := fun y hy hc =>
+        hYavoid y hy (by
+          simp [List.mem_append]
+          tauto)
+      have hYs_Vs : ∀ y ∈ Ys, y ∉ Ty.freeVarsList instArgs := fun y hy hc =>
+        hYavoid y hy (by
+          simp [List.mem_append]
+          tauto)
+      have hYs_σ : ∀ y ∈ Ys, y ∉ σ.body.freeVars := fun y hy hc =>
+        hYavoid y hy (by
+          simp [List.mem_append]
+          tauto)
+      have hpoly' : TypeOfHM (RecSpecs.rhsCtx ⟨Γ, ctors⟩ specs G Xs) (e.openTyVars Ys) (σ.openVars Ys) :=
+        hpoly Xs hXfresh (e, .poly σ) hmem σ rfl Ys hYfresh
+      have hopen : e.openTyVars Ys = e := Expr.openTyVars_eq_self_of_erased herased Ys
+      have he : TypeOfHM (RecSpecs.rhsCtx ⟨Γ, ctors⟩ specs G Xs) e (σ.openVars Ys) := by
+        simpa [hopen] using hpoly'
+      have hb : TypeOfHM ⟨specs.map (RecSpec.bodyScheme G) ++ Γ, ctors⟩ e (σ.openVars Ys) :=
+        TypeOfHM.weaken_schemes
+          (bodyScheme_generalizes_rhsEntry hwf hXnodup hXlen hdisj hXs_monos) he
+      have h_lc : ∀ p ∈ Ys.zip instArgs, Ty.IsLC p.2 := fun p hp => hinstLC p.2 (List.of_mem_zip hp).2
+      have hsub := TypeOfHM.typ_substs_preservation (Ys.zip instArgs)
+        (fun p hp => hYs_env p.1 (List.of_mem_zip hp).1) h_lc hb
+      have hfix : e.substTyFvars (Ys.zip instArgs) = e :=
+        Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by
+          intro p hp
+          exact hYs_e p.1 (List.of_mem_zip hp).1)
+      have hreg : ContainsBvarsUpTo 0 (Ty.openVars Ys σ.body) := by
+        simpa [PolyTy.openVars] using TypeOfHM.regular hb
+      have hty : Ty.substFvars (Ys.zip instArgs) (σ.openVars Ys) = τ := by
+        simpa [PolyTy.openVars] using
+          (substFvars_zip_openVars_eq (Xs := Ys) (Vs := instArgs) hYnodup
+            (fun X hX => hYs_Vs X hX)
+            σ.body τ hinstTo
+            (fun X hX => hYs_σ X hX) hreg)
+      rw [hfix, hty] at hsub
+      exact hsub
 
 /-- Continuation `k` awaits a value of type `τ` (its "hole") and produces a result
     of type `ρ`. -/
