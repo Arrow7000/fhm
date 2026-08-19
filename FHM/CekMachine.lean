@@ -278,6 +278,7 @@ mutual
     | primOp {op} {τ : Ty} (h : PrimBinOp.ty ctors op = some τ) :
         ValTyped ctors (.primOp op) (PolyTy.mkTrivial τ)
     | primOpApp {op v} {τ₁ τ₂ : Ty}
+        (hIsVal : IsVal v)
         (hv : ValTyped ctors v (PolyTy.mkTrivial τ₁))
         (h : PrimBinOp.ty ctors op = some (.arrow τ₁ τ₂)) :
         ValTyped ctors (.primOpApp op v) (PolyTy.mkTrivial τ₂)
@@ -590,12 +591,12 @@ theorem ValTyped_inst_of_isVal {ctors : CtorEnv} {v : Val} {σ : PolyTy} {τ : T
       have hEq := InstantiatesBy.eq_of_closed (PrimBinOp.ty_lc hty) hinstTo
       subst hEq
       exact ValTyped.primOp hty
-  | primOpApp hv' hty =>
+  | primOpApp hIsVal hv' hty =>
       rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
       have hτ₂lc := arrow_lc_r (PrimBinOp.ty_lc hty)
       have hEq := InstantiatesBy.eq_of_closed hτ₂lc hinstTo
       subst hEq
-      exact ValTyped.primOpApp hv' hty
+      exact ValTyped.primOpApp hIsVal hv' hty
   | lam hτ₁ hτ₂ hE hbody =>
       rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
       have hEq := InstantiatesBy.eq_of_closed (ContainsBvarsUpTo.arrow hτ₁ hτ₂) hinstTo
@@ -1138,6 +1139,7 @@ inductive KontTyped (ctors : CtorEnv) : Kont → Ty → Ty → Prop
       (hk : KontTyped ctors k B ρ) :
       KontTyped ctors (.appArg E arg k) (.arrow A B) ρ
   | appFun {fv k} {A B ρ : Ty}
+      (hfv : IsVal fv)
       (hv : ∃ σ, ValTyped ctors fv σ ∧ Instantiates σ (.arrow A B))
       (hk : KontTyped ctors k B ρ) :
       KontTyped ctors (.appFun fv k) A ρ
@@ -1816,13 +1818,13 @@ theorem preservation {ctors : CtorEnv} {s s' : State} {ρ : Ty}
           rename_i A B Γ
           unfold StateOK
           refine ⟨Γ, A, hE, harg, ?_⟩
-          exact KontTyped.appFun ⟨σ, hv, hinst⟩ hk'
+          exact KontTyped.appFun hIsVal ⟨σ, hv, hinst⟩ hk'
   case beta =>
       rename_i body E av k hIsVal
       unfold StateOK at h
       rcases h with ⟨σ, τ, hv, hinst, hk⟩
       cases hk with
-      | appFun hvlam hk' =>
+      | appFun _hfvlam hvlam hk' =>
           rename_i B
           rcases hvlam with ⟨σl, hvlam', hinstl⟩
           cases hvlam' with
@@ -1843,7 +1845,7 @@ theorem preservation {ctors : CtorEnv} {s s' : State} {ρ : Ty}
       unfold StateOK at h
       rcases h with ⟨σ, τ, hv, hinst, hk⟩
       cases hk with
-      | appFun hvfun hk' =>
+      | appFun _hfvfun hvfun hk' =>
           rename_i B
           rcases hvfun with ⟨σf, hvprim, hinstf⟩
           cases hvprim with
@@ -1858,18 +1860,18 @@ theorem preservation {ctors : CtorEnv} {s s' : State} {ρ : Ty}
                 ValTyped_inst_of_isVal hIsVal hv hinst
               have hBLC : B.IsLC := arrow_lc_r (by simpa [← hEq] using hτopLC)
               unfold StateOK
-              exact ⟨PolyTy.mkTrivial B, B, ValTyped.primOpApp hvA hprim',
+              exact ⟨PolyTy.mkTrivial B, B, ValTyped.primOpApp hIsVal hvA hprim',
                 instantiates_trivial hBLC, hk'⟩
   case primOpDelta =>
       rename_i op a b r k hd
       unfold StateOK at h
       rcases h with ⟨σ, τ, hv, hinst, hk⟩
       cases hk with
-      | appFun hvfun hk' =>
+      | appFun _hfvfun hvfun hk' =>
           rename_i B
           rcases hvfun with ⟨σf, hvpa, hinstf⟩
           cases hvpa with
-          | primOpApp hvA hprim =>
+          | primOpApp _hIsValA hvA hprim =>
               rename_i τ₁ τ₂
               rcases hinstf with ⟨instArgs, hinstLC, hinstTo⟩
               have hτ₂lc : τ₂.IsLC := arrow_lc_r (PrimBinOp.ty_lc hprim)
@@ -1959,7 +1961,7 @@ theorem preservation {ctors : CtorEnv} {s s' : State} {ρ : Ty}
       unfold StateOK at h
       rcases h with ⟨σ, τ, hv, hinst, hk⟩
       cases hk with
-      | appFun hvfun hk' =>
+      | appFun _hfvfun hvfun hk' =>
           rename_i B
           have hvA : ValTyped ctors av (PolyTy.mkTrivial τ) := ValTyped_inst_of_isVal hIsVal hv hinst
           rcases hvfun with ⟨σf, hvctorV, hinstf⟩
@@ -2498,7 +2500,13 @@ theorem preservation_exhaustive {ctors : CtorEnv} {s s' : State}
 theorem preservation_star {ctors : CtorEnv} {s s' : State} {ρ : Ty}
     (h : StateOK ctors s ρ) (herased : ErasedState s) (hstep : Relation.ReflTransGen StepM s s') :
     StateOK ctors s' ρ := by
-  sorry
+  suffices hstrong : ErasedState s' ∧ StateOK ctors s' ρ from hstrong.2
+  induction hstep with
+  | refl =>
+      exact ⟨herased, h⟩
+  | tail hprev hstep' ih =>
+      rcases ih with ⟨hEb, hOKb⟩
+      exact ⟨preservation_erased hEb hstep', preservation hOKb hEb hstep'⟩
 
 /-- Type safety: from a well-typed, exhaustive state, every reachable state is
     final or can step (the machine never gets stuck). -/
