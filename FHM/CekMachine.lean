@@ -13,12 +13,14 @@ inductive Expr.IsErased : Expr → Prop
   | lambda {body : Expr} : Expr.IsErased body → Expr.IsErased (.lambda none body)
   | app {f a : Expr} : Expr.IsErased f → Expr.IsErased a → Expr.IsErased (.app f a)
   | letIn {ann : Option PolyTy} {rhs body : Expr} :
+      (∀ σ, ann = some σ → σ.WF) →
       Expr.IsErased rhs → Expr.IsErased body → Expr.IsErased (.letIn ann rhs body)
   | var {i : Nat} : Expr.IsErased (.var i [])
   | ctor {name : CtorName} : Expr.IsErased (.ctor name)
   | match_ {scrut : Expr} {branches : List (MatchPattern × Expr)} :
       Expr.IsErased scrut → (∀ pb ∈ branches, Expr.IsErased pb.2) → Expr.IsErased (.match_ scrut branches)
   | letRec {anns : List (Option PolyTy)} {bindings : List Expr} {body : Expr} :
+      (∀ σ, some σ ∈ anns → σ.WF) →
       (∀ b ∈ bindings, Expr.IsErased b) → Expr.IsErased body → Expr.IsErased (.letRec anns bindings body)
 
 /-- Opening is a no-op on an erased term: an erased term has no scoped type
@@ -930,8 +932,8 @@ mutual
     | .primOp _ => True
     | .primOpApp _ v => v.IsErased
     | .lam body E => body.IsErased ∧ ∀ v ∈ E, v.IsErased
-    | .thunk _ e E => e.IsErased ∧ ∀ v ∈ E, v.IsErased
-    | .recclo _ bindings E _ => (∀ b ∈ bindings, b.IsErased) ∧ ∀ v ∈ E, v.IsErased
+    | .thunk ann e E => (∀ σ, ann = some σ → σ.WF) ∧ e.IsErased ∧ ∀ v ∈ E, v.IsErased
+    | .recclo anns bindings E _ => (∀ σ, some σ ∈ anns → σ.WF) ∧ (∀ b ∈ bindings, b.IsErased) ∧ ∀ v ∈ E, v.IsErased
     | .ctorV _ args => ∀ a ∈ args, a.IsErased
 
   def ErasedEnv : VEnv → Prop
@@ -967,12 +969,180 @@ theorem preservation {ctors : CtorEnv} {s s' : State} {ρ : Ty}
     StateOK ctors s' ρ := by
   sorry
 
+/-- Every value stored in an erased environment is itself erased. -/
+private theorem erasedEnv_get {E : VEnv} (hE : ErasedEnv E) :
+    ∀ i (h : i < E.length), (E.get ⟨i, h⟩).IsErased := by
+  induction E with
+  | nil =>
+      intro i h
+      simp at h
+  | cons v E' ih =>
+      intro i h
+      cases i with
+      | zero =>
+          simp [ErasedEnv] at hE
+          exact hE.1
+      | succ i =>
+          simp [ErasedEnv] at hE
+          exact ih hE.2 i (Nat.lt_of_succ_lt_succ h)
+
+/-- An erased environment is pointwise erased. -/
+private theorem erasedEnv_mem {E : VEnv} (hE : ErasedEnv E) :
+    ∀ v ∈ E, v.IsErased := by
+  induction E with
+  | nil =>
+      intro v hv
+      simp at hv
+  | cons v E' ih =>
+      simp [ErasedEnv] at hE
+      intro w hw
+      simp [List.mem_cons] at hw
+      rcases hw with rfl | hw'
+      · exact hE.1
+      · exact ih hE.2 w hw'
+
+/-- A pointwise-erased list is an erased environment. -/
+private theorem erasedEnv_of_all {E : VEnv} (h : ∀ v ∈ E, v.IsErased) : ErasedEnv E := by
+  induction E with
+  | nil => simp [ErasedEnv]
+  | cons v E' ih =>
+      simp [ErasedEnv, h v (List.mem_cons_self ..),
+        ih (fun w hw => h w (List.mem_cons_of_mem v hw))]
+
+/-- An erased tail environment appended to a list of erased values is erased. -/
+private theorem erasedEnv_append {E : VEnv} (hE : ErasedEnv E) :
+    ∀ (xs : VEnv), (∀ x ∈ xs, x.IsErased) → ErasedEnv (xs ++ E) := by
+  intro xs hxs
+  induction xs with
+  | nil => simp [hE]
+  | cons x xs ih =>
+      simp [ErasedEnv, hxs x (List.mem_cons_self ..),
+        ih (fun y hy => hxs y (List.mem_cons_of_mem x hy))]
+
+/-- A `bindGroup` environment is erased when every binding, every group scheme
+    annotation (well-formed), and the captured environment are. -/
+private theorem erasedEnv_bindGroup {anns : List (Option PolyTy)}
+    {bindings : List Expr} {E : VEnv}
+    (hannsWf : ∀ σ, some σ ∈ anns → σ.WF)
+    (hbind : ∀ b ∈ bindings, b.IsErased) (hE : ErasedEnv E) :
+    ErasedEnv (bindGroup anns bindings E) := by
+  unfold bindGroup
+  apply erasedEnv_append hE
+  intro x hx
+  rcases List.mem_map.mp hx with ⟨j, _, rfl⟩
+  simp [Val.IsErased]
+  exact ⟨hannsWf, hbind, erasedEnv_mem hE⟩
+
 /-- Stepping preserves erased-ness (structural: reduction never introduces
     annotations). -/
 theorem preservation_erased {s s' : State}
     (herased : ErasedState s) (hstep : StepM s s') :
     ErasedState s' := by
-  sorry
+  cases hstep
+  case primLit =>
+      simp only [ErasedState, Val.IsErased] at herased ⊢
+      exact ⟨trivial, herased.2.2⟩
+  case primBinOp =>
+      simp only [ErasedState, Val.IsErased] at herased ⊢
+      exact ⟨trivial, herased.2.2⟩
+  case ctor =>
+      simp only [ErasedState, Val.IsErased] at herased ⊢
+      refine ⟨?_, herased.2.2⟩
+      simp
+  case lambda =>
+      simp only [ErasedState, Val.IsErased] at herased ⊢
+      rcases herased with ⟨hE, hlam, hk⟩
+      cases hlam with
+      | lambda hbody => exact ⟨⟨hbody, erasedEnv_mem hE⟩, hk⟩
+  case var =>
+      rename_i E i tyArgs k hlt
+      simp only [ErasedState] at herased ⊢
+      rcases herased with ⟨hE, _, hk⟩
+      exact ⟨erasedEnv_get hE i hlt, hk⟩
+  case app =>
+      simp only [ErasedState, ErasedKont] at herased ⊢
+      rcases herased with ⟨hE, happ, hk⟩
+      cases happ with
+      | app hf ha => exact ⟨hE, hf, hE, ha, hk⟩
+  case appArgStep =>
+      simp only [ErasedState, ErasedKont] at herased ⊢
+      rcases herased with ⟨hfv, hE, ha, hk⟩
+      exact ⟨hE, ha, hfv, hk⟩
+  case beta =>
+      simp only [ErasedState, Val.IsErased, ErasedKont] at herased ⊢
+      rcases herased with ⟨hav, hlam, hk⟩
+      rcases hlam with ⟨hbody, hE⟩
+      unfold ErasedEnv at ⊢
+      exact ⟨⟨hav, erasedEnv_of_all hE⟩, hbody, hk⟩
+  case primOpPart =>
+      simp only [ErasedState, Val.IsErased, ErasedKont] at herased ⊢
+      rcases herased with ⟨hav, hprim, hk⟩
+      exact ⟨hav, hk⟩
+  case primOpDelta =>
+      rename_i op a b r k hd
+      simp only [ErasedState, Val.IsErased, ErasedKont] at herased ⊢
+      rcases herased with ⟨hpb, hpa, hk⟩
+      have hrv : r.IsErased := by
+        cases op <;> cases a <;> cases b <;> simp [PrimBinOp.delta] at hd
+        all_goals
+          cases hd
+          simp [Val.IsErased]
+      exact ⟨hrv, hk⟩
+  case ctorApp =>
+      simp only [ErasedState, Val.IsErased, ErasedKont] at herased ⊢
+      rcases herased with ⟨hav, hargs, hk⟩
+      refine ⟨?_, hk⟩
+      intro a ha
+      rw [List.mem_append] at ha
+      rcases ha with ha | ha
+      · exact hargs a ha
+      · rw [List.mem_singleton] at ha
+        subst a
+        exact hav
+  case letIn =>
+      simp only [ErasedState] at herased ⊢
+      rcases herased with ⟨hE, hlet, hk⟩
+      cases hlet with
+      | letIn hannWf hrhs hbody =>
+          unfold ErasedEnv at ⊢
+          unfold Val.IsErased at ⊢
+          exact ⟨⟨⟨hannWf, hrhs, erasedEnv_mem hE⟩, hE⟩, hbody, hk⟩
+  case letRec =>
+      simp only [ErasedState] at herased ⊢
+      rcases herased with ⟨hE, hrec, hk⟩
+      cases hrec with
+      | letRec hannsWf hbind hbody => exact ⟨erasedEnv_bindGroup hannsWf hbind hE, hbody, hk⟩
+  case matchScrut =>
+      simp only [ErasedState, ErasedKont] at herased ⊢
+      rcases herased with ⟨hE, hmatch, hk⟩
+      cases hmatch with
+      | match_ hscrut hbodies =>
+          refine ⟨hE, hscrut, hE, ?_, hk⟩
+          intro pb hpb
+          exact hbodies pb hpb
+  case matchCtor =>
+      rename_i name args E branches k pat body hfirst
+      simp only [ErasedState, Val.IsErased, ErasedKont] at herased ⊢
+      rcases herased with ⟨hargs, hE, hbranches, hk⟩
+      refine ⟨erasedEnv_append hE _ (fun a ha => hargs a (List.mem_of_mem_take ha)), ?_, hk⟩
+      exact hbranches (pat, body) (FirstMatchingBranch.mem hfirst)
+  case matchWild =>
+      rename_i v E branches k body hnon
+      simp only [ErasedState, ErasedKont] at herased ⊢
+      rcases herased with ⟨hv, hE, hbranches, hk⟩
+      exact ⟨hE, hbranches (.wildcard, body) (List.mem_cons_self ..), hk⟩
+  case force =>
+      simp only [ErasedState, Val.IsErased] at herased ⊢
+      rcases herased with ⟨hthunk, hk⟩
+      rcases hthunk with ⟨hannWf, he, hE⟩
+      exact ⟨erasedEnv_of_all hE, he, hk⟩
+  case forceRecclo =>
+      rename_i anns bindings E j k hlt
+      simp only [ErasedState, Val.IsErased] at herased ⊢
+      rcases herased with ⟨hrec, hk⟩
+      rcases hrec with ⟨hannsWf, hbind, hE⟩
+      exact ⟨erasedEnv_bindGroup hannsWf hbind (erasedEnv_of_all hE),
+        hbind (bindings.get ⟨j, hlt⟩) (List.get_mem bindings ⟨j, hlt⟩), hk⟩
 
 /-- Every value stored in an exhaustive environment is itself exhaustive. -/
 private theorem exhaustiveEnv_get {ctors : CtorEnv} {E : VEnv} (hE : ExhaustiveEnv ctors E) :
