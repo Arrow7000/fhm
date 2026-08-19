@@ -232,6 +232,32 @@ theorem ValTyped_inst_of_isVal {ctors : CtorEnv} {v : Val} {σ : PolyTy} {τ : T
     ValTyped ctors v (PolyTy.mkTrivial τ) := by
   sorry
 
+/-- `bindGroup anns bindings E` is well-typed against the group's BODY context:
+    each rec-closure at its member's body scheme, and `E` at `Γ`. (Needed by
+    `preservation`'s `forceRecclo` case to type the recursive environment.) -/
+theorem EnvOK_bindGroup {ctors : CtorEnv} {Γ : Env} {anns : List (Option PolyTy)}
+    {bindings : List Expr} {specs : List RecSpec} {G L : List Nat} {E : VEnv}
+    (hE : EnvOK ctors E Γ)
+    (hwf : RecSpecs.WF anns bindings specs G)
+    (hmono : RecSpecs.MonoTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L)
+    (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L) :
+    EnvOK ctors (bindGroup anns bindings E) (specs.map (RecSpec.bodyScheme G) ++ Γ) := by
+  sorry
+
+/-- Each recursive-group member's RHS types, in the BODY context, at any instance
+    of its body scheme. The machine analogue of `TypeOfElabHM.rewrap_hasScheme_*`;
+    needed by `preservation`'s `forceRecclo` case. -/
+theorem recclo_body_typed {ctors : CtorEnv} {Γ : Env} {anns : List (Option PolyTy)}
+    {bindings : List Expr} {specs : List RecSpec} {G L : List Nat}
+    {e : Expr} {spec : RecSpec} {τ : Ty}
+    (hwf : RecSpecs.WF anns bindings specs G)
+    (hmono : RecSpecs.MonoTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L)
+    (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L)
+    (hmem : (e, spec) ∈ bindings.zip specs)
+    (hinst : Instantiates (RecSpec.bodyScheme G spec) τ) :
+    TypeOfHM (RecSpecs.bodyCtx ⟨Γ, ctors⟩ specs G) e τ := by
+  sorry
+
 /-- A length-free variant of `Ty.substFvars_zip_fvar_eq`: the `i`-th pair
     `(Xs[i], Vs[i])` is present in `Xs.zip Vs` and fires on `.fvar (Xs[i])`,
     provided `Vs[i]` is defined (no `Vs.length = Xs.length` hypothesis needed). -/
