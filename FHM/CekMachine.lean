@@ -300,12 +300,13 @@ mutual
         (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L)
         (hσ : σ = RecSpec.bodyScheme G (specs.get ⟨j, hj⟩)) :
         ValTyped ctors (.recclo anns bindings E j) σ
-    | ctorV {name args} {ctor : Ctor} {tyArgs instContents : List Ty}
+    | ctorV {name args} {ctor : Ctor} {tyArgs instContents remContents : List Ty}
         (hlook : LookupList.get? ctors name = some ctor)
         (htyArgs : ∀ a ∈ tyArgs, a.IsLC)
         (hargs : List.Forall₂ (fun a t => ValTyped ctors a (PolyTy.mkTrivial t)) args instContents)
-        (hfields : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents instContents) :
-        ValTyped ctors (.ctorV name args) (PolyTy.mkTrivial (.customTy ctor.tyName tyArgs))
+        (hfields : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents (instContents ++ remContents)) :
+        ValTyped ctors (.ctorV name args)
+          (PolyTy.mkTrivial (Ty.wrapArrows (.customTy ctor.tyName tyArgs) remContents))
 
   /-- Value environment `E` matches typing context `Γ` pointwise (same length, each
       value a denotation of the scheme at its index). -/
@@ -532,10 +533,9 @@ theorem ValTyped_inst_of_isVal {ctors : CtorEnv} {v : Val} {σ : PolyTy} {τ : T
   | recclo =>
       simp [IsVal] at hvIsVal
   | ctorV hlook htyArgs hargs hfields =>
-      rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
-      have hEq := InstantiatesBy.eq_of_closed (ContainsBvarsUpTo.customTy htyArgs) hinstTo
-      subst hEq
-      exact ValTyped.ctorV hlook htyArgs hargs hfields
+      -- TODO(ctorV-remContents): needs LC of `wrapArrows (customTy tyArgs) remContents`
+      -- from `htyArgs` + `hfields` + `ctor.bound`/`ctor.closed` (instantiation preserves LC).
+      sorry
 
 /-- `bindGroup anns bindings E` is well-typed against the group's BODY context:
     each rec-closure at its member's body scheme, and `E` at `Γ`. (Needed by
@@ -1015,11 +1015,11 @@ inductive KontTyped (ctors : CtorEnv) : Kont → Ty → Ty → Prop
       (hv : ∃ σ, ValTyped ctors fv σ ∧ Instantiates σ (.arrow A B))
       (hk : KontTyped ctors k B ρ) :
       KontTyped ctors (.appFun fv k) A ρ
-  | matchSel {E branches k} {τ ρ : Ty} {Γ : Env}
+  | matchSel {E branches k} {τ ρ ρ' : Ty} {Γ : Env}
       (hE : EnvOK ctors E Γ)
       (hbranches : ∀ branch ∈ branches, TypeOfMatchBranch ⟨Γ, ctors⟩ branch τ ρ)
-      (hk : KontTyped ctors k ρ ρ) :
-      KontTyped ctors (.matchSel E branches k) τ ρ
+      (hk : KontTyped ctors k ρ ρ') :
+      KontTyped ctors (.matchSel E branches k) τ ρ'
 
 /-- A machine state is well-typed at result type `ρ`. -/
 def StateOK (ctors : CtorEnv) (s : State) (ρ : Ty) : Prop :=
