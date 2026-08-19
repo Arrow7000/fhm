@@ -67,13 +67,21 @@ cases — `force` with `ann = some σ`, and `forceRecclo` with `anns[j] = some �
 fix: the reduction must *open* the forced term's scoped vars, because `TypeOfHM`
 only types such a rhs opened (`GeneralisesTo`/`PolyTyped`), and the machine
 otherwise evaluates a closed term with dangling `Ty.bvar`s that no typing judgment
-accepts. Two implementations: **(a-canonical, recommended)** open at `freshFloor + i`
-(canonical names above the term's fresh floor) and thread a small fresh-floor
-invariant into `StateOK` (`all fvars in the state < B`) — keeps `stepM_deterministic`
-literal, and FHM's InferW already threads exactly this (`belowFvars`/`eOut_avoid`);
-or **(a-cofinite)** `force`/`forceRecclo` carry a `FreshNames` premise, weakening
-determinism to "up to α-renaming". Self-contained slice: 2 reduction rules + the
-poly half + one `StateOK` component. Does not touch the proved mono core.
+accepts.
+
+**Precise cost (worked out 2026-08-19):** the opening names must avoid the
+*declarative* `GeneralisesTo`/`PolyTyped` avoid-list `L`, which is arbitrary and
+unbounded. So the machine must carry a freshness bound `B` such that every `L` in
+the state's typing hypotheses is `⊆ [0, B)`, and `force`/`forceRecclo` open at
+`B + i`. That means a separate freshness predicate `FreshState B s` (do NOT bake `B`
+into `StateOK`/`EnvOK`/`ValTyped` — that would force re-proving the 6 already-proved
+lemmas; `ExhaustiveState`/`ValTyped`/`TypeOfHM`-level lemmas are freshness-agnostic),
+and the preservation theorem becomes `StateOK s ρ → FreshState B s → StepM s s' →
+∃ B', StateOK s' ρ ∧ FreshState B' s'` — with `B' = B + paramCount` on the two
+forcing steps (the only steps that grow the bound) and `B' = B` elsewhere. This is
+the Φ-counter threading of InferW's `belowFvars`, in miniature. Self-contained slice:
+2 reduction rules + `FreshState` + the poly half + re-proof of `stepM_deterministic`
+(the forcing steps change shape). Does not touch the proved mono core.
 
 This doc remains the plan, living status log, and handover artifact.
 
