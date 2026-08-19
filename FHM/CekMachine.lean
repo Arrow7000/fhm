@@ -1,6 +1,33 @@
 import FHM.Core
 import FHM.InferW
 
+/-- A term carries no *scoped* type-variable references: `var` nodes carry no
+    `tyArgs`, and lambdas carry no parameter ascription. Binding annotations
+    (`letIn ann` / `letRec anns`) are KEPT — they carry polymorphic recursion and
+    generalisation pinning. This is the shape of the term the (type-erasing)
+    machine runs on; the source's scoped variables live only in the two erased
+    positions and are dropped by the pipeline's `erase` before the machine. -/
+inductive Expr.IsErased : Expr → Prop
+  | primLit {p : PrimLitExpr} : Expr.IsErased (.primLit p)
+  | primBinOp {op : PrimBinOp} : Expr.IsErased (.primBinOp op)
+  | lambda {body : Expr} : Expr.IsErased body → Expr.IsErased (.lambda none body)
+  | app {f a : Expr} : Expr.IsErased f → Expr.IsErased a → Expr.IsErased (.app f a)
+  | letIn {ann : Option PolyTy} {rhs body : Expr} :
+      Expr.IsErased rhs → Expr.IsErased body → Expr.IsErased (.letIn ann rhs body)
+  | var {i : Nat} : Expr.IsErased (.var i [])
+  | ctor {name : CtorName} : Expr.IsErased (.ctor name)
+  | match_ {scrut : Expr} {branches : List (MatchPattern × Expr)} :
+      Expr.IsErased scrut → (∀ pb ∈ branches, Expr.IsErased pb.2) → Expr.IsErased (.match_ scrut branches)
+  | letRec {anns : List (Option PolyTy)} {bindings : List Expr} {body : Expr} :
+      (∀ b ∈ bindings, Expr.IsErased b) → Expr.IsErased body → Expr.IsErased (.letRec anns bindings body)
+
+/-- Opening is a no-op on an erased term: an erased term has no scoped type
+    variables (`lambda` ascriptions, `var` tyArgs) to open. This is the bridge that
+    makes the `recclo_body_typed` poly half provable for the machine's terms. -/
+theorem Expr.openTyVars_eq_self_of_erased {e : Expr} (h : e.IsErased) :
+    ∀ Xs, e.openTyVars Xs = e := by
+  sorry
+
 /-! # CEK machine — a type-erasing environment machine for FHM
 
 This is the target semantics of the CEK migration (`briefs/cekmachine-design.md`).
@@ -736,6 +763,7 @@ theorem recclo_body_typed {ctors : CtorEnv} {Γ : Env} {anns : List (Option Poly
     (hwf : RecSpecs.WF anns bindings specs G)
     (hmono : RecSpecs.MonoTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L)
     (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨Γ, ctors⟩ bindings specs G L)
+    (herased : e.IsErased)
     (hmem : (e, spec) ∈ bindings.zip specs)
     (hinst : Instantiates (RecSpec.bodyScheme G spec) τ) :
     TypeOfHM (RecSpecs.bodyCtx ⟨Γ, ctors⟩ specs G) e τ := by
@@ -816,16 +844,11 @@ theorem recclo_body_typed {ctors : CtorEnv} {Γ : Env} {anns : List (Option Poly
       rw [hfix, hty] at hsub
       exact hsub
   | poly σ =>
-      -- STUCK: the conclusion needs the UNOPENED member RHS `e`, but the only
-      -- premise about a poly member (`hpoly`) types `e.openTyVars Ys` — the member
-      -- with its scoped type variables opened. Un-opening requires substituting
-      -- the skolems `Ys` back into `e`, which is only possible when `e`'s
-      -- annotations are closed (`e.TyBvarBounded 0`); for a member whose
-      -- annotation carries a `bvar`, e.g. `e = .lambda (some (.bvar 0)) _` with
-      -- `spec = .poly ⟨1, .fvar 0⟩`, the premises are all satisfiable while
-      -- `TypeOfHM bodyCtx e τ` is NOT derivable (the `lambda` rule demands
-      -- `paramTy.IsLC` for `.bvar 0`). So the poly half is unprovable AS STATED;
-      -- the mono half above is proved in full.
+      -- Provable now via `herased`: `e` is erased, so `e.openTyVars Ys = e`
+      -- (`Expr.openTyVars_eq_self_of_erased`), and `hpoly` types the CLOSED `e`
+      -- at `σ.openVars Ys`; transport rhsCtx → bodyCtx (weaken_schemes) and
+      -- instantiate σ at τ (type-substitution touches only the type, since `e`
+      -- is closed). TODO(erase): prove.
       sorry
 
 /-- Continuation `k` awaits a value of type `τ` (its "hole") and produces a result
@@ -892,6 +915,43 @@ def ExhaustiveState (ctors : CtorEnv) : State → Prop
   | .eval E e k => ExhaustiveEnv ctors E ∧ AllMatchesExhaustive ctors e ∧ ExhaustiveKont ctors k
   | .ret v k => ExhaustiveVal ctors v ∧ ExhaustiveKont ctors k
 
+/-! ## Erased-ness of a machine state
+
+Every term embedded in a state is `Expr.IsErased` (no scoped type-variable
+references). This is a *structural* property — the reduction never introduces
+annotations, so it is preserved by stepping — and it is what makes the machine's
+polymorphic members typeable: a poly member's RHS is closed, so `openTyVars` is a
+no-op on it (`Expr.openTyVars_eq_self_of_erased`). -/
+
+mutual
+
+  def Val.IsErased : Val → Prop
+    | .prim _ => True
+    | .primOp _ => True
+    | .primOpApp _ v => v.IsErased
+    | .lam body E => body.IsErased ∧ ∀ v ∈ E, v.IsErased
+    | .thunk _ e E => e.IsErased ∧ ∀ v ∈ E, v.IsErased
+    | .recclo _ bindings E _ => (∀ b ∈ bindings, b.IsErased) ∧ ∀ v ∈ E, v.IsErased
+    | .ctorV _ args => ∀ a ∈ args, a.IsErased
+
+  def ErasedEnv : VEnv → Prop
+    | [] => True
+    | v :: E => v.IsErased ∧ ErasedEnv E
+
+  def ErasedKont : Kont → Prop
+    | .nil => True
+    | .appArg E arg k => ErasedEnv E ∧ arg.IsErased ∧ ErasedKont k
+    | .appFun v k => v.IsErased ∧ ErasedKont k
+    | .matchSel E branches k =>
+        ErasedEnv E ∧ (∀ pb ∈ branches, pb.2.IsErased) ∧ ErasedKont k
+
+end
+
+/-- Erased-ness of a whole machine state. -/
+def ErasedState : State → Prop
+  | .eval E e k => ErasedEnv E ∧ e.IsErased ∧ ErasedKont k
+  | .ret v k => v.IsErased ∧ ErasedKont k
+
 /-! ## Type safety -/
 
 /-- Progress: a well-typed, exhaustive machine state is final (a value with an
@@ -903,8 +963,15 @@ theorem progress {ctors : CtorEnv} {s : State} {ρ : Ty}
 
 /-- Preservation: stepping preserves well-typedness. -/
 theorem preservation {ctors : CtorEnv} {s s' : State} {ρ : Ty}
-    (h : StateOK ctors s ρ) (hstep : StepM s s') :
+    (h : StateOK ctors s ρ) (herased : ErasedState s) (hstep : StepM s s') :
     StateOK ctors s' ρ := by
+  sorry
+
+/-- Stepping preserves erased-ness (structural: reduction never introduces
+    annotations). -/
+theorem preservation_erased {s s' : State}
+    (herased : ErasedState s) (hstep : StepM s s') :
+    ErasedState s' := by
   sorry
 
 /-- Every value stored in an exhaustive environment is itself exhaustive. -/
@@ -1061,22 +1128,24 @@ theorem preservation_exhaustive {ctors : CtorEnv} {s s' : State}
 
 /-- Multi-step preservation. -/
 theorem preservation_star {ctors : CtorEnv} {s s' : State} {ρ : Ty}
-    (h : StateOK ctors s ρ) (hstep : Relation.ReflTransGen StepM s s') :
+    (h : StateOK ctors s ρ) (herased : ErasedState s) (hstep : Relation.ReflTransGen StepM s s') :
     StateOK ctors s' ρ := by
   sorry
 
 /-- Type safety: from a well-typed, exhaustive state, every reachable state is
     final or can step (the machine never gets stuck). -/
 theorem type_safety {ctors : CtorEnv} {s : State} {ρ : Ty}
-    (h : StateOK ctors s ρ) (hexh : ExhaustiveState ctors s) :
+    (h : StateOK ctors s ρ) (hexh : ExhaustiveState ctors s) (herased : ErasedState s) :
     ∀ s', Relation.ReflTransGen StepM s s' →
       (∃ v, s' = .ret v .nil) ∨ ∃ s'', StepM s' s'' := by
   sorry
 
-/-- Type safety for a closed program: a well-typed, exhaustive closed term is safe
-    under the machine (corollary of `type_safety` at the empty environment). -/
+/-- Type safety for a closed program: a well-typed, exhaustive, ERASED closed term
+    is safe under the machine (corollary of `type_safety` at the empty environment).
+    The erased-ness hypothesis is discharged by the pipeline's `erase` step, with a
+    coherence lemma `TypeOfHM e τ → TypeOfHM (erase e) τ` (a separate slice). -/
 theorem type_safety_closed {ctors : CtorEnv} {e : Expr} {τ : Ty}
-    (h : TypeOfHM ⟨[], ctors⟩ e τ) (hexh : AllMatchesExhaustive ctors e) :
+    (h : TypeOfHM ⟨[], ctors⟩ e τ) (hexh : AllMatchesExhaustive ctors e) (herased : e.IsErased) :
     ∀ s', Relation.ReflTransGen StepM (.eval [] e .nil) s' →
       (∃ v, s' = .ret v .nil) ∨ ∃ s'', StepM s' s'' := by
   sorry
