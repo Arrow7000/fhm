@@ -1237,11 +1237,935 @@ theorem progress {ctors : CtorEnv} {s : State} {ρ : Ty}
     (∃ v, s = .ret v .nil) ∨ ∃ s', StepM s s' := by
   sorry
 
+/-! ## Preservation helpers
+
+Small lemmas supporting the `preservation` proof below: the trivial
+self-instantiation of a monotype, the pointwise `EnvOK` accessor, the
+`bvarRange` instantiation round-trips needed by the `ctor`/`matchCtor` cases,
+and the nullary-`Bool`-constructor facts needed by the primop cases. -/
+
+/-- A locally-closed monotype instantiates to itself (trivially). -/
+private theorem instantiates_trivial {τ : Ty} (h : τ.IsLC) :
+    Instantiates (PolyTy.mkTrivial τ) τ := by
+  exact ⟨[], by intro a ha; simp at ha,
+    by simpa [PolyTy.InstantiatesTo] using (InstantiatesBy.refl_of_closed h)⟩
+
+/-- A well-typed value environment is pointwise well-typed. -/
+private def envOK_get {ctors : CtorEnv} {E : VEnv} {Γ : Env}
+    (hE : EnvOK ctors E Γ) :
+    ∀ i (hE' : i < E.length) (hΓ : i < Γ.length),
+      ValTyped ctors (E.get ⟨i, hE'⟩) (Γ.get ⟨i, hΓ⟩) := by
+  cases hE with
+  | nil =>
+      intro i hE' hΓ
+      simp at hΓ
+  | cons hv htl =>
+      intro i hE' hΓ
+      cases i with
+      | zero => simpa using hv
+      | succ i =>
+          exact envOK_get htl i (Nat.lt_of_succ_lt_succ hE') (Nat.lt_of_succ_lt_succ hΓ)
+
+/-- `bvarRangeFrom` reads back its definition pointwise: the `k`-th entry of a
+    `bvarRangeFrom start n` list is `.bvar (start + k)`. -/
+private theorem bvarRangeFrom_getElem? {n s k : Nat} (hk : k < n) :
+    (Ty.bvarRangeFrom s n)[k]? = some (Ty.bvar (s + k)) := by
+  induction n generalizing s k with
+  | zero => omega
+  | succ m ih =>
+      cases k with
+      | zero => simp [Ty.bvarRangeFrom]
+      | succ j =>
+          simp only [Ty.bvarRangeFrom, List.getElem?_cons_succ]
+          have hshift : s + 1 + j = s + (j + 1) := by omega
+          rw [ih (by omega), hshift]
+
+/-- From `Forall₂ (InstantiatesBy tyArgs') (bvarRangeFrom start n) tyArgs`: the
+    `k`-th entry (k < n) forces `tyArgs[k]? = tyArgs'[start + k]?`. -/
+private theorem bvarRangeFrom_forall₂_agreement {tyArgs tyArgs' : List Ty} :
+    ∀ {start n : Nat},
+      List.Forall₂ (InstantiatesBy tyArgs') (Ty.bvarRangeFrom start n) tyArgs →
+      ∀ k, k < n → tyArgs[k]? = tyArgs'[start + k]? := by
+  intro start n
+  induction n generalizing start tyArgs with
+  | zero =>
+      intro h k hk
+      simp [Ty.bvarRangeFrom] at h
+      cases h
+      omega
+  | succ m ih =>
+      intro h k hk
+      simp only [Ty.bvarRangeFrom] at h
+      cases h with
+      | cons hhd htl =>
+          rename_i hd tl
+          cases hhd with
+          | bvar hidx =>
+              cases k with
+              | zero =>
+                  rw [show start + 0 = start from by omega, hidx]
+                  rfl
+              | succ k =>
+                  have hrec : tl[k]? = tyArgs'[(start + 1) + k]? :=
+                    ih (tyArgs := tl) htl k (by omega)
+                  rw [show start + (k + 1) = (start + 1) + k from by omega]
+                  simpa using hrec
+
+private theorem bvarRange_forall₂_agreement {tyArgs tyArgs' : List Ty} {n : Nat}
+    (h : List.Forall₂ (InstantiatesBy tyArgs') (Ty.bvarRange n) tyArgs) (k : Nat) (hk : k < n) :
+    tyArgs[k]? = tyArgs'[k]? := by
+  have := bvarRangeFrom_forall₂_agreement (start := 0) h k hk
+  rwa [Nat.zero_add] at this
+
+private def bvarRangeFrom_length : ∀ (start n : Nat), (Ty.bvarRangeFrom start n).length = n
+  | _, 0 => rfl
+  | start, m + 1 => by
+      simp [Ty.bvarRangeFrom, bvarRangeFrom_length (start + 1) m]
+
+/-- Instantiating `bvarRange n` pointwise reads back `tyArgs.take n`. -/
+private theorem bvarRange_instantiates_take {tyArgs instTys : List Ty} {n : Nat}
+    (h : List.Forall₂ (InstantiatesBy tyArgs) (Ty.bvarRange n) instTys) :
+    instTys = tyArgs.take n := by
+  apply List.ext_getElem?
+  intro i
+  by_cases hi : i < n
+  · rw [List.getElem?_take_of_lt hi]
+    exact bvarRange_forall₂_agreement h i hi
+  · have hlen : instTys.length = n := by
+      simpa [Ty.bvarRange, bvarRangeFrom_length] using (List.Forall₂.length_eq h).symm
+    rw [List.getElem?_eq_none (by omega), List.getElem?_eq_none (by simp [List.length_take]; omega)]
+
+/-- A `wrapArrows` instantiation decomposes pointwise: the instantiated type is
+    the wrapped result at the instantiated contents, with each content
+    instantiated separately. -/
+private theorem instantiatesBy_wrapArrows {tyArgs : List Ty} {result : Ty} :
+    ∀ (contents : List Ty) (τ : Ty),
+      InstantiatesBy tyArgs (Ty.wrapArrows result contents) τ →
+      ∃ resultI contentsI, τ = Ty.wrapArrows resultI contentsI ∧
+        InstantiatesBy tyArgs result resultI ∧
+        List.Forall₂ (InstantiatesBy tyArgs) contents contentsI := by
+  intro contents
+  induction contents with
+  | nil =>
+      intro τ h
+      exact ⟨τ, [], rfl, h, .nil⟩
+  | cons c cs ih =>
+      intro τ h
+      change InstantiatesBy tyArgs (Ty.arrow c (Ty.wrapArrows result cs)) τ at h
+      cases h with
+      | arrow hc hrest =>
+          rename_i instFst instSnd
+          rcases ih instSnd hrest with ⟨resultI, csI, hEq, hres, hcs⟩
+          refine ⟨resultI, instFst :: csI, ?_, hres, .cons hc hcs⟩
+          rw [hEq]
+          simp [Ty.wrapArrows]
+
+/-- Instantiating by `tyArgs` or by its `n`-prefix agrees on types all of whose
+    bvars are below `n`. -/
+private theorem instantiatesBy_take_of_agree {n : Nat} {tyArgs : List Ty} {t ti : Ty}
+    (hbound : ContainsBvarsUpTo n t) (hinst : InstantiatesBy tyArgs t ti) :
+    InstantiatesBy (tyArgs.take n) t ti := by
+  induction hbound generalizing ti with
+  | prim =>
+      cases hinst
+      exact .prim
+  | arrow hba hbb iha ihb =>
+      cases hinst with
+      | arrow hfa hfb =>
+          exact .arrow (iha hfa) (ihb hfb)
+  | fvar =>
+      cases hinst
+      exact .fvar
+  | customTy hball ih =>
+      cases hinst with
+      | customTy hforall =>
+          apply InstantiatesBy.customTy
+          induction hforall with
+          | nil => exact .nil
+          | cons hhd htl ihtl =>
+              rename_i a b l1 l2
+              refine .cons (ih a List.mem_cons_self hhd) (ihtl ?_ ?_)
+              · intro ty hty
+                exact hball ty (List.mem_cons_of_mem a hty)
+              · intro ty hty _ hinst'
+                exact ih ty (List.mem_cons_of_mem a hty) hinst'
+  | bvar hi =>
+      cases hinst with
+      | bvar hget =>
+          exact .bvar (by
+            rw [List.getElem?_take_of_lt hi]
+            exact hget)
+  | bl hbe ih =>
+      cases hinst with
+      | bl hie =>
+          exact .bl (ih hie)
+
+/-- Pointwise: `instantiatesBy_take_of_agree` through a `Forall₂`. -/
+private theorem forall2_instantiatesBy_take_of_agree {n : Nat} {tyArgs : List Ty}
+    {tys its : List Ty} (hbound : ∀ t ∈ tys, ContainsBvarsUpTo n t)
+    (hinst : ∀ t ∈ tys, ∀ {ti : Ty}, InstantiatesBy tyArgs t ti → InstantiatesBy (tyArgs.take n) t ti)
+    (h : List.Forall₂ (InstantiatesBy tyArgs) tys its) :
+    List.Forall₂ (InstantiatesBy (tyArgs.take n)) tys its := by
+  induction h with
+  | nil => exact .nil
+  | cons hhd htl ih =>
+      refine .cons (hinst _ List.mem_cons_self hhd) (ih ?_ ?_)
+      · intro t ht
+        exact hbound t (List.mem_cons_of_mem _ ht)
+      · intro t ht _ hinst'
+        exact hinst t (List.mem_cons_of_mem _ ht) hinst'
+
+/-- Append one pair to a `Forall₂`. -/
+private theorem forall2_snoc {α β : Type _} {R : α → β → Prop} {l1 : List α} {l2 : List β}
+    {a : α} {b : β} (h : List.Forall₂ R l1 l2) (hab : R a b) :
+    List.Forall₂ R (l1 ++ [a]) (l2 ++ [b]) := by
+  induction h with
+  | nil => exact .cons hab .nil
+  | cons hhd htl ih => exact .cons hhd ih
+
+/-- Element-wise determinism for two `Forall₂ (InstantiatesBy …)` over a common
+    source list, given a per-element determinism hypothesis. -/
+private theorem forall2_det_instantiates {tyArgs1 tyArgs2 : List Ty} :
+    ∀ {tys its1 its2 : List Ty},
+      (∀ t ∈ tys, ∀ {a b : Ty},
+        InstantiatesBy tyArgs1 t a → InstantiatesBy tyArgs2 t b → a = b) →
+      List.Forall₂ (InstantiatesBy tyArgs1) tys its1 →
+      List.Forall₂ (InstantiatesBy tyArgs2) tys its2 →
+      its1 = its2 := by
+  intro tys
+  induction tys with
+  | nil =>
+      intro its1 its2 hdet hf1 hf2
+      cases hf1
+      cases hf2
+      rfl
+  | cons hd tl ihtl =>
+      intro its1 its2 hdet hf1 hf2
+      cases hf1 with
+      | cons h1 h1t =>
+          cases hf2 with
+          | cons h2 h2t =>
+              have hhd : _ = _ := hdet hd List.mem_cons_self h1 h2
+              have htl' := ihtl (fun t ht => hdet t (List.mem_cons_of_mem _ ht)) h1t h2t
+              rw [hhd, htl']
+
+/-- Pointwise: `ValTyped` on `mkTrivial` entries is a pointwise `ValTyped`. -/
+private theorem forall2_valTyped_mkTrivial {ctors : CtorEnv} {args : List Val} {its : List Ty}
+    (h : List.Forall₂ (fun a t => ValTyped ctors a (PolyTy.mkTrivial t)) args its) :
+    List.Forall₂ (fun v σ => ValTyped ctors v σ) args (its.map PolyTy.mkTrivial) := by
+  induction h with
+  | nil => exact .nil
+  | cons hv' htl ih => exact .cons hv' ih
+
+/-- A `Forall₂ (InstantiatesBy …)` over two lists of locally-closed types is an
+    identity (instantiation is deterministic on locally-closed types). -/
+private theorem forall2_instantiatesBy_eq_of_lc {tyArgs1 tyArgs2 instArgs : List Ty}
+    (hLC : ∀ a ∈ tyArgs1, a.IsLC)
+    (h : List.Forall₂ (InstantiatesBy instArgs) tyArgs1 tyArgs2) :
+    tyArgs1 = tyArgs2 := by
+  induction h with
+  | nil => rfl
+  | cons hhd htl ih =>
+      have hEq : _ = _ := InstantiatesBy.eq_of_closed (hLC _ List.mem_cons_self) hhd
+      rw [hEq]
+      congr 1
+      exact ih (fun a ha => hLC a (List.mem_cons_of_mem _ ha))
+
+/-- `bvarRange n` is nonempty unless `n = 0`. -/
+private theorem bvarRange_ne_nil {n : Nat} (h : Ty.bvarRange n = []) : n = 0 := by
+  cases n with
+  | zero => rfl
+  | succ n' => simp [Ty.bvarRange, Ty.bvarRangeFrom] at h
+
+/-- A `customTy` instantiation of a `bvarRange` list reads back the type name
+    and the instantiated argument list. -/
+private theorem instantiatesBy_customTy_bvarRange {tyArgs : List Ty} {n : Nat}
+    {tyName : TyName} {τ : Ty}
+    (h : InstantiatesBy tyArgs (Ty.customTy tyName (Ty.bvarRange n)) τ) :
+    ∃ tyArgs', τ = Ty.customTy tyName tyArgs' ∧
+      List.Forall₂ (InstantiatesBy tyArgs) (Ty.bvarRange n) tyArgs' := by
+  cases h with
+  | customTy hforall =>
+      rename_i instTys
+      exact ⟨instTys, rfl, hforall⟩
+
+/-- A nullary-`Bool` constructor is `Bool`, nullary, and has no fields. -/
+private theorem isNullaryBool_decomp {c : Ctor} (h : c.isNullaryBool = true) :
+    c.tyName = ⟨"Bool"⟩ ∧ c.paramCount = 0 ∧ c.contents = [] := by
+  unfold Ctor.isNullaryBool at h
+  have hsplit : ((c.tyName == TyName.mk "Bool" && c.paramCount == 0) = true ∧
+      c.contents.isEmpty = true) := (Bool.and_eq_true_eq_eq_true_and_eq_true _ _).mp h
+  have h1 : (c.tyName == TyName.mk "Bool" && c.paramCount == 0) = true := hsplit.1
+  have h2 : c.contents.isEmpty = true := hsplit.2
+  have h3 : (c.tyName == TyName.mk "Bool") = true :=
+    ((Bool.and_eq_true_eq_eq_true_and_eq_true _ _).mp h1).1
+  have h4 : (c.paramCount == 0) = true :=
+    ((Bool.and_eq_true_eq_eq_true_and_eq_true _ _).mp h1).2
+  constructor
+  · change decide (c.tyName = TyName.mk "Bool") = true at h3
+    exact of_decide_eq_true h3
+  constructor
+  · change decide (c.paramCount = 0) = true at h4
+    exact of_decide_eq_true h4
+  · by_contra hc
+    rcases List.exists_cons_of_ne_nil hc with ⟨hd, tl, hceq⟩
+    rw [hceq] at h2
+    exact Bool.noConfusion h2
+
+/-- The `⟨"True"⟩`/`⟨"False"⟩` constructors of a typed nullary `Bool` are nullary
+    `Bool` constructors in the environment. -/
+private theorem bool_ctor_nullary_of_typed {ctors : CtorEnv} {Γ : Env} {bname : CtorName}
+    (h : TypeOfHM ⟨Γ, ctors⟩ (.ctor bname) (.customTy ⟨"Bool"⟩ [])) :
+    ∃ c, LookupList.get? ctors bname = some c ∧ c.isNullaryBool = true := by
+  cases h with
+  | ctor hlook htyArgs hinst =>
+      rename_i c tyArgs
+      have hinst' : InstantiatesBy tyArgs
+          (Ty.wrapArrows (Ty.customTy c.tyName (Ty.bvarRange c.paramCount)) c.contents)
+          (.customTy ⟨"Bool"⟩ []) := by
+        simpa [Ctor.toTy, PolyTy.InstantiatesTo] using hinst
+      rcases instantiatesBy_wrapArrows (contents := c.contents) (τ := .customTy ⟨"Bool"⟩ []) hinst'
+        with ⟨resultI, contentsI, hEq, hresI, hcontI⟩
+      have hcontentsI_nil : contentsI = [] := by
+        cases contentsI with
+        | nil => rfl
+        | cons c' cs' =>
+            simp [Ty.wrapArrows] at hEq
+      have hresultI : resultI = Ty.customTy ⟨"Bool"⟩ [] := by
+        rw [hcontentsI_nil] at hEq
+        simpa [Ty.wrapArrows] using hEq.symm
+      have hcontents : c.contents = [] := by
+        by_contra hc
+        rcases List.exists_cons_of_ne_nil hc with ⟨hd, tl, hceq⟩
+        rw [hcontentsI_nil] at hcontI
+        rw [hceq] at hcontI
+        cases hcontI
+      have hresI' : InstantiatesBy tyArgs (Ty.customTy c.tyName (Ty.bvarRange c.paramCount))
+          (Ty.customTy ⟨"Bool"⟩ []) := by
+        simpa [hresultI] using hresI
+      rcases instantiatesBy_customTy_bvarRange hresI' with ⟨tyArgs', hResEq, hf⟩
+      have htyName : c.tyName = ⟨"Bool"⟩ := by
+        injection hResEq.symm
+      have hparamCount : c.paramCount = 0 := by
+        have hts' : tyArgs' = [] := by
+          injection hResEq.symm
+        rw [hts'] at hf
+        have hrange : Ty.bvarRange c.paramCount = [] := by
+          by_contra hc
+          rcases List.exists_cons_of_ne_nil hc with ⟨hd, tl, hceq⟩
+          rw [hceq] at hf
+          cases hf
+        exact bvarRange_ne_nil hrange
+      have hnull : c.isNullaryBool = true := by
+        unfold Ctor.isNullaryBool
+        rw [htyName, hparamCount, hcontents]
+        simp
+      exact ⟨c, hlook, hnull⟩
+
+/-- A nullary-`Bool` constructor value types at the nullary `Bool` type. -/
+private theorem valTyped_bool_ctor {ctors : CtorEnv} {bname : CtorName}
+    (h : ∃ c, LookupList.get? ctors bname = some c ∧ c.isNullaryBool = true) :
+    ValTyped ctors (.ctorV bname []) (PolyTy.mkTrivial (.customTy ⟨"Bool"⟩ [])) := by
+  rcases h with ⟨c, hlook, hnull⟩
+  rcases isNullaryBool_decomp hnull with ⟨htyName, hparamCount, hcontents⟩
+  rw [← htyName]
+  refine ValTyped.ctorV (tyArgs := []) (instContents := []) (remContents := []) hlook ?_ .nil ?_
+  · intro a ha
+    simp at ha
+  · rw [hcontents]
+    exact .nil
+
+/-- The comparison primops are the only primops whose arrow type ends in the
+    nullary `Bool` type; their return type is `Bool` and both `Bool` ctors exist. -/
+private theorem primOp_bool_ret {ctors : CtorEnv} {op : PrimBinOp} {τ₁ A B : Ty}
+    (h : PrimBinOp.ty ctors op = some (.arrow τ₁ (.arrow A B)))
+    (hop : op = .intLt ∨ op = .charLt) :
+    B = .customTy ⟨"Bool"⟩ [] ∧
+    (∃ c, LookupList.get? ctors ⟨"True"⟩ = some c ∧ c.isNullaryBool = true) ∧
+    (∃ c, LookupList.get? ctors ⟨"False"⟩ = some c ∧ c.isNullaryBool = true) := by
+  rcases hop with ⟨opEq⟩ | ⟨opEq⟩
+  · subst op
+    cases h1 : LookupList.get? ctors ⟨"True"⟩ with
+    | none => simp [PrimBinOp.ty, h1] at h
+    | some tc =>
+        cases h2 : LookupList.get? ctors ⟨"False"⟩ with
+        | none => simp [PrimBinOp.ty, h1, h2] at h
+        | some fc =>
+            simp [PrimBinOp.ty, h1, h2] at h
+            rcases h with ⟨htc, hx⟩
+            constructor
+            · exact hx.2.2.symm
+            constructor
+            · exact ⟨tc, rfl, htc.1⟩
+            · exact ⟨fc, rfl, htc.2⟩
+  · subst op
+    cases h1 : LookupList.get? ctors ⟨"True"⟩ with
+    | none => simp [PrimBinOp.ty, h1] at h
+    | some tc =>
+        cases h2 : LookupList.get? ctors ⟨"False"⟩ with
+        | none => simp [PrimBinOp.ty, h1, h2] at h
+        | some fc =>
+            simp [PrimBinOp.ty, h1, h2] at h
+            rcases h with ⟨htc, hx⟩
+            constructor
+            · exact hx.2.2.symm
+            constructor
+            · exact ⟨tc, rfl, htc.1⟩
+            · exact ⟨fc, rfl, htc.2⟩
+
+/-- The arithmetic primops return `int`. -/
+private theorem primOp_int_ret {ctors : CtorEnv} {op : PrimBinOp} {τ₁ A B : Ty}
+    (h : PrimBinOp.ty ctors op = some (.arrow τ₁ (.arrow A B)))
+    (hop : op = .intAdd ∨ op = .intSub) :
+    B = .prim .int := by
+  rcases hop with ⟨hopEq⟩ | ⟨hopEq⟩
+  · subst op
+    simp [PrimBinOp.ty] at h
+    exact h.2.2.symm
+  · subst op
+    simp [PrimBinOp.ty] at h
+    exact h.2.2.symm
+
+/-- The `j`-th entries of two same-length lists sit in their zip. -/
+private def mem_zip_get {α β : Type _} (l1 : List α) (l2 : List β) (j : Nat)
+    (h1 : j < l1.length) (h2 : j < l2.length) :
+    (l1.get ⟨j, h1⟩, l2.get ⟨j, h2⟩) ∈ l1.zip l2 := by
+  revert l2 j h1 h2
+  induction l1 with
+  | nil =>
+      intro l2 j h1 h2
+      simp at h1
+  | cons a as ihas =>
+      intro l2 j h1 h2
+      cases l2 with
+      | nil => simp at h2
+      | cons b bs =>
+          cases j with
+          | zero => simp
+          | succ j' =>
+              simp
+              exact Or.inr (ihas bs j' (Nat.lt_of_succ_lt_succ h1) (Nat.lt_of_succ_lt_succ h2))
+
+/-- A constructor chain value's fully-applied arguments: `args.take n = args`
+    when the pattern binds all `args`. -/
+private theorem take_all_of_eq_length {α : Type _} {l : List α} {n : Nat}
+    (h : n = l.length) : l.take n = l := by
+  rw [h]
+  induction l with
+  | nil => rfl
+  | cons a as ih => simp
+
 /-- Preservation: stepping preserves well-typedness. -/
 theorem preservation {ctors : CtorEnv} {s s' : State} {ρ : Ty}
     (h : StateOK ctors s ρ) (herased : ErasedState s) (hstep : StepM s s') :
     StateOK ctors s' ρ := by
-  sorry
+  cases hstep
+  case primLit =>
+      rename_i E p k
+      unfold StateOK at h
+      rcases h with ⟨Γ, τ, hE, he, hk⟩
+      cases he with
+      | primLitUnit =>
+          unfold StateOK
+          exact ⟨PolyTy.mkTrivial (.prim .unit), .prim .unit, ValTyped.prim,
+            instantiates_trivial (ContainsBvarsUpTo.prim), hk⟩
+      | primLitInt =>
+          unfold StateOK
+          exact ⟨PolyTy.mkTrivial (.prim .int), .prim .int, ValTyped.prim,
+            instantiates_trivial (ContainsBvarsUpTo.prim), hk⟩
+      | primLitNat =>
+          unfold StateOK
+          exact ⟨PolyTy.mkTrivial (.prim .nat), .prim .nat, ValTyped.prim,
+            instantiates_trivial (ContainsBvarsUpTo.prim), hk⟩
+      | primLitChar =>
+          unfold StateOK
+          exact ⟨PolyTy.mkTrivial (.prim .char), .prim .char, ValTyped.prim,
+            instantiates_trivial (ContainsBvarsUpTo.prim), hk⟩
+  case primBinOp =>
+      rename_i E op k
+      unfold StateOK at h
+      rcases h with ⟨Γ, τ, hE, he, hk⟩
+      cases he with
+      | primBinOpIntAdd =>
+          unfold StateOK
+          exact ⟨PolyTy.mkTrivial (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int))),
+            .arrow (.prim .int) (.arrow (.prim .int) (.prim .int)),
+            ValTyped.primOp (h := rfl),
+            instantiates_trivial (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+              (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim ContainsBvarsUpTo.prim)), hk⟩
+      | primBinOpIntSub =>
+          unfold StateOK
+          exact ⟨PolyTy.mkTrivial (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int))),
+            .arrow (.prim .int) (.arrow (.prim .int) (.prim .int)),
+            ValTyped.primOp (h := rfl),
+            instantiates_trivial (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+              (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim ContainsBvarsUpTo.prim)), hk⟩
+      | primBinOpIntLt hTrue hFalse =>
+          have hT : ∃ c, LookupList.get? ctors ⟨"True"⟩ = some c ∧ c.isNullaryBool = true :=
+            bool_ctor_nullary_of_typed hTrue
+          have hF : ∃ c, LookupList.get? ctors ⟨"False"⟩ = some c ∧ c.isNullaryBool = true :=
+            bool_ctor_nullary_of_typed hFalse
+          rcases hT with ⟨cT, h1, htc⟩
+          rcases hF with ⟨cF, h2, hfc⟩
+          unfold StateOK
+          refine ⟨PolyTy.mkTrivial (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ []))),
+            .arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])), ?_,
+            instantiates_trivial (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+              (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+                (ContainsBvarsUpTo.customTy (by intro t ht; simp at ht)))), hk⟩
+          exact ValTyped.primOp (h := by simp [PrimBinOp.ty, h1, h2, htc, hfc])
+      | primBinOpCharLt hTrue hFalse =>
+          have hT : ∃ c, LookupList.get? ctors ⟨"True"⟩ = some c ∧ c.isNullaryBool = true :=
+            bool_ctor_nullary_of_typed hTrue
+          have hF : ∃ c, LookupList.get? ctors ⟨"False"⟩ = some c ∧ c.isNullaryBool = true :=
+            bool_ctor_nullary_of_typed hFalse
+          rcases hT with ⟨cT, h1, htc⟩
+          rcases hF with ⟨cF, h2, hfc⟩
+          unfold StateOK
+          refine ⟨PolyTy.mkTrivial (.arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ []))),
+            .arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ [])), ?_,
+            instantiates_trivial (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+              (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+                (ContainsBvarsUpTo.customTy (by intro t ht; simp at ht)))), hk⟩
+          exact ValTyped.primOp (h := by simp [PrimBinOp.ty, h1, h2, htc, hfc])
+  case ctor =>
+      rename_i E name k
+      unfold StateOK at h
+      rcases h with ⟨Γ, τ, hE, he, hk⟩
+      have hτLC : τ.IsLC := TypeOfHM.regular he
+      cases he with
+      | ctor hlook hLC hinstTo =>
+          rename_i ctor tyArgs
+          have hinstTo' : InstantiatesBy tyArgs
+              (Ty.wrapArrows (Ty.customTy ctor.tyName (Ty.bvarRange ctor.paramCount)) ctor.contents) τ := by
+            simpa [Ctor.toTy, PolyTy.InstantiatesTo] using hinstTo
+          rcases instantiatesBy_wrapArrows (contents := ctor.contents) (τ := τ) hinstTo'
+            with ⟨resultI, contentsI, hEq, hresI, hcontI⟩
+          rcases instantiatesBy_customTy_bvarRange hresI with ⟨instTys, hResEq, hforall⟩
+          have hinstTys : instTys = tyArgs.take ctor.paramCount := bvarRange_instantiates_take hforall
+          have hresultI' : resultI = Ty.customTy ctor.tyName (tyArgs.take ctor.paramCount) := by
+            rw [hResEq, hinstTys]
+          have htyArgsTake : ∀ a ∈ tyArgs.take ctor.paramCount, a.IsLC := by
+            intro a ha
+            exact hLC a (List.mem_of_mem_take ha)
+          have hfields : List.Forall₂ (InstantiatesBy (tyArgs.take ctor.paramCount)) ctor.contents contentsI := by
+            refine forall2_instantiatesBy_take_of_agree (tys := ctor.contents) (its := contentsI)
+              (fun t ht => ctor.bound t ht) ?_ hcontI
+            intro t ht _ hinst'
+            exact instantiatesBy_take_of_agree (n := ctor.paramCount) (ctor.bound t ht) hinst'
+          have hct : ValTyped ctors (.ctorV name [])
+              (PolyTy.mkTrivial (Ty.wrapArrows (Ty.customTy ctor.tyName (tyArgs.take ctor.paramCount)) contentsI)) := by
+            exact ValTyped.ctorV (tyArgs := tyArgs.take ctor.paramCount)
+              (instContents := []) (remContents := contentsI) hlook htyArgsTake .nil hfields
+          have hWrap : Ty.wrapArrows (Ty.customTy ctor.tyName (tyArgs.take ctor.paramCount)) contentsI = τ := by
+            rw [hEq, hresultI']
+          have hv : ValTyped ctors (.ctorV name []) (PolyTy.mkTrivial τ) := by
+            simpa [hWrap] using hct
+          unfold StateOK
+          exact ⟨PolyTy.mkTrivial τ, τ, hv, instantiates_trivial hτLC, hk⟩
+  case lambda =>
+      rename_i E ann body k
+      unfold StateOK at h
+      rcases h with ⟨Γ, τ, hE, he, hk⟩
+      have hτLC : τ.IsLC := TypeOfHM.regular he
+      cases he with
+      | lambda hparamLC hpin hbctx hbody =>
+          rename_i codom dom
+          have hbody' : TypeOfHM ⟨PolyTy.mkTrivial dom :: Γ, ctors⟩ body codom := by
+            rw [hbctx] at hbody
+            simpa using hbody
+          have hcodomLC : codom.IsLC := arrow_lc_r (by simpa using hτLC)
+          unfold StateOK
+          exact ⟨PolyTy.mkTrivial (.arrow dom codom), .arrow dom codom,
+            ValTyped.lam hparamLC hcodomLC hE hbody', instantiates_trivial hτLC, hk⟩
+  case var =>
+      rename_i E i tyArgs k hlt
+      unfold StateOK at h
+      rcases h with ⟨Γ, τ, hE, he, hk⟩
+      cases he with
+      | var hlook hinstLC hinstTo =>
+          rename_i polyTy instArgs
+          have hΓlt : i < Γ.length := by
+            by_contra hc
+            have hn : Γ[i]? = none := List.getElem?_eq_none (by omega)
+            rw [hlook] at hn
+            simp at hn
+          have hget : Γ.get ⟨i, hΓlt⟩ = polyTy := by
+            have h := List.getElem?_eq_getElem hΓlt
+            rw [hlook] at h
+            exact (Option.some.inj h).symm
+          have hv : ValTyped ctors (E.get ⟨i, hlt⟩) (Γ.get ⟨i, hΓlt⟩) := envOK_get hE i hlt hΓlt
+          unfold StateOK
+          refine ⟨Γ.get ⟨i, hΓlt⟩, τ, hv, ?_, hk⟩
+          rw [hget]
+          exact ⟨instArgs, hinstLC, hinstTo⟩
+  case app =>
+      rename_i E f a k
+      unfold StateOK at h
+      rcases h with ⟨Γ, τ, hE, he, hk⟩
+      cases he with
+      | app hf ha =>
+          unfold StateOK
+          exact ⟨Γ, .arrow _ _, hE, hf, KontTyped.appArg hE ha hk⟩
+  case appArgStep =>
+      rename_i fv E a k hIsVal
+      unfold StateOK at h
+      rcases h with ⟨σ, τ, hv, hinst, hk⟩
+      cases hk with
+      | appArg hE harg hk' =>
+          rename_i A B Γ
+          unfold StateOK
+          refine ⟨Γ, A, hE, harg, ?_⟩
+          exact KontTyped.appFun ⟨σ, hv, hinst⟩ hk'
+  case beta =>
+      rename_i body E av k hIsVal
+      unfold StateOK at h
+      rcases h with ⟨σ, τ, hv, hinst, hk⟩
+      cases hk with
+      | appFun hvlam hk' =>
+          rename_i B
+          rcases hvlam with ⟨σl, hvlam', hinstl⟩
+          cases hvlam' with
+          | lam hτ₁ hτ₂ hElam hbody =>
+              rename_i τ₁ τ₂ Γlam
+              rcases hinstl with ⟨instArgs, hinstLC, hinstTo⟩
+              have hEq := InstantiatesBy.eq_of_closed (ContainsBvarsUpTo.arrow hτ₁ hτ₂) hinstTo
+              have hA : τ = τ₁ := by injection hEq
+              have hB : B = τ₂ := by injection hEq
+              have hvA : ValTyped ctors av (PolyTy.mkTrivial τ) :=
+                ValTyped_inst_of_isVal hIsVal hv hinst
+              have hbody' : TypeOfHM ⟨PolyTy.mkTrivial τ :: Γlam, ctors⟩ body B := by
+                simpa [hA.symm, hB.symm] using hbody
+              unfold StateOK
+              exact ⟨PolyTy.mkTrivial τ :: Γlam, B, EnvOK.cons hvA hElam, hbody', hk'⟩
+  case primOpPart =>
+      rename_i op av k hIsVal
+      unfold StateOK at h
+      rcases h with ⟨σ, τ, hv, hinst, hk⟩
+      cases hk with
+      | appFun hvfun hk' =>
+          rename_i B
+          rcases hvfun with ⟨σf, hvprim, hinstf⟩
+          cases hvprim with
+          | primOp hprim =>
+              rename_i τop
+              rcases hinstf with ⟨instArgs, hinstLC, hinstTo⟩
+              have hτopLC : τop.IsLC := PrimBinOp.ty_lc hprim
+              have hEq := InstantiatesBy.eq_of_closed hτopLC hinstTo
+              have hprim' : PrimBinOp.ty ctors op = some (.arrow τ B) := by
+                simpa [hEq] using hprim
+              have hvA : ValTyped ctors av (PolyTy.mkTrivial τ) :=
+                ValTyped_inst_of_isVal hIsVal hv hinst
+              have hBLC : B.IsLC := arrow_lc_r (by simpa [← hEq] using hτopLC)
+              unfold StateOK
+              exact ⟨PolyTy.mkTrivial B, B, ValTyped.primOpApp hvA hprim',
+                instantiates_trivial hBLC, hk'⟩
+  case primOpDelta =>
+      rename_i op a b r k hd
+      unfold StateOK at h
+      rcases h with ⟨σ, τ, hv, hinst, hk⟩
+      cases hk with
+      | appFun hvfun hk' =>
+          rename_i B
+          rcases hvfun with ⟨σf, hvpa, hinstf⟩
+          cases hvpa with
+          | primOpApp hvA hprim =>
+              rename_i τ₁ τ₂
+              rcases hinstf with ⟨instArgs, hinstLC, hinstTo⟩
+              have hτ₂lc : τ₂.IsLC := arrow_lc_r (PrimBinOp.ty_lc hprim)
+              have hEq := InstantiatesBy.eq_of_closed hτ₂lc hinstTo
+              subst hEq
+              cases op with
+              | intAdd =>
+                  have hB : B = .prim .int := primOp_int_ret hprim (Or.inl rfl)
+                  cases a with
+                  | unit => cases b <;> simp [PrimBinOp.delta] at hd
+                  | int m =>
+                      cases b with
+                      | unit => simp [PrimBinOp.delta] at hd
+                      | int n =>
+                          simp [PrimBinOp.delta] at hd
+                          have hr : r = .prim (.int (m + n)) := hd.symm
+                          unfold StateOK
+                          refine ⟨PolyTy.mkTrivial B, B, ?_,
+                            instantiates_trivial (by simpa [hB] using (ContainsBvarsUpTo.prim : ContainsBvarsUpTo 0 (Ty.prim PrimTy.int))), hk'⟩
+                          rw [hr, hB]
+                          exact ValTyped.prim
+                      | nat n => simp [PrimBinOp.delta] at hd
+                      | char n => simp [PrimBinOp.delta] at hd
+                  | nat n => cases b <;> simp [PrimBinOp.delta] at hd
+                  | char n => cases b <;> simp [PrimBinOp.delta] at hd
+              | intSub =>
+                  have hB : B = .prim .int := primOp_int_ret hprim (Or.inr rfl)
+                  cases a with
+                  | unit => cases b <;> simp [PrimBinOp.delta] at hd
+                  | int m =>
+                      cases b with
+                      | unit => simp [PrimBinOp.delta] at hd
+                      | int n =>
+                          simp [PrimBinOp.delta] at hd
+                          have hr : r = .prim (.int (m - n)) := hd.symm
+                          unfold StateOK
+                          refine ⟨PolyTy.mkTrivial B, B, ?_,
+                            instantiates_trivial (by simpa [hB] using (ContainsBvarsUpTo.prim : ContainsBvarsUpTo 0 (Ty.prim PrimTy.int))), hk'⟩
+                          rw [hr, hB]
+                          exact ValTyped.prim
+                      | nat n => simp [PrimBinOp.delta] at hd
+                      | char n => simp [PrimBinOp.delta] at hd
+                  | nat n => cases b <;> simp [PrimBinOp.delta] at hd
+                  | char n => cases b <;> simp [PrimBinOp.delta] at hd
+              | intLt =>
+                  rcases primOp_bool_ret hprim (Or.inl rfl) with ⟨hB, hT, hF⟩
+                  cases a with
+                  | unit => cases b <;> simp [PrimBinOp.delta] at hd
+                  | int m =>
+                      cases b with
+                      | unit => simp [PrimBinOp.delta] at hd
+                      | int n =>
+                          simp [PrimBinOp.delta] at hd
+                          have hr : r = .ctorV (if m < n then ⟨"True"⟩ else ⟨"False"⟩) [] := hd.symm
+                          unfold StateOK
+                          refine ⟨PolyTy.mkTrivial B, B, ?_,
+                            instantiates_trivial (by simpa [hB] using (ContainsBvarsUpTo.customTy (by intro t ht; simp at ht) : ContainsBvarsUpTo 0 (Ty.customTy ⟨"Bool"⟩ []))), hk'⟩
+                          by_cases hmn : m < n
+                          · simpa [hr, hmn, hB] using valTyped_bool_ctor hT
+                          · simpa [hr, hmn, hB] using valTyped_bool_ctor hF
+                      | nat n => simp [PrimBinOp.delta] at hd
+                      | char n => simp [PrimBinOp.delta] at hd
+                  | nat n => cases b <;> simp [PrimBinOp.delta] at hd
+                  | char n => cases b <;> simp [PrimBinOp.delta] at hd
+              | charLt =>
+                  rcases primOp_bool_ret hprim (Or.inr rfl) with ⟨hB, hT, hF⟩
+                  cases a with
+                  | unit => cases b <;> simp [PrimBinOp.delta] at hd
+                  | int m => cases b <;> simp [PrimBinOp.delta] at hd
+                  | nat n => cases b <;> simp [PrimBinOp.delta] at hd
+                  | char m =>
+                      cases b with
+                      | unit => simp [PrimBinOp.delta] at hd
+                      | int n => simp [PrimBinOp.delta] at hd
+                      | nat n => simp [PrimBinOp.delta] at hd
+                      | char n =>
+                          simp [PrimBinOp.delta] at hd
+                          have hr : r = .ctorV (if m.toNat < n.toNat then ⟨"True"⟩ else ⟨"False"⟩) [] := hd.symm
+                          unfold StateOK
+                          refine ⟨PolyTy.mkTrivial B, B, ?_,
+                            instantiates_trivial (by simpa [hB] using (ContainsBvarsUpTo.customTy (by intro t ht; simp at ht) : ContainsBvarsUpTo 0 (Ty.customTy ⟨"Bool"⟩ []))), hk'⟩
+                          by_cases hmn : m.toNat < n.toNat
+                          · simpa [hr, hmn, hB] using valTyped_bool_ctor hT
+                          · simpa [hr, hmn, hB] using valTyped_bool_ctor hF
+  case ctorApp =>
+      rename_i name args av k hIsVal
+      unfold StateOK at h
+      rcases h with ⟨σ, τ, hv, hinst, hk⟩
+      cases hk with
+      | appFun hvfun hk' =>
+          rename_i B
+          have hvA : ValTyped ctors av (PolyTy.mkTrivial τ) := ValTyped_inst_of_isVal hIsVal hv hinst
+          rcases hvfun with ⟨σf, hvctorV, hinstf⟩
+          cases hvctorV with
+          | ctorV hlook htyArgs hargs hfields =>
+              rename_i ctor tyArgs instContents remContents
+              rcases hinstf with ⟨instArgs, hinstLC, hinstTo⟩
+              cases remContents with
+              | nil =>
+                  cases hinstTo
+              | cons c rest =>
+                  cases hinstTo with
+                  | arrow hc hrest =>
+                      have hcLC : c.IsLC := by
+                        rcases Forall₂_mem_right hfields c (List.mem_append.mpr (Or.inr List.mem_cons_self))
+                          with ⟨content, hmemC, hinstC⟩
+                        exact InstantiatesBy_lc htyArgs (ctor.bound content hmemC) hinstC
+                      have hcEq : τ = c := InstantiatesBy.eq_of_closed hcLC hc
+                      have hargs' : List.Forall₂ (fun a t => ValTyped ctors a (PolyTy.mkTrivial t))
+                          (args ++ [av]) (instContents ++ [τ]) := by
+                        exact forall2_snoc hargs hvA
+                      have hfields' : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents
+                          ((instContents ++ [τ]) ++ rest) := by
+                        simpa [List.append_assoc, hcEq] using hfields
+                      have hct : ValTyped ctors (.ctorV name (args ++ [av]))
+                          (PolyTy.mkTrivial (Ty.wrapArrows (Ty.customTy ctor.tyName tyArgs) rest)) := by
+                        exact ValTyped.ctorV (remContents := rest) hlook htyArgs hargs' hfields'
+                      unfold StateOK
+                      refine ⟨PolyTy.mkTrivial (Ty.wrapArrows (Ty.customTy ctor.tyName tyArgs) rest), B, hct, ?_, hk'⟩
+                      exact ⟨instArgs, hinstLC, hrest⟩
+  case letIn =>
+      rename_i E ann rhs body k
+      unfold StateOK at h
+      rcases h with ⟨Γ, τ, hE, he, hk⟩
+      cases he with
+      | letIn hwf hpin hgen hbctx hbody =>
+          rename_i M L
+          have hbody' : TypeOfHM ⟨M :: Γ, ctors⟩ body τ := by
+            rw [hbctx] at hbody
+            simpa using hbody
+          unfold StateOK
+          exact ⟨M :: Γ, τ, EnvOK.cons (ValTyped.thunk hE hpin hwf hgen) hE, hbody', hk⟩
+  case letRec =>
+      rename_i E anns bindings body k
+      unfold StateOK at h
+      rcases h with ⟨Γ, τ, hE, he, hk⟩
+      cases he with
+      | letRec hwf hmono hpoly hbctx hbody =>
+          rename_i specs G L
+          have hbody' : TypeOfHM ⟨specs.map (RecSpec.bodyScheme G) ++ Γ, ctors⟩ body τ := by
+            rw [hbctx] at hbody
+            simpa [RecSpecs.bodyCtx] using hbody
+          unfold StateOK
+          exact ⟨specs.map (RecSpec.bodyScheme G) ++ Γ, τ, EnvOK_bindGroup hE hwf hmono hpoly, hbody', hk⟩
+  case matchScrut =>
+      rename_i E scrut branches k
+      unfold StateOK at h
+      rcases h with ⟨Γ, τ, hE, he, hk⟩
+      cases he with
+      | match_ hscrut hne hbrs =>
+          rename_i scrutTy
+          unfold StateOK
+          exact ⟨Γ, scrutTy, hE, hscrut, KontTyped.matchSel hE hbrs hk⟩
+  case matchCtor =>
+      rename_i name args E branches k pat body hfirst
+      unfold StateOK at h
+      rcases h with ⟨σ, τ, hv, hinst, hk⟩
+      cases hv with
+      | ctorV hlook htyArgs hargs hfields =>
+          rename_i ctor tyArgs instContents remContents
+          rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+          cases hk with
+          | matchSel hE hbranches hk' =>
+              rename_i ρ' Γ
+              have hbranch : TypeOfMatchBranch ⟨Γ, ctors⟩ (pat, body) τ ρ' :=
+                hbranches (pat, body) (FirstMatchingBranch.mem hfirst)
+              cases hbranch with
+              | mk bspec hbctx hbodies =>
+                  rename_i c n tyArgsS instContentsS
+                  rcases bspec with ⟨hlookS, hscrutEq, harity, hbindcount, hfieldsS⟩
+                  rename_i ctorS
+                  have hmatches : (c == name && n == args.length) = true := by
+                    simpa [MatchPattern.matchesCtor] using (FirstMatchingBranch.ctor_eq hfirst)
+                  have hcand := (Bool.and_eq_true_eq_eq_true_and_eq_true _ _).mp hmatches
+                  have hcbeq : (c == name) = true := hcand.1
+                  have hnbeq : (n == args.length) = true := hcand.2
+                  have hc : c = name := by
+                    unfold BEq.beq at hcbeq
+                    exact of_decide_eq_true hcbeq
+                  have hn : n = args.length := by
+                    unfold BEq.beq at hnbeq
+                    exact of_decide_eq_true hnbeq
+                  have hlookS' : LookupList.get? ctors name = some ctorS := by
+                    simpa [hc] using hlookS
+                  have hctorEq : ctorS = ctor := Option.some.inj (hlookS'.symm.trans hlook)
+                  subst ctorS
+                  rcases instantiatesBy_wrapArrows (result := Ty.customTy ctor.tyName tyArgs)
+                    (contents := remContents) (τ := τ) hinstTo
+                    with ⟨resultI, contentsI, hEq2, hresI, hcontI⟩
+                  have hcontentsI_nil : contentsI = [] := by
+                    cases contentsI with
+                    | nil => rfl
+                    | cons c' cs' =>
+                        have hcon : Ty.customTy ctor.tyName tyArgsS = Ty.arrow c' (Ty.wrapArrows resultI cs') :=
+                          hscrutEq.symm.trans hEq2
+                        simp at hcon
+                  have hresultI : resultI = Ty.customTy ctor.tyName tyArgsS := by
+                    rw [hcontentsI_nil] at hEq2
+                    simpa [Ty.wrapArrows] using hEq2.symm.trans hscrutEq
+                  have hremContents : remContents = [] := by
+                    rw [hcontentsI_nil] at hcontI
+                    by_contra hc
+                    rcases List.exists_cons_of_ne_nil hc with ⟨hd, tl, hceq⟩
+                    rw [hceq] at hcontI
+                    cases hcontI
+                  have hresI' : InstantiatesBy instArgs (Ty.customTy ctor.tyName tyArgs)
+                      (Ty.customTy ctor.tyName tyArgsS) := by
+                    simpa [hresultI] using hresI
+                  have hforall : List.Forall₂ (InstantiatesBy instArgs) tyArgs tyArgsS := by
+                    cases hresI' with
+                    | customTy hf => exact hf
+                  have htyArgs_eq : tyArgs = tyArgsS := forall2_instantiatesBy_eq_of_lc htyArgs hforall
+                  subst tyArgs
+                  have hinstEq : instContents ++ remContents = instContentsS := by
+                    refine forall2_det_instantiates ?_ hfields hfieldsS
+                    intro t ht a b ha hb
+                    exact InstantiatesBy.det_agree (fun k hk => rfl) (ctor.bound t ht) ha hb
+                  have hinstContents : instContents = instContentsS := by
+                    rw [hremContents] at hinstEq
+                    simpa using hinstEq
+                  have hpatBind : args.take (MatchPattern.bindCount (.named c n)) = args := by
+                    rw [hn]
+                    exact take_all_of_eq_length (l := args) rfl
+                  have hargsV : List.Forall₂ (fun v σ => ValTyped ctors v σ) args
+                      (instContents.map PolyTy.mkTrivial) := forall2_valTyped_mkTrivial hargs
+                  have htakeV : List.Forall₂ (fun v σ => ValTyped ctors v σ)
+                      (args.take (MatchPattern.bindCount (.named c n))) (instContentsS.map PolyTy.mkTrivial) := by
+                    rw [hpatBind, ← hinstContents]
+                    exact hargsV
+                  have hEnv : EnvOK ctors (args.take (MatchPattern.bindCount (.named c n)) ++ E)
+                      (instContentsS.map PolyTy.mkTrivial ++ Γ) :=
+                    EnvOK_append hE (args.take (MatchPattern.bindCount (.named c n)))
+                      (instContentsS.map PolyTy.mkTrivial) htakeV
+                  have hbody' : TypeOfHM ⟨instContentsS.map PolyTy.mkTrivial ++ Γ, ctors⟩ body ρ' := by
+                    rw [hbctx] at hbodies
+                    simpa using hbodies
+                  unfold StateOK
+                  exact ⟨instContentsS.map PolyTy.mkTrivial ++ Γ, ρ', hEnv, hbody', hk'⟩
+              | wildcard hbody =>
+                  have hpatBind : args.take (MatchPattern.bindCount MatchPattern.wildcard) = [] := by
+                    simp [MatchPattern.bindCount]
+                  unfold StateOK
+                  refine ⟨Γ, ρ', ?_, hbody, hk'⟩
+                  simpa [hpatBind] using hE
+  case matchWild =>
+      rename_i v E branches k body hnon
+      unfold StateOK at h
+      rcases h with ⟨σ, τ, hv, hinst, hk⟩
+      cases hk with
+      | matchSel hE hbranches hk' =>
+          rename_i ρ' Γ
+          have hbranch : TypeOfMatchBranch ⟨Γ, ctors⟩ (.wildcard, body) τ ρ' :=
+            hbranches (.wildcard, body) List.mem_cons_self
+          cases hbranch with
+          | wildcard hbody =>
+              unfold StateOK
+              exact ⟨Γ, ρ', hE, hbody, hk'⟩
+  case force =>
+      rename_i ann e E k
+      unfold StateOK at h
+      rcases h with ⟨σ, τ, hv, hinst, hk⟩
+      cases hv with
+      | thunk hE hpin hMwf hgen =>
+          rename_i L Γ
+          unfold ErasedState at herased
+          rcases herased with ⟨hthunk, hkErased⟩
+          unfold Val.IsErased at hthunk
+          rcases hthunk with ⟨hannWf, he, hEerased⟩
+          have hty : TypeOfHM ⟨Γ, ctors⟩ e τ := GeneralisesTo_inst_ann he hgen hinst
+          unfold StateOK
+          exact ⟨Γ, τ, hE, hty, hk⟩
+  case forceRecclo =>
+      rename_i anns bindings E j k hlt
+      unfold StateOK at h
+      rcases h with ⟨σ, τ, hv, hinst, hk⟩
+      cases hv with
+      | recclo hj hE hwf hmono hpoly hσ =>
+          rename_i specs G L Γ
+          have hinst' : Instantiates (RecSpec.bodyScheme G (specs.get ⟨j, hj⟩)) τ := by
+            simpa [hσ] using hinst
+          have hmem : (bindings.get ⟨j, hlt⟩, specs.get ⟨j, hj⟩) ∈ bindings.zip specs :=
+            mem_zip_get bindings specs j hlt hj
+          have herasedBody : (bindings.get ⟨j, hlt⟩).IsErased := by
+            unfold ErasedState at herased
+            rcases herased with ⟨hrec, hkErased⟩
+            unfold Val.IsErased at hrec
+            rcases hrec with ⟨hannsWf, hbind, hEerased⟩
+            exact hbind (bindings.get ⟨j, hlt⟩) (List.get_mem bindings ⟨j, hlt⟩)
+          have hbody : TypeOfHM (RecSpecs.bodyCtx ⟨Γ, ctors⟩ specs G) (bindings.get ⟨j, hlt⟩) τ :=
+            recclo_body_typed hwf hmono hpoly herasedBody hmem hinst'
+          have hbody' : TypeOfHM ⟨specs.map (RecSpec.bodyScheme G) ++ Γ, ctors⟩
+              (bindings.get ⟨j, hlt⟩) τ := by
+            simpa [RecSpecs.bodyCtx] using hbody
+          unfold StateOK
+          exact ⟨specs.map (RecSpec.bodyScheme G) ++ Γ, τ,
+            EnvOK_bindGroup hE hwf hmono hpoly, hbody', hk⟩
 
 /-- Every value stored in an erased environment is itself erased. -/
 private theorem erasedEnv_get {E : VEnv} (hE : ErasedEnv E) :
