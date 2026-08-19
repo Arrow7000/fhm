@@ -267,6 +267,53 @@ private theorem InstantiatesBy.eq_of_closed {tyArgs : List Ty} {ty τ : Ty}
           | bl hinstElem =>
               exact congrArg (Ty.bl lo hi) (ih he hinstElem)
 
+/-- `PrimBinOp.ty` always returns a locally-closed type (no `bvar`s): the built-in
+    ops are monomorphic — `int`/`char` literals, `Bool` with no type args. -/
+private theorem PrimBinOp.ty_lc {ctors : CtorEnv} {op : PrimBinOp} {τ : Ty}
+    (h : PrimBinOp.ty ctors op = some τ) : τ.IsLC := by
+  cases op with
+  | intAdd =>
+      simp [PrimBinOp.ty] at h
+      rw [← h]
+      exact ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+        (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim ContainsBvarsUpTo.prim)
+  | intSub =>
+      simp [PrimBinOp.ty] at h
+      rw [← h]
+      exact ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+        (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim ContainsBvarsUpTo.prim)
+  | intLt =>
+      cases h1 : LookupList.get? ctors ⟨"True"⟩ with
+      | none => simp [PrimBinOp.ty, h1] at h
+      | some tc =>
+          cases h2 : LookupList.get? ctors ⟨"False"⟩ with
+          | none => simp [PrimBinOp.ty, h1, h2] at h
+          | some fc =>
+              simp [PrimBinOp.ty, h1, h2] at h
+              rcases h with ⟨htc, hx⟩
+              rw [← hx]
+              exact ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+                (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+                  (ContainsBvarsUpTo.customTy (by intro t ht; simp at ht)))
+  | charLt =>
+      cases h1 : LookupList.get? ctors ⟨"True"⟩ with
+      | none => simp [PrimBinOp.ty, h1] at h
+      | some tc =>
+          cases h2 : LookupList.get? ctors ⟨"False"⟩ with
+          | none => simp [PrimBinOp.ty, h1, h2] at h
+          | some fc =>
+              simp [PrimBinOp.ty, h1, h2] at h
+              rcases h with ⟨htc, hx⟩
+              rw [← hx]
+              exact ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+                (ContainsBvarsUpTo.arrow ContainsBvarsUpTo.prim
+                  (ContainsBvarsUpTo.customTy (by intro t ht; simp at ht)))
+
+/-- Right component of a locally-closed arrow is locally closed. -/
+private theorem arrow_lc_r {τ₁ τ₂ : Ty} (h : (Ty.arrow τ₁ τ₂).IsLC) : τ₂.IsLC := by
+  cases h with
+  | arrow _ hb => exact hb
+
 /-- Appending a list of typed values (pointwise) to a typed environment keeps
     `EnvOK`. -/
 private theorem EnvOK_append {ctors : CtorEnv} {E : VEnv} {Γ : Env}
@@ -349,17 +396,47 @@ private theorem EnvOK_bindGroup_pre {ctors : CtorEnv} {Γ : Env}
     the ones consumed at a monotype without being forced first; thunks and
     rec-closures are instead consumed via the `Instantiates` premise in
     `StateOK`/`KontTyped`, never through this lemma.) -/
--- NOTE: UNPROVABLE AS STATED. The `mutual`-compiled `ValTyped` drops the
--- `.IsLC` premises of the `lam`/`ctorV` constructors (Lean 4's mutual-Prop
--- recursor prunes them), so `ValTyped ctors (.lam body E) σ` can hold for a
--- non-locally-closed parameter type; then `hinst` may instantiate its bvars to
--- a type `τ` whose `ValTyped`-at-`mkTrivial τ` conclusion is not derivable.
--- Concrete witness: `v = .lam (.var 0 []) []`, `σ = mkTrivial (.arrow (.bvar 0)
--- (.fvar 5))`, `τ = .arrow (.prim .unit) (.fvar 5)`.
+-- NOTE: previously claimed unprovable because the `mutual`-compiled `ValTyped`
+-- was thought to drop the `.IsLC` premises of the `lam`/`ctorV` constructors.
+-- The current source keeps them, so the proof below goes through: every `IsVal`
+-- constructor forces `σ = mkTrivial t` for a locally-closed `t`, hence `hinst`
+-- is the identity on `t` (`InstantiatesBy.eq_of_closed`) and `τ = t`.
 theorem ValTyped_inst_of_isVal {ctors : CtorEnv} {v : Val} {σ : PolyTy} {τ : Ty}
     (hvIsVal : IsVal v) (hv : ValTyped ctors v σ) (hinst : Instantiates σ τ) :
     ValTyped ctors v (PolyTy.mkTrivial τ) := by
-  sorry
+  cases hv with
+  | prim =>
+      rename_i p
+      cases p <;>
+        (rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+         have hEq := InstantiatesBy.eq_of_closed ContainsBvarsUpTo.prim hinstTo
+         subst hEq
+         exact ValTyped.prim)
+  | primOp hty =>
+      rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+      have hEq := InstantiatesBy.eq_of_closed (PrimBinOp.ty_lc hty) hinstTo
+      subst hEq
+      exact ValTyped.primOp hty
+  | primOpApp hv' hty =>
+      rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+      have hτ₂lc := arrow_lc_r (PrimBinOp.ty_lc hty)
+      have hEq := InstantiatesBy.eq_of_closed hτ₂lc hinstTo
+      subst hEq
+      exact ValTyped.primOpApp hv' hty
+  | lam hτ₁ hτ₂ hE hbody =>
+      rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+      have hEq := InstantiatesBy.eq_of_closed (ContainsBvarsUpTo.arrow hτ₁ hτ₂) hinstTo
+      subst hEq
+      exact ValTyped.lam hτ₁ hτ₂ hE hbody
+  | thunk =>
+      simp [IsVal] at hvIsVal
+  | recclo =>
+      simp [IsVal] at hvIsVal
+  | ctorV hlook htyArgs hargs hfields =>
+      rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+      have hEq := InstantiatesBy.eq_of_closed (ContainsBvarsUpTo.customTy htyArgs) hinstTo
+      subst hEq
+      exact ValTyped.ctorV hlook htyArgs hargs hfields
 
 /-- `bindGroup anns bindings E` is well-typed against the group's BODY context:
     each rec-closure at its member's body scheme, and `E` at `Γ`. (Needed by
