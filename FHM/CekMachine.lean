@@ -491,6 +491,79 @@ private theorem EnvOK_bindGroup_pre {ctors : CtorEnv} {Γ : Env}
               ih (anns := anns) (bindings := bindings_tl) (preA := preA)
                 (preB := preB ++ [b]) (preS := preS ++ [spec]) hpre' hwf' hmono' hpoly'
 
+/-- Pointwise: a `Forall₂` witness reaches every element of the right list. -/
+private theorem Forall₂_mem_right {α β : Type} {R : α → β → Prop}
+    {l₁ : List α} {l₂ : List β} (h : List.Forall₂ R l₁ l₂) :
+    ∀ b ∈ l₂, ∃ a ∈ l₁, R a b := by
+  induction h with
+  | nil =>
+      intro b hb
+      simp at hb
+  | cons ha htl ih =>
+      intro b hb
+      simp at hb
+      rcases hb with rfl | hb
+      · exact ⟨_, List.mem_cons_self, ha⟩
+      · rcases ih b hb with ⟨a, ha', hR⟩
+        exact ⟨a, List.mem_cons_of_mem _ ha', hR⟩
+
+/-- Instantiation preserves local closure: if `t` (whose bvars are all below `n`)
+    instantiates to `τ` at locally-closed args, then `τ` is locally closed. The
+    `bvar` case is discharged by the LC of the corresponding `tyArgs` entry; the
+    `NoFreeVars`-ness of `t` is irrelevant (instantiating only ever *replaces*
+    bvars, and the input side's other constructors pass closure through
+    compositionally). Used to show `ValTyped.ctorV`'s remaining-field types are
+    LC — each is an `InstantiatesBy` instance of a `ctor.contents` field, and
+    fields are `ContainsBvarsUpTo ctor.paramCount`. -/
+private theorem InstantiatesBy_lc {n : Nat} {tyArgs : List Ty} {t τ : Ty}
+    (hLC : ∀ a ∈ tyArgs, a.IsLC)
+    (hbound : ContainsBvarsUpTo n t)
+    (hinst : InstantiatesBy tyArgs t τ) : τ.IsLC := by
+  induction t using Ty.rec_strong generalizing τ with
+  | prim p =>
+      cases hinst
+      exact ContainsBvarsUpTo.prim
+  | arrow a b iha ihb =>
+      cases hbound with
+      | arrow hba hbb =>
+          cases hinst with
+          | arrow hinstA hinstB =>
+              exact ContainsBvarsUpTo.arrow (iha hba hinstA) (ihb hbb hinstB)
+  | bvar i =>
+      cases hbound
+      cases hinst with
+      | bvar hsome =>
+          exact hLC _ (List.mem_of_getElem? hsome)
+  | fvar n =>
+      cases hinst
+      exact ContainsBvarsUpTo.fvar
+  | customTy nm tys ih =>
+      cases hbound with
+      | customTy hball =>
+          cases hinst with
+          | customTy hforall =>
+              refine ContainsBvarsUpTo.customTy ?_
+              intro τ hτ
+              rcases Forall₂_mem_right hforall τ hτ with ⟨a, ha, hinstA⟩
+              exact ih a ha (hball a ha) hinstA
+  | bl lo hi e ih =>
+      cases hbound with
+      | bl hbe =>
+          cases hinst with
+          | bl hinstE =>
+              exact ContainsBvarsUpTo.bl (ih hbe hinstE)
+
+/-- `wrapArrows` of a locally-closed result at locally-closed arguments is
+    locally closed. -/
+private theorem wrapArrows_lc {result : Ty} {args : List Ty}
+    (hres : result.IsLC) (hargs : ∀ a ∈ args, a.IsLC) : (Ty.wrapArrows result args).IsLC := by
+  induction args with
+  | nil => simpa [Ty.wrapArrows] using hres
+  | cons a as ih =>
+      simp only [Ty.wrapArrows]
+      exact ContainsBvarsUpTo.arrow (hargs a List.mem_cons_self)
+        (ih (fun b hb => hargs b (List.mem_cons_of_mem _ hb)))
+
 /-- An already-forced value at scheme `σ` is also at any monotype `τ` that `σ`
     instantiates to. (This closes `ValTyped` downward only for `IsVal` values —
     the ones consumed at a monotype without being forced first; thunks and
@@ -533,9 +606,20 @@ theorem ValTyped_inst_of_isVal {ctors : CtorEnv} {v : Val} {σ : PolyTy} {τ : T
   | recclo =>
       simp [IsVal] at hvIsVal
   | ctorV hlook htyArgs hargs hfields =>
-      -- TODO(ctorV-remContents): needs LC of `wrapArrows (customTy tyArgs) remContents`
-      -- from `htyArgs` + `hfields` + `ctor.bound`/`ctor.closed` (instantiation preserves LC).
-      sorry
+      rename_i name args ctor tyArgs instContents remContents
+      rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+      -- Each remaining-field type is an `InstantiatesBy tyArgs` instance of a
+      -- `ctor.contents` field, and fields are bounded by `ctor.paramCount`.
+      have hmem_lc : ∀ τ ∈ (instContents ++ remContents), τ.IsLC := by
+        intro τ hτ
+        rcases Forall₂_mem_right hfields τ hτ with ⟨a, ha, hinstA⟩
+        exact InstantiatesBy_lc htyArgs (ctor.bound a ha) hinstA
+      have hBodyLC : (Ty.wrapArrows (.customTy ctor.tyName tyArgs) remContents).IsLC :=
+        wrapArrows_lc (ContainsBvarsUpTo.customTy htyArgs)
+          (fun a ha => hmem_lc a (List.mem_append.mpr (Or.inr ha)))
+      have hEq := InstantiatesBy.eq_of_closed hBodyLC hinstTo
+      subst hEq
+      exact ValTyped.ctorV hlook htyArgs hargs hfields
 
 /-- `bindGroup anns bindings E` is well-typed against the group's BODY context:
     each rec-closure at its member's body scheme, and `E` at `Γ`. (Needed by
@@ -704,7 +788,49 @@ theorem GeneralisesTo_inst_ann {ctx : Ctx} {ann : Option PolyTy} {e : Expr}
     (herased : e.IsErased)
     (hgen : GeneralisesTo TypeOfHM ctx ann e M L) (hinst : Instantiates M τ) :
     TypeOfHM ctx e τ := by
-  sorry
+  rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+  -- Pick fresh names `Xs` (length `M.paramCount`) avoiding `L`, the context env's
+  -- free vars, `e`'s annotation free vars, and the free vars of `instArgs` / `M.body`.
+  obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
+    exists_fresh_names
+      (L ++ ctx.env.freeVars ++ e.tyFreeVars ++ Ty.freeVarsList instArgs ++ M.body.freeVars)
+      M.paramCount
+  have hXL : ∀ x ∈ Xs, x ∉ L := fun x hx hc => hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXenv : ∀ x ∈ Xs, x ∉ ctx.env.freeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXe : ∀ x ∈ Xs, x ∉ e.tyFreeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXVs : ∀ x ∈ Xs, x ∉ Ty.freeVarsList instArgs := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXM : ∀ x ∈ Xs, x ∉ M.body.freeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hfresh : FreshNames L M.paramCount Xs := ⟨hXlen, hXnodup, hXL⟩
+  -- Erased-ness collapses the opening: `openBoundTyVars none` is the identity,
+  -- and `openBoundTyVars (some σ)` is `e.openTyVars Xs = e` (no scoped tyVars).
+  have he : TypeOfHM ctx e (M.openVars Xs) := by
+    cases ann with
+    | none => simpa [Expr.openBoundTyVars] using hgen Xs hfresh
+    | some σ =>
+        simpa [Expr.openBoundTyVars, Expr.openTyVars_eq_self_of_erased herased Xs] using hgen Xs hfresh
+  -- Push the type-fvar substitution `Xs[i] ↦ instArgs[i]` through the derivation;
+  -- the fresh names fix both the context and the term.
+  have h_lc : ∀ p ∈ Xs.zip instArgs, Ty.IsLC p.2 := fun p hp =>
+    hinstLC p.2 (List.of_mem_zip hp).2
+  have hsub : TypeOfHM ctx (e.substTyFvars (Xs.zip instArgs))
+      (Ty.substFvars (Xs.zip instArgs) (M.openVars Xs)) :=
+    TypeOfHM.typ_substs_preservation (Xs.zip instArgs)
+      (fun p hp => hXenv p.1 (List.of_mem_zip hp).1) h_lc he
+  have hfix : e.substTyFvars (Xs.zip instArgs) = e :=
+    Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by
+      intro p hp
+      exact hXe p.1 (List.of_mem_zip hp).1)
+  have hreg : (M.openVars Xs).IsLC := TypeOfHM.regular he
+  have hty : Ty.substFvars (Xs.zip instArgs) (M.openVars Xs) = τ := by
+    change Ty.substFvars (Xs.zip instArgs) (Ty.openVars Xs M.body) = τ
+    exact substFvars_zip_openVars_eq (Xs := Xs) (Vs := instArgs)
+      hXnodup hXVs M.body τ hinstTo hXM hreg
+  rw [hfix, hty] at hsub
+  exact hsub
 
 /-- If a term types at every opening of scheme `M`, and `M` instantiates to `τ`,
     then the term types at `τ` (the `GeneralisesTo`-instantiation lemma, the
