@@ -1146,6 +1146,7 @@ inductive KontTyped (ctors : CtorEnv) : Kont → Ty → Ty → Prop
   | matchSel {E branches k} {τ ρ ρ' : Ty} {Γ : Env}
       (hE : EnvOK ctors E Γ)
       (hbranches : ∀ branch ∈ branches, TypeOfMatchBranch ⟨Γ, ctors⟩ branch τ ρ)
+      (hne : branches ≠ [])
       (hk : KontTyped ctors k ρ ρ') :
       KontTyped ctors (.matchSel E branches k) τ ρ'
 
@@ -1154,6 +1155,21 @@ def StateOK (ctors : CtorEnv) (s : State) (ρ : Ty) : Prop :=
   match s with
   | .eval E e k => ∃ Γ τ, EnvOK ctors E Γ ∧ TypeOfHM ⟨Γ, ctors⟩ e τ ∧ KontTyped ctors k τ ρ
   | .ret v k => ∃ σ τ, ValTyped ctors v σ ∧ Instantiates σ τ ∧ KontTyped ctors k τ ρ
+
+/-- Match coverage (machine-level analogue of `AllMatchesExhaustive.match_`): there
+    is a type name `tyName` such that every NAMED branch's ctor has that type name
+    (the "pin" — what links the coverage to the scrutinee's type via the branch's
+    `scrut_eq`), and every ctor of `tyName` is matched by some branch (a named
+    branch by name+arity, a wildcard by default). Carried by `ExhaustiveKont.matchSel`
+    so `progress` can find a branch for whatever ctor the scrutinee evaluates to. -/
+def MatchCovered (ctors : CtorEnv) (branches : List (MatchPattern × Expr)) : Prop :=
+  ∃ tyName : TyName,
+    (∀ (c : CtorName) (n : Nat) (body : Expr), (MatchPattern.named c n, body) ∈ branches →
+       ∃ ctor, LookupList.get? ctors c = some ctor ∧ ctor.tyName = tyName) ∧
+    (∀ (name : CtorName) (ctor : Ctor), LookupList.get? ctors name = some ctor →
+      ctor.tyName = tyName →
+      ∃ (pat : MatchPattern) (body : Expr), (pat, body) ∈ branches ∧
+        pat.matchesCtor name ctor.contents.length = true)
 
 /-! ## Exhaustiveness of a machine state
 
@@ -1184,7 +1200,8 @@ mutual
     | .appFun v k => ExhaustiveVal ctors v ∧ ExhaustiveKont ctors k
     | .matchSel E branches k =>
         ExhaustiveEnv ctors E ∧
-          (∀ pb ∈ branches, AllMatchesExhaustive ctors pb.2) ∧ ExhaustiveKont ctors k
+          (∀ pb ∈ branches, AllMatchesExhaustive ctors pb.2) ∧
+          MatchCovered ctors branches ∧ ExhaustiveKont ctors k
 
 end
 
@@ -2024,7 +2041,7 @@ theorem preservation {ctors : CtorEnv} {s s' : State} {ρ : Ty}
       | match_ hscrut hne hbrs =>
           rename_i scrutTy
           unfold StateOK
-          exact ⟨Γ, scrutTy, hE, hscrut, KontTyped.matchSel hE hbrs hk⟩
+          exact ⟨Γ, scrutTy, hE, hscrut, KontTyped.matchSel hE hbrs hne hk⟩
   case matchCtor =>
       rename_i name args E branches k pat body hfirst
       unfold StateOK at h
@@ -2034,7 +2051,7 @@ theorem preservation {ctors : CtorEnv} {s s' : State} {ρ : Ty}
           rename_i ctor tyArgs instContents remContents
           rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
           cases hk with
-          | matchSel hE hbranches hk' =>
+          | matchSel hE hbranches _hne hk' =>
               rename_i ρ' Γ
               have hbranch : TypeOfMatchBranch ⟨Γ, ctors⟩ (pat, body) τ ρ' :=
                 hbranches (pat, body) (FirstMatchingBranch.mem hfirst)
@@ -2121,7 +2138,7 @@ theorem preservation {ctors : CtorEnv} {s s' : State} {ρ : Ty}
       unfold StateOK at h
       rcases h with ⟨σ, τ, hv, hinst, hk⟩
       cases hk with
-      | matchSel hE hbranches hk' =>
+      | matchSel hE hbranches _hne hk' =>
           rename_i ρ' Γ
           have hbranch : TypeOfMatchBranch ⟨Γ, ctors⟩ (.wildcard, body) τ ρ' :=
             hbranches (.wildcard, body) List.mem_cons_self
@@ -2467,21 +2484,23 @@ theorem preservation_exhaustive {ctors : CtorEnv} {s s' : State}
       simp only [ExhaustiveState, ExhaustiveKont] at hexh ⊢
       rcases hexh with ⟨hE, hmatch, hk⟩
       cases hmatch with
-      | match_ hscrut hbodies _ _ =>
-          refine ⟨hE, hscrut, hE, ?_, hk⟩
-          intro pb hpb
-          rcases pb with ⟨pat, body⟩
-          exact hbodies.mem hpb
+      | match_ hscrut hbodies hpin hcoverage =>
+          rename_i tyName
+          refine ⟨hE, hscrut, hE, ?_, ?_, hk⟩
+          · intro pb hpb
+            rcases pb with ⟨pat, body⟩
+            exact hbodies.mem hpb
+          · exact ⟨tyName, hpin, hcoverage⟩
   case matchCtor =>
       rename_i name args E branches k pat body hfirst
       simp only [ExhaustiveState, ExhaustiveVal, ExhaustiveKont] at hexh ⊢
-      rcases hexh with ⟨hargs, hE, hbranches, hk⟩
+      rcases hexh with ⟨hargs, hE, hbranches, _hcover, hk⟩
       refine ⟨exhaustiveEnv_append hE _ (fun a ha => hargs a (List.mem_of_mem_take ha)), ?_, hk⟩
       exact hbranches (pat, body) (FirstMatchingBranch.mem hfirst)
   case matchWild =>
       rename_i v E branches k body hnon
       simp only [ExhaustiveState, ExhaustiveKont] at hexh ⊢
-      rcases hexh with ⟨hv, hE, hbranches, hk⟩
+      rcases hexh with ⟨hv, hE, hbranches, _hcover, hk⟩
       exact ⟨hE, hbranches (.wildcard, body) (List.mem_cons_self ..), hk⟩
   case force =>
       simp only [ExhaustiveState, ExhaustiveVal] at hexh ⊢
