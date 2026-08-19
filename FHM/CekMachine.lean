@@ -693,6 +693,19 @@ private theorem substFvars_zip_openVars_eq {Xs : List Nat} {Vs : List Ty}
           | bl hLCe =>
               exact congrArg (Ty.bl lo hi) (ih instElem he (fun X hX hc => hfresh X hX hc) hLCe)
 
+/-- The annotated/erased analogue of `GeneralisesTo_inst`: if an ERASED term types
+    at every opening of scheme `M` (whether the `let` was annotated or not), and
+    `M` instantiates to `τ`, then the term types at `τ`. Erased-ness rewrites the
+    opening `openBoundTyVars ann Xs e` to `e` itself, so both the `none` and
+    `some σ` cases collapse to the same substitution argument. Needed by
+    `preservation`'s `force` case (whose thunk may be annotated). -/
+theorem GeneralisesTo_inst_ann {ctx : Ctx} {ann : Option PolyTy} {e : Expr}
+    {M : PolyTy} {L : List Nat} {τ : Ty}
+    (herased : e.IsErased)
+    (hgen : GeneralisesTo TypeOfHM ctx ann e M L) (hinst : Instantiates M τ) :
+    TypeOfHM ctx e τ := by
+  sorry
+
 /-- If a term types at every opening of scheme `M`, and `M` instantiates to `τ`,
     then the term types at `τ` (the `GeneralisesTo`-instantiation lemma, the
     unannotated case — the annotated case collapses via `ann.Pins M`). -/
