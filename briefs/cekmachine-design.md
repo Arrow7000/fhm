@@ -61,27 +61,31 @@ Crary–Weirich–Morrisett architecture); (c) drop/restrict the feature. The
 annotation-free fragment (unannotated `letIn`/`letRec`, which is the go/no-go for
 the metatheory) is unaffected and can be proved first.
 
-**Decision: (a), now concretely located.** The wall is exactly two `preservation`
-cases — `force` with `ann = some σ`, and `forceRecclo` with `anns[j] = some σ`
-(i.e. `recclo_body_typed`'s POLY half; its mono half is proved). Both need the same
-fix: the reduction must *open* the forced term's scoped vars, because `TypeOfHM`
-only types such a rhs opened (`GeneralisesTo`/`PolyTyped`), and the machine
-otherwise evaluates a closed term with dangling `Ty.bvar`s that no typing judgment
-accepts.
+**Decision (corrected 2026-08-19): option (a) is WRONG.** Tracing `let f : ∀a.a→a =
+λ(x : a). x in f 3`, opening at fresh names gives `λ(x : fvar X). x : fvar X → fvar X`,
+but the continuation (from `f 3`) needs `int → int` — the specific instantiation is
+lost, and an erasing machine cannot recover it (recovering it *is* type-passing).
 
-**Precise cost (worked out 2026-08-19):** the opening names must avoid the
-*declarative* `GeneralisesTo`/`PolyTyped` avoid-list `L`, which is arbitrary and
-unbounded. So the machine must carry a freshness bound `B` such that every `L` in
-the state's typing hypotheses is `⊆ [0, B)`, and `force`/`forceRecclo` open at
-`B + i`. That means a separate freshness predicate `FreshState B s` (do NOT bake `B`
-into `StateOK`/`EnvOK`/`ValTyped` — that would force re-proving the 6 already-proved
-lemmas; `ExhaustiveState`/`ValTyped`/`TypeOfHM`-level lemmas are freshness-agnostic),
-and the preservation theorem becomes `StateOK s ρ → FreshState B s → StepM s s' →
-∃ B', StateOK s' ρ ∧ FreshState B' s'` — with `B' = B + paramCount` on the two
-forcing steps (the only steps that grow the bound) and `B' = B` elsewhere. This is
-the Φ-counter threading of InferW's `belowFvars`, in miniature. Self-contained slice:
-2 reduction rules + `FreshState` + the poly half + re-proof of `stepM_deterministic`
-(the forcing steps change shape). Does not touch the proved mono core.
+**The precise split:** the two annotation features separate cleanly. *Polymorphic
+recursion* (`let rec f : ∀a. a→a = λx. f[bool] (f[int] x)`) keeps a load-bearing
+binding scheme annotation but has a **closed** rhs — its uses are instantiations,
+not annotation references — and the machine types it via the `Instantiates`
+existential at each use. *Scoped type variables* (`λ(x : a). x`) put a dangling
+`bvar` in an **inner** annotation (`lambda paramAnn`, `var tyArgs`) — that is the
+only thing the erasing machine cannot type.
+
+**The resolution — erase inner annotations, keep binding annotations.** Erase
+`var tyArgs → []` and `lambda paramAnn → none`; KEEP `letIn ann`/`letRec anns` (they
+carry polymorphic recursion). Then the machine runs on erased terms: every rhs is
+closed, `openTyVars` is a no-op, so the `recclo_body_typed` poly half is provable
+(the type-substitution instantiation touches only the type, never the closed term)
+— **no opening at force, no fresh-floor invariant; the already-proven mono machine
+IS the machine.** A coherence theorem `TypeOfHM e τ → TypeOfHM (erase e) τ` connects
+the source typing (with scoped vars) to the erased typing the machine uses — the
+README's original "erase before running", now sound because the CEK environment
+captures closures (so the orphaned-skolem problem no longer arises). Both features
+are preserved: the source typechecker honors scoped vars; the runtime erases them
+(Haskell `ScopedTypeVariables` style).
 
 This doc remains the plan, living status log, and handover artifact.
 
