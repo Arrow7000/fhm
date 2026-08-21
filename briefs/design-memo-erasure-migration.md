@@ -31,22 +31,33 @@ the code, not just against our summaries.
 - **The one decision**: accept **Damas–Milner monomorphic recursion inside `letRec`
   blocks** (members used at a monotype inside the block; generalised to schemes for
   the *body*). This is the cut the owner has now signed off on.
-- **The cascade that follows**: with mono-internal recursion the annotations are
-  runtime-inert, so we **erase them before evaluation** → erasure dissolves the
-  "orphan scoped tyvar" problem at its root → no type-passing → no `var.tyArgs` /
-  `instTy` → no generalisation-in-the-term → no Λ-nest → **no n²** → no elaboration
-  → no `TypeOfElabHM` / `sourceSound` / `eOut` / `closeTyVars` / `letRecElab*`.
+- **Two causal threads, kept separate** (they are easy to conflate, and the review
+  caught exactly this):
+  - *The cut enables uniform erasure.* With mono-internal recursion the annotations
+    are runtime-inert, so uniformly erasing them dissolves the orphan-tyvar problem
+    at its root and removes type-passing / `var.tyArgs` / `instTy` from the runtime.
+    The cut is what makes **uniform** erasure *coherent* (`Infer.sound`); it is a
+    feature-policy decision, **not** what kills the n².
+  - *Dropping elaboration kills the n².* The n² is the Λ-nest `Infer` emits into
+    `eOut`. It disappears as soon as the runnable term is the source (`erase e`)
+    typed by `TypeOfHM`, with no `eOut` — a consequence of "don't elaborate", which
+    holds for **any** type-erasing runtime (a milder erase that kept `WF` `letRec`
+    anns would also kill the nest). The cut is what lets a *single* `erase` cover
+    `letRec` anns with no leftover load-bearing annotation.
 - **The realisation that ends the CEK detour**: erasure is the load-bearing idea, and
   it is **separable from the choice of machine**. Types are fully erasable here (no
-  type-based dispatch, `match` is on constructors, primops are monomorphic by name).
-  The existing `SmallStep.Step` already reduces erased terms with **zero** type
-  computation (its reduction rules never inspect types, and `substN`'s one type-touch
-  is the identity on erased terms). So we keep `Step` and do not adopt the CEK
-  machine. `FHM/CekMachine.lean` is left in place (it is a proven, isolated leaf).
+  type-based dispatch, `match` is on constructors, primops are monomorphic by name),
+  and the *live* evaluator already runs `SmallStep.Step` (`Live.lean`,
+  `EvaluateUnsafe`). So we keep `Step` and do not adopt the CEK machine —
+  **operationally** `Step` reduces erased terms with zero type computation (its rules
+  never inspect types; `substN`'s one type-touch is the identity on `tyArgs = []`).
+  This is a *product* decision (don't put an unused machine on the evaluator path),
+  **not** a proof-budget win — see §3.7 and §5.
 - **What still has to be proved** (unchanged hard core): `Infer.sound : Infer e τ →
-  TypeOfHM (erase e) τ`, plus one new-but-standard piece — the *term*-substitution
-  and `Step`-preservation metatheory for `TypeOfHM` (which today exists only for
-  `TypeOfElabHM`).
+  TypeOfHM (erase e) τ`, plus a genuinely new *term*-substitution and
+  `Step`-preservation metatheory for `TypeOfHM` (which today exists only for
+  `TypeOfElabHM`; the CEK machine's `TypeOfHM` safety is already proved but is being
+  left unused).
 
 ---
 
@@ -161,9 +172,17 @@ Under the cut, `Infer` rejects three classes of program that the *old* fused
    three-way bind). The cut rejects it; erasure then has nothing dangling to worry about.
 
 These are exactly the programs the v1/v2 coherence lemmas failed on (see
-`feature-support-analysis-response-1/2/3.md`). The cut is *not* a gratuitous
-expressivity sacrifice; it is the class of programs that **uniform erasure cannot
-support anyway** (see §3.4 below).
+`feature-support-analysis-response-1/2/3.md`). Two clarifications of scope, so the
+cut is not over-justified:
+
+- Items (1) and (2) are unsupported by **uniform** drop of `letRec` anns. A *selective*
+  erase that kept well-formed (`WF`) binding annotations **would** support them — that
+  is the C6 point of the review trail, and Stage 1's `Expr.IsErased.letRec` already
+  does it. The cut is therefore a **policy** (owner has signed textbook DM), not a
+  physics constraint. Only item (3) — a *dangling* tyvar **and** in-group poly use —
+  is genuinely impossible without type-passing.
+- The cut is not what kills the n² (§3.4); it is what makes **uniform** erasure
+  coherent. Don't justify it twice.
 
 ### 2.3 What the cut keeps
 
@@ -221,16 +240,28 @@ dropped in cleanup (Stage 4 of the original plan), and `instTy`/`shiftFrom` beco
 "keep `Step`" decision rests on it: every `Step` rule (`Core.lean:1443–1523`) reduces by
 `substN` of *values/rhs/args* and never inspects a type; `substN`'s type-touch is
 identity on erased terms. Therefore `Step` is already a correct, fully type-erased
-reduction on erased terms.
+**reduction** on erased terms. This is an *operational* claim only: it says nothing
+about whether `TypeOfHM`/`Step` *type-safety* is already proved — it is not (§5.2).
+The whole "keep `Step`" decision rests on the *reduction* fact, plus the product fact
+that the live evaluator already runs `Step` (§3.7).
 
-### 3.4 No generalisation-in-the-term → no Λ-nest → no n²
+### 3.4 No generalisation-in-the-term → no compile-time Λ-nest → no n²
 
 Under type-passing, generalisation had to be a term-level Λ (`letRecElabNest`,
-`InferW.lean:2486`), one full group-copy per member — Θ(n²). On erased terms,
-generalisation lives only in the typing *derivation* (`TypeOfHM.letIn`'s cofinite
-`GeneralisesTo`, `TypeOfHM.letRec`'s `bodyScheme`), not in the term. Nothing is
-manufactured; nothing is copied. The n² is gone. (Note: this step is a consequence of
-**erasure**, not of the cut — the cut is what makes erasure *coherent*, §3.5.)
+`InferW.lean:2486`), one full group-copy per member — Θ(n²) in the **elaborated AST**
+(the compile-time / proof-object blowup). On erased terms, generalisation lives only in
+the typing *derivation* (`TypeOfHM.letIn`'s cofinite `GeneralisesTo`,
+`TypeOfHM.letRec`'s `bodyScheme`), not in the term. Nothing is manufactured; nothing is
+copied **by the elaborator**. (Note: this step is a consequence of **dropping `eOut` /
+elaboration**, not of the cut — the cut is what makes *uniform* erasure coherent, §3.6.)
+
+**Sharp edge the review flagged**: this is the *elaborator* n². `SmallStep.letRecUnfold`
+(`Core.lean:1478`) still substitutes a full copy of the group per member **per step** —
+that is ordinary substitution semantics of mutual recursion (`fix`), present in any
+substitution machine, and **not** what goal (3) was about. It is not removed by
+erasure; it is the one place a CEK machine (shared environment, no copy) would
+genuinely differ. For FHM-scale groups this is irrelevant; if a large mutually-recursive
+group ever becomes a product concern, that is the remaining argument *for* CEK.
 
 ### 3.5 No elaboration → no `TypeOfElabHM` / `sourceSound` / `eOut` / `closeTyVars` / `letRecElab*`
 
@@ -256,24 +287,32 @@ Infer.sound : Infer Φ ctx e Φ' S τ → TypeOfHM (S.onCtx ctx) (erase e) (S.on
 (modulo the bounds-erasure threading and the freshness preconditions — see §6.1). This
 is **the** coherence theorem: the source typechecker's result is the type of the erased
 term the machine runs. It is also the *same* theorem the CEK plan needed — the CEK
-machine never changed the hard core of Stage 2, which is why dropping CEK is cheap.
+machine never changed the hard core of Stage 2. ("Dropping CEK is cheap" is true **only
+of Stage 2**; Stage 3 is where the cost is paid, §3.7/§5.)
 
 ### 3.7 Erasure ≠ CEK: why we keep `Step`
 
 The CEK proposal conflated two separable things: **erasure** (drop types from the term)
 and **the environment machine** (CEK). Erasure is the load-bearing idea — it is what
-removes type-passing, elaboration, and the n², and it works with *any* operational
-semantics (substitution or environment). The CEK machine is merely one way to *run*
-erased terms.
+removes type-passing, elaboration, and the *compile-time* n², and it works with *any*
+operational semantics (substitution or environment). The CEK machine is merely one way
+to *run* erased terms.
 
-Given §3.3 — the existing `Step` already runs erased terms correctly — adopting the CEK
-machine adds a machine (`Val`/`Kont`/`StepM`/`StateOK`/`KontTyped`, 3,394 lines) and a
-re-wiring of every surface module to it, for no benefit over keeping `Step`. Decision:
-**keep `SmallStep.Step`; do not adopt the CEK machine.** `FHM/CekMachine.lean` is left
-in place (proven, isolated, imports `Core`+`InferW`, nothing imports it).
+The decision to keep `Step` is a **product** decision, not a proof-budget win:
 
-The *cost* of this decision is one new metatheory obligation (§5.2), not any change to
-the erasure design.
+- **The live evaluator already runs `Step`.** The pipeline is
+  `parse → infer → elaborate → evaluateUnsafe` (`Live.lean:20,257`). Adopting CEK would
+  put a second, unused machine on the evaluator path and rewire `Live`/
+  `EvaluateUnsafe`/`Headlines`/`PatComp` to `StepM`. Keeping `Step` changes the pipeline
+  to `parse → infer → erase → evaluateUnsafe` — a one-line rewire, no new reducer.
+- **The proof side is a wash, arguably a small loss.** CEK Stage 1 *already proved*
+  `TypeOfHM` type-safety (`progress`/`preservation`/`type_safety`/`deterministic`) on
+  `IsErased` terms. Keeping `Step` means re-proving the Mini-ML `TypeOfHM`/`Step`
+  metatheory (§5.2) — real work, not a saving. We accept that because the product
+  should run one operational model, not two, and the CEK machine is not on any path.
+
+Decision: **keep `SmallStep.Step`; do not adopt the CEK machine.** `FHM/CekMachine.lean`
+is left in place (proven, isolated, imports `Core`+`InferW`, nothing imports it).
 
 ---
 
@@ -334,28 +373,50 @@ So the revised plan adds, for the `Step`-on-erased-terms dynamics:
    so they survive the deletion).
 2. **Progress** (canonical forms for `TypeOfHM`: a value of arrow type is a λ, etc.).
 3. **Preservation** (`Step` preserves `TypeOfHM`), then `preservation_star` /
-   `type_safety` / `type_safety_closed`.
+   `type_safety` / `type_safety_closed`. The `letRecUnfold` case is the one with real
+   content: it substitutes, for each member `j`, the term `letRec anns bindings eⱼ` —
+   a **full copy of the group** — and preservation needs that copy to inhabit the
+   member's *body scheme* (`genGroup G τ` under the cut). This is a `TypeOfHM` port of
+   `TypeOfElabHM.rec_rewrap_typed` (`Core.lean:9184`) and
+   `TypeOfElabHM.rewrap_hasScheme_mono` (`Core.lean:9247`). Name it explicitly as a
+   checkpoint; it is the letRec case of the substitution lemma, not a freebie. The
+   `letReduce` case needs the "occurrence-at-instance" lemma
+   (`GeneralisesTo_inst_ann`) and, for the erased term, `openTyVars_eq_self_of_erased`.
+
+**Dependency note**: `GeneralisesTo_inst_ann` (`CekMachine.lean:787`),
+`GeneralisesTo_inst`, `recclo_body_typed`, and `openTyVars_eq_self_of_erased` currently
+live in the CEK leaf we are *not* importing. Move the reusable ones into `Core`/`InferW`
+(once `erase` exists in `Core`) rather than depending on `CekMachine.lean` — the new
+`TypeOfHM`/`Step` metatheory must not cite the leaf.
 
 This is the standard mini-ML substitution-semantics metatheory (the reference in
 `cekmachine-design.md` §8 is exactly this). It is real proof work — the cofinite
 substitution case is the same *kind* of delicacy as `Infer.sound`'s cofinite
-reconstruction, and the two will share lemmas — but it is smaller than the CEK
-metatheory it replaces, and it is the **only** thing the "drop CEK" decision costs.
+reconstruction, and the two will share lemmas. It is **not** a saving versus the CEK
+machine: CEK's `TypeOfHM` safety is already proved; we are *paying* this Mini-ML
+metatheory as the price of keeping the product on a single, already-live dynamics
+(`Step`).
 
 ### 5.3 Ordering (green checkpoints)
 
 1. (Done) Settled design + this memo; `CekMachine.lean` left in place.
 2. Change `Infer.letRec` per §2.1 (all-`.mono` init, no `consPoly`, ceiling premise,
    body env = annotations); get `inferCore`/`principalType`/`typecheck` compiling;
-   `lake build` green. Leave `Infer.sound` `sorry`.
-3. Define `erase` (§3.1); prove `erase_openTyVarsAux` (depth-generalised, §6.3).
+   `lake build` green. **Keep `eOut` for now** (see below) and leave `Infer.sound`
+   `sorry`.
+3. Define `erase` (§3.1); prove `erase_openTyVarsAux` (depth-generalised, §6.2).
 4. Prove `Infer.sound` (§3.6) via the proof-farming workflow; isolate the
-   group-level cofinite lift first (§6.4).
+   group-level cofinite lift first (§6.3). **`eOut` ordering, decided**: prove
+   `Infer.sound` against the *input* term — `TypeOfHM (erase eIn) …` — while `Infer`
+   still threads `eOut`; ignore `eOut` in the conclusion. This is the smaller diff
+   (`eOut` is built but unused by the theorem). `eOut` itself is dropped in step 6.
 5. Prove the `TypeOfHM` dynamics metatheory (§5.2): substitution lemma → progress →
    preservation → type_safety.
 6. Rewire `SurfaceBridge`/`Headlines`/`EvaluateUnsafe`/`PatComp`/`Bounds` to
-   `erase` + `Step` + `TypeOfHM`; delete `TypeOfElabHM` + metatheory, `sourceSound`,
-   `eOut` mirrors, `letRecElab*`, `closeTyVars`, residual bridge.
+   `erase` + `Step` + `TypeOfHM`; **drop `eOut` from `Infer`/`InferBranches`/
+   `InferRecGroup` and `inferCore`/`principalType`/`typecheck`**; delete
+   `TypeOfElabHM` + metatheory, `sourceSound`, `eOut`/`...Out` mirrors, `letRecElab*`,
+   `closeTyVars`, residual bridge.
 7. Cleanup: drop `var.tyArgs`, `instTy`/`shiftFrom`; refresh README / `complexity-budget.md`
    / `letrec-design.md`.
 
@@ -413,9 +474,13 @@ copied into the new rule.
 
 ### 6.5 The new `TypeOfHM` dynamics metatheory (§5.2)
 
-The substitution lemma's cofinite cases are the risk. Mitigation: much of the
-`substN`/`Step` structural machinery survives `TypeOfElabHM` deletion; the proof is the
-standard mini-ML pattern and shares lemmas with `Infer.sound`.
+The substitution lemma's cofinite cases are the risk, and the `letRecUnfold` case in
+particular — it needs the `TypeOfHM` port of `rewrap_hasScheme_mono`/`rec_rewrap_typed`
+(§5.2), which does not yet exist for `TypeOfHM`. Mitigation: much of the `substN`/`Step`
+structural machinery survives `TypeOfElabHM` deletion; the proof is the standard mini-ML
+pattern, shares lemmas with `Infer.sound`, and has a template in the `TypeOfElabHM`
+rewrap lemmas (`Core.lean:9184`/`:9247`). Do not treat "`Step` reduces erased terms"
+(§3.3, operational) as having proved any of this.
 
 ### 6.6 Not a risk, but note
 
@@ -427,13 +492,13 @@ and unrelated.
 
 ## 7. Open questions (for the owner; only when load-bearing)
 
-1. Do we keep the erased-term restriction in the dynamics statement (`Step` only ever
-   sees `erase e`), or state `Step`'s type safety for arbitrary (annotated) terms and
-   rely on `erase` only at the pipeline boundary? Recommendation: keep the dynamics
-   statement on erased terms (`IsErased`-style), so no type ever appears at runtime and
-   the substitution lemma's cofinite cases don't have to handle dangling annotations.
-2. `elaborateSafe` → rename to `typecheckSafe` (cosmetic; deferred, as in
-   `cekmachine-design.md` §7).
+1. (Decided, not open — recorded for completeness.) The dynamics is quantified over
+   **erased** terms only: `type_safety` is stated for `erase e` (or `IsErased`-style),
+   never for arbitrary annotated terms. This is **load-bearing**, not cosmetic: `Step`
+   on an *annotated* `let f : ∀a. a→a = λ(x:a). x in f 3` substitutes the
+   dangling-ascription λ and `TypeOfHM` of that closed rhs fails `paramTy.IsLC` — the
+   orphan problem again. Erase at the pipeline boundary, and do **not** try to prove
+   `Step` preservation for annotated terms without bringing type-passing back.
 
 ---
 
@@ -450,3 +515,49 @@ and unrelated.
 - `FHM/CekMachine.lean` — the proved CEK machine (left in place; isolated leaf).
 - Charguéraud — *The locally nameless representation* (the reference substitution/
   environment metatheory this memo's §5.2 follows).
+
+---
+
+## 9. Response to the adversarial reviewer (`design-memo-erasure-migration-1.md`)
+
+All corrections accepted and incorporated; there are **no substantive disagreements**.
+Specifically:
+
+- **Split the causal claims** (§0, §3.4): dropping `eOut`/elaboration kills the
+  *compile-time* Λ-nest; the cut only makes **uniform** erasure coherent. Both threads
+  are now stated separately, and §3.4 names `SmallStep.letRecUnfold`'s per-step group
+  copy as a distinct, erasure-independent phenomenon (and the one remaining argument
+  for CEK, should large groups ever matter).
+- **§2.2** no longer claims "uniform erasure cannot support these programs anyway" for
+  the self-contained poly-rec cases; it now says the cut is a *policy* (owner-signed
+  DM), with only the dangling-tyvar-plus-in-group-poly case (I1) being impossible
+  without type-passing.
+- **Reduction vs safety** (§3.3, §0, §6.5): "`Step` reduces erased terms" is now
+  explicitly an operational claim; type-safety is §5.2 and unproved.
+- **§5.2** names the `TypeOfHM` rewrap obligation (port of
+  `TypeOfElabHM.rewrap_hasScheme_mono`/`rec_rewrap_typed`, `Core.lean:9247`/`:9184`) as
+  a checkpoint, and records that `GeneralisesTo_inst*`/`openTyVars_eq_self_of_erased`
+  must move out of `CekMachine.lean` into `Core`/`InferW`.
+- **§3.7** justifies keeping `Step` as a product decision (live evaluator already runs
+  it; don't put an unused machine on the path), and states plainly that Stage 3 *pays*
+  the Mini-ML metatheory rather than saving it. "Dropping CEK is cheap" is now scoped
+  to Stage 2 only (§3.6).
+- **§5.3** resolves the `eOut` ordering: prove `Infer.sound` against the *input* while
+  `eOut` is still threaded, drop `eOut` in step 6.
+- **§7** marks the erased-term restriction as decided/load-bearing and drops the rename
+  question.
+
+Two small notes for the reviewer (not disagreements):
+
+1. **`CekMachine.lean` is not quite "free" to leave in place.** It imports `InferW`
+   (for the `TypeOfHM` metatheory at `InferW.lean:11661+`), though it does **not**
+   reference `Infer`/`eOut`/`TypeOfElabHM`. So Stages 2–3 edits to `InferW` should not
+   break it, but the Stage-4 `var.tyArgs` removal will (it changes `Expr` and
+   `Expr.IsErased.var`). If keeping it compiling ever becomes friction, the cheapest fix
+   is to delete it — nothing imports it, and its reusable lemmas will already have moved
+   to `Core`/`InferW` per §5.2.
+2. **"One operational model in the product" is the honest framing, not "one machine".**
+   Keeping `Step` on the evaluator path while `CekMachine.lean` sits unimported means
+   the repo still contains a second (proved but unused) machine; the *product* runs one.
+   That is the intended state, and it is worth keeping explicit so nobody later
+   "finishes" the CEK wiring by accident.
