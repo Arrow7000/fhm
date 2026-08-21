@@ -11105,55 +11105,6 @@ theorem Infer.sound_closed {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eO
   Infer.sound_elab h hctx hbelow [] (by simp) (by simp [hclosed]) (by simp)
 
 
-/-! ### The coherence theorem (`Infer.sound`, vs declarative `TypeOfHM`)
-
-The erasure-on-`Step` migration's single soundness theorem
-(`briefs/design-memo-erasure-migration.md` §3.6): the source checker `Infer` is
-coherent with the erased machine relation `TypeOfHM`. Unlike the `*_elab` family
-above (vs `TypeOfElabHM`, deleted in a later step), the conclusion ranges over the
-ERASED INPUT term (`e.erase`), with `eOut` ignored. The conclusion threads
-`eraseBounds` because `Infer` produces `bl`-annotated types while `TypeOfHM` never
-inhabits them; the `K`-list escape conditions are the ones from the old
-`Infer.sound_elab`. -/
-
-mutual
-
-theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
-    CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
-    (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
-    TypeOfHM (S.onCtx ctx).eraseBounds e.erase (Ty.eraseBounds (S.onTy τ)) := by
-  sorry
-
-theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
-    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
-    (hscrutB : Ty.BelowFvars Φ scrutTy) (hρB : Ty.BelowFvars Φ ρ) (K : List Nat)
-    (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
-    ∀ p ∈ brs,
-      TypeOfMatchBranch (S.onCtx ctx).eraseBounds
-        (p.1, p.2.erase)
-        (Ty.eraseBounds (S.onTy scrutTy)) (Ty.eraseBounds (S.onTy ρ)) := by
-  sorry
-
-theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S bindingsOut)
-    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
-    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
-    (hspecs_env : ∀ s ∈ specs, ∀ y ∈ s.freeVars, y ∈ ctx.env.freeVars)
-    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
-    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
-    (hKsch : ∀ σ, RecSpec.poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K)
-    (hSK : ∀ p ∈ S, p.1 ∉ K) :
-    ∀ p ∈ bindings.zip (specs.map (RecSpec.onSubst S)), ∀ τ, p.2 = RecSpec.mono τ →
-        TypeOfHM (S.onCtx ctx).eraseBounds p.1.erase (Ty.eraseBounds τ) := by
-  sorry
-
-end
-
-
 /-! ### Ann preservation (Path R product honesty)
 
 Infer must not destroy user BL ascriptions on the elaboratum. Independent of
@@ -16766,6 +16717,56 @@ private theorem List.forall₂_of_getElem {α β : Type*} {R : α → β → Pro
       refine .cons (h 0 (by simp) (by simp)) (ih (by simpa using hlen) ?_)
       intro i h₁ h₂
       exact h (i + 1) (by simpa using h₁) (by simpa using h₂)
+
+
+/-! ### The coherence theorem (`Infer.sound`, vs declarative `TypeOfHM`)
+
+The erasure-on-`Step` migration's single soundness theorem
+(`briefs/design-memo-erasure-migration.md` §3.6): the source checker `Infer` is
+coherent with the erased machine relation `TypeOfHM`. Unlike the `*_elab` family
+(vs `TypeOfElabHM`, deleted in a later step), the conclusion ranges over the
+ERASED INPUT term (`e.erase`), with `eOut` ignored. The conclusion threads
+`eraseBounds` because `Infer` produces `bl`-annotated types while `TypeOfHM` never
+inhabits them; the `K`-list escape conditions are the ones from the old
+`Infer.sound_elab`. Placed after the `TypeOfHM` metatheory it depends on
+(`typ_subst_preservation`, `onSubst`, `weaken_scheme`). -/
+
+mutual
+
+theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
+    CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
+    (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
+    TypeOfHM (S.onCtx ctx).eraseBounds e.erase (Ty.eraseBounds (S.onTy τ)) := by
+  sorry
+
+theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
+    (hscrutB : Ty.BelowFvars Φ scrutTy) (hρB : Ty.BelowFvars Φ ρ) (K : List Nat)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    ∀ p ∈ brs,
+      TypeOfMatchBranch (S.onCtx ctx).eraseBounds
+        (p.1, p.2.erase)
+        (Ty.eraseBounds (S.onTy scrutTy)) (Ty.eraseBounds (S.onTy ρ)) := by
+  sorry
+
+theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings specs Φ' S bindingsOut)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
+    (hspecs_env : ∀ s ∈ specs, ∀ y ∈ s.freeVars, y ∈ ctx.env.freeVars)
+    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hKsch : ∀ σ, RecSpec.poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    ∀ p ∈ bindings.zip (specs.map (RecSpec.onSubst S)), ∀ τ, p.2 = RecSpec.mono τ →
+        TypeOfHM (S.onCtx ctx).eraseBounds p.1.erase (Ty.eraseBounds τ) := by
+  sorry
+
+end
 
 
 /-! ### Generalisation/substitution commutation lemmas (for `letIn` principality) -/
