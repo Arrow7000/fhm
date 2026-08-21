@@ -492,14 +492,14 @@ private def gRhs : Expr := .lambda none (.app (.var 1 []) (.var 0 []))
 -- let rec (f : ∀ a. a → a) = λx. let _ = f () in x
 --     and g                = λx. f x
 -- in g 0   :   Int
--- (the mixed POSITIVE witness: `f` poly-recurses at `unit` while being checked at
---  a fresh skolem — the annotated regime; `g` cross-calls `f` at its own shared
---  monotype and is generalised for the body — the unannotated regime. Neither
---  regime alone types this program.)
+-- (The mixed POSITIVE witness under the old FUSED rule: `f` poly-recurses at
+--  `unit` — the annotated regime; `g` cross-calls `f` at its own shared monotype.
+--  Under the DM cut this is REJECTED: `f`'s in-group use at `unit` is polymorphic
+--  recursion, which the cut forbids. This is the cut doing its job.)
 #eval showType (.letRec [some selfSig, none] [fRhs, gRhs]
   (.app (.var 1 []) (.primLit (.int 0))))
 #guard (typecheck [] (.letRec [some selfSig, none] [fRhs, gRhs]
-  (.app (.var 1 []) (.primLit (.int 0))))).isSome = true
+  (.app (.var 1 []) (.primLit (.int 0))))).isSome = false
 
 -- …and the SAME program's all-unannotated reading is REJECTED (the recursive call
 -- `f ()` pins `f`'s monotype to `unit → unit`, so the body's `g 0` fails): the
@@ -507,17 +507,18 @@ private def gRhs : Expr := .lambda none (.app (.var 1 []) (.var 0 []))
 #guard (typecheck [] (.letRec [none, none] [fRhs, gRhs]
   (.app (.var 1 []) (.primLit (.int 0))))).isSome = false
 
--- let rec (f : ∀ a. a → a) = λx. g x and g = λx. f x in f   :   ill-typed
--- (the skolem-leak NEGATIVE witness: checking `f` at a fresh skolem `Y` of its
---  scheme forces the unannotated sibling's shared monotype to be `Y → Y` — but
---  the shared monotypes are fixed OUTSIDE the per-binding skolem quantifier, so
---  the annotation variable cannot leak into the pool. Correctly rejected.)
+-- let rec (f : ∀ a. a → a) = λx. g x and g = λx. f x in f   :   ∀ a. a → a
+-- (the old "skolem-leak" negative witness is now a POSITIVE under the DM cut:
+--  annotated members are checked at a fresh MONOTYPE, not a skolem, so there is
+--  no skolem to leak into the unannotated sibling's monotype. The mutual
+--  recursion `f = λx. g x`, `g = λx. f x` is ordinary monomorphic recursion at
+--  `α → β`, generalised for the body.)
 #eval showType (.letRec [some selfSig, none]
   [.lambda none (.app (.var 2 []) (.var 0 [])), .lambda none (.app (.var 1 []) (.var 0 []))]
   (.var 0 []))
 #guard (typecheck [] (.letRec [some selfSig, none]
   [.lambda none (.app (.var 2 []) (.var 0 [])), .lambda none (.app (.var 1 []) (.var 0 []))]
-  (.var 0 []))).isSome = false
+  (.var 0 []))).isSome = true
 
 
 /-! ### Pushing the fused rule: nested data, three-member mixed groups
@@ -549,12 +550,14 @@ private def bumpRhs : Expr := .lambda none (.app (.ctor ⟨"Succ"⟩) (.var 0 []
 --                                             | SNil       => Zero
 --                                             | SCons x xs => bump (slen xs)
 --     and bump                        = λn. Succ n
--- in slen   :   ∀ a. Seq a → Peano
--- (polymorphic recursion over a NESTED datatype, mixed with an unannotated
---  helper the annotated member calls — neither regime alone types this)
+-- in slen   :   ill-typed  (under the DM cut)
+-- (polymorphic recursion over a NESTED datatype: the recursive call `slen xs`
+--  instantiates `slen` at `Seq (List a) ≠ Seq a`, which is in-group poly-rec —
+--  exactly what the cut forbids. The annotation is now a CEILING, not a
+--  polymorphic-recursion enabler.)
 #eval showTypeP (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0 []))
 #guard (typecheck demoCtors
-  (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0 []))).isSome = true
+  (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0 []))).isSome = false
 
 -- …and WITHOUT the annotation the same program is REJECTED: monomorphic `slen`
 -- forces `a = List a` at the recursive call (no finite type). Poly-recursion
@@ -574,7 +577,10 @@ generalised members. -/
 --     and dup   = λt. FCons (poly t) (FCons t FNil)            (uses poly at pool var)
 --     and sizeF = λts. match ts with | FNil       => Zero      (own pool slice)
 --                                    | FCons h tl => Succ (sizeF tl)
--- in λt. sizeF (dup t)   :   ∀ a. Tree a → Peano
+-- in λt. sizeF (dup t)   :   ill-typed  (under the DM cut)
+-- (The in-group call `poly Zero` is polymorphic recursion — the cut rejects it.
+--  Same for `dup`'s use of `poly` at its own pool variable while `poly`'s
+--  in-group monotype is pinned by `poly Zero`.)
 #eval showTypeP (.letRec [some selfSig, none, none]
   [ .lambda none (.letIn none (.app (.var 1 []) (.ctor ⟨"Zero"⟩)) (.var 1 []))
   , .lambda none (.app (.app (.ctor ⟨"FCons"⟩) (.app (.var 1 []) (.var 0 [])))
@@ -590,7 +596,7 @@ generalised members. -/
   , .lambda none (.match_ (.var 0 [])
       [ (.named ⟨"FNil"⟩ 0, .ctor ⟨"Zero"⟩)
       , (.named ⟨"FCons"⟩ 2, .app (.ctor ⟨"Succ"⟩) (.app (.var 5 []) (.var 1 []))) ]) ]
-  (.lambda none (.app (.var 3 []) (.app (.var 2 []) (.var 0 [])))))).isSome = true
+  (.lambda none (.app (.var 3 []) (.app (.var 2 []) (.var 0 [])))))).isSome = false
 
 /-! Mono-visibility, documented: annotating `f` does NOT unlock polymorphic use
 of its unannotated sibling `h` *inside the group* — `h` is monomorphic there
@@ -610,12 +616,14 @@ private def fUsesHTwice : Expr :=
 #guard (typecheck [] (.letRec [some selfSig, none]
   [fUsesHTwice, .lambda none (.var 0 [])] (.var 0 []))).isSome = false
 
--- …annotate `h` as well and it is accepted: both members now live in the
--- polymorphic regime.   :   ∀ a. a → a
+-- …annotating `h` as well does NOT rescue it under the DM cut: both members are
+-- now MONOMORPHIC inside the group, so `h 0` and `h ()` still clash (Int vs Unit).
+-- (Under the old fused rule the annotations put `h` in the polymorphic regime and
+--  this was accepted; the cut removes that regime.)   :   ill-typed
 #eval showType (.letRec [some selfSig, some selfSig]
   [fUsesHTwice, .lambda none (.var 0 [])] (.var 0 []))
 #guard (typecheck [] (.letRec [some selfSig, some selfSig]
-  [fUsesHTwice, .lambda none (.var 0 [])] (.var 0 []))).isSome = true
+  [fUsesHTwice, .lambda none (.var 0 [])] (.var 0 []))).isSome = false
 
 
 /-! ### Adversarial: where `letRec` is *supposed* to say no

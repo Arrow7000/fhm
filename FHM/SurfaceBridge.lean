@@ -12774,7 +12774,7 @@ theorem infer_preserves_AllMatchesExhaustive {Φ ctx e Φ' S eOut τ}
         obtain ⟨pat, body, hmem, hcov⟩ := hcover ctorName ctor hlook hty
         obtain ⟨b', hb'⟩ := mem_of_map_fst_eq hpats.symm hmem
         exact ⟨pat, b', hb', hcov⟩
-  | letRec _ hgroup hbody =>
+  | letRec _ hgroup _ hbody =>
     cases hexh with
     | letRec hbs hbe =>
       have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
