@@ -1,5 +1,18 @@
 # CEK machine migration — design + living status
 
+> ⚠️ **SUPERSEDED ON ERASURE (2026-08-20).** This doc's *erasure* material — the
+> "scoped type variables vs erasure" section, the "erase `lambda paramAnn` only / KEEP
+> binding annotations" resolution, and the "erase + coherence is a separate follow-up
+> slice" framing — is **out of date**. The settled design (after a long adversarial
+> review) is now: **uniformly drop ALL annotations** (λ ascriptions, `letIn` anns,
+> `letRec` anns) + a **Damas–Milner monomorphic-recursion cut** for `letRec` + **ceiling**
+> annotation semantics, with coherence **=`Infer.sound : Infer e τ → TypeOfHM (erase e) τ`**
+> (a single theorem, integrated into Stage 2 — not a separate slice). See
+> **`briefs/feature-support-analysis-response-6.md`** (the final design spec) and
+> **`briefs/next-agent-brief-cek-stage2.md`** (the Stage 2 handover). Everything else in
+> this doc — the machine description, the staging (Stages 1–4), the risk map, the
+> workflow protocol — remains current.
+
 **Status (2026-08-19): Stage 1 COMPLETE.** The CEK machine (`FHM/CekMachine.lean`,
 commit `0c0aa32`) is fully proved: `progress`, `preservation`,
 `preservation_erased`, `preservation_exhaustive`, `preservation_star`,
