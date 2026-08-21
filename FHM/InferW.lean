@@ -8824,7 +8824,7 @@ private theorem Ctor.IsBoolCtor.typeOfElabHM_erase {ctx : Ctx} {name : CtorName}
 set_option maxRecDepth 10_000 in
 mutual
 /-- Path R residual soundness of `Infer` against pure `TypeOfElabHM`. -/
-theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
+theorem Infer.sound_elab {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
     CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
     TypeOfElabHM (S.onCtx ctx).eraseBounds
@@ -8882,7 +8882,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
         intro M hM; rcases List.mem_cons.mp hM with rfl | hM
         · exact .fvar (by omega)
         · exact (hbelow M hM).mono (by omega)
-      have ih := Infer.sound hbody hbodyWF hbodyBelow K
+      have ih := Infer.sound_elab hbody hbodyWF hbodyBelow K
         (fun k hk => by have := hKΦ k hk; omega) hKe hSK
       refine TypeOfElabHM.lambda
         (Ty.IsLC.eraseBounds (Subst.onTy_lc (Infer.lc hbody hbodyWF).2 ContainsBvarsUpTo.fvar))
@@ -8901,7 +8901,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
         intro M hM; rcases List.mem_cons.mp hM with rfl | hM
         · exact Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hKe v (.inl hv)))
         · exact hbelow M hM
-      have ih := Infer.sound hbody hbodyWF hbodyBelow K
+      have ih := Infer.sound_elab hbody hbodyWF hbodyBelow K
         (fun k hk => by have := hKΦ k hk; omega)
         (fun y hy => hKe y (.inr hy)) hSK
       refine TypeOfElabHM.lambda
@@ -8930,9 +8930,9 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
         obtain ⟨M₀, _, rfl⟩ := List.mem_map.mp hM
         exact helim.1 p hp M₀.body)
       (fun p hp hc => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)) (hKe p.1 (.inr hc)))
-    have hf_sound := Infer.sound hf hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+    have hf_sound := Infer.sound_elab hf hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
       (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
-    have harg_sound := Infer.sound harg hctx1 hbelow1 K
+    have harg_sound := Infer.sound_elab harg hctx1 hbelow1 K
       (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hf))
       (fun y hy => hKe y (.inr hy))
       (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_right _ hp)))
@@ -9109,7 +9109,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
       obtain ⟨M₀, hM₀, rfl⟩ := List.mem_map.mp hM
       exact Subst.notMemOnTy (fun p hp hgp => hS₂genVran p hp g hgp hg)
         (fun hc2 => hgenV_env g hg (Env.mem_freeVars_iff.mpr ⟨M₀, hM₀, hc2⟩)) hgM
-    have hrhs_sound := Infer.sound hrhs hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+    have hrhs_sound := Infer.sound_elab hrhs hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
       (fun p hp => hSK p (List.mem_append_left _ hp))
     have hr2 := TypeOfElabHM.onSubst_eraseBounds_elab_append S₁ S₂ hrhs_s hbody_s hrhs_sound
     -- hr2 : TypeOf at erase((S1++S2).onCtx) erase(rhsOut.subst (S1++S2)) erase(S2.onTy τ1)
@@ -9130,7 +9130,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
             :: ((S₁ ++ S₂).onCtx ctx).env } := by
       rw [Subst.onCtx_append]
       simp only [Subst.onCtx, Subst.onEnv, List.map_cons]
-    have hbody_sound := Infer.sound hbody hbodyWF hbodyBelow K
+    have hbody_sound := Infer.sound_elab hbody hbodyWF hbodyBelow K
       (fun k hk => lt_of_lt_of_le (hKΦ k hk) (Infer.frontier_le hrhs))
       (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
     -- residual body at packed env (overall result monotype is `τ`)
@@ -9286,7 +9286,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
           Expr.substTyFvars_closeTyVars hS₂Ys hS₂Ysran,
           ← Expr.substTyFvars_append]
     -- residual rhs under K ++ Ys
-    have hrhs_sound := Infer.sound hrhs hctx hctx_pc (K ++ Ys)
+    have hrhs_sound := Infer.sound_elab hrhs hctx hctx_pc (K ++ Ys)
       (fun k hk => by
         rcases List.mem_append.mp hk with h | h
         · have := hKΦ k h; have := hΦN; omega
@@ -9352,7 +9352,7 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
       rw [show (S₁ ++ Schk ++ S₂) = (S₁ ++ Schk) ++ S₂ from rfl, Subst.onCtx_append,
         Subst.onCtx_append]
       simp only [Subst.onCtx, Subst.onEnv, List.map_cons]
-    have hbody_sound := Infer.sound hbody hbodyWF hbodyBelow K
+    have hbody_sound := Infer.sound_elab hbody hbodyWF hbodyBelow K
       (fun k hk => by have := hKΦ k hk; have := hΦN; have := hrle; omega)
       (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
     have hSσ_full : Subst.onPolyTy (S₁ ++ Schk ++ S₂) σ = σ := by
@@ -9436,10 +9436,10 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
             simp only [Ty.freeVars, List.mem_singleton]; omega)
         (fun hcc => hSK p (List.mem_append_left _ hp) (hKe p.1 (.inr hcc)))).2.2
         (Expr.mem_branchListTyFreeVars_of hb hc)
-    have hscrut_sound := Infer.sound hscrut hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
+    have hscrut_sound := Infer.sound_elab hscrut hctx hbelow K hKΦ (fun y hy => hKe y (.inl hy))
       (fun p hp => hSK p (List.mem_append_left _ hp))
     have hscrut_decl := TypeOfElabHM.onSubst_eraseBounds_elab_append S₁ S₂ hS₁ hS₂lc hscrut_sound
-    have hbr_sound := InferBranches.sound hbr hctx1 (fun M hM => (hbelow1 M hM).mono (by omega))
+    have hbr_sound := InferBranches.sound_elab hbr hctx1 (fun M hM => (hbelow1 M hM).mono (by omega))
       hτs_lc ContainsBvarsUpTo.fvar
       (hscrut_below.1.mono (by omega)) (.fvar (by omega)) K
       (fun k hk => by have := hKΦ k hk; omega)
@@ -9476,7 +9476,7 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
 /-- Path R residual soundness of branch inference. -/
-theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
+theorem InferBranches.sound_elab {Φ ctx scrutTy ρ brs Φ' S brsOut}
     (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
@@ -9626,7 +9626,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
           (by simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append];
               exact Or.inr hcc))).2.2
         (Expr.mem_branchListTyFreeVars_of hq hc)
-    have hrest_sound := InferBranches.sound hrest hctx1WF hctx1bel
+    have hrest_sound := InferBranches.sound_elab hrest hctx1WF hctx1bel
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc (Subst.onTy_lc hS₀lc hscrutTy)))
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc (Subst.onTy_lc hS₀lc hρ)))
       hscrut'bel hρ'bel K (fun k hk => by have := hKΦ k hk; omega)
@@ -9644,7 +9644,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
             ++ (S₀.onCtx ctx).env }
       have h0 : TypeOfElabHM (S₁.onCtx bodyCtx).eraseBounds
           ((bodyOut.substTyFvars S₁).eraseBounds) (Ty.eraseBounds τb) :=
-        Infer.sound hbody hbodyWF hbodyBelow K
+        Infer.sound_elab hbody hbodyWF hbodyBelow K
           (fun k hk => by have := hKΦ k hk; have := hle0; omega)
           (fun y hy => hKbr y (by
             simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy))
@@ -9850,7 +9850,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
         (fun hcc => hSe p (List.mem_append_left _ hp)
           (by simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inr hcc))).2.2
         (Expr.mem_branchListTyFreeVars_of hq hc)
-    have hrest_sound := InferBranches.sound hrest hctx1WF hctx1bel
+    have hrest_sound := InferBranches.sound_elab hrest hctx1WF hctx1bel
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc hscrutTy))
       (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc hρ))
       hscrut'bel hρ'bel K (fun k hk => by have := hKΦ k hk; omega)
@@ -9860,7 +9860,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
     intro p hp
     rcases List.mem_cons.mp hp with rfl | hp_rest
     · -- head wildcard: residual body typing, transport S₂ then S₃, unify ρ
-      have h0 := Infer.sound hbody hctx hbelow K hKΦ
+      have h0 := Infer.sound_elab hbody hctx hbelow K hKΦ
         (fun y hy => hKbr y (by
           simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy))
         (fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp)))
@@ -9910,7 +9910,7 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
 
 /-- Path R residual soundness of recursive-group inference. -/
-theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
+theorem InferRecGroup.sound_elab {Φ ctx bindings specs Φ' S bindingsOut}
     (h : InferRecGroup Φ ctx bindings specs Φ' S bindingsOut)
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
@@ -10010,7 +10010,7 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
       · rcases List.mem_append.mp hp with hp | hp
         · exact fun hcc => hK1 p hp (hKbr p.1 (.inr hcc))
         · exact fun hcc => hK2 p hp (hKbr p.1 (.inr hcc))
-    obtain ⟨hmono_tail, L_tail, hpoly_tail⟩ := InferRecGroup.sound hrest hctx2 hbelow2
+    obtain ⟨hmono_tail, L_tail, hpoly_tail⟩ := InferRecGroup.sound_elab hrest hctx2 hbelow2
       hspecs' hspecsB' hspecs_env' K (fun k hk => lt_of_lt_of_le (hKΦ k hk) hle1)
       (fun y hy => hKbr y (.inr hy))
       (fun σ' hσ' => hKsch σ' (List.mem_cons_of_mem _ (RecSpec.poly_mem_map_onSubst.mp hσ')))
@@ -10028,7 +10028,7 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
         rw [hred] at hτ0
         injection hτ0 with hτeq
         subst hτeq
-        have h0 := Infer.sound he hctx hbelow K hKΦ (fun y hy => hKbr y (.inl hy)) hK1
+        have h0 := Infer.sound_elab he hctx hbelow K hKΦ (fun y hy => hKbr y (.inl hy)) hK1
         have h1 := TypeOfElabHM.onSubst_eraseBounds_elab_append S₁ S₂ hS₁ hS₂ h0
         have huni_eq := huni.unifies
         simp only [Unifies, AgreesHM] at huni_eq
@@ -10178,7 +10178,7 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
       fun p hp u hu hc =>
         (InferRecGroup.eOut_avoid hrest (w := u) (hYs_lt u hc) (hYs_ctx u hc)
           (fun s' hs' => hYs_specs u hc s' hs') (hYs_rest u hc)).1 p hp hu
-    have hrhs_sound := Infer.sound he hctx hctx_pc (K ++ Ys)
+    have hrhs_sound := Infer.sound_elab he hctx hctx_pc (K ++ Ys)
       (fun k hk => by
         rcases List.mem_append.mp hk with h | h
         · have := hKΦ k h; omega
@@ -10266,7 +10266,7 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
       (fun y hy hc => hYs_env y hy
         ((Env.mem_freeVars_eraseBounds _ y).mp (by simpa [Ctx.eraseBounds] using hc)))
       (fun y hy hc => hYs_σ y hy ((Ty.mem_freeVars_eraseBounds σ.body y).mp hc))
-    obtain ⟨hmono_tail, L_tail, hpoly_tail⟩ := InferRecGroup.sound hrest hctx' hbelow'
+    obtain ⟨hmono_tail, L_tail, hpoly_tail⟩ := InferRecGroup.sound_elab hrest hctx' hbelow'
       hspecs' hspecsB' hspecs_env' K (fun k hk => by have := hKΦ k hk; omega) hKbr' hKsch' hK2
     have hfix : ∀ b ∈ restOut, b.substTyFvars (S₁ ++ Schk ++ S₂) = b.substTyFvars S₂ := by
       intro b hb
@@ -10357,7 +10357,56 @@ theorem Infer.sound_closed {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eO
     (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hclosed : e.tyFreeVars = []) :
     TypeOfElabHM (S.onCtx ctx).eraseBounds
       ((eOut.substTyFvars S).eraseBounds) (Ty.eraseBounds τ) :=
-  Infer.sound h hctx hbelow [] (by simp) (by simp [hclosed]) (by simp)
+  Infer.sound_elab h hctx hbelow [] (by simp) (by simp [hclosed]) (by simp)
+
+
+/-! ### The coherence theorem (`Infer.sound`, vs declarative `TypeOfHM`)
+
+The erasure-on-`Step` migration's single soundness theorem
+(`briefs/design-memo-erasure-migration.md` §3.6): the source checker `Infer` is
+coherent with the erased machine relation `TypeOfHM`. Unlike the `*_elab` family
+above (vs `TypeOfElabHM`, deleted in a later step), the conclusion ranges over the
+ERASED INPUT term (`e.erase`), with `eOut` ignored. The conclusion threads
+`eraseBounds` because `Infer` produces `bl`-annotated types while `TypeOfHM` never
+inhabits them; the `K`-list escape conditions are the ones from the old
+`Infer.sound_elab`. -/
+
+mutual
+
+theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) :
+    CtxWF ctx → CtxBelow Φ ctx → (K : List Nat) → (∀ k ∈ K, k < Φ) →
+    (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
+    TypeOfHM (S.onCtx ctx).eraseBounds e.erase (Ty.eraseBounds (S.onTy τ)) := by
+  sorry
+
+theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S brsOut}
+    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hscrutTy : scrutTy.IsLC) (hρ : ρ.IsLC)
+    (hscrutB : Ty.BelowFvars Φ scrutTy) (hρB : Ty.BelowFvars Φ ρ) (K : List Nat)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    ∀ p ∈ brs,
+      TypeOfMatchBranch (S.onCtx ctx).eraseBounds
+        (p.1, p.2.erase)
+        (Ty.eraseBounds (S.onTy scrutTy)) (Ty.eraseBounds (S.onTy ρ)) := by
+  sorry
+
+theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S bindingsOut}
+    (h : InferRecGroup Φ ctx bindings specs Φ' S bindingsOut)
+    (hctx : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hspecs : ∀ s ∈ specs, s.LC) (hspecsB : ∀ s ∈ specs, s.BelowFvars Φ)
+    (hspecs_env : ∀ s ∈ specs, ∀ y ∈ s.freeVars, y ∈ ctx.env.freeVars)
+    (K : List Nat) (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKbr : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hKsch : ∀ σ, RecSpec.poly σ ∈ specs → ∀ y ∈ σ.body.freeVars, y ∈ K)
+    (hSK : ∀ p ∈ S, p.1 ∉ K) :
+    ∀ p ∈ bindings.zip (specs.map (RecSpec.onSubst S)), ∀ τ, p.2 = RecSpec.mono τ →
+        TypeOfHM (S.onCtx ctx).eraseBounds p.1.erase (Ty.eraseBounds τ) := by
+  sorry
+
+end
 
 
 /-! ### Ann preservation (Path R product honesty)

@@ -13021,7 +13021,7 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   have hty : TypeOfElabHM ⟨[], ctors.eraseBounds⟩ (eOut.substTyFvars S).eraseBounds
       (Ty.eraseBounds τ) := by
     simpa [Subst.onCtx, Subst.onEnv, Ctx.eraseBounds, Env.eraseBounds] using
-      Infer.sound hInf CtxWF.empty CtxBelow.empty
+      Infer.sound_elab hInf CtxWF.empty CtxBelow.empty
         [] (by simp) (by simp [hclosed]) (by simp)
   -- Exhaustiveness: coverage survives `lower`, `Infer`, and `substTyFvars`.
   have hexh : AllMatchesExhaustive ctors (eOut.substTyFvars S) :=

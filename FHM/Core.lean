@@ -2567,6 +2567,168 @@ def Expr.openBoundTyVars : Option PolyTy → List Nat → Expr → Expr
   | none,   _,  e => e
   | some _, Xs, e => e.openTyVars Xs
 
+/-! ### Type erasure (`erase`)
+
+The uniform erasure of the erasure-on-`Step` migration
+(`briefs/design-memo-erasure-migration.md` §3.1): drop ALL type annotations and
+type-passing decorations — `lambda (some t)` → `lambda none`, `letIn (some σ)` →
+`letIn none`, `letRec anns` → `letRec (all none)`, `var i _` → `var i []` (the
+`tyArgs` are zeroed, not passed through). Structural elsewhere. `erase e` is the
+term the machine (`SmallStep.Step`) runs, typed by the declarative `TypeOfHM`; the
+soundness of the source checker against it is `Infer.sound`. -/
+def Expr.erase : Expr → Expr
+  | .primLit p          => .primLit p
+  | .primBinOp op       => .primBinOp op
+  | .lambda _ body      => .lambda none body.erase
+  | .app f arg          => .app f.erase arg.erase
+  | .letIn _ rhs body   => .letIn none rhs.erase body.erase
+  | .var i _            => .var i []
+  | .ctor c             => .ctor c
+  | .match_ scrut branches =>
+      .match_ scrut.erase (branches.map fun pe => (pe.1, pe.2.erase))
+  | .letRec _ bindings body =>
+      .letRec (bindings.map (fun _ => none)) (bindings.map Expr.erase) body.erase
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals first
+    | omega
+    | (have h := List.sizeOf_lt_of_mem ‹_›; omega)
+    | (have h := List.sizeOf_lt_of_mem ‹_›
+       have : sizeOf pe.2 < sizeOf pe := by
+         cases pe; simp only [Prod.mk.sizeOf_spec]; omega
+       omega)
+
+@[simp] theorem Expr.erase_lambda (ann : Option Ty) (body : Expr) :
+    (Expr.lambda ann body).erase = Expr.lambda none body.erase := by
+  simp only [Expr.erase]
+
+@[simp] theorem Expr.erase_app (f arg : Expr) :
+    (Expr.app f arg).erase = Expr.app f.erase arg.erase := by
+  simp only [Expr.erase]
+
+@[simp] theorem Expr.erase_letIn (ann : Option PolyTy) (rhs body : Expr) :
+    (Expr.letIn ann rhs body).erase = Expr.letIn none rhs.erase body.erase := by
+  simp only [Expr.erase]
+
+@[simp] theorem Expr.erase_var (i : Nat) (tyArgs : List Ty) :
+    (Expr.var i tyArgs).erase = Expr.var i [] := by
+  simp only [Expr.erase]
+
+@[simp] theorem Expr.erase_match (scrut : Expr) (branches : List (MatchPattern × Expr)) :
+    (Expr.match_ scrut branches).erase =
+      Expr.match_ scrut.erase (branches.map fun pe => (pe.1, pe.2.erase)) := by
+  simp only [Expr.erase]
+
+@[simp] theorem Expr.erase_letRec (anns : List (Option PolyTy)) (bindings : List Expr) (body : Expr) :
+    (Expr.letRec anns bindings body).erase =
+      Expr.letRec (bindings.map (fun _ => none)) (bindings.map Expr.erase) body.erase := by
+  simp only [Expr.erase]
+
+/-! Erasure commutes with scoped-type-variable opening (depth-generalised). -/
+
+/-- `List.map (fun _ => none)` agrees on lists of equal length. -/
+private theorem List.map_const_none_eq_of_length {α : Type u} {l₁ l₂ : List α}
+    (h : l₁.length = l₂.length) :
+    l₁.map (fun _ : α => (none : Option PolyTy)) = l₂.map (fun _ : α => (none : Option PolyTy)) := by
+  induction l₁ generalizing l₂ with
+  | nil =>
+      cases l₂ with
+      | nil => rfl
+      | cons _ _ => simp at h
+  | cons _ tl ihtl =>
+      cases l₂ with
+      | nil => simp at h
+      | cons _ t2 =>
+          simp only [List.map_cons]
+          have hlen : tl.length = t2.length := by
+            exact Nat.add_one_inj.mp (by simpa using h)
+          rw [ihtl (l₂ := t2) hlen]
+
+/-- For a branch list, erasing after `openTyVarsAux` equals erasing directly, given
+    the pointwise depth-`d` erasure-opening fact on each branch body. -/
+private theorem BranchList.erase_openTyVarsAux (d : Nat) (Xs : List Nat)
+    (brs : List (MatchPattern × Expr))
+    (h : ∀ pb ∈ brs, (pb.2.openTyVarsAux d Xs).erase = pb.2.erase) :
+    (BranchList.openTyVarsAux d Xs brs).map (fun pb => (pb.1, pb.2.erase)) =
+      brs.map (fun pb => (pb.1, pb.2.erase)) := by
+  induction brs with
+  | nil => rfl
+  | cons hd tl ihtl =>
+      obtain ⟨p, b⟩ := hd
+      simp only [BranchList.openTyVarsAux, List.map_cons]
+      rw [h (p, b) (List.mem_cons_self ..)]
+      congr 1
+      exact ihtl (fun pb hpb => h pb (List.mem_cons_of_mem (p, b) hpb))
+
+/-- For a recursion group, erasing after `openTyVarsAux` equals erasing directly,
+    given the per-binding depth-generalised erasure-opening fact. -/
+private theorem RecGroup.erase_openTyVarsAux (d : Nat) (Xs : List Nat)
+    (anns : List (Option PolyTy)) (bindings : List Expr)
+    (h : ∀ b ∈ bindings, ∀ d Xs, (b.openTyVarsAux d Xs).erase = b.erase) :
+    (RecGroup.openTyVarsAux d Xs anns bindings).map Expr.erase = bindings.map Expr.erase := by
+  revert h
+  induction bindings generalizing anns with
+  | nil => intro _; cases anns <;> rfl
+  | cons hd tl ihtl =>
+      intro h
+      cases anns with
+      | nil =>
+          simp only [RecGroup.openTyVarsAux, List.map_cons]
+          rw [h hd (List.mem_cons_self ..) d Xs,
+              ihtl [] (fun b hb => h b (List.mem_cons_of_mem hd hb))]
+      | cons a as =>
+          simp only [RecGroup.openTyVarsAux, List.map_cons]
+          rw [h hd (List.mem_cons_self ..) (d + RecAnn.params a) Xs,
+              ihtl as (fun b hb => h b (List.mem_cons_of_mem hd hb))]
+
+/-- `erase` drops every annotation, so opening scoped type variables first has no
+    effect on the erasure — at ANY depth `d` (the `letIn (some σ)` / `letRec` cases
+    descend bindings at `d + paramCount`, so the depth-0 instance alone is not
+    enough). This is the "erasure ∘ opening = erasure" fact the opened-RHS cases of
+    `Infer.sound` rely on. -/
+theorem Expr.erase_openTyVarsAux (Xs : List Nat) :
+    ∀ (e : Expr) (d : Nat), (e.openTyVarsAux d Xs).erase = e.erase := by
+  intro e
+  induction e using Expr.rec_strong generalizing Xs with
+  | primLit p => intro d; simp [Expr.openTyVarsAux, Expr.erase]
+  | primBinOp op => intro d; simp [Expr.openTyVarsAux, Expr.erase]
+  | ctor nm => intro d; simp [Expr.openTyVarsAux, Expr.erase]
+  | var n tyArgs => intro d; simp [Expr.openTyVarsAux]
+  | lambda ann body ih =>
+      intro d
+      simp [Expr.openTyVarsAux, ih Xs d]
+  | app f arg ihf iharg =>
+      intro d
+      simp [Expr.openTyVarsAux, ihf Xs d, iharg Xs d]
+  | letIn ann rhs body ihr ihb =>
+      intro d
+      cases ann with
+      | none => simp [Expr.openTyVarsAux, ihr Xs d, ihb Xs d]
+      | some σ => simp [Expr.openTyVarsAux, ihr Xs (d + σ.paramCount), ihb Xs d]
+  | match_ scrut branches ihs ihbs =>
+      intro d
+      simp only [Expr.openTyVarsAux, Expr.erase_match, ihs Xs d]
+      congr 1
+      exact BranchList.erase_openTyVarsAux d Xs branches (fun pb hpb => ihbs pb.1 pb.2 hpb Xs d)
+  | letRec anns bindings body ihbs ihb =>
+      intro d
+      simp only [Expr.openTyVarsAux, Expr.erase_letRec, ihb Xs d]
+      congr 1
+      · exact List.map_const_none_eq_of_length (RecGroup.openTyVarsAux_length d Xs anns bindings)
+      · exact RecGroup.erase_openTyVarsAux d Xs anns bindings (fun b hb d' Xs' => ihbs b hb Xs' d')
+
+theorem Expr.erase_openTyVars (Xs : List Nat) (e : Expr) :
+    (e.openTyVars Xs).erase = e.erase := by
+  simpa [Expr.openTyVars] using Expr.erase_openTyVarsAux Xs e 0
+
+/-- Erasure is a no-op on `openBoundTyVars` (the cofinite `letIn` opening): whether
+    or not the `let` carries an annotation, erasing the opened bound expression is
+    erasing the stored one. -/
+theorem Expr.erase_openBoundTyVars (ann : Option PolyTy) (Xs : List Nat) (e : Expr) :
+    (Expr.openBoundTyVars ann Xs e).erase = e.erase := by
+  cases ann <;> simp [Expr.openBoundTyVars, Expr.erase_openTyVars]
+
 /-! ### Path R: `Expr.eraseBounds` commutation
 
 Residual soundness needs erase to pass through Infer's type-spine rewrites.
