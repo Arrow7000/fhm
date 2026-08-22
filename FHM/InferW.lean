@@ -17112,13 +17112,16 @@ def HasSchemeHM (ctx : Ctx) (v : Expr) (M : PolyTy) : Prop :=
 
 /-- Substituting `vs` (each typed at every instance of its scheme `Ms[j]`) for a
     block of `Ms`-typed binders preserves `TypeOfHM`. Decoration-blind port of
-    `TypeOfElabHM.subst_lemma_many` (no `M.WF` premise — the erased `var` case
-    instantiates existentially via `HasSchemeHM`). -/
+    `TypeOfElabHM.subst_lemma_many`, restricted to the image of `Expr.erase`
+    (`h_erased`) per the memo §7 load-bearing restriction: erased `var` tyArgs are
+    `[]`, `letIn` anns `none`, `letRec` specs all-`.mono`, so the type-passing
+    `instTy`/`openTyVars`-commutation machinery is never needed. -/
 theorem TypeOfHM.subst_lemma_many
     {ctors : CtorEnv} {env Ms : Env} {vs : List Expr}
     (h_vs : List.Forall₂ (fun v M => HasSchemeHM ⟨env, ctors⟩ v M) vs Ms) :
     ∀ (n : Nat) (e : Expr), e.size ≤ n → ∀ (env_post : Env) (τ : Ty),
       TypeOfHM ⟨env_post ++ Ms ++ env, ctors⟩ e τ →
+      e.erase = e →
       TypeOfHM ⟨env_post ++ env, ctors⟩ (e.substN env_post.length vs) τ := by
   sorry
 
@@ -17128,10 +17131,11 @@ theorem TypeOfHM.subst_lemma
     {ctors : CtorEnv} {env_post env : Env}
     {e : Expr} {τ : Ty} {M : PolyTy} {v : Expr}
     (h_body : TypeOfHM ⟨env_post ++ [M] ++ env, ctors⟩ e τ)
-    (h_v : HasSchemeHM ⟨env, ctors⟩ v M) :
+    (h_v : HasSchemeHM ⟨env, ctors⟩ v M)
+    (h_erased : e.erase = e) :
     TypeOfHM ⟨env_post ++ env, ctors⟩ (e.substN env_post.length [v]) τ :=
   TypeOfHM.subst_lemma_many (Ms := [M]) (vs := [v])
-    (List.Forall₂.cons h_v List.Forall₂.nil) e.size e (Nat.le_refl _) env_post τ h_body
+    (List.Forall₂.cons h_v List.Forall₂.nil) e.size e (Nat.le_refl _) env_post τ h_body h_erased
 
 /-- `genGroup` at the empty pool is the trivial scheme (local copy of a
     Core-private lemma, needed by the rewrap's `map_bodyScheme_openAt`). -/

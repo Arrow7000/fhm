@@ -1354,7 +1354,7 @@ private def BranchList.substN (k : Nat) (vs : List Expr) :
       (pat, body.substN (k + pat.bindCount) vs)
         :: BranchList.substN k vs rest
 
-private def RecGroup.substN (k : Nat) (vs : List Expr) : List Expr → List Expr
+def RecGroup.substN (k : Nat) (vs : List Expr) : List Expr → List Expr
   | []        => []
   | e :: rest => e.substN k vs :: RecGroup.substN k vs rest
 
@@ -2383,7 +2383,7 @@ theorem RecGroup.shiftFrom_eq_map (threshold n : Nat) (bs : List Expr) :
   | nil => rfl
   | cons hd tl ih => simp only [RecGroup.shiftFrom, List.map_cons, ih]
 
-private theorem RecGroup.substN_eq_map (k : Nat) (vs : List Expr) (bs : List Expr) :
+theorem RecGroup.substN_eq_map (k : Nat) (vs : List Expr) (bs : List Expr) :
     RecGroup.substN k vs bs = bs.map (·.substN k vs) := by
   induction bs with
   | nil => rfl
