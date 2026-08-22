@@ -17437,7 +17437,58 @@ theorem TypeOfHM.rec_rewrap_typed
     {e : Expr} {t : Ty}
     (hbody : TypeOfHM (RecSpecs.rhsCtx ⟨env, ctors⟩ specs G Xs) e t) :
     TypeOfHM ⟨env, ctors⟩ (.letRec anns bindings e) t := by
-  sorry
+  refine TypeOfHM.letRec
+    (specs := specs.map (RecSpec.openAt G Xs)) (G := []) (L := L ++ Xs)
+    (bodyCtx := ⟨specs.map (RecSpec.rhsEntry G Xs) ++ env, ctors⟩)
+    ⟨by rw [RecSpec.map_ann_openAt]; exact hwf.anns_eq,
+     by rw [List.length_map]; exact hwf.length,
+     List.nodup_nil, ?_, ?_⟩
+    ?_ ?_
+    (by simp only [RecSpecs.bodyCtx]; rw [RecSpec.map_bodyScheme_openAt]) hbody
+  · -- transported monotypes are LC
+    intro τ' hτ'
+    obtain ⟨s, hs, hsubst⟩ := List.mem_map.mp hτ'
+    cases s with
+    | mono τ =>
+      injection hsubst with hττ
+      rw [← hττ]
+      exact Ty.renameG_isLC (hwf.mono_lc τ hs)
+    | poly σ => exact RecSpec.noConfusion hsubst
+  · -- transported schemes are WF (openAt preserves poly specs)
+    intro σ' hσ'
+    obtain ⟨s, hs, hsubst⟩ := List.mem_map.mp hσ'
+    cases s with
+    | mono τ => exact RecSpec.noConfusion hsubst
+    | poly σ =>
+      injection hsubst with hσσ
+      rw [← hσσ]
+      exact hwf.poly_wf σ hs
+  · -- mono premise at the empty pool: identical opening, RHS env transported
+    intro Zs _hZs p hp τ' hτ'
+    simp only [RecSpecs.rhsCtx]
+    obtain ⟨a, b, hab, rfl⟩ :=
+      List.mem_zip_map (l := bindings) (r := specs) (f := id) (g := RecSpec.openAt G Xs)
+        (by simpa using hp)
+    cases b with
+    | poly σ => exact RecSpec.noConfusion hτ'
+    | mono τ =>
+      injection hτ' with hττ
+      rw [← hττ, Ty.renameG_nil_pool, RecSpec.map_rhsEntry_openAt]
+      exact hmono Xs hXs (a, .mono τ) hab τ rfl
+  · -- poly premise at the empty pool: skolems dodge `L ++ Xs` by construction
+    intro Zs _hZs p hp σ hσ Ys hYs
+    simp only [RecSpecs.rhsCtx]
+    obtain ⟨a, b, hab, rfl⟩ :=
+      List.mem_zip_map (l := bindings) (r := specs) (f := id) (g := RecSpec.openAt G Xs)
+        (by simpa using hp)
+    cases b with
+    | mono τ => exact RecSpec.noConfusion hσ
+    | poly σ' =>
+      injection hσ with hσσ
+      rw [← hσσ, RecSpec.map_rhsEntry_openAt]
+      refine hpoly Xs hXs (a, .poly σ') hab σ' rfl Ys
+        ⟨by rw [hYs.length, hσσ], hYs.nodup,
+         fun y hy hc => hYs.avoid y hy (List.mem_append_left _ hc)⟩
 
 /-- Each re-wrapped member `letRec anns bindings e` inhabits every instance of
     its generalised body scheme `genGroup G τ` (`HasSchemeHM`). Decoration-blind
@@ -17451,7 +17502,70 @@ theorem TypeOfHM.rewrap_hasSchemeHM_mono
     (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨env, ctors⟩ bindings specs G L)
     {e : Expr} {τ : Ty} (hmem : (e, RecSpec.mono τ) ∈ bindings.zip specs) :
     HasSchemeHM ⟨env, ctors⟩ (.letRec anns bindings e) (PolyTy.genGroup G τ) := by
-  sorry
+  intro τ' hinst
+  rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+  have hτlc : τ.IsLC := hwf.mono_lc τ (List.of_mem_zip hmem).2
+  obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
+    exists_fresh_names
+      (L ++ G ++ (specs.map RecSpec.monoFreeVars).flatten
+        ++ Env.freeVars (specs.map (RecSpec.bodyScheme G) ++ env)
+        ++ env.freeVars
+        ++ (Expr.letRec anns bindings e).tyFreeVars
+        ++ Ty.freeVarsList instArgs ++ ((PolyTy.genGroup G τ).body).freeVars)
+      G.length
+  have hXL : ∀ x ∈ Xs, x ∉ L := fun x hx hc =>
+    hXavoid x hx (by simp [List.mem_append]; tauto)
+  have hXfresh : FreshNames L G.length Xs := ⟨hXlen, hXnodup, hXL⟩
+  have hdisj : ∀ g ∈ G, g ∉ Xs := fun g hg hc =>
+    hXavoid g hc (by simp [List.mem_append]; tauto)
+  have hXs_monos : ∀ s ∈ specs, ∀ x ∈ Xs, x ∉ RecSpec.monoFreeVars s := fun s hs x hx hc =>
+    hXavoid x hx (by
+      have hflat : x ∈ (specs.map RecSpec.monoFreeVars).flatten :=
+        List.mem_flatten.mpr ⟨RecSpec.monoFreeVars s, List.mem_map.mpr ⟨s, hs, rfl⟩, hc⟩
+      simp [List.mem_append, hflat])
+  have hXsτ : ∀ x ∈ Xs, x ∉ τ.freeVars := hXs_monos (RecSpec.mono τ) (List.of_mem_zip hmem).2
+  have hXs_env : ∀ x ∈ Xs, x ∉ env.freeVars := fun x hx hc =>
+    hXavoid x hx (by simp [List.mem_append]; tauto)
+  have hXs_e : ∀ x ∈ Xs, x ∉ (Expr.letRec anns bindings e).tyFreeVars := fun x hx hc =>
+    hXavoid x hx (by simp [List.mem_append]; tauto)
+  have hXs_Vs : ∀ x ∈ Xs, x ∉ Ty.freeVarsList instArgs := fun x hx hc =>
+    hXavoid x hx (by simp [List.mem_append]; tauto)
+  have hXs_M : ∀ x ∈ Xs, x ∉ ((PolyTy.genGroup G τ).body).freeVars := fun x hx hc =>
+    hXavoid x hx (by simp [List.mem_append]; tauto)
+  have hb : TypeOfHM ⟨env, ctors⟩ (.letRec anns bindings e) (Ty.renameG G Xs τ) :=
+    TypeOfHM.rec_rewrap_typed hwf hmono hpoly hXfresh
+      (hmono Xs hXfresh (e, .mono τ) hmem τ rfl)
+  set Xs' := Ty.genFilter Xs (Ty.renameG G Xs τ) with hXsdef
+  have hXlen' : Xs'.length = (Ty.genFilter G τ).length := by
+    have h := congrArg PolyTy.paramCount (PolyTy.genGroup_renameG hτlc hXlen hwf.nodup hXnodup hdisj hXsτ)
+    simp only [PolyTy.genGroup] at h
+    rw [hXsdef]
+    exact h.symm
+  have hXnodup' : Xs'.Nodup := by rw [hXsdef]; unfold Ty.genFilter; exact hXnodup.filter _
+  have hGFnodup : (Ty.genFilter G τ).Nodup := by unfold Ty.genFilter; exact hwf.nodup.filter _
+  have hGFdisj : ∀ g ∈ Ty.genFilter G τ, g ∉ Xs' := by
+    intro g hg hc
+    exact hdisj g (Ty.mem_of_mem_genFilter hg) (by rw [hXsdef] at hc; exact Ty.mem_of_mem_genFilter hc)
+  have hrewrite : Ty.renameG G Xs τ = Ty.openVars Xs' (Ty.closeOver (Ty.genFilter G τ) τ) := by
+    rw [Ty.renameG_eq_genFilter hXlen hwf.nodup hXnodup hdisj hXsτ]
+    exact (Ty.openVars_closeOver_rename hτlc hGFnodup hXlen' hGFdisj).symm
+  rw [hrewrite] at hb
+  have h_lc : ∀ p ∈ Xs'.zip instArgs, Ty.IsLC p.2 := fun p hp => hinstLC p.2 (List.of_mem_zip hp).2
+  have hsub := TypeOfHM.typ_substs_preservation (Xs'.zip instArgs)
+    (fun p hp => hXs_env p.1 (Ty.mem_of_mem_genFilter (List.of_mem_zip hp).1)) h_lc hb
+  have hfix : Expr.substTyFvars (Xs'.zip instArgs) (Expr.letRec anns bindings e)
+      = Expr.letRec anns bindings e :=
+    Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by
+      intro p hp
+      exact hXs_e p.1 (Ty.mem_of_mem_genFilter (List.of_mem_zip hp).1))
+  have hreg : (((PolyTy.genGroup G τ).body).openVars Xs').IsLC := TypeOfHM.regular hb
+  have hty : Ty.substFvars (Xs'.zip instArgs) (Ty.openVars Xs' (Ty.closeOver (Ty.genFilter G τ) τ)) = τ' := by
+    exact Ty.substFvars_zip_openVars_eq (Xs := Xs') (Vs := instArgs) hXnodup'
+      (fun X hX => hXs_Vs X (Ty.mem_of_mem_genFilter hX))
+      (Ty.closeOver (Ty.genFilter G τ) τ) τ' hinstTo
+      (fun X hX => hXs_M X (Ty.mem_of_mem_genFilter hX)) hreg
+  rw [hfix, hty] at hsub
+  exact hsub
 
 /-! ### The coherence theorem (`Infer.sound`, vs declarative `TypeOfHM`)
 
