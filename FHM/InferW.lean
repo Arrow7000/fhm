@@ -3843,6 +3843,122 @@ theorem mem_TyList_freeVars {tys : List Ty} {v : Nat} :
   · rintro ⟨t, ht, hv⟩
     exact TyList.mem_freeVars_of_mem ht hv
 
+/-- An upper bound on the `.bvar` indices occurring in a type (support for
+    `PolyTy.Generalizes.freeVars_subset`: opening at `Ty.bvarMax`-many fresh names
+    instantiates *every* bound variable). -/
+private def Ty.bvarMax : Ty → Nat
+  | .prim _ => 0
+  | .fvar _ => 0
+  | .bvar i => i + 1
+  | .arrow a b => max (Ty.bvarMax a) (Ty.bvarMax b)
+  | .customTy _ tys => (tys.map Ty.bvarMax).foldr max 0
+  | .bl _ _ e => Ty.bvarMax e
+
+/-- A generalising scheme introduces no free type variables beyond those of the
+    scheme it generalises (standard "generalisation does not add free vars"). -/
+theorem PolyTy.Generalizes.freeVars_subset {M' M : PolyTy} (h : PolyTy.Generalizes M' M) :
+    M'.body.freeVars ⊆ M.body.freeVars := by
+  intro w hwM'
+  by_contra hwM
+  -- free fvars of the source survive any `InstantiatesBy` (bvars have no fvars)
+  have hsurv : ∀ {tyArgs : List Ty} {ty ty' : Ty},
+      InstantiatesBy tyArgs ty ty' → w ∈ ty.freeVars → w ∈ ty'.freeVars := by
+    intro tyArgs ty ty' hi
+    induction ty using Ty.rec_strong generalizing ty' with
+    | prim p => cases hi; intro hw; simp [Ty.freeVars] at hw
+    | fvar n => cases hi; intro hw; simpa [Ty.freeVars] using hw
+    | bvar i => cases hi; intro hw; simp [Ty.freeVars] at hw
+    | arrow a b iha ihb =>
+      cases hi with
+      | arrow ha hb =>
+        intro hw
+        simp only [Ty.freeVars, List.mem_dedup, List.mem_append] at hw
+        rcases hw with hw | hw
+        · exact List.mem_dedup.mpr (List.mem_append.mpr (Or.inl (iha ha hw)))
+        · exact List.mem_dedup.mpr (List.mem_append.mpr (Or.inr (ihb hb hw)))
+    | customTy nm tys ih =>
+      cases hi with
+      | customTy hforall =>
+        intro hw
+        simp only [Ty.freeVars] at hw
+        induction hforall with
+        | nil => simp [TyList.freeVars] at hw
+        | cons hhd htl ihtl =>
+          rename_i hd_ty hd_it tl_tys tl_it
+          rcases mem_TyList_freeVars.mp hw with ⟨t, ht, hwt⟩
+          rcases List.mem_cons.mp ht with rfl | ht
+          · exact mem_TyList_freeVars.mpr
+              ⟨hd_it, List.mem_cons_self .., ih t List.mem_cons_self hhd hwt⟩
+          · exact List.mem_dedup.mpr (List.mem_append.mpr (Or.inr
+              (ihtl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
+                (mem_TyList_freeVars.mpr ⟨t, ht, hwt⟩))))
+    | bl lo hi e ih =>
+      cases hi with
+      | bl he =>
+        intro hw
+        simp only [Ty.freeVars] at hw
+        simpa [Ty.freeVars] using ih he hw
+  have hmono : ∀ {n m : Nat} {ty : Ty}, n ≤ m → ContainsBvarsUpTo n ty → ContainsBvarsUpTo m ty := by
+    intro n m ty hnm
+    induction ty using Ty.rec_strong with
+    | prim p => intro h; exact .prim
+    | fvar n' => intro h; exact .fvar
+    | bvar i => intro h; cases h with | bvar hlt => exact .bvar (by omega)
+    | arrow a b iha ihb => intro h; cases h with
+        | arrow ha hb => exact .arrow (iha ha) (ihb hb)
+    | customTy nm tys ih => intro h; cases h with
+        | customTy hb => exact .customTy (by
+            intro t ht
+            exact ih t ht (hb t ht))
+    | bl lo hi e ih => intro h; cases h with
+        | bl he => exact .bl (ih he)
+  have hfold : ∀ {a : Nat} {as : List Nat}, a ∈ as → a ≤ as.foldr max 0 := by
+    intro a as ha
+    induction as with
+    | nil => simp at ha
+    | cons b bs ih =>
+      rcases List.mem_cons.mp ha with rfl | ha
+      · exact le_max_left a (bs.foldr max 0)
+      · exact le_trans (ih ha) (le_max_right b (bs.foldr max 0))
+  have hbvarMax : ∀ {ty : Ty}, ContainsBvarsUpTo (Ty.bvarMax ty) ty := by
+    intro ty
+    induction ty using Ty.rec_strong with
+    | prim p => exact .prim
+    | fvar n => exact .fvar
+    | bvar i => rw [Ty.bvarMax]; exact .bvar (by omega)
+    | arrow a b iha ihb =>
+      rw [Ty.bvarMax]
+      exact .arrow (hmono (le_max_left (Ty.bvarMax a) (Ty.bvarMax b)) iha)
+        (hmono (le_max_right (Ty.bvarMax a) (Ty.bvarMax b)) ihb)
+    | customTy nm tys ih =>
+      rw [Ty.bvarMax]
+      exact .customTy (by
+        intro t ht
+        exact hmono (hfold (List.mem_map.mpr ⟨t, ht, rfl⟩)) (ih t ht))
+    | bl lo hi e ih => rw [Ty.bvarMax]; exact .bl ih
+  -- instantiate `M` at fresh fvars `Vs` strictly above `w`
+  let n : Nat := Ty.bvarMax M.body
+  let Vs : List Nat := (List.range n).map (fun i => w + 1 + i)
+  have hwVs : w ∉ Vs := by
+    intro hwv
+    rcases List.mem_map.mp hwv with ⟨i, _, hieq⟩
+    omega
+  have hInst : InstantiatesBy (Vs.map Ty.fvar) M.body (M.body.openVars Vs) := by
+    exact InstantiatesBy.openVars (Xs := Vs) (n := n) hbvarMax
+      (by simp [Vs, n, List.length_map, List.length_range])
+  have hLC : ∀ t ∈ Vs.map Ty.fvar, t.IsLC := by
+    intro t ht
+    rcases List.mem_map.mp ht with ⟨x, _, rfl⟩
+    exact ContainsBvarsUpTo.fvar
+  have hw_ty : w ∉ (M.body.openVars Vs).freeVars := by
+    intro hwty
+    have hsub := Ty.freeVars_openVars_subset (Xs := Vs) (t := M.body) w hwty
+    rcases hsub with hwbody | hwvs
+    · exact hwM hwbody
+    · exact hwVs hwvs
+  obtain ⟨tyArgs', hLC', hsurv'⟩ := h (Vs.map Ty.fvar) (M.body.openVars Vs) hLC hInst
+  exact hw_ty (hsurv hsurv' hwM')
+
 /-- Free vars introduced by a single-variable substitution come from the input
     or from the replacement. -/
 theorem Ty.mem_freeVars_substFvar {Z : Nat} {U x : Ty} {v : Nat}
@@ -17440,7 +17556,709 @@ theorem Infer.sound {Φ ctx e Φ' S eOut τ} (h : Infer Φ ctx e Φ' S eOut τ) 
     have hctx_eq : (S₂.onCtx (S₁.onCtx ctx)).eraseBounds =
         ((S₁ ++ S₂).onCtx ctx).eraseBounds := by rw [← Subst.onCtx_append]
     rwa [← hctx_eq]
-  | letRec hwfanns hgroup hceiling hbody => sorry
+  | letRec hwfanns hgroup hceiling hbody =>
+    expose_names
+    simp only [Expr.tyFreeVars, List.mem_append] at hKe
+    have hlen : bindings.length = anns.length := by
+      have h₁ := InferRecGroup.length_eq hgroup
+      rw [RecSpec.init_length] at h₁
+      exact h₁
+    have hinit_spec : ∀ s ∈ RecSpec.init Φ anns,
+        ∃ j, j < anns.length ∧ s = RecSpec.mono (.fvar (Φ + j)) := by
+      intro s hs
+      rcases List.mem_iff_getElem.mp hs with ⟨j, hj, rfl⟩
+      have hlenj : j < anns.length := by
+        have h₂ := RecSpec.init_length Φ anns
+        rw [h₂] at hj
+        exact hj
+      have hget : (RecSpec.init Φ anns)[j] = RecSpec.mono (.fvar (Φ + j)) := by
+        have h₁ := List.getElem?_eq_getElem hj
+        rw [RecSpec.init_getElem? Φ anns j, List.getElem?_eq_getElem hlenj] at h₁
+        injection h₁ with hEq
+        exact hEq.symm
+      exact ⟨j, hlenj, hget⟩
+    have hspecs_init : ∀ s ∈ RecSpec.init Φ anns, s.BelowFvars (Φ + bindings.length) := by
+      intro s hs
+      obtain ⟨j, hlenj, hsj⟩ := hinit_spec s hs
+      rw [hsj]
+      refine Ty.BelowFvars.fvar ?_
+      omega
+    have hspecsLC : ∀ s ∈ RecSpec.init Φ anns, s.LC := by
+      intro s hs
+      obtain ⟨j, hlenj, hsj⟩ := hinit_spec s hs
+      rw [hsj]
+      exact ContainsBvarsUpTo.fvar
+    have hgrpLe : Φ + bindings.length ≤ Φ₁ := InferRecGroup.frontier_le hgroup
+    have hctxGroup : CtxBelow (Φ + bindings.length)
+        { ctx with env := (RecSpec.init Φ anns).map (RecSpec.rhsEntry [] []) ++ ctx.env } := by
+      intro M hM
+      rcases List.mem_append.mp hM with hM1 | hM2
+      · obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hM1
+        exact RecSpec.rhsEntry_nil_belowFvars (hspecs_init s hs)
+      · exact (hbelow M hM2).mono (by omega)
+    have hctxG : CtxWF
+        { ctx with env := (RecSpec.init Φ anns).map (RecSpec.rhsEntry [] []) ++ ctx.env } := by
+      intro M hM
+      rcases List.mem_append.mp hM with hM1 | hM2
+      · obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hM1
+        exact RecSpec.rhsEntry_nil_wf (hspecsLC s hs)
+      · exact hctx M hM2
+    have htfv_group : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings,
+        y < Φ + bindings.length := by
+      intro y hy
+      have := hKΦ y (hKe y (.inl (.inr hy)))
+      omega
+    have hS₁ : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 :=
+      InferRecGroup.belowFvars hgroup hctxGroup hspecs_init htfv_group
+    have hS₁_dom : ∀ p ∈ S₁, p.1 < Φ₁ :=
+      InferRecGroup.dom_below hgroup hctxGroup hspecs_init htfv_group
+    have hS₁lc : ∀ p ∈ S₁, p.2.IsLC :=
+      InferRecGroup.lc hgroup hctxG hspecsLC
+    have hspecsEnv : ∀ s ∈ RecSpec.init Φ anns, ∀ y ∈ s.freeVars,
+        y ∈ ({ ctx with env := (RecSpec.init Φ anns).map (RecSpec.rhsEntry [] []) ++ ctx.env }).env.freeVars := by
+      intro s hs y hy
+      obtain ⟨j, hlenj, hsj⟩ := hinit_spec s hs
+      rw [hsj] at hy
+      simp only [RecSpec.freeVars, Ty.freeVars, List.mem_singleton] at hy
+      subst hy
+      refine Env.mem_freeVars_iff.mpr ?_
+      refine ⟨RecSpec.rhsEntry [] [] (RecSpec.mono (.fvar (Φ + j))),
+        List.mem_append_left _ (List.mem_map.mpr ⟨RecSpec.mono (.fvar (Φ + j)),
+          ?hmem, rfl⟩), ?_⟩
+      · refine List.mem_iff_getElem.mpr ⟨j, ?_, ?_⟩
+        · rw [RecSpec.init_length Φ anns]
+          exact hlenj
+        · have hlen_init : j < (RecSpec.init Φ anns).length := by
+            rw [RecSpec.init_length Φ anns]
+            exact hlenj
+          have hg : (RecSpec.init Φ anns)[j]? = some (RecSpec.mono (.fvar (Φ + j))) := by
+            rw [RecSpec.init_getElem? Φ anns j]
+            simp [hlenj]
+          have hge : (RecSpec.init Φ anns)[j]? = some ((RecSpec.init Φ anns)[j]) :=
+            List.getElem?_eq_getElem hlen_init
+          have hg' : some ((RecSpec.init Φ anns)[j]) = some (RecSpec.mono (.fvar (Φ + j))) := by
+            rw [hge] at hg
+            exact hg
+          simpa using hg'
+      · simp [RecSpec.rhsEntry, PolyTy.mkTrivial, Ty.renameG, Ty.substFvars, Ty.freeVars]
+    have hgrp := InferRecGroup.sound hgroup hctxG hctxGroup hspecsLC hspecs_init hspecsEnv K
+      (fun k hk => by have := hKΦ k hk; omega) (fun y hy => hKe y (.inl (.inr hy)))
+      (fun σ hσ y hy => by
+        rcases hinit_spec (RecSpec.poly σ) hσ with ⟨j, hj, hc⟩
+        cases hc)
+      (fun p hp => hSK p (List.mem_append_left _ hp))
+    -- local abbreviations for the post-S₁ specs, the pool, the erased+post-S₂ specs
+    let specs₁ : List RecSpec := (RecSpec.init Φ anns).map (RecSpec.onSubst S₁)
+    let G : List Nat := genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
+        (RecSpecs.monoTys specs₁)
+    let specsE : List RecSpec := (specs₁.map (RecSpec.onSubst S₂)).map RecSpec.eraseBounds
+    let ctx' : Ctx := ((S₁ ++ S₂).onCtx ctx).eraseBounds
+    let bs' : List Expr := bindings.map Expr.erase
+    let anns' : List (Option PolyTy) := bindings.map (fun _ => none)
+    have hspecs_post : ∀ s' ∈ specs₁, s'.BelowFvars Φ₁ := by
+      intro s' hs'
+      obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hs'
+      exact RecSpec.BelowFvars.onSubst hS₁ ((hspecs_init s hs).mono hgrpLe)
+    have hbodyWF : CtxWF
+        { (S₁.onCtx ctx) with
+          env := RecSpecs.ceilingSchemes G anns specs₁ ++ (S₁.onCtx ctx).env } := by
+      intro M hM
+      rcases List.mem_append.mp hM with hM1 | hM2
+      · obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hM1
+        have hpa : p.1 ∈ anns := (List.of_mem_zip hp).1
+        have hps : p.2 ∈ specs₁ := (List.of_mem_zip hp).2
+        cases p with
+        | mk a s =>
+          cases a with
+          | some σ => exact hwfanns σ hpa
+          | none =>
+            obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hps
+            exact RecSpec.bodyScheme_wf (RecSpec.LC.onSubst hS₁lc (hspecsLC s₀ hs₀))
+      · exact Subst.onCtx_wf hS₁lc hctx M hM2
+    have hbodyBelow : CtxBelow Φ₁
+        { (S₁.onCtx ctx) with
+          env := RecSpecs.ceilingSchemes G anns specs₁ ++ (S₁.onCtx ctx).env } := by
+      intro M hM
+      rcases List.mem_append.mp hM with hM1 | hM2
+      · obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hM1
+        have hpa : p.1 ∈ anns := (List.of_mem_zip hp).1
+        have hps : p.2 ∈ specs₁ := (List.of_mem_zip hp).2
+        cases p with
+        | mk a s =>
+          cases a with
+          | some σ =>
+            refine Ty.BelowFvars.of_freeVars_lt (fun v hv => ?_)
+            have hann := Expr.scheme_body_mem_annList_tyFreeVars hpa hv
+            have := hKΦ v (hKe v (.inl (.inl hann)))
+            omega
+          | none =>
+            exact RecSpec.bodyScheme_belowFvars (hspecs_post s hps)
+      · exact Subst.onCtx_below hS₁ (by omega) hbelow M hM2
+    have hS₂lc : ∀ p ∈ S₂, p.2.IsLC := (Infer.lc hbody hbodyWF).2
+    have hrhs_onSubst : ∀ (S : Subst) (s : RecSpec), s ∈ RecSpec.init Φ anns →
+        S.onPolyTy (RecSpec.rhsEntry [] [] s) = RecSpec.rhsEntry [] [] (RecSpec.onSubst S s) := by
+      intro S s hs
+      obtain ⟨j, hlenj, hsj⟩ := hinit_spec s hs
+      rw [hsj]
+      simp [RecSpec.rhsEntry, RecSpec.onSubst, Subst.onPolyTy, Ty.renameG, Ty.substFvars,
+        PolyTy.mkTrivial]
+    have hctxG_eq : S₁.onCtx { ctx with env := (RecSpec.init Φ anns).map (RecSpec.rhsEntry [] []) ++ ctx.env }
+        = { (S₁.onCtx ctx) with env := specs₁.map (RecSpec.rhsEntry [] []) ++ (S₁.onCtx ctx).env } := by
+      simp only [Subst.onCtx, Subst.onEnv, List.map_append, List.map_map, specs₁]
+      congr 1
+      congr 1
+      apply List.map_congr_left
+      intro s hs
+      exact hrhs_onSubst S₁ s hs
+    have hmono : ∀ p ∈ bs'.zip specsE, ∀ τ, p.2 = RecSpec.mono τ →
+        TypeOfHM ⟨specsE.map (RecSpec.rhsEntry [] []) ++ ctx'.env, ctx'.ctors⟩ p.1 τ := by
+      intro p hp τ hτ
+      rcases List.mem_iff_getElem.mp hp with ⟨j, hjp, hpeq⟩
+      have hlen_b' : j < bs'.length :=
+        lt_of_lt_of_le hjp (by rw [List.length_zip]; exact min_le_left _ _)
+      have hlen_e' : j < specsE.length :=
+        lt_of_lt_of_le hjp (by rw [List.length_zip]; exact min_le_right _ _)
+      have hzip : (bs'[j]'(hlen_b'), specsE[j]'(hlen_e')) = p := by
+        rw [List.getElem_zip] at hpeq
+        exact hpeq
+      cases hzip
+      have hlen_b : j < bindings.length := by
+        rwa [List.length_map] at hlen_b'
+      have hlen_init : j < (RecSpec.init Φ anns).length := by
+        rw [RecSpec.init_length]
+        omega
+      have hlen_specs₁ : j < specs₁.length := by
+        rwa [List.length_map, List.length_map] at hlen_e'
+      have hlen_anns : j < anns.length := by
+        exact lt_of_lt_of_le hlen_b (by rw [hlen])
+      have hinit_j : (RecSpec.init Φ anns)[j] = RecSpec.mono (.fvar (Φ + j)) := by
+        have hg : (RecSpec.init Φ anns)[j]? = some (RecSpec.mono (.fvar (Φ + j))) := by
+          rw [RecSpec.init_getElem? Φ anns j]
+          simp [hlen_anns]
+        have hge : (RecSpec.init Φ anns)[j]? = some ((RecSpec.init Φ anns)[j]) :=
+          List.getElem?_eq_getElem hlen_init
+        have hg' : some ((RecSpec.init Φ anns)[j]) = some (RecSpec.mono (.fvar (Φ + j))) := by
+          rw [hge] at hg
+          exact hg
+        simpa using hg'
+      have hspecs₁j : specs₁[j] = RecSpec.mono (S₁.onTy (.fvar (Φ + j))) := by
+        rw [List.getElem_map]
+        rw [hinit_j]
+        rfl
+      have hpair_mem : (bindings[j], specs₁[j]) ∈ bindings.zip specs₁ := by
+        refine List.mem_iff_getElem.mpr ⟨j, ?_, ?_⟩
+        · rw [List.length_zip]
+          exact lt_min hlen_b hlen_specs₁
+        · rw [List.getElem_zip]
+      have hgrp_p := hgrp (bindings[j], specs₁[j]) hpair_mem (S₁.onTy (.fvar (Φ + j))) hspecs₁j
+      have hg1 : TypeOfHM
+          { (S₁.onCtx ctx) with env := specs₁.map (RecSpec.rhsEntry [] []) ++ (S₁.onCtx ctx).env }.eraseBounds
+          (bindings[j]).erase (Ty.eraseBounds (S₁.onTy (.fvar (Φ + j)))) := by
+        rwa [hctxG_eq] at hgrp_p
+      have hg2 := TypeOfHM.onSubst_eraseBounds_fixed
+        (ctx := { (S₁.onCtx ctx) with env := specs₁.map (RecSpec.rhsEntry [] []) ++ (S₁.onCtx ctx).env })
+        (e := (bindings[j]).erase) (τ := S₁.onTy (.fvar (Φ + j))) S₂ hS₂lc
+        (herase_subst (bindings[j]) S₂) (by simpa only [herase_eraseBounds (bindings[j])] using hg1)
+      have hmono_ctx : (S₂.onCtx { (S₁.onCtx ctx) with
+            env := specs₁.map (RecSpec.rhsEntry [] []) ++ (S₁.onCtx ctx).env }).eraseBounds
+          = ⟨specsE.map (RecSpec.rhsEntry [] []) ++ ctx'.env, ctx'.ctors⟩ := by
+        have hS₂onCtx : S₂.onCtx { (S₁.onCtx ctx) with
+              env := specs₁.map (RecSpec.rhsEntry [] []) ++ (S₁.onCtx ctx).env }
+            = { (S₂.onCtx (S₁.onCtx ctx)) with
+              env := S₂.onEnv (specs₁.map (RecSpec.rhsEntry [] []) ++ (S₁.onCtx ctx).env) } := by
+          simp only [Subst.onCtx, Subst.onEnv, List.map_append]
+        rw [hS₂onCtx]
+        rw [← Subst.onCtx_append]
+        simp only [Ctx.eraseBounds, Subst.onEnv, List.map_append, Env.eraseBounds, List.map_map,
+          specsE]
+        congr 1
+        · congr 1
+          · apply List.map_congr_left
+            intro s hs
+            obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
+            obtain ⟨j, hlenj, hsj⟩ := hinit_spec s₀ hs₀
+            rw [hsj]
+            simp [RecSpec.rhsEntry, RecSpec.onSubst, RecSpec.eraseBounds, Subst.onPolyTy,
+              Ty.renameG, Ty.substFvars, PolyTy.eraseBounds_mkTrivial, PolyTy.mkTrivial,
+              PolyTy.eraseBounds]
+          · simp only [Ctx.eraseBounds, Subst.onCtx, Subst.onEnv, Env.eraseBounds, List.map_map,
+              ctx']
+            apply List.map_congr_left
+            intro M hM
+            simp [Subst.onPolyTy, Subst.onTy_append, PolyTy.eraseBounds]
+      have hspecsE_j : specsE[j]'(hlen_e') =
+          RecSpec.mono (Ty.eraseBounds (S₂.onTy (S₁.onTy (.fvar (Φ + j))))) := by
+        rw [List.getElem_map]
+        rw [List.getElem_map]
+        rw [hspecs₁j]
+        rfl
+      have hτeq : τ = Ty.eraseBounds (S₂.onTy (S₁.onTy (.fvar (Φ + j)))) := by
+        rw [hspecsE_j] at hτ
+        injection hτ with hEq
+        exact hEq.symm
+      have hg3 : TypeOfHM ⟨specsE.map (RecSpec.rhsEntry [] []) ++ ctx'.env, ctx'.ctors⟩
+          (bindings[j]).erase τ := by
+        rw [hmono_ctx] at hg2
+        rw [hτeq]
+        simpa [herase_eraseBounds (bindings[j])] using hg2
+      have hbsj : (bs'[j]'(hlen_b'), specsE[j]'(hlen_e')).1 = (bindings[j]).erase := by
+        rw [List.getElem_map]
+      rw [hbsj]
+      exact hg3
+    -- pool facts: S₂ avoids the gen-var pool G (domain and range)
+    have hsubstFvar_preserve : ∀ {Z : Nat} {U τ : Ty} {u : Nat}, u ≠ Z → u ∈ τ.freeVars →
+        u ∈ (Ty.substFvar Z U τ).freeVars := by
+      intro Z U τ u hZ hτ
+      induction τ using Ty.rec_strong with
+      | fvar m =>
+        simp only [Ty.substFvar, Ty.freeVars, List.mem_singleton] at hτ ⊢
+        subst hτ
+        simp [hZ, Ty.freeVars]
+      | prim p => simp [Ty.substFvar, Ty.freeVars] at hτ
+      | bvar i => simp [Ty.substFvar, Ty.freeVars] at hτ
+      | arrow a b iha ihb =>
+        simp only [Ty.substFvar, Ty.freeVars, List.mem_dedup, List.mem_append] at hτ ⊢
+        rcases hτ with hτ | hτ
+        · exact Or.inl (iha hτ)
+        · exact Or.inr (ihb hτ)
+      | customTy nm tys ih =>
+        simp only [Ty.substFvar, Ty.freeVars, TyList.substFvar_eq_map] at hτ ⊢
+        rw [mem_TyList_freeVars] at hτ ⊢
+        obtain ⟨t, ht, hτt⟩ := hτ
+        exact ⟨Ty.substFvar Z U t, List.mem_map.mpr ⟨t, ht, rfl⟩, ih t ht hτt⟩
+      | bl lo hi e ih =>
+        simp only [Ty.substFvar, Ty.freeVars] at hτ ⊢
+        exact ih hτ
+    have honTy_preserve : ∀ (S : Subst) (τ : Ty) (u : Nat), u ∈ τ.freeVars →
+        u ∉ S.map Prod.fst → u ∈ (S.onTy τ).freeVars := by
+      intro S τ u hτ hdom
+      induction S generalizing τ with
+      | nil => simpa [Subst.onTy] using hτ
+      | cons hd tl ih =>
+        obtain ⟨Z, U⟩ := hd
+        have hZ : u ≠ Z := by
+          intro hc
+          exact hdom (List.mem_map.mpr ⟨(Z, U), List.mem_cons_self, hc.symm⟩)
+        have hdom' : u ∉ tl.map Prod.fst := fun hc => by
+          obtain ⟨q, hq, hqeq⟩ := List.mem_map.mp hc
+          exact hdom (List.mem_map.mpr ⟨q, List.mem_cons_of_mem _ hq, hqeq⟩)
+        exact ih (Ty.substFvar Z U τ) (hsubstFvar_preserve hZ hτ) hdom'
+    have hgenGroup_avoid : ∀ {G : List Nat} {τ : Ty} {g : Nat}, g ∈ G → g ∉ (PolyTy.genGroup G τ).body.freeVars := by
+      intro G τ g hg hc
+      have hτ : g ∈ τ.freeVars := Ty.freeVars_closeOver_subset (by simpa [PolyTy.genGroup] using hc)
+      have hgfilter : g ∈ Ty.genFilter G τ := by
+        exact List.mem_filter.mpr ⟨hg, by simp [hτ]⟩
+      exact Ty.not_mem_closeOver_freeVars hgfilter (by simpa [PolyTy.genGroup] using hc)
+    have hcloseOver_preserve : ∀ {gs : List Nat} {τ : Ty} {g : Nat}, g ∈ τ.freeVars → g ∉ gs →
+        g ∈ (Ty.closeOver gs τ).freeVars := by
+      intro gs τ g hτ hg
+      induction τ using Ty.rec_strong with
+      | fvar n =>
+        rw [Ty.closeOver.eq_6]
+        cases h_idx : gs.idxOf? n with
+        | some i =>
+          simp only [Ty.freeVars, List.mem_singleton] at hτ
+          have hgn : g = n := hτ
+          have hn : n ∈ gs := by
+            by_contra hn
+            have hnone : gs.idxOf? n = none := List.idxOf?_eq_none_iff.mpr hn
+            rw [h_idx] at hnone
+            simp at hnone
+          simp [Ty.freeVars]
+          exact hg (by simpa [hgn] using hn)
+        | none =>
+          simp only [Ty.freeVars, List.mem_singleton] at hτ
+          subst hτ
+          simpa [Ty.closeOver, h_idx, Ty.freeVars]
+      | prim p => simp [Ty.closeOver, Ty.freeVars] at hτ
+      | bvar i => simp [Ty.closeOver, Ty.freeVars] at hτ
+      | arrow a b iha ihb =>
+        simp only [Ty.closeOver, Ty.freeVars, List.mem_dedup, List.mem_append] at hτ ⊢
+        rcases hτ with hτ | hτ
+        · exact Or.inl (iha hτ)
+        · exact Or.inr (ihb hτ)
+      | customTy nm tys ih =>
+        simp only [Ty.closeOver, Ty.freeVars, TyList.closeOver_eq_map] at hτ ⊢
+        rw [mem_TyList_freeVars] at hτ ⊢
+        obtain ⟨t, ht, hτt⟩ := hτ
+        exact ⟨Ty.closeOver gs t, List.mem_map.mpr ⟨t, ht, rfl⟩, ih t ht hτt⟩
+      | bl lo hi e ih =>
+        simp only [Ty.closeOver, Ty.freeVars] at hτ ⊢
+        exact ih hτ
+    have hG_member : ∀ g ∈ G, ∃ j, j < bindings.length ∧ g ∈ (S₁.onTy (.fvar (Φ + j))).freeVars := by
+      intro g hg
+      have hg' := genGroupVars_spec hg
+      obtain ⟨τ, hτin, hgτ⟩ := Ty.mem_freeVarsList_exists hg'.1
+      rcases List.mem_filterMap.mp hτin with ⟨s, hs, hmono⟩
+      have hsmono : s = RecSpec.mono τ := by
+        cases s with
+        | mono τ' => simpa [RecSpec.monoTy?] using hmono
+        | poly σ => simp [RecSpec.monoTy?] at hmono
+      obtain ⟨s₀, hs₀, hsub⟩ := List.mem_map.mp hs
+      obtain ⟨j, hlenj, hsj⟩ := hinit_spec s₀ hs₀
+      rw [hsj] at hsub
+      rw [← hsub] at hsmono
+      injection hsmono with hτeq
+      exact ⟨j, (by rwa [← hlen] at hlenj), by simpa [hτeq] using hgτ⟩
+    have hG_not_domS₁ : ∀ g ∈ G, g ∉ S₁.map Prod.fst := by
+      intro g hg hc
+      obtain ⟨p, hp, hpeq⟩ := List.mem_map.mp hc
+      obtain ⟨j, hlenj, hgτ⟩ := hG_member g hg
+      have helim := InferRecGroup.eliminates hgroup hctxGroup hspecs_init htfv_group
+        (fun p hp' hc' => hSK p (List.mem_append_left _ hp') (hKe p.1 (.inl (.inr hc'))))
+        (fun p hp' σ hσ => by
+          rcases hinit_spec (RecSpec.poly σ) hσ with ⟨j', hj', hc'⟩
+          cases hc')
+      subst hpeq
+      exact helim p hp (Ty.fvar (Φ + j)) hgτ
+    have hG_below : ∀ g ∈ G, g < Φ₁ := by
+      intro g hg
+      obtain ⟨j, hlenj, hgτ⟩ := hG_member g hg
+      rcases Subst.mem_freeVars_onTy hgτ with h | h
+      · simp only [Ty.freeVars, List.mem_singleton] at h
+        subst h
+        omega
+      · obtain ⟨p, hp, hgp⟩ := h
+        exact (hS₁ p hp).mem_lt g hgp
+    have hG_notK : ∀ g ∈ G, g ∉ K := by
+      intro g hg hgK
+      have hgΦ : g < Φ := hKΦ g hgK
+      obtain ⟨j, hlenj, hgτ⟩ := hG_member g hg
+      rcases Subst.mem_freeVars_onTy hgτ with h | h
+      · simp only [Ty.freeVars, List.mem_singleton] at h
+        subst h
+        omega
+      · obtain ⟨p, hp, hgp⟩ := h
+        have hctxG_avoid : ∀ M ∈ ({ ctx with
+              env := (RecSpec.init Φ anns).map (RecSpec.rhsEntry [] []) ++ ctx.env } : Ctx).env,
+            g ∉ M.body.freeVars := by
+          intro M hM
+          rcases List.mem_append.mp hM with hM1 | hM2
+          · obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hM1
+            rw [RecSpec.rhsEntry_nil_body_freeVars]
+            rcases hinit_spec s hs with ⟨j', hlenj', hsj'⟩
+            rw [hsj']
+            intro hc
+            simp only [RecSpec.freeVars, Ty.freeVars, List.mem_singleton] at hc
+            omega
+          · intro hc
+            have hgc : g ∈ (S₁.onCtx ctx).env.freeVars := by
+              refine Env.mem_freeVars_iff.mpr ⟨S₁.onPolyTy M, List.mem_map.mpr ⟨M, hM2, rfl⟩, ?_⟩
+              exact honTy_preserve S₁ M.body g hc (hG_not_domS₁ g hg)
+            exact (genGroupVars_spec hg).2.1 hgc
+        have hspecsG_avoid : ∀ s ∈ RecSpec.init Φ anns, g ∉ s.freeVars := by
+          intro s hs
+          rcases hinit_spec s hs with ⟨j', hlenj', hsj'⟩
+          rw [hsj']
+          intro hc
+          simp only [RecSpec.freeVars, Ty.freeVars, List.mem_singleton] at hc
+          omega
+        have hRecGroup_sub : ∀ (bs : List Expr) (g : Nat), g ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bs →
+            g ∈ bs.flatMap Expr.tyFreeVars := by
+          intro bs g
+          induction bs with
+          | nil => intro hc; simp [Expr.tyFreeVars.RecGroup.tyFreeVars] at hc
+          | cons b bs' ih =>
+            intro hc
+            simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append] at hc
+            rcases hc with hc | hc
+            · exact List.mem_flatMap.mpr ⟨b, List.mem_cons_self, hc⟩
+            · rcases List.mem_flatMap.mp (ih hc) with ⟨a, ha, hga⟩
+              exact List.mem_flatMap.mpr ⟨a, List.mem_cons_of_mem _ ha, hga⟩
+        have hbindsG_avoid : g ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings := by
+          intro hc
+          exact (genGroupVars_spec hg).2.2 (List.mem_append_right _ (hRecGroup_sub bindings g hc))
+        have hgrp_avoid := InferRecGroup.eOut_avoid hgroup (w := g) (by omega)
+          hctxG_avoid hspecsG_avoid hbindsG_avoid
+        exact hgrp_avoid.1 p hp hgp
+    have hG_body : ∀ g ∈ G, g ∉ body.tyFreeVars := fun g hg hc =>
+      hG_notK g hg (hKe g (.inr hc))
+    have hG_bodyCtx_env : ∀ g ∈ G, ∀ M ∈ ({ (S₁.onCtx ctx) with
+        env := RecSpecs.ceilingSchemes G anns specs₁ ++ (S₁.onCtx ctx).env } : Ctx).env,
+        g ∉ M.body.freeVars := by
+      intro g hg M hM
+      rcases List.mem_append.mp hM with hM1 | hM2
+      · obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hM1
+        have hpa : p.1 ∈ anns := (List.of_mem_zip hp).1
+        have hps : p.2 ∈ specs₁ := (List.of_mem_zip hp).2
+        cases p with
+        | mk a s =>
+          cases a with
+          | some σ =>
+            intro hc
+            exact (genGroupVars_spec hg).2.2 (List.mem_append_left _ (Expr.scheme_body_mem_annList_tyFreeVars hpa hc))
+          | none =>
+            obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hps
+            obtain ⟨j', hlenj', hsj'⟩ := hinit_spec s₀ hs₀
+            rw [hsj']
+            exact hgenGroup_avoid hg
+      · intro hc
+        exact (genGroupVars_spec hg).2.1 (Env.mem_freeVars_iff.mpr ⟨M, hM2, hc⟩)
+    have hS₂_dom_G : ∀ g ∈ G, g ∉ S₂.map Prod.fst := fun g hg =>
+      Infer.dom_avoid hbody (w := g) (hG_below g hg) (hG_bodyCtx_env g hg) (hG_body g hg)
+    have hS₂_ran_G : ∀ g ∈ G, ∀ p ∈ S₂, g ∉ p.2.freeVars := fun g hg =>
+      (Infer.eOut_avoid hbody (w := g) (hG_below g hg) (hG_bodyCtx_env g hg) (hG_body g hg)).1
+    have hS₂_domG : ∀ p ∈ S₂, p.1 ∉ G := fun p hp hc =>
+      hS₂_dom_G p.1 hc (List.mem_map.mpr ⟨p, hp, rfl⟩)
+    have hS₂_ranG : ∀ p ∈ S₂, ∀ u ∈ p.2.freeVars, u ∉ G := fun p hp u hu hc =>
+      hS₂_ran_G u hc p hp hu
+    -- hwf for the empty-pool letRec
+    have hspecsE_mono : ∀ s ∈ specsE, ∃ τ, s = RecSpec.mono τ := by
+      intro s hs
+      obtain ⟨s₁, hs₁, hsub₁⟩ := List.mem_map.mp hs
+      obtain ⟨s₀, hs₀, hsub₀⟩ := List.mem_map.mp hs₁
+      obtain ⟨s₀₀, hs₀₀, hsub₀₀⟩ := List.mem_map.mp hs₀
+      obtain ⟨j, hlenj, hsj⟩ := hinit_spec s₀₀ hs₀₀
+      rw [hsj] at hsub₀₀
+      rw [← hsub₀₀] at hsub₀
+      rw [← hsub₀] at hsub₁
+      rw [← hsub₁]
+      exact ⟨Ty.eraseBounds (S₂.onTy (S₁.onTy (.fvar (Φ + j)))), rfl⟩
+    have hwf : RecSpecs.WF anns' bs' specsE G := by
+      refine ⟨?_, ?_, ?_, ?_, ?_⟩
+      · rw [show anns' = List.replicate bindings.length none from by simp [anns']]
+        rw [show specsE.map RecSpec.ann = List.replicate specsE.length none from by
+          rw [← List.map_const]
+          apply List.map_congr_left
+          intro s hs
+          obtain ⟨τ, hτ⟩ := hspecsE_mono s hs
+          rw [hτ]
+          rfl]
+        congr 1
+        dsimp [specsE, specs₁]
+        simp [List.length_map, RecSpec.init_length, hlen]
+      · dsimp [bs', specsE, specs₁]
+        simp [List.length_map, RecSpec.init_length, hlen]
+      · exact genGroupVars_nodup
+      · intro τ hτ
+        obtain ⟨s₁, hs₁, hsub₁⟩ := List.mem_map.mp hτ
+        obtain ⟨s₀, hs₀, hsub₀⟩ := List.mem_map.mp hs₁
+        obtain ⟨s₀₀, hs₀₀, hsub₀₀⟩ := List.mem_map.mp hs₀
+        obtain ⟨j, hlenj, hsj⟩ := hinit_spec s₀₀ hs₀₀
+        rw [hsj] at hsub₀₀
+        rw [← hsub₀₀] at hsub₀
+        rw [← hsub₀] at hsub₁
+        change RecSpec.eraseBounds (RecSpec.mono (S₂.onTy (S₁.onTy (.fvar (Φ + j))))) = RecSpec.mono τ at hsub₁
+        injection hsub₁ with hτeq
+        rw [← hτeq]
+        exact Ty.IsLC.eraseBounds (Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc ContainsBvarsUpTo.fvar))
+      · intro σ hσ
+        obtain ⟨τ, hτ⟩ := hspecsE_mono (RecSpec.poly σ) hσ
+        cases hτ
+    -- pool freshness for the final context
+    have hG_env : ∀ g ∈ G, g ∉ ctx'.env.freeVars := by
+      intro g hg hc
+      have hc' : g ∈ ((S₁ ++ S₂).onCtx ctx).env.freeVars :=
+        (Env.mem_freeVars_eraseBounds _ g).mp (by simpa [ctx'] using hc)
+      rw [Subst.onCtx_append] at hc'
+      obtain ⟨M', hM', hgM'⟩ := Env.mem_freeVars_iff.mp hc'
+      rcases List.mem_map.mp hM' with ⟨M, hM, rfl⟩
+      rcases Subst.mem_freeVars_onTy hgM' with h | h
+      · exact (genGroupVars_spec hg).2.1 (Env.mem_freeVars_iff.mpr ⟨M, hM, h⟩)
+      · obtain ⟨p, hp, hgp⟩ := h
+        exact hS₂_ran_G g hg p hp hgp
+    have hG_specs : ∀ g ∈ G, ∀ σ, RecSpec.poly σ ∈ specsE → g ∉ σ.body.freeVars := by
+      intro g hg σ hσ
+      obtain ⟨τ, hτ⟩ := hspecsE_mono (RecSpec.poly σ) hσ
+      cases hτ
+    have hG_bs : ∀ g ∈ G, ∀ e ∈ bs', g ∉ e.tyFreeVars := by
+      intro g hg e he
+      obtain ⟨b, hb, rfl⟩ := List.mem_map.mp he
+      rw [herase_tfv b]
+      simp
+    have hpoly : ∀ p ∈ bs'.zip specsE, ∀ σ, p.2 = RecSpec.poly σ →
+        ∀ Ys, FreshNames [] σ.paramCount Ys →
+          TypeOfHM ⟨specsE.map (RecSpec.rhsEntry [] []) ++ ctx'.env, ctx'.ctors⟩
+            (p.1.openTyVars Ys) (σ.openVars Ys) := by
+      intro p hp σ hσ
+      obtain ⟨τ, hτ⟩ := hspecsE_mono p.2 (List.of_mem_zip hp).2
+      rw [hτ] at hσ
+      cases hσ
+    -- the body lift: from `Infer.sound hbody` to `RecSpecs.bodyCtx ctx' specsE G`
+    have hbody_sound := Infer.sound hbody hbodyWF hbodyBelow K
+      (fun k hk => by have := hKΦ k hk; have := hgrpLe; omega)
+      (fun y hy => hKe y (.inr hy)) (fun p hp => hSK p (List.mem_append_right _ hp))
+    have hΦbody : ∀ y ∈ body.tyFreeVars, y < Φ₁ := fun y hy => by
+      have := hKΦ y (hKe y (.inr hy))
+      have := hgrpLe
+      omega
+    have hSebody : ∀ p ∈ S₂, p.1 ∉ body.tyFreeVars := fun p hp hc =>
+      hSK p (List.mem_append_right _ hp) (hKe p.1 (.inr hc))
+    have hS₂τ_body : S₂.onTy τ = τ :=
+      Ty.substFvars_eq_self_of_no_key (fun p hp =>
+        (Infer.eliminates hbody hbodyBelow hΦbody hSebody).2 p hp)
+    have hbody_ctx : (S₂.onCtx { (S₁.onCtx ctx) with
+        env := RecSpecs.ceilingSchemes G anns specs₁ ++ (S₁.onCtx ctx).env }).eraseBounds
+        = ⟨(S₂.onEnv (RecSpecs.ceilingSchemes G anns specs₁)).eraseBounds
+            ++ (((S₁ ++ S₂).onCtx ctx).eraseBounds).env,
+            (((S₁ ++ S₂).onCtx ctx).eraseBounds).ctors⟩ := by
+      have hS₂onCtx : S₂.onCtx { (S₁.onCtx ctx) with
+            env := RecSpecs.ceilingSchemes G anns specs₁ ++ (S₁.onCtx ctx).env }
+          = { (S₂.onCtx (S₁.onCtx ctx)) with
+            env := S₂.onEnv (RecSpecs.ceilingSchemes G anns specs₁ ++ (S₁.onCtx ctx).env) } := by
+        simp only [Subst.onCtx, Subst.onEnv, List.map_append]
+      rw [hS₂onCtx]
+      rw [← Subst.onCtx_append]
+      simp only [Ctx.eraseBounds, Subst.onEnv, List.map_append, Env.eraseBounds, List.map_map]
+      congr 1
+      congr 1
+      all_goals try rfl
+      · simp only [Subst.onCtx, Subst.onEnv, Env.eraseBounds, List.map_map]
+        apply List.map_congr_left
+        intro M hM
+        simp [Subst.onPolyTy, Subst.onTy_append, PolyTy.eraseBounds]
+    have hbody_pack : TypeOfHM
+        ⟨(S₂.onEnv (RecSpecs.ceilingSchemes G anns specs₁)).eraseBounds
+          ++ (((S₁ ++ S₂).onCtx ctx).eraseBounds).env, (((S₁ ++ S₂).onCtx ctx).eraseBounds).ctors⟩
+        body.erase (Ty.eraseBounds τ) := by
+      rwa [hbody_ctx, hS₂τ_body] at hbody_sound
+    -- ceiling memberwise: `Generalizes (genGroup G τj) (eraseBounds σ)` for annotated,
+    -- equality for unannotated — all via the ceiling + S₂-avoids-G
+    have hS₂τ_fix : ∀ {τ₁ : Ty}, (∀ v ∈ (Ty.eraseBounds τ₁).freeVars, v ∈ G ∨ v ∈ K) →
+        S₂.onTy τ₁ = τ₁ := by
+      intro τ₁ hfv
+      exact Ty.substFvars_eq_self_of_no_key (fun p hp hc => by
+        rcases hfv p.1 ((Ty.mem_freeVars_eraseBounds τ₁ p.1).mpr hc) with h | h
+        · exact hS₂_dom_G p.1 h (List.mem_map.mpr ⟨p, hp, rfl⟩)
+        · exact hSK p (List.mem_append_right _ hp) h)
+    have hforall₂_mem : ∀ {as : List (Option PolyTy)} {bs : List RecSpec},
+        List.Forall₂ (fun a s => match a with
+          | some σ' => PolyTy.Generalizes (PolyTy.eraseBounds (RecSpec.bodyScheme G s)) (PolyTy.eraseBounds σ')
+          | none => True) as bs →
+        ∀ {a b}, (a, b) ∈ as.zip bs →
+          match a with
+          | some σ' => PolyTy.Generalizes (PolyTy.eraseBounds (RecSpec.bodyScheme G b)) (PolyTy.eraseBounds σ')
+          | none => True := by
+      intro as bs hf
+      induction hf with
+      | nil => intro a b hp; simp at hp
+      | cons hhd htl ih =>
+        intro a b hp
+        simp only [List.zip_cons_cons, List.mem_cons] at hp
+        rcases hp with hpair | hp
+        · injection hpair with ha hb
+          subst ha
+          subst hb
+          exact hhd
+        · exact ih hp
+    have hper : ∀ p ∈ anns.zip specs₁,
+        PolyTy.Generalizes
+          (RecSpec.bodyScheme G (RecSpec.eraseBounds (RecSpec.onSubst S₂ p.2)))
+          (PolyTy.eraseBounds (S₂.onPolyTy (match p.1 with
+            | some σ => σ
+            | none => RecSpec.bodyScheme G p.2))) := by
+      intro p hp
+      cases p with
+      | mk a s =>
+        cases a with
+        | some σ =>
+          have hps : s ∈ specs₁ := (List.of_mem_zip hp).2
+          obtain ⟨s₀, hs₀, hsub₀⟩ := List.mem_map.mp hps
+          obtain ⟨j, hlenj, hsj⟩ := hinit_spec s₀ hs₀
+          rw [hsj] at hsub₀
+          rw [← hsub₀] at hp ⊢
+          have hce : PolyTy.Generalizes
+              (PolyTy.genGroup G (Ty.eraseBounds (S₁.onTy (.fvar (Φ + j)))))
+              (PolyTy.eraseBounds σ) := by
+            simpa [RecSpec.bodyScheme, RecSpec.onSubst, PolyTy.eraseBounds_genGroup] using (hforall₂_mem hceiling hp)
+          -- hce : Generalizes (genGroup G (eraseBounds (S₁.onTy (fvar (Φ+j))))) (eraseBounds σ)
+          have hfix : S₂.onTy σ.body = σ.body := by
+            exact Ty.substFvars_eq_self_of_no_key (fun p hp' hc =>
+              hSK p (List.mem_append_right _ hp')
+                (hKe p.1 (.inl (.inl (Expr.scheme_body_mem_annList_tyFreeVars (List.of_mem_zip hp).1 hc)))))
+          have hS₂σ : S₂.onPolyTy σ = σ := by
+            cases σ
+            simp [Subst.onPolyTy, hfix]
+          have hτ₁_fix : S₂.onTy (S₁.onTy (.fvar (Φ + j))) = S₁.onTy (.fvar (Φ + j)) := by
+            apply hS₂τ_fix
+            intro v hv
+            by_cases hvG : v ∈ G
+            · exact Or.inl hvG
+            · right
+              have hsubset := PolyTy.Generalizes.freeVars_subset hce
+              have hvbody : v ∈ (PolyTy.genGroup G (Ty.eraseBounds (S₁.onTy (.fvar (Φ + j))))).body.freeVars := by
+                exact hcloseOver_preserve (by simpa using hv) (by simp [Ty.genFilter, hvG])
+              have hvσ : v ∈ σ.body.freeVars := by
+                have hv1 : v ∈ (Ty.eraseBounds σ.body).freeVars := hsubset (by simpa using hvbody)
+                exact (Ty.mem_freeVars_eraseBounds σ.body v).mp hv1
+              exact hKe v (.inl (.inl (Expr.scheme_body_mem_annList_tyFreeVars (List.of_mem_zip hp).1 hvσ)))
+          change PolyTy.Generalizes
+            (PolyTy.genGroup G (Ty.eraseBounds (S₂.onTy (S₁.onTy (.fvar (Φ + j))))))
+            (PolyTy.eraseBounds (S₂.onPolyTy σ))
+          rw [hτ₁_fix, hS₂σ]
+          exact hce
+        | none =>
+          obtain ⟨s₀, hs₀, hsub₀⟩ := List.mem_map.mp (List.of_mem_zip hp).2
+          obtain ⟨j, hlenj, hsj⟩ := hinit_spec s₀ hs₀
+          rw [hsj] at hsub₀
+          rw [← hsub₀]
+          have heq : PolyTy.eraseBounds (S₂.onPolyTy (RecSpec.bodyScheme G (RecSpec.mono (S₁.onTy (.fvar (Φ + j))))))
+              = RecSpec.bodyScheme G (RecSpec.eraseBounds (RecSpec.onSubst S₂ (RecSpec.mono (S₁.onTy (.fvar (Φ + j)))))) := by
+            simp [RecSpec.bodyScheme, RecSpec.eraseBounds, RecSpec.onSubst,
+              Subst.onPolyTy_genGroup (G := G) (S := S₂) hS₂_domG hS₂_ranG, PolyTy.eraseBounds_genGroup]
+          simp only [Prod.fst, Prod.snd]
+          simp only [RecSpec.onSubst]
+          rw [heq]
+          intro tyArgs ty hlc hinst
+          exact ⟨tyArgs, hlc, hinst⟩
+    have hzip_snd : ∀ {α : Type} {β : Type} {γ : Type} (as : List α) (bs : List β)
+        (f : β → γ), as.length = bs.length → (as.zip bs).map (fun p => f p.2) = bs.map f := by
+      intro α β γ as bs f
+      induction as generalizing bs with
+      | nil => intro h; cases bs with | nil => rfl | cons b bs' => simp at h
+      | cons a as' ih =>
+        intro h
+        cases bs with
+        | nil => simp at h
+        | cons b bs' =>
+          have ih' := ih bs' (by simpa using h)
+          simpa [List.zip_cons_cons, List.map_cons] using (congrArg (fun l => f b :: l) ih')
+    have hlen_zip : (anns.zip specs₁).length = specs₁.length := by
+      rw [List.length_zip]
+      all_goals dsimp [specs₁]
+      all_goals simp [List.length_map, RecSpec.init_length, hlen]
+    have hlen₁ : anns.length = specs₁.length := by
+      dsimp [specs₁]
+      simp [List.length_map, RecSpec.init_length]
+    have hgen_tgt : specsE.map (RecSpec.bodyScheme G)
+        = (anns.zip specs₁).map (fun p => RecSpec.bodyScheme G (RecSpec.eraseBounds (RecSpec.onSubst S₂ p.2))) := by
+      rw [show specsE = (specs₁.map (RecSpec.onSubst S₂)).map RecSpec.eraseBounds from rfl]
+      rw [List.map_map, List.map_map]
+      rw [hzip_snd anns specs₁ (fun s => RecSpec.bodyScheme G (RecSpec.eraseBounds (RecSpec.onSubst S₂ s))) hlen₁]
+      rfl
+    have hgen_src : (S₂.onEnv (RecSpecs.ceilingSchemes G anns specs₁)).eraseBounds
+        = (anns.zip specs₁).map (fun p => PolyTy.eraseBounds (S₂.onPolyTy (match p.1 with
+            | some σ => σ
+            | none => RecSpec.bodyScheme G p.2))) := by
+      rw [show RecSpecs.ceilingSchemes G anns specs₁
+          = (anns.zip specs₁).map (fun p => match p.1 with | some σ => σ | none => RecSpec.bodyScheme G p.2) from rfl]
+      simp only [Subst.onEnv, Env.eraseBounds, List.map_map]
+      rfl
+    have hgen : List.Forall₂ PolyTy.Generalizes
+        (specsE.map (RecSpec.bodyScheme G))
+        ((S₂.onEnv (RecSpecs.ceilingSchemes G anns specs₁)).eraseBounds) := by
+      rw [hgen_tgt, hgen_src]
+      have haux : ∀ (l : List (Option PolyTy × RecSpec)),
+          (∀ x ∈ l, PolyTy.Generalizes
+            (RecSpec.bodyScheme G (RecSpec.eraseBounds (RecSpec.onSubst S₂ x.2)))
+            (PolyTy.eraseBounds (S₂.onPolyTy (match x.1 with | some σ => σ | none => RecSpec.bodyScheme G x.2)))) →
+          List.Forall₂ PolyTy.Generalizes
+            (l.map (fun x => RecSpec.bodyScheme G (RecSpec.eraseBounds (RecSpec.onSubst S₂ x.2))))
+            (l.map (fun x => PolyTy.eraseBounds (S₂.onPolyTy (match x.1 with | some σ => σ | none => RecSpec.bodyScheme G x.2)))) := by
+        intro l h
+        induction l with
+        | nil => exact .nil
+        | cons x xs ih =>
+          exact .cons (h x (List.mem_cons_self)) (ih (fun y hy => h y (List.mem_cons_of_mem _ hy)))
+      exact haux (anns.zip specs₁) hper
+    have hbody_final := TypeOfHM.weaken_schemes hgen hbody_pack
+    have hbody_lift : TypeOfHM (RecSpecs.bodyCtx ctx' specsE G) body.erase (Ty.eraseBounds τ) := by
+      simpa [RecSpecs.bodyCtx, ctx'] using hbody_final
+    -- assemble the empty-pool letRec
+    have hletrec := TypeOfHM.letRec_of_emptyPool (ctx := ctx') (Lp := []) (G := G)
+      (anns := anns') (bs := bs') (specs := specsE) (body := body.erase) (ρ := Ty.eraseBounds τ)
+      hwf hG_env hG_specs hG_bs hmono hpoly hbody_lift
+    simpa [Expr.erase_letRec, anns', bs', ctx', List.map_const] using hletrec
   termination_by e.size
   decreasing_by
     all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
