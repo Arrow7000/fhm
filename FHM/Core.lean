@@ -2729,6 +2729,105 @@ theorem Expr.erase_openBoundTyVars (ann : Option PolyTy) (Xs : List Nat) (e : Ex
     (Expr.openBoundTyVars ann Xs e).erase = e.erase := by
   cases ann <;> simp [Expr.openBoundTyVars, Expr.erase_openTyVars]
 
+/-! ### Erasure is a no-op under scoped-variable opening (image of `erase`).
+
+The CEK leaf's `Expr.openTyVars_eq_self_of_erased` (`CekMachine.lean`) stated
+"opening is a no-op" for the *selective* `IsErased` predicate, which keeps
+`letIn`/`letRec` annotations. The `Step` dynamics needs the analogous fact for
+the *image* of the uniform `Expr.erase`: an erased term has `none`/all-`none`/
+`tyArgs = []` in every annotation slot, so `openTyVarsAux` has nothing to open. -/
+
+/-- For a branch list, opening is a no-op on the erasures of each branch body. -/
+private theorem BranchList.openTyVarsAux_eq_self_of_erase_image (d : Nat) (Xs : List Nat)
+    (brs : List (MatchPattern × Expr))
+    (h : ∀ pb ∈ brs, pb.2.erase.openTyVarsAux d Xs = pb.2.erase) :
+    BranchList.openTyVarsAux d Xs (brs.map (fun pb => (pb.1, pb.2.erase))) =
+      brs.map (fun pb => (pb.1, pb.2.erase)) := by
+  induction brs with
+  | nil => rfl
+  | cons hd tl ihtl =>
+      obtain ⟨p, b⟩ := hd
+      simp only [BranchList.openTyVarsAux, List.map_cons]
+      rw [h (p, b) (List.mem_cons_self ..),
+          ihtl (fun pb hpb => h pb (List.mem_cons_of_mem (p, b) hpb))]
+
+/-- For a recursion group whose bindings are already erased, opening is a no-op on
+    `bindings.map Expr.erase` (the all-`none` annotations descend each binding at
+    `d + RecAnn.params none`, which the depth-general hypothesis covers). -/
+private theorem RecGroup.openTyVarsAux_eq_self_of_erase_image (d : Nat) (Xs : List Nat)
+    (bindings : List Expr)
+    (h : ∀ b ∈ bindings, ∀ d Xs, b.erase.openTyVarsAux d Xs = b.erase) :
+    RecGroup.openTyVarsAux d Xs (bindings.map (fun _ => none)) (bindings.map Expr.erase) =
+      bindings.map Expr.erase := by
+  induction bindings with
+  | nil => rfl
+  | cons hd tl ihtl =>
+      simp only [RecGroup.openTyVarsAux, List.map_cons]
+      rw [h hd (List.mem_cons_self ..) (d + RecAnn.params none) Xs,
+          ihtl (fun b hb => h b (List.mem_cons_of_mem hd hb))]
+
+/-- Opening scoped type variables is a no-op on a term in the image of `Expr.erase`
+    (erasure already blanked every annotation slot, so there is nothing to open),
+    depth-generalised. -/
+theorem Expr.openTyVarsAux_eq_self_of_erase_image (e : Expr) :
+    ∀ (d : Nat) (Xs : List Nat), e.erase.openTyVarsAux d Xs = e.erase := by
+  induction e using Expr.rec_strong with
+  | primLit p => intro d Xs; simp [Expr.openTyVarsAux, Expr.erase]
+  | primBinOp op => intro d Xs; simp [Expr.openTyVarsAux, Expr.erase]
+  | ctor nm => intro d Xs; simp [Expr.openTyVarsAux, Expr.erase]
+  | var n tyArgs => intro d Xs; simp [Expr.openTyVarsAux]
+  | lambda ann body ih =>
+      intro d Xs
+      simp [Expr.openTyVarsAux, ih d Xs]
+  | app f arg ihf iharg =>
+      intro d Xs
+      simp [Expr.openTyVarsAux, ihf d Xs, iharg d Xs]
+  | letIn ann rhs body ihr ihb =>
+      intro d Xs
+      simp [Expr.openTyVarsAux, ihr d Xs, ihb d Xs]
+  | match_ scrut branches ihs ihbs =>
+      intro d Xs
+      simp only [Expr.openTyVarsAux, Expr.erase_match, ihs d Xs]
+      congr 1
+      exact BranchList.openTyVarsAux_eq_self_of_erase_image d Xs branches
+        (fun pb hpb => ihbs pb.1 pb.2 hpb d Xs)
+  | letRec anns bindings body ihbs ihb =>
+      intro d Xs
+      simp only [Expr.openTyVarsAux, Expr.erase_letRec, ihb d Xs]
+      congr 1
+      · simp [RecGroup.openAnns]
+      · exact RecGroup.openTyVarsAux_eq_self_of_erase_image d Xs bindings
+          (fun b hb d' Xs' => ihbs b hb d' Xs')
+
+/-- Opening scoped type variables is a no-op on an erased term (depth 0). -/
+theorem Expr.openTyVars_eq_self_of_erase_image (e : Expr) (Xs : List Nat) :
+    e.erase.openTyVars Xs = e.erase := by
+  simpa [Expr.openTyVars] using Expr.openTyVarsAux_eq_self_of_erase_image e 0 Xs
+
+/-- `Expr.erase` is idempotent (an erased term is a fixed point of `erase`). -/
+theorem Expr.erase_idem (e : Expr) : e.erase.erase = e.erase := by
+  induction e using Expr.rec_strong with
+  | primLit p => simp [Expr.erase]
+  | primBinOp op => simp [Expr.erase]
+  | ctor nm => simp [Expr.erase]
+  | var n tyArgs => simp [Expr.erase_var]
+  | lambda ann body ih => simp [Expr.erase_lambda, ih]
+  | app f arg ihf iharg => simp [Expr.erase_app, ihf, iharg]
+  | letIn ann rhs body ihr ihb => simp [Expr.erase_letIn, ihr, ihb]
+  | match_ scrut branches ihs ihbs =>
+      simp only [Expr.erase_match, ihs]
+      congr 1
+      rw [List.map_map]
+      exact List.map_congr_left (fun pe hpe => by
+        cases pe with
+        | mk p b => simp [ihbs p b hpe])
+  | letRec anns bindings body ihbs ihb =>
+      simp only [Expr.erase_letRec, ihb]
+      congr 1
+      · exact List.map_const_none_eq_of_length (by simp)
+      · rw [List.map_map]
+        exact List.map_congr_left (fun b hb => ihbs b hb)
+
 /-! ### Path R: `Expr.eraseBounds` commutation
 
 Residual soundness needs erase to pass through Infer's type-spine rewrites.
