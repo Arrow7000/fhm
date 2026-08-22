@@ -399,13 +399,21 @@ metatheory as the price of keeping the product on a single, already-live dynamic
 
 ### 5.3 Ordering (green checkpoints)
 
+> **Execution status (2026-08-22, commit `a505638`):** steps 1–4 are DONE and proven
+> (steps 1–4 = "settled design", the DM cut, `erase`, and `Infer.sound` itself).
+> Steps 5–7 (= "step 5–6" below) remain. See **`briefs/next-agent-brief-erasure-step4.md`**
+> for the authoritative current state, the exact remaining `sorry`s (8, all doomed),
+> and the detailed plan for the remaining work. One correction to §6.3 recorded
+> there: the `letRec` body-lift did need one small *new* lemma
+> (`PolyTy.Generalizes.freeVars_subset`), not "no new metatheory shape"; it is proven.
+
 1. (Done) Settled design + this memo; `CekMachine.lean` left in place.
-2. Change `Infer.letRec` per §2.1 (all-`.mono` init, no `consPoly`, ceiling premise,
+2. (Done) Change `Infer.letRec` per §2.1 (all-`.mono` init, no `consPoly`, ceiling premise,
    body env = annotations); get `inferCore`/`principalType`/`typecheck` compiling;
    `lake build` green. **Keep `eOut` for now** (see below) and leave `Infer.sound`
    `sorry`.
-3. Define `erase` (§3.1); prove `erase_openTyVarsAux` (depth-generalised, §6.2).
-4. Prove `Infer.sound` (§3.6) via the proof-farming workflow; isolate the
+3. (Done) Define `erase` (§3.1); prove `erase_openTyVarsAux` (depth-generalised, §6.2).
+4. (Done) Prove `Infer.sound` (§3.6) via the proof-farming workflow; isolate the
    group-level cofinite lift first (§6.3). **`eOut` ordering, decided**: prove
    `Infer.sound` against the *input* term — `TypeOfHM (erase eIn) …` — while `Infer`
    still threads `eOut`; ignore `eOut` in the conclusion. This is the smaller diff
