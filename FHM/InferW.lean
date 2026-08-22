@@ -17904,6 +17904,78 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
         · exact .inr ⟨_, .matchScrut hscrut⟩
     | letRec _ _ _ _ _ => exact .inr ⟨_, .letRecUnfold⟩
 
+/-! ### Preservation + type safety (checkpoint 4)
+
+The `TypeOfHM`/`Step` subject-reduction tower, stated for erased terms (`h_erased`)
+per the memo §7 restriction. -/
+
+/-- Instantiation of a closed type is trivial: if `ty` has no bound variables,
+    any `InstantiatesBy` instance of it forces the instance to equal `ty`. -/
+theorem InstantiatesBy.eq_of_closed {tyArgs : List Ty} {ty τ : Ty}
+    (h : ContainsBvarsUpTo 0 ty) (hinst : InstantiatesBy tyArgs ty τ) : τ = ty := by
+  sorry
+
+/-- A well-typed value inhabits every instance of its trivial scheme
+    (`mkTrivial τ`): instantiation of the closed `τ` is trivial. -/
+theorem HasSchemeHM.ofTypeOfHM {ctx : Ctx} {v : Expr} {τ : Ty}
+    (h : TypeOfHM ctx v τ) : HasSchemeHM ctx v (PolyTy.mkTrivial τ) := by
+  sorry
+
+/-- Assemble the per-argument `HasSchemeHM` list for the `match` reduction: each
+    matched argument is well-typed at the corresponding instantiated field type
+    (the two instantiations coincide by `det_agree`), so it has the trivial
+    scheme of that type. -/
+private theorem InstantiatesBy.build_match_vs
+    {ctx : Ctx} {n : Nat} {tyArgs tyArgsS : List Ty}
+    (hag : ∀ k, k < n → tyArgs[k]? = tyArgsS[k]?) :
+    ∀ {contents instContents : List Ty} {args : List Expr},
+      (∀ c ∈ contents, ContainsBvarsUpTo n c) →
+      List.Forall₂ (InstantiatesBy tyArgs) contents instContents →
+      List.Forall₂ (fun a c => ∃ ct, InstantiatesBy tyArgsS c ct ∧ TypeOfHM ctx a ct)
+        args contents →
+      List.Forall₂ (fun v M => HasSchemeHM ctx v M) args (instContents.map PolyTy.mkTrivial) := by
+  sorry
+
+/-- `Step` preserves erasedness: an erased term steps to an erased term. -/
+theorem SmallStep.Step.preserves_erased {e e' : Expr}
+    (h_erased : e.erase = e) (h_step : SmallStep.Step e e') : e'.erase = e' := by
+  sorry
+
+/-- Subject reduction for `TypeOfHM` on erased terms: a step preserves typing. -/
+theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
+    (h_step : SmallStep.Step e e') (h_ty : TypeOfHM ctx e τ) (h_erased : e.erase = e) :
+    TypeOfHM ctx e' τ := by
+  sorry
+
+/-- Iterated preservation: typing, erasedness, and exhaustiveness are preserved
+    across the reflexive-transitive closure of `Step`. -/
+theorem TypeOfHM.preservation_star {ctors : CtorEnv} {e e' : Expr} {τ : Ty}
+    (h_rtc : Relation.ReflTransGen SmallStep.Step e e')
+    (h_ty : TypeOfHM ⟨[], ctors⟩ e τ)
+    (h_erased : e.erase = e)
+    (h_exh : SmallStep.AllMatchesExhaustive ctors e) :
+    TypeOfHM ⟨[], ctors⟩ e' τ ∧ e'.erase = e' ∧ SmallStep.AllMatchesExhaustive ctors e' := by
+  sorry
+
+/-- **Type safety** ("well-typed erased programs don't go wrong"): a closed,
+    erased, exhaustive, well-typed program makes progress (value or steps) and
+    every step preserves typing. -/
+theorem TypeOfHM.type_safety {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h_ty : TypeOfHM ⟨[], ctors⟩ e τ) (h_erased : e.erase = e)
+    (h_exh : SmallStep.AllMatchesExhaustive ctors e) :
+    (SmallStep.IsValue e ∨ ∃ e', SmallStep.Step e e') ∧
+    (∀ e', SmallStep.Step e e' → TypeOfHM ⟨[], ctors⟩ e' τ) := by
+  sorry
+
+/-- **Iterated type safety**: every term reachable from a closed, erased,
+    exhaustive, well-typed program is well-typed and itself progresses. -/
+theorem TypeOfHM.type_safety_star {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h_ty : TypeOfHM ⟨[], ctors⟩ e τ) (h_erased : e.erase = e)
+    (h_exh : SmallStep.AllMatchesExhaustive ctors e) :
+    ∀ e', Relation.ReflTransGen SmallStep.Step e e' →
+      TypeOfHM ⟨[], ctors⟩ e' τ ∧ (SmallStep.IsValue e' ∨ ∃ e'', SmallStep.Step e' e'') := by
+  sorry
+
 /-! ### The coherence theorem (`Infer.sound`, vs declarative `TypeOfHM`)
 
 The erasure-on-`Step` migration's single soundness theorem
