@@ -17123,7 +17123,246 @@ theorem TypeOfHM.subst_lemma_many
       TypeOfHM ⟨env_post ++ Ms ++ env, ctors⟩ e τ →
       e.erase = e →
       TypeOfHM ⟨env_post ++ env, ctors⟩ (e.substN env_post.length vs) τ := by
-  sorry
+  have h_len : vs.length = Ms.length := h_vs.length_eq
+  intro n
+  induction n with
+  | zero => intro e he; exact absurd he (Nat.not_le.mpr (Expr.size_pos e))
+  | succ n ih =>
+    intro e he env_post τ h_body h_erased
+    cases h_body with
+    | primLitUnit => exact .primLitUnit
+    | primLitInt => exact .primLitInt
+    | primLitNat => exact .primLitNat
+    | primLitChar => exact .primLitChar
+    | primBinOpIntAdd => exact .primBinOpIntAdd
+    | primBinOpIntSub => exact .primBinOpIntSub
+    | primBinOpIntLt htrue hfalse =>
+      cases htrue with
+      | ctor hlookT hlcT hinstT =>
+        cases hfalse with
+        | ctor hlookF hlcF hinstF =>
+          exact .primBinOpIntLt (.ctor hlookT hlcT hinstT) (.ctor hlookF hlcF hinstF)
+    | primBinOpCharLt htrue hfalse =>
+      cases htrue with
+      | ctor hlookT hlcT hinstT =>
+        cases hfalse with
+        | ctor hlookF hlcF hinstF =>
+          exact .primBinOpCharLt (.ctor hlookT hlcT hinstT) (.ctor hlookF hlcF hinstF)
+    | lambda hpc hann heq hbody =>
+      subst heq
+      expose_names
+      simp only [Expr.size] at he
+      simp only [Expr.substN]
+      have h_la : Expr.lambda none body.erase = Expr.lambda ann body := by
+        simpa using h_erased
+      injection h_la with h_ann h_bd
+      refine TypeOfHM.lambda hpc hann rfl ?_
+      have := ih body (by omega) (PolyTy.mkTrivial paramTy :: env_post) bodyTy hbody h_bd
+      simpa using this
+    | app hf hi =>
+      expose_names
+      simp only [Expr.size] at he
+      simp only [Expr.substN]
+      have h_ap : Expr.app f.erase input.erase = Expr.app f input := by
+        simpa using h_erased
+      injection h_ap with hf_e hi_e
+      exact .app (ih _ (by omega) _ _ hf hf_e) (ih _ (by omega) _ _ hi hi_e)
+    | letIn hwf hann hcofin heq hbody =>
+      subst heq
+      expose_names
+      simp only [Expr.size] at he
+      simp only [Expr.substN]
+      have h_li : Expr.letIn none boundExpr.erase body.erase = Expr.letIn ann boundExpr body := by
+        simpa using h_erased
+      injection h_li with h_ann_none h_be h_bd
+      have h_ann : ann = none := h_ann_none.symm
+      subst h_ann
+      refine TypeOfHM.letIn (M := M) (L := L) hwf hann (fun Xs hfresh => ?_) rfl ?_
+      · have hbe := hcofin Xs hfresh
+        simp only [Expr.openBoundTyVars] at hbe
+        have hih := ih boundExpr (by omega) env_post (M.openVars Xs) hbe h_be
+        simpa [Expr.openBoundTyVars] using hih
+      · exact ih body (by omega) (M :: env_post) τ hbody h_bd
+    | var h_lookup h_lc h_inst =>
+      expose_names
+      have htyargs : tyArgs = [] := by
+        have h_v : Expr.var dbl [] = Expr.var dbl tyArgs := by
+          simpa using h_erased
+        injection h_v with hdbl h
+        exact h.symm
+      by_cases h_lt : dbl < env_post.length
+      · have h_subst : (Expr.var dbl tyArgs).substN env_post.length vs = .var dbl tyArgs := by
+          simp [Expr.substN, h_lt]
+        rw [h_subst]
+        refine .var ?_ h_lc h_inst
+        show (env_post ++ env)[dbl]? = some polyTy
+        rw [List.getElem?_append_left h_lt]
+        rw [List.append_assoc, List.getElem?_append_left h_lt] at h_lookup
+        exact h_lookup
+      · push_neg at h_lt
+        by_cases h_in : dbl - env_post.length < vs.length
+        · have hMlt : dbl - env_post.length < Ms.length := by omega
+          have h_subst : (Expr.var dbl tyArgs).substN env_post.length vs
+              = (vs[dbl - env_post.length].instTy tyArgs).shiftFrom 0 env_post.length := by
+            simp only [Expr.substN]
+            rw [if_neg (by omega), dif_pos h_in]
+          rw [h_subst, htyargs]
+          simp only [Expr.instTy_nil]
+          rw [List.append_assoc, List.getElem?_append_right h_lt,
+              List.getElem?_append_left hMlt, List.getElem?_eq_getElem hMlt,
+              Option.some.injEq] at h_lookup
+          subst h_lookup
+          have hhs : HasSchemeHM ⟨env, ctors⟩ vs[dbl - env_post.length]
+              Ms[dbl - env_post.length] := (List.forall₂_iff_get.mp h_vs).2 _ h_in hMlt
+          have hv_typed : TypeOfHM ⟨env, ctors⟩ vs[dbl - env_post.length] τ :=
+            hhs τ ⟨instArgs, h_lc, h_inst⟩
+          exact TypeOfHM.weaken_env (env_pre := []) (env_extra := env_post) hv_typed
+        · push_neg at h_in
+          have h_subst : (Expr.var dbl tyArgs).substN env_post.length vs
+              = .var (dbl - vs.length) tyArgs := by
+            simp only [Expr.substN]
+            rw [if_neg (by omega), dif_neg (by omega)]
+          rw [h_subst]
+          refine .var ?_ h_lc h_inst
+          rw [List.getElem?_append_right (by omega : env_post.length ≤ dbl - vs.length)]
+          rw [List.append_assoc, List.getElem?_append_right h_lt,
+              List.getElem?_append_right (by omega : Ms.length ≤ dbl - env_post.length)]
+            at h_lookup
+          rw [show (dbl - vs.length) - env_post.length
+                = (dbl - env_post.length) - Ms.length by omega]
+          exact h_lookup
+    | ctor h_lookup h_lc h_inst => exact .ctor h_lookup h_lc h_inst
+    | match_ h_scrut h_ne h_brs =>
+      expose_names
+      simp only [Expr.size] at he
+      simp only [Expr.substN]
+      have h_m : Expr.match_ scrutinee.erase
+            (branches.map fun pe => (pe.1, pe.2.erase))
+          = Expr.match_ scrutinee branches := by
+        simpa using h_erased
+      injection h_m with h_sc h_bl
+      refine TypeOfHM.match_ (ih scrutinee (by omega) env_post scrutTy h_scrut h_sc) ?_ ?_
+      · intro hcontra
+        obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil h_ne
+        have hmem' := BranchList.mem_substN_of_mem
+          (k := env_post.length) (vs := vs)
+          (hb ▸ List.mem_cons_self (a := (p, b)))
+        rw [hcontra] at hmem'
+        exact List.not_mem_nil hmem'
+      · intro branch' hmem'
+        obtain ⟨pat, body, hmem, rfl⟩ := BranchList.mem_substN hmem'
+        have hbsize' : body.size ≤ Expr.sizeBranches branches := by
+          clear h_ne he h_erased h_brs h_bl hmem'
+          induction branches with
+          | nil => exact absurd hmem List.not_mem_nil
+          | cons hd tl ihs =>
+            obtain ⟨p', b'⟩ := hd
+            simp only [Expr.sizeBranches]
+            rcases List.mem_cons.mp hmem with heq | hmem
+            · rw [Prod.mk.injEq] at heq
+              obtain ⟨_, rfl⟩ := heq
+              omega
+            · have := ihs hmem
+              omega
+        have hbsize : body.size ≤ n := le_trans hbsize' (by omega)
+        have hbe_all : ∀ pe ∈ branches, pe.2.erase = pe.2 := by
+          intro pe hpe
+          have hmem' : pe ∈ branches.map (fun pb => (pb.1, pb.2.erase)) := by
+            rw [h_bl]
+            exact hpe
+          obtain ⟨⟨p', b'⟩, hb_mem, hb⟩ := List.mem_map.mp hmem'
+          have hpe' : b'.erase = pe.2 := by
+            simpa using congrArg Prod.snd hb
+          rw [hpe'.symm]
+          exact Expr.erase_idem b'
+        have hbe : body.erase = body := hbe_all (pat, body) hmem
+        cases pat with
+        | named c m =>
+          simp only [MatchPattern.bindCount]
+          cases h_brs (.named c m, body) hmem with
+          | mk hspec h_ctx h_bodyT =>
+            subst h_ctx
+            expose_names
+            rw [show (instContents.map PolyTy.mkTrivial ++ (env_post ++ Ms ++ env))
+                  = (instContents.map PolyTy.mkTrivial ++ env_post) ++ Ms ++ env
+                  by rw [List.append_assoc, List.append_assoc, List.append_assoc]] at h_bodyT
+            have ih_b := ih body hbsize (instContents.map PolyTy.mkTrivial ++ env_post)
+              τ h_bodyT hbe
+            simp only [List.length_append, List.length_map] at ih_b
+            rw [← hspec.fields.length_eq, ← hspec.bind_count] at ih_b
+            rw [show m + env_post.length = env_post.length + m from Nat.add_comm _ _] at ih_b
+            refine TypeOfMatchBranch.mk ⟨hspec.lookup, hspec.scrut_eq, hspec.arity,
+              hspec.bind_count, hspec.fields⟩ rfl ?_
+            rw [List.append_assoc] at ih_b
+            exact ih_b
+        | wildcard =>
+          simp only [MatchPattern.bindCount, Nat.add_zero]
+          cases h_brs (.wildcard, body) hmem with
+          | wildcard h_bodyT =>
+            exact TypeOfMatchBranch.wildcard (ih body hbsize env_post τ h_bodyT hbe)
+    | letRec hwf hmono hpoly heq hbodyT =>
+      subst heq
+      expose_names
+      simp only [Expr.size] at he
+      simp only [Expr.substN, RecGroup.substN_eq_map]
+      have h_lr : Expr.letRec (bindings.map (fun _ => none)) (bindings.map Expr.erase)
+            body.erase
+          = Expr.letRec anns bindings body := by
+        simpa using h_erased
+      injection h_lr with h_anns h_binds h_bd
+      refine TypeOfHM.letRec (specs := specs) (G := G) (L := L)
+        ⟨hwf.anns_eq, ?_, hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩ ?_ ?_ rfl ?_
+      · rw [List.length_map]; exact hwf.length
+      · intro Xs hfresh p hp τ hτ
+        obtain ⟨a, b, hmemBind, hq, rfl⟩ := List.mem_zip_map_left hp
+        have hbT := hmono Xs hfresh (a, b) hq τ hτ
+        simp only [RecSpecs.rhsCtx] at hbT
+        rw [← List.append_assoc, ← List.append_assoc] at hbT
+        have hasize' : a.size ≤ Expr.sizeRecGroup bindings := by
+          clear h_erased h_anns h_binds hwf hmono hpoly he hp hq hτ
+          induction bindings with
+          | nil => exact absurd hmemBind List.not_mem_nil
+          | cons hd tl ihs =>
+            simp only [Expr.sizeRecGroup]
+            rcases List.mem_cons.mp hmemBind with heq | hmem
+            · subst heq
+              omega
+            · have := ihs hmem
+              omega
+        have hasize : a.size ≤ n := le_trans hasize' (by omega)
+        have hbe : a.erase = a := by
+          have hmem' : a ∈ bindings.map Expr.erase := by
+            rw [h_binds]
+            exact hmemBind
+          obtain ⟨b', hb_mem, hb⟩ := List.mem_map.mp hmem'
+          rw [← hb]
+          exact Expr.erase_idem b'
+        have ihb := ih a hasize (specs.map (RecSpec.rhsEntry G Xs) ++ env_post)
+          (Ty.renameG G Xs τ) hbT hbe
+        rw [List.append_assoc] at ihb
+        simp only [List.length_append, List.length_map] at ihb
+        rw [← hwf.length, Nat.add_comm bindings.length env_post.length] at ihb
+        exact ihb
+      · intro Xs hfresh p hp σ hσ
+        have hs_mem : p.2 ∈ specs := (List.of_mem_zip hp).2
+        have hann : RecSpec.ann p.2 = none := by
+          have hmem' : RecSpec.ann p.2 ∈ specs.map RecSpec.ann :=
+            List.mem_map.mpr ⟨p.2, hs_mem, rfl⟩
+          rw [hwf.anns_eq, ← h_anns] at hmem'
+          obtain ⟨b, hb_mem, hb⟩ := List.mem_map.mp hmem'
+          exact hb.symm
+        obtain ⟨t, ht⟩ := RecSpec.ann_eq_none hann
+        rw [ht] at hσ
+        cases hσ
+      · -- body
+        simp only [RecSpecs.bodyCtx] at hbodyT
+        rw [← List.append_assoc, ← List.append_assoc] at hbodyT
+        have ihb := ih body (by omega) (specs.map (RecSpec.bodyScheme G) ++ env_post) τ
+          hbodyT h_bd
+        rw [List.append_assoc] at ihb
+        simp only [List.length_append, List.length_map] at ihb
+        rw [← hwf.length, Nat.add_comm bindings.length env_post.length] at ihb
+        exact ihb
 
 /-- Single-value substitution (`beta`/`letReduce`): the `Ms = [M]`, `vs = [v]`
     instance of `subst_lemma_many`. -/
