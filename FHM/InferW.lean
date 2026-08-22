@@ -17913,13 +17913,56 @@ per the memo §7 restriction. -/
     any `InstantiatesBy` instance of it forces the instance to equal `ty`. -/
 theorem InstantiatesBy.eq_of_closed {tyArgs : List Ty} {ty τ : Ty}
     (h : ContainsBvarsUpTo 0 ty) (hinst : InstantiatesBy tyArgs ty τ) : τ = ty := by
-  sorry
+  induction ty using Ty.rec_strong generalizing τ with
+  | prim p =>
+      cases hinst
+      rfl
+  | arrow a b iha ihb =>
+      cases h with
+      | arrow ha hb =>
+          cases hinst with
+          | arrow hinstA hinstB =>
+              rw [iha ha hinstA, ihb hb hinstB]
+  | bvar i =>
+      cases h with
+      | bvar hlt => exact absurd hlt (by omega)
+  | fvar n =>
+      cases hinst
+      rfl
+  | customTy nm tys ih =>
+      cases h with
+      | customTy hall =>
+          cases hinst with
+          | customTy hforall =>
+              refine congrArg (Ty.customTy nm) ?_
+              revert hall
+              induction hforall with
+              | nil => intro hall; rfl
+              | cons hhd htl ihtl =>
+                  rename_i a b l₁ l₂
+                  intro hall
+                  rw [List.cons.injEq]
+                  constructor
+                  · exact ih a List.mem_cons_self (hall a List.mem_cons_self) hhd
+                  · exact ihtl (fun t ht => ih t (List.mem_cons_of_mem _ ht))
+                      (fun ty hty => hall ty (List.mem_cons_of_mem _ hty))
+  | bl lo hi e ih =>
+      cases h with
+      | bl he =>
+          cases hinst with
+          | bl hinstElem =>
+              exact congrArg (Ty.bl lo hi) (ih he hinstElem)
 
 /-- A well-typed value inhabits every instance of its trivial scheme
     (`mkTrivial τ`): instantiation of the closed `τ` is trivial. -/
 theorem HasSchemeHM.ofTypeOfHM {ctx : Ctx} {v : Expr} {τ : Ty}
     (h : TypeOfHM ctx v τ) : HasSchemeHM ctx v (PolyTy.mkTrivial τ) := by
-  sorry
+  intro τ' hinst
+  rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+  have hclosed : ContainsBvarsUpTo 0 τ := TypeOfHM.regular h
+  have hτ' : τ' = τ := InstantiatesBy.eq_of_closed hclosed hinstTo
+  rw [hτ']
+  exact h
 
 /-- Assemble the per-argument `HasSchemeHM` list for the `match` reduction: each
     matched argument is well-typed at the corresponding instantiated field type
@@ -17934,18 +17977,521 @@ private theorem InstantiatesBy.build_match_vs
       List.Forall₂ (fun a c => ∃ ct, InstantiatesBy tyArgsS c ct ∧ TypeOfHM ctx a ct)
         args contents →
       List.Forall₂ (fun v M => HasSchemeHM ctx v M) args (instContents.map PolyTy.mkTrivial) := by
-  sorry
+  intro contents
+  induction contents with
+  | nil =>
+    intro instContents args _ hinst hfor
+    cases hinst
+    cases hfor
+    exact .nil
+  | cons hd tl ih =>
+    intro instContents args hbound hinst hfor
+    cases hinst with
+    | cons hihd hitl =>
+      cases hfor with
+      | cons hfhd hftl =>
+        obtain ⟨ct, hctS, htyA⟩ := hfhd
+        have hdet := InstantiatesBy.det_agree hag (hbound hd List.mem_cons_self) hihd hctS
+        refine List.Forall₂.cons ?_
+          (ih (fun c hc => hbound c (List.mem_cons_of_mem _ hc)) hitl hftl)
+        rw [hdet]
+        exact HasSchemeHM.ofTypeOfHM htyA
 
 /-- `Step` preserves erasedness: an erased term steps to an erased term. -/
 theorem SmallStep.Step.preserves_erased {e e' : Expr}
     (h_erased : e.erase = e) (h_step : SmallStep.Step e e') : e'.erase = e' := by
-  sorry
-
-/-- Subject reduction for `TypeOfHM` on erased terms: a step preserves typing. -/
+  have expr_shiftFrom_erase : ∀ (threshold n : Nat) (e : Expr),
+      e.erase = e → (e.shiftFrom threshold n).erase = e.shiftFrom threshold n := by
+    intro threshold n e
+    revert threshold n
+    induction e using Expr.rec_strong with
+    | primLit p =>
+        intro threshold n h_erased
+        simp [Expr.shiftFrom, Expr.erase]
+    | primBinOp op =>
+        intro threshold n h_erased
+        simp [Expr.shiftFrom, Expr.erase]
+    | ctor c =>
+        intro threshold n h_erased
+        simp [Expr.shiftFrom, Expr.erase]
+    | var i tyArgs =>
+        intro threshold n h_erased
+        have htyargs : tyArgs = [] := by
+          have h_v : Expr.var i [] = Expr.var i tyArgs := by simpa using h_erased
+          injection h_v with hdbl h
+          exact h.symm
+        subst htyargs
+        simp only [Expr.shiftFrom]
+        by_cases h_lt : i < threshold
+        · rw [if_pos h_lt]
+          simp
+        · rw [if_neg h_lt]
+          simp
+    | lambda ann body ih =>
+        intro threshold n h_erased
+        have h_la : Expr.lambda none body.erase = Expr.lambda ann body := by simpa using h_erased
+        injection h_la with h_ann h_bd
+        simp only [Expr.shiftFrom]
+        rw [show ann = none from h_ann.symm]
+        rw [Expr.erase_lambda]
+        congr 1
+        exact ih (threshold + 1) n h_bd
+    | app f arg ihf iha =>
+        intro threshold n h_erased
+        have h_ap : Expr.app f.erase arg.erase = Expr.app f arg := by simpa using h_erased
+        injection h_ap with hf_e ha_e
+        simp only [Expr.shiftFrom, Expr.erase_app]
+        congr 1
+        · exact ihf threshold n hf_e
+        · exact iha threshold n ha_e
+    | letIn ann rhs body ihr ihb =>
+        intro threshold n h_erased
+        have h_li : Expr.letIn none rhs.erase body.erase = Expr.letIn ann rhs body := by simpa using h_erased
+        injection h_li with h_ann_none h_re h_bd
+        have h_ann : ann = none := h_ann_none.symm
+        subst h_ann
+        simp only [Expr.shiftFrom, Expr.erase_letIn]
+        congr 1
+        · exact ihr threshold n h_re
+        · exact ihb (threshold + 1) n h_bd
+    | match_ scrut branches ihs ihbs =>
+        intro threshold n h_erased
+        have h_m : Expr.match_ scrut.erase (branches.map fun pe => (pe.1, pe.2.erase))
+            = Expr.match_ scrut branches := by simpa using h_erased
+        injection h_m with h_sc h_bl
+        have hbe_all : ∀ pe ∈ branches, pe.2.erase = pe.2 := by
+          intro pe hpe
+          have hmem' : pe ∈ branches.map (fun pb => (pb.1, pb.2.erase)) := by
+            rw [h_bl]
+            exact hpe
+          obtain ⟨⟨p', b'⟩, hb_mem, hb⟩ := List.mem_map.mp hmem'
+          have hpe' : b'.erase = pe.2 := by simpa using congrArg Prod.snd hb
+          rw [hpe'.symm]
+          exact Expr.erase_idem b'
+        simp only [Expr.shiftFrom, Expr.erase_match]
+        congr 1
+        · exact ihs threshold n h_sc
+        · exact List.map_eq_self_of_forall_eq_id (fun pe : MatchPattern × Expr => (pe.1, pe.2.erase)) _ (by
+            intro pe hpe
+            obtain ⟨pat, body, hmem, rfl⟩ := BranchList.mem_shiftFrom hpe
+            simpa using congrArg (fun b => (pat, b))
+              (ihbs pat body hmem (threshold + pat.bindCount) n (hbe_all (pat, body) hmem)))
+    | letRec anns bindings body ihbs ihb =>
+        intro threshold n h_erased
+        have h_lr : Expr.letRec (bindings.map (fun _ => none)) (bindings.map Expr.erase) body.erase
+            = Expr.letRec anns bindings body := by simpa using h_erased
+        injection h_lr with h_anns h_binds h_bd
+        have hbe_all : ∀ b, b ∈ bindings → b.erase = b := by
+          intro b hmem
+          have hmem' : b ∈ bindings.map Expr.erase := by
+            rw [h_binds]
+            exact hmem
+          obtain ⟨b', hb_mem, hb⟩ := List.mem_map.mp hmem'
+          rw [← hb]
+          exact Expr.erase_idem b'
+        have hmap : ∀ (k : Nat) (l : List Expr), RecGroup.shiftFrom k n l = l.map (fun e => e.shiftFrom k n) := by
+          intro k l
+          induction l with
+          | nil => rfl
+          | cons b rest ih2 =>
+            simp only [RecGroup.shiftFrom, List.map_cons, ih2]
+        have hanns' : (RecGroup.shiftFrom (threshold + bindings.length) n bindings).map (fun _ : Expr => (none : Option PolyTy))
+            = bindings.map (fun _ : Expr => (none : Option PolyTy)) := by
+          rw [hmap, List.map_map]
+          rfl
+        have hbinds_shift : (RecGroup.shiftFrom (threshold + bindings.length) n bindings).map Expr.erase
+            = RecGroup.shiftFrom (threshold + bindings.length) n bindings := by
+          rw [hmap, List.map_map]
+          apply List.map_congr_left
+          intro b hmem
+          simpa using (ihbs b hmem (threshold + bindings.length) n (hbe_all b hmem))
+        simp only [Expr.shiftFrom]
+        rw [Expr.erase_letRec, hanns', h_anns, hbinds_shift]
+        congr 1
+        exact ihb (threshold + bindings.length) n h_bd
+  have expr_substN_erase : ∀ (k : Nat) (vs : List Expr) (e : Expr),
+      e.erase = e → (∀ v ∈ vs, v.erase = v) → (e.substN k vs).erase = e.substN k vs := by
+    intro k vs e
+    revert k vs
+    induction e using Expr.rec_strong with
+    | primLit p =>
+        intro k vs h_erased hvs
+        simp [Expr.substN, Expr.erase]
+    | primBinOp op =>
+        intro k vs h_erased hvs
+        simp [Expr.substN, Expr.erase]
+    | ctor c =>
+        intro k vs h_erased hvs
+        simp [Expr.substN, Expr.erase]
+    | var i tyArgs =>
+        intro k vs h_erased hvs
+        have htyargs : tyArgs = [] := by
+          have h_v : Expr.var i [] = Expr.var i tyArgs := by simpa using h_erased
+          injection h_v with hdbl h
+          exact h.symm
+        subst htyargs
+        simp only [Expr.substN]
+        by_cases h_lt : i < k
+        · rw [if_pos h_lt]
+          simp
+        · rw [if_neg h_lt]
+          by_cases h_in : i - k < vs.length
+          · rw [dif_pos h_in]
+            rw [Expr.instTy_nil]
+            exact expr_shiftFrom_erase 0 k (vs[i - k]) (hvs (vs[i - k]) (List.getElem_mem h_in))
+          · rw [dif_neg h_in]
+            simp
+    | lambda ann body ih =>
+        intro k vs h_erased hvs
+        have h_la : Expr.lambda none body.erase = Expr.lambda ann body := by simpa using h_erased
+        injection h_la with h_ann h_bd
+        simp only [Expr.substN]
+        rw [show ann = none from h_ann.symm]
+        rw [Expr.erase_lambda]
+        congr 1
+        exact ih (k + 1) vs h_bd hvs
+    | app f arg ihf iha =>
+        intro k vs h_erased hvs
+        have h_ap : Expr.app f.erase arg.erase = Expr.app f arg := by simpa using h_erased
+        injection h_ap with hf_e ha_e
+        simp only [Expr.substN, Expr.erase_app]
+        congr 1
+        · exact ihf k vs hf_e hvs
+        · exact iha k vs ha_e hvs
+    | letIn ann rhs body ihr ihb =>
+        intro k vs h_erased hvs
+        have h_li : Expr.letIn none rhs.erase body.erase = Expr.letIn ann rhs body := by simpa using h_erased
+        injection h_li with h_ann_none h_re h_bd
+        have h_ann : ann = none := h_ann_none.symm
+        subst h_ann
+        simp only [Expr.substN, Expr.erase_letIn]
+        congr 1
+        · exact ihr k vs h_re hvs
+        · exact ihb (k + 1) vs h_bd hvs
+    | match_ scrut branches ihs ihbs =>
+        intro k vs h_erased hvs
+        have h_m : Expr.match_ scrut.erase (branches.map fun pe => (pe.1, pe.2.erase))
+            = Expr.match_ scrut branches := by simpa using h_erased
+        injection h_m with h_sc h_bl
+        have hbe_all : ∀ pe ∈ branches, pe.2.erase = pe.2 := by
+          intro pe hpe
+          have hmem' : pe ∈ branches.map (fun pb => (pb.1, pb.2.erase)) := by
+            rw [h_bl]
+            exact hpe
+          obtain ⟨⟨p', b'⟩, hb_mem, hb⟩ := List.mem_map.mp hmem'
+          have hpe' : b'.erase = pe.2 := by simpa using congrArg Prod.snd hb
+          rw [hpe'.symm]
+          exact Expr.erase_idem b'
+        simp only [Expr.substN, Expr.erase_match]
+        congr 1
+        · exact ihs k vs h_sc hvs
+        · exact List.map_eq_self_of_forall_eq_id (fun pe : MatchPattern × Expr => (pe.1, pe.2.erase)) _ (by
+            intro pe hpe
+            obtain ⟨pat, body, hmem, rfl⟩ := BranchList.mem_substN hpe
+            simpa using congrArg (fun b => (pat, b))
+              (ihbs pat body hmem (k + pat.bindCount) vs (hbe_all (pat, body) hmem) hvs))
+    | letRec anns bindings body ihbs ihb =>
+        intro k vs h_erased hvs
+        have h_lr : Expr.letRec (bindings.map (fun _ => none)) (bindings.map Expr.erase) body.erase
+            = Expr.letRec anns bindings body := by simpa using h_erased
+        injection h_lr with h_anns h_binds h_bd
+        have hbe_all : ∀ b, b ∈ bindings → b.erase = b := by
+          intro b hmem
+          have hmem' : b ∈ bindings.map Expr.erase := by
+            rw [h_binds]
+            exact hmem
+          obtain ⟨b', hb_mem, hb⟩ := List.mem_map.mp hmem'
+          rw [← hb]
+          exact Expr.erase_idem b'
+        have hanns' : (RecGroup.substN (k + bindings.length) vs bindings).map (fun _ : Expr => (none : Option PolyTy))
+            = bindings.map (fun _ : Expr => (none : Option PolyTy)) := by
+          rw [RecGroup.substN_eq_map, List.map_map]
+          rfl
+        have hbinds_subst : (RecGroup.substN (k + bindings.length) vs bindings).map Expr.erase
+            = RecGroup.substN (k + bindings.length) vs bindings := by
+          rw [RecGroup.substN_eq_map, List.map_map]
+          apply List.map_congr_left
+          intro b hmem
+          simpa using (ihbs b hmem (k + bindings.length) vs (hbe_all b hmem) hvs)
+        simp only [Expr.substN]
+        rw [Expr.erase_letRec, hanns', h_anns, hbinds_subst]
+        congr 1
+        exact ihb (k + bindings.length) vs h_bd hvs
+  induction h_step with
+  | beta hval =>
+      rename_i ann body v
+      have h_ap : Expr.app (Expr.lambda none body.erase) v.erase = Expr.app (Expr.lambda ann body) v := by
+        simpa using h_erased
+      injection h_ap with h_lam h_v
+      injection h_lam with h_ann h_bd
+      exact expr_substN_erase 0 [v] body h_bd (by
+        intro x hx
+        rw [List.mem_singleton] at hx
+        subst hx
+        exact h_v)
+  | letReduce =>
+      rename_i ann rhs body
+      have h_li : Expr.letIn none rhs.erase body.erase = Expr.letIn ann rhs body := by simpa using h_erased
+      injection h_li with h_ann h_rhs h_bd
+      exact expr_substN_erase 0 [rhs] body h_bd (by
+        intro x hx
+        rw [List.mem_singleton] at hx
+        subst hx
+        exact h_rhs)
+  | deltaIntAdd => simp [Expr.erase]
+  | deltaIntSub => simp [Expr.erase]
+  | deltaIntLt => simp [Expr.erase]
+  | deltaCharLt => simp [Expr.erase]
+  | matchReduce hval hctor hfirst =>
+      rename_i scrut branches name args pat body
+      have h_m : Expr.match_ scrut.erase (branches.map fun pe => (pe.1, pe.2.erase))
+          = Expr.match_ scrut branches := by simpa using h_erased
+      injection h_m with h_sc h_bl
+      have hbe_all : ∀ pe ∈ branches, pe.2.erase = pe.2 := by
+        intro pe hpe
+        have hmem' : pe ∈ branches.map (fun pb => (pb.1, pb.2.erase)) := by
+          rw [h_bl]
+          exact hpe
+        obtain ⟨⟨p', b'⟩, hb_mem, hb⟩ := List.mem_map.mp hmem'
+        have hpe' : b'.erase = pe.2 := by simpa using congrArg Prod.snd hb
+        rw [hpe'.symm]
+        exact Expr.erase_idem b'
+      have hb : body.erase = body := hbe_all (pat, body) hfirst.mem
+      have hargs_erased : ∀ a, a ∈ args → a.erase = a := by
+        intro a ha
+        clear hval hfirst h_erased
+        induction hctor generalizing a with
+        | base _ =>
+            simp at ha
+        | step hf ih =>
+            simp [Expr.erase_app] at h_sc
+            rcases h_sc with ⟨hf_e, ha_e⟩
+            simp only [List.mem_append, List.mem_singleton] at ha
+            rcases ha with ha' | rfl
+            · exact ih hf_e a ha'
+            · exact ha_e
+      exact expr_substN_erase 0 (args.take pat.bindCount) body hb (by
+        intro v hv
+        exact hargs_erased v (List.mem_of_mem_take hv))
+  | matchWildReduce hval hnc =>
+      rename_i scrut body rest
+      have h_m : Expr.match_ scrut.erase (((.wildcard, body) :: rest).map fun pe => (pe.1, pe.2.erase))
+          = Expr.match_ scrut ((.wildcard, body) :: rest) := by simpa using h_erased
+      injection h_m with h_sc h_bl
+      have hb : body.erase = body := by
+        have hmem' : (.wildcard, body) ∈ ((.wildcard, body) :: rest).map (fun pb => (pb.1, pb.2.erase)) := by
+          rw [h_bl]
+          exact List.mem_cons_self
+        obtain ⟨⟨p', b'⟩, hb_mem, hb⟩ := List.mem_map.mp hmem'
+        have hpe' : b'.erase = body := by simpa using congrArg Prod.snd hb
+        rw [hpe'.symm]
+        exact Expr.erase_idem b'
+      exact hb
+  | appFn _ ih =>
+      simp [Expr.erase_app] at h_erased
+      rcases h_erased with ⟨hf_e, ha_e⟩
+      simp [Expr.erase_app, ih hf_e, ha_e]
+  | appArg hv _ ih =>
+      simp [Expr.erase_app] at h_erased
+      rcases h_erased with ⟨hv_e, ha_e⟩
+      simp [Expr.erase_app, hv_e, ih ha_e]
+  | matchScrut _ ih =>
+      simp [Expr.erase_match] at h_erased
+      rcases h_erased with ⟨h_sc, h_bl⟩
+      simp [Expr.erase_match, ih h_sc, h_bl]
+  | letRecUnfold =>
+      rename_i anns bindings body
+      have h_lr : Expr.letRec (bindings.map (fun _ => none)) (bindings.map Expr.erase) body.erase
+          = Expr.letRec anns bindings body := by simpa using h_erased
+      injection h_lr with h_anns h_binds h_bd
+      have hbe : ∀ b, b ∈ bindings → b.erase = b := by
+        intro b hmem
+        have hmem' : b ∈ bindings.map Expr.erase := by
+          rw [h_binds]
+          exact hmem
+        obtain ⟨b', hb_mem, hb⟩ := List.mem_map.mp hmem'
+        rw [← hb]
+        exact Expr.erase_idem b'
+      have hvs_erased : ∀ v, v ∈ bindings.map (fun e => Expr.letRec anns bindings e) → v.erase = v := by
+        intro v hv
+        obtain ⟨e', he', rfl⟩ := List.mem_map.mp hv
+        simp only [Expr.erase_letRec]
+        rw [h_anns, h_binds, hbe e' he']
+      exact expr_substN_erase 0 (bindings.map (fun e => Expr.letRec anns bindings e)) body h_bd hvs_erased
 theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
     (h_step : SmallStep.Step e e') (h_ty : TypeOfHM ctx e τ) (h_erased : e.erase = e) :
     TypeOfHM ctx e' τ := by
-  sorry
+  induction h_step generalizing τ with
+  | beta hval =>
+    cases h_ty with
+    | app hf hi =>
+      cases hf with
+      | lambda hpc _ heq hbody =>
+        subst heq
+        simp [Expr.erase_app, Expr.erase_lambda] at h_erased
+        rcases h_erased with ⟨h_e1, _⟩
+        rcases h_e1 with ⟨_, h_bd⟩
+        exact TypeOfHM.subst_lemma (env_post := []) (M := PolyTy.mkTrivial _)
+          hbody (HasSchemeHM.ofTypeOfHM hi) h_bd
+  | letReduce =>
+    cases h_ty with
+    | letIn hwf _ hcofin heq hbody =>
+      subst heq
+      simp [Expr.erase_letIn] at h_erased
+      rcases h_erased with ⟨h_ann, h_re, h_bd⟩
+      exact TypeOfHM.subst_lemma (env_post := []) hbody
+        (fun τ' hinst => GeneralisesTo_inst (by simpa [h_ann.symm] using hcofin) hinst) h_bd
+  | deltaIntAdd =>
+    cases h_ty with
+    | app h_f _ => cases h_f with
+      | app h_pbo _ => cases h_pbo; exact .primLitInt
+  | deltaIntSub =>
+    cases h_ty with
+    | app h_f _ => cases h_f with
+      | app h_pbo _ => cases h_pbo; exact .primLitInt
+  | deltaIntLt =>
+    cases h_ty with
+    | app h_f _ => cases h_f with
+      | app h_pbo _ => cases h_pbo with
+        | primBinOpIntLt htrue hfalse => split <;> assumption
+  | deltaCharLt =>
+    cases h_ty with
+    | app h_f _ => cases h_f with
+      | app h_pbo _ => cases h_pbo with
+        | primBinOpCharLt htrue hfalse => split <;> assumption
+  | matchReduce hval hctor hfirst =>
+    rename_i scrut branches name args pat body
+    cases h_ty with
+    | match_ h_scrut h_ne h_brs =>
+      have hmem := hfirst.mem
+      have hpeq := hfirst.ctor_eq
+      simp [Expr.erase_match] at h_erased
+      rcases h_erased with ⟨_, h_bl⟩
+      have hbe_all : ∀ pe ∈ branches, pe.2.erase = pe.2 := by
+        intro pe hpe
+        have hmem' : pe ∈ branches.map (fun pb => (pb.1, pb.2.erase)) := by
+          rw [h_bl]
+          exact hpe
+        obtain ⟨⟨p', b'⟩, hb_mem, hb⟩ := List.mem_map.mp hmem'
+        have hpe' : b'.erase = pe.2 := by simpa using congrArg Prod.snd hb
+        rw [hpe'.symm]
+        exact Expr.erase_idem b'
+      have hb : body.erase = body := hbe_all (pat, body) hmem
+      cases pat with
+      | wildcard =>
+        simp only [MatchPattern.bindCount, List.take_zero]
+        cases h_brs (.wildcard, body) hmem with
+        | wildcard hbodyW =>
+          exact TypeOfHM.subst_lemma_many (Ms := []) List.Forall₂.nil
+            body.size body (Nat.le_refl _) [] _ hbodyW hb
+      | named c n =>
+        simp only [MatchPattern.matchesCtor, Bool.and_eq_true, beq_iff_eq] at hpeq
+        obtain ⟨hcname, hnlen⟩ := hpeq
+        simp only [MatchPattern.bindCount]
+        rw [hnlen, List.take_length]
+        cases h_brs (.named c n, body) hmem with
+        | @mk _ _ _ _ ctorB _ _ _ tyArgsB instContents hspecB hctxB hbodyB =>
+          subst hctxB
+          have hlookB := hspecB.lookup
+          have hScrutB := hspecB.scrut_eq
+          have hpcB := hspecB.arity
+          have hinstB := hspecB.fields
+          rw [hScrutB] at h_scrut
+          have hchain := TypeOfHM.canonical_customTy h_scrut hval
+          obtain ⟨name', args', ctorS, tyArgsS, consumedS, remainingS,
+            hcatS, hlookS, htyargsS, hcontentsS, hforallS, hinstS⟩ :=
+            TypeOfHM.ctor_chain_inversion hchain h_scrut
+          obtain ⟨hnEq, haEq⟩ := hctor.det hcatS
+          subst hnEq
+          subst haEq
+          rw [hcname] at hlookB
+          have hcc := Option.some.inj (hlookS.symm.trans hlookB)
+          subst ctorB
+          cases remainingS with
+          | cons d rest => simp only [Ty.wrapArrows] at hinstS; cases hinstS
+          | nil =>
+            rw [List.append_nil] at hcontentsS
+            subst hcontentsS
+            simp only [Ty.wrapArrows] at hinstS
+            cases hinstS with
+            | customTy hbvr =>
+              have hpc_len : tyArgsB.length = ctorS.paramCount := hpcB.symm
+              have hagree : ∀ k, k < ctorS.paramCount → tyArgsB[k]? = tyArgsS[k]? := by
+                intro k hk
+                have hkt : k < tyArgsB.length := by omega
+                have hkr : k < (Ty.bvarRange ctorS.paramCount).length := by
+                  rw [hbvr.length_eq]; exact hkt
+                have hrel := List.Forall₂.get hbvr hkr hkt
+                simp only [List.get_eq_getElem] at hrel
+                have helem : (Ty.bvarRange ctorS.paramCount)[k] = Ty.bvar k := by
+                  have h1 := Ty.bvarRange_getElem? (n := ctorS.paramCount) (k := k) hk
+                  rw [List.getElem?_eq_getElem hkr] at h1
+                  exact Option.some.inj h1
+                rw [helem] at hrel
+                cases hrel with
+                | bvar hsome =>
+                  rw [hsome]
+                  exact List.getElem?_eq_getElem hkt
+              have h_vs := InstantiatesBy.build_match_vs hagree ctorS.bound hinstB hforallS
+              exact TypeOfHM.subst_lemma_many h_vs
+                body.size body (Nat.le_refl _) [] _ hbodyB hb
+  | matchWildReduce hval hnc =>
+    rename_i scrut body rest
+    cases h_ty with
+    | match_ h_scrut h_ne h_brs =>
+      cases h_brs (.wildcard, body) (List.mem_cons_self ..) with
+      | wildcard hbodyW => exact hbodyW
+  | appFn _ ih =>
+    cases h_ty with
+    | app hf hi =>
+      simp [Expr.erase_app] at h_erased
+      rcases h_erased with ⟨hf_e, _⟩
+      exact .app (ih hf hf_e) hi
+  | appArg hv _ ih =>
+    cases h_ty with
+    | app hf hi =>
+      simp [Expr.erase_app] at h_erased
+      rcases h_erased with ⟨_, ha_e⟩
+      exact .app hf (ih hi ha_e)
+  | matchScrut _ ih =>
+    cases h_ty with
+    | match_ h_scrut h_ne h_brs =>
+      simp [Expr.erase_match] at h_erased
+      rcases h_erased with ⟨h_sc, _⟩
+      exact .match_ (ih h_scrut h_sc) h_ne h_brs
+  | letRecUnfold =>
+    rename_i anns bindings body
+    cases h_ty with
+    | letRec hwf hmonoP hpolyP heq hbodyT =>
+      subst heq
+      expose_names
+      have h_lr : Expr.letRec (bindings.map (fun _ => none)) (bindings.map Expr.erase) body.erase
+          = Expr.letRec anns bindings body := by simpa using h_erased
+      injection h_lr with h_anns h_binds h_bd
+      have h_vs : List.Forall₂ (fun v M' => HasSchemeHM ⟨ctx.env, ctx.ctors⟩ v M')
+          (bindings.map (fun e => Expr.letRec anns bindings e))
+          (specs.map (RecSpec.bodyScheme G)) := by
+        rw [List.forall₂_map_left_iff, List.forall₂_map_right_iff]
+        refine List.forall₂_of_mem_zip hwf.length ?_
+        rintro ⟨a, b⟩ hp
+        cases b with
+        | mono τ =>
+          simp only [RecSpec.bodyScheme]
+          exact TypeOfHM.rewrap_hasSchemeHM_mono hwf hmonoP hpolyP hp
+        | poly σ =>
+          have hann : RecSpec.ann (RecSpec.poly σ) = none := by
+            have hs_mem : RecSpec.poly σ ∈ specs := (List.of_mem_zip hp).2
+            have hmem' : RecSpec.ann (RecSpec.poly σ) ∈ specs.map RecSpec.ann :=
+              List.mem_map.mpr ⟨RecSpec.poly σ, hs_mem, rfl⟩
+            rw [hwf.anns_eq, ← h_anns] at hmem'
+            obtain ⟨b, hb_mem, hb⟩ := List.mem_map.mp hmem'
+            exact hb.symm
+          obtain ⟨t, ht⟩ := RecSpec.ann_eq_none hann
+          cases ht
+      have hfinal := TypeOfHM.subst_lemma_many (env := ctx.env)
+        (Ms := specs.map (RecSpec.bodyScheme G))
+        (ctors := ctx.ctors) h_vs body.size body (Nat.le_refl _) [] _ hbodyT h_bd
+      simpa using hfinal
 
 /-- Iterated preservation: typing, erasedness, and exhaustiveness are preserved
     across the reflexive-transitive closure of `Step`. -/
@@ -17955,7 +18501,13 @@ theorem TypeOfHM.preservation_star {ctors : CtorEnv} {e e' : Expr} {τ : Ty}
     (h_erased : e.erase = e)
     (h_exh : SmallStep.AllMatchesExhaustive ctors e) :
     TypeOfHM ⟨[], ctors⟩ e' τ ∧ e'.erase = e' ∧ SmallStep.AllMatchesExhaustive ctors e' := by
-  sorry
+  induction h_rtc with
+  | refl => exact ⟨h_ty, h_erased, h_exh⟩
+  | tail _ h_bc ih =>
+    obtain ⟨h_ty_b, h_erased_b, h_exh_b⟩ := ih
+    exact ⟨TypeOfHM.preservation h_bc h_ty_b h_erased_b,
+      SmallStep.Step.preserves_erased h_erased_b h_bc,
+      SmallStep.Step.preserves_exhaustive h_exh_b h_bc⟩
 
 /-- **Type safety** ("well-typed erased programs don't go wrong"): a closed,
     erased, exhaustive, well-typed program makes progress (value or steps) and
@@ -17964,8 +18516,9 @@ theorem TypeOfHM.type_safety {ctors : CtorEnv} {e : Expr} {τ : Ty}
     (h_ty : TypeOfHM ⟨[], ctors⟩ e τ) (h_erased : e.erase = e)
     (h_exh : SmallStep.AllMatchesExhaustive ctors e) :
     (SmallStep.IsValue e ∨ ∃ e', SmallStep.Step e e') ∧
-    (∀ e', SmallStep.Step e e' → TypeOfHM ⟨[], ctors⟩ e' τ) := by
-  sorry
+    (∀ e', SmallStep.Step e e' → TypeOfHM ⟨[], ctors⟩ e' τ) :=
+  ⟨TypeOfHM.progress h_ty rfl h_exh,
+   fun _ hstep => TypeOfHM.preservation hstep h_ty h_erased⟩
 
 /-- **Iterated type safety**: every term reachable from a closed, erased,
     exhaustive, well-typed program is well-typed and itself progresses. -/
@@ -17974,7 +18527,9 @@ theorem TypeOfHM.type_safety_star {ctors : CtorEnv} {e : Expr} {τ : Ty}
     (h_exh : SmallStep.AllMatchesExhaustive ctors e) :
     ∀ e', Relation.ReflTransGen SmallStep.Step e e' →
       TypeOfHM ⟨[], ctors⟩ e' τ ∧ (SmallStep.IsValue e' ∨ ∃ e'', SmallStep.Step e' e'') := by
-  sorry
+  intro e' h_rtc
+  obtain ⟨h_ty', h_erased', h_exh'⟩ := TypeOfHM.preservation_star h_rtc h_ty h_erased h_exh
+  exact ⟨h_ty', TypeOfHM.progress h_ty' rfl h_exh'⟩
 
 /-! ### The coherence theorem (`Infer.sound`, vs declarative `TypeOfHM`)
 
