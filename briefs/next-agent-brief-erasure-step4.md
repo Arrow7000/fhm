@@ -5,6 +5,13 @@ This is the authoritative "where we are" doc for a new agent continuing the
 erasure-on-`Step` migration described in `design-memo-erasure-migration.md` (§5.3
 is the roadmap). Read that memo first, then this doc.
 
+**Numbering.** This brief's steps 1–6 are the *migration* steps (cut, erase,
+`Infer.sound`, dynamics, rewire/delete, cleanup). The memo's §5.3 uses a
+1–7 list that starts with "settled design" as step 1, so **this brief's step 4
+= memo step 5**, brief step 5 = memo step 6, brief step 6 = memo step 7. The
+memo's status blurb saying "steps 1–4 are DONE" is memo-numbering (design +
+cut + erase + `Infer.sound`). Do not treat that as "dynamics is done".
+
 ---
 
 ## 0. TL;DR of the whole migration
@@ -29,6 +36,25 @@ deletion of `TypeOfElabHM`, and cleanup) remain.
 premise (annotations are *ceilings*) and a `ceilingSchemes` body env;
 `inferCore`/`inferRecGroupCore` are mono-only with a decidable `ceilingOk` check.
 `ceilingOk_sound`/`ceilingOKB_sound` are proved (sorry-free, axiom-clean).
+They are **soundness, not iff**: isolated `ceilingOk` is strictly stronger than
+semantic `Generalizes` (fresh `Ys`, `σ.body.freeVars` held rigid, `τ` LC,
+`unifyCoreK` succeeds). The three traps from the memo are handled: (a) `σrigid`
+is in the Bool; (b) unify runs on `eraseBounds`; (c) `ceilingOKB_sound` requires
+equal lengths because zip truncates while `Forall₂` does not. At the `inferCore`
+call site `σrigid` is automatic (`RecGroup.rigidVars` includes `AnnList.tyFreeVars`
+= `σ.body.freeVars`) and `hLen` is discharged by `RecSpec.init_length`.
+
+`ceilingOk_complete` (semantic `Generalizes` ⇒ Bool, under the call-site hyps
+`inferCore` already has: `σ.WF`, equal lengths, `rigidVars`, fresh `Φ₁`) **is a
+real theorem worth having**: it would make `inferCore`'s check match
+`Infer.letRec`'s premise, so the algorithm isn't a silent conservative
+approximation of the relation. It is **not** on the critical path of steps 4–6
+(`Infer.sound` uses semantic `ceilingOK`; the remaining work is `TypeOfHM`/`Step`
+then deletion). `unifyCoreK_complete_aux` (`InferW.lean:25016`) already exists,
+so this is a bounded matching-completeness lemma, not another S₂-threading
+gap. Do not block dynamics on it; park it as a follow-up completeness item
+(alongside the doomed `Infer.complete*` family, which is a *different*
+completeness — Infer vs `TypeOfHM` — and is deleted in step 5).
 
 ### Step 2 — type erasure (`Expr.erase`), commit `9380ab0`
 - `FHM/Core.lean`: `def Expr.erase` (near `Expr.openBoundTyVars`, ~line 2579) — drops
@@ -52,8 +78,12 @@ they depend on. The old sound family was renamed `*_elab`:
 
 - `Infer.sound_elab` (`:9688`), `InferBranches.sound_elab`, `InferRecGroup.sound_elab`
   — vs `TypeOfElabHM`, DOOMED (deleted in step 5), their `letRec` cases still `sorry`.
-- `Infer.sound_closed` (`:11217`) kept its name (no collision); the `sourceSound`
-  family (`Infer.sourceSound` etc., vs `TypeOfHM`) is self-contained and untouched.
+- `Infer.sound_closed` (`:11217`) kept its name (no collision) — it is a
+  corollary of `sound_elab` (elaborated `TypeOfElabHM` / `eOut`), **not** of the
+  new `Infer.sound`. For a closed `TypeOfHM` fact, instantiate `Infer.sound`
+  with `K = []`. The `sourceSound` family (`Infer.sourceSound` etc., vs
+  `TypeOfHM` of the *annotated* input) is self-contained and untouched
+  (doomed; deleted in step 5).
 
 The **REUSE invariant layer** re-proved for the new `Infer.letRec` rule (commits
 `750b7e4`, `68f8113`, `0d05f73`): `Infer.lc/.belowFvars/.dom_below/.eOut_avoid/
@@ -148,58 +178,134 @@ them `sorry`; delete with the rest in step 5.
    and what `TypeOfHM.letRec`'s `RecSpecs.WF.anns_eq` sees (`specs.map RecSpec.ann` =
    all-none for all-mono specs).
 
+7. **Do not strip annotation fvars out of `RecGroup.rigidVars`.** The comment at
+   `InferW.lean:1533` is stale (it still talks about schemes sitting in `rhsCtx`;
+   after the cut they don't). The *list* is still right: `G` is computed against
+   the outer `(S₁.onCtx ctx).env`, not the ceiling body env, so rigidVars is
+   what keeps a dangling annotation fvar out of the pool. Deleting that term
+   is a soundness footgun, not a cleanup.
+
+8. **`Expr.IsErased` ≠ image of `Expr.erase`.** `IsErased` (`CekMachine.lean:10`)
+   is the old *selective* erase: λ-ascriptions and `var.tyArgs` dropped, but
+   `letIn`/`letRec` annotations **kept** (provided `WF`). Uniform `Expr.erase`
+   drops those too. `e.erase` is `IsErased`, but not conversely.
+   `openTyVars_eq_self_of_erased` is stated on `IsErased` and relies on
+   `σ.WF` to leave kept annotations unchanged; the fact you actually want for
+   `Step` on `erase e` is "opening is a no-op on the *image* of `erase`"
+   (which follows from `erase` producing `none`/all-none/`tyArgs = []`, or
+   from `erase_openTyVarsAux` plus `erase` idempotence). Do not import
+   `IsErased` into the new dynamics and call the job done.
+
+9. **Adversarial review of steps 1–3 (2026-08-22) passed all five sections.**
+   `Infer.sound` / `InferRecGroup.sound` / `freeVars_subset` / `erase_openTyVarsAux`
+   / `ceilingOk_sound` are axiom-clean (`propext`/`Classical.choice`/`Quot.sound`).
+   The 8 `sorry`s in §2 are the complete live set in `InferW.lean`.
+
 ---
 
 ## 4. Step 4 (NEXT): `TypeOfHM` dynamics for `SmallStep.Step`
 
 The old dynamics metatheory (`TypeOfElabHM.progress`/`preservation`/`type_safety`,
-`Core.lean:8471`/`:9442`/`:10074`) is against the elaborated relation and is deleted
+`Core.lean:8633`/`:9604`/`:10236`) is against the elaborated relation and is deleted
 in step 5. So prove, for `TypeOfHM` on **erased** terms, the standard Mini-ML
 substitution-semantics metatheory (`SmallStep.Step` lives in `Core.lean:1435` and is
-NOT deleted — the live evaluator already runs it):
+NOT deleted — the live evaluator already runs it).
 
-1. **Substitution lemma**: `substN` preserves `TypeOfHM`. The delicate parts are the
-   cofinite `letIn`/`letRec` cases ("types at every opening survive substitution").
-   Scaffolding that survives the deletion: `TypeOfHM.rec_strong` (`:11468`),
+**Load-bearing restriction (memo §7):** state progress/preservation/`type_safety`
+for `erase e` (or terms in the image of `erase`), **never** for arbitrary annotated
+terms. `Step` on an annotated `let f : ∀a. a→a = λ(x:a). x in f 3` orphans the
+ascription; `TypeOfHM` of that closed rhs fails `paramTy.IsLC`. Do not try to
+prove `Step` preservation for annotated terms — that brings type-passing back.
+
+**Placement:** put the new metatheory in `InferW` (after `TypeOfHM.rec_strong` /
+`weaken_scheme`), **not** in `Core`. `TypeOfHM` is defined in `Core`, but its
+induction principle `TypeOfHM.rec_strong` (`InferW.lean:11468`) and the type-subst
+family live in `InferW`; `Core` does not import `InferW`. A new file that imports
+`InferW` is also fine. Do **not** import `CekMachine.lean`.
+
+Templates (port, don't cite):
+
+- `TypeOfElabHM.subst_lemma` / `subst_lemma_many` (`Core.lean:8420` / `:8195`)
+- `TypeOfElabHM.canonical_*` (`:8476+`) then `progress` (`:8633`)
+- `TypeOfElabHM.rec_rewrap_typed` (`:9346`) and `rewrap_hasScheme_mono` (`:9409`)
+- `TypeOfElabHM.preservation` (`:9604`) — `beta` uses `subst_lemma`; `letReduce`
+  uses `HasScheme.fromLetCofinite`; `letRecUnfold` uses the rewrap pair
+
+Under the DM cut the rewrap is *simpler* than the ElabHM original: specs are
+all-`.mono`, so the `PolyTyped` half is vacuous.
+
+Green checkpoints, commit each:
+
+1. **Move/restate the reusable CEK lemmas** into `Core`/`InferW`, restated for
+   the image of `Expr.erase` rather than `IsErased` where it matters:
+   - `Expr.openTyVars_eq_self_of_erased` (`CekMachine.lean:98`) — see §3 item 8
+   - `GeneralisesTo_inst` (`:839`) and `GeneralisesTo_inst_ann` (`:787`)
+   - `recclo_body_typed` (`:972`) is **not** a drop-in for `Step`. It is the
+     CEK analogue of `rewrap_hasScheme_mono` (a rec-closure, not a substituted
+     `letRec` copy). Use it as a proof *template* for the TypeOfHM rewrap
+     port; do not try to apply it to `letRecUnfold`.
+2. **Substitution lemma**: `substN` preserves `TypeOfHM`. Delicate: cofinite
+   `letIn`/`letRec` ("types at every opening survive substitution"). Scaffolding
+   that survives the later deletion: `TypeOfHM.rec_strong` (`:11468`),
    `Expr.substN_openTyVarsAux_comm` (`Core.lean:7889`), `SmallStep.IsValue.substN`,
-   `Step.preserves_exhaustive`, `AllMatchesExhaustive.substN`.
-2. **Progress**: canonical forms for `TypeOfHM` (a value of arrow type is a λ, etc.).
-3. **Preservation**: `Step` preserves `TypeOfHM`. The `letRecUnfold` case is the hard
-   one: it substitutes `letRec anns bindings eⱼ` (a full copy of the group) for each
-   member — needs a `TypeOfHM` port of `TypeOfElabHM.rewrap_hasScheme_mono`
-   (`Core.lean:9247`) and `rec_rewrap_typed` (`Core.lean:9184`). Name it as a checkpoint.
-   The `letReduce` case needs `GeneralisesTo_inst_ann` and (for the erased term)
-   `openTyVars_eq_self_of_erased`.
-4. `preservation_star` / `type_safety` / `type_safety_closed`.
-
-**Dependency note:** `GeneralisesTo_inst_ann`, `GeneralisesTo_inst`,
-`recclo_body_typed`, and `openTyVars_eq_self_of_erased` currently live in
-`FHM/CekMachine.lean` (the proved-but-unused CEK machine leaf). **Move the reusable
-ones into `Core`/`InferW`** (now that `erase` exists in `Core`) rather than importing
-`CekMachine.lean` — the new `TypeOfHM`/`Step` metatheory must not cite the leaf.
+   `Step.preserves_exhaustive`, `AllMatchesExhaustive.substN`. Name the rewrap
+   port (`TypeOfHM.rec_rewrap_typed` / `rewrap_hasScheme_mono`) as a sub-checkpoint
+   of this lemma — it *is* the letRec case, not a freebie.
+3. **Progress**: canonical forms for `TypeOfHM` (a value of arrow type is a λ,
+   etc.). Port `TypeOfElabHM.canonical_*`; they invert values, so they are
+   almost copy-paste onto `TypeOfHM`.
+4. **Preservation** (`Step` preserves `TypeOfHM`). `letRecUnfold` is the hard
+   case (substitutes `letRec anns bindings eⱼ` — a full copy of the group —
+   for each member; the copy must inhabit `genGroup G τ`). `letReduce` needs
+   `GeneralisesTo_inst_ann` and opening-is-id on `erase e`.
+5. `preservation_star` / `type_safety` / `type_safety_closed`.
 
 ---
 
 ## 5. Step 5: rewire the surface; drop `eOut`; delete `TypeOfElabHM`
 
-- Rewire `SurfaceBridge` / `Headlines` / `EvaluateUnsafe` / `PatComp` / `Bounds/*` to
-  `erase` + `SmallStep.Step` + `TypeOfHM` (Headlines `WellTyped := ∃ τ, TypeOfHM
-  ⟨[],ctors⟩ (erase e) τ`; `runSafe` loops `Step`).
-- **Drop `eOut`** from `Infer`/`InferBranches`/`InferRecGroup` and from
-  `inferCore`/`principalType`/`typecheck`. (The `Infer.sound` proof already ignores
-  `eOut`; this is now a mechanical sweep.)
-- **Delete**: `TypeOfElabHM` + its metatheory (`Core.lean:3139`, `:5101–10917`),
-  `faithful`, `Infer.sourceSound` family, the `*_elab` sound family, the 8 doomed
-  sorries above, `eOut_*`/`...Out` mirrors, `letRecElab*`, `closeTyVars`, the residual
-  `eraseBounds` bridge (`Core.lean:10117–10880`).
-- Green: `lake build` **and** `lake build fhm` (CLI pulls the bounds pipeline).
+Do **not** do this as one commit. Three sequenced green checkpoints:
+
+**(a) Rewire call sites, TypeOfElabHM still present.** `SurfaceBridge` /
+`Headlines` / `EvaluateUnsafe` / `PatComp` / `Bounds/*` to `erase` + `SmallStep.Step`
++ `TypeOfHM`. Today's `Headlines.WellTyped` (`:558`) is `TypeOfElabHM` of
+`e.eraseBounds` — that is the Path R *bounds* erase, **not** `Expr.erase`. The
+new definition is `∃ τ, TypeOfHM ⟨[], ctors⟩ (e.erase) τ` (memo §5.1).
+`elaborateSafe` currently runs `elaborateProgram`; the new pipeline is
+`lower → Infer → erase → Step` (no `eOut`). `runSafe` already loops `Step`.
+`Infer.sound` with `K = []` is the closed-term glue; do not call
+`Infer.sound_closed` (that is `sound_elab`).
+
+**(b) Drop `eOut`** from `Infer`/`InferBranches`/`InferRecGroup` and from
+`inferCore`/`principalType`/`typecheck`. The `Infer.sound` *proof* already ignores
+`eOut`; the *type* still carries it. This is mechanical in idea and large in
+blast radius (`eOut` occurs ~270 times in `InferW.lean`). The REUSE layer just
+re-proved for step 3 (`eOut_avoid`, `eOut_tyBvarBounded`, `preservesAnns`) either
+simplifies or disappears — that is expected, not a regression. Do not mix this
+with (c).
+
+**(c) Delete**: `TypeOfElabHM` + its metatheory (`Core.lean:3139`, roughly
+`:5101–10917`), `faithful`, `Infer.sourceSound` family, the `*_elab` sound family,
+the 8 doomed sorries above, `eOut_*`/`...Out` mirrors, `letRecElab*`, `closeTyVars`,
+the residual `eraseBounds` bridge (`Core.lean:10117–10880`). **Keep** anything
+about `substN`/`Step`/`AllMatchesExhaustive` that is not ElabHM-specific
+(`Expr.substN_openTyVarsAux_comm`, `SmallStep.IsValue.substN`,
+`Step.preserves_exhaustive`, `AllMatchesExhaustive.substN`) — those are step-4
+scaffolding living next to doomed lemmas.
+
+Green: `lake build` **and** `lake build fhm` (CLI pulls the bounds pipeline).
+The 7 Bounds `sorry`s stay; they still compile.
 
 ## 6. Step 6: cleanup
 
 Drop `var.tyArgs` from `Expr` + `TypeOfHM.var` (changes `Expr` and `Expr.IsErased.var`,
-so it will break `CekMachine.lean` — if friction, delete that leaf; its reusable lemmas
-will already have moved per §4). Delete now-dead `instTy`/`shiftFrom`/`AllMatchesExhaustive.*`
-helpers. Refresh `README.md` / `complexity-budget.md` / `letrec-design.md`.
+so it will break `CekMachine.lean`). **Expect to delete `FHM/CekMachine.lean` in
+this step** — nothing imports it, reusable lemmas moved in §4, and keeping it
+compiling through an `Expr` ctor change is wasted work. Delete now-dead
+`instTy`/`shiftFrom`/`AllMatchesExhaustive.*` helpers. Refresh `README.md` /
+`complexity-budget.md` / `letrec-design.md`. `Headlines.lean`'s module doc still
+describes Path R residual `TypeOfElabHM` / `sourceSound`; rewrite it to the
+`erase` + `TypeOfHM` + `Step` story.
 
 ---
 
