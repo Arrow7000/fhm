@@ -17094,6 +17094,75 @@ private theorem List.forall₂_of_getElem {α β : Type*} {R : α → β → Pro
       exact h (i + 1) (by simpa using h₁) (by simpa using h₂)
 
 
+/-! ### `TypeOfHM`/`Step` dynamics metatheory (step 4, checkpoints 2–4)
+
+The substitution-semantics metatheory for `TypeOfHM` on erased terms. This is
+the decoration-blind port of `TypeOfElabHM`'s dynamics (subst_lemma / canonical
+forms / progress / preservation), specialised to the image of `Expr.erase`:
+`letIn` anns are always `none`, `letRec` specs all-`.mono`, `var` tyArgs `[]`,
+so the type-passing machinery (`instTy`/`SubstArgsGe`/`TyBvarBounded`) is
+vacuous and the cofinite `openTyVars`-commutation bookkeeping never fires. -/
+
+/-- Decoration-blind "value types at scheme `M`": `v` inhabits every instance of
+    `M`. The direct analogue of the type-passing `HasScheme` (`Core.lean`), but
+    stated with the declarative `Instantiates` (existential instantiation) rather
+    than `instTy`/`openWith`. -/
+def HasSchemeHM (ctx : Ctx) (v : Expr) (M : PolyTy) : Prop :=
+  ∀ τ : Ty, Instantiates M τ → TypeOfHM ctx v τ
+
+/-- Substituting `vs` (each typed at every instance of its scheme `Ms[j]`) for a
+    block of `Ms`-typed binders preserves `TypeOfHM`. Decoration-blind port of
+    `TypeOfElabHM.subst_lemma_many` (no `M.WF` premise — the erased `var` case
+    instantiates existentially via `HasSchemeHM`). -/
+theorem TypeOfHM.subst_lemma_many
+    {ctors : CtorEnv} {env Ms : Env} {vs : List Expr}
+    (h_vs : List.Forall₂ (fun v M => HasSchemeHM ⟨env, ctors⟩ v M) vs Ms) :
+    ∀ (n : Nat) (e : Expr), e.size ≤ n → ∀ (env_post : Env) (τ : Ty),
+      TypeOfHM ⟨env_post ++ Ms ++ env, ctors⟩ e τ →
+      TypeOfHM ⟨env_post ++ env, ctors⟩ (e.substN env_post.length vs) τ := by
+  sorry
+
+/-- Single-value substitution (`beta`/`letReduce`): the `Ms = [M]`, `vs = [v]`
+    instance of `subst_lemma_many`. -/
+theorem TypeOfHM.subst_lemma
+    {ctors : CtorEnv} {env_post env : Env}
+    {e : Expr} {τ : Ty} {M : PolyTy} {v : Expr}
+    (h_body : TypeOfHM ⟨env_post ++ [M] ++ env, ctors⟩ e τ)
+    (h_v : HasSchemeHM ⟨env, ctors⟩ v M) :
+    TypeOfHM ⟨env_post ++ env, ctors⟩ (e.substN env_post.length [v]) τ :=
+  TypeOfHM.subst_lemma_many (Ms := [M]) (vs := [v])
+    (List.Forall₂.cons h_v List.Forall₂.nil) e.size e (Nat.le_refl _) env_post τ h_body
+
+/-- Re-wrap a group member: if `e` types at `t` in the group RHS context at a
+    fresh pool opening `G ↦ Xs`, then the re-wrapped `letRec anns bindings e`
+    types at `t` in the ambient context. Decoration-blind port of
+    `TypeOfElabHM.rec_rewrap_typed` (the fused mono-group trick). -/
+theorem TypeOfHM.rec_rewrap_typed
+    {ctors : CtorEnv} {env : Env} {anns : List (Option PolyTy)} {bindings : List Expr}
+    {specs : List RecSpec} {G L : List Nat}
+    (hwf : RecSpecs.WF anns bindings specs G)
+    (hmono : RecSpecs.MonoTyped TypeOfHM ⟨env, ctors⟩ bindings specs G L)
+    (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨env, ctors⟩ bindings specs G L)
+    {Xs : List Nat} (hXs : FreshNames L G.length Xs)
+    {e : Expr} {t : Ty}
+    (hbody : TypeOfHM (RecSpecs.rhsCtx ⟨env, ctors⟩ specs G Xs) e t) :
+    TypeOfHM ⟨env, ctors⟩ (.letRec anns bindings e) t := by
+  sorry
+
+/-- Each re-wrapped member `letRec anns bindings e` inhabits every instance of
+    its generalised body scheme `genGroup G τ` (`HasSchemeHM`). Decoration-blind
+    port of `TypeOfElabHM.rewrap_hasScheme_mono`; needed by preservation's
+    `letRecUnfold` case. -/
+theorem TypeOfHM.rewrap_hasSchemeHM_mono
+    {ctors : CtorEnv} {env : Env} {anns : List (Option PolyTy)} {bindings : List Expr}
+    {specs : List RecSpec} {G L : List Nat}
+    (hwf : RecSpecs.WF anns bindings specs G)
+    (hmono : RecSpecs.MonoTyped TypeOfHM ⟨env, ctors⟩ bindings specs G L)
+    (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨env, ctors⟩ bindings specs G L)
+    {e : Expr} {τ : Ty} (hmem : (e, RecSpec.mono τ) ∈ bindings.zip specs) :
+    HasSchemeHM ⟨env, ctors⟩ (.letRec anns bindings e) (PolyTy.genGroup G τ) := by
+  sorry
+
 /-! ### The coherence theorem (`Infer.sound`, vs declarative `TypeOfHM`)
 
 The erasure-on-`Step` migration's single soundness theorem
