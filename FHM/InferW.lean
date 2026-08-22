@@ -12278,6 +12278,265 @@ theorem TypeOfMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} 
   | _, _, _, _, .wildcard hbody => TypeOfHM.regular hbody
 end
 
+/-! ### Cofinite `GeneralisesTo` instantiation (moved from `CekMachine.lean`)
+
+The `TypeOfHM`/`Step` dynamics instantiates a cofinite `let`/`letRec` scheme
+premise ("the bound value types at every opening of `M`") at a single type `τ`.
+`Ty.substFvars_zip_openVars_eq` is the type-side round-trip (substituting the
+zipped fresh names back recovers the `InstantiatesBy` instance), and the two
+`GeneralisesTo_inst*` lemmas package it against `TypeOfHM`. These are the
+decoration-blind analogues of the CEK leaf's same-named lemmas, restated for
+the image of `Expr.erase` (not `IsErased`). -/
+
+/-- Scheme `σ` instantiates to monotype `τ` (the declarative `TypeOfHM.var`
+    instantiation: some locally-closed args, no length constraint). -/
+def Instantiates (σ : PolyTy) (τ : Ty) : Prop :=
+  ∃ instArgs, (∀ a ∈ instArgs, a.IsLC) ∧ σ.InstantiatesTo instArgs τ
+
+/-- Substituting along `Xs.zip Vs` sends `.fvar Xs[i]` to `Vs[i]` (freshness of
+    all of `Vs` is required — the `substFvars_zip_openVars_eq` `bvar` case does
+    not know which `Vs` entry is selected ahead of time). -/
+private theorem Ty.substFvars_zip_fvar_eq'_allVs {Xs : List Nat} {Vs : List Ty}
+    {i : Nat} {x : Nat} {v : Ty}
+    (h_nodup : Xs.Nodup)
+    (h_fresh : ∀ X ∈ Xs, X ∉ Ty.freeVarsList Vs)
+    (hx : Xs[i]? = some x)
+    (hv : Vs[i]? = some v) :
+    Ty.substFvars (Xs.zip Vs) (.fvar x) = v := by
+  induction Xs generalizing Vs i x v with
+  | nil => simp at hx
+  | cons X0 Xs' ih =>
+      cases Vs with
+      | nil => simp at hv
+      | cons V0 Vs' =>
+          cases i with
+          | zero =>
+              simp only [List.getElem?_cons_zero, Option.some.injEq] at hx hv
+              simp only [List.zip_cons_cons, Ty.substFvars]
+              rw [← hx, show Ty.substFvar X0 V0 (.fvar X0) = V0 by simp [Ty.substFvar], ← hv]
+              apply Ty.substFvars_eq_self_of_no_key
+              intro p hp hcontra
+              have hp1 : p.1 ∈ Xs' := (List.of_mem_zip hp).1
+              have hXf : p.1 ∉ Ty.freeVarsList (V0 :: Vs') :=
+                h_fresh p.1 (List.mem_cons_of_mem _ hp1)
+              simp only [Ty.freeVarsList, List.mem_dedup, List.mem_append] at hXf
+              exact hXf (Or.inl hcontra)
+          | succ k =>
+              simp only [List.getElem?_cons_succ] at hx hv
+              have h_X0_notin : X0 ∉ Xs' := (List.nodup_cons.mp h_nodup).1
+              have h_x_mem : x ∈ Xs' := List.mem_of_getElem? hx
+              have h_ne : x ≠ X0 := fun h => h_X0_notin (h ▸ h_x_mem)
+              have h_fresh' : ∀ X ∈ Xs', X ∉ Ty.freeVarsList Vs' := by
+                intro X hX hc
+                refine h_fresh X (List.mem_cons_of_mem _ hX) ?_
+                simp only [Ty.freeVarsList, List.mem_dedup, List.mem_append]
+                exact .inr hc
+              simp only [List.zip_cons_cons, Ty.substFvars]
+              rw [show Ty.substFvar X0 V0 (.fvar x) = .fvar x by simp [Ty.substFvar, h_ne]]
+              exact ih (List.nodup_cons.mp h_nodup).2 h_fresh' hx hv
+
+/-- The type-side round-trip: substituting the zipped fresh names `Xs` back to
+    `Vs` through `ty.openVars Xs` recovers exactly the `InstantiatesBy Vs ty τ`
+    instance, PROVIDED the opened type is locally closed (which
+    `TypeOfHM.regular` supplies — the LC hypothesis rules out dangling bvars of
+    `ty` beyond `Xs.length`, where the two sides would diverge). -/
+theorem Ty.substFvars_zip_openVars_eq {Xs : List Nat} {Vs : List Ty}
+    (hXs_nodup : Xs.Nodup)
+    (hXs_fresh_Vs : ∀ X ∈ Xs, X ∉ Ty.freeVarsList Vs) :
+    ∀ (ty τ : Ty), InstantiatesBy Vs ty τ →
+      (∀ X ∈ Xs, X ∉ ty.freeVars) →
+      ContainsBvarsUpTo 0 (Ty.openVars Xs ty) →
+      Ty.substFvars (Xs.zip Vs) (Ty.openVars Xs ty) = τ := by
+  intro ty
+  induction ty using Ty.rec_strong with
+  | prim p =>
+      intro τ h _ _
+      cases h
+      unfold Ty.openVars
+      simp only [Ty.instantiate]
+      exact Ty.substFvars_prim
+  | arrow a b iha ihb =>
+      intro τ h hfresh hLC
+      cases h with
+      | arrow ha hb =>
+          rename_i instFst instSnd
+          rw [Ty.openVars_arrow, Ty.substFvars_arrow]
+          cases hLC with
+          | arrow hLCa hLCb =>
+              rw [iha instFst ha (fun X hX hc => hfresh X hX (by
+                    simp only [Ty.freeVars, List.mem_dedup, List.mem_append]
+                    exact .inl hc)) hLCa,
+                  ihb instSnd hb (fun X hX hc => hfresh X hX (by
+                    simp only [Ty.freeVars, List.mem_dedup, List.mem_append]
+                    exact .inr hc)) hLCb]
+  | bvar i =>
+      intro τ h hfresh hLC
+      cases h with
+      | bvar hsome =>
+          by_cases hi : i < Xs.length
+          · obtain ⟨x, hx⟩ : ∃ x, Xs[i]? = some x := ⟨_, List.getElem?_eq_getElem hi⟩
+            simp only [Ty.openVars, Ty.instantiate, hx, Option.elim]
+            exact Ty.substFvars_zip_fvar_eq'_allVs hXs_nodup hXs_fresh_Vs hx hsome
+          · have hx : Xs[i]? = none := List.getElem?_eq_none (by omega)
+            have hLCi : ContainsBvarsUpTo 0 (.bvar i) := by
+              simpa only [Ty.openVars, Ty.instantiate, hx, Option.elim] using hLC
+            cases hLCi with
+            | bvar hlt => omega
+  | fvar n =>
+      intro τ h hfresh hLC
+      cases h
+      simp only [Ty.openVars, Ty.instantiate]
+      apply Ty.substFvars_eq_self_of_no_key
+      intro p hp hcontra
+      have hp1 : p.1 ∈ Xs := (List.of_mem_zip hp).1
+      have hnf : p.1 ∉ Ty.freeVars (.fvar n) := hfresh p.1 hp1
+      simp only [Ty.freeVars, List.mem_singleton] at hnf hcontra
+      exact hnf hcontra
+  | customTy nm tys ih =>
+      intro τ h hfresh hLC
+      cases h with
+      | customTy hforall =>
+          rw [Ty.openVars_customTy, Ty.substFvars_customTy]
+          apply congrArg (Ty.customTy nm)
+          cases hLC with
+          | customTy hball =>
+              induction hforall with
+              | nil => rfl
+              | cons hhd htl ihtl =>
+                  rename_i hd_ty hd_inst tl_tys tl_inst
+                  have h_hd : Ty.substFvars (Xs.zip Vs) (Ty.openVars Xs hd_ty) = hd_inst :=
+                    ih hd_ty List.mem_cons_self hd_inst hhd
+                      (fun X hX hc => hfresh X hX (by
+                        simp only [Ty.freeVars, TyList.freeVars, List.mem_dedup, List.mem_append]
+                        exact .inl hc))
+                      (hball (Ty.openVars Xs hd_ty) (by
+                        exact List.mem_cons_self))
+                  have hfresh_tl : ∀ X ∈ Xs, X ∉ (Ty.customTy nm tl_tys).freeVars := by
+                    intro X hX hc
+                    exact hfresh X hX (by
+                      simp only [Ty.freeVars, TyList.freeVars, List.mem_dedup, List.mem_append]
+                      exact .inr hc)
+                  have hball_tl :
+                      ∀ ty ∈ TyList.instantiate (fun i => Xs[i]?.elim (Ty.bvar i) Ty.fvar) tl_tys,
+                        ContainsBvarsUpTo 0 ty :=
+                    fun ty ht => hball ty (List.mem_cons_of_mem _ ht)
+                  have h_tl : List.map (Ty.substFvars (Xs.zip Vs))
+                      (List.map (Ty.openVars Xs) tl_tys) = tl_inst :=
+                    ihtl (fun t ht => ih t (List.mem_cons_of_mem _ ht)) hfresh_tl hball_tl
+                  simp only [List.map_cons]
+                  rw [← h_hd, h_tl]
+  | bl lo hi e ih =>
+      intro τ h hfresh hLC
+      cases h with
+      | bl he =>
+          rename_i instElem
+          rw [Ty.openVars_bl, Ty.substFvars_bl]
+          rw [Ty.openVars_bl] at hLC
+          cases hLC with
+          | bl hLCe =>
+              exact congrArg (Ty.bl lo hi) (ih instElem he (fun X hX hc => hfresh X hX hc) hLCe)
+
+/-- If a term types at every opening of scheme `M`, and `M` instantiates to `τ`,
+    then the term types at `τ` (the `GeneralisesTo`-instantiation lemma, the
+    unannotated case — the annotated case collapses via `ann.Pins M`). -/
+theorem GeneralisesTo_inst {ctx : Ctx} {e : Expr} {M : PolyTy} {L : List Nat} {τ : Ty}
+    (hgen : GeneralisesTo TypeOfHM ctx none e M L) (hinst : Instantiates M τ) :
+    TypeOfHM ctx e τ := by
+  rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+  -- Pick fresh names `Xs` (length `M.paramCount`) avoiding `L`, the context env's
+  -- free vars, `e`'s annotation free vars, and the free vars of `instArgs` / `M.body`.
+  obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
+    exists_fresh_names
+      (L ++ ctx.env.freeVars ++ e.tyFreeVars ++ Ty.freeVarsList instArgs ++ M.body.freeVars)
+      M.paramCount
+  have hXL : ∀ x ∈ Xs, x ∉ L := fun x hx hc => hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXenv : ∀ x ∈ Xs, x ∉ ctx.env.freeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXe : ∀ x ∈ Xs, x ∉ e.tyFreeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXVs : ∀ x ∈ Xs, x ∉ Ty.freeVarsList instArgs := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXM : ∀ x ∈ Xs, x ∉ M.body.freeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hfresh : FreshNames L M.paramCount Xs := ⟨hXlen, hXnodup, hXL⟩
+  have he : TypeOfHM ctx e (M.openVars Xs) := by
+    simpa [Expr.openBoundTyVars] using hgen Xs hfresh
+  -- Push the type-fvar substitution `Xs[i] ↦ instArgs[i]` through the derivation;
+  -- the fresh names fix both the context and the term.
+  have h_lc : ∀ p ∈ Xs.zip instArgs, Ty.IsLC p.2 := fun p hp =>
+    hinstLC p.2 (List.of_mem_zip hp).2
+  have hsub : TypeOfHM ctx (e.substTyFvars (Xs.zip instArgs))
+      (Ty.substFvars (Xs.zip instArgs) (M.openVars Xs)) :=
+    TypeOfHM.typ_substs_preservation (Xs.zip instArgs)
+      (fun p hp => hXenv p.1 (List.of_mem_zip hp).1) h_lc he
+  have hfix : e.substTyFvars (Xs.zip instArgs) = e :=
+    Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by
+      intro p hp
+      exact hXe p.1 (List.of_mem_zip hp).1)
+  have hreg : (M.openVars Xs).IsLC := TypeOfHM.regular he
+  have hty : Ty.substFvars (Xs.zip instArgs) (M.openVars Xs) = τ := by
+    change Ty.substFvars (Xs.zip instArgs) (Ty.openVars Xs M.body) = τ
+    exact Ty.substFvars_zip_openVars_eq (Xs := Xs) (Vs := instArgs)
+      hXnodup hXVs M.body τ hinstTo hXM hreg
+  rw [hfix, hty] at hsub
+  exact hsub
+
+/-- The annotated analogue of `GeneralisesTo_inst`: if a term in the image of
+    `Expr.erase` types at every opening of scheme `M` (whether the `let` was
+    annotated or not), and `M` instantiates to `τ`, then the term types at `τ`.
+    Erased-ness rewrites the opening `openBoundTyVars ann Xs e` to `e` itself, so
+    both the `none` and `some σ` cases collapse to the same substitution argument. -/
+theorem GeneralisesTo_inst_ann {ctx : Ctx} {ann : Option PolyTy} {e : Expr}
+    {M : PolyTy} {L : List Nat} {τ : Ty}
+    (herased : e.erase = e)
+    (hgen : GeneralisesTo TypeOfHM ctx ann e M L) (hinst : Instantiates M τ) :
+    TypeOfHM ctx e τ := by
+  rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
+  -- Pick fresh names `Xs` (length `M.paramCount`) avoiding `L`, the context env's
+  -- free vars, `e`'s annotation free vars, and the free vars of `instArgs` / `M.body`.
+  obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ :=
+    exists_fresh_names
+      (L ++ ctx.env.freeVars ++ e.tyFreeVars ++ Ty.freeVarsList instArgs ++ M.body.freeVars)
+      M.paramCount
+  have hXL : ∀ x ∈ Xs, x ∉ L := fun x hx hc => hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXenv : ∀ x ∈ Xs, x ∉ ctx.env.freeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXe : ∀ x ∈ Xs, x ∉ e.tyFreeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXVs : ∀ x ∈ Xs, x ∉ Ty.freeVarsList instArgs := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hXM : ∀ x ∈ Xs, x ∉ M.body.freeVars := fun x hx hc =>
+    hXavoid x hx (by simp only [List.mem_append]; tauto)
+  have hfresh : FreshNames L M.paramCount Xs := ⟨hXlen, hXnodup, hXL⟩
+  -- Erased-ness collapses the opening: `openBoundTyVars none` is the identity,
+  -- and `openBoundTyVars (some σ)` is `e.openTyVars Xs = e` (no scoped tyVars).
+  have he : TypeOfHM ctx e (M.openVars Xs) := by
+    cases ann with
+    | none => simpa [Expr.openBoundTyVars] using hgen Xs hfresh
+    | some σ =>
+        have hopen : e.openTyVars Xs = e := by
+          rw [← herased, Expr.openTyVars_eq_self_of_erase_image e Xs, herased]
+        simpa [Expr.openBoundTyVars, hopen] using hgen Xs hfresh
+  -- Push the type-fvar substitution `Xs[i] ↦ instArgs[i]` through the derivation;
+  -- the fresh names fix both the context and the term.
+  have h_lc : ∀ p ∈ Xs.zip instArgs, Ty.IsLC p.2 := fun p hp =>
+    hinstLC p.2 (List.of_mem_zip hp).2
+  have hsub : TypeOfHM ctx (e.substTyFvars (Xs.zip instArgs))
+      (Ty.substFvars (Xs.zip instArgs) (M.openVars Xs)) :=
+    TypeOfHM.typ_substs_preservation (Xs.zip instArgs)
+      (fun p hp => hXenv p.1 (List.of_mem_zip hp).1) h_lc he
+  have hfix : e.substTyFvars (Xs.zip instArgs) = e :=
+    Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by
+      intro p hp
+      exact hXe p.1 (List.of_mem_zip hp).1)
+  have hreg : (M.openVars Xs).IsLC := TypeOfHM.regular he
+  have hty : Ty.substFvars (Xs.zip instArgs) (M.openVars Xs) = τ := by
+    change Ty.substFvars (Xs.zip instArgs) (Ty.openVars Xs M.body) = τ
+    exact Ty.substFvars_zip_openVars_eq (Xs := Xs) (Vs := instArgs)
+      hXnodup hXVs M.body τ hinstTo hXM hreg
+  rw [hfix, hty] at hsub
+  exact hsub
+
 /-! ### Path R residual source soundness (`TypeOfHM` on erased source)
 
 Source `e` may carry BL anns; pure `TypeOfHM` judges `e.eraseBounds` only.
