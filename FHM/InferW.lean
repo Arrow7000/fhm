@@ -17567,6 +17567,85 @@ theorem TypeOfHM.rewrap_hasSchemeHM_mono
   rw [hfix, hty] at hsub
   exact hsub
 
+/-! ### Canonical forms + progress (checkpoint 3)
+
+The `TypeOfHM` analogues of `TypeOfElabHM`'s value-inversion lemmas: a *value*
+of a given type has a particular syntactic shape, and a closed well-typed term
+is a value or takes a step. These only invert the value constructors, so they
+are nearly verbatim ports. -/
+
+/-- A well-typed constructor chain has a `wrapArrows … (customTy …)` type: a
+    prefix of arrows ending in a `customTy`. -/
+private lemma TypeOfHM.ctor_chain_has_customTy_form
+    {ctx e τ}
+    (h_chain : SmallStep.IsCtorChain e) (h_ty : TypeOfHM ctx e τ) :
+    ∃ name args tys, τ = Ty.wrapArrows (.customTy name args) tys := by
+  sorry
+
+/-- A value of arrow type is a λ, a ctor chain, a bare primop, or a one-argument-
+    short primop application. -/
+theorem TypeOfHM.canonical_arrow {ctx e argTy retTy}
+    (h_ty : TypeOfHM ctx e (.arrow argTy retTy))
+    (h_val : SmallStep.IsValue e) :
+    (∃ ann body, e = .lambda ann body) ∨ SmallStep.IsCtorChain e
+    ∨ (∃ op, e = .primBinOp op) ∨ (∃ op v, e = .app (.primBinOp op) v) := by
+  sorry
+
+/-- A value of a data type is a constructor chain. -/
+theorem TypeOfHM.canonical_customTy {ctx e tyName tyArgs}
+    (h_ty : TypeOfHM ctx e (.customTy tyName tyArgs))
+    (h_val : SmallStep.IsValue e) :
+    SmallStep.IsCtorChain e := by
+  sorry
+
+/-- A value of type `int` is an integer literal. -/
+theorem TypeOfHM.canonical_int {ctx e}
+    (h_ty : TypeOfHM ctx e (.prim .int))
+    (h_val : SmallStep.IsValue e) :
+    ∃ m : Int, e = .primLit (.int m) := by
+  sorry
+
+/-- A value of type `char` is a character literal. -/
+theorem TypeOfHM.canonical_char {ctx e}
+    (h_ty : TypeOfHM ctx e (.prim .char))
+    (h_val : SmallStep.IsValue e) :
+    ∃ c : Char, e = .primLit (.char c) := by
+  sorry
+
+/-- (helper) `Forall₂` distributes over appending one element to both sides. -/
+private theorem List.Forall₂.snoc {α β : Type _} {R : α → β → Prop}
+    {l1 : List α} {l2 : List β} {a : α} {b : β}
+    (h : List.Forall₂ R l1 l2) (hab : R a b) :
+    List.Forall₂ R (l1 ++ [a]) (l2 ++ [b]) := by
+  induction h with
+  | nil => exact .cons hab .nil
+  | cons hhd _ ih => exact .cons hhd ih
+
+/-- A well-typed constructor chain decomposes into a head constructor applied to
+    args, where the consumed fields are well-typed at their instantiations and
+    the result type is the remaining fields wrapped over the (instantiated)
+    `customTy`. -/
+theorem TypeOfHM.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h_chain : SmallStep.IsCtorChain e) (h_ty : TypeOfHM ctx e τ) :
+    ∃ (name : CtorName) (args : List Expr) (ctor : Ctor)
+      (tyArgs consumed remaining : List Ty),
+      SmallStep.CtorAppliedTo e name args ∧
+      LookupList.get? ctx.ctors name = some ctor ∧
+      (∀ t ∈ tyArgs, ContainsBvarsUpTo 0 t) ∧
+      ctor.contents = consumed ++ remaining ∧
+      List.Forall₂ (fun a c => ∃ ct, InstantiatesBy tyArgs c ct ∧ TypeOfHM ctx a ct)
+        args consumed ∧
+      InstantiatesBy tyArgs
+        (Ty.wrapArrows (.customTy ctor.tyName (Ty.bvarRange ctor.paramCount)) remaining) τ := by
+  sorry
+
+/-- Progress: a closed, well-typed term is a value or takes a step. -/
+theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h_ty : TypeOfHM ctx e τ) (h_closed : ctx.env = [])
+    (h_exh : SmallStep.AllMatchesExhaustive ctx.ctors e) :
+    SmallStep.IsValue e ∨ ∃ e', SmallStep.Step e e' := by
+  sorry
+
 /-! ### The coherence theorem (`Infer.sound`, vs declarative `TypeOfHM`)
 
 The erasure-on-`Step` migration's single soundness theorem
