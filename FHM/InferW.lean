@@ -17133,6 +17133,53 @@ theorem TypeOfHM.subst_lemma
   TypeOfHM.subst_lemma_many (Ms := [M]) (vs := [v])
     (List.Forall₂.cons h_v List.Forall₂.nil) e.size e (Nat.le_refl _) env_post τ h_body
 
+/-- `genGroup` at the empty pool is the trivial scheme (local copy of a
+    Core-private lemma, needed by the rewrap's `map_bodyScheme_openAt`). -/
+private theorem PolyTy.genGroup_nil {t : Ty} : PolyTy.genGroup [] t = PolyTy.mkTrivial t := by
+  have hgf : Ty.genFilter [] t = [] := rfl
+  have hcl : Ty.closeOver [] t = t := Ty.closeOver_eq_self_of_fresh (by simp)
+  simp only [PolyTy.genGroup, hgf, List.length_nil, hcl, PolyTy.mkTrivial]
+
+/-- `openAt` transports the stored annotations pointwise-identically (local copy
+    of a Core-private lemma). -/
+private theorem RecSpec.map_ann_openAt (G Xs : List Nat) (specs : List RecSpec) :
+    (specs.map (RecSpec.openAt G Xs)).map RecSpec.ann = specs.map RecSpec.ann := by
+  rw [List.map_map]
+  apply List.map_congr_left
+  intro s _
+  cases s <;> rfl
+
+/-- The transported specs' empty-pool RHS entries are the original specs'
+    pool-opened RHS entries (local copy of a Core-private lemma). -/
+private theorem RecSpec.map_rhsEntry_openAt (G Xs Zs : List Nat) (specs : List RecSpec) :
+    (specs.map (RecSpec.openAt G Xs)).map (RecSpec.rhsEntry [] Zs)
+      = specs.map (RecSpec.rhsEntry G Xs) := by
+  rw [List.map_map]
+  apply List.map_congr_left
+  intro s _
+  cases s with
+  | mono τ =>
+    show PolyTy.mkTrivial (Ty.renameG [] Zs (Ty.renameG G Xs τ)) = _
+    rw [Ty.renameG_nil_pool]
+    rfl
+  | poly σ => rfl
+
+/-- The transported specs' empty-pool BODY schemes are ALSO the original specs'
+    pool-opened RHS entries (`genGroup [] = mkTrivial`) — the crux of the
+    mono-group trick: body env = RHS env after transport (local copy of a
+    Core-private lemma). -/
+private theorem RecSpec.map_bodyScheme_openAt (G Xs : List Nat) (specs : List RecSpec) :
+    (specs.map (RecSpec.openAt G Xs)).map (RecSpec.bodyScheme [])
+      = specs.map (RecSpec.rhsEntry G Xs) := by
+  rw [List.map_map]
+  apply List.map_congr_left
+  intro s _
+  cases s with
+  | mono τ =>
+    show PolyTy.genGroup [] (Ty.renameG G Xs τ) = PolyTy.mkTrivial (Ty.renameG G Xs τ)
+    exact PolyTy.genGroup_nil
+  | poly σ => rfl
+
 /-- Re-wrap a group member: if `e` types at `t` in the group RHS context at a
     fresh pool opening `G ↦ Xs`, then the re-wrapped `letRec anns bindings e`
     types at `t` in the ambient context. Decoration-blind port of
