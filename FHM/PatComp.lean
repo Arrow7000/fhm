@@ -1,5 +1,6 @@
 import FHM.Core
 import FHM.SurfaceLang
+import FHM.InferW
 
 /-! # Verified pattern-match compilation (definitions + executable pipeline)
 
@@ -2946,7 +2947,7 @@ end
     vector) through `compile`'s recursion; maintained across a `hit` because the
     matched ctor's fields inherit its instantiated field types. -/
 def OccTyped (ctors : CtorEnv) (root : Expr) (occ : Occ) (τ : Ty) : Prop :=
-  ∃ w, fetch root occ = some w ∧ IsValue w ∧ TypeOfElabHM ⟨[], ctors⟩ w τ
+  ∃ w, fetch root occ = some w ∧ IsValue w ∧ TypeOfHM ⟨[], ctors⟩ w τ
 
 /-! ### Helpers for `compile_ctorSwitches_aux`
 
@@ -3122,10 +3123,10 @@ private theorem args_typed_fieldTys {ctors : CtorEnv} {ctor : Ctor}
     (hbound : ∀ c ∈ ctor.contents, ContainsBvarsUpTo ctor.paramCount c)
     (hinst : List.Forall₂ (InstantiatesBy tyArgs) ctor.contents fieldTys)
     (hfor : List.Forall₂
-      (fun a c => ∃ ct, InstantiatesBy tyArgs' c ct ∧ TypeOfElabHM ⟨[], ctors⟩ a ct)
+      (fun a c => ∃ ct, InstantiatesBy tyArgs' c ct ∧ TypeOfHM ⟨[], ctors⟩ a ct)
       args ctor.contents)
     (hagr : List.Forall₂ (InstantiatesBy tyArgs') (Ty.bvarRange ctor.paramCount) tyArgs) :
-    List.Forall₂ (fun a ft => TypeOfElabHM ⟨[], ctors⟩ a ft) args fieldTys := by
+    List.Forall₂ (fun a ft => TypeOfHM ⟨[], ctors⟩ a ft) args fieldTys := by
   revert hbound hinst hfor
   generalize ctor.contents = c
   intro hbound hinst hfor
@@ -3149,14 +3150,14 @@ private theorem occTyped_subOccs {ctors : CtorEnv} {root v : Expr} {name : CtorN
     (hfetch : fetch root occ0 = some v)
     (hget : getCtorArgs v = some (name, args))
     (hvals : ∀ a ∈ args, IsValue a)
-    (htyped : List.Forall₂ (fun a ft => TypeOfElabHM ⟨[], ctors⟩ a ft) args fieldTys) :
+    (htyped : List.Forall₂ (fun a ft => TypeOfHM ⟨[], ctors⟩ a ft) args fieldTys) :
     List.Forall₂ (OccTyped ctors root) (subOccs occ0 args.length) fieldTys := by
   have hfetch₂ : List.Forall₂ (fun o a => fetch root o = some a)
       (subOccs occ0 args.length) args :=
     mapM_forall₂_of_eq (fetch root) (fetch_subOccs root occ0 hfetch hget)
-  have hboth : List.Forall₂ (fun a ft => IsValue a ∧ TypeOfElabHM ⟨[], ctors⟩ a ft)
+  have hboth : List.Forall₂ (fun a ft => IsValue a ∧ TypeOfHM ⟨[], ctors⟩ a ft)
       args fieldTys :=
-    Forall₂_and_of_forall (fun (a : Expr) (ft : Ty) => TypeOfElabHM ⟨[], ctors⟩ a ft)
+    Forall₂_and_of_forall (fun (a : Expr) (ft : Ty) => TypeOfHM ⟨[], ctors⟩ a ft)
       IsValue htyped hvals
   exact Forall₂_relay _ _ _
     (fun o a ft hfo ⟨hval, hty⟩ => ⟨a, hfo, hval, hty⟩) hfetch₂ hboth
@@ -3259,7 +3260,7 @@ theorem compile_ctorSwitches_aux {ctors : CtorEnv} {root : Expr} (_hrootval : Is
       | cons hwf0_hd _ =>
         obtain ⟨T0, tyArgs0, _, _, hTy0, _, _, _, _⟩ := GPatWF.gctor_inv hwf0_hd
         subst hTy0
-        have hchain : IsCtorChain v := TypeOfElabHM.canonical_customTy hty hval
+        have hchain : IsCtorChain v := TypeOfHM.canonical_customTy hty hval
         obtain ⟨name, args, hget⟩ := getCtorArgs_of_isCtorChain hchain
         have hvals : ∀ a ∈ args, IsValue a := isValue_getCtorArgs hval hget
         rw [compile]
@@ -3291,7 +3292,7 @@ theorem compile_ctorSwitches_aux {ctors : CtorEnv} {root : Expr} (_hrootval : Is
               injection hTyN with hTN hTyArgsN
               subst hTN
               subst hTyArgsN
-              have hinv := TypeOfElabHM.ctor_chain_inversion hchain hty
+              have hinv := TypeOfHM.ctor_chain_inversion hchain hty
               obtain ⟨nameInv, argsInv, ctorInv, tyArgs', consumed, remaining,
                 hcat, hlookInv, hbv, hcc, hforInv, hinstInv⟩ := hinv
               have hcat2 : CtorAppliedTo v name args := getCtorArgs_ctorAppliedTo hget
@@ -3339,7 +3340,7 @@ theorem compile_ctorSwitches_aux {ctors : CtorEnv} {root : Expr} (_hrootval : Is
     (normalised) surface patterns are well-formed against that type, the
     compiled tree is `CtorSwitches`-safe — no residual hypothesis. -/
 theorem compile_ctorSwitches {ctors : CtorEnv} {root : Expr} {T : TyName} {tyArgs : List Ty}
-    (hty : TypeOfElabHM ⟨[], ctors⟩ root (.customTy T tyArgs))
+    (hty : TypeOfHM ⟨[], ctors⟩ root (.customTy T tyArgs))
     (hval : IsValue root)
     (ps : List Surface.Pattern)
     (hwf : ∀ r ∈ initMatrix ps, GPatWFList ctors r.pats [.customTy T tyArgs]) :
@@ -3351,17 +3352,17 @@ theorem compile_ctorSwitches {ctors : CtorEnv} {root : Expr} {T : TyName} {tyArg
     scrutinee typed at an ADT type and the patterns well-formed, the compiled-
     and-emitted Core term reduces to the surface-selected branch body with the
     right captures. `CtorSwitches` is discharged (`compile_ctorSwitches`) and
-    closedness comes from typing (`TypeOfElabHM.closed`). -/
+    closedness comes from typing (`TypeOfHM.closed`). -/
 theorem lowerMatch_adequate_of_typed {ctors : CtorEnv} {root : Expr}
     {T : TyName} {tyArgs : List Ty}
-    (hty : TypeOfElabHM ⟨[], ctors⟩ root (.customTy T tyArgs))
+    (hty : TypeOfHM ⟨[], ctors⟩ root (.customTy T tyArgs))
     (hval : IsValue root)
     (ps : List Surface.Pattern) (bodies : Nat → Expr)
     (hwf : ∀ r ∈ initMatrix ps, GPatWFList ctors r.pats [.customTy T tyArgs])
     {i : Nat} {ws : List Expr}
     (hmatch : firstMatch root ps = some (i, ws)) :
     Relation.ReflTransGen Step (lowerMatch root ps bodies) ((bodies i).substN 0 ws) :=
-  lowerMatch_adequate bodies hval (TypeOfElabHM.closed hty)
+  lowerMatch_adequate bodies hval (TypeOfHM.closed hty)
     (compile_ctorSwitches hty hval ps hwf) hmatch
 
 
