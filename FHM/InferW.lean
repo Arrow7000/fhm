@@ -18002,7 +18002,57 @@ private theorem InstantiatesBy.build_match_vs
 theorem SmallStep.AllMatchesExhaustive.erase {ctors : CtorEnv} {e : Expr}
     (h : SmallStep.AllMatchesExhaustive ctors e) :
     SmallStep.AllMatchesExhaustive ctors (e.erase) := by
-  sorry
+  induction e using Expr.rec_strong with
+  | primLit p => simp only [Expr.erase]; exact .primLit
+  | primBinOp op => simp only [Expr.erase]; exact .primBinOp
+  | var i tyArgs => simp only [Expr.erase_var]; exact .var
+  | ctor nm => simp only [Expr.erase]; exact .ctor
+  | lambda ann body ih =>
+    cases h with | lambda hb => simp only [Expr.erase_lambda]; exact .lambda (ih hb)
+  | app f arg ihf iharg =>
+    cases h with | app hf ha => simp only [Expr.erase_app]; exact .app (ihf hf) (iharg ha)
+  | letIn ann rhs body ihr ihb =>
+    cases h with | letIn hr hb => simp only [Expr.erase_letIn]; exact .letIn (ihr hr) (ihb hb)
+  | match_ scrut branches ihs ihbr =>
+    have hbodies : ∀ {brs : List (MatchPattern × Expr)},
+        (∀ pat e, (pat, e) ∈ brs → AllMatchesExhaustive ctors e →
+          AllMatchesExhaustive ctors e.erase) →
+        AllBranchBodiesExhaustive ctors brs →
+        AllBranchBodiesExhaustive ctors (brs.map (fun pe => (pe.1, pe.2.erase))) := by
+      intro brs
+      induction brs with
+      | nil => intro ih h; cases h; exact .nil
+      | cons hd tl ih_tl =>
+        intro ih h
+        obtain ⟨pat, body⟩ := hd
+        cases h with
+        | cons hbody hrest =>
+          simp only [List.map_cons]
+          exact .cons (ih pat body List.mem_cons_self hbody)
+            (ih_tl (fun p e hm hae => ih p e (List.mem_cons_of_mem _ hm) hae) hrest)
+    cases h with
+    | match_ hscrut hbranches hpinned hcover =>
+      expose_names
+      simp only [Expr.erase_match]
+      refine .match_ (tyName := tyName) (ihs hscrut) (hbodies ihbr hbranches)
+        (fun c n body hmem => by
+          obtain ⟨pe, hpe, heq⟩ := List.mem_map.mp hmem
+          cases pe with | mk p b =>
+          simp only [Prod.mk.injEq] at heq
+          obtain ⟨rfl, hb⟩ := heq
+          exact hpinned c n b hpe)
+        (fun ctorName ctor hlook htyn => by
+          obtain ⟨pat, body, hmem, hcov⟩ := hcover ctorName ctor hlook htyn
+          exact ⟨pat, body.erase,
+            List.mem_map_of_mem (f := fun pe => (pe.1, pe.2.erase)) hmem, hcov⟩)
+  | letRec anns bindings body ihbs ihb =>
+    cases h with
+    | letRec hbs hb =>
+      simp only [Expr.erase_letRec]
+      refine .letRec ?_ (ihb hb)
+      intro e' he'
+      obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he'
+      exact ihbs e0 he0 (hbs e0 he0)
 
 /-- Bounds-erasing the ctor env preserves match-exhaustiveness: `eraseBounds`
     preserves `tyName` and `contents.length`, and the term's match structure is
@@ -18010,7 +18060,62 @@ theorem SmallStep.AllMatchesExhaustive.erase {ctors : CtorEnv} {e : Expr}
 theorem SmallStep.AllMatchesExhaustive.eraseCtorBounds {ctors : CtorEnv} {e : Expr}
     (h : SmallStep.AllMatchesExhaustive ctors e) :
     SmallStep.AllMatchesExhaustive (CtorEnv.eraseBounds ctors) e := by
-  sorry
+  induction e using Expr.rec_strong with
+  | primLit p => exact .primLit
+  | primBinOp op => exact .primBinOp
+  | var i tyArgs => exact .var
+  | ctor nm => exact .ctor
+  | lambda ann body ih =>
+    cases h with | lambda hb => exact .lambda (ih hb)
+  | app f arg ihf iharg =>
+    cases h with | app hf ha => exact .app (ihf hf) (iharg ha)
+  | letIn ann rhs body ihr ihb =>
+    cases h with | letIn hr hb => exact .letIn (ihr hr) (ihb hb)
+  | match_ scrut branches ihs ihbr =>
+    have hbodies : ∀ {brs : List (MatchPattern × Expr)},
+        (∀ pat e, (pat, e) ∈ brs → AllMatchesExhaustive ctors e →
+          AllMatchesExhaustive (CtorEnv.eraseBounds ctors) e) →
+        AllBranchBodiesExhaustive ctors brs →
+        AllBranchBodiesExhaustive (CtorEnv.eraseBounds ctors) brs := by
+      intro brs
+      induction brs with
+      | nil => intro ih h; cases h; exact .nil
+      | cons hd tl ih_tl =>
+        intro ih h
+        obtain ⟨pat, body⟩ := hd
+        cases h with
+        | cons hbody hrest =>
+          exact .cons (ih pat body List.mem_cons_self hbody)
+            (ih_tl (fun p e hm hae => ih p e (List.mem_cons_of_mem _ hm) hae) hrest)
+    cases h with
+    | match_ hscrut hbranches hpinned hcover =>
+      expose_names
+      refine .match_ (tyName := tyName) (ihs hscrut) (hbodies ihbr hbranches)
+        (fun c n body hmem => by
+          obtain ⟨ctor, hget, hty⟩ := hpinned c n body hmem
+          refine ⟨Ctor.eraseBounds ctor, ?_, ?_⟩
+          · rw [CtorEnv.eraseBounds_get?]
+            simp [hget]
+          · simpa [Ctor.eraseBounds_tyName] using hty)
+        (fun ctorName ctor' hlook htyName => by
+          rw [CtorEnv.eraseBounds_get?] at hlook
+          cases hg : LookupList.get? ctors ctorName with
+          | none => simp [hg] at hlook
+          | some ctor =>
+            simp [hg] at hlook
+            have hty : ctor.tyName = tyName := by
+              rw [← Ctor.eraseBounds_tyName, hlook]
+              exact htyName
+            obtain ⟨pat, body, hmem, hcov⟩ := hcover ctorName ctor hg hty
+            refine ⟨pat, body, hmem, ?_⟩
+            · rw [← hlook, Ctor.eraseBounds_contents, List.length_map]
+              exact hcov)
+  | letRec anns bindings body ihbs ihb =>
+    cases h with
+    | letRec hbs hb =>
+      refine .letRec ?_ (ihb hb)
+      intro e' he'
+      exact ihbs e' he' (hbs e' he')
 
 /-- `Step` preserves erasedness: an erased term steps to an erased term. -/
 theorem SmallStep.Step.preserves_erased {e e' : Expr}
