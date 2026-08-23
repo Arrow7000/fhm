@@ -551,17 +551,17 @@ type — a `Safe` term is a passport that carries evidence of both, so anything
 downstream that only needs one of the two conjuncts can project it out
 without re-deriving it. -/
 
-/-- Path R residual well-typedness (closed): pure HM `TypeOfElabHM` of the
-    erase-projected elaboratum **and** erased ctor field types. Real `e` / real
-    `ctors` may still carry BL; residual judgment does not. Orthogonal to
-    `AllMatchesExhaustive ctors e` (ops coverage on the decorated program). -/
+/-- Erased-term well-typedness (closed): the type-passing-free `TypeOfHM` of the
+    runnable (erased) term. `erase` happens in `elaborateSafe`, before `WellTyped`
+    is applied, so `e` here is already in the image of `Expr.erase`. -/
 def WellTyped (ctors : CtorEnv) (e : Expr) : Prop :=
-  ∃ τ, TypeOfElabHM ⟨[], CtorEnv.eraseBounds ctors⟩ e.eraseBounds τ
+  ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ
 
-/-- A passport: a term that passed BOTH independent checks, carrying both
-    proofs. Anything holding a `Safe ctors` can invoke `type_safety_star` on
-    it with no further side conditions. -/
-abbrev Safe (ctors : CtorEnv) := { e : Expr // WellTyped ctors e ∧ AllMatchesExhaustive ctors e }
+/-- A passport: an ERASED term that passed BOTH independent checks (well-typed,
+    exhaustive) and is in fact erased (`e.erase = e`, so the step-4 dynamics
+    applies). Anything holding a `Safe ctors` can invoke `type_safety` on it. -/
+abbrev Safe (ctors : CtorEnv) :=
+  { e : Expr // e.erase = e ∧ WellTyped ctors e ∧ AllMatchesExhaustive ctors e }
 
 /-- Run a whole surface program through both checks (typechecking, via
     `typecheck`, and exhaustiveness, via `checkExhaustive`); `some ⟨ctors, ⟨e,
@@ -579,18 +579,11 @@ def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors
       match hcov : checkExhaustive ctors p.term with
       | false => none
       | true =>
-        match helab : elaborateProgram p with
-        | none => none
-        | some e =>
-          some ⟨ctors, ⟨e, by
-            obtain ⟨e', τ, helab', hty, hexh, _hsafe⟩ :=
-              program_type_safe hlow htc (checkExhaustive_sound p.term hcov)
-            rw [helab] at helab'
-            obtain rfl := Option.some.inj helab'
-            -- Path R: `program_type_safe` already concludes at the residual
-            -- erased level (`ctors.eraseBounds` / `e.eraseBounds` / `erase τ`),
-            -- which is exactly `WellTyped`.
-            exact ⟨⟨Ty.eraseBounds τ, hty⟩, hexh⟩⟩⟩
+        some ⟨ctors, ⟨c.erase, by
+          -- TODO(step 5): re-glue through `program_type_safe` (`Infer.sound`, K=[])
+          -- once SurfaceBridge is re-pointed; `program_type_safe` currently
+          -- concludes the old `TypeOfElabHM` residual form.
+          sorry⟩⟩
 
 /-- A finished run: an actual value, still carrying its `WellTyped` passport.
     (`IsValue` here is what `runSafe_never_stuck` used to have to prove
@@ -602,36 +595,36 @@ abbrev Value (ctors : CtorEnv) := { v : Expr // IsValue v ∧ WellTyped ctors v 
     and — the new conjunct — provably NOT a value, i.e. genuinely resumable.
     `runSafe_running_reduces` cashes that last conjunct in via `progress`. -/
 abbrev Running (ctors : CtorEnv) :=
-  { e : Expr // WellTyped ctors e ∧ AllMatchesExhaustive ctors e ∧ ¬ IsValue e }
+  { e : Expr // e.erase = e ∧ WellTyped ctors e ∧ AllMatchesExhaustive ctors e ∧ ¬ IsValue e }
 
 /-- Forget the `¬ IsValue` refinement: a `Running` term is still a `Safe` one,
     so `runSafe` can be handed it again (with more fuel) to resume. -/
 def Running.toSafe {ctors : CtorEnv} (r : Running ctors) : Safe ctors :=
-  ⟨r.val, r.property.1, r.property.2.1⟩
+  ⟨r.val, r.property.1, r.property.2.1, r.property.2.2.1⟩
 
-/-- Residual progress for a closed, exhaustive `WellTyped` term: it is a value
-    or steps. Lifts `TypeOfElabHM.residual_progress` through the `WellTyped`
-    erasure. -/
+/-- Progress for a closed, exhaustive `WellTyped` term: it is a value or steps.
+    Lifts `TypeOfHM.progress` (no erasedness needed for progress). -/
 theorem WellTyped.progress {ctors : CtorEnv} {e : Expr}
     (hwt : WellTyped ctors e) (hexh : AllMatchesExhaustive ctors e) :
     IsValue e ∨ ∃ e', Step e e' := by
   obtain ⟨τ, hty⟩ := hwt
-  exact TypeOfElabHM.residual_progress hty hexh
+  exact TypeOfHM.progress hty rfl hexh
 
-/-- Residual preservation for `WellTyped`: a decorated step preserves
-    well-typedness. -/
+/-- Preservation for `WellTyped`: a step of an erased term preserves
+    well-typedness (the step's target is itself erased, via `Step.preserves_erased`). -/
 theorem WellTyped.preservation {ctors : CtorEnv} {e e' : Expr}
-    (hwt : WellTyped ctors e) (hstep : Step e e') : WellTyped ctors e' := by
+    (hwt : WellTyped ctors e) (h_erased : e.erase = e) (hstep : Step e e') : WellTyped ctors e' := by
   obtain ⟨τ, hty⟩ := hwt
-  exact ⟨τ, TypeOfElabHM.residual_preservation hty hstep⟩
+  have hty' := TypeOfHM.preservation hstep hty h_erased
+  exact ⟨τ, by simpa [SmallStep.Step.preserves_erased h_erased hstep] using hty'⟩
 
 /-- **Genuinely more to do.** A `Running` term isn't stuck — it's merely out of
     fuel — so it always has a next step. Progress, specialised to the
     `¬ IsValue` disjunct that must fire. -/
 theorem runSafe_running_reduces {ctors : CtorEnv} (r : Running ctors) :
     ∃ e', Step r.val e' := by
-  obtain hval | ⟨e', hstep⟩ := WellTyped.progress r.property.1 r.property.2.1
-  · exact False.elim (absurd hval r.property.2.2)
+  obtain hval | ⟨e', hstep⟩ := WellTyped.progress r.property.2.1 r.property.2.2.1
+  · exact False.elim (absurd hval r.property.2.2.2)
   · exact ⟨e', hstep⟩
 
 /-- The safe runner: fuel-bounded evaluation of a `Safe` term, proof-carrying
@@ -646,25 +639,27 @@ def runSafe (ctors : CtorEnv) (fuel : Nat) (t : Safe ctors) : Value ctors ⊕ Ru
   match fuel with
   | 0 =>
     if h : isValue t.val = true then
-      .inl ⟨t.val, isValue_iff_IsValue.mp h, t.property.1⟩
+      .inl ⟨t.val, isValue_iff_IsValue.mp h, t.property.2.1⟩
     else
-      .inr ⟨t.val, t.property.1, t.property.2, fun hv => h (isValue_iff_IsValue.mpr hv)⟩
+      .inr ⟨t.val, t.property.1, t.property.2.1, t.property.2.2, fun hv => h (isValue_iff_IsValue.mpr hv)⟩
   | n + 1 =>
     if h : isValue t.val = true then
-      .inl ⟨t.val, isValue_iff_IsValue.mp h, t.property.1⟩
+      .inl ⟨t.val, isValue_iff_IsValue.mp h, t.property.2.1⟩
     else
       have hnv : ¬ IsValue t.val := fun hv => h (isValue_iff_IsValue.mpr hv)
       match hs : step t.val with
       | some e' =>
         have hty' : WellTyped ctors e' :=
-          WellTyped.preservation t.property.1 (step_sound hs)
+          WellTyped.preservation t.property.2.1 t.property.1 (step_sound hs)
         have hexh' : AllMatchesExhaustive ctors e' :=
-          Step.preserves_exhaustive t.property.2 (step_sound hs)
-        runSafe ctors n ⟨e', hty', hexh'⟩
+          Step.preserves_exhaustive t.property.2.2 (step_sound hs)
+        have herased' : e'.erase = e' :=
+          SmallStep.Step.preserves_erased t.property.1 (step_sound hs)
+        runSafe ctors n ⟨e', herased', hty', hexh'⟩
       | none =>
         False.elim <| by
           have hprog : IsValue t.val ∨ ∃ e', Step t.val e' :=
-            WellTyped.progress t.property.1 t.property.2
+            WellTyped.progress t.property.2.1 t.property.2.2
           obtain hval | ⟨e', hstep⟩ := hprog
           · exact absurd hval hnv
           · have hsc := step_complete hstep
