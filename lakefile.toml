@@ -17,7 +17,6 @@ roots = [
   "FHM.Surface.Parse",
   "FHM.PatComp",
   "FHM.Pretty",
-  "FHM.SpikeC",
   "FHM.InferW",
   "FHM.SurfaceBridge",
   "FHM.Scc.Kosaraju",
