@@ -13007,7 +13007,37 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
       AllMatchesExhaustive ctors (c.erase) ∧
       ∀ e', Relation.ReflTransGen Step (c.erase) e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
-  sorry
+  -- O2: the lowered term is type-closed, so inference's rigid seed is empty.
+  have hclosed : c.tyFreeVars = [] := lower_tyClosed hlow
+  -- O3: `typecheck` and `infer` run the same `inferCore` call, so a successful
+  -- `typecheck` recovers the elaborated `(Φ', S, eOut, τ)` from `infer`.
+  obtain ⟨Φ', S, eOut, τ, hinfer⟩ := infer_of_typecheck hclosed htc
+  -- `infer` is sound: the returned tuple is a genuine `Infer` derivation.
+  have hInf : Infer c.freshFloor ⟨[], ctors⟩ c Φ' S eOut τ := infer_sound hinfer
+  -- `K := []`: the closed term has no free type vars, so `Infer.eliminates`
+  -- shows `S`'s keys avoid `τ`, collapsing `Infer.sound`'s `S.onTy τ` to `τ`.
+  have helim : (∀ p ∈ S, ∀ x : Ty, p.1 ∉ (S.onTy x).freeVars) ∧ (∀ p ∈ S, p.1 ∉ τ.freeVars) :=
+    Infer.eliminates hInf CtxBelow.empty
+      (fun y hy => by simp [hclosed] at hy)
+      (fun p hp hc => by simp [hclosed] at hc)
+  have hSτ : S.onTy τ = τ := Ty.substFvars_eq_self_of_no_key (fun p hp => helim.2 p hp)
+  -- Typing: `Infer.sound` yields residual `TypeOfHM` at `(S.onCtx ⟨[], ctors⟩)`
+  -- which is `⟨[], ctors.eraseBounds⟩` (empty env, substituted ctors erased).
+  have hty : TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ (c.erase) (Ty.eraseBounds τ) := by
+    simpa [Subst.onCtx, Subst.onEnv, Ctx.eraseBounds, Env.eraseBounds, hSτ] using
+      Infer.sound hInf CtxWF.empty CtxBelow.empty
+        [] (by simp) (by simp [hclosed]) (by simp)
+  -- Exhaustiveness: coverage survives `lower` and `erase`.
+  have hexh : AllMatchesExhaustive ctors (c.erase) :=
+    SmallStep.AllMatchesExhaustive.erase (lower_exhaustive hcov hlow)
+  -- Safety: `TypeOfHM.type_safety_star` carries typing and progress along every
+  -- term reachable from the erased, exhaustive, well-typed `c.erase`.
+  have hsafe : ∀ e', Relation.ReflTransGen Step (c.erase) e' →
+      IsValue e' ∨ ∃ e'', Step e' e'' := by
+    intro e' hrtc
+    exact (TypeOfHM.type_safety_star (ctors := CtorEnv.eraseBounds ctors) hty
+      (Expr.erase_idem c) (SmallStep.AllMatchesExhaustive.eraseCtorBounds hexh) e' hrtc).2
+  exact ⟨Ty.eraseBounds τ, hty, hexh, hsafe⟩
 
 /-! ### SurfaceWT corollary (Approach A / 1a)
 
@@ -13040,7 +13070,15 @@ theorem surface_type_safe_of_SurfaceWT {ctors : CtorEnv} {s : Surface.Expr}
       AllMatchesExhaustive ctors (c.erase) ∧
       ∀ e', Relation.ReflTransGen Step (c.erase) e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
-  sorry
+  obtain ⟨τ, hwt'⟩ := hwt
+  have hwt : SurfaceWT ctors s := ⟨τ, hwt'⟩
+  have hlow_isSome : (lower ctors s).isSome := by
+    simpa [lower] using lowerExpr_isSome_of_SurfaceWTExpr hwt'
+  obtain ⟨c, hlow⟩ := Option.isSome_iff_exists.mp hlow_isSome
+  have htc : (typecheck ctors c).isSome :=
+    typecheck_of_lower_of_SurfaceWT hwt hcov hlow hcons hfields
+  obtain ⟨τ, hty, hexh, hsafe⟩ := surface_type_safe hlow htc hcov
+  exact ⟨c, τ, hlow, hty, hexh, hsafe⟩
 
 /-- **Well-typed surface programs don't go wrong** (program-level, Path R residual).
     Composes decl elaboration with `surface_type_safe` on the desugared term. -/
@@ -13052,6 +13090,12 @@ theorem program_type_safe {p : Surface.Program} {ctors : CtorEnv} {c : Expr}
       AllMatchesExhaustive ctors (c.erase) ∧
       ∀ e', Relation.ReflTransGen Step (c.erase) e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
-  sorry
+  obtain ⟨userCore, hUser, hb⟩ := option_bind_eq_some hlow
+  obtain ⟨ctors', hElab, hb'⟩ := option_bind_eq_some hb
+  obtain ⟨c', hBody, hPure⟩ := option_bind_eq_some hb'
+  simp at hPure
+  obtain ⟨rfl, rfl⟩ := hPure
+  obtain ⟨τ, hty, hexh, hsafe⟩ := surface_type_safe hBody htc hcov
+  exact ⟨τ, hty, hexh, hsafe⟩
 
 end SurfaceBridge
