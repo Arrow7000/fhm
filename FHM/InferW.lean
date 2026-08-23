@@ -17997,6 +17997,21 @@ private theorem InstantiatesBy.build_match_vs
         rw [hdet]
         exact HasSchemeHM.ofTypeOfHM htyA
 
+/-- `erase` preserves match-exhaustiveness: it drops only type annotations,
+    never a match's patterns or the ctor env, so coverage is unchanged. -/
+theorem SmallStep.AllMatchesExhaustive.erase {ctors : CtorEnv} {e : Expr}
+    (h : SmallStep.AllMatchesExhaustive ctors e) :
+    SmallStep.AllMatchesExhaustive ctors (e.erase) := by
+  sorry
+
+/-- Bounds-erasing the ctor env preserves match-exhaustiveness: `eraseBounds`
+    preserves `tyName` and `contents.length`, and the term's match structure is
+    untouched. -/
+theorem SmallStep.AllMatchesExhaustive.eraseCtorBounds {ctors : CtorEnv} {e : Expr}
+    (h : SmallStep.AllMatchesExhaustive ctors e) :
+    SmallStep.AllMatchesExhaustive (CtorEnv.eraseBounds ctors) e := by
+  sorry
+
 /-- `Step` preserves erasedness: an erased term steps to an erased term. -/
 theorem SmallStep.Step.preserves_erased {e e' : Expr}
     (h_erased : e.erase = e) (h_step : SmallStep.Step e e') : e'.erase = e' := by

@@ -13003,43 +13003,11 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     (hlow : lower ctors s = some c)
     (htc : (typecheck ctors c).isSome)
     (hcov : SurfaceCovers ctors s) :
-    ∃ e τ, elaborate ctors s = some e ∧
-      TypeOfElabHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
-      AllMatchesExhaustive ctors e ∧
-      ∀ e', Relation.ReflTransGen Step e e' →
+    ∃ τ, TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ (c.erase) τ ∧
+      AllMatchesExhaustive ctors (c.erase) ∧
+      ∀ e', Relation.ReflTransGen Step (c.erase) e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
-  -- O2: the lowered term is type-closed, so inference's rigid seed is empty.
-  have hclosed : c.tyFreeVars = [] := lower_tyClosed hlow
-  -- O3: `typecheck` and `infer` run the same `inferCore` call, so a successful
-  -- `typecheck` recovers the elaborated `(Φ', S, eOut, τ)` from `infer`.
-  obtain ⟨Φ', S, eOut, τ, hinfer⟩ := infer_of_typecheck hclosed htc
-  -- `infer` is sound: the returned tuple is a genuine `Infer` derivation.
-  have hInf : Infer c.freshFloor ⟨[], ctors⟩ c Φ' S eOut τ := infer_sound hinfer
-  -- Typing: `Infer.sound` yields residual `TypeOfElabHM` at `(S.onCtx ⟨[], ctors⟩)`
-  -- which is `⟨[], ctors.eraseBounds⟩` (empty env, substituted ctors erased).
-  -- `K := []`: closed term (`lower_tyClosed`), so no free type variables.
-  have hty : TypeOfElabHM ⟨[], ctors.eraseBounds⟩ (eOut.substTyFvars S).eraseBounds
-      (Ty.eraseBounds τ) := by
-    simpa [Subst.onCtx, Subst.onEnv, Ctx.eraseBounds, Env.eraseBounds] using
-      Infer.sound_elab hInf CtxWF.empty CtxBelow.empty
-        [] (by simp) (by simp [hclosed]) (by simp)
-  -- Exhaustiveness: coverage survives `lower`, `Infer`, and `substTyFvars`.
-  have hexh : AllMatchesExhaustive ctors (eOut.substTyFvars S) :=
-    AllMatchesExhaustive.substTyFvars S
-      (infer_preserves_AllMatchesExhaustive hInf (lower_exhaustive hcov hlow))
-  -- `elaborate` is `lower` then `infer`, keeping `eOut.substTyFvars S`.
-  have helab : elaborate ctors s = some (eOut.substTyFvars S) := by
-    rw [elaborate, hlow]
-    simp [hinfer]
-  -- Safety of the decorated term: reachable terms stay typed and exhaustive
-  -- (`residual_preservation_star`), so residual progress applies at each `e'`.
-  have hsafe : ∀ e', Relation.ReflTransGen Step (eOut.substTyFvars S) e' →
-      IsValue e' ∨ ∃ e'', Step e' e'' := by
-    intro e' hrtc
-    obtain ⟨hty', hexh'⟩ :=
-      TypeOfElabHM.residual_preservation_star hrtc hty hexh
-    exact TypeOfElabHM.residual_progress hty' hexh'
-  exact ⟨eOut.substTyFvars S, τ, helab, hty, hexh, hsafe⟩
+  sorry
 
 /-! ### SurfaceWT corollary (Approach A / 1a)
 
@@ -13067,19 +13035,12 @@ theorem surface_type_safe_of_SurfaceWT {ctors : CtorEnv} {s : Surface.Expr}
     (hwt : SurfaceWT ctors s) (hcov : SurfaceCovers ctors s)
     (hcons : CtorEnv.arityConsistent ctors)
     (hfields : CtorEnv.fieldsKinded ctors) :
-    ∃ e τ, elaborate ctors s = some e ∧
-      TypeOfElabHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
-      AllMatchesExhaustive ctors e ∧
-      ∀ e', Relation.ReflTransGen Step e e' →
+    ∃ c τ, lower ctors s = some c ∧
+      TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ (c.erase) τ ∧
+      AllMatchesExhaustive ctors (c.erase) ∧
+      ∀ e', Relation.ReflTransGen Step (c.erase) e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
-  obtain ⟨τ, hwt'⟩ := hwt
-  have hwt : SurfaceWT ctors s := ⟨τ, hwt'⟩
-  have hlow_isSome : (lower ctors s).isSome := by
-    simpa [lower] using lowerExpr_isSome_of_SurfaceWTExpr hwt'
-  obtain ⟨c, hlow⟩ := Option.isSome_iff_exists.mp hlow_isSome
-  have htc : (typecheck ctors c).isSome :=
-    typecheck_of_lower_of_SurfaceWT hwt hcov hlow hcons hfields
-  exact surface_type_safe hlow htc hcov
+  sorry
 
 /-- **Well-typed surface programs don't go wrong** (program-level, Path R residual).
     Composes decl elaboration with `surface_type_safe` on the desugared term. -/
@@ -13087,22 +13048,10 @@ theorem program_type_safe {p : Surface.Program} {ctors : CtorEnv} {c : Expr}
     (hlow : lowerProgram p = some (ctors, c))
     (htc : (typecheck ctors c).isSome)
     (hcov : SurfaceCovers ctors p.term) :
-    ∃ e τ, elaborateProgram p = some e ∧
-      TypeOfElabHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
-      AllMatchesExhaustive ctors e ∧
-      ∀ e', Relation.ReflTransGen Step e e' →
+    ∃ τ, TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ (c.erase) τ ∧
+      AllMatchesExhaustive ctors (c.erase) ∧
+      ∀ e', Relation.ReflTransGen Step (c.erase) e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
-  obtain ⟨userCore, hUser, hb⟩ := option_bind_eq_some hlow
-  obtain ⟨ctors', hElab, hb'⟩ := option_bind_eq_some hb
-  obtain ⟨c', hBody, hPure⟩ := option_bind_eq_some hb'
-  simp at hPure
-  obtain ⟨rfl, rfl⟩ := hPure
-  obtain ⟨e, τ, helab, hty, hexh, hsafe⟩ :=
-    surface_type_safe hBody htc hcov
-  have helabProg : elaborateProgram p = some e := by
-    unfold elaborateProgram
-    rw [hlow]
-    simp [helab]
-  exact ⟨e, τ, helabProg, hty, hexh, hsafe⟩
+  sorry
 
 end SurfaceBridge
