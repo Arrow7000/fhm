@@ -12278,6 +12278,139 @@ theorem TypeOfMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} 
   | _, _, _, _, .wildcard hbody => TypeOfHM.regular hbody
 end
 
+/-! ## Well-typed terms have every free var below the context length
+
+`TypeOfHM` maintains the invariant that a well-typed expression is
+`varsBelow ctx.env.length`: the `var` rule forces an in-range context lookup, and
+every binder rule extends the env by exactly the amount `varsBelow`'s bookkeeping
+expects. Direct port of `TypeOfElabHM.varsBelow` / `TypeOfElabHM.closed`; the
+`var` case differs only in that `tyArgs` is ignored. -/
+
+/-- Every left element of a length-matched pair of lists occurs in their zip. -/
+private theorem mem_zip_of_mem_left {α β : Type _} :
+    ∀ {l : List α} {r : List β}, l.length = r.length → ∀ {a : α}, a ∈ l →
+      ∃ b, (a, b) ∈ l.zip r := by
+  intro l
+  induction l with
+  | nil => intro r _ a ha; exact absurd ha (List.not_mem_nil)
+  | cons x xs ih =>
+    intro r hlen a ha
+    cases r with
+    | nil => simp only [List.length_cons, List.length_nil] at hlen; exact absurd hlen (by omega)
+    | cons y ys =>
+      simp only [List.length_cons, Nat.add_right_cancel_iff] at hlen
+      rcases List.mem_cons.mp ha with rfl | ha'
+      · exact ⟨y, by rw [List.zip_cons_cons]; exact List.mem_cons_self⟩
+      · obtain ⟨b, hb⟩ := ih hlen ha'
+        exact ⟨b, by rw [List.zip_cons_cons]; exact List.mem_cons_of_mem _ hb⟩
+
+/-- The `match_` per-branch motive of `TypeOfHM.varsBelow`: each branch body is
+    closed under the context extended by the pattern's `bindCount`. -/
+private theorem branchMotive_varsBelow {ctx : Ctx} {pat : MatchPattern} {body : Expr}
+    {scrutTy resultTy : Ty}
+    (h : TypeOfHM.BranchMotive (fun c e _ _ => Expr.varsBelow c.env.length e = true)
+          ctx (pat, body) scrutTy resultTy) :
+    Expr.varsBelow (ctx.env.length + pat.bindCount) body = true := by
+  rcases h with
+    ⟨ctor, c, m, tyArgs, instContents, hpat, _, _, _, hbindCount, hfields, _, ihb⟩
+    | ⟨hpat, _, ihb⟩
+  · simp only at hpat
+    subst hpat
+    have hlen : instContents.length = m := by
+      have hfe := List.Forall₂.length_eq hfields
+      rw [hbindCount]
+      omega
+    simp only [MatchPattern.bindCount]
+    simp only [List.length_append, List.length_map] at ihb
+    rw [hlen] at ihb
+    rwa [Nat.add_comm] at ihb
+  · simp only at hpat
+    subst hpat
+    simpa only [MatchPattern.bindCount, Nat.add_zero] using ihb
+
+/-- Assemble a closed branch list from the per-branch motives. -/
+private theorem branchList_varsBelow_of_motive {ctx : Ctx} {scrutTy resultTy : Ty} :
+    ∀ (brs : List (MatchPattern × Expr)),
+      (∀ branch ∈ brs, TypeOfHM.BranchMotive
+        (fun c e _ _ => Expr.varsBelow c.env.length e = true) ctx branch scrutTy resultTy) →
+      BranchListClosed.varsBelow ctx.env.length brs = true := by
+  intro brs
+  induction brs with
+  | nil => intro _; rfl
+  | cons hd tl ih =>
+    obtain ⟨pat, body⟩ := hd
+    intro hbrs
+    simp only [BranchListClosed.varsBelow, Bool.and_eq_true]
+    exact ⟨branchMotive_varsBelow (hbrs (pat, body) List.mem_cons_self),
+      ih (fun br hbr => hbrs br (List.mem_cons_of_mem _ hbr))⟩
+
+/-- **Well-typed ⇒ all free term-vars below the context length.** By induction on
+    the (decoration-blind declarative) typing derivation. -/
+theorem TypeOfHM.varsBelow {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h : TypeOfHM ctx e τ) : Expr.varsBelow ctx.env.length e = true := by
+  induction h using TypeOfHM.rec_strong with
+  | primLitUnit => rfl
+  | primLitInt => rfl
+  | primLitNat => rfl
+  | primLitChar => rfl
+  | primBinOpIntAdd => rfl
+  | primBinOpIntSub => rfl
+  | primBinOpIntLt _ _ _ _ => rfl
+  | primBinOpCharLt _ _ _ _ => rfl
+  | ctor _ _ _ => rfl
+  | var hlook _ _ =>
+    simp only [Expr.varsBelow, decide_eq_true_eq]
+    by_contra hle
+    push_neg at hle
+    rw [List.getElem?_eq_none hle] at hlook
+    exact Option.noConfusion hlook
+  | lambda hpc hann heq hbody ihbody =>
+    subst heq
+    simpa only [Expr.varsBelow, List.length_cons] using ihbody
+  | app hf hinput ihf ihinput =>
+    simp only [Expr.varsBelow, Bool.and_eq_true]
+    exact ⟨ihf, ihinput⟩
+  | letIn hwf hann hcofin heq hbody ihcofin ihbody =>
+    expose_names
+    subst heq
+    simp only [Expr.varsBelow, Bool.and_eq_true]
+    refine ⟨?_, by simpa only [List.length_cons] using ihbody⟩
+    obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L M.paramCount
+    have hc := ihcofin Xs ⟨hXlen, hXnodup, hXavoid⟩
+    rwa [Expr.varsBelow_openBoundTyVars] at hc
+  | match_ hscrut hne hbrs ihscrut ihbrs =>
+    simp only [Expr.varsBelow, Bool.and_eq_true]
+    exact ⟨ihscrut, branchList_varsBelow_of_motive _ ihbrs⟩
+  | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+    expose_names
+    subst heq
+    simp only [Expr.varsBelow, Bool.and_eq_true]
+    have hspecslen : bindings.length = specs.length := hwf.length
+    refine ⟨?_, ?_⟩
+    · -- every binding is closed under the group-extended context
+      apply RecGroupClosed.varsBelow_of_forall
+      intro bnd hmem
+      obtain ⟨s, hs⟩ := mem_zip_of_mem_left hspecslen hmem
+      obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L G.length
+      rcases s with τ | σ
+      · have hc := ihmono Xs ⟨hXlen, hXnodup, hXavoid⟩ (bnd, .mono τ) hs τ rfl
+        simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at hc
+        rwa [Nat.add_comm, ← hspecslen] at hc
+      · obtain ⟨Ys, hYlen, hYnodup, hYavoid⟩ := exists_fresh_names (L ++ Xs) σ.paramCount
+        have hc := ihpoly Xs ⟨hXlen, hXnodup, hXavoid⟩ (bnd, .poly σ) hs σ rfl Ys
+          ⟨hYlen, hYnodup, hYavoid⟩
+        simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at hc
+        rw [Expr.varsBelow_openTyVars] at hc
+        rwa [Nat.add_comm, ← hspecslen] at hc
+    · -- the body is closed under the group-extended context
+      simp only [RecSpecs.bodyCtx, List.length_append, List.length_map] at ihbody
+      rwa [Nat.add_comm, ← hspecslen] at ihbody
+
+/-- **Well-typed in the empty context ⇒ closed.** -/
+theorem TypeOfHM.closed {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h : TypeOfHM ⟨[], ctors⟩ e τ) : Expr.varsBelow 0 e = true :=
+  TypeOfHM.varsBelow h
+
 /-! ### Cofinite `GeneralisesTo` instantiation (moved from `CekMachine.lean`)
 
 The `TypeOfHM`/`Step` dynamics instantiates a cofinite `let`/`letRec` scheme
