@@ -582,10 +582,8 @@ def elaborateSafe (p : Surface.Program) : Option (Σ ctors : CtorEnv, Safe ctors
       | false => none
       | true =>
         some ⟨ctors, ⟨c.erase, by
-          -- TODO(step 5): re-glue through `program_type_safe` (`Infer.sound`, K=[])
-          -- once SurfaceBridge is re-pointed; `program_type_safe` currently
-          -- concludes the old `TypeOfElabHM` residual form.
-          sorry⟩⟩
+          obtain ⟨τ, hty, hexh, _⟩ := program_type_safe hlow htc (checkExhaustive_sound p.term hcov)
+          exact ⟨Expr.erase_idem c, ⟨τ, by simpa [Expr.erase_idem] using hty⟩, hexh⟩⟩⟩
 
 /-- A finished run: an actual value, still carrying its `WellTyped` passport.
     (`IsValue` here is what `runSafe_never_stuck` used to have to prove
@@ -610,7 +608,9 @@ def Running.toSafe {ctors : CtorEnv} (r : Running ctors) : Safe ctors :=
 theorem WellTyped.progress {ctors : CtorEnv} {e : Expr}
     (hwt : WellTyped ctors e) (h_erased : e.erase = e) (hexh : AllMatchesExhaustive ctors e) :
     IsValue e ∨ ∃ e', Step e e' := by
-  sorry
+  obtain ⟨τ, hty⟩ := hwt
+  have hty0 : TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ e τ := by simpa [h_erased] using hty
+  exact TypeOfHM.progress hty0 rfl (SmallStep.AllMatchesExhaustive.eraseCtorBounds hexh)
 
 /-- Preservation for `WellTyped`: a step of an erased term preserves
     well-typedness (the step's target is itself erased, via `Step.preserves_erased`). -/
