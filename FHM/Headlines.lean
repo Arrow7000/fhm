@@ -552,10 +552,12 @@ downstream that only needs one of the two conjuncts can project it out
 without re-deriving it. -/
 
 /-- Erased-term well-typedness (closed): the type-passing-free `TypeOfHM` of the
-    runnable (erased) term. `erase` happens in `elaborateSafe`, before `WellTyped`
-    is applied, so `e` here is already in the image of `Expr.erase`. -/
+    runnable (erased) term, judged against the BOUNDS-erased ctor env (Path R:
+    `Infer.sound` still concludes at `eraseBounds` until the bounds layer is gone).
+    `erase` happens in `elaborateSafe`, before `WellTyped` is applied, so `e` here
+    is already in the image of `Expr.erase`. -/
 def WellTyped (ctors : CtorEnv) (e : Expr) : Prop :=
-  ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ
+  ∃ τ, TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ (e.erase) τ
 
 /-- A passport: an ERASED term that passed BOTH independent checks (well-typed,
     exhaustive) and is in fact erased (`e.erase = e`, so the step-4 dynamics
@@ -603,27 +605,29 @@ def Running.toSafe {ctors : CtorEnv} (r : Running ctors) : Safe ctors :=
   ⟨r.val, r.property.1, r.property.2.1, r.property.2.2.1⟩
 
 /-- Progress for a closed, exhaustive `WellTyped` term: it is a value or steps.
-    Lifts `TypeOfHM.progress` (no erasedness needed for progress). -/
+    Lifts `TypeOfHM.progress` (needs the ctor-erase + erase-image exhaustiveness
+    bridge, TODO step 5). -/
 theorem WellTyped.progress {ctors : CtorEnv} {e : Expr}
-    (hwt : WellTyped ctors e) (hexh : AllMatchesExhaustive ctors e) :
+    (hwt : WellTyped ctors e) (h_erased : e.erase = e) (hexh : AllMatchesExhaustive ctors e) :
     IsValue e ∨ ∃ e', Step e e' := by
-  obtain ⟨τ, hty⟩ := hwt
-  exact TypeOfHM.progress hty rfl hexh
+  sorry
 
 /-- Preservation for `WellTyped`: a step of an erased term preserves
     well-typedness (the step's target is itself erased, via `Step.preserves_erased`). -/
 theorem WellTyped.preservation {ctors : CtorEnv} {e e' : Expr}
     (hwt : WellTyped ctors e) (h_erased : e.erase = e) (hstep : Step e e') : WellTyped ctors e' := by
   obtain ⟨τ, hty⟩ := hwt
-  have hty' := TypeOfHM.preservation hstep hty h_erased
-  exact ⟨τ, by simpa [SmallStep.Step.preserves_erased h_erased hstep] using hty'⟩
+  have hty0 : TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ e τ := by simpa [h_erased] using hty
+  have hty' := TypeOfHM.preservation hstep hty0 h_erased
+  have he' : e'.erase = e' := SmallStep.Step.preserves_erased h_erased hstep
+  exact ⟨τ, by simpa [he'] using hty'⟩
 
 /-- **Genuinely more to do.** A `Running` term isn't stuck — it's merely out of
     fuel — so it always has a next step. Progress, specialised to the
     `¬ IsValue` disjunct that must fire. -/
 theorem runSafe_running_reduces {ctors : CtorEnv} (r : Running ctors) :
     ∃ e', Step r.val e' := by
-  obtain hval | ⟨e', hstep⟩ := WellTyped.progress r.property.2.1 r.property.2.2.1
+  obtain hval | ⟨e', hstep⟩ := WellTyped.progress r.property.2.1 r.property.1 r.property.2.2.1
   · exact False.elim (absurd hval r.property.2.2.2)
   · exact ⟨e', hstep⟩
 
@@ -659,7 +663,7 @@ def runSafe (ctors : CtorEnv) (fuel : Nat) (t : Safe ctors) : Value ctors ⊕ Ru
       | none =>
         False.elim <| by
           have hprog : IsValue t.val ∨ ∃ e', Step t.val e' :=
-            WellTyped.progress t.property.2.1 t.property.2.2
+            WellTyped.progress t.property.2.1 t.property.1 t.property.2.2
           obtain hval | ⟨e', hstep⟩ := hprog
           · exact absurd hval hnv
           · have hsc := step_complete hstep
