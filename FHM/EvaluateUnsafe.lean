@@ -1,4 +1,4 @@
-import FHM.Core
+import FHM.InferW
 
 /-!
 # Unbounded evaluator driver + fuel bridges
@@ -117,22 +117,16 @@ partial def evaluateUnsafe : Expr → Option Expr
       | some e' => evaluateUnsafe e'
       | none => none
 
-/-- Like `evaluateUnsafe`, but for a closed well-typed exhaustive term: progress
-rules out stuck states, so this returns a definite `Expr` rather than `Option`
-(still `partial` — divergence is allowed).
+/-- Like `evaluateUnsafe`, but for a closed well-typed exhaustive ERASED term:
+    progress rules out stuck states, so this returns a definite `Expr` rather than
+    `Option` (still `partial` — divergence is allowed).
 
-`ctx.env = []` is baked into the `TypeOfElabHM ⟨[], ctors⟩` hypothesis (same
-shape as `type_safety` / `type_safety_star`).
-
-**Why not `{ v // IsValue v ∧ TypeOfElabHM … v τ }`?** A `partial` definition’s
-return type must be `Nonempty` (Lean needs a junk inhabitant for the opaque
-constant). That subtype is only inhabited when evaluation terminates, which we
-cannot prove in general — so Lean rejects it. The proofs here still earn
-something real: they make the stuck/`none` branch a `False.elim`. Informally,
-any value this returns is a typed `IsValue`; the kernel just won’t package that
-into the return type of a `partial`. -/
+`ctx.env = []` is baked into the `TypeOfHM ⟨[], ctors⟩` hypothesis (same
+shape as `type_safety` / `type_safety_star`); `h_erased` is the erasedness the
+step-4 dynamics needs. -/
 partial def evaluateUnsafeTyped {ctors : CtorEnv} {τ : Ty} (e : Expr)
-    (h_ty : TypeOfElabHM ⟨[], ctors⟩ e τ)
+    (h_ty : TypeOfHM ⟨[], ctors⟩ e τ)
+    (h_erased : e.erase = e)
     (h_exh : AllMatchesExhaustive ctors e) : Expr :=
   if hval : isValue e = true then e
   else
@@ -140,14 +134,15 @@ partial def evaluateUnsafeTyped {ctors : CtorEnv} {τ : Ty} (e : Expr)
     | some e' =>
       have hstep := step_sound hs
       evaluateUnsafeTyped e'
-        (TypeOfElabHM.preservation hstep h_ty)
+        (TypeOfHM.preservation hstep h_ty h_erased)
+        (SmallStep.Step.preserves_erased h_erased hstep)
         (Step.preserves_exhaustive h_exh hstep)
     | none =>
       False.elim <| by
         have nval : ¬ IsValue e := by
           intro hv
           simp [isValue_iff_IsValue.mpr hv] at hval
-        match TypeOfElabHM.progress h_ty rfl h_exh with
+        match TypeOfHM.progress h_ty rfl h_exh with
         | .inl hv => exact nval hv
         | .inr ⟨_, hstep⟩ => simp [step_complete hstep] at hs
 
