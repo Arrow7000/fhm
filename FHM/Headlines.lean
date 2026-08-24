@@ -9,29 +9,21 @@ let a newcomer read ONE file and come away knowing exactly what this language's
 type system guarantees, what those guarantees *mean* in plain terms, and
 precisely how far the machine-checking currently reaches.
 
-**Status (Path R).** Type safety and *inference soundness* are closed and
-axiom-clean: `Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound` and
-their source duals `Infer.sourceSound` / `InferBranches.sourceSound` /
-`InferRecGroup.sourceSound` depend on nothing but `propext`,
-`Classical.choice`, `Quot.sound`. Two things are NOT yet closed and are
-honestly marked below:
-
-* **Inference completeness** (no spurious rejections, principal types,
-  `typecheck` succeeds ⟺ typeable) — an open campaign in `FHM.InferW`.
-  Note its statements still need repair before proving: under Path R
-  `Infer` keeps `BL` on its output type while the residual judgement types the
-  *erased* term, so principality must read `τ₀ = R.onTy (Ty.eraseBounds τ)`,
-  not `τ₀ = R.onTy τ`.
-* **The operational bridge** — `runSafe` and residual `WellTyped` versus
-  `Step` on decorated terms. This file's own statements are now sorry-free;
-  the bridge lives as seven `sorry`'d lemmas in `FHM.Core`
-  (`SmallStep.Step.eraseBounds` / `.of_eraseBounds`, `IsValue.of_eraseBounds`,
-  `AllMatchesExhaustive.eraseBounds`, `TypeOfElabHM.residual_progress` /
-  `residual_preservation` / `residual_preservation_star`).
+**Status (erasure-on-`Step`).** Type safety and *inference soundness* are closed
+and axiom-clean: `Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound`
+(coherence of the source checker with the erased machine relation `TypeOfHM`,
+via `e.erase`) depend on nothing but `propext`, `Classical.choice`, `Quot.sound`.
+The `TypeOfHM` / `Step` dynamics metatheory (substitution lemma, canonical forms,
+`progress`, `preservation`, `type_safety(_star)`) is likewise proved, on erased
+terms, in `FHM.InferW`. What changed by design (see
+`briefs/design-memo-erasure-migration.md` §3.5): the *elaborated* stack —
+`TypeOfElabHM`, `Infer.sourceSound`, the `eOut` index, and the completeness /
+principality campaign that concluded on elaborated outputs — is **deleted**, not
+merely open. The runnable term is always the erased source `c.erase`; there is
+no elaborated output left to be complete about.
 
 So: do not read this file as "everything below is proved". Read section 6's
-`#print axioms` output, which is the actual, unfakeable status report — it will
-show `sorryAx` for exactly the things above and nothing else.
+`#print axioms` output, which is the actual, unfakeable status report.
 
 Every name below already exists in `FHM.Core` /
 `FHM.SurfaceBridge`; this file re-exports (via doc-comments + `#check`, which
@@ -70,40 +62,26 @@ TO COMPILE if any of these names ever disappear or change shape. -/
 at two levels: `surface_type_safe` at the level of a bare surface *expression*
 (given that its `lower`ing typechecks and its matches cover their scrutinee's
 constructors), and `program_type_safe` at the level of a whole `Surface.Program`
-(decls + binding groups + body). `surface_type_safe_of_SurfaceWT` is the
-DECLARATIVE mirror of `surface_type_safe`: it starts from the `SurfaceWTExpr`
-typing *relation* (rather than the executable `lower`/`typecheck` pipeline),
-closing the spec/impl loop. `TypeOfElabHM.type_safety_star` is the iterated
+(decls + binding groups + body). `TypeOfHM.type_safety_star` is the iterated
 progress+preservation engine both headlines are built on: every term reachable
-by any number of `Step`s from a well-typed, exhaustive term is itself
+by any number of `Step`s from a well-typed, exhaustive (erased) term is itself
 well-typed and is a value or can step again — "never gets stuck" formalised. -/
 #check @surface_type_safe
-#check @surface_type_safe_of_SurfaceWT
 #check @program_type_safe
-#check @TypeOfElabHM.type_safety_star
+#check @TypeOfHM.type_safety_star
 
-/-! ### Type inference is sound AND complete (Path R residual)
+/-! ### Type inference is sound: coherent with the erased machine relation
 
-`Infer` (Algorithm-W-style) is the executable inferer. Under dual-stack Path R,
-pure `TypeOf*` is structural HM (no BL ≡ List). Infer is bounds-blind and may
-keep BL on the elaboratum. **Soundness** (`Infer.sound`) is residual: after the
-inferred substitution, projecting ctx schemes, the elaboratum (`Expr.eraseBounds`),
-and the monotype through `eraseBounds` yields a genuine `TypeOfElabHM`. The real
-elaboratum still carries BL for the bounds layer (`Infer.preservesAnns`).
-**Completeness** (`Infer.CompleteAt` / `complete'`): principal for `TypeOfHM` on
-`e.eraseBounds` — **unrestricted, but concluded up to erasure**
-(`AgreesHM τ₀ (R.onTy τ)`), not for decoration-sensitive TypeOf on raw BL terms.
-Exact equality `τ₀ = erase (R · τ)` is the corollary `Infer.complete_instance`,
-which takes `hnorm : Ty.eraseBounds τ₀ = τ₀`; that hypothesis is a real
-restriction, since `TypeOfHM.var` is decoration-blind (existential `instArgs`) and
-derives `bl`-carrying types even from an erase-normal ctx and an unannotated term.
-Both rest on bounds-blind `UnifyRel` / `FactorsHM` (not structural unifier
-recovery) — which is exactly why the honest pin is `AgreesHM`. See design memo
-§4.1.2. -/
+`Infer` (Algorithm-W-style) is the executable inferer. **Soundness**
+(`Infer.sound`) is the erasure-on-`Step` coherence theorem: after the inferred
+substitution, `TypeOfHM` types the ERASED SOURCE term (`e.erase`) at the erased
+inferred type — one typing relation, one soundness theorem. The runnable term is
+always `c.erase`; no elaborated output exists. The old completeness /
+principality campaign (`CompleteAt`, `complete'`, `iff_typeable`, and their
+whole-program corollaries) concluded on removed elaborated outputs and was
+deleted with them; what survives honestly are the soundness projections
+(`principalType_sound`, `typecheck_sound`, now stated on `e.erase`). -/
 #check @Infer.sound
-#check @Expr.UserAnnsCopied
-#check @Infer.complete'
-#check @UnifyRel.complete
 
 /-! ### Pattern-compilation correctness
 
@@ -213,14 +191,14 @@ theorem SurfaceWTExpr_pair_inv {ctors : CtorEnv} {ke : KindEnv} {tvs vs : List V
 
 The dual of inversion at the VALUE level: a well-typed *value* of a known type
 shape must have one of a small enumerable set of head forms.
-`TypeOfElabHM.canonical_arrow` says an arrow-typed value is a lambda, a
+`TypeOfHM.canonical_arrow` says an arrow-typed value is a lambda, a
 constructor chain, a bare primop, or a partially-applied primop.
-`TypeOfElabHM.ctor_chain_inversion` is the keystone both progress and
+`TypeOfHM.ctor_chain_inversion` is the keystone both progress and
 preservation's `match_` case lean on: a well-typed constructor chain
 decomposes into its head constructor applied to well-typed, correctly
 instantiated arguments. -/
-#check @TypeOfElabHM.canonical_arrow
-#check @TypeOfElabHM.ctor_chain_inversion
+#check @TypeOfHM.canonical_arrow
+#check @TypeOfHM.ctor_chain_inversion
 
 
 /-! ## 3. Witnesses
@@ -543,7 +521,7 @@ example (ctors : CtorEnv) :
 `type_safety` needs TWO independent conjuncts to hold of the runtime term: it
 must be well-typed, AND all its matches must be exhaustive. These are checked
 by two entirely separate mechanisms (`typecheck` vs. `checkExhaustive`) over
-two different representations (the elaborated Core term vs. the surface
+two different representations (the erased Core term `c.erase` vs. the surface
 term). Rather than fuse them into one opaque "is this program okay" boolean,
 we keep them as independent checks and conjoin only the PROOFS at the return
 type — a `Safe` term is a passport that carries evidence of both, so anything
@@ -602,8 +580,8 @@ def Running.toSafe {ctors : CtorEnv} (r : Running ctors) : Safe ctors :=
   ⟨r.val, r.property.1, r.property.2.1, r.property.2.2.1⟩
 
 /-- Progress for a closed, exhaustive `WellTyped` term: it is a value or steps.
-    Lifts `TypeOfHM.progress` (needs the ctor-erase + erase-image exhaustiveness
-    bridge, TODO step 5). -/
+    Lifts `TypeOfHM.progress` through the ctor-erase + erase-image
+    exhaustiveness bridge (`AllMatchesExhaustive.eraseCtorBounds`). -/
 theorem WellTyped.progress {ctors : CtorEnv} {e : Expr}
     (hwt : WellTyped ctors e) (h_erased : e.erase = e) (hexh : AllMatchesExhaustive ctors e) :
     IsValue e ∨ ∃ e', Step e e' := by
@@ -731,30 +709,22 @@ The clean baseline is `{propext, Classical.choice, Quot.sound}`, the three
 standard classical axioms mathlib itself depends on. Not every theorem needs
 all three; a strict subset (e.g. `[propext, Quot.sound]`) is just as clean.
 
-**Where `sorryAx` still appears, and why.** Two distinct gaps, neither in
-inference soundness:
+**Where `sorryAx` still appears, and why.** The seven `Bounds/*` sorries (the
+HM/`--bl` gate) are outside this file's imports. Inside its transitive closure,
+the old operational-bridge gaps are closed: the erased-dynamics lemmas
+(`Step.preserves_erased`, `AllMatchesExhaustive.erase`/`eraseCtorBounds`) and
+the whole `TypeOfHM`/`Step` metatheory live proved and axiom-clean in
+`FHM.InferW`, so `runSafe` / `elaborateSafe` no longer inherit any `sorryAx`
+from a residual bridge.
 
-* `runSafe` / `runSafe_running_reduces` — the operational bridge. This file's
-  proofs are complete, but they rest on the seven residual-bridge lemmas in
-  `FHM.Core` (erase-commutation for `Step` / `IsValue` /
-  `AllMatchesExhaustive`, plus `TypeOfElabHM.residual_progress` /
-  `residual_preservation` / `residual_preservation_star`), which are still
-  `sorry`'d. Closing those seven closes this file entirely.
-* `elaborateSafe` — inherits it from `FHM.SurfaceBridge`, NOT from this file.
-  `surface_type_safe`, `surface_type_safe_of_SurfaceWT` and `program_type_safe`
-  are still fenced there pending the same residual packaging.
-
-Inference soundness itself is closed, and the guard below shows it: the six
+Inference soundness is closed, and the guard below shows it: the three
 `Infer.*sound*` theorems come out clean. That is the load-bearing result this
 façade exists to advertise, and it is the one you can currently rely on. -/
 
--- Closed and clean: Path R residual inference soundness (both stacks).
+-- Closed and clean: erasure-on-`Step` inference soundness.
 #print axioms Infer.sound                -- expect {propext, Classical.choice, Quot.sound}
 #print axioms InferBranches.sound        -- expect {propext, Classical.choice, Quot.sound}
 #print axioms InferRecGroup.sound        -- expect {propext, Classical.choice, Quot.sound}
-#print axioms Infer.sourceSound          -- expect {propext, Classical.choice, Quot.sound}
-#print axioms InferBranches.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
-#print axioms InferRecGroup.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
 
 -- Clean: this file's own inversion lemmas.
 #print axioms TypeOfHM_app_inv           -- expect {propext, Quot.sound}
@@ -762,10 +732,10 @@ façade exists to advertise, and it is the one you can currently rely on. -/
 #print axioms TypeOfHM_pair_inv          -- expect {propext, Quot.sound}
 #print axioms TypeOfHM_letIn_inv         -- expect {propext, Quot.sound}
 
--- OPEN: operational bridge (3 sorries in this file). Expect `sorryAx` until closed.
-#print axioms runSafe                    -- expect sorryAx + the three
-#print axioms runSafe_running_reduces    -- expect sorryAx + the three
--- OPEN: inherited from FHM.SurfaceBridge (surface_type_safe / program_type_safe).
-#print axioms elaborateSafe              -- expect sorryAx + the three
+-- Closed: operational bridge (erased-dynamics lemmas proved in FHM.InferW).
+#print axioms runSafe                    -- expect {propext, Classical.choice, Quot.sound}
+#print axioms runSafe_running_reduces    -- expect {propext, Classical.choice, Quot.sound}
+-- Inherited from FHM.SurfaceBridge via program_type_safe → surface_type_safe → Infer.sound.
+#print axioms elaborateSafe              -- expect {propext, Classical.choice, Quot.sound}
 
 end Headlines

@@ -11,7 +11,8 @@ import FHM.Bounds.Ann
 **Status:** P2 theorems filled (see end for `HasBounds.weaken_Δ` report).
 
 `HasBounds Δ bctx e τ β` assigns bound info `β` to Core `e` at HM type `τ`.
-Does **not** re-derive HM; compose with `TypeOfElabHM` at theorem boundaries.
+Does **not** re-derive HM; compose with `TypeOfHM` (on the erased term, per the
+erasure-on-`Step` migration) at theorem boundaries.
 
 `Agrees β τ` is the shape invariant. List is never `custom "List" […]`.
 Uniqueness ∉ declarative typing. Match join: min/max on every `list`.
@@ -79,6 +80,9 @@ def agreesTemplate : Ty → BoundsTy
   | .arrow a b => .arrow (agreesTemplate a) (agreesTemplate b)
   | .bvar i => .bvar i
   | .fvar i => .fvar i
+  -- Path-R `bl` decoration is invisible to the bounds layer: project to the
+  -- underlying type (same discipline as `Ty.eraseBounds`).
+  | .bl _ _ e => agreesTemplate e
   | .customTy n [α] =>
       if n = listTyName then
         -- Nested List-as-elem only (D22 debt if α is List).
@@ -956,7 +960,7 @@ refinements (interesting direction is branch strengthening, not thinning).
 -/
 
 def WellBound (ctors : CtorEnv) (e : Expr) (τ : Ty) (β : BoundsTy) : Prop :=
-  TypeOfElabHM ⟨[], ctors⟩ e τ ∧ HasBounds [] [] e τ β
+  TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ (e.erase) τ ∧ HasBounds [] [] e τ β
 
 /-! ## P3: BoundCovers — List match coverage under path conditions
 
@@ -1313,7 +1317,7 @@ structure BoundProgramOK
     (hmExh : List (MatchPattern × Expr) → Prop)
     (e : Expr) (τ : Ty) (β : BoundsTy)
     (anns : ProgramBoundsAnns) : Prop where
-  hm : TypeOfElabHM ⟨[], ctors⟩ e τ
+  hm : TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ (e.erase) τ
   bounds : HasBounds [] [] e τ β
   agrees : Agrees β τ
   /-- Body ascription, if any. -/

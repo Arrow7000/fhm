@@ -874,13 +874,14 @@ def boundsDiag (binders : List BinderSpan) (p : Surface.Program)
   let (line, col, endLine, endCol) := spanForBoundsMsg binders p sp msg fallback
   { message := msg, line, col, endLine, endCol }
 
-/-- Infer Core spine + body type for a surface term under `ctors`, if possible. -/
+/-- Infer Core spine + body type for a surface term under `ctors`, if possible.
+The runnable term is the ERASED source (`eOut`/elaboration is gone). -/
 def hmInfer (ctors : CtorEnv) (term : Surface.Expr) : Option (Expr × Ty) :=
   match lower ctors term with
   | none => none
   | some c =>
     match infer c.freshFloor ⟨[], ctors⟩ c with
-    | some (_, _, eOut, τ) => some (eOut, τ)
+    | some (_, _, τ) => some (c, τ)
     | none => none
 
 /-- Does lower + InferW succeed on this surface term under `ctors`? -/
@@ -1005,23 +1006,23 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
       | some c =>
         match infer c.freshFloor ⟨[], ctors⟩ c with
         | none => fail (locateTypecheckFail ctors ke pErased binders sp)
-        | some (_, _, eOut, τ) =>
+        | some (_, _, τ) =>
           let bodyσ := genScheme [] [] τ
           let report0 :=
-            assembleProgramReport pErased.groups (collectTopSchemes eOut) bodyσ ep
+            assembleProgramReport pErased.groups (collectTopSchemes c) bodyσ ep
           let binderEnv := binderEnvFromGroups pErased.groups
           let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
           -- Body-level match / ascription errors (no binder name): body/match hull.
           let bodyFallback : Option Span := some (bodyDiagSpan sp.body)
           let (report, diags) :=
-            match FHM.Bounds.Check.checkProgramAnns eOut τ binderEnv boundsAnns with
+            match FHM.Bounds.Check.checkProgramAnns c τ binderEnv boundsAnns with
             | .error msg =>
                 (report0, [boundsDiag binders pSurface sp msg bodyFallback])
             | .ok (bctx, βBody) =>
                 let report1 :=
                   report0.enrichFromSynth binderEnv (bctx.map BoundBinding.pretty)
                     (some (BoundsTy.pretty βBody))
-                match FHM.Bounds.Check.checkProgramMatches ctors eOut τ binderEnv boundsAnns with
+                match FHM.Bounds.Check.checkProgramMatches ctors c τ binderEnv boundsAnns with
                 | .error msg =>
                     (report1, [boundsDiag binders pSurface sp msg bodyFallback])
                 | .ok () => (report1, [])
