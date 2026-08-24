@@ -29,19 +29,18 @@ See `briefs/next-agent-brief-surface-bridge-followups.md`.
    `lower`-soundness obligation for the match case *is* the already-proven
    compilation-correctness theorem (`PatComp.lowerMatch_adequate_of_typed`).
 
-2. **The payoff is a TWO-hop composition, and the object that runs is `eOut`,
-   not `lower s`.** `typecheck`/`Lowers` speak the DECLARATIVE `TypeOfHM`, but
-   the dynamics (`Step`, `progress`, `type_safety`) are stated on the ELABORATED
-   `TypeOfElabHM` over the decorated term `eOut` produced by `infer`. So the
-   runtime term is `eOut = infer (lower s)`, and the headline goes
-   `s → lower → c → infer → eOut → type_safety_star`. `typecheck` alone is
-   insufficient (it discards `eOut`), which is why `elaborate` runs `infer`.
+2. **The payoff is a TWO-hop composition over the executable pipeline.** The
+   runtime object is the lowered term `c = lower s`: `typecheck`/`Lowers` speak
+   the DECLARATIVE `TypeOfHM`, and the dynamics (`Step`, `progress`,
+   `type_safety`) are stated on the erased residual `c.erase` recovered through
+   `infer` + `Infer.sound`. So the headline goes
+   `s → lower → c → infer → c.erase → type_safety_star`. `typecheck` alone is
+   insufficient, which is why the pipeline runs through `infer`.
 
 3. **Exhaustiveness is a separate, mandatory conjunct.** `type_safety` requires
    `AllMatchesExhaustive` on the runtime term, which typechecking never gives.
-   The scope we need is exactly the corollary `lower_elab_exhaustive` below
-   (surface coverage ⇒ the *emitted-and-elaborated* matches are exhaustive) —
-   NOT a general standalone `checkExhaustive`. -/
+   The scope we need is exactly `lower_exhaustive` below (surface coverage ⇒ the
+   emitted matches are exhaustive) — NOT a general standalone `checkExhaustive`. -/
 
 open SmallStep
 open PatComp
@@ -11556,43 +11555,12 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
             (τscrut := .customTy nBool []) (τres := τ)
             rfl (by simp) (ihc hcL) hpats hbodies' hexh hcons hfields hkind hwk
 
-/-! ## 8. The runtime term: lower, then ELABORATE
+/-! ## 8. The runtime term: lower, then infer
 
-The Core term that actually executes is the elaborated `eOut` (decorated `var`
-type-arguments), substituted by the inferred `S`. `typecheck` throws `eOut`
-away, so we go through `infer` directly. For a closed program the frontier seed
-is `c.freshFloor` and the rigid set is empty. -/
-
-/-- Lower `s`, then run inference to obtain the decorated, runnable Core term
-    `eOut.substTyFvars S`. `none` if lowering or inference fails. -/
-def elaborate (ctors : CtorEnv) (s : Surface.Expr) : Option Expr :=
-  (lower ctors s).bind fun c =>
-    (infer c.freshFloor ⟨[], ctors⟩ c).map fun r => r.2.2.1.substTyFvars r.2.1
-
-/-! ### Trust-free regression guards for the `emit` fix (see PatComp `emit`)
-
-These `#guard`s RUN the pipeline, so they catch a regression in `emit`'s
-wildcard handling independently of any proof: before the fix, `emit` appended an
-untypeable `PatCompFail` wildcard to every switch, so `if` and enumerated
-(catch-all-free) matches failed to typecheck. -/
-
-private def maybeCtors : CtorEnv :=
-  (elabDecls (preludeDecls ++
-    [{ name := ⟨"Maybe"⟩, paramCount := 1,
-       ctors := [(⟨"Just"⟩, [.bvar 0]), (⟨"Nothing"⟩, [])] }])).getD []
-
--- `if true then 1 else 0` now typechecks (desugars to an enumerated True|False match).
-#guard (elaborate ctorsDemo (.ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0)))).isSome
--- a fully-enumerated exhaustive match (no catch-all) now typechecks.
-#guard (elaborate maybeCtors (.match_ (.app (.ctor (⟨"Just"⟩)) (.primLit (.int 5)))
-    [(.ctor ⟨"Just"⟩ [.name ⟨"x"⟩], .var ⟨"x"⟩), (.ctor ⟨"Nothing"⟩ [], .primLit (.int 0))])).isSome
--- a catch-all match still typechecks.
-#guard (elaborate maybeCtors (.match_ (.app (.ctor (⟨"Just"⟩)) (.primLit (.int 5)))
-    [(.ctor ⟨"Just"⟩ [.name ⟨"x"⟩], .var ⟨"x"⟩), (.wildcard, .primLit (.int 0))])).isSome
--- a NON-exhaustive match (missing Nothing, no catch-all) ALSO typechecks — so
--- `typecheck` does NOT enforce exhaustiveness; `SurfaceCovers` genuinely is.
-#guard (elaborate maybeCtors (.match_ (.app (.ctor (⟨"Just"⟩)) (.primLit (.int 5)))
-    [(.ctor ⟨"Just"⟩ [.name ⟨"x"⟩], .var ⟨"x"⟩)])).isSome
+The Core term that actually executes is the lowered `c = lower s`; `infer`
+confirms typing (recovering the substitution) and `Infer.sound` gives the
+residual typing of the erased term. For a closed program the frontier seed is
+`c.freshFloor` and the rigid set is empty. -/
 
 
 /-! ## 9. The obligations the seam creates (proof bodies — delegable)
@@ -12129,25 +12097,24 @@ theorem lower_tyClosed {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
 /-- **(O3) Typechecking ⇒ inference succeeds (recovering the runtime term).**
     For a type-closed `c`, `typecheck` and `infer` run the *same* `inferCore`
     call (`principalType` seeds `c.tyFreeVars = []`, matching `infer`'s empty
-    rigid set), so a successful `typecheck` yields the elaborated `(Φ',S,eOut,τ)`.
+    rigid set), so a successful `typecheck` yields the inferred `(Φ', S, τ)`.
     Mechanical from `typecheck`/`principalType`/`infer` unfolding. -/
 theorem infer_of_typecheck {ctors : CtorEnv} {c : Expr}
     (hclosed : c.tyFreeVars = []) (htc : (typecheck ctors c).isSome) :
-    ∃ Φ' S eOut τ, infer c.freshFloor ⟨[], ctors⟩ c = some (Φ', S, eOut, τ) := by
+    ∃ Φ' S τ, infer c.freshFloor ⟨[], ctors⟩ c = some (Φ', S, τ) := by
   simp only [typecheck, principalType, Option.isSome_map] at htc
   rw [hclosed] at htc
   simp only [infer]
-  rcases hcore : inferCore [] c.freshFloor ⟨[], ctors⟩ c with _ | ⟨⟨Φ', S, eOut, τ⟩, _⟩
+  rcases hcore : inferCore [] c.freshFloor ⟨[], ctors⟩ c with _ | ⟨⟨Φ', S, τ⟩, _⟩
   · simp [hcore] at htc
-  · exact ⟨Φ', S, eOut, τ, by simp⟩
+  · exact ⟨Φ', S, τ, by simp⟩
 
 /-! ### O5 helpers
 
-Transport across elaboration is mechanical (`AllMatchesExhaustive.substTyFvars`
-in Core; `infer_preserves_AllMatchesExhaustive` via induction on `Infer`). The
-crux (A) is now SYNTACTIC: `emit` of a `DTreeExhaustive` tree is
-`AllMatchesExhaustive`, by induction on the coverage derivation — no semantic
-totality, no inhabitation. -/
+Transport across erasure is mechanical (`AllMatchesExhaustive.erase` in Core;
+`lower_exhaustive` via induction on the coverage derivation — no semantic
+totality, no inhabitation). The crux (A) is SYNTACTIC: `emit` of a
+`DTreeExhaustive` tree is `AllMatchesExhaustive`. -/
 
 /-- `emitLets` (leaf `let`-cascade) preserves exhaustiveness: it wraps the body in
     `.letIn none (.var …)` binders (vars are exhaustive) over `body.shiftFrom …`
@@ -12701,170 +12668,12 @@ private theorem letRecElab_AllMatchesExhaustive {ctors : CtorEnv}
   simp only [Expr.letRecElab]
   exact letRecElabNest_AllMatchesExhaustive G anns _ rawBindings hraw _ body hbody
 
-/-- Transfer `(a, _)` membership across a branch list whose first projections
-    (patterns) agree — the key fact letting a `match`'s pinned/cover clauses
-    survive inference (which preserves patterns, only rewriting branch bodies). -/
-private theorem mem_of_map_fst_eq {α β : Type _} {l l' : List (α × β)}
-    (h : l.map (·.1) = l'.map (·.1)) {a : α} {b : β} (hm : (a, b) ∈ l) :
-    ∃ b', (a, b') ∈ l' := by
-  have hmem : a ∈ l.map (·.1) := List.mem_map.mpr ⟨(a, b), hm, rfl⟩
-  rw [h] at hmem
-  obtain ⟨⟨a', b'⟩, hmem', heq⟩ := List.mem_map.mp hmem
-  obtain rfl : a' = a := heq
-  exact ⟨b', hmem'⟩
-
-/-! **Inference preserves match-exhaustiveness** (`Infer`/`InferBranches`/`InferRecGroup`
-    mutual family). Mirrors the `Infer.sourceSound` template: a `cases h`-style mutual
-    block (WF on `Expr.size`/`sizeBranches`/`sizeRecGroup`) whose arms recurse through
-    the companions. Inference only decorates `var` tyArgs, substitutes annotations, and
-    wraps let/letRec generalisation (`closeTyVars`/`letRecElab`) — none of which touch
-    a match's pattern skeleton — so each output stays exhaustive. Type-level wrappers
-    are discharged by the `substTyFvars`/`openTyVars`/`closeTyVars`/`letRecElab`
-    preservation helpers above. -/
-set_option maxRecDepth 8000 in
-mutual
-/-- **(O5 transport)** `Infer` preserves `AllMatchesExhaustive` on the elaborated term. -/
-theorem infer_preserves_AllMatchesExhaustive {Φ ctx e Φ' S eOut τ}
-    (h : Infer Φ ctx e Φ' S eOut τ)
-    (hexh : AllMatchesExhaustive ctx.ctors e) :
-    AllMatchesExhaustive ctx.ctors eOut := by
-  cases h with
-  | primLitUnit | primLitInt | primLitNat | primLitChar => exact .primLit
-  | primBinOpIntAdd | primBinOpIntSub | primBinOpIntLt _ _ _ _ | primBinOpCharLt _ _ _ _ =>
-    exact .primBinOp
-  | var _ => exact .var
-  | ctor _ => exact .ctor
-  | lambda _ hbody =>
-    cases hexh with
-    | lambda hbe =>
-      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
-      exact .lambda hbo
-  | app hf harg _ =>
-    cases hexh with
-    | app hfe hae =>
-      have hfo := infer_preserves_AllMatchesExhaustive hf hfe
-      have hao := infer_preserves_AllMatchesExhaustive harg hae
-      exact .app hfo hao
-  | letIn hrhs hbody =>
-    cases hexh with
-    | letIn hre hbe =>
-      have hro := infer_preserves_AllMatchesExhaustive hrhs hre
-      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
-      exact .letIn
-        (AllMatchesExhaustive.closeTyVars _ (AllMatchesExhaustive.substTyFvars _ hro)) hbo
-  | letInAnn _ _ hrhs _ _ _ hbody =>
-    cases hexh with
-    | letIn hre hbe =>
-      have hro := infer_preserves_AllMatchesExhaustive hrhs
-        (AllMatchesExhaustive.openTyVars _ hre)
-      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
-      exact .letIn
-        (AllMatchesExhaustive.closeTyVars _ (AllMatchesExhaustive.substTyFvars _ hro)) hbo
-  | match_ hscrut _ hbranches =>
-    cases hexh with
-    | match_ hse hbodies hpinned hcover =>
-      expose_names
-      have hso := infer_preserves_AllMatchesExhaustive hscrut hse
-      obtain ⟨hbodiesOut, hpats⟩ := inferBranches_preserves_exh hbranches hbodies
-      refine AllMatchesExhaustive.match_ (tyName := tyName) hso hbodiesOut ?_ ?_
-      · intro c n body' hmem
-        obtain ⟨b0, hb0⟩ := mem_of_map_fst_eq hpats hmem
-        exact hpinned c n b0 hb0
-      · intro ctorName ctor hlook hty
-        obtain ⟨pat, body, hmem, hcov⟩ := hcover ctorName ctor hlook hty
-        obtain ⟨b', hb'⟩ := mem_of_map_fst_eq hpats.symm hmem
-        exact ⟨pat, b', hb', hcov⟩
-  | letRec _ hgroup _ hbody =>
-    cases hexh with
-    | letRec hbs hbe =>
-      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
-      have hraw := inferRecGroup_preserves_exh hgroup hbs
-      exact letRecElab_AllMatchesExhaustive _ _ _ _ _
-        (fun e he => by
-          obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
-          exact AllMatchesExhaustive.substTyFvars _ (hraw e0 he0))
-        hbo
-termination_by e.size
-decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
-
-/-- Branch-list companion: preserves branch-body exhaustiveness AND the pattern list
-    (only bodies are re-inferred). -/
-theorem inferBranches_preserves_exh {Φ ctx scrutTy ρ brs Φ' S brsOut}
-    (h : InferBranches Φ ctx scrutTy ρ brs Φ' S brsOut)
-    (hexh : AllBranchBodiesExhaustive ctx.ctors brs) :
-    AllBranchBodiesExhaustive ctx.ctors brsOut ∧
-      brsOut.map (·.1) = brs.map (·.1) := by
-  cases h with
-  | nil => exact ⟨.nil, rfl⟩
-  | cons _ _ _ hbody _ hrest =>
-    cases hexh with
-    | cons hbe hreste =>
-      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
-      obtain ⟨hre, hpe⟩ := inferBranches_preserves_exh hrest hreste
-      exact ⟨.cons hbo hre, by simp only [List.map_cons, hpe]⟩
-  | consWild hbody _ hrest =>
-    cases hexh with
-    | cons hbe hreste =>
-      have hbo := infer_preserves_AllMatchesExhaustive hbody hbe
-      obtain ⟨hre, hpe⟩ := inferBranches_preserves_exh hrest hreste
-      exact ⟨.cons hbo hre, by simp only [List.map_cons, hpe]⟩
-termination_by Expr.sizeBranches brs
-decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
-
-/-- Rec-group companion: every output binding is exhaustive given every input is. -/
-theorem inferRecGroup_preserves_exh {Φ ctx bindings specs Φ' S bindingsOut}
-    (h : InferRecGroup Φ ctx bindings specs Φ' S bindingsOut)
-    (hexh : ∀ e ∈ bindings, AllMatchesExhaustive ctx.ctors e) :
-    ∀ e ∈ bindingsOut, AllMatchesExhaustive ctx.ctors e := by
-  cases h with
-  | nil => intro e he; simp at he
-  | consMono he0 _ hrest =>
-    intro e he
-    simp only [List.mem_cons] at he
-    rcases he with rfl | he
-    · exact infer_preserves_AllMatchesExhaustive he0 (hexh _ List.mem_cons_self)
-    · have hraw := inferRecGroup_preserves_exh hrest
-        (fun e' he' => hexh e' (List.mem_cons_of_mem _ he'))
-      exact hraw e he
-  | consPoly _ hinfer _ _ _ hrest =>
-    intro e he
-    simp only [List.mem_cons] at he
-    rcases he with rfl | he
-    · have hio := infer_preserves_AllMatchesExhaustive hinfer
-        (AllMatchesExhaustive.openTyVars _ (hexh _ List.mem_cons_self))
-      exact AllMatchesExhaustive.closeTyVars _ (AllMatchesExhaustive.substTyFvars _ hio)
-    · have hraw := inferRecGroup_preserves_exh hrest
-        (fun e' he' => hexh e' (List.mem_cons_of_mem _ he'))
-      exact hraw e he
-termination_by Expr.sizeRecGroup bindings
-decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
-end
-
-/-- **(O5) Exhaustiveness of the emitted-and-elaborated matches.** If every surface
-    `match` in `s` covers its scrutinee's ADT type (`SurfaceCovers`), then the
-    lowered-then-elaborated Core term's matches are all `AllMatchesExhaustive` —
-    the conjunct `type_safety` demands. Composition: `lower_exhaustive` (A) then
-    `infer_preserves_AllMatchesExhaustive` then `AllMatchesExhaustive.substTyFvars`. -/
-theorem lower_elab_exhaustive {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
-    {Φ' : Nat} {S : Subst} {eOut : Expr} {τ : Ty}
-    (hcov : SurfaceCovers ctors s) (hlow : lower ctors s = some c)
-    (hinf : infer c.freshFloor ⟨[], ctors⟩ c = some (Φ', S, eOut, τ)) :
-    AllMatchesExhaustive ctors (eOut.substTyFvars S) := by
-  have hexh_c : AllMatchesExhaustive ctors c := lower_exhaustive hcov hlow
-  have hInfer : Infer c.freshFloor ⟨[], ctors⟩ c Φ' S eOut τ := infer_sound hinf
-  have hexh_out : AllMatchesExhaustive ctors eOut :=
-    infer_preserves_AllMatchesExhaustive hInfer hexh_c
-  exact AllMatchesExhaustive.substTyFvars S hexh_out
-
 
 /-! ## 9b. Whole-program pipeline (plan item 7)
 
 `Surface.Program` = user `DataDecl`s + binding `groups` + body.
 Groups desugar to nested `letRecIn` (`Program.term`); prelude is merged in;
-then reuse expression `lower`/`elaborate`/`surface_type_safe`. Flat bindings
+then reuse expression `lower`/`surface_type_safe`. Flat bindings
 go through `Program.ofFlat` → `sccGroups` → the same desugarer. -/
 
 theorem desugarGroups_nil (body : Surface.Expr) :
@@ -12893,11 +12702,6 @@ def lowerProgram (p : Surface.Program) : Option (CtorEnv × Expr) := do
   let ctors ← elabDecls (preludeDecls ++ userCore)
   let c ← lower ctors p.term
   pure (ctors, c)
-
-/-- Lower then elaborate the program term under the program's `CtorEnv`. -/
-def elaborateProgram (p : Surface.Program) : Option Expr := do
-  let (ctors, _) ← lowerProgram p
-  elaborate ctors p.term
 
 private theorem option_bind_eq_some {α β : Type} {o : Option α} {f : α → Option β} {b : β}
     (h : o >>= f = some b) : ∃ a, o = some a ∧ f a = some b :=
@@ -12951,10 +12755,6 @@ private def pLetRecTwo : Surface.Program :=
     [{ name := .mk "y", ann := none, rhs := .var (.mk "x") }]],
    .var (.mk "y")⟩
 
--- prelude-only body (if) elaborates
-#guard (elaborateProgram pPreludeIf).isSome
--- user Maybe + Just 5 elaborates
-#guard (elaborateProgram pMaybeId).isSome
 -- redeclaring Bool clashes with prelude
 #guard (lowerProgram pClashBool).isNone
 -- user field references prelude type; combined decl group elaborates
@@ -12967,17 +12767,10 @@ private def pLetRecTwo : Surface.Program :=
   [⟨.mk "Bad", [], [(.mk "Mk", [.customTy (.mk "List") [.prim .int, .prim .int]])]⟩]).isNone
 -- user ctor name clashes with prelude ctor True → rejected
 #guard (lowerProgram ⟨[⟨.mk "Box", [], [(.mk "True", [])]⟩], [], .primLit (.int 0)⟩).isNone
--- top-level binding groups desugar + elaborate
-#guard (elaborateProgram pLetRecOne).isSome
-#guard (elaborateProgram pLetRecTwo).isSome
 -- empty group is a no-op (`term` equals body)
 #guard match Surface.desugarGroups [[]] (.primLit (.int 0)) with
   | .primLit (.int 0) => true
   | _ => false
--- SCC → desugar → elaborate (via ofFlat)
-#guard match Program.ofFlat [] [bF, bG] (.var (.mk "g")) with
-  | some p => (elaborateProgram p).isSome
-  | none => false
 #guard (Program.ofFlat [] [bA, { name := .mk "a", ann := none, rhs := .primLit (.int 0) }]
   (.primLit (.int 0))).isNone
 -- SurfaceCovers is inhabited for the Maybe term (no matches → trivial coverage)
@@ -13010,10 +12803,10 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   -- O2: the lowered term is type-closed, so inference's rigid seed is empty.
   have hclosed : c.tyFreeVars = [] := lower_tyClosed hlow
   -- O3: `typecheck` and `infer` run the same `inferCore` call, so a successful
-  -- `typecheck` recovers the elaborated `(Φ', S, eOut, τ)` from `infer`.
-  obtain ⟨Φ', S, eOut, τ, hinfer⟩ := infer_of_typecheck hclosed htc
+  -- `typecheck` recovers the inferred `(Φ', S, τ)` from `infer`.
+  obtain ⟨Φ', S, τ, hinfer⟩ := infer_of_typecheck hclosed htc
   -- `infer` is sound: the returned tuple is a genuine `Infer` derivation.
-  have hInf : Infer c.freshFloor ⟨[], ctors⟩ c Φ' S eOut τ := infer_sound hinfer
+  have hInf : Infer c.freshFloor ⟨[], ctors⟩ c Φ' S τ := infer_sound hinfer
   -- `K := []`: the closed term has no free type vars, so `Infer.eliminates`
   -- shows `S`'s keys avoid `τ`, collapsing `Infer.sound`'s `S.onTy τ` to `τ`.
   have helim : (∀ p ∈ S, ∀ x : Ty, p.1 ∉ (S.onTy x).freeVars) ∧ (∀ p ∈ S, p.1 ∉ τ.freeVars) :=
