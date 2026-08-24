@@ -101,7 +101,6 @@ Both rest on bounds-blind `UnifyRel` / `FactorsHM` (not structural unifier
 recovery) — which is exactly why the honest pin is `AgreesHM`. See design memo
 §4.1.2. -/
 #check @Infer.sound
-#check @Infer.preservesAnns
 #check @Expr.UserAnnsCopied
 #check @Infer.complete'
 #check @UnifyRel.complete
