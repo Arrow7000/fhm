@@ -202,22 +202,22 @@ def checkPipeline (mode : BoundsMode) (src : String) :
         return .error { stage := .lower, message }
     | some x => pure x
 
-  let (eOut, τ) ← match infer c.freshFloor ⟨[], ctors⟩ c with
+  let τ ← match infer c.freshFloor ⟨[], ctors⟩ c with
     | none =>
         return .error {
           stage := .typecheck
           message := "typechecking failed"
         }
-    | some (_, _, eOut, τ) => pure (eOut, τ)
+    | some (_, _, τ) => pure τ
   let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
   -- Slice 2: Core body env order (0 = innermost) from the same groups Infer used.
   let binderEnv := binderEnvFromGroups p.groups
   let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
-  let report0 := assembleProgramReport p.groups (collectTopSchemes eOut) bodyσ ep
+  let report0 := assembleProgramReport p.groups (collectTopSchemes c) bodyσ ep
   let report ←
     if mode == .bl then
-      match FHM.Bounds.Check.checkProgramAnns eOut τ binderEnv boundsAnns with
+      match FHM.Bounds.Check.checkProgramAnns c τ binderEnv boundsAnns with
       | .error msg =>
           return .error { stage := .bounds, message := msg }
       | .ok (bctx, βBody) =>
@@ -228,7 +228,7 @@ def checkPipeline (mode : BoundsMode) (src : String) :
       pure report0
 
   if mode == .bl then
-    match FHM.Bounds.Check.checkProgramMatches ctors eOut τ binderEnv boundsAnns with
+    match FHM.Bounds.Check.checkProgramMatches ctors c τ binderEnv boundsAnns with
     | .error msg =>
         return .error { stage := .exhaustiveness, message := msg }
     | .ok () => pure ()
@@ -236,10 +236,7 @@ def checkPipeline (mode : BoundsMode) (src : String) :
     if !(checkExhaustive ctors p.term) then
       return .error { stage := .exhaustiveness, message := "match not exhaustive" }
 
-  let e ← match elaborateProgram p with
-    | none =>
-        return .error { stage := .elaborate, message := "elaboration failed" }
-    | some e => pure e
+  let e := c.erase
 
   return .ok {
     report := report
