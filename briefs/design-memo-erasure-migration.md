@@ -399,13 +399,15 @@ metatheory as the price of keeping the product on a single, already-live dynamic
 
 ### 5.3 Ordering (green checkpoints)
 
-> **Execution status (2026-08-22, commit `a505638`):** steps 1–4 are DONE and proven
-> (steps 1–4 = "settled design", the DM cut, `erase`, and `Infer.sound` itself).
-> Steps 5–7 (= "step 5–6" below) remain. See **`briefs/next-agent-brief-erasure-step4.md`**
-> for the authoritative current state, the exact remaining `sorry`s (8, all doomed),
-> and the detailed plan for the remaining work. One correction to §6.3 recorded
-> there: the `letRec` body-lift did need one small *new* lemma
-> (`PolyTy.Generalizes.freeVars_subset`), not "no new metatheory shape"; it is proven.
+> **✅ MIGRATION COMPLETE (2026-08-24).** Steps 1–4 (DM cut, `erase`, `Infer.sound`,
+> the full `TypeOfHM`/`Step` dynamics metatheory), step 5 (surface rewired to
+> `lower → Infer → erase → Step`; `eOut` dropped; `TypeOfElabHM` + its metatheory
+> + the doomed completeness campaign deleted), step 6 (`var.tyArgs` dropped from
+> `Expr`; CEK leaf + stale ConstraintTypeSystem deleted), and step 7 (docs) are
+> all DONE. `lake build` and `lake build fhm` green; the only remaining `sorry`s
+> are the 7 pre-existing Bounds-layer ones (unrelated to this migration). The
+> soundness trio and capstones are axiom-clean
+> (`propext`/`Classical.choice`/`Quot.sound`).
 
 1. (Done) Settled design + this memo; `CekMachine.lean` left in place.
 2. (Done) Change `Infer.letRec` per §2.1 (all-`.mono` init, no `consPoly`, ceiling premise,

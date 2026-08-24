@@ -4236,7 +4236,7 @@ def lowerExpr (ke : KindEnv) (tvs vs : List ValName) : Surface.Expr → Option E
     | _, _, _                                => none
   | .var name =>
     match tvarIndex vs name with
-    | some i => some (.var i [])
+    | some i => some (.var i)
     | none   => none
   | .ctor name => some (.ctor name)
   | .ife c t f =>
@@ -4307,10 +4307,10 @@ private def ctorsDemo : CtorEnv := (elabDecls preludeDecls).getD []
 #guard (lower ctorsDemo (.var (.mk "x"))).isNone
 -- λx. x  ↦  λ. var 0
 #guard match lower ctorsDemo (.lambda (.name (.mk "x")) none (.var (.mk "x"))) with
-  | some (.lambda none (.var 0 [])) => true | _ => false
+  | some (.lambda none (.var 0)) => true | _ => false
 -- let x = 1 in x  ↦  let 1 in var 0
 #guard match lower ctorsDemo (.letIn (.mk "x") [] [] none (.primLit (.int 1)) (.var (.mk "x"))) with
-  | some (.letIn none (.primLit (.int 1)) (.var 0 [])) => true | _ => false
+  | some (.letIn none (.primLit (.int 1)) (.var 0)) => true | _ => false
 -- (1, 2)  ↦  Pair 1 2
 #guard match lower ctorsDemo (.pair (.primLit (.int 1)) (.primLit (.int 2))) with
   | some (.app (.app (.ctor (.mk "Pair")) (.primLit (.int 1))) (.primLit (.int 2))) => true | _ => false
@@ -4319,10 +4319,10 @@ private def ctorsDemo : CtorEnv := (elabDecls preludeDecls).getD []
   | some (.app (.app (.ctor (.mk "Cons")) (.primLit (.int 1))) (.ctor (.mk "Nil"))) => true | _ => false
 -- shadowing: λx. λx. x  ↦  inner x is var 0
 #guard match lower ctorsDemo (.lambda (.name (.mk "x")) none (.lambda (.name (.mk "x")) none (.var (.mk "x")))) with
-  | some (.lambda none (.lambda none (.var 0 []))) => true | _ => false
+  | some (.lambda none (.lambda none (.var 0))) => true | _ => false
 -- outer reference: λx. λy. x  ↦  x is var 1 under two binders
 #guard match lower ctorsDemo (.lambda (.name (.mk "x")) none (.lambda (.name (.mk "y")) none (.var (.mk "x")))) with
-  | some (.lambda none (.lambda none (.var 1 []))) => true | _ => false
+  | some (.lambda none (.lambda none (.var 1))) => true | _ => false
 -- ife and match produce some (structure checked by the pattern-compilation tests)
 #guard (lower ctorsDemo (.ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0)))).isSome
 #guard (lower ctorsDemo (.match_ (.var (.mk "x")) [])).isNone  -- unbound scrutinee
@@ -5198,10 +5198,10 @@ inductive LowersExpr (ctors : CtorEnv) (ke : KindEnv) :
       LowersExpr ctors ke tvs vs (.letRecIn binds body)
         (.letRec anns' bindings' body')
 
-  /-- Free surface name → de Bruijn term var (empty type-arg list). -/
+  /-- Free surface name → de Bruijn term var. -/
   | var {vs name i} :
       tvarIndex vs name = some i →
-      LowersExpr ctors ke tvs vs (.var name) (.var i [])
+      LowersExpr ctors ke tvs vs (.var name) (.var i)
 
   /-- Constructor name → Core ctor (applications are surface apps). -/
   | ctor {vs name} :
@@ -6372,7 +6372,7 @@ private theorem emitLets_rhs_typeable {ctors : CtorEnv} {Γ_env Γ_outer doneTys
     (hlook : Γ_env[env.idxOf b]? = some (PolyTy.mkTrivial τ))
     (hlc : τ.IsLC) :
     TypeOfHM ⟨doneTys ++ Γ_env ++ Γ_outer, ctors⟩
-      (.var (env.idxOf b + depth) []) τ := by
+      (.var (env.idxOf b + depth)) τ := by
   refine TypeOfHM.var (polyTy := PolyTy.mkTrivial τ) (instArgs := []) ?_
     (fun _ h => (List.not_mem_nil h).elim) (InstantiatesBy.refl_of_closed hlc)
   have hlt : env.idxOf b < Γ_env.length := by
@@ -6448,7 +6448,7 @@ theorem emitLets_typeable {ctors : CtorEnv} {Γ_env Γ_outer : Env}
       have hrhs : TypeOfHM
           ⟨(bindTys.drop (rest.length + 1)).map PolyTy.mkTrivial ++ Γ_env ++ Γ_outer,
             ctors⟩
-          (.var (env.idxOf b + k) []) τb := by
+          (.var (env.idxOf b + k)) τb := by
         refine emitLets_rhs_typeable (doneTys :=
             (bindTys.drop (rest.length + 1)).map PolyTy.mkTrivial)
           hlen_env ?_ (hbound b (by
@@ -10009,7 +10009,7 @@ private theorem emitLets_tyBvarBounded (n : Nat) (env : List Occ) (binds : List 
     intro depth
     simp only [emitLets.go, Expr.TyBvarBounded]
     refine And.intro ?_ (ih (depth + 1))
-    intro t ht; cases ht
+    trivial
 
 mutual
 private theorem emit_tyBvarBounded (n : Nat) (env : List Occ) (bodies : Nat → Expr)
@@ -10029,14 +10029,14 @@ private theorem emit_tyBvarBounded (n : Nat) (env : List Occ) (bodies : Nat → 
       rw [emit]
       have hcases := emitCases_tyBvarBounded n env bodies occ cases hb
       simp only [Expr.TyBvarBounded, resolveOcc, List.append_nil]
-      exact And.intro (by intro t ht; cases ht) hcases
+      exact And.intro (by trivial) hcases
     | leaf act binds =>
       rw [emit]
       have hcases := emitCases_tyBvarBounded n env bodies occ cases hb
       have hd := emit_tyBvarBounded n env bodies (.leaf act binds) hb
       simp only [Expr.TyBvarBounded, resolveOcc]
       refine And.intro ?_ ((TyBvarBounded_BranchList_append_wildcard n _ _).mpr (And.intro hcases hd))
-      intro t ht; cases ht
+      trivial
       intro h; cases h
     | switch occ' cases' dflt' =>
       rw [emit]
@@ -10044,7 +10044,7 @@ private theorem emit_tyBvarBounded (n : Nat) (env : List Occ) (bodies : Nat → 
       have hd := emit_tyBvarBounded n env bodies (.switch occ' cases' dflt') hb
       simp only [Expr.TyBvarBounded, resolveOcc]
       refine And.intro ?_ ((TyBvarBounded_BranchList_append_wildcard n _ _).mpr (And.intro hcases hd))
-      intro t ht; cases ht
+      trivial
       intro h; cases h
 
 private theorem emitCases_tyBvarBounded (n : Nat) (env : List Occ) (bodies : Nat → Expr)
@@ -10267,8 +10267,7 @@ theorem lowerExpr_tyBvarBounded {ke : KindEnv} {tvs vs : List ValName} :
     | none => simp [hi] at h
     | some i =>
       simp only [hi, Option.some.injEq] at h; subst h
-      simp only [Expr.TyBvarBounded]
-      intro t ht; cases ht
+      trivial
   | .ctor name =>
     simp only [lowerExpr, Option.some.injEq] at h; subst h; simp [Expr.TyBvarBounded]
   | .ife c t f =>
@@ -10575,10 +10574,13 @@ theorem lowerExpr_isSome_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
 gap. Used by poly `letInAnn` to collapse `openBoundTyVars` without mono-shrink. -/
 
 mutual
-/-- Every `var` node carries an empty decoration list (true of all `lowerExpr` output). -/
+/-- Every `var` node carries an empty decoration list. After the erasure
+    migration dropped `tyArgs` from `Expr.var`, this holds *vacuously* of every
+    term; kept as a predicate so the lowering-closedness statements below are
+    unchanged. -/
 def Expr.EmptyVarTyArgs : Expr → Prop
   | .primLit _ | .primBinOp _ | .ctor _ => True
-  | .var _ tyArgs => tyArgs = []
+  | .var _ => True
   | .lambda _ body => Expr.EmptyVarTyArgs body
   | .app f arg => Expr.EmptyVarTyArgs f ∧ Expr.EmptyVarTyArgs arg
   | .letIn _ rhs body => Expr.EmptyVarTyArgs rhs ∧ Expr.EmptyVarTyArgs body
@@ -10613,10 +10615,8 @@ theorem Expr.openTyVarsAux_emptyVarTyArgs (Xs : List Nat) :
   intro e
   induction e using Expr.rec_strong with
   | primLit | primBinOp | ctor => intro _ _; trivial
-  | var n tyArgs =>
-    intro d h
-    simp only [Expr.EmptyVarTyArgs] at h; subst h
-    simp [Expr.openTyVarsAux, Expr.EmptyVarTyArgs]
+  | var n =>
+    intro d _; trivial
   | lambda ann body ih =>
     intro d h
     simp only [Expr.EmptyVarTyArgs, Expr.openTyVarsAux] at h ⊢
@@ -10681,10 +10681,10 @@ theorem Expr.shiftFrom_emptyVarTyArgs {e : Expr} :
     ∀ (t n : Nat), Expr.EmptyVarTyArgs e → Expr.EmptyVarTyArgs (e.shiftFrom t n) := by
   induction e using Expr.rec_strong with
   | primLit | primBinOp | ctor => intro _ _ _; trivial
-  | var i tyArgs =>
-    intro t n h
-    simp only [Expr.EmptyVarTyArgs] at h; subst h
-    simp only [Expr.shiftFrom]; split <;> simp [Expr.EmptyVarTyArgs]
+  | var i =>
+    intro t nn h
+    simp only [Expr.shiftFrom]
+    split <;> simp [Expr.EmptyVarTyArgs]
   | lambda ann body ih =>
     intro t n h
     simp only [Expr.EmptyVarTyArgs, Expr.shiftFrom] at h ⊢
@@ -11040,9 +11040,7 @@ theorem TypeOfHM_tyBvarBounded_of_emptyVarTyArgs {ctx : Ctx} {e : Expr} {τ : Ty
   | app _ _ ihf iha =>
     intro he; simp only [Expr.EmptyVarTyArgs] at he
     exact ⟨ihf he.1, iha he.2⟩
-  | var _ _ _ =>
-    intro he; simp only [Expr.EmptyVarTyArgs] at he; subst he
-    simp only [Expr.TyBvarBounded]; intro t ht; cases ht
+  | var _ _ _ => intro _; trivial
   | ctor => intro _; trivial
   | lambda hpc hann _ _ ih =>
     intro he; simp only [Expr.EmptyVarTyArgs] at he
@@ -11740,7 +11738,7 @@ theorem Expr.tyFreeVars_shiftFrom (e : Expr) (threshold n : Nat)
   induction e using Expr.rec_strong generalizing threshold with
   | primLit | primBinOp | ctor =>
     simp only [Expr.shiftFrom, Expr.tyFreeVars] at *
-  | var i tyArgs =>
+  | var i =>
     simp only [Expr.shiftFrom]
     split <;> simpa [Expr.tyFreeVars] using h
   | lambda ann body ih =>
@@ -11789,7 +11787,7 @@ private theorem emitLets_tyFreeVars (env : List Occ) (binds : List Occ) (body : 
   | cons _ rest ih =>
     intro depth
     simp only [emitLets.go, Expr.tyFreeVars, List.append_eq_nil_iff]
-    exact ⟨⟨rfl, rfl⟩, ih (depth + 1)⟩
+    exact ⟨⟨rfl, trivial⟩, ih (depth + 1)⟩
 
 mutual
 private theorem emit_tyFreeVars (env : List Occ) (bodies : Nat → Expr) (t : DTree)

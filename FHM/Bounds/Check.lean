@@ -31,7 +31,7 @@ abbrev pinHoles := Synth.pinHoles
 /-- Infer wraps recursive binders as `let rec f = rhs in f`. Expose `rhs` so a
 scheme ascription can sit in `bctx` for honest self-application (openFresh+pin). -/
 def unwrapLetRecId : Expr → Expr
-  | .letRec _ [rhs] (.var _ _) => rhs
+  | .letRec _ [rhs] (.var _) => rhs
   | e => e
 
 /-- Look up a binder’s HM monotype body by name. -/
@@ -96,7 +96,7 @@ def checkLetSpine
     -- Infer's `letRecElab` singleton wrapper shifts free vars up by one; scheme
     -- checking prepends `scheme s` to compensate — mirror that for mono/inferred.
     let bctx' := match rhs with
-      | .letRec _ [_] (.var _ _) => BoundEnv.extend bctx (agreesTemplate τ)
+      | .letRec _ [_] (.var _) => BoundEnv.extend bctx (agreesTemplate τ)
       | _ => bctx
     withBinder n do
       match anns.binderAnns[i]? with
@@ -336,7 +336,7 @@ with boundsElab on Core with BL. Do not extend; may remain until Phase 5. -/
 def checkProgramMatchesGo (ctors : CtorEnv) (Δ : List Constraint) (bctx : BoundEnv)
     (demand : Option BoundsTy) (e : Expr) : Except String Unit :=
   match e with
-  | .primLit _ | .primBinOp _ | .var _ _ | .ctor _ => pure ()
+  | .primLit _ | .primBinOp _ | .var _ | .ctor _ => pure ()
   | .lambda ann body =>
       match demand with
       | some (.arrow βp βb) =>

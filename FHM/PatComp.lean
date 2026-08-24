@@ -1418,7 +1418,7 @@ shifted past the match/let binders introduced by the tree. -/
     the emit invariant of the campaign proves every emitted occurrence is
     bound.) -/
 def resolveOcc (env : List Occ) (occ : Occ) : Expr :=
-  .var (env.idxOf occ) []
+  .var (env.idxOf occ)
 
 /-- Wrap `body` in `letIn`s re-binding `binds` so that capture `j` sits at de
     Bruijn index `j` in `body` (innermost let = capture 0). RHS `i` (counting
@@ -1431,7 +1431,7 @@ where
   go : List Occ → Nat → Expr
     | [], _ => body.shiftFrom binds.length env.length
     | b :: rest, depth =>
-      .letIn none (.var (env.idxOf b + depth) []) (go rest (depth + 1))
+      .letIn none (.var (env.idxOf b + depth)) (go rest (depth + 1))
 
 mutual
 
@@ -1703,20 +1703,19 @@ private theorem Expr.shiftFrom_letRec (anns : List (Option PolyTy)) (bs : List E
 
 /- ### `substN` on `var` nodes (the three zones) -/
 
-private theorem Expr.substN_var_lt {i k : Nat} (h : i < k) (vs : List Expr)
-    (tyArgs : List Ty) :
-    (Expr.var i tyArgs).substN k vs = .var i tyArgs := by
+private theorem Expr.substN_var_lt {i k : Nat} (h : i < k) (vs : List Expr) :
+    (Expr.var i).substN k vs = .var i := by
   simp only [Expr.substN, if_pos h]
 
 private theorem Expr.substN_var_hit {i k : Nat} {vs : List Expr} (h1 : ¬ i < k)
-    (h2 : i - k < vs.length) (tyArgs : List Ty) :
-    (Expr.var i tyArgs).substN k vs = ((vs[i - k]).instTy tyArgs).shiftFrom 0 k := by
+    (h2 : i - k < vs.length) :
+    (Expr.var i).substN k vs = (vs[i - k]).shiftFrom 0 k := by
   simp only [Expr.substN, if_neg h1]
   rw [dif_pos h2]
 
 private theorem Expr.substN_var_beyond {i k : Nat} {vs : List Expr} (h1 : ¬ i < k)
-    (h2 : ¬ i - k < vs.length) (tyArgs : List Ty) :
-    (Expr.var i tyArgs).substN k vs = .var (i - vs.length) tyArgs := by
+    (h2 : ¬ i - k < vs.length) :
+    (Expr.var i).substN k vs = .var (i - vs.length) := by
   simp only [Expr.substN, if_neg h1]
   rw [dif_neg h2]
 
@@ -1750,7 +1749,7 @@ theorem varsBelow_getCtorArgs {n : Nat} {v : Expr} {c : CtorName}
   | primLit p => simp [getCtorArgs] at hget
   | primBinOp op => simp [getCtorArgs] at hget
   | lambda ann body _ => simp [getCtorArgs] at hget
-  | var i tyArgs => simp [getCtorArgs] at hget
+  | var i => simp [getCtorArgs] at hget
   | letIn ann rhs body _ _ => simp [getCtorArgs] at hget
   | match_ s brs _ _ => simp [getCtorArgs] at hget
   | letRec anns bs body _ _ => simp [getCtorArgs] at hget
@@ -1789,7 +1788,7 @@ theorem isValue_getCtorArgs {v : Expr} {c : CtorName} {args : List Expr}
   | primLit p => simp [getCtorArgs] at hget
   | primBinOp op => simp [getCtorArgs] at hget
   | lambda ann body _ => simp [getCtorArgs] at hget
-  | var i tyArgs => simp [getCtorArgs] at hget
+  | var i => simp [getCtorArgs] at hget
   | letIn ann rhs body _ _ => simp [getCtorArgs] at hget
   | match_ s brs _ _ => simp [getCtorArgs] at hget
   | letRec anns bs body _ _ => simp [getCtorArgs] at hget
@@ -1814,7 +1813,7 @@ theorem getCtorArgs_ctorAppliedTo {v : Expr} {c : CtorName} {args : List Expr}
   | primLit p => simp [getCtorArgs] at hget
   | primBinOp op => simp [getCtorArgs] at hget
   | lambda ann body _ => simp [getCtorArgs] at hget
-  | var i tyArgs => simp [getCtorArgs] at hget
+  | var i => simp [getCtorArgs] at hget
   | letIn ann rhs body _ _ => simp [getCtorArgs] at hget
   | match_ s brs _ _ => simp [getCtorArgs] at hget
   | letRec anns bs body _ _ => simp [getCtorArgs] at hget
@@ -1833,7 +1832,7 @@ private theorem getCtorArgs_of_isCtorChain {v : Expr} (h : IsCtorChain v) :
   | primLit p => cases h
   | primBinOp op => cases h
   | lambda ann body _ => cases h
-  | var i tyArgs => cases h
+  | var i  => cases h
   | letIn ann rhs body _ _ => cases h
   | match_ s brs _ _ => cases h
   | letRec anns bs body _ _ => cases h
@@ -1940,7 +1939,7 @@ private theorem Expr.varsBelow_instTyAux (Ts : List Ty) :
   | primLit p => intro n d; rfl
   | primBinOp op => intro n d; rfl
   | ctor nm => intro n d; rfl
-  | var i tyArgs => intro n d; rfl
+  | var i  => intro n d; rfl
   | lambda ann body ih =>
     intro n d
     simp only [Expr.instTyAux, Expr.varsBelow, ih]
@@ -2017,7 +2016,7 @@ theorem Expr.substN_substN_append (e : Expr) (k : Nat) (ws vs : List Expr)
   | primLit p => rfl
   | primBinOp op => rfl
   | ctor nm => rfl
-  | var i tyArgs =>
+  | var i  =>
     by_cases h1 : i < k
     · -- below every threshold: all three substitutions are the identity
       rw [Expr.substN_var_lt (by omega : i < k + ws.length),
@@ -2027,7 +2026,7 @@ theorem Expr.substN_substN_append (e : Expr) (k : Nat) (ws vs : List Expr)
         rw [Expr.substN_var_lt (by omega : i < k + ws.length),
           Expr.substN_var_hit h1 h2,
           Expr.substN_var_hit h1 (by simp only [List.length_append]; omega)]
-        congr 2
+        congr 1
         exact (List.getElem_append_left h2).symm
       · by_cases h3 : i - (k + ws.length) < vs.length
         · -- the `vs` zone: the substituted value is closed, so both sides
@@ -2036,16 +2035,14 @@ theorem Expr.substN_substN_append (e : Expr) (k : Nat) (ws vs : List Expr)
             Expr.substN_var_hit h1 (by simp only [List.length_append]; omega)]
           have hv : Expr.varsBelow 0 (vs[i - (k + ws.length)]) = true :=
             hcl _ (List.getElem_mem _)
-          have hv' : Expr.varsBelow 0 ((vs[i - (k + ws.length)]).instTy tyArgs) = true := by
-            rw [Expr.varsBelow_instTy]; exact hv
           have happ : (ws ++ vs)[i - k]'(by simp only [List.length_append]; omega)
               = vs[i - (k + ws.length)]'h3 := by
             rw [List.getElem_append_right (by omega : ws.length ≤ i - k)]
             congr 1
             omega
-          rw [happ, Expr.shiftFrom_of_closed hv', Expr.shiftFrom_of_closed hv']
+          rw [happ, Expr.shiftFrom_of_closed hv, Expr.shiftFrom_of_closed hv]
           exact Expr.substN_of_varsBelow ws _ k
-            (Expr.varsBelow_mono _ (Nat.zero_le k) hv')
+            (Expr.varsBelow_mono _ (Nat.zero_le k) hv)
         · -- beyond both: pure index arithmetic
           rw [Expr.substN_var_beyond (by omega : ¬ i < k + ws.length) h3,
             Expr.substN_var_beyond (by omega : ¬ i - vs.length < k) (by omega),
@@ -2092,7 +2089,7 @@ theorem Expr.substN_nil (e : Expr) (k : Nat) : e.substN k [] = e := by
   | primLit p => rfl
   | primBinOp op => rfl
   | ctor nm => rfl
-  | var i tyArgs =>
+  | var i  =>
     by_cases h : i < k
     · rw [Expr.substN_var_lt h]
     · rw [Expr.substN_var_beyond h (by simp)]
@@ -2125,7 +2122,7 @@ theorem Expr.substN_shiftFrom_cancel (e : Expr) (k : Nat) (vs : List Expr) :
   | primLit p => rfl
   | primBinOp op => rfl
   | ctor nm => rfl
-  | var i tyArgs =>
+  | var i  =>
     by_cases h : i < k
     · simp only [Expr.shiftFrom, if_pos h]
       rw [Expr.substN_var_lt h]
@@ -2387,8 +2384,8 @@ private theorem mapM_idxOf {f : Occ → Option Expr} :
 
 /-- `substN` on a var node hitting the substitution zone, `getElem?` form. -/
 private theorem Expr.substN_var_hit' {i k : Nat} {vs : List Expr} {w : Expr}
-    (h1 : ¬ i < k) (h2 : vs[i - k]? = some w) (tyArgs : List Ty) :
-    (Expr.var i tyArgs).substN k vs = (w.instTy tyArgs).shiftFrom 0 k := by
+    (h1 : ¬ i < k) (h2 : vs[i - k]? = some w) :
+    (Expr.var i).substN k vs = w.shiftFrom 0 k := by
   obtain ⟨hlt, hget⟩ := List.getElem?_eq_some_iff.mp h2
   rw [Expr.substN_var_hit h1 hlt, hget]
 
@@ -2405,11 +2402,10 @@ private theorem substN_var_resolve {root : Expr} {env : List Occ} {envVals : Lis
     (henv : env.mapM (fetch root) = some envVals)
     (hroot : Expr.varsBelow 0 root = true)
     {o : Occ} {w : Expr} (ho : o ∈ env) (hw : fetch root o = some w) (d : Nat) :
-    (Expr.var (env.idxOf o + d) []).substN d envVals = w := by
+    (Expr.var (env.idxOf o + d)).substN d envVals = w := by
   have hidx : envVals[env.idxOf o]? = some w := (mapM_idxOf henv ho).trans hw
   rw [Expr.substN_var_hit' (by omega)
-    (by rw [Nat.add_sub_cancel]; exact hidx) []]
-  rw [Expr.instTy_nil]
+    (by rw [Nat.add_sub_cancel]; exact hidx)]
   exact Expr.shiftFrom_of_closed (fetch_varsBelow hroot hw) 0 d
 
 
@@ -2466,7 +2462,7 @@ private theorem emitLets_go_adequate {root : Expr} {env : List Occ} {body : Expr
           = .letIn none u
               (((emitLets.go env binds body rest (pendOccs.length + 1)).substN
                   (pendOccs.length + 1) envVals).substN 1 pendVals) := by
-      show ((Expr.letIn none (.var (env.idxOf b + pendOccs.length) [])
+      show ((Expr.letIn none (.var (env.idxOf b + pendOccs.length))
           (emitLets.go env binds body rest (pendOccs.length + 1))).substN
             pendOccs.length envVals).substN 0 pendVals = _
       rw [Expr.substN_letIn, substN_var_resolve henv hroot hbmem hu,
@@ -2663,7 +2659,7 @@ private theorem substN_var_resolve0 {root : Expr} {env : List Occ} {envVals : Li
     (henv : env.mapM (fetch root) = some envVals)
     (hroot : Expr.varsBelow 0 root = true)
     {o : Occ} {w : Expr} (ho : o ∈ env) (hw : fetch root o = some w) :
-    (Expr.var (env.idxOf o) []).substN 0 envVals = w := by
+    (Expr.var (env.idxOf o)).substN 0 envVals = w := by
   have := substN_var_resolve henv hroot ho hw 0
   rwa [Nat.add_zero] at this
 
@@ -3458,14 +3454,14 @@ private def nestedPats : List Surface.Pattern :=
 -- match (Just 41) with Just x => x + 1 | Nothing => 0   ~~>  42
 #guard match runN 32 (lowerMatch (vJust (vInt 41)) [pJustX, pNothing]
     (fun i => if i = 0
-      then .app (.app (.primBinOp .intAdd) (.var 0 [])) (vInt 1)
+      then .app (.app (.primBinOp .intAdd) (.var 0)) (vInt 1)
       else vInt 0)) with
   | .primLit (.int 42) => true | _ => false
 
 -- match Nothing with Just x => x + 1 | Nothing => 0   ~~>  0
 #guard match runN 32 (lowerMatch vNothing [pJustX, pNothing]
     (fun i => if i = 0
-      then .app (.app (.primBinOp .intAdd) (.var 0 [])) (vInt 1)
+      then .app (.app (.primBinOp .intAdd) (.var 0)) (vInt 1)
       else vInt 0)) with
   | .primLit (.int 0) => true | _ => false
 
@@ -3473,13 +3469,13 @@ private def nestedPats : List Surface.Pattern :=
 -- x must land at var 0 and y at var 1 (pre-order): 3 - 7 = -4
 #guard match runN 32 (lowerMatch (vPair (vJust (vInt 3)) (vInt 7)) nestedPats
     (fun i => if i = 0
-      then .app (.app (.primBinOp .intSub) (.var 0 [])) (.var 1 [])
+      then .app (.app (.primBinOp .intSub) (.var 0)) (.var 1)
       else vInt 0)) with
   | .primLit (.int (-4)) => true | _ => false
 
 -- second branch of the nested match: (Nothing, 9) ⇒ y = 9 at var 0
 #guard match runN 32 (lowerMatch (vPair vNothing (vInt 9)) nestedPats
-    (fun i => if i = 0 then vInt 0 else .var 0 [])) with
+    (fun i => if i = 0 then vInt 0 else .var 0)) with
   | .primLit (.int 9) => true | _ => false
 
 -- pop-rule pathology end-to-end: match (1, Just 2) with (x, Just y) => x - y
@@ -3487,14 +3483,14 @@ private def nestedPats : List Surface.Pattern :=
 #guard match runN 32 (lowerMatch (vPair (vInt 1) (vJust (vInt 2)))
     [.pair (.name (.mk "x")) pJustX, .wildcard]
     (fun i => if i = 0
-      then .app (.app (.primBinOp .intSub) (.var 0 [])) (.var 1 [])
+      then .app (.app (.primBinOp .intSub) (.var 0)) (.var 1)
       else vInt 99)) with
   | .primLit (.int (-1)) => true | _ => false
 
 -- deep nesting (H4 stress): match Just (Just 5) with Just (Just x) => x
 #guard match runN 32 (lowerMatch (vJust (vJust (vInt 5)))
     [.ctor (.mk "Just") [pJustX], .wildcard]
-    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+    (fun i => if i = 0 then .var 0 else vInt 0)) with
   | .primLit (.int 5) => true | _ => false
 
 -- ── realistic demo: List patterns (cons/list sugar → Cons/Nil) ─────────
@@ -3508,47 +3504,47 @@ private def vCons (h t : Expr) : Expr := .app (.app (.ctor (.mk "Cons")) h) t
 -- (Cons is arity-2; only h is used, t is captured but the body ignores it)
 #guard match runN 32 (lowerMatch (vCons (vInt 42) vNil)
     [.cons (.name (.mk "h")) (.name (.mk "t")), .list []]
-    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+    (fun i => if i = 0 then .var 0 else vInt 0)) with
   | .primLit (.int 42) => true | _ => false
 
 -- List.head on Nil falls to the [] branch:  0
 #guard match runN 32 (lowerMatch vNil
     [.cons (.name (.mk "h")) (.name (.mk "t")), .list []]
-    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+    (fun i => if i = 0 then .var 0 else vInt 0)) with
   | .primLit (.int 0) => true | _ => false
 
 -- List.head on a multi-element list: Cons 7 (Cons 8 Nil)  ⇒  7
 -- (the tail is itself a Cons value — the compiler binds h=7, t=Cons 8 Nil)
 #guard match runN 32 (lowerMatch (vCons (vInt 7) (vCons (vInt 8) vNil))
     [.cons (.name (.mk "h")) (.name (.mk "t")), .list []]
-    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+    (fun i => if i = 0 then .var 0 else vInt 0)) with
   | .primLit (.int 7) => true | _ => false
 
 -- nested List-of-Maybe:  match xs with Just x :: _ => x | _ => 0
 -- (cons + ctor nesting; the wildcard tail is never bound; _ catches Nil/Nothing-head)
 #guard match runN 32 (lowerMatch (vCons (vJust (vInt 99)) vNil)
     [.cons pJustX .wildcard, .wildcard]
-    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+    (fun i => if i = 0 then .var 0 else vInt 0)) with
   | .primLit (.int 99) => true | _ => false
 
 -- same, but the head is Nothing ⇒ the cons pattern fails (Just ≠ Nothing),
 -- falls through to the catch-all wildcard:  0
 #guard match runN 32 (lowerMatch (vCons vNothing vNil)
     [.cons pJustX .wildcard, .wildcard]
-    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+    (fun i => if i = 0 then .var 0 else vInt 0)) with
   | .primLit (.int 0) => true | _ => false
 
 -- same, but the list is Nil ⇒ the cons pattern fails (Nil ≠ Cons), catches:  0
 #guard match runN 32 (lowerMatch vNil
     [.cons pJustX .wildcard, .wildcard]
-    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+    (fun i => if i = 0 then .var 0 else vInt 0)) with
   | .primLit (.int 0) => true | _ => false
 
 -- two-level List-of-List:  match xss with (x :: _) :: _ => x | _ => 0
 -- (cons inside cons — arity-2 ctor at depth 2; pre-order capture gives x@var0)
 #guard match runN 32 (lowerMatch (vCons (vCons (vInt 5) vNil) vNil)
     [.cons (.cons (.name (.mk "x")) .wildcard) .wildcard, .wildcard]
-    (fun i => if i = 0 then .var 0 [] else vInt 0)) with
+    (fun i => if i = 0 then .var 0 else vInt 0)) with
   | .primLit (.int 5) => true | _ => false
 
 end PatComp

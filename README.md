@@ -25,7 +25,7 @@ A high-level overview of the pipeline:
     · desugar / name-resolve
     · compile nested matches → flat Core matches
     · group recursive bindings (Kosaraju SCCs + condensation topo)
-→ Infer / elaborate → fully-annotated Core
+→ Infer → erase → runnable Core
   + check exhaustiveness   (separate check; both needed)
 → evaluate
 ```
@@ -34,13 +34,12 @@ In a bit more detail:
 
 - A surface language (`Surface.Expr` / `Surface.Program`) – named AST, data decls, sugar for pairs/lists/`if`; what the parser builds
 - A core language (`Core.lean`'s `Expr`) that surface is lowered into – de Bruijn indices for terms and types, flat matches, explicit constructors
-- The Hindley-Milner typing relation (`TypeOfHM`), defined on the pre-elaboration core language
-- An elaboration (`Infer`) from desugared core to a core language suitable for execution – adds type annotations on all let bindings and applied type parameters on vars (for System F style type-passing semantics)
-  - This doubles as the algorithm-oriented spec for typechecking (as opposed to the `TypeOf*` relations which are non-algorithmic, _declarative_ typing relations)
-- The HM typing relation defined on the _post_-elaboration core language (`TypeOfElabHM`)
-- A small-step, type-passing, operational semantics (`SmallStep.Step`) defined on an elaborated core-language program
+- The Hindley-Milner typing relation (`TypeOfHM`) — decoration-blind: a polymorphic use instantiates its scheme existentially, so types never live in terms
+- An inference relation (`Infer`) over source programs: Algorithm-W-style, producing a substitution and a principal monotype (annotations are ceilings; recursion inside `let rec` groups is Damas-Milner monomorphic)
+  - This doubles as the algorithm-oriented spec for typechecking (as opposed to `TypeOfHM`, which is non-algorithmic and _declarative_)
+- A small-step operational semantics (`SmallStep.Step`) that runs **type-erased** terms — its rules never inspect a type
 
-Elaboration actually does two things at once: it infers a type for every term, and it writes those types into the program as it goes. The two are inseparable – you can't annotate the bindings and variables without inferring their types first, and there's no point inferring types unless you're also getting the program closer to something runnable. The reason this is needed is that our operational semantics only accepts fully-annotated programs; but because the type system stays within HM (rank-1 prenex polymorphism), inference is still 100% decidable without any annotations. So the source stays annotation-optional, and elaboration is the phase that turns it into the fully-annotated form the evaluator needs.
+There is no elaboration phase. Inference computes types; nothing writes them back into the program. Erasure drops all annotations before evaluation, which is what makes scoped type variables safe under substitution (nothing left to orphan) and keeps the machine fully type-free.
 
 Representation choices:
 
@@ -54,15 +53,14 @@ Representation choices:
 This is where the language lives and where we say, abstractly, what it means for a program to be well-typed. It doesn't compute anything; it just lays down the rules.
 
 - `Expr`: the term language – applications, lambdas, lets (including mutually recursive ones, optionally annotated), constructors, matches, primitives.
-- `TypeOfHM`: the declarative typing relation for the pre-elaboration reading. This is textbook HM, where a polymorphic variable may be used at any instance of its scheme.
-- `TypeOfElabHM`: the same relation for the post-elaboration reading, where every polymorphic use carries the exact type arguments it was instantiated at. The two relations are identical apart from that one rule.
-- `SmallStep.Step`: a small-step semantics that runs the elaborated program directly, carrying types at runtime rather than erasing them.
+- `TypeOfHM`: the declarative HM typing relation. Decoration-blind: a polymorphic variable may be used at any instance of its scheme, chosen existentially per use.
+- `SmallStep.Step`: a small-step semantics over erased terms. Reduction never computes with types.
 
 ### [`InferW.lean`](./FHM/InferW.lean)
 
-This is where we actually work out a program's type, instead of just declaring which types are valid. It's the algorithmic side, and it's where elaboration happens.
+This is where we actually work out a program's type, instead of just declaring which types are valid. It's the algorithmic side, and it's also where the erased-term dynamics metatheory lives.
 
-- `Infer`: a relation specifying inference and elaboration together. From a source program it produces a substitution, an inferred type, and the elaborated program.
+- `Infer`: a relation specifying type inference. From a source program it produces a substitution and an inferred monotype.
 - `infer` and `inferCore`: the executable versions of that relation.
 - `typecheck`: the whole-program entry point. It runs from the empty context and generalises the result into a closed scheme.
 
@@ -72,7 +70,7 @@ This is what the language looks like to a user: real string names, data declarat
 
 ### [`SurfaceBridge.lean`](./FHM/SurfaceBridge.lean)
 
-The front end proper: lowers Surface into Core, groups flat bindings into SCCs, checks exhaustiveness, and proves the end-to-end claim – a well-typed, exhaustive surface program elaborates to Core that is type-safe and never gets stuck.
+The front end proper: lowers Surface into Core, groups flat bindings into SCCs, checks exhaustiveness, and proves the end-to-end claim – a well-typed, exhaustive surface program lowers and erases to Core that is type-safe and never gets stuck.
 
 - `Lowers` / `lower`: declarative vs executable lowering. At match there isn't a unique correct Core term – different decision trees can implement the same surface match equivalently – so the relation allows any of them, and the function picks one.
 - `SurfaceWT` / `SurfaceWTExpr`: a declarative surface typing relation – at match it requires the branches themselves to be well-typed under the binders the patterns introduce, rather than just “whatever Core the lowerer emitted typechecks.”
@@ -110,7 +108,7 @@ A single entry point that re-exports the main theorems with plain-English glosse
 
 The formal evaluator is fuelled. For actually running programs – including naive recursion that blows past any fixed fuel – there's an unbounded evaluator. The unified `fhm` CLI (see `FHM/Cli.lean`) exposes:
 
-- `fhm` / `fhm run` — parse, lower, infer (print binding and body types), exhaustiveness, elaborate, evaluate (`Live.lean`; `--json` for machine output)
+- `fhm` / `fhm run` — parse, lower, infer (print binding and body types), exhaustiveness, evaluate (`Live.lean`; `--json` for machine output)
 - `fhm diagnose` — parse + hover symbols as JSON for editors (`Diagnose.lean` / `EditorSupport.lean`)
 
 Pair `fhm run` with `scripts/watch-live.sh` and a `.fhm` file (see `scratch/live.fhm`) for a save-triggered, REPL-like loop. The Monaco playground under `editors/web/` talks to the same binary over HTTP.
@@ -118,10 +116,6 @@ Pair `fhm run` with `scripts/watch-live.sh` and a `.fhm` file (see `scratch/live
 ### [`Pretty.lean`](./FHM/Pretty.lean), [`Examples.lean`](./FHM/Examples.lean)
 
 `Pretty.lean` prints Core and Surface terms readably, and `Examples.lean` collects runnable `#eval` demos – let-polymorphism, mixed polymorphic recursion, surface→eval walks, and various ill-typed programs that should be rejected.
-
-### [`ConstraintTypeSystem.lean`](./FHM/ConstraintTypeSystem.lean) 🚧
-
-A work-in-progress experiment in a different approach. Instead of Algorithm W, it tries the constraint-based style (Wand; Pottier and Rémy), where inference generates a constraint and then solves it, using guarded constraint schemes `∀ᾱ[C].τ`. It's currently out of date against `Core`, excluded from the default build, and may be getting discarded.
 
 ### [`Bounds/`](./FHM/Bounds/) + [`BLSketch.lean`](./FHM/BLSketch.lean) + [`Z3/`](./FHM/Z3/) (optional)
 
@@ -136,21 +130,18 @@ Separate lake targets (`FHMBounds`, `FHMZ3`; not in the default build): bounded-
 
 All of these are fully proved. The theorems only use the standard axioms and are completely free of `sorry`s. `Headlines.lean` gathers them in one place if you want a single entry point.
 
-**Inference and principality** (`InferW.lean`):
+**Inference soundness** (`InferW.lean`):
 
-- `Infer.sound`: if inference succeeds, the elaborated program it returns really is well-typed under the post-elaboration relation.
-- `Infer.sourceSound`: and the original source program is well-typed under plain HM.
-- `Infer.iff_typeable`: inference succeeds exactly when the program is typeable at all.
-- `Infer.principal`: the type it finds is the [most general](https://doi.org/10.1145/582153.582176) one, and every other valid type is an instance of it.
-- `typecheck_sound`, `typecheck_iff`, `typecheck_principal`: the same three guarantees, packaged up for a whole program.
+- `Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound`: if inference succeeds, the **erased** term really has the inferred type under `TypeOfHM` — the coherence theorem tying the checker to the machine relation. Axiom-clean.
+- `principalType_sound` / `typecheck_sound`: a computed principal type types the erased program, packaged up for a whole program.
 
 **Unification** (`InferW.lean`):
 
-- `unify_sound`, `unify_complete`: the unifier returns a most general unifier when one exists, and only when one exists.
+- `unify_sound`: whenever the unifier returns a substitution, it really is a most-general unifier of its inputs.
 
 **Recursive bindings** (`InferW.lean`):
 
-- `InferRecGroup.sound`, `InferRecGroup.complete`: inference is sound and complete for mutually recursive groups – unannotated members are checked monomorphically and then generalised, annotated members are checked at their declared schemes (polymorphic recursion), and one group may mix both kinds.
+- `InferRecGroup.sound`: inference is sound for mutually recursive groups — unannotated members are checked monomorphically and then generalised for the group body (Damas-Milner); the annotations on annotated members act as ceilings that must cover what the group inferred.
 
 **Pattern compilation** (`PatComp.lean`):
 
@@ -160,12 +151,11 @@ All of these are fully proved. The theorems only use the standard axioms and are
 **Exhaustiveness** (`SurfaceBridge.lean`):
 
 - `checkExhaustive_sound`: if the executable coverage checker says yes, the declarative coverage predicate that type safety needs holds.
-- Exhaustiveness is preserved through lowering and elaboration.
+- Exhaustiveness is preserved through lowering and erasure.
 
 **Surface / program safety** (`SurfaceBridge.lean`):
 
-- `surface_type_safe` / `program_type_safe`: a well-typed, exhaustive surface expression / program elaborates to Core that never gets stuck.
-- `surface_type_safe_of_SurfaceWT`: the same claim, starting from the declarative surface typing relation rather than the executable lower/typecheck pipeline. (The converse – that executable acceptance implies a declarative surface typing – is still open.)
+- `surface_type_safe` / `program_type_safe`: a well-typed, exhaustive surface expression / program lowers and erases to Core that never gets stuck.
 
 **Data declarations & binding groups**:
 
@@ -177,30 +167,26 @@ All of these are fully proved. The theorems only use the standard axioms and are
 - `kosaraju_sound`: the executable Kosaraju partition satisfies `ValidSccPartition`.
 - `ValidSccPartition.eqv_mutual`: any two valid SCC partitions of the same graph agree (components are mutual-reachability classes, up to reordering).
 
-**Runtime safety** (`Core.lean`):
+**Runtime safety** (`InferW.lean`, over erased terms):
 
-- `TypeOfElabHM.progress`: a well-typed elaborated program is either a finished value or it can take another step.
-- `TypeOfElabHM.preservation`: taking a step never changes a program's type.
-- `TypeOfElabHM.type_safety` / `type_safety_star`: putting those together, a well-typed program never gets stuck – including under iterated stepping.
-
-**The elaboration bridge** (`Core.lean`):
-
-- `TypeOfElabHM.faithful`: anything well-typed after elaboration was already well-typed in plain HM, so elaboration never invents new typings.
+- `TypeOfHM.progress`: a well-typed erased program is either a finished value or it can take another step.
+- `TypeOfHM.preservation`: taking a step never changes a program's type.
+- `TypeOfHM.type_safety` / `type_safety_star`: putting those together, a well-typed program never gets stuck – including under iterated stepping.
 
 **Safe pipeline** (`Headlines.lean`):
 
-- `elaborateSafe`: if a surface program typechecks and is exhaustive, returns the elaborated Core term together with proofs of both.
+- `elaborateSafe`: if a surface program typechecks and is exhaustive, returns the **erased** Core term together with proofs of both.
 - `runSafe`: given those proofs, evaluates under fuel. The only thing that can go "wrong" is nontermination – unavoidable in a Turing-complete language.
 
-## Why type-passing semantics for a Hindley-Milner language
+## Why type-erased semantics for a Hindley-Milner language
 
-I first implemented a simple language without type annotations at all. Then I wanted to support type annotations that could mention type variables (skolems) from a higher enclosing scope. That caused a problem because when a let binding reduces, those skolems can end up orphaned, pointing at a scope that no longer exists. This would break type preservation, as stepping would result in an invalid, ill-scoped type variable reference. I decided to tackle this by erasing all type annotations before running a program, and defining all theorems related to evaluation against type-erased programs. That makes sure there are no skolems left to dangle during evaluation.
+I first implemented a simple language without type annotations at all. Then I wanted to support type annotations that could mention type variables (skolems) from a higher enclosing scope. That caused a problem because when a let binding reduces, those skolems can end up orphaned, pointing at a scope that no longer exists. This would break type preservation, as stepping would result in an invalid, ill-scoped type variable reference.
 
-Then I wanted to support mutually recursive let bindings. This is manageable as long as you stick to unannotated bindings or keep them all monomorphic.
+My first fix was the opposite of erasure: keep every type in the term and run a [type-passing](https://doi.org/10.1017/S0956796801004282) semantics, with inference elaborating each program into fully-annotated form before evaluation. That worked, but it had real costs: variables carried their instantiation types at runtime, generalisation had to be written into the program as term-level Λ-nesting (making `let rec` elaboration quadratic), and the whole story needed a second typing relation for the post-elaboration reading plus a second soundness proof tying it back to plain HM.
 
-But then I also wanted _polymorphic_ mutual recursion. This was hard, because inferring it in general is [undecidable](https://doi.org/10.1145/169701.169692), but it becomes decidable once each binding carries a type annotation. The catch is that those annotations can no longer be erased: erase them and inference has to fall back to the monomorphic case, which would leave the typed language strictly weaker than the annotated one. What used to be two separate valid instantiations of a single polymorphic binding has now become two incompatible applications of a _monomorphic_ binding. So erasing types is no longer an option.
+Then I wanted _polymorphic_ mutual recursion, and combining it with scoped type variables under type-passing forced exactly the machinery I was trying to avoid. The resolution was to accept textbook Damas-Milner semantics inside `let rec` groups (members are used monomorphically within the group and generalised for its body). With that cut, annotations become runtime-inert — so the migration could go back to my original instinct: **erase all types before running**, define every evaluation theorem against erased terms, and let inference stay a pure type computation with no elaborated output. Scoped type variables still check statically; there is simply nothing left in terms to dangle at runtime. `Infer.sound` is the theorem that makes this coherent: what the checker accepts is exactly what the (type-free) machine runs safely.
 
-That's what forced the current evaluation model. Instead of erasing types, the program keeps them and runs under a [type-passing](https://doi.org/10.1017/S0956796801004282) semantics, and inference elaborates each program into fully-annotated form. To show that this is merely an evaluation semantics and type annotations are not required for inference, we maintain two different declarative typing relations as stated above: one for the program _before_ elaboration and one for after, with `TypeOfElabHM.faithful` tying them together.
+The old type-passing design is preserved in this repo's git history (and in `briefs/design-memo-erasure-migration.md`, which records why each piece was removed).
 
 ## Building
 

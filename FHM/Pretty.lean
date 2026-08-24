@@ -121,7 +121,7 @@ def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
   | .primBinOp .intSub => "intSub"
   | .primBinOp .intLt => "intLt"
   | .primBinOp .charLt => "charLt"
-  | .var n _   => (ctx[n]?).getD ("#" ++ toString n)
+  | .var n => (ctx[n]?).getD ("#" ++ toString n)
   | .ctor (.mk "Nil") => "[]"
   | .ctor (.mk s) => s
   | .app (.app (.ctor (.mk "Pair")) a) b =>
@@ -208,23 +208,23 @@ section Examples
 #eval toString (Ty.arrow (.arrow (.prim .int) (.prim .int)) (.prim .int))
 
 -- `λx. x`
-#eval toString (Expr.lambda none (.var 0 []))
+#eval toString (Expr.lambda none (.var 0))
 -- `λx. λy. x`
-#eval toString (Expr.lambda none (.lambda none (.var 1 [])))
+#eval toString (Expr.lambda none (.lambda none (.var 1)))
 -- `(λx. x) 5`
-#eval toString (Expr.app (.lambda none (.var 0 [])) (.primLit (.int 5)))
+#eval toString (Expr.app (.lambda none (.var 0)) (.primLit (.int 5)))
 -- `let x : ∀ a. a → a = λy. y in x x`
 #eval toString (Expr.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
-  (.lambda none (.var 0 [])) (.app (.var 0 []) (.var 0 [])))
+  (.lambda none (.var 0)) (.app (.var 0) (.var 0)))
 -- `λx. match x with | Cons y z => y | Nil => x | _ => x`
-#eval toString (Expr.lambda none (.match_ (.var 0 [])
-  [(.named (.mk "Cons") 2, .var 1 []), (.named (.mk "Nil") 0, .var 0 []), (.wildcard, .var 0 [])]))
+#eval toString (Expr.lambda none (.match_ (.var 0)
+  [(.named (.mk "Cons") 2, .var 1), (.named (.mk "Nil") 0, .var 0), (.wildcard, .var 0)]))
 
 -- List/pair sugar: `[1, 2]`, `1 :: x`, `(1, 2)`
 #guard toString (Expr.app (.app (.ctor (.mk "Cons")) (.primLit (.int 1)))
   (.app (.app (.ctor (.mk "Cons")) (.primLit (.int 2))) (.ctor (.mk "Nil")))) = "[1, 2]"
 #guard toString (Expr.ctor (.mk "Nil")) = "[]"
-#guard toString (Expr.app (.app (.ctor (.mk "Cons")) (.primLit (.int 1))) (.var 0 [])) = "1 :: #0"
+#guard toString (Expr.app (.app (.ctor (.mk "Cons")) (.primLit (.int 1))) (.var 0)) = "1 :: #0"
 #guard toString (Expr.app (.app (.ctor (.mk "Pair")) (.primLit (.int 1))) (.primLit (.int 2))) = "(1, 2)"
 #guard toString (Ty.customTy (.mk "Pair") [.prim .int, .customTy (.mk "List") [.prim .int]])
   = "(Int, List Int)"

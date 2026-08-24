@@ -754,10 +754,10 @@ inductive HasBounds :
         (.app (.app (.ctor consCtorName) h) t)
         (listTy α)
         (.list (.add lo (.lit 1)) (.add hi (.lit 1)) βe)
-  | var {Δ bctx i tyArgs τ β} :
+  | var {Δ bctx i τ β} :
       bctx[i]? = some (.mono β) →
       Agrees β τ →
-      HasBounds Δ bctx (.var i tyArgs) τ β
+      HasBounds Δ bctx (.var i) τ β
   | app {Δ bctx f arg τa τr βa βr βa'} :
       HasBounds Δ bctx f (.arrow τa τr) (.arrow βa βr) →
       HasBounds Δ bctx arg τa βa' →

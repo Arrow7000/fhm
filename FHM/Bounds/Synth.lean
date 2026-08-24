@@ -617,8 +617,8 @@ def inferBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (e : Expr)
   match e with
   | .primLit p =>
       pure (Φ, PrimLitExpr.ty p, boundInfoOfPrimLit p)
-  | .var i tyArgs => do
-      let (Φ', β) ← lookupBound bctx Φ i tyArgs
+  | .var i => do
+      let (Φ', β) ← lookupBound bctx Φ i []
       pure (Φ', BoundsTy.toTy β, β)
   | .ctor name =>
       if name == nilCtorName then
@@ -705,8 +705,8 @@ def checkBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
       -- HM type already checked by Infer; bounds are prim-shaped.
       let _ := τ
       pure (Φ, boundInfoOfPrimLit p)
-  | .var i tyArgs => do
-      let (Φ', β) ← lookupBound bctx Φ i tyArgs
+  | .var i => do
+      let (Φ', β) ← lookupBound bctx Φ i []
       let _ := τ
       pure (Φ', β)
   | .ctor name => do
