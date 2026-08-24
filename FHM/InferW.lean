@@ -383,14 +383,7 @@ theorem Expr.mem_tyFreeVars_eraseBounds (e : Expr) (x : Nat) :
     x ∈ e.eraseBounds.tyFreeVars ↔ x ∈ e.tyFreeVars := by
   induction e using Expr.rec_strong with
   | primLit _ | primBinOp _ | ctor _ => simp [Expr.eraseBounds, Expr.tyFreeVars]
-  | var _i tyArgs =>
-    simp only [Expr.eraseBounds, Expr.tyFreeVars, List.mem_flatMap, List.mem_map]
-    constructor
-    · intro ⟨t, ht, hx⟩
-      obtain ⟨t0, ht0, rfl⟩ := ht
-      exact ⟨t0, ht0, (Ty.mem_freeVars_eraseBounds t0 x).mp hx⟩
-    · intro ⟨t, ht, hx⟩
-      exact ⟨Ty.eraseBounds t, ⟨t, ht, rfl⟩, (Ty.mem_freeVars_eraseBounds t x).mpr hx⟩
+  | var _i => simp [Expr.eraseBounds, Expr.tyFreeVars]
   | lambda ann body ih =>
     cases ann with
     | none =>
@@ -1614,941 +1607,6 @@ theorem LamSeed.ann_openVarsFrom {Φ : Nat} {ann pt Φ₀} (h : LamSeed Φ ann p
     simp only [Option.map_some, Option.some.injEq]
     exact Ty.openVarsFrom_eq_self_of_containsBvars (hlc.mono (Nat.zero_le d))
 
-/-! ### Closing scoped type variables in a term (the elaboration inverse of `openTyVars`)
-
-The annotated binders (`letInAnn`, `letRecAnn`) infer the *opened* bound expression
-(`rhs.openTyVars Ys`), so its elaboration comes back with the scheme's variables
-resolved to fresh `fvar`s `Ys`. To place that elaboration back in the closed scope of
-`.letIn (some σ) rhs body` we must **close** it over `Ys` — replacing `fvar Ys[i]` by
-the scheme's `bvar`. `Expr.closeTyVars` is the structural inverse of `Expr.openTyVars`:
-it mirrors `Expr.openTyVarsAux`'s depth tracking exactly, using `Ty.closeOverFrom`
-(close at depth `d`, producing `bvar (d + i)`) in place of `Ty.openVarsFrom`. This is
-the term-level realisation of type-passing for scoped variables: a use that
-instantiated the enclosing scheme's own variable gets a `bvar` tyArg pointing at that
-binder. -/
-
-mutual
-/-- Close `fvar`s in `vars` to `bvar (d + idx)` (depth-shifted `Ty.closeOver`). -/
-def Ty.closeOverFrom (d : Nat) (vars : List Nat) : Ty → Ty
-  | .prim p          => .prim p
-  | .arrow a b       => .arrow (a.closeOverFrom d vars) (b.closeOverFrom d vars)
-  | .bvar i          => .bvar i
-  | .customTy nm tys => .customTy nm (TyList.closeOverFrom d vars tys)
-  | .bl lo hi e      => .bl lo hi (e.closeOverFrom d vars)
-  | .fvar n          =>
-      match vars.idxOf? n with
-      | some i => .bvar (d + i)
-      | none   => .fvar n
-def TyList.closeOverFrom (d : Nat) (vars : List Nat) : List Ty → List Ty
-  | []        => []
-  | hd :: tl  => hd.closeOverFrom d vars :: TyList.closeOverFrom d vars tl
-end
-
-/-- Close scoped type variables through a recursion group's SCHEME-ANNOTATION
-    BODIES: each present `σⱼ.body` is descended at `d + σⱼ.paramCount` (shielding
-    `σⱼ`'s own quantified variables), the structural inverse of Core's
-    `RecGroup.openAnns`. A no-op on `none` entries and self-contained schemes. This
-    keeps `open`/`close` symmetric on scheme bodies, so a scheme may reference an
-    enclosing scope's type variable and the close-back correctly rebinds it. -/
-def RecGroup.closeAnns (d : Nat) (Xs : List Nat) (anns : List (Option PolyTy)) :
-    List (Option PolyTy) :=
-  anns.map (Option.map (fun σ => { σ with body := Ty.closeOverFrom (d + σ.paramCount) Xs σ.body }))
-
-@[simp] theorem RecGroup.closeAnns_nil (d : Nat) (Xs : List Nat) :
-    RecGroup.closeAnns d Xs [] = [] := rfl
-
-theorem RecGroup.closeAnns_cons (d : Nat) (Xs : List Nat) (a : Option PolyTy)
-    (as : List (Option PolyTy)) :
-    RecGroup.closeAnns d Xs (a :: as)
-      = a.map (fun σ => { σ with body := Ty.closeOverFrom (d + σ.paramCount) Xs σ.body })
-          :: RecGroup.closeAnns d Xs as := rfl
-
-/-- `PolyTy.substFvars` acts only on the body (the `paramCount` is preserved). -/
-theorem PolyTy.substFvars_mk : ∀ (S : List (Nat × Ty)) (pc : Nat) (b : Ty),
-    PolyTy.substFvars S { paramCount := pc, body := b }
-      = { paramCount := pc, body := Ty.substFvars S b }
-  | [], _, _ => rfl
-  | (Z, U) :: rest, pc, b => by
-      simp only [PolyTy.substFvars, PolyTy.substFvar, Ty.substFvars]
-      exact PolyTy.substFvars_mk rest pc (Ty.substFvar Z U b)
-
-mutual
-/-- Close the scoped type variables `Xs` inside a term's annotations and var/ctor
-    tyArgs: the structural inverse of `Expr.openTyVarsAux` (same `d` discipline). -/
-def Expr.closeTyVarsAux (d : Nat) (Xs : List Nat) : Expr → Expr
-  | .primLit p          => .primLit p
-  | .primBinOp op       => .primBinOp op
-  | .lambda ann body    => .lambda (ann.map (Ty.closeOverFrom d Xs)) (body.closeTyVarsAux d Xs)
-  | .app f arg          => .app (f.closeTyVarsAux d Xs) (arg.closeTyVarsAux d Xs)
-  | .letIn (some σ) rhs body =>
-      .letIn (some { σ with body := Ty.closeOverFrom (d + σ.paramCount) Xs σ.body })
-        (rhs.closeTyVarsAux (d + σ.paramCount) Xs)
-        (body.closeTyVarsAux d Xs)
-  | .letIn none rhs body =>
-      .letIn none (rhs.closeTyVarsAux d Xs) (body.closeTyVarsAux d Xs)
-  | .var i tyArgs       => .var i (tyArgs.map (Ty.closeOverFrom d Xs))
-  | .ctor c             => .ctor c
-  | .match_ scrut branches =>
-      .match_ (scrut.closeTyVarsAux d Xs) (BranchList.closeTyVarsAux d Xs branches)
-  | .letRec anns bindings body =>
-      .letRec (RecGroup.closeAnns d Xs anns)
-        (RecGroup.closeTyVarsAux d Xs anns bindings)
-        (body.closeTyVarsAux d Xs)
-
-private def BranchList.closeTyVarsAux (d : Nat) (Xs : List Nat) :
-    List (MatchPattern × Expr) → List (MatchPattern × Expr)
-  | []                  => []
-  | (pat, body) :: rest => (pat, body.closeTyVarsAux d Xs) :: BranchList.closeTyVarsAux d Xs rest
-
-/-- Close the scoped type variables `Xs` through a recursion group's bindings: each
-    binding is descended at `d + RecAnn.params aⱼ` (shielding its own scheme's
-    variables when annotated), the anns consumed in lockstep — the structural
-    inverse of Core's `RecGroup.openTyVarsAux`. -/
-private def RecGroup.closeTyVarsAux (d : Nat) (Xs : List Nat) :
-    List (Option PolyTy) → List Expr → List Expr
-  | _,       []        => []
-  | [],      e :: rest => e.closeTyVarsAux d Xs :: RecGroup.closeTyVarsAux d Xs [] rest
-  | a :: as, e :: rest =>
-      e.closeTyVarsAux (d + RecAnn.params a) Xs :: RecGroup.closeTyVarsAux d Xs as rest
-end
-
-/-- Close the scoped type variables `Xs` of an enclosing scheme through a term
-    (top level, `d = 0`): the inverse of `Expr.openTyVars`. -/
-def Expr.closeTyVars (Xs : List Nat) (e : Expr) : Expr := e.closeTyVarsAux 0 Xs
-
-/-- A term's *scoped* (annotation) type variables: the free type vars of its
-    lambda/let/`letRecAnn` scheme annotations only, **excluding** the emitted
-    `var`/`ctor` `tyArgs`. The emitted tyArgs are inference openings (generalisable),
-    not user-written rigid scoped variables, so they must not enter the rigid set
-    that `genScheme` excludes from generalisation — otherwise let-polymorphism through
-    a polymorphic var-use would be lost (the var's fresh opening would be frozen
-    rigid). This is the correct rigid set: a term's *own* annotation scoped vars are
-    caught here, while outer scoped vars are excluded from generalisation via
-    `env.freeVars`. Mirrors `Expr.tyFreeVars` with the `var`/`ctor` cases emptied. -/
-def Expr.annTyFreeVars : Expr → List Nat
-  | .primLit _          => []
-  | .primBinOp _        => []
-  | .lambda ann body    => (ann.elim [] Ty.freeVars) ++ body.annTyFreeVars
-  | .app f arg          => f.annTyFreeVars ++ arg.annTyFreeVars
-  | .letIn ann rhs body => (ann.elim [] (fun σ => σ.body.freeVars)) ++ rhs.annTyFreeVars ++ body.annTyFreeVars
-  | .var _ _            => []
-  | .ctor _             => []
-  | .match_ scrut branches => scrut.annTyFreeVars ++ BranchList.annTyFreeVars branches
-  | .letRec anns bindings body =>
-      AnnList.annTyFreeVars anns ++ RecGroup.annTyFreeVars bindings ++ body.annTyFreeVars
-where
-  BranchList.annTyFreeVars : List (MatchPattern × Expr) → List Nat
-  | []                  => []
-  | (_, body) :: rest   => body.annTyFreeVars ++ Expr.annTyFreeVars.BranchList.annTyFreeVars rest
-  RecGroup.annTyFreeVars : List Expr → List Nat
-  | []        => []
-  | e :: rest => e.annTyFreeVars ++ Expr.annTyFreeVars.RecGroup.annTyFreeVars rest
-  AnnList.annTyFreeVars : List (Option PolyTy) → List Nat
-  | []        => []
-  | a :: rest => (a.elim [] (fun σ => σ.body.freeVars)) ++ Expr.annTyFreeVars.AnnList.annTyFreeVars rest
-
-/-- `TyList.closeOverFrom` is a `map` (mirrors `TyList.closeOver_eq_map`). -/
-theorem TyList.closeOverFrom_eq_map (d : Nat) (Ys : List Nat) (l : List Ty) :
-    TyList.closeOverFrom d Ys l = l.map (Ty.closeOverFrom d Ys) := by
-  induction l with
-  | nil => rfl
-  | cons hd tl ih => simp only [TyList.closeOverFrom, List.map_cons, ih]
-
-/-- `idxOf?` locates the element (Core has this privately). -/
-private theorem List.getElem?_of_idxOf? {α : Type*} [BEq α] [LawfulBEq α]
-    {l : List α} {a : α} {i : Nat} (h : l.idxOf? a = some i) : l[i]? = some a := by
-  induction l generalizing i with
-  | nil => simp [List.idxOf?_nil] at h
-  | cons x xs ih =>
-    rw [List.idxOf?_cons] at h
-    split at h
-    · rename_i hxa
-      simp only [Option.some.injEq] at h
-      subst h
-      simp [eq_of_beq hxa]
-    · obtain ⟨j, hj, rfl⟩ := Option.map_eq_some_iff.mp h
-      simpa using ih hj
-
-/-- Depth-general close-then-reopen-at-the-same-names is the identity. `t`'s bvars
-    must be `< d` (so the `bvar (d+i)` introduced by closing are genuinely new).
-    Depth-general analog of Core's `Ty.openVars_closeOver_self`. -/
-theorem Ty.openVarsFrom_closeOverFrom_self {d : Nat} {Ys : List Nat} :
-    ∀ {t : Ty}, ContainsBvarsUpTo d t → Ty.openVarsFrom d Ys (Ty.closeOverFrom d Ys t) = t := by
-  intro t ht
-  induction t using Ty.rec_strong with
-  | prim p => rfl
-  | bvar i =>
-    cases ht with
-    | bvar hlt =>
-      simp only [Ty.closeOverFrom, Ty.openVarsFrom, Ty.instantiate, if_pos hlt]
-  | fvar n =>
-    simp only [Ty.closeOverFrom]
-    cases h_idx : Ys.idxOf? n with
-    | none => simp only [Ty.openVarsFrom, Ty.instantiate]
-    | some i =>
-      have hYi : Ys[i]? = some n := List.getElem?_of_idxOf? h_idx
-      simp only [Ty.openVarsFrom, Ty.instantiate, if_neg (by omega : ¬ d + i < d),
-        Nat.add_sub_cancel_left, hYi, Option.elim]
-  | arrow a b iha ihb =>
-    cases ht with
-    | arrow ha hb =>
-      simp only [Ty.closeOverFrom, Ty.openVarsFrom, Ty.instantiate] at iha ihb ⊢
-      rw [iha ha, ihb hb]
-  | customTy nm tys ih =>
-    cases ht with
-    | customTy hall =>
-      simp only [Ty.closeOverFrom, TyList.closeOverFrom_eq_map, Ty.openVarsFrom, Ty.instantiate,
-        TyList.instantiate_eq_map, List.map_map]
-      apply congrArg (Ty.customTy nm)
-      conv_rhs => rw [← List.map_id tys]
-      apply List.map_congr_left
-      intro t ht_mem
-      have hres := ih t ht_mem (hall t ht_mem)
-      simpa only [Ty.openVarsFrom, Function.comp_apply, id_eq] using hres
-  | bl lo hi e ih =>
-    cases ht with
-    | bl he =>
-      simp only [Ty.closeOverFrom, Ty.openVarsFrom, Ty.instantiate] at ih ⊢
-      rw [ih he]
-
-/-- Depth-general close-then-open-at-different-names = rename `Ys ↦ Xs`. -/
-theorem Ty.openVarsFrom_closeOverFrom_rename {d : Nat} {Ys Xs : List Nat}
-    (hYnodup : Ys.Nodup) (hlen : Xs.length = Ys.length) (hYXdisj : ∀ y ∈ Ys, y ∉ Xs) :
-    ∀ {t : Ty}, ContainsBvarsUpTo d t →
-      Ty.openVarsFrom d Xs (Ty.closeOverFrom d Ys t)
-        = Ty.substFvars (Ys.zip (Xs.map (Ty.fvar ·))) t := by
-  have h_freshV : ∀ Y ∈ Ys, Y ∉ Ty.freeVarsList (Xs.map (Ty.fvar ·)) := by
-    intro Y hY hc
-    refine hYXdisj Y hY ?_
-    clear hY hlen hYnodup hYXdisj
-    induction Xs with
-    | nil => simp only [List.map_nil, Ty.freeVarsList] at hc; exact absurd hc List.not_mem_nil
-    | cons x xs ih =>
-      simp only [List.map_cons, Ty.freeVarsList, List.mem_dedup, List.mem_append] at hc
-      cases hc with
-      | inl h => simp only [Ty.freeVars, List.mem_singleton] at h; exact h ▸ List.mem_cons_self
-      | inr h => exact List.mem_cons_of_mem _ (ih h)
-  intro t ht
-  induction t using Ty.rec_strong with
-  | prim p => simp only [Ty.closeOverFrom, Ty.openVarsFrom, Ty.instantiate, Ty.substFvars_prim]
-  | bvar i =>
-    cases ht with
-    | bvar hlt =>
-      simp only [Ty.closeOverFrom, Ty.openVarsFrom, Ty.instantiate, if_pos hlt, Ty.substFvars_bvar]
-  | fvar n =>
-    simp only [Ty.closeOverFrom]
-    cases h_idx : Ys.idxOf? n with
-    | none =>
-      simp only [Ty.openVarsFrom, Ty.instantiate]
-      refine (Ty.substFvars_eq_self_of_no_key ?_).symm
-      intro p hp hc
-      simp only [Ty.freeVars, List.mem_singleton] at hc
-      subst hc
-      exact (List.idxOf?_eq_none_iff.mp h_idx) (List.of_mem_zip hp).1
-    | some i =>
-      have hYi : Ys[i]? = some n := List.getElem?_of_idxOf? h_idx
-      obtain ⟨hi, -⟩ := List.getElem?_eq_some_iff.mp hYi
-      have hxi : Xs[i]? = some Xs[i] := List.getElem?_eq_getElem (by omega)
-      have hvi : (Xs.map (Ty.fvar ·))[i]? = some (Ty.fvar Xs[i]) := by
-        rw [List.getElem?_map, hxi]; rfl
-      simp only [Ty.openVarsFrom, Ty.instantiate, if_neg (by omega : ¬ d + i < d),
-        Nat.add_sub_cancel_left, hxi, Option.elim]
-      exact (Ty.substFvars_zip_fvar_eq (by rw [List.length_map]; exact hlen) hYnodup h_freshV hYi hvi).symm
-  | arrow a b iha ihb =>
-    cases ht with
-    | arrow ha hb =>
-      simp only [Ty.closeOverFrom, Ty.openVarsFrom, Ty.instantiate, Ty.substFvars_arrow] at iha ihb ⊢
-      rw [iha ha, ihb hb]
-  | customTy nm tys ih =>
-    cases ht with
-    | customTy hall =>
-      simp only [Ty.closeOverFrom, TyList.closeOverFrom_eq_map, Ty.openVarsFrom, Ty.instantiate,
-        TyList.instantiate_eq_map, Ty.substFvars_customTy, List.map_map]
-      apply congrArg (Ty.customTy nm)
-      apply List.map_congr_left
-      intro t ht_mem
-      have hres := ih t ht_mem (hall t ht_mem)
-      simpa only [Ty.openVarsFrom, Function.comp_apply] using hres
-  | bl lo hi e ih =>
-    cases ht with
-    | bl he =>
-      simp only [Ty.closeOverFrom, Ty.openVarsFrom, Ty.instantiate, Ty.substFvars_bl] at ih ⊢
-      rw [ih he]
-
-/-- Closing over `Ys` removes every `Ys` from a type's free vars (depth-general
-    analog of Core's `Ty.not_mem_closeOver_freeVars`). -/
-theorem Ty.not_mem_closeOverFrom_freeVars {d : Nat} {Ys : List Nat} {g : Nat} (hg : g ∈ Ys) :
-    ∀ {t : Ty}, g ∉ (Ty.closeOverFrom d Ys t).freeVars := by
-  intro t
-  induction t using Ty.rec_strong with
-  | prim p => simp [Ty.closeOverFrom, Ty.freeVars]
-  | bvar i => simp [Ty.closeOverFrom, Ty.freeVars]
-  | fvar n =>
-    simp only [Ty.closeOverFrom]
-    cases h_idx : Ys.idxOf? n with
-    | none =>
-      simp only [Ty.freeVars, List.mem_singleton]
-      intro hc; exact (List.idxOf?_eq_none_iff.mp h_idx) (hc ▸ hg)
-    | some i => simp [Ty.freeVars]
-  | arrow a b iha ihb =>
-    simp only [Ty.closeOverFrom, Ty.freeVars, List.mem_dedup, List.mem_append, not_or]
-    exact ⟨iha, ihb⟩
-  | customTy nm tys ih =>
-    simp only [Ty.closeOverFrom, Ty.freeVars, TyList.closeOverFrom_eq_map]
-    rw [TyList.not_mem_freeVars_iff]
-    intro t ht
-    obtain ⟨t'', _, rfl⟩ := List.mem_map.mp ht
-    exact ih t'' (by assumption)
-  | bl lo hi e ih =>
-    simp only [Ty.closeOverFrom, Ty.freeVars] at *
-    exact ih
-
-/-- `RecGroup.closeTyVarsAux` characterised by `RecGroup.shieldDepths` (the fused
-    anns-keyed analogue of Core's `RecGroup.openTyVarsAux_eq_zip`). -/
-private theorem RecGroup.closeTyVarsAux_eq_zip (d : Nat) (Xs : List Nat)
-    (anns : List (Option PolyTy)) (bs : List Expr) :
-    RecGroup.closeTyVarsAux d Xs anns bs
-      = (bs.zip (RecGroup.shieldDepths d anns bs)).map (fun p => p.1.closeTyVarsAux p.2 Xs) := by
-  induction bs generalizing anns with
-  | nil => cases anns <;> rfl
-  | cons hd tl ih =>
-    cases anns with
-    | nil =>
-      simp only [RecGroup.closeTyVarsAux, RecGroup.shieldDepths, List.zip_cons_cons,
-        List.map_cons, ih]
-    | cons a as =>
-      simp only [RecGroup.closeTyVarsAux, RecGroup.shieldDepths, List.zip_cons_cons,
-        List.map_cons, ih]
-
-theorem RecGroup.closeTyVarsAux_length (d : Nat) (Xs : List Nat)
-    (anns : List (Option PolyTy)) (bs : List Expr) :
-    (RecGroup.closeTyVarsAux d Xs anns bs).length = bs.length := by
-  rw [RecGroup.closeTyVarsAux_eq_zip, List.length_map, List.length_zip,
-    RecGroup.shieldDepths_length, Nat.min_self]
-
-private theorem BranchList.closeTyVarsAux_eq_map {d : Nat} {Xs : List Nat}
-    {brs : List (MatchPattern × Expr)} :
-    BranchList.closeTyVarsAux d Xs brs = brs.map (fun pb => (pb.1, pb.2.closeTyVarsAux d Xs)) := by
-  induction brs with
-  | nil => rfl
-  | cons hd tl ih => obtain ⟨p, b⟩ := hd; simp only [BranchList.closeTyVarsAux, List.map_cons, ih]
-
-/-- `RecGroup` close-then-reopen-at-the-same-names is the identity, given the
-    per-binding identity. Direct recursion on `(anns, bindings)` (no `eq_zip`,
-    avoiding the `shieldDepths`-recomputation under the nested `open (close …)`). -/
-private theorem RecGroup.openClose_self (Ys : List Nat) :
-    ∀ (anns : List (Option PolyTy)) (bindings : List Expr) (d : Nat),
-      Expr.TyBvarBounded.RecGroup d anns bindings →
-      (∀ e ∈ bindings, ∀ d', e.TyBvarBounded d' →
-        (e.closeTyVarsAux d' Ys).openTyVarsAux d' Ys = e) →
-      RecGroup.openTyVarsAux d Ys anns (RecGroup.closeTyVarsAux d Ys anns bindings)
-        = bindings := by
-  intro anns bindings
-  induction bindings generalizing anns with
-  | nil => intro d _ _; cases anns <;> rfl
-  | cons hd tl ih =>
-    intro d hbb hself
-    cases anns with
-    | nil =>
-      simp only [Expr.TyBvarBounded.RecGroup] at hbb
-      simp only [RecGroup.closeTyVarsAux, RecGroup.openTyVarsAux, List.cons.injEq]
-      exact ⟨hself hd List.mem_cons_self d hbb.1,
-             ih [] d hbb.2 (fun e he => hself e (List.mem_cons_of_mem _ he))⟩
-    | cons a as =>
-      simp only [Expr.TyBvarBounded.RecGroup] at hbb
-      simp only [RecGroup.closeTyVarsAux, RecGroup.openTyVarsAux, List.cons.injEq]
-      exact ⟨hself hd List.mem_cons_self (d + RecAnn.params a) hbb.1,
-             ih as d hbb.2 (fun e he => hself e (List.mem_cons_of_mem _ he))⟩
-
-/-- Close-then-reopen-at-the-same-names is the identity on scheme-annotation bodies,
-    given each present body's bvars are within `d + σ.paramCount` (the anns-list lift
-    of `Ty.openVarsFrom_closeOverFrom_self`). Makes `open`/`close` symmetric on the
-    `letRec` scheme bodies. -/
-theorem RecGroup.openAnns_closeAnns_self {d : Nat} {Ys : List Nat} {anns : List (Option PolyTy)}
-    (h : ∀ σ, some σ ∈ anns → ContainsBvarsUpTo (d + σ.paramCount) σ.body) :
-    RecGroup.openAnns d Ys (RecGroup.closeAnns d Ys anns) = anns := by
-  simp only [RecGroup.openAnns, RecGroup.closeAnns, List.map_map]
-  conv_rhs => rw [← List.map_id anns]
-  refine List.map_congr_left (fun a ha => ?_)
-  cases a with
-  | none => rfl
-  | some σ =>
-    obtain ⟨pc, sbody⟩ := σ
-    simp only [Function.comp_apply, Option.map_some, id_eq, Option.some.injEq, PolyTy.mk.injEq,
-      true_and]
-    exact Ty.openVarsFrom_closeOverFrom_self (h ⟨pc, sbody⟩ ha)
-
-/-- `RecGroup.openTyVarsAux` inspects the anns only through each entry's
-    `RecAnn.params` (the per-binding shield depths), and `closeAnns` preserves every
-    `paramCount`; so opening bindings is insensitive to whether the anns were first
-    closed. Lets `openClose_self` discharge the symmetric-close bindings goal. -/
-private theorem RecGroup.openTyVarsAux_closeAnns (d : Nat) (Ys : List Nat)
-    (d' : Nat) (Xs : List Nat) :
-    ∀ (anns : List (Option PolyTy)) (bs : List Expr),
-      RecGroup.openTyVarsAux d Ys (RecGroup.closeAnns d' Xs anns) bs
-        = RecGroup.openTyVarsAux d Ys anns bs := by
-  intro anns bs
-  induction bs generalizing anns with
-  | nil => rfl
-  | cons hd tl ih =>
-    cases anns with
-    | nil => rfl
-    | cons a as =>
-      cases a with
-      | none =>
-        simp only [RecGroup.closeAnns_cons, Option.map_none, RecGroup.openTyVarsAux,
-          RecAnn.params, ih as]
-      | some σ =>
-        simp only [RecGroup.closeAnns_cons, Option.map_some, RecGroup.openTyVarsAux,
-          RecAnn.params, ih as]
-
-/-- **Term-level close-then-reopen-at-the-same-names = identity.** The structural
-    lift of `Ty.openVarsFrom_closeOverFrom_self` over a `TyBvarBounded` term. -/
-theorem Expr.openTyVarsAux_closeTyVarsAux_self {Ys : List Nat} :
-    ∀ (e : Expr) (d : Nat), e.TyBvarBounded d →
-      (e.closeTyVarsAux d Ys).openTyVarsAux d Ys = e := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit p => intro d _; rfl
-  | primBinOp op => intro d _; rfl
-  | ctor nm => intro d _; rfl
-  | var n tyArgs =>
-    intro d hb
-    simp only [Expr.TyBvarBounded] at hb
-    simp only [Expr.closeTyVarsAux, Expr.openTyVarsAux, Expr.var.injEq, true_and, List.map_map]
-    conv_rhs => rw [← List.map_id tyArgs]
-    apply List.map_congr_left
-    intro t ht
-    simp only [Function.comp_def, id_eq]
-    exact Ty.openVarsFrom_closeOverFrom_self (hb t ht)
-  | app f arg ihf iharg =>
-    intro d hb
-    simp only [Expr.TyBvarBounded] at hb
-    simp only [Expr.closeTyVarsAux, Expr.openTyVarsAux, Expr.app.injEq]
-    exact ⟨ihf d hb.1, iharg d hb.2⟩
-  | lambda ann body ih =>
-    intro d hb
-    simp only [Expr.TyBvarBounded] at hb
-    simp only [Expr.closeTyVarsAux, Expr.openTyVarsAux, Expr.lambda.injEq]
-    refine ⟨?_, ih d hb.2⟩
-    cases ann with
-    | none => rfl
-    | some t =>
-      simp only [Option.map_some, Option.some.injEq]
-      exact Ty.openVarsFrom_closeOverFrom_self (hb.1 t rfl)
-  | letIn ann rhs body ihrhs ihbody =>
-    intro d hb
-    cases ann with
-    | none =>
-      simp only [Expr.TyBvarBounded] at hb
-      simp only [Expr.closeTyVarsAux, Expr.openTyVarsAux, Expr.letIn.injEq]
-      exact ⟨trivial, ihrhs d hb.1, ihbody d hb.2⟩
-    | some σ =>
-      simp only [Expr.TyBvarBounded] at hb
-      obtain ⟨pc, sbody⟩ := σ
-      simp only [Expr.closeTyVarsAux, Expr.openTyVarsAux, Expr.letIn.injEq]
-      refine ⟨?_, ihrhs (d + pc) hb.2.1, ihbody d hb.2.2⟩
-      rw [Ty.openVarsFrom_closeOverFrom_self hb.1]
-  | match_ scrut branches ihscrut ihbranches =>
-    intro d hb
-    simp only [Expr.TyBvarBounded] at hb
-    obtain ⟨hs, hbr⟩ := hb
-    rw [Expr.TyBvarBounded.BranchList_iff] at hbr
-    simp only [Expr.closeTyVarsAux, Expr.openTyVarsAux, BranchList.closeTyVarsAux_eq_map,
-      BranchList.openTyVarsAux_eq_map, Expr.match_.injEq, List.map_map]
-    refine ⟨ihscrut d hs, ?_⟩
-    conv_rhs => rw [← List.map_id branches]
-    apply List.map_congr_left
-    rintro ⟨p, b⟩ hpb
-    simp only [Function.comp_def, id_eq]
-    rw [ihbranches p b hpb d (hbr p b hpb)]
-  | letRec anns bindings body ih_bindings ih_body =>
-    intro d hb
-    simp only [Expr.TyBvarBounded] at hb
-    obtain ⟨hsc, hbs, hb'⟩ := hb
-    simp only [Expr.closeTyVarsAux, Expr.openTyVarsAux, Expr.letRec.injEq]
-    refine ⟨RecGroup.openAnns_closeAnns_self hsc, ?_, ih_body d hb'⟩
-    rw [RecGroup.openTyVarsAux_closeAnns d Ys d Ys anns
-        (RecGroup.closeTyVarsAux d Ys anns bindings)]
-    exact RecGroup.openClose_self Ys anns bindings d hbs ih_bindings
-
-/-- Top-level (`d = 0`) close-then-reopen identity. -/
-theorem Expr.openTyVars_closeTyVars_self {Ys : List Nat} {e : Expr} (he : e.TyBvarBounded 0) :
-    (e.closeTyVars Ys).openTyVars Ys = e :=
-  Expr.openTyVarsAux_closeTyVarsAux_self e 0 he
-
-/-! ### `NoRecAnn` RETIRED (Phase A).
-
-The fused `letRec` node subsumes the old `letRecAnn`, and `open`/`close` descend
-into scheme-annotation bodies symmetrically, so the general kernel
-`openTyVars_closeTyVars_rename_of_fresh` handles every case with no freshness side
-condition. The `NoRecAnn` predicate and its whole preservation family are gone. -/
-
-/-! ### Close-back = rename (general form)
-
-`Expr.closeTyVarsAux`/`openTyVarsAux` descend into `letRecAnn` scheme bodies
-symmetrically, so closing a term over `Ys` genuinely rebinds every `Ys` occurrence
-(including those inside scheme bodies) and the close-then-open round-trip is exactly the
-`Ys ↦ Xs` rename — with no `letRecAnn`-freshness side condition. The annotated-group
-lemmas below discharge the `letRecAnn` case of the kernel. -/
-
-/-- The fused-group close descends into each binding (depth-shifted by its
-    annotation). Since closing over `Ys` removes every `g ∈ Ys` from each binding
-    (the per-binding IH), `g` survives nowhere in the closed bindings. -/
-private theorem RecGroup.not_mem_closeTyVarsAux_tyFreeVars {Ys : List Nat} {g : Nat} :
-    ∀ (anns : List (Option PolyTy)) (bindings : List Expr) (d : Nat),
-      (∀ e ∈ bindings, ∀ d', g ∉ (e.closeTyVarsAux d' Ys).tyFreeVars) →
-      g ∉ Expr.tyFreeVars.RecGroup.tyFreeVars
-            (RecGroup.closeTyVarsAux d Ys anns bindings) := by
-  intro anns bindings
-  induction bindings generalizing anns with
-  | nil =>
-    intro d _
-    cases anns <;>
-      simp [RecGroup.closeTyVarsAux, Expr.tyFreeVars.RecGroup.tyFreeVars]
-  | cons hd tl ih =>
-    intro d ihB
-    cases anns with
-    | nil =>
-      simp only [RecGroup.closeTyVarsAux, Expr.tyFreeVars.RecGroup.tyFreeVars,
-        List.mem_append, not_or]
-      exact ⟨ihB hd List.mem_cons_self d,
-        ih [] d (fun e he => ihB e (List.mem_cons_of_mem _ he))⟩
-    | cons a as =>
-      simp only [RecGroup.closeTyVarsAux, Expr.tyFreeVars.RecGroup.tyFreeVars,
-        List.mem_append, not_or]
-      exact ⟨ihB hd List.mem_cons_self (d + RecAnn.params a),
-        ih as d (fun e he => ihB e (List.mem_cons_of_mem _ he))⟩
-
-/-- Closing a fused group's scheme-annotation bodies over `Ys` removes every
-    `g ∈ Ys` from them (each present body is `closeOverFrom`-ed, which strips the
-    closed-over names; `none` entries contribute nothing). -/
-theorem RecGroup.not_mem_closeAnns_tyFreeVars {Ys : List Nat} {d g : Nat} (hg : g ∈ Ys) :
-    ∀ (anns : List (Option PolyTy)),
-      g ∉ Expr.tyFreeVars.AnnList.tyFreeVars (RecGroup.closeAnns d Ys anns)
-  | [] => by simp [Expr.tyFreeVars.AnnList.tyFreeVars]
-  | a :: as => by
-      cases a with
-      | none =>
-        simp only [RecGroup.closeAnns_cons, Option.map_none,
-          Expr.tyFreeVars.AnnList.tyFreeVars, Option.elim, List.nil_append]
-        exact RecGroup.not_mem_closeAnns_tyFreeVars hg as
-      | some σ =>
-        simp only [RecGroup.closeAnns_cons, Option.map_some,
-          Expr.tyFreeVars.AnnList.tyFreeVars, Option.elim, List.mem_append, not_or]
-        exact ⟨Ty.not_mem_closeOverFrom_freeVars hg,
-          RecGroup.not_mem_closeAnns_tyFreeVars hg as⟩
-
-/-- Closing over `Ys` removes every `g ∈ Ys` from a term's free type vars, unconditionally:
-    `open`/`close` now descend into `letRecAnn` scheme bodies symmetrically (so there are no
-    untouched positions where a closed-over `Ys` could survive). The `letRecAnn` case is
-    handled by `RecGroupAnn.not_mem_closeSchemes_tyFreeVars` (scheme bodies are rebound) and
-    `RecGroupAnn.not_mem_closeTyVarsAux_tyFreeVars` (bindings). -/
-theorem Expr.not_mem_closeTyVarsAux_tyFreeVars_of_fresh {Ys : List Nat} {g : Nat}
-    (hg : g ∈ Ys) :
-    ∀ (e : Expr) (d : Nat), g ∉ (e.closeTyVarsAux d Ys).tyFreeVars := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit p => intro d; simp [Expr.closeTyVarsAux, Expr.tyFreeVars]
-  | primBinOp op => intro d; simp [Expr.closeTyVarsAux, Expr.tyFreeVars]
-  | ctor nm => intro d; simp [Expr.closeTyVarsAux, Expr.tyFreeVars]
-  | var n tyArgs =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_flatMap, not_exists, not_and]
-    intro t ht hc
-    obtain ⟨t', _, rfl⟩ := List.mem_map.mp ht
-    exact Ty.not_mem_closeOverFrom_freeVars hg hc
-  | lambda ann body ih =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_append, not_or]
-    refine ⟨?_, ih d⟩
-    cases ann with
-    | none => simp [Option.elim]
-    | some t => simp only [Option.map_some, Option.elim]; exact Ty.not_mem_closeOverFrom_freeVars hg
-  | app f arg ihf iharg =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_append, not_or]
-    exact ⟨ihf d, iharg d⟩
-  | letIn ann rhs body ihrhs ihbody =>
-    intro d
-    cases ann with
-    | none =>
-      simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, Option.elim, List.nil_append,
-        List.mem_append, not_or]
-      exact ⟨ihrhs d, ihbody d⟩
-    | some σ =>
-      obtain ⟨pc, sbody⟩ := σ
-      simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, Option.elim, List.mem_append, not_or]
-      exact ⟨⟨Ty.not_mem_closeOverFrom_freeVars hg, ihrhs (d + pc)⟩, ihbody d⟩
-  | match_ scrut branches ihscrut ihbranches =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, BranchList.closeTyVarsAux_eq_map,
-      List.mem_append, not_or]
-    refine ⟨ihscrut d, ?_⟩
-    intro hc
-    rw [show (Expr.tyFreeVars.BranchList.tyFreeVars
-        (branches.map (fun pb => (pb.1, pb.2.closeTyVarsAux d Ys)))) = _ from rfl] at hc
-    induction branches with
-    | nil => simp [Expr.tyFreeVars.BranchList.tyFreeVars] at hc
-    | cons hd tl ihtl =>
-      obtain ⟨p, b⟩ := hd
-      simp only [List.map_cons, Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at hc
-      cases hc with
-      | inl h => exact ihbranches p b (List.mem_cons_self ..) d h
-      | inr h => exact ihtl (fun p' b' hm => ihbranches p' b' (List.mem_cons_of_mem _ hm)) h
-  | letRec anns bindings body ih_bindings ih_body =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_append, not_or]
-    refine ⟨⟨RecGroup.not_mem_closeAnns_tyFreeVars hg anns, ?_⟩, ih_body d⟩
-    exact RecGroup.not_mem_closeTyVarsAux_tyFreeVars anns bindings d
-      (fun e he d' => ih_bindings e he d')
-
-/-- **Term-level close-then-open = rename**, general form: `open`/`close` descend into
-    `letRecAnn` scheme bodies symmetrically, so closing over `Ys` rebinds every `Ys` and the
-    close-then-open round-trip is the `Ys ↦ Xs` rename — no `NoRecAnn`/freshness side
-    condition needed. -/
-theorem Expr.openTyVars_closeTyVars_rename_of_fresh {Ys Xs : List Nat} {e : Expr}
-    (he : e.TyBvarBounded 0)
-    (h_len : Ys.length = Xs.length) (h_Ys_nodup : Ys.Nodup) (h_Ys_Xs : ∀ y ∈ Ys, y ∉ Xs) :
-    (e.closeTyVars Ys).openTyVars Xs = e.substTyFvars (Ys.zip (Xs.map (Ty.fvar ·))) := by
-  have hf : ∀ y ∈ Ys, y ∉ (e.closeTyVars Ys).tyFreeVars := fun y hy =>
-    Expr.not_mem_closeTyVarsAux_tyFreeVars_of_fresh hy e 0
-  rw [← Expr.substTyFvars_zip_openTyVars h_len h_Ys_nodup hf h_Ys_Xs,
-      Expr.openTyVars_closeTyVars_self he]
-
-/-- Λ-outside encoding of an elaborated **mixed** `letRec` (one nest level per
-    member). Given member `i`'s solved `RecSpec` with shared gen-pool `G`:
-
-    - **unannotated** (`.mono τᵢ`): bind the per-binding generalised scheme
-      `Mᵢ = genGroup G τᵢ` to a fresh copy of the group's inner fused node
-      `.letRec anns rawBindings' (.var i [])` (bindings shifted past the
-      `i`-enclosing wrappers — there are `n - 1 - i` of them) projecting member
-      `i` monomorphically, with the generalised variables `gvᵢ = genFilter G τᵢ`
-      closed back over that copy (the historical `letRec` wrapper).
-    - **annotated** (`.poly σᵢ`): bind the DECLARED scheme `σᵢ` to
-      `.letRec anns rawBindings' (.var i (Ty.bvarRange σᵢ.paramCount))` — the
-      projection instantiates member `i` at the wrapper scheme's own bound
-      variables (opened by the `letIn` rule's cofinite opener); NO `closeTyVars`
-      (the annotated bindings are already closed back scheme-relatively by the
-      threader). Core-side rewrap ammunition: `TypeOfElabHM.rewrap_hasScheme_poly`.
-
-    The members are processed outermost-first; calling with member `0` last
-    (innermost) keeps the body's group de Bruijn indices unchanged
-    (`M₀` at `0`, …, `M₍ₙ₋₁₎` at `n-1`). -/
-def Expr.letRecElabNest (G : List Nat) (anns : List (Option PolyTy)) (n : Nat)
-    (rawBindings : List Expr) : List (Nat × RecSpec) → Expr → Expr
-  | [], body => body
-  | (i, .mono τ) :: rest, body =>
-      .letIn (some (PolyTy.genGroup G τ))
-        (Expr.closeTyVars (Ty.genFilter G τ)
-          (.letRec anns (rawBindings.map (·.shiftFrom n (n - 1 - i))) (.var i [])))
-        (Expr.letRecElabNest G anns n rawBindings rest body)
-  | (i, .poly σ) :: rest, body =>
-      .letIn (some σ)
-        (.letRec anns (rawBindings.map (·.shiftFrom n (n - 1 - i)))
-          (.var i (Ty.bvarRange σ.paramCount)))
-        (Expr.letRecElabNest G anns n rawBindings rest body)
-
-/-- The full Λ-outside elaborated mixed `letRec`: stack the per-member wrappers
-    with member `0` innermost (so the body sees `M₀ … M₍ₙ₋₁₎` at indices `0 … n-1`,
-    matching `solvedSpecs.map (RecSpec.bodyScheme G)`). `rawBindings` is the group's
-    elaborated bindings post-`S₁` (mono members: raw `eOut`; poly members: already
-    closed back over their skolems by `InferRecGroup.consPoly`). -/
-def Expr.letRecElab (G : List Nat) (anns : List (Option PolyTy)) (rawBindings : List Expr)
-    (specs : List RecSpec) (body : Expr) : Expr :=
-  Expr.letRecElabNest G anns rawBindings.length rawBindings
-    (((List.range rawBindings.length).zip specs).reverse) body
-
-/-! ### Path R: erase commutes with Infer-local term rewrites
-
-Needed by residual packing / `Infer.sound` for let and letRec elaborata.
-Mirrors Core's `eraseBounds_openTyVarsAux` for the close direction. -/
-
-/-- `closeOverFrom` only rewrites fvars→bvars; commutes with erase. -/
-private theorem Ty.eraseBounds_closeOverFrom (d : Nat) (Xs : List Nat) (τ : Ty) :
-    Ty.eraseBounds (Ty.closeOverFrom d Xs τ) =
-      Ty.closeOverFrom d Xs (Ty.eraseBounds τ) := by
-  induction τ using Ty.rec_strong with
-  | prim _ => rfl
-  | arrow a b iha ihb =>
-    simp only [Ty.closeOverFrom, Ty.eraseBounds_arrow, iha, ihb]
-  | bvar i => rfl
-  | fvar n =>
-    simp only [Ty.closeOverFrom, Ty.eraseBounds_fvar]
-    cases Xs.idxOf? n with
-    | none => rfl
-    | some _ => rfl
-  | customTy nm tys ih =>
-    simp only [Ty.closeOverFrom, Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map,
-      TyList.closeOverFrom_eq_map, List.map_map]
-    congr 1
-    exact List.map_congr_left fun t ht => ih t ht
-  | bl lo hi e ih =>
-    simp only [Ty.closeOverFrom, Ty.eraseBounds_bl, bareListTy, TyList.closeOverFrom, ih]
-
-/-- Local copy of Core's private `RecAnn.params_eraseBounds` (paramCount fixed). -/
-private theorem RecAnn.params_eraseBounds' (a : Option PolyTy) :
-    RecAnn.params (Option.map PolyTy.eraseBounds a) = RecAnn.params a := by
-  cases a with
-  | none => rfl
-  | some σ => simp only [RecAnn.params, Option.map_some, PolyTy.eraseBounds_paramCount]
-
-/-- Local copy of Core's private `RecGroup.shieldDepths_eraseBounds`. -/
-private theorem RecGroup.shieldDepths_eraseBounds' (d : Nat) (anns : List (Option PolyTy))
-    (bs : List Expr) :
-    RecGroup.shieldDepths d (anns.map (Option.map PolyTy.eraseBounds)) bs =
-      RecGroup.shieldDepths d anns bs := by
-  induction bs generalizing anns with
-  | nil => cases anns <;> rfl
-  | cons hd tl ih =>
-    cases anns with
-    | nil => simp only [List.map_nil, RecGroup.shieldDepths]
-    | cons a as =>
-      simp only [List.map_cons, RecGroup.shieldDepths, RecAnn.params_eraseBounds', ih]
-
-/-- `closeAnns` then pointwise erase = erase anns then closeAnns. -/
-private theorem RecGroup.closeAnns_eraseBounds (d : Nat) (Xs : List Nat)
-    (anns : List (Option PolyTy)) :
-    (RecGroup.closeAnns d Xs anns).map (Option.map PolyTy.eraseBounds) =
-      RecGroup.closeAnns d Xs (anns.map (Option.map PolyTy.eraseBounds)) := by
-  simp only [RecGroup.closeAnns, List.map_map]
-  apply List.map_congr_left
-  intro a _
-  cases a with
-  | none => rfl
-  | some σ =>
-    cases σ with
-    | mk pc b =>
-      simp only [Option.map_some, Function.comp_def, PolyTy.eraseBounds,
-        Ty.eraseBounds_closeOverFrom]
-
-private theorem Expr.eraseBounds_closeTyVarsAux (Xs : List Nat) :
-    ∀ (e : Expr) (d : Nat),
-      (e.closeTyVarsAux d Xs).eraseBounds = e.eraseBounds.closeTyVarsAux d Xs := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit _ | primBinOp _ | ctor _ =>
-    intro d; simp [Expr.closeTyVarsAux, Expr.eraseBounds]
-  | var n tyArgs =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.eraseBounds, Expr.var.injEq, true_and, List.map_map]
-    exact List.map_congr_left fun t _ => Ty.eraseBounds_closeOverFrom d Xs t
-  | app _ _ ihf iharg =>
-    intro d; simp [Expr.closeTyVarsAux, Expr.eraseBounds, ihf d, iharg d]
-  | lambda ann body ih =>
-    intro d
-    simp [Expr.closeTyVarsAux, Expr.eraseBounds, ih d]
-    cases ann with
-    | none => rfl
-    | some t =>
-      simp only [Option.map_some, Option.some.injEq]
-      exact Ty.eraseBounds_closeOverFrom d Xs t
-  | letIn ann rhs body ihr ihb =>
-    intro d
-    cases ann with
-    | none =>
-      simp [Expr.closeTyVarsAux, Expr.eraseBounds, ihr d, ihb d]
-    | some σ =>
-      cases σ with
-      | mk pc b =>
-        simp only [Expr.closeTyVarsAux, Expr.eraseBounds, Option.map_some,
-          PolyTy.eraseBounds, ihr (d + pc), ihb d, Ty.eraseBounds_closeOverFrom]
-  | match_ scrut branches ihs ihbs =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.eraseBounds, ihs d,
-      BranchList.closeTyVarsAux_eq_map, List.map_map]
-    -- match_.injEq leaves a pointwise goal on branch bodies
-    simp [Expr.match_.injEq]
-    intro p b hpb
-    exact ihbs p b hpb d
-  | letRec anns bindings body ihbs ihb =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.eraseBounds, ihb d,
-      RecGroup.closeTyVarsAux_eq_zip, RecGroup.shieldDepths_map,
-      RecGroup.shieldDepths_eraseBounds', List.map_map]
-    simp only [Expr.letRec.injEq]
-    refine ⟨?anns, ?binds, trivial⟩
-    case anns =>
-      exact RecGroup.closeAnns_eraseBounds d Xs anns
-    case binds =>
-      -- zip (map erase bindings) depths = map (Prod.map erase id) (zip bindings depths)
-      rw [List.zip_map_left]
-      simp only [List.map_map]
-      apply List.map_congr_left
-      intro p hp
-      obtain ⟨e, de⟩ := p
-      have he : e ∈ bindings := (List.of_mem_zip hp).1
-      simpa [Function.comp_def, Prod.map_apply] using ihbs e he de
-
-/-- Closing scoped fvars then erase = erase then close (same name list). -/
-theorem Expr.eraseBounds_closeTyVars (Xs : List Nat) (e : Expr) :
-    (e.closeTyVars Xs).eraseBounds = e.eraseBounds.closeTyVars Xs :=
-  Expr.eraseBounds_closeTyVarsAux Xs e 0
-
-/-- Term-var shifting never touches type payloads, so it commutes with erase. -/
-private theorem Expr.eraseBounds_shiftFrom (threshold n : Nat) :
-    ∀ (e : Expr), (e.shiftFrom threshold n).eraseBounds =
-      e.eraseBounds.shiftFrom threshold n := by
-  intro e
-  induction e using Expr.rec_strong generalizing threshold with
-  | primLit _ | primBinOp _ | ctor _ =>
-    simp [Expr.shiftFrom, Expr.eraseBounds]
-  | var i tyArgs =>
-    by_cases h : i < threshold
-    · simp [Expr.shiftFrom, Expr.eraseBounds, h]
-    · simp [Expr.shiftFrom, Expr.eraseBounds, h]
-  | app _ _ ihf iharg =>
-    simp [Expr.shiftFrom, Expr.eraseBounds, ihf, iharg]
-  | lambda ann body ih =>
-    simp [Expr.shiftFrom, Expr.eraseBounds, ih]
-  | letIn ann rhs body ihr ihb =>
-    simp [Expr.shiftFrom, Expr.eraseBounds, ihr, ihb]
-  | match_ scrut branches ihs ihbs =>
-    simp only [Expr.shiftFrom, Expr.eraseBounds, ihs]
-    congr 1
-    induction branches with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      obtain ⟨p, b⟩ := hd
-      change (p, (b.shiftFrom (threshold + p.bindCount) n).eraseBounds)
-          :: _ = (p, b.eraseBounds.shiftFrom (threshold + p.bindCount) n) :: _
-      rw [ihbs p b List.mem_cons_self,
-        ihtl (fun p' b' hmem => ihbs p' b' (List.mem_cons_of_mem _ hmem))]
-  | letRec anns bindings body ihbs ihb =>
-    simp only [Expr.shiftFrom, Expr.eraseBounds, ihb, RecGroup.shiftFrom_eq_map,
-      List.map_map, List.length_map]
-    -- residual: map (erase ∘ shift thr) = map (shift thr ∘ erase) on bindings
-    refine congrArg
-      (fun bs =>
-        Expr.letRec (anns.map (Option.map PolyTy.eraseBounds)) bs
-          (body.eraseBounds.shiftFrom (threshold + bindings.length) n)) ?_
-    apply List.map_congr_left
-    intro e he
-    exact ihbs e he (threshold + bindings.length)
-
-/-- `bvarRange` is pure bvars; erase is a no-op pointwise. -/
-private theorem Ty.map_eraseBounds_bvarRangeFrom :
-    ∀ (s k : Nat), (Ty.bvarRangeFrom s k).map Ty.eraseBounds = Ty.bvarRangeFrom s k
-  | _, 0 => rfl
-  | s, k + 1 => by
-    simp only [Ty.bvarRangeFrom, List.map_cons, Ty.eraseBounds_bvar,
-      Ty.map_eraseBounds_bvarRangeFrom (s + 1) k]
-
-private theorem Ty.map_eraseBounds_bvarRange (k : Nat) :
-    (Ty.bvarRange k).map Ty.eraseBounds = Ty.bvarRange k :=
-  Ty.map_eraseBounds_bvarRangeFrom 0 k
-
-/-- Nest-level erase commute for the Λ-outside elaboratum. -/
-private theorem Expr.eraseBounds_letRecElabNest (G : List Nat) (anns : List (Option PolyTy))
-    (n : Nat) (rawBindings : List Expr) (members : List (Nat × RecSpec)) (body : Expr) :
-    (Expr.letRecElabNest G anns n rawBindings members body).eraseBounds =
-      Expr.letRecElabNest G (anns.map (Option.map PolyTy.eraseBounds)) n
-        (rawBindings.map Expr.eraseBounds)
-        (members.map fun p => (p.1, RecSpec.eraseBounds p.2))
-        body.eraseBounds := by
-  induction members with
-  | nil =>
-    simp only [Expr.letRecElabNest, List.map_nil]
-  | cons hd rest ih =>
-    obtain ⟨i, s⟩ := hd
-    cases s with
-    | mono τ =>
-      -- Unfold both sides to a letIn of genGroup / closeTyVars-of-letRec / nest-rest.
-      simp only [Expr.letRecElabNest, List.map_cons, RecSpec.eraseBounds,
-        Expr.eraseBounds_letIn, Option.map_some, PolyTy.eraseBounds_genGroup, ih]
-      have hgf : Ty.genFilter G (Ty.eraseBounds τ) = Ty.genFilter G τ :=
-        Ty.genFilter_eraseBounds G τ
-      -- Peel letIn to the bound expression (ann/body already agree via simp+ih).
-      refine congrArg
-        (fun r =>
-          Expr.letIn (some (PolyTy.genGroup G (Ty.eraseBounds τ))) r
-            (Expr.letRecElabNest G (anns.map (Option.map PolyTy.eraseBounds)) n
-              (rawBindings.map Expr.eraseBounds)
-              (rest.map fun p => (p.1, RecSpec.eraseBounds p.2)) body.eraseBounds)) ?_
-      -- erase (closeTyVars Xs e) = closeTyVars Xs (erase e); genFilter invariant
-      rw [Expr.eraseBounds_closeTyVars, hgf]
-      refine congrArg (Expr.closeTyVars (Ty.genFilter G τ)) ?_
-      simp only [Expr.eraseBounds, List.map_map, Expr.eraseBounds_var, List.map_nil]
-      refine congrArg (fun bs =>
-          Expr.letRec (anns.map (Option.map PolyTy.eraseBounds)) bs (Expr.var i [])) ?_
-      apply List.map_congr_left
-      intro e _
-      exact Expr.eraseBounds_shiftFrom n (n - 1 - i) e
-    | poly σ =>
-      simp only [Expr.letRecElabNest, List.map_cons, RecSpec.eraseBounds,
-        Expr.eraseBounds_letIn, Option.map_some, ih]
-      -- Peel letIn to the bound expression.
-      refine congrArg
-        (fun r =>
-          Expr.letIn (some (PolyTy.eraseBounds σ)) r
-            (Expr.letRecElabNest G (anns.map (Option.map PolyTy.eraseBounds)) n
-              (rawBindings.map Expr.eraseBounds)
-              (rest.map fun p => (p.1, RecSpec.eraseBounds p.2)) body.eraseBounds)) ?_
-      simp only [Expr.eraseBounds, List.map_map, Expr.eraseBounds_var,
-        PolyTy.eraseBounds_paramCount, Ty.map_eraseBounds_bvarRange]
-      refine congrArg (fun bs =>
-          Expr.letRec (anns.map (Option.map PolyTy.eraseBounds)) bs
-            (Expr.var i (Ty.bvarRange σ.paramCount))) ?_
-      apply List.map_congr_left
-      intro e _
-      exact Expr.eraseBounds_shiftFrom n (n - 1 - i) e
-
-/-- Erase of the Λ-outside letRec elaboratum is the elaboratum of erased pieces. -/
-theorem Expr.eraseBounds_letRecElab (G : List Nat) (anns : List (Option PolyTy))
-    (rawBindings : List Expr) (specs : List RecSpec) (body : Expr) :
-    (Expr.letRecElab G anns rawBindings specs body).eraseBounds =
-      Expr.letRecElab G (anns.map (Option.map PolyTy.eraseBounds))
-        (rawBindings.map Expr.eraseBounds)
-        (specs.map RecSpec.eraseBounds) body.eraseBounds := by
-  simp only [Expr.letRecElab, List.length_map]
-  -- members-map of erase = reverse of (range.zip (specs.map erase))
-  have hmem :
-      (((List.range rawBindings.length).zip specs).reverse).map
-          (fun p => (p.1, RecSpec.eraseBounds p.2)) =
-        ((List.range rawBindings.length).zip (specs.map RecSpec.eraseBounds)).reverse := by
-    rw [List.map_reverse, List.reverse_inj]
-    -- zip_map_right: l₁.zip (l₂.map f) = (l₁.zip l₂).map (Prod.map id f)
-    exact (List.zip_map_right (f := RecSpec.eraseBounds)
-      (l₁ := List.range rawBindings.length) (l₂ := specs)).symm
-  rw [Expr.eraseBounds_letRecElabNest, hmem]
-
-/-- Term-var shifting leaves all *type* annotations untouched, so it preserves the
-    set of free type variables. -/
-theorem Expr.shiftFrom_tyFreeVars (e : Expr) (t n : Nat) :
-    (e.shiftFrom t n).tyFreeVars = e.tyFreeVars := by
-  induction e using Expr.rec_strong generalizing t with
-  | primLit p => rfl
-  | primBinOp op => rfl
-  | ctor c => rfl
-  | var i tyArgs => simp only [Expr.shiftFrom]; split <;> rfl
-  | lambda ann body ih => simp only [Expr.shiftFrom, Expr.tyFreeVars, ih]
-  | app f arg ihf iharg => simp only [Expr.shiftFrom, Expr.tyFreeVars, ihf, iharg]
-  | letIn ann rhs body ihr ihb => simp only [Expr.shiftFrom, Expr.tyFreeVars, ihr, ihb]
-  | match_ scrut branches ihs ihbr =>
-    simp only [Expr.shiftFrom, Expr.tyFreeVars, ihs]
-    congr 1
-    induction branches with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      obtain ⟨p, b⟩ := hd
-      change (b.shiftFrom (t + p.bindCount) n).tyFreeVars
-          ++ _ = b.tyFreeVars ++ Expr.tyFreeVars.BranchList.tyFreeVars tl
-      rw [ihbr p b List.mem_cons_self,
-          ihtl (fun p' b' hmem => ihbr p' b' (List.mem_cons_of_mem _ hmem))]
-  | letRec anns bindings body ihbs ihb =>
-    simp only [Expr.shiftFrom, Expr.tyFreeVars, ihb]
-    congr 1
-    congr 1
-    generalize t + bindings.length = thr
-    induction bindings with
-    | nil => rfl
-    | cons hd tl ihtl =>
-      change (hd.shiftFrom thr n).tyFreeVars
-          ++ _ = hd.tyFreeVars ++ Expr.tyFreeVars.RecGroup.tyFreeVars tl
-      rw [ihbs hd List.mem_cons_self thr,
-          ihtl (fun e' hmem => ihbs e' (List.mem_cons_of_mem _ hmem))]
-
-/-- `c` is a nullary constructor of the prelude `Bool` type. -/
 def Ctor.IsBoolCtor (c : Ctor) : Prop :=
   c.tyName = ⟨"Bool"⟩ ∧ c.paramCount = 0 ∧ c.contents = []
 
@@ -2702,9 +1760,9 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
     Infer Φ₁ (S₁.onCtx ctx) arg Φ₂ S₂ τa →
     UnifyRel (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) S₃ →
     Infer Φ ctx (.app f arg) (Φ₂ + 1) (S₁ ++ S₂ ++ S₃) (S₃.onTy (.fvar Φ₂))
-  | var {Φ ctx i tyArgsIn polyTy} :
+  | var {Φ ctx i polyTy} :
     ctx.env[i]? = some polyTy →
-    Infer Φ ctx (.var i tyArgsIn) (Φ + polyTy.paramCount) []
+    Infer Φ ctx (.var i) (Φ + polyTy.paramCount) []
       (polyTy.openVars (freshVars Φ polyTy.paramCount))
   | ctor {Φ ctx name ctor} :
     LookupList.get? ctx.ctors name = some ctor →
@@ -2927,12 +1985,7 @@ theorem Expr.substTyFvars_tyBvarBounded {S : List (Nat × Ty)} (hS : ∀ p ∈ S
   | ctor c =>
     intro d _
     rw [Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])]; trivial
-  | var i tyArgs =>
-    intro d hb
-    rw [Expr.substTyFvars_var]
-    intro t ht
-    obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
-    exact ContainsBvarsUpTo.substFvars hS (hb t0 ht0)
+  | var i => intro d hb; rw [Expr.substTyFvars_var]; exact hb
   | lambda ann body ih =>
     intro d hb
     rw [Expr.substTyFvars_lambda]
@@ -3972,168 +3025,6 @@ theorem Subst.onPolyTy_eq_self_of_closed {S : Subst} {σ : PolyTy}
   obtain ⟨pc, b⟩ := σ
   simp only [Subst.onPolyTy, Subst.onTy, PolyTy.mk.injEq, true_and]
   exact Ty.substFvars_eq_self_of_no_key (fun p _ => h.not_mem_freeVars p.1)
-
-/-! ### Free-var subset lemmas for the close-back operations (for `Infer.locality`)
-
-Closing scoped variables only ever maps `fvar`s to `bvar`s, never the reverse, so
-it never *introduces* a free type var. These let the locality lemma reduce the
-closed-back elaborated sub-terms to their pre-close free vars. -/
-
-/-- `Ty.closeOverFrom` introduces no new free vars. -/
-theorem Ty.freeVars_closeOverFrom_subset {d : Nat} {vars : List Nat} :
-    ∀ {τ : Ty} {g : Nat}, g ∈ (Ty.closeOverFrom d vars τ).freeVars → g ∈ τ.freeVars := by
-  intro τ
-  induction τ using Ty.rec_strong with
-  | prim p => intro g h; simp [Ty.closeOverFrom, Ty.freeVars] at h
-  | bvar i => intro g h; simp [Ty.closeOverFrom, Ty.freeVars] at h
-  | fvar n =>
-    intro g h
-    simp only [Ty.closeOverFrom] at h
-    cases hidx : vars.idxOf? n with
-    | none => rw [hidx] at h; exact h
-    | some i => rw [hidx] at h; simp [Ty.freeVars] at h
-  | arrow a b iha ihb =>
-    intro g h
-    simp only [Ty.closeOverFrom, Ty.freeVars, List.mem_dedup, List.mem_append] at h ⊢
-    rcases h with h | h
-    · exact .inl (iha h)
-    · exact .inr (ihb h)
-  | customTy nm tys ih =>
-    intro g h
-    simp only [Ty.closeOverFrom, Ty.freeVars, TyList.closeOverFrom_eq_map] at h
-    rw [mem_TyList_freeVars] at h
-    obtain ⟨t', ht', hgt'⟩ := h
-    obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
-    rw [Ty.freeVars]
-    exact TyList.mem_freeVars_of_mem ht0 (ih t0 ht0 hgt')
-  | bl lo hi e ih =>
-    simp only [Ty.closeOverFrom, Ty.freeVars] at *
-    exact ih
-
-/-- The fused-group close keeps free-var subset per binding (depth-shifted by its
-    annotation), so a `g` in the closed group's free vars came from some binding's. -/
-private theorem RecGroup.tyFreeVars_closeTyVarsAux_subset {Xs : List Nat} {g : Nat} :
-    ∀ (anns : List (Option PolyTy)) (bindings : List Expr) (d : Nat),
-      (∀ e ∈ bindings, ∀ d', g ∈ (e.closeTyVarsAux d' Xs).tyFreeVars → g ∈ e.tyFreeVars) →
-      g ∈ Expr.tyFreeVars.RecGroup.tyFreeVars (RecGroup.closeTyVarsAux d Xs anns bindings) →
-      g ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings := by
-  intro anns bindings
-  induction bindings generalizing anns with
-  | nil =>
-    intro d _ h
-    cases anns <;>
-      simp only [RecGroup.closeTyVarsAux, Expr.tyFreeVars.RecGroup.tyFreeVars,
-        List.not_mem_nil] at h
-  | cons hd tl ih =>
-    intro d ihB h
-    cases anns with
-    | nil =>
-      simp only [RecGroup.closeTyVarsAux, Expr.tyFreeVars.RecGroup.tyFreeVars,
-        List.mem_append] at h ⊢
-      rcases h with h | h
-      · exact .inl (ihB hd List.mem_cons_self d h)
-      · exact .inr (ih [] d (fun e he => ihB e (List.mem_cons_of_mem _ he)) h)
-    | cons a as =>
-      simp only [RecGroup.closeTyVarsAux, Expr.tyFreeVars.RecGroup.tyFreeVars,
-        List.mem_append] at h ⊢
-      rcases h with h | h
-      · exact .inl (ihB hd List.mem_cons_self (d + RecAnn.params a) h)
-      · exact .inr (ih as d (fun e he => ihB e (List.mem_cons_of_mem _ he)) h)
-
-/-- Closing a fused group's scheme-annotation bodies only *removes* free type vars, so a
-    free var of the closed anns was already a free var of the original anns. -/
-theorem RecGroup.tyFreeVars_closeAnns_subset {d : Nat} {Xs : List Nat} {g : Nat} :
-    ∀ {anns : List (Option PolyTy)},
-      g ∈ Expr.tyFreeVars.AnnList.tyFreeVars (RecGroup.closeAnns d Xs anns) →
-      g ∈ Expr.tyFreeVars.AnnList.tyFreeVars anns
-  | [], h => by simp [Expr.tyFreeVars.AnnList.tyFreeVars] at h
-  | a :: as, h => by
-      cases a with
-      | none =>
-        simp only [RecGroup.closeAnns_cons, Option.map_none,
-          Expr.tyFreeVars.AnnList.tyFreeVars, Option.elim, List.nil_append] at h ⊢
-        exact RecGroup.tyFreeVars_closeAnns_subset h
-      | some σ =>
-        simp only [RecGroup.closeAnns_cons, Option.map_some,
-          Expr.tyFreeVars.AnnList.tyFreeVars, Option.elim, List.mem_append] at h ⊢
-        rcases h with h | h
-        · exact Or.inl (Ty.freeVars_closeOverFrom_subset h)
-        · exact Or.inr (RecGroup.tyFreeVars_closeAnns_subset h)
-
-/-- `Expr.closeTyVarsAux` introduces no new free type vars. Closing only ever *removes*
-    free vars — now even through `letRecAnn` scheme bodies (descended symmetrically) — so
-    the subset holds unconditionally. -/
-theorem Expr.tyFreeVars_closeTyVarsAux_subset {Xs : List Nat} {g : Nat} :
-    ∀ (e : Expr) (d : Nat), g ∈ (e.closeTyVarsAux d Xs).tyFreeVars → g ∈ e.tyFreeVars := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit p => intro d h; simp [Expr.closeTyVarsAux, Expr.tyFreeVars] at h
-  | primBinOp op => intro d h; simp [Expr.closeTyVarsAux, Expr.tyFreeVars] at h
-  | ctor nm => intro d h; simp [Expr.closeTyVarsAux, Expr.tyFreeVars] at h
-  | var n tyArgs =>
-    intro d h
-    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_flatMap] at h ⊢
-    obtain ⟨t, ht, hgt⟩ := h
-    obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
-    exact ⟨t0, ht0, Ty.freeVars_closeOverFrom_subset hgt⟩
-  | lambda ann body ih =>
-    intro d h
-    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_append] at h ⊢
-    rcases h with h | h
-    · refine .inl ?_
-      cases ann with
-      | none => simp [Option.elim] at h
-      | some t => simp only [Option.map_some, Option.elim] at h ⊢; exact Ty.freeVars_closeOverFrom_subset h
-    · exact .inr (ih d h)
-  | app f arg ihf iharg =>
-    intro d h
-    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_append] at h ⊢
-    rcases h with h | h
-    · exact .inl (ihf d h)
-    · exact .inr (iharg d h)
-  | letIn ann rhs body ihrhs ihbody =>
-    intro d h
-    cases ann with
-    | none =>
-      simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, Option.elim, List.nil_append,
-        List.mem_append] at h ⊢
-      rcases h with h | h
-      · exact .inl (ihrhs d h)
-      · exact .inr (ihbody d h)
-    | some σ =>
-      obtain ⟨pc, sbody⟩ := σ
-      simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, Option.elim, List.mem_append] at h ⊢
-      rcases h with (h | h) | h
-      · exact .inl (.inl (Ty.freeVars_closeOverFrom_subset h))
-      · exact .inl (.inr (ihrhs (d + pc) h))
-      · exact .inr (ihbody d h)
-  | match_ scrut branches ihscrut ihbranches =>
-    intro d h
-    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, BranchList.closeTyVarsAux_eq_map,
-      List.mem_append] at h ⊢
-    rcases h with h | h
-    · exact .inl (ihscrut d h)
-    · refine .inr ?_
-      induction branches with
-      | nil => simp [Expr.tyFreeVars.BranchList.tyFreeVars] at h
-      | cons hd tl ihtl =>
-        obtain ⟨p, b⟩ := hd
-        simp only [List.map_cons, Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append] at h ⊢
-        rcases h with h | h
-        · exact .inl (ihbranches p b (List.mem_cons_self ..) d h)
-        · exact .inr (ihtl (fun p' b' hm => ihbranches p' b' (List.mem_cons_of_mem _ hm)) h)
-  | letRec anns bindings body ih_bindings ih_body =>
-    intro d h
-    simp only [Expr.closeTyVarsAux, Expr.tyFreeVars, List.mem_append] at h ⊢
-    rcases h with (h | h) | h
-    · exact .inl (.inl (RecGroup.tyFreeVars_closeAnns_subset h))
-    · exact .inl (.inr (RecGroup.tyFreeVars_closeTyVarsAux_subset anns bindings d ih_bindings h))
-    · exact .inr (ih_body d h)
-
-/-- `Expr.closeTyVars` introduces no new free type vars (top level). -/
-theorem Expr.tyFreeVars_closeTyVars_subset {Xs : List Nat} {e : Expr} {g : Nat}
-    (h : g ∈ (e.closeTyVars Xs).tyFreeVars) : g ∈ e.tyFreeVars :=
-  Expr.tyFreeVars_closeTyVarsAux_subset e 0 h
 
 /-- All free type vars of `τ` are below `Φ`. The `fvar` analogue of
     `ContainsBvarsUpTo`; clean to push through substitution. -/
@@ -5263,83 +4154,6 @@ theorem Expr.mem_annList_tyFreeVars_ex {anns : List (Option PolyTy)} {y : Nat}
     shifting and closing introduce no new type vars, and the poly projections'
     `bvarRange` tyArgs are fvar-free. The fused nest's inner `.letRec anns …` node
     carries the full `anns` at every level, hence the anns disjunct. -/
-theorem Expr.mem_tyFreeVars_letRecElabNest {G : List Nat} {anns : List (Option PolyTy)}
-    {n : Nat} {rawBindings : List Expr} :
-    ∀ {members : List (Nat × RecSpec)} {body : Expr} {y : Nat},
-      y ∈ (Expr.letRecElabNest G anns n rawBindings members body).tyFreeVars →
-      y ∈ Expr.tyFreeVars.AnnList.tyFreeVars anns
-        ∨ (∃ p ∈ members, y ∈ p.2.freeVars) ∨ (∃ e ∈ rawBindings, y ∈ e.tyFreeVars)
-        ∨ y ∈ body.tyFreeVars := by
-  intro members
-  induction members with
-  | nil => intro body y hy; exact .inr (.inr (.inr hy))
-  | cons hd tl ih =>
-    obtain ⟨i, s⟩ := hd
-    intro body y hy
-    cases s with
-    | mono τ =>
-      simp only [Expr.letRecElabNest, Expr.tyFreeVars, Option.elim_some, List.mem_append] at hy
-      rcases hy with (hy | hy) | hy
-      · refine .inr (.inl ⟨(i, .mono τ), List.mem_cons_self, ?_⟩)
-        simp only [PolyTy.genGroup] at hy
-        exact Ty.freeVars_closeOver_subset hy
-      · have hy2 := Expr.tyFreeVars_closeTyVars_subset hy
-        rw [show (Expr.letRec anns (rawBindings.map (·.shiftFrom n (n - 1 - i)))
-              (Expr.var i [])).tyFreeVars
-            = Expr.tyFreeVars.AnnList.tyFreeVars anns
-              ++ Expr.tyFreeVars.RecGroup.tyFreeVars (rawBindings.map (·.shiftFrom n (n - 1 - i)))
-              ++ (Expr.var i []).tyFreeVars from rfl, List.mem_append, List.mem_append] at hy2
-        rcases hy2 with (hy2 | hy2) | hy2
-        · exact .inl hy2
-        · obtain ⟨e', he', hye'⟩ := Expr.mem_recGroupTyFreeVars hy2
-          obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he'
-          rw [Expr.shiftFrom_tyFreeVars] at hye'
-          exact .inr (.inr (.inl ⟨e0, he0, hye'⟩))
-        · simp [Expr.tyFreeVars] at hy2
-      · rcases ih hy with h | h | h | h
-        · exact .inl h
-        · obtain ⟨p, hp, hyp⟩ := h
-          exact .inr (.inl ⟨p, List.mem_cons_of_mem _ hp, hyp⟩)
-        · exact .inr (.inr (.inl h))
-        · exact .inr (.inr (.inr h))
-    | poly σ =>
-      simp only [Expr.letRecElabNest, Expr.tyFreeVars, Option.elim_some, List.mem_append] at hy
-      rcases hy with (hy | hy) | hy
-      · exact .inr (.inl ⟨(i, .poly σ), List.mem_cons_self, hy⟩)
-      · rcases hy with (hy | hy) | hy
-        · exact .inl hy
-        · obtain ⟨e', he', hye'⟩ := Expr.mem_recGroupTyFreeVars hy
-          obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he'
-          rw [Expr.shiftFrom_tyFreeVars] at hye'
-          exact .inr (.inr (.inl ⟨e0, he0, hye'⟩))
-        · exact absurd hy Ty.not_mem_bvarRange_flatMap_freeVars
-      · rcases ih hy with h | h | h | h
-        · exact .inl h
-        · obtain ⟨p, hp, hyp⟩ := h
-          exact .inr (.inl ⟨p, List.mem_cons_of_mem _ hp, hyp⟩)
-        · exact .inr (.inr (.inl h))
-        · exact .inr (.inr (.inr h))
-
-/-- Mixed-nest free-var locality (top level). The anns free vars fold into the
-    poly members' spec free vars via `specs.map RecSpec.ann = anns`. -/
-theorem Expr.mem_tyFreeVars_letRecElab {G : List Nat} {anns : List (Option PolyTy)}
-    {rawBindings : List Expr} {specs : List RecSpec}
-    {body : Expr} {y : Nat}
-    (hanns : specs.map RecSpec.ann = anns)
-    (hy : y ∈ (Expr.letRecElab G anns rawBindings specs body).tyFreeVars) :
-    (∃ s ∈ specs, y ∈ s.freeVars) ∨ (∃ e ∈ rawBindings, y ∈ e.tyFreeVars) ∨ y ∈ body.tyFreeVars := by
-  rcases Expr.mem_tyFreeVars_letRecElabNest hy with h | h | h | h
-  · obtain ⟨σ, hσ, hyσ⟩ := Expr.mem_annList_tyFreeVars_ex h
-    rw [← hanns] at hσ
-    obtain ⟨s, hs, hsa⟩ := List.mem_map.mp hσ
-    cases RecSpec.ann_eq_some hsa
-    exact .inl ⟨.poly σ, hs, hyσ⟩
-  · obtain ⟨p, hp, hyp⟩ := h
-    exact .inl ⟨p.2, (List.of_mem_zip (List.mem_reverse.mp hp)).2, hyp⟩
-  · exact .inr (.inl h)
-  · exact .inr (.inr h)
-
-/-- Push a var-avoidance through a substitution (avoid form of `Subst.onTy`). -/
 theorem Subst.notMemOnTy {S : Subst} {w : Nat} {τ : Ty}
     (hS : ∀ p ∈ S, w ∉ p.2.freeVars) (hτ : w ∉ τ.freeVars) : w ∉ (S.onTy τ).freeVars := by
   intro hc
@@ -5486,15 +4300,9 @@ theorem Expr.mem_tyFreeVars_substTyFvars {S : List (Nat × Ty)} {w : Nat} :
     intro h
     rw [Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by simp [Expr.tyFreeVars])] at h
     simp [Expr.tyFreeVars] at h
-  | var i tyArgs =>
+  | var i =>
     intro h
-    rw [Expr.substTyFvars_var] at h
-    simp only [Expr.tyFreeVars, List.mem_flatMap] at h
-    obtain ⟨t', ht', hwt'⟩ := h
-    obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
-    rcases Ty.mem_freeVars_substFvars hwt' with hh | hh
-    · exact Or.inl (by simp only [Expr.tyFreeVars, List.mem_flatMap]; exact ⟨t0, ht0, hh⟩)
-    · exact Or.inr hh
+    simp [Expr.substTyFvars_var, Expr.tyFreeVars] at h
   | lambda ann body ih =>
     intro h
     rw [Expr.substTyFvars_lambda] at h
@@ -6732,653 +5540,6 @@ DELETED: `Infer.eOut_substTyFvars_eq` (conclusion referenced the removed
 elaborated-output `eOut`; its only consumers were the deleted `sound_elab`
 family). -/
 
-/-! ### M5: the elaborated output is type-bvar-bounded (`TyBvarBounded 0`)
-
-The Λ-outside encoding wraps each generalised binder in an annotated `letIn (some
-Mⱼ)`, whose `TyBvarBounded` reading absorbs the `closeTyVars`-introduced scheme
-`bvar`s — so the whole `eOut` has no *dangling* type `bvar`s. This is the second
-hypothesis `Expr.openTyVars_closeTyVars_rename` needs (alongside `eOut.NoRecAnn`). -/
-
-/-- `idxOf?` returns an in-range index (Core has this privately). -/
-private theorem List.idxOf?_lt_length {α : Type*} [BEq α] {a : α} :
-    ∀ {l : List α} {i : Nat}, l.idxOf? a = some i → i < l.length := by
-  intro l
-  induction l with
-  | nil => intro i h; simp [List.idxOf?_nil] at h
-  | cons x xs ih =>
-    intro i h
-    rw [List.idxOf?_cons] at h
-    split at h
-    · simp only [Option.some.injEq] at h; subst h; simp
-    · obtain ⟨j, hj, rfl⟩ := Option.map_eq_some_iff.mp h
-      have := ih hj; simp; omega
-
-/-- Closing the names `Xs` at depth `d` raises the bvar bound by `Xs.length`. -/
-theorem Ty.closeOverFrom_preserves_bvars {d : Nat} {Xs : List Nat} :
-    ∀ {t : Ty}, ContainsBvarsUpTo d t → ContainsBvarsUpTo (d + Xs.length) (Ty.closeOverFrom d Xs t) := by
-  intro t ht
-  induction t using Ty.rec_strong with
-  | prim p => exact .prim
-  | bvar i => cases ht with | bvar hlt => exact .bvar (by omega)
-  | fvar n =>
-    simp only [Ty.closeOverFrom]
-    cases hm : Xs.idxOf? n with
-    | none => exact .fvar
-    | some i => exact .bvar (by have := List.idxOf?_lt_length hm; omega)
-  | arrow a b iha ihb => cases ht with | arrow ha hb => exact .arrow (iha ha) (ihb hb)
-  | customTy nm tys ih =>
-    cases ht with
-    | customTy hall =>
-      simp only [Ty.closeOverFrom, TyList.closeOverFrom_eq_map]
-      exact .customTy (fun t' ht' => by
-        obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht'
-        exact ih t0 ht0 (hall t0 ht0))
-  | bl lo hi e ih =>
-    cases ht with
-    | bl he =>
-      simp only [Ty.closeOverFrom]
-      exact .bl (ih he)
-
-/-- Closing a fused group's scheme-annotation bodies over `Xs` raises each present
-    body's bvar bound by `Xs.length` (at its shielded depth). -/
-theorem RecGroup.closeAnns_tyBvarBounded {Xs : List Nat} {d : Nat}
-    {anns : List (Option PolyTy)}
-    (h : ∀ σ, some σ ∈ anns → ContainsBvarsUpTo (d + σ.paramCount) σ.body) :
-    ∀ σ, some σ ∈ RecGroup.closeAnns d Xs anns →
-      ContainsBvarsUpTo (d + Xs.length + σ.paramCount) σ.body := by
-  intro σ hσ
-  rw [RecGroup.closeAnns] at hσ
-  obtain ⟨a, ha, haeq⟩ := List.mem_map.mp hσ
-  cases a with
-  | none => exact absurd haeq (by simp)
-  | some σ0 =>
-    simp only [Option.map_some, Option.some.injEq] at haeq
-    subst haeq
-    have hb := Ty.closeOverFrom_preserves_bvars (d := d + σ0.paramCount) (Xs := Xs) (h σ0 ha)
-    show ContainsBvarsUpTo (d + Xs.length + σ0.paramCount)
-      (Ty.closeOverFrom (d + σ0.paramCount) Xs σ0.body)
-    rw [show d + Xs.length + σ0.paramCount = d + σ0.paramCount + Xs.length by omega]
-    exact hb
-
-/-- The fused-group close raises each binding's shielded bvar bound by `Xs.length`
-    (anns' shield depths are preserved by `closeAnns`). -/
-private theorem RecGroup.closeTyVarsAux_tyBvarBounded_aux {Xs : List Nat} :
-    ∀ (anns : List (Option PolyTy)) (bs : List Expr) (d : Nat),
-      (∀ e ∈ bs, ∀ d', e.TyBvarBounded d' →
-        (e.closeTyVarsAux d' Xs).TyBvarBounded (d' + Xs.length)) →
-      Expr.TyBvarBounded.RecGroup d anns bs →
-      Expr.TyBvarBounded.RecGroup (d + Xs.length) (RecGroup.closeAnns d Xs anns)
-        (RecGroup.closeTyVarsAux d Xs anns bs) := by
-  intro anns bs
-  induction bs generalizing anns with
-  | nil => intro d _ _; cases anns <;> exact trivial
-  | cons hd tl ih =>
-    intro d ihB hbb
-    cases anns with
-    | nil =>
-      exact ⟨ihB hd List.mem_cons_self d hbb.1,
-        ih [] d (fun e he => ihB e (List.mem_cons_of_mem _ he)) hbb.2⟩
-    | cons a as =>
-      refine ⟨?_, ih as d (fun e he => ihB e (List.mem_cons_of_mem _ he)) hbb.2⟩
-      cases a with
-      | none => exact ihB hd List.mem_cons_self d hbb.1
-      | some σ0 =>
-        have hh := ihB hd List.mem_cons_self (d + σ0.paramCount) hbb.1
-        show (hd.closeTyVarsAux (d + σ0.paramCount) Xs).TyBvarBounded
-          (d + Xs.length + σ0.paramCount)
-        rw [show d + Xs.length + σ0.paramCount = d + σ0.paramCount + Xs.length by omega]
-        exact hh
-
-/-- `closeTyVarsAux` raises the bvar bound by `Xs.length` (each leaf type is closed
-    via `Ty.closeOverFrom`, binders advancing `d` in lockstep; the fused `letRec`'s
-    scheme bodies and shielded bindings raise uniformly). -/
-theorem Expr.closeTyVarsAux_tyBvarBounded {Xs : List Nat} :
-    ∀ (e : Expr) (d : Nat), e.TyBvarBounded d →
-      (e.closeTyVarsAux d Xs).TyBvarBounded (d + Xs.length) := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit p => intro d _; exact trivial
-  | primBinOp op => intro d _; exact trivial
-  | ctor c => intro d _; exact trivial
-  | var i tyArgs =>
-    intro d hb
-    simp only [Expr.TyBvarBounded] at hb
-    simp only [Expr.closeTyVarsAux, Expr.TyBvarBounded]
-    intro t ht
-    obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
-    exact Ty.closeOverFrom_preserves_bvars (hb t0 ht0)
-  | lambda ann body ih =>
-    intro d hb
-    simp only [Expr.TyBvarBounded] at hb
-    simp only [Expr.closeTyVarsAux, Expr.TyBvarBounded]
-    refine ⟨?_, ih d hb.2⟩
-    intro t ht
-    obtain ⟨t', ht', rfl⟩ := Option.map_eq_some_iff.mp ht
-    exact Ty.closeOverFrom_preserves_bvars (hb.1 t' ht')
-  | app f arg ihf iharg =>
-    intro d hb
-    simp only [Expr.TyBvarBounded] at hb
-    simp only [Expr.closeTyVarsAux, Expr.TyBvarBounded]
-    exact ⟨ihf d hb.1, iharg d hb.2⟩
-  | letIn ann rhs body ihr ihb =>
-    intro d hb
-    cases ann with
-    | none =>
-      simp only [Expr.TyBvarBounded] at hb
-      simp only [Expr.closeTyVarsAux, Expr.TyBvarBounded]
-      exact ⟨ihr d hb.1, ihb d hb.2⟩
-    | some σ =>
-      obtain ⟨pc, sb⟩ := σ
-      simp only [Expr.TyBvarBounded] at hb
-      simp only [Expr.closeTyVarsAux, Expr.TyBvarBounded]
-      refine ⟨?_, ?_, ihb d hb.2.2⟩
-      · have hh := Ty.closeOverFrom_preserves_bvars (d := d + pc) (Xs := Xs) hb.1
-        rw [show d + Xs.length + pc = d + pc + Xs.length by omega]; exact hh
-      · have hh := ihr (d + pc) hb.2.1
-        rw [show d + Xs.length + pc = d + pc + Xs.length by omega]; exact hh
-  | match_ scrut branches ihs ihbr =>
-    intro d hb
-    simp only [Expr.TyBvarBounded] at hb
-    simp only [Expr.closeTyVarsAux, Expr.TyBvarBounded, BranchList.closeTyVarsAux_eq_map]
-    refine ⟨ihs d hb.1, ?_⟩
-    rw [Expr.TyBvarBounded.BranchList_iff] at hb ⊢
-    intro p b hpb
-    obtain ⟨⟨p', b'⟩, hmem, heq⟩ := List.mem_map.mp hpb
-    simp only [Prod.mk.injEq] at heq
-    obtain ⟨_, rfl⟩ := heq
-    exact ihbr p' b' hmem d (hb.2 p' b' hmem)
-  | letRec anns bindings body ih_bindings ih_body =>
-    intro d hb
-    obtain ⟨hsch, hrg, hbody⟩ := hb
-    simp only [Expr.closeTyVarsAux]
-    exact ⟨RecGroup.closeAnns_tyBvarBounded hsch,
-      RecGroup.closeTyVarsAux_tyBvarBounded_aux anns bindings d
-        (fun e he d' => ih_bindings e he d') hrg,
-      ih_body d hbody⟩
-
-/-- `closeTyVars Xs` (top-level `d = 0`) raises the bvar bound to `Xs.length`. -/
-theorem Expr.closeTyVars_tyBvarBounded {Xs : List Nat} {e : Expr}
-    (he : e.TyBvarBounded 0) : (e.closeTyVars Xs).TyBvarBounded Xs.length := by
-  have := Expr.closeTyVarsAux_tyBvarBounded (Xs := Xs) e 0 he
-  simpa using this
-
-/-- Term-var shifting preserves `TyBvarBounded` (it only renames term `bvar`s, never
-    touching type annotations). (Re-based off `NoRecAnn`: shifting recurses through
-    `letRecAnn` schemes/bindings without touching their type bvars.) -/
-theorem Expr.shiftFrom_tyBvarBounded (n : Nat) {e : Expr} :
-    ∀ (t d : Nat), e.TyBvarBounded d → (e.shiftFrom t n).TyBvarBounded d := by
-  induction e using Expr.rec_strong with
-  | primLit p => intro t d _; exact trivial
-  | primBinOp op => intro t d _; exact trivial
-  | ctor c => intro t d _; exact trivial
-  | var i tyArgs =>
-    intro t d hb; simp only [Expr.TyBvarBounded] at hb
-    simp only [Expr.shiftFrom]; split <;> (simp only [Expr.TyBvarBounded]; exact hb)
-  | lambda ann body ih =>
-    intro t d hb
-    simp only [Expr.TyBvarBounded] at hb
-    simp only [Expr.shiftFrom, Expr.TyBvarBounded]
-    exact ⟨hb.1, ih (t + 1) d hb.2⟩
-  | app f arg ihf iharg =>
-    intro t d hb
-    simp only [Expr.TyBvarBounded] at hb
-    simp only [Expr.shiftFrom, Expr.TyBvarBounded]
-    exact ⟨ihf t d hb.1, iharg t d hb.2⟩
-  | letIn ann rhs body ihr ihb =>
-    intro t d hb
-    cases ann with
-    | none =>
-      simp only [Expr.TyBvarBounded] at hb
-      simp only [Expr.shiftFrom, Expr.TyBvarBounded]
-      exact ⟨ihr t d hb.1, ihb (t + 1) d hb.2⟩
-    | some σ =>
-      simp only [Expr.TyBvarBounded] at hb
-      simp only [Expr.shiftFrom, Expr.TyBvarBounded]
-      exact ⟨hb.1, ihr t (d + σ.paramCount) hb.2.1, ihb (t + 1) d hb.2.2⟩
-  | match_ scrut branches ihs ihbr =>
-    intro t d hb
-    simp only [Expr.TyBvarBounded] at hb
-    simp only [Expr.shiftFrom, Expr.TyBvarBounded]
-    refine ⟨ihs t d hb.1, ?_⟩
-    obtain ⟨_, hbbr⟩ := hb
-    induction branches with
-    | nil => exact trivial
-    | cons hd tl ihtl =>
-      obtain ⟨p, b⟩ := hd
-      exact ⟨ihbr p b List.mem_cons_self (t + p.bindCount) d hbbr.1,
-             ihtl (fun p' b' hmem => ihbr p' b' (List.mem_cons_of_mem _ hmem)) hbbr.2⟩
-  | letRec anns bindings body ihbs ihb =>
-    intro t d hb
-    obtain ⟨hsch, hbs, hbody⟩ := hb
-    refine ⟨hsch, ?_, ihb (t + bindings.length) d hbody⟩
-    generalize t + bindings.length = thr
-    clear hsch hbody
-    induction bindings generalizing anns with
-    | nil => cases anns <;> exact trivial
-    | cons hd tl ihtl =>
-      cases anns with
-      | nil =>
-        exact ⟨ihbs hd List.mem_cons_self thr d hbs.1,
-               ihtl [] (fun e' hm => ihbs e' (List.mem_cons_of_mem _ hm)) hbs.2⟩
-      | cons a as =>
-        exact ⟨ihbs hd List.mem_cons_self thr (d + RecAnn.params a) hbs.1,
-               ihtl as (fun e' hm => ihbs e' (List.mem_cons_of_mem _ hm)) hbs.2⟩
-
-/-- Mapping a function over the left list of a `zip` distributes over the zip. -/
-theorem List.zip_map_left_eq' {α β γ : Type _} (f : α → γ) :
-    ∀ (l : List α) (r : List β), (l.map f).zip r = (l.zip r).map (fun ab => (f ab.1, ab.2)) := by
-  intro l
-  induction l with
-  | nil => intro r; simp
-  | cons hd tl ih =>
-    intro r; cases r with
-    | nil => simp
-    | cons rhd rtl => simp only [List.map_cons, List.zip_cons_cons, ih]
-
-/-- Mapping a function over the right list of a `zip` distributes over the zip. -/
-theorem List.zip_map_right_eq' {α β γ : Type _} (g : β → γ) :
-    ∀ (l : List α) (r : List β), l.zip (r.map g) = (l.zip r).map (fun ab => (ab.1, g ab.2)) := by
-  intro l
-  induction l with
-  | nil => intro r; simp
-  | cons hd tl ih =>
-    intro r; cases r with
-    | nil => simp
-    | cons rhd rtl => simp only [List.map_cons, List.zip_cons_cons, ih]
-
-/-- Shifting the group's term de Bruijn indices preserves the shielded per-binding
-    bound (shield depths are insensitive to structural maps of the bindings). -/
-theorem Expr.TyBvarBounded.RecGroup_map_shiftFrom {d t k : Nat}
-    {anns : List (Option PolyTy)} {bs : List Expr}
-    (h : Expr.TyBvarBounded.RecGroup d anns bs) :
-    Expr.TyBvarBounded.RecGroup d anns (bs.map (·.shiftFrom t k)) := by
-  rw [Expr.TyBvarBounded.RecGroup_iff] at h ⊢
-  intro p hp
-  rw [RecGroup.shieldDepths_map, List.zip_map_left_eq'] at hp
-  obtain ⟨⟨b, d'⟩, hmem, rfl⟩ := List.mem_map.mp hp
-  exact Expr.shiftFrom_tyBvarBounded k t d' (h (b, d') hmem)
-
-/-- An LC type substitution over the group's bindings preserves the shielded
-    per-binding bound (with the anns view unchanged). -/
-theorem Expr.TyBvarBounded.RecGroup_map_substTyFvars {d : Nat} {S : List (Nat × Ty)}
-    (hS : ∀ p ∈ S, p.2.IsLC) {anns : List (Option PolyTy)} {bs : List Expr}
-    (h : Expr.TyBvarBounded.RecGroup d anns bs) :
-    Expr.TyBvarBounded.RecGroup d anns (bs.map (·.substTyFvars S)) := by
-  rw [Expr.TyBvarBounded.RecGroup_iff] at h ⊢
-  intro p hp
-  rw [RecGroup.shieldDepths_map, List.zip_map_left_eq'] at hp
-  obtain ⟨⟨b, d'⟩, hmem, rfl⟩ := List.mem_map.mp hp
-  exact Expr.substTyFvars_tyBvarBounded hS (h (b, d') hmem)
-
-/-- The shielded group bound is monotone in the ambient depth. -/
-theorem Expr.TyBvarBounded.RecGroup.monotone {n m : Nat} (hnm : n ≤ m) :
-    ∀ {anns : List (Option PolyTy)} {bs : List Expr},
-      Expr.TyBvarBounded.RecGroup n anns bs → Expr.TyBvarBounded.RecGroup m anns bs := by
-  intro anns bs
-  induction bs generalizing anns with
-  | nil => intro h; cases anns <;> exact trivial
-  | cons hd tl ih =>
-    intro h
-    cases anns with
-    | nil => exact ⟨Expr.TyBvarBounded.mono h.1 hnm, ih h.2⟩
-    | cons a as => exact ⟨Expr.TyBvarBounded.mono h.1 (by omega), ih h.2⟩
-
-/-- Every member of a `bvarRange` block is bounded by the block width. -/
-private theorem ContainsBvarsUpTo.bvarRangeFrom' :
-    ∀ (k s : Nat), ∀ t ∈ Ty.bvarRangeFrom s k, ContainsBvarsUpTo (s + k) t
-  | 0, s => by intro t ht; simp [Ty.bvarRangeFrom] at ht
-  | k + 1, s => by
-      intro t ht
-      rcases List.mem_cons.mp ht with rfl | ht
-      · exact .bvar (by omega)
-      · exact (ContainsBvarsUpTo.bvarRangeFrom' k (s + 1) t ht).mono (by omega)
-
-theorem ContainsBvarsUpTo.bvarRange {k : Nat} :
-    ∀ t ∈ Ty.bvarRange k, ContainsBvarsUpTo k t := fun t ht => by
-  have := ContainsBvarsUpTo.bvarRangeFrom' k 0 t ht
-  rwa [Nat.zero_add] at this
-
-/-- The mixed Λ-outside nest has no dangling type `bvar`s. Each mono wrapper's
-    annotated `letIn (some Mⱼ)` absorbs the `closeTyVars`-introduced bvars; each
-    poly wrapper's `letIn (some σⱼ)` carries a `WF` scheme, its inner projection's
-    `Ty.bvarRange σⱼ.paramCount` tyArgs are shielded by the wrapper's own depth,
-    and the inner `.letRec anns …` node is `TyBvarBounded` from the (shifted,
-    ann-shielded) raw bindings. -/
-theorem Expr.letRecElabNest_tyBvarBounded {G : List Nat} {anns : List (Option PolyTy)}
-    {n : Nat} {rawBindings : List Expr}
-    (hrawb : Expr.TyBvarBounded.RecGroup 0 anns rawBindings)
-    (hanns : ∀ σ, some σ ∈ anns → σ.WF) :
-    ∀ (members : List (Nat × RecSpec)) {body : Expr}, (∀ p ∈ members, p.2.LC) →
-      body.TyBvarBounded 0 →
-      (Expr.letRecElabNest G anns n rawBindings members body).TyBvarBounded 0 := by
-  intro members
-  induction members with
-  | nil => intro body _ hbody; exact hbody
-  | cons hd tl ih =>
-    obtain ⟨i, s⟩ := hd
-    intro body hlc hbody
-    cases s with
-    | mono τ =>
-      have hτlc : τ.IsLC := hlc (i, .mono τ) List.mem_cons_self
-      simp only [Expr.letRecElabNest, Expr.TyBvarBounded, PolyTy.genGroup, Nat.zero_add]
-      refine ⟨Ty.closeOver_preserves_bvars hτlc, ?_,
-        ih (fun p hp => hlc p (List.mem_cons_of_mem _ hp)) hbody⟩
-      have hinner : (Expr.letRec anns (rawBindings.map (·.shiftFrom n (n - 1 - i)))
-          (Expr.var i [])).TyBvarBounded 0 := by
-        refine ⟨fun σ' hσ' => ?_, Expr.TyBvarBounded.RecGroup_map_shiftFrom hrawb,
-          by intro t ht; simp at ht⟩
-        rw [Nat.zero_add]
-        exact hanns σ' hσ'
-      exact Expr.closeTyVars_tyBvarBounded hinner
-    | poly σ =>
-      have hσwf : σ.WF := hlc (i, .poly σ) List.mem_cons_self
-      simp only [Expr.letRecElabNest, Expr.TyBvarBounded, Nat.zero_add]
-      refine ⟨hσwf, ?_, ih (fun p hp => hlc p (List.mem_cons_of_mem _ hp)) hbody⟩
-      refine ⟨fun σ' hσ' => (hanns σ' hσ').mono (by omega),
-        Expr.TyBvarBounded.RecGroup.monotone (Nat.zero_le _)
-          (Expr.TyBvarBounded.RecGroup_map_shiftFrom hrawb),
-        ?_⟩
-      intro t ht
-      exact ContainsBvarsUpTo.bvarRange t ht
-
-/-- Top-level mixed-nest type-bvar boundedness (`letRecElab` at `TyBvarBounded 0`). -/
-theorem Expr.letRecElab_tyBvarBounded {G : List Nat} {anns : List (Option PolyTy)}
-    {rawBindings : List Expr} {specs : List RecSpec}
-    {body : Expr} (hrawb : Expr.TyBvarBounded.RecGroup 0 anns rawBindings)
-    (hanns : ∀ σ, some σ ∈ anns → σ.WF)
-    (hspecs : ∀ s ∈ specs, s.LC) (hbody : body.TyBvarBounded 0) :
-    (Expr.letRecElab G anns rawBindings specs body).TyBvarBounded 0 :=
-  Expr.letRecElabNest_tyBvarBounded hrawb hanns _
-    (fun p hp => hspecs p.2 (List.of_mem_zip (List.mem_reverse.mp hp)).2) hbody
-
-/-! ### M5: the elaborated output is type-bvar-bounded (`TyBvarBounded 0`)
-
-DELETED: `Infer.eOut_tyBvarBounded` / `InferBranches.eOut_tyBvarBounded` /
-`InferRecGroup.eOut_tyBvarBounded` (conclusions referenced the removed
-elaborated outputs `eOut`/`brsOut`/`bindingsOut`; the family was self-contained
-and had no consumers after the `eOut`-drop). -/
-
-/-- `substTyFvars` distributes over substitution append (it is the left fold of
-    `substTyFvar`). -/
-theorem Expr.substTyFvars_append (A B : List (Nat × Ty)) (e : Expr) :
-    e.substTyFvars (A ++ B) = (e.substTyFvars A).substTyFvars B := by
-  induction A generalizing e with
-  | nil => rfl
-  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [List.cons_append, Expr.substTyFvars, ih]
-
-/-! ### M6 close-back plumbing: `substTyFvars` / `openTyVars` commutation
-
-An LC substitution whose domain avoids the opening names `Xs` commutes with scoped
-opening (its images carry no `Xs`, and it never substitutes the freshly-opened
-`Xs`). Iterated lifts of Core's single-step `Expr.substTyFvar_openTyVarsAux` /
-`Ty.substFvar_openVars`. -/
-
-theorem Expr.substTyFvars_openTyVarsAux {S : List (Nat × Ty)} {Xs : List Nat}
-    (hS_lc : ∀ p ∈ S, p.2.IsLC) (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) :
-    ∀ (e : Expr) (d : Nat),
-      (e.substTyFvars S).openTyVarsAux d Xs = (e.openTyVarsAux d Xs).substTyFvars S := by
-  induction S with
-  | nil => intro e d; rfl
-  | cons hd S' ih =>
-    obtain ⟨Z, U⟩ := hd
-    intro e d
-    simp only [Expr.substTyFvars]
-    rw [ih (fun p hp => hS_lc p (List.mem_cons_of_mem _ hp))
-          (fun p hp => hS_Xs p (List.mem_cons_of_mem _ hp)),
-        ← Expr.substTyFvar_openTyVarsAux (hS_lc (Z, U) List.mem_cons_self)
-            (hS_Xs (Z, U) List.mem_cons_self) e d]
-
-/-- Top-level (`d = 0`) `substTyFvars`/`openTyVars` commutation. -/
-theorem Expr.substTyFvars_openTyVars {S : List (Nat × Ty)} {Xs : List Nat} {e : Expr}
-    (hS_lc : ∀ p ∈ S, p.2.IsLC) (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) :
-    (e.substTyFvars S).openTyVars Xs = (e.openTyVars Xs).substTyFvars S :=
-  Expr.substTyFvars_openTyVarsAux hS_lc hS_Xs e 0
-
-theorem Ty.substFvars_openVars {S : List (Nat × Ty)} {Xs : List Nat} {t : Ty}
-    (hS_lc : ∀ p ∈ S, p.2.IsLC) (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) :
-    (t.substFvars S).openVars Xs = (t.openVars Xs).substFvars S := by
-  induction S generalizing t with
-  | nil => rfl
-  | cons hd S' ih =>
-    obtain ⟨Z, U⟩ := hd
-    simp only [Ty.substFvars]
-    rw [ih (fun p hp => hS_lc p (List.mem_cons_of_mem _ hp))
-          (fun p hp => hS_Xs p (List.mem_cons_of_mem _ hp)),
-        ← Ty.substFvar_openVars (hS_lc (Z, U) List.mem_cons_self)
-            (hS_Xs (Z, U) List.mem_cons_self)]
-
-/-! ### M6 close-back plumbing: `substTyFvars` / `closeTyVars` commutation
-
-The elaboration `closeTyVars`-closes the (substituted) bound expression over the
-generalised variables `genV`. Pushing the *enclosing* substitution `S` through
-that close commutes when `S` avoids `genV` in **both** domain and range: `S`
-never substitutes a freshly-closed `genV` (domain), and its images carry no
-`genV` that would be spuriously captured by the close (range). Structural
-mirror of `Expr.substTyFvars_openTyVars`, lifting the single-step
-`Ty.substFvar_closeOverFrom_comm`. -/
-
-/-- Closing at depth `d` over variables none of which occur free in `τ` is the
-    identity (the offset analogue of `Ty.closeOver_eq_self_of_fresh`). -/
-theorem Ty.closeOverFrom_eq_self_of_fresh {d : Nat} {gs : List Nat} {τ : Ty}
-    (h : ∀ g ∈ gs, g ∉ τ.freeVars) : Ty.closeOverFrom d gs τ = τ := by
-  induction τ using Ty.rec_strong with
-  | prim p => simp [Ty.closeOverFrom]
-  | bvar i => simp [Ty.closeOverFrom]
-  | fvar n =>
-    have hn : n ∉ gs := fun hmem => h n hmem (by simp [Ty.freeVars])
-    simp only [Ty.closeOverFrom, List.idxOf?_eq_none_iff.mpr hn]
-  | arrow a b iha ihb =>
-    have ha : ∀ g ∈ gs, g ∉ a.freeVars := fun g hg hc =>
-      h g hg (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inl hc)
-    have hb : ∀ g ∈ gs, g ∉ b.freeVars := fun g hg hc =>
-      h g hg (by simp only [Ty.freeVars, List.mem_dedup, List.mem_append]; exact .inr hc)
-    simp only [Ty.closeOverFrom, iha ha, ihb hb]
-  | customTy nm tys ih =>
-    simp only [Ty.closeOverFrom, TyList.closeOverFrom_eq_map]
-    apply congrArg (Ty.customTy nm)
-    conv_rhs => rw [← List.map_id tys]
-    apply List.map_congr_left
-    intro t ht
-    exact ih t ht (fun g hg hc => h g hg (TyList.mem_freeVars_of_mem ht hc))
-  | bl lo hi e ih =>
-    have he : ∀ g ∈ gs, g ∉ e.freeVars := fun g hg hc =>
-      h g hg (by simpa only [Ty.freeVars] using hc)
-    simp only [Ty.closeOverFrom, ih he]
-
-/-- `substFvar` commutes with offset closing (`Ty.closeOverFrom`) when the
-    substituted variable `Z` and every free var of the replacement `U` avoid the
-    closed-over pool `gs` (the offset analogue of `Ty.substFvar_closeOver_comm`). -/
-theorem Ty.substFvar_closeOverFrom_comm {Z : Nat} {U : Ty} {gs : List Nat} {d : Nat} {τ : Ty}
-    (hZ : Z ∉ gs) (hU : ∀ g ∈ gs, g ∉ U.freeVars) :
-    Ty.substFvar Z U (Ty.closeOverFrom d gs τ) = Ty.closeOverFrom d gs (Ty.substFvar Z U τ) := by
-  induction τ using Ty.rec_strong with
-  | prim p => simp [Ty.closeOverFrom, Ty.substFvar]
-  | bvar i => simp [Ty.closeOverFrom, Ty.substFvar]
-  | fvar n =>
-    cases h_idx : gs.idxOf? n with
-    | none =>
-      have hn : n ∉ gs := List.idxOf?_eq_none_iff.mp h_idx
-      by_cases hnz : n = Z
-      · subst hnz
-        simp only [Ty.closeOverFrom, h_idx, Ty.substFvar, if_pos]
-        exact (Ty.closeOverFrom_eq_self_of_fresh hU).symm
-      · simp only [Ty.closeOverFrom, h_idx, Ty.substFvar, if_neg hnz]
-    | some i =>
-      have hn : n ∈ gs := List.mem_of_getElem? (List.getElem?_of_idxOf? h_idx)
-      have hnz : ¬ n = Z := fun h => hZ (h ▸ hn)
-      simp only [Ty.closeOverFrom, h_idx, Ty.substFvar, if_neg hnz]
-  | arrow a b iha ihb =>
-    simp only [Ty.closeOverFrom, Ty.substFvar, iha, ihb]
-  | customTy nm tys ih =>
-    simp only [Ty.closeOverFrom, Ty.substFvar, TyList.closeOverFrom_eq_map, TyList.substFvar_eq_map,
-               List.map_map]
-    apply congrArg (Ty.customTy nm)
-    apply List.map_congr_left
-    intro t ht
-    simpa using ih t ht
-  | bl lo hi e ih =>
-    simp only [Ty.closeOverFrom, Ty.substFvar, ih]
-
-/-- Iterated `substFvars` commutes with offset closing, lifting
-    `Ty.substFvar_closeOverFrom_comm` over the substitution `S` (which must avoid
-    the closed-over pool `Xs` in both domain and range). -/
-theorem Ty.substFvars_closeOverFrom {S : Subst} {Xs : List Nat} {d : Nat}
-    (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) (hS_ran : ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∉ Xs) :
-    ∀ {t : Ty}, Ty.substFvars S (Ty.closeOverFrom d Xs t) = Ty.closeOverFrom d Xs (Ty.substFvars S t) := by
-  induction S with
-  | nil => intro t; rfl
-  | cons hd S' ih =>
-    obtain ⟨Z, U⟩ := hd
-    intro t
-    simp only [Ty.substFvars]
-    rw [Ty.substFvar_closeOverFrom_comm (hS_Xs (Z, U) List.mem_cons_self)
-          (fun g hg hc => hS_ran (Z, U) List.mem_cons_self g hc hg),
-        ih (fun p hp => hS_Xs p (List.mem_cons_of_mem _ hp))
-          (fun p hp => hS_ran p (List.mem_cons_of_mem _ hp))]
-
-/-- `substTyFvars` is the identity on `primLit` leaves. -/
-private theorem Expr.substTyFvars_primLit {S : Subst} {p : PrimLitExpr} :
-    (Expr.primLit p).substTyFvars S = .primLit p := by
-  induction S with
-  | nil => rfl
-  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [Expr.substTyFvars, Expr.substTyFvar, ih]
-
-/-- `substTyFvars` is the identity on `ctor` leaves. -/
-private theorem Expr.substTyFvars_ctor {S : Subst} {c : CtorName} :
-    (Expr.ctor c).substTyFvars S = .ctor c := by
-  induction S with
-  | nil => rfl
-  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [Expr.substTyFvars, Expr.substTyFvar, ih]
-
-/-- `substTyFvars` is the identity on `primBinOp` leaves. -/
-private theorem Expr.substTyFvars_primBinOp {S : Subst} {op : PrimBinOp} :
-    (Expr.primBinOp op).substTyFvars S = .primBinOp op := by
-  induction S with
-  | nil => rfl
-  | cons hd tl ih => obtain ⟨Z, U⟩ := hd; simp only [Expr.substTyFvars, Expr.substTyFvar, ih]
-
-/-- Ann-level `substFvars`/`closeAnns` commute (an `Xs`-avoiding substitution
-    passes through each scheme body's close, shield depths preserved). -/
-private theorem RecGroup.substFvars_closeAnns {S : Subst} {Xs : List Nat}
-    (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) (hS_ran : ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∉ Xs)
-    (d : Nat) (anns : List (Option PolyTy)) :
-    (RecGroup.closeAnns d Xs anns).map (RecAnn.substFvars S)
-      = RecGroup.closeAnns d Xs (anns.map (RecAnn.substFvars S)) := by
-  simp only [RecGroup.closeAnns, List.map_map]
-  refine List.map_congr_left (fun a _ => ?_)
-  cases a with
-  | none => simp
-  | some σ =>
-    simp only [Function.comp_apply, Option.map_some, RecAnn.substFvars_some,
-      PolyTy.substFvars_eq, Option.some.injEq]
-    rw [Ty.substFvars_closeOverFrom hS_Xs hS_ran]
-
-/-- Group-level `substTyFvars`/`closeTyVarsAux` commute, given the pointwise
-    commutation for each binding (shield depths preserved by `RecAnn.substFvars`). -/
-private theorem RecGroup.substTyFvars_closeTyVarsAux_aux {S : Subst} {Xs : List Nat} :
-    ∀ (anns : List (Option PolyTy)) (bs : List Expr) (d : Nat),
-      (∀ e ∈ bs, ∀ (d' : Nat),
-        (e.closeTyVarsAux d' Xs).substTyFvars S = (e.substTyFvars S).closeTyVarsAux d' Xs) →
-      (RecGroup.closeTyVarsAux d Xs anns bs).map (·.substTyFvars S)
-        = RecGroup.closeTyVarsAux d Xs (anns.map (RecAnn.substFvars S))
-            (bs.map (·.substTyFvars S)) := by
-  intro anns bs
-  induction bs generalizing anns with
-  | nil => intro d _; cases anns <;> rfl
-  | cons hd tl ih =>
-    intro d hcomm
-    cases anns with
-    | nil =>
-      have h1 := hcomm hd List.mem_cons_self d
-      have h2 := ih [] d (fun e he d' => hcomm e (List.mem_cons_of_mem _ he) d')
-      show (hd.closeTyVarsAux d Xs).substTyFvars S
-            :: (RecGroup.closeTyVarsAux d Xs [] tl).map (·.substTyFvars S)
-          = (hd.substTyFvars S).closeTyVarsAux d Xs
-            :: RecGroup.closeTyVarsAux d Xs [] (tl.map (·.substTyFvars S))
-      rw [h1, h2, List.map_nil]
-    | cons a as =>
-      have h1 := hcomm hd List.mem_cons_self (d + RecAnn.params a)
-      have h2 := ih as d (fun e he d' => hcomm e (List.mem_cons_of_mem _ he) d')
-      show (hd.closeTyVarsAux (d + RecAnn.params a) Xs).substTyFvars S
-            :: (RecGroup.closeTyVarsAux d Xs as tl).map (·.substTyFvars S)
-          = (hd.substTyFvars S).closeTyVarsAux (d + RecAnn.params (RecAnn.substFvars S a)) Xs
-            :: RecGroup.closeTyVarsAux d Xs (as.map (RecAnn.substFvars S))
-                (tl.map (·.substTyFvars S))
-      rw [h1, h2, RecAnn.params_substFvars]
-
-/-- Iterated `substTyFvars` commutes with `closeTyVarsAux` when the substitution
-    `S` avoids the closing names `Xs` in both domain and range. (Fused `letRec`:
-    the scheme-annotation bodies commute by `RecGroup.substFvars_closeAnns` and
-    the bindings pointwise at their preserved shield depths.) -/
-theorem Expr.substTyFvars_closeTyVarsAux {S : Subst} {Xs : List Nat}
-    (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs) (hS_ran : ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∉ Xs) :
-    ∀ (e : Expr) (d : Nat),
-      (e.closeTyVarsAux d Xs).substTyFvars S = (e.substTyFvars S).closeTyVarsAux d Xs := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit p => intro d; simp only [Expr.closeTyVarsAux, Expr.substTyFvars_primLit]
-  | primBinOp op => intro d; simp only [Expr.closeTyVarsAux, Expr.substTyFvars_primBinOp]
-  | ctor nm => intro d; simp only [Expr.closeTyVarsAux, Expr.substTyFvars_ctor]
-  | var n tyArgs =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_var, List.map_map]
-    refine congrArg (Expr.var n) ?_
-    apply List.map_congr_left
-    intro t _
-    simp only [Function.comp_apply]
-    exact Ty.substFvars_closeOverFrom hS_Xs hS_ran
-  | app f inp ih_f ih_i =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_app, Expr.app.injEq]
-    exact ⟨ih_f d, ih_i d⟩
-  | lambda ann body ih =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_lambda, Expr.lambda.injEq]
-    refine ⟨?_, ih d⟩
-    cases ann with
-    | none => rfl
-    | some t =>
-      simp only [Option.map_some, Option.some.injEq]
-      exact Ty.substFvars_closeOverFrom hS_Xs hS_ran
-  | letIn ann be body ih_be ih_body =>
-    intro d
-    cases ann with
-    | none =>
-      simp only [Expr.closeTyVarsAux, Expr.substTyFvars_letIn, Option.map_none]
-      rw [ih_be d, ih_body d]
-    | some σ =>
-      simp only [Expr.closeTyVarsAux, Expr.substTyFvars_letIn, Option.map_some]
-      rw [ih_be (d + σ.paramCount), ih_body d,
-          Ty.substFvars_closeOverFrom hS_Xs hS_ran (t := σ.body)]
-  | match_ scrut branches ih_scrut ih_branches =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_match, BranchList.closeTyVarsAux_eq_map,
-      List.map_map, Expr.match_.injEq]
-    refine ⟨ih_scrut d, ?_⟩
-    apply List.map_congr_left
-    rintro ⟨p, b⟩ hpb
-    simp only [Function.comp_apply, Prod.mk.injEq, true_and]
-    exact ih_branches p b hpb d
-  | letRec anns bs body ih_bs ih_body =>
-    intro d
-    simp only [Expr.closeTyVarsAux, Expr.substTyFvars_letRec, Expr.letRec.injEq]
-    exact ⟨RecGroup.substFvars_closeAnns hS_Xs hS_ran d anns,
-      RecGroup.substTyFvars_closeTyVarsAux_aux anns bs d (fun e he d' => ih_bs e he d'),
-      ih_body d⟩
-
-/-- **Step A — the missing close/subst commutation.** Pushing a substitution `S`
-    that avoids `Xs` (domain AND range) through a top-level `closeTyVars Xs`
-    commutes: `(e.closeTyVars Xs).substTyFvars S = (e.substTyFvars S).closeTyVars Xs`.
-    (Re-based off `NoRecAnn`; commutes through `letRecAnn` too.) This is the
-    bound-expression `S`-distribution the honest `letIn`/`letInAnn` soundness
-    cases need. -/
-theorem Expr.substTyFvars_closeTyVars {S : Subst} {Xs : List Nat} {e : Expr}
-    (hS_Xs : ∀ p ∈ S, p.1 ∉ Xs)
-    (hS_ran : ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∉ Xs) :
-    (e.closeTyVars Xs).substTyFvars S = (e.substTyFvars S).closeTyVars Xs :=
-  Expr.substTyFvars_closeTyVarsAux hS_Xs hS_ran e 0
-
-/-- Mapping a function over the left list of a `zip` distributes over the zip. -/
 theorem List.zip_map_left_eq {α β γ : Type _} (f : α → γ) :
     ∀ (l : List α) (r : List β), (l.map f).zip r = (l.zip r).map (fun ab => (f ab.1, ab.2)) := by
   intro l
@@ -7648,76 +5809,6 @@ theorem Ty.substFvars_closeOver {S : Subst} {gs : List Nat}
           (fun g hg hc => hS_ran (Z, U) List.mem_cons_self g hc hg),
         ih (fun p hp => hS_gs p (List.mem_cons_of_mem _ hp))
           (fun p hp => hS_ran p (List.mem_cons_of_mem _ hp))]
-
-/-- **Substitution removes its own domain from a term's free type vars.** If `w`
-    avoids `S.onTy x` for every `x` (i.e. `w` is idempotently eliminated by `S`),
-    then `w` is not free in `e.substTyFvars S` (for `letRecAnn`-free `e`). Direct
-    structural twin of `Expr.mem_tyFreeVars_substTyFvars` that keeps the
-    `(S.onTy t)` form for annotations instead of weakening to a disjunction — this
-    is what makes `S₁` idempotent on the close-after-`S₁` `letIn` rhs. -/
-theorem Expr.dom_notMem_substTyFvars {S : Subst} {w : Nat}
-    (hidem : ∀ x : Ty, w ∉ (Ty.substFvars S x).freeVars) :
-    ∀ {e : Expr}, w ∉ (e.substTyFvars S).tyFreeVars := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit p => rw [Expr.substTyFvars_primLit]; simp [Expr.tyFreeVars]
-  | primBinOp op => rw [Expr.substTyFvars_primBinOp]; simp [Expr.tyFreeVars]
-  | ctor c => rw [Expr.substTyFvars_ctor]; simp [Expr.tyFreeVars]
-  | var n tyArgs =>
-    rw [Expr.substTyFvars_var]
-    simp only [Expr.tyFreeVars, List.mem_flatMap, not_exists, not_and]
-    intro t ht
-    obtain ⟨t0, _, rfl⟩ := List.mem_map.mp ht
-    exact hidem t0
-  | lambda ann body ih =>
-    rw [Expr.substTyFvars_lambda]
-    cases ann with
-    | none => simpa only [Expr.tyFreeVars, Option.map_none, Option.elim_none, List.nil_append] using ih
-    | some t =>
-      simp only [Expr.tyFreeVars, Option.map_some, Option.elim_some, List.mem_append, not_or]
-      exact ⟨hidem t, ih⟩
-  | app f arg ihf iharg =>
-    rw [Expr.substTyFvars_app]
-    simp only [Expr.tyFreeVars, List.mem_append, not_or]
-    exact ⟨ihf, iharg⟩
-  | letIn ann rhs body ihr ihb =>
-    rw [Expr.substTyFvars_letIn]
-    cases ann with
-    | none =>
-      simp only [Expr.tyFreeVars, Option.map_none, Option.elim_none, List.nil_append,
-        List.mem_append, not_or]
-      exact ⟨ihr, ihb⟩
-    | some σ =>
-      simp only [Expr.tyFreeVars, Option.map_some, Option.elim_some, List.mem_append, not_or]
-      exact ⟨⟨hidem σ.body, ihr⟩, ihb⟩
-  | match_ scrut branches ihs ihbr =>
-    rw [Expr.substTyFvars_match]
-    simp only [Expr.tyFreeVars, List.mem_append, not_or]
-    refine ⟨ihs, ?_⟩
-    intro hc
-    obtain ⟨pb, hpb, hwpb⟩ := Expr.mem_branchListTyFreeVars hc
-    obtain ⟨pb0, hpb0, rfl⟩ := List.mem_map.mp hpb
-    obtain ⟨p0, b0⟩ := pb0
-    exact ihbr p0 b0 hpb0 hwpb
-  | letRec anns bindings body ihbs ihb =>
-    rw [Expr.substTyFvars_letRec]
-    simp only [Expr.tyFreeVars, List.mem_append, not_or]
-    refine ⟨⟨?_, ?_⟩, ihb⟩
-    · induction anns with
-      | nil => simp [Expr.tyFreeVars.AnnList.tyFreeVars]
-      | cons a as iha =>
-        cases a with
-        | none =>
-          simpa only [List.map_cons, RecAnn.substFvars_none, Expr.tyFreeVars.AnnList.tyFreeVars,
-            Option.elim, List.nil_append] using iha
-        | some σ =>
-          simp only [List.map_cons, RecAnn.substFvars_some, Expr.tyFreeVars.AnnList.tyFreeVars,
-            Option.elim, List.mem_append, not_or, PolyTy.body_substFvars]
-          exact ⟨hidem σ.body, iha⟩
-    · intro hc
-      obtain ⟨e', he', hwe'⟩ := Expr.mem_recGroupTyFreeVars hc
-      obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he'
-      exact ihbs e0 he0 hwe'
 
 /-! ### Domain-locality (avoid form): `Infer.dom_avoid`
 
@@ -8169,86 +6260,6 @@ The dedicated erased-`letRec`-soundness lemmas in this block are likewise delete
     output `eOut`; it was a thin wrapper over the deleted `Infer.sound_elab`). -/
 
 
-/-! ### Ann preservation (Path R product honesty)
-
-Infer must not destroy user BL ascriptions on the elaboratum. Independent of
-residual TypeOf. Pipeline keeps anns intact for the bounds layer.
-
-`Infer.lambda` / `letInAnn` copy the source annotation option **exactly** onto
-`eOut` (before any later `substTyFvars S` on the whole elaboratum). Unannotated
-`letIn none` is filled with a genScheme (not a user BL). This relation is the
-structural zip of those facts — not residual erase.
--/
-
-mutual
-/-- Source and elaboratum agree on **user-facing binder ascriptions** (same
-    `Option` payloads at λ / annotated let / letRec; recursive under structure).
-    Unannotated `let` may gain a synthesised scheme on the elaboratum. -/
-inductive Expr.UserAnnsCopied : Expr → Expr → Prop
-  | primLit {p} :
-    Expr.UserAnnsCopied (.primLit p) (.primLit p)
-  | primBinOp {op} :
-    Expr.UserAnnsCopied (.primBinOp op) (.primBinOp op)
-  | ctor {c} :
-    Expr.UserAnnsCopied (.ctor c) (.ctor c)
-  | var {i tyArgsIn tyArgsOut} :
-    Expr.UserAnnsCopied (.var i tyArgsIn) (.var i tyArgsOut)
-  | lambda {ann body bodyOut} :
-    Expr.UserAnnsCopied body bodyOut →
-    Expr.UserAnnsCopied (.lambda ann body) (.lambda ann bodyOut)
-  | app {f fOut a aOut} :
-    Expr.UserAnnsCopied f fOut →
-    Expr.UserAnnsCopied a aOut →
-    Expr.UserAnnsCopied (.app f a) (.app fOut aOut)
-  /-- Unannotated let: elaboratum installs a synthesised scheme. RHS may be
-      `closeTyVars ∘ substTyFvars` of the inferred elaboratum (not a pure
-      same-shape walk of `rhs`); only the body is zipped. -/
-  | letIn_none {rhs body rhsOut bodyOut σ} :
-    Expr.UserAnnsCopied body bodyOut →
-    Expr.UserAnnsCopied (.letIn none rhs body) (.letIn (some σ) rhsOut bodyOut)
-  /-- Annotated let: scheme ascription copied exactly; body zipped; RHS may be closed. -/
-  | letIn_some {σ rhs body rhsOut bodyOut} :
-    Expr.UserAnnsCopied body bodyOut →
-    Expr.UserAnnsCopied (.letIn (some σ) rhs body) (.letIn (some σ) rhsOut bodyOut)
-  | match_ {scrut scrutOut brs brsOut} :
-    Expr.UserAnnsCopied scrut scrutOut →
-    Expr.UserAnnsCopiedBranches brs brsOut →
-    Expr.UserAnnsCopied (.match_ scrut brs) (.match_ scrutOut brsOut)
-  /-- Infer emits `letRecElab` (Λ-outside nest of `letIn` over an **inner**
-      `.letRec anns …`), not a bare `.letRec` elaboratum. Group-level `anns` are
-      copied exactly. Bindings may be `substTyFvars` / `closeTyVars` of the raw
-      group elaborata (same discipline as let RHS — not a pure same-shape zip of
-      nested binder ascriptions after those rewrites); only the body is zipped. -/
-  | letRec {G anns bindings body specs bindingsOut bodyOut} :
-    Expr.UserAnnsCopied body bodyOut →
-    Expr.UserAnnsCopied (.letRec anns bindings body)
-      (Expr.letRecElab G anns bindingsOut specs bodyOut)
-
-/-- Branch list zip (patterns equal; bodies ann-copied). -/
-inductive Expr.UserAnnsCopiedBranches :
-    List (MatchPattern × Expr) → List (MatchPattern × Expr) → Prop
-  | nil : Expr.UserAnnsCopiedBranches [] []
-  | cons {p e eOut rest restOut} :
-    Expr.UserAnnsCopied e eOut →
-    Expr.UserAnnsCopiedBranches rest restOut →
-    Expr.UserAnnsCopiedBranches ((p, e) :: rest) ((p, eOut) :: restOut)
-
-/-- Binding list zip (raw `InferRecGroup` elaborata; pre outer `map substTyFvars`). -/
-inductive Expr.UserAnnsCopiedList : List Expr → List Expr → Prop
-  | nil : Expr.UserAnnsCopiedList [] []
-  | cons {e eOut rest restOut} :
-    Expr.UserAnnsCopied e eOut →
-    Expr.UserAnnsCopiedList rest restOut →
-    Expr.UserAnnsCopiedList (e :: rest) (eOut :: restOut)
-end
-
-/-! ### Ann preservation (`Infer.preservesAnns`) — DELETED
-
-`Infer.preservesAnns` / `InferBranches.preservesAnns` and the
-`Expr.UserAnnsCopied*` relations concluded on the removed elaborated outputs
-(`Expr.UserAnnsCopied e eOut` / `… brs brsOut`); they had no consumers after the
-`eOut`-drop and are deleted with the rest of the elaboratum layer. -/
-
 /-! ## Algorithmic phase, step 2b: completeness (principality) scaffolding
 
 Foundations for `Infer.complete`, independent of how the residual-substitution
@@ -8488,11 +6499,11 @@ theorem TypeOfHM.rec_strong
         motive ctx (Expr.openBoundTyVars ann Xs boundExpr) (M.openVars Xs) (hcofin Xs hf)) →
       motive bodyCtx body bodyTy hbody →
       motive ctx (.letIn ann boundExpr body) bodyTy (.letIn hwf hann hcofin heq hbody))
-    (var : ∀ {dbl : Nat} {polyTy : PolyTy} {instArgs tyArgs : List Ty} {ty : Ty} {ctx : Ctx}
+    (var : ∀ {dbl : Nat} {polyTy : PolyTy} {instArgs : List Ty} {ty : Ty} {ctx : Ctx}
       (hlook : ctx.env[dbl]? = some polyTy)
       (htyargs : ∀ tyArg ∈ instArgs, ContainsBvarsUpTo 0 tyArg)
       (hinst : InstantiatesBy instArgs polyTy.body ty),
-      motive ctx (.var dbl tyArgs) ty (.var hlook htyargs hinst))
+      motive ctx (.var dbl) ty (.var hlook htyargs hinst))
     (ctor : ∀ {name : CtorName} {ctorr : Ctor} {tyArgs : List Ty} {ty : Ty} {ctx : Ctx}
       (hlook : LookupList.get? ctx.ctors name = some ctorr)
       (htyargs : ∀ tyArg ∈ tyArgs, ContainsBvarsUpTo 0 tyArg)
@@ -8963,8 +6974,7 @@ theorem TypeOfHM.eraseBounds_of {ctx : Ctx} {e : Expr} {τ : Ty}
       (Option.Pins.map_eraseBounds hann) rfl ?_
     simpa only [Ctx.eraseBounds, Env.eraseBounds_cons, PolyTy.eraseBounds_mkTrivial]
       using ihbody
-  | @var dbl polyTy instArgs tyArgs ty ctx hlook htyargs hinst =>
-    -- decoration-blind: stored tyArgs erased, instantiation via erased instArgs
+  | @var dbl polyTy instArgs ty ctx hlook htyargs hinst =>
     simp only [Expr.eraseBounds, Ctx.eraseBounds]
     refine TypeOfHM.var (polyTy := PolyTy.eraseBounds polyTy)
       (instArgs := instArgs.map Ty.eraseBounds) ?_ ?_ ?_
@@ -10098,7 +8108,7 @@ theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : Po
       refine TypeOfHM.letIn hwf hann (fun Xs hfresh => ihcofin Xs hfresh ep heq) rfl ?_
       have hbc := ihbody (Msch :: ep) (by simp only [heqctx, heq, List.cons_append])
       simpa only [heqctx, List.cons_append] using hbc
-    | @var dbl polyTy instArgs tyArgs ty ctx hlook hbvars hinst =>
+    | @var dbl polyTy instArgs ty ctx hlook hbvars hinst =>
       intro ep heq
       rw [heq] at hlook
       rcases lt_trichotomy dbl ep.length with hlt | heqd | hgt
@@ -10236,6 +8246,7 @@ theorem TypeOfHM.weaken_env
     by_cases h_lt : dbl < env_pre'.length
     · rw [if_pos h_lt]
       refine .var ?_ hlc hinst
+
       show (env_pre' ++ env_extra ++ env)[dbl]? = _
       rw [List.getElem?_append_left
             (by simp only [List.length_append]; omega : dbl < (env_pre' ++ env_extra).length),
@@ -10444,13 +8455,8 @@ theorem TypeOfHM.subst_lemma_many
       · exact ih body (by omega) (M :: env_post) τ hbody h_bd
     | var h_lookup h_lc h_inst =>
       expose_names
-      have htyargs : tyArgs = [] := by
-        have h_v : Expr.var dbl [] = Expr.var dbl tyArgs := by
-          simpa using h_erased
-        injection h_v with hdbl h
-        exact h.symm
       by_cases h_lt : dbl < env_post.length
-      · have h_subst : (Expr.var dbl tyArgs).substN env_post.length vs = .var dbl tyArgs := by
+      · have h_subst : (Expr.var dbl).substN env_post.length vs = .var dbl := by
           simp [Expr.substN, h_lt]
         rw [h_subst]
         refine .var ?_ h_lc h_inst
@@ -10461,12 +8467,11 @@ theorem TypeOfHM.subst_lemma_many
       · push_neg at h_lt
         by_cases h_in : dbl - env_post.length < vs.length
         · have hMlt : dbl - env_post.length < Ms.length := by omega
-          have h_subst : (Expr.var dbl tyArgs).substN env_post.length vs
-              = (vs[dbl - env_post.length].instTy tyArgs).shiftFrom 0 env_post.length := by
+          have h_subst : (Expr.var dbl).substN env_post.length vs
+              = (vs[dbl - env_post.length]).shiftFrom 0 env_post.length := by
             simp only [Expr.substN]
             rw [if_neg (by omega), dif_pos h_in]
-          rw [h_subst, htyargs]
-          simp only [Expr.instTy_nil]
+          rw [h_subst]
           rw [List.append_assoc, List.getElem?_append_right h_lt,
               List.getElem?_append_left hMlt, List.getElem?_eq_getElem hMlt,
               Option.some.injEq] at h_lookup
@@ -10477,8 +8482,8 @@ theorem TypeOfHM.subst_lemma_many
             hhs τ ⟨instArgs, h_lc, h_inst⟩
           exact TypeOfHM.weaken_env (env_pre := []) (env_extra := env_post) hv_typed
         · push_neg at h_in
-          have h_subst : (Expr.var dbl tyArgs).substN env_post.length vs
-              = .var (dbl - vs.length) tyArgs := by
+          have h_subst : (Expr.var dbl).substN env_post.length vs
+              = .var (dbl - vs.length) := by
             simp only [Expr.substN]
             rw [if_neg (by omega), dif_neg (by omega)]
           rw [h_subst]
@@ -11094,7 +9099,7 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
                     obtain ⟨name, args, hca⟩ := ihf hf
                     exact ⟨name, args ++ [v], .step hca⟩)
                 (fun _ _ _ _ _ => by intro h; cases h)
-                (fun _ _ => by intro h; cases h)
+                (fun _ => by intro h; cases h)
                 (fun nm => by
                   intro h
                   cases h
@@ -11264,7 +9269,7 @@ theorem SmallStep.AllMatchesExhaustive.erase {ctors : CtorEnv} {e : Expr}
   induction e using Expr.rec_strong with
   | primLit p => simp only [Expr.erase]; exact .primLit
   | primBinOp op => simp only [Expr.erase]; exact .primBinOp
-  | var i tyArgs => simp only [Expr.erase_var]; exact .var
+  | var i  => simp only [Expr.erase_var]; exact .var
   | ctor nm => simp only [Expr.erase]; exact .ctor
   | lambda ann body ih =>
     cases h with | lambda hb => simp only [Expr.erase_lambda]; exact .lambda (ih hb)
@@ -11322,7 +9327,7 @@ theorem SmallStep.AllMatchesExhaustive.eraseCtorBounds {ctors : CtorEnv} {e : Ex
   induction e using Expr.rec_strong with
   | primLit p => exact .primLit
   | primBinOp op => exact .primBinOp
-  | var i tyArgs => exact .var
+  | var i  => exact .var
   | ctor nm => exact .ctor
   | lambda ann body ih =>
     cases h with | lambda hb => exact .lambda (ih hb)
@@ -11393,19 +9398,10 @@ theorem SmallStep.Step.preserves_erased {e e' : Expr}
     | ctor c =>
         intro threshold n h_erased
         simp [Expr.shiftFrom, Expr.erase]
-    | var i tyArgs =>
+    | var i =>
         intro threshold n h_erased
-        have htyargs : tyArgs = [] := by
-          have h_v : Expr.var i [] = Expr.var i tyArgs := by simpa using h_erased
-          injection h_v with hdbl h
-          exact h.symm
-        subst htyargs
-        simp only [Expr.shiftFrom]
-        by_cases h_lt : i < threshold
-        · rw [if_pos h_lt]
-          simp
-        · rw [if_neg h_lt]
-          simp
+        simp only [Expr.erase, Expr.shiftFrom]
+        split <;> simp [Expr.erase_var]
     | lambda ann body ih =>
         intro threshold n h_erased
         have h_la : Expr.lambda none body.erase = Expr.lambda ann body := by simpa using h_erased
@@ -11502,24 +9498,17 @@ theorem SmallStep.Step.preserves_erased {e e' : Expr}
     | ctor c =>
         intro k vs h_erased hvs
         simp [Expr.substN, Expr.erase]
-    | var i tyArgs =>
+    | var i =>
         intro k vs h_erased hvs
-        have htyargs : tyArgs = [] := by
-          have h_v : Expr.var i [] = Expr.var i tyArgs := by simpa using h_erased
-          injection h_v with hdbl h
-          exact h.symm
-        subst htyargs
-        simp only [Expr.substN]
-        by_cases h_lt : i < k
-        · rw [if_pos h_lt]
-          simp
-        · rw [if_neg h_lt]
-          by_cases h_in : i - k < vs.length
-          · rw [dif_pos h_in]
-            rw [Expr.instTy_nil]
-            exact expr_shiftFrom_erase 0 k (vs[i - k]) (hvs (vs[i - k]) (List.getElem_mem h_in))
-          · rw [dif_neg h_in]
-            simp
+        simp only [Expr.substN, Expr.erase]
+        split
+        · simp [Expr.erase_var]
+        · split
+          · next h_in =>
+              show (vs[i - k].shiftFrom 0 k).erase = vs[i - k].shiftFrom 0 k
+              rw [expr_shiftFrom_erase 0 k (vs[i - k])
+                (hvs (vs[i - k]) (List.getElem_mem h_in))]
+          · simp [Expr.erase_var]
     | lambda ann body ih =>
         intro k vs h_erased hvs
         have h_la : Expr.lambda none body.erase = Expr.lambda ann body := by simpa using h_erased
@@ -11910,6 +9899,68 @@ theorem TypeOfHM.type_safety_star {ctors : CtorEnv} {e : Expr} {τ : Ty}
   obtain ⟨h_ty', h_erased', h_exh'⟩ := TypeOfHM.preservation_star h_rtc h_ty h_erased h_exh
   exact ⟨h_ty', TypeOfHM.progress h_ty' rfl h_exh'⟩
 
+/-- Term-var shifting preserves `TyBvarBounded` (it only renames term `bvar`s, never
+    touching type annotations). (Re-based off `NoRecAnn`: shifting recurses through
+    `letRecAnn` schemes/bindings without touching their type bvars.) -/
+theorem Expr.shiftFrom_tyBvarBounded (n : Nat) {e : Expr} :
+    ∀ (t d : Nat), e.TyBvarBounded d → (e.shiftFrom t n).TyBvarBounded d := by
+  induction e using Expr.rec_strong with
+  | primLit p => intro t d _; exact trivial
+  | primBinOp op => intro t d _; exact trivial
+  | ctor c => intro t d _; exact trivial
+  | var i =>
+    intro t d hb; simp only [Expr.TyBvarBounded] at hb ⊢
+    simp only [Expr.shiftFrom]; split <;> exact hb
+  | lambda ann body ih =>
+    intro t d hb
+    simp only [Expr.TyBvarBounded] at hb
+    simp only [Expr.shiftFrom, Expr.TyBvarBounded]
+    exact ⟨hb.1, ih (t + 1) d hb.2⟩
+  | app f arg ihf iharg =>
+    intro t d hb
+    simp only [Expr.TyBvarBounded] at hb
+    simp only [Expr.shiftFrom, Expr.TyBvarBounded]
+    exact ⟨ihf t d hb.1, iharg t d hb.2⟩
+  | letIn ann rhs body ihr ihb =>
+    intro t d hb
+    cases ann with
+    | none =>
+      simp only [Expr.TyBvarBounded] at hb
+      simp only [Expr.shiftFrom, Expr.TyBvarBounded]
+      exact ⟨ihr t d hb.1, ihb (t + 1) d hb.2⟩
+    | some σ =>
+      simp only [Expr.TyBvarBounded] at hb
+      simp only [Expr.shiftFrom, Expr.TyBvarBounded]
+      exact ⟨hb.1, ihr t (d + σ.paramCount) hb.2.1, ihb (t + 1) d hb.2.2⟩
+  | match_ scrut branches ihs ihbr =>
+    intro t d hb
+    simp only [Expr.TyBvarBounded] at hb
+    simp only [Expr.shiftFrom, Expr.TyBvarBounded]
+    refine ⟨ihs t d hb.1, ?_⟩
+    obtain ⟨_, hbbr⟩ := hb
+    induction branches with
+    | nil => exact trivial
+    | cons hd tl ihtl =>
+      obtain ⟨p, b⟩ := hd
+      exact ⟨ihbr p b List.mem_cons_self (t + p.bindCount) d hbbr.1,
+             ihtl (fun p' b' hmem => ihbr p' b' (List.mem_cons_of_mem _ hmem)) hbbr.2⟩
+  | letRec anns bindings body ihbs ihb =>
+    intro t d hb
+    obtain ⟨hsch, hbs, hbody⟩ := hb
+    refine ⟨hsch, ?_, ihb (t + bindings.length) d hbody⟩
+    generalize t + bindings.length = thr
+    clear hsch hbody
+    induction bindings generalizing anns with
+    | nil => cases anns <;> exact trivial
+    | cons hd tl ihtl =>
+      cases anns with
+      | nil =>
+        exact ⟨ihbs hd List.mem_cons_self thr d hbs.1,
+               ihtl [] (fun e' hm => ihbs e' (List.mem_cons_of_mem _ hm)) hbs.2⟩
+      | cons a as =>
+        exact ⟨ihbs hd List.mem_cons_self thr (d + RecAnn.params a) hbs.1,
+               ihtl as (fun e' hm => ihbs e' (List.mem_cons_of_mem _ hm)) hbs.2⟩
+
 /-! ### The coherence theorem (`Infer.sound`, vs declarative `TypeOfHM`)
 
 The erasure-on-`Step` migration's single soundness theorem
@@ -11939,7 +9990,7 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     | primLit p => simp [Expr.erase, Expr.tyFreeVars]
     | primBinOp op => simp [Expr.erase, Expr.tyFreeVars]
     | ctor c => simp [Expr.erase, Expr.tyFreeVars]
-    | var i tyArgs => simp [Expr.erase, Expr.tyFreeVars]
+    | var i  => simp [Expr.erase, Expr.tyFreeVars]
     | app f arg ihf iha => simp [Expr.erase_app, Expr.tyFreeVars, ihf, iha]
     | lambda ann body ih => simp [Expr.erase_lambda, Expr.tyFreeVars, ih, Option.elim_none]
     | letIn ann rhs body ihr ihb =>
@@ -11980,7 +10031,7 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     | primLit p => simp [Expr.erase, Expr.eraseBounds]
     | primBinOp op => simp [Expr.erase, Expr.eraseBounds]
     | ctor c => simp [Expr.erase, Expr.eraseBounds]
-    | var i tyArgs => simp [Expr.erase, Expr.eraseBounds]
+    | var i  => simp [Expr.erase, Expr.eraseBounds]
     | app f arg ihf iha => simp only [Expr.erase_app, Expr.eraseBounds_app, ihf, iha]
     | lambda ann body ih =>
       simp only [Expr.erase_lambda, Expr.eraseBounds_lambda, Option.map_none, ih]
@@ -12156,7 +10207,7 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       rwa [hctx_eq, herase_eraseBounds arg] at key
     rw [Expr.erase_app]
     exact TypeOfHM.app hf_arr harg_arr
-  | @var Φ ctx i tyArgsIn polyTy hlook =>
+  | @var Φ ctx i polyTy hlook =>
     simp only [Subst.onCtx_nil, Expr.erase_var]
     refine TypeOfHM.var (polyTy := PolyTy.eraseBounds polyTy)
       (instArgs := ((freshVars Φ polyTy.paramCount).map Ty.fvar).map Ty.eraseBounds) ?_ ?_ ?_
@@ -13356,7 +11407,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S}
     | primLit p => simp [Expr.erase, Expr.tyFreeVars]
     | primBinOp op => simp [Expr.erase, Expr.tyFreeVars]
     | ctor c => simp [Expr.erase, Expr.tyFreeVars]
-    | var i tyArgs => simp [Expr.erase, Expr.tyFreeVars]
+    | var i  => simp [Expr.erase, Expr.tyFreeVars]
     | app f arg ihf iha => simp [Expr.erase_app, Expr.tyFreeVars, ihf, iha]
     | lambda ann body ih => simp [Expr.erase_lambda, Expr.tyFreeVars, ih, Option.elim_none]
     | letIn ann rhs body ihr ihb =>
@@ -13397,7 +11448,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S}
     | primLit p => simp [Expr.erase, Expr.eraseBounds]
     | primBinOp op => simp [Expr.erase, Expr.eraseBounds]
     | ctor c => simp [Expr.erase, Expr.eraseBounds]
-    | var i tyArgs => simp [Expr.erase, Expr.eraseBounds]
+    | var i  => simp [Expr.erase, Expr.eraseBounds]
     | app f arg ihf iha => simp only [Expr.erase_app, Expr.eraseBounds_app, ihf, iha]
     | lambda ann body ih =>
       simp only [Expr.erase_lambda, Expr.eraseBounds_lambda, Option.map_none, ih]
@@ -13754,7 +11805,7 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S}
     | primLit p => simp [Expr.erase, Expr.tyFreeVars]
     | primBinOp op => simp [Expr.erase, Expr.tyFreeVars]
     | ctor c => simp [Expr.erase, Expr.tyFreeVars]
-    | var i tyArgs => simp [Expr.erase, Expr.tyFreeVars]
+    | var i  => simp [Expr.erase, Expr.tyFreeVars]
     | app f arg ihf iha => simp [Expr.erase_app, Expr.tyFreeVars, ihf, iha]
     | lambda ann body ih => simp [Expr.erase_lambda, Expr.tyFreeVars, ih, Option.elim_none]
     | letIn ann rhs body ihr ihb =>
@@ -13795,7 +11846,7 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S}
     | primLit p => simp [Expr.erase, Expr.eraseBounds]
     | primBinOp op => simp [Expr.erase, Expr.eraseBounds]
     | ctor c => simp [Expr.erase, Expr.eraseBounds]
-    | var i tyArgs => simp [Expr.erase, Expr.eraseBounds]
+    | var i  => simp [Expr.erase, Expr.eraseBounds]
     | app f arg ihf iha => simp only [Expr.erase_app, Expr.eraseBounds_app, ihf, iha]
     | lambda ann body ih =>
       simp only [Expr.erase_lambda, Expr.eraseBounds_lambda, Option.map_none, ih]
@@ -14944,7 +12995,7 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
                 · exact hav₁ p h
                 · exact hav₂ p h
               · exact hav₃ p h⟩
-  | .var i _ =>
+  | .var i =>
       match h : ctx.env[i]? with
       | none => none
       | some polyTy =>
@@ -15198,11 +13249,11 @@ but provable relation). `unify` and `infer` reduce only under the compiler
 -- `unify α (α → α) = none` (occurs check)
 -- #eval unify (.fvar 0) (.arrow (.fvar 0) (.fvar 0))
 -- `infer (λx. x) = α → α`
--- #eval infer 0 { env := [], ctors := [] } (.lambda none (.var 0 []))
+-- #eval infer 0 { env := [], ctors := [] } (.lambda none (.var 0))
 -- `infer (λx. λy. x) = α → β → α`
--- #eval infer 0 { env := [], ctors := [] } (.lambda none (.lambda none (.var 1 [])))
+-- #eval infer 0 { env := [], ctors := [] } (.lambda none (.lambda none (.var 1)))
 -- `infer ((λx. x) 5) = Int`
--- #eval infer 0 { env := [], ctors := [] } (.app (.lambda none (.var 0 [])) (.primLit (.int 5)))
+-- #eval infer 0 { env := [], ctors := [] } (.app (.lambda none (.var 0)) (.primLit (.int 5)))
 -- `infer (5 5) = none` (Int is not a function)
 -- #eval infer 0 { env := [], ctors := [] } (.app (.primLit (.int 5)) (.primLit (.int 5)))
 
@@ -15339,53 +13390,53 @@ theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
 -- chain in `Core` (no erasure premise).)
 
 -- `typecheck [] (λx. x) = some ⟨1, bvar 0 → bvar 0⟩`  (i.e. the closed scheme `∀a. a → a`)
--- #eval (typecheck [] (.lambda none (.var 0 []))).map (fun σ => (σ.paramCount, σ.body))
+-- #eval (typecheck [] (.lambda none (.var 0))).map (fun σ => (σ.paramCount, σ.body))
 -- `typecheck [] (5 5) = none`
 -- #eval (typecheck [] (.app (.primLit (.int 5)) (.primLit (.int 5)))).map (fun σ => (σ.paramCount, σ.body))
 
 
 
 -- `infer (λx. x) = α → α`
--- #eval infer 0 { env := [], ctors := [] } (.lambda none (.var 0 []))
+-- #eval infer 0 { env := [], ctors := [] } (.lambda none (.var 0))
 -- `infer (λx. λy. x) = α → β → α`
--- #eval infer 0 { env := [], ctors := [] } (.lambda none (.lambda none (.var 1 [])))
+-- #eval infer 0 { env := [], ctors := [] } (.lambda none (.lambda none (.var 1)))
 -- `infer ((λx. x) 5) = Int`
--- #eval infer 0 { env := [], ctors := [] } (.app (.lambda none (.var 0 [])) (.primLit (.int 5)))
+-- #eval infer 0 { env := [], ctors := [] } (.app (.lambda none (.var 0)) (.primLit (.int 5)))
 -- annotated param: `infer (λ(x : Int). x) = Int → Int`
--- #eval infer 0 { env := [], ctors := [] } (.lambda (some (.prim .int)) (.var 0 []))
+-- #eval infer 0 { env := [], ctors := [] } (.lambda (some (.prim .int)) (.var 0))
 -- free annotation var `λ(x : α). x` ⇒ `α → α` (α is treated as a scoped/rigid
 -- type variable by the rigidity-aware inferer — sound: the result type carries α free)
--- #eval infer 0 { env := [], ctors := [] } (.lambda (some (.fvar 5)) (.var 0 []))
+-- #eval infer 0 { env := [], ctors := [] } (.lambda (some (.fvar 5)) (.var 0))
 
 /-! ### Acceptance tests for annotated `let` (threading design) -/
 
 -- THE WITNESS: `λx. let f : Int = x in f`  ⇒  `Int → Int`
 -- (the annotation `f : Int` refines the outer param `x : α` via threading `α := Int`)
 -- #eval infer 0 { env := [], ctors := [] }
-  -- (.lambda none (.letIn (some ⟨0, .prim .int⟩) (.var 0 []) (.var 0 [])))
+  -- (.lambda none (.letIn (some ⟨0, .prim .int⟩) (.var 0) (.var 0)))
 -- `let f : Int → Int = (λx. x) in f`  ⇒  `Int → Int`  (less general than principal, valid)
 -- #eval infer 0 { env := [], ctors := [] }
-  -- (.letIn (some ⟨0, .arrow (.prim .int) (.prim .int)⟩) (.lambda none (.var 0 [])) (.var 0 []))
+  -- (.letIn (some ⟨0, .arrow (.prim .int) (.prim .int)⟩) (.lambda none (.var 0)) (.var 0))
 -- `let id : ∀a. a → a = (λx. x) in id`  ⇒  `α → α`  (exact principal, valid)
 -- #eval infer 0 { env := [], ctors := [] }
-  -- (.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (.lambda none (.var 0 [])) (.var 0 []))
+  -- (.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (.lambda none (.var 0)) (.var 0))
 -- over-general: `let f : ∀a b. a → b = (λx. x) in f`  ⇒  `none`  (skolem escape ⇒ rejected)
 -- #eval infer 0 { env := [], ctors := [] }
-  -- (.letIn (some ⟨2, .arrow (.bvar 0) (.bvar 1)⟩) (.lambda none (.var 0 [])) (.var 0 []))
+  -- (.letIn (some ⟨2, .arrow (.bvar 0) (.bvar 1)⟩) (.lambda none (.var 0)) (.var 0))
 -- unannotated `let f = λx. x in f`  ⇒  `α → α`  (full generalization, unchanged)
 -- #eval infer 0 { env := [], ctors := [] }
-  -- (.letIn none (.lambda none (.var 0 [])) (.var 0 []))
+  -- (.letIn none (.lambda none (.var 0)) (.var 0))
 
 /-! ### Rigid top-level type variables (the `principalType`/`typecheck` entry seeds
     `K := e.tyFreeVars`, so an unbound annotation var is a rigid scoped constant). -/
 
 -- open identity `λ(x : α). x`  ⇒  `some (α → α)`  (α kept rigid; this IS declaratively typeable)
--- #eval principalType [] (.lambda (some (.fvar 5)) (.var 0 []))
+-- #eval principalType [] (.lambda (some (.fvar 5)) (.var 0))
 -- open misuse `(λ(x : α). x) 5`  ⇒  `none`  (forcing α := Int would bind the rigid var —
 -- rejected; declaratively untypeable. `infer`/`inferCore []` used to wrongly return `some Int`.)
--- #eval principalType [] (.app (.lambda (some (.fvar 5)) (.var 0 [])) (.primLit (.int 5)))
+-- #eval principalType [] (.app (.lambda (some (.fvar 5)) (.var 0)) (.primLit (.int 5)))
 -- closed program: seeding is a no-op (`K = []`, floor `= 0`)  ⇒  `∀a. a → a`
--- #eval (typecheck [] (.lambda none (.var 0 []))).map (fun σ => (σ.paramCount, σ.body))
+-- #eval (typecheck [] (.lambda none (.var 0))).map (fun σ => (σ.paramCount, σ.body))
 
 
 /-! ## Audit capstone: the headlines fire on concrete programs
@@ -15402,7 +13453,7 @@ namespace AuditCapstone
 /-! ### A typeable program — all three headlines fire -/
 
 /-- `λx. x`. -/
-def polyId : Expr := .lambda none (.var 0 [])
+def polyId : Expr := .lambda none (.var 0)
 
 theorem polyId_typeable : TypeOfHM ⟨[], []⟩ polyId (.arrow (.fvar 0) (.fvar 0)) :=
   TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl
@@ -15485,7 +13536,7 @@ theorem instBy_eq_of_lc {tyArgs : List Ty} :
 set_option maxRecDepth 100_000 in
 /-- `λx. x` has principal monotype `α → α` (computed, not postulated). -/
 theorem polyId_principalType : principalType [] polyId = some (.arrow (.fvar 0) (.fvar 0)) := by
-  show (inferCore [] 0 ⟨[], []⟩ (Expr.lambda none (Expr.var 0 []))).map (·.val.2.2) = _
+  show (inferCore [] 0 ⟨[], []⟩ (Expr.lambda none (Expr.var 0))).map (·.val.2.2) = _
   simp only [inferCore, List.getElem?_cons_zero]
   with_unfolding_all rfl
 
@@ -15543,7 +13594,7 @@ theorem appFiveFive_rejected : ¬ (typecheck [] appFiveFive).isSome := by
     (the soundness fix this session). -/
 
 /-- `λ(x : α). x`, with `α` free at the top level. -/
-def openId : Expr := .lambda (some (.fvar 5)) (.var 0 [])
+def openId : Expr := .lambda (some (.fvar 5)) (.var 0)
 
 /-- Accepted, and sound: `α` is rigid, so the only declarative type is `α → α`. -/
 theorem openId_typeable : TypeOfHM ⟨[], []⟩ openId (.arrow (.fvar 5) (.fvar 5)) :=
@@ -15574,8 +13625,8 @@ theorem openMisuse_untypeable : ¬ ∃ τ, TypeOfHM ⟨[], []⟩ openMisuse.eras
 
 /-- `let id : ∀a. a → a = λx. x in id id`. -/
 def idid : Expr :=
-  .letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (.lambda none (.var 0 []))
-    (.app (.var 0 [.arrow (.fvar 0) (.fvar 0)]) (.var 0 [.fvar 0]))
+  .letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (.lambda none (.var 0))
+    (.app (.var 0) (.var 0))
 
 theorem idid_typeable : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 0) (.fvar 0)) := by
   apply TypeOfHM.letIn (M := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (L := [])
@@ -15587,7 +13638,7 @@ theorem idid_typeable : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 0) (.fvar 0)) 
     rcases Xs with _ | ⟨X, _ | ⟨Y, tl⟩⟩
     · simp at hlen
     · have hterm : Expr.openBoundTyVars (some (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy)) [X]
-            (.lambda none (.var 0 [])) = .lambda none (.var 0 []) := rfl
+            (.lambda none (.var 0)) = .lambda none (.var 0) := rfl
       have htype : (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy).openVars [X]
             = .arrow (.fvar X) (.fvar X) := rfl
       rw [hterm, htype]
@@ -15607,12 +13658,9 @@ theorem idid_typeable : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 0) (.fvar 0)) 
 
 set_option maxRecDepth 100_000 in
 /-- `idid`'s principal monotype. The seeded rigid set is `idid.tyFreeVars = [0,0]`
-    and the frontier `idid.freshFloor = 1`, so the residual variable is `4`. -/
-theorem idid_principalType : principalType [] idid = some (.arrow (.fvar 4) (.fvar 4)) := by
-  show (inferCore [0, 0] 1 ⟨[], []⟩
-      (Expr.letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (Expr.lambda none (Expr.var 0 []))
-        ((Expr.var 0 [Ty.arrow (.fvar 0) (.fvar 0)]).app (Expr.var 0 [Ty.fvar 0])))).map
-      (·.val.2.2) = _
+    and the frontier `idid.freshFloor = 0`, so the residual variable is `3`. -/
+theorem idid_principalType : principalType [] idid = some (.arrow (.fvar 3) (.fvar 3)) := by
+  simp only [principalType, idid]
   simp only [inferCore, Expr.openTyVars, Expr.openTyVarsAux, freshVars, List.range,
     List.range.loop, List.map, PolyTy.openVars, List.getElem?_cons_zero, Option.map_none]
   unfold unifyCoreK
@@ -15624,7 +13672,7 @@ theorem idid_eraseBounds : idid.eraseBounds = idid := by
 
 /-- `idid_typeable` at the computed principal variable `4` (the `var` rule is
     decoration-blind, so the stored `tyArgs` need not match `instArgs`). -/
-theorem idid_typeable_fvar4 : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 4) (.fvar 4)) := by
+theorem idid_typeable_fvar3 : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 3) (.fvar 3)) := by
   apply TypeOfHM.letIn (M := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (L := [])
   · show ContainsBvarsUpTo 1 (Ty.arrow (Ty.bvar 0) (Ty.bvar 0))
     exact .arrow (.bvar (by omega)) (.bvar (by omega))
@@ -15634,7 +13682,7 @@ theorem idid_typeable_fvar4 : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 4) (.fva
     rcases Xs with _ | ⟨X, _ | ⟨Y, tl⟩⟩
     · simp at hlen
     · have hterm : Expr.openBoundTyVars (some (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy)) [X]
-            (.lambda none (.var 0 [])) = .lambda none (.var 0 []) := rfl
+            (.lambda none (.var 0)) = .lambda none (.var 0) := rfl
       have htype : (⟨1, .arrow (.bvar 0) (.bvar 0)⟩ : PolyTy).openVars [X]
             = .arrow (.fvar X) (.fvar X) := rfl
       rw [hterm, htype]
@@ -15644,11 +13692,11 @@ theorem idid_typeable_fvar4 : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 4) (.fva
   · rfl
   · exact TypeOfHM.app
       (TypeOfHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
-        (instArgs := [.arrow (.fvar 4) (.fvar 4)]) rfl
+        (instArgs := [.arrow (.fvar 3) (.fvar 3)]) rfl
         (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .arrow .fvar .fvar)
         (.arrow (.bvar rfl) (.bvar rfl)))
       (TypeOfHM.var (polyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)
-        (instArgs := [.fvar 4]) rfl
+        (instArgs := [.fvar 3]) rfl
         (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
         (.arrow (.bvar rfl) (.bvar rfl)))
 
@@ -15656,11 +13704,11 @@ theorem idid_headlines_fire :
     ∃ σ τ, typecheck [] idid = some σ ∧ σ = genScheme [] [] τ ∧
       TypeOfHM ⟨[], []⟩ idid.eraseBounds (Ty.eraseBounds τ) ∧
       ∀ τ₀, TypeOfHM ⟨[], []⟩ idid.eraseBounds τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
-  refine ⟨genScheme [] [] (.arrow (.fvar 4) (.fvar 4)), .arrow (.fvar 4) (.fvar 4),
+  refine ⟨genScheme [] [] (.arrow (.fvar 3) (.fvar 3)), .arrow (.fvar 3) (.fvar 3),
     ?_, rfl, ?_, ?_⟩
   · show (principalType [] idid).map (genScheme [] []) = _
     rw [idid_principalType]; rfl
-  · rw [idid_eraseBounds]; exact idid_typeable_fvar4
+  · rw [idid_eraseBounds]; exact idid_typeable_fvar3
   · rw [idid_eraseBounds]
     intro τ₀ h
     -- Inversion: the annotation pins `M = ∀a. a → a`; the two uses then force
@@ -15694,12 +13742,12 @@ theorem idid_headlines_fire :
                       | bvar d2 =>
                         have hτ : _ = _ := Option.some.inj (d2.symm.trans d1)
                         subst hτ
-                        exact ⟨[(4, _)], rfl⟩
+                        exact ⟨[(3, _)], rfl⟩
 
 /-! ### Progress / preservation fire on a concrete erased program -/
 
 /-- `(λx. x) 5` — already annotation-free; beta-reduces to `5`. -/
-def appIdFive : Expr := .app (.lambda none (.var 0 [])) (.primLit (.int 5))
+def appIdFive : Expr := .app (.lambda none (.var 0)) (.primLit (.int 5))
 
 theorem appIdFive_typeable : TypeOfHM ⟨[], []⟩ appIdFive (.prim .int) :=
   TypeOfHM.app
@@ -15717,7 +13765,7 @@ theorem appIdFive_typeable : TypeOfHM ⟨[], []⟩ appIdFive (.prim .int) :=
 /-- `λx. match x with | _ => 0`. Under Core v1's unconditional-`customTy` match rule
     this had NO principal type (the scrutinee's `customTy` name was unconstrained);
     after the §1 fix the scrutinee type is free, so the principal type is `∀α. α → Int`. -/
-def matchWild : Expr := .lambda none (.match_ (.var 0 []) [(.wildcard, .primLit (.int 0))])
+def matchWild : Expr := .lambda none (.match_ (.var 0) [(.wildcard, .primLit (.int 0))])
 
 theorem matchWild_typeable : TypeOfHM ⟨[], []⟩ matchWild (.arrow (.fvar 0) (.prim .int)) := by
   refine TypeOfHM.lambda .fvar (fun _ h => Option.noConfusion h) rfl ?_
@@ -15731,7 +13779,7 @@ set_option maxRecDepth 100_000 in
 theorem matchWild_principalType :
     principalType [] matchWild = some (.arrow (.fvar 0) (.prim .int)) := by
   show (inferCore [] 0 ⟨[], []⟩
-      (Expr.lambda none ((Expr.var 0 []).match_
+      (Expr.lambda none ((Expr.var 0).match_
         [(MatchPattern.wildcard, Expr.primLit (.int 0))]))).map (·.val.2.2) = _
   simp only [inferCore, inferBranchesCore, List.getElem?_cons_zero]
   unfold unifyCoreK
@@ -15777,7 +13825,7 @@ recursive-binding inference fires end-to-end at the principal type. -/
 
 /-- `letRec [none, none] [var 1, var 0] (var 0)` — the `f = g; g = f` mutual loop
     (both unannotated) returning `f`. -/
-def mutualRec : Expr := .letRec [none, none] [.var 1 [], .var 0 []] (.var 0 [.fvar 0])
+def mutualRec : Expr := .letRec [none, none] [.var 1, .var 0] (.var 0)
 
 /-- The all-`none` mutual group types at its principal monotype under the fused
     `TypeOfHM.letRec`: `specs = [.mono (fvar 100), .mono (fvar 100)]`, pool
@@ -15802,12 +13850,12 @@ theorem mutualRec_typeable : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 0) := by
     rcases hp with rfl | rfl <;> (injection hτ with h'; rw [← h'])
     · -- `f = g`: look up `g` at index 1
       show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
-        (.var 1 []) (.fvar X)
+        (.var 1) (.fvar X)
       exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl
         (by intro t ht; cases ht) .fvar
     · -- `g = f`: look up `f` at index 0
       show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
-        (.var 0 []) (.fvar X)
+        (.var 0) (.fvar X)
       exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl
         (by intro t ht; cases ht) .fvar
   · -- PolyTyped: vacuous (no annotated members)
@@ -15816,7 +13864,7 @@ theorem mutualRec_typeable : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 0) := by
       or_false] at hp
     rcases hp with rfl | rfl <;> exact RecSpec.noConfusion hσ
   · -- the body sees `f`/`g` generalised to `∀a. a` and instantiates at `fvar 0`
-    show TypeOfHM ⟨[⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩], []⟩ (.var 0 [.fvar 0]) (.fvar 0)
+    show TypeOfHM ⟨[⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩], []⟩ (.var 0) (.fvar 0)
     exact TypeOfHM.var (polyTy := ⟨1, .bvar 0⟩) (instArgs := [.fvar 0]) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
       (.bvar rfl)
@@ -15825,10 +13873,8 @@ set_option maxRecDepth 100_000 in
 /-- The group's principal monotype is a bare variable (`∀a. a` after
     generalisation); with `mutualRec.tyFreeVars = [0]` and frontier `1` the
     residual variable is `3`. -/
-theorem mutualRec_principalType : principalType [] mutualRec = some (.fvar 3) := by
-  show (inferCore [0] 1 ⟨[], []⟩
-      (Expr.letRec [none, none] [Expr.var 1 [], Expr.var 0 []] (Expr.var 0 [Ty.fvar 0]))).map
-      (·.val.2.2) = _
+theorem mutualRec_principalType : principalType [] mutualRec = some (.fvar 2) := by
+  simp only [principalType, mutualRec]
   simp only [inferCore, inferRecGroupCore, RecSpec.init, RecSpec.onSubst, RecSpec.rhsEntry,
     freshVars, List.range, List.map, PolyTy.openVars]
   unfold unifyCoreK
@@ -15838,7 +13884,7 @@ theorem mutualRec_eraseBounds : mutualRec.eraseBounds = mutualRec := by
   simp [Expr.eraseBounds, mutualRec]
 
 /-- `mutualRec_typeable` at the computed principal variable `3`. -/
-theorem mutualRec_typeable_fvar3 : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 3) := by
+theorem mutualRec_typeable_fvar2 : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 2) := by
   refine TypeOfHM.letRec (specs := [.mono (.fvar 100), .mono (.fvar 100)]) (G := [100])
     (L := []) ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
   · intro τ hτ
@@ -15852,19 +13898,19 @@ theorem mutualRec_typeable_fvar3 : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 3) := 
       or_false] at hp
     rcases hp with rfl | rfl <;> (injection hτ with h'; rw [← h'])
     · show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
-        (.var 1 []) (.fvar X)
+        (.var 1) (.fvar X)
       exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl
         (by intro t ht; cases ht) .fvar
     · show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
-        (.var 0 []) (.fvar X)
+        (.var 0) (.fvar X)
       exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl
         (by intro t ht; cases ht) .fvar
   · intro Xs hfresh p hp σ hσ
     simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
       or_false] at hp
     rcases hp with rfl | rfl <;> exact RecSpec.noConfusion hσ
-  · show TypeOfHM ⟨[⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩], []⟩ (.var 0 [.fvar 0]) (.fvar 3)
-    exact TypeOfHM.var (polyTy := ⟨1, .bvar 0⟩) (instArgs := [.fvar 3]) rfl
+  · show TypeOfHM ⟨[⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩], []⟩ (.var 0) (.fvar 2)
+    exact TypeOfHM.var (polyTy := ⟨1, .bvar 0⟩) (instArgs := [.fvar 2]) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)
       (.bvar rfl)
 
@@ -15875,14 +13921,14 @@ theorem mutualRec_headlines_fire :
     ∃ σ τ, typecheck [] mutualRec = some σ ∧ σ = genScheme [] [] τ ∧
       TypeOfHM ⟨[], []⟩ mutualRec.eraseBounds (Ty.eraseBounds τ) ∧
       ∀ τ₀, TypeOfHM ⟨[], []⟩ mutualRec.eraseBounds τ₀ → ∃ R : Subst, τ₀ = R.onTy τ := by
-  refine ⟨genScheme [] [] (.fvar 3), .fvar 3, ?_, rfl, ?_, ?_⟩
+  refine ⟨genScheme [] [] (.fvar 2), .fvar 2, ?_, rfl, ?_, ?_⟩
   · show (principalType [] mutualRec).map (genScheme [] []) = _
     rw [mutualRec_principalType]; rfl
-  · rw [mutualRec_eraseBounds]; exact mutualRec_typeable_fvar3
+  · rw [mutualRec_eraseBounds]; exact mutualRec_typeable_fvar2
   · -- The principal type is a *bare* variable, so every `τ₀` is trivially an
     -- instance: no inversion needed.
     rw [mutualRec_eraseBounds]
     intro τ₀ _
-    exact ⟨[(3, τ₀)], rfl⟩
+    exact ⟨[(2, τ₀)], rfl⟩
 
 end AuditCapstone

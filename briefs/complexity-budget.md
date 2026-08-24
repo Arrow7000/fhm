@@ -1,5 +1,13 @@
 # Where FHM's complexity budget goes
 
+> **⚠️ HISTORICAL (2026-08-24).** This analysis describes the *pre-migration*
+> stack (elaboration fused into inference, `eOut`, `TypeOfElabHM`, `letRecElab`,
+> type-passing runtime). The erasure-on-`Step` migration has since landed: those
+> components are deleted and the line counts / case breakdowns below no longer
+> apply. The DM-cut + erasure design is recorded in
+> `design-memo-erasure-migration.md`; the surviving stack is roughly half the
+> size. Kept for the reasoning about *why* the old design cost what it cost.
+
 This document explains why the type-inference stack is the size it is (`Core.lean` ~11k lines,
 `InferW.lean` ~19k), identifies the single highest-leverage simplification — the `letRec`
 promotion described in §3 — and lays out the work to land it. It is written for whoever carries

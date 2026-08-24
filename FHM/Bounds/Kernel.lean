@@ -109,7 +109,7 @@ def cvar (kind : VarKind) (i : Nat) : Count := .var ⟨kind, i⟩
 /-- Evaluate a count in ℕ∪{∞}. -/
 @[simp] def Count.eval : Count → Assign → ExtNat
   | .lit n,   _ => .ofNat n
-  | .var v,   σ => .ofNat (σ v)
+  | .var v, σ => .ofNat (σ v)
   | .inf,     _ => .inf
   | .add a b, σ => ExtNat.add (a.eval σ) (b.eval σ)
   | .mul a b, σ => ExtNat.mul (a.eval σ) (b.eval σ)

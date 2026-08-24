@@ -3,6 +3,13 @@
 
 # Design: recursion in Core via `letRec`
 
+<!--
+     ⚠️ STATUS (2026-08-24): superseded in part by the erasure-on-`Step`
+     migration (`design-memo-erasure-migration.md`). `letRec` itself is live,
+     but the Λ-outside elaboratum (`letRecElab`), the `.poly` rec specs, and the
+     post-elaboration relation it references are gone: recursion inside a group
+     is now Damas–Milner monomorphic, with generalisation for the body only.
+-->
 ## 0. Decisions (resolved)
 
 1. **Keep `letIn` and add a separate `letRec` node.** The two differ in *when*
