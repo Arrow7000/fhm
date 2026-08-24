@@ -673,7 +673,7 @@ end Core.Demo
 
 The Core section above feeds **hand-built Core** into `typecheck` / `evaluate`.
 This section runs the **front-end pipeline**: `Surface.Program` →
-`elaborateProgram` (decls + SCC desugar + `lower` + `infer`) → `evaluate`.
+`lowerProgram` (decls + SCC desugar + `lower`) → `erase` → `evaluate`.
 
 Prints use `ToString` on the surface term (same shape as Core demos).
 `#guard`s assert `.isSome` / printed eval results directly — no opaque matches.
@@ -692,11 +692,11 @@ private def evalStr (e : _root_.Expr) : String :=
   | some v => toString v
   | none   => "stuck / out of fuel"
 
-/-- Elaborate then evaluate a surface program; print surface term ⟹ result. -/
+/-- Lower, erase, then evaluate a surface program; print surface term ⟹ result. -/
 private def evalProgram (p : Surface.Program) : String :=
-  match elaborateProgram p with
-  | none => "elaborate failed"
-  | some e => evalStr e
+  match lowerProgram p with
+  | none => "lower failed"
+  | some (_, c) => evalStr c.erase
 
 private def showEval (p : Surface.Program) : IO Unit :=
   IO.println s!"({p.term})  ⟹  {evalProgram p}"
@@ -705,7 +705,7 @@ private def showEval (p : Surface.Program) : IO Unit :=
 private def sIf : Surface.Program :=
   ⟨[], [], .ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0))⟩
 #eval showEval sIf
-#guard (elaborateProgram sIf).isSome = true
+#guard (lowerProgram sIf).isSome = true
 #guard evalProgram sIf = "1"
 
 -- match Just 5 with Just x => x | Nothing => 0  ⟹  5
@@ -717,7 +717,7 @@ private def sMaybeMatch : Surface.Program :=
      [(.ctor ⟨"Just"⟩ [.name ⟨"x"⟩], .var ⟨"x"⟩),
       (.ctor ⟨"Nothing"⟩ [], .primLit (.int 0))]⟩
 #eval showEval sMaybeMatch
-#guard (elaborateProgram sMaybeMatch).isSome = true
+#guard (lowerProgram sMaybeMatch).isSome = true
 #guard evalProgram sMaybeMatch = "5"
 #guard (lowerProgram sMaybeMatch).isSome = true
 private def sMaybeMatchCtors : CtorEnv :=
@@ -733,7 +733,7 @@ private def sIdApp : Surface.Program :=
   | some p => p
   | none => ⟨[], [], .primLit (.unit)⟩
 #eval showEval sIdApp
-#guard (elaborateProgram sIdApp).isSome = true
+#guard (lowerProgram sIdApp).isSome = true
 #guard evalProgram sIdApp = "7"
 
 -- let id : ∀ a. a → a = λx. x in id 41  ⟹  41
@@ -744,7 +744,7 @@ private def sAnnId : Surface.Program :=
      (.lambda (.name (.mk "x")) none (.var (.mk "x")))
      (.app (.var (.mk "id")) (.primLit (.int 41)))⟩
 #eval showEval sAnnId
-#guard (elaborateProgram sAnnId).isSome = true
+#guard (lowerProgram sAnnId).isSome = true
 #guard evalProgram sAnnId = "41"
 
 -- @TODO(pattern-λ): nontrivial pattern param — lower refuses (not a pipeline demo)
