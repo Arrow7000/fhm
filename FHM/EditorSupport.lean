@@ -1008,6 +1008,17 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
         | none => fail (locateTypecheckFail ctors ke pErased binders sp)
         | some (_, _, τ) =>
           let bodyσ := genScheme [] [] τ
+          -- @TODO(editor-report): binder hover types are degraded since the
+          -- `eOut` drop (erasure migration, 2026-08). The report layer used to
+          -- read each binding's scheme off the elaborated Λ-spine via
+          -- `collectTopSchemes eOut`; with no elaborated output that spine no
+          -- longer exists, so `zipBindingTypes` finds no entries and binder
+          -- `pretty` types render empty (names/kinds/diagnostics unaffected).
+          -- Fix sketch: recover per-binding schemes without an elaboratum —
+          -- e.g. run `inferCore` per SCC group and thread each group's solved
+          -- schemes into `zipBindingTypes`, or extend `inferCore` to return
+          -- group schemes alongside `(Φ', S, τ)`. See
+          -- briefs/completeness-restoration.md (backlog).
           let report0 :=
             assembleProgramReport pErased.groups (collectTopSchemes c) bodyσ ep
           let binderEnv := binderEnvFromGroups pErased.groups

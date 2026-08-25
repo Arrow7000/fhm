@@ -172,3 +172,10 @@ and no-`eOut` conclusions should shrink it).
   sugar until partial annotations/type holes land). Either rewrite it in the
   supported scheme-ascription style or move it to an archive folder so the
   repo's own smoke file runs green again.
+- **Editor binder hover types degraded** (post-`eOut` drop): the report layer
+  read each binding's scheme off the elaborated Λ-spine (`collectTopSchemes`);
+  with no elaboratum, `zipBindingTypes` finds no entries and binder `pretty`
+  types render empty. Names/kinds/diagnostics unaffected. Marked as
+  `@TODO(editor-report)` at the report-assembly site in
+  `FHM/EditorSupport.lean`. Fix sketch there; pair with whichever session owns
+  editor work (independent of this campaign's proofs).
