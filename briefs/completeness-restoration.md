@@ -5,6 +5,35 @@ deleted in step 5(c) of the erasure migration — this time against the *simple*
 post-migration API (no `eOut`, no elaboratum, no `TypeOfElabHM`), so they can be
 proved **sorry-free** and stay that way.
 
+---
+
+## 0a. Read first / current state
+
+1. **Context:** `briefs/design-memo-erasure-migration.md` §0–§7 (why the stack
+   was simplified; erasure-on-`Step`; DM cut). Skim
+   `briefs/next-agent-brief-erasure-step5c-step6.md` for the deletion inventory.
+2. **Current state (2026-08-25, HEAD ≥ `2f4703b`):** migration COMPLETE. Both
+   `lake build` and `lake build fhm` green. Soundness trio + capstones
+   axiom-clean; only sorries anywhere = 7 pre-existing Bounds-layer ones.
+   `Expr.var` has NO tyArgs field; `Infer` has NO eOut output.
+3. **Green bar:** `lake build` **and** `lake build fhm` (the CLI pulls Bounds +
+   Live). ⚠️ **Stale-olean trap:** a target can look green on cached oleans
+   while its sources don't compile fresh (this bit the previous session —
+   `Bounds/Typing.agreesTemplate` was broken at HEAD while `lake build fhm`
+   "passed"). Always confirm with a clean rebuild after import-graph changes.
+4. **Workflow (unchanged):** main agent owns definitions/statements/trivial
+   proofs; farm hard cases to background subagents (lean-lsp MCP), ONE case per
+   subagent, confined to its assigned `sorry`. No `admit`/`axiom`/
+   `native_decide`. **Audit after every checkpoint:** `#print axioms` /
+   `lean_verify` on everything newly proved — the existing soundness trio +
+   capstones must remain `[propext, Classical.choice, Quot.sound]`. Commit only
+   at green checkpoints. Subagent runs may fail with DeepSeek
+   "Insufficient Balance" — file untouched, just relaunch.
+5. **⚠️ Verify every sketched signature in §1 against the CURRENT definitions
+   before proving.** They were written from memory of the old API adapted to
+   the new one; binder names/implicit structure will differ in places. The
+   *shape* is the contract; the exact text is not.
+
 **Reference implementation:** commit **`ffc544f`** ("Restructure: move sources
 into FHM/ library dir"). At that commit `FHM/InferW.lean` contained a fully
 proved, effectively sorry-free completeness stack:
@@ -148,6 +177,14 @@ relitigate at proof time.
 Estimated shape: steps 1–3 ≈ 1.5–2k lines, mostly ports; step 4 is the real
 campaign (historically ~1.7k ln for `complete'` alone, but mono-only `letRec`
 and no-`eOut` conclusions should shrink it).
+
+**Honest difficulty note:** the pre-migration attempts *had* these proofs in
+hand and still stalled when adapting them to decorations — that adaptation is
+where the difficulty lives, not the porting itself. The mitigations this time:
+no `eOut` (the worst obstruction died with it), mono-only `letRec`, and
+statements fixed up-front (§1 decision). If a case resists past two farming
+attempts, stop and restate rather than `sorry` — a smaller true theorem beats
+a stalled campaign.
 
 ---
 
