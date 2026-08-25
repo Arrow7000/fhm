@@ -2382,8 +2382,214 @@ decreasing_by
 
 end
 
--- END-SECTION-GAP2
--- END-SECTION-GAP2
--- END-SECTION-GAP2
+
+/-! ## 4. Principality of a given inference (the D2 spine)
+
+`Infer.Principal h hwf hbelow` says: whenever the source program `e` (WITH its
+annotations) is declaratively HM-typeable in the erased context at some type,
+the given inference output `(S, τ)` is principal — every such typing factors
+through `τ` via an LC residual fixing `K`.
+
+Statement notes (deviations from the brief's §1 sketch, verified before
+proving): the declarative premise is at the ORIGINAL `e`, not `e.erase` —
+`Expr.erase` drops annotations, which would make `Option.Pins` vacuous and
+sever the only link between the declarative binder type and `LamSeed.some` /
+`letInAnn` / the `letRec` ceilings (a counterexample: annotate `λ(x : Int). x`,
+infer at `α → α`; the erased declarative typing at `Nat → Nat` cannot be
+pinned). The spine is stated against the FULL declarative relation
+(`TypeOfHM (S₀.onCtx ctx) e τe`, no erasure): `Expr.erase` destroys exactly
+the information (`Pins`) that principality needs, while bounds-layer
+erasure-threading lives in sound/dynamics, not completeness. Each Principal
+also carries the working conjunct `Subst.AgreesBelow Φ S₀ (S ++ R)` (old
+`CompleteAt`'s agreement clause), which is what sustains K-fixing through
+residual composition. -/
+
+/-- Principality of the inference output `(S, τ)`: whenever the annotated source
+    program types declaratively (in the erased context), every such typing
+    factors through `τ` via an LC residual fixing `K`. -/
+def Infer.Principal {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {τ : Ty}
+    (_h : Infer Φ ctx e Φ' S τ) : Prop :=
+  CtxWF ctx → CtxBelow Φ ctx →
+  ∀ (S₀ : Subst) (τe : Ty) (K : List Nat),
+    (∀ p ∈ S₀, p.2.IsLC) → (∀ k ∈ K, k < Φ) → (∀ y ∈ e.tyFreeVars, y ∈ K) →
+    (∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k) →
+    TypeOfHM (S₀.onCtx ctx) e τe →
+    ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧
+      AgreesHM τe (R.onTy τ) ∧ (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R)
+
+/-- Principality for a `match_` branch-list thread: given the declarative
+    scrutinee typing and per-branch typings (at the erased context, original
+    branches), the threaded result type is principal. -/
+def InferBranches.Principal {Φ : Nat} {ctx : Ctx} {scrutTy : Ty} {ρ : Ty}
+    {brs : List (MatchPattern × Expr)} {Φ' : Nat} {S : Subst}
+    (_h : InferBranches Φ ctx scrutTy ρ brs Φ' S) (hne : brs ≠ []) : Prop :=
+  CtxWF ctx → CtxBelow Φ ctx →
+  ∀ (s : Expr) (S₀ : Subst) (scruT₀ ρe : Ty) (K : List Nat),
+    (∀ p ∈ S₀, p.2.IsLC) → (∀ k ∈ K, k < Φ) →
+    (∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K) →
+    (∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k) →
+    TypeOfHM (S₀.onCtx ctx) s scruT₀ →
+    (∀ b ∈ brs, TypeOfMatchBranch (S₀.onCtx ctx) b scruT₀ ρe) →
+    ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
+      AgreesHM ρe (R.onTy ρ) ∧ (∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
+
+/-- Principality for a recursive-group thread: given the declarative DM-cut
+    group premises (at the erased context, original bindings), the accumulated
+    substitution avoids... i.e., an LC residual fixing `K` exists. -/
+def InferRecGroup.Principal {Φ : Nat} {ctx : Ctx} {bindings : List Expr}
+    {specs : List RecSpec} {Φ' : Nat} {S : Subst}
+    (_h : InferRecGroup Φ ctx bindings specs Φ' S) : Prop :=
+  CtxWF ctx → CtxBelow Φ ctx →
+  ∀ (S₀ : Subst) (G L : List Nat) (K : List Nat),
+    (∀ p ∈ S₀, p.2.IsLC) → (∀ k ∈ K, k < Φ) →
+    (∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K) →
+    (∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k) →
+    RecSpecs.MonoTyped TypeOfHM (S₀.onCtx ctx) bindings specs G L →
+    RecSpecs.PolyTyped TypeOfHM (S₀.onCtx ctx) bindings specs G L →
+    ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧ (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R)
+
+
+/-- **D2 spine** (simultaneous, by size induction over the three mutually
+    recursive derivation relations). -/
+theorem Infer.principals_mut (n : Nat) :
+    (∀ {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {τ : Ty},
+        (_h : Infer Φ ctx e Φ' S τ) → e.size < n → CtxWF ctx → CtxBelow Φ ctx →
+        Infer.Principal _h) ∧
+    (∀ {Φ : Nat} {ctx : Ctx} {scrutTy ρ : Ty} {brs : List (MatchPattern × Expr)}
+        {Φ' : Nat} {S : Subst},
+        (_h : InferBranches Φ ctx scrutTy ρ brs Φ' S) → (hne : brs ≠ []) →
+        Expr.sizeBranches brs < n → CtxWF ctx → CtxBelow Φ ctx →
+        InferBranches.Principal _h hne) ∧
+    (∀ {Φ : Nat} {ctx : Ctx} {bindings : List Expr} {specs : List RecSpec}
+        {Φ' : Nat} {S : Subst},
+        (_h : InferRecGroup Φ ctx bindings specs Φ' S) →
+        Expr.sizeRecGroup bindings < n → CtxWF ctx → CtxBelow Φ ctx →
+        InferRecGroup.Principal _h) := by
+  induction n with
+  | zero =>
+    refine ⟨?_, ?_, ?_⟩
+    · intro Φ ctx e Φ' S τ h hn _ _; exact absurd hn (Nat.not_lt_zero _)
+    · intro Φ ctx scrutTy ρ brs Φ' S h hne hn _ _
+      exact absurd hn (Nat.not_lt_zero _)
+    · intro Φ ctx bindings specs Φ' S h hn _ _
+      exact absurd hn (Nat.not_lt_zero _)
+  | succ n ih =>
+    refine ⟨?_, ?_, ?_⟩
+    · -- Infer tier (D2 spine; one handler per constructor)
+      intro Φ ctx e Φ' S τ h _hn hwf hbelow
+      cases h with
+      | primLitUnit =>
+        intro _ _ S₀ τe K hS₀ hKΦ hKe hKfix hty
+        cases hty with
+        | primLitUnit =>
+          refine ⟨S₀, hS₀, ?_, hKfix, fun v _ => AgreesHM.refl _⟩
+          show Ty.eraseBounds (.prim .unit) = Ty.eraseBounds (Subst.onTy S₀ (.prim .unit))
+          simp [Subst.onTy_prim]
+      | primLitInt =>
+        intro _ _ S₀ τe K hS₀ hKΦ hKe hKfix hty
+        cases hty with
+        | primLitInt =>
+          refine ⟨S₀, hS₀, ?_, hKfix, fun v _ => AgreesHM.refl _⟩
+          show Ty.eraseBounds (.prim .int) = Ty.eraseBounds (Subst.onTy S₀ (.prim .int))
+          simp [Subst.onTy_prim]
+      | primLitNat =>
+        intro _ _ S₀ τe K hS₀ hKΦ hKe hKfix hty
+        cases hty with
+        | primLitNat =>
+          refine ⟨S₀, hS₀, ?_, hKfix, fun v _ => AgreesHM.refl _⟩
+          show Ty.eraseBounds (.prim .nat) = Ty.eraseBounds (Subst.onTy S₀ (.prim .nat))
+          simp [Subst.onTy_prim]
+      | primLitChar =>
+        intro _ _ S₀ τe K hS₀ hKΦ hKe hKfix hty
+        cases hty with
+        | primLitChar =>
+          refine ⟨S₀, hS₀, ?_, hKfix, fun v _ => AgreesHM.refl _⟩
+          show Ty.eraseBounds (.prim .char) = Ty.eraseBounds (Subst.onTy S₀ (.prim .char))
+          simp [Subst.onTy_prim]
+      | primBinOpIntAdd =>
+        intro _ _ S₀ τe K hS₀ hKΦ hKe hKfix hty
+        cases hty with
+        | primBinOpIntAdd =>
+          refine ⟨S₀, hS₀, ?_, hKfix, fun v _ => AgreesHM.refl _⟩
+          show Ty.eraseBounds ((.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))) = Ty.eraseBounds (Subst.onTy S₀ ((.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))))
+          simp [Subst.onTy_arrow]
+      | primBinOpIntSub =>
+        intro _ _ S₀ τe K hS₀ hKΦ hKe hKfix hty
+        cases hty with
+        | primBinOpIntSub =>
+          refine ⟨S₀, hS₀, ?_, hKfix, fun v _ => AgreesHM.refl _⟩
+          show Ty.eraseBounds ((.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))) = Ty.eraseBounds (Subst.onTy S₀ ((.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))))
+          simp [Subst.onTy_arrow]
+      | primBinOpIntLt _ _ _ _ =>
+        intro _ _ S₀ τe K hS₀ hKΦ hKe hKfix hty
+        cases hty with
+        | primBinOpIntLt _ _ =>
+          refine ⟨S₀, hS₀, ?_, hKfix, fun v _ => AgreesHM.refl _⟩
+          show Ty.eraseBounds ((.arrow (.prim .int) (.arrow (.prim .int)
+            (.customTy ⟨"Bool"⟩ [])))) = Ty.eraseBounds (Subst.onTy S₀
+            (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ []))))
+          simp [Subst.onTy_arrow, Subst.onTy_customTy]
+      | primBinOpCharLt _ _ _ _ =>
+        intro _ _ S₀ τe K hS₀ hKΦ hKe hKfix hty
+        cases hty with
+        | primBinOpCharLt _ _ =>
+          refine ⟨S₀, hS₀, ?_, hKfix, fun v _ => AgreesHM.refl _⟩
+          show Ty.eraseBounds ((.arrow (.prim .char) (.arrow (.prim .char)
+            (.customTy ⟨"Bool"⟩ [])))) = Ty.eraseBounds (Subst.onTy S₀
+            (.arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ []))))
+          simp [Subst.onTy_arrow, Subst.onTy_customTy]
+      | @var Φ ctx i polyTy hlook =>
+        exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
+          sorry  -- COMPLETE-VAR
+      | @ctor Φ ctx name ctor hlook =>
+        exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
+          sorry  -- COMPLETE-CTOR
+      | @lambda Φ ctx ann paramTy body Φ₀ Φ' S τb hseed hbody =>
+        exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
+          sorry  -- COMPLETE-LAMBDA
+      | @app Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huni =>
+        exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
+          sorry  -- COMPLETE-APP
+      | @letIn Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂ hrhs hbody =>
+        exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
+          sorry  -- COMPLETE-LETIN
+      | @letInAnn Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂ _ hN hrhs huni _hesc1 _hesc2 hbody =>
+        exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
+          sorry  -- COMPLETE-LETINANN
+      | @match_ Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ τs hscrut hne hbr =>
+        exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
+          sorry  -- COMPLETE-MATCH
+      | @letRec Φ ctx anns bindings body Φ₁ Φ₂ S₁ S₂ τ₂ _ hgroup _ hbody =>
+        exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
+          sorry  -- COMPLETE-LETREC
+    · -- InferBranches tier
+      intro Φ ctx scrutTy ρ brs Φ' S h hne _hn hwf hbelow
+      cases h with
+      | nil =>
+        exact fun _ _ _ _ _ _ _ _ _ _ _ _ => absurd rfl hne
+      | cons =>
+        exact fun hwf hbelow s S₀ scruT₀ ρe K hS₀ hKΦ hKe hKfix hscrut hbrs => by
+          sorry  -- SPINE-BRANCHES-CONS
+      | consWild =>
+        exact fun hwf hbelow s S₀ scruT₀ ρe K hS₀ hKΦ hKe hKfix _ _ => by
+          sorry  -- SPINE-BRANCHES-WILD
+    · -- InferRecGroup tier
+      intro Φ ctx bindings specs Φ' S h _hn hwf hbelow
+      cases h with
+      | nil =>
+        intro _ _ S₀ G L K hS₀ hKΦ hKe hKfix _ _
+        refine ⟨S₀, hS₀, hKfix, fun v _ => congrArg Ty.eraseBounds rfl⟩
+      | consMono =>
+        exact fun hwf hbelow S₀ G L K hS₀ hKΦ hKe hKfix hmono hpoly => by
+          sorry  -- SPINE-GROUP-MONO
+      | consPoly =>
+        exact fun hwf hbelow S₀ G L K hS₀ hKΦ hKe hKfix hmono hpoly => by
+          sorry  -- SPINE-GROUP-POLY
+
+-- END-SECTION-SPINE
+
 
 

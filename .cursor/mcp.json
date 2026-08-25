@@ -1,12 +1,7 @@
 {
   "mcpServers": {
     "lean-lsp": {
-      "command": "/nix/var/nix/profiles/default/bin/nix-shell",
-      "args": [
-        "~/dev/lean-lsp-mcp/shell.nix",
-        "--run",
-        "uvx lean-lsp-mcp"
-      ]
+      "command": "/Users/aron/dev/lean-lsp-mcp/scripts/ensure-fhm-mcp.sh"
     }
   }
 }

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "lean-lsp": {
+      "type": "local",
+      "enabled": true,
+      "timeout": 600000,
+      "command": [
+        "/Users/aron/dev/lean-lsp-mcp/scripts/ensure-fhm-mcp.sh"
+      ]
+    }
+  }
+}

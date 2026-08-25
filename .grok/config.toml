@@ -1,0 +1,6 @@
+# Project-scoped override: first agent starts the shared fhm HTTP server;
+# later agents proxy to it. Global stdio in ~/.grok/config.toml is for other repos.
+[mcp_servers.lean-lsp]
+command = "/Users/aron/dev/lean-lsp-mcp/scripts/ensure-fhm-mcp.sh"
+startup_timeout_sec = 120
+tool_timeout_sec = 600
