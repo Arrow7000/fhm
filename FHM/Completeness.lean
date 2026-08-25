@@ -2685,7 +2685,149 @@ theorem Infer.principals_mut (n : Nat) :
               exact hKfix k hk
       | @ctor Φ ctx name ctor hlook =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
-          sorry  -- COMPLETE-CTOR
+          -- STEP 0: the ctor's scheme `ctor.toTy` is always well-formed (no env
+          -- lookup needed — ctors live outside the env).
+          have hbv : ContainsBvarsUpTo ctor.paramCount ctor.toTy.body := Ctor.toTy_wf ctor
+          -- STEP 1: fresh block start `W` above everything relevant.
+          obtain ⟨W, hd, hWfresh⟩ := exists_fresh_block
+            (S₀.map Prod.fst ++ S₀.flatMap (fun p => p.2.freeVars) ++ τe.freeVars) Φ
+            ctor.paramCount
+          have hτeW : ∀ v ∈ τe.freeVars, ¬ (W ≤ v ∧ v < W + ctor.paramCount) := by
+            intro v hv hc; have := hWfresh v (List.mem_append_right _ hv); omega
+          have hSrange_lt : ∀ p ∈ S₀, ∀ v ∈ p.2.freeVars, v < W := fun p hp v hv =>
+            hWfresh v (List.mem_append_left _
+              (List.mem_append_right _ (List.mem_flatMap.mpr ⟨p, hp, hv⟩)))
+          have hSkey_lt : ∀ p ∈ S₀, p.1 < W := fun p hp =>
+            hWfresh p.1 (List.mem_append_left _
+              (List.mem_append_left _ (List.mem_map.mpr ⟨p, hp, rfl⟩)))
+          have hS₀belowW : ∀ p ∈ S₀, Ty.BelowFvars W p.2 :=
+            fun p hp => Ty.BelowFvars.of_freeVars_lt (fun v hv => hSrange_lt p hp v hv)
+          have hWblock_of_belowW : ∀ {t : Ty}, Ty.BelowFvars W t →
+              ∀ v ∈ t.freeVars, ¬ (W ≤ v ∧ v < W + ctor.paramCount) :=
+            fun {t} ht v hv => by have := ht.mem_lt v hv; omega
+          have finj : Function.Injective (blockSwap Φ W ctor.paramCount) := blockSwap_injective hd
+          have hffix : ∀ v, v < Φ → blockSwap Φ W ctor.paramCount v = v :=
+            fun v hv => blockSwap_lt (by omega) hv
+          -- STEP 2: rename the declarative typing by the block-swap.
+          have hren := TypeOfHM.onSubst_fixed (blockList Φ W ctor.paramCount)
+            (blockList_lc Φ W ctor.paramCount)
+            (Expr.substTyFvars_eq_self_of_tyFreeVars_nil _ rfl) hty
+          have hctxeq : (blockList Φ W ctor.paramCount).onCtx (S₀.onCtx ctx)
+              = (Subst.conj (blockSwap Φ W ctor.paramCount) S₀).onCtx ctx := by
+            simp only [Subst.onCtx, Subst.onEnv, List.map_map]; congr 1
+            apply List.map_congr_left; intro M hM
+            simp only [Function.comp_apply, Subst.onPolyTy]; congr 1
+            rw [blockList_onTy hd (hWblock_of_belowW
+              (Subst.onTy_belowFvars hS₀belowW ((hbelow M hM).mono (by omega))))]
+            conv_rhs => rw [← Ty.rename_eq_self (f := blockSwap Φ W ctor.paramCount)
+              (τ := M.body) (fun v hv => hffix v ((hbelow M hM).mem_lt v hv))]
+            rw [Subst.onTy_conj finj]
+          have htyeq : (blockList Φ W ctor.paramCount).onTy τe
+              = Ty.rename (blockSwap Φ W ctor.paramCount) τe := blockList_onTy hd hτeW
+          have hren2 : TypeOfHM ((Subst.conj (blockSwap Φ W ctor.paramCount) S₀).onCtx ctx)
+              (.ctor name) (Ty.rename (blockSwap Φ W ctor.paramCount) τe) := by
+            rw [hctxeq, htyeq] at hren; exact hren
+          -- STEP 3: invert renamed typing (`S₀.onCtx` leaves `ctors` untouched,
+          -- so the looked-up ctor is literally `ctor` — no env dance).
+          cases hren2 with
+          | @ctor _ ctor' tyArgs2 _ _ hlook2 htyargs2 hinst2 =>
+            have hlook2' : LookupList.get? ctx.ctors name = some ctor' := by
+              simpa [Subst.onCtx] using hlook2
+            have hctor'eq : ctor' = ctor := Option.some.inj (hlook2'.symm.trans hlook)
+            subst ctor'
+            -- STEP 4: assemble. The ctor scheme is closed, so the conjugated
+            -- substitution leaves `ctor.toTy.body` untouched.
+            have htoTyNoSubst : (Subst.conj (blockSwap Φ W ctor.paramCount) S₀).onTy
+                ctor.toTy.body = ctor.toTy.body :=
+              Ty.substFvars_eq_self_of_no_key (fun p hp =>
+                NoFreeVars.not_mem_freeVars (Ctor.toTy_body_noFreeVars ctor) p.1)
+            have hdomfresh : ∀ p ∈ Subst.conj (blockSwap Φ W ctor.paramCount) S₀,
+                p.1 ∉ freshVars Φ ctor.paramCount := by
+              intro p hp hmemf
+              simp only [Subst.conj, List.mem_map] at hp
+              obtain ⟨q, hq, rfl⟩ := hp
+              have hq1 : q.1 < W := hSkey_lt q hq
+              have hge := freshVars_ge _ hmemf
+              have hlt := freshVars_lt _ hmemf
+              simp only [blockSwap] at hge hlt
+              split_ifs at hge hlt <;> omega
+            have hbv2 : ContainsBvarsUpTo (freshVars Φ ctor.paramCount).length
+                ctor.toTy.body := by
+              rw [freshVars_length]
+              exact hbv
+            have hXfresh2 : ∀ x ∈ freshVars Φ ctor.paramCount,
+                x ∉ (Ty.rename (blockSwap Φ W ctor.paramCount) τe).freeVars :=
+              fun x hx => blockSwap_rename_not_mem hd hτeW x (freshVars_ge x hx)
+                (freshVars_lt x hx)
+            have hR'eq : Subst.onTy
+                (Subst.conj (blockSwap Φ W ctor.paramCount) S₀ ++
+                  (freshVars Φ ctor.paramCount).zip tyArgs2)
+                (ctor.toTy.openVars (freshVars Φ ctor.paramCount))
+                = Ty.rename (blockSwap Φ W ctor.paramCount) τe := by
+              rw [Subst.onTy_append]
+              simp only [PolyTy.openVars]
+              rw [Subst.onTy_openVars (Subst.conj_lc hS₀) hdomfresh]
+              rw [htoTyNoSubst]
+              exact InstantiatesBy.onTy_openVars_zip hinst2 hbv2 freshVars_nodup hXfresh2
+            have hagree : Subst.AgreesBelow Φ S₀
+                (([] : Subst) ++ ((Subst.conj (blockSwap Φ W ctor.paramCount) S₀ ++
+                  (freshVars Φ ctor.paramCount).zip tyArgs2) ++
+                  blockListBack Φ W ctor.paramCount)) := by
+              intro v hv
+              have hbelowfv : Ty.BelowFvars W (S₀.onTy (.fvar v)) :=
+                Subst.onTy_belowFvars hS₀belowW (Ty.BelowFvars.fvar (show v < W by omega))
+              have hconjv : Subst.onTy (Subst.conj (blockSwap Φ W ctor.paramCount) S₀)
+                  (.fvar v) = Ty.rename (blockSwap Φ W ctor.paramCount) (S₀.onTy (.fvar v)) := by
+                conv_lhs => rw [show (Ty.fvar v) = Ty.rename (blockSwap Φ W ctor.paramCount)
+                  (Ty.fvar v) by rw [Ty.rename_fvar, hffix v hv]]
+                rw [Subst.onTy_conj finj]
+              have hzipnoop : Subst.onTy ((freshVars Φ ctor.paramCount).zip tyArgs2)
+                  (Ty.rename (blockSwap Φ W ctor.paramCount) (S₀.onTy (.fvar v)))
+                  = Ty.rename (blockSwap Φ W ctor.paramCount) (S₀.onTy (.fvar v)) :=
+                Ty.substFvars_eq_self_of_no_key (fun p hp =>
+                  blockSwap_rename_not_mem hd (hWblock_of_belowW hbelowfv) p.1
+                    (freshVars_ge p.1 (List.of_mem_zip hp).1)
+                    (freshVars_lt p.1 (List.of_mem_zip hp).1))
+              have hback : Subst.onTy (blockListBack Φ W ctor.paramCount)
+                  (Ty.rename (blockSwap Φ W ctor.paramCount) (S₀.onTy (.fvar v)))
+                  = S₀.onTy (.fvar v) :=
+                blockListBack_onTy_rename hd (hWblock_of_belowW hbelowfv)
+              rw [List.nil_append, Subst.onTy_append, Subst.onTy_append, hconjv, hzipnoop, hback]
+              rfl
+            refine ⟨(Subst.conj (blockSwap Φ W ctor.paramCount) S₀ ++
+                (freshVars Φ ctor.paramCount).zip tyArgs2) ++ blockListBack Φ W ctor.paramCount,
+              ?_, ?_, ?_, hagree⟩
+            · intro p hp
+              rw [List.mem_append] at hp
+              rcases hp with hp | hp
+              · rw [List.mem_append] at hp
+                rcases hp with hp | hp
+                · exact Subst.conj_lc hS₀ p hp
+                · exact htyargs2 p.2 (List.of_mem_zip hp).2
+              · exact blockListBack_lc Φ W ctor.paramCount p hp
+            · rw [Subst.onTy_append, hR'eq, blockListBack_onTy_rename hd hτeW]; rfl
+            · intro k hk
+              have hkΦ : k < Φ := hKΦ k hk
+              have hbelowfv : Ty.BelowFvars W (S₀.onTy (.fvar k)) :=
+                Subst.onTy_belowFvars hS₀belowW (Ty.BelowFvars.fvar (show k < W by omega))
+              have hconjv : Subst.onTy (Subst.conj (blockSwap Φ W ctor.paramCount) S₀)
+                  (.fvar k) = Ty.rename (blockSwap Φ W ctor.paramCount) (S₀.onTy (.fvar k)) := by
+                conv_lhs => rw [show (Ty.fvar k) = Ty.rename (blockSwap Φ W ctor.paramCount)
+                  (Ty.fvar k) by rw [Ty.rename_fvar, hffix k (hKΦ k hk)]]
+                rw [Subst.onTy_conj finj]
+              have hzipnoop : Subst.onTy ((freshVars Φ ctor.paramCount).zip tyArgs2)
+                  (Ty.rename (blockSwap Φ W ctor.paramCount) (S₀.onTy (.fvar k)))
+                  = Ty.rename (blockSwap Φ W ctor.paramCount) (S₀.onTy (.fvar k)) :=
+                Ty.substFvars_eq_self_of_no_key (fun p hp =>
+                  blockSwap_rename_not_mem hd (hWblock_of_belowW hbelowfv) p.1
+                    (freshVars_ge p.1 (List.of_mem_zip hp).1)
+                    (freshVars_lt p.1 (List.of_mem_zip hp).1))
+              have hback : Subst.onTy (blockListBack Φ W ctor.paramCount)
+                  (Ty.rename (blockSwap Φ W ctor.paramCount) (S₀.onTy (.fvar k)))
+                  = S₀.onTy (.fvar k) :=
+                blockListBack_onTy_rename hd (hWblock_of_belowW hbelowfv)
+              rw [Subst.onTy_append, Subst.onTy_append, hconjv, hzipnoop, hback]
+              exact hKfix k hk
       | @lambda Φ ctx ann paramTy body Φ₀ Φ' S τb hseed hbody =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           sorry  -- COMPLETE-LAMBDA
