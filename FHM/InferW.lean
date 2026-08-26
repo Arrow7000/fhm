@@ -6517,23 +6517,20 @@ theorem TypeOfHM.rec_strong
       (∀ branch ∈ branches, TypeOfHM.BranchMotive motive ctx branch scrutTy resultTy) →
       motive ctx (.match_ scrutinee branches) resultTy (.match_ hscrut hne hbrs))
     (letRec : ∀ {ctx bodyCtx : Ctx} {anns : List (Option PolyTy)} {bindings : List Expr}
-      {specs : List RecSpec} {G L : List Nat} {body : Expr} {ρ : Ty}
+      {specs : List RecSpec} {τs : List Ty} {G L : List Nat} {body : Expr} {ρ : Ty}
       (hwf : RecSpecs.WF anns bindings specs G)
-      (hmono : RecSpecs.MonoTyped TypeOfHM ctx bindings specs G L)
-      (hpoly : RecSpecs.PolyTyped TypeOfHM ctx bindings specs G L)
+      (hlen : bindings.length = τs.length)
+      (hlink : ∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ)
+      (hlc : ∀ t ∈ τs, t.IsLC)
+      (hmono : RecSpecs.MonoTypedInit TypeOfHM ctx bindings τs G L)
       (heq : bodyCtx = RecSpecs.bodyCtx ctx specs G)
       (hbody : TypeOfHM bodyCtx body ρ),
       (∀ Xs (hf : FreshNames L G.length Xs)
-          p (hp : p ∈ bindings.zip specs) τ (hτ : p.2 = .mono τ),
-        motive (RecSpecs.rhsCtx ctx specs G Xs)
-          p.1 (Ty.renameG G Xs τ) (hmono Xs hf p hp τ hτ)) →
-      (∀ Xs (hf : FreshNames L G.length Xs)
-          p (hp : p ∈ bindings.zip specs) σ (hσ : p.2 = .poly σ)
-          Ys (hfY : FreshNames (L ++ Xs) σ.paramCount Ys),
-        motive (RecSpecs.rhsCtx ctx specs G Xs)
-          (p.1.openTyVars Ys) (σ.openVars Ys) (hpoly Xs hf p hp σ hσ Ys hfY)) →
+          p (hp : p ∈ bindings.zip τs),
+        motive (RecSpecs.rhsCtx ctx (τs.map RecSpec.mono) G Xs)
+          p.1 (Ty.renameG G Xs p.2) (hmono Xs hf p hp)) →
       motive bodyCtx body ρ hbody →
-      motive ctx (.letRec anns bindings body) ρ (.letRec hwf hmono hpoly heq hbody))
+      motive ctx (.letRec anns bindings body) ρ (.letRec hwf hlen hlink hlc hmono heq hbody))
     {ctx : Ctx} {e : Expr} {τ : Ty} (h : TypeOfHM ctx e τ) : motive ctx e τ h := by
   induction h using TypeOfHM.rec
     (motive_2 := fun ctx br scrutTy resultTy _ =>
@@ -6553,8 +6550,8 @@ theorem TypeOfHM.rec_strong
   | var hlook hlc hinst => exact var hlook hlc hinst
   | ctor hlook htyargs hinst => exact ctor hlook htyargs hinst
   | match_ hscrut hne hbrs ihscrut ihbrs => exact match_ hscrut hne hbrs ihscrut ihbrs
-  | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
-      exact letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody
+  | letRec hwf hlen hlink hlc hmono heq hbody ihmono ihbody =>
+      exact letRec hwf hlen hlink hlc hmono heq hbody ihmono ihbody
   | mk hspec heq hbodyT ih =>
       subst heq
       exact Or.inl ⟨_, _, _, _, _, rfl, hspec.lookup, hspec.scrut_eq, hspec.arity,
@@ -6739,32 +6736,41 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
         rw [hScrutEq]; simp [Ty.substFvar, TyList.substFvar_eq_map]
       · subst hpat
         exact TypeOfMatchBranch.wildcard hbodyIH
-  | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+  | letRec hwf hlen hlink hlc hmono heq hbody ihmono ihbody =>
     -- Fused-node port of Core's `TypeOfElabHM.typ_subst_preservation_uniform`
     -- `letRec` case: pool freshening `G ↦ W`, monotypes transported by
     -- `renameG_substFvar_comm`/`renameG_renameG`/`genGroup_renameG`, schemes
     -- substituted pointwise, the env transport split pointwise by `RecSpec`.
+    -- (The old `PolyTyped` transport is GONE: the pivot rule types every member
+    -- monomorphically at the witnesses `τs`, transported in ONE uniform branch.)
     subst heq
     expose_names
     rw [Expr.substTyFvar_eq_substTyFvars_single, Expr.substTyFvars_letRec]
     obtain ⟨W, hWlen0, hWnodup, hWavoid⟩ :=
-      exists_fresh_names (G ++ [Z] ++ U.freeVars ++ specs.flatMap RecSpec.monoFreeVars) G.length
+      exists_fresh_names (G ++ [Z] ++ U.freeVars ++ specs.flatMap RecSpec.monoFreeVars
+        ++ τs.flatMap Ty.freeVars) G.length
     have hWG : ∀ w ∈ W, w ∉ G := fun w hw hc =>
-      hWavoid w hw (List.mem_append_left _ (List.mem_append_left _ (List.mem_append_left _ hc)))
+      hWavoid w hw (by simp [List.mem_append, hc])
     have hGW : ∀ g ∈ G, g ∉ W := fun g hg hc => hWG g hc hg
     have hZW : Z ∉ W := fun hc =>
-      hWavoid Z hc (List.mem_append_left _ (List.mem_append_left _
-        (List.mem_append_right _ (List.mem_singleton.2 rfl))))
+      hWavoid Z hc (by simp [List.mem_append, List.mem_singleton])
     have hUW : ∀ u ∈ U.freeVars, u ∉ W := fun u hu hc =>
-      hWavoid u hc (List.mem_append_left _ (List.mem_append_right _ hu))
+      hWavoid u hc (by simp [List.mem_append, hu])
     have hWfree : ∀ τ, RecSpec.mono τ ∈ specs → ∀ w ∈ W, w ∉ τ.freeVars :=
       fun τ hτ w hw hc =>
-        hWavoid w hw (List.mem_append_right _
-          (List.mem_flatMap.mpr ⟨.mono τ, hτ, hc⟩))
+        have hmem : w ∈ specs.flatMap RecSpec.monoFreeVars :=
+          List.mem_flatMap.mpr ⟨.mono τ, hτ, hc⟩
+        hWavoid w hw (by simp [List.mem_append, hmem])
+    have hWfree_τs : ∀ t, t ∈ τs → ∀ w ∈ W, w ∉ t.freeVars :=
+      fun t ht w hw hc =>
+        have hmem : w ∈ τs.flatMap Ty.freeVars :=
+          List.mem_flatMap.mpr ⟨t, ht, hc⟩
+        hWavoid w hw (by simp [List.mem_append, hmem])
+    let τs' : List Ty := τs.map (fun t => Ty.substFvar Z U (Ty.renameG G W t))
     refine TypeOfHM.letRec
       (specs := specs.map (RecSpec.substFreshened Z U G W))
-      (G := W) (L := Z :: (G ++ W ++ L))
-      ⟨?_, ?_, hWnodup, ?_, ?_⟩ ?_ ?_ rfl ?_
+      (τs := τs') (G := W) (L := Z :: (G ++ W ++ L))
+      ⟨?_, ?_, hWnodup, ?_, ?_⟩ ?_ ?_ ?_ ?_ rfl ?_
     · rw [List.map_map, ← hwf.anns_eq, List.map_map]
       apply List.map_congr_left
       intro s _
@@ -6786,8 +6792,26 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
         injection hsubst with hσσ
         rw [← hσσ]
         exact PolyTy.WF.substFvar h_U_lc (hwf.poly_wf σ hs)
-    · -- UNANNOTATED members: the historical `letRec` transport
-      intro Xs hfresh p hp τ' hτ'
+    · -- the witness list transports pointwise (same length)
+      simpa [τs', List.length_map] using hlen
+    · -- mono-link: structurally true (both lists transport pointwise)
+      intro p hp τ hτ
+      obtain ⟨a, b, hab, rfl⟩ := List.mem_zip_map (l := specs) (r := τs)
+        (f := RecSpec.substFreshened Z U G W)
+        (g := fun t => Ty.substFvar Z U (Ty.renameG G W t))
+        (by simpa [τs'] using hp)
+      cases a with
+      | poly σ => exact RecSpec.noConfusion hτ
+      | mono τ₀ =>
+        injection hτ with hττ
+        have hb : b = τ₀ := hlink (RecSpec.mono τ₀, b) hab τ₀ rfl
+        simpa [hb] using hττ
+    · -- witnesses stay LC under substitution
+      intro t' ht'
+      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+      exact Ty.IsLC.substFvar h_U_lc (Ty.renameG_isLC (hlc t ht))
+    · -- ALL members (mono + annotated alike): the pivot monomorphic transport
+      intro Xs hfresh p hp
       have hXlen : Xs.length = G.length := hfresh.length.trans hWlen0
       have hZXs : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
       have hGXs : ∀ g ∈ G, g ∉ Xs := fun g hg hc =>
@@ -6799,94 +6823,32 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
       have hXsL : FreshNames L G.length Xs :=
         ⟨hXlen, hfresh.nodup, fun x hx hc =>
           hfresh.avoid x hx (List.mem_cons_of_mem _ (List.mem_append_right _ hc))⟩
-      have key : ∀ τ, RecSpec.mono τ ∈ specs →
-          Ty.renameG W Xs (Ty.substFvar Z U (Ty.renameG G W τ))
-            = Ty.substFvar Z U (Ty.renameG G Xs τ) := by
-        intro τ hτ
+      have key : ∀ t, t ∈ τs →
+          Ty.renameG W Xs (Ty.substFvar Z U (Ty.renameG G W t))
+            = Ty.substFvar Z U (Ty.renameG G Xs t) := by
+        intro t ht
         rw [Ty.renameG_substFvar_comm h_U_lc hZW hUW hZXs
-              (Ty.renameG_isLC (hwf.mono_lc τ hτ)) hWnodup hfresh.length hWXs,
-            Ty.renameG_renameG (hwf.mono_lc τ hτ) hwf.nodup hWnodup hWlen0 hXlen hGW
-              (hWfree τ hτ) hWXs hGXs]
-      have henv_rhs : (specs.map (RecSpec.substFreshened Z U G W)).map (RecSpec.rhsEntry W Xs)
-          = Env.substFvar Z U (specs.map (RecSpec.rhsEntry G Xs)) := by
-        show _ = (specs.map (RecSpec.rhsEntry G Xs)).map (PolyTy.substFvar Z U)
-        rw [List.map_map, List.map_map]
+              (Ty.renameG_isLC (hlc t ht)) hWnodup hfresh.length hWXs,
+            Ty.renameG_renameG (hlc t ht) hwf.nodup hWnodup hWlen0 hXlen hGW
+              (hWfree_τs t ht) hWXs hGXs]
+      have henv_rhs : (τs'.map RecSpec.mono).map (RecSpec.rhsEntry W Xs)
+          = Env.substFvar Z U ((τs.map RecSpec.mono).map (RecSpec.rhsEntry G Xs)) := by
+        dsimp [τs']
+        simp only [List.map_map, Function.comp_def, RecSpec.rhsEntry, PolyTy.mkTrivial,
+          Ty.renameG_nil_pool, Env.substFvar]
         apply List.map_congr_left
-        intro s hs
-        cases s with
-        | mono τ =>
-          show PolyTy.mkTrivial (Ty.renameG W Xs (Ty.substFvar Z U (Ty.renameG G W τ)))
-            = PolyTy.substFvar Z U (PolyTy.mkTrivial (Ty.renameG G Xs τ))
-          rw [key τ hs]
-          rfl
-        | poly σ => rfl
-      obtain ⟨a, b, hab, rfl⟩ := List.mem_zip_map hp
-      cases b with
-      | poly σ => exact RecSpec.noConfusion hτ'
-      | mono τ =>
-        injection hτ' with hττ
-        rw [← hττ, key τ (List.of_mem_zip hab).2]
-        have hIH := ihmono Xs hXsL (a, .mono τ) hab τ rfl
-        simp only [RecSpecs.rhsCtx] at hIH
-        rw [Env.substFvar_append, ← henv_rhs] at hIH
-        exact hIH
-    · -- ANNOTATED members: the historical `letRecAnn` transport, nested inside
-      -- the pool opening
-      intro Xs hfresh p hp σ' hσ' Ys hYs
-      have hXlen : Xs.length = G.length := hfresh.length.trans hWlen0
-      have hZXs : Z ∉ Xs := fun hc => hfresh.avoid Z hc List.mem_cons_self
-      have hXsL : FreshNames L G.length Xs :=
-        ⟨hXlen, hfresh.nodup, fun x hx hc =>
-          hfresh.avoid x hx (List.mem_cons_of_mem _ (List.mem_append_right _ hc))⟩
-      have hWXs : ∀ w ∈ W, w ∉ Xs := fun w hw hc =>
-        hfresh.avoid w hc (List.mem_cons_of_mem _
-          (List.mem_append_left _ (List.mem_append_right _ hw)))
-      have key : ∀ τ, RecSpec.mono τ ∈ specs →
-          Ty.renameG W Xs (Ty.substFvar Z U (Ty.renameG G W τ))
-            = Ty.substFvar Z U (Ty.renameG G Xs τ) := by
-        intro τ hτ
-        have hGXs : ∀ g ∈ G, g ∉ Xs := fun g hg hc =>
-          hfresh.avoid g hc (List.mem_cons_of_mem _
-            (List.mem_append_left _ (List.mem_append_left _ hg)))
-        rw [Ty.renameG_substFvar_comm h_U_lc hZW hUW hZXs
-              (Ty.renameG_isLC (hwf.mono_lc τ hτ)) hWnodup hfresh.length hWXs,
-            Ty.renameG_renameG (hwf.mono_lc τ hτ) hwf.nodup hWnodup hWlen0 hXlen hGW
-              (hWfree τ hτ) hWXs hGXs]
-      have henv_rhs : (specs.map (RecSpec.substFreshened Z U G W)).map (RecSpec.rhsEntry W Xs)
-          = Env.substFvar Z U (specs.map (RecSpec.rhsEntry G Xs)) := by
-        show _ = (specs.map (RecSpec.rhsEntry G Xs)).map (PolyTy.substFvar Z U)
-        rw [List.map_map, List.map_map]
-        apply List.map_congr_left
-        intro s hs
-        cases s with
-        | mono τ =>
-          show PolyTy.mkTrivial (Ty.renameG W Xs (Ty.substFvar Z U (Ty.renameG G W τ)))
-            = PolyTy.substFvar Z U (PolyTy.mkTrivial (Ty.renameG G Xs τ))
-          rw [key τ hs]
-          rfl
-        | poly σ => rfl
-      obtain ⟨a, b, hab, rfl⟩ := List.mem_zip_map hp
-      cases b with
-      | mono τ => exact RecSpec.noConfusion hσ'
-      | poly σ =>
-        injection hσ' with hσσ
-        rw [← hσσ]
-        have hpc : σ'.paramCount = σ.paramCount := by rw [← hσσ]; rfl
-        have hZYs : Z ∉ Ys := fun hc =>
-          hYs.avoid Z hc (List.mem_append_left _ List.mem_cons_self)
-        have hYsOld : FreshNames (L ++ Xs) σ.paramCount Ys := by
-          refine ⟨hYs.length.trans hpc, hYs.nodup, ?_⟩
-          intro y hy hc
-          rcases List.mem_append.mp hc with hcL | hcXs
-          · exact hYs.avoid y hy (List.mem_append_left _
-              (List.mem_cons_of_mem _ (List.mem_append_right _ hcL)))
-          · exact hYs.avoid y hy (List.mem_append_right _ hcXs)
-        have hIH := ihpoly Xs hXsL (a, .poly σ) hab σ rfl Ys hYsOld
-        simp only [RecSpecs.rhsCtx] at hIH
-        rw [Expr.substTyFvar_openTyVars h_U_lc hZYs,
-            ← PolyTy.substFvar_openVars h_U_lc hZYs,
-            Env.substFvar_append, ← henv_rhs] at hIH
-        exact hIH
+        intro t ht
+        rw [key t ht]
+        rfl
+      obtain ⟨a, t, hab, rfl⟩ := List.mem_zip_map (l := bindings) (r := τs)
+        (f := fun x => Expr.substTyFvars [(Z, U)] x)
+        (g := fun t => Ty.substFvar Z U (Ty.renameG G W t))
+        (by simpa [τs'] using hp)
+      have hIH := ihmono Xs hXsL (a, t) hab
+      simp only [RecSpecs.rhsCtx] at hIH
+      rw [Env.substFvar_append, ← henv_rhs] at hIH
+      rw [key t (List.of_mem_zip hab).2]
+      exact hIH
     · -- the body: env transport pointwise by constructor
       have henv_body : (specs.map (RecSpec.substFreshened Z U G W)).map (RecSpec.bodyScheme W)
           = Env.substFvar Z U (specs.map (RecSpec.bodyScheme G)) := by
@@ -7055,44 +7017,37 @@ theorem TypeOfHM.eraseBounds_of {ctx : Ctx} {e : Expr} {τ : Ty}
           rfl hbody'
       · subst hpat
         exact TypeOfMatchBranch.wildcard hbodyIH
-  | @letRec ctx bodyCtx anns bindings specs G L body ρ hwf hmono hpoly heq hbody
-      ihmono ihpoly ihbody =>
+  | @letRec ctx bodyCtx anns bindings specs τs G L body ρ hwf hlen hlink hlc hmono heq hbody
+      ihmono ihbody =>
     subst heq
     simp only [Expr.eraseBounds]
     refine TypeOfHM.letRec
       (bodyCtx := RecSpecs.bodyCtx ctx.eraseBounds (specs.map RecSpec.eraseBounds) G)
-      (specs := specs.map RecSpec.eraseBounds) (G := G) (L := L)
-      (RecSpecs.WF.eraseBounds hwf) ?_ ?_ ?_ ?_
-    · intro Xs hf p hp τ hτ
-      obtain ⟨e₀, s₀, hmem₀, hpEq⟩ := List.mem_zip_map_eraseBounds hp
+      (specs := specs.map RecSpec.eraseBounds) (τs := τs.map Ty.eraseBounds) (G := G) (L := L)
+      (RecSpecs.WF.eraseBounds hwf) ?_ ?_ ?_ ?_ rfl ?_
+    · simpa [List.length_map] using hlen
+    · intro p hp τ hτ
+      obtain ⟨e₀, s₀, hmem₀, hpEq⟩ := List.mem_zip_map (l := specs) (r := τs)
+        (f := RecSpec.eraseBounds) (g := Ty.eraseBounds) (by simpa using hp)
       subst hpEq
-      cases s₀ with
+      cases e₀ with
+      | poly σ => exact RecSpec.noConfusion hτ
       | mono τ₀ =>
         injection hτ with hττ
-        subst hττ
-        have hmono₀ := ihmono Xs hf (e₀, .mono τ₀) hmem₀ τ₀ rfl
-        rw [Ty.eraseBounds_renameG, RecSpecs.rhsCtx_eraseBounds] at hmono₀
-        exact hmono₀
-      | poly _ =>
-        simp only [RecSpec.eraseBounds] at hτ
-        exact RecSpec.noConfusion hτ
-    · intro Xs hf p hp σ hσ Ys hfY
-      obtain ⟨e₀, s₀, hmem₀, hpEq⟩ := List.mem_zip_map_eraseBounds hp
+        have hs : s₀ = τ₀ := hlink (RecSpec.mono τ₀, s₀) hmem₀ τ₀ rfl
+        rw [hs]
+        exact hττ
+    · intro t' ht'
+      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+      exact Ty.IsLC.eraseBounds (hlc t ht)
+    · intro Xs hf p hp
+      obtain ⟨e₀, t₀, hmem₀, hpEq⟩ := List.mem_zip_map (l := bindings) (r := τs)
+        (f := Expr.eraseBounds) (g := Ty.eraseBounds) (by simpa using hp)
       subst hpEq
-      cases s₀ with
-      | mono _ =>
-        simp only [RecSpec.eraseBounds] at hσ
-        exact RecSpec.noConfusion hσ
-      | poly σ₀ =>
-        injection hσ with hσσ
-        subst hσσ
-        have hfY' : FreshNames (L ++ Xs) σ₀.paramCount Ys := by
-          simpa [PolyTy.eraseBounds_paramCount] using hfY
-        have hpoly₀ := ihpoly Xs hf (e₀, .poly σ₀) hmem₀ σ₀ rfl Ys hfY'
-        rw [Expr.eraseBounds_openTyVars, PolyTy.eraseBounds_openVars,
-          RecSpecs.rhsCtx_eraseBounds] at hpoly₀
-        exact hpoly₀
-    · rfl
+      have hmono₀ := ihmono Xs hf (e₀, t₀) hmem₀
+      rw [Ty.eraseBounds_renameG] at hmono₀
+      rw [RecSpecs.rhsCtx_eraseBounds] at hmono₀
+      simpa [List.map_map, RecSpec.eraseBounds, Function.comp_def] using hmono₀
     · rwa [RecSpecs.bodyCtx_eraseBounds] at ihbody
 
 theorem TypeOfHM.onSubst_eraseBounds {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
@@ -7186,7 +7141,7 @@ theorem TypeOfHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
   | _, _, _, @TypeOfHM.match_ _ _ _ branches _ hscrut hne hbrs => by
     obtain ⟨hd, tl, rfl⟩ := List.exists_cons_of_ne_nil hne
     exact TypeOfMatchBranch.regular (hbrs hd (List.mem_cons_self ..))
-  | _, _, _, .letRec _ _ _ _ hbody => TypeOfHM.regular hbody
+  | _, _, _, .letRec _ _ _ _ _ _ hbody => TypeOfHM.regular hbody
 
 theorem TypeOfMatchBranch.regular : {ctx : Ctx} → {br : MatchPattern × Expr} →
     {scrutTy : Ty} → {rt : Ty} →
@@ -7298,30 +7253,23 @@ theorem TypeOfHM.varsBelow {ctx : Ctx} {e : Expr} {τ : Ty}
   | match_ hscrut hne hbrs ihscrut ihbrs =>
     simp only [Expr.varsBelow, Bool.and_eq_true]
     exact ⟨ihscrut, branchList_varsBelow_of_motive _ ihbrs⟩
-  | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+  | letRec hwf hlen hlink hlc hmono heq hbody ihmono ihbody =>
     expose_names
     subst heq
     simp only [Expr.varsBelow, Bool.and_eq_true]
-    have hspecslen : bindings.length = specs.length := hwf.length
+    have hτslen : bindings.length = τs.length := hlen
     refine ⟨?_, ?_⟩
     · -- every binding is closed under the group-extended context
       apply RecGroupClosed.varsBelow_of_forall
       intro bnd hmem
-      obtain ⟨s, hs⟩ := mem_zip_of_mem_left hspecslen hmem
+      obtain ⟨t, ht⟩ := mem_zip_of_mem_left hτslen hmem
       obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L G.length
-      rcases s with τ | σ
-      · have hc := ihmono Xs ⟨hXlen, hXnodup, hXavoid⟩ (bnd, .mono τ) hs τ rfl
-        simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at hc
-        rwa [Nat.add_comm, ← hspecslen] at hc
-      · obtain ⟨Ys, hYlen, hYnodup, hYavoid⟩ := exists_fresh_names (L ++ Xs) σ.paramCount
-        have hc := ihpoly Xs ⟨hXlen, hXnodup, hXavoid⟩ (bnd, .poly σ) hs σ rfl Ys
-          ⟨hYlen, hYnodup, hYavoid⟩
-        simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at hc
-        rw [Expr.varsBelow_openTyVars] at hc
-        rwa [Nat.add_comm, ← hspecslen] at hc
+      have hc := ihmono Xs ⟨hXlen, hXnodup, hXavoid⟩ (bnd, t) ht
+      simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at hc
+      rwa [Nat.add_comm, ← hτslen] at hc
     · -- the body is closed under the group-extended context
       simp only [RecSpecs.bodyCtx, List.length_append, List.length_map] at ihbody
-      rwa [Nat.add_comm, ← hspecslen] at ihbody
+      rwa [Nat.add_comm, ← hwf.length] at ihbody
 
 /-- **Well-typed in the empty context ⇒ closed.** -/
 theorem TypeOfHM.closed {ctors : CtorEnv} {e : Expr} {τ : Ty}
@@ -7625,9 +7573,9 @@ theorem TypeOfHM.onSubst_eraseBounds_fixed_append {ctx : Ctx} {e : Expr} {τ : T
 `Expr.letRecElab_sound` types the ELABORATUM: a Λ-outside nest whose inner
 mixed group sits at the EMPTY pool, with the pool-`G` generalisation carried by
 the outer `letIn` wrappers. The source node has no such nest — the declarative
-`TypeOfHM.letRec` wants its cofinite `MonoTyped` / `PolyTyped` premises stated
-at the shared opening `G ↦ Xs`, with each unannotated member's monotype renamed
-(`Ty.renameG G Xs`).
+`TypeOfHM.letRec` wants its cofinite `RecSpecs.MonoTypedInit` premise stated
+at the shared opening `G ↦ Xs`, with every member's witness monotype renamed
+(`Ty.renameG G Xs`), in the all-mono-rendered group context.
 
 Inference, however, only ever delivers the group's members at the empty pool
 with their SOLVED monotypes. The gap is exactly the renaming substitution
@@ -7640,55 +7588,49 @@ side conditions `Infer`'s `letRec` scaffolding already establishes. -/
 
 /-- **Source dual of `Expr.letRecElab_sound`.** Rebuild the declarative source
     `TypeOfHM.letRec` at the shared gen-pool `G` from group premises stated at
-    the EMPTY pool (`RecSpec.rhsEntry [] []`, un-renamed monotypes).
+    the EMPTY pool: every member's RHS types at its witness monotype
+    (`bs.zip τs`) in the ALL-MONO empty-pool context
+    (`(τs.map RecSpec.mono).map (RecSpec.rhsEntry [] [])`, i.e. `τs.map mkTrivial`).
 
-    `hG_env` / `hG_specs` / `hG_bs` say the pool is fresh for the ambient env,
-    for the annotated members' schemes, and for the bindings' annotations —
-    so renaming `G ↦ Xs` moves only the shared monotypes. -/
+    `hG_env` / `hG_bs` say the pool is fresh for the ambient env and for the
+    bindings' annotations — so renaming `G ↦ Xs` moves only the shared
+    monotypes. (The annotated members' schemes need no pool-freshness anymore:
+    they never appear in the RHS context, matching the pivot rule.) -/
 theorem TypeOfHM.letRec_of_emptyPool {ctx : Ctx} {Lp G : List Nat}
-    {anns : List (Option PolyTy)} {bs : List Expr} {specs : List RecSpec}
+    {anns : List (Option PolyTy)} {bs : List Expr} {specs : List RecSpec} {τs : List Ty}
     {body : Expr} {ρ : Ty}
     (hwf : RecSpecs.WF anns bs specs G)
+    (hlen : bs.length = τs.length)
+    (hlink : ∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ)
+    (hlc : ∀ t ∈ τs, t.IsLC)
     (hG_env : ∀ g ∈ G, g ∉ ctx.env.freeVars)
-    (hG_specs : ∀ g ∈ G, ∀ σ, RecSpec.poly σ ∈ specs → g ∉ σ.body.freeVars)
     (hG_bs : ∀ g ∈ G, ∀ e ∈ bs, g ∉ e.tyFreeVars)
-    (hmono : ∀ p ∈ bs.zip specs, ∀ τ, p.2 = RecSpec.mono τ →
-      TypeOfHM ⟨specs.map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩ p.1 τ)
-    (hpoly : ∀ p ∈ bs.zip specs, ∀ σ, p.2 = RecSpec.poly σ →
-      ∀ Ys, FreshNames Lp σ.paramCount Ys →
-        TypeOfHM ⟨specs.map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩
-          (p.1.openTyVars Ys) (σ.openVars Ys))
+    (hmono : ∀ p ∈ bs.zip τs,
+      TypeOfHM ⟨(τs.map RecSpec.mono).map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩
+        p.1 p.2)
     (hbody : TypeOfHM (RecSpecs.bodyCtx ctx specs G) body ρ) :
     TypeOfHM ctx (Expr.letRec anns bs body) ρ := by
   have hctx_eq : ∀ Xs : List Nat,
       Subst.onCtx (G.zip (Xs.map (Ty.fvar ·)))
-          ⟨specs.map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩
-        = RecSpecs.rhsCtx ctx specs G Xs := by
+          ⟨(τs.map RecSpec.mono).map (RecSpec.rhsEntry [] []) ++ ctx.env, ctx.ctors⟩
+        = RecSpecs.rhsCtx ctx (τs.map RecSpec.mono) G Xs := by
     intro Xs
     simp only [Subst.onCtx, Subst.onEnv, RecSpecs.rhsCtx, List.map_append]
     congr 1
     congr 1
-    · rw [List.map_map]
+    · simp only [List.map_map]
       apply List.map_congr_left
-      intro s hs
-      cases s with
-      | mono τ =>
-        simp only [Function.comp_apply, RecSpec.rhsEntry]
-        rw [Ty.renameG_nil_pool]
-        rfl
-      | poly σ =>
-        have hfix : Subst.onTy (G.zip (Xs.map (Ty.fvar ·))) σ.body = σ.body :=
-          Ty.substFvars_eq_self_of_no_key (fun p hp hc =>
-            hG_specs p.1 (List.of_mem_zip hp).1 σ hs hc)
-        simp only [Function.comp_apply, RecSpec.rhsEntry]
-        rw [Subst.onPolyTy, hfix]
+      intro t _
+      simp only [Function.comp_apply, RecSpec.rhsEntry]
+      rw [Ty.renameG_nil_pool]
+      rfl
     · simpa only [Subst.onEnv] using
         Subst.onEnv_eq_self_of_fresh (fun p hp => hG_env p.1 (List.of_mem_zip hp).1)
-  refine TypeOfHM.letRec (specs := specs) (G := G) (L := Lp ++ G)
-    hwf ?mono ?poly rfl hbody
-  · intro Xs hXs p hp τ hτ
+  refine TypeOfHM.letRec (specs := specs) (τs := τs) (G := G) (L := Lp ++ G)
+    hwf hlen hlink hlc ?mono rfl hbody
+  · intro Xs hXs p hp
     have hctx := hctx_eq Xs
-    have hsrc := hmono p hp τ hτ
+    have hsrc := hmono p hp
     have hLC : ∀ q ∈ G.zip (Xs.map (Ty.fvar ·)), q.2.IsLC := by
       intro q hq
       obtain ⟨x, hx, hxeq⟩ := List.mem_map.mp (List.of_mem_zip hq).2
@@ -7699,34 +7641,6 @@ theorem TypeOfHM.letRec_of_emptyPool {ctx : Ctx} {Lp G : List Nat}
     have hren := TypeOfHM.onSubst_fixed (G.zip (Xs.map (Ty.fvar ·))) hLC hfix hsrc
     rw [hctx] at hren
     simpa [Subst.onTy, Ty.renameG] using hren
-  · intro Xs hXs p hp σ hσ Ys hYs
-    have hctx := hctx_eq Xs
-    have hYs' : FreshNames Lp σ.paramCount Ys := by
-      refine ⟨hYs.length, hYs.nodup, ?_⟩
-      intro y hy hc
-      exact hYs.avoid y hy (List.mem_append_left Xs (List.mem_append_left G hc))
-    have hG_Ys : ∀ g ∈ G, g ∉ Ys := by
-      intro g hg hc
-      exact hYs.avoid g hc (List.mem_append_left Xs (List.mem_append_right Lp hg))
-    have hsrc := hpoly p hp σ hσ Ys hYs'
-    have hLC : ∀ q ∈ G.zip (Xs.map (Ty.fvar ·)), q.2.IsLC := by
-      intro q hq
-      obtain ⟨x, hx, hxeq⟩ := List.mem_map.mp (List.of_mem_zip hq).2
-      rw [← hxeq]; exact ContainsBvarsUpTo.fvar
-    have hfix : (p.1.openTyVars Ys).substTyFvars (G.zip (Xs.map (Ty.fvar ·))) = p.1.openTyVars Ys :=
-      Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun q hq hc => by
-        rcases Expr.tyFreeVars_openTyVars hc with h | h
-        · exact hG_bs q.1 (List.of_mem_zip hq).1 p.1 (List.of_mem_zip hp).1 h
-        · exact hG_Ys q.1 (List.of_mem_zip hq).1 h)
-    have htyfix : Subst.onTy (G.zip (Xs.map (Ty.fvar ·))) (σ.openVars Ys) = σ.openVars Ys := by
-      simp only [Subst.onTy]
-      exact Ty.substFvars_eq_self_of_no_key (fun q hq hc => by
-        rcases Ty.freeVars_openVars_subset q.1 hc with h | h
-        · exact hG_specs q.1 (List.of_mem_zip hq).1 σ (by simpa [hσ] using (List.of_mem_zip hp).2) h
-        · exact hG_Ys q.1 (List.of_mem_zip hq).1 h)
-    have hren := TypeOfHM.onSubst_fixed (G.zip (Xs.map (Ty.fvar ·))) hLC hfix hsrc
-    rw [hctx, htyfix] at hren
-    exact hren
 
 /-- Refinement of `Ty.substFvars_zip_fvar_eq` needing freshness only of the
     *selected* value `v` (not all of `Vs`), and no length condition. Substituting
@@ -8154,20 +8068,15 @@ theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : Po
         simpa only [List.append_assoc] using hbc
       · subst hpat
         exact TypeOfMatchBranch.wildcard (ihbody ep heq)
-    | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+    | letRec hwf hlen hlink hlc hmono heq hbody ihmono ihbody =>
       intro ep hep
       subst heq
       expose_names
-      refine TypeOfHM.letRec (specs := specs) (G := G) (L := L) hwf ?_ ?_ rfl ?_
-      · intro Xs hfresh p hp τ' hτ'
-        have hc := ihmono Xs hfresh p hp τ' hτ'
-          (specs.map (RecSpec.rhsEntry G Xs) ++ ep)
-          (by simp only [RecSpecs.rhsCtx, hep, List.append_assoc])
-        simp only [RecSpecs.rhsCtx, List.append_assoc] at hc ⊢
-        exact hc
-      · intro Xs hfresh p hp σ' hσ' Ys hYs
-        have hc := ihpoly Xs hfresh p hp σ' hσ' Ys hYs
-          (specs.map (RecSpec.rhsEntry G Xs) ++ ep)
+      refine TypeOfHM.letRec (specs := specs) (τs := τs) (G := G) (L := L)
+        hwf hlen hlink hlc ?_ rfl ?_
+      · intro Xs hfresh p hp
+        have hc := ihmono Xs hfresh p hp
+          ((τs.map RecSpec.mono).map (RecSpec.rhsEntry G Xs) ++ ep)
           (by simp only [RecSpecs.rhsCtx, hep, List.append_assoc])
         simp only [RecSpecs.rhsCtx, List.append_assoc] at hc ⊢
         exact hc
@@ -8314,31 +8223,22 @@ theorem TypeOfHM.weaken_env
       · subst hpat
         simp only [MatchPattern.bindCount, Nat.add_zero]
         exact TypeOfMatchBranch.wildcard (hbodyIH env_pre' hctx)
-  | letRec hwf hmono hpoly heq hbody ihmono ihpoly ihbody =>
+  | letRec hwf hlen hlink hlc hmono heq hbody ihmono ihbody =>
     intro env_pre' hctx
     subst heq
     expose_names
     simp only [Expr.shiftFrom, RecGroup.shiftFrom_eq_map]
-    refine TypeOfHM.letRec (specs := specs) (G := G) (L := L)
-      ⟨hwf.anns_eq, ?_, hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩ ?_ ?_ rfl ?_
+    refine TypeOfHM.letRec (specs := specs) (τs := τs) (G := G) (L := L)
+      ⟨hwf.anns_eq, ?_, hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩
+      (by simpa [List.length_map] using hlen) hlink hlc ?_ rfl ?_
     · rw [List.length_map]; exact hwf.length
-    · intro Xs hfresh p hp τ hτ
-      obtain ⟨a, b, _, hq, rfl⟩ := List.mem_zip_map_left hp
-      have hc := ihmono Xs hfresh (a, b) hq τ hτ
-        (specs.map (RecSpec.rhsEntry G Xs) ++ env_pre')
+    · intro Xs hfresh p hp
+      obtain ⟨a, t, _, hq, rfl⟩ := List.mem_zip_map_left hp
+      have hc := ihmono Xs hfresh (a, t) hq
+        ((τs.map RecSpec.mono).map (RecSpec.rhsEntry G Xs) ++ env_pre')
         (by simp only [RecSpecs.rhsCtx]; rw [hctx, List.append_assoc])
       simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at hc
-      rw [← hwf.length, Nat.add_comm bindings.length env_pre'.length] at hc
-      simp only [RecSpecs.rhsCtx, List.append_assoc] at hc ⊢
-      exact hc
-    · intro Xs hfresh p hp σ hσ Ys hYs
-      obtain ⟨a, b, _, hq, rfl⟩ := List.mem_zip_map_left hp
-      have hc := ihpoly Xs hfresh (a, b) hq σ hσ Ys hYs
-        (specs.map (RecSpec.rhsEntry G Xs) ++ env_pre')
-        (by simp only [RecSpecs.rhsCtx]; rw [hctx, List.append_assoc])
-      rw [Expr.shiftFrom_openTyVars] at hc
-      simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at hc
-      rw [← hwf.length, Nat.add_comm bindings.length env_pre'.length] at hc
+      rw [← hlen, Nat.add_comm bindings.length env_pre'.length] at hc
       simp only [RecSpecs.rhsCtx, List.append_assoc] at hc ⊢
       exact hc
     · have hb := ihbody (specs.map (RecSpec.bodyScheme G) ++ env_pre')
@@ -8564,7 +8464,7 @@ theorem TypeOfHM.subst_lemma_many
           cases h_brs (.wildcard, body) hmem with
           | wildcard h_bodyT =>
             exact TypeOfMatchBranch.wildcard (ih body hbsize env_post τ h_bodyT hbe)
-    | letRec hwf hmono hpoly heq hbodyT =>
+    | letRec hwf hlen hlink hlc hmono heq hbodyT =>
       subst heq
       expose_names
       simp only [Expr.size] at he
@@ -8574,16 +8474,17 @@ theorem TypeOfHM.subst_lemma_many
           = Expr.letRec anns bindings body := by
         simpa using h_erased
       injection h_lr with h_anns h_binds h_bd
-      refine TypeOfHM.letRec (specs := specs) (G := G) (L := L)
-        ⟨hwf.anns_eq, ?_, hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩ ?_ ?_ rfl ?_
+      refine TypeOfHM.letRec (specs := specs) (τs := τs) (G := G) (L := L)
+        ⟨hwf.anns_eq, ?_, hwf.nodup, hwf.mono_lc, hwf.poly_wf⟩
+        (by simpa [List.length_map] using hlen) hlink hlc ?_ rfl ?_
       · rw [List.length_map]; exact hwf.length
-      · intro Xs hfresh p hp τ hτ
-        obtain ⟨a, b, hmemBind, hq, rfl⟩ := List.mem_zip_map_left hp
-        have hbT := hmono Xs hfresh (a, b) hq τ hτ
+      · intro Xs hfresh p hp
+        obtain ⟨a, t, hmemBind, hq, rfl⟩ := List.mem_zip_map_left hp
+        have hbT := hmono Xs hfresh (a, t) hq
         simp only [RecSpecs.rhsCtx] at hbT
         rw [← List.append_assoc, ← List.append_assoc] at hbT
         have hasize' : a.size ≤ Expr.sizeRecGroup bindings := by
-          clear h_erased h_anns h_binds hwf hmono hpoly he hp hq hτ
+          clear h_erased h_anns h_binds hwf hlen hlink hlc hmono he hp hq
           induction bindings with
           | nil => exact absurd hmemBind List.not_mem_nil
           | cons hd tl ihs =>
@@ -8601,23 +8502,12 @@ theorem TypeOfHM.subst_lemma_many
           obtain ⟨b', hb_mem, hb⟩ := List.mem_map.mp hmem'
           rw [← hb]
           exact Expr.erase_idem b'
-        have ihb := ih a hasize (specs.map (RecSpec.rhsEntry G Xs) ++ env_post)
-          (Ty.renameG G Xs τ) hbT hbe
+        have ihb := ih a hasize ((τs.map RecSpec.mono).map (RecSpec.rhsEntry G Xs) ++ env_post)
+          (Ty.renameG G Xs t) hbT hbe
         rw [List.append_assoc] at ihb
         simp only [List.length_append, List.length_map] at ihb
-        rw [← hwf.length, Nat.add_comm bindings.length env_post.length] at ihb
+        rw [← hlen, Nat.add_comm bindings.length env_post.length] at ihb
         exact ihb
-      · intro Xs hfresh p hp σ hσ
-        have hs_mem : p.2 ∈ specs := (List.of_mem_zip hp).2
-        have hann : RecSpec.ann p.2 = none := by
-          have hmem' : RecSpec.ann p.2 ∈ specs.map RecSpec.ann :=
-            List.mem_map.mpr ⟨p.2, hs_mem, rfl⟩
-          rw [hwf.anns_eq, ← h_anns] at hmem'
-          obtain ⟨b, hb_mem, hb⟩ := List.mem_map.mp hmem'
-          exact hb.symm
-        obtain ⟨t, ht⟩ := RecSpec.ann_eq_none hann
-        rw [ht] at hσ
-        cases hσ
       · -- body
         simp only [RecSpecs.bodyCtx] at hbodyT
         rw [← List.append_assoc, ← List.append_assoc] at hbodyT
@@ -8687,72 +8577,145 @@ private theorem RecSpec.map_bodyScheme_openAt (G Xs : List Nat) (specs : List Re
     exact PolyTy.genGroup_nil
   | poly σ => rfl
 
-/-- Re-wrap a group member: if `e` types at `t` in the group RHS context at a
-    fresh pool opening `G ↦ Xs`, then the re-wrapped `letRec anns bindings e`
-    types at `t` in the ambient context. Decoration-blind port of
-    `TypeOfElabHM.rec_rewrap_typed` (the fused mono-group trick). -/
+/-- The mono-link transports a mono member's spec-membership to the witness
+    list: `(e, .mono τ) ∈ bindings.zip specs` plus `hlen`/`hlink` gives
+    `(e, τ) ∈ bindings.zip τs`. -/
+private theorem mem_zip_mono_link
+    {bindings : List Expr} {specs : List RecSpec} {τs : List Ty} {anns : List (Option PolyTy)}
+    {G : List Nat}
+    (hwf : RecSpecs.WF anns bindings specs G) (hlen : bindings.length = τs.length)
+    (hlink : ∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ)
+    {e : Expr} {τ : Ty} (hmem : (e, RecSpec.mono τ) ∈ bindings.zip specs) :
+    (e, τ) ∈ bindings.zip τs := by
+  obtain ⟨j, hjp, hpeq⟩ := List.mem_iff_getElem.mp hmem
+  have hjl : j < bindings.length :=
+    lt_of_lt_of_le hjp (by rw [List.length_zip]; exact min_le_left _ _)
+  have hjs : j < specs.length := by rwa [hwf.length] at hjl
+  have hjt : j < τs.length := by rwa [hlen] at hjl
+  have hfst : bindings[j]'(hjl) = e := by
+    have h := congrArg Prod.fst hpeq
+    rw [List.getElem_zip] at h
+    exact h
+  have hsnd : specs[j]'(hjs) = RecSpec.mono τ := by
+    have h := congrArg Prod.snd hpeq
+    rw [List.getElem_zip] at h
+    exact h
+  have hpair : (specs[j]'(hjs), τs[j]'(hjt)) ∈ specs.zip τs := by
+    refine List.mem_iff_getElem.mpr ⟨j, ?_, ?_⟩
+    · rw [List.length_zip]
+      exact lt_min hjs hjt
+    · rw [List.getElem_zip]
+  have hlinkτ : τs[j]'(hjt) = τ :=
+    hlink (specs[j]'(hjs), τs[j]'(hjt)) hpair τ (by simpa using hsnd)
+  refine List.mem_iff_getElem.mpr ⟨j, ?_, ?_⟩
+  · rw [List.length_zip]
+    exact lt_min hjl hjt
+  · rw [List.getElem_zip]
+    exact Prod.ext hfst hlinkτ
+
+/-- Re-wrap a group member: if `e` types at `t` in the all-mono group RHS
+    context at a fresh pool opening `G ↦ Xs`, then the re-wrapped
+    `letRec (bindings.map (fun _ => none)) bindings e` types at `t` in the
+    ambient context. The rewrap erases the annotations (the rule's all-mono
+    reification forces all-`none` anns), which is exactly the shape
+    preservation's `letRecUnfold` needs (its subject is erased anyway).
+    Decoration-blind port of `TypeOfElabHM.rec_rewrap_typed` (the fused
+    mono-group trick). -/
 theorem TypeOfHM.rec_rewrap_typed
     {ctors : CtorEnv} {env : Env} {anns : List (Option PolyTy)} {bindings : List Expr}
-    {specs : List RecSpec} {G L : List Nat}
+    {specs : List RecSpec} {τs : List Ty} {G L : List Nat}
     (hwf : RecSpecs.WF anns bindings specs G)
-    (hmono : RecSpecs.MonoTyped TypeOfHM ⟨env, ctors⟩ bindings specs G L)
-    (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨env, ctors⟩ bindings specs G L)
+    (hlen : bindings.length = τs.length)
+    (hlink : ∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ)
+    (hlc : ∀ t ∈ τs, t.IsLC)
+    (hmono : RecSpecs.MonoTypedInit TypeOfHM ⟨env, ctors⟩ bindings τs G L)
     {Xs : List Nat} (hXs : FreshNames L G.length Xs)
     {e : Expr} {t : Ty}
-    (hbody : TypeOfHM (RecSpecs.rhsCtx ⟨env, ctors⟩ specs G Xs) e t) :
-    TypeOfHM ⟨env, ctors⟩ (.letRec anns bindings e) t := by
+    (hbody : TypeOfHM (RecSpecs.rhsCtx ⟨env, ctors⟩ (τs.map RecSpec.mono) G Xs) e t) :
+    TypeOfHM ⟨env, ctors⟩ (.letRec (bindings.map (fun _ => none)) bindings e) t := by
   refine TypeOfHM.letRec
-    (specs := specs.map (RecSpec.openAt G Xs)) (G := []) (L := L ++ Xs)
-    (bodyCtx := ⟨specs.map (RecSpec.rhsEntry G Xs) ++ env, ctors⟩)
-    ⟨by rw [RecSpec.map_ann_openAt]; exact hwf.anns_eq,
-     by rw [List.length_map]; exact hwf.length,
+    (specs := (τs.map (Ty.renameG G Xs)).map RecSpec.mono)
+    (τs := τs.map (Ty.renameG G Xs))
+    (G := []) (L := L ++ Xs)
+    ⟨by
+      rw [List.map_map]
+      change (τs.map (Ty.renameG G Xs)).map (fun x : Ty => RecSpec.ann (RecSpec.mono x))
+        = bindings.map (fun _ => none)
+      rw [show (fun x : Ty => RecSpec.ann (RecSpec.mono x)) = (fun _ : Ty => none) from by
+        funext x
+        rfl]
+      rw [show bindings.map (fun _ => none) = (τs.map (Ty.renameG G Xs)).map (fun _ => none) from by
+        rw [List.map_const', List.map_const', List.length_map]
+        rw [hlen.symm]],
+     by rw [List.length_map, List.length_map]; exact hlen,
      List.nodup_nil, ?_, ?_⟩
-    ?_ ?_
-    (by simp only [RecSpecs.bodyCtx]; rw [RecSpec.map_bodyScheme_openAt]) hbody
-  · -- transported monotypes are LC
+    (by rw [List.length_map]; exact hlen) ?hlink ?hlc ?mono
+    (by
+      simp only [RecSpecs.bodyCtx, RecSpecs.rhsCtx, RecSpec.bodyScheme, PolyTy.genGroup_nil,
+        RecSpec.rhsEntry, List.map_map, Function.comp_apply]
+      congr 1
+      congr 1
+      apply List.map_congr_left
+      intro t _
+      simp only [Function.comp_apply, RecSpec.bodyScheme, PolyTy.genGroup_nil, RecSpec.rhsEntry])
+    hbody
+  · -- reified monotypes are LC
     intro τ' hτ'
-    obtain ⟨s, hs, hsubst⟩ := List.mem_map.mp hτ'
-    cases s with
-    | mono τ =>
-      injection hsubst with hττ
-      rw [← hττ]
-      exact Ty.renameG_isLC (hwf.mono_lc τ hs)
-    | poly σ => exact RecSpec.noConfusion hsubst
-  · -- transported schemes are WF (openAt preserves poly specs)
+    obtain ⟨t, ht, hsubst⟩ := List.mem_map.mp hτ'
+    injection hsubst with hττ
+    rw [← hττ]
+    obtain ⟨t₀, ht₀, hteq⟩ := List.mem_map.mp ht
+    rw [← hteq]
+    exact Ty.renameG_isLC (hlc t₀ ht₀)
+  · -- no annotated members in the reification
     intro σ' hσ'
-    obtain ⟨s, hs, hsubst⟩ := List.mem_map.mp hσ'
-    cases s with
-    | mono τ => exact RecSpec.noConfusion hsubst
-    | poly σ =>
-      injection hsubst with hσσ
-      rw [← hσσ]
-      exact hwf.poly_wf σ hs
+    obtain ⟨t, ht, hsubst⟩ := List.mem_map.mp hσ'
+    exact RecSpec.noConfusion hsubst
+  · -- mono-link: structurally true (both lists transport pointwise)
+    intro p hp τ hτ
+    obtain ⟨a, b, hab, rfl⟩ :=
+      List.mem_zip_map (l := τs.map RecSpec.mono) (r := τs)
+        (f := RecSpec.openAt G Xs) (g := Ty.renameG G Xs)
+        (by simpa using hp)
+    cases a with
+    | poly σ => exact RecSpec.noConfusion hτ
+    | mono τ₀ =>
+      injection hτ with hττ
+      have hb : b = τ₀ := by
+        rcases List.mem_iff_getElem.mp hab with ⟨j, hjp, hpeq⟩
+        have hjl' : j < (τs.map RecSpec.mono).length :=
+          lt_of_lt_of_le hjp (by rw [List.length_zip]; exact min_le_left _ _)
+        have hjr : j < τs.length :=
+          lt_of_lt_of_le hjp (by rw [List.length_zip]; exact min_le_right _ _)
+        have hpeq' : ((τs.map RecSpec.mono)[j]'(hjl'), τs[j]'(hjr)) = (RecSpec.mono τ₀, b) := by
+          rw [List.getElem_zip] at hpeq
+          exact hpeq
+        have h1 : (τs.map RecSpec.mono)[j]'(hjl') = RecSpec.mono τ₀ := by
+          exact congrArg Prod.fst hpeq'
+        have h2 : τs[j]'(hjr) = τ₀ := by
+          rw [List.getElem_map] at h1
+          injection h1
+        have h3 : b = τs[j]'(hjr) := (congrArg Prod.snd hpeq').symm
+        rw [h3, h2]
+      rw [hb]
+      exact hττ
+  · -- witnesses stay LC under the opening
+    intro t' ht'
+    obtain ⟨t, ht, rfl⟩ := List.mem_map.mp ht'
+    exact Ty.renameG_isLC (hlc t ht)
   · -- mono premise at the empty pool: identical opening, RHS env transported
-    intro Zs _hZs p hp τ' hτ'
-    simp only [RecSpecs.rhsCtx]
-    obtain ⟨a, b, hab, rfl⟩ :=
-      List.mem_zip_map (l := bindings) (r := specs) (f := id) (g := RecSpec.openAt G Xs)
+    intro Zs _hZs p hp
+    obtain ⟨a, t₀, hab, rfl⟩ :=
+      List.mem_zip_map (l := bindings) (r := τs) (f := id) (g := Ty.renameG G Xs)
         (by simpa using hp)
-    cases b with
-    | poly σ => exact RecSpec.noConfusion hτ'
-    | mono τ =>
-      injection hτ' with hττ
-      rw [← hττ, Ty.renameG_nil_pool, RecSpec.map_rhsEntry_openAt]
-      exact hmono Xs hXs (a, .mono τ) hab τ rfl
-  · -- poly premise at the empty pool: skolems dodge `L ++ Xs` by construction
-    intro Zs _hZs p hp σ hσ Ys hYs
-    simp only [RecSpecs.rhsCtx]
-    obtain ⟨a, b, hab, rfl⟩ :=
-      List.mem_zip_map (l := bindings) (r := specs) (f := id) (g := RecSpec.openAt G Xs)
-        (by simpa using hp)
-    cases b with
-    | mono τ => exact RecSpec.noConfusion hσ
-    | poly σ' =>
-      injection hσ with hσσ
-      rw [← hσσ, RecSpec.map_rhsEntry_openAt]
-      refine hpoly Xs hXs (a, .poly σ') hab σ' rfl Ys
-        ⟨by rw [hYs.length, hσσ], hYs.nodup,
-         fun y hy hc => hYs.avoid y hy (List.mem_append_left _ hc)⟩
+    have hctx : (RecSpecs.rhsCtx ⟨env, ctors⟩
+          ((τs.map (Ty.renameG G Xs)).map RecSpec.mono) [] Zs)
+        = RecSpecs.rhsCtx ⟨env, ctors⟩ (τs.map RecSpec.mono) G Xs := by
+      simp only [RecSpecs.rhsCtx, List.map_map, RecSpec.rhsEntry, PolyTy.mkTrivial,
+        Function.comp_apply]
+      rfl
+    rw [hctx]
+    exact hmono Xs hXs (a, t₀) hab
 
 /-- Each re-wrapped member `letRec anns bindings e` inhabits every instance of
     its generalised body scheme `genGroup G τ` (`HasSchemeHM`). Decoration-blind
@@ -8760,12 +8723,15 @@ theorem TypeOfHM.rec_rewrap_typed
     `letRecUnfold` case. -/
 theorem TypeOfHM.rewrap_hasSchemeHM_mono
     {ctors : CtorEnv} {env : Env} {anns : List (Option PolyTy)} {bindings : List Expr}
-    {specs : List RecSpec} {G L : List Nat}
+    {specs : List RecSpec} {τs : List Ty} {G L : List Nat}
     (hwf : RecSpecs.WF anns bindings specs G)
-    (hmono : RecSpecs.MonoTyped TypeOfHM ⟨env, ctors⟩ bindings specs G L)
-    (hpoly : RecSpecs.PolyTyped TypeOfHM ⟨env, ctors⟩ bindings specs G L)
+    (hlen : bindings.length = τs.length)
+    (hlink : ∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ)
+    (hlc : ∀ t ∈ τs, t.IsLC)
+    (hmono : RecSpecs.MonoTypedInit TypeOfHM ⟨env, ctors⟩ bindings τs G L)
     {e : Expr} {τ : Ty} (hmem : (e, RecSpec.mono τ) ∈ bindings.zip specs) :
-    HasSchemeHM ⟨env, ctors⟩ (.letRec anns bindings e) (PolyTy.genGroup G τ) := by
+    HasSchemeHM ⟨env, ctors⟩ (.letRec (bindings.map (fun _ => none)) bindings e)
+      (PolyTy.genGroup G τ) := by
   intro τ' hinst
   rcases hinst with ⟨instArgs, hinstLC, hinstTo⟩
   have hτlc : τ.IsLC := hwf.mono_lc τ (List.of_mem_zip hmem).2
@@ -8790,15 +8756,33 @@ theorem TypeOfHM.rewrap_hasSchemeHM_mono
   have hXsτ : ∀ x ∈ Xs, x ∉ τ.freeVars := hXs_monos (RecSpec.mono τ) (List.of_mem_zip hmem).2
   have hXs_env : ∀ x ∈ Xs, x ∉ env.freeVars := fun x hx hc =>
     hXavoid x hx (by simp [List.mem_append]; tauto)
-  have hXs_e : ∀ x ∈ Xs, x ∉ (Expr.letRec anns bindings e).tyFreeVars := fun x hx hc =>
-    hXavoid x hx (by simp [List.mem_append]; tauto)
+  have hAnn_nil : ∀ (l : List Expr),
+      Expr.tyFreeVars.AnnList.tyFreeVars (l.map (fun _ => none)) = [] := by
+    intro l
+    induction l with
+    | nil => rfl
+    | cons b rest ih =>
+      simp only [List.map_cons, Expr.tyFreeVars.AnnList.tyFreeVars]
+      exact ih
+  have hXs_e : ∀ x ∈ Xs, x ∉ (Expr.letRec (bindings.map (fun _ => none)) bindings e).tyFreeVars := fun x hx hc =>
+    hXavoid x hx (by
+      have hmem' : x ∈ (Expr.letRec anns bindings e).tyFreeVars := by
+        simp only [Expr.tyFreeVars, List.mem_append] at hc ⊢
+        rw [hAnn_nil bindings] at hc
+        rcases hc with hc1 | hc3
+        · rcases hc1 with hc1' | hc2
+          · exact False.elim (List.not_mem_nil hc1')
+          · exact Or.inl (Or.inr hc2)
+        · exact Or.inr hc3
+      simp [List.mem_append, hmem'])
   have hXs_Vs : ∀ x ∈ Xs, x ∉ Ty.freeVarsList instArgs := fun x hx hc =>
     hXavoid x hx (by simp [List.mem_append]; tauto)
   have hXs_M : ∀ x ∈ Xs, x ∉ ((PolyTy.genGroup G τ).body).freeVars := fun x hx hc =>
     hXavoid x hx (by simp [List.mem_append]; tauto)
-  have hb : TypeOfHM ⟨env, ctors⟩ (.letRec anns bindings e) (Ty.renameG G Xs τ) :=
-    TypeOfHM.rec_rewrap_typed hwf hmono hpoly hXfresh
-      (hmono Xs hXfresh (e, .mono τ) hmem τ rfl)
+  have hb : TypeOfHM ⟨env, ctors⟩ (.letRec (bindings.map (fun _ => none)) bindings e)
+      (Ty.renameG G Xs τ) :=
+    TypeOfHM.rec_rewrap_typed hwf hlen hlink hlc hmono hXfresh
+      (hmono Xs hXfresh (e, τ) (mem_zip_mono_link hwf hlen hlink hmem))
   set Xs' := Ty.genFilter Xs (Ty.renameG G Xs τ) with hXsdef
   have hXlen' : Xs'.length = (Ty.genFilter G τ).length := by
     have h := congrArg PolyTy.paramCount (PolyTy.genGroup_renameG hτlc hXlen hwf.nodup hXnodup hdisj hXsτ)
@@ -8817,8 +8801,8 @@ theorem TypeOfHM.rewrap_hasSchemeHM_mono
   have h_lc : ∀ p ∈ Xs'.zip instArgs, Ty.IsLC p.2 := fun p hp => hinstLC p.2 (List.of_mem_zip hp).2
   have hsub := TypeOfHM.typ_substs_preservation (Xs'.zip instArgs)
     (fun p hp => hXs_env p.1 (Ty.mem_of_mem_genFilter (List.of_mem_zip hp).1)) h_lc hb
-  have hfix : Expr.substTyFvars (Xs'.zip instArgs) (Expr.letRec anns bindings e)
-      = Expr.letRec anns bindings e :=
+  have hfix : Expr.substTyFvars (Xs'.zip instArgs) (Expr.letRec (bindings.map (fun _ => none)) bindings e)
+      = Expr.letRec (bindings.map (fun _ => none)) bindings e :=
     Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (by
       intro p hp
       exact hXs_e p.1 (Ty.mem_of_mem_genFilter (List.of_mem_zip hp).1))
@@ -9830,7 +9814,7 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
   | letRecUnfold =>
     rename_i anns bindings body
     cases h_ty with
-    | letRec hwf hmonoP hpolyP heq hbodyT =>
+    | letRec hwf hlenP hlinkP hlcP hmonoP heq hbodyT =>
       subst heq
       expose_names
       have h_lr : Expr.letRec (bindings.map (fun _ => none)) (bindings.map Expr.erase) body.erase
@@ -9845,7 +9829,8 @@ theorem TypeOfHM.preservation {ctx : Ctx} {e e' : Expr} {τ : Ty}
         cases b with
         | mono τ =>
           simp only [RecSpec.bodyScheme]
-          exact TypeOfHM.rewrap_hasSchemeHM_mono hwf hmonoP hpolyP hp
+          rw [← h_anns]
+          exact TypeOfHM.rewrap_hasSchemeHM_mono hwf hlenP hlinkP hlcP hmonoP hp
         | poly σ =>
           have hann : RecSpec.ann (RecSpec.poly σ) = none := by
             have hs_mem : RecSpec.poly σ ∈ specs := (List.of_mem_zip hp).2
@@ -10836,15 +10821,42 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       apply List.map_congr_left
       intro s hs
       exact hrhs_onSubst S₁ s hs
-    have hmono : ∀ p ∈ bs'.zip specsE, ∀ τ, p.2 = RecSpec.mono τ →
-        TypeOfHM ⟨specsE.map (RecSpec.rhsEntry [] []) ++ ctx'.env, ctx'.ctors⟩ p.1 τ := by
-      intro p hp τ hτ
+    have hspecsE_mono : ∀ s ∈ specsE, ∃ τ, s = RecSpec.mono τ := by
+      intro s hs
+      obtain ⟨s₁, hs₁, hsub₁⟩ := List.mem_map.mp hs
+      obtain ⟨s₀, hs₀, hsub₀⟩ := List.mem_map.mp hs₁
+      obtain ⟨s₀₀, hs₀₀, hsub₀₀⟩ := List.mem_map.mp hs₀
+      obtain ⟨j, hlenj, hsj⟩ := hinit_spec s₀₀ hs₀₀
+      rw [hsj] at hsub₀₀
+      rw [← hsub₀₀] at hsub₀
+      rw [← hsub₀] at hsub₁
+      rw [← hsub₁]
+      exact ⟨Ty.eraseBounds (S₂.onTy (S₁.onTy (.fvar (Φ + j)))), rfl⟩
+    -- the all-mono witnesses `τsE`: one solved monotype per member
+    let monoTy : RecSpec → Ty := fun s => match s with | .mono τ => τ | .poly σ => σ.body
+    let τsE : List Ty := specsE.map monoTy
+    have hspecsE_re : specsE = τsE.map RecSpec.mono := by
+      dsimp [τsE, monoTy]
+      rw [List.map_map]
+      conv_lhs => rw [← List.map_id specsE]
+      apply List.map_congr_left
+      intro s hs
+      obtain ⟨τ, hτ⟩ := hspecsE_mono s hs
+      rw [hτ]
+      rfl
+    have hctxτ : (τsE.map RecSpec.mono).map (RecSpec.rhsEntry [] [])
+        = specsE.map (RecSpec.rhsEntry [] []) := by
+      rw [← hspecsE_re]
+    have hmono : ∀ p ∈ bs'.zip τsE,
+        TypeOfHM ⟨(τsE.map RecSpec.mono).map (RecSpec.rhsEntry [] []) ++ ctx'.env, ctx'.ctors⟩
+          p.1 p.2 := by
+      intro p hp
       rcases List.mem_iff_getElem.mp hp with ⟨j, hjp, hpeq⟩
       have hlen_b' : j < bs'.length :=
         lt_of_lt_of_le hjp (by rw [List.length_zip]; exact min_le_left _ _)
-      have hlen_e' : j < specsE.length :=
+      have hlen_t' : j < τsE.length :=
         lt_of_lt_of_le hjp (by rw [List.length_zip]; exact min_le_right _ _)
-      have hzip : (bs'[j]'(hlen_b'), specsE[j]'(hlen_e')) = p := by
+      have hzip : (bs'[j]'(hlen_b'), τsE[j]'(hlen_t')) = p := by
         rw [List.getElem_zip] at hpeq
         exact hpeq
       cases hzip
@@ -10854,7 +10866,8 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         rw [RecSpec.init_length]
         omega
       have hlen_specs₁ : j < specs₁.length := by
-        rwa [List.length_map, List.length_map] at hlen_e'
+        dsimp [τsE] at hlen_t'
+        rwa [List.length_map, List.length_map, List.length_map] at hlen_t'
       have hlen_anns : j < anns.length := by
         exact lt_of_lt_of_le hlen_b (by rw [hlen])
       have hinit_j : (RecSpec.init Φ anns)[j] = RecSpec.mono (.fvar (Φ + j)) := by
@@ -10912,22 +10925,25 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
             apply List.map_congr_left
             intro M hM
             simp [Subst.onPolyTy, Subst.onTy_append, PolyTy.eraseBounds]
+      have hlen_e' : j < specsE.length := by
+        dsimp [τsE] at hlen_t'
+        rwa [List.length_map] at hlen_t'
       have hspecsE_j : specsE[j]'(hlen_e') =
           RecSpec.mono (Ty.eraseBounds (S₂.onTy (S₁.onTy (.fvar (Φ + j))))) := by
         rw [List.getElem_map]
         rw [List.getElem_map]
         rw [hspecs₁j]
         rfl
-      have hτeq : τ = Ty.eraseBounds (S₂.onTy (S₁.onTy (.fvar (Φ + j)))) := by
-        rw [hspecsE_j] at hτ
-        injection hτ with hEq
-        exact hEq.symm
-      have hg3 : TypeOfHM ⟨specsE.map (RecSpec.rhsEntry [] []) ++ ctx'.env, ctx'.ctors⟩
-          (bindings[j]).erase τ := by
+      have hτsE_j : τsE[j]'(hlen_t') = Ty.eraseBounds (S₂.onTy (S₁.onTy (.fvar (Φ + j)))) := by
+        rw [List.getElem_map]
+        rw [hspecsE_j]
+      have hg3 : TypeOfHM ⟨(τsE.map RecSpec.mono).map (RecSpec.rhsEntry [] []) ++ ctx'.env, ctx'.ctors⟩
+          (bindings[j]).erase (τsE[j]'(hlen_t')) := by
+        rw [hctxτ]
+        rw [hτsE_j]
         rw [hmono_ctx] at hg2
-        rw [hτeq]
         simpa [herase_eraseBounds (bindings[j])] using hg2
-      have hbsj : (bs'[j]'(hlen_b'), specsE[j]'(hlen_e')).1 = (bindings[j]).erase := by
+      have hbsj : (bs'[j]'(hlen_b'), τsE[j]'(hlen_t')).1 = (bindings[j]).erase := by
         rw [List.getElem_map]
       rw [hbsj]
       exact hg3
@@ -11129,17 +11145,6 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     have hS₂_ranG : ∀ p ∈ S₂, ∀ u ∈ p.2.freeVars, u ∉ G := fun p hp u hu hc =>
       hS₂_ran_G u hc p hp hu
     -- hwf for the empty-pool letRec
-    have hspecsE_mono : ∀ s ∈ specsE, ∃ τ, s = RecSpec.mono τ := by
-      intro s hs
-      obtain ⟨s₁, hs₁, hsub₁⟩ := List.mem_map.mp hs
-      obtain ⟨s₀, hs₀, hsub₀⟩ := List.mem_map.mp hs₁
-      obtain ⟨s₀₀, hs₀₀, hsub₀₀⟩ := List.mem_map.mp hs₀
-      obtain ⟨j, hlenj, hsj⟩ := hinit_spec s₀₀ hs₀₀
-      rw [hsj] at hsub₀₀
-      rw [← hsub₀₀] at hsub₀
-      rw [← hsub₀] at hsub₁
-      rw [← hsub₁]
-      exact ⟨Ty.eraseBounds (S₂.onTy (S₁.onTy (.fvar (Φ + j)))), rfl⟩
     have hwf : RecSpecs.WF anns' bs' specsE G := by
       refine ⟨?_, ?_, ?_, ?_, ?_⟩
       · rw [show anns' = List.replicate bindings.length none from by simp [anns']]
@@ -11183,23 +11188,11 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       · exact (genGroupVars_spec hg).2.1 (Env.mem_freeVars_iff.mpr ⟨M, hM, h⟩)
       · obtain ⟨p, hp, hgp⟩ := h
         exact hS₂_ran_G g hg p hp hgp
-    have hG_specs : ∀ g ∈ G, ∀ σ, RecSpec.poly σ ∈ specsE → g ∉ σ.body.freeVars := by
-      intro g hg σ hσ
-      obtain ⟨τ, hτ⟩ := hspecsE_mono (RecSpec.poly σ) hσ
-      cases hτ
     have hG_bs : ∀ g ∈ G, ∀ e ∈ bs', g ∉ e.tyFreeVars := by
       intro g hg e he
       obtain ⟨b, hb, rfl⟩ := List.mem_map.mp he
       rw [herase_tfv b]
       simp
-    have hpoly : ∀ p ∈ bs'.zip specsE, ∀ σ, p.2 = RecSpec.poly σ →
-        ∀ Ys, FreshNames [] σ.paramCount Ys →
-          TypeOfHM ⟨specsE.map (RecSpec.rhsEntry [] []) ++ ctx'.env, ctx'.ctors⟩
-            (p.1.openTyVars Ys) (σ.openVars Ys) := by
-      intro p hp σ hσ
-      obtain ⟨τ, hτ⟩ := hspecsE_mono p.2 (List.of_mem_zip hp).2
-      rw [hτ] at hσ
-      cases hσ
     -- the body lift: from `Infer.sound hbody` to `RecSpecs.bodyCtx ctx' specsE G`
     have hbody_sound := Infer.sound hbody hbodyWF hbodyBelow K
       (fun k hk => by have := hKΦ k hk; have := hgrpLe; omega)
@@ -11381,9 +11374,36 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     have hbody_lift : TypeOfHM (RecSpecs.bodyCtx ctx' specsE G) body.erase (Ty.eraseBounds τ) := by
       simpa [RecSpecs.bodyCtx, ctx'] using hbody_final
     -- assemble the empty-pool letRec
+    have hτsE_len : bs'.length = τsE.length := by
+      simpa [bs', τsE, List.length_map] using hwf.length
+    have hτsE_link : ∀ p ∈ specsE.zip τsE, ∀ τ, p.1 = RecSpec.mono τ → p.2 = τ := by
+      intro p hp τ hτ
+      rcases List.mem_iff_getElem.mp hp with ⟨j, hjp, hpeq⟩
+      have hjl_e : j < specsE.length :=
+        lt_of_lt_of_le hjp (by rw [List.length_zip]; exact min_le_left _ _)
+      have hjl_t : j < τsE.length :=
+        lt_of_lt_of_le hjp (by rw [List.length_zip]; exact min_le_right _ _)
+      have hpeq' : (specsE[j]'(hjl_e), τsE[j]'(hjl_t)) = p := by
+        rw [List.getElem_zip] at hpeq
+        exact hpeq
+      have hfst : specsE[j]'(hjl_e) = RecSpec.mono τ := by
+        have h := congrArg Prod.fst hpeq'
+        simpa [hτ] using h
+      have hsnd : p.2 = τ := by
+        rw [← hpeq']
+        dsimp [τsE]
+        rw [List.getElem_map, hfst]
+      exact hsnd
+    have hτsE_lc : ∀ t ∈ τsE, t.IsLC := by
+      intro t ht
+      obtain ⟨s, hs, rfl⟩ := List.mem_map.mp ht
+      obtain ⟨τ, hτ⟩ := hspecsE_mono s hs
+      rw [hτ]
+      exact hwf.mono_lc τ (by simpa [hτ] using hs)
     have hletrec := TypeOfHM.letRec_of_emptyPool (ctx := ctx') (Lp := []) (G := G)
-      (anns := anns') (bs := bs') (specs := specsE) (body := body.erase) (ρ := Ty.eraseBounds τ)
-      hwf hG_env hG_specs hG_bs hmono hpoly hbody_lift
+      (anns := anns') (bs := bs') (specs := specsE) (τs := τsE)
+      (body := body.erase) (ρ := Ty.eraseBounds τ)
+      hwf hτsE_len hτsE_link hτsE_lc hG_env hG_bs hmono hbody_lift
     simpa [Expr.erase_letRec, anns', bs', ctx', List.map_const] using hletrec
   termination_by e.size
   decreasing_by
@@ -13828,13 +13848,14 @@ recursive-binding inference fires end-to-end at the principal type. -/
 def mutualRec : Expr := .letRec [none, none] [.var 1, .var 0] (.var 0)
 
 /-- The all-`none` mutual group types at its principal monotype under the fused
-    `TypeOfHM.letRec`: `specs = [.mono (fvar 100), .mono (fvar 100)]`, pool
-    `[100]`. Inside the group both members sit at the opened shared monotype
-    `fvar X`; the body sees them generalised to `∀a. a` and instantiates at
-    `fvar 0`. -/
+    `TypeOfHM.letRec`: `specs = [.mono (fvar 100), .mono (fvar 100)]`, witnesses
+    `τs = [fvar 100, fvar 100]`, pool `[100]`. Inside the group both members sit
+    at the opened shared monotype `fvar X`; the body sees them generalised to
+    `∀a. a` and instantiates at `fvar 0`. -/
 theorem mutualRec_typeable : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 0) := by
-  refine TypeOfHM.letRec (specs := [.mono (.fvar 100), .mono (.fvar 100)]) (G := [100])
-    (L := []) ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
+  refine TypeOfHM.letRec (specs := [.mono (.fvar 100), .mono (.fvar 100)])
+    (τs := [.fvar 100, .fvar 100]) (G := [100])
+    (L := []) ⟨rfl, rfl, by simp, ?_, ?_⟩ rfl ?_ ?_ ?_ rfl ?_
   · -- shared monotypes are LC
     intro τ hτ
     simp only [List.mem_cons, List.not_mem_nil, or_false] at hτ
@@ -13842,12 +13863,21 @@ theorem mutualRec_typeable : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 0) := by
   · -- no annotated members
     intro σ hσ
     simp only [List.mem_cons, List.not_mem_nil, reduceCtorEq, or_self] at hσ
-  · -- MonoTyped: both members at the opened shared monotype `fvar X`
-    intro Xs hfresh p hp τ hτ
+  · -- mono-link: witnesses are exactly the spec monotypes
+    intro p hp τ hτ
+    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
+      or_false] at hp
+    rcases hp with rfl | rfl <;> (injection hτ with h')
+  · -- witnesses are LC
+    intro t ht
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at ht
+    rcases ht with h | h <;> (rw [h]; exact .fvar)
+  · -- MonoTypedInit: both members at the opened shared monotype `fvar X`
+    intro Xs hfresh p hp
     obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
     simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
       or_false] at hp
-    rcases hp with rfl | rfl <;> (injection hτ with h'; rw [← h'])
+    rcases hp with rfl | rfl
     · -- `f = g`: look up `g` at index 1
       show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
         (.var 1) (.fvar X)
@@ -13858,11 +13888,6 @@ theorem mutualRec_typeable : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 0) := by
         (.var 0) (.fvar X)
       exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl
         (by intro t ht; cases ht) .fvar
-  · -- PolyTyped: vacuous (no annotated members)
-    intro Xs hfresh p hp σ hσ
-    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
-      or_false] at hp
-    rcases hp with rfl | rfl <;> exact RecSpec.noConfusion hσ
   · -- the body sees `f`/`g` generalised to `∀a. a` and instantiates at `fvar 0`
     show TypeOfHM ⟨[⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩], []⟩ (.var 0) (.fvar 0)
     exact TypeOfHM.var (polyTy := ⟨1, .bvar 0⟩) (instArgs := [.fvar 0]) rfl
@@ -13885,18 +13910,26 @@ theorem mutualRec_eraseBounds : mutualRec.eraseBounds = mutualRec := by
 
 /-- `mutualRec_typeable` at the computed principal variable `3`. -/
 theorem mutualRec_typeable_fvar2 : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 2) := by
-  refine TypeOfHM.letRec (specs := [.mono (.fvar 100), .mono (.fvar 100)]) (G := [100])
-    (L := []) ⟨rfl, rfl, by simp, ?_, ?_⟩ ?_ ?_ rfl ?_
+  refine TypeOfHM.letRec (specs := [.mono (.fvar 100), .mono (.fvar 100)])
+    (τs := [.fvar 100, .fvar 100]) (G := [100])
+    (L := []) ⟨rfl, rfl, by simp, ?_, ?_⟩ rfl ?_ ?_ ?_ rfl ?_
   · intro τ hτ
     simp only [List.mem_cons, List.not_mem_nil, or_false] at hτ
     rcases hτ with h | h <;> (injection h with h'; rw [h']; exact .fvar)
   · intro σ hσ
     simp only [List.mem_cons, List.not_mem_nil, reduceCtorEq, or_self] at hσ
-  · intro Xs hfresh p hp τ hτ
+  · intro p hp τ hτ
+    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
+      or_false] at hp
+    rcases hp with rfl | rfl <;> (injection hτ with h')
+  · intro t ht
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at ht
+    rcases ht with h | h <;> (rw [h]; exact .fvar)
+  · intro Xs hfresh p hp
     obtain ⟨X, rfl⟩ : ∃ X, Xs = [X] := List.length_eq_one_iff.mp hfresh.length
     simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
       or_false] at hp
-    rcases hp with rfl | rfl <;> (injection hτ with h'; rw [← h'])
+    rcases hp with rfl | rfl
     · show TypeOfHM ⟨[PolyTy.mkTrivial (.fvar X), PolyTy.mkTrivial (.fvar X)], []⟩
         (.var 1) (.fvar X)
       exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl
@@ -13905,10 +13938,6 @@ theorem mutualRec_typeable_fvar2 : TypeOfHM ⟨[], []⟩ mutualRec (.fvar 2) := 
         (.var 0) (.fvar X)
       exact TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar X)) (instArgs := []) rfl
         (by intro t ht; cases ht) .fvar
-  · intro Xs hfresh p hp σ hσ
-    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_cons, List.not_mem_nil,
-      or_false] at hp
-    rcases hp with rfl | rfl <;> exact RecSpec.noConfusion hσ
   · show TypeOfHM ⟨[⟨1, .bvar 0⟩, ⟨1, .bvar 0⟩], []⟩ (.var 0) (.fvar 2)
     exact TypeOfHM.var (polyTy := ⟨1, .bvar 0⟩) (instArgs := [.fvar 2]) rfl
       (by intro t ht; simp only [List.mem_singleton] at ht; subst ht; exact .fvar)

@@ -161,3 +161,82 @@ exactly the branches tier's `AgreesHM ρe (S₀.onTy ρ)` shape, reflexive at th
 since `letRec`'s `InferRecGroup` runs with `S₀ = U` over the init entries). The LETREC
 agent should add these image premises when closing SPINE-GROUP-MONO/POLY; the
 statement is not FALSE as-is, but is un-provable without them.
+
+---
+
+## 2026-08-26 — Stage 1 of the D2 spine: declarative `letRec` aligned with the all-mono algorithm cut (commit 78cf9a1)
+
+**Motivation.** Commit 78cf9a1 cut the ALGORITHM: `Infer.letRec` runs
+ALL-MONO init specs (`RecSpec.init Φ anns` emits `.mono (fvar (Φ+j))` per member),
+the annotation acts as a ceiling (`RecSpecs.ceilingOK`) at the node, and the body
+sees `RecSpecs.ceilingSchemes`. The declarative twin `TypeOfHM.letRec` still
+carried PRE-CUT premises — `RecSpecs.MonoTyped` (unannotated members only) +
+`RecSpecs.PolyTyped` (annotated members scheme-relative, at `rhsCtx` where
+annotated siblings sit at their FULL schemes). That made mixed groups like
+`let rec f : ∀α.α→α = λx.x and h1 = f 1 and h2 = f 'c'` DECLARATIVELY typeable,
+while the algorithm admits no `Infer` derivation for them (h's RHS would need
+f's solved monotype to be both `Int → _` and `Char → _`). The last three sorries
+(COMPLETE-LETREC / SPINE-GROUP-MONO / SPINE-GROUP-POLY) therefore hid a FALSE
+completeness statement. This stage removes the inconsistency at the source: the
+declarative rule now REQUIRES the same all-mono discipline as the algorithm.
+
+**Probe witness (machine-checked, scratch file, deleted):** under the OLD rule the
+program above is derivable (scheme-relative h1/h2 typings); under the NEW rule it
+is provably NOT — `¬ ∃ ρ, TypeOfHM ⟨[],[]⟩ mixedProg ρ` (inverting the cofinite
+premise at a fresh opening forces the annotated member's witness monotype to be
+both `Int → _` and `Char → _`, via `InstantiatesBy.det_agree` on the shared
+witness). A mono-consistent two-member group still derives declaratively
+(`let rec f = () and g = 5 in f`, witnesses `Prim Unit`/`Prim Int`).
+
+**The rule (FHM/Core.lean).** `RecSpecs.MonoTypedInit` (new, relation-parametric,
+pure ∀-nest so the auto-recursor still sees through it) types EVERY member —
+annotated or not — at a per-member witness monotype `τs[i]`, in the ALL-MONO
+group context `rhsCtx ctx (τs.map RecSpec.mono) G Xs`, at the cofinite openings
+`G ↦ Xs`:
+
+```
+| letRec {specs : List RecSpec} {τs : List Ty} {G L : List Nat} :
+    RecSpecs.WF anns bindings specs G →
+    bindings.length = τs.length →
+    (∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ) →
+    (∀ t ∈ τs, t.IsLC) →
+    RecSpecs.MonoTypedInit TypeOfHM ctx bindings τs G L →
+    bodyCtx = RecSpecs.bodyCtx ctx specs G →
+    TypeOfHM bodyCtx body ρ →
+    TypeOfHM ctx (.letRec anns bindings body) ρ
+```
+
+- `hlen` aligns `τs` with the members; `hlink` pins an UNANNOTATED member's
+  witness to its spec monotype (so the body's `genGroup G τᵢ` is justified by the
+  RHS typing); `hlc` keeps witnesses locally closed (needed by the substitution
+  transports). `RecSpecs.PolyTyped` is DROPPED from the rule (vacuous over
+  all-mono witnesses); the old `MonoTyped`/`PolyTyped` defs are kept as
+  documentation for the pre-pivot `Completeness.lean` phase. Ceiling obligations
+  remain algorithmic (`RecSpecs.ceilingOK`) — deliberately NOT duplicated
+  declaratively; an annotated member's role is confined to the body context.
+
+**Touched sites (all mechanical; gate: Core+InferW = 0 errors, sorry counts
+unchanged — Core 0 / InferW 1 [doc-comment mention]).**
+
+| File | Site | Change |
+|---|---|---|
+| FHM/Core.lean | ~3343–3396 | new `RecSpecs.MonoTypedInit`; pivot notes on `MonoTyped`/`PolyTyped` |
+| FHM/Core.lean | 3470–3497 | the rule above |
+| FHM/InferW.lean | rec_strong binder + case | 7-premise letRec; IH over `bindings.zip τs` |
+| FHM/InferW.lean | typ_subst_preservation_uniform letRec | uniform all-mono transport over `τs` (poly branch deleted) |
+| FHM/InferW.lean | eraseBounds_of letRec | transports `hlen/hlink/hlc/MonoTypedInit`; poly branch deleted |
+| FHM/InferW.lean | regular / varsBelow / weaken_scheme / weaken_env / subst_lemma_many letRec cases | new premises; mono transports over `τs`; poly branches deleted |
+| FHM/InferW.lean | letRec_of_emptyPool | drops `hG_specs`; empty-pool premise over `bs.zip τs` at the all-mono ctx |
+| FHM/InferW.lean | rec_rewrap_typed / rewrap_hasSchemeHM_mono (+ mem_zip_mono_link) | rewrap at all-`none` anns (erased world), witness list `τs.map renameG` |
+| FHM/InferW.lean | preservation letRecUnfold | new premises; `rw [← h_anns]` for the all-none rewrap |
+| FHM/InferW.lean | Infer.sound letRec | `τsE = specsE.map monoTy`; hmono over `bs'.zip τsE`; `hpoly` deleted; `hG_specs` deleted; `letRec_of_emptyPool` call gains hlen/hlink/hlc |
+| FHM/InferW.lean | mutualRec_typeable / _fvar2 | witnesses `[fvar 100, fvar 100]`; hlen/hlink/hlc + MonoTypedInit (poly premise deleted) |
+| FHM/SurfaceBridge.lean | letRecIn + rec_strong case | mechanical adaptation to the new premises (poly premise deleted) |
+| FHM/SurfaceBridge.lean | letRecInAnn (114xx) | **deferred**: the surface ctor's premises are scheme-relative for annotated members (`τretPolyOf`); a witness-based restatement of the SURFACE rule is required (marked `@PIVOT-TODO`) |
+
+**Deferred/known state.** `FHM/Completeness.lean` was already broken before this
+stage (concurrent phase WIP — verified by stashing) and is untouched; its
+`RecSpecs.MonoTyped`/`PolyTyped` inversion premises must be re-based on the new
+rule (they were the FALSE-theorem source). The soundness direction got SIMPLER
+(the `Infer.sound` letRec no longer builds the vacuous `hpoly`); the substitution
+transport is a single uniform all-mono branch instead of mono+poly.

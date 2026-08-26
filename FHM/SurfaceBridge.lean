@@ -6108,13 +6108,15 @@ inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
           (τs.map PolyTy.mkTrivial ++ Γ) body τ) :
       SurfaceWTExpr ctors ke tvs vs Γ (.letRecIn binds body) τ
   /-- Annotated / mixed / poly-recursion `letRecIn`. Surface analogue of Core
-      `TypeOfHM.letRec` + `RecSpecs.MonoTyped`/`PolyTyped`.
-      Mono members mirror unannotated `letRecIn`: raw RHS at `τretsList[i]`,
-      `coreParamsToArrows paramTys τret = renameG G Xs τm` after wrap.
-      Poly members mirror poly `letInAnn`: raw RHS at `τretPolyOf i Xs Ys` under
-      params; `coreParamsToArrows paramTys (τretPolyOf i Xs Ys) = σ.openVars Ys`
-      so wrap + `openTyVars` collapse yields what `PolyTyped` wants
-      (`params = []` is the special case `τretPolyOf = fun _ _ => σ.openVars`).
+      `TypeOfHM.letRec` + `RecSpecs.MonoTypedInit` (the all-mono pivot of commit
+      78cf9a1): EVERY member — annotated or not — is checked MONOMORPHICALLY,
+      its raw RHS at a witness monotype `τretsList[i]` with
+      `coreParamsToArrows paramTys τret = renameG G Xs τᵢ` after wrap. An
+      annotated member's declared scheme does NOT appear while the group's RHSs
+      are checked (it is confined to the body context, as in the algorithm's
+      `RecSpecs.ceilingSchemes`); the old scheme-relative half
+      (`RecSpecs.PolyTyped`) is dropped. `params = []` is the special case
+      `τretPolyOf = fun _ _ => σ.openVars` (kept for the body-visible schemes).
 
       @TODO(ann-open-tvs): same `tvs = []` metatheory caveat as `letInAnn` (see
       that ctor). Not a surface compile ban; blocks structural `letRecInAnn` under
@@ -11083,7 +11085,7 @@ theorem TypeOfHM_tyBvarBounded_of_emptyVarTyArgs {ctx : Ctx} {e : Expr} {τ : Ty
     intro p b hmem
     exact TypeOfHM.branchMotive_tyBvarBounded_of_emptyVarTyArgs (ihbrs (p, b) hmem)
       (hbr p b hmem)
-  | letRec hwf _ _ _ _ ihmono ihpoly ihbody =>
+  | letRec hwf hlen hlink hlc hmono heq hbody ihmono ihbody =>
     expose_names
     intro he; simp only [Expr.EmptyVarTyArgs] at he
     refine ⟨?_, ?_, ihbody he.2⟩
@@ -11096,14 +11098,16 @@ theorem TypeOfHM_tyBvarBounded_of_emptyVarTyArgs {ctx : Ctx} {e : Expr} {τ : Ty
       refine Expr.TyBvarBounded.RecGroup_of_zip
         (by simpa [List.length_map] using hwf.length) (fun p hp => ?_)
       obtain ⟨e, annO⟩ := p
-      have hlen : bindings.length = (specs.map RecSpec.ann).length := by
+      have hlen' : bindings.length = (specs.map RecSpec.ann).length := by
         simpa [List.length_map] using hwf.length
-      obtain ⟨i, hi, heq, hann⟩ := List.mem_zip_getElem hlen hp
+      obtain ⟨i, hi, heq, hann⟩ := List.mem_zip_getElem hlen' hp
       have he_e : Expr.EmptyVarTyArgs e := by
         simpa [heq] using he.1 (bindings[i]'hi) (List.getElem_mem hi)
       have hiS : i < specs.length := by
         have hls : bindings.length = specs.length := hwf.length
         omega
+      have hiT : i < τs.length := by
+        rwa [hlen] at hi
       obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L G.length
       have hfresh : FreshNames L G.length Xs := ⟨hXlen, hXnodup, hXavoid⟩
       cases hspec : specs[i]'hiS with
@@ -11113,19 +11117,27 @@ theorem TypeOfHM_tyBvarBounded_of_emptyVarTyArgs {ctx : Ctx} {e : Expr} {τ : Ty
         simp only [hann', RecAnn.params, Nat.add_zero]
         have hmem : (e, RecSpec.mono τ) ∈ bindings.zip specs := by
           simpa [heq, hspec] using List.getElem_mem_zip hi hiS
-        simpa [heq] using ihmono Xs hfresh (e, .mono τ) hmem τ rfl he_e
+        have hmemτ : (e, τ) ∈ bindings.zip τs := by
+          -- the mono-link pins the witness to the spec monotype
+          have hpair : (specs[i]'hiS, τs[i]'hiT) ∈ specs.zip τs := by
+            simpa using List.getElem_mem_zip hiS hiT
+          have hτs : τs[i]'hiT = τ :=
+            hlink (specs[i]'hiS, τs[i]'hiT) hpair τ (by simpa using hspec)
+          simpa [heq, hτs] using List.getElem_mem_zip hi hiT
+        simpa [heq] using ihmono Xs hfresh (e, τ) hmemτ he_e
       | poly σ =>
         have hann' : annO = some σ := by
           simp [hann.symm, List.getElem_map, hspec, RecSpec.ann]
         simp only [hann', RecAnn.params]
         have hmem : (e, RecSpec.poly σ) ∈ bindings.zip specs := by
           simpa [heq, hspec] using List.getElem_mem_zip hi hiS
-        obtain ⟨Ys, hYlen, hYnodup, hYavoid⟩ := exists_fresh_names (L ++ Xs) σ.paramCount
-        have hc := ihpoly Xs hfresh (e, .poly σ) hmem σ rfl Ys ⟨hYlen, hYnodup, hYavoid⟩
-          (Expr.openTyVars_emptyVarTyArgs Ys he_e)
-        have hb := Expr.tyBvarBounded_of_openTyVarsAux Ys e 0
-          (by simpa only [Expr.openTyVars] using hc)
-        simpa [heq, Nat.zero_add, hYlen] using hb
+        -- the pivot rule types the annotated member at its witness monotype too
+        have hmemτ : (e, τs[i]'hiT) ∈ bindings.zip τs := by
+          simpa [heq] using List.getElem_mem_zip hi hiT
+        have hc := ihmono Xs hfresh (e, τs[i]'hiT) hmemτ he_e
+        have hmono' : e.TyBvarBounded (0 + σ.paramCount) :=
+          Expr.TyBvarBounded.mono hc (by omega)
+        simpa [heq, Nat.zero_add] using hmono'
 
 theorem TyBvarBounded_zero_of_lowerExpr_of_TypeOfHM {ke : KindEnv}
     {tvs vs : List ValName} {s : Surface.Expr} {c : Expr} {ctx : Ctx} {τ : Ty}
@@ -11367,24 +11379,44 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         simp only [specs, List.mem_map] at hσ
         obtain ⟨_, _, hcontrad⟩ := hσ
         cases hcontrad
-    refine TypeOfHM.letRec (specs := specs) (G := []) (L := [])
-      hwf ?mono ?poly rfl ?body
-    · intro Xs hXs p hp τ0 hτ0
+    refine TypeOfHM.letRec (specs := specs) (τs := τs) (G := []) (L := [])
+      hwf ?hlen ?hlink ?hlc ?mono rfl ?body
+    · -- the witness list aligns with the members (specs = τs.map .mono)
+      simpa [specs, List.length_map] using hwf.length
+    · -- mono-link: specs = τs.map .mono — structural
+      intro p hp τ hτ
+      rcases List.mem_iff_getElem.mp hp with ⟨j, hjp, hpeq⟩
+      have hjl1 : j < (τs.map RecSpec.mono).length :=
+        lt_of_lt_of_le hjp (by rw [List.length_zip]; exact min_le_left _ _)
+      have hjl2 : j < τs.length :=
+        lt_of_lt_of_le hjp (by rw [List.length_zip]; exact min_le_right _ _)
+      have hpeq' : ((τs.map RecSpec.mono)[j]'(hjl1), τs[j]'(hjl2)) = p := by
+        rw [List.getElem_zip] at hpeq
+        exact hpeq
+      have h1 : (τs.map RecSpec.mono)[j]'(hjl1) = RecSpec.mono τ := by
+        have h := congrArg Prod.fst hpeq'
+        simpa [hτ] using h
+      have h2 : τs[j]'(hjl2) = τ := by
+        rw [List.getElem_map] at h1
+        injection h1
+      exact (congrArg Prod.snd hpeq').symm.trans h2
+    · -- witnesses are LC (they are the spec monotypes)
+      intro t ht
+      have hmem : RecSpec.mono t ∈ specs := by
+        simp [specs, ht]
+      exact hwf.mono_lc t hmem
+    · intro Xs hXs p hp
       have hXs_nil : Xs = [] := List.eq_nil_of_length_eq_zero hXs.length
       subst hXs_nil
-      obtain ⟨b, s⟩ := p
-      have hs : s = .mono τ0 := hτ0
-      subst hs
+      obtain ⟨b, t⟩ := p
       simp only [RecSpecs.rhsCtx, Ty.renameG_nil_pool]
-      have hzip_len : bindings'.length = specs.length := by
-        simp only [specs, List.length_map, hlenB, hlen]
-      obtain ⟨i, hi, hb_eq, hs_eq⟩ := List.mem_zip_getElem hzip_len hp
+      have hzip_len : bindings'.length = τs.length := by
+        simpa [specs, List.length_map] using hwf.length
+      obtain ⟨i, hi, hb_eq, ht_eq⟩ := List.mem_zip_getElem hzip_len hp
       subst hb_eq
-      have hτs : τs[i]'(by omega) = τ0 := by
-        simp only [specs, List.getElem_map, RecSpec.mono.injEq] at hs_eq
-        exact hs_eq
-      have henv : specs.map (RecSpec.rhsEntry [] []) = τs.map PolyTy.mkTrivial := by
-        simp only [specs, List.map_map]
+      have hτs : τs[i]'(by omega) = t := ht_eq
+      have henv : (τs.map RecSpec.mono).map (RecSpec.rhsEntry [] []) = τs.map PolyTy.mkTrivial := by
+        simp only [List.map_map]
         exact List.map_congr_left fun _ _ => RecSpec.rhsEntry_nil_mono
       rw [henv, ← hτs]
       obtain ⟨rhsCore, hr, hwrap⟩ := hgetB i (by omega)
@@ -11401,12 +11433,6 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         simpa [hscope_i i (by omega)] using hwrap
       have hTyW := wrapCoreParams_TypeOfHM (hLL i (by omega)) hwrap' (hrhs_ih i (by omega) hr')
       simpa [← hτbinds i (by omega)] using hTyW
-    · intro Xs _hXs p hp σ hσ
-      have hs := (List.of_mem_zip hp).2
-      simp only [specs, List.mem_map] at hs
-      obtain ⟨_, _, hcontrad⟩ := hs
-      rw [hσ] at hcontrad
-      cases hcontrad
     · simp only [RecSpecs.bodyCtx, specs, List.map_map]
       have hmap : List.map (RecSpec.bodyScheme [] ∘ RecSpec.mono) τs =
           τs.map PolyTy.mkTrivial :=
@@ -11427,6 +11453,13 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     have anns_eq : annsL = anns' := Option.some.inj (hannL.symm.trans hann)
     have hwf : RecSpecs.WF annsL bindings' specs G :=
       ⟨anns_eq ▸ hanns_eq, hlenB.trans hlen, hnodup, hmono_lc, hpoly_wf⟩
+    -- @PIVOT-TODO(78cf9a1): this construction still targets the OLD mixed rule
+    -- (`?monoA`/`?polyA`). The pivot `TypeOfHM.letRec` needs `hlen`/`hlink`/`hlc`
+    -- + `RecSpecs.MonoTypedInit` over per-member witness monotypes; the surface
+    -- `letRecInAnn` ctor only supplies SCHEME-relative typings for annotated
+    -- members (`τretPolyOf`), so a witness-based restatement of the SURFACE rule
+    -- is required (annotated members' RHSs must type at a monotype in the
+    -- all-mono-rendered group context). Deferred to the follow-up phase.
     refine TypeOfHM.letRec (specs := specs) (G := G) (L := L) hwf ?monoA ?polyA rfl ?bodyA
     · intro Xs hfresh p hp τ hτ
       have hzip_len : bindings'.length = specs.length := hwf.length

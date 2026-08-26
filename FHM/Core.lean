@@ -3339,7 +3339,12 @@ structure RecSpecs.WF (anns : List (Option PolyTy)) (bindings : List Expr)
     shared pool opening `G ↦ Xs` — the SAME `Xs` for the whole group, which is
     what keeps mutual monotype-sharing linked — each unannotated member's RHS
     types AS STORED at its opened shared monotype `τ[G↦Xs]`, in the group RHS
-    context. Cofinite (à la `letIn`, NOT existential) ⇒ sound under weakening. -/
+    context. Cofinite (à la `letIn`, NOT existential) ⇒ sound under weakening.
+
+    **Pivot (commit 78cf9a1):** the `TypeOfHM.letRec` rule no longer instantiates
+    this (it is subsumed by `RecSpecs.MonoTypedInit` over the all-mono witnesses,
+    which additionally covers annotated members); kept for the `Completeness.lean`
+    phase that predates the pivot. -/
 def RecSpecs.MonoTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
     (bindings : List Expr) (specs : List RecSpec) (G L : List Nat) : Prop :=
   ∀ Xs, FreshNames L G.length Xs →
@@ -3353,13 +3358,40 @@ def RecSpecs.MonoTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
     `Ys` quantifier is NESTED INSIDE the `Xs` one and excludes it (`L ++ Xs`), so
     the shared monotypes are fixed before any `Ys` is chosen: an unannotated
     member's monotype can never capture an annotated sibling's skolem
-    (machine-checked: `SpikeLetRecMixed.skolemLeak_untypeable`). -/
+    (machine-checked: `SpikeLetRecMixed.skolemLeak_untypeable`).
+
+    **Pivot (commit 78cf9a1):** NOT used by the `TypeOfHM.letRec` rule anymore —
+    the algorithm's all-mono `RecSpec.init` cut makes mixed scheme-relative RHS
+    checking un-realizable, and over all-mono spec lists `PolyTyped` is vacuous.
+    Kept as documentation of the abandoned half (and for the `Completeness.lean`
+    phase that predates the pivot). -/
 def RecSpecs.PolyTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
     (bindings : List Expr) (specs : List RecSpec) (G L : List Nat) : Prop :=
   ∀ Xs, FreshNames L G.length Xs →
     ∀ p ∈ bindings.zip specs, ∀ σ, p.2 = .poly σ →
       ∀ Ys, FreshNames (L ++ Xs) σ.paramCount Ys →
         TypeOf (RecSpecs.rhsCtx ctx specs G Xs) (p.1.openTyVars Ys) (σ.openVars Ys)
+
+/-- **Cofinite monomorphic-recursion premise (ALL members)** — the declarative
+    twin of the algorithm's all-mono `RecSpec.init` cut (commit 78cf9a1): there
+    is ONE monotype per member (the rule's `τs`, aligned with `specs` by its
+    `hlen`/`hlink`/`hlc` premises), and at every sufficiently-fresh shared pool
+    opening `G ↦ Xs` (the SAME `Xs` for the whole group — what keeps mutual
+    monotype-sharing linked) each member's RHS types at its opened monotype
+    `Ty.renameG G Xs τᵢ`, in the **all-mono-rendered** group context: EVERY
+    member — annotated or not — sits at `mkTrivial (renameG G Xs τᵢ)`
+    (`RecSpecs.rhsCtx` over `τs.map RecSpec.mono`). An annotated member is
+    therefore NOT available at its declared scheme while the group's RHSs are
+    checked, exactly as in the algorithm. The annotation's role is confined to
+    the BODY context (`RecSpecs.bodyCtx`); the ceiling relation between a solved
+    monotype and an annotation is an algorithmic obligation
+    (`RecSpecs.ceilingOK`), deliberately not duplicated here. Cofinite (à la
+    `letIn`, NOT existential) ⇒ sound under weakening. -/
+def RecSpecs.MonoTypedInit (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
+    (bindings : List Expr) (τs : List Ty) (G L : List Nat) : Prop :=
+  ∀ Xs, FreshNames L G.length Xs →
+    ∀ p ∈ bindings.zip τs,
+      TypeOf (RecSpecs.rhsCtx ctx (τs.map RecSpec.mono) G Xs) p.1 (Ty.renameG G Xs p.2)
 
 
 /-! ### The *declarative* HM typing relation `TypeOfHM` (the completeness spec).
@@ -3464,13 +3496,29 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     (∀ branch ∈ branches, TypeOfMatchBranch ctx branch scrutTy resultTy) →
     TypeOfHM ctx (.match_ scrutinee branches) resultTy
 
-  /-- Mixed recursive group (the SAME packaged premises as `TypeOfElabHM.letRec`
-      — shared via the relation-parametric `RecSpecs.MonoTyped`/`PolyTyped` —
-      recursing into declarative `TypeOfHM`). -/
-  | letRec {specs : List RecSpec} {G L : List Nat} :
+  /-- Recursive group (the **monomorphic-recursion** rule, aligned with the
+      algorithm's all-mono `RecSpec.init` cut of commit 78cf9a1): EVERY member's
+      RHS is checked MONOMORPHICALLY at the all-mono-rendered group context
+      (`RecSpecs.MonoTypedInit` over the per-member monotypes `τs`), at the
+      cofinite shared-pool openings `G ↦ Xs`. An annotated member is never
+      available at its declared scheme while the RHSs are checked (it appears at
+      its witness `τᵢ` instead) — the annotation's role is confined to the BODY
+      (`RecSpecs.bodyCtx`: annotated members at their schemes, unannotated ones
+      generalised over `G`); the ceiling relation between a solved monotype and
+      an annotation is an ALGORITHMIC obligation (`RecSpecs.ceilingOK`), not
+      duplicated here. `hlen` aligns `τs` with the members; `hlink` pins an
+      unannotated member's witness to its spec monotype (so the body's
+      `genGroup G τᵢ` is justified by the RHS typing); `hlc` keeps the witnesses
+      locally closed. The old scheme-relative half (`RecSpecs.PolyTyped`) is
+      DROPPED: over the all-mono witnesses it is vacuous, and the mixed
+      `let rec f : σ = … and h = (f 1, f "s")` programs it admitted have no
+      `Infer` derivation (D2 completeness spine). -/
+  | letRec {specs : List RecSpec} {τs : List Ty} {G L : List Nat} :
     RecSpecs.WF anns bindings specs G →
-    RecSpecs.MonoTyped TypeOfHM ctx bindings specs G L →
-    RecSpecs.PolyTyped TypeOfHM ctx bindings specs G L →
+    bindings.length = τs.length →
+    (∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ) →
+    (∀ t ∈ τs, t.IsLC) →
+    RecSpecs.MonoTypedInit TypeOfHM ctx bindings τs G L →
     bodyCtx = RecSpecs.bodyCtx ctx specs G →
     TypeOfHM bodyCtx body ρ →
     TypeOfHM ctx (.letRec anns bindings body) ρ
