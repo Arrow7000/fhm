@@ -9,5 +9,29 @@
         "/Users/aron/dev/lean-lsp-mcp/scripts/ensure-fhm-mcp.sh"
       ]
     }
+  },
+  "agent": {
+    "glm-worker": {
+      "description": "Cheap proof-workhorse worker for the fhm Lean project (GLM 5.3 Flash via Z.AI coding plan)",
+      "model": "zai-coding-plan/glm-5.3-flash",
+      "prompt": "{file:AGENTS.md}",
+      "mode": "primary",
+      "temperature": 0.1,
+      "permission": {
+        "edit": "allow",
+        "bash": {
+          "*": false,
+          "lake env lean *": "allow",
+          "grep *": "allow",
+          "sed -n *": "allow",
+          "cat *": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "git show*": "allow",
+          "git status*": "allow"
+        },
+        "webfetch": false
+      }
+    }
   }
 }
