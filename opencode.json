@@ -12,8 +12,8 @@
   },
   "agent": {
     "glm-worker": {
-      "description": "Cheap proof-workhorse worker for the fhm Lean project (GLM 5.3 Flash via Z.AI coding plan)",
-      "model": "zai-coding-plan/glm-5.3-flash",
+      "description": "Proof-workhorse worker for the fhm Lean project (GLM 5.3 Flash via OpenRouter)",
+      "model": "openrouter/z-ai/glm-5.3-flash",
       "mode": "primary",
       "temperature": 0.1,
       "permission": {
