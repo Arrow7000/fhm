@@ -90,7 +90,6 @@ Assembly notes for the case proofs:
 - Seed-.some: paramTyD = erase paramTy from the mapped pin; body premise =
   eraseBounds_of hbodyD directly (context matches (S₀.onCtx Γ'').eraseBounds by
   K-fixing of the pinned scheme + erasure idempotence).
-
 ## 2026-08-26 — InferBranches.Principal UNSOUNDNESS FIX (restatement + match/branch spine closure)
 
 **Discovered unsoundness.** The branch tier's `InferBranches.Principal` (as it stood
