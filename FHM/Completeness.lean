@@ -2830,7 +2830,288 @@ theorem Infer.principals_mut (n : Nat) :
               exact hKfix k hk
       | @lambda Φ ctx ann paramTy body Φ₀ Φ' S τb hseed hbody =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
-          sorry  -- COMPLETE-LAMBDA
+          cases hty with
+          | lambda hpc hann heq hbodyD =>
+            subst heq
+            rename_i bodyTy paramTyD
+            have hsize : body.size < n := by
+              have := _hn
+              simp [Expr.size] at this
+              omega
+            cases hseed with
+            | none =>
+              -- STEP 0: fresh names W (swap partner) and c (swap intermediate)
+              obtain ⟨W, c, hΦW, hΦc, hWc, hWav, hcav⟩ := exists_fresh_two_ge Φ
+                ([Φ] ++ S₀.map Prod.fst ++ S₀.flatMap (fun p => p.2.freeVars)
+                  ++ paramTyD.freeVars ++ bodyTy.freeVars)
+              simp only [List.mem_append, List.mem_singleton, List.mem_map, List.mem_flatMap]
+                at hWav hcav
+              push_neg at hWav hcav
+              obtain ⟨⟨⟨⟨hWΦ, hWkey⟩, hWrange⟩, hWparam⟩, hWbody⟩ := hWav
+              obtain ⟨⟨⟨⟨hcΦ, hckey⟩, hcrange⟩, hcparam⟩, hcbody⟩ := hcav
+              have finj : Function.Injective (swapNat Φ W) := swapNat_injective Φ W
+              have hfix : ∀ v, v < Φ → swapNat Φ W v = v := fun v hv =>
+                swapNat_other (by omega) (by omega)
+              have hWonTy : ∀ {τ : Ty}, W ∉ τ.freeVars → W ∉ (S₀.onTy τ).freeVars :=
+                fun h => Subst.not_mem_onTy_freeVars hWrange h
+              have hconΦ : ∀ p ∈ Subst.conj (swapNat Φ W) S₀, p.1 ≠ Φ := by
+                intro p hp
+                simp only [Subst.conj, List.mem_map] at hp
+                obtain ⟨q, hq, rfl⟩ := hp
+                intro hc
+                apply hWkey q hq
+                have hc' : swapNat Φ W q.1 = Φ := hc
+                simp only [swapNat] at hc'
+                split_ifs at hc' <;> omega
+              have hSconjΦ : (Subst.conj (swapNat Φ W) S₀).onTy (.fvar Φ) = .fvar Φ := by
+                apply Ty.substFvars_eq_self_of_no_key
+                intro p hp hc
+                simp only [Ty.freeVars, List.mem_singleton] at hc
+                exact hconΦ p hp hc
+              -- STEP 1: rename the declarative body derivation and reinterpret its context
+              have hctxeq : (swapSubst Φ W c).onCtx
+                    { (S₀.onCtx ctx) with env := PolyTy.mkTrivial paramTyD :: (S₀.onCtx ctx).env }
+                  = (Subst.conj (swapNat Φ W) S₀ ++ [(Φ, Ty.rename (swapNat Φ W) paramTyD)]).onCtx
+                    { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+                simp only [Subst.onCtx, Subst.onEnv, List.map_cons, List.map_map]
+                congr 1
+                congr 1
+                · -- head
+                  simp only [Subst.onPolyTy, PolyTy.mkTrivial, PolyTy.mk.injEq, true_and]
+                  rw [swapSubst_onTy (Ne.symm hWΦ) (Ne.symm hcΦ) hWc hcparam,
+                      Subst.onTy_append (Subst.conj (swapNat Φ W) S₀)
+                        [(Φ, Ty.rename (swapNat Φ W) paramTyD)] (.fvar Φ),
+                      hSconjΦ]
+                  simp only [Subst.onTy, Ty.substFvars, Ty.substFvar, if_pos]
+                · -- tail
+                  apply List.map_congr_left
+                  intro M hM
+                  have hMbelow : ∀ v ∈ M.body.freeVars, v < Φ := (hbelow M hM).mem_lt
+                  have hrenM : Ty.rename (swapNat Φ W) M.body = M.body :=
+                    Ty.rename_eq_self (fun v hv => hfix v (hMbelow v hv))
+                  have hΦnotin : Φ ∉ (Ty.rename (swapNat Φ W) (S₀.onTy M.body)).freeVars :=
+                    Ty.rename_swap_not_mem_left (hWonTy (τ := M.body)
+                      (fun hv => by have := hMbelow _ hv; omega))
+                  simp only [Function.comp, Subst.onPolyTy, PolyTy.mk.injEq, true_and]
+                  rw [swapSubst_onTy (Ne.symm hWΦ) (Ne.symm hcΦ) hWc
+                        (Subst.not_mem_onTy_freeVars hcrange
+                          (fun hv => by have := hMbelow _ hv; omega)),
+                      Subst.onTy_append (Subst.conj (swapNat Φ W) S₀)
+                        [(Φ, Ty.rename (swapNat Φ W) paramTyD)] M.body]
+                  conv_rhs => rw [← hrenM, Subst.onTy_conj finj]
+                  exact (Ty.substFvar_fresh hΦnotin).symm
+              have hbodyTyeq : (swapSubst Φ W c).onTy bodyTy = Ty.rename (swapNat Φ W) bodyTy :=
+                swapSubst_onTy (Ne.symm hWΦ) (Ne.symm hcΦ) hWc hcbody
+              have hbodyK : ∀ y ∈ body.tyFreeVars, y ∈ K := by
+                simpa [Expr.tyFreeVars] using hKe
+              have hbodyfix : body.substTyFvars (swapSubst Φ W c) = body := by
+                refine Expr.substTyFvars_eq_self_of_not_mem_tyFreeVars (fun p hp hc => ?_)
+                have hpΦ : Φ ≤ p.1 := by
+                  simp only [swapSubst, List.mem_cons, List.not_mem_nil, or_false] at hp
+                  obtain rfl | rfl | rfl := hp <;> omega
+                have := hKΦ p.1 (hbodyK p.1 hc)
+                omega
+              have hren := TypeOfHM.onSubst_fixed (swapSubst Φ W c) (swapSubst_lc Φ W c)
+                hbodyfix hbodyD
+              rw [hctxeq, hbodyTyeq] at hren
+              -- STEP 2: apply the IH to the body under the conjugated specialization
+              have hwf_b : CtxWF { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+                intro M hM
+                rcases List.mem_cons.mp hM with rfl | hM
+                · exact ContainsBvarsUpTo.fvar
+                · exact hwf M hM
+              have hbelow_b : CtxBelow (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+                intro M hM
+                rcases List.mem_cons.mp hM with rfl | hM
+                · exact .fvar (by omega)
+                · exact (hbelow M hM).mono (by omega)
+              have hT_lc : ∀ p ∈ Subst.conj (swapNat Φ W) S₀ ++ [(Φ, Ty.rename (swapNat Φ W) paramTyD)],
+                  p.2.IsLC := by
+                intro p hp
+                rw [List.mem_append] at hp
+                rcases hp with hp | hp
+                · exact Subst.conj_lc hS₀ p hp
+                · rw [List.mem_singleton] at hp
+                  subst hp
+                  exact Ty.rename_isLC hpc
+              have hSconjK : ∀ k ∈ K, (Subst.conj (swapNat Φ W) S₀
+                  ++ [(Φ, Ty.rename (swapNat Φ W) paramTyD)]).onTy (.fvar k) = .fvar k := by
+                intro k hk
+                have hklt := hKΦ k hk
+                rw [Subst.onTy_append]
+                have hconj : (Subst.conj (swapNat Φ W) S₀).onTy (.fvar k) = .fvar k := by
+                  have h := Subst.onTy_conj finj S₀ (.fvar k)
+                  rw [Ty.rename_fvar, hfix k hklt] at h
+                  rw [h, hKfix k hk, Ty.rename_fvar, hfix k hklt]
+                rw [hconj]
+                exact Ty.substFvars_eq_self_of_no_key (fun p hp hc => by
+                  rw [List.mem_singleton] at hp; subst hp
+                  simp only [Ty.freeVars, List.mem_singleton] at hc; omega)
+              let S₁ : Subst := Subst.conj (swapNat Φ W) S₀ ++ [(Φ, Ty.rename (swapNat Φ W) paramTyD)]
+              obtain ⟨R_b, hR_b, htyb, hR_bfix, hagb⟩ :=
+                ih.1 hbody hsize hwf_b hbelow_b hwf_b hbelow_b S₁
+                  (Ty.rename (swapNat Φ W) bodyTy) K
+                  hT_lc (fun k hk => by have := hKΦ k hk; omega) hbodyK hSconjK hren
+              -- STEP 3: assemble the conclusion
+              let R : Subst := R_b ++ [(W, Ty.fvar Φ)]
+              have hWv : ∀ {v : Nat}, v < Φ → W ∉ (Ty.fvar v).freeVars := by
+                intro v hv
+                simp only [Ty.freeVars, List.mem_singleton]
+                omega
+              have hWparam_e : W ∉ (Ty.eraseBounds paramTyD).freeVars := by
+                intro hc
+                exact hWparam ((Ty.mem_freeVars_eraseBounds paramTyD W).1 hc)
+              have hWbody_e : W ∉ (Ty.eraseBounds bodyTy).freeVars := by
+                intro hc
+                exact hWbody ((Ty.mem_freeVars_eraseBounds bodyTy W).1 hc)
+              have herase_swap : ∀ {Y : Ty}, c ∉ Y.freeVars →
+                  Ty.eraseBounds (Ty.rename (swapNat Φ W) Y) = Ty.rename (swapNat Φ W) (Ty.eraseBounds Y) := by
+                intro Y hYc
+                have h1 : (swapSubst Φ W c).onTy Y = Ty.rename (swapNat Φ W) Y :=
+                  swapSubst_onTy (Ne.symm hWΦ) (Ne.symm hcΦ) hWc hYc
+                have h2 : (swapSubst Φ W c).onTy (Ty.eraseBounds Y) = Ty.rename (swapNat Φ W) (Ty.eraseBounds Y) :=
+                  swapSubst_onTy (Ne.symm hWΦ) (Ne.symm hcΦ) hWc
+                    (fun hc' => hYc ((Ty.mem_freeVars_eraseBounds Y c).1 hc'))
+                calc
+                  Ty.eraseBounds (Ty.rename (swapNat Φ W) Y)
+                      = Ty.eraseBounds ((swapSubst Φ W c).onTy Y) := by rw [h1]
+                  _ = (swapSubst Φ W c).onTy (Ty.eraseBounds Y) := by
+                        simp [swapSubst, Subst.onTy, Ty.eraseBounds_substFvars]
+                  _ = Ty.rename (swapNat Φ W) (Ty.eraseBounds Y) := h2
+              have hS₁onTyΦ : Subst.onTy S₁ (.fvar Φ) = Ty.rename (swapNat Φ W) paramTyD := by
+                simp only [S₁]
+                rw [Subst.onTy_append, hSconjΦ]
+                simp only [Subst.onTy, Ty.substFvars, Ty.substFvar, if_pos]
+              have hR'eq_param : AgreesHM paramTyD (Subst.onTy R (S.onTy (.fvar Φ))) := by
+                change Ty.eraseBounds paramTyD = Ty.eraseBounds (Subst.onTy R (S.onTy (.fvar Φ)))
+                dsimp [R]
+                rw [← Subst.onTy_append, ← List.append_assoc, Subst.onTy_append]
+                symm
+                calc
+                  Ty.eraseBounds (Subst.onTy [(W, Ty.fvar Φ)] ((S ++ R_b).onTy (.fvar Φ)))
+                      = Ty.substFvar W (.fvar Φ) (Ty.eraseBounds ((S ++ R_b).onTy (.fvar Φ))) := by
+                        simp [Subst.onTy, Ty.substFvars, Ty.eraseBounds_substFvar]
+                  _ = Ty.substFvar W (.fvar Φ) (Ty.eraseBounds (Subst.onTy S₁ (.fvar Φ))) := by
+                        rw [hagb Φ (by omega)]
+                  _ = Ty.substFvar W (.fvar Φ) (Ty.eraseBounds (Ty.rename (swapNat Φ W) paramTyD)) := by
+                        rw [hS₁onTyΦ]
+                  _ = Ty.substFvar W (.fvar Φ) (Ty.rename (swapNat Φ W) (Ty.eraseBounds paramTyD)) := by
+                        rw [herase_swap hcparam]
+                  _ = Ty.eraseBounds paramTyD := Ty.substFvar_rename_swap hWparam_e
+              have hR'eq_body : AgreesHM bodyTy (Subst.onTy R τb) := by
+                change Ty.eraseBounds bodyTy = Ty.eraseBounds (Subst.onTy R τb)
+                dsimp [R]
+                rw [Subst.onTy_append]
+                symm
+                calc
+                  Ty.eraseBounds (Subst.onTy [(W, Ty.fvar Φ)] (R_b.onTy τb))
+                      = Ty.substFvar W (.fvar Φ) (Ty.eraseBounds (R_b.onTy τb)) := by
+                        simp [Subst.onTy, Ty.substFvars, Ty.eraseBounds_substFvar]
+                  _ = Ty.substFvar W (.fvar Φ) (Ty.eraseBounds (Ty.rename (swapNat Φ W) bodyTy)) := by
+                        rw [htyb]
+                  _ = Ty.substFvar W (.fvar Φ) (Ty.rename (swapNat Φ W) (Ty.eraseBounds bodyTy)) := by
+                        rw [herase_swap hcbody]
+                  _ = Ty.eraseBounds bodyTy := Ty.substFvar_rename_swap hWbody_e
+              have hagree : Subst.AgreesBelow Φ S₀ (S ++ R) := by
+                intro v hv
+                have hconjv : (Subst.conj (swapNat Φ W) S₀).onTy (.fvar v)
+                    = Ty.rename (swapNat Φ W) (S₀.onTy (.fvar v)) := by
+                  have h := Subst.onTy_conj finj S₀ (.fvar v)
+                  rw [Ty.rename_fvar, hfix v hv] at h
+                  exact h
+                have hTv : Subst.onTy S₁ (.fvar v) = Ty.rename (swapNat Φ W) (S₀.onTy (.fvar v)) := by
+                  simp only [S₁]
+                  rw [Subst.onTy_append, hconjv]
+                  exact Ty.substFvar_fresh (Ty.rename_swap_not_mem_left
+                    (hWonTy (τ := .fvar v) (hWv hv)))
+                have hWonTy_v_e : W ∉ (Ty.eraseBounds (S₀.onTy (.fvar v))).freeVars := by
+                  intro hc
+                  exact hWonTy (τ := .fvar v) (hWv hv)
+                    ((Ty.mem_freeVars_eraseBounds (S₀.onTy (.fvar v)) W).1 hc)
+                dsimp [R]
+                rw [← List.append_assoc, Subst.onTy_append]
+                change Ty.eraseBounds (S₀.onTy (.fvar v)) = Ty.eraseBounds
+                  (Subst.onTy [(W, Ty.fvar Φ)] ((S ++ R_b).onTy (.fvar v)))
+                symm
+                calc
+                  Ty.eraseBounds (Subst.onTy [(W, Ty.fvar Φ)] ((S ++ R_b).onTy (.fvar v)))
+                      = Ty.substFvar W (.fvar Φ) (Ty.eraseBounds ((S ++ R_b).onTy (.fvar v))) := by
+                        simp [Subst.onTy, Ty.substFvars, Ty.eraseBounds_substFvar]
+                  _ = Ty.substFvar W (.fvar Φ) (Ty.eraseBounds (Subst.onTy S₁ (.fvar v))) := by
+                        rw [hagb v (by omega)]
+                  _ = Ty.substFvar W (.fvar Φ) (Ty.eraseBounds (Ty.rename (swapNat Φ W) (S₀.onTy (.fvar v)))) := by
+                        rw [hTv]
+                  _ = Ty.substFvar W (.fvar Φ) (Ty.rename (swapNat Φ W) (Ty.eraseBounds (S₀.onTy (.fvar v)))) := by
+                        rw [herase_swap (Subst.not_mem_onTy_freeVars hcrange
+                          (fun hv' => by simp only [Ty.freeVars, List.mem_singleton] at hv'; omega))]
+                  _ = Ty.eraseBounds (S₀.onTy (.fvar v)) :=
+                        Ty.substFvar_rename_swap hWonTy_v_e
+              refine ⟨R, ?_, ?_, ?_, hagree⟩
+              · -- residual is LC
+                intro p hp
+                rw [List.mem_append] at hp
+                rcases hp with hp | hp
+                · exact hR_b p hp
+                · rw [List.mem_singleton] at hp
+                  subst hp
+                  exact ContainsBvarsUpTo.fvar
+              · -- the arrow type is recovered
+                change AgreesHM (.arrow paramTyD bodyTy)
+                  (Subst.onTy R (.arrow (S.onTy (.fvar Φ)) τb))
+                rw [Subst.onTy_arrow]
+                show Ty.eraseBounds (.arrow paramTyD bodyTy) = Ty.eraseBounds
+                  (.arrow (Subst.onTy R (S.onTy (.fvar Φ))) (Subst.onTy R τb))
+                rw [Ty.eraseBounds_arrow, Ty.eraseBounds_arrow]
+                exact congrArg₂ Ty.arrow hR'eq_param hR'eq_body
+              · -- residual fixes the rigid set K
+                intro k hk
+                rw [Subst.onTy_append, hR_bfix k hk]
+                exact Ty.substFvars_eq_self_of_no_key (fun p hp hc => by
+                  rw [List.mem_singleton] at hp; subst hp
+                  simp only [Ty.freeVars, List.mem_singleton] at hc
+                  have := hKΦ k hk; omega)
+            | some hlc =>
+              rename_i hlc
+              have hpeq : paramTyD = paramTy := hann paramTy rfl
+              subst hpeq
+              have hTK : ∀ y ∈ paramTyD.freeVars, y ∈ K := fun y hy =>
+                hKe y (by simp [Expr.tyFreeVars, List.mem_append]; exact Or.inl hy)
+              have hbodyK : ∀ y ∈ body.tyFreeVars, y ∈ K := fun y hy =>
+                hKe y (by simp [Expr.tyFreeVars, List.mem_append]; exact Or.inr hy)
+              have hTbelow : Ty.BelowFvars Φ paramTyD := Ty.BelowFvars.of_freeVars_lt
+                (fun v hv => hKΦ v (hTK v hv))
+              have hself : S₀.onTy paramTyD = paramTyD := Subst.onTy_eq_self_of_fixes
+                (fun v hv => hKfix v (hTK v hv))
+              have hwf' : CtxWF { ctx with env := PolyTy.mkTrivial paramTyD :: ctx.env } := by
+                intro M hM
+                rcases List.mem_cons.mp hM with rfl | hM
+                · exact hlc
+                · exact hwf M hM
+              have hbelow' : CtxBelow Φ { ctx with env := PolyTy.mkTrivial paramTyD :: ctx.env } := by
+                intro M hM
+                rcases List.mem_cons.mp hM with rfl | hM
+                · exact hTbelow
+                · exact hbelow M hM
+              have hbody'2 : TypeOfHM (S₀.onCtx { ctx with env := PolyTy.mkTrivial paramTyD :: ctx.env })
+                  body bodyTy := by
+                have heq2 : S₀.onCtx { ctx with env := PolyTy.mkTrivial paramTyD :: ctx.env }
+                    = { (S₀.onCtx ctx) with env := PolyTy.mkTrivial paramTyD :: (S₀.onCtx ctx).env } := by
+                  simp only [Subst.onCtx, Subst.onEnv, List.map_cons, Subst.onPolyTy,
+                    PolyTy.mkTrivial, hself]
+                rw [heq2]
+                exact hbodyD
+              obtain ⟨R_b, hR_b, htyb, hR_bfix, hagb⟩ :=
+                ih.1 hbody hsize hwf' hbelow' hwf' hbelow' S₀ bodyTy K hS₀ hKΦ hbodyK hKfix hbody'2
+              have hparam : AgreesHM paramTyD (R_b.onTy (S.onTy paramTyD)) := by
+                change Ty.eraseBounds paramTyD = Ty.eraseBounds (R_b.onTy (S.onTy paramTyD))
+                rw [← Subst.onTy_append, ← Subst.onTy_congr_hm hagb hTbelow, hself]
+              refine ⟨R_b, hR_b, ?_, hR_bfix, hagb⟩
+              change AgreesHM (.arrow paramTyD bodyTy) (R_b.onTy (.arrow (S.onTy paramTyD) τb))
+              rw [Subst.onTy_arrow]
+              show Ty.eraseBounds (.arrow paramTyD bodyTy) = Ty.eraseBounds
+                (.arrow (R_b.onTy (S.onTy paramTyD)) (R_b.onTy τb))
+              rw [Ty.eraseBounds_arrow, Ty.eraseBounds_arrow]
+              exact congrArg₂ Ty.arrow hparam htyb
       | @app Φ ctx f arg Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huni =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           sorry  -- COMPLETE-APP
