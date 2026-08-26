@@ -160,7 +160,6 @@ exactly the branches tier's `AgreesHM ρe (S₀.onTy ρ)` shape, reflexive at th
 since `letRec`'s `InferRecGroup` runs with `S₀ = U` over the init entries). The LETREC
 agent should add these image premises when closing SPINE-GROUP-MONO/POLY; the
 statement is not FALSE as-is, but is un-provable without them.
-
 ---
 
 ## 2026-08-26 — Stage 1 of the D2 spine: declarative `letRec` aligned with the all-mono algorithm cut (commit 78cf9a1)

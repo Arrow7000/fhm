@@ -2549,22 +2549,55 @@ def Infer.Principal {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {�
       Subst.AgreesBelow Φ S₀ (S ++ R)
 
 /-- Principality for a `match_` branch-list thread: given the declarative
-    scrutinee typing and per-branch typings (erased contexts, erased terms),
-    the threaded result type is principal. -/
+    per-branch typings (erased contexts, erased terms) at the ambient
+    specialization `S₀`, the threaded result type is principal.
+
+    **UNSOUNDNESS FIX 2026-08-26** (restatement authorised; see the deviation
+    note below): the previous statement concluded with the *pure*
+    `Subst.AgreesBelow Φ S₀ (S ++ R)` — demanded at every `v < Φ`, which for
+    the `match_` caller (`Φ = Φ₁ + 1`) includes `v = Φ₁`, the running result
+    variable `.fvar Φ₁` itself. At `v = Φ₁` nothing links the ambient action to
+    the unifier-applied output (counterexample: `match (var 0) [wildcard
+    primLitInt]` — the only declarative data is the branch's
+    `AgreesHM (.fvar 1) (.prim .int)`, which no premise forces), so the old
+    statement was FALSE. The restatement:
+      * replaces the free `AgreesHM ρe (R.onTy ρ)` conjunct with the
+        output-form `AgreesHM ρe (R.onTy (S.onTy ρ))` — the match node's output
+        type IS `S₂.onTy (.fvar Φ₁)` (old match-aux STEP 5's `τ₀ = R₂.onTy
+        (S₂.onTy (.fvar Φ₁))`, recovered as a first-class conjunct);
+      * adds the two IMAGE premises `AgreesHM ρe (S₀.onTy ρ)` and
+        `AgreesHM scruT₀ (S₀.onTy scrutTy)` — each is REFLEXIVE at the
+        top-level dodge call from COMPLETE-MATCH (`S₀ = U`, `ρe = U.onTy ρ`,
+        `scruT₀ = U.onTy scrutTy`), and inside each `cons`/`consWild` step they
+        are re-derived at the next residual from the body IH's `AgreesBelow`
+        plus the `greatest_K_factors` factoring (old complete's `key_full`/`hUni`
+        steps, now AgreesHM-flavoured);
+      * states LC/below-ness on the ALGORITHMIC types (`scrutTy`, `ρ`) instead
+        of the declarative ones, and drops the scrutinee-term premise `s`
+        entirely: the branch premises are transportable between worlds only by
+        CONTEXT rewriting (`Subst.onCtx_congr_hm`), keeping `scruT₀`/`ρe`
+        unchanged — a changed *declarative* scrutinee/result type is not
+        re-constructible from a `TypeOfMatchBranch` up to `AgreesHM` (the `mk`
+        rule's `scrut_eq` is structural), so `s`/`scruT₀`-below-ness premises
+        would be un-provided by COMPLETE-MATCH. -/
 def InferBranches.Principal {Φ : Nat} {ctx : Ctx} {scrutTy : Ty} {ρ : Ty}
     {brs : List (MatchPattern × Expr)} {Φ' : Nat} {S : Subst}
     (_h : InferBranches Φ ctx scrutTy ρ brs Φ' S) (hne : brs ≠ []) : Prop :=
   CtxWF ctx → CtxBelow Φ ctx →
-  ∀ (s : Expr) (S₀ : Subst) (scruT₀ ρe : Ty) (K : List Nat),
-    (∀ p ∈ S₀, p.2.IsLC) → (∀ k ∈ K, k < Φ) →
+  ∀ (S₀ : Subst) (scruT₀ ρe : Ty) (K : List Nat),
+    (∀ p ∈ S₀, p.2.IsLC) → scruT₀.IsLC → scrutTy.IsLC → ρ.IsLC →
+    Ty.BelowFvars Φ scrutTy → Ty.BelowFvars Φ ρ →
+    (∀ k ∈ K, k < Φ) →
     (∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars brs, y ∈ K) →
     (∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k) →
-    TypeOfHM (S₀.onCtx ctx).eraseBounds s.eraseBounds scruT₀ →
+    AgreesHM ρe (S₀.onTy ρ) →
+    AgreesHM scruT₀ (S₀.onTy scrutTy) →
     (∀ b ∈ brs, TypeOfMatchBranch (S₀.onCtx ctx).eraseBounds (b.1, b.2.eraseBounds)
         scruT₀ ρe) →
     ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧
       Subst.AgreesBelow Φ S₀ (S ++ R) ∧
-      AgreesHM ρe (R.onTy ρ) ∧ (∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
+      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      AgreesHM ρe (R.onTy (S.onTy ρ))
 
 /-- Principality for a recursive-group thread: given the declarative DM-cut
     group premises (erased contexts, erased binding terms), an LC residual
@@ -2583,6 +2616,261 @@ def InferRecGroup.Principal {Φ : Nat} {ctx : Ctx} {bindings : List Expr}
       (bindings.map Expr.eraseBounds) specs G L →
     ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧ (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       Subst.AgreesBelow Φ S₀ (S ++ R)
+
+/-! ### Helper lemmas for the D2 spine (branch tier)
+
+The branch tier's `cons` case needs an erased-world twin of the old
+`customTy_factor_dodge` (ffc544f): given the branch's own MGU `S₀` (from a
+*given* `InferBranches.cons` derivation), the ambient residual `R` factors
+through it via a fresh `R₀` that (i) reconciles `R` and `R₀ ∘ S₀` below `Φ`
+up to erasure (the `Subst.AgreesBelow Φ R (S₀ ++ R₀)` working conjunct of the
+restated `InferBranches.Principal`), and (ii) sends the S₀-applied fresh block
+onto the declarative `tyArgs` up to erasure — exactly the clause
+`Ctx.eraseBounds_branchBindings`'s docstring mentions. The witness is the same
+three-zone dodge `fresh ↦ Ws ++ R ++ Ws ↦ tyArgs` as the old unifier-dodge,
+with the old structural "`R.onTy scrutTy` = customTy" link replaced by the
+AgreesHM image premise `hscrutImg` (reflexive at the top-level call from
+COMPLETE-MATCH). -/
+
+/-- A declarative type agrees with its own erasure (idempotence). Used to lift
+    a branch body's erased typing (`Ty.eraseBounds ρe`) back to the un-erased
+    declarative result type `ρe`. -/
+theorem AgreesHM.of_eraseBounds (τ : Ty) : AgreesHM τ (Ty.eraseBounds τ) := by
+  rw [AgreesHM, Ty.eraseBounds_idem]
+
+/-- Erasing the range of a `zip` commutes with mapping the pair's second
+    component through `Ty.eraseBounds`. -/
+theorem Subst.map_zip_erase_snd {Xs : List Nat} {Vs : List Ty} :
+    (Xs.zip Vs).map (fun p => (p.1, Ty.eraseBounds p.2)) = Xs.zip (Vs.map Ty.eraseBounds) := by
+  induction Xs generalizing Vs with
+  | nil => rfl
+  | cons x xs ih =>
+    cases Vs with
+    | nil => rfl
+    | cons v vs => simp only [List.map_cons, List.zip_cons_cons, ih]
+
+/-- A `nil` branch-list derivation is fully determined: the output frontier is
+    the input frontier and the output substitution is empty. (Extracted as a
+    lemma because `cases` on the derivation inside the branch tier's `cons`
+    case clears the enclosing frontier binder from scope.) -/
+theorem InferBranches.nil_det {Φ₁ : Nat} {ctx' : Ctx} {scrutTy' ρ' : Ty} {Φ₂ : Nat} {S₃ : Subst}
+    (h : InferBranches Φ₁ ctx' scrutTy' ρ' [] Φ₂ S₃) : Φ₂ = Φ₁ ∧ S₃ = [] := by
+  cases h with
+  | nil => exact ⟨rfl, rfl⟩
+
+/-- The named-branch `customTy` factoring dodge (given-MGU form, erased world).
+    `R` factors through the branch's MGU `S₀` via an LC, `K`-fixing `R₀` whose
+    composition with `S₀` agrees with `R` below `Φ` up to erasure and maps the
+    S₀-applied fresh block onto `tyArgs` up to erasure. -/
+theorem customTy_factor_dodge_erase {Φ : Nat} {scrutTy : Ty} {R S₀ : Subst}
+    {K : List Nat} {ctor : Ctor} {tyArgs : List Ty}
+    (h₀ : UnifyRel scrutTy
+      (.customTy ctor.tyName ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))) S₀)
+    (hbscrut : Ty.BelowFvars Φ scrutTy)
+    (hR : ∀ p ∈ R, p.2.IsLC)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKfix : ∀ k ∈ K, R.onTy (.fvar k) = .fvar k)
+    (hpc : ctor.paramCount = tyArgs.length)
+    (htyArgs_lc : ∀ t ∈ tyArgs, t.IsLC)
+    (hscrutImg : AgreesHM (.customTy ctor.tyName tyArgs) (R.onTy scrutTy)) :
+    ∃ R₀ : Subst,
+      (∀ p ∈ R₀, p.2.IsLC) ∧
+      (∀ k ∈ K, R₀.onTy (.fvar k) = .fvar k) ∧
+      (∀ v, v < Φ → AgreesHM (R.onTy (.fvar v)) (R₀.onTy (S₀.onTy (.fvar v)))) ∧
+      ((freshVars Φ ctor.paramCount).map (Ty.fvar ·) |>.map S₀.onTy |>.map R₀.onTy).map
+          Ty.eraseBounds = tyArgs.map Ty.eraseBounds := by
+  obtain ⟨W, hWge, hWfresh⟩ := exists_fresh_block
+    (R.map Prod.fst ++ R.flatMap (fun p => p.2.freeVars) ++
+      tyArgs.flatMap Ty.freeVars ++ List.range Φ) Φ ctor.paramCount
+  obtain ⟨U, hUdef⟩ : ∃ U : Subst,
+    U = (freshVars Φ ctor.paramCount).zip ((freshVars W ctor.paramCount).map (Ty.fvar ·))
+        ++ R ++ (freshVars W ctor.paramCount).zip tyArgs := ⟨_, rfl⟩
+  have hUonTy : ∀ x, U.onTy x =
+      Subst.onTy ((freshVars W ctor.paramCount).zip tyArgs)
+        (R.onTy (Subst.onTy ((freshVars Φ ctor.paramCount).zip
+          ((freshVars W ctor.paramCount).map (Ty.fvar ·))) x)) := by
+    intro x; rw [hUdef, Subst.onTy_append, Subst.onTy_append]
+  have hF_i : ∀ (i : Nat) (hi : i < ctor.paramCount),
+      (freshVars Φ ctor.paramCount)[i]? = some (Φ + i) := by
+    intro i hi
+    rw [List.getElem?_eq_getElem (by simpa [freshVars] using hi)]
+    simp only [freshVars, List.getElem_map, List.getElem_range]
+  have hWi : ∀ (i : Nat) (hi : i < ctor.paramCount),
+      (freshVars W ctor.paramCount)[i]? = some (W + i) := by
+    intro i hi
+    rw [List.getElem?_eq_getElem (by simpa [freshVars] using hi)]
+    simp only [freshVars, List.getElem_map, List.getElem_range]
+  have htyArgs_belowW : ∀ t ∈ tyArgs, Ty.BelowFvars W t := by
+    intro t ht; apply Ty.BelowFvars.of_freeVars_lt
+    intro v hv
+    exact hWfresh v (by
+      simp only [List.mem_append]
+      exact Or.inl (Or.inr (List.mem_flatMap.mpr ⟨t, ht, hv⟩)))
+  have hA_id : ∀ {x : Ty}, Ty.BelowFvars Φ x →
+      Subst.onTy ((freshVars Φ ctor.paramCount).zip
+        ((freshVars W ctor.paramCount).map (Ty.fvar ·))) x = x := by
+    intro x hx
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    have hp1 : p.1 ∈ freshVars Φ ctor.paramCount := (List.of_mem_zip hp).1
+    have hge := freshVars_ge p.1 hp1
+    have hlt := hx.mem_lt p.1 hc
+    omega
+  have hB_fix : ∀ {t : Ty}, (∀ p ∈ R, ∀ v ∈ p.2.freeVars, v ∉ (freshVars W ctor.paramCount)) →
+      (∀ v ∈ t.freeVars, v ∉ freshVars W ctor.paramCount) →
+      Subst.onTy ((freshVars W ctor.paramCount).zip tyArgs) t = t := by
+    intro t hR hB
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    have hp1 : p.1 ∈ freshVars W ctor.paramCount := (List.of_mem_zip hp).1
+    exact hB p.1 hc hp1
+  have hU_fvar : ∀ v, v < Φ → U.onTy (Ty.fvar v) = R.onTy (Ty.fvar v) := by
+    intro v hv
+    rw [hUonTy]
+    rw [hA_id (Ty.BelowFvars.fvar hv)]
+    apply hB_fix
+    · intro p hp w hw' hwW
+      have hwge : W ≤ w := freshVars_ge w hwW
+      have := hWfresh w (by
+        simp only [List.mem_append]
+        exact Or.inl (Or.inl (Or.inr (List.mem_flatMap.mpr ⟨p, hp, hw'⟩))))
+      omega
+    · intro w hw' hwW
+      have hc' : w ∈ (R.onTy (Ty.fvar v)).freeVars := hw'
+      rcases Subst.mem_freeVars_onTy hc' with h'' | ⟨q, hq, h''⟩
+      · simp only [Ty.freeVars, List.mem_singleton] at h''
+        have hvW : w < Φ := h'' ▸ hv
+        have hwge : W ≤ w := freshVars_ge w hwW
+        have := hWfresh w (by
+          simp only [List.mem_append]
+          exact Or.inr (List.mem_range.mpr hvW))
+        omega
+      · have hwge : W ≤ w := freshVars_ge w hwW
+        have := hWfresh w (by
+          simp only [List.mem_append]
+          exact Or.inl (Or.inl (Or.inr (List.mem_flatMap.mpr ⟨q, hq, h''⟩))))
+        omega
+  have hU_index : ∀ (i : Nat) (hi : i < ctor.paramCount),
+      U.onTy (Ty.fvar (Φ + i)) = tyArgs[i]'(by simpa [hpc] using hi) := by
+    intro i hi
+    have hi' : i < tyArgs.length := by simpa [hpc] using hi
+    rw [hUonTy]
+    have hfx : (freshVars Φ ctor.paramCount)[i]? = some (Φ + i) := hF_i i hi
+    have hWx : (freshVars W ctor.paramCount)[i]? = some (W + i) := hWi i hi
+    have hL1 : Subst.onTy ((freshVars Φ ctor.paramCount).zip
+        ((freshVars W ctor.paramCount).map (Ty.fvar ·))) (Ty.fvar (Φ + i))
+        = Ty.fvar (W + i) := by
+      apply Ty.substFvars_zip_fvar_eq' freshVars_nodup hfx
+      · rw [List.getElem?_map, hWi i hi]; rfl
+      · intro X hX hc
+        simp only [Ty.freeVars, List.mem_singleton] at hc
+        have hlt := freshVars_lt X hX
+        omega
+    rw [hL1]
+    have hL2 : R.onTy (Ty.fvar (W + i)) = Ty.fvar (W + i) := by
+      apply Ty.substFvars_eq_self_of_no_key
+      intro p hp hc
+      simp only [Ty.freeVars, List.mem_singleton] at hc
+      have hkey : p.1 ∈ R.map Prod.fst := List.mem_map.mpr ⟨p, hp, rfl⟩
+      rw [hc] at hkey
+      have := hWfresh (W + i) (by
+        simp only [List.mem_append]
+        exact Or.inl (Or.inl (Or.inl hkey)))
+      have hge : W ≤ W + i := by omega
+      omega
+    rw [hL2]
+    have htyx : tyArgs[i]? = some (tyArgs[i]) := by
+      rw [List.getElem?_eq_getElem hi']
+    apply Ty.substFvars_zip_fvar_eq' freshVars_nodup hWx htyx
+    intro w hw hc
+    have hwge := freshVars_ge w hw
+    have hvmem : tyArgs[i] ∈ tyArgs := List.mem_of_getElem? (List.getElem?_eq_getElem hi')
+    have := (htyArgs_belowW (tyArgs[i]) hvmem).mem_lt w hc
+    omega
+  have hmap_U : ((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map U.onTy = tyArgs := by
+    apply List.ext_getElem
+    · simp [hpc]
+    · intro i hi _
+      have hi' : i < (freshVars Φ ctor.paramCount).length := by
+        simpa [freshVars_length] using hi
+      have hx := hF_i i (by simpa [freshVars_length] using hi')
+      have hxi : (freshVars Φ ctor.paramCount)[i] = Φ + i := by
+        rw [List.getElem?_eq_getElem hi'] at hx
+        exact Option.some.inj hx
+      rw [List.getElem_map, List.getElem_map, hxi]
+      exact hU_index i (by simpa [hpc] using hi')
+  have hUni : Unifies U scrutTy
+      (.customTy ctor.tyName ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))) := by
+    have hRHS : U.onTy (.customTy ctor.tyName
+        ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))) = .customTy ctor.tyName tyArgs := by
+      rw [Subst.onTy_customTy, hmap_U]
+    show AgreesHM (U.onTy scrutTy) (U.onTy (.customTy ctor.tyName
+      ((freshVars Φ ctor.paramCount).map (Ty.fvar ·))))
+    rw [hRHS]
+    rw [hUonTy]
+    rw [hA_id hbscrut]
+    unfold AgreesHM
+    have hB_erase : Ty.eraseBounds (Subst.onTy ((freshVars W ctor.paramCount).zip tyArgs)
+        (R.onTy scrutTy))
+        = Ty.substFvars ((freshVars W ctor.paramCount).zip (tyArgs.map Ty.eraseBounds))
+          (Ty.eraseBounds (R.onTy scrutTy)) := by
+      rw [Subst.onTy, Ty.eraseBounds_substFvars, Subst.map_zip_erase_snd]
+    rw [hB_erase]
+    have hWavoid : ∀ p ∈ (freshVars W ctor.paramCount).zip (tyArgs.map Ty.eraseBounds),
+        p.1 ∉ (Ty.eraseBounds (R.onTy scrutTy)).freeVars := by
+      intro p hp hc
+      have hp1 : p.1 ∈ freshVars W ctor.paramCount := (List.of_mem_zip hp).1
+      have hge := freshVars_ge p.1 hp1
+      have hc' : p.1 ∈ (R.onTy scrutTy).freeVars :=
+        (Ty.mem_freeVars_eraseBounds (R.onTy scrutTy) p.1).mp hc
+      rcases Subst.mem_freeVars_onTy hc' with h' | ⟨q, hq, h'⟩
+      · have hlt := hbscrut.mem_lt p.1 h'
+        have := hWfresh p.1 (by
+          simp only [List.mem_append]
+          exact Or.inr (List.mem_range.mpr hlt))
+        omega
+      · have := hWfresh p.1 (by
+          simp only [List.mem_append]
+          exact Or.inl (Or.inl (Or.inr (List.mem_flatMap.mpr ⟨q, hq, h'⟩))))
+        omega
+    rw [Ty.substFvars_eq_self_of_no_key hWavoid]
+    exact hscrutImg.symm
+  have hUlc : ∀ p ∈ U, p.2.IsLC := by
+    rw [hUdef]
+    intro p hp
+    rcases List.mem_append.mp hp with hp' | hp'
+    · rcases List.mem_append.mp hp' with hp'' | hp''
+      · have hmem := (List.of_mem_zip hp'').2
+        obtain ⟨x, _, hxeq⟩ := List.mem_map.mp hmem
+        rw [← hxeq]; exact ContainsBvarsUpTo.fvar
+      · exact hR p hp''
+    · have hmem := (List.of_mem_zip hp').2
+      exact htyArgs_lc p.2 hmem
+  have hUK : ∀ k ∈ K, U.onTy (Ty.fvar k) = Ty.fvar k := fun k hk =>
+    (hU_fvar k (hKΦ k hk)).trans (hKfix k hk)
+  obtain ⟨R₀, hR₀fac, hR₀lc, hR₀K⟩ :=
+    UnifyRel.greatest_K_factors h₀ U hUlc hUni hUK
+  refine ⟨R₀, hR₀lc, hR₀K, ?_, ?_⟩
+  · intro v hv
+    have h := hR₀fac (Ty.fvar v)
+    rwa [hU_fvar v hv] at h
+  · rw [List.map_map, List.map_map, List.map_map]
+    apply List.ext_getElem?
+    intro i
+    by_cases hi : i < ctor.paramCount
+    · have hx : (freshVars Φ ctor.paramCount)[i]? = some (Φ + i) := hF_i i hi
+      rw [List.getElem?_map, hx]
+      rw [List.getElem?_map, List.getElem?_eq_getElem (by simpa [hpc] using hi)]
+      have h := hR₀fac (Ty.fvar (Φ + i))
+      rw [hU_index i hi] at h
+      unfold AgreesHM at h
+      exact congrArg some h.symm
+    · have hlen₁ : i ≥ (freshVars Φ ctor.paramCount).length := by
+        rw [freshVars_length]; exact Nat.le_of_not_gt hi
+      have hlen₂ : i ≥ tyArgs.length := by
+        rw [← hpc]; exact Nat.le_of_not_gt hi
+      rw [List.getElem?_eq_none (by simpa [List.length_map, freshVars_length] using hlen₁)]
+      rw [List.getElem?_eq_none (by simpa [List.length_map] using hlen₂)]
 
 
 /-- **D2 spine** (simultaneous, by size induction over the three mutually
@@ -4178,7 +4466,143 @@ theorem Infer.principals_mut (n : Nat) :
             · simpa [List.append_assoc] using hAgree
       | @match_ Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ τs hscrut hne hbr =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
-          sorry  -- COMPLETE-MATCH
+          -- [match-agent]
+          simp only [Expr.eraseBounds] at hty
+          cases hty with
+          | match_ hscrutD hneD hbrD =>
+            rename_i scruT₀
+            have hsize_scrut : scrut.size < n := by
+              have := _hn
+              simp [Expr.size] at this
+              omega
+            have hsize_br : Expr.sizeBranches branches < n := by
+              have := _hn
+              simp [Expr.size] at this
+              omega
+            have hKscrut : ∀ y ∈ scrut.tyFreeVars, y ∈ K := fun y hy => hKe y (by
+              simp only [Expr.tyFreeVars, List.mem_append]; exact Or.inl hy)
+            have hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars branches, y ∈ K := fun y hy => hKe y (by
+              simp only [Expr.tyFreeVars, List.mem_append]; exact Or.inr hy)
+            have hτe_lc : τe.IsLC := by
+              obtain ⟨hd, tl, hcons⟩ := List.exists_cons_of_ne_nil hne
+              have hhd : (hd.1, hd.2.eraseBounds) ∈ branches.map (fun pb => (pb.1, pb.2.eraseBounds)) := by
+                rw [hcons]
+                exact List.mem_map.mpr ⟨hd, List.mem_cons_self, rfl⟩
+              exact TypeOfMatchBranch.regular (hbrD (hd.1, hd.2.eraseBounds) hhd)
+            -- STEP 1: scrutinee IH.
+            obtain ⟨R₁, hR₁, hty₁, hR₁K, hAgree₁⟩ :=
+              ih.1 hscrut hsize_scrut hwf hbelow hwf hbelow S₀ scruT₀ K hS₀ hKΦ hKscrut hKfix hscrutD
+            have hfle : Φ ≤ Φ₁ := Infer.frontier_le hscrut
+            have hKΦ₁ : ∀ k ∈ K, k < Φ₁ := fun k hk => lt_of_lt_of_le (hKΦ k hk) hfle
+            obtain ⟨hτs_lc, hS₁lc⟩ := Infer.lc hscrut hwf
+            have hscrut_below := Infer.belowFvars hscrut hbelow (fun y hy => hKΦ y (hKscrut y hy))
+            have hτs_bel : Ty.BelowFvars Φ₁ τs := hscrut_below.1
+            have hS₁_bel : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 := hscrut_below.2
+            have hwf₁ : CtxWF (S₁.onCtx ctx) := Subst.onCtx_wf hS₁lc hwf
+            have hbelow₁' : CtxBelow Φ₁ (S₁.onCtx ctx) :=
+              Subst.onCtx_below hS₁_bel hfle hbelow
+            have hbelow₁ : CtxBelow (Φ₁ + 1) (S₁.onCtx ctx) :=
+              Subst.onCtx_below (fun p hp => (hS₁_bel p hp).mono (by omega)) (by omega) hbelow
+            have hscruT₀_lc : scruT₀.IsLC := TypeOfHM.regular hscrutD
+            -- STEP 2: fresh `W` and the dodge `U = [(Φ₁, fvar W)] ++ R₁ ++ [(W, τe)]`.
+            obtain ⟨W, hWge, hWfresh⟩ := exists_fresh_block
+              (R₁.map Prod.fst ++ R₁.flatMap (fun p => p.2.freeVars) ++ τe.freeVars) Φ₁ 1
+            have hWdom : ∀ p ∈ R₁, p.1 ≠ W := by
+              intro p hp he
+              have := hWfresh p.1 (by
+                simp only [List.mem_append]
+                exact Or.inl (Or.inl (List.mem_map.mpr ⟨p, hp, rfl⟩)))
+              omega
+            have hWrange : ∀ p ∈ R₁, W ∉ p.2.freeVars := by
+              intro p hp hc
+              have := hWfresh W (by
+                simp only [List.mem_append]
+                exact Or.inl (Or.inr (List.mem_flatMap.mpr ⟨p, hp, hc⟩)))
+              omega
+            have hWτe : W ∉ τe.freeVars := fun hc => by
+              have := hWfresh W (by
+                simp only [List.mem_append]
+                exact Or.inr hc)
+              omega
+            have hR₁Wfvar : R₁.onTy (Ty.fvar W) = Ty.fvar W := by
+              apply Ty.substFvars_eq_self_of_no_key
+              intro p hp hc
+              simp only [Ty.freeVars, List.mem_singleton] at hc
+              exact hWdom p hp hc
+            obtain ⟨U, hUdef⟩ : ∃ U : Subst, U = [(Φ₁, Ty.fvar W)] ++ R₁ ++ [(W, τe)] := ⟨_, rfl⟩
+            have hsingle : ∀ (Z : Nat) (V y : Ty), Subst.onTy [(Z, V)] y = Ty.substFvar Z V y :=
+              fun _ _ _ => rfl
+            have hUonTy : ∀ x, U.onTy x = Ty.substFvar W τe (R₁.onTy (Ty.substFvar Φ₁ (Ty.fvar W) x)) := by
+              intro x
+              rw [hUdef, Subst.onTy_append, Subst.onTy_append, hsingle, hsingle]
+            have hUlc : ∀ p ∈ U, p.2.IsLC := by
+              rw [hUdef]
+              intro p hp
+              rcases List.mem_append.mp hp with hp' | hp'
+              · rcases List.mem_append.mp hp' with hp'' | hp''
+                · obtain rfl := List.mem_singleton.mp hp''
+                  exact ContainsBvarsUpTo.fvar
+                · exact hR₁ p hp''
+              · obtain rfl := List.mem_singleton.mp hp'
+                exact hτe_lc
+            have hUK : ∀ k ∈ K, U.onTy (.fvar k) = .fvar k := by
+              intro k hk
+              have hklt : k < Φ₁ := hKΦ₁ k hk
+              have hkΦ₁ : Φ₁ ∉ (Ty.fvar k).freeVars := by
+                simp only [Ty.freeVars, List.mem_singleton]; omega
+              have hkW : W ∉ (Ty.fvar k).freeVars := by
+                simp only [Ty.freeVars, List.mem_singleton]; omega
+              rw [hUonTy, Ty.substFvar_fresh hkΦ₁, hR₁K k hk, Ty.substFvar_fresh hkW]
+            have hUΦ₁ : U.onTy (.fvar Φ₁) = τe := by
+              rw [hUonTy,
+                show Ty.substFvar Φ₁ (Ty.fvar W) (Ty.fvar Φ₁) = Ty.fvar W from by simp [Ty.substFvar],
+                hR₁Wfvar,
+                show Ty.substFvar W τe (Ty.fvar W) = τe from by simp [Ty.substFvar]]
+            have hUeqR₁ : ∀ v, v < Φ₁ → U.onTy (Ty.fvar v) = R₁.onTy (Ty.fvar v) := by
+              intro v hv
+              have hvΦ₁ : Φ₁ ∉ (Ty.fvar v).freeVars := by simp only [Ty.freeVars, List.mem_singleton]; omega
+              have hvW : W ∉ (R₁.onTy (Ty.fvar v)).freeVars := by
+                apply Subst.not_mem_onTy_freeVars hWrange
+                simp only [Ty.freeVars, List.mem_singleton]; omega
+              rw [hUonTy, Ty.substFvar_fresh hvΦ₁, Ty.substFvar_fresh hvW]
+            have hUagreeR₁ : Subst.AgreesBelow Φ₁ U R₁ :=
+              fun v hv => by rw [hUeqR₁ v hv]; exact AgreesHM.refl _
+            -- STEP 3: recast the branch premises (context rewrite only; types unchanged).
+            have hctxeq : (U.onCtx (S₁.onCtx ctx)).eraseBounds = (S₀.onCtx ctx).eraseBounds := by
+              have h1 : (U.onCtx (S₁.onCtx ctx)).eraseBounds = (R₁.onCtx (S₁.onCtx ctx)).eraseBounds := by
+                exact Subst.onCtx_congr_hm hUagreeR₁ hbelow₁'
+              have h2 : (R₁.onCtx (S₁.onCtx ctx)).eraseBounds = (S₀.onCtx ctx).eraseBounds := by
+                rw [← Subst.onCtx_append]
+                exact (Subst.onCtx_congr_hm hAgree₁ hbelow).symm
+              exact h1.trans h2
+            have hbr' : ∀ b ∈ branches, TypeOfMatchBranch (U.onCtx (S₁.onCtx ctx)).eraseBounds
+                (b.1, b.2.eraseBounds) scruT₀ τe := by
+              intro b hb
+              have hb' : (b.1, b.2.eraseBounds) ∈ branches.map (fun pb => (pb.1, pb.2.eraseBounds)) :=
+                List.mem_map.mpr ⟨b, hb, rfl⟩
+              rw [hctxeq]
+              exact hbrD (b.1, b.2.eraseBounds) hb'
+            -- the two image premises (reflexive at this call).
+            have hIMGτe : AgreesHM τe (U.onTy (.fvar Φ₁)) := by
+              rw [hUΦ₁]
+              exact AgreesHM.refl _
+            have hIMGscru : AgreesHM scruT₀ (U.onTy τs) :=
+              AgreesHM.trans hty₁ (Subst.onTy_congr_hm hUagreeR₁ hτs_bel |>.symm)
+            have hbτs : Ty.BelowFvars (Φ₁ + 1) τs := hτs_bel.mono (by omega)
+            have hbρ : Ty.BelowFvars (Φ₁ + 1) (.fvar Φ₁) := Ty.BelowFvars.fvar (by omega)
+            have hKΦ' : ∀ k ∈ K, k < Φ₁ + 1 := fun k hk => lt_of_lt_of_le (hKΦ₁ k hk) (by omega)
+            -- STEP 4: the branch tier.
+            obtain ⟨R₂, hR₂, hAgree₂, hR₂K, hty₂⟩ :=
+              ih.2.1 hbr hne hsize_br hwf₁ hbelow₁ hwf₁ hbelow₁ U scruT₀ τe K
+                hUlc hscruT₀_lc hτs_lc ContainsBvarsUpTo.fvar hbτs hbρ hKΦ' hKbr hUK hIMGτe hIMGscru hbr'
+            -- STEP 5: assemble.
+            have hAgree₂' : Subst.AgreesBelow Φ₁ R₁ (S₂ ++ R₂) := by
+              intro v hv
+              exact AgreesHM.trans (hUagreeR₁ v hv).symm (hAgree₂ v (by omega))
+            have hAgree : Subst.AgreesBelow Φ S₀ ((S₁ ++ S₂) ++ R₂) :=
+              @Subst.AgreesBelow.trans_append Φ Φ₁ S₀ S₁ R₁ S₂ R₂ hfle hAgree₁ hS₁_bel hAgree₂'
+            refine ⟨R₂, hR₂, hty₂, hR₂K, ?_⟩
+            · simpa [List.append_assoc] using hAgree
       | @letRec Φ ctx anns bindings body Φ₁ Φ₂ S₁ S₂ τ₂ _ hgroup _ hbody =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           sorry  -- COMPLETE-LETREC
@@ -4186,13 +4610,387 @@ theorem Infer.principals_mut (n : Nat) :
       intro Φ ctx scrutTy ρ brs Φ' S h hne _hn hwf hbelow
       cases h with
       | nil =>
-        exact fun _ _ _ _ _ _ _ _ _ _ _ _ => absurd rfl hne
-      | cons =>
-        exact fun hwf hbelow s S₀ scruT₀ ρe K hS₀ hKΦ hKe hKfix hscrut hbrs => by
-          sorry  -- SPINE-BRANCHES-CONS
-      | consWild =>
-        exact fun hwf hbelow s S₀ scruT₀ ρe K hS₀ hKΦ hKe hKfix _ _ => by
-          sorry  -- SPINE-BRANCHES-WILD
+        intro; exact absurd rfl hne
+      | cons hlook hn h₀ hinfbody h₂ hrest =>
+        rename_i c nbr body rest ctor Φ₁ S₀ S₁ S₂ S₃ τb
+        exact fun hwf hbelow S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKe hKfix hIMGρ hIMGscru hbrs => by
+          -- [match-agent]
+          -- brs = (.named c nbr, body) :: rest; constructor data: `c nbr body rest ctor Φ₁ S₀ S₁ S₂ S₃ τb`
+          -- with hlook : get? ctx.ctors c = some ctor, h₀ : UnifyRel scrutTy (customTy ctor fresh) S₀,
+          --   hinfbody : Infer (Φ + ctor.paramCount) bodyCtx body Φ₁ S₁ τb,
+          --   h₂ : UnifyRel τb (S₁.onTy (S₀.onTy ρ)) S₂, hrest : InferBranches Φ₁ … rest Φ₂ S₃
+          have hsize_b : body.size < n := by
+            have := _hn
+            simp only [Expr.sizeBranches] at this
+            omega
+          have hsize_rest : Expr.sizeBranches rest < n := by
+            have := _hn
+            simp only [Expr.sizeBranches] at this
+            omega
+          have hKbody : ∀ y ∈ body.tyFreeVars, y ∈ K := fun y hy => hKe y (by
+            simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy)
+          have hKrest : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars rest, y ∈ K := fun y hy => hKe y (by
+            simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inr hy)
+          -- STEP 0: invert the head branch's declarative premise (erased world).
+          have hdhead := hbrs (.named c nbr, body) (List.mem_cons_self ..)
+          cases hdhead with
+          | mk hspec hctxdef hbodyty =>
+            rename_i bodyCtx ctorE tyArgsE instContentsE
+            -- `hspec : BranchCtorSpec (S₀amb.onCtx ctx).eraseBounds.ctors c' n' scruT₀ ctorE tyArgsE instContentsE`
+            have hctorE : ctorE = Ctor.eraseBounds ctor := by
+              have hl : LookupList.get? (S₀amb.onCtx ctx).eraseBounds.ctors c = some (Ctor.eraseBounds ctor) := by
+                have hlook' := congrArg (Option.map Ctor.eraseBounds) hlook
+                simpa [Ctx.eraseBounds, Subst.onCtx, CtorEnv.eraseBounds_get?] using hlook'
+              exact Option.some.inj (hspec.lookup.symm.trans hl)
+            have htyArgs_lc : ∀ t ∈ tyArgsE, t.IsLC := by
+              have hlc : (Ty.customTy ctor.tyName tyArgsE).IsLC := by
+                simpa [hctorE, hspec.scrut_eq] using hscruLC
+              cases hlc with | customTy h => exact h
+            have hpc' : ctor.paramCount = tyArgsE.length := by
+              simpa [hctorE] using hspec.arity
+            have hscrutImg' : AgreesHM (.customTy ctor.tyName tyArgsE) (S₀amb.onTy scrutTy) := by
+              simpa [hctorE, hspec.scrut_eq] using hIMGscru
+            have hinstsE : instContentsE = ctorE.contents.map (Ty.openWith tyArgsE) := by
+              refine List.ext_getElem ?_ ?_
+              · rw [List.length_map]
+                exact hspec.fields.length_eq.symm
+              · intro i hi _
+                have hlen₂ : i < ctorE.contents.length := hspec.fields.length_eq.symm ▸ hi
+                have hinst := hspec.fields.get hlen₂ hi
+                rw [List.get_eq_getElem, List.get_eq_getElem] at hinst
+                rw [List.getElem_map]
+                have hpc'' : tyArgsE.length = ctorE.paramCount := hspec.arity.symm
+                exact InstantiatesBy.eq_openWith hinst (ctorE.bound _ (List.getElem_mem hlen₂)) hpc''
+            -- STEP 1: the customTy factoring dodge (per-branch MGU `S₀` is given).
+            obtain ⟨R₀, hR₀, hR₀K, hAgree₀, hmap₀⟩ :=
+              customTy_factor_dodge_erase (R := S₀amb) (S₀ := S₀) (ctor := ctor) (tyArgs := tyArgsE)
+                h₀ hbscrut hS₀amb hKΦ hKfix hpc' htyArgs_lc hscrutImg'
+            have hAgreeBelow₀ : Subst.AgreesBelow Φ S₀amb (S₀ ++ R₀) :=
+              fun v hv => by rw [Subst.onTy_append]; exact hAgree₀ v hv
+            have hS₀lc : ∀ p ∈ S₀, p.2.IsLC :=
+              UnifyRel.lc h₀ hscrutLC (by
+                apply ContainsBvarsUpTo.customTy
+                intro t ht
+                obtain ⟨x, _, rfl⟩ := List.mem_map.mp ht
+                exact ContainsBvarsUpTo.fvar)
+            have hS₀_bel : ∀ p ∈ S₀, Ty.BelowFvars (Φ + ctor.paramCount) p.2 :=
+              UnifyRel.belowFvars h₀ (hbscrut.mono (by omega)) (by
+                apply Ty.BelowFvars.customTy
+                intro t ht
+                obtain ⟨x, hx, rfl⟩ := List.mem_map.mp ht
+                exact Ty.BelowFvars.fvar (by have := freshVars_lt x hx; omega))
+            have hfle₀ : Φ ≤ Φ + ctor.paramCount := by omega
+            -- STEP 2: the algorithmic body context and its WF/below invariants.
+            let bodyCtxAlg : Ctx := { (S₀.onCtx ctx) with
+                env := (ctor.contents.map (Ty.openWith
+                    (((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy))).map PolyTy.mkTrivial
+                  ++ (S₀.onCtx ctx).env }
+            have hwf_body : CtxWF bodyCtxAlg := by
+              dsimp [bodyCtxAlg]
+              refine branchBindings_wf (ctorr := ctor)
+                (ta := ((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy)
+                (Subst.onCtx_wf hS₀lc hwf) ?_ (by simp)
+              intro t ht
+              obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
+              obtain ⟨x, _, rfl⟩ := List.mem_map.mp hv
+              exact Subst.onTy_lc hS₀lc ContainsBvarsUpTo.fvar
+            have hbelow_body : CtxBelow (Φ + ctor.paramCount) bodyCtxAlg := by
+              dsimp [bodyCtxAlg]
+              refine branchBindings_below (ctorr := ctor)
+                (ta := ((freshVars Φ ctor.paramCount).map (Ty.fvar ·)).map S₀.onTy)
+                (Subst.onCtx_below hS₀_bel hfle₀ hbelow) ?_
+              intro t ht
+              obtain ⟨v, hv, rfl⟩ := List.mem_map.mp ht
+              obtain ⟨x, hx, rfl⟩ := List.mem_map.mp hv
+              exact Subst.onTy_belowFvars hS₀_bel (.fvar (by have := freshVars_lt x hx; omega))
+            -- STEP 3: transport the declarative body typing into the R₀-world.
+            have hctx0 : (R₀.onCtx (S₀.onCtx ctx)).eraseBounds = (S₀amb.onCtx ctx).eraseBounds := by
+              rw [← Subst.onCtx_append]
+              exact (Subst.onCtx_congr_hm hAgreeBelow₀ hbelow).symm
+            have hinstsE_erase :
+                instContentsE.map Ty.eraseBounds =
+                  (Ctor.eraseBounds ctor).contents.map (fun c => Ty.openWith (tyArgsE.map Ty.eraseBounds) c) := by
+              rw [hinstsE, hctorE]
+              rw [List.map_map]
+              apply List.map_congr_left
+              intro c hc
+              rw [Function.comp_apply, Ty.eraseBounds_openWith]
+              congr 1
+              obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hc
+              exact Ty.eraseBounds_idem t
+            have hbodyCtxEq : (R₀.onCtx bodyCtxAlg).eraseBounds = bodyCtx.eraseBounds := by
+              calc
+                (R₀.onCtx bodyCtxAlg).eraseBounds
+                    = { (R₀.onCtx (S₀.onCtx ctx)).eraseBounds with
+                        env := ((Ctor.eraseBounds ctor).contents.map
+                          (fun c => Ty.openWith (tyArgsE.map Ty.eraseBounds) c)).map PolyTy.mkTrivial
+                            ++ (R₀.onCtx (S₀.onCtx ctx)).eraseBounds.env } := by
+                  rw [Subst.onCtx_branchBindings hR₀]
+                  rw [Ctx.eraseBounds_branchBindings ctor
+                    ((freshVars Φ ctor.paramCount).map (Ty.fvar ·) |>.map S₀.onTy |>.map R₀.onTy)
+                    (R₀.onCtx (S₀.onCtx ctx))]
+                  rw [hmap₀]
+                _ = { (S₀amb.onCtx ctx).eraseBounds with
+                        env := ((Ctor.eraseBounds ctor).contents.map
+                          (fun c => Ty.openWith (tyArgsE.map Ty.eraseBounds) c)).map PolyTy.mkTrivial
+                            ++ (S₀amb.onCtx ctx).eraseBounds.env } := by
+                  rw [hctx0]
+                _ = bodyCtx.eraseBounds := by
+                  rw [hctxdef]
+                  simp [Ctx.eraseBounds, Env.eraseBounds_append, Env.eraseBounds_map_mkTrivial,
+                    hinstsE_erase, Env.eraseBounds_idem, CtorEnv.eraseBounds_idem]
+            have hbE : TypeOfHM bodyCtx.eraseBounds body.eraseBounds (Ty.eraseBounds ρe) := by
+              simpa [Expr.eraseBounds_idem] using (TypeOfHM.eraseBounds_of hbodyty)
+            have hbE' : TypeOfHM (R₀.onCtx bodyCtxAlg).eraseBounds body.eraseBounds (Ty.eraseBounds ρe) := by
+              rwa [← hbodyCtxEq] at hbE
+            have hKΦ₀ : ∀ k ∈ K, k < Φ + ctor.paramCount := fun k hk => lt_of_lt_of_le (hKΦ k hk) hfle₀
+            -- STEP 4: recurse on the branch body (its declarative type is ρe, erased).
+            obtain ⟨R_b, hR_b, htyb, hR_bK, hagb⟩ :=
+              ih.1 hinfbody hsize_b hwf_body hbelow_body hwf_body hbelow_body R₀ (Ty.eraseBounds ρe) K
+                hR₀ hKΦ₀ hKbody hR₀K hbE'
+            have hle_b : Φ + ctor.paramCount ≤ Φ₁ := Infer.frontier_le hinfbody
+            have hKΦ₁ : ∀ k ∈ K, k < Φ₁ := fun k hk => lt_of_lt_of_le (hKΦ₀ k hk) hle_b
+            have hbodyLC := Infer.lc hinfbody hwf_body
+            have hτb_lc : τb.IsLC := hbodyLC.1
+            have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := hbodyLC.2
+            have hbb := Infer.belowFvars hinfbody hbelow_body (fun y hy => hKΦ₀ y (hKbody y hy))
+            have hτb_bel : Ty.BelowFvars Φ₁ τb := hbb.1
+            have hS₁_bel : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 := hbb.2
+            have htyb' : AgreesHM ρe (R_b.onTy τb) :=
+              AgreesHM.trans (AgreesHM.of_eraseBounds ρe) htyb
+            -- STEP 5: the head body unifies against the running result (ρ-link chain).
+            have hρbel₁ : Ty.BelowFvars (Φ + ctor.paramCount) (S₀.onTy ρ) :=
+              Subst.onTy_belowFvars hS₀_bel (hbρ.mono hfle₀)
+            have hρImg₀ : AgreesHM ρe (R₀.onTy (S₀.onTy ρ)) := by
+              rw [← Subst.onTy_append]
+              exact AgreesHM.trans hIMGρ (Subst.onTy_congr_hm hAgreeBelow₀ hbρ)
+            have hρImg_b : AgreesHM ρe (R_b.onTy (S₁.onTy (S₀.onTy ρ))) := by
+              rw [← Subst.onTy_append]
+              exact AgreesHM.trans hρImg₀ (Subst.onTy_congr_hm hagb hρbel₁)
+            have hUni : Unifies R_b τb (S₁.onTy (S₀.onTy ρ)) := by
+              show AgreesHM (R_b.onTy τb) (R_b.onTy (S₁.onTy (S₀.onTy ρ)))
+              exact AgreesHM.trans (AgreesHM.symm htyb') hρImg_b
+            obtain ⟨R_u, hR_u_fac, hR_u, hR_uK⟩ :=
+              UnifyRel.greatest_K_factors h₂ R_b hR_b hUni hR_bK
+            have hS₂lc : ∀ p ∈ S₂, p.2.IsLC :=
+              UnifyRel.lc h₂ hτb_lc (Subst.onTy_lc hS₁lc (Subst.onTy_lc hS₀lc hρLC))
+            have hS₂_bel : ∀ p ∈ S₂, Ty.BelowFvars Φ₁ p.2 :=
+              UnifyRel.belowFvars h₂ hτb_bel
+                (Subst.onTy_belowFvars hS₁_bel
+                  ((Subst.onTy_belowFvars hS₀_bel (hbρ.mono hfle₀)).mono hle_b))
+            have hAgreeUni : Subst.AgreesBelow Φ₁ R_b (S₂ ++ R_u) :=
+              fun v hv => by rw [Subst.onTy_append]; exact hR_u_fac (Ty.fvar v)
+            have hρImg_u : AgreesHM ρe (R_u.onTy (S₂.onTy (S₁.onTy (S₀.onTy ρ)))) :=
+              AgreesHM.trans hρImg_b (hR_u_fac (S₁.onTy (S₀.onTy ρ)))
+            -- STEP 6: rest recursion premises (declarative types stay scruT₀/ρe).
+            have hwf' : CtxWF (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx))) :=
+              Subst.onCtx_wf hS₂lc (Subst.onCtx_wf hS₁lc (Subst.onCtx_wf hS₀lc hwf))
+            have hbelow' : CtxBelow Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx))) :=
+              Subst.onCtx_below hS₂_bel (le_refl _)
+                (Subst.onCtx_below hS₁_bel hle_b
+                  (Subst.onCtx_below hS₀_bel hfle₀ hbelow))
+            have hbscrut' : Ty.BelowFvars Φ₁ (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))) :=
+              Subst.onTy_belowFvars hS₂_bel
+                (Subst.onTy_belowFvars hS₁_bel
+                  ((Subst.onTy_belowFvars hS₀_bel (hbscrut.mono hfle₀)).mono hle_b))
+            have hbρ' : Ty.BelowFvars Φ₁ (S₂.onTy (S₁.onTy (S₀.onTy ρ))) :=
+              Subst.onTy_belowFvars hS₂_bel
+                (Subst.onTy_belowFvars hS₁_bel
+                  ((Subst.onTy_belowFvars hS₀_bel (hbρ.mono hfle₀)).mono hle_b))
+            have hscrutTy'lc : (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))).IsLC :=
+              Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc (Subst.onTy_lc hS₀lc hscrutLC))
+            have hρ'lc : (S₂.onTy (S₁.onTy (S₀.onTy ρ))).IsLC :=
+              Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc (Subst.onTy_lc hS₀lc hρLC))
+            have hScrutStep1 : AgreesHM (S₀amb.onTy scrutTy) (R₀.onTy (S₀.onTy scrutTy)) := by
+              rw [← Subst.onTy_append]
+              exact Subst.onTy_congr_hm hAgreeBelow₀ hbscrut
+            have hScrutStep2 : AgreesHM (R₀.onTy (S₀.onTy scrutTy))
+                (R_b.onTy (S₁.onTy (S₀.onTy scrutTy))) := by
+              simpa [Subst.onTy_append] using
+                (Subst.onTy_congr_hm hagb (Subst.onTy_belowFvars hS₀_bel (hbscrut.mono hfle₀)))
+            have hScrutStep3 : AgreesHM (R_b.onTy (S₁.onTy (S₀.onTy scrutTy)))
+                (R_u.onTy (S₂.onTy (S₁.onTy (S₀.onTy scrutTy)))) := by
+              simpa [Subst.onTy_append] using (hR_u_fac (S₁.onTy (S₀.onTy scrutTy)))
+            have hscrutImg' : AgreesHM scruT₀ (R_u.onTy (S₂.onTy (S₁.onTy (S₀.onTy scrutTy)))) :=
+              AgreesHM.trans hIMGscru (AgreesHM.trans hScrutStep1 (AgreesHM.trans hScrutStep2 hScrutStep3))
+            have hctxeq' : (R_u.onCtx (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))).eraseBounds
+                = (S₀amb.onCtx ctx).eraseBounds := by
+              have h1 : (R_u.onCtx (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))).eraseBounds
+                  = (R_b.onCtx (S₁.onCtx (S₀.onCtx ctx))).eraseBounds := by
+                rw [← Subst.onCtx_append]
+                exact (Subst.onCtx_congr_hm hAgreeUni
+                  (Subst.onCtx_below hS₁_bel hle_b
+                    (Subst.onCtx_below hS₀_bel hfle₀ hbelow))).symm
+              have hAgree01 : Subst.AgreesBelow Φ S₀amb ((S₀ ++ S₁) ++ R_b) :=
+                @Subst.AgreesBelow.trans_append Φ (Φ + ctor.paramCount) S₀amb S₀ R₀ S₁ R_b
+                  hfle₀ hAgreeBelow₀ hS₀_bel hagb
+              have h2 : (R_b.onCtx (S₁.onCtx (S₀.onCtx ctx))).eraseBounds
+                  = (S₀amb.onCtx ctx).eraseBounds := by
+                simpa [Subst.onCtx_append, List.append_assoc] using
+                  (Subst.onCtx_congr_hm hAgree01 hbelow).symm
+              exact h1.trans h2
+            have hbr' : ∀ br ∈ rest, TypeOfMatchBranch (R_u.onCtx (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))).eraseBounds
+                (br.1, br.2.eraseBounds) scruT₀ ρe := by
+              intro br hbr
+              rw [hctxeq']
+              exact hbrs br (List.mem_cons_of_mem _ hbr)
+            -- STEP 7: assemble (single-branch tail handled by cases on `rest`).
+            by_cases hrestNe : rest = []
+            · -- rest = []: the rest derivation is `nil`, so S₃ = [] and Φ₂ = Φ₁.
+              subst hrestNe
+              have hnil := InferBranches.nil_det hrest
+              -- total S = S₀ ++ S₁ ++ S₂; final residual R = R_u
+              have hAgree1 : Subst.AgreesBelow Φ S₀amb ((S₀ ++ S₁ ++ S₂) ++ R_u) := by
+                have hA : Subst.AgreesBelow Φ S₀amb ((S₀ ++ (S₁ ++ S₂)) ++ R_u) :=
+                  @Subst.AgreesBelow.trans_append Φ (Φ + ctor.paramCount) S₀amb S₀ R₀ (S₁ ++ S₂) R_u
+                    hfle₀ hAgreeBelow₀ hS₀_bel
+                    (@Subst.AgreesBelow.trans_append (Φ + ctor.paramCount) Φ₁ R₀ S₁ R_b S₂ R_u
+                      hle_b hagb hS₁_bel hAgreeUni)
+                simpa [List.append_assoc] using hA
+              rw [hnil.2]
+              refine ⟨R_u, hR_u, by simpa [List.append_assoc, List.append_nil] using hAgree1, hR_uK, ?_⟩
+              · simpa [Subst.onTy_append, List.append_assoc, List.append_nil] using hρImg_u
+            · -- rest ≠ []: recurse with the tier IH.
+              have hsize_rest' : Expr.sizeBranches rest < n := hsize_rest
+              have hrestNe' : rest ≠ [] := hrestNe
+              obtain ⟨R_r, hR_r, hAgreeRest, hR_rK, htyRest⟩ :=
+                ih.2.1 hrest hrestNe' hsize_rest' hwf' hbelow' hwf' hbelow' R_u scruT₀ ρe K
+                  hR_u hscruLC hscrutTy'lc hρ'lc hbscrut' hbρ' hKΦ₁ hKrest hR_uK hρImg_u hscrutImg' hbr'
+              have hAgree1 : Subst.AgreesBelow Φ₁ R_u (S₃ ++ R_r) := hAgreeRest
+              have hAgree01 : Subst.AgreesBelow Φ S₀amb ((S₀ ++ S₁ ++ S₂) ++ R_u) := by
+                have hA : Subst.AgreesBelow Φ S₀amb ((S₀ ++ (S₁ ++ S₂)) ++ R_u) :=
+                  @Subst.AgreesBelow.trans_append Φ (Φ + ctor.paramCount) S₀amb S₀ R₀ (S₁ ++ S₂) R_u
+                    hfle₀ hAgreeBelow₀ hS₀_bel
+                    (@Subst.AgreesBelow.trans_append (Φ + ctor.paramCount) Φ₁ R₀ S₁ R_b S₂ R_u
+                      hle_b hagb hS₁_bel hAgreeUni)
+                simpa [List.append_assoc] using hA
+              have hAgree : Subst.AgreesBelow Φ S₀amb ((S₀ ++ S₁ ++ S₂ ++ S₃) ++ R_r) := by
+                have hA : Subst.AgreesBelow Φ S₀amb (((S₀ ++ S₁ ++ S₂) ++ S₃) ++ R_r) :=
+                  @Subst.AgreesBelow.trans_append Φ Φ₁ S₀amb (S₀ ++ S₁ ++ S₂) R_u S₃ R_r (by omega)
+                    hAgree01
+                    (fun p hp => by
+                      rcases List.mem_append.mp hp with hp | hp
+                      · rcases List.mem_append.mp hp with hp | hp
+                        · exact (hS₀_bel p hp).mono hle_b
+                        · exact hS₁_bel p hp
+                      · exact hS₂_bel p hp)
+                    hAgreeRest
+                simpa [List.append_assoc] using hA
+              refine ⟨R_r, hR_r, hAgree, hR_rK, ?_⟩
+              · simpa [Subst.onTy_append] using htyRest
+      | consWild hinfbody h₂ hrest =>
+        rename_i body rest Φ₁ S₁ S₂ S₃ τb
+        exact fun hwf hbelow S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKe hKfix hIMGρ hIMGscru hbrs => by
+          -- [match-agent]
+          -- brs = (.wildcard, body) :: rest; constructor data:
+          --   hinfbody : Infer Φ ctx body Φ₁ S₁ τb, h₂ : UnifyRel τb (S₁.onTy ρ) S₂,
+          --   hrest : InferBranches Φ₁ (S₂.onCtx (S₁.onCtx ctx)) (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) rest Φ₂ S₃
+          have hsize_b : body.size < n := by
+            have := _hn
+            simp only [Expr.sizeBranches] at this
+            omega
+          have hsize_rest : Expr.sizeBranches rest < n := by
+            have := _hn
+            simp only [Expr.sizeBranches] at this
+            omega
+          have hKbody : ∀ y ∈ body.tyFreeVars, y ∈ K := fun y hy => hKe y (by
+            simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hy)
+          have hKrest : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars rest, y ∈ K := fun y hy => hKe y (by
+            simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inr hy)
+          -- STEP 0: the wildcard body types at the SAME erased context, at ρe.
+          have hdhead := hbrs (.wildcard, body) (List.mem_cons_self ..)
+          have hbodyD : TypeOfHM (S₀amb.onCtx ctx).eraseBounds body.eraseBounds ρe := by
+            cases hdhead with
+            | wildcard hbodyty => exact hbodyty
+          -- STEP 1: recurse on the body (ambient unchanged).
+          obtain ⟨R_b, hR_b, htyb, hR_bK, hagb⟩ :=
+            ih.1 hinfbody hsize_b hwf hbelow hwf hbelow S₀amb ρe K hS₀amb hKΦ hKbody hKfix hbodyD
+          have hle_b : Φ ≤ Φ₁ := Infer.frontier_le hinfbody
+          have hKΦ₁ : ∀ k ∈ K, k < Φ₁ := fun k hk => lt_of_lt_of_le (hKΦ k hk) hle_b
+          have hbodyLC := Infer.lc hinfbody hwf
+          have hτb_lc : τb.IsLC := hbodyLC.1
+          have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := hbodyLC.2
+          have hbb := Infer.belowFvars hinfbody hbelow (fun y hy => hKΦ y (hKbody y hy))
+          have hτb_bel : Ty.BelowFvars Φ₁ τb := hbb.1
+          have hS₁_bel : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 := hbb.2
+          -- STEP 2: the body's output unifies against the running result.
+          have hρImg_b : AgreesHM ρe (R_b.onTy (S₁.onTy ρ)) := by
+            rw [← Subst.onTy_append]
+            exact AgreesHM.trans hIMGρ (Subst.onTy_congr_hm hagb hbρ)
+          have hUni : Unifies R_b τb (S₁.onTy ρ) := by
+            show AgreesHM (R_b.onTy τb) (R_b.onTy (S₁.onTy ρ))
+            exact AgreesHM.trans (AgreesHM.symm htyb) hρImg_b
+          obtain ⟨R_u, hR_u_fac, hR_u, hR_uK⟩ :=
+            UnifyRel.greatest_K_factors h₂ R_b hR_b hUni hR_bK
+          have hS₂lc : ∀ p ∈ S₂, p.2.IsLC :=
+            UnifyRel.lc h₂ hτb_lc (Subst.onTy_lc hS₁lc hρLC)
+          have hS₂_bel : ∀ p ∈ S₂, Ty.BelowFvars Φ₁ p.2 :=
+            UnifyRel.belowFvars h₂ hτb_bel (Subst.onTy_belowFvars hS₁_bel (hbρ.mono hle_b))
+          have hAgreeUni : Subst.AgreesBelow Φ₁ R_b (S₂ ++ R_u) :=
+            fun v hv => by rw [Subst.onTy_append]; exact hR_u_fac (Ty.fvar v)
+          have hρImg_u : AgreesHM ρe (R_u.onTy (S₂.onTy (S₁.onTy ρ))) :=
+            AgreesHM.trans hρImg_b (hR_u_fac (S₁.onTy ρ))
+          -- STEP 3: rest recursion premises.
+          have hwf' : CtxWF (S₂.onCtx (S₁.onCtx ctx)) :=
+            Subst.onCtx_wf hS₂lc (Subst.onCtx_wf hS₁lc hwf)
+          have hbelow' : CtxBelow Φ₁ (S₂.onCtx (S₁.onCtx ctx)) :=
+            Subst.onCtx_below hS₂_bel (le_refl _) (Subst.onCtx_below hS₁_bel hle_b hbelow)
+          have hbscrut' : Ty.BelowFvars Φ₁ (S₂.onTy (S₁.onTy scrutTy)) :=
+            Subst.onTy_belowFvars hS₂_bel (Subst.onTy_belowFvars hS₁_bel (hbscrut.mono hle_b))
+          have hbρ' : Ty.BelowFvars Φ₁ (S₂.onTy (S₁.onTy ρ)) :=
+            Subst.onTy_belowFvars hS₂_bel (Subst.onTy_belowFvars hS₁_bel (hbρ.mono hle_b))
+          have hscrutTy'lc : (S₂.onTy (S₁.onTy scrutTy)).IsLC :=
+            Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc hscrutLC)
+          have hρ'lc : (S₂.onTy (S₁.onTy ρ)).IsLC :=
+            Subst.onTy_lc hS₂lc (Subst.onTy_lc hS₁lc hρLC)
+          have hScrutStep1 : AgreesHM (S₀amb.onTy scrutTy) (R_b.onTy (S₁.onTy scrutTy)) := by
+            simpa [Subst.onTy_append] using (Subst.onTy_congr_hm hagb hbscrut)
+          have hScrutStep2 : AgreesHM (R_b.onTy (S₁.onTy scrutTy))
+              (R_u.onTy (S₂.onTy (S₁.onTy scrutTy))) := by
+            simpa [Subst.onTy_append] using (hR_u_fac (S₁.onTy scrutTy))
+          have hscrutImg' : AgreesHM scruT₀ (R_u.onTy (S₂.onTy (S₁.onTy scrutTy))) :=
+            AgreesHM.trans hIMGscru (AgreesHM.trans hScrutStep1 hScrutStep2)
+          have hctxeq' : (R_u.onCtx (S₂.onCtx (S₁.onCtx ctx))).eraseBounds
+              = (S₀amb.onCtx ctx).eraseBounds := by
+            have h1 : (R_u.onCtx (S₂.onCtx (S₁.onCtx ctx))).eraseBounds
+                = (R_b.onCtx (S₁.onCtx ctx)).eraseBounds := by
+              rw [← Subst.onCtx_append]
+              exact (Subst.onCtx_congr_hm hAgreeUni (Subst.onCtx_below hS₁_bel hle_b hbelow)).symm
+            have h2 : (R_b.onCtx (S₁.onCtx ctx)).eraseBounds = (S₀amb.onCtx ctx).eraseBounds := by
+              rw [← Subst.onCtx_append]
+              exact (Subst.onCtx_congr_hm hagb hbelow).symm
+            exact h1.trans h2
+          have hbr' : ∀ br ∈ rest, TypeOfMatchBranch (R_u.onCtx (S₂.onCtx (S₁.onCtx ctx))).eraseBounds
+              (br.1, br.2.eraseBounds) scruT₀ ρe := by
+            intro br hbr
+            rw [hctxeq']
+            exact hbrs br (List.mem_cons_of_mem _ hbr)
+          -- STEP 4: assemble (single-branch tail handled by cases on `rest`).
+          by_cases hrestNe : rest = []
+          · subst hrestNe
+            have hnil := InferBranches.nil_det hrest
+            have hAgree : Subst.AgreesBelow Φ S₀amb ((S₁ ++ S₂) ++ R_u) :=
+              @Subst.AgreesBelow.trans_append Φ Φ₁ S₀amb S₁ R_b S₂ R_u hle_b hagb hS₁_bel hAgreeUni
+            rw [hnil.2]
+            refine ⟨R_u, hR_u, by simpa [List.append_assoc, List.append_nil] using hAgree, hR_uK, ?_⟩
+            · simpa [Subst.onTy_append, List.append_assoc, List.append_nil] using hρImg_u
+          · have hsize_rest' : Expr.sizeBranches rest < n := hsize_rest
+            have hrestNe' : rest ≠ [] := hrestNe
+            obtain ⟨R_r, hR_r, hAgreeRest, hR_rK, htyRest⟩ :=
+              ih.2.1 hrest hrestNe' hsize_rest' hwf' hbelow' hwf' hbelow' R_u scruT₀ ρe K
+                hR_u hscruLC hscrutTy'lc hρ'lc hbscrut' hbρ' hKΦ₁ hKrest hR_uK hρImg_u hscrutImg' hbr'
+            have hAgree : Subst.AgreesBelow Φ S₀amb ((S₁ ++ S₂ ++ S₃) ++ R_r) := by
+              have hA : Subst.AgreesBelow Φ S₀amb (((S₁ ++ S₂) ++ S₃) ++ R_r) :=
+                @Subst.AgreesBelow.trans_append Φ Φ₁ S₀amb (S₁ ++ S₂) R_u S₃ R_r hle_b
+                  (@Subst.AgreesBelow.trans_append Φ Φ₁ S₀amb S₁ R_b S₂ R_u hle_b hagb hS₁_bel hAgreeUni)
+                  (fun p hp => by
+                    rcases List.mem_append.mp hp with hp | hp
+                    · exact hS₁_bel p hp
+                    · exact hS₂_bel p hp)
+                  hAgreeRest
+              simpa [List.append_assoc] using hA
+            refine ⟨R_r, hR_r, hAgree, hR_rK, ?_⟩
+            · simpa [Subst.onTy_append] using htyRest
     · -- InferRecGroup tier
       intro Φ ctx bindings specs Φ' S h _hn hwf hbelow
       cases h with
