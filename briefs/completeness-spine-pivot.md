@@ -240,3 +240,46 @@ stage (concurrent phase WIP — verified by stashing) and is untouched; its
 rule (they were the FALSE-theorem source). The soundness direction got SIMPLER
 (the `Infer.sound` letRec no longer builds the vacuous `hpoly`); the substitution
 transport is a single uniform all-mono branch instead of mono+poly.
+
+## HANDOVER (2026-08-27): spine at 5 polish errors from done — what remains
+
+**State:** 6 of the original 9 sorries are CLOSED and committed (APP, VAR/CTOR,
+LAMBDA×2 via pivot `1d108b9`; LETIN `693441d`; LETINANN `71f2478`; MATCH +
+branches tier incl. the frontier restatement `739fcea`). The declarative rule
+was aligned with the DM-cut (`874553b`: MonoTypedInit replaces PolyTyped; the
+mixed counterexample is now non-derivable). The three group-tier proofs
+(COMPLETE-LETREC, SPINE-GROUP-MONO/POLY) are WRITTEN in the working tree —
+sorries are gone (grep count 0) — but **5 polish errors remain** blocking
+elaboration of the whole file.
+
+**The 5 errors** (all inside the [letrec-agent] group-tier region ~5440–5710):
+1. L5579 (`hconnB` calc step): rw-fail `(Ty.eraseBounds ?τ).eraseBounds` not
+   found — the chain needs its `Ty.eraseBounds_renameG` + idempotence steps
+   reordered; the link should be: erase(R_g-image at Φ+j) ≡ᵉ renameG G Xs τdecl,
+   built from `hblk` (R₀-block image = renameG) + premise AgreesHM + idem.
+2. L5582: same family one line down — rewrite target has `(renameG G Xs τdecl)
+   .eraseBounds` already on the RHS so the idem-rewrites must run backwards.
+3. L5634: `case inr.refl` unsolved in GROUP-POLY tier recursion — spec-case
+   split residue.
+4. L5699: `InferRecGroup.belowFvars hgroup hctxgBelow hinit_bel htfv_below p hp`
+   "Invalid projection" — that term ALREADY IS `Ty.BelowFvars Φ₁ p.2`; drop the
+   stray `.1`/projection after it.
+5. L5704: `hty_b : AgreesHM τe.eraseBounds (R_b.onTy τ)` vs wanted
+   `AgreesHM τe (...)` — standard idempotence bridge:
+   `show Ty.eraseBounds τe = _; rw [← Ty.eraseBounds_idem]; exact hty_b`.
+
+**Recommended procedure for whoever picks this up:** work ONLY in the
+[letrec-agent] region; use single-file checks (`lake env lean
+FHM/Completeness.lean > /tmp/gate.txt 2>&1; grep -c ': error' /tmp/gate.txt` →
+0); beware the diagonal pattern match `(Ty.renameG G Xs τdecl).eraseBounds`
+(keep it literally on the goal-RHS instead of rewriting into it). Everything
+downstream (capstones §step-5, docs) is untouched.
+
+**Statement changes this campaign (all documented above + at their defs):
+branches frontier restatement (739fcea), group tier per-member image premises
++ declarative-specs parameterization (this commit), declarative letRec DM-cut
+alignment (874553b). All old-framework ports flagged in-flight by stop-and-
+report workers rather than silently weakened.**
+
+Next agent: do NOT re-litigate those statements — they hold up under the
+machine-checked probes recorded here. Go straight to the 5 fixes.
