@@ -1,0 +1,29 @@
+-- THE hard case: polymorphic use INSIDE the letRec block itself.
+-- f and g are mutually recursive (one SCC group). f carries a polymorphic
+-- ascription {a} Int -> a -> Int; g is unannotated, so inside the group it is
+-- checked monomorphically: f's body calls `g (n - 1)`, pinning g's shared
+-- monotype to `Int -> Int` (skolem-free — see polyrec-skolem-leak-must-fail
+-- for why f must NOT pass its rigid `x` to g here).
+-- g's body then calls f at TWO DIFFERENT instantiations:
+--   `f n m`   instantiates {a} Int -> a -> Int at a := Int
+--   `f n [m]` instantiates the same scheme at a := List Int
+-- Under monomorphic recursion (or a broken implementation that reuses one
+-- instance variable across call sites) this is an occurs-check failure
+-- (Int ~ List Int). Only a per-site instantiation of the ascribed scheme works.
+-- Both instantiations also EXECUTE at runtime: the type-passing evaluator
+-- must instantiate f's reclosure at List Int and back.
+
+let f : {a} Int -> a -> Int =
+  \n x -> if n < 1 then 1 else g (n - 1)
+
+let g =
+  \n -> f n n + f n [n]
+
+-- f 2 5 = g 1 = f 1 1 + f 1 [1] = (g 0 + g 0) + (g 0 + g 0) = 2+2+2+2 = 8? No:
+--   g 0 = f 0 0 + f 0 [0] = (n < 1) 1 + 1 = 2; f 1 x = g 0 = 2; g 1 = 2 + 2 = 4;
+--   f 2 x = g 1 = 4.
+-- f 2 [True] = g 1 = 4 likewise, at a := List Bool (outside the group — f is
+--   still polymorphic at exit; g stays monomorphic Int -> Int here: its pinned
+--   type has no free vars to generalise over).
+-- Expected result: (4, 4)
+(f 2 5, f 2 [True])

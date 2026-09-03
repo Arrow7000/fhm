@@ -1,0 +1,23 @@
+-- Mixed group showcase (genuinely mutual: f refs g, g refs f).
+-- f is annotated polymorphic {a} Int -> a -> Int; g is unannotated.
+-- Inside the group g is monomorphic: f's call `g (n - 1)` (result ignored
+-- via `let u = ... in 1`, so g's SECOND parameter is never pinned by f)
+-- pins g's first arg to Int but leaves g's second arg at the SHARED POOL
+-- variable β. g's body then calls f at TWO instantiations INSIDE the group:
+--   `f n m`   a := β (m : β, the pool var)
+--   `f n [m]` a := List β
+-- At group exit g generalises over its leftover pool var (skolem-free!):
+--   g : ∀ b. Int -> b -> Int
+-- so `g 3 True` outside typechecks at b := Bool, while f is instantiated at
+-- yet another type (a := Bool) outside the group.
+-- f 2 5 = let u = g 1 in 1 = 1.
+-- g 3 True = f 3 True + f 3 [True] = 1 + 1 = 2.
+-- Expected result: (1, 2)
+
+let f : {a} Int -> a -> Int =
+  \n x -> if n < 1 then 1 else let u = g (n - 1) in 1
+
+let g =
+  \n m -> f n m + f n [m]
+
+(f 2 5, g 3 True)

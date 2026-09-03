@@ -1,0 +1,37 @@
+-- Test C: three top-level recursive groups (→ three nested letRecIn blocks
+-- after SCC grouping + desugar), with cross-group calls.
+-- Group 1: `size` — annotated polymorphic recursion (recursion at Nested (List a)).
+-- Group 2: `evens`/`odds` — annotated mutual pair (terminating).
+-- Group 3: `stats` — self-recursive + calls Group-1's `size` while ITS OWN
+--          recursion is being checked (outer-scheme lookup inside a group).
+
+type Nested a =
+  | Elem a
+  | Group (Nested (List a))
+
+let size : {a} Nested a -> Int =
+  \n ->
+    match n with
+    | Elem e -> 1
+    | Group h -> 1 + size h
+
+let evens : {a} List a -> List a =
+  \l ->
+    match l with
+    | [] -> []
+    | x :: rest -> x :: odds rest
+
+let odds : {a} List a -> List a =
+  \l ->
+    match l with
+    | [] -> []
+    | _ :: rest -> evens rest
+
+let stats : {a} List (Nested a) -> Int =
+  \l ->
+    match l with
+    | [] -> 0
+    | n :: rest -> size n + stats rest
+
+size (Group (Elem (evens [[1], [2], [3], [4]])))
+  + stats [Group (Elem [1]), Group (Group (Elem [[2]]))]
