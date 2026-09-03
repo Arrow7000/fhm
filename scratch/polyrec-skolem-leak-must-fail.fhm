@@ -1,0 +1,18 @@
+-- MUST FAIL: the mixed-group skolem-leak boundary (documented limitation).
+-- f is annotated {a} Int -> a -> List a and passes its RIGID scoped argument
+-- `x : a` to the unannotated sibling g. That pins g's shared monotype at
+-- `Int -> a -> List a` — a type mentioning f's skolem. Declaratively this is
+-- untypeable: RecSpecs.PolyTyped nests f's skolems Ys INSIDE the shared-pool
+-- opening Xs and excludes them from each other, so g's single shared monotype
+-- can never depend on f's instantiation (machine-checked:
+-- SpikeLetRecMixed.skolemLeak_untypeable). A correct implementation must
+-- REJECT this program at typecheck; accepting it would mean the mono member
+-- captured a skolem that varies per PolyTyped opening.
+
+let f : {a} Int -> a -> List a =
+  \n x -> if n < 1 then Cons x Nil else g (n - 1) x
+
+let g =
+  \n x -> Cons x (f n x)
+
+f 2 5

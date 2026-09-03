@@ -1,0 +1,16 @@
+-- Test D (must FAIL): unannotated polymorphic recursion.
+-- `bad` recurses at `Nested (List a)` while only being inferable at
+-- `Nested a -> Int`; HM without the annotation must reject this
+-- (a ~ List a is an infinite / infinite-depth type).
+
+type Nested a =
+  | Elem a
+  | Group (Nested (List a))
+
+let bad =
+  \n ->
+    match n with
+    | Elem e -> 1
+    | Group h -> 1 + bad h
+
+bad (Group (Elem [5]))

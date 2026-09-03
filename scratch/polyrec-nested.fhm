@@ -1,0 +1,27 @@
+-- Test A: canonical terminating polymorphic recursion (Mycroft's Nested).
+-- `size` recurses at `Nested (List a)` — a DIFFERENT instantiation than its own
+-- scheme `{a} Nested a -> Int`. Under plain HM (monomorphic recursion + later
+-- generalisation) this is rejected with an infinite type `Nested a = Nested (List a)`,
+-- so the annotation is load-bearing. Each `Group` layer shifts `a` by one `List`.
+
+type Nested a =
+  | Elem a
+  | Group (Nested (List a))
+
+let size : {a} Nested a -> Int =
+  \n ->
+    match n with
+    | Elem e -> 1
+    | Group h -> 1 + size h
+
+-- depth 1: size at a=Int, recursive call at a=List Int
+let two = size (Group (Elem [5]))
+
+-- depth 2: three distinct instantiations of size in one program
+-- (a=Int, a=List Int, a=List (List Int))
+let three = size (Group (Group (Elem [[[5]]])))
+
+-- different outer instantiation (a=Bool) coexisting with the above
+let alsoTwo = size (Group (Elem [True]))
+
+(two + (three + alsoTwo))

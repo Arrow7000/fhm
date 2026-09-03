@@ -1,0 +1,14 @@
+-- Same shape as polyrec-inner-poly-calls.fhm, but f has NO annotation.
+-- Inside the group f is monomorphic (DM cut): one metavariable α for its
+-- second argument. g's two call sites pin α ~ a and α ~ List a
+-- (through x), i.e. α ~ List α — an occurs-check failure.
+-- Polymorphic inference for recursive groups is undecidable, so this
+-- MUST be rejected with a typechecking failure.
+
+let f =
+  \n x -> if n < 1 then 1 else g (n - 1) x
+
+let g =
+  \n x -> f n x + f n [x]
+
+f 2 5

@@ -1,0 +1,14 @@
+-- Test E (must FAIL): in a mixed group, the unannotated member `h` is
+-- monomorphic inside the group (pinned to the rigid `a` by `f`'s call),
+-- but `f`'s body also calls `h` at `List a` via `h (f y)`.
+-- Under group-monomorphism this is a conflict (a ~ List a); only a broken
+-- implementation that generalises unannotated members INSIDE the group
+-- would accept it.
+
+let f : {a} a -> List a =
+  \x -> h x
+
+let h =
+  \y -> h (f y)
+
+f 1
