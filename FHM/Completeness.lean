@@ -5566,21 +5566,12 @@ theorem Infer.principals_mut (n : Nat) :
                   = Ty.eraseBounds (R_g.onTy (S₁.onTy (Ty.fvar (Φ + j)))) := by
                 simp only [Subst.onTy, Ty.eraseBounds_substFvars]
               rw [h3]
-              show Ty.eraseBounds (R_g.onTy (S₁.onTy (Ty.fvar (Φ + j))))
-                  = Ty.renameG G Xs τdecl.eraseBounds
-              calc Ty.eraseBounds (R_g.onTy (S₁.onTy (Ty.fvar (Φ + j))))
-                    = Ty.eraseBounds (R₀.onTy (Ty.fvar (Φ + j))) := by
-                        have hb : AgreesHM (R₀.onTy (Ty.fvar (Φ + j)))
-                            (R_g.onTy (S₁.onTy (Ty.fvar (Φ + j)))) := hblockAgree
-                        simpa using hb.symm
-                  _ = Ty.renameG G Xs (τsD[j]'hjT) := by
-                        have h1 := congrArg (fun T => Ty.eraseBounds T) hblk
-                        simp only [PolyTy.eraseBounds_mkTrivial] at h1
-                        rw [Ty.eraseBounds_renameG, Ty.eraseBounds_idem] at h1
-                        exact h1.symm
-                  _ = Ty.renameG G Xs (Ty.eraseBounds τdecl) := by
-                        rw [hlinkτ, ← Ty.eraseBounds_idem (Ty.renameG G Xs τdecl)]
-                  _ = Ty.renameG G Xs τdecl.eraseBounds := rfl
+              have hstep1 : Ty.eraseBounds (R_g.onTy (S₁.onTy (Ty.fvar (Φ + j))))
+                  = Ty.eraseBounds (R₀.onTy (Ty.fvar (Φ + j))) := hblockAgree.symm
+              have hstep2 : Ty.eraseBounds (R₀.onTy (Ty.fvar (Φ + j)))
+                  = Ty.renameG G Xs (Ty.eraseBounds (τsD[j]'hjT)) := by
+                rw [hblk, Ty.eraseBounds_renameG]
+              rw [hstep1, hstep2, ← hlinkτ]
             have hbodyAlg : TypeOfHM
                 (R_g.onCtx ⟨(RecSpecs.ceilingSchemes
                     (genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
@@ -5621,21 +5612,26 @@ theorem Infer.principals_mut (n : Nat) :
               · cases hseq
                 exact Subst.onTy_belowFvars hS₁_bel (.fvar (by omega))
               · exact absurd hseq (by simp [RecSpec.onSubst])
+            have hinit_not_poly : ∀ {Φ} {anns : List (Option PolyTy)} {s : RecSpec},
+                s ∈ RecSpec.init Φ anns → ∀ σ, s ≠ RecSpec.poly σ := by
+              intro Φ anns
+              induction anns generalizing Φ with
+              | nil => intro s hs; simp [RecSpec.init] at hs
+              | cons a as ih =>
+                intro s hs σ
+                simp only [RecSpec.init, List.mem_cons] at hs
+                rcases hs with rfl | hs
+                · intro h; cases h
+                · exact ih hs σ
             have hmono_nopoly : ∀ s ∈ (RecSpec.init Φ anns).map (RecSpec.onSubst S₁),
                 ¬ ∃ σ, s = RecSpec.poly σ := by
-              intro s hs
-              obtain ⟨s₀, hs₀, hseq⟩ := List.mem_map.mp hs
-              rcases RecSpec.mem_init hs₀ with ⟨m, _, _, hs₀'⟩ | ⟨σ, hσ, hs₀'⟩
-              · subst hs₀'
-                simp [RecSpec.onSubst] at hseq
-                intro ⟨σ', hσ'⟩
-                rw [← hseq] at hσ'
-                cases hσ'
-              · subst hs₀'
-                simp [RecSpec.onSubst] at hseq
-                intro ⟨σ', hσ'⟩
-                rw [← hseq] at hσ'
-                cases hσ'
+              intro s hs ⟨σ, hσ⟩
+              obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
+              cases s₀ with
+              | mono τ =>
+                simp [RecSpec.onSubst] at hσ
+              | poly σ₀ =>
+                exact hinit_not_poly hs₀ σ₀ rfl
             have hwfB : CtxWF ⟨(RecSpecs.ceilingSchemes
                   (genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
                     (RecSpecs.monoTys ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))))
@@ -5692,16 +5688,13 @@ theorem Infer.principals_mut (n : Nat) :
             obtain ⟨R_b, hR_b, hty_b, hR_bK, hAgreeB⟩ :=
               ih.1 hbody hsize_body hwfB hbelowB hwfB hbelowB R_g (Ty.eraseBounds τe) K
                 hR_g hKΦ₁ hKbody hR_gK hbodyAlg
-            -- assemble (trans_append twice)
-            have hAgreeB' : Subst.AgreesBelow (Φ + bindings.length) R_g (S₂ ++ R_b) :=
-              fun v hv => hAgreeB v (by have := hgle; omega)
-            have hS₁_bel' : ∀ p ∈ S₁, Ty.BelowFvars (Φ + bindings.length) p.2 :=
-              fun p hp => (InferRecGroup.belowFvars hgroup hctxgBelow hinit_bel htfv_below p hp).1
+            -- assemble (trans_append)
             have hAgree : Subst.AgreesBelow Φ S₀ ((S₁ ++ S₂) ++ R_b) :=
-              @Subst.AgreesBelow.trans_append Φ (Φ + bindings.length) S₀ S₁ R_g S₂ R_b (by omega)
-                hAgreeTier hS₁_bel' hAgreeB'
+              Subst.AgreesBelow.trans_append (by omega) hAgreeTier hS₁_bel hAgreeB
             refine ⟨R_b, hR_b, ?_, hR_bK, ?_⟩
-            · simpa [Ty.eraseBounds_idem] using hty_b
+            · show Ty.eraseBounds τe = Ty.eraseBounds (R_b.onTy τ)
+              rw [← Ty.eraseBounds_idem]
+              exact hty_b
             · simpa [List.append_assoc] using hAgree
     · -- InferBranches tier
       intro Φ ctx scrutTy ρ brs Φ' S h hne _hn hwf hbelow
