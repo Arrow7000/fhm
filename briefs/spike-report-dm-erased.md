@@ -63,3 +63,18 @@ Consequences:
 - Ceiling machinery (`ceilingOK`/`ceilingSchemes`) becomes unnecessary: deletable.
 
 **Probe evidence chain (scratch/B6Probe.lean):** parse ✓ / finalizeAnn ✓ / lowerPoly ✓ / eraseProgram ✓ / lowerProgram ✓ → lowered term is *correct* (`let rec (x : ∀ a. a → a) = λy : a. y in x 5`) → **Infer fails**. All four head-binder suite tests fail this way; full-scheme-ascribed programs pass; skolem-leak test passes *positively* (in-block mono already in force).
+
+## Fix spec (concrete, for implementation)
+
+**Insight:** the all-mono init is *almost* right — the only missing piece is that annotated members' RHSs must be **opened at their scheme's binders** (that's what makes internal tyvar anns like `λy : a. y`'s `: a` resolve) while staying **monomorphic for siblings**.
+
+1. `RecSpec.init`: for `some σ` at frontier Φ emit `.mono (σ.openVars (freshVars Φ σ.paramCount))` instead of a bare `.mono (fvar Φ)` — every member still presents a MONOTYPE to siblings (DM-pure, no re-instantiation), but the annotated member's monotype is its *declared instance*.
+2. `InferRecGroup.consMono` branches on the member's ann (positional, available in the rule):
+   - `none`: unchanged (infer bare, unify vs spec mono).
+   - `some σ`: Ys = the same `freshVars` init used (deterministic); infer `e.openTyVars Ys` with rigid set K ∪ Ys (unifyCoreK keeps Ys unbound — declared-type rigidity, cf. old consPoly's escape premises); unify vs spec mono unchanged.
+3. Executable `inferRecGroupCore`: mirror the same two branches.
+4. Ceiling machinery **unchanged** (ceilingSchemes already exposes σ to the body; ceilingOK becomes near-trivial for annotated members — simplify later).
+5. Declarative side (`Core.RecSpecs`): `MonoTyped` restated to "every member types at its spec monotype, annotated members opened at their Ys"; `PolyTyped` **deleted**; `WF` drops `poly_wf`-specific bits.
+6. Proof updates: `Infer.sound` letRec case + `eOut_avoid`/`eliminates`/`frontier_le` letRec cases adjust to the opening (bounded); spine letRec tiers re-farm later per D9 (spine stays on `erasure-migration`).
+
+**Sequencing note:** rule + exec + declarative + the four proof families move together (branch must stay green). Estimated as the next session's single focused step — do NOT start it without a full context budget. The analytic work above is committed; the branch is green at `4f683b1`.
