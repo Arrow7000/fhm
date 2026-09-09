@@ -1,6 +1,7 @@
--- Test C: three top-level recursive groups (→ three nested letRecIn blocks
--- after SCC grouping + desugar), with cross-group calls.
--- Group 1: `size` — annotated polymorphic recursion (recursion at Nested (List a)).
+-- Negative D2 integration case: three top-level recursive groups (three nested
+-- letRecIn blocks after SCC grouping + desugar), with cross-group calls.
+-- Group 1: `size` attempts annotated polymorphic recursion at Nested (List a),
+--          so D2 rejects the program during inference.
 -- Group 2: `evens`/`odds` — annotated mutual pair (terminating).
 -- Group 3: `stats` — self-recursive + calls Group-1's `size` while ITS OWN
 --          recursion is being checked (outer-scheme lookup inside a group).

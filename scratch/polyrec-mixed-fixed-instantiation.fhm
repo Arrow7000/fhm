@@ -1,0 +1,11 @@
+-- Positive D2 mixed-group case. The mutually recursive calls use `f` and `g`
+-- at one fixed argument type while their SCC is checked. The type variable may
+-- be generalised only after group exit, where `f 2 5` selects `Int`.
+
+let f : {a} Int -> a -> List a =
+  \n x -> if n < 1 then Cons x Nil else g (n - 1) x
+
+let g =
+  \n x -> Cons x (f n x)
+
+f 2 5

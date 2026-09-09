@@ -1,4 +1,4 @@
--- THE hard case: polymorphic use INSIDE the letRec block itself.
+-- Negative D2 boundary: polymorphic use INSIDE the letRec block itself.
 -- f and g are mutually recursive (one SCC group). f carries a polymorphic
 -- ascription {a} Int -> a -> Int; g is unannotated, so inside the group it is
 -- checked monomorphically: f's body calls `g (n - 1)`, pinning g's shared
@@ -9,9 +9,9 @@
 --   `f n [m]` instantiates the same scheme at a := List Int
 -- Under monomorphic recursion (or a broken implementation that reuses one
 -- instance variable across call sites) this is an occurs-check failure
--- (Int ~ List Int). Only a per-site instantiation of the ascribed scheme works.
--- Both instantiations also EXECUTE at runtime: the type-passing evaluator
--- must instantiate f's reclosure at List Int and back.
+-- (Int ~ List Int). Only per-site instantiation of the ascribed scheme could
+-- accept this, and D2 deliberately does not provide that inside an SCC.
+-- Expect Infer rejection.
 
 let f : {a} Int -> a -> Int =
   \n x -> if n < 1 then 1 else g (n - 1)
@@ -25,5 +25,6 @@ let g =
 -- f 2 [True] = g 1 = 4 likewise, at a := List Bool (outside the group — f is
 --   still polymorphic at exit; g stays monomorphic Int -> Int here: its pinned
 --   type has no free vars to generalise over).
--- Expected result: (4, 4)
+-- These outer calls would be valid after group-exit generalisation if the SCC
+-- itself had typechecked.
 (f 2 5, f 2 [True])
