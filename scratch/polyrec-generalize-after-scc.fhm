@@ -1,0 +1,8 @@
+-- Positive D2 boundary: `same` is monomorphic while its one-member SCC is
+-- checked, then generalises at group exit and can be instantiated twice.
+-- The recursive branch is deliberately unreachable so evaluation terminates.
+
+let same =
+  \x -> if True then x else same x
+
+(same 1, same True)

@@ -1,0 +1,7 @@
+-- Current deliberately parked surface/core seam. Parsing, annotation
+-- finalisation, erasure and lowering all succeed, but Infer does not yet open
+-- the complete head binder's scoped `a` in the RHS annotation under D2.
+
+let id1 {a} (x : a) : a = x
+
+id1 5
