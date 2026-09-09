@@ -18,7 +18,7 @@ There is exactly one `.found` wrapper for every logical Core expression node. It
 |---|---|---|
 | Per-expression inferred monotype | `.found Ty Expr` | inference |
 | Generalised type shown for a binder | `BinderSite → PolyTy` result/index | inference at generalisation points |
-| Surface identity/span and generated-node origin | `CorePath → Origin` map | lowering |
+| Surface identity/span and generated-node origin | `SourceId ↔ CorePath` provenance relation | lowering |
 
 User annotations remain in their existing term slots. Machine-inferred binder schemes must not overwrite or masquerade as user annotations.
 
@@ -29,12 +29,22 @@ Inference receives Core only. By then lowering has compiled matches, introduced 
 Assign a stable `SourceId` to each surface expression/binder before lowering, with its span as metadata. Lowering is then the point where both sides of the relationship are known, so it must emit provenance while constructing Core. Use paths in the **logical Core skeleton** (child selectors with `.found` treated as transparent), not equality or hashes of `Expr`, because identical subexpressions can occur more than once. A suitable result shape is:
 
 ```lean
+inductive OriginTarget
+  | present (paths : List CorePath) -- nonempty by invariant
+  | absent (reason : OriginAbsence)
+
 structure Lowered where
-  expr       : Expr
-  provenance : CorePath → Option Origin
+  expr          : Expr
+  sourceTargets : List (SourceId × OriginTarget)
+  coreOrigins   : List (CorePath × Origin)
 ```
 
-`Origin` must distinguish a direct surface node from a generated node and, for generated nodes, retain the originating surface ID/span and generation reason. Multiple Core paths may legitimately share one surface origin. This is construction-time provenance, not a later structural reconciliation.
+The complete provenance artifact must also classify Core-only generated paths by
+their originating surface ID/span and generation reason. Multiple Core paths may
+legitimately share one surface origin. Conversely, pattern compilation can remove
+an unreachable source arm, so a source ID may legitimately have no Core target;
+that absence must be explicit rather than silently dropped. This is
+construction-time provenance, not a later structural reconciliation.
 
 `BinderSite` should be based on the same logical `CorePath` plus a binder slot, since one `letRec` node owns several binders. This gives the LSP a stable join between binder schemes, `.found` node types, and source provenance without placing source metadata in `Expr`.
 
@@ -46,7 +56,10 @@ structure Lowered where
 4. **Final substitution:** every stored monotype has the inference run's final substitution applied. Stored binder schemes are generalised from the final solved monotype/context and are stable under that substitution.
 5. **Typing coherence:** each `.found τ e` agrees with the declarative subderivation for the corresponding stripped node; the root payload agrees with the program result type.
 6. **Separate schemes:** every generalisation site returns its inferred `PolyTy` under a `BinderSite`; nongeneralising binders may use the corresponding trivial scheme when tooling requires one.
-7. **Total Core provenance:** every logical Core path has an `Origin`, including PatComp-generated nodes. Generated origins are marked rather than presented as user-authored expressions.
+7. **Honest provenance:** every logical Core path has an origin classification,
+   including PatComp-generated nodes, and every relevant source ID has either one
+   or more targets or an explicit absence reason. Generated nodes are never
+   presented as user-authored expressions.
 8. **Strip before runtime:** evaluation and operational semantics never consume `.found`. The runtime input is `stripFound typedExpr` passed through the branch's existing erasure boundary; no `Step` rule for `.found` is required.
 
 BL consumes the same typed output. It maps or analyses `.found` payloads; it must not add a second layer of `.found` wrappers.
@@ -55,12 +68,21 @@ BL consumes the same typed output. It maps or analyses `.found` payloads; it mus
 
 A v1 vertical slice may cover literals, variables, applications, lambdas, ordinary lets, and internal binder hover before match provenance is complete. That is an implementation staging choice only: it must be reported as partial and must not become the final LSP contract.
 
-The final product must support surface match expressions and pattern-bound variables. PatComp must record which generated decision-tree/capture nodes came from each surface match/pattern, identify a primary hover/report target where several Core nodes share one origin, and guarantee that every hoverable surface match/pattern ID has at least one target. Positional walking of the finished surface and Core trees is not an acceptable substitute.
+The final product must support surface match expressions and pattern-bound
+variables that survive compilation. PatComp must record which generated
+decision-tree/capture nodes came from each surface match/pattern and identify a
+primary hover/report target where several Core nodes share one origin. Eliminated
+unreachable source code must be reported as having no inferred Core type unless a
+separate, explicitly justified source-typing policy is later adopted. Positional
+walking of the finished surface and Core trees is not an acceptable substitute.
 
 ## Suggested checkpoint sequence
 
 1. Define `.found`, `FoundFree`, `stripFound`, logical `CorePath`, `BinderSite`, and `Origin`; prove the basic strip/path laws.
-2. Change relational and executable inference outputs together so they build one wrapper per node and apply the final substitution across the completed output.
+2. Extend the executable inference result while retaining its existing relational
+   evidence, so it builds one wrapper per node and applies the final substitution
+   across the completed output. Do not create a second independent typechecker;
+   add an output index to the relation only if a later proof obligation requires it.
 3. Return generalised binder schemes separately and prove their agreement with the corresponding solved monotypes/generalisation premises.
 4. Make lowering return total provenance for the non-match fragment; join it with `.found` and binder schemes for internal hover.
 5. Run one small program through `.found` → internal hover → BL report as the first vertical checkpoint.
