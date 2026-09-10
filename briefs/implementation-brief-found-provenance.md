@@ -1,6 +1,6 @@
 # Implementation brief: `.found` typing output and lowering provenance
 
-**Status:** in progress; Core representation, found-producing inference, and inferred binder schemes landed
+**Status:** in progress; Core representation, found-producing inference, inferred binder schemes, and construction-time non-PatComp provenance landed
 **Date:** 2026-09-09
 **Related:** [`design-memo-dm-erased-shadow.md`](design-memo-dm-erased-shadow.md) (D4, D7, D8)
 
@@ -86,6 +86,26 @@ nested annotated binding because it loses the required bvar offset.
 ## Match provenance and staging
 
 A v1 vertical slice may cover literals, variables, applications, lambdas, ordinary lets, and internal binder hover before match provenance is complete. That is an implementation staging choice only: it must be reported as partial and must not become the final LSP contract.
+
+That partial slice now lives in `FHM.Surface.Provenance`. It deterministically
+numbers the parser's `SpannedExpr` mirror in preorder **before** lowering, then a
+provenance-aware lowerer constructs Core and emits source targets, an origin for
+every logical Core path, and structural source-binder ↔ `CoreBinderSite` targets
+in the same pass. The authoritative source-node domain comes from the prior ID
+pass, so accidentally omitting both a source node and its target cannot make the
+totality check pass. Executable checks also require every target path to resolve,
+every Core path to have exactly one known origin, and every joined present target
+to find a `.found` type.
+
+The slice covers primitive leaves, variables, constructors, applications,
+lambdas, ordinary lets, recursive groups, pair/cons/list sugar, and the lambdas
+generated for binding parameters. It uses ordinary terminating definitions; no
+new `partial def` is hidden behind its tooling role. `if` and `match` deliberately
+return `none` because both cross the uninstrumented PatComp boundary. Exact
+binder-token spans also still live in the parser's old flat `BinderSpan` sidecar:
+the new slice supplies a stable structural binder identity and the join to
+inferred schemes, but replacing that final flat-span association is remaining
+LSP integration work rather than something this checkpoint pretends to solve.
 
 The final product must support surface match expressions and pattern-bound
 variables that survive compilation. PatComp must record which generated
