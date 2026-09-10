@@ -1,6 +1,6 @@
 # Implementation brief: `.found` typing output and lowering provenance
 
-**Status:** approved direction; implementation not started
+**Status:** in progress; Core representation and found-producing inference landed
 **Date:** 2026-09-09
 **Related:** [`design-memo-dm-erased-shadow.md`](design-memo-dm-erased-shadow.md) (D4, D7, D8)
 
@@ -53,7 +53,12 @@ construction-time provenance, not a later structural reconciliation.
 1. **Clean input:** parser/lowering output is `.found`-free.
 2. **Shape preservation:** `stripFound typedExpr = lowered.expr`.
 3. **One fact per node:** every logical Core node has exactly one `.found`, and `.found` introduces no additional logical path component.
-4. **Final substitution:** every stored monotype has the inference run's final substitution applied. Stored binder schemes are generalised from the final solved monotype/context and are stable under that substitution.
+4. **Final solved types:** every stored monotype reflects all constraints from the
+   complete inference run. The executable should maintain this by applying exactly
+   the later substitution suffixes introduced after a node was inferred; it must
+   not blindly reapply the whole aggregate substitution, whose idempotence is not
+   assumed. Stored binder schemes are generalised from the final solved
+   monotype/context and are stable under subsequent suffixes.
 5. **Typing coherence:** each `.found τ e` agrees with the declarative subderivation for the corresponding stripped node; the root payload agrees with the program result type.
 6. **Separate schemes:** every generalisation site returns its inferred `PolyTy` under a `BinderSite`; nongeneralising binders may use the corresponding trivial scheme when tooling requires one.
 7. **Honest provenance:** every logical Core path has an origin classification,
@@ -63,6 +68,13 @@ construction-time provenance, not a later structural reconciliation.
 8. **Strip before runtime:** evaluation and operational semantics never consume `.found`. The runtime input is `stripFound typedExpr` passed through the branch's existing erasure boundary; no `Step` rule for `.found` is required.
 
 BL consumes the same typed output. It maps or analyses `.found` payloads; it must not add a second layer of `.found` wrappers.
+
+Annotated `let` inference temporarily opens the scheme-bound variables in its RHS
+to fresh skolems. Before embedding that decorated RHS back into the result, found
+payloads must be closed to scheme-relative bvars with the same binder-depth
+bookkeeping as `openTyVarsAux`, and the ordinary constructor payloads must retain
+the original source annotations. A flat `Ty.closeOver` is insufficient beneath a
+nested annotated binding because it loses the required bvar offset.
 
 ## Match provenance and staging
 
@@ -80,9 +92,11 @@ walking of the finished surface and Core trees is not an acceptable substitute.
 
 1. Define `.found`, `FoundFree`, `stripFound`, logical `CorePath`, `BinderSite`, and `Origin`; prove the basic strip/path laws.
 2. Extend the executable inference result while retaining its existing relational
-   evidence, so it builds one wrapper per node and applies the final substitution
-   across the completed output. Do not create a second independent typechecker;
-   add an output index to the relation only if a later proof obligation requires it.
+   evidence, so it builds one wrapper per node and propagates each later
+   substitution suffix into the already-built child outputs. Do not reapply the
+   aggregate substitution at the public boundary and do not create a second
+   independent typechecker; add an output index to the relation only if a later
+   proof obligation requires it.
 3. Return generalised binder schemes separately and prove their agreement with the corresponding solved monotypes/generalisation premises.
 4. Make lowering return total provenance for the non-match fragment; join it with `.found` and binder schemes for internal hover.
 5. Run one small program through `.found` → internal hover → BL report as the first vertical checkpoint.

@@ -379,6 +379,30 @@ def Expr.stripFoundBranches : List (MatchPattern × Expr) → List (MatchPattern
   | (pat, body) :: rest => (pat, body.stripFound) :: Expr.stripFoundBranches rest
 end
 
+mutual
+/-- Transform only the types carried by inference-produced `found` wrappers.
+    In particular, source-written annotations are left byte-for-byte unchanged. -/
+def Expr.mapFoundTys (f : Ty → Ty) : Expr → Expr
+  | .primLit p => .primLit p
+  | .primBinOp op => .primBinOp op
+  | .lambda ann body => .lambda ann (body.mapFoundTys f)
+  | .app fn arg => .app (fn.mapFoundTys f) (arg.mapFoundTys f)
+  | .letIn ann rhs body => .letIn ann (rhs.mapFoundTys f) (body.mapFoundTys f)
+  | .var i => .var i
+  | .ctor name => .ctor name
+  | .match_ scrut branches =>
+      .match_ (scrut.mapFoundTys f) (Expr.mapFoundTysBranches f branches)
+  | .found ty inner => .found (f ty) (inner.mapFoundTys f)
+  | .letRec anns bindings body =>
+      .letRec anns (bindings.map (Expr.mapFoundTys f)) (body.mapFoundTys f)
+
+def Expr.mapFoundTysBranches (f : Ty → Ty) :
+    List (MatchPattern × Expr) → List (MatchPattern × Expr)
+  | [] => []
+  | (pat, body) :: rest =>
+      (pat, body.mapFoundTys f) :: Expr.mapFoundTysBranches f rest
+end
+
 /-- Expressions which contain no inference-discovered type wrappers. -/
 inductive Expr.FoundFree : Expr → Prop
   | primLit : FoundFree (.primLit p)
@@ -961,6 +985,36 @@ decreasing_by
     | (have h := List.sizeOf_lt_of_mem _hb
        simp only [Prod.mk.sizeOf_spec] at h
        omega)
+
+/-- Applying a function to inferred payloads cannot alter the underlying source
+    expression recovered by `stripFound`. -/
+@[simp] theorem Expr.stripFound_mapFoundTys (f : Ty → Ty) :
+    ∀ (e : Expr), (e.mapFoundTys f).stripFound = e.stripFound := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit | primBinOp | var | ctor => simp [Expr.mapFoundTys, Expr.stripFound]
+  | lambda ann body ih => simp [Expr.mapFoundTys, Expr.stripFound, ih]
+  | app fn arg ihFn ihArg => simp [Expr.mapFoundTys, Expr.stripFound, ihFn, ihArg]
+  | letIn ann rhs body ihRhs ihBody =>
+      simp [Expr.mapFoundTys, Expr.stripFound, ihRhs, ihBody]
+  | match_ scrut branches ihScrut ihBranches =>
+      simp only [Expr.mapFoundTys, Expr.stripFound, ihScrut, Expr.match_.injEq, true_and]
+      induction branches with
+      | nil => simp [Expr.mapFoundTysBranches, Expr.stripFoundBranches]
+      | cons head rest ihRest =>
+          obtain ⟨pat, body⟩ := head
+          simp only [Expr.mapFoundTysBranches, Expr.stripFoundBranches, List.cons.injEq,
+            Prod.mk.injEq, true_and]
+          exact ⟨ihBranches pat body List.mem_cons_self,
+            ihRest (fun p b h => ihBranches p b (List.mem_cons_of_mem _ h))⟩
+  | found ty inner ih => simpa [Expr.mapFoundTys, Expr.stripFound] using ih
+  | letRec anns bindings body ihBindings ihBody =>
+      simp only [Expr.mapFoundTys, Expr.stripFound, Expr.letRec.injEq, ihBody]
+      refine ⟨True.intro, ?_, True.intro⟩
+      rw [List.map_map]
+      apply List.map_congr_left
+      intro binding hBinding
+      exact ihBindings binding hBinding
 
 
 
@@ -2297,6 +2351,16 @@ def Ty.substFvars : List (Nat × Ty) → Ty → Ty
   | []              , ty => ty
   | (Z, U) :: rest  , ty => Ty.substFvars rest (Ty.substFvar Z U ty)
 
+/-- Apply a free-type substitution to inference-produced payloads only. Source
+    annotations are intentionally outside this operation. -/
+def Expr.substFoundTys (S : List (Nat × Ty)) (e : Expr) : Expr :=
+  e.mapFoundTys (Ty.substFvars S)
+
+@[simp] theorem Expr.stripFound_substFoundTys (S : List (Nat × Ty)) (e : Expr) :
+    (e.substFoundTys S).stripFound = e.stripFound := by
+  unfold Expr.substFoundTys
+  exact Expr.stripFound_mapFoundTys (Ty.substFvars S) e
+
 /-- Open a scheme body's bvars with named fvars: `.bvar i ↦ .fvar (Xs.get i)`. -/
 def Ty.openVars (Xs : List Nat) (ty : Ty) : Ty :=
   ty.instantiate (fun i => (Xs[i]?).elim (.bvar i) .fvar)
@@ -2375,6 +2439,26 @@ def PolyTy.substFvars : List (Nat × Ty) → PolyTy → PolyTy
 def Ty.openVarsFrom (d : Nat) (Xs : List Nat) (t : Ty) : Ty :=
   t.instantiate (fun i => if i < d then .bvar i else (Xs[i - d]?).elim (.bvar i) .fvar)
 
+mutual
+/-- Close a named block of free type variables back under `d` inner binders.
+    This is the depth-aware inverse operation needed after inference checks an
+    explicitly quantified RHS in opened/skolem form. -/
+def Ty.closeVarsFrom (d : Nat) (Xs : List Nat) : Ty → Ty
+  | .prim p => .prim p
+  | .arrow a b => .arrow (Ty.closeVarsFrom d Xs a) (Ty.closeVarsFrom d Xs b)
+  | .bvar i => .bvar i
+  | .fvar n =>
+      match Xs.idxOf? n with
+      | some i => .bvar (d + i)
+      | none => .fvar n
+  | .customTy name tys => .customTy name (TyList.closeVarsFrom d Xs tys)
+  | .bl lo hi elem => .bl lo hi (Ty.closeVarsFrom d Xs elem)
+
+def TyList.closeVarsFrom (d : Nat) (Xs : List Nat) : List Ty → List Ty
+  | [] => []
+  | ty :: rest => Ty.closeVarsFrom d Xs ty :: TyList.closeVarsFrom d Xs rest
+end
+
 /-- Open scoped type variables through a recursion group's SCHEME-ANNOTATION
     BODIES: each present `σⱼ.body` is descended at `d + σⱼ.paramCount` (shielding
     `σⱼ`'s own quantified variables), so a scheme may reference an enclosing
@@ -2384,6 +2468,12 @@ def Ty.openVarsFrom (d : Nat) (Xs : List Nat) (t : Ty) : Ty :=
 def RecGroup.openAnns (d : Nat) (Xs : List Nat) (anns : List (Option PolyTy)) :
     List (Option PolyTy) :=
   anns.map (Option.map (fun σ => { σ with body := Ty.openVarsFrom (d + σ.paramCount) Xs σ.body }))
+
+/-- Close an enclosing named type-variable block through recursion-group scheme
+    bodies, shielding every member's own quantifiers. -/
+def RecGroup.closeAnns (d : Nat) (Xs : List Nat) (anns : List (Option PolyTy)) :
+    List (Option PolyTy) :=
+  anns.map (Option.map (fun σ => { σ with body := Ty.closeVarsFrom (d + σ.paramCount) Xs σ.body }))
 
 mutual
 /-- Open the scoped type variables of an enclosing scheme inside a term's
@@ -2437,6 +2527,51 @@ def RecGroup.openTyVarsAux (d : Nat) (Xs : List Nat) :
   | a :: as, e :: rest =>
       e.openTyVarsAux (d + RecAnn.params a) Xs :: RecGroup.openTyVarsAux d Xs as rest
 end
+
+mutual
+/-- Close a named scoped type-variable block throughout an expression. The
+    binder-depth bookkeeping exactly mirrors `Expr.openTyVarsAux`. -/
+def Expr.closeTyVarsAux (d : Nat) (Xs : List Nat) : Expr → Expr
+  | .primLit p => .primLit p
+  | .primBinOp op => .primBinOp op
+  | .lambda ann body =>
+      .lambda (ann.map (Ty.closeVarsFrom d Xs)) (body.closeTyVarsAux d Xs)
+  | .app fn arg => .app (fn.closeTyVarsAux d Xs) (arg.closeTyVarsAux d Xs)
+  | .letIn (some σ) rhs body =>
+      .letIn (some { σ with body := Ty.closeVarsFrom (d + σ.paramCount) Xs σ.body })
+        (rhs.closeTyVarsAux (d + σ.paramCount) Xs)
+        (body.closeTyVarsAux d Xs)
+  | .letIn none rhs body =>
+      .letIn none (rhs.closeTyVarsAux d Xs) (body.closeTyVarsAux d Xs)
+  | .var i => .var i
+  | .ctor name => .ctor name
+  | .match_ scrut branches =>
+      .match_ (scrut.closeTyVarsAux d Xs) (BranchList.closeTyVarsAux d Xs branches)
+  | .found ty inner =>
+      .found (Ty.closeVarsFrom d Xs ty) (inner.closeTyVarsAux d Xs)
+  | .letRec anns bindings body =>
+      .letRec (RecGroup.closeAnns d Xs anns)
+        (RecGroup.closeTyVarsAux d Xs anns bindings)
+        (body.closeTyVarsAux d Xs)
+
+def BranchList.closeTyVarsAux (d : Nat) (Xs : List Nat) :
+    List (MatchPattern × Expr) → List (MatchPattern × Expr)
+  | [] => []
+  | (pat, body) :: rest =>
+      (pat, body.closeTyVarsAux d Xs) :: BranchList.closeTyVarsAux d Xs rest
+
+def RecGroup.closeTyVarsAux (d : Nat) (Xs : List Nat) :
+    List (Option PolyTy) → List Expr → List Expr
+  | _, [] => []
+  | [], binding :: rest =>
+      binding.closeTyVarsAux d Xs :: RecGroup.closeTyVarsAux d Xs [] rest
+  | ann :: anns, binding :: rest =>
+      binding.closeTyVarsAux (d + RecAnn.params ann) Xs ::
+        RecGroup.closeTyVarsAux d Xs anns rest
+end
+
+/-- Close a named block at the outermost type-binder depth. -/
+def Expr.closeTyVars (Xs : List Nat) (e : Expr) : Expr := e.closeTyVarsAux 0 Xs
 
 /-- The `RecGroup.*` structural helpers for `letRec` bindings are all just
     `List.map` of the corresponding single-`Expr` operation. Stating this lets the
