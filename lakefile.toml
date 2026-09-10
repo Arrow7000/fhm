@@ -13,6 +13,7 @@ roots = [
   "FHM.Surface.Lex",
   "FHM.Surface.Span",
   "FHM.Surface.Parse",
+  "FHM.Surface.Provenance",
   "FHM.PatComp",
   "FHM.Pretty",
   "FHM.InferW",
