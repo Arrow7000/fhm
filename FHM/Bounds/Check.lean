@@ -406,6 +406,8 @@ def checkProgramMatchesGo (ctors : CtorEnv) (Δ : List Constraint) (bctx : Bound
           unless coreCtorCoverage ctors τs brs do
             throw "bounds: match not exhaustive for scrutinee type"
           checkProgramMatchesBranches ctors Δ bctx τs βs (.lit 0) (.lit 0) βs demand brs
+  | .found _ _ =>
+      throw "bounds: use the typed `.found` adapter (raw bounds input must be stripped)"
   termination_by e.size
   decreasing_by all_goals (
     first

@@ -72,6 +72,17 @@ private def letInferenceJoin : Bool :=
             typed.sourceTypesTotal && stripOk
       | none => false
 
+private def expressionHoverUsesProvenance : Bool :=
+  match lowerWithProvenance demoCtors letSurface letSpanned with
+  | none => false
+  | some lowering =>
+      match inferWithProvenance demoCtors lowering with
+      | some typed =>
+          match typed.hoverAt? 1 20 with
+          | some ⟨⟨4, ⟨1, 20, 1, 21⟩⟩, [([.letBody, .appArg], .prim .int)]⟩ => true
+          | _ => false
+      | none => false
+
 private def listSurface : Surface.Expr :=
   .list [.primLit (.int 1), .primLit (.int 2)]
 
@@ -138,6 +149,7 @@ def main : IO Unit := do
     ("pair projection agrees", pairProjection),
     ("let parameter paths", letParamPaths),
     ("let inference join", letInferenceJoin),
+    ("expression hover uses provenance", expressionHoverUsesProvenance),
     ("list origins total", listOriginsTotal),
     ("recursive binder join", recBinderJoin),
     ("PatComp forms explicitly deferred", patCompFormsAreExplicitlyDeferred),

@@ -65,6 +65,7 @@ roots = [
   "FHM.Bounds.Escape",    # R3 escape classification (uniqueOnly at pack)
   "FHM.Bounds.Check",     # Live ascription checks (uses Synth)
   "FHM.Bounds.Synth",     # Slice 4: origin HasBounds synthesizer
+  "FHM.Bounds.Found",     # Root `.found` → provenance/hover → bounds slice
   "FHM.Bounds.Erase",     # P4b surface BL → List + BoundsAnnTy
   "FHM.Bounds.Pipeline",  # P4c mode / ofLower / prepare (shapes)
   "FHM.Bounds.Examples",  # P3.5c Core demos

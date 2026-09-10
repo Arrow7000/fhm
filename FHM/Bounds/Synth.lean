@@ -686,6 +686,8 @@ def inferBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat) (e : Expr)
       | _, _ =>
           -- Non-List: peel Pair fields (R4); join arm results (Bool `if`, Maybe, …).
           synthJoinArms Δ bctx Φ1 βs brs
+  | .found _ _ =>
+      throw "bounds: use the typed `.found` adapter (raw bounds input must be stripped)"
 termination_by e.size
 decreasing_by all_goals (
   first
@@ -799,6 +801,8 @@ def checkBoundsΦ (Δ : List Constraint) (bctx : BoundEnv) (Φ : Nat)
           -- (Infer-first fails on list literals — Nil/Cons need a List demand.)
           let (Φ2, β) ← synthJoinArmsAt Δ bctx Φ1 τ βs brs
           pure (Φ2, β)
+  | .found _ _ =>
+      throw "bounds: use the typed `.found` adapter (raw bounds input must be stripped)"
 termination_by e.size
 decreasing_by all_goals (
   first
