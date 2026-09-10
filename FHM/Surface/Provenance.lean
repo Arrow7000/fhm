@@ -4,14 +4,11 @@ import FHM.SurfaceBridge
 
 /-! # Construction-time Surface → Core provenance
 
-This module is the first, deliberately match-free provenance slice. Source IDs
-are assigned to the parser's span tree before lowering. The lowerer then emits
-the Core term and both directions of the correspondence while it constructs the
-term; it never tries to reconcile a finished Surface tree with finished Core.
-
-`if` and `match` are rejected here because both pass through `PatComp`. They
-need instrumentation inside the pattern compiler before this API can honestly
-claim total provenance for them.
+This module carries construction-time provenance through ordinary lowering and
+through `PatComp`'s compiler-owned emission trace. Source IDs are assigned to
+the parser's span tree before lowering. The lowerer then emits the Core term and
+both directions of the correspondence while it constructs the term; it never
+tries to reconcile a finished Surface tree with finished Core.
 -/
 
 open Surface.Span
@@ -146,6 +143,7 @@ inductive GenerationReason where
   | listPartialApp (spineIndex : Nat)
   | listTailApp (spineIndex : Nat)
   | valueParamLambda (paramIndex : Nat)
+  | patternCompilation (node : PatComp.GeneratedNode)
   deriving Repr, DecidableEq, BEq
 
 inductive OriginKind where
@@ -164,11 +162,22 @@ inductive SurfaceBinderSite where
   | letRec (owner : SourceId) (member : Nat)
   | letParam (owner : SourceId) (param : Nat)
   | letRecParam (owner : SourceId) (member param : Nat)
+  | patCapture (owner : SourceId) (arm capture : Nat)
   deriving Repr, DecidableEq, BEq
+
+/-- Binder correspondence records both compiler elimination and cloning. -/
+inductive BinderOriginTarget where
+  | present (sites : List CoreBinderSite)
+  | absent (reason : OriginAbsence)
+  deriving Repr, DecidableEq, BEq
+
+def BinderOriginTarget.belowPath (pre : CorePath) : BinderOriginTarget → BinderOriginTarget
+  | .present sites => .present (sites.map fun site => pre.foldr CoreBinderSite.below site)
+  | .absent reason => .absent reason
 
 abbrev SourceTargetMap := List (SourceId × OriginTarget)
 abbrev CoreOriginMap := List (CorePath × Origin)
-abbrev BinderTargetMap := List (SurfaceBinderSite × CoreBinderSite)
+abbrev BinderTargetMap := List (SurfaceBinderSite × BinderOriginTarget)
 
 structure Lowered where
   expr : Expr
@@ -185,7 +194,7 @@ def belowPath (pre : CorePath) (r : Lowered) : Lowered :=
     sourceTargets := r.sourceTargets.map fun (id, target) => (id, target.belowPath pre)
     coreOrigins := r.coreOrigins.map fun (path, origin) => (pre ++ path, origin)
     binderTargets := r.binderTargets.map fun (source, target) =>
-      (source, pre.foldr CoreBinderSite.below target) }
+      (source, target.belowPath pre) }
 
 def metadata (expr : Expr) (parts : List Lowered) : Lowered :=
   { expr
@@ -272,8 +281,13 @@ def Lowered.sourceTargetsTotal (r : Lowered) : Bool :=
     binder-token spans remain in the parser's existing `BinderSpan` sidecar and
     will be attached when that flat collector is replaced. -/
 def Lowered.binderTargetsResolve (r : Lowered) : Bool :=
-  r.binderTargets.all fun (_, target) =>
-    !target.paths.isEmpty && target.paths.all fun path => (r.expr.atCorePath path).isSome
+  exactlyOnce (r.binderTargets.map Prod.fst) (r.binderTargets.map Prod.fst) &&
+    r.binderTargets.all fun (_, target) =>
+      match target with
+      | .absent _ => true
+      | .present sites =>
+          !sites.isEmpty && sites.all fun site =>
+            !site.paths.isEmpty && site.paths.all fun path => (r.expr.atCorePath path).isSome
 
 def Lowered.provenanceTotal (r : Lowered) : Bool :=
   r.coreOriginsTotal && r.sourceTargetsTotal && r.binderTargetsResolve
@@ -291,7 +305,128 @@ def wrapParamsWithProvenance (ke : KindEnv) (tvs : List ValName) (owner : Source
         sourceNodes := child.sourceNodes
         sourceTargets := child.sourceTargets
         coreOrigins := generatedOrigin owner [] (.valueParamLambda index) :: child.coreOrigins
-        binderTargets := (site index, .lambda []) :: child.binderTargets }
+        binderTargets := (site index, .present [.lambda []]) :: child.binderTargets }
+
+def presentPathsFor (id : SourceId) (targets : SourceTargetMap) : List CorePath :=
+  targets.flatMap fun (candidate, target) =>
+    if candidate == id then
+      match target with
+      | .present paths => paths
+      | .absent _ => []
+    else []
+
+def firstSourceAbsenceFor (id : SourceId) : SourceTargetMap → Option OriginAbsence
+  | [] => none
+  | (candidate, target) :: rest =>
+      if candidate == id then
+        match target with
+        | .absent reason => some reason
+        | .present _ => firstSourceAbsenceFor id rest
+      else firstSourceAbsenceFor id rest
+
+/-- Coalesce copies of source metadata after pattern compilation has cloned an
+    arm. Missing classifications fail instead of being silently fabricated. -/
+def mergeSourceTargets (nodes : List SourceNode) (raw : SourceTargetMap) : Option SourceTargetMap :=
+  nodes.mapM fun node =>
+    let paths := (presentPathsFor node.id raw).dedup
+    if paths.isEmpty then do
+      let reason ← firstSourceAbsenceFor node.id raw
+      pure (node.id, .absent reason)
+    else
+      some (node.id, .present paths)
+
+def presentBinderSitesFor (source : SurfaceBinderSite)
+    (targets : BinderTargetMap) : List CoreBinderSite :=
+  targets.flatMap fun (candidate, target) =>
+    if candidate == source then
+      match target with
+      | .present sites => sites
+      | .absent _ => []
+    else []
+
+def firstBinderAbsenceFor (source : SurfaceBinderSite) :
+    BinderTargetMap → Option OriginAbsence
+  | [] => none
+  | (candidate, target) :: rest =>
+      if candidate == source then
+        match target with
+        | .absent reason => some reason
+        | .present _ => firstBinderAbsenceFor source rest
+      else firstBinderAbsenceFor source rest
+
+/-- Coalesce cloned binder sites and retain an explicit absence when their
+    containing source arm was eliminated. -/
+def mergeBinderTargets (raw : BinderTargetMap) : Option BinderTargetMap :=
+  raw.map Prod.fst |>.dedup |>.mapM fun source =>
+    let rawSites := (presentBinderSitesFor source raw).dedup
+    let sites := match source with
+      | .patCapture _ _ capture =>
+          let paths := rawSites.flatMap fun
+            | .patCapture paths _ => paths
+            | _ => []
+          if paths.isEmpty then [] else [.patCapture paths.dedup capture]
+      | _ => rawSites
+    if sites.isEmpty then do
+      let reason ← firstBinderAbsenceFor source raw
+      pure (source, .absent reason)
+    else
+      some (source, .present sites)
+
+def absentSourceTargets (reason : OriginAbsence) (r : Lowered) : SourceTargetMap :=
+  r.sourceNodes.map fun node => (node.id, .absent reason)
+
+def absentBinderTargets (reason : OriginAbsence) (r : Lowered) : BinderTargetMap :=
+  r.binderTargets.map fun (site, _target) => (site, .absent reason)
+
+def traceArmRoots (act : Nat) (trace : PatComp.EmissionTrace) : List CorePath :=
+  trace.armBodyRoots.filterMap fun (candidate, path) =>
+    if candidate == act then some path else none
+
+def clonedArmParts (trace : PatComp.EmissionTrace) (arms : List Lowered) : List Lowered :=
+  arms.mapIdx (fun act arm => (traceArmRoots act trace).map fun path => arm.belowPath path)
+    |>.flatten
+
+def patternCaptureAbsences (owner : SourceId)
+    (pats : List Surface.Pattern) : BinderTargetMap :=
+  pats.mapIdx (fun arm pat =>
+    (patVars pat).mapIdx fun capture _ =>
+      (.patCapture owner arm capture, .absent .eliminatedByPatternCompilation))
+    |>.flatten
+
+def traceCaptureTargets (owner : SourceId)
+    (trace : PatComp.EmissionTrace) : BinderTargetMap :=
+  trace.captureLets.map fun (act, capture, path) =>
+    (.patCapture owner act capture, .present [.patCapture [path] capture])
+
+/-- Translate PatComp's source-agnostic construction trace into the surface
+    provenance vocabulary, merging duplicated arms and preserving elimination. -/
+def lowerTracedMatch (source : SourceNode) (scrut : Lowered)
+    (pats : List Surface.Pattern) (arms : List Lowered)
+    (traced : PatComp.TracedLowering) : Option Lowered := do
+  let scrutPart := scrut.belowPath [.letRhs]
+  let armParts := clonedArmParts traced.trace arms
+  let nodes := source :: scrut.sourceNodes ++ arms.flatMap (fun arm => arm.sourceNodes)
+  let rawSourceTargets : SourceTargetMap :=
+    (source.id, .present [[]]) :: scrutPart.sourceTargets ++
+      arms.flatMap (absentSourceTargets .eliminatedByPatternCompilation) ++
+      armParts.flatMap (fun arm => arm.sourceTargets)
+  let sourceTargets ← mergeSourceTargets nodes rawSourceTargets
+  let rawBinderTargets : BinderTargetMap :=
+    scrutPart.binderTargets ++
+      arms.flatMap (absentBinderTargets .eliminatedByPatternCompilation) ++
+      patternCaptureAbsences source.id pats ++
+      armParts.flatMap (fun arm => arm.binderTargets) ++
+      traceCaptureTargets source.id traced.trace
+  let binderTargets ← mergeBinderTargets rawBinderTargets
+  pure {
+    expr := traced.expr
+    sourceNodes := nodes
+    sourceTargets
+    coreOrigins :=
+      traced.trace.generated.map (fun (path, node) =>
+        generatedOrigin source path (.patternCompilation node)) ++
+      scrutPart.coreOrigins ++ armParts.flatMap (fun arm => arm.coreOrigins)
+    binderTargets }
 
 mutual
 def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
@@ -329,12 +464,12 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
           let body' ← lowerIdentifiedExpr ke tvs (name :: vs) body sbody
           pure (combineAuthored source (.lambda ann' body'.expr)
             [body'.belowPath [.lambdaBody]] []
-            [(.lambda source.id, .lambda [])])
+            [(.lambda source.id, .present [.lambda []])])
       | .wildcard => do
           let body' ← lowerIdentifiedExpr ke tvs (.mk "_" :: vs) body sbody
           pure (combineAuthored source (.lambda ann' body'.expr)
             [body'.belowPath [.lambdaBody]] []
-            [(.lambda source.id, .lambda [])])
+            [(.lambda source.id, .present [.lambda []])])
       | _ => none
   | .app fn arg, .app source sfn sarg => do
       let fn' ← lowerIdentifiedExpr ke tvs vs fn sfn
@@ -351,7 +486,7 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
       let body' ← lowerIdentifiedExpr ke tvs (name :: vs) body sbody
       pure (combineAuthored source (.letIn ann' rhs'.expr body'.expr)
         [rhs'.belowPath [.letRhs], body'.belowPath [.letBody]] []
-        [(.letIn source.id, .letIn [])])
+        [(.letIn source.id, .present [.letIn []])])
   | .letRecIn binds body, .letRecIn source srhss sbody => do
       let recScope := binds.map (fun b => b.name) ++ vs
       let anns' ← lowerAnnList ke (binds.map fun b => finalizeAnn b.tyParams b.params b.ann)
@@ -360,15 +495,29 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
       let bindingExprs := bindings'.map fun r => r.expr
       let bindingParts := bindings'.mapIdx fun member r => r.belowPath [.letRecRhs member]
       let groupBinders := binds.mapIdx fun member _ =>
-        (.letRec source.id member, .letRec [] member)
+        (.letRec source.id member, .present [.letRec [] member])
       pure (combineAuthored source (.letRec anns' bindingExprs body'.expr)
         (bindingParts ++ [body'.belowPath [.letRecBody]]) [] groupBinders)
   | .var name, .leaf source => do
       let index ← tvarIndex vs name
       pure (authoredRoot source (.var index))
   | .ctor name, .leaf source => some (authoredRoot source (.ctor name))
-  | .ife _ _ _, .ife _ _ _ _ => none
-  | .match_ _ _, .match_ _ _ _ => none
+  | .ife cond then_ else_, .ife source scond sthen selse => do
+      let cond' ← lowerIdentifiedExpr ke tvs vs cond scond
+      let then' ← lowerIdentifiedExpr ke tvs vs then_ sthen
+      let else' ← lowerIdentifiedExpr ke tvs vs else_ selse
+      let pats : List Surface.Pattern := [.ctor cTrue [], .ctor cFalse []]
+      let arms := [then', else']
+      let traced := PatComp.lowerMatchTrace cond'.expr pats
+        (fun i => (arms.map (fun arm => arm.expr)).getD i (.ctor cNil))
+      lowerTracedMatch source cond' pats arms traced
+  | .match_ scrut branches, .match_ source sscrut sarms => do
+      let scrut' ← lowerIdentifiedExpr ke tvs vs scrut sscrut
+      let arms' ← lowerIdentifiedBranches ke tvs vs branches sarms
+      let pats := branches.map Prod.fst
+      let traced := PatComp.lowerMatchTrace scrut'.expr pats
+        (fun i => (arms'.map (fun arm => arm.expr)).getD i (.ctor cNil))
+      lowerTracedMatch source scrut' pats arms' traced
   | _, _ => none
 
 def lowerIdentifiedList (ke : KindEnv) (tvs vs : List ValName) :
@@ -378,6 +527,15 @@ def lowerIdentifiedList (ke : KindEnv) (tvs vs : List ValName) :
       let e' ← lowerIdentifiedExpr ke tvs vs e se
       let es' ← lowerIdentifiedList ke tvs vs es ses
       pure (e' :: es')
+  | _, _ => none
+
+def lowerIdentifiedBranches (ke : KindEnv) (tvs vs : List ValName) :
+    List (Surface.Pattern × Surface.Expr) → List IdentifiedExpr → Option (List Lowered)
+  | [], [] => some []
+  | (pat, body) :: rest, sbody :: srest => do
+      let body' ← lowerIdentifiedExpr ke tvs (patVars pat ++ vs) body sbody
+      let rest' ← lowerIdentifiedBranches ke tvs vs rest srest
+      pure (body' :: rest')
   | _, _ => none
 
 def lowerIdentifiedRecBinds (ke : KindEnv) (tvs recScope : List ValName)
@@ -422,7 +580,7 @@ def lowerListWithProvenance (owner : SourceNode) (index : Nat) (isRoot : Bool) :
         binderTargets := item'.binderTargets ++ tail'.binderTargets }
 end
 
-/-- Match-free construction-time lowering. The `SpannedExpr` must mirror the
+/-- Construction-time lowering. The `SpannedExpr` must mirror the
     Surface tree; shape mismatches fail instead of silently corrupting paths. -/
 def lowerWithProvenance (ctors : CtorEnv) (surface : Surface.Expr)
     (spanned : SpannedExpr) : Option Lowered := do
@@ -441,12 +599,14 @@ def foundTyAtCorePath (e : Expr) (path : CorePath) : Option Ty := do
 
 abbrev SourceTypeMap := List (SourceId × List (CorePath × Ty))
 abbrev InferredSurfaceBinderSchemes := List (SurfaceBinderSite × PolyTy)
+abbrev PatternBinderTypeMap := List (SurfaceBinderSite × List (CorePath × Ty))
 
 structure TypedLowered where
   lowering : Lowered
   inference : FoundResult
   sourceTypes : SourceTypeMap
   inferredBinderSchemes : InferredSurfaceBinderSchemes
+  patternBinderTypes : PatternBinderTypeMap
 
 structure SourceHover where
   source : SourceNode
@@ -479,6 +639,30 @@ def TypedLowered.sourceTypesTotal (r : TypedLowered) : Bool :=
             paths.length == types.length &&
               (paths.zip types).all fun (path, typedPath, _ty) => path == typedPath
 
+def patternBinderTargets (targets : BinderTargetMap) : BinderTargetMap :=
+  targets.filter fun (surface, _target) =>
+    match surface with
+    | .patCapture _ _ _ => true
+    | _ => false
+
+def captureRhsPaths : BinderOriginTarget → List CorePath
+  | .absent _ => []
+  | .present sites => sites.flatMap fun
+      | .patCapture paths _ => paths.map (· ++ [.letRhs])
+      | _ => []
+
+/-- Pattern-binder monotypes are total over the structural capture domain:
+    every surviving capture let has a `.found` RHS type and eliminated captures
+    have an explicit empty result. -/
+def TypedLowered.patternBinderTypesTotal (r : TypedLowered) : Bool :=
+  let targets := patternBinderTargets r.lowering.binderTargets
+  targets.length == r.patternBinderTypes.length &&
+    (targets.zip r.patternBinderTypes).all fun pair =>
+      let ((site, target), (typedSite, types)) := pair
+      let paths := captureRhsPaths target
+      site == typedSite && paths.length == types.length &&
+        (paths.zip types).all fun (path, typedPath, _ty) => path == typedPath
+
 def typesAtTarget (output : Expr) : OriginTarget → List (CorePath × Ty)
   | .absent _ => []
   | .present paths => paths.filterMap fun path =>
@@ -486,8 +670,31 @@ def typesAtTarget (output : Expr) : OriginTarget → List (CorePath × Ty)
 
 def joinBinderSchemes (targets : BinderTargetMap) (schemes : BinderSchemeMap) :
     InferredSurfaceBinderSchemes :=
-  targets.filterMap fun (surface, core) =>
-    (schemes.find? fun pair => pair.1 == core).map fun pair => (surface, pair.2)
+  targets.flatMap fun (surface, target) =>
+    match target with
+    | .absent _ => []
+    | .present sites => sites.flatMap fun site =>
+        -- Pattern captures are source-level monotypes, not generalisation sites.
+        -- Their compiler-generated `letIn` facts therefore stay out of this map.
+        match site with
+        | .patCapture _ _ => []
+        | _ =>
+            match schemes.find? fun pair => pair.1 == site with
+            | some pair => [(surface, pair.2)]
+            | none => []
+
+def patternBinderTypesAt (output : Expr) (targets : BinderTargetMap) : PatternBinderTypeMap :=
+  targets.filterMap fun (surface, target) =>
+    match surface, target with
+    | .patCapture _ _ _, .present sites =>
+        let types := sites.flatMap fun
+          | .patCapture paths _ => paths.filterMap fun path =>
+              let rhsPath := path ++ [.letRhs]
+              (foundTyAtCorePath output rhsPath).map fun ty => (rhsPath, ty)
+          | _ => []
+        some (surface, types)
+    | .patCapture _ _ _, .absent _ => some (surface, [])
+    | _, _ => none
 
 /-- Infer exactly the lowered Core term, then join types and inferred schemes by
     the paths emitted during lowering. No Surface/Core structural zip occurs. -/
@@ -498,6 +705,7 @@ def inferWithProvenance (ctors : CtorEnv) (lowering : Lowered) : Option TypedLow
     inference
     sourceTypes := lowering.sourceTargets.map fun (id, target) =>
       (id, typesAtTarget inference.output target)
-    inferredBinderSchemes := joinBinderSchemes lowering.binderTargets inference.binderSchemes }
+    inferredBinderSchemes := joinBinderSchemes lowering.binderTargets inference.binderSchemes
+    patternBinderTypes := patternBinderTypesAt inference.output lowering.binderTargets }
 
 end SurfaceBridge.Provenance

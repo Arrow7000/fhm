@@ -46,8 +46,8 @@ private def letParamPaths : Bool :=
   match lowerWithProvenance demoCtors letSurface letSpanned with
   | some r =>
       r.binderTargets ==
-        [(.letIn 0, .letIn []),
-         (.letParam 0 0, .lambda [.letRhs])] &&
+        [(.letIn 0, .present [.letIn []]),
+         (.letParam 0 0, .present [.lambda [.letRhs]])] &&
       r.sourceTargets.contains (1, .present [[.letRhs, .lambdaBody]]) &&
       r.provenanceTotal
   | none => false
@@ -114,8 +114,8 @@ private def recBinderJoin : Bool :=
   | some lowering =>
       lowering.provenanceTotal &&
       lowering.binderTargets ==
-        [(.letRec 0 0, .letRec [] 0),
-         (.letRecParam 0 0 0, .lambda [.letRecRhs 0])] &&
+        [(.letRec 0 0, .present [.letRec [] 0]),
+         (.letRecParam 0 0 0, .present [.lambda [.letRecRhs 0]])] &&
       match inferWithProvenance demoCtors lowering with
       | some typed =>
           match typed.inferredBinderSchemes with
@@ -123,7 +123,7 @@ private def recBinderJoin : Bool :=
           | _ => false
       | none => false
 
-private def patCompFormsAreExplicitlyDeferred : Bool :=
+private def patCompFormsHaveTotalProvenance : Bool :=
   let ifSurface : Surface.Expr :=
     .ife (.primLit (.bool true)) (.primLit (.int 1)) (.primLit (.int 0))
   let ifSpanned : SpannedExpr :=
@@ -132,8 +132,95 @@ private def patCompFormsAreExplicitlyDeferred : Bool :=
     .match_ (.primLit (.bool true)) [(.wildcard, .primLit (.int 1))]
   let matchSpanned : SpannedExpr :=
     .match_ (span 1 20) (.leaf (span 7 11)) [.leaf (span 19 20)]
-  (lowerWithProvenance demoCtors ifSurface ifSpanned).isNone &&
-    (lowerWithProvenance demoCtors matchSurface matchSpanned).isNone
+  match lowerWithProvenance demoCtors ifSurface ifSpanned,
+      lowerWithProvenance demoCtors matchSurface matchSpanned with
+  | some ifLowering, some matchLowering =>
+      ifLowering.provenanceTotal && matchLowering.provenanceTotal &&
+        toString (repr ifLowering.expr) ==
+          toString (repr ((lower demoCtors ifSurface).getD (.ctor ⟨"bad"⟩))) &&
+        toString (repr matchLowering.expr) ==
+          toString (repr ((lower demoCtors matchSurface).getD (.ctor ⟨"bad"⟩)))
+  | _, _ => false
+
+private def duplicatedArmAndCapturesAreCoalesced : Bool :=
+  let surface : Surface.Expr :=
+    .match_ (.pair (.primLit (.bool true)) (.primLit (.bool false)))
+      [(.pair (.ctor ⟨"True"⟩ []) (.ctor ⟨"True"⟩ []), .primLit (.int 0)),
+       (.pair (.name ⟨"x"⟩) (.name ⟨"y"⟩), .primLit (.int 1)),
+       (.wildcard, .primLit (.int 2))]
+  let spanned : SpannedExpr :=
+    .match_ (span 1 40)
+      (.pair (span 7 18) (.leaf (span 8 12)) (.leaf (span 13 18)))
+      [.leaf (span 20 21), .leaf (span 28 29), .leaf (span 39 40)]
+  match lowerWithProvenance demoCtors surface spanned with
+  | none => false
+  | some lowering =>
+      let armTargetsOk := match lowering.sourceTargets.find? (fun pair => pair.1 == 5) with
+        | some (_, .present paths) => paths.length == 2
+        | _ => false
+      let captureOk := fun capture =>
+        match lowering.binderTargets.find? (fun pair => pair.1 == .patCapture 0 1 capture) with
+        | some (_, .present [.patCapture paths foundCapture]) =>
+            foundCapture == capture && paths.length == 2
+        | _ => false
+      lowering.provenanceTotal && armTargetsOk && captureOk 0 && captureOk 1 &&
+        match inferWithProvenance demoCtors lowering with
+        | none => false
+        | some typed =>
+            typed.sourceTypesTotal && typed.patternBinderTypesTotal &&
+              typed.patternBinderTypes.length == 2 &&
+              typed.patternBinderTypes.all fun (site, types) =>
+                match site with
+                | .patCapture 0 1 _ =>
+                    types.length == 2 && types.all fun (_, ty) =>
+                      match ty with
+                      | .customTy ⟨"Bool"⟩ [] => true
+                      | _ => false
+                | _ => false
+
+private def eliminatedArmAndBinderAreExplicit : Bool :=
+  let surface : Surface.Expr :=
+    .match_ (.primLit (.bool true))
+      [(.wildcard, .primLit (.int 1)),
+       (.name ⟨"dead"⟩, .primLit (.int 2))]
+  let spanned : SpannedExpr :=
+    .match_ (span 1 30) (.leaf (span 7 11))
+      [.leaf (span 18 19), .leaf (span 29 30)]
+  match lowerWithProvenance demoCtors surface spanned with
+  | none => false
+  | some lowering =>
+      lowering.provenanceTotal &&
+        lowering.sourceTargets.contains
+          (3, .absent .eliminatedByPatternCompilation) &&
+        lowering.binderTargets.contains
+          (.patCapture 0 1 0, .absent .eliminatedByPatternCompilation)
+
+private def emptyMatchFailureOriginsAreTotal : Bool :=
+  let surface : Surface.Expr := .match_ (.primLit (.bool true)) []
+  let spanned : SpannedExpr := .match_ (span 1 12) (.leaf (span 7 11)) []
+  match lowerWithProvenance demoCtors surface spanned with
+  | some lowering =>
+      lowering.provenanceTotal && lowering.coreOrigins.any fun (_, origin) =>
+        origin.kind == .generated (.patternCompilation .failureSentinel)
+  | none => false
+
+private def nestedPatCompTraceRebases : Bool :=
+  let surface : Surface.Expr :=
+    .lambda (.name ⟨"b"⟩) none
+      (.ife (.var ⟨"b"⟩) (.primLit (.int 1)) (.primLit (.int 0)))
+  let spanned : SpannedExpr :=
+    .lambda (span 1 24)
+      (.ife (span 7 24) (.leaf (span 10 11))
+        (.leaf (span 17 18)) (.leaf (span 23 24)))
+  match lowerWithProvenance demoCtors surface spanned with
+  | none => false
+  | some lowering =>
+      lowering.provenanceTotal && lowering.coreOrigins.contains
+        ([.lambdaBody], ⟨⟨1, span 7 24⟩,
+          .generated (.patternCompilation .scrutineeLet)⟩) &&
+        match inferWithProvenance demoCtors lowering with
+        | some typed => typed.sourceTypesTotal
+        | none => false
 
 private def parserMirrorFeedsProvenance : Bool :=
   match parseExprWithSpans "let id x = x in id 7" with
@@ -152,7 +239,11 @@ def main : IO Unit := do
     ("expression hover uses provenance", expressionHoverUsesProvenance),
     ("list origins total", listOriginsTotal),
     ("recursive binder join", recBinderJoin),
-    ("PatComp forms explicitly deferred", patCompFormsAreExplicitlyDeferred),
+    ("PatComp forms have total provenance", patCompFormsHaveTotalProvenance),
+    ("duplicated arm and captures coalesced", duplicatedArmAndCapturesAreCoalesced),
+    ("eliminated arm and binder explicit", eliminatedArmAndBinderAreExplicit),
+    ("empty match failure origins total", emptyMatchFailureOriginsAreTotal),
+    ("nested PatComp trace rebases", nestedPatCompTraceRebases),
     ("parser mirror feeds provenance", parserMirrorFeedsProvenance)
   ]
   for (name, ok) in checks do
