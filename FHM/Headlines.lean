@@ -587,7 +587,7 @@ theorem WellTyped.progress {ctors : CtorEnv} {e : Expr}
     IsValue e ∨ ∃ e', Step e e' := by
   obtain ⟨τ, hty⟩ := hwt
   have hty0 : TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ e τ := by simpa [h_erased] using hty
-  exact TypeOfHM.progress hty0 rfl (SmallStep.AllMatchesExhaustive.eraseCtorBounds hexh)
+  exact TypeOfHM.progress hty0 rfl (SmallStep.AllMatchesExhaustive.eraseCtorBounds hexh) h_erased
 
 /-- Preservation for `WellTyped`: a step of an erased term preserves
     well-typedness (the step's target is itself erased, via `Step.preserves_erased`). -/

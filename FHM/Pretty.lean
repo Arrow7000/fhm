@@ -124,6 +124,7 @@ def Expr.prettyAux (ctx : List String) (prec : Nat) : Expr → String
   | .var n => (ctx[n]?).getD ("#" ++ toString n)
   | .ctor (.mk "Nil") => "[]"
   | .ctor (.mk s) => s
+  | .found _ inner => Expr.prettyAux ctx prec inner
   | .app (.app (.ctor (.mk "Pair")) a) b =>
       "(" ++ Expr.prettyAux ctx 0 a ++ ", " ++ Expr.prettyAux ctx 0 b ++ ")"
   | .app (.app (.ctor (.mk "Cons")) h) t =>

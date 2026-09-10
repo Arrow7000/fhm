@@ -7,6 +7,7 @@ name = "FHM"
 # Default build target = the verified stack.
 roots = [
   "FHM.Core",
+  "FHM.CorePath",
   "FHM.Decls",
   "FHM.SurfaceLang",
   "FHM.Surface.Lex",
