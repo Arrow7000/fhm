@@ -448,6 +448,25 @@ structure TypedLowered where
   sourceTypes : SourceTypeMap
   inferredBinderSchemes : InferredSurfaceBinderSchemes
 
+structure SourceHover where
+  source : SourceNode
+  types : List (CorePath × Ty)
+
+def TypedLowered.typesForSource (r : TypedLowered) (id : SourceId) :
+    List (CorePath × Ty) :=
+  (r.sourceTypes.find? fun pair => pair.1 == id).map (fun pair => pair.2) |>.getD []
+
+/-- Smallest containing expression span, joined to the types found at its Core
+    targets. This is the arbitrary-expression hover primitive for the slice. -/
+def TypedLowered.hoverAt? (r : TypedLowered) (line col : Nat) : Option SourceHover :=
+  let candidates := r.lowering.sourceNodes.filter fun node => node.span.contains line col
+  match candidates with
+  | [] => none
+  | first :: rest =>
+      let best := rest.foldl (fun best node =>
+        if node.span.area < best.span.area then node else best) first
+      some ⟨best, r.typesForSource best.id⟩
+
 /-- Every present source target found exactly one inferred monotype at each of
     its Core paths. Absent targets intentionally contribute no type. -/
 def TypedLowered.sourceTypesTotal (r : TypedLowered) : Bool :=

@@ -1,6 +1,6 @@
 # Implementation brief: `.found` typing output and lowering provenance
 
-**Status:** in progress; Core representation, found-producing inference, inferred binder schemes, and construction-time non-PatComp provenance landed
+**Status:** in progress; checkpoints 1–5 landed, with provenance still non-PatComp and bounds reporting still root-only
 **Date:** 2026-09-09
 **Related:** [`design-memo-dm-erased-shadow.md`](design-memo-dm-erased-shadow.md) (D4, D7, D8)
 
@@ -106,6 +106,17 @@ binder-token spans also still live in the parser's old flat `BinderSpan` sidecar
 the new slice supplies a stable structural binder identity and the join to
 inferred schemes, but replacing that final flat-span association is remaining
 LSP integration work rather than something this checkpoint pretends to solve.
+
+The first vertical checkpoint is `FHM.Bounds.Found`. It takes a successfully
+provenanced/inferred artifact, validates both provenance and the source/type
+join, reads the program HM type from the root `.found`, and invokes the existing
+bounds synthesizer at its established stripped-Core boundary. The smoke case
+demonstrates one list expression flowing through `.found` inference, a nested
+source-span hover lookup, and the root `BL 2 2 Int` report without a second HM
+inference run. This adapter is intentionally root-only: raw bounds entry points
+now reject `.found` with an explicit boundary error, and the eventual D8 walker
+must consume/map every node payload and emit source-keyed per-node bounds rather
+than treating this adapter as the final design.
 
 The final product must support surface match expressions and pattern-bound
 variables that survive compilation. PatComp must record which generated
