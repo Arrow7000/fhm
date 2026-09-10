@@ -1,7 +1,7 @@
 # Implementation brief: `.found` typing output and lowering provenance
 
-**Status:** in progress; checkpoints 1–5 landed, with provenance still non-PatComp and bounds reporting still root-only
-**Date:** 2026-09-09
+**Status:** in progress; checkpoints 1–6 landed, with bounds reporting still root-only and exact binder-token span wiring still pending
+**Date:** 2026-09-09; revised 2026-09-10
 **Related:** [`design-memo-dm-erased-shadow.md`](design-memo-dm-erased-shadow.md) (D4, D7, D8)
 
 ## Outcome
@@ -98,14 +98,13 @@ every Core path to have exactly one known origin, and every joined present targe
 to find a `.found` type.
 
 The slice covers primitive leaves, variables, constructors, applications,
-lambdas, ordinary lets, recursive groups, pair/cons/list sugar, and the lambdas
-generated for binding parameters. It uses ordinary terminating definitions; no
-new `partial def` is hidden behind its tooling role. `if` and `match` deliberately
-return `none` because both cross the uninstrumented PatComp boundary. Exact
-binder-token spans also still live in the parser's old flat `BinderSpan` sidecar:
-the new slice supplies a stable structural binder identity and the join to
-inferred schemes, but replacing that final flat-span association is remaining
-LSP integration work rather than something this checkpoint pretends to solve.
+lambdas, ordinary lets, recursive groups, pair/cons/list sugar, generated
+binding-parameter lambdas, `if`, and surface `match`. It uses ordinary
+terminating definitions; no new `partial def` is hidden behind its tooling role.
+Exact binder-token spans still live in the parser's old flat `BinderSpan`
+sidecar: the new slice supplies stable structural binder identities and joins,
+but replacing that final flat-span association is remaining LSP integration
+work rather than something this checkpoint pretends to solve.
 
 The first vertical checkpoint is `FHM.Bounds.Found`. It takes a successfully
 provenanced/inferred artifact, validates both provenance and the source/type
@@ -118,13 +117,17 @@ now reject `.found` with an explicit boundary error, and the eventual D8 walker
 must consume/map every node payload and emit source-keyed per-node bounds rather
 than treating this adapter as the final design.
 
-The final product must support surface match expressions and pattern-bound
-variables that survive compilation. PatComp must record which generated
-decision-tree/capture nodes came from each surface match/pattern and identify a
-primary hover/report target where several Core nodes share one origin. Eliminated
-unreachable source code must be reported as having no inferred Core type unless a
-separate, explicitly justified source-typing policy is later adopted. Positional
-walking of the finished surface and Core trees is not an acceptable substitute.
+Checkpoint 6 adds a PatComp-owned construction trace beside the verified
+emitter. It records every generated decision/scrutinee/capture/failure node,
+every emitted arm-body root, and every capture-let path. The surface provenance
+layer translates that source-agnostic trace, coalesces cloned arms and binders,
+and marks eliminated arm expressions and binders explicitly absent. A theorem
+states that the traced lowering's expression is definitionally the ordinary
+`lowerMatch` result. Pattern captures remain nongeneralising: their source-facing
+facts are monotypes read from `.found` at capture-let RHS paths, not the
+administrative lets' inferred scheme facts. Focused checks cover `if`, ordinary
+matches, duplicated arms/captures, eliminated arms/binders, and the synthetic
+failure term. Positional walking of finished Surface and Core trees is not used.
 
 ## Suggested checkpoint sequence
 
@@ -138,6 +141,6 @@ walking of the finished surface and Core trees is not an acceptable substitute.
 3. Return generalised binder schemes separately and prove their agreement with the corresponding solved monotypes/generalisation premises.
 4. Make lowering return total provenance for the non-match fragment; join it with `.found` and binder schemes for internal hover.
 5. Run one small program through `.found` → internal hover → BL report as the first vertical checkpoint.
-6. Extend provenance through PatComp and add match/pattern hover tests before declaring LSP/BL parity complete.
+6. **Landed:** extend provenance through PatComp and add match/pattern type-join tests. This removes the PatComp provenance blocker but does not by itself declare LSP/BL parity complete; exact binder-token spans and the per-node D8 bounds walk remain.
 
 Keep R1 (`Expr.erase` removal), full head-binder support, and polymorphic recursion out of these checkpoints.

@@ -1,7 +1,7 @@
 # Design memo: DM-erased regime, `.found` elaboration, two-layer BL ("the labyrinth exit")
 
-**Status:** design agreed 2026-09-08; decision record corrected 2026-09-09 after review of the originating session and the later implementation spikes
-**Date:** 2026-09-08; revised 2026-09-09
+**Status:** design agreed 2026-09-08; decision record corrected 2026-09-09 after review of the originating session and the later implementation spikes; `.found`/provenance checkpoints 1–6 landed 2026-09-10
+**Date:** 2026-09-08; revised 2026-09-10
 **Motivation:** end the whiplash of four half-landed campaigns (CEK, erasure, completeness spine, letRec-promotion) with ONE architecture the owner can hold in their head; each decision below is motivated and states what it was chosen *against*
 **Related:** historical `findings-polyrec-stress-and-survey.md` at commit `ed332a6` (bug log B1–B8, branch map; file is not present on this branch); [`complexity-budget.md`](complexity-budget.md) (n² root-cause analysis, §3); `scratch/POLYREC-README.md` (suite); branch `erasure-migration` (proved erased metatheory); commit `be9cc14f` (end of the ORIGINAL type-erased era — mining reference)
 
@@ -91,6 +91,6 @@ It is not a revert target (BL entanglement, and the old era predates all safety 
 
 1. The completeness spine's statements may be the real blind-tax cost center (they quantify over annotations) — if Spike A shows blindness saturating the spine, D5's "smaller surface" claim weakens and the BL design must be revisited *before* the spine ports.
 2. Blind `Pins` in the declarative rules weakens/strengthens which lemmas? (cofinite machinery is equality-sensitive — subst/weaken lemmas over blind equality need checking).
-3. `.found` ↔ surface correspondence at PatComp sites: PatComp inserts capture-lets. Stable IDs/spans and generated-node provenance must map through the decision tree; positional correspondence is insufficient.
+3. **Resolved at the structural provenance layer (2026-09-10):** PatComp now emits a source-agnostic construction trace for generated nodes, copied/eliminated arms, and capture-let paths; the surface layer coalesces it by stable source IDs. Exact pattern-binder token spans still need to replace the parser/LSP's old flat `BinderSpan` association.
 4. Decide the exact machine-owned representation for generalised binder schemes alongside per-node `.found` monotypes before committing the LSP API.
 5. R1 may still reduce proof plumbing, but its required freshness conditions and payoff should be measured in a new bounded spike; it is not a dependency of the typed-output vertical slice.
