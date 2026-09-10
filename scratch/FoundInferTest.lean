@@ -194,6 +194,89 @@ private def oneWrapperPerLogicalNode : Bool :=
     | some r => fullyFound r.output
     | none => false
 
+private def letSchemeIndexed : Bool :=
+  let source : Expr :=
+    .letIn none (.lambda none (.var 0))
+      (.app (.var 0) (.primLit (.int 1)))
+  match inferFound [] source with
+  | some r => match r.binderSchemes with
+    | [(.letIn [], ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)] => true
+    | _ => false
+  | _ => false
+
+private def branchSchemePaths : Bool :=
+  let branchBody : Expr := .letIn none (.lambda none (.var 0)) (.var 0)
+  let source : Expr := .match_ (.primLit .unit)
+    [(.wildcard, branchBody), (.wildcard, branchBody)]
+  match inferFound [] source with
+  | some r => match r.binderSchemes with
+    | [(.letIn [.matchBranch 0], ⟨1, .arrow (.bvar 0) (.bvar 0)⟩),
+       (.letIn [.matchBranch 1], ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)] => true
+    | _ => false
+  | _ => false
+
+private def recSchemesIndexed : Bool :=
+  let binding : Expr := .letIn none (.lambda none (.var 0)) (.var 0)
+  let source : Expr := .letRec [none] [binding] (.var 0)
+  match inferFound [] source with
+  | some r => match r.binderSchemes with
+    | [(.letRec [] 0, ⟨1, .arrow (.bvar 0) (.bvar 0)⟩),
+       (.letIn [.letRecRhs 0], ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)] => true
+    | _ => false
+  | _ => false
+
+private def nestedSchemeDepthClosed : Bool :=
+  let outerAnn : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
+  let innerAnn : PolyTy :=
+    ⟨1, .arrow (.bvar 1) (.arrow (.bvar 0) (.bvar 1))⟩
+  let zRhs : Expr :=
+    .lambda (some (.bvar 1))
+      (.lambda (some (.bvar 0)) (.var 1))
+  let innerRhs : Expr := .letIn none zRhs (.var 0)
+  let outerRhs : Expr :=
+    .letIn (some innerAnn) innerRhs
+      (.lambda (some (.bvar 0)) (.var 0))
+  let source : Expr := .letIn (some outerAnn) outerRhs (.var 0)
+  match inferFound [] source with
+  | some r => match r.binderSchemes with
+    | [(.letIn [.letRhs, .letRhs],
+        ⟨0, .arrow (.bvar 1) (.arrow (.bvar 0) (.bvar 1))⟩)] => true
+    | _ => false
+  | _ => false
+
+private def annotatedRecRhsSchemeDepthClosed : Bool :=
+  let outerAnn : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
+  let memberAnn : PolyTy := ⟨1, .arrow (.bvar 1) (.bvar 1)⟩
+  let memberRhs : Expr :=
+    .letIn none (.lambda (some (.bvar 1)) (.var 0)) (.var 0)
+  let outerRhs : Expr := .letRec [some memberAnn] [memberRhs] (.var 0)
+  let source : Expr := .letIn (some outerAnn) outerRhs (.var 0)
+  match inferFound [] source with
+  | some r => match r.binderSchemes with
+    | [(.letIn [.letRhs, .letRecRhs 0],
+        ⟨0, .arrow (.bvar 1) (.bvar 1)⟩)] => true
+    | _ => false
+  | _ => false
+
+private def letSchemeReceivesBodySuffix : Bool :=
+  let source : Expr :=
+    .lambda none (.letIn none (.var 0)
+      (.app (.var 0) (.primLit (.int 1))))
+  match inferFound [] source with
+  | some r => match r.binderSchemes with
+    | [(.letIn [.lambdaBody], ⟨0, .arrow (.prim .int) (.fvar _)⟩)] => true
+    | _ => false
+  | _ => false
+
+private def mutualGroupUsesSharedGeneralization : Bool :=
+  let source : Expr := .letRec [none, none] [.var 1, .var 0] (.var 0)
+  match inferFound [] source with
+  | some r => match r.binderSchemes with
+    | [(.letRec [] 0, ⟨1, .bvar 0⟩),
+       (.letRec [] 1, ⟨1, .bvar 0⟩)] => true
+    | _ => false
+  | _ => false
+
 def main : IO Unit := do
   let checks := [
     ("app payload suffixes", appPayloadsSolved),
@@ -207,7 +290,14 @@ def main : IO Unit := do
     ("payload-only substitution", substitutionLeavesSourceAnn),
     ("open annotation remains rigid", openAnnotationMisuseRejected),
     ("no skolem/source collision", skolemCollisionCannotCorruptShape),
-    ("one wrapper per logical node", oneWrapperPerLogicalNode)
+    ("one wrapper per logical node", oneWrapperPerLogicalNode),
+    ("let scheme index", letSchemeIndexed),
+    ("branch scheme paths", branchSchemePaths),
+    ("let-rec scheme index", recSchemesIndexed),
+    ("nested scheme close depth", nestedSchemeDepthClosed),
+    ("annotated rec RHS scheme depth", annotatedRecRhsSchemeDepthClosed),
+    ("let scheme body suffix", letSchemeReceivesBodySuffix),
+    ("shared recursive generalization", mutualGroupUsesSharedGeneralization)
   ]
   for (name, ok) in checks do
     IO.println s!"{if ok then "PASS" else "FAIL"}: {name}"

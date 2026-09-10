@@ -1,6 +1,6 @@
 # Implementation brief: `.found` typing output and lowering provenance
 
-**Status:** in progress; Core representation and found-producing inference landed
+**Status:** in progress; Core representation, found-producing inference, and inferred binder schemes landed
 **Date:** 2026-09-09
 **Related:** [`design-memo-dm-erased-shadow.md`](design-memo-dm-erased-shadow.md) (D4, D7, D8)
 
@@ -21,6 +21,13 @@ There is exactly one `.found` wrapper for every logical Core expression node. It
 | Surface identity/span and generated-node origin | `SourceId ↔ CorePath` provenance relation | lowering |
 
 User annotations remain in their existing term slots. Machine-inferred binder schemes must not overwrite or masquerade as user annotations.
+
+The initial binder index contains only schemes actually created by inference:
+unannotated `let` binders and unannotated `letRec` members. Declared schemes
+remain available from their source annotation slots. Lambda parameters and
+pattern captures are nongeneralising monotypes; they can be added as trivial
+schemes if a concrete tooling consumer needs a total all-binder view, but they
+are not represented as inferred generalisations in this checkpoint.
 
 ## Why provenance is not another `.found` payload
 

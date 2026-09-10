@@ -72,6 +72,39 @@ inductive CoreBinderSite where
   | patCapture (paths : List CorePath) (capture : Nat)
   deriving Repr, DecidableEq, BEq
 
+namespace CoreBinderSite
+
+def paths : CoreBinderSite → List CorePath
+  | .lambda path | .letIn path | .letRec path _ => [path]
+  | .patCapture paths _ => paths
+
+/-- Rebase a binder site below one logical Core edge. Pattern captures may have
+    several equivalent Core targets, so every target path is rebased. -/
+def below (step : CoreStep) : CoreBinderSite → CoreBinderSite
+  | .lambda path => .lambda (step :: path)
+  | .letIn path => .letIn (step :: path)
+  | .letRec path member => .letRec (step :: path) member
+  | .patCapture paths capture => .patCapture (CorePath.below step paths) capture
+
+end CoreBinderSite
+
+/-- Schemes inferred for binder-producing Core positions. Association-list form
+    preserves construction order and does not pretend paths survive rewrites. -/
+abbrev BinderSchemeMap := List (CoreBinderSite × PolyTy)
+
+namespace BinderSchemeMap
+
+/-- Rebase every binder key below one logical Core edge. -/
+def below (step : CoreStep) (schemes : BinderSchemeMap) : BinderSchemeMap :=
+  schemes.map fun (site, scheme) => (site.below step, scheme)
+
+/-- Apply a type transformation to scheme bodies without changing binder keys
+    or quantifier counts. -/
+def mapTys (f : Ty → Ty) (schemes : BinderSchemeMap) : BinderSchemeMap :=
+  schemes.map fun (site, scheme) => (site, { scheme with body := f scheme.body })
+
+end BinderSchemeMap
+
 private def foundPathDemo : Expr :=
   .found (.prim .int)
     (.app
