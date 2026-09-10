@@ -405,6 +405,8 @@ theorem Expr.mem_tyFreeVars_eraseBounds (e : Expr) (x : Nat) :
   | match_ _scrut branches ihs ihbs =>
     simp only [Expr.eraseBounds, Expr.tyFreeVars, List.mem_append, ihs]
     exact or_congr_right (Expr.mem_tyFreeVars_BranchList_eraseBounds branches x ihbs)
+  | found ty inner ih =>
+    simp [Expr.eraseBounds, Expr.tyFreeVars, Ty.mem_freeVars_eraseBounds, ih]
   | letRec anns bindings _body ihbs ihb =>
     simp only [Expr.eraseBounds, Expr.tyFreeVars, List.mem_append, ihb]
     rw [Expr.mem_tyFreeVars_AnnList_eraseBounds,
@@ -2014,6 +2016,11 @@ theorem Expr.substTyFvars_tyBvarBounded {S : List (Nat × Ty)} (hS : ∀ p ∈ S
     simp only [Prod.mk.injEq] at heq
     obtain ⟨_, rfl⟩ := heq
     exact ihbr p' b' hmem (Expr.TyBvarBounded.BranchList_iff.mp hb.2 p' b' hmem)
+  | found ty inner ih =>
+    intro d hb
+    rw [Expr.substTyFvars_found]
+    simp only [Expr.TyBvarBounded] at hb ⊢
+    exact ⟨ContainsBvarsUpTo.substFvars hS hb.1, ih hb.2⟩
   | letRec anns bindings body ihbs ihb =>
     intro d hb
     obtain ⟨hsch, hrg, hbody⟩ := hb
@@ -4370,6 +4377,17 @@ theorem Expr.mem_tyFreeVars_substTyFvars {S : List (Nat × Ty)} {w : Nat} :
       rcases ihbr p0 b0 hpb0 hwpb with hh | hh
       · exact Or.inl (Or.inr (Expr.mem_branchListTyFreeVars_of hpb0 hh))
       · exact Or.inr hh
+  | found ty inner ih =>
+    intro h
+    rw [Expr.substTyFvars_found] at h
+    simp only [Expr.tyFreeVars, List.mem_append] at h ⊢
+    rcases h with h | h
+    · rcases Ty.mem_freeVars_substFvars h with hh | hh
+      · exact Or.inl (Or.inl hh)
+      · exact Or.inr hh
+    · rcases ih h with hh | hh
+      · exact Or.inl (Or.inr hh)
+      · exact Or.inr hh
   | letRec anns bindings body ihbs ihb =>
     intro h
     rw [Expr.substTyFvars_letRec] at h
@@ -6488,6 +6506,10 @@ theorem TypeOfHM.rec_strong
       (hf : TypeOfHM ctx f (.arrow argTy retTy)) (hinput : TypeOfHM ctx input argTy),
       motive ctx f (.arrow argTy retTy) hf → motive ctx input argTy hinput →
       motive ctx (.app f input) retTy (.app hf hinput))
+    (found : ∀ {ctx : Ctx} {ty : Ty} {inner : Expr}
+      (hinner : TypeOfHM ctx inner ty),
+      motive ctx inner ty hinner →
+      motive ctx (.found ty inner) ty (.found hinner))
     (letIn : ∀ {ann : Option PolyTy} {ctx : Ctx} {boundExpr : Expr} {bodyCtx : Ctx} {body : Expr}
       {bodyTy : Ty} {M : PolyTy} {L : List Nat}
       (hwf : M.WF) (hann : ann.Pins M)
@@ -6548,6 +6570,7 @@ theorem TypeOfHM.rec_strong
   | primBinOpCharLt htrue hfalse ihtrue ihfalse => exact primBinOpCharLt htrue hfalse ihtrue ihfalse
   | lambda hpc hann heq hbody ihbody => exact lambda hpc hann heq hbody ihbody
   | app hf hinput ihf ihinput => exact app hf hinput ihf ihinput
+  | found hinner ihinner => exact found hinner ihinner
   | letIn hwf hann hcofin heq hbody ihcofin ihbody =>
       exact letIn hwf hann hcofin heq hbody ihcofin ihbody
   | var hlook hlc hinst => exact var hlook hlc hinst
@@ -6661,6 +6684,9 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
     simp only [Expr.substTyFvar]
     simp only [Ty.substFvar] at ihf
     exact .app ihf ihinput
+  | found hinner ihinner =>
+    simp only [Expr.substTyFvar]
+    exact .found ihinner
   | lambda hpc hann heq hbody ihbody =>
     subst heq
     expose_names
@@ -6964,6 +6990,9 @@ theorem TypeOfHM.eraseBounds_of {ctx : Ctx} {e : Expr} {τ : Ty}
     simp only [Expr.eraseBounds, Ty.eraseBounds_arrow, Ty.eraseBounds_prim,
       Ty.eraseBounds_customTy, TyList.eraseBounds_nil] at ihtrue ihfalse ⊢
     exact .primBinOpCharLt ihtrue ihfalse
+  | found hinner ihinner =>
+    simp only [Expr.eraseBounds]
+    exact .found ihinner
   | app _ _ ihf ihinput =>
     simp only [Expr.eraseBounds, Ty.eraseBounds_arrow] at ihf ⊢
     exact .app ihf ihinput
@@ -7180,6 +7209,7 @@ theorem TypeOfHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
   | _, _, _, .lambda hpc _ _ hbody => .arrow hpc (TypeOfHM.regular hbody)
   | _, _, _, .app hf _ => by
     have := TypeOfHM.regular hf; cases this with | arrow _ hret => exact hret
+  | _, _, _, .found hinner => TypeOfHM.regular hinner
   | _, _, _, .letIn _ _ _ _ hbody => TypeOfHM.regular hbody
   | _, _, _, .var _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
   | _, _, _, .ctor _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
@@ -7287,6 +7317,8 @@ theorem TypeOfHM.varsBelow {ctx : Ctx} {e : Expr} {τ : Ty}
   | app hf hinput ihf ihinput =>
     simp only [Expr.varsBelow, Bool.and_eq_true]
     exact ⟨ihf, ihinput⟩
+  | found hinner ihinner =>
+    simpa only [Expr.varsBelow] using ihinner
   | letIn hwf hann hcofin heq hbody ihcofin ihbody =>
     expose_names
     subst heq
@@ -8098,6 +8130,7 @@ theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : Po
     | primBinOpIntLt _ _ ihtrue ihfalse => intro ep heq; exact .primBinOpIntLt (ihtrue ep heq) (ihfalse ep heq)
     | primBinOpCharLt _ _ ihtrue ihfalse => intro ep heq; exact .primBinOpCharLt (ihtrue ep heq) (ihfalse ep heq)
     | app hf hinput ihf ihinput => intro ep heq; exact .app (ihf ep heq) (ihinput ep heq)
+    | found hinner ihinner => intro ep heq; exact .found (ihinner ep heq)
     | @lambda paramTy ann bodyCtx ctx body bodyTy hpc hann heqctx hbody ihbody =>
       intro ep heq
       refine TypeOfHM.lambda hpc hann rfl ?_
@@ -8235,6 +8268,10 @@ theorem TypeOfHM.weaken_env
     intro env_pre' hctx
     simp only [Expr.shiftFrom]
     exact .app (ihf env_pre' hctx) (ihinput env_pre' hctx)
+  | found hinner ihinner =>
+    intro env_pre' hctx
+    simp only [Expr.shiftFrom]
+    exact .found (ihinner env_pre' hctx)
   | ctor hlook htyargs hinst =>
     intro env_pre' _
     exact .ctor hlook htyargs hinst
@@ -8380,6 +8417,21 @@ vacuous and the cofinite `openTyVars`-commutation bookkeeping never fires. -/
 def HasSchemeHM (ctx : Ctx) (v : Expr) (M : PolyTy) : Prop :=
   ∀ τ : Ty, Instantiates M τ → TypeOfHM ctx v τ
 
+/-- Erasure is the runtime boundary: its image contains no inference markers. -/
+private theorem Expr.erase_ne_found (e : Expr) (ty : Ty) (inner : Expr) :
+    e.erase ≠ .found ty inner := by
+  induction e using Expr.rec_strong with
+  | primLit _ => simp [Expr.erase]
+  | primBinOp _ => simp [Expr.erase]
+  | lambda _ _ _ => simp [Expr.erase]
+  | app _ _ _ _ => simp [Expr.erase]
+  | letIn _ _ _ _ _ => simp [Expr.erase]
+  | var _ => simp [Expr.erase]
+  | ctor _ => simp [Expr.erase]
+  | match_ _ _ _ _ => simp [Expr.erase]
+  | found _ _ ih => simpa [Expr.erase] using ih
+  | letRec _ _ _ _ _ => simp [Expr.erase]
+
 /-- Substituting `vs` (each typed at every instance of its scheme `Ms[j]`) for a
     block of `Ms`-typed binders preserves `TypeOfHM`. Decoration-blind port of
     `TypeOfElabHM.subst_lemma_many`, restricted to the image of `Expr.erase`
@@ -8418,6 +8470,7 @@ theorem TypeOfHM.subst_lemma_many
         cases hfalse with
         | ctor hlookF hlcF hinstF =>
           exact .primBinOpCharLt (.ctor hlookT hlcT hinstT) (.ctor hlookF hlcF hinstF)
+    | found hinner => exact absurd h_erased (Expr.erase_ne_found _ _ _)
     | lambda hpc hann heq hbody =>
       subst heq
       expose_names
@@ -8882,6 +8935,7 @@ private lemma TypeOfHM.ctor_chain_has_customTy_form
   | letIn _ _ _ _ _ => cases h_chain
   | var _          => cases h_chain
   | match_ _ _ _ _ => cases h_chain
+  | found _ _ _ => cases h_chain
   | letRec _ _ _ _ _ => cases h_chain
 
 /-- A value of arrow type is a λ, a ctor chain, a bare primop, or a one-argument-
@@ -9009,23 +9063,24 @@ theorem TypeOfHM.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
   | letIn _ _ _ _ _ => cases h_chain
   | var _ => cases h_chain
   | match_ _ _ _ _ => cases h_chain
+  | found _ _ _ => cases h_chain
   | letRec _ _ _ _ _ => cases h_chain
 
 /-- Progress: a closed, well-typed term is a value or takes a step. -/
 theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
     (h_ty : TypeOfHM ctx e τ) (h_closed : ctx.env = [])
-    (h_exh : SmallStep.AllMatchesExhaustive ctx.ctors e) :
+    (h_exh : SmallStep.AllMatchesExhaustive ctx.ctors e) (h_erased : e.erase = e) :
     SmallStep.IsValue e ∨ ∃ e', SmallStep.Step e e' := by
   open SmallStep in
   suffices H : ∀ (n : Nat) (e : Expr), e.size ≤ n → ∀ (ctx : Ctx) (τ : Ty),
       TypeOfHM ctx e τ → ctx.env = [] → AllMatchesExhaustive ctx.ctors e →
-      IsValue e ∨ ∃ e', Step e e' by
-    exact H e.size e (Nat.le_refl _) ctx τ h_ty h_closed h_exh
+      e.erase = e → IsValue e ∨ ∃ e', Step e e' by
+    exact H e.size e (Nat.le_refl _) ctx τ h_ty h_closed h_exh h_erased
   intro n
   induction n with
   | zero => intro e he; exact absurd he (Nat.not_le.mpr (Expr.size_pos e))
   | succ n ih =>
-    intro e hsize ctx τ h_ty h_closed h_exh
+    intro e hsize ctx τ h_ty h_closed h_exh h_erased
     cases h_ty with
     | primLitUnit => exact .inl (.primLit _)
     | primLitInt => exact .inl (.primLit _)
@@ -9038,12 +9093,17 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
     | ctor _ _ _ => exact .inl (.ctor _)
     | lambda _ _ _ _ => exact .inl (.lambda _ _)
     | var h_lookup _ _ => rw [h_closed] at h_lookup; simp at h_lookup
+    | found hinner =>
+      change (Expr.found τ _).erase = Expr.found τ _ at h_erased
+      exact False.elim ((Expr.erase_ne_found _ _ _) h_erased)
     | @app _ f _ _ arg h_f h_arg =>
       cases h_exh with
       | app h_exh_f h_exh_arg =>
         simp only [Expr.size] at hsize
-        rcases ih f (by omega) ctx _ h_f h_closed h_exh_f with hvf | ⟨f', hf⟩
-        · rcases ih arg (by omega) ctx _ h_arg h_closed h_exh_arg with hva | ⟨arg', harg⟩
+        have herased : f.erase = f ∧ arg.erase = arg := by
+          simpa [Expr.erase_app] using h_erased
+        rcases ih f (by omega) ctx _ h_f h_closed h_exh_f herased.1 with hvf | ⟨f', hf⟩
+        · rcases ih arg (by omega) ctx _ h_arg h_closed h_exh_arg herased.2 with hva | ⟨arg', harg⟩
           · rcases TypeOfHM.canonical_arrow h_f hvf with
                 ⟨ann, body, rfl⟩ | hchain | ⟨op, rfl⟩ | ⟨op, v, rfl⟩
             · exact .inr ⟨_, .beta hva⟩
@@ -9083,7 +9143,12 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
       cases h_exh with
       | match_ h_exh_scrut _ h_branch_ty h_match_exh =>
         simp only [Expr.size] at hsize
-        rcases ih scrut (by omega) ctx _ h_scrut h_closed h_exh_scrut with hvs | ⟨scrut', hscrut⟩
+        have herased : scrut.erase = scrut := by
+          have hboth : scrut.erase = scrut ∧
+              (branches.map fun pe => (pe.1, pe.2.erase)) = branches := by
+            simpa [Expr.erase_match] using h_erased
+          exact hboth.1
+        rcases ih scrut (by omega) ctx _ h_scrut h_closed h_exh_scrut herased with hvs | ⟨scrut', hscrut⟩
         · obtain ⟨⟨pat0, body0⟩, rest0, hbeq⟩ := List.exists_cons_of_ne_nil h_ne
           have hb0 : (pat0, body0) ∈ branches := by rw [hbeq]; exact List.mem_cons_self
           by_cases hchain : IsCtorChain scrut
@@ -9105,6 +9170,7 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
                   cases h
                   exact ⟨nm, [], .base nm⟩)
                 (fun _ _ _ _ => by intro h; cases h)
+                (fun _ _ ih h => by cases h)
                 (fun _ _ _ _ _ => by intro h; cases h)
                 scrut hchain) with ⟨name, args, hcat⟩
             have hcover : ∃ pat body, (pat, body) ∈ branches ∧
@@ -9277,6 +9343,8 @@ theorem SmallStep.AllMatchesExhaustive.erase {ctors : CtorEnv} {e : Expr}
     cases h with | app hf ha => simp only [Expr.erase_app]; exact .app (ihf hf) (iharg ha)
   | letIn ann rhs body ihr ihb =>
     cases h with | letIn hr hb => simp only [Expr.erase_letIn]; exact .letIn (ihr hr) (ihb hb)
+  | found ty inner ih =>
+    cases h with | found hinner => simpa [Expr.erase] using ih hinner
   | match_ scrut branches ihs ihbr =>
     have hbodies : ∀ {brs : List (MatchPattern × Expr)},
         (∀ pat e, (pat, e) ∈ brs → AllMatchesExhaustive ctors e →
@@ -9335,6 +9403,8 @@ theorem SmallStep.AllMatchesExhaustive.eraseCtorBounds {ctors : CtorEnv} {e : Ex
     cases h with | app hf ha => exact .app (ihf hf) (iharg ha)
   | letIn ann rhs body ihr ihb =>
     cases h with | letIn hr hb => exact .letIn (ihr hr) (ihb hb)
+  | found ty inner ih =>
+    cases h with | found hinner => exact .found (ih hinner)
   | match_ scrut branches ihs ihbr =>
     have hbodies : ∀ {brs : List (MatchPattern × Expr)},
         (∀ pat e, (pat, e) ∈ brs → AllMatchesExhaustive ctors e →
@@ -9429,6 +9499,9 @@ theorem SmallStep.Step.preserves_erased {e e' : Expr}
         congr 1
         · exact ihr threshold n h_re
         · exact ihb (threshold + 1) n h_bd
+    | found ty inner ih =>
+        intro threshold n h_erased
+        exact absurd h_erased (Expr.erase_ne_found _ _ _)
     | match_ scrut branches ihs ihbs =>
         intro threshold n h_erased
         have h_m : Expr.match_ scrut.erase (branches.map fun pe => (pe.1, pe.2.erase))
@@ -9536,6 +9609,9 @@ theorem SmallStep.Step.preserves_erased {e e' : Expr}
         congr 1
         · exact ihr k vs h_re hvs
         · exact ihb (k + 1) vs h_bd hvs
+    | found ty inner ih =>
+        intro k vs h_erased hvs
+        exact absurd h_erased (Expr.erase_ne_found _ _ _)
     | match_ scrut branches ihs ihbs =>
         intro k vs h_erased hvs
         have h_m : Expr.match_ scrut.erase (branches.map fun pe => (pe.1, pe.2.erase))
@@ -9885,7 +9961,7 @@ theorem TypeOfHM.type_safety {ctors : CtorEnv} {e : Expr} {τ : Ty}
     (h_exh : SmallStep.AllMatchesExhaustive ctors e) :
     (SmallStep.IsValue e ∨ ∃ e', SmallStep.Step e e') ∧
     (∀ e', SmallStep.Step e e' → TypeOfHM ⟨[], ctors⟩ e' τ) :=
-  ⟨TypeOfHM.progress h_ty rfl h_exh,
+  ⟨TypeOfHM.progress h_ty rfl h_exh h_erased,
    fun _ hstep => TypeOfHM.preservation hstep h_ty h_erased⟩
 
 /-- **Iterated type safety**: every term reachable from a closed, erased,
@@ -9897,7 +9973,7 @@ theorem TypeOfHM.type_safety_star {ctors : CtorEnv} {e : Expr} {τ : Ty}
       TypeOfHM ⟨[], ctors⟩ e' τ ∧ (SmallStep.IsValue e' ∨ ∃ e'', SmallStep.Step e' e'') := by
   intro e' h_rtc
   obtain ⟨h_ty', h_erased', h_exh'⟩ := TypeOfHM.preservation_star h_rtc h_ty h_erased h_exh
-  exact ⟨h_ty', TypeOfHM.progress h_ty' rfl h_exh'⟩
+  exact ⟨h_ty', TypeOfHM.progress h_ty' rfl h_exh' h_erased'⟩
 
 /-- Term-var shifting preserves `TyBvarBounded` (it only renames term `bvar`s, never
     touching type annotations). (Re-based off `NoRecAnn`: shifting recurses through
@@ -9921,6 +9997,10 @@ theorem Expr.shiftFrom_tyBvarBounded (n : Nat) {e : Expr} :
     simp only [Expr.TyBvarBounded] at hb
     simp only [Expr.shiftFrom, Expr.TyBvarBounded]
     exact ⟨ihf t d hb.1, iharg t d hb.2⟩
+  | found ty inner ih =>
+    intro t d hb
+    simp only [Expr.TyBvarBounded] at hb ⊢
+    exact ⟨hb.1, ih t d hb.2⟩
   | letIn ann rhs body ihr ihb =>
     intro t d hb
     cases ann with
@@ -10006,6 +10086,7 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
           rw [ihbs pat body (List.mem_cons_self ..)]
           rw [ih (fun pat₁ e mem => ihbs pat₁ e (List.mem_cons_of_mem _ mem))]
           simp
+    | found ty inner ih => simpa [Expr.erase] using ih
     | letRec anns bindings body ihbs ihb =>
       have hpair : Expr.tyFreeVars.AnnList.tyFreeVars
           (bindings.map (fun _ => none)) = [] ∧
@@ -10047,6 +10128,7 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         | mk pat body => simp [ihbs pat body hpe]
       simp only [Expr.erase_match, Expr.eraseBounds]
       rw [ihs, hb]
+    | found ty inner ih => simpa [Expr.erase, Expr.eraseBounds] using ih
     | letRec anns bindings body ihbs ihb =>
       have hanns : (bindings.map (fun _ => none)).map (Option.map PolyTy.eraseBounds) =
           bindings.map (fun _ => none) := by
@@ -11423,6 +11505,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S}
           rw [ihbs pat body (List.mem_cons_self ..)]
           rw [ih (fun pat₁ e mem => ihbs pat₁ e (List.mem_cons_of_mem _ mem))]
           simp
+    | found ty inner ih => simpa [Expr.erase] using ih
     | letRec anns bindings body ihbs ihb =>
       have hpair : Expr.tyFreeVars.AnnList.tyFreeVars
           (bindings.map (fun _ => none)) = [] ∧
@@ -11464,6 +11547,7 @@ theorem InferBranches.sound {Φ ctx scrutTy ρ brs Φ' S}
         | mk pat body => simp [ihbs pat body hpe]
       simp only [Expr.erase_match, Expr.eraseBounds]
       rw [ihs, hb]
+    | found ty inner ih => simpa [Expr.erase, Expr.eraseBounds] using ih
     | letRec anns bindings body ihbs ihb =>
       have hanns : (bindings.map (fun _ => none)).map (Option.map PolyTy.eraseBounds) =
           bindings.map (fun _ => none) := by
@@ -11821,6 +11905,7 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S}
           rw [ihbs pat body (List.mem_cons_self ..)]
           rw [ih (fun pat₁ e mem => ihbs pat₁ e (List.mem_cons_of_mem _ mem))]
           simp
+    | found ty inner ih => simpa [Expr.erase] using ih
     | letRec anns bindings body ihbs ihb =>
       have hpair : Expr.tyFreeVars.AnnList.tyFreeVars
           (bindings.map (fun _ => none)) = [] ∧
@@ -11862,6 +11947,7 @@ theorem InferRecGroup.sound {Φ ctx bindings specs Φ' S}
         | mk pat body => simp [ihbs pat body hpe]
       simp only [Expr.erase_match, Expr.eraseBounds]
       rw [ihs, hb]
+    | found ty inner ih => simpa [Expr.erase, Expr.eraseBounds] using ih
     | letRec anns bindings body ihbs ihb =>
       have hanns : (bindings.map (fun _ => none)).map (Option.map PolyTy.eraseBounds) =
           bindings.map (fun _ => none) := by
@@ -13074,6 +13160,9 @@ def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
                   intro p hp; rcases List.mem_append.mp hp with h | h
                   · exact hav₁ p h
                   · exact hav₂ p h⟩
+  -- Inference consumes source terms only.  `found` is an internal output marker,
+  -- so callers must lower/strip it before invoking Algorithm W.
+  | .found _ _ => none
   | .letRec anns bindings body =>
       -- DM monomorphic recursion: decidably check each ANNOTATED scheme is WF,
       -- build `RecSpec.init Φ anns` (a fresh monotype var per member), thread the

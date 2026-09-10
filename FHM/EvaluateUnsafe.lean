@@ -142,7 +142,7 @@ partial def evaluateUnsafeTyped {ctors : CtorEnv} {τ : Ty} (e : Expr)
         have nval : ¬ IsValue e := by
           intro hv
           simp [isValue_iff_IsValue.mpr hv] at hval
-        match TypeOfHM.progress h_ty rfl h_exh with
+        match TypeOfHM.progress h_ty rfl h_exh h_erased with
         | .inl hv => exact nval hv
         | .inr ⟨_, hstep⟩ => simp [step_complete hstep] at hs
 
