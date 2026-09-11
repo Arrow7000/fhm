@@ -660,6 +660,11 @@ Inference soundness, successful-inference principality, and both relational and
 executable completeness are closed; the guards below show all proof families
 axiom-clean. -/
 
+-- Closed and clean: direct erased-term dynamics metatheory.
+#print axioms TypeOfHM.progress             -- expect {propext, Classical.choice, Quot.sound}
+#print axioms TypeOfHM.preservation         -- expect {propext, Classical.choice, Quot.sound}
+#print axioms TypeOfHM.type_safety_star     -- expect {propext, Classical.choice, Quot.sound}
+
 -- Closed and clean: erasure-on-`Step` inference soundness.
 #print axioms Infer.sound                -- expect {propext, Classical.choice, Quot.sound}
 #print axioms Infer.sourceSound          -- expect {propext, Classical.choice, Quot.sound}
