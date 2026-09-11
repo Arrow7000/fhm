@@ -12292,16 +12292,17 @@ def InferCoreComplete (e : Expr) : Prop :=
   ∀ {Φ : Nat} {ctx : Ctx} {Φ' : Nat} {S : Subst} {τ : Ty} (K : List Nat),
     CtxWF ctx → CtxBelow Φ ctx → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
-    Infer Φ ctx e Φ' S τ → (inferFoundCore K Φ ctx e).isSome
+    e.FoundFree → Infer Φ ctx e Φ' S τ →
+    (inferFoundCore K Φ ctx e).isSome
 
 theorem inferCore_complete_prim {p : PrimLitExpr} :
     InferCoreComplete (.primLit p) := by
-  intro Φ ctx Φ' S τ K _ _ _ _ _ h
+  intro Φ ctx Φ' S τ K _ _ _ _ _ _ h
   cases h <;> simp only [inferFoundCore, Option.isSome_some]
 
 theorem inferCore_complete_primBinOp {op : PrimBinOp} :
     InferCoreComplete (.primBinOp op) := by
-  intro Φ ctx Φ' S τ K _ _ _ _ _ h
+  intro Φ ctx Φ' S τ K _ _ _ _ _ _ h
   cases h with
   | primBinOpIntAdd => simp only [inferFoundCore, Option.isSome_some]
   | primBinOpIntSub => simp only [inferFoundCore, Option.isSome_some]
@@ -12337,7 +12338,7 @@ theorem inferCore_complete_primBinOp {op : PrimBinOp} :
           rfl
 
 theorem inferCore_complete_var {i : Nat} : InferCoreComplete (.var i) := by
-  intro Φ ctx Φ' S τ K _ _ _ _ _ h
+  intro Φ ctx Φ' S τ K _ _ _ _ _ _ h
   cases h with
   | var hlook =>
       rw [inferFoundCore]
@@ -12347,7 +12348,7 @@ theorem inferCore_complete_var {i : Nat} : InferCoreComplete (.var i) := by
 
 theorem inferCore_complete_ctor {name : CtorName} :
     InferCoreComplete (.ctor name) := by
-  intro Φ ctx Φ' S τ K _ _ _ _ _ h
+  intro Φ ctx Φ' S τ K _ _ _ _ _ _ h
   cases h with
   | ctor hlook =>
       rw [inferFoundCore]
@@ -12375,14 +12376,15 @@ private theorem CtxBelow.cons_fvar {Φ : Nat} {ctx : Ctx}
 
 theorem inferCore_complete_lambda {ann : Option Ty} {body : Expr}
     (ih : InferCoreComplete body) : InferCoreComplete (.lambda ann body) := by
-  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
   cases h with
   | lambda hseed hbody =>
       cases hseed
       case none =>
           simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at hKe
           have hsome := ih K hwf.cons_fvar hbelow.cons_fvar
-            (fun k hk => by have := hKΦ k hk; omega) hKe hSK hbody
+            (fun k hk => by have := hKΦ k hk; omega) hKe hSK
+            (by cases hff with | lambda hb => exact hb) hbody
           obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hsome
           rw [inferFoundCore, hout]
           rcases out with ⟨⟨Φo, So, τo, eout, schemes⟩, houtrel, houtavoid⟩
@@ -12404,9 +12406,103 @@ theorem inferCore_complete_lambda {ann : Option Ty} {body : Expr}
                 (fun v hv => hKΦ v (hKe v (.inl hv)))
             · exact hbelow M hM
           have hsome := ih K hwf' hbelow' hKΦ
-            (fun y hy => hKe y (.inr hy)) hSK hbody
+            (fun y hy => hKe y (.inr hy)) hSK
+            (by cases hff with | lambda hb => exact hb) hbody
           obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hsome
           rw [inferFoundCore,
             dif_pos ((Ty.bvarsBelow_iff paramTy).mpr hcl), hout]
           rcases out with ⟨⟨Φo, So, τo, eout, schemes⟩, houtrel, houtavoid⟩
           rfl
+
+theorem inferCore_complete_app {f arg : Expr}
+    (ihf : InferCoreComplete f) (iharg : InferCoreComplete arg) :
+    InferCoreComplete (.app f arg) := by
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+  have happ := Infer.sourceSound h hwf hbelow K hKΦ hKe hSK
+  rw [Expr.eraseBounds_app] at happ
+  cases h with
+  | @app _ _ _ _ Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huni =>
+      simp only [Expr.tyFreeVars, List.mem_append] at hKe
+      have hKef : ∀ y ∈ f.tyFreeVars, y ∈ K := fun y hy => hKe y (.inl hy)
+      have hKea : ∀ y ∈ arg.tyFreeVars, y ∈ K := fun y hy => hKe y (.inr hy)
+      have hff_f : f.FoundFree := by cases hff with | app hf _ => exact hf
+      have hff_arg : arg.FoundFree := by cases hff with | app _ ha => exact ha
+      have hKfixS : ∀ k ∈ K, (S₁ ++ S₂ ++ S₃).onTy (.fvar k) = .fvar k :=
+        fun k hk => Ty.substFvars_eq_self_of_no_key (fun p hp heq => by
+          simp only [Ty.freeVars, List.mem_singleton] at heq
+          exact hSK p hp (heq ▸ hk))
+      have hSK₁ : ∀ p ∈ S₁, p.1 ∉ K :=
+        fun p hp => hSK p (List.mem_append_left _ (List.mem_append_left _ hp))
+      obtain ⟨argTy, hfty, hargty⟩ : ∃ argTy,
+          TypeOfHM ((S₁ ++ S₂ ++ S₃).onCtx ctx).eraseBounds f.eraseBounds
+            (.arrow argTy (Ty.eraseBounds (S₃.onTy (.fvar Φ₂)))) ∧
+          TypeOfHM ((S₁ ++ S₂ ++ S₃).onCtx ctx).eraseBounds arg.eraseBounds argTy := by
+        cases happ with
+        | app hfty hargty => exact ⟨_, hfty, hargty⟩
+      have hSlc : ∀ p ∈ S₁ ++ S₂ ++ S₃, p.2.IsLC :=
+        (Infer.lc (Infer.app hf harg huni) hwf).2
+
+      have hsf := ihf K hwf hbelow hKΦ hKef hSK₁ hff_f hf
+      obtain ⟨outf, hef⟩ := Option.isSome_iff_exists.mp hsf
+      rcases outf with ⟨⟨Φ₁', S₁', τf', fOut, fSchemes⟩, hf', havf⟩
+      obtain ⟨R_f, hR_flc, hTypef, hR_fK, hAgreef⟩ :=
+        Infer.complete' hf' hwf hbelow hSlc K hKΦ hKef hKfixS hfty
+      have hS₁' : ∀ p ∈ S₁', p.2.IsLC := (Infer.lc hf' hwf).2
+      have hbf := Infer.belowFvars hf' hbelow (fun y hy => hKΦ y (hKef y hy))
+      have hle₁ := Infer.frontier_le hf'
+      have hwf₁ := Subst.onCtx_wf hS₁' hwf
+      have hbelow₁ := Subst.onCtx_below hbf.2 hle₁ hbelow
+      have hKΦ₁ : ∀ k ∈ K, k < Φ₁' :=
+        fun k hk => lt_of_lt_of_le (hKΦ k hk) hle₁
+      have hctxeq : (R_f.onCtx (S₁'.onCtx ctx)).eraseBounds =
+          ((S₁ ++ S₂ ++ S₃).onCtx ctx).eraseBounds := by
+        rw [← Subst.onCtx_append]
+        exact (Subst.onCtx_congr_hm hAgreef hbelow).symm
+      have hargty' : TypeOfHM (R_f.onCtx (S₁'.onCtx ctx)).eraseBounds
+          arg.eraseBounds argTy := by
+        rw [hctxeq]
+        exact hargty
+      obtain ⟨_, _, _, _, hinfa, _, _, hR_alc₀, hR_aK₀, hSaK⟩ :=
+        (Infer.complete arg) hff_arg K hwf₁ hbelow₁ hR_flc hKΦ₁ hKea hR_fK hargty'
+      have hsa := iharg K hwf₁ hbelow₁ hKΦ₁ hKea hSaK hff_arg hinfa
+      obtain ⟨outa, hea⟩ := Option.isSome_iff_exists.mp hsa
+      rcases outa with ⟨⟨Φ₂', S₂', τa', argOut, argSchemes⟩, harg', hava⟩
+      obtain ⟨R_a, hR_alc, hTypea, hR_aK, hAgreea⟩ :=
+        Infer.complete' harg' hwf₁ hbelow₁ hR_flc K hKΦ₁ hKea hR_fK hargty'
+
+      have hba := Infer.belowFvars harg' hbelow₁
+        (fun y hy => hKΦ₁ y (hKea y hy))
+      have hle₂ := Infer.frontier_le harg'
+      have hcongr_f : AgreesHM (R_f.onTy τf') ((S₂' ++ R_a).onTy τf') :=
+        Subst.onTy_congr_hm hAgreea hbf.1
+      have hP : AgreesHM
+          (.arrow argTy (Ty.eraseBounds (S₃.onTy (.fvar Φ₂))))
+          (R_a.onTy (S₂'.onTy τf')) := by
+        simpa [Subst.onTy_append] using AgreesHM.trans hTypef hcongr_f
+      have hΦ₂τf : Φ₂' ∉ (S₂'.onTy τf').freeVars := fun hm => by
+        have hbel := Subst.onTy_belowFvars hba.2 (hbf.1.mono hle₂)
+        have := hbel.mem_lt _ hm
+        omega
+      have hΦ₂τa : Φ₂' ∉ τa'.freeVars := fun hm => by
+        have := hba.1.mem_lt _ hm
+        omega
+      have hτ₀LC : (Ty.eraseBounds (S₃.onTy (.fvar Φ₂))).IsLC := by
+        have hreg := TypeOfHM.regular hfty
+        cases hreg with
+        | arrow _ hT => exact hT
+      have hKΦ₂ : ∀ k ∈ K, k < Φ₂' :=
+        fun k hk => lt_of_lt_of_le (hKΦ₁ k hk) hle₂
+      obtain ⟨U, hUni, hUlc, hUK, _, _⟩ :=
+        exists_app_unifier_erase hP hTypea hΦ₂τf hΦ₂τa hR_alc hτ₀LC hR_aK hKΦ₂
+      have hτfLC := (Infer.lc hf' hwf).1
+      have hτaLC := (Infer.lc harg' hwf₁).1
+      have hS₂' := (Infer.lc harg' hwf₁).2
+      have huniSome :
+          (unifyCoreK K (S₂'.onTy τf') (.arrow τa' (.fvar Φ₂'))).isSome :=
+        unifyCoreK_complete (Subst.onTy_lc hS₂' hτfLC)
+          (.arrow hτaLC ContainsBvarsUpTo.fvar) hUlc hUni hUK
+      obtain ⟨out₃, he₃⟩ := Option.isSome_iff_exists.mp huniSome
+      rcases out₃ with ⟨S₃', h₃, hav₃⟩
+      rw [inferFoundCore, hef]
+      simp only [hea, he₃]
+      rfl
