@@ -1757,6 +1757,256 @@ def RecSpecs.ceilingSchemes (G : List Nat) (anns : List (Option PolyTy)) (specs 
     | some σ => σ
     | none => RecSpec.bodyScheme G p.2)
 
+/-! ### Sequential recursive-annotation constraints
+
+The old fused `letRec` worker checks all ceilings only after inferring the
+whole group.  The next worker phase instead needs a small, certified
+constraint pass: an annotation is compared with the *current* monotype, and
+only the non-pool part of that comparison is committed to later members.  The
+pool is deliberately fixed: equations over a generalisation variable are
+useful for checking this annotation, but must not rewrite the rest of the
+group.
+
+This relation is deliberately independent of `Infer` for now.  It is the
+contract which the subsequent `Infer.letRec` integration will consume. -/
+
+/-- Discard bindings whose domain is in the fixed generalisation pool. -/
+def Subst.dropDomains (G : List Nat) (S : Subst) : Subst :=
+  S.filter (fun p => !G.contains p.1)
+
+theorem Subst.mem_dropDomains {G : List Nat} {S : Subst} {p : Nat × Ty} :
+    p ∈ S.dropDomains G ↔ p ∈ S ∧ p.1 ∉ G := by
+  simp [Subst.dropDomains, List.mem_filter, List.contains_eq_mem]
+
+/-- Boolean range guard used by the executable constraint pass.  Requiring all
+    committed images to mention only `rigid` names simultaneously prevents
+    skolem/pool leakage and makes the pool-preservation invariant explicit. -/
+def Subst.rangesWithin (rigid G : List Nat) (S : Subst) : Bool :=
+  S.all (fun p => p.2.freeVars.all (fun x => rigid.contains x && !G.contains x))
+
+theorem Subst.rangesWithin_iff {rigid G : List Nat} {S : Subst} :
+    S.rangesWithin rigid G = true ↔
+      ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∈ rigid ∧ x ∉ G := by
+  constructor
+  · intro h p hp x hx
+    change S.all (fun p => p.2.freeVars.all
+      (fun x => rigid.contains x && !G.contains x)) = true at h
+    have hp' := List.all_eq_true.mp h p hp
+    have hx' := List.all_eq_true.mp hp' x hx
+    simpa [List.contains_eq_mem] using hx'
+  · intro h
+    change S.all (fun p => p.2.freeVars.all
+      (fun x => rigid.contains x && !G.contains x)) = true
+    apply List.all_eq_true.mpr
+    intro p hp
+    apply List.all_eq_true.mpr
+    intro x hx
+    simpa [List.contains_eq_mem] using h p hp x hx
+
+/-- Sequential ceiling constraints for a recursive group.
+
+For an annotated monomorphic member, `full` is the complete rigid unifier of
+the erased current type and the freshly opened annotation.  `step` is exactly
+`full` projected away from `G`; only `step` is threaded through the remaining
+specifications.  We retain `full` (rather than merely its equality result) so
+the later principality proof can invoke `UnifyRel.greatest_factors`.
+
+Each annotation body is required to have its free variables among `rigid`.
+Consequently the domain-avoidance invariant below proves that all committed
+substitutions leave annotations literally unchanged. -/
+def RecCeilingConstraints (K rigid G : List Nat) (Φ : Nat) :
+    List (Option PolyTy) → List RecSpec → Subst → Prop
+  | [], [], S => S = []
+  | none :: anns, _ :: specs, S =>
+      RecCeilingConstraints K rigid G Φ anns specs S
+  | some σ :: anns, .mono τ :: specs, S =>
+      ∃ full step tail,
+        UnifyRel (Ty.eraseBounds τ)
+          (Ty.eraseBounds (σ.openVars (freshVars Φ σ.paramCount))) full ∧
+        (∀ p ∈ full, p.1 ∉ K ++ rigid ++ freshVars Φ σ.paramCount) ∧
+        step = Subst.dropDomains G full ∧
+        (∀ p ∈ step, ∀ x ∈ p.2.freeVars, x ∈ rigid ∧ x ∉ G) ∧
+        (∀ p ∈ step, p.2.IsLC) ∧
+        σ.WF ∧
+        (∀ x ∈ σ.body.freeVars, x ∈ rigid) ∧
+        RecCeilingConstraints K rigid G Φ anns
+          (specs.map (RecSpec.onSubst step)) tail ∧
+        S = step ++ tail
+  | some _ :: _, .poly _ :: _, _ => False
+  | _, _, _ => False
+
+/-- Every committed substitution in a sequential ceiling derivation has locally
+    closed images. -/
+theorem RecCeilingConstraints.lc {K rigid G Φ anns specs S}
+    (h : RecCeilingConstraints K rigid G Φ anns specs S) :
+    ∀ p ∈ S, p.2.IsLC := by
+  induction anns generalizing specs S with
+  | nil =>
+    cases specs <;> simp [RecCeilingConstraints] at h
+    subst S; simp
+  | cons a anns ih =>
+    cases a with
+    | none =>
+      cases specs with
+      | nil => simp [RecCeilingConstraints] at h
+      | cons s specs => exact ih h
+    | some σ =>
+      cases specs with
+      | nil => simp [RecCeilingConstraints] at h
+      | cons s specs =>
+        cases s with
+        | poly σ' => simp [RecCeilingConstraints] at h
+        | mono τ =>
+          rcases h with ⟨full, step, tail, _, _, _, _, hstepLC, _, _, htail, rfl⟩
+          intro p hp
+          rcases List.mem_append.mp hp with hp | hp
+          · exact hstepLC p hp
+          · exact ih htail p hp
+
+/-- The committed output never binds a name in the ambient rigid set, the
+    annotation skolems, or the fixed pool. -/
+theorem RecCeilingConstraints.dom_avoids {K rigid G Φ anns specs S}
+    (h : RecCeilingConstraints K rigid G Φ anns specs S) :
+    ∀ p ∈ S, p.1 ∉ K ∧ p.1 ∉ rigid ∧ p.1 ∉ G := by
+  induction anns generalizing specs S with
+  | nil =>
+    cases specs <;> simp [RecCeilingConstraints] at h
+    subst S; simp
+  | cons a anns ih =>
+    cases a with
+    | none =>
+      cases specs with
+      | nil => simp [RecCeilingConstraints] at h
+      | cons s specs => exact ih h
+    | some σ =>
+      cases specs with
+      | nil => simp [RecCeilingConstraints] at h
+      | cons s specs =>
+        cases s with
+        | poly σ' => simp [RecCeilingConstraints] at h
+        | mono τ =>
+          rcases h with ⟨full, step, tail, _, hfull, hproj, _, _, _, _, htail, rfl⟩
+          intro p hp
+          rcases List.mem_append.mp hp with hp | hp
+          · rw [hproj] at hp
+            have hp' := Subst.mem_dropDomains.mp hp
+            refine ⟨?_, ?_, hp'.2⟩
+            · intro hk
+              exact hfull p hp'.1 (by simp [List.mem_append, hk])
+            · intro hr
+              exact hfull p hp'.1 (by simp [List.mem_append, hr])
+          · exact ih htail p hp
+
+/-- Every committed image mentions only ambient rigid names. -/
+theorem RecCeilingConstraints.range_subset_rigid {K rigid G Φ anns specs S}
+    (h : RecCeilingConstraints K rigid G Φ anns specs S) :
+    ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∈ rigid := by
+  induction anns generalizing specs S with
+  | nil =>
+    cases specs <;> simp [RecCeilingConstraints] at h
+    subst S; simp
+  | cons a anns ih =>
+    cases a with
+    | none =>
+      cases specs with
+      | nil => simp [RecCeilingConstraints] at h
+      | cons s specs => exact ih h
+    | some σ =>
+      cases specs with
+      | nil => simp [RecCeilingConstraints] at h
+      | cons s specs =>
+        cases s with
+        | poly σ' => simp [RecCeilingConstraints] at h
+        | mono τ =>
+          rcases h with ⟨full, step, tail, _, _, _, hrange, _, _, _, htail, rfl⟩
+          intro p hp x hx
+          exact (List.mem_append.mp hp).elim
+            (fun hp => (hrange p hp x hx).1) (fun hp => ih htail p hp x hx)
+
+/-- No committed image can reintroduce a pool variable. -/
+theorem RecCeilingConstraints.range_avoids_pool {K rigid G Φ anns specs S}
+    (h : RecCeilingConstraints K rigid G Φ anns specs S) :
+    ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∉ G := by
+  induction anns generalizing specs S with
+  | nil =>
+    cases specs <;> simp [RecCeilingConstraints] at h
+    subst S; simp
+  | cons a anns ih =>
+    cases a with
+    | none =>
+      cases specs with
+      | nil => simp [RecCeilingConstraints] at h
+      | cons s specs => exact ih h
+    | some σ =>
+      cases specs with
+      | nil => simp [RecCeilingConstraints] at h
+      | cons s specs =>
+        cases s with
+        | poly σ' => simp [RecCeilingConstraints] at h
+        | mono τ =>
+          rcases h with ⟨full, step, tail, _, _, _, hrange, _, _, _, htail, rfl⟩
+          intro p hp x hx
+          exact (List.mem_append.mp hp).elim
+            (fun hp => (hrange p hp x hx).2) (fun hp => ih htail p hp x hx)
+
+/-- A committed output fixes every pool variable. -/
+theorem RecCeilingConstraints.fixes_pool {K rigid G Φ anns specs S}
+    (h : RecCeilingConstraints K rigid G Φ anns specs S) :
+    ∀ g ∈ G, S.onTy (.fvar g) = .fvar g := by
+  intro g hg
+  change Ty.substFvars S (.fvar g) = .fvar g
+  apply Ty.substFvars_eq_self_of_no_key
+  intro p hp
+  intro heq
+  have hpEq : p.1 = g := by simpa [Ty.freeVars] using heq
+  exact (h.dom_avoids p hp).2.2 (hpEq ▸ hg)
+
+/-- A substitution whose domain avoids every free variable of a scheme leaves
+    that scheme literally unchanged. -/
+theorem Subst.onPolyTy_eq_self_of_dom_avoids {S : Subst} {σ : PolyTy}
+    (hdom : ∀ p ∈ S, p.1 ∉ σ.body.freeVars) : S.onPolyTy σ = σ := by
+  obtain ⟨pc, body⟩ := σ
+  simp only [Subst.onPolyTy, PolyTy.mk.injEq, true_and]
+  exact Ty.substFvars_eq_self_of_no_key hdom
+
+/-- The relation records that every stored annotation is scoped by `rigid`. -/
+theorem RecCeilingConstraints.annotation_fv_rigid {K rigid G Φ anns specs S}
+    (h : RecCeilingConstraints K rigid G Φ anns specs S) :
+    ∀ σ, some σ ∈ anns → ∀ x ∈ σ.body.freeVars, x ∈ rigid := by
+  induction anns generalizing specs S with
+  | nil => simp
+  | cons a anns ih =>
+    cases a with
+    | none =>
+      cases specs with
+      | nil => simp [RecCeilingConstraints] at h
+      | cons s specs =>
+        intro σ hmem x hx
+        exact ih h σ (by simpa using hmem) x hx
+    | some σ0 =>
+      cases specs with
+      | nil => simp [RecCeilingConstraints] at h
+      | cons s specs =>
+        cases s with
+        | poly σ' => simp [RecCeilingConstraints] at h
+        | mono τ =>
+          rcases h with ⟨full, step, tail, _, _, _, _, _, _, hσ0rigid, htail, rfl⟩
+          intro σ hmem
+          simp only [List.mem_cons, Option.some.injEq] at hmem
+          rcases hmem with rfl | hmem
+          · exact hσ0rigid
+          · exact ih htail σ hmem
+
+/-- All stored annotations remain fixed by the total committed substitution. -/
+theorem RecCeilingConstraints.fixes_annotations {K rigid G Φ anns specs S}
+    (h : RecCeilingConstraints K rigid G Φ anns specs S) :
+    ∀ σ, some σ ∈ anns → S.onPolyTy σ = σ := by
+  intro σ hσ
+  apply Subst.onPolyTy_eq_self_of_dom_avoids
+  intro p hp
+  intro hfv
+  exact (h.dom_avoids p hp).2.1 (h.annotation_fv_rigid σ hσ p.1 hfv)
+
 /-! Algorithm W as a type-directed inference relation over the source `Expr`.
     Its outputs are only the fresh-variable frontier, substitution, and inferred
     monotype; runtime execution uses the independently defined erased source term.
@@ -15225,6 +15475,85 @@ theorem unify_sound {a b : Ty} {S : Subst} (h : unify a b = some S) : UnifyRel a
   · simp only [Option.map_some, Option.some.injEq] at h
     subst h
     exact hS'
+
+/-- Execute the sequential recursive-ceiling constraint pass.  This is not yet
+    wired into `inferFoundCore`: phase 2 will use its result to thread only the
+    committed substitutions between annotation checks and into the body.  The
+    three proof arguments are the ordinary prevalidated inputs of that phase
+    (well-formed annotations, their rigid scoping, and locally-closed current
+    specs).
+
+The subtype carries both the relational trace and the ambient-`K` avoidance
+fact, so clients do not need to recover either from boolean control flow. -/
+def solveRecCeilingConstraints (K rigid G : List Nat) (Φ : Nat)
+    (anns : List (Option PolyTy)) (specs : List RecSpec)
+    (hannsWF : ∀ σ, some σ ∈ anns → σ.WF)
+    (hannsRigid : ∀ σ, some σ ∈ anns → ∀ x ∈ σ.body.freeVars, x ∈ rigid)
+    (hspecsLC : ∀ s ∈ specs, s.LC) :
+    Option { S : Subst // RecCeilingConstraints K rigid G Φ anns specs S ∧
+      ∀ p ∈ S, p.1 ∉ K } :=
+  match anns, specs with
+  | [], [] => some ⟨[], by simp [RecCeilingConstraints]⟩
+  | none :: anns, _ :: specs =>
+      match solveRecCeilingConstraints K rigid G Φ anns specs
+        (fun σ hσ => hannsWF σ (List.mem_cons_of_mem _ hσ))
+        (fun σ hσ => hannsRigid σ (List.mem_cons_of_mem _ hσ))
+        (fun s hs => hspecsLC s (List.mem_cons_of_mem _ hs)) with
+      | none => none
+      | some ⟨tail, htail, htailK⟩ => some ⟨tail, htail, htailK⟩
+  | some σ :: anns, .mono τ :: specs =>
+      let Ys := freshVars Φ σ.paramCount
+      match unifyCoreK (K ++ rigid ++ Ys) (Ty.eraseBounds τ)
+          (Ty.eraseBounds (σ.openVars Ys)) with
+      | none => none
+      | some ⟨full, hfull, hfullAvoid⟩ =>
+        let step := Subst.dropDomains G full
+        if hrange : step.rangesWithin rigid G = true then
+          let hτlc : τ.IsLC := hspecsLC (.mono τ) List.mem_cons_self
+          let hopenlc : (σ.openVars Ys).IsLC :=
+            PolyTy.openVars_isLC (hannsWF σ List.mem_cons_self)
+              (by simpa [Ys] using (freshVars_length Φ σ.paramCount).le)
+          let hstepLC : ∀ p ∈ step, p.2.IsLC := by
+            intro p hp
+            have hpfull : p ∈ full := (Subst.mem_dropDomains.mp hp).1
+            exact UnifyRel.lc hfull (Ty.IsLC.eraseBounds hτlc)
+              (Ty.IsLC.eraseBounds hopenlc) p hpfull
+          match solveRecCeilingConstraints K rigid G Φ anns
+            (specs.map (RecSpec.onSubst step))
+            (fun σ' hσ' => hannsWF σ' (List.mem_cons_of_mem _ hσ'))
+            (fun σ' hσ' => hannsRigid σ' (List.mem_cons_of_mem _ hσ'))
+            (fun s' hs' => by
+              obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hs'
+              exact RecSpec.LC.onSubst hstepLC
+                (hspecsLC s (List.mem_cons_of_mem _ hs))) with
+          | none => none
+          | some ⟨tail, htail, htailK⟩ =>
+            let hrel : RecCeilingConstraints K rigid G Φ (some σ :: anns)
+                (.mono τ :: specs) (step ++ tail) :=
+              ⟨full, step, tail, hfull, hfullAvoid, rfl,
+                Subst.rangesWithin_iff.mp hrange, hstepLC,
+                hannsWF σ List.mem_cons_self,
+                hannsRigid σ List.mem_cons_self, htail, rfl⟩
+            some ⟨step ++ tail, ⟨hrel, fun p hp =>
+              (RecCeilingConstraints.dom_avoids hrel p hp).1⟩⟩
+        else none
+  | _, _ => none
+termination_by anns.length
+
+/-- Refinement is definitionally carried by the worker's result. -/
+theorem solveRecCeilingConstraints_sound {K rigid G Φ anns specs S}
+    {hannsWF hannsRigid hspecsLC}
+    (h : solveRecCeilingConstraints K rigid G Φ anns specs hannsWF hannsRigid hspecsLC = some S) :
+    RecCeilingConstraints K rigid G Φ anns specs S.1 ∧
+      ∀ p ∈ S.1, p.1 ∉ K := by
+  cases hsolver : solveRecCeilingConstraints K rigid G Φ anns specs
+      hannsWF hannsRigid hspecsLC with
+  | none => simp [hsolver] at h
+  | some S' =>
+    rw [hsolver] at h
+    simp only [Option.some.injEq] at h
+    subst S
+    exact S'.property
 
 /-! ### The decidable `letRec` ceiling check
 
