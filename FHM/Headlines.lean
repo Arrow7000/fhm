@@ -294,87 +294,15 @@ example (ctors : CtorEnv) :
           exact ContainsBvarsUpTo.prim)
         (InstantiatesBy.arrow (InstantiatesBy.bvar rfl) (InstantiatesBy.bvar rfl)))
 
-/-! ### The annotated polymorphic letrec (`letRecInAnn`) — nice-to-have
+/-! ### Annotated polymorphic `letRecIn`
 
-Same shape one level up: `let rec (id : ∀a. a→a) = λx. x in id`, single-member
-recursive group, annotated (so `RecSpec.poly`). Under the D2 rule the RHS is
-nevertheless checked once at a monomorphic witness (`β → β` here); only the
-body sees the declared scheme. -/
-example (ctors : CtorEnv) :
-    SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] []
-      (.letRecIn
-        [{ name := .mk "id",
-           ann := some ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩,
-           rhs := .lambda (.name (.mk "x")) none (.var (.mk "x")) }]
-        (.var (.mk "id")))
-      (.arrow (.prim .int) (.prim .int)) := by
-  set σ : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
-  set τm : Ty := .arrow (.fvar 100) (.fvar 100)
-  have hed : ([.mk "a"] : List ValName).eraseDups = [.mk "a"] := rfl
-  refine SurfaceWTExpr.letRecInAnn (tvs := []) (vs := []) (Γ := [])
-    (binds := _) (anns' := [some σ]) (specs := [RecSpec.poly σ])
-    (τs := [τm]) (G := []) (L := []) (paramTysList := [[]])
-    (ΓRhsList := [[PolyTy.mkTrivial τm]]) (τretsList := [τm])
-    (body := _) (τ := _)
-    ?htvs ?hann ?hlen ?hparamLen ?hΓRhsLen ?hretsLen ?hanns_eq ?hnodup
-    ?hmono_lc ?hpoly_wf ?hτs_len ?hτs_link ?hτs_lc ?hLL ?hτbinds ?hmono ?hbody
-  · rfl
-  · -- `hed` discharges the `eraseDups` redex inside `lowerPoly`/`finalizeAnn`.
-    simp [finalizeAnn, mergeTyParams, mergeTyParamNames, lowerAnnList, lowerPolyAnn,
-      lowerPoly, hed, lowerTy, tvarIndex, σ, List.map_cons, List.map_nil]
-  · rfl
-  · rfl
-  · rfl
-  · rfl
-  · rfl
-  · exact List.nodup_nil
-  · intro τm h; simp [σ] at h
-  · intro σ' h
-    simp only [σ, List.mem_singleton] at h
-    injection h with h
-    subst h
-    exact .arrow (.bvar (by decide)) (.bvar (by decide))
-  · rfl
-  · intro p hp τ hτ
-    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
-    subst p
-    cases hτ
-  · intro t ht
-    simp only [List.mem_singleton] at ht
-    subst t
-    exact .arrow .fvar .fvar
-  · intro Xs _ i hi
-    have hi0 : i = 0 := by
-      simp only [List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    exact LowerLetParams.nil
-  · intro Xs hfresh i hi
-    have hi0 : i = 0 := by
-      simp only [List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    subst hXs
-    simp [τm, coreParamsToArrows, Ty.renameG_nil_pool]
-  · intro Xs hfresh i hi
-    have hi0 : i = 0 := by
-      simp only [List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
-    subst hXs
-    apply SurfaceWTExpr.lambda_name (paramTy := .fvar 100) (bodyTy := .fvar 100)
-    · exact ContainsBvarsUpTo.fvar
-    · trivial
-    · exact .of_lowers .var (.var (by rfl))
-        (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar 100)) (instArgs := []) rfl
-          (by simp) .fvar)
-  · exact .of_lowers .var (.var (by rfl))
-      (TypeOfHM.var (polyTy := σ) (instArgs := [Ty.prim .int]) rfl
-        (by
-          intro t ht
-          simp only [List.mem_singleton] at ht
-          subst ht
-          exact ContainsBvarsUpTo.prim)
-        (InstantiatesBy.arrow (InstantiatesBy.bvar rfl) (InstantiatesBy.bvar rfl)))
+The stronger D2 ceiling deliberately removed the old witness for
+`let rec (id : ∀a. a→a) = λx. x in id`: it had used `G = []`, which cannot
+justify the polymorphic annotation.  The current structural surface constructor
+also cannot express the corrected `G = [β]` derivation, because its fixed RHS
+result type is required to equal every cofinite renaming of `β`.  This is a
+surface-relation expressiveness gap, not an HM/Core restriction; the closed
+monomorphic annotated witness below continues to exercise `letRecInAnn`. -/
 
 /-! ### Packing B — annotated mono + head binders
 
@@ -466,7 +394,7 @@ example (ctors : CtorEnv) :
     (τretsList := [.prim .int])
     (body := _) (τ := _)
     ?htvs ?hann ?hlen ?hparamLen ?hΓRhsLen ?hretsLen ?hanns_eq ?hnodup
-    ?hmono_lc ?hpoly_wf ?hτs_len ?hτs_link ?hτs_lc ?hLL ?hτbinds ?hmono ?hbody
+    ?hmono_lc ?hpoly_wf ?hτs_len ?hτs_link ?hτs_lc ?hceiling ?hLL ?hτbinds ?hmono ?hbody
   · rfl
   · -- lowerAnnList of finalizeAnn return-type sugar
     have h1 := packingB_lowerPoly ctors
@@ -491,6 +419,9 @@ example (ctors : CtorEnv) :
     simp only [List.mem_singleton] at ht
     subst t
     exact .arrow .prim .prim
+  · simpa [RecSpecs.ceilingOK, RecSpecs.CeilingRel, PolyTy.genGroup,
+      Ty.genFilter, Ty.closeOver] using
+        (PolyTy.Generalizes.refl (PolyTy.eraseBounds σ))
   · intro Xs _ i hi
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
