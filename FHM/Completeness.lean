@@ -67,6 +67,96 @@ private def TyList.rename (f : Nat → Nat) : List Ty → List Ty
   | hd :: tl => hd.rename f :: TyList.rename f tl
 end
 
+/-! The range guard's orientation lemma.  The executable unifier is called
+with the annotation opening on the right and that opening protected in its
+rigid set.  Consequently any returned substitution which avoids the protected
+set can only put protected variables in its raw images. -/
+
+mutual
+theorem UnifyRel.range_within_rhs {K : List Nat} :
+    {a b : Ty} → {S : Subst} → UnifyRel a b S →
+    (∀ p ∈ S, p.1 ∉ K) →
+    (∀ x ∈ b.freeVars, x ∈ K) →
+    ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∈ K
+  | _, _, _, .prim, _, _, p, hp, x, hx => by simp at hp
+  | _, _, _, .fvarRefl, _, _, p, hp, x, hx => by simp at hp
+  | _, _, _, @UnifyRel.fvarL n t _ _, hav, hb, p, hp, x, hx => by
+      rw [List.mem_singleton] at hp
+      subst p
+      exact hb x hx
+  | _, _, _, @UnifyRel.fvarR n t _ _, hav, hb, p, hp, x, hx => by
+      have hn : n ∈ K := hb n (by simp [Ty.freeVars])
+      exact False.elim (hav (n, t) (by simpa using hp) hn)
+  | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, hav, hright, p, hp, x, hx => by
+      have hc : ∀ y ∈ c.freeVars, y ∈ K :=
+        fun y hy => hright y (Ty.mem_freeVars_arrowL hy)
+      have hd : ∀ y ∈ d.freeVars, y ∈ K :=
+        fun y hy => hright y (Ty.mem_freeVars_arrowR hy)
+      have hav₁ : ∀ q ∈ S₁, q.1 ∉ K := fun q hq =>
+        hav q (List.mem_append_left _ hq)
+      have hav₂ : ∀ q ∈ S₂, q.1 ∉ K := fun q hq =>
+        hav q (List.mem_append_right _ hq)
+      have h₁range := UnifyRel.range_within_rhs h₁ hav₁ hc
+      have hd_fixed : S₁.onTy d = d :=
+        Ty.substFvars_eq_self_of_no_key (fun q hq hy => hav₁ q hq (hd q.1 hy))
+      rw [List.mem_append] at hp
+      rcases hp with hp | hp
+      · exact h₁range p hp x hx
+      · have h₂range := UnifyRel.range_within_rhs h₂ hav₂ (by
+          intro y hy
+          rw [hd_fixed] at hy
+          exact hd y hy)
+        exact h₂range p hp x hx
+  | _, _, _, @UnifyRel.customTy nm as bs S hs, hav, hright, p, hp, x, hx => by
+      exact UnifyRelList.range_within_rhs hs hav (by
+        intro t ht y hy
+        exact hright y (Ty.mem_freeVars_customTy ht hy)
+        ) p hp x hx
+  | _, _, _, @UnifyRel.bl lo₁ hi₁ lo₂ hi₂ a b S hs, hav, hright, p, hp, x, hx => by
+      exact UnifyRel.range_within_rhs hs hav (by
+        intro y hy
+        exact hright y (Ty.mem_freeVars_bl hy)
+        ) p hp x hx
+  | _, _, _, @UnifyRel.blList lo hi a b S hs, hav, hright, p, hp, x, hx => by
+      exact UnifyRel.range_within_rhs hs hav (by
+        intro y hy
+        exact hright y (Ty.mem_freeVars_customTy List.mem_cons_self hy)
+        ) p hp x hx
+  | _, _, _, @UnifyRel.listBl lo hi a b S hs, hav, hright, p, hp, x, hx => by
+      exact UnifyRel.range_within_rhs hs hav (by
+        intro y hy
+        exact hright y (Ty.mem_freeVars_bl hy)
+        ) p hp x hx
+
+theorem UnifyRelList.range_within_rhs {K : List Nat} :
+    {as bs : List Ty} → {S : Subst} → UnifyRelList as bs S →
+    (∀ p ∈ S, p.1 ∉ K) →
+    (∀ t ∈ bs, ∀ x ∈ t.freeVars, x ∈ K) →
+    ∀ p ∈ S, ∀ x ∈ p.2.freeVars, x ∈ K
+  | _, _, _, .nil, _, _, p, hp, x, hx => by simp at hp
+  | _, _, _, @UnifyRelList.cons a b as bs S₁ S₂ h₁ h₂, hav, hright, p, hp, x, hx => by
+      have hb : ∀ y ∈ b.freeVars, y ∈ K := hright b List.mem_cons_self
+      have hbs : ∀ t ∈ bs, ∀ y ∈ t.freeVars, y ∈ K :=
+        fun t ht => hright t (List.mem_cons_of_mem _ ht)
+      have hav₁ : ∀ q ∈ S₁, q.1 ∉ K := fun q hq =>
+        hav q (List.mem_append_left _ hq)
+      have hav₂ : ∀ q ∈ S₂, q.1 ∉ K := fun q hq =>
+        hav q (List.mem_append_right _ hq)
+      have h₁range := UnifyRel.range_within_rhs h₁ hav₁ hb
+      have hbs_fixed : ∀ t ∈ bs, S₁.onTy t = t := by
+        intro t ht
+        exact Ty.substFvars_eq_self_of_no_key (fun q hq hy => hav₁ q hq (hbs t ht q.1 hy))
+      rw [List.mem_append] at hp
+      rcases hp with hp | hp
+      · exact h₁range p hp x hx
+      · apply UnifyRelList.range_within_rhs h₂ hav₂
+          (by
+            intro t ht y hy
+            obtain ⟨t0, ht0, rfl⟩ := List.mem_map.mp ht
+            rw [hbs_fixed t0 ht0] at hy
+            exact hbs t0 ht0 y hy) p hp x hx
+end
+
 theorem TyList.rename_eq_map (f : Nat → Nat) (tys : List Ty) :
     TyList.rename f tys = tys.map (Ty.rename f) := by
   induction tys with
@@ -2158,7 +2248,8 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ
       rcases hp with hp | hp
       · exact hsR p hp
       · exact h3R p hp
-  | @letRec Φ ctx anns bindings body Φ₁ Φ₂ S₁ S₂ τ₂ _ hgroup _ hbody =>
+  | @letRec Φ ctx anns bindings body Φ₁ Φ₂ S₁ Sc S₂ τ₂ Kc G specs1 specsC
+      _ hgroup hspecs1 hG hSc hspecsC _ hbody =>
     intro hhi hctx htfv
     simp only [Expr.tyFreeVars] at htfv
     have hAnnsAvoid : ∀ σ, some σ ∈ anns → ∀ v ∈ σ.body.freeVars, v < lo ∨ hi ≤ v :=
@@ -2198,29 +2289,83 @@ theorem Infer.gap_avoid {lo hi : Nat} {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ
       exact Or.inr (Nat.le_trans hhi hmΦ)
     obtain ⟨hgD, hgR⟩ := InferRecGroup.gap_avoid hgroup (by omega) hGroupCtx
       hGroupTargets hBindAvoid
-    -- the body environment (ceiling schemes over the solved monotypes)
-    have hBodyCtx : ∀ M ∈ ({ (S₁.onCtx ctx) with
+    -- The ceiling pass can only write ambient rigid names.  Those are
+    -- annotation/binding fvars of this node, hence inherit the gap invariant.
+    have hRigidAvoid : ∀ x ∈ RecGroup.rigidVars anns bindings,
+        x < lo ∨ hi ≤ x := by
+      intro x hx
+      simp only [RecGroup.rigidVars, List.mem_append] at hx
+      rcases hx with hx | hx
+      · exact htfv x (List.mem_append.mpr (Or.inl
+          (List.mem_append.mpr (Or.inl hx))))
+      · exact htfv x (List.mem_append.mpr (Or.inl
+          (List.mem_append.mpr (Or.inr
+            (Expr.mem_flatMap_tyFreeVars_iff_recGroup.mp hx)))))
+    have hSpecs1Avoid : ∀ s ∈ specs1, ∀ v ∈ s.freeVars,
+        v < lo ∨ hi ≤ v := by
+      intro s hs v hv
+      rw [hspecs1] at hs
+      obtain ⟨s0, hs0, rfl⟩ := List.mem_map.mp hs
+      obtain ⟨m, hmΦ, rfl⟩ := init_spec_mono hs0
+      exact Subst.onTy_avoidsItv hgR
+        (fun w hw => by
+          simp only [Ty.freeVars, List.mem_singleton] at hw
+          subst hw
+          exact Or.inr (Nat.le_trans hhi hmΦ)) v hv
+    have hScR : ∀ p ∈ Sc, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v := by
+      intro p hp v hv
+      exact hRigidAvoid v (RecCeilingConstraints.range_subset_rigid hSc p hp v hv)
+    have hScD : ∀ p ∈ Sc, p.1 < lo ∨ hi ≤ p.1 := by
+      intro p hp
+      by_cases hpΦ : p.1 < Φ₁
+      · by_contra hbad
+        have hpRigid : p.1 ∉ RecGroup.rigidVars anns bindings :=
+          fun hmem => hbad (hRigidAvoid p.1 hmem)
+        have hpSpecs : ∀ s ∈ specs1, p.1 ∉ s.freeVars := by
+          intro s hs hmem
+          exact hbad (hSpecs1Avoid s hs p.1 hmem)
+        have hnot := RecCeilingConstraints.dom_avoid hSc hpRigid hpΦ hpSpecs
+        apply hnot
+        exact List.mem_map.mpr ⟨p, hp, rfl⟩
+      · right
+        have hΦ₁ : Φ ≤ Φ₁ := by have := InferRecGroup.frontier_le hgroup; omega
+        omega
+    have hBothR : ∀ p ∈ S₁ ++ Sc, ∀ v ∈ p.2.freeVars, v < lo ∨ hi ≤ v := by
+      intro p hp
+      rcases List.mem_append.mp hp with hp | hp
+      · exact hgR p hp
+      · exact hScR p hp
+    have hSpecsCEq : specsC =
+        (RecSpec.init Φ anns).map (RecSpec.onSubst (S₁ ++ Sc)) := by
+      rw [hspecsC, hspecs1, List.map_map]
+      apply List.map_congr_left
+      intro s _
+      exact (RecSpec.onSubst_append S₁ Sc s).symm
+    -- the body environment (ceiling schemes over the twice-solved monotypes)
+    have hBodyCtx : ∀ M ∈ ({ (Sc.onCtx (S₁.onCtx ctx)) with
         env := RecSpecs.ceilingSchemes
-                  (genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
-                    (RecSpecs.monoTys ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))))
+                  G
                   anns
-                  ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))
-                ++ (S₁.onCtx ctx).env }).env,
+                  specsC
+                ++ (Sc.onCtx (S₁.onCtx ctx)).env }).env,
         ∀ v ∈ M.body.freeVars, v < lo ∨ hi ≤ v := by
       intro M hM
       rcases List.mem_append.mp hM with hM | hM
-      · exact RecSpecs.ceilingSchemes_avoidsItv hgR hhi anns hAnnsAvoid M hM
-      · exact Subst.onCtx_avoidsItv hgR hctx M hM
+      · rw [hSpecsCEq] at hM
+        exact RecSpecs.ceilingSchemes_avoidsItv hBothR hhi anns hAnnsAvoid M hM
+      · exact Subst.onCtx_avoidsItv hScR (Subst.onCtx_avoidsItv hgR hctx) M hM
     obtain ⟨hbτ, hbD, hbR⟩ := Infer.gap_avoid hbody
       (by have := InferRecGroup.frontier_le hgroup; omega) hBodyCtx hBodyAvoid
     refine ⟨hbτ, ?_, ?_⟩
     · intro p hp; simp only [List.mem_append] at hp
-      rcases hp with hp | hp
+      rcases hp with (hp | hp) | hp
       · exact hgD p hp
+      · exact hScD p hp
       · exact hbD p hp
     · intro p hp; simp only [List.mem_append] at hp
-      rcases hp with hp | hp
+      rcases hp with (hp | hp) | hp
       · exact hgR p hp
+      · exact hScR p hp
       · exact hbR p hp
 termination_by e.size
 decreasing_by
@@ -2972,6 +3117,542 @@ premises, so the bridge's construction work moved into the SPINE-GROUP cases. -/
 
 -- [letrec-agent]
 
+/-! ### Recursive-ceiling solver factoring (Path R)
+
+The `Sc` pass is a sequence of ordinary erased unifications.  A single
+witness which satisfies one such equation already absorbs the solution chosen
+for it.  This is stronger than merely obtaining an arbitrary MGU residual and
+is the algebra that lets the same witness thread through the whole pass.
+Every equality here is `AgreesHM`: no structural recovery is used. -/
+
+mutual
+/-- A unifier of an equation absorbs its `UnifyRel` solution. -/
+theorem UnifyRel.factors_self : {a b : Ty} → {S : Subst} → UnifyRel a b S →
+    ∀ U : Subst, Unifies U a b → FactorsHM U S U
+  | _, _, _, .prim, U, _ => fun t => by simp only [AgreesHM, Subst.onTy_nil]
+  | _, _, _, .fvarRefl, U, _ => fun t => by simp only [AgreesHM, Subst.onTy_nil]
+  | _, _, _, @UnifyRel.fvarL n t _ _, U, hU => by
+      intro x
+      simp only [Unifies, AgreesHM, Subst.onTy] at hU ⊢
+      simpa [Subst.onTy] using (Subst.onTy_substFvar_erase hU x).symm
+  | _, _, _, @UnifyRel.fvarR n t _ _, U, hU => by
+      intro x
+      simp only [Unifies, AgreesHM, Subst.onTy] at hU ⊢
+      simpa [Subst.onTy] using (Subst.onTy_substFvar_erase hU.symm x).symm
+  | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, U, hU => by
+      have hac : Unifies U a c := by
+        simp only [Unifies, AgreesHM, Subst.onTy_arrow, Ty.eraseBounds_arrow] at hU
+        exact (Ty.arrow.inj hU).1
+      have hbd : Unifies U b d := by
+        simp only [Unifies, AgreesHM, Subst.onTy_arrow, Ty.eraseBounds_arrow] at hU
+        exact (Ty.arrow.inj hU).2
+      have h₁U := UnifyRel.factors_self h₁ U hac
+      have h₂U : Unifies U (S₁.onTy b) (S₁.onTy d) := by
+        simp only [Unifies, AgreesHM] at hbd ⊢
+        exact (h₁U b).symm.trans (hbd.trans (h₁U d))
+      have h₂Ufac := UnifyRel.factors_self h₂ U h₂U
+      intro x
+      simp only [FactorsHM, AgreesHM, Subst.onTy_append] at h₁U h₂Ufac ⊢
+      exact (h₁U x).trans (h₂Ufac (S₁.onTy x))
+  | _, _, _, @UnifyRel.customTy nm as bs S hs, U, hU => by
+      have hlist : as.map (fun t => Ty.eraseBounds (U.onTy t)) =
+          bs.map (fun t => Ty.eraseBounds (U.onTy t)) := by
+        simp only [Unifies, AgreesHM, Subst.onTy_customTy, Ty.eraseBounds_customTy,
+          TyList.eraseBounds_eq_map, List.map_map] at hU
+        exact (Ty.customTy.inj hU).2
+      exact UnifyRelList.factors_self hs U hlist
+  | _, _, _, @UnifyRel.bl lo₁ hi₁ lo₂ hi₂ a b S hs, U, hU => by
+      have hab : Unifies U a b := by
+        simp only [Unifies, AgreesHM, Subst.onTy_bl, Ty.eraseBounds_bl, bareListTy] at hU ⊢
+        simpa [bareListTy, Ty.customTy.injEq, List.cons.injEq] using hU
+      exact UnifyRel.factors_self hs U hab
+  | _, _, _, @UnifyRel.blList lo hi a b S hs, U, hU => by
+      have hab : Unifies U a b := by
+        simp only [Unifies, AgreesHM, Subst.onTy_bl, Subst.onTy_customTy,
+          Ty.eraseBounds_bl, Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map,
+          List.map_cons, List.map_nil, bareListTy] at hU ⊢
+        simpa [bareListTy, Ty.customTy.injEq, List.cons.injEq] using hU
+      exact UnifyRel.factors_self hs U hab
+  | _, _, _, @UnifyRel.listBl lo hi a b S hs, U, hU => by
+      have hab : Unifies U b a := by
+        simp only [Unifies, AgreesHM, Subst.onTy_bl, Subst.onTy_customTy,
+          Ty.eraseBounds_bl, Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map,
+          List.map_cons, List.map_nil, bareListTy] at hU ⊢
+        simpa [bareListTy, Ty.customTy.injEq, List.cons.injEq] using hU
+      exact UnifyRel.factors_self hs U hab
+
+/-- List counterpart of `UnifyRel.factors_self`. -/
+theorem UnifyRelList.factors_self : {as bs : List Ty} → {S : Subst} →
+    UnifyRelList as bs S → ∀ U : Subst,
+      as.map (fun t => Ty.eraseBounds (U.onTy t)) =
+        bs.map (fun t => Ty.eraseBounds (U.onTy t)) → FactorsHM U S U
+  | _, _, _, .nil, U, _ => fun t => by simp only [AgreesHM, Subst.onTy_nil]
+  | _, _, _, @UnifyRelList.cons a b as bs S₁ S₂ h₁ h₂, U, hU => by
+      simp only [List.map_cons, List.cons.injEq] at hU
+      obtain ⟨hab, htail⟩ := hU
+      have h₁U := UnifyRel.factors_self h₁ U hab
+      have h₂U := UnifyRelList.factors_self h₂ U (by
+        rw [List.map_map, List.map_map]
+        calc
+          as.map (fun t => Ty.eraseBounds (U.onTy (S₁.onTy t))) =
+              as.map (fun t => Ty.eraseBounds (U.onTy t)) := by
+                apply List.map_congr_left
+                intro t _
+                exact (h₁U t).symm
+          _ = bs.map (fun t => Ty.eraseBounds (U.onTy t)) := htail
+          _ = bs.map (fun t => Ty.eraseBounds (U.onTy (S₁.onTy t))) := by
+                apply List.map_congr_left
+                intro t _
+                exact h₁U t)
+      intro x
+      simp only [FactorsHM, AgreesHM, Subst.onTy_append] at h₁U h₂U ⊢
+      exact (h₁U x).trans (h₂U (S₁.onTy x))
+end
+
+/-- Pointwise erased satisfaction of a substitution's raw bindings makes the
+substitution self-absorbing.  This is the projection-friendly form of the
+ceiling factor invariant: after filtering out pool domains one merely keeps
+the corresponding pointwise facts. -/
+theorem FactorsHM.of_satisfies {U S : Subst}
+    (h : ∀ p ∈ S, AgreesHM (U.onTy (.fvar p.1)) (U.onTy p.2)) :
+    FactorsHM U S U := by
+  induction S with
+  | nil => intro t; simp only [AgreesHM, Subst.onTy_nil]
+  | cons hd tl ih =>
+      obtain ⟨z, u⟩ := hd
+      have hhead : AgreesHM (U.onTy (.fvar z)) (U.onTy u) :=
+        h (z, u) List.mem_cons_self
+      have htail : FactorsHM U tl U := ih (fun p hp =>
+        h p (List.mem_cons_of_mem _ hp))
+      intro t
+      have hsubst := Subst.onTy_substFvar_erase hhead t
+      simp only [FactorsHM, AgreesHM, Subst.onTy] at htail ⊢
+      exact hsubst.symm.trans (htail (Ty.substFvar z u t))
+
+/-- A self-absorbing residual cannot observe a ceiling substitution beneath a
+    scheme whose generalisation pool that substitution avoids.  The pool is
+    deliberately the one selected *before* the ceiling pass: this is the
+    small algebraic fact that keeps `letRec`'s generalisation frontier frozen
+    while its member monotypes are refined by `Sc`. -/
+theorem FactorsHM.genGroup_stable {U Sc : Subst} {G : List Nat} {τ : Ty}
+    (hfac : FactorsHM U Sc U)
+    (hdom : ∀ p ∈ Sc, p.1 ∉ G)
+    (hran : ∀ p ∈ Sc, ∀ u ∈ p.2.freeVars, u ∉ G) :
+    PolyTy.eraseBounds (U.onPolyTy (PolyTy.genGroup G (Sc.onTy τ))) =
+      PolyTy.eraseBounds (U.onPolyTy (PolyTy.genGroup G τ)) := by
+  rw [← Subst.onPolyTy_genGroup hdom hran]
+  apply congrArg₂ PolyTy.mk rfl
+  exact (hfac (PolyTy.genGroup G τ).body).symm
+
+/-! A `UnifyRel` trace supplies the raw pointwise satisfaction needed above.
+Unlike final-action factorisation, this form survives `dropDomains` by plain
+membership filtering. -/
+mutual
+theorem UnifyRel.binding_satisfies : {a b : Ty} → {S : Subst} → UnifyRel a b S →
+    ∀ U : Subst, Unifies U a b →
+      ∀ p ∈ S, AgreesHM (U.onTy (.fvar p.1)) (U.onTy p.2)
+  | _, _, _, .prim, U, hU, p, hp => by simp at hp
+  | _, _, _, .fvarRefl, U, hU, p, hp => by simp at hp
+  | _, _, _, @UnifyRel.fvarL n t _ _, U, hU, p, hp => by
+      rw [List.mem_singleton] at hp
+      subst p
+      exact hU
+  | _, _, _, @UnifyRel.fvarR n t _ _, U, hU, p, hp => by
+      rw [List.mem_singleton] at hp
+      subst p
+      exact hU.symm
+  | _, _, _, @UnifyRel.arrow a b c d S₁ S₂ h₁ h₂, U, hU, p, hp => by
+      have hac : Unifies U a c := by
+        simp only [Unifies, AgreesHM, Subst.onTy_arrow, Ty.eraseBounds_arrow] at hU
+        exact (Ty.arrow.inj hU).1
+      have hbd : Unifies U b d := by
+        simp only [Unifies, AgreesHM, Subst.onTy_arrow, Ty.eraseBounds_arrow] at hU
+        exact (Ty.arrow.inj hU).2
+      have h₁fac := UnifyRel.factors_self h₁ U hac
+      have h₂uni : Unifies U (S₁.onTy b) (S₁.onTy d) := by
+        simp only [Unifies, AgreesHM] at hbd ⊢
+        exact (h₁fac b).symm.trans (hbd.trans (h₁fac d))
+      rw [List.mem_append] at hp
+      exact hp.elim
+        (fun hp => UnifyRel.binding_satisfies h₁ U hac p hp)
+        (fun hp => UnifyRel.binding_satisfies h₂ U h₂uni p hp)
+  | _, _, _, @UnifyRel.customTy nm as bs S hs, U, hU, p, hp => by
+      have hlist : as.map (fun t => Ty.eraseBounds (U.onTy t)) =
+          bs.map (fun t => Ty.eraseBounds (U.onTy t)) := by
+        simp only [Unifies, AgreesHM, Subst.onTy_customTy, Ty.eraseBounds_customTy,
+          TyList.eraseBounds_eq_map, List.map_map] at hU
+        exact (Ty.customTy.inj hU).2
+      exact UnifyRelList.binding_satisfies hs U hlist p hp
+  | _, _, _, @UnifyRel.bl lo₁ hi₁ lo₂ hi₂ a b S hs, U, hU, p, hp => by
+      have hab : Unifies U a b := by
+        simp only [Unifies, AgreesHM, Subst.onTy_bl, Ty.eraseBounds_bl, bareListTy] at hU ⊢
+        simpa [bareListTy, Ty.customTy.injEq, List.cons.injEq] using hU
+      exact UnifyRel.binding_satisfies hs U hab p hp
+  | _, _, _, @UnifyRel.blList lo hi a b S hs, U, hU, p, hp => by
+      have hab : Unifies U a b := by
+        simp only [Unifies, AgreesHM, Subst.onTy_bl, Subst.onTy_customTy,
+          Ty.eraseBounds_bl, Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map,
+          List.map_cons, List.map_nil, bareListTy] at hU ⊢
+        simpa [bareListTy, Ty.customTy.injEq, List.cons.injEq] using hU
+      exact UnifyRel.binding_satisfies hs U hab p hp
+  | _, _, _, @UnifyRel.listBl lo hi a b S hs, U, hU, p, hp => by
+      have hab : Unifies U b a := by
+        simp only [Unifies, AgreesHM, Subst.onTy_bl, Subst.onTy_customTy,
+          Ty.eraseBounds_bl, Ty.eraseBounds_customTy, TyList.eraseBounds_eq_map,
+          List.map_cons, List.map_nil, bareListTy] at hU ⊢
+        simpa [bareListTy, Ty.customTy.injEq, List.cons.injEq] using hU
+      exact UnifyRel.binding_satisfies hs U hab p hp
+
+theorem UnifyRelList.binding_satisfies : {as bs : List Ty} → {S : Subst} →
+    UnifyRelList as bs S → ∀ U : Subst,
+      as.map (fun t => Ty.eraseBounds (U.onTy t)) =
+        bs.map (fun t => Ty.eraseBounds (U.onTy t)) →
+      ∀ p ∈ S, AgreesHM (U.onTy (.fvar p.1)) (U.onTy p.2)
+  | _, _, _, .nil, U, hU, p, hp => by simp at hp
+  | _, _, _, @UnifyRelList.cons a b as bs S₁ S₂ h₁ h₂, U, hU, p, hp => by
+      simp only [List.map_cons, List.cons.injEq] at hU
+      obtain ⟨hab, htail⟩ := hU
+      have h₁fac := UnifyRel.factors_self h₁ U hab
+      have htail' :
+          (as.map S₁.onTy).map (fun t => Ty.eraseBounds (U.onTy t)) =
+            (bs.map S₁.onTy).map (fun t => Ty.eraseBounds (U.onTy t)) := by
+        rw [List.map_map, List.map_map]
+        calc
+          as.map (fun t => Ty.eraseBounds (U.onTy (S₁.onTy t))) =
+              as.map (fun t => Ty.eraseBounds (U.onTy t)) := by
+                apply List.map_congr_left
+                intro t _
+                exact (h₁fac t).symm
+          _ = bs.map (fun t => Ty.eraseBounds (U.onTy t)) := htail
+          _ = bs.map (fun t => Ty.eraseBounds (U.onTy (S₁.onTy t))) := by
+                apply List.map_congr_left
+                intro t _
+                exact h₁fac t
+      rw [List.mem_append] at hp
+      exact hp.elim
+        (fun hp => UnifyRel.binding_satisfies h₁ U hab p hp)
+        (fun hp => UnifyRelList.binding_satisfies h₂ U htail' p hp)
+end
+
+/-- Projection of a genuine unification trace stays self-factored by every
+witness that unifies the original equation. -/
+theorem UnifyRel.factors_self_dropDomains {a b : Ty} {S U : Subst}
+    (h : UnifyRel a b S) (hU : Unifies U a b) (G : List Nat) :
+    FactorsHM U (S.dropDomains G) U :=
+  FactorsHM.of_satisfies (fun p hp =>
+    UnifyRel.binding_satisfies h U hU p (Subst.mem_dropDomains.mp hp).1)
+
+/-- A finite proxy isolates the variables which a scheme closes before an
+    ambient residual is run.  This is the witness needed for a ceiling check:
+    it behaves exactly as `R` on every unprotected source variable, but routes
+    the protected variables through a fresh opening and then the chosen scheme
+    instantiation.  The statement is deliberately structural; callers may
+    erase it when using `UnifyRel.binding_satisfies`. -/
+private theorem Subst.exists_proxy_unifier
+    {g keep : List Nat} {τ target : Ty} {R : Subst} {args : List Ty}
+    (hg : g.Nodup) (hτ : τ.IsLC) (hR : ∀ p ∈ R, p.2.IsLC)
+    (hinst : InstantiatesBy args (R.onTy (Ty.closeOver g τ)) target)
+    (hgtarget : ∀ z ∈ g, z ∉ target.freeVars)
+    (hRtarget : R.onTy target = target) :
+    ∃ U : Subst, Unifies U τ target ∧
+      (∀ z ∈ τ.freeVars, z ∉ g → U.onTy (.fvar z) = R.onTy (.fvar z)) ∧
+      (∀ z ∈ keep, z ∉ g → U.onTy (.fvar z) = R.onTy (.fvar z)) := by
+  obtain ⟨Ws, hWlen, hWnd, hWavoid⟩ := exists_fresh_names
+    (g ++ (keep ++ (τ.freeVars ++ (R.map Prod.fst ++
+      (R.flatMap (fun p => p.2.freeVars) ++ target.freeVars)))))
+    g.length
+  let proxy : Subst := g.zip (Ws.map (Ty.fvar ·))
+  let breal : Subst := Ws.zip args
+  let U : Subst := proxy ++ R ++ breal
+  have hWg : ∀ w ∈ Ws, w ∉ g := fun w hw hwg =>
+    hWavoid w hw (by simp [hwg])
+  have hWτ : ∀ w ∈ Ws, w ∉ τ.freeVars := fun w hw hwτ =>
+    hWavoid w hw (by simp only [List.mem_append]; tauto)
+  have hWkeep : ∀ w ∈ Ws, w ∉ keep := fun w hw hkeep =>
+    hWavoid w hw (by simp only [List.mem_append]; tauto)
+  have hWRdom : ∀ p ∈ R, p.1 ∉ Ws := fun p hp hmem =>
+    hWavoid p.1 hmem (by
+      have hdom : p.1 ∈ R.map Prod.fst := List.mem_map.mpr ⟨p, hp, rfl⟩
+      simp only [List.mem_append]; tauto)
+  have hWRran : ∀ p ∈ R, ∀ w ∈ p.2.freeVars, w ∉ Ws := fun p hp w hw hmem =>
+    hWavoid w hmem (by
+      have hran : w ∈ R.flatMap (fun p => p.2.freeVars) := List.mem_flatMap.mpr ⟨p, hp, hw⟩
+      simp only [List.mem_append]; tauto)
+  have hWtarget : ∀ w ∈ Ws, w ∉ target.freeVars := fun w hw hmem =>
+    hWavoid w hw (by simp only [List.mem_append]; tauto)
+  have hproxy : proxy.onTy τ = Ty.openVars Ws (Ty.closeOver g τ) := by
+    rw [Ty.openVars_closeOver_rename hτ hg hWlen (fun z hz zw => hWg z zw hz)]
+    rfl
+  have hRcomm : R.onTy (Ty.openVars Ws (Ty.closeOver g τ)) =
+      Ty.openVars Ws (R.onTy (Ty.closeOver g τ)) :=
+    Subst.onTy_openVars hR hWRdom
+  have hbv0 : ContainsBvarsUpTo g.length (Ty.closeOver g τ) := by
+    exact Ty.closeOver_preserves_bvars hτ
+  have hbv : ContainsBvarsUpTo Ws.length (R.onTy (Ty.closeOver g τ)) := by
+    rw [hWlen]
+    exact ContainsBvarsUpTo.substFvars hR hbv0
+  have hreal : breal.onTy (Ty.openVars Ws (R.onTy (Ty.closeOver g τ))) = target := by
+    simpa [breal] using InstantiatesBy.onTy_openVars_zip hinst hbv hWnd hWtarget
+  refine ⟨U, ?_, ?_, ?_⟩
+  · apply Unifies.of_eq
+    change (proxy ++ R ++ breal).onTy τ = (proxy ++ R ++ breal).onTy target
+    simp only [Subst.onTy_append]
+    rw [hproxy, hRcomm, hreal]
+    change target = breal.onTy (R.onTy (proxy.onTy target))
+    apply Eq.symm
+    calc
+      breal.onTy (R.onTy (proxy.onTy target)) = breal.onTy (R.onTy target) := by
+        congr 2
+        apply Ty.substFvars_eq_self_of_no_key
+        intro p hp hz
+        change p ∈ g.zip (Ws.map (Ty.fvar ·)) at hp
+        exact hgtarget p.1 (List.of_mem_zip hp).1 (by simpa [Ty.freeVars] using hz)
+      _ = breal.onTy target := by rw [hRtarget]
+      _ = target := by
+        apply Ty.substFvars_eq_self_of_no_key
+        intro p hp hz
+        change p ∈ Ws.zip args at hp
+        exact hWtarget p.1 (List.of_mem_zip hp).1 (by simpa [Ty.freeVars] using hz)
+  · intro z hzτ hzg
+    change (proxy ++ R ++ breal).onTy (.fvar z) = R.onTy (.fvar z)
+    rw [Subst.onTy_append, Subst.onTy_append]
+    have hproxyfix : proxy.onTy (.fvar z) = .fvar z := by
+      apply Ty.substFvars_eq_self_of_no_key
+      intro p hp hz
+      change p ∈ g.zip (Ws.map (Ty.fvar ·)) at hp
+      apply hzg
+      have hpg : p.1 ∈ g := (List.of_mem_zip hp).1
+      have hpz : p.1 = z := by simpa [Ty.freeVars] using hz
+      exact hpz ▸ hpg
+    rw [hproxyfix]
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hz
+    change p ∈ Ws.zip args at hp
+    have hpW : p.1 ∈ Ws := (List.of_mem_zip hp).1
+    have hpNot : p.1 ∉ (Ty.fvar z).freeVars := by
+      simp only [Ty.freeVars, List.mem_singleton]
+      intro hpz
+      rw [hpz] at hpW
+      exact hWτ z hpW hzτ
+    exact (Subst.not_mem_onTy_freeVars
+      (fun q hq hqv => hWRran q hq p.1 hqv hpW) hpNot) hz
+  · intro z hzkeep hzg
+    change (proxy ++ R ++ breal).onTy (.fvar z) = R.onTy (.fvar z)
+    rw [Subst.onTy_append, Subst.onTy_append]
+    have hproxyfix : proxy.onTy (.fvar z) = .fvar z := by
+      apply Ty.substFvars_eq_self_of_no_key
+      intro p hp hz
+      change p ∈ g.zip (Ws.map (Ty.fvar ·)) at hp
+      apply hzg
+      have hpg : p.1 ∈ g := (List.of_mem_zip hp).1
+      have hpz : p.1 = z := by simpa [Ty.freeVars] using hz
+      exact hpz ▸ hpg
+    rw [hproxyfix]
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hz
+    change p ∈ Ws.zip args at hp
+    have hpW : p.1 ∈ Ws := (List.of_mem_zip hp).1
+    have hpNot : p.1 ∉ (Ty.fvar z).freeVars := by
+      simp only [Ty.freeVars, List.mem_singleton]
+      intro hpz
+      rw [hpz] at hpW
+      exact hWkeep z hpW hzkeep
+    exact (Subst.not_mem_onTy_freeVars
+      (fun q hq hqv => hWRran q hq p.1 hqv hpW) hpNot) hz
+
+/-- Thread a common residual witness through the sequential ceiling pass.
+
+    The premise deliberately speaks only about the **committed** bindings of a
+    head step.  A full annotation check may instantiate the frozen group pool
+    differently at each head; those pool-domain bindings are projected away by
+    `dropDomains G` and therefore must not be forced to share one unifier.
+    What remains is exactly the pointwise statement needed for `FactorsHM`.
+
+    The let-rec completeness case supplies this premise from its declarative
+    member connection.  Keeping this algebraic threading lemma separate makes
+    that source-specific argument explicit, and prevents an accidental return
+    to a structural (bounds-sensitive) factorisation argument. -/
+theorem RecCeilingConstraints.factors_of_step_satisfies
+    {K rigid G : List Nat} {Φ : Nat} {anns : List (Option PolyTy)}
+    {specs : List RecSpec} {Sc Rg : Subst}
+    (hSc : RecCeilingConstraints K rigid G Φ anns specs Sc)
+    (hstep : ∀ {τ : Ty} {σ : PolyTy} {full step : Subst},
+      UnifyRel (Ty.eraseBounds τ)
+          (Ty.eraseBounds (σ.openVars (freshVars Φ σ.paramCount))) full →
+      step = Subst.dropDomains G full →
+      ∀ p ∈ step, AgreesHM (Rg.onTy (.fvar p.1)) (Rg.onTy p.2)) :
+    FactorsHM Rg Sc Rg := by
+  apply FactorsHM.of_satisfies
+  induction anns generalizing specs Sc with
+  | nil =>
+      cases specs <;> simp [RecCeilingConstraints] at hSc
+      subst Sc
+      simp
+  | cons ann anns ih =>
+      cases ann with
+      | none =>
+          cases specs with
+          | nil => simp [RecCeilingConstraints] at hSc
+          | cons spec specs =>
+              intro p hp
+              exact ih hSc p hp
+      | some σ =>
+          cases specs with
+          | nil => simp [RecCeilingConstraints] at hSc
+          | cons spec specs =>
+              cases spec with
+              | poly σ' => simp [RecCeilingConstraints] at hSc
+              | mono τ =>
+                  rcases hSc with ⟨full, step, tail, hfull, _havoid, hdef,
+                    _hrange, _hlc, _hwf, _hrigid, htail, rfl⟩
+                  intro p hp
+                  rcases List.mem_append.mp hp with hp | hp
+                  · exact hstep hfull hdef p hp
+                  · exact ih htail p hp
+
+/-- Reflect membership through a map on the right side of a zip. -/
+private theorem List.mem_zip_map_right {alpha beta gamma : Type _} {g : beta → gamma}
+    : ∀ {l : List alpha} {r : List beta} {p : alpha × gamma},
+      p ∈ l.zip (r.map g) → ∃ a b, (a, b) ∈ l.zip r ∧ p = (a, g b) := by
+  intro l
+  induction l with
+  | nil => intro r p h; simp at h
+  | cons hd tl ih =>
+      intro r p h
+      cases r with
+      | nil => simp at h
+      | cons rhd rtl =>
+          simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at h
+          cases h with
+          | inl heq => exact ⟨hd, rhd, List.mem_cons_self, heq⟩
+          | inr h' =>
+              obtain ⟨a, b, hmem, heq⟩ := ih h'
+              exact ⟨a, b, List.mem_cons_of_mem _ hmem, heq⟩
+
+/-- Positional scheme evidence used by the reverse (principality) direction of
+    the recursive ceiling pass.  Only annotated monomorphic entries carry an
+    obligation; the impossible annotated-poly case is recorded explicitly. -/
+private def CeilingGenInv (G : List Nat) (R : Subst)
+    (anns : List (Option PolyTy)) (specs : List RecSpec) : Prop :=
+  ∀ {ann spec}, (ann, spec) ∈ anns.zip specs →
+    match ann, spec with
+    | some σ, .mono τ =>
+        (PolyTy.eraseBounds (R.onPolyTy (PolyTy.genGroup G τ))).Generalizes
+          (PolyTy.eraseBounds σ)
+    | some _, .poly _ => False
+    | none, _ => True
+
+/-- A sequential ceiling is absorbed once each annotated head is absorbed from
+    its scheme-generality witness.  The invariant is transported through a
+    committed head using `genGroup_stable`, so each annotation remains free to
+    choose its own discarded instantiation of the frozen pool. -/
+private theorem RecCeilingConstraints.factors_of_generalizes
+    {K rigid G : List Nat} {Phi : Nat} {anns : List (Option PolyTy)}
+    {specs : List RecSpec} {Sc R : Subst}
+    (hSc : RecCeilingConstraints K rigid G Phi anns specs Sc)
+    (hgen : CeilingGenInv G R anns specs)
+    (hspecLC : ∀ s ∈ specs, s.LC)
+    (hspecBelow : ∀ s ∈ specs, s.BelowFvars Phi)
+    (hrigidBelow : ∀ x ∈ rigid, x < Phi)
+    (hhead : ∀ {τ : Ty} {σ : PolyTy} {full step : Subst},
+      UnifyRel (Ty.eraseBounds τ)
+          (Ty.eraseBounds (σ.openVars (freshVars Phi σ.paramCount))) full →
+      (∀ p ∈ full, p.1 ∉ K ++ rigid ++ freshVars Phi σ.paramCount) →
+      step = Subst.dropDomains G full →
+      (∀ p ∈ step, ∀ x ∈ p.2.freeVars, x ∈ rigid ∧ x ∉ G) →
+      (∀ p ∈ step, p.2.IsLC) →
+      σ.WF →
+      (∀ x ∈ σ.body.freeVars, x ∈ rigid) →
+      τ.IsLC →
+      τ.BelowFvars Phi →
+      (PolyTy.eraseBounds (R.onPolyTy (PolyTy.genGroup G τ))).Generalizes
+        (PolyTy.eraseBounds σ) →
+      FactorsHM R step R) :
+    FactorsHM R Sc R := by
+  induction anns generalizing specs Sc with
+  | nil =>
+      cases specs <;> simp [RecCeilingConstraints] at hSc
+      subst Sc
+      intro t
+      exact AgreesHM.refl _
+  | cons ann anns ih =>
+      cases ann with
+      | none =>
+          cases specs with
+          | nil => simp [RecCeilingConstraints] at hSc
+          | cons spec specs =>
+              apply ih hSc
+              · intro a s hp
+                exact hgen (by
+                  rw [List.zip_cons_cons]
+                  exact List.mem_cons_of_mem _ hp)
+              · intro s hs
+                exact hspecLC s (List.mem_cons_of_mem _ hs)
+              · intro s hs
+                exact hspecBelow s (List.mem_cons_of_mem _ hs)
+      | some σ =>
+          cases specs with
+          | nil => simp [RecCeilingConstraints] at hSc
+          | cons spec specs =>
+              cases spec with
+              | poly σ' => simp [RecCeilingConstraints] at hSc
+              | mono τ =>
+                  rcases hSc with ⟨full, step, tail, hfull, havoid, hdef,
+                    hrange, hstepLC, hσwf, hσrigid, htail, rfl⟩
+                  have hgenHead :
+                      (PolyTy.eraseBounds (R.onPolyTy (PolyTy.genGroup G τ))).Generalizes
+                        (PolyTy.eraseBounds σ) :=
+                    hgen (by rw [List.zip_cons_cons]; exact List.mem_cons_self)
+                  have hfacHead : FactorsHM R step R :=
+                    hhead hfull havoid hdef hrange hstepLC hσwf hσrigid
+                      (hspecLC (.mono τ) List.mem_cons_self)
+                      (hspecBelow (.mono τ) List.mem_cons_self) hgenHead
+                  have hdom : ∀ p ∈ step, p.1 ∉ G := by
+                    intro p hp
+                    rw [hdef] at hp
+                    exact (Subst.mem_dropDomains.mp hp).2
+                  have hgenTail : CeilingGenInv G R anns
+                      (specs.map (RecSpec.onSubst step)) := by
+                    intro a s hs
+                    rcases List.mem_zip_map_right hs with ⟨a0, s0, hs0, heq⟩
+                    injection heq with ha hs'
+                    cases ha
+                    cases hs'
+                    have hold := hgen (by
+                      rw [List.zip_cons_cons]
+                      exact List.mem_cons_of_mem _ hs0)
+                    cases a with
+                    | none => trivial
+                    | some σ0 =>
+                        cases s0 with
+                        | poly σ1 => exact False.elim hold
+                        | mono τ0 =>
+                            have hstable := FactorsHM.genGroup_stable
+                              (U := R) (Sc := step) (G := G) (τ := τ0)
+                              hfacHead hdom (fun p hp x hx => (hrange p hp x hx).2)
+                            change
+                              (PolyTy.eraseBounds
+                                (R.onPolyTy (PolyTy.genGroup G (step.onTy τ0)))).Generalizes
+                                (PolyTy.eraseBounds σ0)
+                            rw [hstable]
+                            exact hold
+                  have hstepBelow : ∀ p ∈ step, p.2.BelowFvars Phi := by
+                    intro p hp
+                    exact Ty.BelowFvars.of_freeVars_lt (fun x hx =>
+                      hrigidBelow x (hrange p hp x hx).1)
+                  have hfacTail : FactorsHM R tail R := ih htail hgenTail
+                    (fun s hs => by
+                      obtain ⟨s0, hs0, rfl⟩ := List.mem_map.mp hs
+                      exact RecSpec.LC.onSubst hstepLC
+                        (hspecLC s0 (List.mem_cons_of_mem _ hs0)))
+                    (fun s hs => by
+                      obtain ⟨s0, hs0, rfl⟩ := List.mem_map.mp hs
+                      exact RecSpec.BelowFvars.onSubst hstepBelow
+                        (hspecBelow s0 (List.mem_cons_of_mem _ hs0)))
+                  intro t
+                  simpa [Subst.onTy_append] using
+                    AgreesHM.trans (hfacHead t) (hfacTail (step.onTy t))
+
 /-- Free vars of a single type are contained in the free vars of any list
     containing it (`Ty.freeVarsList` flavour; the public twin of Core's private
     `Ty.freeVars_subset_freeVarsList`, needed by `exists_recgroup_residual`). -/
@@ -2984,27 +3665,6 @@ private theorem Ty.mem_freeVarsList_of_mem {t : Ty} {tys : List Ty} {x : Nat}
     cases ht with
     | head _ => exact .inl hx
     | tail _ ht' => exact .inr (ih ht')
-
-/-- A member of `l.zip (r.map g)` reflects to a member of `l.zip r`: the
-    `InferRecGroup` tier's `consMono`/`consPoly` tail premises must be
-    reconstructed from a `rest.zip (specs.map (RecSpec.onSubst S))` member. -/
-private theorem List.mem_zip_map_right {α β γ : Type _} {g : β → γ}
-    : ∀ {l : List α} {r : List β} {p : α × γ},
-      p ∈ l.zip (r.map g) → ∃ a b, (a, b) ∈ l.zip r ∧ p = (a, g b) := by
-  intro l
-  induction l with
-  | nil => intro r p h; simp at h
-  | cons hd tl ih =>
-    intro r p h
-    cases r with
-    | nil => simp at h
-    | cons rhd rtl =>
-      simp only [List.map_cons, List.zip_cons_cons, List.mem_cons] at h
-      cases h with
-      | inl heq => exact ⟨hd, rhd, List.mem_cons_self, heq⟩
-      | inr h' =>
-        obtain ⟨a, b, hmem, heq⟩ := ih h'
-        exact ⟨a, b, List.mem_cons_of_mem _ hmem, heq⟩
 
 /-- A scheme generalising its body-type's closed-over form generalises any scheme
     whose body is an opening of that closed form (erase world port of caac62d's
@@ -3125,6 +3785,287 @@ private theorem Subst.onTy_erase_fvar (S : Subst) (v : Nat) :
   rw [Ty.eraseBounds_substFvars]
   simp
 
+/-- Pointwise erased agreement on a type's actual free variables is enough to
+    transport that type.  This is the finite-support counterpart of
+    `Subst.onTy_congr_hm`, used below because a ceiling step only promises
+    agreement on its rigid range, not on an entire numerical frontier. -/
+private theorem Subst.onTy_congr_hm_of_freeVars {S T : Subst} {t : Ty}
+    (h : ∀ v ∈ t.freeVars,
+      AgreesHM (S.onTy (.fvar v)) (T.onTy (.fvar v))) :
+    AgreesHM (S.onTy t) (T.onTy t) := by
+  induction t using Ty.rec_strong with
+  | prim p => simp [AgreesHM]
+  | bvar i => simp [AgreesHM]
+  | fvar n => exact h n (by simp [Ty.freeVars])
+  | arrow a b iha ihb =>
+    simp only [AgreesHM, Subst.onTy_arrow, Ty.eraseBounds_arrow, Ty.arrow.injEq]
+    exact ⟨iha (fun v hv => h v (by
+      simp only [Ty.freeVars, List.mem_dedup, List.mem_append]
+      exact Or.inl hv)),
+      ihb (fun v hv => h v (by
+        simp only [Ty.freeVars, List.mem_dedup, List.mem_append]
+        exact Or.inr hv))⟩
+  | customTy nm tys ih =>
+    simp only [AgreesHM, Subst.onTy_customTy, Ty.eraseBounds_customTy,
+      TyList.eraseBounds_eq_map, List.map_map]
+    apply congrArg (Ty.customTy nm)
+    apply List.map_congr_left
+    intro u hu
+    exact ih u hu (fun v hv => h v (TyList.mem_freeVars_of_mem hu hv))
+  | bl lo hi e ih =>
+    simp only [AgreesHM, Subst.onTy_bl, Ty.eraseBounds_bl]
+    apply congrArg bareListTy
+    exact ih (fun v hv => h v (by simpa [Ty.freeVars] using hv))
+
+/-- A single committed recursive-ceiling step is absorbed by a residual which
+    already generalises the pre-ceiling member scheme.
+
+    The non-obvious part is the `Ys -> Ws -> Ys` sandwich.  The annotation is
+    checked at the current skolem block `Ys`, but the ambient residual may
+    bind those *future* names.  We therefore move the opening to a fresh block
+    `Ws`, obtain the generality witness there, and conjugate its unifier by
+    `blockList`/`blockListBack`.  The resulting witness still agrees with the
+    ambient residual on retained member keys and on rigid range variables. -/
+private theorem RecCeilingConstraints.step_absorbed
+    {K rigid G : List Nat} {Φ : Nat} {τ : Ty} {σ : PolyTy}
+    {full step R : Subst}
+    (hG : G.Nodup)
+    (hrigidG : ∀ x ∈ rigid, x ∉ G)
+    (hRlc : ∀ p ∈ R, p.2.IsLC)
+    (hRrigid : ∀ x ∈ rigid, R.onTy (.fvar x) = .fvar x)
+    (hτlc : τ.IsLC) (hτbelow : τ.BelowFvars Φ)
+    (hrigidbelow : ∀ x ∈ rigid, x < Φ)
+    (hfull : UnifyRel (Ty.eraseBounds τ)
+      (Ty.eraseBounds (σ.openVars (freshVars Φ σ.paramCount))) full)
+    (havoid : ∀ p ∈ full, p.1 ∉ K ++ rigid ++ freshVars Φ σ.paramCount)
+    (hstep : step = Subst.dropDomains G full)
+    (hrange : ∀ p ∈ step, ∀ x ∈ p.2.freeVars, x ∈ rigid ∧ x ∉ G)
+    (_hstepLC : ∀ p ∈ step, p.2.IsLC)
+    (hσwf : σ.WF)
+    (hσrigid : ∀ x ∈ σ.body.freeVars, x ∈ rigid)
+    (hgen : (PolyTy.eraseBounds (R.onPolyTy (PolyTy.genGroup G τ))).Generalizes
+      (PolyTy.eraseBounds σ)) :
+    FactorsHM R step R := by
+  let τe : Ty := Ty.eraseBounds τ
+  let σe : PolyTy := PolyTy.eraseBounds σ
+  let Ys : List Nat := freshVars Φ σ.paramCount
+  let Rer : Subst := R.map (fun p : Nat × Ty => (p.1, Ty.eraseBounds p.2))
+  let g : List Nat := Ty.genFilter G τe
+  have hτelc : τe.IsLC := Ty.IsLC.eraseBounds hτlc
+  have hτebelow : τe.BelowFvars Φ :=
+    Ty.BelowFvars.of_freeVars_lt (fun v hv =>
+      hτbelow.mem_lt v ((Ty.mem_freeVars_eraseBounds τ v).mp (by simpa [τe] using hv)))
+  have hσebodybelow : σe.body.BelowFvars Φ :=
+    Ty.BelowFvars.of_freeVars_lt (fun v hv =>
+      hrigidbelow v (hσrigid v
+        ((Ty.mem_freeVars_eraseBounds σ.body v).mp (by simpa [σe] using hv))))
+  have hgnodup : g.Nodup := by
+    rw [show g = Ty.genFilter G τe from rfl]
+    unfold Ty.genFilter
+    exact hG.filter _
+  have hgsub : ∀ x ∈ g, x ∈ G := by
+    intro x hx
+    exact Ty.mem_of_mem_genFilter hx
+  have hRerlc : ∀ p ∈ Rer, p.2.IsLC := by
+    intro p hp
+    rw [show Rer = R.map (fun p : Nat × Ty => (p.1, Ty.eraseBounds p.2)) from rfl] at hp
+    obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hp
+    exact Ty.IsLC.eraseBounds (hRlc q hq)
+  have hRer_fvar : ∀ z : Nat,
+      Rer.onTy (.fvar z) = Ty.eraseBounds (R.onTy (.fvar z)) := by
+    intro z
+    rw [show Rer = R.map (fun p : Nat × Ty => (p.1, Ty.eraseBounds p.2)) from rfl]
+    exact Subst.onTy_erase_fvar R z
+  have hRerrigid : ∀ x ∈ rigid, Rer.onTy (.fvar x) = .fvar x := by
+    intro x hx
+    rw [hRer_fvar x, hRrigid x hx]
+    rfl
+  obtain ⟨W, hWge, hWfresh⟩ := exists_fresh_block
+    (R.map Prod.fst ++ R.flatMap (fun p => p.2.freeVars) ++ G ++ rigid) Φ σ.paramCount
+  let Ws : List Nat := freshVars W σ.paramCount
+  let block : Subst := blockList Φ W σ.paramCount
+  let back : Subst := blockListBack Φ W σ.paramCount
+  let targetY : Ty := σe.openVars Ys
+  let targetW : Ty := σe.openVars Ws
+  have hW_Rdom : ∀ p ∈ R, p.1 < W := by
+    intro p hp
+    exact hWfresh p.1 (by
+      simp only [List.mem_append]
+      exact Or.inl (Or.inl (Or.inl (List.mem_map.mpr ⟨p, hp, rfl⟩))))
+  have hW_Rrange : ∀ p ∈ R, ∀ v ∈ p.2.freeVars, v < W := by
+    intro p hp v hv
+    exact hWfresh v (by
+      simp only [List.mem_append]
+      exact Or.inl (Or.inl (Or.inr (List.mem_flatMap.mpr ⟨p, hp, hv⟩))))
+  have hW_G : ∀ x ∈ G, x < W := by
+    intro x hx
+    exact hWfresh x (by
+      simp only [List.mem_append]
+      exact Or.inl (Or.inr hx))
+  have hW_rigid : ∀ x ∈ rigid, x < W := by
+    intro x hx
+    exact hWfresh x (by
+      simp only [List.mem_append]
+      exact Or.inr hx)
+  have hWs_ge : ∀ w ∈ Ws, W ≤ w := by
+    intro w hw
+    exact freshVars_ge w (by simpa [Ws] using hw)
+  have hRerWfix : ∀ w ∈ Ws, Rer.onTy (.fvar w) = .fvar w := by
+    intro w hw
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    rw [show Rer = R.map (fun p : Nat × Ty => (p.1, Ty.eraseBounds p.2)) from rfl] at hp
+    obtain ⟨q, hq, hpq⟩ := List.mem_map.mp hp
+    subst p
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    have hlt := hW_Rdom q hq
+    have hge := hWs_ge w hw
+    omega
+  have hRertargetW : Rer.onTy targetW = targetW := by
+    apply Subst.onTy_eq_self_of_fixes
+    intro v hv
+    rcases Ty.freeVars_openVars_subset v (by simpa [targetW] using hv) with hv | hv
+    · exact hRerrigid v (hσrigid v
+        ((Ty.mem_freeVars_eraseBounds σ.body v).mp (by simpa [σe] using hv)))
+    · exact hRerWfix v (by simpa [targetW] using hv)
+  have hgtargetW : ∀ z ∈ g, z ∉ targetW.freeVars := by
+    intro z hzg hzt
+    rcases Ty.freeVars_openVars_subset z (by simpa [targetW] using hzt) with hz | hz
+    · exact hrigidG z (hσrigid z
+        ((Ty.mem_freeVars_eraseBounds σ.body z).mp (by simpa [σe] using hz))) (hgsub z hzg)
+    · have hzglt := hW_G z (hgsub z hzg)
+      have hzge := hWs_ge z (by simpa [targetW] using hz)
+      omega
+  have hinstσW : InstantiatesBy (Ws.map (Ty.fvar ·)) σe.body targetW := by
+    exact InstantiatesBy.openVars (Xs := Ws) (n := σe.paramCount)
+      (by simpa [σe] using PolyTy.WF.eraseBounds hσwf) (by simp [Ws, σe])
+  obtain ⟨args, hargsLC, hargs⟩ := hgen (Ws.map (Ty.fvar ·)) targetW
+    (fun t ht => by
+      obtain ⟨w, hw, rfl⟩ := List.mem_map.mp ht
+      exact ContainsBvarsUpTo.fvar) (by simpa [σe] using hinstσW)
+  have hinstA : InstantiatesBy args (Rer.onTy (Ty.closeOver g τe)) targetW := by
+    rw [eraseBounds_onPolyTy_genGroup R] at hargs
+    simpa [Rer, g, τe, PolyTy.genGroup] using hargs
+  obtain ⟨U0, hU0, hU0τ, hU0rigid⟩ :=
+    Subst.exists_proxy_unifier (g := g) (keep := rigid) (τ := τe)
+      (target := targetW) (R := Rer) (args := args)
+      hgnodup hτelc hRerlc hinstA hgtargetW hRertargetW
+  have hblockfix : ∀ z, z < Φ → block.onTy (.fvar z) = .fvar z := by
+    intro z hz
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    rw [show block = blockList Φ W σ.paramCount from rfl] at hp
+    simp only [blockList, List.mem_map] at hp
+    obtain ⟨i, hi, hp⟩ := hp
+    subst p
+    simp only [Ty.freeVars, List.mem_singleton] at hc
+    omega
+  have hblockτ : block.onTy τe = τe := by
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    rw [show block = blockList Φ W σ.paramCount from rfl] at hp
+    simp only [blockList, List.mem_map] at hp
+    obtain ⟨i, hi, hp⟩ := hp
+    subst p
+    have hlt := hτebelow.mem_lt (Φ + i) hc
+    omega
+  have htargetYavoidW : ∀ v ∈ targetY.freeVars,
+      ¬ (W ≤ v ∧ v < W + σ.paramCount) := by
+    intro v hv hbad
+    rcases Ty.freeVars_openVars_subset v (by simpa [targetY] using hv) with hb | hy
+    · have hlt := hσebodybelow.mem_lt v hb
+      omega
+    · have hlt := freshVars_lt v (by simpa [Ys] using hy)
+      omega
+  have hblocktarget : block.onTy targetY = targetW := by
+    rw [show block = blockList Φ W σ.paramCount from rfl,
+      blockList_onTy hWge htargetYavoidW]
+    exact Ty.rename_openVars_blockSwap hWge σe.body
+      (fun v hv => hσebodybelow.mem_lt v hv)
+  have hRer_fvar_below : ∀ z, z < W → ∀ v ∈ (Rer.onTy (.fvar z)).freeVars, v < W := by
+    intro z hz v hv
+    rcases Subst.mem_freeVars_onTy hv with hv | ⟨p, hp, hv⟩
+    · simp only [Ty.freeVars, List.mem_singleton] at hv
+      simpa [hv] using hz
+    · rw [show Rer = R.map (fun p : Nat × Ty => (p.1, Ty.eraseBounds p.2)) from rfl] at hp
+      obtain ⟨q, hq, hpq⟩ := List.mem_map.mp hp
+      subst p
+      exact hW_Rrange q hq v ((Ty.mem_freeVars_eraseBounds q.2 v).mp hv)
+  have hbackRer : ∀ z, z < W → back.onTy (Rer.onTy (.fvar z)) = Rer.onTy (.fvar z) := by
+    intro z hz
+    apply Ty.substFvars_eq_self_of_no_key
+    intro p hp hc
+    rw [show back = blockListBack Φ W σ.paramCount from rfl] at hp
+    simp only [blockListBack, List.mem_map] at hp
+    obtain ⟨i, hi, hp⟩ := hp
+    subst p
+    have hlt := hRer_fvar_below z hz (W + i) hc
+    omega
+  let U : Subst := block ++ U0 ++ back
+  have hUuni : Unifies U τe targetY := by
+    unfold Unifies
+    simp only [U, Subst.onTy_append]
+    rw [hblockτ, hblocktarget]
+    exact Unifies.congr_onTy (R := back) hU0
+  have hUuniFull : Unifies U (Ty.eraseBounds τ)
+      (Ty.eraseBounds (σ.openVars (freshVars Φ σ.paramCount))) := by
+    simpa [τe, targetY, σe, Ys] using hUuni
+  have hUeqRerτ : ∀ z ∈ τe.freeVars, z ∉ G →
+      U.onTy (.fvar z) = Rer.onTy (.fvar z) := by
+    intro z hz hnotG
+    have hzΦ := hτebelow.mem_lt z hz
+    have hnotg : z ∉ g := fun hzg => hnotG (hgsub z hzg)
+    rw [show U = block ++ U0 ++ back from rfl, Subst.onTy_append,
+      Subst.onTy_append, hblockfix z hzΦ, hU0τ z hz hnotg]
+    apply hbackRer
+    exact lt_of_lt_of_le hzΦ (by omega)
+  have hUeqRerrigid : ∀ z ∈ rigid,
+      U.onTy (.fvar z) = Rer.onTy (.fvar z) := by
+    intro z hz
+    have hzΦ := hrigidbelow z hz
+    have hnotg : z ∉ g := fun hzg => hrigidG z hz (hgsub z hzg)
+    rw [show U = block ++ U0 ++ back from rfl, Subst.onTy_append,
+      Subst.onTy_append, hblockfix z hzΦ, hU0rigid z hz hnotg]
+    apply hbackRer
+    exact lt_of_lt_of_le hzΦ (by omega)
+  have hUagreesτ : ∀ z ∈ τe.freeVars, z ∉ G →
+      AgreesHM (U.onTy (.fvar z)) (R.onTy (.fvar z)) := by
+    intro z hz hnotG
+    rw [hUeqRerτ z hz hnotG, hRer_fvar z]
+    simp [AgreesHM]
+  have hUagreesrigid : ∀ z ∈ rigid,
+      AgreesHM (U.onTy (.fvar z)) (R.onTy (.fvar z)) := by
+    intro z hz
+    rw [hUeqRerrigid z hz, hRer_fvar z]
+    simp [AgreesHM]
+  apply FactorsHM.of_satisfies
+  intro p hpstep
+  have hpfull : p ∈ full := by
+    rw [hstep] at hpstep
+    exact (Subst.mem_dropDomains.mp hpstep).1
+  have hpnotG : p.1 ∉ G := by
+    rw [hstep] at hpstep
+    exact (Subst.mem_dropDomains.mp hpstep).2
+  have hUdom : AgreesHM (U.onTy (.fvar p.1)) (R.onTy (.fvar p.1)) := by
+    rcases UnifyRel.dom_mem hfull p hpfull with hpτ | hpσ
+    · exact hUagreesτ p.1 hpτ hpnotG
+    · have hpY : p.1 ∈ targetY.freeVars := by
+        rw [show targetY = Ty.eraseBounds (σ.openVars Ys) by simp [targetY, σe]]
+        simpa [Ys] using hpσ
+      rcases Ty.freeVars_openVars_subset p.1 (by simpa [targetY] using hpY) with hpbody | hpys
+      · exact False.elim (havoid p hpfull (by
+          simp only [List.mem_append]
+          exact Or.inl (Or.inr (hσrigid p.1
+            ((Ty.mem_freeVars_eraseBounds σ.body p.1).mp (by simpa [σe] using hpbody))))))
+      · exact False.elim (havoid p hpfull (by
+          simp only [List.mem_append]
+          exact Or.inr (by simpa [Ys] using hpys)))
+  have hUrange : AgreesHM (U.onTy p.2) (R.onTy p.2) :=
+    Subst.onTy_congr_hm_of_freeVars (fun z hz =>
+      hUagreesrigid z (hrange p hpstep z hz).1)
+  exact hUdom.symm.trans
+    ((UnifyRel.binding_satisfies hfull U hUuniFull p hpfull).trans hUrange)
+
 /-- **Erase-level body retype** (port of caac62d's `letRecFused_body_retype`): the
     `R₁`-transported algorithmic body schemes (ceilingSchemes) generalise the
     declarative `bodyCtx` schemes, so the declarative body typing transports to
@@ -3133,7 +4074,7 @@ private theorem Subst.onTy_erase_fvar (S : Subst) (v : Nat) :
     = renameG G Xs (eraseBounds τdecl)` (derived in COMPLETE-LETREC from the
     group tier's full-frontier R₀-side agreement + the block link); `hσfix` the
     scheme rigidity for annotated members. -/
-private theorem letRecFused_body_retype_erase
+private theorem letRecFused_body_retype_erase_preSc
     {Φ : Nat} {ctx : Ctx} {S₁ R₁ S₀ : Subst} {anns : List (Option PolyTy)}
     {bindings : List Expr} {body : Expr} {dspecs : List RecSpec} {G Xs : List Nat}
     {τ₀ : Ty} {K : List Nat}
@@ -3409,6 +4350,120 @@ private theorem letRecFused_body_retype_erase
     rw [List.map_map]
     rfl
   simpa [← hrigid_def, ← hGinf_def, ← hsolved_def, ← henvS₁_def, hctx, List.map_map] using hfinal
+
+/-- The post-ceiling form of the body retyping bridge.  `Ginf` is computed from
+    `specs1`, before `Sc`; the solver may refine member monotypes, but it may
+    neither touch nor reintroduce a pool variable.  A residual which absorbs
+    `Sc` consequently sees exactly the same erased schemes and outer context.
+
+    Keeping this as a thin transport over `..._preSc` is intentional: the
+    generalisation proof is about the pre-ceiling group, and should not be
+    reproved against a recomputed pool. -/
+private theorem letRecFused_body_retype_erase
+    {Φ : Nat} {ctx : Ctx} {S₁ Sc R₁ S₀ : Subst} {anns : List (Option PolyTy)}
+    {bindings : List Expr} {body : Expr} {dspecs specs1 specsC : List RecSpec} {G Xs : List Nat}
+    {τ₀ : Ty} {K : List Nat}
+    (hspecs1 : specs1 = (RecSpec.init Φ anns).map (RecSpec.onSubst S₁))
+    (hspecsC : specsC = specs1.map (RecSpec.onSubst Sc))
+    (hScdom : ∀ p ∈ Sc, p.1 ∉
+      genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env (RecSpecs.monoTys specs1))
+    (hScrange : ∀ p ∈ Sc, ∀ u ∈ p.2.freeVars, u ∉
+      genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env (RecSpecs.monoTys specs1))
+    (hfac : FactorsHM R₁ Sc R₁)
+    (hanns_eq : dspecs.map RecSpec.ann = anns.map (Option.map PolyTy.eraseBounds))
+    (hdlc : ∀ τ, RecSpec.mono τ ∈ dspecs → τ.IsLC)
+    (hG : G.Nodup)
+    (hXlen : Xs.length = G.length) (hXnodup : Xs.Nodup)
+    (hXG : ∀ g ∈ G, g ∉ Xs)
+    (hXτs : ∀ x ∈ Xs, ∀ τ, RecSpec.mono τ ∈ dspecs → x ∉ τ.freeVars)
+    (hXenv : ∀ x ∈ Xs, x ∉ (S₀.onCtx ctx).env.freeVars)
+    (hXrigid : ∀ x ∈ Xs, x ∉ RecGroup.rigidVars anns bindings)
+    (hS₁lc : ∀ p ∈ S₁, p.2.IsLC) (hR₁lc : ∀ p ∈ R₁, p.2.IsLC)
+    (hctxS₁ : (R₁.onCtx (S₁.onCtx ctx)).eraseBounds = (S₀.onCtx ctx).eraseBounds)
+    (hKrigid : ∀ y ∈ RecGroup.rigidVars anns bindings, y ∈ K)
+    (hR₁K : ∀ k ∈ K, R₁.onTy (Ty.fvar k) = Ty.fvar k)
+    (hσfix : ∀ σ, some σ ∈ anns → R₁.onPolyTy σ = σ)
+    (hconn : ∀ (j : Nat) (hj : j < dspecs.length) (τdecl : Ty),
+        dspecs[j]'hj = RecSpec.mono τdecl →
+      Subst.onTy (R₁.map (fun p : Nat × Ty => (p.1, Ty.eraseBounds p.2)))
+          (Ty.eraseBounds (S₁.onTy (Ty.fvar (Φ + j))))
+        = Ty.renameG G Xs (Ty.eraseBounds τdecl))
+    (hbodydecl : TypeOfHM (RecSpecs.bodyCtx (S₀.onCtx ctx).eraseBounds dspecs G).eraseBounds
+        body.eraseBounds (Ty.eraseBounds τ₀)) :
+    TypeOfHM (R₁.onCtx
+      { (Sc.onCtx (S₁.onCtx ctx)) with
+        env := RecSpecs.ceilingSchemes
+                 (genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
+                   (RecSpecs.monoTys specs1))
+                 anns specsC ++ (Sc.onCtx (S₁.onCtx ctx)).env }).eraseBounds
+      body.eraseBounds (Ty.eraseBounds τ₀) := by
+  subst specs1
+  subst specsC
+  set Ginf := genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
+    (RecSpecs.monoTys ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)))
+  have hceil_aux : ∀ (Ψ : Nat) (as : List (Option PolyTy)),
+      (RecSpecs.ceilingSchemes Ginf as
+        (((RecSpec.init Ψ as).map (RecSpec.onSubst S₁)).map (RecSpec.onSubst Sc))).map
+          (fun M => PolyTy.eraseBounds (R₁.onPolyTy M))
+        =
+      (RecSpecs.ceilingSchemes Ginf as
+        ((RecSpec.init Ψ as).map (RecSpec.onSubst S₁))).map
+          (fun M => PolyTy.eraseBounds (R₁.onPolyTy M)) := by
+    intro Ψ as
+    induction as generalizing Ψ with
+    | nil => simp [RecSpecs.ceilingSchemes, RecSpec.init]
+    | cons a as ih =>
+      cases a with
+      | none =>
+        have hhead := FactorsHM.genGroup_stable (U := R₁) (Sc := Sc) (G := Ginf)
+          (τ := S₁.onTy (Ty.fvar Ψ)) hfac hScdom hScrange
+        simpa [RecSpecs.ceilingSchemes, RecSpec.init, RecSpec.onSubst,
+          RecSpec.bodyScheme] using And.intro hhead (ih (Ψ + 1))
+      | some σ =>
+        simpa [RecSpecs.ceilingSchemes, RecSpec.init, RecSpec.onSubst] using ih (Ψ + 1)
+  have hceil := hceil_aux Φ anns
+  have honPoly : ∀ M : PolyTy,
+      PolyTy.eraseBounds (R₁.onPolyTy (Sc.onPolyTy M)) =
+        PolyTy.eraseBounds (R₁.onPolyTy M) := by
+    intro M
+    apply congrArg₂ PolyTy.mk rfl
+    exact (hfac M.body).symm
+  have houter : ((Sc.onCtx (S₁.onCtx ctx)).env.map R₁.onPolyTy).map PolyTy.eraseBounds
+      = ((S₁.onCtx ctx).env.map R₁.onPolyTy).map PolyTy.eraseBounds := by
+    simp only [Subst.onCtx, Subst.onEnv, List.map_map]
+    apply List.map_congr_left
+    intro M _
+    exact honPoly (S₁.onPolyTy M)
+  have hpre := letRecFused_body_retype_erase_preSc (Φ := Φ) (ctx := ctx)
+    (S₁ := S₁) (R₁ := R₁) (S₀ := S₀) (anns := anns) (bindings := bindings)
+    (body := body) (dspecs := dspecs) (G := G) (Xs := Xs) (τ₀ := τ₀) (K := K)
+    hanns_eq hdlc hG hXlen hXnodup hXG hXτs hXenv hXrigid hS₁lc hR₁lc hctxS₁
+    hKrigid hR₁K hσfix hconn hbodydecl
+  have hctx :
+      (R₁.onCtx
+        { (Sc.onCtx (S₁.onCtx ctx)) with
+          env := RecSpecs.ceilingSchemes Ginf anns
+                   (((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)).map (RecSpec.onSubst Sc))
+                 ++ (Sc.onCtx (S₁.onCtx ctx)).env }).eraseBounds
+      =
+      (R₁.onCtx
+        { (S₁.onCtx ctx) with
+          env := RecSpecs.ceilingSchemes Ginf anns
+                 ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))
+                 ++ (S₁.onCtx ctx).env }).eraseBounds := by
+    apply congrArg₂ Ctx.mk ?_ rfl
+    change
+      ((RecSpecs.ceilingSchemes Ginf anns
+          (((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)).map (RecSpec.onSubst Sc))
+          ++ (Sc.onCtx (S₁.onCtx ctx)).env).map R₁.onPolyTy).map PolyTy.eraseBounds
+        =
+      ((RecSpecs.ceilingSchemes Ginf anns
+          ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))
+          ++ (S₁.onCtx ctx).env).map R₁.onPolyTy).map PolyTy.eraseBounds
+    simp only [List.map_append]
+    exact congrArg₂ List.append (by simpa [Function.comp_apply] using hceil) houter
+  rw [hctx]
+  simpa [Ginf] using hpre
 
 /-- From the cofinite "types at every fresh opening of `σ`" premise, extract a
     typing at one *specific* opening `Ys` (any list of the right length): pick a
@@ -5310,14 +6365,15 @@ theorem Infer.principals_mut (n : Nat) :
               @Subst.AgreesBelow.trans_append Φ Φ₁ S₀ S₁ R₁ S₂ R₂ hfle hAgree₁ hS₁_bel hAgree₂'
             refine ⟨R₂, hR₂, hty₂, hR₂K, ?_⟩
             · simpa [List.append_assoc] using hAgree
-      | @letRec Φ ctx anns bindings body Φ₁ Φ₂ S₁ S₂ τ₂ hannswf hgroup hceiling hbody =>
+      | @letRec Φ ctx anns bindings body Φ₁ Φ₂ S₁ Sc S₂ τ₂ Kc G specs1 specsC
+          hannswf hgroup hspecs1 hG hSc hspecsC hceiling hbody =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
           -- COMPLETE-LETREC (all-mono cut; R₀ via the block residual, body via the
           -- erase-level retype of `letRecFused_body_retype`).
           rw [Expr.eraseBounds] at hty
           cases hty with
           | letRec hwfD hlenD hlinkD hlcD hmonoD hceilingD hbodyCtxD hbodyD =>
-            rename_i dspecs τsD G L
+            rename_i dspecs τsD Gdecl L
             subst hbodyCtxD
             have hsize_group : Expr.sizeRecGroup bindings < n := by
               have := _hn
@@ -5347,22 +6403,41 @@ theorem Infer.principals_mut (n : Nat) :
                   (mem_recGroup_tyFreeVars (bindings := bindings)).mpr hy
                 exact hKe y (List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inr hy'))))
             -- fresh shared pool opening for the declarative MonoTypedInit
+            let XavoidPool :=
+              (L ++ Gdecl ++ dspecs.flatMap RecSpec.monoFreeVars ++
+                (S₀.onCtx ctx).env.freeVars ++ K) ++ Ty.freeVarsList τsD
             obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names
-              (L ++ G ++ dspecs.flatMap RecSpec.monoFreeVars ++ (S₀.onCtx ctx).env.freeVars ++ K) G.length
-            have hXL : ∀ x ∈ Xs, x ∉ L := fun x hx hc => hXavoid x hx (by simp only [List.mem_append]; tauto)
-            have hXG : ∀ g ∈ G, g ∉ Xs := fun g hg hc => hXavoid g hc (by simp only [List.mem_append]; tauto)
+              XavoidPool Gdecl.length
+            have hXL : ∀ x ∈ Xs, x ∉ L := fun x hx hc => hXavoid x hx (by
+              dsimp [XavoidPool]
+              simp only [List.mem_append]
+              tauto)
+            have hXG : ∀ g ∈ Gdecl, g ∉ Xs := fun g hg hc => hXavoid g hc (by
+              dsimp [XavoidPool]
+              simp only [List.mem_append]
+              tauto)
             have hXτs : ∀ x ∈ Xs, ∀ τ, RecSpec.mono τ ∈ dspecs → x ∉ τ.freeVars := fun x hx τ hτ hc =>
               hXavoid x hx (by
+                dsimp [XavoidPool]
                 simp only [List.mem_append]
-                exact Or.inl (Or.inl (Or.inr (List.mem_flatMap.mpr ⟨RecSpec.mono τ, hτ, hc⟩))))
+                exact Or.inl (Or.inl (Or.inl
+                  (Or.inr (List.mem_flatMap.mpr ⟨RecSpec.mono τ, hτ, hc⟩)))))
+            have hXτsD : ∀ x ∈ Xs, ∀ τ ∈ τsD, x ∉ τ.freeVars := by
+              intro x hx τ hτ hc
+              exact hXavoid x hx (by
+                dsimp [XavoidPool]
+                exact List.mem_append.mpr (Or.inr (Ty.mem_freeVarsList_of_mem hτ hc)))
             have hXenv : ∀ x ∈ Xs, x ∉ (S₀.onCtx ctx).env.freeVars := fun x hx hc =>
-              hXavoid x hx (by simp only [List.mem_append]; tauto)
-            have hXK : ∀ x ∈ Xs, x ∉ K := fun x hx hc => hXavoid x hx (by simp only [List.mem_append]; tauto)
-            have hXfresh : FreshNames L G.length Xs := ⟨hXlen, hXnodup, hXL⟩
+              hXavoid x hx (by dsimp [XavoidPool]; simp only [List.mem_append]; tauto)
+            have hXK : ∀ x ∈ Xs, x ∉ K := fun x hx hc => hXavoid x hx (by
+              dsimp [XavoidPool]
+              simp only [List.mem_append]
+              tauto)
+            have hXfresh : FreshNames L Gdecl.length Xs := ⟨hXlen, hXnodup, hXL⟩
             have hXrigid : ∀ x ∈ Xs, x ∉ RecGroup.rigidVars anns bindings := fun x hx hc =>
               hXK x hx (hKrigid x hc)
             -- the residual targets: the opened witnesses
-            set vs : List Ty := τsD.map (fun τ => Ty.renameG G Xs τ) with hvs_def
+            set vs : List Ty := τsD.map (fun τ => Ty.renameG Gdecl Xs τ) with hvs_def
             have hvs_len : vs.length = bindings.length := by
               rw [hvs_def, List.length_map]
               exact hlen_τsD.symm
@@ -5370,8 +6445,8 @@ theorem Infer.principals_mut (n : Nat) :
               intro t ht
               rw [hvs_def] at ht
               obtain ⟨τ, hτ, rfl⟩ := List.mem_map.mp ht
-              change (Ty.renameG G Xs τ).IsLC
-              change (Subst.onTy (G.zip (Xs.map (Ty.fvar ·))) τ).IsLC
+              change (Ty.renameG Gdecl Xs τ).IsLC
+              change (Subst.onTy (Gdecl.zip (Xs.map (Ty.fvar ·))) τ).IsLC
               exact Subst.onTy_lc (fun p hp => by
                 obtain ⟨w, _, hw⟩ := List.mem_map.mp (List.of_mem_zip hp).2
                 rw [← hw]; exact ContainsBvarsUpTo.fvar) (hlcD τ hτ)
@@ -5380,7 +6455,7 @@ theorem Infer.principals_mut (n : Nat) :
                 hvs_len hS₀ hvs_lc hKΦ hKfix
             -- the block realisation, positionally: R₀.onTy (fvar (Φ+j)) = renameG G Xs (τsD[j])
             have hR₀blockj : ∀ j (hj : j < bindings.length),
-                R₀.onTy (Ty.fvar (Φ + j)) = Ty.renameG G Xs (τsD[j]'(by rw [← hlen_τsD]; exact hj)) := by
+                R₀.onTy (Ty.fvar (Φ + j)) = Ty.renameG Gdecl Xs (τsD[j]'(by rw [← hlen_τsD]; exact hj)) := by
               intro j hj
               have hjT : j < τsD.length := by
                 rw [← hlen_τsD]
@@ -5473,7 +6548,7 @@ theorem Infer.principals_mut (n : Nat) :
                 exact getElem_mem_zip j hjBE hjT
               have hdecl0 := hmonoD Xs hXfresh (bE, tD) hmemD
               have hdeclE := TypeOfHM.eraseBounds_of hdecl0
-              have hctxE : (RecSpecs.rhsCtx (S₀.onCtx ctx).eraseBounds (τsD.map RecSpec.mono) G Xs).eraseBounds
+              have hctxE : (RecSpecs.rhsCtx (S₀.onCtx ctx).eraseBounds (τsD.map RecSpec.mono) Gdecl Xs).eraseBounds
                   = (R₀.onCtx groupCtx).eraseBounds := by
                 simp only [RecSpecs.rhsCtx, groupCtx, Subst.onCtx, Subst.onEnv, Ctx.eraseBounds, Env.eraseBounds, List.map_append]
                 congr 1
@@ -5499,8 +6574,8 @@ theorem Infer.principals_mut (n : Nat) :
                       rw [List.getElem?_eq_getElem (by simpa [RecSpec.init_length] using hkA)] at hg
                       rw [List.getElem?_eq_getElem hkA] at hg
                       simpa using hg
-                    have hblk : R₀.onTy (Ty.fvar (Φ + k)) = Ty.renameG G Xs (τsD[k]'hk2_len) := hR₀blockj k hkB
-                    have hblkE : PolyTy.mkTrivial (Ty.renameG G Xs (τsD[k]'hk2_len)).eraseBounds = PolyTy.mkTrivial (R₀.onTy (Ty.fvar (Φ + k))).eraseBounds := by
+                    have hblk : R₀.onTy (Ty.fvar (Φ + k)) = Ty.renameG Gdecl Xs (τsD[k]'hk2_len) := hR₀blockj k hkB
+                    have hblkE : PolyTy.mkTrivial (Ty.renameG Gdecl Xs (τsD[k]'hk2_len)).eraseBounds = PolyTy.mkTrivial (R₀.onTy (Ty.fvar (Φ + k))).eraseBounds := by
                       simp only [Ty.eraseBounds_renameG, hblk]
                     simp only [List.getElem_map, Function.comp_apply, RecSpec.rhsEntry, hinit_k, Subst.onPolyTy, PolyTy.eraseBounds_mkTrivial, Ty.renameG_nil_pool, PolyTy.eraseBounds, PolyTy.mkTrivial]
                     exact hblkE
@@ -5521,7 +6596,7 @@ theorem Infer.principals_mut (n : Nat) :
                         (hbelow _ hM')
                     exact hrec
                 · simp [Subst.onCtx, CtorEnv.eraseBounds_idem]
-              have htyE : Ty.eraseBounds (Ty.renameG G Xs (τsD[j]'hjT))
+              have htyE : Ty.eraseBounds (Ty.renameG Gdecl Xs (τsD[j]'hjT))
                   = Ty.eraseBounds (R₀.onTy (Ty.fvar (Φ + j))) := by
                 exact congrArg (fun T => Ty.eraseBounds T) (hR₀blockj j hjl1).symm
               rw [hctxE] at hdeclE
@@ -5566,7 +6641,7 @@ theorem Infer.principals_mut (n : Nat) :
                   simp at hf)
             -- the body: transport the declarative body typing to the algorithmic
             -- ceilingSchemes context, then recurse.
-            have hbodyE : TypeOfHM (RecSpecs.bodyCtx (S₀.onCtx ctx).eraseBounds dspecs G).eraseBounds
+            have hbodyE : TypeOfHM (RecSpecs.bodyCtx (S₀.onCtx ctx).eraseBounds dspecs Gdecl).eraseBounds
                 body.eraseBounds (Ty.eraseBounds τe) := by
               simpa [Expr.eraseBounds_idem] using (TypeOfHM.eraseBounds_of hbodyD)
             have hdlc : ∀ τ, RecSpec.mono τ ∈ dspecs → τ.IsLC := by
@@ -5577,106 +6652,325 @@ theorem Infer.principals_mut (n : Nat) :
             have hctxS₁ : (R_g.onCtx (S₁.onCtx ctx)).eraseBounds = (S₀.onCtx ctx).eraseBounds := by
               rw [← Subst.onCtx_append]
               exact (Subst.onCtx_congr_hm hAgreeTier hbelow).symm
+            have hS₁lc : ∀ p ∈ S₁, p.2.IsLC :=
+              InferRecGroup.lc hgroup hctxgWF hinitLC
+            have htfv_below : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings,
+                y < Φ + bindings.length := fun y hy =>
+              Nat.lt_add_right bindings.length (hKΦ y (hKgrp y hy))
+            have hinit_bel : ∀ s ∈ RecSpec.init Φ anns,
+                RecSpec.BelowFvars (Φ + bindings.length) s := by
+              intro s hs
+              rcases RecSpec.mem_init hs with ⟨m, _, _, hs'⟩ | ⟨σ, hσ, hs'⟩
+              · subst hs'; exact hinitB _ hs _ rfl
+              · subst hs'
+                exact Ty.BelowFvars.of_freeVars_lt (fun y hy =>
+                  Nat.lt_add_right bindings.length (hKΦ y (hKe y
+                    (List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inl
+                      (Expr.scheme_body_mem_annList_tyFreeVars hσ hy))))))))
+            have hS₁_bel : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 :=
+              InferRecGroup.belowFvars hgroup hctxgBelow hinit_bel htfv_below
+            have hgle : Φ + bindings.length ≤ Φ₁ := InferRecGroup.frontier_le hgroup
+            have hKΦ₁ : ∀ k ∈ K, k < Φ₁ := fun k hk =>
+              lt_of_lt_of_le (hKΦ k hk)
+                (le_trans (Nat.le_add_right Φ bindings.length) hgle)
+            have hrigidBelow : ∀ x ∈ RecGroup.rigidVars anns bindings, x < Φ₁ :=
+              fun x hx => hKΦ₁ x (hKrigid x hx)
+            have hspecs1LC : ∀ s ∈ specs1, s.LC := by
+              intro s hs
+              rw [hspecs1] at hs
+              obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
+              exact RecSpec.LC.onSubst hS₁lc (hinitLC s₀ hs₀)
+            have hspecs1Below : ∀ s ∈ specs1, s.BelowFvars Φ₁ := by
+              intro s hs
+              rw [hspecs1] at hs
+              obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
+              exact RecSpec.BelowFvars.onSubst hS₁_bel ((hinit_bel s₀ hs₀).mono hgle)
+            have hGnodup : G.Nodup := by
+              rw [hG]
+              exact genGroupVars_nodup
+            have hGrigid : ∀ g ∈ G, g ∉ RecGroup.rigidVars anns bindings := by
+              intro g hg
+              rw [hG] at hg
+              simp only [genGroupVars, List.mem_filter, Bool.and_eq_true,
+                Bool.not_eq_eq_eq_not, Bool.not_true, List.contains_eq_mem,
+                decide_eq_false_iff_not] at hg
+              exact hg.2.2
+            have hScdom : ∀ p ∈ Sc, p.1 ∉ G := fun p hp =>
+              (hSc.dom_avoids p hp).2.2
+            have hScrange : ∀ p ∈ Sc, ∀ u ∈ p.2.freeVars, u ∉ G :=
+              hSc.range_avoids_pool
             have hσfix : ∀ σ, some σ ∈ anns → R_g.onPolyTy σ = σ := by
               intro σ hσ
               simp only [Subst.onPolyTy]
               rw [Subst.onTy_eq_self_of_fixes (fun v hv => hR_gK v (hKe v (List.mem_append.mpr (Or.inl
                 (List.mem_append.mpr (Or.inl (Expr.scheme_body_mem_annList_tyFreeVars hσ hv)))))))]
-            have hconnB : ∀ (j : Nat) (hj : j < dspecs.length) (τdecl : Ty),
-                dspecs[j]'hj = RecSpec.mono τdecl →
+            have hconnAll : ∀ (j : Nat) (hj : j < bindings.length),
               Subst.onTy (R_g.map (fun p : Nat × Ty => (p.1, Ty.eraseBounds p.2)))
                   (Ty.eraseBounds (S₁.onTy (Ty.fvar (Φ + j))))
-                = Ty.renameG G Xs (Ty.eraseBounds τdecl) := by
-              intro j hj τdecl hτdecl
-              have hjl : j < bindings.length := by
-                rw [← hdspec_len]
-                exact hj
-              have hjT : j < τsD.length := by rw [← hlen_τsD]; exact hjl
+                = Ty.renameG Gdecl Xs
+                    (Ty.eraseBounds (τsD[j]'(by rw [← hlen_τsD]; exact hj))) := by
+              intro j hj
+              have hjT : j < τsD.length := by rw [← hlen_τsD]; exact hj
               have hblockAgree : AgreesHM (R₀.onTy (Ty.fvar (Φ + j)))
                   (R_g.onTy (S₁.onTy (Ty.fvar (Φ + j)))) := by
                 rw [← Subst.onTy_append]
-                exact hAgreeTierR (Φ + j) (by have := hjl; omega)
-              have hblk := hR₀blockj j hjl
-              have hlinkτ : τdecl = τsD[j]'hjT := by
-                have hmemD : (RecSpec.mono τdecl, τsD[j]'hjT) ∈ dspecs.zip τsD := by
-                  simpa [hτdecl] using (getElem_mem_zip j hj hjT)
-                exact (hlinkD (RecSpec.mono τdecl, τsD[j]'hjT) hmemD τdecl rfl).symm
+                exact hAgreeTierR (Φ + j) (by omega)
               have h3 : Subst.onTy (R_g.map (fun p : Nat × Ty => (p.1, Ty.eraseBounds p.2)))
                   (Ty.eraseBounds (S₁.onTy (Ty.fvar (Φ + j))))
                   = Ty.eraseBounds (R_g.onTy (S₁.onTy (Ty.fvar (Φ + j)))) := by
                 simp only [Subst.onTy, Ty.eraseBounds_substFvars]
               rw [h3]
-              have hstep1 : Ty.eraseBounds (R_g.onTy (S₁.onTy (Ty.fvar (Φ + j))))
-                  = Ty.eraseBounds (R₀.onTy (Ty.fvar (Φ + j))) := hblockAgree.symm
-              have hstep2 : Ty.eraseBounds (R₀.onTy (Ty.fvar (Φ + j)))
-                  = Ty.renameG G Xs (Ty.eraseBounds (τsD[j]'hjT)) := by
-                rw [hblk, Ty.eraseBounds_renameG]
-              rw [hstep1, hstep2, ← hlinkτ]
-            have hbodyAlg : TypeOfHM
-                (R_g.onCtx ⟨(RecSpecs.ceilingSchemes
-                    (genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
-                      (RecSpecs.monoTys ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))))
-                    anns ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)))
-                  ++ (S₁.onCtx ctx).env, (S₁.onCtx ctx).ctors⟩).eraseBounds
-                body.eraseBounds (Ty.eraseBounds τe) :=
-              letRecFused_body_retype_erase (Φ := Φ) (ctx := ctx) (S₁ := S₁) (R₁ := R_g) (S₀ := S₀)
+              calc
+                Ty.eraseBounds (R_g.onTy (S₁.onTy (Ty.fvar (Φ + j))))
+                    = Ty.eraseBounds (R₀.onTy (Ty.fvar (Φ + j))) := hblockAgree.symm
+                _ = Ty.renameG Gdecl Xs (Ty.eraseBounds (τsD[j]'hjT)) := by
+                  rw [hR₀blockj j hj, Ty.eraseBounds_renameG]
+            have hconnB : ∀ (j : Nat) (hj : j < dspecs.length) (τdecl : Ty),
+                dspecs[j]'hj = RecSpec.mono τdecl →
+              Subst.onTy (R_g.map (fun p : Nat × Ty => (p.1, Ty.eraseBounds p.2)))
+                  (Ty.eraseBounds (S₁.onTy (Ty.fvar (Φ + j))))
+                = Ty.renameG Gdecl Xs (Ty.eraseBounds τdecl) := by
+              intro j hj τdecl hτdecl
+              have hjl : j < bindings.length := by
+                rw [← hdspec_len]
+                exact hj
+              have hjT : j < τsD.length := by rw [← hlen_τsD]; exact hjl
+              have hlinkτ : τdecl = τsD[j]'hjT := by
+                have hmemD : (RecSpec.mono τdecl, τsD[j]'hjT) ∈ dspecs.zip τsD := by
+                  simpa [hτdecl] using (getElem_mem_zip j hj hjT)
+                exact (hlinkD (RecSpec.mono τdecl, τsD[j]'hjT) hmemD τdecl rfl).symm
+              simpa [hlinkτ] using hconnAll j hjl
+            set Rer : Subst :=
+              R_g.map (fun p : Nat × Ty => (p.1, Ty.eraseBounds p.2)) with hRer_def
+            have hRerlc : ∀ p ∈ Rer, p.2.IsLC := by
+              intro p hp
+              rw [hRer_def] at hp
+              obtain ⟨q, hq, rfl⟩ := List.mem_map.mp hp
+              exact Ty.IsLC.eraseBounds (hR_g q hq)
+            have hgenInit : CeilingGenInv G R_g anns specs1 := by
+              intro ann spec hp
+              cases ann with
+              | none => cases spec <;> trivial
+              | some σ =>
+                cases spec with
+                | poly σ' =>
+                  rcases List.mem_iff_getElem.mp hp with ⟨j, hjp, hpeq⟩
+                  have hjS : j < specs1.length := by
+                    rw [List.length_zip] at hjp
+                    exact lt_of_lt_of_le hjp (min_le_right _ _)
+                  have hjA : j < anns.length := by
+                    rw [List.length_zip] at hjp
+                    exact lt_of_lt_of_le hjp (min_le_left _ _)
+                  rw [List.getElem_zip] at hpeq
+                  have hspecj : specs1[j]'hjS = RecSpec.poly σ' := congrArg Prod.snd hpeq
+                  have hinitj : (RecSpec.init Φ anns)[j]'(by
+                      simpa [RecSpec.init_length] using hjA) =
+                      RecSpec.mono (Ty.fvar (Φ + j)) := by
+                    have hg := RecSpec.init_getElem? Φ anns j
+                    rw [List.getElem?_eq_getElem (by
+                      simpa [RecSpec.init_length] using hjA),
+                      List.getElem?_eq_getElem hjA] at hg
+                    simpa using hg
+                  have hs1j : specs1[j]'hjS =
+                      RecSpec.mono (S₁.onTy (Ty.fvar (Φ + j))) := by
+                    have hs := congrArg (fun l => l[j]?) hspecs1
+                    change specs1[j]? =
+                      ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))[j]? at hs
+                    rw [List.getElem?_eq_getElem hjS, List.getElem?_map,
+                      List.getElem?_eq_getElem (by simpa [RecSpec.init_length] using hjA),
+                      hinitj] at hs
+                    exact Option.some.inj hs
+                  rw [hs1j] at hspecj
+                  simp at hspecj
+                | mono τinf =>
+                  rcases List.mem_iff_getElem.mp hp with ⟨j, hjp, hpeq⟩
+                  have hjA : j < anns.length := by
+                    rw [List.length_zip] at hjp
+                    exact lt_of_lt_of_le hjp (min_le_left _ _)
+                  have hjS : j < specs1.length := by
+                    rw [List.length_zip] at hjp
+                    exact lt_of_lt_of_le hjp (min_le_right _ _)
+                  rw [List.getElem_zip] at hpeq
+                  have hannj : anns[j]'hjA = some σ := congrArg Prod.fst hpeq
+                  have hspecj : specs1[j]'hjS = RecSpec.mono τinf := congrArg Prod.snd hpeq
+                  have hjB : j < bindings.length := by rw [← hlen_ab]; exact hjA
+                  have hjT : j < τsD.length := by rw [← hlen_τsD]; exact hjB
+                  have hinitj : (RecSpec.init Φ anns)[j]'(by
+                      simpa [RecSpec.init_length] using hjA) =
+                      RecSpec.mono (Ty.fvar (Φ + j)) := by
+                    have hg := RecSpec.init_getElem? Φ anns j
+                    rw [List.getElem?_eq_getElem (by
+                      simpa [RecSpec.init_length] using hjA),
+                      List.getElem?_eq_getElem hjA] at hg
+                    simpa using hg
+                  have hτinf : τinf = S₁.onTy (Ty.fvar (Φ + j)) := by
+                    have hs1j : specs1[j]'hjS =
+                        RecSpec.mono (S₁.onTy (Ty.fvar (Φ + j))) := by
+                      have hs := congrArg (fun l => l[j]?) hspecs1
+                      change specs1[j]? =
+                        ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))[j]? at hs
+                      rw [List.getElem?_eq_getElem hjS, List.getElem?_map,
+                        List.getElem?_eq_getElem (by simpa [RecSpec.init_length] using hjA),
+                        hinitj] at hs
+                      exact Option.some.inj hs
+                    exact RecSpec.mono.inj (hspecj.symm.trans hs1j)
+                  subst τinf
+                  have hτalgMem : RecSpec.mono (S₁.onTy (Ty.fvar (Φ + j))) ∈ specs1 :=
+                    hspecj ▸ List.getElem_mem hjS
+                  have hτDmem : τsD[j]'hjT ∈ τsD := List.getElem_mem hjT
+                  have hceilMem :
+                      (some (PolyTy.eraseBounds σ), RecSpec.mono (τsD[j]'hjT)) ∈
+                        (anns.map (Option.map PolyTy.eraseBounds)).zip
+                          (τsD.map RecSpec.mono) := by
+                    have hm := getElem_mem_zip
+                      (as := anns.map (Option.map PolyTy.eraseBounds))
+                      (bs := τsD.map RecSpec.mono) j (by simpa using hjA) (by simpa using hjT)
+                    simpa only [List.getElem_map, hannj, Option.map_some] using hm
+                  have hdeclGen := hceilingD.of_mem_zip hceilMem
+                  have hdeclGen' :
+                      (PolyTy.eraseBounds (PolyTy.genGroup Gdecl (τsD[j]'hjT))).Generalizes
+                        (PolyTy.eraseBounds σ) := by
+                    change (PolyTy.eraseBounds (PolyTy.genGroup Gdecl (τsD[j]'hjT))).Generalizes
+                      (PolyTy.eraseBounds (PolyTy.eraseBounds σ)) at hdeclGen
+                    simpa [PolyTy.eraseBounds_idem] using hdeclGen
+                  have hτalgLC : (S₁.onTy (Ty.fvar (Φ + j))).IsLC :=
+                    Subst.onTy_lc hS₁lc ContainsBvarsUpTo.fvar
+                  have hconnj : Rer.onTy
+                        (Ty.eraseBounds (S₁.onTy (Ty.fvar (Φ + j)))) =
+                      Ty.renameG Gdecl Xs (Ty.eraseBounds (τsD[j]'hjT)) := by
+                    simpa [hRer_def] using hconnAll j hjB
+                  have hXinf : ∀ x ∈ Xs, x ∉
+                      (Rer.onPolyTy (PolyTy.genGroup G
+                        (Ty.eraseBounds (S₁.onTy (Ty.fvar (Φ + j)))))).body.freeVars := by
+                    intro x hx hmem
+                    change x ∈ (Rer.onTy (Ty.closeOver (Ty.genFilter G
+                      (Ty.eraseBounds (S₁.onTy (Ty.fvar (Φ + j)))))
+                      (Ty.eraseBounds (S₁.onTy (Ty.fvar (Φ + j)))))).freeVars at hmem
+                    obtain ⟨v, hv, hxv⟩ := Ty.mem_freeVars_onTy_iff.mp hmem
+                    have hvτ : v ∈ (Ty.eraseBounds
+                        (S₁.onTy (Ty.fvar (Φ + j)))).freeVars :=
+                      Ty.freeVars_closeOver_subset hv
+                    have hvτ' : v ∈ (S₁.onTy (Ty.fvar (Φ + j))).freeVars :=
+                      (Ty.mem_freeVars_eraseBounds (S₁.onTy (Ty.fvar (Φ + j))) v).mp hvτ
+                    have hvG : v ∉ G := by
+                      intro hvg
+                      exact Ty.not_mem_closeOver_freeVars
+                        (by simp only [Ty.genFilter, List.mem_filter, decide_eq_true_eq]
+                            exact ⟨hvg, hvτ⟩) hv
+                    have hvMono : v ∈ Ty.freeVarsList (RecSpecs.monoTys specs1) :=
+                      mem_freeVarsList_monoTys (mem_monoTys_of_mem_solved hτalgMem) hvτ'
+                    have hcase : v ∈ (S₁.onCtx ctx).env.freeVars ∨
+                        v ∈ RecGroup.rigidVars anns bindings := by
+                      by_contra hcon
+                      push_neg at hcon
+                      apply hvG
+                      rw [hG]
+                      simp only [genGroupVars, List.mem_filter, Bool.and_eq_true,
+                        Bool.not_eq_eq_eq_not, Bool.not_true, List.contains_eq_mem,
+                        decide_eq_false_iff_not]
+                      exact ⟨hvMono, hcon.1, hcon.2⟩
+                    rcases hcase with henv | hrigid
+                    · obtain ⟨pt, hpt, hvpt⟩ := Env.mem_freeVars_iff.mp henv
+                      have hxv' : x ∈ (R_g.onTy (Ty.fvar v)).freeVars := by
+                        have heq : Rer.onTy (Ty.fvar v) =
+                            Ty.eraseBounds (R_g.onTy (Ty.fvar v)) := by
+                          rw [hRer_def]
+                          exact Subst.onTy_erase_fvar R_g v
+                        rw [heq] at hxv
+                        exact (Ty.mem_freeVars_eraseBounds
+                          (R_g.onTy (Ty.fvar v)) x).mp hxv
+                      have hxOnTy : x ∈ (R_g.onTy pt.body).freeVars :=
+                        Ty.mem_freeVars_onTy_iff.mpr ⟨v, hvpt, hxv'⟩
+                      have hm : R_g.onPolyTy pt ∈ (R_g.onCtx (S₁.onCtx ctx)).env := by
+                        simp only [Subst.onCtx, Subst.onEnv]
+                        exact List.mem_map.mpr ⟨pt, hpt, rfl⟩
+                      have hxEnv : x ∈ (R_g.onCtx (S₁.onCtx ctx)).env.freeVars :=
+                        Env.mem_freeVars_iff.mpr ⟨R_g.onPolyTy pt, hm, hxOnTy⟩
+                      have hxEnvE : x ∈ ((R_g.onCtx (S₁.onCtx ctx)).eraseBounds).env.freeVars :=
+                        (Env.mem_freeVars_eraseBounds
+                          ((R_g.onCtx (S₁.onCtx ctx)).env) x).mpr hxEnv
+                      have hc := congrArg Ctx.env hctxS₁
+                      have hxS₀E : x ∈ ((S₀.onCtx ctx).eraseBounds).env.freeVars := by
+                        rwa [← hc]
+                      exact hXenv x hx
+                        ((Env.mem_freeVars_eraseBounds ((S₀.onCtx ctx).env) x).mp hxS₀E)
+                    · have hfix : R_g.onTy (Ty.fvar v) = Ty.fvar v :=
+                        hR_gK v (hKrigid v hrigid)
+                      have hxv' : x ∈ (R_g.onTy (Ty.fvar v)).freeVars := by
+                        have heq : Rer.onTy (Ty.fvar v) =
+                            Ty.eraseBounds (R_g.onTy (Ty.fvar v)) := by
+                          rw [hRer_def]
+                          exact Subst.onTy_erase_fvar R_g v
+                        rw [heq] at hxv
+                        exact (Ty.mem_freeVars_eraseBounds
+                          (R_g.onTy (Ty.fvar v)) x).mp hxv
+                      rw [hfix] at hxv'
+                      simp only [Ty.freeVars, List.mem_singleton] at hxv'
+                      exact hXrigid x hx (by rw [hxv']; exact hrigid)
+                  have halgDecl := genGroup_generalizes_renameG_erase
+                    (Ginf := G) (G := Gdecl) (Xsfull := Xs)
+                    (τinf := Ty.eraseBounds (S₁.onTy (Ty.fvar (Φ + j))))
+                    (τdecl := Ty.eraseBounds (τsD[j]'hjT)) (R := Rer)
+                    (Ty.IsLC.eraseBounds hτalgLC)
+                    (Ty.IsLC.eraseBounds (hlcD (τsD[j]'hjT) hτDmem)) hRerlc
+                    hwfD.nodup hXlen hXnodup hXG
+                    (fun x hx hc => hXτsD x hx (τsD[j]'hjT) hτDmem
+                      ((Ty.mem_freeVars_eraseBounds (τsD[j]'hjT) x).mp hc))
+                    hconnj hXinf
+                  have halgDecl' :
+                      (PolyTy.eraseBounds (R_g.onPolyTy
+                        (PolyTy.genGroup G (S₁.onTy (Ty.fvar (Φ + j)))))).Generalizes
+                      (PolyTy.eraseBounds (PolyTy.genGroup Gdecl (τsD[j]'hjT))) := by
+                    rw [eraseBounds_onPolyTy_genGroup, PolyTy.eraseBounds_genGroup]
+                    simpa [hRer_def] using halgDecl
+                  exact halgDecl'.trans hdeclGen'
+            have hfac : FactorsHM R_g Sc R_g :=
+              hSc.factors_of_generalizes hgenInit hspecs1LC hspecs1Below hrigidBelow (by
+                intro τ σ full step hfull havoid hstep hrange hstepLC hσwf hσrigid
+                  hτlc hτbelow hgen
+                exact RecCeilingConstraints.step_absorbed hGnodup
+                  (fun x hx hxG => hGrigid x hxG hx) hR_g
+                  (fun x hx => hR_gK x (hKrigid x hx)) hτlc hτbelow hrigidBelow
+                  hfull havoid hstep hrange hstepLC hσwf hσrigid hgen)
+            have hbodyAlg0 :=
+              letRecFused_body_retype_erase (Φ := Φ) (ctx := ctx) (S₁ := S₁)
+                (Sc := Sc) (R₁ := R_g) (S₀ := S₀)
                 (anns := anns) (bindings := bindings) (body := body) (dspecs := dspecs)
-                (G := G) (Xs := Xs) (τ₀ := τe) (K := K)
+                (specs1 := specs1) (specsC := specsC)
+                (G := Gdecl) (Xs := Xs) (τ₀ := τe) (K := K) hspecs1 hspecsC
+                (fun p hp => by rw [← hG]; exact hScdom p hp)
+                (fun p hp u hu => by rw [← hG]; exact hScrange p hp u hu) hfac
                 hanns_eq hdlc hwfD.nodup hXlen hXnodup hXG hXτs hXenv hXrigid
-                (InferRecGroup.lc hgroup hctxgWF hinitLC) hR_g hctxS₁ hKrigid hR_gK hσfix hconnB hbodyE
+                hS₁lc hR_g hctxS₁ hKrigid hR_gK hσfix hconnB hbodyE
+            have hbodyAlg : TypeOfHM
+                (R_g.onCtx
+                  { (Sc.onCtx (S₁.onCtx ctx)) with
+                    env := RecSpecs.ceilingSchemes G anns specsC ++
+                      (Sc.onCtx (S₁.onCtx ctx)).env }).eraseBounds
+                body.eraseBounds (Ty.eraseBounds τe) := by
+              simpa only [hG] using hbodyAlg0
             -- recurse on the body at the algorithmic body context
-            have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := InferRecGroup.lc hgroup hctxgWF hinitLC
-            have htfv_below : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings,
-                y < Φ + bindings.length := fun y hy =>
-              Nat.lt_add_right bindings.length (hKΦ y (hKgrp y hy))
-            have hinit_bel : ∀ s ∈ RecSpec.init Φ anns, RecSpec.BelowFvars (Φ + bindings.length) s := by
-              intro s hs
-              rcases RecSpec.mem_init hs with ⟨m, hm1, hm2, hs'⟩ | ⟨σ, hσ, hs'⟩
-              · subst hs'; exact hinitB _ hs _ rfl
-              · subst hs'; exact Ty.BelowFvars.of_freeVars_lt (fun y hy => Nat.lt_add_right bindings.length (hKΦ y (hKe y (List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inl (Expr.scheme_body_mem_annList_tyFreeVars hσ hy))))))))
-            have hS₁_bel : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 :=
-              InferRecGroup.belowFvars hgroup hctxgBelow hinit_bel htfv_below
-            have hgle : Φ + bindings.length ≤ Φ₁ := InferRecGroup.frontier_le hgroup
-            have hKΦ₁ : ∀ k ∈ K, k < Φ₁ := fun k hk =>
-              lt_of_lt_of_le (hKΦ k hk) (le_trans (Nat.le_add_right Φ bindings.length) hgle)
             have hσbody_bel : ∀ σ, some σ ∈ anns → Ty.BelowFvars Φ₁ σ.body := fun σ hσ =>
               Ty.BelowFvars.of_freeVars_lt (fun y hy =>
                 have hK := hKe y (List.mem_append.mpr (Or.inl (List.mem_append.mpr (Or.inl
                   (Expr.scheme_body_mem_annList_tyFreeVars hσ hy)))))
                 hKΦ₁ y hK)
-            have hmono_bel : ∀ τm, RecSpec.mono τm ∈ (RecSpec.init Φ anns).map (RecSpec.onSubst S₁) →
-                Ty.BelowFvars Φ₁ τm := by
-              intro τm hτm
-              obtain ⟨s, hs, hseq⟩ := List.mem_map.mp hτm
-              rcases RecSpec.mem_init hs with ⟨m, hm1, hm2, rfl⟩ | ⟨σ, hσ, rfl⟩
-              · cases hseq
-                exact Subst.onTy_belowFvars hS₁_bel (.fvar (by omega))
-              · exact absurd hseq (by simp [RecSpec.onSubst])
-            have hinit_not_poly : ∀ {Φ} {anns : List (Option PolyTy)} {s : RecSpec},
-                s ∈ RecSpec.init Φ anns → ∀ σ, s ≠ RecSpec.poly σ := by
-              intro Φ anns
-              induction anns generalizing Φ with
-              | nil => intro s hs; simp [RecSpec.init] at hs
-              | cons a as ih =>
-                intro s hs σ
-                simp only [RecSpec.init, List.mem_cons] at hs
-                rcases hs with rfl | hs
-                · intro h; cases h
-                · exact ih hs σ
-            have hmono_nopoly : ∀ s ∈ (RecSpec.init Φ anns).map (RecSpec.onSubst S₁),
-                ¬ ∃ σ, s = RecSpec.poly σ := by
-              intro s hs ⟨σ, hσ⟩
-              obtain ⟨s₀, hs₀, rfl⟩ := List.mem_map.mp hs
-              cases s₀ with
-              | mono τ =>
-                simp [RecSpec.onSubst] at hσ
-              | poly σ₀ =>
-                exact hinit_not_poly hs₀ σ₀ rfl
-            have hwfB : CtxWF ⟨(RecSpecs.ceilingSchemes
-                  (genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
-                    (RecSpecs.monoTys ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))))
-                  anns ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)))
-                ++ (S₁.onCtx ctx).env, (S₁.onCtx ctx).ctors⟩ := by
+            have hSc_bel : ∀ p ∈ Sc, Ty.BelowFvars Φ₁ p.2 :=
+              hSc.belowFvars hrigidBelow
+            have hspecsC_lc : ∀ s ∈ specsC, s.LC := by
+              intro s hs
+              rw [hspecsC] at hs
+              obtain ⟨s₁, hs₁, rfl⟩ := List.mem_map.mp hs
+              exact RecSpec.LC.onSubst hSc.lc (hspecs1LC s₁ hs₁)
+            have hspecsC_post : ∀ s ∈ specsC, s.BelowFvars Φ₁ := by
+              intro s hs
+              rw [hspecsC] at hs
+              obtain ⟨s₁, hs₁, rfl⟩ := List.mem_map.mp hs
+              exact RecSpec.BelowFvars.onSubst hSc_bel (hspecs1Below s₁ hs₁)
+            have hwfB : CtxWF
+                { (Sc.onCtx (S₁.onCtx ctx)) with
+                  env := RecSpecs.ceilingSchemes G anns specsC ++
+                    (Sc.onCtx (S₁.onCtx ctx)).env } := by
               intro M hM
               rcases List.mem_append.mp hM with hM | hM
               · obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hM
@@ -5686,25 +6980,13 @@ theorem Infer.principals_mut (n : Nat) :
                   | some σ =>
                     exact hannswf σ (List.of_mem_zip hp).1
                   | none =>
-                    cases hs : s with
-                    | mono τm =>
-                      have hτm_lc : τm.IsLC := by
-                        have hmem := (List.of_mem_zip hp).2
-                        rw [hs] at hmem
-                        obtain ⟨s₀, hs₀, hs_eq⟩ := List.mem_map.mp hmem
-                        rcases RecSpec.mem_init hs₀ with ⟨m', _, _, rfl⟩ | ⟨σ', _, rfl⟩
-                        · simp [RecSpec.onSubst] at hs_eq
-                          cases hs; cases hs_eq
-                          exact Subst.onTy_lc hS₁lc ContainsBvarsUpTo.fvar
-                        · simp [RecSpec.onSubst] at hs_eq
-                      exact PolyTy.genGroup_wf hτm_lc
-                    | poly σ => exact False.elim ((hmono_nopoly s (List.of_mem_zip hp).2) ⟨σ, hs⟩)
-              · exact Subst.onCtx_wf hS₁lc hwf M hM
-            have hbelowB : CtxBelow Φ₁ ⟨(RecSpecs.ceilingSchemes
-                  (genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
-                    (RecSpecs.monoTys ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁))))
-                  anns ((RecSpec.init Φ anns).map (RecSpec.onSubst S₁)))
-                ++ (S₁.onCtx ctx).env, (S₁.onCtx ctx).ctors⟩ := by
+                    exact RecSpec.bodyScheme_wf
+                      (hspecsC_lc s (List.of_mem_zip hp).2)
+              · exact Subst.onCtx_wf hSc.lc (Subst.onCtx_wf hS₁lc hwf) M hM
+            have hbelowB : CtxBelow Φ₁
+                { (Sc.onCtx (S₁.onCtx ctx)) with
+                  env := RecSpecs.ceilingSchemes G anns specsC ++
+                    (Sc.onCtx (S₁.onCtx ctx)).env } := by
               intro M hM
               rcases List.mem_append.mp hM with hM | hM
               · obtain ⟨p, hp, rfl⟩ := List.mem_map.mp hM
@@ -5714,23 +6996,25 @@ theorem Infer.principals_mut (n : Nat) :
                   | some σ =>
                     exact hσbody_bel σ (List.of_mem_zip hp).1
                   | none =>
-                    cases hs : s with
-                    | mono τm =>
-                      refine Ty.BelowFvars.of_freeVars_lt (fun v hv => ?_)
-                      have hmem := (List.of_mem_zip hp).2
-                      rw [hs] at hmem
-                      have hτ := hmono_bel τm hmem
-                      have hvτ : v ∈ τm.freeVars :=
-                        Ty.freeVars_closeOver_subset (by simpa [RecSpec.bodyScheme, PolyTy.genGroup] using hv)
-                      exact hτ.mem_lt v hvτ
-                    | poly σ => exact False.elim ((hmono_nopoly s (List.of_mem_zip hp).2) ⟨σ, hs⟩)
-              · exact (Subst.onCtx_below hS₁_bel (le_trans (by omega) hgle) hbelow) M hM
+                    exact RecSpec.bodyScheme_belowFvars
+                      (hspecsC_post s (List.of_mem_zip hp).2)
+              · exact Subst.onCtx_below hSc_bel (le_refl _)
+                  (Subst.onCtx_below hS₁_bel (le_trans (by omega) hgle) hbelow) M hM
             obtain ⟨R_b, hR_b, hty_b, hR_bK, hAgreeB⟩ :=
               ih.1 hbody hsize_body hwfB hbelowB hwfB hbelowB R_g (Ty.eraseBounds τe) K
                 hR_g hKΦ₁ hKbody hR_gK hbodyAlg
-            -- assemble (trans_append)
-            have hAgree : Subst.AgreesBelow Φ S₀ ((S₁ ++ S₂) ++ R_b) :=
-              Subst.AgreesBelow.trans_append (by omega) hAgreeTier hS₁_bel hAgreeB
+            -- The committed ceiling is absorbed by the group residual, then the
+            -- ordinary body tier composes exactly as in the other W cases.
+            have hRgSc : Subst.AgreesBelow Φ₁ R_g (Sc ++ R_g) := by
+              intro v hv
+              simpa only [Subst.onTy_append] using hfac (Ty.fvar v)
+            have hAgreePre : Subst.AgreesBelow Φ S₀ ((S₁ ++ Sc) ++ R_g) :=
+              Subst.AgreesBelow.trans_append (by omega) hAgreeTier hS₁_bel hRgSc
+            have hS₁Sc_bel : ∀ p ∈ S₁ ++ Sc, Ty.BelowFvars Φ₁ p.2 := by
+              intro p hp
+              exact (List.mem_append.mp hp).elim (hS₁_bel p) (hSc_bel p)
+            have hAgree : Subst.AgreesBelow Φ S₀ (((S₁ ++ Sc) ++ S₂) ++ R_b) :=
+              Subst.AgreesBelow.trans_append (by omega) hAgreePre hS₁Sc_bel hAgreeB
             refine ⟨R_b, hR_b, ?_, hR_bK, ?_⟩
             · show Ty.eraseBounds τe = Ty.eraseBounds (R_b.onTy τ)
               rw [← Ty.eraseBounds_idem]
