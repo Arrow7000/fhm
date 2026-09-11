@@ -13601,3 +13601,188 @@ theorem inferFoundBranchesCore_complete : ∀ (branches : List (MatchPattern × 
               ⟨⟨Φ₂, S₃, restOut, restSchemes⟩, hrestActual, hav3⟩
             rw [inferFoundBranchesCore]
             simp only [hebody, heuni, herest, Option.isSome_some]
+
+/-- Executable completeness for matches.  The scrutinee worker fixes the
+    concrete first phase; a fresh residual realizes the declarative result type
+    at the worker's reserved result variable, after which branch-list
+    completeness runs at provenance index zero. -/
+theorem inferCore_complete_match {scrut : Expr}
+    {branches : List (MatchPattern × Expr)}
+    (ihscrut : InferCoreComplete scrut)
+    (ihbranches : ∀ br ∈ branches, InferCoreComplete br.2) :
+    InferCoreComplete (.match_ scrut branches) := by
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+  have hScrutFF : scrut.FoundFree := by
+    cases hff with | match_ hs _ => exact hs
+  have hBranchesFF : ∀ br ∈ branches, br.2.FoundFree := by
+    cases hff with | match_ _ hb => exact hb
+  simp only [Expr.tyFreeVars, List.mem_append] at hKe
+  have hKscrut : ∀ y ∈ scrut.tyFreeVars, y ∈ K :=
+    fun y hy => hKe y (.inl hy)
+  have hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars branches, y ∈ K :=
+    fun y hy => hKe y (.inr hy)
+  let resultTy : Ty := Ty.eraseBounds τ
+  have hsource := Infer.sourceSound h hwf hbelow K hKΦ
+    (fun y hy => hKe y (by simpa [Expr.tyFreeVars] using hy)) hSK
+  simp only [Expr.eraseBounds] at hsource
+  have hsource' : TypeOfHM ((S.onCtx ctx).eraseBounds)
+      (.match_ scrut.eraseBounds
+        (branches.map fun pe => (pe.1, pe.2.eraseBounds))) resultTy := by
+    simpa [resultTy] using hsource
+  have hSlc : ∀ p ∈ S, p.2.IsLC := (Infer.lc h hwf).2
+  cases h with
+  | @match_ _ _ _ _ Φ₁d Φ₂d S₁d S₂d τsd hscrutD hne hbranchesD =>
+      cases hsource' with
+      | match_ hscrutDecl hneSource hbranchesSource =>
+        rename_i scrutTy
+        obtain ⟨b0, rest, hcons⟩ := List.exists_cons_of_ne_nil hne
+        subst hcons
+        have hKfixS : ∀ k ∈ K, (S₁d ++ S₂d).onTy (.fvar k) = .fvar k :=
+          fun k hk => Ty.substFvars_eq_self_of_no_key (fun p hp heq => by
+            simp only [Ty.freeVars, List.mem_singleton] at heq
+            exact hSK p hp (heq ▸ hk))
+        have hSK₁ : ∀ p ∈ S₁d, p.1 ∉ K :=
+          fun p hp => hSK p (List.mem_append_left _ hp)
+        have hbranchesDecl : ∀ br ∈ b0 :: rest,
+            TypeOfMatchBranch ((S₁d ++ S₂d).onCtx ctx).eraseBounds
+              (br.1, br.2.eraseBounds) scrutTy resultTy := by
+          intro br hbr
+          exact hbranchesSource (br.1, br.2.eraseBounds) (by
+            apply List.mem_map.mpr
+            exact ⟨br, hbr, rfl⟩)
+        have hτLC : resultTy.IsLC :=
+          TypeOfMatchBranch.regular
+            (hbranchesDecl b0 (List.mem_cons_self ..))
+        have hscrutSome := ihscrut K hwf hbelow hKΦ hKscrut hSK₁
+          hScrutFF hscrutD
+        obtain ⟨scrutResult, hescrut⟩ :=
+          Option.isSome_iff_exists.mp hscrutSome
+        rcases scrutResult with
+          ⟨⟨Φ₁, S₁, τs, scrutOut, scrutSchemes⟩, hscrutActual, hav1⟩
+        obtain ⟨R₁, hR₁lc, hAgreeScrutTy, hR₁K, hAgreeScrut⟩ :=
+          Infer.complete' hscrutActual hwf hbelow hSlc K hKΦ hKscrut
+            hKfixS hscrutDecl
+        have hfle : Φ ≤ Φ₁ := Infer.frontier_le hscrutActual
+        obtain ⟨hτsLC, hS₁lc⟩ := Infer.lc hscrutActual hwf
+        obtain ⟨hτsBel, hS₁bel⟩ := Infer.belowFvars hscrutActual hbelow
+          (fun y hy => hKΦ y (hKscrut y hy))
+        have hwf₁ : CtxWF (S₁.onCtx ctx) := Subst.onCtx_wf hS₁lc hwf
+        have hbelow₁ : CtxBelow Φ₁ (S₁.onCtx ctx) :=
+          Subst.onCtx_below hS₁bel hfle hbelow
+        have hbelowBranches : CtxBelow (Φ₁ + 1) (S₁.onCtx ctx) :=
+          fun M hM => (hbelow₁ M hM).mono (by omega)
+        have hKΦ₁ : ∀ k ∈ K, k < Φ₁ :=
+          fun k hk => lt_of_lt_of_le (hKΦ k hk) hfle
+        have hKΦBranches : ∀ k ∈ K, k < Φ₁ + 1 :=
+          fun k hk => Nat.lt_succ_of_lt (hKΦ₁ k hk)
+        have hτsBel' : Ty.BelowFvars (Φ₁ + 1) τs :=
+          hτsBel.mono (by omega)
+        obtain ⟨R₁', hR₁'lc, hR₁'K, hR₁'Φ₁, hR₁'below⟩ :=
+          exists_residual_at_fresh (Φ := Φ₁) (R := R₁) (K := K)
+            hR₁lc hτLC hR₁K hKΦ₁
+        have hR₁'agreeR₁ : Subst.AgreesBelow Φ₁ R₁' R₁ := by
+          intro v hv
+          rw [hR₁'below v hv]
+          exact AgreesHM.refl (R₁.onTy (.fvar v))
+        have hAgreeScrut' : Subst.AgreesBelow Φ (S₁ ++ R₁) (S₁d ++ S₂d) :=
+          fun v hv => AgreesHM.symm (hAgreeScrut v hv)
+        have hctxEq : (R₁'.onCtx (S₁.onCtx ctx)).eraseBounds =
+            ((S₁d ++ S₂d).onCtx ctx).eraseBounds := by
+          calc
+            (R₁'.onCtx (S₁.onCtx ctx)).eraseBounds =
+                (R₁.onCtx (S₁.onCtx ctx)).eraseBounds :=
+              Subst.onCtx_congr_hm hR₁'agreeR₁ hbelow₁
+            _ = ((S₁d ++ S₂d).onCtx ctx).eraseBounds := by
+              rw [← Subst.onCtx_append]
+              exact Subst.onCtx_congr_hm hAgreeScrut' hbelow
+        have hscrutEq : Ty.eraseBounds (R₁'.onTy τs) =
+            Ty.eraseBounds scrutTy := by
+          calc
+            Ty.eraseBounds (R₁'.onTy τs) = Ty.eraseBounds (R₁.onTy τs) :=
+              Subst.onTy_congr_hm hR₁'agreeR₁ hτsBel
+            _ = Ty.eraseBounds scrutTy := AgreesHM.symm hAgreeScrutTy
+        have hbranchesAlg : ∀ br ∈ b0 :: rest,
+            TypeOfMatchBranch (R₁'.onCtx (S₁.onCtx ctx)).eraseBounds
+              (br.1, br.2.eraseBounds)
+              (Ty.eraseBounds (R₁'.onTy τs))
+              (Ty.eraseBounds (R₁'.onTy (.fvar Φ₁))) := by
+          intro br hbr
+          rcases br with ⟨pat, body⟩
+          cases hbranchesDecl (pat, body) hbr with
+          | mk hspec hbodyCtxEq hbodyDecl =>
+              rename_i ctor c n tyArgs instContents
+              have hbodyErased : TypeOfHM
+                  { ((S₁d ++ S₂d).onCtx ctx).eraseBounds with
+                    env := (instContents.map Ty.eraseBounds).map PolyTy.mkTrivial ++
+                      ((S₁d ++ S₂d).onCtx ctx).eraseBounds.env }
+                  body.eraseBounds (Ty.eraseBounds resultTy) := by
+                have ht := TypeOfHM.eraseBounds_of hbodyDecl
+                rw [hbodyCtxEq] at ht
+                simpa [Ctx.eraseBounds, Env.eraseBounds_append,
+                  Env.eraseBounds_map_mkTrivial, CtorEnv.eraseBounds_idem,
+                  Expr.eraseBounds_idem] using ht
+              have hbody' : TypeOfHM
+                  { (R₁'.onCtx (S₁.onCtx ctx)).eraseBounds with
+                    env := (instContents.map Ty.eraseBounds).map PolyTy.mkTrivial ++
+                      (R₁'.onCtx (S₁.onCtx ctx)).eraseBounds.env }
+                  body.eraseBounds
+                  (Ty.eraseBounds (R₁'.onTy (.fvar Φ₁))) := by
+                rw [hctxEq, hR₁'Φ₁]
+                simpa [Ty.eraseBounds_idem] using hbodyErased
+              have hctorE : ∃ ct, LookupList.get? ctx.ctors c = some ct ∧
+                  Ctor.eraseBounds ct = ctor := by
+                have hmap : (LookupList.get? ctx.ctors c).map Ctor.eraseBounds =
+                    some ctor := by
+                  rw [← CtorEnv.eraseBounds_get?]
+                  exact hspec.lookup
+                cases hlk : LookupList.get? ctx.ctors c with
+                | none => exfalso; simp [hlk] at hmap
+                | some ct => exact ⟨ct, rfl, by simpa [hlk] using hmap⟩
+              obtain ⟨ct, hlk, hctor⟩ := hctorE
+              have hfields' : List.Forall₂
+                  (InstantiatesBy (tyArgs.map Ty.eraseBounds)) ctor.contents
+                  (instContents.map Ty.eraseBounds) := by
+                have ht := InstantiatesBy.forall2_eraseBounds hspec.fields
+                simpa [Ctor.eraseBounds_contents, List.map_map,
+                  Ty.eraseBounds_idem, ← hctor] using ht
+              have hlookup' : LookupList.get?
+                  (R₁'.onCtx (S₁.onCtx ctx)).eraseBounds.ctors c = some ctor := by
+                simpa [Ctx.eraseBounds, Subst.onCtx] using hspec.lookup
+              have hscrutEq' : Ty.eraseBounds (R₁'.onTy τs) =
+                  .customTy ctor.tyName (tyArgs.map Ty.eraseBounds) := by
+                calc
+                  Ty.eraseBounds (R₁'.onTy τs) = Ty.eraseBounds scrutTy := hscrutEq
+                  _ = .customTy ctor.tyName (tyArgs.map Ty.eraseBounds) := by
+                    rw [hspec.scrut_eq]
+                    simp only [Ty.eraseBounds_customTy,
+                      TyList.eraseBounds_eq_map]
+              have harity' : ctor.paramCount =
+                  (tyArgs.map Ty.eraseBounds).length := by
+                simpa using hspec.arity
+              exact TypeOfMatchBranch.mk
+                ⟨hlookup', hscrutEq', harity', hspec.bind_count, hfields'⟩
+                rfl hbody'
+          | wildcard hbodyDecl =>
+              apply TypeOfMatchBranch.wildcard
+              have ht := TypeOfHM.eraseBounds_of hbodyDecl
+              rw [hctxEq.symm] at ht
+              rw [hR₁'Φ₁.symm] at ht
+              simpa [Ctx.eraseBounds, CtorEnv.eraseBounds_idem,
+                Env.eraseBounds_idem, Expr.eraseBounds_idem,
+                Ty.eraseBounds_idem] using ht
+        obtain ⟨_, _, _, hbranchesRel, _, _, _, hSbranchesK⟩ :=
+          @InferBranches.complete (b0 :: rest) (Φ₁ + 1) (S₁.onCtx ctx)
+            τs (.fvar Φ₁) R₁' K
+            (fun br _ => Infer.complete br.2) hBranchesFF hwf₁
+            hbelowBranches hτsLC hτsBel' ContainsBvarsUpTo.fvar
+            (.fvar (by omega)) hR₁'lc hKΦBranches hKbr hR₁'K hbranchesAlg
+        have hbranchesSome := inferFoundBranchesCore_complete (b0 :: rest)
+          ihbranches K 0 hwf₁ hbelowBranches hτsLC hτsBel'
+          ContainsBvarsUpTo.fvar (.fvar (by omega)) hKΦBranches hKbr
+          hSbranchesK hBranchesFF hbranchesRel
+        obtain ⟨branchesResult, hebranches⟩ :=
+          Option.isSome_iff_exists.mp hbranchesSome
+        rcases branchesResult with
+          ⟨⟨Φ₂, S₂, branchesOut, branchSchemes⟩, hbranchesActual, hav2⟩
+        rw [inferFoundCore, hescrut]
+        simp only [List.head?_cons, hebranches, Option.isSome_some]
