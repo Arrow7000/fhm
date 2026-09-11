@@ -360,6 +360,59 @@ the shared-monotype rule infers their principal types. -/
   (.var 0))
 
 
+/-! ### Recursive annotation ceilings
+
+An annotation is an upper bound on what the group may claim after inference:
+the inferred RHS scheme must be at least as general as the declaration.  The
+constraint phase may refine flexible variables from the surrounding inference
+context, but it may neither bind source-rigid variables nor consume the frozen
+generalisation pool of an unannotated sibling. -/
+
+/-- A recursive `Int` annotation refines the enclosing lambda parameter's
+    flexible inference variable. -/
+private def recAnnRefinesOuter : Expr :=
+  .lambda none (.letRec [some ⟨0, .prim .int⟩] [.var 1] (.var 0))
+
+#guard match typecheck [] recAnnRefinesOuter with
+  | some ⟨0, .arrow (.prim .int) (.prim .int)⟩ => true
+  | _ => false
+
+/-- A less-general monomorphic declaration is a valid ceiling for the inferred
+    polymorphic identity. -/
+private def recAnnSpecialisesIdentity : Expr :=
+  .letRec [some ⟨0, .arrow (.prim .int) (.prim .int)⟩]
+    [.lambda none (.var 0)] (.var 0)
+
+#guard match typecheck [] recAnnSpecialisesIdentity with
+  | some ⟨0, .arrow (.prim .int) (.prim .int)⟩ => true
+  | _ => false
+
+/-- `1` has only type `Int`, so it cannot justify the declared `∀a. a`. -/
+private def recAnnOverclaims : Expr :=
+  .letRec [some ⟨1, .bvar 0⟩] [.primLit (.int 1)] (.var 0)
+
+#guard (typecheck [] recAnnOverclaims).isNone
+
+/-- A free variable written in an annotation is source-rigid, not an inference
+    metavariable which the ceiling checker may solve. -/
+private def recAnnCannotSolveRigid : Expr :=
+  .letRec [some ⟨0, .fvar 7⟩] [.primLit (.int 1)] (.var 0)
+
+#guard (typecheck [] recAnnCannotSolveRigid).isNone
+
+/-- Constraining annotated `f` must not consume `g`'s frozen group variable:
+    the body can still instantiate unannotated `g` at both `Int` and `Char`. -/
+private def recAnnKeepsSiblingPolymorphic : Expr :=
+  .letRec [some ⟨0, .arrow (.prim .int) (.prim .int)⟩, none]
+    [.lambda none (.var 0), .lambda none (.var 0)]
+    (.letIn none (.app (.var 1) (.primLit (.int 1)))
+      (.app (.var 2) (.primLit (.char 'c'))))
+
+#guard match typecheck [] recAnnKeepsSiblingPolymorphic with
+  | some ⟨0, .prim .char⟩ => true
+  | _ => false
+
+
 /-! ### Recursion over real data
 
 The genuine article: self-recursive folds over an inductive type, defined with a
