@@ -6756,3 +6756,138 @@ theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
   · simp only [Option.map_some, Option.some.injEq] at h
     exact ⟨τ, h.symm, principalType_source_sound hc, principalType_sound hc,
       principalType_principal hc⟩
+
+/-! ## 6. Producer completeness
+
+The principality spine above starts from an existing `Infer` derivation.  The
+remaining completeness direction constructs such a derivation from a
+declarative typing.  It is intentionally restricted to `Expr.FoundFree` source
+terms: `.found` nodes are inferred output metadata and have no `Infer` rule.
+
+As in the principality spine, the induction carries an ambient specialization
+and an LC residual.  This richer invariant is needed to thread Algorithm W's
+fresh variables and substitutions through compound expressions; the public
+corollaries will hide it. -/
+
+/-- Producer completeness at one source expression. Any bounds-blind
+    declarative typing under an LC specialization is realized by an `Infer`
+    derivation whose result factors the declarative type up to `AgreesHM`. -/
+def Infer.CompleteAt (e : Expr) : Prop :=
+  e.FoundFree →
+  ∀ {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {τ₀ : Ty} (K : List Nat),
+    CtxWF ctx → CtxBelow Φ ctx → (∀ p ∈ S₀, p.2.IsLC) →
+    (∀ k ∈ K, k < Φ) → (∀ y ∈ e.tyFreeVars, y ∈ K) →
+    (∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k) →
+    TypeOfHM (S₀.onCtx ctx).eraseBounds e.eraseBounds τ₀ →
+    ∃ Φ' S τ R,
+      Infer Φ ctx e Φ' S τ ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) ∧
+      AgreesHM τ₀ (R.onTy τ) ∧
+      (∀ p ∈ R, p.2.IsLC) ∧
+      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      (∀ p ∈ S, p.1 ∉ K)
+
+/-- Producer completeness for primitive literals. -/
+theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) := by
+  intro _ Φ ctx S₀ τ₀ K _ _ hS₀ _ _ hKfix hty
+  cases p with
+  | unit =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primLitUnit =>
+      refine ⟨Φ, [], .prim .unit, S₀, .primLitUnit, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | int n =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primLitInt =>
+      refine ⟨Φ, [], .prim .int, S₀, .primLitInt, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | nat n =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primLitNat =>
+      refine ⟨Φ, [], .prim .nat, S₀, .primLitNat, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | char c =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primLitChar =>
+      refine ⟨Φ, [], .prim .char, S₀, .primLitChar, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+
+/-- Producer completeness for primitive operators. -/
+theorem Infer.complete_primBinOp {op : PrimBinOp} :
+    Infer.CompleteAt (.primBinOp op) := by
+  intro _ Φ ctx S₀ τ₀ K _ _ hS₀ _ _ hKfix hty
+  cases op with
+  | intAdd =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primBinOpIntAdd =>
+      refine ⟨Φ, [], .arrow (.prim .int) (.arrow (.prim .int) (.prim .int)), S₀,
+        .primBinOpIntAdd, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | intSub =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primBinOpIntSub =>
+      refine ⟨Φ, [], .arrow (.prim .int) (.arrow (.prim .int) (.prim .int)), S₀,
+        .primBinOpIntSub, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | intLt =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primBinOpIntLt hT hF =>
+      obtain ⟨trueC, hlookT, hbT⟩ :=
+        Ctor.isBoolCtor_of_typeOfHM_erase (ctx := S₀.onCtx ctx) hT
+      obtain ⟨falseC, hlookF, hbF⟩ :=
+        Ctor.isBoolCtor_of_typeOfHM_erase (ctx := S₀.onCtx ctx) hF
+      refine ⟨Φ, [],
+        .arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])), S₀,
+        .primBinOpIntLt hlookT hbT hlookF hbF, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
+  | charLt =>
+    simp only [Expr.eraseBounds] at hty
+    cases hty with
+    | primBinOpCharLt hT hF =>
+      obtain ⟨trueC, hlookT, hbT⟩ :=
+        Ctor.isBoolCtor_of_typeOfHM_erase (ctx := S₀.onCtx ctx) hT
+      obtain ⟨falseC, hlookF, hbF⟩ :=
+        Ctor.isBoolCtor_of_typeOfHM_erase (ctx := S₀.onCtx ctx) hF
+      refine ⟨Φ, [],
+        .arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ [])), S₀,
+        .primBinOpCharLt hlookT hbT hlookF hbF, ?_, ?_, ?_, ?_, ?_⟩
+      · intro v hv; rfl
+      · simp [AgreesHM]
+      · exact hS₀
+      · exact hKfix
+      · simp
