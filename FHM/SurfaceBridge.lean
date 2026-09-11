@@ -12634,10 +12634,10 @@ The declarative `SurfaceWT` corollary (below) closes the spec/impl loop under
 Approach A / 1a: strong open `SurfaceWTExpr` + coverage ⇒ the concrete `lower`
 output typechecks, then reuse `surface_type_safe`. -/
 
-/-- Path R residual: well-typed surface programs elaborate to Core that is
-    residual-HM-typed (`e.eraseBounds` / `erase τ`, against the erased ctor env
-    `ctors.eraseBounds`), match-exhaustive on the real elaboratum, and non-stuck
-    (safety of decorated `e` via the residual operational bridge in `Core`). -/
+/-- Path R residual: well-typed surface programs lower to Core whose erased
+    runtime term is HM-typed against `ctors.eraseBounds`, match-exhaustive, and
+    non-stuck. Bounds and source annotations are static and do not enter
+    `SmallStep.Step`. -/
 theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     (hlow : lower ctors s = some c)
     (htc : (typecheck ctors c).isSome)

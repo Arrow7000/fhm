@@ -253,7 +253,7 @@ inductive PrimLitExpr
     literal operands.     Arithmetic ops (`intAdd`/`intSub`) return `int`
     unconditionally; the comparison ops `intLt`/`charLt` return `Bool` and so are
     only well-typed relative to an env providing `Bool` (see
-    `TypeOfElabHM.primBinOpIntLt`). -/
+    `TypeOfHM.primBinOpIntLt`). -/
 inductive PrimBinOp
   | intAdd
   | intSub
@@ -261,7 +261,7 @@ inductive PrimBinOp
   | charLt
   deriving DecidableEq, Repr
 
-/-- Type of a primitive literal (`TypeOfHM` / `TypeOfElabHM` primLit rules). -/
+/-- Type of a primitive literal (the `TypeOfHM` primitive-literal rules). -/
 def PrimLitExpr.ty : PrimLitExpr → Ty
   | .unit => .prim .unit
   | .int _ => .prim .int
@@ -318,7 +318,7 @@ inductive Expr
   | primLit (prim : PrimLitExpr)
   /-- A primitive binary operator (e.g. `intAdd`). A leaf naming a built-in,
       curried, monomorphic 2-argument function, applied via ordinary `app`. Its
-      type is fixed (see the `primBinOp*` rules of `TypeOfElabHM`/`TypeOfHM`); a
+      type is fixed (see the `primBinOp*` rules of `TypeOfHM`); a
       *saturated* application to literal operands reduces by a δ-rule in
       `SmallStep.Step`, while a partial application `app (primBinOp op) v` is a
       value (a stuck function). -/
@@ -1161,11 +1161,9 @@ inductive InstantiatesBy (tyArgs : List Ty) : Ty → Ty → Prop
     with `σ`'s bound variables replaced by the corresponding `tyArgs`. THE
     scheme-instantiation judgment (used by the `var`/`ctor` typing rules).
 
-    Deliberately says nothing about `tyArgs.length` vs `σ.paramCount`: the
-    decoration-blind `TypeOfHM.var` (textbook HM) instantiates by *any* witness
-    list, while the type-passing `TypeOfElabHM.var` pins the arity with a
-    separate `Ty.AreLC` premise. Scheme well-formedness (`PolyTy.WF`) is likewise
-    a separate concern. -/
+    Deliberately says nothing about `tyArgs.length` vs `σ.paramCount`:
+    `TypeOfHM.var` (textbook HM) instantiates by an existential witness list.
+    Scheme well-formedness (`PolyTy.WF`) is a separate concern. -/
 def PolyTy.InstantiatesTo (σ : PolyTy) (tyArgs : List Ty) (τ : Ty) : Prop :=
   InstantiatesBy tyArgs σ.body τ
 
@@ -1202,8 +1200,8 @@ variables: `var 0` is the innermost binder. Substitution is the standard
 disappearing binder.
 
 The machine here is independent of type checking — it would run on any
-syntactically well-formed `Expr`. Type soundness (progress + preservation) is
-the bridge between this and `TypeOfElabHM`. -/
+syntactically well-formed `Expr`. `TypeOfHM` progress and preservation connect
+this reduction relation to the static semantics on erased terms. -/
 
 mutual
 
@@ -1248,8 +1246,7 @@ def RecGroup.shiftFrom (threshold : Nat) (n : Nat) : List Expr → List Expr
 
 end
 
-/-! ### Type-beta (type-passing): instantiate a scheme's variables through a
-    term's annotations.
+/-! ### Scoped type-variable instantiation through source annotations
 
 `Ty.openTyFrom d Ts ty` substitutes the *outermost* (depth-`d`) scheme's type
 variables: `bvar (d+i) ↦ Ts[i]`, leaving `bvar < d` (bound by inner schemes) and
@@ -1258,8 +1255,9 @@ annotation in a term, with `d`-bookkeeping identical to `Expr.openTyVarsAux` (a
 TERM binder leaves `d` unchanged; an annotated `let`'s bound expression sits under
 `σ.paramCount` extra type binders, so `d` grows there). With `Ts = Xs.map Ty.fvar`
 this coincides with `openTyVarsAux d Xs` (see `instTyAux_fvar_eq_openTyVarsAux`),
-which ties type-beta to the static scoped-variable opening. `instTy Ts e` is
-type-beta at the outermost scheme (depth 0). -/
+which ties explicit instantiation to the static scoped-variable opening.
+`instTy Ts e` acts at the outermost scheme (depth 0). These helpers support
+static annotation reasoning; the runtime does not pass or reduce types. -/
 /-- Shift every `bvar` of a type up by `d`. `Ty` has no internal binders (the `∀`
     lives at `PolyTy`), so an unconditional shift is correct and capture-free. -/
 def Ty.shiftBvarsBy (d : Nat) (ty : Ty) : Ty :=
@@ -1650,10 +1648,8 @@ inductive Step : Expr → Expr → Prop
       Step (.app (.lambda ann body) v) (body.substN 0 [v])
 
   /-- Let reduction (call-by-name: a `let` binds its rhs without first reducing it).
-      This is the genuine type-passing semantics — we never reduce *under* the
-      implicit `Λ` of a polymorphic binding, so a scheme's type binders are always
-      consumed outside-in and `instTy` only ever instantiates in-range type `bvar`s.
-      Sound here because the language is pure (no effects). -/
+      Source annotations are dynamics-inert, so reduction is ordinary term
+      substitution. Sound here because the language is pure (no effects). -/
   | letReduce {ann rhs body} :
       Step (.letIn ann rhs body) (body.substN 0 [rhs])
 
@@ -2996,12 +2992,11 @@ def Expr.openBoundTyVars : Option PolyTy → List Nat → Expr → Expr
 /-! ### Type erasure (`erase`)
 
 The uniform erasure of the erasure-on-`Step` migration
-(`briefs/design-memo-erasure-migration.md` §3.1): drop ALL type annotations and
-type-passing decorations — `lambda (some t)` → `lambda none`, `letIn (some σ)` →
-`letIn none`, `letRec anns` → `letRec (all none)`, `var i _` → `var i []` (the
-`tyArgs` are zeroed, not passed through). Structural elsewhere. `erase e` is the
-term the machine (`SmallStep.Step`) runs, typed by the declarative `TypeOfHM`; the
-soundness of the source checker against it is `Infer.sound`. -/
+(`briefs/design-memo-erasure-migration.md` §3.1): drop all source annotations
+and inference markers — `lambda (some t)` → `lambda none`, `letIn (some σ)` →
+`letIn none`, `letRec anns` → `letRec (all none)`, and `.found _ e` → `e`.
+Structural elsewhere. `erase e` is the term the machine (`SmallStep.Step`) runs,
+typed by `TypeOfHM`; inference soundness against it is `Infer.sound`. -/
 def Expr.erase : Expr → Expr
   | .primLit p          => .primLit p
   | .primBinOp op       => .primBinOp op
@@ -3758,10 +3753,9 @@ structure FreshNames (L : List Nat) (n : Nat) (Xs : List Nat) : Prop where
 The substantial premises of the typing rules are named here so the rules (and
 every proof over them) read as a handful of meaningful propositions instead of
 raw quantifier nests. Premises that recurse into the typing relation are
-parameterised by it (`TypeOf`), so `TypeOfElabHM` and `TypeOfHM` share them
-verbatim — making it syntactically evident that the two relations differ in the
-`var` rule ONLY. (The auto-generated recursors see through these definitions and
-still provide induction hypotheses for the packaged sub-derivations.) -/
+parameterised by it (`TypeOf`) so auxiliary judgments can reuse them. (The
+auto-generated recursors see through these definitions and still provide
+induction hypotheses for the packaged sub-derivations.) -/
 
 /-- An optional annotation, when present, pins a rule-internal choice: the
     `lambda` rule's parameter type must be the parameter ascription (if any),
@@ -3891,20 +3885,15 @@ def RecSpecs.MonoTypedInit (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
 
 /-! ### The *declarative* HM typing relation `TypeOfHM` (the completeness spec).
 
-Classic Damas–Milner typing, **decoration-blind**: the algorithm-independent
-specification of "this (source) program is HM-typeable", against which the
-elaborator's completeness / principality is stated. It ranges over the same `Expr`
-as `TypeOfElabHM` but **ignores** the `tyArgs` stored in `var` nodes — a use
-instantiates its scheme by *some* witness types (existentially), exactly as in
-textbook HM, with no `length = paramCount` requirement.
+Classic Damas–Milner typing and the single algorithm-independent specification
+of "this program is HM-typeable". A variable use instantiates its environment
+scheme by existential witness types, exactly as in textbook HM. Source
+annotations constrain `lambda`, `letIn`, and `letRec`; bounds are retained here
+structurally and ignored only at the explicit Path-R projection sites.
 
-`TypeOfHM` and `TypeOfElabHM` differ in **exactly one rule** — `var`. Every other
-constructor is identical: `ctor`/`match` store no tyArgs (already decoration-blind),
-and the `let`/`letRec(Ann)` openings act on annotation scoped-type-variables (present
-in source terms) and harmlessly on the ignored var-tyArgs. Consequently
-`TypeOfElabHM e τ → TypeOfHM e τ` (the elaborated relation is the stricter one). The
-dynamics / progress / preservation / type safety are stated about `TypeOfElabHM`;
-`TypeOfHM` borrows its operational meaning through elaboration. -/
+The same relation types both annotated sources (`e.eraseBounds`) and runnable
+erased terms (`e.erase`). Its substitution, progress, preservation, and type
+safety metatheory is proved directly, without an elaborated term language. -/
 
 mutual
 
@@ -3922,8 +3911,7 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | primLitChar :
     TypeOfHM ctx (.primLit (.char c)) (.prim .char)
 
-  /-- `intAdd : int → int → int` (identical to the `TypeOfElabHM` rule — a primop
-      carries no `tyArgs`, so the two relations agree; `faithful` is trivial). -/
+  /-- `intAdd : int → int → int`. -/
   | primBinOpIntAdd :
     TypeOfHM ctx (.primBinOp .intAdd)
       (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
@@ -3933,14 +3921,14 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     TypeOfHM ctx (.primBinOp .intSub)
       (.arrow (.prim .int) (.arrow (.prim .int) (.prim .int)))
 
-  /-- `intLt : int → int → Bool` (identical to the `TypeOfElabHM` rule). -/
+  /-- `intLt : int → int → Bool`. -/
   | primBinOpIntLt :
     TypeOfHM ctx (.ctor ⟨"True"⟩) (.customTy ⟨"Bool"⟩ []) →
     TypeOfHM ctx (.ctor ⟨"False"⟩) (.customTy ⟨"Bool"⟩ []) →
     TypeOfHM ctx (.primBinOp .intLt)
       (.arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ [])))
 
-  /-- `charLt : char → char → Bool` (identical to the `TypeOfElabHM` rule). -/
+  /-- `charLt : char → char → Bool`. -/
   | primBinOpCharLt :
     TypeOfHM ctx (.ctor ⟨"True"⟩) (.customTy ⟨"Bool"⟩ []) →
     TypeOfHM ctx (.ctor ⟨"False"⟩) (.customTy ⟨"Bool"⟩ []) →
@@ -3964,8 +3952,7 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     TypeOfHM ctx inner ty →
     TypeOfHM ctx (.found ty inner) ty
 
-  /-- Cofinite let-generalisation (identical to `TypeOfElabHM.letIn`; see
-      `GeneralisesTo`). -/
+  /-- Cofinite let-generalisation; see `GeneralisesTo`. -/
   | letIn {M : PolyTy} {L : List Nat} :
     PolyTy.WF M →
     ann.Pins M →
@@ -3974,10 +3961,9 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     TypeOfHM bodyCtx body bodyTy →
     TypeOfHM ctx (.letIn ann boundExpr body) bodyTy
 
-  /-- **The one rule that differs from `TypeOfElabHM`.** Decoration-blind: the
-      stored `tyArgs` are ignored (the use is well-typed for *any* decoration), and
-      the scheme is instantiated by *some* witness `instArgs` (existential), with no
-      `length = paramCount` requirement — the classic HM instantiation. -/
+  /-- A variable scheme is instantiated by existential witness `instArgs`, with
+      no separate term-level type application: classic erased HM
+      instantiation. -/
   | var :
     ctx.env[dbl]? = some polyTy →
     (∀ tyArg ∈ instArgs, tyArg.IsLC) →
@@ -8819,7 +8805,7 @@ theorem Expr.varsBelow_openBoundTyVars (ann : Option PolyTy) (Xs : List Nat) (e 
 
 /-! ## Well-typed terms have every free var below the context length
 
-The declarative typing relation `TypeOfElabHM` maintains the invariant that a
+The declarative typing relation `TypeOfHM` maintains the invariant that a
 well-typed expression is `varsBelow ctx.env.length`: the `var` rule forces an
 in-range context lookup, and every binder rule extends the env by exactly the
 amount `varsBelow`'s bookkeeping expects (`lambda`/`letIn` +1, a match branch by

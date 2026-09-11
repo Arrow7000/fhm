@@ -249,7 +249,8 @@ These are the programs that expose the classic landmines — over-eager
 generalization, escaping skolems, occurs-check loops, and rigid scoped type
 variables. The verified checker should accept exactly the sound ones and reject
 the rest. Each rejection below corresponds to a genuinely *untypeable* program
-(no `TypeOfElabHM` derivation exists), not merely an algorithmic giving-up. -/
+(no `TypeOfHM` derivation exists for the bounds-erased source), not merely an
+algorithmic giving-up. -/
 
 -- λx. x x   :  ill-typed   (occurs check: a = a → b has no finite solution)
 #eval showType (.lambda none (.app (.var 0) (.var 0)))
@@ -510,7 +511,7 @@ whose scheme body mentions a type variable bound by an *enclosing* scope. Here t
 group binding `loop`'s annotation `a → a` refers to the outer `let`'s `∀ a`, i.e. a
 `bvar` past `loop`'s own (zero) parameters. This was previously *rejected* —
 `open`/`close` didn't descend into stored recursion-annotation scheme bodies, so the
-outer `bvar` never resolved and failed `PolyTy.WF`; the elaborator now opens it to
+outer `bvar` never resolved and failed `PolyTy.WF`; inference now opens it to
 the enclosing skolem and closes it back, so the whole thing infers `∀ a. a → a`. -/
 
 -- let (g : ∀ a. a → a) = (let rec (loop : a → a) = λy. loop y in loop) in g   :  ∀ a. a → a
