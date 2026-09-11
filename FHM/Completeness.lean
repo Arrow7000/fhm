@@ -14919,3 +14919,55 @@ theorem inferCore_complete (e : Expr) : InferCoreComplete e := by
               K hwf hbelow hKΦ hKe hSK hff h
   intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
   exact upto (e.size + 1) e (by omega) K hwf hbelow hKΦ hKe hSK hff h
+
+/-! ## 8. Public executable-completeness capstones -/
+
+/-- Every declaratively typeable, found-free annotated source is accepted by
+    the public principal-monotype checker.  The declarative term is
+    `e.eraseBounds`: bounds are ignored under Path R, while source annotations
+    remain part of the language accepted by inference. -/
+theorem principalType_complete {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (hff : e.FoundFree)
+    (hty : TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ) :
+    (principalType ctors e).isSome := by
+  obtain ⟨Φ', S, τ', R, hInfer, _hAgree, _hty, _hRlc, _hRK, hSK⟩ :=
+    (Infer.complete e) hff e.tyFreeVars CtxWF.empty CtxBelow.empty
+      (S₀ := []) (τ₀ := τ) (by simp)
+      (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) (by simp) (by
+        simpa [Subst.onCtx, Subst.onEnv, Ctx.eraseBounds, Env.eraseBounds] using hty)
+  have hsome := inferCore_complete e e.tyFreeVars CtxWF.empty CtxBelow.empty
+    (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) hSK hff hInfer
+  obtain ⟨result, hresult⟩ := Option.isSome_iff_exists.mp hsome
+  rcases result with
+    ⟨⟨Φr, Sr, τr, output, schemes⟩, hResultInfer, hResultAvoid⟩
+  rw [principalType, inferCore, hresult]
+  rfl
+
+/-- Whole-program type checking accepts every declaratively typeable,
+    found-free annotated source. -/
+theorem typecheck_complete {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (hff : e.FoundFree)
+    (hty : TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ) :
+    (typecheck ctors e).isSome := by
+  simpa [typecheck] using principalType_complete hff hty
+
+/-- On source expressions, executable principal-type acceptance is exactly
+    bounds-blind declarative HM typeability. -/
+theorem principalType_accepts_iff {ctors : CtorEnv} {e : Expr}
+    (hff : e.FoundFree) :
+    (principalType ctors e).isSome ↔
+      ∃ τ, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ := by
+  constructor
+  · intro hsome
+    obtain ⟨τ, hτ⟩ := Option.isSome_iff_exists.mp hsome
+    exact ⟨τ.eraseBounds, principalType_source_sound hτ⟩
+  · rintro ⟨τ, hτ⟩
+    exact principalType_complete hff hτ
+
+/-- The public whole-program checker succeeds exactly on found-free annotated
+    sources that are declaratively HM-typeable after erasing bounds. -/
+theorem typecheck_accepts_iff {ctors : CtorEnv} {e : Expr}
+    (hff : e.FoundFree) :
+    (typecheck ctors e).isSome ↔
+      ∃ τ, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ := by
+  simpa [typecheck] using principalType_accepts_iff (ctors := ctors) hff
