@@ -6156,6 +6156,7 @@ inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
       (hτs_len : binds.length = τs.length)
       (hτs_link : ∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ)
       (hτs_lc : ∀ t ∈ τs, t.IsLC)
+      (hceiling : RecSpecs.ceilingOK G anns' (τs.map RecSpec.mono))
       (hLL : ∀ (Xs : List Nat) (_hfresh : FreshNames L G.length Xs) (i : Nat) (hi : i < binds.length),
         LowerLetParams ke
           (letRhsTyScope (binds[i]'hi).tyParams (binds[i]'hi).params (binds[i]'hi).ann tvs)
@@ -10511,7 +10512,7 @@ theorem lowerExpr_isSome_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
   | letRecInAnn =>
     rename_i tvs' vs' Γ binds anns' specs τs G L paramTysList ΓRhsList τretsList body τ
       htvs hann hlen hparamLen hΓRhsLen hretsLen hanns_eq hnodup hmono_lc hpoly_wf
-      hτs_len hτs_link hτs_lc hLL hτbinds hmono hbody
+      hτs_len hτs_link hτs_lc hceiling hLL hτbinds hmono hbody
       hmono_ih hbody_ih
     simp only [lowerExpr]
     obtain ⟨bodyCore, hb⟩ := Option.isSome_iff_exists.mp hbody_ih
@@ -11081,7 +11082,7 @@ theorem TypeOfHM_tyBvarBounded_of_emptyVarTyArgs {ctx : Ctx} {e : Expr} {τ : Ty
     intro p b hmem
     exact TypeOfHM.branchMotive_tyBvarBounded_of_emptyVarTyArgs (ihbrs (p, b) hmem)
       (hbr p b hmem)
-  | letRec hwf hlen hlink hlc hmono heq hbody ihmono ihbody =>
+  | letRec hwf hlen hlink hlc hmono hceiling heq hbody ihmono ihbody =>
     expose_names
     intro he; simp only [Expr.EmptyVarTyArgs] at he
     refine ⟨?_, ?_, ihbody he.2⟩
@@ -11376,7 +11377,7 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         obtain ⟨_, _, hcontrad⟩ := hσ
         cases hcontrad
     refine TypeOfHM.letRec (specs := specs) (τs := τs) (G := []) (L := [])
-      hwf ?hlen ?hlink ?hlc ?mono rfl ?body
+      hwf ?hlen ?hlink ?hlc ?mono ?ceiling rfl ?body
     · -- the witness list aligns with the members (specs = τs.map .mono)
       simpa [specs, List.length_map] using hwf.length
     · -- mono-link: specs = τs.map .mono — structural
@@ -11429,6 +11430,7 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         simpa [hscope_i i (by omega)] using hwrap
       have hTyW := wrapCoreParams_TypeOfHM (hLL i (by omega)) hwrap' (hrhs_ih i (by omega) hr')
       simpa [← hτbinds i (by omega)] using hTyW
+    · simpa [anns_eq, hlen] using RecSpecs.ceilingOK_allNone [] τs
     · simp only [RecSpecs.bodyCtx, specs, List.map_map]
       have hmap : List.map (RecSpec.bodyScheme [] ∘ RecSpec.mono) τs =
           τs.map PolyTy.mkTrivial :=
@@ -11438,7 +11440,7 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
   | letRecInAnn =>
     rename_i tvs' vs' Γ binds anns' specs τs G L paramTysList ΓRhsList τretsList body τ
       htvs hann hlen hparamLen hΓRhsLen hretsLen hanns_eq hnodup hmono_lc hpoly_wf
-      hτs_len hτs_link hτs_lc hLL hτbinds hmono hbody
+      hτs_len hτs_link hτs_lc hceiling hLL hτbinds hmono hbody
       hmono_ih hbody_ih
     subst htvs
     obtain ⟨annsL, bindings', bodyL, hannL, hbindsL, hbL, hc⟩ :=
@@ -11449,10 +11451,10 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     have anns_eq : annsL = anns' := Option.some.inj (hannL.symm.trans hann)
     have hwf : RecSpecs.WF annsL bindings' specs G :=
       ⟨anns_eq ▸ hanns_eq, hlenB.trans hlen, hnodup, hmono_lc, hpoly_wf⟩
-    -- all-mono construction (witness monotypes `τs`; ceilings are algorithmic):
+    -- All-mono construction with the surface annotation-ceiling premise.
     -- identical in shape to the `letRecIn` sibling, per the 78cf9a1 cut.
     refine TypeOfHM.letRec (specs := specs) (τs := τs) (G := G) (L := L)
-      hwf ?_ ?_ ?_ ?_ rfl ?_
+      hwf ?_ ?_ ?_ ?_ (by simpa [anns_eq] using hceiling) rfl ?_
     · -- the witness list aligns with the members
       exact hlenB.trans hτs_len
     · -- mono-link: `specs.zip τs` — the ctor's witness-link premise
