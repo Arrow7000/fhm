@@ -1749,23 +1749,6 @@ theorem Ctor.isBoolCtor_of_typeOfHM_erase {ctx : Ctx} {name : CtorName}
   refine ⟨c, hlk, ?_⟩
   exact Ctor.IsBoolCtor.of_eraseBounds (by simpa [hceq] using hbE)
 
-/-- `M'` is at least as general as `M`: every instantiation of `M` is also an
-    instantiation of `M'`. (Defined before `Infer` because `Infer.letRec`'s ceiling
-    premise uses it.) -/
-def PolyTy.Generalizes (M' M : PolyTy) : Prop :=
-  ∀ tyArgs ty, (∀ t ∈ tyArgs, t.IsLC) → InstantiatesBy tyArgs M.body ty →
-    ∃ tyArgs', (∀ t ∈ tyArgs', t.IsLC) ∧ InstantiatesBy tyArgs' M'.body ty
-
-/-- The `letRec` ceiling premise: for every ANNOTATED member, the solved-and-
-    generalised scheme `genGroup G τⱼ` is at least as general as the annotation
-    `σⱼ` — an over-claiming annotation is rejected, an under-claiming one passes
-    (with the body seeing the less-general annotation as a ceiling). Positional,
-    via `List.Forall₂` over `anns` and the solved specs. -/
-def RecSpecs.ceilingOK (G : List Nat) (anns : List (Option PolyTy)) (specs : List RecSpec) : Prop :=
-  List.Forall₂ (fun a s => match a with
-    | some σ => PolyTy.Generalizes (PolyTy.eraseBounds (RecSpec.bodyScheme G s)) (PolyTy.eraseBounds σ)
-    | none => True) anns specs
-
 /-- The `letRec` BODY environment under the ceiling: annotated members at their
     (opened) annotation, unannotated members at their generalised scheme
     `genGroup G τⱼ`. -/
@@ -13455,14 +13438,16 @@ theorem Infer.sound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         · exact hS₂_dom_G p.1 h (List.mem_map.mpr ⟨p, hp, rfl⟩)
         · exact hSK p (List.mem_append_right _ hp) h)
     have hforall₂_mem : ∀ {as : List (Option PolyTy)} {bs : List RecSpec},
-        List.Forall₂ (fun a s => match a with
-          | some σ' => PolyTy.Generalizes (PolyTy.eraseBounds (RecSpec.bodyScheme G s)) (PolyTy.eraseBounds σ')
-          | none => True) as bs →
+        RecSpecs.ceilingOK G as bs →
         ∀ {a b}, (a, b) ∈ as.zip bs →
-          match a with
-          | some σ' => PolyTy.Generalizes (PolyTy.eraseBounds (RecSpec.bodyScheme G b)) (PolyTy.eraseBounds σ')
-          | none => True := by
+          match a, b with
+          | some σ', .mono τ' =>
+              PolyTy.Generalizes (PolyTy.eraseBounds (PolyTy.genGroup G τ'))
+                (PolyTy.eraseBounds σ')
+          | some _, .poly _ => False
+          | none, _ => True := by
       intro as bs hf
+      unfold RecSpecs.ceilingOK at hf
       induction hf with
       | nil => intro a b hp; simp at hp
       | cons hhd htl ih =>
