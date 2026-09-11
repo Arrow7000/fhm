@@ -1720,7 +1720,7 @@ theorem Ctor.isBoolCtor_of_typeOfHM {ctx : Ctx} {name : CtorName}
 
 /-- A raw ctor is a Bool ctor iff its erased image is (tyName/paramCount survive
     erase and `contents = []` iff `contents.map erase = []`). -/
-private theorem Ctor.IsBoolCtor.of_eraseBounds {c : Ctor}
+theorem Ctor.IsBoolCtor.of_eraseBounds {c : Ctor}
     (h : (Ctor.eraseBounds c).IsBoolCtor) : c.IsBoolCtor := by
   obtain ⟨hname, hpc, hcont⟩ := h
   refine ⟨?_, ?_, ?_⟩
@@ -1731,7 +1731,7 @@ private theorem Ctor.IsBoolCtor.of_eraseBounds {c : Ctor}
 /-- Lookup transport for the primBinOp `Bool` ctors: a `TypeOfHM` Bool typing of
     `name` under an *erased* context yields the **raw** ctor lookup together with
     its `IsBoolCtor` shape (contrapositive of `Ctor.IsBoolCtor.typeOfHM_erase`). -/
-private theorem Ctor.isBoolCtor_of_typeOfHM_erase {ctx : Ctx} {name : CtorName}
+theorem Ctor.isBoolCtor_of_typeOfHM_erase {ctx : Ctx} {name : CtorName}
     (h : TypeOfHM ctx.eraseBounds (.ctor name) (.customTy ⟨"Bool"⟩ [])) :
     ∃ c, LookupList.get? ctx.ctors name = some c ∧ c.IsBoolCtor := by
   obtain ⟨cE, hlookE, hbE⟩ := Ctor.isBoolCtor_of_typeOfHM h
@@ -1774,11 +1774,11 @@ def RecSpecs.ceilingSchemes (G : List Nat) (anns : List (Option PolyTy)) (specs 
     | some σ => σ
     | none => RecSpec.bodyScheme G p.2)
 
-/-! Algorithm W as a type-directed **elaboration** relation: the subject `eIn` is
-    the unelaborated skeleton and the new output index `eOut` carries the elaborated
-    (type-passing) term. The runnable term is `eOut.substTyFvars S`. Mutually defined
-    with `InferBranches`/`InferRecGroup` (the `match_`/`letRec` threaders), which
-    each thread out their elaborated sub-terms. -/
+/-! Algorithm W as a type-directed inference relation over the source `Expr`.
+    Its outputs are only the fresh-variable frontier, substitution, and inferred
+    monotype; runtime execution uses the independently defined erased source term.
+    The relation is mutually defined with the `match_` and `letRec` threaders
+    `InferBranches` and `InferRecGroup`. -/
 mutual
 inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
   | primLitUnit {Φ ctx} :
@@ -1890,8 +1890,7 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
     `scrutTy` (which each *named* pattern constrains to its ADT by unifying it with a
     fresh `customTy` instance) and a running result type `ρ` that each branch body's
     type is unified against, with substitutions propagated to the next branch. An
-    all-wildcard list leaves `scrutTy` free. The output index threads the elaborated
-    branch list. -/
+    all-wildcard list leaves `scrutTy` free. -/
 inductive InferBranches :
     Nat → Ctx → Ty → Ty → List (MatchPattern × Expr) → Nat → Subst → Prop
   | nil {Φ ctx scrutTy ρ} :
@@ -1929,14 +1928,13 @@ inductive InferBranches :
       `τ` (a `mono` spec's stored monotype); infer the binding as stored, unify its
       type against `S₁.onTy τ`, then push the accumulated substitution `S₁ ++ S₂`
       through the REMAINING specs via `RecSpec.onSubst` (monos move, schemes stay
-      rigid); output the raw `eOut`.
+      rigid).
     - `consPoly` (old `InferRecGroupAnn.cons`): the head member is a `poly σ`
       spec; skolemise `σ` (`Ys = freshVars N σ.paramCount`), infer
       `e.openTyVars Ys` against `σ.openVars Ys` (→ `Schk`), escape-check `Ys`
       rigid (none bound by `S₁ ++ Schk`; none leaking into the threaded env — which
       now also contains the mono βs, so this ALSO rejects skolem-into-pool leaks),
-      thread `S₁ ++ Schk` through the remaining specs, and emit the binding closed
-      back over `Ys` (after applying `S₁ ++ Schk`). -/
+      thread `S₁ ++ Schk` through the remaining specs. -/
 inductive InferRecGroup : Nat → Ctx → List Expr → List RecSpec → Nat → Subst → Prop
   | nil {Φ ctx} : InferRecGroup Φ ctx [] [] Φ []
   | consMono {Φ ctx e rest τ specs Φ₁ Φ₂ S₁ S₂ S₃ τ'} :
@@ -4469,9 +4467,9 @@ theorem Expr.notMem_tyFreeVars_substTyFvars {S : List (Nat × Ty)} {e : Expr} {w
 
 mutual
 /-- **Locality (avoid form).** A var below the input frontier that avoids the
-    context env and the skeleton's annotation free vars also avoids the inferred
-    substitution range, result type, and elaborated output. This is the
-    characterisation the prefix-fix corollary (M4) needs. -/
+    context env and the source annotation free vars also avoids the inferred
+    substitution range and result type. The historical `eOut_avoid` name is kept
+    for API stability after removal of the elaborated-output index. -/
 theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ e.tyFreeVars →
     (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ τ.freeVars := by
@@ -4779,9 +4777,9 @@ theorem InferBranches.eOut_avoid {Φ ctx scrutTy ρ brs Φ' S}
 termination_by Expr.sizeBranches brs
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
-/-- Fused `InferRecGroup` output locality (avoid form): a var below the input
-    frontier that avoids the context, the specs and the bindings' annotation vars
-    is absent from the substitution range and the elaborated outputs. -/
+/-- Fused `InferRecGroup` locality (avoid form): a var below the input frontier
+    that avoids the context, specs, and binding annotation vars is absent from
+    the substitution range. The historical name is retained for API stability. -/
 theorem InferRecGroup.eOut_avoid {Φ ctx bindings specs Φ' S}
     (h : InferRecGroup Φ ctx bindings specs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
@@ -15481,7 +15479,7 @@ termination_by Expr.sizeBranches branches
 decreasing_by
   all_goals (try simp only [Expr.sizeBranches]; omega)
 
-/-- Thread check-and-elaborate through a recursion group (DM monomorphic
+/-- Thread inference and found-metadata production through a recursion group (DM monomorphic
     recursion): each member is `mono τ`, inferred and unified against `S₁.onTy τ`,
     threading the remaining specs via `RecSpec.onSubst`. (`RecSpec.init` emits only
     `.mono`; a `.poly` spec here is unreachable and falls through to `none`.) -/
@@ -15559,9 +15557,8 @@ structure FoundResult where
 def infer (Φ : Nat) (ctx : Ctx) (e : Expr) : Option (Nat × Subst × Ty) :=
   (inferCore [] Φ ctx e).map (·.1)
 
-/-- Lightweight `Repr` for the elaborated output term, so the `#eval` sanity
-    checks (which now print a 4-tuple including `eOut`) elaborate. -/
-instance : Repr Expr := ⟨fun _ _ => Std.Format.text "‹elaborated-term›"⟩
+/-- Lightweight `Repr` for found-annotated output terms used by sanity checks. -/
+instance : Repr Expr := ⟨fun _ _ => Std.Format.text "‹found-output-term›"⟩
 
 /-- `infer` soundness: a returned `(Φ', S, τ)` is a genuine `Infer` derivation
     (immediate — `inferCore` carries it). -/
