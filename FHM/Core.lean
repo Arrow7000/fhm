@@ -3660,18 +3660,54 @@ def RecSpec.bodyScheme (G : List Nat) : RecSpec → PolyTy
   | .mono τ => PolyTy.genGroup G τ
   | .poly σ => σ
 
+/-- The pointwise relation underlying the recursive annotation ceiling. -/
+def RecSpecs.CeilingRel (G : List Nat) (ann : Option PolyTy) (spec : RecSpec) : Prop :=
+  match ann, spec with
+    | some σ, .mono τ =>
+        PolyTy.Generalizes (PolyTy.eraseBounds (PolyTy.genGroup G τ))
+          (PolyTy.eraseBounds σ)
+    | some _, .poly _ => False
+    | none, _ => True
+
 /-- The `letRec` ceiling premise. At an annotated position the solved member
     must be monomorphic, and its scheme generalised over the shared pool must be
     at least as general as the annotation (in the bounds-erased HM world).
     Unannotated positions impose no ceiling. -/
 def RecSpecs.ceilingOK (G : List Nat) (anns : List (Option PolyTy))
     (specs : List RecSpec) : Prop :=
-  List.Forall₂ (fun ann spec => match ann, spec with
-    | some σ, .mono τ =>
-        PolyTy.Generalizes (PolyTy.eraseBounds (PolyTy.genGroup G τ))
-          (PolyTy.eraseBounds σ)
-    | some _, .poly _ => False
-    | none, _ => True) anns specs
+  List.Forall₂ (RecSpecs.CeilingRel G) anns specs
+
+/-- An all-unannotated recursion group has no ceiling obligations. -/
+theorem RecSpecs.ceilingOK_allNone (G : List Nat) (τs : List Ty) :
+    RecSpecs.ceilingOK G (List.replicate τs.length none) (τs.map RecSpec.mono) := by
+  unfold RecSpecs.ceilingOK
+  induction τs with
+  | nil => exact .nil
+  | cons τ τs ih => exact .cons trivial ih
+
+/-- Length-aligned annotations erased to `none` also have a vacuous ceiling. -/
+theorem RecSpecs.ceilingOK_mapNone {α : Type} (G : List Nat) (xs : List α)
+    (τs : List Ty) (hlen : xs.length = τs.length) :
+    RecSpecs.ceilingOK G (xs.map (fun _ => none)) (τs.map RecSpec.mono) := by
+  rw [List.map_const', hlen]
+  exact RecSpecs.ceilingOK_allNone G τs
+
+/-- Recover the positional ceiling fact for a member of the aligned zip. -/
+theorem RecSpecs.ceilingOK.of_mem_zip {G : List Nat} {anns : List (Option PolyTy)}
+    {specs : List RecSpec} (h : RecSpecs.ceilingOK G anns specs)
+    {ann : Option PolyTy} {spec : RecSpec} (hp : (ann, spec) ∈ anns.zip specs) :
+    RecSpecs.CeilingRel G ann spec := by
+  unfold RecSpecs.ceilingOK at h
+  induction h with
+  | nil => simp at hp
+  | cons hhd htl ih =>
+      simp only [List.zip_cons_cons, List.mem_cons] at hp
+      rcases hp with hpair | hp
+      · injection hpair with ha hs
+        subst ha
+        subst hs
+        exact hhd
+      · exact ih hp
 
 /-- The free type variables a spec's MONOTYPE contributes (schemes are
     pool-independent and handled pointwise, so they contribute nothing here).
@@ -3842,9 +3878,9 @@ def RecSpecs.PolyTyped (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
     (`RecSpecs.rhsCtx` over `τs.map RecSpec.mono`). An annotated member is
     therefore NOT available at its declared scheme while the group's RHSs are
     checked, exactly as in the algorithm. The annotation's role is confined to
-    the BODY context (`RecSpecs.bodyCtx`); the ceiling relation between a solved
-    monotype and an annotation is an algorithmic obligation
-    (`RecSpecs.ceilingOK`), deliberately not duplicated here. Cofinite (à la
+    the BODY context (`RecSpecs.bodyCtx`). The separate `RecSpecs.ceilingOK`
+    premise checks that each solved monotype supports its declared annotation.
+    Cofinite (à la
     `letIn`, NOT existential) ⇒ sound under weakening. -/
 def RecSpecs.MonoTypedInit (TypeOf : Ctx → Expr → Ty → Prop) (ctx : Ctx)
     (bindings : List Expr) (τs : List Ty) (G L : List Nat) : Prop :=
@@ -3968,9 +4004,9 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
       available at its declared scheme while the RHSs are checked (it appears at
       its witness `τᵢ` instead) — the annotation's role is confined to the BODY
       (`RecSpecs.bodyCtx`: annotated members at their schemes, unannotated ones
-      generalised over `G`); the ceiling relation between a solved monotype and
-      an annotation is an ALGORITHMIC obligation (`RecSpecs.ceilingOK`), not
-      duplicated here. `hlen` aligns `τs` with the members; `hlink` pins an
+      generalised over `G`). The ceiling relation additionally requires every
+      solved monotype to support its declared annotation. `hlen` aligns `τs`
+      with the members; `hlink` pins an
       unannotated member's witness to its spec monotype (so the body's
       `genGroup G τᵢ` is justified by the RHS typing); `hlc` keeps the witnesses
       locally closed. The old scheme-relative half (`RecSpecs.PolyTyped`) is
@@ -3983,6 +4019,7 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     (∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ) →
     (∀ t ∈ τs, t.IsLC) →
     RecSpecs.MonoTypedInit TypeOfHM ctx bindings τs G L →
+    RecSpecs.ceilingOK G anns (τs.map RecSpec.mono) →
     bodyCtx = RecSpecs.bodyCtx ctx specs G →
     TypeOfHM bodyCtx body ρ →
     TypeOfHM ctx (.letRec anns bindings body) ρ
