@@ -22,7 +22,7 @@ abbrev FvarCtx := List TyMaybe
 
 /-! ## Algorithmic phase, step 1: substitution algebra
 
-The declarative `TypeOfElabHM` treats `.fvar`s as rigid/abstract type variables.
+The declarative `TypeOfHM` treats `.fvar`s as rigid/abstract type variables.
 The algorithm reinterprets them as *unification variables* and solves equality
 constraints between monotypes by computing a most-general unifier (MGU).
 
@@ -275,7 +275,7 @@ theorem Option.Pins.map_eraseBounds_poly {ann : Option PolyTy} {σ : PolyTy}
     rw [h a₀ rfl]
 
 /-- `eraseBounds` commutes with `openVars`: opening only injects fvars/bvars,
-    both fixed by erase. Used by `TypeOfElabHM.eraseBounds_of` (`letIn`/`letRec`). -/
+    both fixed by erasure. -/
 theorem Ty.eraseBounds_openVars (Xs : List Nat) (τ : Ty) :
     Ty.eraseBounds (Ty.openVars Xs τ) = Ty.openVars Xs (Ty.eraseBounds τ) := by
   unfold Ty.openVars
@@ -1275,8 +1275,9 @@ fresh-variable frontier `Φ` (every unification var in play is `< Φ`), expressi
 vars up to the new frontier `Φ'`. `.fvar`s are the unification variables;
 composition of the threaded substitutions is `++`.
 
-This covers the full language (`primLit`, `pair`, `lambda`, `app`, `var`,
-`letIn`, `fst`, `snd`, `ctor`, `match_`), bridging to `TypeOfElabHM` via soundness.
+This covers the full language and is connected directly to the annotated
+bounds-blind `TypeOfHM` source judgment by `Infer.sourceSound`, and to the
+runnable erased term by `Infer.sound`.
 
 The plan: prove `Infer.sound` (algo type ⟹ declarative type, iterating
 `typ_subst_preservation` and using `UnifyRel.isMGU`), then completeness. -/
@@ -1404,7 +1405,8 @@ def RecSpec.LC : RecSpec → Prop
   | .mono τ => τ.IsLC
   | .poly σ => σ.WF
 
-/-- Free type variables a `RecSpec` contributes to the elaborated nest: an
+/-- Free type variables a `RecSpec` contributes to recursive-group
+    generalisation and ceiling checks: an
     unannotated member's monotype free vars, an annotated member's scheme-body free
     vars (its scoped variables). -/
 def RecSpec.freeVars : RecSpec → List Nat
@@ -2218,7 +2220,7 @@ end
 The whole `NoRecAnn` preservation family (`closeTyVarsAux`/`closeTyVars`/
 `letRecElab(Nest)_noRecAnn`/`substTyFvar(s)_noRecAnn`/`substTyFvar_tyBvarBounded`)
 is gone: the fused `letRec` node subsumes `letRecAnn` and `open`/`close` descend
-into scheme-annotation bodies symmetrically, so no elaboration path needs a
+into scheme-annotation bodies symmetrically, so no static opening path needs a
 `letRecAnn`-free witness. The `substTyFvars`-preserves-`TyBvarBounded` fact
 survives (fused, below); its old `substTyFvar` single-step sibling was only
 scaffolding for it and is deleted. -/
@@ -4207,15 +4209,16 @@ decreasing_by
 end
 
 
-/-! ### M2: substitution domain bound + elaborated-output free-var locality
+/-! ### M2: substitution-domain and inferred-result free-variable locality
 
 `Infer.dom_below` extends the frontier discipline to the substitution **domain**
 (`∀ p ∈ S, p.1 < Φ'`, via `UnifyRel.dom_mem` + `Infer.belowFvars`).
-`Infer.eOut_avoid` is the *locality* of the elaborated output (avoid form): a
-variable that is below the input frontier and avoids both the context env and the
-skeleton's annotation free vars cannot appear in `eOut`/`τ`/the substitution
-range. Together with idempotency (`Infer.eliminates`, M3) these give the prefix-fix
-corollary (M4) that the honest soundness needs. -/
+`Infer.eOut_avoid` is the corresponding avoid-form locality theorem: a variable
+below the input frontier that avoids both the context env and the source's
+annotation free vars cannot appear in the inferred type or substitution range.
+The historical theorem name is retained for API stability. Together with
+idempotency (`Infer.eliminates`, M3), this yields the prefix-fix corollary (M4)
+used by soundness. -/
 
 mutual
 theorem Infer.dom_below {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
@@ -8490,12 +8493,10 @@ theorem TypeOfHM.onSubst_eraseBounds_fixed_append {ctx : Ctx} {e : Expr} {τ : T
 
 /-! ### Source-side rebuild of the fused `letRec` rule at the shared pool.
 
-`Expr.letRecElab_sound` types the ELABORATUM: a Λ-outside nest whose inner
-mixed group sits at the EMPTY pool, with the pool-`G` generalisation carried by
-the outer `letIn` wrappers. The source node has no such nest — the declarative
-`TypeOfHM.letRec` wants its cofinite `RecSpecs.MonoTypedInit` premise stated
-at the shared opening `G ↦ Xs`, with every member's witness monotype renamed
-(`Ty.renameG G Xs`), in the all-mono-rendered group context.
+The declarative `TypeOfHM.letRec` rule wants its cofinite
+`RecSpecs.MonoTypedInit` premise stated at the shared opening `G ↦ Xs`, with
+every member's witness monotype renamed (`Ty.renameG G Xs`) in the
+all-mono-rendered group context.
 
 Inference, however, only ever delivers the group's members at the empty pool
 with their SOLVED monotypes. The gap is exactly the renaming substitution
@@ -8506,8 +8507,8 @@ the ambient env, the annotated members' declared schemes, and the bindings'
 own annotation free variables. Those three are precisely the `genGroupVars`
 side conditions `Infer`'s `letRec` scaffolding already establishes. -/
 
-/-- **Source dual of `Expr.letRecElab_sound`.** Rebuild the declarative source
-    `TypeOfHM.letRec` at the shared gen-pool `G` from group premises stated at
+/-- Rebuild the declarative source `TypeOfHM.letRec` at the shared gen-pool `G`
+    from group premises stated at
     the EMPTY pool: every member's RHS types at its witness monotype
     (`bs.zip τs`) in the ALL-MONO empty-pool context
     (`(τs.map RecSpec.mono).map (RecSpec.rhsEntry [] [])`, i.e. `τs.map mkTrivial`).
@@ -9190,19 +9191,14 @@ private theorem List.forall₂_of_getElem {α β : Type*} {R : α → β → Pro
       exact h (i + 1) (by simpa using h₁) (by simpa using h₂)
 
 
-/-! ### `TypeOfHM`/`Step` dynamics metatheory (step 4, checkpoints 2–4)
+/-! ### `TypeOfHM`/`Step` dynamics metatheory
 
-The substitution-semantics metatheory for `TypeOfHM` on erased terms. This is
-the decoration-blind port of `TypeOfElabHM`'s dynamics (subst_lemma / canonical
-forms / progress / preservation), specialised to the image of `Expr.erase`:
-`letIn` anns are always `none`, `letRec` specs all-`.mono`, `var` tyArgs `[]`,
-so the type-passing machinery (`instTy`/`SubstArgsGe`/`TyBvarBounded`) is
-vacuous and the cofinite `openTyVars`-commutation bookkeeping never fires. -/
+The substitution-semantics metatheory for `TypeOfHM` on the image of
+`Expr.erase`: source annotations and inference markers are absent, so the
+cofinite scoped-annotation opening cases are vacuous at runtime. -/
 
-/-- Decoration-blind "value types at scheme `M`": `v` inhabits every instance of
-    `M`. The direct analogue of the type-passing `HasScheme` (`Core.lean`), but
-    stated with the declarative `Instantiates` (existential instantiation) rather
-    than `instTy`/`openWith`. -/
+/-- Decoration-blind "value types at scheme `M`": `v` inhabits every instance
+    of `M`, stated with declarative existential instantiation. -/
 def HasSchemeHM (ctx : Ctx) (v : Expr) (M : PolyTy) : Prop :=
   ∀ τ : Ty, Instantiates M τ → TypeOfHM ctx v τ
 
@@ -9222,11 +9218,10 @@ private theorem Expr.erase_ne_found (e : Expr) (ty : Ty) (inner : Expr) :
   | letRec _ _ _ _ _ => simp [Expr.erase]
 
 /-- Substituting `vs` (each typed at every instance of its scheme `Ms[j]`) for a
-    block of `Ms`-typed binders preserves `TypeOfHM`. Decoration-blind port of
-    `TypeOfElabHM.subst_lemma_many`, restricted to the image of `Expr.erase`
-    (`h_erased`) per the memo §7 load-bearing restriction: erased `var` tyArgs are
-    `[]`, `letIn` anns `none`, `letRec` specs all-`.mono`, so the type-passing
-    `instTy`/`openTyVars`-commutation machinery is never needed. -/
+    block of `Ms`-typed binders preserves `TypeOfHM`. The theorem is restricted
+    to the image of `Expr.erase` (`h_erased`): `letIn` annotations are `none` and
+    `letRec` annotations are all `none`, so static scoped-annotation opening is
+    never needed by runtime substitution. -/
 theorem TypeOfHM.subst_lemma_many
     {ctors : CtorEnv} {env Ms : Env} {vs : List Expr}
     (h_vs : List.Forall₂ (fun v M => HasSchemeHM ⟨env, ctors⟩ v M) vs Ms) :
@@ -17010,11 +17005,8 @@ theorem typecheck_sound {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
   · simp only [Option.map_some, Option.some.injEq] at h
     exact ⟨τ, principalType_sound hc, h.symm⟩
 
--- (The whole-program progress/preservation theorems and the type-erasure helper
--- lemmas that lived here have been removed: the type-passing Core has no erasure
--- layer, so `eraseTyAnnots`/`IsTyErased`/`erased_type_safety`/`erase_preserves_typing`
--- no longer exist. Whole-program safety is now the literal `TypeOfHM.type_safety`
--- chain in `Core` (no erasure premise).)
+-- Whole-program safety is the direct `TypeOfHM.type_safety(_star)` chain above,
+-- applied to the runtime term produced by `Expr.erase`.
 
 -- `typecheck [] (λx. x) = some ⟨1, bvar 0 → bvar 0⟩`  (i.e. the closed scheme `∀a. a → a`)
 -- #eval (typecheck [] (.lambda none (.var 0))).map (fun σ => (σ.paramCount, σ.body))

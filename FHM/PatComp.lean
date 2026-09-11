@@ -27,8 +27,8 @@ This file contains the full **definition layer** and the executable pipeline:
   matrix compiler. Termination is by the lexicographic measure
   (total `gctor` count, column count) — see `Matrix.ctorCount`.
 * `emit` — render a `DTree` as nested Core `match_`es, PARAMETRIC in the leaf
-  bodies (crucial: `Step` runs on *elaborated* terms, so adequacy must not
-  bake in literal bodies). Leaves re-bind their captures with `letIn`s so the
+  bodies (crucial: adequacy must not bake in literal bodies). `Step` runs the
+  erased Core result. Leaves re-bind their captures with `letIn`s so the
   body sees capture `j` at de Bruijn index `j` ("leaf-lets" design).
 
 No theorems yet beyond what termination requires; the proof campaign (H1
