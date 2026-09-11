@@ -3125,11 +3125,6 @@ private theorem Subst.onTy_erase_fvar (S : Subst) (v : Nat) :
   rw [Ty.eraseBounds_substFvars]
   simp
 
-/-- Generalisation is reflexive. -/
-private theorem PolyTy.Generalizes.refl (M : PolyTy) : M.Generalizes M := by
-  intro tyArgs ty hlc hinst
-  exact ⟨tyArgs, hlc, hinst⟩
-
 /-- **Erase-level body retype** (port of caac62d's `letRecFused_body_retype`): the
     `R₁`-transported algorithmic body schemes (ceilingSchemes) generalise the
     declarative `bodyCtx` schemes, so the declarative body typing transports to
@@ -5321,7 +5316,7 @@ theorem Infer.principals_mut (n : Nat) :
           -- erase-level retype of `letRecFused_body_retype`).
           rw [Expr.eraseBounds] at hty
           cases hty with
-          | letRec hwfD hlenD hlinkD hlcD hmonoD hbodyCtxD hbodyD =>
+          | letRec hwfD hlenD hlinkD hlcD hmonoD hceilingD hbodyCtxD hbodyD =>
             rename_i dspecs τsD G L
             subst hbodyCtxD
             have hsize_group : Expr.sizeRecGroup bindings < n := by
