@@ -19,12 +19,13 @@ The `TypeOfHM` / `Step` dynamics metatheory (substitution lemma, canonical forms
 `progress`, `preservation`, `type_safety(_star)`) is likewise proved, on erased
 terms, in `FHM.InferW`. What changed by design (see
 `briefs/design-memo-erasure-migration.md` §3.5): the *elaborated* stack —
-`TypeOfElabHM`, `Infer.sourceSound`, and the `eOut` index — is deleted. The
-runnable term is always the erased source `c.erase`. The replacement D2
-principality spine reasons directly about the bounds-blind annotated source
-`c.eraseBounds`, and factors declarative types through successful inference via
-`AgreesHM`. The remaining open theorem is executable acceptance completeness:
-declarative typeability does not yet imply that `principalType` returns `some`.
+`TypeOfElabHM` and the `eOut` index — is deleted. The runnable term is always the
+erased source `c.erase`; `Infer.sourceSound` now projects the same derivation
+directly onto the bounds-blind annotated source `c.eraseBounds`. The replacement
+D2 principality spine factors declarative types through successful inference via
+`AgreesHM`. Relational and executable completeness are now closed as well:
+for found-free sources, `principalType` and `typecheck` succeed exactly when the
+bounds-blind annotated source has a `TypeOfHM` derivation.
 
 So: do not read this file as "everything below is proved". Read section 6's
 `#print axioms` output, which is the actual, unfakeable status report.
@@ -84,9 +85,9 @@ inferred type — one typing relation, one soundness theorem. The runnable term 
 always `c.erase`; no elaborated output exists. **Principality** is now proved by
 the D2 spine directly against the annotated, bounds-blind source
 `e.eraseBounds`: every declarative type factors through a successful inferred
-type via an LC residual substitution, modulo `AgreesHM`. This does not yet prove
-the separate executable-completeness direction “declaratively typeable implies
-the worker succeeds”. -/
+type via an LC residual substitution, modulo `AgreesHM`. Producer completeness
+constructs relational derivations from declarative typings, and executable
+completeness proves that the concrete worker realizes them. -/
 #check @Infer.sound
 #check @Infer.sourceSound
 #check @Infer.principal
@@ -94,6 +95,12 @@ the worker succeeds”. -/
 #check @principalType_source_sound
 #check @principalType_principal
 #check @typecheck_principal
+#check @Infer.complete
+#check @inferCore_complete
+#check @principalType_complete
+#check @typecheck_complete
+#check @principalType_accepts_iff
+#check @typecheck_accepts_iff
 
 /-! ### Pattern-compilation correctness
 
@@ -649,8 +656,9 @@ the whole `TypeOfHM`/`Step` metatheory live proved and axiom-clean in
 `FHM.InferW`, so `runSafe` / `elaborateSafe` no longer inherit any `sorryAx`
 from a residual bridge.
 
-Inference soundness and successful-inference principality are closed, and the
-guards below show both proof families axiom-clean. -/
+Inference soundness, successful-inference principality, and both relational and
+executable completeness are closed; the guards below show all proof families
+axiom-clean. -/
 
 -- Closed and clean: erasure-on-`Step` inference soundness.
 #print axioms Infer.sound                -- expect {propext, Classical.choice, Quot.sound}
@@ -664,6 +672,14 @@ guards below show both proof families axiom-clean. -/
 #print axioms principalType_source_sound  -- expect {propext, Classical.choice, Quot.sound}
 #print axioms principalType_principal     -- expect {propext, Classical.choice, Quot.sound}
 #print axioms typecheck_principal         -- expect {propext, Classical.choice, Quot.sound}
+
+-- Closed and clean: relational and executable producer completeness.
+#print axioms Infer.complete               -- expect {propext, Classical.choice, Quot.sound}
+#print axioms inferCore_complete            -- expect {propext, Classical.choice, Quot.sound}
+#print axioms principalType_complete        -- expect {propext, Classical.choice, Quot.sound}
+#print axioms typecheck_complete            -- expect {propext, Classical.choice, Quot.sound}
+#print axioms principalType_accepts_iff     -- expect {propext, Classical.choice, Quot.sound}
+#print axioms typecheck_accepts_iff         -- expect {propext, Classical.choice, Quot.sound}
 
 -- Clean: this file's own inversion lemmas.
 #print axioms TypeOfHM_app_inv           -- expect {propext, Quot.sound}
