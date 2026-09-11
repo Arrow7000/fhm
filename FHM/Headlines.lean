@@ -1,4 +1,5 @@
 import FHM.SurfaceBridge
+import FHM.Completeness
 import FHM.EvaluateUnsafe
 import FHM.Pretty
 
@@ -9,18 +10,21 @@ let a newcomer read ONE file and come away knowing exactly what this language's
 type system guarantees, what those guarantees *mean* in plain terms, and
 precisely how far the machine-checking currently reaches.
 
-**Status (erasure-on-`Step`).** Type safety and *inference soundness* are closed
-and axiom-clean: `Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound`
+**Status (erasure-on-`Step`, D2 recursion).** Type safety, *inference
+soundness*, and principality of successful inference are closed and
+axiom-clean: `Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound`
 (coherence of the source checker with the erased machine relation `TypeOfHM`,
 via `e.erase`) depend on nothing but `propext`, `Classical.choice`, `Quot.sound`.
 The `TypeOfHM` / `Step` dynamics metatheory (substitution lemma, canonical forms,
 `progress`, `preservation`, `type_safety(_star)`) is likewise proved, on erased
 terms, in `FHM.InferW`. What changed by design (see
 `briefs/design-memo-erasure-migration.md` §3.5): the *elaborated* stack —
-`TypeOfElabHM`, `Infer.sourceSound`, the `eOut` index, and the completeness /
-principality campaign that concluded on elaborated outputs — is **deleted**, not
-merely open. The runnable term is always the erased source `c.erase`; there is
-no elaborated output left to be complete about.
+`TypeOfElabHM`, `Infer.sourceSound`, and the `eOut` index — is deleted. The
+runnable term is always the erased source `c.erase`. The replacement D2
+principality spine reasons directly about the bounds-blind annotated source
+`c.eraseBounds`, and factors declarative types through successful inference via
+`AgreesHM`. The remaining open theorem is executable acceptance completeness:
+declarative typeability does not yet imply that `principalType` returns `some`.
 
 So: do not read this file as "everything below is proved". Read section 6's
 `#print axioms` output, which is the actual, unfakeable status report.
@@ -37,7 +41,8 @@ Standalone-compilable: `lake env lean FHM/Headlines.lean`. Not added to
 
 ## The six sections
 
-1. Doc-narrated headline re-exports (type safety, inference sound+complete,
+1. Doc-narrated headline re-exports (type safety, inference soundness and
+   successful-inference principality,
    pattern-compilation correctness, decidable coverage, DataDecl bridge).
 2. Universal properties: inversion / canonical-forms lemmas.
 3. Witnesses: the relations above are genuinely inhabited, not vacuous.
@@ -76,12 +81,17 @@ well-typed and is a value or can step again — "never gets stuck" formalised. -
 (`Infer.sound`) is the erasure-on-`Step` coherence theorem: after the inferred
 substitution, `TypeOfHM` types the ERASED SOURCE term (`e.erase`) at the erased
 inferred type — one typing relation, one soundness theorem. The runnable term is
-always `c.erase`; no elaborated output exists. The old completeness /
-principality campaign (`CompleteAt`, `complete'`, `iff_typeable`, and their
-whole-program corollaries) concluded on removed elaborated outputs and was
-deleted with them; what survives honestly are the soundness projections
-(`principalType_sound`, `typecheck_sound`, now stated on `e.erase`). -/
+always `c.erase`; no elaborated output exists. **Principality** is now proved by
+the D2 spine directly against the annotated, bounds-blind source
+`e.eraseBounds`: every declarative type factors through a successful inferred
+type via an LC residual substitution, modulo `AgreesHM`. This does not yet prove
+the separate executable-completeness direction “declaratively typeable implies
+the worker succeeds”. -/
 #check @Infer.sound
+#check @Infer.principal
+#check @Infer.complete'
+#check @principalType_principal
+#check @typecheck_principal
 
 /-! ### Pattern-compilation correctness
 
@@ -285,9 +295,9 @@ example (ctors : CtorEnv) :
 /-! ### The annotated polymorphic letrec (`letRecInAnn`) — nice-to-have
 
 Same shape one level up: `let rec (id : ∀a. a→a) = λx. x in id`, single-member
-recursive group, annotated (so `RecSpec.poly`). No `RecSpec.mono` member, so
-`hmono_lc`/`hmono`/`hτbinds` are vacuous; `hpoly`/`hτbinds_poly` are the
-substantive premises (empty head-binders: wrap identity, `τretPolyOf = σ.openVars`). -/
+recursive group, annotated (so `RecSpec.poly`). Under the D2 rule the RHS is
+nevertheless checked once at a monomorphic witness (`β → β` here); only the
+body sees the declared scheme. -/
 example (ctors : CtorEnv) :
     SurfaceWTExpr ctors (kindEnvOfCtors ctors) [] [] []
       (.letRecIn
@@ -297,14 +307,15 @@ example (ctors : CtorEnv) :
         (.var (.mk "id")))
       (.arrow (.prim .int) (.prim .int)) := by
   set σ : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
+  set τm : Ty := .arrow (.fvar 100) (.fvar 100)
   have hed : ([.mk "a"] : List ValName).eraseDups = [.mk "a"] := rfl
   refine SurfaceWTExpr.letRecInAnn (tvs := []) (vs := []) (Γ := [])
     (binds := _) (anns' := [some σ]) (specs := [RecSpec.poly σ])
-    (G := []) (L := []) (paramTysList := [[]]) (ΓRhsList := [[σ]])
-    (τretsList := [σ.body]) (τretPolyOf := fun _ _ Ys => σ.openVars Ys)
+    (τs := [τm]) (G := []) (L := []) (paramTysList := [[]])
+    (ΓRhsList := [[PolyTy.mkTrivial τm]]) (τretsList := [τm])
     (body := _) (τ := _)
     ?htvs ?hann ?hlen ?hparamLen ?hΓRhsLen ?hretsLen ?hanns_eq ?hnodup
-    ?hmono_lc ?hpoly_wf ?hLL ?hτbinds ?hmono ?hτbinds_poly ?hpoly ?hbody
+    ?hmono_lc ?hpoly_wf ?hτs_len ?hτs_link ?hτs_lc ?hLL ?hτbinds ?hmono ?hbody
   · rfl
   · -- `hed` discharges the `eraseDups` redex inside `lowerPoly`/`finalizeAnn`.
     simp [finalizeAnn, mergeTyParams, mergeTyParamNames, lowerAnnList, lowerPolyAnn,
@@ -321,46 +332,39 @@ example (ctors : CtorEnv) :
     injection h with h
     subst h
     exact .arrow (.bvar (by decide)) (.bvar (by decide))
+  · rfl
+  · intro p hp τ hτ
+    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
+    subst p
+    cases hτ
+  · intro t ht
+    simp only [List.mem_singleton] at ht
+    subst t
+    exact .arrow .fvar .fvar
   · intro Xs _ i hi
     have hi0 : i = 0 := by
       simp only [List.length_cons, List.length_nil] at hi; omega
     subst hi0
     exact LowerLetParams.nil
-  · intro Xs _ i hi τm hspec
+  · intro Xs hfresh i hi
     have hi0 : i = 0 := by
       simp only [List.length_cons, List.length_nil] at hi; omega
     subst hi0
-    simp only [σ, List.getElem_cons_zero] at hspec
-    cases hspec
-  · intro Xs _ i hi τm hspec
+    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
+    subst hXs
+    simp [τm, coreParamsToArrows, Ty.renameG_nil_pool]
+  · intro Xs hfresh i hi
     have hi0 : i = 0 := by
       simp only [List.length_cons, List.length_nil] at hi; omega
     subst hi0
-    simp only [σ, List.getElem_cons_zero] at hspec
-    cases hspec
-  · intro Xs _ i hi σ' hspec Ys _
-    have hi0 : i = 0 := by
-      simp only [List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    simp only [σ, List.getElem_cons_zero] at hspec
-    injection hspec with hspec
-    subst hspec
-    rfl
-  · intro Xs _ i hi σ' hspec Ys hfreshY
-    have hi0 : i = 0 := by
-      simp only [List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    simp only [σ, List.getElem_cons_zero] at hspec
-    injection hspec with hspec
-    subst hspec
-    have hlenY : Ys.length = 1 := by simpa [σ] using hfreshY.length
-    obtain ⟨Y, hYeq⟩ := List.length_eq_one_iff.mp hlenY
-    subst hYeq
-    apply SurfaceWTExpr.lambda_name (paramTy := .fvar Y) (bodyTy := .fvar Y)
+    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
+    subst hXs
+    apply SurfaceWTExpr.lambda_name (paramTy := .fvar 100) (bodyTy := .fvar 100)
     · exact ContainsBvarsUpTo.fvar
     · trivial
     · exact .of_lowers .var (.var (by rfl))
-        (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar Y)) (instArgs := []) rfl (by simp) .fvar)
+        (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.fvar 100)) (instArgs := []) rfl
+          (by simp) .fvar)
   · exact .of_lowers .var (.var (by rfl))
       (TypeOfHM.var (polyTy := σ) (instArgs := [Ty.prim .int]) rfl
         (by
@@ -454,13 +458,13 @@ example (ctors : CtorEnv) :
        rhs := .var (.mk "x") }]
   refine SurfaceWTExpr.letRecInAnn (tvs := []) (vs := []) (Γ := [])
     (binds := binds) (anns' := [some σ]) (specs := [RecSpec.poly σ])
+    (τs := [σ.body])
     (G := []) (L := []) (paramTysList := [[.prim .int]])
-    (ΓRhsList := [[PolyTy.mkTrivial (.prim .int), σ]])
+    (ΓRhsList := [[PolyTy.mkTrivial (.prim .int), PolyTy.mkTrivial σ.body]])
     (τretsList := [.prim .int])
-    (τretPolyOf := fun _ _ _ => .prim .int)
     (body := _) (τ := _)
     ?htvs ?hann ?hlen ?hparamLen ?hΓRhsLen ?hretsLen ?hanns_eq ?hnodup
-    ?hmono_lc ?hpoly_wf ?hLL ?hτbinds ?hmono ?hτbinds_poly ?hpoly ?hbody
+    ?hmono_lc ?hpoly_wf ?hτs_len ?hτs_link ?hτs_lc ?hLL ?hτbinds ?hmono ?hbody
   · rfl
   · -- lowerAnnList of finalizeAnn return-type sugar
     have h1 := packingB_lowerPoly ctors
@@ -476,38 +480,33 @@ example (ctors : CtorEnv) :
     simp only [List.mem_singleton, σ] at h
     injection h with h; subst h
     exact .arrow ContainsBvarsUpTo.prim ContainsBvarsUpTo.prim
+  · rfl
+  · intro p hp τ hτ
+    simp only [List.zip_cons_cons, List.zip_nil_right, List.mem_singleton] at hp
+    subst p
+    cases hτ
+  · intro t ht
+    simp only [List.mem_singleton] at ht
+    subst t
+    exact .arrow .prim .prim
   · intro Xs _ i hi
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
     subst hi0
     refine LowerLetParams.cons rfl (by simp [lowerTy]) ContainsBvarsUpTo.prim LowerLetParams.nil
-  · intro Xs _ i hi τm hspec
+  · intro Xs hfresh i hi
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
     subst hi0
-    simp only [σ, List.getElem_cons_zero] at hspec
-    cases hspec
-  · intro Xs _ i hi τm hspec
+    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
+    subst hXs
+    simp [σ, coreParamsToArrows, Ty.renameG_nil_pool]
+  · intro Xs hfresh i hi
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
     subst hi0
-    simp only [σ, List.getElem_cons_zero] at hspec
-    cases hspec
-  · intro Xs _ i hi σ' hspec Ys hfreshY
-    have hi0 : i = 0 := by
-      simp only [binds, List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    simp only [σ, List.getElem_cons_zero] at hspec
-    injection hspec with hspec; subst hspec
-    have hYs : Ys = [] := List.eq_nil_of_length_eq_zero (by simpa [σ] using hfreshY.length)
-    subst hYs
-    simp [coreParamsToArrows, PolyTy.openVars]
-  · intro Xs _ i hi σ' hspec Ys hfreshY
-    have hi0 : i = 0 := by
-      simp only [binds, List.length_cons, List.length_nil] at hi; omega
-    subst hi0
-    simp only [σ, List.getElem_cons_zero] at hspec
-    injection hspec with hspec; subst hspec
+    have hXs : Xs = [] := List.eq_nil_of_length_eq_zero hfresh.length
+    subst hXs
     exact .of_lowers .var (.var (by rfl))
       (TypeOfHM.var (polyTy := PolyTy.mkTrivial (.prim .int)) (instArgs := []) rfl
         (by simp) .prim)
@@ -717,14 +716,19 @@ the whole `TypeOfHM`/`Step` metatheory live proved and axiom-clean in
 `FHM.InferW`, so `runSafe` / `elaborateSafe` no longer inherit any `sorryAx`
 from a residual bridge.
 
-Inference soundness is closed, and the guard below shows it: the three
-`Infer.*sound*` theorems come out clean. That is the load-bearing result this
-façade exists to advertise, and it is the one you can currently rely on. -/
+Inference soundness and successful-inference principality are closed, and the
+guards below show both proof families axiom-clean. -/
 
 -- Closed and clean: erasure-on-`Step` inference soundness.
 #print axioms Infer.sound                -- expect {propext, Classical.choice, Quot.sound}
 #print axioms InferBranches.sound        -- expect {propext, Classical.choice, Quot.sound}
 #print axioms InferRecGroup.sound        -- expect {propext, Classical.choice, Quot.sound}
+
+-- Closed and clean: D2 principality of successful inference.
+#print axioms Infer.principal             -- expect {propext, Classical.choice, Quot.sound}
+#print axioms Infer.complete'             -- expect {propext, Classical.choice, Quot.sound}
+#print axioms principalType_principal     -- expect {propext, Classical.choice, Quot.sound}
+#print axioms typecheck_principal         -- expect {propext, Classical.choice, Quot.sound}
 
 -- Clean: this file's own inversion lemmas.
 #print axioms TypeOfHM_app_inv           -- expect {propext, Quot.sound}
