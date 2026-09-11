@@ -12396,6 +12396,95 @@ theorem Infer.complete (e : Expr) : Infer.CompleteAt e := by
               (ih body hbody)
   exact upto (e.size + 1) e (by omega)
 
+/-- A relational annotated-let derivation leaves the executable worker's
+    canonical skolem block rigid, even when the relation chose a later seed.
+    Names below that later seed lie in an allocation gap; names at or above it
+    are are protected by the rule's own escape premises. -/
+theorem Infer.letInAnn_block_fresh {Φ : Nat} {ctx : Ctx} {σ : PolyTy}
+    {rhs body : Expr} {Φ' : Nat} {S : Subst} {τ : Ty}
+    (h : Infer Φ ctx (.letIn (some σ) rhs body) Φ' S τ)
+    (hbelow : CtxBelow Φ ctx)
+    (htfv : ∀ y ∈ (Expr.letIn (some σ) rhs body).tyFreeVars, y < Φ) :
+    (∀ y ∈ freshVars Φ σ.paramCount, y ∉ S.map Prod.fst) ∧
+    (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S.onCtx ctx).env.freeVars) := by
+  cases h with
+  | @letInAnn _ N _ _ _ _ Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂
+      hσwf hΦN hrhs huni hesc1 hesc2 hbody =>
+    simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at htfv
+    have hctxGap : ∀ M ∈ ctx.env, ∀ v ∈ M.body.freeVars, v < Φ ∨ N ≤ v :=
+      fun M hM v hv => Or.inl ((hbelow M hM).mem_lt v hv)
+    have hrhsTfvGap :
+        ∀ y ∈ (rhs.openTyVars (freshVars N σ.paramCount)).tyFreeVars,
+          y < Φ ∨ N ≤ y := by
+      intro y hy
+      rcases Expr.tyFreeVars_openTyVars hy with hh | hh
+      · exact Or.inl (htfv y (.inl (.inr hh)))
+      · exact Or.inr (freshVars_ge y hh)
+    obtain ⟨hr_τ, hr_D, hr_R⟩ :=
+      Infer.gap_avoid hrhs (by omega) hctxGap hrhsTfvGap
+    have hσopenGap :
+        ∀ v ∈ (σ.openVars (freshVars N σ.paramCount)).freeVars,
+          v < Φ ∨ N ≤ v := by
+      intro v hv
+      rcases Ty.freeVars_openVars_subset v hv with hh | hh
+      · exact Or.inl (htfv v (.inl (.inl hh)))
+      · exact Or.inr (freshVars_ge v hh)
+    obtain ⟨hSchk_D, hSchk_R⟩ := UnifyRel.gap_avoid huni hr_τ hσopenGap
+    have hbodyEnvGap :
+        ∀ M ∈ (Schk.onCtx (S₁.onCtx ctx)).env, ∀ v ∈ M.body.freeVars,
+          v < Φ ∨ Φ + σ.paramCount ≤ v := by
+      intro M hM v hv
+      rcases Subst.onCtx_avoidsItv hSchk_R
+          (Subst.onCtx_avoidsItv hr_R hctxGap) M hM v hv with hlt | hge
+      · exact Or.inl hlt
+      · by_cases hvlt : v < Φ + σ.paramCount
+        · exact absurd (Env.mem_freeVars_iff.mpr ⟨M, hM, hv⟩)
+            (hesc2 v (by
+              simp only [freshVars, List.mem_map, List.mem_range]
+              exact ⟨v - N, by omega, by omega⟩))
+        · exact Or.inr (by omega)
+    have hle₁ := Infer.frontier_le hrhs
+    obtain ⟨hb_τ, hb_D, hb_R⟩ := Infer.gap_avoid hbody
+      (show Φ + σ.paramCount ≤ Φ₁ by omega)
+      (by
+        intro M hM v hv
+        rcases List.mem_cons.mp hM with rfl | hM
+        · exact Or.inl (htfv v (.inl (.inl hv)))
+        · exact hbodyEnvGap M hM v hv)
+      (fun y hy => Or.inl (htfv y (.inr hy)))
+    refine ⟨?_, ?_⟩
+    · intro y hy hmem
+      have hyge := freshVars_ge y hy
+      have hylt := freshVars_lt y hy
+      rw [List.map_append, List.map_append, List.mem_append, List.mem_append] at hmem
+      rcases hmem with (hmem | hmem) | hmem
+      · obtain ⟨p, hp, hpy⟩ := List.mem_map.mp hmem
+        by_cases hyN : y < N
+        · rcases hr_D p hp with hh | hh <;> rw [hpy] at hh <;> omega
+        · exact hesc1 y (by
+            simp only [freshVars, List.mem_map, List.mem_range]
+            exact ⟨y - N, by omega, by omega⟩)
+            (List.mem_map.mpr ⟨p, List.mem_append_left _ hp, hpy⟩)
+      · obtain ⟨p, hp, hpy⟩ := List.mem_map.mp hmem
+        by_cases hyN : y < N
+        · rcases hSchk_D p hp with hh | hh <;> rw [hpy] at hh <;> omega
+        · exact hesc1 y (by
+            simp only [freshVars, List.mem_map, List.mem_range]
+            exact ⟨y - N, by omega, by omega⟩)
+            (List.mem_map.mpr ⟨p, List.mem_append_right _ hp, hpy⟩)
+      · obtain ⟨p, hp, hpy⟩ := List.mem_map.mp hmem
+        rcases hb_D p hp with hh | hh <;> rw [hpy] at hh <;> omega
+    · intro y hy hmem
+      have hyge := freshVars_ge y hy
+      have hylt := freshVars_lt y hy
+      have hSenv :
+          ∀ M ∈ ((S₁ ++ Schk ++ S₂).onCtx ctx).env, ∀ v ∈ M.body.freeVars,
+            v < Φ ∨ Φ + σ.paramCount ≤ v := by
+        rw [Subst.onCtx_append, Subst.onCtx_append]
+        exact Subst.onCtx_avoidsItv hb_R hbodyEnvGap
+      obtain ⟨M, hM, hyM⟩ := Env.mem_freeVars_iff.mp hmem
+      rcases hSenv M hM y hyM with hh | hh <;> omega
+
 /-! ## 7. Executable producer completeness
 
 Relational completeness chooses witnesses existentially.  The executable
