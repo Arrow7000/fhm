@@ -13786,3 +13786,209 @@ theorem inferCore_complete_match {scrut : Expr}
           ⟨⟨Φ₂, S₂, branchesOut, branchSchemes⟩, hbranchesActual, hav2⟩
         rw [inferFoundCore, hescrut]
         simp only [List.head?_cons, hebranches, Option.isSome_some]
+/-- Executable producer completeness for an all-monomorphic recursion-group
+thread.  Besides success of the concrete found-producing worker, the result
+carries the residual needed by the outer `letRec` ceiling phase. -/
+theorem inferFoundRecGroupCore_complete_mono
+    {Φ : Nat} {ctx : Ctx} {bindings : List Expr} {specs : List RecSpec}
+    {S₀ : Subst} {K : List Nat} (memberIndex : Nat)
+    (ihRel : ∀ e ∈ bindings, Infer.CompleteAt e)
+    (ihExec : ∀ e ∈ bindings, InferCoreComplete e)
+    (hff : ∀ e ∈ bindings, e.FoundFree)
+    (hlen : bindings.length = specs.length)
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
+    (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
+    (hKΦ : ∀ k ∈ K, k < Φ)
+    (hKtv : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K)
+    (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
+    (hspecLC : ∀ s ∈ specs, s.LC)
+    (hspecBelow : ∀ s ∈ specs, ∀ τ, s = .mono τ → Ty.BelowFvars Φ τ)
+    (hspecMono : ∀ s ∈ specs, ∃ τ, s = .mono τ)
+    (hdecl : ∀ p ∈ bindings.zip specs, ∀ τ, p.2 = .mono τ →
+      TypeOfHM (S₀.onCtx ctx).eraseBounds p.1.eraseBounds
+        (Ty.eraseBounds (S₀.onTy τ))) :
+    ∃ out R,
+      inferFoundRecGroupCore K Φ ctx memberIndex bindings specs = some out ∧
+      Subst.AgreesBelow Φ S₀ (out.1.2.1 ++ R) ∧
+      (∀ p ∈ R, p.2.IsLC) ∧
+      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
+  induction bindings generalizing Φ ctx specs S₀ memberIndex hwf hbelow hS₀ hKΦ hKfix
+    hspecLC hspecBelow hspecMono with
+  | nil =>
+    cases specs with
+    | nil =>
+      let out : { r : Nat × Subst × List Expr × InferredBinderSchemes //
+          InferRecGroup Φ ctx [] [] r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+        ⟨(Φ, [], [], []), .nil, by simp⟩
+      refine ⟨out, S₀, ?_, ?_, hS₀, hKfix⟩
+      · simp [out, inferFoundRecGroupCore]
+      · intro v hv
+        exact AgreesHM.refl _
+    | cons s ss => simp at hlen
+  | cons e rest ihrec =>
+    cases specs with
+    | nil => simp at hlen
+    | cons s ss =>
+      obtain ⟨τ, hs⟩ := hspecMono s List.mem_cons_self
+      subst s
+      have hrest_len : rest.length = ss.length := by simpa using hlen
+      have hheadFF : e.FoundFree := hff e List.mem_cons_self
+      have hrestFF : ∀ e' ∈ rest, e'.FoundFree := fun e' he' =>
+        hff e' (List.mem_cons_of_mem _ he')
+      have hheadRel : Infer.CompleteAt e := ihRel e List.mem_cons_self
+      have hrestRel : ∀ e' ∈ rest, Infer.CompleteAt e' := fun e' he' =>
+        ihRel e' (List.mem_cons_of_mem _ he')
+      have hheadExec : InferCoreComplete e := ihExec e List.mem_cons_self
+      have hrestExec : ∀ e' ∈ rest, InferCoreComplete e' := fun e' he' =>
+        ihExec e' (List.mem_cons_of_mem _ he')
+      have hKe : ∀ y ∈ e.tyFreeVars, y ∈ K := fun y hy =>
+        hKtv y (by simp [Expr.tyFreeVars.RecGroup.tyFreeVars, hy])
+      have hKrest : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars rest, y ∈ K := fun y hy =>
+        hKtv y (by simp [Expr.tyFreeVars.RecGroup.tyFreeVars, hy])
+      have hτbelow : Ty.BelowFvars Φ τ :=
+        hspecBelow (.mono τ) List.mem_cons_self τ rfl
+      have hτlc : τ.IsLC := by
+        have := hspecLC (.mono τ) List.mem_cons_self
+        simpa using this
+      have hheadDecl : TypeOfHM (S₀.onCtx ctx).eraseBounds e.eraseBounds
+          (Ty.eraseBounds (S₀.onTy τ)) :=
+        hdecl (e, .mono τ) (by simp) τ rfl
+      obtain ⟨_, _, _, _, hSeed, _, _, _, _, hSeedK⟩ :=
+        hheadRel hheadFF K hwf hbelow hS₀ hKΦ hKe hKfix hheadDecl
+      have hHeadSome := hheadExec K hwf hbelow hKΦ hKe hSeedK hheadFF hSeed
+      obtain ⟨outE, heinfer⟩ := Option.isSome_iff_exists.mp hHeadSome
+      obtain ⟨⟨Φ₁, S₁, τe, eOut, eSchemes⟩, hInferE, hS₁K⟩ := outE
+      obtain ⟨R₁, hR₁lc, hAgreeTy, hR₁K, hAgreeE⟩ :=
+        Infer.complete' hInferE hwf hbelow hS₀ K hKΦ hKe hKfix hheadDecl
+      have hΦ₁ : Φ ≤ Φ₁ := Infer.frontier_le hInferE
+      have hKΦ₁ : ∀ k ∈ K, k < Φ₁ := fun k hk =>
+        lt_of_lt_of_le (hKΦ k hk) hΦ₁
+      have hE_lc := Infer.lc hInferE hwf
+      have hτeLC : τe.IsLC := hE_lc.1
+      have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := hE_lc.2
+      have hE_below := Infer.belowFvars hInferE hbelow
+        (fun y hy => hKΦ y (hKe y hy))
+      have hτeBelow : Ty.BelowFvars Φ₁ τe := hE_below.1
+      have hS₁Below : ∀ p ∈ S₁, Ty.BelowFvars Φ₁ p.2 := hE_below.2
+      have hτAfterLC : (S₁.onTy τ).IsLC := Subst.onTy_lc hS₁lc hτlc
+      have hTarget : AgreesHM (S₀.onTy τ) (R₁.onTy (S₁.onTy τ)) := by
+        simpa [Subst.onTy_append] using
+          (Subst.onTy_congr_hm hAgreeE hτbelow)
+      have hUni : Unifies R₁ τe (S₁.onTy τ) := by
+        apply AgreesHM.trans hAgreeTy.symm
+        simpa [AgreesHM, Ty.eraseBounds_idem] using hTarget
+      have hUnifySome : (unifyCoreK K τe (S₁.onTy τ)).isSome :=
+        unifyCoreK_complete hτeLC hτAfterLC hR₁lc hUni hR₁K
+      obtain ⟨outU, heuni⟩ := Option.isSome_iff_exists.mp hUnifySome
+      obtain ⟨S₂, hS₂uni, hS₂K⟩ := outU
+      obtain ⟨R₂, hR₂fac, hR₂lc, hR₂K⟩ :=
+        UnifyRel.greatest_K_factors hS₂uni R₁ hR₁lc hUni hR₁K
+      have hS₂lc : ∀ p ∈ S₂, p.2.IsLC :=
+        UnifyRel.lc hS₂uni hτeLC hτAfterLC
+      have hτAfterBelow : Ty.BelowFvars Φ₁ (S₁.onTy τ) :=
+        Subst.onTy_belowFvars hS₁Below (hτbelow.mono hΦ₁)
+      have hS₂Below : ∀ p ∈ S₂, Ty.BelowFvars Φ₁ p.2 :=
+        UnifyRel.belowFvars hS₂uni hτeBelow hτAfterBelow
+      have hAgreeUni : Subst.AgreesBelow Φ₁ R₁ (S₂ ++ R₂) := by
+        intro v hv
+        rw [Subst.onTy_append]
+        exact hR₂fac (.fvar v)
+      have hAgreeHead : Subst.AgreesBelow Φ S₀ ((S₁ ++ S₂) ++ R₂) :=
+        @Subst.AgreesBelow.trans_append Φ Φ₁ S₀ S₁ R₁ S₂ R₂
+          hΦ₁ hAgreeE hS₁Below hAgreeUni
+      have hctxWF : CtxWF (S₂.onCtx (S₁.onCtx ctx)) :=
+        Subst.onCtx_wf hS₂lc (Subst.onCtx_wf hS₁lc hwf)
+      have hctxBelow : CtxBelow Φ₁ (S₂.onCtx (S₁.onCtx ctx)) :=
+        Subst.onCtx_below hS₂Below (le_refl _)
+          (Subst.onCtx_below hS₁Below hΦ₁ hbelow)
+      have hctxEq : (R₂.onCtx (S₂.onCtx (S₁.onCtx ctx))).eraseBounds =
+          (S₀.onCtx ctx).eraseBounds := by
+        rw [← Subst.onCtx_append]
+        simpa [Subst.onCtx_append, List.append_assoc] using
+          (Subst.onCtx_congr_hm hAgreeHead hbelow).symm
+      have hssLC : ∀ s' ∈ ss.map (RecSpec.onSubst (S₁ ++ S₂)), s'.LC := by
+        intro s' hs'
+        obtain ⟨s0, hs0, rfl⟩ := List.mem_map.mp hs'
+        apply RecSpec.LC.onSubst
+        intro p hp
+        rcases List.mem_append.mp hp with hp | hp
+        · exact hS₁lc p hp
+        · exact hS₂lc p hp
+        exact hspecLC s0 (List.mem_cons_of_mem _ hs0)
+      have hssMono : ∀ s' ∈ ss.map (RecSpec.onSubst (S₁ ++ S₂)),
+          ∃ τ', s' = .mono τ' := by
+        intro s' hs'
+        obtain ⟨s0, hs0, rfl⟩ := List.mem_map.mp hs'
+        obtain ⟨τ0, hτ0⟩ := hspecMono s0 (List.mem_cons_of_mem _ hs0)
+        subst s0
+        exact ⟨(S₁ ++ S₂).onTy τ0, rfl⟩
+      have hssBelow : ∀ s' ∈ ss.map (RecSpec.onSubst (S₁ ++ S₂)), ∀ τ',
+          s' = .mono τ' → Ty.BelowFvars Φ₁ τ' := by
+        intro s' hs' τ' hmono
+        obtain ⟨s0, hs0, rfl⟩ := List.mem_map.mp hs'
+        obtain ⟨τ0, hτ0⟩ := hspecMono s0 (List.mem_cons_of_mem _ hs0)
+        subst s0
+        simp only [RecSpec.onSubst] at hmono
+        cases hmono
+        apply Subst.onTy_belowFvars
+        · intro p hp
+          rcases List.mem_append.mp hp with hp | hp
+          · exact (hS₁Below p hp).mono (le_refl _)
+          · exact hS₂Below p hp
+        · exact (hspecBelow (.mono τ0) (List.mem_cons_of_mem _ hs0) τ0 rfl).mono hΦ₁
+      have hdeclTail : ∀ p ∈ rest.zip (ss.map (RecSpec.onSubst (S₁ ++ S₂))),
+          ∀ τ', p.2 = .mono τ' →
+          TypeOfHM (R₂.onCtx (S₂.onCtx (S₁.onCtx ctx))).eraseBounds p.1.eraseBounds
+            (Ty.eraseBounds (R₂.onTy τ')) := by
+        intro p hp τ' hmono
+        rcases List.mem_zip_map_right hp with ⟨e', s0, hp0, rfl⟩
+        obtain ⟨τ0, hτ0⟩ := hspecMono s0 (List.mem_cons_of_mem _ (List.of_mem_zip hp0).2)
+        subst s0
+        simp only [RecSpec.onSubst] at hmono
+        cases hmono
+        have hold : TypeOfHM (S₀.onCtx ctx).eraseBounds e'.eraseBounds
+            (Ty.eraseBounds (S₀.onTy τ0)) :=
+          hdecl (e', .mono τ0)
+            (by rw [List.zip_cons_cons]; exact List.mem_cons_of_mem _ hp0) τ0 rfl
+        rw [hctxEq]
+        have htype : AgreesHM (S₀.onTy τ0)
+            (R₂.onTy ((S₁ ++ S₂).onTy τ0)) := by
+          simpa [Subst.onTy_append] using
+            (Subst.onTy_congr_hm hAgreeHead
+              ((hspecBelow (.mono τ0) (List.mem_cons_of_mem _ (List.of_mem_zip hp0).2)
+                τ0 rfl)))
+        rw [AgreesHM] at htype
+        rw [htype] at hold
+        exact hold
+      obtain ⟨outRest, R₃, herest, hAgreeRest, hR₃lc, hR₃K⟩ :=
+        ihrec (Φ := Φ₁) (ctx := S₂.onCtx (S₁.onCtx ctx))
+          (specs := ss.map (RecSpec.onSubst (S₁ ++ S₂))) (S₀ := R₂)
+          (memberIndex := memberIndex + 1) hrestRel hrestExec hrestFF
+          (by simpa using hrest_len) hctxWF hctxBelow hR₂lc hKΦ₁ hKrest hR₂K
+          hssLC hssBelow hssMono hdeclTail
+      obtain ⟨⟨Φ₂, S₃, restOut, restSchemes⟩, hRest, hS₃K⟩ := outRest
+      have hS₁₂Below : ∀ p ∈ S₁ ++ S₂, Ty.BelowFvars Φ₁ p.2 := by
+        intro p hp
+        rcases List.mem_append.mp hp with hp | hp
+        · exact hS₁Below p hp
+        · exact hS₂Below p hp
+      have hAgree : Subst.AgreesBelow Φ S₀ (((S₁ ++ S₂) ++ S₃) ++ R₃) :=
+        @Subst.AgreesBelow.trans_append Φ Φ₁ S₀ (S₁ ++ S₂) R₂ S₃ R₃
+          hΦ₁ hAgreeHead hS₁₂Below hAgreeRest
+      let out : { r : Nat × Subst × List Expr × InferredBinderSchemes //
+          InferRecGroup Φ ctx (e :: rest) (.mono τ :: ss) r.1 r.2.1 ∧
+            (∀ p ∈ r.2.1, p.1 ∉ K) } :=
+        ⟨(Φ₂, S₁ ++ S₂ ++ S₃,
+            eOut.substFoundTys (S₂ ++ S₃) :: restOut,
+            (eSchemes.onSubst (S₂ ++ S₃)).below (.letRecRhs memberIndex) ++ restSchemes),
+          .consMono hInferE hS₂uni hRest, by
+            intro p hp
+            rw [List.mem_append, List.mem_append] at hp
+            rcases hp with (hp | hp) | hp
+            · exact hS₁K p hp
+            · exact hS₂K p hp
+            · exact hS₃K p hp⟩
+      refine ⟨out, R₃, ?_, ?_, hR₃lc, hR₃K⟩
+      · simp only [inferFoundRecGroupCore, heinfer, heuni, herest]
+        rfl
+      · simpa [out, List.append_assoc] using hAgree
