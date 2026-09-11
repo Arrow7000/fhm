@@ -14828,3 +14828,94 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)}
       simp only
       rw [hebodyRaw]
       rfl
+
+/-- The concrete found-producing inference worker accepts every well-scoped
+    relational inference derivation for a source expression.  As for
+    `Infer.complete`, the size induction is needed because annotated `let`
+    opens the annotation binders in its RHS without changing expression size. -/
+theorem inferCore_complete (e : Expr) : InferCoreComplete e := by
+  have upto : ∀ n : Nat, ∀ e : Expr, e.size < n → InferCoreComplete e := by
+    intro n
+    induction n with
+    | zero =>
+        intro e hsize
+        omega
+    | succ n ih =>
+        intro e hsize
+        cases e with
+        | primLit p => exact inferCore_complete_prim
+        | primBinOp op => exact inferCore_complete_primBinOp
+        | var i => exact inferCore_complete_var
+        | ctor name => exact inferCore_complete_ctor
+        | found ty inner =>
+            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+            cases hff
+        | lambda ann body =>
+            have hbody : body.size < n := by
+              simp only [Expr.size] at hsize
+              omega
+            have ihbody : InferCoreComplete body := ih body hbody
+            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+            exact inferCore_complete_lambda (ann := ann) (body := body) ihbody
+              K hwf hbelow hKΦ hKe hSK hff h
+        | app f arg =>
+            have hf : f.size < n := by
+              simp only [Expr.size] at hsize
+              omega
+            have harg : arg.size < n := by
+              simp only [Expr.size] at hsize
+              omega
+            have ihf : InferCoreComplete f := ih f hf
+            have iharg : InferCoreComplete arg := ih arg harg
+            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+            exact inferCore_complete_app (f := f) (arg := arg) ihf iharg
+              K hwf hbelow hKΦ hKe hSK hff h
+        | letIn ann rhs body =>
+            have hrhs : rhs.size < n := by
+              simp only [Expr.size] at hsize
+              omega
+            have hbody : body.size < n := by
+              simp only [Expr.size] at hsize
+              omega
+            have ihrhs : InferCoreComplete rhs := ih rhs hrhs
+            have ihopened : ∀ Ys, InferCoreComplete (rhs.openTyVars Ys) :=
+              fun Ys => ih (rhs.openTyVars Ys) (by
+                  rw [Expr.size_openTyVars]
+                  exact hrhs)
+            have ihbody : InferCoreComplete body := ih body hbody
+            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+            exact inferCore_complete_letIn (ann := ann) (rhs := rhs)
+              (body := body) ihrhs ihopened ihbody K hwf hbelow hKΦ hKe hSK hff h
+        | match_ scrut branches =>
+            have hscrut : scrut.size < n := by
+              simp only [Expr.size] at hsize
+              omega
+            have hbranches : ∀ br ∈ branches, br.2.size < n := by
+              intro br hbr
+              have hle := Expr.size_le_sizeBranches_of_mem hbr
+              simp only [Expr.size] at hsize
+              omega
+            have ihscrut : InferCoreComplete scrut := ih scrut hscrut
+            have ihbr : ∀ br ∈ branches, InferCoreComplete br.2 :=
+              fun br hbr => ih br.2 (hbranches br hbr)
+            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+            exact inferCore_complete_match (scrut := scrut)
+              (branches := branches) ihscrut ihbr K hwf hbelow hKΦ hKe hSK hff h
+        | letRec anns bindings body =>
+            have hbody : body.size < n := by
+              simp only [Expr.size] at hsize
+              omega
+            have hbindings : ∀ b ∈ bindings, b.size < n := by
+              intro b hb
+              have hle := Expr.size_le_sizeRecGroup_of_mem hb
+              simp only [Expr.size] at hsize
+              omega
+            have ihbs : ∀ b ∈ bindings, InferCoreComplete b :=
+              fun b hb => ih b (hbindings b hb)
+            have ihbody : InferCoreComplete body := ih body hbody
+            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+            exact inferCore_complete_letRec (anns := anns)
+              (bindings := bindings) (body := body) ihbs ihbody
+              K hwf hbelow hKΦ hKe hSK hff h
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+  exact upto (e.size + 1) e (by omega) K hwf hbelow hKΦ hKe hSK hff h
