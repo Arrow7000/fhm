@@ -421,12 +421,6 @@ inductive Expr.FoundFree : Expr → Prop
       FoundFree body →
       FoundFree (.letRec anns bindings body)
 
-
-
-
-
-
-
 /-- Build `[.bvar start, .bvar (start+1), ..., .bvar (start+count-1)]`. -/
 def Ty.bvarRangeFrom (start : Nat) : Nat → List Ty
   | 0     => []
@@ -1015,6 +1009,97 @@ decreasing_by
       apply List.map_congr_left
       intro binding hBinding
       exact ihBindings binding hBinding
+
+/-- Stripping a source expression which is already free of inferred wrappers is
+    the identity. -/
+theorem Expr.FoundFree.stripFound_eq {e : Expr} (h : e.FoundFree) :
+    e.stripFound = e := by
+  revert h
+  induction e using Expr.rec_strong with
+  | primLit | primBinOp | var | ctor => intro _; simp [Expr.stripFound]
+  | lambda ann body ih =>
+    intro h
+    cases h with
+    | lambda hbody => simp [Expr.stripFound, ih hbody]
+  | app fn arg ihfn iharg =>
+    intro h
+    cases h with
+    | app hfn harg => simp [Expr.stripFound, ihfn hfn, iharg harg]
+  | letIn ann rhs body ihrhs ihbody =>
+    intro h
+    cases h with
+    | letIn hrhs hbody => simp [Expr.stripFound, ihrhs hrhs, ihbody hbody]
+  | match_ scrut branches ihscrut ihbranches =>
+    intro h
+    cases h with
+    | match_ hscrut hbranches =>
+      simp only [Expr.stripFound, ihscrut hscrut, Expr.match_.injEq, true_and]
+      induction branches with
+      | nil => simp [Expr.stripFoundBranches]
+      | cons head rest ihRest =>
+        obtain ⟨pat, body⟩ := head
+        simp only [Expr.stripFoundBranches, List.cons.injEq, Prod.mk.injEq, true_and]
+        exact ⟨ihbranches pat body List.mem_cons_self (hbranches (pat, body) List.mem_cons_self),
+          ihRest (fun p b hmem => ihbranches p b (List.mem_cons_of_mem _ hmem))
+            (fun branch hmem => hbranches branch (List.mem_cons_of_mem _ hmem))⟩
+  | found _ _ _ => intro h; cases h
+  | letRec anns bindings body ihbindings ihbody =>
+    intro h
+    cases h with
+    | letRec hbindings hbody =>
+      simp only [Expr.stripFound, Expr.letRec.injEq, ihbody hbody]
+      refine ⟨True.intro, ?_, True.intro⟩
+      refine (List.map_congr_left ?_).trans (List.map_id _)
+      intro binding hmem
+      exact ihbindings binding hmem (hbindings binding hmem)
+
+/-- Strip all inferred wrappers from a branch list whose bodies are source
+    expressions. -/
+theorem Expr.stripFoundBranches_eq_self_of_foundFree
+    {branches : List (MatchPattern × Expr)}
+    (h : ∀ branch ∈ branches, branch.2.FoundFree) :
+    Expr.stripFoundBranches branches = branches := by
+  induction branches with
+  | nil => simp [Expr.stripFoundBranches]
+  | cons branch rest ih =>
+    obtain ⟨pat, body⟩ := branch
+    simp only [Expr.stripFoundBranches, List.cons.injEq, Prod.mk.injEq, true_and]
+    exact ⟨(h (pat, body) List.mem_cons_self).stripFound_eq,
+      ih (fun branch hmem => h branch (List.mem_cons_of_mem _ hmem))⟩
+
+/-- The normalization `stripFound` always returns a source expression. -/
+theorem Expr.stripFound_foundFree (e : Expr) : e.stripFound.FoundFree := by
+  induction e using Expr.rec_strong with
+  | primLit => simp only [Expr.stripFound]; exact .primLit
+  | primBinOp => simp only [Expr.stripFound]; exact .primBinOp
+  | var => simp only [Expr.stripFound]; exact .var
+  | ctor => simp only [Expr.stripFound]; exact .ctor
+  | lambda _ _ ih => simp only [Expr.stripFound]; exact .lambda ih
+  | app _ _ ihf iha => simp only [Expr.stripFound]; exact .app ihf iha
+  | letIn _ _ _ ihr ihb => simp only [Expr.stripFound]; exact .letIn ihr ihb
+  | found _ _ ih => simpa [Expr.stripFound] using ih
+  | match_ scrut branches ihscrut ihbranches =>
+    simp only [Expr.stripFound]
+    refine .match_ ihscrut ?_
+    induction branches with
+    | nil =>
+      intro branch hmem
+      simp only [Expr.stripFoundBranches] at hmem
+      cases hmem
+    | cons head rest ihRest =>
+      obtain ⟨pat, body⟩ := head
+      intro branch hmem
+      simp only [Expr.stripFoundBranches, List.mem_cons] at hmem
+      rcases hmem with h | h
+      · subst h
+        exact ihbranches pat body List.mem_cons_self
+      · exact ihRest (fun p b hb => ihbranches p b (List.mem_cons_of_mem _ hb)) branch h
+  | letRec anns bindings body ihbindings ihbody =>
+    simp only [Expr.stripFound]
+    refine .letRec ?_ ihbody
+    intro binding hmem
+    rcases List.mem_map.mp hmem with ⟨e, he, rfl⟩
+    exact ihbindings e he
 
 
 
@@ -7139,7 +7224,7 @@ theorem Expr.openTyVarsAux_instTyAux (Ys : List Nat) (Ts : List Ty) :
     exact congrArg (Prod.mk p) (ihbs p b hpb d d' (hbs p b hpb))
   | found ty inner ih =>
     intro d d' h
-    simp only [Expr.instTyAux, Expr.openTyVarsAux, Expr.TyBvarBounded] at h
+    simp only [Expr.TyBvarBounded] at h
     simp only [Expr.instTyAux, Expr.openTyVarsAux, Expr.found.injEq]
     exact ⟨Ty.openVarsFrom_openTyFrom d' d Ys Ts h.1, ih d d' h.2⟩
   | letRec anns bindings body ihbs ihb =>
@@ -7408,7 +7493,7 @@ theorem Expr.openTyVarsAux_eq_self_of_tyBvarBounded (Xs : List Nat) :
     rw [ihbs p b hpb d (hbs p b hpb)]
   | found ty inner ih =>
     intro d h
-    simp only [Expr.openTyVarsAux, Expr.TyBvarBounded] at h
+    simp only [Expr.TyBvarBounded] at h
     simp only [Expr.openTyVarsAux, Expr.found.injEq]
     exact ⟨Ty.openVarsFrom_eq_self_of_bvars h.1, ih d h.2⟩
   | letRec anns bindings body ihbs ihb =>
@@ -8035,7 +8120,7 @@ theorem Expr.varsBelow_mono (e : Expr) :
   | primLit p => intro m n _ _; rfl
   | primBinOp op => intro m n _ _; rfl
   | ctor nm => intro m n _ _; rfl
-  | var i => 
+  | var i =>
     intro m n hmn h
     simp only [Expr.varsBelow, decide_eq_true_eq] at h ⊢
     omega
@@ -8263,7 +8348,7 @@ theorem Expr.shiftFrom_of_varsBelow (n : Nat) :
   | primLit p => intro t _; rfl
   | primBinOp op => intro t _; rfl
   | ctor nm => intro t _; rfl
-  | var i => 
+  | var i =>
     intro t h
     simp only [Expr.varsBelow, decide_eq_true_eq] at h
     simp only [Expr.shiftFrom, if_pos h]
@@ -8398,7 +8483,7 @@ theorem Expr.substN_of_varsBelow (vs : List Expr) :
   | primLit p => intro k _; rfl
   | primBinOp op => intro k _; rfl
   | ctor nm => intro k _; rfl
-  | var i => 
+  | var i =>
     intro k h
     simp only [Expr.varsBelow, decide_eq_true_eq] at h
     simp only [Expr.substN, if_pos h]
