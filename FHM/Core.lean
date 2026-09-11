@@ -1169,6 +1169,24 @@ inductive InstantiatesBy (tyArgs : List Ty) : Ty → Ty → Prop
 def PolyTy.InstantiatesTo (σ : PolyTy) (tyArgs : List Ty) (τ : Ty) : Prop :=
   InstantiatesBy tyArgs σ.body τ
 
+/-- `M'` is at least as general as `M`: every locally-closed instantiation of
+    `M` is also an instantiation of `M'`. -/
+def PolyTy.Generalizes (M' M : PolyTy) : Prop :=
+  ∀ tyArgs ty, (∀ t ∈ tyArgs, ContainsBvarsUpTo 0 t) → InstantiatesBy tyArgs M.body ty →
+    ∃ tyArgs', (∀ t ∈ tyArgs', ContainsBvarsUpTo 0 t) ∧ InstantiatesBy tyArgs' M'.body ty
+
+/-- Generality is reflexive. -/
+theorem PolyTy.Generalizes.refl (M : PolyTy) : M.Generalizes M := by
+  intro tyArgs ty hlc hinst
+  exact ⟨tyArgs, hlc, hinst⟩
+
+/-- Generality is transitive. -/
+theorem PolyTy.Generalizes.trans {A B C : PolyTy}
+    (hAB : A.Generalizes B) (hBC : B.Generalizes C) : A.Generalizes C := by
+  intro tyArgs ty hlc hinst
+  obtain ⟨tyArgs', hlc', hinst'⟩ := hBC tyArgs ty hlc hinst
+  exact hAB tyArgs' ty hlc' hinst'
+
 
 
 
@@ -3641,6 +3659,19 @@ def RecSpec.rhsEntry (G Xs : List Nat) : RecSpec → PolyTy
 def RecSpec.bodyScheme (G : List Nat) : RecSpec → PolyTy
   | .mono τ => PolyTy.genGroup G τ
   | .poly σ => σ
+
+/-- The `letRec` ceiling premise. At an annotated position the solved member
+    must be monomorphic, and its scheme generalised over the shared pool must be
+    at least as general as the annotation (in the bounds-erased HM world).
+    Unannotated positions impose no ceiling. -/
+def RecSpecs.ceilingOK (G : List Nat) (anns : List (Option PolyTy))
+    (specs : List RecSpec) : Prop :=
+  List.Forall₂ (fun ann spec => match ann, spec with
+    | some σ, .mono τ =>
+        PolyTy.Generalizes (PolyTy.eraseBounds (PolyTy.genGroup G τ))
+          (PolyTy.eraseBounds σ)
+    | some _, .poly _ => False
+    | none, _ => True) anns specs
 
 /-- The free type variables a spec's MONOTYPE contributes (schemes are
     pool-independent and handled pointwise, so they contribute nothing here).
