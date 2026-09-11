@@ -8865,6 +8865,193 @@ private theorem RecCeilingConstraints.exists_of_generalizes
   exact RecCeilingConstraints.exists_head_of_generalizes hG hrigidG hPG
     hRlc hRP hRrigid hτlc hτbelow hPbelow hrigidBelow hGbelow hσwf hσrigid hgenHead
 
+/-- Executable completeness of the sequential recursive-ceiling pass.
+
+    Unlike `exists_of_generalizes`, this theorem runs the particular
+    `unifyCoreK` chosen by the implementation.  The skolem-safe witness makes
+    that unifier succeed; `dropDomains_range_of_witness` then proves that this
+    concrete result passes the executable `rangesWithin` guard.  The explicit
+    `K`/`G` disjointness is the lexical invariant of an actual `letRec` call:
+    it is stronger than the filtered protection used by relational producer
+    completeness, and is exactly what the worker passes to `unifyCoreK`. -/
+private theorem RecCeilingConstraints.solve_complete_of_generalizes
+    {K rigid G : List Nat} {Φ : Nat} {anns : List (Option PolyTy)}
+    {specs : List RecSpec} {R : Subst}
+    (hlen : anns.length = specs.length)
+    (hG : G.Nodup)
+    (hrigidG : ∀ x ∈ rigid, x ∉ G)
+    (hKG : ∀ x ∈ K, x ∉ G)
+    (hRlc : ∀ p ∈ R, p.2.IsLC)
+    (hRK : ∀ x ∈ K, R.onTy (.fvar x) = .fvar x)
+    (hRrigid : ∀ x ∈ rigid, R.onTy (.fvar x) = .fvar x)
+    (hKbelow : ∀ x ∈ K, x < Φ)
+    (hrigidBelow : ∀ x ∈ rigid, x < Φ)
+    (hGbelow : ∀ x ∈ G, x < Φ)
+    (hannsWF : ∀ σ : PolyTy, some σ ∈ anns → σ.WF)
+    (hannsRigid : ∀ σ : PolyTy, some σ ∈ anns →
+      ∀ x ∈ σ.body.freeVars, x ∈ rigid)
+    (hspecLC : ∀ s ∈ specs, s.LC)
+    (hspecBelow : ∀ s ∈ specs, s.BelowFvars Φ)
+    (hgen : CeilingGenInv G R anns specs) :
+    ∃ out : { Sc : Subst // RecCeilingConstraints K rigid G Φ anns specs Sc ∧
+        ∀ p ∈ Sc, p.1 ∉ K },
+      solveRecCeilingConstraints K rigid G Φ anns specs hannsWF hannsRigid hspecLC = some out ∧
+        FactorsHM R out.1 R := by
+  induction anns generalizing specs with
+  | nil =>
+      cases specs with
+      | nil =>
+          refine ⟨⟨[], by simp [RecCeilingConstraints]⟩, ?_, ?_⟩
+          · simp [solveRecCeilingConstraints]
+          · intro t
+            exact AgreesHM.refl _
+      | cons spec specs => simp at hlen
+  | cons ann anns ih =>
+      cases specs with
+      | nil => simp at hlen
+      | cons spec specs =>
+          have hlenTail : anns.length = specs.length := by simpa using hlen
+          cases ann with
+          | none =>
+              have hgenTail : CeilingGenInv G R anns specs := by
+                intro a s hs
+                exact hgen (by
+                  rw [List.zip_cons_cons]
+                  exact List.mem_cons_of_mem _ hs)
+              obtain ⟨out, hout, hfac⟩ := ih (specs := specs) hlenTail
+                (fun σ hσ => hannsWF σ (List.mem_cons_of_mem _ hσ))
+                (fun σ hσ x hx => hannsRigid σ (List.mem_cons_of_mem _ hσ) x hx)
+                (fun s hs => hspecLC s (List.mem_cons_of_mem _ hs))
+                (fun s hs => hspecBelow s (List.mem_cons_of_mem _ hs)) hgenTail
+              obtain ⟨tail, htail, htailK⟩ := out
+              refine ⟨⟨tail, htail, htailK⟩, ?_, hfac⟩
+              simp only [solveRecCeilingConstraints]
+              rw [hout]
+          | some σ =>
+              cases spec with
+              | poly σ' =>
+                  have hfalse := hgen (by
+                    rw [List.zip_cons_cons]
+                    exact List.mem_cons_self)
+                  exact False.elim hfalse
+              | mono τ =>
+                  have hσwf : σ.WF := hannsWF σ List.mem_cons_self
+                  have hσrigid : ∀ x ∈ σ.body.freeVars, x ∈ rigid :=
+                    hannsRigid σ List.mem_cons_self
+                  have hτlc : τ.IsLC := by
+                    simpa using hspecLC (.mono τ) List.mem_cons_self
+                  have hτbelow : τ.BelowFvars Φ := by
+                    simpa using hspecBelow (.mono τ) List.mem_cons_self
+                  have hgenHead :
+                      (PolyTy.eraseBounds (R.onPolyTy (PolyTy.genGroup G τ))).Generalizes
+                        (PolyTy.eraseBounds σ) :=
+                    hgen (by
+                      rw [List.zip_cons_cons]
+                      exact List.mem_cons_self)
+                  let Rer : Subst := R.map (fun p : Nat × Ty => (p.1, Ty.eraseBounds p.2))
+                  have hgenE :
+                      (Rer.onPolyTy (PolyTy.genGroup G (Ty.eraseBounds τ))).Generalizes
+                        (PolyTy.eraseBounds σ) := by
+                    rw [show Rer = R.map (fun p : Nat × Ty =>
+                      (p.1, Ty.eraseBounds p.2)) from rfl]
+                    rw [← eraseBounds_onPolyTy_genGroup R]
+                    exact hgenHead
+                  obtain ⟨U, hUlc, hUuni, hUfix, hUagree⟩ :=
+                    RecCeilingConstraints.exists_skolem_safe_unifier hG hrigidG hKG
+                      hRlc hRK hRrigid hτlc hτbelow hKbelow hrigidBelow hσwf hσrigid hgenHead
+                  have hRrange : ∀ z ∈ (Ty.eraseBounds τ).freeVars, z ∉ G →
+                      ∀ x ∈ (Rer.onTy (.fvar z)).freeVars, x ∈ rigid := by
+                    intro z hz hzG x hx
+                    exact hσrigid x ((Ty.mem_freeVars_eraseBounds σ.body x).mp
+                      (PolyTy.Generalizes.genGroup_nonpool_range hgenE hz hzG hx))
+                  have hcore :
+                      (unifyCoreK (K ++ rigid ++ freshVars Φ σ.paramCount)
+                        (Ty.eraseBounds τ)
+                        (Ty.eraseBounds (σ.openVars (freshVars Φ σ.paramCount)))).isSome :=
+                    unifyCoreK_complete (Ty.IsLC.eraseBounds hτlc)
+                      (Ty.IsLC.eraseBounds
+                        (PolyTy.openVars_isLC hσwf (by simp))) hUlc hUuni hUfix
+                  obtain ⟨⟨full, hfull, havoid⟩, hfullExec⟩ :=
+                    Option.isSome_iff_exists.mp hcore
+                  let step : Subst := Subst.dropDomains G full
+                  have hrange : ∀ p ∈ step, ∀ x ∈ p.2.freeVars, x ∈ rigid ∧ x ∉ G := by
+                    simpa [step] using RecCeilingConstraints.dropDomains_range_of_witness
+                      hσrigid hrigidG hrigidBelow hGbelow hfull havoid hUuni hUfix hUagree hRrange
+                  have hrangeB : step.rangesWithin rigid G = true :=
+                    Subst.rangesWithin_iff.mpr hrange
+                  have hstepLC : ∀ p ∈ step, p.2.IsLC := by
+                    intro p hp
+                    exact UnifyRel.lc hfull (Ty.IsLC.eraseBounds hτlc)
+                      (Ty.IsLC.eraseBounds
+                        (PolyTy.openVars_isLC hσwf (by simp))) p
+                      ((Subst.mem_dropDomains.mp hp).1)
+                  have hfacHead : FactorsHM R step R :=
+                    RecCeilingConstraints.step_absorbed hG hrigidG hRlc hRrigid hτlc hτbelow
+                      hrigidBelow hfull havoid rfl hrange hstepLC hσwf hσrigid hgenHead
+                  have hdom : ∀ p ∈ step, p.1 ∉ G := by
+                    intro p hp
+                    exact (Subst.mem_dropDomains.mp hp).2
+                  have hgenTail : CeilingGenInv G R anns
+                      (specs.map (RecSpec.onSubst step)) := by
+                    intro a s hs
+                    rcases List.mem_zip_map_right hs with ⟨a0, s0, hs0, heq⟩
+                    injection heq with ha hs'
+                    cases ha
+                    cases hs'
+                    have hold := hgen (by
+                      rw [List.zip_cons_cons]
+                      exact List.mem_cons_of_mem _ hs0)
+                    cases a with
+                    | none => trivial
+                    | some σ0 =>
+                        cases s0 with
+                        | poly σ1 => exact False.elim hold
+                        | mono τ0 =>
+                            have hstable := FactorsHM.genGroup_stable
+                              (U := R) (Sc := step) (G := G) (τ := τ0)
+                              hfacHead hdom (fun p hp x hx => (hrange p hp x hx).2)
+                            change
+                              (PolyTy.eraseBounds
+                                (R.onPolyTy (PolyTy.genGroup G (step.onTy τ0)))).Generalizes
+                                (PolyTy.eraseBounds σ0)
+                            rw [hstable]
+                            exact hold
+                  have hstepBelow : ∀ p ∈ step, p.2.BelowFvars Φ := by
+                    intro p hp
+                    exact Ty.BelowFvars.of_freeVars_lt (fun x hx =>
+                      hrigidBelow x (hrange p hp x hx).1)
+                  obtain ⟨outTail, htailExec, hfacTail⟩ := ih
+                    (specs := specs.map (RecSpec.onSubst step)) (by simpa using hlenTail)
+                    (fun σ hσ => hannsWF σ (List.mem_cons_of_mem _ hσ))
+                    (fun σ hσ x hx => hannsRigid σ (List.mem_cons_of_mem _ hσ) x hx)
+                    (fun s hs => by
+                      obtain ⟨s0, hs0, rfl⟩ := List.mem_map.mp hs
+                      exact RecSpec.LC.onSubst hstepLC
+                        (hspecLC s0 (List.mem_cons_of_mem _ hs0)))
+                    (fun s hs => by
+                      obtain ⟨s0, hs0, rfl⟩ := List.mem_map.mp hs
+                      exact RecSpec.BelowFvars.onSubst hstepBelow
+                        (hspecBelow s0 (List.mem_cons_of_mem _ hs0)))
+                    hgenTail
+                  obtain ⟨tail, htail, htailK⟩ := outTail
+                  let hrel : RecCeilingConstraints K rigid G Φ (some σ :: anns)
+                      (.mono τ :: specs) (step ++ tail) :=
+                    ⟨full, step, tail, hfull, havoid, rfl, hrange, hstepLC,
+                      hσwf, hσrigid, htail, rfl⟩
+                  refine ⟨⟨step ++ tail, hrel, ?_⟩, ?_, ?_⟩
+                  · intro p hp
+                    exact (RecCeilingConstraints.dom_avoids hrel p hp).1
+                  · simp only [solveRecCeilingConstraints]
+                    rw [hfullExec]
+                    dsimp
+                    split
+                    · rw [htailExec]
+                    · rename_i hnot
+                      exact False.elim (hnot (by simpa [step] using hrangeB))
+                  · intro t
+                    simpa [Subst.onTy_append] using
+                      AgreesHM.trans (hfacHead t) (hfacTail (step.onTy t))
+
 /-- Shared residual construction for variable and constructor leaves. It moves
     the algorithm's fresh opening block out of the way, realizes the
     declarative instantiation there, and swaps the result back. -/
@@ -12089,3 +12276,137 @@ theorem Infer.complete (e : Expr) : Infer.CompleteAt e := by
               (fun b hb => ih b (hbindings b hb))
               (ih body hbody)
   exact upto (e.size + 1) e (by omega)
+
+/-! ## 7. Executable producer completeness
+
+Relational completeness chooses witnesses existentially.  The executable
+worker instead commits to particular fresh blocks and most-general unifiers,
+so its completeness proof follows the worker in lockstep and uses the
+principality theorem above to retype later subproblems under those concrete
+choices. -/
+
+/-- Function-completeness at a source expression: every well-scoped `Infer`
+    derivation whose output avoids the worker's rigid set is accepted by the
+    concrete worker. -/
+def InferCoreComplete (e : Expr) : Prop :=
+  ∀ {Φ : Nat} {ctx : Ctx} {Φ' : Nat} {S : Subst} {τ : Ty} (K : List Nat),
+    CtxWF ctx → CtxBelow Φ ctx → (∀ k ∈ K, k < Φ) →
+    (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
+    Infer Φ ctx e Φ' S τ → (inferFoundCore K Φ ctx e).isSome
+
+theorem inferCore_complete_prim {p : PrimLitExpr} :
+    InferCoreComplete (.primLit p) := by
+  intro Φ ctx Φ' S τ K _ _ _ _ _ h
+  cases h <;> simp only [inferFoundCore, Option.isSome_some]
+
+theorem inferCore_complete_primBinOp {op : PrimBinOp} :
+    InferCoreComplete (.primBinOp op) := by
+  intro Φ ctx Φ' S τ K _ _ _ _ _ h
+  cases h with
+  | primBinOpIntAdd => simp only [inferFoundCore, Option.isSome_some]
+  | primBinOpIntSub => simp only [inferFoundCore, Option.isSome_some]
+  | primBinOpIntLt hlookT hbT hlookF hbF =>
+      rw [inferFoundCore]
+      split
+      next heqT => rw [hlookT] at heqT; simp at heqT
+      next tc heqT =>
+        rw [hlookT] at heqT
+        obtain rfl := (Option.some.inj heqT).symm
+        split
+        next heqF => rw [hlookF] at heqF; simp at heqF
+        next fc heqF =>
+          rw [hlookF] at heqF
+          obtain rfl := (Option.some.inj heqF).symm
+          rw [dif_pos (Ctor.isBoolCtor_iff.mpr hbT),
+            dif_pos (Ctor.isBoolCtor_iff.mpr hbF)]
+          rfl
+  | primBinOpCharLt hlookT hbT hlookF hbF =>
+      rw [inferFoundCore]
+      split
+      next heqT => rw [hlookT] at heqT; simp at heqT
+      next tc heqT =>
+        rw [hlookT] at heqT
+        obtain rfl := (Option.some.inj heqT).symm
+        split
+        next heqF => rw [hlookF] at heqF; simp at heqF
+        next fc heqF =>
+          rw [hlookF] at heqF
+          obtain rfl := (Option.some.inj heqF).symm
+          rw [dif_pos (Ctor.isBoolCtor_iff.mpr hbT),
+            dif_pos (Ctor.isBoolCtor_iff.mpr hbF)]
+          rfl
+
+theorem inferCore_complete_var {i : Nat} : InferCoreComplete (.var i) := by
+  intro Φ ctx Φ' S τ K _ _ _ _ _ h
+  cases h with
+  | var hlook =>
+      rw [inferFoundCore]
+      split
+      · rename_i heq; rw [heq] at hlook; simp at hlook
+      · rfl
+
+theorem inferCore_complete_ctor {name : CtorName} :
+    InferCoreComplete (.ctor name) := by
+  intro Φ ctx Φ' S τ K _ _ _ _ _ h
+  cases h with
+  | ctor hlook =>
+      rw [inferFoundCore]
+      split
+      · rename_i heq; rw [heq] at hlook; simp at hlook
+      · rfl
+
+/-- Extending a well-formed context by the fresh monotype used for an
+    unannotated lambda preserves well-formedness. -/
+private theorem CtxWF.cons_fvar {Φ : Nat} {ctx : Ctx} (hwf : CtxWF ctx) :
+    CtxWF { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+  intro M hM
+  rcases List.mem_cons.mp hM with rfl | hM
+  · exact ContainsBvarsUpTo.fvar
+  · exact hwf M hM
+
+/-- The same lambda extension advances the free-variable frontier by one. -/
+private theorem CtxBelow.cons_fvar {Φ : Nat} {ctx : Ctx}
+    (hbelow : CtxBelow Φ ctx) :
+    CtxBelow (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } := by
+  intro M hM
+  rcases List.mem_cons.mp hM with rfl | hM
+  · exact .fvar (by omega)
+  · exact (hbelow M hM).mono (by omega)
+
+theorem inferCore_complete_lambda {ann : Option Ty} {body : Expr}
+    (ih : InferCoreComplete body) : InferCoreComplete (.lambda ann body) := by
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
+  cases h with
+  | lambda hseed hbody =>
+      cases hseed
+      case none =>
+          simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at hKe
+          have hsome := ih K hwf.cons_fvar hbelow.cons_fvar
+            (fun k hk => by have := hKΦ k hk; omega) hKe hSK hbody
+          obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hsome
+          rw [inferFoundCore, hout]
+          rcases out with ⟨⟨Φo, So, τo, eout, schemes⟩, houtrel, houtavoid⟩
+          rfl
+      case some hcl =>
+          expose_names
+          simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append] at hKe
+          have hwf' : CtxWF
+              { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } := by
+            intro M hM
+            rcases List.mem_cons.mp hM with rfl | hM
+            · exact hcl
+            · exact hwf M hM
+          have hbelow' : CtxBelow Φ
+              { ctx with env := PolyTy.mkTrivial paramTy :: ctx.env } := by
+            intro M hM
+            rcases List.mem_cons.mp hM with rfl | hM
+            · exact Ty.BelowFvars.of_freeVars_lt
+                (fun v hv => hKΦ v (hKe v (.inl hv)))
+            · exact hbelow M hM
+          have hsome := ih K hwf' hbelow' hKΦ
+            (fun y hy => hKe y (.inr hy)) hSK hbody
+          obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hsome
+          rw [inferFoundCore,
+            dif_pos ((Ty.bvarsBelow_iff paramTy).mpr hcl), hout]
+          rcases out with ⟨⟨Φo, So, τo, eout, schemes⟩, houtrel, houtavoid⟩
+          rfl
