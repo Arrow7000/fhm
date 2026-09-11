@@ -6664,5 +6664,76 @@ theorem Infer.principals_mut (n : Nat) :
 
 -- END-SECTION-SPINE
 
+/-! ## 5. Public principality capstones
 
+The mutual size-induction above is intentionally an internal engine.  The
+theorems in this section expose its expression-level and whole-program
+consequences.  Under Path R, factorisation is stated with `AgreesHM`: bounds are
+static decorations ignored by HM inference, so structural equality of decorated
+types would be too strong.
 
+The declarative source term is `e.eraseBounds` (bounds-blind, with source
+annotations still present).  The executable program is `e.erase` (annotations
+and `.found` metadata removed); its typing is supplied independently by
+`Infer.sound` / `principalType_sound`. -/
+
+/-- Principality of a given inference derivation, projected from the mutual D2
+    spine. Every bounds-blind declarative type factors through the inferred
+    monotype up to `AgreesHM`. -/
+theorem Infer.principal {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat}
+    {S : Subst} {τ : Ty} (h : Infer Φ ctx e Φ' S τ) : Infer.Principal h := by
+  intro hwf hbelow
+  exact (Infer.principals_mut (e.size + 1)).1 h (Nat.lt_succ_self _) hwf hbelow
+    hwf hbelow
+
+/-- Expanded compatibility wrapper around `Infer.principal`. -/
+theorem Infer.complete' {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat}
+    {S : Subst} {τ : Ty} (h : Infer Φ ctx e Φ' S τ)
+    (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) {S₀ : Subst} {τ₀ : Ty}
+    (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (K : List Nat)
+    (hKΦ : ∀ k ∈ K, k < Φ) (hKe : ∀ y ∈ e.tyFreeVars, y ∈ K)
+    (hKfix : ∀ k ∈ K, S₀.onTy (.fvar k) = .fvar k)
+    (hty : TypeOfHM (S₀.onCtx ctx).eraseBounds e.eraseBounds τ₀) :
+    ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧
+      AgreesHM τ₀ (R.onTy τ) ∧
+      (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
+      Subst.AgreesBelow Φ S₀ (S ++ R) := by
+  exact Infer.principal h hwf hbelow S₀ τ₀ K hS₀ hKΦ hKe hKfix hty
+
+/-- Monotype principality for the concrete result returned by
+    `principalType`.  This is deliberately a source-typing statement
+    (`e.eraseBounds`); operational soundness for `e.erase` is
+    `principalType_sound`. -/
+theorem principalType_principal {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h : principalType ctors e = some τ) :
+    ∀ τ₀, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ₀ →
+      ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧ AgreesHM τ₀ (R.onTy τ) := by
+  rw [principalType] at h
+  rcases hc : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with
+    _ | ⟨⟨Φ', S, τ'⟩, hInfer, hSK⟩ <;> rw [hc] at h
+  · simp at h
+  · simp only [Option.map_some, Option.some.injEq] at h
+    subst h
+    intro τ₀ hτ₀
+    obtain ⟨R, _hRlc, hfac, _hRfix, _hag⟩ :=
+      Infer.complete' hInfer CtxWF.empty CtxBelow.empty
+        (S₀ := []) (τ₀ := τ₀) (by simp) e.tyFreeVars
+        (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) (by simp) (by
+          simpa [Subst.onCtx, Subst.onEnv, Ctx.eraseBounds, Env.eraseBounds] using hτ₀)
+    exact ⟨R, _hRlc, hfac⟩
+
+/-- A successful whole-program `typecheck` packages a sound principal
+    monotype.  Its closed output scheme is `genScheme [] [] τ`; every
+    bounds-blind declarative source type is an instance of `τ` up to
+    `AgreesHM`. -/
+theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
+    (h : typecheck ctors e = some σ) :
+    ∃ τ, σ = genScheme [] [] τ ∧
+      TypeOfHM ⟨[], ctors.eraseBounds⟩ e.erase (Ty.eraseBounds τ) ∧
+      ∀ τ₀, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ₀ →
+        ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧ AgreesHM τ₀ (R.onTy τ) := by
+  rw [typecheck] at h
+  rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
+  · simp at h
+  · simp only [Option.map_some, Option.some.injEq] at h
+    exact ⟨τ, h.symm, principalType_sound hc, principalType_principal hc⟩
