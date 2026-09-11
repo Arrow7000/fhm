@@ -6674,8 +6674,8 @@ types would be too strong.
 
 The declarative source term is `e.eraseBounds` (bounds-blind, with source
 annotations still present).  The executable program is `e.erase` (annotations
-and `.found` metadata removed); its typing is supplied independently by
-`Infer.sound` / `principalType_sound`. -/
+and `.found` metadata removed).  `Infer.sourceSound` and `Infer.sound` supply
+the two corresponding soundness projections. -/
 
 /-- Principality of a given inference derivation, projected from the mutual D2
     spine. Every bounds-blind declarative type factors through the inferred
@@ -6700,6 +6700,23 @@ theorem Infer.complete' {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat}
       Subst.AgreesBelow Φ S₀ (S ++ R) := by
   exact Infer.principal h hwf hbelow S₀ τ₀ K hS₀ hKΦ hKe hKfix hty
 
+/-- A computed monotype types the bounds-blind annotated source itself.  This
+    is stronger in a different direction than operational `principalType_sound`:
+    annotations are retained here, while the latter types the runnable erased
+    term. -/
+theorem principalType_source_sound {ctors : CtorEnv} {e : Expr} {τ : Ty}
+    (h : principalType ctors e = some τ) :
+    TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) := by
+  rw [principalType] at h
+  rcases hc : inferCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e with
+    _ | ⟨⟨Φ', S, τ'⟩, hInfer, hSK⟩ <;> rw [hc] at h
+  · simp at h
+  · simp only [Option.map_some, Option.some.injEq] at h
+    subst h
+    simpa [Subst.onCtx, Subst.onEnv, Ctx.eraseBounds, Env.eraseBounds] using
+      Infer.sourceSound hInfer CtxWF.empty CtxBelow.empty
+        e.tyFreeVars (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) hSK
+
 /-- Monotype principality for the concrete result returned by
     `principalType`.  This is deliberately a source-typing statement
     (`e.eraseBounds`); operational soundness for `e.erase` is
@@ -6722,13 +6739,14 @@ theorem principalType_principal {ctors : CtorEnv} {e : Expr} {τ : Ty}
           simpa [Subst.onCtx, Subst.onEnv, Ctx.eraseBounds, Env.eraseBounds] using hτ₀)
     exact ⟨R, _hRlc, hfac⟩
 
-/-- A successful whole-program `typecheck` packages a sound principal
-    monotype.  Its closed output scheme is `genScheme [] [] τ`; every
-    bounds-blind declarative source type is an instance of `τ` up to
-    `AgreesHM`. -/
+/-- A successful whole-program `typecheck` packages a source-sound and
+    operationally sound principal monotype. Its closed output scheme is
+    `genScheme [] [] τ`; every bounds-blind declarative source type is an
+    instance of `τ` up to `AgreesHM`. -/
 theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
     (h : typecheck ctors e = some σ) :
     ∃ τ, σ = genScheme [] [] τ ∧
+      TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds (Ty.eraseBounds τ) ∧
       TypeOfHM ⟨[], ctors.eraseBounds⟩ e.erase (Ty.eraseBounds τ) ∧
       ∀ τ₀, TypeOfHM ⟨[], ctors.eraseBounds⟩ e.eraseBounds τ₀ →
         ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧ AgreesHM τ₀ (R.onTy τ) := by
@@ -6736,4 +6754,5 @@ theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
   rcases hc : principalType ctors e with _ | τ <;> rw [hc] at h
   · simp at h
   · simp only [Option.map_some, Option.some.injEq] at h
-    exact ⟨τ, h.symm, principalType_sound hc, principalType_principal hc⟩
+    exact ⟨τ, h.symm, principalType_source_sound hc, principalType_sound hc,
+      principalType_principal hc⟩

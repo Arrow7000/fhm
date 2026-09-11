@@ -12,7 +12,7 @@ precisely how far the machine-checking currently reaches.
 
 **Status (erasure-on-`Step`, D2 recursion).** Type safety, *inference
 soundness*, and principality of successful inference are closed and
-axiom-clean: `Infer.sound` / `InferBranches.sound` / `InferRecGroup.sound`
+axiom-clean: `Infer.sound` / `Infer.sourceSound` and their branch/group families
 (coherence of the source checker with the erased machine relation `TypeOfHM`,
 via `e.erase`) depend on nothing but `propext`, `Classical.choice`, `Quot.sound`.
 The `TypeOfHM` / `Step` dynamics metatheory (substitution lemma, canonical forms,
@@ -88,8 +88,10 @@ type via an LC residual substitution, modulo `AgreesHM`. This does not yet prove
 the separate executable-completeness direction “declaratively typeable implies
 the worker succeeds”. -/
 #check @Infer.sound
+#check @Infer.sourceSound
 #check @Infer.principal
 #check @Infer.complete'
+#check @principalType_source_sound
 #check @principalType_principal
 #check @typecheck_principal
 
@@ -721,12 +723,14 @@ guards below show both proof families axiom-clean. -/
 
 -- Closed and clean: erasure-on-`Step` inference soundness.
 #print axioms Infer.sound                -- expect {propext, Classical.choice, Quot.sound}
+#print axioms Infer.sourceSound          -- expect {propext, Classical.choice, Quot.sound}
 #print axioms InferBranches.sound        -- expect {propext, Classical.choice, Quot.sound}
 #print axioms InferRecGroup.sound        -- expect {propext, Classical.choice, Quot.sound}
 
 -- Closed and clean: D2 principality of successful inference.
 #print axioms Infer.principal             -- expect {propext, Classical.choice, Quot.sound}
 #print axioms Infer.complete'             -- expect {propext, Classical.choice, Quot.sound}
+#print axioms principalType_source_sound  -- expect {propext, Classical.choice, Quot.sound}
 #print axioms principalType_principal     -- expect {propext, Classical.choice, Quot.sound}
 #print axioms typecheck_principal         -- expect {propext, Classical.choice, Quot.sound}
 
