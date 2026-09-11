@@ -2613,6 +2613,122 @@ def RecGroup.openTyVarsAux (d : Nat) (Xs : List Nat) :
       e.openTyVarsAux (d + RecAnn.params a) Xs :: RecGroup.openTyVarsAux d Xs as rest
 end
 
+/-- Opening scoped type variables only rewrites type annotations, so it cannot
+    introduce an inference-produced `found` wrapper. -/
+theorem Expr.FoundFree.openTyVarsAux {e : Expr} (h : e.FoundFree)
+    (d : Nat) (Xs : List Nat) : (e.openTyVarsAux d Xs).FoundFree := by
+  revert h d Xs
+  induction e using Expr.rec_strong with
+  | primLit p =>
+    intro _ _ _
+    simp only [Expr.openTyVarsAux]
+    exact .primLit
+  | primBinOp op =>
+    intro _ _ _
+    simp only [Expr.openTyVarsAux]
+    exact .primBinOp
+  | var i =>
+    intro _ _ _
+    simp only [Expr.openTyVarsAux]
+    exact .var
+  | ctor name =>
+    intro _ _ _
+    simp only [Expr.openTyVarsAux]
+    exact .ctor
+  | lambda ann body ih =>
+    intro h d Xs
+    cases h with
+    | lambda hbody =>
+      simp only [Expr.openTyVarsAux]
+      exact .lambda (ih hbody d Xs)
+  | app f arg ihf iharg =>
+    intro h d Xs
+    cases h with
+    | app hf ha =>
+      simp only [Expr.openTyVarsAux]
+      exact .app (ihf hf d Xs) (iharg ha d Xs)
+  | letIn ann rhs body ihrhs ihbody =>
+    intro h d Xs
+    cases h with
+    | letIn hrhs hbody =>
+      cases ann with
+      | none =>
+        simp only [Expr.openTyVarsAux]
+        exact .letIn (ihrhs hrhs d Xs) (ihbody hbody d Xs)
+      | some σ =>
+        simp only [Expr.openTyVarsAux]
+        exact .letIn (ihrhs hrhs (d + σ.paramCount) Xs) (ihbody hbody d Xs)
+  | match_ scrut branches ihscrut ihbranches =>
+    intro h d Xs
+    cases h with
+    | match_ hscrut hbranches =>
+      simp only [Expr.openTyVarsAux]
+      refine .match_ (ihscrut hscrut d Xs) ?_
+      clear hscrut ihscrut
+      revert ihbranches hbranches
+      induction branches with
+      | nil =>
+        intro _ _ branch hmem
+        simp only [BranchList.openTyVarsAux] at hmem
+        cases hmem
+      | cons head rest ih =>
+        obtain ⟨pat, body⟩ := head
+        intro ihbranches hbranches branch hmem
+        simp only [BranchList.openTyVarsAux, List.mem_cons] at hmem
+        rcases hmem with hmem | hmem
+        · subst branch
+          exact ihbranches pat body List.mem_cons_self
+            (hbranches (pat, body) List.mem_cons_self) d Xs
+        · exact ih
+            (fun p b hmem => ihbranches p b (List.mem_cons_of_mem _ hmem))
+            (fun branch hmem => hbranches branch (List.mem_cons_of_mem _ hmem))
+            branch hmem
+  | found ty inner ih =>
+    intro h _ _
+    cases h
+  | letRec anns bindings body ihbindings ihbody =>
+    intro h d Xs
+    cases h with
+    | letRec hbindings hbody =>
+      simp only [Expr.openTyVarsAux]
+      refine .letRec ?_ (ihbody hbody d Xs)
+      have hrec : ∀ (anns : List (Option PolyTy)) (bindings : List Expr),
+          (∀ binding ∈ bindings, ∀ d Xs, binding.FoundFree →
+            (binding.openTyVarsAux d Xs).FoundFree) →
+          (∀ binding ∈ bindings, binding.FoundFree) →
+          ∀ binding ∈ RecGroup.openTyVarsAux d Xs anns bindings, binding.FoundFree := by
+        intro anns bindings
+        induction bindings generalizing anns with
+        | nil =>
+          intro _ _ binding hmem
+          simp only [RecGroup.openTyVarsAux] at hmem
+          cases hmem
+        | cons binding rest ih =>
+          intro hopen hfound
+          cases anns with
+          | nil =>
+            intro binding' hmem
+            simp only [RecGroup.openTyVarsAux, List.mem_cons] at hmem
+            rcases hmem with hmem | hmem
+            · subst binding'
+              exact hopen binding List.mem_cons_self d Xs
+                (hfound binding List.mem_cons_self)
+            · exact ih []
+                (fun e he d' Xs' hff => hopen e (List.mem_cons_of_mem _ he) d' Xs' hff)
+                (fun e he => hfound e (List.mem_cons_of_mem _ he)) binding' hmem
+          | cons ann anns =>
+            intro binding' hmem
+            simp only [RecGroup.openTyVarsAux, List.mem_cons] at hmem
+            rcases hmem with hmem | hmem
+            · subst binding'
+              exact hopen binding List.mem_cons_self (d + RecAnn.params ann) Xs
+                (hfound binding List.mem_cons_self)
+            · exact ih anns
+                (fun e he d' Xs' hff => hopen e (List.mem_cons_of_mem _ he) d' Xs' hff)
+                (fun e he => hfound e (List.mem_cons_of_mem _ he)) binding' hmem
+      exact hrec anns bindings
+        (fun binding hmem d' Xs' hff => ihbindings binding hmem hff d' Xs') hbindings
+
 mutual
 /-- Close a named scoped type-variable block throughout an expression. The
     binder-depth bookkeeping exactly mirrors `Expr.openTyVarsAux`. -/
@@ -2838,6 +2954,12 @@ private theorem List.mem_zip_map_right_ex {α β γ : Type _} {g : β → γ} :
 /-- Open an enclosing scheme's scoped type variables throughout a (bound) term:
     the term-level analogue of `PolyTy.openVars`. -/
 def Expr.openTyVars (Xs : List Nat) (e : Expr) : Expr := e.openTyVarsAux 0 Xs
+
+/-- Top-level scoped-type-variable opening preserves the absence of inferred
+    `found` wrappers. -/
+theorem Expr.FoundFree.openTyVars {e : Expr} (h : e.FoundFree) (Xs : List Nat) :
+    (e.openTyVars Xs).FoundFree := by
+  exact h.openTyVarsAux 0 Xs
 
 /-- Top-level coincidence (`d = 0`): type-beta at fresh `fvar`s is scoped opening. -/
 theorem Expr.instTy_fvar_eq_openTyVars (Xs : List Nat) (e : Expr) :
