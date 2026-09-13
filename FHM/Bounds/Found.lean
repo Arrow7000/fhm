@@ -72,6 +72,8 @@ def synthNodes (typed : TypedLowered) :
       (Typed.Result [] [] typed.inference.output × List NodeReport) := do
   unless typed.lowering.provenanceTotal && typed.sourceTypesTotal do
     throw "bounds: incomplete typed provenance"
+  unless typed.lowering.counts.problems.isEmpty do
+    throw "bounds: unresolved or duplicate count binder scope"
   let result ← Typed.walk [] [] [] typed.inference.output
   unless exactlyOnce (logicalCorePaths typed.inference.output) (result.nodes.map (·.path)) do
     throw "bounds: incomplete or duplicate typed node report"

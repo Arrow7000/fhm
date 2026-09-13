@@ -176,3 +176,49 @@ Validation after 3b: `lake build FHM FHMBounds` passes (754 jobs), the 17 typed
 and seven scheme regressions pass, and the scratch HM audit is unchanged. No
 new proof placeholders, axioms or partial definitions were added. Legacy CLI
 behaviour remains untouched.
+
+2026-09-13, checkpoint 3c: count telescopes now survive construction-time
+provenance lowering in `Lowered.counts`, keyed by Core binder sites. Their
+identities are injectively encoded from source ID, recursive member and count
+parameter position, not reused local rigid indices. Nested scopes shadow by
+name while captured outer identities remain unchanged. Compiler cloning and
+rebasing move sites, not count identities; eliminated-arm metadata follows the
+existing emitted-arm construction trace rather than being guessed afterwards.
+
+Carried annotations resolve count names while they are lowered. Unresolved
+names and duplicate count binders are retained as explicit BL problems; they
+do not cause HM to reject a bounds-only error. `Found.synthNodes` rejects these
+problems before checking. The legacy verified `lowerExpr` remains unchanged;
+the provenance-aware front end now preserves this extra static information.
+
+`Scope` proves count-ID injectivity, lexical membership transport under
+renaming, count-evaluation transport and invariance of HM-erased types under
+count renaming. These are not a complete formal correctness theorem for the
+front-end name resolver or count metadata. Six executable regressions cover
+member isolation, shadowing/capture, invalid-name HM blindness, duplicate
+binders, identity-preserving rebasing and retention of distinct cloned sites.
+Symbolic checking remains disabled
+until the quantified scheme/generalization contract is proved and integrated.
+
+2026-09-13, checkpoint 3d: `CountSubstitution` provides simultaneous substitution
+of selected stable rigid identities, retaining captured identities and the
+separate inferable namespace. For finite Nat replacements it proves evaluation
+transport, validity transport (premises and goals together), semantic-subtyping
+transport and unchanged HM type skeletons. None require solver axioms. Theorems
+are deliberately about count substitution, not permission to generalize an
+escaping unknown or to instantiate an unchecked recursive contract.
+
+Four executable regressions and additional ordinary Lean proofs cover
+capture retention, replacement assignments, namespace isolation, simultaneous
+nonrecursive replacement and the unsoundness of leaving old premises behind.
+Together with stable telescope preservation, these form the foundation for a
+scoped quantified-bounds judgement. The old `BScheme` closed-binder format
+alone is insufficient for arbitrary captured outer counts; do not silently
+flatten those captures into the scheme's quantified slots.
+
+Validation after 3d: `lake build FHM FHMBounds FHMEditorTests fhm` passes
+(1703 jobs). All 34 executable BL regressions pass: 17 typed, seven closed
+scheme, six front-end count-scope and four capture-safe substitution tests.
+The rebuilt CLI's scratch HM audit remains 28 accepted / eight expected
+rejections / zero unexpected failures; the unverified-boundary guard passes.
+No new axioms, proof placeholders or partial definitions were introduced.
