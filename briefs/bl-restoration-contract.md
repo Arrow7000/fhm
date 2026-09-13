@@ -149,3 +149,30 @@ bounds spines. Tests cover scalar application, curried arithmetic, exact List
 contracts and wrong-length rejection (16 regressions total). Count-scheme and HM
 scheme instantiation remain separate pending work; no unification shortcuts or
 unproved count substitutions were enabled.
+
+2026-09-13, checkpoint 3b: `Bounds.Scheme` proves Boolean scheme well-formedness
+soundness, executable `applyArgs` correspondence to `Count.Subst`/`BoundsTy.Subst`,
+and `BScheme.instantiate?` soundness against `InstantiatesTo`. No solver axioms
+are required. For finite count arguments, substitution commutes with evaluation
+under the induced Nat assignment. `instantiateNat` carries substitution and
+finite-argument evidence; it conservatively rejects arguments containing `inf`.
+Literal infinity endpoints in scheme bodies remain legal. Seven executable
+regressions cover finite/symbolic arguments, arity, binder scope and infinity.
+
+Front-end scope audit: `lowerPolyAnn`/`lowerAnnList` in ordinary and
+provenance-aware lowering do not thread `Binding.natBinders`. `lowerCountSolid`
+explicitly maps an unresolved surface count name to rigid index 0 as a temporary
+scaffold. Thus the typed artifact does not yet justify named count scopes or
+quantification. The new typed annotation decoder now rejects symbolic counts
+until their telescopes are preserved; all 17 typed-slice regressions pass.
+
+Next design/proof checkpoint: preserve count telescopes by stable binder
+identity without perturbing the proved HM `PolyTy`/D2 rules; establish count
+scope, generalization, simultaneous HM/bounds scheme instantiation and escape
+contracts. `Scheme` is a certified reusable foundation, not yet a wired
+count-polymorphic walk. Recommend high reasoning for this interconnected step.
+
+Validation after 3b: `lake build FHM FHMBounds` passes (754 jobs), the 17 typed
+and seven scheme regressions pass, and the scratch HM audit is unchanged. No
+new proof placeholders, axioms or partial definitions were added. Legacy CLI
+behaviour remains untouched.

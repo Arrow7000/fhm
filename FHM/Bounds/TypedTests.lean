@@ -92,7 +92,12 @@ private def cases : List (String × Bool) := [
   ("count holes explicitly unsupported", rejects
     (.found intsTy (.letIn (some ⟨0, .bl .hole .hole intTy⟩)
       (ints [1, 2]) (.found intsTy (.var 0))))
-    "bounds: count holes unsupported in typed slice")]
+    "bounds: count holes unsupported in typed slice"),
+  ("unscoped symbolic annotation explicitly rejected", rejects
+    (.found (.arrow intsTy intsTy)
+      (.lambda (some (.bl (.solid (.var ⟨.rigid, 0⟩)) (.solid (.var ⟨.rigid, 0⟩)) intTy))
+        (.found intsTy (.var 0))))
+    "bounds: symbolic annotation needs preserved count scope")]
 
 private def provenanceSlice : Bool :=
   let ctors := (elabDecls preludeDecls).getD []
