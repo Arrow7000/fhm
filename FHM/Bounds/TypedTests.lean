@@ -51,11 +51,32 @@ private def cases : List (String × Bool) := [
   ("fresh List parameter bounds explicitly deferred", rejects
     (.found (.arrow intsTy intsTy) (.lambda none (.found intsTy (.var 0))))
     "bounds: unannotated non-scalar parameter unsupported in typed slice"),
-  ("general application explicitly unsupported", rejects
+  ("general scalar application", match walk [] [] []
     (.found intTy (.app
       (.found (.arrow intTy intTy) (.lambda none (.found intTy (.var 0))))
-      (.found intTy (.primLit (.int 1)))))
-    "bounds: expression form unsupported in typed slice"),
+      (.found intTy (.primLit (.int 1))))) with
+    | .ok r => r.bounds.pretty == "Int" && r.nodes.length == 4
+    | _ => false),
+  ("curried primitive application", match walk [] [] []
+    (.found intTy (.app
+      (.found (.arrow intTy intTy) (.app
+        (.found (.arrow intTy (.arrow intTy intTy)) (.primBinOp .intAdd))
+        (.found intTy (.primLit (.int 1))))) (.found intTy (.primLit (.int 2))))) with
+    | .ok r => r.bounds.pretty == "Int" && r.nodes.length == 5
+    | _ => false),
+  ("List application preserves checked contract", match walk [] [] []
+    (.found intsTy (.app
+      (.found (.arrow intsTy intsTy)
+        (.lambda (some (.bl (.solid (.lit 2)) (.solid (.lit 2)) intTy))
+          (.found intsTy (.var 0)))) (ints [1, 2]))) with
+    | .ok r => r.bounds.pretty == "BL 2 2 Int"
+    | _ => false),
+  ("List application rejects incorrect length", rejects
+    (.found intsTy (.app
+      (.found (.arrow intsTy intsTy)
+        (.lambda (some (.bl (.solid (.lit 2)) (.solid (.lit 2)) intTy))
+          (.found intsTy (.var 0)))) (ints [1])))
+    "bounds: interval inclusion not established (invalid or unknown)"),
   ("incorrect child payload rejected", rejects
     (.found (.arrow intTy (.prim .char)) (.lambda none
       (.found (.prim .char) (.primLit (.int 1)))))
