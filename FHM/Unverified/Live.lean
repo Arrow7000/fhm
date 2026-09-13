@@ -1,9 +1,9 @@
-import FHM.Surface.Parse
+import FHM.Unverified.Surface.Parse
 import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Pretty
-import FHM.EvaluateUnsafe
-import FHM.PipelineShared
+import FHM.Unverified.EvaluateUnsafe
+import FHM.Unverified.PipelineShared
 import FHM.Bounds.Erase
 import FHM.Bounds.Pipeline
 import FHM.Bounds.Ann
@@ -16,17 +16,18 @@ import Lean.Data.Json
 
 Read a `.fhm` source file (or stdin) and run:
 
-`parse → [hmRequireNoBl] → eraseProgram → lower → infer → assembleProgramReport
- → [Check if --bl] → exh → elaborate → evaluateUnsafe`
+`parse → lower → inferFound → HM report → exh → erase → evaluateUnsafe`
 
-`--bl` selects `BoundsMode.bl` (allow `BL` syntax). Default is HM: reject BL with a
-clear error (D16). Erase always runs. Under `--bl`, `ofLower` (post-infer binder
+Default HM admits carried `BL` annotations under Path R: inference ignores
+bounds, reports the erased `List` shape, and performs no bounds validation.
+`--bl` selects the separate legacy bounds pipeline: surface erase, then
+`ofLower` (post-infer binder
 spine, mono or scheme) + origin `synthBounds` / `checkProgramAnns` then Core
 `checkProgramMatches` / BoundCovers. Schemes pack/inst; D24 fresh List λ-params.
 HM mode keeps surface `checkExhaustive`.
 
-Display types come from `ProgramReport` (assembled once after erase+infer) —
-one type line per binder; no parallel `bounds:` dump.
+HM display types come from the producer's actual group-exit binder schemes.
+The legacy bounds mode retains its `ProgramReport` assembly/checking behavior.
 
 ## CLI
 
@@ -146,8 +147,8 @@ structure CheckedProgram where
   checkNs : Nat
   elaborated : Expr
   mode : BoundsMode := .default
-  /-- Erase package (anns on binders). -/
-  erased : ErasedProgram
+  /-- Legacy BL erase package; HM neither constructs nor needs its proof. -/
+  erased : Option ErasedProgram := none
   /-- De Bruijn projection of erase anns (Check spine only). -/
   boundsAnns : ProgramBoundsAnns := {}
   /-- Names for `ofLower` (0 = innermost). From `binderEnvFromGroups` post-infer. -/
@@ -165,7 +166,37 @@ structure LiveArgs where
   bl : Bool := false
   path : Option String := none
 
-/-- Parse → HM gate → erase → lower → infer → exhaustiveness → elaborate. -/
+/-- Read actual group-exit schemes by logical binder identity. Empty surface
+groups emit no Core node; every nonempty top-level group emits one `letRec`.
+Neither inferred RHS monotypes nor the deleted elaboration wrapper spine are
+used to reconstruct generalisation. -/
+private def foundTopBindingTypes (groups : List (List Surface.Binding))
+    (core : Expr) (schemes : BinderSchemeMap) : Option (List (ValName × PolyTy)) :=
+  let rec go (groups : List (List Surface.Binding)) (path : CorePath) :
+      Option (List (ValName × PolyTy)) := do
+    match groups with
+    | [] => pure []
+    | group :: rest =>
+        if group.isEmpty then go rest path
+        else
+          let here ← group.zipIdx.mapM fun (binding, member) => do
+            -- Declared members are validated by inference but intentionally
+            -- absent from the inferred-scheme map. Read their actual lowered
+            -- declaration, including any head-parameter desugaring.
+            let declared := match core.atCorePath path with
+              | some (.letRec anns _ _) => anns[member]?.getD none
+              | _ => none
+            let inferred := (schemes.find? fun (site, _) =>
+              site == .letRec path member).map (·.2)
+            let scheme ← declared.orElse (fun _ => inferred)
+            pure (binding.name, scheme)
+          let later ← go rest (path ++ [.letRecBody])
+          pure (here ++ later)
+  go groups []
+
+/-- Parse → erase → lower → infer → exhaustiveness → erased execution.
+HM mode consumes the rich producer output; the legacy bounds branch remains
+separate until its downstream migration. -/
 def checkPipeline (mode : BoundsMode) (src : String) :
     IO (Except PipelineErr CheckedProgram) := do
   let tCheck0 ← IO.monoNanosNow
@@ -181,14 +212,10 @@ def checkPipeline (mode : BoundsMode) (src : String) :
         }
     | .ok p => pure p
 
-  if mode == .hm then
-    match hmRequireNoBl p with
-    | .error msg =>
-        return .error { stage := .bounds, message := msg }
-    | .ok _ => pure ()
-
-  let ep := eraseProgram p
-  let p := ep.toProgram
+  -- The legacy erase package contains an unfinished no-bounds proof. Do not
+  -- construct it in HM mode: Core inference itself owns Path R erasure.
+  let ep := if mode == .hm then none else some (eraseProgram p)
+  let p := (ep.map (·.toProgram)).getD p
 
   let (ctors, c) ← match lowerProgram p with
     | none =>
@@ -202,19 +229,39 @@ def checkPipeline (mode : BoundsMode) (src : String) :
         return .error { stage := .lower, message }
     | some x => pure x
 
-  let τ ← match infer c.freshFloor ⟨[], ctors⟩ c with
-    | none =>
-        return .error {
-          stage := .typecheck
-          message := "typechecking failed"
-        }
-    | some (_, _, τ) => pure τ
+  let (τ, found?) ←
+    if mode == .hm then
+      match inferFound ctors c with
+      | none => return .error { stage := .typecheck, message := "typechecking failed" }
+      | some found => pure (found.ty, some found)
+    else
+      match infer c.freshFloor ⟨[], ctors⟩ c with
+      | none => return .error { stage := .typecheck, message := "typechecking failed" }
+      | some (_, _, τ) => pure (τ, none)
   let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
   -- Slice 2: Core body env order (0 = innermost) from the same groups Infer used.
   let binderEnv := binderEnvFromGroups p.groups
-  let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
-  let report0 := assembleProgramReport p.groups (collectTopSchemes c) bodyσ ep
+  let boundsAnns := (ep.map (ProgramBoundsAnns.ofLower binderEnv)).getD {}
+  let report0 ← match found? with
+    | some found =>
+        let bindings ← match foundTopBindingTypes p.groups c found.binderSchemes with
+          | some bindings => pure bindings
+          | none => return .error {
+              stage := .typecheck
+              message := "internal inference artifact error: missing top-level binder scheme"
+            }
+        -- HM presentation is bounds-erased, even when a source ascription
+        -- carries bounds syntax. Bounds reports belong only to the BL branch.
+        pure { bindings := bindings.map fun (name, hm) => { name, hm := hm.eraseBounds }
+               programHm := bodyσ.eraseBounds }
+    | none =>
+        match ep with
+        | some ep => pure (assembleProgramReport p.groups (collectTopSchemes c) bodyσ ep)
+        | none => return .error {
+            stage := .typecheck
+            message := "internal pipeline error: missing inference result"
+          }
   let report ←
     if mode == .bl then
       match FHM.Bounds.Check.checkProgramAnns c τ binderEnv boundsAnns with

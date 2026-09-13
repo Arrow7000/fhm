@@ -1,5 +1,5 @@
 import FHM.BLSketch
-import FHM.BLSketch.Pretty
+import FHM.Unverified.BLSketch.Pretty
 
 /-! # BLSketch × Z3 demos
 

@@ -14,6 +14,8 @@ There's a full lexer and parser for an Elm-flavoured concrete syntax, and a live
 
 ## Architecture
 
+Production `partial def` implementations live under [`FHM/Unverified/`](./FHM/Unverified/README.md). The default `lake build` keeps those operational modules outside the verified import closure; CLI, editor, and Z3 targets opt into them. Run `bash scripts/check-unverified-boundary.sh` to check that boundary.
+
 A high-level overview of the pipeline:
 
 ```text
@@ -64,7 +66,7 @@ This is where we actually work out a program's type, instead of just declaring w
 - `infer` and `inferCore`: the executable versions of that relation.
 - `typecheck`: the whole-program entry point. It runs from the empty context and generalises the result into a closed scheme.
 
-### [`SurfaceLang.lean`](./FHM/SurfaceLang.lean), [`Surface/Lex.lean`](./FHM/Surface/Lex.lean), [`Surface/Parse.lean`](./FHM/Surface/Parse.lean)
+### [`SurfaceLang.lean`](./FHM/SurfaceLang.lean), [`Surface/Token.lean`](./FHM/Surface/Token.lean), [`Unverified/Surface/Lex.lean`](./FHM/Unverified/Surface/Lex.lean), [`Unverified/Surface/Parse.lean`](./FHM/Unverified/Surface/Parse.lean)
 
 This is what the language looks like to a user: real string names, data declarations, and syntactic sugar for pairs, lists, `if`, and so on. Lex and Parse turn source text into that AST – Elm-flavoured concrete syntax, with F#-style `match` and `{a b} τ` schemes for polymorphism. Infix like `+`/`-`/`<`/`::` and multi-arg lambdas are desugared during parsing. Lexer/parser _correctness_ is deliberately not proven; the verified story starts at the Surface AST.
 
@@ -104,12 +106,34 @@ Data-declaration elaboration: surface `type` decls become the Core constructor e
 
 A single entry point that re-exports the main theorems with plain-English glosses, plus the safe pipeline helpers `elaborateSafe` / `runSafe`. Also keeps a living `#print axioms` guard. Worth reading first if you're new to the project.
 
-### [`EvaluateUnsafe.lean`](./FHM/EvaluateUnsafe.lean), [`Live.lean`](./FHM/Live.lean), [`Diagnose.lean`](./FHM/Diagnose.lean)
+### [`Unverified/EvaluateUnsafe.lean`](./FHM/Unverified/EvaluateUnsafe.lean), [`Unverified/Live.lean`](./FHM/Unverified/Live.lean), [`Unverified/Diagnose.lean`](./FHM/Unverified/Diagnose.lean)
 
-The formal evaluator is fuelled. For actually running programs – including naive recursion that blows past any fixed fuel – there's an unbounded evaluator. The unified `fhm` CLI (see `FHM/Cli.lean`) exposes:
+The formal evaluator is fuelled. For actually running programs – including naive recursion that blows past any fixed fuel – there's an unbounded evaluator. The unified `fhm` CLI (see `FHM/Unverified/Cli.lean`) exposes:
 
 - `fhm` / `fhm run` — parse, lower, infer (print binding and body types), exhaustiveness, evaluate (`Live.lean`; `--json` for machine output)
 - `fhm diagnose` — parse + hover symbols as JSON for editors (`Diagnose.lean` / `EditorSupport.lean`)
+
+The default CLI and editor path is HM-only: it consumes `inferFound`, reads
+validated declarations or inferred group-exit schemes by binder identity, and
+joins occurrence/expression types through the separate provenance map. Carried
+`BL` annotations display as their HM `List` shape; no length checking runs here.
+The `--bl` CLI remains a legacy, separately unfinished pipeline.
+
+An annotation is a ceiling on the binding's exported scheme, not necessarily
+an expected type pushed into an otherwise unconstrained RHS. Definition hovers
+show that validated scheme; RHS hovers show the monotypes actually synthesized.
+Explicit schemes such as `let id : {a} a -> a = \\x -> x` work. Scoped header
+type-variable sugar such as `let id {a} (x : a) : a = x` is still unsupported by
+the D2 front end; use the explicit scheme form for now.
+
+Operational regression checks:
+
+```sh
+lake build FHMEditorTests fhm
+node scripts/hm-editor-smoke.mjs
+node editors/web/scripts/hover-sweep.mjs editors/web/fixtures/hover-rich.fhm
+bash scripts/check-unverified-boundary.sh
+```
 
 Pair `fhm run` with `scripts/watch-live.sh` and a `.fhm` file (see `scratch/live.fhm`) for a save-triggered, REPL-like loop. The Monaco playground under `editors/web/` talks to the same binary over HTTP.
 

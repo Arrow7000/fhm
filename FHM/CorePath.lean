@@ -8,14 +8,23 @@ transparent: adding or removing found wrappers never changes a path.
 
 /-- One edge from a Core expression to an immediate logical child. -/
 inductive CoreStep where
+  /-- Body of a `lambda`. -/
   | lambdaBody
+  /-- Function of an `app`. -/
   | appFun
+  /-- Argument of an `app`. -/
   | appArg
+  /-- Bound RHS of a `letIn`. -/
   | letRhs
+  /-- Body of a `letIn`. -/
   | letBody
+  /-- Scrutinee of a `match_`. -/
   | matchScrut
+  /-- Body of the `index`-th match branch. -/
   | matchBranch (index : Nat)
+  /-- RHS of the `member`-th `letRec` binding. -/
   | letRecRhs (member : Nat)
+  /-- Body of a `letRec`. -/
   | letRecBody
   deriving Repr, DecidableEq, BEq
 

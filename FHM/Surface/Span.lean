@@ -1,4 +1,4 @@
-import FHM.Surface.Lex
+import FHM.Surface.Token
 
 namespace Surface.Span
 

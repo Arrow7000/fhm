@@ -1,8 +1,9 @@
-import FHM.Surface.Parse
+import FHM.Unverified.Surface.Parse
 import FHM.Surface.Span
-import FHM.Surface.Lex
+import FHM.Unverified.Surface.Lex
 import FHM.SurfaceBridge
-import FHM.PipelineShared
+import FHM.Unverified.HMArtifacts
+import FHM.Unverified.PipelineShared
 import FHM.InferW
 import FHM.Pretty
 import FHM.Decls
@@ -15,14 +16,14 @@ import Lean.Data.Json
 /-!
 # Editor support helpers
 
-Shared collection of hover symbols (bindings + type/ctor decls) for
-`fhm diagnose`. Display types come from `ProgramReport` (same assemble as Live).
+HM-only `fhm diagnose` consumes found-producing inference and separate
+provenance. Binding definitions use inferred schemes or validated declarations;
+occurrences and authored expressions use their actual found payloads, displayed
+with bounds erased. Source locations and JSON presentation remain unverified.
 
-v3: structural walk emits complete `RangedSymbol`s (span + type + scope) at each
-binder site — no parallel-stream zip. Top schemes are a name map from inference
-(SCC order independent). Binder spans are consumed in parse/source order.
-Resolves by def-span containment first, else name+innermost scope. Type/ctor
-symbols use program-wide scope. Lit/op tokens from Core prim types.
+The old structural guesses are retained only for `collectHoverLegacyBL`; they
+are not used by the successful HM editor path. The v3 span/scope JSON contract
+remains compatible with the existing VS Code and web consumers.
 -/
 
 open Surface.Parse
@@ -915,13 +916,9 @@ def explainTypeMismatch (ctors : CtorEnv) (ke : KindEnv)
       match hmInfer ctors probe with
       | none =>
           s!"typechecking failed in `{nm}` (ascribed {wantStr}; RHS also fails without ascription)"
-      | some (eOut, _) =>
-          let pairs := zipBindingTypes (acc ++ [g']) (collectTopSchemes eOut)
-          match pairs.find? (fun p => p.1 == b.name) with
-          | some (_, got) =>
-              s!"type mismatch in `{nm}`: expected {wantStr}, got {got.pretty}"
-          | none =>
-              s!"typechecking failed in `{nm}` (ascribed {wantStr})"
+      | some (_, ty) =>
+          let got := genScheme [] [] ty
+          s!"type mismatch in `{nm}`: expected {wantStr}, got {got.pretty}"
 
 /-- Progressive HM location: first top-level group that fails when added, else body.
 Each probe uses `desugarGroups acc (var firstName)` so prior bindings stay in scope.
@@ -982,7 +979,7 @@ diagnostic — do **not** silently swallow errors (diagnose reliability).
 
 Lower / typecheck failures now return a diagnostic with a best-effort span
 (unbound use site, progressive binder, or body) instead of collapsing to (1,1). -/
-def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
+def collectHoverLegacyBL (src : String) (p : Surface.Program) (binders : List BinderSpan)
     (sp : SpannedProgram) : HoverReport :=
   -- Pre-erase program for the structural walk: `eraseProgram` clears `natBinders`
   -- but parse binder spans still emit `.count` entries.
@@ -1034,6 +1031,80 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
               !(binderSyms.any fun b => b.name == s.name && b.kind == s.kind)
           let syms := binderSyms ++ collectLitOpSymbols src ctors ++ preludeSyms
           { symbols := syms, programTy := report.programPretty, diagnostics := diags }
+
+/-- HM-only editor inference. Source token locations are unverified plumbing;
+    every displayed value type is read from the actual inferred artifacts.
+    Bounds annotations are retained for Path R, but no Bounds checker runs. -/
+def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
+    (sp : SpannedProgram) : HoverReport :=
+  let fail (d : HoverDiag) : HoverReport :=
+    { symbols := [], programTy := "", diagnostics := [d] }
+  match lowerDataDeclsIn preludeKindEnv p.decls with
+  | none => fail (locateDeclFail sp "declaration lowering failed (duplicate type/ctor, bad field, or unknown type)")
+  | some userCore =>
+    match elabDecls (preludeDecls ++ userCore) with
+    | none => fail (locateDeclFail sp "declaration elaboration failed (ill-formed data decls)")
+    | some ctors =>
+      let ke := DataDecls.kindEnv (preludeDecls ++ userCore)
+      let scope := programWideScope binders sp
+      match FHM.Unverified.HMArtifacts.programSpanned p sp scope with
+      | none => fail (diagAtSpan "internal parser provenance shape mismatch" (some scope))
+      | some tree =>
+        match SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree with
+        | none => fail (locateLowerFail src p sp)
+        | some lowered =>
+          match SurfaceBridge.Provenance.inferWithProvenance ctors lowered with
+          | none => fail (locateTypecheckFail ctors ke p binders sp)
+          | some typed =>
+            if !lowered.provenanceTotal || !typed.sourceTypesTotal || !typed.patternBinderTypesTotal then
+              fail (diagAtSpan "internal inferred provenance coverage failure" (some scope))
+            else
+              let locations := FHM.Unverified.HMArtifacts.collect binders p.term
+                (SurfaceBridge.Provenance.identify tree)
+              let values := locations.binders.filterMap fun b =>
+                (FHM.Unverified.HMArtifacts.binderType typed b.site).map fun ty =>
+                  mkSym b.name b.kind.toString ty b.span b.scope
+              let occurrences := locations.occurrences.filterMap fun occ => do
+                let source ← lowered.sourceNodes.find? (fun n => n.id == occ.id)
+                let (_, ty) ← (typed.typesForSource occ.id).head?
+                let name := if occ.kind == "lit" || occ.kind == "op" then
+                  FHM.Unverified.HMArtifacts.spanText src source.span
+                  else occ.name
+                let kind := if occ.kind == "val" then
+                  ((locations.binders.filter fun b => b.name == occ.name && b.scope.contains
+                    source.span.startLine source.span.startCol).mergeSort
+                    (fun a b => a.scope.area ≤ b.scope.area)).head? |>.map (·.kind.toString) |>.getD "val"
+                  else occ.kind
+                pure (mkSym name kind ty.eraseBounds.pretty source.span source.span)
+              -- Type declarations and scoped type/count variables are syntax
+              -- facts, not inferred value facts. Never invent a missing type.
+              let syntaxSyms := binders.filterMap fun b =>
+                if locations.binders.any (fun s => s.span == b.span) then none
+                else if b.kind == .type then
+                  (p.decls.find? (fun d => prettyTyName d.name == b.name)).map fun d =>
+                    mkSym b.name "type" (prettySurfaceDataDecl d) b.span scope
+                else if b.kind == .ctor then
+                  (LookupList.get? ctors (.mk b.name)).map fun c =>
+                    mkSym b.name "ctor" c.toTy.eraseBounds.pretty b.span scope
+                else if b.kind == .count then
+                  some (mkSym b.name "count" "count variable (unchecked in HM mode)" b.span (b.scope?.getD b.span))
+                else if b.kind == .param then
+                  let decl := (p.decls.zip sp.declSpans).find? fun (_, s) =>
+                    FHM.Unverified.HMArtifacts.inside b.span s
+                  let label := match decl with
+                    | some (d, _) => s!"type variable (of {prettyTyName d.name})"
+                    | none => "type variable (scheme binder)"
+                  let sc := match decl with
+                    | some (_, s) => s
+                    | none => b.scope?.getD scope
+                  some (mkSym b.name "param" label b.span sc)
+                else none
+              let prelude := (preludeTypeCtorSymbols ctors scope).filter fun s =>
+                !(syntaxSyms.any fun b => b.name == s.name && b.kind == s.kind)
+              let sugarOps := (collectLitOpSymbols src ctors).filter fun s => s.name == "::"
+              { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences
+                programTy := (genScheme [] [] typed.inference.ty.eraseBounds).pretty
+                diagnostics := [] }
 
 /-- Parse-error diagnostic JSON object. -/
 def parseDiagJson (e : ParseError) : Lean.Json :=

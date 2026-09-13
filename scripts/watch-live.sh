@@ -62,19 +62,15 @@ fi
 
 # Lean sources that actually feed `fhm` (not scratch modules under FHM/).
 PIPELINE_SRCS=(
-  FHM/PipelineShared.lean
-  FHM/Cli.lean
-  FHM/Live.lean
-  FHM/Diagnose.lean
+  FHM/Unverified
   FHM/Pretty.lean
-  FHM/EvaluateUnsafe.lean
   FHM/SurfaceBridge.lean
   FHM/InferW.lean
   FHM/Core.lean
   FHM/SurfaceLang.lean
   FHM/Surface
   FHM/Bounds
-  lakefile.lean
+  lakefile.toml
 )
 
 if [[ ! -f "$FILE" ]]; then
@@ -87,7 +83,7 @@ needs_rebuild() {
     return 0
   fi
   local newest
-  newest="$(find "${PIPELINE_SRCS[@]}" -type f -name '*.lean' -newer "$BIN" 2>/dev/null | head -1)"
+  newest="$(find "${PIPELINE_SRCS[@]}" -type f \( -name '*.lean' -o -name 'lakefile.toml' \) -newer "$BIN" 2>/dev/null | head -1)"
   [[ -n "$newest" ]]
 }
 

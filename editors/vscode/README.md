@@ -4,8 +4,9 @@
 
 - **Syntax highlighting** for `.fhm` via a TextMate grammar generated from `Surface.Lex`
 - **Language config** — `--` / `{- -}` comments, brackets, auto-close
-- **Parse diagnostics on `didChange`** (debounced) via `fhm diagnose` — line/col from the existing parser
-- **Type-on-hover** via **span + scope** (v3): one structural walk emits complete symbols (def span + type + lexical scope together) in parse/source order; top schemes are a name map from inference (SCC reorder cannot desync). Lit/op tokens (incl. unit `()`), type/ctor uses, type-decl tyvar uses (decl-hull scope), and scheme-ann `{a}` tyvar uses included. Def-site / token span hit first; else name + innermost scope. Empty types show no hover — **no name-map fallback**. Tyvar params show `type variable (of T)` / `type variable (scheme binder)`.
+- **Parse, lowering and HM diagnostics on edit** (debounced) via `fhm diagnose`.
+- **Type-on-hover** (v3) from actual inferred artifacts and a separate source/Core provenance map. Definitions show validated declarations or inferred schemes; occurrences show independently instantiated monotypes. Lambda/pattern binders and authored compound expressions are covered. Exact spans win before name/scope fallback.
+- **HM only:** carried `BL` types display as `List`, without bounds checking. Scoped head-type-variable sugar is still unsupported; prefer explicit schemes and ordinary lambdas.
 
 ## Install via symlink (Cursor)
 
@@ -46,14 +47,15 @@ The symlink target is `~/.cursor/extensions/fhm.fhm-0.0.1` → `editors/vscode/`
 }
 ```
 
-Line/col are **1-based**, half-open `[start, end)` (same as the lexer). Missing `scope*` fields fall back to the def span (v2 compat).
+Line/col are **1-based UTF-16**, half-open `[start, end)` (same as the lexer/editor). Missing `scope*` fields fall back to the def span (v2 compat).
 
 ## Tests
 
 ```bash
-lake build FHMEditorTests   # #guard canaries in FHM/EditorSupportTests.lean
+lake build FHMEditorTests   # #guard canaries in FHM/Unverified/EditorSupportTests.lean
 lake build fhm
-.lake/build/bin/fhm diagnose scratch/live.fhm
+.lake/build/bin/fhm diagnose editors/web/fixtures/hover-rich.fhm
+node scripts/hm-editor-smoke.mjs
 ```
 
 ## Regenerate grammar
@@ -62,7 +64,7 @@ lake build fhm
 scripts/gen-fhm-tmgrammar.sh
 ```
 
-Keywords / ops / punct come from `keywordEntries`, `binOpSurfaces`, `punctSurfaces` in `FHM/Surface/Lex.lean`. Ident / comment / string patterns are TextMate approximations of the lexer.
+Keywords / ops / punct come from `keywordEntries`, `binOpSurfaces`, `punctSurfaces` in the total `FHM/Surface/Token.lean` module. Ident / comment / string patterns are TextMate approximations of the operational lexer in `FHM/Unverified/Surface/Lex.lean`.
 
 ## Settings
 

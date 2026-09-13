@@ -11,4 +11,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+      - name: Check verified/unverified boundary
+        run: bash scripts/check-unverified-boundary.sh
       - uses: leanprover/lean-action@v1

@@ -1,8 +1,8 @@
-import FHM.Surface.Parse
+import FHM.Unverified.Surface.Parse
 import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Pretty
-import FHM.EvaluateUnsafe
+import FHM.Unverified.EvaluateUnsafe
 import FHM.Bounds.Erase
 
 /-!

@@ -1,5 +1,5 @@
-import FHM.Live
-import FHM.Diagnose
+import FHM.Unverified.Live
+import FHM.Unverified.Diagnose
 
 /-!
 # Unified FHM CLI
