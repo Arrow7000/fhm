@@ -1,6 +1,7 @@
 import FHM.CorePath
 import FHM.Surface.Span
 import FHM.SurfaceBridge
+import FHM.Unverified.Surface.CountScope
 
 /-! # Construction-time Surface → Core provenance
 
@@ -14,6 +15,8 @@ tries to reconcile a finished Surface tree with finished Core.
 open Surface.Span
 
 namespace SurfaceBridge.Provenance
+
+open FHM.Bounds.Scope
 
 abbrev SourceId := Nat
 
@@ -185,6 +188,7 @@ structure Lowered where
   sourceTargets : SourceTargetMap
   coreOrigins : CoreOriginMap
   binderTargets : BinderTargetMap
+  counts : Metadata := {}
   deriving Repr
 
 namespace Lowered
@@ -194,14 +198,16 @@ def belowPath (pre : CorePath) (r : Lowered) : Lowered :=
     sourceTargets := r.sourceTargets.map fun (id, target) => (id, target.belowPath pre)
     coreOrigins := r.coreOrigins.map fun (path, origin) => (pre ++ path, origin)
     binderTargets := r.binderTargets.map fun (source, target) =>
-      (source, target.belowPath pre) }
+      (source, target.belowPath pre)
+    counts := r.counts.below pre }
 
 def metadata (expr : Expr) (parts : List Lowered) : Lowered :=
   { expr
     sourceNodes := parts.flatMap (fun r => r.sourceNodes)
     sourceTargets := parts.flatMap (fun r => r.sourceTargets)
     coreOrigins := parts.flatMap (fun r => r.coreOrigins)
-    binderTargets := parts.flatMap (fun r => r.binderTargets) }
+    binderTargets := parts.flatMap (fun r => r.binderTargets)
+    counts := Metadata.combine (parts.map (·.counts)) }
 
 end Lowered
 
@@ -223,7 +229,8 @@ def combineAuthored (source : SourceNode) (expr : Expr) (parts : List Lowered)
     sourceNodes := source :: children.sourceNodes
     sourceTargets := (source.id, .present [[]]) :: children.sourceTargets
     coreOrigins := ([], ⟨source, .authored⟩) :: generated ++ children.coreOrigins
-    binderTargets := binders ++ children.binderTargets }
+    binderTargets := binders ++ children.binderTargets
+    counts := children.counts }
 
 mutual
 def logicalCorePaths : Expr → List CorePath
@@ -294,18 +301,19 @@ def Lowered.provenanceTotal (r : Lowered) : Bool :=
 
 def wrapParamsWithProvenance (ke : KindEnv) (tvs : List ValName) (owner : SourceNode)
     (site : Nat → SurfaceBinderSite) :
-    Nat → List (ValName × Option Surface.Ty) → Lowered → Option Lowered
-  | _, [], rhs => some rhs
-  | index, (_name, ann) :: rest, rhs => do
-      let inner ← wrapParamsWithProvenance ke tvs owner site (index + 1) rest rhs
-      let ann' ← lowerAnn ke tvs ann
+    Nat → List (ValName × Option Surface.Ty) → Lowered → (scope : Lexical := []) → Option Lowered
+  | _, [], rhs, _ => some rhs
+  | index, (_name, ann) :: rest, rhs, scope => do
+      let inner ← wrapParamsWithProvenance ke tvs owner site (index + 1) rest rhs scope
+      let ann' ← CountScope.lowerAnnScoped ke tvs scope ann
       let child := inner.belowPath [.lambdaBody]
       pure {
         expr := .lambda ann' inner.expr
         sourceNodes := child.sourceNodes
         sourceTargets := child.sourceTargets
         coreOrigins := generatedOrigin owner [] (.valueParamLambda index) :: child.coreOrigins
-        binderTargets := (site index, .present [.lambda []]) :: child.binderTargets }
+        binderTargets := (site index, .present [.lambda []]) :: child.binderTargets
+        counts := Metadata.combine [CountScope.annotationMetadata (.lambda []) scope ann, child.counts] }
 
 def presentPathsFor (id : SourceId) (targets : SourceTargetMap) : List CorePath :=
   targets.flatMap fun (candidate, target) =>
@@ -426,129 +434,145 @@ def lowerTracedMatch (source : SourceNode) (scrut : Lowered)
       traced.trace.generated.map (fun (path, node) =>
         generatedOrigin source path (.patternCompilation node)) ++
       scrutPart.coreOrigins ++ armParts.flatMap (fun arm => arm.coreOrigins)
-    binderTargets }
+    binderTargets
+    counts := Metadata.combine (scrutPart.counts :: armParts.map (·.counts)) }
 
 mutual
 def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
-    Surface.Expr → IdentifiedExpr → Option Lowered
-  | .primLit (.bool b), .leaf source =>
+    Surface.Expr → IdentifiedExpr → (scope : Lexical := []) → Option Lowered
+  | .primLit (.bool b), .leaf source, _ =>
       some (authoredRoot source (.ctor (if b then cTrue else cFalse)))
-  | .primLit .unit, .leaf source => some (authoredRoot source (.primLit .unit))
-  | .primLit (.int n), .leaf source => some (authoredRoot source (.primLit (.int n)))
-  | .primLit (.nat n), .leaf source => some (authoredRoot source (.primLit (.nat n)))
-  | .primLit (.char c), .leaf source => some (authoredRoot source (.primLit (.char c)))
-  | .primBinOp op, .leaf source => some (authoredRoot source (.primBinOp op))
-  | .pair a b, .pair source sa sb => do
-      let a' ← lowerIdentifiedExpr ke tvs vs a sa
-      let b' ← lowerIdentifiedExpr ke tvs vs b sb
+  | .primLit .unit, .leaf source, _ => some (authoredRoot source (.primLit .unit))
+  | .primLit (.int n), .leaf source, _ => some (authoredRoot source (.primLit (.int n)))
+  | .primLit (.nat n), .leaf source, _ => some (authoredRoot source (.primLit (.nat n)))
+  | .primLit (.char c), .leaf source, _ => some (authoredRoot source (.primLit (.char c)))
+  | .primBinOp op, .leaf source, _ => some (authoredRoot source (.primBinOp op))
+  | .pair a b, .pair source sa sb, scope => do
+      let a' ← lowerIdentifiedExpr ke tvs vs a sa scope
+      let b' ← lowerIdentifiedExpr ke tvs vs b sb scope
       let expr := .app (.app (.ctor cPair) a'.expr) b'.expr
       pure (combineAuthored source expr
         [a'.belowPath [.appFun, .appArg], b'.belowPath [.appArg]]
         [generatedOrigin source [.appFun] .pairPartialApp,
          generatedOrigin source [.appFun, .appFun] .pairCtor])
-  | .cons h t, .cons source sh st => do
-      let h' ← lowerIdentifiedExpr ke tvs vs h sh
-      let t' ← lowerIdentifiedExpr ke tvs vs t st
+  | .cons h t, .cons source sh st, scope => do
+      let h' ← lowerIdentifiedExpr ke tvs vs h sh scope
+      let t' ← lowerIdentifiedExpr ke tvs vs t st scope
       let expr := .app (.app (.ctor cCons) h'.expr) t'.expr
       pure (combineAuthored source expr
         [h'.belowPath [.appFun, .appArg], t'.belowPath [.appArg]]
         [generatedOrigin source [.appFun] .consPartialApp,
          generatedOrigin source [.appFun, .appFun] .consCtor])
-  | .list items, .list source sitems => do
-      let items' ← lowerIdentifiedList ke tvs vs items sitems
+  | .list items, .list source sitems, scope => do
+      let items' ← lowerIdentifiedList ke tvs vs items sitems scope
       lowerListWithProvenance source 0 true items'
-  | .lambda param paramAnn body, .lambda source sbody => do
-      let ann' ← lowerAnn ke tvs paramAnn
+  | .lambda param paramAnn body, .lambda source sbody, scope => do
+      let ann' ← CountScope.lowerAnnScoped ke tvs scope paramAnn
       match param with
       | .name name => do
-          let body' ← lowerIdentifiedExpr ke tvs (name :: vs) body sbody
-          pure (combineAuthored source (.lambda ann' body'.expr)
+          let body' ← lowerIdentifiedExpr ke tvs (name :: vs) body sbody scope
+          let result := combineAuthored source (.lambda ann' body'.expr)
             [body'.belowPath [.lambdaBody]] []
-            [(.lambda source.id, .present [.lambda []])])
+            [(.lambda source.id, .present [.lambda []])]
+          pure { result with counts := Metadata.combine [
+            CountScope.annotationMetadata (.lambda []) scope paramAnn, result.counts] }
       | .wildcard => do
-          let body' ← lowerIdentifiedExpr ke tvs (.mk "_" :: vs) body sbody
-          pure (combineAuthored source (.lambda ann' body'.expr)
+          let body' ← lowerIdentifiedExpr ke tvs (.mk "_" :: vs) body sbody scope
+          let result := combineAuthored source (.lambda ann' body'.expr)
             [body'.belowPath [.lambdaBody]] []
-            [(.lambda source.id, .present [.lambda []])])
+            [(.lambda source.id, .present [.lambda []])]
+          pure { result with counts := Metadata.combine [
+            CountScope.annotationMetadata (.lambda []) scope paramAnn, result.counts] }
       | _ => none
-  | .app fn arg, .app source sfn sarg => do
-      let fn' ← lowerIdentifiedExpr ke tvs vs fn sfn
-      let arg' ← lowerIdentifiedExpr ke tvs vs arg sarg
+  | .app fn arg, .app source sfn sarg, scope => do
+      let fn' ← lowerIdentifiedExpr ke tvs vs fn sfn scope
+      let arg' ← lowerIdentifiedExpr ke tvs vs arg sarg scope
       pure (combineAuthored source (.app fn'.expr arg'.expr)
         [fn'.belowPath [.appFun], arg'.belowPath [.appArg]])
-  | .letIn name tyParams params ann rhs body, .letIn source srhs sbody => do
+  | .letIn name tyParams params ann rhs body, .letIn source srhs sbody, scope => do
       let annF := finalizeAnn tyParams params ann
-      let ann' ← lowerPolyAnn ke annF
+      let ann' ← CountScope.lowerPolyScoped ke scope annF
       let tvs' := letAnnTyPrefix tyParams annF ++ tvs
-      let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope params vs) rhs srhs
+      let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope params vs) rhs srhs scope
       let rhs' ← wrapParamsWithProvenance ke tvs' source
-        (fun i => .letParam source.id i) 0 params rhsCore
-      let body' ← lowerIdentifiedExpr ke tvs (name :: vs) body sbody
-      pure (combineAuthored source (.letIn ann' rhs'.expr body'.expr)
+        (fun i => .letParam source.id i) 0 params rhsCore scope
+      let body' ← lowerIdentifiedExpr ke tvs (name :: vs) body sbody scope
+      let result := combineAuthored source (.letIn ann' rhs'.expr body'.expr)
         [rhs'.belowPath [.letRhs], body'.belowPath [.letBody]] []
-        [(.letIn source.id, .present [.letIn []])])
-  | .letRecIn binds body, .letRecIn source srhss sbody => do
+        [(.letIn source.id, .present [.letIn []])]
+      pure { result with counts := Metadata.combine [
+        CountScope.annotationMetadata (.letIn []) scope (annF.map (·.body)), result.counts] }
+  | .letRecIn binds body, .letRecIn source srhss sbody, scope => do
       let recScope := binds.map (fun b => b.name) ++ vs
-      let anns' ← lowerAnnList ke (binds.map fun b => finalizeAnn b.tyParams b.params b.ann)
-      let bindings' ← lowerIdentifiedRecBinds ke tvs recScope source 0 binds srhss
-      let body' ← lowerIdentifiedExpr ke tvs recScope body sbody
+      let ownScopes := binds.mapIdx fun member b => telescope source.id member b.natBinders
+      let anns' ← (binds.zip ownScopes).mapM fun (b, own) =>
+        CountScope.lowerPolyScoped ke (own ++ scope) (finalizeAnn b.tyParams b.params b.ann)
+      let countParts := (binds.zip ownScopes).mapIdx fun member (b, own) =>
+        Metadata.combine [CountScope.telescopeMetadata (.letRec [] member) own,
+          CountScope.annotationMetadata (.letRec [] member) (own ++ scope)
+            ((finalizeAnn b.tyParams b.params b.ann).map (·.body))]
+      let bindings' ← lowerIdentifiedRecBinds ke tvs recScope source 0 binds srhss scope
+      let body' ← lowerIdentifiedExpr ke tvs recScope body sbody scope
       let bindingExprs := bindings'.map fun r => r.expr
       let bindingParts := bindings'.mapIdx fun member r => r.belowPath [.letRecRhs member]
       let groupBinders := binds.mapIdx fun member _ =>
         (.letRec source.id member, .present [.letRec [] member])
-      pure (combineAuthored source (.letRec anns' bindingExprs body'.expr)
-        (bindingParts ++ [body'.belowPath [.letRecBody]]) [] groupBinders)
-  | .var name, .leaf source => do
+      let result := combineAuthored source (.letRec anns' bindingExprs body'.expr)
+        (bindingParts ++ [body'.belowPath [.letRecBody]]) [] groupBinders
+      pure { result with counts := Metadata.combine (result.counts :: countParts) }
+  | .var name, .leaf source, _ => do
       let index ← tvarIndex vs name
       pure (authoredRoot source (.var index))
-  | .ctor name, .leaf source => some (authoredRoot source (.ctor name))
-  | .ife cond then_ else_, .ife source scond sthen selse => do
-      let cond' ← lowerIdentifiedExpr ke tvs vs cond scond
-      let then' ← lowerIdentifiedExpr ke tvs vs then_ sthen
-      let else' ← lowerIdentifiedExpr ke tvs vs else_ selse
+  | .ctor name, .leaf source, _ => some (authoredRoot source (.ctor name))
+  | .ife cond then_ else_, .ife source scond sthen selse, scope => do
+      let cond' ← lowerIdentifiedExpr ke tvs vs cond scond scope
+      let then' ← lowerIdentifiedExpr ke tvs vs then_ sthen scope
+      let else' ← lowerIdentifiedExpr ke tvs vs else_ selse scope
       let pats : List Surface.Pattern := [.ctor cTrue [], .ctor cFalse []]
       let arms := [then', else']
       let traced := PatComp.lowerMatchTrace cond'.expr pats
         (fun i => (arms.map (fun arm => arm.expr)).getD i (.ctor cNil))
       lowerTracedMatch source cond' pats arms traced
-  | .match_ scrut branches, .match_ source sscrut sarms => do
-      let scrut' ← lowerIdentifiedExpr ke tvs vs scrut sscrut
-      let arms' ← lowerIdentifiedBranches ke tvs vs branches sarms
+  | .match_ scrut branches, .match_ source sscrut sarms, scope => do
+      let scrut' ← lowerIdentifiedExpr ke tvs vs scrut sscrut scope
+      let arms' ← lowerIdentifiedBranches ke tvs vs branches sarms scope
       let pats := branches.map Prod.fst
       let traced := PatComp.lowerMatchTrace scrut'.expr pats
         (fun i => (arms'.map (fun arm => arm.expr)).getD i (.ctor cNil))
       lowerTracedMatch source scrut' pats arms' traced
-  | _, _ => none
+  | _, _, _ => none
 
 def lowerIdentifiedList (ke : KindEnv) (tvs vs : List ValName) :
-    List Surface.Expr → List IdentifiedExpr → Option (List Lowered)
-  | [], [] => some []
-  | e :: es, se :: ses => do
-      let e' ← lowerIdentifiedExpr ke tvs vs e se
-      let es' ← lowerIdentifiedList ke tvs vs es ses
+    List Surface.Expr → List IdentifiedExpr → (scope : Lexical := []) → Option (List Lowered)
+  | [], [], _ => some []
+  | e :: es, se :: ses, scope => do
+      let e' ← lowerIdentifiedExpr ke tvs vs e se scope
+      let es' ← lowerIdentifiedList ke tvs vs es ses scope
       pure (e' :: es')
-  | _, _ => none
+  | _, _, _ => none
 
 def lowerIdentifiedBranches (ke : KindEnv) (tvs vs : List ValName) :
-    List (Surface.Pattern × Surface.Expr) → List IdentifiedExpr → Option (List Lowered)
-  | [], [] => some []
-  | (pat, body) :: rest, sbody :: srest => do
-      let body' ← lowerIdentifiedExpr ke tvs (patVars pat ++ vs) body sbody
-      let rest' ← lowerIdentifiedBranches ke tvs vs rest srest
+    List (Surface.Pattern × Surface.Expr) → List IdentifiedExpr → (scope : Lexical := []) → Option (List Lowered)
+  | [], [], _ => some []
+  | (pat, body) :: rest, sbody :: srest, scope => do
+      let body' ← lowerIdentifiedExpr ke tvs (patVars pat ++ vs) body sbody scope
+      let rest' ← lowerIdentifiedBranches ke tvs vs rest srest scope
       pure (body' :: rest')
-  | _, _ => none
+  | _, _, _ => none
 
 def lowerIdentifiedRecBinds (ke : KindEnv) (tvs recScope : List ValName)
-    (owner : SourceNode) : Nat → List Surface.Binding → List IdentifiedExpr → Option (List Lowered)
-  | _, [], [] => some []
-  | member, b :: rest, srhs :: srest => do
+    (owner : SourceNode) : Nat → List Surface.Binding → List IdentifiedExpr →
+      (scope : Lexical := []) → Option (List Lowered)
+  | _, [], [], _ => some []
+  | member, b :: rest, srhs :: srest, scope => do
       let tvs' := bindingLowerTyScope b tvs
-      let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope b.params recScope) b.rhs srhs
+      let own := telescope owner.id member b.natBinders
+      let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope b.params recScope) b.rhs srhs (own ++ scope)
       let rhs' ← wrapParamsWithProvenance ke tvs' owner
-        (fun i => .letRecParam owner.id member i) 0 b.params rhsCore
-      let rest' ← lowerIdentifiedRecBinds ke tvs recScope owner (member + 1) rest srest
+        (fun i => .letRecParam owner.id member i) 0 b.params rhsCore (own ++ scope)
+      let rest' ← lowerIdentifiedRecBinds ke tvs recScope owner (member + 1) rest srest scope
       pure (rhs' :: rest')
-  | _, _, _ => none
+  | _, _, _, _ => none
 
 def lowerListWithProvenance (owner : SourceNode) (index : Nat) (isRoot : Bool) :
     List Lowered → Option Lowered
@@ -577,7 +601,8 @@ def lowerListWithProvenance (owner : SourceNode) (index : Nat) (isRoot : Bool) :
            generatedOrigin owner [.appFun] (.listPartialApp index),
            generatedOrigin owner [.appFun, .appFun] (.listCtor index)] ++
           item'.coreOrigins ++ tail'.coreOrigins
-        binderTargets := item'.binderTargets ++ tail'.binderTargets }
+        binderTargets := item'.binderTargets ++ tail'.binderTargets
+        counts := Metadata.combine [item'.counts, tail'.counts] }
 end
 
 /-- Construction-time lowering. The `SpannedExpr` must mirror the

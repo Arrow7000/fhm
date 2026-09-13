@@ -31,6 +31,7 @@ roots = [
   "FHM.Unverified.Surface.Lex",
   "FHM.Unverified.Surface.Parse",
   "FHM.Unverified.Surface.Provenance",
+  "FHM.Unverified.Surface.CountScope",
   "FHM.Unverified.EvaluateUnsafe",
 ]
 
@@ -76,6 +77,10 @@ roots = [
   "FHM.Bounds.SemanticTests", # Solver-free variance/containment regressions
   "FHM.Bounds.Scheme",    # Count-scheme executable/declarative correspondence
   "FHM.Bounds.SchemeTests", # Count scope, arity and finite-argument regressions
+  "FHM.Bounds.CountSubstitution", # Capture-preserving semantic count substitution
+  "FHM.Bounds.CountSubstitutionTests", # Capture, simultaneous substitution and premise regressions
+  "FHM.Bounds.Scope",     # Static count identity and HM-blind renaming contracts
+  "FHM.Unverified.Surface.CountScopeTests", # Construction-time telescope regressions
   "FHM.Bounds.Typed",     # Proof-carrying found-driven initial bounds fragment
   "FHM.Bounds.TypedTests", # Initial typed traversal and provenance regressions
   "FHM.Bounds.Escape",    # R3 escape classification (uniqueOnly at pack)
