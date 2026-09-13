@@ -1,4 +1,5 @@
 import FHM.Bounds.Found
+import FHM.Bounds.ScopedAnnotation
 
 /-! Construction-time count scope regressions. Not part of the HM proof roots. -/
 
@@ -113,6 +114,46 @@ private def cloningKeepsSites : Bool :=
       cloned.counts.telescopes.any (fun t => t.site == .letRec [.appFun] 0) &&
       cloned.counts.telescopes.any (fun t => t.site == .letRec [.appArg] 0)
 
+private def inferredContract : Bool := Id.run do
+  let some r := lower [binding ⟨"f"⟩ [n, m] n m] | return false
+  let some typed := inferWithProvenance ctors r | return false
+  let ids := (telescope 0 0 [n, m]).map Prod.snd
+  match typed.inference.output with
+  | .found _ (.letRec [some ann] _ _) =>
+      match FHM.Bounds.ScopedAnnotation.contract ids [] [] ann.body with
+      | .error _ => return false
+      | .ok c => match c.scheme.instantiate [.lit 3, .lit 8] [] with
+          | .ok inst => return inst.bounds.pretty == "BL 3 8 Int → BL 3 8 Int"
+          | .error _ => return false
+  | _ => return false
+
+private def inferredCapturedContract : Bool := Id.run do
+  let inner := binding ⟨"inner"⟩ [n] n m
+  let outer := { binding ⟨"outer"⟩ [n, m] n m with
+    rhs := Surface.Expr.lambda (.name xs) (some (interval n m))
+      (.letRecIn [inner] (.var xs)) }
+  let spans : SpannedExpr := .letRecIn s
+    [.lambda s (.letRecIn s [bindingSpan] leaf)] leaf
+  let some r := lowerWithProvenance ctors (.letRecIn [outer] (.primLit (.int 1))) spans
+    | return false
+  let some typed := inferWithProvenance ctors r | return false
+  let some nested := typed.inference.output.atCorePath [.letRecRhs 0, .lambdaBody]
+    | return false
+  let outerM := (BinderId.mk 0 0 1).index
+  let innerN := (BinderId.mk 2 0 0).index
+  match nested with
+  | .found _ (.letRec [some ann] _ _) =>
+      match FHM.Bounds.ScopedAnnotation.contract [innerN] [outerM] [] ann.body with
+      | .error _ => return false
+      | .ok c => match c.scheme.instantiate [.lit 3] [outerM] with
+          | .ok inst => match inst.bounds with
+              | .arrow (.list lo hi _) (.list lo' hi' _) =>
+                  return lo == .lit 3 && lo' == .lit 3 &&
+                    hi == .var ⟨.rigid, outerM⟩ && hi' == .var ⟨.rigid, outerM⟩
+              | _ => return false
+          | .error _ => return false
+  | _ => return false
+
 def main : IO Unit := do
   for (name, ok) in [
       ("same-named member telescopes have distinct identities", twoMembers),
@@ -120,7 +161,9 @@ def main : IO Unit := do
       ("unknown counts remain HM-blind but fail BL", unknownKeepsHM),
       ("duplicate count binders remain HM-blind but recorded invalid", duplicateKeepsHM),
       ("rebasing changes sites, not count identities", rebasingKeepsIds),
-      ("cloning retains both Core sites without changing identities", cloningKeepsSites)] do
+      ("cloning retains both Core sites without changing identities", cloningKeepsSites),
+      ("lowered and inferred carried contract decodes and instantiates", inferredContract),
+      ("inferred nested contract instantiates shadow but retains capture", inferredCapturedContract)] do
     IO.println s!"{if ok then "PASS" else "FAIL"}: {name}"
     unless ok do throw (IO.userError s!"count scope regression: {name}")
 
