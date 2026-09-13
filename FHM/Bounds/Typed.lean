@@ -1,11 +1,12 @@
 import FHM.Bounds.Semantic
 import FHM.Bounds.Synth
 import FHM.CorePath
+import FHM.Bounds.BinderBridge
 
 /-! # Proof-carrying typed bounds slice
 
 Consumes child `.found` payloads, not reconstructed HM types. This deliberately
-small fragment excludes polymorphic lets, recursion and
+small fragment excludes polymorphic binding uses, recursion and
 matches. Constructor scaffolding is reported explicitly without pretending a
 saturated-Cons rule synthesizes bounds for the partial constructor functions.
 The derivations below establish static synthesis/annotation soundness for this
@@ -25,24 +26,7 @@ private def require (x : Option α) (msg : String) : Except String α :=
 
 /-- Decidable evidence for the slice's type shapes; no global equality instance
     or comparison of proof-carrying inference outputs is introduced. -/
-private def equalTy (a b : Ty) : Option (PLift (a = b)) :=
-  match a, b with
-  | .prim p, .prim q => if h : p = q then some ⟨by subst q; rfl⟩ else none
-  | .fvar i, .fvar j => if h : i = j then some ⟨by subst j; rfl⟩ else none
-  | .bvar i, .bvar j => if h : i = j then some ⟨by subst j; rfl⟩ else none
-  | .arrow a b, .arrow c d => do
-      let ha ← equalTy a c
-      let hb ← equalTy b d
-      pure ⟨by rw [ha.down, hb.down]⟩
-  | .customTy n [a], .customTy m [b] =>
-      if h : n = m then do
-        let ha ← equalTy a b
-        pure ⟨by rw [h, ha.down]⟩
-      else none
-  | .customTy n [], .customTy m [] =>
-      if h : n = m then some ⟨by rw [h]⟩ else none
-  | _, _ => none
-termination_by sizeOf a + sizeOf b
+private def equalTy := BinderBridge.equalTy
 
 /-- Positive arithmetic verdicts produce semantic evidence. There are no HM
     stub shortcuts, demand-fragment restrictions or fallback to legacy checks. -/
@@ -210,7 +194,24 @@ private def checkBinding (Δ : List Constraint) (ann : Option PolyTy) (β : Boun
         pure ⟨⟨hq, hp.down⟩⟩
       else throw "bounds: polymorphic annotation unsupported in typed slice"
 
-def walk (Δ : List Constraint) (env : List BoundsTy) (path : CorePath) (e : Expr) :
+/-- Artifact-backed lets validate the inferred generalization interface before
+    checking their body. Standalone hand-built slice tests can omit the map.
+    This check does not provide universal bounds typing for polymorphic uses. -/
+private def checkInferredBinding (schemes : Option BinderSchemeMap) (path : CorePath)
+    (ann : Option PolyTy) (actual : BoundsTy) (env : List BoundsTy)
+    (sourceFvars : List Nat) : Except String Bool := do
+  match ann, schemes with
+  | none, some facts =>
+      let checked ← BinderBridge.atSite facts (.letIn path) actual
+        (env.map spine ++ sourceFvars.map Ty.fvar)
+      pure (checked.scheme.paramCount != 0)
+  | _, _ => pure false
+
+/-- Artifact-backed mode checks inferred let schemes. `deferredSchemes` tracks
+    their unsupported polymorphic uses at the same de Bruijn depth as `env`;
+    lambda parameters and newly shadowing monomorphic lets push `false`. -/
+def walk (Δ : List Constraint) (env : List BoundsTy) (path : CorePath) (e : Expr)
+    (schemes : Option BinderSchemeMap := none) (deferredSchemes : List Bool := []) :
     Except String (Result Δ env e) := do
   match e with
   | .found hm (.primLit p) =>
@@ -231,6 +232,8 @@ def walk (Δ : List Constraint) (env : List BoundsTy) (path : CorePath) (e : Exp
         | _ => throw "bounds: Nil has non-List found type"
       else throw "bounds: standalone constructor unsupported in typed slice"
   | .found hm (.var i) =>
+      if deferredSchemes[i]?.getD false then
+        throw "bounds: polymorphic binding use needs a generalized RHS bounds derivation"
       match h : env[i]? with
       | none => throw "bounds: variable outside typed bounds environment"
       | some β =>
@@ -242,21 +245,22 @@ def walk (Δ : List Constraint) (env : List BoundsTy) (path : CorePath) (e : Exp
           let ⟨param, hp⟩ ← chooseParam Δ ann paramTy
           let _ ← require (equalTy (spine param) paramTy)
             "bounds: parameter annotation disagrees with found type"
-          let result ← walk Δ (param :: env) (path ++ [.lambdaBody]) body
+          let result ← walk Δ (param :: env) (path ++ [.lambdaBody]) body schemes (false :: deferredSchemes)
           finish Δ env (.found hm (.lambda ann body)) path hm.eraseBounds (.arrow param result.bounds)
             (by simpa only [Expr.stripFound] using (Derives.lambda hp.down result.derivation)) result.nodes
       | _ => throw "bounds: lambda has non-arrow found type"
   | .found hm (.letIn ann rhs body) =>
-      let actual ← walk Δ env (path ++ [.letRhs]) rhs
+      let actual ← walk Δ env (path ++ [.letRhs]) rhs schemes deferredSchemes
+      let deferred ← checkInferredBinding schemes path ann actual.bounds env rhs.stripFound.tyFreeVars
       let hp ← checkBinding Δ ann actual.bounds
-      let result ← walk Δ (actual.bounds :: env) (path ++ [.letBody]) body
+      let result ← walk Δ (actual.bounds :: env) (path ++ [.letBody]) body schemes (deferred :: deferredSchemes)
       finish Δ env (.found hm (.letIn ann rhs body)) path hm.eraseBounds result.bounds
         (by simpa only [Expr.stripFound] using (Derives.letIn hp.down actual.derivation result.derivation))
         (actual.nodes ++ result.nodes)
   | .found hm (.app (.found partialTy (.app (.found ctorTy (.ctor name)) head)) tail) =>
       if hn : name = consCtorName then
-        let h ← walk Δ env (path ++ [.appFun, .appArg]) head
-        let t ← walk Δ env (path ++ [.appArg]) tail
+        let h ← walk Δ env (path ++ [.appFun, .appArg]) head schemes deferredSchemes
+        let t ← walk Δ env (path ++ [.appArg]) tail schemes deferredSchemes
         match ht : t.bounds with
         | .list lo hi elem =>
             let _ ← require (equalTy ctorTy.eraseBounds (.arrow h.hm (.arrow t.hm t.hm)))
@@ -276,8 +280,8 @@ def walk (Δ : List Constraint) (env : List BoundsTy) (path : CorePath) (e : Exp
         | _ => throw "bounds: Cons tail has non-List bounds"
       else throw "bounds: unsupported constructor application in typed slice"
   | .found hm (.app f arg) =>
-      let fn ← walk Δ env (path ++ [.appFun]) f
-      let actual ← walk Δ env (path ++ [.appArg]) arg
+      let fn ← walk Δ env (path ++ [.appFun]) f schemes deferredSchemes
+      let actual ← walk Δ env (path ++ [.appArg]) arg schemes deferredSchemes
       match hf : fn.bounds with
       | .arrow domain result =>
           let hsub ← subtype Δ actual.bounds domain
