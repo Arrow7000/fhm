@@ -83,11 +83,15 @@ def shapeTop (τ : Ty) : Except String BoundsTy := do
   | _ => throw "bounds: unsupported type shape in typed slice"
 termination_by sizeOf τ
 
-/-- Decode annotations directly from their carried Core slots. Count holes and
-    schemes are explicitly deferred, rather than erased or accepted unchecked. -/
+/-- Decode annotations directly from their carried Core slots. Until count
+    telescopes survive lowering, symbolic counts are explicitly rejected: an
+    unresolved surface name must not be accepted as lowering's rigid-0 stub. -/
 def annotation (τ : Ty) : Except String BoundsTy := do
   match τ with
-  | .bl (.solid lo) (.solid hi) a => return .list lo hi (← annotation a)
+  | .bl (.solid lo) (.solid hi) a =>
+      unless lo.isGround && hi.isGround do
+        throw "bounds: symbolic annotation needs preserved count scope"
+      return .list lo hi (← annotation a)
   | .bl _ _ _ => throw "bounds: count holes unsupported in typed slice"
   | .arrow a b => return .arrow (← annotation a) (← annotation b)
   | .customTy n [a] =>

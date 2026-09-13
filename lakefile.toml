@@ -74,6 +74,8 @@ roots = [
   "FHM.Bounds.Typing",
   "FHM.Bounds.Semantic",  # Solver-independent subtype specification and bridge
   "FHM.Bounds.SemanticTests", # Solver-free variance/containment regressions
+  "FHM.Bounds.Scheme",    # Count-scheme executable/declarative correspondence
+  "FHM.Bounds.SchemeTests", # Count scope, arity and finite-argument regressions
   "FHM.Bounds.Typed",     # Proof-carrying found-driven initial bounds fragment
   "FHM.Bounds.TypedTests", # Initial typed traversal and provenance regressions
   "FHM.Bounds.Escape",    # R3 escape classification (uniqueOnly at pack)
