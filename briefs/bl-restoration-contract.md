@@ -222,3 +222,27 @@ scheme, six front-end count-scope and four capture-safe substitution tests.
 The rebuilt CLI's scratch HM audit remains 28 accepted / eight expected
 rejections / zero unexpected failures; the unverified-boundary guard passes.
 No new axioms, proof placeholders or partial definitions were introduced.
+
+2026-09-13, checkpoint 3e: `ScopedScheme` distinguishes quantified stable
+identities from captured lexical identities. Its guarded instantiation checks
+unique quantifiers, disjoint captures, scope of the body and premises, arity,
+finite Nat arguments, caller scope and capture availability. Successful results
+carry proofs of caller-scoped bounds and premises, unchanged captures and
+unchanged HM skeletons. Distinct uses instantiate independently.
+
+Instantiation retains the substituted premises as obligations; it does not
+establish them. `Instance.Usable` is a separate semantic call-site certificate,
+with conservative `checkPremises` construction through the existing positive
+validity oracle contract. `SemanticSub.assuming` and `Instance.useSubtype` prove
+that discharged premises let transported subtype evidence be used under the
+caller's assumptions. These transport theorems require no solver axioms;
+only executable premise discharge inherits `checkValid_sound`.
+
+Nineteen executable regressions plus ordinary Lean proofs cover captures,
+independent instantiation, invalid interfaces and true/false call requirements.
+This does not yet check an implementation against a declared scheme or consume
+schemes in `Typed.walk`; count-polymorphic `.fhm` acceptance remains pending.
+
+Validation after 3e: the full HM/Bounds/editor/CLI build passes (1705 jobs),
+all 53 executable BL regressions pass, and the scratch HM audit and boundary
+guard remain unchanged. No new axioms, placeholders or partial defs were added.

@@ -101,6 +101,34 @@ mutual
 end
 
 mutual
+  /-- A caller may use a derivation under different assumptions only after
+      establishing all of its original premises. Mere instantiation or scope
+      validation does not provide these facts. -/
+  theorem SemanticSub.assuming {Δ Δ' a b} (h : SemanticSub Δ a b)
+      (hpre : (⟨Δ', Δ⟩ : ForallProblem).Valid) : SemanticSub Δ' a b := by
+    cases h with
+    | prim => exact .prim
+    | bvar => exact .bvar
+    | fvar => exact .fvar
+    | arrow ha hb => exact .arrow (ha.assuming hpre) (hb.assuming hpre)
+    | list hv he =>
+        exact .list (by
+          intro σ hp g hg
+          exact hv σ (hpre σ hp) g hg) (he.assuming hpre)
+    | custom hs => exact .custom (semanticAll_assuming hs hpre)
+  termination_by sizeOf a + sizeOf b
+
+  private theorem semanticAll_assuming {Δ Δ' as bs}
+      (h : List.Forall₂ (SemanticSub Δ) as bs)
+      (hpre : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+      List.Forall₂ (SemanticSub Δ') as bs := by
+    cases h with
+    | nil => exact .nil
+    | cons hh ht => exact .cons (hh.assuming hpre) (semanticAll_assuming ht hpre)
+  termination_by sizeOf as + sizeOf bs
+end
+
+mutual
   theorem SemanticSub.trans {Δ a b c} (hab : SemanticSub Δ a b)
       (hbc : SemanticSub Δ b c) : SemanticSub Δ a c := by
     cases hab with
@@ -133,6 +161,7 @@ end
 #print axioms SemanticSub.refl
 #print axioms Sub.semantic
 #print axioms SemanticSub.strengthen
+#print axioms SemanticSub.assuming
 #print axioms SemanticSub.trans
 
 end FHM.Bounds
