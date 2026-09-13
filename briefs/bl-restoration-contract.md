@@ -295,3 +295,46 @@ is 28 accepted / eight expected rejections / zero failures. The unverified
 boundary guard and diff whitespace checks pass. No new proof placeholders,
 axioms or partial defs were introduced; the seven legacy BL placeholders and
 existing positive-oracle trust boundary remain unchanged.
+
+2026-09-13, checkpoint 3h: `BinderBridge` connects inferred binder schemes to
+actual bounds monotypes and `.found` uses. Structural matching only proposes
+arguments; accepted instances carry a complete `InstantiatesBy` witness and
+checked arity/scope. Repeated slots must agree and free HM captures must match
+exactly. Unused slots have explicit Unit witnesses, never out-of-range defaults.
+
+Abstraction recovers an injective generalized free-identity pool from the
+certified opening, checks freshness against a supplied captured type interface,
+and proves its closed bounds body has exactly the inferred scheme's erased HM
+skeleton. Closing preserves count scope and never changes count payloads.
+`use_shape` joins the checked abstraction and use certificates to the combined
+specialization theorem. None of these proofs require solver axioms.
+
+Artifact-backed `Typed.walk` now consumes `FoundResult.binderSchemes` at every
+unannotated let. It requires exactly one fact at the exact Core site and includes
+environment types and source annotation identities in the captured interface.
+Annotated declarations remain separate: the existing HM artifact deliberately
+does not emit inferred facts for them. Hand-built standalone fragment tests can
+still omit the map. The existing bounds derivation remains authoritative; no
+new polymorphic variable rule is assumed. A depth-aligned restriction tracks
+generalized binders and reports unsupported polymorphic uses specifically,
+without confusing shadowing lambda parameters or monomorphic lets with them.
+
+Twenty-four bridge regressions and fourteen artifact/traversal regressions cover
+repeated slots, captures, count/type namespace isolation, invalid metadata,
+compiler clones, source annotation freshness, de Bruijn shadowing and the
+explicit polymorphic-use boundary. This is not a complete formal artifact
+coherence theorem. Abstraction with enclosing HM bound slots remains explicitly
+unsupported, and count-polymorphic expression checking is still pending.
+
+Next theorem/implementation target: bounds derivation transport under fresh HM
+free-type substitutions, followed by a genuine generalized-RHS judgement and
+scheme-aware variable/let rules. Only then should checked abstractions enable
+polymorphic uses. Declared count contracts subsequently need directed RHS
+checking and the separate simultaneous recursive-contract rule.
+
+Validation after 3h: `lake build FHM FHMBounds FHMEditorTests fhm` passes
+(1711 jobs); all 121 executable BL regressions pass. The fresh scratch HM audit
+is unchanged at 28 accepted / eight expected rejections / zero failures. The
+unverified-boundary guard and diff checks pass; no new axioms, placeholders or
+partial definitions were introduced. HM inference, D2 rules, Path R and the
+legacy CLI `--bl` launch boundary are unchanged.

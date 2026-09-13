@@ -4,13 +4,13 @@ import FHM.Bounds.Typed
 
 /-! # `.found` → bounds/provenance adapters
 
-This adapter proves the pipeline shape before the per-node bounds walk lands.
-It takes the HM type from the root `.found` wrapper, never reruns HM inference,
-and feeds the stripped Core term plus that type to the existing bounds
-synthesizer. The result is keyed back to the root source origin.
+The legacy root adapter takes the HM type from the root `.found` wrapper,
+never reruns HM inference, and feeds the stripped Core term plus that type to
+the existing bounds synthesizer. The result is keyed to the root source origin.
 
 The legacy `synthRoot` path is intentionally root-only. `synthNodes` uses the
-new proof-carrying typed slice and joins its per-node results to provenance.
+new proof-carrying typed slice, checks inferred unannotated-let binder facts
+by exact Core site, and joins its per-node results to provenance.
 Neither adapter is the completed D8 checker: the new slice explicitly rejects
 unsupported forms and marks constructor scaffolding without synthesized bounds.
 -/
@@ -74,7 +74,7 @@ def synthNodes (typed : TypedLowered) :
     throw "bounds: incomplete typed provenance"
   unless typed.lowering.counts.problems.isEmpty do
     throw "bounds: unresolved or duplicate count binder scope"
-  let result ← Typed.walk [] [] [] typed.inference.output
+  let result ← Typed.walk [] [] [] typed.inference.output (some typed.inference.binderSchemes)
   unless exactlyOnce (logicalCorePaths typed.inference.output) (result.nodes.map (·.path)) do
     throw "bounds: incomplete or duplicate typed node report"
   let reports ← result.nodes.mapM fun node => do
