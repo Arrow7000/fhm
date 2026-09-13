@@ -1,7 +1,7 @@
 import FHM.Z3.Atom
 import FHM.Z3.Query
 import FHM.Z3.Encode
-import FHM.Z3.Parse
+import FHM.Unverified.Z3.Parse
 import FHM.Z3.Oracle
 import FHM.Z3.Process
 import FHM.Z3.Examples

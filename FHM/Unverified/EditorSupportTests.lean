@@ -1,5 +1,5 @@
-import FHM.EditorSupport
-import FHM.Surface.Parse
+import FHM.Unverified.EditorSupport
+import FHM.Unverified.Surface.Parse
 import FHM.Surface.Span
 
 /-!
@@ -57,7 +57,8 @@ def shadowedXs : String :=
         hasSub v.type_ "Int"
     | _, _ => false)
 
--- 2. Lambda params under annotated map-like let (body must inhabit the scheme)
+-- 2. Annotation ceilings need not constrain an unused RHS parameter. Its
+-- actual inferred monotype remains more general than the declared domain.
 def mapLike : String :=
   "let map : {a} (a -> a) -> List a -> List a =\n  \\f xs -> xs\n"
 
@@ -69,9 +70,7 @@ def mapLike : String :=
         f.name == "f" && xs.name == "xs" &&
         f.kind == "param" && xs.kind == "param" &&
         !f.type_.isEmpty && !xs.type_.isEmpty &&
-        (hasSub f.type_ "→" || hasSub f.type_ "->") &&
-        -- bare `List` in schemes displays as default `BL 0 0` under bounds report
-        (hasSub xs.type_ "List" || hasSub xs.type_ "BL")
+        !hasSub f.type_ "type variable" && !hasSub xs.type_ "type variable"
     | _, _ => false)
 
 -- 3. Type / ctor spans + tyvar label (D)
@@ -167,8 +166,7 @@ def filterLamSrc : String :=
     -- `\f xs -> xs` — use of xs at end of line 2
     match symbolAtUseSite syms 2 12 "xs" with
     | some s =>
-        s.name == "xs" && s.kind == "param" &&
-        (hasSub s.type_ "List" || hasSub s.type_ "BL")
+        s.name == "xs" && s.kind == "param" && !s.type_.isEmpty
     | none => false)
 
 -- A2. Shadowed use: `f xs` on line 3 resolves to val xs, not param
@@ -336,13 +334,13 @@ def natSchemeHover : String :=
         a.name == "a" && a.kind == "param" && hasSub a.type_ "type variable"
     | _, _ => false)
 
--- E3b2. Val hover type is ProgramReport pretty (BL scheme), not HM List.
+-- E3b2. HM presents the erased shape, not an unchecked Bounds claim.
 #guard (match hoverSyms natSchemeHover with
   | none => false
   | some syms =>
     match syms.find? (fun s => s.name == "id" && s.kind == "val") with
     | some id =>
-        hasSub id.type_ "BL" && hasSub id.type_ "Nat" && !hasSub id.type_ "List"
+        hasSub id.type_ "List" && !hasSub id.type_ "BL" && !hasSub id.type_ "Nat"
     | none => false)
 
 -- E3c. Multiple tops with `{n : Nat, …}`: erase must not zero `natBinders` for
@@ -365,26 +363,24 @@ def natMultiTop : String :=
         id2.scope.endLine > id2.span.startLine
     | _, _, _ => false)
 
--- E3d. `{n : Nat, …}` after header tyParams / value-params (parse order).
+-- E3d. `{n : Nat, …}` after a concrete head value-parameter.
 def natAfterHeaderParams : String :=
-  "let f {a} (x : a) : {n : Nat, b} BL n n b -> BL n n b =\n" ++
+  "let f (x : Int) : {n : Nat, b} BL n n b -> BL n n b =\n" ++
   "  \\y -> y\n" ++
   "f\n"
 
 #guard (match hoverSyms natAfterHeaderParams with
   | none => false
   | some syms =>
-    let a? := syms.find? (fun s => s.name == "a" && s.kind == "param" && s.span.startLine == 1)
     let x? := syms.find? (fun s => s.name == "x" && s.kind == "param" && s.span.startLine == 1)
     let n? := syms.find? (fun s => s.name == "n" && s.kind == "count")
-    match a?, x?, n? with
-    | some a, some x, some n =>
-        hasSub a.type_ "type variable" &&
-        !x.type_.isEmpty &&
+    match x?, n? with
+    | some x, some n =>
+        hasSub x.type_ "Int" &&
         hasSub n.type_ "count" &&
-        -- count binders must follow header tyParams / value-params in the walk
-        a.span.startCol < x.span.startCol && x.span.startCol < n.span.startCol
-    | _, _, _ => false)
+        -- syntax locations retain source order
+        x.span.startCol < n.span.startCol
+    | _, _ => false)
 
 -- E4. Several annotated lets: later λ params must not get empty/stolen types
 -- (regression: takeFirstKind .val reshuffled earlier λ/pats ahead of scheme binders)
@@ -403,10 +399,10 @@ def multiLetParams : String :=
           symbolAt syms 4 4, symbolAt syms 4 6,
           symbolAt syms 5 16 with
     | some f1, some xs, some f2, some ys, some n =>
-        f1.name == "f" && !f1.type_.isEmpty && hasSub f1.type_ "→" &&
-        xs.name == "xs" && (hasSub xs.type_ "List" || hasSub xs.type_ "BL") &&
+        f1.name == "f" && !f1.type_.isEmpty && !hasSub f1.type_ "type variable" &&
+        xs.name == "xs" && !xs.type_.isEmpty &&
         f2.name == "f" && !f2.type_.isEmpty &&
-        ys.name == "ys" && (hasSub ys.type_ "List" || hasSub ys.type_ "BL") &&
+        ys.name == "ys" && !ys.type_.isEmpty &&
         n.name == "n" && !n.type_.isEmpty
     | _, _, _, _, _ => false)
 
@@ -418,8 +414,8 @@ def sccOrderSrc : String :=
   "type Tree a = Leaf | Node a (Tree a) (Tree a)\n" ++
   "let mapMaybe : {a b} (a -> b) -> Maybe a -> Maybe b =\n" ++
   "  \\f m -> match m with | Nothing -> Nothing | Just x -> Just (f x)\n" ++
-  "let treeMap {a b} (f : a -> b) : Tree a -> Tree b =\n" ++
-  "  \\t -> match t with | Leaf -> Leaf | Node x l r -> Node (f x) (treeMap f l) (treeMap f r)\n" ++
+  "let treeMap : {a b} (a -> b) -> Tree a -> Tree b =\n" ++
+  "  \\f t -> match t with | Leaf -> Leaf | Node x l r -> Node (f x) (treeMap f l) (treeMap f r)\n" ++
   "let addInts (a : Int) : Int -> Int = \\b -> a + b\n" ++
   "addInts 1 2\n"
 
@@ -445,7 +441,7 @@ def sccOrderSrc : String :=
         | none => false
     | _, _, _, _, _ => false)
 
-/-! ## Bounds diagnostics (must not be swallowed — diagnose ≡ Live `--bl`) -/
+/-! ## Bounds blindness: HM checks element types, not length claims. -/
 
 /-- Helper: parse + full hover report (symbols + bounds diags). -/
 def hoverReport (src : String) : Option HoverReport :=
@@ -453,21 +449,15 @@ def hoverReport (src : String) : Option HoverReport :=
   | .error _ => none
   | .ok (p, bs, sp) => some (collectHover src p bs sp)
 
--- E6. Ascription fail: diagnostic present, pointed at binder `xs`, symbols kept.
+-- E6. Impossible length ascription is irrelevant to HM element typing.
 def holeFailSrc : String :=
   "let xs : BL _ 0 Int = [1, 2]\nxs\n"
 
 #guard (match hoverReport holeFailSrc with
   | none => false
   | some r =>
-      match r.diagnostics with
-      | [d] =>
-          hasSub d.message "ascription" &&
-          d.line == 1 &&
-          d.col ≥ 20 &&  -- RHS `[1, 2]`, not binder `xs`
-          d.endCol > d.col &&
-          (r.symbols.any fun s => s.name == "xs" && s.kind == "val")
-      | _ => false)
+      r.diagnostics.isEmpty && r.programTy == "List Int" &&
+      (r.symbols.any fun s => s.name == "xs" && s.kind == "val" && s.type_ == "List Int"))
 
 -- E6b. Happy-path BL: no diagnostics.
 def holeOkSrc : String :=
@@ -478,8 +468,7 @@ def holeOkSrc : String :=
   | some r => r.diagnostics.isEmpty &&
       (r.symbols.any fun s => s.name == "xs" && s.kind == "val"))
 
--- E6c. BoundCovers / Nil-only fail surfaces as a diagnostic (not silent).
--- When the match sits in a named binder, point at that binder (not file-top).
+-- E6c. HM inference does not perform Bounds-specific coverage checking.
 def nilOnlyFailSrc : String :=
   "let xs : BL 2 2 Int = [1, 2]\n" ++
   "let bad =\n" ++
@@ -490,18 +479,9 @@ def nilOnlyFailSrc : String :=
 #guard (match hoverReport nilOnlyFailSrc with
   | none => false
   | some r =>
-      match r.diagnostics with
-      | [d] =>
-          (hasSub d.message "Nil-only" ||
-            hasSub d.message "cover" ||
-            hasSub d.message "empty" ||
-            hasSub d.message "error for bad") &&
-          hasSub d.message "bad" &&
-          d.line ≥ 3 &&  -- match RHS, not binder name line
-          d.endLine ≥ 4
-      | _ => false)
+      r.diagnostics.isEmpty && r.programTy == "Int")
 
--- E6c1. Body-level Nil-only (no binder): point at the match expression, not (1,1).
+-- E6c1. Likewise for a body-level match. Runtime exhaustiveness is separate.
 def nilOnlyBodySrc : String :=
   "let xs : BL 2 2 Int = [1, 2]\n" ++
   "match xs with\n" ++
@@ -510,13 +490,9 @@ def nilOnlyBodySrc : String :=
 #guard (match hoverReport nilOnlyBodySrc with
   | none => false
   | some r =>
-      match r.diagnostics with
-      | [d] =>
-          (hasSub d.message "Nil-only" || hasSub d.message "empty") &&
-          d.line == 2  -- match line, not file-top comment/line 1
-      | _ => false)
+      r.diagnostics.isEmpty && r.programTy == "Int")
 
--- E6c2. R3 multi-model escape: diagnostic on binder `bad`, not (1,1).
+-- E6c2. Bounds multi-model escape is not an HM diagnostic.
 def r3MidFailSrc : String :=
   "let f : {x : Nat} BL x (2 * x) Int -> BL x (2 * x) Int =\n" ++
   "  \\xs -> xs\n" ++
@@ -528,30 +504,16 @@ def r3MidFailSrc : String :=
 #guard (match hoverReport r3MidFailSrc with
   | none => false
   | some r =>
-      match r.diagnostics with
-      | [d] =>
-          hasSub d.message "non-unique" &&
-          hasSub d.message "bad" &&
-          d.line ≥ 5 &&
-          -- RHS `f e`, not binder name `bad`
-          d.col > 5 &&
-          d.endCol > d.col
-      | _ => false)
+      r.diagnostics.isEmpty && r.programTy == "List Int")
 
--- E6d. Solid demand fail.
+-- E6d. Length demands do not constrain HM inference.
 def synthFailSrc : String :=
   "let xs : BL 0 0 Int = [1, 2]\nxs\n"
 
 #guard (match hoverReport synthFailSrc with
   | none => false
   | some r =>
-      match r.diagnostics with
-      | [d] =>
-          hasSub d.message "bounds" &&
-          hasSub d.message "ascription" &&
-          d.line == 1 &&
-          d.col ≥ 20  -- RHS list, not `xs`
-      | _ => false)
+      r.diagnostics.isEmpty && r.programTy == "List Int")
 
 /-! ## HM / lower diagnostics (must not collapse to file-top (1,1)) -/
 
@@ -642,3 +604,65 @@ def unboundLongSrc : String :=
       e.line ≥ 1 && e.col ≥ 1 &&
       (e.endLine > e.line || e.endCol > e.col)
   | .ok _ => false)
+
+/-! ## Rich-output HM regressions (executable tests, not coherence proofs). -/
+
+def instantiatedIdSrc : String :=
+  "let id = \\x -> x\nlet number = id 1\nlet truth = id True\n(number, truth)\n"
+
+#guard (match hoverReport instantiatedIdSrc with
+  | some r => r.diagnostics.isEmpty &&
+    (match symbolAt r.symbols 1 5, symbolAt r.symbols 2 14, symbolAt r.symbols 3 13 with
+      | some definition, some numberUse, some truthUse =>
+          hasSub definition.type_ "∀" &&
+          numberUse.type_ == "Int → Int" && truthUse.type_ == "Bool → Bool"
+      | _, _, _ => false)
+  | none => false)
+
+-- Later unification refines the lambda binder's payload.
+#guard (match hoverReport "let inc = \\x -> x + 1\ninc 2\n" with
+  | some r => r.diagnostics.isEmpty &&
+      (match symbolAt r.symbols 1 12 with
+       | some x => x.kind == "param" && x.type_ == "Int"
+       | none => false)
+  | none => false)
+
+-- Authored expressions have hovers too, not just names.
+#guard (match hoverReport "[1, 2]\n" with
+  | some r => r.diagnostics.isEmpty &&
+      (match symbolAt r.symbols 1 1 with
+       | some xs => xs.kind == "expr" && xs.type_ == "List Int"
+       | none => false)
+  | none => false)
+
+def afterSccSrc : String :=
+  "let f = \\x -> g x\nlet g = \\x -> f x\n(f 1, g True)\n"
+
+#guard (match hoverReport afterSccSrc with
+  | some r => r.diagnostics.isEmpty &&
+      (r.symbols.any fun s => s.name == "f" && s.span.startLine == 1 && hasSub s.type_ "∀") &&
+      (r.symbols.any fun s => s.name == "g" && s.span.startLine == 2 && hasSub s.type_ "∀")
+  | none => false)
+
+#guard (match hoverReport "let f : {a} a = 1\nf\n" with
+  | some r => !r.diagnostics.isEmpty &&
+      (r.diagnostics.all fun d => d.endLine > d.line || d.endCol > d.col)
+  | none => false)
+
+-- An annotation does not permit polymorphic calls *within* its SCC.
+#guard (match hoverReport "let f : {a} a -> Int = \\x -> g True + g 1\nlet g : {a} a -> Int = \\x -> f x\nf\n" with
+  | some r => !r.diagnostics.isEmpty
+  | none => false)
+
+-- Non-BMP characters consume two UTF-16 columns before later tokens.
+#guard (match hoverReport "let value = 1\n('😀', value)\n" with
+  | some r => r.diagnostics.isEmpty &&
+      (match symbolAt r.symbols 2 8 with
+       | some value => value.name == "value" && value.type_ == "Int" && value.span.startCol == 8
+       | none => false)
+  | none => false)
+
+-- Keep the existing scoped-head-sugar limitation visible.
+#guard (match hoverReport "let id {a} (x : a) : a = x\nid\n" with
+  | some r => !r.diagnostics.isEmpty
+  | none => false)

@@ -1,6 +1,5 @@
 import FHM.SurfaceBridge
 import FHM.Completeness
-import FHM.EvaluateUnsafe
 import FHM.Pretty
 
 /-! # `Headlines` — the human-readable capabilities surface

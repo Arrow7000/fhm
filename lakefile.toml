@@ -10,10 +10,8 @@ roots = [
   "FHM.CorePath",
   "FHM.Decls",
   "FHM.SurfaceLang",
-  "FHM.Surface.Lex",
+  "FHM.Surface.Token",
   "FHM.Surface.Span",
-  "FHM.Surface.Parse",
-  "FHM.Surface.Provenance",
   "FHM.PatComp",
   "FHM.Pretty",
   "FHM.InferW",
@@ -21,36 +19,46 @@ roots = [
   "FHM.SurfaceBridge",
   "FHM.Scc.Kosaraju",
   "FHM.Examples",
-  "FHM.EvaluateUnsafe",
   "FHM.Headlines",
+]
+
+[[lean_lib]]
+name = "FHMUnverified"
+# Operational front end and evaluator; not part of the default verified stack.
+roots = [
+  "FHM.Unverified.HMArtifacts",
+  "FHM.Unverified.Surface.Lex",
+  "FHM.Unverified.Surface.Parse",
+  "FHM.Unverified.Surface.Provenance",
+  "FHM.Unverified.EvaluateUnsafe",
 ]
 
 [[lean_lib]]
 name = "FHMEditor"
 # Hover/diagnose helpers — built with `fhm`, not default `lake build`.
-roots = ["FHM.EditorSupport"]
+roots = ["FHM.Unverified.EditorSupport"]
 
 [[lean_lib]]
 name = "FHMEditorTests"
 # Span-hover canaries — `lake build FHMEditorTests`.
-roots = ["FHM.EditorSupportTests"]
+roots = ["FHM.Unverified.EditorSupportTests"]
 
 [[lean_lib]]
 name = "FHMCli"
 # Unified CLI modules — `lake build fhm`.
 # Live imports FHM.Bounds.Pipeline / Erase for `--bl` (pulls FHMBounds + Z3 modules).
-roots = ["FHM.Cli", "FHM.Live", "FHM.Diagnose", "FHM.PipelineShared"]
+roots = ["FHM.Unverified.Cli", "FHM.Unverified.Live", "FHM.Unverified.Diagnose", "FHM.Unverified.PipelineShared"]
 
 [[lean_exe]]
 name = "fhm"
-root = "FHM.Cli"
+root = "FHM.Unverified.Cli"
 # Unified CLI: `fhm diagnose` + `fhm run` (formerly fhm_diagnose / fhm_live).
 # Build with `lake build fhm`, scripts/watch-live.sh, or editor tooling.
 
 [[lean_exe]]
 name = "fhm_grammar"
-root = "FHM.GrammarExport"
-# Emits TextMate JSON from Surface.Lex tables. `scripts/gen-fhm-tmgrammar.sh`
+root = "FHM.Unverified.GrammarExport"
+# Emits TextMate JSON from Surface.Token tables. `scripts/gen-fhm-tmgrammar.sh`
 
 [[lean_lib]]
 name = "FHMBounds"
@@ -76,7 +84,7 @@ roots = [
 name = "FHMZ3"
 # Optional: Z3 subprocess oracle + BLSketch bound layer.
 # Build with `lake build FHMZ3` (requires `z3` on PATH for runtime / #eval).
-roots = ["FHM.Z3", "FHM.BLSketch", "FHM.BLSketch.Pretty"]
+roots = ["FHM.Z3", "FHM.Unverified.Z3.Parse", "FHM.BLSketch", "FHM.Unverified.BLSketch.Pretty"]
 
 [[require]]
 name = "mathlib"

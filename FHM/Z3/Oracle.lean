@@ -1,5 +1,5 @@
 import FHM.Z3.Encode
-import FHM.Z3.Parse
+import FHM.Unverified.Z3.Parse
 import FHM.Z3.Process
 
 /-!

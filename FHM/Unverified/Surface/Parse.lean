@@ -1,5 +1,5 @@
 import Parser
-import FHM.Surface.Lex
+import FHM.Unverified.Surface.Lex
 import FHM.Surface.Span
 import FHM.SurfaceLang
 import FHM.SurfaceBridge
