@@ -83,6 +83,8 @@ roots = [
   "FHM.Bounds.ScopedSchemeTests", # Caller scope, capture and independent-use regressions
   "FHM.Bounds.ScopedAnnotation", # Scope-checked carried annotation demands with HM shape proofs
   "FHM.Bounds.ScopedAnnotationTests", # Nested demands, holes, namespaces and declaration regressions
+  "FHM.Bounds.TypeSubstitution", # Capture-safe HM bound-slot/count specialization proofs
+  "FHM.Bounds.TypeSubstitutionTests", # Free HM captures and caller-count substitution order
   "FHM.Bounds.Scope",     # Static count identity and HM-blind renaming contracts
   "FHM.Unverified.Surface.CountScopeTests", # Construction-time telescope regressions
   "FHM.Bounds.Typed",     # Proof-carrying found-driven initial bounds fragment
