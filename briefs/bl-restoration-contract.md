@@ -246,3 +246,26 @@ schemes in `Typed.walk`; count-polymorphic `.fhm` acceptance remains pending.
 Validation after 3e: the full HM/Bounds/editor/CLI build passes (1705 jobs),
 all 53 executable BL regressions pass, and the scratch HM audit and boundary
 guard remain unchanged. No new axioms, placeholders or partial defs were added.
+
+2026-09-13, checkpoint 3f: `ScopedAnnotation.decode` reads carried solid counts
+in an explicit lexical scope and produces proof-carrying bounds demands with
+exact HM-erased skeleton equality. It traverses arrows, nested lists and data
+arguments, rejects holes and unresolved/inferable lexical counts, and treats
+bare List as a top interval. `contract` checks the explicit quantified/captured
+interface and premise scope; neither API establishes RHS conformance.
+
+Eighteen executable regressions and two construction-trace regressions exercise
+the bridge from lowering through `.found` inference to scoped contract decoding
+and instantiation, including nested shadowing with retained outer captures.
+All new decoding/shape proofs require only standard Lean axioms. The existing
+ground-only `Typed.walk` annotation policy and legacy CLI acceptance are unchanged.
+
+HM specialization warning: legacy `BoundsTy.instTyArgs` replaces both `.bvar`
+and `.fvar` by indexing the supplied type arguments. Free inference identities
+are not scheme-slot indices. Likewise `fvarsToBVars` is not valid abstraction
+without a witnessed binder-slot map. Do not reuse either operation in the new
+scheme-use path; preserve captured HM fvars and specialize only bound slots.
+
+Validation after 3f: the full build passes (1707 jobs); all 73 executable BL
+regressions pass. The default HM stack is unchanged, the last rebuilt CLI scratch
+audit remains clean, and no axioms, placeholders or partial defs were introduced.
