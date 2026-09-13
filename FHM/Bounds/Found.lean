@@ -1,15 +1,18 @@
 import FHM.Unverified.Surface.Provenance
 import FHM.Bounds.Synth
+import FHM.Bounds.Typed
 
-/-! # First `.found` → bounds vertical slice
+/-! # `.found` → bounds/provenance adapters
 
 This adapter proves the pipeline shape before the per-node bounds walk lands.
 It takes the HM type from the root `.found` wrapper, never reruns HM inference,
 and feeds the stripped Core term plus that type to the existing bounds
 synthesizer. The result is keyed back to the root source origin.
 
-This is intentionally root-only. It must not be mistaken for D8's final
-per-node bounds report; that requires instrumenting the bounds walk itself.
+The legacy `synthRoot` path is intentionally root-only. `synthNodes` uses the
+new proof-carrying typed slice and joins its per-node results to provenance.
+Neither adapter is the completed D8 checker: the new slice explicitly rejects
+unsupported forms and marks constructor scaffolding without synthesized bounds.
 -/
 
 namespace FHM.Bounds.Found
@@ -56,5 +59,27 @@ def checkRoot (ctors : CtorEnv) (surface : Surface.Expr) (spanned : Surface.Span
     | none => throw "bounds: HM inference failed"
   let report ← synthRoot [] [] typed
   pure (typed, report)
+
+structure NodeReport where
+  node : Typed.NodeResult
+  origin : Origin
+
+/-- First per-node typed slice. Reports retain each Core occurrence, including
+    generated constructor scaffolding, rather than coalescing by source name.
+    Coverage guards are executable checks, not a formal provenance theorem. -/
+def synthNodes (typed : TypedLowered) :
+    Except String
+      (Typed.Result [] [] typed.inference.output × List NodeReport) := do
+  unless typed.lowering.provenanceTotal && typed.sourceTypesTotal do
+    throw "bounds: incomplete typed provenance"
+  let result ← Typed.walk [] [] [] typed.inference.output
+  unless exactlyOnce (logicalCorePaths typed.inference.output) (result.nodes.map (·.path)) do
+    throw "bounds: incomplete or duplicate typed node report"
+  let reports ← result.nodes.mapM fun node => do
+    let origin ← match typed.lowering.coreOrigins.find? (fun pair => pair.1 == node.path) with
+      | some (_, origin) => pure origin
+      | none => throw "bounds: missing node origin"
+    pure ⟨node, origin⟩
+  pure (result, reports)
 
 end FHM.Bounds.Found
