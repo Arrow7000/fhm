@@ -33,6 +33,14 @@ def le : ExtNat → ExtNat → Prop
   | .inf, .ofNat _ => False
   | .ofNat a, .ofNat b => a ≤ b
 
+theorem le_refl (a : ExtNat) : le a a := by
+  cases a <;> simp [le]
+
+theorem le_trans {a b c : ExtNat} (hab : le a b) (hbc : le b c) :
+    le a c := by
+  cases a <;> cases b <;> cases c <;> simp_all [le]
+  omega
+
 def add : ExtNat → ExtNat → ExtNat
   | .inf, _ => .inf
   | _, .inf => .inf
@@ -235,6 +243,16 @@ def ExistsProblem.UniqueOutputs (ψ : ExistsProblem) (outs : List Count) : Prop 
 theorem ForallProblem.valid_empty_goals (prem : List Constraint) :
     (⟨prem, []⟩ : ForallProblem).Valid := by
   intro σ _ g hg; cases hg
+
+/-- Semantic validity survives strengthening the assumptions. No property of
+    an executable solver (in particular, no monotonicity of its verdict) is
+    needed. -/
+theorem ForallProblem.Valid.strengthen {prem prem' goals : List Constraint}
+    (h : (⟨prem, goals⟩ : ForallProblem).Valid)
+    (hpre : ∀ c ∈ prem, c ∈ prem') :
+    (⟨prem', goals⟩ : ForallProblem).Valid := by
+  intro σ hp
+  exact h σ (fun c hc => hp c (hpre c hc))
 
 /-! ## DemandOK (syntactic restriction on demanded bounds) -/
 
@@ -607,6 +625,36 @@ structure Interval where
 def Interval.subGoals (Δ : List Constraint) (a b : Interval) : ForallProblem where
   prem  := Δ
   goals := [⟨b.lo, a.lo⟩, ⟨a.hi, b.hi⟩]
+
+/-- The interval contains a length (or other extended-natural quantity) under
+    a concrete count assignment. -/
+def Interval.Contains (a : Interval) (σ : Assign) (n : ExtNat) : Prop :=
+  ExtNat.le (a.lo.eval σ) n ∧ ExtNat.le n (a.hi.eval σ)
+
+/-- Interval validity is exactly the two semantic endpoint inequalities. -/
+theorem Interval.subGoals_valid_iff {Δ : List Constraint} {a b : Interval} :
+    (subGoals Δ a b).Valid ↔
+      ∀ σ, (∀ c ∈ Δ, c.Holds σ) →
+        ExtNat.le (b.lo.eval σ) (a.lo.eval σ) ∧
+        ExtNat.le (a.hi.eval σ) (b.hi.eval σ) := by
+  simp [ForallProblem.Valid, subGoals, Constraint.Holds]
+
+/-- A valid inclusion carries actual contained lengths into the demanded
+    interval. This is arithmetic meaning, not yet whole-language soundness. -/
+theorem Interval.Contains.of_subGoals {Δ : List Constraint} {a b : Interval}
+    {σ : Assign} {n : ExtNat} (hv : (subGoals Δ a b).Valid)
+    (hp : ∀ c ∈ Δ, c.Holds σ) (hn : a.Contains σ n) : b.Contains σ n := by
+  obtain ⟨hlo, hhi⟩ := subGoals_valid_iff.mp hv σ hp
+  exact ⟨ExtNat.le_trans hlo hn.1, ExtNat.le_trans hn.2 hhi⟩
+
+theorem Interval.subGoals_valid_trans {Δ : List Constraint} {a b c : Interval}
+    (hab : (subGoals Δ a b).Valid) (hbc : (subGoals Δ b c).Valid) :
+    (subGoals Δ a c).Valid := by
+  apply subGoals_valid_iff.mpr
+  intro σ hp
+  obtain ⟨hablo, habhi⟩ := subGoals_valid_iff.mp hab σ hp
+  obtain ⟨hbclo, hbchi⟩ := subGoals_valid_iff.mp hbc σ hp
+  exact ⟨ExtNat.le_trans hbclo hablo, ExtNat.le_trans habhi hbchi⟩
 
 def Interval.meet (a b : Interval) : Interval :=
   ⟨.max a.lo b.lo, .min a.hi b.hi⟩

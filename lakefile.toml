@@ -72,6 +72,10 @@ roots = [
   "FHM.Bounds.Oracle",
   "FHM.Bounds.Commit",
   "FHM.Bounds.Typing",
+  "FHM.Bounds.Semantic",  # Solver-independent subtype specification and bridge
+  "FHM.Bounds.SemanticTests", # Solver-free variance/containment regressions
+  "FHM.Bounds.Typed",     # Proof-carrying found-driven initial bounds fragment
+  "FHM.Bounds.TypedTests", # Initial typed traversal and provenance regressions
   "FHM.Bounds.Escape",    # R3 escape classification (uniqueOnly at pack)
   "FHM.Bounds.Check",     # Live ascription checks (uses Synth)
   "FHM.Bounds.Synth",     # Slice 4: origin HasBounds synthesizer
