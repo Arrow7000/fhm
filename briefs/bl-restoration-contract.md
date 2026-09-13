@@ -141,3 +141,11 @@ regressions pass, and the scratch HM audit remains 28 accepted / 8 expected
 rejections / 0 failures. New code contains no `sorry`, axioms or partial defs.
 `walk` inherits `checkValid_sound`; the fragment derivation projection uses
 only standard Lean axioms. The seven legacy BL proof placeholders remain.
+
+2026-09-13, checkpoint 3a: general monomorphic application now checks the
+argument against the function domain with certified semantic subtyping and
+retains the function result bounds. Primitive binary operators have their fixed
+bounds spines. Tests cover scalar application, curried arithmetic, exact List
+contracts and wrong-length rejection (16 regressions total). Count-scheme and HM
+scheme instantiation remain separate pending work; no unification shortcuts or
+unproved count substitutions were enabled.

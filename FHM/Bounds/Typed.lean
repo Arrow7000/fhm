@@ -5,7 +5,7 @@ import FHM.CorePath
 /-! # Proof-carrying typed bounds slice
 
 Consumes child `.found` payloads, not reconstructed HM types. This deliberately
-small fragment excludes general application, polymorphic lets, recursion and
+small fragment excludes polymorphic lets, recursion and
 matches. Constructor scaffolding is reported explicitly without pretending a
 saturated-Cons rule synthesizes bounds for the partial constructor functions.
 The derivations below establish static synthesis/annotation soundness for this
@@ -39,6 +39,8 @@ private def equalTy (a b : Ty) : Option (PLift (a = b)) :=
         let ha ← equalTy a b
         pure ⟨by rw [h, ha.down]⟩
       else none
+  | .customTy n [], .customTy m [] =>
+      if h : n = m then some ⟨by rw [h]⟩ else none
   | _, _ => none
 termination_by sizeOf a + sizeOf b
 
@@ -61,6 +63,9 @@ def subtype (Δ : List Constraint) (a b : BoundsTy) :
       if h : checkValid query = .valid then
         pure ⟨.list (checkValid_sound query h) he.down⟩
       else throw "bounds: interval inclusion not established (invalid or unknown)"
+  | .custom n [], .custom m [] =>
+      if h : n = m then pure ⟨by subst m; exact .custom .nil⟩
+      else throw "bounds: data type mismatch"
   | _, _ => throw "bounds: unsupported subtype shape in typed slice"
 termination_by sizeOf a + sizeOf b
 
@@ -107,10 +112,16 @@ def BindingOK (Δ : List Constraint) (ann : Option PolyTy) (β : BoundsTy) : Pro
   | none => True
   | some σ => σ.paramCount = 0 ∧ AnnotationOK Δ σ.body β
 
+def primOpBounds : PrimBinOp → BoundsTy
+  | .intAdd | .intSub => .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))
+  | .intLt => .arrow (.prim .int) (.arrow (.prim .int) (.custom boolTyName []))
+  | .charLt => .arrow (.prim .char) (.arrow (.prim .char) (.custom boolTyName []))
+
 /-- Declarative static bounds derivations for precisely the initial fragment.
     Unlike legacy `HasBounds`, annotation obligations are explicit. -/
 inductive Derives (Δ : List Constraint) : List BoundsTy → Expr → BoundsTy → Prop where
   | literal {env p} : Derives Δ env (.primLit p) (boundInfoOfPrimLit p)
+  | primBinOp {env op} : Derives Δ env (.primBinOp op) (primOpBounds op)
   | nil {env elem} : Derives Δ env (.ctor nilCtorName) (.list (.lit 0) (.lit 0) elem)
   | cons {env h t head elem lo hi} :
       Derives Δ env h head → Derives Δ env t (.list lo hi elem) →
@@ -118,6 +129,9 @@ inductive Derives (Δ : List Constraint) : List BoundsTy → Expr → BoundsTy �
       Derives Δ env (.app (.app (.ctor consCtorName) h) t)
         (.list (.add lo (.lit 1)) (.add hi (.lit 1)) elem)
   | var {env i β} : env[i]? = some β → Derives Δ env (.var i) β
+  | app {env f arg domain actual result} :
+      Derives Δ env f (.arrow domain result) → Derives Δ env arg actual →
+      SemanticSub Δ actual domain → Derives Δ env (.app f arg) result
   | lambda {env ann body param result} :
       ParamOK Δ ann param → Derives Δ (param :: env) body result →
       Derives Δ env (.lambda ann body) (.arrow param result)
@@ -198,6 +212,9 @@ def walk (Δ : List Constraint) (env : List BoundsTy) (path : CorePath) (e : Exp
   | .found hm (.primLit p) =>
       finish Δ env (.found hm (.primLit p)) path hm.eraseBounds (boundInfoOfPrimLit p)
         (by simpa only [Expr.stripFound] using (Derives.literal (Δ := Δ) (env := env) (p := p))) []
+  | .found hm (.primBinOp op) =>
+      finish Δ env (.found hm (.primBinOp op)) path hm.eraseBounds (primOpBounds op)
+        (by simpa only [Expr.stripFound] using (Derives.primBinOp (Δ := Δ) (env := env) (op := op))) []
   | .found hm (.ctor name) =>
       if hn : name = nilCtorName then
         match hm.eraseBounds with
@@ -253,7 +270,19 @@ def walk (Δ : List Constraint) (env : List BoundsTy) (path : CorePath) (e : Exp
               (⟨path ++ [.appFun], partialTy.eraseBounds, none⟩ ::
                ⟨path ++ [.appFun, .appFun], ctorTy.eraseBounds, none⟩ :: h.nodes ++ t.nodes)
         | _ => throw "bounds: Cons tail has non-List bounds"
-      else throw "bounds: general application unsupported in typed slice"
+      else throw "bounds: unsupported constructor application in typed slice"
+  | .found hm (.app f arg) =>
+      let fn ← walk Δ env (path ++ [.appFun]) f
+      let actual ← walk Δ env (path ++ [.appArg]) arg
+      match hf : fn.bounds with
+      | .arrow domain result =>
+          let hsub ← subtype Δ actual.bounds domain
+          finish Δ env (.found hm (.app f arg)) path hm.eraseBounds result
+            (by
+              simpa only [Expr.stripFound] using
+                (Derives.app (by simpa only [hf] using fn.derivation) actual.derivation hsub.down))
+            (fn.nodes ++ actual.nodes)
+      | _ => throw "bounds: application has non-function bounds"
   | .found _ _ => throw "bounds: expression form unsupported in typed slice"
   | _ => throw "bounds: every logical node must have one found wrapper"
 termination_by sizeOf e
