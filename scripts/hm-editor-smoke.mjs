@@ -11,6 +11,7 @@ const require = createRequire(import.meta.url);
 const { normalizePayload, resolveHover } = require("../editors/shared/fhmEditorCore.cjs");
 const binary = process.env.FHM || fileURLToPath(new URL("../.lake/build/bin/fhm", import.meta.url));
 let failures = 0;
+let tests = 0;
 
 function cli(args, source) {
   const child = spawnSync(binary, args, {
@@ -59,6 +60,7 @@ function run(source, result, flags = []) {
 }
 
 function test(name, action) {
+  tests++;
   try { action(); console.log(`PASS ${name}`); }
   catch (error) { failures++; console.error(`FAIL ${name}: ${error.message}`); }
 }
@@ -125,5 +127,44 @@ test("non-BMP character before ASCII occurrence preserves UTF-16 range", () => {
   hover(payload, source, 1, "value", "Int");
 });
 
-console.log(`${7 - failures}/7 HM CLI/editor semantic smoke checks passed.`);
+test("whitespace resolves whole application/list types, not identifier fallback", () => {
+  const source = "let id = \\x -> x\nid 1\n";
+  const { ranged } = normalizePayload(diagnose(source));
+  const hit = resolveHover(ranged, 1, 2, "id 1");
+  assert.equal(hit?.kind, "expr");
+  assert.equal(hit?.type, "Int");
+  assert.deepEqual([hit.startCol0, hit.endCol0], [0, 4]);
+  const list = normalizePayload(diagnose("[1, 2]\n"));
+  assert.equal(resolveHover(list.ranged, 0, 3, "[1, 2]")?.type, "List Int");
+});
+
+test("signature names survive RHS hovers and nested-let skolems", () => {
+  const source = "let keep : {element} element -> element = \\x -> x\nkeep\n";
+  const payload = diagnose(source);
+  hover(payload, source, 0, "x", "element", 0);
+  hover(payload, source, 0, "x", "element", 1);
+  const response = run("let keep : {element} element -> element = \\x -> x\nkeep 1\n", "1");
+  assert.equal(response.bindings.find(b => b.name === "keep")?.type, "∀ element. element → element");
+  const nested = "let demo = let keep : {item} item -> item = \\x -> x in keep 1\ndemo\n";
+  const scoped = diagnose(nested);
+  hover(scoped, nested, 0, "x", "item", 0);
+  hover(scoped, nested, 0, "x", "item", 1);
+  for (const symbol of [...payload.symbols, ...scoped.symbols]) {
+    assert.ok(!/\?[a-zA-Z]\w*/.test(symbol.type), symbol.type);
+  }
+});
+
+test("annotated mutual SCC exports polymorphism but forbids polymorphic recursive calls", () => {
+  const source = "let f : {item} item -> item = \\x -> if True then x else g x\nlet g = \\y -> f y\n(f 1, f True)\n";
+  const payload = diagnose(source);
+  hover(payload, source, 2, "f", "Int → Int", 0);
+  hover(payload, source, 2, "f", "Bool → Bool", 1);
+  run(source, "(1, True)");
+  const bad = "let f : {item} item -> item = \\x -> if True then x else g x\nlet g = \\y -> (f y, f [y])\nf\n";
+  const rejected = cli(["diagnose"], bad);
+  assert.equal(rejected.status, 1);
+  assert.ok(rejected.payload.diagnostics.length > 0);
+});
+
+console.log(`${tests - failures}/${tests} HM CLI/editor semantic smoke checks passed.`);
 process.exitCode = failures ? 1 : 0;

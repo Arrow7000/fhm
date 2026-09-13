@@ -1,0 +1,15 @@
+-- Small HM hover playground (no Bounds syntax or scoped header sugar).
+-- `keep`'s definition shows its declared scheme; both `value` tokens show
+-- the named type `element`. Later calls show their own instantiated types.
+let keep : {element} element -> element =
+  \value -> value
+
+let wrap : {item} item -> List item =
+  \value -> [value]
+
+-- Hover the space between `keep` and `[` for the application's `List Int`.
+-- Hover the space after the comma inside the list for the list's `List Int`.
+let xs = keep [1, 2]
+
+-- Hover the space between `wrap` and `True` for `List Bool`.
+(xs, wrap True)

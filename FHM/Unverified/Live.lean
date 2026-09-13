@@ -4,6 +4,7 @@ import FHM.InferW
 import FHM.Pretty
 import FHM.Unverified.EvaluateUnsafe
 import FHM.Unverified.PipelineShared
+import FHM.Unverified.HMDisplay
 import FHM.Bounds.Erase
 import FHM.Bounds.Pipeline
 import FHM.Bounds.Ann
@@ -253,8 +254,14 @@ def checkPipeline (mode : BoundsMode) (src : String) :
             }
         -- HM presentation is bounds-erased, even when a source ascription
         -- carries bounds syntax. Bounds reports belong only to the BL branch.
-        pure { bindings := bindings.map fun (name, hm) => { name, hm := hm.eraseBounds }
-               programHm := bodyσ.eraseBounds }
+        pure { bindings := bindings.map fun (name, hm) =>
+                 let binding := (p.groups.flatMap id).find? (fun b => b.name == name)
+                 let ann := binding.bind (fun b => finalizeAnn b.tyParams b.params b.ann)
+                 let names := FHM.Unverified.HMArtifacts.displayNames ann
+                 { name, hm := hm.eraseBounds
+                   synthPretty? := some (FHM.Unverified.HMDisplay.scheme {} names hm) }
+               programHm := bodyσ.eraseBounds
+               programSynthPretty? := some (FHM.Unverified.HMDisplay.scheme {} [] bodyσ) }
     | none =>
         match ep with
         | some ep => pure (assembleProgramReport p.groups (collectTopSchemes c) bodyσ ep)
