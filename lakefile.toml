@@ -79,6 +79,8 @@ roots = [
   "FHM.Bounds.SchemeTests", # Count scope, arity and finite-argument regressions
   "FHM.Bounds.CountSubstitution", # Capture-preserving semantic count substitution
   "FHM.Bounds.CountSubstitutionTests", # Capture, simultaneous substitution and premise regressions
+  "FHM.Bounds.ScopedScheme", # Quantified stable identities with explicit lexical captures
+  "FHM.Bounds.ScopedSchemeTests", # Caller scope, capture and independent-use regressions
   "FHM.Bounds.Scope",     # Static count identity and HM-blind renaming contracts
   "FHM.Unverified.Surface.CountScopeTests", # Construction-time telescope regressions
   "FHM.Bounds.Typed",     # Proof-carrying found-driven initial bounds fragment
