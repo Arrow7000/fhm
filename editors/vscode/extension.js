@@ -18,9 +18,13 @@ let diagnostics;
 const pending = new Map();
 /** @type {Map<string, import("child_process").ChildProcess>} */
 const running = new Map();
+/** @type {Map<string, number>} */
+const requestGeneration = new Map();
+let nextRequestGeneration = 0;
 /**
  * Cached v3 ranged symbols (def span + lexical scope for use-site).
- * @type {Map<string, { version: number, ranged: any[] }>}
+ * `documentVersion` prevents stale ranges from serving hovers during debounce.
+ * @type {Map<string, { version: number, documentVersion: number, ranged: any[] }>}
  */
 const symbolCache = new Map();
 
@@ -53,9 +57,9 @@ async function refreshDiagnostics(doc) {
   if (doc.languageId !== "fhm" || doc.uri.scheme !== "file") return;
 
   const cfg = vscode.workspace.getConfiguration("fhm");
-  if (!cfg.get("diagnostics.enable", true)) {
+  const diagnosticsEnabled = cfg.get("diagnostics.enable", true);
+  if (!diagnosticsEnabled) {
     diagnostics.set(doc.uri, []);
-    return;
   }
 
   const folder = vscode.workspace.getWorkspaceFolder(doc.uri);
@@ -66,10 +70,12 @@ async function refreshDiagnostics(doc) {
   }
 
   const key = doc.uri.toString();
+  const documentVersion = doc.version;
+  const generation = ++nextRequestGeneration;
+  requestGeneration.set(key, generation);
   const prev = running.get(key);
   if (prev) {
     prev.kill();
-    running.delete(key);
   }
 
   try {
@@ -86,7 +92,8 @@ async function refreshDiagnostics(doc) {
       });
       child.on("error", reject);
       child.on("close", (code) => {
-        running.delete(key);
+        // A killed obsolete child can close after its replacement starts.
+        if (running.get(key) === child) running.delete(key);
         try {
           resolve(JSON.parse(stdout.trim() || "[]"));
         } catch (err) {
@@ -101,8 +108,18 @@ async function refreshDiagnostics(doc) {
       child.stdin.end();
     });
 
+    // Only the newest request for the unchanged document snapshot may publish.
+    if (
+      requestGeneration.get(key) !== generation ||
+      doc.version !== documentVersion
+    ) {
+      return;
+    }
+
     const { diagnostics: diagArr, version, ranged } = normalizePayload(raw);
-    symbolCache.set(key, { version, ranged });
+    symbolCache.set(key, { version, documentVersion, ranged });
+
+    if (!diagnosticsEnabled) return;
 
     /** @type {vscode.Diagnostic[]} */
     const diags = diagnosticsToMarkers(diagArr).map((m) => {
@@ -131,6 +148,9 @@ async function refreshDiagnostics(doc) {
 function scheduleRefresh(doc) {
   if (doc.languageId !== "fhm") return;
   const key = doc.uri.toString();
+  // A range is tied to a specific buffer snapshot.  Never answer hovers with
+  // offsets from the previous snapshot while this edit is debounced.
+  symbolCache.delete(key);
   const prev = pending.get(key);
   if (prev) clearTimeout(prev);
   const ms = vscode.workspace
@@ -154,7 +174,12 @@ function activate(context) {
     vscode.languages.registerHoverProvider("fhm", {
       provideHover(doc, position) {
         const cache = symbolCache.get(doc.uri.toString());
-        if (!cache || !cache.ranged || cache.ranged.length === 0) {
+        if (
+          !cache ||
+          cache.documentVersion !== doc.version ||
+          !cache.ranged ||
+          cache.ranged.length === 0
+        ) {
           return undefined;
         }
 
@@ -214,6 +239,7 @@ function activate(context) {
       const child = running.get(key);
       if (child) child.kill();
       running.delete(key);
+      requestGeneration.delete(key);
     }),
     vscode.workspace.onDidSaveTextDocument((doc) => {
       // Immediate refresh on save (still didChange-primary).
@@ -231,7 +257,14 @@ function deactivate() {
   pending.clear();
   for (const c of running.values()) c.kill();
   running.clear();
+  requestGeneration.clear();
   symbolCache.clear();
 }
 
-module.exports = { activate, deactivate, IDENT_RE };
+module.exports = {
+  activate,
+  deactivate,
+  IDENT_RE,
+  // Explicitly exposed only to the mocked lifecycle regression harness.
+  __test: { refreshDiagnostics, scheduleRefresh, symbolCache, running },
+};

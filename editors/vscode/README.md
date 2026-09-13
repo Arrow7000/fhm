@@ -56,6 +56,8 @@ lake build FHMEditorTests   # #guard canaries in FHM/Unverified/EditorSupportTes
 lake build fhm
 .lake/build/bin/fhm diagnose editors/web/fixtures/hover-rich.fhm
 node scripts/hm-editor-smoke.mjs
+node scripts/scratch-hm-audit.mjs
+node editors/vscode/test/lifecycle-regression.cjs
 ```
 
 ## Regenerate grammar
@@ -70,6 +72,6 @@ Keywords / ops / punct come from `keywordEntries`, `binOpSurfaces`, `punctSurfac
 
 | Setting | Default | Meaning |
 |---------|---------|---------|
-| `fhm.diagnostics.enable` | `true` | Parse check on edit |
+| `fhm.diagnostics.enable` | `true` | Show diagnostics; hover inference still runs when disabled |
 | `fhm.diagnostics.debounceMs` | `300` | Debounce for `didChange` |
 | `fhm.diagnosePath` | `""` | Override path to `fhm` binary. Empty = search workspace `.lake/build/bin/fhm`. |

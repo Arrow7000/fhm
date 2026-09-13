@@ -3,6 +3,7 @@ import FHM.Surface.Span
 import FHM.Unverified.Surface.Lex
 import FHM.SurfaceBridge
 import FHM.Unverified.HMArtifacts
+import FHM.Unverified.HMDisplay
 import FHM.Unverified.PipelineShared
 import FHM.InferW
 import FHM.Pretty
@@ -906,9 +907,10 @@ def explainTypeMismatch (ctors : CtorEnv) (ke : KindEnv)
   match b.ann with
   | none => s!"typechecking failed in `{nm}`"
   | some σs =>
+      let σs := (finalizeAnn b.tyParams b.params (some σs)).getD σs
       let wantStr :=
         match lowerPoly ke σs with
-        | some σ => σ.pretty
+        | some σ => FHM.Unverified.HMDisplay.scheme {} (σs.foralls.map prettyValName) σ
         | none => Surface.PolyTy.pretty σs
       let g' := g.map fun b' =>
         if b'.name == b.name then stripBindingAnn b' else b'
@@ -918,7 +920,8 @@ def explainTypeMismatch (ctors : CtorEnv) (ke : KindEnv)
           s!"typechecking failed in `{nm}` (ascribed {wantStr}; RHS also fails without ascription)"
       | some (_, ty) =>
           let got := genScheme [] [] ty
-          s!"type mismatch in `{nm}`: expected {wantStr}, got {got.pretty}"
+          let gotStr := FHM.Unverified.HMDisplay.scheme {} [] got
+          s!"type mismatch in `{nm}`: expected {wantStr}, got {gotStr}"
 
 /-- Progressive HM location: first top-level group that fails when added, else body.
 Each probe uses `desugarGroups acc (var firstName)` so prior bindings stay in scope.
@@ -1059,14 +1062,19 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
             if !lowered.provenanceTotal || !typed.sourceTypesTotal || !typed.patternBinderTypesTotal then
               fail (diagAtSpan "internal inferred provenance coverage failure" (some scope))
             else
-              let locations := FHM.Unverified.HMArtifacts.collect binders p.term
-                (SurfaceBridge.Provenance.identify tree)
+              let identified := SurfaceBridge.Provenance.identify tree
+              let collected := FHM.Unverified.HMArtifacts.collect binders p.term identified
+              let wrapperIds := FHM.Unverified.HMArtifacts.programWrapperIds p.groups identified
+              let authoredOccurrences := collected.occurrences.filter
+                (fun occ => !(wrapperIds.contains occ.id))
+              let locations := { collected with occurrences := authoredOccurrences }
+              let displayScopes := FHM.Unverified.HMDisplay.scopes typed locations
               let values := locations.binders.filterMap fun b =>
-                (FHM.Unverified.HMArtifacts.binderType typed b.site).map fun ty =>
+                (FHM.Unverified.HMDisplay.binderType typed displayScopes locations b.site).map fun ty =>
                   mkSym b.name b.kind.toString ty b.span b.scope
               let occurrences := locations.occurrences.filterMap fun occ => do
                 let source ← lowered.sourceNodes.find? (fun n => n.id == occ.id)
-                let (_, ty) ← (typed.typesForSource occ.id).head?
+                let ty ← FHM.Unverified.HMDisplay.sourceType typed displayScopes occ.id
                 let name := if occ.kind == "lit" || occ.kind == "op" then
                   FHM.Unverified.HMArtifacts.spanText src source.span
                   else occ.name
@@ -1075,7 +1083,7 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                     source.span.startLine source.span.startCol).mergeSort
                     (fun a b => a.scope.area ≤ b.scope.area)).head? |>.map (·.kind.toString) |>.getD "val"
                   else occ.kind
-                pure (mkSym name kind ty.eraseBounds.pretty source.span source.span)
+                pure (mkSym name kind ty source.span source.span)
               -- Type declarations and scoped type/count variables are syntax
               -- facts, not inferred value facts. Never invent a missing type.
               let syntaxSyms := binders.filterMap fun b =>
@@ -1085,7 +1093,10 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                     mkSym b.name "type" (prettySurfaceDataDecl d) b.span scope
                 else if b.kind == .ctor then
                   (LookupList.get? ctors (.mk b.name)).map fun c =>
-                    mkSym b.name "ctor" c.toTy.eraseBounds.pretty b.span scope
+                    let names := ((p.decls.find? fun d =>
+                      d.ctors.any (fun (name, _) => prettyCtorName name == b.name)).map
+                        (fun d => d.params.map prettyValName)).getD []
+                    mkSym b.name "ctor" (FHM.Unverified.HMDisplay.scheme {} names c.toTy) b.span scope
                 else if b.kind == .count then
                   some (mkSym b.name "count" "count variable (unchecked in HM mode)" b.span (b.scope?.getD b.span))
                 else if b.kind == .param then
@@ -1103,7 +1114,8 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                 !(syntaxSyms.any fun b => b.name == s.name && b.kind == s.kind)
               let sugarOps := (collectLitOpSymbols src ctors).filter fun s => s.name == "::"
               { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences
-                programTy := (genScheme [] [] typed.inference.ty.eraseBounds).pretty
+                programTy := FHM.Unverified.HMDisplay.scheme {} []
+                  (genScheme [] [] typed.inference.ty.eraseBounds)
                 diagnostics := [] }
 
 /-- Parse-error diagnostic JSON object. -/

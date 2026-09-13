@@ -666,3 +666,41 @@ def afterSccSrc : String :=
 #guard (match hoverReport "let id {a} (x : a) : a = x\nid\n" with
   | some r => !r.diagnostics.isEmpty
   | none => false)
+
+-- Named annotation binders survive presentation, both for a D2 recursive
+-- binding's synthesized variables and for genuine nested-let skolems.
+def namedSignatureSrc : String :=
+  "let keep : {element} element -> element = \\x -> x\nkeep\n"
+
+#guard (match hoverReport namedSignatureSrc with
+  | some r => r.diagnostics.isEmpty &&
+      (r.symbols.any fun s => s.name == "keep" && s.type_ == "∀ element. element → element") &&
+      (r.symbols.any fun s => s.name == "x" && s.kind == "param" && s.type_ == "element") &&
+      (r.symbols.all fun s => !hasSub s.type_ "?")
+  | none => false)
+
+#guard (match hoverReport "let demo = let keep : {item} item -> item = \\x -> x in keep 1\ndemo\n" with
+  | some r => r.diagnostics.isEmpty &&
+      (r.symbols.any fun s => s.name == "x" && s.kind == "param" && s.type_ == "item")
+  | none => false)
+
+#guard (match hoverReport "let map : {input output} (input -> output) -> List input -> List output =\n  \\f xs -> match xs with | [] -> [] | h :: t -> f h :: map f t\nmap\n" with
+  | some r => r.diagnostics.isEmpty &&
+      (r.symbols.any fun s => s.name == "f" && s.kind == "param" && s.type_ == "input → output") &&
+      (r.symbols.any fun s => s.name == "xs" && s.kind == "param" && s.type_ == "List input")
+  | none => false)
+
+-- A less-general ceiling must not merge two independently inferred variables
+-- merely because both corresponding declared domains use the same name.
+#guard (match hoverReport "let f : {item} item -> item -> item = \\x y -> y\nf\n" with
+  | some r => r.diagnostics.isEmpty &&
+      (match r.symbols.find? (fun s => s.name == "x" && s.kind == "param"),
+             r.symbols.find? (fun s => s.name == "y" && s.kind == "param") with
+       | some x, some y => x.type_ != y.type_ && !hasSub x.type_ "?" && !hasSub y.type_ "?"
+       | _, _ => false)
+  | none => false)
+
+-- Fresh inferred quantifier names must not capture a named outer type variable.
+#guard FHM.Unverified.HMDisplay.scheme
+  { aliases := [(0, "a")], freeIds := [0] } []
+  ⟨1, .arrow (.bvar 0) (.fvar 0)⟩ == "∀ b. b → a"

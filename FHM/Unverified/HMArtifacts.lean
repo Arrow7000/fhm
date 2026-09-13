@@ -23,16 +23,24 @@ structure Occurrence where
   name : String
   kind : String
 
+structure BindingDisplay where
+  site : SurfaceBinderSite
+  names : List String
+
 structure Locations where
   binders : List BinderLocation := []
   occurrences : List Occurrence := []
+  displays : List BindingDisplay := []
   deriving Inhabited
 
 def Locations.append (a b : Locations) : Locations :=
-  ⟨a.binders ++ b.binders, a.occurrences ++ b.occurrences⟩
+  ⟨a.binders ++ b.binders, a.occurrences ++ b.occurrences, a.displays ++ b.displays⟩
 
 def Locations.withExpr (a : Locations) (source : SourceNode) : Locations :=
   { a with occurrences := ⟨source.id, "expression", "expr"⟩ :: a.occurrences }
+
+def displayNames (ann : Option Surface.PolyTy) : List String :=
+  (ann.map (fun a => a.foralls.map (fun | .mk s => s))).getD []
 
 def before (a b : Span) : Bool :=
   a.endLine < b.startLine || (a.endLine == b.startLine && a.endCol ≤ b.startCol)
@@ -71,10 +79,10 @@ def bindingLocations (bs : List BinderSpan) (owner : SourceNode) (member : Nat)
 
 mutual
 partial def collect (bs : List BinderSpan) : Surface.Expr → IdentifiedExpr → Locations
-  | .var name, .leaf n => ⟨[], [⟨n.id, (match name with | .mk s => s), "val"⟩]⟩
-  | .ctor name, .leaf n => ⟨[], [⟨n.id, (match name with | .mk s => s), "ctor"⟩]⟩
-  | .primLit _, .leaf n => ⟨[], [⟨n.id, "literal", "lit"⟩]⟩
-  | .primBinOp _, .leaf n => ⟨[], [⟨n.id, "operator", "op"⟩]⟩
+  | .var name, .leaf n => ⟨[], [⟨n.id, (match name with | .mk s => s), "val"⟩], []⟩
+  | .ctor name, .leaf n => ⟨[], [⟨n.id, (match name with | .mk s => s), "ctor"⟩], []⟩
+  | .primLit _, .leaf n => ⟨[], [⟨n.id, "literal", "lit"⟩], []⟩
+  | .primBinOp _, .leaf n => ⟨[], [⟨n.id, "operator", "op"⟩], []⟩
   | .pair a b, .pair n sa sb | .cons a b, .cons n sa sb | .app a b, .app n sa sb =>
       ((collect bs a sa).append (collect bs b sb)).withExpr n
   | .list es, .list n ses => (collectList bs es ses).withExpr n
@@ -82,17 +90,18 @@ partial def collect (bs : List BinderSpan) : Surface.Expr → IdentifiedExpr →
       let binders := match pat with
         | .name name => locate bs (.lambda owner.id) name .param owner.span sbody.source.span sbody.source.span
         | _ => []
-      ((⟨binders, []⟩ : Locations).append (collect bs body sbody)).withExpr owner
-  | .letIn name _ params _ rhs body, .letIn owner srhs sbody =>
+      ((⟨binders, [], []⟩ : Locations).append (collect bs body sbody)).withExpr owner
+  | .letIn name tyParams params ann rhs body, .letIn owner srhs sbody =>
       let vals := locate bs (.letIn owner.id) name .val owner.span sbody.source.span srhs.source.span
       let header := match vals with
         | v :: _ => { owner.span with startLine := v.span.startLine, startCol := v.span.startCol }
         | [] => owner.span
       let heads := (params.mapIdx fun i (n, _) =>
         locate bs (.letParam owner.id i) n .param header srhs.source.span srhs.source.span).flatten
-      ((⟨vals ++ heads, []⟩ : Locations).append ((collect bs rhs srhs).append (collect bs body sbody))).withExpr owner
+      let display := ⟨.letIn owner.id, displayNames (finalizeAnn tyParams params ann)⟩
+      ((⟨vals ++ heads, [], [display]⟩ : Locations).append ((collect bs rhs srhs).append (collect bs body sbody))).withExpr owner
   | .letRecIn bindings body, .letRecIn owner rhss sbody =>
-      (collectBindings bs owner 0 bindings rhss sbody.source.span).append (collect bs body sbody)
+      ((collectBindings bs owner 0 bindings rhss sbody.source.span).append (collect bs body sbody)).withExpr owner
   | .ife c t f, .ife n sc st sf =>
       ((collect bs c sc).append ((collect bs t st).append (collect bs f sf))).withExpr n
   | .match_ scrut arms, .match_ owner sscrut sarms =>
@@ -107,7 +116,8 @@ partial def collectBindings (bs : List BinderSpan) (owner : SourceNode) (member 
     List Surface.Binding → List IdentifiedExpr → Span → Locations
   | b :: rest, rhs :: rhss, scope =>
       let own := bindingLocations bs owner member b rhs (owner.span.union scope)
-      (⟨own, []⟩ : Locations).append ((collect bs b.rhs rhs).append
+      let display := ⟨.letRec owner.id member, displayNames (finalizeAnn b.tyParams b.params b.ann)⟩
+      (⟨own, [], [display]⟩ : Locations).append ((collect bs b.rhs rhs).append
         (collectBindings bs owner (member + 1) rest rhss scope))
   | _, _, _ => {}
 
@@ -118,7 +128,7 @@ partial def collectArms (bs : List BinderSpan) (owner : SourceNode) (arm : Nat) 
       let names := patVars pat
       let binders := (names.mapIdx fun capture name =>
         locate bs (.patCapture owner.id arm capture) name .pat header sbody.source.span sbody.source.span).flatten
-      (⟨binders, []⟩ : Locations).append ((collect bs body sbody).append
+      (⟨binders, [], []⟩ : Locations).append ((collect bs body sbody).append
         (collectArms bs owner (arm + 1) sbody.source.span rest srest))
   | _, _ => {}
 end
@@ -135,6 +145,16 @@ def programSpanned (p : Surface.Program) (sp : SpannedProgram) (scope : Span) : 
           pure (if g.isEmpty then body else .letRecIn scope rhs body)
     | _, _ => none
   go p.groups sp.groups
+
+/-- Program-level SCC wrappers are lowering scaffolding, not authored
+    expression-hover targets. Nested authored recursive lets are retained. -/
+def programWrapperIds : List (List Surface.Binding) → IdentifiedExpr → List SourceId
+  | [], _ => []
+  | group :: rest, tree =>
+      if group.isEmpty then programWrapperIds rest tree
+      else match tree with
+        | .letRecIn owner _ body => owner.id :: programWrapperIds rest body
+        | _ => []
 
 /-- Authored schemes are carried declarations, deliberately absent from the
     inferred-scheme map. They have nevertheless passed the HM ceiling check. -/

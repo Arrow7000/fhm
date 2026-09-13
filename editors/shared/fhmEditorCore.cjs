@@ -315,6 +315,8 @@ function kindBadge(kind) {
   if (kind === "pat") return "pat";
   if (kind === "lit") return "lit";
   if (kind === "op") return "op";
+  if (kind === "expr") return "expr";
+  if (kind === "count") return "count";
   return "val";
 }
 

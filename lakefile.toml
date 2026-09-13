@@ -27,6 +27,7 @@ name = "FHMUnverified"
 # Operational front end and evaluator; not part of the default verified stack.
 roots = [
   "FHM.Unverified.HMArtifacts",
+  "FHM.Unverified.HMDisplay",
   "FHM.Unverified.Surface.Lex",
   "FHM.Unverified.Surface.Parse",
   "FHM.Unverified.Surface.Provenance",

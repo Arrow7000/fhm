@@ -131,9 +131,19 @@ Operational regression checks:
 ```sh
 lake build FHMEditorTests fhm
 node scripts/hm-editor-smoke.mjs
+node scripts/scratch-hm-audit.mjs
 node editors/web/scripts/hover-sweep.mjs editors/web/fixtures/hover-rich.fhm
 bash scripts/check-unverified-boundary.sh
 ```
+
+Editor types use readable alpha names rather than internal metavariable IDs,
+and preserve authored signature names where their correspondence is valid.
+For a small expression-hover playground, open `scratch/hm-hover.fhm` and hover
+the whitespace inside `keep [1, 2]` or `wrap True`. Expression hover requires a
+successfully checked buffer; partial hover recovery after errors is not yet
+implemented. Rebuild `fhm`, then reload the editor or edit the buffer to refresh
+cached results. The scratch and recursion audits are recorded in
+`briefs/scratch-hm-audit.md` and `briefs/recursion-hm-audit.md`.
 
 Pair `fhm run` with `scripts/watch-live.sh` and a `.fhm` file (see `scratch/live.fhm`) for a save-triggered, REPL-like loop. The Monaco playground under `editors/web/` talks to the same binary over HTTP.
 
