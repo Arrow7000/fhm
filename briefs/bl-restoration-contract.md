@@ -269,3 +269,29 @@ scheme-use path; preserve captured HM fvars and specialize only bound slots.
 Validation after 3f: the full build passes (1707 jobs); all 73 executable BL
 regressions pass. The default HM stack is unchanged, the last rebuilt CLI scratch
 audit remains clean, and no axioms, placeholders or partial defs were introduced.
+
+2026-09-13, checkpoint 3g: `TypeSubstitution` specializes only HM `.bvar`
+slots, preserves free HM identities and inserts the full supplied bounds rather
+than a shape-only template. It proves HM skeleton correspondence, semantic
+subtyping and caller count-scope preservation. Combined specialization replaces
+scheme counts before inserting caller type arguments, leaving the counts inside
+those arguments untouched even when their numeric identities overlap.
+
+`found_shape` proves exact correspondence to an HM scheme-instantiation witness,
+not merely structural resemblance to a guessed type. Ten executable regressions
+and ordinary Lean proofs cover free captures, simultaneous replacement, nested
+bounds, substitution ordering, variance and an exact HM instance. All transport
+and correspondence theorems require only standard Lean axioms.
+
+Still pending: extract the actual inferred binder-slot abstraction and HM
+instantiation witnesses from the artifact, justify argument bounds in the
+typing environment, check declared RHS contracts, and consume these certificates
+in scheme-aware `Typed.walk` rules. This checkpoint does not enable unrestricted
+polymorphic binding use or count-polymorphic recursion on its own.
+
+Validation after 3g: `lake build FHM FHMBounds FHMEditorTests fhm` passes
+(1709 jobs), all 83 executable BL regressions pass, and the fresh scratch audit
+is 28 accepted / eight expected rejections / zero failures. The unverified
+boundary guard and diff whitespace checks pass. No new proof placeholders,
+axioms or partial defs were introduced; the seven legacy BL placeholders and
+existing positive-oracle trust boundary remain unchanged.
