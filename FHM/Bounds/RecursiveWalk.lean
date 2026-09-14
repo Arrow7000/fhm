@@ -234,6 +234,19 @@ private theorem match_noGroups {ids rows caller Δ env ctx branches} {scrut : Ex
   rcases List.mem_map.mp ha with ⟨br, hm, rfl⟩
   exact arms.noGroups br hm
 
+/-- Defer only lambda telescopes containing an unannotated non-scalar domain.
+    Synthesizable scalar/annotated callbacks remain genuine count origins. -/
+private def needsSpineDemand (e : Expr) : Bool :=
+  match e with
+  | .found hm (.lambda none body) =>
+      match hm.eraseBounds with
+      | .arrow (.prim _) _ | .arrow (.fvar _) _ | .arrow (.bvar _) _ => needsSpineDemand body
+      | .arrow _ _ => true
+      | _ => false
+  | .found _ (.lambda (some _) body) => needsSpineDemand body
+  | _ => false
+termination_by sizeOf e
+
 mutual
 /-- The optional demand guides match checking and unannotated lambda domains,
     not an unchecked coercion of arbitrary node results. RHS certificates still
@@ -246,10 +259,12 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
   | some spine =>
       match env[spine.index]? with
       | some (.recursive _) =>
-          let checked ← checkSpineArguments ids rows caller Δ env spine schemes
-          let used ← RecursiveSpine.infer checked
+          let prepared ← prepareSpineArguments ids rows caller Δ env spine schemes
+          let args ← prepared.propose
+          let completed ← completeSpineArguments ids rows caller Δ env prepared schemes args
+          let used := completed.result
           return ← finish ids rows caller Δ env e path spine.hm.eraseBounds used.bounds
-            used.typing checked.noGroups used.nodes.tail
+            used.typing completed.checked.noGroups used.nodes.tail
       | _ => pure ()
   | none => pure ()
   match e with
@@ -382,7 +397,7 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
   | .found _ (.letRec _ _ _) => throw "bounds: nested recursive group needs captured-template transport"
   | .found _ _ => throw "bounds: expression form unsupported in recursive RHS slice"
   | _ => throw "bounds: every recursive RHS logical node must have one found wrapper"
-termination_by (sizeOf e, 1)
+termination_by (sizeOf e, 2)
 
 private def walkBranches (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List Binding) (ctx : BranchContext)
@@ -435,17 +450,44 @@ decreasing_by
   all_goals simp_wf
   all_goals first | omega | (cases br; simp_all; omega)
 
-private def checkSpineArguments (ids : List Nat) (rows : Bindings) (caller : List Nat)
+private def prepareSpineArguments (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List Binding) {e : Expr} (spine : RecursiveSpine.Syntax e)
-    (schemes : BinderSchemeMap) : Except String (RecursiveSpine.Checked ids rows caller Δ env spine) := do
+    (schemes : BinderSchemeMap) : Except String (RecursiveSpine.Prepared ids rows caller Δ env spine) := do
   match spine with
   | .head path i hm => pure (.head path i hm)
   | .app path hm previous arg =>
-      let prior ← checkSpineArguments ids rows caller Δ env previous schemes
-      let actual ← walk ids rows caller Δ env (path ++ [.appArg]) arg schemes
-      pure (.app path hm prior ⟨actual.bounds, actual.derivation, actual.countScope,
-        actual.noGroups, actual.nodes⟩)
+      let prior ← prepareSpineArguments ids rows caller Δ env previous schemes
+      if needsSpineDemand arg then pure (.app path hm prior none)
+      else
+        let actual ← walk ids rows caller Δ env (path ++ [.appArg]) arg schemes
+        pure (.app path hm prior (some ⟨actual.bounds, actual.derivation, actual.countScope,
+          actual.noGroups, actual.nodes⟩))
 termination_by (sizeOf e, 0)
+
+private def completeSpineArguments (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (Δ : List Constraint) (env : List Binding) {e : Expr} {spine : RecursiveSpine.Syntax e}
+    (prepared : RecursiveSpine.Prepared ids rows caller Δ env spine)
+    (schemes : BinderSchemeMap) (args : List Count) :
+    Except String (RecursiveSpine.Completed ids rows caller Δ env spine) := do
+  match prepared with
+  | .head path i hm =>
+      let checked := RecursiveSpine.Checked.head (ids := ids) (rows := rows)
+        (caller := caller) (Δ := Δ) (env := env) path i hm
+      let result ← RecursiveSpine.use checked args
+      pure ⟨checked, result⟩
+  | .app path hm previous actual =>
+      let prior ← completeSpineArguments ids rows caller Δ env previous schemes args
+      match prior.result.bounds with
+      | .arrow domain _ =>
+          let argument ← match actual with
+            | some a => pure a
+            | none => do
+                let r ← walk ids rows caller Δ env (path ++ [.appArg]) _ schemes (some domain)
+                pure ⟨r.bounds, r.derivation, r.countScope, r.noGroups, r.nodes⟩
+          let result ← RecursiveSpine.append path hm prior.result argument
+          pure ⟨.app path hm prior.checked argument, result⟩
+      | _ => throw "bounds: recursive spine applies a non-function contract result"
+termination_by (sizeOf e, 1)
 end
 
 #print axioms walk

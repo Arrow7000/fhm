@@ -77,6 +77,54 @@ structure Result (ids : List Nat) (rows : Bindings) (caller : List Nat)
   scope : ScopedScheme.BoundsScoped caller bounds
   nodes : List Typed.NodeResult
 
+/-- An absent argument has no invented bounds or typing evidence. -/
+inductive Prepared (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (Δ : List Constraint) (env : List Binding) : {e : Expr} → Syntax e → Type where
+  | head (path : CorePath) (i : Nat) (hm : Ty) : Prepared ids rows caller Δ env (.head path i hm)
+  | app {fn : Expr} {prior : Syntax fn} {arg : Expr} (path : CorePath) (hm : Ty)
+      (previous : Prepared ids rows caller Δ env prior)
+      (actual : Option (Argument ids rows caller Δ env arg)) :
+      Prepared ids rows caller Δ env (.app path hm prior arg)
+
+def Prepared.originsRev {ids rows caller Δ env e} {spine : Syntax e} :
+    Prepared ids rows caller Δ env spine → List (Option BoundsTy)
+  | .head _ _ _ => []
+  | .app _ _ previous actual => actual.map (·.bounds) :: previous.originsRev
+
+def Prepared.propose {ids rows caller Δ env e} {spine : Syntax e}
+    (prepared : Prepared ids rows caller Δ env spine) : Except String (List Count) := do
+  match env[spine.index]? with
+  | some (.recursive c) =>
+      CountProposal.proposeOrigins c.counts.quantified c.counts.body prepared.originsRev.reverse
+  | _ => throw "bounds: recursive spine requires a declared recursive assumption"
+
+/-- A completed spine contains evidence for every exact source argument. -/
+structure Completed (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (Δ : List Constraint) (env : List Binding) {e : Expr} (spine : Syntax e) where
+  checked : Checked ids rows caller Δ env spine
+  result : Result ids rows caller Δ env spine
+
+/-- Extend an already checked callee without repeating its count instantiation. -/
+def append {ids rows caller Δ env fn arg} {spine : Syntax fn}
+    (path : CorePath) (hm : Ty) (prior : Result ids rows caller Δ env spine)
+    (actual : Argument ids rows caller Δ env arg) :
+    Except String (Result ids rows caller Δ env (.app path hm spine arg)) := do
+  match hp : prior.bounds with
+  | .arrow domain result =>
+      let inclusion ← Typed.subtype Δ actual.bounds domain
+      let shape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy result) hm.eraseBounds with
+        | none => throw "bounds: recursive spine result disagrees with intermediate found payload"
+        | some h => pure h
+      have functionTyping : Derives ids rows Δ env _ (.arrow domain result) :=
+        by simpa only [hp] using prior.typing
+      have scope : ScopedScheme.BoundsScoped caller (.arrow domain result) :=
+        by simpa only [hp] using prior.scope
+      have applied := Derives.app functionTyping actual.typing inclusion.down
+      pure ⟨result, (by simpa only [Expr.stripFound] using applied),
+        shape.down, scope.2,
+        ⟨path, hm.eraseBounds, some result⟩ :: prior.nodes ++ actual.nodes⟩
+  | _ => throw "bounds: recursive spine applies a non-function contract result"
+
 def use {ids rows caller Δ env e} {spine : Syntax e}
     (checked : Checked ids rows caller Δ env spine) (args : List Count) :
     Except String (Result ids rows caller Δ env spine) := do
@@ -87,21 +135,7 @@ def use {ids rows caller Δ env e} {spine : Syntax e}
         callee.shape, callee.countScope, [⟨path, hm.eraseBounds, some callee.bounds⟩]⟩
   | .app path hm previous actual =>
       let prior ← use previous args
-      match hp : prior.bounds with
-      | .arrow domain result =>
-          let inclusion ← Typed.subtype Δ actual.bounds domain
-          let shape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy result) hm.eraseBounds with
-            | none => throw "bounds: recursive spine result disagrees with intermediate found payload"
-            | some h => pure h
-          have functionTyping : Derives ids rows Δ env _ (.arrow domain result) :=
-            by simpa only [hp] using prior.typing
-          have scope : ScopedScheme.BoundsScoped caller (.arrow domain result) :=
-            by simpa only [hp] using prior.scope
-          have applied := Derives.app functionTyping actual.typing inclusion.down
-          pure ⟨result, (by simpa only [Expr.stripFound] using applied),
-            shape.down, scope.2,
-            ⟨path, hm.eraseBounds, some result⟩ :: prior.nodes ++ actual.nodes⟩
-      | _ => throw "bounds: recursive spine applies a non-function contract result"
+      append path hm prior actual
 
 /-- Conditional acceptance only. Whole-group introduction still requires all
     RHS certificates, and every recursive use keeps the group's fixed HM type. -/
@@ -115,6 +149,7 @@ def infer {ids rows caller Δ env e} {spine : Syntax e}
   | _ => throw "bounds: recursive spine requires a declared recursive assumption"
 
 #print axioms Checked.noGroups
+#print axioms append
 #print axioms use
 #print axioms infer
 
