@@ -8,8 +8,9 @@ requires all RHSs, at every finite scoped count instantiation, to satisfy their
 carried annotations and their declared contracts under the simultaneous group
 assumptions. Merely decoding those assumptions never proves this premise.
 
-The initial group body retains fixed HM monotypes; exit HM generalization,
-matches, executable group traversal and runtime length soundness are separate.
+The initial group body retains fixed HM monotypes. `RecursiveGroup` supplies an
+optional executable introduction; exit HM generalization, matches and runtime
+length soundness are separate.
 -/
 
 namespace FHM.Bounds.RecursiveTyping
