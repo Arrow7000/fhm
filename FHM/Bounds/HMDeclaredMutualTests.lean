@@ -43,6 +43,12 @@ private def actual : Except String Bool := do
     have sameFixed : b1.fixed.types = b2.fixed.types := by
       exact c1.fixedTypes.trans ((congrArg (List.map BoundsTy.fvar) hs).trans c2.fixedTypes.symm)
     let env : List Binding := [.recursive b1, .recursive b2]
+    let stable1 ← RecursiveHMEnvironment.checkTypesFixed c1.interpretation env
+    let stable2 ← RecursiveHMEnvironment.checkTypesFixed c2.interpretation env
+    have common1 : env.map (mapBinding c1.interpretation c1.interpretationLC) = env :=
+      RecursiveHMEnvironment.typesFixed c1.interpretationLC stable1.down
+    have common2 : env.map (mapBinding c2.interpretation c2.interpretationLC) = env :=
+      RecursiveHMEnvironment.typesFixed c2.interpretationLC stable2.down
     let checked1 ← HMDeclaredRHS.check c1 env artifact.binderSchemes
     let checked2 ← HMDeclaredRHS.check c2 env artifact.binderSchemes
     have represented : ∀ b, .recursive b ∈ env → b.template.hm.body ∈ captures := by
@@ -99,7 +105,24 @@ private def fixedCapture : Except String Bool := do
       | .ok _ => pure true
       | .error message => throw message
 
+private def vectorChange : Except String Bool := do
+  let template ← HMCountScheme.decode (signature 7) [7] []
+  let args := [BoundsTy.fvar 91]
+  let found := Synth.BoundsTy.toTy (HMCountScheme.opened template args)
+  let fixed ← RecursiveHMContract.fix template found args
+  let c : Contract := ⟨template, found, fixed⟩
+  match RecursiveHMEnvironment.checkTypesFixed (fun _ => .prim .int) [.recursive c] with
+  | .ok _ => throw "test: changing a sibling's full opaque HM vector passed common environment checking"
+  | .error _ => pure true
+
 def main : IO Unit := do
+  match vectorChange with
+  | .ok true => IO.println "PASS: RHS reconciliation cannot specialize a sibling's fixed opaque HM vector"
+  | .ok false => throw (IO.userError "common fixed-vector stability checking failed")
+  | .error message => throw (IO.userError message)
+  match RecursiveHMEnvironment.checkTypesFixed (fun _ => .prim .int) [.mono (.fvar 91)] with
+  | .ok _ => throw (IO.userError "RHS reconciliation cannot specialize an outer mono capture")
+  | .error _ => IO.println "PASS: common mono captures cannot change between independently checked RHSs"
   match fixedCapture with
   | .ok true => IO.println "PASS: full fixed recursive HM arguments require their inner counts to be explicit common captures"
   | .ok false => throw (IO.userError "fixed HM capture checking failed")

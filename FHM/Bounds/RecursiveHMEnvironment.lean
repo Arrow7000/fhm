@@ -17,6 +17,16 @@ private theorem fixed_ext {s found} {a b : RecursiveHMContract.Fixed s found}
   cases types
   rfl
 
+private theorem contract_ext {a b : Contract} (template : a.template = b.template)
+    (hm : a.hm = b.hm) (types : a.fixed.types = b.fixed.types) : a = b := by
+  cases a
+  cases b
+  cases template
+  cases hm
+  have h := fixed_ext types
+  cases h
+  rfl
+
 def Captured (ids : List Nat) (env : List RecursiveHMJudgement.Binding) : Prop :=
   (∀ β, .mono β ∈ env → BoundsScoped ids β) ∧
     ∀ c, .recursive c ∈ env → ∀ β ∈ c.fixed.types, BoundsScoped ids β
@@ -39,6 +49,96 @@ def checkCaptured (ids : List Nat) (env : List RecursiveHMJudgement.Binding) :
     Except String (PLift (Captured ids env)) :=
   if h : capturedBool ids env = true then .ok ⟨capturedBool_sound h⟩
   else .error "bounds: common recursive fixed HM arguments or mono captures depend on member-local counts"
+
+/-- Uniform source reconciliation must not give each RHS a different recursive
+    assumption environment. Check full argument vectors, not just their shape. -/
+def TypesFixed (f : Nat → BoundsTy) (env : List Binding) : Prop :=
+  (∀ β, .mono β ∈ env → ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, f i = .fvar i) ∧
+    ∀ c, .recursive c ∈ env → c.hm.eraseBounds = c.hm ∧
+      ∀ β ∈ c.fixed.types, ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, f i = .fvar i
+
+private def identityBool (f : Nat → BoundsTy) (i : Nat) : Bool :=
+  match f i with | .fvar j => i == j | _ => false
+
+private theorem identityBool_sound {f i} (h : identityBool f i = true) : f i = .fvar i := by
+  unfold identityBool at h
+  split at h
+  · rename_i j he
+    have hi : i = j := by simpa using h
+    simpa [hi] using he
+  · contradiction
+
+private def fixedBoundsBool (f : Nat → BoundsTy) (β : BoundsTy) : Bool :=
+  (Synth.BoundsTy.toTy β).freeVars.all (identityBool f)
+
+private theorem fixedBoundsBool_sound {f β} (h : fixedBoundsBool f β = true) :
+    ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, f i = .fvar i := by
+  intro i hi
+  exact identityBool_sound (List.all_eq_true.mp h i hi)
+
+private def checkTypesFixedBinding (f : Nat → BoundsTy) (b : Binding) :
+    Except String (PLift (TypesFixed f [b])) := do
+  match b with
+  | .mono β =>
+      if h : fixedBoundsBool f β = true then
+        pure ⟨⟨by
+          intro a ha
+          have ha : a = β := by simpa using ha
+          subst a
+          exact fixedBoundsBool_sound h,
+          by intro c hc; simp at hc⟩⟩
+      else throw "bounds: RHS reconciliation changes a common mono capture"
+  | .recursive c =>
+      let normal ← match BinderBridge.equalTy c.hm.eraseBounds c.hm with
+        | some h => pure h | none => throw "bounds: common recursive HM payload is not erase-normal"
+      if h : c.fixed.types.all (fixedBoundsBool f) = true then
+        pure ⟨⟨by intro β hβ; simp at hβ, by
+          intro d hd
+          have hd : d = c := by simpa using hd
+          subst d
+          exact ⟨normal.down, fun β hβ => fixedBoundsBool_sound (List.all_eq_true.mp h β hβ)⟩⟩⟩
+      else throw "bounds: RHS reconciliation changes the common fixed recursive HM vector"
+
+def checkTypesFixed (f : Nat → BoundsTy) (env : List Binding) :
+    Except String (PLift (TypesFixed f env)) := do
+  match env with
+  | [] => pure ⟨⟨by simp, by simp⟩⟩
+  | b :: rest =>
+      let head ← checkTypesFixedBinding f b
+      let tail ← checkTypesFixed f rest
+      pure ⟨⟨by
+        intro β hβ
+        rcases List.mem_cons.mp hβ with hb | ht
+        · exact head.down.1 β (by simp [hb])
+        · exact tail.down.1 β ht,
+        by
+        intro c hc
+        rcases List.mem_cons.mp hc with hb | ht
+        · exact head.down.2 c (by simp [hb])
+        · exact tail.down.2 c ht⟩⟩
+
+theorem typesFixed {f env} (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (h : TypesFixed f env) : env.map (mapBinding f hf) = env := by
+  conv_rhs => rw [← List.map_id env]
+  apply List.map_congr_left
+  intro b hb
+  cases b with
+  | mono β => exact congrArg Binding.mono (SchemeSpecialization.fixed (h.1 β hb))
+  | recursive c =>
+      have ht : c.fixed.types.map (SchemeSpecialization.mapFree f) = c.fixed.types := by
+        conv_rhs => rw [← List.map_id c.fixed.types]
+        apply List.map_congr_left
+        intro β hβ
+        exact SchemeSpecialization.fixed ((h.2 c hb).2 β hβ)
+      have hm : Synth.BoundsTy.toTy (HMCountScheme.opened c.template c.fixed.types) = c.hm :=
+        c.fixed.shape.trans (h.2 c hb).1
+      have hc : c.mapTypes f hf = c := by
+        apply contract_ext (a := c.mapTypes f hf) (b := c) rfl
+        · change Synth.BoundsTy.toTy (HMCountScheme.opened c.template
+            (c.fixed.types.map (SchemeSpecialization.mapFree f))) = c.hm
+          rw [ht, hm]
+        · exact ht
+      exact congrArg Binding.recursive hc
 
 /-- Callee templates need not be count-substituted to instantiate one member's
     RHS. The fixed HM vector remains unchanged when its counts are captures. -/
@@ -172,6 +272,8 @@ def atScopedSignedNode {output path} (node : HMFoundView.AtNode output path)
   exact checked
 
 #print axioms capturedBool_sound
+#print axioms checkTypesFixed
+#print axioms typesFixed
 #print axioms checkCaptured
 #print axioms fixed
 #print axioms instantiated
