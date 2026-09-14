@@ -189,8 +189,55 @@ inductive BodyBinding where
   | mono (bounds : BoundsTy)
   | exported (scheme : HMCountScheme.Scheme)
 
-inductive BodyDerives (ids : List Nat) (rows : Bindings) (Δ : List Constraint) :
-    List BodyBinding → Expr → BoundsTy → Prop where
+/-- One branch path for List refinements and finite Bool coverage. Generalized
+    exports remain in the environment behind any newly opened mono fields. -/
+inductive BodyBranchContext where
+  | list (lo hi : Count) (elem : BoundsTy)
+  | bool
+
+def BodyBranchContext.bounds : BodyBranchContext → BoundsTy
+  | .list lo hi elem => .list lo hi elem
+  | .bool => .custom boolTyName []
+
+def BodyBranchContext.refine : BodyBranchContext → MatchPattern → List Constraint
+  | .list lo hi _, p => RecursiveTyping.branchRefine p lo hi
+  | .bool, _ => []
+
+def BodyBranchContext.extend : BodyBranchContext → MatchPattern → List BodyBinding → List BodyBinding
+  | .list lo hi elem, p, env =>
+      if p = .named consCtorName 2 then
+        .mono elem :: .mono (.list (.pred lo) (.pred hi) elem) :: env
+      else env
+  | .bool, _, env => env
+
+def BodyBranchContext.Pattern : BodyBranchContext → MatchPattern → Prop
+  | .list _ _ _, p => RecursiveTyping.ListPattern p
+  | .bool, p => BoolBranches.Pattern p
+
+instance (ctx : BodyBranchContext) (p : MatchPattern) : Decidable (ctx.Pattern p) := by
+  cases ctx <;> unfold BodyBranchContext.Pattern <;> infer_instance
+
+def BodyBranchContext.Covers (Δ : List Constraint) : BodyBranchContext → List (MatchPattern × Expr) → Prop
+  | .list lo hi _, branches => ListBranches.Covers Δ ⟨lo, hi⟩ branches
+  | .bool, branches => BoolBranches.Covers branches
+
+def BodyBranchContext.checkCoverage (ctx : BodyBranchContext) (Δ : List Constraint)
+    (branches : List (MatchPattern × Expr)) : Except String (PLift (ctx.Covers Δ branches)) :=
+  match ctx with
+  | .list lo hi _ => ListBranches.check Δ ⟨lo, hi⟩ branches
+  | .bool => BoolBranches.check branches
+
+private def bodyBranchContext (β : BoundsTy) :
+    Except String (Σ ctx : BodyBranchContext, PLift (β = ctx.bounds)) :=
+  match β with
+  | .list lo hi elem => .ok ⟨.list lo hi elem, ⟨rfl⟩⟩
+  | .custom name [] =>
+      if hn : name = boolTyName then .ok ⟨.bool, ⟨by subst name; rfl⟩⟩
+      else .error "bounds: generalized body match scrutinee is neither List nor Bool"
+  | _ => .error "bounds: generalized body match scrutinee is neither List nor Bool"
+
+inductive BodyDerives (ids : List Nat) (rows : Bindings) :
+    List Constraint → List BodyBinding → Expr → BoundsTy → Prop where
   | literal {env p} : BodyDerives ids rows Δ env (.primLit p) (boundInfoOfPrimLit p)
   | primBinOp {env op} : BodyDerives ids rows Δ env (.primBinOp op) (Typed.primOpBounds op)
   | nil {env elem} : BodyDerives ids rows Δ env (.ctor nilCtorName) (.list (.lit 0) (.lit 0) elem)
@@ -214,6 +261,13 @@ inductive BodyDerives (ids : List Nat) (rows : Bindings) (Δ : List Constraint) 
       ScopedHMAnnotation.BindingOK BoundsTy.fvar BoundsTy.bvar ids rows Δ ann actual →
       BodyDerives ids rows Δ env rhs actual → BodyDerives ids rows Δ (.mono actual :: env) body result →
       BodyDerives ids rows Δ env (.letIn ann rhs body) result
+  | match_ {env scrut branches result} {ctx : BodyBranchContext} {actuals : Nat → BoundsTy} :
+      BodyDerives ids rows Δ env scrut ctx.bounds → ctx.Covers Δ branches →
+      (∀ br ∈ branches, ctx.Pattern br.1) →
+      (∀ i br, branches[i]? = some br →
+        BodyDerives ids rows (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2 (actuals i)) →
+      (∀ i br, branches[i]? = some br → SemanticSub (Δ ++ ctx.refine br.1) (actuals i) result) →
+      BodyDerives ids rows Δ env (.match_ scrut branches) result
   | letRec {output metadata path vectors captures premises bodyTypes bodyResult}
       (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes []) :
       (∀ caller (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
@@ -243,9 +297,68 @@ private def finishBody {ids rows caller Δ env e} (path : CorePath) (hm : Ty) (�
       ⟨path, hm.eraseBounds, some β⟩ :: children⟩
   else throw "bounds: generalized body result counts escape caller scope"
 
+private structure BodyBranches (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (Δ : List Constraint) (env : List BodyBinding) (ctx : BodyBranchContext)
+    (branches : List (MatchPattern × Expr)) where
+  actuals : Nat → BoundsTy
+  typing : ∀ i br, branches[i]? = some br →
+    BodyDerives ids rows (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2.stripFound (actuals i)
+  patterns : ∀ br ∈ branches, ctx.Pattern br.1
+  bounds : Option BoundsTy
+  inclusions : ∀ i br, branches[i]? = some br →
+    match bounds with | none => False | some β => SemanticSub (Δ ++ ctx.refine br.1) (actuals i) β
+  nodes : List Typed.NodeResult
+
+private def prependBodyBranches {ids rows caller Δ env br branches} {ctx : BodyBranchContext}
+    (head : BodyResult ids rows caller (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2)
+    (hp : ctx.Pattern br.1) (tail : BodyBranches ids rows caller Δ env ctx branches)
+    (β : BoundsTy) (hh : SemanticSub (Δ ++ ctx.refine br.1) head.bounds β)
+    (ht : ∀ i arm, branches[i]? = some arm → SemanticSub (Δ ++ ctx.refine arm.1) (tail.actuals i) β) :
+    BodyBranches ids rows caller Δ env ctx (br :: branches) where
+  actuals := fun i => match i with | 0 => head.bounds | i + 1 => tail.actuals i
+  typing := by
+    intro i arm h
+    cases i with
+    | zero => simp only [List.getElem?_cons_zero, Option.some.injEq] at h; subst arm; exact head.typing
+    | succ i => exact tail.typing i arm (by simpa only [List.getElem?_cons_succ] using h)
+  patterns := by
+    intro arm h
+    rcases List.mem_cons.mp h with rfl | h
+    · exact hp
+    · exact tail.patterns arm h
+  bounds := some β
+  inclusions := by
+    intro i arm h
+    cases i with
+    | zero => simp only [List.getElem?_cons_zero, Option.some.injEq] at h; subst arm; exact hh
+    | succ i => exact ht i arm (by simpa only [List.getElem?_cons_succ] using h)
+  nodes := head.nodes ++ tail.nodes
+
+private theorem body_match_typing {ids rows caller Δ env branches β} {ctx : BodyBranchContext} {scrut : Expr}
+    (hs : BodyDerives ids rows Δ env scrut.stripFound ctx.bounds)
+    (arms : BodyBranches ids rows caller Δ env ctx branches) (hb : arms.bounds = some β)
+    (hc : ctx.Covers Δ (Expr.stripFoundBranches branches)) :
+    BodyDerives ids rows Δ env (Expr.match_ scrut branches).stripFound β := by
+  simp only [Expr.stripFound]
+  apply BodyDerives.match_ (actuals := arms.actuals) hs hc
+  · intro arm ha
+    rw [RecursiveHMWalk.stripBranches] at ha
+    rcases List.mem_map.mp ha with ⟨br, hm, rfl⟩
+    exact arms.patterns br hm
+  · intro i arm ha
+    rcases RecursiveHMWalk.strip_index ha with ⟨br, hm, rfl⟩
+    exact arms.typing i br hm
+  · intro i arm ha
+    rcases RecursiveHMWalk.strip_index ha with ⟨br, hm, rfl⟩
+    simpa only [hb] using arms.inclusions i br hm
+
+private theorem body_path_assuming (Δ Γ : List Constraint) :
+    (⟨Δ ++ Γ, Δ⟩ : ForallProblem).Valid := fun _ h c hc => h c (List.mem_append_left Γ hc)
+
+mutual
 /-- Initial generalized body slice: literals, List origins, scalar operators,
     lambdas, mono locals and origin-backed single-argument exported calls.
-    Generalized local lets, matches, nested groups and deferred spines fail
+    Generalized local lets, nested groups and deferred spines fail
     explicitly until their SAME-interface assembly rules are implemented. -/
 def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
     (env : List BodyBinding) (path : CorePath) (e : Expr) (schemes : BinderSchemeMap)
@@ -368,13 +481,72 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
         (by simpa only [Expr.stripFound] using
           (BodyDerives.letMono obligation.down actual.typing result.typing))
         (actual.nodes ++ result.nodes)
-  | .found _ (.match_ _ _) => throw "bounds: matches in generalized group bodies are not supported yet"
+  | .found hm (.match_ scrut branches) =>
+      let input ← walkBody ids rows caller Δ env (path ++ [.matchScrut]) scrut schemes
+      -- Equality of full bounds, not merely HM shape, connects scrutinee origins
+      -- with constructor refinements and freshly opened field bindings.
+      let ⟨ctx, hin⟩ ← bodyBranchContext input.bounds
+      let coverage ← ctx.checkCoverage Δ (Expr.stripFoundBranches branches)
+      let arms ← walkBodyBranches ids rows caller Δ env ctx path branches 0 schemes expected
+      match hb : arms.bounds with
+      | none => throw "bounds: generalized body match has no result-producing branch"
+      | some β =>
+          finishBody path hm β rfl
+            (by simpa only [Expr.stripFound] using
+              body_match_typing (by simpa only [hin.down] using input.typing) arms hb coverage.down)
+            (input.nodes ++ arms.nodes)
   | .found _ (.letRec _ _ _) => throw "bounds: nested generalized recursive groups are not supported yet"
   | _ => throw "bounds: generalized body lacks an original found node"
-termination_by sizeOf e
+termination_by (sizeOf e, 1)
+
+private def walkBodyBranches (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (Δ : List Constraint) (env : List BodyBinding) (ctx : BodyBranchContext)
+    (path : CorePath) (branches : List (MatchPattern × Expr)) (index : Nat)
+    (schemes : BinderSchemeMap) (expected : Option BoundsTy) :
+    Except String (BodyBranches ids rows caller Δ env ctx branches) := do
+  match branches with
+  | [] => pure ⟨(fun _ => .prim .int), (by intros; contradiction), (by intros; contradiction),
+      none, (by intros; contradiction), []⟩
+  | br :: rest =>
+      if hp : ctx.Pattern br.1 then
+        let head ← walkBody ids rows caller (Δ ++ ctx.refine br.1) (ctx.extend br.1 env)
+          (path ++ [.matchBranch index]) br.2 schemes expected
+        let tail ← walkBodyBranches ids rows caller Δ env ctx path rest (index + 1) schemes expected
+        match expected with
+        | some β =>
+            let hs ← Typed.subtype (Δ ++ ctx.refine br.1) head.bounds β
+            match ht : tail.bounds with
+            | none => pure (prependBodyBranches head hp tail β hs.down (by
+                intro i arm ha
+                have impossible := tail.inclusions i arm ha
+                simp only [ht] at impossible))
+            | some τ =>
+                let ts ← Typed.subtype Δ τ β
+                pure (prependBodyBranches head hp tail β hs.down (by
+                  intro i arm ha
+                  have sub : SemanticSub (Δ ++ ctx.refine arm.1) (tail.actuals i) τ :=
+                    by simpa only [ht] using tail.inclusions i arm ha
+                  exact sub.trans (ts.down.assuming (body_path_assuming _ _))))
+        | none =>
+            match ht : tail.bounds with
+            | none => pure (prependBodyBranches head hp tail head.bounds (SemanticSub.refl _ _) (by
+                intro i arm ha
+                have impossible := tail.inclusions i arm ha
+                simp only [ht] at impossible))
+            | some τ =>
+                let ⟨β, merged⟩ ← BranchMerge.combine .upper head.bounds τ
+                let subs := merged.down.sound Δ
+                pure (prependBodyBranches head hp tail β (subs.1.assuming (body_path_assuming _ _)) (by
+                  intro i arm ha
+                  have sub : SemanticSub (Δ ++ ctx.refine arm.1) (tail.actuals i) τ :=
+                    by simpa only [ht] using tail.inclusions i arm ha
+                  exact sub.trans (subs.2.assuming (body_path_assuming _ _))))
+      else throw "bounds: generalized body match has an unsupported pattern or constructor arity"
+termination_by (sizeOf branches, 0)
 decreasing_by
   all_goals simp_wf
-  all_goals omega
+  all_goals first | omega | (cases br; simp_all; omega)
+end
 
 private def memberNodes {output metadata path captures premises typeCaptures env index vectors}
     {ps : HMDeclaredGroup.Interfaces output metadata path captures premises typeCaptures index vectors}

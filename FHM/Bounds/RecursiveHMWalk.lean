@@ -102,7 +102,8 @@ private def prependBranches {types slots ids rows caller Δ env br branches} {ct
     | succ i => exact ht i arm (by simpa only [List.getElem?_cons_succ] using h)
   nodes := head.nodes ++ tail.nodes
 
-private theorem stripBranches (branches : List (MatchPattern × Expr)) :
+/-- Structural branch erasure shared by original-node RHS and body checking. -/
+theorem stripBranches (branches : List (MatchPattern × Expr)) :
     Expr.stripFoundBranches branches = branches.map (fun br => (br.1, br.2.stripFound)) := by
   induction branches with
   | nil => simp [Expr.stripFoundBranches]
@@ -136,7 +137,8 @@ def checkLocalInterface (ann : Option PolyTy) (schemes : BinderSchemeMap)
       | none => throw "bounds: missing inferred local binder scheme in interpreted RHS"
   | _ => throw "bounds: duplicate inferred local binder scheme in interpreted RHS"
 
-private theorem strip_index {branches : List (MatchPattern × Expr)} {i : Nat}
+/-- Erasure preserves each branch's index and pattern. -/
+theorem strip_index {branches : List (MatchPattern × Expr)} {i : Nat}
     {arm : MatchPattern × Expr} (h : (Expr.stripFoundBranches branches)[i]? = some arm) :
     ∃ br, branches[i]? = some br ∧ arm = (br.1, br.2.stripFound) := by
   rw [stripBranches, List.getElem?_map] at h
