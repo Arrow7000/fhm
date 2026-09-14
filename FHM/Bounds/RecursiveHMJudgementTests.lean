@@ -1,4 +1,5 @@
 import FHM.Bounds.RecursiveHMEnvironment
+import FHM.Bounds.RecursiveHMUniform
 
 namespace FHM.Bounds.RecursiveHMJudgementTests
 
@@ -369,5 +370,100 @@ theorem typedTailRuntimeSafe (bound free : Runtime.TypeEnv) (σ : Assign)
   tailReady.safeClosed bound free σ hb hf (by simp)
 
 #print axioms typedTailRuntimeSafe
+
+private theorem selfMemberSafe (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
+    (e : EnvAt bound free σ budget [.recursive contract]) (i : Nat)
+    (inside : i < [Binding.recursive contract].length) :
+    BindingAt bound free σ budget ([Binding.recursive contract][i])
+      (([Expr.var 0][i]'(by simpa using inside)).substN 0 e.terms) := by
+  have zero : i = 0 := by simp only [List.length_singleton] at inside; omega
+  subst i
+  change BindingAt bound free σ budget (.recursive contract) ((Expr.var 0).substN 0 e.terms)
+  rw [Runtime.closing_var e.terms e.closed 0 (by rw [e.arity]; decide)]
+  exact e.denotes 0 (by decide)
+
+/-- A genuinely cyclic recursive assumption is realized at every checked
+    count instance. Its implementation diverges; finite-budget safety must
+    accept that without using an invariant as an unproved runtime promise. -/
+theorem recursiveSelfRuntimeSafe (bound free : Runtime.TypeEnv) (σ : Assign) :
+    Runtime.Safe bound free σ recursiveUse.bounds (.letRec [none] [.var 0] (.var 0)) := by
+  intro budget
+  let tied := EnvAt.tieGroup [none] [.var 0] (env := [.recursive contract]) rfl
+    (by intro rhs member; obtain rfl := List.mem_singleton.mp member; decide)
+    (selfMemberSafe bound free σ) budget
+  have behavior := tied.val.varRecursive (i := 0) rfl recursiveUse (by simp)
+  rw [tied.property] at behavior
+  rw [Runtime.closing_var _ (Runtime.recursiveTerms_closed
+    (by intro rhs member; obtain rfl := List.mem_singleton.mp member; decide)) 0 (by decide)] at behavior
+  exact behavior
+
+private def mutualRhss : List Expr := [.var 1, .ctor nilCtorName]
+private def emptyInts : BoundsTy := .list (.lit 0) (.lit 0) (.prim .int)
+private def mutualEnv : List Binding := [.mono emptyInts, .mono emptyInts]
+
+private theorem mutualMembersSafe (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
+    (e : EnvAt bound free σ budget mutualEnv) (i : Nat) (inside : i < mutualEnv.length) :
+    BindingAt bound free σ budget mutualEnv[i]
+      ((mutualRhss[i]'(by simpa [mutualEnv, mutualRhss] using inside)).substN 0 e.terms) := by
+  cases i with
+  | zero => exact e.varMono (i := 1) rfl
+  | succ i =>
+      have zero : i = 0 := by simp [mutualEnv] at inside; omega
+      subst i
+      exact Runtime.TermAt.value (.ctor _) (Runtime.ValueAt.nil bound free σ budget _)
+
+/-- A two-member group uses the simultaneously tied environment, not a
+    sequential prefix. The first RHS calls the second, which returns Nil. -/
+theorem mutualGroupRuntimeSafe (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free) :
+    Runtime.Safe bound free σ emptyInts (.letRec [none, none] mutualRhss (.var 0)) := by
+  have bodyTyping : Derives BoundsTy.fvar [] [] [] mutualEnv (.var 0) emptyInts := .varMono rfl
+  have bodyReady : ScopedDerives.RuntimeReady bodyTyping := .varMono (i := 0) rfl (.list .prim)
+  exact bodyReady.safeGroup bound free σ hb hf [none, none] mutualRhss rfl
+    (by
+      intro rhs member
+      simp only [mutualRhss, List.mem_cons, List.not_mem_nil, or_false] at member
+      rcases member with rfl | rfl <;> decide)
+    (mutualMembersSafe bound free σ) (by simp)
+
+#print axioms recursiveSelfRuntimeSafe
+#print axioms mutualGroupRuntimeSafe
+
+private theorem recursiveIdentityReady : ScopedDerives.RuntimeReady recursiveIdentity := by
+  have callTyping : Derives BoundsTy.fvar [7] [] []
+      [.mono (exact (.fvar 90)), .recursive contract] (.app (.var 1) (.var 0)) (exact (.fvar 90)) :=
+    .app (.varRecursive rfl recursiveUse) (.varMono rfl) (SemanticSub.refl _ _)
+  have callReady : ScopedDerives.RuntimeReady callTyping :=
+    .app (SemanticSub.refl _ _)
+      (.varRecursive (i := 1) rfl recursiveUse (.arrow (.list .fvar) (.list .fvar)))
+      (.varMono (i := 0) rfl (.list .fvar))
+  exact ScopedDerives.RuntimeReady.lambda (ann := none) True.intro (.list .fvar) callReady
+
+/-- The same original recursive lambda has a runtime implementation proof at
+    every complete supported full-HM/count specialization. Caller-owned nested
+    bounds are retained by the existing count-first/full-HM-second certificate. -/
+theorem universalRecursiveRhsRuntime {counts caller}
+    (inst : ScopedScheme.Instance scheme.counts counts caller)
+    (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (scope : ∀ i, ScopedScheme.BoundsScoped caller (f i))
+    (arguments : ∀ i, Runtime.Supported (f i))
+    (fixed : CapturesFixed f [.recursive contract])
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat) (premises : ∀ p ∈ inst.premises, p.Holds σ)
+    (e : EnvAt bound free σ budget ([.recursive contract].map (mapBinding f lc))) :
+    Runtime.TermAt bound free σ budget (RecursiveHMUniform.demand universal counts f)
+      (loop.substN 0 e.terms) := by
+  have ready : ScopedDerives.RuntimeReady universal.typing := recursiveIdentityReady
+  let result := RecursiveHMUniform.fromCertified universal inst f lc scope capturedOpaqueEnvironment fixed
+  have specialized := RecursiveHMUniform.fromCertified_runtimeReady universal ready inst f lc scope
+    arguments capturedOpaqueEnvironment fixed
+  have demandSupport : Runtime.Supported (RecursiveHMUniform.demand universal counts f) := by
+    change Runtime.Supported (SchemeSpecialization.mapFree f
+      (CountSubstitution.bounds ([7].zip counts) (.arrow (exact (.fvar 90)) (exact (.fvar 90)))))
+    exact ((Runtime.Supported.arrow (.list .fvar) (.list .fvar)).counts _).types f arguments
+  exact result.termAt specialized demandSupport bound free σ hb hf budget premises e
+
+#print axioms universalRecursiveRhsRuntime
 
 end FHM.Bounds.RecursiveHMJudgementTests

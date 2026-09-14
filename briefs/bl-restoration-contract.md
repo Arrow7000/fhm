@@ -213,6 +213,31 @@ runtime contract. Budget weakening and mono extension are checked constructions;
 `EnvAt.varMono` and `EnvAt.varRecursive` prove the actual closing substitution
 sound for both variable rules. Recursive use obtains its raw premises from
 `used.usable` and established caller premises, never by appending requirements.
+
+The simultaneous runtime closure lemma is now `EnvAt.tieGroup`: induction on
+observation budget constructs ALL Core recursive replacement terms in one
+realizing environment, including genuine mutual cycles. `RuntimeReady.safeGroup`
+uses it and the ordinary fundamental theorem to prove actual erased group-body
+safety after the single Core `letRecUnfold` step. The premise still requires
+every actual RHS to establish its `BindingAt` obligation under a realizing
+environment; it is not an assumption that the cyclic replacement terms already
+obey their annotations. Kernel fixtures cover a genuinely cyclic recursive
+count contract (divergent, therefore no fabricated termination claim) and a
+two-member dependency whose second RHS returns Nil.
+
+Readiness now transports through established caller/path assumptions, count
+specialization and full HM specialization (`RuntimeReady.assuming`, `.counts`,
+`.types`). `RecursiveHMUniform.fromCertified_runtimeReady` connects those facts
+to the ACTUAL existing count-first/full-HM-second member certificate constructor;
+`Result.termAt` derives its demand-bound runtime behaviour under a realizing
+environment. A kernel fixture checks a recursive lambda at every supported
+full-HM/count specialization, preserving nested caller counts.
+
+Remaining gate-3 assembly: use those per-instance proofs to discharge ALL members
+in source order, realize generalized exports and connect `BodyDerives`.
+Readiness of the original supported checker proofs must also be established.
+The cyclic closure lemma is not by itself a theorem that the current
+whole-artifact checker is runtime-sound.
 This does NOT yet construct a cyclic group's realizing environment or finish
 the induction over all RHS/body rules.
 

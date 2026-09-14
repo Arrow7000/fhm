@@ -292,6 +292,19 @@ private theorem bindings_scoped {depth bindings}
       simp only [RecGroupClosed.varsBelow, Bool.and_eq_true]
       exact ⟨h e (by simp), ih (fun e member => h e (List.mem_cons_of_mem _ member))⟩
 
+/-- Exactly the recursive replacements constructed by Core `letRecUnfold`.
+    This does not build a type-passing elaboratum or expand RHS environments. -/
+def recursiveTerms (annotations : List (Option PolyTy)) (rhss : List Expr) : List Expr :=
+  rhss.map (fun rhs => .letRec annotations rhss rhs)
+
+theorem recursiveTerms_closed {annotations rhss}
+    (scope : ∀ rhs ∈ rhss, rhs.varsBelow rhss.length = true) :
+    ∀ term ∈ recursiveTerms annotations rhss, term.varsBelow 0 = true := by
+  intro term member
+  obtain ⟨rhs, rhsMember, rfl⟩ := List.mem_map.mp member
+  simp only [Expr.varsBelow, Nat.zero_add, Bool.and_eq_true]
+  exact ⟨bindings_scoped scope, scope rhs rhsMember⟩
+
 /-- Actual closing substitution removes exactly its environment's free term
     slots. Scope under nested and mutual binders is retained, not assumed. -/
 theorem closing_scoped (terms : List Expr)
@@ -370,6 +383,16 @@ theorem Supported.counts (rows : CountSubstitution.Bindings) (h : Supported β) 
   | prim => exact .prim
   | bvar => exact .bvar
   | fvar => exact .fvar
+  | bool => exact .bool
+  | arrow _ _ domain result => exact .arrow domain result
+  | list _ element => exact .list element
+
+theorem Supported.types (f : Nat → BoundsTy) (arguments : ∀ i, Supported (f i))
+    (h : Supported β) : Supported (SchemeSpecialization.mapFree f β) := by
+  induction h with
+  | prim => exact .prim
+  | bvar => exact .bvar
+  | fvar => exact arguments _
   | bool => exact .bool
   | arrow _ _ domain result => exact .arrow domain result
   | list _ element => exact .list element

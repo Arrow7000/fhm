@@ -149,6 +149,56 @@ structure EnvAt (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
     BindingAt bound free σ budget env[i]
       (terms[i]'(by rw [arity]; exact inside))
 
+theorem BindingAt.zero (bound free : Runtime.TypeEnv) (σ : Assign) (binding : Binding) (term : Expr) :
+    BindingAt bound free σ 0 binding term := by
+  have vacuous : ∀ β, Runtime.TermAt bound free σ 0 β term := by
+    intro β
+    unfold Runtime.TermAt
+    intro steps value _ before
+    omega
+  cases binding with
+  | mono β => exact vacuous β
+  | recursive c => exact fun _ _ _ _ => vacuous _
+
+theorem BindingAt.prepend {bound free σ budget binding term next}
+    (step : SmallStep.Step term next) (safe : BindingAt bound free σ budget binding next) :
+    BindingAt bound free σ (budget + 1) binding term := by
+  cases binding with
+  | mono β => exact Runtime.TermAt.prepend step safe
+  | recursive c =>
+      exact fun Δ caller used premises => Runtime.TermAt.prepend step (safe Δ caller used premises)
+
+/-- Tie ALL members simultaneously by induction on observation budget. The
+    premise checks each actual RHS under a realizing assumption environment;
+    it does not assume the recursive replacements already satisfy a contract.
+    The resulting terms are exactly Core's replacements, even for mutual cycles.
+    Static universal-member certificates must discharge this RHS premise. -/
+def EnvAt.tieGroup {bound free σ env} (annotations : List (Option PolyTy)) (rhss : List Expr)
+    (arity : rhss.length = env.length)
+    (scope : ∀ rhs ∈ rhss, rhs.varsBelow rhss.length = true)
+    (rhsSafe : ∀ budget (e : EnvAt bound free σ budget env) i (inside : i < env.length),
+      BindingAt bound free σ budget env[i]
+        (rhss[i]'(by rw [arity]; exact inside) |>.substN 0 e.terms)) :
+    ∀ budget, { e : EnvAt bound free σ budget env // e.terms = Runtime.recursiveTerms annotations rhss }
+  | 0 =>
+      ⟨{ terms := Runtime.recursiveTerms annotations rhss
+         arity := by simp only [Runtime.recursiveTerms, List.length_map, arity]
+         closed := Runtime.recursiveTerms_closed scope
+         denotes := fun i inside => BindingAt.zero bound free σ env[i] _ }, rfl⟩
+  | budget + 1 => by
+      let previous := EnvAt.tieGroup annotations rhss arity scope rhsSafe budget
+      refine ⟨{ terms := Runtime.recursiveTerms annotations rhss
+                arity := by simp only [Runtime.recursiveTerms, List.length_map, arity]
+                closed := Runtime.recursiveTerms_closed scope
+                denotes := ?_ }, rfl⟩
+      intro i inside
+      have memberSafe := rhsSafe budget previous.val i inside
+      rw [previous.property] at memberSafe
+      simp only [Runtime.recursiveTerms, List.getElem_map]
+      exact BindingAt.prepend SmallStep.Step.letRecUnfold memberSafe
+
+#print axioms EnvAt.tieGroup
+
 def EnvAt.down {bound free σ small large env}
     (e : EnvAt bound free σ large env)
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
@@ -484,6 +534,32 @@ theorem RuntimeReady.safeClosed {types slots ids rows Δ expr β}
 
 #print axioms RuntimeReady.safeClosed
 
+/-- Actual erased group introduction, once ALL member implementations establish
+    their runtime obligations. This connects simultaneous cyclic realization to
+    the existing fundamental theorem and Core's single unfolding rule. -/
+theorem RuntimeReady.safeGroup {types slots ids rows Δ env body β}
+    {h : ScopedDerives types slots ids rows Δ env body β} (ready : RuntimeReady h)
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (annotations : List (Option PolyTy)) (rhss : List Expr)
+    (arity : rhss.length = env.length)
+    (scope : ∀ rhs ∈ rhss, rhs.varsBelow rhss.length = true)
+    (rhsSafe : ∀ budget (e : EnvAt bound free σ budget env) i (inside : i < env.length),
+      BindingAt bound free σ budget env[i]
+        (rhss[i]'(by rw [arity]; exact inside) |>.substN 0 e.terms))
+    (premises : ∀ p ∈ Δ, p.Holds σ) :
+    Runtime.Safe bound free σ β (.letRec annotations rhss body) := by
+  intro budget
+  cases budget with
+  | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+  | succ budget =>
+      let realized := EnvAt.tieGroup annotations rhss arity scope rhsSafe budget
+      have bodySafe := ready.termAt bound free σ hb hf budget premises realized.val
+      rw [realized.property] at bodySafe
+      exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
+
+#print axioms RuntimeReady.safeGroup
+
 end ScopedDerives
 
 
@@ -551,6 +627,42 @@ theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
       exact .matchBool (ihscrut hp) hc hpat
         (fun i br hb => ihbranches i br hb hp)
         (fun i br hb => (hsub i br hb).assuming hp)
+
+/-- Established caller/path assumptions preserve the supported proof fragment,
+    including every selected-arm intermediate type. This accompanies the
+    existing whole-derivation transport; it makes no new solver request. -/
+theorem ScopedDerives.RuntimeReady.assuming {types slots ids rows Δ Δ' env e β}
+    {h : ScopedDerives types slots ids rows Δ env e β} (ready : ScopedDerives.RuntimeReady h)
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) : ScopedDerives.RuntimeReady (h.assuming hp) := by
+  induction ready generalizing Δ' with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil support => exact .nil support
+  | boolCtor nameOK => exact .boolCtor nameOK
+  | cons sub _ _ ihh iht => exact .cons (sub.assuming hp) (ihh hp) (iht hp)
+  | varMono lookup support => exact .varMono lookup support
+  | varRecursive lookup used support =>
+      let next : RecursiveHMContract.Use _ Δ' _ _ :=
+        ⟨used.counts, used.inst, fun σ premises => used.usable σ (hp σ premises),
+          used.typesScoped, used.fixedHM⟩
+      exact .varRecursive lookup next support
+  | app sub _ _ ihf iha => exact .app (sub.assuming hp) (ihf hp) (iha hp)
+  | lambda annotation support _ ih =>
+      exact .lambda (param_assuming annotation hp) support (ih hp)
+  | letMono annotation _ _ ihr ihb =>
+      exact .letMono (binding_assuming annotation hp) (ihr hp) (ihb hp)
+  | matchList coverage patterns bodies subs _ _ support ihs ihb =>
+      exact .matchList (coverage.assuming hp) patterns
+        (fun i br atIndex => (bodies i br atIndex).assuming (RecursiveTyping.assuming_append hp))
+        (fun i br atIndex => (subs i br atIndex).assuming (RecursiveTyping.assuming_append hp))
+        (ihs hp) (fun i br atIndex => ihb i br atIndex (RecursiveTyping.assuming_append hp)) support
+  | matchBool coverage patterns bodies subs _ _ support ihs ihb =>
+      exact .matchBool coverage patterns
+        (fun i br atIndex => (bodies i br atIndex).assuming hp)
+        (fun i br atIndex => (subs i br atIndex).assuming hp)
+        (ihs hp) (fun i br atIndex => ihb i br atIndex hp) support
+
+#print axioms ScopedDerives.RuntimeReady.assuming
 
 def Contract.mapTypes (c : Contract) (f : Nat → BoundsTy)
     (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) : Contract :=
@@ -738,6 +850,135 @@ theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : L
       exact .matchBool (ihscrut fresh) hc hpat
         (fun i br hb => ihbranches i br hb fresh)
         (fun i br hb => CountSubstitution.subtype outer hf (hsub i br hb))
+
+/-- Count specialization preserves readiness of the whole existing proof,
+    not merely support of its final type. Callee captures remain protected. -/
+theorem ScopedDerives.RuntimeReady.counts (outer : Bindings) (hf : Finite outer) (target : List Nat)
+    (scope : ∀ row ∈ outer, Scope.CountScoped target row.2)
+    {types slots ids rows Δ env e β} {h : ScopedDerives types slots ids rows Δ env e β}
+    (ready : ScopedDerives.RuntimeReady h) (fresh : CountCapturesFixed outer env) :
+    ScopedDerives.RuntimeReady (transportScopedCounts outer hf target scope h fresh) := by
+  induction ready with
+  | literal => cases ‹PrimLitExpr› <;> exact .literal
+  | primBinOp => cases ‹PrimBinOp› <;> exact .primBinOp
+  | nil support => exact .nil (support.counts outer)
+  | boolCtor nameOK => exact .boolCtor nameOK
+  | cons sub _ _ ihh iht => exact .cons (CountSubstitution.subtype outer hf sub) (ihh fresh) (iht fresh)
+  | varMono lookup support =>
+      exact .varMono (by simpa [mapCountBinding] using congrArg (Option.map (mapCountBinding outer)) lookup)
+        (support.counts outer)
+  | @varRecursive env' i c pathΔ caller lookup used support =>
+      have captured := fresh _ (List.mem_of_getElem? lookup)
+      have moved := ScopedDerives.RuntimeReady.varRecursive
+        (types := fun i => bounds outer (types i)) (slots := fun i => bounds outer (slots i))
+        (ids := ids) (rows := CountAlgebra.compose outer rows)
+        (env := env'.map (mapCountBinding outer)) (i := i) (c := c.mapCounts outer)
+        (by simpa only [List.getElem?_map, Option.map_some, mapCountBinding]
+          using congrArg (Option.map (mapCountBinding outer)) lookup)
+        (used.mapCounts outer hf target scope captured)
+        (by simpa only [used.mapCounts_bounds outer hf target scope captured] using support.counts outer)
+      simpa only [used.mapCounts_bounds outer hf target scope captured] using moved
+  | app sub _ _ ihf iha => exact .app (CountSubstitution.subtype outer hf sub) (ihf fresh) (iha fresh)
+  | lambda annotation support _ ih =>
+      exact .lambda (param_counts annotation outer hf) (support.counts outer)
+        (by simpa [mapCountBinding] using ih (count_captures_cons fresh))
+  | letMono annotation _ _ ihr ihb =>
+      exact .letMono (binding_counts annotation outer hf) (ihr fresh)
+        (by simpa [mapCountBinding] using ihb (count_captures_cons fresh))
+  | matchList coverage patterns bodies subs scrutReady branchesReady support ihs ihb =>
+      rename_i pathΔ env' scrut lo hi elem branches result actuals hs
+      have movedBodies : ∀ i br (atIndex : branches[i]? = some br),
+          ScopedDerives (fun i => bounds outer (types i)) (fun i => bounds outer (slots i))
+            ids (CountAlgebra.compose outer rows)
+            (pathΔ.map (constraint outer) ++ RecursiveTyping.branchRefine br.1 (count outer lo) (count outer hi))
+            (branchEnv br.1 (count outer lo) (count outer hi) (bounds outer elem)
+              (env'.map (mapCountBinding outer))) br.2 (bounds outer (actuals i)) := by
+        intro i br atIndex
+        have moved := transportScopedCounts outer hf target scope (bodies i br atIndex) (count_captures_branch fresh)
+        by_cases isCons : br.1 = .named consCtorName 2
+        · simpa [branchEnv, isCons, mapCountBinding, bounds, List.map_append,
+            RecursiveCountTransport.branchRefine_transport] using moved
+        · simpa [branchEnv, isCons, List.map_append, RecursiveCountTransport.branchRefine_transport] using moved
+      refine .matchList (coverage.transport outer hf) patterns movedBodies
+        (fun i br atIndex => by simpa only [List.map_append, RecursiveCountTransport.branchRefine_transport]
+          using CountSubstitution.subtype outer hf (subs i br atIndex))
+        (ihs fresh) ?_ (support.counts outer)
+      intro i br atIndex
+      have moved := ihb i br atIndex (count_captures_branch fresh)
+      by_cases isCons : br.1 = .named consCtorName 2
+      · simpa [branchEnv, isCons, mapCountBinding, bounds, List.map_append,
+          RecursiveCountTransport.branchRefine_transport] using moved
+      · simpa [branchEnv, isCons, List.map_append, RecursiveCountTransport.branchRefine_transport] using moved
+  | matchBool coverage patterns bodies subs _ _ support ihs ihb =>
+      exact .matchBool coverage patterns
+        (fun i br atIndex => transportScopedCounts outer hf target scope (bodies i br atIndex) fresh)
+        (fun i br atIndex => CountSubstitution.subtype outer hf (subs i br atIndex))
+        (ihs fresh) (fun i br atIndex => ihb i br atIndex fresh) (support.counts outer)
+
+#print axioms ScopedDerives.RuntimeReady.counts
+
+/-- Full HM specialization preserves every intermediate runtime interpretation.
+    Only supported full arguments may enlarge this proof fragment; an erased
+    HM-shape check cannot justify an unsupported nominal runtime meaning. -/
+theorem ScopedDerives.RuntimeReady.types (f : Nat → BoundsTy)
+    (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (target : List Nat) (scope : ∀ i, ScopedScheme.BoundsScoped target (f i))
+    (arguments : ∀ i, Runtime.Supported (f i))
+    {types slots ids rows Δ env e β} {h : ScopedDerives types slots ids rows Δ env e β}
+    (ready : ScopedDerives.RuntimeReady h) (fresh : CapturesFixed f env) :
+    ScopedDerives.RuntimeReady (transportScopedTypes f hf target scope h fresh) := by
+  induction ready with
+  | literal => cases ‹PrimLitExpr› <;> exact .literal
+  | primBinOp => cases ‹PrimBinOp› <;> exact .primBinOp
+  | nil support => exact .nil (support.types f arguments)
+  | boolCtor nameOK => exact .boolCtor nameOK
+  | cons sub _ _ ihh iht => exact .cons (SchemeSpecialization.subtype f sub) (ihh fresh) (iht fresh)
+  | varMono lookup support =>
+      exact .varMono (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) lookup)
+        (support.types f arguments)
+  | @varRecursive env' i c pathΔ caller lookup used support =>
+      have captured := fresh _ (List.mem_of_getElem? lookup)
+      have moved := ScopedDerives.RuntimeReady.varRecursive
+        (types := fun i => mapFree f (types i)) (slots := fun i => mapFree f (slots i))
+        (ids := ids) (rows := rows) (env := env'.map (mapBinding f hf)) (i := i) (c := c.mapTypes f hf)
+        (by simpa only [List.getElem?_map, Option.map_some, mapBinding]
+          using congrArg (Option.map (mapBinding f hf)) lookup)
+        (mapUse used f hf target scope)
+        (by simpa only [mapUse_bounds used f hf target scope captured] using support.types f arguments)
+      simpa only [mapUse_bounds used f hf target scope captured] using moved
+  | app sub _ _ ihf iha => exact .app (SchemeSpecialization.subtype f sub) (ihf fresh) (iha fresh)
+  | lambda annotation support _ ih =>
+      exact .lambda (param_types annotation f) (support.types f arguments)
+        (by simpa [mapBinding] using ih (captures_cons fresh))
+  | letMono annotation _ _ ihr ihb =>
+      exact .letMono (binding_types annotation f) (ihr fresh)
+        (by simpa [mapBinding] using ihb (captures_cons fresh))
+  | matchList coverage patterns bodies subs scrutReady branchesReady support ihs ihb =>
+      rename_i pathΔ env' scrut lo hi elem branches result actuals hs
+      have movedBodies : ∀ i br (atIndex : branches[i]? = some br),
+          ScopedDerives (fun i => mapFree f (types i)) (fun i => mapFree f (slots i)) ids rows
+            (pathΔ ++ RecursiveTyping.branchRefine br.1 lo hi)
+            (branchEnv br.1 lo hi (mapFree f elem) (env'.map (mapBinding f hf))) br.2 (mapFree f (actuals i)) := by
+        intro i br atIndex
+        have moved := transportScopedTypes f hf target scope (bodies i br atIndex) (captures_branch fresh)
+        by_cases isCons : br.1 = .named consCtorName 2
+        · simpa [branchEnv, isCons, mapBinding, mapFree] using moved
+        · simpa [branchEnv, isCons] using moved
+      refine .matchList coverage patterns movedBodies
+        (fun i br atIndex => SchemeSpecialization.subtype f (subs i br atIndex))
+        (ihs fresh) ?_ (support.types f arguments)
+      intro i br atIndex
+      have moved := ihb i br atIndex (captures_branch fresh)
+      by_cases isCons : br.1 = .named consCtorName 2
+      · simpa [branchEnv, isCons, mapBinding, mapFree] using moved
+      · simpa [branchEnv, isCons] using moved
+  | matchBool coverage patterns bodies subs _ _ support ihs ihb =>
+      exact .matchBool coverage patterns
+        (fun i br atIndex => transportScopedTypes f hf target scope (bodies i br atIndex) fresh)
+        (fun i br atIndex => SchemeSpecialization.subtype f (subs i br atIndex))
+        (ihs fresh) (fun i br atIndex => ihb i br atIndex fresh) (support.types f arguments)
+
+#print axioms ScopedDerives.RuntimeReady.types
 
 /-- Identity-slot specialization of the canonical scoped transport. -/
 theorem transportTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
