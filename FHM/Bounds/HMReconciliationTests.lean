@@ -96,18 +96,8 @@ private def universalSpecialization (annotation : PolyTy := signature)
     ⟨discovered, body, by simp [Expr.atCorePath]⟩
   let interface ← HMCountScheme.decodeAnnotated annotation [7] []
   let c ← check node facts (.letIn []) interface.scheme original [91] []
-  have typing : RecursiveHMJudgement.Derives BoundsTy.fvar [7] [] [] []
-      node.inner.stripFound original := by
-    simp only [node, body, original, Expr.stripFound]
-    refine .lambda ?_ (.varMono rfl)
-    cases scopedAnnotation with
-    | false => trivial
-    | true =>
-        refine ⟨⟨.fvar 90, True.intro, by simp [Synth.BoundsTy.toTy, Ty.eraseBounds]⟩,
-          by simp [ScopedAnnotation.decode, pure, Except.pure], ?_⟩
-        exact SemanticSub.refl _ _
-  let rhs ← checkRHS c original typing (by intro d hd; cases hd)
-  let cert := RecursiveHMReconciled.fromAnnotated interface c rhs
+  let located ← RecursiveHMReconciled.checkLocated c []
+  let cert := RecursiveHMReconciled.fromAnnotated interface c located.rhs
     (by intro d hd; cases hd) (by intro d hd; cases hd)
   let inst ← interface.scheme.counts.instantiate [.lit 3] [7]
   let arg : BoundsTy := .list n n (.prim .int)

@@ -1702,3 +1702,48 @@ generalized group export. Current factories consume genuine proof-carrying RHS
 results; they do not yet make the existing guarded recursive source decoder accept
 polymorphic annotations or deliver full BL/LSP support. Nested groups under
 universal RHS checking and local HM-polymorphic bindings remain separate work.
+
+### Checkpoint 4aa — executable interpreted RHS construction (initial slice)
+
+`RecursiveHMAnnotation` now decodes and checks carried source annotations under
+the shared HM interpretation. Source counts are substituted before full HM bounds
+are inserted; source lexical scope, final caller scope, finite Nat replacements,
+parameter HM agreement and actual inclusion are checked independently. Named
+source identities therefore denote their full interpreted type, not a stale
+opaque variable. Mono local-binding obligations and hints use the same reader.
+
+`RecursiveHMWalk.walk` constructs actual `RecursiveHMJudgement.Derives` evidence
+from the unchanged found tree for literals/operators, Nil/Bool/Cons constructors,
+mono variables, lambdas, applications, mono local lets and direct count-polymorphic
+recursive calls. Cons validates and reports its partial/constructor nodes too.
+Local lets require exactly one original machine fact and reject inferred
+generalization rather than laundering it into mono typing. Recursive calls retain
+the common fixed HM vector; count proposals inspect the CLOSED template and reject
+unresolved later-domain coordinates instead of prematurely selecting zero.
+
+`RecursiveHMReconciled.checkLocated` connects this traversal to symbolic RHS
+acceptance, independently checking the actual result against the opaque demand.
+Existing reconciliation/universal regressions now use executable traversal rather
+than hand-supplied RHS proofs. Sixteen annotation and 23 traversal regressions
+cover scope, exact-node coverage, false intervals, local binders, self/mutual
+fixed-vector recursion, incomplete partial calls and a real `inferFound` artifact.
+The real inferred binder is checked, then universally specialized at the original
+RHS node without rerunning inference or rewriting source annotations.
+
+The real annotated-forall artifact test documents another integration boundary:
+inference intentionally omits machine facts for declared binders and closes their
+RHS types to lexical bound slots. The current reconciliation abstraction requires
+free generalized identities. An explicit lexical HM bound-slot reader/interface
+is still required; adding a made-up inferred fact or reopening/replacing the
+expression artifact is not a valid fix. This case is a deliberate test rejection.
+
+Full 1786-job build and parsed-source regressions pass; scratch HM audit remains
+28 accepted / eight expected rejections / zero failures. Boundary/whitespace guards
+pass. New pure metadata proofs use standard Lean axioms; executable inclusion
+uses only the existing bounds solver soundness boundary. No new placeholders,
+axioms or partials; HM/D2, Path R and production guards remain unchanged.
+
+Next traversal migrations are bounds-aware List/Bool matches and full recursive
+application spines/deferred callbacks. Lexical forall-slot reading, generalized
+local lets, complete simultaneous group acceptance and generalized export still
+remain; this initial executable slice is not full polymorphic BL/LSP support.
