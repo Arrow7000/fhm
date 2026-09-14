@@ -79,27 +79,44 @@ private def bodySignature (i : Nat) : PolyTy :=
 
 /-- Actual argument origins determine both count and HM instantiation; the
     second call crosses a local binder and uses the SAME export at Char. -/
-private def bodyCalls (badLocal : Bool := false) (polyLocal : Bool := false) : Except String Bool := do
+private def bodyCalls (badLocal : Bool := false) (polyLocal : Bool := false)
+    (forgedRoot : Bool := false) (nested : Bool := false) : Except String Bool := do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
   let singleton (p : PrimLitExpr) : Expr :=
     .app (.app (.ctor consCtorName) (.primLit p)) (.ctor nilCtorName)
   let localAnn : Option PolyTy := if polyLocal then some ⟨1, listTy (.prim .int)⟩ else if badLocal then
     some ⟨0, .bl (.solid (.lit 2)) (.solid (.lit 2)) (.prim .int)⟩ else none
+  let secondArg := if nested then
+    .app (.app (.ctor consCtorName) (singleton (.char 'a'))) (.ctor nilCtorName)
+    else singleton (.char 'a')
   let source := Expr.letRec
     [some (bodySignature 7), some (bodySignature 8), some ⟨0, .prim .int⟩]
     [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0)), .primLit (.int 0)]
     (.letIn localAnn (.app (.var 0) (singleton (.int 1)))
-      (.app (.var 1) (singleton (.char 'a'))))
+      (.app (.var 1) secondArg))
   let a ← match inferFound ctors source with
     | some a => pure a | none => throw "test: generalized body HM inference failed"
   let metadata : Scope.Metadata :=
     { telescopes := [⟨.letRec [] 0, [(⟨"n"⟩, 7)]⟩, ⟨.letRec [] 1, [(⟨"m"⟩, 8)]⟩] }
-  let g ← HMDeclaredCoordinates.check a.output metadata [] (schemes := a.binderSchemes)
-  let result ← RecursiveHMUniform.checkBody g.checked [] [] [] [] a.binderSchemes
+  let output := if forgedRoot then
+    match a.output with | .found _ inner => .found (.prim .int) inner | e => e
+    else a.output
+  let program ← RecursiveHMUniform.checkClosedProgram output metadata a.binderSchemes
+  let result := program.body
   let exact := match result.bounds with
-    | .list lo hi (.prim .char) => lo.eval (fun _ => 0) == .ofNat 1 && hi.eval (fun _ => 0) == .ofNat 1
+    | .list lo hi elem =>
+        let inner := match elem with
+          | .prim .char => !nested
+          | .list a b (.prim .char) => nested &&
+              a.eval (fun _ => 0) == .ofNat 1 && b.eval (fun _ => 0) == .ofNat 1
+          | _ => false
+        lo.eval (fun _ => 0) == .ofNat 1 && hi.eval (fun _ => 0) == .ofNat 1 && inner
     | _ => false
-  pure (exact && exactlyOnce (logicalCorePaths a.output) (result.nodes.map (·.path)))
+  pure (exact && program.assembled.checked.exports.length == 3 &&
+    exactlyOnce (logicalCorePaths output) (result.nodes.map (·.path)))
+
+example {output metadata} (program : ProgramResult output metadata) :
+    BodyDerives [] [] [] [] output.stripFound program.body.bounds := program.body.typing
 
 def main : IO Unit := do
   match actual with
@@ -126,6 +143,16 @@ def main : IO Unit := do
         throw (IO.userError s!"wrong generalized local-let guard: {message}")
       IO.println "PASS: an HM-valid generalized local let fails explicitly until its own universal introduction is available"
   | .ok _ => throw (IO.userError "generalized local let silently fell back to mono body checking")
+  match bodyCalls (forgedRoot := true) with
+  | .error message =>
+      unless (message.splitOn "original found payload").length > 1 do
+        throw (IO.userError s!"wrong original root-shape rejection: {message}")
+      IO.println "PASS: automatic closed-program assembly certifies the exact input and rejects a forged original root HM payload"
+  | .ok _ => throw (IO.userError "automatic closed-program assembly ignored the original root HM payload")
+  match bodyCalls (nested := true) with
+  | .ok true => IO.println "PASS: actual nested singleton origins survive full exported HM insertion without widening inner List bounds"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "automatic generalized program lost nested List origins or source-node coverage")
 
 #eval main
 
