@@ -96,6 +96,12 @@ private def cases : List (String × Bool) := [
   ("missing machine binder facts rejected", damagedFacts false),
   ("duplicate machine binder facts rejected", damagedFacts true),
   ("incorrect polymorphic callee found payload rejected", damagedPayload),
+  ("two-slot curried function with checked unused Unit slot", accepts
+    (.letIn none (.lambda none (.lambda none (.var 1)))
+      (.app (.app (.var 0) char) (.primLit .unit))) "Char"),
+  ("two-slot curried function does not invent unused Int bounds", rejects
+    (.letIn none (.lambda none (.lambda none (.var 1)))
+      (.app (.app (.var 0) char) int)) "disagree"),
   ("ground List binding annotation checked", accepts
     (.letIn none identity (.letIn
       (some ⟨0, .bl (.solid (.lit 1)) (.solid (.lit 1)) (.prim .char)⟩)

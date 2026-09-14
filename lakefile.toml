@@ -107,6 +107,8 @@ roots = [
   "FHM.Bounds.SchemeApplication", # Origin-backed application at a sole generalized domain slot
   "FHM.Bounds.SchemeApplicationTests", # Exact Nil/Cons origins, captures and application payload checks
   "FHM.Bounds.SchemeWalk", # Found-driven traversal with certified mixed-environment generalization
+  "FHM.Bounds.StructuralApplication", # Origin-backed proposals with exact instantiation and semantic inclusion
+  "FHM.Bounds.StructuralApplicationTests", # Structural origins, multiple/repeated slots, variance and scope
   "FHM.Bounds.SchemeFound", # Opt-in inference/provenance adapter; existing launch route unchanged
   "FHM.Bounds.SchemeWalkTests", # Real HM artifacts, mixed lets, exact List origins and provenance joins
   "FHM.Bounds.Escape",    # R3 escape classification (uniqueOnly at pack)

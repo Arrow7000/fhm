@@ -1,12 +1,12 @@
-import FHM.Bounds.SchemeApplication
+import FHM.Bounds.StructuralApplication
 import FHM.Bounds.SchemeTransport
 
 /-! # Proof-carrying traversal with inferred HM schemes
 
 All logical child types come from `.found`. Generalized lets consume the unique
 machine binder fact at their exact Core site and a universal mixed-environment
-RHS typing proof. Polymorphic applications currently support only a direct sole
-slot domain, with full argument bounds supplied by the argument derivation.
+RHS typing proof. Polymorphic application proposals use structural argument
+bounds, validated by exact HM specialization and semantic domain inclusion.
 Unsupported forms never fall back to the legacy checker. This is not yet the
 CLI/LSP launch route, a runtime interpretation or full artifact-coherence proof.
 -/
@@ -128,11 +128,11 @@ def walk (Δ : List Constraint) (env : List Binding) (path : CorePath) (e : Expr
       match env[i]? with
       | some (.poly _) =>
           let actual ← walk Δ env (path ++ [.appArg]) arg schemes scope
-          let result ← SchemeApplication.check Δ env i arg.stripFound actual.bounds actual.derivation
+          let result ← StructuralApplication.check Δ env i arg.stripFound actual.bounds actual.derivation
             functionHM hm scope
           finish Δ env (.found hm (.app (.found functionHM (.var i)) arg)) scope path hm.eraseBounds result.bounds
             (by simpa only [Expr.stripFound] using result.derivation)
-            (⟨path ++ [.appFun], functionHM.eraseBounds, some (.arrow actual.bounds result.bounds)⟩ :: actual.nodes)
+            (⟨path ++ [.appFun], functionHM.eraseBounds, some (.arrow result.domain result.bounds)⟩ :: actual.nodes)
       | _ =>
           let fn ← walk Δ env (path ++ [.appFun]) (.found functionHM (.var i)) schemes scope
           let actual ← walk Δ env (path ++ [.appArg]) arg schemes scope

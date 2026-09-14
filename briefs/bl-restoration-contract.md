@@ -524,3 +524,34 @@ guards pass. No new axioms, proof placeholders or partial definitions were added
 The walk inherits only the established positive solver trust for inclusion;
 its derivation projection requires standard Lean axioms only. HM and Path R are
 unchanged. Structural origin-backed applications are the next component target.
+
+2026-09-14, checkpoint 3p: `StructuralApplication.check` proposes HM-slot bounds
+from the certified argument's structural bounds. Exact `SchemeVariable.check`
+evidence validates the complete HM instance, local closure and caller count
+scope; semantic subtyping separately proves argument inclusion in the opened
+domain. Successful applications carry both the callee typing and application
+typing. The traversal now reports the specialized callee domain, not the
+potentially narrower argument bounds as though they were the function domain.
+
+The component supports nested List and arrow slots and multiple HM slots.
+Repeated occurrences select one origin-backed proposal and validate all uses;
+there is no join-search or claim of completeness. Slots absent from the domain
+receive an explicit Unit witness, accepted only if it agrees with the entire
+found HM instance. Other missing slot bounds fail rather than being fabricated
+from a result's HM shape. Quantified count contracts remain separate work.
+
+Eleven component regressions cover nested origins, multiple/repeated slots,
+interval rejection, arrow variance, missing-slot policy and count/LC guards.
+Two additional actual-inference traversal regressions exercise a two-slot
+curried constant with an unused Unit slot and conservative rejection for Int.
+The component's structural capabilities do not mean arbitrary structural source
+functions now pass: general unannotated List/higher-order parameter introduction
+and standalone polymorphic values are still unsupported, as are polymorphic
+annotations, holes, count contracts, matches and recursion. CLI/LSP remain on
+their existing paths; no runtime or full artifact-coherence result is claimed.
+
+Validation after 3p: full HM/Bounds/editor/CLI build passes (1731 jobs), with 229
+BL component/adapter regressions. Fresh scratch HM audit: 28 accepted / eight
+expected rejections / zero failures. Boundary and whitespace checks pass. No new
+axioms, placeholders or partial definitions; inclusion retains the established
+positive solver trust. HM metatheory and Path R are unchanged.
