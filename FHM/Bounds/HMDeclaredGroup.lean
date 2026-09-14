@@ -1,5 +1,6 @@
 import FHM.Bounds.HMDeclaredRHS
 import FHM.Bounds.RecursiveHMEnvironment
+import FHM.Bounds.RecursiveHMCaller
 
 /-! Ordered acceptance of every original annotated RHS in one recursive group.
 Opaque HM slot vectors are explicit checked proposals, not inferred binder facts.
@@ -198,6 +199,46 @@ inductive CheckedMembers {output metadata path captures premises typeCaptures}
       {he : p.reconciled.signatureIds = ids} :
       MemberChecked p env → CheckedMembers env tail → CheckedMembers env (Interfaces.cons p he tail)
 
+/-- Generalized exit interfaces come from the exact declarations whose actual
+    RHSs ALL accepted. Annotated members deliberately have no fabricated machine
+    binder fact; inferred/unannotated exports need their separate machine path. -/
+def CheckedMembers.exports {output metadata path captures premises typeCaptures env index vectors}
+    {ps : Interfaces output metadata path captures premises typeCaptures index vectors}
+    (ms : CheckedMembers env ps) : List HMCountScheme.Scheme :=
+  match ms with
+  | .nil => []
+  | .cons head rest => head.certificate.interface.scheme :: rest.exports
+
+theorem CheckedMembers.exportCount {output metadata path captures premises typeCaptures env index vectors}
+    {ps : Interfaces output metadata path captures premises typeCaptures index vectors}
+    (ms : CheckedMembers env ps) : ms.exports.length = ps.contracts.length := by
+  induction ms with
+  | nil => rfl
+  | cons _ _ ih => simpa [exports, Interfaces.contracts] using ih
+
+/-- The exit position, source declaration and universal implementation are
+    selected together. A successful lookup cannot swap the signature/RHS pair. -/
+structure Selected {output metadata path captures premises typeCaptures env index vectors}
+    {ps : Interfaces output metadata path captures premises typeCaptures index vectors}
+    (ms : CheckedMembers env ps) (offset : Nat) where
+  sourceIndex : Nat
+  member : Member output metadata path sourceIndex captures premises typeCaptures
+  rhs : MemberChecked member env
+  position : sourceIndex = index + offset
+  selection : ms.exports[offset]? = some rhs.certificate.interface.scheme
+
+def CheckedMembers.select {output metadata path captures premises typeCaptures env index vectors}
+    {ps : Interfaces output metadata path captures premises typeCaptures index vectors}
+    (ms : CheckedMembers env ps) (offset : Nat) : Except String (Selected ms offset) := do
+  match ms, offset with
+  | .nil, _ => throw "bounds: binding is outside the exported recursive group"
+  | .cons (p := p) head _, 0 => pure ⟨index, p, head, by simp, rfl⟩
+  | .cons _ rest, offset + 1 =>
+      let tail ← rest.select offset
+      pure ⟨tail.sourceIndex, tail.member, tail.rhs, by
+        have h := tail.position
+        omega, tail.selection⟩
+
 private def checkMembers {output metadata path captures premises typeCaptures index vectors}
     (ps : Interfaces output metadata path captures premises typeCaptures index vectors)
     (env : List Binding) (schemes : BinderSchemeMap) : Except String (CheckedMembers env ps) := do
@@ -235,6 +276,34 @@ theorem Checked.memberCount {output metadata path vectors captures premises oute
     g.interfaces.contracts.length = g.rhss.length :=
   g.interfaces.length.trans g.complete
 
+def Checked.exports {output metadata path vectors captures premises outerTypes outerEnv}
+    (g : Checked output metadata path vectors captures premises outerTypes outerEnv) : List HMCountScheme.Scheme :=
+  g.members.exports
+
+theorem Checked.exportCount {output metadata path vectors captures premises outerTypes outerEnv}
+    (g : Checked output metadata path vectors captures premises outerTypes outerEnv) :
+    g.exports.length = g.rhss.length := g.members.exportCount.trans g.memberCount
+
+structure ExportedUse {output metadata path vectors captures premises outerTypes outerEnv}
+    (g : Checked output metadata path vectors captures premises outerTypes outerEnv)
+    (index : Nat) (Δ : List Constraint) (found : Ty) (caller : List Nat) where
+  selected : Selected g.members index
+  result : RecursiveHMCaller.Checked selected.member.declaration.node
+    selected.rhs.certificate Δ found caller
+
+/-- Only an ALL-member checked group can expose this exit-use interface.
+    External callers supply their own full HM/count arguments, unlike recursive
+    calls' fixed HM vectors. The consuming body walk must still justify argument
+    origins and its variable-environment lookup; this is not whole-body typing. -/
+def Checked.checkExportedUse {output metadata path vectors captures premises outerTypes outerEnv}
+    (g : Checked output metadata path vectors captures premises outerTypes outerEnv)
+    (index : Nat) (Δ : List Constraint) (found : Ty) (counts : List Count)
+    (types : List BoundsTy) (caller : List Nat) : Except String (ExportedUse g index Δ found caller) := do
+  let selected ← g.members.select index
+  let result ← RecursiveHMCaller.check selected.member.declaration.node selected.rhs.certificate
+    selected.rhs.captured Δ found counts types caller
+  pure ⟨selected, result⟩
+
 /-- All source members accept or the entire result rejects. Explicit per-member
     opaque vectors may have different arities; no machine schemes are invented.
     This entry point deliberately does NOT accept or export the group's body. -/
@@ -266,6 +335,9 @@ def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
 #print axioms checkConsistent
 #print axioms MemberChecked.certificate
 #print axioms Checked.memberCount
+#print axioms CheckedMembers.select
+#print axioms Checked.exportCount
+#print axioms Checked.checkExportedUse
 #print axioms check
 
 end FHM.Bounds.HMDeclaredGroup

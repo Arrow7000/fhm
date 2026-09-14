@@ -2247,3 +2247,58 @@ Next is generalized body/export introduction using these combined obligations,
 then enclosing lexical declarations, generalized local lets/nested groups and
 full/deferred recursive application spines. No group body or production BL LSP
 is accepted merely from this RHS family; those remain separate gates.
+
+### Checkpoint 4ar — ordered generalized exit interfaces retain real source RHSs
+
+`HMDeclaredGroup.Checked.exports` is produced from the ALL-member accepted
+certificate family. `exportCount` proves exact output/source-member arity.
+`CheckedMembers.select` returns source index, exact original declaration,
+universally checked implementation and a kernel-proved exit-array selection
+together; signatures cannot be swapped independently of their RHS certificate.
+
+`checkExportedUse` joins this selection with checked caller HM/count arguments,
+actual source-node evidence and discharged caller premises. Annotated members
+use their exact source declarations; no machine binder fact is invented. This
+entry point does not cover unannotated/inferred exports, whose genuinely inferred
+schemes remain authoritative on their separate reconciliation path.
+
+Two regressions use actual body function payloads for Int/Char instantiations of
+the SAME member across a local-let de Bruijn shift, plus a mono member and a
+rejected out-of-range export. Argument-origin and body-environment derivations
+remain the consuming body's obligations: exit-use evidence alone is not a
+whole-program typing theorem.
+
+Full build passes (1805 jobs); scratch HM audit is 28 accepted / eight expected
+rejects / zero failures, boundary/whitespace pass. Selection/arity proofs use
+standard Lean axioms; executable caller acceptance retains existing solver trust.
+No new files, placeholders, partial defs or axioms. HM/D2, Path R and production
+BL guards unchanged. Next is actual generalized body expression typing and the
+group-introduction rule that consumes these exports and ALL universal members.
+
+## Consolidation / retirement ledger
+
+The file count is not a target architecture. Many files are regression suites;
+several traversal generations are also retained during verified migration.
+Retirement must follow replacement/parity, not delete useful proofs blindly.
+
+- `RecursiveWalk` / `RecursiveGroup` / `RecursiveFound`: earlier checked fixed-HM
+  program path. Retire executable duplication after universal generalized body
+  traversal covers matches, nested groups, curried/deferred calls and ordinary
+  program prefixes, with its current positive/negative regressions ported.
+- `SchemeWalk` / `ScopedWalk` and their adapters: intermediate non-recursive
+  scheme/count slices. Reuse their algebra/proofs; consolidate their independent
+  entry points once the canonical mixed-scope/program path subsumes their tests.
+- `HMReconciliation` / `RecursiveHMReconciled` are NOT obsolete merely because
+  declared reconciliation exists: they consume real INFERRED machine facts,
+  whereas `HMDeclared*` consumes original annotated declarations. Preserve this
+  semantic distinction while consolidating shared helpers.
+- Legacy `Pipeline` / root-only `synthRoot` / old product adapters: retire after
+  the new verified report/program route has CLI/LSP parity; existing proof holes
+  in that legacy path are not silently accepted as part of the new metatheory.
+- `ScopedHMInterpretation`, count/free algebra and exact-node readers are shared
+  foundations, not additional language engines. Keep provenance/front-end/LSP
+  reconciliation outside verified syntax, as already agreed.
+
+Final cleanup must make the active entry point and supported language obvious,
+leave one authority per acceptance rule, and organize tests so experimental or
+superseded engines do not masquerade as the finished verified language.
