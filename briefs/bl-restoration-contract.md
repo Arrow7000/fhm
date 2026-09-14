@@ -1266,3 +1266,37 @@ silently rewrite it as a monomorphic let or skip generalized HM obligations.
 Groups inside a monomorphic let RHS or a universal recursive RHS still require
 further program/template handling. No new axioms, placeholders or partial
 definitions; HM/D2, Path R and production CLI/LSP launch remain unchanged.
+
+### Checkpoint 4o — ordinary program binders can contain checked groups
+
+The program checker now descends through ordinary lambda bodies and monomorphic
+let RHSs, introducing the existing lambda/let/group rules under the unchanged
+caller interpretation. It does not transport a nested group through a universal
+recursive RHS certificate: that harder boundary remains explicit in
+`RecursiveWalk.NoGroups`. Source annotations, captured environment scope and
+every inner member certificate still apply. The shared lambda-domain admission
+preserves carried annotations and requires exact found HM agreement.
+
+An optional checking demand now travels through program binders to the existing
+walker. It guides unannotated lambda domains and checked branch results; it is
+not an unchecked coercion. Enclosing binding/application obligations remain
+mandatory. Lambda roots verify their entire HM arrow and caller count scope,
+including unused parameter domains, before returning a result/report.
+
+Nine parsed regressions cover program lambdas with inner groups, scalar captures,
+unannotated scalar domains, invalid inner contracts, annotated/unannotated
+monomorphic let RHS groups, enclosing count obligations and signature-guided
+unannotated List domains. Four kernel regressions cover forged/non-arrow lambda
+HM payloads, missing body wrappers and an out-of-scope checking-domain count.
+All 89 parsed and 28 group regressions pass, as does the full 1766-job
+HM/Bounds/editor/CLI build, boundary/whitespace guards and fresh scratch HM audit
+(28 accepted / eight expected rejections / zero failures). No new axioms,
+placeholders or partial definitions; HM/D2, Path R and production launch unchanged.
+
+This is not unrestricted descent into every expression context: applications
+and match arms still use the universal-RHS walker and reject contained groups.
+Genuinely polymorphic HM signatures/lets and top-level unannotated groups still
+need their proper opening/generalization interfaces. The main proof dependency
+remains capture-safe joint HM/count transport and sealed group-exit schemes,
+followed by complete program descent and production LSP integration. Runtime
+length soundness and formal artifact/report coherence remain separate claims.

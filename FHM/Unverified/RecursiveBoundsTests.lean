@@ -317,6 +317,29 @@ private def cases : List (String × Bool) := [
     "(let id = \\x -> x in\n" ++ selfSource ++ "in f [])\n")) "generalized HM internal let"),
   ("parsed polymorphic source prefix remains an explicit generalization boundary", fails (run (
     "(let id : {a} a -> a = \\x -> x in\n" ++ selfSource ++ "in f [])\n")) "polymorphic HM internal binding"),
+  ("parsed program lambda can contain a certified recursive group", returns (run (
+    "\\(xs : BL 2 2 Int) ->\n" ++ selfSource ++ "in f xs\n")) "BL 2 2 Int → BL 2 2 Int"),
+  ("parsed program lambda captures its scalar assumption in an inner group", returns (run (
+    "\\(offset : Int) ->\n" ++ mapSource "(transform (h + offset) + 0) :: f transform t" ++
+    "in f (\\x -> x + 1) [1, 2]\n")) "Int → BL 2 2 Int"),
+  ("parsed unannotated scalar lambda still checks its inner group's result", returns (run (
+    "\\offset ->\n" ++ mapSource "(transform (h + offset) + 0) :: f transform t" ++
+    "in f (\\x -> x + 1) [1, 2]\n")) "Int → BL 2 2 Int"),
+  ("parsed program lambda cannot hide an invalid inner contract", fails (run (
+    "\\(xs : BL 2 2 Int) ->\n" ++
+    unannotatedCopy "1 :: ((h + 0) :: f t)" ++ "in f xs\n")) "interval inclusion"),
+  ("parsed monomorphic let RHS can introduce a certified recursive group", returns (run (
+    "(let result : BL 2 2 Int = (\n" ++ selfSource ++ "in f [1, 2]) in result)\n")) "BL 2 2 Int"),
+  ("parsed unannotated monomorphic let RHS retains an inner group certificate", returns (run (
+    "(let result = (\n" ++ selfSource ++ "in f [1, 2]) in result)\n")) "BL 2 2 Int"),
+  ("parsed enclosing let still checks the actual inner group result bounds", fails (run (
+    "(let result : BL 0 0 Int = (\n" ++ selfSource ++ "in f [1, 2]) in result)\n")) "interval inclusion"),
+  ("parsed invalid group in a monomorphic let RHS rejects the whole program", fails (run (
+    "(let result : BL 2 2 Int = (\n" ++ unannotatedCopy "1 :: ((h + 0) :: f t)" ++
+    "in f [1, 2]) in result)\n")) "interval inclusion"),
+  ("parsed program lambda demand guides an unannotated List domain", returns (run (
+    "(let copy : BL 2 2 Int -> BL 2 2 Int = \\xs -> " ++
+    "match xs with | [] -> [] | h :: t -> (h + 0) :: t in copy [1, 2])\n")) "BL 2 2 Int"),
   ("missing source origins reject report adapter", fails (provenanceRejected (fun a =>
     {a with lowering := {a.lowering with coreOrigins := []}})) "incomplete typed provenance"),
   ("duplicate source origins reject report adapter", fails (provenanceRejected (fun a =>
