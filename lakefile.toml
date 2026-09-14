@@ -130,6 +130,10 @@ roots = [
   "FHM.Bounds.HMReconciliation", # Machine binder identities reconcile with fresh source signatures without rewriting found trees
   "FHM.Bounds.HMReconciliationTests", # More-general RHSs, exact machine sites, fresh/vacuous source slots and rejection boundaries
   "FHM.Bounds.RecursiveHMReconciled", # Real checked RHSs retain their source interpretation in full universal HM/count certificates
+  "FHM.Bounds.HMDeclaredReconciliation", # Exact source annotations, capture-protected solved RHS specialization without fake machine facts
+  "FHM.Bounds.HMDeclaredReconciliationTests", # Real narrower ceilings, capture/rigid protection and exact source-site rejection
+  "FHM.Bounds.HMDeclaredRHS", # Actual original source-site RHS checking and universally signed explicit-environment certificates
+  "FHM.Bounds.HMDeclaredRHSTests", # Real annotated and more-general recursive RHSs through actual checking and universal signed original-node use
   "FHM.Bounds.RecursiveHMAnnotation", # Executable count-first/full-HM source annotation and parameter obligations
   "FHM.Bounds.RecursiveHMAnnotationTests", # Named HM identities, count namespace collisions, scope and actual-inclusion failures
   "FHM.Bounds.RecursiveHMWalk", # Interpreted original-node traversal constructs actual RHS proofs and fixed-HM recursive calls
