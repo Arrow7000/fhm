@@ -59,7 +59,9 @@ theorem length {output metadata path captures premises typeCaptures index vector
 
 end Interfaces
 
-private def prepareMembers (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
+/-- Metadata-only preparation for checked coordinate proposals. Actual RHS
+    acceptance still requires `check`; this function licenses no assumptions. -/
+def prepareInterfaces (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
     (captures : List Nat) (premises : List Constraint) (typeCaptures : List Ty)
     (index : Nat) (vectors : List (List Nat)) :
     Except String (Interfaces output metadata path captures premises typeCaptures index vectors) := do
@@ -67,7 +69,7 @@ private def prepareMembers (output : Expr) (metadata : Scope.Metadata) (path : C
   | [] => pure .nil
   | ids :: rest =>
       let p ← HMDeclaredRHS.prepare output metadata (.letRec path index) ids captures typeCaptures premises
-      let tail ← prepareMembers output metadata path captures premises typeCaptures (index + 1) rest
+      let tail ← prepareInterfaces output metadata path captures premises typeCaptures (index + 1) rest
       if he : p.reconciled.signatureIds = ids then pure (.cons p he tail)
       else throw "bounds: recursive member changed its proposed opaque HM coordinates"
 
@@ -246,7 +248,7 @@ def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
       if ha : anns.length = rhss.length then
         if hv : vectors.length = rhss.length then
           let guarded := anns.filterMap (fun a => a.map (fun s => s.body.eraseBounds)) ++ outerTypes
-          let ps ← prepareMembers output metadata path captures premises guarded 0 vectors
+          let ps ← prepareInterfaces output metadata path captures premises guarded 0 vectors
           if hq : ps.quantified.Nodup then
             if hc : captures.all (fun i => !ps.quantified.contains i) = true then
               let agreement ← checkConsistent ps.proposals
