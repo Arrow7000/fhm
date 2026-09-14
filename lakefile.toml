@@ -116,6 +116,8 @@ roots = [
   "FHM.Bounds.RecursiveRHSTests", # Actual recursive artifacts, universal certificates and bad contract rejection
   "FHM.Bounds.RecursiveGroup", # Whole-group acceptance discharges every universal RHS obligation and checks body
   "FHM.Bounds.RecursiveGroupTests", # Actual self/mutual groups, body origins, invalid members and exact-site reports
+  "FHM.Bounds.RecursiveFound", # Opt-in group acceptance and per-occurrence source-provenance reports
+  "FHM.Unverified.RecursiveBoundsTests", # Actual parsed .fhm contracts and fail-closed artifact boundaries
   "FHM.Bounds.RecursiveContractTests", # Fixed HM/count boundary, conditional calls and formal group obligations
   "FHM.Bounds.CountApplicationTests", # Real declaration certificates, origin bounds and rejected contract calls
   "FHM.Bounds.CountAlgebra", # Finite composition of simultaneous source-count interpretations
