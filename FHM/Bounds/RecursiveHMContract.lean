@@ -119,6 +119,25 @@ theorem map_opened (s : HMCountScheme.Scheme) (types : List BoundsTy)
   funext i
   exact (vector_map f types i).symm
 
+/-- Mapping the fixed vector is total even when a template captures free HM
+    identities. Equality with mapping an entire use additionally needs those
+    captures fixed; the transport theorem checks that premise separately. -/
+def Fixed.mapTypes {s found} (c : Fixed s found) (f : Nat → BoundsTy)
+    (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) :
+    Fixed s (Synth.BoundsTy.toTy (opened s (c.types.map (mapFree f)))) := by
+  have argsLC : ∀ a ∈ c.types.map (mapFree f), (Synth.BoundsTy.toTy a).IsLC := by
+    intro a ha
+    obtain ⟨b, hb, rfl⟩ := List.mem_map.mp ha
+    exact FreeAlgebra.bvars f hf (c.typesLC b hb)
+  refine ⟨c.types.map (mapFree f), by simpa using c.arity, argsLC,
+    (FreeAlgebra.shape_erased _).symm, ?_⟩
+  rw [FreeAlgebra.shape_erased, opened, TypeSubstitution.shape, s.shape]
+  apply Ty.instantiate_isLC (n := s.hm.paramCount) _ s.hmWF
+  intro i _
+  cases h : (c.types.map (mapFree f))[i]? with
+  | none => simp [SchemeUse.vector, h, Synth.BoundsTy.toTy, Ty.IsLC]; exact .prim
+  | some a => simpa only [SchemeUse.vector, h, Option.getD_some] using argsLC a (List.mem_of_getElem? h)
+
 /-- Before full caller bounds replace the opaque HM identities, the new
     count-first interface agrees exactly with the existing recursive rule. -/
 theorem opaque_count_coherence {s found captures} (o : Opening s found captures)

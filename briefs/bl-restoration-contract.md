@@ -1452,3 +1452,46 @@ interpretation, prove whole-RHS HM transport rather than variable-use transport
 alone, check specialization of more-general RHS found payloads, and introduce
 joint universal HM/count RHS and generalized group-exit certificates. Removing
 the current decoder/annotation guards before those proofs would be unsound.
+
+### Checkpoint 4t — full recursive RHS HM/count transport and checked-fragment embedding
+
+`HMInterpretation` makes source HM interpretation explicit and proof-side. Its
+annotation judgement decodes the original scoped source, interprets source
+counts first, then simultaneously inserts full bounds at free HM identities.
+Composition and count-transport laws preserve caller-owned counts inside those
+inserted types. The original source annotations and runtime expression stay
+unchanged. Monomorphic local binding annotations retain their existing guard;
+top-level polymorphic contract obligations remain a separate group concern.
+
+`RecursiveHMJudgement` supplies the generalized no-group RHS target judgement.
+Its recursive assumptions use closed templates and one fixed HM bounds vector;
+one HM interpretation is shared by the whole derivation. `transportTypes` proves
+full RHS specialization through applications, explicit lambda annotations,
+local lets, recursive calls and every List/Bool match arm. It preserves captured
+free HM template identities and checks caller scope for inserted types.
+`transportCounts` transports the whole RHS, its source interpretation, path
+assumptions, mono bindings, caller-owned fixed HM types and recursive count
+witnesses together, while protecting callee count telescopes/captures. These
+are genuine derivation transport theorems, not variable-interface checks alone.
+
+`RecursiveHMEmbedding.typing` embeds every existing checked no-group recursive
+derivation at the identity HM interpretation, preserving exact actual intervals,
+unchanged source terms, annotation obligations, coverage and inclusions. Its
+`certified` theorem applies directly to `RecursiveRHS.Certified`; old executable
+RHS certificates therefore have a checked path into the new judgement. Group
+acceptance and the production launch still use the original guarded route.
+
+Kernel-checked examples specialize an explicitly annotated identity lambda and
+a genuinely self-recursive RHS to arbitrary complete locally closed/scoped
+caller bounds, under one fixed recursive interface throughout. All new proofs
+use standard Lean axioms only. Full 1774-job build, existing parsed-source
+regressions and scratch HM audit pass (28 accepted / eight expected rejections /
+zero failures); boundary/whitespace guards pass. No new axioms, placeholders or
+partials; HM/D2, Path R, source expressions and production launch unchanged.
+
+Next: join whole-RHS HM and finite-count transport into one universal contract
+certificate preserving actual RHS intervals and independently proved demand
+inclusion; then connect generalized group-exit/source-annotation obligations
+and the executable fixed-HM artifact interpretation seam before enabling the
+polymorphic decoder path. Nested groups inside universally checked RHSs remain
+outside this deliberately explicit no-group fragment.

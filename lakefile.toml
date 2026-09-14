@@ -115,6 +115,10 @@ roots = [
   "FHM.Bounds.HMCountSchemeTests", # Slot/capture/vacuous-forall and caller-count insertion regressions
   "FHM.Bounds.RecursiveContract", # Declared recursive count assumptions with one fixed HM monotype
   "FHM.Bounds.RecursiveHMContract", # Closed templates and fixed HM vectors; capture-safe count-only assumptions
+  "FHM.Bounds.HMInterpretation", # Proof-side source HM interpretation; complete caller types stay count-separated
+  "FHM.Bounds.RecursiveHMJudgement", # Whole-RHS HM transport interprets source annotations and fixed recursive vectors
+  "FHM.Bounds.RecursiveHMJudgementTests", # Kernel-checked annotated/recursive RHS specialization over full caller bounds
+  "FHM.Bounds.RecursiveHMEmbedding", # Existing checked RHSs embed with exact bounds and unchanged source terms
   "FHM.Bounds.RecursiveHMContractTests", # Fixed HM/count calls, caller-count collisions and assumption specialization
   "FHM.Bounds.RecursiveTyping", # Simultaneous group rule requires universal RHS and annotation obligations
   "FHM.Bounds.RecursiveVariable", # Fixed-HM recursive assumption uses and origin-backed count calls
