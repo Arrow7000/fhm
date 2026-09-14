@@ -120,6 +120,7 @@ roots = [
   "FHM.Bounds.RecursiveHMJudgementTests", # Kernel-checked annotated/recursive RHS specialization over full caller bounds
   "FHM.Bounds.ScopedHMJudgementTests", # Unchanged lexical annotations and both-interface RHS specialization
   "FHM.Bounds.ScopedHMWalkTests", # Real annotated-forall original-node checking and fixed-HM recursion
+  "FHM.Bounds.ScopedHMUniversalTests", # Real lexical forall RHS certificates specialize counts then full caller types
   "FHM.Bounds.RecursiveHMEmbedding", # Existing checked RHSs embed with exact bounds and unchanged source terms
   "FHM.Bounds.RecursiveHMUniversal", # Joint full-HM/finite-count RHS derivations and independently proved contract inclusion
   "FHM.Bounds.RecursiveHMSigned", # Exact written signature agreement backed by joint universal RHS certificates
