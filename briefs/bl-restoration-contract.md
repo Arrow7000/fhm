@@ -394,3 +394,24 @@ pass. No polymorphic-use acceptance, new axioms, placeholders or partial defs
 have been introduced. The next step is a checked executable use certificate,
 followed by scheme-aware environment/variable/let rules and their expanded
 judgement transport; count-polymorphic contracts remain separate work.
+
+2026-09-14, checkpoint 3k: `SchemeUse.check` constructs an executable use
+certificate from a checked binder abstraction, its RHS typing derivation,
+actual supplied bounds arguments and final HM use type. The full argument
+vector must match the independently checked HM instance; missing, extra,
+inconsistent or differently shaped arguments are rejected. Caller arguments
+must be locally closed, and both supplied counts and captured RHS counts must
+be available in the explicit caller scope. Inferable counts are not lexical
+captures. Successful output carries RHS typing, exact final HM shape and count
+scope proofs, all independent of solver axioms.
+
+This API does not invent bounds arguments or prove that caller arguments
+describe an expression's actual value; the consuming application rule must
+establish argument-origin typing. No scheme-aware variable/let rule or CLI/LSP
+acceptance is enabled by this helper alone.
+
+Validation after 3k: the full build passes (1717 jobs), including 159 BL
+component/adapter executable regressions and ordinary Lean proof examples.
+The fresh scratch audit remains 28 accepted / eight expected rejections / zero
+failures. Boundary and whitespace guards pass; no new axioms, placeholders or
+partial definitions were added.
