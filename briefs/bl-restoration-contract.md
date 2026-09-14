@@ -105,6 +105,48 @@ builds and the scratch HM audit. Do not widen this campaign to experimental
 
 ## Implementation record
 
+### Metatheory-first closure order (2026-09-14)
+
+The final goal is a verified, usable BL layer, not a demo-first release. The
+earlier numbered checkpoints do not authorize postponing the central runtime
+argument until after product integration. The active closure order is:
+
+1. Fix the runtime target in `Runtime`: concrete erased values/reductions,
+   higher-order meanings, permitted divergence, and explicit supported nominal
+   data. Prove semantic subtyping includes those meanings.
+2. Prove compatibility and the fundamental theorem for the ordinary rules
+   shared by `RecursiveHMJudgement.ScopedDerives` and
+   `RecursiveHMUniform.BodyDerives`. Closing environments must justify actual
+   variable denotations; static HM-shape agreement is not that justification.
+3. Extend the fundamental theorem to count/HM scheme instantiation and ALL-member
+   recursive contracts using finite observation budgets. This must justify the
+   existing `SmallStep.Step.letRecUnfold`, not invent alternative execution.
+4. Assemble generalized locals, enclosing bindings and nested groups into one
+   canonical whole-program route, extending its semantic proof at each rule.
+   No parallel walker generation solely to avoid the common-scope obligation.
+5. Establish the HM-artifact and source/report coherence bridges and expose the
+   same checked whole-program route to CLI/LSP. Retire superseded engines after
+   proof/regression parity; provide an explicit test entry point.
+
+Deferred callback inference is an eventual supported-language obligation, but
+further inference conveniences must not displace these closure gates. Explicit
+annotations may exercise a sound fragment without falsely claiming the missing
+inference is implemented. Arbitrary recursive invariant inference and
+unrestricted BL completeness/principality remain outside the promised target.
+
+`Runtime.Supported` initially permits primitives, HM variables, arrows, Lists
+and Bool. Arbitrary nominal datatypes need justified constructor-field variance;
+the structural `SemanticSub.custom` rule is not sufficient runtime evidence for
+a negative occurrence of a type parameter. This is an explicit theorem boundary,
+not permission to silently change the supported language or HM semantics.
+
+Current runtime bridge: `Runtime.subtype` proves value-meaning inclusion;
+`ValueAt.down`/`TermAt.down` prove finite-budget weakening under valid semantic
+type environments; `Safe.step`, `Safe.progress` and `Safe.list_length` give
+observable consequences of the runtime target. These use only standard Lean
+axioms. They do NOT establish that accepted checker derivations imply `Safe`:
+the fundamental theorem in gates 2–3 remains required before claiming BL safety.
+
 2026-09-13, checkpoint 1: added semantic subtyping with reflexivity,
 transitivity and premise-strengthening, plus the legacy derivation bridge.
 Added interval containment, semantic endpoint characterization and inclusion
