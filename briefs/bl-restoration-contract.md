@@ -655,3 +655,34 @@ Validation after 3s: full HM/Bounds/editor/CLI build passes (1741 jobs), with 27
 BL regressions. Fresh scratch HM audit: 28 accepted / eight expected rejections /
 zero failures. Boundary and whitespace checks pass; no new axioms, placeholders
 or partial definitions. Executable inclusion retains positive solver trust.
+
+2026-09-14, checkpoint 3t: scoped declaration certificates now support
+unannotated HM generalization as well as count quantification. The unique,
+exact-site machine binder scheme is checked against the actual RHS bounds and
+closed at fresh HM identities. Freshness includes both the captured environment
+and original source annotations; erasing an already-checked annotation does not
+make its fixed identity generalizable.
+
+`ScopedTyping.binder_instances` reuses the proved erased RHS specialization
+bridge to construct the universal HM premise of `CountContract.Certified`.
+The count scheme stores the closed HM body, so count interpretation precedes
+insertion of complete caller HM bounds. Caller count identities remain untouched
+even when they coincide numerically with declaration count identities. This
+proof requires only standard Lean axioms, not a solver axiom.
+
+Five new real-artifact regressions cover independent HM uses, combined HM/count
+instantiation with a caller-name collision, two-slot specialization in the
+machine's actual slot order, malformed alias metadata and a source-annotation
+identity incorrectly claimed as generalizable. The scoped declaration suite
+now contains 28 cases.
+
+This expands RHS certification, not recursive-group acceptance. Annotated HM
+polymorphism and specialization of a more-general RHS to a narrower annotation
+remain explicit unsupported cases, as do generalized internal lets, recursive
+assumptions and matches. CLI/LSP launch and HM/Path R remain unchanged; runtime
+length soundness and full artifact coherence are still separate theorem targets.
+
+Validation after 3t: full HM/Bounds/editor/CLI build passes (1741 jobs). Fresh
+scratch HM audit: 28 accepted / eight expected rejections / zero failures.
+Boundary and whitespace guards pass; no new axioms, placeholders or partial
+definitions were introduced. Executable inclusion retains positive solver trust.

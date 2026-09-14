@@ -104,6 +104,91 @@ private def capturedEnvAccepted : Bool :=
         | .ok r => r.bounds.pretty == "BL 3 3 Int → BL 3 3 Int"
         | .error _ => false
 
+private def genericSingleton : Option TypedLowered :=
+  artifact {binding (.var n) (.var xs) with
+    ann := none
+    rhs := .lambda (.name xs) none (.list [.var xs])} (.list span [leaf])
+private def genericNil : Option TypedLowered :=
+  artifact {binding (.var n) (.list []) with ann := none} (.list span [])
+
+private def genericConstant : Bool :=
+  let b := {binding (.var n) (.var xs) with
+    ann := none
+    rhs := .lambda (.name xs) none (.lambda (.name ⟨"y"⟩) none (.var xs))}
+  match artifact b (.lambda span leaf) with
+  | none => false
+  | some a => match ScopedDeclaration.checkRHS a.inference.output a.inference.binderSchemes
+      a.lowering.counts (.letRec [] 0) with
+    | .error _ => false
+    | .ok c =>
+        let hm : Ty := .arrow (.prim .char) (.arrow (.prim .int) (.prim .char))
+        match BinderBridge.instantiate c.certificate.hm.hm hm with
+        | .error _ => false
+        | .ok use =>
+            -- Machine slots need not follow the textual parameter order.
+            -- These witnesses are primitive bounds, not invented List origins.
+            let args := use.args.filterMap fun t => match t with
+              | .prim p => some (BoundsTy.prim p)
+              | _ => none
+            match CountContract.check c.certificate [] hm [.lit 3] args [] with
+            | .ok r => c.certificate.hm.hm.paramCount == 2 && r.bounds.pretty == "Char → Int → Char"
+            | .error _ => false
+
+private def genericUses : Bool :=
+  match genericSingleton with
+  | none => false
+  | some a => match ScopedDeclaration.checkRHS a.inference.output a.inference.binderSchemes
+      a.lowering.counts (.letRec [] 0) with
+    | .error _ => false
+    | .ok c =>
+        let intHM : Ty := .arrow (.prim .int) (listTy (.prim .int))
+        let charHM : Ty := .arrow (.prim .char) (listTy (.prim .char))
+        match CountContract.check c.certificate [] intHM [.lit 3] [.prim .int] [],
+            CountContract.check c.certificate [] charHM [.lit 8] [.prim .char] [] with
+        | .ok i, .ok ch => c.certificate.hm.hm.paramCount == 1 &&
+            i.bounds.pretty == "Int → BL 1 1 Int" && ch.bounds.pretty == "Char → BL 1 1 Char"
+        | _, _ => false
+
+private def genericCountCollision : Bool :=
+  match genericNil with
+  | none => false
+  | some a => match ScopedDeclaration.checkRHS a.inference.output a.inference.binderSchemes
+      a.lowering.counts (.letRec [] 0) with
+    | .error _ => false
+    | .ok c => match c.quantified with
+      | [id] =>
+          let count : Count := .var ⟨.rigid, id⟩
+          let arg : BoundsTy := .list count count (.prim .int)
+          let hm : Ty := .arrow (listTy (.prim .int)) (listTy (listTy (.prim .int)))
+          match CountContract.check c.certificate [] hm [.lit 3] [arg] [id] with
+          | .ok r => match r.bounds with
+            | .arrow (.list (.lit 3) (.lit 3) (.prim .int))
+                (.list (.lit 0) (.lit 0) (.list lo hi (.prim .int))) =>
+                c.certificate.hm.hm.paramCount == 1 && lo == count && hi == count
+            | _ => false
+          | .error _ => false
+      | _ => false
+
+private def malformedGenericFact : Bool :=
+  match genericSingleton with
+  | none => false
+  | some a =>
+      let facts := a.inference.binderSchemes.map fun row =>
+        if row.1 == .letRec [] 0 then (row.1, (⟨2, .arrow (.bvar 0) (listTy (.bvar 1))⟩ : PolyTy)) else row
+      match ScopedDeclaration.checkRHS a.inference.output facts a.lowering.counts (.letRec [] 0) with
+      | .error message => (message.splitOn "alias").length > 1 || (message.splitOn "duplicate").length > 1
+      | .ok _ => false
+
+private def annotationCaptureRejected : Bool :=
+  let source : Expr := .letIn none (.lambda (some (.fvar 7)) (.var 0)) (.primLit (.int 1))
+  match inferFound ctors source with
+  | none => false
+  | some typed =>
+      let forged : BinderSchemeMap := [(.letIn [], ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)]
+      match ScopedDeclaration.checkRHS typed.output forged ⟨[], []⟩ (.letIn []) with
+      | .error message => (message.splitOn "captured type interface").length > 1
+      | .ok _ => false
+
 private def cases : List (String × Bool) := [
   ("actual inferred symbolic declaration produces usable certificate", accepts identity "BL 3 3 Int → BL 3 3 Int"),
   ("one checked declaration supports independent counts", accepts identity "BL 1 1 Int → BL 1 1 Int" 1 &&
@@ -117,6 +202,11 @@ private def cases : List (String × Bool) := [
     (artifact (binding (.var n) (.list [])) (.list span [])) "HM specialization"),
   ("quantified declaration counts cannot be outer captures", quantifiedEnvRejected),
   ("actual declaration preserves explicit captured environment counts", capturedEnvAccepted),
+  ("unannotated machine HM generalization supports independent types", genericUses),
+  ("combined HM/count certificate preserves overlapping caller counts", genericCountCollision),
+  ("two machine HM slots specialize from supplied complete arguments", genericConstant),
+  ("malformed generalized slot alias fact rejected", malformedGenericFact),
+  ("generalization cannot rewrite a source-annotation identity", annotationCaptureRejected),
   ("recursive calls are not enabled by RHS inspection", rejects
     (artifact (binding (.var n) (.app (.var ⟨"f"⟩) (.var xs))) (.app span leaf leaf)) "outside scoped RHS"),
   ("missing machine binder fact rejected", factsRejected false),
