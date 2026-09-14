@@ -1,4 +1,5 @@
 import FHM.Bounds.SchemeUse
+import FHM.Bounds.FreeAlgebra
 
 /-! # Scheme-aware static bounds judgement
 
@@ -15,7 +16,12 @@ structure Scheme where
   hm : PolyTy
   body : BoundsTy
   wf : hm.eraseBounds.WF
-  shape : Synth.BoundsTy.toTy body = hm.body.eraseBounds
+  /-- Stored HM metadata is canonical and bounds-blind; carried source
+      annotations remain in the expression, and counts remain in `body`. -/
+  shape : Synth.BoundsTy.toTy body = hm.body
+
+theorem Scheme.erasedShape (s : Scheme) : Synth.BoundsTy.toTy s.body = s.hm.body.eraseBounds := by
+  rw [← s.shape, FreeAlgebra.shape_erased]
 
 inductive Binding where
   | mono (bounds : BoundsTy)
@@ -71,7 +77,8 @@ theorem ofMonomorphic {Δ env e β} (h : Typed.Derives Δ env e β) :
   | letIn hp _ _ ihr ihb => exact .letMono hp ihr ihb
 
 def fromBinder {σ β captures} (a : BinderBridge.Abstraction σ β captures) : Scheme :=
-  ⟨σ, BinderBridge.close a.ids β, a.hmOpening.wf, a.shape⟩
+  ⟨σ.eraseBounds, BinderBridge.close a.ids β,
+    by simpa only [PolyTy.eraseBounds_idem] using a.hmOpening.wf, a.shape⟩
 
 /-- Existing certified RHS specialization supplies the genuine universal premise
     of `letPoly` when the RHS belongs to the initial monomorphic fragment. -/
@@ -108,7 +115,7 @@ theorem instance_shape (s : Scheme) (args : List BoundsTy) (ha : s.Arguments arg
   change InstantiatesBy (args.map Synth.BoundsTy.toTy) s.hm.body.eraseBounds
     (Ty.openWith (args.map Synth.BoundsTy.toTy) s.hm.body.eraseBounds) at hi
   change InstantiatesBy (args.map Synth.BoundsTy.toTy) s.hm.body.eraseBounds _
-  rw [Scheme.instantiate, TypeSubstitution.shape, s.shape]
+  rw [Scheme.instantiate, TypeSubstitution.shape, s.erasedShape]
   rw [TypeSubstitution.hm_instance hi _ (fun _ _ h => SchemeUse.vector_shape rfl h)]
   exact hi
 

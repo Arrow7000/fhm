@@ -463,3 +463,34 @@ Validation after 3m: the full HM/Bounds/editor/CLI build passes (1723 jobs), wit
 28 accepted / eight expected rejections / zero failures. Boundary and whitespace
 guards pass. All new checker/theorem targets are solver-independent; no new
 axioms, placeholders or partial definitions were introduced.
+
+2026-09-14, checkpoint 3n: `FreeAlgebra` and `SchemeTransport` close full free-HM
+substitution transport for the enlarged scheme-aware judgement. This includes
+polymorphic uses in RHSs and nested polymorphic lets. At a nested universal RHS,
+the proof first opens its slots at a finite fresh identity block, protects those
+placeholders while transporting captures, then simultaneously specializes them
+to arbitrary locally closed caller bounds. Caller identities need not be
+disjoint from generalized or placeholder identities. The proof recurses on
+source term size, not on the potentially repeated universal derivations.
+
+`SchemeTransport.binder_instances` and `let_fromBinder` now establish artifact-
+certified generalization in arbitrary mixed bounds environments. Their capture
+interface uses a monotype for monomorphic entries and the stored closed HM body
+for polymorphic entries; bound slots are not misclassified as free captures.
+Stored scheme HM metadata is explicitly canonical/bounds-blind (`σ.eraseBounds`),
+while its bounds body retains counts and source annotations stay in the term.
+This makes identity environment transport exact rather than an unproved quotient
+over equivalent metadata. No executable HM inference or Path R rule changed.
+
+The LC side condition is essential: non-LC free replacements can be captured by
+later bound-slot substitution. The commutation/congruence and well-formedness
+lemmas prove the required boundaries. Eight executable regressions and formal
+examples exercise a genuinely mixed RHS, a nested polymorphic let, and the
+critical instance where an outer captured fvar7 becomes a bounded List but a
+caller-provided slot fvar7 must remain fvar7. All new theorem targets require only
+standard Lean axioms, without solver trust or proof placeholders.
+
+Validation after 3n: the full HM/Bounds/editor/CLI build passes (1726 jobs), with
+201 executable BL component/adapter regressions. Boundary and whitespace guards
+pass. The main typed traversal and CLI/LSP launch boundary remain unchanged;
+integrating these universal premises into a scheme-aware traversal is next.
