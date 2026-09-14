@@ -1,4 +1,4 @@
-import FHM.Bounds.RecursiveHMUniversal
+import FHM.Bounds.RecursiveHMEnvironment
 
 namespace FHM.Bounds.RecursiveHMJudgementTests
 
@@ -159,5 +159,61 @@ example : RecursiveHMUniversal.demand scheme [.lit 3] [.list n n (.prim .int)] =
     SchemeUse.vector, scheme, exact, n]
 
 #print axioms jointRecursiveInstances
+
+private def sourceSignature : PolyTy :=
+  ⟨1, .arrow (.bl (.solid n) (.solid n) (.bvar 0)) (.bl (.solid n) (.solid n) (.bvar 0))⟩
+
+private def sourceInterface : HMCountScheme.Annotated sourceSignature [7] [] [] :=
+  { source :=
+      { annotation :=
+          { bounds := scheme.counts.body
+            inScope := scheme.countWF.2.2.1
+            shape := by simp [sourceSignature, scheme, exact, Synth.BoundsTy.toTy,
+              Ty.eraseBounds, listTy, bareListTy, FHM.Bounds.listTyName, _root_.listTyName] }
+        wf := scheme.countWF
+        decoded := by
+          simp [ScopedAnnotation.decode, ScopedScheme.countScopedBool, sourceSignature,
+            scheme, exact, n, bind, pure, Except.bind, Except.pure] }
+    hmWF := (Ty.bvarsBelow_iff _).mp (by decide) }
+
+private theorem sourceInterfaceScheme : sourceInterface.scheme = scheme := by
+  rfl
+
+private def signed : RecursiveHMSigned.Certified sourceSignature [7] [] [] contract.hm []
+    [.recursive contract] loop :=
+  ⟨sourceInterface, by simpa only [sourceInterfaceScheme] using universal⟩
+
+/-- The written forall signature is justified by universal recursive RHS typing,
+    not just by its decoded demand or by one monomorphic use. -/
+theorem writtenPolymorphicRecursiveSignature {counts caller}
+    (inst : ScopedScheme.Instance sourceInterface.scheme.counts counts caller)
+    (arg : BoundsTy) (lc : (Synth.BoundsTy.toTy arg).IsLC)
+    (scope : ScopedScheme.BoundsScoped caller arg) :
+    RecursiveHMSigned.BindingOK [7] ([7].zip counts) [arg] inst.premises sourceSignature
+      (RecursiveHMUniversal.actual signed.implementation counts [arg]) := by
+  exact RecursiveHMSigned.signatureInstances signed inst [arg] rfl
+    (by
+      intro a ha
+      have he : a = arg := by simpa using ha
+      subst a
+      exact lc)
+    (by simpa using ScopedScheme.boundsScopedBool_complete scope)
+
+#print axioms writtenPolymorphicRecursiveSignature
+
+private theorem capturedOpaqueEnvironment : RecursiveHMEnvironment.Captured [] [.recursive contract] := by
+  constructor
+  · intro β hb
+    simp at hb
+  · intro c hc β hβ
+    have hc : c = contract := by simpa using hc
+    subst c
+    exact RecursiveHMEnvironment.opaqueVector opening [] β hβ
+
+theorem unchangedCountEnvironment {counts caller} (inst : ScopedScheme.Instance scheme.counts counts caller) :
+    [.recursive contract].map (mapCountBinding (scheme.counts.quantified.zip counts)) = [.recursive contract] :=
+  RecursiveHMEnvironment.instantiated inst capturedOpaqueEnvironment
+
+#print axioms unchangedCountEnvironment
 
 end FHM.Bounds.RecursiveHMJudgementTests

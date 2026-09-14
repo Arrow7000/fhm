@@ -77,6 +77,7 @@ structure Contract (quantified captures : List Nat) (premises : List Constraint)
     (τ : Ty) where
   annotation : Decoded (quantified ++ captures) τ
   wf : Scheme.WF ⟨quantified, captures, premises, annotation.bounds⟩
+  decoded : decode (quantified ++ captures) τ = .ok annotation
 
 def Contract.scheme {quantified captures premises τ}
     (c : Contract quantified captures premises τ) : Scheme :=
@@ -90,11 +91,13 @@ theorem Contract.shape {quantified captures premises τ}
     captures. An invalid interface fails even when the body uses no counts. -/
 def contract (quantified captures : List Nat) (premises : List Constraint) (τ : Ty) :
     Except String (Contract quantified captures premises τ) := do
-  let ann ← decode (quantified ++ captures) τ
-  let s : Scheme := ⟨quantified, captures, premises, ann.bounds⟩
-  if hw : s.wfBool = true then
-    pure ⟨ann, Scheme.wfBool_sound hw⟩
-  else throw "bounds: declared count contract has an invalid interface or premises"
+  match hd : decode (quantified ++ captures) τ with
+  | .error message => throw message
+  | .ok ann =>
+      let s : Scheme := ⟨quantified, captures, premises, ann.bounds⟩
+      if hw : s.wfBool = true then
+        pure ⟨ann, Scheme.wfBool_sound hw, hd⟩
+      else throw "bounds: declared count contract has an invalid interface or premises"
 
 #print axioms decode
 #print axioms contract

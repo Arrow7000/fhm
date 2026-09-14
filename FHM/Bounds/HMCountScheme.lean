@@ -24,13 +24,25 @@ structure Scheme where
   countWF : counts.WF
   shape : Synth.BoundsTy.toTy counts.body = hm.body
 
-def decode (annotation : PolyTy) (quantified captures : List Nat)
-    (premises : List Constraint := []) : Except String Scheme := do
+/-- Preserve the exact source decoder witness rather than merely its HM shape. -/
+structure Annotated (annotation : PolyTy) (quantified captures : List Nat) (premises : List Constraint) where
+  source : ScopedAnnotation.Contract quantified captures premises annotation.body
+  hmWF : annotation.eraseBounds.WF
+
+def Annotated.scheme {annotation quantified captures premises}
+    (a : Annotated annotation quantified captures premises) : Scheme :=
+  ⟨annotation.eraseBounds, a.source.scheme, a.hmWF, a.source.wf, a.source.shape⟩
+
+def decodeAnnotated (annotation : PolyTy) (quantified captures : List Nat)
+    (premises : List Constraint := []) : Except String (Annotated annotation quantified captures premises) := do
   let source ← ScopedAnnotation.contract quantified captures premises annotation.body
   if hw : annotation.body.eraseBounds.bvarsBelow annotation.paramCount = true then
-    pure ⟨annotation.eraseBounds, source.scheme,
-      (Ty.bvarsBelow_iff annotation.body.eraseBounds).mp hw, source.wf, source.shape⟩
+    pure ⟨source, (Ty.bvarsBelow_iff annotation.body.eraseBounds).mp hw⟩
   else throw "bounds: contract annotation has an out-of-scope HM slot"
+
+def decode (annotation : PolyTy) (quantified captures : List Nat)
+    (premises : List Constraint := []) : Except String Scheme := do
+  pure (← decodeAnnotated annotation quantified captures premises).scheme
 
 def opened (s : Scheme) (args : List BoundsTy) : BoundsTy :=
   TypeSubstitution.substitute (SchemeUse.vector args) s.counts.body
