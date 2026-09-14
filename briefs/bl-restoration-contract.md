@@ -2211,3 +2211,39 @@ This is certified RHS caller use, not argument-origin validation, generalized
 group-body introduction or runtime closure soundness. Uniform ALL-member HM
 specialization in one common group environment is the next assembly proof;
 generalized body/export and nested scopes remain ahead.
+
+### Checkpoint 4aq — ALL RHSs specialize under ONE full group HM map
+
+`RecursiveHMUniform.fromCertified` specializes member counts FIRST, removes the
+common environment's count transport using checked captured-vector evidence,
+then transports actual RHS typing through one uniform full HM map. Its result
+is indexed by the SAME `env.map (mapBinding f lc)` for every member, including
+opaque slots unused by the member being checked. Implementation and demand
+bounds remain distinct; scope and semantic inclusion are proved independently.
+
+`allMembers` constructs ordered universal obligations for EVERY checked original
+member under this common full interpretation. `demand_instance`, `Result.signature`
+and `atSignedNode` retain the exact written decoder, own-slot vector from the
+uniform map, original found node/path and actual implementation bounds. Caller
+premise implication transports whole RHS obligations without adding assumptions.
+
+`checkTemplateFixed` validates closed callee template captures, intentionally
+distinct from `checkTypesFixed`: uniform group specialization MAY change opaque
+fixed argument vectors but MUST NOT rewrite captured source identities.
+
+The real three-member regression includes mutually recursive two-slot signatures
+in different orders, distinct count telescopes and a mono member. It consumes the
+ALL-member universal family and exact signed original-node results, with full
+caller HM arguments containing Int/Char and inner count 7 surviving member count
+7 -> 3. A second regression rejects rewriting a closed template's captured HM ID.
+
+Full `lake build FHM FHMBounds fhm` passes (1805 jobs); scratch HM audit remains
+28 accepted / eight expected rejects / zero failures. Boundary/whitespace pass.
+Uniform transport, signature, exact-node and ALL-member proofs use only standard
+Lean axioms. No new placeholders, partial defs or axioms; existing executable
+solver trust is unchanged. HM/D2, Path R and production BL guards unchanged.
+
+Next is generalized body/export introduction using these combined obligations,
+then enclosing lexical declarations, generalized local lets/nested groups and
+full/deferred recursive application spines. No group body or production BL LSP
+is accepted merely from this RHS family; those remain separate gates.

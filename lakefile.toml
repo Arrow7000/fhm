@@ -127,6 +127,8 @@ roots = [
   "FHM.Bounds.RecursiveHMEnvironment", # Captured fixed-vector proofs reconcile member count instantiation with the group environment
   "FHM.Bounds.RecursiveHMCaller", # Original signed RHS evidence, caller HM shape and discharged premises in one actual-bound package
   "FHM.Bounds.RecursiveHMCallerTests", # Real automatic groups specialize at multiple caller types without assuming unmet contract premises
+  "FHM.Bounds.RecursiveHMUniform", # All ordered RHSs universally specialize through one full group HM map and one common environment
+  "FHM.Bounds.RecursiveHMUniformTests", # Permuted mutual vectors, member-local counts, preserved full caller bounds and closed-template capture guards
   "FHM.Bounds.HMFoundView", # Shared HM interpretation reads exact-node payload views without rewriting artifacts or paths
   "FHM.Bounds.HMFoundViewTests", # More-general payload specialization, exact Core sites and explicit count scope
   "FHM.Bounds.HMReconciliation", # Machine binder identities reconcile with fresh source signatures without rewriting found trees
