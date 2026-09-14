@@ -882,3 +882,35 @@ are unchanged. Whole-group certificate assembly/introduction and group-body
 checking are next. Narrower annotation specialization, fixed polymorphic HM
 openings, exit HM generalization, matches, CLI/LSP migration, artifact coherence
 and runtime length soundness remain separate. HM/D2 and Path R are unchanged.
+
+### Checkpoint 4d — whole recursive groups discharge their assumptions
+
+`RecursiveGroup.Members` indexes certificates by the complete ordered contract,
+RHS and annotation lists. Its universal obligations discharge all three RHS
+premises of `RecursiveTyping.Derives.letRec`; `Certified.typing` introduces the
+whole group only after its body has also been derived under the same assumptions.
+There is no API exporting a successful body from unchecked members.
+
+The optional found-driven group checker decodes each declared interface at its
+exact Core member site, validates telescope independence and outer capture scope,
+checks every RHS with `RecursiveRHS`, then checks the body. Count instantiation is
+available in the body from actual argument origins; recursive HM types remain
+fixed. The located RHS helper is indexed by its actual input child, preserving
+the source link without an expression-equality reconciliation pass.
+
+Eighteen executable regressions cover actual self/mutually recursive artifacts,
+different count arguments, one bad member rejecting a group, a bad group body,
+standalone count-polymorphic values without an origin, missing contracts,
+overlapping/duplicate/missing telescopes, outer capture escapes, forged/missing
+found payloads, parallel-list arity, empty groups, and rebased non-root sites.
+Successful whole groups retain exactly-once logical-node coverage. This remains
+an executable guard, not a formal provenance/coherence theorem.
+
+Validation: full HM/Bounds/editor/CLI build passes (1755 jobs); scratch HM audit
+remains 28 accepted / eight expected rejections / zero failures. Boundary and
+whitespace guards pass. Group introduction uses only standard Lean axioms;
+executable inclusion retains the existing positive solver trust. No new axioms,
+placeholders or partial definitions. The body still uses fixed HM monotypes;
+annotation specialization, fixed polymorphic annotation opening, exit HM
+generalization, nested groups, matches and unified product wiring are not yet
+supplied. HM/D2, erased runtime and Path R remain unchanged.

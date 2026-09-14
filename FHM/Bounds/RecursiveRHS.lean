@@ -64,13 +64,17 @@ structure Checked (c : Declared) (env : List Binding) where
     (c.counts.quantified ++ c.counts.captures) c.counts.premises env rhs.expr
   certificate : Certified c env rhs.expr.stripFound rhs.annotation
 
-/-- The telescope is reconciled at the exact Core site. No quantified IDs are
-    inferred from names or from a carried HM annotation. -/
-def check (output : Expr) (schemes : BinderSchemeMap) (metadata : Scope.Metadata)
-    (site : CoreBinderSite) (c : Declared) (env : List Binding) : Except String (Checked c env) := do
-  unless metadata.problems.isEmpty do throw "bounds: unresolved recursive RHS count scope"
-  let rhs ← ScopedDeclaration.locate output site
-  let quantified ← ScopedDeclaration.telescope metadata site
+structure LocatedChecked (c : Declared) (env : List Binding) (rhs : ScopedDeclaration.RHS) where
+  typed : RecursiveWalk.Result (c.counts.quantified ++ c.counts.captures) []
+    (c.counts.quantified ++ c.counts.captures) c.counts.premises env rhs.expr
+  certificate : Certified c env rhs.expr.stripFound rhs.annotation
+
+/-- Check an already located RHS against its explicit count telescope. The
+    group checker supplies children directly from its found root; standalone
+    inspection below reconciles them through the exact Core site. -/
+def checkLocated (schemes : BinderSchemeMap) (quantified : List Nat)
+    (rhs : ScopedDeclaration.RHS) (c : Declared) (env : List Binding) :
+    Except String (LocatedChecked c env rhs) := do
   unless quantified = c.counts.quantified do throw "bounds: recursive RHS telescope disagrees with declared assumption"
   let ids := c.counts.quantified ++ c.counts.captures
   let actual ← RecursiveWalk.walk ids [] ids c.counts.premises env rhs.path rhs.expr schemes
@@ -91,8 +95,18 @@ def check (output : Expr) (schemes : BinderSchemeMap) (metadata : Scope.Metadata
           intro d hd i hi
           simpa [environmentOK, List.contains_iff_mem] using
             List.all_eq_true.mp (List.all_eq_true.mp he _ hd) i hi }
-    pure ⟨rhs, actual, cert⟩
+    pure ⟨actual, cert⟩
   else throw "bounds: recursive RHS environment violates capture or quantified-count freshness"
+
+/-- The telescope is reconciled at the exact Core site. No quantified IDs are
+    inferred from names or from a carried HM annotation. -/
+def check (output : Expr) (schemes : BinderSchemeMap) (metadata : Scope.Metadata)
+    (site : CoreBinderSite) (c : Declared) (env : List Binding) : Except String (Checked c env) := do
+  unless metadata.problems.isEmpty do throw "bounds: unresolved recursive RHS count scope"
+  let rhs ← ScopedDeclaration.locate output site
+  let quantified ← ScopedDeclaration.telescope metadata site
+  let checked ← checkLocated schemes quantified rhs c env
+  pure ⟨rhs, checked.typed, checked.certificate⟩
 
 #print axioms use
 #print axioms check
