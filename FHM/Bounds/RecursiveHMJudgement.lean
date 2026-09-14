@@ -1,5 +1,6 @@
 import FHM.Bounds.RecursiveHMContract
 import FHM.Bounds.HMInterpretation
+import FHM.Bounds.Runtime
 
 /-! # Recursive RHS typing with an explicit proof-side HM interpretation
 
@@ -123,6 +124,91 @@ theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
         simpa [MatchPattern.bindCount] using bodyScope
 
 #print axioms ScopedDerives.varsBelow
+
+/-- Runtime realization of an assumption. Recursive entries promise actual
+    behaviour at every usable count instance, not just the fixed HM skeleton.
+    Raw instantiated premises must hold at the actual count assignment. The
+    ambient static path context is intentionally not baked into this predicate. -/
+def BindingAt (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
+    (binding : Binding) (term : Expr) : Prop :=
+  match binding with
+  | .mono β => Runtime.TermAt bound free σ budget β term
+  | .recursive c =>
+      ∀ Δ caller (used : RecursiveHMContract.Use c.fixed Δ c.hm caller),
+        (∀ p ∈ used.inst.premises, p.Holds σ) →
+          Runtime.TermAt bound free σ budget used.bounds term
+
+/-- One closing environment for the existing RHS judgment. These are semantic
+    proof obligations, not a new typing judgment or executable checker. -/
+structure EnvAt (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
+    (env : List Binding) where
+  terms : List Expr
+  arity : terms.length = env.length
+  closed : ∀ e ∈ terms, e.varsBelow 0 = true
+  denotes : ∀ i (inside : i < env.length),
+    BindingAt bound free σ budget env[i]
+      (terms[i]'(by rw [arity]; exact inside))
+
+def EnvAt.down {bound free σ small large env}
+    (e : EnvAt bound free σ large env)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (le : small ≤ large) : EnvAt bound free σ small env := by
+  refine ⟨e.terms, e.arity, e.closed, ?_⟩
+  intro i inside
+  have actual := e.denotes i inside
+  cases kind : env[i] with
+  | mono β =>
+      simp only [BindingAt, kind] at actual ⊢
+      exact actual.down hb hf le
+  | recursive c =>
+      simp only [BindingAt, kind] at actual ⊢
+      intro Δ caller used premises
+      exact (actual Δ caller used premises).down hb hf le
+
+def EnvAt.extendMono {bound free σ budget env}
+    (e : EnvAt bound free σ budget env) (β : BoundsTy) (term : Expr)
+    (closed : term.varsBelow 0 = true) (safe : Runtime.TermAt bound free σ budget β term) :
+    EnvAt bound free σ budget (.mono β :: env) where
+  terms := term :: e.terms
+  arity := by simp only [List.length_cons, e.arity]
+  closed := by
+    intro v member
+    rcases List.mem_cons.mp member with rfl | rest
+    · exact closed
+    · exact e.closed v rest
+  denotes := by
+    intro i inside
+    cases i with
+    | zero => exact safe
+    | succ i =>
+        have small : i < env.length := by simp only [List.length_cons] at inside; omega
+        simpa only [List.getElem_cons_succ] using e.denotes i small
+
+#print axioms EnvAt.down
+#print axioms EnvAt.extendMono
+
+theorem EnvAt.varMono {bound free σ budget env i β}
+    (e : EnvAt bound free σ budget env) (lookup : env[i]? = some (.mono β)) :
+    Runtime.TermAt bound free σ budget β ((Expr.var i).substN 0 e.terms) := by
+  obtain ⟨inside, entry⟩ := List.getElem?_eq_some_iff.mp lookup
+  rw [Runtime.closing_var e.terms e.closed i (by rw [e.arity]; exact inside)]
+  have meaning := e.denotes i inside
+  simpa only [BindingAt, entry] using meaning
+
+theorem EnvAt.varRecursive {bound free σ budget env i c Δ caller}
+    (e : EnvAt bound free σ budget env) (lookup : env[i]? = some (.recursive c))
+    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller)
+    (premises : ∀ p ∈ Δ, p.Holds σ) :
+    Runtime.TermAt bound free σ budget used.bounds ((Expr.var i).substN 0 e.terms) := by
+  obtain ⟨inside, entry⟩ := List.getElem?_eq_some_iff.mp lookup
+  rw [Runtime.closing_var e.terms e.closed i (by rw [e.arity]; exact inside)]
+  have meaning := e.denotes i inside
+  simp only [BindingAt, entry] at meaning
+  exact meaning Δ caller used (used.usable σ premises)
+
+#print axioms EnvAt.varMono
+#print axioms EnvAt.varRecursive
+
 
 namespace Derives
 abbrev literal {types : Nat → BoundsTy} := @ScopedDerives.literal types BoundsTy.bvar

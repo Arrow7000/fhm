@@ -77,6 +77,10 @@ private theorem subst_var_present (terms : List Expr)
   simpa only [Expr.substN, Nat.add_sub_cancel_left, if_neg (by omega : ¬ depth + i < depth),
     dif_pos small] using Expr.shiftFrom_of_closed (closed _ (List.getElem_mem small)) 0 depth
 
+theorem closing_var (terms : List Expr) (closed : ∀ e ∈ terms, e.varsBelow 0 = true)
+    (i : Nat) (inside : i < terms.length) : (Expr.var i).substN 0 terms = terms[i] := by
+  simpa only [Nat.zero_add] using subst_var_present terms closed 0 i inside
+
 private theorem subst_var_missing (large : depth ≤ i) (outside : terms.length ≤ i - depth) :
     (Expr.var i).substN depth terms = .var (i - terms.length) := by
   simp [Expr.substN, show ¬ i < depth by omega, show ¬ i - depth < terms.length by omega]
