@@ -914,3 +914,39 @@ placeholders or partial definitions. The body still uses fixed HM monotypes;
 annotation specialization, fixed polymorphic annotation opening, exit HM
 generalization, nested groups, matches and unified product wiring are not yet
 supplied. HM/D2, erased runtime and Path R remain unchanged.
+
+### Checkpoint 4e — parsed recursive contracts and source reports
+
+`RecursiveFound.synthNodes` is an opt-in adapter from an already inferred
+provenanced artifact to whole-group acceptance and per-occurrence source reports.
+It guards input provenance, complete logical-node coverage and origin joins. It
+does not replace the production CLI/LSP BL launch or certify full artifact
+coherence.
+
+Eighteen new parser-to-report regressions exercise actual `.fhm` source syntax,
+self/mutual recursion at distinct counts, literal list origins, retained nested
+lambda/let annotations, bad implementations/bodies, and missing/duplicate source
+joins. Polymorphic signatures, more-general RHS specialization, matches and
+standalone count-polymorphic values remain explicit unsupported cases.
+
+These tests uncovered a frontend gap: expression annotations parsed their counts
+under an empty declared-name context, so a signature's `n` could not occur in an
+inner lambda or ordinary let annotation. `Parse.CountContext` now distinguishes
+closed standalone type/scheme parsing from lexically deferred expression
+annotations. Construction-time `CountScope` remains the name/scope authority;
+no parser-invented identities or substitutions are introduced. Named count atoms
+also work as operands of `pred`, `min` and `max`.
+
+Unbound named counts in program annotations now parse and remain invisible to HM;
+the new BL adapter rejects their recorded scope problems. Regressions ensure type
+foralls do not silently become Nat binders. Standalone `parseTy`/`parsePolyTy`
+retain their declared-name restrictions. This is syntax/scope plumbing, not a
+change to the HM rules or erased semantics.
+
+Validation: full HM/Bounds/editor/CLI build passes (1757 jobs); scratch HM audit
+remains 28 accepted / eight expected rejections / zero failures. Boundary and
+whitespace guards pass. No new axioms, placeholders or partial definitions;
+parser partials remain under `FHM/Unverified`. Existing positive solver trust and
+legacy Bounds placeholders are unchanged. Runtime soundness, annotation HM
+opening/specialization, exit generalization, matches and unified product launch
+remain future work.
