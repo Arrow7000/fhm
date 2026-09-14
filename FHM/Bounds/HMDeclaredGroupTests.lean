@@ -22,7 +22,7 @@ private def metadata (duplicateCounts : Bool := false) : Scope.Metadata :=
       ⟨.letRec [] 1, [(⟨"m"⟩, if duplicateCounts then 7 else 8)]⟩] }
 
 private def artifact (duplicateCounts : Bool := false) (badBounds : Bool := false)
-    (unannotated : Bool := false) : Except String FoundResult := do
+    (unannotated : Bool := false) (polyBody : Bool := false) : Except String FoundResult := do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
   let lastAnnotation : PolyTy := if badBounds then
     ⟨0, .bl (.solid (.lit 2)) (.solid (.lit 2)) (.prim .int)⟩ else ⟨0, .prim .int⟩
@@ -31,7 +31,11 @@ private def artifact (duplicateCounts : Bool := false) (badBounds : Bool := fals
       some lastAnnotation]
     [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0)),
       if badBounds then .ctor nilCtorName else .primLit (.int 0)]
-    (.primLit (.int 0))
+    (if polyBody then
+      .letIn none
+        (.app (.var 0) (.app (.app (.ctor consCtorName) (.primLit (.int 1))) (.ctor nilCtorName)))
+        (.app (.var 1) (.app (.app (.ctor consCtorName) (.primLit (.char 'a'))) (.ctor nilCtorName)))
+    else .primLit (.int 0))
   match inferFound ctors source with
   | some a => pure a
   | none => throw "test: three-member group HM inference failed"
@@ -66,6 +70,26 @@ private def actual : Except String Bool := do
   pure (g.interfaces.contracts.length == 3 && g.rhss.length == 3 &&
     g.interfaces.quantified == [7, 8] && used)
 
+/-- Read actual function payloads at two different body uses of the SAME
+    exported source member, across a local let's de Bruijn shift. Body traversal
+    and argument-origin/group-introduction proofs are still separate work. -/
+private def exportedUses (badIndex : Bool := false) : Except String Bool := do
+  let a ← artifact (polyBody := true)
+  let g ← HMDeclaredGroup.check a.output metadata [] [[91], [91], []] (schemes := a.binderSchemes)
+  let first ← HMFoundView.locate a.output [.letRecBody, .letRhs, .appFun]
+  let second ← HMFoundView.locate a.output [.letRecBody, .letBody, .appFun]
+  let firstUse ← g.checkExportedUse (if badIndex then 99 else 0) [] first.original [.lit 1] [.prim .int] []
+  let secondUse ← g.checkExportedUse 0 [] second.original [.lit 1] [.prim .char] []
+  let mono ← g.checkExportedUse 2 [] (.prim .int) [] [] []
+  let int := BoundsTy.arrow (.list (.lit 1) (.lit 1) (.prim .int)) (.list (.lit 1) (.lit 1) (.prim .int))
+  let char := BoundsTy.arrow (.list (.lit 1) (.lit 1) (.prim .char)) (.list (.lit 1) (.lit 1) (.prim .char))
+  pure (g.exports.map (fun s => s.hm.paramCount) == [1, 1, 0] &&
+    firstUse.selected.sourceIndex == 0 && secondUse.selected.sourceIndex == 0 && mono.selected.sourceIndex == 2 &&
+    firstUse.result.result.checked.typed.actual.pretty == int.pretty &&
+    secondUse.result.result.checked.typed.actual.pretty == char.pretty &&
+    mono.result.result.checked.typed.actual.pretty == (BoundsTy.prim .int).pretty &&
+    firstUse.selected.member.quantified == [7] && secondUse.selected.member.quantified == [7])
+
 private def group (vectors : List (List Nat)) (duplicateCounts : Bool := false)
     (badBounds : Bool := false) (unannotated : Bool := false) : Except String Bool := do
   let a ← artifact duplicateCounts badBounds unannotated
@@ -78,6 +102,10 @@ private def fails {α} (result : Except String α) (part : String) : Bool :=
 private def tests : List (String × Bool) := [
   ("all three real RHSs assemble and specialize in the same common environment with different HM/count arities",
     match actual with | .ok b => b | .error _ => false),
+  ("exit exports select actual source certificates and support Int/Char uses from real found body payloads",
+    match exportedUses with | .ok b => b | _ => false),
+  ("an out-of-range exit use cannot select a fabricated declaration or RHS certificate",
+    fails (exportedUses true) "outside the exported recursive group"),
   ("a skipped member's opaque vector rejects the entire assembly",
     fails (group [[91], [91]]) "opaque vector/RHS arity"),
   ("extra opaque member vectors reject the entire assembly",
