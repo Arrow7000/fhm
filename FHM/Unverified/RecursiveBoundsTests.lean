@@ -51,6 +51,18 @@ private def mutualSource : String :=
   "  \\(xs : BL n n Int) -> (\\(ignored : List Int) -> xs) (f (1 :: xs))\n" ++
   "f []\n"
 
+private def copySource (empty : String := "[]") (nonempty : String := "h :: f t") : String :=
+  "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+  "  \\(xs : BL n n Int) -> match xs with | [] -> " ++ empty ++
+  " | h :: t -> " ++ nonempty ++ "\n"
+
+private def mutualCopy : String :=
+  "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+  "  \\(xs : BL n n Int) -> match xs with | [] -> [] | h :: t -> h :: g t\n" ++
+  "let g : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+  "  \\(xs : BL n n Int) -> match xs with | [] -> [] | h :: t -> h :: f t\n" ++
+  "f [1, 2, 3]\n"
+
 private def provenanceRejected (modify : TypedLowered → TypedLowered) : Except String Unit := do
   let a ← artifact (selfSource ++ "f []\n")
   let _ ← RecursiveFound.synthNodes (modify a)
@@ -92,9 +104,39 @@ private def cases : List (String × Bool) := [
   ("parsed more-general RHS explicitly needs annotation specialization", fails (run (
     "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
     "  \\(xs : BL n n Int) -> f xs\nf []\n")) "needs specialization"),
-  ("parsed matches stay unsupported rather than using legacy synthesis", fails (run (
+  ("parsed matches preserve exact input under each constructor path", returns (run (
     "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
-    "  \\(xs : BL n n Int) -> match xs with | [] -> xs | h :: t -> xs\nf []\n")) "unsupported"),
+    "  \\(xs : BL n n Int) -> match xs with | [] -> xs | h :: t -> xs\nf []\n")) "BL 0 0 Int"),
+  ("parsed recursive copy checks Nil at count zero", returns
+    (run (copySource ++ "f []\n")) "BL 0 0 Int"),
+  ("parsed recursive copy checks singleton tail count", returns
+    (run (copySource ++ "f [1]\n")) "BL 1 1 Int"),
+  ("parsed recursive copy preserves longer exact lengths", returns
+    (run (copySource ++ "f [1, 2, 3]\n")) "BL 3 3 Int"),
+  ("parsed mutually recursive copies transport predecessor arguments", returns
+    (run mutualCopy) "BL 3 3 Int"),
+  ("parsed bad empty recursive arm rejects", fails
+    (run (copySource "[1]" ++ "f []\n")) "interval inclusion"),
+  ("parsed recursive duplication rejects claimed exact length", fails
+    (run (copySource "[]" "1 :: (h :: f t)" ++ "f []\n")) "interval inclusion"),
+  ("parsed recursive head loss rejects claimed exact length", fails
+    (run (copySource "[]" "(\\(r : List Int) -> r) (f t)" ++ "f []\n")) "interval inclusion"),
+  ("parsed missing Nil arm cannot cover count-polymorphic input", fails (run (
+    "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+    "  \\(xs : BL n n Int) -> match xs with | h :: t -> h :: f t\nf []\n")) "Cons-only"),
+  ("parsed missing Cons arm cannot cover count-polymorphic input", fails (run (
+    "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+    "  \\(xs : BL n n Int) -> (\\(r : List Int) -> r) " ++
+    "(match xs with | [] -> f xs)\nf []\n")) "Nil-only"),
+  ("parsed wildcard recursive identity remains supported", returns (run (
+    "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+    "  \\(xs : BL n n Int) -> match xs with | _ -> " ++
+    "(\\(ignored : List Int) -> xs) (f xs)\nf [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed local annotated match uses its checked common result", returns (run (
+    "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+    "  \\(xs : BL n n Int) -> let ys : BL n n Int = " ++
+    "match xs with | [] -> [] | h :: t -> h :: t in\n" ++
+    "    (\\(ignored : List Int) -> ys) (f ys)\nf [1, 2]\n")) "BL 2 2 Int"),
   ("missing source origins reject report adapter", fails (provenanceRejected (fun a =>
     {a with lowering := {a.lowering with coreOrigins := []}})) "incomplete typed provenance"),
   ("duplicate source origins reject report adapter", fails (provenanceRejected (fun a =>

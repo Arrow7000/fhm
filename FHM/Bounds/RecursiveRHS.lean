@@ -78,6 +78,7 @@ def checkLocated (schemes : BinderSchemeMap) (quantified : List Nat)
   unless quantified = c.counts.quantified do throw "bounds: recursive RHS telescope disagrees with declared assumption"
   let ids := c.counts.quantified ++ c.counts.captures
   let actual ← RecursiveWalk.walk ids [] ids c.counts.premises env rhs.path rhs.expr schemes
+    (some c.counts.body)
   let hm ← match BinderBridge.equalTy actual.hm c.hm with
     | none => throw "bounds: recursive RHS needs specialization to fixed HM monotype"
     | some h => pure h

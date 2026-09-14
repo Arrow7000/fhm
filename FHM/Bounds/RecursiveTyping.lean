@@ -1,5 +1,6 @@
 import FHM.Bounds.RecursiveContract
 import FHM.Bounds.ScopedTyping
+import FHM.Bounds.ListBranches
 
 /-! # Scoped bounds typing with explicit recursive contract assumptions
 
@@ -9,8 +10,8 @@ carried annotations and their declared contracts under the simultaneous group
 assumptions. Merely decoding those assumptions never proves this premise.
 
 The initial group body retains fixed HM monotypes. `RecursiveGroup` supplies an
-optional executable introduction; exit HM generalization, matches and runtime
-length soundness are separate.
+optional executable introduction; exit HM generalization and runtime length
+soundness are separate.
 -/
 
 namespace FHM.Bounds.RecursiveTyping
@@ -44,6 +45,25 @@ theorem independentBool_sound {contracts : List Declared}
       List.all_eq_true.mp (List.all_eq_true.mp h.2 c hc) i hi
   exact absent (List.mem_flatMap.mpr ⟨d, hd, hq⟩)
 
+/-- Only the constructors whose refinements and binder layout are justified
+    by the List semantics are admitted. Coverage is a separate premise. -/
+def ListPattern (p : MatchPattern) : Prop :=
+  p = .wildcard ∨ p = .named nilCtorName 0 ∨ p = .named consCtorName 2
+
+instance (p : MatchPattern) : Decidable (ListPattern p) :=
+  inferInstanceAs (Decidable (p = .wildcard ∨ p = .named nilCtorName 0 ∨ p = .named consCtorName 2))
+
+def branchRefine (p : MatchPattern) (lo hi : Count) : List Constraint :=
+  if p = .named nilCtorName 0 then nilRefine lo
+  else if p = .named consCtorName 2 then consRefine hi else []
+
+/-- Core opens Cons contents head first, tail second. -/
+def branchEnv (p : MatchPattern) (lo hi : Count) (elem : BoundsTy)
+    (env : List Binding) : List Binding :=
+  if p = .named consCtorName 2 then
+    .mono elem :: .mono (.list (.pred lo) (.pred hi) elem) :: env
+  else env
+
 inductive Derives : List Nat → Bindings → List Constraint →
     List Binding → Expr → BoundsTy → Prop where
   | literal {env p} : Derives ids rows Δ env (.primLit p) (boundInfoOfPrimLit p)
@@ -69,6 +89,16 @@ inductive Derives : List Nat → Bindings → List Constraint →
       InterpretedAnnotation.BindingOK ids rows Δ ann actual →
       Derives ids rows Δ env rhs actual → Derives ids rows Δ (.mono actual :: env) body result →
       Derives ids rows Δ env (.letIn ann rhs body) result
+  | matchList {env scrut branches lo hi elem result}
+      {actuals : Nat → BoundsTy} :
+      Derives ids rows Δ env scrut (.list lo hi elem) →
+      ListBranches.Covers Δ ⟨lo, hi⟩ branches →
+      (∀ br ∈ branches, ListPattern br.1) →
+      (∀ i br, branches[i]? = some br → Derives ids rows (Δ ++ branchRefine br.1 lo hi)
+        (branchEnv br.1 lo hi elem env) br.2 (actuals i)) →
+      (∀ i br, branches[i]? = some br →
+        SemanticSub (Δ ++ branchRefine br.1 lo hi) (actuals i) result) →
+      Derives ids rows Δ env (.match_ scrut branches) result
   | letRec {env : List Binding} {contracts : List Declared}
       {anns : List (Option PolyTy)} {rhss : List Expr} {body result}
       {actuals : Nat → List Count → BoundsTy} :
@@ -130,6 +160,14 @@ private theorem binding_assuming {ids rows Δ Δ' ann β}
   | none => trivial
   | some σ => exact ⟨h.1, InterpretedAnnotation.assuming h.2 hp⟩
 
+theorem assuming_append {Δ Δ' Γ : List Constraint}
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    (⟨Δ' ++ Γ, Δ ++ Γ⟩ : ForallProblem).Valid := by
+  intro σ h c hc
+  rcases List.mem_append.mp hc with hc | hc
+  · exact hp σ (fun d hd => h d (List.mem_append_left Γ hd)) c hc
+  · exact h c (List.mem_append_right Δ' hc)
+
 /-- Universal group RHS obligations use each contract's own instantiated
     premises, not unproved assumptions appended by the caller. -/
 theorem assuming {ids rows Δ Δ' env e β} (h : Derives ids rows Δ env e β)
@@ -147,6 +185,10 @@ theorem assuming {ids rows Δ Δ' env e β} (h : Derives ids rows Δ env e β)
   | app _ _ hs ihh iht => exact .app (ihh hp) (iht hp) (hs.assuming hp)
   | lambda hparam _ ih => exact .lambda (param_assuming hparam hp) (ih hp)
   | letMono hbind _ _ ihr ihb => exact .letMono (binding_assuming hbind hp) (ihr hp) (ihb hp)
+  | matchList _ hc hpat _ hsub ihscrut ihbranches =>
+      exact .matchList (ihscrut hp) (hc.assuming hp) hpat
+        (fun i br hb => ihbranches i br hb (assuming_append hp))
+        (fun i br hb => (hsub i br hb).assuming (assuming_append hp))
   | letRec hanns hrhss hIndependent hcapture hall hAnn hSub _ _ ihbody =>
       exact .letRec hanns hrhss hIndependent hcapture hall hAnn hSub (ihbody hp)
 

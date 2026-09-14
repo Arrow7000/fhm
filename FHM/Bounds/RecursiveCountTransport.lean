@@ -175,15 +175,20 @@ def CapturesFixed (outer : Bindings) (env : List Binding) : Prop :=
 /-- The initial symbolic-RHS transport slice excludes nested recursive groups.
     Such groups may capture the enclosing count telescope and need a separate
     captured-template transport rule. This restriction is explicit in the proof,
-    not an unchecked assumption in the executable path. Matches are also outside
-    this judgement, and source terms must already have found wrappers stripped. -/
+    not an unchecked assumption in the executable path. List matches recurse
+    through every arm; source terms must have found wrappers stripped. -/
 def NoGroups : Expr → Prop
   | .lambda _ body => NoGroups body
   | .app f arg => NoGroups f ∧ NoGroups arg
   | .letIn _ rhs body => NoGroups rhs ∧ NoGroups body
   | .letRec _ _ _ => False
-  | .match_ _ _ | .found _ _ => False
+  | .match_ scrut branches => NoGroups scrut ∧ ∀ br ∈ branches, NoGroups br.2
+  | .found _ _ => False
   | _ => True
+termination_by e => sizeOf e
+decreasing_by
+  all_goals simp_wf
+  all_goals first | omega | (have hsz := List.sizeOf_lt_of_mem ‹_ ∈ _›; cases ‹MatchPattern × Expr›; simp_all; omega)
 
 private theorem captures_cons {outer env β} (h : CapturesFixed outer env) :
     CapturesFixed outer (.mono β :: env) := by
@@ -191,6 +196,29 @@ private theorem captures_cons {outer env β} (h : CapturesFixed outer env) :
   rcases List.mem_cons.mp hc with impossible | rest
   · cases impossible
   · exact h c rest i hi
+
+private theorem captures_branch {outer env p lo hi elem} (h : CapturesFixed outer env) :
+    CapturesFixed outer (branchEnv p lo hi elem env) := by
+  unfold branchEnv
+  split
+  · exact captures_cons (captures_cons h)
+  · exact h
+
+theorem branchRefine_transport (outer : Bindings) (p : MatchPattern) (lo hi : Count) :
+    (branchRefine p lo hi).map (constraint outer) =
+      branchRefine p (count outer lo) (count outer hi) := by
+  simp only [branchRefine]
+  split
+  · simp [nilRefine, constraint, count]
+  · split <;> simp [consRefine, constraint, count]
+
+theorem branchEnv_transport (outer : Bindings) (p : MatchPattern) (lo hi : Count)
+    (elem : BoundsTy) (env : List Binding) :
+    (branchEnv p lo hi elem env).map (mapBinding outer) =
+      branchEnv p (count outer lo) (count outer hi) (bounds outer elem)
+        (env.map (mapBinding outer)) := by
+  simp only [branchEnv]
+  split <;> simp [*, mapBinding, bounds, count]
 
 private theorem param_transport (outer : Bindings) (hf : Finite outer) {ids inner Δ ann β}
     (h : InterpretedAnnotation.ParamOK ids inner Δ ann β) :
@@ -221,6 +249,7 @@ theorem transport (outer : Bindings) (hf : Finite outer) (target : List Nat)
   | primBinOp => cases ‹PrimBinOp› <;> exact .primBinOp
   | nil => exact .nil
   | cons hh ht hi =>
+      simp only [NoGroups] at hn
       exact .cons (transport outer hf target hs hh hk hn.1.2)
         (transport outer hf target hs ht hk hn.2) (CountSubstitution.subtype outer hf hi)
   | varMono hv => exact .varMono (by simpa [mapBinding] using congrArg (Option.map (mapBinding outer)) hv)
@@ -231,20 +260,34 @@ theorem transport (outer : Bindings) (hf : Finite outer) (target : List Nat)
         (instanceTransport inst outer hf target hs captured)
         (usable_transport inst hu outer hf target hs captured)
   | app hf' ha hi =>
+      simp only [NoGroups] at hn
       exact .app (transport outer hf target hs hf' hk hn.1)
         (transport outer hf target hs ha hk hn.2) (CountSubstitution.subtype outer hf hi)
   | lambda hp hb =>
+      simp only [NoGroups] at hn
       exact .lambda (param_transport outer hf hp)
         (transport outer hf target hs hb (captures_cons hk) hn)
   | letMono hp hr hb =>
+      simp only [NoGroups] at hn
       exact .letMono (binding_transport outer hf hp) (transport outer hf target hs hr hk hn.1)
         (transport outer hf target hs hb (captures_cons hk) hn.2)
-  | letRec => exact False.elim hn
+  | matchList hscrut hc hpat hbranches hsub =>
+      simp only [NoGroups] at hn
+      apply Derives.matchList
+        (transport outer hf target hs hscrut hk hn.1) (hc.transport outer hf) hpat
+      · intro i br hb
+        have ht := transport outer hf target hs (hbranches i br hb)
+          (captures_branch hk) (hn.2 br (List.mem_of_getElem? hb))
+        simpa only [List.map_append, branchRefine_transport, branchEnv_transport] using ht
+      · intro i br hb
+        simpa only [List.map_append, branchRefine_transport] using
+          CountSubstitution.subtype outer hf (hsub i br hb)
+  | letRec => simp only [NoGroups] at hn
 termination_by sizeOf e
 decreasing_by
   all_goals subst_vars
   all_goals simp_wf
-  all_goals omega
+  all_goals first | omega | (have hsz := List.sizeOf_lt_of_mem (List.mem_of_getElem? ‹_ = some _›); cases ‹MatchPattern × Expr›; simp_all; omega)
 
 private theorem env_fixed {s : Scheme} (outer : Bindings) {env : List Binding}
     (hm : ∀ β, .mono β ∈ env → BoundsScoped s.captures β)
