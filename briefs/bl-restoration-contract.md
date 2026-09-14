@@ -1626,3 +1626,37 @@ construct those universal certificates with an interpreted executable walker,
 introduce generalized group exit, or remove polymorphic source guards. A
 more-general inferred RHS still needs explicit machine-binder/signature HM
 reconciliation before its original found payloads can supply that walker.
+
+### Checkpoint 4y — checked machine-binder/source-signature HM reconciliation
+
+`HMReconciliation.check` reads a unique machine binder fact for the exact
+original RHS path, verifies its generalized identities and captured interface,
+and proposes full bounds replacements from a fresh opaque source demand.
+Complete interpreted HM agreement, local closure, count scope and both source
+and machine freshness are checked. `Checked.machineInstance` proves an exact
+relational instance of the ORIGINAL inferred scheme with the selected bounds
+vector. Source identities (including unused forall slots) and captures remain
+fixed by the interpretation. No expression, `.found` payload or provenance is
+rewritten, and no inference is rerun.
+
+Metadata reconciliation is explicitly not RHS acceptance. `checkRHS` additionally
+requires a real derivation for the original node, with recursive captured
+templates represented in the capture interface. It transports that derivation,
+checks exact-node shape and actual count scope, then independently checks actual
+bounds inclusion in the opaque source demand. The result retains the same exact
+implementation bounds and genuine derivation. Nineteen regressions include a
+more-general identity, root/body views, fresh/vacuous slots, missing/duplicate or
+wrong-site machine facts, unjustified forall, incompatible HM slots, and both
+loose and unjustifiably tight result intervals.
+
+Full 1781-job build and parsed-source regressions pass; scratch HM audit remains
+28 accepted / eight expected rejections / zero failures. Pure metadata proofs use
+standard Lean axioms only; executable RHS inclusion uses the existing bounds
+solver soundness boundary (`checkValid_sound`), not a new axiom. No new placeholders
+or partials; HM/D2, Path R and production guards remain unchanged.
+
+The new symbolic RHS seam still needs a universally specialized source HM
+interpretation (including count payloads inside its replacements), then executable
+walker construction and generalized group export. The original universal
+certificate starts at the identity source interpretation, so more-general
+reconciled source annotations cannot simply be shoved into it unchanged.
