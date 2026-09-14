@@ -338,3 +338,36 @@ is unchanged at 28 accepted / eight expected rejections / zero failures. The
 unverified-boundary guard and diff checks pass; no new axioms, placeholders or
 partial definitions were introduced. HM inference, D2 rules, Path R and the
 legacy CLI `--bl` launch boundary are unchanged.
+
+2026-09-14, checkpoint 3i: `Generalization` proves free-HM substitution transport
+for the current `Typed.Derives` fragment. A generalized identity can be replaced
+by complete caller bounds, including structured list bounds, while semantic
+subtyping is transported and all count payloads remain unchanged. Source
+annotations must be fresh; successful decoding preserves that freshness and
+therefore leaves carried demands fixed. Captured environment types must also
+be fresh to obtain a universal RHS fact in the unchanged environment.
+
+`GeneralizedRHS` records universality for left-to-right free substitutions drawn
+from the generalized pool. `fromBinder` derives it from the actual checked
+`BinderBridge.Abstraction` freshness interface and a fragment RHS derivation.
+This is a typing theorem, not merely HM skeleton agreement. Sequential free
+substitution is explicitly distinct from simultaneous bound-slot specialization;
+the exact closed-scheme specialization bridge remains to be proved before use.
+
+Twelve executable regressions and ordinary Lean proofs cover structured caller
+bounds, namespaces, nested type arguments, sequential substitution, captured
+environment exclusion and source-annotation exclusion. All new theorem targets
+depend only on standard Lean axioms, not the positive solver oracle.
+
+Still pending: scheme-aware bounds environments, variable/let typing and
+executable rules, transport/generalization for that enlarged judgement, and the
+exact correspondence from RHS specialization to the closed scheme's caller
+instance. No polymorphic-use acceptance has been enabled; the legacy CLI/LSP
+BL boundary remains unchanged. Count generalization, caller count scope and
+recursive contract checking are separate subsequent obligations.
+
+Validation after 3i: `lake build FHM FHMBounds FHMEditorTests fhm` passes
+(1713 jobs), including all 133 executable BL component/adapter regressions.
+The fresh scratch HM audit remains 28 accepted / eight expected rejections /
+zero failures. The unverified-boundary guard and diff whitespace checks pass.
+No new axioms, placeholders or partial definitions were introduced.

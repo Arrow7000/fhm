@@ -91,6 +91,8 @@ roots = [
   "FHM.Unverified.Surface.CountScopeTests", # Construction-time telescope regressions
   "FHM.Bounds.Typed",     # Proof-carrying found-driven initial bounds fragment
   "FHM.Bounds.TypedTests", # Initial typed traversal and provenance regressions
+  "FHM.Bounds.Generalization", # Fresh HM substitution and universal RHS bounds typing
+  "FHM.Bounds.GeneralizationTests", # Full caller bounds, annotation/capture and namespace regressions
   "FHM.Bounds.Escape",    # R3 escape classification (uniqueOnly at pack)
   "FHM.Bounds.Check",     # Live ascription checks (uses Synth)
   "FHM.Bounds.Synth",     # Slice 4: origin HasBounds synthesizer
