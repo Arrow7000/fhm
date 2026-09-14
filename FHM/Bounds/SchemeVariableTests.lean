@@ -26,7 +26,7 @@ private def succeeds (result : Except String α) : Bool :=
 private def failsWith (result : Except String α) (needle : String) : Bool :=
   match result with | .ok _ => false | .error message => (message.splitOn needle).length > 1
 
-example {Δ env i found scope} (r : SchemeVariable.Result Δ env i found scope) :
+example {Δ env i found scope args} (r : SchemeVariable.Result Δ env i found scope args) :
     Derives Δ env (.var i) r.bounds ∧
     Synth.BoundsTy.toTy r.bounds = found.eraseBounds ∧
     ScopedScheme.BoundsScoped scope r.bounds := ⟨r.derivation, r.shape, r.countScope⟩

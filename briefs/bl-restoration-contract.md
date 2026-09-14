@@ -439,3 +439,27 @@ targets require only standard Lean axioms. Boundary and whitespace guards pass;
 no new axioms, placeholders or partial definitions were added. Generalization
 transport for RHSs in mixed scheme environments and origin-backed application
 argument selection remain pending before general traversal acceptance.
+
+2026-09-14, checkpoint 3m: `SchemeApplication.check` implements an origin-backed
+polymorphic application slice for a function whose domain is its sole HM slot.
+The argument's existing scheme-aware bounds derivation supplies the complete
+slot bounds; no HM-shape reconstruction or interval guess is used. Variable use
+certificates now identify the exact selected environment entry and specialized
+bounds, not just the erased shape. Successful application output carries its
+declarative derivation, exact result HM payload agreement and caller count scope.
+The direct-domain application subtype premise is reflexivity, requiring no
+solver axiom. Other arities and structural slot inference fail explicitly.
+
+Twelve executable regressions cover Int/Char uses, exact Nil and singleton Cons
+origins, symbolic captured argument bounds, caller scope, shadowing depth,
+callee/result payload mismatches and explicit unsupported cases. This is a
+checker component, not general `.fhm` traversal acceptance or LSP integration.
+Universal RHS typing in mixed scheme environments remains the next proof target;
+its transport must preserve arbitrary caller arguments without accidentally
+substituting captured HM identities into those inserted arguments.
+
+Validation after 3m: the full HM/Bounds/editor/CLI build passes (1723 jobs), with
+193 executable BL component/adapter regressions. The fresh scratch HM audit is
+28 accepted / eight expected rejections / zero failures. Boundary and whitespace
+guards pass. All new checker/theorem targets are solver-independent; no new
+axioms, placeholders or partial definitions were introduced.
