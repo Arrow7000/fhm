@@ -118,6 +118,49 @@ private def bodyCalls (badLocal : Bool := false) (polyLocal : Bool := false)
 example {output metadata} (program : ProgramResult output metadata) :
     BodyDerives [] [] [] [] output.stripFound program.body.bounds := program.body.typing
 
+private def bodyMatches (kind : Nat) (onlyNil : Bool := false) (onlyCons : Bool := false)
+    (badDemand : Bool := false) :
+    Except String Bool := do
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let singleton : Expr := .app (.app (.ctor consCtorName) (.primLit (.int 1))) (.ctor nilCtorName)
+  let call (i : Nat) (arg : Expr) := Expr.app (.var i) arg
+  let body := if kind == 0 then
+    .match_ (.ctor BoolBranches.trueCtorName)
+      [(.named BoolBranches.trueCtorName 0, call 0 singleton),
+        (.named BoolBranches.falseCtorName 0, call 0 (.ctor nilCtorName))]
+    else .match_ (call 0 (if kind == 2 then .ctor nilCtorName else singleton))
+      (if onlyNil then [(.named nilCtorName 0, call 0 (.ctor nilCtorName))] else if onlyCons then
+        [(.named consCtorName 2, call 2 (.var 1))] else
+        [(.named consCtorName 2, call 2 (.var 1)),
+          (.named nilCtorName 0, call 0 (.ctor nilCtorName))])
+  let source := Expr.letRec [some (bodySignature 7)]
+    [.lambda none (.app (.var 1) (.var 0))] body
+  let a ← match inferFound ctors source with
+    | some a => pure a | none => throw "test: generalized match HM inference failed"
+  let metadata : Scope.Metadata := { telescopes := [⟨.letRec [] 0, [(⟨"n"⟩, 7)]⟩] }
+  let expected := if badDemand then some (BoundsTy.list (.lit 2) (.lit 2) (.prim .int)) else none
+  let program ← checkClosedProgram a.output metadata a.binderSchemes expected
+  let exact := match program.body.bounds with
+    | .list lo hi _ => lo.eval (fun _ => 0) == .ofNat 0 &&
+        hi.eval (fun _ => 0) == .ofNat (if kind == 0 then 1 else 0)
+    | _ => false
+  pure (exact && exactlyOnce (logicalCorePaths a.output) (program.body.nodes.map (·.path)))
+
+private def bodyPatternGuard : Bool :=
+  let e := Expr.found (.prim .int) (.match_ (.found (listTy (.prim .int)) (.var 0))
+    [(.named consCtorName 1, .found (.prim .int) (.primLit (.int 1))),
+      (.wildcard, .found (.prim .int) (.primLit (.int 0)))])
+  match walkBody [] [] [] [] [.mono (.list (.lit 1) (.lit 1) (.prim .int))] [] e [] with
+  | .error message => (message.splitOn "unsupported pattern or constructor arity").length > 1
+  | .ok _ => false
+
+private def bodyBoolCoverageGuard : Bool :=
+  let e := Expr.found (.prim .int) (.match_ (.found (.customTy boolTyName []) (.ctor BoolBranches.trueCtorName))
+    [(.named BoolBranches.trueCtorName 0, .found (.prim .int) (.primLit (.int 0)))])
+  match walkBody [] [] [] [] [] [] e [] with
+  | .error message => (message.splitOn "missing False coverage").length > 1
+  | .ok _ => false
+
 def main : IO Unit := do
   match actual with
   | .ok true => IO.println "PASS: every actual member universally specializes through one full group HM map with permuted slots and distinct count telescopes"
@@ -153,6 +196,33 @@ def main : IO Unit := do
   | .ok true => IO.println "PASS: actual nested singleton origins survive full exported HM insertion without widening inner List bounds"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "automatic generalized program lost nested List origins or source-node coverage")
+  for kind in [0, 1, 2] do
+    match bodyMatches kind (onlyNil := kind == 2) with
+    | .ok true => IO.println s!"PASS: generalized body match kind {kind} checks every original arm, coverage and full origins with exact node reports"
+    | .error message => throw (IO.userError message)
+    | .ok false => throw (IO.userError "generalized body match lost branch refinements, result bounds or original node coverage")
+  match bodyMatches 1 (onlyNil := true) with
+  | .error message =>
+      unless (message.splitOn "every admitted List is empty").length > 1 do
+        throw (IO.userError s!"wrong generalized List coverage rejection: {message}")
+      IO.println "PASS: generalized body Nil-only coverage cannot discard an admitted nonempty input"
+  | .ok _ => throw (IO.userError "generalized body accepted uncovered nonempty List inputs")
+  match bodyMatches 1 (onlyCons := true) with
+  | .ok true => IO.println "PASS: generalized body Cons-only coverage discharges semantic nonemptiness from the actual singleton origin"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "generalized body Cons-only match lost predecessor tail bounds or coverage")
+  match bodyMatches 0 (badDemand := true) with
+  | .error message =>
+      unless (message.splitOn "inclusion").length > 1 do
+        throw (IO.userError s!"wrong generalized branch-demand rejection: {message}")
+      IO.println "PASS: a common demanded match result cannot replace checking actual arm bounds"
+  | .ok _ => throw (IO.userError "generalized body fabricated a demanded match result without arm inclusion")
+  unless bodyPatternGuard do
+    throw (IO.userError "a wildcard hid a malformed generalized body Cons pattern")
+  IO.println "PASS: a wildcard cannot hide a malformed Cons field arity in a generalized body"
+  unless bodyBoolCoverageGuard do
+    throw (IO.userError "generalized body accepted incomplete Bool coverage")
+  IO.println "PASS: generalized body Bool coverage checks both finite constructors independently of arithmetic validity"
 
 #eval main
 

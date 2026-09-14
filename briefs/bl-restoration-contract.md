@@ -2337,6 +2337,38 @@ solver trust boundary. HM/D2 and Path R are unchanged. Remaining gates are mixed
 enclosing scopes/generalized locals, matches, full/deferred origins, product
 integration, wider runtime/artifact proofs and consolidation of replaced routes.
 
+### Checkpoint 4au — generalized body List/Bool branches consume actual origins
+
+One `BodyBranchContext`/branch traversal in the existing uniform module connects
+generalized body typing to the established semantic List and finite Bool
+coverage APIs. List arms open mono head/tail bindings ahead of the SAME exported
+interfaces; tail bounds use predecessors and constructor path premises remain
+explicit. A full-bounds equality, not an HM-only reconstruction, connects the
+actual scrutinee with that branch context. Structural branch-erasure/index
+lemmas are shared with the original RHS walker instead of copied.
+
+`BodyDerives.match_` requires coverage, every valid pattern, every actual arm
+derivation and each arm's semantic inclusion into the result. Branch merging
+uses the existing proved `BranchMerge` upper combination. Expected result
+guidance still checks actual arms independently; it cannot manufacture success.
+Each original match/scrutinee/arm occurrence stays in the exact-path report.
+
+Real HM-artifact regressions cover Bool branch results of length zero/one, List
+tail calls across Cons's two-binder export shift, semantically justified Nil-only
+and Cons-only matches, and rejection of Nil-only coverage on a singleton. Extra
+guards reject malformed Cons arity even behind a wildcard, incomplete Bool
+coverage and a false common demanded result. Generalized locals, nested groups,
+ordinary enclosing program prefixes and full/deferred origin spines still have
+their existing gates; no production BL fallback is enabled.
+
+Full `lake build FHM FHMBounds fhm` passes (1805 jobs); all 15 uniform/body/
+program regressions pass. Scratch HM audit: 28 accepted / eight expected rejects /
+zero failures. Boundary/whitespace pass.
+No new files, placeholders, partial defs or axioms. The new static fragment is
+not a claim of completed BL runtime safety/artifact-coherence proofs; executable
+acceptance retains the existing arithmetic solver boundary. HM/D2 and Path R
+are unchanged. Consolidation is still tracked below, not falsely called done.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
