@@ -317,7 +317,7 @@ private theorem runtimeLocalInstances (calleeΔ : List Constraint) (found : Ty) 
       (runtimeIdScheme.counts.quantified ++ runtimeIdScheme.counts.captures ++ [])
       (CountAlgebra.compose (runtimeIdScheme.counts.quantified.zip used.counts) [])
       ([] ++ used.countInstance.premises) [] runtimeLocalRhs used.bounds := by
-  have typed : ScopedBodyDerives (localTypes runtimeLocalFrame.owned BoundsTy.fvar used.types)
+  have typed : ScopedDerives (localTypes runtimeLocalFrame.owned BoundsTy.fvar used.types)
       (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types) [] [] [] []
       runtimeLocalRhs (.arrow
         (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types 0)
@@ -326,7 +326,8 @@ private theorem runtimeLocalInstances (calleeΔ : List Constraint) (found : Ty) 
   simpa only [localSlots, runtimeIdScheme, Option.map_some, Option.getD_some,
     Nat.zero_lt_succ, ↓reduceIte, HMCountScheme.Use.bounds, ScopedScheme.Instance.premises,
     List.nil_append, List.zip_nil_left, List.map_nil, CountAlgebra.compose,
-    TypeSubstitution.combined, CountSubstitution.bounds, TypeSubstitution.substitute] using typed
+    TypeSubstitution.combined, CountSubstitution.bounds, TypeSubstitution.substitute,
+    ordinaryBodyEnv, List.map_nil] using ordinaryRhsToBody typed (by simp [OrdinaryEnv])
 
 private theorem runtimeLocalCasesReady (calleeΔ : List Constraint) (found : Ty) (caller : List Nat)
     (used : HMCountScheme.Use runtimeIdScheme calleeΔ found caller)
@@ -338,12 +339,12 @@ private theorem runtimeLocalCasesReady (calleeΔ : List Constraint) (found : Ty)
     | some a =>
         simpa only [SchemeUse.vector, atIndex, Option.getD_some] using
           arguments a (List.mem_of_getElem? atIndex)
-  have ready : BodyDerives.RuntimeReady
-      (ScopedBodyDerives.lambda
+  have ready : ScopedDerives.RuntimeReady
+      (ScopedDerives.lambda
         (env := [])
         (runtimeLocalParam (localTypes runtimeLocalFrame.owned BoundsTy.fvar used.types)
           (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types))
-        (ScopedBodyDerives.varMono (i := 0) rfl)) := by
+        (ScopedDerives.varMono (i := 0) rfl)) := by
     have scopedElement : Runtime.Supported
         (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types 0) := by
       simpa [localSlots, runtimeIdScheme] using element
@@ -352,7 +353,8 @@ private theorem runtimeLocalCasesReady (calleeΔ : List Constraint) (found : Ty)
   simpa only [localSlots, runtimeIdScheme, Option.map_some, Option.getD_some,
     Nat.zero_lt_succ, ↓reduceIte, HMCountScheme.Use.bounds, ScopedScheme.Instance.premises,
     List.nil_append, List.zip_nil_left, List.map_nil, CountAlgebra.compose,
-    TypeSubstitution.combined, CountSubstitution.bounds, TypeSubstitution.substitute] using ready
+    TypeSubstitution.combined, CountSubstitution.bounds, TypeSubstitution.substitute,
+    ordinaryBodyEnv, List.map_nil] using ordinaryRhsReadyToBody ready (by simp [OrdinaryEnv])
 
 private theorem runtimeLocalTyping : BodyDerives [] [] [] [] runtimeLocalProgram (.prim .char) :=
   ScopedBodyDerives.letExported runtimeLocalFrame runtimeLocalAnnotation (by decide)
@@ -384,10 +386,32 @@ theorem universalLocalRuntimeSafe (bound free : Runtime.TypeEnv) (σ : Assign)
 theorem incorrectUniversalRhsRejected {types slots ids rows Δ env} :
     ¬ ScopedBodyDerives types slots ids rows Δ env (.primLit (.int 1)) (.prim .char) := by
   intro typing
-  cases typing
+  have impossible := typing.primLitBounds (.int 1) rfl
+  cases impossible
+
+private theorem nilIntervalWidening :
+    SemanticSub [] (.list (.lit 0) (.lit 0) (.prim .int))
+      (.list (.lit 0) (.lit 2) (.prim .int)) := by
+  apply SemanticSub.list
+  · simp [ForallProblem.Valid, Interval.subGoals, Constraint.Holds, Count.eval, ExtNat.le]
+  · exact .prim
+
+private theorem widenedNilTyping : BodyDerives [] [] [] [] (.ctor nilCtorName)
+    (.list (.lit 0) (.lit 2) (.prim .int)) :=
+  .subsumption .nil nilIntervalWidening
+
+/-- A real narrower implementation may satisfy a wider declared demand;
+    this changes neither the source term nor its underlying HM type. -/
+theorem widenedNilRuntimeSafe (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free) :
+    Runtime.Safe bound free σ (.list (.lit 0) (.lit 2) (.prim .int)) (.ctor nilCtorName) := by
+  have ready : BodyDerives.RuntimeReady widenedNilTyping :=
+    .subsumption nilIntervalWidening (.nil .prim) (.list .prim)
+  exact ready.safeClosed bound free σ hb hf (by simp)
 
 #print axioms universalLocalRuntimeSafe
 #print axioms incorrectUniversalRhsRejected
+#print axioms widenedNilRuntimeSafe
 
 private def unsupportedIntermediate : Except String Bool := do
   let opaqueName : TyName := ⟨"Opaque"⟩

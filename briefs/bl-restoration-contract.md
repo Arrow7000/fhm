@@ -353,6 +353,20 @@ from the existing source-site scheme facts and count/HM transports. Generalized
 locals therefore remain explicitly guarded in production; no demo shortcut or
 new acceptance engine was enabled.
 
+Ordinary `ScopedDerives` RHS proofs and their complete runtime readiness now
+embed into this SAME scoped body judgment in mono captured environments,
+including annotated scopes and List/Bool branch refinements. Fixed recursive
+assumptions are explicitly excluded from this bridge; no universal export is
+inferred from them. The polymorphic-local kernel fixture now reuses ordinary
+RHS proofs through this bridge rather than constructing a parallel body proof.
+Semantic `subsumption` retains the actual implementation derivation alongside
+its independent demand inclusion. The runtime theorem transports actual bounds
+to demand bounds, requiring supported types on both sides. A kernel Nil fixture
+checks genuine interval widening, and literal-type preservation still proves
+that Int implementations cannot satisfy Char demands. This is the proof reuse
+needed to consume existing count-first/full-HM-second RHS certificates at local
+introduction, not an executable generalized-local acceptance shortcut.
+
 Next: generalized locals, enclosing bindings and nested groups, then the general
 artifact/report bridge and CLI/LSP migration. No whole-language BL runtime
 soundness or BL LSP support is claimed yet.
