@@ -112,6 +112,75 @@ example {s Δ found caller} (u : Use s Δ found caller) :
 
 example {s found captures} (o : Opening s found captures) : o.counts.WF := o.wf
 
+example {s found captures} (o : Opening s found captures) :
+    BinderBridge.close o.ids o.bounds = s.counts.body := o.close
+
+example {s found Δ env rhs}
+    (o : Opening s found (env.map Synth.BoundsTy.toTy ++ rhs.tyFreeVars.map Ty.fvar))
+    (h : Typed.Derives Δ env rhs o.bounds) (args : Nat → BoundsTy) :
+    Typed.Derives Δ env rhs (TypeSubstitution.substitute args s.counts.body) := o.rhs_instances h args
+
+private def formalScheme : Scheme :=
+  { hm := ⟨1, .arrow (listTy (.bvar 0)) (listTy (.bvar 0))⟩
+    counts := ⟨[7], [], [], .arrow (exact n (.bvar 0)) (exact n (.bvar 0))⟩
+    hmWF := (Ty.bvarsBelow_iff _).mp (by decide)
+    countWF := ScopedScheme.Scheme.wfBool_sound (by decide)
+    shape := by simp [exact, Synth.BoundsTy.toTy, listTy, FHM.Bounds.listTyName] }
+
+private def formalOpening : Opening formalScheme identityHM [] :=
+  ⟨[90], rfl, by decide, by
+      intro i hi t ht
+      have ht : t = formalScheme.hm.body := by simpa using ht
+      subst t
+      simp [formalScheme, Ty.freeVars, TyList.freeVars, listTy],
+    (by simp [opened, formalScheme, TypeSubstitution.substitute, SchemeUse.vector, exact,
+      Synth.BoundsTy.toTy, identityHM, listTy, Ty.eraseBounds, TyList.eraseBounds, FHM.Bounds.listTyName]),
+    (Ty.bvarsBelow_iff _).mp (by decide)⟩
+
+private theorem formalRHS :
+    Typed.Derives [] [] (.lambda none (.var 0)) formalOpening.bounds := by
+  change Typed.Derives [] [] (.lambda none (.var 0))
+    (.arrow (exact n (.fvar 90)) (exact n (.fvar 90)))
+  exact Typed.Derives.lambda (ann := none) True.intro (Typed.Derives.var rfl)
+
+/-- The entire caller bounds type (including a nested count) replaces the
+    opaque HM slot. This proof is not an executable sample/solver verdict. -/
+theorem formalAllBounds (arg : BoundsTy) :
+    Typed.Derives [] [] (.lambda none (.var 0))
+      (.arrow (exact n arg) (exact n arg)) := by
+  let o : Opening formalScheme identityHM
+      ([].map Synth.BoundsTy.toTy ++ (Expr.lambda none (.var 0)).tyFreeVars.map Ty.fvar) := formalOpening
+  simpa only [formalScheme, exact, TypeSubstitution.substitute] using o.rhs_instances formalRHS (fun _ => arg)
+
+#print axioms formalAllBounds
+
+private def formalVacuousScheme : Scheme :=
+  { hm := ⟨1, .arrow (.prim .int) (.prim .int)⟩
+    counts := ⟨[], [], [], .arrow (.prim .int) (.prim .int)⟩
+    hmWF := (Ty.bvarsBelow_iff _).mp (by decide)
+    countWF := ScopedScheme.Scheme.wfBool_sound (by decide)
+    shape := by simp [Synth.BoundsTy.toTy] }
+
+private def formalVacuousOpening : Opening formalVacuousScheme (.arrow (.prim .int) (.prim .int)) [] :=
+  ⟨[123], rfl, by decide, by
+      intro i hi t ht
+      have ht : t = formalVacuousScheme.hm.body := by simpa using ht
+      subst t
+      simp [formalVacuousScheme, Ty.freeVars],
+    (by simp [opened, formalVacuousScheme, TypeSubstitution.substitute,
+      Synth.BoundsTy.toTy, Ty.eraseBounds]), (Ty.bvarsBelow_iff _).mp (by decide)⟩
+
+theorem formalVacuousAllBounds (arg : BoundsTy) :
+    Typed.Derives [] [] (.lambda none (.var 0)) (.arrow (.prim .int) (.prim .int)) := by
+  let o : Opening formalVacuousScheme (.arrow (.prim .int) (.prim .int))
+      ([].map Synth.BoundsTy.toTy ++ (Expr.lambda none (.var 0)).tyFreeVars.map Ty.fvar) := formalVacuousOpening
+  have h : Typed.Derives [] [] (.lambda none (.var 0)) o.bounds := by
+    change Typed.Derives [] [] (.lambda none (.var 0)) (.arrow (.prim .int) (.prim .int))
+    exact Typed.Derives.lambda (ann := none) True.intro (Typed.Derives.var rfl)
+  simpa only [formalVacuousScheme, TypeSubstitution.substitute] using o.rhs_instances h (fun _ => arg)
+
+#print axioms formalVacuousAllBounds
+
 def main : IO Unit := do
   let mut failures := 0
   for (name, ok) in cases do

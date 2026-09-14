@@ -1,5 +1,6 @@
 import FHM.Bounds.ScopedAnnotation
 import FHM.Bounds.SchemeUse
+import FHM.Bounds.FreeAlgebra
 
 /-! # Closed HM/count contract interfaces
 
@@ -73,6 +74,115 @@ theorem Opening.hm_instance {s found captures} (o : Opening s found captures) :
     s.hm.InstantiatesTo (o.ids.map Ty.fvar) found.eraseBounds := by
   have h := opened_instance s (o.ids.map BoundsTy.fvar) (by simpa using o.arity)
   simpa only [List.map_map, Function.comp_def, Synth.BoundsTy.toTy, o.shape] using h
+
+private theorem close_slot (ids : List Nat) (hd : ids.Nodup) (i : Nat) (hi : i < ids.length) :
+    BinderBridge.close ids (SchemeUse.vector (ids.map BoundsTy.fvar) i) = .bvar i := by
+  have hm : ids[i] ∈ ids := List.getElem_mem hi
+  have hx : ids.idxOf? ids[i] = some i := by
+    cases h : ids.idxOf? ids[i] with
+    | none => exact False.elim ((List.idxOf?_eq_none_iff.mp h) hm)
+    | some j =>
+        have hj := hd.idxOf_getElem i hi
+        rw [List.idxOf_eq_getD_idxOf?, h] at hj
+        simp only [Option.getD_some] at hj
+        simpa only [hj] using h
+  have hv : SchemeUse.vector (ids.map BoundsTy.fvar) i = .fvar ids[i] := by
+    simp [SchemeUse.vector, List.getElem?_map, List.getElem?_eq_getElem hi]
+  simp only [hv, BinderBridge.close, hx]
+
+mutual
+/-- Opaque opening and reclosing preserve the ENTIRE bounds template, not
+    merely its HM skeleton. Declared captures and count payloads are unchanged. -/
+theorem close_opened (ids : List Nat) (hd : ids.Nodup) (β : BoundsTy)
+    (hw : ContainsBvarsUpTo ids.length (Synth.BoundsTy.toTy β))
+    (hf : ∀ i ∈ ids, i ∉ (Synth.BoundsTy.toTy β).freeVars) :
+    BinderBridge.close ids (TypeSubstitution.substitute (SchemeUse.vector (ids.map BoundsTy.fvar)) β) = β := by
+  cases β with
+  | prim => rfl
+  | bvar i =>
+      simp only [Synth.BoundsTy.toTy] at hw
+      cases hw with
+      | bvar hi => exact close_slot ids hd i hi
+  | fvar i =>
+      have hi : i ∉ ids := by
+        intro h
+        exact hf i h (by simp [Synth.BoundsTy.toTy, Ty.freeVars])
+      simp only [TypeSubstitution.substitute, BinderBridge.close, List.idxOf?_eq_none_iff.mpr hi]
+  | arrow a b =>
+      simp only [Synth.BoundsTy.toTy] at hw
+      cases hw with
+      | arrow ha hb =>
+          simp only [TypeSubstitution.substitute, BinderBridge.close]
+          rw [close_opened ids hd a ha (fun i hi h =>
+            hf i hi (by simp [Synth.BoundsTy.toTy, Ty.freeVars, h])),
+            close_opened ids hd b hb (fun i hi h =>
+              hf i hi (by simp [Synth.BoundsTy.toTy, Ty.freeVars, h]))]
+  | list lo hi elem =>
+      simp only [Synth.BoundsTy.toTy, listTy] at hw
+      cases hw with
+      | customTy hall =>
+          exact congrArg (BoundsTy.list lo hi) (close_opened ids hd elem (hall _ (by simp))
+            (fun i hi => by simpa [Synth.BoundsTy.toTy, listTy, Ty.freeVars, TyList.freeVars] using hf i hi))
+  | custom name as =>
+      simp only [Synth.BoundsTy.toTy] at hw
+      cases hw with
+      | customTy hall =>
+          exact congrArg (BoundsTy.custom name) (close_opened_list ids hd as hall
+            (by simpa only [Synth.BoundsTy.toTy, Ty.freeVars] using hf))
+termination_by sizeOf β
+
+private theorem close_opened_list (ids : List Nat) (hd : ids.Nodup) (as : List BoundsTy)
+    (hw : ∀ t ∈ as.map Synth.BoundsTy.toTy, ContainsBvarsUpTo ids.length t)
+    (hf : ∀ i ∈ ids, i ∉ TyList.freeVars (as.map Synth.BoundsTy.toTy)) :
+    BinderBridge.closeList ids (TypeSubstitution.substituteList (SchemeUse.vector (ids.map BoundsTy.fvar)) as) = as := by
+  cases as with
+  | nil => rfl
+  | cons a as =>
+      simp only [TypeSubstitution.substituteList, BinderBridge.closeList]
+      rw [close_opened ids hd a (hw _ (by simp)) (fun i hi h =>
+          hf i hi (by simp [TyList.freeVars, h])),
+        close_opened_list ids hd as (fun t ht => hw t (List.mem_cons_of_mem _ ht)) (fun i hi h =>
+          hf i hi (by simp [TyList.freeVars, h]))]
+termination_by sizeOf as
+end
+
+theorem Opening.close {s found captures} (o : Opening s found captures) :
+    BinderBridge.close o.ids o.bounds = s.counts.body := by
+  apply close_opened o.ids o.distinct s.counts.body
+  · rw [s.shape, o.arity]; exact s.hmWF
+  · intro i hi
+    rw [s.shape]
+    exact o.fresh i hi s.hm.body (by simp)
+
+/-- Unlike recovering slots from a guessed opening, this bridge includes
+    checked unused forall slots. It still needs a real RHS derivation before
+    any generalization theorem can be invoked. -/
+def Opening.abstraction {s found captures} (o : Opening s found captures) :
+    BinderBridge.Abstraction s.hm o.bounds captures := by
+  have hb : Synth.BoundsTy.toTy o.bounds = found.eraseBounds := o.shape
+  refine ⟨o.ids, o.arity, o.distinct,
+    fun i hi t ht => o.fresh i hi t (List.mem_cons_of_mem _ ht),
+    (by rw [hb]; exact o.lc),
+    ⟨o.ids.map Ty.fvar, (by simpa using o.arity), s.hmWF.eraseBounds, ?_⟩,
+    (by rw [o.close, ← s.shape]; exact (FreeAlgebra.shape_erased s.counts.body).symm)⟩
+  have h := InstantiatesBy.eraseBounds o.hm_instance
+  simpa only [List.map_map, Function.comp_def, Ty.eraseBounds, Ty.eraseBounds_idem, hb] using h
+
+theorem Opening.specialize {s found captures} (o : Opening s found captures) (args : Nat → BoundsTy) :
+    SchemeSpecialization.mapFree (SchemeSpecialization.argument o.ids args) o.bounds =
+      TypeSubstitution.substitute args s.counts.body := by
+  rw [← SchemeSpecialization.close_open o.ids args o.abstraction.originalLC, o.close]
+
+/-- A real derivation at a fresh opaque opening supplies every HM bounds
+    instance in the initial (non-recursive) typed fragment. Recursive assumption
+    transport and polymorphic source-binding introduction remain separate. -/
+theorem Opening.rhs_instances {s found Δ env rhs}
+    (o : Opening s found (env.map Synth.BoundsTy.toTy ++ rhs.tyFreeVars.map Ty.fvar))
+    (h : Typed.Derives Δ env rhs o.bounds) (args : Nat → BoundsTy) :
+    Typed.Derives Δ env rhs (TypeSubstitution.substitute args s.counts.body) := by
+  have hg := SchemeSpecialization.fromBinder o.abstraction h args
+  change Typed.Derives Δ env rhs (TypeSubstitution.substitute args (BinderBridge.close o.ids o.bounds)) at hg
+  simpa only [o.close] using hg
 
 /-- Explicit identities must be reconciled with the authoritative fixed found
     monotype. Freshness/shape checks do not themselves establish parametricity. -/
@@ -154,6 +264,11 @@ def check (s : Scheme) (Δ : List Constraint) (found : Ty) (counts : List Count)
 #print axioms opened_instance
 #print axioms Opening.wf
 #print axioms Opening.hm_instance
+#print axioms close_opened
+#print axioms Opening.close
+#print axioms Opening.abstraction
+#print axioms Opening.specialize
+#print axioms Opening.rhs_instances
 #print axioms Use.inScope
 #print axioms Use.hm_instance
 #print axioms Use.subtype

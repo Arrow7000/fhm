@@ -1340,3 +1340,40 @@ HM/D2, Path R and production launch unchanged. Next is a bounds-preserving
 opaque close/open bridge into genuine RHS universality, followed by the joint
 recursive-group generalization/annotation judgement rather than enabling a
 decoder guard in isolation.
+
+### Checkpoint 4q — exact opaque closure and genuine fragment RHS universality
+
+`HMCountScheme.close_opened` proves that opening well-scoped HM slots at distinct
+fresh free identities and then closing those identities recovers the ENTIRE
+bounds template, including every count payload and declared free capture.
+`Opening.close` specializes this theorem to checked interfaces. `Opening.abstraction`
+builds a genuine `BinderBridge.Abstraction` with its explicit slot vector,
+including unused forall slots, rather than trying to recover those from a
+defaulted Unit opening. `Opening.specialize` connects simultaneous free bounds
+replacement at opaque identities to specialization of the exact closed template.
+
+`Opening.rhs_instances` joins that bridge to a real `Typed.Derives` RHS proof,
+with freshness for the captured environment and source annotations. It gives
+every full bounds argument instance in the existing initial non-recursive typed
+fragment. Kernel-checked identity examples cover arbitrary nested caller bounds
+and a vacuous forall; neither relies on a solver oracle or executable samples.
+This is not yet universal recursive-assumption transport or a polymorphic source
+binding/group rule, and it does not authorize exporting decoded assumptions.
+
+All interface regressions and the full 1768-job HM/Bounds/editor/CLI build pass,
+including all 89 parsed-source regressions. Scratch HM audit remains 28 accepted /
+eight expected rejections / zero failures; boundary/whitespace guards pass.
+The closure, abstraction and RHS universality proofs use only standard Lean
+axioms, with no added oracle trust, placeholders or partial definitions.
+HM/D2, Path R and production launch remain unchanged.
+
+Next dependency: recursive specialization must retain closed count templates
+and fixed HM bounds arguments separately. Embedding a caller bounds argument in
+a telescope body before count substitution can capture caller counts when IDs
+overlap. The external template checker already avoids this with count-first,
+type-insertion-second instantiation; the recursive assumption/rule/transport
+extension must preserve the same separation. Fixed HM arguments are per-group
+interfaces, not HM re-instantiation at recursive calls and not runtime
+type-passing elaborata. Valid HM RHSs more general than a declared signature also
+need a checked payload interpretation/specialization seam, not another inference
+pass or an unchecked cast of their found root.
