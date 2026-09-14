@@ -67,6 +67,204 @@ theorem Reduces.from_value (value : SmallStep.IsValue e) (h : Reduces n e v) :
   | refl => exact ⟨rfl, rfl⟩
   | step step _ => exact False.elim (value_no_step value step)
 
+private theorem subst_var_protected (small : i < depth) (terms : List Expr) :
+    (Expr.var i).substN depth terms = .var i := by
+  simp [Expr.substN, small]
+
+private theorem subst_var_present (terms : List Expr)
+    (closed : ∀ e ∈ terms, e.varsBelow 0 = true) (depth i : Nat) (small : i < terms.length) :
+    (Expr.var (depth + i)).substN depth terms = terms[i] := by
+  simpa only [Expr.substN, Nat.add_sub_cancel_left, if_neg (by omega : ¬ depth + i < depth),
+    dif_pos small] using Expr.shiftFrom_of_closed (closed _ (List.getElem_mem small)) 0 depth
+
+private theorem subst_var_missing (large : depth ≤ i) (outside : terms.length ≤ i - depth) :
+    (Expr.var i).substN depth terms = .var (i - terms.length) := by
+  simp [Expr.substN, show ¬ i < depth by omega, show ¬ i - depth < terms.length by omega]
+
+private theorem subst_var_compose (outer inner : List Expr)
+    (ho : ∀ e ∈ outer, e.varsBelow 0 = true) (hi : ∀ e ∈ inner, e.varsBelow 0 = true)
+    (depth i : Nat) :
+    ((Expr.var i).substN (depth + inner.length) outer).substN depth inner =
+      (Expr.var i).substN depth (inner ++ outer) := by
+  have combined : ∀ e ∈ inner ++ outer, e.varsBelow 0 = true := by
+    intro e member
+    exact (List.mem_append.mp member).elim (hi e) (ho e)
+  by_cases underBinder : i < depth
+  · rw [subst_var_protected (by omega), subst_var_protected underBinder,
+      subst_var_protected underBinder]
+  · obtain ⟨j, rfl⟩ : ∃ j, i = depth + j := ⟨i - depth, by omega⟩
+    by_cases inside : j < inner.length
+    · rw [subst_var_protected (by omega), subst_var_present inner hi depth j inside,
+        subst_var_present (inner ++ outer) combined depth j (by simp; omega),
+        List.getElem_append_left inside]
+    · by_cases inOuter : j - inner.length < outer.length
+      · have position : depth + j = (depth + inner.length) + (j - inner.length) := by omega
+        rw [position, subst_var_present outer ho _ _ inOuter,
+          Expr.substN_of_closed (ho _ (List.getElem_mem inOuter))]
+        rw [← position, subst_var_present (inner ++ outer) combined depth j (by simp; omega),
+          List.getElem_append_right (by omega)]
+      · rw [subst_var_missing (by omega) (by omega), subst_var_missing (by omega) (by omega),
+          subst_var_missing (by omega) (by simp; omega)]
+        congr 1
+        simp only [List.length_append]
+        omega
+
+private theorem subst_match_branches (scrut : Expr) (branches : List (MatchPattern × Expr))
+    (depth : Nat) (terms : List Expr) :
+    ((Expr.match_ scrut branches).substN depth terms).matchBranchesOf =
+      branches.map (fun br => (br.1, br.2.substN (depth + br.1.bindCount) terms)) := by
+  induction branches with
+  | nil => rfl
+  | cons br rest ih =>
+      have peel : ((Expr.match_ scrut (br :: rest)).substN depth terms).matchBranchesOf =
+          (br.1, br.2.substN (depth + br.1.bindCount) terms) ::
+            ((Expr.match_ scrut rest).substN depth terms).matchBranchesOf := rfl
+      rw [peel, ih]
+      rfl
+
+private theorem subst_match (scrut : Expr) (branches : List (MatchPattern × Expr))
+    (depth : Nat) (terms : List Expr) :
+    (Expr.match_ scrut branches).substN depth terms =
+      .match_ (scrut.substN depth terms)
+        (branches.map (fun br => (br.1, br.2.substN (depth + br.1.bindCount) terms))) := by
+  change Expr.match_ _ (((Expr.match_ scrut branches).substN depth terms).matchBranchesOf) = _
+  rw [subst_match_branches]
+
+private theorem subst_rec_bindings (terms : List Expr) (depth : Nat) (bindings : List Expr) :
+    RecGroup.substN depth terms bindings = bindings.map (fun e => e.substN depth terms) := by
+  induction bindings with
+  | nil => rfl
+  | cons e rest ih => simp only [RecGroup.substN, List.map_cons, ih]
+
+/-- Closing outer captures then opening local contents is the SAME actual Core
+    substitution as closing the combined environment. Valid below arbitrary
+    lambdas, match binders and mutual groups; inserted terms must be closed.
+    This is the term-substitution bridge used by the runtime fundamental proof. -/
+theorem closing_compose (outer inner : List Expr)
+    (ho : ∀ e ∈ outer, e.varsBelow 0 = true) (hi : ∀ e ∈ inner, e.varsBelow 0 = true)
+    (e : Expr) : ∀ depth,
+    (e.substN (depth + inner.length) outer).substN depth inner =
+      e.substN depth (inner ++ outer) := by
+  induction e using Expr.rec_strong with
+  | primLit | primBinOp | ctor => intro depth; rfl
+  | var i => exact fun depth => subst_var_compose outer inner ho hi depth i
+  | lambda ann body ih =>
+      intro depth
+      simp only [Expr.substN]
+      congr 1
+      simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using ih (depth + 1)
+  | app fn arg ihf iha => intro depth; simp only [Expr.substN, ihf depth, iha depth]
+  | letIn ann rhs body ihr ihb =>
+      intro depth
+      simp only [Expr.substN]
+      congr 1
+      · exact ihr depth
+      · simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using ihb (depth + 1)
+  | found ty inner ih => intro depth; simp only [Expr.substN, ih depth]
+  | match_ scrut branches ihscrut ihbranches =>
+      intro depth
+      rw [subst_match, subst_match, subst_match, List.map_map, ihscrut depth]
+      congr 1
+      apply List.map_congr_left
+      intro br member
+      rcases br with ⟨pat, body⟩
+      simp only [Function.comp_apply]
+      congr 1
+      simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+        ihbranches pat body member (depth + pat.bindCount)
+  | letRec anns bindings body ihbindings ihbody =>
+      intro depth
+      simp only [Expr.substN, subst_rec_bindings, List.length_map, List.map_map]
+      congr 1
+      · apply List.map_congr_left
+        intro binding member
+        simp only [Function.comp_apply]
+        simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+          ihbindings binding member (depth + bindings.length)
+      · simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+          ihbody (depth + bindings.length)
+
+#print axioms closing_compose
+
+private theorem branches_scoped {depth branches}
+    (h : ∀ br ∈ branches, br.2.varsBelow (depth + br.1.bindCount) = true) :
+    BranchListClosed.varsBelow depth branches = true := by
+  induction branches with
+  | nil => rfl
+  | cons br rest ih =>
+      simp only [BranchListClosed.varsBelow, Bool.and_eq_true]
+      exact ⟨h br (by simp), ih (fun br member => h br (List.mem_cons_of_mem _ member))⟩
+
+private theorem bindings_scoped {depth bindings}
+    (h : ∀ e ∈ bindings, e.varsBelow depth = true) :
+    RecGroupClosed.varsBelow depth bindings = true := by
+  induction bindings with
+  | nil => rfl
+  | cons e rest ih =>
+      simp only [RecGroupClosed.varsBelow, Bool.and_eq_true]
+      exact ⟨h e (by simp), ih (fun e member => h e (List.mem_cons_of_mem _ member))⟩
+
+/-- Actual closing substitution removes exactly its environment's free term
+    slots. Scope under nested and mutual binders is retained, not assumed. -/
+theorem closing_scoped (terms : List Expr)
+    (closed : ∀ e ∈ terms, e.varsBelow 0 = true) (e : Expr) : ∀ depth,
+    e.varsBelow (depth + terms.length) = true →
+      (e.substN depth terms).varsBelow depth = true := by
+  induction e using Expr.rec_strong with
+  | primLit | primBinOp | ctor => intro depth _; rfl
+  | var i =>
+      intro depth sourceScope
+      simp only [Expr.varsBelow, decide_eq_true_eq] at sourceScope
+      by_cases underBinder : i < depth
+      · rw [subst_var_protected underBinder]
+        simpa only [Expr.varsBelow, decide_eq_true_eq] using underBinder
+      · obtain ⟨j, rfl⟩ : ∃ j, i = depth + j := ⟨i - depth, by omega⟩
+        rw [subst_var_present terms closed depth j (by omega)]
+        exact Expr.varsBelow_mono _ (Nat.zero_le depth) (closed _ (List.getElem_mem (by omega)))
+  | lambda ann body ih =>
+      intro depth sourceScope
+      simp only [Expr.substN, Expr.varsBelow] at sourceScope ⊢
+      exact ih (depth + 1) (by
+        simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using sourceScope)
+  | app fn arg ihf iha =>
+      intro depth sourceScope
+      simp only [Expr.substN, Expr.varsBelow, Bool.and_eq_true] at sourceScope ⊢
+      exact ⟨ihf depth sourceScope.1, iha depth sourceScope.2⟩
+  | letIn ann rhs body ihr ihb =>
+      intro depth sourceScope
+      simp only [Expr.substN, Expr.varsBelow, Bool.and_eq_true] at sourceScope ⊢
+      exact ⟨ihr depth sourceScope.1, ihb (depth + 1) (by
+        simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using sourceScope.2)⟩
+  | found ty inner ih =>
+      intro depth sourceScope
+      simp only [Expr.substN, Expr.varsBelow] at sourceScope ⊢
+      exact ih depth sourceScope
+  | match_ scrut branches ihscrut ihbranches =>
+      intro depth sourceScope
+      simp only [Expr.varsBelow, Bool.and_eq_true] at sourceScope
+      rw [subst_match]
+      simp only [Expr.varsBelow, Bool.and_eq_true]
+      refine ⟨ihscrut depth sourceScope.1, branches_scoped ?_⟩
+      intro br member
+      obtain ⟨original, inSource, rfl⟩ := List.mem_map.mp member
+      rcases original with ⟨pat, body⟩
+      apply ihbranches pat body inSource (depth + pat.bindCount)
+      simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+        BranchListClosed.varsBelow_of_mem sourceScope.2 pat body inSource
+  | letRec anns bindings body ihbindings ihbody =>
+      intro depth sourceScope
+      simp only [Expr.varsBelow, Bool.and_eq_true] at sourceScope
+      simp only [Expr.substN, subst_rec_bindings, Expr.varsBelow, List.length_map, Bool.and_eq_true]
+      refine ⟨bindings_scoped ?_, ihbody (depth + bindings.length) ?_⟩
+      · intro e member
+        obtain ⟨original, inSource, rfl⟩ := List.mem_map.mp member
+        apply ihbindings original inSource (depth + bindings.length)
+        simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using
+          RecGroupClosed.varsBelow_of_mem sourceScope.1 original inSource
+      · simpa only [Nat.add_assoc, Nat.add_comm, Nat.add_left_comm] using sourceScope.2
+
+#print axioms closing_scoped
+
 /-- Explicit domain of the initial runtime theorem; not an inference guard. -/
 inductive Supported : BoundsTy → Prop where
   | prim : Supported (.prim p)
@@ -503,6 +701,81 @@ theorem ValueAt.literal (bound free : TypeEnv) (σ : Assign) (budget : Nat) (p :
       cases p <;> rw [boundInfoOfPrimLit, ValueAt] <;>
         exact ⟨.primLit _, rfl, _, rfl, rfl⟩
 
+theorem ValueAt.bool (bound free : TypeEnv) (σ : Assign) (budget : Nat)
+    (name : CtorName) (nameOK : BoolBranches.IsCtor name) :
+    ValueAt bound free σ budget (.custom boolTyName []) (.ctor name) := by
+  cases budget with
+  | zero => simp only [ValueAt]
+  | succ budget =>
+      rw [ValueAt]
+      exact ⟨.ctor _, rfl, rfl, rfl, nameOK.elim (fun h => .inl (congrArg Expr.ctor h))
+        (fun h => .inr (congrArg Expr.ctor h))⟩
+
+/-- One proof for curried primitive application, instantiated below by the
+    actual Core delta rules. Ill-typed literal combinations supply no evidence. -/
+private theorem curried_primitive (bound free : TypeEnv) (σ : Assign)
+    (op : PrimBinOp) (domain : PrimTy) (result : BoundsTy)
+    (delta : ∀ p q, p.ty = .prim domain → q.ty = .prim domain →
+      ∃ value, SmallStep.Step (.app (.app (.primBinOp op) (.primLit p)) (.primLit q)) value ∧
+        ∀ budget, ValueAt bound free σ budget result value) (budget : Nat) :
+    ValueAt bound free σ budget (.arrow (.prim domain) (.arrow (.prim domain) result)) (.primBinOp op) := by
+  cases budget with
+  | zero => simp only [ValueAt]
+  | succ budget =>
+      rw [ValueAt]
+      refine ⟨.primBinOp _, rfl, ?_⟩
+      intro j _ arg argument
+      cases j with
+      | zero => unfold TermAt; intro steps v _ before; omega
+      | succ j =>
+          rw [ValueAt] at argument
+          obtain ⟨_, _, p, rfl, pType⟩ := argument
+          apply TermAt.value (.primBinOpPartial (.primLit p))
+          rw [ValueAt]
+          refine ⟨.primBinOpPartial (.primLit p), rfl, ?_⟩
+          intro k _ arg argument
+          cases k with
+          | zero => unfold TermAt; intro steps v _ before; omega
+          | succ k =>
+              rw [ValueAt] at argument
+              obtain ⟨_, _, q, rfl, qType⟩ := argument
+              obtain ⟨value, step, meaning⟩ := delta p q pType qType
+              have actual := meaning 1
+              rw [ValueAt.eq_def] at actual
+              exact TermAt.prepend step (TermAt.value actual.1 (meaning k))
+
+/-- All four builtins satisfy their bounds types under the REAL delta rules,
+    including saturated comparisons producing actual Bool constructors. -/
+theorem ValueAt.primBinOp (bound free : TypeEnv) (σ : Assign) (budget : Nat) (op : PrimBinOp) :
+    ValueAt bound free σ budget (Typed.primOpBounds op) (.primBinOp op) := by
+  cases op with
+  | intAdd =>
+      apply curried_primitive bound free σ .intAdd .int (.prim .int) _ budget
+      intro p q pType qType
+      cases p <;> cases q <;> simp_all [PrimLitExpr.ty]
+      exact ⟨_, .deltaIntAdd, fun n => ValueAt.literal bound free σ n (.int _)⟩
+  | intSub =>
+      apply curried_primitive bound free σ .intSub .int (.prim .int) _ budget
+      intro p q pType qType
+      cases p <;> cases q <;> simp_all [PrimLitExpr.ty]
+      exact ⟨_, .deltaIntSub, fun n => ValueAt.literal bound free σ n (.int _)⟩
+  | intLt =>
+      apply curried_primitive bound free σ .intLt .int (.custom boolTyName []) _ budget
+      intro p q pType qType
+      cases p <;> cases q <;> simp_all [PrimLitExpr.ty]
+      refine ⟨_, .deltaIntLt, ?_⟩
+      intro n
+      apply ValueAt.bool
+      split <;> simp [BoolBranches.IsCtor, BoolBranches.trueCtorName, BoolBranches.falseCtorName]
+  | charLt =>
+      apply curried_primitive bound free σ .charLt .char (.custom boolTyName []) _ budget
+      intro p q pType qType
+      cases p <;> cases q <;> simp_all [PrimLitExpr.ty]
+      refine ⟨_, .deltaCharLt, ?_⟩
+      intro n
+      apply ValueAt.bool
+      split <;> simp [BoolBranches.IsCtor, BoolBranches.trueCtorName, BoolBranches.falseCtorName]
+
 theorem ValueAt.nil (bound free : TypeEnv) (σ : Assign) (budget : Nat) (elem : BoundsTy) :
     ValueAt bound free σ budget (.list (.lit 0) (.lit 0) elem) (.ctor nilCtorName) := by
   cases budget with
@@ -691,6 +964,16 @@ theorem TermAt.matchBool {bound free σ budget result scrut branches}
 def Safe (bound free : TypeEnv) (σ : Assign) (β : BoundsTy) (e : Expr) : Prop :=
   ∀ budget, TermAt bound free σ budget β e
 
+theorem Safe.app {bound free σ domain result fn arg}
+    (hb : TypeEnv.Downward bound) (hf : TypeEnv.Downward free)
+    (function : Safe bound free σ (.arrow domain result) fn)
+    (argument : Safe bound free σ domain arg) : Safe bound free σ result (.app fn arg) :=
+  fun budget => (function budget).app hb hf (argument budget)
+
+theorem Safe.primBinOp (bound free : TypeEnv) (σ : Assign) (op : PrimBinOp) :
+    Safe bound free σ (Typed.primOpBounds op) (.primBinOp op) :=
+  fun budget => TermAt.value (.primBinOp op) (ValueAt.primBinOp bound free σ budget op)
+
 theorem Safe.subtype {bound free σ Δ a b e} (h : Safe bound free σ a e)
     (sub : SemanticSub Δ a b) (ha : Supported a) (hb : Supported b)
     (premises : ∀ c ∈ Δ, c.Holds σ) : Safe bound free σ b e :=
@@ -779,6 +1062,9 @@ theorem Safe.not_dropping_callback (bound free : TypeEnv) (σ : Assign) :
 #print axioms TermAt.app
 #print axioms ValueAt.lambda
 #print axioms ValueAt.identity
+#print axioms ValueAt.primBinOp
+#print axioms Safe.app
+#print axioms Safe.primBinOp
 #print axioms ValueAt.cons
 #print axioms TermAt.cons
 #print axioms ListValue.covered

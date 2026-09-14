@@ -74,6 +74,56 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
 /-- Compatibility view: the original API leaves lexical slots unchanged. -/
 abbrev Derives (types : Nat → BoundsTy) := ScopedDerives types BoundsTy.bvar
 
+private theorem variable_scoped {env : List α} {i value} (lookup : env[i]? = some value) :
+    (Expr.var i).varsBelow env.length = true := by
+  obtain ⟨small, _⟩ := List.getElem?_eq_some_iff.mp lookup
+  simpa only [Expr.varsBelow, decide_eq_true_eq] using small
+
+private theorem branches_scoped {depth branches}
+    (bodies : ∀ br ∈ branches, br.2.varsBelow (depth + br.1.bindCount) = true) :
+    BranchListClosed.varsBelow depth branches = true := by
+  induction branches with
+  | nil => rfl
+  | cons br rest ih =>
+      simp only [BranchListClosed.varsBelow, Bool.and_eq_true]
+      exact ⟨bodies br (by simp), ih (fun br member => bodies br (List.mem_cons_of_mem _ member))⟩
+
+/-- A real RHS derivation supplies lexical scope, not merely HM/count shape.
+    Cons branches open exactly the two contents used by Core match reduction.
+    This is a prerequisite for closing environments in runtime soundness. -/
+theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
+    (h : ScopedDerives types slots ids rows Δ env e β) : e.varsBelow env.length = true := by
+  induction h with
+  | literal | primBinOp | nil | boolCtor => rfl
+  | cons _ _ _ ihh iht => simp [Expr.varsBelow, ihh, iht]
+  | varMono lookup => exact variable_scoped lookup
+  | varRecursive lookup _ => exact variable_scoped lookup
+  | app _ _ _ ihf iha => simp [Expr.varsBelow, ihf, iha]
+  | lambda _ _ ih => simpa only [Expr.varsBelow, List.length_cons] using ih
+  | letMono _ _ _ ihr ihb =>
+      simp only [Expr.varsBelow, Bool.and_eq_true]
+      exact ⟨ihr, by simpa only [List.length_cons] using ihb⟩
+  | matchList _ _ patterns _ _ ihscrut ihbranches =>
+      simp only [Expr.varsBelow, Bool.and_eq_true]
+      refine ⟨ihscrut, branches_scoped ?_⟩
+      intro br member
+      obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
+      have bodyScope := ihbranches i br atIndex
+      rcases br with ⟨pat, body⟩
+      rcases patterns (pat, body) member with rfl | rfl | rfl <;>
+        simpa [branchEnv, MatchPattern.bindCount, nilCtorName, consCtorName] using bodyScope
+  | matchBool _ _ patterns _ _ ihscrut ihbranches =>
+      simp only [Expr.varsBelow, Bool.and_eq_true]
+      refine ⟨ihscrut, branches_scoped ?_⟩
+      intro br member
+      obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
+      have bodyScope := ihbranches i br atIndex
+      rcases br with ⟨pat, body⟩
+      rcases patterns (pat, body) member with rfl | rfl | rfl <;>
+        simpa [MatchPattern.bindCount] using bodyScope
+
+#print axioms ScopedDerives.varsBelow
+
 namespace Derives
 abbrev literal {types : Nat → BoundsTy} := @ScopedDerives.literal types BoundsTy.bvar
 abbrev primBinOp {types : Nat → BoundsTy} := @ScopedDerives.primBinOp types BoundsTy.bvar
