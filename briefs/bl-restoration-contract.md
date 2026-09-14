@@ -2127,3 +2127,33 @@ mono capture. New equality/stability proofs use standard Lean axioms only.
 guards pass. No new placeholders, partials or axioms. HM/D2, Path R and production
 BL guards unchanged. Ordered arbitrary-size RHS certificate assembly is next;
 generalized export and group-body introduction remain separate.
+
+### Checkpoint 4an — ordered arbitrary-size universally signed RHS assembly
+
+`HMDeclaredGroup` consumes exact sequential source sites and metadata, with one
+explicit opaque vector per member. Source annotation/RHS/vector arities are
+checked; the ordered indexed family and `memberCount` prevent omitted or extra
+RHS certificates. Each actual RHS is checked and universally signed in the SAME
+common recursive environment, using checked HM-vector stability, count capture
+scope, protected closed templates and count independence.
+
+Shared solved free identities must have equal COMPLETE erased replacement types.
+Different member count telescopes need not have equal interval payloads. This
+accepts different HM arities without equating every member's entire vector.
+Opaque vectors remain checked proposals, not fabricated machine binder facts.
+
+Nine regressions cover all three real HM-produced members (two more-general
+mutual RHSs and a mono member) through universal original-node specialization;
+skipped/extra members, unrelated coordinates for shared HM variables, aliased
+count telescopes and a false final contract reject the whole assembly.
+Unannotated recursive contracts remain deliberately guarded in this entry point.
+
+Full `lake build FHM FHMBounds fhm` passes (1799 jobs); HM audit stays 28 accepted /
+eight expected rejects / zero failures; boundary/whitespace guards pass. New
+assembly/certificate/equality proofs use standard Lean axioms, with executable
+inclusion retaining the existing solver boundary. No new placeholders, partials
+or axioms; HM/D2, Path R and production BL guards unchanged.
+
+This assembles universal RHS obligations, NOT group-body introduction or export.
+Next is automatic compatible opaque-coordinate proposal, then generalized body
+interfaces and nested scoped bindings; production BL LSP activation is later.
