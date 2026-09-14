@@ -30,12 +30,13 @@ termination_by sizeOf as
 end
 
 structure Certified (s : HMCountScheme.Scheme) (found : Ty) (captures : List Ty)
-    (env : List RecursiveHMJudgement.Binding) (rhs : Expr) where
+    (env : List RecursiveHMJudgement.Binding) (rhs : Expr)
+    (sourceTypes : Nat → BoundsTy := BoundsTy.fvar) where
   opening : HMCountScheme.Opening s found captures
   actual : BoundsTy
   shape : Synth.BoundsTy.toTy actual = found.eraseBounds
   actualScope : BoundsScoped (s.counts.quantified ++ s.counts.captures) actual
-  typing : Derives BoundsTy.fvar (s.counts.quantified ++ s.counts.captures) [] s.counts.premises env rhs actual
+  typing : Derives sourceTypes (s.counts.quantified ++ s.counts.captures) [] s.counts.premises env rhs actual
   inclusion : SemanticSub s.counts.premises actual opening.bounds
   typeFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ opening.ids, i ∉ c.template.hm.body.freeVars
   countFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ s.counts.quantified
@@ -63,7 +64,7 @@ private theorem replacementScope (ids : List Nat) (args : Nat → BoundsTy)
   | none => simp [argument, h, BoundsScoped]
   | some slot => simpa only [argument, h] using scope slot
 
-private theorem countFresh {s found captures env rhs} (cert : Certified s found captures env rhs)
+private theorem countFresh {s found captures env rhs sourceTypes} (cert : Certified s found captures env rhs sourceTypes)
     {counts caller} (inst : Instance s.counts counts caller) :
     CountCapturesFixed (s.counts.quantified.zip counts) env := by
   intro c hc i hi
@@ -71,7 +72,7 @@ private theorem countFresh {s found captures env rhs} (cert : Certified s found 
   rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
   exact cert.countFresh c hc i hi
 
-private theorem typeFresh {s found captures env rhs} (cert : Certified s found captures env rhs)
+private theorem typeFresh {s found captures env rhs sourceTypes} (cert : Certified s found captures env rhs sourceTypes)
     (args : Nat → BoundsTy) (rows : Bindings) :
     CapturesFixed (argument cert.opening.ids args) (env.map (mapCountBinding rows)) := by
   intro c hc i hi
@@ -84,7 +85,7 @@ private theorem typeFresh {s found captures env rhs} (cert : Certified s found c
       have hnone : cert.opening.ids.idxOf? i = none := List.idxOf?_eq_none_iff.mpr absent
       simp [argument, hnone]
 
-def actual {s found captures env rhs} (cert : Certified s found captures env rhs)
+def actual {s found captures env rhs sourceTypes} (cert : Certified s found captures env rhs sourceTypes)
     (counts : List Count) (types : List BoundsTy) : BoundsTy :=
   TypeSubstitution.combined (s.counts.quantified.zip counts) (SchemeUse.vector types)
     (BinderBridge.close cert.opening.ids cert.actual)
@@ -94,7 +95,7 @@ def demand (s : HMCountScheme.Scheme) (counts : List Count) (types : List Bounds
 
 /-- The exact implementation bounds, not the contract demand, are the shared
     simultaneous interpretation of count-specialized original RHS bounds. -/
-theorem actual_transport {s found captures env rhs} (cert : Certified s found captures env rhs)
+theorem actual_transport {s found captures env rhs sourceTypes} (cert : Certified s found captures env rhs sourceTypes)
     (counts : List Count) (types : List BoundsTy) :
     mapFree (argument cert.opening.ids (SchemeUse.vector types))
       (bounds (s.counts.quantified.zip counts) cert.actual) = actual cert counts types := by
@@ -105,7 +106,7 @@ theorem actual_transport {s found captures env rhs} (cert : Certified s found ca
     close_counts]
   rfl
 
-theorem actual_hm_instance {s found captures env rhs} (cert : Certified s found captures env rhs)
+theorem actual_hm_instance {s found captures env rhs sourceTypes} (cert : Certified s found captures env rhs sourceTypes)
     (counts : List Count) (types : List BoundsTy) (arity : types.length = s.hm.paramCount) :
     s.hm.InstantiatesTo (types.map Synth.BoundsTy.toTy) (Synth.BoundsTy.toTy (actual cert counts types)) := by
   have hs : s.hm.body.eraseBounds = s.hm.body := by
@@ -119,7 +120,7 @@ theorem actual_hm_instance {s found captures env rhs} (cert : Certified s found 
   rw [ha]
   exact HMCountScheme.opened_instance s types arity
 
-theorem actual_inScope {s found captures env rhs} (cert : Certified s found captures env rhs)
+theorem actual_inScope {s found captures env rhs sourceTypes} (cert : Certified s found captures env rhs sourceTypes)
     {counts caller} (inst : Instance s.counts counts caller) (types : List BoundsTy)
     (scope : types.all (boundsScopedBool caller) = true) : BoundsScoped caller (actual cert counts types) := by
   apply TypeSubstitution.inScope _ _ (SchemeUse.vector_scope scope)
@@ -134,14 +135,15 @@ theorem actual_inScope {s found captures env rhs} (cert : Certified s found capt
 
 /-- Count substitution precedes full HM insertion. The RHS, every recursive
     assumption, and source annotation interpretation specialize uniformly. -/
-theorem use {s found captures env rhs} (cert : Certified s found captures env rhs)
+theorem useInterpreted {s found captures env rhs sourceTypes} (cert : Certified s found captures env rhs sourceTypes)
     {counts caller} (inst : Instance s.counts counts caller) (types : List BoundsTy)
     (arity : types.length = s.hm.paramCount)
     (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
     (scope : types.all (boundsScopedBool caller) = true) :
     let rows := s.counts.quantified.zip counts
     let f := argument cert.opening.ids (SchemeUse.vector types)
-    Derives f (s.counts.quantified ++ s.counts.captures) rows inst.premises
+    Derives (fun i => mapFree f (bounds rows (sourceTypes i)))
+      (s.counts.quantified ++ s.counts.captures) rows inst.premises
       ((env.map (mapCountBinding rows)).map (mapBinding f (replacementLC _ _ (argumentsLC types lc))))
       rhs (actual cert counts types) ∧
     SemanticSub inst.premises (actual cert counts types) (demand s counts types) ∧
@@ -165,16 +167,32 @@ theorem use {s found captures env rhs} (cert : Certified s found captures env rh
   rw [ha, hd] at hs
   refine ⟨?_, hs, actual_hm_instance cert counts types arity, actual_inScope cert inst types scope⟩
   simpa only [ha, CountAlgebra.compose, List.map_nil, List.nil_append,
-    ScopedScheme.Instance.premises, mapFree] using ht
+    ScopedScheme.Instance.premises] using ht
 
-def interpretedEnvironment {s found captures env rhs} (cert : Certified s found captures env rhs)
+/-- Compatibility view for the original identity-source certificates. -/
+theorem use {s found captures env rhs} (cert : Certified s found captures env rhs)
+    {counts caller} (inst : Instance s.counts counts caller) (types : List BoundsTy)
+    (arity : types.length = s.hm.paramCount)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
+    (scope : types.all (boundsScopedBool caller) = true) :
+    let rows := s.counts.quantified.zip counts
+    let f := argument cert.opening.ids (SchemeUse.vector types)
+    Derives f (s.counts.quantified ++ s.counts.captures) rows inst.premises
+      ((env.map (mapCountBinding rows)).map (mapBinding f (replacementLC _ _ (argumentsLC types lc))))
+      rhs (actual cert counts types) ∧
+    SemanticSub inst.premises (actual cert counts types) (demand s counts types) ∧
+    s.hm.InstantiatesTo (types.map Synth.BoundsTy.toTy) (Synth.BoundsTy.toTy (actual cert counts types)) ∧
+    BoundsScoped caller (actual cert counts types) := by
+  simpa only [bounds, mapFree] using useInterpreted cert inst types arity lc scope
+
+def interpretedEnvironment {s found captures env rhs sourceTypes} (cert : Certified s found captures env rhs sourceTypes)
     (counts : List Count) (types : List BoundsTy)
     (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC) : List RecursiveHMJudgement.Binding :=
   (env.map (mapCountBinding (s.counts.quantified.zip counts))).map
     (mapBinding (argument cert.opening.ids (SchemeUse.vector types))
       (replacementLC _ _ (argumentsLC types lc)))
 
-def typeEnvironment {s found captures env rhs} (cert : Certified s found captures env rhs)
+def typeEnvironment {s found captures env rhs sourceTypes} (cert : Certified s found captures env rhs sourceTypes)
     (types : List BoundsTy) (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC) :
     List RecursiveHMJudgement.Binding :=
   env.map (mapBinding (argument cert.opening.ids (SchemeUse.vector types))
@@ -207,6 +225,26 @@ theorem atNode_actual {output path} (node : HMFoundView.AtNode output path) {s c
     (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
     (scope : types.all (boundsScopedBool caller) = true) :
     (atNode node cert inst types arity lc scope).actual = actual cert counts types := rfl
+
+/-- Reconciled RHS certificates start at a nonidentity source interpretation.
+    Count substitution acts inside that interpretation before full caller types
+    are inserted. The ORIGINAL artifact and path still index the final result. -/
+def atInterpretedNode {output path} (node : HMFoundView.AtNode output path)
+    {s captures env sourceTypes}
+    (cert : Certified s (node.view sourceTypes) captures env node.inner.stripFound sourceTypes)
+    {counts caller} (inst : Instance s.counts counts caller) (types : List BoundsTy)
+    (arity : types.length = s.hm.paramCount)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
+    (scope : types.all (boundsScopedBool caller) = true) :
+    HMFoundView.TypedChecked node
+      (fun i => mapFree (argument cert.opening.ids (SchemeUse.vector types))
+        (bounds (s.counts.quantified.zip counts) (sourceTypes i)))
+      (s.counts.quantified ++ s.counts.captures) (s.counts.quantified.zip counts)
+      inst.premises (interpretedEnvironment cert counts types lc) caller := by
+  have h := useInterpreted cert inst types arity lc scope
+  refine ⟨actual cert counts types, ⟨?_, h.2.2.2⟩, h.1⟩
+  rw [← actual_transport cert counts types, HMFoundView.bounds_shape, bounds_shape, cert.shape]
+  exact HMFoundView.specialization _ _ _ node.original
 
 /-- Reuse an existing sound RHS certificate; its actual scope is a real proof
     supplied by the checked artifact, not reconstructed from the HM skeleton. -/
@@ -246,11 +284,13 @@ def fromLocatedChecked {c env rhs} (checked : RecursiveRHS.LocatedChecked c env 
 
 #print axioms close_counts
 #print axioms use
+#print axioms useInterpreted
 #print axioms actual_hm_instance
 #print axioms actual_inScope
 #print axioms actual_transport
 #print axioms atNode
 #print axioms atNode_actual
+#print axioms atInterpretedNode
 #print axioms fromChecked
 
 end FHM.Bounds.RecursiveHMUniversal
