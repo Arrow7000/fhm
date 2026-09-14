@@ -751,3 +751,51 @@ Boundary and whitespace guards pass; no new axioms, placeholders or partial
 definitions. Recursive-group/call-environment rules, generalized internal scoped
 lets, matches, production CLI/LSP migration, artifact coherence and runtime
 length soundness remain pending. HM/D2 and bounds-blind Path R remain unchanged.
+
+2026-09-14, checkpoint 4a: `RecursiveContract.Declared` represents a declared
+recursive assumption separately from `CountContract.Certified`. Its HM type is
+one locally closed monotype, not an instantiable HM scheme. Count uses check
+finite/scoped arguments, captures and independently discharged premises, then
+compare their found payload with that exact monotype. Free HM identities remain
+fixed too; no caller HM argument array or slot-proposal path exists here.
+
+`RecursiveTyping` extends the scoped annotation judgement with explicit
+recursive bindings and a simultaneous group rule. Group introduction requires
+each RHS, at every scoped finite count instantiation, to have a derivation,
+satisfy its original interpreted annotation, and lie within its declared bounds
+contract. All three universal premises are required; decoding or sampling a
+contract does not supply them. Group count telescopes must be distinct and no
+member may capture another member's quantified coordinate. Captured outer
+bindings must fit every member's explicit capture interface.
+
+The initial group body retains fixed HM monotypes; exit HM generalization is
+not implemented by this judgement. Monomorphic HM carried signatures must align
+exactly with found payloads. Valid HM artifacts whose RHS is more general than
+its annotation explicitly defer for specialization. Opening polymorphic HM
+annotations at the actual shared group identities also remains separate work;
+this is not permission to reinstantiate those annotations at recursive calls.
+
+`RecursiveVariable` constructs conditional variable/application derivations
+under these explicit assumptions. Implicit calls propose counts from actual
+argument origins, then check scope, finiteness, premises, semantic domain
+inclusion and exact function/result HM payloads. These results do NOT accept a
+group or export an RHS certificate.
+
+The solver-free `recursive_var_shape` theorem proves fixed HM spines for all
+declarative recursive-variable uses, not just checked ones. Existing scoped
+derivations embed unchanged, and premise strengthening preserves the universal
+group obligations. Two solver-free group regression proofs exercise universal
+self-recursive calls and retained symbolic lambda/binding annotations. Thirty-one
+executable cases exercise actual self/mutually recursive HM artifacts, independent
+counts, forbidden HM specialization, caller scope/captures/premises, Nil/Cons
+applications, malformed interfaces and valid-HM specialization deferral.
+
+Validation after 4a: full HM/Bounds/editor/CLI build passes (1748 jobs). Fresh
+scratch HM audit: 28 accepted / eight expected rejections / zero failures.
+Boundary and whitespace guards pass. New theorem dependencies are standard Lean
+axioms only; executable premise/inclusion checks retain positive solver trust.
+No new axioms, placeholders or partial definitions. Legacy Bounds placeholders
+are unchanged. Executable symbolic-RHS/group checking still needs a capture-safe
+recursive count-transport bridge before universal certificates can be generated.
+Matches, CLI/LSP migration, artifact coherence and runtime length soundness remain
+pending; HM/D2 and Path R are unchanged.
