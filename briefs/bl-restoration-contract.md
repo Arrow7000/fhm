@@ -1209,3 +1209,33 @@ group exit can export a generalized HM scheme. Captured type/count identities
 and caller bounds inside HM arguments need capture-safe simultaneous transport.
 Nested groups, fresh open origins, general data matches, runtime length soundness,
 artifact coherence and unified product wiring remain subsequent work.
+
+### Checkpoint 4m — consecutive program groups and non-recursive roots
+
+`RecursiveGroup.check` now checks consecutive recursive groups in program bodies
+with the same whole-group introduction theorem at every group. The caller count
+interpretation is unchanged when moving to a later body: no universal RHS
+transport is assumed or manufactured. Each later group's exact metadata site,
+environment captures, fixed HM identities and all member obligations are still
+checked before the outer result/report can be returned. Invalid later groups or
+final bodies reject the entire result. Recursion is structurally decreasing on
+the found expression, without a partial definition.
+
+Non-recursive found roots delegate to the existing expression walker and retain
+its derivation, HM shape and count-scope evidence. Thus the opt-in provenance
+adapter also accepts scalar operations, exact List literals, ordinary monomorphic
+root lets and Bool conditionals, rather than requiring a recursive root.
+
+Eleven new parsed regressions cover those non-recursive roots, consecutive groups,
+calls to earlier groups, deferred callbacks at a later group's count identities,
+bad later contracts and invalid final bodies. Three kernel-side regressions check
+empty consecutive groups, forged inner HM payloads and missing inner found roots.
+Groups inside universal RHSs still explicitly reject: they need protected
+captured-template transport, unlike consecutive groups in program bodies.
+
+Validation: 74 parsed-source and 21 group regressions pass, along with the full
+1766-job HM/Bounds/editor/CLI build. Boundary/whitespace guards pass; the scratch
+HM audit remains 28 accepted / eight expected rejections / zero failures. No new
+axioms, placeholders or partial definitions; HM/D2, Path R and production launch
+are unchanged. Polymorphic HM opening/exit generalization and general program
+wrappers are not claimed complete by this narrower extension.

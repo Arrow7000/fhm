@@ -4,8 +4,9 @@ import FHM.Bounds.RecursiveRHS
 
 All members are checked under the same declared assumptions, and their universal
 certificates discharge the group rule before its body result is accepted. The
-initial body keeps fixed HM monotypes: HM generalization at group exit and nested
-groups remain separate work. This optional checker does not change CLI/LSP launch.
+initial body keeps fixed HM monotypes. Consecutive groups in program bodies are
+checked recursively; groups within universal RHSs still require captured-template
+transport. HM exit generalization and CLI/LSP migration remain separate work.
 -/
 
 namespace FHM.Bounds.RecursiveGroup
@@ -139,7 +140,11 @@ structure Result (ids : List Nat) (rows : Bindings) (caller : List Nat)
   countScope : BoundsScoped caller bounds
   nodes : List Typed.NodeResult
 
-/-- Check a found recursive group at its logical Core path. Missing contracts,
+private def fromWalk {ids rows caller Δ env e}
+    (r : RecursiveWalk.Result ids rows caller Δ env e) : Result ids rows caller Δ env e :=
+  ⟨r.hm, r.bounds, r.root, r.shape, r.derivation, r.countScope, r.nodes⟩
+
+/-- Check a found program at its logical Core path. Missing contracts,
     invalid members or an invalid body reject the whole group; no partial result
     is exported and no legacy fallback is used. -/
 def check (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
@@ -153,8 +158,8 @@ def check (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Cons
       if hi : independentBool cs = true then
         if hc : cs.all (captureOK env) = true then
           let members ← checkMembers schemes metadata path (cs.map Binding.recursive ++ env) 0 cs rhss anns
-          let result ← RecursiveWalk.walk ids rows caller Δ (cs.map Binding.recursive ++ env)
-            (path ++ [.letRecBody]) body schemes
+          let result ← check ids rows caller Δ (cs.map Binding.recursive ++ env)
+            (path ++ [.letRecBody]) body schemes metadata
           let shape ← match BinderBridge.equalTy result.hm hm.eraseBounds with
             | some h => pure h | none => throw "bounds: recursive group body disagrees with root found payload"
           let cert : Certified ids rows Δ env anns rhss body :=
@@ -166,7 +171,10 @@ def check (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Cons
             result.countScope, ⟨path, hm.eraseBounds, some result.bounds⟩ :: members.2 ++ result.nodes⟩
         else throw "bounds: recursive group environment escapes declared captures"
       else throw "bounds: recursive group count telescopes overlap or capture quantified counts"
-  | _ => throw "bounds: requested expression is not a found recursive group"
+  | .found hm inner =>
+      pure (fromWalk (← RecursiveWalk.walk ids rows caller Δ env path (.found hm inner) schemes))
+  | _ => throw "bounds: requested expression is not a found recursive group or program node"
+termination_by sizeOf e
 
 #print axioms Certified.typing
 #print axioms check
