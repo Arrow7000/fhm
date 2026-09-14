@@ -38,6 +38,20 @@ theorem countScopedBool_sound {ids : List Nat} {c : Count}
       exact ⟨ha h.1, hb h.2⟩
   | pred a ha => exact ha h
 
+theorem countScopedBool_complete {ids : List Nat} {c : Count}
+    (h : CountScoped ids c) : countScopedBool ids c = true := by
+  induction c with
+  | lit | inf => rfl
+  | var v =>
+      cases v with | mk kind i =>
+        cases kind with
+        | rigid => simpa [countScopedBool, List.contains_iff_mem] using h
+        | inferable => cases h
+  | add a b ha hb | mul a b ha hb | min a b ha hb | max a b ha hb =>
+      simp only [countScopedBool, Bool.and_eq_true]
+      exact ⟨ha h.1, hb h.2⟩
+  | pred a ha => exact ha h
+
 mutual
 def BoundsScoped (ids : List Nat) : BoundsTy → Prop
   | .prim _ | .fvar _ | .bvar _ => True
@@ -85,6 +99,31 @@ private theorem boundsListScopedBool_sound {ids : List Nat} {as : List BoundsTy}
   | cons a as =>
       simp only [boundsListScopedBool, Bool.and_eq_true] at h
       exact ⟨boundsScopedBool_sound h.1, boundsListScopedBool_sound h.2⟩
+termination_by sizeOf as
+end
+
+mutual
+theorem boundsScopedBool_complete {ids : List Nat} {β : BoundsTy}
+    (h : BoundsScoped ids β) : boundsScopedBool ids β = true := by
+  cases β with
+  | prim | fvar | bvar => rfl
+  | arrow a b =>
+      simp only [boundsScopedBool, Bool.and_eq_true]
+      exact ⟨boundsScopedBool_complete h.1, boundsScopedBool_complete h.2⟩
+  | list lo hi elem =>
+      simp only [boundsScopedBool, Bool.and_eq_true]
+      exact ⟨⟨countScopedBool_complete h.1, countScopedBool_complete h.2.1⟩,
+        boundsScopedBool_complete h.2.2⟩
+  | custom name args => exact boundsListScopedBool_complete h
+termination_by sizeOf β
+
+private theorem boundsListScopedBool_complete {ids : List Nat} {as : List BoundsTy}
+    (h : BoundsListScoped ids as) : boundsListScopedBool ids as = true := by
+  cases as with
+  | nil => rfl
+  | cons a as =>
+      simp only [boundsListScopedBool, Bool.and_eq_true]
+      exact ⟨boundsScopedBool_complete h.1, boundsListScopedBool_complete h.2⟩
 termination_by sizeOf as
 end
 

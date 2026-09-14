@@ -106,7 +106,7 @@ theorem premises_transport {s args caller} (inst : Instance s args caller)
   intro c hc
   exact constraint_transport inst outer hk (inst.wf.2.2.2 c hc)
 
-private theorem scope_mono {ids ids' c} (h : Scope.CountScoped ids c)
+theorem scope_mono {ids ids' c} (h : Scope.CountScoped ids c)
     (hk : ∀ i ∈ ids, i ∈ ids') : Scope.CountScoped ids' c := by
   induction c with
   | lit | inf => trivial

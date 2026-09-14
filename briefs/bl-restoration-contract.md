@@ -1402,3 +1402,53 @@ definitions; HM/D2, Path R and production launch remain unchanged.
 Next is a closed-template/fixed-HM-argument recursive assumption interface and
 its count-only use/specialization proofs, retaining the count-first/type-second
 boundary before integrating universal recursive RHS and group-exit rules.
+
+### Checkpoint 4s — fixed HM vectors with protected recursive count transport
+
+`RecursiveHMContract.Fixed` stores the closed HM/count template and one fixed
+vector of complete HM bounds arguments separately. `fix` reconciles that vector
+with the authoritative group monotype, checking exact arity, local closure and
+repeated-slot alignment. `fromOpaque` starts from the explicit fresh opening.
+Neither is an implementation certificate. The optional module is not yet used
+by the existing executable group walker.
+
+Recursive `check` accepts count arguments only: callers cannot reopen the fixed
+HM vector. Its `Use` certificate checks finite scoped count instantiation,
+discharges premises, checks caller count scope for the separately inserted full
+HM types, and preserves the exact call's found monotype. Bounds substitute the
+closed count telescope BEFORE inserting those types. Scope, exact HM shape and
+semantic contract-inclusion transport follow through the existing certified
+external HM/count interface.
+
+`Fixed.map` / `Use.map_bounds` prove simultaneous specialization of the entire
+fixed interface and assumption uses, leaving captured free HM identities fixed
+and retaining count witnesses/premises. This is a proof tool for specializing a
+whole group, not permission to change HM arguments independently at calls.
+`opaque_count_coherence` proves exact equality with the existing count-only
+recursive rule before opaque HM arguments are replaced by full caller bounds.
+
+`Fixed.mapCounts` maps caller-owned counts inside the fixed HM argument vector
+without touching the callee's closed telescope. `Use.mapCounts` transports finite
+caller count arguments and path assumptions together, protects callee captures,
+and proves caller scope automatically. `Use.mapCounts_bounds` identifies the
+result with semantic count substitution of the original use. This includes the
+self-recursive overlapping-ID case. Supporting additions prove completeness of
+the existing executable count/bounds scope predicates and expose the existing
+count-scope monotonicity lemma; their specifications and algorithms are unchanged.
+
+Seventeen new regressions cover opaque/specialized fixed HM calls, rejected
+per-call HM reopening, repeated slots, arity, bound slots, count scope, finite
+witnesses, failed premises, vacuous forall slots, overlapping caller/callee count
+IDs, and outer transport with symbolic versus literal callee arguments. Generic
+kernel-checked full-bounds and finite-count use transport proofs add no oracle
+trust. The full 1770-job build and all 89 parsed-source regressions pass; scratch
+HM audit stays 28 accepted / eight expected rejections / zero failures. Boundary
+and whitespace guards pass. No new axioms, placeholders or partial definitions;
+HM/D2, Path R and production launch remain unchanged.
+
+Still required before enabling polymorphic recursive contracts: integrate this
+assumption representation into recursive typing/walking and source-annotation
+interpretation, prove whole-RHS HM transport rather than variable-use transport
+alone, check specialization of more-general RHS found payloads, and introduce
+joint universal HM/count RHS and generalized group-exit certificates. Removing
+the current decoder/annotation guards before those proofs would be unsound.
