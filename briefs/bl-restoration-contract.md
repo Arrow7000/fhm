@@ -1913,3 +1913,33 @@ boundary. No new placeholder/axiom/partial; HM/D2, Path R and production guards
 unchanged. Next: joint universal certificates carrying lexical slots and a
 checked declared interface, followed by complete group/environment reconciliation.
 Generalized local lets, nested groups and deferred full spines remain guarded.
+
+### Checkpoint 4ag — joint universal certificates retain lexical interfaces
+
+`RecursiveHMUniversal.Certified` now retains a trailing, defaulted lexical-slot
+interface as well as its free-identity interpretation. Existing certificates
+default to identity slots. `useScopedInterpreted` jointly transports BOTH source
+interfaces, the actual implementation bounds and the fixed recursive environment
+through finite count specialization followed by full caller HM insertion.
+Existing free-only `useInterpreted`/`use` views remain compatible.
+
+`ScopedHMFoundView.composition`/`specialization` prove that the final reader agrees
+at every original type with this two-stage specialization. `atScopedNode` retains
+the exact original source node/address and actual RHS derivation in its final
+caller context. `fromScopedChecked` requires a checked opaque signature opening,
+genuine exact-node scoped typing, independent actual inclusion and explicit
+closed-template HM/count capture protection; the walker alone cannot generalize.
+
+Two real HM artifact regressions take annotated-forall identity/List-match RHSs
+through original-node checking at a fresh opaque lexical opening, universal
+certificate construction, then count 7 -> 3 and a FULL caller List type whose
+inner count still names caller 7. The inner count is preserved rather than
+accidentally replaced by the source telescope. Original machine metadata remains
+unchanged (annotated bindings have no inference-produced binder fact).
+
+Full 1794-job build passes; scratch HM audit 28 accepted / eight expected rejects /
+zero failures; boundary and whitespace checks pass. New universal/coherence
+proofs use standard Lean axioms; executable inclusion uses the existing solver
+boundary. HM/D2, Path R and production guards unchanged. This does not yet provide
+the complete source-site declared-interface reconciler, signed lexical-node
+package, recursive group acceptance/export or production BL LSP launch.
