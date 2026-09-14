@@ -89,6 +89,54 @@ abbrev matchList {types : Nat → BoundsTy} := @ScopedDerives.matchList types Bo
 abbrev matchBool {types : Nat → BoundsTy} := @ScopedDerives.matchBool types BoundsTy.bvar
 end Derives
 
+private theorem param_assuming {types slots ids rows Δ Δ' ann β}
+    (h : ScopedHMAnnotation.ParamOK types slots ids rows Δ ann β)
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    ScopedHMAnnotation.ParamOK types slots ids rows Δ' ann β := by
+  cases ann with
+  | none => trivial
+  | some τ => exact h.assuming hp
+
+private theorem binding_assuming {types slots ids rows Δ Δ' ann β}
+    (h : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann β)
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    ScopedHMAnnotation.BindingOK types slots ids rows Δ' ann β := by
+  cases ann with
+  | none => trivial
+  | some σ => exact ⟨h.1, h.2.assuming hp⟩
+
+/-- A caller must establish instantiated contract premises. Transport the
+    entire actual RHS, including nested source obligations and refined arms,
+    into that caller context rather than silently appending assumptions. -/
+theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
+    (h : ScopedDerives types slots ids rows Δ env e β)
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) : ScopedDerives types slots ids rows Δ' env e β := by
+  induction h generalizing Δ' with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil => exact .nil
+  | boolCtor hn => exact .boolCtor hn
+  | cons _ _ hs ihh iht => exact .cons (ihh hp) (iht hp) (hs.assuming hp)
+  | varMono hv => exact .varMono hv
+  | varRecursive hv used =>
+      let next : RecursiveHMContract.Use _ Δ' _ _ :=
+        ⟨used.counts, used.inst, by
+          intro σ hΔ goal hgoal
+          exact used.usable σ (fun c hc => hp σ hΔ c hc) goal hgoal,
+          used.typesScoped, used.fixedHM⟩
+      exact .varRecursive hv next
+  | app _ _ hs ihh iht => exact .app (ihh hp) (iht hp) (hs.assuming hp)
+  | lambda hparam _ ih => exact .lambda (param_assuming hparam hp) (ih hp)
+  | letMono hbind _ _ ihr ihb => exact .letMono (binding_assuming hbind hp) (ihr hp) (ihb hp)
+  | matchList _ hc hpat _ hsub ihscrut ihbranches =>
+      exact .matchList (ihscrut hp) (hc.assuming hp) hpat
+        (fun i br hb => ihbranches i br hb (RecursiveTyping.assuming_append hp))
+        (fun i br hb => (hsub i br hb).assuming (RecursiveTyping.assuming_append hp))
+  | matchBool _ hc hpat _ hsub ihscrut ihbranches =>
+      exact .matchBool (ihscrut hp) hc hpat
+        (fun i br hb => ihbranches i br hb hp)
+        (fun i br hb => (hsub i br hb).assuming hp)
+
 def Contract.mapTypes (c : Contract) (f : Nat → BoundsTy)
     (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) : Contract :=
   ⟨c.template, Synth.BoundsTy.toTy (HMCountScheme.opened c.template (c.fixed.types.map (mapFree f))),

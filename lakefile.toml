@@ -125,6 +125,8 @@ roots = [
   "FHM.Bounds.RecursiveHMUniversal", # Joint full-HM/finite-count RHS derivations and independently proved contract inclusion
   "FHM.Bounds.RecursiveHMSigned", # Exact written signature agreement backed by joint universal RHS certificates
   "FHM.Bounds.RecursiveHMEnvironment", # Captured fixed-vector proofs reconcile member count instantiation with the group environment
+  "FHM.Bounds.RecursiveHMCaller", # Original signed RHS evidence, caller HM shape and discharged premises in one actual-bound package
+  "FHM.Bounds.RecursiveHMCallerTests", # Real automatic groups specialize at multiple caller types without assuming unmet contract premises
   "FHM.Bounds.HMFoundView", # Shared HM interpretation reads exact-node payload views without rewriting artifacts or paths
   "FHM.Bounds.HMFoundViewTests", # More-general payload specialization, exact Core sites and explicit count scope
   "FHM.Bounds.HMReconciliation", # Machine binder identities reconcile with fresh source signatures without rewriting found trees

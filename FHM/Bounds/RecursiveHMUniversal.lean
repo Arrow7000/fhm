@@ -107,6 +107,17 @@ theorem actual_transport {s found captures env rhs sourceTypes sourceSlots} (cer
     close_counts]
   rfl
 
+theorem actual_demand_shape {s found captures env rhs sourceTypes sourceSlots}
+    (cert : Certified s found captures env rhs sourceTypes sourceSlots)
+    (counts : List Count) (types : List BoundsTy) :
+    Synth.BoundsTy.toTy (actual cert counts types) = Synth.BoundsTy.toTy (demand s counts types) := by
+  have hs : s.hm.body.eraseBounds = s.hm.body := by
+    rw [← s.shape]
+    exact FreeAlgebra.shape_erased _
+  have hc := (cert.opening.abstractActual cert.actual cert.shape).shape
+  change Synth.BoundsTy.toTy (BinderBridge.close cert.opening.ids cert.actual) = s.hm.body.eraseBounds at hc
+  simp only [actual, demand, TypeSubstitution.combined_shape, hc, hs, s.shape]
+
 theorem actual_hm_instance {s found captures env rhs sourceTypes sourceSlots} (cert : Certified s found captures env rhs sourceTypes sourceSlots)
     (counts : List Count) (types : List BoundsTy) (arity : types.length = s.hm.paramCount) :
     s.hm.InstantiatesTo (types.map Synth.BoundsTy.toTy) (Synth.BoundsTy.toTy (actual cert counts types)) := by
