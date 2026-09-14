@@ -1,4 +1,5 @@
 import FHM.Bounds.HMReconciliation
+import FHM.Bounds.RecursiveHMReconciled
 
 namespace FHM.Bounds.HMReconciliationTests
 
@@ -82,6 +83,51 @@ private def mismatchingDerivation : Except String Unit := do
   let _ ← checkRHS c actual typing (by intro d hd; cases hd)
   pure ()
 
+/-- End-to-end symbolic certificate construction and external specialization:
+    original gamma maps first to List n alpha, then n to 3, and finally alpha
+    to caller List n Int. The caller's n must stay untouched in the final type. -/
+private def universalSpecialization (annotation : PolyTy := signature)
+    (scopedAnnotation : Bool := false) : Except String Bool := do
+  let body := Expr.lambda (if scopedAnnotation then some (.fvar 90) else none)
+    (.found (.fvar 90) (.var 0))
+  let node : HMFoundView.AtNode
+      (.found (.prim .int) (.letIn none (.found discovered body)
+        (.found (.prim .int) (.primLit (.int 0))))) [.letRhs] :=
+    ⟨discovered, body, by simp [Expr.atCorePath]⟩
+  let interface ← HMCountScheme.decodeAnnotated annotation [7] []
+  let c ← check node facts (.letIn []) interface.scheme original [91] []
+  have typing : RecursiveHMJudgement.Derives BoundsTy.fvar [7] [] [] []
+      node.inner.stripFound original := by
+    simp only [node, body, original, Expr.stripFound]
+    refine .lambda ?_ (.varMono rfl)
+    cases scopedAnnotation with
+    | false => trivial
+    | true =>
+        refine ⟨⟨.fvar 90, True.intro, by simp [Synth.BoundsTy.toTy, Ty.eraseBounds]⟩,
+          by simp [ScopedAnnotation.decode, pure, Except.pure], ?_⟩
+        exact SemanticSub.refl _ _
+  let rhs ← checkRHS c original typing (by intro d hd; cases hd)
+  let cert := RecursiveHMReconciled.fromAnnotated interface c rhs
+    (by intro d hd; cases hd) (by intro d hd; cases hd)
+  let inst ← interface.scheme.counts.instantiate [.lit 3] [7]
+  let arg : BoundsTy := .list n n (.prim .int)
+  if ha : [arg].length = annotation.paramCount then
+    let used := RecursiveHMSigned.atInterpretedNode node cert inst [arg] ha
+      (by
+        intro a hin
+        have he : a = arg := by simpa using hin
+        subst a
+        apply (Ty.bvarsBelow_iff _).mp
+        simp [arg, Synth.BoundsTy.toTy, listTy, Ty.bvarsBelow, TyList.bvarsBelow])
+      (by decide)
+    pure (match used.typed.actual with
+      | .arrow (.list lo hi (.list callerLo callerHi (.prim .int)))
+          (.list resultLo resultHi (.list nestedLo nestedHi (.prim .int))) =>
+        lo == .lit 3 && hi == .lit 3 && resultLo == .lit 3 && resultHi == .lit 3 &&
+          callerLo == n && callerHi == n && nestedLo == n && nestedHi == n
+      | _ => false)
+  else throw "test: expected one source HM slot"
+
 private def succeeds (r : Except String α) : Bool := match r with | .ok _ => true | _ => false
 private def passes (r : Except String Bool) : Bool := match r with | .ok b => b | _ => false
 private def fails (r : Except String α) (needle : String) : Bool :=
@@ -117,7 +163,13 @@ private def cases : List (String × Bool) := [
     (typedIdentity ⟨1, .arrow sourceList (.bl (.solid (.lit 0)) (.solid (.lit 0)) (.bvar 0))⟩)
     "interval inclusion"),
   ("a real derivation still rejects when its interpreted actual disagrees with the node", fails
-    mismatchingDerivation "interpreted found payload")]
+    mismatchingDerivation "interpreted found payload"),
+  ("a reconciled actual RHS yields universal written-signature and exact original-node instances", passes
+    universalSpecialization),
+  ("counts inside source replacements specialize before nested caller counts are inserted", passes
+    (universalSpecialization ⟨1, .arrow sourceList (.bl (.solid (.lit 0)) (.solid .inf) (.bvar 0))⟩)),
+  ("carried lambda type annotations use the same reconciled universal source interpretation", passes
+    (universalSpecialization signature true))]
 
 def main : IO Unit := do
   for (name, ok) in cases do

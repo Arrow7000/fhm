@@ -63,8 +63,8 @@ theorem opaqueVector {s found typeCaptures} (o : HMCountScheme.Opening s found t
 /-- Universal RHS transport uses the SAME common recursive environment, with
     only its uniform HM interpretation, once captured-vector scope is checked.
     No closed callee contract or independent per-call HM vector is rewritten. -/
-theorem interpreted {s found typeCaptures env rhs}
-    (cert : RecursiveHMUniversal.Certified s found typeCaptures env rhs)
+theorem interpreted {s found typeCaptures env rhs sourceTypes}
+    (cert : RecursiveHMUniversal.Certified s found typeCaptures env rhs sourceTypes)
     {counts caller} (inst : Instance s.counts counts caller)
     (captures : Captured s.counts.captures env) (types : List BoundsTy)
     (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC) :
@@ -87,10 +87,30 @@ def atNode {output path} (node : HMFoundView.AtNode output path) {s typeCaptures
   rw [interpreted cert inst captures types lc] at checked
   exact checked
 
+def atInterpretedNode {output path} (node : HMFoundView.AtNode output path)
+    {s typeCaptures env sourceTypes}
+    (cert : RecursiveHMUniversal.Certified s (node.view sourceTypes) typeCaptures
+      env node.inner.stripFound sourceTypes)
+    {counts caller} (inst : Instance s.counts counts caller)
+    (captures : Captured s.counts.captures env) (types : List BoundsTy)
+    (arity : types.length = s.hm.paramCount)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
+    (scope : types.all (boundsScopedBool caller) = true) :
+    HMFoundView.TypedChecked node
+      (fun i => SchemeSpecialization.mapFree
+        (SchemeSpecialization.argument cert.opening.ids (SchemeUse.vector types))
+        (bounds (s.counts.quantified.zip counts) (sourceTypes i)))
+      (s.counts.quantified ++ s.counts.captures) (s.counts.quantified.zip counts) inst.premises
+      (RecursiveHMUniversal.typeEnvironment cert types lc) caller := by
+  have checked := RecursiveHMUniversal.atInterpretedNode node cert inst types arity lc scope
+  rw [interpreted cert inst captures types lc] at checked
+  exact checked
+
 #print axioms fixed
 #print axioms instantiated
 #print axioms opaqueVector
 #print axioms interpreted
 #print axioms atNode
+#print axioms atInterpretedNode
 
 end FHM.Bounds.RecursiveHMEnvironment

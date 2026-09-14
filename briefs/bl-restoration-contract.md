@@ -1660,3 +1660,45 @@ interpretation (including count payloads inside its replacements), then executab
 walker construction and generalized group export. The original universal
 certificate starts at the identity source interpretation, so more-general
 reconciled source annotations cannot simply be shoved into it unchanged.
+
+### Checkpoint 4z — universally specialize reconciled source HM interpretations
+
+`RecursiveHMUniversal.Certified` and `RecursiveHMSigned.Certified` now take an
+explicit source HM interpretation, defaulting to the old identity interpretation
+so existing clients remain compatible. `useInterpreted` transports count payloads
+INSIDE that source interpretation before inserting full caller bounds types.
+The existing `use` remains its identity-source compatibility theorem. Actual RHS
+intervals, inclusion, exact relational HM instances and caller scope are retained.
+
+`HMFoundView.composition` / `specialization` prove the corresponding view at
+every original Ty node. Universal and signed `atInterpretedNode` consume the
+ORIGINAL found node, not a rewritten virtual expression. Their result retains
+the real source-node derivation under the composed source interpretation.
+`RecursiveHMEnvironment` also reconciles the common count environment for these
+nonidentity certificates, keeping the one fixed HM vector per group member.
+
+`RecursiveHMReconciled.fromChecked` / `fromAnnotated` turn genuinely accepted
+symbolic RHS results into universal certificates with their checked source HM
+interpretation intact. Recursive closed-template capture representation and count
+independence remain explicit proof obligations. The annotated factory additionally
+retains the exact decoded written source signature, not merely its HM skeleton.
+
+The 22 reconciliation regressions now include end-to-end symbolic RHS acceptance,
+universal written-signature/exact-original-node specialization, count substitution
+inside source replacements before nested caller insertion, and carried lambda
+annotations using that same interpretation. The caller/callee count-ID collision
+regression preserves outer exact [3,3] and inner caller-owned [n,n]; a loose source
+result demand does not replace the implementation's precise actual interval.
+
+Full 1782-job build and parsed-source regressions pass; scratch HM audit remains
+28 accepted / eight expected rejections / zero failures. Boundary and whitespace
+guards pass. New transport, factory and view proofs use standard Lean axioms only;
+RHS executable inclusion retains the existing bounds solver soundness boundary.
+No new placeholders, axioms or partials; HM/D2, Path R and production unchanged.
+
+Remaining integration is to CONSTRUCT these interpreted RHS derivations with the
+executable recursive walker, jointly accept the complete group, and introduce
+generalized group export. Current factories consume genuine proof-carrying RHS
+results; they do not yet make the existing guarded recursive source decoder accept
+polymorphic annotations or deliver full BL/LSP support. Nested groups under
+universal RHS checking and local HM-polymorphic bindings remain separate work.

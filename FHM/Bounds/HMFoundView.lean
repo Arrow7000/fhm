@@ -86,6 +86,39 @@ private theorem counts_list_blind {a b : Nat → BoundsTy}
 termination_by sizeOf as
 end
 
+mutual
+/-- Outer specialization interprets identities inside the already checked
+    source interpretation, not inside freshly inserted final caller types. -/
+theorem composition (outer inner : Nat → BoundsTy) (τ : Ty) :
+    ty outer (ty inner τ) = ty (fun i => mapFree outer (inner i)) τ := by
+  cases τ with
+  | prim | bvar => rfl
+  | fvar i => exact (bounds_shape outer (inner i)).symm
+  | arrow a b => simp only [ty, composition outer inner a, composition outer inner b]
+  | bl lo hi a =>
+      simpa only [ty, listTy, tys] using congrArg listTy (composition outer inner a)
+  | customTy name as => exact congrArg (Ty.customTy name) (composition_list outer inner as)
+termination_by sizeOf τ
+
+private theorem composition_list (outer inner : Nat → BoundsTy) (as : List Ty) :
+    tys outer (tys inner as) = tys (fun i => mapFree outer (inner i)) as := by
+  cases as with
+  | nil => rfl
+  | cons a as => simp only [tys, composition outer inner a, composition_list outer inner as]
+termination_by sizeOf as
+end
+
+/-- Count-first specialization of source replacements agrees at every HM node
+    with interpreting the original source view. Count payloads remain separate. -/
+theorem specialization (outer source : Nat → BoundsTy)
+    (rows : CountSubstitution.Bindings) (τ : Ty) :
+    ty outer (ty source τ).eraseBounds =
+      ty (fun i => mapFree outer (CountSubstitution.bounds rows (source i))) τ := by
+  rw [erased, composition]
+  apply counts_blind
+  intro i
+  rw [bounds_shape, bounds_shape, CountSubstitution.bounds_shape]
+
 structure AtNode (output : Expr) (path : CorePath) where
   original : Ty
   inner : Expr
@@ -143,6 +176,8 @@ def checkTyped {output path} (node : AtNode output path) (types : Nat → Bounds
 #print axioms erased
 #print axioms bounds_shape
 #print axioms counts_blind
+#print axioms composition
+#print axioms specialization
 #print axioms AtNode.coherent
 #print axioms checkShape
 #print axioms checkTyped
