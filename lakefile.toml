@@ -105,6 +105,7 @@ roots = [
   "FHM.Bounds.CountContract", # Checked count/HM uses require universal RHS certificates and discharged premises
   "FHM.Bounds.CountContractTests", # Certified implementations, caller collisions, scope and premise discharge
   "FHM.Bounds.CountApplication", # RHS-certified contract calls require actual argument bounds and inclusion
+  "FHM.Bounds.CountProposal", # Untrusted direct count proposals; no inversion or captured-coordinate guessing
   "FHM.Bounds.CountApplicationTests", # Real declaration certificates, origin bounds and rejected contract calls
   "FHM.Bounds.CountAlgebra", # Finite composition of simultaneous source-count interpretations
   "FHM.Bounds.InterpretedAnnotation", # Scoped symbolic annotation demands without source rewriting

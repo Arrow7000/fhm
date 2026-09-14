@@ -1,12 +1,14 @@
 import FHM.Bounds.CountContract
 import FHM.Bounds.StructuralApplication
+import FHM.Bounds.CountProposal
 
 /-! # Origin-backed application of an RHS-certified HM/count contract
 
 A contract use is not yet a checked application. The argument must have its own
 derivation, caller-scoped bounds, and semantic inclusion in the specialized
-domain. Exact function/result found payloads are checked separately. Count
-arguments are explicit, finite and scoped; they are not inferred or asserted.
+domain. Exact function/result found payloads are checked separately. Explicit
+or conservatively proposed count arguments must be finite, scoped and usable;
+proposals are not asserted as caller assumptions.
 
 This component applies the certified RHS term, not a recursively assumed
 variable. Group introduction, recursive-call environments, runtime length
@@ -74,7 +76,21 @@ def fromOrigin {env rhs} (c : Certified env rhs) (Δ : List Constraint) (arg : E
       check c Δ arg actual typing functionHM resultHM counts args caller
   | _ => throw "bounds: count application contract has non-arrow body"
 
+/-- Direct count and structural HM proposals are both untrusted. This is an
+    incomplete supported-fragment policy, not arbitrary invariant inference or
+    count principality: every proposed use passes the certified checker. -/
+def infer {env rhs} (c : Certified env rhs) (Δ : List Constraint) (arg : Expr)
+    (actual : BoundsTy) (typing : Derives Δ env arg actual)
+    (functionHM resultHM : Ty) (caller : List Nat) :
+    Except String (Result Δ env rhs arg actual functionHM resultHM caller) := do
+  match c.hm.body with
+  | .arrow pattern _ =>
+      let counts ← CountProposal.propose c.counts.quantified pattern actual
+      fromOrigin c Δ arg actual typing functionHM resultHM counts caller
+  | _ => throw "bounds: count application contract has non-arrow body"
+
 #print axioms check
 #print axioms fromOrigin
+#print axioms infer
 
 end FHM.Bounds.CountApplication

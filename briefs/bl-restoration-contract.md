@@ -717,3 +717,37 @@ Validation after 3u: full HM/Bounds/editor/CLI build passes (1743 jobs). Fresh
 scratch HM audit: 28 accepted / eight expected rejections / zero failures.
 Boundary and whitespace guards pass; no new axioms, placeholders or partial
 definitions were introduced.
+
+2026-09-14, checkpoint 3v: `CountProposal` supplies conservative implicit count
+arguments from directly exposed interval endpoints in the argument's actual
+bounds. Proposal order follows the declaration telescope, captures remain
+untouched, and opaque HM slots do not expose their caller counts as declaration
+coordinates. Repeated coordinates retain the first proposal; every endpoint
+and structural variance obligation is still checked afterward.
+
+Compound-only occurrences explicitly report unsupported arithmetic inversion.
+Coordinates absent from the domain receive zero as a finite proposed witness;
+their premises are still discharged independently, not silently assumed. This
+is a supported-fragment policy, not completeness, principality or arbitrary
+recursive invariant inference.
+
+`CountApplication.infer` sends count proposals and full structural HM proposals
+through the existing certified application path. No scope, finite Nat, premise,
+HM-shape, variance or semantic inclusion check is bypassed. Ordinary source
+application currently has no explicit count-argument syntax, so this supplies a
+needed component for later source-call integration without changing the parser.
+
+Fourteen additional regressions cover implicit Nil/Cons/increment calls, unused
+coordinates, caller count collisions, independently checked premises, direct
+upper endpoints, compound deferral with successful explicit specialization,
+telescope order, captures, opaque slots, conflicting repeated endpoints and an
+infinite endpoint that must not become a Nat argument. The application suite now
+contains 39 cases. The proposal computation requires only standard Lean axioms;
+accepted applications retain the existing positive solver trust.
+
+Validation after 3v: full HM/Bounds/editor/CLI build passes (1744 jobs). Fresh
+scratch HM audit: 28 accepted / eight expected rejections / zero failures.
+Boundary and whitespace guards pass; no new axioms, placeholders or partial
+definitions. Recursive-group/call-environment rules, generalized internal scoped
+lets, matches, production CLI/LSP migration, artifact coherence and runtime
+length soundness remain pending. HM/D2 and bounds-blind Path R remain unchanged.
