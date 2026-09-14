@@ -311,6 +311,22 @@ This closes supported runtime readiness at the canonical CLOSED-root
 checker/report boundary, not the remaining mixed-scope/nested-group language
 rules. The existing static arithmetic-validity oracle remains a separate trust
 boundary; the new runtime theorem/extraction code adds no oracle or proof hole.
+`ScopedBodyDerives` is now the same body judgment indexed by separate free-HM
+and lexical-slot interpretations, plus its count identities/rows. These are
+indices, not fixed inductive parameters: later local generalization must allow
+an RHS to be checked in its own argument/count frame without creating a second
+body language. `BodyDerives` remains the identity-interpreted compatibility
+view used by the current checker. Scope, premise transport and the entire
+runtime fundamental theorem have been generalized in place. A kernel fixture
+proves actual annotated lexical/captured interfaces safe at arbitrary supported
+full types, leaving both written source annotations unchanged.
+
+`RuntimeReady.assuming` and `BodyResult.assuming` preserve proof witnesses under
+established path premises, including all member evidence and complete HM
+vectors. Report bounds, original nodes and presence of runtime proof evidence
+are unchanged. This enables scope/path assembly; it does NOT yet license or
+enable generalized local lets, enclosing captures or nested groups.
+
 Next: generalized locals, enclosing bindings and nested groups, then the general
 artifact/report bridge and CLI/LSP migration. No whole-language BL runtime
 soundness or BL LSP support is claimed yet.

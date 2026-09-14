@@ -228,6 +228,55 @@ theorem generalizedBodyRuntimeSafe (bound free : Runtime.TypeEnv) (σ : Assign)
 
 #print axioms generalizedBodyRuntimeSafe
 
+private def scopedBodySource : Expr :=
+  .lambda (some (.bvar 0)) (.lambda (some (.fvar 90)) (.var 1))
+
+/-- Lexical annotation slots and captured free identities are interpreted
+    independently in the existing body rules; the source annotations stay put. -/
+theorem scopedBodyTyping (types slots : Nat → BoundsTy) :
+    ScopedBodyDerives types slots [] [] [] [] scopedBodySource
+      (.arrow (slots 0) (.arrow (types 90) (slots 0))) := by
+  refine .lambda ?_ (.lambda ?_ (.varMono rfl))
+  · refine ⟨⟨.bvar 0, True.intro, by simp [Synth.BoundsTy.toTy, Ty.eraseBounds]⟩,
+      by simp [ScopedAnnotation.decode, pure, Except.pure], ?_⟩
+    exact SemanticSub.refl _ _
+  · refine ⟨⟨.fvar 90, True.intro, by simp [Synth.BoundsTy.toTy, Ty.eraseBounds]⟩,
+      by simp [ScopedAnnotation.decode, pure, Except.pure], ?_⟩
+    exact SemanticSub.refl _ _
+
+private theorem scopedBodyReady (types slots : Nat → BoundsTy)
+    (lexical : Runtime.Supported (slots 0)) (captured : Runtime.Supported (types 90)) :
+    BodyDerives.RuntimeReady (scopedBodyTyping types slots) := by
+  refine BodyDerives.RuntimeReady.lambda (ann := some (.bvar 0)) ?_ lexical
+    (BodyDerives.RuntimeReady.lambda (ann := some (.fvar 90)) ?_ captured
+      (.varMono (i := 1) rfl lexical))
+  · refine ⟨⟨.bvar 0, True.intro, by simp [Synth.BoundsTy.toTy, Ty.eraseBounds]⟩,
+      by simp [ScopedAnnotation.decode, pure, Except.pure], ?_⟩
+    exact SemanticSub.refl _ _
+  · refine ⟨⟨.fvar 90, True.intro, by simp [Synth.BoundsTy.toTy, Ty.eraseBounds]⟩,
+      by simp [ScopedAnnotation.decode, pure, Except.pure], ?_⟩
+    exact SemanticSub.refl _ _
+
+theorem scopedBodyRuntimeSafe (types slots : Nat → BoundsTy)
+    (lexical : Runtime.Supported (slots 0)) (captured : Runtime.Supported (types 90))
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free) :
+    Runtime.Safe bound free σ (.arrow (slots 0) (.arrow (types 90) (slots 0))) scopedBodySource :=
+  (scopedBodyReady types slots lexical captured).safeClosed bound free σ hb hf (by simp)
+
+example {Δ} (hp : (⟨Δ, []⟩ : ForallProblem).Valid) :
+    BodyDerives.RuntimeReady (runtimePolyTyping.assuming hp) := runtimePolyReady.assuming hp
+
+example {output metadata Δ} (program : ProgramResult output metadata)
+    (hp : (⟨Δ, []⟩ : ForallProblem).Valid) :
+    (program.body.assuming hp).bounds = program.body.bounds ∧
+    (program.body.assuming hp).nodes = program.body.nodes ∧
+    (program.body.assuming hp).runtimeReady.isSome = program.body.runtimeReady.isSome := by
+  simp [BodyResult.assuming]
+
+#print axioms scopedBodyTyping
+#print axioms scopedBodyRuntimeSafe
+
 private def unsupportedIntermediate : Except String Bool := do
   let opaqueName : TyName := ⟨"Opaque"⟩
   let domain := BoundsTy.custom opaqueName []

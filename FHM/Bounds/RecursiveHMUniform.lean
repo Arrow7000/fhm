@@ -601,46 +601,67 @@ private def bodyBranchContext (β : BoundsTy) :
       else .error "bounds: generalized body match scrutinee is neither List nor Bool"
   | _ => .error "bounds: generalized body match scrutinee is neither List nor Bool"
 
-inductive BodyDerives (ids : List Nat) (rows : Bindings) :
+inductive ScopedBodyDerives :
+    (Nat → BoundsTy) → (Nat → BoundsTy) → List Nat → Bindings →
     List Constraint → List BodyBinding → Expr → BoundsTy → Prop where
-  | literal {env p} : BodyDerives ids rows Δ env (.primLit p) (boundInfoOfPrimLit p)
-  | primBinOp {env op} : BodyDerives ids rows Δ env (.primBinOp op) (Typed.primOpBounds op)
-  | nil {env elem} : BodyDerives ids rows Δ env (.ctor nilCtorName) (.list (.lit 0) (.lit 0) elem)
+  | literal {env p} : ScopedBodyDerives types slots ids rows Δ env (.primLit p) (boundInfoOfPrimLit p)
+  | primBinOp {env op} : ScopedBodyDerives types slots ids rows Δ env (.primBinOp op) (Typed.primOpBounds op)
+  | nil {env elem} : ScopedBodyDerives types slots ids rows Δ env (.ctor nilCtorName) (.list (.lit 0) (.lit 0) elem)
   | boolCtor {env name} : BoolBranches.IsCtor name →
-      BodyDerives ids rows Δ env (.ctor name) (.custom boolTyName [])
+      ScopedBodyDerives types slots ids rows Δ env (.ctor name) (.custom boolTyName [])
   | cons {env h t head elem lo hi} :
-      BodyDerives ids rows Δ env h head → BodyDerives ids rows Δ env t (.list lo hi elem) →
-      SemanticSub Δ head elem → BodyDerives ids rows Δ env (.app (.app (.ctor consCtorName) h) t)
+      ScopedBodyDerives types slots ids rows Δ env h head → ScopedBodyDerives types slots ids rows Δ env t (.list lo hi elem) →
+      SemanticSub Δ head elem → ScopedBodyDerives types slots ids rows Δ env (.app (.app (.ctor consCtorName) h) t)
         (.list (.add lo (.lit 1)) (.add hi (.lit 1)) elem)
-  | varMono {env i β} : env[i]? = some (.mono β) → BodyDerives ids rows Δ env (.var i) β
+  | varMono {env i β} : env[i]? = some (.mono β) → ScopedBodyDerives types slots ids rows Δ env (.var i) β
   | varExported {env i s found caller} : env[i]? = some (.exported s) →
-      (used : HMCountScheme.Use s Δ found caller) → BodyDerives ids rows Δ env (.var i) used.bounds
+      (used : HMCountScheme.Use s Δ found caller) → ScopedBodyDerives types slots ids rows Δ env (.var i) used.bounds
   | app {env f arg domain actual result} :
-      BodyDerives ids rows Δ env f (.arrow domain result) → BodyDerives ids rows Δ env arg actual →
-      SemanticSub Δ actual domain → BodyDerives ids rows Δ env (.app f arg) result
+      ScopedBodyDerives types slots ids rows Δ env f (.arrow domain result) → ScopedBodyDerives types slots ids rows Δ env arg actual →
+      SemanticSub Δ actual domain → ScopedBodyDerives types slots ids rows Δ env (.app f arg) result
   | lambda {env ann body param result} :
-      ScopedHMAnnotation.ParamOK BoundsTy.fvar BoundsTy.bvar ids rows Δ ann param →
-      BodyDerives ids rows Δ (.mono param :: env) body result →
-      BodyDerives ids rows Δ env (.lambda ann body) (.arrow param result)
+      ScopedHMAnnotation.ParamOK types slots ids rows Δ ann param →
+      ScopedBodyDerives types slots ids rows Δ (.mono param :: env) body result →
+      ScopedBodyDerives types slots ids rows Δ env (.lambda ann body) (.arrow param result)
   | letMono {env ann rhs body actual result} :
-      ScopedHMAnnotation.BindingOK BoundsTy.fvar BoundsTy.bvar ids rows Δ ann actual →
-      BodyDerives ids rows Δ env rhs actual → BodyDerives ids rows Δ (.mono actual :: env) body result →
-      BodyDerives ids rows Δ env (.letIn ann rhs body) result
+      ScopedHMAnnotation.BindingOK types slots ids rows Δ ann actual →
+      ScopedBodyDerives types slots ids rows Δ env rhs actual → ScopedBodyDerives types slots ids rows Δ (.mono actual :: env) body result →
+      ScopedBodyDerives types slots ids rows Δ env (.letIn ann rhs body) result
   | match_ {env scrut branches result} {ctx : BodyBranchContext} {actuals : Nat → BoundsTy} :
-      BodyDerives ids rows Δ env scrut ctx.bounds → ctx.Covers Δ branches →
+      ScopedBodyDerives types slots ids rows Δ env scrut ctx.bounds → ctx.Covers Δ branches →
       (∀ br ∈ branches, ctx.Pattern br.1) →
       (∀ i br, branches[i]? = some br →
-        BodyDerives ids rows (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2 (actuals i)) →
+        ScopedBodyDerives types slots ids rows (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2 (actuals i)) →
       (∀ i br, branches[i]? = some br → SemanticSub (Δ ++ ctx.refine br.1) (actuals i) result) →
-      BodyDerives ids rows Δ env (.match_ scrut branches) result
+      ScopedBodyDerives types slots ids rows Δ env (.match_ scrut branches) result
   | letRec {output metadata path vectors captures premises bodyTypes bodyResult}
       (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes []) :
       (∀ caller (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
         (scope : ∀ i, BoundsScoped caller (f i))
         (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ [])),
         Members f lc scope g.members) →
-      BodyDerives ids rows Δ (g.exports.map BodyBinding.exported) g.body.stripFound bodyResult →
-      BodyDerives ids rows Δ [] (.letRec g.annotations (g.rhss.map Expr.stripFound) g.body.stripFound) bodyResult
+      ScopedBodyDerives types slots ids rows Δ (g.exports.map BodyBinding.exported) g.body.stripFound bodyResult →
+      ScopedBodyDerives types slots ids rows Δ [] (.letRec g.annotations (g.rhss.map Expr.stripFound) g.body.stripFound) bodyResult
+
+/-- Identity-interpreted compatibility view of the same body judgment. -/
+abbrev BodyDerives := ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar
+
+namespace BodyDerives
+abbrev literal := @ScopedBodyDerives.literal BoundsTy.fvar BoundsTy.bvar
+abbrev primBinOp := @ScopedBodyDerives.primBinOp BoundsTy.fvar BoundsTy.bvar
+abbrev nil := @ScopedBodyDerives.nil BoundsTy.fvar BoundsTy.bvar
+abbrev boolCtor := @ScopedBodyDerives.boolCtor BoundsTy.fvar BoundsTy.bvar
+abbrev cons := @ScopedBodyDerives.cons BoundsTy.fvar BoundsTy.bvar
+abbrev varMono := @ScopedBodyDerives.varMono BoundsTy.fvar BoundsTy.bvar
+abbrev varExported {ids rows Δ env i s found caller}
+    (lookup : env[i]? = some (BodyBinding.exported s)) (used : HMCountScheme.Use s Δ found caller) :
+    BodyDerives ids rows Δ env (.var i) used.bounds := ScopedBodyDerives.varExported lookup used
+abbrev app := @ScopedBodyDerives.app BoundsTy.fvar BoundsTy.bvar
+abbrev lambda := @ScopedBodyDerives.lambda BoundsTy.fvar BoundsTy.bvar
+abbrev letMono := @ScopedBodyDerives.letMono BoundsTy.fvar BoundsTy.bvar
+abbrev match_ := @ScopedBodyDerives.match_ BoundsTy.fvar BoundsTy.bvar
+abbrev letRec := @ScopedBodyDerives.letRec BoundsTy.fvar BoundsTy.bvar
+end BodyDerives
 
 theorem BodyBranchContext.Covers.assuming {ctx : BodyBranchContext} {Δ Δ' branches}
     (h : ctx.Covers Δ branches) (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
@@ -652,9 +673,9 @@ theorem BodyBranchContext.Covers.assuming {ctx : BodyBranchContext} {Δ Δ' bran
 /-- Established caller/path premises transport the ENTIRE generalized body,
     including original source obligations, all match arms and group introduction.
     Callee premises are still discharged, never merely appended as assumptions. -/
-theorem BodyDerives.assuming {ids rows Δ Δ' env e β}
-    (h : BodyDerives ids rows Δ env e β) (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
-    BodyDerives ids rows Δ' env e β := by
+theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
+    (h : ScopedBodyDerives types slots ids rows Δ env e β) (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    ScopedBodyDerives types slots ids rows Δ' env e β := by
   induction h generalizing Δ' with
   | literal => exact .literal
   | primBinOp => exact .primBinOp
@@ -694,8 +715,8 @@ theorem BodyBranchContext.extend_length {ctx : BodyBranchContext} {pat env}
         simp [BodyBranchContext.extend, MatchPattern.bindCount, nilCtorName, consCtorName]
   | bool => rcases pattern with rfl | rfl | rfl <;> rfl
 
-theorem BodyDerives.varsBelow {ids rows Δ env e β}
-    (h : BodyDerives ids rows Δ env e β) : e.varsBelow env.length = true := by
+theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
+    (h : ScopedBodyDerives types slots ids rows Δ env e β) : e.varsBelow env.length = true := by
   induction h with
   | literal | primBinOp | nil | boolCtor => rfl
   | cons _ _ _ ihh iht => simp [Expr.varsBelow, ihh, iht]
@@ -717,13 +738,21 @@ theorem BodyDerives.varsBelow {ids rows Δ env e β}
       apply Runtime.letRec_closed g.rhssScoped
       simpa only [List.length_map, g.exportCount] using ihbody
 
-theorem BodyEnvAt.closes {bound free σ budget env ids rows Δ expr β}
-    (e : BodyEnvAt bound free σ budget env) (h : BodyDerives ids rows Δ env expr β) :
+theorem BodyEnvAt.closes {bound free σ budget env types slots ids rows Δ expr β}
+    (e : BodyEnvAt bound free σ budget env) (h : ScopedBodyDerives types slots ids rows Δ env expr β) :
     (expr.substN 0 e.terms).varsBelow 0 = true := by
   apply Runtime.closing_scoped e.terms e.closed expr 0
   simpa only [Nat.zero_add, e.arity] using h.varsBelow
 
-#print axioms BodyDerives.varsBelow
+#print axioms ScopedBodyDerives.varsBelow
+
+namespace BodyDerives
+theorem assuming {ids rows Δ Δ' env e β} (h : BodyDerives ids rows Δ env e β)
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) : BodyDerives ids rows Δ' env e β :=
+  ScopedBodyDerives.assuming h hp
+theorem varsBelow {ids rows Δ env e β} (h : BodyDerives ids rows Δ env e β) :
+    e.varsBelow env.length = true := ScopedBodyDerives.varsBelow h
+end BodyDerives
 
 theorem BodyEnvAt.listBranch {bound free σ budget env lo hi elem v len name args pat body branches}
     (e : BodyEnvAt bound free σ budget env)
@@ -785,15 +814,16 @@ namespace BodyDerives
 
 /-- Runtime-fragment evidence attached to the existing generalized-body
     derivation. Group evidence covers ALL original source members. -/
-inductive RuntimeReady {ids rows} :
+inductive RuntimeReady :
+    {types slots : Nat → BoundsTy} → {ids : List Nat} → {rows : Bindings} →
     {Δ : List Constraint} → {env : List BodyBinding} → {e : Expr} → {β : BoundsTy} →
-    BodyDerives ids rows Δ env e β → Prop where
+    ScopedBodyDerives types slots ids rows Δ env e β → Prop where
   | literal : RuntimeReady (.literal (p := p))
   | primBinOp : RuntimeReady (.primBinOp (op := op))
   | nil : Runtime.Supported elem → RuntimeReady (.nil (elem := elem))
   | boolCtor (nameOK : BoolBranches.IsCtor name) : RuntimeReady (.boolCtor nameOK)
-  | cons {hh : BodyDerives ids rows Δ env h head}
-      {ht : BodyDerives ids rows Δ env t (.list lo hi elem)}
+  | cons {hh : ScopedBodyDerives types slots ids rows Δ env h head}
+      {ht : ScopedBodyDerives types slots ids rows Δ env t (.list lo hi elem)}
       (sub : SemanticSub Δ head elem) : RuntimeReady hh → RuntimeReady ht →
       RuntimeReady (.cons hh ht sub)
   | varMono (lookup : env[i]? = some (BodyBinding.mono β)) :
@@ -802,25 +832,25 @@ inductive RuntimeReady {ids rows} :
       (used : HMCountScheme.Use s Δ found caller) :
       Runtime.Supported used.bounds → (∀ a ∈ used.types, Runtime.Supported a) →
       RuntimeReady (.varExported lookup used)
-  | app {actual : BoundsTy} {hfn : BodyDerives ids rows Δ env f (.arrow domain result)}
-      {ha : BodyDerives ids rows Δ env arg actual}
+  | app {actual : BoundsTy} {hfn : ScopedBodyDerives types slots ids rows Δ env f (.arrow domain result)}
+      {ha : ScopedBodyDerives types slots ids rows Δ env arg actual}
       (sub : SemanticSub Δ actual domain) : RuntimeReady hfn → RuntimeReady ha →
       RuntimeReady (.app hfn ha sub)
   | lambda {param : BoundsTy}
-      (annOK : ScopedHMAnnotation.ParamOK BoundsTy.fvar BoundsTy.bvar ids rows Δ ann param)
-      {hbody : BodyDerives ids rows Δ (.mono param :: env) body result} :
+      (annOK : ScopedHMAnnotation.ParamOK types slots ids rows Δ ann param)
+      {hbody : ScopedBodyDerives types slots ids rows Δ (.mono param :: env) body result} :
       Runtime.Supported param → RuntimeReady hbody → RuntimeReady (.lambda annOK hbody)
   | letMono {actual : BoundsTy}
-      (annOK : ScopedHMAnnotation.BindingOK BoundsTy.fvar BoundsTy.bvar ids rows Δ ann actual)
-      {hrhs : BodyDerives ids rows Δ env rhs actual}
-      {hbody : BodyDerives ids rows Δ (.mono actual :: env) body result} :
+      (annOK : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann actual)
+      {hrhs : ScopedBodyDerives types slots ids rows Δ env rhs actual}
+      {hbody : ScopedBodyDerives types slots ids rows Δ (.mono actual :: env) body result} :
       RuntimeReady hrhs → RuntimeReady hbody → RuntimeReady (.letMono annOK hrhs hbody)
   | match_ {actuals : Nat → BoundsTy} {ctx : BodyBranchContext}
-      {hs : BodyDerives ids rows Δ env scrut ctx.bounds}
+      {hs : ScopedBodyDerives types slots ids rows Δ env scrut ctx.bounds}
       (coverage : ctx.Covers Δ branches)
       (patterns : ∀ br ∈ branches, ctx.Pattern br.1)
       (bodies : ∀ i br, branches[i]? = some br →
-        BodyDerives ids rows (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2 (actuals i))
+        ScopedBodyDerives types slots ids rows (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2 (actuals i))
       (subs : ∀ i br, branches[i]? = some br →
         SemanticSub (Δ ++ ctx.refine br.1) (actuals i) result) :
       RuntimeReady hs → (∀ i br atIndex, RuntimeReady (bodies i br atIndex)) →
@@ -831,14 +861,14 @@ inductive RuntimeReady {ids rows} :
         (scope : ∀ i, BoundsScoped caller (f i))
         (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ [])),
         Members f lc scope g.members)
-      {hbody : BodyDerives ids rows Δ (g.exports.map BodyBinding.exported) g.body.stripFound result} :
+      {hbody : ScopedBodyDerives types slots ids rows Δ (g.exports.map BodyBinding.exported) g.body.stripFound result} :
       (∀ offset (inside : offset < g.exports.length),
         ScopedDerives.RuntimeReady (g.members.memberAt offset inside).rhs.certificate.implementation.typing) →
       (∀ offset (inside : offset < g.exports.length),
         Runtime.Supported (g.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds) →
       RuntimeReady hbody → RuntimeReady (.letRec g universal hbody)
 
-theorem RuntimeReady.supported {ids rows Δ env e β} {h : BodyDerives ids rows Δ env e β}
+theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBodyDerives types slots ids rows Δ env e β}
     (ready : RuntimeReady h) : Runtime.Supported β := by
   induction ready with
   | literal => cases ‹PrimLitExpr› <;> exact .prim
@@ -856,8 +886,8 @@ theorem RuntimeReady.supported {ids rows Δ env e β} {h : BodyDerives ids rows 
 /-- Fundamental theorem for the supported generalized-body derivation. Closed
     group introduction discharges recursive assumptions from the actual checked
     members, rather than assuming their annotations describe runtime behavior. -/
-theorem RuntimeReady.termAt {ids rows Δ env expr β}
-    {h : BodyDerives ids rows Δ env expr β} (ready : RuntimeReady h)
+theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
+    {h : ScopedBodyDerives types slots ids rows Δ env expr β} (ready : RuntimeReady h)
     (bound free : Runtime.TypeEnv) (σ : Assign)
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free) :
     ∀ budget, (∀ p ∈ Δ, p.Holds σ) → (e : BodyEnvAt bound free σ budget env) →
@@ -979,7 +1009,7 @@ theorem RuntimeReady.termAt {ids rows Δ env expr β}
       intro budget premises e
       have empty : e.terms = [] := List.length_eq_zero_iff.mp e.arity
       rw [empty]
-      rw [Expr.substN_of_closed (BodyDerives.letRec g universal (by assumption)).varsBelow]
+      rw [Expr.substN_of_closed (ScopedBodyDerives.letRec g universal (by assumption)).varsBelow]
       cases budget with
       | zero => unfold Runtime.TermAt; intro steps v _ before; omega
       | succ budget =>
@@ -991,8 +1021,8 @@ theorem RuntimeReady.termAt {ids rows Δ env expr β}
 #print axioms RuntimeReady.supported
 #print axioms RuntimeReady.termAt
 
-theorem RuntimeReady.safeClosed {ids rows Δ expr β}
-    {h : BodyDerives ids rows Δ [] expr β} (ready : RuntimeReady h)
+theorem RuntimeReady.safeClosed {types slots ids rows Δ expr β}
+    {h : ScopedBodyDerives types slots ids rows Δ [] expr β} (ready : RuntimeReady h)
     (bound free : Runtime.TypeEnv) (σ : Assign)
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
     (premises : ∀ p ∈ Δ, p.Holds σ) : Runtime.Safe bound free σ β expr := by
@@ -1003,6 +1033,36 @@ theorem RuntimeReady.safeClosed {ids rows Δ expr β}
   simpa only [Expr.substN_of_closed h.varsBelow] using safe
 
 #print axioms RuntimeReady.safeClosed
+
+/-- Preserve the complete runtime fragment witness when established path
+    premises strengthen the body context. The callee's raw premises, full HM
+    vector and unused slots remain unchanged. -/
+theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
+    {h : ScopedBodyDerives types slots ids rows Δ env expr β} (ready : RuntimeReady h)
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) : RuntimeReady (h.assuming hp) := by
+  induction ready generalizing Δ' with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil elem => exact .nil elem
+  | boolCtor nameOK => exact .boolCtor nameOK
+  | cons sub _ _ ihh iht => exact .cons (sub.assuming hp) (ihh hp) (iht hp)
+  | varMono lookup supported => exact .varMono lookup supported
+  | varExported lookup used supported arguments =>
+      let next : HMCountScheme.Use _ Δ' _ _ :=
+        ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
+          used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
+      exact .varExported lookup next supported arguments
+  | app sub _ _ ihf iha => exact .app (sub.assuming hp) (ihf hp) (iha hp)
+  | lambda annOK param _ ih => exact .lambda (param_assuming annOK hp) param (ih hp)
+  | letMono annOK _ _ ihr ihb => exact .letMono (binding_assuming annOK hp) (ihr hp) (ihb hp)
+  | match_ coverage patterns bodies subs _ _ result ihs ihb =>
+      exact .match_ (coverage.assuming hp) patterns
+        (fun i br atIndex => (bodies i br atIndex).assuming (RecursiveTyping.assuming_append hp))
+        (fun i br atIndex => (subs i br atIndex).assuming (RecursiveTyping.assuming_append hp))
+        (ihs hp) (fun i br atIndex => ihb i br atIndex (RecursiveTyping.assuming_append hp)) result
+  | letRec g universal members demand _ ihb => exact .letRec g universal members demand (ihb hp)
+
+#print axioms RuntimeReady.assuming
 
 end BodyDerives
 
@@ -1016,6 +1076,22 @@ structure BodyResult (ids : List Nat) (rows : Bindings) (caller : List Nat)
   inScope : BoundsScoped caller bounds
   nodes : List Typed.NodeResult
   runtimeReady : Option (PLift (BodyDerives.RuntimeReady typing))
+
+/-- Proof-only context transport keeps the original artifact, all node reports,
+    inferred bounds and runtime witness. No expressions or schemes are rebuilt. -/
+def BodyResult.assuming {ids rows caller Δ Δ' env e}
+    (result : BodyResult ids rows caller Δ env e) (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    BodyResult ids rows caller Δ' env e where
+  hm := result.hm
+  bounds := result.bounds
+  root := result.root
+  shape := result.shape
+  typing := result.typing.assuming hp
+  inScope := result.inScope
+  nodes := result.nodes
+  runtimeReady := result.runtimeReady.map (fun ready => ⟨ready.down.assuming hp⟩)
+
+#print axioms BodyResult.assuming
 
 private def finishBody {ids rows caller Δ env e} (path : CorePath) (hm : Ty) (β : BoundsTy)
     (root : Typed.rootHM? e = some hm.eraseBounds) (typing : BodyDerives ids rows Δ env e.stripFound β)
@@ -1190,10 +1266,12 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
   match e with
   | .found hm (.primLit p) =>
       finishBody path hm (boundInfoOfPrimLit p) rfl (by simpa only [Expr.stripFound] using BodyDerives.literal) []
-        (some ⟨by simpa only [Expr.stripFound] using (@BodyDerives.RuntimeReady.literal ids rows Δ env p)⟩)
+        (some ⟨by simpa only [Expr.stripFound] using
+          (@BodyDerives.RuntimeReady.literal BoundsTy.fvar BoundsTy.bvar ids rows Δ env p)⟩)
   | .found hm (.primBinOp op) =>
       finishBody path hm (Typed.primOpBounds op) rfl (by simpa only [Expr.stripFound] using BodyDerives.primBinOp) []
-        (some ⟨by simpa only [Expr.stripFound] using (@BodyDerives.RuntimeReady.primBinOp ids rows Δ env op)⟩)
+        (some ⟨by simpa only [Expr.stripFound] using
+          (@BodyDerives.RuntimeReady.primBinOp BoundsTy.fvar BoundsTy.bvar ids rows Δ env op)⟩)
   | .found hm (.ctor name) =>
       if hn : name = nilCtorName then
         match hm.eraseBounds with
@@ -1209,14 +1287,14 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
                   pure ⟨by
                     subst name
                     simpa only [Expr.stripFound] using
-                      (@BodyDerives.RuntimeReady.nil ids rows Δ env elem supported.down)⟩)
+                      (@BodyDerives.RuntimeReady.nil BoundsTy.fvar BoundsTy.bvar ids rows Δ env elem supported.down)⟩)
             else throw "bounds: generalized body Nil has a non-List found payload"
         | _ => throw "bounds: generalized body Nil has a non-List found payload"
       else if hb : BoolBranches.IsCtor name then
         finishBody path hm (.custom boolTyName []) rfl
           (by simpa only [Expr.stripFound] using BodyDerives.boolCtor hb) []
           (some ⟨by simpa only [Expr.stripFound] using
-            (@BodyDerives.RuntimeReady.boolCtor ids rows Δ env name hb)⟩)
+            (@BodyDerives.RuntimeReady.boolCtor BoundsTy.fvar BoundsTy.bvar ids rows Δ env name hb)⟩)
       else throw "bounds: unsupported standalone constructor in generalized body"
   | .found hm (.var i) =>
       match hv : env[i]? with
