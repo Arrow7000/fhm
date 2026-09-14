@@ -163,8 +163,8 @@ callee's count telescope. Kernel-checked examples prove identity preserves any
 full type meaning and refute both nonempty-Nil claims and a callback whose actual
 beta reduct drops a singleton to Nil. These are proofs, not PASS/FAIL printing.
 
-The remaining ordinary-rule obligations are primitive operators, closing-term
-substitution/environment lemmas, and deriving selected-arm semantic premises
+The remaining ordinary-rule obligations are closing-term
+substitution/environment lemmas and deriving selected-arm semantic premises
 from the static refined branch environment. Scheme/group introduction still
 needs its fundamental proof. Compatibility hypotheses are NOT counted as proofs
 that checker derivations establish them. No CLI/LSP acceptance was enabled.
@@ -174,6 +174,18 @@ Validation of the runtime compatibility/specialization batch:
 dependency uses only standard Lean axioms, without the arithmetic oracle or
 `sorryAx`; there are no new axioms, placeholders or partial definitions. The HM
 audit remains 36 files / 28 accepted / eight expected rejects / zero failures.
+
+All four primitive operators now satisfy their runtime arrow meanings through
+the actual Core delta rules, including partially applied functions and saturated
+Bool comparisons. `ScopedDerives.varsBelow` proves lexical scope directly from
+the existing RHS derivation, with exact two-field Cons and zero-field Bool branch
+opening. Neither proof adds another typing judgment or acceptance engine.
+
+`Runtime.closing_compose` proves that closing outer captures then substituting
+local contents equals one combined Core substitution, including beneath match
+binders and mutual groups. `Runtime.closing_scoped` proves the actual substituted
+term retains exactly the remaining lexical scope. Inserted terms must be closed;
+neither scope nor capture avoidance is asserted from HM-shape agreement.
 
 2026-09-13, checkpoint 1: added semantic subtyping with reflexivity,
 transitivity and premise-strengthening, plus the legacy derivation bridge.
