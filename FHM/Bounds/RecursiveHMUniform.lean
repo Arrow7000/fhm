@@ -1,5 +1,6 @@
 import FHM.Bounds.RecursiveHMCaller
 import FHM.Bounds.HMDeclaredGroup
+import FHM.Bounds.HMDeclaredCoordinates
 
 /-! Every recursive RHS specializes through ONE uniform full group HM map.
 Member counts specialize first. Checked common captures remove that count
@@ -259,7 +260,9 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
         match hm.eraseBounds with
         | .customTy n [a] =>
             if n = listTyName then
-              let elem ← Typed.shapeTop a
+              let elem ← match expected with
+                | some (.list _ _ elem) => pure elem
+                | _ => Typed.shapeTop a
               finishBody path hm (.list (.lit 0) (.lit 0) elem) rfl
                 (by subst name; simpa only [Expr.stripFound] using BodyDerives.nil) []
             else throw "bounds: generalized body Nil has a non-List found payload"
@@ -292,8 +295,10 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
       | _ => throw "bounds: generalized body lambda has a non-arrow found payload"
   | .found hm (.app (.found partialHM (.app (.found ctorHM (.ctor name)) head)) tail) =>
       if hn : name = consCtorName then
-        let h ← walkBody ids rows caller Δ env (path ++ [.appFun, .appArg]) head schemes
+        let headHint := match expected with | some (.list _ _ elem) => some elem | _ => none
+        let h ← walkBody ids rows caller Δ env (path ++ [.appFun, .appArg]) head schemes headHint
         let t ← walkBody ids rows caller Δ env (path ++ [.appArg]) tail schemes
+          (some (.list (.lit 0) .inf h.bounds))
         match ht : t.bounds with
         | .list lo hi elem =>
             let _ ← match BinderBridge.equalTy ctorHM.eraseBounds (.arrow h.hm.eraseBounds (.arrow t.hm.eraseBounds t.hm.eraseBounds)) with
@@ -393,6 +398,26 @@ def checkBody {output metadata path vectors captures premises bodyTypes}
       BodyDerives.letRec g (fun _ f lc scope fixed => allMembers g.members f lc scope fixed) body.typing)
     (memberNodes g.members ++ body.nodes)
 
+/-- A source-linked closed ROOT recursive program, not a general program-prefix
+    or nested-group adapter. The body certificate is indexed by the exact input
+    artifact, while retaining the actual all-member coordinate assembly. -/
+structure ProgramResult (output : Expr) (metadata : Scope.Metadata) where
+  assembled : HMDeclaredCoordinates.Result output metadata [] [] [] [] []
+  body : BodyResult [] [] [] [] [] output
+
+/-- No supplied opaque vectors, reconstructed RHSs or legacy fallback. Source
+    annotations and real mono-local machine facts keep their distinct roles.
+    `expected` is synthesis guidance, not an asserted result inclusion. -/
+def checkClosedProgram (output : Expr) (metadata : Scope.Metadata)
+    (schemes : BinderSchemeMap := []) (expected : Option BoundsTy := none) :
+    Except String (ProgramResult output metadata) := do
+  let assembled ← HMDeclaredCoordinates.check output metadata [] (schemes := schemes)
+  let body ← checkBody assembled.checked [] [] [] [] schemes expected
+  have sourceEq : output = .found assembled.checked.originalHM
+      (.letRec assembled.checked.annotations assembled.checked.rhss assembled.checked.body) := by
+    simpa only [Expr.atCorePath, Option.some.injEq] using assembled.checked.source
+  pure ⟨assembled, by simpa only [sourceEq] using body⟩
+
 #print axioms fromCertified
 #print axioms demand_instance
 #print axioms Result.assuming
@@ -401,5 +426,6 @@ def checkBody {output metadata path vectors captures premises bodyTypes}
 #print axioms allMembers
 #print axioms walkBody
 #print axioms checkBody
+#print axioms checkClosedProgram
 
 end FHM.Bounds.RecursiveHMUniform

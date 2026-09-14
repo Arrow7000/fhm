@@ -2309,6 +2309,34 @@ HM/D2, Path R and production BL guards are unchanged. Next is a source-linked
 automatic closed-program entry point, then enclosing scopes/generalized locals,
 matches, full/deferred spines and product integration; no full-language claim.
 
+### Checkpoint 4at — automatic exact-input closed-program certification
+
+`RecursiveHMUniform.checkClosedProgram` accepts an original root recursive HM
+artifact, count metadata and real binder facts. It automatically reconciles
+coordinates, checks ALL RHSs, introduces their generalized exports and checks
+the original body. `ProgramResult.body.typing` is indexed by the exact INPUT
+artifact's erased term, with the checked assembly retained alongside it; the
+root source equality rewrites the entire dependent result, not isolated fields.
+This adapter covers CLOSED ROOT groups only, not ordinary enclosing program
+prefixes, generalized locals or nested groups. Expected bounds are synthesis
+guidance, not a fabricated final inclusion theorem. Production BL stays guarded.
+
+The actual Int/Char body regression now uses this automatic entry point. A
+forged original root payload rejects independently of correct members/body.
+The new nested singleton case revealed a precision gap: the body slice initially
+widened the element of `Cons head Nil` via HM-only `shapeTop`. It now follows the
+existing RHS walker's head-origin/Nil guidance, independently checking original
+HM shape and caller count scope. Full nested singleton bounds survive exported
+HM insertion, and every original occurrence remains reported exactly once.
+
+Full `lake build FHM FHMBounds fhm` passes (1805 jobs), with all seven uniform/
+body/program regressions green; HM audit remains 28 accepted / eight expected
+rejects / zero failures from this batch. Boundary/whitespace pass. No new files,
+placeholders, partial defs or axioms; exact-input acceptance retains the existing
+solver trust boundary. HM/D2 and Path R are unchanged. Remaining gates are mixed
+enclosing scopes/generalized locals, matches, full/deferred origins, product
+integration, wider runtime/artifact proofs and consolidation of replaced routes.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
