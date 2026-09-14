@@ -135,6 +135,8 @@ roots = [
   "FHM.Bounds.HMDeclaredRHS", # Actual original source-site RHS checking and universally signed explicit-environment certificates
   "FHM.Bounds.HMDeclaredRHSTests", # Real annotated and more-general recursive RHSs through actual checking and universal signed original-node use
   "FHM.Bounds.HMDeclaredMutualTests", # Both more-general mutual members, shared opaque HM vector, distinct count telescopes and caller-count insertion
+  "FHM.Bounds.HMDeclaredGroup", # Ordered actual universal RHS acceptance with shared HM proposals and one checked common recursive environment
+  "FHM.Bounds.HMDeclaredGroupTests", # Three real members, distinct arities, source count independence and fail-closed whole-family assembly
   "FHM.Bounds.RecursiveHMAnnotation", # Executable count-first/full-HM source annotation and parameter obligations
   "FHM.Bounds.RecursiveHMAnnotationTests", # Named HM identities, count namespace collisions, scope and actual-inclusion failures
   "FHM.Bounds.RecursiveHMWalk", # Interpreted original-node traversal constructs actual RHS proofs and fixed-HM recursive calls
