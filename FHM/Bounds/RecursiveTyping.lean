@@ -1,6 +1,7 @@
 import FHM.Bounds.RecursiveContract
 import FHM.Bounds.ScopedTyping
 import FHM.Bounds.ListBranches
+import FHM.Bounds.BoolBranches
 
 /-! # Scoped bounds typing with explicit recursive contract assumptions
 
@@ -69,6 +70,8 @@ inductive Derives : List Nat → Bindings → List Constraint →
   | literal {env p} : Derives ids rows Δ env (.primLit p) (boundInfoOfPrimLit p)
   | primBinOp {env op} : Derives ids rows Δ env (.primBinOp op) (Typed.primOpBounds op)
   | nil {env elem} : Derives ids rows Δ env (.ctor nilCtorName) (.list (.lit 0) (.lit 0) elem)
+  | boolCtor {env name} : BoolBranches.IsCtor name →
+      Derives ids rows Δ env (.ctor name) (.custom boolTyName [])
   | cons {env h t head elem lo hi} :
       Derives ids rows Δ env h head → Derives ids rows Δ env t (.list lo hi elem) →
       SemanticSub Δ head elem →
@@ -98,6 +101,13 @@ inductive Derives : List Nat → Bindings → List Constraint →
         (branchEnv br.1 lo hi elem env) br.2 (actuals i)) →
       (∀ i br, branches[i]? = some br →
         SemanticSub (Δ ++ branchRefine br.1 lo hi) (actuals i) result) →
+      Derives ids rows Δ env (.match_ scrut branches) result
+  | matchBool {env scrut branches result} {actuals : Nat → BoundsTy} :
+      Derives ids rows Δ env scrut (.custom boolTyName []) →
+      BoolBranches.Covers branches →
+      (∀ br ∈ branches, BoolBranches.Pattern br.1) →
+      (∀ i br, branches[i]? = some br → Derives ids rows Δ env br.2 (actuals i)) →
+      (∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) →
       Derives ids rows Δ env (.match_ scrut branches) result
   | letRec {env : List Binding} {contracts : List Declared}
       {anns : List (Option PolyTy)} {rhss : List Expr} {body result}
@@ -176,6 +186,7 @@ theorem assuming {ids rows Δ Δ' env e β} (h : Derives ids rows Δ env e β)
   | literal => exact .literal
   | primBinOp => exact .primBinOp
   | nil => exact .nil
+  | boolCtor hn => exact .boolCtor hn
   | cons _ _ hs ihh iht => exact .cons (ihh hp) (iht hp) (hs.assuming hp)
   | varMono hv => exact .varMono hv
   | varRecursive hv inst hu =>
@@ -189,6 +200,10 @@ theorem assuming {ids rows Δ Δ' env e β} (h : Derives ids rows Δ env e β)
       exact .matchList (ihscrut hp) (hc.assuming hp) hpat
         (fun i br hb => ihbranches i br hb (assuming_append hp))
         (fun i br hb => (hsub i br hb).assuming (assuming_append hp))
+  | matchBool _ hc hpat _ hsub ihscrut ihbranches =>
+      exact .matchBool (ihscrut hp) hc hpat
+        (fun i br hb => ihbranches i br hb hp)
+        (fun i br hb => (hsub i br hb).assuming hp)
   | letRec hanns hrhss hIndependent hcapture hall hAnn hSub _ _ ihbody =>
       exact .letRec hanns hrhss hIndependent hcapture hall hAnn hSub (ihbody hp)
 

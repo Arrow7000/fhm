@@ -67,6 +67,11 @@ private def unannotatedCopy (body : String := "(h + 0) :: f t") : String :=
   "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
   "  \\xs -> match xs with | [] -> [] | h :: t -> " ++ body ++ "\n"
 
+private def filterSource (body : String := "if h < 0 then f t else h :: f t")
+    (lower : String := "0") : String :=
+  "let f : {n : Nat} BL n n Int -> BL " ++ lower ++ " n Int =\n" ++
+  "  \\xs -> match xs with | [] -> [] | h :: t -> " ++ body ++ "\n"
+
 private def provenanceRejected (modify : TypedLowered → TypedLowered) : Except String Unit := do
   let a ← artifact (selfSource ++ "f []\n")
   let _ ← RecursiveFound.synthNodes (modify a)
@@ -160,6 +165,28 @@ private def cases : List (String × Bool) := [
     "  \\(xs : BL n n Int) -> " ++
     "(\\(g : BL n n Int -> BL (n + 1) (n + 1) Int) -> " ++
     "(\\(ignored : List Int) -> xs) (f xs)) (\\ys -> ys)\nf []\n")) "interval inclusion"),
+  ("parsed recursive filtering checks empty input", returns
+    (run (filterSource ++ "f []\n")) "BL 0 0 Int"),
+  ("parsed recursive filtering exports zero-to-input-length bounds", returns
+    (run (filterSource ++ "f [1, 2, 3]\n")) "BL 0 3 Int"),
+  ("parsed conditional copying preserves exact length under List paths", returns
+    (run (filterSource "if h < 0 then h :: f t else h :: f t" "n" ++ "f [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed filtering cannot claim every element is retained", fails
+    (run (filterSource "if h < 0 then f t else h :: f t" "n" ++ "f []\n")) "interval inclusion"),
+  ("parsed filtering cannot duplicate beyond its upper bound", fails
+    (run (filterSource "if h < 0 then 1 :: (h :: f t) else f t" ++ "f []\n")) "interval inclusion"),
+  ("parsed Bool conditions do not invent count refinements", fails (run (
+    "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+    "  \\(xs : BL n n Int) -> if True then [] else " ++
+    "(\\(ignored : List Int) -> xs) (f xs)\nf []\n")) "interval inclusion"),
+  ("parsed ordinary scalar recursion can return Bool", returns (run (
+    "let f : Int -> Bool = \\n -> if n < 1 then True else f (n - 1)\nf 3\n")) "Bool"),
+  ("parsed mutually recursive filters retain independent count scopes", returns (run (
+    "let f : {n : Nat} BL n n Int -> BL 0 n Int =\n" ++
+    "  \\xs -> match xs with | [] -> [] | h :: t -> if h < 0 then g t else h :: g t\n" ++
+    "let g : {n : Nat} BL n n Int -> BL 0 n Int =\n" ++
+    "  \\xs -> match xs with | [] -> [] | h :: t -> if h < 0 then h :: f t else f t\n" ++
+    "f [1, 2]\n")) "BL 0 2 Int"),
   ("missing source origins reject report adapter", fails (provenanceRejected (fun a =>
     {a with lowering := {a.lowering with coreOrigins := []}})) "incomplete typed provenance"),
   ("duplicate source origins reject report adapter", fails (provenanceRejected (fun a =>
@@ -169,9 +196,11 @@ private def cases : List (String × Bool) := [
     {a with sourceTypes := []})) "incomplete typed provenance")]
 
 def main : IO Unit := do
+  let mut failures := 0
   for (name, ok) in cases do
     IO.println s!"{if ok then "PASS" else "FAIL"}: {name}"
-    unless ok do throw (IO.userError s!"parsed recursive bounds regression: {name}")
+    unless ok do failures := failures + 1
+  unless failures = 0 do throw (IO.userError s!"{failures} parsed recursive bounds regressions failed")
 
 #eval main
 

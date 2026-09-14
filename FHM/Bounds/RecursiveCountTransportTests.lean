@@ -154,6 +154,37 @@ private theorem every_match_instance : ∀ args caller (inst : Instance simple a
     subst c
     simp [fixed, simple] at hi
 
+private def chooseLoop : Expr := .lambda none (.match_ (.ctor BoolBranches.trueCtorName)
+  [(.named BoolBranches.trueCtorName 0, .var 0), (.named BoolBranches.falseCtorName 0, .var 0)])
+
+private theorem symbolic_choose : Derives [7] [] [] [.recursive fixed] chooseLoop simple.body := by
+  apply Derives.lambda (ann := none) True.intro
+  apply Derives.matchBool (actuals := fun _ => .list n n (.prim .int))
+    (Derives.boolCtor (.inl rfl))
+  · exact .full (by simp) (by simp)
+  · intro br hb
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hb
+    rcases hb with rfl | rfl <;> simp [BoolBranches.Pattern]
+  · intro i br hb
+    cases i with
+    | zero => simp only [List.getElem?_cons_zero, Option.some.injEq] at hb; subst br; exact .varMono rfl
+    | succ i =>
+        cases i with
+        | zero => simp only [List.getElem?_cons_succ, List.getElem?_cons_zero, Option.some.injEq] at hb; subst br; exact .varMono rfl
+        | succ i => simp at hb
+  · intro i br _; exact SemanticSub.refl _ _
+
+private theorem every_choose_instance : ∀ args caller (inst : Instance simple args caller),
+    Derives [7] ([7].zip args) inst.premises [.recursive fixed] chooseLoop
+      (bounds ([7].zip args) simple.body) := by
+  apply universal_rhs (s := simple) symbolic_choose
+  · simp [chooseLoop, NoGroups]
+  · intro γ hγ; simp at hγ
+  · intro c hc i hi
+    simp only [List.mem_singleton, Binding.recursive.injEq] at hc
+    subst c
+    simp [fixed, simple] at hi
+
 example {ids rows Δ Δ' env scrut branches β}
     (h : Derives ids rows Δ env (.match_ scrut branches) β)
     (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
@@ -167,5 +198,6 @@ def main : IO Unit := do
 #eval main
 #print axioms every_loop_instance
 #print axioms every_match_instance
+#print axioms every_choose_instance
 
 end FHM.Bounds.RecursiveCountTransportTests

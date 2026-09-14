@@ -79,6 +79,7 @@ roots = [
   "FHM.Bounds.BranchMergeTests", # Solver-free interval, higher-order variance and shape boundary regressions
   "FHM.Bounds.ListBranches", # Semantic finite-length List coverage and proved Nil/Cons/tail refinements
   "FHM.Bounds.ListBranchesTests", # Coverage arity/path conditions and predecessor reconstruction regressions
+  "FHM.Bounds.BoolBranches", # Solver-independent full/wildcard Bool constructor coverage
   "FHM.Bounds.Scheme",    # Count-scheme executable/declarative correspondence
   "FHM.Bounds.SchemeTests", # Count scope, arity and finite-argument regressions
   "FHM.Bounds.CountSubstitution", # Capture-preserving semantic count substitution
@@ -117,6 +118,7 @@ roots = [
   "FHM.Bounds.RecursiveCountTransportTests", # Symbolic recursive RHS universality, protected counts and capture boundaries
   "FHM.Bounds.RecursiveWalk", # Found-driven symbolic RHS checking under fixed-HM recursive assumptions
   "FHM.Bounds.RecursiveMatchTests", # Typed List coverage, paths, common contract results and arrow-domain safety
+  "FHM.Bounds.RecursiveBoolTests", # Typed Bool constructor coverage, conditionals and nested occurrence reports
   "FHM.Bounds.RecursiveRHS", # Checked symbolic RHSs supply universal typing/annotation/contract premises
   "FHM.Bounds.RecursiveRHSTests", # Actual recursive artifacts, universal certificates and bad contract rejection
   "FHM.Bounds.RecursiveGroup", # Whole-group acceptance discharges every universal RHS obligation and checks body
