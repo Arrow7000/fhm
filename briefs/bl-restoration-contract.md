@@ -579,3 +579,36 @@ HM audit: 28 accepted / eight expected rejections / zero failures. Boundary and
 whitespace checks pass. New proof targets use standard Lean axioms only, with
 no positive-solver dependency, new axioms, placeholders or partial definitions.
 HM/Path R and CLI/LSP routes are unchanged.
+
+2026-09-14, checkpoint 3r: `CountContract.Certified` separates an RHS-certified
+HM/count contract from merely decoded annotation metadata. It requires exact
+body agreement, a well-scoped count telescope, an environment containing only
+explicit captured counts, and universal RHS typing at its HM scheme. Quantified
+count substitution is proved to leave that captured environment unchanged.
+
+`CountContract.use` and executable `check` specialize a certified declaration's
+counts before inserting arbitrary caller HM-slot bounds. The call independently
+checks count arity/finiteness/scope, retained captures, instantiated premises,
+the complete relational HM instance, slot local closure and slot count scope.
+Successful results carry the specialized RHS derivation, final HM shape and
+caller count scope. No shape-only List arguments or unproved premises are used.
+Origin typing for supplied HM bounds remains the consuming application's duty.
+
+Nineteen executable regressions use formal implementation certificates, not
+invented production binder maps. They exercise independent uses, caller count
+collisions, symbolic scope, finite Nat boundaries, missing/extra/wrong HM slots,
+premise discharge/rejection and an actual captured outer-count environment.
+The certificate and `use` theorem require only standard Lean axioms; `check`
+inherits the established positive solver trust solely for premise discharge.
+
+This is not yet declaration synthesis: typed artifacts cannot manufacture the
+required universal RHS certificate just by decoding their annotations. The
+existing fragment's carried annotation obligations remain ground-only; scoped
+symbolic declarations need a corresponding judgement/interpretation boundary
+before launch. Recursion, fresh unknown inference, branch coverage, runtime
+soundness and CLI/LSP integration remain separate. No HM/Path R rule changed.
+
+Validation after 3r: full HM/Bounds/editor/CLI build passes (1735 jobs), with 256
+BL regressions. Fresh scratch HM audit: 28 accepted / eight expected rejections /
+zero failures. Boundary and whitespace guards pass; no new axioms, placeholders
+or partial definitions were introduced.
