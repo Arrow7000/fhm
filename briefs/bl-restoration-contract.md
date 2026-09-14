@@ -841,3 +841,44 @@ RHS checking and universal group-certificate construction are next integration
 targets; narrower annotation specialization, fixed polymorphic HM openings,
 exit HM generalization, matches, CLI/LSP migration, artifact coherence and
 runtime length soundness remain separate. HM/D2 and Path R are unchanged.
+
+2026-09-14, checkpoint 4c: `RecursiveWalk` consumes found children to check
+symbolic RHSs under fixed-HM recursive assumptions. Direct recursive variable
+applications use argument-origin count proposals and the checked conditional
+application rule. Literal/list origins, primitive operations, interpreted lambda
+annotations, monomorphic internal lets and ordinary applications retain their
+obligations. Every success carries a derivation, count scope, exact root shape,
+Core-path reports and the explicit fragment proof needed by count transport.
+
+Standalone count-polymorphic recursive variables explicitly require an argument
+origin; generalized internal HM lets, nested groups, matches and unsupported
+origins remain explicit errors. There is no fallback to a legacy synthesizer or
+independent recursive HM scheme instantiation.
+
+`RecursiveRHS.check` reconciles the declaration telescope at its exact Core site,
+checks the actual found RHS, its carried binding annotation and its declared
+contract, then validates captured monomorphic bounds and recursive capture
+freshness. `Certified` stores all of that evidence. Its solver-free `use` bridge
+supplies universal typing, retained annotation and contract-inclusion premises
+for every scoped finite count instance using the proved symbolic transport.
+Certificates remain conditional on the simultaneous assumption environment;
+checking one RHS alone does NOT accept a group or export an assumed contract.
+
+Ten executable regressions use actual lowered/inferred recursive artifacts.
+They generate universal certificates, accept count-polymorphic calls at n+1
+when the surrounding obligations permit them, reject incorrect recursive length
+claims and nested annotations, enforce exact metadata/capture boundaries, retain
+valid-HM specialization deferral, and check both mutually recursive RHSs under
+the same environment at differing recursive counts. Successful single-member
+tests also check exactly-once logical Core-path report coverage; that remains an
+executable check, not formal artifact coherence.
+
+Validation after 4c: full HM/Bounds/editor/CLI build passes (1753 jobs). Fresh
+scratch HM audit: 28 accepted / eight expected rejections / zero failures.
+Boundary and whitespace guards pass. Certificate specialization requires only
+standard Lean axioms; executable inclusion checks retain positive solver trust.
+No new axioms, placeholders or partial definitions; legacy Bounds placeholders
+are unchanged. Whole-group certificate assembly/introduction and group-body
+checking are next. Narrower annotation specialization, fixed polymorphic HM
+openings, exit HM generalization, matches, CLI/LSP migration, artifact coherence
+and runtime length soundness remain separate. HM/D2 and Path R are unchanged.
