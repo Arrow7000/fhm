@@ -111,6 +111,9 @@ roots = [
   "FHM.Bounds.RecursiveVariable", # Fixed-HM recursive assumption uses and origin-backed count calls
   "FHM.Bounds.RecursiveCountTransport", # Caller count transport protects callee telescopes and fixed captures
   "FHM.Bounds.RecursiveCountTransportTests", # Symbolic recursive RHS universality, protected counts and capture boundaries
+  "FHM.Bounds.RecursiveWalk", # Found-driven symbolic RHS checking under fixed-HM recursive assumptions
+  "FHM.Bounds.RecursiveRHS", # Checked symbolic RHSs supply universal typing/annotation/contract premises
+  "FHM.Bounds.RecursiveRHSTests", # Actual recursive artifacts, universal certificates and bad contract rejection
   "FHM.Bounds.RecursiveContractTests", # Fixed HM/count boundary, conditional calls and formal group obligations
   "FHM.Bounds.CountApplicationTests", # Real declaration certificates, origin bounds and rejected contract calls
   "FHM.Bounds.CountAlgebra", # Finite composition of simultaneous source-count interpretations
