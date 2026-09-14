@@ -1,4 +1,5 @@
 import FHM.Bounds.HMDeclaredRHS
+import FHM.Bounds.RecursiveHMEnvironment
 import FHM.Bounds.Found
 
 namespace FHM.Bounds.HMDeclaredMutualTests
@@ -61,14 +62,20 @@ private def actual : Except String Bool := do
         simp [b1, b2, HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme] at hi
     let cert1 := HMDeclaredRHS.certify c1 checked1 represented fresh1
     let cert2 := HMDeclaredRHS.certify c2 checked2 represented fresh2
+    let captured1 ← RecursiveHMEnvironment.checkCaptured []
+      (env.map (mapBinding c1.interpretation c1.interpretationLC))
+    let captured2 ← RecursiveHMEnvironment.checkCaptured []
+      (env.map (mapBinding c2.interpretation c2.interpretationLC))
     let counts1 ← c1.interface.scheme.counts.instantiate [.lit 3] [7]
     let counts2 ← c2.interface.scheme.counts.instantiate [.lit 3] [7]
     if ha1 : [arg].length = d1.annotation.paramCount then
       if ha2 : [arg].length = d2.annotation.paramCount then
-        let used1 := RecursiveHMSigned.atScopedNode d1.node cert1 counts1 [arg] ha1 argLC (by decide)
-        let used2 := RecursiveHMSigned.atScopedNode d2.node cert2 counts2 [arg] ha2 argLC (by decide)
-        let after1 := RecursiveHMUniversal.interpretedEnvironment cert1.implementation [.lit 3] [arg] argLC
-        let after2 := RecursiveHMUniversal.interpretedEnvironment cert2.implementation [.lit 3] [arg] argLC
+        let used1 := RecursiveHMEnvironment.atScopedSignedNode d1.node cert1 counts1 captured1.down
+          [arg] ha1 argLC (by decide)
+        let used2 := RecursiveHMEnvironment.atScopedSignedNode d2.node cert2 counts2 captured2.down
+          [arg] ha2 argLC (by decide)
+        let after1 := RecursiveHMUniversal.typeEnvironment cert1.implementation [arg] argLC
+        let after2 := RecursiveHMUniversal.typeEnvironment cert2.implementation [arg] argLC
         let expected := BoundsTy.arrow (.list (.lit 3) (.lit 3) arg) (.list (.lit 3) (.lit 3) arg)
         pure (used1.typed.actual.pretty == expected.pretty && used2.typed.actual.pretty == expected.pretty &&
           vectors after1 == [[arg.pretty], [arg.pretty]] && vectors after2 == vectors after1 &&
@@ -80,7 +87,29 @@ private def actual : Except String Bool := do
     else throw "test: first member did not retain one source HM slot"
   else throw "test: mutual members do not share their opaque HM opening"
 
+private def fixedCapture : Except String Bool := do
+  let template ← HMCountScheme.decode (signature 7) [7] []
+  let found := Synth.BoundsTy.toTy (HMCountScheme.opened template [arg])
+  let fixed ← RecursiveHMContract.fix template found [arg]
+  let c : Contract := ⟨template, found, fixed⟩
+  match RecursiveHMEnvironment.checkCaptured [] [.recursive c] with
+  | .ok _ => throw "test: member-local count hidden in a fixed HM argument passed common capture checking"
+  | .error _ =>
+      match RecursiveHMEnvironment.checkCaptured [7] [.recursive c] with
+      | .ok _ => pure true
+      | .error message => throw message
+
 def main : IO Unit := do
+  match fixedCapture with
+  | .ok true => IO.println "PASS: full fixed recursive HM arguments require their inner counts to be explicit common captures"
+  | .ok false => throw (IO.userError "fixed HM capture checking failed")
+  | .error message => throw (IO.userError message)
+  match RecursiveHMEnvironment.checkCaptured [] [.mono arg] with
+  | .ok _ => throw (IO.userError "member-local counts cannot be treated as common environment captures")
+  | .error _ => IO.println "PASS: common-environment scope checking rejects a member-local count in a mono capture"
+  match RecursiveHMEnvironment.checkCaptured [7] [.mono arg] with
+  | .ok _ => IO.println "PASS: explicitly captured full count-bearing mono type passes common-environment scope checking"
+  | .error message => throw (IO.userError message)
   match actual with
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "mutual source-site universal specialization lost bounds/vector/path coherence")

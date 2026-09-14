@@ -2079,3 +2079,33 @@ member slot vectors with the common solved HM interface, consuming all member
 certificates together and exporting generalized bindings to body checking.
 Enclosing lexical declared interfaces, generalized local lets, nested groups
 and full/deferred application spines remain guarded; production BL LSP is later.
+
+### Checkpoint 4al — scoped node evidence in the SAME common environment
+
+`RecursiveHMEnvironment.interpreted` now works with arbitrary source lexical-slot
+interfaces as well as free interpretations. The existing captured-vector count
+reconciliation proof is reused, not duplicated or assumed. `atScopedNode` and
+`atScopedSignedNode` retain actual original-node evidence and the written source
+obligation in the SAME common environment with only uniform full HM transport;
+member count instantiation does not rewrite closed callee templates or its
+captured fixed vector.
+
+`capturedBool`/`capturedBool_sound`/`checkCaptured` independently validate the
+required premise on actual mono captures and FULL fixed recursive HM arguments.
+Counts in CLOSED callee telescopes are not caller-vector counts and are ignored.
+The check is performed BEFORE inserting final caller HM types; a vector carrying
+member-local counts cannot silently be treated as invariant under specialization.
+
+The real mutual-source regression now obtains checked captured-vector evidence
+for both interpreted environments and consumes scoped signed node results in
+their common type-only environments. Full fixed argument vectors and caller-owned
+inner counts remain equal. Additional regressions reject member-local counts in
+mono/fixed-vector captures and accept explicitly captured count-bearing types.
+
+Full 1799-job build passes; scratch HM audit 28 accepted / eight expected rejects /
+zero failures; boundary and whitespace guards pass. New scope-check and scoped
+common-environment proofs use standard Lean axioms, with no new placeholders,
+partials or solver axiom. HM/D2, Path R and production guards remain unchanged.
+Next structural work is still the arbitrary-group member-vector reconciliation,
+combined acceptance and generalized body/export rule; enclosing lexical declared
+interfaces, generalized local lets, nested groups and full spines remain guarded.
