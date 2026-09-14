@@ -13,15 +13,17 @@ namespace FHM.Bounds.SchemeVariable
 open SchemeTyping
 
 structure Result (Δ : List Constraint) (env : List Binding) (i : Nat)
-    (found : Ty) (scope : List Nat) where
+    (found : Ty) (scope : List Nat) (args : List BoundsTy) where
   bounds : BoundsTy
   derivation : Derives Δ env (.var i) bounds
   shape : Synth.BoundsTy.toTy bounds = found.eraseBounds
   countScope : ScopedScheme.BoundsScoped scope bounds
+  selected : env[i]? = some (.mono bounds) ∨
+    ∃ s, env[i]? = some (.poly s) ∧ bounds = s.instantiate args ∧ s.Arguments args
 
 def check (Δ : List Constraint) (env : List Binding) (i : Nat)
     (found : Ty) (args : List BoundsTy) (scope : List Nat) :
-    Except String (Result Δ env i found scope) := do
+    Except String (Result Δ env i found scope args) := do
   match lookup : env[i]? with
   | none => throw "bounds: variable outside scheme-aware bounds environment"
   | some (.mono β) =>
@@ -30,7 +32,7 @@ def check (Δ : List Constraint) (env : List Binding) (i : Nat)
         | none => throw "bounds: monomorphic variable disagrees with found payload"
         | some shape => pure shape
       if hc : ScopedScheme.boundsScopedBool scope β = true then
-        pure ⟨β, .varMono lookup, shape.down, ScopedScheme.boundsScopedBool_sound hc⟩
+        pure ⟨β, .varMono lookup, shape.down, ScopedScheme.boundsScopedBool_sound hc, .inl lookup⟩
       else throw "bounds: monomorphic variable counts are outside caller scope"
   | some (.poly s) =>
       let use ← BinderBridge.instantiate s.hm found
@@ -51,7 +53,8 @@ def check (Δ : List Constraint) (env : List Binding) (i : Nat)
                 (fun _ _ h => SchemeUse.vector_shape shapes.down h)
             pure ⟨s.instantiate args, .varPoly lookup arguments, shape,
               TypeSubstitution.inScope (SchemeUse.vector args)
-                (ScopedScheme.boundsScopedBool_sound hb) (SchemeUse.vector_scope ha)⟩
+                (ScopedScheme.boundsScopedBool_sound hb) (SchemeUse.vector_scope ha),
+              .inr ⟨s, lookup, rfl, arguments⟩⟩
           else throw "bounds: captured scheme counts are outside caller scope"
         else throw "bounds: supplied argument counts are outside caller scope"
       else throw "bounds: supplied HM argument contains an enclosing bound slot"
