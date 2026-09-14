@@ -1,6 +1,7 @@
 import FHM.Bounds.HMReconciliation
 import FHM.Bounds.RecursiveHMUniversal
 import FHM.Bounds.RecursiveHMSigned
+import FHM.Bounds.RecursiveHMWalk
 
 /-! Checked symbolic RHS results become universal certificates without losing
 their original source HM interpretation. Closed recursive templates still need
@@ -61,5 +62,34 @@ def fromAnnotated {output path node schemes site annotation quantified captures 
   ⟨interface, fromChecked checked rhs represented countFresh⟩
 
 #print axioms fromAnnotated
+
+structure LocatedChecked {output path node schemes site s captures}
+    (checked : @HMReconciliation.Checked output path node schemes site s captures)
+    (env : List Binding) where
+  rhs : HMReconciliation.RHSChecked checked env
+  nodes : List Typed.NodeResult
+
+/-- Construct the symbolic derivation by traversing the exact original found
+    RHS, rather than requiring a caller-supplied proof at an identity opening.
+    The source demand guides checking, but actual bounds and inclusion remain
+    separate. Unsupported traversal cases reject with no legacy fallback. -/
+def checkLocated {output path node schemes site s captures}
+    (checked : @HMReconciliation.Checked output path node schemes site s captures)
+    (env : List Binding) : Except String (LocatedChecked checked env) := do
+  let interpretedEnv := env.map (mapBinding checked.interpretation checked.interpretationLC)
+  let walked ← RecursiveHMWalk.walk checked.interpretation
+    (s.counts.quantified ++ s.counts.captures) [] (s.counts.quantified ++ s.counts.captures)
+    s.counts.premises interpretedEnv path (.found node.original node.inner) schemes
+    (some checked.opening.bounds)
+  let derivation : Derives checked.interpretation (s.counts.quantified ++ s.counts.captures) []
+      s.counts.premises interpretedEnv node.inner.stripFound walked.bounds := by
+    simpa only [Expr.stripFound] using walked.derivation
+  let typed ← HMFoundView.checkTyped node checked.interpretation
+    (s.counts.quantified ++ s.counts.captures) [] s.counts.premises interpretedEnv
+    (s.counts.quantified ++ s.counts.captures) walked.bounds derivation
+  let inclusion ← Typed.subtype s.counts.premises typed.actual checked.opening.bounds
+  pure ⟨⟨typed, inclusion.down⟩, walked.nodes⟩
+
+#print axioms checkLocated
 
 end FHM.Bounds.RecursiveHMReconciled
