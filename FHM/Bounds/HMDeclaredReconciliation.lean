@@ -109,6 +109,7 @@ structure Checked {output site} (d : Declaration output site)
     (ScopedHMInterpretation.AtNode.view d.node
       (argument flexible (SchemeUse.vector arguments)) (slotsFor site signatureIds))
     (d.node.original :: guardedTypes d typeCaptures)
+  openingIds : opening.ids = signatureIds
 
 def Checked.interpretation {output site d quantified captures premises typeCaptures}
     (c : @Checked output site d quantified captures premises typeCaptures) : Nat → BoundsTy :=
@@ -133,6 +134,28 @@ theorem Checked.interpretationLC {output site d quantified captures premises typ
       | none => simp only [SchemeUse.vector, ha, Option.getD_none, Synth.BoundsTy.toTy]; exact .prim
       | some a => simpa only [SchemeUse.vector, ha, Option.getD_some] using
           c.argumentsLC a (List.mem_of_getElem? ha)
+
+theorem Checked.signatureIdentityFixed {output site d quantified captures premises typeCaptures}
+    (c : @Checked output site d quantified captures premises typeCaptures)
+    {i : Nat} (slot : i ∈ c.signatureIds) : c.interpretation i = .fvar i := by
+  simp [Checked.interpretation, argument, List.idxOf?_eq_none_iff.mpr (c.newIdentities i slot)]
+
+theorem Checked.interpretationScope {output site d quantified captures premises typeCaptures}
+    (c : @Checked output site d quantified captures premises typeCaptures) :
+    ∀ i, BoundsScoped (quantified ++ captures) (c.interpretation i) := by
+  intro i
+  cases h : c.flexible.idxOf? i with
+  | none => simp [Checked.interpretation, argument, h, BoundsScoped]
+  | some slot => simpa only [Checked.interpretation, argument, h] using
+      SchemeUse.vector_scope c.argumentsScope slot
+
+/-- Fixed recursive arguments retain every exact source coordinate, including
+    vacuous forall slots. This equality is needed for common-group assembly. -/
+theorem Checked.fixedTypes {output site d quantified captures premises typeCaptures}
+    (c : @Checked output site d quantified captures premises typeCaptures) :
+    (RecursiveHMContract.fromOpaque c.opening).types = c.signatureIds.map BoundsTy.fvar := by
+  change c.opening.ids.map BoundsTy.fvar = c.signatureIds.map BoundsTy.fvar
+  rw [c.openingIds]
 
 /-- Propose specialization in the correct direction: original solved RHS
     identities may stand for complete types in the narrower source ceiling.
@@ -181,9 +204,11 @@ def check {output site} (d : Declaration output site) (quantified captures : Lis
               have newIds : ∀ i ∈ signatureIds, i ∉ flexible := by
                 intro i hi
                 simpa [List.contains_iff_mem] using List.all_eq_true.mp hf i hi
-              pure ⟨interface, original, originalShape.down, hslots, flexible, hd, fromOriginal, guardedIds,
-                arguments, ha, (fun a hm => (Ty.bvarsBelow_iff _).mp (List.all_eq_true.mp hlc a hm)),
-                hs, signatureIds, newIds, opening⟩
+              if hi : opening.ids = signatureIds then
+                pure ⟨interface, original, originalShape.down, hslots, flexible, hd, fromOriginal, guardedIds,
+                  arguments, ha, (fun a hm => (Ty.bvarsBelow_iff _).mp (List.all_eq_true.mp hlc a hm)),
+                  hs, signatureIds, newIds, opening, hi⟩
+              else throw "bounds: declared RHS opening changed source HM identities"
             else throw "bounds: declared RHS replacement counts escape source signature scope"
           else throw "bounds: declared RHS replacements contain enclosing HM slots"
         else throw "bounds: declared RHS replacement vector has wrong arity"
@@ -194,6 +219,9 @@ def check {output site} (d : Declaration output site) (quantified captures : Lis
 #print axioms locate
 #print axioms Checked.capturesFixed
 #print axioms Checked.interpretationLC
+#print axioms Checked.signatureIdentityFixed
+#print axioms Checked.interpretationScope
+#print axioms Checked.fixedTypes
 #print axioms check
 
 end FHM.Bounds.HMDeclaredReconciliation
