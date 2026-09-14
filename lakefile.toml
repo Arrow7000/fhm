@@ -77,6 +77,8 @@ roots = [
   "FHM.Bounds.SemanticTests", # Solver-free variance/containment regressions
   "FHM.Bounds.BranchMerge", # Proved structural upper/lower branch candidates with contravariant arrow domains
   "FHM.Bounds.BranchMergeTests", # Solver-free interval, higher-order variance and shape boundary regressions
+  "FHM.Bounds.ListBranches", # Semantic finite-length List coverage and proved Nil/Cons/tail refinements
+  "FHM.Bounds.ListBranchesTests", # Coverage arity/path conditions and predecessor reconstruction regressions
   "FHM.Bounds.Scheme",    # Count-scheme executable/declarative correspondence
   "FHM.Bounds.SchemeTests", # Count scope, arity and finite-argument regressions
   "FHM.Bounds.CountSubstitution", # Capture-preserving semantic count substitution

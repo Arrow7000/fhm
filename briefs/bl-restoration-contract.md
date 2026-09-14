@@ -981,3 +981,33 @@ branch typing are still needed. Annotated recursive functions additionally need
 branch results checked against their common declared result under each path's
 assumptions; an unconditional interval union alone can lose the correlation
 needed for an exact length-preserving contract. HM/D2 and Path R are unchanged.
+
+### Checkpoint 4g — semantic List coverage and path arithmetic
+
+`ListBranches.Covers` expresses List coverage using arithmetic validity rather
+than executable verdicts. `Covers.sound` proves that every finite length admitted
+by the interval has an appropriate proper-arity Nil/Cons branch or wildcard.
+The executable checker constructs that evidence and rejects unsupported coverage;
+the legacy coverage relation has a one-way semantic bridge retaining its existing
+positive-verdict trust. This is the intended List coverage specification for the
+new typed match layer, not a second enabled product-level pass.
+
+Coverage transports through finite count substitution with its premises, without
+another solver verdict. Constructor arithmetic proves Nil/Cons path refinements,
+predecessor tail containment, and reconstruction of the original interval only
+under the nonempty path premise. That premise is essential at zero because
+`pred 0 = 0`. Tail interpretation commutes with count substitution.
+
+Eighteen executable regressions exercise full/wildcard/single-constructor
+coverage, incorrect arities/names, symbolic path evidence, infinity, tail lengths
+and the truncated-predecessor counterexample. The specification and arithmetic
+proofs use only standard Lean axioms; executable coverage retains positive
+solver trust. Full HM/Bounds/editor/CLI build passes (1761 jobs); scratch HM audit
+remains 28 accepted / eight expected rejections / zero failures. Boundary and
+whitespace guards pass; no new axioms, placeholders or partial definitions.
+
+These are finite-length arithmetic/coverage components. They do not yet connect
+interval membership to all Core runtime values, introduce bounds derivations for
+match expressions, or enable matches in the found walker. Branch typing and
+count transport through matches, contract-guided result checking, HM annotation
+opening/specialization, exit generalization and unified product wiring remain.
