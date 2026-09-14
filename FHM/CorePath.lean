@@ -71,6 +71,64 @@ decreasing_by
        simp only [Prod.mk.sizeOf_spec] at hsz
        omega)
 
+/-- Source-relative descent composes with an already located logical node.
+    Empty paths retain `.found` payloads; nonempty descent remains transparent.
+    This lets runtime member proofs identify an actual original group RHS. -/
+theorem Expr.atCorePath_append (e : Expr) : ∀ basePath suffix,
+    e.atCorePath (basePath ++ suffix) = (e.atCorePath basePath).bind (fun node => node.atCorePath suffix) := by
+  induction e using Expr.rec_strong with
+  | primLit | primBinOp | var | ctor =>
+      intro basePath suffix
+      cases basePath with
+      | nil => simp only [List.nil_append, Expr.atCorePath, Option.bind_some]
+      | cons step rest => cases step <;> simp [Expr.atCorePath]
+  | lambda ann body ih =>
+      intro basePath suffix
+      cases basePath with
+      | nil => simp only [List.nil_append, Expr.atCorePath, Option.bind_some]
+      | cons step rest => cases step <;> simp [Expr.atCorePath, ih]
+  | app fn arg ihf iha =>
+      intro basePath suffix
+      cases basePath with
+      | nil => simp only [List.nil_append, Expr.atCorePath, Option.bind_some]
+      | cons step rest => cases step <;> simp [Expr.atCorePath, ihf, iha]
+  | letIn ann rhs body ihr ihb =>
+      intro basePath suffix
+      cases basePath with
+      | nil => simp only [List.nil_append, Expr.atCorePath, Option.bind_some]
+      | cons step rest => cases step <;> simp [Expr.atCorePath, ihr, ihb]
+  | found ty inner ih =>
+      intro basePath suffix
+      cases basePath with
+      | nil => simp only [List.nil_append, Expr.atCorePath, Option.bind_some]
+      | cons step rest => simpa only [List.cons_append, Expr.atCorePath] using ih (step :: rest) suffix
+  | match_ scrut branches ihs ihb =>
+      intro basePath suffix
+      cases basePath with
+      | nil => simp only [List.nil_append, Expr.atCorePath, Option.bind_some]
+      | cons step rest =>
+          cases step <;> try simp [Expr.atCorePath, ihs]
+          rename_i index
+          cases atIndex : branches[index]? with
+          | none => simp [Expr.atCorePath, atIndex]
+          | some br =>
+              simpa [Expr.atCorePath, atIndex] using
+                ihb br.1 br.2 (List.mem_of_getElem? atIndex) rest suffix
+  | letRec ann rhss body ihr ihb =>
+      intro basePath suffix
+      cases basePath with
+      | nil => simp only [List.nil_append, Expr.atCorePath, Option.bind_some]
+      | cons step rest =>
+          cases step <;> try simp [Expr.atCorePath, ihb]
+          rename_i index
+          cases atIndex : rhss[index]? with
+          | none => simp [Expr.atCorePath, atIndex]
+          | some rhs =>
+              simpa [Expr.atCorePath, atIndex] using
+                ihr rhs (List.mem_of_getElem? atIndex) rest suffix
+
+#print axioms Expr.atCorePath_append
+
 /-- A binder-producing position in Core. Several source binders can point into
     one node (a recursive group), and pattern compilation can duplicate a
     capture site. -/

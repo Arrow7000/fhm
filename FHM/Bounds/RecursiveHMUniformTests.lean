@@ -62,6 +62,18 @@ private def actual : Except String Bool := do
   let env := g.checked.interfaces.contracts.map Binding.recursive ++ []
   let fixed ← RecursiveHMEnvironment.checkTemplateFixed argument env
   let all := RecursiveHMUniform.allMembers g.checked.members argument argumentLC argumentScope fixed.down
+  for offset in List.finRange g.checked.exports.length do
+    let selected := g.checked.members.memberAt offset.val offset.isLt
+    if selected.sourceIndex != offset.val ||
+        !selected.member.declaration.node.inner.stripFound.varsBelow g.checked.rhss.length then
+      throw "test: total universal-member selection lost original source order or group scope"
+    let counts := selected.member.quantified.map (fun _ => Count.lit 3)
+    let inst ← selected.rhs.certificate.interface.scheme.counts.instantiate counts [7]
+    let result := all.memberAt offset.val offset.isLt counts inst
+    let bounds := (RecursiveHMUniform.atNode selected.member.declaration.node
+      selected.rhs.certificate.implementation result).actual
+    if !(match bounds with | .arrow _ _ | .prim .int => true | _ => false) then
+      throw "test: ordered universal-member selection lost its actual specialized RHS proof"
   exercise g.checked.members all
 
 private def changedCapture : Except String Bool := do

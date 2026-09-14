@@ -186,9 +186,33 @@ def MemberChecked.certificate {output metadata path index captures premises type
       (ScopedHMInterpretation.AtNode.view p.declaration.node p.reconciled.interpretation BoundsTy.bvar)
       (p.declaration.node.original :: guardedTypes p.declaration typeCaptures)
       env p.declaration.node.inner.stripFound p.reconciled.interpretation BoundsTy.bvar := by
-  have h := HMDeclaredRHS.certify p.reconciled checked.rhs checked.represented checked.countFresh
+  let h := HMDeclaredRHS.certify p.reconciled checked.rhs checked.represented checked.countFresh
   have he := RecursiveHMEnvironment.typesFixed p.reconciled.interpretationLC checked.stable
-  simpa only [he, slotsFor] using h
+  -- Preserve source/template/opening data definitionally. Only the proof
+  -- fields mentioning the environment need transport; casting the entire
+  -- certificate hides otherwise stable projections behind an equality recursor.
+  refine ⟨p.reconciled.interface, {
+    opening := p.reconciled.opening
+    actual := h.implementation.actual
+    shape := h.implementation.shape
+    actualScope := h.implementation.actualScope
+    inclusion := h.implementation.inclusion
+    typing := ?_
+    typeFresh := ?_
+    countFresh := ?_ }⟩
+  · simpa only [he, slotsFor] using h.implementation.typing
+  · simpa only [he] using h.implementation.typeFresh
+  · simpa only [he] using h.implementation.countFresh
+
+theorem MemberChecked.certificateScheme {output metadata path index captures premises typeCaptures env}
+    {p : Member output metadata path index captures premises typeCaptures} (checked : MemberChecked p env) :
+    checked.certificate.interface.scheme = p.contract.template := by
+  rfl
+
+theorem MemberChecked.certificateOpeningIds {output metadata path index captures premises typeCaptures env}
+    {p : Member output metadata path index captures premises typeCaptures} (checked : MemberChecked p env) :
+    checked.certificate.implementation.opening.ids = p.reconciled.opening.ids := by
+  rfl
 
 inductive CheckedMembers {output metadata path captures premises typeCaptures}
     (env : List Binding) : {index : Nat} → {vectors : List (List Nat)} →
@@ -226,18 +250,33 @@ structure Selected {output metadata path captures premises typeCaptures env inde
   rhs : MemberChecked member env
   position : sourceIndex = index + offset
   selection : ms.exports[offset]? = some rhs.certificate.interface.scheme
+  contractSelection : ps.contracts[offset]? = some member.contract
+
+/-- Total proof-side selection at a valid exit position. The source member,
+    actual RHS certificate, generalized export and fixed recursive contract
+    are selected together; outside-the-group rejection remains in `select`. -/
+def CheckedMembers.memberAt {output metadata path captures premises typeCaptures env index vectors}
+    {ps : Interfaces output metadata path captures premises typeCaptures index vectors}
+    (ms : CheckedMembers env ps) (offset : Nat) (inside : offset < ms.exports.length) : Selected ms offset :=
+  match ms, offset with
+  | .nil, _ => False.elim (by simp [CheckedMembers.exports] at inside)
+  | .cons (p := p) head _, 0 => ⟨index, p, head, by simp, rfl, rfl⟩
+  | .cons _ rest, offset + 1 =>
+      let tail := rest.memberAt offset (by simpa [CheckedMembers.exports] using inside)
+      ⟨tail.sourceIndex, tail.member, tail.rhs, by have h := tail.position; omega,
+        tail.selection, tail.contractSelection⟩
 
 def CheckedMembers.select {output metadata path captures premises typeCaptures env index vectors}
     {ps : Interfaces output metadata path captures premises typeCaptures index vectors}
     (ms : CheckedMembers env ps) (offset : Nat) : Except String (Selected ms offset) := do
   match ms, offset with
   | .nil, _ => throw "bounds: binding is outside the exported recursive group"
-  | .cons (p := p) head _, 0 => pure ⟨index, p, head, by simp, rfl⟩
+  | .cons (p := p) head _, 0 => pure ⟨index, p, head, by simp, rfl, rfl⟩
   | .cons _ rest, offset + 1 =>
       let tail ← rest.select offset
       pure ⟨tail.sourceIndex, tail.member, tail.rhs, by
         have h := tail.position
-        omega, tail.selection⟩
+        omega, tail.selection, tail.contractSelection⟩
 
 private def checkMembers {output metadata path captures premises typeCaptures index vectors}
     (ps : Interfaces output metadata path captures premises typeCaptures index vectors)
@@ -276,6 +315,22 @@ theorem Checked.memberCount {output metadata path vectors captures premises oute
     g.interfaces.contracts.length = g.rhss.length :=
   g.interfaces.length.trans g.complete
 
+/-- A member's certified RHS is the RHS at its source index in this exact
+    original group. The proof composes logical paths; it does not reconcile
+    structurally similar RHS expressions after elaboration. -/
+theorem Checked.memberRhs {output metadata path vectors captures premises outerTypes outerEnv}
+    (g : Checked output metadata path vectors captures premises outerTypes outerEnv)
+    {index typeCaptures} (p : Member output metadata path index captures premises typeCaptures) :
+    g.rhss[index]? = some (.found p.declaration.node.original p.declaration.node.inner) := by
+  have rhsPath := HMDeclaredReconciliation.SourceAt.rhsPath p.declaration.source
+  have pathEq : path ++ [.letRecRhs index] = p.declaration.path := Option.some.inj rhsPath
+  have descent := Expr.atCorePath_append output path [.letRecRhs index]
+  rw [g.source] at descent
+  simp only [Expr.atCorePath, Option.bind_some] at descent
+  have located := (congrArg (fun q => output.atCorePath q) pathEq).trans p.declaration.node.located
+  cases atIndex : g.rhss[index]? <;> rw [atIndex] at descent <;>
+    simpa using descent.symm.trans located
+
 def Checked.exports {output metadata path vectors captures premises outerTypes outerEnv}
     (g : Checked output metadata path vectors captures premises outerTypes outerEnv) : List HMCountScheme.Scheme :=
   g.members.exports
@@ -283,6 +338,36 @@ def Checked.exports {output metadata path vectors captures premises outerTypes o
 theorem Checked.exportCount {output metadata path vectors captures premises outerTypes outerEnv}
     (g : Checked output metadata path vectors captures premises outerTypes outerEnv) :
     g.exports.length = g.rhss.length := g.members.exportCount.trans g.memberCount
+
+theorem Checked.memberAtRhs {output metadata path vectors captures premises outerTypes outerEnv}
+    (g : Checked output metadata path vectors captures premises outerTypes outerEnv)
+    (offset : Nat) (inside : offset < g.exports.length) :
+    let selected := g.members.memberAt offset inside
+    g.rhss[offset]? = some (.found selected.member.declaration.node.original
+      selected.member.declaration.node.inner) := by
+  let selected := g.members.memberAt offset inside
+  have sourceRhs := g.memberRhs selected.member
+  simpa only [selected.position, Nat.zero_add] using sourceRhs
+
+/-- Every actual erased RHS of a closed checked group has exactly the group's
+    lexical slots. ALL-member certification discharges the scope premise of
+    simultaneous runtime closure, without guessing scope from final HM types. -/
+theorem Checked.rhssScoped {output metadata path vectors captures premises outerTypes}
+    (g : Checked output metadata path vectors captures premises outerTypes []) :
+    ∀ rhs ∈ g.rhss.map Expr.stripFound,
+      rhs.varsBelow (g.rhss.map Expr.stripFound).length = true := by
+  intro rhs member
+  obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
+  obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp originalMember
+  obtain ⟨inside, _⟩ := List.getElem?_eq_some_iff.mp atIndex
+  have exitInside : i < g.exports.length := by rw [g.exportCount]; exact inside
+  let selected := g.members.memberAt i exitInside
+  have sourceRhs := g.memberAtRhs i exitInside
+  have originalEq := Option.some.inj (atIndex.symm.trans sourceRhs)
+  rw [originalEq]
+  have scope := selected.rhs.certificate.implementation.typing.varsBelow
+  simpa only [Expr.stripFound, List.length_map, List.length_append, List.length_nil,
+    Nat.add_zero, g.memberCount] using scope
 
 structure ExportedUse {output metadata path vectors captures premises outerTypes outerEnv}
     (g : Checked output metadata path vectors captures premises outerTypes outerEnv)
@@ -334,9 +419,15 @@ def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
 
 #print axioms checkConsistent
 #print axioms MemberChecked.certificate
+#print axioms MemberChecked.certificateScheme
+#print axioms MemberChecked.certificateOpeningIds
 #print axioms Checked.memberCount
+#print axioms Checked.memberRhs
 #print axioms CheckedMembers.select
+#print axioms CheckedMembers.memberAt
 #print axioms Checked.exportCount
+#print axioms Checked.memberAtRhs
+#print axioms Checked.rhssScoped
 #print axioms Checked.checkExportedUse
 #print axioms check
 
