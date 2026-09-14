@@ -178,6 +178,59 @@ private def bodyCallerPremises (established : Bool) : Except String Bool := do
     [.exported s, .mono (.list (count 7) (count 7) (.prim .int))] [] e []
   pure (result.bounds.pretty == (BoundsTy.list (count 7) (count 7) (.prim .int)).pretty)
 
+private def fullBodySpine (kind : Nat := 0) (badFirst : Bool := false)
+    (partialCall : Bool := false) (forgedPrefix : Bool := false) : Except String Bool := do
+  let list (n : Count) (elem : Ty) := Ty.bl (.solid n) (.solid n) elem
+  let σ : PolyTy := if kind == 2 then ⟨1, .arrow (.bvar 0) (.arrow (.bvar 0) (.bvar 0))⟩
+    else if kind == 1 then
+      ⟨1, .arrow (list (.add (count 7) (.lit 1)) (.bvar 0))
+        (.arrow (list (count 7) (.bvar 0)) (list (count 7) (.bvar 0)))⟩
+    else ⟨2, .arrow (list (count 7) (.bvar 0))
+      (.arrow (list (count 8) (.bvar 1)) (list (count 8) (.bvar 1)))⟩
+  let singleton (p : PrimLitExpr) : Expr :=
+    .app (.app (.ctor consCtorName) (.primLit p)) (.ctor nilCtorName)
+  let double (p : PrimLitExpr) : Expr :=
+    .app (.app (.ctor consCtorName) (.primLit p)) (singleton p)
+  let first := if kind == 1 && !badFirst then double (.int 1) else singleton (.int 1)
+  let second := if kind == 0 then double (.char 'a') else
+    if kind == 2 then double (.int 2) else singleton (.int 2)
+  let firstCall := Expr.app (.var 0) first
+  let source := Expr.letRec [some σ] [.lambda none (.lambda none (.var 0))]
+    (if partialCall then firstCall else .app firstCall second)
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let a ← match inferFound ctors source with
+    | some a => pure a | none => throw "test: full generalized spine HM inference failed"
+  let metadata : Scope.Metadata :=
+    if kind == 2 then {} else
+      { telescopes := [⟨.letRec [] 0, if kind == 1 then [(⟨"n"⟩, 7)] else [(⟨"n"⟩, 7), (⟨"m"⟩, 8)]⟩] }
+  let output := if forgedPrefix then
+    match a.output with
+    | .found root (.letRec anns rhss (.found hm (.app (.found _ prefixInner) arg))) =>
+        .found root (.letRec anns rhss (.found hm (.app (.found (.prim .int) prefixInner) arg)))
+    | e => e
+    else a.output
+  let program ← checkClosedProgram output metadata a.binderSchemes
+  let exact := match program.body.bounds with
+    | .list lo hi (.prim p) => lo.eval (fun _ => 0) == .ofNat (if kind == 0 then 2 else 1) &&
+        hi.eval (fun _ => 0) == .ofNat (if kind == 0 then 2 else 1) &&
+        p == (if kind == 0 then .char else .int)
+    | _ => false
+  pure (exact && exactlyOnce (logicalCorePaths output) (program.body.nodes.map (·.path)))
+
+private def fullBodyCapture : Except String Bool := do
+  let list (elem : Ty) := Ty.bl (.solid (count 7)) (.solid (count 7)) elem
+  let s ← HMCountScheme.decode ⟨2, .arrow (list (.bvar 0)) (.arrow (list (.bvar 1)) (list (.bvar 1)))⟩ [7] []
+  let int := BoundsTy.list (count 7) (count 7) (.prim .int)
+  let char := BoundsTy.list (count 7) (count 7) (.prim .char)
+  let first := BoundsTy.list (.lit 1) (.lit 1) int
+  let second := BoundsTy.list (.lit 1) (.lit 1) char
+  let a := Synth.BoundsTy.toTy first
+  let b := Synth.BoundsTy.toTy second
+  let e := Expr.found b (.app (.found (.arrow b b)
+    (.app (.found (.arrow a (.arrow b b)) (.var 0)) (.found a (.var 1)))) (.found b (.var 2)))
+  let result ← walkBody [] [] [7] [] [.exported s, .mono first, .mono second] [] e []
+  pure (result.bounds.pretty == second.pretty && exactlyOnce (logicalCorePaths e) (result.nodes.map (·.path)))
+
 def main : IO Unit := do
   match actual with
   | .ok true => IO.println "PASS: every actual member universally specializes through one full group HM map with permuted slots and distinct count telescopes"
@@ -250,6 +303,25 @@ def main : IO Unit := do
         throw (IO.userError s!"wrong caller-premise rejection: {message}")
       IO.println "PASS: exported calls cannot simply append unestablished callee count premises"
   | .ok _ => throw (IO.userError "generalized body assumed an unestablished callee premise")
+  for kind in [0, 1] do
+    match fullBodySpine kind with
+    | .ok true => IO.println s!"PASS: full generalized body spine {kind} uses later HM/count origins and checks every original application frame"
+    | .error message => throw (IO.userError message)
+    | .ok false => throw (IO.userError "full generalized body spine lost result bounds or exact original-node coverage")
+  for (result, part, name) in [
+      (fullBodySpine 1 (badFirst := true), "inclusion", "later count origins cannot hide a false earlier compound-domain obligation"),
+      (fullBodySpine 2, "inclusion", "one repeated full HM slot checks every argument's inner List bounds"),
+      (fullBodySpine (partialCall := true), "later argument origin", "partial exported calls cannot guess unsupplied count coordinates"),
+      (fullBodySpine (forgedPrefix := true), "original found payload", "every intermediate original found payload is independently checked")] do
+    match result with
+    | .error message =>
+        unless (message.splitOn part).length > 1 do throw (IO.userError s!"wrong spine rejection ({name}): {message}")
+        IO.println s!"PASS: {name}"
+    | .ok _ => throw (IO.userError s!"accepted invalid generalized body spine: {name}")
+  match fullBodyCapture with
+  | .ok true => IO.println "PASS: one whole-spine count instantiation cannot capture caller counts inside either full HM argument"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "whole-spine specialization captured caller counts or dropped original nodes")
 
 #eval main
 

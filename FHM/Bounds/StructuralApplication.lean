@@ -40,6 +40,27 @@ def propose (pattern actual : BoundsTy) (arity : Nat) : Except String (List Boun
   pure ((List.range arity).map fun slot =>
     ((uses.find? (fun row => row.1 == slot)).map Prod.snd).getD (.prim .unit))
 
+private def collectArguments (contract : BoundsTy) (actuals : List BoundsTy) :
+    Option (List (Nat × BoundsTy)) :=
+  match actuals with
+  | [] => some []
+  | actual :: rest =>
+      match contract with
+      | .arrow domain result => do
+          pure ((← collect domain actual) ++ (← collectArguments result rest))
+      | _ => none
+
+/-- One untrusted HM vector for a whole supplied spine, including slots whose
+    first actual origin is a later argument. Repeated slots keep their first
+    proposal; EVERY domain still needs independent semantic inclusion. -/
+def proposeArguments (contract : BoundsTy) (actuals : List BoundsTy) (arity : Nat) :
+    Except String (List BoundsTy) := do
+  let uses ← match collectArguments contract actuals with
+    | some uses => pure uses
+    | none => throw "bounds: unsupported full-spine HM proposal shape or excess arguments"
+  pure ((List.range arity).map fun slot =>
+    ((uses.find? (fun row => row.1 == slot)).map Prod.snd).getD (.prim .unit))
+
 structure Result (Δ : List Constraint) (env : List Binding) (i : Nat) (arg : Expr)
     (functionHM resultHM : Ty) (scope : List Nat) where
   domain : BoundsTy
