@@ -1871,3 +1871,45 @@ transport and regression proofs use only standard Lean axioms. No new solver
 axiom, placeholder or partial; HM/D2, Path R and production guards unchanged.
 The executable walker still needs this lexical interface; this checkpoint alone
 does not certify a declared-forall artifact or introduce/export a recursive group.
+
+### Checkpoint 4af — executable lexical RHS traversal and exact-node evidence
+
+`RecursiveHMWalk.walkScoped` now consumes both free/lexical interfaces and
+constructs `ScopedDerives` on the ORIGINAL stripped RHS. Every primitive,
+annotation, Cons payload, application and List/Bool branch reads through the
+same simultaneous interface. Logical Core paths and per-node reports remain
+unchanged. The original `walk`/`Result` APIs are identity-slot views of this SAME
+traversal, with compatibility shape lemmas. Annotation demands/checks now reuse
+the canonical `ScopedHMAnnotation` implementation rather than duplicate it.
+
+`ScopedHMFoundView` retains exact-node shape/scope checks plus genuine scoped RHS
+derivations. `RecursiveHMWalk.checkLocated` connects the traversal to that node's
+original expression and exact address, without annotation rewriting or fake
+machine binder facts. Actual bounds remain separate from declared demands;
+whole-RHS inclusion is independently checked by the consumer.
+
+Eight executable regressions use real HM-produced annotated-forall identity,
+List-match, self-recursive and mutually recursive artifacts, including full
+count-bearing caller types inserted AFTER source count substitution. False
+written result claims, escaped caller counts and forged found payloads reject.
+Free and bound namespaces remain separate even when an inserted slot contains a
+free identity also interpreted differently in original source syntax.
+
+Important interface distinction: annotated ordinary lets close their checked RHS
+at lexical bvars; recursive inference preserves solved monomorphic free IDs.
+Recursive tests match the real source declaration (not invented inferred facts)
+where the solved HM shape is an exact declaration instance. A more-general RHS
+such as an unconstrained diverging alpha-to-beta loop can satisfy a narrower
+written ceiling without its ORIGINAL root being an instance of that ceiling;
+the forthcoming declared-interface reconciler must allow the correct direction
+of specialization. These tests do NOT license generalization from arbitrary
+free IDs. Source lambda bvars not opened by recursive HM inference must not be
+silently treated as valid recursive HM inputs by BL.
+
+Full 1793-job build passes; HM scratch audit 28 accepted / eight expected rejects /
+zero failures; boundary/whitespace checks pass. New exact-node pure helpers use
+standard Lean axioms; executable RHS inclusion retains the existing solver
+boundary. No new placeholder/axiom/partial; HM/D2, Path R and production guards
+unchanged. Next: joint universal certificates carrying lexical slots and a
+checked declared interface, followed by complete group/environment reconciliation.
+Generalized local lets, nested groups and deferred full spines remain guarded.

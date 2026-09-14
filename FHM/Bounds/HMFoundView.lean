@@ -29,6 +29,28 @@ def tys (types : Nat → BoundsTy) : List Ty → List Ty
 end
 
 mutual
+/-- The lexical reader with identity slots is the original free-only HM view. -/
+theorem scoped_identity_slots (types : Nat → BoundsTy) (τ : Ty) :
+    ScopedHMInterpretation.ty types BoundsTy.bvar τ = ty types τ := by
+  cases τ with
+  | prim | fvar => rfl
+  | bvar => simp only [ScopedHMInterpretation.ty, ty, Synth.BoundsTy.toTy]
+  | arrow a b =>
+      simp only [ScopedHMInterpretation.ty, ty, scoped_identity_slots types a, scoped_identity_slots types b]
+  | bl lo hi a => exact congrArg listTy (scoped_identity_slots types a)
+  | customTy n as => exact congrArg (Ty.customTy n) (scoped_identity_slots_list types as)
+termination_by sizeOf τ
+
+private theorem scoped_identity_slots_list (types : Nat → BoundsTy) (as : List Ty) :
+    ScopedHMInterpretation.tys types BoundsTy.bvar as = tys types as := by
+  cases as with
+  | nil => rfl
+  | cons a as =>
+      simp only [ScopedHMInterpretation.tys, tys, scoped_identity_slots types a, scoped_identity_slots_list types as]
+termination_by sizeOf as
+end
+
+mutual
 theorem erased (types : Nat → BoundsTy) (τ : Ty) : ty types τ.eraseBounds = ty types τ := by
   cases τ with
   | prim | fvar | bvar => simp only [ty, Ty.eraseBounds]
@@ -174,6 +196,7 @@ def checkTyped {output path} (node : AtNode output path) (types : Nat → Bounds
   pure ⟨actual, checked, derivation⟩
 
 #print axioms erased
+#print axioms scoped_identity_slots
 #print axioms bounds_shape
 #print axioms counts_blind
 #print axioms composition
