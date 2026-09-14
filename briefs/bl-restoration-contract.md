@@ -1124,3 +1124,44 @@ pass. Full HM/Bounds/editor/CLI build passes (1764 jobs); scratch HM audit remai
 pass. Bool coverage introduces no solver trust; typed/count-transport proofs retain
 only standard Lean axioms and executable inclusion retains the existing positive
 verdict axiom. No new axioms, placeholders or partial definitions.
+
+### Checkpoint 4k — full curried recursive application spines
+
+`CountProposal.proposeArguments` collects one untrusted count vector across all
+supplied input domains, in telescope order. Repeated coordinates retain their
+first witness, and a later direct endpoint can supply an earlier compound one.
+Compound-only occurrences still reject rather than invert arithmetic. A count
+appearing only in an unsupplied input domain requests a later origin; truly
+result-only coordinates retain the documented finite-witness policy.
+
+`RecursiveSpine` keeps the exact found application spine and each argument's
+derivation, scope and report nodes. Acceptance introduces the existing recursive
+variable rule once, discharging the instantiated premises and checking its fixed
+HM identity, then introduces the existing application rule at every frame. Every
+actual domain inclusion and intermediate found HM payload is checked. No new
+typing rule or HM inference pass is used, and existing universal count transport
+and whole-group certification apply unchanged. Argument collection accumulates
+in reverse once instead of repeatedly appending to an argument vector.
+
+The same found walker intercepts recursive application spines before synthesizing
+a partial callee. Ordinary monomorphic argument guidance remains unchanged, and
+there is no second unary recursive proposal authority in this product slice.
+Twenty new executable proposal/spine regressions exercise multiple/later origins,
+partial calls, repeated/compound/captured coordinates, fixed HM identities,
+intermediate payloads, premises, finite/caller scopes and exact-once reports.
+Twelve new parsed-source regressions check curried monomorphic map, mutual map,
+third-argument origins, two-count append with an `n + m` result contract, repeated
+count mismatches and earlier compound-domain validation.
+
+HM/D2, bounds-blind Path R and the legacy production CLI/LSP route are unchanged.
+Polymorphic HM annotation opening/specialization and exit generalization remain.
+An unannotated List-parameter callback that needs bounds inferred from another
+argument still requires a two-phase argument-checking route: origins first,
+then checking deferred lambdas at the instantiated caller-scoped domain. This
+checkpoint does not invent an origin to get such a callback through synthesis.
+
+Validation: all 20 spine and 55 parsed-source regressions pass, as does the full
+HM/Bounds/editor/CLI build (1766 jobs). Scratch HM audit remains 28 accepted /
+eight expected rejections / zero failures. Boundary and whitespace guards pass.
+The spine uses the existing positive-verdict trust only; no new axioms,
+placeholders or partial definitions were introduced.

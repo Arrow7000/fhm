@@ -1,6 +1,7 @@
 import FHM.Bounds.RecursiveVariable
 import FHM.Bounds.RecursiveCountTransport
 import FHM.Bounds.BranchMerge
+import FHM.Bounds.RecursiveSpine
 
 /-! # Found-driven symbolic RHS checking under recursive assumptions
 
@@ -241,6 +242,16 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
     (env : List Binding) (path : CorePath) (e : Expr) (schemes : BinderSchemeMap)
     (expected : Option BoundsTy := none) :
     Except String (Result ids rows caller Δ env e) := do
+  match RecursiveSpine.parseApplication path e with
+  | some spine =>
+      match env[spine.index]? with
+      | some (.recursive _) =>
+          let checked ← checkSpineArguments ids rows caller Δ env spine schemes
+          let used ← RecursiveSpine.infer checked
+          return ← finish ids rows caller Δ env e path spine.hm.eraseBounds used.bounds
+            used.typing checked.noGroups used.nodes.tail
+      | _ => pure ()
+  | none => pure ()
   match e with
   | .found hm (.primLit p) =>
       finish ids rows caller Δ env (.found hm (.primLit p)) path hm.eraseBounds (boundInfoOfPrimLit p)
@@ -320,13 +331,10 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
         | some (.mono (.arrow domain _)) => some domain
         | _ => none
       let actual ← walk ids rows caller Δ env (path ++ [.appArg]) arg schemes argHint
-      let used ← match env[i]? with
-        | some (.recursive _) =>
-            RecursiveVariable.inferApplication ids rows Δ env i arg.stripFound actual.bounds
-              actual.derivation functionHM hm caller
-        | _ =>
-            RecursiveVariable.application ids rows Δ env i arg.stripFound actual.bounds
-              actual.derivation functionHM hm [] caller
+      -- Recursive heads use the full-spine route above; this introduces no
+      -- second count-proposal authority for an ordinary variable application.
+      let used ← RecursiveVariable.application ids rows Δ env i arg.stripFound actual.bounds
+        actual.derivation functionHM hm [] caller
       finish ids rows caller Δ env (.found hm (.app (.found functionHM (.var i)) arg)) path hm.eraseBounds used.bounds
         (by simpa only [Expr.stripFound] using used.derivation)
         (by simpa only [Expr.stripFound, NoGroups] using And.intro True.intro actual.noGroups)
@@ -374,7 +382,7 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
   | .found _ (.letRec _ _ _) => throw "bounds: nested recursive group needs captured-template transport"
   | .found _ _ => throw "bounds: expression form unsupported in recursive RHS slice"
   | _ => throw "bounds: every recursive RHS logical node must have one found wrapper"
-termination_by sizeOf e
+termination_by (sizeOf e, 1)
 
 private def walkBranches (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List Binding) (ctx : BranchContext)
@@ -422,10 +430,22 @@ private def walkBranches (ids : List Nat) (rows : Bindings) (caller : List Nat)
       else match ctx with
         | .list _ _ _ => throw "bounds: unsupported List pattern or constructor arity"
         | .bool => throw "bounds: unsupported Bool pattern or constructor arity"
-termination_by sizeOf branches
+termination_by (sizeOf branches, 0)
 decreasing_by
   all_goals simp_wf
   all_goals first | omega | (cases br; simp_all; omega)
+
+private def checkSpineArguments (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (Δ : List Constraint) (env : List Binding) {e : Expr} (spine : RecursiveSpine.Syntax e)
+    (schemes : BinderSchemeMap) : Except String (RecursiveSpine.Checked ids rows caller Δ env spine) := do
+  match spine with
+  | .head path i hm => pure (.head path i hm)
+  | .app path hm previous arg =>
+      let prior ← checkSpineArguments ids rows caller Δ env previous schemes
+      let actual ← walk ids rows caller Δ env (path ++ [.appArg]) arg schemes
+      pure (.app path hm prior ⟨actual.bounds, actual.derivation, actual.countScope,
+        actual.noGroups, actual.nodes⟩)
+termination_by (sizeOf e, 0)
 end
 
 #print axioms walk
