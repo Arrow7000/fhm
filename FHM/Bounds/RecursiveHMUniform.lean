@@ -143,6 +143,26 @@ theorem Result.termAt {s found typeCaptures env rhs sourceTypes sourceSlots}
 #print axioms fromCertified_runtimeReady
 #print axioms Result.termAt
 
+/-- The actual specialized member demand is exactly the fixed in-group
+    recursive-use bounds. Full caller arguments are inserted after the member
+    count telescope; no independent HM vector is selected at a recursive call. -/
+theorem _root_.FHM.Bounds.HMDeclaredGroup.MemberChecked.demandAtRecursiveUse
+    {output metadata path index captures premises typeCaptures env}
+    {p : HMDeclaredGroup.Member output metadata path index captures premises typeCaptures}
+    (checked : HMDeclaredGroup.MemberChecked p env)
+    (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (fixed : ∀ i ∈ p.contract.template.hm.body.freeVars, f i = .fvar i)
+    {Δ caller} (used : RecursiveHMContract.Use (p.contract.mapTypes f lc).fixed
+      Δ (p.contract.mapTypes f lc).hm caller) :
+    demand checked.certificate.implementation used.counts f = used.bounds := by
+  rw [demand_instance checked.certificate.implementation used.counts f lc fixed]
+  rw [checked.certificateOpeningIds, checked.certificateScheme]
+  simp only [RecursiveHMContract.Use.bounds, Contract.mapTypes, RecursiveHMContract.Fixed.mapTypes,
+    HMDeclaredGroup.Member.contract, RecursiveHMContract.fromOpaque, List.map_map,
+    Function.comp_def, mapFree]
+
+#print axioms HMDeclaredGroup.MemberChecked.demandAtRecursiveUse
+
 def Result.assuming {s found typeCaptures env rhs sourceTypes sourceSlots}
     {cert : RecursiveHMUniversal.Certified s found typeCaptures env rhs sourceTypes sourceSlots}
     {counts caller} {inst : Instance s.counts counts caller} {f lc}
@@ -231,6 +251,88 @@ def allMembers {output metadata path captures premises typeCaptures env index ve
   | .cons head rest =>
       .cons (fun _ inst => fromCertified head.certificate.implementation inst f lc scope head.captured fixed)
         (allMembers rest f lc scope fixed)
+
+/-- Select universal implementation evidence at the SAME total source/exit
+    position used for the RHS certificate and fixed recursive contract. This
+    cannot drop a member or select an independent member-local HM map. -/
+def Members.memberAt {output metadata path captures premises typeCaptures env index vectors caller}
+    {ps : HMDeclaredGroup.Interfaces output metadata path captures premises typeCaptures index vectors}
+    {ms : HMDeclaredGroup.CheckedMembers env ps} {f lc scope}
+    (universal : Members f lc (caller := caller) scope ms) (offset : Nat)
+    (inside : offset < ms.exports.length) :
+    let selected := ms.memberAt offset inside
+    ∀ counts (inst : Instance selected.rhs.certificate.interface.scheme.counts counts caller),
+      Result selected.rhs.certificate.implementation inst f lc :=
+  by
+    induction universal generalizing offset with
+    | nil => simp [HMDeclaredGroup.CheckedMembers.exports] at inside
+    | cons obligations others ih =>
+        cases offset with
+        | zero => exact obligations
+        | succ offset => exact ih offset (by simpa [HMDeclaredGroup.CheckedMembers.exports] using inside)
+
+#print axioms Members.memberAt
+
+/-- ALL source-ordered supported member certificates realize the actual closed
+    recursive group at one common full HM map. Recursive calls retain that map;
+    only their count instances vary. Caller-scope weakening adds no premises.
+    Generalized exit realization is a separate next step. -/
+def _root_.FHM.Bounds.HMDeclaredGroup.Checked.runtimeEnvironment
+    {output metadata path vectors captures premises bodyTypes}
+    (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes [])
+    (commonCaller : List Nat) (f : Nat → BoundsTy)
+    (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (scope : ∀ i, BoundsScoped commonCaller (f i)) (arguments : ∀ i, Runtime.Supported (f i))
+    (fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ []))
+    (ready : ∀ offset (inside : offset < g.exports.length),
+      ScopedDerives.RuntimeReady (g.members.memberAt offset inside).rhs.certificate.implementation.typing)
+    (demandSupport : ∀ offset (inside : offset < g.exports.length),
+      Runtime.Supported (g.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds)
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free) :
+    ∀ budget, { e : EnvAt bound free σ budget
+        ((g.interfaces.contracts.map Binding.recursive ++ []).map (mapBinding f lc)) //
+      e.terms = Runtime.recursiveTerms g.annotations (g.rhss.map Expr.stripFound) } := by
+  let originalEnv := g.interfaces.contracts.map Binding.recursive ++ []
+  let env := originalEnv.map (mapBinding f lc)
+  have arity : (g.rhss.map Expr.stripFound).length = env.length := by
+    simp only [env, originalEnv, List.length_map, List.length_append, List.length_nil,
+      Nat.add_zero, g.memberCount]
+  apply EnvAt.tieGroup g.annotations (g.rhss.map Expr.stripFound) arity g.rhssScoped
+  intro budget e i inside
+  have exitInside : i < g.exports.length := by
+    simpa only [env, originalEnv, List.length_map, List.length_append, List.length_nil,
+      Nat.add_zero, g.memberCount, g.exportCount] using inside
+  let selected := g.members.memberAt i exitInside
+  have lookup : env[i]? = some (.recursive (selected.member.contract.mapTypes f lc)) := by
+    simpa only [env, originalEnv, List.append_nil, List.getElem?_map, Option.map_some,
+      Option.map_map, Function.comp_def, mapBinding]
+      using congrArg (Option.map (fun c => mapBinding f lc (.recursive c))) selected.contractSelection
+  have entry := (List.getElem?_eq_some_iff.mp lookup).choose_spec
+  rw [entry]
+  change ∀ Δ caller (used : RecursiveHMContract.Use (selected.member.contract.mapTypes f lc).fixed
+    Δ (selected.member.contract.mapTypes f lc).hm caller),
+    (∀ p ∈ used.inst.premises, p.Holds σ) → _
+  intro Δ caller used rawPremises
+  let inst := weakenInstance used.inst commonCaller
+  have extendedScope : ∀ i, BoundsScoped (caller ++ commonCaller) (f i) :=
+    fun i => HMInterpretation.scope_mono (scope i) (fun _ member => List.mem_append_right _ member)
+  let result := fromCertified selected.rhs.certificate.implementation inst f lc extendedScope selected.rhs.captured fixed
+  have specialized := fromCertified_runtimeReady selected.rhs.certificate.implementation
+    (ready i exitInside) inst f lc extendedScope arguments selected.rhs.captured fixed
+  have supported : Runtime.Supported (demand selected.rhs.certificate.implementation used.counts f) :=
+    ((demandSupport i exitInside).counts _).types f arguments
+  have behavior := result.termAt specialized supported bound free σ hb hf budget rawPremises e
+  have templateFixed : ∀ j ∈ selected.member.contract.template.hm.body.freeVars, f j = .fvar j := by
+    apply fixed
+    exact List.mem_append_left _ (List.mem_map.mpr
+      ⟨selected.member.contract, List.mem_of_getElem? selected.contractSelection, rfl⟩)
+  rw [selected.rhs.demandAtRecursiveUse f lc templateFixed used] at behavior
+  have sourceRhs := g.memberAtRhs i exitInside
+  have rhsEq := (List.getElem?_eq_some_iff.mp sourceRhs).choose_spec
+  simpa only [List.getElem_map, rhsEq, Expr.stripFound] using behavior
+
+#print axioms HMDeclaredGroup.Checked.runtimeEnvironment
 
 /-! The program body has generalized exit bindings, unlike the RHS judgement's
 fixed recursive assumptions. Keep this boundary explicit: a body variable use

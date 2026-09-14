@@ -238,6 +238,29 @@ in source order, realize generalized exports and connect `BodyDerives`.
 Readiness of the original supported checker proofs must also be established.
 The cyclic closure lemma is not by itself a theorem that the current
 whole-artifact checker is runtime-sound.
+
+The ALL-member fixed-HM runtime environment assembly is now
+`HMDeclaredGroup.Checked.runtimeEnvironment`. It consumes readiness and supported
+demands for every original member, specializes each actual certificate at its
+checked recursive count use, and ties the whole group with one common full HM
+map. Caller-scope weakening accommodates shared arguments whose counts one
+member does not use; it changes neither instance bounds nor raw premises.
+`MemberChecked.demandAtRecursiveUse` proves the specialized implementation demand
+is exactly that use's fixed-vector bounds.
+
+The source-order bridge is total `CheckedMembers.memberAt` plus
+`Members.memberAt`, keeping the actual certificate, generalized export and fixed
+recursive contract together. `Checked.memberRhs`/`memberAtRhs` identify its exact
+original `.found` RHS using verified Core-path composition, and `rhssScoped`
+obtains ALL actual erased RHS scope proofs from the checked member derivations.
+The certificate constructor now preserves source/template/opening data directly;
+only proof fields requiring environment equality are transported. This removes
+an opaque whole-certificate cast without changing language acceptance.
+
+Next: realize arbitrary supported generalized exit instances from these common
+fixed-HM environments, prove the generalized-body fundamental theorem, then
+establish readiness at the checker/artifact boundary. The runtime environment
+assembly does not yet prove whole-program checker soundness or enable BL LSP.
 This does NOT yet construct a cyclic group's realizing environment or finish
 the induction over all RHS/body rules.
 

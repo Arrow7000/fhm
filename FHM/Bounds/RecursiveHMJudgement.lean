@@ -689,7 +689,9 @@ private theorem captures_branch {f env p lo hi elem} (h : CapturesFixed f env) :
   · exact captures_cons (captures_cons h)
   · exact h
 
-private def weakenInstance {s args caller} (inst : ScopedScheme.Instance s args caller) (target : List Nat) :
+/-- Enlarge caller count scope without changing the instance, its bounds or
+    raw premises. Shared group arguments may mention counts unused by one member. -/
+def weakenInstance {s args caller} (inst : ScopedScheme.Instance s args caller) (target : List Nat) :
     ScopedScheme.Instance s args (caller ++ target) :=
   { wf := inst.wf, arity := inst.arity, finiteArgs := inst.finiteArgs
     argsScoped := fun a ha => count_mono (inst.argsScoped a ha) (fun _ hi => List.mem_append_left _ hi)
