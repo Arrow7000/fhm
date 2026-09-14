@@ -612,3 +612,46 @@ Validation after 3r: full HM/Bounds/editor/CLI build passes (1735 jobs), with 25
 BL regressions. Fresh scratch HM audit: 28 accepted / eight expected rejections /
 zero failures. Boundary and whitespace guards pass; no new axioms, placeholders
 or partial definitions were introduced.
+
+2026-09-14, checkpoint 3s: `CountAlgebra` proves finite composition of
+simultaneous count interpretations. `InterpretedAnnotation` keeps original
+annotations and lexical identities unchanged, while checking their interpreted
+demands in a separate caller scope. Decoder scope, finite Nat interpretation,
+HM shape and semantic inclusion are independent evidence boundaries.
+
+`ScopedTyping` supplies an annotation-aware monomorphic fragment indexed by
+source count scope and interpretation. Every lambda/let annotation remains a
+checked obligation. Count transport changes interpretation, path assumptions,
+environment and result, not source syntax. Its annotation-forgetting theorem
+produces bounds typing for the existing erased runtime term; it is not runtime
+length soundness. Transport/forgetting/assuming require standard Lean axioms only.
+
+`ScopedWalk` consumes found children and checks scoped symbolic annotations at
+all supported nesting depths. `ScopedDeclaration.checkRHS` selects an exact-site
+count telescope, checks the real typed RHS and declared obligation, validates
+monomorphic HM shape/local closure, and constructs a `CountContract.Certified`
+value through the proved erasure bridge. The environment's counts must belong
+only to explicit captures, never the declaration's quantified coordinates.
+
+HM binder facts currently cover unannotated declarations only. Those continue
+to require their unique exact-site machine fact. Annotated monomorphic RHSs use
+their actual found payload and separately checked carried signature; no missing
+machine fact or generalized annotation slots are invented. RHSs needing HM
+specialization to a narrower signature explicitly defer, as do generalized HM
+declarations/lets, nested count telescopes, holes, open parameter unknowns,
+matches and recursive assumptions. Surface count telescopes currently occur on
+recursive bindings: inspecting a member's RHS is NOT acceptance of its group.
+The checker has no recursive group introduction or recursive-call contract rule.
+
+Twenty-three real-artifact/interpretation regressions cover symbolic identity,
+independent count uses, Cons length increment, incorrect result/nested contracts,
+scope and metadata failures, forbidden recursive calls, deferred RHS HM
+specialization, captured environments and overlapping interpretation rows.
+The checked artifacts now generate certificates rather than relying only on
+handwritten implementation certificates. CLI/LSP launch routes and HM/Path R
+remain unchanged; no full artifact-coherence or runtime theorem is claimed.
+
+Validation after 3s: full HM/Bounds/editor/CLI build passes (1741 jobs), with 279
+BL regressions. Fresh scratch HM audit: 28 accepted / eight expected rejections /
+zero failures. Boundary and whitespace checks pass; no new axioms, placeholders
+or partial definitions. Executable inclusion retains positive solver trust.
