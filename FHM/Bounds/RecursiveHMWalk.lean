@@ -2,6 +2,7 @@ import FHM.Bounds.RecursiveHMAnnotation
 import FHM.Bounds.CountProposal
 import FHM.Bounds.BranchMerge
 import FHM.Bounds.ScopedHMFoundView
+import FHM.Bounds.RecursiveSpine
 
 /-! Initial executable interpreted RHS traversal. Reads original found payloads
 and carried annotations, builds real recursive HM derivations, and records
@@ -183,6 +184,48 @@ private theorem bool_match_typing {types slots ids rows caller Δ env branches �
     rcases strip_index ha with ⟨br, hm, rfl⟩
     simpa only [hb, BranchContext.refine, List.append_nil] using arms.inclusions i br hm
 
+private def appendScoped {types slots ids rows caller Δ env fn arg} (path : CorePath) (hm : Ty)
+    (prior : ScopedResult types slots ids rows caller Δ env fn)
+    (actual : ScopedResult types slots ids rows caller Δ env arg) :
+    Except String (ScopedResult types slots ids rows caller Δ env (.found hm (.app fn arg))) := do
+  match hf : prior.bounds with
+  | .arrow domain result =>
+      let sub ← Typed.subtype Δ actual.bounds domain
+      finish types slots ids rows caller Δ env (.found hm (.app fn arg)) path result
+        (by simpa only [Expr.stripFound] using
+          (ScopedDerives.app (by simpa only [hf] using prior.derivation) actual.derivation sub.down))
+        (prior.nodes ++ actual.nodes)
+  | _ => throw "bounds: interpreted application callee is not an arrow"
+
+private inductive ScopedSpine (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
+    (caller : List Nat) (Δ : List Constraint) (env : List Binding) :
+    {e : Expr} → RecursiveSpine.Syntax e → Type where
+  | head (path : CorePath) (i : Nat) (hm : Ty) : ScopedSpine types slots ids rows caller Δ env (.head path i hm)
+  | app {fn : Expr} {prior : RecursiveSpine.Syntax fn} {arg : Expr} (path : CorePath) (hm : Ty)
+      (previous : ScopedSpine types slots ids rows caller Δ env prior)
+      (actual : ScopedResult types slots ids rows caller Δ env arg) :
+      ScopedSpine types slots ids rows caller Δ env (.app path hm prior arg)
+
+private def ScopedSpine.actualsRev {types slots ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e} :
+    ScopedSpine types slots ids rows caller Δ env spine → List BoundsTy
+  | .head _ _ _ => []
+  | .app _ _ previous actual => actual.bounds :: previous.actualsRev
+
+/-- Fixed common HM vector throughout: ONE count instantiation at the original
+    recursive head, then independently checked original application frames. -/
+private def useScopedSpine {types slots ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e}
+    (checked : ScopedSpine types slots ids rows caller Δ env spine) {c : Contract}
+    (lookup : env[spine.index]? = some (.recursive c))
+    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) :
+    Except String (ScopedResult types slots ids rows caller Δ env e) := do
+  match checked with
+  | .head path i hm =>
+      finish types slots ids rows caller Δ env (.found hm (.var i)) path used.bounds
+        (by simpa only [Expr.stripFound] using ScopedDerives.varRecursive lookup used) []
+  | .app path hm previous actual =>
+      let prior ← useScopedSpine previous lookup used
+      appendScoped path hm prior actual
+
 mutual
 def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) (path : CorePath)
@@ -256,51 +299,23 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                 ⟨path ++ [.appFun, .appFun], ScopedHMInterpretation.ty types slots ctorTy, none⟩ :: h.nodes ++ t.nodes)
         | _ => throw "bounds: interpreted Cons tail is not a List"
       else throw "bounds: constructor application unsupported in interpreted RHS traversal"
-  | .found hm (.app (.found functionHM (.var i)) arg) =>
-      -- Only count arguments are proposed: HM arguments belong to the fixed
-      -- common group vector. Proposals inspect the CLOSED template so counts
-      -- in inserted HM arguments cannot be mistaken for callee coordinates.
-      match hv : env[i]? with
-      | some (.recursive c) =>
-          match c.template.counts.body with
-          | .arrow _ _ =>
-              let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes
-              let counts ← CountProposal.proposeArguments c.template.counts.quantified
-                c.template.counts.body [actual.bounds]
-              let used ← RecursiveHMContract.check c.fixed Δ c.hm counts caller
-              let fn ← finish types slots ids rows caller Δ env (.found functionHM (.var i))
-                (path ++ [.appFun]) used.bounds
-                (by simpa only [Expr.stripFound] using (ScopedDerives.varRecursive hv used)) []
-              match hf : fn.bounds with
-              | .arrow domain result =>
-                  let sub ← Typed.subtype Δ actual.bounds domain
-                  finish types slots ids rows caller Δ env (.found hm (.app (.found functionHM (.var i)) arg)) path result
-                    (by simpa only [Expr.stripFound] using
-                      (ScopedDerives.app (by simpa only [hf, Expr.stripFound] using fn.derivation) actual.derivation sub.down))
-                    (fn.nodes ++ actual.nodes)
-              | _ => throw "bounds: interpreted recursive assumption is not an arrow"
-          | _ => throw "bounds: interpreted recursive contract is not an arrow"
-      | _ =>
-          let fn ← walkScoped types slots ids rows caller Δ env (path ++ [.appFun]) (.found functionHM (.var i)) schemes
-          match hf : fn.bounds with
-          | .arrow domain result =>
-              let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain)
-              let sub ← Typed.subtype Δ actual.bounds domain
-              finish types slots ids rows caller Δ env (.found hm (.app (.found functionHM (.var i)) arg)) path result
-                (by simpa only [Expr.stripFound] using
-                  (ScopedDerives.app (by simpa only [hf, Expr.stripFound] using fn.derivation) actual.derivation sub.down))
-                (fn.nodes ++ actual.nodes)
-          | _ => throw "bounds: interpreted application callee is not an arrow"
   | .found hm (.app function arg) =>
+      match RecursiveSpine.Syntax.parse path (.found hm (.app function arg)) with
+      | some spine =>
+          match hv : env[spine.index]? with
+          | some (.recursive c) =>
+              let checked ← walkScopedSpine types slots ids rows caller Δ env spine schemes
+              let counts ← CountProposal.proposeArguments c.template.counts.quantified
+                c.template.counts.body checked.actualsRev.reverse
+              let used ← RecursiveHMContract.check c.fixed Δ c.hm counts caller
+              return ← useScopedSpine checked hv used
+          | _ => pure ()
+      | none => pure ()
       let fn ← walkScoped types slots ids rows caller Δ env (path ++ [.appFun]) function schemes
       match hf : fn.bounds with
       | .arrow domain result =>
           let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain)
-          let sub ← Typed.subtype Δ actual.bounds domain
-          finish types slots ids rows caller Δ env (.found hm (.app function arg)) path result
-            (by simpa only [Expr.stripFound] using
-              (ScopedDerives.app (by simpa only [hf] using fn.derivation) actual.derivation sub.down))
-            (fn.nodes ++ actual.nodes)
+          appendScoped path hm fn actual
       | _ => throw "bounds: interpreted application callee is not an arrow"
   | .found _ (.letRec _ _ _) => throw "bounds: nested groups unsupported in interpreted universal RHS traversal"
   | .found hm (.letIn ann rhs body) =>
@@ -344,6 +359,18 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
       | _ => throw "bounds: interpreted match scrutinee is neither List nor Bool"
   | _ => throw "bounds: unsupported or missing found node in interpreted RHS traversal"
 termination_by (sizeOf e, 1)
+
+private def walkScopedSpine (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
+    (caller : List Nat) (Δ : List Constraint) (env : List Binding) {e : Expr}
+    (spine : RecursiveSpine.Syntax e) (schemes : BinderSchemeMap) :
+    Except String (ScopedSpine types slots ids rows caller Δ env spine) := do
+  match spine with
+  | .head path i hm => pure (.head path i hm)
+  | .app path hm prior arg =>
+      let previous ← walkScopedSpine types slots ids rows caller Δ env prior schemes
+      let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes
+      pure (.app path hm previous actual)
+termination_by (sizeOf e, 0)
 
 private def walkScopedBranches (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) (ctx : BranchContext)
@@ -433,6 +460,7 @@ def checkLocated {output path} (node : HMFoundView.AtNode output path)
   pure ⟨typed, walked.nodes⟩
 
 #print axioms checkLocated
+#print axioms useScopedSpine
 #print axioms walkScoped
 #print axioms walk
 

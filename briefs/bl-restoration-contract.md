@@ -2426,6 +2426,35 @@ prefixes remain separate gates; no production BL fallback is enabled. No new
 files, placeholders, partial defs or axioms. Existing solver trust is unchanged;
 HM/D2 and Path R remain untouched.
 
+### Checkpoint 4ax — full recursive RHS spines retain the common fixed HM vector
+
+The original-node RHS walker now gathers every actual argument of a recursive
+application spine before proposing ONE count vector. It uses the same existing
+source-indexed `RecursiveSpine.Syntax`, but does NOT propose new HM arguments:
+the callee's common-group fixed HM vector remains authoritative throughout.
+`useScopedSpine` derives the head with the existing recursive-variable rule and
+checks every application using ordinary application typing, semantic domain
+inclusion and the original HM payload under the SAME source interpretation.
+The older single-argument recursive route is replaced, not duplicated.
+
+Actual self-recursive two-argument groups now assemble universally before their
+generalized Int/Char body uses, including compound-first/later-direct count
+origins. The mutual regression gives the two members distinct count telescopes
+while their RHSs keep a shared fixed HM vector; separate body uses reverse the
+full Int/Char caller vector across a mono-local binder shift. Every original RHS,
+body and application occurrence remains reported exactly once. Direct negative
+tests reject changing the recursive head's fixed HM instance and forging an
+intermediate original payload.
+
+Full `lake build FHM FHMBounds fhm` passes (1805 jobs), including all 27 uniform/
+body/program regressions and the three new fixed-RHS cases. This batch's HM audit
+remains 28 accepted / eight expected rejects / zero failures; boundary/whitespace
+pass. No new typing rule, source rewrite, files, placeholders, partial defs or axioms.
+The existing executable arithmetic-solver trust boundary is unchanged; HM/D2,
+Path R and production BL guards remain unchanged. Deferred expected-dependent
+arguments, nested/generalized-local introduction and enclosing program prefixes
+remain the next assembly gates, not silently accepted through old engines.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

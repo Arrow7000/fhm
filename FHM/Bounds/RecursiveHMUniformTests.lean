@@ -179,7 +179,8 @@ private def bodyCallerPremises (established : Bool) : Except String Bool := do
   pure (result.bounds.pretty == (BoundsTy.list (count 7) (count 7) (.prim .int)).pretty)
 
 private def fullBodySpine (kind : Nat := 0) (badFirst : Bool := false)
-    (partialCall : Bool := false) (forgedPrefix : Bool := false) : Except String Bool := do
+    (partialCall : Bool := false) (forgedPrefix : Bool := false)
+    (recursive : Bool := false) : Except String Bool := do
   let list (n : Count) (elem : Ty) := Ty.bl (.solid n) (.solid n) elem
   let σ : PolyTy := if kind == 2 then ⟨1, .arrow (.bvar 0) (.arrow (.bvar 0) (.bvar 0))⟩
     else if kind == 1 then
@@ -195,7 +196,9 @@ private def fullBodySpine (kind : Nat := 0) (badFirst : Bool := false)
   let second := if kind == 0 then double (.char 'a') else
     if kind == 2 then double (.int 2) else singleton (.int 2)
   let firstCall := Expr.app (.var 0) first
-  let source := Expr.letRec [some σ] [.lambda none (.lambda none (.var 0))]
+  let rhs := Expr.lambda none (.lambda none
+    (if recursive then .app (.app (.var 2) (.var 1)) (.var 0) else .var 0))
+  let source := Expr.letRec [some σ] [rhs]
     (if partialCall then firstCall else .app firstCall second)
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
   let a ← match inferFound ctors source with
@@ -230,6 +233,32 @@ private def fullBodyCapture : Except String Bool := do
     (.app (.found (.arrow a (.arrow b b)) (.var 0)) (.found a (.var 1)))) (.found b (.var 2)))
   let result ← walkBody [] [] [7] [] [.exported s, .mono first, .mono second] [] e []
   pure (result.bounds.pretty == second.pretty && exactlyOnce (logicalCorePaths e) (result.nodes.map (·.path)))
+
+private def fullMutualSpine : Except String Bool := do
+  let signature (n m : Nat) : PolyTy :=
+    let list (id : Nat) (elem : Ty) := Ty.bl (.solid (count id)) (.solid (count id)) elem
+    ⟨2, .arrow (list n (.bvar 0)) (.arrow (list m (.bvar 1)) (list m (.bvar 1)))⟩
+  let rhs (callee : Nat) := Expr.lambda none (.lambda none (.app (.app (.var callee) (.var 1)) (.var 0)))
+  let singleton (p : PrimLitExpr) : Expr :=
+    .app (.app (.ctor consCtorName) (.primLit p)) (.ctor nilCtorName)
+  let first := Expr.app (.app (.var 0) (singleton (.int 1))) (singleton (.char 'a'))
+  -- The local binder shifts g to index 2; its independent exit use reverses
+  -- the full caller HM arguments while both RHSs retain the shared fixed vector.
+  let second := Expr.app (.app (.var 2) (singleton (.char 'b'))) (singleton (.int 2))
+  let source := Expr.letRec [some (signature 7 8), some (signature 9 10)] [rhs 3, rhs 2]
+    (.letIn none first second)
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let a ← match inferFound ctors source with
+    | some a => pure a | none => throw "test: full mutual recursive spine HM inference failed"
+  let metadata : Scope.Metadata := { telescopes :=
+    [⟨.letRec [] 0, [(⟨"n"⟩, 7), (⟨"m"⟩, 8)]⟩,
+      ⟨.letRec [] 1, [(⟨"p"⟩, 9), (⟨"q"⟩, 10)]⟩] }
+  let program ← checkClosedProgram a.output metadata a.binderSchemes
+  let exact := match program.body.bounds with
+    | .list lo hi (.prim .int) => lo.eval (fun _ => 0) == .ofNat 1 && hi.eval (fun _ => 0) == .ofNat 1
+    | _ => false
+  pure (exact && program.assembled.checked.exports.length == 2 &&
+    exactlyOnce (logicalCorePaths a.output) (program.body.nodes.map (·.path)))
 
 def main : IO Unit := do
   match actual with
@@ -322,6 +351,15 @@ def main : IO Unit := do
   | .ok true => IO.println "PASS: one whole-spine count instantiation cannot capture caller counts inside either full HM argument"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "whole-spine specialization captured caller counts or dropped original nodes")
+  for kind in [0, 1] do
+    match fullBodySpine kind (recursive := true) with
+    | .ok true => IO.println s!"PASS: actual recursive RHS spine {kind} keeps one fixed full HM vector and one count instance before generalized body uses"
+    | .error message => throw (IO.userError message)
+    | .ok false => throw (IO.userError "full recursive RHS/body program lost result bounds or exact original-node coverage")
+  match fullMutualSpine with
+  | .ok true => IO.println "PASS: mutually recursive full RHS spines retain a shared fixed HM vector across distinct count telescopes and independent Int/Char exit uses"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "full mutual recursive program lost source-member identity, exact bounds or original nodes")
 
 #eval main
 
