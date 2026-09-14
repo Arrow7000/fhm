@@ -82,6 +82,7 @@ structure TypedChecked {output path} (node : HMFoundView.AtNode output path)
   actual : BoundsTy
   checked : ShapeChecked node free slots caller actual
   derivation : RecursiveHMJudgement.ScopedDerives free slots ids rows Δ env node.inner.stripFound actual
+  runtimeReady : Option (PLift (RecursiveHMJudgement.ScopedDerives.RuntimeReady derivation)) := none
 
 /-- A node consumer must supply a genuine derivation of the original source,
     not a rebuilt expression or a bounds type reconstructed from its HM shape. -/
@@ -89,10 +90,11 @@ def checkTyped {output path} (node : HMFoundView.AtNode output path)
     (free slots : Nat → BoundsTy) (ids : List Nat) (rows : CountSubstitution.Bindings)
     (Δ : List Constraint) (env : List RecursiveHMJudgement.Binding) (caller : List Nat)
     (actual : BoundsTy)
-    (derivation : RecursiveHMJudgement.ScopedDerives free slots ids rows Δ env node.inner.stripFound actual) :
+    (derivation : RecursiveHMJudgement.ScopedDerives free slots ids rows Δ env node.inner.stripFound actual)
+    (ready : Option (PLift (RecursiveHMJudgement.ScopedDerives.RuntimeReady derivation)) := none) :
     Except String (TypedChecked node free slots ids rows Δ env caller) := do
   let checked ← checkShape node free slots caller actual
-  pure ⟨actual, checked, derivation⟩
+  pure ⟨actual, checked, derivation, ready⟩
 
 #print axioms AtNode.coherent
 #print axioms composition

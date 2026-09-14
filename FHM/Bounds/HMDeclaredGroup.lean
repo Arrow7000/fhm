@@ -214,6 +214,20 @@ theorem MemberChecked.certificateOpeningIds {output metadata path index captures
     checked.certificate.implementation.opening.ids = p.reconciled.opening.ids := by
   rfl
 
+/-- Readiness comes from the actual source RHS traversal and survives the same
+    common-environment reconciliation as its universal implementation proof.
+    Absence preserves static acceptance but does not certify runtime safety. -/
+def MemberChecked.runtimeReady {output metadata path index captures premises typeCaptures env}
+    {p : Member output metadata path index captures premises typeCaptures} (checked : MemberChecked p env) :
+    Option (PLift (RecursiveHMJudgement.ScopedDerives.RuntimeReady checked.certificate.implementation.typing)) := do
+  let ready ← checked.rhs.located.typed.runtimeReady
+  pure ⟨by
+    have he := RecursiveHMEnvironment.typesFixed p.reconciled.interpretationLC checked.stable
+    simpa only [MemberChecked.certificate, HMDeclaredRHS.certify,
+      RecursiveHMUniversal.fromScopedChecked, he, slotsFor] using ready.down⟩
+
+#print axioms MemberChecked.runtimeReady
+
 inductive CheckedMembers {output metadata path captures premises typeCaptures}
     (env : List Binding) : {index : Nat} → {vectors : List (List Nat)} →
     Interfaces output metadata path captures premises typeCaptures index vectors → Type where
@@ -265,6 +279,31 @@ def CheckedMembers.memberAt {output metadata path captures premises typeCaptures
       let tail := rest.memberAt offset (by simpa [CheckedMembers.exports] using inside)
       ⟨tail.sourceIndex, tail.member, tail.rhs, by have h := tail.position; omega,
         tail.selection, tail.contractSelection⟩
+
+/-- Collect runtime evidence for every member, never just the demanded export.
+    This consumes witnesses built by the existing RHS checker, without another
+    traversal, constraint check or acceptance rule. -/
+def CheckedMembers.runtimeReady {output metadata path captures premises typeCaptures env index vectors}
+    {ps : Interfaces output metadata path captures premises typeCaptures index vectors}
+    (ms : CheckedMembers env ps) :
+    Option (PLift (∀ offset (inside : offset < ms.exports.length),
+      RecursiveHMJudgement.ScopedDerives.RuntimeReady (ms.memberAt offset inside).rhs.certificate.implementation.typing ∧
+      Runtime.Supported (ms.memberAt offset inside).rhs.certificate.implementation.opening.bounds)) :=
+  match ms with
+  | .nil => some ⟨by intro offset inside; simp [CheckedMembers.exports] at inside⟩
+  | .cons checked rest => do
+      let head ← checked.runtimeReady
+      let demand ← Runtime.supported? checked.certificate.implementation.opening.bounds
+      let tail ← rest.runtimeReady
+      pure ⟨by
+        intro offset inside
+        cases offset with
+        | zero => exact ⟨head.down, demand.down⟩
+        | succ offset => exact tail.down offset (by
+            simp only [CheckedMembers.exports, List.length_cons] at inside
+            omega)⟩
+
+#print axioms CheckedMembers.runtimeReady
 
 def CheckedMembers.select {output metadata path captures premises typeCaptures env index vectors}
     {ps : Interfaces output metadata path captures premises typeCaptures index vectors}

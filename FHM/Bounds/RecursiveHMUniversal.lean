@@ -296,7 +296,7 @@ def atScopedNode {output path} (node : HMFoundView.AtNode output path)
       (s.counts.quantified ++ s.counts.captures) (s.counts.quantified.zip counts)
       inst.premises (interpretedEnvironment cert counts types lc) caller := by
   have h := useScopedInterpreted cert inst types arity lc scope
-  refine ⟨actual cert counts types, ⟨?_, h.2.2.2⟩, h.1⟩
+  refine ⟨actual cert counts types, ⟨?_, h.2.2.2⟩, h.1, none⟩
   rw [← actual_transport cert counts types, HMFoundView.bounds_shape, bounds_shape, cert.shape]
   exact ScopedHMInterpretation.specialization _ _ _ _ node.original
 

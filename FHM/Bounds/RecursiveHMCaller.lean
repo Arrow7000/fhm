@@ -62,7 +62,8 @@ def fromUse {output path} (node : HMFoundView.AtNode output path)
   have all := RecursiveHMUniversal.useScopedInterpreted cert.implementation used.countInstance
     used.types used.arity used.typesLC used.typesScoped
   have actual : base.typed.actual = RecursiveHMUniversal.actual cert.implementation used.counts used.types := rfl
-  refine ⟨⟨⟨base.typed.actual, base.typed.checked, base.typed.derivation.assuming used.usable⟩,
+  refine ⟨⟨⟨base.typed.actual, base.typed.checked, base.typed.derivation.assuming used.usable,
+      base.typed.runtimeReady.map (fun ready => ⟨ready.down.assuming used.usable⟩)⟩,
     signature_assuming base.signature used.usable⟩, ?_, ?_⟩
   · rw [actual, RecursiveHMUniversal.actual_demand_shape]
     exact used.shape

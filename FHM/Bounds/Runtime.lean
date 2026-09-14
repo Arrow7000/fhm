@@ -384,6 +384,50 @@ inductive Supported : BoundsTy → Prop where
 
 abbrev TypeEnv := Nat → Nat → Expr → Prop
 
+/-- A total proof-producing fragment check. It neither checks constraints nor
+    claims runtime soundness of an expression from its root type. -/
+def supported? (β : BoundsTy) : Option (PLift (Supported β)) :=
+  match β with
+  | .prim _ => some ⟨.prim⟩
+  | .bvar _ => some ⟨.bvar⟩
+  | .fvar _ => some ⟨.fvar⟩
+  | .arrow domain result => do
+      let a ← supported? domain
+      let b ← supported? result
+      pure ⟨.arrow a.down b.down⟩
+  | .list _ _ elem => do
+      let a ← supported? elem
+      pure ⟨.list a.down⟩
+  | .custom name [] =>
+      if hn : name = boolTyName then some ⟨by subst name; exact .bool⟩ else none
+  | .custom _ (_ :: _) => none
+
+theorem supported?_complete {β : BoundsTy} (h : Supported β) :
+    (supported? β).isSome = true := by
+  induction h with
+  | prim | bvar | fvar => rfl
+  | bool => simp [supported?]
+  | @arrow domain result _ _ a b =>
+      cases ha : supported? domain <;> cases hb : supported? result <;> simp_all [supported?]
+  | @list elem lo hi _ a =>
+      cases ha : supported? elem <;> simp_all [supported?]
+
+#print axioms supported?
+#print axioms supported?_complete
+
+def supportedArguments? (types : List BoundsTy) :
+    Option (PLift (∀ a ∈ types, Supported a)) :=
+  match types with
+  | [] => some ⟨by simp⟩
+  | a :: rest => do
+      let head ← supported? a
+      let tail ← supportedArguments? rest
+      pure ⟨by
+        intro b member
+        rcases List.mem_cons.mp member with rfl | member
+        · exact head.down
+        · exact tail.down b member⟩
+
 theorem Supported.counts (rows : CountSubstitution.Bindings) (h : Supported β) :
     Supported (CountSubstitution.bounds rows β) := by
   induction h with

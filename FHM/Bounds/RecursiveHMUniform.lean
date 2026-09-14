@@ -204,7 +204,7 @@ def atNode {output path} (node : HMFoundView.AtNode output path)
       (fun i => mapFree f (bounds (s.counts.quantified.zip counts) (sourceSlots i)))
       (s.counts.quantified ++ s.counts.captures) (s.counts.quantified.zip counts)
       inst.premises (env.map (mapBinding f lc)) caller := by
-  refine ⟨actual cert counts f, ⟨?_, r.inScope⟩, r.typing⟩
+  refine ⟨actual cert counts f, ⟨?_, r.inScope⟩, r.typing, none⟩
   rw [actual, HMFoundView.bounds_shape, bounds_shape, cert.shape]
   exact ScopedHMInterpretation.specialization f sourceTypes sourceSlots _ node.original
 
@@ -1015,15 +1015,18 @@ structure BodyResult (ids : List Nat) (rows : Bindings) (caller : List Nat)
   typing : BodyDerives ids rows Δ env e.stripFound bounds
   inScope : BoundsScoped caller bounds
   nodes : List Typed.NodeResult
+  runtimeReady : Option (PLift (BodyDerives.RuntimeReady typing))
 
 private def finishBody {ids rows caller Δ env e} (path : CorePath) (hm : Ty) (β : BoundsTy)
     (root : Typed.rootHM? e = some hm.eraseBounds) (typing : BodyDerives ids rows Δ env e.stripFound β)
-    (children : List Typed.NodeResult) : Except String (BodyResult ids rows caller Δ env e) := do
+    (children : List Typed.NodeResult)
+    (ready : Option (PLift (BodyDerives.RuntimeReady typing))) :
+    Except String (BodyResult ids rows caller Δ env e) := do
   let shape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy β) hm.eraseBounds with
     | some h => pure h | none => throw "bounds: generalized body result disagrees with original found payload"
   if h : boundsScopedBool caller β = true then
     pure ⟨hm, β, root, shape.down, typing, boundsScopedBool_sound h,
-      ⟨path, hm.eraseBounds, some β⟩ :: children⟩
+      ⟨path, hm.eraseBounds, some β⟩ :: children, ready⟩
   else throw "bounds: generalized body result counts escape caller scope"
 
 private structure BodyBranches (ids : List Nat) (rows : Bindings) (caller : List Nat)
@@ -1037,6 +1040,7 @@ private structure BodyBranches (ids : List Nat) (rows : Bindings) (caller : List
   inclusions : ∀ i br, branches[i]? = some br →
     match bounds with | none => False | some β => SemanticSub (Δ ++ ctx.refine br.1) (actuals i) β
   nodes : List Typed.NodeResult
+  runtimeReady : Option (PLift (∀ i br atIndex, BodyDerives.RuntimeReady (typing i br atIndex)))
 
 private def prependBodyBranches {ids rows caller Δ env br branches} {ctx : BodyBranchContext}
     (head : BodyResult ids rows caller (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2)
@@ -1062,6 +1066,17 @@ private def prependBodyBranches {ids rows caller Δ env br branches} {ctx : Body
     | zero => simp only [List.getElem?_cons_zero, Option.some.injEq] at h; subst arm; exact hh
     | succ i => exact ht i arm (by simpa only [List.getElem?_cons_succ] using h)
   nodes := head.nodes ++ tail.nodes
+  runtimeReady := do
+    let hh ← head.runtimeReady
+    let ht ← tail.runtimeReady
+    pure ⟨by
+      intro i arm atIndex
+      cases i with
+      | zero =>
+          simp only [List.getElem?_cons_zero, Option.some.injEq] at atIndex
+          subst arm
+          exact hh.down
+      | succ i => exact ht.down i arm (by simpa only [List.getElem?_cons_succ] using atIndex)⟩
 
 private theorem body_match_typing {ids rows caller Δ env branches β} {ctx : BodyBranchContext} {scrut : Expr}
     (hs : BodyDerives ids rows Δ env scrut.stripFound ctx.bounds)
@@ -1081,6 +1096,32 @@ private theorem body_match_typing {ids rows caller Δ env branches β} {ctx : Bo
     rcases RecursiveHMWalk.strip_index ha with ⟨br, hm, rfl⟩
     simpa only [hb] using arms.inclusions i br hm
 
+private def body_match_ready {ids rows caller Δ env branches β} {ctx : BodyBranchContext} {scrut : Expr}
+    (hs : BodyDerives ids rows Δ env scrut.stripFound ctx.bounds)
+    (arms : BodyBranches ids rows caller Δ env ctx branches) (hb : arms.bounds = some β)
+    (hc : ctx.Covers Δ (Expr.stripFoundBranches branches))
+    (ready : Option (PLift (BodyDerives.RuntimeReady hs))) :
+    Option (PLift (BodyDerives.RuntimeReady (body_match_typing hs arms hb hc))) := do
+  let input ← ready
+  let bodies ← arms.runtimeReady
+  let result ← Runtime.supported? β
+  pure ⟨by
+    simp only [Expr.stripFound]
+    refine BodyDerives.RuntimeReady.match_ (actuals := arms.actuals) hc ?_ ?_ ?_ input.down ?_ result.down
+    · intro arm member
+      rw [RecursiveHMWalk.stripBranches] at member
+      obtain ⟨br, atSource, rfl⟩ := List.mem_map.mp member
+      exact arms.patterns br atSource
+    · intro i arm atIndex
+      rcases RecursiveHMWalk.strip_index atIndex with ⟨br, atSource, rfl⟩
+      exact arms.typing i br atSource
+    · intro i arm atIndex
+      rcases RecursiveHMWalk.strip_index atIndex with ⟨br, atSource, rfl⟩
+      simpa only [hb] using arms.inclusions i br atSource
+    · intro i arm atIndex
+      rcases RecursiveHMWalk.strip_index atIndex with ⟨br, atSource, rfl⟩
+      exact bodies.down i br atSource⟩
+
 private theorem body_path_assuming (Δ Γ : List Constraint) :
     (⟨Δ ++ Γ, Δ⟩ : ForallProblem).Valid := fun _ h c hc => h c (List.mem_append_left Γ hc)
 
@@ -1094,6 +1135,14 @@ private def appendBody {ids rows caller Δ env fn arg} (path : CorePath) (hm : T
         (by simpa only [Expr.stripFound] using
           (BodyDerives.app (by simpa only [hf] using prior.typing) actual.typing sub.down))
         (prior.nodes ++ actual.nodes)
+        (do
+          let fn ← prior.runtimeReady
+          let arg ← actual.runtimeReady
+          pure ⟨by
+            simp only [Expr.stripFound]
+            apply BodyDerives.RuntimeReady.app sub.down
+            · simpa only [hf] using fn.down
+            · exact arg.down⟩)
   | _ => throw "bounds: generalized body function is not an arrow"
 
 private inductive BodySpine (ids : List Nat) (rows : Bindings) (caller : List Nat)
@@ -1120,6 +1169,12 @@ private def useBodySpine {ids rows caller Δ env e} {spine : RecursiveSpine.Synt
   | .head path i hm =>
       finishBody path hm used.bounds rfl
         (by simpa only [Expr.stripFound] using BodyDerives.varExported lookup used) []
+        (do
+          let supported ← Runtime.supported? used.bounds
+          let arguments ← Runtime.supportedArguments? used.types
+          pure ⟨by simpa only [Expr.stripFound] using
+            (BodyDerives.RuntimeReady.varExported (ids := ids) (rows := rows)
+              (i := i) lookup used supported.down arguments.down)⟩)
   | .app path hm previous actual =>
       let prior ← useBodySpine previous lookup used
       appendBody path hm prior actual
@@ -1135,8 +1190,10 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
   match e with
   | .found hm (.primLit p) =>
       finishBody path hm (boundInfoOfPrimLit p) rfl (by simpa only [Expr.stripFound] using BodyDerives.literal) []
+        (some ⟨by simpa only [Expr.stripFound] using (@BodyDerives.RuntimeReady.literal ids rows Δ env p)⟩)
   | .found hm (.primBinOp op) =>
       finishBody path hm (Typed.primOpBounds op) rfl (by simpa only [Expr.stripFound] using BodyDerives.primBinOp) []
+        (some ⟨by simpa only [Expr.stripFound] using (@BodyDerives.RuntimeReady.primBinOp ids rows Δ env op)⟩)
   | .found hm (.ctor name) =>
       if hn : name = nilCtorName then
         match hm.eraseBounds with
@@ -1147,22 +1204,40 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
                 | _ => Typed.shapeTop a
               finishBody path hm (.list (.lit 0) (.lit 0) elem) rfl
                 (by subst name; simpa only [Expr.stripFound] using BodyDerives.nil) []
+                (do
+                  let supported ← Runtime.supported? elem
+                  pure ⟨by
+                    subst name
+                    simpa only [Expr.stripFound] using
+                      (@BodyDerives.RuntimeReady.nil ids rows Δ env elem supported.down)⟩)
             else throw "bounds: generalized body Nil has a non-List found payload"
         | _ => throw "bounds: generalized body Nil has a non-List found payload"
       else if hb : BoolBranches.IsCtor name then
         finishBody path hm (.custom boolTyName []) rfl
           (by simpa only [Expr.stripFound] using BodyDerives.boolCtor hb) []
+          (some ⟨by simpa only [Expr.stripFound] using
+            (@BodyDerives.RuntimeReady.boolCtor ids rows Δ env name hb)⟩)
       else throw "bounds: unsupported standalone constructor in generalized body"
   | .found hm (.var i) =>
       match hv : env[i]? with
       | some (.mono β) =>
           finishBody path hm β rfl
             (by simpa only [Expr.stripFound] using BodyDerives.varMono hv) []
+            (do
+              let supported ← Runtime.supported? β
+              pure ⟨by simpa only [Expr.stripFound] using
+                (BodyDerives.RuntimeReady.varMono (ids := ids) (rows := rows) (i := i) hv supported.down)⟩)
       | some (.exported s) =>
           if s.hm.paramCount == 0 && s.counts.quantified.isEmpty then
             let used ← HMCountScheme.check s Δ hm [] [] caller
             finishBody path hm used.bounds rfl
               (by simpa only [Expr.stripFound] using BodyDerives.varExported hv used) []
+              (do
+                let supported ← Runtime.supported? used.bounds
+                let arguments ← Runtime.supportedArguments? used.types
+                pure ⟨by simpa only [Expr.stripFound] using
+                  (BodyDerives.RuntimeReady.varExported (ids := ids) (rows := rows)
+                    (i := i) hv used supported.down arguments.down)⟩)
           else throw "bounds: exported polymorphic use needs origin-backed arguments"
       | none => throw "bounds: generalized body variable outside binding environment"
   | .found hm (.lambda ann body) =>
@@ -1174,6 +1249,11 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
           let result ← walkBody ids rows caller Δ (.mono param.bounds :: env) (path ++ [.lambdaBody]) body schemes bodyHint
           finishBody path hm (.arrow param.bounds result.bounds) rfl
             (by simpa only [Expr.stripFound] using BodyDerives.lambda param.obligation result.typing) result.nodes
+            (do
+              let supported ← Runtime.supported? param.bounds
+              let body ← result.runtimeReady
+              pure ⟨by simpa only [Expr.stripFound] using
+                (BodyDerives.RuntimeReady.lambda (ann := ann) param.obligation supported.down body.down)⟩)
       | _ => throw "bounds: generalized body lambda has a non-arrow found payload"
   | .found hm (.app (.found partialHM (.app (.found ctorHM (.ctor name)) head)) tail) =>
       if hn : name = consCtorName then
@@ -1193,6 +1273,14 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
                 BodyDerives.cons h.typing (by simpa only [ht] using t.typing) sub.down)
               (⟨path ++ [.appFun], partialHM.eraseBounds, none⟩ ::
                 ⟨path ++ [.appFun, .appFun], ctorHM.eraseBounds, none⟩ :: h.nodes ++ t.nodes)
+              (do
+                let head ← h.runtimeReady
+                let tail ← t.runtimeReady
+                pure ⟨by
+                  subst name
+                  simp only [Expr.stripFound]
+                  apply BodyDerives.RuntimeReady.cons sub.down head.down
+                  simpa only [ht] using tail.down⟩)
         | _ => throw "bounds: generalized body Cons tail is not a List"
       else throw "bounds: generalized body constructor application unsupported"
   | .found hm (.app fn arg) =>
@@ -1221,6 +1309,11 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
         (by simpa only [Expr.stripFound] using
           (BodyDerives.letMono obligation.down actual.typing result.typing))
         (actual.nodes ++ result.nodes)
+        (do
+          let rhs ← actual.runtimeReady
+          let body ← result.runtimeReady
+          pure ⟨by simpa only [Expr.stripFound] using
+            (BodyDerives.RuntimeReady.letMono (ann := ann) obligation.down rhs.down body.down)⟩)
   | .found hm (.match_ scrut branches) =>
       let input ← walkBody ids rows caller Δ env (path ++ [.matchScrut]) scrut schemes
       -- Equality of full bounds, not merely HM shape, connects scrutinee origins
@@ -1235,6 +1328,9 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
             (by simpa only [Expr.stripFound] using
               body_match_typing (by simpa only [hin.down] using input.typing) arms hb coverage.down)
             (input.nodes ++ arms.nodes)
+            (by simpa only [Expr.stripFound] using
+              (body_match_ready (by simpa only [hin.down] using input.typing) arms hb coverage.down
+                (by simpa only [hin.down] using input.runtimeReady)))
   | .found _ (.letRec _ _ _) => throw "bounds: nested generalized recursive groups are not supported yet"
   | _ => throw "bounds: generalized body lacks an original found node"
 termination_by (sizeOf e, 1)
@@ -1257,7 +1353,7 @@ private def walkBodyBranches (ids : List Nat) (rows : Bindings) (caller : List N
     Except String (BodyBranches ids rows caller Δ env ctx branches) := do
   match branches with
   | [] => pure ⟨(fun _ => .prim .int), (by intros; contradiction), (by intros; contradiction),
-      none, (by intros; contradiction), []⟩
+      none, (by intros; contradiction), [], some ⟨by intros; contradiction⟩⟩
   | br :: rest =>
       if hp : ctx.Pattern br.1 then
         let head ← walkBody ids rows caller (Δ ++ ctx.refine br.1) (ctx.extend br.1 env)
@@ -1320,6 +1416,14 @@ def checkBody {output metadata path vectors captures premises bodyTypes}
     (by simpa only [Expr.stripFound] using
       BodyDerives.letRec g (fun _ f lc scope fixed => allMembers g.members f lc scope fixed) body.typing)
     (memberNodes g.members ++ body.nodes)
+    (do
+      let members ← g.members.runtimeReady
+      let ready ← body.runtimeReady
+      pure ⟨by simpa only [Expr.stripFound] using
+        (BodyDerives.RuntimeReady.letRec g
+          (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
+          (fun offset inside => (members.down offset inside).1)
+          (fun offset inside => (members.down offset inside).2) ready.down)⟩)
 
 /-- A source-linked closed ROOT recursive program, not a general program-prefix
     or nested-group adapter. The body certificate is indexed by the exact input
@@ -1340,6 +1444,22 @@ def checkClosedProgram (output : Expr) (metadata : Scope.Metadata)
       (.letRec assembled.checked.annotations assembled.checked.rhss assembled.checked.body) := by
     simpa only [Expr.atCorePath, Option.some.injEq] using assembled.checked.source
   pure ⟨assembled, by simpa only [sourceEq] using body⟩
+
+/-- Extract the runtime theorem carried by a supported closed report. This is
+    indexed by its EXACT input artifact and inferred bounds, not by a rebuilt
+    expression. A missing witness makes no runtime soundness claim. Constraint
+    validity is still supplied by the existing static certificate machinery. -/
+def BodyResult.runtimeSafety? {ids rows caller Δ output}
+    (result : BodyResult ids rows caller Δ [] output) :
+    Option (PLift (∀ (bound free : Runtime.TypeEnv) (σ : Assign),
+      Runtime.TypeEnv.Downward bound → Runtime.TypeEnv.Downward free →
+      (∀ p ∈ Δ, p.Holds σ) → Runtime.Safe bound free σ result.bounds output.stripFound)) := do
+  let ready ← result.runtimeReady
+  pure ⟨by
+    intro bound free σ hb hf premises
+    exact ready.down.safeClosed bound free σ hb hf premises⟩
+
+#print axioms BodyResult.runtimeSafety?
 
 #print axioms fromCertified
 #print axioms demand_instance
