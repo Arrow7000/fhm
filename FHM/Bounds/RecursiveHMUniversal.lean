@@ -1,0 +1,202 @@
+import FHM.Bounds.RecursiveHMEmbedding
+
+/-! Joint finite-count/full-HM RHS contract certificates. Universal use retains
+the actual implementation's bounds and a separate semantic demand inclusion.
+The simultaneously specialized recursive environment is explicit; group
+introduction/generalized export must reconcile that environment separately. -/
+
+namespace FHM.Bounds.RecursiveHMUniversal
+
+open RecursiveHMJudgement SchemeSpecialization CountSubstitution ScopedScheme
+
+mutual
+theorem close_counts (ids : List Nat) (rows : Bindings) (β : BoundsTy) :
+    BinderBridge.close ids (bounds rows β) = bounds rows (BinderBridge.close ids β) := by
+  cases β with
+  | prim | bvar => rfl
+  | fvar i => cases h : ids.idxOf? i <;> simp [BinderBridge.close, bounds, h]
+  | arrow a b => simp only [BinderBridge.close, bounds, close_counts ids rows a, close_counts ids rows b]
+  | list lo hi a => exact congrArg (BoundsTy.list (count rows lo) (count rows hi)) (close_counts ids rows a)
+  | custom n as => exact congrArg (BoundsTy.custom n) (close_list_counts ids rows as)
+termination_by sizeOf β
+
+private theorem close_list_counts (ids : List Nat) (rows : Bindings) (as : List BoundsTy) :
+    BinderBridge.closeList ids (boundsList rows as) = boundsList rows (BinderBridge.closeList ids as) := by
+  cases as with
+  | nil => rfl
+  | cons a as => simp only [BinderBridge.closeList, boundsList, close_counts ids rows a, close_list_counts ids rows as]
+termination_by sizeOf as
+end
+
+structure Certified (s : HMCountScheme.Scheme) (found : Ty) (captures : List Ty)
+    (env : List RecursiveHMJudgement.Binding) (rhs : Expr) where
+  opening : HMCountScheme.Opening s found captures
+  actual : BoundsTy
+  shape : Synth.BoundsTy.toTy actual = found.eraseBounds
+  actualScope : BoundsScoped (s.counts.quantified ++ s.counts.captures) actual
+  typing : Derives BoundsTy.fvar (s.counts.quantified ++ s.counts.captures) [] s.counts.premises env rhs actual
+  inclusion : SemanticSub s.counts.premises actual opening.bounds
+  typeFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ opening.ids, i ∉ c.template.hm.body.freeVars
+  countFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ s.counts.quantified
+
+private theorem argumentsLC (types : List BoundsTy)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC) :
+    ∀ i, (Synth.BoundsTy.toTy (SchemeUse.vector types i)).IsLC := by
+  intro i
+  cases h : types[i]? with
+  | none => simp only [SchemeUse.vector, h, Option.getD_none, Synth.BoundsTy.toTy]; exact .prim
+  | some a => simpa only [SchemeUse.vector, h, Option.getD_some] using lc a (List.mem_of_getElem? h)
+
+private theorem replacementLC (ids : List Nat) (args : Nat → BoundsTy)
+    (lc : ∀ i, (Synth.BoundsTy.toTy (args i)).IsLC) :
+    ∀ i, (Synth.BoundsTy.toTy (argument ids args i)).IsLC := by
+  intro i
+  cases h : ids.idxOf? i with
+  | none => simp only [argument, h, Synth.BoundsTy.toTy]; exact .fvar
+  | some slot => simpa only [argument, h] using lc slot
+
+private theorem replacementScope (ids : List Nat) (args : Nat → BoundsTy)
+    (scope : ∀ i, BoundsScoped caller (args i)) : ∀ i, BoundsScoped caller (argument ids args i) := by
+  intro i
+  cases h : ids.idxOf? i with
+  | none => simp [argument, h, BoundsScoped]
+  | some slot => simpa only [argument, h] using scope slot
+
+private theorem countFresh {s found captures env rhs} (cert : Certified s found captures env rhs)
+    {counts caller} (inst : Instance s.counts counts caller) :
+    CountCapturesFixed (s.counts.quantified.zip counts) env := by
+  intro c hc i hi
+  apply lookup_none
+  rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
+  exact cert.countFresh c hc i hi
+
+private theorem typeFresh {s found captures env rhs} (cert : Certified s found captures env rhs)
+    (args : Nat → BoundsTy) (rows : Bindings) :
+    CapturesFixed (argument cert.opening.ids args) (env.map (mapCountBinding rows)) := by
+  intro c hc i hi
+  obtain ⟨b, hb, he⟩ := List.mem_map.mp hc
+  cases b with
+  | mono β => cases he
+  | recursive d =>
+      cases he
+      have absent : i ∉ cert.opening.ids := fun present => cert.typeFresh d hb i present hi
+      have hnone : cert.opening.ids.idxOf? i = none := List.idxOf?_eq_none_iff.mpr absent
+      simp [argument, hnone]
+
+def actual {s found captures env rhs} (cert : Certified s found captures env rhs)
+    (counts : List Count) (types : List BoundsTy) : BoundsTy :=
+  TypeSubstitution.combined (s.counts.quantified.zip counts) (SchemeUse.vector types)
+    (BinderBridge.close cert.opening.ids cert.actual)
+
+def demand (s : HMCountScheme.Scheme) (counts : List Count) (types : List BoundsTy) : BoundsTy :=
+  TypeSubstitution.combined (s.counts.quantified.zip counts) (SchemeUse.vector types) s.counts.body
+
+theorem actual_hm_instance {s found captures env rhs} (cert : Certified s found captures env rhs)
+    (counts : List Count) (types : List BoundsTy) (arity : types.length = s.hm.paramCount) :
+    s.hm.InstantiatesTo (types.map Synth.BoundsTy.toTy) (Synth.BoundsTy.toTy (actual cert counts types)) := by
+  have hs : s.hm.body.eraseBounds = s.hm.body := by
+    rw [← s.shape]
+    exact FreeAlgebra.shape_erased _
+  have hc := (cert.opening.abstractActual cert.actual cert.shape).shape
+  change Synth.BoundsTy.toTy (BinderBridge.close cert.opening.ids cert.actual) = s.hm.body.eraseBounds at hc
+  rw [hs] at hc
+  have ha : Synth.BoundsTy.toTy (actual cert counts types) = Synth.BoundsTy.toTy (HMCountScheme.opened s types) := by
+    simp only [actual, TypeSubstitution.combined_shape, HMCountScheme.opened, TypeSubstitution.shape, hc, s.shape]
+  rw [ha]
+  exact HMCountScheme.opened_instance s types arity
+
+theorem actual_inScope {s found captures env rhs} (cert : Certified s found captures env rhs)
+    {counts caller} (inst : Instance s.counts counts caller) (types : List BoundsTy)
+    (scope : types.all (boundsScopedBool caller) = true) : BoundsScoped caller (actual cert counts types) := by
+  apply TypeSubstitution.inScope _ _ (SchemeUse.vector_scope scope)
+  apply bounds_scoped (BinderBridge.close_inScope cert.opening.ids cert.actualScope)
+    (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2)
+  intro i hi hn
+  rcases List.mem_append.mp hi with hq | hc
+  · have absent := lookup_none_iff.mp hn
+    rw [List.map_fst_zip (Nat.le_of_eq inst.arity)] at absent
+    exact (absent hq).elim
+  · exact inst.capturesScoped i hc
+
+/-- Count substitution precedes full HM insertion. The RHS, every recursive
+    assumption, and source annotation interpretation specialize uniformly. -/
+theorem use {s found captures env rhs} (cert : Certified s found captures env rhs)
+    {counts caller} (inst : Instance s.counts counts caller) (types : List BoundsTy)
+    (arity : types.length = s.hm.paramCount)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
+    (scope : types.all (boundsScopedBool caller) = true) :
+    let rows := s.counts.quantified.zip counts
+    let f := argument cert.opening.ids (SchemeUse.vector types)
+    Derives f (s.counts.quantified ++ s.counts.captures) rows inst.premises
+      ((env.map (mapCountBinding rows)).map (mapBinding f (replacementLC _ _ (argumentsLC types lc))))
+      rhs (actual cert counts types) ∧
+    SemanticSub inst.premises (actual cert counts types) (demand s counts types) ∧
+    s.hm.InstantiatesTo (types.map Synth.BoundsTy.toTy) (Synth.BoundsTy.toTy (actual cert counts types)) ∧
+    BoundsScoped caller (actual cert counts types) := by
+  let rows := s.counts.quantified.zip counts
+  let f := argument cert.opening.ids (SchemeUse.vector types)
+  have fLC := replacementLC cert.opening.ids (SchemeUse.vector types) (argumentsLC types lc)
+  have fScope := replacementScope cert.opening.ids (SchemeUse.vector types) (SchemeUse.vector_scope scope)
+  have hc := transportCounts rows inst.finite caller
+    (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2) cert.typing (countFresh cert inst)
+  have ht := transportTypes f fLC caller fScope hc (typeFresh cert _ rows)
+  have actualLC : (Synth.BoundsTy.toTy (bounds rows cert.actual)).IsLC := by
+    rw [bounds_shape, cert.shape]
+    exact cert.opening.lc
+  have ha : mapFree f (bounds rows cert.actual) = actual cert counts types := by
+    rw [← SchemeSpecialization.close_open cert.opening.ids (SchemeUse.vector types) actualLC, close_counts]
+    rfl
+  have hd : mapFree f (bounds rows cert.opening.bounds) = demand s counts types := by
+    have openingShape : Synth.BoundsTy.toTy cert.opening.bounds = found.eraseBounds := cert.opening.shape
+    rw [← SchemeSpecialization.close_open cert.opening.ids (SchemeUse.vector types)
+      (by rw [bounds_shape, openingShape]; exact cert.opening.lc), close_counts, cert.opening.close]
+    rfl
+  have hs := SchemeSpecialization.subtype f (inst.subtype cert.inclusion)
+  rw [ha, hd] at hs
+  refine ⟨?_, hs, actual_hm_instance cert counts types arity, actual_inScope cert inst types scope⟩
+  simpa only [ha, CountAlgebra.compose, List.map_nil, List.nil_append,
+    ScopedScheme.Instance.premises, mapFree] using ht
+
+/-- Reuse an existing sound RHS certificate; its actual scope is a real proof
+    supplied by the checked artifact, not reconstructed from the HM skeleton. -/
+def fromLegacy {c env rhs ann} (cert : RecursiveRHS.Certified c env rhs ann)
+    (scope : BoundsScoped (c.counts.quantified ++ c.counts.captures) cert.actual) :
+    Certified (RecursiveHMEmbedding.template c) c.hm [] (env.map RecursiveHMEmbedding.binding) rhs := by
+  let d := RecursiveHMEmbedding.contract c
+  have hmErased : c.hm.eraseBounds = c.hm := by rw [← c.shape]; exact FreeAlgebra.shape_erased _
+  refine
+    { opening := ⟨[], rfl, by simp, by simp, d.fixed.shape, d.fixed.lc⟩
+      actual := cert.actual
+      shape := cert.shape.trans hmErased.symm
+      actualScope := scope
+      typing := RecursiveHMEmbedding.certified cert
+      inclusion := ?_
+      typeFresh := by simp
+      countFresh := ?_ }
+  · change SemanticSub c.counts.premises cert.actual (HMCountScheme.opened (RecursiveHMEmbedding.template c) [])
+    have lc : (Synth.BoundsTy.toTy c.counts.body).IsLC := by rw [c.shape]; exact c.lc
+    simpa only [HMCountScheme.opened, RecursiveHMEmbedding.template, FreeAlgebra.instantiate_fixed _ lc] using cert.inclusion
+  · intro d hd i hi
+    obtain ⟨b, hb, he⟩ := List.mem_map.mp hd
+    cases b with
+    | mono β => cases he
+    | recursive old =>
+        cases he
+        exact cert.recursiveFresh old hb i hi
+
+def fromChecked {c env} (checked : RecursiveRHS.Checked c env) :
+    Certified (RecursiveHMEmbedding.template c) c.hm [] (env.map RecursiveHMEmbedding.binding)
+      checked.rhs.expr.stripFound :=
+  fromLegacy checked.certificate (by rw [checked.actualEq]; exact checked.typed.countScope)
+
+def fromLocatedChecked {c env rhs} (checked : RecursiveRHS.LocatedChecked c env rhs) :
+    Certified (RecursiveHMEmbedding.template c) c.hm [] (env.map RecursiveHMEmbedding.binding) rhs.expr.stripFound :=
+  fromLegacy checked.certificate (by rw [checked.actualEq]; exact checked.typed.countScope)
+
+#print axioms close_counts
+#print axioms use
+#print axioms actual_hm_instance
+#print axioms actual_inScope
+#print axioms fromChecked
+
+end FHM.Bounds.RecursiveHMUniversal
