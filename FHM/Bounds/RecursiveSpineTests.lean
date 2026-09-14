@@ -46,6 +46,27 @@ private def returns (r : Except String BoundsTy) (expected : BoundsTy) : Bool :=
   | _, _ => false
 
 private def cases : List (String × Bool) := [
+  ("a deferred callback never becomes its own count origin", fails
+    (CountProposal.proposeOrigins [7] (.arrow (.arrow (exact k) (exact k)) (.prim .int))
+      [none]) "independent origin"),
+  ("a later actual supplies a deferred callback's coordinate", match
+    CountProposal.proposeOrigins [7]
+      (.arrow (.arrow (exact k) (exact k)) (.arrow (exact k) (exact k)))
+      [none, some (exact (.lit 2))] with
+    | .ok args => args == [.lit 2]
+    | .error _ => false),
+  ("deferral does not guess through a compound-only actual", fails
+    (CountProposal.proposeOrigins [7]
+      (.arrow (.arrow (exact k) (exact k)) (.arrow (exact (.add k (.lit 1))) (exact k)))
+      [none, some (exact (.lit 2))]) "independent origin"),
+  ("deferred coordinates without an origin do not default to zero", fails
+    (CountProposal.proposeOrigins [7, 8]
+      (.arrow (.arrow (exact k) (exact m)) (.arrow (exact k) (exact k)))
+      [none, some (exact (.lit 2))]) "independent origin"),
+  ("deferred scalar checking creates no count coordinate", match
+    CountProposal.proposeOrigins [7] (.arrow fnBounds (exact k)) [none] with
+    | .ok args => args == [.lit 0]
+    | .error _ => false),
   ("full map proposal finds the second input length", proposes [7] mapBounds
     [fnBounds, exact (.lit 3)] [.lit 3]),
   ("partial map does not manufacture zero for an unsupplied input", fails

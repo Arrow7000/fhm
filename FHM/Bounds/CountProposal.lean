@@ -70,15 +70,18 @@ private def pending (ids : List Nat) : BoundsTy → List Nat
   | _ => []
 
 private def collectArguments (ids : List Nat) (contract : BoundsTy)
-    (actuals : List BoundsTy) : Option (Proposals × List Nat) :=
+    (actuals : List (Option BoundsTy)) : Option (Proposals × List Nat × List Nat) :=
   match actuals with
-  | [] => some (([], []), pending ids contract)
+  | [] => some (([], []), pending ids contract, [])
   | actual :: rest =>
       match contract with
       | .arrow domain result => do
-          let here ← collect ids domain actual
-          let (later, unsupplied) ← collectArguments ids result rest
-          pure (combine here later, unsupplied)
+          let (later, unsupplied, deferred) ← collectArguments ids result rest
+          match actual with
+          | some β => do
+              let here ← collect ids domain β
+              pure (combine here later, unsupplied, deferred)
+          | none => pure (later, unsupplied, occurrences ids domain ++ deferred)
       | _ => none
 
 /-- Proposal order is the declaration telescope's order, not traversal order.
@@ -99,10 +102,12 @@ def propose (quantified : List Nat) (pattern actual : BoundsTy) : Except String 
 /-- One proposal vector for the whole supplied application spine. Repeated
     coordinates keep their first witness; ALL domains must subsequently pass
     inclusion. A later direct occurrence can supply a compound earlier one,
-    but no arithmetic is inverted. This function establishes no typing fact. -/
-def proposeArguments (quantified : List Nat) (contract : BoundsTy)
-    (actuals : List BoundsTy) : Except String (List Count) := do
-  let ((uses, blocked), unsupplied) ← match collectArguments quantified contract actuals with
+    but no arithmetic is inverted. This function establishes no typing fact.
+    Missing actuals are deferred checking obligations, NEVER proposal origins.
+    Every coordinate in a deferred domain needs an independent actual origin. -/
+def proposeOrigins (quantified : List Nat) (contract : BoundsTy)
+    (actuals : List (Option BoundsTy)) : Except String (List Count) := do
+  let ((uses, blocked), unsupplied, deferred) ← match collectArguments quantified contract actuals with
     | none => throw "bounds: unsupported full-spine count proposal shape or excess arguments"
     | some p => pure p
   quantified.mapM fun id =>
@@ -111,11 +116,18 @@ def proposeArguments (quantified : List Nat) (contract : BoundsTy)
     | none =>
         if unsupplied.contains id then
           throw "bounds: count-polymorphic partial application needs a later argument origin"
+        else if deferred.contains id then
+          throw "bounds: count argument needs an independent origin before deferred argument checking"
         else if blocked.contains id then
           throw "bounds: implicit count argument needs unsupported arithmetic inversion"
         else pure (.lit 0)
 
+def proposeArguments (quantified : List Nat) (contract : BoundsTy)
+    (actuals : List BoundsTy) : Except String (List Count) :=
+  proposeOrigins quantified contract (actuals.map some)
+
 #print axioms propose
+#print axioms proposeOrigins
 #print axioms proposeArguments
 
 end FHM.Bounds.CountProposal

@@ -1165,3 +1165,47 @@ HM/Bounds/editor/CLI build (1766 jobs). Scratch HM audit remains 28 accepted /
 eight expected rejections / zero failures. Boundary and whitespace guards pass.
 The spine uses the existing positive-verdict trust only; no new axioms,
 placeholders or partial definitions were introduced.
+
+### Checkpoint 4l — origins first, deferred callback checking second
+
+Recursive spines now explicitly prepare argument origins before checking lambda
+telescopes containing unannotated non-scalar domains. `Prepared` stores `none`
+for those arguments: no bounds or derivation is fabricated. `proposeOrigins`
+is the single proposal authority, and `proposeArguments` delegates to it.
+Coordinates appearing in deferred domains require an independent actual origin;
+they cannot silently receive the result-only zero witness or be obtained by
+arithmetic inversion. Synthesizable scalar and annotated callbacks remain actual
+origins, including a scalar callback that supplies the only count witness.
+
+Completion checks the recursive variable once, including finite arguments,
+caller scope, declared premises and fixed HM identity. Each deferred callback is
+then checked under the actual instantiated domain, and every application frame
+still verifies inclusion and its intermediate found HM payload. `Completed`
+contains all exact source argument derivations. The new `append` helper shares
+the existing ordinary application proof; it does not repeatedly reinstantiate
+the callee or rewalk already synthesized arguments. The verified walker remains
+total, with a checked lexicographic termination measure for the two phases.
+
+Five new proposal regressions and eight parsed-source regressions cover missing
+origins, later origins, mixed scalar/List lambda telescopes, zero counts, bad
+output lengths, internal annotations and a mutually recursive caller's distinct
+count identities. The mutual fixture deliberately forms one group: sequential
+nested groups still reject at the existing captured-template transport boundary.
+
+Validation: 25 spine/proposal and 63 parsed-source regressions pass. Full
+HM/Bounds/editor/CLI build passes (1766 jobs), as do the boundary and whitespace
+guards. The fresh scratch HM audit remains 28 accepted / eight expected
+rejections / zero failures. HM/D2, Path R, production CLI/LSP launch and the
+existing solver trust boundary are unchanged; no new axioms, placeholders or
+partial definitions were introduced.
+
+The next major dependency is genuinely polymorphic HM contract opening and RHS
+specialization/generalization, not another application-spine patch. Merely
+matching a forall annotation against a found type is insufficient: the current
+annotation-aware recursive judgement intentionally has monomorphic binding
+obligations, so its universal RHS/group certificates must be extended together.
+Recursive calls must retain the group's one fixed HM opening throughout; only
+group exit can export a generalized HM scheme. Captured type/count identities
+and caller bounds inside HM arguments need capture-safe simultaneous transport.
+Nested groups, fresh open origins, general data matches, runtime length soundness,
+artifact coherence and unified product wiring remain subsequent work.

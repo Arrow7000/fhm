@@ -90,6 +90,16 @@ private def compoundSource : String :=
   "  \\(xs : BL (n + 1) (n + 1) Int) (ys : BL n n Int) -> " ++
   "(\\(ignored : List Int) -> ys) (f xs ys)\n"
 
+private def callbackSource : String :=
+  "let f : {n : Nat} (BL n n Int -> BL n n Int) -> BL n n Int -> BL n n Int =\n" ++
+  "  \\(transform : BL n n Int -> BL n n Int) (xs : BL n n Int) -> " ++
+  "(\\(ignored : List Int) -> transform xs) (f transform xs)\n"
+
+private def soleCallbackSource (domain : String) : String :=
+  "let f : {n : Nat} (" ++ domain ++ " -> BL n n Int) -> Int =\n" ++
+  "  \\(g : " ++ domain ++ " -> BL n n Int) -> " ++
+  "(\\(ignored : Int) -> 1) (f g)\n"
+
 private def provenanceRejected (modify : TypedLowered → TypedLowered) : Except String Unit := do
   let a ← artifact (selfSource ++ "f []\n")
   let _ ← RecursiveFound.synthNodes (modify a)
@@ -237,6 +247,27 @@ private def cases : List (String × Bool) := [
     "let g : {n : Nat} (Int -> Int) -> BL n n Int -> BL n n Int =\n" ++
     "  \\transform xs -> match xs with | [] -> [] | h :: t -> (transform (h + 0) + 0) :: f transform t\n" ++
     "f (\\x -> x + 1) [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed deferred List callback obtains a later actual origin", returns
+    (run (callbackSource ++ "f (\\ys -> ys) [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed deferred List callback checks count zero", returns
+    (run (callbackSource ++ "f (\\ys -> ys) []\n")) "BL 0 0 Int"),
+  ("parsed deferred callback cannot increase the required exact length", fails
+    (run (callbackSource ++ "f (\\ys -> 1 :: ys) [1, 2]\n")) "interval inclusion"),
+  ("parsed deferred callback still checks its internal source annotation", fails
+    (run (callbackSource ++ "f (\\ys -> let bad : BL 0 0 Int = ys in bad) [1, 2]\n")) "interval inclusion"),
+  ("parsed unknown List callback does not manufacture its own count origin", fails
+    (run (soleCallbackSource "BL n n Int" ++ "f (\\ys -> ys)\n")) "independent origin"),
+  ("parsed scalar callback remains a synthesized sole count origin", returns
+    (run (soleCallbackSource "Int" ++ "f (\\x -> [])\n")) "Int"),
+  ("parsed curried callback receives guidance through its lambda telescope", returns (run (
+    "let f : {n : Nat} (Int -> BL n n Int -> BL n n Int) -> BL n n Int -> BL n n Int =\n" ++
+    "  \\(g : Int -> BL n n Int -> BL n n Int) (xs : BL n n Int) -> " ++
+    "(\\(ignored : List Int) -> g 0 xs) (f g xs)\nf (\\seed ys -> ys) [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed deferred callback remains checked at a captured caller count", returns (run (
+    callbackSource.replace "(f transform xs)" "(g xs)" ++
+    "let g : {m : Nat} BL m m Int -> BL m m Int =\n" ++
+    "  \\(xs : BL m m Int) -> f (\\ys -> ys) xs\n" ++
+    "g [1, 2]\n")) "BL 2 2 Int"),
   ("missing source origins reject report adapter", fails (provenanceRejected (fun a =>
     {a with lowering := {a.lowering with coreOrigins := []}})) "incomplete typed provenance"),
   ("duplicate source origins reject report adapter", fails (provenanceRejected (fun a =>
