@@ -287,4 +287,87 @@ private def recursiveNodeCheck : Bool :=
 #print axioms exactSignedRecursiveNodeInstances
 #print axioms exactGroupEnvironmentNodeInstances
 
+private def anyInts : BoundsTy := .list (.lit 0) .inf (.prim .int)
+private def tailInts : BoundsTy := .list (.pred (.lit 0)) (.pred .inf) (.prim .int)
+private def tailBranches : List (MatchPattern × Expr) :=
+  [(.named nilCtorName 0, .ctor nilCtorName), (.named consCtorName 2, .var 1)]
+private def tailFunction : Expr := .lambda none (.match_ (.var 0) tailBranches)
+private def tailActuals (i : Nat) : BoundsTy :=
+  if i = 0 then .list (.lit 0) (.lit 0) (.prim .int) else tailInts
+
+private theorem tailBodies (i : Nat) (br : MatchPattern × Expr)
+    (atIndex : tailBranches[i]? = some br) :
+    Derives BoundsTy.fvar [] [] (RecursiveTyping.branchRefine br.1 (.lit 0) .inf)
+      (branchEnv br.1 (.lit 0) .inf (.prim .int) [.mono anyInts]) br.2 (tailActuals i) := by
+  cases i with
+  | zero =>
+      have same : br = (.named nilCtorName 0, .ctor nilCtorName) := by simpa [tailBranches] using atIndex.symm
+      subst br
+      exact .nil
+  | succ i =>
+      cases i with
+      | zero =>
+          have same : br = (.named consCtorName 2, .var 1) := by simpa [tailBranches] using atIndex.symm
+          subst br
+          exact .varMono rfl
+      | succ i => simp [tailBranches] at atIndex
+
+private theorem tailSubs (i : Nat) (br : MatchPattern × Expr)
+    (atIndex : tailBranches[i]? = some br) :
+    SemanticSub (RecursiveTyping.branchRefine br.1 (.lit 0) .inf) (tailActuals i) anyInts := by
+  cases i with
+  | zero =>
+      refine .list ?_ .prim
+      intro σ _ goal member
+      simp [Interval.subGoals, tailActuals, anyInts] at member
+      rcases member with rfl | rfl <;> simp [Constraint.Holds, Count.eval, ExtNat.le]
+  | succ i =>
+      refine .list ?_ .prim
+      intro σ _ goal member
+      simp [Interval.subGoals, tailActuals, tailInts, anyInts] at member
+      rcases member with rfl | rfl <;> simp [Constraint.Holds, Count.eval, ExtNat.pred, ExtNat.le]
+
+private theorem tailPatterns : ∀ br ∈ tailBranches, RecursiveTyping.ListPattern br.1 := by
+  intro br member
+  simp only [tailBranches, List.mem_cons, List.not_mem_nil, or_false] at member
+  rcases member with rfl | rfl
+  · exact .inr (.inl rfl)
+  · exact .inr (.inr rfl)
+
+private theorem tailCoverage : ListBranches.Covers [] ⟨.lit 0, .inf⟩ tailBranches :=
+  .full ⟨.ctor nilCtorName, by simp [tailBranches]⟩ ⟨.var 1, by simp [tailBranches]⟩
+
+private theorem tailTyping : Derives BoundsTy.fvar [] [] [] [] tailFunction (.arrow anyInts anyInts) :=
+  .lambda True.intro (.matchList (.varMono rfl) tailCoverage tailPatterns tailBodies tailSubs)
+
+private theorem tailReady : ScopedDerives.RuntimeReady tailTyping := by
+  have branchesReady : ∀ i br atIndex, ScopedDerives.RuntimeReady (tailBodies i br atIndex) := by
+    intro i br atIndex
+    cases i with
+    | zero =>
+        have same : br = (.named nilCtorName 0, .ctor nilCtorName) := by simpa [tailBranches] using atIndex.symm
+        subst br
+        exact .nil .prim
+    | succ i =>
+        cases i with
+        | zero =>
+            have same : br = (.named consCtorName 2, .var 1) := by simpa [tailBranches] using atIndex.symm
+            subst br
+            exact .varMono rfl (.list .prim)
+        | succ i => simp [tailBranches] at atIndex
+  have matchReady : ScopedDerives.RuntimeReady
+      (ScopedDerives.matchList (.varMono rfl) tailCoverage tailPatterns tailBodies tailSubs) :=
+    .matchList tailCoverage tailPatterns tailBodies tailSubs
+      (.varMono (i := 0) rfl (.list .prim)) branchesReady (.list .prim)
+  exact ScopedDerives.RuntimeReady.lambda (ann := none) True.intro (.list .prim) matchReady
+
+/-- This is obtained from the actual refined-branch typing proof, not a
+    separately postulated runtime callback contract. -/
+theorem typedTailRuntimeSafe (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free) :
+    Runtime.Safe bound free σ (.arrow anyInts anyInts) tailFunction :=
+  tailReady.safeClosed bound free σ hb hf (by simp)
+
+#print axioms typedTailRuntimeSafe
+
 end FHM.Bounds.RecursiveHMJudgementTests
