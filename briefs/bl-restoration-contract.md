@@ -799,3 +799,45 @@ are unchanged. Executable symbolic-RHS/group checking still needs a capture-safe
 recursive count-transport bridge before universal certificates can be generated.
 Matches, CLI/LSP migration, artifact coherence and runtime length soundness remain
 pending; HM/D2 and Path R are unchanged.
+
+2026-09-14, checkpoint 4b: `RecursiveCountTransport` proves caller count
+transport with protected callee telescopes. Instantiating a contract and then
+transforming its caller counts equals transforming the arguments and opening
+the unchanged contract template. Captured coordinates must remain fixed.
+The equality covers self-recursive calls whose selected caller identity is also
+the callee's quantified identity, and transforms contract premises in lockstep.
+
+Transported instances retain finite/scoped arguments and captures; their caller
+interface conservatively keeps the previous scope and adds the replacement
+scope. Usability transports by semantic validity, not a fresh solver verdict or
+an assumption appended to the context. No HM identities or schemes are opened.
+
+The `transport` theorem lifts this algebra to annotation-aware derivations with
+recursive assumptions. Monomorphic local bounds and call arguments are mapped,
+recursive templates remain unchanged, and original source annotations use a
+separate composed interpretation. An explicit source-fragment condition excludes
+nested recursive groups and matches; nested groups may capture enclosing counts
+and require captured-template transport rather than this fixed-capture rule.
+
+`universal_rhs` now generates every scoped finite count instance from one checked
+symbolic RHS derivation, captured outer monomorphic bounds, and recursive capture
+freshness. Group interface independence supplies the relevant freshness for
+other members. A concrete solver-free regression generates the universal
+self-recursive RHS premise from a symbolic proof rather than proving each use
+directly. This is the needed theorem bridge, not yet an executable RHS walker or
+whole-group acceptance route.
+
+Twelve executable transport regressions cover protected self-recursive IDs,
+lockstep premises, distinct caller coordinates, symbolic replacements, fixed
+captures, arity/scope, infinite and inferable replacement rejection, and
+simultaneous insertion without recursive resubstitution. All new transport and
+universal-RHS proofs depend only on standard Lean axioms, not solver trust.
+
+Validation after 4b: full HM/Bounds/editor/CLI build passes (1750 jobs). Fresh
+scratch HM audit: 28 accepted / eight expected rejections / zero failures.
+Boundary and whitespace guards pass; no new axioms, placeholders or partial
+definitions. Legacy Bounds placeholders are unchanged. Found-driven recursive
+RHS checking and universal group-certificate construction are next integration
+targets; narrower annotation specialization, fixed polymorphic HM openings,
+exit HM generalization, matches, CLI/LSP migration, artifact coherence and
+runtime length soundness remain separate. HM/D2 and Path R are unchanged.
