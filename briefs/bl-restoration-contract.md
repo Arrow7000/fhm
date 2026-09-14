@@ -325,7 +325,33 @@ full types, leaving both written source annotations unchanged.
 established path premises, including all member evidence and complete HM
 vectors. Report bounds, original nodes and presence of runtime proof evidence
 are unchanged. This enables scope/path assembly; it does NOT yet license or
-enable generalized local lets, enclosing captures or nested groups.
+enable generalized local lets, enclosing captures or nested groups in the checker.
+
+The metatheory now has `ScopedBodyDerives.letExported`: local generalization
+requires actual RHS derivations at EVERY full HM/count use, checked in the
+local's argument/count frame. The original outer premises are preserved and
+combined with RAW instance premises; requirements are not appended to caller
+assumptions. Written local annotations must retain the exact decoded declared
+scheme through `LocalAnnotationOK`. The scope premise applies to the original
+RHS. `LocalFrame` requires fresh, distinct owned HM identities and fresh owned
+count identities, with count captures scoped in the parent. The canonical
+`localTypes` interpretation preserves captured source identities; `localSlots`
+preserves parent lexical slots beyond the local annotation telescope. Arbitrary
+RHS interpreter functions are not accepted. Kernel preservation fixtures check
+both capture boundaries. The runtime fundamental theorem constructs the generalized local's meaning
+from these derivations and its captured closing environment before the actual
+Core call-by-name let step. Runtime readiness and premise transport cover this
+rule too. No generalized runtime contract is postulated.
+
+A kernel fixture introduces a written polymorphic identity with an actual
+lexically annotated RHS, then uses it at Int and Char across another local
+binder. The SAME Core fixture also passes real HM inference. Constant-to-Char
+RHS derivations are formally impossible, and the HM regression rejects
+`forall a. a = 1` even when unused. These are proof/specification checkpoints:
+the executable local checker must still CONSTRUCT those universal certificates
+from the existing source-site scheme facts and count/HM transports. Generalized
+locals therefore remain explicitly guarded in production; no demo shortcut or
+new acceptance engine was enabled.
 
 Next: generalized locals, enclosing bindings and nested groups, then the general
 artifact/report bridge and CLI/LSP migration. No whole-language BL runtime

@@ -483,10 +483,10 @@ def BodyEnvAt.down {bound free σ small large env}
       intro Δ found caller used arguments premises
       exact (actual Δ found caller used arguments premises).down hb hf le
 
-def BodyEnvAt.extendMono {bound free σ budget env}
-    (e : BodyEnvAt bound free σ budget env) (β : BoundsTy) (term : Expr)
-    (closed : term.varsBelow 0 = true) (safe : Runtime.TermAt bound free σ budget β term) :
-    BodyEnvAt bound free σ budget (.mono β :: env) where
+def BodyEnvAt.extend {bound free σ budget env}
+    (e : BodyEnvAt bound free σ budget env) (binding : BodyBinding) (term : Expr)
+    (closed : term.varsBelow 0 = true) (safe : BodyBindingAt bound free σ budget binding term) :
+    BodyEnvAt bound free σ budget (binding :: env) where
   terms := term :: e.terms
   arity := by simp only [List.length_cons, e.arity]
   closed := by
@@ -501,6 +501,11 @@ def BodyEnvAt.extendMono {bound free σ budget env}
     | succ i =>
         have small : i < env.length := by simp only [List.length_cons] at inside; omega
         simpa only [List.getElem_cons_succ] using e.denotes i small
+
+def BodyEnvAt.extendMono {bound free σ budget env}
+    (e : BodyEnvAt bound free σ budget env) (β : BoundsTy) (term : Expr)
+    (closed : term.varsBelow 0 = true) (safe : Runtime.TermAt bound free σ budget β term) :
+    BodyEnvAt bound free σ budget (.mono β :: env) := e.extend (.mono β) term closed safe
 
 theorem BodyEnvAt.varMono {bound free σ budget env i β}
     (e : BodyEnvAt bound free σ budget env) (lookup : env[i]? = some (.mono β)) :
@@ -601,6 +606,49 @@ private def bodyBranchContext (β : BoundsTy) :
       else .error "bounds: generalized body match scrutinee is neither List nor Bool"
   | _ => .error "bounds: generalized body match scrutinee is neither List nor Bool"
 
+/-- A written generalized local must retain its actual declared HM/count
+    interface. Unannotated interfaces instead come from checked machine facts
+    at the consuming checker boundary, not from this semantic judgment. -/
+def LocalAnnotationOK (s : HMCountScheme.Scheme) : Option PolyTy → Prop
+  | none => True
+  | some annotation => ∃ declared : HMCountScheme.Annotated annotation
+      s.counts.quantified s.counts.captures s.counts.premises, declared.scheme = s
+
+/-- Local generalization may replace only fresh owned HM identities. Captured
+    source annotation identities and count scopes remain the parent's. -/
+structure LocalFrame (s : HMCountScheme.Scheme) (parentIds : List Nat) (rhs : Expr) where
+  owned : List Nat
+  arity : owned.length = s.hm.paramCount
+  distinct : owned.Nodup
+  fresh : ∀ i ∈ owned, i ∉ rhs.tyFreeVars ++ s.hm.body.freeVars
+  countFresh : ∀ i ∈ s.counts.quantified, i ∉ parentIds
+  capturesScoped : ∀ i ∈ s.counts.captures, i ∈ parentIds
+
+def localTypes (owned : List Nat) (parent : Nat → BoundsTy) (args : List BoundsTy) (i : Nat) : BoundsTy :=
+  match owned.idxOf? i with
+  | none => parent i
+  | some slot => SchemeUse.vector args slot
+
+def localSlots (ann : Option PolyTy) (parent : Nat → BoundsTy) (args : List BoundsTy) (i : Nat) : BoundsTy :=
+  let depth := (ann.map (·.paramCount)).getD 0
+  if i < depth then SchemeUse.vector args i else parent (i - depth)
+
+theorem localTypes_parent {owned parent args i} (fresh : i ∉ owned) :
+    localTypes owned parent args i = parent i := by
+  simp only [localTypes, List.idxOf?_eq_none_iff.mpr fresh]
+
+theorem LocalFrame.annotationTypes {s parentIds rhs} (frame : LocalFrame s parentIds rhs)
+    (parent : Nat → BoundsTy) (args : List BoundsTy) {i} (captured : i ∈ rhs.tyFreeVars) :
+    localTypes frame.owned parent args i = parent i := by
+  apply localTypes_parent
+  intro owned
+  exact frame.fresh i owned (List.mem_append_left _ captured)
+
+theorem localSlots_parent (ann : Option PolyTy) (parent : Nat → BoundsTy) (args : List BoundsTy) (i : Nat) :
+    localSlots ann parent args (i + (ann.map (·.paramCount)).getD 0) = parent i := by
+  simp only [localSlots]
+  rw [if_neg (by omega), Nat.add_sub_cancel]
+
 inductive ScopedBodyDerives :
     (Nat → BoundsTy) → (Nat → BoundsTy) → List Nat → Bindings →
     List Constraint → List BodyBinding → Expr → BoundsTy → Prop where
@@ -626,6 +674,15 @@ inductive ScopedBodyDerives :
   | letMono {env ann rhs body actual result} :
       ScopedHMAnnotation.BindingOK types slots ids rows Δ ann actual →
       ScopedBodyDerives types slots ids rows Δ env rhs actual → ScopedBodyDerives types slots ids rows Δ (.mono actual :: env) body result →
+      ScopedBodyDerives types slots ids rows Δ env (.letIn ann rhs body) result
+  | letExported {env ann rhs body s result} (frame : LocalFrame s ids rhs) :
+      LocalAnnotationOK s ann → rhs.varsBelow env.length = true →
+      (∀ calleeΔ found caller (used : HMCountScheme.Use s calleeΔ found caller),
+        ScopedBodyDerives (localTypes frame.owned types used.types) (localSlots ann slots used.types)
+          (s.counts.quantified ++ s.counts.captures ++ ids)
+          (CountAlgebra.compose (s.counts.quantified.zip used.counts) rows)
+          (Δ ++ used.countInstance.premises) env rhs used.bounds) →
+      ScopedBodyDerives types slots ids rows Δ (.exported s :: env) body result →
       ScopedBodyDerives types slots ids rows Δ env (.letIn ann rhs body) result
   | match_ {env scrut branches result} {ctx : BodyBranchContext} {actuals : Nat → BoundsTy} :
       ScopedBodyDerives types slots ids rows Δ env scrut ctx.bounds → ctx.Covers Δ branches →
@@ -692,6 +749,10 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
   | lambda param _ ih => exact .lambda (param_assuming param hp) (ih hp)
   | letMono obligation _ _ ihr ihb =>
       exact .letMono (binding_assuming obligation hp) (ihr hp) (ihb hp)
+  | letExported frame annotation scope _ _ ihr ihb =>
+      exact .letExported frame annotation scope
+        (fun calleeΔ found caller used => ihr calleeΔ found caller used (RecursiveTyping.assuming_append hp))
+        (ihb hp)
   | match_ _ coverage patterns _ subs ihs iharms =>
       exact .match_ (ihs hp) (coverage.assuming hp) patterns
         (fun i br hb => iharms i br hb (RecursiveTyping.assuming_append hp))
@@ -728,6 +789,9 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
   | letMono _ _ _ ihr ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       exact ⟨ihr, by simpa only [List.length_cons] using ihb⟩
+  | letExported _ _ scope _ _ _ ihb =>
+      simp only [Expr.varsBelow, Bool.and_eq_true]
+      exact ⟨scope, by simpa only [List.length_cons] using ihb⟩
   | match_ _ _ patterns _ _ ihs ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       refine ⟨ihs, bodyBranches_scoped ?_⟩
@@ -845,6 +909,18 @@ inductive RuntimeReady :
       {hrhs : ScopedBodyDerives types slots ids rows Δ env rhs actual}
       {hbody : ScopedBodyDerives types slots ids rows Δ (.mono actual :: env) body result} :
       RuntimeReady hrhs → RuntimeReady hbody → RuntimeReady (.letMono annOK hrhs hbody)
+  | letExported
+      (frame : LocalFrame s ids rhs)
+      (annotation : LocalAnnotationOK s ann) (scope : rhs.varsBelow env.length = true)
+      (instances : ∀ calleeΔ found caller (used : HMCountScheme.Use s calleeΔ found caller),
+        ScopedBodyDerives (localTypes frame.owned types used.types) (localSlots ann slots used.types)
+          (s.counts.quantified ++ s.counts.captures ++ ids)
+          (CountAlgebra.compose (s.counts.quantified.zip used.counts) rows)
+          (Δ ++ used.countInstance.premises) env rhs used.bounds)
+      {hbody : ScopedBodyDerives types slots ids rows Δ (.exported s :: env) body result} :
+      (∀ calleeΔ found caller (used : HMCountScheme.Use s calleeΔ found caller),
+        (∀ a ∈ used.types, Runtime.Supported a) → RuntimeReady (instances calleeΔ found caller used)) →
+      RuntimeReady hbody → RuntimeReady (.letExported frame annotation scope instances hbody)
   | match_ {actuals : Nat → BoundsTy} {ctx : BodyBranchContext}
       {hs : ScopedBodyDerives types slots ids rows Δ env scrut ctx.bounds}
       (coverage : ctx.Covers Δ branches)
@@ -880,6 +956,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
   | lambda _ param _ result => exact .arrow param result
   | letMono _ _ _ _ body => exact body
+  | letExported _ _ _ _ _ _ _ body => exact body
   | match_ _ _ _ _ _ _ result => exact result
   | letRec _ _ _ _ _ body => exact body
 
@@ -949,6 +1026,28 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           have rhsClosed := e.closes (by assumption)
           let opened := (e.down hb hf (by omega : j ≤ j + 1)).extendMono _ _ rhsClosed
             (ihr j premises (e.down hb hf (by omega)))
+          have bodySafe := ihb j premises opened
+          apply Runtime.TermAt.prepend SmallStep.Step.letReduce
+          change Runtime.TermAt bound free σ j _ (Expr.substN 0 (_ :: e.terms) _) at bodySafe
+          rw [Runtime.closing_singleton e.terms e.closed _ rhsClosed]
+          exact bodySafe
+  | letExported frame annotation scope instances _ bodyReady ihr ihb =>
+      rename_i s ownIds rhs ann ownEnv ownTypes ownSlots ownRows pathΔ body result hbody rhsReady
+      intro budget premises e
+      cases budget with
+      | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+      | succ j =>
+          have rhsClosed := Runtime.closing_scoped e.terms e.closed _ 0
+            (by simpa only [Nat.zero_add, e.arity] using scope)
+          let previous := e.down hb hf (by omega : j ≤ j + 1)
+          have rhsSafe : BodyBindingAt bound free σ j (.exported s) (rhs.substN 0 e.terms) := by
+            intro calleeΔ found caller used arguments rawPremises
+            apply ihr calleeΔ found caller used arguments j ?_ previous
+            intro p member
+            rcases List.mem_append.mp member with outer | raw
+            · exact premises p outer
+            · exact rawPremises p raw
+          let opened := previous.extend (.exported s) (rhs.substN 0 e.terms) rhsClosed rhsSafe
           have bodySafe := ihb j premises opened
           apply Runtime.TermAt.prepend SmallStep.Step.letReduce
           change Runtime.TermAt bound free σ j _ (Expr.substN 0 (_ :: e.terms) _) at bodySafe
@@ -1055,6 +1154,11 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
   | app sub _ _ ihf iha => exact .app (sub.assuming hp) (ihf hp) (iha hp)
   | lambda annOK param _ ih => exact .lambda (param_assuming annOK hp) param (ih hp)
   | letMono annOK _ _ ihr ihb => exact .letMono (binding_assuming annOK hp) (ihr hp) (ihb hp)
+  | letExported frame annotation scope instances _ _ ihr ihb =>
+      exact .letExported frame annotation scope
+        (fun calleeΔ found caller used => (instances calleeΔ found caller used).assuming (RecursiveTyping.assuming_append hp))
+        (fun calleeΔ found caller used arguments => ihr calleeΔ found caller used arguments (RecursiveTyping.assuming_append hp))
+        (ihb hp)
   | match_ coverage patterns bodies subs _ _ result ihs ihb =>
       exact .match_ (coverage.assuming hp) patterns
         (fun i br atIndex => (bodies i br atIndex).assuming (RecursiveTyping.assuming_append hp))

@@ -277,6 +277,118 @@ example {output metadata Δ} (program : ProgramResult output metadata)
 #print axioms scopedBodyTyping
 #print axioms scopedBodyRuntimeSafe
 
+private def runtimeLocalRhs : Expr := .lambda (some (.bvar 0)) (.var 0)
+private def runtimeLocalProgram : Expr := .letIn (some runtimeIdScheme.hm) runtimeLocalRhs runtimePolyBody
+
+private theorem runtimeLocalAnnotation : LocalAnnotationOK runtimeIdScheme (some runtimeIdScheme.hm) := by
+  let declared : HMCountScheme.Annotated runtimeIdScheme.hm [] [] [] :=
+    { source :=
+        { annotation :=
+            { bounds := .arrow (.bvar 0) (.bvar 0)
+              inScope := ⟨True.intro, True.intro⟩
+              shape := by simp [runtimeIdScheme, Synth.BoundsTy.toTy, Ty.eraseBounds] }
+          wf := runtimeIdScheme.countWF
+          decoded := by simp [runtimeIdScheme, ScopedAnnotation.decode, pure, Except.pure,
+            bind, Except.bind] }
+      hmWF := runtimeIdScheme.hmWF }
+  refine ⟨declared, ?_⟩
+  simp [declared, HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme,
+    runtimeIdScheme, PolyTy.eraseBounds, Ty.eraseBounds]
+
+private def runtimeLocalFrame : LocalFrame runtimeIdScheme [] runtimeLocalRhs where
+  owned := [91]
+  arity := rfl
+  distinct := by decide
+  fresh := by simp [runtimeLocalRhs, Expr.tyFreeVars, runtimeIdScheme, Ty.freeVars]
+  countFresh := by simp [runtimeIdScheme]
+  capturesScoped := by simp [runtimeIdScheme]
+
+private theorem runtimeLocalParam (types slots : Nat → BoundsTy) :
+    ScopedHMAnnotation.ParamOK types slots [] [] []
+      (some (.bvar 0)) (slots 0) := by
+  refine ⟨⟨.bvar 0, True.intro, by simp [Synth.BoundsTy.toTy, Ty.eraseBounds]⟩,
+    by simp [ScopedAnnotation.decode, pure, Except.pure], ?_⟩
+  exact SemanticSub.refl _ _
+
+private theorem runtimeLocalInstances (calleeΔ : List Constraint) (found : Ty) (caller : List Nat)
+    (used : HMCountScheme.Use runtimeIdScheme calleeΔ found caller) :
+    ScopedBodyDerives (localTypes runtimeLocalFrame.owned BoundsTy.fvar used.types)
+      (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types)
+      (runtimeIdScheme.counts.quantified ++ runtimeIdScheme.counts.captures ++ [])
+      (CountAlgebra.compose (runtimeIdScheme.counts.quantified.zip used.counts) [])
+      ([] ++ used.countInstance.premises) [] runtimeLocalRhs used.bounds := by
+  have typed : ScopedBodyDerives (localTypes runtimeLocalFrame.owned BoundsTy.fvar used.types)
+      (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types) [] [] [] []
+      runtimeLocalRhs (.arrow
+        (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types 0)
+        (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types 0)) :=
+    .lambda (runtimeLocalParam _ _) (.varMono rfl)
+  simpa only [localSlots, runtimeIdScheme, Option.map_some, Option.getD_some,
+    Nat.zero_lt_succ, ↓reduceIte, HMCountScheme.Use.bounds, ScopedScheme.Instance.premises,
+    List.nil_append, List.zip_nil_left, List.map_nil, CountAlgebra.compose,
+    TypeSubstitution.combined, CountSubstitution.bounds, TypeSubstitution.substitute] using typed
+
+private theorem runtimeLocalCasesReady (calleeΔ : List Constraint) (found : Ty) (caller : List Nat)
+    (used : HMCountScheme.Use runtimeIdScheme calleeΔ found caller)
+    (arguments : ∀ a ∈ used.types, Runtime.Supported a) :
+    BodyDerives.RuntimeReady (runtimeLocalInstances calleeΔ found caller used) := by
+  have element : Runtime.Supported (SchemeUse.vector used.types 0) := by
+    cases atIndex : used.types[0]? with
+    | none => simp only [SchemeUse.vector, atIndex, Option.getD_none]; exact .prim
+    | some a =>
+        simpa only [SchemeUse.vector, atIndex, Option.getD_some] using
+          arguments a (List.mem_of_getElem? atIndex)
+  have ready : BodyDerives.RuntimeReady
+      (ScopedBodyDerives.lambda
+        (env := [])
+        (runtimeLocalParam (localTypes runtimeLocalFrame.owned BoundsTy.fvar used.types)
+          (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types))
+        (ScopedBodyDerives.varMono (i := 0) rfl)) := by
+    have scopedElement : Runtime.Supported
+        (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types 0) := by
+      simpa [localSlots, runtimeIdScheme] using element
+    exact .lambda (ann := some (.bvar 0)) (runtimeLocalParam _ _) scopedElement
+      (.varMono (i := 0) rfl scopedElement)
+  simpa only [localSlots, runtimeIdScheme, Option.map_some, Option.getD_some,
+    Nat.zero_lt_succ, ↓reduceIte, HMCountScheme.Use.bounds, ScopedScheme.Instance.premises,
+    List.nil_append, List.zip_nil_left, List.map_nil, CountAlgebra.compose,
+    TypeSubstitution.combined, CountSubstitution.bounds, TypeSubstitution.substitute] using ready
+
+private theorem runtimeLocalTyping : BodyDerives [] [] [] [] runtimeLocalProgram (.prim .char) :=
+  ScopedBodyDerives.letExported runtimeLocalFrame runtimeLocalAnnotation (by decide)
+    runtimeLocalInstances runtimePolyTyping
+
+private theorem runtimeLocalReady : BodyDerives.RuntimeReady runtimeLocalTyping :=
+  .letExported (s := runtimeIdScheme) (ann := some runtimeIdScheme.hm)
+    (ids := []) (rows := []) (Δ := []) (env := [])
+    runtimeLocalFrame runtimeLocalAnnotation (by decide) runtimeLocalInstances runtimeLocalCasesReady runtimePolyReady
+
+/-- Instantiating a local telescope cannot reinterpret a captured source identity. -/
+example {s ids rhs} (frame : LocalFrame s ids rhs) (parent : Nat → BoundsTy)
+    (arguments : List BoundsTy) (captured : 90 ∈ rhs.tyFreeVars) :
+    localTypes frame.owned parent arguments 90 = parent 90 :=
+  frame.annotationTypes parent arguments captured
+
+/-- Slots beyond the local telescope retain the enclosing annotation interpretation. -/
+example (parent : Nat → BoundsTy) (arguments : List BoundsTy) :
+    localSlots (some runtimeIdScheme.hm) parent arguments 1 = parent 0 := by
+  simpa [runtimeIdScheme] using localSlots_parent (some runtimeIdScheme.hm) parent arguments 0
+
+/-- A generalized LOCAL is introduced from actual universal RHS derivations,
+    then used at Int and Char. No generalized runtime contract is postulated. -/
+theorem universalLocalRuntimeSafe (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free) :
+    Runtime.Safe bound free σ (.prim .char) runtimeLocalProgram :=
+  runtimeLocalReady.safeClosed bound free σ hb hf (by simp)
+
+theorem incorrectUniversalRhsRejected {types slots ids rows Δ env} :
+    ¬ ScopedBodyDerives types slots ids rows Δ env (.primLit (.int 1)) (.prim .char) := by
+  intro typing
+  cases typing
+
+#print axioms universalLocalRuntimeSafe
+#print axioms incorrectUniversalRhsRejected
+
 private def unsupportedIntermediate : Except String Bool := do
   let opaqueName : TyName := ⟨"Opaque"⟩
   let domain := BoundsTy.custom opaqueName []
@@ -568,6 +680,12 @@ def main : IO Unit := do
     | .ok _ => throw (IO.userError s!"unexpected deferred RHS acceptance: {name}")
 
 #eval do
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  unless (inferFound ctors runtimeLocalProgram).isSome do
+    throw (IO.userError "universal local runtime fixture is not accepted by the actual HM layer")
+  unless (inferFound ctors (.letIn (some ⟨1, .bvar 0⟩)
+      (.primLit (.int 1)) (.primLit (.int 0)))).isNone do
+    throw (IO.userError "a constant RHS satisfied an unjustified forall-a-a local annotation")
   match unsupportedIntermediate with
   | .ok true => IO.println "PASS: a supported root cannot hide an unsupported intermediate runtime domain"
   | .ok false => throw (IO.userError "unsupported intermediate type acquired a runtime witness")
