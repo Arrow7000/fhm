@@ -63,6 +63,10 @@ private def mutualCopy : String :=
   "  \\(xs : BL n n Int) -> match xs with | [] -> [] | h :: t -> h :: f t\n" ++
   "f [1, 2, 3]\n"
 
+private def unannotatedCopy (body : String := "(h + 0) :: f t") : String :=
+  "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+  "  \\xs -> match xs with | [] -> [] | h :: t -> " ++ body ++ "\n"
+
 private def provenanceRejected (modify : TypedLowered → TypedLowered) : Except String Unit := do
   let a ← artifact (selfSource ++ "f []\n")
   let _ ← RecursiveFound.synthNodes (modify a)
@@ -137,6 +141,25 @@ private def cases : List (String × Bool) := [
     "  \\(xs : BL n n Int) -> let ys : BL n n Int = " ++
     "match xs with | [] -> [] | h :: t -> h :: t in\n" ++
     "    (\\(ignored : List Int) -> ys) (f ys)\nf [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed unannotated recursive List parameter uses declared count bounds", returns
+    (run (unannotatedCopy ++ "f [1, 2, 3]\n")) "BL 3 3 Int"),
+  ("parsed unannotated recursive copy still checks count zero", returns
+    (run (unannotatedCopy ++ "f []\n")) "BL 0 0 Int"),
+  ("parsed unannotated parameter does not excuse a bad recursive length", fails
+    (run (unannotatedCopy "1 :: ((h + 0) :: f t)" ++ "f []\n")) "interval inclusion"),
+  ("parsed generalized parameter HM identity still requires specialization", fails (run (
+    "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+    "  \\xs -> match xs with | [] -> [] | h :: t -> h :: f t\nf []\n")) "needs specialization"),
+  ("parsed higher-order argument receives captured declared count bounds", returns (run (
+    "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+    "  \\(xs : BL n n Int) -> " ++
+    "(\\(g : BL n n Int -> BL n n Int) -> " ++
+    "(\\(ignored : List Int) -> g xs) (f xs)) (\\ys -> ys)\nf [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed higher-order argument cannot satisfy a false result bound", fails (run (
+    "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+    "  \\(xs : BL n n Int) -> " ++
+    "(\\(g : BL n n Int -> BL (n + 1) (n + 1) Int) -> " ++
+    "(\\(ignored : List Int) -> xs) (f xs)) (\\ys -> ys)\nf []\n")) "interval inclusion"),
   ("missing source origins reject report adapter", fails (provenanceRejected (fun a =>
     {a with lowering := {a.lowering with coreOrigins := []}})) "incomplete typed provenance"),
   ("duplicate source origins reject report adapter", fails (provenanceRejected (fun a =>
