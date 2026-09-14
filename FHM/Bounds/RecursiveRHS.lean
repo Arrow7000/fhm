@@ -63,11 +63,13 @@ structure Checked (c : Declared) (env : List Binding) where
   typed : RecursiveWalk.Result (c.counts.quantified ++ c.counts.captures) []
     (c.counts.quantified ++ c.counts.captures) c.counts.premises env rhs.expr
   certificate : Certified c env rhs.expr.stripFound rhs.annotation
+  actualEq : certificate.actual = typed.bounds
 
 structure LocatedChecked (c : Declared) (env : List Binding) (rhs : ScopedDeclaration.RHS) where
   typed : RecursiveWalk.Result (c.counts.quantified ++ c.counts.captures) []
     (c.counts.quantified ++ c.counts.captures) c.counts.premises env rhs.expr
   certificate : Certified c env rhs.expr.stripFound rhs.annotation
+  actualEq : certificate.actual = typed.bounds
 
 /-- Check an already located RHS against its explicit count telescope. The
     group checker supplies children directly from its found root; standalone
@@ -96,7 +98,7 @@ def checkLocated (schemes : BinderSchemeMap) (quantified : List Nat)
           intro d hd i hi
           simpa [environmentOK, List.contains_iff_mem] using
             List.all_eq_true.mp (List.all_eq_true.mp he _ hd) i hi }
-    pure ⟨actual, cert⟩
+    pure ⟨actual, cert, rfl⟩
   else throw "bounds: recursive RHS environment violates capture or quantified-count freshness"
 
 /-- The telescope is reconciled at the exact Core site. No quantified IDs are
@@ -107,7 +109,7 @@ def check (output : Expr) (schemes : BinderSchemeMap) (metadata : Scope.Metadata
   let rhs ← ScopedDeclaration.locate output site
   let quantified ← ScopedDeclaration.telescope metadata site
   let checked ← checkLocated schemes quantified rhs c env
-  pure ⟨rhs, checked.typed, checked.certificate⟩
+  pure ⟨rhs, checked.typed, checked.certificate, checked.actualEq⟩
 
 #print axioms use
 #print axioms check

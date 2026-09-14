@@ -1495,3 +1495,40 @@ inclusion; then connect generalized group-exit/source-annotation obligations
 and the executable fixed-HM artifact interpretation seam before enabling the
 polymorphic decoder path. Nested groups inside universally checked RHSs remain
 outside this deliberately explicit no-group fragment.
+
+### Checkpoint 4u — joint universal recursive RHS contract certificates
+
+`RecursiveHMUniversal.Certified` packages a real recursive RHS derivation at a
+checked opaque interface, exact actual HM shape, actual count scope and separate
+semantic demand inclusion. HM-template captures and recursive count captures
+have explicit freshness premises. `use` jointly quantifies over every finite
+scoped count instance and full locally closed/scoped HM vector of exact arity.
+It proves the unchanged RHS derivation under the uniformly specialized recursive
+environment, preserves actual RHS bounds, proves contract inclusion, and provides
+the exact relational HM instance and caller count scope. Count substitution is
+performed BEFORE inserting caller HM bounds, including nested caller counts.
+
+`close_counts` certifies the count/HM closure interchange used to specialize
+actual intervals rather than overwrite them with the demand. A kernel-checked
+self-recursive identity example covers arbitrary full HM bounds and arbitrary
+finite scoped count vectors; a concrete equality checks a caller count ID equal
+to the callee telescope ID stays caller-owned inside the inserted type.
+
+Existing `RecursiveRHS.Checked` / `LocatedChecked` now carry `actualEq`, linking
+their certificate's actual bounds to their typed output's actual bounds. This
+local artifact agreement is proved by construction and lets `fromChecked` /
+`fromLocatedChecked` reuse genuine checked count scope. These bridges certify
+existing executable RHSs in the joint universal judgement without guessing bounds
+from their HM shape. They do not remove monomorphic source guards or reclassify
+decoded assumptions as accepted implementations.
+
+Full 1775-job build, parsed-source regressions and scratch HM audit pass (28
+accepted / eight expected rejections / zero failures); boundary/whitespace guards
+pass. New proofs use standard Lean axioms only. No new axioms, placeholders or
+partials; HM/D2, Path R and production launch remain unchanged.
+
+Next is exact source-annotation agreement for the closed universal contract,
+followed by the generalized group-exit/environment reconciliation and executable
+fixed-HM found-payload interpretation. The explicitly specialized environment in
+`use` is not yet a whole-group/generalized-export judgement; its reconciliation
+must be proved, not assumed from per-member universal certificates.

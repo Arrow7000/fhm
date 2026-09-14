@@ -1,4 +1,4 @@
-import FHM.Bounds.RecursiveHMJudgement
+import FHM.Bounds.RecursiveHMUniversal
 
 namespace FHM.Bounds.RecursiveHMJudgementTests
 
@@ -111,5 +111,53 @@ theorem recursiveIdentityAllBounds (arg : BoundsTy) (ids : List Nat)
 
 #print axioms annotatedIdentityAllBounds
 #print axioms recursiveIdentityAllBounds
+
+private def universal : RecursiveHMUniversal.Certified scheme contract.hm [] [.recursive contract] loop :=
+  { opening := opening
+    actual := .arrow (exact (.fvar 90)) (exact (.fvar 90))
+    shape := opening.shape
+    actualScope := by simp [scheme, exact, ScopedScheme.BoundsScoped, Scope.CountScoped, n]
+    typing := recursiveIdentity
+    inclusion := SemanticSub.refl _ _
+    typeFresh := by
+      intro c hc i hi ht
+      have hc : c = contract := by simpa using hc
+      subst c
+      simp [contract, scheme, Ty.freeVars, TyList.freeVars, listTy] at ht
+    countFresh := by
+      intro c hc i hi
+      have hc : c = contract := by simpa using hc
+      subst c
+      simp [contract, scheme] at hi }
+
+/-- Joint quantification is kernel-checked for any finite scoped count vector
+    and full caller bounds argument, not sampled at a few primitive types. -/
+theorem jointRecursiveInstances {counts caller} (inst : ScopedScheme.Instance scheme.counts counts caller)
+    (arg : BoundsTy) (lc : (Synth.BoundsTy.toTy arg).IsLC)
+    (scope : ScopedScheme.BoundsScoped caller arg) :
+    ∃ types env, Derives types [7] (scheme.counts.quantified.zip counts) inst.premises env loop
+      (RecursiveHMUniversal.actual universal counts [arg]) ∧
+    SemanticSub inst.premises (RecursiveHMUniversal.actual universal counts [arg])
+      (RecursiveHMUniversal.demand scheme counts [arg]) ∧
+    scheme.hm.InstantiatesTo [Synth.BoundsTy.toTy arg]
+      (Synth.BoundsTy.toTy (RecursiveHMUniversal.actual universal counts [arg])) ∧
+    ScopedScheme.BoundsScoped caller (RecursiveHMUniversal.actual universal counts [arg]) := by
+  have h := RecursiveHMUniversal.use universal inst [arg] rfl
+    (by
+      intro a ha
+      have he : a = arg := by simpa using ha
+      subst a
+      exact lc)
+    (by simpa using ScopedScheme.boundsScopedBool_complete scope)
+  exact ⟨_, _, h⟩
+
+example : RecursiveHMUniversal.demand scheme [.lit 3] [.list n n (.prim .int)] =
+    .arrow (.list (.lit 3) (.lit 3) (.list n n (.prim .int)))
+      (.list (.lit 3) (.lit 3) (.list n n (.prim .int))) := by
+  simp [RecursiveHMUniversal.demand, TypeSubstitution.combined, TypeSubstitution.substitute,
+    CountSubstitution.bounds, CountSubstitution.count, CountSubstitution.lookup,
+    SchemeUse.vector, scheme, exact, n]
+
+#print axioms jointRecursiveInstances
 
 end FHM.Bounds.RecursiveHMJudgementTests
