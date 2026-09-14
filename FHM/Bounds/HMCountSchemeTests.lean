@@ -53,6 +53,27 @@ private def nestedCollision : Bool :=
       a == callerCount && b == callerCount && a' == callerCount && b' == callerCount
   | _ => false
 
+private def preciseRHS : Except String Bool := do
+  let s ← template ⟨1, .arrow annList (.bl (.solid (.lit 0)) (.solid n) (.bvar 0))⟩
+  let o ← openFixed s identityHM [90] []
+  let actual := BoundsTy.arrow (exact n (.fvar 90)) (exact n (.fvar 90))
+  let shape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy actual) identityHM.eraseBounds with
+    | some h => pure h
+    | none => throw "test: actual RHS shape mismatch"
+  let a := o.abstractActual actual shape.down
+  let _ ← Typed.subtype [] actual o.bounds
+  pure (match BinderBridge.close a.ids actual with
+    | .arrow (.list lo hi (.bvar 0)) (.list lo' hi' (.bvar 0)) =>
+        lo == n && hi == n && lo' == n && hi' == n
+    | _ => false)
+
+private def falseRHS : Except String Unit := do
+  let s ← template
+  let o ← openFixed s identityHM [90] []
+  let actual := BoundsTy.arrow (exact n (.fvar 90)) (exact (.lit 0) (.fvar 90))
+  let _ ← Typed.subtype [] actual o.bounds
+  pure ()
+
 private def cases : List (String × Bool) := [
   ("closed forall/count identity decodes without inventing an RHS", succeeds template),
   ("opaque opening agrees with the actual free HM identity", succeeds opens),
@@ -102,7 +123,11 @@ private def cases : List (String × Bool) := [
     (use [.lit 2] [.prim .int] [] (identityHM (.prim .int)) [⟨n, .lit 0⟩]) "premises"),
   ("opaque recursive assumption accepts count-only specialization", succeeds opaqueUse),
   ("opaque recursive assumption does not reopen HM quantifiers at calls", fails
-    (opaqueUse (identityHM (.prim .int))) "fixed HM monotype")]
+    (opaqueUse (identityHM (.prim .int))) "fixed HM monotype"),
+  ("closing a more precise RHS preserves its actual intervals", match preciseRHS with
+    | .ok ok => ok | _ => false),
+  ("an HM-shaped RHS still must establish its claimed count inclusion", fails
+    falseRHS "interval inclusion")]
 
 example {s Δ found caller} (u : Use s Δ found caller) :
     ScopedScheme.BoundsScoped caller u.bounds := u.inScope
@@ -153,6 +178,43 @@ theorem formalAllBounds (arg : BoundsTy) :
   simpa only [formalScheme, exact, TypeSubstitution.substitute] using o.rhs_instances formalRHS (fun _ => arg)
 
 #print axioms formalAllBounds
+
+private def formalDemand : Scheme :=
+  { formalScheme with
+    counts := ⟨[7], [], [], .arrow (exact n (.bvar 0)) (.list (.lit 0) n (.bvar 0))⟩
+    countWF := ScopedScheme.Scheme.wfBool_sound (by decide)
+    shape := by simp [formalScheme, exact, Synth.BoundsTy.toTy, listTy, FHM.Bounds.listTyName] }
+
+private def formalDemandOpening : Opening formalDemand identityHM [] :=
+  ⟨formalOpening.ids, formalOpening.arity, formalOpening.distinct, formalOpening.fresh,
+    (by simp [opened, formalDemand, formalScheme, formalOpening, TypeSubstitution.substitute, SchemeUse.vector,
+      exact, Synth.BoundsTy.toTy, identityHM, listTy, Ty.eraseBounds, TyList.eraseBounds,
+      FHM.Bounds.listTyName]), formalOpening.lc⟩
+
+/-- Generalization preserves the tighter identity RHS and proves its weaker
+    declared result demand, for every caller bounds type. -/
+theorem formalPreciseAllBounds (arg : BoundsTy) :
+    Typed.Derives [] [] (.lambda none (.var 0)) (.arrow (exact n arg) (exact n arg)) ∧
+    SemanticSub [] (.arrow (exact n arg) (exact n arg))
+      (.arrow (exact n arg) (.list (.lit 0) n arg)) := by
+  let o : Opening formalDemand identityHM
+      ([].map Synth.BoundsTy.toTy ++ (Expr.lambda none (.var 0)).tyFreeVars.map Ty.fvar) := formalDemandOpening
+  have sub : SemanticSub [] formalOpening.bounds o.bounds := by
+    change SemanticSub [] (.arrow (exact n (.fvar 90)) (exact n (.fvar 90)))
+      (.arrow (exact n (.fvar 90)) (.list (.lit 0) n (.fvar 90)))
+    refine .arrow (SemanticSub.refl _ _) (.list ?_ .fvar)
+    intro σ _ g hg
+    simp [Interval.subGoals] at hg
+    rcases hg with rfl | rfl
+    · change ExtNat.le (.ofNat 0) (n.eval σ)
+      cases n.eval σ <;> simp [ExtNat.le]
+    · exact ExtNat.le_refl _
+  have h := o.rhs_subinstances formalRHS formalOpening.shape sub (fun _ => arg)
+  simpa [formalDemand, formalScheme, formalOpening, Opening.bounds, opened,
+    exact, BinderBridge.close, SchemeUse.vector, SchemeSpecialization.argument,
+    TypeSubstitution.substitute] using h
+
+#print axioms formalPreciseAllBounds
 
 private def formalVacuousScheme : Scheme :=
   { hm := ⟨1, .arrow (.prim .int) (.prim .int)⟩

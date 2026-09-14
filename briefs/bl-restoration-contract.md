@@ -1377,3 +1377,28 @@ interfaces, not HM re-instantiation at recursive calls and not runtime
 type-passing elaborata. Valid HM RHSs more general than a declared signature also
 need a checked payload interpretation/specialization seam, not another inference
 pass or an unchecked cast of their found root.
+
+### Checkpoint 4r — generalize actual RHS intervals and contract inclusion together
+
+`Opening.abstractActual` uses the checked opaque slot vector to close an actual
+RHS bounds type with the authoritative HM shape. It preserves the actual count
+payloads; it does not replace them with the annotation's intervals.
+`Opening.rhs_subinstances` requires both a genuine initial-fragment RHS derivation
+and independently proved semantic inclusion in the opened contract. Every full
+caller bounds specialization then retains the actual RHS derivation AND its
+inclusion in the exact closed contract. Decoding an HM-shaped demand is still
+not an RHS proof, and this theorem is not recursive-group introduction.
+
+A kernel-checked universally quantified identity example preserves exact `n`
+result bounds while meeting a weaker `0..n` demand for any caller bounds type.
+Executable regressions check that closing retains the tighter intervals and
+reject an HM-shaped RHS claiming an unjustified exact result count. All 28
+HM/count interface regressions pass, as do the full 1768-job build and all 89
+parsed-source regressions. Scratch HM audit remains 28 accepted / eight expected
+rejections / zero failures; boundary and whitespace guards pass. New theorem
+proofs use standard Lean axioms only. No new axioms, placeholders or partial
+definitions; HM/D2, Path R and production launch remain unchanged.
+
+Next is a closed-template/fixed-HM-argument recursive assumption interface and
+its count-only use/specialization proofs, retaining the count-first/type-second
+boundary before integrating universal recursive RHS and group-exit rules.
