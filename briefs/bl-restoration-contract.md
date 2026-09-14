@@ -950,3 +950,34 @@ parser partials remain under `FHM/Unverified`. Existing positive solver trust an
 legacy Bounds placeholders are unchanged. Runtime soundness, annotation HM
 opening/specialization, exit generalization, matches and unified product launch
 remain future work.
+
+### Checkpoint 4f — semantic branch upper/lower candidates
+
+`BranchMerge` specifies structural upper and lower candidates independently of
+the solver. List upper candidates use interval union; lower candidates use
+intersection. Arrow domains flip the mode, including through nested arrows;
+codomains retain it. Successful construction carries a `Combines` derivation.
+Proved consequences establish both semantic inclusions at every premise context,
+exact agreement with both input HM spines, and preservation of explicit count
+scope. No unrestricted principality/minimality theorem is claimed.
+
+This deliberately does not reuse legacy `joinBoundsTy`: that function unions
+arrow domains as well as results and has an HM-shape theorem, not the semantic
+upper-bound guarantee needed here. For example, merging domains of exact lengths
+one and two must not make both functions callable on either length. Their safe
+upper function candidate has the empty intersection domain `[2,1]`. Such an
+interval fabricates no inhabitant and is not evidence that an arm is unreachable.
+The legacy launch remains untouched until unified-pipeline migration.
+
+Sixteen solver-free regressions cover unions/intersections, disjoint domains,
+higher-order variance, nested Lists, infinity, symbolic counts and fixed HM
+identity/constructor boundaries. Full HM/Bounds/editor/CLI build passes (1759
+jobs); scratch HM audit remains 28 accepted / eight expected rejections / zero
+failures. Boundary/whitespace guards pass. All new merge proofs/construction use
+only standard Lean axioms; no new solver trust, placeholders or partials.
+
+This is match groundwork, not acceptance of matches. Path-refined coverage and
+branch typing are still needed. Annotated recursive functions additionally need
+branch results checked against their common declared result under each path's
+assumptions; an unconditional interval union alone can lose the correlation
+needed for an exact length-preserving contract. HM/D2 and Path R are unchanged.
