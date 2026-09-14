@@ -144,8 +144,9 @@ Current runtime bridge: `Runtime.subtype` proves value-meaning inclusion;
 `ValueAt.down`/`TermAt.down` prove finite-budget weakening under valid semantic
 type environments; `Safe.step`, `Safe.progress` and `Safe.list_length` give
 observable consequences of the runtime target. These use only standard Lean
-axioms. They do NOT establish that accepted checker derivations imply `Safe`:
-the fundamental theorem in gates 2–3 remains required before claiming BL safety.
+axioms. These consequences alone do NOT establish that accepted checker
+artifacts imply `Safe`; group introduction and the artifact bridge remain
+required before claiming end-to-end BL safety.
 
 Runtime compatibility now covers ordinary application at the SAME finite
 budget, beta/lambda introduction, literal/Nil/Cons value meanings and Cons
@@ -163,11 +164,27 @@ callee's count telescope. Kernel-checked examples prove identity preserves any
 full type meaning and refute both nonempty-Nil claims and a callback whose actual
 beta reduct drops a singleton to Nil. These are proofs, not PASS/FAIL printing.
 
-The remaining ordinary-rule obligations are closing-term
-substitution/environment lemmas and deriving selected-arm semantic premises
-from the static refined branch environment. Scheme/group introduction still
-needs its fundamental proof. Compatibility hypotheses are NOT counted as proofs
-that checker derivations establish them. No CLI/LSP acceptance was enabled.
+The ordinary RHS fundamental theorem is now
+`ScopedDerives.RuntimeReady.termAt`: the existing supported derivation, established
+path premises and a realizing `EnvAt` imply safety of the actual closed term at
+every finite budget. It covers all ordinary RHS rules, including call-by-name
+`let`, higher-order application and refined List/Bool matches. `safeClosed`
+discharges the environment obligation for closed ordinary terms. `RuntimeReady`
+is proof metadata indexed by the existing derivation, not another checker or
+language acceptance judgment; it records supported INTERMEDIATE types as well
+as the root. A kernel fixture derives the safety of a List-tail function from
+its actual Nil/Cons typing derivation.
+
+`firstMatch_unclose` recovers the original selected branch after capture closing;
+coverage and first-match precedence survive closing. `EnvAt.listBranch` derives
+Nil/Cons arithmetic refinements from concrete lengths and constructs the exact
+head-first/tail-second branch environment. `closing_compose` then identifies
+branch reduction with that combined closing substitution. Recursive variables
+are still conditional on a REALIZING environment: ALL-member cyclic environment
+construction and scheme/group introduction remain the next fundamental-proof
+obligations. The checker/artifact bridge must also establish readiness throughout
+its supported fragment; a supported root alone is insufficient. No CLI/LSP
+acceptance was enabled.
 
 Validation of the runtime compatibility/specialization batch:
 `lake build FHM FHMBounds fhm` passes (1806 jobs). Every displayed runtime theorem

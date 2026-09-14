@@ -209,6 +209,283 @@ theorem EnvAt.varRecursive {bound free σ budget env i c Δ caller}
 #print axioms EnvAt.varMono
 #print axioms EnvAt.varRecursive
 
+theorem EnvAt.closes {bound free σ budget env types slots ids rows Δ expr β}
+    (e : EnvAt bound free σ budget env)
+    (h : ScopedDerives types slots ids rows Δ env expr β) :
+    (expr.substN 0 e.terms).varsBelow 0 = true := by
+  apply Runtime.closing_scoped e.terms e.closed expr 0
+  simpa only [Nat.zero_add, e.arity] using h.varsBelow
+
+/-- The actual contents selected by a List match realize exactly the branch
+    context, and justify its arithmetic path premises. No branch-local count
+    assumption is added without a corresponding concrete constructor. -/
+theorem EnvAt.listBranch {bound free σ budget env lo hi elem v len name args pat body branches}
+    (e : EnvAt bound free σ budget env)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (list : Runtime.ListValue (Runtime.ValueAt bound free σ (budget + 1) elem) v len)
+    (contained : (⟨lo, hi⟩ : Interval).Contains σ (.ofNat len))
+    (applied : SmallStep.CtorAppliedTo v name args)
+    (selected : SmallStep.FirstMatchingBranch name args.length branches pat body)
+    (pattern : RecursiveTyping.ListPattern pat) :
+    (∀ p ∈ RecursiveTyping.branchRefine pat lo hi, p.Holds σ) ∧
+      ∃ opened : EnvAt bound free σ budget (branchEnv pat lo hi elem env),
+        opened.terms = args.take pat.bindCount ++ e.terms := by
+  rcases pattern with rfl | rfl | rfl
+  · simp only [RecursiveTyping.branchRefine, branchEnv, MatchPattern.bindCount,
+      List.take_zero, List.nil_append]
+    exact ⟨by simp [nilCtorName, consCtorName], by simpa [nilCtorName, consCtorName] using ⟨e, rfl⟩⟩
+  · cases list with
+    | nil =>
+        obtain ⟨rfl, rfl⟩ := applied.det (.base nilCtorName)
+        simp only [RecursiveTyping.branchRefine, branchEnv, MatchPattern.bindCount,
+          List.take_zero, List.nil_append]
+        exact ⟨by simpa using ListBranches.nil_refine contained,
+          by simpa [nilCtorName, consCtorName] using ⟨e, rfl⟩⟩
+    | @cons headTerm tailTerm n head tail =>
+        have canonical : SmallStep.CtorAppliedTo _ consCtorName [headTerm, tailTerm] :=
+          .step (.step (.base consCtorName))
+        obtain ⟨rfl, rfl⟩ := applied.det canonical
+        have fires := selected.ctor_eq
+        simp [MatchPattern.matchesCtor, nilCtorName, consCtorName] at fires
+  · cases list with
+    | nil =>
+        obtain ⟨rfl, rfl⟩ := applied.det (.base nilCtorName)
+        have fires := selected.ctor_eq
+        simp [MatchPattern.matchesCtor, nilCtorName, consCtorName] at fires
+    | @cons headTerm tailTerm n head tail =>
+        have canonical : SmallStep.CtorAppliedTo _ consCtorName [headTerm, tailTerm] :=
+          .step (.step (.base consCtorName))
+        obtain ⟨rfl, rfl⟩ := applied.det canonical
+        have headFacts := head
+        rw [Runtime.ValueAt.eq_def] at headFacts
+        have tailValue := tail.value (fun v hv => by rw [Runtime.ValueAt.eq_def] at hv; exact hv.1)
+        have tailClosed := tail.closed (fun v hv => by rw [Runtime.ValueAt.eq_def] at hv; exact hv.2.1)
+        have tailBounds : Runtime.ValueAt bound free σ (budget + 1)
+            (.list (.pred lo) (.pred hi) elem) tailTerm := by
+          rw [Runtime.ValueAt]
+          exact ⟨tailValue, tailClosed, n, tail, ListBranches.tail_contains contained⟩
+        let opened := (e.extendMono (.list (.pred lo) (.pred hi) elem) tailTerm tailClosed
+          (Runtime.TermAt.value tailValue (tailBounds.down hb hf (by omega)))).extendMono
+            elem headTerm headFacts.2.1
+            (Runtime.TermAt.value headFacts.1 (head.down hb hf (by omega)))
+        refine ⟨?_, ?_⟩
+        · simpa [RecursiveTyping.branchRefine, nilCtorName, consCtorName] using
+            ListBranches.cons_refine contained
+        · refine ⟨?_, ?_⟩
+          · simpa only [branchEnv, if_pos rfl] using opened
+          · rfl
+
+#print axioms EnvAt.listBranch
+
+namespace ScopedDerives
+
+/-- Proof-fragment metadata on an EXISTING derivation, not a second acceptance
+    judgment. Every intermediate type used by semantic inclusion must have a
+    justified runtime interpretation. In particular, supporting only the final
+    result would silently overlook an unsupported application domain. -/
+inductive RuntimeReady {types slots ids rows} :
+    {Δ : List Constraint} → {env : List Binding} → {e : Expr} → {β : BoundsTy} →
+    ScopedDerives types slots ids rows Δ env e β → Prop where
+  | literal : RuntimeReady (.literal (p := p))
+  | primBinOp : RuntimeReady (.primBinOp (op := op))
+  | nil : Runtime.Supported elem → RuntimeReady (.nil (elem := elem))
+  | boolCtor (nameOK : BoolBranches.IsCtor name) : RuntimeReady (.boolCtor nameOK)
+  | cons {hh : ScopedDerives types slots ids rows Δ env h head}
+      {ht : ScopedDerives types slots ids rows Δ env t (.list lo hi elem)}
+      (sub : SemanticSub Δ head elem) : RuntimeReady hh → RuntimeReady ht →
+      RuntimeReady (.cons hh ht sub)
+  | varMono (lookup : env[i]? = some (Binding.mono β)) :
+      Runtime.Supported β → RuntimeReady (.varMono lookup)
+  | varRecursive (lookup : env[i]? = some (Binding.recursive c))
+      (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) :
+      Runtime.Supported used.bounds → RuntimeReady (.varRecursive lookup used)
+  | app {hfn : ScopedDerives types slots ids rows Δ env f (.arrow domain result)}
+      {ha : ScopedDerives types slots ids rows Δ env arg actual}
+      (sub : SemanticSub Δ actual domain) : RuntimeReady hfn → RuntimeReady ha →
+      RuntimeReady (.app hfn ha sub)
+  | lambda {param : BoundsTy} (annOK : ScopedHMAnnotation.ParamOK types slots ids rows Δ ann param)
+      {hbody : ScopedDerives types slots ids rows Δ (.mono param :: env) body result} :
+      Runtime.Supported param → RuntimeReady hbody → RuntimeReady (.lambda annOK hbody)
+  | letMono (annOK : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann actual)
+      {hrhs : ScopedDerives types slots ids rows Δ env rhs actual}
+      {hbody : ScopedDerives types slots ids rows Δ (.mono actual :: env) body result} :
+      RuntimeReady hrhs → RuntimeReady hbody → RuntimeReady (.letMono annOK hrhs hbody)
+  | matchList {actuals : Nat → BoundsTy}
+      {hs : ScopedDerives types slots ids rows Δ env scrut (.list lo hi elem)}
+      (coverage : ListBranches.Covers Δ ⟨lo, hi⟩ branches)
+      (patterns : ∀ br ∈ branches, RecursiveTyping.ListPattern br.1)
+      (bodies : ∀ i br, branches[i]? = some br →
+        ScopedDerives types slots ids rows (Δ ++ RecursiveTyping.branchRefine br.1 lo hi)
+          (branchEnv br.1 lo hi elem env) br.2 (actuals i))
+      (subs : ∀ i br, branches[i]? = some br →
+        SemanticSub (Δ ++ RecursiveTyping.branchRefine br.1 lo hi) (actuals i) result) :
+      RuntimeReady hs → (∀ i br atIndex, RuntimeReady (bodies i br atIndex)) →
+      Runtime.Supported result → RuntimeReady (.matchList hs coverage patterns bodies subs)
+  | matchBool {actuals : Nat → BoundsTy}
+      {hs : ScopedDerives types slots ids rows Δ env scrut (.custom boolTyName [])}
+      (coverage : BoolBranches.Covers branches)
+      (patterns : ∀ br ∈ branches, BoolBranches.Pattern br.1)
+      (bodies : ∀ i br, branches[i]? = some br →
+        ScopedDerives types slots ids rows Δ env br.2 (actuals i))
+      (subs : ∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) :
+      RuntimeReady hs → (∀ i br atIndex, RuntimeReady (bodies i br atIndex)) →
+      Runtime.Supported result → RuntimeReady (.matchBool hs coverage patterns bodies subs)
+
+theorem RuntimeReady.supported {types slots ids rows Δ env e β}
+    {h : ScopedDerives types slots ids rows Δ env e β} (ready : RuntimeReady h) :
+    Runtime.Supported β := by
+  induction ready with
+  | literal => rename_i p; cases p <;> exact .prim
+  | primBinOp => rename_i op; cases op <;> exact .arrow .prim (.arrow .prim (by first | exact .prim | exact .bool))
+  | nil elem => exact .list elem
+  | boolCtor => exact .bool
+  | cons _ _ _ _ tail => cases tail with | list elem => exact .list elem
+  | varMono _ support | varRecursive _ _ support => exact support
+  | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
+  | lambda _ param _ result => exact .arrow param result
+  | letMono _ _ _ _ body => exact body
+  | matchList _ _ _ _ _ _ result | matchBool _ _ _ _ _ _ result => exact result
+
+/-- Fundamental theorem for the supported ordinary RHS rules. Recursive
+    variables are justified by a realizing environment, NOT by their declared
+    contract alone. Group introduction must construct that environment. -/
+theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
+    {h : ScopedDerives types slots ids rows Δ env expr β} (ready : RuntimeReady h)
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free) :
+    ∀ budget, (∀ p ∈ Δ, p.Holds σ) → (e : EnvAt bound free σ budget env) →
+      Runtime.TermAt bound free σ budget β (expr.substN 0 e.terms) := by
+  induction ready with
+  | literal =>
+      intro budget _ e
+      exact Runtime.TermAt.value (.primLit _) (Runtime.ValueAt.literal bound free σ budget _)
+  | primBinOp =>
+      intro budget _ e
+      exact Runtime.TermAt.value (.primBinOp _) (Runtime.ValueAt.primBinOp bound free σ budget _)
+  | nil _ =>
+      intro budget _ e
+      exact Runtime.TermAt.value (.ctor _) (Runtime.ValueAt.nil bound free σ budget _)
+  | boolCtor nameOK =>
+      intro budget _ e
+      exact Runtime.TermAt.value (.ctor _) (Runtime.ValueAt.bool bound free σ budget _ nameOK)
+  | cons sub headReady tailReady ihh iht =>
+      intro budget premises e
+      have tailSupport := tailReady.supported
+      cases tailSupport with
+      | list elemSupport =>
+          exact Runtime.TermAt.cons hb hf
+            ((ihh budget premises e).of_values (Runtime.subtype sub headReady.supported elemSupport bound free σ premises))
+            (iht budget premises e)
+  | varMono lookup _ =>
+      intro budget _ e
+      exact e.varMono lookup
+  | varRecursive lookup used _ =>
+      intro budget premises e
+      exact e.varRecursive lookup used premises
+  | app sub fnReady argReady ihf iha =>
+      intro budget premises e
+      have fnSupport := fnReady.supported
+      cases fnSupport with
+      | arrow domainSupport _ =>
+          exact Runtime.TermAt.app hb hf (ihf budget premises e)
+            ((iha budget premises e).of_values
+              (Runtime.subtype sub argReady.supported domainSupport bound free σ premises))
+  | lambda annOK _ bodyReady ih =>
+      intro budget premises e
+      apply Runtime.TermAt.value (.lambda _ _)
+      apply Runtime.ValueAt.lambda
+      · exact e.closes (.lambda annOK (by assumption))
+      · intro j before arg argument
+        have facts := argument
+        rw [Runtime.ValueAt.eq_def] at facts
+        let opened := (e.down hb hf (by omega : j ≤ budget)).extendMono _ arg facts.2.1
+          (Runtime.TermAt.value facts.1 (argument.down hb hf (by omega)))
+        have bodySafe := ih j premises opened
+        change Runtime.TermAt bound free σ j _ (Expr.substN 0 (arg :: e.terms) _) at bodySafe
+        rw [Runtime.closing_singleton e.terms e.closed arg facts.2.1]
+        exact bodySafe
+  | letMono annOK rhsReady bodyReady ihr ihb =>
+      intro budget premises e
+      cases budget with
+      | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+      | succ j =>
+          have rhsClosed := e.closes (by assumption)
+          let opened := (e.down hb hf (by omega : j ≤ j + 1)).extendMono _ _ rhsClosed
+            (ihr j premises (e.down hb hf (by omega)))
+          have bodySafe := ihb j premises opened
+          apply Runtime.TermAt.prepend SmallStep.Step.letReduce
+          change Runtime.TermAt bound free σ j _ (Expr.substN 0 (_ :: e.terms) _) at bodySafe
+          rw [Runtime.closing_singleton e.terms e.closed _ rhsClosed]
+          exact bodySafe
+  | matchList coverage patterns bodies subs scrutReady branchReady resultSupport ihs ihb =>
+      rename_i pathΔ branchEnv' scrut lo hi elem branches result actuals hs
+      intro budget premises e
+      rw [Runtime.closing_match]
+      apply Runtime.TermAt.matchList (ihs budget premises e)
+        (Runtime.listCoverage_close coverage e.terms) premises
+      intro j before v len name args pat closedBody list contained applied selected
+      obtain ⟨body, original, rfl⟩ := Runtime.firstMatch_unclose e.terms selected
+      obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp original.mem
+      obtain ⟨refined, opened, terms⟩ := (e.down hb hf (by omega : j ≤ budget)).listBranch
+        hb hf list contained applied original (patterns _ original.mem)
+      have path : ∀ p ∈ pathΔ ++ RecursiveTyping.branchRefine pat lo hi, p.Holds σ := by
+        intro p member
+        rcases List.mem_append.mp member with outer | localPath
+        · exact premises p outer
+        · exact refined p localPath
+      have branchSafe := (ihb i (pat, body) atIndex j path opened).of_values
+        (Runtime.subtype (subs i (pat, body) atIndex) (branchReady i _ atIndex).supported
+          resultSupport bound free σ path)
+      rw [terms] at branchSafe
+      have contentsLength : (args.take pat.bindCount).length = pat.bindCount := by
+        have arity := opened.arity
+        rw [terms, List.length_append] at arity
+        change (args.take pat.bindCount).length + e.terms.length =
+          (branchEnv pat lo hi elem branchEnv').length at arity
+        rw [e.arity] at arity
+        rcases patterns _ original.mem with rfl | rfl | rfl <;>
+          simp [branchEnv, MatchPattern.bindCount, nilCtorName, consCtorName] at arity ⊢ <;> omega
+      have contentsClosed : ∀ term ∈ args.take pat.bindCount, term.varsBelow 0 = true := by
+        intro term member
+        exact opened.closed term (by rw [terms]; exact List.mem_append_left _ member)
+      have closing := Runtime.closing_compose e.terms (args.take pat.bindCount) e.closed contentsClosed body 0
+      simp only [Nat.zero_add, contentsLength] at closing
+      rw [closing]
+      exact branchSafe
+  | matchBool coverage patterns bodies subs scrutReady branchReady resultSupport ihs ihb =>
+      intro budget premises e
+      rw [Runtime.closing_match]
+      apply Runtime.TermAt.matchBool (ihs budget premises e)
+        (Runtime.boolCoverage_close coverage e.terms)
+      intro j before name pat closedBody nameOK selected
+      obtain ⟨body, original, rfl⟩ := Runtime.firstMatch_unclose e.terms selected
+      obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp original.mem
+      have zero : pat.bindCount = 0 := by
+        rcases patterns _ original.mem with rfl | rfl | rfl <;> rfl
+      simp only [zero, List.take_zero]
+      rw [Expr.substN_of_closed (e.closes (bodies i (pat, body) atIndex))]
+      exact (ihb i (pat, body) atIndex j premises (e.down hb hf (by omega))).of_values
+        (Runtime.subtype (subs i (pat, body) atIndex) (branchReady i _ atIndex).supported
+          resultSupport bound free σ premises)
+
+#print axioms RuntimeReady.supported
+#print axioms RuntimeReady.termAt
+
+theorem RuntimeReady.safeClosed {types slots ids rows Δ expr β}
+    {h : ScopedDerives types slots ids rows Δ [] expr β} (ready : RuntimeReady h)
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (premises : ∀ p ∈ Δ, p.Holds σ) : Runtime.Safe bound free σ β expr := by
+  intro budget
+  let empty : EnvAt bound free σ budget [] :=
+    ⟨[], rfl, by simp, by intro i inside; simp at inside⟩
+  have safe := ready.termAt bound free σ hb hf budget premises empty
+  simpa only [Expr.substN_of_closed h.varsBelow] using safe
+
+#print axioms RuntimeReady.safeClosed
+
+end ScopedDerives
+
 
 namespace Derives
 abbrev literal {types : Nat → BoundsTy} := @ScopedDerives.literal types BoundsTy.bvar

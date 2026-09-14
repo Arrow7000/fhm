@@ -35,6 +35,18 @@ theorem ListValue.map {p q : Expr → Prop} (hpq : ∀ v, p v → q v)
   | nil => exact .nil
   | cons hh _ ih => exact .cons (hpq _ hh) ih
 
+theorem ListValue.value {p : Expr → Prop} (elements : ∀ v, p v → SmallStep.IsValue v)
+    (list : ListValue p v n) : SmallStep.IsValue v := by
+  induction list with
+  | nil => exact .ctor _
+  | cons hh _ ih => exact .ctorApp (.app (.ctor _) (elements _ hh)) ih
+
+theorem ListValue.closed {p : Expr → Prop} (elements : ∀ v, p v → v.varsBelow 0 = true)
+    (list : ListValue p v n) : v.varsBelow 0 = true := by
+  induction list with
+  | nil => rfl
+  | cons hh _ ih => simp only [Expr.varsBelow, elements _ hh, ih, Bool.and_self]
+
 private theorem ctorChain_value (h : SmallStep.IsCtorChain e) : SmallStep.IsValue e := by
   cases h with
   | ctor name => exact .ctor name
@@ -134,6 +146,71 @@ private theorem subst_match (scrut : Expr) (branches : List (MatchPattern × Exp
   change Expr.match_ _ (((Expr.match_ scrut branches).substN depth terms).matchBranchesOf) = _
   rw [subst_match_branches]
 
+/-- Close captures without changing patterns or first-match precedence. -/
+def closeBranches (terms : List Expr) (branches : List (MatchPattern × Expr)) :=
+  branches.map (fun br => (br.1, br.2.substN br.1.bindCount terms))
+
+theorem closing_match (scrut : Expr) (branches : List (MatchPattern × Expr))
+    (terms : List Expr) :
+    (Expr.match_ scrut branches).substN 0 terms =
+      .match_ (scrut.substN 0 terms) (closeBranches terms branches) := by
+  simpa only [closeBranches, Nat.zero_add] using subst_match scrut branches 0 terms
+
+theorem firstMatch_close {name arity branches pat body}
+    (selected : SmallStep.FirstMatchingBranch name arity branches pat body) (terms : List Expr) :
+    SmallStep.FirstMatchingBranch name arity (closeBranches terms branches)
+      pat (body.substN pat.bindCount terms) := by
+  induction selected with
+  | here fires => exact .here fires
+  | there misses _ ih => exact .there misses ih
+
+/-- Recover the original branch proof, rather than guessing a source body
+    from the result of substitution. -/
+theorem firstMatch_unclose {name arity branches pat closedBody} (terms : List Expr)
+    (selected : SmallStep.FirstMatchingBranch name arity (closeBranches terms branches) pat closedBody) :
+    ∃ body, SmallStep.FirstMatchingBranch name arity branches pat body ∧
+      closedBody = body.substN pat.bindCount terms := by
+  induction branches with
+  | nil => cases selected
+  | cons br rest ih =>
+      cases selected with
+      | here fires => exact ⟨br.2, .here fires, rfl⟩
+      | there misses next =>
+          obtain ⟨body, original, same⟩ := ih next
+          exact ⟨body, .there misses original, same⟩
+
+private theorem member_close {pat body branches} (member : (pat, body) ∈ branches)
+    (terms : List Expr) : (pat, body.substN pat.bindCount terms) ∈ closeBranches terms branches :=
+  List.mem_map.mpr ⟨(pat, body), member, rfl⟩
+
+theorem listCoverage_close {Δ i branches} (coverage : ListBranches.Covers Δ i branches)
+    (terms : List Expr) : ListBranches.Covers Δ i (closeBranches terms branches) := by
+  cases coverage with
+  | full hn hc =>
+      obtain ⟨bn, hn⟩ := hn
+      obtain ⟨bc, hc⟩ := hc
+      exact .full ⟨_, member_close hn terms⟩ ⟨_, member_close hc terms⟩
+  | emptyOnly valid hn =>
+      obtain ⟨body, hn⟩ := hn
+      exact .emptyOnly valid ⟨_, member_close hn terms⟩
+  | nonemptyOnly valid hc =>
+      obtain ⟨body, hc⟩ := hc
+      exact .nonemptyOnly valid ⟨_, member_close hc terms⟩
+  | wildcard hw =>
+      obtain ⟨body, hw⟩ := hw
+      exact .wildcard ⟨_, member_close hw terms⟩
+
+theorem boolCoverage_close {branches} (coverage : BoolBranches.Covers branches)
+    (terms : List Expr) : BoolBranches.Covers (closeBranches terms branches) := by
+  cases coverage with
+  | full ht hf =>
+      obtain ⟨bt, ht⟩ := ht
+      obtain ⟨bf, hf⟩ := hf
+      exact .full ⟨_, member_close ht terms⟩ ⟨_, member_close hf terms⟩
+  | wildcard hw =>
+      obtain ⟨body, hw⟩ := hw
+      exact .wildcard ⟨_, member_close hw terms⟩
+
 private theorem subst_rec_bindings (terms : List Expr) (depth : Nat) (bindings : List Expr) :
     RecGroup.substN depth terms bindings = bindings.map (fun e => e.substN depth terms) := by
   induction bindings with
@@ -189,6 +266,13 @@ theorem closing_compose (outer inner : List Expr)
           ihbody (depth + bindings.length)
 
 #print axioms closing_compose
+
+theorem closing_singleton (outer : List Expr) (closed : ∀ e ∈ outer, e.varsBelow 0 = true)
+    (inner : Expr) (innerClosed : inner.varsBelow 0 = true) (body : Expr) :
+    (body.substN 1 outer).substN 0 [inner] = body.substN 0 (inner :: outer) := by
+  simpa only [List.length_singleton, Nat.zero_add, List.singleton_append] using
+    closing_compose outer [inner] closed
+      (by intro e member; obtain rfl := List.mem_singleton.mp member; exact innerClosed) body 0
 
 private theorem branches_scoped {depth branches}
     (h : ∀ br ∈ branches, br.2.varsBelow (depth + br.1.bindCount) = true) :
@@ -1052,6 +1136,11 @@ theorem Safe.not_dropping_callback (bound free : TypeEnv) (σ : Assign) :
   omega
 
 #print axioms subtype
+#print axioms closing_match
+#print axioms firstMatch_close
+#print axioms firstMatch_unclose
+#print axioms listCoverage_close
+#print axioms boolCoverage_close
 #print axioms ValueAt.down
 #print axioms TermAt.down
 #print axioms ValueAt.counts
