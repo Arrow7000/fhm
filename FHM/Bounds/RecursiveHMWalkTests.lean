@@ -54,15 +54,21 @@ private def recursive (isMutual : Bool := false) (wrongCall : Bool := false) : E
 private def monoApplication : Expr := .found (.fvar 90)
   (.app (.found identityHM (.var 0)) (.found (.fvar 90) (.var 1)))
 
-private def realArtifact (annotatedBinding : Bool := false) : Except String Bool := do
+private def realArtifact (annotatedBinding : Bool := false) (withMatch : Bool := false) : Except String Bool := do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
-  let source : Expr := .letIn (if annotatedBinding then some recursiveSignature else none)
-    (.lambda none (.var 0)) (.primLit (.int 0))
+  let contract := if withMatch then
+      PolyTy.mk 1 (.arrow (.bl (.solid n) (.solid n) (.bvar 0))
+        (.bl (.solid (.lit 0)) (.solid n) (.bvar 0)))
+    else recursiveSignature
+  let rhs : Expr := if withMatch then .lambda none (.match_ (.var 0)
+      [(.named consCtorName 2, .var 1), (.named nilCtorName 0, .ctor nilCtorName)])
+    else .lambda none (.var 0)
+  let source : Expr := .letIn (if annotatedBinding then some contract else none) rhs (.primLit (.int 0))
   let artifact ← match inferFound ctors source with
     | some artifact => pure artifact | none => throw "test: real HM artifact inference failed"
   let node ← HMFoundView.locate artifact.output [.letRhs]
   let skeleton ← Typed.shapeTop node.original.eraseBounds
-  let interface ← HMCountScheme.decodeAnnotated recursiveSignature [7] []
+  let interface ← HMCountScheme.decodeAnnotated contract [7] []
   let fresh := node.original.freeVars.foldl max 0 + 1
   let checked ← HMReconciliation.check node artifact.binderSchemes (.letIn [])
     interface.scheme skeleton [fresh] []
@@ -70,7 +76,8 @@ private def realArtifact (annotatedBinding : Bool := false) : Except String Bool
   let cert := RecursiveHMReconciled.fromAnnotated interface checked located.rhs
     (by intro c hc; cases hc) (by intro c hc; cases hc)
   let scopedInstance ← interface.scheme.counts.instantiate [.lit 2] []
-  let used := RecursiveHMSigned.atInterpretedNode node cert scopedInstance [.prim .int] rfl
+  let used := RecursiveHMSigned.atInterpretedNode node cert scopedInstance [.prim .int]
+    (by cases withMatch <;> simp [contract, recursiveSignature])
     (by
       intro a ha
       have he : a = BoundsTy.prim .int := by simpa using ha
@@ -78,7 +85,8 @@ private def realArtifact (annotatedBinding : Bool := false) : Except String Bool
       simp only [Synth.BoundsTy.toTy]
       exact .prim)
     (by decide)
-  pure (used.typed.actual.pretty == "BL 2 2 Int → BL 2 2 Int" &&
+  let expectedResult := if withMatch then "BL 2 2 Int → BL 0 2 Int" else "BL 2 2 Int → BL 2 2 Int"
+  pure (used.typed.actual.pretty == expectedResult &&
     exactlyOnce (logicalCorePaths (.found node.original node.inner))
       (located.nodes.map fun node => node.path.drop 1))
 
@@ -93,6 +101,33 @@ private def prematurePartial : Except String String := do
   let resultHM := Ty.arrow (listTy (.prim .int)) (listTy (.prim .int))
   run (.found resultHM (.app (.found hm (.var 0)) (.found (.prim .int) (.primLit (.int 1)))))
     [.recursive c] [] none []
+
+private def boolMatch (branches : List (MatchPattern × Expr)) : Expr :=
+  .found (listTy (.prim .int)) (.match_
+    (.found (.customTy boolTyName []) (.ctor BoolBranches.trueCtorName)) branches)
+private def boolArms : List (MatchPattern × Expr) := [
+  (.named BoolBranches.trueCtorName 0, .found (listTy (.prim .int)) (.ctor nilCtorName)),
+  (.named BoolBranches.falseCtorName 0, cons)]
+private def boolUnion : Except String Bool := do
+  let e := boolMatch boolArms
+  let r ← RecursiveHMWalk.walk types [] [] [] [] [] [] e []
+  pure (match r.bounds with
+    | .list lo hi (.prim .int) =>
+        match lo.eval (fun _ => 0), hi.eval (fun _ => 0) with
+        | .ofNat a, .ofNat b => a == 0 && b == 1 && exactlyOnce
+            (logicalCorePaths e) (r.nodes.map (·.path))
+        | _, _ => false
+    | _ => false)
+
+private def tailArms : List (MatchPattern × Expr) := [
+  (.named consCtorName 2, .found (listTy (.fvar 90)) (.var 1)),
+  (.named nilCtorName 0, .found (listTy (.fvar 90)) (.ctor nilCtorName))]
+private def tailMatch (branches : List (MatchPattern × Expr) := tailArms) : Expr :=
+  .found recursiveHM (.lambda none (.found (listTy (.fvar 90))
+    (.match_ (.found (listTy (.fvar 90)) (.var 0)) branches)))
+private def tailExpected : BoundsTy :=
+  .arrow (.list n n callerType) (.list (.lit 0) n callerType)
+private def trueResult (r : Except String Bool) : Bool := match r with | .ok ok => ok | _ => false
 
 private def succeeds (r : Except String α) : Bool := match r with | .ok _ => true | _ => false
 private def returns (r : Except String String) (s : String) : Bool := match r with | .ok a => a == s | _ => false
@@ -133,7 +168,25 @@ private def cases : List (String × Bool) := [
   ("annotated forall artifact cannot bypass the lexical bound-slot reader boundary", fails
     (realArtifact true) "missing inferred binder scheme"),
   ("partial recursive call cannot fix a later-domain count to a guessed zero", fails
-    prematurePartial "later argument origin")]
+    prematurePartial "later argument origin"),
+  ("Bool arms synthesize their variance-correct interval union with every node reported", trueResult boolUnion),
+  ("Bool match rejects missing constructor coverage", fails
+    (run (boolMatch (boolArms.take 1)) [] [] none []) "False coverage"),
+  ("Bool wildcard coverage works under interpreted checking", succeeds
+    (run (boolMatch [(.wildcard, cons)]) [] [] none [])),
+  ("Bool constructor-pattern arity cannot hide behind wildcard coverage", fails
+    (run (boolMatch [(.named BoolBranches.trueCtorName 1, cons), (.wildcard, cons)]) [] [] none []) "pattern or constructor arity"),
+  ("a common match demand checks all actual branches rather than asserting it", fails
+    (run (boolMatch boolArms) [] [] (some (.list (.lit 0) (.lit 0) (.prim .int))) []) "interval inclusion"),
+  ("List Cons/Nil arms retain interpreted element origins and path-refined tail bounds", returns
+    (run tailMatch [] [] (some tailExpected)) tailExpected.pretty),
+  ("List coverage still includes the empty case at an unknown caller length", !succeeds
+    (run (tailMatch (tailArms.take 1)) [] [] (some tailExpected))),
+  ("List constructor arity is checked before branch-environment extension", fails
+    (run (tailMatch [(.named consCtorName 1, .found (listTy (.fvar 90)) (.var 0)),
+      (.wildcard, .found (listTy (.fvar 90)) (.var 0))]) [] [] (some tailExpected)) "pattern or constructor arity"),
+  ("real List-match artifact constructs and specializes a universal RHS certificate", trueResult
+    (realArtifact false true))]
 
 def main : IO Unit := do
   for (name, ok) in cases do
