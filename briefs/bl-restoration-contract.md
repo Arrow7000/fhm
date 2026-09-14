@@ -387,6 +387,29 @@ mono-capture proof bridge is available, but this eliminator does not yet handle
 nonempty captured term environments or generalized captures. Production local
 guards therefore remain unchanged.
 
+Free source-reader reconciliation is now proved through the ordinary RHS
+judgment and all runtime readiness cases. `ScopedHMInterpretation.congrFree`
+and bounds-erasure membership preservation establish that reader changes
+outside carried annotation identities are irrelevant. Source obligations and
+`ScopedDerives.sourceFree` preserve the exact expression, implementation bounds,
+environment and count frames; readiness transport includes refined List/Bool
+arms. `RecursiveHMUniversal.Certified.sourceFree` retains the original opaque
+opening, actual implementation and independent demand inclusion. It explicitly
+does NOT assert a new found-artifact interpretation.
+
+The actual source-site reconciliation proves `Checked.sourceIdentity` using
+its existing protected annotation identities. `HMDeclaredRHS.certifySource`
+therefore recovers the canonical free source reader from checked RHS evidence,
+not metadata alone. Real declared-RHS regressions require supported readiness
+and transport it through this reconciliation, retaining the same actual bounds
+and opening identities. A named-source fixture checks that solving unrelated
+artifact identity 65 leaves source annotation identity 90 unchanged.
+
+Next at this boundary: lexical-slot reconciliation with the canonical local
+frame and exact report retention, followed by nonempty/generalized captured
+term environments and nested groups. Executable generalized-local acceptance
+remains guarded until this assembly is proved and exercised end to end.
+
 Next: generalized locals, enclosing bindings and nested groups, then the general
 artifact/report bridge and CLI/LSP migration. No whole-language BL runtime
 soundness or BL LSP support is claimed yet.

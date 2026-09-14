@@ -135,6 +135,16 @@ theorem Checked.interpretationLC {output site d quantified captures premises typ
       | some a => simpa only [SchemeUse.vector, ha, Option.getD_some] using
           c.argumentsLC a (List.mem_of_getElem? ha)
 
+/-- Flexible found identities may be solved, but identities named in carried
+    RHS annotations retain the source reader's original meaning. -/
+theorem Checked.sourceIdentity {output site d quantified captures premises typeCaptures}
+    (c : @Checked output site d quantified captures premises typeCaptures)
+    {i} (named : i ∈ d.node.inner.stripFound.tyFreeVars) :
+    c.interpretation i = .fvar i := by
+  have guarded : Ty.fvar i ∈ guardedTypes d typeCaptures :=
+    List.mem_cons_of_mem _ (List.mem_append_right _ (List.mem_map.mpr ⟨i, named, rfl⟩))
+  exact c.capturesFixed guarded (by simp [Ty.freeVars])
+
 theorem Checked.signatureIdentityFixed {output site d quantified captures premises typeCaptures}
     (c : @Checked output site d quantified captures premises typeCaptures)
     {i : Nat} (slot : i ∈ c.signatureIds) : c.interpretation i = .fvar i := by
@@ -222,6 +232,7 @@ def check {output site} (d : Declaration output site) (quantified captures : Lis
 #print axioms Checked.signatureIdentityFixed
 #print axioms Checked.interpretationScope
 #print axioms Checked.fixedTypes
+#print axioms Checked.sourceIdentity
 #print axioms check
 
 end FHM.Bounds.HMDeclaredReconciliation
