@@ -30,6 +30,16 @@ private def collectList (as bs : List BoundsTy) : Option (List (Nat × BoundsTy)
 termination_by sizeOf as + sizeOf bs
 end
 
+/-- Untrusted complete HM-slot proposals from an argument's full bounds.
+    This only collects structure: exact HM shape, local closure, caller scope
+    and semantic domain inclusion must still be checked by the consumer. -/
+def propose (pattern actual : BoundsTy) (arity : Nat) : Except String (List BoundsTy) := do
+  let uses ← match collect pattern actual with
+    | none => throw "bounds: unsupported structural argument bounds proposal"
+    | some uses => pure uses
+  pure ((List.range arity).map fun slot =>
+    ((uses.find? (fun row => row.1 == slot)).map Prod.snd).getD (.prim .unit))
+
 structure Result (Δ : List Constraint) (env : List Binding) (i : Nat) (arg : Expr)
     (functionHM resultHM : Ty) (scope : List Nat) where
   domain : BoundsTy
@@ -51,11 +61,7 @@ def check (Δ : List Constraint) (env : List Binding) (i : Nat) (arg : Expr)
   | some (.poly s) =>
       match body : s.body with
       | .arrow pattern result =>
-          let uses ← match collect pattern actual with
-            | none => throw "bounds: unsupported structural argument bounds proposal"
-            | some uses => pure uses
-          let args := (List.range s.hm.paramCount).map fun slot =>
-            ((uses.find? (fun row => row.1 == slot)).map Prod.snd).getD (.prim .unit)
+          let args ← propose pattern actual s.hm.paramCount
           let callee ← SchemeVariable.check Δ env i functionHM args scope
           have vb : callee.bounds = s.instantiate args := by
             rcases callee.selected with mono | ⟨selected, selectedAt, vb, _⟩

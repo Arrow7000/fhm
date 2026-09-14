@@ -686,3 +686,34 @@ Validation after 3t: full HM/Bounds/editor/CLI build passes (1741 jobs). Fresh
 scratch HM audit: 28 accepted / eight expected rejections / zero failures.
 Boundary and whitespace guards pass; no new axioms, placeholders or partial
 definitions were introduced. Executable inclusion retains positive solver trust.
+
+2026-09-14, checkpoint 3u: `CountApplication` connects a certified HM/count RHS
+use to an independently typed argument. Successful results retain function and
+argument derivations, both caller scopes, semantic argument-to-domain inclusion,
+and a derivation for the application with exact found function/result shapes.
+Explicit complete HM arguments cannot bypass the actual argument obligation.
+
+Structural HM proposals share `StructuralApplication.propose`; they preserve
+full argument bounds and remain untrusted until the same checking path succeeds.
+Slots absent from the domain receive Unit only, so a result-only List or other
+non-Unit HM slot still needs separately supplied full bounds. Count arguments
+remain explicit at this component boundary; count inference is not yet supplied.
+
+Twenty-five regressions use certificates constructed from actual lowered and
+inferred declaration RHS artifacts. They cover Nil/Cons lengths, an incrementing
+implementation, generic and nested origins, caller-count collisions, count
+scope/arity/finiteness, independently discharged premises, mismatched HM and
+result payloads, higher-order variance, result-only slots and scalar contracts.
+The existing structural application regressions also pass after sharing the
+proposal collector.
+
+These are applications of the certified RHS term, not uses of a recursively
+assumed variable. Recursive-group introduction/call environments, match rules,
+CLI/LSP migration, runtime length soundness and artifact coherence remain pending.
+The checker inherits only the established positive solver trust beyond standard
+Lean axioms. HM/D2 and bounds-blind Path R are unchanged.
+
+Validation after 3u: full HM/Bounds/editor/CLI build passes (1743 jobs). Fresh
+scratch HM audit: 28 accepted / eight expected rejections / zero failures.
+Boundary and whitespace guards pass; no new axioms, placeholders or partial
+definitions were introduced.
