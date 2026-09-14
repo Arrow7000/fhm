@@ -1849,3 +1849,25 @@ its executable walker by the lexical interface, retaining the current identity-
 slot API as compatibility. The scoped annotation reader alone does not yet accept
 declared-forall RHS artifacts, generalized local lets or groups, and no machine
 fact is fabricated for those annotated bindings.
+
+### Checkpoint 4ae — canonical lexical-interface RHS typing and transport
+
+`RecursiveHMJudgement.ScopedDerives` is now the canonical recursive RHS
+judgement, carrying independent free-identity and lexical-slot interfaces.
+Annotated lambda/mono-let obligations use `ScopedHMAnnotation`; all other rules,
+including fixed-HM recursive assumptions and List/Bool matches, remain unchanged.
+The original `Derives` API and constructor names are identity-slot compatibility
+views of this SAME judgement, not a separately maintained typing system.
+
+Whole-RHS HM and finite-count transport now transform BOTH interfaces. Existing
+closed-template capture protection remains explicit. The old transport theorems
+specialize these proofs to identity slots. Generic kernel regressions check an
+unchanged RHS containing both a bound-slot parameter and a captured free-identity
+parameter, and arbitrary full-type/count specialization of both interfaces.
+
+Full 1792-job build passes; scratch HM audit remains 28 accepted / eight expected
+rejections / zero failures. Boundary and whitespace checks pass. New judgement
+transport and regression proofs use only standard Lean axioms. No new solver
+axiom, placeholder or partial; HM/D2, Path R and production guards unchanged.
+The executable walker still needs this lexical interface; this checkpoint alone
+does not certify a declared-forall artifact or introduce/export a recursive group.

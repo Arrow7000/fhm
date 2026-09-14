@@ -118,6 +118,7 @@ roots = [
   "FHM.Bounds.HMInterpretation", # Proof-side source HM interpretation; complete caller types stay count-separated
   "FHM.Bounds.RecursiveHMJudgement", # Whole-RHS HM transport interprets source annotations and fixed recursive vectors
   "FHM.Bounds.RecursiveHMJudgementTests", # Kernel-checked annotated/recursive RHS specialization over full caller bounds
+  "FHM.Bounds.ScopedHMJudgementTests", # Unchanged lexical annotations and both-interface RHS specialization
   "FHM.Bounds.RecursiveHMEmbedding", # Existing checked RHSs embed with exact bounds and unchanged source terms
   "FHM.Bounds.RecursiveHMUniversal", # Joint full-HM/finite-count RHS derivations and independently proved contract inclusion
   "FHM.Bounds.RecursiveHMSigned", # Exact written signature agreement backed by joint universal RHS certificates

@@ -27,49 +27,67 @@ def branchEnv (p : MatchPattern) (lo hi : Count) (elem : BoundsTy) (env : List B
     .mono elem :: .mono (.list (.pred lo) (.pred hi) elem) :: env
   else env
 
-inductive Derives (types : Nat → BoundsTy) : List Nat → Bindings → List Constraint →
+inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings → List Constraint →
     List Binding → Expr → BoundsTy → Prop where
-  | literal {env p} : Derives types ids rows Δ env (.primLit p) (boundInfoOfPrimLit p)
-  | primBinOp {env op} : Derives types ids rows Δ env (.primBinOp op) (Typed.primOpBounds op)
-  | nil {env elem} : Derives types ids rows Δ env (.ctor nilCtorName) (.list (.lit 0) (.lit 0) elem)
+  | literal {env p} : ScopedDerives types slots ids rows Δ env (.primLit p) (boundInfoOfPrimLit p)
+  | primBinOp {env op} : ScopedDerives types slots ids rows Δ env (.primBinOp op) (Typed.primOpBounds op)
+  | nil {env elem} : ScopedDerives types slots ids rows Δ env (.ctor nilCtorName) (.list (.lit 0) (.lit 0) elem)
   | boolCtor {env name} : BoolBranches.IsCtor name →
-      Derives types ids rows Δ env (.ctor name) (.custom boolTyName [])
+      ScopedDerives types slots ids rows Δ env (.ctor name) (.custom boolTyName [])
   | cons {env h t head elem lo hi} :
-      Derives types ids rows Δ env h head → Derives types ids rows Δ env t (.list lo hi elem) →
+      ScopedDerives types slots ids rows Δ env h head → ScopedDerives types slots ids rows Δ env t (.list lo hi elem) →
       SemanticSub Δ head elem →
-      Derives types ids rows Δ env (.app (.app (.ctor consCtorName) h) t)
+      ScopedDerives types slots ids rows Δ env (.app (.app (.ctor consCtorName) h) t)
         (.list (.add lo (.lit 1)) (.add hi (.lit 1)) elem)
-  | varMono {env i β} : env[i]? = some (.mono β) → Derives types ids rows Δ env (.var i) β
+  | varMono {env i β} : env[i]? = some (.mono β) → ScopedDerives types slots ids rows Δ env (.var i) β
   | varRecursive {env i c caller} : env[i]? = some (.recursive c) →
       (u : RecursiveHMContract.Use c.fixed Δ c.hm caller) →
-      Derives types ids rows Δ env (.var i) u.bounds
+      ScopedDerives types slots ids rows Δ env (.var i) u.bounds
   | app {env f arg domain actual result} :
-      Derives types ids rows Δ env f (.arrow domain result) → Derives types ids rows Δ env arg actual →
-      SemanticSub Δ actual domain → Derives types ids rows Δ env (.app f arg) result
+      ScopedDerives types slots ids rows Δ env f (.arrow domain result) → ScopedDerives types slots ids rows Δ env arg actual →
+      SemanticSub Δ actual domain → ScopedDerives types slots ids rows Δ env (.app f arg) result
   | lambda {env ann body param result} :
-      HMInterpretation.ParamOK types ids rows Δ ann param →
-      Derives types ids rows Δ (.mono param :: env) body result →
-      Derives types ids rows Δ env (.lambda ann body) (.arrow param result)
+      ScopedHMAnnotation.ParamOK types slots ids rows Δ ann param →
+      ScopedDerives types slots ids rows Δ (.mono param :: env) body result →
+      ScopedDerives types slots ids rows Δ env (.lambda ann body) (.arrow param result)
   | letMono {env ann rhs body actual result} :
-      HMInterpretation.BindingOK types ids rows Δ ann actual →
-      Derives types ids rows Δ env rhs actual → Derives types ids rows Δ (.mono actual :: env) body result →
-      Derives types ids rows Δ env (.letIn ann rhs body) result
+      ScopedHMAnnotation.BindingOK types slots ids rows Δ ann actual →
+      ScopedDerives types slots ids rows Δ env rhs actual → ScopedDerives types slots ids rows Δ (.mono actual :: env) body result →
+      ScopedDerives types slots ids rows Δ env (.letIn ann rhs body) result
   | matchList {env scrut branches lo hi elem result} {actuals : Nat → BoundsTy} :
-      Derives types ids rows Δ env scrut (.list lo hi elem) →
+      ScopedDerives types slots ids rows Δ env scrut (.list lo hi elem) →
       ListBranches.Covers Δ ⟨lo, hi⟩ branches →
       (∀ br ∈ branches, RecursiveTyping.ListPattern br.1) →
       (∀ i br, branches[i]? = some br →
-        Derives types ids rows (Δ ++ RecursiveTyping.branchRefine br.1 lo hi)
+        ScopedDerives types slots ids rows (Δ ++ RecursiveTyping.branchRefine br.1 lo hi)
           (branchEnv br.1 lo hi elem env) br.2 (actuals i)) →
       (∀ i br, branches[i]? = some br →
         SemanticSub (Δ ++ RecursiveTyping.branchRefine br.1 lo hi) (actuals i) result) →
-      Derives types ids rows Δ env (.match_ scrut branches) result
+      ScopedDerives types slots ids rows Δ env (.match_ scrut branches) result
   | matchBool {env scrut branches result} {actuals : Nat → BoundsTy} :
-      Derives types ids rows Δ env scrut (.custom boolTyName []) → BoolBranches.Covers branches →
+      ScopedDerives types slots ids rows Δ env scrut (.custom boolTyName []) → BoolBranches.Covers branches →
       (∀ br ∈ branches, BoolBranches.Pattern br.1) →
-      (∀ i br, branches[i]? = some br → Derives types ids rows Δ env br.2 (actuals i)) →
+      (∀ i br, branches[i]? = some br → ScopedDerives types slots ids rows Δ env br.2 (actuals i)) →
       (∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) →
-      Derives types ids rows Δ env (.match_ scrut branches) result
+      ScopedDerives types slots ids rows Δ env (.match_ scrut branches) result
+
+/-- Compatibility view: the original API leaves lexical slots unchanged. -/
+abbrev Derives (types : Nat → BoundsTy) := ScopedDerives types BoundsTy.bvar
+
+namespace Derives
+abbrev literal {types : Nat → BoundsTy} := @ScopedDerives.literal types BoundsTy.bvar
+abbrev primBinOp {types : Nat → BoundsTy} := @ScopedDerives.primBinOp types BoundsTy.bvar
+abbrev nil {types : Nat → BoundsTy} := @ScopedDerives.nil types BoundsTy.bvar
+abbrev boolCtor {types : Nat → BoundsTy} := @ScopedDerives.boolCtor types BoundsTy.bvar
+abbrev cons {types : Nat → BoundsTy} := @ScopedDerives.cons types BoundsTy.bvar
+abbrev varMono {types : Nat → BoundsTy} := @ScopedDerives.varMono types BoundsTy.bvar
+abbrev varRecursive {types : Nat → BoundsTy} := @ScopedDerives.varRecursive types BoundsTy.bvar
+abbrev app {types : Nat → BoundsTy} := @ScopedDerives.app types BoundsTy.bvar
+abbrev lambda {types : Nat → BoundsTy} := @ScopedDerives.lambda types BoundsTy.bvar
+abbrev letMono {types : Nat → BoundsTy} := @ScopedDerives.letMono types BoundsTy.bvar
+abbrev matchList {types : Nat → BoundsTy} := @ScopedDerives.matchList types BoundsTy.bvar
+abbrev matchBool {types : Nat → BoundsTy} := @ScopedDerives.matchBool types BoundsTy.bvar
+end Derives
 
 def Contract.mapTypes (c : Contract) (f : Nat → BoundsTy)
     (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) : Contract :=
@@ -124,26 +142,26 @@ private theorem mapUse_bounds {c : Contract} {Δ caller} (u : RecursiveHMContrac
     (mapUse u f hf target scope).bounds = mapFree f u.bounds :=
   (RecursiveHMContract.map_combined c.template c.fixed.types _ f hf captured).symm
 
-private theorem param_types {types ids rows Δ ann β}
-    (h : HMInterpretation.ParamOK types ids rows Δ ann β) (f : Nat → BoundsTy) :
-    HMInterpretation.ParamOK (fun i => mapFree f (types i)) ids rows Δ ann (mapFree f β) := by
+private theorem param_types {types slots ids rows Δ ann β}
+    (h : ScopedHMAnnotation.ParamOK types slots ids rows Δ ann β) (f : Nat → BoundsTy) :
+    ScopedHMAnnotation.ParamOK (fun i => mapFree f (types i)) (fun i => mapFree f (slots i)) ids rows Δ ann (mapFree f β) := by
   cases ann with
   | none => trivial
   | some τ => exact h.types f
 
-private theorem binding_types {types ids rows Δ ann β}
-    (h : HMInterpretation.BindingOK types ids rows Δ ann β) (f : Nat → BoundsTy) :
-    HMInterpretation.BindingOK (fun i => mapFree f (types i)) ids rows Δ ann (mapFree f β) := by
+private theorem binding_types {types slots ids rows Δ ann β}
+    (h : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann β) (f : Nat → BoundsTy) :
+    ScopedHMAnnotation.BindingOK (fun i => mapFree f (types i)) (fun i => mapFree f (slots i)) ids rows Δ ann (mapFree f β) := by
   cases ann with
   | none => trivial
   | some σ => exact ⟨h.1, h.2.types f⟩
 
 /-- Full RHS HM transport, including annotated lambdas, lets, recursive calls
     and all match arms. One map interprets the whole source derivation. -/
-theorem transportTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
     (target : List Nat) (scope : ∀ i, ScopedScheme.BoundsScoped target (f i))
-    {types ids rows Δ env e β} (h : Derives types ids rows Δ env e β) (fresh : CapturesFixed f env) :
-    Derives (fun i => mapFree f (types i)) ids rows Δ (env.map (mapBinding f hf)) e (mapFree f β) := by
+    {types slots ids rows Δ env e β} (h : ScopedDerives types slots ids rows Δ env e β) (fresh : CapturesFixed f env) :
+    ScopedDerives (fun i => mapFree f (types i)) (fun i => mapFree f (slots i)) ids rows Δ (env.map (mapBinding f hf)) e (mapFree f β) := by
   induction h with
   | literal => cases ‹PrimLitExpr› <;> exact .literal
   | primBinOp => cases ‹PrimBinOp› <;> exact .primBinOp
@@ -161,7 +179,7 @@ theorem transportTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy 
   | letMono hp _ _ ihr ihb =>
       exact .letMono (binding_types hp f) (ihr fresh) (by simpa [mapBinding] using ihb (captures_cons fresh))
   | matchList _ hc hpat _ hsub ihscrut ihbranches =>
-      apply Derives.matchList (ihscrut fresh) hc hpat
+      apply ScopedDerives.matchList (ihscrut fresh) hc hpat
       · intro i br hb
         have ht := ihbranches i br hb (captures_branch fresh)
         by_cases hcbr : br.1 = .named consCtorName 2
@@ -198,17 +216,17 @@ private theorem count_captures_branch {outer env p lo hi elem} (h : CountCapture
   · exact count_captures_cons (count_captures_cons h)
   · exact h
 
-private theorem param_counts {types ids rows Δ ann β}
-    (h : HMInterpretation.ParamOK types ids rows Δ ann β) (outer : Bindings) (hf : Finite outer) :
-    HMInterpretation.ParamOK (fun i => bounds outer (types i)) ids (CountAlgebra.compose outer rows)
+private theorem param_counts {types slots ids rows Δ ann β}
+    (h : ScopedHMAnnotation.ParamOK types slots ids rows Δ ann β) (outer : Bindings) (hf : Finite outer) :
+    ScopedHMAnnotation.ParamOK (fun i => bounds outer (types i)) (fun i => bounds outer (slots i)) ids (CountAlgebra.compose outer rows)
       (Δ.map (constraint outer)) ann (bounds outer β) := by
   cases ann with
   | none => trivial
   | some τ => exact h.counts outer hf
 
-private theorem binding_counts {types ids rows Δ ann β}
-    (h : HMInterpretation.BindingOK types ids rows Δ ann β) (outer : Bindings) (hf : Finite outer) :
-    HMInterpretation.BindingOK (fun i => bounds outer (types i)) ids (CountAlgebra.compose outer rows)
+private theorem binding_counts {types slots ids rows Δ ann β}
+    (h : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann β) (outer : Bindings) (hf : Finite outer) :
+    ScopedHMAnnotation.BindingOK (fun i => bounds outer (types i)) (fun i => bounds outer (slots i)) ids (CountAlgebra.compose outer rows)
       (Δ.map (constraint outer)) ann (bounds outer β) := by
   cases ann with
   | none => trivial
@@ -216,11 +234,11 @@ private theorem binding_counts {types ids rows Δ ann β}
 
 /-- Whole-RHS count transport also maps counts inside inserted HM types. Closed
     callee telescopes stay protected and source annotations stay unchanged. -/
-theorem transportCounts (outer : Bindings) (hf : Finite outer) (target : List Nat)
+theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : List Nat)
     (scope : ∀ row ∈ outer, Scope.CountScoped target row.2)
-    {types ids rows Δ env e β} (h : Derives types ids rows Δ env e β)
+    {types slots ids rows Δ env e β} (h : ScopedDerives types slots ids rows Δ env e β)
     (fresh : CountCapturesFixed outer env) :
-    Derives (fun i => bounds outer (types i)) ids (CountAlgebra.compose outer rows)
+    ScopedDerives (fun i => bounds outer (types i)) (fun i => bounds outer (slots i)) ids (CountAlgebra.compose outer rows)
       (Δ.map (constraint outer)) (env.map (mapCountBinding outer)) e (bounds outer β) := by
   induction h with
   | literal => cases ‹PrimLitExpr› <;> exact .literal
@@ -243,7 +261,7 @@ theorem transportCounts (outer : Bindings) (hf : Finite outer) (target : List Na
       exact .letMono (binding_counts hp outer hf) (ihr fresh)
         (by simpa [mapCountBinding] using ihb (count_captures_cons fresh))
   | matchList _ hc hpat _ hsub ihscrut ihbranches =>
-      apply Derives.matchList (ihscrut fresh) (hc.transport outer hf) hpat
+      apply ScopedDerives.matchList (ihscrut fresh) (hc.transport outer hf) hpat
       · intro i br hb
         have ht := ihbranches i br hb (count_captures_branch fresh)
         by_cases hcbr : br.1 = .named consCtorName 2
@@ -258,6 +276,24 @@ theorem transportCounts (outer : Bindings) (hf : Finite outer) (target : List Na
         (fun i br hb => ihbranches i br hb fresh)
         (fun i br hb => CountSubstitution.subtype outer hf (hsub i br hb))
 
+/-- Identity-slot specialization of the canonical scoped transport. -/
+theorem transportTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (target : List Nat) (scope : ∀ i, ScopedScheme.BoundsScoped target (f i))
+    {types ids rows Δ env e β} (h : Derives types ids rows Δ env e β) (fresh : CapturesFixed f env) :
+    Derives (fun i => mapFree f (types i)) ids rows Δ (env.map (mapBinding f hf)) e (mapFree f β) := by
+  simpa only [mapFree] using transportScopedTypes f hf target scope h fresh
+
+/-- Identity-slot specialization of the canonical scoped count transport. -/
+theorem transportCounts (outer : Bindings) (hf : Finite outer) (target : List Nat)
+    (scope : ∀ row ∈ outer, Scope.CountScoped target row.2)
+    {types ids rows Δ env e β} (h : Derives types ids rows Δ env e β)
+    (fresh : CountCapturesFixed outer env) :
+    Derives (fun i => bounds outer (types i)) ids (CountAlgebra.compose outer rows)
+      (Δ.map (constraint outer)) (env.map (mapCountBinding outer)) e (bounds outer β) := by
+  simpa only [bounds] using transportScopedCounts outer hf target scope h fresh
+
+#print axioms transportScopedTypes
+#print axioms transportScopedCounts
 #print axioms transportTypes
 #print axioms transportCounts
 
