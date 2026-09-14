@@ -115,6 +115,8 @@ private def bodyCalls (badLocal : Bool := false) (polyLocal : Bool := false)
     else a.output
   let program ← RecursiveHMUniform.checkClosedProgram output metadata a.binderSchemes
   let result := program.body
+  if !result.runtimeSafety?.isSome then
+    throw "test: supported recursive Int/Char body report lost its runtime theorem"
   let exact := match result.bounds with
     | .list lo hi elem =>
         let inner := match elem with
@@ -226,6 +228,16 @@ theorem generalizedBodyRuntimeSafe (bound free : Runtime.TypeEnv) (σ : Assign)
 
 #print axioms generalizedBodyRuntimeSafe
 
+private def unsupportedIntermediate : Except String Bool := do
+  let opaqueName : TyName := ⟨"Opaque"⟩
+  let domain := BoundsTy.custom opaqueName []
+  let e := Expr.found (.prim .int)
+    (.app (.found (.arrow (.customTy opaqueName []) (.prim .int)) (.var 0))
+      (.found (.customTy opaqueName []) (.var 1)))
+  let result ← RecursiveHMWalk.walkScoped BoundsTy.fvar BoundsTy.bvar [] [] [] []
+    [.mono (.arrow domain (.prim .int)), .mono domain] [] e []
+  pure ((Runtime.supported? result.bounds).isSome && !result.runtimeReady.isSome)
+
 private def bodyMatches (kind : Nat) (onlyNil : Bool := false) (onlyCons : Bool := false)
     (badDemand : Bool := false) :
     Except String Bool := do
@@ -248,6 +260,8 @@ private def bodyMatches (kind : Nat) (onlyNil : Bool := false) (onlyCons : Bool 
   let metadata : Scope.Metadata := { telescopes := [⟨.letRec [] 0, [(⟨"n"⟩, 7)]⟩] }
   let expected := if badDemand then some (BoundsTy.list (.lit 2) (.lit 2) (.prim .int)) else none
   let program ← checkClosedProgram a.output metadata a.binderSchemes expected
+  if !program.body.runtimeSafety?.isSome then
+    throw "test: supported recursive List/Bool match report lost its runtime theorem"
   let exact := match program.body.bounds with
     | .list lo hi _ => lo.eval (fun _ => 0) == .ofNat 0 &&
         hi.eval (fun _ => 0) == .ofNat (if kind == 0 then 1 else 0)
@@ -316,6 +330,8 @@ private def fullBodySpine (kind : Nat := 0) (badFirst : Bool := false)
     | e => e
     else a.output
   let program ← checkClosedProgram output metadata a.binderSchemes
+  if !program.body.runtimeSafety?.isSome then
+    throw "test: supported full recursive application spine lost its runtime theorem"
   let exact := match program.body.bounds with
     | .list lo hi (.prim p) => lo.eval (fun _ => 0) == .ofNat (if kind == 0 then 2 else 1) &&
         hi.eval (fun _ => 0) == .ofNat (if kind == 0 then 2 else 1) &&
@@ -357,6 +373,8 @@ private def fullMutualSpine : Except String Bool := do
     [⟨.letRec [] 0, [(⟨"n"⟩, 7), (⟨"m"⟩, 8)]⟩,
       ⟨.letRec [] 1, [(⟨"p"⟩, 9), (⟨"q"⟩, 10)]⟩] }
   let program ← checkClosedProgram a.output metadata a.binderSchemes
+  if !program.body.runtimeSafety?.isSome then
+    throw "test: supported mutual recursive spines lost their runtime theorem"
   let exact := match program.body.bounds with
     | .list lo hi (.prim .int) => lo.eval (fun _ => 0) == .ofNat 1 && hi.eval (fun _ => 0) == .ofNat 1
     | _ => false
@@ -380,6 +398,8 @@ private def deferredRecursiveProgram (badCallback : Bool := false) (onlyDeferred
     | some a => pure a | none => throw "test: deferred recursive callback HM inference failed"
   let metadata : Scope.Metadata := { telescopes := [⟨.letRec [] 0, [(⟨"n"⟩, 7)]⟩] }
   let program ← checkClosedProgram a.output metadata a.binderSchemes
+  if !program.body.runtimeSafety?.isSome then
+    throw "test: deferred recursive callback lost its runtime theorem"
   let exact := match program.body.bounds with
     | .list lo hi (.prim .int) => lo.eval (fun _ => 0) == .ofNat 1 && hi.eval (fun _ => 0) == .ofNat 1
     | _ => false
@@ -497,6 +517,12 @@ def main : IO Unit := do
         unless (message.splitOn part).length > 1 do throw (IO.userError s!"wrong deferred RHS rejection ({name}): {message}")
         IO.println s!"PASS: {name}"
     | .ok _ => throw (IO.userError s!"unexpected deferred RHS acceptance: {name}")
+
+#eval do
+  match unsupportedIntermediate with
+  | .ok true => IO.println "PASS: a supported root cannot hide an unsupported intermediate runtime domain"
+  | .ok false => throw (IO.userError "unsupported intermediate type acquired a runtime witness")
+  | .error message => throw (IO.userError s!"fragment metadata changed static acceptance: {message}")
 
 #eval main
 

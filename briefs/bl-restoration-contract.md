@@ -287,8 +287,33 @@ local binder. These theorems require source-member and intermediate-type
 readiness, not merely a supported root; their dependencies exclude the
 arithmetic oracle and `sorryAx`.
 
-Next: establish readiness at the checker/artifact
-boundary. This does not yet prove whole-program checker soundness or enable BL LSP.
+The existing canonical RHS/body traversals now BUILD runtime readiness while
+building their original static derivations. `ScopedResult.runtimeReady`,
+exact-node `TypedChecked.runtimeReady` and `BodyResult.runtimeReady` carry an
+optional proof witness. Application/constructor/local/branch assembly consumes
+the actual child witnesses; no proof is inferred from root support alone.
+`MemberChecked.runtimeReady` transports the original RHS witness through the
+existing common-environment reconciliation, and `CheckedMembers.runtimeReady`
+collects ALL original member witnesses and supported declaration demands.
+Closed group checking uses those and the real body witness to construct the
+group's readiness. `BodyResult.runtimeSafety?` extracts the resulting theorem
+for the EXACT erased input artifact and inferred bounds.
+
+`Runtime.supported?` is a total proof-producing check for the current runtime
+type fragment, with completeness proved for `Runtime.Supported`; unsupported
+cases simply have no witness. Static acceptance is unchanged, and CLI/LSP
+production is still guarded. Regression gates require runtime theorem witnesses
+for actual Int/Char exit uses, full/mutual/deferred recursive spines and List/Bool
+matches. A negative gate checks that a supported Int root with an unsupported
+intermediate custom-type domain does NOT get a runtime witness.
+
+This closes supported runtime readiness at the canonical CLOSED-root
+checker/report boundary, not the remaining mixed-scope/nested-group language
+rules. The existing static arithmetic-validity oracle remains a separate trust
+boundary; the new runtime theorem/extraction code adds no oracle or proof hole.
+Next: generalized locals, enclosing bindings and nested groups, then the general
+artifact/report bridge and CLI/LSP migration. No whole-language BL runtime
+soundness or BL LSP support is claimed yet.
 
 Closing-environment validation: full `lake build FHM FHMBounds fhm` passes
 (1806 jobs), including all existing Bounds regression gates. Scope, primitive,
