@@ -2109,3 +2109,21 @@ partials or solver axiom. HM/D2, Path R and production guards remain unchanged.
 Next structural work is still the arbitrary-group member-vector reconciliation,
 combined acceptance and generalized body/export rule; enclosing lexical declared
 interfaces, generalized local lets, nested groups and full spines remain guarded.
+
+### Checkpoint 4am — checked source-HM stability of the common group environment
+
+`RecursiveHMEnvironment.TypesFixed` and its executable checker inspect full
+opaque recursive argument vectors and mono captures. `typesFixed` proves that
+uniform source reconciliation leaves the actual common environment unchanged,
+not merely shape-compatible. Recursive HM payloads must be erase-normal;
+member-local count scope remains independently checked by `checkCaptured`.
+
+Both real mutual RHSs now obtain this stability evidence. Negative regressions
+reject reconciliation that specializes a sibling's opaque vector or an outer
+mono capture. New equality/stability proofs use standard Lean axioms only.
+
+`lake build FHM FHMBounds fhm` passes (1797 jobs); the scratch HM audit remains
+28 accepted / eight expected rejects / zero failures. Boundary and whitespace
+guards pass. No new placeholders, partials or axioms. HM/D2, Path R and production
+BL guards unchanged. Ordered arbitrary-size RHS certificate assembly is next;
+generalized export and group-body introduction remain separate.
