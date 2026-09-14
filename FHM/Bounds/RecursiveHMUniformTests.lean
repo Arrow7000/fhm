@@ -310,24 +310,58 @@ private theorem runtimeLocalParam (types slots : Nat → BoundsTy) :
     by simp [ScopedAnnotation.decode, pure, Except.pure], ?_⟩
   exact SemanticSub.refl _ _
 
-private theorem runtimeLocalInstances (calleeΔ : List Constraint) (found : Ty) (caller : List Nat)
-    (used : HMCountScheme.Use runtimeIdScheme calleeΔ found caller) :
-    ScopedBodyDerives (localTypes runtimeLocalFrame.owned BoundsTy.fvar used.types)
-      (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types)
-      (runtimeIdScheme.counts.quantified ++ runtimeIdScheme.counts.captures ++ [])
-      (CountAlgebra.compose (runtimeIdScheme.counts.quantified.zip used.counts) [])
-      ([] ++ used.countInstance.premises) [] runtimeLocalRhs used.bounds := by
-  have typed : ScopedDerives (localTypes runtimeLocalFrame.owned BoundsTy.fvar used.types)
-      (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types) [] [] [] []
+private theorem runtimeLocalOpaqueTyping :
+    ScopedDerives BoundsTy.fvar
+      (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar (runtimeLocalFrame.owned.map BoundsTy.fvar))
+      [] [] [] [] runtimeLocalRhs (.arrow (.fvar 91) (.fvar 91)) := by
+  have typed : ScopedDerives BoundsTy.fvar
+      (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar (runtimeLocalFrame.owned.map BoundsTy.fvar))
+      [] [] [] []
       runtimeLocalRhs (.arrow
-        (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types 0)
-        (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types 0)) :=
+        (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar (runtimeLocalFrame.owned.map BoundsTy.fvar) 0)
+        (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar (runtimeLocalFrame.owned.map BoundsTy.fvar) 0)) :=
     .lambda (runtimeLocalParam _ _) (.varMono rfl)
-  simpa only [localSlots, runtimeIdScheme, Option.map_some, Option.getD_some,
-    Nat.zero_lt_succ, ↓reduceIte, HMCountScheme.Use.bounds, ScopedScheme.Instance.premises,
-    List.nil_append, List.zip_nil_left, List.map_nil, CountAlgebra.compose,
-    TypeSubstitution.combined, CountSubstitution.bounds, TypeSubstitution.substitute,
-    ordinaryBodyEnv, List.map_nil] using ordinaryRhsToBody typed (by simp [OrdinaryEnv])
+  simpa [localSlots, runtimeIdScheme, runtimeLocalFrame, SchemeUse.vector] using typed
+
+private def runtimeLocalCertificate :
+    RecursiveHMUniversal.Certified runtimeIdScheme (.arrow (.fvar 91) (.fvar 91)) [] []
+      runtimeLocalRhs BoundsTy.fvar
+      (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar (runtimeLocalFrame.owned.map BoundsTy.fvar)) where
+  opening :=
+    { ids := [91]
+      arity := rfl
+      distinct := by decide
+      fresh := by simp [runtimeIdScheme, Ty.freeVars]
+      shape := by simp [runtimeIdScheme, HMCountScheme.opened, SchemeUse.vector,
+        TypeSubstitution.substitute, Synth.BoundsTy.toTy, Ty.eraseBounds]
+      lc := .arrow .fvar .fvar }
+  actual := .arrow (.fvar 91) (.fvar 91)
+  shape := by simp [Synth.BoundsTy.toTy, Ty.eraseBounds]
+  actualScope := by simp [ScopedScheme.BoundsScoped]
+  typing := runtimeLocalOpaqueTyping
+  inclusion := by
+    simpa [HMCountScheme.Opening.bounds, HMCountScheme.opened, runtimeIdScheme,
+      TypeSubstitution.substitute, SchemeUse.vector] using
+      SemanticSub.refl [] (.arrow (.fvar 91) (.fvar 91))
+  typeFresh := by simp
+  countFresh := by simp
+
+private theorem runtimeLocalOpaqueReady : ScopedDerives.RuntimeReady runtimeLocalCertificate.typing := by
+  have element : Runtime.Supported
+      (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar (runtimeLocalFrame.owned.map BoundsTy.fvar) 0) := by
+    simpa [localSlots, runtimeIdScheme, runtimeLocalFrame, SchemeUse.vector] using
+      (Runtime.Supported.fvar (i := 91))
+  have ready : ScopedDerives.RuntimeReady
+      (ScopedDerives.lambda (env := [])
+        (runtimeLocalParam BoundsTy.fvar
+          (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar (runtimeLocalFrame.owned.map BoundsTy.fvar)))
+        (ScopedDerives.varMono (i := 0) rfl)) :=
+    .lambda (ann := some (.bvar 0)) (runtimeLocalParam _ _) element (.varMono (i := 0) rfl element)
+  simpa [runtimeLocalCertificate, localSlots, runtimeIdScheme, runtimeLocalFrame, SchemeUse.vector] using ready
+
+private def runtimeLocalInstances (calleeΔ : List Constraint) (found : Ty) (caller : List Nat)
+    (used : HMCountScheme.Use runtimeIdScheme calleeΔ found caller) :=
+  localRhsInstances (Δ := []) runtimeLocalFrame runtimeLocalAnnotation runtimeLocalCertificate rfl used
 
 private theorem runtimeLocalCasesReady (calleeΔ : List Constraint) (found : Ty) (caller : List Nat)
     (used : HMCountScheme.Use runtimeIdScheme calleeΔ found caller)
@@ -339,22 +373,11 @@ private theorem runtimeLocalCasesReady (calleeΔ : List Constraint) (found : Ty)
     | some a =>
         simpa only [SchemeUse.vector, atIndex, Option.getD_some] using
           arguments a (List.mem_of_getElem? atIndex)
-  have ready : ScopedDerives.RuntimeReady
-      (ScopedDerives.lambda
-        (env := [])
-        (runtimeLocalParam (localTypes runtimeLocalFrame.owned BoundsTy.fvar used.types)
-          (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types))
-        (ScopedDerives.varMono (i := 0) rfl)) := by
-    have scopedElement : Runtime.Supported
-        (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar used.types 0) := by
-      simpa [localSlots, runtimeIdScheme] using element
-    exact .lambda (ann := some (.bvar 0)) (runtimeLocalParam _ _) scopedElement
-      (.varMono (i := 0) rfl scopedElement)
-  simpa only [localSlots, runtimeIdScheme, Option.map_some, Option.getD_some,
-    Nat.zero_lt_succ, ↓reduceIte, HMCountScheme.Use.bounds, ScopedScheme.Instance.premises,
-    List.nil_append, List.zip_nil_left, List.map_nil, CountAlgebra.compose,
-    TypeSubstitution.combined, CountSubstitution.bounds, TypeSubstitution.substitute,
-    ordinaryBodyEnv, List.map_nil] using ordinaryRhsReadyToBody ready (by simp [OrdinaryEnv])
+  have demandSupport : Runtime.Supported used.bounds := by
+    simpa [HMCountScheme.Use.bounds, runtimeIdScheme, TypeSubstitution.combined,
+      CountSubstitution.bounds, TypeSubstitution.substitute] using Runtime.Supported.arrow element element
+  exact localRhsInstances_runtimeReady runtimeLocalFrame runtimeLocalAnnotation runtimeLocalCertificate rfl
+    runtimeLocalOpaqueReady used arguments demandSupport
 
 private theorem runtimeLocalTyping : BodyDerives [] [] [] [] runtimeLocalProgram (.prim .char) :=
   ScopedBodyDerives.letExported runtimeLocalFrame runtimeLocalAnnotation (by decide)
@@ -375,6 +398,17 @@ example {s ids rhs} (frame : LocalFrame s ids rhs) (parent : Nat → BoundsTy)
 example (parent : Nat → BoundsTy) (arguments : List BoundsTy) :
     localSlots (some runtimeIdScheme.hm) parent arguments 1 = parent 0 := by
   simpa [runtimeIdScheme] using localSlots_parent (some runtimeIdScheme.hm) parent arguments 0
+
+/-- A caller count inside a full HM argument survives even when the local
+    source count substitution uses the same numeric identity. -/
+example : SchemeSpecialization.mapFree
+    (SchemeSpecialization.argument [91] (SchemeUse.vector [.list (count 91) (count 91) (.prim .int)]))
+    (CountSubstitution.bounds [(91, .lit 3)]
+      (localSlots (some runtimeIdScheme.hm) BoundsTy.bvar [.fvar 91] 0)) =
+    .list (count 91) (count 91) (.prim .int) := by
+  simpa [localSlots, runtimeIdScheme, SchemeUse.vector] using
+    congrFun (localSlots_specialize (some runtimeIdScheme.hm) [91] [(91, .lit 3)]
+      [.list (count 91) (count 91) (.prim .int)] (by decide) (by simp [runtimeIdScheme])) 0
 
 /-- A generalized LOCAL is introduced from actual universal RHS derivations,
     then used at Int and Char. No generalized runtime contract is postulated. -/
