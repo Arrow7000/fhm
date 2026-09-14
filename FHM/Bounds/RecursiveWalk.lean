@@ -7,7 +7,8 @@ import FHM.Bounds.BranchMerge
 Consumes the existing HM artifact; never reruns inference or invents recursive
 HM slots. Every supported annotation remains an interpreted obligation. Results
 carry conditional derivations and the explicit fragment proof for universal RHS
-transport. Matches use constructor path premises and either a proved semantic
+transport. List matches add constructor path premises; Bool matches have finite
+constructor coverage without new length assumptions. Both use a proved semantic
 merge or a common checked result demand. This checks RHSs, not groups, and does
 not export an assumed contract.
 -/
@@ -95,33 +96,52 @@ private def bindingHint (ids : List Nat) (rows : Bindings) (caller : List Nat)
       else pure none
   | none => pure none
 
+private inductive BranchContext where
+  | list (lo hi : Count) (elem : BoundsTy)
+  | bool
+
+private def BranchContext.refine : BranchContext → MatchPattern → List Constraint
+  | .list lo hi _, p => branchRefine p lo hi
+  | .bool, _ => []
+
+private def BranchContext.extend : BranchContext → MatchPattern → List Binding → List Binding
+  | .list lo hi elem, p, env => branchEnv p lo hi elem env
+  | .bool, _, env => env
+
+private def BranchContext.Pattern : BranchContext → MatchPattern → Prop
+  | .list _ _ _, p => ListPattern p
+  | .bool, p => BoolBranches.Pattern p
+
+private instance (ctx : BranchContext) (p : MatchPattern) : Decidable (ctx.Pattern p) := by
+  cases ctx <;> unfold BranchContext.Pattern <;> infer_instance
+
 /-- Branch evidence is indexed by the original ordered input, not by a report
     reconstructed from found types. Empty arms have no synthesized result. -/
 private structure BranchResults (ids : List Nat) (rows : Bindings) (caller : List Nat)
-    (Δ : List Constraint) (env : List Binding) (lo hi : Count) (elem : BoundsTy)
+    (Δ : List Constraint) (env : List Binding) (ctx : BranchContext)
     (branches : List (MatchPattern × Expr)) where
   actuals : Nat → BoundsTy
   typing : ∀ i br, branches[i]? = some br →
-    Derives ids rows (Δ ++ branchRefine br.1 lo hi)
-      (branchEnv br.1 lo hi elem env) br.2.stripFound (actuals i)
-  patterns : ∀ br ∈ branches, ListPattern br.1
+    Derives ids rows (Δ ++ ctx.refine br.1)
+      (ctx.extend br.1 env) br.2.stripFound (actuals i)
+  patterns : ∀ br ∈ branches, ctx.Pattern br.1
   noGroups : ∀ br ∈ branches, NoGroups br.2.stripFound
   bounds : Option BoundsTy
   inclusions : ∀ i br, branches[i]? = some br →
     match bounds with
     | none => False
-    | some β => SemanticSub (Δ ++ branchRefine br.1 lo hi) (actuals i) β
+    | some β => SemanticSub (Δ ++ ctx.refine br.1) (actuals i) β
   nodes : List Typed.NodeResult
 
-private def prependBranches {ids rows caller Δ env lo hi elem br branches}
-    (head : Result ids rows caller (Δ ++ branchRefine br.1 lo hi)
-      (branchEnv br.1 lo hi elem env) br.2)
-    (hp : ListPattern br.1) (tail : BranchResults ids rows caller Δ env lo hi elem branches)
+private def prependBranches {ids rows caller Δ env br branches} {ctx : BranchContext}
+    (head : Result ids rows caller (Δ ++ ctx.refine br.1)
+      (ctx.extend br.1 env) br.2)
+    (hp : ctx.Pattern br.1) (tail : BranchResults ids rows caller Δ env ctx branches)
     (β : BoundsTy)
-    (hh : SemanticSub (Δ ++ branchRefine br.1 lo hi) head.bounds β)
+    (hh : SemanticSub (Δ ++ ctx.refine br.1) head.bounds β)
     (ht : ∀ i arm, branches[i]? = some arm →
-      SemanticSub (Δ ++ branchRefine arm.1 lo hi) (tail.actuals i) β) :
-    BranchResults ids rows caller Δ env lo hi elem (br :: branches) where
+      SemanticSub (Δ ++ ctx.refine arm.1) (tail.actuals i) β) :
+    BranchResults ids rows caller Δ env ctx (br :: branches) where
   actuals := fun i => match i with | 0 => head.bounds | i + 1 => tail.actuals i
   typing := by
     intro i arm h
@@ -167,7 +187,7 @@ private theorem strip_index {branches : List (MatchPattern × Expr)} {i : Nat}
 
 private theorem match_typing {ids rows caller Δ env branches lo hi elem β} {scrut : Expr}
     (hs : Derives ids rows Δ env scrut.stripFound (.list lo hi elem))
-    (arms : BranchResults ids rows caller Δ env lo hi elem branches)
+    (arms : BranchResults ids rows caller Δ env (.list lo hi elem) branches)
     (hb : arms.bounds = some β)
     (hc : ListBranches.Covers Δ ⟨lo, hi⟩ (Expr.stripFoundBranches branches)) :
     Derives ids rows Δ env (Expr.match_ scrut branches).stripFound β := by
@@ -183,6 +203,35 @@ private theorem match_typing {ids rows caller Δ env branches lo hi elem β} {sc
   · intro i arm ha
     rcases strip_index ha with ⟨br, hm, rfl⟩
     simpa only [hb] using arms.inclusions i br hm
+
+private theorem bool_match_typing {ids rows caller Δ env branches β} {scrut : Expr}
+    (hs : Derives ids rows Δ env scrut.stripFound (.custom boolTyName []))
+    (arms : BranchResults ids rows caller Δ env .bool branches)
+    (hb : arms.bounds = some β)
+    (hc : BoolBranches.Covers (Expr.stripFoundBranches branches)) :
+    Derives ids rows Δ env (Expr.match_ scrut branches).stripFound β := by
+  simp only [Expr.stripFound]
+  apply Derives.matchBool (actuals := arms.actuals) hs hc
+  · intro arm ha
+    rw [stripBranches] at ha
+    rcases List.mem_map.mp ha with ⟨br, hm, rfl⟩
+    exact arms.patterns br hm
+  · intro i arm ha
+    rcases strip_index ha with ⟨br, hm, rfl⟩
+    simpa only [BranchContext.refine, BranchContext.extend, List.append_nil] using arms.typing i br hm
+  · intro i arm ha
+    rcases strip_index ha with ⟨br, hm, rfl⟩
+    simpa only [hb, BranchContext.refine, List.append_nil] using arms.inclusions i br hm
+
+private theorem match_noGroups {ids rows caller Δ env ctx branches} {scrut : Expr}
+    (hs : NoGroups scrut.stripFound) (arms : BranchResults ids rows caller Δ env ctx branches) :
+    NoGroups (Expr.match_ scrut branches).stripFound := by
+  simp only [Expr.stripFound, NoGroups]
+  refine ⟨hs, ?_⟩
+  rw [stripBranches]
+  intro arm ha
+  rcases List.mem_map.mp ha with ⟨br, hm, rfl⟩
+  exact arms.noGroups br hm
 
 mutual
 /-- The optional demand guides match checking and unannotated lambda domains,
@@ -209,6 +258,9 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
                 (by subst name; simp only [Expr.stripFound]; exact .nil) (by simp [Expr.stripFound, NoGroups]) []
             else throw "bounds: recursive RHS Nil has non-List found type"
         | _ => throw "bounds: recursive RHS Nil has non-List found type"
+      else if hb : BoolBranches.IsCtor name then
+        finish ids rows caller Δ env (.found hm (.ctor name)) path hm.eraseBounds (.custom boolTyName [])
+          (by simp only [Expr.stripFound]; exact .boolCtor hb) (by simp [Expr.stripFound, NoGroups]) []
       else throw "bounds: standalone constructor unsupported in recursive RHS slice"
   | .found hm (.var i) =>
       match env[i]? with
@@ -296,21 +348,28 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
       match hin : input.bounds with
       | .list lo hi elem =>
           let coverage ← ListBranches.check Δ ⟨lo, hi⟩ (Expr.stripFoundBranches branches)
-          let arms ← walkBranches ids rows caller Δ env lo hi elem path branches 0 schemes expected
+          let arms ← walkBranches ids rows caller Δ env (.list lo hi elem) path branches 0 schemes expected
           match hb : arms.bounds with
           | none => throw "bounds: List match has no result-producing branch"
           | some β =>
               finish ids rows caller Δ env (.found hm (.match_ scrut branches)) path hm.eraseBounds β
                 (by simpa only [Expr.stripFound] using
                   match_typing (by simpa only [hin] using input.derivation) arms hb coverage.down)
-                (by
-                  simp only [Expr.stripFound, NoGroups]
-                  refine ⟨input.noGroups, ?_⟩
-                  rw [stripBranches]
-                  intro arm ha
-                  rcases List.mem_map.mp ha with ⟨br, hm, rfl⟩
-                  exact arms.noGroups br hm)
+                (by simpa only [Expr.stripFound] using match_noGroups input.noGroups arms)
                 (input.nodes ++ arms.nodes)
+      | .custom name [] =>
+          if hn : name = boolTyName then
+            let coverage ← BoolBranches.check (Expr.stripFoundBranches branches)
+            let arms ← walkBranches ids rows caller Δ env .bool path branches 0 schemes expected
+            match hb : arms.bounds with
+            | none => throw "bounds: Bool match has no result-producing branch"
+            | some β =>
+                finish ids rows caller Δ env (.found hm (.match_ scrut branches)) path hm.eraseBounds β
+                  (by simpa only [Expr.stripFound] using
+                    bool_match_typing (by simpa only [hin, hn] using input.derivation) arms hb coverage.down)
+                  (by simpa only [Expr.stripFound] using match_noGroups input.noGroups arms)
+                  (input.nodes ++ arms.nodes)
+          else throw "bounds: recursive RHS match scrutinee has non-List/non-Bool bounds"
       | _ => throw "bounds: recursive RHS match scrutinee has non-List bounds"
   | .found _ (.letRec _ _ _) => throw "bounds: nested recursive group needs captured-template transport"
   | .found _ _ => throw "bounds: expression form unsupported in recursive RHS slice"
@@ -318,22 +377,22 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
 termination_by sizeOf e
 
 private def walkBranches (ids : List Nat) (rows : Bindings) (caller : List Nat)
-    (Δ : List Constraint) (env : List Binding) (lo hi : Count) (elem : BoundsTy)
+    (Δ : List Constraint) (env : List Binding) (ctx : BranchContext)
     (path : CorePath) (branches : List (MatchPattern × Expr)) (index : Nat)
     (schemes : BinderSchemeMap) (expected : Option BoundsTy) :
-    Except String (BranchResults ids rows caller Δ env lo hi elem branches) := do
+    Except String (BranchResults ids rows caller Δ env ctx branches) := do
   match branches with
   | [] => pure ⟨(fun _ => .prim .int),
       (by intros; contradiction), (by intros; contradiction),
       (by intros; contradiction), none, (by intros; contradiction), []⟩
   | br :: rest =>
-      if hp : ListPattern br.1 then
-        let head ← walk ids rows caller (Δ ++ branchRefine br.1 lo hi)
-          (branchEnv br.1 lo hi elem env) (path ++ [.matchBranch index]) br.2 schemes expected
-        let tail ← walkBranches ids rows caller Δ env lo hi elem path rest (index + 1) schemes expected
+      if hp : ctx.Pattern br.1 then
+        let head ← walk ids rows caller (Δ ++ ctx.refine br.1)
+          (ctx.extend br.1 env) (path ++ [.matchBranch index]) br.2 schemes expected
+        let tail ← walkBranches ids rows caller Δ env ctx path rest (index + 1) schemes expected
         match expected with
         | some β =>
-            let hs ← Typed.subtype (Δ ++ branchRefine br.1 lo hi) head.bounds β
+            let hs ← Typed.subtype (Δ ++ ctx.refine br.1) head.bounds β
             match ht : tail.bounds with
             | none => pure (prependBranches head hp tail β hs.down (by
                 intro i arm ha
@@ -343,7 +402,7 @@ private def walkBranches (ids : List Nat) (rows : Bindings) (caller : List Nat)
                 let ts ← Typed.subtype Δ τ β
                 pure (prependBranches head hp tail β hs.down (by
                   intro i arm ha
-                  have sub : SemanticSub (Δ ++ branchRefine arm.1 lo hi) (tail.actuals i) τ :=
+                  have sub : SemanticSub (Δ ++ ctx.refine arm.1) (tail.actuals i) τ :=
                     by simpa only [ht] using tail.inclusions i arm ha
                   exact sub.trans (ts.down.assuming (path_assuming _ _))))
         | none =>
@@ -357,10 +416,12 @@ private def walkBranches (ids : List Nat) (rows : Bindings) (caller : List Nat)
                 let subs := merged.down.sound Δ
                 pure (prependBranches head hp tail β (subs.1.assuming (path_assuming _ _)) (by
                   intro i arm ha
-                  have sub : SemanticSub (Δ ++ branchRefine arm.1 lo hi) (tail.actuals i) τ :=
+                  have sub : SemanticSub (Δ ++ ctx.refine arm.1) (tail.actuals i) τ :=
                     by simpa only [ht] using tail.inclusions i arm ha
                   exact sub.trans (subs.2.assuming (path_assuming _ _))))
-      else throw "bounds: unsupported List pattern or constructor arity"
+      else match ctx with
+        | .list _ _ _ => throw "bounds: unsupported List pattern or constructor arity"
+        | .bool => throw "bounds: unsupported Bool pattern or constructor arity"
 termination_by sizeOf branches
 decreasing_by
   all_goals simp_wf

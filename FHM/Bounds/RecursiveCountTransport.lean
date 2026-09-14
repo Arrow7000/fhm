@@ -175,7 +175,7 @@ def CapturesFixed (outer : Bindings) (env : List Binding) : Prop :=
 /-- The initial symbolic-RHS transport slice excludes nested recursive groups.
     Such groups may capture the enclosing count telescope and need a separate
     captured-template transport rule. This restriction is explicit in the proof,
-    not an unchecked assumption in the executable path. List matches recurse
+    not an unchecked assumption in the executable path. Matches recurse
     through every arm; source terms must have found wrappers stripped. -/
 def NoGroups : Expr → Prop
   | .lambda _ body => NoGroups body
@@ -248,6 +248,7 @@ theorem transport (outer : Bindings) (hf : Finite outer) (target : List Nat)
   | literal => cases ‹PrimLitExpr› <;> exact .literal
   | primBinOp => cases ‹PrimBinOp› <;> exact .primBinOp
   | nil => exact .nil
+  | boolCtor hctor => exact .boolCtor hctor
   | cons hh ht hi =>
       simp only [NoGroups] at hn
       exact .cons (transport outer hf target hs hh hk hn.1.2)
@@ -282,12 +283,24 @@ theorem transport (outer : Bindings) (hf : Finite outer) (target : List Nat)
       · intro i br hb
         simpa only [List.map_append, branchRefine_transport] using
           CountSubstitution.subtype outer hf (hsub i br hb)
+  | matchBool hscrut hc hpat hbranches hsub =>
+      simp only [NoGroups] at hn
+      apply Derives.matchBool (transport outer hf target hs hscrut hk hn.1) hc hpat
+      · intro i br hb
+        exact transport outer hf target hs (hbranches i br hb) hk
+          (hn.2 br (List.mem_of_getElem? hb))
+      · intro i br hb
+        exact CountSubstitution.subtype outer hf (hsub i br hb)
   | letRec => simp only [NoGroups] at hn
 termination_by sizeOf e
 decreasing_by
   all_goals subst_vars
   all_goals simp_wf
-  all_goals first | omega | (have hsz := List.sizeOf_lt_of_mem (List.mem_of_getElem? ‹_ = some _›); cases ‹MatchPattern × Expr›; simp_all; omega)
+  all_goals first | omega |
+    (have hsz := List.sizeOf_lt_of_mem (List.mem_of_getElem? ‹_ = some _›)
+     cases ‹MatchPattern × Expr›
+     simp only [Prod.mk.sizeOf_spec] at hsz ⊢
+     omega)
 
 private theorem env_fixed {s : Scheme} (outer : Bindings) {env : List Binding}
     (hm : ∀ β, .mono β ∈ env → BoundsScoped s.captures β)

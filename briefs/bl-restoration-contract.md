@@ -1084,3 +1084,43 @@ Validation: all 32 walker and 35 parsed-source regressions pass, along with the
 full HM/Bounds/editor/CLI build (1762 jobs). Scratch HM audit remains 28 accepted /
 eight expected rejections / zero failures. Boundary and whitespace guards pass;
 no new axioms, placeholders or partial definitions, and solver trust is unchanged.
+
+### Checkpoint 4j — typed Bool matches, conditionals and recursive filtering
+
+`BoolBranches` specifies proper True/False/wildcard coverage and proves that it
+covers both constructor cases without arithmetic solver trust. `RecursiveTyping`
+now has Bool constructor and match rules. Both premise strengthening and finite
+count transport preserve them, so the same universal recursive RHS and whole-group
+certificates also cover conditionals. Bool comparison outcomes introduce no extra
+count or length refinements.
+
+The found walker uses one ordered branch traversal for List and Bool, with an
+explicit context selecting patterns, premises and binder environment. Bool arms
+retain the caller's premises and environment; List arms retain their proved
+constructor refinements. Both synthesis and common-result checking use the same
+semantic inclusion/report machinery. This accepts the Core form to which surface
+`if` lowers; it does not perform constant-condition dead-arm elimination.
+
+Fourteen new Bool walker regressions check literals, comparison results, full and
+wildcard coverage, wrong arities/constructor names, interval union, bad result
+claims even in a constant condition, forged HM types and nested reports. Eight
+new parsed-source regressions check recursive and mutually recursive keep/drop
+filters with `0..n` result contracts, conditional exact-length copying, incorrect
+retention/duplication claims, the absence of invented count refinements and
+ordinary scalar recursion returning Bool. A formal symbolic Bool-match regression
+generates every finite scoped count instance with only standard Lean axioms.
+
+These are monomorphic-HM examples with explicit count contracts. General `map`
+and `filter` signatures still require HM annotation opening/specialization, and
+curried count-polymorphic applications must infer from the relevant full argument
+spine rather than guess at the first argument. Product CLI/LSP migration, fresh
+open origins, generalized lets/group exit, captured nested groups and general data
+matches remain. HM/D2 and Path R are unchanged; no runtime length or termination
+theorem is claimed by these certificates.
+
+Validation: all 14 Bool, 32 List/checking-guidance and 43 parsed-source regressions
+pass. Full HM/Bounds/editor/CLI build passes (1764 jobs); scratch HM audit remains
+28 accepted / eight expected rejections / zero failures. Boundary/whitespace guards
+pass. Bool coverage introduces no solver trust; typed/count-transport proofs retain
+only standard Lean axioms and executable inclusion retains the existing positive
+verdict axiom. No new axioms, placeholders or partial definitions.
