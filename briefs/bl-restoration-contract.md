@@ -371,3 +371,26 @@ Validation after 3i: `lake build FHM FHMBounds FHMEditorTests fhm` passes
 The fresh scratch HM audit remains 28 accepted / eight expected rejections /
 zero failures. The unverified-boundary guard and diff whitespace checks pass.
 No new axioms, placeholders or partial definitions were introduced.
+
+2026-09-14, checkpoint 3j: `SchemeSpecialization` closes the exact RHS-to-closed-
+scheme bridge. Simultaneous free-identity mapping transports the current bounds
+typing fragment while fixing source annotations and captures. On locally closed
+RHS bounds, mapping the generalized identities is exactly bound-slot
+specialization of the checked closed scheme. Caller arguments are inserted
+without respecializing their own free identities, even when these overlap the
+generalized pool; no caller/generalized disjointness assumption is needed.
+
+`checked_use` joins that RHS typing theorem with the actual HM use witness and
+proves exact final `.found` skeleton agreement. `caller_scope` separately
+transports explicit caller count scope. All new proofs are solver-independent.
+Twelve executable regressions and ordinary Lean proofs include the concrete
+collision where sequential replacement would incorrectly rewrite a caller's
+type argument. The sequential theorem from 3i remains valid but is not used as
+the simultaneous scheme-use bridge.
+
+Validation after 3j: the full HM/Bounds/editor/CLI build passes (1715 jobs), with
+145 executable BL component/adapter regressions. Boundary and whitespace guards
+pass. No polymorphic-use acceptance, new axioms, placeholders or partial defs
+have been introduced. The next step is a checked executable use certificate,
+followed by scheme-aware environment/variable/let rules and their expanded
+judgement transport; count-polymorphic contracts remain separate work.
