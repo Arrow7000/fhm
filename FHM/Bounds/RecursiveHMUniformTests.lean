@@ -118,6 +118,11 @@ private def bodyCalls (badLocal : Bool := false) (polyLocal : Bool := false)
 example {output metadata} (program : ProgramResult output metadata) :
     BodyDerives [] [] [] [] output.stripFound program.body.bounds := program.body.typing
 
+example {output metadata Δ} (program : ProgramResult output metadata)
+    (premises : (⟨Δ, []⟩ : ForallProblem).Valid) :
+    BodyDerives [] [] Δ [] output.stripFound program.body.bounds :=
+  program.body.typing.assuming premises
+
 private def bodyMatches (kind : Nat) (onlyNil : Bool := false) (onlyCons : Bool := false)
     (badDemand : Bool := false) :
     Except String Bool := do
@@ -160,6 +165,18 @@ private def bodyBoolCoverageGuard : Bool :=
   match walkBody [] [] [] [] [] [] e [] with
   | .error message => (message.splitOn "missing False coverage").length > 1
   | .ok _ => false
+
+/-- A context assumption supplies the actual argument origin; quantified count
+    7 is instantiated with caller count 7, but its precondition still needs proof. -/
+private def bodyCallerPremises (established : Bool) : Except String Bool := do
+  let premise : Constraint := ⟨.lit 1, count 7⟩
+  let s ← HMCountScheme.decode (bodySignature 7) [7] [] [premise]
+  let hm := listTy (.prim .int)
+  let e := Expr.found hm (.app (.found (.arrow hm hm) (.var 0)) (.found hm (.var 1)))
+  let Δ := if established then [premise] else []
+  let result ← walkBody [] [] [7] Δ
+    [.exported s, .mono (.list (count 7) (count 7) (.prim .int))] [] e []
+  pure (result.bounds.pretty == (BoundsTy.list (count 7) (count 7) (.prim .int)).pretty)
 
 def main : IO Unit := do
   match actual with
@@ -223,6 +240,16 @@ def main : IO Unit := do
   unless bodyBoolCoverageGuard do
     throw (IO.userError "generalized body accepted incomplete Bool coverage")
   IO.println "PASS: generalized body Bool coverage checks both finite constructors independently of arithmetic validity"
+  match bodyCallerPremises true with
+  | .ok true => IO.println "PASS: established caller count premises permit actual origin-backed exported specialization"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "exported specialization changed a caller count origin")
+  match bodyCallerPremises false with
+  | .error message =>
+      unless (message.splitOn "premises").length > 1 do
+        throw (IO.userError s!"wrong caller-premise rejection: {message}")
+      IO.println "PASS: exported calls cannot simply append unestablished callee count premises"
+  | .ok _ => throw (IO.userError "generalized body assumed an unestablished callee premise")
 
 #eval main
 

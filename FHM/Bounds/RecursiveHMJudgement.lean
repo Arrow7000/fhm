@@ -89,7 +89,8 @@ abbrev matchList {types : Nat → BoundsTy} := @ScopedDerives.matchList types Bo
 abbrev matchBool {types : Nat → BoundsTy} := @ScopedDerives.matchBool types BoundsTy.bvar
 end Derives
 
-private theorem param_assuming {types slots ids rows Δ Δ' ann β}
+/-- Shared source-parameter obligation transport for RHS and body judgments. -/
+theorem param_assuming {types slots ids rows Δ Δ' ann β}
     (h : ScopedHMAnnotation.ParamOK types slots ids rows Δ ann β)
     (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
     ScopedHMAnnotation.ParamOK types slots ids rows Δ' ann β := by
@@ -97,7 +98,8 @@ private theorem param_assuming {types slots ids rows Δ Δ' ann β}
   | none => trivial
   | some τ => exact h.assuming hp
 
-private theorem binding_assuming {types slots ids rows Δ Δ' ann β}
+/-- Shared source mono-binding obligation transport; forall guards remain intact. -/
+theorem binding_assuming {types slots ids rows Δ Δ' ann β}
     (h : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann β)
     (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
     ScopedHMAnnotation.BindingOK types slots ids rows Δ' ann β := by
