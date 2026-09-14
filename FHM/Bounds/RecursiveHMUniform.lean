@@ -649,6 +649,43 @@ theorem localSlots_parent (ann : Option PolyTy) (parent : Nat → BoundsTy) (arg
   simp only [localSlots]
   rw [if_neg (by omega), Nat.add_sub_cancel]
 
+theorem LocalFrame.slotsFit {s ids rhs ann} (frame : LocalFrame s ids rhs)
+    (annotation : LocalAnnotationOK s ann) :
+    (ann.map (·.paramCount)).getD 0 ≤ frame.owned.length := by
+  cases ann with
+  | none => simp
+  | some a =>
+      obtain ⟨declared, scheme⟩ := annotation
+      have arity := congrArg (fun s : HMCountScheme.Scheme => s.hm.paramCount) scheme
+      simpa [HMCountScheme.Annotated.scheme, PolyTy.eraseBounds, ← frame.arity] using
+        Nat.le_of_eq arity
+
+/-- Specialize opaque lexical annotation slots after source counts. Full type
+    arguments are inserted last, so their caller-owned counts are untouched. -/
+theorem localSlots_specialize (ann : Option PolyTy) (owned : List Nat)
+    (rows : Bindings) (args : List BoundsTy) (distinct : owned.Nodup)
+    (fit : (ann.map (·.paramCount)).getD 0 ≤ owned.length) :
+    (fun i => mapFree (argument owned (SchemeUse.vector args))
+      (bounds rows (localSlots ann BoundsTy.bvar (owned.map BoundsTy.fvar) i))) =
+      localSlots ann BoundsTy.bvar args := by
+  funext i
+  unfold localSlots
+  dsimp only
+  split
+  · rename_i inside
+    have small : i < owned.length := Nat.lt_of_lt_of_le inside fit
+    have ownedSlot : SchemeUse.vector (owned.map BoundsTy.fvar) i = .fvar owned[i] := by
+      simp [SchemeUse.vector, List.getElem?_map, List.getElem?_eq_getElem small]
+    simp only [ownedSlot, bounds, mapFree]
+    exact argument_slot owned (SchemeUse.vector args) distinct i small
+  · rfl
+
+theorem localTypes_specialize (owned : List Nat) (rows : Bindings) (args : List BoundsTy) :
+    (fun i => mapFree (argument owned (SchemeUse.vector args)) (bounds rows (.fvar i))) =
+      localTypes owned BoundsTy.fvar args := by
+  funext i
+  rfl
+
 inductive ScopedBodyDerives :
     (Nat → BoundsTy) → (Nat → BoundsTy) → List Nat → Bindings →
     List Constraint → List BodyBinding → Expr → BoundsTy → Prop where
@@ -1304,6 +1341,101 @@ theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
 
 #print axioms ordinaryRhsToBody
 #print axioms ordinaryRhsReadyToBody
+
+/-- A single real opaque-opening RHS certificate supplies every local use in
+    the closed-capture slice. This is certificate elimination, not another
+    inference or solver pass, and keeps implementation/demand bounds separate. -/
+theorem localRhsDemand {s found typeCaptures env rhs sourceTypes sourceSlots calleeΔ caller useHM}
+    (cert : RecursiveHMUniversal.Certified s found typeCaptures env rhs sourceTypes sourceSlots)
+    (used : HMCountScheme.Use s calleeΔ useHM caller) :
+    demand cert used.counts (argument cert.opening.ids (SchemeUse.vector used.types)) = used.bounds := by
+  rw [demand, ← SchemeSpecialization.close_open cert.opening.ids (SchemeUse.vector used.types)
+    (by rw [bounds_shape, HMCountScheme.Opening.bounds, cert.opening.shape]; exact cert.opening.lc),
+    RecursiveHMUniversal.close_counts, cert.opening.close]
+  rfl
+
+def localRhsInstances {s ann rhs found typeCaptures Δ calleeΔ caller useHM}
+    (frame : LocalFrame s [] rhs) (annotation : LocalAnnotationOK s ann)
+    (cert : RecursiveHMUniversal.Certified s found typeCaptures [] rhs BoundsTy.fvar
+      (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar)))
+    (owners : cert.opening.ids = frame.owned)
+    (used : HMCountScheme.Use s calleeΔ useHM caller) :
+    ScopedBodyDerives (localTypes frame.owned BoundsTy.fvar used.types)
+      (localSlots ann BoundsTy.bvar used.types)
+      (s.counts.quantified ++ s.counts.captures ++ [])
+      (CountAlgebra.compose (s.counts.quantified.zip used.counts) [])
+      (Δ ++ used.countInstance.premises) [] rhs used.bounds := by
+  let rows := s.counts.quantified.zip used.counts
+  let f := argument cert.opening.ids (SchemeUse.vector used.types)
+  have lc := RecursiveHMUniversal.replacementLC cert.opening.ids (SchemeUse.vector used.types)
+    (RecursiveHMUniversal.argumentsLC used.types used.typesLC)
+  have scope := RecursiveHMUniversal.replacementScope cert.opening.ids (SchemeUse.vector used.types)
+    (SchemeUse.vector_scope used.typesScoped)
+  let specialized := fromCertified cert used.countInstance f lc scope
+    (by simp [RecursiveHMEnvironment.Captured]) (by simp [CapturesFixed])
+  have instanceBody := ordinaryRhsToBody specialized.typing (by simp [OrdinaryEnv])
+  have widened := ScopedBodyDerives.subsumption instanceBody specialized.inclusion
+  have withParent := widened.assuming (Δ' := Δ ++ used.countInstance.premises)
+    (by intro σ premises p member; exact premises p (List.mem_append_right _ member))
+  have typesEq : (fun i => mapFree f (bounds rows (BoundsTy.fvar i))) =
+      localTypes frame.owned BoundsTy.fvar used.types := by
+    simpa only [f, owners] using localTypes_specialize frame.owned rows used.types
+  have slotsEq : (fun i => mapFree f
+      (bounds rows (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar) i))) =
+      localSlots ann BoundsTy.bvar used.types := by
+    simpa only [f, owners] using
+      localSlots_specialize ann frame.owned rows used.types frame.distinct (frame.slotsFit annotation)
+  have demandEq : demand cert used.counts f = used.bounds := by
+    exact localRhsDemand cert used
+  simpa only [specialized, rows, typesEq, slotsEq, demandEq, ordinaryBodyEnv,
+    List.map_nil, List.append_nil, CountAlgebra.compose, List.nil_append] using withParent
+
+theorem localRhsInstances_runtimeReady {s ann rhs found typeCaptures Δ calleeΔ caller useHM}
+    (frame : LocalFrame s [] rhs) (annotation : LocalAnnotationOK s ann)
+    (cert : RecursiveHMUniversal.Certified s found typeCaptures [] rhs BoundsTy.fvar
+      (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar)))
+    (owners : cert.opening.ids = frame.owned) (ready : ScopedDerives.RuntimeReady cert.typing)
+    (used : HMCountScheme.Use s calleeΔ useHM caller)
+    (arguments : ∀ a ∈ used.types, Runtime.Supported a) (demandSupport : Runtime.Supported used.bounds) :
+    BodyDerives.RuntimeReady (localRhsInstances (Δ := Δ) frame annotation cert owners used) := by
+  let rows := s.counts.quantified.zip used.counts
+  let f := argument cert.opening.ids (SchemeUse.vector used.types)
+  have lc := RecursiveHMUniversal.replacementLC cert.opening.ids (SchemeUse.vector used.types)
+    (RecursiveHMUniversal.argumentsLC used.types used.typesLC)
+  have scope := RecursiveHMUniversal.replacementScope cert.opening.ids (SchemeUse.vector used.types)
+    (SchemeUse.vector_scope used.typesScoped)
+  have vectorSupport : ∀ i, Runtime.Supported (SchemeUse.vector used.types i) := by
+    intro i
+    cases atIndex : used.types[i]? with
+    | none => simp only [SchemeUse.vector, atIndex, Option.getD_none]; exact .prim
+    | some a =>
+        simpa only [SchemeUse.vector, atIndex, Option.getD_some] using
+          arguments a (List.mem_of_getElem? atIndex)
+  let specialized := fromCertified cert used.countInstance f lc scope
+    (by simp [RecursiveHMEnvironment.Captured]) (by simp [CapturesFixed])
+  have specializedReady := fromCertified_runtimeReady cert ready used.countInstance f lc scope
+    (Runtime.Supported.argument cert.opening.ids _ vectorSupport)
+    (by simp [RecursiveHMEnvironment.Captured]) (by simp [CapturesFixed])
+  have bodyReady := ordinaryRhsReadyToBody specializedReady (by simp [OrdinaryEnv])
+  have demandEq : demand cert used.counts f = used.bounds := localRhsDemand cert used
+  have widenedReady := BodyDerives.RuntimeReady.subsumption specialized.inclusion bodyReady
+    (by rw [demandEq]; exact demandSupport)
+  have withParent := widenedReady.assuming (Δ' := Δ ++ used.countInstance.premises)
+    (by intro σ premises p member; exact premises p (List.mem_append_right _ member))
+  have typesEq : (fun i => mapFree f (bounds rows (BoundsTy.fvar i))) =
+      localTypes frame.owned BoundsTy.fvar used.types := by
+    simpa only [f, owners] using localTypes_specialize frame.owned rows used.types
+  have slotsEq : (fun i => mapFree f
+      (bounds rows (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar) i))) =
+      localSlots ann BoundsTy.bvar used.types := by
+    simpa only [f, owners] using
+      localSlots_specialize ann frame.owned rows used.types frame.distinct (frame.slotsFit annotation)
+  simpa only [specialized, rows, typesEq, slotsEq, demandEq, ordinaryBodyEnv,
+    List.map_nil, List.append_nil, CountAlgebra.compose, List.nil_append] using withParent
+
+#print axioms localSlots_specialize
+#print axioms localRhsInstances
+#print axioms localRhsInstances_runtimeReady
 
 structure BodyResult (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) (e : Expr) where

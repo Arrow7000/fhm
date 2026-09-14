@@ -367,6 +367,26 @@ that Int implementations cannot satisfy Char demands. This is the proof reuse
 needed to consume existing count-first/full-HM-second RHS certificates at local
 introduction, not an executable generalized-local acceptance shortcut.
 
+`localRhsInstances` now eliminates ONE ordinary opaque-opening certificate into
+EVERY actual full HM/count use required by local introduction, in the initial
+closed term-capture slice. It transports source counts first, inserts full HM
+arguments second, independently weakens actual implementation bounds to the
+declared demand, and preserves outer path premises without assuming caller
+requirements. `localRhsInstances_runtimeReady` transports the corresponding
+runtime proof witnesses. `LocalFrame.slotsFit`, `localSlots_specialize` and
+`localTypes_specialize` reconcile this transport with the capture-preserving
+local frame. The polymorphic identity fixture now checks one opaque RHS proof
+and derives all Int/Char uses through this shared certificate eliminator.
+A kernel regression retains a caller count inside a complete type argument even
+when the source count telescope substitutes the same numeric identity.
+
+The certificate must still be assembled from exact source-site reconciliation:
+its source interpreter and annotation-slot interface have to be reconciled with
+the canonical local frame, and original reports must be retained. The ordinary
+mono-capture proof bridge is available, but this eliminator does not yet handle
+nonempty captured term environments or generalized captures. Production local
+guards therefore remain unchanged.
+
 Next: generalized locals, enclosing bindings and nested groups, then the general
 artifact/report bridge and CLI/LSP migration. No whole-language BL runtime
 soundness or BL LSP support is claimed yet.
