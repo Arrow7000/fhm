@@ -1747,3 +1747,37 @@ Next traversal migrations are bounds-aware List/Bool matches and full recursive
 application spines/deferred callbacks. Lexical forall-slot reading, generalized
 local lets, complete simultaneous group acceptance and generalized export still
 remain; this initial executable slice is not full polymorphic BL/LSP support.
+
+### Checkpoint 4ab — interpreted List/Bool matches and universal artifact regression
+
+The interpreted walker now checks List and Bool matches with original ordered
+branch evidence. List coverage uses actual scrutinee intervals; Cons arms receive
+the existing path constraints and exact predecessor tail bounds. Bool coverage
+is finite constructor coverage, with no invented arithmetic premises. Every arm
+retains its actual derivation and semantic inclusion in a variance-correct merged
+result, or in an independently checked common demand. Found payloads, constructor
+arities and caller scope remain checked inside each arm, with no fallback.
+
+Branch synthesis reuses `BranchMerge`'s solver-independent sound union/intersection
+proofs, including arrow variance. Pattern/environment rules and stripFound branch
+indexing are proved in the interpreted judgement, so universal HM/count transport
+can consume these actual match derivations. The report includes every original
+scrutinee/arm node at its original logical path.
+
+The walker matrix has 32 regressions, adding Bool interval union, complete and
+wildcard coverage, wrong pattern arity, a false common result demand, interpreted
+List element origins, Cons tail path refinements and the empty-list case. A real
+`inferFound` List-match artifact is reconciled and checked by traversal, then
+universally certified and specialized at the unchanged original RHS node.
+
+Full 1786-job build and parsed-source regressions pass; scratch HM audit remains
+28 accepted / eight expected rejections / zero failures. Boundary/whitespace guards
+pass. No new placeholders, axioms or partials; executable inclusion retains only
+the existing bounds solver soundness boundary. HM/D2, Path R and production guards
+are unchanged.
+
+Next is the lexical forall bound-slot reader/interface documented at 4aa, alongside
+full recursive spines/deferred callbacks. Generalized local lets, complete group
+acceptance/export and BL/LSP launch remain outstanding. The passing real artifacts
+here use genuine inferred binders; declared-forall binder artifacts still reject
+at the explicitly guarded lexical-slot seam rather than invent machine facts.
