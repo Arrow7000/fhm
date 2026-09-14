@@ -72,6 +72,24 @@ private def filterSource (body : String := "if h < 0 then f t else h :: f t")
   "let f : {n : Nat} BL n n Int -> BL " ++ lower ++ " n Int =\n" ++
   "  \\xs -> match xs with | [] -> [] | h :: t -> " ++ body ++ "\n"
 
+private def mapSource (body : String := "(transform (h + 0) + 0) :: f transform t") : String :=
+  "let f : {n : Nat} (Int -> Int) -> BL n n Int -> BL n n Int =\n" ++
+  "  \\transform xs -> match xs with | [] -> [] | h :: t -> " ++ body ++ "\n"
+
+private def appendSource : String :=
+  "let f : {n m : Nat} BL n n Int -> BL m m Int -> BL (n + m) (n + m) Int =\n" ++
+  "  \\xs ys -> match xs with | [] -> ys | h :: t -> (h + 0) :: f t ys\n"
+
+private def repeatedSource : String :=
+  "let f : {n : Nat} BL n n Int -> BL n n Int -> BL n n Int =\n" ++
+  "  \\(xs : BL n n Int) (ys : BL n n Int) -> " ++
+  "(\\(ignored : List Int) -> xs) (f xs ys)\n"
+
+private def compoundSource : String :=
+  "let f : {n : Nat} BL (n + 1) (n + 1) Int -> BL n n Int -> BL n n Int =\n" ++
+  "  \\(xs : BL (n + 1) (n + 1) Int) (ys : BL n n Int) -> " ++
+  "(\\(ignored : List Int) -> ys) (f xs ys)\n"
+
 private def provenanceRejected (modify : TypedLowered → TypedLowered) : Except String Unit := do
   let a ← artifact (selfSource ++ "f []\n")
   let _ ← RecursiveFound.synthNodes (modify a)
@@ -187,6 +205,38 @@ private def cases : List (String × Bool) := [
     "let g : {n : Nat} BL n n Int -> BL 0 n Int =\n" ++
     "  \\xs -> match xs with | [] -> [] | h :: t -> if h < 0 then h :: f t else f t\n" ++
     "f [1, 2]\n")) "BL 0 2 Int"),
+  ("parsed curried monomorphic map obtains length from its second argument", returns
+    (run (mapSource ++ "f (\\x -> x + 1) [1, 2, 3]\n")) "BL 3 3 Int"),
+  ("parsed curried map checks its empty case", returns
+    (run (mapSource ++ "f (\\x -> x + 1) []\n")) "BL 0 0 Int"),
+  ("parsed curried map rejects an extra output element", fails
+    (run (mapSource "1 :: ((transform (h + 0) + 0) :: f transform t)" ++
+      "f (\\x -> x + 1) []\n")) "interval inclusion"),
+  ("parsed partial curried map requests a later origin", fails
+    (run (mapSource ++ "f (\\x -> x + 1)\n")) "later argument origin"),
+  ("parsed curried append transports two counts and their sum", returns
+    (run (appendSource ++ "f [1, 2] [3]\n")) "BL 3 3 Int"),
+  ("parsed curried append preserves the second count at Nil", returns
+    (run (appendSource ++ "f [] [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed repeated count accepts both actual domains", returns
+    (run (repeatedSource ++ "f [1] [2]\n")) "BL 1 1 Int"),
+  ("parsed repeated count rejects inconsistent later argument", fails
+    (run (repeatedSource ++ "f [] [1]\n")) "interval inclusion"),
+  ("parsed later direct count supplies an earlier compound endpoint", returns
+    (run (compoundSource ++ "f [1, 2] [3]\n")) "BL 1 1 Int"),
+  ("parsed earlier compound domain is still checked", fails
+    (run (compoundSource ++ "f [1] [2]\n")) "interval inclusion"),
+  ("parsed third-argument length is not prematurely fixed", returns (run (
+    "let f : {n : Nat} Int -> (Int -> Int) -> BL n n Int -> BL n n Int =\n" ++
+    "  \\seed transform xs -> match xs with | [] -> [] | h :: t -> " ++
+    "(transform (h + seed) + 0) :: f seed transform t\n" ++
+    "f 1 (\\x -> x + 1) [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed mutually recursive curried maps keep independent telescopes", returns (run (
+    "let f : {n : Nat} (Int -> Int) -> BL n n Int -> BL n n Int =\n" ++
+    "  \\transform xs -> match xs with | [] -> [] | h :: t -> (transform (h + 0) + 0) :: g transform t\n" ++
+    "let g : {n : Nat} (Int -> Int) -> BL n n Int -> BL n n Int =\n" ++
+    "  \\transform xs -> match xs with | [] -> [] | h :: t -> (transform (h + 0) + 0) :: f transform t\n" ++
+    "f (\\x -> x + 1) [1, 2]\n")) "BL 2 2 Int"),
   ("missing source origins reject report adapter", fails (provenanceRejected (fun a =>
     {a with lowering := {a.lowering with coreOrigins := []}})) "incomplete typed provenance"),
   ("duplicate source origins reject report adapter", fails (provenanceRejected (fun a =>

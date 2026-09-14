@@ -49,6 +49,38 @@ private def collectList (ids : List Nat) (as bs : List BoundsTy) : Option Propos
 termination_by sizeOf as + sizeOf bs
 end
 
+mutual
+private def occurrences (ids : List Nat) : BoundsTy → List Nat
+  | .prim _ | .fvar _ | .bvar _ => []
+  | .arrow a b => occurrences ids a ++ occurrences ids b
+  | .list lo hi elem => selected ids lo ++ selected ids hi ++ occurrences ids elem
+  | .custom _ as => occurrencesList ids as
+termination_by β => sizeOf β
+
+private def occurrencesList (ids : List Nat) : List BoundsTy → List Nat
+  | [] => []
+  | a :: as => occurrences ids a ++ occurrencesList ids as
+termination_by as => sizeOf as
+end
+
+/-- Coordinates in input domains not yet supplied, excluding result-only
+    coordinates. These must not be silently fixed to zero by a partial call. -/
+private def pending (ids : List Nat) : BoundsTy → List Nat
+  | .arrow domain result => occurrences ids domain ++ pending ids result
+  | _ => []
+
+private def collectArguments (ids : List Nat) (contract : BoundsTy)
+    (actuals : List BoundsTy) : Option (Proposals × List Nat) :=
+  match actuals with
+  | [] => some (([], []), pending ids contract)
+  | actual :: rest =>
+      match contract with
+      | .arrow domain result => do
+          let here ← collect ids domain actual
+          let (later, unsupplied) ← collectArguments ids result rest
+          pure (combine here later, unsupplied)
+      | _ => none
+
 /-- Proposal order is the declaration telescope's order, not traversal order.
     Compound-only occurrences reject instead of guessing an arithmetic inverse.
     Successful proposals must still pass the certified application checker. -/
@@ -64,6 +96,26 @@ def propose (quantified : List Nat) (pattern actual : BoundsTy) : Except String 
           throw "bounds: implicit count argument needs unsupported arithmetic inversion"
         else pure (.lit 0)
 
+/-- One proposal vector for the whole supplied application spine. Repeated
+    coordinates keep their first witness; ALL domains must subsequently pass
+    inclusion. A later direct occurrence can supply a compound earlier one,
+    but no arithmetic is inverted. This function establishes no typing fact. -/
+def proposeArguments (quantified : List Nat) (contract : BoundsTy)
+    (actuals : List BoundsTy) : Except String (List Count) := do
+  let ((uses, blocked), unsupplied) ← match collectArguments quantified contract actuals with
+    | none => throw "bounds: unsupported full-spine count proposal shape or excess arguments"
+    | some p => pure p
+  quantified.mapM fun id =>
+    match CountSubstitution.lookup uses id with
+    | some c => pure c
+    | none =>
+        if unsupplied.contains id then
+          throw "bounds: count-polymorphic partial application needs a later argument origin"
+        else if blocked.contains id then
+          throw "bounds: implicit count argument needs unsupported arithmetic inversion"
+        else pure (.lit 0)
+
 #print axioms propose
+#print axioms proposeArguments
 
 end FHM.Bounds.CountProposal

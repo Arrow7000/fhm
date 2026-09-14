@@ -114,6 +114,8 @@ roots = [
   "FHM.Bounds.RecursiveContract", # Declared recursive count assumptions with one fixed HM monotype
   "FHM.Bounds.RecursiveTyping", # Simultaneous group rule requires universal RHS and annotation obligations
   "FHM.Bounds.RecursiveVariable", # Fixed-HM recursive assumption uses and origin-backed count calls
+  "FHM.Bounds.RecursiveSpine", # One count proposal vector, every curried domain and intermediate found payload checked
+  "FHM.Bounds.RecursiveSpineTests", # Multi-origin proposals, partial calls, premise/scope/fixed-HM checks and exact-node reports
   "FHM.Bounds.RecursiveCountTransport", # Caller count transport protects callee telescopes and fixed captures
   "FHM.Bounds.RecursiveCountTransportTests", # Symbolic recursive RHS universality, protected counts and capture boundaries
   "FHM.Bounds.RecursiveWalk", # Found-driven symbolic RHS checking under fixed-HM recursive assumptions
