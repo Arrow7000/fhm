@@ -26,6 +26,11 @@ def Syntax.hm {e} : Syntax e → Ty
   | .head _ _ hm => hm
   | .app _ hm _ _ => hm
 
+/-- Original callee payload, distinct from every intermediate/final payload. -/
+def Syntax.headHM {e} : Syntax e → Ty
+  | .head _ _ hm => hm
+  | .app _ _ prior _ => prior.headHM
+
 def Syntax.parse (path : CorePath) (e : Expr) : Option (Syntax e) :=
   match e with
   | .found hm (.var i) => some (.head path i hm)

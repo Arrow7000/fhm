@@ -2395,6 +2395,37 @@ claim. No new files, placeholders, partial defs or axioms; HM/D2, Path R and
 production BL guards remain unchanged. Full mixed-scope nested introduction and
 deferred/full-spine origins remain the next substantial assembly work.
 
+### Checkpoint 4aw — one exported HM/count instance for a full actual body spine
+
+The generalized body walker now gathers every supplied source argument before
+choosing a single HM/count vector. It reuses `RecursiveSpine.Syntax` and its
+original callee payload rather than introducing another parser or source rewrite.
+`StructuralApplication.proposeArguments` gathers full HM-slot proposals across
+ALL supplied domains; `CountProposal.proposeArguments` continues scanning the
+CLOSED template so inserted caller counts never become callee origins.
+
+`useBodySpine` uses the existing exported-variable rule ONCE at the head and the
+ordinary application rule at EVERY original frame. Each domain inclusion,
+intermediate/final original `.found` payload and count scope is independently
+checked. Ordinary non-exported applications share the same application helper.
+The earlier single-argument exported route is replaced, not retained in parallel.
+
+Real closed-group regressions cover different HM/count slots first supplied by
+different arguments, and an earlier compound count resolved by a later direct
+origin. Invalid earlier domain bounds, conflicting repeated full HM slots,
+unsupplied later count origins and a forged intermediate payload all reject.
+A separate origin-backed caller case specializes callee count 7 to one while
+preserving caller count 7 inside BOTH full HM arguments and every source node.
+
+Full `lake build FHM FHMBounds fhm` passes (1805 jobs), with all 24 uniform/body/
+program regressions green. HM audit: 28 accepted / eight expected rejects / zero
+failures. Boundary/whitespace pass.
+This checkpoint concerns generalized body exports. Full count-only recursive RHS
+spines, deferred argument checking, nested groups/generalized locals and program
+prefixes remain separate gates; no production BL fallback is enabled. No new
+files, placeholders, partial defs or axioms. Existing solver trust is unchanged;
+HM/D2 and Path R remain untouched.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

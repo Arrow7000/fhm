@@ -1,6 +1,7 @@
 import FHM.Bounds.RecursiveHMCaller
 import FHM.Bounds.HMDeclaredGroup
 import FHM.Bounds.HMDeclaredCoordinates
+import FHM.Bounds.RecursiveSpine
 
 /-! Every recursive RHS specializes through ONE uniform full group HM map.
 Member counts specialize first. Checked common captures remove that count
@@ -390,9 +391,49 @@ private theorem body_match_typing {ids rows caller Δ env branches β} {ctx : Bo
 private theorem body_path_assuming (Δ Γ : List Constraint) :
     (⟨Δ ++ Γ, Δ⟩ : ForallProblem).Valid := fun _ h c hc => h c (List.mem_append_left Γ hc)
 
+private def appendBody {ids rows caller Δ env fn arg} (path : CorePath) (hm : Ty)
+    (prior : BodyResult ids rows caller Δ env fn) (actual : BodyResult ids rows caller Δ env arg) :
+    Except String (BodyResult ids rows caller Δ env (.found hm (.app fn arg))) := do
+  match hf : prior.bounds with
+  | .arrow domain result =>
+      let sub ← Typed.subtype Δ actual.bounds domain
+      finishBody path hm result rfl
+        (by simpa only [Expr.stripFound] using
+          (BodyDerives.app (by simpa only [hf] using prior.typing) actual.typing sub.down))
+        (prior.nodes ++ actual.nodes)
+  | _ => throw "bounds: generalized body function is not an arrow"
+
+private inductive BodySpine (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (Δ : List Constraint) (env : List BodyBinding) : {e : Expr} → RecursiveSpine.Syntax e → Type where
+  | head (path : CorePath) (i : Nat) (hm : Ty) : BodySpine ids rows caller Δ env (.head path i hm)
+  | app {fn : Expr} {prior : RecursiveSpine.Syntax fn} {arg : Expr} (path : CorePath) (hm : Ty)
+      (previous : BodySpine ids rows caller Δ env prior)
+      (actual : BodyResult ids rows caller Δ env arg) :
+      BodySpine ids rows caller Δ env (.app path hm prior arg)
+
+private def BodySpine.actualsRev {ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e} :
+    BodySpine ids rows caller Δ env spine → List BoundsTy
+  | .head _ _ _ => []
+  | .app _ _ previous actual => actual.bounds :: previous.actualsRev
+
+/-- One exported use at the head, then the ordinary application rule at EVERY
+    original frame. Counts/HM arguments are never reproposed at a prefix. -/
+private def useBodySpine {ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e}
+    (checked : BodySpine ids rows caller Δ env spine) {s : HMCountScheme.Scheme}
+    (lookup : env[spine.index]? = some (.exported s))
+    (used : HMCountScheme.Use s Δ spine.headHM caller) :
+    Except String (BodyResult ids rows caller Δ env e) := do
+  match checked with
+  | .head path i hm =>
+      finishBody path hm used.bounds rfl
+        (by simpa only [Expr.stripFound] using BodyDerives.varExported lookup used) []
+  | .app path hm previous actual =>
+      let prior ← useBodySpine previous lookup used
+      appendBody path hm prior actual
+
 mutual
 /-- Initial generalized body slice: literals, List origins, scalar operators,
-    lambdas, mono locals and origin-backed single-argument exported calls.
+    lambdas, mono locals, matches and origin-backed exported application spines.
     Generalized local lets, nested groups and deferred spines fail
     explicitly until their SAME-interface assembly rules are implemented. -/
 def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
@@ -461,51 +502,22 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
                 ⟨path ++ [.appFun, .appFun], ctorHM.eraseBounds, none⟩ :: h.nodes ++ t.nodes)
         | _ => throw "bounds: generalized body Cons tail is not a List"
       else throw "bounds: generalized body constructor application unsupported"
-  | .found hm (.app (.found functionHM (.var i)) arg) =>
-      match hv : env[i]? with
-      | some (.exported s) =>
-          match s.counts.body with
-          | .arrow domain _ =>
-              let actual ← walkBody ids rows caller Δ env (path ++ [.appArg]) arg schemes
-              let types ← StructuralApplication.propose domain actual.bounds s.hm.paramCount
-              let counts ← CountProposal.proposeArguments s.counts.quantified s.counts.body [actual.bounds]
-              let used ← HMCountScheme.check s Δ functionHM counts types caller
-              match hu : used.bounds with
-              | .arrow param result =>
-                  let sub ← Typed.subtype Δ actual.bounds param
-                  let fn ← finishBody (ids := ids) (rows := rows) (caller := caller)
-                    (Δ := Δ) (env := env) (e := .found functionHM (.var i))
-                    (path ++ [.appFun]) functionHM used.bounds rfl
-                    (by simpa only [Expr.stripFound] using BodyDerives.varExported hv used) []
-                  finishBody path hm result rfl
-                    (by simpa only [Expr.stripFound] using
-                      BodyDerives.app (by simpa only [hu] using
-                        (BodyDerives.varExported (ids := ids) (rows := rows) hv used)) actual.typing sub.down)
-                    (fn.nodes ++ actual.nodes)
-              | _ => throw "bounds: exported body use is not an arrow"
-          | _ => throw "bounds: exported body application has a non-arrow contract"
-      | _ =>
-          let fn ← walkBody ids rows caller Δ env (path ++ [.appFun]) (.found functionHM (.var i)) schemes
-          let actual ← walkBody ids rows caller Δ env (path ++ [.appArg]) arg schemes
-          match hf : fn.bounds with
-          | .arrow domain result =>
-              let sub ← Typed.subtype Δ actual.bounds domain
-              finishBody path hm result rfl
-                (by simpa only [Expr.stripFound] using
-                  (BodyDerives.app (by simpa only [Expr.stripFound, hf] using fn.typing) actual.typing sub.down))
-                (fn.nodes ++ actual.nodes)
-          | _ => throw "bounds: generalized body function is not an arrow"
   | .found hm (.app fn arg) =>
+      match RecursiveSpine.Syntax.parse path (.found hm (.app fn arg)) with
+      | some spine =>
+          match hv : env[spine.index]? with
+          | some (.exported s) =>
+              let checked ← walkBodySpine ids rows caller Δ env spine schemes
+              let actuals := checked.actualsRev.reverse
+              let types ← StructuralApplication.proposeArguments s.counts.body actuals s.hm.paramCount
+              let counts ← CountProposal.proposeArguments s.counts.quantified s.counts.body actuals
+              let used ← HMCountScheme.check s Δ spine.headHM counts types caller
+              return ← useBodySpine checked hv used
+          | _ => pure ()
+      | none => pure ()
       let function ← walkBody ids rows caller Δ env (path ++ [.appFun]) fn schemes
       let actual ← walkBody ids rows caller Δ env (path ++ [.appArg]) arg schemes
-      match hf : function.bounds with
-      | .arrow domain result =>
-          let sub ← Typed.subtype Δ actual.bounds domain
-          finishBody path hm result rfl
-            (by simpa only [Expr.stripFound] using
-              (BodyDerives.app (by simpa only [hf] using function.typing) actual.typing sub.down))
-            (function.nodes ++ actual.nodes)
-      | _ => throw "bounds: generalized body function is not an arrow"
+      appendBody path hm function actual
   | .found hm (.letIn ann rhs body) =>
       let hint ← RecursiveHMAnnotation.scopedBindingHint BoundsTy.fvar BoundsTy.bvar ids rows caller ann
       let actual ← walkBody ids rows caller Δ env (path ++ [.letRhs]) rhs schemes hint
@@ -533,6 +545,17 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
   | .found _ (.letRec _ _ _) => throw "bounds: nested generalized recursive groups are not supported yet"
   | _ => throw "bounds: generalized body lacks an original found node"
 termination_by (sizeOf e, 1)
+
+private def walkBodySpine (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (Δ : List Constraint) (env : List BodyBinding) {e : Expr} (spine : RecursiveSpine.Syntax e)
+    (schemes : BinderSchemeMap) : Except String (BodySpine ids rows caller Δ env spine) := do
+  match spine with
+  | .head path i hm => pure (.head path i hm)
+  | .app path hm prior arg =>
+      let previous ← walkBodySpine ids rows caller Δ env prior schemes
+      let actual ← walkBody ids rows caller Δ env (path ++ [.appArg]) arg schemes
+      pure (.app path hm previous actual)
+termination_by (sizeOf e, 0)
 
 private def walkBodyBranches (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) (ctx : BodyBranchContext)
@@ -634,6 +657,7 @@ def checkClosedProgram (output : Expr) (metadata : Scope.Metadata)
 #print axioms BodyBranchContext.Covers.assuming
 #print axioms BodyDerives.assuming
 #print axioms body_match_typing
+#print axioms useBodySpine
 #print axioms walkBody
 #print axioms checkBody
 #print axioms checkClosedProgram
