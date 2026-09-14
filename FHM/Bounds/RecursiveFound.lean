@@ -1,7 +1,7 @@
 import FHM.Bounds.Found
 import FHM.Bounds.RecursiveGroup
 
-/-! Opt-in provenance adapter for checked recursive groups. It consumes the
+/-! Opt-in provenance adapter for checked found programs and recursive groups. It consumes the
 existing HM artifact and exports reports only after whole-group acceptance.
 Coverage guards are executable checks, not formal artifact-coherence theorems.
 The production CLI/LSP launch remains unchanged.

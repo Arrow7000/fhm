@@ -100,6 +100,21 @@ example {ids rows Δ env anns rhss body} (cert : RecursiveGroup.Certified ids ro
     Derives ids rows Δ env (.letRec anns (rhss.map Expr.stripFound) body.stripFound) cert.result := cert.typing
 
 private def cases : List (String × Bool) := [
+  ("consecutive empty group checks through the same group introduction", succeeds
+    (changedExpr (fun
+      | .found hm (.letRec anns rhss body) =>
+          .found hm (.letRec anns rhss (.found hm (.letRec [] [] body)))
+      | e => e))),
+  ("forged inner group root is checked before outer acceptance", fails
+    (changedExpr (fun
+      | .found hm (.letRec anns rhss body) =>
+          .found hm (.letRec anns rhss (.found (.prim .char) (.letRec [] [] body)))
+      | e => e)) "body disagrees"),
+  ("missing inner found group payload is not reconstructed", fails
+    (changedExpr (fun
+      | .found hm (.letRec anns rhss body) =>
+          .found hm (.letRec anns rhss (.letRec [] [] body))
+      | e => e)) "not a found recursive group"),
   ("whole self-recursive group checks and body gets exact Nil result", returns (run) "BL 0 0 Int"),
   ("whole mutual group checks all members before accepting body", returns
     (run [binding f (ignored g), binding g (ignored f (cons (.var xs)))]

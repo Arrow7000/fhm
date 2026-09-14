@@ -100,12 +100,27 @@ private def soleCallbackSource (domain : String) : String :=
   "  \\(g : " ++ domain ++ " -> BL n n Int) -> " ++
   "(\\(ignored : Int) -> 1) (f g)\n"
 
+private def consecutiveSource (body : String := "f xs") : String :=
+  selfSource ++
+  "let g : {m : Nat} BL m m Int -> BL m m Int =\n" ++
+  "  \\(xs : BL m m Int) -> (\\(ignored : List Int) -> " ++ body ++ ") (g xs)\n"
+
 private def provenanceRejected (modify : TypedLowered → TypedLowered) : Except String Unit := do
   let a ← artifact (selfSource ++ "f []\n")
   let _ ← RecursiveFound.synthNodes (modify a)
   pure ()
 
 private def cases : List (String × Bool) := [
+  ("parsed program without a recursive root checks scalar operations", returns
+    (run "1 + 2\n") "Int"),
+  ("parsed program without a recursive root infers exact List bounds", returns
+    (run "[1, 2]\n") "BL 2 2 Int"),
+  ("parsed ordinary monomorphic root let retains its checked List bounds", returns
+    (run "let xs : BL 2 2 Int = [1, 2]\nxs\n") "BL 2 2 Int"),
+  ("parsed ordinary root let still checks its source annotation", fails
+    (run "let xs : BL 0 0 Int = [1]\nxs\n") "interval inclusion"),
+  ("parsed program without recursion uses the same Bool branch checker", returns
+    (run "if True then 1 else 2\n") "Int"),
   ("parsed self-recursive contract and exact empty body result", returns (run (selfSource ++ "f []\n")) "BL 0 0 Int"),
   ("parsed self-recursive contract follows singleton argument origin", returns (run (selfSource ++ "f [1]\n")) "BL 1 1 Int"),
   ("parsed mutual recursion uses independent same-named count binders", returns (run mutualSource) "BL 0 0 Int"),
@@ -268,6 +283,23 @@ private def cases : List (String × Bool) := [
     "let g : {m : Nat} BL m m Int -> BL m m Int =\n" ++
     "  \\(xs : BL m m Int) -> f (\\ys -> ys) xs\n" ++
     "g [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed consecutive groups retain distinct telescopes and outer calls", returns
+    (run (consecutiveSource ++ "g [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed consecutive group body can still call the earlier group", returns
+    (run (consecutiveSource ++ "f [1, 2, 3]\n")) "BL 3 3 Int"),
+  ("parsed bad later group rejects rather than exporting earlier reports", fails
+    (run (consecutiveSource "1 :: f xs" ++ "f []\n")) "interval inclusion"),
+  ("parsed later group still checks final body inclusion", fails
+    (run (consecutiveSource ++ "(\\(xs : BL 0 0 Int) -> 1) (g [1])\n")) "interval inclusion"),
+  ("parsed deferred callback works across consecutive groups", returns (run (
+    callbackSource ++
+    "let g : {m : Nat} BL m m Int -> BL m m Int =\n" ++
+    "  \\(xs : BL m m Int) -> (\\(ignored : List Int) -> f (\\ys -> ys) xs) (g xs)\n" ++
+    "g [1, 2]\n")) "BL 2 2 Int"),
+  ("parsed recursive group in a universal RHS still needs transport", fails (run (
+    "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+    "  \\(xs : BL n n Int) -> let g : {m : Nat} Int -> Int = \\i -> g i in " ++
+    "(\\(ignored : Int) -> xs) (g 1)\nf []\n")) "captured-template transport"),
   ("missing source origins reject report adapter", fails (provenanceRejected (fun a =>
     {a with lowering := {a.lowering with coreOrigins := []}})) "incomplete typed provenance"),
   ("duplicate source origins reject report adapter", fails (provenanceRejected (fun a =>
