@@ -1569,3 +1569,30 @@ Next is the exact-node found-payload interpretation seam for more-general HM
 RHSs, then joint group/environment/signature acceptance and generalized export.
 The polymorphic source judgement above is proof-side; it does NOT enable the
 existing executable group decoder or claim whole-program BL support yet.
+
+### Checkpoint 4w — exact-node interpreted found views with genuine typing evidence
+
+`HMFoundView` applies one simultaneous HM interpretation to the discovered
+payload at an exact original Core path. Neither the expression artifact, paths,
+nor separate source provenance are rewritten. The view is bounds-blind: changing
+count intervals in supplied types cannot change its HM result, and inserted
+caller identities are not recursively reinterpreted. `AtNode.coherent` proves
+agreement with transported actual bounds from original node agreement.
+
+The executable `checkShape` checks interpreted HM agreement and actual caller
+count scope, indexed by the exact supplied bounds. It deliberately does not
+manufacture an origin proof. `checkTyped` additionally retains a genuine
+`RecursiveHMJudgement.Derives` proof for the unchanged original source node.
+Twelve regressions cover root/body paths, shape and scope failures, missing or
+non-found nodes, simultaneous interpretation, and real typed-node acceptance.
+
+Full 1779-job build, parsed-source regressions and scratch HM audit pass (28
+accepted / eight expected rejections / zero failures); boundary/whitespace guards
+pass. New declarations use standard Lean axioms only, with no new placeholders
+or partials. Existing legacy Pipeline placeholders are unchanged. HM/D2, Path R
+and the guarded production launch remain unchanged.
+
+This is an exact-node seam, not yet an interpreted recursive walker or a
+generalized group-exit rule. Next work must connect universal RHS specialization
+to these views and reconcile the common recursive environment before export;
+the polymorphic executable source guards remain intact.
