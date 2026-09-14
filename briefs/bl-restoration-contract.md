@@ -1011,3 +1011,44 @@ interval membership to all Core runtime values, introduce bounds derivations for
 match expressions, or enable matches in the found walker. Branch typing and
 count transport through matches, contract-guided result checking, HM annotation
 opening/specialization, exit generalization and unified product wiring remain.
+
+### Checkpoint 4h — typed List matches and universal count transport
+
+The existing `RecursiveTyping` judgement now includes List matches, with proper
+Nil/Cons/wildcard patterns, semantic coverage, constructor-specific path premises
+and head-before-tail Cons binder layout. Every arm has an actual bounds derivation
+and a semantic inclusion into a common result under its own path. Strengthening
+premises and finite count transport preserve the rule, including the refined
+tail environment. Consequently the existing universal recursive RHS certificates
+and simultaneous group introduction work for matches without a new trust premise.
+Nested recursive groups remain explicitly excluded from this transport fragment.
+
+`RecursiveWalk` consumes the same found artifact and keeps exact ordered branch
+evidence. Unannotated match synthesis uses the proved variance-correct semantic
+merge. A result demand from a recursive contract or monomorphic local annotation
+instead checks each arm against that common result under the arm's path. This
+avoids losing the empty/nonempty correlation needed for exact-length copy. Actual
+arm reports remain unchanged; a declaration is not substituted for arm evidence.
+Demand guidance is not an unchecked global subsumption rule, and the outer RHS
+annotation and contract inclusions are still checked.
+
+Twenty new found-tree regressions cover coverage, malformed patterns alongside
+wildcards, tail scopes, nested matches, forged HM shapes, bad length claims and
+function-valued matches with disjoint arrow domains. Eleven new parsed-source
+regressions cover exact-length recursive and mutually recursive copies, count
+zero/singleton/longer calls, bad arms, incomplete coverage, wildcard recursion and
+captured local annotated matches. The old parsed "matches unsupported" regression
+now checks acceptance. A solver-independent formal regression generates every
+finite scoped count instance from a symbolic match derivation.
+
+The production CLI/LSP route is unchanged. HM/D2 and bounds-blind Path R are
+unchanged. This is typed coverage/count-certificate work, not whole-runtime length
+soundness, full artifact coherence or termination checking. HM annotation opening
+and specialization, contract-guided unannotated List parameters, exit/internal-let
+generalization, captured nested groups and unified product wiring remain.
+
+Validation: full HM/Bounds/editor/CLI build passes (1762 jobs); scratch HM audit
+remains 28 accepted / eight expected rejections / zero failures. Boundary and
+whitespace guards pass. The new typing/transport proofs and universal-match
+regression use only standard Lean axioms; executable checking retains the existing
+positive solver-verdict trust. No new axioms, placeholders or partial definitions.

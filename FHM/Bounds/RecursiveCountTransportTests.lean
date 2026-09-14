@@ -42,7 +42,7 @@ private theorem symbolic_loop : Derives [7] [] [] [.recursive fixed] loop simple
 private theorem every_loop_instance : ∀ args caller (inst : Instance simple args caller),
     Derives [7] ([7].zip args) inst.premises [.recursive fixed] loop (bounds ([7].zip args) simple.body) := by
   apply universal_rhs (s := simple) symbolic_loop
-  · exact ⟨True.intro, True.intro⟩
+  · simp [loop, NoGroups]
   · intro γ hγ
     simp at hγ
   · intro c hc i hi
@@ -120,7 +120,44 @@ example {s args caller Δ} (inst : Instance s args caller) (hu : inst.Usable Δ)
     (instanceTransport inst outer hf target hs hk).Usable (Δ.map (constraint outer)) :=
   usable_transport inst hu outer hf target hs hk
 
-example : ¬NoGroups (.letRec [none] [loop] loop) := fun h => h
+example : ¬NoGroups (.letRec [none] [loop] loop) := by simp [NoGroups]
+
+private def matchBody : Expr := .match_ (.var 0)
+  [(.named nilCtorName 0, .var 0), (.named consCtorName 2, .var 2)]
+private def matchLoop : Expr := .lambda none matchBody
+
+private theorem symbolic_match : Derives [7] [] [] [.recursive fixed] matchLoop simple.body := by
+  apply Derives.lambda (ann := none) True.intro
+  apply Derives.matchList (actuals := fun _ => .list n n (.prim .int))
+    (Derives.varMono rfl)
+  · exact .full (by simp [hasNilBranch]) (by simp [hasConsBranch])
+  · intro br hb
+    simp only [List.mem_cons, List.not_mem_nil, or_false] at hb
+    rcases hb with rfl | rfl <;> simp [ListPattern]
+  · intro i br hb
+    cases i with
+    | zero => simp only [List.getElem?_cons_zero, Option.some.injEq] at hb; subst br; exact .varMono rfl
+    | succ i =>
+        cases i with
+        | zero => simp only [List.getElem?_cons_succ, List.getElem?_cons_zero, Option.some.injEq] at hb; subst br; exact .varMono (by simp [branchEnv])
+        | succ i => simp at hb
+  · intro i br _; exact SemanticSub.refl _ _
+
+private theorem every_match_instance : ∀ args caller (inst : Instance simple args caller),
+    Derives [7] ([7].zip args) inst.premises [.recursive fixed] matchLoop
+      (bounds ([7].zip args) simple.body) := by
+  apply universal_rhs (s := simple) symbolic_match
+  · simp [matchLoop, matchBody, NoGroups]
+  · intro γ hγ; simp at hγ
+  · intro c hc i hi
+    simp only [List.mem_singleton, Binding.recursive.injEq] at hc
+    subst c
+    simp [fixed, simple] at hi
+
+example {ids rows Δ Δ' env scrut branches β}
+    (h : Derives ids rows Δ env (.match_ scrut branches) β)
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    Derives ids rows Δ' env (.match_ scrut branches) β := assuming h hp
 
 def main : IO Unit := do
   for (name, ok) in cases do
@@ -129,5 +166,6 @@ def main : IO Unit := do
 
 #eval main
 #print axioms every_loop_instance
+#print axioms every_match_instance
 
 end FHM.Bounds.RecursiveCountTransportTests
