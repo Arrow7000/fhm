@@ -125,6 +125,68 @@ theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
 
 #print axioms ScopedDerives.varsBelow
 
+private theorem branch_typeFree {branches : List (MatchPattern × Expr)} {br i}
+    (member : br ∈ branches) (used : i ∈ br.2.tyFreeVars) :
+    i ∈ Expr.tyFreeVars.BranchList.tyFreeVars branches := by
+  induction branches with
+  | nil => cases member
+  | cons head tail ih =>
+      rcases List.mem_cons.mp member with rfl | rest
+      · exact List.mem_append_left _ used
+      · exact List.mem_append_right _ (ih rest)
+
+/-- Solved artifact identities need not share a source interpreter. Agreement
+    on identities actually named in source annotations preserves the exact RHS
+    proof, its bounds, count frames and environment. No source rewriting. -/
+theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
+    (h : ScopedDerives types slots ids rows Δ env e β) :
+    (∀ i ∈ e.tyFreeVars, types i = types' i) →
+    ScopedDerives types' slots ids rows Δ env e β := by
+  induction h with
+  | literal => intro _; exact .literal
+  | primBinOp => intro _; exact .primBinOp
+  | nil => intro _; exact .nil
+  | boolCtor ctor => intro _; exact .boolCtor ctor
+  | varMono lookup => intro _; exact .varMono lookup
+  | varRecursive lookup used => intro _; exact .varRecursive lookup used
+  | cons _ _ sub ihh iht =>
+      intro agree
+      exact .cons (ihh (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (iht (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) sub
+  | app _ _ sub ihf iha =>
+      intro agree
+      exact .app (ihf (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (iha (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) sub
+  | lambda annotation _ ih =>
+      intro agree
+      exact .lambda
+        (ScopedHMAnnotation.ParamOK.congrFree annotation
+          (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (ih (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | letMono annotation _ _ ihr ihb =>
+      intro agree
+      exact .letMono
+        (ScopedHMAnnotation.BindingOK.congrFree annotation
+          (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (ihr (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (ihb (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | matchList _ coverage patterns bodies subs ihs ihb =>
+      intro agree
+      refine .matchList (ihs (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        coverage patterns ?_ subs
+      intro index br atIndex
+      exact ihb index br atIndex (fun i hi => agree i
+        (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
+  | matchBool _ coverage patterns bodies subs ihs ihb =>
+      intro agree
+      refine .matchBool (ihs (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        coverage patterns ?_ subs
+      intro index br atIndex
+      exact ihb index br atIndex (fun i hi => agree i
+        (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
+
+#print axioms ScopedDerives.sourceFree
+
 /-- Runtime realization of an assumption. Recursive entries promise actual
     behaviour at every usable count instance, not just the fixed HM skeleton.
     Raw instantiated premises must hold at the actual count assignment. The
@@ -694,6 +756,59 @@ theorem ScopedDerives.RuntimeReady.assuming {types slots ids rows Δ Δ' env e �
         (ihs hp) (fun i br atIndex => ihb i br atIndex hp) support
 
 #print axioms ScopedDerives.RuntimeReady.assuming
+
+theorem ScopedDerives.RuntimeReady.sourceFree {types types' slots : Nat → BoundsTy} {ids rows Δ env e β}
+    {h : ScopedDerives types slots ids rows Δ env e β} (ready : ScopedDerives.RuntimeReady h) :
+    ∀ agree : ∀ i ∈ e.tyFreeVars, types i = types' i,
+      ScopedDerives.RuntimeReady (h.sourceFree agree) := by
+  induction ready with
+  | literal => intro _; exact .literal
+  | primBinOp => intro _; exact .primBinOp
+  | nil supported => intro _; exact .nil supported
+  | boolCtor ctor => intro _; exact .boolCtor ctor
+  | varMono lookup supported => intro _; exact .varMono lookup supported
+  | varRecursive lookup used supported => intro _; exact .varRecursive lookup used supported
+  | cons sub _ _ ihh iht =>
+      intro agree
+      exact .cons sub (ihh (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (iht (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | app sub _ _ ihf iha =>
+      intro agree
+      exact .app sub (ihf (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (iha (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | lambda annotation supported _ ih =>
+      intro agree
+      exact .lambda
+        (ScopedHMAnnotation.ParamOK.congrFree annotation
+          (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        supported (ih (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | letMono annotation _ _ ihr ihb =>
+      intro agree
+      exact .letMono
+        (ScopedHMAnnotation.BindingOK.congrFree annotation
+          (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (ihr (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (ihb (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
+      intro agree
+      refine .matchList coverage patterns
+        (fun index br atIndex => (bodies index br atIndex).sourceFree (fun i hi => agree i
+          (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi))))
+        subs (ihs (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) ?_ supported
+      intro index br atIndex
+      exact ihb index br atIndex (fun i hi => agree i
+        (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
+  | matchBool coverage patterns bodies subs _ _ supported ihs ihb =>
+      intro agree
+      refine .matchBool coverage patterns
+        (fun index br atIndex => (bodies index br atIndex).sourceFree (fun i hi => agree i
+          (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi))))
+        subs (ihs (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) ?_ supported
+      intro index br atIndex
+      exact ihb index br atIndex (fun i hi => agree i
+        (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
+
+#print axioms ScopedDerives.RuntimeReady.sourceFree
 
 def Contract.mapTypes (c : Contract) (f : Nat → BoundsTy)
     (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) : Contract :=

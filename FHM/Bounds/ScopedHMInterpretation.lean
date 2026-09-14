@@ -26,6 +26,39 @@ def readList (free slots : Nat → BoundsTy) : List BoundsTy → List BoundsTy
 end
 
 mutual
+/-- Reader changes outside the source's free identities are irrelevant, even
+    with an independent lexical-slot interface. Inserted types are not reread. -/
+theorem congrFree {f g slots : Nat → BoundsTy} {β}
+    (h : ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, f i = g i) :
+    read f slots β = read g slots β := by
+  cases β with
+  | prim | bvar => rfl
+  | fvar i => exact h i (by simp [Synth.BoundsTy.toTy, Ty.freeVars])
+  | arrow a b =>
+      simp only [read]
+      congr 1
+      · exact congrFree (fun i hi => h i (by simp [Synth.BoundsTy.toTy, Ty.freeVars, hi]))
+      · exact congrFree (fun i hi => h i (by simp [Synth.BoundsTy.toTy, Ty.freeVars, hi]))
+  | list lo hi a => exact congrArg (BoundsTy.list lo hi) (congrFree
+      (fun i hi => h i (by simpa [Synth.BoundsTy.toTy, listTy, Ty.freeVars, TyList.freeVars] using hi)))
+  | custom n as => exact congrArg (BoundsTy.custom n) (list_congrFree
+      (by simpa only [Synth.BoundsTy.toTy, Ty.freeVars] using h))
+termination_by sizeOf β
+
+private theorem list_congrFree {f g slots : Nat → BoundsTy} {as}
+    (h : ∀ i ∈ TyList.freeVars (as.map Synth.BoundsTy.toTy), f i = g i) :
+    readList f slots as = readList g slots as := by
+  cases as with
+  | nil => rfl
+  | cons a as =>
+      simp only [readList]
+      congr 1
+      · exact congrFree (fun i hi => h i (by simp [TyList.freeVars, hi]))
+      · exact list_congrFree (fun i hi => h i (by simp [TyList.freeVars, hi]))
+termination_by sizeOf as
+end
+
+mutual
 def ty (free slots : Nat → BoundsTy) : Ty → Ty
   | .prim p => .prim p
   | .fvar i => Synth.BoundsTy.toTy (free i)
@@ -37,6 +70,27 @@ def ty (free slots : Nat → BoundsTy) : Ty → Ty
 def tys (free slots : Nat → BoundsTy) : List Ty → List Ty
   | [] => []
   | a :: as => ty free slots a :: tys free slots as
+end
+
+mutual
+/-- Bounds erasure does not remove or invent source HM identities. -/
+theorem eraseFreeVars (τ : Ty) (i : Nat) : i ∈ τ.eraseBounds.freeVars ↔ i ∈ τ.freeVars := by
+  cases τ with
+  | prim | bvar | fvar => rfl
+  | arrow a b => simp [Ty.eraseBounds_arrow, Ty.freeVars, eraseFreeVars a i, eraseFreeVars b i]
+  | bl lo hi a =>
+      simp [Ty.eraseBounds_bl, bareListTy, Ty.freeVars, TyList.freeVars, eraseFreeVars a i]
+  | customTy name as =>
+      simp only [Ty.eraseBounds_customTy, Ty.freeVars, TyList.eraseBounds_eq_map]
+      exact list_eraseFreeVars as i
+termination_by sizeOf τ
+
+private theorem list_eraseFreeVars (as : List Ty) (i : Nat) :
+    i ∈ TyList.freeVars (as.map Ty.eraseBounds) ↔ i ∈ TyList.freeVars as := by
+  cases as with
+  | nil => rfl
+  | cons a as => simp [List.map_cons, TyList.freeVars, eraseFreeVars a i, list_eraseFreeVars as i]
+termination_by sizeOf as
 end
 
 mutual
@@ -164,6 +218,8 @@ termination_by sizeOf as
 end
 
 #print axioms identity_slots
+#print axioms congrFree
+#print axioms eraseFreeVars
 #print axioms map_types
 #print axioms map_counts
 #print axioms shape

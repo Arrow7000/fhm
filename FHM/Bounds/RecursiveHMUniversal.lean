@@ -42,6 +42,32 @@ structure Certified (s : HMCountScheme.Scheme) (found : Ty) (captures : List Ty)
   typeFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ opening.ids, i ∉ c.template.hm.body.freeVars
   countFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ s.counts.quantified
 
+/-- Reconcile proof-side source readers only where the original RHS names
+    identities. The checked opening, actual bounds and demand inclusion stay
+    intact; this does not assert a new found-artifact interpretation. -/
+def Certified.sourceFree {s found captures env rhs sourceTypes sourceSlots sourceTypes'}
+    (cert : Certified s found captures env rhs sourceTypes sourceSlots)
+    (agree : ∀ i ∈ rhs.tyFreeVars, sourceTypes i = sourceTypes' i) :
+    Certified s found captures env rhs sourceTypes' sourceSlots where
+  opening := cert.opening
+  actual := cert.actual
+  shape := cert.shape
+  actualScope := cert.actualScope
+  typing := cert.typing.sourceFree agree
+  inclusion := cert.inclusion
+  typeFresh := cert.typeFresh
+  countFresh := cert.countFresh
+
+theorem Certified.sourceFree_runtimeReady {s found captures env rhs}
+    {sourceTypes sourceSlots sourceTypes' : Nat → BoundsTy}
+    (cert : Certified s found captures env rhs sourceTypes sourceSlots)
+    (agree : ∀ i ∈ rhs.tyFreeVars, sourceTypes i = sourceTypes' i)
+    (ready : ScopedDerives.RuntimeReady cert.typing) :
+    ScopedDerives.RuntimeReady (cert.sourceFree agree).typing := ready.sourceFree agree
+
+#print axioms Certified.sourceFree
+#print axioms Certified.sourceFree_runtimeReady
+
 /-- Complete caller vectors retain local closure at every total vector slot. -/
 theorem argumentsLC (types : List BoundsTy)
     (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC) :

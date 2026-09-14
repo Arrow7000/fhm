@@ -53,6 +53,16 @@ private def actual (recursive : Bool := false) (falseClaim : Bool := false)
           have hb : b = contract := by simpa [env] using hb
           subst b
           simp [contract, HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme] at hi)
+  let sourceCert := cert.implementation.sourceFree (sourceTypes' := BoundsTy.fvar)
+    (fun _ named => c.sourceIdentity named)
+  let rhsReady ← match checked.located.typed.runtimeReady with
+    | some proof => pure proof
+    | none => throw "test: actual declared RHS lost its supported runtime witness"
+  have _sourceReady : ScopedDerives.RuntimeReady sourceCert.typing :=
+    RecursiveHMUniversal.Certified.sourceFree_runtimeReady cert.implementation
+      (fun _ named => c.sourceIdentity named) rhsReady.down
+  have _sameActual : sourceCert.actual = cert.implementation.actual := rfl
+  have _sameOpening : sourceCert.opening.ids = cert.implementation.opening.ids := rfl
   let counts ← c.interface.scheme.counts.instantiate [.lit 3] [7]
   if ha : [arg].length = d.annotation.paramCount then
     let used := RecursiveHMSigned.atScopedNode d.node cert counts [arg]

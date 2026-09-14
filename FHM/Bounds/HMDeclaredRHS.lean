@@ -84,8 +84,20 @@ def certify {output site d quantified captures premises typeCaptures env}
         cases he
         exact countFresh original ho i hi
 
+/-- Recover the canonical free source reader from the actual reconciled RHS
+    proof. Opening and implementation evidence are retained, not reconstructed
+    from metadata; lexical slots and exact-node reports remain separate. -/
+def certifySource {output site d quantified captures premises typeCaptures env}
+    (c : @HMDeclaredReconciliation.Checked output site d quantified captures premises typeCaptures)
+    (rhs : Checked c env)
+    (represented : ∀ b, .recursive b ∈ env → b.template.hm.body ∈ typeCaptures)
+    (countFresh : ∀ b, .recursive b ∈ env → ∀ i ∈ b.template.counts.captures, i ∉ quantified) :=
+  (certify c rhs represented countFresh).implementation.sourceFree (sourceTypes' := BoundsTy.fvar)
+    (fun _ named => c.sourceIdentity named)
+
 #print axioms check
 #print axioms prepare
 #print axioms certify
+#print axioms certifySource
 
 end FHM.Bounds.HMDeclaredRHS

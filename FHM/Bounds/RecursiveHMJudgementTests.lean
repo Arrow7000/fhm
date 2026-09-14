@@ -16,6 +16,32 @@ private theorem annotatedIdentity : Derives BoundsTy.fvar [] [] [] [] source
     by simp [ScopedAnnotation.decode, pure, Except.pure], ?_⟩
   exact .fvar
 
+private def artifactOnlyReader (i : Nat) : BoundsTy :=
+  if i = 65 then .list (.lit 1) (.lit 1) (.prim .int) else .fvar i
+
+private theorem sourceReaderAgreement : ∀ i ∈ source.tyFreeVars,
+    BoundsTy.fvar i = artifactOnlyReader i := by
+  intro i named
+  have identity : i = 90 := by simpa [source, Expr.tyFreeVars, Ty.freeVars] using named
+  subst i
+  simp [artifactOnlyReader]
+
+/-- Solving an unrelated artifact identity cannot reinterpret named source
+    identity 90, nor change the actual annotated program or its bounds. -/
+theorem artifactReaderSourceSafe (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free) :
+    Runtime.Safe bound free σ (.arrow (.fvar 90) (.fvar 90)) source := by
+  have annotation : ScopedHMAnnotation.ParamOK BoundsTy.fvar BoundsTy.bvar [] [] []
+      (some (.fvar 90)) (.fvar 90) := by
+    refine ⟨⟨.fvar 90, True.intro, by simp [Synth.BoundsTy.toTy, Ty.eraseBounds]⟩,
+      by simp [ScopedAnnotation.decode, pure, Except.pure], ?_⟩
+    exact .fvar
+  have ready : ScopedDerives.RuntimeReady annotatedIdentity :=
+    .lambda (ann := some (.fvar 90)) annotation .fvar (.varMono (i := 0) rfl .fvar)
+  exact (ready.sourceFree sourceReaderAgreement).safeClosed bound free σ hb hf (by simp)
+
+#print axioms artifactReaderSourceSafe
+
 private def replacement (arg : BoundsTy) (i : Nat) : BoundsTy :=
   if i = 90 then arg else .fvar i
 

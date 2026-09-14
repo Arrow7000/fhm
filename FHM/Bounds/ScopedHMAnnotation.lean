@@ -48,6 +48,34 @@ theorem AnnotationOK.assuming {free slots ids rows Δ Δ' τ actual}
   obtain ⟨d, hd, hs⟩ := h
   exact ⟨d, hd, hs.assuming premises⟩
 
+/-- Source checking may change solved artifact identities without changing
+    the meaning of identities carried by the original annotation. -/
+theorem AnnotationOK.congrFree {free free' slots ids rows Δ τ actual}
+    (h : AnnotationOK free slots ids rows Δ τ actual)
+    (agree : ∀ i ∈ τ.freeVars, free i = free' i) :
+    AnnotationOK free' slots ids rows Δ τ actual := by
+  obtain ⟨d, decoded, inclusion⟩ := h
+  have same : read free slots (bounds rows d.bounds) = read free' slots (bounds rows d.bounds) :=
+    ScopedHMInterpretation.congrFree (fun i member => agree i (by
+      simpa only [bounds_shape, d.shape, eraseFreeVars] using member))
+  exact ⟨d, decoded, by rw [← same]; exact inclusion⟩
+
+theorem ParamOK.congrFree {free free' slots ids rows Δ ann actual}
+    (h : ParamOK free slots ids rows Δ ann actual)
+    (agree : ∀ i ∈ ann.elim [] Ty.freeVars, free i = free' i) :
+    ParamOK free' slots ids rows Δ ann actual := by
+  cases ann with
+  | none => trivial
+  | some τ => exact AnnotationOK.congrFree h agree
+
+theorem BindingOK.congrFree {free free' slots ids rows Δ ann actual}
+    (h : BindingOK free slots ids rows Δ ann actual)
+    (agree : ∀ i ∈ ann.elim [] (fun σ => σ.body.freeVars), free i = free' i) :
+    BindingOK free' slots ids rows Δ ann actual := by
+  cases ann with
+  | none => trivial
+  | some σ => exact ⟨h.1, AnnotationOK.congrFree h.2 agree⟩
+
 structure Demand (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (τ : Ty) where
   source : ScopedAnnotation.Decoded ids τ
@@ -84,6 +112,7 @@ def check (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) (ca
 #print axioms AnnotationOK.types
 #print axioms AnnotationOK.counts
 #print axioms AnnotationOK.assuming
+#print axioms AnnotationOK.congrFree
 #print axioms Demand.shape
 #print axioms decode
 #print axioms check
