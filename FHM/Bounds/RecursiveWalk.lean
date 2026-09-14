@@ -58,7 +58,7 @@ private def finish (ids : List Nat) (rows : Bindings) (caller : List Nat)
 /-- Checking an unannotated lambda at an explicit domain introduces that
     domain as an assumption. It does not infer a fresh count or specialize HM.
     Carried annotations remain authoritative and outer inclusion is separate. -/
-private def chooseParam (ids : List Nat) (rows : Bindings) (caller : List Nat)
+def chooseParam (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (ann : Option Ty) (hm : Ty) (expected : Option BoundsTy) : Except String
       (Σ param, PLift (InterpretedAnnotation.ParamOK ids rows Δ ann param)) := do
   match ann with

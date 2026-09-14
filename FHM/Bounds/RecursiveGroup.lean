@@ -4,9 +4,11 @@ import FHM.Bounds.RecursiveRHS
 
 All members are checked under the same declared assumptions, and their universal
 certificates discharge the group rule before its body result is accepted. The
-initial body keeps fixed HM monotypes. Consecutive groups in program bodies are
-checked recursively; groups within universal RHSs still require captured-template
-transport. HM exit generalization and CLI/LSP migration remain separate work.
+initial body keeps fixed HM monotypes. Ordinary program lets/lambdas and groups
+in their bodies or monomorphic RHSs are checked under the unchanged caller
+interpretation. Groups within universal recursive RHSs still require protected
+captured-template transport. HM exit generalization and CLI/LSP migration remain
+separate work.
 -/
 
 namespace FHM.Bounds.RecursiveGroup
@@ -149,7 +151,8 @@ private def fromWalk {ids rows caller Δ env e}
     is exported and no legacy fallback is used. -/
 def check (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
     (env : List Binding) (path : CorePath) (e : Expr) (schemes : BinderSchemeMap)
-    (metadata : Scope.Metadata) : Except String (Result ids rows caller Δ env e) := do
+    (metadata : Scope.Metadata) (expected : Option BoundsTy := none) :
+    Except String (Result ids rows caller Δ env e) := do
   unless metadata.problems.isEmpty do throw "bounds: unresolved recursive group count scope"
   match e with
   | .found hm (.letRec anns rhss body) =>
@@ -159,7 +162,7 @@ def check (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Cons
         if hc : cs.all (captureOK env) = true then
           let members ← checkMembers schemes metadata path (cs.map Binding.recursive ++ env) 0 cs rhss anns
           let result ← check ids rows caller Δ (cs.map Binding.recursive ++ env)
-            (path ++ [.letRecBody]) body schemes metadata
+            (path ++ [.letRecBody]) body schemes metadata expected
           let shape ← match BinderBridge.equalTy result.hm hm.eraseBounds with
             | some h => pure h | none => throw "bounds: recursive group body disagrees with root found payload"
           let cert : Certified ids rows Δ env anns rhss body :=
@@ -173,9 +176,10 @@ def check (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Cons
       else throw "bounds: recursive group count telescopes overlap or capture quantified counts"
   | .found hm (.letIn ann rhs body) =>
       let hint ← RecursiveWalk.bindingHint ids rows caller ann
-      let actual ← RecursiveWalk.walk ids rows caller Δ env (path ++ [.letRhs]) rhs schemes hint
+      let actual ← check ids rows caller Δ env (path ++ [.letRhs]) rhs schemes metadata hint
       let hp ← RecursiveWalk.checkMonoBinding ids rows caller Δ env path rhs schemes ann actual.bounds
-      let result ← check ids rows caller Δ (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes metadata
+      let result ← check ids rows caller Δ (.mono actual.bounds :: env)
+        (path ++ [.letBody]) body schemes metadata expected
       let shape ← match BinderBridge.equalTy result.hm hm.eraseBounds with
         | some h => pure h
         | none => throw "bounds: program let body disagrees with root found payload"
@@ -183,8 +187,27 @@ def check (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Cons
       pure ⟨hm.eraseBounds, result.bounds, rfl, result.shape.trans shape.down,
         (by simpa only [Expr.stripFound] using introduced), result.countScope,
         ⟨path, hm.eraseBounds, some result.bounds⟩ :: actual.nodes ++ result.nodes⟩
+  | .found hm (.lambda ann body) =>
+      match hm.eraseBounds with
+      | .arrow paramTy _ =>
+          let paramHint := match expected with | some (.arrow β _) => some β | _ => none
+          let ⟨param, hp⟩ ← RecursiveWalk.chooseParam ids rows caller Δ ann paramTy paramHint
+          let bodyHint := match expected with | some (.arrow _ β) => some β | _ => none
+          let result ← check ids rows caller Δ (.mono param :: env)
+            (path ++ [.lambdaBody]) body schemes metadata bodyHint
+          let β := BoundsTy.arrow param result.bounds
+          let shape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy β) hm.eraseBounds with
+            | some h => pure h
+            | none => throw "bounds: program lambda disagrees with root found payload"
+          if hs : boundsScopedBool caller β = true then
+            have introduced := Derives.lambda hp.down result.derivation
+            pure ⟨hm.eraseBounds, β, rfl, shape.down,
+              (by simpa only [Expr.stripFound] using introduced), boundsScopedBool_sound hs,
+              ⟨path, hm.eraseBounds, some β⟩ :: result.nodes⟩
+          else throw "bounds: program lambda counts are outside caller scope"
+      | _ => throw "bounds: program lambda has non-arrow found type"
   | .found hm inner =>
-      pure (fromWalk (← RecursiveWalk.walk ids rows caller Δ env path (.found hm inner) schemes))
+      pure (fromWalk (← RecursiveWalk.walk ids rows caller Δ env path (.found hm inner) schemes expected))
   | _ => throw "bounds: requested expression is not a found recursive group or program node"
 termination_by sizeOf e
 

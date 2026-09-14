@@ -100,6 +100,26 @@ example {ids rows Δ env anns rhss body} (cert : RecursiveGroup.Certified ids ro
     Derives ids rows Δ env (.letRec anns (rhss.map Expr.stripFound) body.stripFound) cert.result := cert.typing
 
 private def cases : List (String × Bool) := [
+  ("program lambda guidance cannot admit a caller-out-of-scope count", fails
+    (RecursiveGroup.check [] [] [] [] [] []
+      (.found (.arrow (listTy (.prim .int)) (.prim .int))
+        (.lambda none (.found (.prim .int) (.primLit (.int 1))))) [] {}
+      (some (.arrow (.list (.var ⟨.rigid, 77⟩) (.var ⟨.rigid, 77⟩) (.prim .int)) (.prim .int))))
+      "outside caller scope"),
+  ("program lambda independently checks its found result HM identity", fails
+    (RecursiveGroup.check [] [] [] [] [] []
+      (.found (.arrow (.prim .int) (.prim .char))
+        (.lambda (some (.prim .int)) (.found (.prim .int) (.primLit (.int 1))))) [] {})
+      "lambda disagrees"),
+  ("program lambda rejects a non-arrow found payload", fails
+    (RecursiveGroup.check [] [] [] [] [] []
+      (.found (.prim .int) (.lambda none (.found (.prim .int) (.primLit (.int 1))))) [] {})
+      "non-arrow found type"),
+  ("program lambda does not reconstruct a missing found body", fails
+    (RecursiveGroup.check [] [] [] [] [] []
+      (.found (.arrow (.prim .int) (.prim .int))
+        (.lambda (some (.prim .int)) (.primLit (.int 1)))) [] {})
+      "not a found recursive group"),
   ("program let validates its own found HM payload", fails
     (RecursiveGroup.check [] [] [] [] [] []
       (.found (.prim .char) (.letIn (some ⟨0, .prim .int⟩)
@@ -109,7 +129,7 @@ private def cases : List (String × Bool) := [
     (RecursiveGroup.check [] [] [] [] [] []
       (.found (.prim .int) (.letIn (some ⟨0, .prim .int⟩)
         (.primLit (.int 1)) (.found (.prim .int) (.primLit (.int 2))))) [] {})
-      "one found wrapper"),
+      "not a found recursive group"),
   ("program let requires the exact found body", fails
     (RecursiveGroup.check [] [] [] [] [] []
       (.found (.prim .int) (.letIn (some ⟨0, .prim .int⟩)
