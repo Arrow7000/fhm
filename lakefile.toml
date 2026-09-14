@@ -109,6 +109,8 @@ roots = [
   "FHM.Bounds.RecursiveContract", # Declared recursive count assumptions with one fixed HM monotype
   "FHM.Bounds.RecursiveTyping", # Simultaneous group rule requires universal RHS and annotation obligations
   "FHM.Bounds.RecursiveVariable", # Fixed-HM recursive assumption uses and origin-backed count calls
+  "FHM.Bounds.RecursiveCountTransport", # Caller count transport protects callee telescopes and fixed captures
+  "FHM.Bounds.RecursiveCountTransportTests", # Symbolic recursive RHS universality, protected counts and capture boundaries
   "FHM.Bounds.RecursiveContractTests", # Fixed HM/count boundary, conditional calls and formal group obligations
   "FHM.Bounds.CountApplicationTests", # Real declaration certificates, origin bounds and rejected contract calls
   "FHM.Bounds.CountAlgebra", # Finite composition of simultaneous source-count interpretations
