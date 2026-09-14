@@ -33,6 +33,15 @@ private def scalar : Surface.Binding :=
   { identity with
     ann := none
     rhs := .primLit (.int 1) }
+private def compound : Surface.Binding :=
+  { identity with
+    ann := some ⟨[], .arrow (exact (.add (.var n) (.lit 1))) (exact (.add (.var n) (.lit 1)))⟩
+    rhs := .lambda (.name xs) (some (exact (.add (.var n) (.lit 1)))) (.var xs) }
+private def upperOnly : Surface.Binding :=
+  let ty := Surface.Ty.bl (.solid (.lit 0)) (.solid (.var n)) (.prim .int)
+  { identity with
+    ann := some ⟨[], .arrow ty ty⟩
+    rhs := .lambda (.name xs) (some ty) (.var xs) }
 
 private def artifact (b : Surface.Binding) : Option TypedLowered := do
   let bodySpan := match b.rhs with
@@ -64,7 +73,8 @@ private def cm : Count := .var ⟨.rigid, 99⟩
 private def run (b : Surface.Binding) (arg : Expr) (actual : BoundsTy)
     (typing : Derives Δ [] arg actual) (resultHM : Ty) (counts : List Count)
     (caller : List Nat := []) (guarded : Bool := false)
-    (functionHM : Option Ty := none) (explicit : Option (List BoundsTy) := none) :
+    (functionHM : Option Ty := none) (explicit : Option (List BoundsTy) := none)
+    (implicitCounts : Bool := false) :
     Except String (BoundsTy × BoundsTy) := do
   let a ← match artifact b with
     | none => throw "test: HM artifact construction failed"
@@ -74,9 +84,11 @@ private def run (b : Surface.Binding) (arg : Expr) (actual : BoundsTy)
   let c ← ScopedDeclaration.checkRHS a.inference.output a.inference.binderSchemes
     a.lowering.counts (.letRec [] 0) [] [] premises
   let hm := functionHM.getD (.arrow (Synth.BoundsTy.toTy actual) resultHM)
-  let r ← match explicit with
-    | none => CountApplication.fromOrigin c.certificate Δ arg actual typing hm resultHM counts caller
-    | some args => CountApplication.check c.certificate Δ arg actual typing hm resultHM counts args caller
+  let r ← if implicitCounts then
+      CountApplication.infer c.certificate Δ arg actual typing hm resultHM caller
+    else match explicit with
+      | none => CountApplication.fromOrigin c.certificate Δ arg actual typing hm resultHM counts caller
+      | some args => CountApplication.check c.certificate Δ arg actual typing hm resultHM counts args caller
   pure (r.domain, r.bounds)
 
 private def succeeds (r : Except String α) : Bool := match r with | .ok _ => true | _ => false
@@ -87,8 +99,12 @@ private def identityNil (counts : List Count) :=
   run identity nil (zero (.prim .int)) (Δ := []) .nil intList counts
 private def identityOne (counts : List Count) :=
   run identity one oneBounds (oneTyping []) intList counts
+private def implicitRun (b : Surface.Binding) (arg : Expr) (actual : BoundsTy)
+    (typing : Derives Δ [] arg actual) (resultHM : Ty) (caller : List Nat := [])
+    (guarded : Bool := false) :=
+  run b arg actual typing resultHM [] caller guarded none none true
 
-private def callerCollision : Bool :=
+private def callerCollision (implicitCounts : Bool := false) : Bool :=
   match artifact singleton with
   | none => false
   | some a => match ScopedDeclaration.checkRHS a.inference.output a.inference.binderSchemes
@@ -99,13 +115,27 @@ private def callerCollision : Bool :=
           let k : Count := .var ⟨.rigid, id⟩
           let actual := zero (.list k k (.prim .int))
           let resultHM := listTy (Synth.BoundsTy.toTy actual)
-          match CountApplication.fromOrigin c.certificate [] nil actual .nil
-              (.arrow (Synth.BoundsTy.toTy actual) resultHM) resultHM [.lit 3] [id] with
+          let used := if implicitCounts then
+              CountApplication.infer c.certificate [] nil actual .nil
+                (.arrow (Synth.BoundsTy.toTy actual) resultHM) resultHM [id]
+            else CountApplication.fromOrigin c.certificate [] nil actual .nil
+              (.arrow (Synth.BoundsTy.toTy actual) resultHM) resultHM [.lit 3] [id]
+          match used with
           | .ok r => match r.bounds with
             | .list _ _ (.list _ _ (.list lo hi (.prim .int))) => lo == k && hi == k
             | _ => false
           | .error _ => false
       | _ => false
+
+private def intervalRejected (b : Surface.Binding) (actual : BoundsTy) (needle : String) : Bool :=
+  match artifact b with
+  | none => false
+  | some a => match ScopedDeclaration.checkRHS a.inference.output a.inference.binderSchemes
+      a.lowering.counts (.letRec [] 0) [] [actual] with
+    | .error _ => false
+    | .ok c =>
+        fails (CountApplication.infer c.certificate [] (.var 0) actual (.varMono rfl)
+          (.arrow intList intList) intList []) needle
 
 example {Δ env rhs arg actual functionHM resultHM caller}
     (r : CountApplication.Result Δ env rhs arg actual functionHM resultHM caller) :
@@ -133,7 +163,7 @@ private def cases : List (String × Bool) := [
       (listTy (listTy (listTy (.prim .char)))) [.lit 7] with
     | .ok (_, .list _ _ (.list (.lit 0) (.lit 0) (.list (.lit 0) (.lit 0) (.prim .char)))) => true
     | _ => false),
-  ("combined contract application preserves colliding caller count", callerCollision),
+  ("combined contract application preserves colliding caller count", callerCollision false),
   ("argument scope checked even outside HM-slot proposals", fails
     (run singleton nil (zero (.list cm cm (.prim .int))) (Δ := []) .nil
       (listTy (listTy intList)) [.lit 3]) "argument counts"),
@@ -172,7 +202,46 @@ private def cases : List (String × Bool) := [
     (run scalar nil (zero (.prim .int)) (Δ := []) .nil (.prim .int) [.lit 3]) "non-arrow body"),
   ("explicit call cannot treat scalar certificate as a function", fails
     (run scalar nil (zero (.prim .int)) (Δ := []) .nil (.prim .int) [.lit 3] [] false
-      (some (.prim .int)) (some [])) "not a function")]
+      (some (.prim .int)) (some [])) "not a function"),
+  ("implicit identity count comes from actual Nil", succeeds
+    (implicitRun identity nil (zero (.prim .int)) (Δ := []) .nil intList)),
+  ("implicit identity count comes from actual Cons", succeeds
+    (implicitRun identity one oneBounds (oneTyping []) intList)),
+  ("implicit increment count retains computed output", match
+    implicitRun increment one oneBounds (oneTyping []) intList with
+    | .ok (_, .list lo hi _) => lo.eval (fun _ => 0) == .ofNat 2 && hi.eval (fun _ => 0) == .ofNat 2
+    | _ => false),
+  ("implicit unused count witness supports generic application", succeeds
+    (implicitRun singleton (.primLit (.char 'x')) (.prim .char) (Δ := []) .literal (listTy (.prim .char)))),
+  ("implicit proposals leave caller counts inside HM slots alone", callerCollision true),
+  ("implicit proposal does not assert a failing premise", fails
+    (implicitRun identity one oneBounds (oneTyping []) intList [] true) "not established"),
+  ("implicit upper endpoint supplies quantified count", succeeds
+    (implicitRun upperOnly one oneBounds (oneTyping []) intList)),
+  ("compound-only implicit count occurrence explicitly deferred", fails
+    (implicitRun compound one oneBounds (oneTyping []) intList) "arithmetic inversion"),
+  ("deferred compound contract remains usable with explicit counts", succeeds
+    (run compound one oneBounds (oneTyping []) intList [.lit 0])),
+  ("count proposals follow telescope order not occurrence order", match
+    CountProposal.propose [7, 8]
+      (.list (.var ⟨.rigid, 8⟩) (.var ⟨.rigid, 7⟩) (.bvar 0))
+      (.list (.lit 2) (.lit 3) (.prim .int)) with
+    | .ok cs => cs == [.lit 3, .lit 2]
+    | _ => false),
+  ("direct count proposal does not generalize captured coordinate", match
+    CountProposal.propose [7]
+      (.list cm (.var ⟨.rigid, 7⟩) (.bvar 0))
+      (.list (.lit 2) (.lit 3) (.prim .int)) with
+    | .ok cs => cs == [.lit 3]
+    | _ => false),
+  ("count proposal leaves opaque HM slot counts untouched", match
+    CountProposal.propose [7] (.bvar 0)
+      (.list (.var ⟨.rigid, 7⟩) (.var ⟨.rigid, 7⟩) (.prim .int)) with
+    | .ok cs => cs == [.lit 0]
+    | _ => false),
+  ("repeated count proposal still checks incompatible upper endpoint", intervalRejected identity
+    (.list (.lit 1) (.lit 2) (.prim .int)) "interval inclusion"),
+  ("infinite endpoint is not promoted to a finite Nat count", intervalRejected upperOnly top "finite")]
 
 def main : IO Unit := do
   for (name, ok) in cases do
