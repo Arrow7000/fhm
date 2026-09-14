@@ -2455,6 +2455,34 @@ Path R and production BL guards remain unchanged. Deferred expected-dependent
 arguments, nested/generalized-local introduction and enclosing program prefixes
 remain the next assembly gates, not silently accepted through old engines.
 
+### Checkpoint 4ay — independently originated count vectors precede deferred RHS checks
+
+Recursive RHS spine preparation now preserves optional independent argument
+proofs: a failed unguided argument has NO invented bounds, origin or typing.
+`CountProposal.proposeOrigins` requires every coordinate in a deferred domain to
+have an independent supplied origin before instantiation. Only then does
+`completeScopedSpine` check missing arguments against the real instantiated
+callee domains and independently check EVERY application inclusion/payload.
+The common HM vector stays fixed, and no count re-proposal incorporates guided
+pending arguments. Missing proofs cannot survive in the accepted RHS derivation.
+
+The real self-recursive program supplies a List lambda inside its RHS, whose
+parameter cannot be inferred unguided. A later actual argument supplies its
+count; the callback then produces a real source-indexed lambda/body proof.
+The program's explicitly annotated external callback lets the full closed-program
+slice verify the resulting singleton and exactly-once coverage of every node.
+A wrong deferred callback fails actual function-domain inclusion; an all-deferred
+call without an independent count origin remains explicitly unsupported.
+
+This replaces the independent-only RHS completion rather than adding a parallel
+engine. No new files, typing rules, placeholders, partial defs or axioms. Solver
+trust, HM/D2, Path R and production BL guards are unchanged. Generalized BODY
+callbacks with later HM origins still need staged partial-HM guidance; this
+checkpoint does not infer full caller bounds from a found-type skeleton.
+
+Validation: `lake build FHM FHMBounds fhm` passes (1805 jobs), including
+all 30 uniform/body/program regressions; boundary and whitespace checks pass.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

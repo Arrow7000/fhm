@@ -260,6 +260,28 @@ private def fullMutualSpine : Except String Bool := do
   pure (exact && program.assembled.checked.exports.length == 2 &&
     exactlyOnce (logicalCorePaths a.output) (program.body.nodes.map (·.path)))
 
+private def deferredRecursiveProgram (badCallback : Bool := false) (onlyDeferred : Bool := false) :
+    Except String Bool := do
+  let list := Ty.bl (.solid (count 7)) (.solid (count 7)) (.prim .int)
+  let callback := Ty.arrow list list
+  let σ : PolyTy := ⟨0, .arrow callback (if onlyDeferred then list else .arrow list list)⟩
+  let deferred := Expr.lambda none (if badCallback then .ctor nilCtorName else .var 0)
+  let rhs := if onlyDeferred then Expr.lambda none (.app (.var 1) deferred) else
+    .lambda none (.lambda none (.app (.app (.var 2) deferred) (.var 0)))
+  let bodyCallback := Expr.lambda (some (.bl (.solid (.lit 1)) (.solid (.lit 1)) (.prim .int))) (.var 0)
+  let singleton := Expr.app (.app (.ctor consCtorName) (.primLit (.int 1))) (.ctor nilCtorName)
+  let body := Expr.app (.var 0) bodyCallback
+  let source := Expr.letRec [some σ] [rhs] (if onlyDeferred then body else .app body singleton)
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let a ← match inferFound ctors source with
+    | some a => pure a | none => throw "test: deferred recursive callback HM inference failed"
+  let metadata : Scope.Metadata := { telescopes := [⟨.letRec [] 0, [(⟨"n"⟩, 7)]⟩] }
+  let program ← checkClosedProgram a.output metadata a.binderSchemes
+  let exact := match program.body.bounds with
+    | .list lo hi (.prim .int) => lo.eval (fun _ => 0) == .ofNat 1 && hi.eval (fun _ => 0) == .ofNat 1
+    | _ => false
+  pure (exact && exactlyOnce (logicalCorePaths a.output) (program.body.nodes.map (·.path)))
+
 def main : IO Unit := do
   match actual with
   | .ok true => IO.println "PASS: every actual member universally specializes through one full group HM map with permuted slots and distinct count telescopes"
@@ -360,6 +382,18 @@ def main : IO Unit := do
   | .ok true => IO.println "PASS: mutually recursive full RHS spines retain a shared fixed HM vector across distinct count telescopes and independent Int/Char exit uses"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "full mutual recursive program lost source-member identity, exact bounds or original nodes")
+  match deferredRecursiveProgram with
+  | .ok true => IO.println "PASS: a recursive RHS checks its formerly unguided List lambda only after a later actual argument supplies the count origin"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "deferred recursive callback lost actual body proof, result bounds or original node coverage")
+  for (result, part, name) in [
+      (deferredRecursiveProgram (badCallback := true), "inclusion", "a false deferred callback still fails actual domain inclusion"),
+      (deferredRecursiveProgram (onlyDeferred := true), "independent origin", "deferred callbacks cannot manufacture their own count origins")] do
+    match result with
+    | .error message =>
+        unless (message.splitOn part).length > 1 do throw (IO.userError s!"wrong deferred RHS rejection ({name}): {message}")
+        IO.println s!"PASS: {name}"
+    | .ok _ => throw (IO.userError s!"unexpected deferred RHS acceptance: {name}")
 
 #eval main
 
