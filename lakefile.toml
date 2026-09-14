@@ -100,6 +100,8 @@ roots = [
   "FHM.Bounds.SchemeUseTests", # Exact bounds, repeated slots, caller collisions and invalid use regressions
   "FHM.Bounds.SchemeTyping", # Scheme-aware bounds judgement with universal RHS introduction
   "FHM.Bounds.SchemeTransport", # Capture-safe mixed scheme environment transport and reparameterization
+  "FHM.Bounds.CountTransport", # Finite count substitution of mixed derivations; caller bounds protected
+  "FHM.Bounds.CountTransportTests", # Nested universality, caller count collisions and finite-boundary proofs
   "FHM.Bounds.SchemeTransportTests", # Nested universal lets, mixed RHSs, caller collisions and count isolation
   "FHM.Bounds.SchemeTypingTests", # Formal independent polymorphic uses and captured-interface regressions
   "FHM.Bounds.SchemeVariable", # Certified scheme-aware variable rule with exact found shape
