@@ -1973,3 +1973,48 @@ metadata. The scoped signed package is real universal RHS evidence in an
 EXPLICIT specialized environment, not yet that whole-group introduction rule.
 Generalized local lets, nested groups, deferred full application spines and
 production BL LSP activation remain guarded; no user decision is pending.
+
+### Checkpoint 4ai — actual source-site declared reconciliation and RHS acceptance
+
+`HMDeclaredReconciliation.SourceAt`/`Declaration` select a written annotation
+from the exact ORIGINAL found declaration and retain its source-site proof plus
+exact RHS node. Annotated bindings need no invented inferred binder fact.
+Ordinary annotated lets use their own lexical forall slots; recursive RHSs use
+their solved monomorphic free identities. Enclosing lexical scopes remain an
+explicit unsupported case in this INITIAL closed-HM-scope interface.
+
+Structural specialization goes from the MORE GENERAL original solved RHS to the
+narrower written ceiling, not the reverse. Candidate free identities are only
+metadata proposals. Captured surrounding types, free IDs in the source signature
+and rigid IDs in carried source annotations are protected. Fresh opaque source
+coordinates, unused-slot arity, LC/count scope and exact final shape are checked
+independently. There is no machine-generalization certificate fabricated from
+`freeVars`, and metadata reconciliation alone cannot accept an implementation.
+
+`HMDeclaredRHS.prepare` selects count telescopes from the SAME lowering metadata
+site, retaining resolution and exact selection equalities; unresolved/duplicate
+scope rejects. `check` constructs an actual original-node RHS derivation in the
+explicit interpreted environment and independently checks its bounds inclusion.
+`certify` additionally requires represented CLOSED recursive type captures and
+count freshness, yielding a universal signed source-node certificate in that
+EXPLICIT specialized environment. No whole-group introduction/export is claimed.
+
+Twenty-two regressions cover real annotated-forall RHSs and the unconstrained
+recursive alpha-to-beta loop under its narrower forall/List ceiling, followed
+through actual RHS checking and full caller specialization. Caller-owned inner
+count 7 survives source count 7 -> 3. False non-recursive result bounds fail
+actual inclusion. Source-site mismatch, missing annotations, malformed recursion,
+captured/rigid identity specialization, repeated/aliased/unused/out-of-scope HM
+coordinates and malformed count metadata are checked separately.
+
+Full 1798-job build and scratch HM audit (28 accepted / eight expected rejects /
+zero failures) pass, as do boundary/whitespace guards. New metadata/source-site
+and certification proofs use standard Lean axioms; executable RHS inclusion
+uses the existing solver boundary. No new placeholders/axioms/partials. HM/D2,
+Path R and production guards unchanged.
+
+Next: fix scoped mono-local binder consumption (outer lexical captures are not
+new forall slots; annotated locals intentionally omit inferred facts), then
+complete common-group reconciliation/generalized export and enclosing-scope
+declared interfaces. Generalized local lets, nested groups and deferred full
+application spines remain guarded; production BL LSP activation is still later.
