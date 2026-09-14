@@ -1239,3 +1239,30 @@ HM audit remains 28 accepted / eight expected rejections / zero failures. No new
 axioms, placeholders or partial definitions; HM/D2, Path R and production launch
 are unchanged. Polymorphic HM opening/exit generalization and general program
 wrappers are not claimed complete by this narrower extension.
+
+### Checkpoint 4n — monomorphic expression lets around program groups
+
+Program checking now handles expression-level monomorphic `let ... in ...`
+prefixes before and between recursive groups. RHS bounds are synthesized with
+the existing annotation hint; the shared `RecursiveWalk.checkMonoBinding`
+checks the actual source annotation and, for unannotated lets, the exact inferred
+binder scheme and captured HM identities. The program body recurses through the
+same group checker under the actual RHS bounds. The existing `Derives.letMono`
+rule supplies the proof; the let root's found HM payload is independently checked.
+The universal RHS walker shares this admission helper but retains `NoGroups`.
+
+Six parsed regressions cover captured scalar prefixes, an unannotated concrete
+List prefix, a bad count annotation, a monomorphic let between groups, and both
+inferred/declared polymorphic lets rejecting at the generalization boundary.
+Three kernel regressions check forged let HM payloads and missing exact found
+RHS/body nodes. All 80 parsed and 24 group regressions pass, with the full
+1766-job HM/Bounds/editor/CLI build, boundary/whitespace guards and fresh scratch
+HM audit (28 accepted / eight expected rejections / zero failures).
+
+Source distinction matters: top-level declarations desugar as groups, whereas
+expression `let ... in ...` nodes use `letMono`. An unannotated top-level singleton
+group still needs declared contracts in this slice; this checkpoint does not
+silently rewrite it as a monomorphic let or skip generalized HM obligations.
+Groups inside a monomorphic let RHS or a universal recursive RHS still require
+further program/template handling. No new axioms, placeholders or partial
+definitions; HM/D2, Path R and production CLI/LSP launch remain unchanged.
