@@ -44,7 +44,32 @@ theorem exactSource {annotation quantified captures premises found typeCaptures 
     (cert : Certified annotation quantified captures premises found typeCaptures env rhs) :
     cert.interface.scheme.counts.body = cert.interface.source.annotation.bounds := rfl
 
+/-- Exact-node evidence and the source-signature obligation share one actual
+    implementation result. A shape view alone cannot inhabit this package. -/
+structure NodeChecked {output path} (node : HMFoundView.AtNode output path)
+    (interpretation : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
+    (Δ : List Constraint) (env : List RecursiveHMJudgement.Binding) (caller : List Nat)
+    (annotation : PolyTy) (types : List BoundsTy) where
+  typed : HMFoundView.TypedChecked node interpretation ids rows Δ env caller
+  signature : BindingOK ids rows types Δ annotation typed.actual
+
+def atNode {output path} (node : HMFoundView.AtNode output path)
+    {annotation quantified captures premises typeCaptures env}
+    (cert : Certified annotation quantified captures premises node.original typeCaptures env node.inner.stripFound)
+    {counts caller} (inst : Instance cert.interface.scheme.counts counts caller)
+    (types : List BoundsTy) (arity : types.length = annotation.paramCount)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
+    (scope : types.all (boundsScopedBool caller) = true) :
+    NodeChecked node
+      (SchemeSpecialization.argument cert.implementation.opening.ids (SchemeUse.vector types))
+      (quantified ++ captures) (quantified.zip counts) inst.premises
+      (RecursiveHMUniversal.interpretedEnvironment cert.implementation counts types lc)
+      caller annotation types :=
+  ⟨RecursiveHMUniversal.atNode node cert.implementation inst types arity lc scope,
+    signatureInstances cert inst types arity lc scope⟩
+
 #print axioms signatureInstances
 #print axioms exactSource
+#print axioms atNode
 
 end FHM.Bounds.RecursiveHMSigned

@@ -1,4 +1,5 @@
 import FHM.Bounds.RecursiveHMEmbedding
+import FHM.Bounds.HMFoundView
 
 /-! Joint finite-count/full-HM RHS contract certificates. Universal use retains
 the actual implementation's bounds and a separate semantic demand inclusion.
@@ -91,6 +92,19 @@ def actual {s found captures env rhs} (cert : Certified s found captures env rhs
 def demand (s : HMCountScheme.Scheme) (counts : List Count) (types : List BoundsTy) : BoundsTy :=
   TypeSubstitution.combined (s.counts.quantified.zip counts) (SchemeUse.vector types) s.counts.body
 
+/-- The exact implementation bounds, not the contract demand, are the shared
+    simultaneous interpretation of count-specialized original RHS bounds. -/
+theorem actual_transport {s found captures env rhs} (cert : Certified s found captures env rhs)
+    (counts : List Count) (types : List BoundsTy) :
+    mapFree (argument cert.opening.ids (SchemeUse.vector types))
+      (bounds (s.counts.quantified.zip counts) cert.actual) = actual cert counts types := by
+  have actualLC : (Synth.BoundsTy.toTy (bounds (s.counts.quantified.zip counts) cert.actual)).IsLC := by
+    rw [bounds_shape, cert.shape]
+    exact cert.opening.lc
+  rw [← SchemeSpecialization.close_open cert.opening.ids (SchemeUse.vector types) actualLC,
+    close_counts]
+  rfl
+
 theorem actual_hm_instance {s found captures env rhs} (cert : Certified s found captures env rhs)
     (counts : List Count) (types : List BoundsTy) (arity : types.length = s.hm.paramCount) :
     s.hm.InstantiatesTo (types.map Synth.BoundsTy.toTy) (Synth.BoundsTy.toTy (actual cert counts types)) := by
@@ -140,12 +154,8 @@ theorem use {s found captures env rhs} (cert : Certified s found captures env rh
   have hc := transportCounts rows inst.finite caller
     (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2) cert.typing (countFresh cert inst)
   have ht := transportTypes f fLC caller fScope hc (typeFresh cert _ rows)
-  have actualLC : (Synth.BoundsTy.toTy (bounds rows cert.actual)).IsLC := by
-    rw [bounds_shape, cert.shape]
-    exact cert.opening.lc
   have ha : mapFree f (bounds rows cert.actual) = actual cert counts types := by
-    rw [← SchemeSpecialization.close_open cert.opening.ids (SchemeUse.vector types) actualLC, close_counts]
-    rfl
+    exact actual_transport cert counts types
   have hd : mapFree f (bounds rows cert.opening.bounds) = demand s counts types := by
     have openingShape : Synth.BoundsTy.toTy cert.opening.bounds = found.eraseBounds := cert.opening.shape
     rw [← SchemeSpecialization.close_open cert.opening.ids (SchemeUse.vector types)
@@ -156,6 +166,47 @@ theorem use {s found captures env rhs} (cert : Certified s found captures env rh
   refine ⟨?_, hs, actual_hm_instance cert counts types arity, actual_inScope cert inst types scope⟩
   simpa only [ha, CountAlgebra.compose, List.map_nil, List.nil_append,
     ScopedScheme.Instance.premises, mapFree] using ht
+
+def interpretedEnvironment {s found captures env rhs} (cert : Certified s found captures env rhs)
+    (counts : List Count) (types : List BoundsTy)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC) : List RecursiveHMJudgement.Binding :=
+  (env.map (mapCountBinding (s.counts.quantified.zip counts))).map
+    (mapBinding (argument cert.opening.ids (SchemeUse.vector types))
+      (replacementLC _ _ (argumentsLC types lc)))
+
+def typeEnvironment {s found captures env rhs} (cert : Certified s found captures env rhs)
+    (types : List BoundsTy) (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC) :
+    List RecursiveHMJudgement.Binding :=
+  env.map (mapBinding (argument cert.opening.ids (SchemeUse.vector types))
+    (replacementLC _ _ (argumentsLC types lc)))
+
+/-- A universal certificate consumes an exact ORIGINAL found node and produces
+    its caller-specialized typed view. Source, Core path, exact implementation
+    intervals, count scope and the real recursive RHS derivation stay linked.
+    The common group environment is still explicitly specialized; this is not
+    a generalized group-introduction rule. -/
+def atNode {output path} (node : HMFoundView.AtNode output path) {s captures env}
+    (cert : Certified s node.original captures env node.inner.stripFound)
+    {counts caller} (inst : Instance s.counts counts caller) (types : List BoundsTy)
+    (arity : types.length = s.hm.paramCount)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
+    (scope : types.all (boundsScopedBool caller) = true) :
+    HMFoundView.TypedChecked node (argument cert.opening.ids (SchemeUse.vector types))
+      (s.counts.quantified ++ s.counts.captures) (s.counts.quantified.zip counts)
+      inst.premises (interpretedEnvironment cert counts types lc) caller := by
+  have h := use cert inst types arity lc scope
+  refine ⟨actual cert counts types, ⟨?_, h.2.2.2⟩, h.1⟩
+  rw [← actual_transport cert counts types]
+  apply node.coherent
+  rw [bounds_shape, cert.shape]
+
+theorem atNode_actual {output path} (node : HMFoundView.AtNode output path) {s captures env}
+    (cert : Certified s node.original captures env node.inner.stripFound)
+    {counts caller} (inst : Instance s.counts counts caller) (types : List BoundsTy)
+    (arity : types.length = s.hm.paramCount)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
+    (scope : types.all (boundsScopedBool caller) = true) :
+    (atNode node cert inst types arity lc scope).actual = actual cert counts types := rfl
 
 /-- Reuse an existing sound RHS certificate; its actual scope is a real proof
     supplied by the checked artifact, not reconstructed from the HM skeleton. -/
@@ -197,6 +248,9 @@ def fromLocatedChecked {c env rhs} (checked : RecursiveRHS.LocatedChecked c env 
 #print axioms use
 #print axioms actual_hm_instance
 #print axioms actual_inScope
+#print axioms actual_transport
+#print axioms atNode
+#print axioms atNode_actual
 #print axioms fromChecked
 
 end FHM.Bounds.RecursiveHMUniversal

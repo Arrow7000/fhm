@@ -216,4 +216,75 @@ theorem unchangedCountEnvironment {counts caller} (inst : ScopedScheme.Instance 
 
 #print axioms unchangedCountEnvironment
 
+private def originalOutput : Expr := .found contract.hm loop
+private def originalNode : HMFoundView.AtNode originalOutput [] :=
+  ⟨contract.hm, loop, by simp [originalOutput, Expr.atCorePath]⟩
+
+private def nodeCertificate : RecursiveHMUniversal.Certified scheme originalNode.original []
+    [.recursive contract] originalNode.inner.stripFound := by
+  simpa only [originalNode, loop, Expr.stripFound] using universal
+
+private def signedNodeCertificate : RecursiveHMSigned.Certified sourceSignature [7] [] []
+    originalNode.original [] [.recursive contract] originalNode.inner.stripFound := by
+  simpa only [originalNode, loop, Expr.stripFound] using signed
+
+/-- Every caller instance yields a typed view at the unchanged original site,
+    with exactly the certified implementation bounds, not inferred top bounds. -/
+theorem exactRecursiveNodeInstances {counts caller}
+    (inst : ScopedScheme.Instance scheme.counts counts caller) (types : List BoundsTy)
+    (arity : types.length = scheme.hm.paramCount)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
+    (scope : types.all (ScopedScheme.boundsScopedBool caller) = true) :
+    (RecursiveHMUniversal.atNode originalNode nodeCertificate inst types arity lc scope).actual =
+      RecursiveHMUniversal.actual nodeCertificate counts types := rfl
+
+/-- Source-signature evidence is about the very same exact-node actual result. -/
+theorem exactSignedRecursiveNodeInstances {counts caller}
+    (inst : ScopedScheme.Instance signedNodeCertificate.interface.scheme.counts counts caller)
+    (types : List BoundsTy) (arity : types.length = sourceSignature.paramCount)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
+    (scope : types.all (ScopedScheme.boundsScopedBool caller) = true) :
+    RecursiveHMSigned.BindingOK [7] ([7].zip counts) types inst.premises sourceSignature
+      (RecursiveHMSigned.atNode originalNode signedNodeCertificate inst types arity lc scope).typed.actual :=
+  (RecursiveHMSigned.atNode originalNode signedNodeCertificate inst types arity lc scope).signature
+
+/-- The captured-vector proof removes count environment transport while keeping
+    the one shared HM specialization of every recursive assumption explicit. -/
+theorem exactGroupEnvironmentNodeInstances {counts caller}
+    (inst : ScopedScheme.Instance scheme.counts counts caller) (types : List BoundsTy)
+    (arity : types.length = scheme.hm.paramCount)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
+    (scope : types.all (ScopedScheme.boundsScopedBool caller) = true) :
+    Derives (argument nodeCertificate.opening.ids (SchemeUse.vector types)) [7] ([7].zip counts)
+      inst.premises (RecursiveHMUniversal.typeEnvironment nodeCertificate types lc)
+      originalNode.inner.stripFound
+      (RecursiveHMEnvironment.atNode originalNode nodeCertificate inst capturedOpaqueEnvironment
+        types arity lc scope).actual :=
+  (RecursiveHMEnvironment.atNode originalNode nodeCertificate inst capturedOpaqueEnvironment
+    types arity lc scope).derivation
+
+private def recursiveNodeCheck : Bool :=
+  let arg : BoundsTy := .list n n (.prim .int)
+  let checked := RecursiveHMUniversal.atNode originalNode nodeCertificate symbolic [arg] rfl
+    (by
+      intro a ha
+      have he : a = arg := by simpa using ha
+      subst a
+      apply (Ty.bvarsBelow_iff _).mp
+      simp [arg, Synth.BoundsTy.toTy, listTy, Ty.bvarsBelow, TyList.bvarsBelow])
+    (by decide)
+  match checked.actual with
+  | .arrow (.list lo hi (.list callerLo callerHi (.prim .int)))
+      (.list resultLo resultHi (.list nestedLo nestedHi (.prim .int))) =>
+    lo == n && hi == n && callerLo == n && callerHi == n &&
+      resultLo == n && resultHi == n && nestedLo == n && nestedHi == n
+  | _ => false
+
+#eval if recursiveNodeCheck then IO.println "PASS: recursive exact-node specialization preserves nested caller counts even at callee ID collision"
+  else throw (IO.userError "recursive exact-node specialization lost implementation bounds")
+
+#print axioms exactRecursiveNodeInstances
+#print axioms exactSignedRecursiveNodeInstances
+#print axioms exactGroupEnvironmentNodeInstances
+
 end FHM.Bounds.RecursiveHMJudgementTests

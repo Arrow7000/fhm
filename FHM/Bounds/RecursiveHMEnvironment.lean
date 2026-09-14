@@ -60,8 +60,37 @@ theorem opaqueVector {s found typeCaptures} (o : HMCountScheme.Opening s found t
   obtain ⟨i, _, rfl⟩ := List.mem_map.mp hβ
   trivial
 
+/-- Universal RHS transport uses the SAME common recursive environment, with
+    only its uniform HM interpretation, once captured-vector scope is checked.
+    No closed callee contract or independent per-call HM vector is rewritten. -/
+theorem interpreted {s found typeCaptures env rhs}
+    (cert : RecursiveHMUniversal.Certified s found typeCaptures env rhs)
+    {counts caller} (inst : Instance s.counts counts caller)
+    (captures : Captured s.counts.captures env) (types : List BoundsTy)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC) :
+    RecursiveHMUniversal.interpretedEnvironment cert counts types lc =
+      RecursiveHMUniversal.typeEnvironment cert types lc := by
+  unfold RecursiveHMUniversal.interpretedEnvironment RecursiveHMUniversal.typeEnvironment
+  rw [instantiated inst captures]
+
+def atNode {output path} (node : HMFoundView.AtNode output path) {s typeCaptures env}
+    (cert : RecursiveHMUniversal.Certified s node.original typeCaptures env node.inner.stripFound)
+    {counts caller} (inst : Instance s.counts counts caller)
+    (captures : Captured s.counts.captures env) (types : List BoundsTy)
+    (arity : types.length = s.hm.paramCount)
+    (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC)
+    (scope : types.all (boundsScopedBool caller) = true) :
+    HMFoundView.TypedChecked node (SchemeSpecialization.argument cert.opening.ids (SchemeUse.vector types))
+      (s.counts.quantified ++ s.counts.captures) (s.counts.quantified.zip counts) inst.premises
+      (RecursiveHMUniversal.typeEnvironment cert types lc) caller := by
+  have checked := RecursiveHMUniversal.atNode node cert inst types arity lc scope
+  rw [interpreted cert inst captures types lc] at checked
+  exact checked
+
 #print axioms fixed
 #print axioms instantiated
 #print axioms opaqueVector
+#print axioms interpreted
+#print axioms atNode
 
 end FHM.Bounds.RecursiveHMEnvironment

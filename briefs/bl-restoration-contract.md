@@ -1596,3 +1596,33 @@ This is an exact-node seam, not yet an interpreted recursive walker or a
 generalized group-exit rule. Next work must connect universal RHS specialization
 to these views and reconcile the common recursive environment before export;
 the polymorphic executable source guards remain intact.
+
+### Checkpoint 4x — universal recursive certificates consume exact found nodes
+
+`RecursiveHMUniversal.actual_transport` identifies count-first/HM-second actual
+implementation specialization with the same simultaneous HM interpretation used
+by node views. `atNode` consumes a certificate for the exact original node's
+source expression and returns `HMFoundView.TypedChecked`: real recursive typing,
+interpreted HM agreement, caller scope and unchanged implementation intervals.
+`atNode_actual` is a construction equality, not an assumed root reconciliation.
+
+`RecursiveHMSigned.NodeChecked` / `atNode` attach the written source signature
+obligation to that SAME typed actual result. `RecursiveHMEnvironment.interpreted`
+proves the count-transported environment equals the uniformly HM-interpreted
+common environment under captured-vector evidence; its `atNode` reuses that
+equality to return the real derivation in the reconciled environment. HM vectors
+remain fixed per specialization throughout the recursive group, preserving D2.
+
+Kernel-checked recursive examples quantify over arbitrary finite scoped count
+vectors and full HM bounds arguments, linking exact node bounds, written
+signature and common environment. An executable nested-List regression confirms
+caller counts survive even when their ID equals the callee telescope ID.
+Full 1779-job build and parsed-source regressions pass; scratch HM audit remains
+28 accepted / eight expected rejections / zero failures. New declarations use
+standard Lean axioms only; no new placeholders, partials or production changes.
+
+This connects the universal proof to exact-node consumption, but does not yet
+construct those universal certificates with an interpreted executable walker,
+introduce generalized group exit, or remove polymorphic source guards. A
+more-general inferred RHS still needs explicit machine-binder/signature HM
+reconciliation before its original found payloads can supply that walker.
