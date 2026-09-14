@@ -53,13 +53,22 @@ private def finish (ids : List Nat) (rows : Bindings) (caller : List Nat)
         else throw "bounds: recursive RHS counts are outside caller scope"
       else throw "bounds: recursive RHS interpretation contains an infinite Nat replacement"
 
+/-- Checking an unannotated lambda at an explicit domain introduces that
+    domain as an assumption. It does not infer a fresh count or specialize HM.
+    Carried annotations remain authoritative and outer inclusion is separate. -/
 private def chooseParam (ids : List Nat) (rows : Bindings) (caller : List Nat)
-    (Δ : List Constraint) (ann : Option Ty) (hm : Ty) : Except String
+    (Δ : List Constraint) (ann : Option Ty) (hm : Ty) (expected : Option BoundsTy) : Except String
       (Σ param, PLift (InterpretedAnnotation.ParamOK ids rows Δ ann param)) := do
   match ann with
   | none =>
-      let ⟨param, _⟩ ← Typed.chooseParam Δ none hm
-      pure ⟨param, ⟨True.intro⟩⟩
+      match expected with
+      | some param =>
+          let _ ← equal (Synth.BoundsTy.toTy param) hm
+            "bounds: declared parameter needs specialization to found HM type"
+          pure ⟨param, ⟨True.intro⟩⟩
+      | none =>
+          let ⟨param, _⟩ ← Typed.chooseParam Δ none hm
+          pure ⟨param, ⟨True.intro⟩⟩
   | some τ =>
       let d ← InterpretedAnnotation.decode ids rows caller τ
       let _ ← equal (Synth.BoundsTy.toTy d.bounds) hm "bounds: recursive parameter annotation disagrees with found type"
@@ -176,8 +185,9 @@ private theorem match_typing {ids rows caller Δ env branches lo hi elem β} {sc
     simpa only [hb] using arms.inclusions i br hm
 
 mutual
-/-- The optional demand guides match checking, not an unchecked coercion of
-    arbitrary node results. RHS certificates still check the outer inclusion. -/
+/-- The optional demand guides match checking and unannotated lambda domains,
+    not an unchecked coercion of arbitrary node results. RHS certificates still
+    check the outer inclusion; applications still check argument inclusion. -/
 def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
     (env : List Binding) (path : CorePath) (e : Expr) (schemes : BinderSchemeMap)
     (expected : Option BoundsTy := none) :
@@ -212,7 +222,8 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
   | .found hm (.lambda ann body) =>
       match hm.eraseBounds with
       | .arrow paramTy _ =>
-          let ⟨param, hp⟩ ← chooseParam ids rows caller Δ ann paramTy
+          let paramHint := match expected with | some (.arrow β _) => some β | _ => none
+          let ⟨param, hp⟩ ← chooseParam ids rows caller Δ ann paramTy paramHint
           let bodyHint := match expected with | some (.arrow _ β) => some β | _ => none
           let result ← walk ids rows caller Δ (.mono param :: env) (path ++ [.lambdaBody]) body schemes bodyHint
           finish ids rows caller Δ env (.found hm (.lambda ann body)) path hm.eraseBounds (.arrow param result.bounds)
@@ -253,7 +264,10 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
         | _ => throw "bounds: recursive RHS Cons tail has non-List bounds"
       else throw "bounds: unsupported constructor application in recursive RHS slice"
   | .found hm (.app (.found functionHM (.var i)) arg) =>
-      let actual ← walk ids rows caller Δ env (path ++ [.appArg]) arg schemes
+      let argHint := match env[i]? with
+        | some (.mono (.arrow domain _)) => some domain
+        | _ => none
+      let actual ← walk ids rows caller Δ env (path ++ [.appArg]) arg schemes argHint
       let used ← match env[i]? with
         | some (.recursive _) =>
             RecursiveVariable.inferApplication ids rows Δ env i arg.stripFound actual.bounds
@@ -267,9 +281,9 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
         (⟨path ++ [.appFun], functionHM.eraseBounds, some (.arrow used.domain used.bounds)⟩ :: actual.nodes)
   | .found hm (.app fn arg) =>
       let f ← walk ids rows caller Δ env (path ++ [.appFun]) fn schemes
-      let actual ← walk ids rows caller Δ env (path ++ [.appArg]) arg schemes
       match hf : f.bounds with
       | .arrow domain result =>
+          let actual ← walk ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain)
           let hs ← Typed.subtype Δ actual.bounds domain
           finish ids rows caller Δ env (.found hm (.app fn arg)) path hm.eraseBounds result
             (by simpa only [Expr.stripFound] using

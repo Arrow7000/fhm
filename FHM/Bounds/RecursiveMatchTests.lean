@@ -48,6 +48,17 @@ private def retainedArm : Bool :=
   | .ok r => r.nodes.any fun node => node.path == [.matchBranch 0] &&
       match node.bounds with | some (.list (.lit 0) (.lit 0) _) => true | _ => false
 
+private def identity : Expr := .found (.arrow listHM listHM) (.lambda none (var 0))
+private def checkedLambda (e : Expr) (β : BoundsTy) (ids : List Nat := []) : Except String Unit := do
+  let r ← RecursiveWalk.walk ids [] ids [] [] [] e [] (some β)
+  let _ ← Typed.subtype [] r.bounds β
+  pure ()
+
+private def consumer (result : Nat := 3) : Expr :=
+  .found (.arrow (.arrow listHM listHM) (.prim .int)) (.lambda
+    (some (.arrow (.bl (.solid (.lit 3)) (.solid (.lit 3)) (.prim .int))
+      (.bl (.solid (.lit result)) (.solid (.lit result)) (.prim .int)))) (int))
+
 private def cases : List (String × Bool) := [
   ("Nil-only match accepts exact empty input", returns
     (run [.mono (exact 0)] (matchList (var 0) [(.named nilCtorName 0, nil)])) "BL 0 0 Int"),
@@ -97,7 +108,36 @@ private def cases : List (String × Bool) := [
   ("guided match keeps actual empty-arm evidence in reports", retainedArm),
   ("nested matches recurse through tail scope", succeeds
     (run [.mono (exact 2)] (matchList (var 0) (both nil
-      (matchList (var 1) (both nil (var 1))))))) ]
+      (matchList (var 1) (both nil (var 1))))))),
+  ("declared domain supplies an unannotated List parameter", succeeds
+    (checkedLambda identity (.arrow (exact 3) (exact 3)))),
+  ("symbolic declared domain retains its scoped count origin", succeeds
+    (checkedLambda identity (.arrow (.list k k (.prim .int)) (.list k k (.prim .int))) [7])),
+  ("no contract means no guessed open parameter origin", fails (run [] identity) "parameter"),
+  ("declared lambda output remains an inclusion obligation", fails
+    (checkedLambda identity (.arrow (exact 3) (exact 2))) "interval inclusion"),
+  ("declared parameter with different HM spine is not silently specialized", fails
+    (checkedLambda identity (.arrow (.list (.lit 3) (.lit 3) (.prim .char)) (exact 3))) "needs specialization"),
+  ("declared parameter cannot escape caller count scope", fails
+    (checkedLambda identity (.arrow (.list k k (.prim .int)) (.list k k (.prim .int)))) "outside caller scope"),
+  ("carried parameter annotation is not overridden by a contract", fails
+    (checkedLambda (.found (.arrow listHM listHM) (.lambda
+      (some (.bl (.solid (.lit 2)) (.solid (.lit 2)) (.prim .int))) (var 0)))
+      (.arrow (exact 3) (exact 3))) "interval inclusion"),
+  ("curried contract guidance reaches the inner List parameter", succeeds
+    (checkedLambda (.found (.arrow (.prim .int) (.arrow listHM listHM)) (.lambda none identity))
+      (.arrow (.prim .int) (.arrow (exact 3) (exact 3))))),
+  ("computed function domain guides an unannotated lambda argument", returns
+    (run [] (.found (.prim .int) (.app (consumer) identity))) "Int"),
+  ("monomorphic variable domain guides an unannotated lambda argument", returns
+    (run [.mono (.arrow (.arrow (exact 3) (exact 3)) (.prim .int))]
+      (.found (.prim .int) (.app (var 0 (.arrow (.arrow listHM listHM) (.prim .int))) identity))) "Int"),
+  ("argument guidance retains output inclusion checks", fails
+    (run [] (.found (.prim .int) (.app (consumer 2) identity))) "interval inclusion"),
+  ("argument guidance checks correlated match arms independently", returns
+    (run [.mono (.arrow (.list k k (.prim .int)) (.prim .int)), .mono (.list k k (.prim .int))]
+      (.found (.prim .int) (.app (var 0 (.arrow listHM (.prim .int)))
+        (matchList (var 1) (both nil (cons (var 0 (.prim .int)) (var 1)))))) none [7]) "Int")]
 
 def main : IO Unit := do
   for (name, ok) in cases do

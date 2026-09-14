@@ -1052,3 +1052,35 @@ remains 28 accepted / eight expected rejections / zero failures. Boundary and
 whitespace guards pass. The new typing/transport proofs and universal-match
 regression use only standard Lean axioms; executable checking retains the existing
 positive solver-verdict trust. No new axioms, placeholders or partial definitions.
+
+### Checkpoint 4i — contract-guided lambda domains and application arguments
+
+An unannotated lambda checked against an explicit arrow demand now introduces
+the declared domain as its parameter assumption, after requiring exact agreement
+with the found HM parameter spine. Curried guidance reaches inner parameters.
+Carried parameter annotations are still decoded and checked independently rather
+than overridden. Without a demand, open List parameters remain explicitly
+unsupported; no fresh count origin is guessed. Caller-scope checks and the outer
+RHS contract inclusion remain mandatory.
+
+Known computed-function and monomorphic-variable domains also guide argument
+checking. This admits higher-order unannotated lambda arguments and path-correlated
+match arguments, while retaining the application rule's actual argument inclusion.
+Count-polymorphic recursive argument proposals still require an actual origin;
+this change does not use an uninstantiated callee telescope as caller information.
+
+Twelve new walker regressions cover fixed/symbolic/captured domains, curried
+checking, absent demands, wrong output claims, differing HM identities, count
+escape, carried annotations, higher-order arguments and correlated match arguments.
+Six new parsed-source regressions exercise monomorphic recursive copies with
+unannotated parameters and captured-count higher-order arguments, including bad
+claims and the still-explicit need for HM annotation specialization.
+
+The production route and HM/D2/Path R are unchanged. General polymorphic recursive
+annotation opening/specialization, fresh open-parameter origin inference, Bool/data
+matches, exit/internal-let generalization and captured nested groups remain separate.
+
+Validation: all 32 walker and 35 parsed-source regressions pass, along with the
+full HM/Bounds/editor/CLI build (1762 jobs). Scratch HM audit remains 28 accepted /
+eight expected rejections / zero failures. Boundary and whitespace guards pass;
+no new axioms, placeholders or partial definitions, and solver trust is unchanged.
