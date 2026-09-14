@@ -187,6 +187,23 @@ binders and mutual groups. `Runtime.closing_scoped` proves the actual substitute
 term retains exactly the remaining lexical scope. Inserted terms must be closed;
 neither scope nor capture avoidance is asserted from HM-shape agreement.
 
+`RecursiveHMJudgement.EnvAt` now gives one closing environment for the existing
+RHS judgment. Mono entries denote actual safe terms; recursive entries denote
+safe terms at every checked count instance whose RAW instantiated premises hold
+at the actual assignment. The predicate is independent of the ambient static
+path context, so branch refinement does not accidentally weaken an assumption's
+runtime contract. Budget weakening and mono extension are checked constructions;
+`EnvAt.varMono` and `EnvAt.varRecursive` prove the actual closing substitution
+sound for both variable rules. Recursive use obtains its raw premises from
+`used.usable` and established caller premises, never by appending requirements.
+This does NOT yet construct a cyclic group's realizing environment or finish
+the induction over all RHS/body rules.
+
+Closing-environment validation: full `lake build FHM FHMBounds fhm` passes
+(1806 jobs), including all existing Bounds regression gates. Scope, primitive,
+closing and variable-realization proofs use only standard Lean axioms; no new
+oracle axioms, placeholders or partial definitions. Boundary/whitespace pass.
+
 2026-09-13, checkpoint 1: added semantic subtyping with reflexivity,
 transitivity and premise-strengthening, plus the legacy derivation bridge.
 Added interval containment, semantic endpoint characterization and inclusion
