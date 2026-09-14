@@ -95,9 +95,12 @@ roots = [
   "FHM.Bounds.GeneralizationTests", # Full caller bounds, annotation/capture and namespace regressions
   "FHM.Bounds.SchemeSpecialization", # Exact simultaneous RHS/closed-scheme typing correspondence
   "FHM.Bounds.SchemeSpecializationTests", # Caller identity collisions and certified specialization regressions
+  "FHM.Bounds.FreeAlgebra", # LC-safe free substitution, bound-slot commutation and congruence
   "FHM.Bounds.SchemeUse", # Executable certified RHS use with actual bounds arguments and caller scope
   "FHM.Bounds.SchemeUseTests", # Exact bounds, repeated slots, caller collisions and invalid use regressions
   "FHM.Bounds.SchemeTyping", # Scheme-aware bounds judgement with universal RHS introduction
+  "FHM.Bounds.SchemeTransport", # Capture-safe mixed scheme environment transport and reparameterization
+  "FHM.Bounds.SchemeTransportTests", # Nested universal lets, mixed RHSs, caller collisions and count isolation
   "FHM.Bounds.SchemeTypingTests", # Formal independent polymorphic uses and captured-interface regressions
   "FHM.Bounds.SchemeVariable", # Certified scheme-aware variable rule with exact found shape
   "FHM.Bounds.SchemeVariableTests", # Mono/poly separation, shadowing, exact bounds and invalid variable use

@@ -48,7 +48,7 @@ def check (Δ : List Constraint) (env : List Binding) (i : Nat)
               exact (Ty.bvarsBelow_iff (Synth.BoundsTy.toTy a)).mp
                 (List.all_eq_true.mp hlc a ha)⟩
             have shape : Synth.BoundsTy.toTy (s.instantiate args) = found.eraseBounds := by
-              rw [Scheme.instantiate, TypeSubstitution.shape, s.shape]
+              rw [Scheme.instantiate, TypeSubstitution.shape, s.erasedShape]
               exact TypeSubstitution.hm_instance use.witness _
                 (fun _ _ h => SchemeUse.vector_shape shapes.down h)
             pure ⟨s.instantiate args, .varPoly lookup arguments, shape,

@@ -114,7 +114,7 @@ theorem annotation_fixed {f τ β} (h : Typed.annotation τ = .ok β)
                   (fun i hi => hf i (by simpa [Ty.freeVars, TyList.freeVars] using hi)))
               · simp [throw] at h
 
-private theorem param {f Δ ann β} (h : Typed.ParamOK Δ ann β)
+theorem param {f Δ ann β} (h : Typed.ParamOK Δ ann β)
     (hf : ∀ i ∈ ann.elim [] Ty.freeVars, f i = .fvar i) :
     Typed.ParamOK Δ ann (mapFree f β) := by
   cases ann with
@@ -123,7 +123,7 @@ private theorem param {f Δ ann β} (h : Typed.ParamOK Δ ann β)
       obtain ⟨demand, hd, hs⟩ := h
       exact ⟨demand, hd, by simpa only [annotation_fixed hd hf] using subtype f hs⟩
 
-private theorem binding {f Δ ann β} (h : Typed.BindingOK Δ ann β)
+theorem binding {f Δ ann β} (h : Typed.BindingOK Δ ann β)
     (hf : ∀ i ∈ ann.elim [] (fun σ => σ.body.freeVars), f i = .fvar i) :
     Typed.BindingOK Δ ann (mapFree f β) := by
   cases ann with
