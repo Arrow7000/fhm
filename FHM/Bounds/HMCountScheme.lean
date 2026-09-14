@@ -184,6 +184,42 @@ theorem Opening.rhs_instances {s found Δ env rhs}
   change Typed.Derives Δ env rhs (TypeSubstitution.substitute args (BinderBridge.close o.ids o.bounds)) at hg
   simpa only [o.close] using hg
 
+/-- RHS intervals may be more precise than their contract. The exact checked
+    HM opening still determines the slot map; no interval information is erased
+    or overwritten when the actual RHS bounds are closed. -/
+def Opening.abstractActual {s found captures} (o : Opening s found captures)
+    (actual : BoundsTy) (shape : Synth.BoundsTy.toTy actual = found.eraseBounds) :
+    BinderBridge.Abstraction s.hm actual captures := by
+  have hb : Synth.BoundsTy.toTy o.bounds = found.eraseBounds := o.shape
+  have ht : Synth.BoundsTy.toTy actual = Synth.BoundsTy.toTy o.bounds := shape.trans hb.symm
+  have hc := o.abstraction.shape
+  change Synth.BoundsTy.toTy (BinderBridge.close o.ids o.bounds) = s.hm.body.eraseBounds at hc
+  refine ⟨o.ids, o.arity, o.distinct,
+    fun i hi t ht => o.fresh i hi t (List.mem_cons_of_mem _ ht),
+    (by rw [shape]; exact o.lc),
+    ⟨o.abstraction.hmOpening.args, o.abstraction.hmOpening.arity,
+      o.abstraction.hmOpening.wf, ?_⟩, ?_⟩
+  · rw [ht]; exact o.abstraction.hmOpening.witness
+  · rw [BinderBridge.close_shape, ht]
+    simpa only [BinderBridge.close_shape] using hc
+
+/-- Generalize the actual RHS bounds and its independently checked inclusion
+    together. The exact closed contract is a demand, not a fabricated RHS type. -/
+theorem Opening.rhs_subinstances {s found Δ env rhs actual}
+    (o : Opening s found (env.map Synth.BoundsTy.toTy ++ rhs.tyFreeVars.map Ty.fvar))
+    (h : Typed.Derives Δ env rhs actual)
+    (shape : Synth.BoundsTy.toTy actual = found.eraseBounds)
+    (sub : SemanticSub Δ actual o.bounds) (args : Nat → BoundsTy) :
+    Typed.Derives Δ env rhs (TypeSubstitution.substitute args (BinderBridge.close o.ids actual)) ∧
+    SemanticSub Δ (TypeSubstitution.substitute args (BinderBridge.close o.ids actual))
+      (TypeSubstitution.substitute args s.counts.body) := by
+  let a := o.abstractActual actual shape
+  have hg := SchemeSpecialization.fromBinder a h args
+  change Typed.Derives Δ env rhs (TypeSubstitution.substitute args (BinderBridge.close o.ids actual)) at hg
+  have hs := SchemeSpecialization.subtype (SchemeSpecialization.argument o.ids args) sub
+  rw [← SchemeSpecialization.close_open o.ids args a.originalLC, o.specialize args] at hs
+  exact ⟨hg, hs⟩
+
 /-- Explicit identities must be reconciled with the authoritative fixed found
     monotype. Freshness/shape checks do not themselves establish parametricity. -/
 def openFixed (s : Scheme) (found : Ty) (ids : List Nat) (captures : List Ty) :
@@ -269,6 +305,8 @@ def check (s : Scheme) (Δ : List Constraint) (found : Ty) (counts : List Count)
 #print axioms Opening.abstraction
 #print axioms Opening.specialize
 #print axioms Opening.rhs_instances
+#print axioms Opening.abstractActual
+#print axioms Opening.rhs_subinstances
 #print axioms Use.inScope
 #print axioms Use.hm_instance
 #print axioms Use.subtype
