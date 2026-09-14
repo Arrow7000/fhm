@@ -2046,3 +2046,36 @@ zero failures; boundary/whitespace guards pass. No new placeholders, partials or
 axioms; HM/D2, Path R and production guards unchanged. Next is a shared-group
 exercise with distinct member count telescopes, then complete common-group
 reconciliation/generalized export and enclosing-scope declared interfaces.
+
+### Checkpoint 4ak — shared mutual vector and distinct member count telescopes
+
+Declared reconciliation now retains `openingIds`: checked opaque opening IDs
+are EXACTLY the chosen signature coordinates. This matters for vacuous slots
+and common-group assembly; runtime equality is independently checked rather
+than assumed from opening construction. `signatureIdentityFixed`,
+`interpretationScope` and `fixedTypes` expose the corresponding pure invariants.
+In particular, fixed recursive arguments equal the full opaque source-coordinate
+vector, including unused forall slots.
+
+`HMDeclaredMutualTests` checks BOTH real mutually recursive annotated members
+whose original solved RHSs remain more general than their written List ceilings.
+They have distinct count telescopes 7/8 but one common fixed opaque HM vector and
+one common recursive environment. Shared chosen IDs yield kernel-proved equality
+of their fixed vectors. Each actual RHS independently yields a universally
+signed exact-original-node certificate. External full caller specialization
+preserves both nodes' implementation bounds, all logical paths and the SAME
+full fixed argument vector in both specialized environments; caller count 7
+inside that inserted vector survives member source-count substitution.
+
+Full 1799-job build passes; scratch HM audit 28 accepted / eight expected rejects /
+zero failures; boundary/whitespace guards pass. New identity/vector/scope proofs
+use standard Lean axioms; executable inclusion retains the old solver boundary.
+No new placeholders, partials or axioms. HM/D2, Path R and production guards
+unchanged.
+
+This is evidence for a shared-group exercise, NOT a full arbitrary-group
+acceptance/export rule. Next structural work remains reconciling arbitrary
+member slot vectors with the common solved HM interface, consuming all member
+certificates together and exporting generalized bindings to body checking.
+Enclosing lexical declared interfaces, generalized local lets, nested groups
+and full/deferred application spines remain guarded; production BL LSP is later.
