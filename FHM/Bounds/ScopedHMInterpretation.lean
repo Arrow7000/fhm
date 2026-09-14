@@ -1,4 +1,5 @@
-import FHM.Bounds.HMFoundView
+import FHM.Bounds.FreeAlgebra
+import FHM.Bounds.CountAlgebra
 
 /-! Simultaneous free/bound HM readers for lexical forall RHS artifacts.
 Both namespaces are explicit; neither replacement is recursively reinterpreted.
@@ -134,15 +135,6 @@ private theorem erased_list (free slots : Nat → BoundsTy) (as : List Ty) :
 termination_by sizeOf as
 end
 
-def AtNode.view {output path} (node : HMFoundView.AtNode output path) (free slots : Nat → BoundsTy) : Ty :=
-  ty free slots node.original
-
-theorem AtNode.coherent {output path} (node : HMFoundView.AtNode output path) (free slots : Nat → BoundsTy)
-    {actual : BoundsTy} (original : Synth.BoundsTy.toTy actual = node.original.eraseBounds) :
-    Synth.BoundsTy.toTy (read free slots actual) = AtNode.view node free slots := by
-  rw [shape, original, erased]
-  rfl
-
 /-- Out-of-range slots remain bound slots, never guessed Unit/type witnesses.
     The consuming signature interface must separately check arity and WF. -/
 def vector (args : List BoundsTy) (i : Nat) : BoundsTy := args[i]?.getD (.bvar i)
@@ -175,7 +167,6 @@ end
 #print axioms map_types
 #print axioms map_counts
 #print axioms shape
-#print axioms AtNode.coherent
 #print axioms counts_blind
 
 end FHM.Bounds.ScopedHMInterpretation

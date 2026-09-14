@@ -1,5 +1,6 @@
 import FHM.Bounds.InterpretedAnnotation
 import FHM.Bounds.FreeAlgebra
+import FHM.Bounds.ScopedHMAnnotation
 
 /-! Proof-side simultaneous interpretation of source HM identities. Source
 annotations and the runtime term stay unchanged. Counts in inserted complete
@@ -51,8 +52,7 @@ end
 
 def AnnotationOK (types : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (Δ : List Constraint) (τ : Ty) (actual : BoundsTy) : Prop :=
-  ∃ d : ScopedAnnotation.Decoded ids τ, ScopedAnnotation.decode ids τ = .ok d ∧
-    SemanticSub Δ actual (mapFree types (bounds rows d.bounds))
+  ScopedHMAnnotation.AnnotationOK types BoundsTy.bvar ids rows Δ τ actual
 
 def ParamOK (types : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (Δ : List Constraint) (ann : Option Ty) (actual : BoundsTy) : Prop :=
@@ -68,26 +68,23 @@ theorem AnnotationOK.identity {ids rows Δ τ actual}
     (h : InterpretedAnnotation.OK ids rows Δ τ actual) :
     AnnotationOK BoundsTy.fvar ids rows Δ τ actual := by
   obtain ⟨d, hd, hs⟩ := h
-  exact ⟨d, hd, by simpa only [HMInterpretation.identity] using hs⟩
+  exact ⟨d, hd, by simpa only [ScopedHMInterpretation.identity_slots, HMInterpretation.identity] using hs⟩
 
 theorem AnnotationOK.types {types ids rows Δ τ actual}
     (h : AnnotationOK types ids rows Δ τ actual) (f : Nat → BoundsTy) :
     AnnotationOK (fun i => mapFree f (types i)) ids rows Δ τ (mapFree f actual) := by
-  obtain ⟨d, hd, hs⟩ := h
-  exact ⟨d, hd, by simpa only [compose] using SchemeSpecialization.subtype f hs⟩
+  simpa only [mapFree] using ScopedHMAnnotation.AnnotationOK.types h f
 
 theorem AnnotationOK.counts {types ids rows Δ τ actual}
     (h : AnnotationOK types ids rows Δ τ actual) (outer : Bindings) (hf : Finite outer) :
     AnnotationOK (fun i => bounds outer (types i)) ids (CountAlgebra.compose outer rows)
       (Δ.map (constraint outer)) τ (bounds outer actual) := by
-  obtain ⟨d, hd, hs⟩ := h
-  exact ⟨d, hd, by simpa only [HMInterpretation.counts, CountAlgebra.bounds_compose] using subtype outer hf hs⟩
+  simpa only [bounds] using ScopedHMAnnotation.AnnotationOK.counts h outer hf
 
 theorem AnnotationOK.assuming {types ids rows Δ Δ' τ actual}
     (h : AnnotationOK types ids rows Δ τ actual) (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
     AnnotationOK types ids rows Δ' τ actual := by
-  obtain ⟨d, hd, hs⟩ := h
-  exact ⟨d, hd, hs.assuming hp⟩
+  exact ScopedHMAnnotation.AnnotationOK.assuming h hp
 
 mutual
 theorem scope_mono {ids target β} (h : ScopedScheme.BoundsScoped ids β)

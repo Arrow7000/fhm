@@ -1809,3 +1809,43 @@ source-annotation judgement, recursive derivation transport and executable walke
 must still carry both interfaces before a declared-forall artifact can be checked.
 The initial free-identity walker therefore still rejects that artifact; the passing
 new annotated test is explicit metadata/coherence evidence, not a typing proof.
+
+### Checkpoint 4ad — lexical annotation obligations and shared free-only compatibility
+
+`ScopedHMAnnotation.AnnotationOK` carries both simultaneous HM interfaces through
+source decoding, full-type specialization, count specialization and stronger path
+premises. The original annotation stays unchanged. Executable decoding retains
+source lexical count scope, finite replacements and final caller scope; checking
+independently validates actual semantic inclusion in the interpreted demand.
+Transport proofs update BOTH replacement interfaces, not only free identities.
+
+The existing `HMInterpretation.AnnotationOK` is now the identity-bound-slot
+compatibility view of this SAME obligation, with old proof and checker APIs kept
+compatible. Existing free-only annotation demands use that same reader; the
+`identity_slots` theorem proves equivalence to the previous free mapper. This is
+not a second interpretation with separately drifting acceptance rules.
+
+The pure scoped reader no longer imports its own artifact consumers. Exact-node
+views now live in `ScopedHMFoundView`, above both reader and original found-node
+API. That dependency separation allows recursive typing to import the scoped
+annotation layer without a typing/artifact cycle.
+
+Ten executable lexical-annotation tests cover count-first insertion, named
+free/bound identities, escaped and undeclared counts, finite witnesses, actual
+inclusion and false OUTER and NESTED count assertions. Missing lexical coordinates
+are preserved as bound slots, not guessed Unit; these metadata demands do not
+assert signature slot arity or local closure. The consuming scoped signature
+interface must supply those checks. Two generic kernel examples cover arbitrary
+full-type and finite-count obligation transport.
+
+Full 1791-job build and parsed-source regressions pass; scratch HM audit remains
+28 accepted / eight expected rejections / zero failures. Boundary/whitespace guards
+pass. New pure transport proofs use standard Lean axioms; executable inclusion
+uses the existing bounds solver boundary. No new placeholders, axioms or partials;
+HM/D2, Path R and production guards remain unchanged.
+
+Next structural work is to parameterize recursive source typing/transport and
+its executable walker by the lexical interface, retaining the current identity-
+slot API as compatibility. The scoped annotation reader alone does not yet accept
+declared-forall RHS artifacts, generalized local lets or groups, and no machine
+fact is fabricated for those annotated bindings.
