@@ -2157,3 +2157,28 @@ or axioms; HM/D2, Path R and production BL guards unchanged.
 This assembles universal RHS obligations, NOT group-body introduction or export.
 Next is automatic compatible opaque-coordinate proposal, then generalized body
 interfaces and nested scoped bindings; production BL LSP activation is later.
+
+### Checkpoint 4ao — automatic compatible opaque-coordinate proposals
+
+`HMDeclaredCoordinates` chooses fresh full vectors from source forall arities,
+then aligns only opaque slot identities required by shared solved HM shapes.
+Finite eager equivalence classes handle transitive/permuted slot relationships
+without partial functions or recursive representative lookup. Original count
+telescopes stay separate. Freshness includes ALL original found/source types,
+outer mono/recursive interfaces and machine binder scheme captures.
+
+The proposal algorithm has no acceptance authority: final vectors run through
+the SAME exact-source, full-shape, fresh/distinct-slot, common-environment and
+actual universally signed RHS checker. Unsupported equations requiring more
+than opaque slot renaming reject explicitly; this is not a completeness claim.
+No HM inference/unification is rerun and no per-call HM polymorphism is added.
+
+Six real-artifact regressions cover automatic three-member acceptance, permuted
+two-slot signatures, preserved independent vacuous slots, outer capture freshness,
+false final bounds and malformed source arities. All prior assembly tests pass.
+Full `lake build FHM FHMBounds fhm` passes (1801 jobs), HM audit is still 28 accepted /
+eight expected rejects / zero failures, and boundary/whitespace guards pass.
+No new placeholders/partials/axioms. Proposal proofs use standard Lean axioms;
+actual inclusion retains the existing solver boundary. HM/D2, Path R and
+production BL guards unchanged. Generalized body/export and nested scope work
+remain ahead; automatic RHS assembly alone does not accept the group body.
