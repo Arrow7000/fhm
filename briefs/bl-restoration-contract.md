@@ -2369,6 +2369,32 @@ not a claim of completed BL runtime safety/artifact-coherence proofs; executable
 acceptance retains the existing arithmetic solver boundary. HM/D2 and Path R
 are unchanged. Consolidation is still tracked below, not falsely called done.
 
+### Checkpoint 4av — established premises transport the whole generalized body
+
+`BodyDerives.assuming` transports an entire body derivation whenever the new
+caller/path context semantically establishes the old premises. It covers source
+lambda/mono-local obligations, generalized uses, every List/Bool arm with its
+constructor refinements and ALL-member recursive introduction. The checked
+source-annotation transport lemmas are shared with `RecursiveHMJudgement`, not
+reimplemented. Coverage transport reuses `ListBranches.Covers.assuming`; Bool
+coverage remains independent of arithmetic premises.
+
+Generalized uses preserve the exact HM/count arguments and instantiated contract;
+only the proof discharging its premises changes. A real origin-backed symbolic
+caller test with symbolic count `n` (identity 7) succeeds when `1 <= n` is
+established and rejects without that premise. Callee requirements are NEVER merely
+appended to the caller's assumptions. A kernel-checked exact-input program example consumes the whole-body
+transport theorem, including group introduction.
+
+Full `lake build FHM FHMBounds fhm` passes (1805 jobs), including all 17 uniform/
+body/program regressions. Whole-body and branch-coverage transport proofs use
+only standard Lean axioms; scratch HM audit remains 28 accepted / eight expected
+rejects / zero failures. Boundary/whitespace pass.
+This is pure logical transport, not another execution path or a runtime safety
+claim. No new files, placeholders, partial defs or axioms; HM/D2, Path R and
+production BL guards remain unchanged. Full mixed-scope nested introduction and
+deferred/full-spine origins remain the next substantial assembly work.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

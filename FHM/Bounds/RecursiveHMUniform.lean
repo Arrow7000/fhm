@@ -277,6 +277,41 @@ inductive BodyDerives (ids : List Nat) (rows : Bindings) :
       BodyDerives ids rows Δ (g.exports.map BodyBinding.exported) g.body.stripFound bodyResult →
       BodyDerives ids rows Δ [] (.letRec g.annotations (g.rhss.map Expr.stripFound) g.body.stripFound) bodyResult
 
+theorem BodyBranchContext.Covers.assuming {ctx : BodyBranchContext} {Δ Δ' branches}
+    (h : ctx.Covers Δ branches) (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    ctx.Covers Δ' branches := by
+  cases ctx with
+  | list => exact ListBranches.Covers.assuming h hp
+  | bool => exact h
+
+/-- Established caller/path premises transport the ENTIRE generalized body,
+    including original source obligations, all match arms and group introduction.
+    Callee premises are still discharged, never merely appended as assumptions. -/
+theorem BodyDerives.assuming {ids rows Δ Δ' env e β}
+    (h : BodyDerives ids rows Δ env e β) (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    BodyDerives ids rows Δ' env e β := by
+  induction h generalizing Δ' with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil => exact .nil
+  | boolCtor hn => exact .boolCtor hn
+  | cons _ _ sub ihh iht => exact .cons (ihh hp) (iht hp) (sub.assuming hp)
+  | varMono lookup => exact .varMono lookup
+  | varExported lookup used =>
+      let next : HMCountScheme.Use _ Δ' _ _ :=
+        ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
+          used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
+      exact .varExported lookup next
+  | app _ _ sub ihf iha => exact .app (ihf hp) (iha hp) (sub.assuming hp)
+  | lambda param _ ih => exact .lambda (param_assuming param hp) (ih hp)
+  | letMono obligation _ _ ihr ihb =>
+      exact .letMono (binding_assuming obligation hp) (ihr hp) (ihb hp)
+  | match_ _ coverage patterns _ subs ihs iharms =>
+      exact .match_ (ihs hp) (coverage.assuming hp) patterns
+        (fun i br hb => iharms i br hb (RecursiveTyping.assuming_append hp))
+        (fun i br hb => (subs i br hb).assuming (RecursiveTyping.assuming_append hp))
+  | letRec g universal _ ihbody => exact .letRec g universal (ihbody hp)
+
 structure BodyResult (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) (e : Expr) where
   hm : Ty
@@ -596,6 +631,9 @@ def checkClosedProgram (output : Expr) (metadata : Scope.Metadata)
 #print axioms Result.signature
 #print axioms atSignedNode
 #print axioms allMembers
+#print axioms BodyBranchContext.Covers.assuming
+#print axioms BodyDerives.assuming
+#print axioms body_match_typing
 #print axioms walkBody
 #print axioms checkBody
 #print axioms checkClosedProgram
