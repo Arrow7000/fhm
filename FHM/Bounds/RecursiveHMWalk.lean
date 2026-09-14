@@ -121,7 +121,9 @@ private def checkMonoFact (σ : PolyTy) (original : Ty) : Except String Unit := 
   | some _ => pure ()
   | none => throw "bounds: monomorphic local binder fact disagrees with original found payload"
 
-private def checkLocalInterface (ann : Option PolyTy) (schemes : BinderSchemeMap)
+/-- Shared exact-source mono-local interface check for RHS and program bodies.
+    This validates metadata only; actual typing/inclusion remain separate. -/
+def checkLocalInterface (ann : Option PolyTy) (schemes : BinderSchemeMap)
     (site : CoreBinderSite) (original : Ty) : Except String Unit := do
   match ann with
   | some σ => unless σ.paramCount = 0 do
