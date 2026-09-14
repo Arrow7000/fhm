@@ -2018,3 +2018,31 @@ new forall slots; annotated locals intentionally omit inferred facts), then
 complete common-group reconciliation/generalized export and enclosing-scope
 declared interfaces. Generalized local lets, nested groups and deferred full
 application spines remain guarded; production BL LSP activation is still later.
+
+### Checkpoint 4aj — mono local binders retain enclosing lexical captures
+
+The canonical scoped RHS walker now distinguishes local source annotations from
+inference-produced binder facts. Unannotated locals still require one unique
+zero-forall machine fact. Annotated mono locals need their actual source
+obligation, not an invented machine fact; optional compatibility facts are
+cross-checked, and duplicates reject. Generalized inferred/annotated locals stay
+explicitly guarded.
+
+A mono fact can contain bound slots captured from the enclosing source forall.
+These are NOT newly generalized local slots, so closed-scheme WF/instantiation
+was the wrong check. The walker now checks the mono fact's exact ORIGINAL erased
+payload against the actual original RHS payload, before shared interpretation.
+The existing scoped judgement then retains real local typing, scope and
+independent source inclusion without changing the local generalization policy.
+
+Three real HM-artifact regressions take inferred/annotated mono locals under an
+outer forall through universal signed original-node specialization, preserving
+count-bearing caller types. A false local interval claim rejects independently.
+Three walker regressions cover absent annotated-local facts, mismatched original
+mono payloads and the polymorphic annotated-local guard.
+
+Full 1798-job build passes; scratch HM audit 28 accepted / eight expected rejects /
+zero failures; boundary/whitespace guards pass. No new placeholders, partials or
+axioms; HM/D2, Path R and production guards unchanged. Next is a shared-group
+exercise with distinct member count telescopes, then complete common-group
+reconciliation/generalized export and enclosing-scope declared interfaces.

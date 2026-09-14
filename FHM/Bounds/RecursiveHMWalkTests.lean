@@ -145,6 +145,12 @@ private def cases : List (String × Bool) := [
   ("monomorphic local let retains exact caller-origin intervals", returns (run localLet [] letFacts) expected.pretty),
   ("carried mono local annotation is checked under the same interpretation", returns
     (run (localLet (some ⟨0, .fvar 90⟩)) [] letFacts) expected.pretty),
+  ("annotated mono local needs its source obligation rather than an invented inferred fact", returns
+    (run (localLet (some ⟨0, .fvar 90⟩))) expected.pretty),
+  ("mono local fact must agree with the original payload before interpretation", fails
+    (run localLet [] (letFacts ⟨0, .fvar 91⟩)) "original found payload"),
+  ("polymorphic annotated local remains explicitly guarded", fails
+    (run (localLet (some ⟨1, .bvar 0⟩))) "polymorphic HM internal binding"),
   ("local let cannot omit its machine binder fact", fails (run localLet) "missing inferred local"),
   ("local let cannot use duplicate machine binder facts", fails (run localLet [] (letFacts ++ letFacts)) "duplicate inferred local"),
   ("inferred generalized local let cannot masquerade as monomorphic", fails

@@ -12,11 +12,16 @@ private def signature (falseClaim : Bool := false) : PolyTy :=
   ⟨1, .arrow param (.bl (.solid (if falseClaim then .lit 0 else n))
     (.solid (if falseClaim then .lit 0 else n)) (.bvar 0))⟩
 
-private def actual (recursive : Bool := false) (falseClaim : Bool := false) : Except String Bool := do
+private def actual (recursive : Bool := false) (falseClaim : Bool := false)
+    (localChoice : Nat := 0) : Except String Bool := do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
   let σ := signature falseClaim
+  let body := if recursive then Expr.app (.var 1) (.var 0) else .var 0
+  let localAnn := if localChoice = 3 then
+      Ty.bl (.solid (.lit 0)) (.solid (.lit 0)) (.bvar 0) else param
   let rhs := Expr.lambda (if recursive then none else some param)
-    (if recursive then .app (.var 1) (.var 0) else .var 0)
+    (if localChoice = 0 then body else .letIn (if localChoice = 1 then none else some ⟨0, localAnn⟩)
+      (.var 0) (.var 0))
   let source := if recursive then Expr.letRec [some σ] [rhs] (.primLit (.int 0))
     else Expr.letIn (some σ) rhs (.primLit (.int 0))
   let artifact ← match inferFound ctors source with
@@ -25,6 +30,9 @@ private def actual (recursive : Bool := false) (falseClaim : Bool := false) : Ex
   let d ← locate artifact.output site
   let typeCaptures := if recursive then [d.annotation.body.eraseBounds] else []
   let c ← HMDeclaredReconciliation.check d [7] [] [91] typeCaptures
+  if localChoice > 1 then
+    unless (BinderBridge.candidates artifact.binderSchemes (.letIn [.letRhs, .lambdaBody])).isEmpty do
+      throw "test: annotated local unexpectedly acquired an inferred binder fact"
   let contract : Contract := ⟨c.interface.scheme, _, RecursiveHMContract.fromOpaque c.opening⟩
   let env : List Binding := if recursive then [.recursive contract] else []
   let checked ← HMDeclaredRHS.check c env artifact.binderSchemes
@@ -87,6 +95,12 @@ private def cases : List (String × Bool) := [
     (actual true)),
   ("HM-compatible false result bounds fail actual RHS inclusion, not source decoding", fails
     (actual false true) "interval inclusion"),
+  ("real inferred mono local captures the enclosing lexical forall slot without re-generalizing it", passes
+    (actual false false 1)),
+  ("real annotated mono local checks its source obligation without an invented machine fact", passes
+    (actual false false 2)),
+  ("false bounds in a real annotated mono local fail independent inclusion", fails
+    (actual false false 3) "interval inclusion"),
   ("source-site preparation retains the exact lowering count telescope", passes prepareMetadata),
   ("duplicate lowering count telescopes reject instead of choosing one", fails
     (prepareMetadata true) "duplicate count telescope"),

@@ -111,6 +111,29 @@ private theorem stripBranches (branches : List (MatchPattern × Expr)) :
 private theorem path_assuming (Δ Γ : List Constraint) :
     (⟨Δ ++ Γ, Δ⟩ : ForallProblem).Valid := fun _ h c hc => h c (List.mem_append_left Γ hc)
 
+/-- A zero-forall machine fact can refer to enclosing lexical slots. These are
+    captures, not fresh local HM parameters; closed-scheme WF/instantiation is
+    therefore the wrong check. Compare the exact ORIGINAL mono payload instead. -/
+private def checkMonoFact (σ : PolyTy) (original : Ty) : Except String Unit := do
+  unless σ.paramCount = 0 do
+    throw "bounds: generalized local HM let unsupported in interpreted recursive RHS slice"
+  match BinderBridge.equalTy σ.body.eraseBounds original.eraseBounds with
+  | some _ => pure ()
+  | none => throw "bounds: monomorphic local binder fact disagrees with original found payload"
+
+private def checkLocalInterface (ann : Option PolyTy) (schemes : BinderSchemeMap)
+    (site : CoreBinderSite) (original : Ty) : Except String Unit := do
+  match ann with
+  | some σ => unless σ.paramCount = 0 do
+      throw "bounds: polymorphic HM internal binding unsupported in interpreted recursive RHS slice"
+  | none => pure ()
+  match BinderBridge.candidates schemes site with
+  | [σ] => checkMonoFact σ original
+  | [] => match ann with
+      | some _ => pure ()
+      | none => throw "bounds: missing inferred local binder scheme in interpreted RHS"
+  | _ => throw "bounds: duplicate inferred local binder scheme in interpreted RHS"
+
 private theorem strip_index {branches : List (MatchPattern × Expr)} {i : Nat}
     {arm : MatchPattern × Expr} (h : (Expr.stripFoundBranches branches)[i]? = some arm) :
     ∃ br, branches[i]? = some br ∧ arm = (br.1, br.2.stripFound) := by
@@ -279,16 +302,10 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
   | .found hm (.letIn ann rhs body) =>
       let hint ← RecursiveHMAnnotation.scopedBindingHint types slots ids rows caller ann
       let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.letRhs]) rhs schemes hint
-      -- A mono proof cannot silently stand in for an inferred generalized let.
-      -- Keep the original machine HM interface, not the interpreted payload.
-      let _ ← match BinderBridge.candidates schemes (.letIn path) with
-        | [σ] => do
-            unless σ.paramCount = 0 do
-              throw "bounds: generalized local HM let unsupported in interpreted recursive RHS slice"
-            let _ ← BinderBridge.instantiate σ actual.originalHM
-            pure ()
-        | [] => throw "bounds: missing inferred local binder scheme in interpreted RHS"
-        | _ => throw "bounds: duplicate inferred local binder scheme in interpreted RHS"
+      -- Unannotated locals require a unique original machine fact. Annotated
+      -- mono declarations do not have one; their source obligation is checked
+      -- below. If a compatibility artifact includes a fact, cross-check it.
+      let _ ← checkLocalInterface ann schemes (.letIn path) actual.originalHM
       let obligation ← RecursiveHMAnnotation.checkScopedBinding types slots ids rows caller Δ ann actual.bounds
       let result ← walkScoped types slots ids rows caller Δ (.mono actual.bounds :: env)
         (path ++ [.letBody]) body schemes expected
