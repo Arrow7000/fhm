@@ -105,6 +105,28 @@ private def prematurePartial : Except String String := do
 private def boolMatch (branches : List (MatchPattern × Expr)) : Expr :=
   .found (listTy (.prim .int)) (.match_
     (.found (.customTy boolTyName []) (.ctor BoolBranches.trueCtorName)) branches)
+
+private def fullFixedSpine (wrongHead : Bool := false) (wrongPrefix : Bool := false) :
+    Except String String := do
+  let m : Count := .var ⟨.rigid, 8⟩
+  let list (c : Count) : Ty := .bl (.solid c) (.solid c) (.prim .int)
+  let annotation : PolyTy := ⟨0, .arrow (list n) (.arrow (list m) (list m))⟩
+  let s ← HMCountScheme.decode annotation [7, 8] []
+  let hm := annotation.body.eraseBounds
+  let fixed ← RecursiveHMContract.fix s hm []
+  let c : Contract := ⟨s, hm, fixed⟩
+  let l := listTy (.prim .int)
+  let headHM := if wrongHead then .arrow (listTy (.prim .char)) (.arrow l l) else hm
+  let firstHM := if wrongPrefix then Ty.prim .int else .arrow l l
+  let e := Expr.found l (.app (.found firstHM (.app (.found headHM (.var 0)) (.found l (.var 1))))
+    (.found l (.var 2)))
+  let r ← RecursiveHMWalk.walk BoundsTy.fvar [] [] [] []
+    [.recursive c, .mono (.list (.lit 1) (.lit 1) (.prim .int)),
+      .mono (.list (.lit 2) (.lit 2) (.prim .int))] [] e []
+  unless exactlyOnce (logicalCorePaths e) (r.nodes.map (·.path)) do
+    throw "test: fixed recursive full spine lost original node coverage"
+  pure r.bounds.pretty
+
 private def boolArms : List (MatchPattern × Expr) := [
   (.named BoolBranches.trueCtorName 0, .found (listTy (.prim .int)) (.ctor nilCtorName)),
   (.named BoolBranches.falseCtorName 0, cons)]
@@ -135,6 +157,12 @@ private def fails (r : Except String α) (needle : String) : Bool :=
   match r with | .error m => (m.splitOn needle).length > 1 | _ => false
 
 private def cases : List (String × Bool) := [
+  ("full fixed recursive spine gathers later count origins and preserves every source frame",
+    match fullFixedSpine with | .ok text => text == "BL 2 2 Int" | _ => false),
+  ("full recursive head cannot change the common fixed HM instance",
+    fails (fullFixedSpine (wrongHead := true)) "HM-interpreted"),
+  ("full recursive prefix cannot hide a forged original HM payload",
+    fails (fullFixedSpine (wrongPrefix := true)) "HM-interpreted"),
   ("interpreted lambda constructs its actual RHS proof from the original found tree", returns run expected.pretty),
   ("named carried parameter annotation uses its full HM replacement", returns (run (identity (some (.fvar 90)))) expected.pretty),
   ("interpreted lambda still checks every body payload", fails
