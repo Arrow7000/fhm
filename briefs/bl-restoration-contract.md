@@ -2182,3 +2182,32 @@ No new placeholders/partials/axioms. Proposal proofs use standard Lean axioms;
 actual inclusion retains the existing solver boundary. HM/D2, Path R and
 production BL guards unchanged. Generalized body/export and nested scope work
 remain ahead; automatic RHS assembly alone does not accept the group body.
+
+### Checkpoint 4ap — actual signed RHS use in discharged caller contexts
+
+`RecursiveHMJudgement.ScopedDerives.assuming` transports the entire canonical
+scoped derivation, including recursive uses, nested annotations and List branch
+refinements, under a semantic premise implication. No contract premises are
+silently appended to the caller's assumptions.
+
+`RecursiveHMCaller` first checks caller HM/count arguments, scope and instantiated
+premises using the existing checked interface. It then retains exact original
+source-node typing, the written signature, implementation bounds, caller found
+shape and independent actual inclusion in ONE proof package under caller Δ.
+Whole-package environment transport avoids extracting incoherent independently
+cast typed/signature fields. `actual_demand_shape` relates exact implementation
+bounds to the same caller HM shape without discarding interval precision.
+
+Seven real automatic-group regressions exercise Int and Char callers, caller-owned
+inner count collisions, exact Nil results under a wider written ceiling, unmet
+premises, escaping caller counts and unrelated found HM shapes. All earlier HM
+and bounds suites remain green; full build passes (1803 jobs), HM audit stays
+28 accepted / eight expected rejects / zero failures, boundary/whitespace pass.
+Transport/assembly proofs use standard Lean axioms only; positive executable
+inclusion/premise answers retain the existing solver boundary. No new placeholders,
+partials or axioms. HM/D2, Path R and production guards unchanged.
+
+This is certified RHS caller use, not argument-origin validation, generalized
+group-body introduction or runtime closure soundness. Uniform ALL-member HM
+specialization in one common group environment is the next assembly proof;
+generalized body/export and nested scopes remain ahead.
