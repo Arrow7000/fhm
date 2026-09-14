@@ -1781,3 +1781,31 @@ full recursive spines/deferred callbacks. Generalized local lets, complete group
 acceptance/export and BL/LSP launch remain outstanding. The passing real artifacts
 here use genuine inferred binders; declared-forall binder artifacts still reject
 at the explicitly guarded lexical-slot seam rather than invent machine facts.
+
+### Checkpoint 4ac — simultaneous lexical bound/free HM reader groundwork
+
+`ScopedHMInterpretation.read` / `ty` give separate simultaneous interfaces for
+original free identities and lexical bound slots. Inserted full bounds types are
+not reinterpreted through either namespace. Missing vector coordinates stay bound,
+not Unit or guessed type witnesses. `identity_slots` recovers the existing free
+reader, while kernel-checked full-type/count transport and HM shape/coherence
+lemmas cover the new reader. Count blindness holds for BOTH replacement interfaces,
+retaining Path R.
+
+Six executable tests cover namespace separation, count-first insertion, ordinary
+List views, out-of-range and arbitrary supplied slots. A real annotated-forall
+identity artifact retains its original bound-slot root, body and carried parameter
+annotation; all three read as the SAME fresh opaque identity without any inferred
+fact being manufactured for the declared binder. Three generic kernel examples
+cover type transport, count transport and bounds-blind views.
+
+Full 1788-job build and parsed-source regressions pass; scratch HM audit remains
+28 accepted / eight expected rejections / zero failures. Boundary/whitespace guards
+pass. New reader proofs use standard Lean axioms only; no new placeholders,
+axioms or partials. HM/D2, Path R and production guards remain unchanged.
+
+This checkpoint supplies the lexical reader, NOT scoped RHS acceptance. The
+source-annotation judgement, recursive derivation transport and executable walker
+must still carry both interfaces before a declared-forall artifact can be checked.
+The initial free-identity walker therefore still rejects that artifact; the passing
+new annotated test is explicit metadata/coherence evidence, not a typing proof.

@@ -131,6 +131,8 @@ roots = [
   "FHM.Bounds.RecursiveHMAnnotationTests", # Named HM identities, count namespace collisions, scope and actual-inclusion failures
   "FHM.Bounds.RecursiveHMWalk", # Interpreted original-node traversal constructs actual RHS proofs and fixed-HM recursive calls
   "FHM.Bounds.RecursiveHMWalkTests", # Exact-node coverage, annotated/local/app/List traversal and fixed-vector self/mutual recursion
+  "FHM.Bounds.ScopedHMInterpretation", # Simultaneous lexical bound/free HM readers and full-type/count transport groundwork
+  "FHM.Bounds.ScopedHMInterpretationTests", # Protected caller types, bound/free namespaces and original declared-forall artifacts
   "FHM.Bounds.RecursiveHMContractTests", # Fixed HM/count calls, caller-count collisions and assumption specialization
   "FHM.Bounds.RecursiveTyping", # Simultaneous group rule requires universal RHS and annotation obligations
   "FHM.Bounds.RecursiveVariable", # Fixed-HM recursive assumption uses and origin-backed count calls
