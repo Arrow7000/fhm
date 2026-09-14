@@ -7,8 +7,9 @@ import FHM.Bounds.RecursiveSpine
 /-! Initial executable interpreted RHS traversal. Reads original found payloads
 and carried annotations, builds real recursive HM derivations, and records
 interpreted per-node bounds without rewriting the expression. List/Bool matches
-retain constructor coverage and variance-correct joins. Generalized local
-lets, deferred callback spines and nested groups remain explicit
+retain constructor coverage and variance-correct joins. Full recursive spines
+collect independent count origins before checking guided pending arguments.
+Generalized local lets and nested groups remain explicit
 unsupported cases until their existing checker mechanisms are migrated. -/
 
 namespace FHM.Bounds.RecursiveHMWalk
@@ -197,34 +198,21 @@ private def appendScoped {types slots ids rows caller Δ env fn arg} (path : Cor
         (prior.nodes ++ actual.nodes)
   | _ => throw "bounds: interpreted application callee is not an arrow"
 
+/-- Preparation only: absent arguments have neither bounds nor typing evidence.
+    They may be accepted only by the source-indexed completion below. -/
 private inductive ScopedSpine (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) :
     {e : Expr} → RecursiveSpine.Syntax e → Type where
   | head (path : CorePath) (i : Nat) (hm : Ty) : ScopedSpine types slots ids rows caller Δ env (.head path i hm)
   | app {fn : Expr} {prior : RecursiveSpine.Syntax fn} {arg : Expr} (path : CorePath) (hm : Ty)
       (previous : ScopedSpine types slots ids rows caller Δ env prior)
-      (actual : ScopedResult types slots ids rows caller Δ env arg) :
+      (actual : Option (ScopedResult types slots ids rows caller Δ env arg)) :
       ScopedSpine types slots ids rows caller Δ env (.app path hm prior arg)
 
 private def ScopedSpine.actualsRev {types slots ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e} :
-    ScopedSpine types slots ids rows caller Δ env spine → List BoundsTy
+    ScopedSpine types slots ids rows caller Δ env spine → List (Option BoundsTy)
   | .head _ _ _ => []
-  | .app _ _ previous actual => actual.bounds :: previous.actualsRev
-
-/-- Fixed common HM vector throughout: ONE count instantiation at the original
-    recursive head, then independently checked original application frames. -/
-private def useScopedSpine {types slots ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e}
-    (checked : ScopedSpine types slots ids rows caller Δ env spine) {c : Contract}
-    (lookup : env[spine.index]? = some (.recursive c))
-    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) :
-    Except String (ScopedResult types slots ids rows caller Δ env e) := do
-  match checked with
-  | .head path i hm =>
-      finish types slots ids rows caller Δ env (.found hm (.var i)) path used.bounds
-        (by simpa only [Expr.stripFound] using ScopedDerives.varRecursive lookup used) []
-  | .app path hm previous actual =>
-      let prior ← useScopedSpine previous lookup used
-      appendScoped path hm prior actual
+  | .app _ _ previous actual => actual.map (·.bounds) :: previous.actualsRev
 
 mutual
 def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
@@ -305,10 +293,10 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
           match hv : env[spine.index]? with
           | some (.recursive c) =>
               let checked ← walkScopedSpine types slots ids rows caller Δ env spine schemes
-              let counts ← CountProposal.proposeArguments c.template.counts.quantified
+              let counts ← CountProposal.proposeOrigins c.template.counts.quantified
                 c.template.counts.body checked.actualsRev.reverse
               let used ← RecursiveHMContract.check c.fixed Δ c.hm counts caller
-              return ← useScopedSpine checked hv used
+              return ← completeScopedSpine types slots ids rows caller Δ env checked hv used schemes
           | _ => pure ()
       | none => pure ()
       let fn ← walkScoped types slots ids rows caller Δ env (path ++ [.appFun]) function schemes
@@ -368,8 +356,34 @@ private def walkScopedSpine (types slots : Nat → BoundsTy) (ids : List Nat) (r
   | .head path i hm => pure (.head path i hm)
   | .app path hm prior arg =>
       let previous ← walkScopedSpine types slots ids rows caller Δ env prior schemes
-      let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes
+      let actual := match walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes with
+        | .ok result => some result
+        | .error _ => none
       pure (.app path hm previous actual)
+termination_by (sizeOf e, 0)
+
+/-- Fixed HM vector and ONE count vector. Missing independent arguments are
+    checked only against domains obtained from the real instantiated callee;
+    they never become count origins. Every source frame still needs a proof. -/
+private def completeScopedSpine (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
+    (caller : List Nat) (Δ : List Constraint) (env : List Binding) {e : Expr}
+    {spine : RecursiveSpine.Syntax e} (prepared : ScopedSpine types slots ids rows caller Δ env spine)
+    {c : Contract} (lookup : env[spine.index]? = some (.recursive c))
+    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) (schemes : BinderSchemeMap) :
+    Except String (ScopedResult types slots ids rows caller Δ env e) := do
+  match prepared with
+  | .head path i hm =>
+      finish types slots ids rows caller Δ env (.found hm (.var i)) path used.bounds
+        (by simpa only [Expr.stripFound] using ScopedDerives.varRecursive lookup used) []
+  | .app (arg := arg) path hm previous actual =>
+      let prior ← completeScopedSpine types slots ids rows caller Δ env previous lookup used schemes
+      match prior.bounds with
+      | .arrow domain _ =>
+          let checked ← match actual with
+            | some checked => pure checked
+            | none => walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain)
+          appendScoped path hm prior checked
+      | _ => throw "bounds: deferred recursive spine applies a non-arrow contract result"
 termination_by (sizeOf e, 0)
 
 private def walkScopedBranches (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
@@ -460,7 +474,7 @@ def checkLocated {output path} (node : HMFoundView.AtNode output path)
   pure ⟨typed, walked.nodes⟩
 
 #print axioms checkLocated
-#print axioms useScopedSpine
+#print axioms completeScopedSpine
 #print axioms walkScoped
 #print axioms walk
 
