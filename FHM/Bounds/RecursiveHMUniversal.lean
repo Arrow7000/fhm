@@ -42,7 +42,8 @@ structure Certified (s : HMCountScheme.Scheme) (found : Ty) (captures : List Ty)
   typeFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ opening.ids, i ∉ c.template.hm.body.freeVars
   countFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ s.counts.quantified
 
-private theorem argumentsLC (types : List BoundsTy)
+/-- Complete caller vectors retain local closure at every total vector slot. -/
+theorem argumentsLC (types : List BoundsTy)
     (lc : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC) :
     ∀ i, (Synth.BoundsTy.toTy (SchemeUse.vector types i)).IsLC := by
   intro i
@@ -50,7 +51,8 @@ private theorem argumentsLC (types : List BoundsTy)
   | none => simp only [SchemeUse.vector, h, Option.getD_none, Synth.BoundsTy.toTy]; exact .prim
   | some a => simpa only [SchemeUse.vector, h, Option.getD_some] using lc a (List.mem_of_getElem? h)
 
-private theorem replacementLC (ids : List Nat) (args : Nat → BoundsTy)
+/-- The same simultaneous map used by in-group and generalized-exit proofs. -/
+theorem replacementLC (ids : List Nat) (args : Nat → BoundsTy)
     (lc : ∀ i, (Synth.BoundsTy.toTy (args i)).IsLC) :
     ∀ i, (Synth.BoundsTy.toTy (argument ids args i)).IsLC := by
   intro i
@@ -58,7 +60,7 @@ private theorem replacementLC (ids : List Nat) (args : Nat → BoundsTy)
   | none => simp only [argument, h, Synth.BoundsTy.toTy]; exact .fvar
   | some slot => simpa only [argument, h] using lc slot
 
-private theorem replacementScope (ids : List Nat) (args : Nat → BoundsTy)
+theorem replacementScope (ids : List Nat) (args : Nat → BoundsTy)
     (scope : ∀ i, BoundsScoped caller (args i)) : ∀ i, BoundsScoped caller (argument ids args i) := by
   intro i
   cases h : ids.idxOf? i with

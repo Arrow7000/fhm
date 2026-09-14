@@ -334,6 +334,107 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.runtimeEnvironment
 
 #print axioms HMDeclaredGroup.Checked.runtimeEnvironment
 
+theorem _root_.FHM.Bounds.HMDeclaredGroup.MemberChecked.exitMapFixed
+    {output metadata path index captures premises typeCaptures env}
+    {p : HMDeclaredGroup.Member output metadata path index captures premises typeCaptures}
+    (checked : HMDeclaredGroup.MemberChecked p env) (types : List BoundsTy) :
+    CapturesFixed (argument checked.certificate.implementation.opening.ids (SchemeUse.vector types)) env := by
+  intro c member i freeId
+  have absent : i ∉ checked.certificate.implementation.opening.ids :=
+    fun present => checked.certificate.implementation.typeFresh c member i present freeId
+  simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+
+theorem _root_.FHM.Bounds.HMDeclaredGroup.MemberChecked.exitMapVector
+    {output metadata path index captures premises typeCaptures env}
+    {p : HMDeclaredGroup.Member output metadata path index captures premises typeCaptures}
+    (checked : HMDeclaredGroup.MemberChecked p env) {Δ found caller}
+    (used : HMCountScheme.Use checked.certificate.interface.scheme Δ found caller) :
+    let f := argument checked.certificate.implementation.opening.ids (SchemeUse.vector used.types)
+    let lc := RecursiveHMUniversal.replacementLC _ _ (RecursiveHMUniversal.argumentsLC _ used.typesLC)
+    (p.contract.mapTypes f lc).fixed.types = used.types := by
+  simp only [Contract.mapTypes, RecursiveHMContract.Fixed.mapTypes, HMDeclaredGroup.Member.contract,
+    RecursiveHMContract.fromOpaque, List.map_map, Function.comp_def, mapFree]
+  rw [← checked.certificateOpeningIds]
+  exact SchemeUse.vector_of_argument _ _ checked.certificate.implementation.opening.distinct
+    (used.arity.trans checked.certificate.implementation.opening.arity.symm)
+
+/-- One arbitrary complete exit instance induces ONE common fixed HM map for
+    its recursive implementation proof. This is not polymorphic recursion. -/
+def _root_.FHM.Bounds.HMDeclaredGroup.MemberChecked.fixedExitUse
+    {output metadata path index captures premises typeCaptures env}
+    {p : HMDeclaredGroup.Member output metadata path index captures premises typeCaptures}
+    (checked : HMDeclaredGroup.MemberChecked p env) {Δ found caller}
+    (used : HMCountScheme.Use checked.certificate.interface.scheme Δ found caller) :
+    let f := argument checked.certificate.implementation.opening.ids (SchemeUse.vector used.types)
+    let lc := RecursiveHMUniversal.replacementLC _ _ (RecursiveHMUniversal.argumentsLC _ used.typesLC)
+    RecursiveHMContract.Use (p.contract.mapTypes f lc).fixed Δ (p.contract.mapTypes f lc).hm caller := by
+  refine ⟨used.counts, used.countInstance, used.usable, ?_, rfl⟩
+  simpa only [checked.exitMapVector used] using used.typesScoped
+
+theorem _root_.FHM.Bounds.HMDeclaredGroup.MemberChecked.fixedExitUse_bounds
+    {output metadata path index captures premises typeCaptures env}
+    {p : HMDeclaredGroup.Member output metadata path index captures premises typeCaptures}
+    (checked : HMDeclaredGroup.MemberChecked p env) {Δ found caller}
+    (used : HMCountScheme.Use checked.certificate.interface.scheme Δ found caller) :
+    (checked.fixedExitUse used).bounds = used.bounds := by
+  simp only [RecursiveHMContract.Use.bounds, HMDeclaredGroup.MemberChecked.fixedExitUse, HMCountScheme.Use.bounds]
+  rw [checked.exitMapVector used]
+  simp only [Contract.mapTypes, checked.certificateScheme]
+
+#print axioms HMDeclaredGroup.MemberChecked.exitMapFixed
+#print axioms HMDeclaredGroup.MemberChecked.exitMapVector
+#print axioms HMDeclaredGroup.MemberChecked.fixedExitUse_bounds
+
+/-- Arbitrary supported generalized exit instances describe the SAME actual
+    recursive implementation. Each proof specializes the whole group at one
+    induced common HM map; it never licenses in-group polymorphic recursion. -/
+theorem _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportedMemberSafe
+    {output metadata path vectors captures premises bodyTypes}
+    (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes [])
+    (ready : ∀ offset (inside : offset < g.exports.length),
+      ScopedDerives.RuntimeReady (g.members.memberAt offset inside).rhs.certificate.implementation.typing)
+    (demandSupport : ∀ offset (inside : offset < g.exports.length),
+      Runtime.Supported (g.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds)
+    (offset : Nat) (inside : offset < g.exports.length)
+    {Δ found caller}
+    (used : HMCountScheme.Use (g.members.memberAt offset inside).rhs.certificate.interface.scheme Δ found caller)
+    (arguments : ∀ a ∈ used.types, Runtime.Supported a)
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (rawPremises : ∀ p ∈ used.countInstance.premises, p.Holds σ) :
+    Runtime.Safe bound free σ used.bounds
+      (.letRec g.annotations (g.rhss.map Expr.stripFound)
+        (g.members.memberAt offset inside).member.declaration.node.inner.stripFound) := by
+  let selected := g.members.memberAt offset inside
+  let f := argument selected.rhs.certificate.implementation.opening.ids (SchemeUse.vector used.types)
+  let lc := RecursiveHMUniversal.replacementLC selected.rhs.certificate.implementation.opening.ids
+    (SchemeUse.vector used.types) (RecursiveHMUniversal.argumentsLC used.types used.typesLC)
+  have scope : ∀ i, BoundsScoped caller (f i) := RecursiveHMUniversal.replacementScope _ _
+    (SchemeUse.vector_scope used.typesScoped)
+  have slotsSupport : ∀ i, Runtime.Supported (SchemeUse.vector used.types i) := by
+    intro i
+    cases atIndex : used.types[i]? with
+    | none => simp only [SchemeUse.vector, atIndex, Option.getD_none]; exact .prim
+    | some a =>
+        simpa only [SchemeUse.vector, atIndex, Option.getD_some] using arguments a (List.mem_of_getElem? atIndex)
+  have fullSupport : ∀ i, Runtime.Supported (f i) := Runtime.Supported.argument _ _ slotsSupport
+  have fixed := selected.rhs.exitMapFixed used.types
+  let realized := g.runtimeEnvironment caller f lc scope fullSupport fixed ready demandSupport bound free σ hb hf
+  have lookup : ((g.interfaces.contracts.map Binding.recursive ++ []).map (mapBinding f lc))[offset]? =
+      some (.recursive (selected.member.contract.mapTypes f lc)) := by
+    simpa only [List.append_nil, List.getElem?_map, Option.map_some, Option.map_map,
+      Function.comp_def, mapBinding] using
+        congrArg (Option.map (fun c => mapBinding f lc (.recursive c))) selected.contractSelection
+  have sourceRhs := g.memberAtRhs offset inside
+  have rhsLookup : (g.rhss.map Expr.stripFound)[offset]? =
+      some selected.member.declaration.node.inner.stripFound := by
+    simpa only [List.getElem?_map, Option.map_some, Expr.stripFound] using
+      congrArg (Option.map Expr.stripFound) sourceRhs
+  have behavior := EnvAt.recursiveMemberSafe realized lookup (selected.rhs.fixedExitUse used) rawPremises rhsLookup
+  simpa only [selected.rhs.fixedExitUse_bounds used] using behavior
+
+#print axioms HMDeclaredGroup.Checked.exportedMemberSafe
+
 /-! The program body has generalized exit bindings, unlike the RHS judgement's
 fixed recursive assumptions. Keep this boundary explicit: a body variable use
 checks a full HM/count instance, while group introduction requires ALL actual

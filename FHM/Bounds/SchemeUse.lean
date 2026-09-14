@@ -14,6 +14,19 @@ namespace FHM.Bounds.SchemeUse
 def vector (args : List BoundsTy) (i : Nat) : BoundsTy :=
   args[i]?.getD (.prim .unit)
 
+/-- A complete generalized exit vector is exactly the fixed recursive vector
+    induced by its simultaneous opaque-slot map, including unused slots. -/
+theorem vector_of_argument (ids : List Nat) (types : List BoundsTy) (distinct : ids.Nodup)
+    (arity : types.length = ids.length) :
+    ids.map (SchemeSpecialization.argument ids (vector types)) = types := by
+  apply List.ext_getElem (by simp only [List.length_map, arity])
+  intro i leftInside rightInside
+  have inside : i < ids.length := by simpa only [List.length_map] using leftInside
+  simp only [List.getElem_map, SchemeSpecialization.argument_slot ids _ distinct i inside,
+    vector, List.getElem?_eq_getElem rightInside, Option.getD_some]
+
+#print axioms vector_of_argument
+
 theorem vector_shape {args : List BoundsTy} {expected : List Ty}
     (h : args.map Synth.BoundsTy.toTy = expected) {i t}
     (hi : expected[i]? = some t) : Synth.BoundsTy.toTy (vector args i) = t := by

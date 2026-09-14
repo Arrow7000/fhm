@@ -257,10 +257,20 @@ The certificate constructor now preserves source/template/opening data directly;
 only proof fields requiring environment equality are transported. This removes
 an opaque whole-certificate cast without changing language acceptance.
 
-Next: realize arbitrary supported generalized exit instances from these common
-fixed-HM environments, prove the generalized-body fundamental theorem, then
-establish readiness at the checker/artifact boundary. The runtime environment
-assembly does not yet prove whole-program checker soundness or enable BL LSP.
+Generalized exit implementation safety is now `Checked.exportedMemberSafe`:
+every supported complete full-HM/count exit use denotes the same actual erased
+recursive implementation. `exitMapFixed` protects ALL recursive templates' free
+captures, `exitMapVector` recovers exactly the caller vector (including unused
+forall slots), and `fixedExitUse_bounds` proves that the induced fixed in-group
+use has exactly the exit bounds. Different exit uses may choose different maps;
+within each recursive implementation proof the whole group has ONE common map.
+`EnvAt.recursiveMemberSafe` turns the realized environment into actual wrapped-RHS
+safety, not just a safe variable lookup. These proofs use only standard Lean
+axioms, without the arithmetic oracle or placeholders.
+
+Next: build the generalized-body realizing environment from these safe exports,
+prove its fundamental theorem, then establish readiness at the checker/artifact
+boundary. This does not yet prove whole-program checker soundness or enable BL LSP.
 This does NOT yet construct a cyclic group's realizing environment or finish
 the induction over all RHS/body rules.
 

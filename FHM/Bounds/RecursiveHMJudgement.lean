@@ -259,6 +259,37 @@ theorem EnvAt.varRecursive {bound free σ budget env i c Δ caller}
 #print axioms EnvAt.varMono
 #print axioms EnvAt.varRecursive
 
+/-- A uniformly realized group gives actual recursive implementation safety,
+    not merely safety of an environment lookup. Raw instantiated premises are
+    sufficient; a caller's unrelated ambient context is not assumed to hold. -/
+theorem EnvAt.recursiveMemberSafe {bound free σ env annotations rhss c Δ caller rhs} {i : Nat}
+    (realized : ∀ budget, { e : EnvAt bound free σ budget env //
+      e.terms = Runtime.recursiveTerms annotations rhss })
+    (lookup : env[i]? = some (Binding.recursive c))
+    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller)
+    (premises : ∀ p ∈ used.inst.premises, p.Holds σ)
+    (rhsLookup : rhss[i]? = some rhs) :
+    Runtime.Safe bound free σ used.bounds (.letRec annotations rhss rhs) := by
+  intro budget
+  let e := realized budget
+  obtain ⟨inside, entry⟩ := List.getElem?_eq_some_iff.mp lookup
+  have closedVariable : Runtime.TermAt bound free σ budget used.bounds ((Expr.var i).substN 0 e.val.terms) := by
+    rw [Runtime.closing_var e.val.terms e.val.closed i (by rw [e.val.arity]; exact inside)]
+    have actual := e.val.denotes i inside
+    simp only [BindingAt, entry] at actual
+    exact actual Δ caller used premises
+  rw [e.property] at closedVariable
+  have termInside : i < (Runtime.recursiveTerms annotations rhss).length := by
+    rw [← e.property, e.val.arity]
+    exact inside
+  have termsClosed : ∀ term ∈ Runtime.recursiveTerms annotations rhss, term.varsBelow 0 = true := by
+    simpa only [e.property] using e.val.closed
+  rw [Runtime.closing_var _ termsClosed i termInside] at closedVariable
+  obtain ⟨rhsInside, rhsEntry⟩ := List.getElem?_eq_some_iff.mp rhsLookup
+  simpa only [Runtime.recursiveTerms, List.getElem_map, rhsEntry] using closedVariable
+
+#print axioms EnvAt.recursiveMemberSafe
+
 theorem EnvAt.closes {bound free σ budget env types slots ids rows Δ expr β}
     (e : EnvAt bound free σ budget env)
     (h : ScopedDerives types slots ids rows Δ env expr β) :
