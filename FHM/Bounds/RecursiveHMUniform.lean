@@ -91,6 +91,58 @@ def fromCertified {s found typeCaptures env rhs sourceTypes sourceSlots}
   · exact HMInterpretation.scope_mono (HMInterpretation.map_scope countScope f scope)
       (fun _ hi => (List.mem_append.mp hi).elim id id)
 
+/-- The actual count-first/full-HM-second certificate specialization preserves
+    the complete supported proof fragment, including annotated inner scopes.
+    This adds no acceptance rule and no new solver call. -/
+theorem fromCertified_runtimeReady {s found typeCaptures env rhs sourceTypes sourceSlots}
+    (cert : RecursiveHMUniversal.Certified s found typeCaptures env rhs sourceTypes sourceSlots)
+    (ready : ScopedDerives.RuntimeReady cert.typing)
+    {counts caller} (inst : Instance s.counts counts caller)
+    (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (scope : ∀ i, BoundsScoped caller (f i)) (arguments : ∀ i, Runtime.Supported (f i))
+    (captured : RecursiveHMEnvironment.Captured s.counts.captures env)
+    (fixed : CapturesFixed f env) :
+    ScopedDerives.RuntimeReady (fromCertified cert inst f lc scope captured fixed).typing := by
+  let rows := s.counts.quantified.zip counts
+  have countKeep : CountCapturesFixed rows env := by
+    intro c hc i hi
+    apply lookup_none
+    rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
+    exact cert.countFresh c hc i hi
+  have typeKeep : CapturesFixed f (env.map (mapCountBinding rows)) := by
+    intro c hc i hi
+    obtain ⟨original, ho, he⟩ := List.mem_map.mp hc
+    cases original with
+    | mono β => cases he
+    | recursive original =>
+        cases he
+        exact fixed original ho i hi
+  have hc := ready.counts rows inst.finite caller
+    (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2) countKeep
+  have ht := hc.types f lc caller scope arguments typeKeep
+  have envFixed := RecursiveHMEnvironment.instantiated inst captured
+  simpa only [actual, rows, envFixed, CountAlgebra.compose, List.map_nil,
+    List.nil_append, ScopedScheme.Instance.premises] using ht
+
+/-- An actual specialized RHS proof establishes runtime behaviour at its
+    demand bounds, provided its recursive assumptions are realized. This is
+    the implementation obligation consumed by simultaneous group closure. -/
+theorem Result.termAt {s found typeCaptures env rhs sourceTypes sourceSlots}
+    {cert : RecursiveHMUniversal.Certified s found typeCaptures env rhs sourceTypes sourceSlots}
+    {counts caller} {inst : Instance s.counts counts caller} {f lc}
+    (r : Result cert inst f lc) (ready : ScopedDerives.RuntimeReady r.typing)
+    (demandSupported : Runtime.Supported (demand cert counts f))
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat) (premises : ∀ p ∈ inst.premises, p.Holds σ)
+    (e : EnvAt bound free σ budget (env.map (mapBinding f lc))) :
+    Runtime.TermAt bound free σ budget (demand cert counts f) (rhs.substN 0 e.terms) :=
+  (ready.termAt bound free σ hb hf budget premises e).of_values
+    (Runtime.subtype r.inclusion ready.supported demandSupported bound free σ premises)
+
+#print axioms fromCertified_runtimeReady
+#print axioms Result.termAt
+
 def Result.assuming {s found typeCaptures env rhs sourceTypes sourceSlots}
     {cert : RecursiveHMUniversal.Certified s found typeCaptures env rhs sourceTypes sourceSlots}
     {counts caller} {inst : Instance s.counts counts caller} {f lc}
