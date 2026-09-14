@@ -109,4 +109,32 @@ theorem assuming {ids rows Δ Δ' env e β} (h : Derives ids rows Δ env e β)
 #print axioms transport
 #print axioms assuming
 
+theorem erased_tyFreeVars {ids rows Δ env e β} (h : Derives ids rows Δ env e β) :
+    e.erase.tyFreeVars = [] := by
+  induction h <;> simp_all [Expr.erase, Expr.tyFreeVars]
+
+/-- An annotation-checked RHS generalizes only identities fresh for both its
+    captured environment and original source annotations. The existing erased
+    RHS specialization theorem is reused; unchecked annotations are not erased
+    to manufacture a certificate. Caller HM/count identities may overlap. -/
+theorem binder_instances {σ ids rows Δ env e β}
+    (a : BinderBridge.Abstraction σ β
+      (env.map Synth.BoundsTy.toTy ++ e.tyFreeVars.map Ty.fvar))
+    (h : Derives ids rows Δ env e β) :
+    ∀ args, (SchemeTyping.fromBinder a).Arguments args →
+      SchemeTyping.Derives Δ (env.map SchemeTyping.Binding.mono) e.erase
+        ((SchemeTyping.fromBinder a).instantiate args) := by
+  intro args _
+  let erased : BinderBridge.Abstraction σ β
+      (env.map Synth.BoundsTy.toTy ++ e.erase.tyFreeVars.map Ty.fvar) :=
+    { a with
+      fresh := by
+        intro i hi t ht
+        simp only [erased_tyFreeVars h, List.map_nil, List.append_nil] at ht
+        exact a.fresh i hi t (List.mem_append_left _ ht) }
+  exact SchemeTyping.ofMonomorphic
+    (SchemeSpecialization.fromBinder erased (erase h) (SchemeUse.vector args))
+
+#print axioms binder_instances
+
 end FHM.Bounds.ScopedTyping
