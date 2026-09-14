@@ -415,3 +415,27 @@ component/adapter executable regressions and ordinary Lean proof examples.
 The fresh scratch audit remains 28 accepted / eight expected rejections / zero
 failures. Boundary and whitespace guards pass; no new axioms, placeholders or
 partial definitions were added.
+
+2026-09-14, checkpoint 3l: `SchemeTyping` adds explicit monomorphic/polymorphic
+environment entries and declarative variable/let rules. Scheme bodies have
+checked HM shape and well-formedness. Polymorphic let introduction requires a
+universally typed RHS; `let_fromBinder` supplies that premise from the existing
+certified fragment RHS theorem. `ofMonomorphic` embeds the old judgement without
+changing its bounds, and `instance_shape` proves every permitted scheme instance
+is an actual relational HM opening. A formal example types one identity binding
+at Int and Char across an intervening monomorphic let; lambda parameters remain
+monomorphic. Annotated polymorphic declarations are not enabled.
+
+`SchemeVariable.check` implements the exact de Bruijn variable rule with supplied
+bounds arguments, final `.found` HM shape, count scope and local-closure checks.
+Successful output carries a derivation of the enlarged judgement. Its environment
+is an assumption: only a sound environment-introduction rule can justify stored
+schemes. This does not certify externally invented schemes as source facts or
+wire the main traversal/CLI/LSP to the new judgement.
+
+Validation after 3l: the full build passes (1721 jobs), with 181 BL executable
+component/adapter regressions plus formal examples. All new theorem/checker
+targets require only standard Lean axioms. Boundary and whitespace guards pass;
+no new axioms, placeholders or partial definitions were added. Generalization
+transport for RHSs in mixed scheme environments and origin-backed application
+argument selection remain pending before general traversal acceptance.

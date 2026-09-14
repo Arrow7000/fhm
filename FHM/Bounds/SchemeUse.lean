@@ -14,7 +14,7 @@ namespace FHM.Bounds.SchemeUse
 def vector (args : List BoundsTy) (i : Nat) : BoundsTy :=
   args[i]?.getD (.prim .unit)
 
-private theorem vector_shape {args : List BoundsTy} {expected : List Ty}
+theorem vector_shape {args : List BoundsTy} {expected : List Ty}
     (h : args.map Synth.BoundsTy.toTy = expected) {i t}
     (hi : expected[i]? = some t) : Synth.BoundsTy.toTy (vector args i) = t := by
   rw [← h] at hi
@@ -24,7 +24,7 @@ private theorem vector_shape {args : List BoundsTy} {expected : List Ty}
       simp only [List.getElem?_map, ha, Option.map_some, Option.some.injEq] at hi
       simpa only [vector, ha, Option.getD_some] using hi
 
-private theorem vector_scope {args : List BoundsTy} {scope}
+theorem vector_scope {args : List BoundsTy} {scope}
     (h : args.all (ScopedScheme.boundsScopedBool scope) = true) :
     ∀ i, ScopedScheme.BoundsScoped scope (vector args i) := by
   intro i
