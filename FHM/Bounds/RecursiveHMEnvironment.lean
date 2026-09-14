@@ -117,6 +117,23 @@ def checkTypesFixed (f : Nat → BoundsTy) (env : List Binding) :
         · exact head.down.2 c (by simp [hb])
         · exact tail.down.2 c ht⟩⟩
 
+/-- Universal group specialization MAY change fixed opaque argument vectors,
+    but must preserve the closed callee templates' captured free identities. -/
+def templateFixedBool (f : Nat → BoundsTy) (env : List Binding) : Bool :=
+  env.all fun b => match b with
+    | .mono _ => true
+    | .recursive c => c.template.hm.body.freeVars.all (identityBool f)
+
+theorem templateFixedBool_sound {f env} (h : templateFixedBool f env = true) :
+    CapturesFixed f env := by
+  intro c hc i hi
+  exact identityBool_sound (List.all_eq_true.mp (List.all_eq_true.mp h (.recursive c) hc) i hi)
+
+def checkTemplateFixed (f : Nat → BoundsTy) (env : List Binding) :
+    Except String (PLift (CapturesFixed f env)) :=
+  if h : templateFixedBool f env = true then .ok ⟨templateFixedBool_sound h⟩
+  else .error "bounds: uniform group HM specialization changes a closed recursive template capture"
+
 theorem typesFixed {f env} (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
     (h : TypesFixed f env) : env.map (mapBinding f hf) = env := by
   conv_rhs => rw [← List.map_id env]
@@ -274,6 +291,7 @@ def atScopedSignedNode {output path} (node : HMFoundView.AtNode output path)
 #print axioms capturedBool_sound
 #print axioms checkTypesFixed
 #print axioms typesFixed
+#print axioms checkTemplateFixed
 #print axioms checkCaptured
 #print axioms fixed
 #print axioms instantiated
