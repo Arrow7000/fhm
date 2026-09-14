@@ -147,6 +147,34 @@ observable consequences of the runtime target. These use only standard Lean
 axioms. They do NOT establish that accepted checker derivations imply `Safe`:
 the fundamental theorem in gates 2–3 remains required before claiming BL safety.
 
+Runtime compatibility now covers ordinary application at the SAME finite
+budget, beta/lambda introduction, literal/Nil/Cons value meanings and Cons
+evaluation, and List/Bool matching through the actual first selected branch and
+actual `substN` contents. `TermAt.prepend` and `TermAt.bind` reuse existing Core
+step determinism and congruence, not new execution rules. The lambda body is
+required safe at a strictly smaller budget, leaving room for the recursive
+fundamental argument.
+
+`ValueAt.counts`/`TermAt.counts` connect count substitution to assignments;
+`ValueAt.types`/`TermAt.types` connect simultaneous full HM substitution to its
+semantic environment. Combined `specialize` explicitly freezes inserted full
+caller type meanings at the CALLER count assignment before interpreting the
+callee's count telescope. Kernel-checked examples prove identity preserves any
+full type meaning and refute both nonempty-Nil claims and a callback whose actual
+beta reduct drops a singleton to Nil. These are proofs, not PASS/FAIL printing.
+
+The remaining ordinary-rule obligations are primitive operators, closing-term
+substitution/environment lemmas, and deriving selected-arm semantic premises
+from the static refined branch environment. Scheme/group introduction still
+needs its fundamental proof. Compatibility hypotheses are NOT counted as proofs
+that checker derivations establish them. No CLI/LSP acceptance was enabled.
+
+Validation of the runtime compatibility/specialization batch:
+`lake build FHM FHMBounds fhm` passes (1806 jobs). Every displayed runtime theorem
+dependency uses only standard Lean axioms, without the arithmetic oracle or
+`sorryAx`; there are no new axioms, placeholders or partial definitions. The HM
+audit remains 36 files / 28 accepted / eight expected rejects / zero failures.
+
 2026-09-13, checkpoint 1: added semantic subtyping with reflexivity,
 transitivity and premise-strengthening, plus the legacy derivation bridge.
 Added interval containment, semantic endpoint characterization and inclusion
