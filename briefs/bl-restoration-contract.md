@@ -1532,3 +1532,40 @@ followed by the generalized group-exit/environment reconciliation and executable
 fixed-HM found-payload interpretation. The explicitly specialized environment in
 `use` is not yet a whole-group/generalized-export judgement; its reconciliation
 must be proved, not assumed from per-member universal certificates.
+
+### Checkpoint 4v — written polymorphic signatures and count-environment agreement
+
+Scoped annotation contracts now retain their exact source decoder equality.
+`HMCountScheme.Annotated` keeps that evidence with source count interface and
+HM well-formedness; the existing `decode` delegates to `decodeAnnotated` and
+still returns the same closed `Scheme` API. This is source provenance for the
+contract, not source spans inside `.found` nodes.
+
+`RecursiveHMSigned.BindingOK` is a genuine polymorphic source-signature
+judgement: well-formed forall slots, exact HM vector arity, original source
+decoding and semantic inclusion in count-first/HM-second specialization of THAT
+decoded source demand. `Certified` ties the annotated interface to its joint
+universal RHS implementation. `signatureInstances` proves the written signature
+at every finite scoped count and full HM bounds instance; no assumption decoder,
+single HM instance or root-shape comparison is an implementation certificate.
+A kernel-checked self-recursive forall/List signature example covers arbitrary
+full caller bounds and finite scoped count vectors.
+
+`RecursiveHMEnvironment.Captured` records count scope for mono captures and
+callee fixed HM vectors. `instantiated` proves a member's count instantiation
+leaves the common group environment unchanged when that evidence is available.
+The closed callee templates are not substituted. `opaqueVector` supplies the
+fixed-vector premise automatically for genuine opaque openings; the concrete
+recursive example proves the count environment unchanged at every finite scoped
+count instantiation. This reconciles count transport, not HM generalized export:
+the group's fixed HM vectors still need one uniform whole-group specialization.
+
+Full 1777-job build, parsed-source regressions and scratch HM audit pass (28
+accepted / eight expected rejections / zero failures); boundary/whitespace guards
+pass. New proofs use standard Lean axioms only. No new axioms, placeholders or
+partials; HM/D2, Path R and the guarded production launch remain unchanged.
+
+Next is the exact-node found-payload interpretation seam for more-general HM
+RHSs, then joint group/environment/signature acceptance and generalized export.
+The polymorphic source judgement above is proof-side; it does NOT enable the
+existing executable group decoder or claim whole-program BL support yet.
