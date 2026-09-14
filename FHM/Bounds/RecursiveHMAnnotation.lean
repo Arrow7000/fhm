@@ -14,14 +14,15 @@ structure Demand (types : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
   source : ScopedAnnotation.Decoded ids τ
   decoded : ScopedAnnotation.decode ids τ = .ok source
   finite : Finite rows
-  inScope : BoundsScoped caller (mapFree types (bounds rows source.bounds))
+  inScope : BoundsScoped caller (ScopedHMInterpretation.read types BoundsTy.bvar (bounds rows source.bounds))
 
 def Demand.bounds {types ids rows caller τ} (d : Demand types ids rows caller τ) : BoundsTy :=
-  mapFree types (CountSubstitution.bounds rows d.source.bounds)
+  ScopedHMInterpretation.read types BoundsTy.bvar (CountSubstitution.bounds rows d.source.bounds)
 
 theorem Demand.shape {types ids rows caller τ} (d : Demand types ids rows caller τ) :
     Synth.BoundsTy.toTy d.bounds = HMFoundView.ty types τ := by
-  rw [Demand.bounds, HMFoundView.bounds_shape, bounds_shape, d.source.shape, HMFoundView.erased]
+  rw [Demand.bounds, ScopedHMInterpretation.identity_slots, HMFoundView.bounds_shape,
+    bounds_shape, d.source.shape, HMFoundView.erased]
 
 def decode (types : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (τ : Ty) : Except String (Demand types ids rows caller τ) := do
@@ -29,7 +30,8 @@ def decode (types : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     match hd : ScopedAnnotation.decode ids τ with
     | .error message => throw message
     | .ok source =>
-        if hs : boundsScopedBool caller (mapFree types (bounds rows source.bounds)) = true then
+        if hs : boundsScopedBool caller
+            (ScopedHMInterpretation.read types BoundsTy.bvar (bounds rows source.bounds)) = true then
           pure ⟨source, hd, fun row hr => Count.noInf_of_isNoInf (List.all_eq_true.mp hf row hr),
             boundsScopedBool_sound hs⟩
         else throw "bounds: HM-interpreted annotation counts are outside caller scope"

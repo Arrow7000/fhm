@@ -1,4 +1,4 @@
-import FHM.Bounds.ScopedHMInterpretation
+import FHM.Bounds.ScopedHMFoundView
 import FHM.Bounds.Found
 
 namespace FHM.Bounds.ScopedHMInterpretationTests
