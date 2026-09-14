@@ -1943,3 +1943,33 @@ proofs use standard Lean axioms; executable inclusion uses the existing solver
 boundary. HM/D2, Path R and production guards unchanged. This does not yet provide
 the complete source-site declared-interface reconciler, signed lexical-node
 package, recursive group acceptance/export or production BL LSP launch.
+
+### Checkpoint 4ah — written signatures share scoped universal node evidence
+
+`RecursiveHMSigned.Certified` now retains the same defaulted lexical-slot
+interface as its universal implementation. `signatureInstances` works for BOTH
+interfaces and proves the original written polymorphic signature at every finite
+count/full-HM instance; its exact decoded source body cannot be swapped.
+Existing identity/free-only signed APIs remain compatible.
+
+`ScopedNodeChecked`/`atScopedNode` attach the written source obligation to the
+SAME actual bounds and exact-original-node scoped derivation. The real annotated
+identity/List-match regression pipeline now consumes these signed packages,
+including the source-count/caller-count identity collision case. It does not
+merely compare the final node's HM shape or test one primitive HM witness.
+
+Full 1794-job build passes; scratch HM audit 28 accepted / eight expected rejects /
+zero failures; boundary and whitespace guards pass. New signed universal proofs
+use standard Lean axioms. No placeholders, partials or new solver axiom. HM/D2,
+Path R and production guards unchanged.
+
+Next substantive seam: a checked SOURCE-SITE declared-interface reconciler for
+annotated bindings (where omitted inferred machine facts are intentional), then
+complete common recursive-environment reconciliation and generalized group
+export. It must handle a genuine more-general solved RHS under a narrower
+written ceiling, protect captured source free IDs and enclosing lexical slots,
+and never infer universal permission merely from arbitrary freeVars or decoded
+metadata. The scoped signed package is real universal RHS evidence in an
+EXPLICIT specialized environment, not yet that whole-group introduction rule.
+Generalized local lets, nested groups, deferred full application spines and
+production BL LSP activation remain guarded; no user decision is pending.
