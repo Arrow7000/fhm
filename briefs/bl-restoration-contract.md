@@ -233,8 +233,8 @@ to the ACTUAL existing count-first/full-HM-second member certificate constructor
 environment. A kernel fixture checks a recursive lambda at every supported
 full-HM/count specialization, preserving nested caller counts.
 
-Remaining gate-3 assembly: use those per-instance proofs to discharge ALL members
-in source order, realize generalized exports and connect `BodyDerives`.
+The gate-3 assembly below discharges ALL members in source order, realizes
+generalized exports and connects `BodyDerives`.
 Readiness of the original supported checker proofs must also be established.
 The cyclic closure lemma is not by itself a theorem that the current
 whole-artifact checker is runtime-sound.
@@ -268,11 +268,27 @@ within each recursive implementation proof the whole group has ONE common map.
 safety, not just a safe variable lookup. These proofs use only standard Lean
 axioms, without the arithmetic oracle or placeholders.
 
-Next: build the generalized-body realizing environment from these safe exports,
-prove its fundamental theorem, then establish readiness at the checker/artifact
+The generalized-body runtime environment is now `BodyEnvAt`, with
+`Checked.exportEnvironment` realizing ALL source-ordered exits by the original
+Core recursive replacements. Each exported entry promises every complete
+supported HM/count instance; supporting unused HM arguments is explicit too.
+`BodyDerives.varsBelow` proves actual scope, including closed group introduction.
+`BodyEnvAt.listBranch` preserves generalized exports behind the concrete List
+fields and derives arithmetic branch premises from their observed lengths.
+
+`BodyDerives.RuntimeReady.termAt` now proves the fundamental theorem for ALL
+existing supported body rules: primitives, constructors, mono/generalized uses,
+applications, lambdas, call-by-name mono locals, List/Bool matches and CLOSED
+recursive-group introduction. The group case constructs the export environment
+from original member certificates; it does not assume recursive annotation
+soundness. `safeClosed` gives safety of the exact erased body/program. A kernel
+fixture calls the same proved generalized identity at Int and Char across a
+local binder. These theorems require source-member and intermediate-type
+readiness, not merely a supported root; their dependencies exclude the
+arithmetic oracle and `sorryAx`.
+
+Next: establish readiness at the checker/artifact
 boundary. This does not yet prove whole-program checker soundness or enable BL LSP.
-This does NOT yet construct a cyclic group's realizing environment or finish
-the induction over all RHS/body rules.
 
 Closing-environment validation: full `lake build FHM FHMBounds fhm` passes
 (1806 jobs), including all existing Bounds regression gates. Scope, primitive,

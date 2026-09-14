@@ -305,6 +305,13 @@ theorem recursiveTerms_closed {annotations rhss}
   simp only [Expr.varsBelow, Nat.zero_add, Bool.and_eq_true]
   exact ⟨bindings_scoped scope, scope rhs rhsMember⟩
 
+theorem letRec_closed {annotations rhss body}
+    (scope : ∀ rhs ∈ rhss, rhs.varsBelow rhss.length = true)
+    (bodyScope : body.varsBelow rhss.length = true) :
+    (Expr.letRec annotations rhss body).varsBelow 0 = true := by
+  simp only [Expr.varsBelow, Nat.zero_add, Bool.and_eq_true]
+  exact ⟨bindings_scoped scope, bodyScope⟩
+
 /-- Actual closing substitution removes exactly its environment's free term
     slots. Scope under nested and mutual binders is retained, not assumed. -/
 theorem closing_scoped (terms : List Expr)

@@ -135,6 +135,97 @@ example {output metadata Δ} (program : ProgramResult output metadata)
     BodyDerives [] [] Δ [] output.stripFound program.body.bounds :=
   program.body.typing.assuming premises
 
+/-- The report theorem uses the exact artifact-indexed derivation, not a
+    replacement program or an assumed runtime contract. Readiness remains an
+    explicit supported-fragment obligation until the checker bridge closes it. -/
+example {output metadata} (program : ProgramResult output metadata)
+    (ready : BodyDerives.RuntimeReady program.body.typing)
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free) :
+    Runtime.Safe bound free σ program.body.bounds output.stripFound :=
+  ready.safeClosed bound free σ hb hf (by simp)
+
+private def runtimeIdScheme : HMCountScheme.Scheme :=
+  { hm := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
+    counts := ⟨[], [], [], .arrow (.bvar 0) (.bvar 0)⟩
+    hmWF := by exact .arrow (.bvar (by decide)) (.bvar (by decide))
+    countWF := by simp [ScopedScheme.Scheme.WF, ScopedScheme.BoundsScoped]
+    shape := by simp [Synth.BoundsTy.toTy] }
+
+private def runtimeIdUse (p : PrimTy) :
+    HMCountScheme.Use runtimeIdScheme [] (.arrow (.prim p) (.prim p)) [] :=
+  { counts := []
+    countInstance :=
+      { arity := rfl
+        wf := runtimeIdScheme.countWF
+        argsScoped := by simp
+        finiteArgs := by simp
+        capturesScoped := by simp [runtimeIdScheme]
+        bodyScoped := by simp [runtimeIdScheme, CountSubstitution.bounds, ScopedScheme.BoundsScoped]
+        premisesScoped := by simp [runtimeIdScheme] }
+    usable := by intro σ _ goal member; simp [ScopedScheme.Instance.premises, runtimeIdScheme] at member
+    types := [.prim p]
+    arity := rfl
+    typesLC := by
+      intro a member
+      obtain rfl := List.mem_singleton.mp member
+      have closed : (Ty.prim p).IsLC := .prim
+      simpa only [Synth.BoundsTy.toTy] using closed
+    typesScoped := rfl
+    shape := by simp [runtimeIdScheme, TypeSubstitution.combined, CountSubstitution.bounds,
+      TypeSubstitution.substitute, SchemeUse.vector, Synth.BoundsTy.toTy, Ty.eraseBounds] }
+
+private def runtimePolyBody : Expr :=
+  .letIn none (.app (.var 0) (.primLit (.int 1)))
+    (.app (.var 1) (.primLit (.char 'a')))
+
+private theorem runtimePolyTyping :
+    BodyDerives [] [] [] [.exported runtimeIdScheme] runtimePolyBody (.prim .char) :=
+  .letMono True.intro
+    (.app (.varExported rfl (runtimeIdUse .int)) .literal (SemanticSub.refl _ _))
+    (.app (.varExported rfl (runtimeIdUse .char)) .literal (SemanticSub.refl _ _))
+
+private theorem runtimePolyReady : BodyDerives.RuntimeReady runtimePolyTyping := by
+  have intReady : BodyDerives.RuntimeReady
+      (BodyDerives.varExported (ids := []) (rows := []) (env := [.exported runtimeIdScheme])
+        (i := 0) rfl (runtimeIdUse .int)) :=
+    .varExported rfl (runtimeIdUse .int) (.arrow .prim .prim)
+      (by intro a member; obtain rfl := List.mem_singleton.mp member; exact .prim)
+  have charReady : BodyDerives.RuntimeReady
+      (BodyDerives.varExported (ids := []) (rows := [])
+        (env := [.mono (.prim .int), .exported runtimeIdScheme])
+        (i := 1) rfl (runtimeIdUse .char)) :=
+    .varExported rfl (runtimeIdUse .char) (.arrow .prim .prim)
+      (by intro a member; obtain rfl := List.mem_singleton.mp member; exact .prim)
+  exact BodyDerives.RuntimeReady.letMono (ann := none) True.intro
+    (.app (SemanticSub.refl _ _) intReady .literal)
+    (.app (SemanticSub.refl _ _) charReady .literal)
+
+/-- The SAME generalized identity is called at Int and Char across a mono local
+    binder. Its runtime meaning is proved from lambda reduction, not asserted. -/
+theorem generalizedBodyRuntimeSafe (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free) :
+    Runtime.Safe bound free σ (.prim .char)
+      (runtimePolyBody.substN 0 [.lambda none (.var 0)]) := by
+  intro budget
+  let e : BodyEnvAt bound free σ budget [.exported runtimeIdScheme] :=
+    { terms := [.lambda none (.var 0)]
+      arity := rfl
+      closed := by intro term member; obtain rfl := List.mem_singleton.mp member; rfl
+      denotes := by
+        intro i inside
+        have zero : i = 0 := by simp at inside; omega
+        subst i
+        intro Δ found caller used _ _
+        change Runtime.TermAt bound free σ budget
+          (TypeSubstitution.combined ([] : List (Nat × Count)) (SchemeUse.vector used.types)
+            (.arrow (.bvar 0) (.bvar 0))) (.lambda none (.var 0))
+        simp only [TypeSubstitution.combined, CountSubstitution.bounds, TypeSubstitution.substitute]
+        exact Runtime.TermAt.value (.lambda _ _) (Runtime.ValueAt.identity hb hf) }
+  exact runtimePolyReady.termAt bound free σ hb hf budget (by simp) e
+
+#print axioms generalizedBodyRuntimeSafe
+
 private def bodyMatches (kind : Nat) (onlyNil : Bool := false) (onlyCons : Bool := false)
     (badDemand : Bool := false) :
     Except String Bool := do
