@@ -397,6 +397,15 @@ theorem Supported.types (f : Nat → BoundsTy) (arguments : ∀ i, Supported (f 
   | arrow _ _ domain result => exact .arrow domain result
   | list _ element => exact .list element
 
+theorem Supported.argument (ids : List Nat) (args : Nat → BoundsTy)
+    (arguments : ∀ i, Supported (args i)) :
+    ∀ i, Supported (SchemeSpecialization.argument ids args i) := by
+  intro i
+  unfold SchemeSpecialization.argument
+  cases ids.idxOf? i with
+  | none => exact .fvar
+  | some slot => exact arguments slot
+
 mutual
   /-- At positive budgets, values are closed and have the promised runtime
       contents. An arrow accepts every argument at any budget up to its own;

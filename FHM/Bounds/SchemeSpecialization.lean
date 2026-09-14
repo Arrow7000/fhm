@@ -157,6 +157,29 @@ def argument (ids : List Nat) (args : Nat → BoundsTy) (i : Nat) : BoundsTy :=
   | none => .fvar i
   | some slot => args slot
 
+private theorem opaque_slot {ids : List Nat} (distinct : ids.Nodup) {i : Nat}
+    (inside : i < ids.length) : ids.idxOf? ids[i] = some i := by
+  induction ids generalizing i with
+  | nil => simp at inside
+  | cons head rest ih =>
+      obtain ⟨absent, tailDistinct⟩ := List.nodup_cons.mp distinct
+      cases i with
+      | zero => simp [List.idxOf?_cons]
+      | succ i =>
+          have tailInside : i < rest.length := by simp only [List.length_cons] at inside; omega
+          have different : head ≠ rest[i] := fun same => absent (same ▸ List.getElem_mem tailInside)
+          simpa only [List.getElem_cons_succ, List.idxOf?_cons,
+            show (head == rest[i]) = false from by simpa using different,
+            Bool.false_eq_true, if_false, ih tailDistinct tailInside, Option.map_some] using
+              (rfl : some (i + 1) = some (i + 1))
+
+/-- Opaque scheme identities read exactly their assigned simultaneous slots. -/
+theorem argument_slot (ids : List Nat) (args : Nat → BoundsTy) (distinct : ids.Nodup)
+    (i : Nat) (inside : i < ids.length) : argument ids args ids[i] = args i := by
+  simp only [argument, opaque_slot distinct inside]
+
+#print axioms argument_slot
+
 mutual
 theorem close_open (ids : List Nat) (args : Nat → BoundsTy) {β}
     (hlc : (Synth.BoundsTy.toTy β).IsLC) :
