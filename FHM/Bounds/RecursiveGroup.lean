@@ -171,6 +171,18 @@ def check (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Cons
             result.countScope, ⟨path, hm.eraseBounds, some result.bounds⟩ :: members.2 ++ result.nodes⟩
         else throw "bounds: recursive group environment escapes declared captures"
       else throw "bounds: recursive group count telescopes overlap or capture quantified counts"
+  | .found hm (.letIn ann rhs body) =>
+      let hint ← RecursiveWalk.bindingHint ids rows caller ann
+      let actual ← RecursiveWalk.walk ids rows caller Δ env (path ++ [.letRhs]) rhs schemes hint
+      let hp ← RecursiveWalk.checkMonoBinding ids rows caller Δ env path rhs schemes ann actual.bounds
+      let result ← check ids rows caller Δ (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes metadata
+      let shape ← match BinderBridge.equalTy result.hm hm.eraseBounds with
+        | some h => pure h
+        | none => throw "bounds: program let body disagrees with root found payload"
+      have introduced := Derives.letMono hp.down actual.derivation result.derivation
+      pure ⟨hm.eraseBounds, result.bounds, rfl, result.shape.trans shape.down,
+        (by simpa only [Expr.stripFound] using introduced), result.countScope,
+        ⟨path, hm.eraseBounds, some result.bounds⟩ :: actual.nodes ++ result.nodes⟩
   | .found hm inner =>
       pure (fromWalk (← RecursiveWalk.walk ids rows caller Δ env path (.found hm inner) schemes))
   | _ => throw "bounds: requested expression is not a found recursive group or program node"

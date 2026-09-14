@@ -300,6 +300,23 @@ private def cases : List (String × Bool) := [
     "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
     "  \\(xs : BL n n Int) -> let g : {m : Nat} Int -> Int = \\i -> g i in " ++
     "(\\(ignored : Int) -> xs) (g 1)\nf []\n")) "captured-template transport"),
+  ("parsed scalar prefix is captured by a later recursive map", returns (run (
+    "(let offset : Int = 1 in\n" ++
+    mapSource "(transform (h + offset) + 0) :: f transform t" ++
+    "in f (\\x -> x + 1) [1, 2])\n")) "BL 2 2 Int"),
+  ("parsed unannotated monomorphic prefix keeps its actual List count", returns (run (
+    "(let saved = [1, 2] in\n" ++ selfSource ++ "in f saved)\n")) "BL 2 2 Int"),
+  ("parsed annotated prefix still rejects an incorrect count", fails (run (
+    "(let saved : BL 0 0 Int = [1] in\n" ++ selfSource ++ "in f [])\n")) "interval inclusion"),
+  ("parsed monomorphic let between groups keeps certified outer call bounds", returns (run (
+    "(" ++ selfSource ++ "in let saved : BL 2 2 Int = f [1, 2] in\n" ++
+    "let g : {m : Nat} BL m m Int -> BL m m Int =\n" ++
+    "  \\(xs : BL m m Int) -> (\\(ignored : List Int) -> f xs) (g xs)\n" ++
+    "in g saved)\n")) "BL 2 2 Int"),
+  ("parsed generalized prefix is not silently treated as monomorphic", fails (run (
+    "(let id = \\x -> x in\n" ++ selfSource ++ "in f [])\n")) "generalized HM internal let"),
+  ("parsed polymorphic source prefix remains an explicit generalization boundary", fails (run (
+    "(let id : {a} a -> a = \\x -> x in\n" ++ selfSource ++ "in f [])\n")) "polymorphic HM internal binding"),
   ("missing source origins reject report adapter", fails (provenanceRejected (fun a =>
     {a with lowering := {a.lowering with coreOrigins := []}})) "incomplete typed provenance"),
   ("duplicate source origins reject report adapter", fails (provenanceRejected (fun a =>

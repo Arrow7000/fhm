@@ -100,6 +100,21 @@ example {ids rows Δ env anns rhss body} (cert : RecursiveGroup.Certified ids ro
     Derives ids rows Δ env (.letRec anns (rhss.map Expr.stripFound) body.stripFound) cert.result := cert.typing
 
 private def cases : List (String × Bool) := [
+  ("program let validates its own found HM payload", fails
+    (RecursiveGroup.check [] [] [] [] [] []
+      (.found (.prim .char) (.letIn (some ⟨0, .prim .int⟩)
+        (.found (.prim .int) (.primLit (.int 1)))
+        (.found (.prim .int) (.primLit (.int 2))))) [] {}) "let body disagrees"),
+  ("program let requires the exact found RHS", fails
+    (RecursiveGroup.check [] [] [] [] [] []
+      (.found (.prim .int) (.letIn (some ⟨0, .prim .int⟩)
+        (.primLit (.int 1)) (.found (.prim .int) (.primLit (.int 2))))) [] {})
+      "one found wrapper"),
+  ("program let requires the exact found body", fails
+    (RecursiveGroup.check [] [] [] [] [] []
+      (.found (.prim .int) (.letIn (some ⟨0, .prim .int⟩)
+        (.found (.prim .int) (.primLit (.int 1))) (.primLit (.int 2)))) [] {})
+      "not a found recursive group"),
   ("consecutive empty group checks through the same group introduction", succeeds
     (changedExpr (fun
       | .found hm (.letRec anns rhss body) =>

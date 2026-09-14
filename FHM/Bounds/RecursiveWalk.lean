@@ -87,7 +87,8 @@ private def checkBinding (ids : List Nat) (rows : Bindings) (caller : List Nat)
         pure ⟨hσ, obligation.down⟩
       else throw "bounds: polymorphic HM internal binding unsupported in recursive RHS slice"
 
-private def bindingHint (ids : List Nat) (rows : Bindings) (caller : List Nat)
+/-- The source annotation guides synthesis but never replaces actual bounds. -/
+def bindingHint (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (ann : Option PolyTy) : Except String (Option BoundsTy) := do
   match ann with
   | some σ =>
@@ -96,6 +97,20 @@ private def bindingHint (ids : List Nat) (rows : Bindings) (caller : List Nat)
         pure (some d.bounds)
       else pure none
   | none => pure none
+
+/-- Shared monomorphic let admission for universal RHS and program checking.
+    Unannotated lets must agree with the authoritative HM binder scheme; a
+    syntactically unannotated binding is not automatically monomorphic. -/
+def checkMonoBinding (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (Δ : List Constraint) (env : List Binding) (path : CorePath) (rhs : Expr)
+    (schemes : BinderSchemeMap) (ann : Option PolyTy) (actual : BoundsTy) :
+    Except String (PLift (InterpretedAnnotation.BindingOK ids rows Δ ann actual)) := do
+  if ann.isNone then
+    let fact ← BinderBridge.atSite schemes (.letIn path) actual
+      (env.map bindingHM ++ rhs.stripFound.tyFreeVars.map Ty.fvar)
+    unless fact.scheme.paramCount = 0 do
+      throw "bounds: generalized HM internal let unsupported in recursive RHS slice"
+  checkBinding ids rows caller Δ ann actual
 
 private inductive BranchContext where
   | list (lo hi : Count) (elem : BoundsTy)
@@ -311,12 +326,7 @@ def walk (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Const
   | .found hm (.letIn ann rhs body) =>
       let rhsHint ← bindingHint ids rows caller ann
       let actual ← walk ids rows caller Δ env (path ++ [.letRhs]) rhs schemes rhsHint
-      if ann.isNone then
-        let fact ← BinderBridge.atSite schemes (.letIn path) actual.bounds
-          (env.map bindingHM ++ rhs.stripFound.tyFreeVars.map Ty.fvar)
-        unless fact.scheme.paramCount = 0 do
-          throw "bounds: generalized HM internal let unsupported in recursive RHS slice"
-      let hp ← checkBinding ids rows caller Δ ann actual.bounds
+      let hp ← checkMonoBinding ids rows caller Δ env path rhs schemes ann actual.bounds
       let result ← walk ids rows caller Δ (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes expected
       finish ids rows caller Δ env (.found hm (.letIn ann rhs body)) path hm.eraseBounds result.bounds
         (by simpa only [Expr.stripFound] using Derives.letMono hp.down actual.derivation result.derivation)
