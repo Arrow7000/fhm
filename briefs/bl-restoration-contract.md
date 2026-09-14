@@ -2275,6 +2275,40 @@ No new files, placeholders, partial defs or axioms. HM/D2, Path R and production
 BL guards unchanged. Next is actual generalized body expression typing and the
 group-introduction rule that consumes these exports and ALL universal members.
 
+### Checkpoint 4as — actual generalized body checking and closed-group introduction
+
+The initial body slice now lives in the existing `RecursiveHMUniform` module.
+Its context deliberately distinguishes mono locals from generalized exits;
+recursive RHS assumptions still use the original FIXED-HM recursive context.
+`BodyDerives.letRec` consumes the ordered ALL-member universal family and an
+actual body derivation under precisely those members' exported interfaces.
+This is a checked static fragment, NOT the wider BL runtime progress/preservation
+or artifact-coherence theorem campaign.
+
+`checkBody` checks actual original `.found` body occurrences: literals/scalar
+operators, List origins, lambdas, mono lets, ordinary applications and direct
+origin-backed exported calls. Full HM/count proposals come from certified actual
+arguments; specialization, premises, domain inclusion, source local annotations,
+original HM shapes and caller count scope are independently validated. The
+existing exact-site mono-local metadata checker is shared, not duplicated.
+
+The same actual source export is called at Int then Char across a local binder;
+the result retains exact singleton length. Reports include ALL original RHSs,
+body nodes and group root, with executable exactly-once coverage checked in the
+regression. An HM-valid length-two local contract on a singleton rejects; an
+HM-valid vacuously polymorphic local let is explicitly guarded until universal
+local-let introduction is implemented. Matches, nested groups and later-origin
+deferred calls remain guarded rather than accepted through a legacy fallback.
+
+Full `lake build FHM FHMBounds fhm` passes (1805 jobs); the scratch HM audit is
+28 accepted / eight expected rejects / zero failures, boundary/whitespace pass.
+No new files, placeholders, partial defs or axioms. The executable body checker
+retains only the existing arithmetic solver trust boundary plus standard Lean
+axioms; the earlier universal specialization proofs remain solver-independent.
+HM/D2, Path R and production BL guards are unchanged. Next is a source-linked
+automatic closed-program entry point, then enclosing scopes/generalized locals,
+matches, full/deferred spines and product integration; no full-language claim.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
