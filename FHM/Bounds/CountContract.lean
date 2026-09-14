@@ -8,8 +8,9 @@ not enough. Count specialization precedes insertion of caller HM-slot bounds,
 and every instantiated premise must be discharged in the caller's context.
 
 This is a certified-use component, not a declaration synthesizer or a new
-recursive rule. The RHS judgement still supports only ground carried annotation
-demands. CLI/LSP integration and runtime bounds soundness remain separate work.
+recursive rule. `ScopedDeclaration` can supply certificates after checking
+symbolic source annotations and crossing the proved erased-RHS boundary.
+CLI/LSP integration and runtime bounds soundness remain separate work.
 -/
 
 namespace FHM.Bounds.CountContract

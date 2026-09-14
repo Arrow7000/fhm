@@ -104,6 +104,8 @@ roots = [
   "FHM.Bounds.CountTransportTests", # Nested universality, caller count collisions and finite-boundary proofs
   "FHM.Bounds.CountContract", # Checked count/HM uses require universal RHS certificates and discharged premises
   "FHM.Bounds.CountContractTests", # Certified implementations, caller collisions, scope and premise discharge
+  "FHM.Bounds.CountApplication", # RHS-certified contract calls require actual argument bounds and inclusion
+  "FHM.Bounds.CountApplicationTests", # Real declaration certificates, origin bounds and rejected contract calls
   "FHM.Bounds.CountAlgebra", # Finite composition of simultaneous source-count interpretations
   "FHM.Bounds.InterpretedAnnotation", # Scoped symbolic annotation demands without source rewriting
   "FHM.Bounds.ScopedTyping", # Interpreted annotation obligations, count transport and erased-typing bridge
