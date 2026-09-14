@@ -173,7 +173,7 @@ private def scalarParam (τ : Ty) : Except String BoundsTy :=
   | .bvar i => .ok (.bvar i)
   | _ => .error "bounds: unannotated non-scalar parameter unsupported in typed slice"
 
-private def chooseParam (Δ : List Constraint) (ann : Option Ty) (hm : Ty) :
+def chooseParam (Δ : List Constraint) (ann : Option Ty) (hm : Ty) :
     Except String (Σ β, PLift (ParamOK Δ ann β)) :=
   match ann with
   | none => do
@@ -184,7 +184,7 @@ private def chooseParam (Δ : List Constraint) (ann : Option Ty) (hm : Ty) :
       let hp ← checkAnnotation Δ τ β
       pure ⟨β, hp⟩
 
-private def checkBinding (Δ : List Constraint) (ann : Option PolyTy) (β : BoundsTy) :
+def checkBinding (Δ : List Constraint) (ann : Option PolyTy) (β : BoundsTy) :
     Except String (PLift (BindingOK Δ ann β)) :=
   match ann with
   | none => .ok ⟨True.intro⟩

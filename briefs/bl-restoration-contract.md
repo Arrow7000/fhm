@@ -494,3 +494,33 @@ Validation after 3n: the full HM/Bounds/editor/CLI build passes (1726 jobs), wit
 201 executable BL component/adapter regressions. Boundary and whitespace guards
 pass. The main typed traversal and CLI/LSP launch boundary remain unchanged;
 integrating these universal premises into a scheme-aware traversal is next.
+
+2026-09-14, checkpoint 3o: `SchemeWalk.walk` consumes final found artifacts and
+mandatory exact-site machine binder facts. Unannotated generalized lets use the
+mixed-environment universal RHS proof from 3n, rather than treating successful
+syntactic abstraction as permission to generalize. Monomorphic uses, supported
+annotations, literals, Nil/Cons, lambdas and applications retain proof-carrying
+semantic checks. Direct sole-slot polymorphic applications use the argument's
+certified bounds, preserving concrete list origins through identity calls.
+
+`SchemeFound.synthNodes` is an opt-in adapter joining this traversal to existing
+provenance with coverage/uniqueness guards. Its successful result carries a
+declarative scheme-aware derivation, root HM shape and count scope. These guards
+are not full formal artifact/report coherence. Constructor scaffolding retains
+explicit bounds-free reports. CLI/editor launch routes have not been switched.
+
+Fifteen executable regressions use actual HM inference artifacts, including
+Int/Char uses of one generalized binding, mixed and nested generalized RHSs,
+exact Nil/Cons lengths, shadowing, missing/duplicate binder facts, incorrect
+callee payloads, positive/negative nested List annotations and a surface
+inference/provenance join. Standalone polymorphic uses, polymorphic annotations,
+structural/multiple-slot polymorphic applications, count contracts/holes, fresh
+open List parameters, matches and recursive groups remain explicitly deferred.
+
+Validation after 3o: the full HM/Bounds/editor/CLI build passes (1729 jobs), with
+216 executable BL component/adapter regressions. The fresh scratch HM audit is
+28 accepted / eight expected rejections / zero failures. Boundary and whitespace
+guards pass. No new axioms, proof placeholders or partial definitions were added.
+The walk inherits only the established positive solver trust for inclusion;
+its derivation projection requires standard Lean axioms only. HM and Path R are
+unchanged. Structural origin-backed applications are the next component target.
