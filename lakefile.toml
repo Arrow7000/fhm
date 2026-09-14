@@ -111,6 +111,8 @@ roots = [
   "FHM.Bounds.CountContractTests", # Certified implementations, caller collisions, scope and premise discharge
   "FHM.Bounds.CountApplication", # RHS-certified contract calls require actual argument bounds and inclusion
   "FHM.Bounds.CountProposal", # Untrusted direct count proposals; no inversion or captured-coordinate guessing
+  "FHM.Bounds.HMCountScheme", # Closed HM/count templates and checked opaque group openings
+  "FHM.Bounds.HMCountSchemeTests", # Slot/capture/vacuous-forall and caller-count insertion regressions
   "FHM.Bounds.RecursiveContract", # Declared recursive count assumptions with one fixed HM monotype
   "FHM.Bounds.RecursiveTyping", # Simultaneous group rule requires universal RHS and annotation obligations
   "FHM.Bounds.RecursiveVariable", # Fixed-HM recursive assumption uses and origin-backed count calls

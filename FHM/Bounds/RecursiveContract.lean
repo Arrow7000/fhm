@@ -1,5 +1,4 @@
-import FHM.Bounds.ScopedAnnotation
-import FHM.Bounds.BinderBridge
+import FHM.Bounds.HMCountScheme
 
 /-! # Declared assumptions for recursive count-polymorphic calls
 
@@ -9,9 +8,10 @@ Only the declared count telescope may be instantiated, with scoped finite Nat
 arguments and independently discharged premises. Group acceptance must prove
 every implementation meets these assumptions before exporting any result.
 
-The initial decoder accepts monomorphic HM annotations only. Opening a genuinely
-polymorphic annotation at its group's fixed HM identities remains separate work;
-annotation quantifiers must never be reopened independently at recursive calls.
+The group decoder still accepts monomorphic HM annotations only. `decodeOpaque`
+certifies a genuinely polymorphic interface at explicit fixed HM identities, but
+its universal RHS/annotation/group introduction remains separate work. Annotation
+quantifiers must never be reopened independently at recursive calls.
 Exact annotation/found alignment is required in this slice; valid HM artifacts
 whose RHS remains more general than the carried signature explicitly defer.
 -/
@@ -25,19 +25,32 @@ structure Declared where
   shape : Synth.BoundsTy.toTy counts.body = hm
   lc : hm.IsLC
 
+/-- Retain the closed interface alongside its one fixed opaque opening. This
+    is still an assumption certificate, not a polymorphic RHS/group proof. -/
+structure Opaque (found : Ty) (typeCaptures : List Ty) where
+  template : HMCountScheme.Scheme
+  opening : HMCountScheme.Opening template found typeCaptures
+
+def Opaque.declared {found typeCaptures} (o : Opaque found typeCaptures) : Declared :=
+  ⟨found.eraseBounds, o.opening.counts, o.opening.wf, o.opening.shape, o.opening.lc⟩
+
+/-- Identities are supplied explicitly and checked against the fixed HM
+    artifact. This API never opens quantifiers independently at recursive uses. -/
+def decodeOpaque (annotation : PolyTy) (found : Ty) (ids quantified captures : List Nat)
+    (typeCaptures : List Ty) (premises : List Constraint := []) :
+    Except String (Opaque found typeCaptures) := do
+  let template ← HMCountScheme.decode annotation quantified captures premises
+  let opening ← HMCountScheme.openFixed template found ids typeCaptures
+  pure ⟨template, opening⟩
+
 /-- Decoding authorizes an assumption interface, NOT acceptance of an RHS or
     group. The source signature must agree with the actual fixed found type. -/
 def decode (annotation : PolyTy) (found : Ty) (quantified captures : List Nat)
     (premises : List Constraint := []) : Except String Declared := do
   unless annotation.paramCount = 0 do
     throw "bounds: fixed opening of polymorphic recursive annotation not yet supported"
-  let source ← ScopedAnnotation.contract quantified captures premises annotation.body
-  let shape ← match BinderBridge.equalTy annotation.body.eraseBounds found.eraseBounds with
-    | none => throw "bounds: recursive annotation needs specialization or disagrees with fixed HM monotype"
-    | some shape => pure shape
-  if hlc : found.eraseBounds.bvarsBelow 0 = true then
-    pure ⟨found.eraseBounds, source.scheme, source.wf,
-      source.shape.trans shape.down, (Ty.bvarsBelow_iff found.eraseBounds).mp hlc⟩
+  if found.eraseBounds.bvarsBelow 0 then
+    pure (← decodeOpaque annotation found [] quantified captures [] premises).declared
   else throw "bounds: recursive HM monotype contains an enclosing bound slot"
 
 structure Use (c : Declared) (Δ : List Constraint) (found : Ty) (caller : List Nat) where
@@ -66,6 +79,8 @@ def check (c : Declared) (Δ : List Constraint) (found : Ty) (args : List Count)
   pure ⟨args, inst, usable.down, fixed.down⟩
 
 #print axioms decode
+#print axioms decodeOpaque
+#print axioms Opaque.declared
 #print axioms Use.shape
 #print axioms check
 

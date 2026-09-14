@@ -1300,3 +1300,43 @@ need their proper opening/generalization interfaces. The main proof dependency
 remains capture-safe joint HM/count transport and sealed group-exit schemes,
 followed by complete program descent and production LSP integration. Runtime
 length soundness and formal artifact/report coherence remain separate claims.
+
+### Checkpoint 4p — closed HM/count templates and opaque interfaces
+
+`HMCountScheme` separates the declared HM slots, quantified counts and captured
+identities in one well-formed closed template. `openFixed` checks explicit opaque
+free HM identities against the actual fixed found monotype: exact arity, distinct
+slots, freshness for both declared free captures and the surrounding type
+interface, and local closure. It supports legitimate unused forall slots without
+imposing a guessed Unit argument. The opening preserves all source counts and
+has certified count-interface well-formedness and relational HM instantiation.
+
+External `check` takes explicit caller bounds arguments, checks their HM arity,
+local closure and count scope, instantiates finite caller count arguments and
+discharges declared premises. Counts are substituted before caller bounds are
+inserted at HM slots. The resulting certificate proves the exact found HM
+instance, caller scope and transport of semantic inclusions. It does not invent
+argument-origin evidence or prove an RHS.
+
+`RecursiveContract.decodeOpaque` retains the closed template and its fixed
+opening; the derived `Declared` uses the existing count-only recursive-variable
+rule. The monomorphic group decoder delegates to the same interface machinery,
+but its polymorphic guard stays until the source annotation/universal RHS/group
+proofs are extended together. Interface decoding is not group acceptance.
+
+Twenty-six new regressions cover repeated/distinct/aliased HM slots, declared and
+nested captures, separate type/count namespaces, vacuous quantifiers, fixed
+recursive HM calls, independent external Int/Char instances, caller bound-slot
+and count escapes, finite Nat witnesses, failed premises and a caller count ID
+overlapping the callee telescope inside an inserted nested List type.
+
+Validation: all new and existing contract regressions pass; full
+HM/Bounds/editor/CLI build passes (1768 jobs), including all 89 parsed-source
+regressions. Boundary/whitespace guards pass and scratch HM audit remains
+28 accepted / eight expected rejections / zero failures. Pure template/opening
+proofs add no oracle trust; checked premise discharge retains the existing
+positive-verdict axiom only. No new axioms, placeholders or partial definitions;
+HM/D2, Path R and production launch unchanged. Next is a bounds-preserving
+opaque close/open bridge into genuine RHS universality, followed by the joint
+recursive-group generalization/annotation judgement rather than enabling a
+decoder guard in isolation.
