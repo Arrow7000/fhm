@@ -555,3 +555,27 @@ BL component/adapter regressions. Fresh scratch HM audit: 28 accepted / eight
 expected rejections / zero failures. Boundary and whitespace checks pass. No new
 axioms, placeholders or partial definitions; inclusion retains the established
 positive solver trust. HM metatheory and Path R are unchanged.
+
+2026-09-14, checkpoint 3q: `CountTransport.transport` proves simultaneous finite
+selected count substitution for the full mixed-scheme fragment judgement,
+including nested polymorphic lets. Path conditions, bounds environments and
+existing use arguments are transported together. At a universal RHS, fresh HM
+placeholders are transported first and arbitrary caller bounds inserted only
+afterwards. Caller counts overlapping quantified/captured identities are not
+accidentally rewritten. HM scheme metadata remains exactly unchanged.
+
+`assuming` transports entire mixed derivations when caller assumptions imply
+the old premises; instantiated requirements are never simply asserted as facts.
+Scope-based fixed-environment lemmas keep explicit captured counts untouched.
+Ground annotation demands are proved fixed under selected substitution. This
+does not yet change the ground-only annotation judgement or enable quantified
+declaration checking; it supplies the safe transport boundary for certified
+count-contract uses. Finiteness is essential for Nat assignment semantics, with
+an explicit infinite-replacement counterexample in the formal regressions.
+
+Eight executable regressions and formal collision/nested-let/annotation proofs
+pass. Full HM/Bounds/editor/CLI build: 1733 jobs, 237 BL regressions. Fresh scratch
+HM audit: 28 accepted / eight expected rejections / zero failures. Boundary and
+whitespace checks pass. New proof targets use standard Lean axioms only, with
+no positive-solver dependency, new axioms, placeholders or partial definitions.
+HM/Path R and CLI/LSP routes are unchanged.
