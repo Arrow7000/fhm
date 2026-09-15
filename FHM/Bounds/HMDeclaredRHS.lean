@@ -41,6 +41,21 @@ structure Checked {output site d quantified captures premises typeCaptures}
     (env.map (mapBinding c.interpretation c.interpretationLC))
   inclusion : SemanticSub premises located.typed.actual c.opening.bounds
 
+/-- Finish declared-RHS acceptance from an exact located traversal.  Keeping
+    this constructor separate from the default walker lets a structurally
+    recursive deep driver supply the same proof after certifying nested groups;
+    source reconciliation and semantic inclusion remain unchanged. -/
+def ofLocated {output site d quantified captures premises typeCaptures}
+    (c : @HMDeclaredReconciliation.Checked output site d quantified captures premises typeCaptures)
+    (env : List Binding)
+    (located : RecursiveHMWalk.LocatedResult d.node c.interpretation
+      (slotsFor site c.signatureIds) (quantified ++ captures) []
+      (quantified ++ captures) premises
+      (env.map (mapBinding c.interpretation c.interpretationLC))) :
+    Except String (Checked c env) := do
+  let inclusion ← Typed.subtype premises located.typed.actual c.opening.bounds
+  pure ⟨located, inclusion.down⟩
+
 /-- Check the ORIGINAL source-site RHS, not an identity-expanded reconstruction.
     The signature is guidance; actual result inclusion is independently checked. -/
 def check {output site d quantified captures premises typeCaptures}
@@ -51,8 +66,7 @@ def check {output site d quantified captures premises typeCaptures}
     (quantified ++ captures) [] (quantified ++ captures) premises
     (env.map (mapBinding c.interpretation c.interpretationLC)) schemes (some c.opening.bounds)
     (ctors := ctors)
-  let inclusion ← Typed.subtype premises located.typed.actual c.opening.bounds
-  pure ⟨located, inclusion.down⟩
+  ofLocated c env located
 
 /-- The common environment's CLOSED recursive captures must be represented in
     the declaration's protected interface. Actual fixed HM vectors still map
@@ -141,6 +155,7 @@ theorem certifySource_runtimeReady {output site d quantified captures premises t
     (fun _ named => c.sourceIdentity named) ready
 
 #print axioms check
+#print axioms ofLocated
 #print axioms prepare
 #print axioms certify
 #print axioms certifySource

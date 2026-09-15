@@ -3225,6 +3225,22 @@ mutual SCC inside a count-universal outer RHS, its runtime theorem, and rejectio
 when either member lacks its explicit contract. Generalized/polymorphic exits
 from such a nested SCC remain the next metatheory boundary.
 
+### Checkpoint 4bq — group assembly is open over exact RHS traversal
+
+The generalized-group checker no longer hard-wires one executable RHS walk into
+its proof assembly. `HMDeclaredRHS.ofLocated` finishes a declaration from an
+already located, reconciled source proof; `HMDeclaredGroup.checkWith` and
+`HMDeclaredCoordinates.checkWith` thread such a checker through every member.
+Their existing `check` entry points are definitionally the old behavior and use
+`RecursiveHMWalk.checkLocated` by default.
+
+This is an architectural seam, not a new acceptance rule. Coordinate agreement,
+the common fixed recursive environment, protected captures, count freshness,
+semantic inclusion, ALL-member ordering and generalized exports are still built
+by the same proof objects. The seam permits the next structurally recursive
+driver to certify a member's nested groups first and return the identical
+located certificate, avoiding either a module-import cycle or a copied walker.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

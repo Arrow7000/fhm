@@ -102,18 +102,32 @@ structure Result (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
   vectors : List (List Nat)
   checked : HMDeclaredGroup.Checked output metadata path vectors captures premises outerTypes outerEnv
 
+/-- Automatic proposals followed by group assembly with a caller-supplied exact
+    RHS checker. Coordinate inference has no authority over the callback's
+    typing proof; the result still passes through `HMDeclaredGroup.checkWith`. -/
+def checkWith (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
+    (captures : List Nat := []) (premises : List Constraint := []) (outerTypes : List Ty := [])
+    (outerEnv : List Binding := []) (schemes : BinderSchemeMap := [])
+    (checkRHS : ∀ {memberIndex : Nat} {typeCaptures : List Ty},
+      (p : HMDeclaredGroup.Member output metadata path memberIndex captures premises typeCaptures) →
+      (env : List Binding) → Except String (HMDeclaredRHS.Checked p.reconciled env)) :
+    Except String (Result output metadata path captures premises outerTypes outerEnv) := do
+  let vectors ← propose output metadata path captures premises outerTypes outerEnv schemes
+  let checked ← HMDeclaredGroup.checkWith output metadata path vectors captures premises
+    outerTypes outerEnv checkRHS
+  pure ⟨vectors, checked⟩
+
 /-- Automatic proposals are accepted ONLY through the same proof-carrying
     original-member checker as explicitly supplied vectors. No legacy fallback. -/
 def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
     (captures : List Nat := []) (premises : List Constraint := []) (outerTypes : List Ty := [])
     (outerEnv : List Binding := []) (schemes : BinderSchemeMap := []) (ctors : CtorEnv := []) :
-    Except String (Result output metadata path captures premises outerTypes outerEnv) := do
-  let vectors ← propose output metadata path captures premises outerTypes outerEnv schemes
-  let checked ← HMDeclaredGroup.check output metadata path vectors captures premises outerTypes outerEnv
-    schemes ctors
-  pure ⟨vectors, checked⟩
+    Except String (Result output metadata path captures premises outerTypes outerEnv) :=
+  checkWith output metadata path captures premises outerTypes outerEnv schemes
+    (fun p env => HMDeclaredRHS.check p.reconciled env schemes ctors)
 
 #print axioms propose
+#print axioms checkWith
 #print axioms check
 
 end FHM.Bounds.HMDeclaredCoordinates
