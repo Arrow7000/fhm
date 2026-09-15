@@ -187,6 +187,60 @@ theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
 
 #print axioms ScopedDerives.sourceFree
 
+private theorem letMono_sourceSlots {types slots slots' ids rows Δ ann actual rhs body n}
+    (annotation : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann actual)
+    (bounded : (Expr.letIn ann rhs body).TyBvarBounded n)
+    (agree : ∀ i < n, slots i = slots' i) :
+    ScopedHMAnnotation.BindingOK types slots' ids rows Δ ann actual ∧
+      rhs.TyBvarBounded n ∧ body.TyBvarBounded n := by
+  cases ann with
+  | none => exact ⟨trivial, bounded.1, bounded.2⟩
+  | some σ =>
+      refine ⟨ScopedHMAnnotation.BindingOK.congrSlots annotation
+        (fun _ equality => by cases equality; exact bounded.1) agree, ?_, bounded.2.2⟩
+      simpa [annotation.1] using bounded.2.1
+
+/-- Changing the lexical reader outside the slots scoped over the source term
+    preserves its exact RHS derivation. Full types inserted by the reader stay
+    opaque; only source annotations are subject to the slot bound. -/
+theorem ScopedDerives.sourceSlots {types slots slots' ids rows Δ env e β n}
+    (h : ScopedDerives types slots ids rows Δ env e β)
+    (bounded : e.TyBvarBounded n)
+    (agree : ∀ i < n, slots i = slots' i) :
+    ScopedDerives types slots' ids rows Δ env e β := by
+  induction h with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil => exact .nil
+  | boolCtor ctor => exact .boolCtor ctor
+  | varMono lookup => exact .varMono lookup
+  | varRecursive lookup used => exact .varRecursive lookup used
+  | cons _ _ sub ihh iht =>
+      simp only [Expr.TyBvarBounded] at bounded
+      exact .cons (ihh bounded.1.2) (iht bounded.2) sub
+  | app _ _ sub ihf iha =>
+      exact .app (ihf bounded.1) (iha bounded.2) sub
+  | lambda annotation _ ih =>
+      exact .lambda (ScopedHMAnnotation.ParamOK.congrSlots annotation bounded.1 agree)
+        (ih bounded.2)
+  | letMono annotation _ _ ihr ihb =>
+      have moved := letMono_sourceSlots annotation bounded agree
+      exact .letMono moved.1 (ihr moved.2.1) (ihb moved.2.2)
+  | matchList _ coverage patterns bodies subs ihs ihb =>
+      refine .matchList (ihs bounded.1) coverage patterns ?_ subs
+      intro index br atIndex
+      exact ihb index br atIndex
+        (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
+          (List.mem_of_getElem? atIndex))
+  | matchBool _ coverage patterns bodies subs ihs ihb =>
+      refine .matchBool (ihs bounded.1) coverage patterns ?_ subs
+      intro index br atIndex
+      exact ihb index br atIndex
+        (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
+          (List.mem_of_getElem? atIndex))
+
+#print axioms ScopedDerives.sourceSlots
+
 /-- Runtime realization of an assumption. Recursive entries promise actual
     behaviour at every usable count instance, not just the fixed HM skeleton.
     Raw instantiated premises must hold at the actual count assignment. The
@@ -809,6 +863,58 @@ theorem ScopedDerives.RuntimeReady.sourceFree {types types' slots : Nat → Boun
         (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
 
 #print axioms ScopedDerives.RuntimeReady.sourceFree
+
+theorem ScopedDerives.RuntimeReady.sourceSlots {types slots slots' : Nat → BoundsTy}
+    {ids rows Δ env e β n} {h : ScopedDerives types slots ids rows Δ env e β}
+    (ready : ScopedDerives.RuntimeReady h) (agree : ∀ i < n, slots i = slots' i) :
+    ∀ bounded : e.TyBvarBounded n,
+      ScopedDerives.RuntimeReady (h.sourceSlots bounded agree) := by
+  induction ready with
+  | literal => intro _; exact .literal
+  | primBinOp => intro _; exact .primBinOp
+  | nil supported => intro _; exact .nil supported
+  | boolCtor ctor => intro _; exact .boolCtor ctor
+  | varMono lookup supported => intro _; exact .varMono lookup supported
+  | varRecursive lookup used supported => intro _; exact .varRecursive lookup used supported
+  | cons sub _ _ ihh iht =>
+      intro bounded
+      simp only [Expr.TyBvarBounded] at bounded
+      exact .cons sub (ihh bounded.1.2) (iht bounded.2)
+  | app sub _ _ ihf iha =>
+      intro bounded
+      exact .app sub (ihf bounded.1) (iha bounded.2)
+  | lambda annotation supported _ ih =>
+      intro bounded
+      exact .lambda (ScopedHMAnnotation.ParamOK.congrSlots annotation bounded.1 agree)
+        supported (ih bounded.2)
+  | letMono annotation _ _ ihr ihb =>
+      intro bounded
+      have moved := letMono_sourceSlots annotation bounded agree
+      exact .letMono moved.1 (ihr moved.2.1) (ihb moved.2.2)
+  | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
+      intro bounded
+      refine .matchList coverage patterns
+        (fun index br atIndex => (bodies index br atIndex).sourceSlots
+          (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
+            (List.mem_of_getElem? atIndex)) agree)
+        subs (ihs bounded.1) ?_ supported
+      intro index br atIndex
+      exact ihb index br atIndex
+        (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
+          (List.mem_of_getElem? atIndex))
+  | matchBool coverage patterns bodies subs _ _ supported ihs ihb =>
+      intro bounded
+      refine .matchBool coverage patterns
+        (fun index br atIndex => (bodies index br atIndex).sourceSlots
+          (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
+            (List.mem_of_getElem? atIndex)) agree)
+        subs (ihs bounded.1) ?_ supported
+      intro index br atIndex
+      exact ihb index br atIndex
+        (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
+          (List.mem_of_getElem? atIndex))
+
+#print axioms ScopedDerives.RuntimeReady.sourceSlots
 
 def Contract.mapTypes (c : Contract) (f : Nat → BoundsTy)
     (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) : Contract :=

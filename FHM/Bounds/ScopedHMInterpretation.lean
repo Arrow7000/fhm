@@ -59,6 +59,48 @@ termination_by sizeOf as
 end
 
 mutual
+/-- Lexical readers agree on a source whose every bound slot lies below the
+    checked limit. Inserted full types are opaque and are never reread. -/
+theorem congrSlots {free slots slots' : Nat → BoundsTy} {β n}
+    (bounded : ContainsBvarsUpTo n (Synth.BoundsTy.toTy β))
+    (agree : ∀ i < n, slots i = slots' i) :
+    read free slots β = read free slots' β := by
+  cases β with
+  | prim | fvar => rfl
+  | bvar i =>
+      simp only [Synth.BoundsTy.toTy] at bounded
+      cases bounded with | bvar small => exact agree i small
+  | arrow a b =>
+      simp only [Synth.BoundsTy.toTy] at bounded
+      cases bounded with
+      | arrow sa sb => simp only [read, congrSlots sa agree, congrSlots sb agree]
+  | list lo hi a =>
+      simp only [Synth.BoundsTy.toTy, listTy] at bounded
+      cases bounded with
+      | customTy all =>
+          exact congrArg (BoundsTy.list lo hi)
+            (congrSlots (all _ (by simp)) agree)
+  | custom name as =>
+      simp only [Synth.BoundsTy.toTy] at bounded
+      cases bounded with
+      | customTy all => exact congrArg (BoundsTy.custom name) (list_congrSlots all agree)
+termination_by sizeOf β
+
+private theorem list_congrSlots {free slots slots' : Nat → BoundsTy} {as n}
+    (bounded : ∀ τ ∈ as.map Synth.BoundsTy.toTy, ContainsBvarsUpTo n τ)
+    (agree : ∀ i < n, slots i = slots' i) :
+    readList free slots as = readList free slots' as := by
+  cases as with
+  | nil => rfl
+  | cons a as =>
+      simp only [readList]
+      congr 1
+      · exact congrSlots (bounded _ (by simp)) agree
+      · exact list_congrSlots (fun τ member => bounded τ (by simp [member])) agree
+termination_by sizeOf as
+end
+
+mutual
 def ty (free slots : Nat → BoundsTy) : Ty → Ty
   | .prim p => .prim p
   | .fvar i => Synth.BoundsTy.toTy (free i)
@@ -219,6 +261,7 @@ end
 
 #print axioms identity_slots
 #print axioms congrFree
+#print axioms congrSlots
 #print axioms eraseFreeVars
 #print axioms map_types
 #print axioms map_counts

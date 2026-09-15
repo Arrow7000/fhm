@@ -58,6 +58,22 @@ def Certified.sourceFree {s found captures env rhs sourceTypes sourceSlots sourc
   typeFresh := cert.typeFresh
   countFresh := cert.countFresh
 
+/-- Reconcile lexical source readers on a term whose carried annotations are
+    known to use only the checked prefix of slots. -/
+def Certified.sourceSlots {s found captures env rhs sourceTypes sourceSlots sourceSlots' n}
+    (cert : Certified s found captures env rhs sourceTypes sourceSlots)
+    (bounded : rhs.TyBvarBounded n)
+    (agree : ∀ i < n, sourceSlots i = sourceSlots' i) :
+    Certified s found captures env rhs sourceTypes sourceSlots' where
+  opening := cert.opening
+  actual := cert.actual
+  shape := cert.shape
+  actualScope := cert.actualScope
+  typing := cert.typing.sourceSlots bounded agree
+  inclusion := cert.inclusion
+  typeFresh := cert.typeFresh
+  countFresh := cert.countFresh
+
 theorem Certified.sourceFree_runtimeReady {s found captures env rhs}
     {sourceTypes sourceSlots sourceTypes' : Nat → BoundsTy}
     (cert : Certified s found captures env rhs sourceTypes sourceSlots)
@@ -65,8 +81,18 @@ theorem Certified.sourceFree_runtimeReady {s found captures env rhs}
     (ready : ScopedDerives.RuntimeReady cert.typing) :
     ScopedDerives.RuntimeReady (cert.sourceFree agree).typing := ready.sourceFree agree
 
+theorem Certified.sourceSlots_runtimeReady {s found captures env rhs}
+    {sourceTypes sourceSlots sourceSlots' : Nat → BoundsTy} {n}
+    (cert : Certified s found captures env rhs sourceTypes sourceSlots)
+    (bounded : rhs.TyBvarBounded n) (agree : ∀ i < n, sourceSlots i = sourceSlots' i)
+    (ready : ScopedDerives.RuntimeReady cert.typing) :
+    ScopedDerives.RuntimeReady (cert.sourceSlots bounded agree).typing :=
+  ready.sourceSlots agree bounded
+
 #print axioms Certified.sourceFree
+#print axioms Certified.sourceSlots
 #print axioms Certified.sourceFree_runtimeReady
+#print axioms Certified.sourceSlots_runtimeReady
 
 /-- Complete caller vectors retain local closure at every total vector slot. -/
 theorem argumentsLC (types : List BoundsTy)
