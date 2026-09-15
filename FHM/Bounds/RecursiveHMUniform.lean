@@ -779,6 +779,107 @@ def BodyEnvAt.tieMono {bound free σ env demand rhs ann}
               show recursive.length = 1 by
                 simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss]] using meaning
 
+/-- Simultaneously tie an arbitrary body-environment prefix while retaining
+    its already realized outer lexical environment.  This is the generalized
+    body counterpart of `EnvAt.tieGroupCaptured`; the caller still has to
+    prove the meaning of every member under the complete cyclic environment. -/
+def BodyEnvAt.tieGroupCaptured {bound free σ innerEnv outerEnv}
+    (annotations : List (Option PolyTy)) (rhss : List Expr)
+    (arity : rhss.length = innerEnv.length)
+    (scope : ∀ rhs ∈ rhss, rhs.varsBelow (rhss.length + outerEnv.length) = true)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (rhsSafe : ∀ budget (e : BodyEnvAt bound free σ budget (innerEnv ++ outerEnv))
+      i (inside : i < innerEnv.length),
+      BodyBindingAt bound free σ budget innerEnv[i]
+        (rhss[i]'(by rw [arity]; exact inside) |>.substN 0 e.terms)) :
+    ∀ budget (outer : BodyEnvAt bound free σ budget outerEnv),
+      { e : BodyEnvAt bound free σ budget (innerEnv ++ outerEnv) //
+        e.terms = Runtime.recursiveTerms annotations (closeOuterRhss rhss outer.terms) ++
+          outer.terms }
+  | 0, outer => by
+      let closedRhss := closeOuterRhss rhss outer.terms
+      let recursive := Runtime.recursiveTerms annotations closedRhss
+      have closedScope : ∀ source ∈ closedRhss,
+          source.varsBelow rhss.length = true := by
+        intro source member
+        obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
+        apply Runtime.closing_scoped outer.terms outer.closed original rhss.length
+        rw [outer.arity]
+        exact scope original originalMember
+      have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true :=
+        Runtime.recursiveTerms_closed (by
+          simpa only [closedRhss, closeOuterRhss_length] using closedScope)
+      refine ⟨{ terms := recursive ++ outer.terms
+                arity := ?_
+                closed := ?_
+                denotes := fun i inside => BodyBindingAt.zero bound free σ _ _ }, rfl⟩
+      · simp only [List.length_append, recursive, Runtime.recursiveTerms, List.length_map,
+          closedRhss, closeOuterRhss_length, outer.arity, arity]
+      · intro term member
+        exact (List.mem_append.mp member).elim (recursiveClosed term) (outer.closed term)
+  | budget + 1, outer => by
+      let previousOuter := outer.down hb hf (by omega : budget ≤ budget + 1)
+      let previous := BodyEnvAt.tieGroupCaptured annotations rhss arity scope hb hf rhsSafe
+        budget previousOuter
+      let closedRhss := closeOuterRhss rhss outer.terms
+      let recursive := Runtime.recursiveTerms annotations closedRhss
+      have closedScope : ∀ source ∈ closedRhss,
+          source.varsBelow rhss.length = true := by
+        intro source member
+        obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
+        apply Runtime.closing_scoped outer.terms outer.closed original rhss.length
+        rw [outer.arity]
+        exact scope original originalMember
+      have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true :=
+        Runtime.recursiveTerms_closed (by
+          simpa only [closedRhss, closeOuterRhss_length] using closedScope)
+      refine ⟨{ terms := recursive ++ outer.terms
+                arity := ?_
+                closed := ?_
+                denotes := ?_ }, rfl⟩
+      · simp only [List.length_append, recursive, Runtime.recursiveTerms, List.length_map,
+          closedRhss, closeOuterRhss_length, outer.arity, arity]
+      · intro term member
+        exact (List.mem_append.mp member).elim (recursiveClosed term) (outer.closed term)
+      · intro i inside
+        by_cases inner : i < innerEnv.length
+        · have rhsInside : i < rhss.length := by rw [arity]; exact inner
+          have safe := rhsSafe budget previous.val i inner
+          have previousTerms : previousOuter.terms = outer.terms := rfl
+          rw [previous.property, previousTerms] at safe
+          have composed := Runtime.closing_compose outer.terms recursive outer.closed
+            recursiveClosed (rhss[i]'rhsInside) 0
+          have recursiveLength : recursive.length = rhss.length := by
+            simp only [recursive, Runtime.recursiveTerms, List.length_map,
+              closedRhss, closeOuterRhss_length]
+          rw [Nat.zero_add, recursiveLength] at composed
+          rw [← composed] at safe
+          have closedInside : i < closedRhss.length := by
+            rw [closeOuterRhss_length]
+            exact rhsInside
+          have recursiveInside : i < recursive.length := by rw [recursiveLength]; exact rhsInside
+          have rhsEntry : closedRhss[i]'closedInside =
+              (rhss[i]'rhsInside).substN rhss.length outer.terms := by
+            simp only [closedRhss, closeOuterRhss, List.getElem_map]
+          have recursiveEntry : recursive[i]'recursiveInside =
+              .letRec annotations closedRhss (closedRhss[i]'closedInside) := by
+            simp only [recursive, Runtime.recursiveTerms, List.getElem_map]
+          rw [List.getElem_append_left inner, List.getElem_append_left recursiveInside]
+          rw [recursiveEntry, rhsEntry]
+          exact BodyBindingAt.prepend SmallStep.Step.letRecUnfold safe
+        · have outerInside : i - innerEnv.length < outerEnv.length := by
+            simp only [List.length_append] at inside
+            omega
+          have meaning := outer.denotes (i - innerEnv.length) outerInside
+          have recursiveLength : recursive.length = innerEnv.length := by
+            simp only [recursive, Runtime.recursiveTerms, List.length_map,
+              closedRhss, closeOuterRhss_length, arity]
+          have envPosition : innerEnv.length ≤ i := by omega
+          have recursivePosition : recursive.length ≤ i := by rw [recursiveLength]; exact envPosition
+          rw [List.getElem_append_right envPosition,
+            List.getElem_append_right recursivePosition]
+          simpa only [recursiveLength] using meaning
+
 theorem BodyEnvAt.varMono {bound free σ budget env i β}
     (e : BodyEnvAt bound free σ budget env) (lookup : env[i]? = some (.mono β)) :
     Runtime.TermAt bound free σ budget β ((Expr.var i).substN 0 e.terms) := by
@@ -1657,6 +1758,22 @@ inductive ScopedBodyDerives :
       SemanticSub Δ actual demand →
       ScopedBodyDerives types slots ids rows Δ (.mono demand :: env) body result →
       ScopedBodyDerives types slots ids rows Δ env (.letRec [ann] [rhs] body) result
+  | letRecMonoGroup {env annotations rhss body result} (demands : List BoundsTy)
+      {actuals : Nat → BoundsTy}
+      (annotationCount : annotations.length = rhss.length)
+      (demandCount : demands.length = rhss.length)
+      (annotationsOK : ∀ i (inside : i < rhss.length),
+        ScopedHMAnnotation.BindingOK types slots ids rows Δ
+          (annotations[i]'(by omega)) (demands[i]'(by omega)))
+      (rhssTyping : ∀ i (inside : i < rhss.length),
+        ScopedBodyDerives types slots ids rows Δ
+          (demands.map BodyBinding.mono ++ env) rhss[i] (actuals i))
+      (inclusions : ∀ i (inside : i < rhss.length),
+        SemanticSub Δ (actuals i) (demands[i]'(by omega)))
+      (bodyTyping : ScopedBodyDerives types slots ids rows Δ
+        (demands.map BodyBinding.mono ++ env) body result) :
+      ScopedBodyDerives types slots ids rows Δ env
+        (.letRec annotations rhss body) result
   | letPinned {env annotation rhs body actual result}
       (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ annotation.body actual) :
       annotation.paramCount = 0 →
@@ -1733,7 +1850,8 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | ctor | cons | consPartial | pair | pairPartial |
       varMono | varExported | app | lambda |
-      letMono | letRecMono | letPinned | letRecPinnedMono | letRecInferredMono | letExported | letRecExported |
+      letMono | letRecMono | letRecMonoGroup | letPinned | letRecPinnedMono | letRecInferredMono |
+          letExported | letRecExported |
           match_ | letRec =>
         intro p source; cases source
 
@@ -1816,6 +1934,13 @@ theorem rhsToBody {types slots ids rows Δ env e β}
   | letRecMono annotation _ sub _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
         ScopedBodyDerives.letRecMono annotation ihr sub ihb
+  | letRecMonoGroup demands annotationCount demandCount annotationsOK rhssTyping inclusions
+      bodyTyping ihRhss ihBody =>
+      refine .letRecMonoGroup demands annotationCount demandCount annotationsOK ?_ inclusions ?_
+      · intro i inside
+        simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding] using
+          ihRhss i inside
+      · simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding] using ihBody
   | matchList _ coverage patterns bodies subs ihs ihb =>
       refine .match_ (ctx := .list _ _ _) ihs coverage patterns ?_ subs
       intro i br atIndex
@@ -1882,6 +2007,15 @@ theorem ordinaryRhsToBody {types slots ids rows Δ env e β}
   | letRecMono annotation _ sub _ ihr ihb =>
       intro ordinary
       exact .letRecMono annotation (ihr ordinary.consMono) sub (ihb ordinary.consMono)
+  | letRecMonoGroup demands annotationCount demandCount annotationsOK rhssTyping inclusions
+      bodyTyping ihRhss ihBody =>
+      intro ordinary
+      refine .letRecMonoGroup demands annotationCount demandCount annotationsOK ?_ inclusions ?_
+      · intro i inside
+        simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding] using
+          ihRhss i inside (ordinary.monos demands)
+      · simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding] using
+          ihBody (ordinary.monos demands)
   | matchList _ coverage patterns bodies subs ihs ihb =>
       intro ordinary
       refine .match_ (ctx := .list _ _ _) (ihs ordinary) coverage patterns ?_ subs
@@ -1980,6 +2114,14 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
   | letRecMono annotation _ sub _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letRecMono annotation ihr sub ihb
+  | letRecMonoGroup demands annotationCount demandCount annotationsOK rhssTyping inclusions
+      bodyTyping ihRhss ihBody =>
+      refine .letRecMonoGroup demands annotationCount demandCount annotationsOK ?_ inclusions ?_
+      · intro i inside
+        simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+          List.append_assoc] using ihRhss i inside
+      · simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+          List.append_assoc] using ihBody
   | matchList _ coverage patterns bodies subs ihs ihb =>
       refine .match_ (ctx := .list _ _ _) ihs coverage patterns ?_ subs
       intro i br atIndex
@@ -2054,6 +2196,14 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letRecMono annotation (ihr ordinary.consMono) sub
           (ihb ordinary.consMono)
+  | letRecMonoGroup demands annotationCount demandCount annotationsOK rhssTyping inclusions
+      bodyTyping ihRhss ihBody =>
+      refine .letRecMonoGroup demands annotationCount demandCount annotationsOK ?_ inclusions ?_
+      · intro i inside
+        simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+          List.append_assoc] using ihRhss i inside (ordinary.monos demands)
+      · simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+          List.append_assoc] using ihBody (ordinary.monos demands)
   | matchList _ coverage patterns bodies subs ihs ihb =>
       refine .match_ (ctx := .list _ _ _) (ihs ordinary) coverage patterns ?_ subs
       intro i br atIndex
@@ -2158,6 +2308,13 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
   | letRecMono obligation _ sub _ ihr ihb =>
       exact .letRecMono (binding_assuming obligation hp) (ihr hp)
         (sub.assuming hp) (ihb hp)
+  | letRecMonoGroup demands annotationCount demandCount annotationsOK rhssTyping inclusions
+      bodyTyping ihRhss ihBody =>
+      exact .letRecMonoGroup demands annotationCount demandCount
+        (fun i inside => binding_assuming (annotationsOK i inside) hp)
+        (fun i inside => ihRhss i inside hp)
+        (fun i inside => (inclusions i inside).assuming hp)
+        (ihBody hp)
   | letPinned pinned mono _ _ ihr ihb =>
       exact .letPinned (pinned.assuming hp) mono (ihr hp) (ihb hp)
   | letRecPinnedMono pinned mono rhs _ ihbody =>
@@ -2232,6 +2389,16 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
         Bool.and_true, Bool.and_eq_true]
       exact ⟨by simpa only [List.length_cons] using ihr,
         by simpa only [List.length_cons] using ihb⟩
+  | letRecMonoGroup demands annotationCount demandCount _ _ _ _ ihRhss ihBody =>
+      simp only [Expr.varsBelow, Bool.and_eq_true]
+      refine ⟨RecGroupClosed.varsBelow_of_forall ?_, ?_⟩
+      · intro rhs member
+        obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
+        obtain ⟨inside, entry⟩ := List.getElem?_eq_some_iff.mp atIndex
+        have rhsScope := ihRhss i inside
+        rw [entry] at rhsScope
+        simpa [List.length_append, List.length_map, demandCount, Nat.add_comm] using rhsScope
+      · simpa [List.length_append, List.length_map, demandCount, Nat.add_comm] using ihBody
   | letPinned _ _ _ _ ihr ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       exact ⟨ihr, by simpa only [List.length_cons] using ihb⟩
@@ -2422,6 +2589,25 @@ inductive RuntimeReady :
       {hbody : ScopedBodyDerives types slots ids rows Δ (.mono demand :: env) body result} :
       RuntimeReady hrhs → Runtime.Supported demand → RuntimeReady hbody →
       RuntimeReady (.letRecMono annOK hrhs sub hbody)
+  | letRecMonoGroup (annotations : List (Option PolyTy)) (rhss : List Expr)
+      (body : Expr) (demands : List BoundsTy) {result : BoundsTy}
+      {actuals : Nat → BoundsTy}
+      {annotationCount : annotations.length = rhss.length}
+      {demandCount : demands.length = rhss.length}
+      {annotationsOK : ∀ i (inside : i < rhss.length),
+        ScopedHMAnnotation.BindingOK types slots ids rows Δ
+          (annotations[i]'(by omega)) (demands[i]'(by omega))}
+      {rhssTyping : ∀ i (inside : i < rhss.length),
+        ScopedBodyDerives types slots ids rows Δ
+          (demands.map BodyBinding.mono ++ env) rhss[i] (actuals i)}
+      {inclusions : ∀ i (inside : i < rhss.length),
+        SemanticSub Δ (actuals i) (demands[i]'(by omega))}
+      {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+        (demands.map BodyBinding.mono ++ env) body result} :
+      (∀ i inside, RuntimeReady (rhssTyping i inside)) →
+      (∀ demand ∈ demands, Runtime.Supported demand) → RuntimeReady bodyTyping →
+      RuntimeReady (.letRecMonoGroup demands annotationCount demandCount
+        annotationsOK rhssTyping inclusions bodyTyping)
   | letPinned {annotation : PolyTy} {actual : BoundsTy}
       (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ annotation.body actual)
       (mono : annotation.paramCount = 0)
@@ -2513,6 +2699,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | lambda _ param _ result => exact .arrow param result
   | letMono _ _ _ _ body => exact body
   | letRecMono _ _ _ _ _ _ body => exact body
+  | letRecMonoGroup _ _ _ _ _ _ _ _ bodySupport => exact bodySupport
   | letPinned _ _ _ _ _ _ body => exact body
   | letRecPinnedMono _ _ _ _ _ _ body => exact body
   | letRecInferredMono _ _ _ _ body => exact body
@@ -2648,6 +2835,72 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
           change Runtime.TermAt bound free σ (budget + 1) result
             (.letRec [ann] closedRhss (body.substN 1 previous.terms))
+          exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
+  | letRecMonoGroup annotations rhss body demands rhssReady demandsSupported bodyReady
+      ihRhss ihBody =>
+      rename_i Δ' env' result actuals annotationCount demandCount annotationsOK
+        rhssTyping inclusions bodyTyping
+      intro observation premises e
+      cases observation with
+      | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+      | succ budget =>
+          let previous := e.down hb hf (by omega : budget ≤ budget + 1)
+          let innerEnv := demands.map BodyBinding.mono
+          have arity : rhss.length = innerEnv.length := by
+            simp only [innerEnv, List.length_map]
+            exact demandCount.symm
+          have rhsScope : ∀ source ∈ rhss,
+              source.varsBelow (rhss.length + env'.length) = true := by
+            intro source member
+            obtain ⟨i, inside, rfl⟩ := List.mem_iff_getElem.mp member
+            have scopeFact := (rhssTyping i inside).varsBelow
+            simpa only [innerEnv, List.length_append, List.length_map, demandCount] using scopeFact
+          let rhsSafe : ∀ innerBudget
+              (assumptions : BodyEnvAt bound free σ innerBudget (innerEnv ++ env'))
+              i (inside : i < innerEnv.length),
+              BodyBindingAt bound free σ innerBudget innerEnv[i]
+                ((rhss[i]'(by rw [arity]; exact inside)).substN 0 assumptions.terms) :=
+            fun innerBudget assumptions i inside => by
+            have rhsInside : i < rhss.length := by rw [arity]; exact inside
+            have demandInside : i < demands.length := by
+              rw [demandCount]
+              exact rhsInside
+            simp only [innerEnv, List.getElem_map, BodyBindingAt]
+            exact (ihRhss i rhsInside innerBudget premises assumptions).of_values
+              (Runtime.subtype (inclusions i rhsInside)
+                (rhssReady i rhsInside).supported
+                (demandsSupported demands[i] (List.getElem_mem demandInside))
+                bound free σ premises)
+          let realized := BodyEnvAt.tieGroupCaptured annotations rhss arity rhsScope hb hf
+            rhsSafe budget previous
+          let closedRhss := closeOuterRhss rhss previous.terms
+          let recursive := Runtime.recursiveTerms annotations closedRhss
+          have realizedTerms : realized.val.terms = recursive ++ previous.terms := by
+            simpa only [recursive, closedRhss] using realized.property
+          have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+            apply Runtime.recursiveTerms_closed
+            have closedScope : ∀ source ∈ closedRhss,
+                source.varsBelow rhss.length = true := by
+              intro source member
+              obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
+              apply Runtime.closing_scoped previous.terms previous.closed original rhss.length
+              rw [previous.arity]
+              exact rhsScope original originalMember
+            simpa only [closedRhss, closeOuterRhss_length] using closedScope
+          have recursiveLength : recursive.length = rhss.length := by
+            simp only [recursive, Runtime.recursiveTerms, List.length_map,
+              closedRhss, closeOuterRhss_length]
+          have bodySafe := ihBody budget premises realized.val
+          rw [realizedTerms] at bodySafe
+          have composed := Runtime.closing_compose previous.terms recursive previous.closed
+            recursiveClosed body 0
+          rw [Nat.zero_add, recursiveLength] at composed
+          rw [← composed] at bodySafe
+          have sameTerms : previous.terms = e.terms := rfl
+          rw [← sameTerms]
+          simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+          change Runtime.TermAt bound free σ (budget + 1) result
+            (.letRec annotations closedRhss (body.substN rhss.length previous.terms))
           exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
   | letPinned pinned mono rhsReady demandSupport bodyReady ihr ihb =>
       intro budget premises e
@@ -3052,6 +3305,18 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
   | letRecMono annOK sub _ demand _ ihr ihb =>
       exact .letRecMono (binding_assuming annOK hp) (sub.assuming hp)
         (ihr hp) demand (ihb hp)
+  | letRecMonoGroup annotations rhss body demands rhssReady demandsSupported bodyReady
+      ihRhss ihBody =>
+      rename_i Δ0 env0 result actuals annotationCount demandCount annotationsOK
+        rhssTyping inclusions bodyTyping
+      refine .letRecMonoGroup annotations rhss body demands
+        (annotationCount := annotationCount) (demandCount := demandCount)
+        (annotationsOK := fun i inside => binding_assuming (annotationsOK i inside) hp)
+        (rhssTyping := fun i inside => (rhssTyping i inside).assuming hp)
+        (inclusions := fun i inside => (inclusions i inside).assuming hp)
+        (bodyTyping := bodyTyping.assuming hp) ?_ demandsSupported ?_
+      · exact fun i inside => ihRhss i inside hp
+      · exact ihBody hp
   | letPinned pinned mono _ demand _ ihr ihb =>
       exact .letPinned (pinned.assuming hp) mono (ihr hp) demand (ihb hp)
   | letRecPinnedMono pinned mono rhs demand outerArguments _ ihbody =>
@@ -3117,6 +3382,14 @@ private theorem RecursiveArgumentsSupported.consMono {env β}
   intro c member
   exact supported c (by simpa using member)
 
+private theorem RecursiveArgumentsSupported.monos {env}
+    (supported : RecursiveArgumentsSupported env) (demands : List BoundsTy) :
+    RecursiveArgumentsSupported (demands.map Binding.mono ++ env) := by
+  induction demands with
+  | nil => simpa using supported
+  | cons demand rest ih =>
+      simpa only [List.map_cons, List.cons_append] using ih.consMono
+
 private theorem RecursiveArgumentsSupported.branch {env p lo hi elem}
     (supported : RecursiveArgumentsSupported env) :
     RecursiveArgumentsSupported (branchEnv p lo hi elem env) := by
@@ -3169,6 +3442,27 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         BodyDerives.RuntimeReady.letRecMono annotation sub (ihr arguments.consMono)
           demand (ihb arguments.consMono)
+  | letRecMonoGroup annotations rhss body demands rhssReady demandsSupported bodyReady
+      ihRhss ihBody =>
+      rename_i Δ0 env0 result actuals annotationCount demandCount annotationsOK
+        rhssTyping inclusions bodyTyping
+      refine .letRecMonoGroup annotations rhss body demands
+        (annotationCount := annotationCount) (demandCount := demandCount)
+        (annotationsOK := annotationsOK)
+        (rhssTyping := fun i inside => by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+            List.append_assoc] using rhsToBodyAppend (rhssTyping i inside) tail)
+        (inclusions := inclusions)
+        (bodyTyping := by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+            List.append_assoc] using rhsToBodyAppend bodyTyping tail)
+        (fun i inside => by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+            List.append_assoc] using ihRhss i inside (arguments.monos demands))
+        demandsSupported
+        (by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+            List.append_assoc] using ihBody (arguments.monos demands))
   | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
       refine .match_ (ctx := .list _ _ _) coverage patterns
         (fun i br atIndex => by
@@ -3240,6 +3534,28 @@ theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
       intro ordinary
       exact .letRecMono annotation sub (ihr ordinary.consMono) demand
         (ihb ordinary.consMono)
+  | letRecMonoGroup annotations rhss body demands rhssReady demandsSupported bodyReady
+      ihRhss ihBody =>
+      intro ordinary
+      rename_i Δ0 env0 result actuals annotationCount demandCount annotationsOK
+        rhssTyping inclusions bodyTyping
+      refine .letRecMonoGroup annotations rhss body demands
+        (annotationCount := annotationCount) (demandCount := demandCount)
+        (annotationsOK := annotationsOK)
+        (rhssTyping := fun i inside => by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding] using
+            ordinaryRhsToBody (rhssTyping i inside) (ordinary.monos demands))
+        (inclusions := inclusions)
+        (bodyTyping := by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding] using
+            ordinaryRhsToBody bodyTyping (ordinary.monos demands))
+        (fun i inside => by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding] using
+            ihRhss i inside (ordinary.monos demands))
+        demandsSupported
+        (by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding] using
+            ihBody (ordinary.monos demands))
   | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
       intro ordinary
       refine .match_ (ctx := .list _ _ _) coverage patterns
@@ -3321,6 +3637,30 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         BodyDerives.RuntimeReady.letRecMono annotation sub
           (ihr ordinary.consMono tail) demand (ihb ordinary.consMono tail)
+  | letRecMonoGroup annotations rhss body demands rhssReady demandsSupported bodyReady
+      ihRhss ihBody =>
+      intro ordinary tail
+      rename_i Δ0 env0 result actuals annotationCount demandCount annotationsOK
+        rhssTyping inclusions bodyTyping
+      refine .letRecMonoGroup annotations rhss body demands
+        (annotationCount := annotationCount) (demandCount := demandCount)
+        (annotationsOK := annotationsOK)
+        (rhssTyping := fun i inside => by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+            List.append_assoc] using
+              ordinaryRhsToBodyAppend (rhssTyping i inside) (ordinary.monos demands) tail)
+        (inclusions := inclusions)
+        (bodyTyping := by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+            List.append_assoc] using
+              ordinaryRhsToBodyAppend bodyTyping (ordinary.monos demands) tail)
+        (fun i inside => by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+            List.append_assoc] using ihRhss i inside (ordinary.monos demands) tail)
+        demandsSupported
+        (by
+          simpa [ordinaryBodyEnv, List.map_append, Function.comp_def, ordinaryBinding,
+            List.append_assoc] using ihBody (ordinary.monos demands) tail)
   | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
       intro ordinary tail
       refine .match_ (ctx := .list _ _ _) coverage patterns
