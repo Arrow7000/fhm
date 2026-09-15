@@ -1166,6 +1166,34 @@ theorem TermAt.pair {bound free σ budget leftTy rightTy left right}
           exact TermAt.value (.ctorApp (.app (.ctor _) actualLeft.1) actualRight.1)
             (ValueAt.pair (leftMeaning.down hb hf smaller) rightMeaning)
 
+/-- A partially applied Pair constructor is a genuine semantic function: its
+    captured first component is retained at every application budget. -/
+theorem TermAt.pairPartial {bound free σ budget leftTy rightTy left}
+    (hb : TypeEnv.Downward bound) (hf : TypeEnv.Downward free)
+    (hleft : TermAt bound free σ budget leftTy left) :
+    TermAt bound free σ budget (.arrow rightTy (.custom pairTyName [leftTy, rightTy]))
+      (.app (.ctor pairCtorName) left) := by
+  apply hleft.bind
+    (⟨fun step => .appArg (.ctor _) step, app_right_value⟩ :
+      Context (fun x => .app (.ctor pairCtorName) x))
+  intro j before x leftMeaning
+  cases j with
+  | zero => unfold TermAt; intro steps v _ before; omega
+  | succ j =>
+      have actualLeft := leftMeaning
+      rw [ValueAt.eq_def] at actualLeft
+      apply TermAt.value (.ctorApp (.ctor _) actualLeft.1)
+      rw [ValueAt]
+      refine ⟨.ctorApp (.ctor _) actualLeft.1, actualLeft.2.1, ?_⟩
+      intro k smaller y rightMeaning
+      cases k with
+      | zero => unfold TermAt; intro steps v _ before; omega
+      | succ k =>
+          have actualRight := rightMeaning
+          rw [ValueAt.eq_def] at actualRight
+          exact TermAt.value (.ctorApp (.app (.ctor _) actualLeft.1) actualRight.1)
+            (ValueAt.pair (leftMeaning.down hb hf smaller) rightMeaning)
+
 theorem ValueAt.nil (bound free : TypeEnv) (σ : Assign) (budget : Nat) (elem : BoundsTy) :
     ValueAt bound free σ budget (.list (.lit 0) (.lit 0) elem) (.ctor nilCtorName) := by
   cases budget with
@@ -1231,6 +1259,46 @@ theorem TermAt.cons {bound free σ budget elem lo hi head tail}
           rw [ValueAt] at actualTail
           exact TermAt.value (.ctorApp (.app (.ctor _) actualHead.1) actualTail.1)
             (ValueAt.cons (headMeaning.down hb hf smaller) tailMeaning)
+
+/-- A partial Cons cannot expose a dependent count binder through an ordinary
+    arrow, so its sound interface accepts any finite List length and promises
+    only non-emptiness. -/
+theorem TermAt.consPartial {bound free σ budget elem head}
+    (hb : TypeEnv.Downward bound) (hf : TypeEnv.Downward free)
+    (hhead : TermAt bound free σ budget elem head) :
+    TermAt bound free σ budget
+      (.arrow (.list (.lit 0) .inf elem) (.list (.lit 1) .inf elem))
+      (.app (.ctor consCtorName) head) := by
+  apply hhead.bind
+    (⟨fun step => .appArg (.ctor _) step, app_right_value⟩ :
+      Context (fun h => .app (.ctor consCtorName) h))
+  intro j before h headMeaning
+  cases j with
+  | zero => unfold TermAt; intro steps v _ before; omega
+  | succ j =>
+      have actualHead := headMeaning
+      rw [ValueAt.eq_def] at actualHead
+      apply TermAt.value (.ctorApp (.ctor _) actualHead.1)
+      rw [ValueAt]
+      refine ⟨.ctorApp (.ctor _) actualHead.1, actualHead.2.1, ?_⟩
+      intro k smaller t tailMeaning
+      cases k with
+      | zero => unfold TermAt; intro steps v _ before; omega
+      | succ k =>
+          have actualTail := tailMeaning
+          rw [ValueAt.eq_def] at actualTail
+          have grown := ValueAt.cons (headMeaning.down hb hf smaller) tailMeaning
+          have normalized : ValueAt bound free σ (k + 1)
+              (.list (.lit 1) .inf elem)
+              (.app (.app (.ctor consCtorName) h) t) :=
+            (ValueAt.list_congr
+              (bound := bound) (free := free) (bound' := bound) (free' := free)
+              (σ := σ) (σ' := σ)
+              (lo := .add (.lit 0) (.lit 1)) (hi := .add .inf (.lit 1))
+              (lo' := .lit 1) (hi' := .inf) (elem := elem) (elem' := elem)
+              (fun _ _ => Iff.rfl)
+              (fun len => by simp [Interval.Contains, Count.eval, ExtNat.add])).mp grown
+          exact TermAt.value (.ctorApp (.app (.ctor _) actualHead.1) actualTail.1) normalized
 
 private theorem firstMatch_exists {name arity branches}
     (matched : ∃ pat body, (pat, body) ∈ branches ∧ pat.matchesCtor name arity = true) :

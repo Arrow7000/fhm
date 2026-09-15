@@ -48,12 +48,20 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
       SemanticSub Δ head elem →
       ScopedDerives types slots ids rows Δ env (.app (.app (.ctor consCtorName) h) t)
         (.list (.add lo (.lit 1)) (.add hi (.lit 1)) elem)
+  | consPartial {env h head} :
+      ScopedDerives types slots ids rows Δ env h head →
+      ScopedDerives types slots ids rows Δ env (.app (.ctor consCtorName) h)
+        (.arrow (.list (.lit 0) .inf head) (.list (.lit 1) .inf head))
   | pair {env left right leftTy rightTy} :
       ScopedDerives types slots ids rows Δ env left leftTy →
       ScopedDerives types slots ids rows Δ env right rightTy →
       ScopedDerives types slots ids rows Δ env
         (.app (.app (.ctor pairCtorName) left) right)
         (.custom pairTyName [leftTy, rightTy])
+  | pairPartial {env left leftTy rightTy} :
+      ScopedDerives types slots ids rows Δ env left leftTy →
+      ScopedDerives types slots ids rows Δ env (.app (.ctor pairCtorName) left)
+        (.arrow rightTy (.custom pairTyName [leftTy, rightTy]))
   | varMono {env i β} : env[i]? = some (.mono β) → ScopedDerives types slots ids rows Δ env (.var i) β
   | varRecursive {env i c caller} : env[i]? = some (.recursive c) →
       (u : RecursiveHMContract.Use c.fixed Δ c.hm caller) →
@@ -144,7 +152,9 @@ theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
   induction h with
   | literal | primBinOp | nil | boolCtor | ctor => rfl
   | cons _ _ _ ihh iht => simp [Expr.varsBelow, ihh, iht]
+  | consPartial _ ih => simpa [Expr.varsBelow] using ih
   | pair _ _ ihLeft ihRight => simp [Expr.varsBelow, ihLeft, ihRight]
+  | pairPartial _ ih => simpa [Expr.varsBelow] using ih
   | varMono lookup => exact variable_scoped lookup
   | varRecursive lookup _ => exact variable_scoped lookup
   | varExported lookup _ => exact variable_scoped lookup
@@ -234,6 +244,12 @@ theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
       intro agree
       exact .cons (ihh (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
         (iht (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) sub
+  | consPartial _ ih =>
+      intro agree
+      exact .consPartial (ih (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | pairPartial _ ih =>
+      intro agree
+      exact .pairPartial (ih (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
   | app _ _ sub ihf iha =>
       intro agree
       exact .app (ihf (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
@@ -325,6 +341,12 @@ theorem ScopedDerives.sourceSlots {types slots slots' ids rows Δ env e β n}
   | cons _ _ sub ihh iht =>
       simp only [Expr.TyBvarBounded] at bounded
       exact .cons (ihh bounded.1.2) (iht bounded.2) sub
+  | consPartial _ ih =>
+      simp only [Expr.TyBvarBounded] at bounded
+      exact .consPartial (ih bounded.2)
+  | pairPartial _ ih =>
+      simp only [Expr.TyBvarBounded] at bounded
+      exact .pairPartial (ih bounded.2)
   | app _ _ sub ihf iha =>
       exact .app (ihf bounded.1) (iha bounded.2) sub
   | lambda annotation _ ih =>
@@ -781,9 +803,14 @@ inductive RuntimeReady {types slots ids rows} :
       {ht : ScopedDerives types slots ids rows Δ env t (.list lo hi elem)}
       (sub : SemanticSub Δ head elem) : RuntimeReady hh → RuntimeReady ht →
       RuntimeReady (.cons hh ht sub)
+  | consPartial {hh : ScopedDerives types slots ids rows Δ env h head} :
+      RuntimeReady hh → RuntimeReady (.consPartial hh)
   | pair {hleft : ScopedDerives types slots ids rows Δ env left leftTy}
       {hright : ScopedDerives types slots ids rows Δ env right rightTy} :
       RuntimeReady hleft → RuntimeReady hright → RuntimeReady (.pair hleft hright)
+  | pairPartial {hleft : ScopedDerives types slots ids rows Δ env left leftTy} :
+      RuntimeReady hleft → Runtime.Supported rightTy →
+      RuntimeReady (.pairPartial (rightTy := rightTy) hleft)
   | varMono (lookup : env[i]? = some (Binding.mono β)) :
       Runtime.Supported β → RuntimeReady (.varMono lookup)
   | varRecursive (lookup : env[i]? = some (Binding.recursive c))
@@ -844,7 +871,9 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β}
   | nil elem => exact .list elem
   | boolCtor => exact .bool
   | cons _ _ _ _ tail => cases tail with | list elem => exact .list elem
+  | consPartial _ head => exact .arrow (.list head) (.list head)
   | pair _ _ left right => exact .pair left right
+  | pairPartial _ right left => exact .arrow right (.pair left right)
   | varMono _ support | varRecursive _ _ support | varExported _ _ support _ => exact support
   | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
   | lambda _ param _ result => exact .arrow param result
@@ -883,9 +912,15 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           exact Runtime.TermAt.cons hb hf
             ((ihh budget premises e).of_values (Runtime.subtype sub headReady.supported elemSupport bound free σ premises))
             (iht budget premises e)
+  | consPartial _ ih =>
+      intro budget premises e
+      exact Runtime.TermAt.consPartial hb hf (ih budget premises e)
   | pair leftReady rightReady ihLeft ihRight =>
       intro budget premises e
       exact Runtime.TermAt.pair hb hf (ihLeft budget premises e) (ihRight budget premises e)
+  | pairPartial _ _ ih =>
+      intro budget premises e
+      exact Runtime.TermAt.pairPartial hb hf (ih budget premises e)
   | varMono lookup _ =>
       intro budget _ e
       exact e.varMono lookup
@@ -1108,7 +1143,9 @@ theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
   | boolCtor hn => exact .boolCtor hn
   | ctor hn => exact .ctor hn
   | cons _ _ hs ihh iht => exact .cons (ihh hp) (iht hp) (hs.assuming hp)
+  | consPartial _ ih => exact .consPartial (ih hp)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
+  | pairPartial _ ih => exact .pairPartial (ih hp)
   | varMono hv => exact .varMono hv
   | varRecursive hv used =>
       let next : RecursiveHMContract.Use _ Δ' _ _ :=
@@ -1160,7 +1197,9 @@ theorem ScopedDerives.RuntimeReady.assuming {types slots ids rows Δ Δ' env e �
   | nil support => exact .nil support
   | boolCtor nameOK => exact .boolCtor nameOK
   | cons sub _ _ ihh iht => exact .cons (sub.assuming hp) (ihh hp) (iht hp)
+  | consPartial _ ih => exact .consPartial (ih hp)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
+  | pairPartial _ support ih => exact .pairPartial (ih hp) support
   | varMono lookup support => exact .varMono lookup support
   | varRecursive lookup used support =>
       let next : RecursiveHMContract.Use _ Δ' _ _ :=
@@ -1212,10 +1251,16 @@ theorem ScopedDerives.RuntimeReady.sourceFree {types types' slots : Nat → Boun
       intro agree
       exact .cons sub (ihh (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
         (iht (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | consPartial _ ih =>
+      intro agree
+      exact .consPartial (ih (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
   | pair _ _ ihLeft ihRight =>
       intro agree
       exact .pair (ihLeft (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
         (ihRight (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | pairPartial _ support ih =>
+      intro agree
+      exact .pairPartial (ih (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) support
   | app sub _ _ ihf iha =>
       intro agree
       exact .app sub (ihf (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
@@ -1281,10 +1326,18 @@ theorem ScopedDerives.RuntimeReady.sourceSlots {types slots slots' : Nat → Bou
       intro bounded
       simp only [Expr.TyBvarBounded] at bounded
       exact .cons sub (ihh bounded.1.2) (iht bounded.2)
+  | consPartial _ ih =>
+      intro bounded
+      simp only [Expr.TyBvarBounded] at bounded
+      exact .consPartial (ih bounded.2)
   | pair _ _ ihLeft ihRight =>
       intro bounded
       simp only [Expr.TyBvarBounded] at bounded
       exact .pair (ihLeft bounded.1.2) (ihRight bounded.2)
+  | pairPartial _ support ih =>
+      intro bounded
+      simp only [Expr.TyBvarBounded] at bounded
+      exact .pairPartial (ih bounded.2) support
   | app sub _ _ ihf iha =>
       intro bounded
       exact .app sub (ihf bounded.1) (iha bounded.2)
@@ -1471,7 +1524,9 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
   | boolCtor hn => exact .boolCtor hn
   | ctor hn => exact .ctor hn
   | cons _ _ hs ihh iht => exact .cons (ihh fresh) (iht fresh) (SchemeSpecialization.subtype f hs)
+  | consPartial _ ih => exact .consPartial (ih fresh)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft fresh) (ihRight fresh)
+  | pairPartial _ ih => exact .pairPartial (ih fresh)
   | varMono hv => exact .varMono (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) hv)
   | varRecursive hv u =>
       rw [← mapUse_bounds u f hf target scope (fresh.recursive (List.mem_of_getElem? hv))]
@@ -1661,7 +1716,9 @@ theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : L
   | ctor hn => exact .ctor hn
   | cons _ _ hs ihh iht =>
       exact .cons (ihh fresh) (iht fresh) (CountSubstitution.subtype outer hf hs)
+  | consPartial _ ih => exact .consPartial (ih fresh)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft fresh) (ihRight fresh)
+  | pairPartial _ ih => exact .pairPartial (ih fresh)
   | varMono hv => exact .varMono (by simpa [mapCountBinding] using congrArg (Option.map (mapCountBinding outer)) hv)
   | @varRecursive Δ ids rows env i c caller hv u =>
       have captured := fresh.recursive (List.mem_of_getElem? hv)
@@ -1745,7 +1802,9 @@ theorem ScopedDerives.RuntimeReady.counts (outer : Bindings) (hf : Finite outer)
   | boolCtor nameOK => exact .boolCtor nameOK
   | cons sub _ _ ihh iht =>
       exact .cons (CountSubstitution.subtype outer hf sub) (ihh fresh) (iht fresh)
+  | consPartial _ ih => exact .consPartial (ih fresh)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft fresh) (ihRight fresh)
+  | pairPartial _ support ih => exact .pairPartial (ih fresh) (support.counts outer)
   | varMono lookup support =>
       exact .varMono (by simpa [mapCountBinding] using congrArg (Option.map (mapCountBinding outer)) lookup)
         (support.counts outer)
@@ -1851,7 +1910,9 @@ theorem ScopedDerives.RuntimeReady.types (f : Nat → BoundsTy)
   | boolCtor nameOK => exact .boolCtor nameOK
   | cons sub _ _ ihh iht =>
       exact .cons (SchemeSpecialization.subtype f sub) (ihh fresh) (iht fresh)
+  | consPartial _ ih => exact .consPartial (ih fresh)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft fresh) (ihRight fresh)
+  | pairPartial _ support ih => exact .pairPartial (ih fresh) (support.types f arguments)
   | varMono lookup support =>
       exact .varMono (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) lookup)
         (support.types f arguments)

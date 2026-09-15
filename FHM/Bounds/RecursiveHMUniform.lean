@@ -1520,12 +1520,20 @@ inductive ScopedBodyDerives :
       ScopedBodyDerives types slots ids rows Δ env h head → ScopedBodyDerives types slots ids rows Δ env t (.list lo hi elem) →
       SemanticSub Δ head elem → ScopedBodyDerives types slots ids rows Δ env (.app (.app (.ctor consCtorName) h) t)
         (.list (.add lo (.lit 1)) (.add hi (.lit 1)) elem)
+  | consPartial {env h head} :
+      ScopedBodyDerives types slots ids rows Δ env h head →
+      ScopedBodyDerives types slots ids rows Δ env (.app (.ctor consCtorName) h)
+        (.arrow (.list (.lit 0) .inf head) (.list (.lit 1) .inf head))
   | pair {env left right leftTy rightTy} :
       ScopedBodyDerives types slots ids rows Δ env left leftTy →
       ScopedBodyDerives types slots ids rows Δ env right rightTy →
       ScopedBodyDerives types slots ids rows Δ env
         (.app (.app (.ctor pairCtorName) left) right)
         (.custom pairTyName [leftTy, rightTy])
+  | pairPartial {env left leftTy rightTy} :
+      ScopedBodyDerives types slots ids rows Δ env left leftTy →
+      ScopedBodyDerives types slots ids rows Δ env (.app (.ctor pairCtorName) left)
+        (.arrow rightTy (.custom pairTyName [leftTy, rightTy]))
   | varMono {env i β} : env[i]? = some (.mono β) → ScopedBodyDerives types slots ids rows Δ env (.var i) β
   | varExported {env i s found caller} : env[i]? = some (.exported s) →
       (used : HMCountScheme.Use s Δ found caller) → ScopedBodyDerives types slots ids rows Δ env (.var i) used.bounds
@@ -1617,7 +1625,8 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       intro p source
       rw [ih p source] at sub
       cases p <;> cases sub <;> rfl
-  | primBinOp | nil | boolCtor | ctor | cons | pair | varMono | varExported | app | lambda |
+  | primBinOp | nil | boolCtor | ctor | cons | consPartial | pair | pairPartial |
+      varMono | varExported | app | lambda |
       letMono | letPinned | letRecPinnedMono | letRecInferredMono | letExported | letRecExported |
           match_ | letRec =>
         intro p source; cases source
@@ -1680,7 +1689,9 @@ theorem rhsToBody {types slots ids rows Δ env e β}
   | boolCtor ctor => exact .boolCtor ctor
   | ctor hn => exact .ctor hn
   | cons _ _ sub ihh iht => exact .cons ihh iht sub
+  | consPartial _ ih => exact .consPartial ih
   | pair _ _ ihLeft ihRight => exact .pair ihLeft ihRight
+  | pairPartial _ ih => exact .pairPartial ih
   | varMono lookup =>
       exact .varMono (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])
   | varRecursive lookup used =>
@@ -1741,7 +1752,9 @@ theorem ordinaryRhsToBody {types slots ids rows Δ env e β}
   | boolCtor ctor => intro _; exact .boolCtor ctor
   | ctor hn => intro _; exact .ctor hn
   | cons _ _ sub ihh iht => intro ordinary; exact .cons (ihh ordinary) (iht ordinary) sub
+  | consPartial _ ih => intro ordinary; exact .consPartial (ih ordinary)
   | pair _ _ ihLeft ihRight => intro ordinary; exact .pair (ihLeft ordinary) (ihRight ordinary)
+  | pairPartial _ ih => intro ordinary; exact .pairPartial (ih ordinary)
   | varMono lookup =>
       intro _
       exact .varMono (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])
@@ -1833,7 +1846,9 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
   | boolCtor ctor => exact .boolCtor ctor
   | ctor hn => exact .ctor hn
   | cons _ _ sub ihh iht => exact .cons ihh iht sub
+  | consPartial _ ih => exact .consPartial ih
   | pair _ _ ihLeft ihRight => exact .pair ihLeft ihRight
+  | pairPartial _ ih => exact .pairPartial ih
   | varMono lookup =>
       exact .varMono (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]))
@@ -1903,7 +1918,9 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
   | boolCtor ctor => exact .boolCtor ctor
   | ctor hn => exact .ctor hn
   | cons _ _ sub ihh iht => exact .cons (ihh ordinary) (iht ordinary) sub
+  | consPartial _ ih => exact .consPartial (ih ordinary)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft ordinary) (ihRight ordinary)
+  | pairPartial _ ih => exact .pairPartial (ih ordinary)
   | varMono lookup =>
       exact .varMono (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]))
@@ -1963,7 +1980,9 @@ abbrev nil := @ScopedBodyDerives.nil BoundsTy.fvar BoundsTy.bvar
 abbrev boolCtor := @ScopedBodyDerives.boolCtor BoundsTy.fvar BoundsTy.bvar
 abbrev ctor := @ScopedBodyDerives.ctor BoundsTy.fvar BoundsTy.bvar
 abbrev cons := @ScopedBodyDerives.cons BoundsTy.fvar BoundsTy.bvar
+abbrev consPartial := @ScopedBodyDerives.consPartial BoundsTy.fvar BoundsTy.bvar
 abbrev pair := @ScopedBodyDerives.pair BoundsTy.fvar BoundsTy.bvar
+abbrev pairPartial := @ScopedBodyDerives.pairPartial BoundsTy.fvar BoundsTy.bvar
 abbrev varMono := @ScopedBodyDerives.varMono BoundsTy.fvar BoundsTy.bvar
 abbrev varExported {ids rows Δ env i s found caller}
     (lookup : env[i]? = some (BodyBinding.exported s)) (used : HMCountScheme.Use s Δ found caller) :
@@ -2002,7 +2021,9 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
   | boolCtor hn => exact .boolCtor hn
   | ctor hn => exact .ctor hn
   | cons _ _ sub ihh iht => exact .cons (ihh hp) (iht hp) (sub.assuming hp)
+  | consPartial _ ih => exact .consPartial (ih hp)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
+  | pairPartial _ ih => exact .pairPartial (ih hp)
   | varMono lookup => exact .varMono lookup
   | varExported lookup used =>
       let next : HMCountScheme.Use _ Δ' _ _ :=
@@ -2071,7 +2092,9 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
   induction h with
   | literal | primBinOp | nil | boolCtor | ctor => rfl
   | cons _ _ _ ihh iht => simp [Expr.varsBelow, ihh, iht]
+  | consPartial _ ih => simpa [Expr.varsBelow] using ih
   | pair _ _ ihLeft ihRight => simp [Expr.varsBelow, ihLeft, ihRight]
+  | pairPartial _ ih => simpa [Expr.varsBelow] using ih
   | varMono lookup | varExported lookup _ =>
       obtain ⟨small, _⟩ := List.getElem?_eq_some_iff.mp lookup
       simpa only [Expr.varsBelow, decide_eq_true_eq] using small
@@ -2233,9 +2256,14 @@ inductive RuntimeReady :
       {ht : ScopedBodyDerives types slots ids rows Δ env t (.list lo hi elem)}
       (sub : SemanticSub Δ head elem) : RuntimeReady hh → RuntimeReady ht →
       RuntimeReady (.cons hh ht sub)
+  | consPartial {hh : ScopedBodyDerives types slots ids rows Δ env h head} :
+      RuntimeReady hh → RuntimeReady (.consPartial hh)
   | pair {hleft : ScopedBodyDerives types slots ids rows Δ env left leftTy}
       {hright : ScopedBodyDerives types slots ids rows Δ env right rightTy} :
       RuntimeReady hleft → RuntimeReady hright → RuntimeReady (.pair hleft hright)
+  | pairPartial {hleft : ScopedBodyDerives types slots ids rows Δ env left leftTy} :
+      RuntimeReady hleft → Runtime.Supported rightTy →
+      RuntimeReady (.pairPartial (rightTy := rightTy) hleft)
   | varMono (lookup : env[i]? = some (BodyBinding.mono β)) :
       Runtime.Supported β → RuntimeReady (.varMono lookup)
   | varExported (lookup : env[i]? = some (BodyBinding.exported s))
@@ -2341,7 +2369,9 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | nil elem => exact .list elem
   | boolCtor => exact .bool
   | cons _ _ _ _ tail => cases tail with | list elem => exact .list elem
+  | consPartial _ head => exact .arrow (.list head) (.list head)
   | pair _ _ left right => exact .pair left right
+  | pairPartial _ right left => exact .arrow right (.pair left right)
   | varMono _ supported | varExported _ _ supported _ => exact supported
   | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
   | subsumption _ _ demand => exact demand
@@ -2389,9 +2419,15 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           exact Runtime.TermAt.cons hb hf
             ((ihh budget premises e).of_values (Runtime.subtype sub headReady.supported elemSupport bound free σ premises))
             (iht budget premises e)
+  | consPartial _ ih =>
+      intro budget premises e
+      exact Runtime.TermAt.consPartial hb hf (ih budget premises e)
   | pair leftReady rightReady ihLeft ihRight =>
       intro budget premises e
       exact Runtime.TermAt.pair hb hf (ihLeft budget premises e) (ihRight budget premises e)
+  | pairPartial _ _ ih =>
+      intro budget premises e
+      exact Runtime.TermAt.pairPartial hb hf (ih budget premises e)
   | varMono lookup _ =>
       intro budget _ e
       exact e.varMono lookup
@@ -2820,7 +2856,9 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
   | nil elem => exact .nil elem
   | boolCtor nameOK => exact .boolCtor nameOK
   | cons sub _ _ ihh iht => exact .cons (sub.assuming hp) (ihh hp) (iht hp)
+  | consPartial _ ih => exact .consPartial (ih hp)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
+  | pairPartial _ support ih => exact .pairPartial (ih hp) support
   | varMono lookup supported => exact .varMono lookup supported
   | varExported lookup used supported arguments =>
       let next : HMCountScheme.Use _ Δ' _ _ :=
@@ -2923,7 +2961,9 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
   | nil supported => exact .nil supported
   | boolCtor ctor => exact .boolCtor ctor
   | cons sub _ _ ihh iht => exact .cons sub (ihh arguments) (iht arguments)
+  | consPartial _ ih => exact .consPartial (ih arguments)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft arguments) (ihRight arguments)
+  | pairPartial _ supported ih => exact .pairPartial (ih arguments) supported
   | varMono lookup supported =>
       exact .varMono (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) supported
@@ -2984,9 +3024,13 @@ theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
   | nil supported => intro _; exact .nil supported
   | boolCtor ctor => intro _; exact .boolCtor ctor
   | cons sub _ _ ihh iht => intro ordinary; exact .cons sub (ihh ordinary) (iht ordinary)
+  | consPartial _ ih => intro ordinary; exact .consPartial (ih ordinary)
   | pair _ _ ihLeft ihRight =>
       intro ordinary
       exact .pair (ihLeft ordinary) (ihRight ordinary)
+  | pairPartial _ supported ih =>
+      intro ordinary
+      exact .pairPartial (ih ordinary) supported
   | varMono lookup supported =>
       intro _
       exact .varMono (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) supported
@@ -3048,9 +3092,15 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
   | cons sub _ _ ihh iht =>
       intro ordinary tail
       exact .cons sub (ihh ordinary tail) (iht ordinary tail)
+  | consPartial _ ih =>
+      intro ordinary tail
+      exact .consPartial (ih ordinary tail)
   | pair _ _ ihLeft ihRight =>
       intro ordinary tail
       exact .pair (ihLeft ordinary tail) (ihRight ordinary tail)
+  | pairPartial _ supported ih =>
+      intro ordinary tail
+      exact .pairPartial (ih ordinary tail) supported
   | varMono lookup supported =>
       intro _ tail
       exact .varMono (body_getElem?_append_left (by
@@ -4638,9 +4688,41 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       if hn : name = nilCtorName then
         throw "bounds: Nil cannot be applied"
       else if hc : name = consCtorName then
-        throw "bounds: partial Cons application unsupported in generalized body"
+        let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+          (path ++ [.appArg]) arg schemes capture
+          (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
+        let result := .arrow (.list (.lit 0) .inf actual.bounds)
+          (.list (.lit 1) .inf actual.bounds)
+        finishBody path hm result rfl
+          (by subst name; simpa only [Expr.stripFound] using
+            BodyDerives.consPartial actual.typing)
+          (⟨path ++ [.appFun], ctorHM.eraseBounds, none⟩ :: actual.nodes)
+          (do
+            let ready ← actual.runtimeReady
+            pure ⟨by
+              subst name
+              simpa only [Expr.stripFound] using
+                BodyDerives.RuntimeReady.consPartial ready.down⟩)
       else if hp : name = pairCtorName then
-        throw "bounds: partial Pair application unsupported in generalized body"
+        match hm.eraseBounds with
+        | .arrow rightHM _ =>
+            let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+              (path ++ [.appArg]) arg schemes capture
+              (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
+            let right ← Typed.shapeTop rightHM
+            let result := .arrow right (.custom pairTyName [actual.bounds, right])
+            finishBody path hm result rfl
+              (by subst name; simpa only [Expr.stripFound] using
+                BodyDerives.pairPartial (rightTy := right) actual.typing)
+              (⟨path ++ [.appFun], ctorHM.eraseBounds, none⟩ :: actual.nodes)
+              (do
+                let ready ← actual.runtimeReady
+                let supported ← Runtime.supported? right
+                pure ⟨by
+                  subst name
+                  simpa only [Expr.stripFound] using
+                    BodyDerives.RuntimeReady.pairPartial ready.down supported.down⟩)
+        | _ => throw "bounds: partial Pair has a non-arrow generalized result"
       else if hb : BoolBranches.IsCtor name then
         throw "bounds: Bool constructor cannot be applied"
       else

@@ -214,6 +214,15 @@ private def cases : List (String × Bool) := [
   ("parsed Pair wildcard is exhaustive without opening fields", returns (run (
     "let ignorePair : (BL 2 2 Int, Int) -> BL 1 1 Int = \\p -> " ++
     "match p with | _ -> [1]\nignorePair ([1, 2], 0)\n")) "BL 1 1 Int"),
+  ("parsed partial Cons has an honest nondependent length interface", returns
+    (run "(Cons 1)\n") "BL 0 ∞ Int → BL 1 ∞ Int"),
+  ("parsed partial Cons retains its runtime theorem", succeeds
+    (runtimeCertified "(Cons 1)\n")),
+  ("parsed partial Pair preserves its captured first-field bounds", returns
+    (run "(let mk : Bool -> (BL 1 1 Int, Bool) = Pair [1] in mk True)\n")
+      "(BL 1 1 Int, Bool)"),
+  ("parsed partial Pair retains its runtime theorem", succeeds
+    (runtimeCertified "(let mk : Bool -> (BL 1 1 Int, Bool) = Pair [1] in mk True)\n")),
   ("parsed self-recursive contract and exact empty body result", returns (run (selfSource ++ "f []\n")) "BL 0 0 Int"),
   ("parsed self-recursive contract follows singleton argument origin", returns (run (selfSource ++ "f [1]\n")) "BL 1 1 Int"),
   ("parsed mutual recursion uses independent same-named count binders", returns (run mutualSource) "BL 0 0 Int"),
