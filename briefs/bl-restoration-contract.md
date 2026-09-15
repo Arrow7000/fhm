@@ -2893,6 +2893,32 @@ the new entry point is the intended verified program boundary for report/LSP
 wiring.  No new axiom, placeholder, partial definition or fallback engine is
 introduced.
 
+### Checkpoint 4bd — the source report adapter uses the canonical checker
+
+`RecursiveFound.synthNodes` now invokes `RecursiveHMUniform.checkProgram`
+instead of the earlier fixed-HM `RecursiveGroup` traversal.  Consequently the
+typed-provenance adapter, its exact-once Core/source join, and the parsed `.fhm`
+regression suite all exercise the same verified whole-program judgment that
+supports ordinary prefixes, generalized declarations and nested groups.  The
+suite remains build-failing on any failed expectation; its printed PASS lines
+are a readable report, not a substitute for an exit failure.
+
+Parity exposed one real shape omission: nullary custom types such as `Bool`
+were already present in the bounds syntax, subtyping and runtime model, but the
+typed decoder rejected them.  `Typed.shapeTop` and `Typed.annotation` now decode
+that existing case, while the freshness, type-specialization and count-transport
+proofs establish that it is fixed under their respective maps.  The parsed
+suite covers scalar recursive Bool results as well as List/count behavior.
+
+Expectations that represented superseded implementation frontiers now record
+the established semantics: an annotated recursive member has one fixed
+in-group HM instance and may be generalized only on exit; its RHS is checked
+against the declared instance even when inference found a more-general type;
+and declared generalized ordinary lets are checked rather than rejected.
+Unsupported inferred generalized lets and recursive groups nested inside a
+universally interpreted recursive RHS remain explicit errors.  No fallback to
+the retired checker, placeholder, partial definition or new axiom is introduced.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

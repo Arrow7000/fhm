@@ -101,7 +101,7 @@ theorem annotation_fixed {f τ β} (h : Typed.annotation τ = .ok β)
       · simp [bind, Except.bind] at h
   | customTy n as ih =>
       cases as with
-      | nil => simp [Typed.annotation, throw] at h
+      | nil => simp [Typed.annotation, pure, Except.pure] at h; subst β; rfl
       | cons a as =>
           cases as with
           | cons b bs => simp [Typed.annotation, throw] at h

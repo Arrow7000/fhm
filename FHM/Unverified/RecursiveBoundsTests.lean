@@ -43,6 +43,8 @@ private def returns (r : Except String String) (expected : String) : Bool :=
   match r with | .ok s => s == expected | _ => false
 private def fails (r : Except String α) (needle : String) : Bool :=
   match r with | .error m => (m.splitOn needle).length > 1 | _ => false
+private def succeeds (r : Except String α) : Bool :=
+  match r with | .ok _ => true | .error _ => false
 
 private def mutualSource : String :=
   "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
@@ -135,10 +137,10 @@ private def cases : List (String × Bool) := [
     "  \\(xs : BL n n Int) -> 1 :: f xs\nf []\n")) "interval inclusion"),
   ("parsed body remains an independent annotation obligation", fails
     (run (selfSource ++ "(\\(demand : BL 1 1 Int) -> 1) (f [])\n")) "interval inclusion"),
-  ("parsed count-polymorphic value is not instantiated by guesswork", fails (run (selfSource ++ "f\n")) "needs an argument origin"),
-  ("parsed fixed polymorphic HM signature explicitly deferred", fails (run (
+  ("parsed count-polymorphic value is not instantiated by guesswork", fails (run (selfSource ++ "f\n")) "origin-backed arguments"),
+  ("parsed fixed polymorphic HM signature retains one in-group instance", succeeds (run (
     "let f : {n : Nat, a} BL n n a -> BL n n a =\n" ++
-    "  \\xs -> f xs\nf []\n")) "polymorphic recursive annotation"),
+    "  \\xs -> f xs\nf []\n"))),
   ("parsed local binding annotation captures enclosing count binder", returns (run (
     "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
     "  \\(xs : BL n n Int) -> let ys : BL n n Int = xs in\n" ++
@@ -149,13 +151,13 @@ private def cases : List (String × Bool) := [
     "    (\\(ignored : List Int) -> xs) (f xs)\nf []\n")) "interval inclusion"),
   ("unbound nested count parses and passes HM but rejects at count scope", fails (run (
     "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
-    "  \\(xs : BL typo typo Int) -> (\\(ignored : List Int) -> xs) (f xs)\nf []\n")) "unresolved recursive group count scope"),
+    "  \\(xs : BL typo typo Int) -> (\\(ignored : List Int) -> xs) (f xs)\nf []\n")) "unresolved count scope"),
   ("type foralls do not become Nat binders through permissive syntax", fails (run (
     "let f : {n m} BL (n * m) (n * m) Int -> BL (n * m) (n * m) Int =\n" ++
-    "  \\xs -> xs\nf []\n")) "unresolved recursive group count scope"),
-  ("parsed more-general RHS explicitly needs annotation specialization", fails (run (
+    "  \\xs -> xs\nf []\n")) "unresolved count scope"),
+  ("parsed more-general RHS is checked against its narrower annotation", returns (run (
     "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
-    "  \\(xs : BL n n Int) -> f xs\nf []\n")) "needs specialization"),
+    "  \\(xs : BL n n Int) -> f xs\nf []\n")) "BL 0 0 Int"),
   ("parsed matches preserve exact input under each constructor path", returns (run (
     "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
     "  \\(xs : BL n n Int) -> match xs with | [] -> xs | h :: t -> xs\nf []\n")) "BL 0 0 Int"),
@@ -195,9 +197,9 @@ private def cases : List (String × Bool) := [
     (run (unannotatedCopy ++ "f []\n")) "BL 0 0 Int"),
   ("parsed unannotated parameter does not excuse a bad recursive length", fails
     (run (unannotatedCopy "1 :: ((h + 0) :: f t)" ++ "f []\n")) "interval inclusion"),
-  ("parsed generalized parameter HM identity still requires specialization", fails (run (
+  ("parsed generalized parameter receives declared recursive guidance", returns (run (
     "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
-    "  \\xs -> match xs with | [] -> [] | h :: t -> h :: f t\nf []\n")) "needs specialization"),
+    "  \\xs -> match xs with | [] -> [] | h :: t -> h :: f t\nf []\n")) "BL 0 0 Int"),
   ("parsed higher-order argument receives captured declared count bounds", returns (run (
     "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
     "  \\(xs : BL n n Int) -> " ++
@@ -299,7 +301,7 @@ private def cases : List (String × Bool) := [
   ("parsed recursive group in a universal RHS still needs transport", fails (run (
     "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
     "  \\(xs : BL n n Int) -> let g : {m : Nat} Int -> Int = \\i -> g i in " ++
-    "(\\(ignored : Int) -> xs) (g 1)\nf []\n")) "captured-template transport"),
+    "(\\(ignored : Int) -> xs) (g 1)\nf []\n")) "nested groups unsupported"),
   ("parsed scalar prefix is captured by a later recursive map", returns (run (
     "(let offset : Int = 1 in\n" ++
     mapSource "(transform (h + offset) + 0) :: f transform t" ++
@@ -314,9 +316,9 @@ private def cases : List (String × Bool) := [
     "  \\(xs : BL m m Int) -> (\\(ignored : List Int) -> f xs) (g xs)\n" ++
     "in g saved)\n")) "BL 2 2 Int"),
   ("parsed generalized prefix is not silently treated as monomorphic", fails (run (
-    "(let id = \\x -> x in\n" ++ selfSource ++ "in f [])\n")) "generalized HM internal let"),
-  ("parsed polymorphic source prefix remains an explicit generalization boundary", fails (run (
-    "(let id : {a} a -> a = \\x -> x in\n" ++ selfSource ++ "in f [])\n")) "polymorphic HM internal binding"),
+    "(let id = \\x -> x in\n" ++ selfSource ++ "in f [])\n")) "generalized local HM let"),
+  ("parsed polymorphic source prefix is checked as a generalized declaration", returns (run (
+    "(let id : {a} a -> a = \\x -> x in\n" ++ selfSource ++ "in f [])\n")) "BL 0 0 Int"),
   ("parsed program lambda can contain a certified recursive group", returns (run (
     "\\(xs : BL 2 2 Int) ->\n" ++ selfSource ++ "in f xs\n")) "BL 2 2 Int → BL 2 2 Int"),
   ("parsed program lambda captures its scalar assumption in an inner group", returns (run (

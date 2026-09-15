@@ -1,5 +1,5 @@
 import FHM.Bounds.Found
-import FHM.Bounds.RecursiveGroup
+import FHM.Bounds.RecursiveHMUniform
 
 /-! Opt-in provenance adapter for checked found programs and recursive groups. It consumes the
 existing HM artifact and exports reports only after whole-group acceptance.
@@ -12,11 +12,11 @@ namespace FHM.Bounds.RecursiveFound
 open SurfaceBridge.Provenance
 
 def synthNodes (typed : TypedLowered) : Except String
-    (RecursiveGroup.Result [] [] [] [] [] typed.inference.output × List Found.NodeReport) := do
+    (RecursiveHMUniform.BodyResult [] [] [] [] [] typed.inference.output × List Found.NodeReport) := do
   unless typed.lowering.provenanceTotal && typed.sourceTypesTotal do
     throw "bounds: incomplete typed provenance"
-  let result ← RecursiveGroup.check [] [] [] [] [] [] typed.inference.output
-    typed.inference.binderSchemes typed.lowering.counts
+  let result ← RecursiveHMUniform.checkProgram typed.inference.output typed.lowering.counts
+    typed.inference.binderSchemes
   unless exactlyOnce (logicalCorePaths typed.inference.output) (result.nodes.map (·.path)) do
     throw "bounds: incomplete or duplicate recursive node report"
   let reports ← result.nodes.mapM fun node => do
