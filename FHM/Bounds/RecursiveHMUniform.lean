@@ -1206,6 +1206,12 @@ inductive ScopedBodyDerives :
       ScopedHMAnnotation.BindingOK types slots ids rows Δ ann actual →
       ScopedBodyDerives types slots ids rows Δ env rhs actual → ScopedBodyDerives types slots ids rows Δ (.mono actual :: env) body result →
       ScopedBodyDerives types slots ids rows Δ env (.letIn ann rhs body) result
+  | letPinned {env annotation rhs body actual result}
+      (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ annotation.body actual) :
+      annotation.paramCount = 0 →
+      ScopedBodyDerives types slots ids rows Δ env rhs actual →
+      ScopedBodyDerives types slots ids rows Δ (.mono pinned.demand :: env) body result →
+      ScopedBodyDerives types slots ids rows Δ env (.letIn (some annotation) rhs body) result
   | letExported {env ann rhs body s result} (frame : LocalFrame s ids rhs) :
       LocalAnnotationOK s ann → rhs.varsBelow env.length = true →
       (∀ calleeΔ found caller (used : HMCountScheme.Use s calleeΔ found caller),
@@ -1248,7 +1254,7 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       rw [ih p source] at sub
       cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | cons | pair | varMono | varExported | app | lambda |
-      letMono | letExported | match_ | letRec => intro p source; cases source
+      letMono | letPinned | letExported | match_ | letRec => intro p source; cases source
 
 /-- Ordinary RHS proofs can be reused for local introduction in mono captured
     environments. This does not turn fixed recursive assumptions into universal
@@ -1505,6 +1511,7 @@ abbrev app := @ScopedBodyDerives.app BoundsTy.fvar BoundsTy.bvar
 abbrev subsumption := @ScopedBodyDerives.subsumption BoundsTy.fvar BoundsTy.bvar
 abbrev lambda := @ScopedBodyDerives.lambda BoundsTy.fvar BoundsTy.bvar
 abbrev letMono := @ScopedBodyDerives.letMono BoundsTy.fvar BoundsTy.bvar
+abbrev letPinned := @ScopedBodyDerives.letPinned BoundsTy.fvar BoundsTy.bvar
 abbrev match_ := @ScopedBodyDerives.match_ BoundsTy.fvar BoundsTy.bvar
 abbrev letRec := @ScopedBodyDerives.letRec BoundsTy.fvar BoundsTy.bvar
 end BodyDerives
@@ -1541,6 +1548,8 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
   | lambda param _ ih => exact .lambda (param_assuming param hp) (ih hp)
   | letMono obligation _ _ ihr ihb =>
       exact .letMono (binding_assuming obligation hp) (ihr hp) (ihb hp)
+  | letPinned pinned mono _ _ ihr ihb =>
+      exact .letPinned (pinned.assuming hp) mono (ihr hp) (ihb hp)
   | letExported frame annotation scope _ _ ihr ihb =>
       exact .letExported frame annotation scope
         (fun calleeΔ found caller used => ihr calleeΔ found caller used (RecursiveTyping.assuming_append hp))
@@ -1584,6 +1593,9 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
   | subsumption _ _ ih => exact ih
   | lambda _ _ ih => simpa only [Expr.varsBelow, List.length_cons] using ih
   | letMono _ _ _ ihr ihb =>
+      simp only [Expr.varsBelow, Bool.and_eq_true]
+      exact ⟨ihr, by simpa only [List.length_cons] using ihb⟩
+  | letPinned _ _ _ _ ihr ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       exact ⟨ihr, by simpa only [List.length_cons] using ihb⟩
   | letExported _ _ scope _ _ _ ihb =>
@@ -1739,6 +1751,13 @@ inductive RuntimeReady :
       {hrhs : ScopedBodyDerives types slots ids rows Δ env rhs actual}
       {hbody : ScopedBodyDerives types slots ids rows Δ (.mono actual :: env) body result} :
       RuntimeReady hrhs → RuntimeReady hbody → RuntimeReady (.letMono annOK hrhs hbody)
+  | letPinned {annotation : PolyTy} {actual : BoundsTy}
+      (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ annotation.body actual)
+      (mono : annotation.paramCount = 0)
+      {hrhs : ScopedBodyDerives types slots ids rows Δ env rhs actual}
+      {hbody : ScopedBodyDerives types slots ids rows Δ (.mono pinned.demand :: env) body result} :
+      RuntimeReady hrhs → Runtime.Supported pinned.demand → RuntimeReady hbody →
+      RuntimeReady (.letPinned pinned mono hrhs hbody)
   | letExported
       (frame : LocalFrame s ids rhs)
       (annotation : LocalAnnotationOK s ann) (scope : rhs.varsBelow env.length = true)
@@ -1791,6 +1810,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | subsumption _ _ demand => exact demand
   | lambda _ param _ result => exact .arrow param result
   | letMono _ _ _ _ body => exact body
+  | letPinned _ _ _ _ _ _ body => exact body
   | letExported _ _ _ _ _ _ _ body => exact body
   | match_ _ _ _ _ _ _ result => exact result
   | letRec _ _ _ _ _ _ body => exact body
@@ -1868,6 +1888,23 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           have rhsClosed := e.closes (by assumption)
           let opened := (e.down hb hf (by omega : j ≤ j + 1)).extendMono _ _ rhsClosed
             (ihr j premises (e.down hb hf (by omega)))
+          have bodySafe := ihb j premises opened
+          apply Runtime.TermAt.prepend SmallStep.Step.letReduce
+          change Runtime.TermAt bound free σ j _ (Expr.substN 0 (_ :: e.terms) _) at bodySafe
+          rw [Runtime.closing_singleton e.terms e.closed _ rhsClosed]
+          exact bodySafe
+  | letPinned pinned mono rhsReady demandSupport bodyReady ihr ihb =>
+      intro budget premises e
+      cases budget with
+      | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+      | succ j =>
+          have rhsClosed := e.closes (by assumption)
+          have rhsAt := ihr j premises (e.down hb hf (by omega))
+          have widened := rhsAt.of_values
+            (Runtime.subtype pinned.inclusion rhsReady.supported demandSupport
+              bound free σ premises)
+          let opened := (e.down hb hf (by omega : j ≤ j + 1)).extendMono
+            pinned.demand _ rhsClosed widened
           have bodySafe := ihb j premises opened
           apply Runtime.TermAt.prepend SmallStep.Step.letReduce
           change Runtime.TermAt bound free σ j _ (Expr.substN 0 (_ :: e.terms) _) at bodySafe
@@ -2053,6 +2090,8 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
   | subsumption sub _ demand ih => exact .subsumption (sub.assuming hp) (ih hp) demand
   | lambda annOK param _ ih => exact .lambda (param_assuming annOK hp) param (ih hp)
   | letMono annOK _ _ ihr ihb => exact .letMono (binding_assuming annOK hp) (ihr hp) (ihb hp)
+  | letPinned pinned mono _ demand _ ihr ihb =>
+      exact .letPinned (pinned.assuming hp) mono (ihr hp) demand (ihb hp)
   | letExported frame annotation scope instances _ _ ihr ihb =>
       exact .letExported frame annotation scope
         (fun calleeΔ found caller used => (instances calleeΔ found caller used).assuming (RecursiveTyping.assuming_append hp))
@@ -3254,31 +3293,57 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
   | .found hm (.letIn ann rhs body) =>
       match ann with
       | some annotation =>
-          if annotation.paramCount == 0 &&
+          if hmono : annotation.paramCount == 0 &&
               (metadata.telescopes.filter (fun telescope => telescope.site == .letIn path)).isEmpty then
-            let hint ← RecursiveHMAnnotation.scopedBindingHint BoundsTy.fvar BoundsTy.bvar
-              ids rows caller (some annotation)
-            let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
-              (path ++ [.letRhs]) rhs schemes capture
-              (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint
-            let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
-              (.letIn path) actual.hm
-            let obligation ← RecursiveHMAnnotation.checkScopedBinding BoundsTy.fvar BoundsTy.bvar
-              ids rows caller Δ (some annotation) actual.bounds
-            let result ← walkBodySource sourceOutput metadata ids rows caller Δ
-              (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
-              (extendMonoCapture? capture actual.bounds)
-              (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
-            finishBody path hm result.bounds rfl
-              (by simpa only [Expr.stripFound] using
-                (BodyDerives.letMono obligation.down actual.typing result.typing))
-              (actual.nodes ++ result.nodes)
-              (do
-                let rhsReady ← actual.runtimeReady
-                let bodyReady ← result.runtimeReady
-                pure ⟨by simpa only [Expr.stripFound] using
-                  (BodyDerives.RuntimeReady.letMono (ann := some annotation)
-                    obligation.down rhsReady.down bodyReady.down)⟩)
+            if ScopedHMAnnotation.hasHole annotation.body then
+              let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+                (path ++ [.letRhs]) rhs schemes capture
+                (descendBodySource sourceAt (by simp [Expr.atCorePath])) none
+              let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
+                (.letIn path) actual.hm
+              let pinned ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar
+                ids rows caller Δ annotation.body actual.bounds
+              have mono : annotation.paramCount = 0 := by
+                exact of_decide_eq_true ((Bool.and_eq_true _ _).mp hmono).1
+              let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+                (.mono pinned.demand :: env) (path ++ [.letBody]) body schemes
+                (extendMonoCapture? capture pinned.demand)
+                (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
+              finishBody path hm result.bounds rfl
+                (by simpa only [Expr.stripFound] using
+                  (BodyDerives.letPinned pinned mono actual.typing result.typing))
+                (actual.nodes ++ result.nodes)
+                (do
+                  let rhsReady ← actual.runtimeReady
+                  let demandSupported ← Runtime.supported? pinned.demand
+                  let bodyReady ← result.runtimeReady
+                  pure ⟨by simpa only [Expr.stripFound] using
+                    (BodyDerives.RuntimeReady.letPinned pinned mono rhsReady.down
+                      demandSupported.down bodyReady.down)⟩)
+            else
+              let hint ← RecursiveHMAnnotation.scopedBindingHint BoundsTy.fvar BoundsTy.bvar
+                ids rows caller (some annotation)
+              let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+                (path ++ [.letRhs]) rhs schemes capture
+                (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint
+              let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
+                (.letIn path) actual.hm
+              let obligation ← RecursiveHMAnnotation.checkScopedBinding BoundsTy.fvar BoundsTy.bvar
+                ids rows caller Δ (some annotation) actual.bounds
+              let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+                (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
+                (extendMonoCapture? capture actual.bounds)
+                (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
+              finishBody path hm result.bounds rfl
+                (by simpa only [Expr.stripFound] using
+                  (BodyDerives.letMono obligation.down actual.typing result.typing))
+                (actual.nodes ++ result.nodes)
+                (do
+                  let rhsReady ← actual.runtimeReady
+                  let bodyReady ← result.runtimeReady
+                  pure ⟨by simpa only [Expr.stripFound] using
+                    (BodyDerives.RuntimeReady.letMono (ann := some annotation)
+                      obligation.down rhsReady.down bodyReady.down)⟩)
           else
             let sourceProof ← match sourceAt with
               | some located => pure located

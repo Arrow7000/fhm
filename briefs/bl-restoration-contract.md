@@ -3049,6 +3049,28 @@ groups, so product support must next thread the pinned interface through group
 assembly, universal RHS checking and group exit rather than revive the legacy
 unverified pinning path.
 
+### Checkpoint 4bk — pinned local interfaces enter the proved body judgment
+
+The generalized-body judgment now has a distinct origin-pinned monomorphic-let
+rule.  Its RHS is derived at the private origin bounds, the carried annotation
+is related to that origin by `ScopedHMAnnotation.Pins`, and the body environment
+contains the pinned demand rather than the more precise RHS result.  This keeps
+provenance, authored obligation and public interface separate in the formal
+rule instead of treating a successful subtype query as sufficient metadata.
+
+Runtime readiness explicitly widens the evaluated RHS along the certified
+semantic inclusion before extending the body environment.  Premise
+strengthening and lexical-scope proofs preserve the same pin certificate.  The
+canonical source-linked walker selects this rule only for a zero-HM-slot local
+annotation containing a count hole; solid annotations continue through the
+existing decoded rule.  Build-failing regressions establish `BL _ 5 Int` over
+an exact length-two RHS as the public interval `BL 2 5 Int`, retain every exact
+node report and the runtime theorem, and reject a false solid upper endpoint.
+
+This is the local `letIn` boundary.  Parsed top-level bindings still lower as
+Core SCC `letRec` groups and therefore require a corresponding group
+introduction path; this checkpoint makes no product-level hole claim yet.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

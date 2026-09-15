@@ -260,6 +260,33 @@ structure Pinned (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindin
   inScope : BoundsScoped caller demand
   inclusion : SemanticSub Δ actual demand
 
+def Pinned.assuming {free slots ids rows caller Δ Δ' τ actual}
+    (p : Pinned free slots ids rows caller Δ τ actual)
+    (premises : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    Pinned free slots ids rows caller Δ' τ actual where
+  demand := p.demand
+  provenance := p.provenance
+  finite := p.finite
+  shape := p.shape
+  inScope := p.inScope
+  inclusion := p.inclusion.assuming premises
+
+mutual
+/-- Does a carried type contain an endpoint hole that must be filled from an
+    already-derived origin rather than decoded as a standalone demand? -/
+def hasHole : Ty → Bool
+  | .prim _ | .fvar _ | .bvar _ => false
+  | .arrow a b => hasHole a || hasHole b
+  | .bl lo hi elem =>
+      (match lo with | .hole => true | .solid _ => false) ||
+      (match hi with | .hole => true | .solid _ => false) || hasHole elem
+  | .customTy _ args => hasHoleList args
+
+def hasHoleList : List Ty → Bool
+  | [] => false
+  | ty :: rest => hasHole ty || hasHoleList rest
+end
+
 /-- Fill every annotation hole from a genuine origin, then validate shape,
 caller scope and semantic inclusion.  The returned interface is safe to expose
 to the binding body; it need not equal the more precise private RHS origin. -/
@@ -285,6 +312,7 @@ def pin (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
 #print axioms AnnotationOK.assuming
 #print axioms AnnotationOK.congrFree
 #print axioms AnnotationOK.congrSlots
+#print axioms Pinned.assuming
 #print axioms Demand.shape
 #print axioms decode
 #print axioms check
