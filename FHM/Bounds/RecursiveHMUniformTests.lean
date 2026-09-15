@@ -101,10 +101,12 @@ private def bodyCalls (badLocal : Bool := false) (polyLocal : Bool := false)
   let secondArg := if nested then
     .app (.app (.ctor consCtorName) (singleton (.char 'a'))) (.ctor nilCtorName)
     else singleton (.char 'a')
+  let localRhs := if polyLocal then singleton (.int 1) else
+    .app (.var 0) (singleton (.int 1))
   let source := Expr.letRec
     [some (bodySignature 7), some (bodySignature 8), some ⟨0, .prim .int⟩]
     [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0)), .primLit (.int 0)]
-    (.letIn localAnn (.app (.var 0) (singleton (.int 1)))
+    (.letIn localAnn localRhs
       (.app (.var 1) secondArg))
   let a ← match inferFound ctors source with
     | some a => pure a | none => throw "test: generalized body HM inference failed"
@@ -635,11 +637,9 @@ def main : IO Unit := do
       IO.println "PASS: an HM-valid local annotation cannot widen an exact singleton body result to an exact length-two contract"
   | .ok _ => throw (IO.userError "generalized body ignored a false local bounds annotation")
   match bodyCalls (polyLocal := true) with
-  | .error message =>
-      unless (message.splitOn "polymorphic").length > 1 do
-        throw (IO.userError s!"wrong generalized local-let guard: {message}")
-      IO.println "PASS: an HM-valid generalized local let fails explicitly until its own universal introduction is available"
-  | .ok _ => throw (IO.userError "generalized local let silently fell back to mono body checking")
+  | .ok true => IO.println "PASS: a closed generalized local let is introduced from its exact source RHS certificate"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "closed generalized local let lost body bounds or exact source-node coverage")
   match bodyCalls (forgedRoot := true) with
   | .error message =>
       unless (message.splitOn "original found payload").length > 1 do
