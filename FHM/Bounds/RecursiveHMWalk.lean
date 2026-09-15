@@ -10,7 +10,7 @@ and carried annotations, builds real recursive HM derivations, and records
 interpreted per-node bounds without rewriting the expression. List/Bool/Pair matches
 retain constructor coverage and variance-correct joins. Full recursive spines
 collect independent count origins before checking guided pending arguments.
-Generalized local lets and nested groups remain explicit
+Generalized local lets and generalized or mutual nested groups remain explicit
 unsupported cases until their existing checker mechanisms are migrated. -/
 
 namespace FHM.Bounds.RecursiveHMWalk
@@ -725,7 +725,39 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
           let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain) (ctors := ctors)
           appendScoped path hm fn actual
       | _ => throw "bounds: interpreted application callee is not an arrow"
-  | .found _ (.letRec _ _ _) => throw "bounds: nested groups unsupported in interpreted universal RHS traversal"
+  | .found hm (.letRec annotations rhss body) =>
+      match annotations, rhss with
+      | [some annotation], [rhs] =>
+          if hmono : annotation.paramCount = 0 then
+            let hint ← RecursiveHMAnnotation.scopedBindingHint types slots ids rows caller
+              (some annotation)
+            let demand ← match hint with
+              | some demand => pure demand
+              | none => throw "bounds: monomorphic nested recursive annotation has no bounds demand"
+            let actual ← walkScoped types slots ids rows caller Δ (.mono demand :: env)
+              (path ++ [.letRecRhs 0]) rhs schemes (some demand) (ctors := ctors)
+            let _ ← checkLocalInterface (some annotation) schemes (.letRec path 0)
+              actual.originalHM
+            let obligation ← RecursiveHMAnnotation.checkScopedBinding types slots ids rows caller
+              Δ (some annotation) demand
+            let inclusion ← Typed.subtype Δ actual.bounds demand
+            let result ← walkScoped types slots ids rows caller Δ (.mono demand :: env)
+              (path ++ [.letRecBody]) body schemes expected (ctors := ctors)
+            finish types slots ids rows caller Δ env
+              (.found hm (.letRec [some annotation] [rhs] body)) path result.bounds
+              (by simpa only [Expr.stripFound] using
+                (ScopedDerives.letRecMono obligation.down actual.derivation
+                  inclusion.down result.derivation))
+              (actual.nodes ++ result.nodes)
+              (do
+                let rhsReady ← actual.runtimeReady
+                let demandSupported ← Runtime.supported? demand
+                let bodyReady ← result.runtimeReady
+                pure ⟨by simpa only [Expr.stripFound] using
+                  (ScopedDerives.RuntimeReady.letRecMono obligation.down inclusion.down
+                    rhsReady.down demandSupported.down bodyReady.down)⟩)
+          else throw "bounds: generalized nested recursive group unsupported in interpreted universal RHS traversal"
+      | _, _ => throw "bounds: non-singleton nested recursive group unsupported in interpreted universal RHS traversal"
   | .found hm (.letIn ann rhs body) =>
       let hint ← RecursiveHMAnnotation.scopedBindingHint types slots ids rows caller ann
       let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.letRhs]) rhs schemes hint (ctors := ctors)

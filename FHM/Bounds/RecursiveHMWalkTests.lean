@@ -248,8 +248,8 @@ private def cases : List (String × Bool) := [
   ("self recursion checks count-only use of the fixed full HM vector", succeeds recursive),
   ("mutual recursion uses the same fixed full HM vector in the common environment", succeeds (recursive true)),
   ("recursive call cannot change its group's fixed HM instantiation", fails (recursive false true) "found payload"),
-  ("nested recursive groups still reject in universally checked RHSs", fails
-    (run (.found identityHM (.letRec [] [] identity))) "nested groups"),
+  ("malformed empty nested recursive groups still reject", fails
+    (run (.found identityHM (.letRec [] [] identity))) "non-singleton nested recursive group"),
   ("missing found wrapper cannot invent a node type", fails (run (.var 0)) "missing found")]
   ++ [
   ("Bool constructor uses the interpreted finite-constructor rule", succeeds
