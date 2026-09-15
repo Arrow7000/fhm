@@ -2986,6 +2986,24 @@ bounds suite remains green without a new axiom or placeholder. This establishes
 the static shape layer needed for parameterized nominal runtime support; it does
 not yet claim runtime meaning or traversal rules for Pair construction/matches.
 
+### Checkpoint 4bh — saturated Pair construction has a runtime meaning
+
+`Pair` joins primitive values, arrows, bounded Lists and Bool in the explicit
+runtime-supported fragment. A positive-budget Pair value is the existing erased
+saturated constructor applied to two values, with each field satisfying its own
+full `BoundsTy`; support, downward closure, count substitution, simultaneous HM
+specialization and semantic subtyping all recurse pointwise through those field
+meanings. The construction theorem uses only the existing small-step value
+rules, and a corresponding `TermAt.pair` composes evaluation of both fields.
+
+The canonical generalized-body judgment and source-linked walker now have a
+dedicated saturated-Pair rule. They validate the inferred full and partial
+constructor payloads, preserve exact child reports and attach the runtime proof
+only when both children possess one. Parsed build-failing regressions establish
+both a Pair containing an exact bounded List and nested Pairs with independently
+precise List origins. Pair pattern elimination remains the next separate unit:
+construction support does not pretend that coverage or field opening is proved.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
