@@ -774,6 +774,30 @@ private def nestedCapturedGroup (monoCapture : Bool := false) (badInner : Bool :
   pure (exact && exactlyOnce (logicalCorePaths artifact.output)
     (program.body.nodes.map (·.path)))
 
+/-- The canonical entry point starts before any group.  An ordinary lambda and
+    application may therefore surround a nested group, whose RHS captures the
+    lambda parameter through the same represented environment. -/
+private def prefixedNestedGroup (badInner : Bool := false) : Except String Bool := do
+  let one := Ty.bl (.solid (.lit 1)) (.solid (.lit 1)) (.prim .int)
+  let two := Ty.bl (.solid (.lit 2)) (.solid (.lit 2)) (.prim .int)
+  let singleton := Expr.app
+    (.app (.ctor consCtorName) (.primLit (.int 1))) (.ctor nilCtorName)
+  let nested := Expr.letRec [some ⟨0, if badInner then two else one⟩]
+    [.var 1] (.var 0)
+  let source := Expr.app (.lambda (some one) nested) singleton
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let artifact ← match inferFound ctors source with
+    | some artifact => pure artifact
+    | none => throw "test: prefixed nested group HM inference failed"
+  let result ← checkProgram artifact.output {} artifact.binderSchemes
+  if !result.runtimeSafety?.isSome then
+    throw "test: prefixed nested group lost its runtime theorem"
+  let exact := match result.bounds with
+    | .list lo hi (.prim .int) =>
+        lo.eval (fun _ => 0) == .ofNat 1 && hi.eval (fun _ => 0) == .ofNat 1
+    | _ => false
+  pure (exact && exactlyOnce (logicalCorePaths artifact.output) (result.nodes.map (·.path)))
+
 def main : IO Unit := do
   match actual with
   | .ok true => IO.println "PASS: every actual member universally specializes through one full group HM map with permuted slots and distinct count telescopes"
@@ -938,6 +962,16 @@ def main : IO Unit := do
         throw (IO.userError s!"wrong nested-group ceiling rejection: {message}")
       IO.println "PASS: a captured outer value cannot justify a false nested-group ceiling"
   | .ok _ => throw (IO.userError "nested group accepted a false result ceiling")
+  match prefixedNestedGroup with
+  | .ok true => IO.println "PASS: the canonical program checker reaches a captured group through ordinary lambda/application prefixes"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "prefixed nested group lost bounds, runtime evidence or source coverage")
+  match prefixedNestedGroup true with
+  | .error message =>
+      unless (message.splitOn "inclusion").length > 1 do
+        throw (IO.userError s!"wrong prefixed nested-group rejection: {message}")
+      IO.println "PASS: ordinary program prefixes do not hide a false nested-group ceiling"
+  | .ok _ => throw (IO.userError "program-prefix traversal accepted a false nested-group ceiling")
 
 #eval do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []

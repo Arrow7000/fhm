@@ -2198,6 +2198,14 @@ structure BodyCapture (env : List BodyBinding) where
   countClosed : ∀ c, .recursive c ∈ rhsEnv → c.template.counts.captures = []
   exportCountClosed : ∀ s, .exported s ∈ rhsEnv → s.counts.captures = []
 
+private def emptyBodyCapture : BodyCapture [] where
+  rhsEnv := []
+  bodyEnv := rfl
+  captured := by simp [RecursiveHMEnvironment.Captured]
+  arguments := by simp [RecursiveArgumentsSupported]
+  countClosed := by simp
+  exportCountClosed := by simp
+
 private theorem interfaceCaptured
     {output metadata path premises typeCaptures index vectors}
     (ps : HMDeclaredGroup.Interfaces output metadata path [] premises typeCaptures index vectors) :
@@ -3531,6 +3539,17 @@ def checkClosedProgram (output : Expr) (metadata : Scope.Metadata)
     simpa only [Expr.atCorePath, Option.some.injEq] using assembled.checked.source
   pure ⟨assembled, by simpa only [sourceEq] using body⟩
 
+/-- Canonical source-linked program entry point.  Unlike the historical
+    root-group slice, this begins with the empty represented environment and
+    therefore covers ordinary prefixes as well as a recursive group at any
+    supported source position.  Successful results carry the same derivation,
+    exact-node report and optional runtime theorem as `checkClosedProgram`. -/
+def checkProgram (output : Expr) (metadata : Scope.Metadata)
+    (schemes : BinderSchemeMap := []) (expected : Option BoundsTy := none) :
+    Except String (BodyResult [] [] [] [] [] output) :=
+  walkBodySource output metadata [] [] [] [] [] [] output schemes
+    (some emptyBodyCapture) (some ⟨by simp [Expr.atCorePath]⟩) expected
+
 /-- Extract the runtime theorem carried by a supported closed report. This is
     indexed by its EXACT input artifact and inferred bounds, not by a rebuilt
     expression. A missing witness makes no runtime soundness claim. Constraint
@@ -3560,5 +3579,6 @@ def BodyResult.runtimeSafety? {ids rows caller Δ output}
 #print axioms walkBody
 #print axioms checkBody
 #print axioms checkClosedProgram
+#print axioms checkProgram
 
 end FHM.Bounds.RecursiveHMUniform

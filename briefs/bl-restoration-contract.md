@@ -2874,6 +2874,25 @@ No fallback traversal, reconstructed source node, termination premise, partial
 definition, placeholder or new axiom is introduced.  HM/D2, Path R and the
 existing arithmetic-solver trust boundary remain unchanged.
 
+### Checkpoint 4bc — one canonical checker starts before recursive groups
+
+`RecursiveHMUniform.checkProgram` now starts the source-linked body traversal in
+an explicitly empty represented environment.  It checks ordinary literals,
+applications, lambdas, monomorphic/generalized lets and matches before, around
+and after recursive groups, instead of requiring the whole artifact to have a
+root `letRec`.  A group encountered at any supported path goes through the same
+all-member assembly, captured-environment introduction and runtime theorem as
+checkpoint 4bb; there is no prefix-specific group rule.
+
+The regression wraps a captured nested group inside an ordinary lambda and
+application, retains exact singleton bounds, covers every original Core node
+once and extracts the closed runtime-safety theorem.  Tightening the nested
+group to a false length-two ceiling still fails its independent inclusion check.
+The older `checkClosedProgram` root result remains temporarily for compatibility;
+the new entry point is the intended verified program boundary for report/LSP
+wiring.  No new axiom, placeholder, partial definition or fallback engine is
+introduced.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
