@@ -2415,7 +2415,8 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
   | .found hm (.letIn ann rhs body) =>
       match ann with
       | some annotation =>
-          if annotation.paramCount == 0 then
+          if annotation.paramCount == 0 &&
+              (metadata.telescopes.filter (fun telescope => telescope.site == .letIn path)).isEmpty then
             let hint ← RecursiveHMAnnotation.scopedBindingHint BoundsTy.fvar BoundsTy.bvar
               ids rows caller (some annotation)
             let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
