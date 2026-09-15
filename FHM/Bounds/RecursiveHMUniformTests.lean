@@ -744,6 +744,36 @@ private def deferredBodyProgram (badCallback : Bool := false) (onlyDeferred : Bo
     | _ => false
   pure (exact && exactlyOnce (logicalCorePaths artifact.output) (program.body.nodes.map (·.path)))
 
+/-- Once an outer group has been accepted, a later group's RHS sees its
+    generalized exit, not the opaque monotype that was fixed only while proving
+    the outer group.  The two groups deliberately use distinct HM identities
+    and count coordinates. -/
+private def nestedPolymorphicExport : Except String Bool := do
+  let outer := bodySignature 7
+  let inner := bodySignature 8
+  let outerRhs := Expr.lambda none (.var 0)
+  let innerRhs := Expr.lambda none (.app (.var 2) (.var 0))
+  let singleton := Expr.app
+    (.app (.ctor consCtorName) (.primLit (.char 'z'))) (.ctor nilCtorName)
+  let source := Expr.letRec [some outer] [outerRhs]
+    (.letRec [some inner] [innerRhs] (.app (.var 0) singleton))
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let artifact ← match inferFound ctors source with
+    | some artifact => pure artifact
+    | none => throw "test: nested polymorphic export HM inference failed"
+  let metadata : Scope.Metadata :=
+    { telescopes := [⟨.letRec [] 0, [(⟨"n"⟩, 7)]⟩,
+        ⟨.letRec [.letRecBody] 0, [(⟨"m"⟩, 8)]⟩] }
+  let program ← checkClosedProgram artifact.output metadata artifact.binderSchemes
+  if !program.body.runtimeSafety?.isSome then
+    throw "test: nested polymorphic export lost its runtime theorem"
+  let exact := match program.body.bounds with
+    | .list lo hi (.prim .char) =>
+        lo.eval (fun _ => 0) == .ofNat 1 && hi.eval (fun _ => 0) == .ofNat 1
+    | _ => false
+  pure (exact && exactlyOnce (logicalCorePaths artifact.output)
+    (program.body.nodes.map (·.path)))
+
 /-- Nested groups close over the already checked outer runtime environment.
     Exercise both an earlier generalized group export and an intervening exact
     monomorphic let; a false inner ceiling must still fail independently. -/
@@ -949,6 +979,10 @@ def main : IO Unit := do
         unless (message.splitOn part).length > 1 do throw (IO.userError s!"wrong deferred body rejection ({name}): {message}")
         IO.println s!"PASS: {name}"
     | .ok _ => throw (IO.userError s!"unexpected deferred body acceptance: {name}")
+  match nestedPolymorphicExport with
+  | .ok true => IO.println "PASS: later recursive RHSs capture earlier groups through their generalized polymorphic exits"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "nested polymorphic export lost its type/count instance, runtime evidence or source coverage")
   for (monoCapture, name) in [
       (false, "an earlier generalized export"),
       (true, "an intervening monomorphic let")] do

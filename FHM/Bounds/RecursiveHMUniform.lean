@@ -603,6 +603,14 @@ private def ordinaryBinding : Binding → BodyBinding
 
 def ordinaryBodyEnv (env : List Binding) : List BodyBinding := env.map ordinaryBinding
 
+private theorem ordinaryBodyEnv_exports (schemes : List HMCountScheme.Scheme) :
+    ordinaryBodyEnv (schemes.map Binding.exported) = schemes.map BodyBinding.exported := by
+  induction schemes with
+  | nil => rfl
+  | cons _ rest ih =>
+      simp only [List.map_cons, ordinaryBodyEnv, ordinaryBinding]
+      exact congrArg (List.cons _) (by simpa only [ordinaryBodyEnv] using ih)
+
 /-- Runtime conversion of recursive RHS assumptions additionally records that
     every fixed HM argument exported to the body runtime has an interpretation.
     This is independent of whether a particular RHS happens to use that slot. -/
@@ -2383,79 +2391,38 @@ private def emptyBodyCapture : BodyCapture [] where
   countClosed := by simp
   exportCountClosed := by simp
 
-private theorem interfaceCaptured
-    {output metadata path premises typeCaptures index vectors}
-    (ps : HMDeclaredGroup.Interfaces output metadata path [] premises typeCaptures index vectors) :
-    RecursiveHMEnvironment.Captured [] (ps.contracts.map Binding.recursive) := by
-  induction ps with
-  | nil => simp [HMDeclaredGroup.Interfaces.contracts, RecursiveHMEnvironment.Captured]
-  | cons p _ rest ih =>
-      constructor
-      · intro β member; simp at member
-      · intro c member a argument
-        rcases List.mem_cons.mp (by
-          simpa [HMDeclaredGroup.Interfaces.contracts] using member) with head | tail
-        · cases head
-          obtain ⟨i, _, rfl⟩ := List.mem_map.mp (by
-            simpa [HMDeclaredGroup.Member.contract, RecursiveHMContract.fromOpaque] using argument)
-          simp [BoundsScoped]
-        · exact ih.2 c (by simpa using tail) a argument
-
-private theorem interfaceArgumentsSupported
-    {output metadata path premises typeCaptures index vectors}
-    (ps : HMDeclaredGroup.Interfaces output metadata path [] premises typeCaptures index vectors) :
-    RecursiveArgumentsSupported (ps.contracts.map Binding.recursive) := by
-  induction ps with
-  | nil => simp [HMDeclaredGroup.Interfaces.contracts, RecursiveArgumentsSupported]
-  | cons p _ rest ih =>
-      intro c member a argument
-      rcases List.mem_cons.mp (by
-        simpa [HMDeclaredGroup.Interfaces.contracts] using member) with head | tail
-      · cases head
-        obtain ⟨i, _, rfl⟩ := List.mem_map.mp (by
-          simpa [HMDeclaredGroup.Member.contract, RecursiveHMContract.fromOpaque] using argument)
-        exact .fvar
-      · exact ih c (by simpa using tail) a argument
-
-private theorem interfaceCountsClosed
-    {output metadata path premises typeCaptures index vectors}
-    (ps : HMDeclaredGroup.Interfaces output metadata path [] premises typeCaptures index vectors) :
-    ∀ c, .recursive c ∈ ps.contracts.map Binding.recursive →
-      c.template.counts.captures = [] := by
-  induction ps with
-  | nil => simp [HMDeclaredGroup.Interfaces.contracts]
-  | cons p _ rest ih =>
-      intro c member
-      rcases List.mem_cons.mp (by
-        simpa [HMDeclaredGroup.Interfaces.contracts] using member) with head | tail
-      · cases head
-        rfl
-      · exact ih c (by simpa using tail)
-
-private theorem checkedMembersBodyEnv
+/-- Every exit from a group checked with no enclosing count telescope is itself
+    count-closed.  This lets later groups capture the generalized exit rather
+    than the old fixed recursive opening. -/
+private theorem checkedMembersExportCountsClosed
     {output metadata path premises typeCaptures env index vectors}
     {ps : HMDeclaredGroup.Interfaces output metadata path [] premises typeCaptures index vectors}
     (members : HMDeclaredGroup.CheckedMembers env ps) :
-    ordinaryBodyEnv (ps.contracts.map Binding.recursive) =
-      members.exports.map BodyBinding.exported := by
+    ∀ s ∈ members.exports, s.counts.captures = [] := by
   induction members with
-  | nil => rfl
+  | nil => simp [HMDeclaredGroup.CheckedMembers.exports]
   | cons head rest ih =>
-      simp only [HMDeclaredGroup.Interfaces.contracts, List.map_cons, ordinaryBodyEnv,
-        ordinaryBinding, HMDeclaredGroup.CheckedMembers.exports]
-      rw [head.certificateScheme]
-      exact congrArg (List.cons (BodyBinding.exported head.certificate.interface.scheme)) ih
+      intro s member
+      rcases List.mem_cons.mp member with first | tail
+      · cases first
+        rfl
+      · exact ih s tail
 
 private def checkedGroupBodyCapture
     {output metadata path vectors premises bodyTypes}
     (g : HMDeclaredGroup.Checked output metadata path vectors [] premises bodyTypes []) :
     BodyCapture (g.exports.map BodyBinding.exported) where
-  rhsEnv := g.interfaces.contracts.map Binding.recursive
-  bodyEnv := checkedMembersBodyEnv g.members
-  captured := interfaceCaptured g.interfaces
-  arguments := interfaceArgumentsSupported g.interfaces
-  countClosed := interfaceCountsClosed g.interfaces
-  exportCountClosed := by intro s member; simp at member
+  rhsEnv := g.exports.map Binding.exported
+  bodyEnv := ordinaryBodyEnv_exports g.exports
+  captured := by simp [RecursiveHMEnvironment.Captured]
+  arguments := by simp [RecursiveArgumentsSupported]
+  countClosed := by intro c member; simp at member
+  exportCountClosed := by
+    intro s member
+    obtain ⟨t, source, same⟩ := List.mem_map.mp member
+    injection same with same
+    subst s
+    exact checkedMembersExportCountsClosed g.members t source
 
 /-- Enter a checked nested group without losing the exact recursive assumptions
     represented by the surrounding body environment.  The new group's fixed
@@ -2465,39 +2432,45 @@ private def BodyCapture.extendGroup {env output metadata path vectors premises b
     (capture : BodyCapture env)
     (g : HMDeclaredGroup.Checked output metadata path vectors [] premises bodyTypes capture.rhsEnv) :
     BodyCapture (g.exports.map BodyBinding.exported ++ env) where
-  rhsEnv := g.interfaces.contracts.map Binding.recursive ++ capture.rhsEnv
+  rhsEnv := g.exports.map Binding.exported ++ capture.rhsEnv
   bodyEnv := by
-    have inner := checkedMembersBodyEnv g.members
-    have outer := capture.bodyEnv
-    simp only [ordinaryBodyEnv, List.map_append] at inner outer ⊢
-    rw [inner, outer]
-    rfl
+    calc
+      ordinaryBodyEnv (g.exports.map Binding.exported ++ capture.rhsEnv) =
+          ordinaryBodyEnv (g.exports.map Binding.exported) ++ ordinaryBodyEnv capture.rhsEnv := by
+            simp only [ordinaryBodyEnv, List.map_append]
+      _ = g.exports.map BodyBinding.exported ++ env := by
+        rw [ordinaryBodyEnv_exports, capture.bodyEnv]
   captured := by
     constructor
     · intro β member
       rcases List.mem_append.mp member with inner | outer
-      · obtain ⟨contract, _, impossible⟩ := List.mem_map.mp inner
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
         cases impossible
       · exact capture.captured.1 β outer
     · intro contract member β argument
       rcases List.mem_append.mp member with inner | outer
-      · exact (interfaceCaptured g.interfaces).2 contract inner β argument
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
       · exact capture.captured.2 contract outer β argument
   arguments := by
     intro contract member β argument
     rcases List.mem_append.mp member with inner | outer
-    · exact interfaceArgumentsSupported g.interfaces contract inner β argument
+    · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+      cases impossible
     · exact capture.arguments contract outer β argument
   countClosed := by
     intro contract member
     rcases List.mem_append.mp member with inner | outer
-    · exact interfaceCountsClosed g.interfaces contract inner
+    · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+      cases impossible
     · exact capture.countClosed contract outer
   exportCountClosed := by
     intro s member
     rcases List.mem_append.mp member with inner | outer
-    · obtain ⟨contract, _, impossible⟩ := List.mem_map.mp inner
-      cases impossible
+    · obtain ⟨t, source, same⟩ := List.mem_map.mp inner
+      injection same with same
+      subst s
+      exact checkedMembersExportCountsClosed g.members t source
     · exact capture.exportCountClosed s outer
 
 private def BodyCapture.extendMono {env} (capture : BodyCapture env) (β : BoundsTy)

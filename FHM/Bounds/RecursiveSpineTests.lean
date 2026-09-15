@@ -55,10 +55,12 @@ private def cases : List (String × Bool) := [
       [none, some (exact (.lit 2))] with
     | .ok args => args == [.lit 2]
     | .error _ => false),
-  ("deferral does not guess through a compound-only actual", fails
-    (CountProposal.proposeOrigins [7]
+  ("a later ground additive actual supplies a deferred callback coordinate", match
+    CountProposal.proposeOrigins [7]
       (.arrow (.arrow (exact k) (exact k)) (.arrow (exact (.add k (.lit 1))) (exact k)))
-      [none, some (exact (.lit 2))]) "independent origin"),
+      [none, some (exact (.lit 2))] with
+    | .ok args => args == [.lit 1]
+    | .error _ => false),
   ("deferred coordinates without an origin do not default to zero", fails
     (CountProposal.proposeOrigins [7, 8]
       (.arrow (.arrow (exact k) (exact m)) (.arrow (exact k) (exact k)))
@@ -82,9 +84,14 @@ private def cases : List (String × Bool) := [
   ("later direct witness can supply an earlier compound occurrence", proposes [7]
     (.arrow (exact (.add k (.lit 1))) (.arrow (exact k) (exact k)))
     [exact (.lit 2), exact (.lit 1)] [.lit 1]),
-  ("compound-only occurrence still needs unsupported inversion", fails
-    (CountProposal.proposeArguments [7] (.arrow (exact (.add k (.lit 1))) (exact k))
-      [exact (.lit 2)]) "arithmetic inversion"),
+  ("a ground additive endpoint supplies its uniquely peeled coordinate", proposes [7]
+    (.arrow (exact (.add k (.lit 1))) (exact k)) [exact (.lit 2)] [.lit 1]),
+  ("additive peeling rejects an impossible natural predecessor", fails
+    (CountProposal.proposeArguments [7] (.arrow (exact (.add k (.lit 2))) (exact k))
+      [exact (.lit 1)]) "arithmetic inversion"),
+  ("ambiguous multiplicative endpoints remain unsupported", fails
+    (CountProposal.proposeArguments [7] (.arrow (exact (.mul k (.lit 2))) (exact k))
+      [exact (.lit 4)]) "arithmetic inversion"),
   ("result-only coordinate remains an explicit finite witness", proposes [7]
     (.arrow (.prim .int) (exact k)) [.prim .int] [.lit 0]),
   ("captured coordinates are never included in the proposal telescope", proposes [7]

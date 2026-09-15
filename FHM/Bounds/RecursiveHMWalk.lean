@@ -41,7 +41,7 @@ private def finish (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bin
       let viewed := ScopedHMInterpretation.ty types slots original
       let shape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy β) viewed with
         | some h => pure h
-        | none => throw "bounds: actual RHS disagrees with HM-interpreted found payload"
+        | none => throw s!"bounds: actual RHS disagrees with HM-interpreted found payload at {repr path}: {β.pretty} versus {repr viewed}"
       if hs : boundsScopedBool caller β = true then
         if hf : rows.all (fun row => row.2.noInf) = true then
           pure ⟨original, hr, β, shape.down, h, boundsScopedBool_sound hs,
@@ -521,11 +521,10 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
               return ← completeScopedSpine types slots ids rows caller Δ env checked hv used schemes
           | some (.exported s) =>
               let checked ← walkScopedSpine types slots ids rows caller Δ env spine schemes
-              let actuals ← checked.actualsRev.reverse.mapM fun
-                | some actual => pure actual
-                | none => throw "bounds: exported RHS spine argument needs an independent bounds origin"
-              let typeArgs ← StructuralApplication.proposeArguments s.counts.body actuals s.hm.paramCount
-              let counts ← CountProposal.proposeArguments s.counts.quantified s.counts.body actuals
+              let origins := checked.actualsRev.reverse
+              let typeArgs ← StructuralApplication.proposeOrigins
+                s.counts.body origins s.hm.paramCount
+              let counts ← CountProposal.proposeOrigins s.counts.quantified s.counts.body origins
               let used ← HMCountScheme.check s Δ
                 (ScopedHMInterpretation.ty types slots spine.headHM) counts typeArgs caller
               return ← completeExportedScopedSpine types slots ids rows caller Δ env checked hv used schemes
@@ -678,7 +677,7 @@ private def completeExportedScopedSpine (types slots : Nat → BoundsTy) (ids : 
       | .arrow domain _ =>
           let checked ← match actual with
             | some checked => pure checked
-            | none => throw "bounds: exported RHS spine lost a checked argument"
+            | none => walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain)
           appendScoped path hm prior checked
       | _ => throw "bounds: deferred exported spine applies a non-arrow scheme result"
 termination_by (sizeOf e, 0)

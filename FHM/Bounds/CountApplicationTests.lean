@@ -218,8 +218,8 @@ private def cases : List (String × Bool) := [
     (implicitRun identity one oneBounds (oneTyping []) intList [] true) "not established"),
   ("implicit upper endpoint supplies quantified count", succeeds
     (implicitRun upperOnly one oneBounds (oneTyping []) intList)),
-  ("compound-only implicit count occurrence explicitly deferred", fails
-    (implicitRun compound one oneBounds (oneTyping []) intList) "arithmetic inversion"),
+  ("ground additive implicit count occurrence is peeled and rechecked", succeeds
+    (implicitRun compound one oneBounds (oneTyping []) intList)),
   ("deferred compound contract remains usable with explicit counts", succeeds
     (run compound one oneBounds (oneTyping []) intList [.lit 0])),
   ("count proposals follow telescope order not occurrence order", match
