@@ -125,6 +125,10 @@ private def cases : List (String × Bool) := [
     (run "[1, 2]\n") "BL 2 2 Int"),
   ("parsed ordinary monomorphic root let retains its checked List bounds", returns
     (run "let xs : BL 2 2 Int = [1, 2]\nxs\n") "BL 2 2 Int"),
+  ("parsed inferred polymorphic identity exports independent HM instances", returns
+    (run "let id = \\x -> x\n(id 1, id True)\n") "(Int, Bool)"),
+  ("parsed inferred polymorphic identity retains its runtime theorem", succeeds
+    (runtimeCertified "let id = \\x -> x\n(id 1, id True)\n")),
   ("parsed ordinary root let still checks its source annotation", fails
     (run "let xs : BL 0 0 Int = [1]\nxs\n") "interval inclusion"),
   ("parsed hole-annotated identity generalizes RHS-induced count sharing", returns (run (

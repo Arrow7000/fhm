@@ -96,21 +96,25 @@ private inductive BranchContext where
   | list (lo hi : Count) (elem : BoundsTy)
   | bool
   | pair (left right : BoundsTy)
+  | opaque (scrutinee : BoundsTy)
 
 private def BranchContext.refine : BranchContext → MatchPattern → List Constraint
   | .list lo hi _, p => RecursiveTyping.branchRefine p lo hi
   | .bool, _ => []
   | .pair _ _, _ => []
+  | .opaque _, _ => []
 
 private def BranchContext.extend : BranchContext → MatchPattern → List Binding → List Binding
   | .list lo hi elem, p, env => branchEnv p lo hi elem env
   | .bool, _, env => env
   | .pair left right, p, env => pairBranchEnv p left right env
+  | .opaque _, _, env => env
 
 private def BranchContext.Pattern : BranchContext → MatchPattern → Prop
   | .list _ _ _, p => RecursiveTyping.ListPattern p
   | .bool, p => BoolBranches.Pattern p
   | .pair _ _, p => PairBranches.Pattern p
+  | .opaque _, p => p = .wildcard
 
 private instance (ctx : BranchContext) (p : MatchPattern) : Decidable (ctx.Pattern p) := by
   cases ctx <;> unfold BranchContext.Pattern <;> infer_instance
@@ -353,6 +357,27 @@ private def pair_match_ready {types slots ids rows caller Δ env branches left r
       rcases strip_index atIndex with ⟨br, atSource, rfl⟩
       simpa only [BranchContext.refine, BranchContext.extend, List.append_nil] using
         bodies.down i br atSource⟩
+
+private theorem opaque_match_typing {types slots ids rows caller Δ env branches scrutinee β}
+    {scrut : Expr}
+    (hs : ScopedDerives types slots ids rows Δ env scrut.stripFound scrutinee)
+    (arms : BranchResults types slots ids rows caller Δ env (.opaque scrutinee) branches)
+    (hb : arms.bounds = some β) :
+    ScopedDerives types slots ids rows Δ env (Expr.match_ scrut branches).stripFound β := by
+  simp only [Expr.stripFound]
+  apply ScopedDerives.matchOpaque (actuals := arms.actuals) hs
+  · intro arm member
+    rw [stripBranches] at member
+    obtain ⟨br, atSource, rfl⟩ := List.mem_map.mp member
+    exact arms.patterns br atSource
+  · intro i arm atIndex
+    rcases strip_index atIndex with ⟨br, atSource, rfl⟩
+    simpa only [BranchContext.refine, BranchContext.extend, List.append_nil] using
+      arms.typing i br atSource
+  · intro i arm atIndex
+    rcases strip_index atIndex with ⟨br, atSource, rfl⟩
+    simpa only [hb, BranchContext.refine, List.append_nil] using
+      arms.inclusions i br atSource
 
 private def appendScoped {types slots ids rows caller Δ env fn arg} (path : CorePath) (hm : Ty)
     (prior : ScopedResult types slots ids rows caller Δ env fn)
@@ -679,7 +704,16 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                 (input.nodes ++ arms.nodes)
                 (by simpa only [Expr.stripFound] using pairReady)
           else throw "bounds: interpreted match scrutinee is not List, Bool, or Pair"
-      | _ => throw "bounds: interpreted match scrutinee is not List, Bool, or Pair"
+      | _ =>
+          let arms ← walkScopedBranches types slots ids rows caller Δ env
+            (.opaque input.bounds) path branches 0 schemes expected
+          match hb : arms.bounds with
+          | none => throw "bounds: interpreted wildcard match has no result-producing branch"
+          | some β =>
+              finish types slots ids rows caller Δ env (.found hm (.match_ scrut branches)) path β
+                (by simpa only [Expr.stripFound] using
+                  opaque_match_typing input.derivation arms hb)
+                (input.nodes ++ arms.nodes) none
   | _ => throw "bounds: unsupported or missing found node in interpreted RHS traversal"
 termination_by (sizeOf e, 1)
 
