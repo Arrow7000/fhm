@@ -449,6 +449,14 @@ def hoverReport (src : String) : Option HoverReport :=
   | .error _ => none
   | .ok (p, bs, sp) => some (collectHover src p bs sp)
 
+/-- Explicit canonical Bounds-mode report. HM tests above and below continue to
+exercise Path R through `hoverReport`; the editor's auto mode selects this path
+for a parsed program containing `BL`. -/
+def hoverReportBL (src : String) : Option HoverReport :=
+  match parseProgramWithSpans src with
+  | .error _ => none
+  | .ok (p, bs, sp) => some (collectHoverBL src p bs sp)
+
 -- E6. Impossible length ascription is irrelevant to HM element typing.
 def holeFailSrc : String :=
   "let xs : BL _ 0 Int = [1, 2]\nxs\n"
@@ -514,6 +522,44 @@ def synthFailSrc : String :=
   | none => false
   | some r =>
       r.diagnostics.isEmpty && r.programTy == "List Int")
+
+/-! ## Canonical Bounds editor mode -/
+
+def namedBoundsHoverSrc : String :=
+  "let id : {n : Nat, a} BL n n a -> BL n n a =\n" ++
+  "  \\xs -> xs\n" ++
+  "id [1]\n"
+
+-- Declared source names survive the checker's locally opened/reindexed type
+-- and count variables at the binding, lambda parameter, and expression node.
+#guard (match hoverReportBL namedBoundsHoverSrc with
+  | none => false
+  | some r =>
+      r.diagnostics.isEmpty &&
+      (r.symbols.any fun s => s.name == "id" && s.kind == "val" &&
+        s.type_ == "∀ a. BL n n a → BL n n a") &&
+      (r.symbols.any fun s => s.name == "xs" && s.kind == "param" &&
+        s.type_ == "BL n n a") &&
+      !(r.symbols.any fun s => hasSub s.type_ "?k" || hasSub s.type_ "?t"))
+
+-- Whitespace inside an authored expression resolves to the smallest enclosing
+-- expression artifact, so hover is not restricted to identifiers/binders.
+#guard (match hoverReportBL namedBoundsHoverSrc with
+  | none => false
+  | some r =>
+      match symbolAt r.symbols 3 3 with -- space in `id [1]`
+      | some s => s.kind == "expr" && hasSub s.type_ "BL" && hasSub s.type_ "Int"
+      | none => false)
+
+-- Bounds rejection remains a real build guard and retains useful symbols for
+-- the editor instead of dropping the successfully inferred HM/provenance data.
+#guard (match hoverReportBL synthFailSrc with
+  | none => false
+  | some r =>
+      (!r.diagnostics.isEmpty) &&
+      (r.diagnostics.any fun d => hasSub d.message "bounds") &&
+      (r.symbols.any fun s => s.name == "xs" && s.kind == "val" &&
+        s.type_ == "BL 0 0 Int"))
 
 /-! ## HM / lower diagnostics (must not collapse to file-top (1,1)) -/
 

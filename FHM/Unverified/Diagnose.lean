@@ -26,12 +26,20 @@ Line/col are 1-based half-open spans (same as `ParseError` / the lexer).
 open Lean
 
 def diagnoseUsage : String :=
-  "usage: fhm diagnose [path]\n\
+  "usage: fhm diagnose [--hm|--bl|--auto] [path]\n\
+   --hm: Path-R HM checking (default; count claims are unchecked)\n\
+   --bl: canonical Bounds checking\n\
+   --auto: use Bounds checking when the program contains BL\n\
    with path: read that file\n\
    without: read source from stdin"
 
 def runDiagnose (args : List String) : IO UInt32 := do
-  let src ← match args with
+  let (mode, paths) := match args with
+    | "--hm" :: rest => ("hm", rest)
+    | "--bl" :: rest => ("bl", rest)
+    | "--auto" :: rest => ("auto", rest)
+    | rest => ("hm", rest)
+  let src ← match paths with
     | [] =>
       let stdin ← IO.getStdin
       stdin.readToEnd
@@ -39,7 +47,9 @@ def runDiagnose (args : List String) : IO UInt32 := do
     | _ =>
       IO.eprintln diagnoseUsage
       return 2
-  let payload := diagnosePayload src
+  let payload := if mode == "bl" then diagnosePayloadMode true src
+    else if mode == "auto" then diagnosePayloadAuto src
+    else diagnosePayload src
   IO.println payload.pretty
   let hasDiags :=
     match payload.getObjVal? "diagnostics" with

@@ -4,9 +4,9 @@
 
 - **Syntax highlighting** for `.fhm` via a TextMate grammar generated from `Surface.Lex`
 - **Language config** — `--` / `{- -}` comments, brackets, auto-close
-- **Parse, lowering and HM diagnostics on edit** (debounced) via `fhm diagnose`.
+- **Parse, lowering, HM and canonical Bounds diagnostics on edit** (debounced) via `fhm diagnose`.
 - **Type-on-hover** (v3) from actual inferred artifacts and a separate source/Core provenance map. Definitions show validated declarations or inferred schemes; occurrences show independently instantiated monotypes. Lambda/pattern binders and authored compound expressions are covered. Exact spans win before name/scope fallback.
-- **HM only:** carried `BL` types display as `List`, without bounds checking. Scoped head-type-variable sugar is still unsupported; prefer explicit schemes and ordinary lambdas.
+- **Checker modes:** `auto` (the default) runs canonical Bounds checking when the parsed program contains `BL`; `hm` retains Path-R bounds blindness and displays `BL` as `List`; `bl` always requests the canonical checker. Scoped head-type-variable sugar is still unsupported; prefer explicit schemes and ordinary lambdas.
 
 ## Install via symlink (Cursor)
 
@@ -55,6 +55,7 @@ Line/col are **1-based UTF-16**, half-open `[start, end)` (same as the lexer/edi
 lake build FHMEditorTests   # #guard canaries in FHM/Unverified/EditorSupportTests.lean
 lake build fhm
 .lake/build/bin/fhm diagnose editors/web/fixtures/hover-rich.fhm
+.lake/build/bin/fhm diagnose --bl scratch/bl-live.fhm
 node scripts/hm-editor-smoke.mjs
 node scripts/scratch-hm-audit.mjs
 node editors/vscode/test/lifecycle-regression.cjs
@@ -75,3 +76,4 @@ Keywords / ops / punct come from `keywordEntries`, `binOpSurfaces`, `punctSurfac
 | `fhm.diagnostics.enable` | `true` | Show diagnostics; hover inference still runs when disabled |
 | `fhm.diagnostics.debounceMs` | `300` | Debounce for `didChange` |
 | `fhm.diagnosePath` | `""` | Override path to `fhm` binary. Empty = search workspace `.lake/build/bin/fhm`. |
+| `fhm.boundsMode` | `"auto"` | `auto`, bounds-blind `hm`, or canonical `bl` checking and hover. |
