@@ -3268,6 +3268,22 @@ variable without silently upgrading it to an exported scheme. This is the
 foundational judgment seam for the structurally recursive deep RHS driver; no
 new generalized-group acceptance rule is claimed at this checkpoint.
 
+### Checkpoint 4bs — fixed recursive spines in the deep traversal
+
+The canonical generalized-body traversal now recognizes a fixed recursive
+binding at the head of a complete application spine. It gathers count origins
+from all source arguments, checks one `RecursiveHMContract.Use`, and reuses that
+single use at every application prefix. Deferred arguments are checked against
+domains from the same instantiated contract. Unlike an exported spine, this
+path never proposes or independently instantiates HM arguments.
+
+Both source-linked and source-agnostic spine paths preserve exact node reports
+and the runtime witness when the supported fragment permits one. This extends
+the 4br judgment seam from bare recursive variables to realistic recursive
+functions. Wiring a fixed capture mode through nested generalized group
+introduction remains the next step; this checkpoint alone does not route the
+declared group checker through the deep traversal.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

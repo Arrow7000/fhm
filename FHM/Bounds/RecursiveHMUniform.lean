@@ -4931,6 +4931,39 @@ private def useBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
       | _ => throw "bounds: deferred generalized body spine applies a non-arrow scheme result"
 termination_by (sizeOf e, 0)
 
+/-- A fixed recursive spine chooses one count instance for the entire call and
+    retains the contract's already-fixed HM vector.  Deferred arguments are
+    checked against domains from that same instance; no generalized export is
+    introduced inside the SCC. -/
+private def useRecursiveBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
+    {ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e}
+    (checked : BodySpine sourceOutput ids rows caller Δ env spine) {c : Contract}
+    (lookup : env[spine.index]? = some (.recursive c))
+    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) (schemes : BinderSchemeMap)
+    (capture : Option (BodyCapture env)) (ctors : CtorEnv) :
+    Except String (BodyResult ids rows caller Δ env e) := do
+  match checked with
+  | .head path i hm =>
+      finishBody path hm used.bounds rfl
+        (by simpa only [Expr.stripFound] using BodyDerives.varRecursive lookup used) []
+        (do
+          let supported ← Runtime.supported? used.bounds
+          pure ⟨by simpa only [Expr.stripFound] using
+            (BodyDerives.RuntimeReady.varRecursive (ids := ids) (rows := rows)
+              (i := i) lookup used supported.down)⟩)
+  | .app (arg := arg) path hm previous actual source =>
+      let prior ← useRecursiveBodySpine sourceOutput metadata previous lookup used schemes capture ctors
+      match prior.bounds with
+      | .arrow domain _ =>
+          let checked ← match actual with
+            | some checked => pure checked
+            | none =>
+                walkBodySource sourceOutput metadata ids rows caller Δ env
+                  (path ++ [.appArg]) arg schemes capture source (some domain) ctors
+          appendBody path hm prior checked
+      | _ => throw "bounds: deferred fixed recursive spine applies a non-arrow contract result"
+termination_by (sizeOf e, 0)
+
 
 /-- Certify and export a closed singleton recursive RHS whose source annotation
     contains count holes. Fresh rigid count identities are proposed, but the
@@ -5562,6 +5595,13 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       match sourceAt.bind (parseBodySpineSource sourceOutput path (.found hm (.app fn arg))) with
       | some ⟨spine, spineSource⟩ =>
           match hv : env[spine.index]? with
+          | some (.recursive c) =>
+              let checked ← walkBodySpineSourced sourceOutput metadata ids rows caller Δ env
+                spine schemes capture spineSource.down ctors
+              let counts ← CountProposal.proposeOrigins c.template.counts.quantified
+                c.template.counts.body checked.originsRev.reverse
+              let used ← RecursiveHMContract.check c.fixed Δ c.hm counts caller
+              return ← useRecursiveBodySpine sourceOutput metadata checked hv used schemes capture ctors
           | some (.exported s) =>
               let checked ← walkBodySpineSourced sourceOutput metadata ids rows caller Δ env
                 spine schemes capture spineSource.down ctors
@@ -5575,6 +5615,13 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           match RecursiveSpine.Syntax.parse path (.found hm (.app fn arg)) with
           | some spine =>
               match hv : env[spine.index]? with
+              | some (.recursive c) =>
+                  let checked ← walkBodySpine sourceOutput metadata ids rows caller Δ env
+                    spine schemes capture ctors
+                  let counts ← CountProposal.proposeOrigins c.template.counts.quantified
+                    c.template.counts.body checked.originsRev.reverse
+                  let used ← RecursiveHMContract.check c.fixed Δ c.hm counts caller
+                  return ← useRecursiveBodySpine sourceOutput metadata checked hv used schemes capture ctors
               | some (.exported s) =>
                   let checked ← walkBodySpine sourceOutput metadata ids rows caller Δ env
                     spine schemes capture ctors
