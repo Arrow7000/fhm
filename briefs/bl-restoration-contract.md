@@ -3025,6 +3025,30 @@ Int`, then safely performs a List match on that opened field; a wildcard Pair
 match separately checks the zero-binder exhaustive case. The complete bounds
 suite and executable smoke test remain green without a new axiom or placeholder.
 
+### Checkpoint 4bj — annotation holes have an origin-pinning specification
+
+`ScopedHMAnnotation.Pins` now gives carried `_` count slots an explicit
+provenance-sensitive meaning: a hole copies the already-derived endpoint at
+the same structural List node, while a solid endpoint remains the written
+source count interpreted through the checked count environment.  The relation
+recurses through arrows, bare Lists and nominal arguments, so nested holes do
+not fall back to a root-only convention.
+
+The proof-producing `ScopedHMAnnotation.pin` validates four independent facts:
+the demand really arises from that relation, Nat substitutions are finite, the
+result has the HM-interpreted source shape and caller count scope, and the
+actual origin is semantically included in the pinned demand.  Thus `BL _ 5`
+over an exact length-two origin yields an interface `BL 2 5`; it does not erase
+the solid ceiling or expose only the private `BL 2 2` origin.  A false solid
+ceiling and an out-of-scope solid count still reject.  Build-failing regressions
+cover mixed hole/solid intervals and holes nested in nominal arguments.
+
+This checkpoint establishes the specification and executable certificate, not
+yet the binding/group introduction rule.  Top-level declarations are Core SCC
+groups, so product support must next thread the pinned interface through group
+assembly, universal RHS checking and group exit rather than revive the legacy
+unverified pinning path.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

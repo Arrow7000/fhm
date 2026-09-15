@@ -142,6 +142,144 @@ def check (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) (ca
   let inclusion ← Typed.subtype Δ actual demand.bounds
   pure ⟨demand.source, demand.decoded, inclusion.down⟩
 
+/-! ## Origin-pinned annotation holes
+
+An annotation hole does not introduce an unconstrained semantic assumption.
+It copies the already-derived endpoint at the same List node; solid source
+counts continue to be interpreted through the declaration's count map.  The
+relation below records that provenance independently of the executable
+decoder.  In particular, a successful subtype check alone is not accepted as
+evidence that a demand came from the written annotation. -/
+
+inductive PinsCount (ids : List Nat) (rows : Bindings) :
+    CountSlot → Count → Count → Prop where
+  | hole : PinsCount ids rows .hole actual actual
+  | solid : Scope.CountScoped ids source →
+      PinsCount ids rows (.solid source) actual (CountSubstitution.count rows source)
+
+mutual
+inductive Pins (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) :
+    Ty → BoundsTy → BoundsTy → Prop where
+  | prim : Pins free slots ids rows (.prim p) actual (.prim p)
+  | fvar : Pins free slots ids rows (.fvar i) actual (free i)
+  | bvar : Pins free slots ids rows (.bvar i) actual (slots i)
+  | arrow :
+      Pins free slots ids rows a actualA demandA →
+      Pins free slots ids rows b actualB demandB →
+      Pins free slots ids rows (.arrow a b) (.arrow actualA actualB) (.arrow demandA demandB)
+  | bl :
+      PinsCount ids rows lo actualLo demandLo →
+      PinsCount ids rows hi actualHi demandHi →
+      Pins free slots ids rows elem actualElem demandElem →
+      Pins free slots ids rows (.bl lo hi elem) (.list actualLo actualHi actualElem)
+        (.list demandLo demandHi demandElem)
+  | bareList :
+      Pins free slots ids rows elem actualElem demandElem →
+      Pins free slots ids rows (.customTy listTyName [elem]) (.list actualLo actualHi actualElem)
+        (.list (.lit 0) .inf demandElem)
+  | custom : name ≠ listTyName →
+      PinsList free slots ids rows args actualArgs demandArgs →
+      Pins free slots ids rows (.customTy name args) (.custom name actualArgs)
+        (.custom name demandArgs)
+
+inductive PinsList (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) :
+    List Ty → List BoundsTy → List BoundsTy → Prop where
+  | nil : PinsList free slots ids rows [] [] []
+  | cons :
+      Pins free slots ids rows a actual demand →
+      PinsList free slots ids rows as actuals demands →
+      PinsList free slots ids rows (a :: as) (actual :: actuals) (demand :: demands)
+end
+
+private def pinCount (ids : List Nat) (rows : Bindings) (slot : CountSlot)
+    (actual : Count) : Except String (Σ demand, PLift (PinsCount ids rows slot actual demand)) := do
+  match slot with
+  | .hole => pure ⟨actual, ⟨.hole⟩⟩
+  | .solid source =>
+      if hscoped : countScopedBool ids source = true then
+        pure ⟨CountSubstitution.count rows source, ⟨.solid (countScopedBool_sound hscoped)⟩⟩
+      else throw "bounds: solid annotation count is outside lexical scope"
+
+mutual
+private def pinDemand (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) :
+    (τ : Ty) → (actual : BoundsTy) →
+      Except String (Σ demand, PLift (Pins free slots ids rows τ actual demand))
+  | .prim p, actual => pure ⟨.prim p, ⟨.prim⟩⟩
+  | .fvar i, actual => pure ⟨free i, ⟨.fvar⟩⟩
+  | .bvar i, actual => pure ⟨slots i, ⟨.bvar⟩⟩
+  | .arrow a b, .arrow actualA actualB => do
+      let ⟨demandA, pinnedA⟩ ← pinDemand free slots ids rows a actualA
+      let ⟨demandB, pinnedB⟩ ← pinDemand free slots ids rows b actualB
+      pure ⟨.arrow demandA demandB, ⟨.arrow pinnedA.down pinnedB.down⟩⟩
+  | .arrow _ _, _ => throw "bounds: annotation arrow disagrees with derived origin"
+  | .bl lo hi elem, .list actualLo actualHi actualElem => do
+      let ⟨demandLo, pinnedLo⟩ ← pinCount ids rows lo actualLo
+      let ⟨demandHi, pinnedHi⟩ ← pinCount ids rows hi actualHi
+      let ⟨demandElem, pinnedElem⟩ ← pinDemand free slots ids rows elem actualElem
+      pure ⟨.list demandLo demandHi demandElem,
+        ⟨.bl pinnedLo.down pinnedHi.down pinnedElem.down⟩⟩
+  | .bl _ _ _, _ => throw "bounds: BL annotation disagrees with derived List origin"
+  | .customTy name [elem], .list actualLo actualHi actualElem => do
+      if hn : name = listTyName then
+        let ⟨demandElem, pinnedElem⟩ ← pinDemand free slots ids rows elem actualElem
+        pure ⟨.list (.lit 0) .inf demandElem, ⟨by
+          subst name
+          exact .bareList pinnedElem.down⟩⟩
+      else throw "bounds: nominal annotation disagrees with derived List origin"
+  | .customTy name args, .custom actualName actualArgs => do
+      if hn : name = actualName then
+        if hl : name = listTyName then
+          throw "bounds: malformed List annotation arity"
+        else
+          let ⟨demands, pinned⟩ ← pinDemandList free slots ids rows args actualArgs
+          pure ⟨.custom name demands, ⟨by
+            subst actualName
+            exact .custom hl pinned.down⟩⟩
+      else throw "bounds: annotation nominal name disagrees with derived origin"
+  | .customTy name _, _ =>
+      if name = listTyName then throw "bounds: malformed or mismatched List annotation"
+      else throw "bounds: nominal annotation disagrees with derived origin"
+
+private def pinDemandList (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) :
+    (types : List Ty) → (actuals : List BoundsTy) →
+      Except String (Σ demands, PLift (PinsList free slots ids rows types actuals demands))
+  | [], [] => pure ⟨[], ⟨.nil⟩⟩
+  | ty :: types, actual :: actuals => do
+      let ⟨demand, pinned⟩ ← pinDemand free slots ids rows ty actual
+      let ⟨demands, pinnedRest⟩ ← pinDemandList free slots ids rows types actuals
+      pure ⟨demand :: demands, ⟨.cons pinned.down pinnedRest.down⟩⟩
+  | _, _ => throw "bounds: annotation nominal arity disagrees with derived origin"
+end
+
+structure Pinned (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
+    (caller : List Nat) (Δ : List Constraint) (τ : Ty) (actual : BoundsTy) where
+  demand : BoundsTy
+  provenance : Pins free slots ids rows τ actual demand
+  finite : Finite rows
+  shape : Synth.BoundsTy.toTy demand = ScopedHMInterpretation.ty free slots τ
+  inScope : BoundsScoped caller demand
+  inclusion : SemanticSub Δ actual demand
+
+/-- Fill every annotation hole from a genuine origin, then validate shape,
+caller scope and semantic inclusion.  The returned interface is safe to expose
+to the binding body; it need not equal the more precise private RHS origin. -/
+def pin (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
+    (caller : List Nat) (Δ : List Constraint) (τ : Ty) (actual : BoundsTy) :
+    Except String (Pinned free slots ids rows caller Δ τ actual) := do
+  if hfinite : rows.all (fun row => row.2.noInf) = true then
+    let ⟨demand, provenance⟩ ← pinDemand free slots ids rows τ actual
+    let shape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy demand)
+        (ScopedHMInterpretation.ty free slots τ) with
+      | some h => pure h
+      | none => throw "bounds: pinned annotation disagrees with HM-interpreted source type"
+    if hscoped : boundsScopedBool caller demand = true then
+      let inclusion ← Typed.subtype Δ actual demand
+      pure ⟨demand, provenance.down,
+        (fun row member => Count.noInf_of_isNoInf (List.all_eq_true.mp hfinite row member)),
+        shape.down, boundsScopedBool_sound hscoped, inclusion.down⟩
+    else throw "bounds: pinned annotation counts are outside caller scope"
+  else throw "bounds: pinned annotation interpretation contains an infinite Nat replacement"
+
 #print axioms AnnotationOK.types
 #print axioms AnnotationOK.counts
 #print axioms AnnotationOK.assuming
@@ -150,5 +288,6 @@ def check (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) (ca
 #print axioms Demand.shape
 #print axioms decode
 #print axioms check
+#print axioms pin
 
 end FHM.Bounds.ScopedHMAnnotation
