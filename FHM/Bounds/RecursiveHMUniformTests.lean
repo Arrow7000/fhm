@@ -166,6 +166,24 @@ private def countLocalCall : Except String Bool := do
     throw "test: count-polymorphic local lost exact source-node coverage"
   pure true
 
+/-- Generalized local certification retains the checked group environment when
+    a closed monomorphic binder has been pushed in front of it. -/
+private def capturedLocalBelowMono (underLambda : Bool) : Except String Bool := do
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let localExpr := Expr.letIn (some ⟨1, .prim .int⟩) (.var 1) (.var 1)
+  let body := if underLambda then
+    .app (.lambda (some (.prim .int)) localExpr) (.primLit (.int 2))
+    else .letIn none (.primLit (.int 2)) localExpr
+  let source := Expr.letRec [some ⟨0, .prim .int⟩] [.primLit (.int 1)] body
+  let artifact ← match inferFound ctors source with
+    | some artifact => pure artifact
+    | none => throw "test: captured generalized local below mono binder failed HM inference"
+  let program ← checkClosedProgram artifact.output {} artifact.binderSchemes
+  if !program.body.runtimeSafety?.isSome then
+    throw "test: captured generalized local below mono binder lost its runtime theorem"
+  let exact := match program.body.bounds with | .prim .int => true | _ => false
+  pure (exact && exactlyOnce (logicalCorePaths artifact.output) (program.body.nodes.map (·.path)))
+
 example {output metadata} (program : ProgramResult output metadata) :
     BodyDerives [] [] [] [] output.stripFound program.body.bounds := program.body.typing
 
@@ -687,6 +705,11 @@ def main : IO Unit := do
   | .ok true => IO.println "PASS: a zero-HM-slot local count telescope is universally introduced and instantiated from its actual argument"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "count-polymorphic local lost instantiated result bounds or source-node coverage")
+  for underLambda in [false, true] do
+    match capturedLocalBelowMono underLambda with
+    | .ok true => IO.println s!"PASS: a generalized local retains its enclosing group below a closed mono {if underLambda then "lambda" else "let"} binder"
+    | .error message => throw (IO.userError message)
+    | .ok false => throw (IO.userError "captured generalized local below mono binder lost its result or source-node coverage")
   match bodyCalls (forgedRoot := true) with
   | .error message =>
       unless (message.splitOn "original found payload").length > 1 do
