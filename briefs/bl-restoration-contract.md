@@ -56,7 +56,17 @@ assumptions. This is not permission for HM polymorphic recursion. Count-scheme
 instantiation at recursive calls, unannotated recursive bounds inference,
 count-variable scope/escape and constructor-field variance require design and
 proof before acceptance; do not enable them through provisional dummy types.
-Arbitrary recursive invariant inference is not a launch requirement.
+Arbitrary recursive invariant inference is not a launch requirement.  More
+strongly, the product policy is that a genuinely recursive SCC whose interface
+uses quantitative bounds must carry an explicit bounds contract for every
+quantitatively relevant member.  Recursive calls assume those contracts and
+each RHS must prove an actual result semantically included in its declared
+contract; the implementation need not reproduce the written interval exactly.
+The checker must report a missing recursive bounds annotation rather than try
+to synthesize a quantified invariant.  A future convenience pass may use base
+cases and recursive clauses to *propose* contracts, but every proposal must go
+through this same verified checking rule and proposal inference is not part of
+the trusted metatheory.
 
 ## Required theorem targets
 
