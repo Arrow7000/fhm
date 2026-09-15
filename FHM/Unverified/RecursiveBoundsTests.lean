@@ -45,6 +45,12 @@ private def runtimeCertified (src : String) : Except String Unit := do
   unless result.runtimeReady.isSome do
     throw "test: accepted bounds program lost its runtime theorem"
 
+private def runtimeUncertified (src : String) : Except String Unit := do
+  let a ← artifact src
+  let (result, _) ← RecursiveFound.synthNodes a
+  unless result.runtimeReady.isNone do
+    throw "test: static-only nominal match unexpectedly claimed a runtime theorem"
+
 private def returns (r : Except String String) (expected : String) : Bool :=
   match r with | .ok s => s == expected | _ => false
 private def fails (r : Except String α) (needle : String) : Bool :=
@@ -129,6 +135,25 @@ private def cases : List (String × Bool) := [
     (run "let id = \\x -> x\n(id 1, id True)\n") "(Int, Bool)"),
   ("parsed inferred polymorphic identity retains its runtime theorem", succeeds
     (runtimeCertified "let id = \\x -> x\n(id 1, id True)\n")),
+  ("parsed generic nominal match opens declaration-indexed fields and preserves count arguments",
+    returns (run (
+      "type Option a = Some a | None\n" ++
+      "let unwrap : {n : Nat} Option (BL n n Int) -> BL 0 n Int =\n" ++
+      "  \\(m : Option (BL n n Int)) -> match m with | Some xs -> xs | None -> []\n" ++
+      "let o : Option (BL 2 2 Int) = Some [1, 2]\n" ++
+      "unwrap o\n")) "BL 0 2 Int"),
+  ("parsed generic nominal match remains explicit static-only evidence", succeeds
+    (runtimeUncertified (
+      "type Option a = Some a | None\n" ++
+      "let unwrap : {n : Nat} Option (BL n n Int) -> BL 0 n Int =\n" ++
+      "  \\(m : Option (BL n n Int)) -> match m with | Some xs -> xs | None -> []\n" ++
+      "let o : Option (BL 2 2 Int) = Some [1, 2]\n" ++
+      "unwrap o\n"))),
+  ("parsed generic nominal match checks declaration-indexed exhaustiveness", fails
+    (run (
+      "type Option a = Some a | None\n" ++
+      "let get = \\m -> match m with | Some x -> x\n" ++
+      "get (Some 1)\n")) "nominal match is not exhaustive"),
   ("parsed ordinary root let still checks its source annotation", fails
     (run "let xs : BL 0 0 Int = [1]\nxs\n") "interval inclusion"),
   ("parsed hole-annotated identity generalizes RHS-induced count sharing", returns (run (

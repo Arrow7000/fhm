@@ -14,9 +14,9 @@ let pick =
     else
       [1, 2, 3]
 
--- Option match → same join. Call sites must be Option values (not True/False).
--- `None` is a nullary ctor (check mode OK). `Some 1` is a ctor *app* — bounds
--- still cannot origin-synth non-List ctor apps (triage T3); use ascribed None.
+-- Option match → same join. Constructor ownership, field arity and finite
+-- coverage are checked against this declaration. Call sites must be Option
+-- values (not True/False).
 let pickMatch =
   \m ->
     match m with

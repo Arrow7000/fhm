@@ -184,7 +184,7 @@ theorem instantiate_congr {args args' : Nat → BoundsTy} {n β}
       | customTy hall => exact congrArg (BoundsTy.custom name) (list_instantiate_congr hall ha)
 termination_by sizeOf β
 
-private theorem list_instantiate_congr {args args' : Nat → BoundsTy} {n as}
+theorem list_instantiate_congr {args args' : Nat → BoundsTy} {n as}
     (h : ∀ t ∈ as.map Synth.BoundsTy.toTy, ContainsBvarsUpTo n t) (ha : ∀ i < n, args i = args' i) :
     TypeSubstitution.substituteList args as = TypeSubstitution.substituteList args' as := by
   cases as with

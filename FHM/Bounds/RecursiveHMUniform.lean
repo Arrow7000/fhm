@@ -889,18 +889,21 @@ inductive BodyBranchContext where
   | list (lo hi : Count) (elem : BoundsTy)
   | bool
   | pair (left right : BoundsTy)
+  | nominal (ctors : CtorEnv) (typeName : TyName) (args : List BoundsTy)
   | wildcardOnly (scrutinee : BoundsTy)
 
 def BodyBranchContext.bounds : BodyBranchContext → BoundsTy
   | .list lo hi elem => .list lo hi elem
   | .bool => .custom boolTyName []
   | .pair left right => .custom pairTyName [left, right]
+  | .nominal _ typeName args => .custom typeName args
   | .wildcardOnly scrutinee => scrutinee
 
 def BodyBranchContext.refine : BodyBranchContext → MatchPattern → List Constraint
   | .list lo hi _, p => RecursiveTyping.branchRefine p lo hi
   | .bool, _ => []
   | .pair _ _, _ => []
+  | .nominal _ _ _, _ => []
   | .wildcardOnly _, _ => []
 
 def BodyBranchContext.extend : BodyBranchContext → MatchPattern → List BodyBinding → List BodyBinding
@@ -911,26 +914,45 @@ def BodyBranchContext.extend : BodyBranchContext → MatchPattern → List BodyB
   | .bool, _, env => env
   | .pair left right, p, env =>
       if p = .named pairCtorName 2 then .mono left :: .mono right :: env else env
+  | .nominal ctors typeName args, p, env =>
+      ((NominalBranches.fields? ctors typeName args p).getD []).map BodyBinding.mono ++ env
   | .wildcardOnly _, _, env => env
 
 def BodyBranchContext.Pattern : BodyBranchContext → MatchPattern → Prop
   | .list _ _ _, p => RecursiveTyping.ListPattern p
   | .bool, p => BoolBranches.Pattern p
   | .pair _ _, p => PairBranches.Pattern p
+  | .nominal ctors typeName args, p =>
+      ∃ fields, NominalBranches.PatternFields ctors typeName args p fields
   | .wildcardOnly _, p => p = .wildcard
 
 instance (ctx : BodyBranchContext) (p : MatchPattern) : Decidable (ctx.Pattern p) := by
-  cases ctx <;> unfold BodyBranchContext.Pattern <;> infer_instance
+  cases ctx with
+  | list lo hi elem => unfold BodyBranchContext.Pattern; infer_instance
+  | bool => unfold BodyBranchContext.Pattern; infer_instance
+  | pair left right => unfold BodyBranchContext.Pattern; infer_instance
+  | wildcardOnly scrutinee => unfold BodyBranchContext.Pattern; infer_instance
+  | nominal ctors typeName args =>
+      unfold BodyBranchContext.Pattern NominalBranches.PatternFields
+      cases h : NominalBranches.fields? ctors typeName args p with
+      | none =>
+          apply isFalse
+          intro witness
+          obtain ⟨fields, equality⟩ := witness
+          rw [h] at equality
+          contradiction
+      | some fields => exact isTrue ⟨fields, h⟩
 
 def BodyBranchContext.Covers (Δ : List Constraint) : BodyBranchContext → List (MatchPattern × Expr) → Prop
   | .list lo hi _, branches => ListBranches.Covers Δ ⟨lo, hi⟩ branches
   | .bool, branches => BoolBranches.Covers branches
   | .pair _ _, branches => PairBranches.Covers branches
+  | .nominal ctors typeName _, branches => NominalBranches.Covers ctors typeName branches
   | .wildcardOnly _, branches => ∀ br ∈ branches, br.1 = .wildcard
 
 def BodyBranchContext.RuntimeCapable : BodyBranchContext → Prop
   | .list .. | .bool | .pair .. => True
-  | .wildcardOnly _ => False
+  | .nominal .. | .wildcardOnly _ => False
 
 def BodyBranchContext.checkCoverage (ctx : BodyBranchContext) (Δ : List Constraint)
     (branches : List (MatchPattern × Expr)) : Except String (PLift (ctx.Covers Δ branches)) :=
@@ -938,22 +960,24 @@ def BodyBranchContext.checkCoverage (ctx : BodyBranchContext) (Δ : List Constra
   | .list lo hi _ => ListBranches.check Δ ⟨lo, hi⟩ branches
   | .bool => BoolBranches.check branches
   | .pair _ _ => PairBranches.check branches
+  | .nominal ctors typeName _ => NominalBranches.checkCoverage ctors typeName branches
   | .wildcardOnly _ =>
       if h : branches.all (fun br => br.1 == .wildcard) = true then
         pure ⟨fun br member => by
           exact beq_iff_eq.mp (List.all_eq_true.mp h br member)⟩
       else throw "bounds: opaque match accepts only wildcard patterns"
 
-private def bodyBranchContext (β : BoundsTy) :
+private def bodyBranchContext (ctors : CtorEnv) (β : BoundsTy) :
     Except String (Σ ctx : BodyBranchContext, PLift (β = ctx.bounds)) :=
   match β with
   | .list lo hi elem => .ok ⟨.list lo hi elem, ⟨rfl⟩⟩
   | .custom name [] =>
       if hn : name = boolTyName then .ok ⟨.bool, ⟨by subst name; rfl⟩⟩
-      else .ok ⟨.wildcardOnly (.custom name []), ⟨rfl⟩⟩
+      else .ok ⟨.nominal ctors name [], ⟨rfl⟩⟩
   | .custom name [left, right] =>
       if hn : name = pairTyName then .ok ⟨.pair left right, ⟨by subst name; rfl⟩⟩
-      else .ok ⟨.wildcardOnly (.custom name [left, right]), ⟨rfl⟩⟩
+      else .ok ⟨.nominal ctors name [left, right], ⟨rfl⟩⟩
+  | .custom name args => .ok ⟨.nominal ctors name args, ⟨rfl⟩⟩
   | β => .ok ⟨.wildcardOnly β, ⟨rfl⟩⟩
 
 /-- A generalized hole annotation retains both the original source syntax and
@@ -1608,6 +1632,13 @@ private theorem OrdinaryEnv.consMono {env β} (ordinary : OrdinaryEnv env) :
   intro c
   simpa using ordinary c
 
+private theorem OrdinaryEnv.monos {env} (ordinary : OrdinaryEnv env)
+    (fields : List BoundsTy) : OrdinaryEnv (fields.map Binding.mono ++ env) := by
+  induction fields with
+  | nil => simpa using ordinary
+  | cons field rest ih =>
+      simpa only [List.map_cons, List.cons_append] using ih.consMono
+
 private theorem OrdinaryEnv.branch {env p lo hi elem} (ordinary : OrdinaryEnv env) :
     OrdinaryEnv (branchEnv p lo hi elem env) := by
   unfold branchEnv
@@ -1679,6 +1710,19 @@ theorem rhsToBody {types slots ids rows Δ env e β}
         (by simpa [BodyBranchContext.refine] using subs)
       intro i br atIndex
       simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine] using ihb i br atIndex
+  | matchNominal fieldss actuals _ coverage fields bodies subs ihs ihb =>
+      refine .match_ (ctx := .nominal _ _ _) ihs coverage ?_ ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      · intro br member
+        obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
+        exact ⟨fieldss i, fields i br atIndex⟩
+      · intro i br atIndex
+        have valid := fields i br atIndex
+        have fieldEq : (some (fieldss i)).getD [] = fieldss i := rfl
+        unfold NominalBranches.PatternFields at valid
+        rw [← valid] at fieldEq
+        simpa [ordinaryBodyEnv, BodyBranchContext.extend, BodyBranchContext.refine,
+          fieldEq, ordinaryBinding] using ihb i br atIndex
   | matchOpaque _ patterns bodies subs ihs ihb =>
       refine .match_ (ctx := .wildcardOnly _) ihs patterns patterns ?_
         (by simpa [BodyBranchContext.refine] using subs)
@@ -1731,6 +1775,21 @@ theorem ordinaryRhsToBody {types slots ids rows Δ env e β}
       intro i br atIndex
       simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine] using
         ihb i br atIndex ordinary.pairBranch
+  | matchNominal fieldss actuals _ coverage fields bodies subs ihs ihb =>
+      intro ordinary
+      refine .match_ (ctx := .nominal _ _ _) (ihs ordinary) coverage ?_ ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      · intro br member
+        obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
+        exact ⟨fieldss i, fields i br atIndex⟩
+      · intro i br atIndex
+        have valid := fields i br atIndex
+        have fieldEq : (some (fieldss i)).getD [] = fieldss i := rfl
+        unfold NominalBranches.PatternFields at valid
+        rw [← valid] at fieldEq
+        simpa [ordinaryBodyEnv, BodyBranchContext.extend, BodyBranchContext.refine,
+          fieldEq, ordinaryBinding] using
+            ihb i br atIndex (ordinary.monos (fieldss i))
   | matchOpaque _ patterns bodies subs ihs ihb =>
       intro ordinary
       refine .match_ (ctx := .wildcardOnly _) (ihs ordinary) patterns patterns ?_
@@ -1755,6 +1814,8 @@ private theorem BodyBranchContext.extend_append (ctx : BodyBranchContext)
       by_cases pair : pattern = .named pairCtorName 2
       · simp [BodyBranchContext.extend, pair]
       · simp [BodyBranchContext.extend, pair]
+  | nominal ctors typeName args =>
+      simp [BodyBranchContext.extend, List.append_assoc]
   | list lo hi elem =>
       by_cases cons : pattern = .named consCtorName 2
       · simp [BodyBranchContext.extend, cons]
@@ -1805,6 +1866,20 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
       intro i br atIndex
       simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
         BodyBranchContext.extend_append] using ihb i br atIndex
+  | matchNominal fieldss actuals _ coverage fields bodies subs ihs ihb =>
+      refine .match_ (ctx := .nominal _ _ _) ihs coverage ?_ ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      · intro br member
+        obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
+        exact ⟨fieldss i, fields i br atIndex⟩
+      · intro i br atIndex
+        have valid := fields i br atIndex
+        have fieldEq : (some (fieldss i)).getD [] = fieldss i := rfl
+        unfold NominalBranches.PatternFields at valid
+        rw [← valid] at fieldEq
+        simpa [ordinaryBodyEnv, BodyBranchContext.extend, BodyBranchContext.refine,
+          fieldEq, ordinaryBinding, BodyBranchContext.extend_append] using
+            ihb i br atIndex
   | matchOpaque _ patterns bodies subs ihs ihb =>
       refine .match_ (ctx := .wildcardOnly _) ihs patterns patterns ?_
         (by simpa [BodyBranchContext.refine] using subs)
@@ -1860,6 +1935,20 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
       intro i br atIndex
       simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
         BodyBranchContext.extend_append] using ihb i br atIndex ordinary.pairBranch
+  | matchNominal fieldss actuals _ coverage fields bodies subs ihs ihb =>
+      refine .match_ (ctx := .nominal _ _ _) (ihs ordinary) coverage ?_ ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      · intro br member
+        obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
+        exact ⟨fieldss i, fields i br atIndex⟩
+      · intro i br atIndex
+        have valid := fields i br atIndex
+        have fieldEq : (some (fieldss i)).getD [] = fieldss i := rfl
+        unfold NominalBranches.PatternFields at valid
+        rw [← valid] at fieldEq
+        simpa [ordinaryBodyEnv, BodyBranchContext.extend, BodyBranchContext.refine,
+          fieldEq, ordinaryBinding, BodyBranchContext.extend_append] using
+            ihb i br atIndex (ordinary.monos (fieldss i))
   | matchOpaque _ patterns bodies subs ihs ihb =>
       refine .match_ (ctx := .wildcardOnly _) (ihs ordinary) patterns patterns ?_
         (by simpa [BodyBranchContext.refine] using subs)
@@ -1897,6 +1986,7 @@ theorem BodyBranchContext.Covers.assuming {ctx : BodyBranchContext} {Δ Δ' bran
   | list => exact ListBranches.Covers.assuming h hp
   | bool => exact h
   | pair => exact h
+  | nominal => exact h
   | wildcardOnly => exact h
 
 /-- Established caller/path premises transport the ENTIRE generalized body,
@@ -1963,6 +2053,15 @@ theorem BodyBranchContext.extend_length {ctx : BodyBranchContext} {pat env}
   | pair left right =>
       rcases pattern with rfl | rfl <;>
         simp [BodyBranchContext.extend, MatchPattern.bindCount]
+  | nominal ctors typeName args =>
+      obtain ⟨fields, valid⟩ := pattern
+      have fieldEq : (NominalBranches.fields? ctors typeName args pat).getD [] = fields := by
+        unfold NominalBranches.PatternFields at valid
+        rw [valid]
+        rfl
+      rw [BodyBranchContext.extend, fieldEq, List.length_append, List.length_map,
+        valid.length]
+      exact Nat.add_comm _ _
   | wildcardOnly scrutinee =>
       rw [pattern]
       rfl
@@ -2655,6 +2754,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           simp only [Nat.zero_add, contentsLength] at closing
           rw [closing]
           exact branchSafe
+      | nominal ctors typeName args => exact False.elim capable
       | wildcardOnly scrutinee => exact False.elim capable
   | letRec g universal membersReady demandSupport outerArguments bodyReady ihbody =>
       intro budget premises e
@@ -3277,6 +3377,7 @@ private def extendBranchCapture? {env} (capture : Option (BodyCapture env))
   match ctx with
   | .bool => capture
   | .wildcardOnly _ => capture
+  | .nominal _ _ _ => none
   | .pair left right =>
       if isPair : pattern = .named pairCtorName 2 then
         have extended : (BodyBranchContext.pair left right).extend pattern env =
@@ -3684,7 +3785,7 @@ private def body_match_ready {ids rows caller Δ env branches β} {ctx : BodyBra
     Option (PLift (BodyDerives.RuntimeReady (body_match_typing hs arms hb hc))) := do
   let capable : Option (PLift ctx.RuntimeCapable) := match ctx with
     | .list .. | .bool | .pair .. => some ⟨True.intro⟩
-    | .wildcardOnly _ => none
+    | .nominal .. | .wildcardOnly _ => none
   let capable ← capable
   let input ← ready
   let bodies ← arms.runtimeReady
@@ -3765,13 +3866,14 @@ private structure InferredExportPrepared {output path env}
 
 private def prepareInferredExport {output path env}
     (node : HMFoundView.AtNode output path) (machine : PolyTy)
-    (quantified : List Nat) (captured : BodyCapture env) (schemes : BinderSchemeMap) :
+    (quantified : List Nat) (captured : BodyCapture env) (schemes : BinderSchemeMap)
+    (ctors : CtorEnv) :
     Except String (InferredExportPrepared node captured) := do
   let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
     recursiveFixedTypeCaptures captured.rhsEnv ++
     node.inner.stripFound.tyFreeVars.map Ty.fvar
   let located ← RecursiveHMWalk.checkLocated node BoundsTy.fvar BoundsTy.bvar
-    quantified [] quantified [] captured.rhsEnv schemes none
+    quantified [] quantified [] captured.rhsEnv schemes none (ctors := ctors)
   unless located.typed.actual.freeInferables.isEmpty do
     throw "bounds: inferred polymorphic export has unresolved count origins"
   let abstraction ← BinderBridge.abstract machine located.typed.actual typeCaptures
@@ -3929,7 +4031,7 @@ private def useBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
     (checked : BodySpine sourceOutput ids rows caller Δ env spine) {s : HMCountScheme.Scheme}
     (lookup : env[spine.index]? = some (.exported s))
     (used : HMCountScheme.Use s Δ spine.headHM caller) (schemes : BinderSchemeMap)
-    (capture : Option (BodyCapture env)) :
+    (capture : Option (BodyCapture env)) (ctors : CtorEnv) :
     Except String (BodyResult ids rows caller Δ env e) := do
   match checked with
   | .head path i hm =>
@@ -3942,14 +4044,14 @@ private def useBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
             (BodyDerives.RuntimeReady.varExported (ids := ids) (rows := rows)
               (i := i) lookup used supported.down arguments.down)⟩)
   | .app (arg := arg) path hm previous actual source =>
-      let prior ← useBodySpine sourceOutput metadata previous lookup used schemes capture
+      let prior ← useBodySpine sourceOutput metadata previous lookup used schemes capture ctors
       match prior.bounds with
       | .arrow domain _ =>
           let checked ← match actual with
             | some checked => pure checked
             | none =>
                 walkBodySource sourceOutput metadata ids rows caller Δ env
-                  (path ++ [.appArg]) arg schemes capture source (some domain)
+                  (path ++ [.appArg]) arg schemes capture source (some domain) ctors
           appendBody path hm prior checked
       | _ => throw "bounds: deferred generalized body spine applies a non-arrow scheme result"
 termination_by (sizeOf e, 0)
@@ -3968,7 +4070,7 @@ private def walkGeneralizedHoleLetRec
     (fallback : Except String
       (BodyResult ids rows caller Δ env
         (.found hm (.letRec [some annotation] [rhs] body))))
-    (expected : Option BoundsTy) :
+    (expected : Option BoundsTy) (ctors : CtorEnv) :
     Except String
       (BodyResult ids rows caller Δ env
         (.found hm (.letRec [some annotation] [rhs] body))) := do
@@ -4000,7 +4102,7 @@ private def walkGeneralizedHoleLetRec
                 let initialLocated ← RecursiveHMWalk.checkLocated node
                   initialReconciled.interpretation BoundsTy.bvar
                   proposal.scheme.counts.quantified [] proposal.scheme.counts.quantified []
-                  initialEnv schemes (some initialReconciled.opening.bounds)
+                  initialEnv schemes (some initialReconciled.opening.bounds) (ctors := ctors)
                 let inferred ← ScopedHMAnnotation.pin initialReconciled.interpretation
                   BoundsTy.bvar proposal.scheme.counts.quantified []
                   proposal.scheme.counts.quantified [] annotation.body initialLocated.typed.actual
@@ -4016,7 +4118,7 @@ private def walkGeneralizedHoleLetRec
                 let located ← RecursiveHMWalk.checkLocated node reconciled.interpretation
                   BoundsTy.bvar iface.scheme.counts.quantified []
                   iface.scheme.counts.quantified [] mappedEnv schemes
-                  (some reconciled.opening.bounds)
+                  (some reconciled.opening.bounds) (ctors := ctors)
                 let inclusion ← Typed.subtype [] located.typed.actual reconciled.opening.bounds
                 let baseCert : RecursiveHMUniversal.Certified iface.scheme
                     (ScopedHMInterpretation.AtNode.view node reconciled.interpretation BoundsTy.bvar)
@@ -4110,7 +4212,7 @@ private def walkGeneralizedHoleLetRec
                 let result ← walkBodySource sourceOutput metadata [] [] caller Δ
                   (.exported iface.scheme :: env) (path ++ [.letRecBody]) body schemes
                   (some (captured.extendExported iface.scheme iface.source.captures))
-                  (some ⟨bodySource⟩) expected
+                  (some ⟨bodySource⟩) expected ctors
                 have closed : rhsInner.stripFound.varsBelow 0 = true := by
                   simpa only [Expr.stripFound] using rhsClosed
                 let completed ← finishBody (ids := []) (rows := []) (caller := caller)
@@ -4182,7 +4284,7 @@ private def walkInferredExportLetRec
       some (.found hm (.letRec [none] [rhs] body))))
     (fallback : Except String
       (BodyResult ids rows caller Δ env (.found hm (.letRec [none] [rhs] body))))
-    (expected : Option BoundsTy) :
+    (expected : Option BoundsTy) (ctors : CtorEnv) :
     Except String
       (BodyResult ids rows caller Δ env (.found hm (.letRec [none] [rhs] body))) := do
   if rhsClosed : rhs.stripFound.varsBelow 0 = true then
@@ -4200,7 +4302,7 @@ private def walkInferredExportLetRec
                 simp only [Expr.atCorePath, Option.bind_some, List.getElem?_cons_zero]
               let node : HMFoundView.AtNode sourceOutput (path ++ [.letRecRhs 0]) :=
                 ⟨rhsHM, rhsInner, descent⟩
-              let prepared ← prepareInferredExport node machine quantified captured schemes
+              let prepared ← prepareInferredExport node machine quantified captured schemes ctors
               let interface := prepared.interface
               let frame := prepared.frame
               let cert := prepared.cert
@@ -4229,7 +4331,7 @@ private def walkInferredExportLetRec
               let result ← walkBodySource sourceOutput metadata [] [] caller []
                 (.exported interface :: env) (path ++ [.letRecBody]) body schemes
                 (some (captured.extendExported interface prepared.capturesClosed))
-                (some ⟨bodySource⟩) expected
+                (some ⟨bodySource⟩) expected ctors
               let completed ← finishBody (ids := []) (rows := []) (caller := caller)
                 (Δ := []) (env := env)
                 (e := .found hm (.letRec [none] [.found rhsHM rhsInner] body))
@@ -4273,7 +4375,8 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
     (env : List BodyBinding) (path : CorePath) (e : Expr) (schemes : BinderSchemeMap)
     (capture : Option (BodyCapture env))
     (sourceAt : Option (PLift (sourceOutput.atCorePath path = some e)))
-    (expected : Option BoundsTy) : Except String (BodyResult ids rows caller Δ env e) := do
+    (expected : Option BoundsTy) (ctors : CtorEnv) :
+    Except String (BodyResult ids rows caller Δ env e) := do
   match e with
   | .found hm (.primLit p) =>
       finishBody path hm (boundInfoOfPrimLit p) rfl (by simpa only [Expr.stripFound] using BodyDerives.literal) []
@@ -4343,7 +4446,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           let result ← walkBodySource sourceOutput metadata ids rows caller Δ
             (.mono param.bounds :: env) (path ++ [.lambdaBody]) body schemes
             (extendMonoCapture? capture param.bounds)
-            (descendBodySource sourceAt (by simp [Expr.atCorePath])) bodyHint
+            (descendBodySource sourceAt (by simp [Expr.atCorePath])) bodyHint ctors
           finishBody path hm (.arrow param.bounds result.bounds) rfl
             (by simpa only [Expr.stripFound] using BodyDerives.lambda param.obligation result.typing) result.nodes
             (do
@@ -4357,11 +4460,11 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
         let headHint := match expected with | some (.list _ _ elem) => some elem | _ => none
         let h ← walkBodySource sourceOutput metadata ids rows caller Δ env
           (path ++ [.appFun, .appArg]) head schemes
-          capture (descendBodySource sourceAt (by simp [Expr.atCorePath])) headHint
+          capture (descendBodySource sourceAt (by simp [Expr.atCorePath])) headHint ctors
         let t ← walkBodySource sourceOutput metadata ids rows caller Δ env
           (path ++ [.appArg]) tail schemes capture
           (descendBodySource sourceAt (by simp [Expr.atCorePath]))
-          (some (.list (.lit 0) .inf h.bounds))
+          (some (.list (.lit 0) .inf h.bounds)) ctors
         match ht : t.bounds with
         | .list lo hi elem =>
             let _ ← match BinderBridge.equalTy ctorHM.eraseBounds (.arrow h.hm.eraseBounds (.arrow t.hm.eraseBounds t.hm.eraseBounds)) with
@@ -4392,10 +4495,10 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           | _ => none
         let left ← walkBodySource sourceOutput metadata ids rows caller Δ env
           (path ++ [.appFun, .appArg]) head schemes capture
-          (descendBodySource sourceAt (by simp [Expr.atCorePath])) leftHint
+          (descendBodySource sourceAt (by simp [Expr.atCorePath])) leftHint ctors
         let right ← walkBodySource sourceOutput metadata ids rows caller Δ env
           (path ++ [.appArg]) tail schemes capture
-          (descendBodySource sourceAt (by simp [Expr.atCorePath])) rightHint
+          (descendBodySource sourceAt (by simp [Expr.atCorePath])) rightHint ctors
         let _ ← match BinderBridge.equalTy ctorHM.eraseBounds
             (.arrow left.hm.eraseBounds (.arrow right.hm.eraseBounds hm.eraseBounds)) with
           | some h => pure h | none => throw "bounds: generalized body Pair constructor payload mismatch"
@@ -4418,10 +4521,10 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
         let function ← walkBodySource sourceOutput metadata ids rows caller Δ env
           (path ++ [.appFun])
           (.found partialHM (.app (.found ctorHM (.ctor name)) head)) schemes capture
-          (descendBodySource sourceAt (by simp [Expr.atCorePath])) none
+          (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
         let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
           (path ++ [.appArg]) tail schemes capture
-          (descendBodySource sourceAt (by simp [Expr.atCorePath])) none
+          (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
         appendBody path hm function actual
   | .found hm (.app (.found ctorHM (.ctor name)) arg) =>
       if hn : name = nilCtorName then
@@ -4437,7 +4540,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
         | .arrow domainHM resultHM =>
             let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
               (path ++ [.appArg]) arg schemes capture
-              (descendBodySource sourceAt (by simp [Expr.atCorePath])) none
+              (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
             let result ← RecursiveHMWalk.transferCtorOrigin domainHM actual.bounds resultHM
             let function ← finishBody (path ++ [.appFun]) ctorHM
               (.arrow actual.bounds result) rfl
@@ -4450,12 +4553,12 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           match hv : env[spine.index]? with
           | some (.exported s) =>
               let checked ← walkBodySpineSourced sourceOutput metadata ids rows caller Δ env
-                spine schemes capture spineSource.down
+                spine schemes capture spineSource.down ctors
               let origins := checked.originsRev.reverse
               let types ← StructuralApplication.proposeOrigins s.counts.body origins s.hm.paramCount
               let counts ← CountProposal.proposeOrigins s.counts.quantified s.counts.body origins
               let used ← HMCountScheme.check s Δ spine.headHM counts types caller
-              return ← useBodySpine sourceOutput metadata checked hv used schemes capture
+              return ← useBodySpine sourceOutput metadata checked hv used schemes capture ctors
           | _ => pure ()
       | none =>
           match RecursiveSpine.Syntax.parse path (.found hm (.app fn arg)) with
@@ -4463,20 +4566,20 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               match hv : env[spine.index]? with
               | some (.exported s) =>
                   let checked ← walkBodySpine sourceOutput metadata ids rows caller Δ env
-                    spine schemes capture
+                    spine schemes capture ctors
                   let origins := checked.originsRev.reverse
                   let types ← StructuralApplication.proposeOrigins s.counts.body origins s.hm.paramCount
                   let counts ← CountProposal.proposeOrigins s.counts.quantified s.counts.body origins
                   let used ← HMCountScheme.check s Δ spine.headHM counts types caller
-                  return ← useBodySpine sourceOutput metadata checked hv used schemes capture
+                  return ← useBodySpine sourceOutput metadata checked hv used schemes capture ctors
               | _ => pure ()
           | none => pure ()
       let function ← walkBodySource sourceOutput metadata ids rows caller Δ env
         (path ++ [.appFun]) fn schemes capture
-        (descendBodySource sourceAt (by simp [Expr.atCorePath])) none
+        (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
       let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
         (path ++ [.appArg]) arg schemes capture
-        (descendBodySource sourceAt (by simp [Expr.atCorePath])) none
+        (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
       appendBody path hm function actual
   | .found hm (.letIn ann rhs body) =>
       match ann with
@@ -4487,7 +4590,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             if ScopedHMAnnotation.hasHole annotation.body then
               let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
                 (path ++ [.letRhs]) rhs schemes capture
-                (descendBodySource sourceAt (by simp [Expr.atCorePath])) none
+                (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
               let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
                 (.letIn path) actual.hm
               let pinned ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar
@@ -4497,7 +4600,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               let result ← walkBodySource sourceOutput metadata ids rows caller Δ
                 (.mono pinned.demand :: env) (path ++ [.letBody]) body schemes
                 (extendMonoCapture? capture pinned.demand)
-                (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
+                (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
               finishBody path hm result.bounds rfl
                 (by simpa only [Expr.stripFound] using
                   (BodyDerives.letPinned pinned mono actual.typing result.typing))
@@ -4514,7 +4617,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                 ids rows caller (some annotation)
               let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
                 (path ++ [.letRhs]) rhs schemes capture
-                (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint
+                (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint ctors
               let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
                 (.letIn path) actual.hm
               let obligation ← RecursiveHMAnnotation.checkScopedBinding BoundsTy.fvar BoundsTy.bvar
@@ -4522,7 +4625,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               let result ← walkBodySource sourceOutput metadata ids rows caller Δ
                 (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
                 (extendMonoCapture? capture actual.bounds)
-                (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
+                (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
               finishBody path hm result.bounds rfl
                 (by simpa only [Expr.stripFound] using
                   (BodyDerives.letMono obligation.down actual.typing result.typing))
@@ -4573,7 +4676,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                         let result ← walkBodySource sourceOutput metadata [] [] caller Δ
                           (.exported reconciled.interface.scheme :: env)
                           (path ++ [.letBody]) body schemes none
-                          (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
+                          (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
                         let completed ← finishBody (ids := []) (rows := []) (caller := caller)
                           (Δ := Δ) (env := env)
                           (e := .found hm (.letIn (some annotation) (.found rhsHM rhsInner) body))
@@ -4672,7 +4775,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                           (path ++ [.letBody]) body schemes
                           (some (captured.extendExported reconciled.interface.scheme (by
                             simp [HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme])))
-                          (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
+                          (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
                         let completed ← finishBody (ids := []) (rows := []) (caller := caller)
                           (Δ := Δ) (env := env)
                           (e := .found hm (.letIn (some annotation) (.found rhsHM rhsInner) body))
@@ -4718,12 +4821,12 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             ids rows caller none
           let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
             (path ++ [.letRhs]) rhs schemes capture
-            (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint
+            (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint ctors
           let _ ← RecursiveHMWalk.checkLocalInterface none schemes (.letIn path) actual.hm
           let result ← walkBodySource sourceOutput metadata ids rows caller Δ
             (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
             (extendMonoCapture? capture actual.bounds)
-            (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
+            (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
           finishBody path hm result.bounds rfl
             (by simpa only [Expr.stripFound] using
               (BodyDerives.letMono (by trivial) actual.typing result.typing))
@@ -4737,10 +4840,10 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
   | .found hm (.match_ scrut branches) =>
       let input ← walkBodySource sourceOutput metadata ids rows caller Δ env
         (path ++ [.matchScrut]) scrut schemes capture
-        (descendBodySource sourceAt (by simp [Expr.atCorePath])) none
+        (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
       -- Equality of full bounds, not merely HM shape, connects scrutinee origins
       -- with constructor refinements and freshly opened field bindings.
-      let ⟨ctx, hin⟩ ← bodyBranchContext input.bounds
+      let ⟨ctx, hin⟩ ← bodyBranchContext ctors input.bounds
       let coverage ← ctx.checkCoverage Δ (Expr.stripFoundBranches branches)
       let branchSources : BodyBranchSources sourceOutput path 0 branches := fun i br atIndex =>
         sourceAt.map fun located => ⟨by
@@ -4749,7 +4852,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           simp only [Expr.atCorePath, Option.bind_some]
           rw [atIndex]⟩
       let arms ← walkBodyBranches sourceOutput metadata ids rows caller Δ env ctx path branches 0
-        schemes capture branchSources expected
+        schemes capture branchSources expected ctors
       match hb : arms.bounds with
       | none => throw "bounds: generalized body match has no result-producing branch"
       | some β =>
@@ -4787,7 +4890,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               simp [Expr.atCorePath, bodyEq]
             let result ← walkBodySource sourceOutput metadata ids rows caller Δ
               (g.exports.map BodyBinding.exported ++ env) (path ++ [CoreStep.letRecBody])
-              body schemes (some (captured.extendGroup g)) (some ⟨bodySource⟩) expected
+              body schemes (some (captured.extendGroup g)) (some ⟨bodySource⟩) expected ctors
             let completed ← finishBody (ids := ids) (rows := rows) (caller := caller)
               (Δ := Δ) (env := env)
               (e := .found g.originalHM (.letRec g.annotations g.rhss g.body))
@@ -4844,12 +4947,14 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                       let seed ← Typed.shapeTop annotation.body.eraseBounds
                       let trial ← RecursiveHMWalk.walk BoundsTy.fvar ids rows caller Δ
                         (.mono seed :: captured.rhsEnv) (path ++ [.letRecRhs 0]) rhs schemes
+                        (ctors := ctors)
                       let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
                         (.letRec path 0) trial.originalHM
                       let first ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar
                         ids rows caller Δ annotation.body trial.bounds
                       let final ← RecursiveHMWalk.walk BoundsTy.fvar ids rows caller Δ
                         (.mono first.demand :: captured.rhsEnv) (path ++ [.letRecRhs 0]) rhs schemes
+                        (ctors := ctors)
                       let pinned ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar
                         ids rows caller Δ annotation.body final.bounds
                       let stable ← match ScopedHMAnnotation.equalBounds pinned.demand first.demand with
@@ -4862,7 +4967,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                         simp [Expr.atCorePath]
                       let result ← walkBodySource sourceOutput metadata ids rows caller Δ
                         (.mono pinned.demand :: env) (path ++ [CoreStep.letRecBody]) body schemes
-                        (extendMonoCapture? capture pinned.demand) (some ⟨bodySource⟩) expected
+                        (extendMonoCapture? capture pinned.demand) (some ⟨bodySource⟩) expected ctors
                       have rhsTyping : ScopedDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
                           (.mono pinned.demand :: captured.rhsEnv) rhs.stripFound final.bounds := by
                         simpa only [stable.down] using final.derivation
@@ -4889,11 +4994,11 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                     | .ok result => .ok result
                     | .error _ =>
                         walkGeneralizedHoleLetRec sourceOutput metadata ids rows caller Δ env path hm
-                          annotation rhs body schemes captured sourceProof fallback expected
+                          annotation rhs body schemes captured sourceProof fallback expected ctors
                   else fallback
                 else
                   walkGeneralizedHoleLetRec sourceOutput metadata ids rows caller Δ env path hm
-                    annotation rhs body schemes captured sourceProof fallback expected
+                    annotation rhs body schemes captured sourceProof fallback expected ctors
               else fallback
           | [none], [rhs] =>
               let fallback : Except String
@@ -4910,12 +5015,13 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                       let seed ← Typed.shapeTop scheme.body.eraseBounds
                       let trial ← RecursiveHMWalk.walk BoundsTy.fvar ids rows caller Δ
                         (.mono seed :: captured.rhsEnv) (path ++ [.letRecRhs 0]) rhs schemes
+                        (ctors := ctors)
                       let _ ← RecursiveHMWalk.checkLocalInterface none schemes
                         (.letRec path 0) trial.originalHM
                       if trial.bounds.freeInferables.isEmpty then
                         let final ← RecursiveHMWalk.walk BoundsTy.fvar ids rows caller Δ
                           (.mono trial.bounds :: captured.rhsEnv)
-                          (path ++ [.letRecRhs 0]) rhs schemes
+                          (path ++ [.letRecRhs 0]) rhs schemes (ctors := ctors)
                         let stable ← match ScopedHMAnnotation.equalBounds final.bounds trial.bounds with
                           | some equality => pure equality
                           | none => throw "bounds: inferred recursive binding does not reach a stable interface"
@@ -4925,7 +5031,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                           simp [Expr.atCorePath]
                         let result ← walkBodySource sourceOutput metadata ids rows caller Δ
                           (.mono final.bounds :: env) (path ++ [CoreStep.letRecBody]) body schemes
-                          (extendMonoCapture? capture final.bounds) (some ⟨bodySource⟩) expected
+                          (extendMonoCapture? capture final.bounds) (some ⟨bodySource⟩) expected ctors
                         have rhsTyping : ScopedDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
                             (.mono final.bounds :: captured.rhsEnv) rhs.stripFound final.bounds := by
                           simpa only [stable.down] using final.derivation
@@ -4952,7 +5058,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                     else fallback
                   else
                     walkInferredExportLetRec sourceOutput metadata ids rows caller Δ env path hm
-                      scheme rhs body schemes captured sourceProof fallback expected
+                      scheme rhs body schemes captured sourceProof fallback expected ctors
               | _ => fallback
           | _, _ => by simpa only [ha, hr] using ordinary ()
   | _ => throw "bounds: generalized body lacks an original found node"
@@ -4962,14 +5068,14 @@ private def walkBodySpineSourced (sourceOutput : Expr) (metadata : Scope.Metadat
     (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) {e : Expr} (spine : RecursiveSpine.Syntax e)
     (schemes : BinderSchemeMap) (capture : Option (BodyCapture env))
-    (source : BodySpineSource sourceOutput spine) :
+    (source : BodySpineSource sourceOutput spine) (ctors : CtorEnv) :
     Except String (BodySpine sourceOutput ids rows caller Δ env spine) := do
   match source with
   | .head (path := path) (i := i) (hm := hm) _ => pure (.head path i hm)
   | .app (path := path) (hm := hm) (prior := prior) (arg := arg) priorSource argSource =>
-      let previous ← walkBodySpineSourced sourceOutput metadata ids rows caller Δ env prior schemes capture priorSource
+      let previous ← walkBodySpineSourced sourceOutput metadata ids rows caller Δ env prior schemes capture priorSource ctors
       let actual := match walkBodySource sourceOutput metadata ids rows caller Δ env
-          (path ++ [.appArg]) arg schemes capture (some ⟨argSource⟩) none with
+          (path ++ [.appArg]) arg schemes capture (some ⟨argSource⟩) none ctors with
         | .ok result => some result
         | .error _ => none
       pure (.app path hm previous actual (some ⟨argSource⟩))
@@ -4978,14 +5084,14 @@ termination_by (sizeOf e, 0)
 private def walkBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
     (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) {e : Expr} (spine : RecursiveSpine.Syntax e)
-    (schemes : BinderSchemeMap) (capture : Option (BodyCapture env)) :
+    (schemes : BinderSchemeMap) (capture : Option (BodyCapture env)) (ctors : CtorEnv) :
     Except String (BodySpine sourceOutput ids rows caller Δ env spine) := do
   match spine with
   | .head path i hm => pure (.head path i hm)
   | .app path hm prior arg =>
-      let previous ← walkBodySpine sourceOutput metadata ids rows caller Δ env prior schemes capture
+      let previous ← walkBodySpine sourceOutput metadata ids rows caller Δ env prior schemes capture ctors
       let actual := match walkBodySource sourceOutput metadata ids rows caller Δ env
-          (path ++ [.appArg]) arg schemes capture none none with
+          (path ++ [.appArg]) arg schemes capture none none ctors with
         | .ok result => some result
         | .error _ => none
       pure (.app path hm previous actual none)
@@ -4997,7 +5103,7 @@ private def walkBodyBranches (sourceOutput : Expr) (metadata : Scope.Metadata)
     (path : CorePath) (branches : List (MatchPattern × Expr)) (index : Nat)
     (schemes : BinderSchemeMap) (capture : Option (BodyCapture env))
     (sources : BodyBranchSources sourceOutput path index branches)
-    (expected : Option BoundsTy) :
+    (expected : Option BoundsTy) (ctors : CtorEnv) :
     Except String (BodyBranches ids rows caller Δ env ctx branches) := do
   match branches with
   | [] => pure ⟨(fun _ => .prim .int), (by intros; contradiction), (by intros; contradiction),
@@ -5008,14 +5114,14 @@ private def walkBodyBranches (sourceOutput : Expr) (metadata : Scope.Metadata)
         let head ← walkBodySource sourceOutput metadata ids rows caller
           (Δ ++ ctx.refine br.1) (ctx.extend br.1 env)
           (path ++ [.matchBranch index]) br.2 schemes (extendBranchCapture? capture ctx br.1)
-          (by simpa only [Nat.add_zero] using headSource) expected
+          (by simpa only [Nat.add_zero] using headSource) expected ctors
         let tailSources : BodyBranchSources sourceOutput path (index + 1) rest := fun i arm atIndex =>
           have shifted : (br :: rest)[i + 1]? = some arm := by simpa using atIndex
           (sources (i + 1) arm shifted).map fun located => ⟨by
             have position : index + (i + 1) = index + 1 + i := by omega
             simpa only [position] using located.down⟩
         let tail ← walkBodyBranches sourceOutput metadata ids rows caller Δ env ctx path rest
-          (index + 1) schemes capture tailSources expected
+          (index + 1) schemes capture tailSources expected ctors
         match expected with
         | some β =>
             let hs ← Typed.subtype (Δ ++ ctx.refine br.1) head.bounds β
@@ -5057,18 +5163,19 @@ end
     metadata; isolated callers have no enclosing source metadata. -/
 def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
     (env : List BodyBinding) (path : CorePath) (e : Expr) (schemes : BinderSchemeMap)
-    (expected : Option BoundsTy := none) : Except String (BodyResult ids rows caller Δ env e) :=
+    (expected : Option BoundsTy := none) (ctors : CtorEnv := []) :
+    Except String (BodyResult ids rows caller Δ env e) :=
   match path with
   | [] => walkBodySource e {} ids rows caller Δ env [] e schemes
-      none (some ⟨by simp [Expr.atCorePath]⟩) expected
-  | _ => walkBodySource e {} ids rows caller Δ env path e schemes none none expected
+      none (some ⟨by simp [Expr.atCorePath]⟩) expected ctors
+  | _ => walkBodySource e {} ids rows caller Δ env path e schemes none none expected ctors
 
 /-- Closed-group vertical slice. Only after all universal RHSs accept do their
     generalized exit bindings become available to actual source body checking. -/
 def checkBody {output metadata path vectors premises bodyTypes}
     (g : HMDeclaredGroup.Checked output metadata path vectors [] premises bodyTypes [])
     (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
-    (schemes : BinderSchemeMap) (expected : Option BoundsTy := none) :
+    (schemes : BinderSchemeMap) (expected : Option BoundsTy := none) (ctors : CtorEnv := []) :
     Except String (BodyResult ids rows caller Δ []
       (.found g.originalHM (.letRec g.annotations g.rhss g.body))) := do
   have bodySource : output.atCorePath (path ++ [.letRecBody]) = some g.body := by
@@ -5076,7 +5183,7 @@ def checkBody {output metadata path vectors premises bodyTypes}
     simp [Expr.atCorePath]
   let body ← walkBodySource output metadata ids rows caller Δ (g.exports.map BodyBinding.exported)
     (path ++ [.letRecBody]) g.body schemes (some (checkedGroupBodyCapture g))
-    (some ⟨bodySource⟩) expected
+    (some ⟨bodySource⟩) expected ctors
   finishBody path g.originalHM body.bounds rfl
     (by
       have bodyTyping : BodyDerives ids rows Δ
@@ -5115,10 +5222,11 @@ structure ProgramResult (output : Expr) (metadata : Scope.Metadata) where
     annotations and real mono-local machine facts keep their distinct roles.
     `expected` is synthesis guidance, not an asserted result inclusion. -/
 def checkClosedProgram (output : Expr) (metadata : Scope.Metadata)
-    (schemes : BinderSchemeMap := []) (expected : Option BoundsTy := none) :
+    (schemes : BinderSchemeMap := []) (expected : Option BoundsTy := none)
+    (ctors : CtorEnv := []) :
     Except String (ProgramResult output metadata) := do
   let assembled ← HMDeclaredCoordinates.check output metadata [] (schemes := schemes)
-  let body ← checkBody assembled.checked [] [] [] [] schemes expected
+  let body ← checkBody assembled.checked [] [] [] [] schemes expected ctors
   have sourceEq : output = .found assembled.checked.originalHM
       (.letRec assembled.checked.annotations assembled.checked.rhss assembled.checked.body) := by
     simpa only [Expr.atCorePath, Option.some.injEq] using assembled.checked.source
@@ -5130,10 +5238,11 @@ def checkClosedProgram (output : Expr) (metadata : Scope.Metadata)
     supported source position.  Successful results carry the same derivation,
     exact-node report and optional runtime theorem as `checkClosedProgram`. -/
 def checkProgram (output : Expr) (metadata : Scope.Metadata)
-    (schemes : BinderSchemeMap := []) (expected : Option BoundsTy := none) :
+    (schemes : BinderSchemeMap := []) (expected : Option BoundsTy := none)
+    (ctors : CtorEnv := []) :
     Except String (BodyResult [] [] [] [] [] output) :=
   walkBodySource output metadata [] [] [] [] [] [] output schemes
-    (some emptyBodyCapture) (some ⟨by simp [Expr.atCorePath]⟩) expected
+    (some emptyBodyCapture) (some ⟨by simp [Expr.atCorePath]⟩) expected ctors
 
 /-- Extract the runtime theorem carried by a supported closed report. This is
     indexed by its EXACT input artifact and inferred bounds, not by a rebuilt

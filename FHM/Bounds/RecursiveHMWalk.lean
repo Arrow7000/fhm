@@ -96,28 +96,48 @@ private inductive BranchContext where
   | list (lo hi : Count) (elem : BoundsTy)
   | bool
   | pair (left right : BoundsTy)
+  | nominal (ctors : CtorEnv) (typeName : TyName) (args : List BoundsTy)
   | opaque (scrutinee : BoundsTy)
 
 private def BranchContext.refine : BranchContext → MatchPattern → List Constraint
   | .list lo hi _, p => RecursiveTyping.branchRefine p lo hi
   | .bool, _ => []
   | .pair _ _, _ => []
+  | .nominal _ _ _, _ => []
   | .opaque _, _ => []
 
 private def BranchContext.extend : BranchContext → MatchPattern → List Binding → List Binding
   | .list lo hi elem, p, env => branchEnv p lo hi elem env
   | .bool, _, env => env
   | .pair left right, p, env => pairBranchEnv p left right env
+  | .nominal ctors typeName args, p, env =>
+      ((NominalBranches.fields? ctors typeName args p).getD []).map Binding.mono ++ env
   | .opaque _, _, env => env
 
 private def BranchContext.Pattern : BranchContext → MatchPattern → Prop
   | .list _ _ _, p => RecursiveTyping.ListPattern p
   | .bool, p => BoolBranches.Pattern p
   | .pair _ _, p => PairBranches.Pattern p
+  | .nominal ctors typeName args, p =>
+      ∃ fields, NominalBranches.PatternFields ctors typeName args p fields
   | .opaque _, p => p = .wildcard
 
 private instance (ctx : BranchContext) (p : MatchPattern) : Decidable (ctx.Pattern p) := by
-  cases ctx <;> unfold BranchContext.Pattern <;> infer_instance
+  cases ctx with
+  | list lo hi elem => unfold BranchContext.Pattern; infer_instance
+  | bool => unfold BranchContext.Pattern; infer_instance
+  | pair left right => unfold BranchContext.Pattern; infer_instance
+  | «opaque» scrutinee => unfold BranchContext.Pattern; infer_instance
+  | nominal ctors typeName args =>
+      unfold BranchContext.Pattern NominalBranches.PatternFields
+      cases h : NominalBranches.fields? ctors typeName args p with
+      | none =>
+          apply isFalse
+          intro witness
+          obtain ⟨fields, equality⟩ := witness
+          rw [h] at equality
+          contradiction
+      | some fields => exact isTrue ⟨fields, h⟩
 
 private structure BranchResults (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) (ctx : BranchContext)
@@ -358,6 +378,38 @@ private def pair_match_ready {types slots ids rows caller Δ env branches left r
       simpa only [BranchContext.refine, BranchContext.extend, List.append_nil] using
         bodies.down i br atSource⟩
 
+private theorem nominal_match_typing {types slots ids rows caller Δ env branches typeName args β}
+    {scrut : Expr} {ctors : CtorEnv}
+    (hs : ScopedDerives types slots ids rows Δ env scrut.stripFound (.custom typeName args))
+    (arms : BranchResults types slots ids rows caller Δ env
+      (.nominal ctors typeName args) branches)
+    (hb : arms.bounds = some β)
+    (hc : NominalBranches.Covers ctors typeName (Expr.stripFoundBranches branches)) :
+    ScopedDerives types slots ids rows Δ env (Expr.match_ scrut branches).stripFound β := by
+  let fieldss : Nat → List BoundsTy := fun i =>
+    match branches[i]? with
+    | some br => (NominalBranches.fields? ctors typeName args br.1).getD []
+    | none => []
+  simp only [Expr.stripFound]
+  apply ScopedDerives.matchNominal (fieldss := fieldss) (actuals := arms.actuals) hs hc
+  · intro i arm atIndex
+    rcases strip_index atIndex with ⟨br, atSource, rfl⟩
+    obtain ⟨fields, valid⟩ := arms.patterns br (List.mem_of_getElem? atSource)
+    unfold fieldss
+    simp only [atSource]
+    unfold NominalBranches.PatternFields at valid ⊢
+    rw [valid]
+    simp
+  · intro i arm atIndex
+    rcases strip_index atIndex with ⟨br, atSource, rfl⟩
+    unfold fieldss
+    rw [atSource]
+    simpa only [BranchContext.refine, BranchContext.extend, List.append_nil] using
+      arms.typing i br atSource
+  · intro i arm atIndex
+    rcases strip_index atIndex with ⟨br, atSource, rfl⟩
+    simpa only [hb, BranchContext.refine, List.append_nil] using arms.inclusions i br atSource
+
 private theorem opaque_match_typing {types slots ids rows caller Δ env branches scrutinee β}
     {scrut : Expr}
     (hs : ScopedDerives types slots ids rows Δ env scrut.stripFound scrutinee)
@@ -419,7 +471,8 @@ private def ScopedSpine.actualsRev {types slots ids rows caller Δ env e} {spine
 mutual
 def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) (path : CorePath)
-    (e : Expr) (schemes : BinderSchemeMap) (expected : Option BoundsTy := none) :
+    (e : Expr) (schemes : BinderSchemeMap) (expected : Option BoundsTy := none)
+    (ctors : CtorEnv := []) :
     Except String (ScopedResult types slots ids rows caller Δ env e) := do
   match e with
   | .found hm (.primLit p) =>
@@ -503,7 +556,7 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
           let bodyHint := match expected with | some (.arrow _ b) => some b | _ => none
           let param ← RecursiveHMAnnotation.chooseScopedParam types slots ids rows caller Δ ann paramHM paramHint
           let result ← walkScoped types slots ids rows caller Δ (.mono param.bounds :: env)
-            (path ++ [.lambdaBody]) body schemes bodyHint
+            (path ++ [.lambdaBody]) body schemes bodyHint (ctors := ctors)
           finish types slots ids rows caller Δ env (.found hm (.lambda ann body)) path (.arrow param.bounds result.bounds)
             (by simpa only [Expr.stripFound] using (ScopedDerives.lambda param.obligation result.derivation)) result.nodes
             (do
@@ -516,9 +569,9 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
   | .found hm (.app (.found partialTy (.app (.found ctorTy (.ctor name)) head)) tail) =>
       if hn : name = consCtorName then
         let headHint := match expected with | some (.list _ _ elem) => some elem | _ => none
-        let h ← walkScoped types slots ids rows caller Δ env (path ++ [.appFun, .appArg]) head schemes headHint
+        let h ← walkScoped types slots ids rows caller Δ env (path ++ [.appFun, .appArg]) head schemes headHint (ctors := ctors)
         let t ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) tail schemes
-          (some (.list (.lit 0) .inf h.bounds))
+          (some (.list (.lit 0) .inf h.bounds)) (ctors := ctors)
         match ht : t.bounds with
         | .list lo hi elem =>
             let _ ← match BinderBridge.equalTy (ScopedHMInterpretation.ty types slots ctorTy)
@@ -553,9 +606,9 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
           | some (.custom pairName [_, right]) => if pairName = pairTyName then some right else none
           | _ => none
         let left ← walkScoped types slots ids rows caller Δ env
-          (path ++ [.appFun, .appArg]) head schemes leftHint
+          (path ++ [.appFun, .appArg]) head schemes leftHint (ctors := ctors)
         let right ← walkScoped types slots ids rows caller Δ env
-          (path ++ [.appArg]) tail schemes rightHint
+          (path ++ [.appArg]) tail schemes rightHint (ctors := ctors)
         let interpretedResult := ScopedHMInterpretation.ty types slots hm
         let _ ← match BinderBridge.equalTy (ScopedHMInterpretation.ty types slots ctorTy)
             (.arrow (ScopedHMInterpretation.ty types slots left.originalHM)
@@ -583,8 +636,8 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                 ScopedDerives.RuntimeReady.pair leftReady.down rightReady.down⟩)
       else
         let fn ← walkScoped types slots ids rows caller Δ env (path ++ [.appFun])
-          (.found partialTy (.app (.found ctorTy (.ctor name)) head)) schemes
-        let arg ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) tail schemes
+          (.found partialTy (.app (.found ctorTy (.ctor name)) head)) schemes (ctors := ctors)
+        let arg ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) tail schemes (ctors := ctors)
         appendScoped path hm fn arg
   | .found hm (.app (.found ctorHM (.ctor name)) arg) =>
       if hn : name = nilCtorName then
@@ -599,7 +652,7 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
         match ScopedHMInterpretation.ty types slots ctorHM with
         | .arrow domainHM resultHM =>
             let actual ← walkScoped types slots ids rows caller Δ env
-              (path ++ [.appArg]) arg schemes
+              (path ++ [.appArg]) arg schemes (ctors := ctors)
             let result ← transferCtorOrigin domainHM actual.bounds resultHM
             let function ← finish types slots ids rows caller Δ env
               (.found ctorHM (.ctor name)) (path ++ [.appFun])
@@ -613,39 +666,39 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
       | some spine =>
           match hv : env[spine.index]? with
           | some (.recursive c) =>
-              let checked ← walkScopedSpine types slots ids rows caller Δ env spine schemes
+              let checked ← walkScopedSpine types slots ids rows caller Δ env spine schemes ctors
               let counts ← CountProposal.proposeOrigins c.template.counts.quantified
                 c.template.counts.body checked.actualsRev.reverse
               let used ← RecursiveHMContract.check c.fixed Δ c.hm counts caller
-              return ← completeScopedSpine types slots ids rows caller Δ env checked hv used schemes
+              return ← completeScopedSpine types slots ids rows caller Δ env checked hv used schemes ctors
           | some (.exported s) =>
-              let checked ← walkScopedSpine types slots ids rows caller Δ env spine schemes
+              let checked ← walkScopedSpine types slots ids rows caller Δ env spine schemes ctors
               let origins := checked.actualsRev.reverse
               let typeArgs ← StructuralApplication.proposeOrigins
                 s.counts.body origins s.hm.paramCount
               let counts ← CountProposal.proposeOrigins s.counts.quantified s.counts.body origins
               let used ← HMCountScheme.check s Δ
                 (ScopedHMInterpretation.ty types slots spine.headHM) counts typeArgs caller
-              return ← completeExportedScopedSpine types slots ids rows caller Δ env checked hv used schemes
+              return ← completeExportedScopedSpine types slots ids rows caller Δ env checked hv used schemes ctors
           | _ => pure ()
       | none => pure ()
-      let fn ← walkScoped types slots ids rows caller Δ env (path ++ [.appFun]) function schemes
+      let fn ← walkScoped types slots ids rows caller Δ env (path ++ [.appFun]) function schemes (ctors := ctors)
       match hf : fn.bounds with
       | .arrow domain result =>
-          let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain)
+          let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain) (ctors := ctors)
           appendScoped path hm fn actual
       | _ => throw "bounds: interpreted application callee is not an arrow"
   | .found _ (.letRec _ _ _) => throw "bounds: nested groups unsupported in interpreted universal RHS traversal"
   | .found hm (.letIn ann rhs body) =>
       let hint ← RecursiveHMAnnotation.scopedBindingHint types slots ids rows caller ann
-      let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.letRhs]) rhs schemes hint
+      let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.letRhs]) rhs schemes hint (ctors := ctors)
       -- Unannotated locals require a unique original machine fact. Annotated
       -- mono declarations do not have one; their source obligation is checked
       -- below. If a compatibility artifact includes a fact, cross-check it.
       let _ ← checkLocalInterface ann schemes (.letIn path) actual.originalHM
       let obligation ← RecursiveHMAnnotation.checkScopedBinding types slots ids rows caller Δ ann actual.bounds
       let result ← walkScoped types slots ids rows caller Δ (.mono actual.bounds :: env)
-        (path ++ [.letBody]) body schemes expected
+        (path ++ [.letBody]) body schemes expected (ctors := ctors)
       finish types slots ids rows caller Δ env (.found hm (.letIn ann rhs body)) path result.bounds
         (by simpa only [Expr.stripFound] using
           (ScopedDerives.letMono obligation.down actual.derivation result.derivation)) (actual.nodes ++ result.nodes)
@@ -656,11 +709,12 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
             simpa only [Expr.stripFound] using
               (ScopedDerives.RuntimeReady.letMono (ann := ann) obligation.down rhs.down body.down)⟩)
   | .found hm (.match_ scrut branches) =>
-      let input ← walkScoped types slots ids rows caller Δ env (path ++ [.matchScrut]) scrut schemes
+      let input ← walkScoped types slots ids rows caller Δ env (path ++ [.matchScrut]) scrut schemes (ctors := ctors)
       match hin : input.bounds with
       | .list lo hi elem =>
           let coverage ← ListBranches.check Δ ⟨lo, hi⟩ (Expr.stripFoundBranches branches)
-          let arms ← walkScopedBranches types slots ids rows caller Δ env (.list lo hi elem) path branches 0 schemes expected
+          let arms ← walkScopedBranches types slots ids rows caller Δ env
+            (BranchContext.list lo hi elem) path branches 0 schemes expected ctors
           match hb : arms.bounds with
           | none => throw "bounds: interpreted List match has no result-producing branch"
           | some β =>
@@ -674,7 +728,8 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
       | .custom name [] =>
           if hn : name = boolTyName then
             let coverage ← BoolBranches.check (Expr.stripFoundBranches branches)
-            let arms ← walkScopedBranches types slots ids rows caller Δ env .bool path branches 0 schemes expected
+            let arms ← walkScopedBranches types slots ids rows caller Δ env
+              BranchContext.bool path branches 0 schemes expected ctors
             match hb : arms.bounds with
             | none => throw "bounds: interpreted Bool match has no result-producing branch"
             | some β =>
@@ -685,12 +740,24 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                 (by simpa only [Expr.stripFound] using
                   (bool_match_ready (by simpa only [hin, hn] using input.derivation) arms hb coverage.down
                     (by simpa only [hin, hn] using input.runtimeReady)))
-          else throw "bounds: interpreted match scrutinee is not List, Bool, or Pair"
+          else
+            let coverage ← NominalBranches.checkCoverage ctors name
+              (Expr.stripFoundBranches branches)
+            let arms ← walkScopedBranches types slots ids rows caller Δ env
+              (.nominal ctors name []) path branches 0 schemes expected ctors
+            match hb : arms.bounds with
+            | none => throw "bounds: interpreted nominal match has no result-producing branch"
+            | some β =>
+              let nominalTyping := nominal_match_typing
+                (by simpa only [hin] using input.derivation) arms hb coverage.down
+              finish types slots ids rows caller Δ env (.found hm (.match_ scrut branches)) path β
+                (by simpa only [Expr.stripFound] using nominalTyping)
+                (input.nodes ++ arms.nodes) none
       | .custom name [left, right] =>
           if hn : name = pairTyName then
             let coverage ← PairBranches.check (Expr.stripFoundBranches branches)
             let arms ← walkScopedBranches types slots ids rows caller Δ env (.pair left right)
-              path branches 0 schemes expected
+              path branches 0 schemes expected ctors
             match hb : arms.bounds with
             | none => throw "bounds: interpreted Pair match has no result-producing branch"
             | some β =>
@@ -703,10 +770,35 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                 (by simpa only [Expr.stripFound] using pairTyping)
                 (input.nodes ++ arms.nodes)
                 (by simpa only [Expr.stripFound] using pairReady)
-          else throw "bounds: interpreted match scrutinee is not List, Bool, or Pair"
+          else
+            let coverage ← NominalBranches.checkCoverage ctors name
+              (Expr.stripFoundBranches branches)
+            let arms ← walkScopedBranches types slots ids rows caller Δ env
+              (.nominal ctors name [left, right]) path branches 0 schemes expected ctors
+            match hb : arms.bounds with
+            | none => throw "bounds: interpreted nominal match has no result-producing branch"
+            | some β =>
+              let nominalTyping := nominal_match_typing
+                (by simpa only [hin] using input.derivation) arms hb coverage.down
+              finish types slots ids rows caller Δ env (.found hm (.match_ scrut branches)) path β
+                (by simpa only [Expr.stripFound] using nominalTyping)
+                (input.nodes ++ arms.nodes) none
+      | .custom name args =>
+          let coverage ← NominalBranches.checkCoverage ctors name
+            (Expr.stripFoundBranches branches)
+          let arms ← walkScopedBranches types slots ids rows caller Δ env
+            (.nominal ctors name args) path branches 0 schemes expected ctors
+          match hb : arms.bounds with
+          | none => throw "bounds: interpreted nominal match has no result-producing branch"
+          | some β =>
+            let nominalTyping := nominal_match_typing
+              (by simpa only [hin] using input.derivation) arms hb coverage.down
+            finish types slots ids rows caller Δ env (.found hm (.match_ scrut branches)) path β
+              (by simpa only [Expr.stripFound] using nominalTyping)
+              (input.nodes ++ arms.nodes) none
       | _ =>
           let arms ← walkScopedBranches types slots ids rows caller Δ env
-            (.opaque input.bounds) path branches 0 schemes expected
+            (BranchContext.«opaque» input.bounds) path branches 0 schemes expected ctors
           match hb : arms.bounds with
           | none => throw "bounds: interpreted wildcard match has no result-producing branch"
           | some β =>
@@ -719,13 +811,13 @@ termination_by (sizeOf e, 1)
 
 private def walkScopedSpine (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) {e : Expr}
-    (spine : RecursiveSpine.Syntax e) (schemes : BinderSchemeMap) :
+    (spine : RecursiveSpine.Syntax e) (schemes : BinderSchemeMap) (ctors : CtorEnv) :
     Except String (ScopedSpine types slots ids rows caller Δ env spine) := do
   match spine with
   | .head path i hm => pure (.head path i hm)
   | .app path hm prior arg =>
-      let previous ← walkScopedSpine types slots ids rows caller Δ env prior schemes
-      let actual := match walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes with
+      let previous ← walkScopedSpine types slots ids rows caller Δ env prior schemes ctors
+      let actual := match walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (ctors := ctors) with
         | .ok result => some result
         | .error _ => none
       pure (.app path hm previous actual)
@@ -738,7 +830,8 @@ private def completeScopedSpine (types slots : Nat → BoundsTy) (ids : List Nat
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) {e : Expr}
     {spine : RecursiveSpine.Syntax e} (prepared : ScopedSpine types slots ids rows caller Δ env spine)
     {c : Contract} (lookup : env[spine.index]? = some (.recursive c))
-    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) (schemes : BinderSchemeMap) :
+    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) (schemes : BinderSchemeMap)
+    (ctors : CtorEnv) :
     Except String (ScopedResult types slots ids rows caller Δ env e) := do
   match prepared with
   | .head path i hm =>
@@ -750,12 +843,12 @@ private def completeScopedSpine (types slots : Nat → BoundsTy) (ids : List Nat
             (ScopedDerives.RuntimeReady.varRecursive (types := types) (slots := slots)
               (ids := ids) (rows := rows) (i := i) lookup used supported.down)⟩)
   | .app (arg := arg) path hm previous actual =>
-      let prior ← completeScopedSpine types slots ids rows caller Δ env previous lookup used schemes
+      let prior ← completeScopedSpine types slots ids rows caller Δ env previous lookup used schemes ctors
       match prior.bounds with
       | .arrow domain _ =>
           let checked ← match actual with
             | some checked => pure checked
-            | none => walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain)
+            | none => walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain) (ctors := ctors)
           appendScoped path hm prior checked
       | _ => throw "bounds: deferred recursive spine applies a non-arrow contract result"
 termination_by (sizeOf e, 0)
@@ -766,7 +859,7 @@ private def completeExportedScopedSpine (types slots : Nat → BoundsTy) (ids : 
     (prepared : ScopedSpine types slots ids rows caller Δ env spine)
     {s : HMCountScheme.Scheme} (lookup : env[spine.index]? = some (.exported s))
     (used : HMCountScheme.Use s Δ (ScopedHMInterpretation.ty types slots spine.headHM) caller)
-    (schemes : BinderSchemeMap) :
+    (schemes : BinderSchemeMap) (ctors : CtorEnv) :
     Except String (ScopedResult types slots ids rows caller Δ env e) := do
   match prepared with
   | .head path i hm =>
@@ -780,12 +873,12 @@ private def completeExportedScopedSpine (types slots : Nat → BoundsTy) (ids : 
               (ids := ids) (rows := rows) (i := i) lookup used supported.down arguments.down)⟩)
   | .app (arg := arg) path hm previous actual =>
       let prior ← completeExportedScopedSpine types slots ids rows caller Δ env
-        previous lookup used schemes
+        previous lookup used schemes ctors
       match prior.bounds with
       | .arrow domain _ =>
           let checked ← match actual with
             | some checked => pure checked
-            | none => walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain)
+            | none => walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain) (ctors := ctors)
           appendScoped path hm prior checked
       | _ => throw "bounds: deferred exported spine applies a non-arrow scheme result"
 termination_by (sizeOf e, 0)
@@ -793,7 +886,7 @@ termination_by (sizeOf e, 0)
 private def walkScopedBranches (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) (ctx : BranchContext)
     (path : CorePath) (branches : List (MatchPattern × Expr)) (index : Nat)
-    (schemes : BinderSchemeMap) (expected : Option BoundsTy) :
+    (schemes : BinderSchemeMap) (expected : Option BoundsTy) (ctors : CtorEnv) :
     Except String (BranchResults types slots ids rows caller Δ env ctx branches) := do
   match branches with
   | [] => pure ⟨(fun _ => .prim .int), (by intros; contradiction), (by intros; contradiction),
@@ -801,8 +894,8 @@ private def walkScopedBranches (types slots : Nat → BoundsTy) (ids : List Nat)
   | br :: rest =>
       if hp : ctx.Pattern br.1 then
         let head ← walkScoped types slots ids rows caller (Δ ++ ctx.refine br.1) (ctx.extend br.1 env)
-          (path ++ [.matchBranch index]) br.2 schemes expected
-        let tail ← walkScopedBranches types slots ids rows caller Δ env ctx path rest (index + 1) schemes expected
+          (path ++ [.matchBranch index]) br.2 schemes expected (ctors := ctors)
+        let tail ← walkScopedBranches types slots ids rows caller Δ env ctx path rest (index + 1) schemes expected ctors
         match expected with
         | some β =>
             let hs ← Typed.subtype (Δ ++ ctx.refine br.1) head.bounds β
@@ -852,9 +945,10 @@ end Result
 /-- Identity-slot view of the same executable traversal. -/
 def walk (types : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) (path : CorePath)
-    (e : Expr) (schemes : BinderSchemeMap) (expected : Option BoundsTy := none) :
+    (e : Expr) (schemes : BinderSchemeMap) (expected : Option BoundsTy := none)
+    (ctors : CtorEnv := []) :
     Except String (Result types ids rows caller Δ env e) :=
-  walkScoped types BoundsTy.bvar ids rows caller Δ env path e schemes expected
+  walkScoped types BoundsTy.bvar ids rows caller Δ env path e schemes expected (ctors := ctors)
 
 structure LocatedResult {output path} (node : HMFoundView.AtNode output path)
     (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
@@ -868,10 +962,11 @@ structure LocatedResult {output path} (node : HMFoundView.AtNode output path)
 def checkLocated {output path} (node : HMFoundView.AtNode output path)
     (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding)
-    (schemes : BinderSchemeMap) (expected : Option BoundsTy := none) :
+    (schemes : BinderSchemeMap) (expected : Option BoundsTy := none)
+    (ctors : CtorEnv := []) :
     Except String (LocatedResult node types slots ids rows caller Δ env) := do
   let walked ← walkScoped types slots ids rows caller Δ env path
-    (.found node.original node.inner) schemes expected
+    (.found node.original node.inner) schemes expected (ctors := ctors)
   let derivation : ScopedDerives types slots ids rows Δ env node.inner.stripFound walked.bounds := by
     simpa only [Expr.stripFound] using walked.derivation
   let typed ← ScopedHMInterpretation.checkTyped node types slots ids rows Δ env caller walked.bounds derivation
