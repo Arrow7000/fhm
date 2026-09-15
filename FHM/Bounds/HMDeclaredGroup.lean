@@ -432,9 +432,12 @@ def CheckedMembers.select {output metadata path captures premises typeCaptures e
         have h := tail.position
         omega, tail.selection, tail.contractSelection⟩
 
-private def checkMembers {output metadata path captures premises typeCaptures index vectors}
+private def checkMembersWith {output metadata path captures premises typeCaptures index vectors}
     (ps : Interfaces output metadata path captures premises typeCaptures index vectors)
-    (env : List Binding) (schemes : BinderSchemeMap) (ctors : CtorEnv) :
+    (env : List Binding)
+    (checkRHS : ∀ {memberIndex : Nat},
+      (p : Member output metadata path memberIndex captures premises typeCaptures) →
+      Except String (HMDeclaredRHS.Checked p.reconciled env)) :
     Except String (CheckedMembers env ps) := do
   match ps with
   | .nil => pure .nil
@@ -445,8 +448,8 @@ private def checkMembers {output metadata path captures premises typeCaptures in
       let countFresh ← checkCountFresh p.quantified env
       let exportCountFresh ← checkExportCountFresh p.quantified env
       let captured ← RecursiveHMEnvironment.checkCaptured captures env
-      let rhs ← HMDeclaredRHS.check p.reconciled env schemes ctors
-      let tail ← checkMembers rest env schemes ctors
+      let rhs ← checkRHS p
+      let tail ← checkMembersWith rest env checkRHS
       pure (.cons ⟨rhs, stable.down, represented.down, exportsRepresented.down,
         countFresh.down, exportCountFresh.down, captured.down⟩ tail)
 
@@ -559,13 +562,16 @@ def Checked.checkExportedUse {output metadata path vectors captures premises out
     selected.rhs.captured Δ found counts types caller
   pure ⟨selected, result⟩
 
-/-- All source members accept or the entire result rejects. Explicit per-member
-    opaque vectors may have different arities; no machine schemes are invented.
-    This entry point deliberately does NOT accept or export the group's body. -/
-def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
+/-- Assemble a group with a caller-supplied exact RHS checker.  The callback may
+    recurse through nested groups, but it must return the same reconciled located
+    certificate consumed by the ordinary path; all common-environment,
+    representation, freshness and ALL-member obligations stay here. -/
+def checkWith (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
     (vectors : List (List Nat)) (captures : List Nat := []) (premises : List Constraint := [])
-    (outerTypes : List Ty := []) (outerEnv : List Binding := []) (schemes : BinderSchemeMap := [])
-    (ctors : CtorEnv := []) :
+    (outerTypes : List Ty := []) (outerEnv : List Binding := [])
+    (checkRHS : ∀ {memberIndex : Nat} {typeCaptures : List Ty},
+      (p : Member output metadata path memberIndex captures premises typeCaptures) →
+      (env : List Binding) → Except String (HMDeclaredRHS.Checked p.reconciled env)) :
     Except String (Checked output metadata path vectors captures premises outerTypes outerEnv) := do
   if hp : metadata.problems.isEmpty = true then
    match hs : output.atCorePath path with
@@ -579,8 +585,8 @@ def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
               let agreement ← checkConsistent ps.proposals
               let outerMonoRepresented ← checkMonoRepresented outerTypes outerEnv
               let outerFixedRepresented ← checkFixedRepresented outerTypes outerEnv
-              let checked ← checkMembers ps (ps.contracts.map Binding.recursive ++ outerEnv)
-                schemes ctors
+              let commonEnv := ps.contracts.map Binding.recursive ++ outerEnv
+              let checked ← checkMembersWith ps commonEnv (fun p => checkRHS p commonEnv)
               pure ⟨hm, anns, rhss, body, hs, hp, ha, hv, ps, hq,
                 (fun i hi => by simpa [List.contains_iff_mem] using List.all_eq_true.mp hc i hi),
                 agreement.down, outerMonoRepresented.down, outerFixedRepresented.down, checked⟩
@@ -591,7 +597,19 @@ def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
   | _ => throw "bounds: requested source path is not a found recursive group"
   else throw "bounds: unresolved or duplicate count scope in recursive group metadata"
 
+/-- All source members accept or the entire result rejects. Explicit per-member
+    opaque vectors may have different arities; no machine schemes are invented.
+    This entry point deliberately does NOT accept or export the group's body. -/
+def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
+    (vectors : List (List Nat)) (captures : List Nat := []) (premises : List Constraint := [])
+    (outerTypes : List Ty := []) (outerEnv : List Binding := []) (schemes : BinderSchemeMap := [])
+    (ctors : CtorEnv := []) :
+    Except String (Checked output metadata path vectors captures premises outerTypes outerEnv) :=
+  checkWith output metadata path vectors captures premises outerTypes outerEnv
+    (fun p env => HMDeclaredRHS.check p.reconciled env schemes ctors)
+
 #print axioms checkConsistent
+#print axioms checkWith
 #print axioms MemberChecked.certificate
 #print axioms MemberChecked.certificateScheme
 #print axioms MemberChecked.certificateOpeningIds
