@@ -43,6 +43,12 @@
           "default": "",
           "description": "Absolute path to fhm binary. Empty = search workspace .lake/build/bin/fhm."
         },
+        "fhm.boundsMode": {
+          "type": "string",
+          "enum": ["auto", "hm", "bl"],
+          "default": "auto",
+          "description": "Checker used for diagnostics and hover. Auto enables canonical Bounds checking for programs containing BL; HM retains Path-R bounds blindness."
+        },
         "fhm.diagnostics.debounceMs": {
           "type": "number",
           "default": 300,

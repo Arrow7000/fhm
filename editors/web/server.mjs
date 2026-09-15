@@ -135,7 +135,7 @@ async function createApp() {
     try {
       const { stdout, stderr, code } = await runBin(
         bin,
-        ["diagnose"],
+        ["diagnose", "--auto"],
         source,
         DIAGNOSE_TIMEOUT_MS
       );

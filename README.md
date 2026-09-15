@@ -111,18 +111,22 @@ A single entry point that re-exports the main theorems with plain-English glosse
 The formal evaluator is fuelled. For actually running programs – including naive recursion that blows past any fixed fuel – there's an unbounded evaluator. The unified `fhm` CLI (see `FHM/Unverified/Cli.lean`) exposes:
 
 - `fhm` / `fhm run` — parse, lower, infer (print binding and body types), exhaustiveness, evaluate (`Live.lean`; `--json` for machine output)
-- `fhm diagnose` — parse + hover symbols as JSON for editors (`Diagnose.lean` / `EditorSupport.lean`)
+- `fhm diagnose [--hm|--bl|--auto]` — diagnostics + hover symbols as JSON for editors (`Diagnose.lean` / `EditorSupport.lean`)
 
-The default CLI and editor path is HM-only: it consumes `inferFound`, reads
+The default batch CLI path is HM-only: it consumes `inferFound`, reads
 validated declarations or inferred group-exit schemes by binder identity, and
 joins occurrence/expression types through the separate provenance map. Carried
 `BL` annotations display as their HM `List` shape; no length checking runs here.
+`fhm diagnose --bl` instead joins canonical proof-producing per-node Bounds
+reports to those source IDs. `--auto` selects that mode when the parsed program
+contains `BL`; this is the default in the VS Code and web editors, and VS Code's
+`fhm.boundsMode` setting can force either interpretation.
 `fhm run --bl` consumes the same provenance-rich inference artifact and routes
 acceptance through the canonical proof-producing bounds checker. Its supported
 fragment includes checked recursive List/Bool programs, lexical captures,
-generalized declarations and nested groups; annotation-hole escape inference,
-unannotated recursive exports, parameterized nominal runtime meanings and BL
-editor presentation remain explicit follow-up boundaries.
+generalized declarations and nested groups. Annotation-hole escape inference,
+unannotated recursive exports and parameterized nominal runtime meanings remain
+explicit follow-up boundaries.
 
 An annotation is a ceiling on the binding's exported scheme, not necessarily
 an expected type pushed into an otherwise unconstrained RHS. Definition hovers

@@ -11,19 +11,21 @@ import FHM.Decls
 import FHM.Bounds.Erase
 import FHM.Bounds.Report
 import FHM.Bounds.Pipeline
+import FHM.Bounds.RecursiveFound
 import FHM.Bounds.Check
 import Lean.Data.Json
 
 /-!
 # Editor support helpers
 
-HM-only `fhm diagnose` consumes found-producing inference and separate
-provenance. Binding definitions use inferred schemes or validated declarations;
-occurrences and authored expressions use their actual found payloads, displayed
-with bounds erased. Source locations and JSON presentation remain unverified.
+`fhm diagnose` consumes found-producing inference and separate provenance.
+HM mode displays found payloads with bounds erased; canonical Bounds mode joins
+proof-producing per-node reports back to the same source IDs. Binding definitions
+use inferred schemes or validated declarations. Source locations, name recovery,
+and JSON presentation remain unverified.
 
 The old structural guesses are retained only for `collectHoverLegacyBL`; they
-are not used by the successful HM editor path. The v3 span/scope JSON contract
+are not used by either current editor mode. The v3 span/scope JSON contract
 remains compatible with the existing VS Code and web consumers.
 -/
 
@@ -876,6 +878,226 @@ def boundsDiag (binders : List BinderSpan) (p : Surface.Program)
   let (line, col, endLine, endCol) := spanForBoundsMsg binders p sp msg fallback
   { message := msg, line, col, endLine, endCol }
 
+/-! ## Canonical BL presentation
+
+The verified checker reports `BoundsTy` at Core paths.  This unverified layer
+only joins those reports back to source IDs and chooses readable source names;
+it never participates in acceptance. -/
+
+namespace BLDisplay
+
+open FHM.Bounds
+open SurfaceBridge.Provenance
+
+abbrev CountAliases := List (Nat × String)
+
+structure Checked where
+  body : BoundsTy
+  reports : List FHM.Bounds.Found.NodeReport
+
+def check (typed : TypedLowered) : Except String Checked := do
+  let (result, reports) ← FHM.Bounds.RecursiveFound.synthNodes typed
+  pure ⟨result.bounds, reports⟩
+
+def countAliases (typed : TypedLowered) : CountAliases :=
+  typed.lowering.counts.telescopes.flatMap fun telescope =>
+    telescope.binders.map fun (name, id) => (id, prettyValName name)
+
+def countName (aliases : CountAliases) (v : Var) : String :=
+  match v.kind with
+  | .inferable =>
+      "?" ++ ((aliases.find? (fun p : Nat × String => p.1 == v.idx)).map (·.2)).getD s!"n{v.idx}"
+  | .rigid => (aliases.find? (fun p => p.1 == v.idx)).map (·.2) |>.getD s!"n{v.idx}"
+
+partial def count (aliases : CountAliases) : Count → String
+  | .lit n => toString n
+  | .inf => "∞"
+  | .var v => countName aliases v
+  | .add a b => s!"({count aliases a} + {count aliases b})"
+  | .mul a b => s!"({count aliases a} * {count aliases b})"
+  | .pred a => s!"(pred {count aliases a})"
+  | .min a b => s!"(min {count aliases a} {count aliases b})"
+  | .max a b => s!"(max {count aliases a} {count aliases b})"
+
+def slot (aliases : CountAliases) : CountSlot → String
+  | .hole => "_"
+  | .solid c => count aliases c
+
+mutual
+partial def boundsAux (ctx : FHM.Unverified.HMDisplay.Context) (aliases : CountAliases)
+    (prec : Nat) : BoundsTy → String
+  | .prim p => prettyPrimTy p
+  | .bvar i => ctx.boundNames[i]?.getD (prettyTyVarName i)
+  | .fvar i => FHM.Unverified.HMDisplay.freeName ctx i
+  | .arrow a b => prettyParenIf (prec ≥ 1)
+      (boundsAux ctx aliases 1 a ++ " → " ++ boundsAux ctx aliases 0 b)
+  | .list lo hi e => prettyParenIf (prec ≥ 2)
+      ("BL " ++ count aliases lo ++ " " ++ count aliases hi ++ " " ++
+        boundsAux ctx aliases 2 e)
+  | .custom (.mk "Pair") [a, b] =>
+      "(" ++ boundsAux ctx aliases 0 a ++ ", " ++ boundsAux ctx aliases 0 b ++ ")"
+  | .custom (.mk name) args =>
+      if args.isEmpty then name
+      else prettyParenIf (prec ≥ 2)
+        (name ++ " " ++ String.intercalate " " (boundsArgs ctx aliases args))
+
+partial def boundsArgs (ctx : FHM.Unverified.HMDisplay.Context) (aliases : CountAliases) :
+    List BoundsTy → List String
+  | [] => []
+  | a :: rest => boundsAux ctx aliases 2 a :: boundsArgs ctx aliases rest
+end
+
+mutual
+partial def tyAux (ctx : FHM.Unverified.HMDisplay.Context) (aliases : CountAliases)
+    (prec : Nat) : Ty → String
+  | .prim p => prettyPrimTy p
+  | .bvar i => ctx.boundNames[i]?.getD (prettyTyVarName i)
+  | .fvar i => FHM.Unverified.HMDisplay.freeName ctx i
+  | .arrow a b => prettyParenIf (prec ≥ 1)
+      (tyAux ctx aliases 1 a ++ " → " ++ tyAux ctx aliases 0 b)
+  | .bl lo hi e => prettyParenIf (prec ≥ 2)
+      ("BL " ++ slot aliases lo ++ " " ++ slot aliases hi ++ " " ++ tyAux ctx aliases 2 e)
+  | .customTy (.mk "Pair") [a, b] =>
+      "(" ++ tyAux ctx aliases 0 a ++ ", " ++ tyAux ctx aliases 0 b ++ ")"
+  | .customTy (.mk name) args =>
+      if args.isEmpty then name
+      else prettyParenIf (prec ≥ 2)
+        (name ++ " " ++ String.intercalate " " (tyArgs ctx aliases args))
+
+partial def tyArgs (ctx : FHM.Unverified.HMDisplay.Context) (aliases : CountAliases) :
+    List Ty → List String
+  | [] => []
+  | a :: rest => tyAux ctx aliases 2 a :: tyArgs ctx aliases rest
+end
+
+def bounds (ctx : FHM.Unverified.HMDisplay.Context) (aliases : CountAliases)
+    (β : BoundsTy) : String :=
+  boundsAux { ctx with freeIds :=
+    (ctx.freeIds ++ (FHM.Bounds.Synth.BoundsTy.toTy β).freeVars).eraseDups } aliases 0 β
+
+/- Canonical Bounds checking may reindex its locally opened type variables.
+Align them structurally with the HM type reported at the same Core node, whose
+IDs are already related to source signature names by `HMDisplay.scopes`. -/
+mutual
+partial def alignTypeNames (ctx : FHM.Unverified.HMDisplay.Context) :
+    Ty → BoundsTy → List (Nat × String)
+  | .fvar hmId, .fvar boundsId => [(boundsId, FHM.Unverified.HMDisplay.freeName ctx hmId)]
+  | .arrow ha hb, .arrow ba bb =>
+      alignTypeNames ctx ha ba ++ alignTypeNames ctx hb bb
+  | .bl _ _ he, .list _ _ be => alignTypeNames ctx he be
+  | .customTy hn hargs, .custom bn bargs =>
+      if hn == bn then alignTypeNameArgs ctx hargs bargs else []
+  | _, _ => []
+
+partial def alignTypeNameArgs (ctx : FHM.Unverified.HMDisplay.Context) :
+    List Ty → List BoundsTy → List (Nat × String)
+  | h :: hs, b :: bs => alignTypeNames ctx h b ++ alignTypeNameArgs ctx hs bs
+  | _, _ => []
+end
+
+def boundsAtHM (ctx : FHM.Unverified.HMDisplay.Context) (aliases : CountAliases)
+    (hm : Ty) (β : BoundsTy) : String :=
+  bounds { ctx with aliases := (alignTypeNames ctx hm β ++ ctx.aliases).eraseDups }
+    aliases β
+
+mutual
+partial def alignDeclaredNames (names : List String) : BoundsTy → Ty → List (Nat × String)
+  | .fvar boundsId, .bvar binder =>
+      (names[binder]?).toList.map fun name => (boundsId, name)
+  | .arrow ba bb, .arrow ha hb =>
+      alignDeclaredNames names ba ha ++ alignDeclaredNames names bb hb
+  | .list _ _ be, .bl _ _ he => alignDeclaredNames names be he
+  | .custom bn bargs, .customTy hn hargs =>
+      if bn == hn then alignDeclaredNameArgs names bargs hargs else []
+  | _, _ => []
+
+partial def alignDeclaredNameArgs (names : List String) :
+    List BoundsTy → List Ty → List (Nat × String)
+  | b :: bs, h :: hs => alignDeclaredNames names b h ++ alignDeclaredNameArgs names bs hs
+  | _, _ => []
+end
+
+def declaredTypeAliases (typed : TypedLowered)
+    (locations : FHM.Unverified.HMArtifacts.Locations)
+    (reports : List FHM.Bounds.Found.NodeReport) (path : CorePath) : List (Nat × String) :=
+  locations.displays.flatMap fun display =>
+    match FHM.Unverified.HMDisplay.rhsPath typed display.site,
+        FHM.Unverified.HMArtifacts.declaredScheme typed display.site with
+    | some root, some sig =>
+        if root.isPrefixOf path then
+          match reports.find? (fun report => report.node.path == root) with
+          | some report =>
+              match report.node.bounds with
+              | some β => alignDeclaredNames display.names β sig.body
+              | none => []
+          | none => []
+        else []
+    | _, _ => []
+
+def displayContext (typed : TypedLowered) (scopes : List FHM.Unverified.HMDisplay.Scope)
+    (locations : FHM.Unverified.HMArtifacts.Locations)
+    (reports : List FHM.Bounds.Found.NodeReport) (path : CorePath) (hm : Ty) :
+    FHM.Unverified.HMDisplay.Context :=
+  let ctx := FHM.Unverified.HMDisplay.context scopes path hm
+  { ctx with aliases := (declaredTypeAliases typed locations reports path ++ ctx.aliases).eraseDups }
+
+def scheme (ctx : FHM.Unverified.HMDisplay.Context) (aliases : CountAliases)
+    (names : List String) (sig : PolyTy) : String :=
+  let names := if names.length == sig.paramCount then names
+    else (List.range sig.paramCount).map FHM.Unverified.HMDisplay.alphaName
+  let body := tyAux { ctx with boundNames := names ++ ctx.boundNames } aliases 0 sig.body
+  if names.isEmpty then body else "∀ " ++ String.intercalate " " names ++ ". " ++ body
+
+def atPath? (reports : List FHM.Bounds.Found.NodeReport) (path : CorePath) :
+    Option (Ty × BoundsTy) := do
+  let report ← reports.find? fun report => report.node.path == path
+  let β ← report.node.bounds
+  pure (report.node.hm, β)
+
+def source? (reports : List FHM.Bounds.Found.NodeReport) (id : SourceId) :
+    Option (CorePath × Ty × BoundsTy) := do
+  let report ← reports.find? fun report =>
+    report.origin.source.id == id && match report.origin.kind with
+      | .authored => true
+      | .generated _ => false
+  let β ← report.node.bounds
+  pure (report.node.path, report.node.hm, β)
+
+def sourceType (typed : TypedLowered) (scopes : List FHM.Unverified.HMDisplay.Scope)
+    (locations : FHM.Unverified.HMArtifacts.Locations)
+    (reports : List FHM.Bounds.Found.NodeReport) (id : SourceId) : Option String := do
+  let (path, hm, β) ← source? reports id
+  let ctx := displayContext typed scopes locations reports path hm
+  pure (boundsAtHM ctx (countAliases typed) hm β)
+
+def binderType (typed : TypedLowered) (scopes : List FHM.Unverified.HMDisplay.Scope)
+    (locations : FHM.Unverified.HMArtifacts.Locations)
+    (reports : List FHM.Bounds.Found.NodeReport) (site : SurfaceBinderSite) : Option String :=
+  let aliases := countAliases typed
+  let names := ((locations.displays.find? fun d => d.site == site).map (·.names)).getD []
+  match FHM.Unverified.HMArtifacts.declaredScheme typed site with
+  | some sig =>
+      let path := (FHM.Unverified.HMDisplay.rhsPath typed site).getD []
+      let outerScopes := scopes.filter fun s => s.path != path
+      some (scheme (FHM.Unverified.HMDisplay.context outerScopes path sig.body) aliases names sig)
+  | none => do
+      let (_, target) ← typed.lowering.binderTargets.find? (fun p => p.1 == site)
+      let sites ← match target with | .present sites => some sites | .absent _ => none
+      let core ← sites.head?
+      let path ← match core with
+        | .letIn path => some (path ++ [.letRhs])
+        | .letRec path member => some (path ++ [.letRecRhs member])
+        | .lambda path => some path
+        | _ => none
+      let (hm, β) ← atPath? reports path
+      let ctx := displayContext typed scopes locations reports path hm
+      match core, hm, β with
+      | .lambda _, .arrow hmDomain _, .arrow boundsDomain _ =>
+          pure (boundsAtHM ctx aliases hmDomain boundsDomain)
+      | _, _, _ => pure (boundsAtHM ctx aliases hm β)
+
+end BLDisplay
+
 /-- Infer Core spine + body type for a surface term under `ctors`, if possible.
 The runnable term is the ERASED source (`eOut`/elaboration is gone). -/
 def hmInfer (ctors : CtorEnv) (term : Surface.Expr) : Option (Expr × Ty) :=
@@ -1035,11 +1257,12 @@ def collectHoverLegacyBL (src : String) (p : Surface.Program) (binders : List Bi
           let syms := binderSyms ++ collectLitOpSymbols src ctors ++ preludeSyms
           { symbols := syms, programTy := report.programPretty, diagnostics := diags }
 
-/-- HM-only editor inference. Source token locations are unverified plumbing;
-    every displayed value type is read from the actual inferred artifacts.
-    Bounds annotations are retained for Path R, but no Bounds checker runs. -/
-def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
-    (sp : SpannedProgram) : HoverReport :=
+/-- Editor inference from the shared provenance pipeline. In Bounds mode the
+canonical recursive checker supplies every displayed `BoundsTy` and all Bounds
+diagnostics; in HM mode annotations remain bounds-blind (Path R). Source-token
+locations are unverified plumbing and never participate in acceptance. -/
+def collectHoverMode (bounds : Bool) (src : String) (p : Surface.Program)
+    (binders : List BinderSpan) (sp : SpannedProgram) : HoverReport :=
   let fail (d : HoverDiag) : HoverReport :=
     { symbols := [], programTy := "", diagnostics := [d] }
   match lowerDataDeclsIn preludeKindEnv p.decls with
@@ -1069,12 +1292,24 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                 (fun occ => !(wrapperIds.contains occ.id))
               let locations := { collected with occurrences := authoredOccurrences }
               let displayScopes := FHM.Unverified.HMDisplay.scopes typed locations
+              let blAttempt : Except String (Option BLDisplay.Checked) :=
+                if bounds then (BLDisplay.check typed).map some else .ok none
+              let blChecked? := match blAttempt with
+                | .ok checked => checked
+                | .error _ => none
+              let blReports := (blChecked?.map (·.reports)).getD []
               let values := locations.binders.filterMap fun b =>
-                (FHM.Unverified.HMDisplay.binderType typed displayScopes locations b.site).map fun ty =>
+                let ty? := if bounds then
+                  (BLDisplay.binderType typed displayScopes locations blReports b.site).orElse
+                    (fun _ => FHM.Unverified.HMDisplay.binderType typed displayScopes locations b.site)
+                  else FHM.Unverified.HMDisplay.binderType typed displayScopes locations b.site
+                ty?.map fun ty =>
                   mkSym b.name b.kind.toString ty b.span b.scope
               let occurrences := locations.occurrences.filterMap fun occ => do
                 let source ← lowered.sourceNodes.find? (fun n => n.id == occ.id)
-                let ty ← FHM.Unverified.HMDisplay.sourceType typed displayScopes occ.id
+                let ty ← (blChecked?.bind fun _ =>
+                  BLDisplay.sourceType typed displayScopes locations blReports occ.id).orElse fun _ =>
+                    FHM.Unverified.HMDisplay.sourceType typed displayScopes occ.id
                 let name := if occ.kind == "lit" || occ.kind == "op" then
                   FHM.Unverified.HMArtifacts.spanText src source.span
                   else occ.name
@@ -1098,7 +1333,10 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                         (fun d => d.params.map prettyValName)).getD []
                     mkSym b.name "ctor" (FHM.Unverified.HMDisplay.scheme {} names c.toTy) b.span scope
                 else if b.kind == .count then
-                  some (mkSym b.name "count" "count variable (unchecked in HM mode)" b.span (b.scope?.getD b.span))
+                  some (mkSym b.name "count"
+                    (if bounds then "count variable (Nat)"
+                      else "count variable (unchecked in HM mode)")
+                    b.span (b.scope?.getD b.span))
                 else if b.kind == .param then
                   let decl := (p.decls.zip sp.declSpans).find? fun (_, s) =>
                     FHM.Unverified.HMArtifacts.inside b.span s
@@ -1114,9 +1352,24 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
                 !(syntaxSyms.any fun b => b.name == s.name && b.kind == s.kind)
               let sugarOps := (collectLitOpSymbols src ctors).filter fun s => s.name == "::"
               { symbols := prelude ++ syntaxSyms ++ values ++ sugarOps ++ occurrences
-                programTy := FHM.Unverified.HMDisplay.scheme {} []
-                  (genScheme [] [] typed.inference.ty.eraseBounds)
-                diagnostics := [] }
+                programTy := match blChecked? with
+                  | some checked => BLDisplay.bounds {} (BLDisplay.countAliases typed) checked.body
+                  | none => FHM.Unverified.HMDisplay.scheme {} []
+                      (genScheme [] [] typed.inference.ty.eraseBounds)
+                diagnostics := match blAttempt with
+                  | .error msg => [boundsDiag binders p sp msg (some (bodyDiagSpan sp.body))]
+                  | .ok _ => [] }
+
+/-- HM editor mode: Path R retains `BL` annotations but HM remains blind to
+their count claims. This is also the compatibility default for `diagnose`. -/
+def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan)
+    (sp : SpannedProgram) : HoverReport :=
+  collectHoverMode false src p binders sp
+
+/-- Canonical Bounds editor mode. -/
+def collectHoverBL (src : String) (p : Surface.Program) (binders : List BinderSpan)
+    (sp : SpannedProgram) : HoverReport :=
+  collectHoverMode true src p binders sp
 
 /-- Parse-error diagnostic JSON object. -/
 def parseDiagJson (e : ParseError) : Lean.Json :=
@@ -1129,8 +1382,9 @@ def parseDiagJson (e : ParseError) : Lean.Json :=
     ("endCol", Lean.Json.num e.endCol)
   ]
 
-/-- Diagnose payload: versioned object with diagnostics, symbols, optional programTy. -/
-def diagnosePayload (src : String) : Lean.Json :=
+/-- Diagnose payload using a mode selected from the successfully parsed
+program. Keeping selection here avoids reparsing in `diagnose --auto`. -/
+def diagnosePayloadSelect (selectBounds : Surface.Program → Bool) (src : String) : Lean.Json :=
   match parseProgramWithSpans src with
   | .error e =>
     Lean.Json.mkObj [
@@ -1139,13 +1393,26 @@ def diagnosePayload (src : String) : Lean.Json :=
       ("symbols", Lean.Json.arr #[])
     ]
   | .ok (p, binders, sp) =>
-    let r := collectHover src p binders sp
+    let r := collectHoverMode (selectBounds p) src p binders sp
     Lean.Json.mkObj [
       ("version", Lean.Json.num 3),
       ("diagnostics", Lean.Json.arr (r.diagnostics.map HoverDiag.toJson).toArray),
       ("symbols", Lean.Json.arr (r.symbols.map RangedSymbol.toJson).toArray),
       ("programTy", Lean.Json.str r.programTy)
     ]
+
+/-- Diagnose payload in an explicitly selected checker mode. -/
+def diagnosePayloadMode (bounds : Bool) (src : String) : Lean.Json :=
+  diagnosePayloadSelect (fun _ => bounds) src
+
+/-- Select canonical Bounds checking exactly when the parsed program contains
+a `BL` annotation. Intended for editors; batch clients should choose a mode. -/
+def diagnosePayloadAuto (src : String) : Lean.Json :=
+  diagnosePayloadSelect programContainsBl src
+
+/-- Compatibility entry point: HM / Path-R diagnostics. -/
+def diagnosePayload (src : String) : Lean.Json :=
+  diagnosePayloadMode false src
 
 def binderNames (bs : List BinderSpan) : List String :=
   bs.map (·.name)
