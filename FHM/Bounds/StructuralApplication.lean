@@ -50,6 +50,26 @@ private def collectArguments (contract : BoundsTy) (actuals : List BoundsTy) :
           pure ((← collect domain actual) ++ (← collectArguments result rest))
       | _ => none
 
+private def occurrences : BoundsTy → List Nat
+  | .prim _ | .fvar _ => []
+  | .bvar i => [i]
+  | .arrow a b => occurrences a ++ occurrences b
+  | .list _ _ elem => occurrences elem
+  | .custom _ args => args.flatMap occurrences
+
+private def collectArgumentOrigins (contract : BoundsTy)
+    (actuals : List (Option BoundsTy)) : Option (List (Nat × BoundsTy) × List Nat) :=
+  match actuals with
+  | [] => some ([], [])
+  | actual :: rest =>
+      match contract with
+      | .arrow domain result => do
+          let later ← collectArgumentOrigins result rest
+          match actual with
+          | some β => pure ((← collect domain β) ++ later.1, later.2)
+          | none => pure (later.1, occurrences domain ++ later.2)
+      | _ => none
+
 /-- One untrusted HM vector for a whole supplied spine, including slots whose
     first actual origin is a later argument. Repeated slots keep their first
     proposal; EVERY domain still needs independent semantic inclusion. -/
@@ -60,6 +80,23 @@ def proposeArguments (contract : BoundsTy) (actuals : List BoundsTy) (arity : Na
     | none => throw "bounds: unsupported full-spine HM proposal shape or excess arguments"
   pure ((List.range arity).map fun slot =>
     ((uses.find? (fun row => row.1 == slot)).map Prod.snd).getD (.prim .unit))
+
+/-- Full-spine HM proposals may be gathered before every argument checks.  An
+    absent argument contributes no proposal; every slot occurring there must be
+    supplied independently by another actual argument.  Truly domain-absent
+    slots retain the established `Unit` witness convention. -/
+def proposeOrigins (contract : BoundsTy) (actuals : List (Option BoundsTy))
+    (arity : Nat) : Except String (List BoundsTy) := do
+  let (uses, blocked) ← match collectArgumentOrigins contract actuals with
+    | some result => pure result
+    | none => throw "bounds: unsupported staged HM argument proposal shape or excess arguments"
+  (List.range arity).mapM fun slot =>
+    match (uses.find? (fun row => row.1 == slot)).map Prod.snd with
+    | some argument => pure argument
+    | none =>
+        if blocked.contains slot then
+          throw "bounds: HM argument needs an independent origin before deferred argument checking"
+        else pure (.prim .unit)
 
 structure Result (Δ : List Constraint) (env : List Binding) (i : Nat) (arg : Expr)
     (functionHM resultHM : Ty) (scope : List Nat) where

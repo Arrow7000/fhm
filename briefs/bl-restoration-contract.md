@@ -2797,6 +2797,57 @@ checkpoint does not infer full caller bounds from a found-type skeleton.
 Validation: `lake build FHM FHMBounds fhm` passes (1805 jobs), including
 all 30 uniform/body/program regressions; boundary and whitespace checks pass.
 
+### Checkpoint 4az — generalized local RHSs may consume earlier exports
+
+The mixed body environment now distinguishes an earlier generalized export
+from both recursive group contracts and monomorphic binders.  Its source rule
+checks a real `HMCountScheme.Use`; its runtime rule requires supported concrete
+bounds/type arguments; and its capture invariants preserve the export's whole
+scheme rather than pretending it is a fixed monotype.  Type/count freshness and
+fixed-capture evidence are threaded through the same universal local
+certificate, group certificate and reconciliation route.
+
+Consequently a later generalized local can use an earlier generalized local in
+its own universally checked RHS.  The production `RecursiveHMWalk` validates
+the full exported application spine inside that RHS, including the original
+found HM payload.  The real regression introduces polymorphic `id`, defines
+polymorphic `copy` through it, and specializes `copy` at Char; the result keeps
+its runtime theorem and exact source-node coverage.
+
+This extends the existing binding/certificate family rather than adding an
+alternate local engine.  No new placeholder, partial definition or axiom was
+introduced.  Full `lake build FHM FHMBounds fhm` passes (1806 jobs); HM/D2,
+Path R and the solver trust boundary are unchanged.
+
+### Checkpoint 4ba — later origins discharge deferred generalized-body arguments
+
+The generalized body spine now stages optional independently checked argument
+proofs.  `StructuralApplication.proposeOrigins` and the existing count-origin
+collector inspect the entire supplied spine before specialization: a missing
+argument contributes no proposal, and each type/count coordinate occurring in
+its domain must come from another independently checked argument.  Coordinates
+absent from every domain retain the established irrelevant-witness convention.
+
+After the ONE whole-spine HM/count instance is checked, every missing argument
+is traversed again under its actual instantiated domain.  Acceptance therefore
+contains a genuine derivation, runtime evidence and original source paths for
+the formerly unguided expression.  Every application frame still checks actual
+domain inclusion and its original `.found` payload; no guided argument is fed
+back into origin proposal, and an unresolved partial call rejects.
+
+The end-to-end regression uses `∀a n. (List[n] a → List[n] a) → List[n] a →
+List[n] a`.  An unannotated List identity callback is initially uncheckable;
+the later singleton Char argument supplies both `a` and `n`, after which the
+callback checks with exact singleton bounds and full runtime/source coverage.
+A callback returning `Nil` fails actual inclusion, and the partial call fails
+the independent-origin guard.  This replaces the independent-only body-spine
+completion, not a parallel execution path.  No new files, typing rules,
+placeholders, partial definitions or axioms were introduced.
+
+Validation: `lake build FHM FHMBounds fhm` passes (1806 jobs), including the
+positive staged-body case and both independent negative guards; boundary and
+whitespace checks pass.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

@@ -715,6 +715,35 @@ private def deferredRecursiveProgram (badCallback : Bool := false) (onlyDeferred
     | _ => false
   pure (exact && exactlyOnce (logicalCorePaths a.output) (program.body.nodes.map (·.path)))
 
+/-- A generalized BODY use may likewise postpone an earlier callback until a
+    later actual supplies both its HM element type and its count coordinate.
+    The postponed expression is then traversed again under the instantiated
+    domain, so acceptance still contains its actual derivation and source nodes. -/
+private def deferredBodyProgram (badCallback : Bool := false) (onlyDeferred : Bool := false) :
+    Except String Bool := do
+  let list := Ty.bl (.solid (count 7)) (.solid (count 7)) (.bvar 0)
+  let callback := Ty.arrow list list
+  let σ : PolyTy := ⟨1, .arrow callback (.arrow list list)⟩
+  let rhs := Expr.lambda none (.lambda none (.app (.var 1) (.var 0)))
+  let deferred := Expr.lambda none (if badCallback then .ctor nilCtorName else .var 0)
+  let singleton := Expr.app (.app (.ctor consCtorName) (.primLit (.char 'z'))) (.ctor nilCtorName)
+  let partialCall := Expr.app (.var 0) deferred
+  let source := Expr.letRec [some σ] [rhs]
+    (if onlyDeferred then partialCall else .app partialCall singleton)
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let artifact ← match inferFound ctors source with
+    | some artifact => pure artifact
+    | none => throw "test: deferred generalized body callback HM inference failed"
+  let metadata : Scope.Metadata := { telescopes := [⟨.letRec [] 0, [(⟨"n"⟩, 7)]⟩] }
+  let program ← checkClosedProgram artifact.output metadata artifact.binderSchemes
+  if !program.body.runtimeSafety?.isSome then
+    throw "test: deferred generalized body callback lost its runtime theorem"
+  let exact := match program.body.bounds with
+    | .list lo hi (.prim .char) =>
+        lo.eval (fun _ => 0) == .ofNat 1 && hi.eval (fun _ => 0) == .ofNat 1
+    | _ => false
+  pure (exact && exactlyOnce (logicalCorePaths artifact.output) (program.body.nodes.map (·.path)))
+
 def main : IO Unit := do
   match actual with
   | .ok true => IO.println "PASS: every actual member universally specializes through one full group HM map with permuted slots and distinct count telescopes"
@@ -854,6 +883,18 @@ def main : IO Unit := do
         unless (message.splitOn part).length > 1 do throw (IO.userError s!"wrong deferred RHS rejection ({name}): {message}")
         IO.println s!"PASS: {name}"
     | .ok _ => throw (IO.userError s!"unexpected deferred RHS acceptance: {name}")
+  match deferredBodyProgram with
+  | .ok true => IO.println "PASS: a generalized body use rechecks its deferred callback after a later argument supplies both HM and count origins"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "deferred generalized body callback lost its proof, exact bounds or original-node coverage")
+  for (result, part, name) in [
+      (deferredBodyProgram (badCallback := true), "inclusion", "a false deferred generalized-body callback still fails actual domain inclusion"),
+      (deferredBodyProgram (onlyDeferred := true), "independent origin", "a deferred generalized-body callback cannot manufacture its own HM/count origins")] do
+    match result with
+    | .error message =>
+        unless (message.splitOn part).length > 1 do throw (IO.userError s!"wrong deferred body rejection ({name}): {message}")
+        IO.println s!"PASS: {name}"
+    | .ok _ => throw (IO.userError s!"unexpected deferred body acceptance: {name}")
 
 #eval do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
