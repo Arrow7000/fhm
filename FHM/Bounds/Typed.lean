@@ -61,6 +61,7 @@ def shapeTop (τ : Ty) : Except String BoundsTy := do
   | .fvar i => pure (.fvar i)
   | .bvar i => pure (.bvar i)
   | .arrow a b => return .arrow (← shapeTop a) (← shapeTop b)
+  | .customTy n [] => pure (.custom n [])
   | .customTy n [a] =>
       if n = listTyName then return .list (.lit 0) .inf (← shapeTop a)
       else throw "bounds: unsupported data type in typed slice"
@@ -81,6 +82,7 @@ def annotation (τ : Ty) : Except String BoundsTy := do
   | .customTy n [a] =>
       if n = listTyName then return .list (.lit 0) .inf (← annotation a)
       else throw "bounds: unsupported annotation data type"
+  | .customTy n [] => pure (.custom n [])
   | .prim p => pure (.prim p)
   | .fvar i => pure (.fvar i)
   | .bvar i => pure (.bvar i)
