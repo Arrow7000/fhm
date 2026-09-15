@@ -5,11 +5,12 @@ import FHM.Pretty
 import FHM.Unverified.EvaluateUnsafe
 import FHM.Unverified.PipelineShared
 import FHM.Unverified.HMDisplay
+import FHM.Unverified.HMArtifacts
 import FHM.Bounds.Erase
 import FHM.Bounds.Pipeline
 import FHM.Bounds.Ann
 import FHM.Bounds.Report
-import FHM.Bounds.Check
+import FHM.Bounds.RecursiveFound
 import Lean.Data.Json
 
 /-!
@@ -21,14 +22,13 @@ Read a `.fhm` source file (or stdin) and run:
 
 Default HM admits carried `BL` annotations under Path R: inference ignores
 bounds, reports the erased `List` shape, and performs no bounds validation.
-`--bl` selects the separate legacy bounds pipeline: surface erase, then
-`ofLower` (post-infer binder
-spine, mono or scheme) + origin `synthBounds` / `checkProgramAnns` then Core
-`checkProgramMatches` / BoundCovers. Schemes pack/inst; D24 fresh List λ-params.
-HM mode keeps surface `checkExhaustive`.
+`--bl` checks the same provenance-rich inferred artifact with the canonical
+proof-producing bounds checker. HM mode keeps surface `checkExhaustive`;
+BL match coverage is part of its bounds derivation.
 
 HM display types come from the producer's actual group-exit binder schemes.
-The legacy bounds mode retains its `ProgramReport` assembly/checking behavior.
+BL display retains authored surface annotations and adds the checked body
+bounds; display assembly is not an acceptance authority.
 
 ## CLI
 
@@ -195,13 +195,12 @@ private def foundTopBindingTypes (groups : List (List Surface.Binding))
           pure (here ++ later)
   go groups []
 
-/-- Parse → erase → lower → infer → exhaustiveness → erased execution.
-HM mode consumes the rich producer output; the legacy bounds branch remains
-separate until its downstream migration. -/
+/-- Parse → provenance-aware lower → found inference → optional verified bounds
+checking → erased execution. HM and BL consume the same inferred artifact. -/
 def checkPipeline (mode : BoundsMode) (src : String) :
     IO (Except PipelineErr CheckedProgram) := do
   let tCheck0 ← IO.monoNanosNow
-  let p ← match parseProgram src with
+  let (p, binders, sp) ← match parseProgramWithSpans src with
     | .error e =>
         return .error {
           stage := .parse
@@ -211,14 +210,13 @@ def checkPipeline (mode : BoundsMode) (src : String) :
           endLine := e.endLine
           endCol := e.endCol
         }
-    | .ok p => pure p
+    | .ok parsed => pure parsed
 
-  -- The legacy erase package contains an unfinished no-bounds proof. Do not
-  -- construct it in HM mode: Core inference itself owns Path R erasure.
+  -- Presentation-only compatibility: acceptance never consumes this erased
+  -- package. Core inference itself owns Path R erasure in both modes.
   let ep := if mode == .hm then none else some (eraseProgram p)
-  let p := (ep.map (·.toProgram)).getD p
 
-  let (ctors, c) ← match lowerProgram p with
+  let (ctors, _) ← match lowerProgram p with
     | none =>
         -- Prefer a concrete free-name message when possible (editor path has spans).
         let free := freeNamesD [] p.term
@@ -230,67 +228,65 @@ def checkPipeline (mode : BoundsMode) (src : String) :
         return .error { stage := .lower, message }
     | some x => pure x
 
-  let (τ, found?) ←
-    if mode == .hm then
-      match inferFound ctors c with
-      | none => return .error { stage := .typecheck, message := "typechecking failed" }
-      | some found => pure (found.ty, some found)
+  let scope :=
+    let spans := binders.map (·.span) ++ sp.groups.flatMap (·.map Surface.Span.SpannedExpr.span)
+      ++ [sp.body.span]
+    (Surface.Span.Span.hull spans).getD sp.body.span
+  let tree ← match FHM.Unverified.HMArtifacts.programSpanned p sp scope with
+    | none => return .error {
+        stage := .lower
+        message := "internal parser provenance shape mismatch"
+      }
+    | some tree => pure tree
+  let lowered ← match SurfaceBridge.Provenance.lowerWithProvenance ctors p.term tree with
+    | none => return .error { stage := .lower, message := "provenance-aware lowering failed" }
+    | some lowered => pure lowered
+  let typed ← match SurfaceBridge.Provenance.inferWithProvenance ctors lowered with
+    | none => return .error { stage := .typecheck, message := "typechecking failed" }
+    | some typed => pure typed
+  let τ := typed.inference.ty
+  let found := typed.inference
+  let checkedBodyBounds ←
+    if mode == .bl then
+      match FHM.Bounds.RecursiveFound.synthNodes typed with
+      | .error msg => return .error { stage := .bounds, message := msg }
+      | .ok (result, _) => pure (some result.bounds)
     else
-      match infer c.freshFloor ⟨[], ctors⟩ c with
-      | none => return .error { stage := .typecheck, message := "typechecking failed" }
-      | some (_, _, τ) => pure (τ, none)
+      pure none
   let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
   -- Slice 2: Core body env order (0 = innermost) from the same groups Infer used.
   let binderEnv := binderEnvFromGroups p.groups
   let boundsAnns := (ep.map (ProgramBoundsAnns.ofLower binderEnv)).getD {}
-  let report0 ← match found? with
-    | some found =>
-        let bindings ← match foundTopBindingTypes p.groups c found.binderSchemes with
-          | some bindings => pure bindings
-          | none => return .error {
-              stage := .typecheck
-              message := "internal inference artifact error: missing top-level binder scheme"
-            }
-        -- HM presentation is bounds-erased, even when a source ascription
-        -- carries bounds syntax. Bounds reports belong only to the BL branch.
-        pure { bindings := bindings.map fun (name, hm) =>
-                 let binding := (p.groups.flatMap id).find? (fun b => b.name == name)
-                 let ann := binding.bind (fun b => finalizeAnn b.tyParams b.params b.ann)
-                 let names := FHM.Unverified.HMArtifacts.displayNames ann
-                 { name, hm := hm.eraseBounds
-                   synthPretty? := some (FHM.Unverified.HMDisplay.scheme {} names hm) }
-               programHm := bodyσ.eraseBounds
-               programSynthPretty? := some (FHM.Unverified.HMDisplay.scheme {} [] bodyσ) }
-    | none =>
-        match ep with
-        | some ep => pure (assembleProgramReport p.groups (collectTopSchemes c) bodyσ ep)
-        | none => return .error {
-            stage := .typecheck
-            message := "internal pipeline error: missing inference result"
-          }
-  let report ←
+  let bindings ← match foundTopBindingTypes p.groups lowered.expr found.binderSchemes with
+    | some bindings => pure bindings
+    | none => return .error {
+        stage := .typecheck
+        message := "internal inference artifact error: missing top-level binder scheme"
+      }
+  let report0 :=
     if mode == .bl then
-      match FHM.Bounds.Check.checkProgramAnns c τ binderEnv boundsAnns with
-      | .error msg =>
-          return .error { stage := .bounds, message := msg }
-      | .ok (bctx, βBody) =>
-          -- Pretty body via packScheme so free inferables generalise (∀ …), not `?n`.
-          pure (report0.enrichFromSynth binderEnv (bctx.map BoundBinding.pretty)
-            (some (BoundBinding.pretty (BoundsTy.packScheme? βBody))))
+      match ep with
+      | some erased => assembleFromBindings bindings bodyσ erased
+      | none => { programHm := bodyσ }
     else
-      pure report0
+      { bindings := bindings.map fun (name, hm) =>
+          let binding := (p.groups.flatMap id).find? (fun b => b.name == name)
+          let ann := binding.bind (fun b => finalizeAnn b.tyParams b.params b.ann)
+          let names := FHM.Unverified.HMArtifacts.displayNames ann
+          { name, hm := hm.eraseBounds
+            synthPretty? := some (FHM.Unverified.HMDisplay.scheme {} names hm) }
+        programHm := bodyσ.eraseBounds
+        programSynthPretty? := some (FHM.Unverified.HMDisplay.scheme {} [] bodyσ) }
+  let report := match checkedBodyBounds with
+    | some β => report0.enrichFromSynth binderEnv [] (some β.pretty)
+    | none => report0
 
-  if mode == .bl then
-    match FHM.Bounds.Check.checkProgramMatches ctors c τ binderEnv boundsAnns with
-    | .error msg =>
-        return .error { stage := .exhaustiveness, message := msg }
-    | .ok () => pure ()
-  else
+  if mode != .bl then
     if !(checkExhaustive ctors p.term) then
       return .error { stage := .exhaustiveness, message := "match not exhaustive" }
 
-  let e := c.erase
+  let e := found.output.erase
 
   return .ok {
     report := report

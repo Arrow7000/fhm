@@ -48,7 +48,8 @@ roots = ["FHM.Unverified.EditorSupportTests"]
 [[lean_lib]]
 name = "FHMCli"
 # Unified CLI modules — `lake build fhm`.
-# Live imports FHM.Bounds.Pipeline / Erase for `--bl` (pulls FHMBounds + Z3 modules).
+# Live `--bl` invokes the canonical proof-producing checker; Pipeline remains
+# temporarily imported only for the mode enum/detector and Erase for display.
 roots = ["FHM.Unverified.Cli", "FHM.Unverified.Live", "FHM.Unverified.Diagnose", "FHM.Unverified.PipelineShared"]
 
 [[lean_exe]]

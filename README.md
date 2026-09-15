@@ -117,7 +117,12 @@ The default CLI and editor path is HM-only: it consumes `inferFound`, reads
 validated declarations or inferred group-exit schemes by binder identity, and
 joins occurrence/expression types through the separate provenance map. Carried
 `BL` annotations display as their HM `List` shape; no length checking runs here.
-The `--bl` CLI remains a legacy, separately unfinished pipeline.
+`fhm run --bl` consumes the same provenance-rich inference artifact and routes
+acceptance through the canonical proof-producing bounds checker. Its supported
+fragment includes checked recursive List/Bool programs, lexical captures,
+generalized declarations and nested groups; annotation-hole escape inference,
+unannotated recursive exports, parameterized nominal runtime meanings and BL
+editor presentation remain explicit follow-up boundaries.
 
 An annotation is a ceiling on the binding's exported scheme, not necessarily
 an expected type pushed into an otherwise unconstrained RHS. Definition hovers
