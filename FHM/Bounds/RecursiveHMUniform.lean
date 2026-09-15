@@ -1179,6 +1179,8 @@ inductive ScopedBodyDerives :
   | nil {env elem} : ScopedBodyDerives types slots ids rows Δ env (.ctor nilCtorName) (.list (.lit 0) (.lit 0) elem)
   | boolCtor {env name} : BoolBranches.IsCtor name →
       ScopedBodyDerives types slots ids rows Δ env (.ctor name) (.custom boolTyName [])
+  | ctor {env name β} : name ≠ nilCtorName →
+      ScopedBodyDerives types slots ids rows Δ env (.ctor name) β
   | cons {env h t head elem lo hi} :
       ScopedBodyDerives types slots ids rows Δ env h head → ScopedBodyDerives types slots ids rows Δ env t (.list lo hi elem) →
       SemanticSub Δ head elem → ScopedBodyDerives types slots ids rows Δ env (.app (.app (.ctor consCtorName) h) t)
@@ -1267,7 +1269,7 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       intro p source
       rw [ih p source] at sub
       cases p <;> cases sub <;> rfl
-  | primBinOp | nil | boolCtor | cons | pair | varMono | varExported | app | lambda |
+  | primBinOp | nil | boolCtor | ctor | cons | pair | varMono | varExported | app | lambda |
       letMono | letPinned | letRecPinnedMono | letRecInferredMono | letExported | match_ | letRec =>
         intro p source; cases source
 
@@ -1320,6 +1322,7 @@ theorem rhsToBody {types slots ids rows Δ env e β}
   | primBinOp => exact .primBinOp
   | nil => exact .nil
   | boolCtor ctor => exact .boolCtor ctor
+  | ctor hn => exact .ctor hn
   | cons _ _ sub ihh iht => exact .cons ihh iht sub
   | pair _ _ ihLeft ihRight => exact .pair ihLeft ihRight
   | varMono lookup =>
@@ -1362,6 +1365,7 @@ theorem ordinaryRhsToBody {types slots ids rows Δ env e β}
   | primBinOp => intro _; exact .primBinOp
   | nil => intro _; exact .nil
   | boolCtor ctor => intro _; exact .boolCtor ctor
+  | ctor hn => intro _; exact .ctor hn
   | cons _ _ sub ihh iht => intro ordinary; exact .cons (ihh ordinary) (iht ordinary) sub
   | pair _ _ ihLeft ihRight => intro ordinary; exact .pair (ihLeft ordinary) (ihRight ordinary)
   | varMono lookup =>
@@ -1428,6 +1432,7 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
   | primBinOp => exact .primBinOp
   | nil => exact .nil
   | boolCtor ctor => exact .boolCtor ctor
+  | ctor hn => exact .ctor hn
   | cons _ _ sub ihh iht => exact .cons ihh iht sub
   | pair _ _ ihLeft ihRight => exact .pair ihLeft ihRight
   | varMono lookup =>
@@ -1477,6 +1482,7 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
   | primBinOp => exact .primBinOp
   | nil => exact .nil
   | boolCtor ctor => exact .boolCtor ctor
+  | ctor hn => exact .ctor hn
   | cons _ _ sub ihh iht => exact .cons (ihh ordinary) (iht ordinary) sub
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft ordinary) (ihRight ordinary)
   | varMono lookup =>
@@ -1516,6 +1522,7 @@ abbrev literal := @ScopedBodyDerives.literal BoundsTy.fvar BoundsTy.bvar
 abbrev primBinOp := @ScopedBodyDerives.primBinOp BoundsTy.fvar BoundsTy.bvar
 abbrev nil := @ScopedBodyDerives.nil BoundsTy.fvar BoundsTy.bvar
 abbrev boolCtor := @ScopedBodyDerives.boolCtor BoundsTy.fvar BoundsTy.bvar
+abbrev ctor := @ScopedBodyDerives.ctor BoundsTy.fvar BoundsTy.bvar
 abbrev cons := @ScopedBodyDerives.cons BoundsTy.fvar BoundsTy.bvar
 abbrev pair := @ScopedBodyDerives.pair BoundsTy.fvar BoundsTy.bvar
 abbrev varMono := @ScopedBodyDerives.varMono BoundsTy.fvar BoundsTy.bvar
@@ -1552,6 +1559,7 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
   | primBinOp => exact .primBinOp
   | nil => exact .nil
   | boolCtor hn => exact .boolCtor hn
+  | ctor hn => exact .ctor hn
   | cons _ _ sub ihh iht => exact .cons (ihh hp) (iht hp) (sub.assuming hp)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
   | varMono lookup => exact .varMono lookup
@@ -1604,7 +1612,7 @@ theorem BodyBranchContext.extend_length {ctx : BodyBranchContext} {pat env}
 theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
     (h : ScopedBodyDerives types slots ids rows Δ env e β) : e.varsBelow env.length = true := by
   induction h with
-  | literal | primBinOp | nil | boolCtor => rfl
+  | literal | primBinOp | nil | boolCtor | ctor => rfl
   | cons _ _ _ ihh iht => simp [Expr.varsBelow, ihh, iht]
   | pair _ _ ihLeft ihRight => simp [Expr.varsBelow, ihLeft, ihRight]
   | varMono lookup | varExported lookup _ =>
@@ -3367,7 +3375,12 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           (by simpa only [Expr.stripFound] using BodyDerives.boolCtor hb) []
           (some ⟨by simpa only [Expr.stripFound] using
             (@BodyDerives.RuntimeReady.boolCtor BoundsTy.fvar BoundsTy.bvar ids rows Δ env name hb)⟩)
-      else throw "bounds: unsupported standalone constructor in generalized body"
+      else
+        let β ← match expected with
+          | some β => pure β
+          | none => Typed.shapeTop hm.eraseBounds
+        finishBody path hm β rfl
+          (by simpa only [Expr.stripFound] using BodyDerives.ctor hn) [] none
   | .found hm (.var i) =>
       match hv : env[i]? with
       | some (.mono β) =>
@@ -3470,7 +3483,36 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               subst name
               simpa only [Expr.stripFound] using
                 BodyDerives.RuntimeReady.pair leftReady.down rightReady.down⟩)
-      else throw "bounds: generalized body constructor application unsupported"
+      else
+        let function ← walkBodySource sourceOutput metadata ids rows caller Δ env
+          (path ++ [.appFun])
+          (.found partialHM (.app (.found ctorHM (.ctor name)) head)) schemes capture
+          (descendBodySource sourceAt (by simp [Expr.atCorePath])) none
+        let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+          (path ++ [.appArg]) tail schemes capture
+          (descendBodySource sourceAt (by simp [Expr.atCorePath])) none
+        appendBody path hm function actual
+  | .found hm (.app (.found ctorHM (.ctor name)) arg) =>
+      if hn : name = nilCtorName then
+        throw "bounds: Nil cannot be applied"
+      else if hc : name = consCtorName then
+        throw "bounds: partial Cons application unsupported in generalized body"
+      else if hp : name = pairCtorName then
+        throw "bounds: partial Pair application unsupported in generalized body"
+      else if hb : BoolBranches.IsCtor name then
+        throw "bounds: Bool constructor cannot be applied"
+      else
+        match ctorHM.eraseBounds with
+        | .arrow domainHM resultHM =>
+            let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+              (path ++ [.appArg]) arg schemes capture
+              (descendBodySource sourceAt (by simp [Expr.atCorePath])) none
+            let result ← RecursiveHMWalk.transferCtorOrigin domainHM actual.bounds resultHM
+            let function ← finishBody (path ++ [.appFun]) ctorHM
+              (.arrow actual.bounds result) rfl
+              (by simpa only [Expr.stripFound] using BodyDerives.ctor hn) [] none
+            appendBody path hm function actual
+        | _ => throw "bounds: applied constructor has a non-arrow generalized HM payload"
   | .found hm (.app fn arg) =>
       match sourceAt.bind (parseBodySpineSource sourceOutput path (.found hm (.app fn arg))) with
       | some ⟨spine, spineSource⟩ =>

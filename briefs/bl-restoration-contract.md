@@ -3126,6 +3126,33 @@ multi-model canary rejects again and the cross-argument compound regression
 continues to pass.  The `.fhm` smoke matrix stands at 17/21; its remaining green
 frontiers are generalized annotation holes and generic nominal constructors.
 
+### Checkpoint 4bn — nominal construction in the canonical checker
+
+The recursive RHS and generalized-body judgments now admit non-List nominal
+constructors as a static, HM-parasitic fragment.  The complete result object
+still checks every chosen bounds type against the original found HM payload;
+the new rule does not validate constructor identity independently of the HM
+artifact.  Nil, Bool, Cons and Pair retain their dedicated quantitative and
+runtime-certified rules.
+
+The canonical walkers handle nullary constructors from a shape-correct expected
+result and arbitrary curried non-special constructor applications.  At each
+application, bounds obtained from the actual field are transported through
+matching instantiated HM substructure in the constructor result.  Consequently
+`Some xs` for `xs : BL 2 2 Int` synthesizes `Option (BL 2 2 Int)` instead of
+widening the nested List to `BL 0 ∞ Int`; every original constructor/application
+node remains represented exactly once.  Build-failing regressions cover unary
+origin transport and nullary expected construction, and the parsed T3 Option
+program now passes end to end.  The product smoke matrix is 18/21.
+
+Generic constructors intentionally carry no `RuntimeReady` witness.  Runtime
+safety remains available for the previously certified primitive/List/Bool/Pair
+fragment, while nominal construction is presently static-only.  A declaration-
+indexed constructor schema is still needed before claiming general constructor
+field/result principality or runtime certification; the instantiated-HM
+transport used here restores the intended Option-style product behavior without
+pretending to settle that larger theorem.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
