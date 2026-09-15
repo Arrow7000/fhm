@@ -12,6 +12,128 @@ namespace FHM.Bounds.HMDeclaredReconciliation
 
 open SchemeSpecialization ScopedScheme
 
+private def annotationsTyBvarsBelow (n : Nat) (anns : List (Option PolyTy)) : Bool :=
+  anns.all fun ann => match ann with
+    | none => true
+    | some σ => σ.body.bvarsBelow (n + σ.paramCount)
+
+mutual
+private def rhsTyBvarsBelow (n : Nat) (e : Expr) : Bool := match e with
+  | .primLit _ | .primBinOp _ | .var _ | .ctor _ => true
+  | .lambda ann body =>
+      (match ann with | none => true | some τ => τ.bvarsBelow n) && rhsTyBvarsBelow n body
+  | .app f arg => rhsTyBvarsBelow n f && rhsTyBvarsBelow n arg
+  | .letIn ann rhs body =>
+      match ann with
+      | none => rhsTyBvarsBelow n rhs && rhsTyBvarsBelow n body
+      | some σ => σ.body.bvarsBelow (n + σ.paramCount) &&
+          rhsTyBvarsBelow (n + σ.paramCount) rhs && rhsTyBvarsBelow n body
+  | .match_ scrut branches => rhsTyBvarsBelow n scrut && branchesTyBvarsBelow n branches
+  | .found τ inner => τ.bvarsBelow n && rhsTyBvarsBelow n inner
+  | .letRec anns rhss body => annotationsTyBvarsBelow n anns &&
+      recursiveTyBvarsBelow n anns rhss && rhsTyBvarsBelow n body
+termination_by sizeOf e
+
+private def branchesTyBvarsBelow (n : Nat) (branches : List (MatchPattern × Expr)) : Bool := match branches with
+  | [] => true
+  | (_, body) :: rest => rhsTyBvarsBelow n body && branchesTyBvarsBelow n rest
+termination_by sizeOf branches
+
+private def recursiveTyBvarsBelow (n : Nat) (anns : List (Option PolyTy)) (rhss : List Expr) : Bool := match anns, rhss with
+  | _, [] => true
+  | [], rhs :: rest => rhsTyBvarsBelow n rhs && recursiveTyBvarsBelow n [] rest
+  | ann :: anns, rhs :: rest =>
+      rhsTyBvarsBelow (n + RecAnn.params ann) rhs && recursiveTyBvarsBelow n anns rest
+termination_by sizeOf rhss
+end
+
+private theorem annotationsTyBvarsBelow_sound {n anns}
+    (h : annotationsTyBvarsBelow n anns = true) :
+    ∀ σ, some σ ∈ anns → ContainsBvarsUpTo (n + σ.paramCount) σ.body := by
+  intro σ member
+  have checked := List.all_eq_true.mp h (some σ) member
+  simpa [annotationsTyBvarsBelow, Ty.bvarsBelow_iff] using checked
+
+private theorem branchesTyBvarsBelow_at {branches n pat body}
+    (checked : branchesTyBvarsBelow n branches = true) (member : (pat, body) ∈ branches) :
+    rhsTyBvarsBelow n body = true := by
+  cases branches with
+  | nil => cases member
+  | cons branch rest =>
+      rcases branch with ⟨headPat, headBody⟩
+      simp only [branchesTyBvarsBelow, Bool.and_eq_true] at checked
+      rcases List.mem_cons.mp member with equality | tail
+      · cases equality
+        exact checked.1
+      · exact branchesTyBvarsBelow_at checked.2 tail
+
+private theorem rhsTyBvarsBelow_sound :
+    ∀ {e n}, rhsTyBvarsBelow n e = true → e.TyBvarBounded n := by
+  intro e
+  induction e using Expr.rec_strong with
+  | primLit | primBinOp | var | ctor => intro n _; trivial
+  | lambda ann body ih =>
+      intro n checked
+      cases ann with
+      | none =>
+          simp only [rhsTyBvarsBelow, Bool.and_eq_true] at checked
+          exact ⟨(by intro τ source; cases source), ih checked.2⟩
+      | some annotation =>
+          simp only [rhsTyBvarsBelow, Bool.and_eq_true] at checked
+          exact ⟨(by intro τ source; cases source; exact (Ty.bvarsBelow_iff _).mp checked.1),
+            ih checked.2⟩
+  | app f arg ihf iha =>
+      intro n checked
+      simp only [rhsTyBvarsBelow, Bool.and_eq_true] at checked
+      exact ⟨ihf checked.1, iha checked.2⟩
+  | letIn ann rhs body ihr ihb =>
+      intro n checked
+      cases ann with
+      | none =>
+          simp only [rhsTyBvarsBelow, Bool.and_eq_true] at checked
+          exact ⟨ihr checked.1, ihb checked.2⟩
+      | some σ =>
+          simp only [rhsTyBvarsBelow, Bool.and_eq_true] at checked
+          exact ⟨(Ty.bvarsBelow_iff _).mp checked.1.1, ihr checked.1.2, ihb checked.2⟩
+  | match_ scrut branches ihs ihbs =>
+      intro n checked
+      simp only [rhsTyBvarsBelow, Bool.and_eq_true] at checked
+      refine ⟨ihs checked.1, Expr.TyBvarBounded.BranchList_iff.mpr ?_⟩
+      intro pat body member
+      exact ihbs pat body member (branchesTyBvarsBelow_at checked.2 member)
+  | found τ inner ih =>
+      intro n checked
+      simp only [rhsTyBvarsBelow, Bool.and_eq_true] at checked
+      exact ⟨(Ty.bvarsBelow_iff _).mp checked.1, ih checked.2⟩
+  | letRec anns rhss body ihs ihb =>
+      intro n checked
+      simp only [rhsTyBvarsBelow, Bool.and_eq_true] at checked
+      refine ⟨annotationsTyBvarsBelow_sound checked.1.1, ?_, ihb checked.2⟩
+      have recursive := checked.1.2
+      have go : ∀ (anns : List (Option PolyTy)) (rhss : List Expr),
+          (∀ e ∈ rhss, ∀ {n}, rhsTyBvarsBelow n e = true → e.TyBvarBounded n) →
+          recursiveTyBvarsBelow n anns rhss = true →
+          Expr.TyBvarBounded.RecGroup n anns rhss := by
+        intro anns rhss
+        induction rhss generalizing anns with
+        | nil => intro _ _; trivial
+        | cons rhs rest ihr =>
+            intro derives checked
+            cases anns with
+            | nil =>
+                simp only [recursiveTyBvarsBelow, Bool.and_eq_true] at checked
+                exact ⟨derives rhs (by simp) checked.1,
+                  ihr [] (fun e he => derives e (List.mem_cons_of_mem _ he)) checked.2⟩
+            | cons ann anns =>
+                simp only [recursiveTyBvarsBelow, Bool.and_eq_true] at checked
+                exact ⟨derives rhs (by simp) checked.1,
+                  ihr anns (fun e he => derives e (List.mem_cons_of_mem _ he)) checked.2⟩
+      exact go anns rhss ihs recursive
+
+private def checkRhsTyBvars (n : Nat) (e : Expr) : Except String (PLift (e.TyBvarBounded n)) :=
+  if h : rhsTyBvarsBelow n e = true then .ok ⟨rhsTyBvarsBelow_sound h⟩
+  else .error "bounds: source RHS annotation contains an out-of-scope HM slot"
+
 private theorem mem_eraseDups {a : Nat} {l : List Nat} (h : a ∈ l.eraseDups) : a ∈ l := by
   have go : ∀ n, ∀ (l : List Nat), l.length = n → ∀ a, a ∈ l.eraseDups → a ∈ l := by
     intro n
@@ -95,6 +217,7 @@ structure Checked {output site} (d : Declaration output site)
   original : BoundsTy
   originalShape : Synth.BoundsTy.toTy original = d.node.original.eraseBounds
   originalSlots : d.node.original.eraseBounds.bvarsBelow (slotLimit site d.annotation) = true
+  rhsSlots : d.node.inner.stripFound.TyBvarBounded (slotLimit site d.annotation)
   flexible : List Nat
   distinct : flexible.Nodup
   fromOriginal : ∀ i ∈ flexible, i ∈ d.node.original.freeVars
@@ -178,6 +301,7 @@ def check {output site} (d : Declaration output site) (quantified captures : Lis
   let originalShape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy original) d.node.original.eraseBounds with
     | some h => pure h | none => throw "bounds: original declared RHS skeleton disagrees with found payload"
   if hslots : d.node.original.eraseBounds.bvarsBelow (slotLimit site d.annotation) = true then
+    let rhsSlots ← checkRhsTyBvars (slotLimit site d.annotation) d.node.inner.stripFound
     let guarded := guardedTypes d typeCaptures
     let flexible := (d.node.original.freeVars.filter fun i =>
       !(guarded.any fun t => t.freeVars.contains i)).eraseDups
@@ -215,7 +339,8 @@ def check {output site} (d : Declaration output site) (quantified captures : Lis
                 intro i hi
                 simpa [List.contains_iff_mem] using List.all_eq_true.mp hf i hi
               if hi : opening.ids = signatureIds then
-                pure ⟨interface, original, originalShape.down, hslots, flexible, hd, fromOriginal, guardedIds,
+                pure ⟨interface, original, originalShape.down, hslots, rhsSlots.down,
+                  flexible, hd, fromOriginal, guardedIds,
                   arguments, ha, (fun a hm => (Ty.bvarsBelow_iff _).mp (List.all_eq_true.mp hlc a hm)),
                   hs, signatureIds, newIds, opening, hi⟩
               else throw "bounds: declared RHS opening changed source HM identities"

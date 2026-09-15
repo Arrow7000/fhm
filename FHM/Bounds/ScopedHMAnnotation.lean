@@ -60,6 +60,19 @@ theorem AnnotationOK.congrFree {free free' slots ids rows Δ τ actual}
       simpa only [bounds_shape, d.shape, eraseFreeVars] using member))
   exact ⟨d, decoded, by rw [← same]; exact inclusion⟩
 
+/-- Lexical readers may likewise be changed outside the bound slots actually
+    named by the source annotation. -/
+theorem AnnotationOK.congrSlots {free slots slots' ids rows Δ τ actual n}
+    (h : AnnotationOK free slots ids rows Δ τ actual)
+    (bounded : ContainsBvarsUpTo n τ)
+    (agree : ∀ i < n, slots i = slots' i) :
+    AnnotationOK free slots' ids rows Δ τ actual := by
+  obtain ⟨d, decoded, inclusion⟩ := h
+  have sourceBounded : ContainsBvarsUpTo n (Synth.BoundsTy.toTy (bounds rows d.bounds)) := by
+    simpa only [bounds_shape, d.shape] using bounded.eraseBounds
+  have same := ScopedHMInterpretation.congrSlots (free := free) sourceBounded agree
+  exact ⟨d, decoded, by rw [← same]; exact inclusion⟩
+
 theorem ParamOK.congrFree {free free' slots ids rows Δ ann actual}
     (h : ParamOK free slots ids rows Δ ann actual)
     (agree : ∀ i ∈ ann.elim [] Ty.freeVars, free i = free' i) :
@@ -68,6 +81,15 @@ theorem ParamOK.congrFree {free free' slots ids rows Δ ann actual}
   | none => trivial
   | some τ => exact AnnotationOK.congrFree h agree
 
+theorem ParamOK.congrSlots {free slots slots' ids rows Δ ann actual n}
+    (h : ParamOK free slots ids rows Δ ann actual)
+    (bounded : ∀ τ, ann = some τ → ContainsBvarsUpTo n τ)
+    (agree : ∀ i < n, slots i = slots' i) :
+    ParamOK free slots' ids rows Δ ann actual := by
+  cases ann with
+  | none => trivial
+  | some τ => exact AnnotationOK.congrSlots h (bounded τ rfl) agree
+
 theorem BindingOK.congrFree {free free' slots ids rows Δ ann actual}
     (h : BindingOK free slots ids rows Δ ann actual)
     (agree : ∀ i ∈ ann.elim [] (fun σ => σ.body.freeVars), free i = free' i) :
@@ -75,6 +97,17 @@ theorem BindingOK.congrFree {free free' slots ids rows Δ ann actual}
   cases ann with
   | none => trivial
   | some σ => exact ⟨h.1, AnnotationOK.congrFree h.2 agree⟩
+
+theorem BindingOK.congrSlots {free slots slots' ids rows Δ ann actual n}
+    (h : BindingOK free slots ids rows Δ ann actual)
+    (bounded : ∀ σ, ann = some σ → ContainsBvarsUpTo (n + σ.paramCount) σ.body)
+    (agree : ∀ i < n, slots i = slots' i) :
+    BindingOK free slots' ids rows Δ ann actual := by
+  cases ann with
+  | none => trivial
+  | some σ =>
+      refine ⟨h.1, AnnotationOK.congrSlots h.2 ?_ agree⟩
+      simpa [h.1] using bounded σ rfl
 
 structure Demand (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (τ : Ty) where
@@ -113,6 +146,7 @@ def check (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) (ca
 #print axioms AnnotationOK.counts
 #print axioms AnnotationOK.assuming
 #print axioms AnnotationOK.congrFree
+#print axioms AnnotationOK.congrSlots
 #print axioms Demand.shape
 #print axioms decode
 #print axioms check

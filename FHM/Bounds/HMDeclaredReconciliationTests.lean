@@ -88,6 +88,10 @@ private def cases : List (String × Bool) := [
   ("recursive source annotation/RHS arity mismatch rejects before selecting a member", fails malformed "arity mismatch"),
   ("out-of-scope written forall slots reject before proposals", !succeeds
     (synthetic identity ⟨1, .arrow (list (.bvar 1)) (list (.bvar 1))⟩)),
+  ("out-of-scope slots in nested RHS annotations reject even when the root shape is closed", fails
+    (synthetic (.found (.prim .int)
+      (.lambda (some (.bvar 1)) (.found (.prim .int) (.primLit (.int 0)))))
+      ⟨1, .prim .int⟩) "source RHS annotation"),
   ("enclosing original lexical slots remain explicitly guarded in the closed interface", fails
     (synthetic (.found (.arrow (.bvar 1) (.bvar 1))
       (.lambda none (.found (.bvar 1) (.var 0)))) signature) "enclosing lexical")]

@@ -660,6 +660,74 @@ theorem LocalFrame.slotsFit {s ids rhs ann} (frame : LocalFrame s ids rhs)
       simpa [HMCountScheme.Annotated.scheme, PolyTy.eraseBounds, ← frame.arity] using
         Nat.le_of_eq arity
 
+/-- The source reader used by declared ordinary-let reconciliation and the
+    canonical local reader coincide on every slot the declaration can name. -/
+theorem declaredLocalSlotsAgree {output path d quantified premises typeCaptures}
+    (c : @HMDeclaredReconciliation.Checked output (.letIn path) d
+      quantified [] premises typeCaptures) :
+    ∀ i < d.annotation.paramCount,
+      HMDeclaredReconciliation.slotsFor (.letIn path) c.signatureIds i =
+        localSlots (some d.annotation) BoundsTy.bvar
+          (c.signatureIds.map BoundsTy.fvar) i := by
+  intro i inside
+  have small : i < c.signatureIds.length := by
+    have arity := c.opening.arity
+    rw [c.openingIds] at arity
+    rw [arity]
+    simpa [HMCountScheme.Annotated.scheme, PolyTy.eraseBounds] using inside
+  have mapSmall : i < (c.signatureIds.map BoundsTy.fvar).length := by simpa using small
+  have present : (c.signatureIds.map BoundsTy.fvar)[i]? =
+      some ((c.signatureIds.map BoundsTy.fvar)[i]'mapSmall) :=
+    List.getElem?_eq_getElem mapSmall
+  simp only [HMDeclaredReconciliation.slotsFor, localSlots, Option.map_some, Option.getD_some,
+    if_pos inside, ScopedHMInterpretation.vector, SchemeUse.vector,
+    present, Option.getD_some]
+
+/-- A checked source declaration supplies the canonical closed-parent local
+    frame. Freshness comes from its opaque opening, including RHS annotation
+    identities that reconciliation explicitly protects. -/
+def declaredLocalFrame {output path d quantified premises typeCaptures}
+    (c : @HMDeclaredReconciliation.Checked output (.letIn path) d
+      quantified [] premises typeCaptures) :
+    LocalFrame c.interface.scheme [] d.node.inner.stripFound where
+  owned := c.signatureIds
+  arity := by rw [← c.openingIds]; exact c.opening.arity
+  distinct := by rw [← c.openingIds]; exact c.opening.distinct
+  fresh := by
+    intro i owned named
+    have opened : i ∈ c.opening.ids := by rw [c.openingIds]; exact owned
+    rcases List.mem_append.mp named with rhsNamed | schemeNamed
+    · have guarded : Ty.fvar i ∈ HMDeclaredReconciliation.guardedTypes d typeCaptures := by
+        unfold HMDeclaredReconciliation.guardedTypes
+        exact List.mem_cons_of_mem _ (List.mem_append_right _
+          (List.mem_map.mpr ⟨i, rhsNamed, rfl⟩))
+      exact c.opening.fresh i opened (Ty.fvar i)
+        (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ guarded)) (by simp [Ty.freeVars])
+    · exact c.opening.fresh i opened c.interface.scheme.hm.body List.mem_cons_self schemeNamed
+  countFresh := by simp [HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme]
+  capturesScoped := by simp [HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme]
+
+/-- The actual checked source RHS, with its exact opening and demand inclusion,
+    can be consumed through the canonical local lexical frame. -/
+def declaredLocalCertificate {output path d quantified premises typeCaptures}
+    (c : @HMDeclaredReconciliation.Checked output (.letIn path) d
+      quantified [] premises typeCaptures)
+    (rhs : HMDeclaredRHS.Checked c []) :
+    RecursiveHMUniversal.Certified c.interface.scheme
+      (ScopedHMInterpretation.AtNode.view d.node c.interpretation
+        (HMDeclaredReconciliation.slotsFor (.letIn path) c.signatureIds))
+      (d.node.original :: HMDeclaredReconciliation.guardedTypes d typeCaptures)
+      [] d.node.inner.stripFound BoundsTy.fvar
+      (localSlots (some d.annotation) BoundsTy.bvar
+        (c.signatureIds.map BoundsTy.fvar)) := by
+  let cert := HMDeclaredRHS.certifySource c rhs
+    (fun b member => by cases member)
+    (fun b member => by cases member)
+  exact cert.sourceSlots c.rhsSlots (by
+    intro i inside
+    exact declaredLocalSlotsAgree c i (by
+      simpa [HMDeclaredReconciliation.slotLimit] using inside))
+
 /-- Specialize opaque lexical annotation slots after source counts. Full type
     arguments are inserted last, so their caller-owned counts are untouched. -/
 theorem localSlots_specialize (ann : Option PolyTy) (owned : List Nat)
@@ -1434,6 +1502,9 @@ theorem localRhsInstances_runtimeReady {s ann rhs found typeCaptures Δ calleeΔ
     List.map_nil, List.append_nil, CountAlgebra.compose, List.nil_append] using withParent
 
 #print axioms localSlots_specialize
+#print axioms declaredLocalSlotsAgree
+#print axioms declaredLocalFrame
+#print axioms declaredLocalCertificate
 #print axioms localRhsInstances
 #print axioms localRhsInstances_runtimeReady
 
