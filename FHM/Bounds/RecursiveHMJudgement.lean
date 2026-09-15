@@ -96,6 +96,16 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
           br.2 (actuals i)) →
       (∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) →
       ScopedDerives types slots ids rows Δ env (.match_ scrut branches) result
+  /-- A wildcard-only match exposes no constructor fields and is exhaustive for
+      every HM shape.  Surface variable patterns lower through this form, so it
+      must not be confused with declaration-indexed nominal matching. -/
+  | matchOpaque {env scrut branches scrutinee result} {actuals : Nat → BoundsTy} :
+      ScopedDerives types slots ids rows Δ env scrut scrutinee →
+      (∀ br ∈ branches, br.1 = .wildcard) →
+      (∀ i br, branches[i]? = some br →
+        ScopedDerives types slots ids rows Δ env br.2 (actuals i)) →
+      (∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) →
+      ScopedDerives types slots ids rows Δ env (.match_ scrut branches) result
 
 /-- Compatibility view: the original API leaves lexical slots unchanged. -/
 abbrev Derives (types : Nat → BoundsTy) := ScopedDerives types BoundsTy.bvar
@@ -158,6 +168,15 @@ theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
       rcases br with ⟨pat, body⟩
       rcases patterns (pat, body) member with rfl | rfl <;>
         simpa [pairBranchEnv, MatchPattern.bindCount] using bodyScope
+  | matchOpaque _ patterns _ _ ihscrut ihbranches =>
+      simp only [Expr.varsBelow, Bool.and_eq_true]
+      refine ⟨ihscrut, branches_scoped ?_⟩
+      intro br member
+      obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
+      have bodyScope := ihbranches i br atIndex
+      rcases br with ⟨pat, body⟩
+      rw [patterns (pat, body) member]
+      simpa [MatchPattern.bindCount] using bodyScope
 
 #print axioms ScopedDerives.varsBelow
 
@@ -233,6 +252,13 @@ theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
       intro index br atIndex
       exact ihb index br atIndex (fun i hi => agree i
         (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
+  | matchOpaque _ patterns bodies subs ihs ihb =>
+      intro agree
+      refine .matchOpaque (ihs (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        patterns ?_ subs
+      intro index br atIndex
+      exact ihb index br atIndex (fun i hi => agree i
+        (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
 
 #print axioms ScopedDerives.sourceFree
 
@@ -294,6 +320,12 @@ theorem ScopedDerives.sourceSlots {types slots slots' ids rows Δ env e β n}
           (List.mem_of_getElem? atIndex))
   | matchPair _ coverage patterns bodies subs ihs ihb =>
       refine .matchPair (ihs bounded.1) coverage patterns ?_ subs
+      intro index br atIndex
+      exact ihb index br atIndex
+        (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
+          (List.mem_of_getElem? atIndex))
+  | matchOpaque _ patterns bodies subs ihs ihb =>
+      refine .matchOpaque (ihs bounded.1) patterns ?_ subs
       intro index br atIndex
       exact ihb index br atIndex
         (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
@@ -1009,6 +1041,7 @@ abbrev letMono {types : Nat → BoundsTy} := @ScopedDerives.letMono types Bounds
 abbrev matchList {types : Nat → BoundsTy} := @ScopedDerives.matchList types BoundsTy.bvar
 abbrev matchBool {types : Nat → BoundsTy} := @ScopedDerives.matchBool types BoundsTy.bvar
 abbrev matchPair {types : Nat → BoundsTy} := @ScopedDerives.matchPair types BoundsTy.bvar
+abbrev matchOpaque {types : Nat → BoundsTy} := @ScopedDerives.matchOpaque types BoundsTy.bvar
 end Derives
 
 /-- Shared source-parameter obligation transport for RHS and body judgments. -/
@@ -1071,6 +1104,10 @@ theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
         (fun i br hb => (hsub i br hb).assuming hp)
   | matchPair _ hc hpat _ hsub ihscrut ihbranches =>
       exact .matchPair (ihscrut hp) hc hpat
+        (fun i br hb => ihbranches i br hb hp)
+        (fun i br hb => (hsub i br hb).assuming hp)
+  | matchOpaque _ hpat _ hsub ihscrut ihbranches =>
+      exact .matchOpaque (ihscrut hp) hpat
         (fun i br hb => ihbranches i br hb hp)
         (fun i br hb => (hsub i br hb).assuming hp)
 
@@ -1431,6 +1468,10 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
         · simpa [pairBranchEnv, hp] using moved
       · intro i br hb
         exact SchemeSpecialization.subtype f (hsub i br hb)
+  | matchOpaque _ hpat _ hsub ihscrut ihbranches =>
+      exact .matchOpaque (ihscrut fresh) hpat
+        (fun i br hb => ihbranches i br hb fresh)
+        (fun i br hb => SchemeSpecialization.subtype f (hsub i br hb))
 
 def Contract.mapCounts (c : Contract) (outer : Bindings) : Contract :=
   ⟨c.template, c.hm, c.fixed.mapCounts outer⟩
@@ -1596,6 +1637,10 @@ theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : L
         · simpa [pairBranchEnv, hp] using moved
       · intro i br hb
         exact CountSubstitution.subtype outer hf (hsub i br hb)
+  | matchOpaque _ hpat _ hsub ihscrut ihbranches =>
+      exact .matchOpaque (ihscrut fresh) hpat
+        (fun i br hb => ihbranches i br hb fresh)
+        (fun i br hb => CountSubstitution.subtype outer hf (hsub i br hb))
 
 /-- Count specialization preserves readiness of the whole existing proof,
     not merely support of its final type. Callee captures remain protected. -/

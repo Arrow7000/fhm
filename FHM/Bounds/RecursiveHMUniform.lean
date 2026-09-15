@@ -889,16 +889,19 @@ inductive BodyBranchContext where
   | list (lo hi : Count) (elem : BoundsTy)
   | bool
   | pair (left right : BoundsTy)
+  | wildcardOnly (scrutinee : BoundsTy)
 
 def BodyBranchContext.bounds : BodyBranchContext → BoundsTy
   | .list lo hi elem => .list lo hi elem
   | .bool => .custom boolTyName []
   | .pair left right => .custom pairTyName [left, right]
+  | .wildcardOnly scrutinee => scrutinee
 
 def BodyBranchContext.refine : BodyBranchContext → MatchPattern → List Constraint
   | .list lo hi _, p => RecursiveTyping.branchRefine p lo hi
   | .bool, _ => []
   | .pair _ _, _ => []
+  | .wildcardOnly _, _ => []
 
 def BodyBranchContext.extend : BodyBranchContext → MatchPattern → List BodyBinding → List BodyBinding
   | .list lo hi elem, p, env =>
@@ -908,11 +911,13 @@ def BodyBranchContext.extend : BodyBranchContext → MatchPattern → List BodyB
   | .bool, _, env => env
   | .pair left right, p, env =>
       if p = .named pairCtorName 2 then .mono left :: .mono right :: env else env
+  | .wildcardOnly _, _, env => env
 
 def BodyBranchContext.Pattern : BodyBranchContext → MatchPattern → Prop
   | .list _ _ _, p => RecursiveTyping.ListPattern p
   | .bool, p => BoolBranches.Pattern p
   | .pair _ _, p => PairBranches.Pattern p
+  | .wildcardOnly _, p => p = .wildcard
 
 instance (ctx : BodyBranchContext) (p : MatchPattern) : Decidable (ctx.Pattern p) := by
   cases ctx <;> unfold BodyBranchContext.Pattern <;> infer_instance
@@ -921,6 +926,11 @@ def BodyBranchContext.Covers (Δ : List Constraint) : BodyBranchContext → List
   | .list lo hi _, branches => ListBranches.Covers Δ ⟨lo, hi⟩ branches
   | .bool, branches => BoolBranches.Covers branches
   | .pair _ _, branches => PairBranches.Covers branches
+  | .wildcardOnly _, branches => ∀ br ∈ branches, br.1 = .wildcard
+
+def BodyBranchContext.RuntimeCapable : BodyBranchContext → Prop
+  | .list .. | .bool | .pair .. => True
+  | .wildcardOnly _ => False
 
 def BodyBranchContext.checkCoverage (ctx : BodyBranchContext) (Δ : List Constraint)
     (branches : List (MatchPattern × Expr)) : Except String (PLift (ctx.Covers Δ branches)) :=
@@ -928,6 +938,11 @@ def BodyBranchContext.checkCoverage (ctx : BodyBranchContext) (Δ : List Constra
   | .list lo hi _ => ListBranches.check Δ ⟨lo, hi⟩ branches
   | .bool => BoolBranches.check branches
   | .pair _ _ => PairBranches.check branches
+  | .wildcardOnly _ =>
+      if h : branches.all (fun br => br.1 == .wildcard) = true then
+        pure ⟨fun br member => by
+          exact beq_iff_eq.mp (List.all_eq_true.mp h br member)⟩
+      else throw "bounds: opaque match accepts only wildcard patterns"
 
 private def bodyBranchContext (β : BoundsTy) :
     Except String (Σ ctx : BodyBranchContext, PLift (β = ctx.bounds)) :=
@@ -935,11 +950,11 @@ private def bodyBranchContext (β : BoundsTy) :
   | .list lo hi elem => .ok ⟨.list lo hi elem, ⟨rfl⟩⟩
   | .custom name [] =>
       if hn : name = boolTyName then .ok ⟨.bool, ⟨by subst name; rfl⟩⟩
-      else .error "bounds: generalized body match scrutinee is not a supported data type"
+      else .ok ⟨.wildcardOnly (.custom name []), ⟨rfl⟩⟩
   | .custom name [left, right] =>
       if hn : name = pairTyName then .ok ⟨.pair left right, ⟨by subst name; rfl⟩⟩
-      else .error "bounds: generalized body match scrutinee is not a supported data type"
-  | _ => .error "bounds: generalized body match scrutinee is not a supported data type"
+      else .ok ⟨.wildcardOnly (.custom name [left, right]), ⟨rfl⟩⟩
+  | β => .ok ⟨.wildcardOnly β, ⟨rfl⟩⟩
 
 /-- A generalized hole annotation retains both the original source syntax and
     the exact rigid interface chosen at escape.  `Pinned` is the proof that
@@ -1664,6 +1679,11 @@ theorem rhsToBody {types slots ids rows Δ env e β}
         (by simpa [BodyBranchContext.refine] using subs)
       intro i br atIndex
       simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine] using ihb i br atIndex
+  | matchOpaque _ patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .wildcardOnly _) ihs patterns patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [BodyBranchContext.extend, BodyBranchContext.refine] using ihb i br atIndex
 
 #print axioms rhsToBody
 
@@ -1711,6 +1731,13 @@ theorem ordinaryRhsToBody {types slots ids rows Δ env e β}
       intro i br atIndex
       simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine] using
         ihb i br atIndex ordinary.pairBranch
+  | matchOpaque _ patterns bodies subs ihs ihb =>
+      intro ordinary
+      refine .match_ (ctx := .wildcardOnly _) (ihs ordinary) patterns patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [BodyBranchContext.extend, BodyBranchContext.refine] using
+        ihb i br atIndex ordinary
 
 private theorem body_getElem?_append_left {env tail : List BodyBinding} {i : Nat}
     {binding : BodyBinding}
@@ -1723,6 +1750,7 @@ private theorem BodyBranchContext.extend_append (ctx : BodyBranchContext)
     ctx.extend pattern (env ++ tail) = ctx.extend pattern env ++ tail := by
   cases ctx with
   | bool => rfl
+  | wildcardOnly => rfl
   | pair left right =>
       by_cases pair : pattern = .named pairCtorName 2
       · simp [BodyBranchContext.extend, pair]
@@ -1777,6 +1805,12 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
       intro i br atIndex
       simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
         BodyBranchContext.extend_append] using ihb i br atIndex
+  | matchOpaque _ patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .wildcardOnly _) ihs patterns patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [BodyBranchContext.extend, BodyBranchContext.refine,
+        BodyBranchContext.extend_append] using ihb i br atIndex
 
 #print axioms rhsToBodyAppend
 
@@ -1826,6 +1860,12 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
       intro i br atIndex
       simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
         BodyBranchContext.extend_append] using ihb i br atIndex ordinary.pairBranch
+  | matchOpaque _ patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .wildcardOnly _) (ihs ordinary) patterns patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [BodyBranchContext.extend, BodyBranchContext.refine,
+        BodyBranchContext.extend_append] using ihb i br atIndex ordinary
 
 namespace BodyDerives
 abbrev literal := @ScopedBodyDerives.literal BoundsTy.fvar BoundsTy.bvar
@@ -1857,6 +1897,7 @@ theorem BodyBranchContext.Covers.assuming {ctx : BodyBranchContext} {Δ Δ' bran
   | list => exact ListBranches.Covers.assuming h hp
   | bool => exact h
   | pair => exact h
+  | wildcardOnly => exact h
 
 /-- Established caller/path premises transport the ENTIRE generalized body,
     including original source obligations, all match arms and group introduction.
@@ -1922,6 +1963,9 @@ theorem BodyBranchContext.extend_length {ctx : BodyBranchContext} {pat env}
   | pair left right =>
       rcases pattern with rfl | rfl <;>
         simp [BodyBranchContext.extend, MatchPattern.bindCount]
+  | wildcardOnly scrutinee =>
+      rw [pattern]
+      rfl
 
 theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
     (h : ScopedBodyDerives types slots ids rows Δ env e β) : e.varsBelow env.length = true := by
@@ -2171,6 +2215,7 @@ inductive RuntimeReady :
         ScopedBodyDerives types slots ids rows (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2 (actuals i))
       (subs : ∀ i br, branches[i]? = some br →
         SemanticSub (Δ ++ ctx.refine br.1) (actuals i) result) :
+      ctx.RuntimeCapable →
       RuntimeReady hs → (∀ i br atIndex, RuntimeReady (bodies i br atIndex)) →
       Runtime.Supported result → RuntimeReady (.match_ hs coverage patterns bodies subs)
   | letRec
@@ -2208,7 +2253,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | letRecInferredMono _ _ _ _ body => exact body
   | letExported _ _ _ _ _ _ _ body => exact body
   | letRecExported _ _ _ _ _ _ _ body => exact body
-  | match_ _ _ _ _ _ _ result => exact result
+  | match_ _ _ _ _ _ _ _ result => exact result
   | letRec _ _ _ _ _ _ body => exact body
 
 /-- Fundamental theorem for the supported generalized-body derivation. Closed
@@ -2527,7 +2572,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           rw [rhsOuter]
           apply Runtime.TermAt.prepend SmallStep.Step.letRecUnfold
           simpa only [List.map_cons, List.map_nil, recursiveTerm] using bodySafe
-  | match_ coverage patterns bodies subs scrutReady branchReady resultSupport ihs ihb =>
+  | match_ coverage patterns bodies subs capable scrutReady branchReady resultSupport ihs ihb =>
       rename_i pathΔ env' scrut branches result actuals ctx hs
       intro budget premises e
       rw [Runtime.closing_match]
@@ -2610,6 +2655,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           simp only [Nat.zero_add, contentsLength] at closing
           rw [closing]
           exact branchSafe
+      | wildcardOnly scrutinee => exact False.elim capable
   | letRec g universal membersReady demandSupport outerArguments bodyReady ihbody =>
       intro budget premises e
       cases budget with
@@ -2702,11 +2748,12 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
         (fun calleeΔ found caller used => (instances calleeΔ found caller used).assuming (RecursiveTyping.assuming_append hp))
         (fun calleeΔ found caller used arguments => ihr calleeΔ found caller used arguments (RecursiveTyping.assuming_append hp))
         (ihb hp)
-  | match_ coverage patterns bodies subs _ _ result ihs ihb =>
+  | match_ coverage patterns bodies subs capable _ _ result ihs ihb =>
       exact .match_ (coverage.assuming hp) patterns
         (fun i br atIndex => (bodies i br atIndex).assuming (RecursiveTyping.assuming_append hp))
         (fun i br atIndex => (subs i br atIndex).assuming (RecursiveTyping.assuming_append hp))
-        (ihs hp) (fun i br atIndex => ihb i br atIndex (RecursiveTyping.assuming_append hp)) result
+        capable (ihs hp)
+        (fun i br atIndex => ihb i br atIndex (RecursiveTyping.assuming_append hp)) result
   | letRec g universal members demand outerArguments _ ihb =>
       exact .letRec g universal members demand outerArguments (ihb hp)
 
@@ -2800,7 +2847,7 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
         (fun i br atIndex => by
           simpa only [ordinaryBodyEnv_branch, BodyBranchContext.extend_append] using
             rhsToBodyAppend (bodies i br atIndex) tail)
-        subs (ihs arguments) ?_ supported
+        subs (by trivial) (ihs arguments) ?_ supported
       intro i br atIndex
       simpa only [ordinaryBodyEnv_branch, BodyBranchContext.extend_append] using
         ihb i br atIndex arguments.branch
@@ -2809,7 +2856,8 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
         (fun i br atIndex => by
           simpa [BodyBranchContext.refine, BodyBranchContext.extend,
             BodyBranchContext.extend_append] using rhsToBodyAppend (bodies i br atIndex) tail)
-        (by simpa [BodyBranchContext.refine] using subs) (ihs arguments) ?_ supported
+        (by simpa [BodyBranchContext.refine] using subs) (by trivial)
+        (ihs arguments) ?_ supported
       intro i br atIndex
       simpa [BodyBranchContext.refine, BodyBranchContext.extend,
         BodyBranchContext.extend_append] using ihb i br atIndex arguments
@@ -2818,7 +2866,8 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
         (fun i br atIndex => by
           simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
             BodyBranchContext.extend_append] using rhsToBodyAppend (bodies i br atIndex) tail)
-        (by simpa [BodyBranchContext.refine] using subs) (ihs arguments) ?_ supported
+        (by simpa [BodyBranchContext.refine] using subs) (by trivial)
+        (ihs arguments) ?_ supported
       intro i br atIndex
       simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
         BodyBranchContext.extend_append] using ihb i br atIndex arguments.pairBranch
@@ -2861,7 +2910,7 @@ theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
       refine .match_ (ctx := .list _ _ _) coverage patterns
         (fun i br atIndex => by
           simpa only [ordinaryBodyEnv_branch] using ordinaryRhsToBody (bodies i br atIndex) ordinary.branch)
-        subs (ihs ordinary) ?_ supported
+        subs (by trivial) (ihs ordinary) ?_ supported
       intro i br atIndex
       simpa only [ordinaryBodyEnv_branch] using ihb i br atIndex ordinary.branch
   | matchBool coverage patterns bodies subs _ _ supported ihs ihb =>
@@ -2870,7 +2919,8 @@ theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
         (fun i br atIndex => by
           simpa [BodyBranchContext.refine, BodyBranchContext.extend] using
             ordinaryRhsToBody (bodies i br atIndex) ordinary)
-        (by simpa [BodyBranchContext.refine] using subs) (ihs ordinary) ?_ supported
+        (by simpa [BodyBranchContext.refine] using subs) (by trivial)
+        (ihs ordinary) ?_ supported
       intro i br atIndex
       simpa [BodyBranchContext.refine, BodyBranchContext.extend] using ihb i br atIndex ordinary
   | matchPair coverage patterns bodies subs _ _ supported ihs ihb =>
@@ -2879,7 +2929,8 @@ theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
         (fun i br atIndex => by
           simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine] using
             ordinaryRhsToBody (bodies i br atIndex) ordinary.pairBranch)
-        (by simpa [BodyBranchContext.refine] using subs) (ihs ordinary) ?_ supported
+        (by simpa [BodyBranchContext.refine] using subs) (by trivial)
+        (ihs ordinary) ?_ supported
       intro i br atIndex
       simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine] using
         ihb i br atIndex ordinary.pairBranch
@@ -2930,7 +2981,7 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
         (fun i br atIndex => by
           simpa only [ordinaryBodyEnv_branch, BodyBranchContext.extend_append] using
             ordinaryRhsToBodyAppend (bodies i br atIndex) ordinary.branch tail)
-        subs (ihs ordinary tail) ?_ supported
+        subs (by trivial) (ihs ordinary tail) ?_ supported
       intro i br atIndex
       simpa only [ordinaryBodyEnv_branch, BodyBranchContext.extend_append] using
         ihb i br atIndex ordinary.branch tail
@@ -2941,7 +2992,8 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
           simpa [BodyBranchContext.refine, BodyBranchContext.extend,
             BodyBranchContext.extend_append] using
             ordinaryRhsToBodyAppend (bodies i br atIndex) ordinary tail)
-        (by simpa [BodyBranchContext.refine] using subs) (ihs ordinary tail) ?_ supported
+        (by simpa [BodyBranchContext.refine] using subs) (by trivial)
+        (ihs ordinary tail) ?_ supported
       intro i br atIndex
       simpa [BodyBranchContext.refine, BodyBranchContext.extend,
         BodyBranchContext.extend_append] using ihb i br atIndex ordinary tail
@@ -2952,7 +3004,8 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
           simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
             BodyBranchContext.extend_append] using
             ordinaryRhsToBodyAppend (bodies i br atIndex) ordinary.pairBranch tail)
-        (by simpa [BodyBranchContext.refine] using subs) (ihs ordinary tail) ?_ supported
+        (by simpa [BodyBranchContext.refine] using subs) (by trivial)
+        (ihs ordinary tail) ?_ supported
       intro i br atIndex
       simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
         BodyBranchContext.extend_append] using ihb i br atIndex ordinary.pairBranch tail
@@ -3223,6 +3276,7 @@ private def extendBranchCapture? {env} (capture : Option (BodyCapture env))
     Option (BodyCapture (ctx.extend pattern env)) :=
   match ctx with
   | .bool => capture
+  | .wildcardOnly _ => capture
   | .pair left right =>
       if isPair : pattern = .named pairCtorName 2 then
         have extended : (BodyBranchContext.pair left right).extend pattern env =
@@ -3287,6 +3341,34 @@ private theorem declaredLocalArgumentTypesFixed
     simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
   · intro contract member
     refine ⟨(stable.2 contract member).1, ?_⟩
+    intro β argMember i free
+    have absent := fixesCapture (fixedRepresented contract member β argMember) free
+    simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+
+/-- Machine-inferred local openings protect the same captured environment as
+    source-declared openings.  The authoritative inferred scheme owns only its
+    freshly abstracted identities; later callers may replace those identities
+    without changing any surrounding mono or recursive argument type. -/
+private theorem inferredLocalArgumentTypesFixed
+    {s found typeCaptures env calleeΔ caller useHM}
+    (opening : HMCountScheme.Opening s found typeCaptures)
+    (identity : RecursiveHMEnvironment.TypesFixed BoundsTy.fvar env)
+    (monoRepresented : ∀ β, .mono β ∈ env → Synth.BoundsTy.toTy β ∈ typeCaptures)
+    (fixedRepresented : ∀ contract, .recursive contract ∈ env →
+      ∀ β ∈ contract.fixed.types, Synth.BoundsTy.toTy β ∈ typeCaptures)
+    (used : HMCountScheme.Use s calleeΔ useHM caller) :
+    RecursiveHMEnvironment.TypesFixed
+      (argument opening.ids (SchemeUse.vector used.types)) env := by
+  have fixesCapture {t : Ty} (member : t ∈ typeCaptures) {i : Nat}
+      (free : i ∈ t.freeVars) : i ∉ opening.ids := by
+    intro owned
+    exact opening.fresh i owned t (List.mem_cons_of_mem _ member) free
+  constructor
+  · intro β member i free
+    have absent := fixesCapture (monoRepresented β member) free
+    simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+  · intro contract member
+    refine ⟨(identity.2 contract member).1, ?_⟩
     intro β argMember i free
     have absent := fixesCapture (fixedRepresented contract member β argMember) free
     simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
@@ -3600,12 +3682,17 @@ private def body_match_ready {ids rows caller Δ env branches β} {ctx : BodyBra
     (hc : ctx.Covers Δ (Expr.stripFoundBranches branches))
     (ready : Option (PLift (BodyDerives.RuntimeReady hs))) :
     Option (PLift (BodyDerives.RuntimeReady (body_match_typing hs arms hb hc))) := do
+  let capable : Option (PLift ctx.RuntimeCapable) := match ctx with
+    | .list .. | .bool | .pair .. => some ⟨True.intro⟩
+    | .wildcardOnly _ => none
+  let capable ← capable
   let input ← ready
   let bodies ← arms.runtimeReady
   let result ← Runtime.supported? β
   pure ⟨by
     simp only [Expr.stripFound]
-    refine BodyDerives.RuntimeReady.match_ (actuals := arms.actuals) hc ?_ ?_ ?_ input.down ?_ result.down
+    refine BodyDerives.RuntimeReady.match_ (actuals := arms.actuals) hc ?_ ?_ ?_
+      capable.down input.down ?_ result.down
     · intro arm member
       rw [RecursiveHMWalk.stripBranches] at member
       obtain ⟨br, atSource, rfl⟩ := List.mem_map.mp member
@@ -3651,6 +3738,125 @@ private def freshLocalTypeIds (output : Expr) (arity : Nat) : List Nat :=
 
 private def freshGuardedLocalTypeIds (output : Expr) (guards : List Ty) (arity : Nat) : List Nat :=
   freshVars ((output.tyFreeVars ++ guards.flatMap Ty.freeVars).foldl Nat.max 0 + 1) arity
+
+/-- Everything needed to eliminate one machine-inferred, closed local RHS at
+    arbitrary HM instances.  Packaging the dependent fields here also keeps
+    the mutually recursive source walker from re-elaborating the certificate
+    construction at every recursive branch. -/
+private structure InferredExportPrepared {output path env}
+    (node : HMFoundView.AtNode output path) (captured : BodyCapture env) where
+  interface : HMCountScheme.Scheme
+  capturesClosed : interface.counts.captures = []
+  frame : LocalFrame interface [] node.inner.stripFound
+  cert : RecursiveHMUniversal.Certified interface
+    (ScopedHMInterpretation.AtNode.view node BoundsTy.fvar BoundsTy.bvar)
+    (recursiveTypeCaptures captured.rhsEnv ++
+      recursiveFixedTypeCaptures captured.rhsEnv ++
+      node.inner.stripFound.tyFreeVars.map Ty.fvar)
+    captured.rhsEnv node.inner.stripFound BoundsTy.fvar
+    (localSlots none BoundsTy.bvar (frame.owned.map BoundsTy.fvar))
+  owners : cert.opening.ids = frame.owned
+  instanceFixed : ∀ calleeΔ found caller
+    (used : HMCountScheme.Use interface calleeΔ found caller),
+    RecursiveHMEnvironment.TypesFixed
+      (argument cert.opening.ids (SchemeUse.vector used.types)) captured.rhsEnv
+  nodes : List Typed.NodeResult
+  runtimeReady : Option (PLift (ScopedDerives.RuntimeReady cert.typing))
+
+private def prepareInferredExport {output path env}
+    (node : HMFoundView.AtNode output path) (machine : PolyTy)
+    (quantified : List Nat) (captured : BodyCapture env) (schemes : BinderSchemeMap) :
+    Except String (InferredExportPrepared node captured) := do
+  let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
+    recursiveFixedTypeCaptures captured.rhsEnv ++
+    node.inner.stripFound.tyFreeVars.map Ty.fvar
+  let located ← RecursiveHMWalk.checkLocated node BoundsTy.fvar BoundsTy.bvar
+    quantified [] quantified [] captured.rhsEnv schemes none
+  unless located.typed.actual.freeInferables.isEmpty do
+    throw "bounds: inferred polymorphic export has unresolved count origins"
+  let abstraction ← BinderBridge.abstract machine located.typed.actual typeCaptures
+  let normal ← match BinderBridge.equalTy machine.body.eraseBounds machine.body with
+    | some equality => pure equality
+    | none => throw "bounds: inferred binder scheme is not bounds-erased"
+  if hmWF : machine.body.bvarsBelow machine.paramCount = true then
+    let countBody := BinderBridge.close abstraction.ids located.typed.actual
+    let counts : ScopedScheme.Scheme := ⟨quantified, [], [], countBody⟩
+    if countWF : counts.wfBool = true then
+      have shape : Synth.BoundsTy.toTy countBody = machine.body :=
+        abstraction.shape.trans normal.down
+      let interface : HMCountScheme.Scheme :=
+        ⟨machine, counts, (Ty.bvarsBelow_iff machine.body).mp hmWF,
+          ScopedScheme.Scheme.wfBool_sound countWF, shape⟩
+      let opening ← HMCountScheme.openFixed interface
+        (ScopedHMInterpretation.AtNode.view node BoundsTy.fvar BoundsTy.bvar)
+        abstraction.ids typeCaptures
+      let typed : ScopedHMInterpretation.TypedChecked node BoundsTy.fvar BoundsTy.bvar
+          (interface.counts.quantified ++ interface.counts.captures) []
+          interface.counts.premises captured.rhsEnv
+          (interface.counts.quantified ++ interface.counts.captures) := by
+        simpa only [interface, counts, List.append_nil] using located.typed
+      let inclusion ← Typed.subtype interface.counts.premises typed.actual opening.bounds
+      let represented : ∀ c, .recursive c ∈ captured.rhsEnv →
+          c.template.hm.body ∈ typeCaptures := fun c member =>
+        List.mem_append_left _
+          (List.mem_append_left _ (recursiveTypeCaptures_represented member))
+      let exportsRepresented : ∀ s, .exported s ∈ captured.rhsEnv →
+          s.hm.body ∈ typeCaptures := fun s member =>
+        List.mem_append_left _
+          (List.mem_append_left _ (recursiveTypeCaptures_exported member))
+      let monoRepresented : ∀ β, .mono β ∈ captured.rhsEnv →
+          Synth.BoundsTy.toTy β ∈ typeCaptures := fun β member =>
+        List.mem_append_left _
+          (List.mem_append_left _ (recursiveTypeCaptures_mono member))
+      let fixedRepresented : ∀ c, .recursive c ∈ captured.rhsEnv →
+          ∀ β ∈ c.fixed.types, Synth.BoundsTy.toTy β ∈ typeCaptures :=
+        fun c member β argument => List.mem_append_left _
+          (List.mem_append_right _
+            (recursiveFixedTypeCaptures_represented member argument))
+      let baseCert := RecursiveHMUniversal.fromScopedChecked node opening typed inclusion.down
+        (fun c member i owned free =>
+          opening.fresh i owned c.template.hm.body
+            (List.mem_cons_of_mem _ (represented c member)) free)
+        (fun s member i owned free =>
+          opening.fresh i owned s.hm.body
+            (List.mem_cons_of_mem _ (exportsRepresented s member)) free)
+        (fun c member i inside => by
+          rw [captured.countClosed c member] at inside
+          cases inside)
+        (fun s member i inside => by
+          rw [captured.exportCountClosed s member] at inside
+          cases inside)
+      let frame : LocalFrame interface [] node.inner.stripFound :=
+        { owned := opening.ids
+          arity := opening.arity
+          distinct := opening.distinct
+          fresh := by
+            intro i owned named
+            rcases List.mem_append.mp named with rhsNamed | schemeNamed
+            · exact opening.fresh i owned (Ty.fvar i)
+                (List.mem_cons_of_mem _ (List.mem_append_right _
+                  (List.mem_map.mpr ⟨i, rhsNamed, rfl⟩))) (by simp [Ty.freeVars])
+            · exact opening.fresh i owned interface.hm.body List.mem_cons_self schemeNamed
+          countFresh := by simp
+          capturesScoped := by simp [interface, counts] }
+      let cert : RecursiveHMUniversal.Certified interface
+          (ScopedHMInterpretation.AtNode.view node BoundsTy.fvar BoundsTy.bvar)
+          typeCaptures captured.rhsEnv node.inner.stripFound BoundsTy.fvar
+          (localSlots none BoundsTy.bvar (frame.owned.map BoundsTy.fvar)) := by
+        simpa only [localSlots] using baseCert
+      have owners : cert.opening.ids = frame.owned := by
+        simp only [cert, baseCert, RecursiveHMUniversal.fromScopedChecked, frame]
+      let identityFixed ← RecursiveHMEnvironment.checkTypesFixed BoundsTy.fvar captured.rhsEnv
+      let instanceFixed := fun calleeΔ found caller
+          (used : HMCountScheme.Use interface calleeΔ found caller) => by
+        have fixed := inferredLocalArgumentTypesFixed opening identityFixed.down
+          monoRepresented fixedRepresented used
+        simpa only [cert, baseCert, RecursiveHMUniversal.fromScopedChecked] using fixed
+      let ready := typed.runtimeReady.map fun sourceReady => ⟨by
+        simpa only [cert, baseCert, RecursiveHMUniversal.fromScopedChecked] using sourceReady.down⟩
+      pure ⟨interface, rfl, frame, cert, owners, instanceFixed, located.nodes, ready⟩
+    else throw "bounds: inferred polymorphic export count scheme is not closed"
+  else throw "bounds: inferred binder scheme has an out-of-scope HM slot"
 
 private def descendBodySource {output e child : Expr} {path suffix : CorePath}
     (source : Option (PLift (output.atCorePath path = some e)))
@@ -3960,6 +4166,103 @@ private def walkGeneralizedHoleLetRec
       else fallback
     else fallback
 termination_by (sizeOf (Expr.found hm (.letRec [some annotation] [rhs] body)), 0)
+
+/-- A syntactically recursive singleton whose RHS is actually closed may use
+    the authoritative machine-inferred HM scheme as a genuine lexical export.
+    We first check one opaque opening of the exact original RHS, abstract only
+    fresh HM identities, and then eliminate that certificate at every use.
+    This is the unannotated counterpart of `walkGeneralizedHoleLetRec`; it does
+    not invent a source annotation or admit polymorphic recursion. -/
+private def walkInferredExportLetRec
+    (sourceOutput : Expr) (metadata : Scope.Metadata)
+    (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
+    (env : List BodyBinding) (path : CorePath) (hm : Ty) (machine : PolyTy)
+    (rhs body : Expr) (schemes : BinderSchemeMap) (captured : BodyCapture env)
+    (sourceProof : PLift (sourceOutput.atCorePath path =
+      some (.found hm (.letRec [none] [rhs] body))))
+    (fallback : Except String
+      (BodyResult ids rows caller Δ env (.found hm (.letRec [none] [rhs] body))))
+    (expected : Option BoundsTy) :
+    Except String
+      (BodyResult ids rows caller Δ env (.found hm (.letRec [none] [rhs] body))) := do
+  if rhsClosed : rhs.stripFound.varsBelow 0 = true then
+    if parentIds : ids = [] then
+      if parentRows : rows = [] then
+        if parentPremises : Δ = [] then
+          unless metadata.problems.isEmpty do
+            throw "bounds: unresolved or duplicate count scope in inferred export"
+          let quantified ← ScopedDeclaration.telescope metadata (.letRec path 0)
+          match rhs with
+          | .found rhsHM rhsInner =>
+              have descent : sourceOutput.atCorePath (path ++ [.letRecRhs 0]) =
+                  some (.found rhsHM rhsInner) := by
+                rw [Expr.atCorePath_append, sourceProof.down]
+                simp only [Expr.atCorePath, Option.bind_some, List.getElem?_cons_zero]
+              let node : HMFoundView.AtNode sourceOutput (path ++ [.letRecRhs 0]) :=
+                ⟨rhsHM, rhsInner, descent⟩
+              let prepared ← prepareInferredExport node machine quantified captured schemes
+              let interface := prepared.interface
+              let frame := prepared.frame
+              let cert := prepared.cert
+              let annotationOK : LocalAnnotationOK interface none := True.intro
+              have certCaptured : RecursiveHMEnvironment.Captured
+                  interface.counts.captures captured.rhsEnv := by
+                rw [prepared.capturesClosed]
+                exact captured.captured
+              let instances := fun calleeΔ found localCaller
+                  (used : HMCountScheme.Use interface calleeΔ found localCaller) =>
+                (by
+                  have derived := capturedLocalRhsInstances (Δ := []) frame annotationOK
+                    cert prepared.owners certCaptured used (prepared.instanceFixed _ _ _ used)
+                  simpa only [List.append_nil, captured.bodyEnv] using derived :
+                    ScopedBodyDerives
+                      (localTypes frame.owned BoundsTy.fvar used.types)
+                      (localSlots none BoundsTy.bvar used.types)
+                      (interface.counts.quantified ++ interface.counts.captures ++ [])
+                      (CountAlgebra.compose
+                        (interface.counts.quantified.zip used.counts) [])
+                      used.countInstance.premises env rhsInner.stripFound used.bounds)
+              have bodySource : sourceOutput.atCorePath
+                  (path ++ [CoreStep.letRecBody]) = some body := by
+                rw [Expr.atCorePath_append, sourceProof.down]
+                simp [Expr.atCorePath]
+              let result ← walkBodySource sourceOutput metadata [] [] caller []
+                (.exported interface :: env) (path ++ [.letRecBody]) body schemes
+                (some (captured.extendExported interface prepared.capturesClosed))
+                (some ⟨bodySource⟩) expected
+              let completed ← finishBody (ids := []) (rows := []) (caller := caller)
+                (Δ := []) (env := env)
+                (e := .found hm (.letRec [none] [.found rhsHM rhsInner] body))
+                path hm result.bounds rfl
+                (by
+                  simpa only [Expr.stripFound, List.map_cons, List.map_nil,
+                    captured.bodyEnv] using
+                    (ScopedBodyDerives.letRecExported frame annotationOK
+                      (by simpa only [Expr.stripFound] using rhsClosed)
+                      instances result.typing))
+                (prepared.nodes ++ result.nodes)
+                (do
+                  let sourceReady ← prepared.runtimeReady
+                  let bodyReady ← result.runtimeReady
+                  pure ⟨by
+                    let ready := BodyDerives.RuntimeReady.letRecExported frame annotationOK
+                      (by simpa only [Expr.stripFound] using rhsClosed) instances
+                      (fun calleeΔ found localCaller used arguments => by
+                        let instanceReady := capturedLocalRhsInstances_runtimeReady
+                          (Δ := []) frame annotationOK cert prepared.owners sourceReady.down
+                          certCaptured used (prepared.instanceFixed _ _ _ used)
+                          captured.arguments arguments
+                        simpa only [List.append_nil, captured.bodyEnv] using instanceReady)
+                      bodyReady.down
+                    simpa only [Expr.stripFound, List.map_cons, List.map_nil,
+                      captured.bodyEnv] using ready⟩)
+              pure (by simpa only [parentIds, parentRows, parentPremises] using completed)
+          | _ => throw "bounds: inferred polymorphic recursive RHS lacks its original found root"
+        else fallback
+      else fallback
+    else fallback
+  else fallback
+termination_by (sizeOf (Expr.found hm (.letRec [none] [rhs] body)), 0)
 
 /-- Source-linked body traversal: literals, List origins, scalar operators,
     lambdas, mono/generalized locals, matches and origin-backed exported
@@ -4647,7 +4950,9 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                                 actualSupported.down captured.arguments bodyReady')⟩)
                       else throw "bounds: non-unique inferred counts require a generalized escape interface"
                     else fallback
-                  else fallback
+                  else
+                    walkInferredExportLetRec sourceOutput metadata ids rows caller Δ env path hm
+                      scheme rhs body schemes captured sourceProof fallback expected
               | _ => fallback
           | _, _ => by simpa only [ha, hr] using ordinary ()
   | _ => throw "bounds: generalized body lacks an original found node"

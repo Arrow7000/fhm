@@ -118,6 +118,17 @@ private def boolMatch (branches : List (MatchPattern × Expr)) : Expr :=
   .found (listTy (.prim .int)) (.match_
     (.found (.customTy boolTyName []) (.ctor BoolBranches.trueCtorName)) branches)
 
+private def opaqueWildcard : Except String Bool := do
+  let box : BoundsTy := .custom optionTyName [.prim .int]
+  let boxHM := Synth.BoundsTy.toTy box
+  let e : Expr := .found (.prim .int) (.match_
+    (.found boxHM (.var 0)) [(.wildcard, .found (.prim .int) (.primLit (.int 1)))])
+  let r ← RecursiveHMWalk.walk BoundsTy.fvar [] [] [] [] [.mono box] [] e []
+  pure (match r.bounds with
+    | .prim .int => r.runtimeReady.isNone &&
+        exactlyOnce (logicalCorePaths e) (r.nodes.map (·.path))
+    | _ => false)
+
 private def fullFixedSpine (wrongHead : Bool := false) (wrongPrefix : Bool := false) :
     Except String String := do
   let m : Count := .var ⟨.rigid, 8⟩
@@ -225,6 +236,8 @@ private def cases : List (String × Bool) := [
     (run (boolMatch (boolArms.take 1)) [] [] none []) "False coverage"),
   ("Bool wildcard coverage works under interpreted checking", succeeds
     (run (boolMatch [(.wildcard, cons)]) [] [] none [])),
+  ("opaque wildcard match is statically exhaustive but does not forge runtime support",
+    trueResult opaqueWildcard),
   ("Bool constructor-pattern arity cannot hide behind wildcard coverage", fails
     (run (boolMatch [(.named BoolBranches.trueCtorName 1, cons), (.wildcard, cons)]) [] [] none []) "pattern or constructor arity"),
   ("a common match demand checks all actual branches rather than asserting it", fails
