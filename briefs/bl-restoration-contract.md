@@ -3307,6 +3307,29 @@ well. Executable capture threading is still separate: this checkpoint proves
 the exact rule the deep RHS driver must construct, rather than accepting a
 weaker operational shortcut.
 
+### Checkpoint 4bu — executable fixed capture crosses nested group exits
+
+The canonical generalized-body traversal now carries an explicit capture mode:
+either the enclosing recursive group has already been exited, or its contracts
+remain fixed while one of its implementations is being checked. Ordinary
+monomorphic binders, pattern fields, and already-generalized local exports
+preserve that distinction as the traversal descends. This makes the
+generalization boundary a visible invariant rather than an implicit choice of
+environment conversion.
+
+When the fixed traversal reaches a nested declared recursive group, it checks
+that group against the exact captured RHS environment, exports only the inner
+group's schemes, and constructs `ScopedBodyDerives.letRecFixed`. Runtime
+evidence is assembled with `RuntimeReady.letRecFixed` and the fixed captured
+environment theorem, so it requires no universal-argument premise for the
+outer SCC. The already-exited path continues to use the ordinary `letRec` rule.
+
+Generalized singleton-local fallbacks inside a fixed implementation remain
+deliberately closed until their proof route is connected; they fail explicitly
+rather than changing capture mode. The remaining integration seam is to make
+declared recursive-member checking invoke this deep fixed traversal and return
+the member certificate expected by group assembly.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
