@@ -54,6 +54,17 @@ private def recursive (isMutual : Bool := false) (wrongCall : Bool := false) : E
 private def monoApplication : Expr := .found (.fvar 90)
   (.app (.found identityHM (.var 0)) (.found (.fvar 90) (.var 1)))
 
+private def optionTyName : TyName := ⟨"Option"⟩
+private def someCtorName : CtorName := ⟨"Some"⟩
+private def noneCtorName : CtorName := ⟨"None"⟩
+private def exactTwo : BoundsTy := .list (.lit 2) (.lit 2) (.prim .int)
+private def optionExactTwo : BoundsTy := .custom optionTyName [exactTwo]
+private def optionListHM : Ty := .customTy optionTyName [listTy (.prim .int)]
+private def nominalSome : Expr :=
+  .found optionListHM (.app
+    (.found (.arrow (listTy (.prim .int)) optionListHM) (.ctor someCtorName))
+    (.found (listTy (.prim .int)) (.var 0)))
+
 private def realArtifact (annotatedBinding : Bool := false) (withMatch : Bool := false) : Except String Bool := do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
   let contract := if withMatch then
@@ -189,6 +200,11 @@ private def cases : List (String × Bool) := [
   ("Cons constructor payload is checked, not silently skipped", fails (run (cons false true) [] [] none []) "Cons found"),
   ("monomorphic function application retains actual argument bounds", returns
     (run monoApplication [.mono expected, .mono callerType] [] none) callerType.pretty),
+  ("nominal unary constructor transports an actual nested List origin into its result", returns
+    (run nominalSome [.mono exactTwo] [] none []) optionExactTwo.pretty),
+  ("nominal nullary constructor accepts a shape-correct expected result", returns
+    (run (.found optionListHM (.ctor noneCtorName)) [] [] (some optionExactTwo) [])
+      optionExactTwo.pretty),
   ("self recursion checks count-only use of the fixed full HM vector", succeeds recursive),
   ("mutual recursion uses the same fixed full HM vector in the common environment", succeeds (recursive true)),
   ("recursive call cannot change its group's fixed HM instantiation", fails (recursive false true) "found payload"),

@@ -17,6 +17,48 @@ namespace FHM.Bounds.RecursiveHMWalk
 
 open RecursiveHMJudgement SchemeSpecialization CountSubstitution ScopedScheme
 
+/- Refine every occurrence of an instantiated constructor argument shape in
+   its result with the bounds obtained from the actual argument.  The found HM
+   payload still checks the resulting shape in `finish`; this function only
+   transports quantitative information through nominal result structure. -/
+mutual
+def transferCtorOrigin (origin : Ty) (actual : BoundsTy) (target : Ty) :
+    Except String BoundsTy := do
+  match BinderBridge.equalTy target origin with
+  | some _ => pure actual
+  | none =>
+    match target with
+    | .prim p => pure (.prim p)
+    | .fvar i => pure (.fvar i)
+    | .bvar i => pure (.bvar i)
+    | .arrow a b =>
+        let domain ← transferCtorOrigin origin actual a
+        let result ← transferCtorOrigin origin actual b
+        pure (.arrow domain result)
+    | .customTy n args =>
+        if n = listTyName then
+          match args with
+          | [a] =>
+              let elem ← transferCtorOrigin origin actual a
+              pure (.list (.lit 0) .inf elem)
+          | _ => throw "bounds: malformed List type in constructor result"
+        else
+          let refined ← transferCtorOrigins origin actual args
+          pure (.custom n refined)
+    | .bl _ _ _ => throw "bounds: unerased BL node in constructor HM payload"
+termination_by sizeOf target
+
+def transferCtorOrigins (origin : Ty) (actual : BoundsTy) (targets : List Ty) :
+    Except String (List BoundsTy) := do
+  match targets with
+  | [] => pure []
+  | target :: rest =>
+      let head ← transferCtorOrigin origin actual target
+      let tail ← transferCtorOrigins origin actual rest
+      pure (head :: tail)
+termination_by sizeOf targets
+end
+
 structure ScopedResult (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) (e : Expr) where
   originalHM : Ty
@@ -388,7 +430,13 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
           (some ⟨by simpa only [Expr.stripFound] using
             (ScopedDerives.RuntimeReady.boolCtor (types := types) (slots := slots)
               (ids := ids) (rows := rows) (name := name) hb)⟩)
-      else throw "bounds: standalone constructor unsupported in interpreted RHS traversal"
+      else
+        let β ← match expected with
+          | some β => pure β
+          | none => Typed.shapeTop (ScopedHMInterpretation.ty types slots hm)
+        finish types slots ids rows caller Δ env (.found hm (.ctor name)) path β
+          (by simpa only [Expr.stripFound] using
+            (ScopedDerives.ctor (types := types) (slots := slots) (env := env) hn)) [] none
   | .found hm (.var i) =>
       match hv : env[i]? with
       | none => throw "bounds: interpreted variable outside assumption environment"
@@ -508,7 +556,33 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
               subst name
               simpa only [Expr.stripFound] using
                 ScopedDerives.RuntimeReady.pair leftReady.down rightReady.down⟩)
-      else throw "bounds: constructor application unsupported in interpreted RHS traversal"
+      else
+        let fn ← walkScoped types slots ids rows caller Δ env (path ++ [.appFun])
+          (.found partialTy (.app (.found ctorTy (.ctor name)) head)) schemes
+        let arg ← walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) tail schemes
+        appendScoped path hm fn arg
+  | .found hm (.app (.found ctorHM (.ctor name)) arg) =>
+      if hn : name = nilCtorName then
+        throw "bounds: Nil cannot be applied"
+      else if hc : name = consCtorName then
+        throw "bounds: partial Cons application unsupported in interpreted RHS traversal"
+      else if hp : name = pairCtorName then
+        throw "bounds: partial Pair application unsupported in interpreted RHS traversal"
+      else if hb : BoolBranches.IsCtor name then
+        throw "bounds: Bool constructor cannot be applied"
+      else
+        match ScopedHMInterpretation.ty types slots ctorHM with
+        | .arrow domainHM resultHM =>
+            let actual ← walkScoped types slots ids rows caller Δ env
+              (path ++ [.appArg]) arg schemes
+            let result ← transferCtorOrigin domainHM actual.bounds resultHM
+            let function ← finish types slots ids rows caller Δ env
+              (.found ctorHM (.ctor name)) (path ++ [.appFun])
+              (.arrow actual.bounds result)
+              (by simpa only [Expr.stripFound] using
+                (ScopedDerives.ctor (types := types) (slots := slots) (env := env) hn)) [] none
+            appendScoped path hm function actual
+        | _ => throw "bounds: applied constructor has a non-arrow interpreted HM type"
   | .found hm (.app function arg) =>
       match RecursiveSpine.Syntax.parse path (.found hm (.app function arg)) with
       | some spine =>

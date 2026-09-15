@@ -40,6 +40,8 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
   | nil {env elem} : ScopedDerives types slots ids rows Δ env (.ctor nilCtorName) (.list (.lit 0) (.lit 0) elem)
   | boolCtor {env name} : BoolBranches.IsCtor name →
       ScopedDerives types slots ids rows Δ env (.ctor name) (.custom boolTyName [])
+  | ctor {env name β} : name ≠ nilCtorName →
+      ScopedDerives types slots ids rows Δ env (.ctor name) β
   | cons {env h t head elem lo hi} :
       ScopedDerives types slots ids rows Δ env h head → ScopedDerives types slots ids rows Δ env t (.list lo hi elem) →
       SemanticSub Δ head elem →
@@ -118,7 +120,7 @@ private theorem branches_scoped {depth branches}
 theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
     (h : ScopedDerives types slots ids rows Δ env e β) : e.varsBelow env.length = true := by
   induction h with
-  | literal | primBinOp | nil | boolCtor => rfl
+  | literal | primBinOp | nil | boolCtor | ctor => rfl
   | cons _ _ _ ihh iht => simp [Expr.varsBelow, ihh, iht]
   | pair _ _ ihLeft ihRight => simp [Expr.varsBelow, ihLeft, ihRight]
   | varMono lookup => exact variable_scoped lookup
@@ -181,6 +183,7 @@ theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
   | primBinOp => intro _; exact .primBinOp
   | nil => intro _; exact .nil
   | boolCtor ctor => intro _; exact .boolCtor ctor
+  | ctor hn => intro _; exact .ctor hn
   | pair _ _ ihLeft ihRight =>
       intro agree
       exact .pair (ihLeft (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
@@ -259,6 +262,7 @@ theorem ScopedDerives.sourceSlots {types slots slots' ids rows Δ env e β n}
   | primBinOp => exact .primBinOp
   | nil => exact .nil
   | boolCtor ctor => exact .boolCtor ctor
+  | ctor hn => exact .ctor hn
   | pair _ _ ihLeft ihRight =>
       simp only [Expr.TyBvarBounded] at bounded
       exact .pair (ihLeft bounded.1.2) (ihRight bounded.2)
@@ -1036,6 +1040,7 @@ theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
   | primBinOp => exact .primBinOp
   | nil => exact .nil
   | boolCtor hn => exact .boolCtor hn
+  | ctor hn => exact .ctor hn
   | cons _ _ hs ihh iht => exact .cons (ihh hp) (iht hp) (hs.assuming hp)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
   | varMono hv => exact .varMono hv
@@ -1382,6 +1387,7 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
   | primBinOp => cases ‹PrimBinOp› <;> exact .primBinOp
   | nil => exact .nil
   | boolCtor hn => exact .boolCtor hn
+  | ctor hn => exact .ctor hn
   | cons _ _ hs ihh iht => exact .cons (ihh fresh) (iht fresh) (SchemeSpecialization.subtype f hs)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft fresh) (ihRight fresh)
   | varMono hv => exact .varMono (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) hv)
@@ -1540,6 +1546,7 @@ theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : L
   | primBinOp => cases ‹PrimBinOp› <;> exact .primBinOp
   | nil => exact .nil
   | boolCtor hn => exact .boolCtor hn
+  | ctor hn => exact .ctor hn
   | cons _ _ hs ihh iht =>
       exact .cons (ihh fresh) (iht fresh) (CountSubstitution.subtype outer hf hs)
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft fresh) (ihRight fresh)
