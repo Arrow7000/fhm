@@ -630,6 +630,26 @@ def BodyBindingAt (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
         (∀ p ∈ used.countInstance.premises, p.Holds σ) →
         Runtime.TermAt bound free σ budget used.bounds term
 
+theorem BodyBindingAt.zero (bound free : Runtime.TypeEnv) (σ : Assign)
+    (binding : BodyBinding) (term : Expr) : BodyBindingAt bound free σ 0 binding term := by
+  have vacuous : ∀ β, Runtime.TermAt bound free σ 0 β term := by
+    intro β
+    unfold Runtime.TermAt
+    intro steps value _ before
+    omega
+  cases binding with
+  | mono β => exact vacuous β
+  | exported s => exact fun _ _ _ _ _ _ => vacuous _
+
+theorem BodyBindingAt.prepend {bound free σ budget binding term next}
+    (step : SmallStep.Step term next) (safe : BodyBindingAt bound free σ budget binding next) :
+    BodyBindingAt bound free σ (budget + 1) binding term := by
+  cases binding with
+  | mono β => exact Runtime.TermAt.prepend step safe
+  | exported s =>
+      exact fun Δ found caller used arguments premises =>
+        Runtime.TermAt.prepend step (safe Δ found caller used arguments premises)
+
 structure BodyEnvAt (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
     (env : List BodyBinding) where
   terms : List Expr
@@ -678,6 +698,86 @@ def BodyEnvAt.extendMono {bound free σ budget env}
     (e : BodyEnvAt bound free σ budget env) (β : BoundsTy) (term : Expr)
     (closed : term.varsBelow 0 = true) (safe : Runtime.TermAt bound free σ budget β term) :
     BodyEnvAt bound free σ budget (.mono β :: env) := e.extend (.mono β) term closed safe
+
+/-- Tie one monomorphic recursive implementation while retaining an arbitrary
+    generalized-body environment. This is the body-environment counterpart of
+    `EnvAt.tieGroupCaptured`; no termination assumption is required. -/
+def BodyEnvAt.tieMono {bound free σ env demand rhs ann}
+    (scope : rhs.varsBelow (1 + env.length) = true)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (rhsSafe : ∀ budget (e : BodyEnvAt bound free σ budget (.mono demand :: env)),
+      Runtime.TermAt bound free σ budget demand (rhs.substN 0 e.terms)) :
+    ∀ budget (outer : BodyEnvAt bound free σ budget env),
+      { e : BodyEnvAt bound free σ budget (.mono demand :: env) //
+        e.terms = Runtime.recursiveTerms [ann] (closeOuterRhss [rhs] outer.terms) ++
+          outer.terms }
+  | 0, outer => by
+      let closedRhss := closeOuterRhss [rhs] outer.terms
+      let recursive := Runtime.recursiveTerms [ann] closedRhss
+      have closedScope : ∀ source ∈ closedRhss, source.varsBelow 1 = true := by
+        intro source member
+        obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
+        have originalEq : original = rhs := List.mem_singleton.mp originalMember
+        subst original
+        apply Runtime.closing_scoped outer.terms outer.closed rhs 1
+        rw [outer.arity]
+        simpa only [Nat.add_comm] using scope
+      have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true :=
+        Runtime.recursiveTerms_closed (by
+          simpa only [closedRhss, closeOuterRhss_length] using closedScope)
+      refine ⟨{ terms := recursive ++ outer.terms
+                arity := ?_
+                closed := ?_
+                denotes := fun i inside => BodyBindingAt.zero bound free σ _ _ }, rfl⟩
+      · simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss, outer.arity]
+      · intro term member
+        exact (List.mem_append.mp member).elim (recursiveClosed term) (outer.closed term)
+  | budget + 1, outer => by
+      let previousOuter := outer.down hb hf (by omega : budget ≤ budget + 1)
+      let previous := BodyEnvAt.tieMono (ann := ann) scope hb hf rhsSafe budget previousOuter
+      let closedRhss := closeOuterRhss [rhs] outer.terms
+      let recursive := Runtime.recursiveTerms [ann] closedRhss
+      have closedScope : ∀ source ∈ closedRhss, source.varsBelow 1 = true := by
+        intro source member
+        obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
+        have originalEq : original = rhs := List.mem_singleton.mp originalMember
+        subst original
+        apply Runtime.closing_scoped outer.terms outer.closed rhs 1
+        rw [outer.arity]
+        simpa only [Nat.add_comm] using scope
+      have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true :=
+        Runtime.recursiveTerms_closed (by
+          simpa only [closedRhss, closeOuterRhss_length] using closedScope)
+      refine ⟨{ terms := recursive ++ outer.terms
+                arity := ?_
+                closed := ?_
+                denotes := ?_ }, rfl⟩
+      · simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss, outer.arity]
+      · intro term member
+        exact (List.mem_append.mp member).elim (recursiveClosed term) (outer.closed term)
+      · intro i inside
+        cases i with
+        | zero =>
+            simp only [List.getElem_cons_zero, BodyBindingAt]
+            have safe := rhsSafe budget previous.val
+            have previousTerms : previousOuter.terms = outer.terms := rfl
+            rw [previous.property, previousTerms] at safe
+            have composed := Runtime.closing_compose outer.terms recursive outer.closed
+              recursiveClosed rhs 0
+            rw [Nat.zero_add, show recursive.length = 1 by
+              simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss]] at composed
+            rw [← composed] at safe
+            simpa only [recursive, Runtime.recursiveTerms, List.getElem_map,
+              closedRhss, List.getElem_cons_zero] using
+              Runtime.TermAt.prepend SmallStep.Step.letRecUnfold safe
+        | succ i =>
+            have outerInside : i < env.length := by
+              simp only [List.length_cons] at inside
+              omega
+            have meaning := outer.denotes i outerInside
+            simpa only [List.getElem_cons_succ, List.getElem_append_right,
+              show recursive.length = 1 by
+                simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss]] using meaning
 
 theorem BodyEnvAt.varMono {bound free σ budget env i β}
     (e : BodyEnvAt bound free σ budget env) (lookup : env[i]? = some (.mono β)) :
@@ -1551,6 +1651,12 @@ inductive ScopedBodyDerives :
       ScopedHMAnnotation.BindingOK types slots ids rows Δ ann actual →
       ScopedBodyDerives types slots ids rows Δ env rhs actual → ScopedBodyDerives types slots ids rows Δ (.mono actual :: env) body result →
       ScopedBodyDerives types slots ids rows Δ env (.letIn ann rhs body) result
+  | letRecMono {env ann rhs body actual demand result} :
+      ScopedHMAnnotation.BindingOK types slots ids rows Δ ann demand →
+      ScopedBodyDerives types slots ids rows Δ (.mono demand :: env) rhs actual →
+      SemanticSub Δ actual demand →
+      ScopedBodyDerives types slots ids rows Δ (.mono demand :: env) body result →
+      ScopedBodyDerives types slots ids rows Δ env (.letRec [ann] [rhs] body) result
   | letPinned {env annotation rhs body actual result}
       (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ annotation.body actual) :
       annotation.paramCount = 0 →
@@ -1627,7 +1733,7 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | ctor | cons | consPartial | pair | pairPartial |
       varMono | varExported | app | lambda |
-      letMono | letPinned | letRecPinnedMono | letRecInferredMono | letExported | letRecExported |
+      letMono | letRecMono | letPinned | letRecPinnedMono | letRecInferredMono | letExported | letRecExported |
           match_ | letRec =>
         intro p source; cases source
 
@@ -1707,6 +1813,9 @@ theorem rhsToBody {types slots ids rows Δ env e β}
   | letMono annotation _ _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
         ScopedBodyDerives.letMono annotation ihr ihb
+  | letRecMono annotation _ sub _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
+        ScopedBodyDerives.letRecMono annotation ihr sub ihb
   | matchList _ coverage patterns bodies subs ihs ihb =>
       refine .match_ (ctx := .list _ _ _) ihs coverage patterns ?_ subs
       intro i br atIndex
@@ -1770,6 +1879,9 @@ theorem ordinaryRhsToBody {types slots ids rows Δ env e β}
   | letMono annotation _ _ ihr ihb =>
       intro ordinary
       exact .letMono annotation (ihr ordinary) (ihb ordinary.consMono)
+  | letRecMono annotation _ sub _ ihr ihb =>
+      intro ordinary
+      exact .letRecMono annotation (ihr ordinary.consMono) sub (ihb ordinary.consMono)
   | matchList _ coverage patterns bodies subs ihs ihb =>
       intro ordinary
       refine .match_ (ctx := .list _ _ _) (ihs ordinary) coverage patterns ?_ subs
@@ -1865,6 +1977,9 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
   | letMono annotation _ _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letMono annotation ihr ihb
+  | letRecMono annotation _ sub _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        ScopedBodyDerives.letRecMono annotation ihr sub ihb
   | matchList _ coverage patterns bodies subs ihs ihb =>
       refine .match_ (ctx := .list _ _ _) ihs coverage patterns ?_ subs
       intro i br atIndex
@@ -1935,6 +2050,10 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
   | letMono annotation _ _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letMono annotation (ihr ordinary) (ihb ordinary.consMono)
+  | letRecMono annotation _ sub _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        ScopedBodyDerives.letRecMono annotation (ihr ordinary.consMono) sub
+          (ihb ordinary.consMono)
   | matchList _ coverage patterns bodies subs ihs ihb =>
       refine .match_ (ctx := .list _ _ _) (ihs ordinary) coverage patterns ?_ subs
       intro i br atIndex
@@ -1992,6 +2111,7 @@ abbrev subsumption := @ScopedBodyDerives.subsumption BoundsTy.fvar BoundsTy.bvar
 abbrev lambda := @ScopedBodyDerives.lambda BoundsTy.fvar BoundsTy.bvar
 abbrev letMono := @ScopedBodyDerives.letMono BoundsTy.fvar BoundsTy.bvar
 abbrev letPinned := @ScopedBodyDerives.letPinned BoundsTy.fvar BoundsTy.bvar
+abbrev letRecMono := @ScopedBodyDerives.letRecMono BoundsTy.fvar BoundsTy.bvar
 abbrev letRecPinnedMono := @ScopedBodyDerives.letRecPinnedMono BoundsTy.fvar BoundsTy.bvar
 abbrev letRecInferredMono := @ScopedBodyDerives.letRecInferredMono BoundsTy.fvar BoundsTy.bvar
 abbrev match_ := @ScopedBodyDerives.match_ BoundsTy.fvar BoundsTy.bvar
@@ -2035,6 +2155,9 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
   | lambda param _ ih => exact .lambda (param_assuming param hp) (ih hp)
   | letMono obligation _ _ ihr ihb =>
       exact .letMono (binding_assuming obligation hp) (ihr hp) (ihb hp)
+  | letRecMono obligation _ sub _ ihr ihb =>
+      exact .letRecMono (binding_assuming obligation hp) (ihr hp)
+        (sub.assuming hp) (ihb hp)
   | letPinned pinned mono _ _ ihr ihb =>
       exact .letPinned (pinned.assuming hp) mono (ihr hp) (ihb hp)
   | letRecPinnedMono pinned mono rhs _ ihbody =>
@@ -2104,6 +2227,11 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
   | letMono _ _ _ ihr ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       exact ⟨ihr, by simpa only [List.length_cons] using ihb⟩
+  | letRecMono _ _ _ _ ihr ihb =>
+      simp only [Expr.varsBelow, List.length_singleton, RecGroupClosed.varsBelow,
+        Bool.and_true, Bool.and_eq_true]
+      exact ⟨by simpa only [List.length_cons] using ihr,
+        by simpa only [List.length_cons] using ihb⟩
   | letPinned _ _ _ _ ihr ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       exact ⟨ihr, by simpa only [List.length_cons] using ihb⟩
@@ -2287,6 +2415,13 @@ inductive RuntimeReady :
       {hrhs : ScopedBodyDerives types slots ids rows Δ env rhs actual}
       {hbody : ScopedBodyDerives types slots ids rows Δ (.mono actual :: env) body result} :
       RuntimeReady hrhs → RuntimeReady hbody → RuntimeReady (.letMono annOK hrhs hbody)
+  | letRecMono {actual demand : BoundsTy}
+      (annOK : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann demand)
+      {hrhs : ScopedBodyDerives types slots ids rows Δ (.mono demand :: env) rhs actual}
+      (sub : SemanticSub Δ actual demand)
+      {hbody : ScopedBodyDerives types slots ids rows Δ (.mono demand :: env) body result} :
+      RuntimeReady hrhs → Runtime.Supported demand → RuntimeReady hbody →
+      RuntimeReady (.letRecMono annOK hrhs sub hbody)
   | letPinned {annotation : PolyTy} {actual : BoundsTy}
       (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ annotation.body actual)
       (mono : annotation.paramCount = 0)
@@ -2377,6 +2512,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | subsumption _ _ demand => exact demand
   | lambda _ param _ result => exact .arrow param result
   | letMono _ _ _ _ body => exact body
+  | letRecMono _ _ _ _ _ _ body => exact body
   | letPinned _ _ _ _ _ _ body => exact body
   | letRecPinnedMono _ _ _ _ _ _ body => exact body
   | letRecInferredMono _ _ _ _ body => exact body
@@ -2469,6 +2605,50 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           change Runtime.TermAt bound free σ j _ (Expr.substN 0 (_ :: e.terms) _) at bodySafe
           rw [Runtime.closing_singleton e.terms e.closed _ rhsClosed]
           exact bodySafe
+  | @letRecMono _ _ _ _ _ ann env rhs body result actual demand annOK hrhs sub hbody
+      rhsReady demandSupport bodyReady ihr ihb =>
+      intro observation premises e
+      cases observation with
+      | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+      | succ budget =>
+          let previous := e.down hb hf (by omega : budget ≤ budget + 1)
+          have rhsScope : rhs.varsBelow (1 + env.length) = true := by
+            simpa only [List.length_cons, Nat.add_comm] using hrhs.varsBelow
+          let rhsSafe : ∀ innerBudget
+              (assumptions : BodyEnvAt bound free σ innerBudget
+                (.mono demand :: env)),
+              Runtime.TermAt bound free σ innerBudget demand
+                (rhs.substN 0 assumptions.terms) :=
+            fun innerBudget assumptions =>
+              (ihr innerBudget premises assumptions).of_values
+                (Runtime.subtype sub rhsReady.supported demandSupport bound free σ premises)
+          let realized := BodyEnvAt.tieMono (ann := ann) rhsScope hb hf rhsSafe budget previous
+          let closedRhss := closeOuterRhss [rhs] previous.terms
+          let recursive := Runtime.recursiveTerms [ann] closedRhss
+          have realizedTerms : realized.val.terms = recursive ++ previous.terms := by
+            simpa only [recursive, closedRhss] using realized.property
+          have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+            apply Runtime.recursiveTerms_closed
+            intro source member
+            obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
+            have originalEq : original = rhs := List.mem_singleton.mp originalMember
+            subst original
+            apply Runtime.closing_scoped previous.terms previous.closed rhs 1
+            rw [previous.arity]
+            simpa only [Nat.add_comm] using rhsScope
+          have bodySafe := ihb budget premises realized.val
+          rw [realizedTerms] at bodySafe
+          have composed := Runtime.closing_compose previous.terms recursive previous.closed
+            recursiveClosed body 0
+          rw [Nat.zero_add, show recursive.length = 1 by
+            simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss]] at composed
+          rw [← composed] at bodySafe
+          have sameTerms : previous.terms = e.terms := rfl
+          rw [← sameTerms]
+          simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+          change Runtime.TermAt bound free σ (budget + 1) result
+            (.letRec [ann] closedRhss (body.substN 1 previous.terms))
+          exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
   | letPinned pinned mono rhsReady demandSupport bodyReady ihr ihb =>
       intro budget premises e
       cases budget with
@@ -2869,6 +3049,9 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
   | subsumption sub _ demand ih => exact .subsumption (sub.assuming hp) (ih hp) demand
   | lambda annOK param _ ih => exact .lambda (param_assuming annOK hp) param (ih hp)
   | letMono annOK _ _ ihr ihb => exact .letMono (binding_assuming annOK hp) (ihr hp) (ihb hp)
+  | letRecMono annOK sub _ demand _ ihr ihb =>
+      exact .letRecMono (binding_assuming annOK hp) (sub.assuming hp)
+        (ihr hp) demand (ihb hp)
   | letPinned pinned mono _ demand _ ihr ihb =>
       exact .letPinned (pinned.assuming hp) mono (ihr hp) demand (ihb hp)
   | letRecPinnedMono pinned mono rhs demand outerArguments _ ihbody =>
@@ -2982,6 +3165,10 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
   | letMono annotation _ _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         BodyDerives.RuntimeReady.letMono annotation (ihr arguments) (ihb arguments.consMono)
+  | letRecMono annotation sub _ demand _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        BodyDerives.RuntimeReady.letRecMono annotation sub (ihr arguments.consMono)
+          demand (ihb arguments.consMono)
   | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
       refine .match_ (ctx := .list _ _ _) coverage patterns
         (fun i br atIndex => by
@@ -3049,6 +3236,10 @@ theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
   | letMono annotation _ _ ihr ihb =>
       intro ordinary
       exact .letMono annotation (ihr ordinary) (ihb ordinary.consMono)
+  | letRecMono annotation sub _ demand _ ihr ihb =>
+      intro ordinary
+      exact .letRecMono annotation sub (ihr ordinary.consMono) demand
+        (ihb ordinary.consMono)
   | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
       intro ordinary
       refine .match_ (ctx := .list _ _ _) coverage patterns
@@ -3125,6 +3316,11 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         BodyDerives.RuntimeReady.letMono annotation (ihr ordinary tail)
           (ihb ordinary.consMono tail)
+  | letRecMono annotation sub _ demand _ ihr ihb =>
+      intro ordinary tail
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        BodyDerives.RuntimeReady.letRecMono annotation sub
+          (ihr ordinary.consMono tail) demand (ihb ordinary.consMono tail)
   | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
       intro ordinary tail
       refine .match_ (ctx := .list _ _ _) coverage patterns

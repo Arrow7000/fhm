@@ -126,6 +126,11 @@ private def consecutiveSource (body : String := "f xs") : String :=
   "let g : {m : Nat} BL m m Int -> BL m m Int =\n" ++
   "  \\(xs : BL m m Int) -> (\\(ignored : List Int) -> " ++ body ++ ") (g xs)\n"
 
+private def nestedMonoSource : String :=
+  "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+  "  \\(xs : BL n n Int) -> let g : {m : Nat} Int -> Int = \\(i : Int) -> g i + 0 in " ++
+  "(\\(ignored : Int) -> xs) (g 1)\nf []\n"
+
 private def provenanceRejected (modify : TypedLowered → TypedLowered) : Except String Unit := do
   let a ← artifact (selfSource ++ "f []\n")
   let _ ← RecursiveFound.synthNodes (modify a)
@@ -398,10 +403,10 @@ private def cases : List (String × Bool) := [
     "let g : {m : Nat} BL m m Int -> BL m m Int =\n" ++
     "  \\(xs : BL m m Int) -> (\\(ignored : List Int) -> f (\\ys -> ys) xs) (g xs)\n" ++
     "g [1, 2]\n")) "BL 2 2 Int"),
-  ("parsed recursive group in a universal RHS still needs transport", fails (run (
-    "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
-    "  \\(xs : BL n n Int) -> let g : {m : Nat} Int -> Int = \\i -> g i in " ++
-    "(\\(ignored : Int) -> xs) (g 1)\nf []\n")) "nested groups unsupported"),
+  ("parsed monomorphic recursive group composes inside a universal RHS",
+    returns (run nestedMonoSource) "BL 0 0 Int"),
+  ("parsed monomorphic recursive group in a universal RHS retains its runtime theorem",
+    succeeds (runtimeCertified nestedMonoSource)),
   ("parsed scalar prefix is captured by a later recursive map", returns (run (
     "(let offset : Int = 1 in\n" ++
     mapSource "(transform (h + offset) + 0) :: f transform t" ++
