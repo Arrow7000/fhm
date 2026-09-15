@@ -4379,6 +4379,99 @@ private def walkInferredExportLetRec
   else fallback
 termination_by (sizeOf (Expr.found hm (.letRec [none] [rhs] body)), 0)
 
+/-- Export an ordinary unannotated HM `let` at the authoritative machine
+    scheme. Unlike the recursive singleton adapter, its RHS may refer to the
+    surrounding lexical environment: `prepareInferredExport` certifies that
+    exact captured environment once, and the `letExported` rule eliminates the
+    certificate at every HM/count instance used by the body. -/
+private def walkInferredExportLet
+    (sourceOutput : Expr) (metadata : Scope.Metadata)
+    (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
+    (env : List BodyBinding) (path : CorePath) (hm : Ty) (machine : PolyTy)
+    (rhs body : Expr) (schemes : BinderSchemeMap) (captured : BodyCapture env)
+    (sourceProof : PLift (sourceOutput.atCorePath path =
+      some (.found hm (.letIn none rhs body))))
+    (expected : Option BoundsTy) (ctors : CtorEnv) :
+    Except String
+      (BodyResult ids rows caller Δ env (.found hm (.letIn none rhs body))) := do
+  if parentIds : ids = [] then
+    if parentRows : rows = [] then
+      unless metadata.problems.isEmpty do
+        throw "bounds: unresolved or duplicate count scope in inferred local export"
+      let quantified ← ScopedDeclaration.telescope metadata (.letIn path)
+      match rhs with
+      | .found rhsHM rhsInner =>
+          have descent : sourceOutput.atCorePath (path ++ [.letRhs]) =
+              some (.found rhsHM rhsInner) := by
+            rw [Expr.atCorePath_append, sourceProof.down]
+            simp [Expr.atCorePath]
+          let node : HMFoundView.AtNode sourceOutput (path ++ [.letRhs]) :=
+            ⟨rhsHM, rhsInner, descent⟩
+          let prepared ← match prepareInferredExport node machine quantified captured schemes ctors with
+            | .ok prepared => pure prepared
+            | .error message => throw s!"bounds: inferred ordinary let preparation failed ({message})"
+          let interface := prepared.interface
+          let frame := prepared.frame
+          let cert := prepared.cert
+          let annotationOK : LocalAnnotationOK interface none := True.intro
+          have certCaptured : RecursiveHMEnvironment.Captured
+              interface.counts.captures captured.rhsEnv := by
+            rw [prepared.capturesClosed]
+            exact captured.captured
+          have envLength : captured.rhsEnv.length = env.length := by
+            have lengths := congrArg List.length captured.bodyEnv
+            simpa only [ordinaryBodyEnv, List.length_map] using lengths
+          have rhsScope : rhsInner.stripFound.varsBelow env.length = true := by
+            simpa only [envLength] using cert.typing.varsBelow
+          let instances := fun calleeΔ found localCaller
+              (used : HMCountScheme.Use interface calleeΔ found localCaller) =>
+            (by
+              have derived := capturedLocalRhsInstances (Δ := Δ) frame annotationOK
+                cert prepared.owners certCaptured used (prepared.instanceFixed _ _ _ used)
+              simpa only [List.append_nil, captured.bodyEnv] using derived :
+                ScopedBodyDerives
+                  (localTypes frame.owned BoundsTy.fvar used.types)
+                  (localSlots none BoundsTy.bvar used.types)
+                  (interface.counts.quantified ++ interface.counts.captures ++ [])
+                  (CountAlgebra.compose
+                    (interface.counts.quantified.zip used.counts) [])
+                  (Δ ++ used.countInstance.premises) env rhsInner.stripFound used.bounds)
+          have bodySource : sourceOutput.atCorePath (path ++ [.letBody]) = some body := by
+            rw [Expr.atCorePath_append, sourceProof.down]
+            simp [Expr.atCorePath]
+          let result ← walkBodySource sourceOutput metadata [] [] caller Δ
+            (.exported interface :: env) (path ++ [.letBody]) body schemes
+            (some (captured.extendExported interface prepared.capturesClosed))
+            (some ⟨bodySource⟩) expected ctors
+          let completed ← finishBody (ids := []) (rows := []) (caller := caller)
+            (Δ := Δ) (env := env)
+            (e := .found hm (.letIn none (.found rhsHM rhsInner) body))
+            path hm result.bounds rfl
+            (by
+              simpa only [Expr.stripFound, captured.bodyEnv] using
+                (ScopedBodyDerives.letExported frame annotationOK rhsScope
+                  instances result.typing))
+            (prepared.nodes ++ result.nodes)
+            (do
+              let sourceReady ← prepared.runtimeReady
+              let bodyReady ← result.runtimeReady
+              pure ⟨by
+                let ready := BodyDerives.RuntimeReady.letExported frame annotationOK rhsScope
+                  instances
+                  (fun calleeΔ found localCaller used arguments => by
+                    let instanceReady := capturedLocalRhsInstances_runtimeReady
+                      (Δ := Δ) frame annotationOK cert prepared.owners sourceReady.down
+                      certCaptured used (prepared.instanceFixed _ _ _ used)
+                      captured.arguments arguments
+                    simpa only [List.append_nil, captured.bodyEnv] using instanceReady)
+                  bodyReady.down
+                simpa only [Expr.stripFound, captured.bodyEnv] using ready⟩)
+          pure (by simpa only [parentIds, parentRows] using completed)
+      | _ => throw "bounds: inferred polymorphic local RHS lacks its original found root"
+    else throw "bounds: inferred local export under enclosing count substitutions is not supported yet"
+  else throw "bounds: inferred local export under enclosing count identities is not supported yet"
+termination_by (sizeOf (Expr.found hm (.letIn none rhs body)), 0)
+
 /-- Source-linked body traversal: literals, List origins, scalar operators,
     lambdas, mono/generalized locals, matches and origin-backed exported
     application spines, including arguments deferred until later origins are
@@ -4438,8 +4531,10 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               pure ⟨by simpa only [Expr.stripFound] using
                 (BodyDerives.RuntimeReady.varMono (ids := ids) (rows := rows) (i := i) hv supported.down)⟩)
       | some (.exported s) =>
-          if s.hm.paramCount == 0 && s.counts.quantified.isEmpty then
-            let used ← HMCountScheme.check s Δ hm [] [] caller
+          if s.counts.quantified.isEmpty then
+            let hmUse ← BinderBridge.instantiate s.hm hm
+            let types ← hmUse.args.mapM Typed.shapeTop
+            let used ← HMCountScheme.check s Δ hm [] types caller
             finishBody path hm used.bounds rfl
               (by simpa only [Expr.stripFound] using BodyDerives.varExported hv used) []
               (do
@@ -4448,7 +4543,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                 pure ⟨by simpa only [Expr.stripFound] using
                   (BodyDerives.RuntimeReady.varExported (ids := ids) (rows := rows)
                     (i := i) hv used supported.down arguments.down)⟩)
-          else throw "bounds: exported polymorphic use needs origin-backed arguments"
+          else throw "bounds: count-polymorphic use needs origin-backed arguments"
       | none => throw "bounds: generalized body variable outside binding environment"
   | .found hm (.lambda ann body) =>
       match hm.eraseBounds with
@@ -4830,26 +4925,40 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               else throw "bounds: generalized local under enclosing count substitutions is not supported yet"
             else throw "bounds: generalized local under enclosing count identities is not supported yet"
       | none =>
-          let hint ← RecursiveHMAnnotation.scopedBindingHint BoundsTy.fvar BoundsTy.bvar
-            ids rows caller none
-          let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
-            (path ++ [.letRhs]) rhs schemes capture
-            (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint ctors
-          let _ ← RecursiveHMWalk.checkLocalInterface none schemes (.letIn path) actual.hm
-          let result ← walkBodySource sourceOutput metadata ids rows caller Δ
-            (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
-            (extendMonoCapture? capture actual.bounds)
-            (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
-          finishBody path hm result.bounds rfl
-            (by simpa only [Expr.stripFound] using
-              (BodyDerives.letMono (by trivial) actual.typing result.typing))
-            (actual.nodes ++ result.nodes)
-            (do
-              let rhsReady ← actual.runtimeReady
-              let bodyReady ← result.runtimeReady
-              pure ⟨by simpa only [Expr.stripFound] using
-                (BodyDerives.RuntimeReady.letMono (ann := none) (by trivial)
-                  rhsReady.down bodyReady.down)⟩)
+          match BinderBridge.candidates schemes (.letIn path) with
+          | [machine] =>
+              if machine.paramCount == 0 then
+                let hint ← RecursiveHMAnnotation.scopedBindingHint BoundsTy.fvar BoundsTy.bvar
+                  ids rows caller none
+                let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+                  (path ++ [.letRhs]) rhs schemes capture
+                  (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint ctors
+                let _ ← RecursiveHMWalk.checkLocalInterface none schemes (.letIn path) actual.hm
+                let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+                  (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
+                  (extendMonoCapture? capture actual.bounds)
+                  (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
+                finishBody path hm result.bounds rfl
+                  (by simpa only [Expr.stripFound] using
+                    (BodyDerives.letMono (by trivial) actual.typing result.typing))
+                  (actual.nodes ++ result.nodes)
+                  (do
+                    let rhsReady ← actual.runtimeReady
+                    let bodyReady ← result.runtimeReady
+                    pure ⟨by simpa only [Expr.stripFound] using
+                      (BodyDerives.RuntimeReady.letMono (ann := none) (by trivial)
+                        rhsReady.down bodyReady.down)⟩)
+              else
+                let captured ← match capture with
+                  | some captured => pure captured
+                  | none => throw "bounds: inferred polymorphic local lacks a represented environment"
+                let sourceProof ← match sourceAt with
+                  | some located => pure located
+                  | none => throw "bounds: inferred polymorphic local lacks exact source provenance"
+                walkInferredExportLet sourceOutput metadata ids rows caller Δ env path hm machine
+                  rhs body schemes captured sourceProof expected ctors
+          | [] => throw "bounds: missing inferred local binder scheme in generalized body"
+          | _ => throw "bounds: duplicate inferred local binder scheme in generalized body"
   | .found hm (.match_ scrut branches) =>
       let input ← walkBodySource sourceOutput metadata ids rows caller Δ env
         (path ++ [.matchScrut]) scrut schemes capture

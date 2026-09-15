@@ -536,8 +536,11 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                 (ScopedDerives.RuntimeReady.varRecursive (types := types) (slots := slots)
                   (ids := ids) (rows := rows) (env := env) (i := i) (c := c) hv used supported.down)⟩)
       | some (.exported s) =>
-          if s.hm.paramCount == 0 && s.counts.quantified.isEmpty then
-            let used ← HMCountScheme.check s Δ (ScopedHMInterpretation.ty types slots hm) [] [] caller
+          if s.counts.quantified.isEmpty then
+            let found := ScopedHMInterpretation.ty types slots hm
+            let hmUse ← BinderBridge.instantiate s.hm found
+            let typeArgs ← hmUse.args.mapM Typed.shapeTop
+            let used ← HMCountScheme.check s Δ found [] typeArgs caller
             finish types slots ids rows caller Δ env (.found hm (.var i)) path used.bounds
               (by simpa only [Expr.stripFound] using
                 (ScopedDerives.varExported (types := types) (slots := slots)
@@ -548,7 +551,7 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                 pure ⟨by simpa only [Expr.stripFound] using
                   (ScopedDerives.RuntimeReady.varExported (types := types) (slots := slots)
                     (ids := ids) (rows := rows) (i := i) hv used supported.down arguments.down)⟩)
-          else throw "bounds: exported polymorphic RHS use needs origin-backed arguments"
+          else throw "bounds: count-polymorphic RHS use needs origin-backed arguments"
   | .found hm (.lambda ann body) =>
       match hm.eraseBounds with
       | .arrow paramHM _ =>
