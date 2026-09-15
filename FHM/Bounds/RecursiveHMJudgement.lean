@@ -1,6 +1,7 @@
 import FHM.Bounds.RecursiveHMContract
 import FHM.Bounds.HMInterpretation
 import FHM.Bounds.Runtime
+import FHM.Bounds.NominalBranches
 
 /-! # Recursive RHS typing with an explicit proof-side HM interpretation
 
@@ -96,6 +97,17 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
           br.2 (actuals i)) →
       (∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) →
       ScopedDerives types slots ids rows Δ env (.match_ scrut branches) result
+  | matchNominal {env scrut branches typeName args result} {ctors : CtorEnv}
+      (fieldss : Nat → List BoundsTy) (actuals : Nat → BoundsTy) :
+      ScopedDerives types slots ids rows Δ env scrut (.custom typeName args) →
+      NominalBranches.Covers ctors typeName branches →
+      (∀ i br, branches[i]? = some br →
+        NominalBranches.PatternFields ctors typeName args br.1 (fieldss i)) →
+      (∀ i br, branches[i]? = some br →
+        ScopedDerives types slots ids rows Δ
+          ((fieldss i).map Binding.mono ++ env) br.2 (actuals i)) →
+      (∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) →
+      ScopedDerives types slots ids rows Δ env (.match_ scrut branches) result
   /-- A wildcard-only match exposes no constructor fields and is exhaustive for
       every HM shape.  Surface variable patterns lower through this form, so it
       must not be confused with declaration-indexed nominal matching. -/
@@ -168,6 +180,14 @@ theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
       rcases br with ⟨pat, body⟩
       rcases patterns (pat, body) member with rfl | rfl <;>
         simpa [pairBranchEnv, MatchPattern.bindCount] using bodyScope
+  | matchNominal _ _ _ _ fields _ _ ihscrut ihbranches =>
+      simp only [Expr.varsBelow, Bool.and_eq_true]
+      refine ⟨ihscrut, branches_scoped ?_⟩
+      intro br member
+      obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
+      have bodyScope := ihbranches i br atIndex
+      have fieldCount := (fields i br atIndex).length
+      simpa only [List.length_append, List.length_map, fieldCount, Nat.add_comm] using bodyScope
   | matchOpaque _ patterns _ _ ihscrut ihbranches =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       refine ⟨ihscrut, branches_scoped ?_⟩
@@ -252,6 +272,13 @@ theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
       intro index br atIndex
       exact ihb index br atIndex (fun i hi => agree i
         (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
+  | matchNominal fieldss actuals _ coverage fields bodies subs ihs ihb =>
+      intro agree
+      refine .matchNominal fieldss actuals
+        (ihs (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) coverage fields ?_ subs
+      intro index br atIndex
+      exact ihb index br atIndex (fun i hi => agree i
+        (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
   | matchOpaque _ patterns bodies subs ihs ihb =>
       intro agree
       refine .matchOpaque (ihs (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
@@ -320,6 +347,12 @@ theorem ScopedDerives.sourceSlots {types slots slots' ids rows Δ env e β n}
           (List.mem_of_getElem? atIndex))
   | matchPair _ coverage patterns bodies subs ihs ihb =>
       refine .matchPair (ihs bounded.1) coverage patterns ?_ subs
+      intro index br atIndex
+      exact ihb index br atIndex
+        (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
+          (List.mem_of_getElem? atIndex))
+  | matchNominal fieldss actuals _ coverage fields bodies subs ihs ihb =>
+      refine .matchNominal fieldss actuals (ihs bounded.1) coverage fields ?_ subs
       intro index br atIndex
       exact ihb index br atIndex
         (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
@@ -1106,6 +1139,10 @@ theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
       exact .matchPair (ihscrut hp) hc hpat
         (fun i br hb => ihbranches i br hb hp)
         (fun i br hb => (hsub i br hb).assuming hp)
+  | matchNominal fieldss actuals _ coverage fields bodies subs ihscrut ihbranches =>
+      exact .matchNominal fieldss actuals (ihscrut hp) coverage fields
+        (fun i br hb => ihbranches i br hb hp)
+        (fun i br hb => (subs i br hb).assuming hp)
   | matchOpaque _ hpat _ hsub ihscrut ihbranches =>
       exact .matchOpaque (ihscrut hp) hpat
         (fun i br hb => ihbranches i br hb hp)
@@ -1339,6 +1376,14 @@ private theorem captures_pairBranch {f env p left right} (h : CapturesFixed f en
   · exact captures_cons (captures_cons h)
   · exact h
 
+private theorem captures_monos {f env} (h : CapturesFixed f env)
+    (fields : List BoundsTy) :
+    CapturesFixed f (fields.map Binding.mono ++ env) := by
+  induction fields with
+  | nil => simpa using h
+  | cons field rest ih =>
+      simpa only [List.map_cons, List.cons_append] using captures_cons ih
+
 /-- Enlarge caller count scope without changing the instance, its bounds or
     raw premises. Shared group arguments may mention counts unused by one member. -/
 def weakenInstance {s args caller} (inst : ScopedScheme.Instance s args caller) (target : List Nat) :
@@ -1468,6 +1513,24 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
         · simpa [pairBranchEnv, hp] using moved
       · intro i br hb
         exact SchemeSpecialization.subtype f (hsub i br hb)
+  | matchNominal fieldss actuals _ hc fields bodies hsub ihscrut ihbranches =>
+      apply ScopedDerives.matchNominal
+        (fieldss := fun i => SchemeSpecialization.mapFreeList f (fieldss i))
+        (actuals := fun i => SchemeSpecialization.mapFree f (actuals i))
+        (ihscrut fresh) hc
+      · intro i br hb
+        exact (fields i br hb).types f hf
+      · intro i br hb
+        have moved := ihbranches i br hb (captures_monos fresh (fieldss i))
+        have mappedFields :
+            ((fieldss i).map Binding.mono).map (mapBinding f hf) =
+              (SchemeSpecialization.mapFreeList f (fieldss i)).map Binding.mono := by
+          induction (fieldss i) with
+          | nil => rfl
+          | cons field rest ih => simp [SchemeSpecialization.mapFreeList, mapBinding, ih]
+        simpa only [List.map_append, mappedFields] using moved
+      · intro i br hb
+        exact SchemeSpecialization.subtype f (hsub i br hb)
   | matchOpaque _ hpat _ hsub ihscrut ihbranches =>
       exact .matchOpaque (ihscrut fresh) hpat
         (fun i br hb => ihbranches i br hb fresh)
@@ -1516,6 +1579,14 @@ private theorem count_captures_pairBranch {outer env p left right}
   split
   · exact count_captures_cons (count_captures_cons h)
   · exact h
+
+private theorem count_captures_monos {outer env} (h : CountCapturesFixed outer env)
+    (fields : List BoundsTy) :
+    CountCapturesFixed outer (fields.map Binding.mono ++ env) := by
+  induction fields with
+  | nil => simpa using h
+  | cons field rest ih =>
+      simpa only [List.map_cons, List.cons_append] using count_captures_cons ih
 
 private def mapExportedUseCounts {s : HMCountScheme.Scheme} {Δ found caller}
     (u : HMCountScheme.Use s Δ found caller)
@@ -1635,6 +1706,24 @@ theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : L
         by_cases hp : br.1 = .named pairCtorName 2
         · simpa [pairBranchEnv, hp, mapCountBinding, bounds] using moved
         · simpa [pairBranchEnv, hp] using moved
+      · intro i br hb
+        exact CountSubstitution.subtype outer hf (hsub i br hb)
+  | matchNominal fieldss actuals _ hc fields bodies hsub ihscrut ihbranches =>
+      apply ScopedDerives.matchNominal
+        (fieldss := fun i => CountSubstitution.boundsList outer (fieldss i))
+        (actuals := fun i => CountSubstitution.bounds outer (actuals i))
+        (ihscrut fresh) hc
+      · intro i br hb
+        exact (fields i br hb).counts outer
+      · intro i br hb
+        have moved := ihbranches i br hb (count_captures_monos fresh (fieldss i))
+        have mappedFields :
+            ((fieldss i).map Binding.mono).map (mapCountBinding outer) =
+              (CountSubstitution.boundsList outer (fieldss i)).map Binding.mono := by
+          induction (fieldss i) with
+          | nil => rfl
+          | cons field rest ih => simp [CountSubstitution.boundsList, mapCountBinding, ih]
+        simpa only [List.map_append, mappedFields] using moved
       · intro i br hb
         exact CountSubstitution.subtype outer hf (hsub i br hb)
   | matchOpaque _ hpat _ hsub ihscrut ihbranches =>

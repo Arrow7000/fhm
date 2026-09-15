@@ -15,8 +15,10 @@ private def identity (ann : Option Ty := none) : Expr :=
 private def expected : BoundsTy := .arrow callerType callerType
 
 private def run (e : Expr := identity) (env : List Binding := []) (schemes : BinderSchemeMap := [])
-    (hint : Option BoundsTy := some expected) (caller : List Nat := [7]) : Except String String := do
+    (hint : Option BoundsTy := some expected) (caller : List Nat := [7])
+    (ctors : CtorEnv := []) : Except String String := do
   let r ← RecursiveHMWalk.walk types [7] [(7, .lit 3)] caller [] env [] e schemes hint
+    (ctors := ctors)
   unless exactlyOnce (logicalCorePaths e) (r.nodes.map (·.path)) do
     throw "test: interpreted walker lost or duplicated logical Core nodes"
   pure r.bounds.pretty
@@ -64,6 +66,22 @@ private def nominalSome : Expr :=
   .found optionListHM (.app
     (.found (.arrow (listTy (.prim .int)) optionListHM) (.ctor someCtorName))
     (.found (listTy (.prim .int)) (.var 0)))
+
+private def optionCtors : CtorEnv :=
+  (elabDecls (preludeDecls ++ [{
+    name := optionTyName
+    paramCount := 1
+    ctors := [(someCtorName, [.bvar 0]), (noneCtorName, [])] }])).getD []
+
+private def nominalMatch (branches : List (MatchPattern × Expr)) : Expr :=
+  .found (listTy (.prim .int))
+    (.match_ (.found optionListHM (.var 0)) branches)
+
+private def someFieldBranch : MatchPattern × Expr :=
+  (.named someCtorName 1, .found (listTy (.prim .int)) (.var 0))
+
+private def noneListBranch : MatchPattern × Expr :=
+  (.named noneCtorName 0, .found (listTy (.prim .int)) (.ctor nilCtorName))
 
 private def realArtifact (annotatedBinding : Bool := false) (withMatch : Bool := false) : Except String Bool := do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
@@ -216,6 +234,17 @@ private def cases : List (String × Bool) := [
   ("nominal nullary constructor accepts a shape-correct expected result", returns
     (run (.found optionListHM (.ctor noneCtorName)) [] [] (some optionExactTwo) [])
       optionExactTwo.pretty),
+  ("declaration-indexed nominal match opens its instantiated field bounds", returns
+    (run (nominalMatch [someFieldBranch, noneListBranch]) [.mono optionExactTwo] [] none []
+      optionCtors) "BL 0 2 Int"),
+  ("declaration-indexed nominal match rejects missing constructor coverage", fails
+    (run (nominalMatch [someFieldBranch]) [.mono optionExactTwo] [] none [] optionCtors)
+      "not exhaustive"),
+  ("declaration-indexed nominal match rejects a constructor field-arity mismatch", fails
+    (run (nominalMatch [(.named someCtorName 0,
+        .found (listTy (.prim .int)) (.ctor nilCtorName)),
+        (.wildcard, .found (listTy (.prim .int)) (.ctor nilCtorName))])
+      [.mono optionExactTwo] [] none [] optionCtors) "pattern or constructor arity"),
   ("self recursion checks count-only use of the fixed full HM vector", succeeds recursive),
   ("mutual recursion uses the same fixed full HM vector in the common environment", succeeds (recursive true)),
   ("recursive call cannot change its group's fixed HM instantiation", fails (recursive false true) "found payload"),

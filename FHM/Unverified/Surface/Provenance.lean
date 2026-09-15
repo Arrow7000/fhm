@@ -627,6 +627,10 @@ abbrev InferredSurfaceBinderSchemes := List (SurfaceBinderSite × PolyTy)
 abbrev PatternBinderTypeMap := List (SurfaceBinderSite × List (CorePath × Ty))
 
 structure TypedLowered where
+  /-- The declaration environment used by both lowering and HM inference.
+      Bounds matching consumes this same authority rather than reconstructing
+      constructor ownership or field types from surface syntax. -/
+  ctors : CtorEnv
   lowering : Lowered
   inference : FoundResult
   sourceTypes : SourceTypeMap
@@ -726,6 +730,7 @@ def patternBinderTypesAt (output : Expr) (targets : BinderTargetMap) : PatternBi
 def inferWithProvenance (ctors : CtorEnv) (lowering : Lowered) : Option TypedLowered := do
   let inference ← inferFound ctors lowering.expr
   pure {
+    ctors
     lowering
     inference
     sourceTypes := lowering.sourceTargets.map fun (id, target) =>

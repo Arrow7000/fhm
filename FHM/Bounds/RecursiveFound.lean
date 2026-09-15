@@ -16,7 +16,7 @@ def synthNodes (typed : TypedLowered) : Except String
   unless typed.lowering.provenanceTotal && typed.sourceTypesTotal do
     throw "bounds: incomplete typed provenance"
   let result ← RecursiveHMUniform.checkProgram typed.inference.output typed.lowering.counts
-    typed.inference.binderSchemes
+    typed.inference.binderSchemes (ctors := typed.ctors)
   unless exactlyOnce (logicalCorePaths typed.inference.output) (result.nodes.map (·.path)) do
     throw "bounds: incomplete or duplicate recursive node report"
   let reports ← result.nodes.mapM fun node => do
