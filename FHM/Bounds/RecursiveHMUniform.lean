@@ -1916,6 +1916,23 @@ private def extendMonoCapture? {env} (capture : Option (BodyCapture env)) (β : 
       some (captured.extendMono β (boundsScopedBool_sound inScope))
     else none
 
+private def extendBranchCapture? {env} (capture : Option (BodyCapture env))
+    (ctx : BodyBranchContext) (pattern : MatchPattern) :
+    Option (BodyCapture (ctx.extend pattern env)) :=
+  match ctx with
+  | .bool => capture
+  | .list lo hi elem =>
+      if isCons : pattern = .named consCtorName 2 then
+        have extended : (BodyBranchContext.list lo hi elem).extend pattern env =
+            .mono elem :: .mono (.list (.pred lo) (.pred hi) elem) :: env := by
+          simp [BodyBranchContext.extend, isCons]
+        extended.symm ▸ extendMonoCapture?
+          (extendMonoCapture? capture (.list (.pred lo) (.pred hi) elem)) elem
+      else
+        have unchanged : (BodyBranchContext.list lo hi elem).extend pattern env = env := by
+          simp [BodyBranchContext.extend, isCons]
+        unchanged.symm ▸ capture
+
 private theorem RecursiveArgumentsSupported.mapBinding {env}
     (supported : RecursiveArgumentsSupported env) (f : Nat → BoundsTy)
     (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
@@ -2758,7 +2775,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           simp only [Expr.atCorePath, Option.bind_some]
           rw [atIndex]⟩
       let arms ← walkBodyBranches sourceOutput metadata ids rows caller Δ env ctx path branches 0
-        schemes branchSources expected
+        schemes capture branchSources expected
       match hb : arms.bounds with
       | none => throw "bounds: generalized body match has no result-producing branch"
       | some β =>
@@ -2806,7 +2823,8 @@ private def walkBodyBranches (sourceOutput : Expr) (metadata : Scope.Metadata)
     (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) (ctx : BodyBranchContext)
     (path : CorePath) (branches : List (MatchPattern × Expr)) (index : Nat)
-    (schemes : BinderSchemeMap) (sources : BodyBranchSources sourceOutput path index branches)
+    (schemes : BinderSchemeMap) (capture : Option (BodyCapture env))
+    (sources : BodyBranchSources sourceOutput path index branches)
     (expected : Option BoundsTy) :
     Except String (BodyBranches ids rows caller Δ env ctx branches) := do
   match branches with
@@ -2817,7 +2835,7 @@ private def walkBodyBranches (sourceOutput : Expr) (metadata : Scope.Metadata)
         let headSource := sources 0 br (by simp)
         let head ← walkBodySource sourceOutput metadata ids rows caller
           (Δ ++ ctx.refine br.1) (ctx.extend br.1 env)
-          (path ++ [.matchBranch index]) br.2 schemes none
+          (path ++ [.matchBranch index]) br.2 schemes (extendBranchCapture? capture ctx br.1)
           (by simpa only [Nat.add_zero] using headSource) expected
         let tailSources : BodyBranchSources sourceOutput path (index + 1) rest := fun i arm atIndex =>
           have shifted : (br :: rest)[i + 1]? = some arm := by simpa using atIndex
@@ -2825,7 +2843,7 @@ private def walkBodyBranches (sourceOutput : Expr) (metadata : Scope.Metadata)
             have position : index + (i + 1) = index + 1 + i := by omega
             simpa only [position] using located.down⟩
         let tail ← walkBodyBranches sourceOutput metadata ids rows caller Δ env ctx path rest
-          (index + 1) schemes tailSources expected
+          (index + 1) schemes capture tailSources expected
         match expected with
         | some β =>
             let hs ← Typed.subtype (Δ ++ ctx.refine br.1) head.bounds β

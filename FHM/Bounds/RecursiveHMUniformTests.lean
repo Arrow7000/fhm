@@ -184,6 +184,26 @@ private def capturedLocalBelowMono (underLambda : Bool) : Except String Bool := 
   let exact := match program.body.bounds with | .prim .int => true | _ => false
   pure (exact && exactlyOnce (logicalCorePaths artifact.output) (program.body.nodes.map (·.path)))
 
+/-- A constructor branch adds head and tail bindings in front of the group;
+    generalized local certification must retain that exact mixed environment. -/
+private def capturedLocalInConsArm : Except String Bool := do
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let singleton : Expr :=
+    .app (.app (.ctor consCtorName) (.primLit (.int 2))) (.ctor nilCtorName)
+  let localExpr := Expr.letIn (some ⟨1, .prim .int⟩) (.var 2) (.var 1)
+  let body := Expr.match_ singleton
+    [(.named consCtorName 2, localExpr),
+      (.named nilCtorName 0, .primLit (.int 0))]
+  let source := Expr.letRec [some ⟨0, .prim .int⟩] [.primLit (.int 1)] body
+  let artifact ← match inferFound ctors source with
+    | some artifact => pure artifact
+    | none => throw "test: captured generalized local in Cons arm failed HM inference"
+  let program ← checkClosedProgram artifact.output {} artifact.binderSchemes
+  if !program.body.runtimeSafety?.isSome then
+    throw "test: captured generalized local in Cons arm lost its runtime theorem"
+  let exact := match program.body.bounds with | .prim .int => true | _ => false
+  pure (exact && exactlyOnce (logicalCorePaths artifact.output) (program.body.nodes.map (·.path)))
+
 example {output metadata} (program : ProgramResult output metadata) :
     BodyDerives [] [] [] [] output.stripFound program.body.bounds := program.body.typing
 
@@ -710,6 +730,10 @@ def main : IO Unit := do
     | .ok true => IO.println s!"PASS: a generalized local retains its enclosing group below a closed mono {if underLambda then "lambda" else "let"} binder"
     | .error message => throw (IO.userError message)
     | .ok false => throw (IO.userError "captured generalized local below mono binder lost its result or source-node coverage")
+  match capturedLocalInConsArm with
+  | .ok true => IO.println "PASS: a generalized local retains its enclosing group through closed Cons head/tail refinements"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "captured generalized local in Cons arm lost its result or source-node coverage")
   match bodyCalls (forgedRoot := true) with
   | .error message =>
       unless (message.splitOn "original found payload").length > 1 do
