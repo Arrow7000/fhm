@@ -941,13 +941,188 @@ private def bodyBranchContext (β : BoundsTy) :
       else .error "bounds: generalized body match scrutinee is not a supported data type"
   | _ => .error "bounds: generalized body match scrutinee is not a supported data type"
 
-/-- A written generalized local must retain its actual declared HM/count
-    interface. Unannotated interfaces instead come from checked machine facts
-    at the consuming checker boundary, not from this semantic judgment. -/
+/-- A generalized hole annotation retains both the original source syntax and
+    the exact rigid interface chosen at escape.  `Pinned` is the proof that
+    every `_` came from that interface while every solid endpoint was preserved. -/
+structure LocalHoleAnnotationOK (s : HMCountScheme.Scheme) (annotation : PolyTy) where
+  captures : s.counts.captures = []
+  premises : s.counts.premises = []
+  hm : s.hm = annotation.eraseBounds
+  pinned : ScopedHMAnnotation.Pinned BoundsTy.fvar BoundsTy.bvar
+    s.counts.quantified [] s.counts.quantified [] annotation.body s.counts.body
+  demand : pinned.demand = s.counts.body
+
+mutual
+private theorem scopedIdentityTy (τ : Ty) :
+    ScopedHMInterpretation.ty BoundsTy.fvar BoundsTy.bvar τ = τ.eraseBounds := by
+  cases τ with
+  | prim => rfl
+  | fvar i => simp [ScopedHMInterpretation.ty, Synth.BoundsTy.toTy, Ty.eraseBounds]
+  | bvar i => simp [ScopedHMInterpretation.ty, Synth.BoundsTy.toTy, Ty.eraseBounds]
+  | arrow a b => simp only [ScopedHMInterpretation.ty, Ty.eraseBounds,
+      scopedIdentityTy a, scopedIdentityTy b]
+  | bl lo hi elem =>
+      simp [ScopedHMInterpretation.ty, Ty.eraseBounds, bareListTy,
+        scopedIdentityTy elem, listTy, FHM.Bounds.listTyName, _root_.listTyName]
+  | customTy name args =>
+      exact congrArg (Ty.customTy name) (scopedIdentityTys args)
+termination_by sizeOf τ
+
+private theorem scopedIdentityTys (types : List Ty) :
+    ScopedHMInterpretation.tys BoundsTy.fvar BoundsTy.bvar types =
+      TyList.eraseBounds types := by
+  cases types with
+  | nil => rfl
+  | cons ty rest =>
+      simp only [ScopedHMInterpretation.tys, TyList.eraseBounds,
+        scopedIdentityTy ty, scopedIdentityTys rest]
+termination_by sizeOf types
+end
+
+private def seedHoleCount (next : Nat) : CountSlot → Nat × Count
+  | .hole => (next + 1, .var ⟨.rigid, next⟩)
+  | .solid count => (next, count)
+
+mutual
+/-- Turn source holes into fresh rigid proposals.  Acceptance still comes from
+    `ScopedHMAnnotation.pin`, scheme well-formedness, and checking the RHS. -/
+private def seedAnnotationHoles (next : Nat) (τ : Ty) : Except String (Nat × BoundsTy) :=
+  match τ with
+  | .prim p => pure (next, .prim p)
+  | .fvar i => pure (next, .fvar i)
+  | .bvar i => pure (next, .bvar i)
+  | .arrow a b => do
+      let (next, a) ← seedAnnotationHoles next a
+      let (next, b) ← seedAnnotationHoles next b
+      pure (next, .arrow a b)
+  | .bl lo hi elem => do
+      let (next, lo) := seedHoleCount next lo
+      let (next, hi) := seedHoleCount next hi
+      let (next, elem) ← seedAnnotationHoles next elem
+      pure (next, .list lo hi elem)
+  | .customTy name [elem] =>
+      if hn : name = listTyName then do
+        let (next, elem) ← seedAnnotationHoles next elem
+        pure (next, .list (.lit 0) .inf elem)
+      else do
+        let (next, args) ← seedAnnotationHoleList next [elem]
+        pure (next, .custom name args)
+  | .customTy name args =>
+      if name = listTyName then
+        throw "bounds: malformed List annotation arity at generalized hole escape"
+      else do
+        let (next, args) ← seedAnnotationHoleList next args
+        pure (next, .custom name args)
+termination_by sizeOf τ
+
+private def seedAnnotationHoleList (next : Nat) (types : List Ty) :
+    Except String (Nat × List BoundsTy) :=
+  match types with
+  | [] => pure (next, [])
+  | ty :: rest => do
+      let (next, ty) ← seedAnnotationHoles next ty
+      let (next, rest) ← seedAnnotationHoleList next rest
+      pure (next, ty :: rest)
+termination_by sizeOf types
+end
+
+private structure GeneralizedHoleInterface (annotation : PolyTy) where
+  scheme : HMCountScheme.Scheme
+  mono : annotation.paramCount = 0
+  source : LocalHoleAnnotationOK scheme annotation
+
+/-- Allocate rigid output identities for annotation holes, then certify the
+    exact source-to-interface pin.  This is proposal construction only; callers
+    must still derive the original RHS and prove inclusion in `scheme`. -/
+private def generalizedHoleInterface (annotation : PolyTy) (base : List Nat) :
+    Except String (GeneralizedHoleInterface annotation) := do
+  if hmono : annotation.paramCount = 0 then
+    let start := base.foldl Nat.max 0 + 1
+    let (next, body) ← seedAnnotationHoles start annotation.body
+    let fresh := List.range' start (next - start)
+    let quantified := base ++ fresh
+    let pinned ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar quantified []
+      quantified [] annotation.body body
+    let stable ← match ScopedHMAnnotation.equalBounds pinned.demand body with
+      | some equality => pure equality
+      | none => throw "bounds: generalized hole proposal did not preserve its pinned interface"
+    let counts : ScopedScheme.Scheme := ⟨quantified, [], [], body⟩
+    if hw : counts.wfBool = true then
+      if hhm : annotation.body.eraseBounds.bvarsBelow annotation.paramCount = true then
+        have shape : Synth.BoundsTy.toTy body = annotation.body.eraseBounds := by
+          rw [← stable.down, pinned.shape]
+          exact scopedIdentityTy annotation.body
+        let scheme : HMCountScheme.Scheme :=
+          ⟨annotation.eraseBounds, counts,
+            (Ty.bvarsBelow_iff annotation.body.eraseBounds).mp hhm,
+            ScopedScheme.Scheme.wfBool_sound hw, shape⟩
+        pure ⟨scheme, hmono,
+          ⟨rfl, rfl, rfl, pinned, stable.down⟩⟩
+      else throw "bounds: generalized hole annotation has an out-of-scope HM slot"
+    else throw "bounds: generalized hole interface is not a closed count scheme"
+  else throw "bounds: generalized hole escape currently requires a monomorphic HM annotation"
+
+private def countRigidIds : Count → List Nat
+  | .lit _ | .inf => []
+  | .var ⟨.rigid, i⟩ => [i]
+  | .var ⟨.inferable, _⟩ => []
+  | .add a b | .mul a b | .min a b | .max a b => countRigidIds a ++ countRigidIds b
+  | .pred a => countRigidIds a
+
+mutual
+private def boundsRigidIds : BoundsTy → List Nat
+  | .prim _ | .fvar _ | .bvar _ => []
+  | .arrow a b => boundsRigidIds a ++ boundsRigidIds b
+  | .list lo hi elem => countRigidIds lo ++ countRigidIds hi ++ boundsRigidIds elem
+  | .custom _ args => boundsRigidIdsList args
+termination_by β => sizeOf β
+
+private def boundsRigidIdsList : List BoundsTy → List Nat
+  | [] => []
+  | β :: rest => boundsRigidIds β ++ boundsRigidIdsList rest
+termination_by types => sizeOf types
+end
+
+/-- Repack the equalities discovered by checking the RHS: explicit source
+    binders remain, while provisional hole identities unused by the pinned
+    demand are removed. Re-pinning under the smaller scope certifies that no
+    source endpoint was lost. -/
+private def generalizedHoleInterfaceFromDemand (annotation : PolyTy)
+    (base provisional : List Nat) (demand : BoundsTy) :
+    Except String (GeneralizedHoleInterface annotation) := do
+  if hmono : annotation.paramCount = 0 then
+    let used := boundsRigidIds demand
+    let inferred := provisional.filter (fun i => !base.contains i && used.contains i)
+    let quantified := base ++ inferred
+    let pinned ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar quantified []
+      quantified [] annotation.body demand
+    let stable ← match ScopedHMAnnotation.equalBounds pinned.demand demand with
+      | some equality => pure equality
+      | none => throw "bounds: inferred hole equalities changed during count escape"
+    let counts : ScopedScheme.Scheme := ⟨quantified, [], [], demand⟩
+    if hw : counts.wfBool = true then
+      if hhm : annotation.body.eraseBounds.bvarsBelow annotation.paramCount = true then
+        have shape : Synth.BoundsTy.toTy demand = annotation.body.eraseBounds := by
+          rw [← stable.down, pinned.shape]
+          exact scopedIdentityTy annotation.body
+        let scheme : HMCountScheme.Scheme :=
+          ⟨annotation.eraseBounds, counts,
+            (Ty.bvarsBelow_iff annotation.body.eraseBounds).mp hhm,
+            ScopedScheme.Scheme.wfBool_sound hw, shape⟩
+        pure ⟨scheme, hmono, ⟨rfl, rfl, rfl, pinned, stable.down⟩⟩
+      else throw "bounds: generalized hole annotation has an out-of-scope HM slot"
+    else throw "bounds: inferred generalized hole demand is not a closed count scheme"
+  else throw "bounds: generalized hole escape currently requires a monomorphic HM annotation"
+
+/-- A written generalized local must retain either its decoded solid contract
+    or a certified hole-pinned escape interface. Unannotated interfaces instead
+    come from checked machine facts at the consuming checker boundary. -/
 def LocalAnnotationOK (s : HMCountScheme.Scheme) : Option PolyTy → Prop
   | none => True
-  | some annotation => ∃ declared : HMCountScheme.Annotated annotation
-      s.counts.quantified s.counts.captures s.counts.premises, declared.scheme = s
+  | some annotation =>
+      (∃ declared : HMCountScheme.Annotated annotation
+        s.counts.quantified s.counts.captures s.counts.premises, declared.scheme = s) ∨
+      Nonempty (LocalHoleAnnotationOK s annotation)
 
 /-- Local generalization may replace only fresh owned HM identities. Captured
     source annotation identities and count scopes remain the parent's. -/
@@ -958,6 +1133,124 @@ structure LocalFrame (s : HMCountScheme.Scheme) (parentIds : List Nat) (rhs : Ex
   fresh : ∀ i ∈ owned, i ∉ rhs.tyFreeVars ++ s.hm.body.freeVars
   countFresh : ∀ i ∈ s.counts.quantified, i ∉ parentIds
   capturesScoped : ∀ i ∈ s.counts.captures, i ∈ parentIds
+
+private def GeneralizedHoleInterface.frame {annotation : PolyTy}
+    (g : GeneralizedHoleInterface annotation) (rhs : Expr) :
+    LocalFrame g.scheme [] rhs where
+  owned := []
+  arity := by
+    simpa [g.source.hm, PolyTy.eraseBounds, g.mono]
+  distinct := by simp
+  fresh := by simp
+  countFresh := by simp
+  capturesScoped := by simp [g.source.captures]
+
+/-- HM reconciliation for a hole-pinned count interface. This is deliberately
+    separate from `HMDeclaredReconciliation.Checked`: the latter retains an
+    exact successful `ScopedAnnotation.decode`, which source `_` syntax cannot
+    provide. The flexible-HM specialization and freshness obligations are the
+    same. -/
+private structure GeneralizedHoleReconciled {output : Expr} {site : CoreBinderSite}
+    (d : HMDeclaredReconciliation.Declaration output site)
+    (iface : GeneralizedHoleInterface d.annotation) (typeCaptures : List Ty) where
+  original : BoundsTy
+  originalShape : Synth.BoundsTy.toTy original = d.node.original.eraseBounds
+  flexible : List Nat
+  distinct : flexible.Nodup
+  guarded : ∀ i ∈ flexible,
+    ∀ t ∈ HMDeclaredReconciliation.guardedTypes d typeCaptures, i ∉ t.freeVars
+  arguments : List BoundsTy
+  argumentArity : arguments.length = flexible.length
+  argumentsLC : ∀ a ∈ arguments, (Synth.BoundsTy.toTy a).IsLC
+  argumentsScope : arguments.all
+    (boundsScopedBool (iface.scheme.counts.quantified ++ iface.scheme.counts.captures)) = true
+  opening : HMCountScheme.Opening iface.scheme
+    (ScopedHMInterpretation.AtNode.view d.node
+      (argument flexible (SchemeUse.vector arguments)) BoundsTy.bvar)
+    (d.node.original :: HMDeclaredReconciliation.guardedTypes d typeCaptures)
+  openingIds : opening.ids = []
+
+private def GeneralizedHoleReconciled.interpretation
+    {output site d iface typeCaptures}
+    (c : @GeneralizedHoleReconciled output site d iface typeCaptures) : Nat → BoundsTy :=
+  argument c.flexible (SchemeUse.vector c.arguments)
+
+private theorem GeneralizedHoleReconciled.interpretationLC
+    {output site d iface typeCaptures}
+    (c : @GeneralizedHoleReconciled output site d iface typeCaptures) :
+    ∀ i, (Synth.BoundsTy.toTy (c.interpretation i)).IsLC := by
+  intro i
+  cases h : c.flexible.idxOf? i with
+  | none => simp only [GeneralizedHoleReconciled.interpretation, argument, h,
+      Synth.BoundsTy.toTy]; exact .fvar
+  | some slot =>
+      simp only [GeneralizedHoleReconciled.interpretation, argument, h]
+      cases ha : c.arguments[slot]? with
+      | none => simp only [SchemeUse.vector, ha, Option.getD_none,
+          Synth.BoundsTy.toTy]; exact .prim
+      | some a => simpa only [SchemeUse.vector, ha, Option.getD_some] using
+          c.argumentsLC a (List.mem_of_getElem? ha)
+
+private theorem GeneralizedHoleReconciled.sourceIdentity
+    {output site d iface typeCaptures}
+    (c : @GeneralizedHoleReconciled output site d iface typeCaptures)
+    {i} (named : i ∈ d.node.inner.stripFound.tyFreeVars) :
+    c.interpretation i = .fvar i := by
+  have sourceGuard : Ty.fvar i ∈ HMDeclaredReconciliation.guardedTypes d typeCaptures := by
+    unfold HMDeclaredReconciliation.guardedTypes
+    exact List.mem_cons_of_mem _ (List.mem_append_right _
+      (List.mem_map.mpr ⟨i, named, rfl⟩))
+  have absent : i ∉ c.flexible := by
+    intro member
+    exact c.guarded i member (Ty.fvar i) sourceGuard (by simp [Ty.freeVars])
+  simp [GeneralizedHoleReconciled.interpretation, argument,
+    List.idxOf?_eq_none_iff.mpr absent]
+
+private def reconcileGeneralizedHole {output site}
+    (d : HMDeclaredReconciliation.Declaration output site)
+    (iface : GeneralizedHoleInterface d.annotation) (typeCaptures : List Ty) :
+    Except String (GeneralizedHoleReconciled d iface typeCaptures) := do
+  let original ← Typed.shapeTop d.node.original.eraseBounds
+  let originalShape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy original)
+      d.node.original.eraseBounds with
+    | some equality => pure equality
+    | none => throw "bounds: generalized hole RHS skeleton disagrees with found payload"
+  let guarded := HMDeclaredReconciliation.guardedTypes d typeCaptures
+  let flexible := (d.node.original.freeVars.filter fun i =>
+    !(guarded.any fun t => t.freeVars.contains i)).eraseDups
+  if distinct : flexible.Nodup then
+    let target := HMCountScheme.opened iface.scheme []
+    let _ ← HMCountScheme.openFixed iface.scheme (Synth.BoundsTy.toTy target) []
+      (d.node.original :: guarded)
+    let pattern := BinderBridge.close flexible
+      (ScopedHMInterpretation.read BoundsTy.fvar BoundsTy.bvar original)
+    let arguments ← StructuralApplication.propose pattern target flexible.length
+    if arity : arguments.length = flexible.length then
+      if lc : arguments.all (fun a => (Synth.BoundsTy.toTy a).bvarsBelow 0) = true then
+        if scope : arguments.all (boundsScopedBool
+            (iface.scheme.counts.quantified ++ iface.scheme.counts.captures)) = true then
+          let viewed := ScopedHMInterpretation.AtNode.view d.node
+            (argument flexible (SchemeUse.vector arguments)) BoundsTy.bvar
+          let opening ← HMCountScheme.openFixed iface.scheme viewed []
+            (d.node.original :: guarded)
+          if openingIds : opening.ids = [] then
+            have guardedIds : ∀ i ∈ flexible, ∀ t ∈ guarded, i ∉ t.freeVars := by
+              intro i member t guardedTy used
+              have filtered := List.mem_filter.mp (HMDeclaredReconciliation.mem_eraseDups
+                (l := d.node.original.freeVars.filter
+                  (fun i => !guarded.any fun t => t.freeVars.contains i)) member)
+              have absent : ∀ t ∈ guarded, i ∉ t.freeVars := by
+                simpa [List.contains_iff_mem] using filtered.2
+              exact absent t guardedTy used
+            pure ⟨original, originalShape.down, flexible, distinct, guardedIds,
+              arguments, arity,
+              (fun a member => (Ty.bvarsBelow_iff _).mp (List.all_eq_true.mp lc a member)),
+              scope, opening, openingIds⟩
+          else throw "bounds: generalized hole opening unexpectedly acquired HM slots"
+        else throw "bounds: generalized hole HM replacements escape the count interface"
+      else throw "bounds: generalized hole HM replacements contain enclosing slots"
+    else throw "bounds: generalized hole HM replacement vector has wrong arity"
+  else throw "bounds: generalized hole reconciliation found duplicate flexible HM identities"
 
 def localTypes (owned : List Nat) (parent : Nat → BoundsTy) (args : List BoundsTy) (i : Nat) : BoundsTy :=
   match owned.idxOf? i with
@@ -990,10 +1283,13 @@ theorem LocalFrame.slotsFit {s ids rhs ann} (frame : LocalFrame s ids rhs)
   cases ann with
   | none => simp
   | some a =>
-      obtain ⟨declared, scheme⟩ := annotation
-      have arity := congrArg (fun s : HMCountScheme.Scheme => s.hm.paramCount) scheme
-      simpa [HMCountScheme.Annotated.scheme, PolyTy.eraseBounds, ← frame.arity] using
-        Nat.le_of_eq arity
+      rcases annotation with ⟨declared, scheme⟩ | hole
+      · have arity := congrArg (fun s : HMCountScheme.Scheme => s.hm.paramCount) scheme
+        simpa [HMCountScheme.Annotated.scheme, PolyTy.eraseBounds, ← frame.arity] using
+          Nat.le_of_eq arity
+      · obtain ⟨hole⟩ := hole
+        have arity := congrArg PolyTy.paramCount hole.hm
+        simpa [PolyTy.eraseBounds, ← frame.arity] using Nat.le_of_eq arity.symm
 
 /-- The source reader used by declared ordinary-let reconciliation and the
     canonical local reader coincide on every slot the declaration can name. -/
@@ -1092,7 +1388,7 @@ def declaredCapturedLocalCertificate {output path d quantified premises typeCapt
   exact cert.sourceSlots c.rhsSlots (by
     intro i inside
     exact declaredLocalSlotsAgree c i (by
-      simpa [HMDeclaredReconciliation.slotLimit] using inside))
+        simpa [HMDeclaredReconciliation.slotLimit] using inside))
 
 theorem declaredLocalCertificate_runtimeReady {output path d quantified premises typeCaptures}
     (c : @HMDeclaredReconciliation.Checked output (.letIn path) d
@@ -1237,6 +1533,19 @@ inductive ScopedBodyDerives :
           (Δ ++ used.countInstance.premises) env rhs used.bounds) →
       ScopedBodyDerives types slots ids rows Δ (.exported s :: env) body result →
       ScopedBodyDerives types slots ids rows Δ env (.letIn ann rhs body) result
+  /-- A closed singleton `let rec` may export the same checked universal
+      interface as an ordinary local.  Closure is the semantic reason this is
+      sound: the RHS cannot observe (or recursively call) the group binder,
+      although Core retains its original `letRec` syntax and reduction rule. -/
+  | letRecExported {env ann rhs body s result} (frame : LocalFrame s ids rhs) :
+      LocalAnnotationOK s ann → rhs.varsBelow 0 = true →
+      (∀ calleeΔ found caller (used : HMCountScheme.Use s calleeΔ found caller),
+        ScopedBodyDerives (localTypes frame.owned types used.types) (localSlots ann slots used.types)
+          (s.counts.quantified ++ s.counts.captures ++ ids)
+          (CountAlgebra.compose (s.counts.quantified.zip used.counts) rows)
+          (Δ ++ used.countInstance.premises) env rhs used.bounds) →
+      ScopedBodyDerives types slots ids rows Δ (.exported s :: env) body result →
+      ScopedBodyDerives types slots ids rows Δ env (.letRec [ann] [rhs] body) result
   | match_ {env scrut branches result} {ctx : BodyBranchContext} {actuals : Nat → BoundsTy} :
       ScopedBodyDerives types slots ids rows Δ env scrut ctx.bounds → ctx.Covers Δ branches →
       (∀ br ∈ branches, ctx.Pattern br.1) →
@@ -1270,7 +1579,8 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       rw [ih p source] at sub
       cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | ctor | cons | pair | varMono | varExported | app | lambda |
-      letMono | letPinned | letRecPinnedMono | letRecInferredMono | letExported | match_ | letRec =>
+      letMono | letPinned | letRecPinnedMono | letRecInferredMono | letExported | letRecExported |
+          match_ | letRec =>
         intro p source; cases source
 
 /-- Ordinary RHS proofs can be reused for local introduction in mono captured
@@ -1583,6 +1893,10 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
       exact .letExported frame annotation scope
         (fun calleeΔ found caller used => ihr calleeΔ found caller used (RecursiveTyping.assuming_append hp))
         (ihb hp)
+  | letRecExported frame annotation scope _ _ ihr ihb =>
+      exact .letRecExported frame annotation scope
+        (fun calleeΔ found caller used => ihr calleeΔ found caller used (RecursiveTyping.assuming_append hp))
+        (ihb hp)
   | match_ _ coverage patterns _ subs ihs iharms =>
       exact .match_ (ihs hp) (coverage.assuming hp) patterns
         (fun i br hb => iharms i br hb (RecursiveTyping.assuming_append hp))
@@ -1646,6 +1960,12 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
   | letExported _ _ scope _ _ _ ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       exact ⟨scope, by simpa only [List.length_cons] using ihb⟩
+  | letRecExported _ _ scope _ _ _ ihb =>
+      apply Runtime.letRec_scoped
+      · intro member inside
+        obtain rfl := List.mem_singleton.mp inside
+        exact Expr.varsBelow_mono _ (Nat.zero_le _) scope
+      · simpa only [List.length_singleton, List.length_cons, Nat.add_comm] using ihb
   | match_ _ _ patterns _ _ ihs ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       refine ⟨ihs, bodyBranches_scoped ?_⟩
@@ -1831,6 +2151,18 @@ inductive RuntimeReady :
       (∀ calleeΔ found caller (used : HMCountScheme.Use s calleeΔ found caller),
         (∀ a ∈ used.types, Runtime.Supported a) → RuntimeReady (instances calleeΔ found caller used)) →
       RuntimeReady hbody → RuntimeReady (.letExported frame annotation scope instances hbody)
+  | letRecExported
+      (frame : LocalFrame s ids rhs)
+      (annotation : LocalAnnotationOK s ann) (scope : rhs.varsBelow 0 = true)
+      (instances : ∀ calleeΔ found caller (used : HMCountScheme.Use s calleeΔ found caller),
+        ScopedBodyDerives (localTypes frame.owned types used.types) (localSlots ann slots used.types)
+          (s.counts.quantified ++ s.counts.captures ++ ids)
+          (CountAlgebra.compose (s.counts.quantified.zip used.counts) rows)
+          (Δ ++ used.countInstance.premises) env rhs used.bounds)
+      {hbody : ScopedBodyDerives types slots ids rows Δ (.exported s :: env) body result} :
+      (∀ calleeΔ found caller (used : HMCountScheme.Use s calleeΔ found caller),
+        (∀ a ∈ used.types, Runtime.Supported a) → RuntimeReady (instances calleeΔ found caller used)) →
+      RuntimeReady hbody → RuntimeReady (.letRecExported frame annotation scope instances hbody)
   | match_ {actuals : Nat → BoundsTy} {ctx : BodyBranchContext}
       {hs : ScopedBodyDerives types slots ids rows Δ env scrut ctx.bounds}
       (coverage : ctx.Covers Δ branches)
@@ -1875,6 +2207,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | letRecPinnedMono _ _ _ _ _ _ body => exact body
   | letRecInferredMono _ _ _ _ body => exact body
   | letExported _ _ _ _ _ _ _ body => exact body
+  | letRecExported _ _ _ _ _ _ _ body => exact body
   | match_ _ _ _ _ _ _ result => exact result
   | letRec _ _ _ _ _ _ body => exact body
 
@@ -2147,6 +2480,53 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           change Runtime.TermAt bound free σ j _ (Expr.substN 0 (_ :: e.terms) _) at bodySafe
           rw [Runtime.closing_singleton e.terms e.closed _ rhsClosed]
           exact bodySafe
+  | letRecExported frame annotation scope instances _ bodyReady ihr ihb =>
+      rename_i s ownIds rhs ann ownEnv ownTypes ownSlots ownRows pathΔ body result hbody rhsReady
+      intro budget premises e
+      cases budget with
+      | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+      | succ j =>
+          let previous := e.down hb hf (by omega : j ≤ j + 1)
+          let recursiveTerm : Expr := .letRec [ann] [rhs] rhs
+          have rhsAtOne : rhs.varsBelow 1 = true :=
+            Expr.varsBelow_mono rhs (Nat.zero_le 1) scope
+          have recursiveClosed : recursiveTerm.varsBelow 0 = true := by
+            exact Runtime.letRec_closed
+              (by intro source member; obtain rfl := List.mem_singleton.mp member; exact rhsAtOne)
+              rhsAtOne
+          have recursiveSafe : BodyBindingAt bound free σ j (.exported s) recursiveTerm := by
+            intro calleeΔ found localCaller used arguments rawPremises
+            cases j with
+            | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+            | succ k =>
+                let earlier := previous.down hb hf (by omega : k ≤ k + 1)
+                have instanceSafe := ihr calleeΔ found localCaller used arguments k
+                  (by
+                    intro p member
+                    rcases List.mem_append.mp member with outer | raw
+                    · exact premises p outer
+                    · exact rawPremises p raw)
+                  earlier
+                have rhsSafe : Runtime.TermAt bound free σ k used.bounds rhs := by
+                  simpa only [Expr.substN_of_closed scope] using instanceSafe
+                apply Runtime.TermAt.prepend SmallStep.Step.letRecUnfold
+                simpa only [List.map_cons, List.map_nil, Expr.substN_of_closed scope] using rhsSafe
+          let opened := previous.extend (.exported s) recursiveTerm recursiveClosed recursiveSafe
+          have bodySafe := ihb j premises opened
+          have openedTerms : opened.terms = recursiveTerm :: previous.terms := rfl
+          rw [openedTerms] at bodySafe
+          have composed := Runtime.closing_singleton previous.terms previous.closed recursiveTerm
+            recursiveClosed body
+          rw [← composed] at bodySafe
+          have sameTerms : previous.terms = e.terms := rfl
+          rw [sameTerms] at bodySafe
+          have rhsOuter : rhs.substN 1 e.terms = rhs :=
+            Expr.substN_of_varsBelow e.terms rhs 1 rhsAtOne
+          change Runtime.TermAt bound free σ (j + 1) result
+            (.letRec [ann] [rhs.substN 1 e.terms] (body.substN 1 e.terms))
+          rw [rhsOuter]
+          apply Runtime.TermAt.prepend SmallStep.Step.letRecUnfold
+          simpa only [List.map_cons, List.map_nil, recursiveTerm] using bodySafe
   | match_ coverage patterns bodies subs scrutReady branchReady resultSupport ihs ihb =>
       rename_i pathΔ env' scrut branches result actuals ctx hs
       intro budget premises e
@@ -2317,6 +2697,11 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
         (fun calleeΔ found caller used => (instances calleeΔ found caller used).assuming (RecursiveTyping.assuming_append hp))
         (fun calleeΔ found caller used arguments => ihr calleeΔ found caller used arguments (RecursiveTyping.assuming_append hp))
         (ihb hp)
+  | letRecExported frame annotation scope instances _ _ ihr ihb =>
+      exact .letRecExported frame annotation scope
+        (fun calleeΔ found caller used => (instances calleeΔ found caller used).assuming (RecursiveTyping.assuming_append hp))
+        (fun calleeΔ found caller used arguments => ihr calleeΔ found caller used arguments (RecursiveTyping.assuming_append hp))
+        (ihb hp)
   | match_ coverage patterns bodies subs _ _ result ihs ihb =>
       exact .match_ (coverage.assuming hp) patterns
         (fun i br atIndex => (bodies i br atIndex).assuming (RecursiveTyping.assuming_append hp))
@@ -2328,6 +2713,35 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
 #print axioms RuntimeReady.assuming
 
 end BodyDerives
+
+/-- Runtime readiness is proof-irrelevant once equalities expose the same
+    indexed judgement. These helpers keep checker-side context transport local. -/
+private theorem scopedRuntimeReady_congrContext
+    {types slots : Nat → BoundsTy} {ids ids' : List Nat} {rows : Bindings}
+    {Δ Δ' : List Constraint} {env : List RecursiveHMJudgement.Binding}
+    {e : Expr} {β : BoundsTy}
+    {h : ScopedDerives types slots ids rows Δ env e β}
+    {h' : ScopedDerives types slots ids' rows Δ' env e β}
+    (idsEq : ids = ids') (premisesEq : Δ = Δ')
+    (ready : ScopedDerives.RuntimeReady h) : ScopedDerives.RuntimeReady h' := by
+  cases idsEq
+  cases premisesEq
+  have proofEq : h = h' := Subsingleton.elim _ _
+  cases proofEq
+  exact ready
+
+private theorem bodyRuntimeReady_congrSlotsEnv
+    {types slots slots' : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env env' : List BodyBinding} {e : Expr} {β : BoundsTy}
+    {h : ScopedBodyDerives types slots ids rows Δ env e β}
+    {h' : ScopedBodyDerives types slots' ids rows Δ env' e β}
+    (slotsEq : slots = slots') (envEq : env = env')
+    (ready : BodyDerives.RuntimeReady h) : BodyDerives.RuntimeReady h' := by
+  cases slotsEq
+  cases envEq
+  have proofEq : h = h' := Subsingleton.elim _ _
+  cases proofEq
+  exact ready
 
 private theorem RecursiveArgumentsSupported.consMono {env β}
     (supported : RecursiveArgumentsSupported env) :
@@ -2851,8 +3265,8 @@ private theorem RecursiveArgumentsSupported.mapBinding {env}
     opening guards. Consequently arbitrary later instances of the local scheme
     leave mono captures and fixed recursive argument vectors unchanged. -/
 private theorem declaredLocalArgumentTypesFixed
-    {output path d quantified premises typeCaptures env calleeΔ caller useHM}
-    (c : @HMDeclaredReconciliation.Checked output (.letIn path) d
+    {output site d quantified premises typeCaptures env calleeΔ caller useHM}
+    (c : @HMDeclaredReconciliation.Checked output site d
       quantified [] premises typeCaptures)
     (stable : RecursiveHMEnvironment.TypesFixed c.interpretation env)
     (monoRepresented : ∀ β, .mono β ∈ env → Synth.BoundsTy.toTy β ∈ typeCaptures)
@@ -3300,6 +3714,7 @@ private def memberNodes {output metadata path captures premises typeCaptures env
   | .nil => []
   | .cons head rest => head.rhs.located.nodes ++ memberNodes rest
 
+set_option maxHeartbeats 800000 in
 mutual
 /-- One exported use at the head, then the ordinary application rule at EVERY
     original frame. Counts/HM arguments are never reproposed at a prefix. -/
@@ -3332,6 +3747,219 @@ private def useBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
           appendBody path hm prior checked
       | _ => throw "bounds: deferred generalized body spine applies a non-arrow scheme result"
 termination_by (sizeOf e, 0)
+
+
+/-- Certify and export a closed singleton recursive RHS whose source annotation
+    contains count holes. Fresh rigid count identities are proposed, but the
+    original RHS must derive at that interface and prove semantic inclusion. -/
+private def walkGeneralizedHoleLetRec
+    (sourceOutput : Expr) (metadata : Scope.Metadata)
+    (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
+    (env : List BodyBinding) (path : CorePath) (hm : Ty) (annotation : PolyTy)
+    (rhs body : Expr) (schemes : BinderSchemeMap) (captured : BodyCapture env)
+    (sourceProof : PLift (sourceOutput.atCorePath path =
+      some (.found hm (.letRec [some annotation] [rhs] body))))
+    (fallback : Except String
+      (BodyResult ids rows caller Δ env
+        (.found hm (.letRec [some annotation] [rhs] body))))
+    (expected : Option BoundsTy) :
+    Except String
+      (BodyResult ids rows caller Δ env
+        (.found hm (.letRec [some annotation] [rhs] body))) := do
+    if rhsClosed : rhs.stripFound.varsBelow 0 = true then
+      if parentIds : ids = [] then
+        if parentRows : rows = [] then
+          if parentPremises : Δ = [] then
+            unless metadata.problems.isEmpty do
+              throw "bounds: unresolved or duplicate count scope in generalized hole escape"
+            let base ← ScopedDeclaration.telescope metadata (.letRec path 0)
+            let proposal ← generalizedHoleInterface annotation base
+            match rhs with
+            | .found rhsHM rhsInner =>
+                have descent : sourceOutput.atCorePath (path ++ [.letRecRhs 0]) =
+                    some (.found rhsHM rhsInner) := by
+                  rw [Expr.atCorePath_append, sourceProof.down]
+                  simp only [Expr.atCorePath, Option.bind_some, List.getElem?_cons_zero]
+                let node : HMFoundView.AtNode sourceOutput (path ++ [.letRecRhs 0]) :=
+                  ⟨rhsHM, rhsInner, descent⟩
+                let declaration : HMDeclaredReconciliation.Declaration sourceOutput
+                    (.letRec path 0) :=
+                  ⟨annotation, path ++ [.letRecRhs 0],
+                    .letRec sourceProof.down rfl rfl, node⟩
+                let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
+                  recursiveFixedTypeCaptures captured.rhsEnv
+                let initialReconciled ← reconcileGeneralizedHole declaration proposal typeCaptures
+                let initialEnv := captured.rhsEnv.map
+                  (mapBinding initialReconciled.interpretation initialReconciled.interpretationLC)
+                let initialLocated ← RecursiveHMWalk.checkLocated node
+                  initialReconciled.interpretation BoundsTy.bvar
+                  proposal.scheme.counts.quantified [] proposal.scheme.counts.quantified []
+                  initialEnv schemes (some initialReconciled.opening.bounds)
+                let inferred ← ScopedHMAnnotation.pin initialReconciled.interpretation
+                  BoundsTy.bvar proposal.scheme.counts.quantified []
+                  proposal.scheme.counts.quantified [] annotation.body initialLocated.typed.actual
+                let iface ← generalizedHoleInterfaceFromDemand annotation base
+                  proposal.scheme.counts.quantified inferred.demand
+                let reconciled ← reconcileGeneralizedHole declaration iface typeCaptures
+                let stable ← RecursiveHMEnvironment.checkTypesFixed
+                  reconciled.interpretation captured.rhsEnv
+                let mappedEnv := captured.rhsEnv.map
+                  (mapBinding reconciled.interpretation reconciled.interpretationLC)
+                have stableEnv : mappedEnv = captured.rhsEnv :=
+                  RecursiveHMEnvironment.typesFixed reconciled.interpretationLC stable.down
+                let located ← RecursiveHMWalk.checkLocated node reconciled.interpretation
+                  BoundsTy.bvar iface.scheme.counts.quantified []
+                  iface.scheme.counts.quantified [] mappedEnv schemes
+                  (some reconciled.opening.bounds)
+                let inclusion ← Typed.subtype [] located.typed.actual reconciled.opening.bounds
+                let baseCert : RecursiveHMUniversal.Certified iface.scheme
+                    (ScopedHMInterpretation.AtNode.view node reconciled.interpretation BoundsTy.bvar)
+                    (rhsHM :: HMDeclaredReconciliation.guardedTypes declaration typeCaptures)
+                    mappedEnv rhsInner.stripFound reconciled.interpretation BoundsTy.bvar :=
+                  { opening := reconciled.opening
+                    actual := located.typed.actual
+                    shape := by
+                      rw [← located.typed.checked.shape]
+                      exact (FreeAlgebra.shape_erased located.typed.actual).symm
+                    actualScope := by
+                      simpa only [iface.source.captures, List.append_nil] using
+                        located.typed.checked.inScope
+                    typing := by
+                      simpa only [iface.source.captures, iface.source.premises,
+                        List.append_nil] using located.typed.derivation
+                    inclusion := by
+                      rw [iface.source.premises]
+                      exact inclusion.down
+                    typeFresh := by
+                      intro c member i inside
+                      rw [reconciled.openingIds] at inside
+                      cases inside
+                    exportTypeFresh := by
+                      intro s member i inside
+                      rw [reconciled.openingIds] at inside
+                      cases inside
+                    countFresh := by
+                      intro c member i inside
+                      obtain ⟨original, originalMember, equality⟩ := List.mem_map.mp member
+                      cases original with
+                      | mono β => cases equality
+                      | recursive original =>
+                          cases equality
+                          change i ∈ original.template.counts.captures at inside
+                          rw [captured.countClosed original originalMember] at inside
+                          cases inside
+                      | exported s => cases equality
+                    exportCountFresh := by
+                      intro s member i inside
+                      obtain ⟨original, originalMember, equality⟩ := List.mem_map.mp member
+                      cases original with
+                      | mono β => cases equality
+                      | recursive c => cases equality
+                      | exported original =>
+                          cases equality
+                          rw [captured.exportCountClosed s originalMember] at inside
+                          cases inside }
+                let cert := baseCert.sourceFree
+                  (fun _ named => reconciled.sourceIdentity named)
+                let frame := iface.frame rhsInner.stripFound
+                have owners : cert.opening.ids = frame.owned := by
+                  simpa only [cert, baseCert, frame, GeneralizedHoleInterface.frame] using
+                    reconciled.openingIds
+                let annotationOK : LocalAnnotationOK iface.scheme (some annotation) :=
+                  Or.inr ⟨iface.source⟩
+                let noAnnotationOK : LocalAnnotationOK iface.scheme none := True.intro
+                have certCaptured : RecursiveHMEnvironment.Captured
+                    iface.scheme.counts.captures mappedEnv := by
+                  rw [iface.source.captures]
+                  simpa only [stableEnv] using captured.captured
+                let identityFixed ← RecursiveHMEnvironment.checkTypesFixed BoundsTy.fvar mappedEnv
+                let instances := fun calleeΔ found localCaller
+                    (used : HMCountScheme.Use iface.scheme calleeΔ found localCaller) =>
+                  (by
+                    have certFixed : RecursiveHMEnvironment.TypesFixed
+                        (argument cert.opening.ids (SchemeUse.vector used.types)) mappedEnv := by
+                      have empty : cert.opening.ids = [] := by
+                        simpa only [cert, baseCert] using reconciled.openingIds
+                      rw [empty]
+                      simpa only [argument, List.idxOf?_nil] using identityFixed.down
+                    have derived := capturedLocalRhsInstances (Δ := Δ) frame noAnnotationOK
+                      cert owners certCaptured used certFixed
+                    have slotsEq : localSlots none BoundsTy.bvar used.types =
+                        localSlots (some annotation) BoundsTy.bvar used.types := by
+                      funext i
+                      simp [localSlots, iface.mono]
+                    rw [← slotsEq]
+                    simpa only [List.append_nil, stableEnv, captured.bodyEnv] using derived :
+                      ScopedBodyDerives
+                        (localTypes frame.owned BoundsTy.fvar used.types)
+                        (localSlots (some annotation) BoundsTy.bvar used.types)
+                        (iface.scheme.counts.quantified ++ iface.scheme.counts.captures ++ [])
+                        (CountAlgebra.compose
+                          (iface.scheme.counts.quantified.zip used.counts) [])
+                        (Δ ++ used.countInstance.premises) env rhsInner.stripFound used.bounds)
+                have bodySource : sourceOutput.atCorePath
+                    (path ++ [CoreStep.letRecBody]) = some body := by
+                  rw [Expr.atCorePath_append, sourceProof.down]
+                  simp [Expr.atCorePath]
+                let result ← walkBodySource sourceOutput metadata [] [] caller Δ
+                  (.exported iface.scheme :: env) (path ++ [.letRecBody]) body schemes
+                  (some (captured.extendExported iface.scheme iface.source.captures))
+                  (some ⟨bodySource⟩) expected
+                have closed : rhsInner.stripFound.varsBelow 0 = true := by
+                  simpa only [Expr.stripFound] using rhsClosed
+                let completed ← finishBody (ids := []) (rows := []) (caller := caller)
+                  (Δ := Δ) (env := env)
+                  (e := .found hm (.letRec [some annotation] [.found rhsHM rhsInner] body))
+                  path hm result.bounds rfl
+                  (by
+                    simpa only [Expr.stripFound, List.map_cons, List.map_nil,
+                      captured.bodyEnv] using
+                      (ScopedBodyDerives.letRecExported frame annotationOK closed
+                        instances result.typing))
+                  (located.nodes ++ result.nodes)
+                  (do
+                    let sourceReady ← located.typed.runtimeReady
+                    let bodyReady ← result.runtimeReady
+                    have baseReady : ScopedDerives.RuntimeReady baseCert.typing := by
+                      apply scopedRuntimeReady_congrContext
+                        (h := located.typed.derivation)
+                        (idsEq := by simp only [iface.source.captures, List.append_nil])
+                        (premisesEq := iface.source.premises.symm)
+                      exact sourceReady.down
+                    let certReady := RecursiveHMUniversal.Certified.sourceFree_runtimeReady
+                      baseCert (fun _ named => reconciled.sourceIdentity named) baseReady
+                    pure ⟨by
+                      let ready := BodyDerives.RuntimeReady.letRecExported frame annotationOK
+                        closed instances
+                        (fun calleeΔ found localCaller used arguments => by
+                          have certFixed : RecursiveHMEnvironment.TypesFixed
+                              (argument cert.opening.ids (SchemeUse.vector used.types)) mappedEnv := by
+                            have empty : cert.opening.ids = [] := by
+                              simpa only [cert, baseCert] using reconciled.openingIds
+                            rw [empty]
+                            simpa only [argument, List.idxOf?_nil] using identityFixed.down
+                          have slotsEq : localSlots none BoundsTy.bvar used.types =
+                              localSlots (some annotation) BoundsTy.bvar used.types := by
+                            funext i
+                            simp [localSlots, iface.mono]
+                          let rawReady := capturedLocalRhsInstances_runtimeReady (Δ := Δ) frame
+                            noAnnotationOK cert owners certReady certCaptured used certFixed
+                            (by simpa only [stableEnv] using captured.arguments) arguments
+                          have envEq : ordinaryBodyEnv mappedEnv ++ [] = env := by
+                            simpa only [List.append_nil, stableEnv] using captured.bodyEnv
+                          exact bodyRuntimeReady_congrSlotsEnv
+                            (h' := instances calleeΔ found localCaller used)
+                            slotsEq envEq rawReady)
+                        bodyReady.down
+                      simpa only [Expr.stripFound, List.map_cons, List.map_nil,
+                        captured.bodyEnv] using ready⟩)
+                pure (by simpa only [parentIds, parentRows] using completed)
+            | _ => throw "bounds: generalized hole recursive RHS lacks its original found root"
+          else fallback
+        else fallback
+      else fallback
+    else fallback
+termination_by (sizeOf (Expr.found hm (.letRec [some annotation] [rhs] body)), 0)
 
 /-- Source-linked body traversal: literals, List origins, scalar operators,
     lambdas, mono/generalized locals, matches and origin-backed exported
@@ -3630,7 +4258,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                         let frame := declaredLocalFrame reconciled
                         let cert := declaredLocalCertificate reconciled checked
                         let annotationOK : LocalAnnotationOK reconciled.interface.scheme (some annotation) :=
-                          ⟨reconciled.interface, rfl⟩
+                          Or.inl ⟨reconciled.interface, rfl⟩
                         have owners : cert.opening.ids = frame.owned := by
                           simpa only [cert, frame, declaredLocalCertificate, declaredLocalFrame] using
                             reconciled.openingIds
@@ -3690,7 +4318,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                         let cert := declaredCapturedLocalCertificate reconciled checked
                           represented exportsRepresented countFresh exportCountFresh
                         let annotationOK : LocalAnnotationOK reconciled.interface.scheme (some annotation) :=
-                          ⟨reconciled.interface, rfl⟩
+                          Or.inl ⟨reconciled.interface, rfl⟩
                         have owners : cert.opening.ids = frame.owned := by
                           simpa only [cert, frame, declaredCapturedLocalCertificate,
                             declaredLocalFrame] using reconciled.openingIds
@@ -3907,52 +4535,62 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                       (fun telescope => telescope.site == .letRec path 0)).all
                         (fun telescope => telescope.binders.isEmpty) then
                   if ScopedHMAnnotation.hasHole annotation.body then
-                    let seed ← Typed.shapeTop annotation.body.eraseBounds
-                    let trial ← RecursiveHMWalk.walk BoundsTy.fvar ids rows caller Δ
-                      (.mono seed :: captured.rhsEnv) (path ++ [.letRecRhs 0]) rhs schemes
-                    let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
-                      (.letRec path 0) trial.originalHM
-                    let first ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar
-                      ids rows caller Δ annotation.body trial.bounds
-                    let final ← RecursiveHMWalk.walk BoundsTy.fvar ids rows caller Δ
-                      (.mono first.demand :: captured.rhsEnv) (path ++ [.letRecRhs 0]) rhs schemes
-                    let pinned ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar
-                      ids rows caller Δ annotation.body final.bounds
-                    let stable ← match ScopedHMAnnotation.equalBounds pinned.demand first.demand with
-                      | some equality => pure equality
-                      | none => throw "bounds: pinned recursive annotation does not reach a stable interface"
-                    have mono : annotation.paramCount = 0 := of_decide_eq_true hmono
-                    have bodySource : sourceOutput.atCorePath
-                        (path ++ [CoreStep.letRecBody]) = some body := by
-                      rw [Expr.atCorePath_append, sourceProof.down]
-                      simp [Expr.atCorePath]
-                    let result ← walkBodySource sourceOutput metadata ids rows caller Δ
-                      (.mono pinned.demand :: env) (path ++ [CoreStep.letRecBody]) body schemes
-                      (extendMonoCapture? capture pinned.demand) (some ⟨bodySource⟩) expected
-                    have rhsTyping : ScopedDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
-                        (.mono pinned.demand :: captured.rhsEnv) rhs.stripFound final.bounds := by
-                      simpa only [stable.down] using final.derivation
-                    have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
-                        (.mono pinned.demand :: ordinaryBodyEnv captured.rhsEnv)
-                        body.stripFound result.bounds := by
-                      simpa only [captured.bodyEnv] using result.typing
-                    finishBody path hm result.bounds rfl
-                      (by simpa only [Expr.stripFound, captured.bodyEnv] using
-                        (ScopedBodyDerives.letRecPinnedMono pinned mono rhsTyping bodyTyping))
-                      (final.nodes ++ result.nodes)
-                      (do
-                        let rhsReady ← final.runtimeReady
-                        let demandSupported ← Runtime.supported? pinned.demand
-                        let bodyReady ← result.runtimeReady
-                        have rhsReady' : ScopedDerives.RuntimeReady rhsTyping := by
-                          simpa only [stable.down] using rhsReady.down
-                        have bodyReady' : BodyDerives.RuntimeReady bodyTyping := by
-                          simpa only [captured.bodyEnv] using bodyReady.down
-                        pure ⟨by simpa only [Expr.stripFound, captured.bodyEnv] using
-                          (BodyDerives.RuntimeReady.letRecPinnedMono pinned mono rhsReady'
-                            demandSupported.down captured.arguments bodyReady')⟩)
+                    let pinnedAttempt : Except String
+                        (BodyResult ids rows caller Δ env
+                          (.found hm (.letRec [some annotation] [rhs] body))) := do
+                      let seed ← Typed.shapeTop annotation.body.eraseBounds
+                      let trial ← RecursiveHMWalk.walk BoundsTy.fvar ids rows caller Δ
+                        (.mono seed :: captured.rhsEnv) (path ++ [.letRecRhs 0]) rhs schemes
+                      let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
+                        (.letRec path 0) trial.originalHM
+                      let first ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar
+                        ids rows caller Δ annotation.body trial.bounds
+                      let final ← RecursiveHMWalk.walk BoundsTy.fvar ids rows caller Δ
+                        (.mono first.demand :: captured.rhsEnv) (path ++ [.letRecRhs 0]) rhs schemes
+                      let pinned ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar
+                        ids rows caller Δ annotation.body final.bounds
+                      let stable ← match ScopedHMAnnotation.equalBounds pinned.demand first.demand with
+                        | some equality => pure equality
+                        | none => throw "bounds: pinned recursive annotation does not reach a stable interface"
+                      have mono : annotation.paramCount = 0 := of_decide_eq_true hmono
+                      have bodySource : sourceOutput.atCorePath
+                          (path ++ [CoreStep.letRecBody]) = some body := by
+                        rw [Expr.atCorePath_append, sourceProof.down]
+                        simp [Expr.atCorePath]
+                      let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+                        (.mono pinned.demand :: env) (path ++ [CoreStep.letRecBody]) body schemes
+                        (extendMonoCapture? capture pinned.demand) (some ⟨bodySource⟩) expected
+                      have rhsTyping : ScopedDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
+                          (.mono pinned.demand :: captured.rhsEnv) rhs.stripFound final.bounds := by
+                        simpa only [stable.down] using final.derivation
+                      have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
+                          (.mono pinned.demand :: ordinaryBodyEnv captured.rhsEnv)
+                          body.stripFound result.bounds := by
+                        simpa only [captured.bodyEnv] using result.typing
+                      finishBody path hm result.bounds rfl
+                        (by simpa only [Expr.stripFound, captured.bodyEnv] using
+                          (ScopedBodyDerives.letRecPinnedMono pinned mono rhsTyping bodyTyping))
+                        (final.nodes ++ result.nodes)
+                        (do
+                          let rhsReady ← final.runtimeReady
+                          let demandSupported ← Runtime.supported? pinned.demand
+                          let bodyReady ← result.runtimeReady
+                          have rhsReady' : ScopedDerives.RuntimeReady rhsTyping := by
+                            simpa only [stable.down] using rhsReady.down
+                          have bodyReady' : BodyDerives.RuntimeReady bodyTyping := by
+                            simpa only [captured.bodyEnv] using bodyReady.down
+                          pure ⟨by simpa only [Expr.stripFound, captured.bodyEnv] using
+                            (BodyDerives.RuntimeReady.letRecPinnedMono pinned mono rhsReady'
+                              demandSupported.down captured.arguments bodyReady')⟩)
+                    match pinnedAttempt with
+                    | .ok result => .ok result
+                    | .error _ =>
+                        walkGeneralizedHoleLetRec sourceOutput metadata ids rows caller Δ env path hm
+                          annotation rhs body schemes captured sourceProof fallback expected
                   else fallback
-                else fallback
+                else
+                  walkGeneralizedHoleLetRec sourceOutput metadata ids rows caller Δ env path hm
+                    annotation rhs body schemes captured sourceProof fallback expected
               else fallback
           | [none], [rhs] =>
               let fallback : Except String

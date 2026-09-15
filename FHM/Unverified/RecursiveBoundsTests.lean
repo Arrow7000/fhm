@@ -39,6 +39,12 @@ private def run (src : String) : Except String String := do
     throw "test: provenance join dropped or duplicated an occurrence"
   pure result.bounds.pretty
 
+private def runtimeCertified (src : String) : Except String Unit := do
+  let a ← artifact src
+  let (result, _) ← RecursiveFound.synthNodes a
+  unless result.runtimeReady.isSome do
+    throw "test: accepted bounds program lost its runtime theorem"
+
 private def returns (r : Except String String) (expected : String) : Bool :=
   match r with | .ok s => s == expected | _ => false
 private def fails (r : Except String α) (needle : String) : Bool :=
@@ -121,6 +127,14 @@ private def cases : List (String × Bool) := [
     (run "let xs : BL 2 2 Int = [1, 2]\nxs\n") "BL 2 2 Int"),
   ("parsed ordinary root let still checks its source annotation", fails
     (run "let xs : BL 0 0 Int = [1]\nxs\n") "interval inclusion"),
+  ("parsed hole-annotated identity generalizes RHS-induced count sharing", returns (run (
+    "let listId : BL _ _ Int -> BL _ _ Int = \\xs -> xs\n" ++
+    "(listId [1, 2], listId [1, 2, 3])\n"))
+      "(BL 2 2 Int, BL 3 3 Int)"),
+  ("generalized hole escape retains the runtime fundamental witness", succeeds
+    (runtimeCertified (
+      "let listId : BL _ _ Int -> BL _ _ Int = \\xs -> xs\n" ++
+      "listId [1, 2]\n"))),
   ("parsed program without recursion uses the same Bool branch checker", returns
     (run "if True then 1 else 2\n") "Int"),
   ("parsed Pair construction retains both field bounds", returns

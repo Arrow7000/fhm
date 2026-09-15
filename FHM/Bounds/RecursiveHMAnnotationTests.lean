@@ -58,6 +58,8 @@ private def cases : List (String × Bool) := [
     (parameter none (.fvar 90) (some callerType) []) "outside caller scope"),
   ("unguided List parameter does not invent a bounds assumption", !succeeds
     (parameter none (.fvar 90) none [])),
+  ("unguided nominal parameter retains its structural HM shape", succeeds
+    (parameter none (.customTy ⟨"Option"⟩ [.prim .int]) none [])),
   ("carried mono binding checks actual exact counts under the same HM interpretation", succeeds
     (binding (some ⟨0, list⟩) (.list (.lit 3) (.lit 3) callerType))),
   ("carried mono binding cannot claim a false interval", fails
