@@ -176,6 +176,11 @@ private def cases : List (String × Bool) := [
       "  in f xs\n" ++
       "| None -> []\n"))
       "BL 0 2 Int"),
+  ("an ordinary List stored in a nominal field reopens at its honest unknown ceiling", returns
+    (run (
+      "type Bucket a = Bucket (List a)\n" ++
+      "match Bucket [2] with | Bucket xs -> 1 :: xs\n"))
+      "BL 1 ∞ Int"),
   ("parsed generic nominal match checks declaration-indexed exhaustiveness", fails
     (run (
       "type Option a = Some a | None\n" ++

@@ -17,14 +17,18 @@ open TypeSubstitution
 mutual
 /-- Read constructor fields at their honest HM-shape ceiling.  Nominal matching
     does not invent a value-origin interval for a stored field: a carried `BL`
-    therefore becomes `[0,∞]`, while ordinary nominal applications retain only
-    their structural arguments. Actual scrutinee type arguments are substituted
-    afterwards, retaining any bounds they already carry. -/
+    therefore becomes `[0,∞]`; a bare `List` likewise becomes `[0,∞]`, while
+    other nominal applications retain only their structural arguments. Actual
+    scrutinee type arguments are substituted afterwards, retaining any bounds
+    they already carry. -/
 def template : Ty → BoundsTy
   | .prim p => .prim p
   | .fvar i => .fvar i
   | .bvar i => .bvar i
   | .arrow a b => .arrow (template a) (template b)
+  | .customTy name [elem] =>
+      if name = listTyName then .list (.lit 0) .inf (template elem)
+      else .custom name [template elem]
   | .customTy name args => .custom name (templates args)
   | .bl _ _ elem => .list (.lit 0) .inf (template elem)
 termination_by ty => sizeOf ty
@@ -44,10 +48,21 @@ theorem template_shape (ty : Ty) : Synth.BoundsTy.toTy (template ty) = ty.eraseB
   | arrow a b => simp only [template, Synth.BoundsTy.toTy, Ty.eraseBounds,
       template_shape a, template_shape b]
   | customTy name args =>
-      simp only [template, Synth.BoundsTy.toTy, Ty.eraseBounds]
-      change Ty.customTy name ((templates args).map Synth.BoundsTy.toTy) =
-        Ty.customTy name (TyList.eraseBounds args)
-      rw [templates_shape args]
+      cases args with
+      | nil => simp [template, Synth.BoundsTy.toTy, Ty.eraseBounds, templates,
+          TyList.eraseBounds]
+      | cons elem rest =>
+          cases rest with
+          | nil =>
+              by_cases named : name = listTyName
+              · subst name
+                simp [template, Synth.BoundsTy.toTy, Ty.eraseBounds, listTy,
+                  FHM.Bounds.listTyName, template_shape elem]
+              · simp [template, Synth.BoundsTy.toTy, Ty.eraseBounds, named,
+                  template_shape elem, TyList.eraseBounds]
+          | cons next rest =>
+              simp only [template, Synth.BoundsTy.toTy, Ty.eraseBounds]
+              rw [templates_shape]
   | bl lo hi elem =>
       simp [template, Synth.BoundsTy.toTy, Ty.eraseBounds, listTy, bareListTy,
         FHM.Bounds.listTyName, _root_.listTyName, template_shape elem]
@@ -59,9 +74,6 @@ theorem templates_shape (types : List Ty) :
   | nil => simp [templates, TyList.eraseBounds]
   | cons ty rest =>
       simp only [templates, List.map_cons, TyList.eraseBounds]
-      change Synth.BoundsTy.toTy (template ty) ::
-          (templates rest).map Synth.BoundsTy.toTy =
-        ty.eraseBounds :: TyList.eraseBounds rest
       rw [template_shape ty, templates_shape rest]
 termination_by sizeOf types
 end
@@ -119,8 +131,26 @@ private theorem template_free_fixed (f : Nat → BoundsTy) {ty : Ty}
   | arrow ha hb => simp only [template, SchemeSpecialization.mapFree,
       template_free_fixed f ha, template_free_fixed f hb]
   | customTy hall =>
-      simp only [template, SchemeSpecialization.mapFree]
-      exact congrArg (BoundsTy.custom _) (templates_free_fixed f hall)
+      rename_i args name
+      cases args with
+      | nil =>
+          simp only [template, SchemeSpecialization.mapFree]
+          exact congrArg (BoundsTy.custom name) (templates_free_fixed f hall)
+      | cons elem rest =>
+          cases rest with
+          | nil =>
+              by_cases named : name = listTyName
+              · simp only [template, named, if_pos, SchemeSpecialization.mapFree]
+                exact congrArg (BoundsTy.list (.lit 0) .inf)
+                  (template_free_fixed f (hall elem (by simp)))
+              · simp only [template, named]
+                have fixed : SchemeSpecialization.mapFreeList f [template elem] =
+                    [template elem] := by
+                  simpa only [templates] using templates_free_fixed f hall
+                exact congrArg (BoundsTy.custom name) fixed
+          | cons next rest =>
+              simp only [template, SchemeSpecialization.mapFree]
+              exact congrArg (BoundsTy.custom name) (templates_free_fixed f hall)
   | bl he =>
       simp only [template, SchemeSpecialization.mapFree]
       exact congrArg (BoundsTy.list (.lit 0) .inf) (template_free_fixed f he)
@@ -193,7 +223,24 @@ private theorem template_counts_fixed (rows : CountSubstitution.Bindings) (ty : 
   | arrow a b => simp only [template, CountSubstitution.bounds,
       template_counts_fixed rows a, template_counts_fixed rows b]
   | customTy name args =>
-      simp only [template, CountSubstitution.bounds, templates_counts_fixed rows args]
+      cases args with
+      | nil =>
+          simp only [template, CountSubstitution.bounds]
+          exact congrArg (BoundsTy.custom name) (templates_counts_fixed rows [])
+      | cons elem rest =>
+          cases rest with
+          | nil =>
+              by_cases named : name = listTyName
+              · simp [template, named, CountSubstitution.bounds,
+                  CountSubstitution.count, template_counts_fixed rows elem]
+              · simp only [template, named]
+                have fixed : CountSubstitution.boundsList rows [template elem] =
+                    [template elem] := by
+                  simpa only [templates] using templates_counts_fixed rows [elem]
+                exact congrArg (BoundsTy.custom name) fixed
+          | cons next rest =>
+              simp only [template, CountSubstitution.bounds,
+                templates_counts_fixed rows (elem :: next :: rest)]
   | bl lo hi elem =>
       simp only [template, CountSubstitution.bounds, CountSubstitution.count,
         template_counts_fixed rows elem]
