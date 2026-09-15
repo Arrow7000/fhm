@@ -181,6 +181,11 @@ private def cases : List (String × Bool) := [
       "type Bucket a = Bucket (List a)\n" ++
       "match Bucket [2] with | Bucket xs -> 1 :: xs\n"))
       "BL 1 ∞ Int"),
+  ("a generalized nominal scrutinee is instantiated from its found HM use", returns
+    (run (
+      "type Bucket a = Bucket (List a)\n" ++
+      "match Bucket [] with | Bucket xs -> 1 :: xs\n"))
+      "BL 1 ∞ Int"),
   ("parsed generic nominal match checks declaration-indexed exhaustiveness", fails
     (run (
       "type Option a = Some a | None\n" ++
@@ -401,8 +406,12 @@ private def cases : List (String × Bool) := [
     "let g : {m : Nat} BL m m Int -> BL m m Int =\n" ++
     "  \\(xs : BL m m Int) -> (\\(ignored : List Int) -> f xs) (g xs)\n" ++
     "in g saved)\n")) "BL 2 2 Int"),
-  ("parsed generalized prefix is not silently treated as monomorphic", fails (run (
-    "(let id = \\x -> x in\n" ++ selfSource ++ "in f [])\n")) "generalized local HM let"),
+  ("parsed inferred generalized prefix remains available to a later group", returns (run (
+    "(let id = \\x -> x in\n" ++ selfSource ++ "in f [])\n")) "BL 0 0 Int"),
+  ("parsed inferred generalized local exports independent HM instances", returns
+    (run "(let id = \\x -> x in (id 1, id True))\n") "(Int, Bool)"),
+  ("parsed inferred generalized local retains its runtime theorem", succeeds
+    (runtimeCertified "(let id = \\x -> x in (id 1, id True))\n")),
   ("parsed polymorphic source prefix is checked as a generalized declaration", returns (run (
     "(let id : {a} a -> a = \\x -> x in\n" ++ selfSource ++ "in f [])\n")) "BL 0 0 Int"),
   ("parsed program lambda can contain a certified recursive group", returns (run (
