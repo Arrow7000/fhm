@@ -106,10 +106,11 @@ structure Result (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
     original-member checker as explicitly supplied vectors. No legacy fallback. -/
 def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
     (captures : List Nat := []) (premises : List Constraint := []) (outerTypes : List Ty := [])
-    (outerEnv : List Binding := []) (schemes : BinderSchemeMap := []) :
+    (outerEnv : List Binding := []) (schemes : BinderSchemeMap := []) (ctors : CtorEnv := []) :
     Except String (Result output metadata path captures premises outerTypes outerEnv) := do
   let vectors ← propose output metadata path captures premises outerTypes outerEnv schemes
-  let checked ← HMDeclaredGroup.check output metadata path vectors captures premises outerTypes outerEnv schemes
+  let checked ← HMDeclaredGroup.check output metadata path vectors captures premises outerTypes outerEnv
+    schemes ctors
   pure ⟨vectors, checked⟩
 
 #print axioms propose

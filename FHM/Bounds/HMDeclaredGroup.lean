@@ -434,7 +434,8 @@ def CheckedMembers.select {output metadata path captures premises typeCaptures e
 
 private def checkMembers {output metadata path captures premises typeCaptures index vectors}
     (ps : Interfaces output metadata path captures premises typeCaptures index vectors)
-    (env : List Binding) (schemes : BinderSchemeMap) : Except String (CheckedMembers env ps) := do
+    (env : List Binding) (schemes : BinderSchemeMap) (ctors : CtorEnv) :
+    Except String (CheckedMembers env ps) := do
   match ps with
   | .nil => pure .nil
   | .cons p _ rest =>
@@ -444,8 +445,8 @@ private def checkMembers {output metadata path captures premises typeCaptures in
       let countFresh ← checkCountFresh p.quantified env
       let exportCountFresh ← checkExportCountFresh p.quantified env
       let captured ← RecursiveHMEnvironment.checkCaptured captures env
-      let rhs ← HMDeclaredRHS.check p.reconciled env schemes
-      let tail ← checkMembers rest env schemes
+      let rhs ← HMDeclaredRHS.check p.reconciled env schemes ctors
+      let tail ← checkMembers rest env schemes ctors
       pure (.cons ⟨rhs, stable.down, represented.down, exportsRepresented.down,
         countFresh.down, exportCountFresh.down, captured.down⟩ tail)
 
@@ -563,7 +564,8 @@ def Checked.checkExportedUse {output metadata path vectors captures premises out
     This entry point deliberately does NOT accept or export the group's body. -/
 def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
     (vectors : List (List Nat)) (captures : List Nat := []) (premises : List Constraint := [])
-    (outerTypes : List Ty := []) (outerEnv : List Binding := []) (schemes : BinderSchemeMap := []) :
+    (outerTypes : List Ty := []) (outerEnv : List Binding := []) (schemes : BinderSchemeMap := [])
+    (ctors : CtorEnv := []) :
     Except String (Checked output metadata path vectors captures premises outerTypes outerEnv) := do
   if hp : metadata.problems.isEmpty = true then
    match hs : output.atCorePath path with
@@ -577,7 +579,8 @@ def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
               let agreement ← checkConsistent ps.proposals
               let outerMonoRepresented ← checkMonoRepresented outerTypes outerEnv
               let outerFixedRepresented ← checkFixedRepresented outerTypes outerEnv
-              let checked ← checkMembers ps (ps.contracts.map Binding.recursive ++ outerEnv) schemes
+              let checked ← checkMembers ps (ps.contracts.map Binding.recursive ++ outerEnv)
+                schemes ctors
               pure ⟨hm, anns, rhss, body, hs, hp, ha, hv, ps, hq,
                 (fun i hi => by simpa [List.contains_iff_mem] using List.all_eq_true.mp hc i hi),
                 agreement.down, outerMonoRepresented.down, outerFixedRepresented.down, checked⟩
