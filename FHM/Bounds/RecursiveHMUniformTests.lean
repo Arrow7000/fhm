@@ -37,7 +37,7 @@ private def exercise {output metadata path captures premises typeCaptures env in
       let own : Contract := ⟨cert.interface.scheme, _, RecursiveHMContract.fromOpaque cert.implementation.opening⟩
       let fixed ← RecursiveHMEnvironment.checkTemplateFixed argument [.recursive own]
       have sourceFixed : ∀ i ∈ cert.interface.scheme.hm.body.freeVars, argument i = .fvar i :=
-        fixed.down own (by simp)
+        fixed.down.recursive (c := own) (by simp)
       let signed := RecursiveHMUniform.atSignedNode p.declaration.node cert r sourceFixed
       let bounds := signed.typed.actual
       let exactCounts := match bounds with
@@ -202,6 +202,25 @@ private def capturedLocalInConsArm : Except String Bool := do
   if !program.body.runtimeSafety?.isSome then
     throw "test: captured generalized local in Cons arm lost its runtime theorem"
   let exact := match program.body.bounds with | .prim .int => true | _ => false
+  pure (exact && exactlyOnce (logicalCorePaths artifact.output) (program.body.nodes.map (·.path)))
+
+/-- A later generalized local may specialize an earlier generalized local while
+    its own RHS is being universally checked.  The earlier declaration is an
+    exported scheme, not a monomorphic capture or a recursive group member. -/
+private def nestedGeneralizedExport : Except String Bool := do
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let identity : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
+  let source := Expr.letRec [some ⟨0, .prim .int⟩] [.primLit (.int 0)]
+    (.letIn (some identity) (.lambda none (.var 0))
+      (.letIn (some identity) (.lambda none (.app (.var 1) (.var 0)))
+        (.app (.var 0) (.primLit (.char 'z')))))
+  let artifact ← match inferFound ctors source with
+    | some artifact => pure artifact
+    | none => throw "test: nested generalized export failed HM inference"
+  let program ← checkClosedProgram artifact.output {} artifact.binderSchemes
+  if !program.body.runtimeSafety?.isSome then
+    throw "test: nested generalized export lost its runtime theorem"
+  let exact := match program.body.bounds with | .prim .char => true | _ => false
   pure (exact && exactlyOnce (logicalCorePaths artifact.output) (program.body.nodes.map (·.path)))
 
 example {output metadata} (program : ProgramResult output metadata) :
@@ -419,7 +438,9 @@ private def runtimeLocalCertificate :
       TypeSubstitution.substitute, SchemeUse.vector] using
       SemanticSub.refl [] (.arrow (.fvar 91) (.fvar 91))
   typeFresh := by simp
+  exportTypeFresh := by simp
   countFresh := by simp
+  exportCountFresh := by simp
 
 private theorem runtimeLocalOpaqueReady : ScopedDerives.RuntimeReady runtimeLocalCertificate.typing := by
   have element : Runtime.Supported
@@ -734,6 +755,10 @@ def main : IO Unit := do
   | .ok true => IO.println "PASS: a generalized local retains its enclosing group through closed Cons head/tail refinements"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "captured generalized local in Cons arm lost its result or source-node coverage")
+  match nestedGeneralizedExport with
+  | .ok true => IO.println "PASS: a generalized local RHS may specialize an earlier generalized export"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "nested generalized export lost its Char result or exact source-node coverage")
   match bodyCalls (forgedRoot := true) with
   | .error message =>
       unless (message.splitOn "original found payload").length > 1 do

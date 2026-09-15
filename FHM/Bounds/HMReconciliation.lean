@@ -164,11 +164,19 @@ def checkRHS {output path node schemes site s captures}
     {env : List RecursiveHMJudgement.Binding} (actual : BoundsTy)
     (typing : RecursiveHMJudgement.Derives BoundsTy.fvar
       (s.counts.quantified ++ s.counts.captures) [] s.counts.premises env node.inner.stripFound actual)
-    (represented : ∀ c, .recursive c ∈ env → c.template.hm.body ∈ captures) :
+    (represented : ∀ c, .recursive c ∈ env → c.template.hm.body ∈ captures)
+    (exportsRepresented : ∀ t, .exported t ∈ env → t.hm.body ∈ captures) :
     Except String (RHSChecked checked env) := do
   have fresh : RecursiveHMJudgement.CapturesFixed checked.interpretation env := by
-    intro c hc i hi
-    exact checked.capturesFixed (represented c hc) hi
+    intro b hb
+    cases b with
+    | mono β => trivial
+    | recursive c =>
+        intro i hi
+        exact checked.capturesFixed (represented c hb) hi
+    | exported t =>
+        intro i hi
+        exact checked.capturesFixed (exportsRepresented t hb) hi
   have transported := RecursiveHMJudgement.transportTypes checked.interpretation
     checked.interpretationLC (s.counts.quantified ++ s.counts.captures)
     checked.interpretationScope typing fresh

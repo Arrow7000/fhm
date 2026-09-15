@@ -37,6 +37,7 @@ def capturedBool (ids : List Nat) (env : List RecursiveHMJudgement.Binding) : Bo
   env.all fun b => match b with
     | .mono β => boundsScopedBool ids β
     | .recursive c => c.fixed.types.all (boundsScopedBool ids)
+    | .exported _ => true
 
 theorem capturedBool_sound {ids env} (h : capturedBool ids env = true) : Captured ids env := by
   constructor
@@ -98,6 +99,8 @@ private def checkTypesFixedBinding (f : Nat → BoundsTy) (b : Binding) :
           subst d
           exact ⟨normal.down, fun β hβ => fixedBoundsBool_sound (List.all_eq_true.mp h β hβ)⟩⟩⟩
       else throw "bounds: RHS reconciliation changes the common fixed recursive HM vector"
+  | .exported s =>
+      pure ⟨⟨by intro β hβ; simp at hβ, by intro c hc; simp at hc⟩⟩
 
 def checkTypesFixed (f : Nat → BoundsTy) (env : List Binding) :
     Except String (PLift (TypesFixed f env)) := do
@@ -123,11 +126,21 @@ def templateFixedBool (f : Nat → BoundsTy) (env : List Binding) : Bool :=
   env.all fun b => match b with
     | .mono _ => true
     | .recursive c => c.template.hm.body.freeVars.all (identityBool f)
+    | .exported s => s.hm.body.freeVars.all (identityBool f)
 
 theorem templateFixedBool_sound {f env} (h : templateFixedBool f env = true) :
     CapturesFixed f env := by
-  intro c hc i hi
-  exact identityBool_sound (List.all_eq_true.mp (List.all_eq_true.mp h (.recursive c) hc) i hi)
+  intro b hb
+  cases b with
+  | mono β => trivial
+  | recursive c =>
+      intro i hi
+      exact identityBool_sound
+        (List.all_eq_true.mp (List.all_eq_true.mp h (.recursive c) hb) i hi)
+  | exported s =>
+      intro i hi
+      exact identityBool_sound
+        (List.all_eq_true.mp (List.all_eq_true.mp h (.exported s) hb) i hi)
 
 def checkTemplateFixed (f : Nat → BoundsTy) (env : List Binding) :
     Except String (PLift (CapturesFixed f env)) :=
@@ -156,6 +169,7 @@ theorem typesFixed {f env} (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
           rw [ht, hm]
         · exact ht
       exact congrArg Binding.recursive hc
+  | exported s => rfl
 
 /-- Callee templates need not be count-substituted to instantiate one member's
     RHS. The fixed HM vector remains unchanged when its counts are captures. -/
@@ -176,6 +190,7 @@ theorem fixed (rows : Bindings) {ids env} (captures : Captured ids env)
         exact CountTransport.bounds_fixed rows (captures.2 c hb β hβ) keep
       change Binding.recursive ⟨c.template, c.hm, c.fixed.mapCounts rows⟩ = Binding.recursive c
       rw [hv]
+  | exported s => rfl
 
 /-- A member's scoped finite instantiation leaves the common recursive count
     environment intact when the group has checked the captured-vector property. -/

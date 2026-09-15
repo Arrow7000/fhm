@@ -131,6 +131,7 @@ private def checkRepresentedHead (ts : List Ty) (b : Binding) :
   | .recursive c =>
       let h ← checkMemberTy c.template.hm.body ts
       pure ⟨by intro d hd; cases hd; exact h.down⟩
+  | .exported _ => pure ⟨by intro c hc; cases hc⟩
 
 private def checkRepresented (ts : List Ty) (env : List Binding) :
     Except String (PLift (∀ c, .recursive c ∈ env → c.template.hm.body ∈ ts)) := do
@@ -145,6 +146,28 @@ private def checkRepresented (ts : List Ty) (env : List Binding) :
         · exact head.down c hb
         · exact tail.down c ht⟩
 
+private def checkExportRepresentedHead (ts : List Ty) (b : Binding) :
+    Except String (PLift (∀ s, .exported s = b → s.hm.body ∈ ts)) := do
+  match b with
+  | .mono _ => pure ⟨by intro s hs; cases hs⟩
+  | .recursive _ => pure ⟨by intro s hs; cases hs⟩
+  | .exported s =>
+      let h ← checkMemberTy s.hm.body ts
+      pure ⟨by intro t ht; cases ht; exact h.down⟩
+
+private def checkExportRepresented (ts : List Ty) (env : List Binding) :
+    Except String (PLift (∀ s, .exported s ∈ env → s.hm.body ∈ ts)) := do
+  match env with
+  | [] => pure ⟨by simp⟩
+  | b :: rest =>
+      let head ← checkExportRepresentedHead ts b
+      let tail ← checkExportRepresented ts rest
+      pure ⟨by
+        intro s hs
+        rcases List.mem_cons.mp hs with hb | ht
+        · exact head.down s hb
+        · exact tail.down s ht⟩
+
 private def checkCountFreshHead (q : List Nat) (b : Binding) :
     Except String (PLift (∀ c, .recursive c = b → ∀ i ∈ c.template.counts.captures, i ∉ q)) :=
   match b with
@@ -156,6 +179,7 @@ private def checkCountFreshHead (q : List Nat) (b : Binding) :
           cases hd
           simpa [List.contains_iff_mem] using List.all_eq_true.mp h i hi⟩
       else .error "bounds: common recursive template captures a member-local count"
+  | .exported _ => .ok ⟨by intro c hc; cases hc⟩
 
 private def checkCountFresh (q : List Nat) (env : List Binding) :
     Except String (PLift (∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ q)) := do
@@ -170,12 +194,40 @@ private def checkCountFresh (q : List Nat) (env : List Binding) :
         · exact head.down c hb
         · exact tail.down c ht⟩
 
+private def checkExportCountFreshHead (q : List Nat) (b : Binding) :
+    Except String (PLift (∀ s, .exported s = b → ∀ i ∈ s.counts.captures, i ∉ q)) :=
+  match b with
+  | .mono _ => .ok ⟨by intro s hs; cases hs⟩
+  | .recursive _ => .ok ⟨by intro s hs; cases hs⟩
+  | .exported s =>
+      if h : s.counts.captures.all (fun i => !q.contains i) = true then
+        .ok ⟨by
+          intro t ht i hi
+          cases ht
+          simpa [List.contains_iff_mem] using List.all_eq_true.mp h i hi⟩
+      else .error "bounds: exported scheme captures a member-local count"
+
+private def checkExportCountFresh (q : List Nat) (env : List Binding) :
+    Except String (PLift (∀ s, .exported s ∈ env → ∀ i ∈ s.counts.captures, i ∉ q)) := do
+  match env with
+  | [] => pure ⟨by simp⟩
+  | b :: rest =>
+      let head ← checkExportCountFreshHead q b
+      let tail ← checkExportCountFresh q rest
+      pure ⟨by
+        intro s hs
+        rcases List.mem_cons.mp hs with hb | ht
+        · exact head.down s hb
+        · exact tail.down s ht⟩
+
 structure MemberChecked {output metadata path index captures premises typeCaptures}
     (p : Member output metadata path index captures premises typeCaptures) (env : List Binding) where
   rhs : HMDeclaredRHS.Checked p.reconciled env
   stable : RecursiveHMEnvironment.TypesFixed p.reconciled.interpretation env
   represented : ∀ c, .recursive c ∈ env → c.template.hm.body ∈ typeCaptures
+  exportsRepresented : ∀ s, .exported s ∈ env → s.hm.body ∈ typeCaptures
   countFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ p.quantified
+  exportCountFresh : ∀ s, .exported s ∈ env → ∀ i ∈ s.counts.captures, i ∉ p.quantified
   captured : RecursiveHMEnvironment.Captured captures env
 
 /-- The certificate's environment is definitionally the common group env at
@@ -186,7 +238,8 @@ def MemberChecked.certificate {output metadata path index captures premises type
       (ScopedHMInterpretation.AtNode.view p.declaration.node p.reconciled.interpretation BoundsTy.bvar)
       (p.declaration.node.original :: guardedTypes p.declaration typeCaptures)
       env p.declaration.node.inner.stripFound p.reconciled.interpretation BoundsTy.bvar := by
-  let h := HMDeclaredRHS.certify p.reconciled checked.rhs checked.represented checked.countFresh
+  let h := HMDeclaredRHS.certify p.reconciled checked.rhs checked.represented
+    checked.exportsRepresented checked.countFresh checked.exportCountFresh
   have he := RecursiveHMEnvironment.typesFixed p.reconciled.interpretationLC checked.stable
   -- Preserve source/template/opening data definitionally. Only the proof
   -- fields mentioning the environment need transport; casting the entire
@@ -199,10 +252,14 @@ def MemberChecked.certificate {output metadata path index captures premises type
     inclusion := h.implementation.inclusion
     typing := ?_
     typeFresh := ?_
-    countFresh := ?_ }⟩
+    exportTypeFresh := ?_
+    countFresh := ?_
+    exportCountFresh := ?_ }⟩
   · simpa only [he, slotsFor] using h.implementation.typing
   · simpa only [he] using h.implementation.typeFresh
+  · simpa only [he] using h.implementation.exportTypeFresh
   · simpa only [he] using h.implementation.countFresh
+  · simpa only [he] using h.implementation.exportCountFresh
 
 theorem MemberChecked.certificateScheme {output metadata path index captures premises typeCaptures env}
     {p : Member output metadata path index captures premises typeCaptures} (checked : MemberChecked p env) :
@@ -325,11 +382,14 @@ private def checkMembers {output metadata path captures premises typeCaptures in
   | .cons p _ rest =>
       let stable ← RecursiveHMEnvironment.checkTypesFixed p.reconciled.interpretation env
       let represented ← checkRepresented typeCaptures env
+      let exportsRepresented ← checkExportRepresented typeCaptures env
       let countFresh ← checkCountFresh p.quantified env
+      let exportCountFresh ← checkExportCountFresh p.quantified env
       let captured ← RecursiveHMEnvironment.checkCaptured captures env
       let rhs ← HMDeclaredRHS.check p.reconciled env schemes
       let tail ← checkMembers rest env schemes
-      pure (.cons ⟨rhs, stable.down, represented.down, countFresh.down, captured.down⟩ tail)
+      pure (.cons ⟨rhs, stable.down, represented.down, exportsRepresented.down,
+        countFresh.down, exportCountFresh.down, captured.down⟩ tail)
 
 structure Checked (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
     (vectors : List (List Nat)) (captures : List Nat) (premises : List Constraint)

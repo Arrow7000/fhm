@@ -74,7 +74,8 @@ private def realArtifact (annotatedBinding : Bool := false) (withMatch : Bool :=
     interface.scheme skeleton [fresh] []
   let located ← RecursiveHMReconciled.checkLocated checked []
   let cert := RecursiveHMReconciled.fromAnnotated interface checked located.rhs
-    (by intro c hc; cases hc) (by intro c hc; cases hc)
+    (by intro c hc; cases hc) (by intro s hs; cases hs)
+    (by intro c hc; cases hc) (by intro s hs; cases hs)
   let scopedInstance ← interface.scheme.counts.instantiate [.lit 2] []
   let used := RecursiveHMSigned.atInterpretedNode node cert scopedInstance [.prim .int]
     (by cases withMatch <;> simp [contract, recursiveSignature])

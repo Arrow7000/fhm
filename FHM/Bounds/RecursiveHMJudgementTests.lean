@@ -127,9 +127,10 @@ theorem recursiveIdentityAllBounds (arg : BoundsTy) (ids : List Nat)
       ([.recursive contract].map (mapBinding (replacement arg) (replacementLC lc))) loop
       (.arrow (exact arg) (exact arg)) := by
   have fresh : CapturesFixed (replacement arg) [.recursive contract] := by
-    intro c hc i hi
-    have hc : c = contract := by simpa using hc
-    subst c
+    intro b hb
+    have hb : b = .recursive contract := by simpa using hb
+    subst b
+    intro i hi
     have impossible : False := by simpa [contract, scheme, Ty.freeVars, TyList.freeVars, listTy] using hi
     exact impossible.elim
   have h := transportTypes (replacement arg) (replacementLC lc) ids (replacementScope scope)
@@ -151,11 +152,13 @@ private def universal : RecursiveHMUniversal.Certified scheme contract.hm [] [.r
       have hc : c = contract := by simpa using hc
       subst c
       simp [contract, scheme, Ty.freeVars, TyList.freeVars, listTy] at ht
+    exportTypeFresh := by simp
     countFresh := by
       intro c hc i hi
       have hc : c = contract := by simpa using hc
       subst c
-      simp [contract, scheme] at hi }
+      simp [contract, scheme] at hi
+    exportCountFresh := by simp }
 
 /-- Joint quantification is kernel-checked for any finite scoped count vector
     and full caller bounds argument, not sampled at a few primitive types. -/

@@ -66,6 +66,7 @@ private def typedIdentity (annotation : PolyTy := signature) : Except String Boo
     simp only [originalNode, original, Expr.stripFound]
     exact .lambda True.intro (.varMono rfl)
   let result ← checkRHS c original typing (by intro d hd; cases hd)
+    (by intro d hd; cases hd)
   pure (match result.typed.actual with
     | .arrow (.list lo hi (.fvar i)) (.list lo' hi' (.fvar j)) =>
         lo == n && hi == n && lo' == n && hi' == n && i == 91 && j == 91
@@ -81,6 +82,7 @@ private def mismatchingDerivation : Except String Unit := do
     simp only [originalNode, actual, Expr.stripFound]
     exact .lambda True.intro (.varMono rfl)
   let _ ← checkRHS c actual typing (by intro d hd; cases hd)
+    (by intro d hd; cases hd)
   pure ()
 
 /-- End-to-end symbolic certificate construction and external specialization:
@@ -98,7 +100,8 @@ private def universalSpecialization (annotation : PolyTy := signature)
   let c ← check node facts (.letIn []) interface.scheme original [91] []
   let located ← RecursiveHMReconciled.checkLocated c []
   let cert := RecursiveHMReconciled.fromAnnotated interface c located.rhs
-    (by intro d hd; cases hd) (by intro d hd; cases hd)
+    (by intro d hd; cases hd) (by intro s hs; cases hs)
+    (by intro d hd; cases hd) (by intro s hs; cases hs)
   let inst ← interface.scheme.counts.instantiate [.lit 3] [7]
   let arg : BoundsTy := .list n n (.prim .int)
   if ha : [arg].length = annotation.paramCount then

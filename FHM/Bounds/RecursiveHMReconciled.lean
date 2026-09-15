@@ -15,7 +15,10 @@ def fromChecked {output path node schemes site s captures env}
     (checked : @HMReconciliation.Checked output path node schemes site s captures)
     (rhs : HMReconciliation.RHSChecked checked env)
     (represented : ∀ c, .recursive c ∈ env → c.template.hm.body ∈ captures)
+    (exportsRepresented : ∀ t, .exported t ∈ env → t.hm.body ∈ captures)
     (countFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures,
+      i ∉ s.counts.quantified)
+    (exportCountFresh : ∀ t, .exported t ∈ env → ∀ i ∈ t.counts.captures,
       i ∉ s.counts.quantified) :
     RecursiveHMUniversal.Certified s (node.view checked.interpretation) (node.original :: captures)
       (env.map (mapBinding checked.interpretation checked.interpretationLC))
@@ -28,7 +31,9 @@ def fromChecked {output path node schemes site s captures env}
       typing := rhs.typed.derivation
       inclusion := rhs.inclusion
       typeFresh := ?_
-      countFresh := ?_ }
+      exportTypeFresh := ?_
+      countFresh := ?_
+      exportCountFresh := ?_ }
   · rw [← rhs.typed.checked.shape]
     exact (FreeAlgebra.shape_erased _).symm
   · intro c hc i hi used
@@ -39,6 +44,16 @@ def fromChecked {output path node schemes site s captures env}
         cases he
         exact checked.opening.fresh i hi d.template.hm.body
           (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (represented d hb))) used
+    | exported t => cases he
+  · intro t ht i hi used
+    obtain ⟨b, hb, he⟩ := List.mem_map.mp ht
+    cases b with
+    | mono β => cases he
+    | recursive d => cases he
+    | exported original =>
+        cases he
+        exact checked.opening.fresh i hi t.hm.body
+          (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (exportsRepresented t hb))) used
   · intro c hc i hi
     obtain ⟨b, hb, he⟩ := List.mem_map.mp hc
     cases b with
@@ -46,6 +61,15 @@ def fromChecked {output path node schemes site s captures env}
     | recursive d =>
         cases he
         exact countFresh d hb i hi
+    | exported t => cases he
+  · intro t ht i hi
+    obtain ⟨b, hb, he⟩ := List.mem_map.mp ht
+    cases b with
+    | mono β => cases he
+    | recursive d => cases he
+    | exported original =>
+        cases he
+        exact exportCountFresh t hb i hi
 
 #print axioms fromChecked
 
@@ -54,12 +78,14 @@ def fromAnnotated {output path node schemes site annotation quantified captures 
     (checked : @HMReconciliation.Checked output path node schemes site interface.scheme typeCaptures)
     (rhs : HMReconciliation.RHSChecked checked env)
     (represented : ∀ c, .recursive c ∈ env → c.template.hm.body ∈ typeCaptures)
-    (countFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ quantified) :
+    (exportsRepresented : ∀ t, .exported t ∈ env → t.hm.body ∈ typeCaptures)
+    (countFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ quantified)
+    (exportCountFresh : ∀ t, .exported t ∈ env → ∀ i ∈ t.counts.captures, i ∉ quantified) :
     RecursiveHMSigned.Certified annotation quantified captures premises
       (node.view checked.interpretation) (node.original :: typeCaptures)
       (env.map (mapBinding checked.interpretation checked.interpretationLC))
       node.inner.stripFound checked.interpretation :=
-  ⟨interface, fromChecked checked rhs represented countFresh⟩
+  ⟨interface, fromChecked checked rhs represented exportsRepresented countFresh exportCountFresh⟩
 
 #print axioms fromAnnotated
 
