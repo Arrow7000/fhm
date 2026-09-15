@@ -828,6 +828,29 @@ private def prefixedNestedGroup (badInner : Bool := false) : Except String Bool 
     | _ => false
   pure (exact && exactlyOnce (logicalCorePaths artifact.output) (result.nodes.map (·.path)))
 
+/-- A local hole is filled from the checked RHS origin, while a written solid
+    endpoint remains the public interface seen by the body. -/
+private def pinnedLocal (bad : Bool := false) : Except String Bool := do
+  let hi := if bad then 0 else 5
+  let annotation : PolyTy :=
+    ⟨0, .bl .hole (.solid (.lit hi)) (.prim .int)⟩
+  let rhs := Expr.app
+    (.app (.ctor consCtorName) (.primLit (.int 1)))
+    (.app (.app (.ctor consCtorName) (.primLit (.int 2))) (.ctor nilCtorName))
+  let source := Expr.letIn (some annotation) rhs (.var 0)
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let artifact ← match inferFound ctors source with
+    | some artifact => pure artifact
+    | none => throw "test: pinned local HM inference failed"
+  let result ← checkProgram artifact.output {} artifact.binderSchemes
+  if !result.runtimeSafety?.isSome then
+    throw "test: pinned local lost its runtime theorem"
+  pure ((match result.bounds with
+    | .list lo (.lit upper) (.prim .int) =>
+        lo.eval (fun _ => 0) == .ofNat 2 && upper == hi
+    | _ => false) &&
+    exactlyOnce (logicalCorePaths artifact.output) (result.nodes.map (·.path)))
+
 def main : IO Unit := do
   match actual with
   | .ok true => IO.println "PASS: every actual member universally specializes through one full group HM map with permuted slots and distinct count telescopes"
@@ -837,6 +860,16 @@ def main : IO Unit := do
   | .ok true => IO.println "PASS: uniform group specialization cannot rewrite closed recursive template captures"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "closed recursive template capture guard failed")
+  match pinnedLocal with
+  | .ok true => IO.println "PASS: a local hole copies its exact RHS endpoint while the solid ceiling remains the body interface"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "local hole pinning lost its public interface, runtime theorem or exact nodes")
+  match pinnedLocal true with
+  | .error message =>
+      unless (message.splitOn "inclusion").length > 1 do
+        throw (IO.userError s!"wrong pinned local rejection: {message}")
+      IO.println "PASS: local hole pinning cannot hide a false solid ceiling"
+  | .ok _ => throw (IO.userError "local hole pinning accepted a false solid ceiling")
   match bodyCalls with
   | .ok true => IO.println "PASS: all-member universal introduction checks actual Int/Char body calls and reports every original group/RHS/body occurrence exactly once"
   | .error message => throw (IO.userError message)
