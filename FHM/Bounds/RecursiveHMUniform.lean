@@ -594,6 +594,7 @@ instead of introducing another parallel file family. -/
 
 inductive BodyBinding where
   | mono (bounds : BoundsTy)
+  | recursive (contract : Contract)
   | exported (scheme : HMCountScheme.Scheme)
 
 private def ordinaryBinding : Binding → BodyBinding
@@ -602,6 +603,17 @@ private def ordinaryBinding : Binding → BodyBinding
   | .exported s => .exported s
 
 def ordinaryBodyEnv (env : List Binding) : List BodyBinding := env.map ordinaryBinding
+
+/-- Enter an implementation without crossing a generalization boundary.
+    Recursive assumptions remain fixed contracts, unlike `ordinaryBodyEnv`,
+    which deliberately exposes them as schemes after their defining group has
+    exited.  The two conversions are the judgment-level statement of D2. -/
+private def fixedBinding : Binding → BodyBinding
+  | .mono β => .mono β
+  | .recursive c => .recursive c
+  | .exported s => .exported s
+
+def fixedBodyEnv (env : List Binding) : List BodyBinding := env.map fixedBinding
 
 private theorem ordinaryBodyEnv_exports (schemes : List HMCountScheme.Scheme) :
     ordinaryBodyEnv (schemes.map Binding.exported) = schemes.map BodyBinding.exported := by
@@ -624,6 +636,10 @@ def BodyBindingAt (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
     (binding : BodyBinding) (term : Expr) : Prop :=
   match binding with
   | .mono β => Runtime.TermAt bound free σ budget β term
+  | .recursive c =>
+      ∀ Δ caller (used : RecursiveHMContract.Use c.fixed Δ c.hm caller),
+        (∀ p ∈ used.inst.premises, p.Holds σ) →
+          Runtime.TermAt bound free σ budget used.bounds term
   | .exported s =>
       ∀ Δ found caller (used : HMCountScheme.Use s Δ found caller),
         (∀ a ∈ used.types, Runtime.Supported a) →
@@ -639,6 +655,7 @@ theorem BodyBindingAt.zero (bound free : Runtime.TypeEnv) (σ : Assign)
     omega
   cases binding with
   | mono β => exact vacuous β
+  | recursive c => exact fun _ _ _ _ => vacuous _
   | exported s => exact fun _ _ _ _ _ _ => vacuous _
 
 theorem BodyBindingAt.prepend {bound free σ budget binding term next}
@@ -646,6 +663,8 @@ theorem BodyBindingAt.prepend {bound free σ budget binding term next}
     BodyBindingAt bound free σ (budget + 1) binding term := by
   cases binding with
   | mono β => exact Runtime.TermAt.prepend step safe
+  | recursive c =>
+      exact fun Δ caller used premises => Runtime.TermAt.prepend step (safe Δ caller used premises)
   | exported s =>
       exact fun Δ found caller used arguments premises =>
         Runtime.TermAt.prepend step (safe Δ found caller used arguments premises)
@@ -670,6 +689,10 @@ def BodyEnvAt.down {bound free σ small large env}
   | mono β =>
       simp only [BodyBindingAt, kind] at actual ⊢
       exact actual.down hb hf le
+  | recursive c =>
+      simp only [BodyBindingAt, kind] at actual ⊢
+      intro Δ caller used premises
+      exact (actual Δ caller used premises).down hb hf le
   | exported s =>
       simp only [BodyBindingAt, kind] at actual ⊢
       intro Δ found caller used arguments premises
@@ -888,6 +911,17 @@ theorem BodyEnvAt.varMono {bound free σ budget env i β}
   have meaning := e.denotes i inside
   simpa only [BodyBindingAt, entry] using meaning
 
+theorem BodyEnvAt.varRecursive {bound free σ budget env i c Δ caller}
+    (e : BodyEnvAt bound free σ budget env) (lookup : env[i]? = some (.recursive c))
+    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller)
+    (premises : ∀ p ∈ Δ, p.Holds σ) :
+    Runtime.TermAt bound free σ budget used.bounds ((Expr.var i).substN 0 e.terms) := by
+  obtain ⟨inside, entry⟩ := List.getElem?_eq_some_iff.mp lookup
+  rw [Runtime.closing_var e.terms e.closed i (by rw [e.arity]; exact inside)]
+  have meaning := e.denotes i inside
+  simp only [BodyBindingAt, entry] at meaning
+  exact meaning Δ caller used (used.usable σ premises)
+
 theorem BodyEnvAt.varExported {bound free σ budget env i s Δ found caller}
     (e : BodyEnvAt bound free σ budget env) (lookup : env[i]? = some (.exported s))
     (used : HMCountScheme.Use s Δ found caller)
@@ -899,6 +933,52 @@ theorem BodyEnvAt.varExported {bound free σ budget env i s Δ found caller}
   have meaning := e.denotes i inside
   simp only [BodyBindingAt, entry] at meaning
   exact meaning Δ found caller used arguments (used.usable σ premises)
+
+/-- The runtime interpretation of a fixed implementation environment is
+    definitionally the ordinary recursive-RHS interpretation, with only the
+    binding tag changed. -/
+def EnvAt.toFixedBody {bound free σ budget env}
+    (e : EnvAt bound free σ budget env) :
+    BodyEnvAt bound free σ budget (fixedBodyEnv env) := by
+  refine ⟨e.terms, ?_, e.closed, ?_⟩
+  · simpa only [fixedBodyEnv, List.length_map] using e.arity
+  · intro i inside
+    have sourceInside : i < env.length := by
+      simpa only [fixedBodyEnv, List.length_map] using inside
+    have meaning := e.denotes i sourceInside
+    cases source : env[i] with
+    | mono β =>
+        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
+          BodyBindingAt, BindingAt] using meaning
+    | recursive c =>
+        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
+          BodyBindingAt, BindingAt] using meaning
+    | exported s =>
+        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
+          BodyBindingAt, BindingAt] using meaning
+
+/-- Conversely, fixed body assumptions forget back to the exact ordinary RHS
+    environment without needing the all-arguments premise required at a
+    generalized group exit. -/
+def BodyEnvAt.toFixedEnvAt {bound free σ budget env}
+    (e : BodyEnvAt bound free σ budget (fixedBodyEnv env)) :
+    EnvAt bound free σ budget env := by
+  refine ⟨e.terms, ?_, e.closed, ?_⟩
+  · simpa only [fixedBodyEnv, List.length_map] using e.arity
+  · intro i inside
+    have bodyInside : i < (fixedBodyEnv env).length := by
+      simpa only [fixedBodyEnv, List.length_map] using inside
+    have meaning := e.denotes i bodyInside
+    cases source : env[i] with
+    | mono β =>
+        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
+          BodyBindingAt, BindingAt] using meaning
+    | recursive c =>
+        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
+          BodyBindingAt, BindingAt] using meaning
+    | exported s =>
+        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
+          BodyBindingAt, BindingAt] using meaning
 
 /-- Forget the generalized body view of an ordinary RHS environment.  A body
     export for a recursive contract is stronger than the fixed in-group
@@ -1736,6 +1816,9 @@ inductive ScopedBodyDerives :
       ScopedBodyDerives types slots ids rows Δ env (.app (.ctor pairCtorName) left)
         (.arrow rightTy (.custom pairTyName [leftTy, rightTy]))
   | varMono {env i β} : env[i]? = some (.mono β) → ScopedBodyDerives types slots ids rows Δ env (.var i) β
+  | varRecursive {env i c caller} : env[i]? = some (.recursive c) →
+      (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) →
+      ScopedBodyDerives types slots ids rows Δ env (.var i) used.bounds
   | varExported {env i s found caller} : env[i]? = some (.exported s) →
       (used : HMCountScheme.Use s Δ found caller) → ScopedBodyDerives types slots ids rows Δ env (.var i) used.bounds
   | app {env f arg domain actual result} :
@@ -1849,7 +1932,7 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       rw [ih p source] at sub
       cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | ctor | cons | consPartial | pair | pairPartial |
-      varMono | varExported | app | lambda |
+      varMono | varRecursive | varExported | app | lambda |
       letMono | letRecMono | letRecMonoGroup | letPinned | letRecPinnedMono | letRecInferredMono |
           letExported | letRecExported |
           match_ | letRec =>
@@ -1899,6 +1982,97 @@ private theorem ordinaryBodyEnv_pairBranch (env : List Binding) (p : MatchPatter
       (BodyBranchContext.pair left right).extend p (ordinaryBodyEnv env) := by
   simp only [pairBranchEnv, BodyBranchContext.extend]
   split <;> rfl
+
+private theorem fixedBodyEnv_branch (env : List Binding) (p : MatchPattern)
+    (lo hi : Count) (elem : BoundsTy) :
+    fixedBodyEnv (branchEnv p lo hi elem env) =
+      (BodyBranchContext.list lo hi elem).extend p (fixedBodyEnv env) := by
+  simp only [branchEnv, BodyBranchContext.extend]
+  split <;> rfl
+
+private theorem fixedBodyEnv_pairBranch (env : List Binding) (p : MatchPattern)
+    (left right : BoundsTy) :
+    fixedBodyEnv (pairBranchEnv p left right env) =
+      (BodyBranchContext.pair left right).extend p (fixedBodyEnv env) := by
+  simp only [pairBranchEnv, BodyBranchContext.extend]
+  split <;> rfl
+
+/-- Embed an ordinary RHS derivation without crossing a group exit.  In
+    particular, recursive variables remain fixed-contract uses; this is the
+    embedding used by the deep universal-RHS traversal around generalized
+    nested groups. -/
+theorem rhsToFixedBody {types slots ids rows Δ env e β}
+    (h : ScopedDerives types slots ids rows Δ env e β) :
+    ScopedBodyDerives types slots ids rows Δ (fixedBodyEnv env) e β := by
+  induction h with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil => exact .nil
+  | boolCtor ctor => exact .boolCtor ctor
+  | ctor hn => exact .ctor hn
+  | cons _ _ sub ihh iht => exact .cons ihh iht sub
+  | consPartial _ ih => exact .consPartial ih
+  | pair _ _ ihLeft ihRight => exact .pair ihLeft ihRight
+  | pairPartial _ ih => exact .pairPartial ih
+  | varMono lookup =>
+      exact .varMono (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding])
+  | varRecursive lookup used =>
+      exact .varRecursive
+        (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding]) used
+  | varExported lookup used =>
+      exact .varExported
+        (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding]) used
+  | app _ _ sub ihf iha => exact .app ihf iha sub
+  | lambda annotation _ ih =>
+      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
+        ScopedBodyDerives.lambda annotation ih
+  | letMono annotation _ _ ihr ihb =>
+      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
+        ScopedBodyDerives.letMono annotation ihr ihb
+  | letRecMono annotation _ sub _ ihr ihb =>
+      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
+        ScopedBodyDerives.letRecMono annotation ihr sub ihb
+  | letRecMonoGroup demands annotationCount demandCount annotationsOK rhssTyping inclusions
+      bodyTyping ihRhss ihBody =>
+      refine .letRecMonoGroup demands annotationCount demandCount annotationsOK ?_ inclusions ?_
+      · intro i inside
+        simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using
+          ihRhss i inside
+      · simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using ihBody
+  | matchList _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .list _ _ _) ihs coverage patterns ?_ subs
+      intro i br atIndex
+      simpa only [fixedBodyEnv_branch] using ihb i br atIndex
+  | matchBool _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .bool) ihs coverage patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [BodyBranchContext.extend, BodyBranchContext.refine] using ihb i br atIndex
+  | matchPair _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .pair _ _) ihs coverage patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [fixedBodyEnv_pairBranch, BodyBranchContext.refine] using ihb i br atIndex
+  | matchNominal fieldss actuals _ coverage fields bodies subs ihs ihb =>
+      refine .match_ (ctx := .nominal _ _ _) ihs coverage ?_ ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      · intro br member
+        obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
+        exact ⟨fieldss i, fields i br atIndex⟩
+      · intro i br atIndex
+        have valid := fields i br atIndex
+        have fieldEq : (some (fieldss i)).getD [] = fieldss i := rfl
+        unfold NominalBranches.PatternFields at valid
+        rw [← valid] at fieldEq
+        simpa [fixedBodyEnv, BodyBranchContext.extend, BodyBranchContext.refine,
+          fieldEq, fixedBinding] using ihb i br atIndex
+  | matchOpaque _ patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .wildcardOnly _) ihs patterns patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [BodyBranchContext.extend, BodyBranchContext.refine] using ihb i br atIndex
+
+#print axioms rhsToFixedBody
 
 /-- A recursive RHS assumption becomes the corresponding universally exported
     body binding. Each concrete recursive use already contains an external
@@ -2253,6 +2427,10 @@ abbrev consPartial := @ScopedBodyDerives.consPartial BoundsTy.fvar BoundsTy.bvar
 abbrev pair := @ScopedBodyDerives.pair BoundsTy.fvar BoundsTy.bvar
 abbrev pairPartial := @ScopedBodyDerives.pairPartial BoundsTy.fvar BoundsTy.bvar
 abbrev varMono := @ScopedBodyDerives.varMono BoundsTy.fvar BoundsTy.bvar
+abbrev varRecursive {ids rows Δ env i c caller}
+    (lookup : env[i]? = some (BodyBinding.recursive c))
+    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) :
+    BodyDerives ids rows Δ env (.var i) used.bounds := ScopedBodyDerives.varRecursive lookup used
 abbrev varExported {ids rows Δ env i s found caller}
     (lookup : env[i]? = some (BodyBinding.exported s)) (used : HMCountScheme.Use s Δ found caller) :
     BodyDerives ids rows Δ env (.var i) used.bounds := ScopedBodyDerives.varExported lookup used
@@ -2295,6 +2473,13 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
   | pairPartial _ ih => exact .pairPartial (ih hp)
   | varMono lookup => exact .varMono lookup
+  | varRecursive lookup used =>
+      let next : RecursiveHMContract.Use _ Δ' _ _ :=
+        ⟨used.counts, used.inst, by
+          intro σ hΔ goal hgoal
+          exact used.usable σ (fun c hc => hp σ hΔ c hc) goal hgoal,
+          used.typesScoped, used.fixedHM⟩
+      exact .varRecursive lookup next
   | varExported lookup used =>
       let next : HMCountScheme.Use _ Δ' _ _ :=
         ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
@@ -2375,7 +2560,7 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
   | consPartial _ ih => simpa [Expr.varsBelow] using ih
   | pair _ _ ihLeft ihRight => simp [Expr.varsBelow, ihLeft, ihRight]
   | pairPartial _ ih => simpa [Expr.varsBelow] using ih
-  | varMono lookup | varExported lookup _ =>
+  | varMono lookup | varRecursive lookup _ | varExported lookup _ =>
       obtain ⟨small, _⟩ := List.getElem?_eq_some_iff.mp lookup
       simpa only [Expr.varsBelow, decide_eq_true_eq] using small
   | app _ _ _ ihf iha => simp [Expr.varsBelow, ihf, iha]
@@ -2561,6 +2746,9 @@ inductive RuntimeReady :
       RuntimeReady (.pairPartial (rightTy := rightTy) hleft)
   | varMono (lookup : env[i]? = some (BodyBinding.mono β)) :
       Runtime.Supported β → RuntimeReady (.varMono lookup)
+  | varRecursive (lookup : env[i]? = some (BodyBinding.recursive c))
+      (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) :
+      Runtime.Supported used.bounds → RuntimeReady (.varRecursive lookup used)
   | varExported (lookup : env[i]? = some (BodyBinding.exported s))
       (used : HMCountScheme.Use s Δ found caller) :
       Runtime.Supported used.bounds → (∀ a ∈ used.types, Runtime.Supported a) →
@@ -2693,7 +2881,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | consPartial _ head => exact .arrow (.list head) (.list head)
   | pair _ _ left right => exact .pair left right
   | pairPartial _ right left => exact .arrow right (.pair left right)
-  | varMono _ supported | varExported _ _ supported _ => exact supported
+  | varMono _ supported | varRecursive _ _ supported | varExported _ _ supported _ => exact supported
   | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
   | subsumption _ _ demand => exact demand
   | lambda _ param _ result => exact .arrow param result
@@ -2754,6 +2942,9 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
   | varMono lookup _ =>
       intro budget _ e
       exact e.varMono lookup
+  | varRecursive lookup used _ =>
+      intro budget premises e
+      exact e.varRecursive lookup used premises
   | varExported lookup used _ arguments =>
       intro budget premises e
       exact e.varExported lookup used arguments premises
@@ -3293,6 +3484,11 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
   | pairPartial _ support ih => exact .pairPartial (ih hp) support
   | varMono lookup supported => exact .varMono lookup supported
+  | varRecursive lookup used supported =>
+      let next : RecursiveHMContract.Use _ Δ' _ _ :=
+        ⟨used.counts, used.inst, fun σ premises => used.usable σ (hp σ premises),
+          used.typesScoped, used.fixedHM⟩
+      exact .varRecursive lookup next supported
   | varExported lookup used supported arguments =>
       let next : HMCountScheme.Use _ Δ' _ _ :=
         ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
@@ -3346,6 +3542,86 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
 #print axioms RuntimeReady.assuming
 
 end BodyDerives
+
+/-- Runtime evidence follows the fixed-environment embedding without requiring
+    support for an entire recursive HM vector: each recursive occurrence keeps
+    the exact fixed `Use` already certified by the ordinary RHS derivation. -/
+theorem rhsReadyToFixedBody {types slots ids rows Δ env e β}
+    {h : ScopedDerives types slots ids rows Δ env e β}
+    (ready : ScopedDerives.RuntimeReady h) :
+    BodyDerives.RuntimeReady (rhsToFixedBody h) := by
+  induction ready with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil supported => exact .nil supported
+  | boolCtor ctor => exact .boolCtor ctor
+  | cons sub _ _ ihh iht => exact .cons sub ihh iht
+  | consPartial _ ih => exact .consPartial ih
+  | pair _ _ ihLeft ihRight => exact .pair ihLeft ihRight
+  | pairPartial _ supported ih => exact .pairPartial ih supported
+  | varMono lookup supported =>
+      exact .varMono
+        (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding]) supported
+  | varRecursive lookup used supported =>
+      exact .varRecursive
+        (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding]) used supported
+  | varExported lookup used supported arguments =>
+      exact .varExported
+        (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding]) used supported arguments
+  | app sub _ _ ihf iha => exact .app sub ihf iha
+  | lambda annotation supported _ ih =>
+      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
+        BodyDerives.RuntimeReady.lambda annotation supported ih
+  | letMono annotation _ _ ihr ihb =>
+      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
+        BodyDerives.RuntimeReady.letMono annotation ihr ihb
+  | letRecMono annotation sub _ demand _ ihr ihb =>
+      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
+        BodyDerives.RuntimeReady.letRecMono annotation sub ihr demand ihb
+  | letRecMonoGroup annotations rhss body demands rhssReady demandsSupported bodyReady
+      ihRhss ihBody =>
+      rename_i Δ0 env0 result actuals annotationCount demandCount annotationsOK
+        rhssTyping inclusions bodyTyping
+      refine .letRecMonoGroup annotations rhss body demands
+        (annotationCount := annotationCount) (demandCount := demandCount)
+        (annotationsOK := annotationsOK)
+        (rhssTyping := fun i inside => by
+          simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using
+            rhsToFixedBody (rhssTyping i inside))
+        (inclusions := inclusions)
+        (bodyTyping := by
+          simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using
+            rhsToFixedBody bodyTyping)
+        (fun i inside => by
+          simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using
+            ihRhss i inside)
+        demandsSupported
+        (by
+          simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using ihBody)
+  | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
+      refine .match_ (ctx := .list _ _ _) coverage patterns
+        (fun i br atIndex => by
+          simpa only [fixedBodyEnv_branch] using rhsToFixedBody (bodies i br atIndex))
+        subs (by trivial) ihs ?_ supported
+      intro i br atIndex
+      simpa only [fixedBodyEnv_branch] using ihb i br atIndex
+  | matchBool coverage patterns bodies subs _ _ supported ihs ihb =>
+      refine .match_ (ctx := .bool) coverage patterns
+        (fun i br atIndex => by
+          simpa [BodyBranchContext.refine, BodyBranchContext.extend] using
+            rhsToFixedBody (bodies i br atIndex))
+        (by simpa [BodyBranchContext.refine] using subs) (by trivial) ihs ?_ supported
+      intro i br atIndex
+      simpa [BodyBranchContext.refine, BodyBranchContext.extend] using ihb i br atIndex
+  | matchPair coverage patterns bodies subs _ _ supported ihs ihb =>
+      refine .match_ (ctx := .pair _ _) coverage patterns
+        (fun i br atIndex => by
+          simpa [fixedBodyEnv_pairBranch, BodyBranchContext.refine] using
+            rhsToFixedBody (bodies i br atIndex))
+        (by simpa [BodyBranchContext.refine] using subs) (by trivial) ihs ?_ supported
+      intro i br atIndex
+      simpa [fixedBodyEnv_pairBranch, BodyBranchContext.refine] using ihb i br atIndex
+#print axioms rhsReadyToFixedBody
 
 /-- Runtime readiness is proof-irrelevant once equalities expose the same
     indexed judgement. These helpers keep checker-side context transport local. -/
@@ -5116,6 +5392,15 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               let supported ← Runtime.supported? β
               pure ⟨by simpa only [Expr.stripFound] using
                 (BodyDerives.RuntimeReady.varMono (ids := ids) (rows := rows) (i := i) hv supported.down)⟩)
+      | some (.recursive c) =>
+          let used ← RecursiveHMContract.check c.fixed Δ c.hm [] caller
+          finishBody path hm used.bounds rfl
+            (by simpa only [Expr.stripFound] using BodyDerives.varRecursive hv used) []
+            (do
+              let supported ← Runtime.supported? used.bounds
+              pure ⟨by simpa only [Expr.stripFound] using
+                (BodyDerives.RuntimeReady.varRecursive (ids := ids) (rows := rows)
+                  (i := i) hv used supported.down)⟩)
       | some (.exported s) =>
           if s.counts.quantified.isEmpty then
             let hmUse ← BinderBridge.instantiate s.hm hm

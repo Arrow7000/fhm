@@ -3241,6 +3241,33 @@ by the same proof objects. The seam permits the next structurally recursive
 driver to certify a member's nested groups first and return the identical
 located certificate, avoiding either a module-import cycle or a copied walker.
 
+### Checkpoint 4br — fixed recursion and generalized exits are distinct body bindings
+
+The generalized-body judgment now represents three semantically different
+lexical assumptions: monomorphic values, fixed recursive contracts, and
+generalized exported schemes. Previously its conversion from an ordinary RHS
+environment deliberately turned every recursive contract into an export,
+which is correct after leaving a group but cannot represent traversal inside an
+enclosing SCC. `fixedBodyEnv` is the new non-exit conversion; the existing
+`ordinaryBodyEnv` remains the explicit generalization boundary.
+
+The static and runtime judgments both have a fixed-recursive variable rule.
+Its use consumes `RecursiveHMContract.Use`, so one complete HM vector remains
+fixed within the SCC while count instances may vary; it is not a second route
+to polymorphic recursion. `BodyBindingAt` gives this case the same
+finite-observation interpretation as the ordinary recursive RHS judgment, and
+the exact runtime-environment conversions in both directions require no
+all-arguments premise. Generalized exports retain their stronger independent-
+HM-instance interpretation.
+
+`rhsToFixedBody` embeds every ordinary RHS derivation into this non-exit body
+view, including simultaneous monomorphic groups and all static match forms.
+`rhsReadyToFixedBody` preserves the complete runtime-certified fragment. The
+canonical generalized-body walker can now consume a direct fixed recursive
+variable without silently upgrading it to an exported scheme. This is the
+foundational judgment seam for the structurally recursive deep RHS driver; no
+new generalized-group acceptance rule is claimed at this checkpoint.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
