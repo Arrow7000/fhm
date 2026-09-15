@@ -158,6 +158,24 @@ private def cases : List (String × Bool) := [
       "unwrap o\n"))),
   ("declared recursive RHS receives the same nominal constructor environment", returns
     (run recursiveOptionSource) "BL 0 2 Int"),
+  ("nominal pattern fields remain captured by a generalized local in the branch", returns
+    (run (
+      "type Option a = Some a | None\n" ++
+      "match Some [1, 2] with" ++
+      " | Some xs -> let keep : {a} a -> BL 2 2 Int = \\ignored -> xs in keep 0" ++
+      " | None -> []\n"))
+      "BL 0 2 Int"),
+  ("nominal pattern fields remain captured by a nested recursive group", returns
+    (run (
+      "type Option a = Some a | None\n" ++
+      "match Some [1, 2] with\n" ++
+      "| Some xs ->\n" ++
+      "  let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+      "    \\(ys : BL n n Int) ->" ++
+      " (\\(ignored : List Int) -> (\\(captured : List Int) -> ys) xs) (f ys)\n" ++
+      "  in f xs\n" ++
+      "| None -> []\n"))
+      "BL 0 2 Int"),
   ("parsed generic nominal match checks declaration-indexed exhaustiveness", fails
     (run (
       "type Option a = Some a | None\n" ++

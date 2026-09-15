@@ -3371,13 +3371,26 @@ private def extendMonoCapture? {env} (capture : Option (BodyCapture env)) (β : 
       some (captured.extendMono β (boundsScopedBool_sound inScope))
     else none
 
+/-- Extend a captured body environment by an arbitrary pattern-field prefix.
+    The right fold preserves the de Bruijn order of `fields.map mono ++ env`;
+    failure means at least one field mentions a count outside the closed body
+    capture interface. -/
+private def extendMonoCaptures? {env} (capture : Option (BodyCapture env)) :
+    (fields : List BoundsTy) → Option (BodyCapture (fields.map BodyBinding.mono ++ env))
+  | [] => by simpa using capture
+  | field :: rest => by
+      simpa only [List.map_cons, List.cons_append] using
+        extendMonoCapture? (extendMonoCaptures? capture rest) field
+
 private def extendBranchCapture? {env} (capture : Option (BodyCapture env))
     (ctx : BodyBranchContext) (pattern : MatchPattern) :
     Option (BodyCapture (ctx.extend pattern env)) :=
   match ctx with
   | .bool => capture
   | .wildcardOnly _ => capture
-  | .nominal _ _ _ => none
+  | .nominal ctors typeName args =>
+      extendMonoCaptures? capture
+        ((NominalBranches.fields? ctors typeName args pattern).getD [])
   | .pair left right =>
       if isPair : pattern = .named pairCtorName 2 then
         have extended : (BodyBranchContext.pair left right).extend pattern env =
