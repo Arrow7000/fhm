@@ -2942,6 +2942,32 @@ and runtime support for parameterized nominal data such as pairs.  These are
 language-coverage tasks, not adapter defects.  HM editor/CLI smoke remains
 28 accepted, eight expected HM rejections and zero audit failures.
 
+### Checkpoint 4bf — editor diagnostics consume the canonical artifact
+
+Bounds editor mode now runs `RecursiveFound.synthNodes` over the same
+provenance-rich inferred term as `run --bl`. Successful node reports supply
+binding, occurrence, arbitrary-expression and program-result bounds; failure is
+surfaced as a diagnostic while the already valid HM/provenance symbols remain
+available. No source span or display reconciliation participates in acceptance.
+
+The report presentation aligns the canonical checker's locally opened type
+variables structurally with the HM artifact at the same Core path and with the
+validated declaration enclosing that path. Consequently authored names such as
+`a` and count names such as `n` survive through a declaration, lambda parameter
+and RHS expression instead of leaking worker IDs or unrelated alpha names.
+Hovering whitespace within an authored compound expression selects the smallest
+enclosing expression report and displays its checked `BoundsTy`.
+
+`diagnose --hm` retains Path-R bounds blindness, `--bl` requests the canonical
+checker, and `--auto` selects it exactly when the parsed program contains `BL`.
+The batch default remains HM for compatibility; VS Code and the web editor use
+auto, with an explicit VS Code setting to force either mode. The mode detector
+and CLI policy now live under `FHM/Unverified`; Live no longer imports the legacy
+proof-holed `Bounds.Pipeline` merely for an enum/detector. Build-failing editor
+guards cover canonical success, named skolems/counts, whitespace expression
+hover and retained symbols on rejection. HM semantic smoke, the 36-file scratch
+audit, VS Code lifecycle checks and the exhaustive web hover sweep remain green.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

@@ -4,13 +4,12 @@ import FHM.Unverified.Surface.Lex
 import FHM.SurfaceBridge
 import FHM.Unverified.HMArtifacts
 import FHM.Unverified.HMDisplay
-import FHM.Unverified.PipelineShared
+import FHM.Unverified.BoundsFrontend
 import FHM.InferW
 import FHM.Pretty
 import FHM.Decls
 import FHM.Bounds.Erase
 import FHM.Bounds.Report
-import FHM.Bounds.Pipeline
 import FHM.Bounds.RecursiveFound
 import FHM.Bounds.Check
 import Lean.Data.Json
@@ -35,7 +34,7 @@ open Surface.Lex (BinOpToken Punct Token)
 open SurfaceBridge
 open FHM.Bounds (BoundBinding BoundsTy ProgramBoundsAnns BoundsAnnTy)
 open FHM.Bounds.Report
-open FHM.Bounds.Pipeline
+open FHM.Unverified.BoundsFrontend
 
 /-- Hover typing environment: let schemes + λ/pattern locals (prepend = shadow). -/
 structure HoverEnv where
@@ -1193,6 +1192,16 @@ def locateDeclFail (sp : SpannedProgram) (msg : String) : HoverDiag :=
   | s :: _ => diagAtSpan msg (some s)
   | [] => diagAtSpan msg none
 
+def legacyEditorBinderEnvFromGroups (groups : List (List Surface.Binding)) : List ValName :=
+  groups.reverse.flatMap (·.map (·.name))
+
+def legacyEditorProgramBoundsAnns (binderEnv : List ValName)
+    (ep : FHM.Bounds.Erase.ErasedProgram) : ProgramBoundsAnns :=
+  let surface := ep.toSurfaceAnns
+  { binderAnns := binderEnv.map fun name =>
+      (surface.byName.find? fun ⟨other, _⟩ => other = name).map (·.2)
+    bodyAnn := surface.bodyAnn }
+
 /-- Full hover report for a parsed program + binder spans + spanned program.
 
 Always erases surface `BL` → `List` before lower/infer (same as Live under `--bl`),
@@ -1232,8 +1241,8 @@ def collectHoverLegacyBL (src : String) (p : Surface.Program) (binders : List Bi
           let bodyσ := genScheme [] [] τ
           let report0 :=
             assembleProgramReport pErased.groups (collectTopSchemes c) bodyσ ep
-          let binderEnv := binderEnvFromGroups pErased.groups
-          let boundsAnns := ProgramBoundsAnns.ofLower binderEnv ep
+          let binderEnv := legacyEditorBinderEnvFromGroups pErased.groups
+          let boundsAnns := legacyEditorProgramBoundsAnns binderEnv ep
           -- Body-level match / ascription errors (no binder name): body/match hull.
           let bodyFallback : Option Span := some (bodyDiagSpan sp.body)
           let (report, diags) :=
@@ -1408,7 +1417,7 @@ def diagnosePayloadMode (bounds : Bool) (src : String) : Lean.Json :=
 /-- Select canonical Bounds checking exactly when the parsed program contains
 a `BL` annotation. Intended for editors; batch clients should choose a mode. -/
 def diagnosePayloadAuto (src : String) : Lean.Json :=
-  diagnosePayloadSelect programContainsBl src
+  diagnosePayloadSelect FHM.Unverified.BoundsFrontend.programContainsBl src
 
 /-- Compatibility entry point: HM / Path-R diagnostics. -/
 def diagnosePayload (src : String) : Lean.Json :=

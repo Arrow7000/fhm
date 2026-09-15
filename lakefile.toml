@@ -28,6 +28,7 @@ name = "FHMUnverified"
 roots = [
   "FHM.Unverified.HMArtifacts",
   "FHM.Unverified.HMDisplay",
+  "FHM.Unverified.BoundsFrontend",
   "FHM.Unverified.Surface.Lex",
   "FHM.Unverified.Surface.Parse",
   "FHM.Unverified.Surface.Provenance",
@@ -48,8 +49,8 @@ roots = ["FHM.Unverified.EditorSupportTests"]
 [[lean_lib]]
 name = "FHMCli"
 # Unified CLI modules — `lake build fhm`.
-# Live `--bl` invokes the canonical proof-producing checker; Pipeline remains
-# temporarily imported only for the mode enum/detector and Erase for display.
+# Live `--bl` invokes the canonical proof-producing checker; operational mode
+# selection lives under Unverified and Erase remains temporarily for display.
 roots = ["FHM.Unverified.Cli", "FHM.Unverified.Live", "FHM.Unverified.Diagnose", "FHM.Unverified.PipelineShared"]
 
 [[lean_exe]]
