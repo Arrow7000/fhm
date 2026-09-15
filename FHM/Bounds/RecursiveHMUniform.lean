@@ -4268,11 +4268,10 @@ structure BodyCapture (env : List BodyBinding) where
     generalization boundary. Unlike `BodyCapture`, recursive entries are
     represented by fixed contracts in the body judgment. -/
 structure FixedBodyCapture (env : List BodyBinding) where
+  captureIds : List Nat
   rhsEnv : List Binding
   bodyEnv : fixedBodyEnv rhsEnv = env
-  captured : RecursiveHMEnvironment.Captured [] rhsEnv
-  countClosed : ∀ c, .recursive c ∈ rhsEnv → c.template.counts.captures = []
-  exportCountClosed : ∀ s, .exported s ∈ rhsEnv → s.counts.captures = []
+  captured : RecursiveHMEnvironment.Captured captureIds rhsEnv
 
 private inductive BodyWalkCapture (env : List BodyBinding) where
   | exited : BodyCapture env → BodyWalkCapture env
@@ -4283,22 +4282,12 @@ private def BodyWalkCapture.rhsEnv {env} : BodyWalkCapture env → List Binding
   | .fixed capture => capture.rhsEnv
 
 private def BodyWalkCapture.captured {env} (capture : BodyWalkCapture env) :
-    RecursiveHMEnvironment.Captured [] capture.rhsEnv := by
+    RecursiveHMEnvironment.Captured
+      (match capture with | .exited _ => [] | .fixed capture => capture.captureIds)
+      capture.rhsEnv := by
   cases capture with
   | exited capture => exact capture.captured
   | fixed capture => exact capture.captured
-
-private def BodyWalkCapture.countClosed {env} (capture : BodyWalkCapture env) :
-    ∀ c, .recursive c ∈ capture.rhsEnv → c.template.counts.captures = [] := by
-  cases capture with
-  | exited capture => exact capture.countClosed
-  | fixed capture => exact capture.countClosed
-
-private def BodyWalkCapture.exportCountClosed {env} (capture : BodyWalkCapture env) :
-    ∀ s, .exported s ∈ capture.rhsEnv → s.counts.captures = [] := by
-  cases capture with
-  | exited capture => exact capture.exportCountClosed
-  | fixed capture => exact capture.exportCountClosed
 
 private def emptyBodyCapture : BodyCapture [] where
   rhsEnv := []
@@ -4457,8 +4446,10 @@ private def BodyCapture.extendExported {env} (capture : BodyCapture env)
 
 private def FixedBodyCapture.extendGroup {env output metadata path vectors premises bodyTypes}
     (capture : FixedBodyCapture env)
-    (g : HMDeclaredGroup.Checked output metadata path vectors [] premises bodyTypes capture.rhsEnv) :
+    (g : HMDeclaredGroup.Checked output metadata path vectors capture.captureIds premises
+      bodyTypes capture.rhsEnv) :
     FixedBodyCapture (g.exports.map BodyBinding.exported ++ env) where
+  captureIds := capture.captureIds
   rhsEnv := g.exports.map Binding.exported ++ capture.rhsEnv
   bodyEnv := by
     calc
@@ -4480,23 +4471,10 @@ private def FixedBodyCapture.extendGroup {env output metadata path vectors premi
       · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
         cases impossible
       · exact capture.captured.2 contract outer β argument
-  countClosed := by
-    intro contract member
-    rcases List.mem_append.mp member with inner | outer
-    · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
-      cases impossible
-    · exact capture.countClosed contract outer
-  exportCountClosed := by
-    intro s member
-    rcases List.mem_append.mp member with inner | outer
-    · obtain ⟨t, source, same⟩ := List.mem_map.mp inner
-      injection same with same
-      subst s
-      exact checkedMembersExportCountsClosed g.members t source
-    · exact capture.exportCountClosed s outer
 
 private def FixedBodyCapture.extendMono {env} (capture : FixedBodyCapture env) (β : BoundsTy)
-    (scope : BoundsScoped [] β) : FixedBodyCapture (.mono β :: env) where
+    (scope : BoundsScoped capture.captureIds β) : FixedBodyCapture (.mono β :: env) where
+  captureIds := capture.captureIds
   rhsEnv := .mono β :: capture.rhsEnv
   bodyEnv := by
     change .mono β :: fixedBodyEnv capture.rhsEnv = .mono β :: env
@@ -4511,20 +4489,11 @@ private def FixedBodyCapture.extendMono {env} (capture : FixedBodyCapture env) (
       rcases List.mem_cons.mp member with head | tail
       · cases head
       · exact capture.captured.2 c tail a argument
-  countClosed := by
-    intro c member
-    rcases List.mem_cons.mp member with head | tail
-    · cases head
-    · exact capture.countClosed c tail
-  exportCountClosed := by
-    intro s member
-    rcases List.mem_cons.mp member with head | tail
-    · cases head
-    · exact capture.exportCountClosed s tail
 
 private def FixedBodyCapture.extendExported {env} (capture : FixedBodyCapture env)
-    (s : HMCountScheme.Scheme) (closed : s.counts.captures = []) :
+    (s : HMCountScheme.Scheme) :
     FixedBodyCapture (.exported s :: env) where
+  captureIds := capture.captureIds
   rhsEnv := .exported s :: capture.rhsEnv
   bodyEnv := by
     change .exported s :: fixedBodyEnv capture.rhsEnv = .exported s :: env
@@ -4539,25 +4508,19 @@ private def FixedBodyCapture.extendExported {env} (capture : FixedBodyCapture en
       rcases List.mem_cons.mp member with head | tail
       · cases head
       · exact capture.captured.2 c tail a argument
-  countClosed := by
-    intro c member
-    rcases List.mem_cons.mp member with head | tail
-    · cases head
-    · exact capture.countClosed c tail
-  exportCountClosed := by
-    intro t member
-    rcases List.mem_cons.mp member with head | tail
-    · cases head; exact closed
-    · exact capture.exportCountClosed t tail
 
 private def extendMonoCapture? {env} (capture : Option (BodyWalkCapture env)) (β : BoundsTy) :
     Option (BodyWalkCapture (.mono β :: env)) :=
   capture.bind fun captured =>
-    if inScope : boundsScopedBool [] β = true then
-      match captured with
-      | .exited capture => some (.exited (capture.extendMono β (boundsScopedBool_sound inScope)))
-      | .fixed capture => some (.fixed (capture.extendMono β (boundsScopedBool_sound inScope)))
-    else none
+    match captured with
+    | .exited capture =>
+        if inScope : boundsScopedBool [] β = true then
+          some (.exited (capture.extendMono β (boundsScopedBool_sound inScope)))
+        else none
+    | .fixed capture =>
+        if inScope : boundsScopedBool capture.captureIds β = true then
+          some (.fixed (capture.extendMono β (boundsScopedBool_sound inScope)))
+        else none
 
 /-- Extend a captured body environment by an arbitrary pattern-field prefix.
     The right fold preserves the de Bruijn order of `fields.map mono ++ env`;
@@ -6274,7 +6237,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       | some (.fixed captured) =>
           let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
             recursiveFixedTypeCaptures captured.rhsEnv
-          let assembled ← HMDeclaredCoordinates.check sourceOutput metadata path [] Δ
+          let assembled ← HMDeclaredCoordinates.check sourceOutput metadata path captured.captureIds Δ
             typeCaptures captured.rhsEnv schemes ctors
           let g := assembled.checked
           have sourceEq : Expr.found hm (Expr.letRec annotations rhss body) =

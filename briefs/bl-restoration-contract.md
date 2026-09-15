@@ -3330,6 +3330,23 @@ rather than changing capture mode. The remaining integration seam is to make
 declared recursive-member checking invoke this deep fixed traversal and return
 the member certificate expected by group assembly.
 
+### Checkpoint 4bv — fixed captures retain their count-coordinate scope
+
+A fixed body capture is no longer incorrectly restricted to
+`RecursiveHMEnvironment.Captured []`. It now records the exact count-coordinate
+scope in which the enclosing SCC's fixed HM vectors live. Monomorphic binders
+and pattern fields may extend that capture precisely when their bounds are
+scoped by those coordinates, and a nested generalized group receives the same
+coordinates as its explicit captured-count interface.
+
+This distinction is essential inside a count-universal recursive member: a
+fixed argument such as `BL n n a` is not closed, but it is valid under that
+member's `n` telescope. Treating it as closed would reject the intended nested
+group; dropping the check would let counts escape. Already-exited program
+captures remain closed exactly as before. The next certificate adapter must
+also be scoped over the reconciled free/type-slot readers; the current public
+body result is still the identity-reader specialization.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
