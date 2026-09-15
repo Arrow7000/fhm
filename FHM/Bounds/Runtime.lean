@@ -312,6 +312,15 @@ theorem letRec_closed {annotations rhss body}
   simp only [Expr.varsBelow, Nat.zero_add, Bool.and_eq_true]
   exact ⟨bindings_scoped scope, bodyScope⟩
 
+/-- Captured recursive groups are scoped by their group binders followed by
+    the surrounding lexical depth.  `letRec_closed` is the depth-zero case. -/
+theorem letRec_scoped {annotations rhss body depth}
+    (scope : ∀ rhs ∈ rhss, rhs.varsBelow (depth + rhss.length) = true)
+    (bodyScope : body.varsBelow (depth + rhss.length) = true) :
+    (Expr.letRec annotations rhss body).varsBelow depth = true := by
+  simp only [Expr.varsBelow, Bool.and_eq_true]
+  exact ⟨bindings_scoped scope, bodyScope⟩
+
 /-- Actual closing substitution removes exactly its environment's free term
     slots. Scope under nested and mutual binders is retained, not assumed. -/
 theorem closing_scoped (terms : List Expr)

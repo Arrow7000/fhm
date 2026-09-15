@@ -146,6 +146,64 @@ private def checkRepresented (ts : List Ty) (env : List Binding) :
         · exact head.down c hb
         · exact tail.down c ht⟩
 
+private def checkMonoRepresentedHead (ts : List Ty) (b : Binding) :
+    Except String (PLift (∀ β, .mono β = b → Synth.BoundsTy.toTy β ∈ ts)) := do
+  match b with
+  | .mono β =>
+      let h ← checkMemberTy (Synth.BoundsTy.toTy β) ts
+      pure ⟨by intro a ha; cases ha; exact h.down⟩
+  | .recursive _ => pure ⟨by intro β hβ; cases hβ⟩
+  | .exported _ => pure ⟨by intro β hβ; cases hβ⟩
+
+private def checkMonoRepresented (ts : List Ty) (env : List Binding) :
+    Except String (PLift (∀ β, .mono β ∈ env → Synth.BoundsTy.toTy β ∈ ts)) := do
+  match env with
+  | [] => pure ⟨by simp⟩
+  | b :: rest =>
+      let head ← checkMonoRepresentedHead ts b
+      let tail ← checkMonoRepresented ts rest
+      pure ⟨by
+        intro β hβ
+        rcases List.mem_cons.mp hβ with hb | ht
+        · exact head.down β hb
+        · exact tail.down β ht⟩
+
+private def checkFixedRepresentedHead (ts : List Ty) (b : Binding) :
+    Except String (PLift (∀ c, .recursive c = b →
+      ∀ β ∈ c.fixed.types, Synth.BoundsTy.toTy β ∈ ts)) := do
+  match b with
+  | .mono _ => pure ⟨by intro c hc; cases hc⟩
+  | .recursive c =>
+      let rec loop (types : List BoundsTy) :
+          Except String (PLift (∀ β ∈ types, Synth.BoundsTy.toTy β ∈ ts)) := do
+        match types with
+        | [] => pure ⟨by simp⟩
+        | β :: rest =>
+            let head ← checkMemberTy (Synth.BoundsTy.toTy β) ts
+            let tail ← loop rest
+            pure ⟨by
+              intro a ha
+              rcases List.mem_cons.mp ha with h | h
+              · cases h; exact head.down
+              · exact tail.down a h⟩
+      let represented ← loop c.fixed.types
+      pure ⟨by intro d hd; cases hd; exact represented.down⟩
+  | .exported _ => pure ⟨by intro c hc; cases hc⟩
+
+private def checkFixedRepresented (ts : List Ty) (env : List Binding) :
+    Except String (PLift (∀ c, .recursive c ∈ env →
+      ∀ β ∈ c.fixed.types, Synth.BoundsTy.toTy β ∈ ts)) := do
+  match env with
+  | [] => pure ⟨by simp⟩
+  | b :: rest =>
+      let head ← checkFixedRepresentedHead ts b
+      let tail ← checkFixedRepresented ts rest
+      pure ⟨by
+        intro c hc
+        rcases List.mem_cons.mp hc with hb | ht
+        · exact head.down c hb
+        · exact tail.down c ht⟩
+
 private def checkExportRepresentedHead (ts : List Ty) (b : Binding) :
     Except String (PLift (∀ s, .exported s = b → s.hm.body ∈ ts)) := do
   match b with
@@ -407,6 +465,9 @@ structure Checked (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
   distinctCounts : interfaces.quantified.Nodup
   independentCaptures : ∀ i ∈ captures, i ∉ interfaces.quantified
   agreement : Consistent interfaces.proposals
+  outerMonoRepresented : ∀ β, .mono β ∈ outerEnv → Synth.BoundsTy.toTy β ∈ outerTypes
+  outerFixedRepresented : ∀ c, .recursive c ∈ outerEnv →
+    ∀ β ∈ c.fixed.types, Synth.BoundsTy.toTy β ∈ outerTypes
   members : CheckedMembers (interfaces.contracts.map Binding.recursive ++ outerEnv) interfaces
 
 theorem Checked.memberCount {output metadata path vectors captures premises outerTypes outerEnv}
@@ -448,13 +509,14 @@ theorem Checked.memberAtRhs {output metadata path vectors captures premises oute
   have sourceRhs := g.memberRhs selected.member
   simpa only [selected.position, Nat.zero_add] using sourceRhs
 
-/-- Every actual erased RHS of a closed checked group has exactly the group's
-    lexical slots. ALL-member certification discharges the scope premise of
-    simultaneous runtime closure, without guessing scope from final HM types. -/
-theorem Checked.rhssScoped {output metadata path vectors captures premises outerTypes}
-    (g : Checked output metadata path vectors captures premises outerTypes []) :
+/-- Every actual erased RHS is scoped by the recursive group followed by its
+    exact captured outer environment. ALL-member certification supplies this
+    structural fact; it is not guessed from the final HM type. -/
+theorem Checked.rhssScopedCaptured
+    {output metadata path vectors captures premises outerTypes outerEnv}
+    (g : Checked output metadata path vectors captures premises outerTypes outerEnv) :
     ∀ rhs ∈ g.rhss.map Expr.stripFound,
-      rhs.varsBelow (g.rhss.map Expr.stripFound).length = true := by
+      rhs.varsBelow ((g.rhss.map Expr.stripFound).length + outerEnv.length) = true := by
   intro rhs member
   obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
   obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp originalMember
@@ -465,8 +527,16 @@ theorem Checked.rhssScoped {output metadata path vectors captures premises outer
   have originalEq := Option.some.inj (atIndex.symm.trans sourceRhs)
   rw [originalEq]
   have scope := selected.rhs.certificate.implementation.typing.varsBelow
-  simpa only [Expr.stripFound, List.length_map, List.length_append, List.length_nil,
-    Nat.add_zero, g.memberCount] using scope
+  simpa only [Expr.stripFound, List.length_map, List.length_append,
+    g.memberCount] using scope
+
+/-- Closed groups are the empty-capture specialization of the captured scope
+    theorem used by the original simultaneous tying rule. -/
+theorem Checked.rhssScoped {output metadata path vectors captures premises outerTypes}
+    (g : Checked output metadata path vectors captures premises outerTypes []) :
+    ∀ rhs ∈ g.rhss.map Expr.stripFound,
+      rhs.varsBelow (g.rhss.map Expr.stripFound).length = true := by
+  simpa only [List.length_nil, Nat.add_zero] using g.rhssScopedCaptured
 
 structure ExportedUse {output metadata path vectors captures premises outerTypes outerEnv}
     (g : Checked output metadata path vectors captures premises outerTypes outerEnv)
@@ -505,10 +575,12 @@ def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
           if hq : ps.quantified.Nodup then
             if hc : captures.all (fun i => !ps.quantified.contains i) = true then
               let agreement ← checkConsistent ps.proposals
+              let outerMonoRepresented ← checkMonoRepresented outerTypes outerEnv
+              let outerFixedRepresented ← checkFixedRepresented outerTypes outerEnv
               let checked ← checkMembers ps (ps.contracts.map Binding.recursive ++ outerEnv) schemes
               pure ⟨hm, anns, rhss, body, hs, hp, ha, hv, ps, hq,
                 (fun i hi => by simpa [List.contains_iff_mem] using List.all_eq_true.mp hc i hi),
-                agreement.down, checked⟩
+                agreement.down, outerMonoRepresented.down, outerFixedRepresented.down, checked⟩
             else throw "bounds: common captures overlap recursive member count telescopes"
           else throw "bounds: recursive member count telescopes overlap"
         else throw "bounds: recursive opaque vector/RHS arity mismatch"
@@ -526,6 +598,7 @@ def check (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
 #print axioms CheckedMembers.memberAt
 #print axioms Checked.exportCount
 #print axioms Checked.memberAtRhs
+#print axioms Checked.rhssScopedCaptured
 #print axioms Checked.rhssScoped
 #print axioms Checked.checkExportedUse
 #print axioms check
