@@ -351,6 +351,120 @@ def EnvAt.down {bound free σ small large env}
       intro Δ found caller used arguments premises
       exact (actual Δ found caller used arguments premises).down hb hf le
 
+/-- Close only the outer variables of every recursive RHS.  The first
+    `rhss.length` variables remain protected for the simultaneously tied group. -/
+def closeOuterRhss (rhss : List Expr) (outer : List Expr) : List Expr :=
+  rhss.map fun rhs => rhs.substN rhss.length outer
+
+theorem closeOuterRhss_length (rhss outer : List Expr) :
+    (closeOuterRhss rhss outer).length = rhss.length := by
+  simp [closeOuterRhss]
+
+theorem closeOuterRhss_scoped {bound free σ budget outerEnv}
+    (outer : EnvAt bound free σ budget outerEnv) {rhss : List Expr}
+    (scope : ∀ rhs ∈ rhss, rhs.varsBelow (rhss.length + outerEnv.length) = true) :
+    ∀ rhs ∈ closeOuterRhss rhss outer.terms, rhs.varsBelow rhss.length = true := by
+  intro rhs member
+  obtain ⟨source, sourceMember, rfl⟩ := List.mem_map.mp member
+  apply Runtime.closing_scoped outer.terms outer.closed source rhss.length
+  rw [outer.arity]
+  exact scope source sourceMember
+
+/-- Tie a recursive group while retaining an already realized outer lexical
+    environment.  Recursive replacements contain the outer-closing
+    substitution exactly once; the member premise is still checked against the
+    single combined `inner ++ outer` assumption environment.
+
+    This is the captured analogue of `tieGroup`, proved by the same finite
+    observation-budget induction.  It does not assume termination and does not
+    grant any group interface on its own. -/
+def EnvAt.tieGroupCaptured {bound free σ innerEnv outerEnv}
+    (annotations : List (Option PolyTy)) (rhss : List Expr)
+    (arity : rhss.length = innerEnv.length)
+    (scope : ∀ rhs ∈ rhss, rhs.varsBelow (rhss.length + outerEnv.length) = true)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (rhsSafe : ∀ budget (e : EnvAt bound free σ budget (innerEnv ++ outerEnv))
+      i (inside : i < innerEnv.length),
+      BindingAt bound free σ budget innerEnv[i]
+        (rhss[i]'(by rw [arity]; exact inside) |>.substN 0 e.terms)) :
+    ∀ budget (outer : EnvAt bound free σ budget outerEnv),
+      { e : EnvAt bound free σ budget (innerEnv ++ outerEnv) //
+        e.terms = Runtime.recursiveTerms annotations (closeOuterRhss rhss outer.terms) ++
+          outer.terms }
+  | 0, outer => by
+      let closedRhss := closeOuterRhss rhss outer.terms
+      let recursive := Runtime.recursiveTerms annotations closedRhss
+      have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true :=
+        Runtime.recursiveTerms_closed (by
+          simpa only [closedRhss, closeOuterRhss_length] using
+            closeOuterRhss_scoped outer scope)
+      refine ⟨{ terms := recursive ++ outer.terms
+                arity := ?_
+                closed := ?_
+                denotes := fun i inside => BindingAt.zero bound free σ _ _ }, rfl⟩
+      · simp only [List.length_append, recursive, Runtime.recursiveTerms, List.length_map,
+          closedRhss, closeOuterRhss_length, outer.arity, arity]
+      · intro term member
+        exact (List.mem_append.mp member).elim (recursiveClosed term) (outer.closed term)
+  | budget + 1, outer => by
+      let previousOuter := outer.down hb hf (by omega : budget ≤ budget + 1)
+      let previous := EnvAt.tieGroupCaptured annotations rhss arity scope hb hf rhsSafe
+        budget previousOuter
+      let closedRhss := closeOuterRhss rhss outer.terms
+      let recursive := Runtime.recursiveTerms annotations closedRhss
+      have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true :=
+        Runtime.recursiveTerms_closed (by
+          simpa only [closedRhss, closeOuterRhss_length] using
+            closeOuterRhss_scoped outer scope)
+      refine ⟨{ terms := recursive ++ outer.terms
+                arity := ?_
+                closed := ?_
+                denotes := ?_ }, rfl⟩
+      · simp only [List.length_append, recursive, Runtime.recursiveTerms, List.length_map,
+          closedRhss, closeOuterRhss_length, outer.arity, arity]
+      · intro term member
+        exact (List.mem_append.mp member).elim (recursiveClosed term) (outer.closed term)
+      · intro i inside
+        by_cases inner : i < innerEnv.length
+        · have rhsInside : i < rhss.length := by rw [arity]; exact inner
+          have safe := rhsSafe budget previous.val i inner
+          have previousTerms : previousOuter.terms = outer.terms := rfl
+          rw [previous.property, previousTerms] at safe
+          have composed := Runtime.closing_compose outer.terms recursive outer.closed
+            recursiveClosed (rhss[i]'rhsInside) 0
+          have recursiveLength : recursive.length = rhss.length := by
+            simp only [recursive, Runtime.recursiveTerms, List.length_map,
+              closedRhss, closeOuterRhss_length]
+          rw [Nat.zero_add, recursiveLength] at composed
+          rw [← composed] at safe
+          have closedInside : i < closedRhss.length := by
+            rw [closeOuterRhss_length]
+            exact rhsInside
+          have recursiveInside : i < recursive.length := by rw [recursiveLength]; exact rhsInside
+          have rhsEntry : closedRhss[i]'closedInside =
+              (rhss[i]'rhsInside).substN rhss.length outer.terms := by
+            simp only [closedRhss, closeOuterRhss, List.getElem_map]
+          have recursiveEntry : recursive[i]'recursiveInside =
+              .letRec annotations closedRhss (closedRhss[i]'closedInside) := by
+            simp only [recursive, Runtime.recursiveTerms, List.getElem_map]
+          rw [List.getElem_append_left inner, List.getElem_append_left recursiveInside]
+          rw [recursiveEntry, rhsEntry]
+          exact BindingAt.prepend SmallStep.Step.letRecUnfold safe
+        · have outerInside : i - innerEnv.length < outerEnv.length := by
+            simp only [List.length_append] at inside
+            omega
+          have meaning := outer.denotes (i - innerEnv.length) outerInside
+          have recursiveLength : recursive.length = innerEnv.length := by
+            simp only [recursive, Runtime.recursiveTerms, List.length_map,
+              closedRhss, closeOuterRhss_length, arity]
+          have envPosition : innerEnv.length ≤ i := by omega
+          have recursivePosition : recursive.length ≤ i := by rw [recursiveLength]; exact envPosition
+          rw [List.getElem_append_right envPosition,
+            List.getElem_append_right recursivePosition]
+          simpa only [recursiveLength] using meaning
+
+#print axioms EnvAt.tieGroupCaptured
+
 def EnvAt.extendMono {bound free σ budget env}
     (e : EnvAt bound free σ budget env) (β : BoundsTy) (term : Expr)
     (closed : term.varsBelow 0 = true) (safe : Runtime.TermAt bound free σ budget β term) :
