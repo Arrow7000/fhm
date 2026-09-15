@@ -1164,6 +1164,124 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCaptured
 
 #print axioms HMDeclaredGroup.Checked.exportEnvironmentCaptured
 
+/-- Captured generalized exits while the outer SCC is still being checked.
+    The inner group's exports are polymorphic, but the already-present outer
+    recursive bindings retain their exact fixed-contract interpretation. -/
+def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCapturedFixed
+    {output metadata path vectors captures premises bodyTypes outerEnv}
+    (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes outerEnv)
+    (ready : ∀ offset (inside : offset < g.exports.length),
+      ScopedDerives.RuntimeReady (g.members.memberAt offset inside).rhs.certificate.implementation.typing)
+    (demandSupport : ∀ offset (inside : offset < g.exports.length),
+      Runtime.Supported (g.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds)
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat) (outer : BodyEnvAt bound free σ budget (fixedBodyEnv outerEnv)) :
+    { e : BodyEnvAt bound free σ budget
+        (g.exports.map BodyBinding.exported ++ fixedBodyEnv outerEnv) //
+      e.terms = Runtime.recursiveTerms g.annotations
+        (closeOuterRhss (g.rhss.map Expr.stripFound) outer.terms) ++ outer.terms } := by
+  let outerRhs := outer.toFixedEnvAt
+  let closedRhss := closeOuterRhss (g.rhss.map Expr.stripFound) outer.terms
+  let recursive := Runtime.recursiveTerms g.annotations closedRhss
+  have closedScope : ∀ rhs ∈ closedRhss,
+      rhs.varsBelow (g.rhss.map Expr.stripFound).length = true := by
+    apply closeOuterRhss_scoped outerRhs
+    simpa only [fixedBodyEnv, List.length_map, Nat.add_comm] using g.rhssScopedCaptured
+  have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+    apply Runtime.recursiveTerms_closed
+    simpa only [closedRhss, closeOuterRhss_length] using closedScope
+  refine ⟨{ terms := recursive ++ outer.terms
+            arity := ?_
+            closed := ?_
+            denotes := ?_ }, rfl⟩
+  · simp only [List.length_append, recursive, Runtime.recursiveTerms, List.length_map,
+      closedRhss, closeOuterRhss_length, g.exportCount, fixedBodyEnv, outer.arity]
+  · intro term member
+    exact (List.mem_append.mp member).elim (recursiveClosed term) (outer.closed term)
+  · intro i inside
+    by_cases groupInside : i < g.exports.length
+    · let selected := g.members.memberAt i groupInside
+      have exported := List.getElem?_eq_some_iff.mp selected.selection
+      have exportEntry : g.exports[i] = selected.rhs.certificate.interface.scheme :=
+        exported.choose_spec
+      have exportBindingInside : i < (g.exports.map BodyBinding.exported).length := by
+        simpa only [List.length_map] using groupInside
+      have rhsInside : i < (g.rhss.map Expr.stripFound).length := by
+        simpa only [List.length_map, g.exportCount] using groupInside
+      have recursiveInside : i < recursive.length := by
+        simpa only [recursive, Runtime.recursiveTerms, List.length_map,
+          closedRhss, closeOuterRhss_length] using rhsInside
+      rw [List.getElem_append_left exportBindingInside, List.getElem_map, exportEntry,
+        List.getElem_append_left recursiveInside]
+      simp only [BodyBindingAt]
+      intro Δ found caller used arguments rawPremises
+      let f := argument selected.rhs.certificate.implementation.opening.ids
+        (SchemeUse.vector used.types)
+      let lc := RecursiveHMUniversal.replacementLC
+        selected.rhs.certificate.implementation.opening.ids (SchemeUse.vector used.types)
+        (RecursiveHMUniversal.argumentsLC used.types used.typesLC)
+      have typeScope : ∀ i, BoundsScoped caller (f i) :=
+        RecursiveHMUniversal.replacementScope _ _ (SchemeUse.vector_scope used.typesScoped)
+      have slotsSupport : ∀ i, Runtime.Supported (SchemeUse.vector used.types i) := by
+        intro slot
+        cases atIndex : used.types[slot]? with
+        | none => simp only [SchemeUse.vector, atIndex, Option.getD_none]; exact .prim
+        | some a =>
+            simpa only [SchemeUse.vector, atIndex, Option.getD_some] using
+              arguments a (List.mem_of_getElem? atIndex)
+      have fullSupport : ∀ i, Runtime.Supported (f i) :=
+        Runtime.Supported.argument _ _ slotsSupport
+      have fixed := selected.rhs.exitMapFixed used.types
+      have outerFixed := g.exitMapOuterTypesFixed i groupInside used.types
+      have outerEq : outerEnv.map (mapBinding f lc) = outerEnv :=
+        RecursiveHMEnvironment.typesFixed lc outerFixed
+      let mappedOuter : EnvAt bound free σ budget (outerEnv.map (mapBinding f lc)) := by
+        refine { terms := outerRhs.terms, arity := ?_, closed := outerRhs.closed, denotes := ?_ }
+        · simpa only [List.length_map] using outerRhs.arity
+        · simpa only [outerEq] using outerRhs.denotes
+      let realized := g.runtimeEnvironmentCaptured caller f lc typeScope fullSupport fixed ready
+        demandSupport bound free σ hb hf budget mappedOuter
+      have contractInside : i < g.interfaces.contracts.length := by
+        simpa only [g.memberCount, g.exportCount] using groupInside
+      have mappedContractInside : i <
+          ((g.interfaces.contracts.map Binding.recursive).map (mapBinding f lc)).length := by
+        simpa only [List.length_map] using contractInside
+      have fullInside : i <
+          ((g.interfaces.contracts.map Binding.recursive).map (mapBinding f lc) ++
+            outerEnv.map (mapBinding f lc)).length := by
+        simp only [List.length_append, List.length_map]
+        omega
+      have lookup : ((g.interfaces.contracts.map Binding.recursive).map
+          (mapBinding f lc))[i] = .recursive (selected.member.contract.mapTypes f lc) := by
+        rw [List.getElem_map, List.getElem_map]
+        exact congrArg (fun contract : Contract =>
+          Binding.recursive (contract.mapTypes f lc))
+          (List.getElem?_eq_some_iff.mp selected.contractSelection).choose_spec
+      have meaning := realized.val.denotes i fullInside
+      rw [List.getElem_append_left mappedContractInside, lookup] at meaning
+      simp only [BindingAt] at meaning
+      have safe := meaning Δ caller (selected.rhs.fixedExitUse used) rawPremises
+      rw [selected.rhs.fixedExitUse_bounds used] at safe
+      simpa only [realized.property, mappedOuter, outerRhs, BodyEnvAt.toFixedEnvAt,
+        recursive, closedRhss, List.getElem_append_left recursiveInside] using safe
+    · have outerInside : i - g.exports.length < (fixedBodyEnv outerEnv).length := by
+        simp only [List.length_append, List.length_map, fixedBodyEnv] at inside ⊢
+        omega
+      have meaning := outer.denotes (i - g.exports.length) outerInside
+      have recursiveLength : recursive.length = g.exports.length := by
+        simp only [recursive, Runtime.recursiveTerms, List.length_map,
+          closedRhss, closeOuterRhss_length, g.exportCount]
+      have exportPosition : g.exports.length ≤ i := by omega
+      have recursivePosition : recursive.length ≤ i := by rw [recursiveLength]; exact exportPosition
+      have exportBindingPosition : (g.exports.map BodyBinding.exported).length ≤ i := by
+        simpa only [List.length_map] using exportPosition
+      rw [List.getElem_append_right exportBindingPosition,
+        List.getElem_append_right recursivePosition]
+      simpa only [List.length_map, recursiveLength] using meaning
+
+#print axioms HMDeclaredGroup.Checked.exportEnvironmentCapturedFixed
+
 /-- One branch path for List refinements and finite nominal coverage. Generalized
     exports remain in the environment behind any newly opened mono fields. -/
 inductive BodyBranchContext where
@@ -1917,6 +2035,20 @@ inductive ScopedBodyDerives :
         g.body.stripFound bodyResult →
       ScopedBodyDerives types slots ids rows Δ (ordinaryBodyEnv outerEnv)
         (.letRec g.annotations (g.rhss.map Expr.stripFound) g.body.stripFound) bodyResult
+  /-- Introduce a nested generalized group while remaining inside an enclosing
+      SCC. The new group's members become exported in its body, but captured
+      recursive assumptions retain their fixed contracts. -/
+  | letRecFixed {output metadata path vectors captures premises bodyTypes outerEnv bodyResult}
+      (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes outerEnv) :
+      (∀ caller (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+        (scope : ∀ i, BoundsScoped caller (f i))
+        (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ outerEnv)),
+        Members f lc scope g.members) →
+      ScopedBodyDerives types slots ids rows Δ
+        (g.exports.map BodyBinding.exported ++ fixedBodyEnv outerEnv)
+        g.body.stripFound bodyResult →
+      ScopedBodyDerives types slots ids rows Δ (fixedBodyEnv outerEnv)
+        (.letRec g.annotations (g.rhss.map Expr.stripFound) g.body.stripFound) bodyResult
 
 /-- Identity-interpreted compatibility view of the same body judgment. -/
 abbrev BodyDerives := ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar
@@ -1935,7 +2067,7 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       varMono | varRecursive | varExported | app | lambda |
       letMono | letRecMono | letRecMonoGroup | letPinned | letRecPinnedMono | letRecInferredMono |
           letExported | letRecExported |
-          match_ | letRec =>
+          match_ | letRec | letRecFixed =>
         intro p source; cases source
 
 /-- Ordinary RHS proofs can be reused for local introduction in mono captured
@@ -2444,6 +2576,7 @@ abbrev letRecPinnedMono := @ScopedBodyDerives.letRecPinnedMono BoundsTy.fvar Bou
 abbrev letRecInferredMono := @ScopedBodyDerives.letRecInferredMono BoundsTy.fvar BoundsTy.bvar
 abbrev match_ := @ScopedBodyDerives.match_ BoundsTy.fvar BoundsTy.bvar
 abbrev letRec := @ScopedBodyDerives.letRec BoundsTy.fvar BoundsTy.bvar
+abbrev letRecFixed := @ScopedBodyDerives.letRecFixed BoundsTy.fvar BoundsTy.bvar
 end BodyDerives
 
 theorem BodyBranchContext.Covers.assuming {ctx : BodyBranchContext} {Δ Δ' branches}
@@ -2519,6 +2652,7 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
         (fun i br hb => iharms i br hb (RecursiveTyping.assuming_append hp))
         (fun i br hb => (subs i br hb).assuming (RecursiveTyping.assuming_append hp))
   | letRec g universal _ ihbody => exact .letRec g universal (ihbody hp)
+  | letRecFixed g universal _ ihbody => exact .letRecFixed g universal (ihbody hp)
 
 private theorem bodyBranches_scoped {depth branches}
     (bodies : ∀ br ∈ branches, br.2.varsBelow (depth + br.1.bindCount) = true) :
@@ -2625,6 +2759,13 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
           g.rhssScopedCaptured rhs member
       · simpa only [List.length_append, List.length_map, g.exportCount,
           ordinaryBodyEnv, Nat.add_comm] using ihbody
+  | letRecFixed g _ _ ihbody =>
+      apply Runtime.letRec_scoped
+      · intro rhs member
+        simpa only [fixedBodyEnv, List.length_map, Nat.add_comm] using
+          g.rhssScopedCaptured rhs member
+      · simpa only [List.length_append, List.length_map, g.exportCount,
+          fixedBodyEnv, Nat.add_comm] using ihbody
 
 theorem BodyEnvAt.closes {bound free σ budget env types slots ids rows Δ expr β}
     (e : BodyEnvAt bound free σ budget env) (h : ScopedBodyDerives types slots ids rows Δ env expr β) :
@@ -2869,6 +3010,20 @@ inductive RuntimeReady :
         Runtime.Supported (g.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds) →
       RecursiveArgumentsSupported outerEnv →
       RuntimeReady hbody → RuntimeReady (.letRec g universal hbody)
+  | letRecFixed
+      (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes outerEnv)
+      (universal : ∀ caller (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+        (scope : ∀ i, BoundsScoped caller (f i))
+        (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ outerEnv)),
+        Members f lc scope g.members)
+      {hbody : ScopedBodyDerives types slots ids rows Δ
+        (g.exports.map BodyBinding.exported ++ fixedBodyEnv outerEnv)
+        g.body.stripFound result} :
+      (∀ offset (inside : offset < g.exports.length),
+        ScopedDerives.RuntimeReady (g.members.memberAt offset inside).rhs.certificate.implementation.typing) →
+      (∀ offset (inside : offset < g.exports.length),
+        Runtime.Supported (g.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds) →
+      RuntimeReady hbody → RuntimeReady (.letRecFixed g universal hbody)
 
 theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBodyDerives types slots ids rows Δ env e β}
     (ready : RuntimeReady h) : Runtime.Supported β := by
@@ -2895,6 +3050,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | letRecExported _ _ _ _ _ _ _ body => exact body
   | match_ _ _ _ _ _ _ _ result => exact result
   | letRec _ _ _ _ _ _ body => exact body
+  | letRecFixed _ _ _ _ _ body => exact body
 
 /-- Fundamental theorem for the supported generalized-body derivation. Closed
     group introduction discharges recursive assumptions from the actual checked
@@ -3451,6 +3607,41 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
             (.letRec g.annotations closedRhss
               (g.body.stripFound.substN (g.rhss.map Expr.stripFound).length previous.terms))
           exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
+  | letRecFixed g universal membersReady demandSupport bodyReady ihbody =>
+      intro budget premises e
+      cases budget with
+      | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+      | succ budget =>
+          let previous := e.down hb hf (by omega : budget ≤ budget + 1)
+          let realized := g.exportEnvironmentCapturedFixed membersReady demandSupport
+            bound free σ hb hf budget previous
+          have bodySafe := ihbody budget premises realized.val
+          rw [realized.property] at bodySafe
+          let closedRhss := closeOuterRhss (g.rhss.map Expr.stripFound) previous.terms
+          let recursive := Runtime.recursiveTerms g.annotations closedRhss
+          have closedScope : ∀ rhs ∈ closedRhss,
+              rhs.varsBelow (g.rhss.map Expr.stripFound).length = true := by
+            let outerRhs := previous.toFixedEnvAt
+            apply closeOuterRhss_scoped outerRhs
+            simpa only [fixedBodyEnv, List.length_map, Nat.add_comm] using
+              g.rhssScopedCaptured
+          have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+            apply Runtime.recursiveTerms_closed
+            simpa only [closedRhss, closeOuterRhss_length] using closedScope
+          have composed := Runtime.closing_compose previous.terms recursive previous.closed
+            recursiveClosed g.body.stripFound 0
+          have recursiveLength : recursive.length = (g.rhss.map Expr.stripFound).length := by
+            simp only [recursive, Runtime.recursiveTerms, List.length_map,
+              closedRhss, closeOuterRhss_length]
+          rw [Nat.zero_add, recursiveLength] at composed
+          rw [← composed] at bodySafe
+          have sameTerms : previous.terms = e.terms := rfl
+          rw [← sameTerms]
+          simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+          change Runtime.TermAt bound free σ (budget + 1) _
+            (.letRec g.annotations closedRhss
+              (g.body.stripFound.substN (g.rhss.map Expr.stripFound).length previous.terms))
+          exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
 
 #print axioms RuntimeReady.supported
 #print axioms RuntimeReady.termAt
@@ -3538,6 +3729,8 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
         (fun i br atIndex => ihb i br atIndex (RecursiveTyping.assuming_append hp)) result
   | letRec g universal members demand outerArguments _ ihb =>
       exact .letRec g universal members demand outerArguments (ihb hp)
+  | letRecFixed g universal members demand _ ihb =>
+      exact .letRecFixed g universal members demand (ihb hp)
 
 #print axioms RuntimeReady.assuming
 

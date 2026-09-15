@@ -3284,6 +3284,29 @@ functions. Wiring a fixed capture mode through nested generalized group
 introduction remains the next step; this checkpoint alone does not route the
 declared group checker through the deep traversal.
 
+### Checkpoint 4bt — generalized nested groups preserve a fixed outer SCC
+
+`ScopedBodyDerives.letRecFixed` is the generalized-group introduction rule for
+an implementation still inside an enclosing recursive SCC. The nested group's
+checked members remain universal and its body receives their exported schemes,
+while the captured outer environment is `fixedBodyEnv`, not the post-exit
+`ordinaryBodyEnv`. Thus leaving the inner group does not accidentally
+generalize the enclosing group's recursive assumptions.
+
+`exportEnvironmentCapturedFixed` realizes that mixed environment from the
+original erased `letRec` replacements and an already realized fixed outer
+environment. Each arbitrary supported use of an inner export still induces one
+common HM map for all inner members; the existing outer-type-fixity theorem
+proves that map leaves every captured outer contract unchanged. The runtime
+readiness rule and fundamental theorem cover the new introduction rule through
+finite observation, with no termination assumption and no extra
+`RecursiveArgumentsSupported` premise for fixed outer bindings.
+
+The static premise-strengthening and lexical-scope theorems cover the rule as
+well. Executable capture threading is still separate: this checkpoint proves
+the exact rule the deep RHS driver must construct, rather than accepting a
+weaker operational shortcut.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
