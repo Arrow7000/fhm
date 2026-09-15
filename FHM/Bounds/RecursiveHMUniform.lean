@@ -728,6 +728,26 @@ def declaredLocalCertificate {output path d quantified premises typeCaptures}
     exact declaredLocalSlotsAgree c i (by
       simpa [HMDeclaredReconciliation.slotLimit] using inside))
 
+theorem declaredLocalCertificate_runtimeReady {output path d quantified premises typeCaptures}
+    (c : @HMDeclaredReconciliation.Checked output (.letIn path) d
+      quantified [] premises typeCaptures)
+    (rhs : HMDeclaredRHS.Checked c [])
+    (ready : ScopedDerives.RuntimeReady rhs.located.typed.derivation) :
+    ScopedDerives.RuntimeReady (declaredLocalCertificate c rhs).typing := by
+  let base := HMDeclaredRHS.certifySource c rhs
+    (fun b member => by cases member)
+    (fun b member => by cases member)
+  have baseReady : ScopedDerives.RuntimeReady base.typing :=
+    HMDeclaredRHS.certifySource_runtimeReady c rhs
+      (fun b member => by cases member)
+      (fun b member => by cases member) ready
+  have moved := RecursiveHMUniversal.Certified.sourceSlots_runtimeReady base c.rhsSlots
+    (by
+      intro i inside
+      exact declaredLocalSlotsAgree c i (by
+        simpa [HMDeclaredReconciliation.slotLimit] using inside)) baseReady
+  simpa only [declaredLocalCertificate] using moved
+
 /-- Specialize opaque lexical annotation slots after source counts. Full type
     arguments are inserted last, so their caller-owned counts are untouched. -/
 theorem localSlots_specialize (ann : Option PolyTy) (owned : List Nat)
@@ -885,6 +905,58 @@ theorem ordinaryRhsToBody {types slots ids rows Δ env e β}
         (by simpa [BodyBranchContext.refine] using subs)
       intro i br atIndex
       simpa [BodyBranchContext.extend, BodyBranchContext.refine] using ihb i br atIndex ordinary
+
+private theorem body_getElem?_append_left {env tail : List BodyBinding} {i : Nat}
+    {binding : BodyBinding}
+    (lookup : env[i]? = some binding) : (env ++ tail)[i]? = some binding := by
+  obtain ⟨inside, rfl⟩ := List.getElem?_eq_some_iff.mp lookup
+  rw [List.getElem?_append_left inside, lookup]
+
+private theorem BodyBranchContext.extend_append (ctx : BodyBranchContext)
+    (pattern : MatchPattern) (env tail : List BodyBinding) :
+    ctx.extend pattern (env ++ tail) = ctx.extend pattern env ++ tail := by
+  cases ctx with
+  | bool => rfl
+  | list lo hi elem =>
+      by_cases cons : pattern = .named consCtorName 2
+      · simp [BodyBranchContext.extend, cons]
+      · simp [BodyBranchContext.extend, cons]
+
+/-- Append an unused outer body environment to an ordinary RHS derivation.
+    De Bruijn indices retain their original prefix, so this is the precise
+    weakening needed by a closed generalized local nested in a larger body. -/
+theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
+    (h : ScopedDerives types slots ids rows Δ env e β)
+    (ordinary : OrdinaryEnv env) (tail : List BodyBinding) :
+    ScopedBodyDerives types slots ids rows Δ (ordinaryBodyEnv env ++ tail) e β := by
+  induction h with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil => exact .nil
+  | boolCtor ctor => exact .boolCtor ctor
+  | cons _ _ sub ihh iht => exact .cons (ihh ordinary) (iht ordinary) sub
+  | varMono lookup =>
+      exact .varMono (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]))
+  | varRecursive lookup used => exact False.elim (ordinary _ (List.mem_of_getElem? lookup))
+  | app _ _ sub ihf iha => exact .app (ihf ordinary) (iha ordinary) sub
+  | lambda annotation _ ih =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        ScopedBodyDerives.lambda annotation (ih ordinary.consMono)
+  | letMono annotation _ _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        ScopedBodyDerives.letMono annotation (ihr ordinary) (ihb ordinary.consMono)
+  | matchList _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .list _ _ _) (ihs ordinary) coverage patterns ?_ subs
+      intro i br atIndex
+      simpa only [ordinaryBodyEnv_branch, BodyBranchContext.extend_append] using
+        ihb i br atIndex ordinary.branch
+  | matchBool _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .bool) (ihs ordinary) coverage patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [BodyBranchContext.refine, BodyBranchContext.extend,
+        BodyBranchContext.extend_append] using ihb i br atIndex ordinary
 
 namespace BodyDerives
 abbrev literal := @ScopedBodyDerives.literal BoundsTy.fvar BoundsTy.bvar
@@ -1407,8 +1479,64 @@ theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
       intro i br atIndex
       simpa [BodyBranchContext.refine, BodyBranchContext.extend] using ihb i br atIndex ordinary
 
+theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
+    {h : ScopedDerives types slots ids rows Δ env e β}
+    (ready : ScopedDerives.RuntimeReady h) :
+    ∀ (ordinary : OrdinaryEnv env) (tail : List BodyBinding),
+      BodyDerives.RuntimeReady (ordinaryRhsToBodyAppend h ordinary tail) := by
+  induction ready with
+  | literal => intro _ _; exact .literal
+  | primBinOp => intro _ _; exact .primBinOp
+  | nil supported => intro _ _; exact .nil supported
+  | boolCtor ctor => intro _ _; exact .boolCtor ctor
+  | cons sub _ _ ihh iht =>
+      intro ordinary tail
+      exact .cons sub (ihh ordinary tail) (iht ordinary tail)
+  | varMono lookup supported =>
+      intro _ tail
+      exact .varMono (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) supported
+  | varRecursive lookup _ _ =>
+      intro ordinary _
+      exact False.elim (ordinary _ (List.mem_of_getElem? lookup))
+  | app sub _ _ ihf iha =>
+      intro ordinary tail
+      exact .app sub (ihf ordinary tail) (iha ordinary tail)
+  | lambda annotation supported _ ih =>
+      intro ordinary tail
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        BodyDerives.RuntimeReady.lambda annotation supported (ih ordinary.consMono tail)
+  | letMono annotation _ _ ihr ihb =>
+      intro ordinary tail
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        BodyDerives.RuntimeReady.letMono annotation (ihr ordinary tail)
+          (ihb ordinary.consMono tail)
+  | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
+      intro ordinary tail
+      refine .match_ (ctx := .list _ _ _) coverage patterns
+        (fun i br atIndex => by
+          simpa only [ordinaryBodyEnv_branch, BodyBranchContext.extend_append] using
+            ordinaryRhsToBodyAppend (bodies i br atIndex) ordinary.branch tail)
+        subs (ihs ordinary tail) ?_ supported
+      intro i br atIndex
+      simpa only [ordinaryBodyEnv_branch, BodyBranchContext.extend_append] using
+        ihb i br atIndex ordinary.branch tail
+  | matchBool coverage patterns bodies subs _ _ supported ihs ihb =>
+      intro ordinary tail
+      refine .match_ (ctx := .bool) coverage patterns
+        (fun i br atIndex => by
+          simpa [BodyBranchContext.refine, BodyBranchContext.extend,
+            BodyBranchContext.extend_append] using
+            ordinaryRhsToBodyAppend (bodies i br atIndex) ordinary tail)
+        (by simpa [BodyBranchContext.refine] using subs) (ihs ordinary tail) ?_ supported
+      intro i br atIndex
+      simpa [BodyBranchContext.refine, BodyBranchContext.extend,
+        BodyBranchContext.extend_append] using ihb i br atIndex ordinary tail
+
 #print axioms ordinaryRhsToBody
+#print axioms ordinaryRhsToBodyAppend
 #print axioms ordinaryRhsReadyToBody
+#print axioms ordinaryRhsReadyToBodyAppend
 
 /-- A single real opaque-opening RHS certificate supplies every local use in
     the closed-capture slice. This is certificate elimination, not another
@@ -1427,12 +1555,13 @@ def localRhsInstances {s ann rhs found typeCaptures Δ calleeΔ caller useHM}
     (cert : RecursiveHMUniversal.Certified s found typeCaptures [] rhs BoundsTy.fvar
       (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar)))
     (owners : cert.opening.ids = frame.owned)
-    (used : HMCountScheme.Use s calleeΔ useHM caller) :
+    (used : HMCountScheme.Use s calleeΔ useHM caller)
+    (outer : List BodyBinding := []) :
     ScopedBodyDerives (localTypes frame.owned BoundsTy.fvar used.types)
       (localSlots ann BoundsTy.bvar used.types)
       (s.counts.quantified ++ s.counts.captures ++ [])
       (CountAlgebra.compose (s.counts.quantified.zip used.counts) [])
-      (Δ ++ used.countInstance.premises) [] rhs used.bounds := by
+      (Δ ++ used.countInstance.premises) outer rhs used.bounds := by
   let rows := s.counts.quantified.zip used.counts
   let f := argument cert.opening.ids (SchemeUse.vector used.types)
   have lc := RecursiveHMUniversal.replacementLC cert.opening.ids (SchemeUse.vector used.types)
@@ -1441,7 +1570,7 @@ def localRhsInstances {s ann rhs found typeCaptures Δ calleeΔ caller useHM}
     (SchemeUse.vector_scope used.typesScoped)
   let specialized := fromCertified cert used.countInstance f lc scope
     (by simp [RecursiveHMEnvironment.Captured]) (by simp [CapturesFixed])
-  have instanceBody := ordinaryRhsToBody specialized.typing (by simp [OrdinaryEnv])
+  have instanceBody := ordinaryRhsToBodyAppend specialized.typing (by simp [OrdinaryEnv]) outer
   have widened := ScopedBodyDerives.subsumption instanceBody specialized.inclusion
   have withParent := widened.assuming (Δ' := Δ ++ used.countInstance.premises)
     (by intro σ premises p member; exact premises p (List.mem_append_right _ member))
@@ -1464,8 +1593,9 @@ theorem localRhsInstances_runtimeReady {s ann rhs found typeCaptures Δ calleeΔ
       (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar)))
     (owners : cert.opening.ids = frame.owned) (ready : ScopedDerives.RuntimeReady cert.typing)
     (used : HMCountScheme.Use s calleeΔ useHM caller)
-    (arguments : ∀ a ∈ used.types, Runtime.Supported a) (demandSupport : Runtime.Supported used.bounds) :
-    BodyDerives.RuntimeReady (localRhsInstances (Δ := Δ) frame annotation cert owners used) := by
+    (arguments : ∀ a ∈ used.types, Runtime.Supported a)
+    (outer : List BodyBinding := []) :
+    BodyDerives.RuntimeReady (localRhsInstances (Δ := Δ) frame annotation cert owners used outer) := by
   let rows := s.counts.quantified.zip used.counts
   let f := argument cert.opening.ids (SchemeUse.vector used.types)
   have lc := RecursiveHMUniversal.replacementLC cert.opening.ids (SchemeUse.vector used.types)
@@ -1484,8 +1614,11 @@ theorem localRhsInstances_runtimeReady {s ann rhs found typeCaptures Δ calleeΔ
   have specializedReady := fromCertified_runtimeReady cert ready used.countInstance f lc scope
     (Runtime.Supported.argument cert.opening.ids _ vectorSupport)
     (by simp [RecursiveHMEnvironment.Captured]) (by simp [CapturesFixed])
-  have bodyReady := ordinaryRhsReadyToBody specializedReady (by simp [OrdinaryEnv])
+  have bodyReady := ordinaryRhsReadyToBodyAppend specializedReady (by simp [OrdinaryEnv]) outer
   have demandEq : demand cert used.counts f = used.bounds := localRhsDemand cert used
+  have demandSupport : Runtime.Supported used.bounds := by
+    rw [← demandEq]
+    exact Runtime.Supported.subtypeRight specialized.inclusion specializedReady.supported
   have widenedReady := BodyDerives.RuntimeReady.subsumption specialized.inclusion bodyReady
     (by rw [demandEq]; exact demandSupport)
   have withParent := widenedReady.assuming (Δ' := Δ ++ used.countInstance.premises)
@@ -1505,6 +1638,7 @@ theorem localRhsInstances_runtimeReady {s ann rhs found typeCaptures Δ calleeΔ
 #print axioms declaredLocalSlotsAgree
 #print axioms declaredLocalFrame
 #print axioms declaredLocalCertificate
+#print axioms declaredLocalCertificate_runtimeReady
 #print axioms localRhsInstances
 #print axioms localRhsInstances_runtimeReady
 

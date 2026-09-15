@@ -95,9 +95,21 @@ def certifySource {output site d quantified captures premises typeCaptures env}
   (certify c rhs represented countFresh).implementation.sourceFree (sourceTypes' := BoundsTy.fvar)
     (fun _ named => c.sourceIdentity named)
 
+theorem certifySource_runtimeReady {output site d quantified captures premises typeCaptures env}
+    (c : @HMDeclaredReconciliation.Checked output site d quantified captures premises typeCaptures)
+    (rhs : Checked c env)
+    (represented : ∀ b, .recursive b ∈ env → b.template.hm.body ∈ typeCaptures)
+    (countFresh : ∀ b, .recursive b ∈ env → ∀ i ∈ b.template.counts.captures, i ∉ quantified)
+    (ready : ScopedDerives.RuntimeReady rhs.located.typed.derivation) :
+    ScopedDerives.RuntimeReady (certifySource c rhs represented countFresh).typing :=
+  RecursiveHMUniversal.Certified.sourceFree_runtimeReady
+    (certify c rhs represented countFresh).implementation
+    (fun _ named => c.sourceIdentity named) ready
+
 #print axioms check
 #print axioms prepare
 #print axioms certify
 #print axioms certifySource
+#print axioms certifySource_runtimeReady
 
 end FHM.Bounds.HMDeclaredRHS

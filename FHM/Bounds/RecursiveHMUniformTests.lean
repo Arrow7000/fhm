@@ -367,17 +367,8 @@ private theorem runtimeLocalCasesReady (calleeΔ : List Constraint) (found : Ty)
     (used : HMCountScheme.Use runtimeIdScheme calleeΔ found caller)
     (arguments : ∀ a ∈ used.types, Runtime.Supported a) :
     BodyDerives.RuntimeReady (runtimeLocalInstances calleeΔ found caller used) := by
-  have element : Runtime.Supported (SchemeUse.vector used.types 0) := by
-    cases atIndex : used.types[0]? with
-    | none => simp only [SchemeUse.vector, atIndex, Option.getD_none]; exact .prim
-    | some a =>
-        simpa only [SchemeUse.vector, atIndex, Option.getD_some] using
-          arguments a (List.mem_of_getElem? atIndex)
-  have demandSupport : Runtime.Supported used.bounds := by
-    simpa [HMCountScheme.Use.bounds, runtimeIdScheme, TypeSubstitution.combined,
-      CountSubstitution.bounds, TypeSubstitution.substitute] using Runtime.Supported.arrow element element
   exact localRhsInstances_runtimeReady runtimeLocalFrame runtimeLocalAnnotation runtimeLocalCertificate rfl
-    runtimeLocalOpaqueReady used arguments demandSupport
+    runtimeLocalOpaqueReady used arguments
 
 private theorem runtimeLocalTyping : BodyDerives [] [] [] [] runtimeLocalProgram (.prim .char) :=
   ScopedBodyDerives.letExported runtimeLocalFrame runtimeLocalAnnotation (by decide)

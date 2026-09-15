@@ -382,6 +382,45 @@ inductive Supported : BoundsTy → Prop where
   | list : Supported elem → Supported (.list lo hi elem)
   | bool : Supported (.custom boolTyName [])
 
+mutual
+/-- Semantic subtyping preserves the runtime fragment in both directions:
+    interval variance can change precision, but never the underlying runtime
+    type constructor. -/
+theorem Supported.subtypeLeft {a b : BoundsTy} (sub : SemanticSub Δ a b)
+    (right : Supported b) : Supported a := by
+  cases sub with
+  | prim => exact .prim
+  | bvar => exact .bvar
+  | fvar => exact .fvar
+  | arrow domain result =>
+      cases right with
+      | arrow targetDomain targetResult =>
+          exact .arrow (Supported.subtypeRight domain targetDomain) (Supported.subtypeLeft result targetResult)
+  | list _ elem =>
+      cases right with
+      | list targetElem => exact .list (Supported.subtypeLeft elem targetElem)
+  | custom args =>
+      cases right with
+      | bool => cases args; exact .bool
+
+theorem Supported.subtypeRight {a b : BoundsTy} (sub : SemanticSub Δ a b)
+    (left : Supported a) : Supported b := by
+  cases sub with
+  | prim => exact .prim
+  | bvar => exact .bvar
+  | fvar => exact .fvar
+  | arrow domain result =>
+      cases left with
+      | arrow sourceDomain sourceResult =>
+          exact .arrow (Supported.subtypeLeft domain sourceDomain) (Supported.subtypeRight result sourceResult)
+  | list _ elem =>
+      cases left with
+      | list sourceElem => exact .list (Supported.subtypeRight elem sourceElem)
+  | custom args =>
+      cases left with
+      | bool => cases args; exact .bool
+end
+
 abbrev TypeEnv := Nat → Nat → Expr → Prop
 
 /-- A total proof-producing fragment check. It neither checks constraints nor
@@ -414,6 +453,8 @@ theorem supported?_complete {β : BoundsTy} (h : Supported β) :
 
 #print axioms supported?
 #print axioms supported?_complete
+#print axioms Supported.subtypeLeft
+#print axioms Supported.subtypeRight
 
 def supportedArguments? (types : List BoundsTy) :
     Option (PLift (∀ a ∈ types, Supported a)) :=
