@@ -1212,6 +1212,14 @@ inductive ScopedBodyDerives :
       ScopedBodyDerives types slots ids rows Δ env rhs actual →
       ScopedBodyDerives types slots ids rows Δ (.mono pinned.demand :: env) body result →
       ScopedBodyDerives types slots ids rows Δ env (.letIn (some annotation) rhs body) result
+  | letRecPinnedMono {outerEnv annotation rhs body actual result}
+      (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ annotation.body actual) :
+      annotation.paramCount = 0 →
+      ScopedDerives types slots ids rows Δ (.mono pinned.demand :: outerEnv) rhs actual →
+      ScopedBodyDerives types slots ids rows Δ
+        (.mono pinned.demand :: ordinaryBodyEnv outerEnv) body result →
+      ScopedBodyDerives types slots ids rows Δ (ordinaryBodyEnv outerEnv)
+        (.letRec [some annotation] [rhs] body) result
   | letExported {env ann rhs body s result} (frame : LocalFrame s ids rhs) :
       LocalAnnotationOK s ann → rhs.varsBelow env.length = true →
       (∀ calleeΔ found caller (used : HMCountScheme.Use s calleeΔ found caller),
@@ -1254,7 +1262,8 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       rw [ih p source] at sub
       cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | cons | pair | varMono | varExported | app | lambda |
-      letMono | letPinned | letExported | match_ | letRec => intro p source; cases source
+      letMono | letPinned | letRecPinnedMono | letExported | match_ | letRec =>
+        intro p source; cases source
 
 /-- Ordinary RHS proofs can be reused for local introduction in mono captured
     environments. This does not turn fixed recursive assumptions into universal
@@ -1512,6 +1521,7 @@ abbrev subsumption := @ScopedBodyDerives.subsumption BoundsTy.fvar BoundsTy.bvar
 abbrev lambda := @ScopedBodyDerives.lambda BoundsTy.fvar BoundsTy.bvar
 abbrev letMono := @ScopedBodyDerives.letMono BoundsTy.fvar BoundsTy.bvar
 abbrev letPinned := @ScopedBodyDerives.letPinned BoundsTy.fvar BoundsTy.bvar
+abbrev letRecPinnedMono := @ScopedBodyDerives.letRecPinnedMono BoundsTy.fvar BoundsTy.bvar
 abbrev match_ := @ScopedBodyDerives.match_ BoundsTy.fvar BoundsTy.bvar
 abbrev letRec := @ScopedBodyDerives.letRec BoundsTy.fvar BoundsTy.bvar
 end BodyDerives
@@ -1550,6 +1560,8 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
       exact .letMono (binding_assuming obligation hp) (ihr hp) (ihb hp)
   | letPinned pinned mono _ _ ihr ihb =>
       exact .letPinned (pinned.assuming hp) mono (ihr hp) (ihb hp)
+  | letRecPinnedMono pinned mono rhs _ ihbody =>
+      exact .letRecPinnedMono (pinned.assuming hp) mono (rhs.assuming hp) (ihbody hp)
   | letExported frame annotation scope _ _ ihr ihb =>
       exact .letExported frame annotation scope
         (fun calleeΔ found caller used => ihr calleeΔ found caller used (RecursiveTyping.assuming_append hp))
@@ -1598,6 +1610,14 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
   | letPinned _ _ _ _ ihr ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       exact ⟨ihr, by simpa only [List.length_cons] using ihb⟩
+  | letRecPinnedMono _ _ rhs _ ihbody =>
+      apply Runtime.letRec_scoped
+      · intro member inside
+        obtain rfl := List.mem_singleton.mp inside
+        simpa only [List.length_singleton, ordinaryBodyEnv, List.length_map,
+          List.length_cons, Nat.add_comm] using rhs.varsBelow
+      · simpa only [List.length_singleton, ordinaryBodyEnv, List.length_map,
+          List.length_cons, Nat.add_comm] using ihbody
   | letExported _ _ scope _ _ _ ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       exact ⟨scope, by simpa only [List.length_cons] using ihb⟩
@@ -1758,6 +1778,15 @@ inductive RuntimeReady :
       {hbody : ScopedBodyDerives types slots ids rows Δ (.mono pinned.demand :: env) body result} :
       RuntimeReady hrhs → Runtime.Supported pinned.demand → RuntimeReady hbody →
       RuntimeReady (.letPinned pinned mono hrhs hbody)
+  | letRecPinnedMono {annotation : PolyTy} {actual : BoundsTy}
+      (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ annotation.body actual)
+      (mono : annotation.paramCount = 0)
+      {hrhs : ScopedDerives types slots ids rows Δ (.mono pinned.demand :: outerEnv) rhs actual}
+      {hbody : ScopedBodyDerives types slots ids rows Δ
+        (.mono pinned.demand :: ordinaryBodyEnv outerEnv) body result} :
+      ScopedDerives.RuntimeReady hrhs → Runtime.Supported pinned.demand →
+      RecursiveArgumentsSupported outerEnv → RuntimeReady hbody →
+      RuntimeReady (.letRecPinnedMono pinned mono hrhs hbody)
   | letExported
       (frame : LocalFrame s ids rhs)
       (annotation : LocalAnnotationOK s ann) (scope : rhs.varsBelow env.length = true)
@@ -1811,6 +1840,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | lambda _ param _ result => exact .arrow param result
   | letMono _ _ _ _ body => exact body
   | letPinned _ _ _ _ _ _ body => exact body
+  | letRecPinnedMono _ _ _ _ _ _ body => exact body
   | letExported _ _ _ _ _ _ _ body => exact body
   | match_ _ _ _ _ _ _ result => exact result
   | letRec _ _ _ _ _ _ body => exact body
@@ -1910,6 +1940,83 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           change Runtime.TermAt bound free σ j _ (Expr.substN 0 (_ :: e.terms) _) at bodySafe
           rw [Runtime.closing_singleton e.terms e.closed _ rhsClosed]
           exact bodySafe
+  | letRecPinnedMono pinned mono rhsReady demandSupport outerArguments bodyReady ihbody =>
+      rename_i types slots ids rows caller pathΔ outerEnv rhs body result annotation actual hrhs hbody
+      intro budget premises e
+      cases budget with
+      | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+      | succ budget =>
+          let previous := e.down hb hf (by omega : budget ≤ budget + 1)
+          let outerRhs := previous.toEnvAt outerArguments
+          have rhsScope : ∀ source ∈ [rhs],
+              source.varsBelow ([rhs].length + outerEnv.length) = true := by
+            intro source member
+            obtain rfl := List.mem_singleton.mp member
+            simpa only [List.length_singleton, List.length_cons, Nat.add_comm] using
+              hrhs.varsBelow
+          let rhsSafe : ∀ observation
+              (assumptions : EnvAt bound free σ observation
+                ([Binding.mono pinned.demand] ++ outerEnv))
+              i (inside : i < [Binding.mono pinned.demand].length),
+              BindingAt bound free σ observation
+                ([Binding.mono pinned.demand][i])
+                (([rhs][i]'(by simpa using inside)).substN 0 assumptions.terms) :=
+            fun observation assumptions i inside => by
+            have index : i = 0 := by simpa using inside
+            subst i
+            simp only [List.getElem_cons_zero, BindingAt]
+            exact (rhsReady.termAt bound free σ hb hf observation premises assumptions).of_values
+              (Runtime.subtype pinned.inclusion rhsReady.supported demandSupport
+                bound free σ premises)
+          let realized := EnvAt.tieGroupCaptured [some annotation] [rhs] rfl rhsScope hb hf
+            rhsSafe budget outerRhs
+          let closedRhss := closeOuterRhss [rhs] previous.terms
+          let recursive := Runtime.recursiveTerms [some annotation] closedRhss
+          have realizedTerms : realized.val.terms = recursive ++ previous.terms := by
+            simpa only [recursive, closedRhss, outerRhs] using realized.property
+          have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+            apply Runtime.recursiveTerms_closed
+            apply closeOuterRhss_scoped outerRhs
+            exact rhsScope
+          have recursiveLength : recursive.length = 1 := by
+            simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss]
+          have realizedNonempty : 0 < realized.val.terms.length := by
+            rw [realized.val.arity]
+            simp
+          let recursiveTerm := realized.val.terms[0]'realizedNonempty
+          have recursiveTermClosed : recursiveTerm.varsBelow 0 = true :=
+            realized.val.closed recursiveTerm (List.getElem_mem _)
+          have recursiveSafe : Runtime.TermAt bound free σ budget pinned.demand recursiveTerm := by
+            have meaning := realized.val.denotes 0 (by simp)
+            simpa only [List.getElem_append_left
+              (by simp : 0 < [Binding.mono pinned.demand].length),
+              List.getElem_cons_zero, BindingAt, recursiveTerm] using meaning
+          let opened := previous.extendMono pinned.demand recursiveTerm
+            recursiveTermClosed recursiveSafe
+          have bodySafe := ihbody budget premises opened
+          have openedTerms : opened.terms = recursive ++ previous.terms := by
+            have headEq : recursiveTerm = recursive[0]'(by rw [recursiveLength]; omega) := by
+              have left := List.getElem?_eq_getElem realizedNonempty
+              have rightInside : 0 < recursive.length := by rw [recursiveLength]; omega
+              have right := List.getElem?_eq_getElem rightInside
+              have entries : realized.val.terms[0]? = recursive[0]? := by
+                rw [realizedTerms]
+                exact List.getElem?_append_left rightInside
+              exact Option.some.inj (left.symm.trans (entries.trans right))
+            simp only [opened, BodyEnvAt.extendMono, BodyEnvAt.extend]
+            simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss] at headEq ⊢
+            exact headEq
+          rw [openedTerms] at bodySafe
+          have composed := Runtime.closing_compose previous.terms recursive previous.closed
+            recursiveClosed body 0
+          rw [Nat.zero_add, recursiveLength] at composed
+          rw [← composed] at bodySafe
+          have sameTerms : previous.terms = e.terms := rfl
+          rw [← sameTerms]
+          simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+          change Runtime.TermAt bound free σ (budget + 1) _
+            (.letRec [some annotation] closedRhss (body.substN 1 previous.terms))
+          exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
   | letExported frame annotation scope instances _ bodyReady ihr ihb =>
       rename_i s ownIds rhs ann ownEnv ownTypes ownSlots ownRows pathΔ body result hbody rhsReady
       intro budget premises e
@@ -2092,6 +2199,9 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
   | letMono annOK _ _ ihr ihb => exact .letMono (binding_assuming annOK hp) (ihr hp) (ihb hp)
   | letPinned pinned mono _ demand _ ihr ihb =>
       exact .letPinned (pinned.assuming hp) mono (ihr hp) demand (ihb hp)
+  | letRecPinnedMono pinned mono rhs demand outerArguments _ ihbody =>
+      exact .letRecPinnedMono (pinned.assuming hp) mono
+        (rhs.assuming hp) demand outerArguments (ihbody hp)
   | letExported frame annotation scope instances _ _ ihr ihb =>
       exact .letExported frame annotation scope
         (fun calleeΔ found caller used => (instances calleeΔ found caller used).assuming (RecursiveTyping.assuming_append hp))
@@ -3294,7 +3404,8 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       match ann with
       | some annotation =>
           if hmono : annotation.paramCount == 0 &&
-              (metadata.telescopes.filter (fun telescope => telescope.site == .letIn path)).isEmpty then
+              (metadata.telescopes.filter (fun telescope => telescope.site == .letIn path)).all
+                (fun telescope => telescope.binders.isEmpty) then
             if ScopedHMAnnotation.hasHole annotation.body then
               let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
                 (path ++ [.letRhs]) rhs schemes capture
@@ -3578,54 +3689,118 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       match capture with
       | none => throw "bounds: nested recursive group lacks a captured lexical environment"
       | some captured =>
-          let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
-            recursiveFixedTypeCaptures captured.rhsEnv
-          let assembled ← HMDeclaredCoordinates.check sourceOutput metadata path [] Δ
-            typeCaptures captured.rhsEnv schemes
-          let g := assembled.checked
-          have sourceEq : Expr.found hm (Expr.letRec annotations rhss body) =
-              Expr.found g.originalHM (Expr.letRec g.annotations g.rhss g.body) := by
-            exact Option.some.inj (sourceProof.down.symm.trans g.source)
-          have bodyEq : body = g.body := by
-            injection sourceEq with _ innerEq
-            injection innerEq
-          have bodySource : sourceOutput.atCorePath (path ++ [.letRecBody]) = some body := by
-            rw [Expr.atCorePath_append, g.source]
-            simp [Expr.atCorePath, bodyEq]
-          let result ← walkBodySource sourceOutput metadata ids rows caller Δ
-            (g.exports.map BodyBinding.exported ++ env) (path ++ [.letRecBody])
-            body schemes (some (captured.extendGroup g)) (some ⟨bodySource⟩) expected
-          let completed ← finishBody (ids := ids) (rows := rows) (caller := caller)
-            (Δ := Δ) (env := env)
-            (e := .found g.originalHM (.letRec g.annotations g.rhss g.body))
-            path g.originalHM result.bounds rfl
-            (by
-              have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
-                  (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv captured.rhsEnv)
-                  g.body.stripFound result.bounds := by
-                simpa only [bodyEq, captured.bodyEnv] using result.typing
-              simpa only [Expr.stripFound, captured.bodyEnv] using
-                (ScopedBodyDerives.letRec g
-                  (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
-                  bodyTyping))
-            (memberNodes g.members ++ result.nodes)
-            (do
-              let members ← g.members.runtimeReady
-              let bodyReady ← result.runtimeReady
-              have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
-                  (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv captured.rhsEnv)
-                  g.body.stripFound result.bounds := by
-                simpa only [bodyEq, captured.bodyEnv] using result.typing
-              have ready : BodyDerives.RuntimeReady bodyTyping := by
-                simpa only [bodyEq, captured.bodyEnv] using bodyReady.down
-              pure ⟨by
+          let ordinary (_ : Unit) : Except String
+              (BodyResult ids rows caller Δ env
+                (.found hm (.letRec annotations rhss body))) := do
+            let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
+              recursiveFixedTypeCaptures captured.rhsEnv
+            let assembled ← HMDeclaredCoordinates.check sourceOutput metadata path [] Δ
+              typeCaptures captured.rhsEnv schemes
+            let g := assembled.checked
+            have sourceEq : Expr.found hm (Expr.letRec annotations rhss body) =
+                Expr.found g.originalHM (Expr.letRec g.annotations g.rhss g.body) := by
+              exact Option.some.inj (sourceProof.down.symm.trans g.source)
+            have bodyEq : body = g.body := by
+              injection sourceEq with _ innerEq
+              injection innerEq
+            have bodySource : sourceOutput.atCorePath
+                (path ++ [CoreStep.letRecBody]) = some body := by
+              rw [Expr.atCorePath_append, g.source]
+              simp [Expr.atCorePath, bodyEq]
+            let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+              (g.exports.map BodyBinding.exported ++ env) (path ++ [CoreStep.letRecBody])
+              body schemes (some (captured.extendGroup g)) (some ⟨bodySource⟩) expected
+            let completed ← finishBody (ids := ids) (rows := rows) (caller := caller)
+              (Δ := Δ) (env := env)
+              (e := .found g.originalHM (.letRec g.annotations g.rhss g.body))
+              path g.originalHM result.bounds rfl
+              (by
+                have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
+                    (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv captured.rhsEnv)
+                    g.body.stripFound result.bounds := by
+                  simpa only [bodyEq, captured.bodyEnv] using result.typing
                 simpa only [Expr.stripFound, captured.bodyEnv] using
-                  (BodyDerives.RuntimeReady.letRec g
+                  (ScopedBodyDerives.letRec g
                     (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
-                    (fun offset inside => (members.down offset inside).1)
-                    (fun offset inside => (members.down offset inside).2)
-                    captured.arguments ready)⟩)
-          pure (by simpa only [sourceEq] using completed)
+                    bodyTyping))
+              (memberNodes g.members ++ result.nodes)
+              (do
+                let members ← g.members.runtimeReady
+                let bodyReady ← result.runtimeReady
+                have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
+                    (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv captured.rhsEnv)
+                    g.body.stripFound result.bounds := by
+                  simpa only [bodyEq, captured.bodyEnv] using result.typing
+                have ready : BodyDerives.RuntimeReady bodyTyping := by
+                  simpa only [bodyEq, captured.bodyEnv] using bodyReady.down
+                pure ⟨by
+                  simpa only [Expr.stripFound, captured.bodyEnv] using
+                    (BodyDerives.RuntimeReady.letRec g
+                      (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
+                      (fun offset inside => (members.down offset inside).1)
+                      (fun offset inside => (members.down offset inside).2)
+                      captured.arguments ready)⟩)
+            pure (by simpa only [sourceEq] using completed)
+          match ha : annotations, hr : rhss with
+          | [some annotation], [rhs] =>
+              let fallback : Except String
+                  (BodyResult ids rows caller Δ env
+                    (.found hm (.letRec [some annotation] [rhs] body))) := by
+                simpa only [ha, hr] using ordinary ()
+              if hmono : annotation.paramCount == 0 then
+                if htelescope :
+                    (metadata.telescopes.filter
+                      (fun telescope => telescope.site == .letRec path 0)).all
+                        (fun telescope => telescope.binders.isEmpty) then
+                  if ScopedHMAnnotation.hasHole annotation.body then
+                    let seed ← Typed.shapeTop annotation.body.eraseBounds
+                    let trial ← RecursiveHMWalk.walk BoundsTy.fvar ids rows caller Δ
+                      (.mono seed :: captured.rhsEnv) (path ++ [.letRecRhs 0]) rhs schemes
+                    let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
+                      (.letRec path 0) trial.originalHM
+                    let first ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar
+                      ids rows caller Δ annotation.body trial.bounds
+                    let final ← RecursiveHMWalk.walk BoundsTy.fvar ids rows caller Δ
+                      (.mono first.demand :: captured.rhsEnv) (path ++ [.letRecRhs 0]) rhs schemes
+                    let pinned ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar
+                      ids rows caller Δ annotation.body final.bounds
+                    let stable ← match ScopedHMAnnotation.equalBounds pinned.demand first.demand with
+                      | some equality => pure equality
+                      | none => throw "bounds: pinned recursive annotation does not reach a stable interface"
+                    have mono : annotation.paramCount = 0 := of_decide_eq_true hmono
+                    have bodySource : sourceOutput.atCorePath
+                        (path ++ [CoreStep.letRecBody]) = some body := by
+                      rw [Expr.atCorePath_append, sourceProof.down]
+                      simp [Expr.atCorePath]
+                    let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+                      (.mono pinned.demand :: env) (path ++ [CoreStep.letRecBody]) body schemes
+                      (extendMonoCapture? capture pinned.demand) (some ⟨bodySource⟩) expected
+                    have rhsTyping : ScopedDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
+                        (.mono pinned.demand :: captured.rhsEnv) rhs.stripFound final.bounds := by
+                      simpa only [stable.down] using final.derivation
+                    have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
+                        (.mono pinned.demand :: ordinaryBodyEnv captured.rhsEnv)
+                        body.stripFound result.bounds := by
+                      simpa only [captured.bodyEnv] using result.typing
+                    finishBody path hm result.bounds rfl
+                      (by simpa only [Expr.stripFound, captured.bodyEnv] using
+                        (ScopedBodyDerives.letRecPinnedMono pinned mono rhsTyping bodyTyping))
+                      (final.nodes ++ result.nodes)
+                      (do
+                        let rhsReady ← final.runtimeReady
+                        let demandSupported ← Runtime.supported? pinned.demand
+                        let bodyReady ← result.runtimeReady
+                        have rhsReady' : ScopedDerives.RuntimeReady rhsTyping := by
+                          simpa only [stable.down] using rhsReady.down
+                        have bodyReady' : BodyDerives.RuntimeReady bodyTyping := by
+                          simpa only [captured.bodyEnv] using bodyReady.down
+                        pure ⟨by simpa only [Expr.stripFound, captured.bodyEnv] using
+                          (BodyDerives.RuntimeReady.letRecPinnedMono pinned mono rhsReady'
+                            demandSupported.down captured.arguments bodyReady')⟩)
+                  else fallback
+                else fallback
+              else fallback
+          | _, _ => by simpa only [ha, hr] using ordinary ()
   | _ => throw "bounds: generalized body lacks an original found node"
 termination_by (sizeOf e, 1)
 

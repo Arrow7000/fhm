@@ -851,6 +851,32 @@ private def pinnedLocal (bad : Bool := false) : Except String Bool := do
     | _ => false) &&
     exactlyOnce (logicalCorePaths artifact.output) (result.nodes.map (·.path)))
 
+/-- Top-level source bindings lower through Core `letRec` even when their SCC is
+    a singleton.  Hole pinning therefore has a dedicated recursive rule: its
+    checked public interface is the recursive assumption as well as the body
+    binding, and the resulting certificate retains the real tied-group runtime
+    semantics. -/
+private def pinnedRecursiveSingleton (bad : Bool := false) : Except String Bool := do
+  let hi := if bad then 0 else 5
+  let annotation : PolyTy :=
+    ⟨0, .bl .hole (.solid (.lit hi)) (.prim .int)⟩
+  let rhs := Expr.app
+    (.app (.ctor consCtorName) (.primLit (.int 1)))
+    (.app (.app (.ctor consCtorName) (.primLit (.int 2))) (.ctor nilCtorName))
+  let source := Expr.letRec [some annotation] [rhs] (.var 0)
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let artifact ← match inferFound ctors source with
+    | some artifact => pure artifact
+    | none => throw "test: pinned recursive singleton HM inference failed"
+  let result ← checkProgram artifact.output {} artifact.binderSchemes
+  if !result.runtimeSafety?.isSome then
+    throw "test: pinned recursive singleton lost its tied-group runtime theorem"
+  pure ((match result.bounds with
+    | .list lo (.lit upper) (.prim .int) =>
+        lo.eval (fun _ => 0) == .ofNat 2 && upper == hi
+    | _ => false) &&
+    exactlyOnce (logicalCorePaths artifact.output) (result.nodes.map (·.path)))
+
 def main : IO Unit := do
   match actual with
   | .ok true => IO.println "PASS: every actual member universally specializes through one full group HM map with permuted slots and distinct count telescopes"
@@ -870,6 +896,16 @@ def main : IO Unit := do
         throw (IO.userError s!"wrong pinned local rejection: {message}")
       IO.println "PASS: local hole pinning cannot hide a false solid ceiling"
   | .ok _ => throw (IO.userError "local hole pinning accepted a false solid ceiling")
+  match pinnedRecursiveSingleton with
+  | .ok true => IO.println "PASS: a singleton recursive binding pins holes into one stable public interface with tied-group runtime safety"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "recursive singleton hole pinning lost its public interface, runtime theorem or exact nodes")
+  match pinnedRecursiveSingleton true with
+  | .error message =>
+      unless (message.splitOn "inclusion").length > 1 do
+        throw (IO.userError s!"wrong pinned recursive singleton rejection: {message}")
+      IO.println "PASS: recursive singleton hole pinning cannot hide a false solid ceiling"
+  | .ok _ => throw (IO.userError "recursive singleton hole pinning accepted a false solid ceiling")
   match bodyCalls with
   | .ok true => IO.println "PASS: all-member universal introduction checks actual Int/Char body calls and reports every original group/RHS/body occurrence exactly once"
   | .error message => throw (IO.userError message)

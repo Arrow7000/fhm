@@ -139,7 +139,10 @@ def check (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) (ca
     (Δ : List Constraint) (τ : Ty) (actual : BoundsTy) :
     Except String (PLift (AnnotationOK free slots ids rows Δ τ actual)) := do
   let demand ← decode free slots ids rows caller τ
-  let inclusion ← Typed.subtype Δ actual demand.bounds
+  let inclusion ← match Typed.subtype Δ actual demand.bounds with
+    | .ok included => pure included
+    | .error message =>
+        throw s!"bounds: ascription does not meet derived origin ({message})"
   pure ⟨demand.source, demand.decoded, inclusion.down⟩
 
 /-! ## Origin-pinned annotation holes
@@ -287,6 +290,45 @@ def hasHoleList : List Ty → Bool
   | ty :: rest => hasHole ty || hasHoleList rest
 end
 
+mutual
+/-- Proof-producing structural equality for inferred bounds.  This is used at
+    recursive annotation boundaries where accepting merely equal HM erasures
+    would leave the recursive assumption unrelated to the checked result. -/
+def equalBounds (a b : BoundsTy) : Option (PLift (a = b)) :=
+  match a, b with
+  | .prim p, .prim q => if h : p = q then some ⟨by subst q; rfl⟩ else none
+  | .bvar i, .bvar j => if h : i = j then some ⟨by subst j; rfl⟩ else none
+  | .fvar i, .fvar j => if h : i = j then some ⟨by subst j; rfl⟩ else none
+  | .arrow a b, .arrow c d => do
+      let ha ← equalBounds a c
+      let hb ← equalBounds b d
+      pure ⟨by rw [ha.down, hb.down]⟩
+  | .list alo ahi aelem, .list blo bhi belem =>
+      if hlo : alo = blo then
+        if hhi : ahi = bhi then do
+          let helem ← equalBounds aelem belem
+          pure ⟨by rw [hlo, hhi, helem.down]⟩
+        else none
+      else none
+  | .custom aname aargs, .custom bname bargs =>
+      if hname : aname = bname then do
+        let hargs ← equalBoundsList aargs bargs
+        pure ⟨by rw [hname, hargs.down]⟩
+      else none
+  | _, _ => none
+termination_by sizeOf a + sizeOf b
+
+def equalBoundsList (as bs : List BoundsTy) : Option (PLift (as = bs)) :=
+  match as, bs with
+  | [], [] => some ⟨rfl⟩
+  | a :: as, b :: bs => do
+      let hh ← equalBounds a b
+      let ht ← equalBoundsList as bs
+      pure ⟨by rw [hh.down, ht.down]⟩
+  | _, _ => none
+termination_by sizeOf as + sizeOf bs
+end
+
 /-- Fill every annotation hole from a genuine origin, then validate shape,
 caller scope and semantic inclusion.  The returned interface is safe to expose
 to the binding body; it need not equal the more precise private RHS origin. -/
@@ -300,7 +342,10 @@ def pin (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
       | some h => pure h
       | none => throw "bounds: pinned annotation disagrees with HM-interpreted source type"
     if hscoped : boundsScopedBool caller demand = true then
-      let inclusion ← Typed.subtype Δ actual demand
+      let inclusion ← match Typed.subtype Δ actual demand with
+        | .ok included => pure included
+        | .error message =>
+            throw s!"bounds: ascription does not meet derived origin ({message})"
       pure ⟨demand, provenance.down,
         (fun row member => Count.noInf_of_isNoInf (List.all_eq_true.mp hfinite row member)),
         shape.down, boundsScopedBool_sound hscoped, inclusion.down⟩
