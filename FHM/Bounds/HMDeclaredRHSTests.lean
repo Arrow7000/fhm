@@ -46,6 +46,9 @@ private def actual (recursive : Bool := false) (falseClaim : Bool := false)
           subst b
           simp [typeCaptures, contract, HMCountScheme.Annotated.scheme, PolyTy.eraseBounds])
     (by
+      intro b hb
+      cases recursive <;> simp [env] at hb)
+    (by
       intro b hb i hi
       cases recursive with
       | false => simp [env] at hb
@@ -53,6 +56,9 @@ private def actual (recursive : Bool := false) (falseClaim : Bool := false)
           have hb : b = contract := by simpa [env] using hb
           subst b
           simp [contract, HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme] at hi)
+    (by
+      intro b hb
+      cases recursive <;> simp [env] at hb)
   let sourceCert := cert.implementation.sourceFree (sourceTypes' := BoundsTy.fvar)
     (fun _ named => c.sourceIdentity named)
   let rhsReady ← match checked.located.typed.runtimeReady with

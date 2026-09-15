@@ -60,18 +60,30 @@ def fromCertified {s found typeCaptures env rhs sourceTypes sourceSlots}
     (fixed : CapturesFixed f env) : Result cert inst f lc := by
   let rows := s.counts.quantified.zip counts
   have countKeep : CountCapturesFixed rows env := by
-    intro c hc i hi
-    apply lookup_none
-    rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
-    exact cert.countFresh c hc i hi
+    intro b hb
+    cases b with
+    | mono β => trivial
+    | recursive c =>
+        intro i hi
+        apply lookup_none
+        rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
+        exact cert.countFresh c hb i hi
+    | exported s =>
+        intro i hi
+        apply lookup_none
+        rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
+        exact cert.exportCountFresh s hb i hi
   have typeKeep : CapturesFixed f (env.map (mapCountBinding rows)) := by
-    intro c hc i hi
+    intro c hc
     obtain ⟨original, ho, he⟩ := List.mem_map.mp hc
     cases original with
-    | mono β => cases he
+    | mono β => cases he; trivial
     | recursive original =>
         cases he
-        exact fixed original ho i hi
+        simpa [Contract.mapCounts] using fixed.recursive ho
+    | exported s =>
+        cases he
+        exact fixed.exported ho
   have hc := transportScopedCounts rows inst.finite caller
     (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2) cert.typing countKeep
   have ht := transportScopedTypes f lc caller scope hc typeKeep
@@ -105,18 +117,30 @@ theorem fromCertified_runtimeReady {s found typeCaptures env rhs sourceTypes sou
     ScopedDerives.RuntimeReady (fromCertified cert inst f lc scope captured fixed).typing := by
   let rows := s.counts.quantified.zip counts
   have countKeep : CountCapturesFixed rows env := by
-    intro c hc i hi
-    apply lookup_none
-    rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
-    exact cert.countFresh c hc i hi
+    intro b hb
+    cases b with
+    | mono β => trivial
+    | recursive c =>
+        intro i hi
+        apply lookup_none
+        rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
+        exact cert.countFresh c hb i hi
+    | exported s =>
+        intro i hi
+        apply lookup_none
+        rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
+        exact cert.exportCountFresh s hb i hi
   have typeKeep : CapturesFixed f (env.map (mapCountBinding rows)) := by
-    intro c hc i hi
+    intro c hc
     obtain ⟨original, ho, he⟩ := List.mem_map.mp hc
     cases original with
-    | mono β => cases he
+    | mono β => cases he; trivial
     | recursive original =>
         cases he
-        exact fixed original ho i hi
+        simpa [Contract.mapCounts] using fixed.recursive ho
+    | exported s =>
+        cases he
+        exact fixed.exported ho
   have hc := ready.counts rows inst.finite caller
     (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2) countKeep
   have ht := hc.types f lc caller scope arguments typeKeep
@@ -324,7 +348,7 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.runtimeEnvironment
     ((demandSupport i exitInside).counts _).types f arguments
   have behavior := result.termAt specialized supported bound free σ hb hf budget rawPremises e
   have templateFixed : ∀ j ∈ selected.member.contract.template.hm.body.freeVars, f j = .fvar j := by
-    apply fixed
+    apply fixed.recursive
     exact List.mem_append_left _ (List.mem_map.mpr
       ⟨selected.member.contract, List.mem_of_getElem? selected.contractSelection, rfl⟩)
   rw [selected.rhs.demandAtRecursiveUse f lc templateFixed used] at behavior
@@ -339,10 +363,19 @@ theorem _root_.FHM.Bounds.HMDeclaredGroup.MemberChecked.exitMapFixed
     {p : HMDeclaredGroup.Member output metadata path index captures premises typeCaptures}
     (checked : HMDeclaredGroup.MemberChecked p env) (types : List BoundsTy) :
     CapturesFixed (argument checked.certificate.implementation.opening.ids (SchemeUse.vector types)) env := by
-  intro c member i freeId
-  have absent : i ∉ checked.certificate.implementation.opening.ids :=
-    fun present => checked.certificate.implementation.typeFresh c member i present freeId
-  simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+  intro b member
+  cases b with
+  | mono β => trivial
+  | recursive c =>
+      intro i freeId
+      have absent : i ∉ checked.certificate.implementation.opening.ids :=
+        fun present => checked.certificate.implementation.typeFresh c member i present freeId
+      simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+  | exported s =>
+      intro i freeId
+      have absent : i ∉ checked.certificate.implementation.opening.ids :=
+        fun present => checked.certificate.implementation.exportTypeFresh s member i present freeId
+      simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
 
 theorem _root_.FHM.Bounds.HMDeclaredGroup.MemberChecked.exitMapVector
     {output metadata path index captures premises typeCaptures env}
@@ -723,6 +756,8 @@ def declaredLocalCertificate {output path d quantified premises typeCaptures}
   let cert := HMDeclaredRHS.certifySource c rhs
     (fun b member => by cases member)
     (fun b member => by cases member)
+    (fun b member => by cases member)
+    (fun b member => by cases member)
   exact cert.sourceSlots c.rhsSlots (by
     intro i inside
     exact declaredLocalSlotsAgree c i (by
@@ -737,8 +772,11 @@ def declaredCapturedLocalCertificate {output path d quantified premises typeCapt
       quantified [] premises typeCaptures)
     (rhs : HMDeclaredRHS.Checked c env)
     (represented : ∀ b, .recursive b ∈ env → b.template.hm.body ∈ typeCaptures)
+    (exportsRepresented : ∀ s, .exported s ∈ env → s.hm.body ∈ typeCaptures)
     (countFresh : ∀ b, .recursive b ∈ env →
-      ∀ i ∈ b.template.counts.captures, i ∉ quantified) :
+      ∀ i ∈ b.template.counts.captures, i ∉ quantified)
+    (exportCountFresh : ∀ s, .exported s ∈ env →
+      ∀ i ∈ s.counts.captures, i ∉ quantified) :
     RecursiveHMUniversal.Certified c.interface.scheme
       (ScopedHMInterpretation.AtNode.view d.node c.interpretation
         (HMDeclaredReconciliation.slotsFor (.letIn path) c.signatureIds))
@@ -747,7 +785,8 @@ def declaredCapturedLocalCertificate {output path d quantified premises typeCapt
       d.node.inner.stripFound BoundsTy.fvar
       (localSlots (some d.annotation) BoundsTy.bvar
         (c.signatureIds.map BoundsTy.fvar)) := by
-  let cert := HMDeclaredRHS.certifySource c rhs represented countFresh
+  let cert := HMDeclaredRHS.certifySource c rhs represented exportsRepresented
+    countFresh exportCountFresh
   exact cert.sourceSlots c.rhsSlots (by
     intro i inside
     exact declaredLocalSlotsAgree c i (by
@@ -762,8 +801,12 @@ theorem declaredLocalCertificate_runtimeReady {output path d quantified premises
   let base := HMDeclaredRHS.certifySource c rhs
     (fun b member => by cases member)
     (fun b member => by cases member)
+    (fun b member => by cases member)
+    (fun b member => by cases member)
   have baseReady : ScopedDerives.RuntimeReady base.typing :=
     HMDeclaredRHS.certifySource_runtimeReady c rhs
+      (fun b member => by cases member)
+      (fun b member => by cases member)
       (fun b member => by cases member)
       (fun b member => by cases member) ready
   have moved := RecursiveHMUniversal.Certified.sourceSlots_runtimeReady base c.rhsSlots
@@ -779,14 +822,20 @@ theorem declaredCapturedLocalCertificate_runtimeReady
       quantified [] premises typeCaptures)
     (rhs : HMDeclaredRHS.Checked c env)
     (represented : ∀ b, .recursive b ∈ env → b.template.hm.body ∈ typeCaptures)
+    (exportsRepresented : ∀ s, .exported s ∈ env → s.hm.body ∈ typeCaptures)
     (countFresh : ∀ b, .recursive b ∈ env →
       ∀ i ∈ b.template.counts.captures, i ∉ quantified)
+    (exportCountFresh : ∀ s, .exported s ∈ env →
+      ∀ i ∈ s.counts.captures, i ∉ quantified)
     (ready : ScopedDerives.RuntimeReady rhs.located.typed.derivation) :
     ScopedDerives.RuntimeReady
-      (declaredCapturedLocalCertificate c rhs represented countFresh).typing := by
-  let base := HMDeclaredRHS.certifySource c rhs represented countFresh
+      (declaredCapturedLocalCertificate c rhs represented exportsRepresented
+        countFresh exportCountFresh).typing := by
+  let base := HMDeclaredRHS.certifySource c rhs represented exportsRepresented
+    countFresh exportCountFresh
   have baseReady : ScopedDerives.RuntimeReady base.typing :=
-    HMDeclaredRHS.certifySource_runtimeReady c rhs represented countFresh ready
+    HMDeclaredRHS.certifySource_runtimeReady c rhs represented exportsRepresented
+      countFresh exportCountFresh ready
   have moved := RecursiveHMUniversal.Certified.sourceSlots_runtimeReady base c.rhsSlots
     (by
       intro i inside
@@ -898,6 +947,7 @@ def OrdinaryEnv (env : List Binding) : Prop := ∀ c, Binding.recursive c ∉ en
 private def ordinaryBinding : Binding → BodyBinding
   | .mono β => .mono β
   | .recursive c => .exported c.template
+  | .exported s => .exported s
 
 def ordinaryBodyEnv (env : List Binding) : List BodyBinding := env.map ordinaryBinding
 
@@ -937,6 +987,9 @@ theorem rhsToBody {types slots ids rows Δ env e β}
   | varRecursive lookup used =>
       exact .varExported
         (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) used.external
+  | varExported lookup used =>
+      exact .varExported
+        (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) used
   | app _ _ sub ihf iha => exact .app ihf iha sub
   | lambda annotation _ ih =>
       simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
@@ -971,6 +1024,10 @@ theorem ordinaryRhsToBody {types slots ids rows Δ env e β}
   | varRecursive lookup used =>
       intro ordinary
       exact False.elim (ordinary _ (List.mem_of_getElem? lookup))
+  | varExported lookup used =>
+      intro _
+      exact .varExported
+        (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) used
   | app _ _ sub ihf iha => intro ordinary; exact .app (ihf ordinary) (iha ordinary) sub
   | lambda annotation _ ih => intro ordinary; exact .lambda annotation (ih ordinary.consMono)
   | letMono annotation _ _ ihr ihb =>
@@ -1021,6 +1078,9 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
   | varRecursive lookup used =>
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used.external
+  | varExported lookup used =>
+      exact .varExported (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
   | app _ _ sub ihf iha => exact .app ihf iha sub
   | lambda annotation _ ih =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
@@ -1058,6 +1118,9 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
       exact .varMono (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]))
   | varRecursive lookup used => exact False.elim (ordinary _ (List.mem_of_getElem? lookup))
+  | varExported lookup used =>
+      exact .varExported (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
   | app _ _ sub ihf iha => exact .app (ihf ordinary) (iha ordinary) sub
   | lambda annotation _ ih =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
@@ -1595,6 +1658,10 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used.external
         supported (arguments _ (List.mem_of_getElem? lookup))
+  | varExported lookup used supported usedArguments =>
+      exact .varExported (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
+        supported usedArguments
   | app sub _ _ ihf iha => exact .app sub (ihf arguments) (iha arguments)
   | lambda annotation supported _ ih =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
@@ -1639,6 +1706,11 @@ theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
   | varRecursive lookup _ _ =>
       intro ordinary
       exact False.elim (ordinary _ (List.mem_of_getElem? lookup))
+  | varExported lookup used supported arguments =>
+      intro _
+      exact .varExported
+        (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])
+        used supported arguments
   | app sub _ _ ihf iha => intro ordinary; exact .app sub (ihf ordinary) (iha ordinary)
   | lambda annotation supported _ ih =>
       intro ordinary
@@ -1684,6 +1756,11 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
   | varRecursive lookup _ _ =>
       intro ordinary _
       exact False.elim (ordinary _ (List.mem_of_getElem? lookup))
+  | varExported lookup used supported arguments =>
+      intro _ tail
+      exact .varExported (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]))
+        used supported arguments
   | app sub _ _ ihf iha =>
       intro ordinary tail
       exact .app sub (ihf ordinary tail) (iha ordinary tail)
@@ -1776,11 +1853,13 @@ def recursiveTypeCaptures (env : List Binding) : List Ty :=
   env.map fun binding => match binding with
     | .mono β => Synth.BoundsTy.toTy β
     | .recursive c => c.template.hm.body
+    | .exported s => s.hm.body
 
 def recursiveFixedTypeCaptures (env : List Binding) : List Ty :=
   env.flatMap fun binding => match binding with
     | .mono β => [Synth.BoundsTy.toTy β]
     | .recursive c => c.fixed.types.map Synth.BoundsTy.toTy
+    | .exported _ => []
 
 private theorem recursiveTypeCaptures_represented {env c}
     (member : Binding.recursive c ∈ env) :
@@ -1791,6 +1870,11 @@ private theorem recursiveTypeCaptures_mono {env β}
     (member : Binding.mono β ∈ env) :
     Synth.BoundsTy.toTy β ∈ recursiveTypeCaptures env :=
   List.mem_map.mpr ⟨.mono β, member, rfl⟩
+
+private theorem recursiveTypeCaptures_exported {env s}
+    (member : Binding.exported s ∈ env) :
+    s.hm.body ∈ recursiveTypeCaptures env :=
+  List.mem_map.mpr ⟨.exported s, member, rfl⟩
 
 private theorem recursiveFixedTypeCaptures_represented {env c β}
     (member : Binding.recursive c ∈ env) (argument : β ∈ c.fixed.types) :
@@ -1808,6 +1892,7 @@ structure BodyCapture (env : List BodyBinding) where
   captured : RecursiveHMEnvironment.Captured [] rhsEnv
   arguments : RecursiveArgumentsSupported rhsEnv
   countClosed : ∀ c, .recursive c ∈ rhsEnv → c.template.counts.captures = []
+  exportCountClosed : ∀ s, .exported s ∈ rhsEnv → s.counts.captures = []
 
 private theorem interfaceCaptured
     {output metadata path premises typeCaptures index vectors}
@@ -1881,6 +1966,7 @@ private def checkedGroupBodyCapture
   captured := interfaceCaptured g.interfaces
   arguments := interfaceArgumentsSupported g.interfaces
   countClosed := interfaceCountsClosed g.interfaces
+  exportCountClosed := by intro s member; simp at member
 
 private def BodyCapture.extendMono {env} (capture : BodyCapture env) (β : BoundsTy)
     (scope : BoundsScoped [] β) : BodyCapture (.mono β :: env) where
@@ -1908,6 +1994,44 @@ private def BodyCapture.extendMono {env} (capture : BodyCapture env) (β : Bound
     rcases List.mem_cons.mp member with head | tail
     · cases head
     · exact capture.countClosed c tail
+  exportCountClosed := by
+    intro s member
+    rcases List.mem_cons.mp member with head | tail
+    · cases head
+    · exact capture.exportCountClosed s tail
+
+private def BodyCapture.extendExported {env} (capture : BodyCapture env)
+    (s : HMCountScheme.Scheme) (closed : s.counts.captures = []) :
+    BodyCapture (.exported s :: env) where
+  rhsEnv := .exported s :: capture.rhsEnv
+  bodyEnv := by
+    change .exported s :: ordinaryBodyEnv capture.rhsEnv = .exported s :: env
+    rw [capture.bodyEnv]
+  captured := by
+    constructor
+    · intro β member
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.1 β tail
+    · intro c member a argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.2 c tail a argument
+  arguments := by
+    intro c member a argument
+    rcases List.mem_cons.mp member with head | tail
+    · cases head
+    · exact capture.arguments c tail a argument
+  countClosed := by
+    intro c member
+    rcases List.mem_cons.mp member with head | tail
+    · cases head
+    · exact capture.countClosed c tail
+  exportCountClosed := by
+    intro t member
+    rcases List.mem_cons.mp member with head | tail
+    · cases head; exact closed
+    · exact capture.exportCountClosed t tail
 
 private def extendMonoCapture? {env} (capture : Option (BodyCapture env)) (β : BoundsTy) :
     Option (BodyCapture (.mono β :: env)) :=
@@ -1947,6 +2071,7 @@ private theorem RecursiveArgumentsSupported.mapBinding {env}
       obtain ⟨b, sourceArgument, rfl⟩ := List.mem_map.mp (by
         simpa [Contract.mapTypes, RecursiveHMContract.Fixed.mapTypes] using argument)
       exact Runtime.Supported.types f arguments (supported original source b sourceArgument)
+  | exported s => cases mapped
 
 /-- Every type named by the captured environment was placed among the local
     opening guards. Consequently arbitrary later instances of the local scheme
@@ -2004,9 +2129,19 @@ def capturedLocalRhsInstances {s ann rhs found typeCaptures env Δ calleeΔ call
   have scope := RecursiveHMUniversal.replacementScope cert.opening.ids (SchemeUse.vector used.types)
     (SchemeUse.vector_scope used.typesScoped)
   have capturesFixed : CapturesFixed f env := by
-    intro c member i freeId
-    have absent : i ∉ cert.opening.ids := fun present => cert.typeFresh c member i present freeId
-    simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
+    intro b member
+    cases b with
+    | mono β => trivial
+    | recursive c =>
+        intro i freeId
+        have absent : i ∉ cert.opening.ids :=
+          fun present => cert.typeFresh c member i present freeId
+        simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
+    | exported s =>
+        intro i freeId
+        have absent : i ∉ cert.opening.ids :=
+          fun present => cert.exportTypeFresh s member i present freeId
+        simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
   let specialized := fromCertified cert used.countInstance f lc scope captured capturesFixed
   have instanceBody := rhsToBodyAppend specialized.typing outer
   have widened := ScopedBodyDerives.subsumption instanceBody specialized.inclusion
@@ -2107,9 +2242,19 @@ theorem capturedLocalRhsInstances_runtimeReady
   have fullSupport : ∀ i, Runtime.Supported (f i) :=
     Runtime.Supported.argument cert.opening.ids _ vectorSupport
   have capturesFixed : CapturesFixed f env := by
-    intro c member i freeId
-    have absent : i ∉ cert.opening.ids := fun present => cert.typeFresh c member i present freeId
-    simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
+    intro b member
+    cases b with
+    | mono β => trivial
+    | recursive c =>
+        intro i freeId
+        have absent : i ∉ cert.opening.ids :=
+          fun present => cert.typeFresh c member i present freeId
+        simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
+    | exported s =>
+        intro i freeId
+        have absent : i ∉ cert.opening.ids :=
+          fun present => cert.exportTypeFresh s member i present freeId
+        simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
   let specialized := fromCertified cert used.countInstance f lc scope captured capturesFixed
   have specializedReady := fromCertified_runtimeReady cert ready used.countInstance f lc scope
     fullSupport captured capturesFixed
@@ -2643,12 +2788,17 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                         let checked ← HMDeclaredRHS.check reconciled captured.rhsEnv schemes
                         let represented := fun c member => List.mem_append_left _
                           (recursiveTypeCaptures_represented member)
+                        let exportsRepresented := fun s member => List.mem_append_left _
+                          (recursiveTypeCaptures_exported member)
                         let countFresh := fun c member i inside => by
                           rw [captured.countClosed c member] at inside
                           cases inside
+                        let exportCountFresh := fun s member i inside => by
+                          rw [captured.exportCountClosed s member] at inside
+                          cases inside
                         let frame := declaredLocalFrame reconciled
                         let cert := declaredCapturedLocalCertificate reconciled checked
-                          represented countFresh
+                          represented exportsRepresented countFresh exportCountFresh
                         let annotationOK : LocalAnnotationOK reconciled.interface.scheme (some annotation) :=
                           ⟨reconciled.interface, rfl⟩
                         have owners : cert.opening.ids = frame.owned := by
@@ -2698,7 +2848,9 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                               declaration.node.inner.stripFound used.bounds)
                         let result ← walkBodySource sourceOutput metadata [] [] caller Δ
                           (.exported reconciled.interface.scheme :: env)
-                          (path ++ [.letBody]) body schemes none
+                          (path ++ [.letBody]) body schemes
+                          (some (captured.extendExported reconciled.interface.scheme (by
+                            simp [HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme])))
                           (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
                         let completed ← finishBody (ids := []) (rows := []) (caller := caller)
                           (Δ := Δ) (env := env)
@@ -2713,7 +2865,8 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                             let sourceReady ← checked.located.typed.runtimeReady
                             let bodyReady ← result.runtimeReady
                             let certReady := declaredCapturedLocalCertificate_runtimeReady
-                              reconciled checked represented countFresh sourceReady.down
+                              reconciled checked represented exportsRepresented countFresh
+                                exportCountFresh sourceReady.down
                             pure ⟨by
                               let ready := BodyDerives.RuntimeReady.letExported frame annotationOK
                                 rhsScope instances

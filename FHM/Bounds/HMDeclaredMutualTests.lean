@@ -22,6 +22,7 @@ private def vectors (env : List Binding) : List (List String) :=
   env.map fun b => match b with
     | .mono β => [β.pretty]
     | .recursive c => c.fixed.types.map BoundsTy.pretty
+    | .exported s => [s.hm.body.pretty]
 
 /-- Both real members check against one common fixed HM vector, despite
     distinct count telescopes and genuinely more-general solved RHS payloads. -/
@@ -66,8 +67,17 @@ private def actual : Except String Bool := do
       have hb : b = b1 ∨ b = b2 := by simpa [env] using hb
       rcases hb with rfl | rfl <;>
         simp [b1, b2, HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme] at hi
-    let cert1 := HMDeclaredRHS.certify c1 checked1 represented fresh1
-    let cert2 := HMDeclaredRHS.certify c2 checked2 represented fresh2
+    have exportsRepresented : ∀ s, .exported s ∈ env → s.hm.body ∈ captures := by
+      intro s hs
+      simp [env] at hs
+    have exportFresh1 : ∀ s, .exported s ∈ env → ∀ i ∈ s.counts.captures, i ∉ [7] := by
+      intro s hs
+      simp [env] at hs
+    have exportFresh2 : ∀ s, .exported s ∈ env → ∀ i ∈ s.counts.captures, i ∉ [8] := by
+      intro s hs
+      simp [env] at hs
+    let cert1 := HMDeclaredRHS.certify c1 checked1 represented exportsRepresented fresh1 exportFresh1
+    let cert2 := HMDeclaredRHS.certify c2 checked2 represented exportsRepresented fresh2 exportFresh2
     let captured1 ← RecursiveHMEnvironment.checkCaptured []
       (env.map (mapBinding c1.interpretation c1.interpretationLC))
     let captured2 ← RecursiveHMEnvironment.checkCaptured []

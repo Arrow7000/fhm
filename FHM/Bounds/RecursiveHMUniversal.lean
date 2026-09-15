@@ -40,7 +40,9 @@ structure Certified (s : HMCountScheme.Scheme) (found : Ty) (captures : List Ty)
   typing : ScopedDerives sourceTypes sourceSlots (s.counts.quantified ++ s.counts.captures) [] s.counts.premises env rhs actual
   inclusion : SemanticSub s.counts.premises actual opening.bounds
   typeFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ opening.ids, i ∉ c.template.hm.body.freeVars
+  exportTypeFresh : ∀ t, .exported t ∈ env → ∀ i ∈ opening.ids, i ∉ t.hm.body.freeVars
   countFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ s.counts.quantified
+  exportCountFresh : ∀ t, .exported t ∈ env → ∀ i ∈ t.counts.captures, i ∉ s.counts.quantified
 
 /-- Reconcile proof-side source readers only where the original RHS names
     identities. The checked opening, actual bounds and demand inclusion stay
@@ -56,7 +58,9 @@ def Certified.sourceFree {s found captures env rhs sourceTypes sourceSlots sourc
   typing := cert.typing.sourceFree agree
   inclusion := cert.inclusion
   typeFresh := cert.typeFresh
+  exportTypeFresh := cert.exportTypeFresh
   countFresh := cert.countFresh
+  exportCountFresh := cert.exportCountFresh
 
 /-- Reconcile lexical source readers on a term whose carried annotations are
     known to use only the checked prefix of slots. -/
@@ -72,7 +76,9 @@ def Certified.sourceSlots {s found captures env rhs sourceTypes sourceSlots sour
   typing := cert.typing.sourceSlots bounded agree
   inclusion := cert.inclusion
   typeFresh := cert.typeFresh
+  exportTypeFresh := cert.exportTypeFresh
   countFresh := cert.countFresh
+  exportCountFresh := cert.exportCountFresh
 
 theorem Certified.sourceFree_runtimeReady {s found captures env rhs}
     {sourceTypes sourceSlots sourceTypes' : Nat → BoundsTy}
@@ -122,21 +128,37 @@ theorem replacementScope (ids : List Nat) (args : Nat → BoundsTy)
 private theorem countFresh {s found captures env rhs sourceTypes sourceSlots} (cert : Certified s found captures env rhs sourceTypes sourceSlots)
     {counts caller} (inst : Instance s.counts counts caller) :
     CountCapturesFixed (s.counts.quantified.zip counts) env := by
-  intro c hc i hi
-  apply lookup_none
-  rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
-  exact cert.countFresh c hc i hi
+  intro b hb
+  cases b with
+  | mono β => trivial
+  | recursive c =>
+      intro i hi
+      apply lookup_none
+      rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
+      exact cert.countFresh c hb i hi
+  | exported t =>
+      intro i hi
+      apply lookup_none
+      rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
+      exact cert.exportCountFresh t hb i hi
 
 private theorem typeFresh {s found captures env rhs sourceTypes sourceSlots} (cert : Certified s found captures env rhs sourceTypes sourceSlots)
     (args : Nat → BoundsTy) (rows : Bindings) :
     CapturesFixed (argument cert.opening.ids args) (env.map (mapCountBinding rows)) := by
-  intro c hc i hi
+  intro c hc
   obtain ⟨b, hb, he⟩ := List.mem_map.mp hc
   cases b with
-  | mono β => cases he
+  | mono β => cases he; trivial
   | recursive d =>
       cases he
+      intro i hi
       have absent : i ∉ cert.opening.ids := fun present => cert.typeFresh d hb i present hi
+      have hnone : cert.opening.ids.idxOf? i = none := List.idxOf?_eq_none_iff.mpr absent
+      simp [argument, hnone]
+  | exported t =>
+      cases he
+      intro i hi
+      have absent : i ∉ cert.opening.ids := fun present => cert.exportTypeFresh t hb i present hi
       have hnone : cert.opening.ids.idxOf? i = none := List.idxOf?_eq_none_iff.mpr absent
       simp [argument, hnone]
 
@@ -365,10 +387,13 @@ def fromScopedChecked {output path} (node : HMFoundView.AtNode output path)
       (s.counts.quantified ++ s.counts.captures))
     (inclusion : SemanticSub s.counts.premises typed.actual opening.bounds)
     (typeFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ opening.ids, i ∉ c.template.hm.body.freeVars)
-    (countFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ s.counts.quantified) :
+    (exportTypeFresh : ∀ t, .exported t ∈ env → ∀ i ∈ opening.ids, i ∉ t.hm.body.freeVars)
+    (countFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ s.counts.quantified)
+    (exportCountFresh : ∀ t, .exported t ∈ env → ∀ i ∈ t.counts.captures, i ∉ s.counts.quantified) :
     Certified s (ScopedHMInterpretation.AtNode.view node sourceTypes sourceSlots)
       captures env node.inner.stripFound sourceTypes sourceSlots := by
-  refine ⟨opening, typed.actual, ?_, typed.checked.inScope, typed.derivation, inclusion, typeFresh, countFresh⟩
+  refine ⟨opening, typed.actual, ?_, typed.checked.inScope, typed.derivation, inclusion,
+    typeFresh, exportTypeFresh, countFresh, exportCountFresh⟩
   rw [← typed.checked.shape]
   exact (FreeAlgebra.shape_erased _).symm
 
@@ -387,7 +412,15 @@ def fromLegacy {c env rhs ann} (cert : RecursiveRHS.Certified c env rhs ann)
       typing := RecursiveHMEmbedding.certified cert
       inclusion := ?_
       typeFresh := by simp
-      countFresh := ?_ }
+      exportTypeFresh := by
+        intro t ht
+        obtain ⟨b, _, he⟩ := List.mem_map.mp ht
+        cases b <;> cases he
+      countFresh := ?_
+      exportCountFresh := by
+        intro t ht
+        obtain ⟨b, _, he⟩ := List.mem_map.mp ht
+        cases b <;> cases he }
   · change SemanticSub c.counts.premises cert.actual (HMCountScheme.opened (RecursiveHMEmbedding.template c) [])
     have lc : (Synth.BoundsTy.toTy c.counts.body).IsLC := by rw [c.shape]; exact c.lc
     simpa only [HMCountScheme.opened, RecursiveHMEmbedding.template, FreeAlgebra.instantiate_fixed _ lc] using cert.inclusion

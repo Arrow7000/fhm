@@ -3,6 +3,7 @@ import FHM.Bounds.CountProposal
 import FHM.Bounds.BranchMerge
 import FHM.Bounds.ScopedHMFoundView
 import FHM.Bounds.RecursiveSpine
+import FHM.Bounds.StructuralApplication
 
 /-! Initial executable interpreted RHS traversal. Reads original found payloads
 and carried annotations, builds real recursive HM derivations, and records
@@ -350,6 +351,20 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
               pure ⟨by simpa only [Expr.stripFound] using
                 (ScopedDerives.RuntimeReady.varRecursive (types := types) (slots := slots)
                   (ids := ids) (rows := rows) (env := env) (i := i) (c := c) hv used supported.down)⟩)
+      | some (.exported s) =>
+          if s.hm.paramCount == 0 && s.counts.quantified.isEmpty then
+            let used ← HMCountScheme.check s Δ (ScopedHMInterpretation.ty types slots hm) [] [] caller
+            finish types slots ids rows caller Δ env (.found hm (.var i)) path used.bounds
+              (by simpa only [Expr.stripFound] using
+                (ScopedDerives.varExported (types := types) (slots := slots)
+                  (ids := ids) (rows := rows) hv used)) []
+              (do
+                let supported ← Runtime.supported? used.bounds
+                let arguments ← Runtime.supportedArguments? used.types
+                pure ⟨by simpa only [Expr.stripFound] using
+                  (ScopedDerives.RuntimeReady.varExported (types := types) (slots := slots)
+                    (ids := ids) (rows := rows) (i := i) hv used supported.down arguments.down)⟩)
+          else throw "bounds: exported polymorphic RHS use needs origin-backed arguments"
   | .found hm (.lambda ann body) =>
       match hm.eraseBounds with
       | .arrow paramHM _ =>
@@ -410,6 +425,16 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                 c.template.counts.body checked.actualsRev.reverse
               let used ← RecursiveHMContract.check c.fixed Δ c.hm counts caller
               return ← completeScopedSpine types slots ids rows caller Δ env checked hv used schemes
+          | some (.exported s) =>
+              let checked ← walkScopedSpine types slots ids rows caller Δ env spine schemes
+              let actuals ← checked.actualsRev.reverse.mapM fun
+                | some actual => pure actual
+                | none => throw "bounds: exported RHS spine argument needs an independent bounds origin"
+              let typeArgs ← StructuralApplication.proposeArguments s.counts.body actuals s.hm.paramCount
+              let counts ← CountProposal.proposeArguments s.counts.quantified s.counts.body actuals
+              let used ← HMCountScheme.check s Δ
+                (ScopedHMInterpretation.ty types slots spine.headHM) counts typeArgs caller
+              return ← completeExportedScopedSpine types slots ids rows caller Δ env checked hv used schemes
           | _ => pure ()
       | none => pure ()
       let fn ← walkScoped types slots ids rows caller Δ env (path ++ [.appFun]) function schemes
@@ -514,6 +539,36 @@ private def completeScopedSpine (types slots : Nat → BoundsTy) (ids : List Nat
             | none => walkScoped types slots ids rows caller Δ env (path ++ [.appArg]) arg schemes (some domain)
           appendScoped path hm prior checked
       | _ => throw "bounds: deferred recursive spine applies a non-arrow contract result"
+termination_by (sizeOf e, 0)
+
+private def completeExportedScopedSpine (types slots : Nat → BoundsTy) (ids : List Nat)
+    (rows : Bindings) (caller : List Nat) (Δ : List Constraint) (env : List Binding) {e : Expr}
+    {spine : RecursiveSpine.Syntax e}
+    (prepared : ScopedSpine types slots ids rows caller Δ env spine)
+    {s : HMCountScheme.Scheme} (lookup : env[spine.index]? = some (.exported s))
+    (used : HMCountScheme.Use s Δ (ScopedHMInterpretation.ty types slots spine.headHM) caller)
+    (schemes : BinderSchemeMap) :
+    Except String (ScopedResult types slots ids rows caller Δ env e) := do
+  match prepared with
+  | .head path i hm =>
+      finish types slots ids rows caller Δ env (.found hm (.var i)) path used.bounds
+        (by simpa only [Expr.stripFound] using ScopedDerives.varExported lookup used) []
+        (do
+          let supported ← Runtime.supported? used.bounds
+          let arguments ← Runtime.supportedArguments? used.types
+          pure ⟨by simpa only [Expr.stripFound] using
+            (ScopedDerives.RuntimeReady.varExported (types := types) (slots := slots)
+              (ids := ids) (rows := rows) (i := i) lookup used supported.down arguments.down)⟩)
+  | .app (arg := arg) path hm previous actual =>
+      let prior ← completeExportedScopedSpine types slots ids rows caller Δ env
+        previous lookup used schemes
+      match prior.bounds with
+      | .arrow domain _ =>
+          let checked ← match actual with
+            | some checked => pure checked
+            | none => throw "bounds: exported RHS spine lost a checked argument"
+          appendScoped path hm prior checked
+      | _ => throw "bounds: deferred exported spine applies a non-arrow scheme result"
 termination_by (sizeOf e, 0)
 
 private def walkScopedBranches (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)

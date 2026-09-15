@@ -28,7 +28,8 @@ private def realUniversal (withMatch : Bool := false) : Except String Bool := do
     artifact.binderSchemes (some opening.bounds)
   let inclusion ← Typed.subtype [] located.typed.actual opening.bounds
   let cert := RecursiveHMUniversal.fromScopedChecked node opening located.typed inclusion.down
-    (by intro c hc; cases hc) (by intro c hc; cases hc)
+    (by intro c hc; cases hc) (by intro s hs; cases hs)
+    (by intro c hc; cases hc) (by intro s hs; cases hs)
   let signed : RecursiveHMSigned.Certified σ [7] [] []
       (AtNode.view node BoundsTy.fvar opaqueSlots) [node.original] [] node.inner.stripFound
       BoundsTy.fvar opaqueSlots := ⟨interface, cert⟩

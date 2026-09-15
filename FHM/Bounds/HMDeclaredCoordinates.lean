@@ -22,6 +22,7 @@ private def bindingIds : Binding → List Nat
   | .mono β => (Synth.BoundsTy.toTy β).freeVars
   | .recursive c => c.hm.freeVars ++ c.template.hm.body.freeVars ++
       c.fixed.types.flatMap (fun β => (Synth.BoundsTy.toTy β).freeVars)
+  | .exported s => s.hm.body.freeVars
 
 mutual
 private def alignTypes (opaqueIds : List Nat) (a b : Ty) : Except String (List (Nat × Nat)) := do

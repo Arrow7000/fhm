@@ -58,13 +58,16 @@ def certify {output site d quantified captures premises typeCaptures env}
     (c : @HMDeclaredReconciliation.Checked output site d quantified captures premises typeCaptures)
     (rhs : Checked c env)
     (represented : ∀ b, .recursive b ∈ env → b.template.hm.body ∈ typeCaptures)
-    (countFresh : ∀ b, .recursive b ∈ env → ∀ i ∈ b.template.counts.captures, i ∉ quantified) :
+    (exportsRepresented : ∀ t, .exported t ∈ env → t.hm.body ∈ typeCaptures)
+    (countFresh : ∀ b, .recursive b ∈ env → ∀ i ∈ b.template.counts.captures, i ∉ quantified)
+    (exportCountFresh : ∀ t, .exported t ∈ env → ∀ i ∈ t.counts.captures, i ∉ quantified) :
     RecursiveHMSigned.Certified d.annotation quantified captures premises
       (ScopedHMInterpretation.AtNode.view d.node c.interpretation (slotsFor site c.signatureIds))
       (d.node.original :: guardedTypes d typeCaptures)
       (env.map (mapBinding c.interpretation c.interpretationLC))
       d.node.inner.stripFound c.interpretation (slotsFor site c.signatureIds) := by
-  refine ⟨c.interface, RecursiveHMUniversal.fromScopedChecked d.node c.opening rhs.located.typed rhs.inclusion ?_ ?_⟩
+  refine ⟨c.interface, RecursiveHMUniversal.fromScopedChecked d.node c.opening
+    rhs.located.typed rhs.inclusion ?_ ?_ ?_ ?_⟩
   · intro b hb i hi used
     obtain ⟨original, ho, he⟩ := List.mem_map.mp hb
     cases original with
@@ -76,6 +79,19 @@ def certify {output site d quantified captures premises typeCaptures env}
           exact List.mem_cons_of_mem _ (List.mem_append_left _ (represented original ho))
         exact c.opening.fresh i hi original.template.hm.body
           (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ guarded)) used
+    | exported t => cases he
+  · intro t ht i hi used
+    obtain ⟨original, ho, he⟩ := List.mem_map.mp ht
+    cases original with
+    | mono β => cases he
+    | recursive c => cases he
+    | exported original =>
+        cases he
+        have guarded : t.hm.body ∈ guardedTypes d typeCaptures := by
+          unfold guardedTypes
+          exact List.mem_cons_of_mem _ (List.mem_append_left _ (exportsRepresented t ho))
+        exact c.opening.fresh i hi t.hm.body
+          (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ guarded)) used
   · intro b hb i hi
     obtain ⟨original, ho, he⟩ := List.mem_map.mp hb
     cases original with
@@ -83,6 +99,15 @@ def certify {output site d quantified captures premises typeCaptures env}
     | recursive original =>
         cases he
         exact countFresh original ho i hi
+    | exported t => cases he
+  · intro t ht i hi
+    obtain ⟨original, ho, he⟩ := List.mem_map.mp ht
+    cases original with
+    | mono β => cases he
+    | recursive c => cases he
+    | exported original =>
+        cases he
+        exact exportCountFresh t ho i hi
 
 /-- Recover the canonical free source reader from the actual reconciled RHS
     proof. Opening and implementation evidence are retained, not reconstructed
@@ -91,19 +116,25 @@ def certifySource {output site d quantified captures premises typeCaptures env}
     (c : @HMDeclaredReconciliation.Checked output site d quantified captures premises typeCaptures)
     (rhs : Checked c env)
     (represented : ∀ b, .recursive b ∈ env → b.template.hm.body ∈ typeCaptures)
-    (countFresh : ∀ b, .recursive b ∈ env → ∀ i ∈ b.template.counts.captures, i ∉ quantified) :=
-  (certify c rhs represented countFresh).implementation.sourceFree (sourceTypes' := BoundsTy.fvar)
+    (exportsRepresented : ∀ t, .exported t ∈ env → t.hm.body ∈ typeCaptures)
+    (countFresh : ∀ b, .recursive b ∈ env → ∀ i ∈ b.template.counts.captures, i ∉ quantified)
+    (exportCountFresh : ∀ t, .exported t ∈ env → ∀ i ∈ t.counts.captures, i ∉ quantified) :=
+  (certify c rhs represented exportsRepresented countFresh exportCountFresh).implementation.sourceFree
+    (sourceTypes' := BoundsTy.fvar)
     (fun _ named => c.sourceIdentity named)
 
 theorem certifySource_runtimeReady {output site d quantified captures premises typeCaptures env}
     (c : @HMDeclaredReconciliation.Checked output site d quantified captures premises typeCaptures)
     (rhs : Checked c env)
     (represented : ∀ b, .recursive b ∈ env → b.template.hm.body ∈ typeCaptures)
+    (exportsRepresented : ∀ t, .exported t ∈ env → t.hm.body ∈ typeCaptures)
     (countFresh : ∀ b, .recursive b ∈ env → ∀ i ∈ b.template.counts.captures, i ∉ quantified)
+    (exportCountFresh : ∀ t, .exported t ∈ env → ∀ i ∈ t.counts.captures, i ∉ quantified)
     (ready : ScopedDerives.RuntimeReady rhs.located.typed.derivation) :
-    ScopedDerives.RuntimeReady (certifySource c rhs represented countFresh).typing :=
+    ScopedDerives.RuntimeReady
+      (certifySource c rhs represented exportsRepresented countFresh exportCountFresh).typing :=
   RecursiveHMUniversal.Certified.sourceFree_runtimeReady
-    (certify c rhs represented countFresh).implementation
+    (certify c rhs represented exportsRepresented countFresh exportCountFresh).implementation
     (fun _ named => c.sourceIdentity named) ready
 
 #print axioms check
