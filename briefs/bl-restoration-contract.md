@@ -3071,6 +3071,33 @@ This is the local `letIn` boundary.  Parsed top-level bindings still lower as
 Core SCC `letRec` groups and therefore require a corresponding group
 introduction path; this checkpoint makes no product-level hole claim yet.
 
+### Checkpoint 4bl — singleton recursive bindings expose origin-pinned interfaces
+
+The body judgment now has a separate zero-HM-slot singleton-recursive rule for
+carried annotations containing count holes.  The RHS is checked under the same
+pinned public demand used for its recursive self-reference; the private final
+RHS origin is included in that demand, and the following body receives the
+demand rather than the private origin.  Its runtime proof uses the existing
+tied recursive environment and erased `letRec` unfolding—not a conversion to
+non-recursive `letIn` semantics—so a genuinely self-recursive singleton remains
+covered by the rule's safety statement.
+
+The executable checker obtains the interface through a finite checked fixed
+point.  It first walks the RHS under a structural seed, pins the resulting
+origin, walks again under that public interface, repins the final origin, and
+accepts only when proof-producing structural equality shows the two public
+interfaces coincide.  Equality of HM erasures is deliberately insufficient.
+This path is limited to one annotated member, no HM quantifiers and no count
+telescope binders; all generalized and mutual groups continue through the
+existing universal group checker.  Empty telescope records emitted by lowering
+are correctly distinguished from telescopes containing binders.
+
+Build-failing regressions establish a top-level `BL _ 5 Int` singleton with an
+exact length-two RHS as public `BL 2 5 Int`, retain exact per-node coverage and
+the tied-group runtime theorem, and reject `BL _ 0 Int`.  The parsed `.fhm`
+smoke matrix now accepts the basic hole-ascription and wider-public-interface
+programs; escaping/generalized holes remain separate work.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
