@@ -2125,6 +2125,11 @@ private structure BodyBranches (ids : List Nat) (rows : Bindings) (caller : List
   nodes : List Typed.NodeResult
   runtimeReady : Option (PLift (∀ i br atIndex, BodyDerives.RuntimeReady (typing i br atIndex)))
 
+private abbrev BodyBranchSources (output : Expr) (path : CorePath) (index : Nat)
+    (branches : List (MatchPattern × Expr)) :=
+  ∀ i br, branches[i]? = some br →
+    Option (PLift (output.atCorePath (path ++ [.matchBranch (index + i)]) = some br.2))
+
 private def prependBodyBranches {ids rows caller Δ env br branches} {ctx : BodyBranchContext}
     (head : BodyResult ids rows caller (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2)
     (hp : ctx.Pattern br.1) (tail : BodyBranches ids rows caller Δ env ctx branches)
@@ -2254,6 +2259,37 @@ private def BodySpine.actualsRev {ids rows caller Δ env e} {spine : RecursiveSp
     BodySpine ids rows caller Δ env spine → List BoundsTy
   | .head _ _ _ => []
   | .app _ _ previous actual => actual.bounds :: previous.actualsRev
+
+/-- A parsed exported spine together with exact paths back into the single
+    original found artifact. Keeping this evidence beside the syntax avoids
+    any equality oracle for `Expr` (which intentionally has no `DecidableEq`). -/
+private inductive BodySpineSource (output : Expr) :
+    {e : Expr} → RecursiveSpine.Syntax e → Type where
+  | head {path i hm} :
+      output.atCorePath path = some (.found hm (.var i)) →
+      BodySpineSource output (.head path i hm)
+  | app {fn : Expr} {path : CorePath} {hm : Ty}
+      {prior : RecursiveSpine.Syntax fn} {arg : Expr} :
+      BodySpineSource output prior →
+      output.atCorePath (path ++ [.appArg]) = some arg →
+      BodySpineSource output (.app path hm prior arg)
+
+private def parseBodySpineSource (output : Expr) (path : CorePath) (e : Expr)
+    (source : PLift (output.atCorePath path = some e)) :
+    Option (Σ spine : RecursiveSpine.Syntax e, PLift (BodySpineSource output spine)) :=
+  match e with
+  | .found hm (.var i) => some ⟨.head path i hm, ⟨.head source.down⟩⟩
+  | .found hm (.app fn arg) => do
+      have fnSource : output.atCorePath (path ++ [.appFun]) = some fn := by
+        rw [Expr.atCorePath_append, source.down]
+        simp [Expr.atCorePath]
+      have argSource : output.atCorePath (path ++ [.appArg]) = some arg := by
+        rw [Expr.atCorePath_append, source.down]
+        simp [Expr.atCorePath]
+      let ⟨prior, priorSource⟩ ← parseBodySpineSource output (path ++ [.appFun]) fn ⟨fnSource⟩
+      pure ⟨.app path hm prior arg, ⟨.app priorSource.down argSource⟩⟩
+  | _ => none
+termination_by sizeOf e
 
 /-- One exported use at the head, then the ordinary application rule at EVERY
     original frame. Counts/HM arguments are never reproposed at a prefix. -/
@@ -2392,19 +2428,32 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
         | _ => throw "bounds: generalized body Cons tail is not a List"
       else throw "bounds: generalized body constructor application unsupported"
   | .found hm (.app fn arg) =>
-      match RecursiveSpine.Syntax.parse path (.found hm (.app fn arg)) with
-      | some spine =>
+      match sourceAt.bind (parseBodySpineSource sourceOutput path (.found hm (.app fn arg))) with
+      | some ⟨spine, spineSource⟩ =>
           match hv : env[spine.index]? with
           | some (.exported s) =>
-              let checked ← walkBodySpine sourceOutput metadata ids rows caller Δ env
-                spine schemes capture
+              let checked ← walkBodySpineSourced sourceOutput metadata ids rows caller Δ env
+                spine schemes capture spineSource.down
               let actuals := checked.actualsRev.reverse
               let types ← StructuralApplication.proposeArguments s.counts.body actuals s.hm.paramCount
               let counts ← CountProposal.proposeArguments s.counts.quantified s.counts.body actuals
               let used ← HMCountScheme.check s Δ spine.headHM counts types caller
               return ← useBodySpine checked hv used
           | _ => pure ()
-      | none => pure ()
+      | none =>
+          match RecursiveSpine.Syntax.parse path (.found hm (.app fn arg)) with
+          | some spine =>
+              match hv : env[spine.index]? with
+              | some (.exported s) =>
+                  let checked ← walkBodySpine sourceOutput metadata ids rows caller Δ env
+                    spine schemes capture
+                  let actuals := checked.actualsRev.reverse
+                  let types ← StructuralApplication.proposeArguments s.counts.body actuals s.hm.paramCount
+                  let counts ← CountProposal.proposeArguments s.counts.quantified s.counts.body actuals
+                  let used ← HMCountScheme.check s Δ spine.headHM counts types caller
+                  return ← useBodySpine checked hv used
+              | _ => pure ()
+          | none => pure ()
       let function ← walkBodySource sourceOutput metadata ids rows caller Δ env
         (path ++ [.appFun]) fn schemes capture
         (descendBodySource sourceAt (by simp [Expr.atCorePath]))
@@ -2622,7 +2671,14 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       -- with constructor refinements and freshly opened field bindings.
       let ⟨ctx, hin⟩ ← bodyBranchContext input.bounds
       let coverage ← ctx.checkCoverage Δ (Expr.stripFoundBranches branches)
-      let arms ← walkBodyBranches sourceOutput metadata ids rows caller Δ env ctx path branches 0 schemes expected
+      let branchSources : BodyBranchSources sourceOutput path 0 branches := fun i br atIndex =>
+        sourceAt.map fun located => ⟨by
+          simp only [Nat.zero_add]
+          rw [Expr.atCorePath_append, located.down]
+          simp only [Expr.atCorePath, Option.bind_some]
+          rw [atIndex]⟩
+      let arms ← walkBodyBranches sourceOutput metadata ids rows caller Δ env ctx path branches 0
+        schemes branchSources expected
       match hb : arms.bounds with
       | none => throw "bounds: generalized body match has no result-producing branch"
       | some β =>
@@ -2636,6 +2692,21 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
   | .found _ (.letRec _ _ _) => throw "bounds: nested generalized recursive groups are not supported yet"
   | _ => throw "bounds: generalized body lacks an original found node"
 termination_by (sizeOf e, 1)
+
+private def walkBodySpineSourced (sourceOutput : Expr) (metadata : Scope.Metadata)
+    (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (Δ : List Constraint) (env : List BodyBinding) {e : Expr} (spine : RecursiveSpine.Syntax e)
+    (schemes : BinderSchemeMap) (capture : Option (BodyCapture env))
+    (source : BodySpineSource sourceOutput spine) :
+    Except String (BodySpine ids rows caller Δ env spine) := do
+  match source with
+  | .head (path := path) (i := i) (hm := hm) _ => pure (.head path i hm)
+  | .app (path := path) (hm := hm) (prior := prior) (arg := arg) priorSource argSource =>
+      let previous ← walkBodySpineSourced sourceOutput metadata ids rows caller Δ env prior schemes capture priorSource
+      let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+        (path ++ [.appArg]) arg schemes capture (some ⟨argSource⟩)
+      pure (.app path hm previous actual)
+termination_by (sizeOf e, 0)
 
 private def walkBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
     (ids : List Nat) (rows : Bindings) (caller : List Nat)
@@ -2655,18 +2726,26 @@ private def walkBodyBranches (sourceOutput : Expr) (metadata : Scope.Metadata)
     (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) (ctx : BodyBranchContext)
     (path : CorePath) (branches : List (MatchPattern × Expr)) (index : Nat)
-    (schemes : BinderSchemeMap) (expected : Option BoundsTy) :
+    (schemes : BinderSchemeMap) (sources : BodyBranchSources sourceOutput path index branches)
+    (expected : Option BoundsTy) :
     Except String (BodyBranches ids rows caller Δ env ctx branches) := do
   match branches with
   | [] => pure ⟨(fun _ => .prim .int), (by intros; contradiction), (by intros; contradiction),
       none, (by intros; contradiction), [], some ⟨by intros; contradiction⟩⟩
   | br :: rest =>
       if hp : ctx.Pattern br.1 then
+        let headSource := sources 0 br (by simp)
         let head ← walkBodySource sourceOutput metadata ids rows caller
           (Δ ++ ctx.refine br.1) (ctx.extend br.1 env)
-          (path ++ [.matchBranch index]) br.2 schemes none none expected
+          (path ++ [.matchBranch index]) br.2 schemes none
+          (by simpa only [Nat.add_zero] using headSource) expected
+        let tailSources : BodyBranchSources sourceOutput path (index + 1) rest := fun i arm atIndex =>
+          have shifted : (br :: rest)[i + 1]? = some arm := by simpa using atIndex
+          (sources (i + 1) arm shifted).map fun located => ⟨by
+            have position : index + (i + 1) = index + 1 + i := by omega
+            simpa only [position] using located.down⟩
         let tail ← walkBodyBranches sourceOutput metadata ids rows caller Δ env ctx path rest
-          (index + 1) schemes expected
+          (index + 1) schemes tailSources expected
         match expected with
         | some β =>
             let hs ← Typed.subtype (Δ ++ ctx.refine br.1) head.bounds β

@@ -93,16 +93,19 @@ private def bodySignature (i : Nat) : PolyTy :=
     second call crosses a local binder and uses the SAME export at Char. -/
 private def bodyCalls (badLocal : Bool := false) (polyLocal : Bool := false)
     (capturedLocal : Bool := false) (forgedRoot : Bool := false)
-    (nested : Bool := false) : Except String Bool := do
+    (nested : Bool := false) (nestedPolyArg : Bool := false) : Except String Bool := do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
   let singleton (p : PrimLitExpr) : Expr :=
     .app (.app (.ctor consCtorName) (.primLit p)) (.ctor nilCtorName)
   let localAnn : Option PolyTy := if polyLocal then
     some ⟨1, if capturedLocal then .prim .int else listTy (.prim .int)⟩ else if badLocal then
     some ⟨0, .bl (.solid (.lit 2)) (.solid (.lit 2)) (.prim .int)⟩ else none
-  let secondArg := if nested then
+  let baseSecondArg := if nested then
     .app (.app (.ctor consCtorName) (singleton (.char 'a'))) (.ctor nilCtorName)
     else singleton (.char 'a')
+  let secondArg := if nestedPolyArg then
+    .letIn (some ⟨1, listTy (.prim .int)⟩) (singleton (.int 2)) baseSecondArg
+    else baseSecondArg
   let localRhs := if polyLocal && capturedLocal then .var 2 else if polyLocal then singleton (.int 1) else
     .app (.var 0) (singleton (.int 1))
   let source := Expr.letRec
@@ -483,14 +486,18 @@ private def unsupportedIntermediate : Except String Bool := do
   pure ((Runtime.supported? result.bounds).isSome && !result.runtimeReady.isSome)
 
 private def bodyMatches (kind : Nat) (onlyNil : Bool := false) (onlyCons : Bool := false)
-    (badDemand : Bool := false) :
+    (badDemand : Bool := false) (nestedPolyArm : Bool := false) :
     Except String Bool := do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
   let singleton : Expr := .app (.app (.ctor consCtorName) (.primLit (.int 1))) (.ctor nilCtorName)
   let call (i : Nat) (arg : Expr) := Expr.app (.var i) arg
+  let firstBoolArm := call 0 singleton
+  let firstBoolArm := if nestedPolyArm then
+    .letIn (some ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (.lambda none (.var 0)) firstBoolArm
+    else firstBoolArm
   let body := if kind == 0 then
     .match_ (.ctor BoolBranches.trueCtorName)
-      [(.named BoolBranches.trueCtorName 0, call 0 singleton),
+      [(.named BoolBranches.trueCtorName 0, firstBoolArm),
         (.named BoolBranches.falseCtorName 0, call 0 (.ctor nilCtorName))]
     else .match_ (call 0 (if kind == 2 then .ctor nilCtorName else singleton))
       (if onlyNil then [(.named nilCtorName 0, call 0 (.ctor nilCtorName))] else if onlyCons then
@@ -690,11 +697,19 @@ def main : IO Unit := do
   | .ok true => IO.println "PASS: actual nested singleton origins survive full exported HM insertion without widening inner List bounds"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "automatic generalized program lost nested List origins or source-node coverage")
+  match bodyCalls (nestedPolyArg := true) with
+  | .ok true => IO.println "PASS: exact source provenance reaches a generalized local nested inside an exported application argument"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "nested application-argument generalization lost bounds or exact source-node coverage")
   for kind in [0, 1, 2] do
     match bodyMatches kind (onlyNil := kind == 2) with
     | .ok true => IO.println s!"PASS: generalized body match kind {kind} checks every original arm, coverage and full origins with exact node reports"
     | .error message => throw (IO.userError message)
     | .ok false => throw (IO.userError "generalized body match lost branch refinements, result bounds or original node coverage")
+  match bodyMatches 0 (nestedPolyArm := true) with
+  | .ok true => IO.println "PASS: exact source provenance reaches a generalized local nested inside a match arm"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "nested match-arm generalization lost bounds or exact source-node coverage")
   match bodyMatches 1 (onlyNil := true) with
   | .error message =>
       unless (message.splitOn "every admitted List is empty").length > 1 do
