@@ -76,12 +76,11 @@ let zip : {n : Nat, a b} BL n n a -> BL n n b -> BL n n (a, b) =
 --   flatMap (\x -> [x, x+1]) [7,8]-- [7,8,8,9] : BL 4 4
 --   head/tail [1,2,3,4]           -- (1, [2,3,4])
 let data4 : BL 4 4 Int = [1, 2, 3, 4]
-let result =
-  (append
-    (reverse (map (\x -> x + 1) (filter (\n -> n < 5) [1, 6, 2, 8, 3])))
-    (cons 0 (singleton 99)),
-  (zip [10, 20] [30, 40],
-    (flatMap (\x -> cons x (singleton (x + 1))) [7, 8],
-      (head data4, tail data4))))
-
-result
+-- Keep the final pipeline as the program expression: unannotated recursive
+-- exports are intentionally outside the current BL checker boundary.
+(append
+  (reverse (map (\x -> x + 1) (filter (\n -> n < 5) [1, 6, 2, 8, 3])))
+  (cons 0 (singleton 99)),
+(zip [10, 20] [30, 40],
+  (flatMap (\x -> cons x (singleton (x + 1))) [7, 8],
+    (head data4, tail data4))))

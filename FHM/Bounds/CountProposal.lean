@@ -2,10 +2,11 @@ import FHM.Bounds.ScopedScheme
 
 /-! # Untrusted direct count proposals from argument bounds
 
-Only selected declaration identities exposed directly at interval endpoints are
-proposed. Captured identities are never generalized, HM slots are opaque, and
-compound arithmetic is not inverted. Repeated coordinates keep their first
-proposal: the consuming checker must validate all remaining obligations.
+Selected declaration identities exposed directly at interval endpoints are
+proposed.  We also peel a literal summand from a ground finite endpoint, the
+single unambiguous arithmetic inversion needed by domains such as `n + 1`.
+Captured identities are never generalized and HM slots are opaque. Repeated
+coordinates keep their first proposal: the consuming checker must validate all remaining obligations.
 Truly domain-absent coordinates receive zero as a finite witness, not an inferred
 invariant. No proposal establishes typing, scope, finiteness or premise validity.
 -/
@@ -23,10 +24,36 @@ private abbrev Proposals := List (Nat × Count) × List Nat
 
 private def combine (a b : Proposals) : Proposals := (a.1 ++ b.1, a.2 ++ b.2)
 
+/-- Evaluate only syntactically ground, finite count arithmetic.  This is a
+    proposal helper, not a solver and not acceptance evidence. -/
+private def groundNat? : Count → Option Nat
+  | .lit n => some n
+  | .add a b => do pure ((← groundNat? a) + (← groundNat? b))
+  | .mul a b => do pure ((← groundNat? a) * (← groundNat? b))
+  | .pred a => do pure ((← groundNat? a) - 1)
+  | .min a b => do pure (min (← groundNat? a) (← groundNat? b))
+  | .max a b => do pure (max (← groundNat? a) (← groundNat? b))
+  | .var _ | .inf => none
+
+private def peelLiteral (actual : Count) (offset : Nat) : Option Count := do
+  let value ← groundNat? actual
+  if offset ≤ value then some (.lit (value - offset)) else none
+
+/-- Deliberately narrow inversion.  We do not invert multiplication, `pred`,
+    min/max, multiple variables, or symbolic right-hand sides. -/
+private def additiveEndpoint (ids : List Nat) (pattern actual : Count) : Option (Nat × Count) :=
+  match pattern with
+  | .add (.var ⟨.rigid, i⟩) (.lit offset)
+  | .add (.lit offset) (.var ⟨.rigid, i⟩) =>
+      if ids.contains i then (peelLiteral actual offset).map fun value => (i, value) else none
+  | _ => none
+
 private def endpoint (ids : List Nat) (pattern actual : Count) : Proposals :=
   match pattern with
   | .var ⟨.rigid, i⟩ => if ids.contains i then ([(i, actual)], []) else ([], [])
-  | _ => ([], selected ids pattern)
+  | _ => match additiveEndpoint ids pattern actual with
+      | some proposal => ([proposal], [])
+      | none => ([], selected ids pattern)
 
 mutual
 private def collect (ids : List Nat) (pattern actual : BoundsTy) : Option Proposals :=
@@ -85,7 +112,7 @@ private def collectArguments (ids : List Nat) (contract : BoundsTy)
       | _ => none
 
 /-- Proposal order is the declaration telescope's order, not traversal order.
-    Compound-only occurrences reject instead of guessing an arithmetic inverse.
+    Unsupported or ambiguous compound-only occurrences reject instead of guessing an inverse.
     Successful proposals must still pass the certified application checker. -/
 def propose (quantified : List Nat) (pattern actual : BoundsTy) : Except String (List Count) := do
   let (uses, blocked) ← match collect quantified pattern actual with
@@ -101,8 +128,8 @@ def propose (quantified : List Nat) (pattern actual : BoundsTy) : Except String 
 
 /-- One proposal vector for the whole supplied application spine. Repeated
     coordinates keep their first witness; ALL domains must subsequently pass
-    inclusion. A later direct occurrence can supply a compound earlier one,
-    but no arithmetic is inverted. This function establishes no typing fact.
+    inclusion. A later direct occurrence can supply an unsupported compound
+    earlier one. This function establishes no typing fact.
     Missing actuals are deferred checking obligations, NEVER proposal origins.
     Every coordinate in a deferred domain needs an independent actual origin. -/
 def proposeOrigins (quantified : List Nat) (contract : BoundsTy)
