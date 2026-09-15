@@ -1,5 +1,6 @@
 import FHM.Bounds.BoolBranches
 import FHM.Bounds.ListBranches
+import FHM.Bounds.PairBranches
 import FHM.Bounds.SchemeSpecialization
 
 /-! # Bounds meaning in the existing erased small-step semantics
@@ -232,6 +233,16 @@ theorem boolCoverage_close {branches} (coverage : BoolBranches.Covers branches)
       obtain ⟨bt, ht⟩ := ht
       obtain ⟨bf, hf⟩ := hf
       exact .full ⟨_, member_close ht terms⟩ ⟨_, member_close hf terms⟩
+  | wildcard hw =>
+      obtain ⟨body, hw⟩ := hw
+      exact .wildcard ⟨_, member_close hw terms⟩
+
+theorem pairCoverage_close {branches} (coverage : PairBranches.Covers branches)
+    (terms : List Expr) : PairBranches.Covers (closeBranches terms branches) := by
+  cases coverage with
+  | constructor hp =>
+      obtain ⟨body, hp⟩ := hp
+      exact .constructor ⟨_, member_close hp terms⟩
   | wildcard hw =>
       obtain ⟨body, hw⟩ := hw
       exact .wildcard ⟨_, member_close hw terms⟩
@@ -1338,6 +1349,39 @@ theorem TermAt.matchBool {bound free σ budget result scrut branches}
       · exact choose _ (.inl rfl) trueValue
       · exact choose _ (.inr rfl) falseValue
 
+private theorem pair_covered {branches} (coverage : PairBranches.Covers branches) :
+    ∃ pat body, SmallStep.FirstMatchingBranch pairCtorName 2 branches pat body := by
+  apply firstMatch_exists
+  rcases coverage.sound with ⟨body, member⟩ | ⟨body, member⟩
+  · exact ⟨.wildcard, body, member, rfl⟩
+  · exact ⟨.named pairCtorName 2, body, member, by simp [MatchPattern.matchesCtor]⟩
+
+theorem TermAt.matchPair {bound free σ budget leftTy rightTy result scrut branches}
+    (scrutinee : TermAt bound free σ budget (.custom pairTyName [leftTy, rightTy]) scrut)
+    (coverage : PairBranches.Covers branches)
+    (branchSafe : ∀ j, j < budget → ∀ left right pat body,
+      ValueAt bound free σ (j + 1) leftTy left →
+      ValueAt bound free σ (j + 1) rightTy right →
+      SmallStep.FirstMatchingBranch pairCtorName 2 branches pat body →
+      TermAt bound free σ j result
+        (body.substN 0 ([left, right].take pat.bindCount))) :
+    TermAt bound free σ budget result (.match_ scrut branches) := by
+  apply scrutinee.bind
+    (⟨fun step => .matchScrut step, fun value => by cases value⟩ :
+      Context (fun v => .match_ v branches))
+  intro j before v meaning
+  cases j with
+  | zero => unfold TermAt; intro steps v _ before; omega
+  | succ j =>
+      rw [ValueAt] at meaning
+      obtain ⟨value, _, _, pair⟩ := meaning
+      cases pair with
+      | @mk left right leftMeaning rightMeaning =>
+          obtain ⟨pat, body, selected⟩ := pair_covered coverage
+          exact TermAt.prepend
+            (.matchReduce value (.step (.step (.base pairCtorName))) selected)
+            (branchSafe j (by omega) left right pat body leftMeaning rightMeaning selected)
+
 /-- Unbounded observational safety allows infinite reductions; it does not
     claim termination or infer recursive invariants. -/
 def Safe (bound free : TypeEnv) (σ : Assign) (β : BoundsTy) (e : Expr) : Prop :=
@@ -1432,6 +1476,7 @@ theorem Safe.not_dropping_callback (bound free : TypeEnv) (σ : Assign) :
 #print axioms firstMatch_unclose
 #print axioms listCoverage_close
 #print axioms boolCoverage_close
+#print axioms pairCoverage_close
 #print axioms ValueAt.down
 #print axioms TermAt.down
 #print axioms ValueAt.counts
@@ -1451,9 +1496,12 @@ theorem Safe.not_dropping_callback (bound free : TypeEnv) (σ : Assign) :
 #print axioms Safe.primBinOp
 #print axioms ValueAt.cons
 #print axioms TermAt.cons
+#print axioms ValueAt.pair
+#print axioms TermAt.pair
 #print axioms ListValue.covered
 #print axioms TermAt.matchList
 #print axioms TermAt.matchBool
+#print axioms TermAt.matchPair
 #print axioms Safe.not_nonempty_nil
 #print axioms Safe.not_dropping_callback
 #print axioms Safe.subtype

@@ -7,7 +7,7 @@ import FHM.Bounds.StructuralApplication
 
 /-! Initial executable interpreted RHS traversal. Reads original found payloads
 and carried annotations, builds real recursive HM derivations, and records
-interpreted per-node bounds without rewriting the expression. List/Bool matches
+interpreted per-node bounds without rewriting the expression. List/Bool/Pair matches
 retain constructor coverage and variance-correct joins. Full recursive spines
 collect independent count origins before checking guided pending arguments.
 Generalized local lets and nested groups remain explicit
@@ -53,18 +53,22 @@ private def finish (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bin
 private inductive BranchContext where
   | list (lo hi : Count) (elem : BoundsTy)
   | bool
+  | pair (left right : BoundsTy)
 
 private def BranchContext.refine : BranchContext → MatchPattern → List Constraint
   | .list lo hi _, p => RecursiveTyping.branchRefine p lo hi
   | .bool, _ => []
+  | .pair _ _, _ => []
 
 private def BranchContext.extend : BranchContext → MatchPattern → List Binding → List Binding
   | .list lo hi elem, p, env => branchEnv p lo hi elem env
   | .bool, _, env => env
+  | .pair left right, p, env => pairBranchEnv p left right env
 
 private def BranchContext.Pattern : BranchContext → MatchPattern → Prop
   | .list _ _ _, p => RecursiveTyping.ListPattern p
   | .bool, p => BoolBranches.Pattern p
+  | .pair _ _, p => PairBranches.Pattern p
 
 private instance (ctx : BranchContext) (p : MatchPattern) : Decidable (ctx.Pattern p) := by
   cases ctx <;> unfold BranchContext.Pattern <;> infer_instance
@@ -254,6 +258,60 @@ private def bool_match_ready {types slots ids rows caller Δ env branches β} {s
       rcases strip_index atIndex with ⟨br, atSource, rfl⟩
       simpa only [BranchContext.refine, BranchContext.extend, List.append_nil] using bodies.down i br atSource⟩
 
+private theorem pair_match_typing {types slots ids rows caller Δ env branches left right β}
+    {scrut : Expr}
+    (hs : ScopedDerives types slots ids rows Δ env scrut.stripFound
+      (.custom pairTyName [left, right]))
+    (arms : BranchResults types slots ids rows caller Δ env (.pair left right) branches)
+    (hb : arms.bounds = some β)
+    (hc : PairBranches.Covers (Expr.stripFoundBranches branches)) :
+    ScopedDerives types slots ids rows Δ env (Expr.match_ scrut branches).stripFound β := by
+  simp only [Expr.stripFound]
+  apply ScopedDerives.matchPair (actuals := arms.actuals) hs hc
+  · intro arm ha
+    rw [stripBranches] at ha
+    rcases List.mem_map.mp ha with ⟨br, hm, rfl⟩
+    exact arms.patterns br hm
+  · intro i arm ha
+    rcases strip_index ha with ⟨br, hm, rfl⟩
+    simpa only [BranchContext.refine, BranchContext.extend, List.append_nil] using
+      arms.typing i br hm
+  · intro i arm ha
+    rcases strip_index ha with ⟨br, hm, rfl⟩
+    simpa only [hb, BranchContext.refine, List.append_nil] using arms.inclusions i br hm
+
+private def pair_match_ready {types slots ids rows caller Δ env branches left right β}
+    {scrut : Expr}
+    (hs : ScopedDerives types slots ids rows Δ env scrut.stripFound
+      (.custom pairTyName [left, right]))
+    (arms : BranchResults types slots ids rows caller Δ env (.pair left right) branches)
+    (hb : arms.bounds = some β)
+    (hc : PairBranches.Covers (Expr.stripFoundBranches branches))
+    (ready : Option (PLift (ScopedDerives.RuntimeReady hs))) :
+    Option (PLift (ScopedDerives.RuntimeReady (pair_match_typing hs arms hb hc))) := do
+  let input ← ready
+  let bodies ← arms.runtimeReady
+  let result ← Runtime.supported? β
+  pure ⟨by
+    simp only [Expr.stripFound]
+    refine ScopedDerives.RuntimeReady.matchPair (actuals := arms.actuals) hc ?_ ?_ ?_
+      input.down ?_ result.down
+    · intro arm member
+      rw [stripBranches] at member
+      obtain ⟨br, atSource, rfl⟩ := List.mem_map.mp member
+      exact arms.patterns br atSource
+    · intro i arm atIndex
+      rcases strip_index atIndex with ⟨br, atSource, rfl⟩
+      simpa only [BranchContext.refine, BranchContext.extend, List.append_nil] using
+        arms.typing i br atSource
+    · intro i arm atIndex
+      rcases strip_index atIndex with ⟨br, atSource, rfl⟩
+      simpa only [hb, BranchContext.refine, List.append_nil] using arms.inclusions i br atSource
+    · intro i arm atIndex
+      rcases strip_index atIndex with ⟨br, atSource, rfl⟩
+      simpa only [BranchContext.refine, BranchContext.extend, List.append_nil] using
+        bodies.down i br atSource⟩
+
 private def appendScoped {types slots ids rows caller Δ env fn arg} (path : CorePath) (hm : Ty)
     (prior : ScopedResult types slots ids rows caller Δ env fn)
     (actual : ScopedResult types slots ids rows caller Δ env arg) :
@@ -414,6 +472,42 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                   apply ScopedDerives.RuntimeReady.cons sub.down head.down
                   simpa only [ht] using tail.down⟩)
         | _ => throw "bounds: interpreted Cons tail is not a List"
+      else if hp : name = pairCtorName then
+        let leftHint := match expected with
+          | some (.custom pairName [left, _]) => if pairName = pairTyName then some left else none
+          | _ => none
+        let rightHint := match expected with
+          | some (.custom pairName [_, right]) => if pairName = pairTyName then some right else none
+          | _ => none
+        let left ← walkScoped types slots ids rows caller Δ env
+          (path ++ [.appFun, .appArg]) head schemes leftHint
+        let right ← walkScoped types slots ids rows caller Δ env
+          (path ++ [.appArg]) tail schemes rightHint
+        let interpretedResult := ScopedHMInterpretation.ty types slots hm
+        let _ ← match BinderBridge.equalTy (ScopedHMInterpretation.ty types slots ctorTy)
+            (.arrow (ScopedHMInterpretation.ty types slots left.originalHM)
+              (.arrow (ScopedHMInterpretation.ty types slots right.originalHM) interpretedResult)) with
+          | some h => pure h
+          | none => throw "bounds: inconsistent interpreted Pair found type"
+        let _ ← match BinderBridge.equalTy (ScopedHMInterpretation.ty types slots partialTy)
+            (.arrow (ScopedHMInterpretation.ty types slots right.originalHM) interpretedResult) with
+          | some h => pure h
+          | none => throw "bounds: inconsistent interpreted partial Pair found type"
+        finish types slots ids rows caller Δ env
+          (.found hm (.app (.found partialTy (.app (.found ctorTy (.ctor name)) head)) tail))
+          path (.custom pairTyName [left.bounds, right.bounds])
+          (by subst name; simpa only [Expr.stripFound] using
+            (ScopedDerives.pair left.derivation right.derivation))
+          (⟨path ++ [.appFun], ScopedHMInterpretation.ty types slots partialTy, none⟩ ::
+            ⟨path ++ [.appFun, .appFun], ScopedHMInterpretation.ty types slots ctorTy, none⟩ ::
+            left.nodes ++ right.nodes)
+          (do
+            let leftReady ← left.runtimeReady
+            let rightReady ← right.runtimeReady
+            pure ⟨by
+              subst name
+              simpa only [Expr.stripFound] using
+                ScopedDerives.RuntimeReady.pair leftReady.down rightReady.down⟩)
       else throw "bounds: constructor application unsupported in interpreted RHS traversal"
   | .found hm (.app function arg) =>
       match RecursiveSpine.Syntax.parse path (.found hm (.app function arg)) with
@@ -493,8 +587,26 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                 (by simpa only [Expr.stripFound] using
                   (bool_match_ready (by simpa only [hin, hn] using input.derivation) arms hb coverage.down
                     (by simpa only [hin, hn] using input.runtimeReady)))
-          else throw "bounds: interpreted match scrutinee is neither List nor Bool"
-      | _ => throw "bounds: interpreted match scrutinee is neither List nor Bool"
+          else throw "bounds: interpreted match scrutinee is not List, Bool, or Pair"
+      | .custom name [left, right] =>
+          if hn : name = pairTyName then
+            let coverage ← PairBranches.check (Expr.stripFoundBranches branches)
+            let arms ← walkScopedBranches types slots ids rows caller Δ env (.pair left right)
+              path branches 0 schemes expected
+            match hb : arms.bounds with
+            | none => throw "bounds: interpreted Pair match has no result-producing branch"
+            | some β =>
+              let pairTyping := pair_match_typing
+                (by simpa only [hin, hn] using input.derivation) arms hb coverage.down
+              let pairReady := pair_match_ready
+                (by simpa only [hin, hn] using input.derivation) arms hb coverage.down
+                  (by simpa only [hin, hn] using input.runtimeReady)
+              finish types slots ids rows caller Δ env (.found hm (.match_ scrut branches)) path β
+                (by simpa only [Expr.stripFound] using pairTyping)
+                (input.nodes ++ arms.nodes)
+                (by simpa only [Expr.stripFound] using pairReady)
+          else throw "bounds: interpreted match scrutinee is not List, Bool, or Pair"
+      | _ => throw "bounds: interpreted match scrutinee is not List, Bool, or Pair"
   | _ => throw "bounds: unsupported or missing found node in interpreted RHS traversal"
 termination_by (sizeOf e, 1)
 

@@ -875,19 +875,22 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCaptured
 
 #print axioms HMDeclaredGroup.Checked.exportEnvironmentCaptured
 
-/-- One branch path for List refinements and finite Bool coverage. Generalized
+/-- One branch path for List refinements and finite nominal coverage. Generalized
     exports remain in the environment behind any newly opened mono fields. -/
 inductive BodyBranchContext where
   | list (lo hi : Count) (elem : BoundsTy)
   | bool
+  | pair (left right : BoundsTy)
 
 def BodyBranchContext.bounds : BodyBranchContext → BoundsTy
   | .list lo hi elem => .list lo hi elem
   | .bool => .custom boolTyName []
+  | .pair left right => .custom pairTyName [left, right]
 
 def BodyBranchContext.refine : BodyBranchContext → MatchPattern → List Constraint
   | .list lo hi _, p => RecursiveTyping.branchRefine p lo hi
   | .bool, _ => []
+  | .pair _ _, _ => []
 
 def BodyBranchContext.extend : BodyBranchContext → MatchPattern → List BodyBinding → List BodyBinding
   | .list lo hi elem, p, env =>
@@ -895,10 +898,13 @@ def BodyBranchContext.extend : BodyBranchContext → MatchPattern → List BodyB
         .mono elem :: .mono (.list (.pred lo) (.pred hi) elem) :: env
       else env
   | .bool, _, env => env
+  | .pair left right, p, env =>
+      if p = .named pairCtorName 2 then .mono left :: .mono right :: env else env
 
 def BodyBranchContext.Pattern : BodyBranchContext → MatchPattern → Prop
   | .list _ _ _, p => RecursiveTyping.ListPattern p
   | .bool, p => BoolBranches.Pattern p
+  | .pair _ _, p => PairBranches.Pattern p
 
 instance (ctx : BodyBranchContext) (p : MatchPattern) : Decidable (ctx.Pattern p) := by
   cases ctx <;> unfold BodyBranchContext.Pattern <;> infer_instance
@@ -906,12 +912,14 @@ instance (ctx : BodyBranchContext) (p : MatchPattern) : Decidable (ctx.Pattern p
 def BodyBranchContext.Covers (Δ : List Constraint) : BodyBranchContext → List (MatchPattern × Expr) → Prop
   | .list lo hi _, branches => ListBranches.Covers Δ ⟨lo, hi⟩ branches
   | .bool, branches => BoolBranches.Covers branches
+  | .pair _ _, branches => PairBranches.Covers branches
 
 def BodyBranchContext.checkCoverage (ctx : BodyBranchContext) (Δ : List Constraint)
     (branches : List (MatchPattern × Expr)) : Except String (PLift (ctx.Covers Δ branches)) :=
   match ctx with
   | .list lo hi _ => ListBranches.check Δ ⟨lo, hi⟩ branches
   | .bool => BoolBranches.check branches
+  | .pair _ _ => PairBranches.check branches
 
 private def bodyBranchContext (β : BoundsTy) :
     Except String (Σ ctx : BodyBranchContext, PLift (β = ctx.bounds)) :=
@@ -919,8 +927,11 @@ private def bodyBranchContext (β : BoundsTy) :
   | .list lo hi elem => .ok ⟨.list lo hi elem, ⟨rfl⟩⟩
   | .custom name [] =>
       if hn : name = boolTyName then .ok ⟨.bool, ⟨by subst name; rfl⟩⟩
-      else .error "bounds: generalized body match scrutinee is neither List nor Bool"
-  | _ => .error "bounds: generalized body match scrutinee is neither List nor Bool"
+      else .error "bounds: generalized body match scrutinee is not a supported data type"
+  | .custom name [left, right] =>
+      if hn : name = pairTyName then .ok ⟨.pair left right, ⟨by subst name; rfl⟩⟩
+      else .error "bounds: generalized body match scrutinee is not a supported data type"
+  | _ => .error "bounds: generalized body match scrutinee is not a supported data type"
 
 /-- A written generalized local must retain its actual declared HM/count
     interface. Unannotated interfaces instead come from checked machine facts
@@ -1248,11 +1259,25 @@ private theorem OrdinaryEnv.branch {env p lo hi elem} (ordinary : OrdinaryEnv en
   · exact ordinary.consMono.consMono
   · exact ordinary
 
+private theorem OrdinaryEnv.pairBranch {env p left right} (ordinary : OrdinaryEnv env) :
+    OrdinaryEnv (pairBranchEnv p left right env) := by
+  unfold pairBranchEnv
+  split
+  · exact ordinary.consMono.consMono
+  · exact ordinary
+
 private theorem ordinaryBodyEnv_branch (env : List Binding) (p : MatchPattern)
     (lo hi : Count) (elem : BoundsTy) :
     ordinaryBodyEnv (branchEnv p lo hi elem env) =
       (BodyBranchContext.list lo hi elem).extend p (ordinaryBodyEnv env) := by
   simp only [branchEnv, BodyBranchContext.extend]
+  split <;> rfl
+
+private theorem ordinaryBodyEnv_pairBranch (env : List Binding) (p : MatchPattern)
+    (left right : BoundsTy) :
+    ordinaryBodyEnv (pairBranchEnv p left right env) =
+      (BodyBranchContext.pair left right).extend p (ordinaryBodyEnv env) := by
+  simp only [pairBranchEnv, BodyBranchContext.extend]
   split <;> rfl
 
 /-- A recursive RHS assumption becomes the corresponding universally exported
@@ -1267,6 +1292,7 @@ theorem rhsToBody {types slots ids rows Δ env e β}
   | nil => exact .nil
   | boolCtor ctor => exact .boolCtor ctor
   | cons _ _ sub ihh iht => exact .cons ihh iht sub
+  | pair _ _ ihLeft ihRight => exact .pair ihLeft ihRight
   | varMono lookup =>
       exact .varMono (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])
   | varRecursive lookup used =>
@@ -1291,6 +1317,11 @@ theorem rhsToBody {types slots ids rows Δ env e β}
         (by simpa [BodyBranchContext.refine] using subs)
       intro i br atIndex
       simpa [BodyBranchContext.extend, BodyBranchContext.refine] using ihb i br atIndex
+  | matchPair _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .pair _ _) ihs coverage patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine] using ihb i br atIndex
 
 #print axioms rhsToBody
 
@@ -1303,6 +1334,7 @@ theorem ordinaryRhsToBody {types slots ids rows Δ env e β}
   | nil => intro _; exact .nil
   | boolCtor ctor => intro _; exact .boolCtor ctor
   | cons _ _ sub ihh iht => intro ordinary; exact .cons (ihh ordinary) (iht ordinary) sub
+  | pair _ _ ihLeft ihRight => intro ordinary; exact .pair (ihLeft ordinary) (ihRight ordinary)
   | varMono lookup =>
       intro _
       exact .varMono (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])
@@ -1329,6 +1361,13 @@ theorem ordinaryRhsToBody {types slots ids rows Δ env e β}
         (by simpa [BodyBranchContext.refine] using subs)
       intro i br atIndex
       simpa [BodyBranchContext.extend, BodyBranchContext.refine] using ihb i br atIndex ordinary
+  | matchPair _ coverage patterns bodies subs ihs ihb =>
+      intro ordinary
+      refine .match_ (ctx := .pair _ _) (ihs ordinary) coverage patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine] using
+        ihb i br atIndex ordinary.pairBranch
 
 private theorem body_getElem?_append_left {env tail : List BodyBinding} {i : Nat}
     {binding : BodyBinding}
@@ -1341,6 +1380,10 @@ private theorem BodyBranchContext.extend_append (ctx : BodyBranchContext)
     ctx.extend pattern (env ++ tail) = ctx.extend pattern env ++ tail := by
   cases ctx with
   | bool => rfl
+  | pair left right =>
+      by_cases pair : pattern = .named pairCtorName 2
+      · simp [BodyBranchContext.extend, pair]
+      · simp [BodyBranchContext.extend, pair]
   | list lo hi elem =>
       by_cases cons : pattern = .named consCtorName 2
       · simp [BodyBranchContext.extend, cons]
@@ -1357,6 +1400,7 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
   | nil => exact .nil
   | boolCtor ctor => exact .boolCtor ctor
   | cons _ _ sub ihh iht => exact .cons ihh iht sub
+  | pair _ _ ihLeft ihRight => exact .pair ihLeft ihRight
   | varMono lookup =>
       exact .varMono (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]))
@@ -1383,6 +1427,12 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
       intro i br atIndex
       simpa [BodyBranchContext.extend, BodyBranchContext.refine,
         BodyBranchContext.extend_append] using ihb i br atIndex
+  | matchPair _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .pair _ _) ihs coverage patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
+        BodyBranchContext.extend_append] using ihb i br atIndex
 
 #print axioms rhsToBodyAppend
 
@@ -1399,6 +1449,7 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
   | nil => exact .nil
   | boolCtor ctor => exact .boolCtor ctor
   | cons _ _ sub ihh iht => exact .cons (ihh ordinary) (iht ordinary) sub
+  | pair _ _ ihLeft ihRight => exact .pair (ihLeft ordinary) (ihRight ordinary)
   | varMono lookup =>
       exact .varMono (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]))
@@ -1424,6 +1475,12 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
       intro i br atIndex
       simpa [BodyBranchContext.refine, BodyBranchContext.extend,
         BodyBranchContext.extend_append] using ihb i br atIndex ordinary
+  | matchPair _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .pair _ _) (ihs ordinary) coverage patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
+        BodyBranchContext.extend_append] using ihb i br atIndex ordinary.pairBranch
 
 namespace BodyDerives
 abbrev literal := @ScopedBodyDerives.literal BoundsTy.fvar BoundsTy.bvar
@@ -1450,6 +1507,7 @@ theorem BodyBranchContext.Covers.assuming {ctx : BodyBranchContext} {Δ Δ' bran
   cases ctx with
   | list => exact ListBranches.Covers.assuming h hp
   | bool => exact h
+  | pair => exact h
 
 /-- Established caller/path premises transport the ENTIRE generalized body,
     including original source obligations, all match arms and group introduction.
@@ -1501,6 +1559,9 @@ theorem BodyBranchContext.extend_length {ctx : BodyBranchContext} {pat env}
       rcases pattern with rfl | rfl | rfl <;>
         simp [BodyBranchContext.extend, MatchPattern.bindCount, nilCtorName, consCtorName]
   | bool => rcases pattern with rfl | rfl | rfl <;> rfl
+  | pair left right =>
+      rcases pattern with rfl | rfl <;>
+        simp [BodyBranchContext.extend, MatchPattern.bindCount]
 
 theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
     (h : ScopedBodyDerives types slots ids rows Δ env e β) : e.varsBelow env.length = true := by
@@ -1605,6 +1666,28 @@ theorem BodyEnvAt.listBranch {bound free σ budget env lo hi elem v len name arg
         · refine ⟨?_, ?_⟩
           · simpa only [BodyBranchContext.extend, if_pos rfl] using opened
           · rfl
+
+theorem BodyEnvAt.pairBranch {bound free σ budget env leftTy rightTy left right pat}
+    (e : BodyEnvAt bound free σ budget env)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (leftMeaning : Runtime.ValueAt bound free σ (budget + 1) leftTy left)
+    (rightMeaning : Runtime.ValueAt bound free σ (budget + 1) rightTy right)
+    (pattern : PairBranches.Pattern pat) :
+    ∃ opened : BodyEnvAt bound free σ budget
+        ((BodyBranchContext.pair leftTy rightTy).extend pat env),
+      opened.terms = [left, right].take pat.bindCount ++ e.terms := by
+  rcases pattern with rfl | rfl
+  · simpa [BodyBranchContext.extend, MatchPattern.bindCount] using ⟨e, rfl⟩
+  · have leftFacts := leftMeaning
+    have rightFacts := rightMeaning
+    rw [Runtime.ValueAt.eq_def] at leftFacts rightFacts
+    let opened := (e.extendMono rightTy right rightFacts.2.1
+      (Runtime.TermAt.value rightFacts.1 (rightMeaning.down hb hf (by omega)))).extendMono
+        leftTy left leftFacts.2.1
+        (Runtime.TermAt.value leftFacts.1 (leftMeaning.down hb hf (by omega)))
+    refine ⟨?_, ?_⟩
+    · simpa only [BodyBranchContext.extend, if_pos rfl] using opened
+    · rfl
 
 namespace BodyDerives
 
@@ -1855,6 +1938,38 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           exact (ihb i (pat, body) atIndex j path (e.down hb hf (by omega))).of_values
             (Runtime.subtype (subs i (pat, body) atIndex) (branchReady i _ atIndex).supported
               resultSupport bound free σ path)
+      | pair leftTy rightTy =>
+          apply Runtime.TermAt.matchPair (ihs budget premises e)
+            (Runtime.pairCoverage_close coverage e.terms)
+          intro j before left right pat closedBody leftMeaning rightMeaning selected
+          obtain ⟨body, original, rfl⟩ := Runtime.firstMatch_unclose e.terms selected
+          obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp original.mem
+          obtain ⟨opened, terms⟩ := (e.down hb hf (by omega : j ≤ budget)).pairBranch
+            hb hf leftMeaning rightMeaning (patterns _ original.mem)
+          have path : ∀ p ∈ pathΔ ++ (BodyBranchContext.pair leftTy rightTy).refine pat,
+              p.Holds σ := by
+            simpa only [BodyBranchContext.refine, List.append_nil] using premises
+          have branchSafe := (ihb i (pat, body) atIndex j path opened).of_values
+            (Runtime.subtype (subs i (pat, body) atIndex) (branchReady i _ atIndex).supported
+              resultSupport bound free σ path)
+          rw [terms] at branchSafe
+          have contentsLength : ([left, right].take pat.bindCount).length = pat.bindCount := by
+            have arity := opened.arity
+            rw [terms, List.length_append] at arity
+            rw [BodyBranchContext.extend_length (patterns _ original.mem)] at arity
+            change ([left, right].take pat.bindCount).length + e.terms.length =
+              env'.length + pat.bindCount at arity
+            rw [e.arity] at arity
+            omega
+          have contentsClosed : ∀ term ∈ [left, right].take pat.bindCount,
+              term.varsBelow 0 = true := by
+            intro term member
+            exact opened.closed term (by rw [terms]; exact List.mem_append_left _ member)
+          have closing := Runtime.closing_compose e.terms ([left, right].take pat.bindCount)
+            e.closed contentsClosed body 0
+          simp only [Nat.zero_add, contentsLength] at closing
+          rw [closing]
+          exact branchSafe
   | letRec g universal membersReady demandSupport outerArguments bodyReady ihbody =>
       intro budget premises e
       cases budget with
@@ -1961,6 +2076,14 @@ private theorem RecursiveArgumentsSupported.branch {env p lo hi elem}
   · exact supported.consMono.consMono
   · exact supported
 
+private theorem RecursiveArgumentsSupported.pairBranch {env p left right}
+    (supported : RecursiveArgumentsSupported env) :
+    RecursiveArgumentsSupported (pairBranchEnv p left right env) := by
+  unfold pairBranchEnv
+  split
+  · exact supported.consMono.consMono
+  · exact supported
+
 theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
     {h : ScopedDerives types slots ids rows Δ env e β}
     (ready : ScopedDerives.RuntimeReady h)
@@ -1972,6 +2095,7 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
   | nil supported => exact .nil supported
   | boolCtor ctor => exact .boolCtor ctor
   | cons sub _ _ ihh iht => exact .cons sub (ihh arguments) (iht arguments)
+  | pair _ _ ihLeft ihRight => exact .pair (ihLeft arguments) (ihRight arguments)
   | varMono lookup supported =>
       exact .varMono (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) supported
@@ -2008,6 +2132,15 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
       intro i br atIndex
       simpa [BodyBranchContext.refine, BodyBranchContext.extend,
         BodyBranchContext.extend_append] using ihb i br atIndex arguments
+  | matchPair coverage patterns bodies subs _ _ supported ihs ihb =>
+      refine .match_ (ctx := .pair _ _) coverage patterns
+        (fun i br atIndex => by
+          simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
+            BodyBranchContext.extend_append] using rhsToBodyAppend (bodies i br atIndex) tail)
+        (by simpa [BodyBranchContext.refine] using subs) (ihs arguments) ?_ supported
+      intro i br atIndex
+      simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
+        BodyBranchContext.extend_append] using ihb i br atIndex arguments.pairBranch
 
 #print axioms rhsReadyToBodyAppend
 
@@ -2021,6 +2154,9 @@ theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
   | nil supported => intro _; exact .nil supported
   | boolCtor ctor => intro _; exact .boolCtor ctor
   | cons sub _ _ ihh iht => intro ordinary; exact .cons sub (ihh ordinary) (iht ordinary)
+  | pair _ _ ihLeft ihRight =>
+      intro ordinary
+      exact .pair (ihLeft ordinary) (ihRight ordinary)
   | varMono lookup supported =>
       intro _
       exact .varMono (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) supported
@@ -2056,6 +2192,16 @@ theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
         (by simpa [BodyBranchContext.refine] using subs) (ihs ordinary) ?_ supported
       intro i br atIndex
       simpa [BodyBranchContext.refine, BodyBranchContext.extend] using ihb i br atIndex ordinary
+  | matchPair coverage patterns bodies subs _ _ supported ihs ihb =>
+      intro ordinary
+      refine .match_ (ctx := .pair _ _) coverage patterns
+        (fun i br atIndex => by
+          simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine] using
+            ordinaryRhsToBody (bodies i br atIndex) ordinary.pairBranch)
+        (by simpa [BodyBranchContext.refine] using subs) (ihs ordinary) ?_ supported
+      intro i br atIndex
+      simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine] using
+        ihb i br atIndex ordinary.pairBranch
 
 theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
     {h : ScopedDerives types slots ids rows Δ env e β}
@@ -2070,6 +2216,9 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
   | cons sub _ _ ihh iht =>
       intro ordinary tail
       exact .cons sub (ihh ordinary tail) (iht ordinary tail)
+  | pair _ _ ihLeft ihRight =>
+      intro ordinary tail
+      exact .pair (ihLeft ordinary tail) (ihRight ordinary tail)
   | varMono lookup supported =>
       intro _ tail
       exact .varMono (body_getElem?_append_left (by
@@ -2115,6 +2264,17 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
       intro i br atIndex
       simpa [BodyBranchContext.refine, BodyBranchContext.extend,
         BodyBranchContext.extend_append] using ihb i br atIndex ordinary tail
+  | matchPair coverage patterns bodies subs _ _ supported ihs ihb =>
+      intro ordinary tail
+      refine .match_ (ctx := .pair _ _) coverage patterns
+        (fun i br atIndex => by
+          simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
+            BodyBranchContext.extend_append] using
+            ordinaryRhsToBodyAppend (bodies i br atIndex) ordinary.pairBranch tail)
+        (by simpa [BodyBranchContext.refine] using subs) (ihs ordinary tail) ?_ supported
+      intro i br atIndex
+      simpa [ordinaryBodyEnv_pairBranch, BodyBranchContext.refine,
+        BodyBranchContext.extend_append] using ihb i br atIndex ordinary.pairBranch tail
 
 #print axioms ordinaryRhsToBody
 #print axioms ordinaryRhsToBodyAppend
@@ -2417,6 +2577,16 @@ private def extendBranchCapture? {env} (capture : Option (BodyCapture env))
     Option (BodyCapture (ctx.extend pattern env)) :=
   match ctx with
   | .bool => capture
+  | .pair left right =>
+      if isPair : pattern = .named pairCtorName 2 then
+        have extended : (BodyBranchContext.pair left right).extend pattern env =
+            .mono left :: .mono right :: env := by
+          simp [BodyBranchContext.extend, isPair]
+        extended.symm ▸ extendMonoCapture? (extendMonoCapture? capture right) left
+      else
+        have unchanged : (BodyBranchContext.pair left right).extend pattern env = env := by
+          simp [BodyBranchContext.extend, isPair]
+        unchanged.symm ▸ capture
   | .list lo hi elem =>
       if isCons : pattern = .named consCtorName 2 then
         have extended : (BodyBranchContext.list lo hi elem).extend pattern env =
