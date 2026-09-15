@@ -646,9 +646,43 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
       if hn : name = nilCtorName then
         throw "bounds: Nil cannot be applied"
       else if hc : name = consCtorName then
-        throw "bounds: partial Cons application unsupported in interpreted RHS traversal"
+        let actual ← walkScoped types slots ids rows caller Δ env
+          (path ++ [.appArg]) arg schemes (ctors := ctors)
+        let result := .arrow (.list (.lit 0) .inf actual.bounds)
+          (.list (.lit 1) .inf actual.bounds)
+        finish types slots ids rows caller Δ env
+          (.found hm (.app (.found ctorHM (.ctor name)) arg)) path result
+          (by subst name; simpa only [Expr.stripFound] using
+            ScopedDerives.consPartial actual.derivation)
+          (⟨path ++ [.appFun], ScopedHMInterpretation.ty types slots ctorHM, none⟩ ::
+            actual.nodes)
+          (do
+            let ready ← actual.runtimeReady
+            pure ⟨by
+              subst name
+              simpa only [Expr.stripFound] using
+                ScopedDerives.RuntimeReady.consPartial ready.down⟩)
       else if hp : name = pairCtorName then
-        throw "bounds: partial Pair application unsupported in interpreted RHS traversal"
+        match ScopedHMInterpretation.ty types slots hm with
+        | .arrow rightHM _ =>
+            let actual ← walkScoped types slots ids rows caller Δ env
+              (path ++ [.appArg]) arg schemes (ctors := ctors)
+            let right ← Typed.shapeTop rightHM
+            let result := .arrow right (.custom pairTyName [actual.bounds, right])
+            finish types slots ids rows caller Δ env
+              (.found hm (.app (.found ctorHM (.ctor name)) arg)) path result
+              (by subst name; simpa only [Expr.stripFound] using
+                ScopedDerives.pairPartial (rightTy := right) actual.derivation)
+              (⟨path ++ [.appFun], ScopedHMInterpretation.ty types slots ctorHM, none⟩ ::
+                actual.nodes)
+              (do
+                let ready ← actual.runtimeReady
+                let supported ← Runtime.supported? right
+                pure ⟨by
+                  subst name
+                  simpa only [Expr.stripFound] using
+                    ScopedDerives.RuntimeReady.pairPartial ready.down supported.down⟩)
+        | _ => throw "bounds: partial Pair has a non-arrow interpreted result"
       else if hb : BoolBranches.IsCtor name then
         throw "bounds: Bool constructor cannot be applied"
       else
