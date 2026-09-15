@@ -128,7 +128,7 @@ private def consecutiveSource (body : String := "f xs") : String :=
 
 private def nestedMonoSource : String :=
   "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
-  "  \\(xs : BL n n Int) -> let g : {m : Nat} Int -> Int = \\(i : Int) -> g i + 0 in " ++
+  "  \\(xs : BL n n Int) -> let g : {m : Nat} Int -> Int = \\i -> g i in " ++
   "(\\(ignored : Int) -> xs) (g 1)\nf []\n"
 
 private def provenanceRejected (modify : TypedLowered → TypedLowered) : Except String Unit := do
@@ -407,6 +407,10 @@ private def cases : List (String × Bool) := [
     returns (run nestedMonoSource) "BL 0 0 Int"),
   ("parsed monomorphic recursive group in a universal RHS retains its runtime theorem",
     succeeds (runtimeCertified nestedMonoSource)),
+  ("nested monomorphic RHS reconciliation cannot hide a false bounds ceiling", fails (run (
+    "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+    "  \\(xs : BL n n Int) -> let g : {m : Nat} BL 0 0 Int = [1] in " ++
+    "(\\(ignored : List Int) -> xs) g\nf []\n")) "interval inclusion"),
   ("parsed scalar prefix is captured by a later recursive map", returns (run (
     "(let offset : Int = 1 in\n" ++
     mapSource "(transform (h + offset) + 0) :: f transform t" ++

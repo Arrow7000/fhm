@@ -4,6 +4,7 @@ import FHM.Bounds.BranchMerge
 import FHM.Bounds.ScopedHMFoundView
 import FHM.Bounds.RecursiveSpine
 import FHM.Bounds.StructuralApplication
+import FHM.Bounds.HMDeclaredReconciliation
 
 /-! Initial executable interpreted RHS traversal. Reads original found payloads
 and carried annotations, builds real recursive HM derivations, and records
@@ -729,33 +730,81 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
       match annotations, rhss with
       | [some annotation], [rhs] =>
           if hmono : annotation.paramCount = 0 then
-            let hint ← RecursiveHMAnnotation.scopedBindingHint types slots ids rows caller
-              (some annotation)
-            let demand ← match hint with
-              | some demand => pure demand
-              | none => throw "bounds: monomorphic nested recursive annotation has no bounds demand"
-            let actual ← walkScoped types slots ids rows caller Δ (.mono demand :: env)
-              (path ++ [.letRecRhs 0]) rhs schemes (some demand) (ctors := ctors)
-            let _ ← checkLocalInterface (some annotation) schemes (.letRec path 0)
-              actual.originalHM
-            let obligation ← RecursiveHMAnnotation.checkScopedBinding types slots ids rows caller
-              Δ (some annotation) demand
-            let inclusion ← Typed.subtype Δ actual.bounds demand
-            let result ← walkScoped types slots ids rows caller Δ (.mono demand :: env)
-              (path ++ [.letRecBody]) body schemes expected (ctors := ctors)
-            finish types slots ids rows caller Δ env
-              (.found hm (.letRec [some annotation] [rhs] body)) path result.bounds
-              (by simpa only [Expr.stripFound] using
-                (ScopedDerives.letRecMono obligation.down actual.derivation
-                  inclusion.down result.derivation))
-              (actual.nodes ++ result.nodes)
-              (do
-                let rhsReady ← actual.runtimeReady
-                let demandSupported ← Runtime.supported? demand
-                let bodyReady ← result.runtimeReady
-                pure ⟨by simpa only [Expr.stripFound] using
-                  (ScopedDerives.RuntimeReady.letRecMono obligation.down inclusion.down
-                    rhsReady.down demandSupported.down bodyReady.down)⟩)
+            match rhs with
+            | .found rhsHM rhsInner =>
+                let localOutput := .found hm
+                  (.letRec [some annotation] [.found rhsHM rhsInner] body)
+                let node : HMFoundView.AtNode localOutput [.letRecRhs 0] :=
+                  ⟨rhsHM, rhsInner, by
+                    change (Expr.found hm (.letRec [some annotation]
+                      [.found rhsHM rhsInner] body)).atCorePath [.letRecRhs 0] = _
+                    simp [Expr.atCorePath]
+                    split <;> simp_all⟩
+                let declaration : HMDeclaredReconciliation.Declaration localOutput
+                    (.letRec [] 0) :=
+                  ⟨annotation, [.letRecRhs 0],
+                    .letRec (path := []) (member := 0) (hm := hm)
+                      (annotations := [some annotation])
+                      (rhss := [.found rhsHM rhsInner]) (body := body)
+                      (annotation := annotation) (by
+                        change (Expr.found hm (.letRec [some annotation]
+                          [.found rhsHM rhsInner] body)).atCorePath [] = _
+                        simp [Expr.atCorePath]) (by rfl) (by rfl), node⟩
+                -- Protect every source HM identity mentioned by the body.  The
+                -- reconciliation may solve only RHS-local found identities.
+                let bodyCaptures := body.stripFound.tyFreeVars.map Ty.fvar
+                let reconciled ← HMDeclaredReconciliation.check declaration [] ids []
+                  bodyCaptures Δ
+                let localTypes := fun i => mapFree types (reconciled.interpretation i)
+                have rhsAgreement : ∀ i ∈ rhsInner.stripFound.tyFreeVars,
+                    localTypes i = types i := by
+                  intro i named
+                  simp only [localTypes, reconciled.sourceIdentity named]
+                  rfl
+                have bodyAgreement : ∀ i ∈ body.stripFound.tyFreeVars,
+                    localTypes i = types i := by
+                  intro i named
+                  have captured : Ty.fvar i ∈
+                      HMDeclaredReconciliation.guardedTypes declaration bodyCaptures := by
+                    unfold HMDeclaredReconciliation.guardedTypes
+                    exact List.mem_cons_of_mem _ (List.mem_append_left _
+                      (List.mem_map.mpr ⟨i, named, rfl⟩))
+                  have fixed : reconciled.interpretation i = .fvar i :=
+                    reconciled.capturesFixed captured (by simp [Ty.freeVars])
+                  simp only [localTypes, fixed]
+                  rfl
+                let hint ← RecursiveHMAnnotation.scopedBindingHint types slots ids rows caller
+                  (some annotation)
+                let demand ← match hint with
+                  | some demand => pure demand
+                  | none => throw "bounds: monomorphic nested recursive annotation has no bounds demand"
+                let actual ← walkScoped localTypes slots ids rows caller Δ (.mono demand :: env)
+                  (path ++ [.letRecRhs 0]) (.found rhsHM rhsInner) schemes (some demand) (ctors := ctors)
+                let _ ← checkLocalInterface (some annotation) schemes (.letRec path 0)
+                  actual.originalHM
+                let obligation ← RecursiveHMAnnotation.checkScopedBinding types slots ids rows caller
+                  Δ (some annotation) demand
+                let inclusion ← Typed.subtype Δ actual.bounds demand
+                let result ← walkScoped localTypes slots ids rows caller Δ (.mono demand :: env)
+                  (path ++ [.letRecBody]) body schemes expected (ctors := ctors)
+                let actualDerivation := actual.derivation.sourceFree
+                  (by simpa only [Expr.stripFound] using rhsAgreement)
+                let resultDerivation := result.derivation.sourceFree bodyAgreement
+                finish types slots ids rows caller Δ env localOutput path result.bounds
+                  (by simpa only [Expr.stripFound, List.map_cons, List.map_nil, localOutput] using
+                    (ScopedDerives.letRecMono obligation.down actualDerivation
+                      inclusion.down resultDerivation))
+                  (actual.nodes ++ result.nodes)
+                  (do
+                    let rhsReady ← actual.runtimeReady
+                    let demandSupported ← Runtime.supported? demand
+                    let bodyReady ← result.runtimeReady
+                    pure ⟨by simpa only [Expr.stripFound, List.map_cons, List.map_nil, localOutput] using
+                      (ScopedDerives.RuntimeReady.letRecMono obligation.down inclusion.down
+                        (rhsReady.down.sourceFree
+                          (by simpa only [Expr.stripFound] using rhsAgreement)) demandSupported.down
+                        (bodyReady.down.sourceFree bodyAgreement))⟩)
+            | _ => throw "bounds: nested recursive RHS is missing its original found root"
           else throw "bounds: generalized nested recursive group unsupported in interpreted universal RHS traversal"
       | _, _ => throw "bounds: non-singleton nested recursive group unsupported in interpreted universal RHS traversal"
   | .found hm (.letIn ann rhs body) =>
