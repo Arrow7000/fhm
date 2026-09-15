@@ -728,6 +728,31 @@ def declaredLocalCertificate {output path d quantified premises typeCaptures}
     exact declaredLocalSlotsAgree c i (by
       simpa [HMDeclaredReconciliation.slotLimit] using inside))
 
+/-- The same exact source certificate may retain a surrounding recursive
+    environment. Its templates must be represented among the reconciliation
+    guards, and their captured count coordinates must stay outside the local
+    telescope, exactly as required by the universal RHS certificate. -/
+def declaredCapturedLocalCertificate {output path d quantified premises typeCaptures env}
+    (c : @HMDeclaredReconciliation.Checked output (.letIn path) d
+      quantified [] premises typeCaptures)
+    (rhs : HMDeclaredRHS.Checked c env)
+    (represented : ∀ b, .recursive b ∈ env → b.template.hm.body ∈ typeCaptures)
+    (countFresh : ∀ b, .recursive b ∈ env →
+      ∀ i ∈ b.template.counts.captures, i ∉ quantified) :
+    RecursiveHMUniversal.Certified c.interface.scheme
+      (ScopedHMInterpretation.AtNode.view d.node c.interpretation
+        (HMDeclaredReconciliation.slotsFor (.letIn path) c.signatureIds))
+      (d.node.original :: HMDeclaredReconciliation.guardedTypes d typeCaptures)
+      (env.map (mapBinding c.interpretation c.interpretationLC))
+      d.node.inner.stripFound BoundsTy.fvar
+      (localSlots (some d.annotation) BoundsTy.bvar
+        (c.signatureIds.map BoundsTy.fvar)) := by
+  let cert := HMDeclaredRHS.certifySource c rhs represented countFresh
+  exact cert.sourceSlots c.rhsSlots (by
+    intro i inside
+    exact declaredLocalSlotsAgree c i (by
+      simpa [HMDeclaredReconciliation.slotLimit] using inside))
+
 theorem declaredLocalCertificate_runtimeReady {output path d quantified premises typeCaptures}
     (c : @HMDeclaredReconciliation.Checked output (.letIn path) d
       quantified [] premises typeCaptures)
@@ -747,6 +772,27 @@ theorem declaredLocalCertificate_runtimeReady {output path d quantified premises
       exact declaredLocalSlotsAgree c i (by
         simpa [HMDeclaredReconciliation.slotLimit] using inside)) baseReady
   simpa only [declaredLocalCertificate] using moved
+
+theorem declaredCapturedLocalCertificate_runtimeReady
+    {output path d quantified premises typeCaptures env}
+    (c : @HMDeclaredReconciliation.Checked output (.letIn path) d
+      quantified [] premises typeCaptures)
+    (rhs : HMDeclaredRHS.Checked c env)
+    (represented : ∀ b, .recursive b ∈ env → b.template.hm.body ∈ typeCaptures)
+    (countFresh : ∀ b, .recursive b ∈ env →
+      ∀ i ∈ b.template.counts.captures, i ∉ quantified)
+    (ready : ScopedDerives.RuntimeReady rhs.located.typed.derivation) :
+    ScopedDerives.RuntimeReady
+      (declaredCapturedLocalCertificate c rhs represented countFresh).typing := by
+  let base := HMDeclaredRHS.certifySource c rhs represented countFresh
+  have baseReady : ScopedDerives.RuntimeReady base.typing :=
+    HMDeclaredRHS.certifySource_runtimeReady c rhs represented countFresh ready
+  have moved := RecursiveHMUniversal.Certified.sourceSlots_runtimeReady base c.rhsSlots
+    (by
+      intro i inside
+      exact declaredLocalSlotsAgree c i (by
+        simpa [HMDeclaredReconciliation.slotLimit] using inside)) baseReady
+  simpa only [declaredCapturedLocalCertificate] using moved
 
 /-- Specialize opaque lexical annotation slots after source counts. Full type
     arguments are inserted last, so their caller-owned counts are untouched. -/
@@ -874,6 +920,42 @@ private theorem ordinaryBodyEnv_branch (env : List Binding) (p : MatchPattern)
   simp only [branchEnv, BodyBranchContext.extend]
   split <;> rfl
 
+/-- A recursive RHS assumption becomes the corresponding universally exported
+    body binding. Each concrete recursive use already contains an external
+    scheme use with the same counts, fixed HM arguments and demanded bounds. -/
+theorem rhsToBody {types slots ids rows Δ env e β}
+    (h : ScopedDerives types slots ids rows Δ env e β) :
+    ScopedBodyDerives types slots ids rows Δ (ordinaryBodyEnv env) e β := by
+  induction h with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil => exact .nil
+  | boolCtor ctor => exact .boolCtor ctor
+  | cons _ _ sub ihh iht => exact .cons ihh iht sub
+  | varMono lookup =>
+      exact .varMono (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])
+  | varRecursive lookup used =>
+      exact .varExported
+        (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) used.external
+  | app _ _ sub ihf iha => exact .app ihf iha sub
+  | lambda annotation _ ih =>
+      simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
+        ScopedBodyDerives.lambda annotation ih
+  | letMono annotation _ _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
+        ScopedBodyDerives.letMono annotation ihr ihb
+  | matchList _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .list _ _ _) ihs coverage patterns ?_ subs
+      intro i br atIndex
+      simpa only [ordinaryBodyEnv_branch] using ihb i br atIndex
+  | matchBool _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .bool) ihs coverage patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [BodyBranchContext.extend, BodyBranchContext.refine] using ihb i br atIndex
+
+#print axioms rhsToBody
+
 theorem ordinaryRhsToBody {types slots ids rows Δ env e β}
     (h : ScopedDerives types slots ids rows Δ env e β) :
     OrdinaryEnv env → ScopedBodyDerives types slots ids rows Δ (ordinaryBodyEnv env) e β := by
@@ -921,6 +1003,43 @@ private theorem BodyBranchContext.extend_append (ctx : BodyBranchContext)
       by_cases cons : pattern = .named consCtorName 2
       · simp [BodyBranchContext.extend, cons]
       · simp [BodyBranchContext.extend, cons]
+
+/-- The source recursive environment remains the de Bruijn prefix; unrelated
+    surrounding body bindings may be appended without changing any lookup. -/
+theorem rhsToBodyAppend {types slots ids rows Δ env e β}
+    (h : ScopedDerives types slots ids rows Δ env e β) (tail : List BodyBinding) :
+    ScopedBodyDerives types slots ids rows Δ (ordinaryBodyEnv env ++ tail) e β := by
+  induction h with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil => exact .nil
+  | boolCtor ctor => exact .boolCtor ctor
+  | cons _ _ sub ihh iht => exact .cons ihh iht sub
+  | varMono lookup =>
+      exact .varMono (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]))
+  | varRecursive lookup used =>
+      exact .varExported (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used.external
+  | app _ _ sub ihf iha => exact .app ihf iha sub
+  | lambda annotation _ ih =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        ScopedBodyDerives.lambda annotation ih
+  | letMono annotation _ _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        ScopedBodyDerives.letMono annotation ihr ihb
+  | matchList _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .list _ _ _) ihs coverage patterns ?_ subs
+      intro i br atIndex
+      simpa only [ordinaryBodyEnv_branch, BodyBranchContext.extend_append] using ihb i br atIndex
+  | matchBool _ coverage patterns bodies subs ihs ihb =>
+      refine .match_ (ctx := .bool) ihs coverage patterns ?_
+        (by simpa [BodyBranchContext.refine] using subs)
+      intro i br atIndex
+      simpa [BodyBranchContext.extend, BodyBranchContext.refine,
+        BodyBranchContext.extend_append] using ihb i br atIndex
+
+#print axioms rhsToBodyAppend
 
 /-- Append an unused outer body environment to an ordinary RHS derivation.
     De Bruijn indices retain their original prefix, so this is the precise
@@ -1438,6 +1557,72 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
 
 end BodyDerives
 
+/-- Runtime conversion of recursive RHS assumptions additionally records that
+    every fixed HM argument exported to the body runtime has an interpretation.
+    This is independent of whether a particular RHS happens to use that slot. -/
+def RecursiveArgumentsSupported (env : List Binding) : Prop :=
+  ∀ c, .recursive c ∈ env → ∀ a ∈ c.fixed.types, Runtime.Supported a
+
+private theorem RecursiveArgumentsSupported.consMono {env β}
+    (supported : RecursiveArgumentsSupported env) :
+    RecursiveArgumentsSupported (.mono β :: env) := by
+  intro c member
+  exact supported c (by simpa using member)
+
+private theorem RecursiveArgumentsSupported.branch {env p lo hi elem}
+    (supported : RecursiveArgumentsSupported env) :
+    RecursiveArgumentsSupported (branchEnv p lo hi elem env) := by
+  unfold branchEnv
+  split
+  · exact supported.consMono.consMono
+  · exact supported
+
+theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
+    {h : ScopedDerives types slots ids rows Δ env e β}
+    (ready : ScopedDerives.RuntimeReady h)
+    (arguments : RecursiveArgumentsSupported env) (tail : List BodyBinding) :
+    BodyDerives.RuntimeReady (rhsToBodyAppend h tail) := by
+  induction ready with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil supported => exact .nil supported
+  | boolCtor ctor => exact .boolCtor ctor
+  | cons sub _ _ ihh iht => exact .cons sub (ihh arguments) (iht arguments)
+  | varMono lookup supported =>
+      exact .varMono (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) supported
+  | varRecursive lookup used supported =>
+      exact .varExported (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used.external
+        supported (arguments _ (List.mem_of_getElem? lookup))
+  | app sub _ _ ihf iha => exact .app sub (ihf arguments) (iha arguments)
+  | lambda annotation supported _ ih =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        BodyDerives.RuntimeReady.lambda annotation supported (ih arguments.consMono)
+  | letMono annotation _ _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        BodyDerives.RuntimeReady.letMono annotation (ihr arguments) (ihb arguments.consMono)
+  | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
+      refine .match_ (ctx := .list _ _ _) coverage patterns
+        (fun i br atIndex => by
+          simpa only [ordinaryBodyEnv_branch, BodyBranchContext.extend_append] using
+            rhsToBodyAppend (bodies i br atIndex) tail)
+        subs (ihs arguments) ?_ supported
+      intro i br atIndex
+      simpa only [ordinaryBodyEnv_branch, BodyBranchContext.extend_append] using
+        ihb i br atIndex arguments.branch
+  | matchBool coverage patterns bodies subs _ _ supported ihs ihb =>
+      refine .match_ (ctx := .bool) coverage patterns
+        (fun i br atIndex => by
+          simpa [BodyBranchContext.refine, BodyBranchContext.extend,
+            BodyBranchContext.extend_append] using rhsToBodyAppend (bodies i br atIndex) tail)
+        (by simpa [BodyBranchContext.refine] using subs) (ihs arguments) ?_ supported
+      intro i br atIndex
+      simpa [BodyBranchContext.refine, BodyBranchContext.extend,
+        BodyBranchContext.extend_append] using ihb i br atIndex arguments
+
+#print axioms rhsReadyToBodyAppend
+
 theorem ordinaryRhsReadyToBody {types slots ids rows Δ env e β}
     {h : ScopedDerives types slots ids rows Δ env e β}
     (ready : ScopedDerives.RuntimeReady h) :
@@ -1587,6 +1772,188 @@ def localRhsInstances {s ann rhs found typeCaptures Δ calleeΔ caller useHM}
   simpa only [specialized, rows, typesEq, slotsEq, demandEq, ordinaryBodyEnv,
     List.map_nil, List.append_nil, CountAlgebra.compose, List.nil_append] using withParent
 
+def RecursiveOnly (env : List Binding) : Prop := ∀ β, .mono β ∉ env
+
+def recursiveTypeCaptures (env : List Binding) : List Ty :=
+  env.map fun binding => match binding with
+    | .mono β => Synth.BoundsTy.toTy β
+    | .recursive c => c.template.hm.body
+
+def recursiveFixedTypeCaptures (env : List Binding) : List Ty :=
+  env.flatMap fun binding => match binding with
+    | .mono β => [Synth.BoundsTy.toTy β]
+    | .recursive c => c.fixed.types.map Synth.BoundsTy.toTy
+
+private theorem recursiveTypeCaptures_represented {env c}
+    (member : Binding.recursive c ∈ env) :
+    c.template.hm.body ∈ recursiveTypeCaptures env :=
+  List.mem_map.mpr ⟨.recursive c, member, rfl⟩
+
+/-- Exact recursive RHS assumptions available at a body point. This initial
+    captured slice deliberately contains no mono prefix; closed local RHSs use
+    the independent weakening theorem and therefore need no capture context. -/
+structure BodyCapture (env : List BodyBinding) where
+  rhsEnv : List Binding
+  bodyEnv : ordinaryBodyEnv rhsEnv = env
+  only : RecursiveOnly rhsEnv
+  captured : RecursiveHMEnvironment.Captured [] rhsEnv
+  arguments : RecursiveArgumentsSupported rhsEnv
+  countClosed : ∀ c, .recursive c ∈ rhsEnv → c.template.counts.captures = []
+
+private theorem interfaceRecursiveOnly
+    {output metadata path premises typeCaptures index vectors}
+    (ps : HMDeclaredGroup.Interfaces output metadata path [] premises typeCaptures index vectors) :
+    RecursiveOnly (ps.contracts.map Binding.recursive) := by
+  simp [RecursiveOnly]
+
+private theorem interfaceCaptured
+    {output metadata path premises typeCaptures index vectors}
+    (ps : HMDeclaredGroup.Interfaces output metadata path [] premises typeCaptures index vectors) :
+    RecursiveHMEnvironment.Captured [] (ps.contracts.map Binding.recursive) := by
+  induction ps with
+  | nil => simp [HMDeclaredGroup.Interfaces.contracts, RecursiveHMEnvironment.Captured]
+  | cons p _ rest ih =>
+      constructor
+      · intro β member; simp at member
+      · intro c member a argument
+        rcases List.mem_cons.mp (by
+          simpa [HMDeclaredGroup.Interfaces.contracts] using member) with head | tail
+        · cases head
+          obtain ⟨i, _, rfl⟩ := List.mem_map.mp (by
+            simpa [HMDeclaredGroup.Member.contract, RecursiveHMContract.fromOpaque] using argument)
+          simp [BoundsScoped]
+        · exact ih.2 c (by simpa using tail) a argument
+
+private theorem interfaceArgumentsSupported
+    {output metadata path premises typeCaptures index vectors}
+    (ps : HMDeclaredGroup.Interfaces output metadata path [] premises typeCaptures index vectors) :
+    RecursiveArgumentsSupported (ps.contracts.map Binding.recursive) := by
+  induction ps with
+  | nil => simp [HMDeclaredGroup.Interfaces.contracts, RecursiveArgumentsSupported]
+  | cons p _ rest ih =>
+      intro c member a argument
+      rcases List.mem_cons.mp (by
+        simpa [HMDeclaredGroup.Interfaces.contracts] using member) with head | tail
+      · cases head
+        obtain ⟨i, _, rfl⟩ := List.mem_map.mp (by
+          simpa [HMDeclaredGroup.Member.contract, RecursiveHMContract.fromOpaque] using argument)
+        exact .fvar
+      · exact ih c (by simpa using tail) a argument
+
+private theorem interfaceCountsClosed
+    {output metadata path premises typeCaptures index vectors}
+    (ps : HMDeclaredGroup.Interfaces output metadata path [] premises typeCaptures index vectors) :
+    ∀ c, .recursive c ∈ ps.contracts.map Binding.recursive →
+      c.template.counts.captures = [] := by
+  induction ps with
+  | nil => simp [HMDeclaredGroup.Interfaces.contracts]
+  | cons p _ rest ih =>
+      intro c member
+      rcases List.mem_cons.mp (by
+        simpa [HMDeclaredGroup.Interfaces.contracts] using member) with head | tail
+      · cases head
+        rfl
+      · exact ih c (by simpa using tail)
+
+private theorem checkedMembersBodyEnv
+    {output metadata path premises typeCaptures env index vectors}
+    {ps : HMDeclaredGroup.Interfaces output metadata path [] premises typeCaptures index vectors}
+    (members : HMDeclaredGroup.CheckedMembers env ps) :
+    ordinaryBodyEnv (ps.contracts.map Binding.recursive) =
+      members.exports.map BodyBinding.exported := by
+  induction members with
+  | nil => rfl
+  | cons head rest ih =>
+      simp only [HMDeclaredGroup.Interfaces.contracts, List.map_cons, ordinaryBodyEnv,
+        ordinaryBinding, HMDeclaredGroup.CheckedMembers.exports]
+      rw [head.certificateScheme]
+      exact congrArg (List.cons (BodyBinding.exported head.certificate.interface.scheme)) ih
+
+private def checkedGroupBodyCapture
+    {output metadata path vectors premises bodyTypes}
+    (g : HMDeclaredGroup.Checked output metadata path vectors [] premises bodyTypes []) :
+    BodyCapture (g.exports.map BodyBinding.exported) where
+  rhsEnv := g.interfaces.contracts.map Binding.recursive
+  bodyEnv := checkedMembersBodyEnv g.members
+  only := interfaceRecursiveOnly g.interfaces
+  captured := interfaceCaptured g.interfaces
+  arguments := interfaceArgumentsSupported g.interfaces
+  countClosed := interfaceCountsClosed g.interfaces
+
+private theorem ordinaryBodyEnv_mapBinding {env} (only : RecursiveOnly env)
+    (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) :
+    ordinaryBodyEnv (env.map (mapBinding f lc)) = ordinaryBodyEnv env := by
+  induction env with
+  | nil => rfl
+  | cons binding rest ih =>
+      cases binding with
+      | mono β => exact False.elim (only β (by simp))
+      | recursive c =>
+          simp only [List.map_cons, mapBinding, ordinaryBodyEnv, ordinaryBinding,
+            Contract.mapTypes, List.cons.injEq, true_and]
+          exact ih (fun β member => only β (List.mem_cons_of_mem _ member))
+
+private theorem RecursiveArgumentsSupported.mapBinding {env}
+    (supported : RecursiveArgumentsSupported env) (f : Nat → BoundsTy)
+    (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (arguments : ∀ i, Runtime.Supported (f i)) :
+    RecursiveArgumentsSupported (env.map (mapBinding f lc)) := by
+  intro c member a argument
+  obtain ⟨binding, source, mapped⟩ := List.mem_map.mp member
+  cases binding with
+  | mono β => cases mapped
+  | recursive original =>
+      cases mapped
+      obtain ⟨b, sourceArgument, rfl⟩ := List.mem_map.mp (by
+        simpa [Contract.mapTypes, RecursiveHMContract.Fixed.mapTypes] using argument)
+      exact Runtime.Supported.types f arguments (supported original source b sourceArgument)
+
+/-- A local universal instance may keep a source prefix of fixed recursive
+    assumptions. The local opening is fresh from every captured template, so
+    its HM substitution leaves those templates fixed; converting each concrete
+    recursive use to the corresponding body export preserves the exact proof. -/
+def capturedLocalRhsInstances {s ann rhs found typeCaptures env Δ calleeΔ caller useHM}
+    (frame : LocalFrame s [] rhs) (annotation : LocalAnnotationOK s ann)
+    (cert : RecursiveHMUniversal.Certified s found typeCaptures env rhs BoundsTy.fvar
+      (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar)))
+    (owners : cert.opening.ids = frame.owned)
+    (captured : RecursiveHMEnvironment.Captured s.counts.captures env)
+    (only : RecursiveOnly env)
+    (used : HMCountScheme.Use s calleeΔ useHM caller)
+    (outer : List BodyBinding := []) :
+    ScopedBodyDerives (localTypes frame.owned BoundsTy.fvar used.types)
+      (localSlots ann BoundsTy.bvar used.types)
+      (s.counts.quantified ++ s.counts.captures ++ [])
+      (CountAlgebra.compose (s.counts.quantified.zip used.counts) [])
+      (Δ ++ used.countInstance.premises) (ordinaryBodyEnv env ++ outer) rhs used.bounds := by
+  let rows := s.counts.quantified.zip used.counts
+  let f := argument cert.opening.ids (SchemeUse.vector used.types)
+  have lc := RecursiveHMUniversal.replacementLC cert.opening.ids (SchemeUse.vector used.types)
+    (RecursiveHMUniversal.argumentsLC used.types used.typesLC)
+  have scope := RecursiveHMUniversal.replacementScope cert.opening.ids (SchemeUse.vector used.types)
+    (SchemeUse.vector_scope used.typesScoped)
+  have fixed : CapturesFixed f env := by
+    intro c member i freeId
+    have absent : i ∉ cert.opening.ids := fun present => cert.typeFresh c member i present freeId
+    simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
+  let specialized := fromCertified cert used.countInstance f lc scope captured fixed
+  have instanceBody := rhsToBodyAppend specialized.typing outer
+  have widened := ScopedBodyDerives.subsumption instanceBody specialized.inclusion
+  have withParent := widened.assuming (Δ' := Δ ++ used.countInstance.premises)
+    (by intro σ premises p member; exact premises p (List.mem_append_right _ member))
+  have typesEq : (fun i => mapFree f (bounds rows (BoundsTy.fvar i))) =
+      localTypes frame.owned BoundsTy.fvar used.types := by
+    simpa only [f, owners] using localTypes_specialize frame.owned rows used.types
+  have slotsEq : (fun i => mapFree f
+      (bounds rows (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar) i))) =
+      localSlots ann BoundsTy.bvar used.types := by
+    simpa only [f, owners] using
+      localSlots_specialize ann frame.owned rows used.types frame.distinct (frame.slotsFit annotation)
+  have demandEq : demand cert used.counts f = used.bounds := localRhsDemand cert used
+  have envEq := ordinaryBodyEnv_mapBinding only f lc
+  simpa only [specialized, rows, typesEq, slotsEq, demandEq, envEq,
+    CountAlgebra.compose, List.map_nil, List.nil_append, List.append_nil] using withParent
+
 theorem localRhsInstances_runtimeReady {s ann rhs found typeCaptures Δ calleeΔ caller useHM}
     (frame : LocalFrame s [] rhs) (annotation : LocalAnnotationOK s ann)
     (cert : RecursiveHMUniversal.Certified s found typeCaptures [] rhs BoundsTy.fvar
@@ -1634,13 +2001,77 @@ theorem localRhsInstances_runtimeReady {s ann rhs found typeCaptures Δ calleeΔ
   simpa only [specialized, rows, typesEq, slotsEq, demandEq, ordinaryBodyEnv,
     List.map_nil, List.append_nil, CountAlgebra.compose, List.nil_append] using withParent
 
+theorem capturedLocalRhsInstances_runtimeReady
+    {s ann rhs found typeCaptures env Δ calleeΔ caller useHM}
+    (frame : LocalFrame s [] rhs) (annotation : LocalAnnotationOK s ann)
+    (cert : RecursiveHMUniversal.Certified s found typeCaptures env rhs BoundsTy.fvar
+      (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar)))
+    (owners : cert.opening.ids = frame.owned)
+    (ready : ScopedDerives.RuntimeReady cert.typing)
+    (captured : RecursiveHMEnvironment.Captured s.counts.captures env)
+    (only : RecursiveOnly env) (sourceArguments : RecursiveArgumentsSupported env)
+    (used : HMCountScheme.Use s calleeΔ useHM caller)
+    (arguments : ∀ a ∈ used.types, Runtime.Supported a)
+    (outer : List BodyBinding := []) :
+    BodyDerives.RuntimeReady
+      (capturedLocalRhsInstances (Δ := Δ) frame annotation cert owners
+        captured only used outer) := by
+  let rows := s.counts.quantified.zip used.counts
+  let f := argument cert.opening.ids (SchemeUse.vector used.types)
+  have lc := RecursiveHMUniversal.replacementLC cert.opening.ids (SchemeUse.vector used.types)
+    (RecursiveHMUniversal.argumentsLC used.types used.typesLC)
+  have scope := RecursiveHMUniversal.replacementScope cert.opening.ids (SchemeUse.vector used.types)
+    (SchemeUse.vector_scope used.typesScoped)
+  have vectorSupport : ∀ i, Runtime.Supported (SchemeUse.vector used.types i) := by
+    intro i
+    cases atIndex : used.types[i]? with
+    | none => simp only [SchemeUse.vector, atIndex, Option.getD_none]; exact .prim
+    | some a =>
+        simpa only [SchemeUse.vector, atIndex, Option.getD_some] using
+          arguments a (List.mem_of_getElem? atIndex)
+  have fullSupport : ∀ i, Runtime.Supported (f i) :=
+    Runtime.Supported.argument cert.opening.ids _ vectorSupport
+  have fixed : CapturesFixed f env := by
+    intro c member i freeId
+    have absent : i ∉ cert.opening.ids := fun present => cert.typeFresh c member i present freeId
+    simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
+  let specialized := fromCertified cert used.countInstance f lc scope captured fixed
+  have specializedReady := fromCertified_runtimeReady cert ready used.countInstance f lc scope
+    fullSupport captured fixed
+  have mappedArguments := sourceArguments.mapBinding f lc fullSupport
+  have bodyReady := rhsReadyToBodyAppend specializedReady mappedArguments outer
+  have demandEq : demand cert used.counts f = used.bounds := localRhsDemand cert used
+  have demandSupport : Runtime.Supported used.bounds := by
+    rw [← demandEq]
+    exact Runtime.Supported.subtypeRight specialized.inclusion specializedReady.supported
+  have widenedReady := BodyDerives.RuntimeReady.subsumption specialized.inclusion bodyReady
+    (by rw [demandEq]; exact demandSupport)
+  have withParent := widenedReady.assuming (Δ' := Δ ++ used.countInstance.premises)
+    (by intro σ premises p member; exact premises p (List.mem_append_right _ member))
+  have typesEq : (fun i => mapFree f (bounds rows (BoundsTy.fvar i))) =
+      localTypes frame.owned BoundsTy.fvar used.types := by
+    simpa only [f, owners] using localTypes_specialize frame.owned rows used.types
+  have slotsEq : (fun i => mapFree f
+      (bounds rows (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar) i))) =
+      localSlots ann BoundsTy.bvar used.types := by
+    simpa only [f, owners] using
+      localSlots_specialize ann frame.owned rows used.types frame.distinct (frame.slotsFit annotation)
+  have envEq := ordinaryBodyEnv_mapBinding only f lc
+  simpa only [capturedLocalRhsInstances, specialized, rows, typesEq, slotsEq,
+    demandEq, envEq, CountAlgebra.compose, List.map_nil, List.nil_append,
+    List.append_nil] using withParent
+
 #print axioms localSlots_specialize
 #print axioms declaredLocalSlotsAgree
 #print axioms declaredLocalFrame
 #print axioms declaredLocalCertificate
+#print axioms declaredCapturedLocalCertificate
 #print axioms declaredLocalCertificate_runtimeReady
+#print axioms declaredCapturedLocalCertificate_runtimeReady
 #print axioms localRhsInstances
 #print axioms localRhsInstances_runtimeReady
+#print axioms capturedLocalRhsInstances
+#print axioms capturedLocalRhsInstances_runtimeReady
 
 structure BodyResult (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) (e : Expr) where
@@ -1800,6 +2231,9 @@ private def appendBody {ids rows caller Δ env fn arg} (path : CorePath) (hm : T
 private def freshLocalTypeIds (output : Expr) (arity : Nat) : List Nat :=
   freshVars (output.tyFreeVars.foldl Nat.max 0 + 1) arity
 
+private def freshGuardedLocalTypeIds (output : Expr) (guards : List Ty) (arity : Nat) : List Nat :=
+  freshVars ((output.tyFreeVars ++ guards.flatMap Ty.freeVars).foldl Nat.max 0 + 1) arity
+
 private def descendBodySource {output e child : Expr} {path suffix : CorePath}
     (source : Option (PLift (output.atCorePath path = some e)))
     (localPath : e.atCorePath suffix = some child) :
@@ -1850,6 +2284,7 @@ mutual
 private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
     (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
     (env : List BodyBinding) (path : CorePath) (e : Expr) (schemes : BinderSchemeMap)
+    (capture : Option (BodyCapture env))
     (sourceAt : Option (PLift (sourceOutput.atCorePath path = some e)))
     (expected : Option BoundsTy := none) : Except String (BodyResult ids rows caller Δ env e) := do
   match e with
@@ -1915,7 +2350,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           let param ← RecursiveHMAnnotation.chooseScopedParam BoundsTy.fvar BoundsTy.bvar ids rows caller Δ ann paramHM paramHint
           let result ← walkBodySource sourceOutput metadata ids rows caller Δ
             (.mono param.bounds :: env) (path ++ [.lambdaBody]) body schemes
-            (descendBodySource sourceAt (by simp [Expr.atCorePath])) bodyHint
+            none (descendBodySource sourceAt (by simp [Expr.atCorePath])) bodyHint
           finishBody path hm (.arrow param.bounds result.bounds) rfl
             (by simpa only [Expr.stripFound] using BodyDerives.lambda param.obligation result.typing) result.nodes
             (do
@@ -1929,9 +2364,10 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
         let headHint := match expected with | some (.list _ _ elem) => some elem | _ => none
         let h ← walkBodySource sourceOutput metadata ids rows caller Δ env
           (path ++ [.appFun, .appArg]) head schemes
-          (descendBodySource sourceAt (by simp [Expr.atCorePath])) headHint
+          capture (descendBodySource sourceAt (by simp [Expr.atCorePath])) headHint
         let t ← walkBodySource sourceOutput metadata ids rows caller Δ env
-          (path ++ [.appArg]) tail schemes (descendBodySource sourceAt (by simp [Expr.atCorePath]))
+          (path ++ [.appArg]) tail schemes capture
+          (descendBodySource sourceAt (by simp [Expr.atCorePath]))
           (some (.list (.lit 0) .inf h.bounds))
         match ht : t.bounds with
         | .list lo hi elem =>
@@ -1960,7 +2396,8 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       | some spine =>
           match hv : env[spine.index]? with
           | some (.exported s) =>
-              let checked ← walkBodySpine sourceOutput metadata ids rows caller Δ env spine schemes
+              let checked ← walkBodySpine sourceOutput metadata ids rows caller Δ env
+                spine schemes capture
               let actuals := checked.actualsRev.reverse
               let types ← StructuralApplication.proposeArguments s.counts.body actuals s.hm.paramCount
               let counts ← CountProposal.proposeArguments s.counts.quantified s.counts.body actuals
@@ -1969,9 +2406,11 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           | _ => pure ()
       | none => pure ()
       let function ← walkBodySource sourceOutput metadata ids rows caller Δ env
-        (path ++ [.appFun]) fn schemes (descendBodySource sourceAt (by simp [Expr.atCorePath]))
+        (path ++ [.appFun]) fn schemes capture
+        (descendBodySource sourceAt (by simp [Expr.atCorePath]))
       let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
-        (path ++ [.appArg]) arg schemes (descendBodySource sourceAt (by simp [Expr.atCorePath]))
+        (path ++ [.appArg]) arg schemes capture
+        (descendBodySource sourceAt (by simp [Expr.atCorePath]))
       appendBody path hm function actual
   | .found hm (.letIn ann rhs body) =>
       match ann with
@@ -1980,7 +2419,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             let hint ← RecursiveHMAnnotation.scopedBindingHint BoundsTy.fvar BoundsTy.bvar
               ids rows caller (some annotation)
             let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
-              (path ++ [.letRhs]) rhs schemes
+              (path ++ [.letRhs]) rhs schemes capture
               (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint
             let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
               (.letIn path) actual.hm
@@ -1988,7 +2427,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               ids rows caller Δ (some annotation) actual.bounds
             let result ← walkBodySource sourceOutput metadata ids rows caller Δ
               (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
-              (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
+              none (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
             finishBody path hm result.bounds rfl
               (by simpa only [Expr.stripFound] using
                 (BodyDerives.letMono obligation.down actual.typing result.typing))
@@ -2018,51 +2457,139 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                       ⟨rhsHM, rhsInner, descent⟩
                     let declaration : HMDeclaredReconciliation.Declaration sourceOutput (.letIn path) :=
                       ⟨annotation, path ++ [.letRhs], .letIn sourceProof.down, node⟩
-                    let signatureIds := freshLocalTypeIds sourceOutput annotation.paramCount
-                    let reconciled ← HMDeclaredReconciliation.check declaration quantified []
-                      signatureIds [] []
-                    let checked ← HMDeclaredRHS.check reconciled [] schemes
-                    let frame := declaredLocalFrame reconciled
-                    let cert := declaredLocalCertificate reconciled checked
-                    let annotationOK : LocalAnnotationOK reconciled.interface.scheme (some annotation) :=
-                      ⟨reconciled.interface, rfl⟩
-                    have owners : cert.opening.ids = frame.owned := by
-                      simpa only [cert, frame, declaredLocalCertificate, declaredLocalFrame] using
-                        reconciled.openingIds
-                    have rhsScope : declaration.node.inner.stripFound.varsBelow env.length = true :=
-                      Expr.varsBelow_mono _ (Nat.zero_le env.length) cert.typing.varsBelow
-                    let instances := fun calleeΔ found localCaller
-                        (used : HMCountScheme.Use reconciled.interface.scheme calleeΔ found localCaller) =>
-                      localRhsInstances (Δ := Δ) frame annotationOK cert owners used env
-                    let result ← walkBodySource sourceOutput metadata [] [] caller Δ
-                      (.exported reconciled.interface.scheme :: env)
-                      (path ++ [.letBody]) body schemes
-                      (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
-                    let completed ← finishBody (ids := []) (rows := []) (caller := caller)
-                      (Δ := Δ) (env := env)
-                      (e := .found hm (.letIn (some annotation) (.found rhsHM rhsInner) body))
-                      path hm result.bounds rfl
-                      (by
-                        let derivation := ScopedBodyDerives.letExported frame annotationOK
-                          rhsScope instances result.typing
-                        simpa only [Expr.stripFound, declaration, node] using derivation)
-                      (checked.located.nodes ++ result.nodes)
-                      (do
-                        let sourceReady ← checked.located.typed.runtimeReady
-                        let bodyReady ← result.runtimeReady
-                        let certReady := declaredLocalCertificate_runtimeReady
-                          reconciled checked sourceReady.down
-                        pure ⟨by
-                          let ready := BodyDerives.RuntimeReady.letExported frame annotationOK
-                            rhsScope instances
-                            (fun calleeΔ found localCaller used arguments =>
-                              localRhsInstances_runtimeReady frame annotationOK cert owners certReady
-                                used arguments env)
-                            bodyReady.down
-                          simpa only [Expr.stripFound, declaration, node] using ready⟩)
-                    pure (by
-                      rw [parentIds, parentRows]
-                      exact completed)
+                    match capture with
+                    | none =>
+                        let signatureIds := freshLocalTypeIds sourceOutput annotation.paramCount
+                        let reconciled ← HMDeclaredReconciliation.check declaration quantified []
+                          signatureIds [] []
+                        let checked ← HMDeclaredRHS.check reconciled [] schemes
+                        let frame := declaredLocalFrame reconciled
+                        let cert := declaredLocalCertificate reconciled checked
+                        let annotationOK : LocalAnnotationOK reconciled.interface.scheme (some annotation) :=
+                          ⟨reconciled.interface, rfl⟩
+                        have owners : cert.opening.ids = frame.owned := by
+                          simpa only [cert, frame, declaredLocalCertificate, declaredLocalFrame] using
+                            reconciled.openingIds
+                        have rhsScope : declaration.node.inner.stripFound.varsBelow env.length = true :=
+                          Expr.varsBelow_mono _ (Nat.zero_le env.length) cert.typing.varsBelow
+                        let instances := fun calleeΔ found localCaller
+                            (used : HMCountScheme.Use reconciled.interface.scheme calleeΔ found localCaller) =>
+                          localRhsInstances (Δ := Δ) frame annotationOK cert owners used env
+                        let result ← walkBodySource sourceOutput metadata [] [] caller Δ
+                          (.exported reconciled.interface.scheme :: env)
+                          (path ++ [.letBody]) body schemes none
+                          (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
+                        let completed ← finishBody (ids := []) (rows := []) (caller := caller)
+                          (Δ := Δ) (env := env)
+                          (e := .found hm (.letIn (some annotation) (.found rhsHM rhsInner) body))
+                          path hm result.bounds rfl
+                          (by
+                            let derivation := ScopedBodyDerives.letExported frame annotationOK
+                              rhsScope instances result.typing
+                            simpa only [Expr.stripFound, declaration, node] using derivation)
+                          (checked.located.nodes ++ result.nodes)
+                          (do
+                            let sourceReady ← checked.located.typed.runtimeReady
+                            let bodyReady ← result.runtimeReady
+                            let certReady := declaredLocalCertificate_runtimeReady
+                              reconciled checked sourceReady.down
+                            pure ⟨by
+                              let ready := BodyDerives.RuntimeReady.letExported frame annotationOK
+                                rhsScope instances
+                                (fun calleeΔ found localCaller used arguments =>
+                                  localRhsInstances_runtimeReady frame annotationOK cert owners certReady
+                                    used arguments env)
+                                bodyReady.down
+                              simpa only [Expr.stripFound, declaration, node] using ready⟩)
+                        pure (by rw [parentIds, parentRows]; exact completed)
+                    | some captured =>
+                        let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
+                          recursiveFixedTypeCaptures captured.rhsEnv
+                        let signatureIds := freshGuardedLocalTypeIds sourceOutput typeCaptures
+                          annotation.paramCount
+                        let reconciled ← HMDeclaredReconciliation.check declaration quantified []
+                          signatureIds typeCaptures []
+                        let stable ← RecursiveHMEnvironment.checkTypesFixed
+                          reconciled.interpretation captured.rhsEnv
+                        let checked ← HMDeclaredRHS.check reconciled captured.rhsEnv schemes
+                        let represented := fun c member => List.mem_append_left _
+                          (recursiveTypeCaptures_represented member)
+                        let countFresh := fun c member i inside => by
+                          rw [captured.countClosed c member] at inside
+                          cases inside
+                        let frame := declaredLocalFrame reconciled
+                        let cert := declaredCapturedLocalCertificate reconciled checked
+                          represented countFresh
+                        let annotationOK : LocalAnnotationOK reconciled.interface.scheme (some annotation) :=
+                          ⟨reconciled.interface, rfl⟩
+                        have owners : cert.opening.ids = frame.owned := by
+                          simpa only [cert, frame, declaredCapturedLocalCertificate,
+                            declaredLocalFrame] using reconciled.openingIds
+                        have stableEnv : captured.rhsEnv.map
+                            (mapBinding reconciled.interpretation reconciled.interpretationLC) =
+                            captured.rhsEnv :=
+                          RecursiveHMEnvironment.typesFixed reconciled.interpretationLC stable.down
+                        have certCaptured : RecursiveHMEnvironment.Captured
+                            reconciled.interface.scheme.counts.captures
+                            (captured.rhsEnv.map
+                              (mapBinding reconciled.interpretation reconciled.interpretationLC)) := by
+                          simpa only [stableEnv] using captured.captured
+                        have certOnly : RecursiveOnly (captured.rhsEnv.map
+                            (mapBinding reconciled.interpretation reconciled.interpretationLC)) := by
+                          simpa only [stableEnv] using captured.only
+                        have certArguments : RecursiveArgumentsSupported (captured.rhsEnv.map
+                            (mapBinding reconciled.interpretation reconciled.interpretationLC)) := by
+                          simpa only [stableEnv] using captured.arguments
+                        have envLength : captured.rhsEnv.length = env.length := by
+                          have lengths := congrArg List.length captured.bodyEnv
+                          simpa only [ordinaryBodyEnv, List.length_map] using lengths
+                        have rhsScope : declaration.node.inner.stripFound.varsBelow env.length = true := by
+                          simpa only [List.length_map, envLength] using cert.typing.varsBelow
+                        let instances := fun calleeΔ found localCaller
+                            (used : HMCountScheme.Use reconciled.interface.scheme calleeΔ found localCaller) =>
+                          (by
+                            have derived := capturedLocalRhsInstances (Δ := Δ) frame annotationOK
+                              cert owners certCaptured certOnly used
+                            simpa only [List.append_nil, stableEnv, captured.bodyEnv] using derived :
+                            ScopedBodyDerives
+                              (localTypes frame.owned BoundsTy.fvar used.types)
+                              (localSlots (some annotation) BoundsTy.bvar used.types)
+                              (reconciled.interface.scheme.counts.quantified ++
+                                reconciled.interface.scheme.counts.captures ++ [])
+                              (CountAlgebra.compose
+                                (reconciled.interface.scheme.counts.quantified.zip used.counts) [])
+                              (Δ ++ used.countInstance.premises) env
+                              declaration.node.inner.stripFound used.bounds)
+                        let result ← walkBodySource sourceOutput metadata [] [] caller Δ
+                          (.exported reconciled.interface.scheme :: env)
+                          (path ++ [.letBody]) body schemes none
+                          (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
+                        let completed ← finishBody (ids := []) (rows := []) (caller := caller)
+                          (Δ := Δ) (env := env)
+                          (e := .found hm (.letIn (some annotation) (.found rhsHM rhsInner) body))
+                          path hm result.bounds rfl
+                          (by
+                            let derivation := ScopedBodyDerives.letExported frame annotationOK
+                              rhsScope instances result.typing
+                            simpa only [Expr.stripFound, declaration, node] using derivation)
+                          (checked.located.nodes ++ result.nodes)
+                          (do
+                            let sourceReady ← checked.located.typed.runtimeReady
+                            let bodyReady ← result.runtimeReady
+                            let certReady := declaredCapturedLocalCertificate_runtimeReady
+                              reconciled checked represented countFresh sourceReady.down
+                            pure ⟨by
+                              let ready := BodyDerives.RuntimeReady.letExported frame annotationOK
+                                rhsScope instances
+                                (fun calleeΔ found localCaller used arguments => by
+                                  have instanceReady := capturedLocalRhsInstances_runtimeReady
+                                    (Δ := Δ) frame annotationOK cert owners certReady certCaptured certOnly
+                                    certArguments used arguments
+                                  simpa only [List.append_nil, stableEnv, captured.bodyEnv] using
+                                    instanceReady)
+                                bodyReady.down
+                              simpa only [Expr.stripFound, declaration, node] using ready⟩)
+                        pure (by rw [parentIds, parentRows]; exact completed)
                 | _ => throw "bounds: generalized local RHS lacks its original found root"
               else throw "bounds: generalized local under enclosing count substitutions is not supported yet"
             else throw "bounds: generalized local under enclosing count identities is not supported yet"
@@ -2070,12 +2597,12 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           let hint ← RecursiveHMAnnotation.scopedBindingHint BoundsTy.fvar BoundsTy.bvar
             ids rows caller none
           let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
-            (path ++ [.letRhs]) rhs schemes
+            (path ++ [.letRhs]) rhs schemes capture
             (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint
           let _ ← RecursiveHMWalk.checkLocalInterface none schemes (.letIn path) actual.hm
           let result ← walkBodySource sourceOutput metadata ids rows caller Δ
             (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
-            (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
+            none (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected
           finishBody path hm result.bounds rfl
             (by simpa only [Expr.stripFound] using
               (BodyDerives.letMono (by trivial) actual.typing result.typing))
@@ -2088,7 +2615,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                   rhsReady.down bodyReady.down)⟩)
   | .found hm (.match_ scrut branches) =>
       let input ← walkBodySource sourceOutput metadata ids rows caller Δ env
-        (path ++ [.matchScrut]) scrut schemes
+        (path ++ [.matchScrut]) scrut schemes capture
         (descendBodySource sourceAt (by simp [Expr.atCorePath]))
       -- Equality of full bounds, not merely HM shape, connects scrutinee origins
       -- with constructor refinements and freshly opened field bindings.
@@ -2112,13 +2639,14 @@ termination_by (sizeOf e, 1)
 private def walkBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
     (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) {e : Expr} (spine : RecursiveSpine.Syntax e)
-    (schemes : BinderSchemeMap) : Except String (BodySpine ids rows caller Δ env spine) := do
+    (schemes : BinderSchemeMap) (capture : Option (BodyCapture env)) :
+    Except String (BodySpine ids rows caller Δ env spine) := do
   match spine with
   | .head path i hm => pure (.head path i hm)
   | .app path hm prior arg =>
-      let previous ← walkBodySpine sourceOutput metadata ids rows caller Δ env prior schemes
+      let previous ← walkBodySpine sourceOutput metadata ids rows caller Δ env prior schemes capture
       let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
-        (path ++ [.appArg]) arg schemes none
+        (path ++ [.appArg]) arg schemes capture none
       pure (.app path hm previous actual)
 termination_by (sizeOf e, 0)
 
@@ -2135,7 +2663,7 @@ private def walkBodyBranches (sourceOutput : Expr) (metadata : Scope.Metadata)
       if hp : ctx.Pattern br.1 then
         let head ← walkBodySource sourceOutput metadata ids rows caller
           (Δ ++ ctx.refine br.1) (ctx.extend br.1 env)
-          (path ++ [.matchBranch index]) br.2 schemes none expected
+          (path ++ [.matchBranch index]) br.2 schemes none none expected
         let tail ← walkBodyBranches sourceOutput metadata ids rows caller Δ env ctx path rest
           (index + 1) schemes expected
         match expected with
@@ -2182,8 +2710,8 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
     (expected : Option BoundsTy := none) : Except String (BodyResult ids rows caller Δ env e) :=
   match path with
   | [] => walkBodySource e {} ids rows caller Δ env [] e schemes
-      (some ⟨by simp [Expr.atCorePath]⟩) expected
-  | _ => walkBodySource e {} ids rows caller Δ env path e schemes none expected
+      none (some ⟨by simp [Expr.atCorePath]⟩) expected
+  | _ => walkBodySource e {} ids rows caller Δ env path e schemes none none expected
 
 private def memberNodes {output metadata path captures premises typeCaptures env index vectors}
     {ps : HMDeclaredGroup.Interfaces output metadata path captures premises typeCaptures index vectors}
@@ -2194,8 +2722,8 @@ private def memberNodes {output metadata path captures premises typeCaptures env
 
 /-- Closed-group vertical slice. Only after all universal RHSs accept do their
     generalized exit bindings become available to actual source body checking. -/
-def checkBody {output metadata path vectors captures premises bodyTypes}
-    (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes [])
+def checkBody {output metadata path vectors premises bodyTypes}
+    (g : HMDeclaredGroup.Checked output metadata path vectors [] premises bodyTypes [])
     (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
     (schemes : BinderSchemeMap) (expected : Option BoundsTy := none) :
     Except String (BodyResult ids rows caller Δ []
@@ -2204,7 +2732,8 @@ def checkBody {output metadata path vectors captures premises bodyTypes}
     rw [Expr.atCorePath_append, g.source]
     simp [Expr.atCorePath]
   let body ← walkBodySource output metadata ids rows caller Δ (g.exports.map BodyBinding.exported)
-    (path ++ [.letRecBody]) g.body schemes (some ⟨bodySource⟩) expected
+    (path ++ [.letRecBody]) g.body schemes (some (checkedGroupBodyCapture g))
+    (some ⟨bodySource⟩) expected
   finishBody path g.originalHM body.bounds rfl
     (by simpa only [Expr.stripFound] using
       BodyDerives.letRec g (fun _ f lc scope fixed => allMembers g.members f lc scope fixed) body.typing)

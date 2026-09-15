@@ -92,16 +92,18 @@ private def bodySignature (i : Nat) : PolyTy :=
 /-- Actual argument origins determine both count and HM instantiation; the
     second call crosses a local binder and uses the SAME export at Char. -/
 private def bodyCalls (badLocal : Bool := false) (polyLocal : Bool := false)
-    (forgedRoot : Bool := false) (nested : Bool := false) : Except String Bool := do
+    (capturedLocal : Bool := false) (forgedRoot : Bool := false)
+    (nested : Bool := false) : Except String Bool := do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
   let singleton (p : PrimLitExpr) : Expr :=
     .app (.app (.ctor consCtorName) (.primLit p)) (.ctor nilCtorName)
-  let localAnn : Option PolyTy := if polyLocal then some ⟨1, listTy (.prim .int)⟩ else if badLocal then
+  let localAnn : Option PolyTy := if polyLocal then
+    some ⟨1, if capturedLocal then .prim .int else listTy (.prim .int)⟩ else if badLocal then
     some ⟨0, .bl (.solid (.lit 2)) (.solid (.lit 2)) (.prim .int)⟩ else none
   let secondArg := if nested then
     .app (.app (.ctor consCtorName) (singleton (.char 'a'))) (.ctor nilCtorName)
     else singleton (.char 'a')
-  let localRhs := if polyLocal then singleton (.int 1) else
+  let localRhs := if polyLocal && capturedLocal then .var 2 else if polyLocal then singleton (.int 1) else
     .app (.var 0) (singleton (.int 1))
   let source := Expr.letRec
     [some (bodySignature 7), some (bodySignature 8), some ⟨0, .prim .int⟩]
@@ -640,6 +642,10 @@ def main : IO Unit := do
   | .ok true => IO.println "PASS: a closed generalized local let is introduced from its exact source RHS certificate"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "closed generalized local let lost body bounds or exact source-node coverage")
+  match bodyCalls (polyLocal := true) (capturedLocal := true) with
+  | .ok true => IO.println "PASS: a generalized local RHS may retain a fixed-monomorphic enclosing group use"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "captured generalized local lost body bounds or exact source-node coverage")
   match bodyCalls (forgedRoot := true) with
   | .error message =>
       unless (message.splitOn "original found payload").length > 1 do
