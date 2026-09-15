@@ -28,8 +28,9 @@ private def require (x : Option α) (msg : String) : Except String α :=
     or comparison of proof-carrying inference outputs is introduced. -/
 private def equalTy := BinderBridge.equalTy
 
-/-- Positive arithmetic verdicts produce semantic evidence. There are no HM
+/- Positive arithmetic verdicts produce semantic evidence. There are no HM
     stub shortcuts, demand-fragment restrictions or fallback to legacy checks. -/
+mutual
 def subtype (Δ : List Constraint) (a b : BoundsTy) :
     Except String (PLift (SemanticSub Δ a b)) := do
   match a, b with
@@ -47,30 +48,55 @@ def subtype (Δ : List Constraint) (a b : BoundsTy) :
       if h : checkValid query = .valid then
         pure ⟨.list (checkValid_sound query h) he.down⟩
       else throw "bounds: interval inclusion not established (invalid or unknown)"
-  | .custom n [], .custom m [] =>
-      if h : n = m then pure ⟨by subst m; exact .custom .nil⟩
+  | .custom n as, .custom m bs =>
+      if h : n = m then
+        let args ← subtypeList Δ as bs
+        pure ⟨by subst m; exact .custom args.down⟩
       else throw "bounds: data type mismatch"
   | _, _ => throw "bounds: unsupported subtype shape in typed slice"
 termination_by sizeOf a + sizeOf b
 
-/-- Shape-only top information, used for Nil element shapes and bare List
+def subtypeList (Δ : List Constraint) (as bs : List BoundsTy) :
+    Except String (PLift (List.Forall₂ (SemanticSub Δ) as bs)) := do
+  match as, bs with
+  | [], [] => pure ⟨.nil⟩
+  | a :: as, b :: bs =>
+      let head ← subtype Δ a b
+      let tail ← subtypeList Δ as bs
+      pure ⟨.cons head.down tail.down⟩
+  | _, _ => throw "bounds: data type arity mismatch"
+termination_by sizeOf as + sizeOf bs
+end
+
+/- Shape-only top information, used for Nil element shapes and bare List
     demands, never as evidence of an exact origin or a fresh parameter bound. -/
+mutual
 def shapeTop (τ : Ty) : Except String BoundsTy := do
   match τ with
   | .prim p => pure (.prim p)
   | .fvar i => pure (.fvar i)
   | .bvar i => pure (.bvar i)
   | .arrow a b => return .arrow (← shapeTop a) (← shapeTop b)
-  | .customTy n [] => pure (.custom n [])
-  | .customTy n [a] =>
-      if n = listTyName then return .list (.lit 0) .inf (← shapeTop a)
-      else throw "bounds: unsupported data type in typed slice"
-  | _ => throw "bounds: unsupported type shape in typed slice"
+  | .customTy n args =>
+      if n = listTyName then
+        match args with
+        | [a] => return .list (.lit 0) .inf (← shapeTop a)
+        | _ => throw "bounds: malformed List type arity"
+      else return .custom n (← shapeTopList args)
+  | .bl _ _ _ => throw "bounds: unsupported type shape in typed slice"
 termination_by sizeOf τ
 
-/-- Decode annotations directly from their carried Core slots. Until count
+def shapeTopList (types : List Ty) : Except String (List BoundsTy) := do
+  match types with
+  | [] => pure []
+  | ty :: rest => return (← shapeTop ty) :: (← shapeTopList rest)
+termination_by sizeOf types
+end
+
+/- Decode annotations directly from their carried Core slots. Until count
     telescopes survive lowering, symbolic counts are explicitly rejected: an
     unresolved surface name must not be accepted as lowering's rigid-0 stub. -/
+mutual
 def annotation (τ : Ty) : Except String BoundsTy := do
   match τ with
   | .bl (.solid lo) (.solid hi) a =>
@@ -79,15 +105,23 @@ def annotation (τ : Ty) : Except String BoundsTy := do
       return .list lo hi (← annotation a)
   | .bl _ _ _ => throw "bounds: count holes unsupported in typed slice"
   | .arrow a b => return .arrow (← annotation a) (← annotation b)
-  | .customTy n [a] =>
-      if n = listTyName then return .list (.lit 0) .inf (← annotation a)
-      else throw "bounds: unsupported annotation data type"
-  | .customTy n [] => pure (.custom n [])
+  | .customTy n args =>
+      if n = listTyName then
+        match args with
+        | [a] => return .list (.lit 0) .inf (← annotation a)
+        | _ => throw "bounds: malformed List annotation arity"
+      else return .custom n (← annotationList args)
   | .prim p => pure (.prim p)
   | .fvar i => pure (.fvar i)
   | .bvar i => pure (.bvar i)
-  | _ => throw "bounds: unsupported annotation shape"
 termination_by sizeOf τ
+
+def annotationList (types : List Ty) : Except String (List BoundsTy) := do
+  match types with
+  | [] => pure []
+  | ty :: rest => return (← annotation ty) :: (← annotationList rest)
+termination_by sizeOf types
+end
 
 def AnnotationOK (Δ : List Constraint) (τ : Ty) (β : BoundsTy) : Prop :=
   ∃ demand, annotation τ = .ok demand ∧ SemanticSub Δ β demand

@@ -76,43 +76,73 @@ private theorem list_subtype (f : Nat → BoundsTy) {Δ as bs}
 termination_by sizeOf as + sizeOf bs
 end
 
+mutual
 theorem annotation_fixed {f τ β} (h : Typed.annotation τ = .ok β)
     (hf : ∀ i ∈ τ.freeVars, f i = .fvar i) : mapFree f β = β := by
-  induction τ using Ty.rec_strong generalizing β with
+  cases τ with
   | prim p => simp [Typed.annotation, pure, Except.pure] at h; subst β; rfl
   | fvar i =>
       simp [Typed.annotation, pure, Except.pure] at h; subst β
       exact hf i (by simp [Ty.freeVars])
   | bvar i => simp [Typed.annotation, pure, Except.pure] at h; subst β; rfl
-  | arrow a b iha ihb =>
+  | arrow a b =>
       cases ha : Typed.annotation a <;> cases hb : Typed.annotation b <;>
         simp [Typed.annotation, ha, hb, bind, pure, Except.bind, Except.pure] at h
       subst β
       simp only [mapFree]
       congr 1
-      · exact iha ha (fun i hi => hf i (by simp [Ty.freeVars, hi]))
-      · exact ihb hb (fun i hi => hf i (by simp [Ty.freeVars, hi]))
-  | bl lo hi a ih =>
+      · exact annotation_fixed ha (fun i hi => hf i (by simp [Ty.freeVars, hi]))
+      · exact annotation_fixed hb (fun i hi => hf i (by simp [Ty.freeVars, hi]))
+  | bl lo hi a =>
       cases lo <;> cases hi <;> simp only [Typed.annotation, throw, reduceCtorEq] at h
       split at h
       · cases ha : Typed.annotation a <;> simp [ha, bind, pure, Except.bind, Except.pure] at h
         subst β
-        exact congrArg (BoundsTy.list _ _) (ih ha hf)
+        exact congrArg (BoundsTy.list _ _) (annotation_fixed ha hf)
       · simp [bind, Except.bind] at h
-  | customTy n as ih =>
-      cases as with
-      | nil => simp [Typed.annotation, pure, Except.pure] at h; subst β; rfl
-      | cons a as =>
-          cases as with
-          | cons b bs => simp [Typed.annotation, throw] at h
-          | nil =>
-              simp only [Typed.annotation] at h
-              split at h
-              · cases ha : Typed.annotation a <;> simp [ha, bind, pure, Except.bind, Except.pure] at h
+  | customTy name args =>
+      by_cases hn : name = listTyName
+      · subst name
+        cases args with
+        | nil => rw [Typed.annotation.eq_def] at h; simp [throw] at h
+        | cons a rest =>
+            cases rest with
+            | cons b bs => rw [Typed.annotation.eq_def] at h; simp [throw] at h
+            | nil =>
+                rw [Typed.annotation.eq_def] at h
+                cases ha : Typed.annotation a <;>
+                  simp [ha, bind, pure, Except.bind, Except.pure] at h
                 subst β
-                exact congrArg (BoundsTy.list _ _) (ih a (by simp) ha
-                  (fun i hi => hf i (by simpa [Ty.freeVars, TyList.freeVars] using hi)))
-              · simp [throw] at h
+                exact congrArg (BoundsTy.list _ _)
+                  (annotation_fixed ha (fun i hi => hf i
+                    (by simpa [Ty.freeVars, TyList.freeVars] using hi)))
+      · cases hs : Typed.annotationList args with
+        | error message =>
+            rw [Typed.annotation.eq_def] at h
+            simp [hn, hs, bind, Except.bind] at h
+        | ok decoded =>
+            rw [Typed.annotation.eq_def] at h
+            simp [hn, hs, bind, pure, Except.bind, Except.pure] at h
+            subst β
+            exact congrArg (BoundsTy.custom name)
+              (annotationList_fixed hs (by simpa only [Ty.freeVars] using hf))
+termination_by sizeOf τ
+
+private theorem annotationList_fixed {f types decoded}
+    (h : Typed.annotationList types = .ok decoded)
+    (hf : ∀ i ∈ TyList.freeVars types, f i = .fvar i) :
+    mapFreeList f decoded = decoded := by
+  cases types with
+  | nil => simp [Typed.annotationList, pure, Except.pure] at h; subst decoded; rfl
+  | cons ty rest =>
+      cases ht : Typed.annotation ty <;> cases hr : Typed.annotationList rest <;>
+        simp [Typed.annotationList, ht, hr, bind, pure, Except.bind, Except.pure] at h
+      subst decoded
+      simp only [mapFreeList,
+        annotation_fixed ht (fun i hi => hf i (TyList.mem_freeVars_of_mem (by simp) hi)),
+        annotationList_fixed hr (fun i hi => hf i (by simp [TyList.freeVars, hi]))]
+termination_by sizeOf types
+end
 
 theorem param {f Δ ann β} (h : Typed.ParamOK Δ ann β)
     (hf : ∀ i ∈ ann.elim [] Ty.freeVars, f i = .fvar i) :

@@ -63,40 +63,65 @@ theorem instance_mapped (rows : Bindings) (s : SchemeTyping.Scheme) (args : List
 theorem ground_fixed (rows : Bindings) {c : Count} (h : c.Ground) : count rows c = c := by
   induction h <;> simp_all [count]
 
+mutual
 theorem annotation_fixed (rows : Bindings) {τ β} (h : Typed.annotation τ = .ok β) :
     bounds rows β = β := by
-  induction τ using Ty.rec_strong generalizing β with
+  cases τ with
   | prim p => simp [Typed.annotation, pure, Except.pure] at h; subst β; rfl
   | fvar i => simp [Typed.annotation, pure, Except.pure] at h; subst β; rfl
   | bvar i => simp [Typed.annotation, pure, Except.pure] at h; subst β; rfl
-  | arrow a b iha ihb =>
+  | arrow a b =>
       cases ha : Typed.annotation a <;> cases hb : Typed.annotation b <;>
         simp [Typed.annotation, ha, hb, bind, pure, Except.bind, Except.pure] at h
       subst β
-      simp only [bounds, iha ha, ihb hb]
-  | bl lo hi a ih =>
+      simp only [bounds, annotation_fixed rows ha, annotation_fixed rows hb]
+  | bl lo hi a =>
       cases lo <;> cases hi <;> simp only [Typed.annotation, throw, reduceCtorEq] at h
       split at h
       · rename_i hg
         have hg' := (Bool.and_eq_true _ _).mp hg
         cases ha : Typed.annotation a <;> simp [ha, bind, pure, Except.bind, Except.pure] at h
         subst β
-        simp only [bounds, ih ha, ground_fixed rows (Count.ground_of_isGround hg'.1),
+        simp only [bounds, annotation_fixed rows ha,
+          ground_fixed rows (Count.ground_of_isGround hg'.1),
           ground_fixed rows (Count.ground_of_isGround hg'.2)]
       · simp [bind, Except.bind] at h
-  | customTy n as ih =>
-      cases as with
-      | nil => simp [Typed.annotation, pure, Except.pure] at h; subst β; rfl
-      | cons a as =>
-          cases as with
-          | cons b bs => simp [Typed.annotation, throw] at h
-          | nil =>
-              simp only [Typed.annotation] at h
-              split at h
-              · cases ha : Typed.annotation a <;> simp [ha, bind, pure, Except.bind, Except.pure] at h
+  | customTy name args =>
+      by_cases hn : name = listTyName
+      · subst name
+        cases args with
+        | nil => rw [Typed.annotation.eq_def] at h; simp [throw] at h
+        | cons a rest =>
+            cases rest with
+            | cons b bs => rw [Typed.annotation.eq_def] at h; simp [throw] at h
+            | nil =>
+                rw [Typed.annotation.eq_def] at h
+                cases ha : Typed.annotation a <;>
+                  simp [ha, bind, pure, Except.bind, Except.pure] at h
                 subst β
-                exact congrArg (BoundsTy.list (.lit 0) .inf) (ih a (by simp) ha)
-              · simp [throw] at h
+                exact congrArg (BoundsTy.list (.lit 0) .inf) (annotation_fixed rows ha)
+      · cases hs : Typed.annotationList args with
+        | error message =>
+            rw [Typed.annotation.eq_def] at h
+            simp [hn, hs, bind, Except.bind] at h
+        | ok decoded =>
+            rw [Typed.annotation.eq_def] at h
+            simp [hn, hs, bind, pure, Except.bind, Except.pure] at h
+            subst β
+            exact congrArg (BoundsTy.custom name) (annotationList_fixed rows hs)
+termination_by sizeOf τ
+
+private theorem annotationList_fixed (rows : Bindings) {types decoded}
+    (h : Typed.annotationList types = .ok decoded) : boundsList rows decoded = decoded := by
+  cases types with
+  | nil => simp [Typed.annotationList, pure, Except.pure] at h; subst decoded; rfl
+  | cons ty rest =>
+      cases ht : Typed.annotation ty <;> cases hr : Typed.annotationList rest <;>
+        simp [Typed.annotationList, ht, hr, bind, pure, Except.bind, Except.pure] at h
+      subst decoded
+      simp only [boundsList, annotation_fixed rows ht, annotationList_fixed rows hr]
+termination_by sizeOf types
+end
 
 theorem param (rows : Bindings) (hf : Finite rows) {Δ ann β} (h : Typed.ParamOK Δ ann β) :
     Typed.ParamOK (Δ.map (constraint rows)) ann (bounds rows β) := by
