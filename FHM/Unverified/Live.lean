@@ -3,11 +3,10 @@ import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Pretty
 import FHM.Unverified.EvaluateUnsafe
-import FHM.Unverified.PipelineShared
+import FHM.Unverified.BoundsFrontend
 import FHM.Unverified.HMDisplay
 import FHM.Unverified.HMArtifacts
 import FHM.Bounds.Erase
-import FHM.Bounds.Pipeline
 import FHM.Bounds.Ann
 import FHM.Bounds.Report
 import FHM.Bounds.RecursiveFound
@@ -47,8 +46,20 @@ open Surface.Parse
 open SurfaceBridge
 open FHM.Bounds (ProgramBoundsAnns BoundBinding BoundsTy)
 open FHM.Bounds.Erase
-open FHM.Bounds.Pipeline
+open FHM.Unverified.BoundsFrontend
 open FHM.Bounds.Report
+
+/- Deprecated erased-annotation display plumbing. These helpers are operational
+only; canonical `--bl` acceptance consumes `TypedLowered` directly. -/
+def legacyBinderEnvFromGroups (groups : List (List Surface.Binding)) : List ValName :=
+  groups.reverse.flatMap (·.map (·.name))
+
+def legacyProgramBoundsAnns (binderEnv : List ValName)
+    (ep : FHM.Bounds.Erase.ErasedProgram) : ProgramBoundsAnns :=
+  let surface := ep.toSurfaceAnns
+  { binderAnns := binderEnv.map fun name =>
+      (surface.byName.find? fun ⟨other, _⟩ => other = name).map (·.2)
+    bodyAnn := surface.bodyAnn }
 
 /-- Which pipeline stage rejected the program. -/
 inductive PipelineStage
@@ -147,7 +158,7 @@ structure CheckedProgram where
   report : ProgramReport
   checkNs : Nat
   elaborated : Expr
-  mode : BoundsMode := .default
+  mode : Mode := .default
   /-- Legacy BL erase package; HM neither constructs nor needs its proof. -/
   erased : Option ErasedProgram := none
   /-- De Bruijn projection of erase anns (Check spine only). -/
@@ -160,7 +171,7 @@ structure PipelineOk where
   checkNs : Nat
   evalNs : Nat
   resultPretty : String
-  mode : BoundsMode := .default
+  mode : Mode := .default
 
 structure LiveArgs where
   json : Bool := false
@@ -197,7 +208,7 @@ private def foundTopBindingTypes (groups : List (List Surface.Binding))
 
 /-- Parse → provenance-aware lower → found inference → optional verified bounds
 checking → erased execution. HM and BL consume the same inferred artifact. -/
-def checkPipeline (mode : BoundsMode) (src : String) :
+def checkPipeline (mode : Mode) (src : String) :
     IO (Except PipelineErr CheckedProgram) := do
   let tCheck0 ← IO.monoNanosNow
   let (p, binders, sp) ← match parseProgramWithSpans src with
@@ -256,8 +267,8 @@ def checkPipeline (mode : BoundsMode) (src : String) :
   let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
   -- Slice 2: Core body env order (0 = innermost) from the same groups Infer used.
-  let binderEnv := binderEnvFromGroups p.groups
-  let boundsAnns := (ep.map (ProgramBoundsAnns.ofLower binderEnv)).getD {}
+  let binderEnv := legacyBinderEnvFromGroups p.groups
+  let boundsAnns := (ep.map (legacyProgramBoundsAnns binderEnv)).getD {}
   let bindings ← match foundTopBindingTypes p.groups lowered.expr found.binderSchemes with
     | some bindings => pure bindings
     | none => return .error {
@@ -378,7 +389,7 @@ def runLive (args : List String) : IO UInt32 := do
         return 2
     | .ok x => pure x
 
-  let mode : BoundsMode := if liveArgs.bl then .bl else .default
+  let mode : Mode := if liveArgs.bl then .bl else .default
 
   let src ← match liveArgs.path, liveArgs.json with
     | some path, _ => IO.FS.readFile path
