@@ -29,6 +29,10 @@ def branchEnv (p : MatchPattern) (lo hi : Count) (elem : BoundsTy) (env : List B
     .mono elem :: .mono (.list (.pred lo) (.pred hi) elem) :: env
   else env
 
+def pairBranchEnv (p : MatchPattern) (left right : BoundsTy)
+    (env : List Binding) : List Binding :=
+  if p = .named pairCtorName 2 then .mono left :: .mono right :: env else env
+
 inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings → List Constraint →
     List Binding → Expr → BoundsTy → Prop where
   | literal {env p} : ScopedDerives types slots ids rows Δ env (.primLit p) (boundInfoOfPrimLit p)
@@ -41,6 +45,12 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
       SemanticSub Δ head elem →
       ScopedDerives types slots ids rows Δ env (.app (.app (.ctor consCtorName) h) t)
         (.list (.add lo (.lit 1)) (.add hi (.lit 1)) elem)
+  | pair {env left right leftTy rightTy} :
+      ScopedDerives types slots ids rows Δ env left leftTy →
+      ScopedDerives types slots ids rows Δ env right rightTy →
+      ScopedDerives types slots ids rows Δ env
+        (.app (.app (.ctor pairCtorName) left) right)
+        (.custom pairTyName [leftTy, rightTy])
   | varMono {env i β} : env[i]? = some (.mono β) → ScopedDerives types slots ids rows Δ env (.var i) β
   | varRecursive {env i c caller} : env[i]? = some (.recursive c) →
       (u : RecursiveHMContract.Use c.fixed Δ c.hm caller) →
@@ -75,6 +85,15 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
       (∀ i br, branches[i]? = some br → ScopedDerives types slots ids rows Δ env br.2 (actuals i)) →
       (∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) →
       ScopedDerives types slots ids rows Δ env (.match_ scrut branches) result
+  | matchPair {env scrut branches left right result} {actuals : Nat → BoundsTy} :
+      ScopedDerives types slots ids rows Δ env scrut (.custom pairTyName [left, right]) →
+      PairBranches.Covers branches →
+      (∀ br ∈ branches, PairBranches.Pattern br.1) →
+      (∀ i br, branches[i]? = some br →
+        ScopedDerives types slots ids rows Δ (pairBranchEnv br.1 left right env)
+          br.2 (actuals i)) →
+      (∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) →
+      ScopedDerives types slots ids rows Δ env (.match_ scrut branches) result
 
 /-- Compatibility view: the original API leaves lexical slots unchanged. -/
 abbrev Derives (types : Nat → BoundsTy) := ScopedDerives types BoundsTy.bvar
@@ -101,6 +120,7 @@ theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
   induction h with
   | literal | primBinOp | nil | boolCtor => rfl
   | cons _ _ _ ihh iht => simp [Expr.varsBelow, ihh, iht]
+  | pair _ _ ihLeft ihRight => simp [Expr.varsBelow, ihLeft, ihRight]
   | varMono lookup => exact variable_scoped lookup
   | varRecursive lookup _ => exact variable_scoped lookup
   | varExported lookup _ => exact variable_scoped lookup
@@ -127,6 +147,15 @@ theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
       rcases br with ⟨pat, body⟩
       rcases patterns (pat, body) member with rfl | rfl | rfl <;>
         simpa [MatchPattern.bindCount] using bodyScope
+  | matchPair _ _ patterns _ _ ihscrut ihbranches =>
+      simp only [Expr.varsBelow, Bool.and_eq_true]
+      refine ⟨ihscrut, branches_scoped ?_⟩
+      intro br member
+      obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
+      have bodyScope := ihbranches i br atIndex
+      rcases br with ⟨pat, body⟩
+      rcases patterns (pat, body) member with rfl | rfl <;>
+        simpa [pairBranchEnv, MatchPattern.bindCount] using bodyScope
 
 #print axioms ScopedDerives.varsBelow
 
@@ -152,6 +181,10 @@ theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
   | primBinOp => intro _; exact .primBinOp
   | nil => intro _; exact .nil
   | boolCtor ctor => intro _; exact .boolCtor ctor
+  | pair _ _ ihLeft ihRight =>
+      intro agree
+      exact .pair (ihLeft (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (ihRight (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
   | varMono lookup => intro _; exact .varMono lookup
   | varRecursive lookup used => intro _; exact .varRecursive lookup used
   | varExported lookup used => intro _; exact .varExported lookup used
@@ -190,6 +223,13 @@ theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
       intro index br atIndex
       exact ihb index br atIndex (fun i hi => agree i
         (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
+  | matchPair _ coverage patterns bodies subs ihs ihb =>
+      intro agree
+      refine .matchPair (ihs (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        coverage patterns ?_ subs
+      intro index br atIndex
+      exact ihb index br atIndex (fun i hi => agree i
+        (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
 
 #print axioms ScopedDerives.sourceFree
 
@@ -219,6 +259,9 @@ theorem ScopedDerives.sourceSlots {types slots slots' ids rows Δ env e β n}
   | primBinOp => exact .primBinOp
   | nil => exact .nil
   | boolCtor ctor => exact .boolCtor ctor
+  | pair _ _ ihLeft ihRight =>
+      simp only [Expr.TyBvarBounded] at bounded
+      exact .pair (ihLeft bounded.1.2) (ihRight bounded.2)
   | varMono lookup => exact .varMono lookup
   | varRecursive lookup used => exact .varRecursive lookup used
   | varExported lookup used => exact .varExported lookup used
@@ -241,6 +284,12 @@ theorem ScopedDerives.sourceSlots {types slots slots' ids rows Δ env e β n}
           (List.mem_of_getElem? atIndex))
   | matchBool _ coverage patterns bodies subs ihs ihb =>
       refine .matchBool (ihs bounded.1) coverage patterns ?_ subs
+      intro index br atIndex
+      exact ihb index br atIndex
+        (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
+          (List.mem_of_getElem? atIndex))
+  | matchPair _ coverage patterns bodies subs ihs ihb =>
+      refine .matchPair (ihs bounded.1) coverage patterns ?_ subs
       intro index br atIndex
       exact ihb index br atIndex
         (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
@@ -621,6 +670,31 @@ theorem EnvAt.listBranch {bound free σ budget env lo hi elem v len name args pa
 
 #print axioms EnvAt.listBranch
 
+/-- The two concrete fields selected by a Pair match realize the exact branch
+    environment. Pair patterns carry no arithmetic refinement. -/
+theorem EnvAt.pairBranch {bound free σ budget env leftTy rightTy left right pat}
+    (e : EnvAt bound free σ budget env)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (leftMeaning : Runtime.ValueAt bound free σ (budget + 1) leftTy left)
+    (rightMeaning : Runtime.ValueAt bound free σ (budget + 1) rightTy right)
+    (pattern : PairBranches.Pattern pat) :
+    ∃ opened : EnvAt bound free σ budget (pairBranchEnv pat leftTy rightTy env),
+      opened.terms = [left, right].take pat.bindCount ++ e.terms := by
+  rcases pattern with rfl | rfl
+  · simpa [pairBranchEnv, MatchPattern.bindCount] using ⟨e, rfl⟩
+  · have leftFacts := leftMeaning
+    have rightFacts := rightMeaning
+    rw [Runtime.ValueAt.eq_def] at leftFacts rightFacts
+    let opened := (e.extendMono rightTy right rightFacts.2.1
+      (Runtime.TermAt.value rightFacts.1 (rightMeaning.down hb hf (by omega)))).extendMono
+        leftTy left leftFacts.2.1
+        (Runtime.TermAt.value leftFacts.1 (leftMeaning.down hb hf (by omega)))
+    refine ⟨?_, ?_⟩
+    · simpa only [pairBranchEnv, if_pos rfl] using opened
+    · rfl
+
+#print axioms EnvAt.pairBranch
+
 namespace ScopedDerives
 
 /-- Proof-fragment metadata on an EXISTING derivation, not a second acceptance
@@ -638,6 +712,9 @@ inductive RuntimeReady {types slots ids rows} :
       {ht : ScopedDerives types slots ids rows Δ env t (.list lo hi elem)}
       (sub : SemanticSub Δ head elem) : RuntimeReady hh → RuntimeReady ht →
       RuntimeReady (.cons hh ht sub)
+  | pair {hleft : ScopedDerives types slots ids rows Δ env left leftTy}
+      {hright : ScopedDerives types slots ids rows Δ env right rightTy} :
+      RuntimeReady hleft → RuntimeReady hright → RuntimeReady (.pair hleft hright)
   | varMono (lookup : env[i]? = some (Binding.mono β)) :
       Runtime.Supported β → RuntimeReady (.varMono lookup)
   | varRecursive (lookup : env[i]? = some (Binding.recursive c))
@@ -678,6 +755,16 @@ inductive RuntimeReady {types slots ids rows} :
       (subs : ∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) :
       RuntimeReady hs → (∀ i br atIndex, RuntimeReady (bodies i br atIndex)) →
       Runtime.Supported result → RuntimeReady (.matchBool hs coverage patterns bodies subs)
+  | matchPair {actuals : Nat → BoundsTy}
+      {hs : ScopedDerives types slots ids rows Δ env scrut (.custom pairTyName [left, right])}
+      (coverage : PairBranches.Covers branches)
+      (patterns : ∀ br ∈ branches, PairBranches.Pattern br.1)
+      (bodies : ∀ i br, branches[i]? = some br →
+        ScopedDerives types slots ids rows Δ (pairBranchEnv br.1 left right env)
+          br.2 (actuals i))
+      (subs : ∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) :
+      RuntimeReady hs → (∀ i br atIndex, RuntimeReady (bodies i br atIndex)) →
+      Runtime.Supported result → RuntimeReady (.matchPair hs coverage patterns bodies subs)
 
 theorem RuntimeReady.supported {types slots ids rows Δ env e β}
     {h : ScopedDerives types slots ids rows Δ env e β} (ready : RuntimeReady h) :
@@ -688,11 +775,14 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β}
   | nil elem => exact .list elem
   | boolCtor => exact .bool
   | cons _ _ _ _ tail => cases tail with | list elem => exact .list elem
+  | pair _ _ left right => exact .pair left right
   | varMono _ support | varRecursive _ _ support | varExported _ _ support _ => exact support
   | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
   | lambda _ param _ result => exact .arrow param result
   | letMono _ _ _ _ body => exact body
-  | matchList _ _ _ _ _ _ result | matchBool _ _ _ _ _ _ result => exact result
+  | matchList _ _ _ _ _ _ result => exact result
+  | matchBool _ _ _ _ _ _ result => exact result
+  | matchPair _ _ _ _ _ _ result => exact result
 
 /-- Fundamental theorem for the supported ordinary RHS rules. Recursive
     variables are justified by a realizing environment, NOT by their declared
@@ -724,6 +814,9 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           exact Runtime.TermAt.cons hb hf
             ((ihh budget premises e).of_values (Runtime.subtype sub headReady.supported elemSupport bound free σ premises))
             (iht budget premises e)
+  | pair leftReady rightReady ihLeft ihRight =>
+      intro budget premises e
+      exact Runtime.TermAt.pair hb hf (ihLeft budget premises e) (ihRight budget premises e)
   | varMono lookup _ =>
       intro budget _ e
       exact e.varMono lookup
@@ -818,6 +911,38 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
       exact (ihb i (pat, body) atIndex j premises (e.down hb hf (by omega))).of_values
         (Runtime.subtype (subs i (pat, body) atIndex) (branchReady i _ atIndex).supported
           resultSupport bound free σ premises)
+  | matchPair coverage patterns bodies subs scrutReady branchReady resultSupport ihs ihb =>
+      rename_i pathΔ branchEnv' scrut leftTy rightTy branches result actuals hs
+      intro budget premises e
+      rw [Runtime.closing_match]
+      apply Runtime.TermAt.matchPair (ihs budget premises e)
+        (Runtime.pairCoverage_close coverage e.terms)
+      intro j before left right pat closedBody leftMeaning rightMeaning selected
+      obtain ⟨body, original, rfl⟩ := Runtime.firstMatch_unclose e.terms selected
+      obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp original.mem
+      obtain ⟨opened, terms⟩ := (e.down hb hf (by omega : j ≤ budget)).pairBranch
+        hb hf leftMeaning rightMeaning (patterns _ original.mem)
+      have branchSafe := (ihb i (pat, body) atIndex j premises opened).of_values
+        (Runtime.subtype (subs i (pat, body) atIndex) (branchReady i _ atIndex).supported
+          resultSupport bound free σ premises)
+      rw [terms] at branchSafe
+      have contentsLength : ([left, right].take pat.bindCount).length = pat.bindCount := by
+        have arity := opened.arity
+        rw [terms, List.length_append] at arity
+        change ([left, right].take pat.bindCount).length + e.terms.length =
+          (pairBranchEnv pat leftTy rightTy branchEnv').length at arity
+        rw [e.arity] at arity
+        rcases patterns _ original.mem with rfl | rfl <;>
+          simp [pairBranchEnv, MatchPattern.bindCount] at arity ⊢ <;> omega
+      have contentsClosed : ∀ term ∈ [left, right].take pat.bindCount,
+          term.varsBelow 0 = true := by
+        intro term member
+        exact opened.closed term (by rw [terms]; exact List.mem_append_left _ member)
+      have closing := Runtime.closing_compose e.terms ([left, right].take pat.bindCount)
+        e.closed contentsClosed body 0
+      simp only [Nat.zero_add, contentsLength] at closing
+      rw [closing]
+      exact branchSafe
 
 #print axioms RuntimeReady.supported
 #print axioms RuntimeReady.termAt
@@ -870,6 +995,7 @@ abbrev primBinOp {types : Nat → BoundsTy} := @ScopedDerives.primBinOp types Bo
 abbrev nil {types : Nat → BoundsTy} := @ScopedDerives.nil types BoundsTy.bvar
 abbrev boolCtor {types : Nat → BoundsTy} := @ScopedDerives.boolCtor types BoundsTy.bvar
 abbrev cons {types : Nat → BoundsTy} := @ScopedDerives.cons types BoundsTy.bvar
+abbrev pair {types : Nat → BoundsTy} := @ScopedDerives.pair types BoundsTy.bvar
 abbrev varMono {types : Nat → BoundsTy} := @ScopedDerives.varMono types BoundsTy.bvar
 abbrev varRecursive {types : Nat → BoundsTy} := @ScopedDerives.varRecursive types BoundsTy.bvar
 abbrev varExported {types : Nat → BoundsTy} := @ScopedDerives.varExported types BoundsTy.bvar
@@ -878,6 +1004,7 @@ abbrev lambda {types : Nat → BoundsTy} := @ScopedDerives.lambda types BoundsTy
 abbrev letMono {types : Nat → BoundsTy} := @ScopedDerives.letMono types BoundsTy.bvar
 abbrev matchList {types : Nat → BoundsTy} := @ScopedDerives.matchList types BoundsTy.bvar
 abbrev matchBool {types : Nat → BoundsTy} := @ScopedDerives.matchBool types BoundsTy.bvar
+abbrev matchPair {types : Nat → BoundsTy} := @ScopedDerives.matchPair types BoundsTy.bvar
 end Derives
 
 /-- Shared source-parameter obligation transport for RHS and body judgments. -/
@@ -910,6 +1037,7 @@ theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
   | nil => exact .nil
   | boolCtor hn => exact .boolCtor hn
   | cons _ _ hs ihh iht => exact .cons (ihh hp) (iht hp) (hs.assuming hp)
+  | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
   | varMono hv => exact .varMono hv
   | varRecursive hv used =>
       let next : RecursiveHMContract.Use _ Δ' _ _ :=
@@ -936,6 +1064,10 @@ theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
       exact .matchBool (ihscrut hp) hc hpat
         (fun i br hb => ihbranches i br hb hp)
         (fun i br hb => (hsub i br hb).assuming hp)
+  | matchPair _ hc hpat _ hsub ihscrut ihbranches =>
+      exact .matchPair (ihscrut hp) hc hpat
+        (fun i br hb => ihbranches i br hb hp)
+        (fun i br hb => (hsub i br hb).assuming hp)
 
 /-- Established caller/path assumptions preserve the supported proof fragment,
     including every selected-arm intermediate type. This accompanies the
@@ -949,6 +1081,7 @@ theorem ScopedDerives.RuntimeReady.assuming {types slots ids rows Δ Δ' env e �
   | nil support => exact .nil support
   | boolCtor nameOK => exact .boolCtor nameOK
   | cons sub _ _ ihh iht => exact .cons (sub.assuming hp) (ihh hp) (iht hp)
+  | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
   | varMono lookup support => exact .varMono lookup support
   | varRecursive lookup used support =>
       let next : RecursiveHMContract.Use _ Δ' _ _ :=
@@ -975,6 +1108,11 @@ theorem ScopedDerives.RuntimeReady.assuming {types slots ids rows Δ Δ' env e �
         (fun i br atIndex => (bodies i br atIndex).assuming hp)
         (fun i br atIndex => (subs i br atIndex).assuming hp)
         (ihs hp) (fun i br atIndex => ihb i br atIndex hp) support
+  | matchPair coverage patterns bodies subs _ _ support ihs ihb =>
+      exact .matchPair coverage patterns
+        (fun i br atIndex => (bodies i br atIndex).assuming hp)
+        (fun i br atIndex => (subs i br atIndex).assuming hp)
+        (ihs hp) (fun i br atIndex => ihb i br atIndex hp) support
 
 #print axioms ScopedDerives.RuntimeReady.assuming
 
@@ -995,6 +1133,10 @@ theorem ScopedDerives.RuntimeReady.sourceFree {types types' slots : Nat → Boun
       intro agree
       exact .cons sub (ihh (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
         (iht (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | pair _ _ ihLeft ihRight =>
+      intro agree
+      exact .pair (ihLeft (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (ihRight (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
   | app sub _ _ ihf iha =>
       intro agree
       exact .app sub (ihf (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
@@ -1030,6 +1172,15 @@ theorem ScopedDerives.RuntimeReady.sourceFree {types types' slots : Nat → Boun
       intro index br atIndex
       exact ihb index br atIndex (fun i hi => agree i
         (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
+  | matchPair coverage patterns bodies subs _ _ supported ihs ihb =>
+      intro agree
+      refine .matchPair coverage patterns
+        (fun index br atIndex => (bodies index br atIndex).sourceFree (fun i hi => agree i
+          (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi))))
+        subs (ihs (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) ?_ supported
+      intro index br atIndex
+      exact ihb index br atIndex (fun i hi => agree i
+        (List.mem_append_right _ (branch_typeFree (List.mem_of_getElem? atIndex) hi)))
 
 #print axioms ScopedDerives.RuntimeReady.sourceFree
 
@@ -1051,6 +1202,10 @@ theorem ScopedDerives.RuntimeReady.sourceSlots {types slots slots' : Nat → Bou
       intro bounded
       simp only [Expr.TyBvarBounded] at bounded
       exact .cons sub (ihh bounded.1.2) (iht bounded.2)
+  | pair _ _ ihLeft ihRight =>
+      intro bounded
+      simp only [Expr.TyBvarBounded] at bounded
+      exact .pair (ihLeft bounded.1.2) (ihRight bounded.2)
   | app sub _ _ ihf iha =>
       intro bounded
       exact .app sub (ihf bounded.1) (iha bounded.2)
@@ -1076,6 +1231,17 @@ theorem ScopedDerives.RuntimeReady.sourceSlots {types slots slots' : Nat → Bou
   | matchBool coverage patterns bodies subs _ _ supported ihs ihb =>
       intro bounded
       refine .matchBool coverage patterns
+        (fun index br atIndex => (bodies index br atIndex).sourceSlots
+          (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
+            (List.mem_of_getElem? atIndex)) agree)
+        subs (ihs bounded.1) ?_ supported
+      intro index br atIndex
+      exact ihb index br atIndex
+        (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
+          (List.mem_of_getElem? atIndex))
+  | matchPair coverage patterns bodies subs _ _ supported ihs ihb =>
+      intro bounded
+      refine .matchPair coverage patterns
         (fun index br atIndex => (bodies index br atIndex).sourceSlots
           (Expr.TyBvarBounded.BranchList_iff.mp bounded.2 br.1 br.2
             (List.mem_of_getElem? atIndex)) agree)
@@ -1120,6 +1286,13 @@ private theorem captures_cons {f env β} (h : CapturesFixed f env) : CapturesFix
 private theorem captures_branch {f env p lo hi elem} (h : CapturesFixed f env) :
     CapturesFixed f (branchEnv p lo hi elem env) := by
   unfold branchEnv
+  split
+  · exact captures_cons (captures_cons h)
+  · exact h
+
+private theorem captures_pairBranch {f env p left right} (h : CapturesFixed f env) :
+    CapturesFixed f (pairBranchEnv p left right env) := by
+  unfold pairBranchEnv
   split
   · exact captures_cons (captures_cons h)
   · exact h
@@ -1210,6 +1383,7 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
   | nil => exact .nil
   | boolCtor hn => exact .boolCtor hn
   | cons _ _ hs ihh iht => exact .cons (ihh fresh) (iht fresh) (SchemeSpecialization.subtype f hs)
+  | pair _ _ ihLeft ihRight => exact .pair (ihLeft fresh) (ihRight fresh)
   | varMono hv => exact .varMono (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) hv)
   | varRecursive hv u =>
       rw [← mapUse_bounds u f hf target scope (fresh.recursive (List.mem_of_getElem? hv))]
@@ -1242,6 +1416,15 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
       exact .matchBool (ihscrut fresh) hc hpat
         (fun i br hb => ihbranches i br hb fresh)
         (fun i br hb => SchemeSpecialization.subtype f (hsub i br hb))
+  | matchPair _ hc hpat _ hsub ihscrut ihbranches =>
+      apply ScopedDerives.matchPair (ihscrut fresh) hc hpat
+      · intro i br hb
+        have moved := ihbranches i br hb (captures_pairBranch fresh)
+        by_cases hp : br.1 = .named pairCtorName 2
+        · simpa [pairBranchEnv, hp, mapBinding, mapFree] using moved
+        · simpa [pairBranchEnv, hp] using moved
+      · intro i br hb
+        exact SchemeSpecialization.subtype f (hsub i br hb)
 
 def Contract.mapCounts (c : Contract) (outer : Bindings) : Contract :=
   ⟨c.template, c.hm, c.fixed.mapCounts outer⟩
@@ -1275,6 +1458,14 @@ private theorem count_captures_cons {outer env β} (h : CountCapturesFixed outer
 private theorem count_captures_branch {outer env p lo hi elem} (h : CountCapturesFixed outer env) :
     CountCapturesFixed outer (branchEnv p lo hi elem env) := by
   unfold branchEnv
+  split
+  · exact count_captures_cons (count_captures_cons h)
+  · exact h
+
+private theorem count_captures_pairBranch {outer env p left right}
+    (h : CountCapturesFixed outer env) :
+    CountCapturesFixed outer (pairBranchEnv p left right env) := by
+  unfold pairBranchEnv
   split
   · exact count_captures_cons (count_captures_cons h)
   · exact h
@@ -1351,6 +1542,7 @@ theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : L
   | boolCtor hn => exact .boolCtor hn
   | cons _ _ hs ihh iht =>
       exact .cons (ihh fresh) (iht fresh) (CountSubstitution.subtype outer hf hs)
+  | pair _ _ ihLeft ihRight => exact .pair (ihLeft fresh) (ihRight fresh)
   | varMono hv => exact .varMono (by simpa [mapCountBinding] using congrArg (Option.map (mapCountBinding outer)) hv)
   | @varRecursive Δ ids rows env i c caller hv u =>
       have captured := fresh.recursive (List.mem_of_getElem? hv)
@@ -1388,6 +1580,15 @@ theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : L
       exact .matchBool (ihscrut fresh) hc hpat
         (fun i br hb => ihbranches i br hb fresh)
         (fun i br hb => CountSubstitution.subtype outer hf (hsub i br hb))
+  | matchPair _ hc hpat _ hsub ihscrut ihbranches =>
+      apply ScopedDerives.matchPair (ihscrut fresh) hc hpat
+      · intro i br hb
+        have moved := ihbranches i br hb (count_captures_pairBranch fresh)
+        by_cases hp : br.1 = .named pairCtorName 2
+        · simpa [pairBranchEnv, hp, mapCountBinding, bounds] using moved
+        · simpa [pairBranchEnv, hp] using moved
+      · intro i br hb
+        exact CountSubstitution.subtype outer hf (hsub i br hb)
 
 /-- Count specialization preserves readiness of the whole existing proof,
     not merely support of its final type. Callee captures remain protected. -/
@@ -1403,6 +1604,7 @@ theorem ScopedDerives.RuntimeReady.counts (outer : Bindings) (hf : Finite outer)
   | boolCtor nameOK => exact .boolCtor nameOK
   | cons sub _ _ ihh iht =>
       exact .cons (CountSubstitution.subtype outer hf sub) (ihh fresh) (iht fresh)
+  | pair _ _ ihLeft ihRight => exact .pair (ihLeft fresh) (ihRight fresh)
   | varMono lookup support =>
       exact .varMono (by simpa [mapCountBinding] using congrArg (Option.map (mapCountBinding outer)) lookup)
         (support.counts outer)
@@ -1473,6 +1675,21 @@ theorem ScopedDerives.RuntimeReady.counts (outer : Bindings) (hf : Finite outer)
         (fun i br atIndex => CountSubstitution.subtype outer hf (subs i br atIndex))
         (ihs fresh) (fun i br atIndex => ihb i br atIndex fresh)
         (support.counts outer)
+  | matchPair coverage patterns bodies subs _ _ support ihs ihb =>
+      have movedBodies := fun i br atIndex => transportScopedCounts outer hf target scope
+        (bodies i br atIndex) (count_captures_pairBranch fresh)
+      refine .matchPair coverage patterns ?_
+        (fun i br atIndex => CountSubstitution.subtype outer hf (subs i br atIndex))
+        (ihs fresh) ?_ (support.counts outer)
+      · intro i br atIndex
+        by_cases hp : br.1 = .named pairCtorName 2
+        · simpa [pairBranchEnv, hp, mapCountBinding, bounds] using movedBodies i br atIndex
+        · simpa [pairBranchEnv, hp] using movedBodies i br atIndex
+      · intro i br atIndex
+        have moved := ihb i br atIndex (count_captures_pairBranch fresh)
+        by_cases hp : br.1 = .named pairCtorName 2
+        · simpa [pairBranchEnv, hp, mapCountBinding, bounds] using moved
+        · simpa [pairBranchEnv, hp] using moved
 
 #print axioms ScopedDerives.RuntimeReady.counts
 
@@ -1493,6 +1710,7 @@ theorem ScopedDerives.RuntimeReady.types (f : Nat → BoundsTy)
   | boolCtor nameOK => exact .boolCtor nameOK
   | cons sub _ _ ihh iht =>
       exact .cons (SchemeSpecialization.subtype f sub) (ihh fresh) (iht fresh)
+  | pair _ _ ihLeft ihRight => exact .pair (ihLeft fresh) (ihRight fresh)
   | varMono lookup support =>
       exact .varMono (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) lookup)
         (support.types f arguments)
@@ -1556,6 +1774,21 @@ theorem ScopedDerives.RuntimeReady.types (f : Nat → BoundsTy)
         (fun i br atIndex => SchemeSpecialization.subtype f (subs i br atIndex))
         (ihs fresh) (fun i br atIndex => ihb i br atIndex fresh)
         (support.types f arguments)
+  | matchPair coverage patterns bodies subs _ _ support ihs ihb =>
+      have movedBodies := fun i br atIndex => transportScopedTypes f hf target scope
+        (bodies i br atIndex) (captures_pairBranch fresh)
+      refine .matchPair coverage patterns ?_
+        (fun i br atIndex => SchemeSpecialization.subtype f (subs i br atIndex))
+        (ihs fresh) ?_ (support.types f arguments)
+      · intro i br atIndex
+        by_cases hp : br.1 = .named pairCtorName 2
+        · simpa [pairBranchEnv, hp, mapBinding, mapFree] using movedBodies i br atIndex
+        · simpa [pairBranchEnv, hp] using movedBodies i br atIndex
+      · intro i br atIndex
+        have moved := ihb i br atIndex (captures_pairBranch fresh)
+        by_cases hp : br.1 = .named pairCtorName 2
+        · simpa [pairBranchEnv, hp, mapBinding, mapFree] using moved
+        · simpa [pairBranchEnv, hp] using moved
 
 #print axioms ScopedDerives.RuntimeReady.types
 

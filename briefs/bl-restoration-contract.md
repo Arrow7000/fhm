@@ -3004,6 +3004,27 @@ both a Pair containing an exact bounded List and nested Pairs with independently
 precise List origins. Pair pattern elimination remains the next separate unit:
 construction support does not pretend that coverage or field opening is proved.
 
+### Checkpoint 4bi — Pair elimination opens semantically justified fields
+
+Pair matches now have a verified one-constructor coverage checker: either a
+`Pair` pattern of arity two or a wildcard is exhaustive, and no other pattern is
+accepted by the bounds traversal. The runtime fundamental theorem follows the
+existing erased match reduction, extracts the two concrete constructor fields,
+and opens the branch environment with their full left/right `BoundsTy`
+meanings. This is semantic field evidence, not a reconstruction from erased HM
+shape; nested List intervals therefore remain exact inside Pair patterns.
+
+Both ordinary annotated RHS derivations and the canonical generalized-body
+judgment carry the Pair construction/elimination rules through premise
+strengthening, source-slot agreement, simultaneous HM specialization, count
+transport, ordinary-environment conversion and runtime readiness. The source
+walker validates full and partial Pair constructor payloads, checks Pair branch
+coverage, and emits the same exact per-node reports consumed by CLI/editor
+diagnostics. The `.fhm` regression exercises a Pair field containing `BL 2 2
+Int`, then safely performs a List match on that opened field; a wildcard Pair
+match separately checks the zero-binder exhaustive case. The complete bounds
+suite and executable smoke test remain green without a new axiom or placeholder.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
