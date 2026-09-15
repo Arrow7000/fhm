@@ -44,10 +44,12 @@ structure Checked {output site d quantified captures premises typeCaptures}
     The signature is guidance; actual result inclusion is independently checked. -/
 def check {output site d quantified captures premises typeCaptures}
     (c : @HMDeclaredReconciliation.Checked output site d quantified captures premises typeCaptures)
-    (env : List Binding) (schemes : BinderSchemeMap := []) : Except String (Checked c env) := do
+    (env : List Binding) (schemes : BinderSchemeMap := []) (ctors : CtorEnv := []) :
+    Except String (Checked c env) := do
   let located ← RecursiveHMWalk.checkLocated d.node c.interpretation (slotsFor site c.signatureIds)
     (quantified ++ captures) [] (quantified ++ captures) premises
     (env.map (mapBinding c.interpretation c.interpretationLC)) schemes (some c.opening.bounds)
+    (ctors := ctors)
   let inclusion ← Typed.subtype premises located.typed.actual c.opening.bounds
   pure ⟨located, inclusion.down⟩
 

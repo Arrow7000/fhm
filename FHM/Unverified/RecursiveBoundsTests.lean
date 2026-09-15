@@ -65,6 +65,13 @@ private def mutualSource : String :=
   "  \\(xs : BL n n Int) -> (\\(ignored : List Int) -> xs) (f (1 :: xs))\n" ++
   "f []\n"
 
+private def recursiveOptionSource : String :=
+  "type Option a = Some a | None\n" ++
+  "let unwrapRec : {n : Nat} Option (BL n n Int) -> BL 0 n Int =\n" ++
+  "  \\(m : Option (BL n n Int)) -> match m with" ++
+  " | Some xs -> (\\(ignored : List Int) -> xs) (unwrapRec m) | None -> []\n" ++
+  "unwrapRec (Some [1, 2])\n"
+
 private def copySource (empty : String := "[]") (nonempty : String := "h :: f t") : String :=
   "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
   "  \\(xs : BL n n Int) -> match xs with | [] -> " ++ empty ++
@@ -149,6 +156,8 @@ private def cases : List (String × Bool) := [
       "  \\(m : Option (BL n n Int)) -> match m with | Some xs -> xs | None -> []\n" ++
       "let o : Option (BL 2 2 Int) = Some [1, 2]\n" ++
       "unwrap o\n"))),
+  ("declared recursive RHS receives the same nominal constructor environment", returns
+    (run recursiveOptionSource) "BL 0 2 Int"),
   ("parsed generic nominal match checks declaration-indexed exhaustiveness", fails
     (run (
       "type Option a = Some a | None\n" ++

@@ -4660,7 +4660,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                         let signatureIds := freshLocalTypeIds sourceOutput annotation.paramCount
                         let reconciled ← HMDeclaredReconciliation.check declaration quantified []
                           signatureIds [] []
-                        let checked ← HMDeclaredRHS.check reconciled [] schemes
+                        let checked ← HMDeclaredRHS.check reconciled [] schemes ctors
                         let frame := declaredLocalFrame reconciled
                         let cert := declaredLocalCertificate reconciled checked
                         let annotationOK : LocalAnnotationOK reconciled.interface.scheme (some annotation) :=
@@ -4709,7 +4709,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                           signatureIds typeCaptures []
                         let stable ← RecursiveHMEnvironment.checkTypesFixed
                           reconciled.interpretation captured.rhsEnv
-                        let checked ← HMDeclaredRHS.check reconciled captured.rhsEnv schemes
+                        let checked ← HMDeclaredRHS.check reconciled captured.rhsEnv schemes ctors
                         let represented := fun c member => List.mem_append_left _
                           (recursiveTypeCaptures_represented member)
                         let exportsRepresented := fun s member => List.mem_append_left _
@@ -4876,7 +4876,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
               recursiveFixedTypeCaptures captured.rhsEnv
             let assembled ← HMDeclaredCoordinates.check sourceOutput metadata path [] Δ
-              typeCaptures captured.rhsEnv schemes
+              typeCaptures captured.rhsEnv schemes ctors
             let g := assembled.checked
             have sourceEq : Expr.found hm (Expr.letRec annotations rhss body) =
                 Expr.found g.originalHM (Expr.letRec g.annotations g.rhss g.body) := by
@@ -5226,6 +5226,7 @@ def checkClosedProgram (output : Expr) (metadata : Scope.Metadata)
     (ctors : CtorEnv := []) :
     Except String (ProgramResult output metadata) := do
   let assembled ← HMDeclaredCoordinates.check output metadata [] (schemes := schemes)
+    (ctors := ctors)
   let body ← checkBody assembled.checked [] [] [] [] schemes expected ctors
   have sourceEq : output = .found assembled.checked.originalHM
       (.letRec assembled.checked.annotations assembled.checked.rhss assembled.checked.body) := by
