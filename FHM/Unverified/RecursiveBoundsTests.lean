@@ -131,6 +131,14 @@ private def nestedMonoSource : String :=
   "  \\(xs : BL n n Int) -> let g : {m : Nat} Int -> Int = \\i -> g i in " ++
   "(\\(ignored : Int) -> xs) (g 1)\nf []\n"
 
+private def nestedMonoMutualSource (annotateSecond : Bool := true) : String :=
+  "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
+  "  \\(xs : BL n n Int) ->\n" ++
+  "    let g : Int -> Int = \\i -> h i\n" ++
+  (if annotateSecond then "        h : Int -> Int = \\i -> g i\n"
+   else "        h = \\i -> g i\n") ++
+  "    in (\\(ignored : Int) -> xs) (g 1)\nf []\n"
+
 private def provenanceRejected (modify : TypedLowered → TypedLowered) : Except String Unit := do
   let a ← artifact (selfSource ++ "f []\n")
   let _ ← RecursiveFound.synthNodes (modify a)
@@ -407,6 +415,12 @@ private def cases : List (String × Bool) := [
     returns (run nestedMonoSource) "BL 0 0 Int"),
   ("parsed monomorphic recursive group in a universal RHS retains its runtime theorem",
     succeeds (runtimeCertified nestedMonoSource)),
+  ("parsed monomorphic mutual SCC composes inside a universal RHS",
+    returns (run nestedMonoMutualSource) "BL 0 0 Int"),
+  ("parsed monomorphic mutual SCC in a universal RHS retains its runtime theorem",
+    succeeds (runtimeCertified nestedMonoMutualSource)),
+  ("parsed quantitative SCC requires an explicit contract on every member",
+    fails (run (nestedMonoMutualSource false)) "requires an explicit bounds annotation"),
   ("nested monomorphic RHS reconciliation cannot hide a false bounds ceiling", fails (run (
     "let f : {n : Nat} BL n n Int -> BL n n Int =\n" ++
     "  \\(xs : BL n n Int) -> let g : {m : Nat} BL 0 0 Int = [1] in " ++

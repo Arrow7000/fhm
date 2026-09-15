@@ -197,6 +197,15 @@ private def returns (r : Except String String) (s : String) : Bool := match r wi
 private def fails (r : Except String α) (needle : String) : Bool :=
   match r with | .error m => (m.splitOn needle).length > 1 | _ => false
 
+private def nestedMonoMutual (missingSecond : Bool := false) : Expr :=
+  let annotation : PolyTy := ⟨0, .fvar 90⟩
+  let annotations := [some annotation, if missingSecond then none else some annotation]
+  let rhs0 := .found (.fvar 90) (.var 1)
+  let rhs1 := .found (.fvar 90) (.var 0)
+  .found identityHM (.lambda none
+    (.found (.fvar 90) (.letRec annotations [rhs0, rhs1]
+      (.found (.fvar 90) (.var 0)))))
+
 private def cases : List (String × Bool) := [
   ("full fixed recursive spine gathers later count origins and preserves every source frame",
     match fullFixedSpine with | .ok text => text == "BL 2 2 Int" | _ => false),
@@ -248,6 +257,10 @@ private def cases : List (String × Bool) := [
   ("self recursion checks count-only use of the fixed full HM vector", succeeds recursive),
   ("mutual recursion uses the same fixed full HM vector in the common environment", succeeds (recursive true)),
   ("recursive call cannot change its group's fixed HM instantiation", fails (recursive false true) "found payload"),
+  ("nested monomorphic mutual SCC checks every implementation under the complete demand vector",
+    returns (run nestedMonoMutual) expected.pretty),
+  ("nested quantitative SCC rejects a member without an explicit recursive contract",
+    fails (run (nestedMonoMutual true)) "requires an explicit bounds annotation"),
   ("malformed empty nested recursive groups still reject", fails
     (run (.found identityHM (.letRec [] [] identity))) "non-singleton nested recursive group"),
   ("missing found wrapper cannot invent a node type", fails (run (.var 0)) "missing found")]

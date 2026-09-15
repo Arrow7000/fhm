@@ -3196,6 +3196,35 @@ matrix is 20/21.  The sole remaining green frontier is the unannotated
 HM-generalized singleton used by `bl-join-if.fhm`; generic nominal match
 elimination remains the following declaration-indexed constructor task.
 
+### Checkpoint 4bp — simultaneous monomorphic SCCs inside universal RHSs
+
+The ordinary scoped judgment now has a genuine simultaneous recursive-group
+rule rather than iterating singleton rules. Every member is typed under the
+same complete monomorphic demand vector, every actual implementation is checked
+for semantic inclusion in its written interface, and the body is typed under
+that same vector. Scope/free-variable/count/type transports and the
+finite-observation runtime theorem cover the new rule; its generalized-body
+embedding uses the same derivation instead of a second acceptance principle.
+
+`RecursiveHMWalk` now constructs that proof for a mutual SCC occurring inside
+an interpreted universal RHS. It reconciles every original found RHS at its own
+source path, traverses all implementations under the complete group environment,
+preserves exact node coverage, and retains `RuntimeReady` only when every member
+and the body supply the corresponding evidence. Consistent with the product
+decision above, every member of this quantitative recursive path needs an
+explicit contract; omission is a checked error, not a request for recursive
+invariant invention.
+
+The surface parser's local multi-binding block now performs SCC grouping when
+the block actually contains recursive references. Acyclic blocks preserve their
+previous lexical `.letIn` structure and HM generalization, while recursive
+singletons/mutual components lower to `.letRecIn`; duplicate-name blocks retain
+lexical shadowing. This makes the new proof path expressible in `.fhm` rather
+than only by handcrafted Core artifacts. Parsed regressions cover a two-member
+mutual SCC inside a count-universal outer RHS, its runtime theorem, and rejection
+when either member lacks its explicit contract. Generalized/polymorphic exits
+from such a nested SCC remain the next metatheory boundary.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
