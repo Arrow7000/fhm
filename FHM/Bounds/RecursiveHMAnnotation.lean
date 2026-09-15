@@ -33,8 +33,16 @@ private def scopedParameterCandidate (types slots : Nat → BoundsTy) (ids : Lis
         let param ← match expected with
           | some β => pure β
           | none => do
-              let ⟨β, _⟩ ← Typed.chooseParam Δ none (ScopedHMInterpretation.ty types slots originalHM)
-              pure β
+              let interpreted := ScopedHMInterpretation.ty types slots originalHM
+              match interpreted with
+              | .customTy name _ =>
+                  if name = listTyName then
+                    let ⟨β, _⟩ ← Typed.chooseParam Δ none interpreted
+                    pure β
+                  else Typed.shapeTop interpreted
+              | _ =>
+                  let ⟨β, _⟩ ← Typed.chooseParam Δ none interpreted
+                  pure β
         pure ⟨param, ⟨True.intro⟩⟩
 
 /-- A parameter is an assumption at its declared or explicitly guided domain,

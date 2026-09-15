@@ -3153,6 +3153,39 @@ field/result principality or runtime certification; the instantiated-HM
 transport used here restores the intended Option-style product behavior without
 pretending to settle that larger theorem.
 
+### Checkpoint 4bo — closed singleton holes escape with inferred sharing
+
+A closed singleton `letRec` may now export a count-polymorphic interface inferred
+from source annotation holes.  The declarative `letRecExported` rule retains the
+actual Core `letRec` syntax and unfolding semantics, but requires
+`rhs.varsBelow 0 = true`: the source group member is genuinely nonrecursive, so
+its one checked RHS implementation may soundly realize every exported count
+instance.  Its premise strengthening, lexical-scope and runtime fundamental
+proofs cover the same rule; it is not an unchecked product-only shortcut.
+
+Hole escape is deliberately separate from solid annotation decoding.  A
+`LocalHoleAnnotationOK` certificate retains the original source syntax, the
+exact `Pinned` relation from every `_` to its inferred endpoint, and equality of
+that pinned demand with the exported scheme body.  The checker first proposes
+fresh count identities, reconciles the RHS's principal HM scheme with the
+narrower written HM interface, and checks the original found RHS.  It then pins
+the annotation to that actual derivation, removes provisional identities made
+redundant by RHS-induced sharing, re-pins under the smaller telescope, and
+rechecks the original RHS at the final rigid interface.  Thus the principal RHS
+`∀a. a → a` can implement the written `BL _ _ Int → BL _ _ Int`, and its body
+forces the output holes to share the input coordinates rather than exporting
+four unrelated variables.
+
+The resulting universal certificate retains the specialized HM interpretation,
+actual RHS bounds, independent semantic inclusion, captured-environment
+freshness, exact source node reports and `RuntimeReady` evidence.  A parsed,
+build-failing regression uses the same binding at lengths two and three in one
+program, establishing real per-use count instantiation rather than a single
+monomorphic pin.  The R3 canary and full showcase now pass, and the product smoke
+matrix is 20/21.  The sole remaining green frontier is the unannotated
+HM-generalized singleton used by `bl-join-if.fhm`; generic nominal match
+elimination remains the following declaration-indexed constructor task.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

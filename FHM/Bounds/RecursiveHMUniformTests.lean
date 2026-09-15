@@ -385,7 +385,7 @@ private theorem runtimeLocalAnnotation : LocalAnnotationOK runtimeIdScheme (some
           decoded := by simp [runtimeIdScheme, ScopedAnnotation.decode, pure, Except.pure,
             bind, Except.bind] }
       hmWF := runtimeIdScheme.hmWF }
-  refine ⟨declared, ?_⟩
+  refine Or.inl ⟨declared, ?_⟩
   simp [declared, HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme,
     runtimeIdScheme, PolyTy.eraseBounds, Ty.eraseBounds]
 

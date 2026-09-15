@@ -134,7 +134,7 @@ private def checkRhsTyBvars (n : Nat) (e : Expr) : Except String (PLift (e.TyBva
   if h : rhsTyBvarsBelow n e = true then .ok ⟨rhsTyBvarsBelow_sound h⟩
   else .error "bounds: source RHS annotation contains an out-of-scope HM slot"
 
-private theorem mem_eraseDups {a : Nat} {l : List Nat} (h : a ∈ l.eraseDups) : a ∈ l := by
+theorem mem_eraseDups {a : Nat} {l : List Nat} (h : a ∈ l.eraseDups) : a ∈ l := by
   have go : ∀ n, ∀ (l : List Nat), l.length = n → ∀ a, a ∈ l.eraseDups → a ∈ l := by
     intro n
     refine Nat.strongRecOn n (motive := fun n =>
