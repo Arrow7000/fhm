@@ -744,6 +744,36 @@ private def deferredBodyProgram (badCallback : Bool := false) (onlyDeferred : Bo
     | _ => false
   pure (exact && exactlyOnce (logicalCorePaths artifact.output) (program.body.nodes.map (·.path)))
 
+/-- Nested groups close over the already checked outer runtime environment.
+    Exercise both an earlier generalized group export and an intervening exact
+    monomorphic let; a false inner ceiling must still fail independently. -/
+private def nestedCapturedGroup (monoCapture : Bool := false) (badInner : Bool := false) :
+    Except String Bool := do
+  let one := Ty.bl (.solid (.lit 1)) (.solid (.lit 1)) (.prim .int)
+  let two := Ty.bl (.solid (.lit 2)) (.solid (.lit 2)) (.prim .int)
+  let singleton := Expr.app
+    (.app (.ctor consCtorName) (.primLit (.int 1))) (.ctor nilCtorName)
+  let inner := Expr.letRec [some ⟨0, if badInner then two else one⟩]
+    [.var 1] (.var 0)
+  let source := if monoCapture then
+    Expr.letRec [some ⟨0, .prim .int⟩] [.primLit (.int 0)]
+      (.letIn none singleton inner)
+    else
+      Expr.letRec [some ⟨0, one⟩] [singleton] inner
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let artifact ← match inferFound ctors source with
+    | some artifact => pure artifact
+    | none => throw "test: nested captured group HM inference failed"
+  let program ← checkClosedProgram artifact.output {} artifact.binderSchemes
+  if !program.body.runtimeSafety?.isSome then
+    throw "test: nested captured group lost its runtime theorem"
+  let exact := match program.body.bounds with
+    | .list lo hi (.prim .int) =>
+        lo.eval (fun _ => 0) == .ofNat 1 && hi.eval (fun _ => 0) == .ofNat 1
+    | _ => false
+  pure (exact && exactlyOnce (logicalCorePaths artifact.output)
+    (program.body.nodes.map (·.path)))
+
 def main : IO Unit := do
   match actual with
   | .ok true => IO.println "PASS: every actual member universally specializes through one full group HM map with permuted slots and distinct count telescopes"
@@ -895,6 +925,19 @@ def main : IO Unit := do
         unless (message.splitOn part).length > 1 do throw (IO.userError s!"wrong deferred body rejection ({name}): {message}")
         IO.println s!"PASS: {name}"
     | .ok _ => throw (IO.userError s!"unexpected deferred body acceptance: {name}")
+  for (monoCapture, name) in [
+      (false, "an earlier generalized export"),
+      (true, "an intervening monomorphic let")] do
+    match nestedCapturedGroup monoCapture with
+    | .ok true => IO.println s!"PASS: a nested recursive group safely captures {name}"
+    | .error message => throw (IO.userError message)
+    | .ok false => throw (IO.userError s!"nested group lost {name}, exact bounds or source coverage")
+  match nestedCapturedGroup (badInner := true) with
+  | .error message =>
+      unless (message.splitOn "inclusion").length > 1 do
+        throw (IO.userError s!"wrong nested-group ceiling rejection: {message}")
+      IO.println "PASS: a captured outer value cannot justify a false nested-group ceiling"
+  | .ok _ => throw (IO.userError "nested group accepted a false result ceiling")
 
 #eval do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []

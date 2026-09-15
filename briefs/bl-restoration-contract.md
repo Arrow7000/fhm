@@ -2848,6 +2848,32 @@ Validation: `lake build FHM FHMBounds fhm` passes (1806 jobs), including the
 positive staged-body case and both independent negative guards; boundary and
 whitespace checks pass.
 
+### Checkpoint 4bb — nested groups retain captured lexical runtime environments
+
+The generalized body judgment and its runtime fundamental theorem now admit a
+checked recursive group above an arbitrary represented outer environment.
+`EnvAt.tieGroupCaptured` first closes the already realized outer terms into each
+source RHS, then ties the mutually recursive replacements by the same finite
+observation-budget induction as a root group.  A substitution-composition proof
+shows this is exactly Core's single `inner ++ outer` closing substitution; outer
+terms are neither captured by the new binders nor duplicated.
+
+Generalized exits additionally prove that every later full-HM opening leaves
+outer mono types and fixed recursive argument vectors unchanged.  The group
+checker records their presence in the guarded outer type list, so this transport
+is derived from opening freshness and the original erase-normality check rather
+than from the weaker template-only freshness condition.
+
+The source-linked body walker now assembles nested groups at their exact Core
+path, checks every member universally, extends the precise `BodyCapture`, checks
+the nested body under its generalized exits, and returns one ordinary `letRec`
+derivation with runtime evidence.  Regressions cover capture of an earlier group
+export, capture through an intervening monomorphic let, exact singleton bounds,
+complete source-node coverage, and rejection of a false inner result ceiling.
+No fallback traversal, reconstructed source node, termination premise, partial
+definition, placeholder or new axiom is introduced.  HM/D2, Path R and the
+existing arithmetic-solver trust boundary remain unchanged.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

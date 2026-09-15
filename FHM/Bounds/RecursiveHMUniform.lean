@@ -2272,6 +2272,49 @@ private def checkedGroupBodyCapture
   countClosed := interfaceCountsClosed g.interfaces
   exportCountClosed := by intro s member; simp at member
 
+/-- Enter a checked nested group without losing the exact recursive assumptions
+    represented by the surrounding body environment.  The new group's fixed
+    contracts precede the captured outer assumptions in the same de Bruijn
+    order used by its universally checked RHSs. -/
+private def BodyCapture.extendGroup {env output metadata path vectors premises bodyTypes}
+    (capture : BodyCapture env)
+    (g : HMDeclaredGroup.Checked output metadata path vectors [] premises bodyTypes capture.rhsEnv) :
+    BodyCapture (g.exports.map BodyBinding.exported ++ env) where
+  rhsEnv := g.interfaces.contracts.map Binding.recursive ++ capture.rhsEnv
+  bodyEnv := by
+    have inner := checkedMembersBodyEnv g.members
+    have outer := capture.bodyEnv
+    simp only [ordinaryBodyEnv, List.map_append] at inner outer ⊢
+    rw [inner, outer]
+    rfl
+  captured := by
+    constructor
+    · intro β member
+      rcases List.mem_append.mp member with inner | outer
+      · obtain ⟨contract, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
+      · exact capture.captured.1 β outer
+    · intro contract member β argument
+      rcases List.mem_append.mp member with inner | outer
+      · exact (interfaceCaptured g.interfaces).2 contract inner β argument
+      · exact capture.captured.2 contract outer β argument
+  arguments := by
+    intro contract member β argument
+    rcases List.mem_append.mp member with inner | outer
+    · exact interfaceArgumentsSupported g.interfaces contract inner β argument
+    · exact capture.arguments contract outer β argument
+  countClosed := by
+    intro contract member
+    rcases List.mem_append.mp member with inner | outer
+    · exact interfaceCountsClosed g.interfaces contract inner
+    · exact capture.countClosed contract outer
+  exportCountClosed := by
+    intro s member
+    rcases List.mem_append.mp member with inner | outer
+    · obtain ⟨contract, _, impossible⟩ := List.mem_map.mp inner
+      cases impossible
+    · exact capture.exportCountClosed s outer
+
 private def BodyCapture.extendMono {env} (capture : BodyCapture env) (β : BoundsTy)
     (scope : BoundsScoped [] β) : BodyCapture (.mono β :: env) where
   rhsEnv := .mono β :: capture.rhsEnv
@@ -2820,6 +2863,13 @@ private def parseBodySpineSource (output : Expr) (path : CorePath) (e : Expr)
   | _ => none
 termination_by sizeOf e
 
+private def memberNodes {output metadata path captures premises typeCaptures env index vectors}
+    {ps : HMDeclaredGroup.Interfaces output metadata path captures premises typeCaptures index vectors}
+    (ms : HMDeclaredGroup.CheckedMembers env ps) : List Typed.NodeResult :=
+  match ms with
+  | .nil => []
+  | .cons head rest => head.rhs.located.nodes ++ memberNodes rest
+
 mutual
 /-- One exported use at the head, then the ordinary application rule at EVERY
     original frame. Counts/HM arguments are never reproposed at a prefix. -/
@@ -3257,7 +3307,61 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             (by simpa only [Expr.stripFound] using
               (body_match_ready (by simpa only [hin.down] using input.typing) arms hb coverage.down
                 (by simpa only [hin.down] using input.runtimeReady)))
-  | .found _ (.letRec _ _ _) => throw "bounds: nested generalized recursive groups are not supported yet"
+  | .found hm (.letRec annotations rhss body) =>
+      let sourceProof ← match sourceAt with
+        | some located => pure located
+        | none => throw "bounds: nested recursive group lacks exact source provenance"
+      match capture with
+      | none => throw "bounds: nested recursive group lacks a captured lexical environment"
+      | some captured =>
+          let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
+            recursiveFixedTypeCaptures captured.rhsEnv
+          let assembled ← HMDeclaredCoordinates.check sourceOutput metadata path [] Δ
+            typeCaptures captured.rhsEnv schemes
+          let g := assembled.checked
+          have sourceEq : Expr.found hm (Expr.letRec annotations rhss body) =
+              Expr.found g.originalHM (Expr.letRec g.annotations g.rhss g.body) := by
+            exact Option.some.inj (sourceProof.down.symm.trans g.source)
+          have bodyEq : body = g.body := by
+            injection sourceEq with _ innerEq
+            injection innerEq
+          have bodySource : sourceOutput.atCorePath (path ++ [.letRecBody]) = some body := by
+            rw [Expr.atCorePath_append, g.source]
+            simp [Expr.atCorePath, bodyEq]
+          let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+            (g.exports.map BodyBinding.exported ++ env) (path ++ [.letRecBody])
+            body schemes (some (captured.extendGroup g)) (some ⟨bodySource⟩) expected
+          let completed ← finishBody (ids := ids) (rows := rows) (caller := caller)
+            (Δ := Δ) (env := env)
+            (e := .found g.originalHM (.letRec g.annotations g.rhss g.body))
+            path g.originalHM result.bounds rfl
+            (by
+              have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
+                  (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv captured.rhsEnv)
+                  g.body.stripFound result.bounds := by
+                simpa only [bodyEq, captured.bodyEnv] using result.typing
+              simpa only [Expr.stripFound, captured.bodyEnv] using
+                (ScopedBodyDerives.letRec g
+                  (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
+                  bodyTyping))
+            (memberNodes g.members ++ result.nodes)
+            (do
+              let members ← g.members.runtimeReady
+              let bodyReady ← result.runtimeReady
+              have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
+                  (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv captured.rhsEnv)
+                  g.body.stripFound result.bounds := by
+                simpa only [bodyEq, captured.bodyEnv] using result.typing
+              have ready : BodyDerives.RuntimeReady bodyTyping := by
+                simpa only [bodyEq, captured.bodyEnv] using bodyReady.down
+              pure ⟨by
+                simpa only [Expr.stripFound, captured.bodyEnv] using
+                  (BodyDerives.RuntimeReady.letRec g
+                    (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
+                    (fun offset inside => (members.down offset inside).1)
+                    (fun offset inside => (members.down offset inside).2)
+                    captured.arguments ready)⟩)
+          pure (by simpa only [sourceEq] using completed)
   | _ => throw "bounds: generalized body lacks an original found node"
 termination_by (sizeOf e, 1)
 
@@ -3365,13 +3469,6 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
   | [] => walkBodySource e {} ids rows caller Δ env [] e schemes
       none (some ⟨by simp [Expr.atCorePath]⟩) expected
   | _ => walkBodySource e {} ids rows caller Δ env path e schemes none none expected
-
-private def memberNodes {output metadata path captures premises typeCaptures env index vectors}
-    {ps : HMDeclaredGroup.Interfaces output metadata path captures premises typeCaptures index vectors}
-    (ms : HMDeclaredGroup.CheckedMembers env ps) : List Typed.NodeResult :=
-  match ms with
-  | .nil => []
-  | .cons head rest => head.rhs.located.nodes ++ memberNodes rest
 
 /-- Closed-group vertical slice. Only after all universal RHSs accept do their
     generalized exit bindings become available to actual source body checking. -/
