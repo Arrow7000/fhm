@@ -877,6 +877,28 @@ private def pinnedRecursiveSingleton (bad : Bool := false) : Except String Bool 
     | _ => false) &&
     exactlyOnce (logicalCorePaths artifact.output) (result.nodes.map (·.path)))
 
+/-- An unannotated HM-monomorphic top-level singleton still arrives as a Core
+    recursive group.  Its exact inferred bounds may serve as the recursive and
+    exported body interface once the checked second walk reaches the same
+    structural fixed point. -/
+private def inferredRecursiveSingleton : Except String Bool := do
+  let rhs := Expr.app
+    (.app (.ctor consCtorName) (.primLit (.int 1)))
+    (.app (.app (.ctor consCtorName) (.primLit (.int 2))) (.ctor nilCtorName))
+  let source := Expr.letRec [none] [rhs] (.var 0)
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let artifact ← match inferFound ctors source with
+    | some artifact => pure artifact
+    | none => throw "test: inferred recursive singleton HM inference failed"
+  let result ← checkProgram artifact.output {} artifact.binderSchemes
+  if !result.runtimeSafety?.isSome then
+    throw "test: inferred recursive singleton lost its tied-group runtime theorem"
+  pure ((match result.bounds with
+    | .list lo hi (.prim .int) =>
+        lo.eval (fun _ => 0) == .ofNat 2 && hi.eval (fun _ => 0) == .ofNat 2
+    | _ => false) &&
+    exactlyOnce (logicalCorePaths artifact.output) (result.nodes.map (·.path)))
+
 def main : IO Unit := do
   match actual with
   | .ok true => IO.println "PASS: every actual member universally specializes through one full group HM map with permuted slots and distinct count telescopes"
@@ -906,6 +928,10 @@ def main : IO Unit := do
         throw (IO.userError s!"wrong pinned recursive singleton rejection: {message}")
       IO.println "PASS: recursive singleton hole pinning cannot hide a false solid ceiling"
   | .ok _ => throw (IO.userError "recursive singleton hole pinning accepted a false solid ceiling")
+  match inferredRecursiveSingleton with
+  | .ok true => IO.println "PASS: an unannotated HM-monomorphic singleton reaches one exact recursive interface with tied-group runtime safety"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "inferred recursive singleton lost its fixed interface, runtime theorem or exact nodes")
   match bodyCalls with
   | .ok true => IO.println "PASS: all-member universal introduction checks actual Int/Char body calls and reports every original group/RHS/body occurrence exactly once"
   | .error message => throw (IO.userError message)

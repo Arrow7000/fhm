@@ -3098,6 +3098,34 @@ the tied-group runtime theorem, and reject `BL _ 0 Int`.  The parsed `.fhm`
 smoke matrix now accepts the basic hole-ascription and wider-public-interface
 programs; escaping/generalized holes remain separate work.
 
+### Checkpoint 4bm — inferred monomorphic singleton groups and compound pins
+
+Unannotated top-level bindings are also represented as Core singleton recursive
+groups.  A new declarative rule admits the HM-monomorphic, count-closed case
+without fabricating a source annotation: the RHS is derived at one exact bounds
+interface under that same recursive assumption, and the following body receives
+the interface monomorphically.  Premise transport, scope, runtime support and the
+fundamental theorem all cover the new rule.  Runtime safety again uses the real
+tied `letRec` environment.
+
+The checker selects this route only when the unique inferred binder scheme has
+zero HM parameters, the source telescope contains no count binders and the first
+walk has no free inferable counts.  It performs a second RHS walk under the first
+result and requires proof-producing exact equality of the two bounds trees.
+Polymorphic or escaping results are deliberately left to generalized export;
+they are not silently frozen by this monomorphic rule.  A build-failing test
+checks an unannotated exact-List singleton, exact node coverage and its runtime
+theorem.  The parsed compound `head`/`tail` program now passes end to end.
+
+This exposed an older count-proposal ambiguity: in `BL x (2*x)`, a proposal from
+the direct lower endpoint used to override the unsupported compound occurrence
+of the same coordinate at the upper endpoint.  Proposals are now suppressed
+when that conflict occurs within one List domain, while a later independent
+argument may still supply an earlier compound coordinate.  Thus the R3
+multi-model canary rejects again and the cross-argument compound regression
+continues to pass.  The `.fhm` smoke matrix stands at 17/21; its remaining green
+frontiers are generalized annotation holes and generic nominal constructors.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;

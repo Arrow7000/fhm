@@ -24,6 +24,14 @@ private abbrev Proposals := List (Nat × Count) × List Nat
 
 private def combine (a b : Proposals) : Proposals := (a.1 ++ b.1, a.2 ++ b.2)
 
+/-- A direct proposal at one endpoint cannot erase an unsupported compound
+    occurrence of the same coordinate at the other endpoint.  Such a List
+    domain denotes an inequality range, not an exact pin (for example
+    `BL x (2*x)` against an exact length).  Cross-argument origins are still
+    combined later and may independently discharge an earlier compound use. -/
+private def keepUnblocked (p : Proposals) : Proposals :=
+  (p.1.filter (fun row => !p.2.contains row.1), p.2)
+
 /-- Evaluate only syntactically ground, finite count arithmetic.  This is a
     proposal helper, not a solver and not acceptance evidence. -/
 private def groundNat? : Count → Option Nat
@@ -62,7 +70,8 @@ private def collect (ids : List Nat) (pattern actual : BoundsTy) : Option Propos
   | .prim _, .prim _ | .fvar _, .fvar _ => some ([], [])
   | .arrow a b, .arrow c d => do pure (combine (← collect ids a c) (← collect ids b d))
   | .list lo hi elem, .list actualLo actualHi actualElem => do
-      pure (combine (combine (endpoint ids lo actualLo) (endpoint ids hi actualHi))
+      pure (combine (keepUnblocked
+        (combine (endpoint ids lo actualLo) (endpoint ids hi actualHi)))
         (← collect ids elem actualElem))
   | .custom n as, .custom m bs => if n = m then collectList ids as bs else none
   | _, _ => none
@@ -123,7 +132,7 @@ def propose (quantified : List Nat) (pattern actual : BoundsTy) : Except String 
     | some c => pure c
     | none =>
         if blocked.contains id then
-          throw "bounds: implicit count argument needs unsupported arithmetic inversion"
+          throw "bounds: non-unique count constraint or unsupported arithmetic inversion"
         else pure (.lit 0)
 
 /-- One proposal vector for the whole supplied application spine. Repeated
@@ -146,7 +155,7 @@ def proposeOrigins (quantified : List Nat) (contract : BoundsTy)
         else if deferred.contains id then
           throw "bounds: count argument needs an independent origin before deferred argument checking"
         else if blocked.contains id then
-          throw "bounds: implicit count argument needs unsupported arithmetic inversion"
+          throw "bounds: non-unique count constraint or unsupported arithmetic inversion"
         else pure (.lit 0)
 
 def proposeArguments (quantified : List Nat) (contract : BoundsTy)

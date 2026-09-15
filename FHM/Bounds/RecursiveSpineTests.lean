@@ -92,6 +92,10 @@ private def cases : List (String × Bool) := [
   ("ambiguous multiplicative endpoints remain unsupported", fails
     (CountProposal.proposeArguments [7] (.arrow (exact (.mul k (.lit 2))) (exact k))
       [exact (.lit 4)]) "arithmetic inversion"),
+  ("a direct endpoint cannot override a compound occurrence in the same List domain", fails
+    (CountProposal.proposeArguments [7]
+      (.arrow (.list k (.mul (.lit 2) k) (.prim .int)) (exact k))
+      [exact (.lit 10)]) "non-unique"),
   ("result-only coordinate remains an explicit finite witness", proposes [7]
     (.arrow (.prim .int) (exact k)) [.prim .int] [.lit 0]),
   ("captured coordinates are never included in the proposal telescope", proposes [7]
