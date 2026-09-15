@@ -72,6 +72,57 @@ structure ScopedResult (types slots : Nat → BoundsTy) (ids : List Nat) (rows :
   nodes : List Typed.NodeResult
   runtimeReady : Option (PLift (ScopedDerives.RuntimeReady derivation))
 
+/-- The explicit quantitative interfaces of one monomorphic recursive SCC.
+    This pass only decodes and checks source contracts; implementations are
+    checked separately under the complete resulting demand vector. -/
+structure MonoRecInterfaces (types slots : Nat → BoundsTy) (ids : List Nat)
+    (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
+    (annotations : List (Option PolyTy)) where
+  demands : List BoundsTy
+  length_eq : demands.length = annotations.length
+  obligations : ∀ i (inside : i < annotations.length),
+    ScopedHMAnnotation.BindingOK types slots ids rows Δ annotations[i] demands[i]
+
+private def checkMonoRecInterfaces (types slots : Nat → BoundsTy) (ids : List Nat)
+    (rows : Bindings) (caller : List Nat) (Δ : List Constraint) :
+    (annotations : List (Option PolyTy)) →
+      Except String (MonoRecInterfaces types slots ids rows caller Δ annotations)
+  | [] => pure ⟨[], rfl, by intro i inside; simp at inside⟩
+  | none :: _ =>
+      throw "bounds: recursive quantitative SCC member requires an explicit bounds annotation"
+  | some annotation :: rest => do
+      unless annotation.paramCount = 0 do
+        throw "bounds: polymorphic recursive SCC member requires the generalized group checker"
+      let demand ← RecursiveHMAnnotation.decodeScoped types slots ids rows caller annotation.body
+      let obligation ← RecursiveHMAnnotation.checkScopedBinding types slots ids rows caller Δ
+        (some annotation) demand.bounds
+      let tail ← checkMonoRecInterfaces types slots ids rows caller Δ rest
+      pure {
+        demands := demand.bounds :: tail.demands
+        length_eq := by simp only [List.length_cons, tail.length_eq]
+        obligations := by
+          intro i inside
+          cases i with
+          | zero => simpa only [List.getElem_cons_zero] using obligation.down
+          | succ i =>
+              simpa only [List.getElem_cons_succ] using
+                tail.obligations i (by simp only [List.length_cons] at inside; omega) }
+
+/-- Checked implementations for an aligned suffix of a monomorphic SCC.  The
+    lexical environment remains the complete demand vector, never the suffix. -/
+structure MonoRecMembers (types slots : Nat → BoundsTy) (ids : List Nat)
+    (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
+    (env : List Binding) (rhss : List Expr) (demands : List BoundsTy) where
+  length_eq : demands.length = rhss.length
+  actuals : Nat → BoundsTy
+  typings : ∀ i (inside : i < rhss.length),
+    ScopedDerives types slots ids rows Δ env rhss[i].stripFound (actuals i)
+  inclusions : ∀ i (inside : i < rhss.length),
+    SemanticSub Δ (actuals i) demands[i]
+  nodes : List Typed.NodeResult
+  runtimeReady : Option (PLift (∀ i (inside : i < rhss.length),
+    ScopedDerives.RuntimeReady (typings i inside)))
+
 private def finish (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) (e : Expr)
     (path : CorePath) (β : BoundsTy) (h : ScopedDerives types slots ids rows Δ env e.stripFound β)
@@ -806,7 +857,62 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                         (bodyReady.down.sourceFree bodyAgreement))⟩)
             | _ => throw "bounds: nested recursive RHS is missing its original found root"
           else throw "bounds: generalized nested recursive group unsupported in interpreted universal RHS traversal"
-      | _, _ => throw "bounds: non-singleton nested recursive group unsupported in interpreted universal RHS traversal"
+      | annotations', rhss' =>
+          if annotationCount : annotations'.length = rhss'.length then
+            if multiple : 1 < rhss'.length then
+              let interfaces ← checkMonoRecInterfaces types slots ids rows caller Δ annotations'
+              let demandCount : interfaces.demands.length = rhss'.length :=
+                interfaces.length_eq.trans annotationCount
+              let groupEnv := interfaces.demands.map Binding.mono ++ env
+              let members ← walkMonoRecMembers types slots ids rows caller Δ groupEnv hm body
+                path 0 schemes ctors annotations' rhss' interfaces.demands annotationCount demandCount
+              let result ← walkScoped types slots ids rows caller Δ groupEnv
+                (path ++ [.letRecBody]) body schemes expected (ctors := ctors)
+              let mappedRhss := rhss'.map Expr.stripFound
+              have mappedAnnotationCount : annotations'.length = mappedRhss.length := by
+                simpa only [mappedRhss, List.length_map] using annotationCount
+              have mappedDemandCount : interfaces.demands.length = mappedRhss.length := by
+                simpa only [mappedRhss, List.length_map] using demandCount
+              let groupTyping := ScopedDerives.letRecMonoGroup interfaces.demands
+                mappedAnnotationCount mappedDemandCount
+                (fun i inside => interfaces.obligations i
+                  (by simpa only [mappedRhss, List.length_map, annotationCount] using inside))
+                (fun i inside => by
+                  simpa only [mappedRhss, List.getElem_map] using
+                    members.typings i (by simpa only [mappedRhss, List.length_map] using inside))
+                (fun i inside => members.inclusions i
+                  (by simpa only [mappedRhss, List.length_map] using inside))
+                result.derivation
+              finish types slots ids rows caller Δ env
+                (.found hm (.letRec annotations' rhss' body)) path result.bounds
+                (by simpa only [Expr.stripFound, mappedRhss] using groupTyping)
+                (members.nodes ++ result.nodes)
+                (do
+                  let memberReady ← members.runtimeReady
+                  let demandSupport ← Runtime.supportedArguments? interfaces.demands
+                  let bodyReady ← result.runtimeReady
+                  pure ⟨by
+                    let ready := ScopedDerives.RuntimeReady.letRecMonoGroup
+                      annotations' mappedRhss body.stripFound interfaces.demands
+                      (annotationCount := mappedAnnotationCount)
+                      (demandCount := mappedDemandCount)
+                      (annotationsOK := fun i inside => interfaces.obligations i
+                        (by simpa only [mappedRhss, List.length_map, annotationCount] using inside))
+                      (rhssTyping := fun i inside => by
+                        simpa only [mappedRhss, List.getElem_map] using
+                          members.typings i
+                            (by simpa only [mappedRhss, List.length_map] using inside))
+                      (inclusions := fun i inside => members.inclusions i
+                        (by simpa only [mappedRhss, List.length_map] using inside))
+                      (bodyTyping := result.derivation)
+                      (fun i inside => by
+                        simpa only [mappedRhss, List.getElem_map] using
+                          memberReady.down i
+                            (by simpa only [mappedRhss, List.length_map] using inside))
+                      demandSupport.down bodyReady.down
+                    simpa only [Expr.stripFound, mappedRhss] using ready⟩)
+            else throw "bounds: non-singleton nested recursive group requires at least two members"
+          else throw "bounds: recursive annotation/RHS arity mismatch"
   | .found hm (.letIn ann rhs body) =>
       let hint ← RecursiveHMAnnotation.scopedBindingHint types slots ids rows caller ann
       let actual ← walkScoped types slots ids rows caller Δ env (path ++ [.letRhs]) rhs schemes hint (ctors := ctors)
@@ -926,6 +1032,96 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                 (input.nodes ++ arms.nodes) none
   | _ => throw "bounds: unsupported or missing found node in interpreted RHS traversal"
 termination_by (sizeOf e, 1)
+
+private def walkMonoRecMembers (types slots : Nat → BoundsTy) (ids : List Nat)
+    (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
+    (groupEnv : List Binding) (groupHM : Ty) (body : Expr)
+    (path : CorePath) (offset : Nat) (schemes : BinderSchemeMap) (ctors : CtorEnv) :
+    (annotations : List (Option PolyTy)) → (rhss : List Expr) →
+    (demands : List BoundsTy) → annotations.length = rhss.length →
+      demands.length = rhss.length →
+      Except String (MonoRecMembers types slots ids rows caller Δ groupEnv rhss demands)
+  | [], [], [], _, _ => pure {
+      length_eq := rfl
+      actuals := fun _ => .prim .int
+      typings := by intro i inside; simp at inside
+      inclusions := by intro i inside; simp at inside
+      nodes := []
+      runtimeReady := some ⟨by intro i inside; simp at inside⟩ }
+  | some annotation :: annotations, (.found rhsHM rhsInner) :: rhss, demand :: demands,
+      annotationCount, demandCount => do
+      let localOutput := .found groupHM
+        (.letRec (some annotation :: annotations) (.found rhsHM rhsInner :: rhss) body)
+      let node : HMFoundView.AtNode localOutput [.letRecRhs 0] :=
+        ⟨rhsHM, rhsInner, by
+          simp [localOutput, Expr.atCorePath]
+          split <;> simp_all⟩
+      let declaration : HMDeclaredReconciliation.Declaration localOutput (.letRec [] 0) :=
+        ⟨annotation, [.letRecRhs 0],
+          .letRec (path := []) (member := 0) (hm := groupHM)
+            (annotations := some annotation :: annotations)
+            (rhss := .found rhsHM rhsInner :: rhss) (body := body)
+            (annotation := annotation) (by
+              simp [localOutput, Expr.atCorePath]) annotationCount rfl,
+          node⟩
+      let reconciled ← HMDeclaredReconciliation.check declaration [] ids [] [] Δ
+      let localTypes := fun i => mapFree types (reconciled.interpretation i)
+      let actual ← walkScoped localTypes slots ids rows caller Δ groupEnv
+        (path ++ [.letRecRhs offset]) (.found rhsHM rhsInner) schemes (some demand)
+        (ctors := ctors)
+      let _ ← checkLocalInterface (some annotation) schemes (.letRec path offset)
+        actual.originalHM
+      have rhsAgreement : ∀ i ∈ rhsInner.stripFound.tyFreeVars,
+          localTypes i = types i := by
+        intro i named
+        simp only [localTypes, reconciled.sourceIdentity named]
+        rfl
+      let inclusion ← Typed.subtype Δ actual.bounds demand
+      have tailAnnotationCount : annotations.length = rhss.length := by
+        simp only [List.length_cons] at annotationCount
+        omega
+      have tailDemandCount : demands.length = rhss.length := by
+        simp only [List.length_cons] at demandCount
+        omega
+      let tail ← walkMonoRecMembers types slots ids rows caller Δ groupEnv groupHM body
+        path (offset + 1) schemes ctors annotations rhss demands tailAnnotationCount
+        tailDemandCount
+      pure {
+        length_eq := demandCount
+        actuals := fun i => match i with | 0 => actual.bounds | i + 1 => tail.actuals i
+        typings := by
+          intro i inside
+          cases i with
+          | zero =>
+              simpa only [List.getElem_cons_zero, Expr.stripFound] using
+                actual.derivation.sourceFree
+                  (by simpa only [Expr.stripFound] using rhsAgreement)
+          | succ i =>
+              simpa only [List.getElem_cons_succ] using
+                tail.typings i (by simp only [List.length_cons] at inside; omega)
+        inclusions := by
+          intro i inside
+          cases i with
+          | zero => simpa only [List.getElem_cons_zero] using inclusion.down
+          | succ i =>
+              simpa only [List.getElem_cons_succ] using
+                tail.inclusions i (by simp only [List.length_cons] at inside; omega)
+        nodes := actual.nodes ++ tail.nodes
+        runtimeReady := do
+          let headReady ← actual.runtimeReady
+          let tailReady ← tail.runtimeReady
+          pure ⟨by
+            intro i inside
+            cases i with
+            | zero =>
+                simpa only [List.getElem_cons_zero, Expr.stripFound] using
+                  headReady.down.sourceFree
+                    (by simpa only [Expr.stripFound] using rhsAgreement)
+            | succ i =>
+                simpa only [List.getElem_cons_succ] using
+                  tailReady.down i (by simp only [List.length_cons] at inside; omega)⟩ }
+  | _, _, _, _, _ => throw "bounds: recursive annotation, RHS, and demand arities disagree"
+termination_by annotations rhss demands _ _ => (sizeOf rhss, 0)
 
 private def walkScopedSpine (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
     (caller : List Nat) (Δ : List Constraint) (env : List Binding) {e : Expr}
