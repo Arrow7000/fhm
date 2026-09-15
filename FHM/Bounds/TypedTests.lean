@@ -29,6 +29,31 @@ private def rejects (e : Expr) (message : String) : Bool :=
   | .ok _ => false
 
 private def cases : List (String × Bool) := [
+  ("nominal subtype recurses through every argument", match subtype []
+      (.custom pairTyName [.list (.lit 2) (.lit 2) (.prim .int), .prim .char])
+      (.custom pairTyName [.list (.lit 0) .inf (.prim .int), .prim .char]) with
+    | .ok _ => true
+    | .error _ => false),
+  ("nominal subtype rejects arity mismatch", match subtype []
+      (.custom pairTyName [.prim .int])
+      (.custom pairTyName [.prim .int, .prim .char]) with
+    | .error msg => msg == "bounds: data type arity mismatch"
+    | .ok _ => false),
+  ("nominal shape retains nested List structure", match shapeTop
+      (.customTy pairTyName [listTy intTy, .prim .char]) with
+    | .ok (.custom name [.list (.lit 0) .inf (.prim .int), .prim .char]) =>
+        name == pairTyName
+    | _ => false),
+  ("nominal annotation retains exact nested bounds", match annotation
+      (.customTy pairTyName [
+        .bl (.solid (.lit 2)) (.solid (.lit 2)) intTy, .prim .char]) with
+    | .ok (.custom name [.list (.lit 2) (.lit 2) (.prim .int), .prim .char]) =>
+        name == pairTyName
+    | _ => false),
+  ("malformed List annotation arity rejected", match annotation
+      (.customTy listTyName [intTy, .prim .char]) with
+    | .error msg => msg == "bounds: malformed List annotation arity"
+    | .ok _ => false),
   ("exact two-element list", match walk [] [] [] (ints [1, 2]) with
     | .ok r => r.bounds.pretty == "BL 2 2 Int" && r.nodes.length == 9
     | _ => false),

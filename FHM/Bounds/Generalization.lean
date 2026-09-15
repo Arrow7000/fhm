@@ -76,46 +76,75 @@ private theorem list_subtype (z : Nat) (arg : BoundsTy) {Δ as bs}
 termination_by sizeOf as + sizeOf bs
 end
 
+mutual
 /-- Successful annotation decoding cannot invent a free HM identity absent
     from its carried source type. -/
 theorem annotation_fresh {z arg τ β} (h : Typed.annotation τ = .ok β)
     (hf : z ∉ τ.freeVars) : replace z arg β = β := by
-  induction τ using Ty.rec_strong generalizing β with
+  cases τ with
   | prim p => simp [Typed.annotation, pure, Except.pure] at h; subst β; rfl
   | fvar i =>
       simp [Typed.annotation, pure, Except.pure] at h; subst β
       apply fresh
       simpa only [Synth.BoundsTy.toTy] using hf
   | bvar i => simp [Typed.annotation, pure, Except.pure] at h; subst β; rfl
-  | arrow a b iha ihb =>
+  | arrow a b =>
       simp only [Ty.freeVars, List.mem_dedup, List.mem_append, not_or] at hf
       cases ha : Typed.annotation a <;> cases hb : Typed.annotation b <;>
         simp [Typed.annotation, ha, hb, bind, pure, Except.bind, Except.pure] at h
       subst β
-      simp only [replace, iha ha hf.1, ihb hb hf.2]
-  | bl lo hi a ih =>
+      simp only [replace, annotation_fresh ha hf.1, annotation_fresh hb hf.2]
+  | bl lo hi a =>
       cases lo <;> cases hi <;>
         simp only [Typed.annotation, throw, reduceCtorEq] at h
       split at h
       · cases ha : Typed.annotation a <;> simp [ha, bind, pure, Except.bind, Except.pure] at h
         subst β
-        simp only [replace, ih ha hf]
+        simp only [replace, annotation_fresh ha hf]
       · simp [bind, Except.bind] at h
-  | customTy n as ih =>
-      cases as with
-      | nil => simp [Typed.annotation, pure, Except.pure] at h; subst β; rfl
-      | cons a as =>
-          cases as with
-          | cons b bs => simp [Typed.annotation, throw] at h
-          | nil =>
-              have haFresh : z ∉ a.freeVars := by
-                simpa [Ty.freeVars, TyList.freeVars] using hf
-              simp only [Typed.annotation] at h
-              split at h
-              · cases ha : Typed.annotation a <;> simp [ha, bind, pure, Except.bind, Except.pure] at h
+  | customTy name args =>
+      by_cases hn : name = listTyName
+      · subst name
+        cases args with
+        | nil => rw [Typed.annotation.eq_def] at h; simp [throw] at h
+        | cons a rest =>
+            cases rest with
+            | cons b bs => rw [Typed.annotation.eq_def] at h; simp [throw] at h
+            | nil =>
+                rw [Typed.annotation.eq_def] at h
+                cases ha : Typed.annotation a <;>
+                  simp [ha, bind, pure, Except.bind, Except.pure] at h
                 subst β
-                simp only [replace, ih a (by simp) ha haFresh]
-              · simp [throw] at h
+                have haFresh : z ∉ a.freeVars := by
+                  simpa [Ty.freeVars, TyList.freeVars] using hf
+                simp only [replace, annotation_fresh ha haFresh]
+      · cases hs : Typed.annotationList args with
+        | error message =>
+            rw [Typed.annotation.eq_def] at h
+            simp [hn, hs, bind, Except.bind] at h
+        | ok decoded =>
+            rw [Typed.annotation.eq_def] at h
+            simp [hn, hs, bind, pure, Except.bind, Except.pure] at h
+            subst β
+            exact congrArg (BoundsTy.custom name)
+              (annotationList_fresh hs (by simpa only [Ty.freeVars] using hf))
+termination_by sizeOf τ
+
+private theorem annotationList_fresh {z arg types decoded}
+    (h : Typed.annotationList types = .ok decoded)
+    (hf : z ∉ TyList.freeVars types) : replaceList z arg decoded = decoded := by
+  cases types with
+  | nil => simp [Typed.annotationList, pure, Except.pure] at h; subst decoded; rfl
+  | cons ty rest =>
+      rw [TyList.not_mem_freeVars_iff] at hf
+      cases ht : Typed.annotation ty <;> cases hr : Typed.annotationList rest <;>
+        simp [Typed.annotationList, ht, hr, bind, pure, Except.bind, Except.pure] at h
+      subst decoded
+      simp only [replaceList, annotation_fresh ht (hf ty (by simp)),
+        annotationList_fresh hr (TyList.not_mem_freeVars_iff.mpr fun t member =>
+          hf t (by simp [member]))]
+termination_by sizeOf types
+end
 
 private theorem param {z arg Δ ann β} (h : Typed.ParamOK Δ ann β)
     (hf : z ∉ ann.elim [] Ty.freeVars) : Typed.ParamOK Δ ann (replace z arg β) := by

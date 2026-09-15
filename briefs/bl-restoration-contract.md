@@ -2968,6 +2968,24 @@ guards cover canonical success, named skolems/counts, whitespace expression
 hover and retained symbols on rejection. HM semantic smoke, the 36-file scratch
 audit, VS Code lifecycle checks and the exhaustive web hover sweep remain green.
 
+### Checkpoint 4bg — nominal bounds retain their parameter structure
+
+The typed decoder no longer treats every non-`List` nominal type as nullary.
+Shape demands and authored annotations recurse through all nominal arguments,
+and semantic subtyping checks equal constructors, equal arities and pointwise
+argument subtyping. `List` remains the distinguished interval-carrying type and
+rejects malformed arity rather than silently becoming an ordinary nominal.
+
+The corresponding freshness, simultaneous HM-specialization and count-
+transport lemmas now recurse over nominal argument lists as well. Thus the
+executable generalisation is covered by the same proof transformations used by
+declarations and recursive groups; it is not merely a pretty-printing or editor
+exception. Build-failing regressions cover nested exact List bounds inside a
+Pair-shaped type, pointwise subtyping and arity rejection. The full verified
+bounds suite remains green without a new axiom or placeholder. This establishes
+the static shape layer needed for parameterized nominal runtime support; it does
+not yet claim runtime meaning or traversal rules for Pair construction/matches.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
