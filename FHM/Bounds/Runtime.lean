@@ -9,7 +9,7 @@ Finite observation budgets permit divergence while detecting stuck states and
 checking every value observed with positive budget. Arrows describe the actual
 behaviour of applications, rather than only their erased HM shape.
 
-Nominal data is currently restricted to the supported List/Bool fragment.
+Nominal data is currently restricted to the supported List/Bool/Pair fragment.
 Other constructors require their field/variance semantics before a fundamental
 theorem may cover them. Free and bound HM identities have explicit semantic
 environments; their downward-closure obligations belong to environment validity.
@@ -29,6 +29,11 @@ inductive ListValue (element : Expr → Prop) : Expr → Nat → Prop where
   | cons : element h → ListValue element t n →
       ListValue element (.app (.app (.ctor consCtorName) h) t) (n + 1)
 
+/-- Concrete saturated Pair values, with semantic evidence for both fields. -/
+inductive PairValue (left right : Expr → Prop) : Expr → Prop where
+  | mk : left x → right y →
+      PairValue left right (.app (.app (.ctor pairCtorName) x) y)
+
 theorem ListValue.map {p q : Expr → Prop} (hpq : ∀ v, p v → q v)
     (h : ListValue p v n) : ListValue q v n := by
   induction h with
@@ -46,6 +51,26 @@ theorem ListValue.closed {p : Expr → Prop} (elements : ∀ v, p v → v.varsBe
   induction list with
   | nil => rfl
   | cons hh _ ih => simp only [Expr.varsBelow, elements _ hh, ih, Bool.and_self]
+
+theorem PairValue.map {p p' q q' : Expr → Prop}
+    (hp : ∀ v, p v → p' v) (hq : ∀ v, q v → q' v)
+    (pair : PairValue p q v) : PairValue p' q' v := by
+  cases pair with
+  | mk left right => exact .mk (hp _ left) (hq _ right)
+
+theorem PairValue.value {p q : Expr → Prop}
+    (left : ∀ v, p v → SmallStep.IsValue v)
+    (right : ∀ v, q v → SmallStep.IsValue v)
+    (pair : PairValue p q v) : SmallStep.IsValue v := by
+  cases pair with
+  | mk hx hy => exact .ctorApp (.app (.ctor _) (left _ hx)) (right _ hy)
+
+theorem PairValue.closed {p q : Expr → Prop}
+    (left : ∀ v, p v → v.varsBelow 0 = true)
+    (right : ∀ v, q v → v.varsBelow 0 = true)
+    (pair : PairValue p q v) : v.varsBelow 0 = true := by
+  cases pair with
+  | mk hx hy => simp only [Expr.varsBelow, left _ hx, right _ hy, Bool.and_self]
 
 private theorem ctorChain_value (h : SmallStep.IsCtorChain e) : SmallStep.IsValue e := by
   cases h with
@@ -390,6 +415,8 @@ inductive Supported : BoundsTy → Prop where
   | arrow : Supported a → Supported b → Supported (.arrow a b)
   | list : Supported elem → Supported (.list lo hi elem)
   | bool : Supported (.custom boolTyName [])
+  | pair : Supported left → Supported right →
+      Supported (.custom pairTyName [left, right])
 
 mutual
 /-- Semantic subtyping preserves the runtime fragment in both directions:
@@ -411,6 +438,14 @@ theorem Supported.subtypeLeft {a b : BoundsTy} (sub : SemanticSub Δ a b)
   | custom args =>
       cases right with
       | bool => cases args; exact .bool
+      | pair rightLeft rightRight =>
+          cases args with
+          | cons leftSub rest =>
+              cases rest with
+              | cons rightSub empty =>
+                  cases empty
+                  exact .pair (Supported.subtypeLeft leftSub rightLeft)
+                    (Supported.subtypeLeft rightSub rightRight)
 
 theorem Supported.subtypeRight {a b : BoundsTy} (sub : SemanticSub Δ a b)
     (left : Supported a) : Supported b := by
@@ -428,6 +463,14 @@ theorem Supported.subtypeRight {a b : BoundsTy} (sub : SemanticSub Δ a b)
   | custom args =>
       cases left with
       | bool => cases args; exact .bool
+      | pair leftLeft leftRight =>
+          cases args with
+          | cons leftSub rest =>
+              cases rest with
+              | cons rightSub empty =>
+                  cases empty
+                  exact .pair (Supported.subtypeRight leftSub leftLeft)
+                    (Supported.subtypeRight rightSub leftRight)
 end
 
 abbrev TypeEnv := Nat → Nat → Expr → Prop
@@ -448,13 +491,22 @@ def supported? (β : BoundsTy) : Option (PLift (Supported β)) :=
       pure ⟨.list a.down⟩
   | .custom name [] =>
       if hn : name = boolTyName then some ⟨by subst name; exact .bool⟩ else none
-  | .custom _ (_ :: _) => none
+  | .custom name [left, right] =>
+      if hp : name = pairTyName then do
+        let a ← supported? left
+        let b ← supported? right
+        pure ⟨by subst name; exact .pair a.down b.down⟩
+      else none
+  | .custom _ _ => none
 
 theorem supported?_complete {β : BoundsTy} (h : Supported β) :
     (supported? β).isSome = true := by
   induction h with
   | prim | bvar | fvar => rfl
   | bool => simp [supported?]
+  | @pair left right leftSupported rightSupported ihLeft ihRight =>
+      cases hl : supported? left <;> cases hr : supported? right <;>
+        simp_all [supported?]
   | @arrow domain result _ _ a b =>
       cases ha : supported? domain <;> cases hb : supported? result <;> simp_all [supported?]
   | @list elem lo hi _ a =>
@@ -485,6 +537,7 @@ theorem Supported.counts (rows : CountSubstitution.Bindings) (h : Supported β) 
   | bvar => exact .bvar
   | fvar => exact .fvar
   | bool => exact .bool
+  | pair _ _ left right => exact .pair left right
   | arrow _ _ domain result => exact .arrow domain result
   | list _ element => exact .list element
 
@@ -495,6 +548,7 @@ theorem Supported.types (f : Nat → BoundsTy) (arguments : ∀ i, Supported (f 
   | bvar => exact .bvar
   | fvar => exact arguments _
   | bool => exact .bool
+  | pair _ _ left right => exact .pair left right
   | arrow _ _ domain result => exact .arrow domain result
   | list _ element => exact .list element
 
@@ -527,9 +581,14 @@ mutual
       | .list lo hi elem =>
           ∃ len, ListValue (ValueAt bound free σ (n + 1) elem) v len ∧
             (⟨lo, hi⟩ : Interval).Contains σ (.ofNat len)
-      | .custom name args =>
-          name = boolTyName ∧ args = [] ∧
+      | .custom name [] =>
+          name = boolTyName ∧ ([] : List BoundsTy) = [] ∧
             (v = .ctor BoolBranches.trueCtorName ∨ v = .ctor BoolBranches.falseCtorName)
+      | .custom name [left, right] =>
+          name = pairTyName ∧
+            PairValue (ValueAt bound free σ (n + 1) left)
+              (ValueAt bound free σ (n + 1) right) v
+      | .custom _ _ => False
   termination_by (sizeOf β, 0)
   decreasing_by
     all_goals apply Prod.Lex.left _ _
@@ -575,7 +634,19 @@ theorem ValueAt.down {bound free σ small large β v}
       | list lo hi elem =>
           obtain ⟨len, elements, interval⟩ := meaning
           exact ⟨len, elements.map (fun _ hv => ValueAt.down hb hf le hv), interval⟩
-      | custom name args => exact meaning
+      | custom name args =>
+          cases args with
+          | nil => exact meaning
+          | cons left rest =>
+              cases rest with
+              | nil => exact meaning
+              | cons right tail =>
+                  cases tail with
+                  | nil =>
+                      exact ⟨meaning.1, meaning.2.map
+                        (fun _ hv => ValueAt.down hb hf le hv)
+                        (fun _ hv => ValueAt.down hb hf le hv)⟩
+                  | cons third tail => exact meaning
 termination_by sizeOf β
 
 theorem TermAt.down {bound free σ small large β e}
@@ -648,6 +719,27 @@ theorem ValueAt.list_congr {bound free bound' free' σ σ' budget lo hi lo' hi' 
         exact ⟨value, closed, len,
           elements.map (fun v hv => (element (budget + 1) v).mpr hv), (interval len).mpr contained⟩
 
+theorem ValueAt.pair_congr {bound free bound' free' σ σ' budget left left' right right' v}
+    (leftMeaning : ∀ n v, ValueAt bound free σ n left v ↔
+      ValueAt bound' free' σ' n left' v)
+    (rightMeaning : ∀ n v, ValueAt bound free σ n right v ↔
+      ValueAt bound' free' σ' n right' v) :
+    ValueAt bound free σ budget (.custom pairTyName [left, right]) v ↔
+      ValueAt bound' free' σ' budget (.custom pairTyName [left', right']) v := by
+  cases budget with
+  | zero => simp only [ValueAt]
+  | succ budget =>
+      rw [ValueAt, ValueAt]
+      constructor
+      · rintro ⟨value, closed, nameOK, pair⟩
+        exact ⟨value, closed, nameOK, pair.map
+          (fun v hv => (leftMeaning (budget + 1) v).mp hv)
+          (fun v hv => (rightMeaning (budget + 1) v).mp hv)⟩
+      · rintro ⟨value, closed, nameOK, pair⟩
+        exact ⟨value, closed, nameOK, pair.map
+          (fun v hv => (leftMeaning (budget + 1) v).mpr hv)
+          (fun v hv => (rightMeaning (budget + 1) v).mpr hv)⟩
+
 /-- Count instantiation has its actual semantic meaning, even below arrows.
     The same HM environment is retained: full caller type meanings are not
     accidentally reinterpreted under the callee's substituted count telescope. -/
@@ -663,6 +755,9 @@ theorem ValueAt.counts (rows : CountSubstitution.Bindings)
     cases supported with
     | prim | bvar | fvar | bool =>
         simp only [CountSubstitution.bounds, CountSubstitution.boundsList, ValueAt]
+    | pair left right =>
+        exact ValueAt.pair_congr (ValueAt.counts rows finite left bound free σ)
+          (ValueAt.counts rows finite right bound free σ)
     | arrow domain result =>
         exact ValueAt.arrow_congr (ValueAt.counts rows finite domain bound free σ)
           (ValueAt.counts rows finite result bound free σ)
@@ -700,6 +795,9 @@ theorem ValueAt.types (types : Nat → BoundsTy) {β} (supported : Supported β)
     cases supported with
     | prim | bvar | bool =>
         simp only [SchemeSpecialization.mapFree, SchemeSpecialization.mapFreeList, ValueAt]
+    | pair left right =>
+        exact ValueAt.pair_congr (ValueAt.types types left bound free σ)
+          (ValueAt.types types right bound free σ)
     | fvar =>
         rw [SchemeSpecialization.mapFree, ValueAt]
         change ValueAt bound free σ (budget + 1) _ v ↔
@@ -786,6 +884,23 @@ theorem subtype {Δ a b} (h : SemanticSub Δ a b)
       | bool =>
         cases args with
         | nil => exact fun _ _ hv => hv
+      | pair left right =>
+          cases args with
+          | cons leftSub rest =>
+              cases rest with
+              | cons rightSub empty =>
+                  cases empty
+                  intro budget v hv
+                  cases budget with
+                  | zero => simp only [ValueAt]
+                  | succ budget =>
+                      rw [ValueAt] at hv ⊢
+                      obtain ⟨value, closed, nameOK, pair⟩ := hv
+                      exact ⟨value, closed, nameOK, pair.map
+                        (subtype leftSub left
+                          (Supported.subtypeRight leftSub left) bound free σ premises (budget + 1))
+                        (subtype rightSub right
+                          (Supported.subtypeRight rightSub right) bound free σ premises (budget + 1))⟩
 termination_by sizeOf a + sizeOf b
 
 /-- One existing-language step consumes one unit of semantic safety budget. -/
@@ -996,6 +1111,49 @@ theorem ValueAt.primBinOp (bound free : TypeEnv) (σ : Assign) (budget : Nat) (o
       intro n
       apply ValueAt.bool
       split <;> simp [BoolBranches.IsCtor, BoolBranches.trueCtorName, BoolBranches.falseCtorName]
+
+theorem ValueAt.pair {bound free σ budget leftTy rightTy left right}
+    (hleft : ValueAt bound free σ budget leftTy left)
+    (hright : ValueAt bound free σ budget rightTy right) :
+    ValueAt bound free σ budget (.custom pairTyName [leftTy, rightTy])
+      (.app (.app (.ctor pairCtorName) left) right) := by
+  cases budget with
+  | zero => simp only [ValueAt]
+  | succ budget =>
+      have actualLeft := hleft
+      have actualRight := hright
+      rw [ValueAt.eq_def] at actualLeft actualRight
+      rw [ValueAt]
+      refine ⟨.ctorApp (.app (.ctor _) actualLeft.1) actualRight.1, ?_, rfl, .mk hleft hright⟩
+      simp only [Expr.varsBelow, actualLeft.2.1, actualRight.2.1, Bool.and_self]
+
+theorem TermAt.pair {bound free σ budget leftTy rightTy left right}
+    (hb : TypeEnv.Downward bound) (hf : TypeEnv.Downward free)
+    (hleft : TermAt bound free σ budget leftTy left)
+    (hright : TermAt bound free σ budget rightTy right) :
+    TermAt bound free σ budget (.custom pairTyName [leftTy, rightTy])
+      (.app (.app (.ctor pairCtorName) left) right) := by
+  apply hleft.bind
+    (⟨fun step => .appFn (.appArg (.ctor _) step),
+      fun value => app_right_value (app_left_value value)⟩ :
+      Context (fun x => .app (.app (.ctor pairCtorName) x) right))
+  intro j before x leftMeaning
+  cases j with
+  | zero => unfold TermAt; intro steps v _ before; omega
+  | succ j =>
+      have actualLeft := leftMeaning
+      rw [ValueAt.eq_def] at actualLeft
+      apply (hright.down hb hf before).bind
+        (⟨fun step => .appArg (.ctorApp (.ctor _) actualLeft.1) step, app_right_value⟩ :
+          Context (fun y => .app (.app (.ctor pairCtorName) x) y))
+      intro k smaller y rightMeaning
+      cases k with
+      | zero => unfold TermAt; intro steps v _ before; omega
+      | succ k =>
+          have actualRight := rightMeaning
+          rw [ValueAt.eq_def] at actualRight
+          exact TermAt.value (.ctorApp (.app (.ctor _) actualLeft.1) actualRight.1)
+            (ValueAt.pair (leftMeaning.down hb hf smaller) rightMeaning)
 
 theorem ValueAt.nil (bound free : TypeEnv) (σ : Assign) (budget : Nat) (elem : BoundsTy) :
     ValueAt bound free σ budget (.list (.lit 0) (.lit 0) elem) (.ctor nilCtorName) := by

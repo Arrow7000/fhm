@@ -123,6 +123,10 @@ private def cases : List (String × Bool) := [
     (run "let xs : BL 0 0 Int = [1]\nxs\n") "interval inclusion"),
   ("parsed program without recursion uses the same Bool branch checker", returns
     (run "if True then 1 else 2\n") "Int"),
+  ("parsed Pair construction retains both field bounds", returns
+    (run "([1, 2], True)\n") "(BL 2 2 Int, Bool)"),
+  ("parsed nested Pair construction retains inner origins", returns
+    (run "(1, ([2], [3, 4]))\n") "(Int, (BL 1 1 Int, BL 2 2 Int))"),
   ("parsed self-recursive contract and exact empty body result", returns (run (selfSource ++ "f []\n")) "BL 0 0 Int"),
   ("parsed self-recursive contract follows singleton argument origin", returns (run (selfSource ++ "f [1]\n")) "BL 1 1 Int"),
   ("parsed mutual recursion uses independent same-named count binders", returns (run mutualSource) "BL 0 0 Int"),

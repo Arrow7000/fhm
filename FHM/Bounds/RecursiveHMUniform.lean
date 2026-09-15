@@ -1164,6 +1164,12 @@ inductive ScopedBodyDerives :
       ScopedBodyDerives types slots ids rows Δ env h head → ScopedBodyDerives types slots ids rows Δ env t (.list lo hi elem) →
       SemanticSub Δ head elem → ScopedBodyDerives types slots ids rows Δ env (.app (.app (.ctor consCtorName) h) t)
         (.list (.add lo (.lit 1)) (.add hi (.lit 1)) elem)
+  | pair {env left right leftTy rightTy} :
+      ScopedBodyDerives types slots ids rows Δ env left leftTy →
+      ScopedBodyDerives types slots ids rows Δ env right rightTy →
+      ScopedBodyDerives types slots ids rows Δ env
+        (.app (.app (.ctor pairCtorName) left) right)
+        (.custom pairTyName [leftTy, rightTy])
   | varMono {env i β} : env[i]? = some (.mono β) → ScopedBodyDerives types slots ids rows Δ env (.var i) β
   | varExported {env i s found caller} : env[i]? = some (.exported s) →
       (used : HMCountScheme.Use s Δ found caller) → ScopedBodyDerives types slots ids rows Δ env (.var i) used.bounds
@@ -1222,7 +1228,7 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       intro p source
       rw [ih p source] at sub
       cases p <;> cases sub <;> rfl
-  | primBinOp | nil | boolCtor | cons | varMono | varExported | app | lambda |
+  | primBinOp | nil | boolCtor | cons | pair | varMono | varExported | app | lambda |
       letMono | letExported | match_ | letRec => intro p source; cases source
 
 /-- Ordinary RHS proofs can be reused for local introduction in mono captured
@@ -1425,6 +1431,7 @@ abbrev primBinOp := @ScopedBodyDerives.primBinOp BoundsTy.fvar BoundsTy.bvar
 abbrev nil := @ScopedBodyDerives.nil BoundsTy.fvar BoundsTy.bvar
 abbrev boolCtor := @ScopedBodyDerives.boolCtor BoundsTy.fvar BoundsTy.bvar
 abbrev cons := @ScopedBodyDerives.cons BoundsTy.fvar BoundsTy.bvar
+abbrev pair := @ScopedBodyDerives.pair BoundsTy.fvar BoundsTy.bvar
 abbrev varMono := @ScopedBodyDerives.varMono BoundsTy.fvar BoundsTy.bvar
 abbrev varExported {ids rows Δ env i s found caller}
     (lookup : env[i]? = some (BodyBinding.exported s)) (used : HMCountScheme.Use s Δ found caller) :
@@ -1456,6 +1463,7 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
   | nil => exact .nil
   | boolCtor hn => exact .boolCtor hn
   | cons _ _ sub ihh iht => exact .cons (ihh hp) (iht hp) (sub.assuming hp)
+  | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
   | varMono lookup => exact .varMono lookup
   | varExported lookup used =>
       let next : HMCountScheme.Use _ Δ' _ _ :=
@@ -1499,6 +1507,7 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
   induction h with
   | literal | primBinOp | nil | boolCtor => rfl
   | cons _ _ _ ihh iht => simp [Expr.varsBelow, ihh, iht]
+  | pair _ _ ihLeft ihRight => simp [Expr.varsBelow, ihLeft, ihRight]
   | varMono lookup | varExported lookup _ =>
       obtain ⟨small, _⟩ := List.getElem?_eq_some_iff.mp lookup
       simpa only [Expr.varsBelow, decide_eq_true_eq] using small
@@ -1613,6 +1622,9 @@ inductive RuntimeReady :
       {ht : ScopedBodyDerives types slots ids rows Δ env t (.list lo hi elem)}
       (sub : SemanticSub Δ head elem) : RuntimeReady hh → RuntimeReady ht →
       RuntimeReady (.cons hh ht sub)
+  | pair {hleft : ScopedBodyDerives types slots ids rows Δ env left leftTy}
+      {hright : ScopedBodyDerives types slots ids rows Δ env right rightTy} :
+      RuntimeReady hleft → RuntimeReady hright → RuntimeReady (.pair hleft hright)
   | varMono (lookup : env[i]? = some (BodyBinding.mono β)) :
       Runtime.Supported β → RuntimeReady (.varMono lookup)
   | varExported (lookup : env[i]? = some (BodyBinding.exported s))
@@ -1682,6 +1694,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | nil elem => exact .list elem
   | boolCtor => exact .bool
   | cons _ _ _ _ tail => cases tail with | list elem => exact .list elem
+  | pair _ _ left right => exact .pair left right
   | varMono _ supported | varExported _ _ supported _ => exact supported
   | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
   | subsumption _ _ demand => exact demand
@@ -1725,6 +1738,9 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           exact Runtime.TermAt.cons hb hf
             ((ihh budget premises e).of_values (Runtime.subtype sub headReady.supported elemSupport bound free σ premises))
             (iht budget premises e)
+  | pair leftReady rightReady ihLeft ihRight =>
+      intro budget premises e
+      exact Runtime.TermAt.pair hb hf (ihLeft budget premises e) (ihRight budget premises e)
   | varMono lookup _ =>
       intro budget _ e
       exact e.varMono lookup
@@ -1903,6 +1919,7 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
   | nil elem => exact .nil elem
   | boolCtor nameOK => exact .boolCtor nameOK
   | cons sub _ _ ihh iht => exact .cons (sub.assuming hp) (ihh hp) (iht hp)
+  | pair _ _ ihLeft ihRight => exact .pair (ihLeft hp) (ihRight hp)
   | varMono lookup supported => exact .varMono lookup supported
   | varExported lookup used supported arguments =>
       let next : HMCountScheme.Use _ Δ' _ _ :=
@@ -3025,6 +3042,37 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                   apply BodyDerives.RuntimeReady.cons sub.down head.down
                   simpa only [ht] using tail.down⟩)
         | _ => throw "bounds: generalized body Cons tail is not a List"
+      else if hp : name = pairCtorName then
+        let leftHint := match expected with
+          | some (.custom pairName [left, _]) => if pairName = pairTyName then some left else none
+          | _ => none
+        let rightHint := match expected with
+          | some (.custom pairName [_, right]) => if pairName = pairTyName then some right else none
+          | _ => none
+        let left ← walkBodySource sourceOutput metadata ids rows caller Δ env
+          (path ++ [.appFun, .appArg]) head schemes capture
+          (descendBodySource sourceAt (by simp [Expr.atCorePath])) leftHint
+        let right ← walkBodySource sourceOutput metadata ids rows caller Δ env
+          (path ++ [.appArg]) tail schemes capture
+          (descendBodySource sourceAt (by simp [Expr.atCorePath])) rightHint
+        let _ ← match BinderBridge.equalTy ctorHM.eraseBounds
+            (.arrow left.hm.eraseBounds (.arrow right.hm.eraseBounds hm.eraseBounds)) with
+          | some h => pure h | none => throw "bounds: generalized body Pair constructor payload mismatch"
+        let _ ← match BinderBridge.equalTy partialHM.eraseBounds
+            (.arrow right.hm.eraseBounds hm.eraseBounds) with
+          | some h => pure h | none => throw "bounds: generalized body partial Pair payload mismatch"
+        finishBody path hm (.custom pairTyName [left.bounds, right.bounds]) rfl
+          (by subst name; simpa only [Expr.stripFound] using
+            BodyDerives.pair left.typing right.typing)
+          (⟨path ++ [.appFun], partialHM.eraseBounds, none⟩ ::
+            ⟨path ++ [.appFun, .appFun], ctorHM.eraseBounds, none⟩ :: left.nodes ++ right.nodes)
+          (do
+            let leftReady ← left.runtimeReady
+            let rightReady ← right.runtimeReady
+            pure ⟨by
+              subst name
+              simpa only [Expr.stripFound] using
+                BodyDerives.RuntimeReady.pair leftReady.down rightReady.down⟩)
       else throw "bounds: generalized body constructor application unsupported"
   | .found hm (.app fn arg) =>
       match sourceAt.bind (parseBodySpineSource sourceOutput path (.found hm (.app fn arg))) with
