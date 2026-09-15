@@ -2919,6 +2919,29 @@ Unsupported inferred generalized lets and recursive groups nested inside a
 universally interpreted recursive RHS remain explicit errors.  No fallback to
 the retired checker, placeholder, partial definition or new axiom is introduced.
 
+### Checkpoint 4be — `run --bl` consumes the canonical artifact
+
+The CLI now parses spans, performs provenance-aware lowering and runs found
+inference once in both modes.  `run --bl` passes that exact typed artifact to
+`RecursiveFound.synthNodes`; successful execution erases the accepted inferred
+term, while HM mode continues to apply its ordinary surface exhaustiveness
+check.  The legacy surface-erasing `Check` and `BoundCovers` pipeline no longer
+decide BL acceptance or coverage.
+
+The deprecated erase package remains temporarily in the unverified CLI only
+to preserve the spelling of authored bounds annotations in `ProgramReport`.
+It supplies no input to inference, checking, evaluation or node provenance.
+The canonical checked body bounds now supply the BL program result display.
+
+Product smoke checks establish that `bl-live.fhm` and the ascribed List-lambda
+fixture typecheck and evaluate, while invalid interval and Nil-only coverage
+fixtures fail at the bounds stage through the new checker.  Older showcase
+fixtures now honestly expose three remaining fragment boundaries instead of
+falling back: annotation holes/escape inference, unannotated recursive exports,
+and runtime support for parameterized nominal data such as pairs.  These are
+language-coverage tasks, not adapter defects.  HM editor/CLI smoke remains
+28 accepted, eight expected HM rejections and zero audit failures.
+
 ## Consolidation / retirement ledger
 
 The file count is not a target architecture. Many files are regression suites;
