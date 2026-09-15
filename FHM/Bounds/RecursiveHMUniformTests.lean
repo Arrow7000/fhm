@@ -133,6 +133,36 @@ private def bodyCalls (badLocal : Bool := false) (polyLocal : Bool := false)
   pure (exact && program.assembled.checked.exports.length == 3 &&
     exactlyOnce (logicalCorePaths output) (result.nodes.map (·.path)))
 
+/-- A local declaration may quantify only count variables: its HM arity is zero,
+    but the site telescope still requires universal introduction and call-site
+    instantiation rather than the monomorphic local route. -/
+private def countLocalCall : Except String Bool := do
+  let ctors : CtorEnv := (elabDecls preludeDecls).getD []
+  let n := count 9
+  let listN := Ty.bl (.solid (.lit 0)) (.solid n) (.prim .int)
+  let annotation : PolyTy := ⟨0, .arrow listN listN⟩
+  let singleton : Expr :=
+    .app (.app (.ctor consCtorName) (.primLit (.int 1))) (.ctor nilCtorName)
+  let source := Expr.letRec [some ⟨0, .prim .int⟩] [.primLit (.int 0)]
+    (.letIn (some annotation) (.lambda none (.var 0)) (.app (.var 0) singleton))
+  let artifact ← match inferFound ctors source with
+    | some artifact => pure artifact
+    | none => throw "test: count-polymorphic local HM inference failed"
+  let metadata : Scope.Metadata :=
+    { telescopes := [⟨.letIn [.letRecBody], [(⟨"n"⟩, 9)]⟩] }
+  let program ← checkClosedProgram artifact.output metadata artifact.binderSchemes
+  if !program.body.runtimeSafety?.isSome then
+    throw "test: count-polymorphic local lost its runtime theorem"
+  let exact := match program.body.bounds with
+    | .list lo hi (.prim .int) =>
+        lo.eval (fun _ => 0) == .ofNat 0 && hi.eval (fun _ => 0) == .ofNat 1
+    | _ => false
+  if !exact then
+    throw s!"test: count-polymorphic local returned unexpected bounds {repr program.body.bounds}"
+  if !exactlyOnce (logicalCorePaths artifact.output) (program.body.nodes.map (·.path)) then
+    throw "test: count-polymorphic local lost exact source-node coverage"
+  pure true
+
 example {output metadata} (program : ProgramResult output metadata) :
     BodyDerives [] [] [] [] output.stripFound program.body.bounds := program.body.typing
 
@@ -646,6 +676,10 @@ def main : IO Unit := do
   | .ok true => IO.println "PASS: a generalized local RHS may retain a fixed-monomorphic enclosing group use"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "captured generalized local lost body bounds or exact source-node coverage")
+  match countLocalCall with
+  | .ok true => IO.println "PASS: a zero-HM-slot local count telescope is universally introduced and instantiated from its actual argument"
+  | .error message => throw (IO.userError message)
+  | .ok false => throw (IO.userError "count-polymorphic local lost instantiated result bounds or source-node coverage")
   match bodyCalls (forgedRoot := true) with
   | .error message =>
       unless (message.splitOn "original found payload").length > 1 do
