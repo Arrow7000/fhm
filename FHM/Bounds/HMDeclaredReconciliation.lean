@@ -1,5 +1,4 @@
 import FHM.Bounds.HMReconciliation
-import FHM.Bounds.RecursiveHMWalk
 import FHM.Bounds.RecursiveHMSigned
 
 /-! Source-site reconciliation for annotated bindings. No inferred binder fact

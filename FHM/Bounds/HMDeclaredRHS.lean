@@ -1,4 +1,5 @@
 import FHM.Bounds.HMDeclaredReconciliation
+import FHM.Bounds.RecursiveHMWalk
 import FHM.Bounds.ScopedDeclaration
 
 /-! Actual source-site RHS acceptance after declared-interface reconciliation.
