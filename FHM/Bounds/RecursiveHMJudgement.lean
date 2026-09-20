@@ -25,6 +25,51 @@ inductive Binding where
   | recursive (contract : Contract)
   | exported (scheme : HMCountScheme.Scheme)
 
+/-- The HM identities owned by a generalized local.  Only these fresh
+    identities may be replaced when one of the local's instances is checked;
+    source identities and count captures continue to denote the enclosing
+    scope.  This lives with the authoritative judgment because generalized
+    local introduction is a typing rule, not executable-walker metadata. -/
+structure LocalFrame (s : HMCountScheme.Scheme) (parentIds : List Nat) (rhs : Expr) where
+  owned : List Nat
+  arity : owned.length = s.hm.paramCount
+  distinct : owned.Nodup
+  fresh : ∀ i ∈ owned, i ∉ rhs.tyFreeVars ++ s.hm.body.freeVars
+  countFresh : ∀ i ∈ s.counts.quantified, i ∉ parentIds
+  capturesScoped : ∀ i ∈ s.counts.captures, i ∈ parentIds
+
+/-- Interpret the fresh free HM identities owned by a generalized local with
+    the arguments of one particular use. -/
+def localTypes (owned : List Nat) (parent : Nat → BoundsTy)
+    (args : List BoundsTy) (i : Nat) : BoundsTy :=
+  match owned.idxOf? i with
+  | none => parent i
+  | some slot => SchemeUse.vector args slot
+
+/-- Interpret annotation-bound HM slots with the arguments of one particular
+    use, leaving slots outside the local annotation in the enclosing reader. -/
+def localSlots (ann : Option PolyTy) (parent : Nat → BoundsTy)
+    (args : List BoundsTy) (i : Nat) : BoundsTy :=
+  let depth := (ann.map (·.paramCount)).getD 0
+  if i < depth then SchemeUse.vector args i else parent (i - depth)
+
+theorem localTypes_parent {owned parent args i} (fresh : i ∉ owned) :
+    localTypes owned parent args i = parent i := by
+  simp only [localTypes, List.idxOf?_eq_none_iff.mpr fresh]
+
+theorem LocalFrame.annotationTypes {s parentIds rhs} (frame : LocalFrame s parentIds rhs)
+    (parent : Nat → BoundsTy) (args : List BoundsTy) {i} (captured : i ∈ rhs.tyFreeVars) :
+    localTypes frame.owned parent args i = parent i := by
+  apply localTypes_parent
+  intro owned
+  exact frame.fresh i owned (List.mem_append_left _ captured)
+
+theorem localSlots_parent (ann : Option PolyTy) (parent : Nat → BoundsTy)
+    (args : List BoundsTy) (i : Nat) :
+    localSlots ann parent args (i + (ann.map (·.paramCount)).getD 0) = parent i := by
+  simp only [localSlots]
+  rw [if_neg (by omega), Nat.add_sub_cancel]
+
 def branchEnv (p : MatchPattern) (lo hi : Count) (elem : BoundsTy) (env : List Binding) : List Binding :=
   if p = .named consCtorName 2 then
     .mono elem :: .mono (.list (.pred lo) (.pred hi) elem) :: env

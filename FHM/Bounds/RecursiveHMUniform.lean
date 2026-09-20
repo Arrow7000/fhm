@@ -1562,16 +1562,6 @@ def LocalAnnotationOK (s : HMCountScheme.Scheme) : Option PolyTy → Prop
         s.counts.quantified s.counts.captures s.counts.premises, declared.scheme = s) ∨
       Nonempty (LocalHoleAnnotationOK s annotation)
 
-/-- Local generalization may replace only fresh owned HM identities. Captured
-    source annotation identities and count scopes remain the parent's. -/
-structure LocalFrame (s : HMCountScheme.Scheme) (parentIds : List Nat) (rhs : Expr) where
-  owned : List Nat
-  arity : owned.length = s.hm.paramCount
-  distinct : owned.Nodup
-  fresh : ∀ i ∈ owned, i ∉ rhs.tyFreeVars ++ s.hm.body.freeVars
-  countFresh : ∀ i ∈ s.counts.quantified, i ∉ parentIds
-  capturesScoped : ∀ i ∈ s.counts.captures, i ∈ parentIds
-
 private def GeneralizedHoleInterface.frame {annotation : PolyTy}
     (g : GeneralizedHoleInterface annotation) (rhs : Expr) :
     LocalFrame g.scheme [] rhs where
@@ -1690,32 +1680,7 @@ private def reconcileGeneralizedHole {output site}
     else throw "bounds: generalized hole HM replacement vector has wrong arity"
   else throw "bounds: generalized hole reconciliation found duplicate flexible HM identities"
 
-def localTypes (owned : List Nat) (parent : Nat → BoundsTy) (args : List BoundsTy) (i : Nat) : BoundsTy :=
-  match owned.idxOf? i with
-  | none => parent i
-  | some slot => SchemeUse.vector args slot
-
-def localSlots (ann : Option PolyTy) (parent : Nat → BoundsTy) (args : List BoundsTy) (i : Nat) : BoundsTy :=
-  let depth := (ann.map (·.paramCount)).getD 0
-  if i < depth then SchemeUse.vector args i else parent (i - depth)
-
-theorem localTypes_parent {owned parent args i} (fresh : i ∉ owned) :
-    localTypes owned parent args i = parent i := by
-  simp only [localTypes, List.idxOf?_eq_none_iff.mpr fresh]
-
-theorem LocalFrame.annotationTypes {s parentIds rhs} (frame : LocalFrame s parentIds rhs)
-    (parent : Nat → BoundsTy) (args : List BoundsTy) {i} (captured : i ∈ rhs.tyFreeVars) :
-    localTypes frame.owned parent args i = parent i := by
-  apply localTypes_parent
-  intro owned
-  exact frame.fresh i owned (List.mem_append_left _ captured)
-
-theorem localSlots_parent (ann : Option PolyTy) (parent : Nat → BoundsTy) (args : List BoundsTy) (i : Nat) :
-    localSlots ann parent args (i + (ann.map (·.paramCount)).getD 0) = parent i := by
-  simp only [localSlots]
-  rw [if_neg (by omega), Nat.add_sub_cancel]
-
-theorem LocalFrame.slotsFit {s ids rhs ann} (frame : LocalFrame s ids rhs)
+theorem localFrame_slotsFit {s ids rhs ann} (frame : LocalFrame s ids rhs)
     (annotation : LocalAnnotationOK s ann) :
     (ann.map (·.paramCount)).getD 0 ≤ frame.owned.length := by
   cases ann with
@@ -4213,7 +4178,8 @@ def localRhsInstances {s ann rhs found typeCaptures Δ calleeΔ caller useHM}
       (bounds rows (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar) i))) =
       localSlots ann BoundsTy.bvar used.types := by
     simpa only [f, owners] using
-      localSlots_specialize ann frame.owned rows used.types frame.distinct (frame.slotsFit annotation)
+      localSlots_specialize ann frame.owned rows used.types frame.distinct
+        (localFrame_slotsFit frame annotation)
   have demandEq : demand cert used.counts f = used.bounds := by
     exact localRhsDemand cert used
   simpa only [specialized, rows, typesEq, slotsEq, demandEq, ordinaryBodyEnv,
@@ -4700,7 +4666,8 @@ def capturedLocalRhsInstances {s ann rhs found typeCaptures env Δ calleeΔ call
       (bounds rows (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar) i))) =
       localSlots ann BoundsTy.bvar used.types := by
     simpa only [f, owners] using
-      localSlots_specialize ann frame.owned rows used.types frame.distinct (frame.slotsFit annotation)
+      localSlots_specialize ann frame.owned rows used.types frame.distinct
+        (localFrame_slotsFit frame annotation)
   have demandEq : demand cert used.counts f = used.bounds := localRhsDemand cert used
   have envFixed := RecursiveHMEnvironment.typesFixed lc typesFixed
   have envEq : ordinaryBodyEnv (env.map (mapBinding f lc)) = ordinaryBodyEnv env := by
@@ -4751,7 +4718,8 @@ theorem localRhsInstances_runtimeReady {s ann rhs found typeCaptures Δ calleeΔ
       (bounds rows (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar) i))) =
       localSlots ann BoundsTy.bvar used.types := by
     simpa only [f, owners] using
-      localSlots_specialize ann frame.owned rows used.types frame.distinct (frame.slotsFit annotation)
+      localSlots_specialize ann frame.owned rows used.types frame.distinct
+        (localFrame_slotsFit frame annotation)
   simpa only [specialized, rows, typesEq, slotsEq, demandEq, ordinaryBodyEnv,
     List.map_nil, List.append_nil, CountAlgebra.compose, List.nil_append] using withParent
 
@@ -4821,7 +4789,8 @@ theorem capturedLocalRhsInstances_runtimeReady
       (bounds rows (localSlots ann BoundsTy.bvar (frame.owned.map BoundsTy.fvar) i))) =
       localSlots ann BoundsTy.bvar used.types := by
     simpa only [f, owners] using
-      localSlots_specialize ann frame.owned rows used.types frame.distinct (frame.slotsFit annotation)
+      localSlots_specialize ann frame.owned rows used.types frame.distinct
+        (localFrame_slotsFit frame annotation)
   have envFixed := RecursiveHMEnvironment.typesFixed lc typesFixed
   have envEq : ordinaryBodyEnv (env.map (mapBinding f lc)) = ordinaryBodyEnv env := by
     rw [envFixed]
