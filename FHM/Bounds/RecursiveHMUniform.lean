@@ -4273,21 +4273,27 @@ structure FixedBodyCapture (env : List BodyBinding) where
   bodyEnv : fixedBodyEnv rhsEnv = env
   captured : RecursiveHMEnvironment.Captured captureIds rhsEnv
 
-private inductive BodyWalkCapture (env : List BodyBinding) where
-  | exited : BodyCapture env → BodyWalkCapture env
-  | fixed : FixedBodyCapture env → BodyWalkCapture env
+private inductive BodyWalkCapture :
+    (Nat → BoundsTy) → (Nat → BoundsTy) → List BodyBinding → Type where
+  | open {env} : BodyWalkCapture BoundsTy.fvar BoundsTy.bvar env
+  | exited {env} : BodyCapture env →
+      BodyWalkCapture BoundsTy.fvar BoundsTy.bvar env
+  | fixed {types slots env} : FixedBodyCapture env →
+      BodyWalkCapture types slots env
 
-private def BodyWalkCapture.rhsEnv {env} : BodyWalkCapture env → List Binding
-  | .exited capture => capture.rhsEnv
-  | .fixed capture => capture.rhsEnv
-
-private def BodyWalkCapture.captured {env} (capture : BodyWalkCapture env) :
-    RecursiveHMEnvironment.Captured
-      (match capture with | .exited _ => [] | .fixed capture => capture.captureIds)
-      capture.rhsEnv := by
-  cases capture with
-  | exited capture => exact capture.captured
-  | fixed capture => exact capture.captured
+/-- Dependent case analysis for the capture mode. Keeping the reader-indexed
+    motive explicit is essential: matching through `Option` otherwise loses
+    the fact that open/exited captures use the identity readers. -/
+private def BodyWalkCapture.dispatch {env}
+    {M : (Nat → BoundsTy) → (Nat → BoundsTy) → Type}
+    {types slots : Nat → BoundsTy} (capture : BodyWalkCapture types slots env)
+    (openCase : M BoundsTy.fvar BoundsTy.bvar)
+    (exitedCase : BodyCapture env → M BoundsTy.fvar BoundsTy.bvar)
+    (fixedCase : FixedBodyCapture env → M types slots) : M types slots :=
+  match capture with
+  | .open => openCase
+  | .exited captured => exitedCase captured
+  | .fixed captured => fixedCase captured
 
 private def emptyBodyCapture : BodyCapture [] where
   rhsEnv := []
@@ -4509,10 +4515,12 @@ private def FixedBodyCapture.extendExported {env} (capture : FixedBodyCapture en
       · cases head
       · exact capture.captured.2 c tail a argument
 
-private def extendMonoCapture? {env} (capture : Option (BodyWalkCapture env)) (β : BoundsTy) :
-    Option (BodyWalkCapture (.mono β :: env)) :=
+private def extendMonoCapture? {types slots env}
+    (capture : Option (BodyWalkCapture types slots env)) (β : BoundsTy) :
+    Option (BodyWalkCapture types slots (.mono β :: env)) :=
   capture.bind fun captured =>
     match captured with
+    | .open => some .open
     | .exited capture =>
         if inScope : boundsScopedBool [] β = true then
           some (.exited (capture.extendMono β (boundsScopedBool_sound inScope)))
@@ -4526,16 +4534,19 @@ private def extendMonoCapture? {env} (capture : Option (BodyWalkCapture env)) (�
     The right fold preserves the de Bruijn order of `fields.map mono ++ env`;
     failure means at least one field mentions a count outside the closed body
     capture interface. -/
-private def extendMonoCaptures? {env} (capture : Option (BodyWalkCapture env)) :
-    (fields : List BoundsTy) → Option (BodyWalkCapture (fields.map BodyBinding.mono ++ env))
+private def extendMonoCaptures? {types slots env}
+    (capture : Option (BodyWalkCapture types slots env)) :
+    (fields : List BoundsTy) →
+      Option (BodyWalkCapture types slots (fields.map BodyBinding.mono ++ env))
   | [] => by simpa using capture
   | field :: rest => by
       simpa only [List.map_cons, List.cons_append] using
         extendMonoCapture? (extendMonoCaptures? capture rest) field
 
-private def extendBranchCapture? {env} (capture : Option (BodyWalkCapture env))
+private def extendBranchCapture? {types slots env}
+    (capture : Option (BodyWalkCapture types slots env))
     (ctx : BodyBranchContext) (pattern : MatchPattern) :
-    Option (BodyWalkCapture (ctx.extend pattern env)) :=
+    Option (BodyWalkCapture types slots (ctx.extend pattern env)) :=
   match ctx with
   | .bool => capture
   | .wildcardOnly _ => capture
@@ -4830,22 +4841,27 @@ theorem capturedLocalRhsInstances_runtimeReady
 #print axioms capturedLocalRhsInstances
 #print axioms capturedLocalRhsInstances_runtimeReady
 
-structure BodyResult (ids : List Nat) (rows : Bindings) (caller : List Nat)
+structure ScopedBodyResult (types slots : Nat → BoundsTy)
+    (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) (e : Expr) where
   hm : Ty
   bounds : BoundsTy
   root : Typed.rootHM? e = some hm.eraseBounds
-  shape : Synth.BoundsTy.toTy bounds = hm.eraseBounds
-  typing : BodyDerives ids rows Δ env e.stripFound bounds
+  shape : Synth.BoundsTy.toTy bounds = ScopedHMInterpretation.ty types slots hm
+  typing : ScopedBodyDerives types slots ids rows Δ env e.stripFound bounds
   inScope : BoundsScoped caller bounds
   nodes : List Typed.NodeResult
   runtimeReady : Option (PLift (BodyDerives.RuntimeReady typing))
 
+/-- Identity-reader compatibility view used by whole-program checking. -/
+abbrev BodyResult := ScopedBodyResult BoundsTy.fvar BoundsTy.bvar
+
 /-- Proof-only context transport keeps the original artifact, all node reports,
     inferred bounds and runtime witness. No expressions or schemes are rebuilt. -/
-def BodyResult.assuming {ids rows caller Δ Δ' env e}
-    (result : BodyResult ids rows caller Δ env e) (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
-    BodyResult ids rows caller Δ' env e where
+def ScopedBodyResult.assuming {types slots ids rows caller Δ Δ' env e}
+    (result : ScopedBodyResult types slots ids rows caller Δ env e)
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    ScopedBodyResult types slots ids rows caller Δ' env e where
   hm := result.hm
   bounds := result.bounds
   root := result.root
@@ -4855,26 +4871,47 @@ def BodyResult.assuming {ids rows caller Δ Δ' env e}
   nodes := result.nodes
   runtimeReady := result.runtimeReady.map (fun ready => ⟨ready.down.assuming hp⟩)
 
-#print axioms BodyResult.assuming
+#print axioms ScopedBodyResult.assuming
 
-private def finishBody {ids rows caller Δ env e} (path : CorePath) (hm : Ty) (β : BoundsTy)
-    (root : Typed.rootHM? e = some hm.eraseBounds) (typing : BodyDerives ids rows Δ env e.stripFound β)
+namespace BodyResult
+/-- Compatibility specialization for callers of the identity-reader result. -/
+def assuming {ids rows caller Δ Δ' env e}
+    (result : BodyResult ids rows caller Δ env e)
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    BodyResult ids rows caller Δ' env e where
+  hm := result.hm
+  bounds := result.bounds
+  root := result.root
+  shape := result.shape
+  typing := result.typing.assuming hp
+  inScope := result.inScope
+  nodes := result.nodes
+  runtimeReady := result.runtimeReady.map (fun ready => ⟨ready.down.assuming hp⟩)
+end BodyResult
+
+private def finishBody {types slots ids rows caller Δ env e}
+    (path : CorePath) (hm : Ty) (β : BoundsTy)
+    (root : Typed.rootHM? e = some hm.eraseBounds)
+    (typing : ScopedBodyDerives types slots ids rows Δ env e.stripFound β)
     (children : List Typed.NodeResult)
     (ready : Option (PLift (BodyDerives.RuntimeReady typing))) :
-    Except String (BodyResult ids rows caller Δ env e) := do
-  let shape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy β) hm.eraseBounds with
+    Except String (ScopedBodyResult types slots ids rows caller Δ env e) := do
+  let shape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy β)
+      (ScopedHMInterpretation.ty types slots hm) with
     | some h => pure h | none => throw "bounds: generalized body result disagrees with original found payload"
   if h : boundsScopedBool caller β = true then
     pure ⟨hm, β, root, shape.down, typing, boundsScopedBool_sound h,
       ⟨path, hm.eraseBounds, some β⟩ :: children, ready⟩
   else throw "bounds: generalized body result counts escape caller scope"
 
-private structure BodyBranches (ids : List Nat) (rows : Bindings) (caller : List Nat)
+private structure BodyBranches (types slots : Nat → BoundsTy)
+    (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) (ctx : BodyBranchContext)
     (branches : List (MatchPattern × Expr)) where
   actuals : Nat → BoundsTy
   typing : ∀ i br, branches[i]? = some br →
-    BodyDerives ids rows (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2.stripFound (actuals i)
+    ScopedBodyDerives types slots ids rows (Δ ++ ctx.refine br.1)
+      (ctx.extend br.1 env) br.2.stripFound (actuals i)
   patterns : ∀ br ∈ branches, ctx.Pattern br.1
   bounds : Option BoundsTy
   inclusions : ∀ i br, branches[i]? = some br →
@@ -4887,12 +4924,15 @@ private abbrev BodyBranchSources (output : Expr) (path : CorePath) (index : Nat)
   ∀ i br, branches[i]? = some br →
     Option (PLift (output.atCorePath (path ++ [.matchBranch (index + i)]) = some br.2))
 
-private def prependBodyBranches {ids rows caller Δ env br branches} {ctx : BodyBranchContext}
-    (head : BodyResult ids rows caller (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2)
-    (hp : ctx.Pattern br.1) (tail : BodyBranches ids rows caller Δ env ctx branches)
+private def prependBodyBranches {types slots ids rows caller Δ env br branches}
+    {ctx : BodyBranchContext}
+    (head : ScopedBodyResult types slots ids rows caller (Δ ++ ctx.refine br.1)
+      (ctx.extend br.1 env) br.2)
+    (hp : ctx.Pattern br.1)
+    (tail : BodyBranches types slots ids rows caller Δ env ctx branches)
     (β : BoundsTy) (hh : SemanticSub (Δ ++ ctx.refine br.1) head.bounds β)
     (ht : ∀ i arm, branches[i]? = some arm → SemanticSub (Δ ++ ctx.refine arm.1) (tail.actuals i) β) :
-    BodyBranches ids rows caller Δ env ctx (br :: branches) where
+    BodyBranches types slots ids rows caller Δ env ctx (br :: branches) where
   actuals := fun i => match i with | 0 => head.bounds | i + 1 => tail.actuals i
   typing := by
     intro i arm h
@@ -4923,13 +4963,15 @@ private def prependBodyBranches {ids rows caller Δ env br branches} {ctx : Body
           exact hh.down
       | succ i => exact ht.down i arm (by simpa only [List.getElem?_cons_succ] using atIndex)⟩
 
-private theorem body_match_typing {ids rows caller Δ env branches β} {ctx : BodyBranchContext} {scrut : Expr}
-    (hs : BodyDerives ids rows Δ env scrut.stripFound ctx.bounds)
-    (arms : BodyBranches ids rows caller Δ env ctx branches) (hb : arms.bounds = some β)
+private theorem body_match_typing {types slots ids rows caller Δ env branches β}
+    {ctx : BodyBranchContext} {scrut : Expr}
+    (hs : ScopedBodyDerives types slots ids rows Δ env scrut.stripFound ctx.bounds)
+    (arms : BodyBranches types slots ids rows caller Δ env ctx branches)
+    (hb : arms.bounds = some β)
     (hc : ctx.Covers Δ (Expr.stripFoundBranches branches)) :
-    BodyDerives ids rows Δ env (Expr.match_ scrut branches).stripFound β := by
+    ScopedBodyDerives types slots ids rows Δ env (Expr.match_ scrut branches).stripFound β := by
   simp only [Expr.stripFound]
-  apply BodyDerives.match_ (actuals := arms.actuals) hs hc
+  apply ScopedBodyDerives.match_ (actuals := arms.actuals) hs hc
   · intro arm ha
     rw [RecursiveHMWalk.stripBranches] at ha
     rcases List.mem_map.mp ha with ⟨br, hm, rfl⟩
@@ -4941,9 +4983,11 @@ private theorem body_match_typing {ids rows caller Δ env branches β} {ctx : Bo
     rcases RecursiveHMWalk.strip_index ha with ⟨br, hm, rfl⟩
     simpa only [hb] using arms.inclusions i br hm
 
-private def body_match_ready {ids rows caller Δ env branches β} {ctx : BodyBranchContext} {scrut : Expr}
-    (hs : BodyDerives ids rows Δ env scrut.stripFound ctx.bounds)
-    (arms : BodyBranches ids rows caller Δ env ctx branches) (hb : arms.bounds = some β)
+private def body_match_ready {types slots ids rows caller Δ env branches β}
+    {ctx : BodyBranchContext} {scrut : Expr}
+    (hs : ScopedBodyDerives types slots ids rows Δ env scrut.stripFound ctx.bounds)
+    (arms : BodyBranches types slots ids rows caller Δ env ctx branches)
+    (hb : arms.bounds = some β)
     (hc : ctx.Covers Δ (Expr.stripFoundBranches branches))
     (ready : Option (PLift (BodyDerives.RuntimeReady hs))) :
     Option (PLift (BodyDerives.RuntimeReady (body_match_typing hs arms hb hc))) := do
@@ -4975,9 +5019,12 @@ private def body_match_ready {ids rows caller Δ env branches β} {ctx : BodyBra
 private theorem body_path_assuming (Δ Γ : List Constraint) :
     (⟨Δ ++ Γ, Δ⟩ : ForallProblem).Valid := fun _ h c hc => h c (List.mem_append_left Γ hc)
 
-private def appendBody {ids rows caller Δ env fn arg} (path : CorePath) (hm : Ty)
-    (prior : BodyResult ids rows caller Δ env fn) (actual : BodyResult ids rows caller Δ env arg) :
-    Except String (BodyResult ids rows caller Δ env (.found hm (.app fn arg))) := do
+private def appendBody {types slots ids rows caller Δ env fn arg}
+    (path : CorePath) (hm : Ty)
+    (prior : ScopedBodyResult types slots ids rows caller Δ env fn)
+    (actual : ScopedBodyResult types slots ids rows caller Δ env arg) :
+    Except String (ScopedBodyResult types slots ids rows caller Δ env
+      (.found hm (.app fn arg))) := do
   match hf : prior.bounds with
   | .arrow domain result =>
       let sub ← match Typed.subtype Δ actual.bounds domain with
@@ -4986,7 +5033,7 @@ private def appendBody {ids rows caller Δ env fn arg} (path : CorePath) (hm : T
             throw s!"bounds: application argument does not meet domain ({message})"
       finishBody path hm result rfl
         (by simpa only [Expr.stripFound] using
-          (BodyDerives.app (by simpa only [hf] using prior.typing) actual.typing sub.down))
+          (ScopedBodyDerives.app (by simpa only [hf] using prior.typing) actual.typing sub.down))
         (prior.nodes ++ actual.nodes)
         (do
           let fn ← prior.runtimeReady
@@ -5132,19 +5179,20 @@ private def descendBodySource {output e child : Expr} {path suffix : CorePath}
     rw [Expr.atCorePath_append, located.down]
     exact localPath⟩
 
-private inductive BodySpine (sourceOutput : Expr) (ids : List Nat) (rows : Bindings) (caller : List Nat)
+private inductive BodySpine (sourceOutput : Expr) (types slots : Nat → BoundsTy)
+    (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) : {e : Expr} → RecursiveSpine.Syntax e → Type where
   | head (path : CorePath) (i : Nat) (hm : Ty) :
-      BodySpine sourceOutput ids rows caller Δ env (.head path i hm)
+      BodySpine sourceOutput types slots ids rows caller Δ env (.head path i hm)
   | app {fn : Expr} {prior : RecursiveSpine.Syntax fn} {arg : Expr} (path : CorePath) (hm : Ty)
-      (previous : BodySpine sourceOutput ids rows caller Δ env prior)
-      (actual : Option (BodyResult ids rows caller Δ env arg))
+      (previous : BodySpine sourceOutput types slots ids rows caller Δ env prior)
+      (actual : Option (ScopedBodyResult types slots ids rows caller Δ env arg))
       (source : Option (PLift (sourceOutput.atCorePath (path ++ [.appArg]) = some arg))) :
-      BodySpine sourceOutput ids rows caller Δ env (.app path hm prior arg)
+      BodySpine sourceOutput types slots ids rows caller Δ env (.app path hm prior arg)
 
-private def BodySpine.originsRev {sourceOutput ids rows caller Δ env e}
+private def BodySpine.originsRev {sourceOutput types slots ids rows caller Δ env e}
     {spine : RecursiveSpine.Syntax e} :
-    BodySpine sourceOutput ids rows caller Δ env spine → List (Option BoundsTy)
+    BodySpine sourceOutput types slots ids rows caller Δ env spine → List (Option BoundsTy)
   | .head _ _ _ => []
   | .app _ _ previous actual _ => actual.map (·.bounds) :: previous.originsRev
 
@@ -5191,16 +5239,17 @@ mutual
 /-- One exported use at the head, then the ordinary application rule at EVERY
     original frame. Counts/HM arguments are never reproposed at a prefix. -/
 private def useBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
-    {ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e}
-    (checked : BodySpine sourceOutput ids rows caller Δ env spine) {s : HMCountScheme.Scheme}
+    {types slots ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e}
+    (checked : BodySpine sourceOutput types slots ids rows caller Δ env spine)
+    {s : HMCountScheme.Scheme}
     (lookup : env[spine.index]? = some (.exported s))
     (used : HMCountScheme.Use s Δ spine.headHM caller) (schemes : BinderSchemeMap)
-    (capture : Option (BodyWalkCapture env)) (ctors : CtorEnv) :
-    Except String (BodyResult ids rows caller Δ env e) := do
+    (capture : Option (BodyWalkCapture types slots env)) (ctors : CtorEnv) :
+    Except String (ScopedBodyResult types slots ids rows caller Δ env e) := do
   match checked with
   | .head path i hm =>
       finishBody path hm used.bounds rfl
-        (by simpa only [Expr.stripFound] using BodyDerives.varExported lookup used) []
+        (by simpa only [Expr.stripFound] using ScopedBodyDerives.varExported lookup used) []
         (do
           let supported ← Runtime.supported? used.bounds
           let arguments ← Runtime.supportedArguments? used.types
@@ -5214,7 +5263,7 @@ private def useBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
           let checked ← match actual with
             | some checked => pure checked
             | none =>
-                walkBodySource sourceOutput metadata ids rows caller Δ env
+                walkBodySource sourceOutput metadata types slots ids rows caller Δ env
                   (path ++ [.appArg]) arg schemes capture source (some domain) ctors
           appendBody path hm prior checked
       | _ => throw "bounds: deferred generalized body spine applies a non-arrow scheme result"
@@ -5225,16 +5274,17 @@ termination_by (sizeOf e, 0)
     checked against domains from that same instance; no generalized export is
     introduced inside the SCC. -/
 private def useRecursiveBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
-    {ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e}
-    (checked : BodySpine sourceOutput ids rows caller Δ env spine) {c : Contract}
+    {types slots ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e}
+    (checked : BodySpine sourceOutput types slots ids rows caller Δ env spine)
+    {c : Contract}
     (lookup : env[spine.index]? = some (.recursive c))
     (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) (schemes : BinderSchemeMap)
-    (capture : Option (BodyWalkCapture env)) (ctors : CtorEnv) :
-    Except String (BodyResult ids rows caller Δ env e) := do
+    (capture : Option (BodyWalkCapture types slots env)) (ctors : CtorEnv) :
+    Except String (ScopedBodyResult types slots ids rows caller Δ env e) := do
   match checked with
   | .head path i hm =>
       finishBody path hm used.bounds rfl
-        (by simpa only [Expr.stripFound] using BodyDerives.varRecursive lookup used) []
+        (by simpa only [Expr.stripFound] using ScopedBodyDerives.varRecursive lookup used) []
         (do
           let supported ← Runtime.supported? used.bounds
           pure ⟨by simpa only [Expr.stripFound] using
@@ -5247,7 +5297,7 @@ private def useRecursiveBodySpine (sourceOutput : Expr) (metadata : Scope.Metada
           let checked ← match actual with
             | some checked => pure checked
             | none =>
-                walkBodySource sourceOutput metadata ids rows caller Δ env
+                walkBodySource sourceOutput metadata types slots ids rows caller Δ env
                   (path ++ [.appArg]) arg schemes capture source (some domain) ctors
           appendBody path hm prior checked
       | _ => throw "bounds: deferred fixed recursive spine applies a non-arrow contract result"
@@ -5406,9 +5456,11 @@ private def walkGeneralizedHoleLetRec
                     (path ++ [CoreStep.letRecBody]) = some body := by
                   rw [Expr.atCorePath_append, sourceProof.down]
                   simp [Expr.atCorePath]
-                let result ← walkBodySource sourceOutput metadata [] [] caller Δ
+                let result ← walkBodySource sourceOutput metadata BoundsTy.fvar BoundsTy.bvar
+                  [] [] caller Δ
                   (.exported iface.scheme :: env) (path ++ [.letRecBody]) body schemes
-                  (some (.exited (captured.extendExported iface.scheme iface.source.captures)))
+                  (some (.exited
+                    (captured.extendExported iface.scheme iface.source.captures)))
                   (some ⟨bodySource⟩) expected ctors
                 have closed : rhsInner.stripFound.varsBelow 0 = true := by
                   simpa only [Expr.stripFound] using rhsClosed
@@ -5525,9 +5577,11 @@ private def walkInferredExportLetRec
                   (path ++ [CoreStep.letRecBody]) = some body := by
                 rw [Expr.atCorePath_append, sourceProof.down]
                 simp [Expr.atCorePath]
-              let result ← walkBodySource sourceOutput metadata [] [] caller []
+              let result ← walkBodySource sourceOutput metadata BoundsTy.fvar BoundsTy.bvar
+                [] [] caller []
                 (.exported interface :: env) (path ++ [.letRecBody]) body schemes
-                (some (.exited (captured.extendExported interface prepared.capturesClosed)))
+                (some (.exited
+                  (captured.extendExported interface prepared.capturesClosed)))
                 (some ⟨bodySource⟩) expected ctors
               let completed ← finishBody (ids := []) (rows := []) (caller := caller)
                 (Δ := []) (env := env)
@@ -5623,9 +5677,11 @@ private def walkInferredExportLet
           have bodySource : sourceOutput.atCorePath (path ++ [.letBody]) = some body := by
             rw [Expr.atCorePath_append, sourceProof.down]
             simp [Expr.atCorePath]
-          let result ← walkBodySource sourceOutput metadata [] [] caller Δ
+          let result ← walkBodySource sourceOutput metadata BoundsTy.fvar BoundsTy.bvar
+            [] [] caller Δ
             (.exported interface :: env) (path ++ [.letBody]) body schemes
-            (some (.exited (captured.extendExported interface prepared.capturesClosed)))
+            (some (.exited
+              (captured.extendExported interface prepared.capturesClosed)))
             (some ⟨bodySource⟩) expected ctors
           let completed ← finishBody (ids := []) (rows := []) (caller := caller)
             (Δ := Δ) (env := env)
@@ -5659,23 +5715,27 @@ termination_by (sizeOf (Expr.found hm (.letIn none rhs body)), 0)
 /-- Source-linked body traversal: literals, List origins, scalar operators,
     lambdas, mono/generalized locals, matches and origin-backed exported
     application spines, including arguments deferred until later origins are
-    known. Nested groups remain an explicit frontier. -/
+    known. Nested groups preserve fixed enclosing SCC assumptions until their
+    own checked exits become generalized. -/
 private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
-    (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
+    (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
+    (caller : List Nat) (Δ : List Constraint)
     (env : List BodyBinding) (path : CorePath) (e : Expr) (schemes : BinderSchemeMap)
-    (capture : Option (BodyWalkCapture env))
+    (capture : Option (BodyWalkCapture types slots env))
     (sourceAt : Option (PLift (sourceOutput.atCorePath path = some e)))
     (expected : Option BoundsTy) (ctors : CtorEnv) :
-    Except String (BodyResult ids rows caller Δ env e) := do
+    Except String (ScopedBodyResult types slots ids rows caller Δ env e) := do
   match e with
   | .found hm (.primLit p) =>
-      finishBody path hm (boundInfoOfPrimLit p) rfl (by simpa only [Expr.stripFound] using BodyDerives.literal) []
+      finishBody path hm (boundInfoOfPrimLit p) rfl
+        (by simpa only [Expr.stripFound] using ScopedBodyDerives.literal) []
         (some ⟨by simpa only [Expr.stripFound] using
-          (@BodyDerives.RuntimeReady.literal BoundsTy.fvar BoundsTy.bvar ids rows Δ env p)⟩)
+          (@BodyDerives.RuntimeReady.literal types slots ids rows Δ env p)⟩)
   | .found hm (.primBinOp op) =>
-      finishBody path hm (Typed.primOpBounds op) rfl (by simpa only [Expr.stripFound] using BodyDerives.primBinOp) []
+      finishBody path hm (Typed.primOpBounds op) rfl
+        (by simpa only [Expr.stripFound] using ScopedBodyDerives.primBinOp) []
         (some ⟨by simpa only [Expr.stripFound] using
-          (@BodyDerives.RuntimeReady.primBinOp BoundsTy.fvar BoundsTy.bvar ids rows Δ env op)⟩)
+          (@BodyDerives.RuntimeReady.primBinOp types slots ids rows Δ env op)⟩)
   | .found hm (.ctor name) =>
       if hn : name = nilCtorName then
         match hm.eraseBounds with
@@ -5685,31 +5745,31 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                 | some (.list _ _ elem) => pure elem
                 | _ => Typed.shapeTop a
               finishBody path hm (.list (.lit 0) (.lit 0) elem) rfl
-                (by subst name; simpa only [Expr.stripFound] using BodyDerives.nil) []
+                (by subst name; simpa only [Expr.stripFound] using ScopedBodyDerives.nil) []
                 (do
                   let supported ← Runtime.supported? elem
                   pure ⟨by
                     subst name
                     simpa only [Expr.stripFound] using
-                      (@BodyDerives.RuntimeReady.nil BoundsTy.fvar BoundsTy.bvar ids rows Δ env elem supported.down)⟩)
+                      (@BodyDerives.RuntimeReady.nil types slots ids rows Δ env elem supported.down)⟩)
             else throw "bounds: generalized body Nil has a non-List found payload"
         | _ => throw "bounds: generalized body Nil has a non-List found payload"
       else if hb : BoolBranches.IsCtor name then
         finishBody path hm (.custom boolTyName []) rfl
-          (by simpa only [Expr.stripFound] using BodyDerives.boolCtor hb) []
+          (by simpa only [Expr.stripFound] using ScopedBodyDerives.boolCtor hb) []
           (some ⟨by simpa only [Expr.stripFound] using
-            (@BodyDerives.RuntimeReady.boolCtor BoundsTy.fvar BoundsTy.bvar ids rows Δ env name hb)⟩)
+            (@BodyDerives.RuntimeReady.boolCtor types slots ids rows Δ env name hb)⟩)
       else
         let β ← match expected with
           | some β => pure β
           | none => Typed.shapeTop hm.eraseBounds
         finishBody path hm β rfl
-          (by simpa only [Expr.stripFound] using BodyDerives.ctor hn) [] none
+          (by simpa only [Expr.stripFound] using ScopedBodyDerives.ctor hn) [] none
   | .found hm (.var i) =>
       match hv : env[i]? with
       | some (.mono β) =>
           finishBody path hm β rfl
-            (by simpa only [Expr.stripFound] using BodyDerives.varMono hv) []
+            (by simpa only [Expr.stripFound] using ScopedBodyDerives.varMono hv) []
             (do
               let supported ← Runtime.supported? β
               pure ⟨by simpa only [Expr.stripFound] using
@@ -5717,7 +5777,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       | some (.recursive c) =>
           let used ← RecursiveHMContract.check c.fixed Δ c.hm [] caller
           finishBody path hm used.bounds rfl
-            (by simpa only [Expr.stripFound] using BodyDerives.varRecursive hv used) []
+            (by simpa only [Expr.stripFound] using ScopedBodyDerives.varRecursive hv used) []
             (do
               let supported ← Runtime.supported? used.bounds
               pure ⟨by simpa only [Expr.stripFound] using
@@ -5729,7 +5789,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             let types ← hmUse.args.mapM Typed.shapeTop
             let used ← HMCountScheme.check s Δ hm [] types caller
             finishBody path hm used.bounds rfl
-              (by simpa only [Expr.stripFound] using BodyDerives.varExported hv used) []
+              (by simpa only [Expr.stripFound] using ScopedBodyDerives.varExported hv used) []
               (do
                 let supported ← Runtime.supported? used.bounds
                 let arguments ← Runtime.supportedArguments? used.types
@@ -5743,13 +5803,14 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       | .arrow paramHM _ =>
           let paramHint := match expected with | some (.arrow a _) => some a | _ => none
           let bodyHint := match expected with | some (.arrow _ b) => some b | _ => none
-          let param ← RecursiveHMAnnotation.chooseScopedParam BoundsTy.fvar BoundsTy.bvar ids rows caller Δ ann paramHM paramHint
-          let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+          let param ← RecursiveHMAnnotation.chooseScopedParam types slots ids rows caller Δ ann paramHM paramHint
+          let result ← walkBodySource sourceOutput metadata types slots ids rows caller Δ
             (.mono param.bounds :: env) (path ++ [.lambdaBody]) body schemes
             (extendMonoCapture? capture param.bounds)
             (descendBodySource sourceAt (by simp [Expr.atCorePath])) bodyHint ctors
           finishBody path hm (.arrow param.bounds result.bounds) rfl
-            (by simpa only [Expr.stripFound] using BodyDerives.lambda param.obligation result.typing) result.nodes
+            (by simpa only [Expr.stripFound] using
+              ScopedBodyDerives.lambda param.obligation result.typing) result.nodes
             (do
               let supported ← Runtime.supported? param.bounds
               let body ← result.runtimeReady
@@ -5759,10 +5820,10 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
   | .found hm (.app (.found partialHM (.app (.found ctorHM (.ctor name)) head)) tail) =>
       if hn : name = consCtorName then
         let headHint := match expected with | some (.list _ _ elem) => some elem | _ => none
-        let h ← walkBodySource sourceOutput metadata ids rows caller Δ env
+        let h ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
           (path ++ [.appFun, .appArg]) head schemes
           capture (descendBodySource sourceAt (by simp [Expr.atCorePath])) headHint ctors
-        let t ← walkBodySource sourceOutput metadata ids rows caller Δ env
+        let t ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
           (path ++ [.appArg]) tail schemes capture
           (descendBodySource sourceAt (by simp [Expr.atCorePath]))
           (some (.list (.lit 0) .inf h.bounds)) ctors
@@ -5775,7 +5836,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             let sub ← Typed.subtype Δ h.bounds elem
             finishBody path hm (.list (.add lo (.lit 1)) (.add hi (.lit 1)) elem) rfl
               (by subst name; simpa only [Expr.stripFound] using
-                BodyDerives.cons h.typing (by simpa only [ht] using t.typing) sub.down)
+                ScopedBodyDerives.cons h.typing (by simpa only [ht] using t.typing) sub.down)
               (⟨path ++ [.appFun], partialHM.eraseBounds, none⟩ ::
                 ⟨path ++ [.appFun, .appFun], ctorHM.eraseBounds, none⟩ :: h.nodes ++ t.nodes)
               (do
@@ -5794,10 +5855,10 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
         let rightHint := match expected with
           | some (.custom pairName [_, right]) => if pairName = pairTyName then some right else none
           | _ => none
-        let left ← walkBodySource sourceOutput metadata ids rows caller Δ env
+        let left ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
           (path ++ [.appFun, .appArg]) head schemes capture
           (descendBodySource sourceAt (by simp [Expr.atCorePath])) leftHint ctors
-        let right ← walkBodySource sourceOutput metadata ids rows caller Δ env
+        let right ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
           (path ++ [.appArg]) tail schemes capture
           (descendBodySource sourceAt (by simp [Expr.atCorePath])) rightHint ctors
         let _ ← match BinderBridge.equalTy ctorHM.eraseBounds
@@ -5808,7 +5869,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           | some h => pure h | none => throw "bounds: generalized body partial Pair payload mismatch"
         finishBody path hm (.custom pairTyName [left.bounds, right.bounds]) rfl
           (by subst name; simpa only [Expr.stripFound] using
-            BodyDerives.pair left.typing right.typing)
+            ScopedBodyDerives.pair left.typing right.typing)
           (⟨path ++ [.appFun], partialHM.eraseBounds, none⟩ ::
             ⟨path ++ [.appFun, .appFun], ctorHM.eraseBounds, none⟩ :: left.nodes ++ right.nodes)
           (do
@@ -5819,11 +5880,11 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               simpa only [Expr.stripFound] using
                 BodyDerives.RuntimeReady.pair leftReady.down rightReady.down⟩)
       else
-        let function ← walkBodySource sourceOutput metadata ids rows caller Δ env
+        let function ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
           (path ++ [.appFun])
           (.found partialHM (.app (.found ctorHM (.ctor name)) head)) schemes capture
           (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
-        let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+        let actual ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
           (path ++ [.appArg]) tail schemes capture
           (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
         appendBody path hm function actual
@@ -5831,14 +5892,14 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       if hn : name = nilCtorName then
         throw "bounds: Nil cannot be applied"
       else if hc : name = consCtorName then
-        let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+        let actual ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
           (path ++ [.appArg]) arg schemes capture
           (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
         let result := .arrow (.list (.lit 0) .inf actual.bounds)
           (.list (.lit 1) .inf actual.bounds)
         finishBody path hm result rfl
           (by subst name; simpa only [Expr.stripFound] using
-            BodyDerives.consPartial actual.typing)
+            ScopedBodyDerives.consPartial actual.typing)
           (⟨path ++ [.appFun], ctorHM.eraseBounds, none⟩ :: actual.nodes)
           (do
             let ready ← actual.runtimeReady
@@ -5849,14 +5910,14 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       else if hp : name = pairCtorName then
         match hm.eraseBounds with
         | .arrow rightHM _ =>
-            let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+            let actual ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
               (path ++ [.appArg]) arg schemes capture
               (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
             let right ← Typed.shapeTop rightHM
             let result := .arrow right (.custom pairTyName [actual.bounds, right])
             finishBody path hm result rfl
               (by subst name; simpa only [Expr.stripFound] using
-                BodyDerives.pairPartial (rightTy := right) actual.typing)
+                ScopedBodyDerives.pairPartial (rightTy := right) actual.typing)
               (⟨path ++ [.appFun], ctorHM.eraseBounds, none⟩ :: actual.nodes)
               (do
                 let ready ← actual.runtimeReady
@@ -5871,13 +5932,13 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       else
         match ctorHM.eraseBounds with
         | .arrow domainHM resultHM =>
-            let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+            let actual ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
               (path ++ [.appArg]) arg schemes capture
               (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
             let result ← RecursiveHMWalk.transferCtorOrigin domainHM actual.bounds resultHM
             let function ← finishBody (path ++ [.appFun]) ctorHM
               (.arrow actual.bounds result) rfl
-              (by simpa only [Expr.stripFound] using BodyDerives.ctor hn) [] none
+              (by simpa only [Expr.stripFound] using ScopedBodyDerives.ctor hn) [] none
             appendBody path hm function actual
         | _ => throw "bounds: applied constructor has a non-arrow generalized HM payload"
   | .found hm (.app fn arg) =>
@@ -5885,14 +5946,14 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       | some ⟨spine, spineSource⟩ =>
           match hv : env[spine.index]? with
           | some (.recursive c) =>
-              let checked ← walkBodySpineSourced sourceOutput metadata ids rows caller Δ env
+              let checked ← walkBodySpineSourced sourceOutput metadata types slots ids rows caller Δ env
                 spine schemes capture spineSource.down ctors
               let counts ← CountProposal.proposeOrigins c.template.counts.quantified
                 c.template.counts.body checked.originsRev.reverse
               let used ← RecursiveHMContract.check c.fixed Δ c.hm counts caller
               return ← useRecursiveBodySpine sourceOutput metadata checked hv used schemes capture ctors
           | some (.exported s) =>
-              let checked ← walkBodySpineSourced sourceOutput metadata ids rows caller Δ env
+              let checked ← walkBodySpineSourced sourceOutput metadata types slots ids rows caller Δ env
                 spine schemes capture spineSource.down ctors
               let origins := checked.originsRev.reverse
               let types ← StructuralApplication.proposeOrigins s.counts.body origins s.hm.paramCount
@@ -5905,14 +5966,14 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           | some spine =>
               match hv : env[spine.index]? with
               | some (.recursive c) =>
-                  let checked ← walkBodySpine sourceOutput metadata ids rows caller Δ env
+                  let checked ← walkBodySpine sourceOutput metadata types slots ids rows caller Δ env
                     spine schemes capture ctors
                   let counts ← CountProposal.proposeOrigins c.template.counts.quantified
                     c.template.counts.body checked.originsRev.reverse
                   let used ← RecursiveHMContract.check c.fixed Δ c.hm counts caller
                   return ← useRecursiveBodySpine sourceOutput metadata checked hv used schemes capture ctors
               | some (.exported s) =>
-                  let checked ← walkBodySpine sourceOutput metadata ids rows caller Δ env
+                  let checked ← walkBodySpine sourceOutput metadata types slots ids rows caller Δ env
                     spine schemes capture ctors
                   let origins := checked.originsRev.reverse
                   let types ← StructuralApplication.proposeOrigins s.counts.body origins s.hm.paramCount
@@ -5921,10 +5982,10 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                   return ← useBodySpine sourceOutput metadata checked hv used schemes capture ctors
               | _ => pure ()
           | none => pure ()
-      let function ← walkBodySource sourceOutput metadata ids rows caller Δ env
+      let function ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
         (path ++ [.appFun]) fn schemes capture
         (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
-      let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+      let actual ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
         (path ++ [.appArg]) arg schemes capture
         (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
       appendBody path hm function actual
@@ -5935,22 +5996,22 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               (metadata.telescopes.filter (fun telescope => telescope.site == .letIn path)).all
                 (fun telescope => telescope.binders.isEmpty) then
             if ScopedHMAnnotation.hasHole annotation.body then
-              let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+              let actual ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
                 (path ++ [.letRhs]) rhs schemes capture
                 (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
               let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
                 (.letIn path) actual.hm
-              let pinned ← ScopedHMAnnotation.pin BoundsTy.fvar BoundsTy.bvar
+              let pinned ← ScopedHMAnnotation.pin types slots
                 ids rows caller Δ annotation.body actual.bounds
               have mono : annotation.paramCount = 0 := by
                 exact of_decide_eq_true ((Bool.and_eq_true _ _).mp hmono).1
-              let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+              let result ← walkBodySource sourceOutput metadata types slots ids rows caller Δ
                 (.mono pinned.demand :: env) (path ++ [.letBody]) body schemes
                 (extendMonoCapture? capture pinned.demand)
                 (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
               finishBody path hm result.bounds rfl
                 (by simpa only [Expr.stripFound] using
-                  (BodyDerives.letPinned pinned mono actual.typing result.typing))
+                  (ScopedBodyDerives.letPinned pinned mono actual.typing result.typing))
                 (actual.nodes ++ result.nodes)
                 (do
                   let rhsReady ← actual.runtimeReady
@@ -5960,22 +6021,22 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                     (BodyDerives.RuntimeReady.letPinned pinned mono rhsReady.down
                       demandSupported.down bodyReady.down)⟩)
             else
-              let hint ← RecursiveHMAnnotation.scopedBindingHint BoundsTy.fvar BoundsTy.bvar
+              let hint ← RecursiveHMAnnotation.scopedBindingHint types slots
                 ids rows caller (some annotation)
-              let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+              let actual ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
                 (path ++ [.letRhs]) rhs schemes capture
                 (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint ctors
               let _ ← RecursiveHMWalk.checkLocalInterface (some annotation) schemes
                 (.letIn path) actual.hm
-              let obligation ← RecursiveHMAnnotation.checkScopedBinding BoundsTy.fvar BoundsTy.bvar
+              let obligation ← RecursiveHMAnnotation.checkScopedBinding types slots
                 ids rows caller Δ (some annotation) actual.bounds
-              let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+              let result ← walkBodySource sourceOutput metadata types slots ids rows caller Δ
                 (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
                 (extendMonoCapture? capture actual.bounds)
                 (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
               finishBody path hm result.bounds rfl
                 (by simpa only [Expr.stripFound] using
-                  (BodyDerives.letMono obligation.down actual.typing result.typing))
+                  (ScopedBodyDerives.letMono obligation.down actual.typing result.typing))
                 (actual.nodes ++ result.nodes)
                 (do
                   let rhsReady ← actual.runtimeReady
@@ -6004,6 +6065,14 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                       ⟨annotation, path ++ [.letRhs], .letIn sourceProof.down, node⟩
                     match capture with
                     | none =>
+                        throw "bounds: generalized local export lost its lexical capture mode"
+                    | some captured =>
+                      BodyWalkCapture.dispatch
+                        (M := fun types slots => Except String
+                          (ScopedBodyResult types slots ids rows caller Δ env
+                            (.found hm (.letIn (some annotation) (.found rhsHM rhsInner) body))))
+                        captured
+                        (openCase := do
                         let signatureIds := freshLocalTypeIds sourceOutput annotation.paramCount
                         let reconciled ← HMDeclaredReconciliation.check declaration quantified []
                           signatureIds [] []
@@ -6020,9 +6089,10 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                         let instances := fun calleeΔ found localCaller
                             (used : HMCountScheme.Use reconciled.interface.scheme calleeΔ found localCaller) =>
                           localRhsInstances (Δ := Δ) frame annotationOK cert owners used env
-                        let result ← walkBodySource sourceOutput metadata [] [] caller Δ
+                        let result ← walkBodySource sourceOutput metadata BoundsTy.fvar BoundsTy.bvar
+                          [] [] caller Δ
                           (.exported reconciled.interface.scheme :: env)
-                          (path ++ [.letBody]) body schemes none
+                          (path ++ [.letBody]) body schemes (some .open)
                           (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
                         let completed ← finishBody (ids := []) (rows := []) (caller := caller)
                           (Δ := Δ) (env := env)
@@ -6046,10 +6116,10 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                                     used arguments env)
                                 bodyReady.down
                               simpa only [Expr.stripFound, declaration, node] using ready⟩)
-                        pure (by rw [parentIds, parentRows]; exact completed)
-                    | some (.fixed _) =>
-                        throw "bounds: generalized local export inside a fixed recursive implementation is not wired yet"
-                    | some (.exited captured) =>
+                        pure (by rw [parentIds, parentRows]; exact completed))
+                        (fixedCase := fun _ =>
+                          throw "bounds: generalized local export inside a fixed recursive implementation is not wired yet")
+                        (exitedCase := fun captured => do
                         let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
                           recursiveFixedTypeCaptures captured.rhsEnv
                         let signatureIds := freshGuardedLocalTypeIds sourceOutput typeCaptures
@@ -6119,11 +6189,13 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                                 (reconciled.interface.scheme.counts.quantified.zip used.counts) [])
                               (Δ ++ used.countInstance.premises) env
                               declaration.node.inner.stripFound used.bounds)
-                        let result ← walkBodySource sourceOutput metadata [] [] caller Δ
+                        let result ← walkBodySource sourceOutput metadata BoundsTy.fvar BoundsTy.bvar
+                          [] [] caller Δ
                           (.exported reconciled.interface.scheme :: env)
                           (path ++ [.letBody]) body schemes
-                          (some (.exited (captured.extendExported reconciled.interface.scheme (by
-                            simp [HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme]))))
+                          (some (.exited
+                            (captured.extendExported reconciled.interface.scheme (by
+                              simp [HMCountScheme.Annotated.scheme, ScopedAnnotation.Contract.scheme]))))
                           (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
                         let completed ← finishBody (ids := []) (rows := []) (caller := caller)
                           (Δ := Δ) (env := env)
@@ -6161,7 +6233,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                                     instanceReady)
                                 bodyReady.down
                               simpa only [Expr.stripFound, declaration, node] using ready⟩)
-                        pure (by rw [parentIds, parentRows]; exact completed)
+                        pure (by rw [parentIds, parentRows]; exact completed))
                 | _ => throw "bounds: generalized local RHS lacks its original found root"
               else throw "bounds: generalized local under enclosing count substitutions is not supported yet"
             else throw "bounds: generalized local under enclosing count identities is not supported yet"
@@ -6169,19 +6241,19 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           match BinderBridge.candidates schemes (.letIn path) with
           | [machine] =>
               if machine.paramCount == 0 then
-                let hint ← RecursiveHMAnnotation.scopedBindingHint BoundsTy.fvar BoundsTy.bvar
+                let hint ← RecursiveHMAnnotation.scopedBindingHint types slots
                   ids rows caller none
-                let actual ← walkBodySource sourceOutput metadata ids rows caller Δ env
+                let actual ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
                   (path ++ [.letRhs]) rhs schemes capture
                   (descendBodySource sourceAt (by simp [Expr.atCorePath])) hint ctors
                 let _ ← RecursiveHMWalk.checkLocalInterface none schemes (.letIn path) actual.hm
-                let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+                let result ← walkBodySource sourceOutput metadata types slots ids rows caller Δ
                   (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
                   (extendMonoCapture? capture actual.bounds)
                   (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
                 finishBody path hm result.bounds rfl
                   (by simpa only [Expr.stripFound] using
-                    (BodyDerives.letMono (by trivial) actual.typing result.typing))
+                    (ScopedBodyDerives.letMono (by trivial) actual.typing result.typing))
                   (actual.nodes ++ result.nodes)
                   (do
                     let rhsReady ← actual.runtimeReady
@@ -6190,20 +6262,28 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                       (BodyDerives.RuntimeReady.letMono (ann := none) (by trivial)
                         rhsReady.down bodyReady.down)⟩)
               else
-                let captured ← match capture with
-                  | some (.exited captured) => pure captured
-                  | some (.fixed _) =>
-                      throw "bounds: inferred generalized local inside a fixed recursive implementation is not wired yet"
-                  | none => throw "bounds: inferred polymorphic local lacks a represented environment"
-                let sourceProof ← match sourceAt with
-                  | some located => pure located
-                  | none => throw "bounds: inferred polymorphic local lacks exact source provenance"
-                walkInferredExportLet sourceOutput metadata ids rows caller Δ env path hm machine
-                  rhs body schemes captured sourceProof expected ctors
+                match capture with
+                | none =>
+                    throw "bounds: inferred polymorphic local lacks a represented environment"
+                | some captured =>
+                    BodyWalkCapture.dispatch
+                      (M := fun types slots => Except String
+                        (ScopedBodyResult types slots ids rows caller Δ env
+                          (.found hm (.letIn none rhs body))))
+                      captured
+                      (openCase := throw "bounds: inferred polymorphic local lacks a represented environment")
+                      (exitedCase := fun captured => do
+                        let sourceProof ← match sourceAt with
+                          | some located => pure located
+                          | none => throw "bounds: inferred polymorphic local lacks exact source provenance"
+                        walkInferredExportLet sourceOutput metadata ids rows caller Δ env path hm machine
+                          rhs body schemes captured sourceProof expected ctors)
+                      (fixedCase := fun _ =>
+                        throw "bounds: inferred generalized local inside a fixed recursive implementation is not wired yet")
           | [] => throw "bounds: missing inferred local binder scheme in generalized body"
           | _ => throw "bounds: duplicate inferred local binder scheme in generalized body"
   | .found hm (.match_ scrut branches) =>
-      let input ← walkBodySource sourceOutput metadata ids rows caller Δ env
+      let input ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
         (path ++ [.matchScrut]) scrut schemes capture
         (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
       -- Equality of full bounds, not merely HM shape, connects scrutinee origins
@@ -6216,7 +6296,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           rw [Expr.atCorePath_append, located.down]
           simp only [Expr.atCorePath, Option.bind_some]
           rw [atIndex]⟩
-      let arms ← walkBodyBranches sourceOutput metadata ids rows caller Δ env ctx path branches 0
+      let arms ← walkBodyBranches sourceOutput metadata types slots ids rows caller Δ env ctx path branches 0
         schemes capture branchSources expected ctors
       match hb : arms.bounds with
       | none => throw "bounds: generalized body match has no result-producing branch"
@@ -6234,7 +6314,14 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
         | none => throw "bounds: nested recursive group lacks exact source provenance"
       match capture with
       | none => throw "bounds: nested recursive group lacks a captured lexical environment"
-      | some (.fixed captured) =>
+      | some captured =>
+        BodyWalkCapture.dispatch
+          (M := fun types slots => Except String
+            (ScopedBodyResult types slots ids rows caller Δ env
+              (.found hm (.letRec annotations rhss body))))
+          captured
+          (openCase := throw "bounds: nested recursive group lacks a represented lexical environment")
+          (fixedCase := fun captured => do
           let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
             recursiveFixedTypeCaptures captured.rhsEnv
           let assembled ← HMDeclaredCoordinates.check sourceOutput metadata path captured.captureIds Δ
@@ -6250,7 +6337,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               (path ++ [CoreStep.letRecBody]) = some body := by
             rw [Expr.atCorePath_append, g.source]
             simp [Expr.atCorePath, bodyEq]
-          let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+          let result ← walkBodySource sourceOutput metadata types slots ids rows caller Δ
             (g.exports.map BodyBinding.exported ++ env) (path ++ [CoreStep.letRecBody])
             body schemes (some (.fixed (captured.extendGroup g))) (some ⟨bodySource⟩) expected ctors
           let completed ← finishBody (ids := ids) (rows := rows) (caller := caller)
@@ -6258,7 +6345,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             (e := .found g.originalHM (.letRec g.annotations g.rhss g.body))
             path g.originalHM result.bounds rfl
             (by
-              have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
+              have bodyTyping : ScopedBodyDerives types slots ids rows Δ
                   (g.exports.map BodyBinding.exported ++ fixedBodyEnv captured.rhsEnv)
                   g.body.stripFound result.bounds := by
                 simpa only [bodyEq, captured.bodyEnv] using result.typing
@@ -6270,7 +6357,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             (do
               let members ← g.members.runtimeReady
               let bodyReady ← result.runtimeReady
-              have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
+              have bodyTyping : ScopedBodyDerives types slots ids rows Δ
                   (g.exports.map BodyBinding.exported ++ fixedBodyEnv captured.rhsEnv)
                   g.body.stripFound result.bounds := by
                 simpa only [bodyEq, captured.bodyEnv] using result.typing
@@ -6283,8 +6370,8 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                     (fun offset inside => (members.down offset inside).1)
                     (fun offset inside => (members.down offset inside).2)
                     ready)⟩)
-          pure (by simpa only [sourceEq] using completed)
-      | some (.exited captured) =>
+          pure (by simpa only [sourceEq] using completed))
+          (exitedCase := fun captured => do
           let ordinary (_ : Unit) : Except String
               (BodyResult ids rows caller Δ env
                 (.found hm (.letRec annotations rhss body))) := do
@@ -6303,9 +6390,11 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                 (path ++ [CoreStep.letRecBody]) = some body := by
               rw [Expr.atCorePath_append, g.source]
               simp [Expr.atCorePath, bodyEq]
-            let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+            let result ← walkBodySource sourceOutput metadata BoundsTy.fvar BoundsTy.bvar
+              ids rows caller Δ
               (g.exports.map BodyBinding.exported ++ env) (path ++ [CoreStep.letRecBody])
-              body schemes (some (.exited (captured.extendGroup g))) (some ⟨bodySource⟩) expected ctors
+              body schemes (some (.exited (captured.extendGroup g)))
+              (some ⟨bodySource⟩) expected ctors
             let completed ← finishBody (ids := ids) (rows := rows) (caller := caller)
               (Δ := Δ) (env := env)
               (e := .found g.originalHM (.letRec g.annotations g.rhss g.body))
@@ -6380,9 +6469,11 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                           (path ++ [CoreStep.letRecBody]) = some body := by
                         rw [Expr.atCorePath_append, sourceProof.down]
                         simp [Expr.atCorePath]
-                      let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+                      let result ← walkBodySource sourceOutput metadata BoundsTy.fvar BoundsTy.bvar
+                        ids rows caller Δ
                         (.mono pinned.demand :: env) (path ++ [CoreStep.letRecBody]) body schemes
-                        (extendMonoCapture? capture pinned.demand) (some ⟨bodySource⟩) expected ctors
+                        (extendMonoCapture? (some (.exited captured)) pinned.demand)
+                        (some ⟨bodySource⟩) expected ctors
                       have rhsTyping : ScopedDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
                           (.mono pinned.demand :: captured.rhsEnv) rhs.stripFound final.bounds := by
                         simpa only [stable.down] using final.derivation
@@ -6444,9 +6535,11 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                             (path ++ [CoreStep.letRecBody]) = some body := by
                           rw [Expr.atCorePath_append, sourceProof.down]
                           simp [Expr.atCorePath]
-                        let result ← walkBodySource sourceOutput metadata ids rows caller Δ
+                        let result ← walkBodySource sourceOutput metadata BoundsTy.fvar BoundsTy.bvar
+                          ids rows caller Δ
                           (.mono final.bounds :: env) (path ++ [CoreStep.letRecBody]) body schemes
-                          (extendMonoCapture? capture final.bounds) (some ⟨bodySource⟩) expected ctors
+                          (extendMonoCapture? (some (.exited captured)) final.bounds)
+                          (some ⟨bodySource⟩) expected ctors
                         have rhsTyping : ScopedDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
                             (.mono final.bounds :: captured.rhsEnv) rhs.stripFound final.bounds := by
                           simpa only [stable.down] using final.derivation
@@ -6475,21 +6568,22 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                     walkInferredExportLetRec sourceOutput metadata ids rows caller Δ env path hm
                       scheme rhs body schemes captured sourceProof fallback expected ctors
               | _ => fallback
-          | _, _ => by simpa only [ha, hr] using ordinary ()
+          | _, _ => by simpa only [ha, hr] using ordinary ())
   | _ => throw "bounds: generalized body lacks an original found node"
 termination_by (sizeOf e, 1)
 
 private def walkBodySpineSourced (sourceOutput : Expr) (metadata : Scope.Metadata)
-    (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) {e : Expr} (spine : RecursiveSpine.Syntax e)
-    (schemes : BinderSchemeMap) (capture : Option (BodyWalkCapture env))
+    (schemes : BinderSchemeMap) (capture : Option (BodyWalkCapture types slots env))
     (source : BodySpineSource sourceOutput spine) (ctors : CtorEnv) :
-    Except String (BodySpine sourceOutput ids rows caller Δ env spine) := do
+    Except String (BodySpine sourceOutput types slots ids rows caller Δ env spine) := do
   match source with
   | .head (path := path) (i := i) (hm := hm) _ => pure (.head path i hm)
   | .app (path := path) (hm := hm) (prior := prior) (arg := arg) priorSource argSource =>
-      let previous ← walkBodySpineSourced sourceOutput metadata ids rows caller Δ env prior schemes capture priorSource ctors
-      let actual := match walkBodySource sourceOutput metadata ids rows caller Δ env
+      let previous ← walkBodySpineSourced sourceOutput metadata types slots ids rows caller Δ env
+        prior schemes capture priorSource ctors
+      let actual := match walkBodySource sourceOutput metadata types slots ids rows caller Δ env
           (path ++ [.appArg]) arg schemes capture (some ⟨argSource⟩) none ctors with
         | .ok result => some result
         | .error _ => none
@@ -6497,15 +6591,17 @@ private def walkBodySpineSourced (sourceOutput : Expr) (metadata : Scope.Metadat
 termination_by (sizeOf e, 0)
 
 private def walkBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
-    (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) {e : Expr} (spine : RecursiveSpine.Syntax e)
-    (schemes : BinderSchemeMap) (capture : Option (BodyWalkCapture env)) (ctors : CtorEnv) :
-    Except String (BodySpine sourceOutput ids rows caller Δ env spine) := do
+    (schemes : BinderSchemeMap) (capture : Option (BodyWalkCapture types slots env))
+    (ctors : CtorEnv) :
+    Except String (BodySpine sourceOutput types slots ids rows caller Δ env spine) := do
   match spine with
   | .head path i hm => pure (.head path i hm)
   | .app path hm prior arg =>
-      let previous ← walkBodySpine sourceOutput metadata ids rows caller Δ env prior schemes capture ctors
-      let actual := match walkBodySource sourceOutput metadata ids rows caller Δ env
+      let previous ← walkBodySpine sourceOutput metadata types slots ids rows caller Δ env
+        prior schemes capture ctors
+      let actual := match walkBodySource sourceOutput metadata types slots ids rows caller Δ env
           (path ++ [.appArg]) arg schemes capture none none ctors with
         | .ok result => some result
         | .error _ => none
@@ -6513,20 +6609,20 @@ private def walkBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
 termination_by (sizeOf e, 0)
 
 private def walkBodyBranches (sourceOutput : Expr) (metadata : Scope.Metadata)
-    (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings) (caller : List Nat)
     (Δ : List Constraint) (env : List BodyBinding) (ctx : BodyBranchContext)
     (path : CorePath) (branches : List (MatchPattern × Expr)) (index : Nat)
-    (schemes : BinderSchemeMap) (capture : Option (BodyWalkCapture env))
+    (schemes : BinderSchemeMap) (capture : Option (BodyWalkCapture types slots env))
     (sources : BodyBranchSources sourceOutput path index branches)
     (expected : Option BoundsTy) (ctors : CtorEnv) :
-    Except String (BodyBranches ids rows caller Δ env ctx branches) := do
+    Except String (BodyBranches types slots ids rows caller Δ env ctx branches) := do
   match branches with
   | [] => pure ⟨(fun _ => .prim .int), (by intros; contradiction), (by intros; contradiction),
       none, (by intros; contradiction), [], some ⟨by intros; contradiction⟩⟩
   | br :: rest =>
       if hp : ctx.Pattern br.1 then
         let headSource := sources 0 br (by simp)
-        let head ← walkBodySource sourceOutput metadata ids rows caller
+        let head ← walkBodySource sourceOutput metadata types slots ids rows caller
           (Δ ++ ctx.refine br.1) (ctx.extend br.1 env)
           (path ++ [.matchBranch index]) br.2 schemes (extendBranchCapture? capture ctx br.1)
           (by simpa only [Nat.add_zero] using headSource) expected ctors
@@ -6535,7 +6631,7 @@ private def walkBodyBranches (sourceOutput : Expr) (metadata : Scope.Metadata)
           (sources (i + 1) arm shifted).map fun located => ⟨by
             have position : index + (i + 1) = index + 1 + i := by omega
             simpa only [position] using located.down⟩
-        let tail ← walkBodyBranches sourceOutput metadata ids rows caller Δ env ctx path rest
+        let tail ← walkBodyBranches sourceOutput metadata types slots ids rows caller Δ env ctx path rest
           (index + 1) schemes capture tailSources expected ctors
         match expected with
         | some β =>
@@ -6581,9 +6677,10 @@ def walkBody (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List C
     (expected : Option BoundsTy := none) (ctors : CtorEnv := []) :
     Except String (BodyResult ids rows caller Δ env e) :=
   match path with
-  | [] => walkBodySource e {} ids rows caller Δ env [] e schemes
-      none (some ⟨by simp [Expr.atCorePath]⟩) expected ctors
-  | _ => walkBodySource e {} ids rows caller Δ env path e schemes none none expected ctors
+  | [] => walkBodySource e {} BoundsTy.fvar BoundsTy.bvar ids rows caller Δ env [] e schemes
+      (some .open) (some ⟨by simp [Expr.atCorePath]⟩) expected ctors
+  | _ => walkBodySource e {} BoundsTy.fvar BoundsTy.bvar ids rows caller Δ env path e schemes
+      (some .open) none expected ctors
 
 /-- Closed-group vertical slice. Only after all universal RHSs accept do their
     generalized exit bindings become available to actual source body checking. -/
@@ -6596,7 +6693,8 @@ def checkBody {output metadata path vectors premises bodyTypes}
   have bodySource : output.atCorePath (path ++ [.letRecBody]) = some g.body := by
     rw [Expr.atCorePath_append, g.source]
     simp [Expr.atCorePath]
-  let body ← walkBodySource output metadata ids rows caller Δ (g.exports.map BodyBinding.exported)
+  let body ← walkBodySource output metadata BoundsTy.fvar BoundsTy.bvar ids rows caller Δ
+    (g.exports.map BodyBinding.exported)
     (path ++ [.letRecBody]) g.body schemes (some (.exited (checkedGroupBodyCapture g)))
     (some ⟨bodySource⟩) expected ctors
   finishBody path g.originalHM body.bounds rfl
@@ -6657,7 +6755,7 @@ def checkProgram (output : Expr) (metadata : Scope.Metadata)
     (schemes : BinderSchemeMap := []) (expected : Option BoundsTy := none)
     (ctors : CtorEnv := []) :
     Except String (BodyResult [] [] [] [] [] output) :=
-  walkBodySource output metadata [] [] [] [] [] [] output schemes
+  walkBodySource output metadata BoundsTy.fvar BoundsTy.bvar [] [] [] [] [] [] output schemes
     (some (.exited emptyBodyCapture)) (some ⟨by simp [Expr.atCorePath]⟩) expected ctors
 
 /-- Extract the runtime theorem carried by a supported closed report. This is
