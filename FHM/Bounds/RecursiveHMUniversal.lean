@@ -242,9 +242,9 @@ theorem useScopedInterpreted {s found captures env rhs sourceTypes sourceSlots} 
   let f := argument cert.opening.ids (SchemeUse.vector types)
   have fLC := replacementLC cert.opening.ids (SchemeUse.vector types) (argumentsLC types lc)
   have fScope := replacementScope cert.opening.ids (SchemeUse.vector types) (SchemeUse.vector_scope scope)
-  have hc := transportScopedCounts rows inst.finite caller
-    (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2) cert.typing (countFresh cert inst)
-  have ht := transportScopedTypes f fLC caller fScope hc (typeFresh cert _ rows)
+  let specialized := cert.typing.specialize rows f inst.finite caller
+    (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2)
+    fLC caller fScope (countFresh cert inst) (typeFresh cert _ rows)
   have ha : mapFree f (bounds rows cert.actual) = actual cert counts types := by
     exact actual_transport cert counts types
   have hd : mapFree f (bounds rows cert.opening.bounds) = demand s counts types := by
@@ -256,7 +256,7 @@ theorem useScopedInterpreted {s found captures env rhs sourceTypes sourceSlots} 
   rw [ha, hd] at hs
   refine ⟨?_, hs, actual_hm_instance cert counts types arity, actual_inScope cert inst types scope⟩
   simpa only [ha, CountAlgebra.compose, List.map_nil, List.nil_append,
-    ScopedScheme.Instance.premises] using ht
+    ScopedScheme.Instance.premises] using specialized.typing
 
 /-- Identity-slot compatibility for existing free-only source certificates. -/
 theorem useInterpreted {s found captures env rhs sourceTypes} (cert : Certified s found captures env rhs sourceTypes)

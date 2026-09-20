@@ -84,9 +84,9 @@ def fromCertified {s found typeCaptures env rhs sourceTypes sourceSlots}
     | exported s =>
         cases he
         exact fixed.exported ho
-  have hc := transportScopedCounts rows inst.finite caller
-    (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2) cert.typing countKeep
-  have ht := transportScopedTypes f lc caller scope hc typeKeep
+  let specialized := cert.typing.specialize rows f inst.finite caller
+    (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2)
+    lc caller scope countKeep typeKeep
   have envFixed := RecursiveHMEnvironment.instantiated inst captured
   have countScope : BoundsScoped caller (bounds rows cert.actual) := by
     apply bounds_scoped cert.actualScope
@@ -99,7 +99,7 @@ def fromCertified {s found typeCaptures env rhs sourceTypes sourceSlots}
     · exact inst.capturesScoped i hcap
   refine ⟨?_, SchemeSpecialization.subtype f (inst.subtype cert.inclusion), ?_⟩
   · simpa only [actual, rows, envFixed, CountAlgebra.compose, List.map_nil,
-      List.nil_append, ScopedScheme.Instance.premises] using ht
+      List.nil_append, ScopedScheme.Instance.premises] using specialized.typing
   · exact HMInterpretation.scope_mono (HMInterpretation.map_scope countScope f scope)
       (fun _ hi => (List.mem_append.mp hi).elim id id)
 
@@ -141,12 +141,13 @@ theorem fromCertified_runtimeReady {s found typeCaptures env rhs sourceTypes sou
     | exported s =>
         cases he
         exact fixed.exported ho
-  have hc := ready.counts rows inst.finite caller
-    (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2) countKeep
-  have ht := hc.types f lc caller scope arguments typeKeep
+  let specialized := cert.typing.specialize rows f inst.finite caller
+    (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2)
+    lc caller scope countKeep typeKeep
+  have transportedReady := specialized.runtimeReady ready arguments
   have envFixed := RecursiveHMEnvironment.instantiated inst captured
   simpa only [actual, rows, envFixed, CountAlgebra.compose, List.map_nil,
-    List.nil_append, ScopedScheme.Instance.premises] using ht
+    List.nil_append, ScopedScheme.Instance.premises] using transportedReady
 
 /-- An actual specialized RHS proof establishes runtime behaviour at its
     demand bounds, provided its recursive assumptions are realized. This is

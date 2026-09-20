@@ -2551,6 +2551,58 @@ theorem ScopedDerives.RuntimeReady.types (f : Nat → BoundsTy)
 
 #print axioms ScopedDerives.RuntimeReady.types
 
+/-- One lawful count-first, HM-second specialization of a scoped derivation.
+    This packages the transported typing derivation together with preservation
+    of its runtime witness.  Keeping this interface separate from bare typing
+    is important for generalized locals: their captured environments make
+    transport an additional certificate, not a theorem of typing alone. -/
+structure ScopedDerives.Specialized
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List Binding} {e : Expr} {β : BoundsTy}
+    (h : ScopedDerives types slots ids rows Δ env e β)
+    (outer : Bindings) (f : Nat → BoundsTy)
+    (outerFinite : Finite outer) (countTarget : List Nat)
+    (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+    (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (typeTarget : List Nat)
+    (typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i))
+    (countFresh : CountCapturesFixed outer env)
+    (typeFresh : CapturesFixed f (env.map (mapCountBinding outer))) where
+  typing : ScopedDerives
+    (fun i => mapFree f (bounds outer (types i)))
+    (fun i => mapFree f (bounds outer (slots i))) ids
+    (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+    ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)) e
+    (mapFree f (bounds outer β))
+  runtimeReady : ScopedDerives.RuntimeReady h →
+    (∀ i, Runtime.Supported (f i)) → ScopedDerives.RuntimeReady typing
+
+/-- The structural fragment currently derives its specialization certificate
+    from the two proven transport theorems.  Generalized introduction rules can
+    later inhabit `Specialized` directly, without asserting an invalid global
+    map operation on their captured schemes. -/
+def ScopedDerives.specialize
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List Binding} {e : Expr} {β : BoundsTy}
+    (h : ScopedDerives types slots ids rows Δ env e β)
+    (outer : Bindings) (f : Nat → BoundsTy)
+    (outerFinite : Finite outer) (countTarget : List Nat)
+    (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+    (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (typeTarget : List Nat)
+    (typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i))
+    (countFresh : CountCapturesFixed outer env)
+    (typeFresh : CapturesFixed f (env.map (mapCountBinding outer))) :
+    ScopedDerives.Specialized h outer f outerFinite countTarget countScope
+      typeLC typeTarget typeScope countFresh typeFresh := by
+  let counted := transportScopedCounts outer outerFinite countTarget countScope h countFresh
+  let typed := transportScopedTypes f typeLC typeTarget typeScope counted typeFresh
+  exact ⟨typed, fun ready arguments =>
+    (ready.counts outer outerFinite countTarget countScope countFresh).types
+      f typeLC typeTarget typeScope arguments typeFresh⟩
+
+#print axioms ScopedDerives.specialize
+
 /-- Identity-slot specialization of the canonical scoped transport. -/
 theorem transportTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
     (target : List Nat) (scope : ∀ i, ScopedScheme.BoundsScoped target (f i))
