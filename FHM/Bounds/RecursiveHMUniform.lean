@@ -593,10 +593,12 @@ checks a full HM/count instance, while group introduction requires ALL actual
 universal RHS obligations. These initial body rules stay in this assembly module
 instead of introducing another parallel file family. -/
 
-inductive BodyBinding where
-  | mono (bounds : BoundsTy)
-  | recursive (contract : Contract)
-  | exported (scheme : HMCountScheme.Scheme)
+/-- The generalized body and recursive-RHS judgments share one binding
+    language.  The distinction between a fixed recursive assumption and an
+    exited generalized scheme is already represented by `Binding.recursive`
+    versus `Binding.exported`; a second isomorphic datatype obscured that
+    common semantic boundary. -/
+abbrev BodyBinding := Binding
 
 private def ordinaryBinding : Binding → BodyBinding
   | .mono β => .mono β
@@ -617,7 +619,7 @@ private def fixedBinding : Binding → BodyBinding
 def fixedBodyEnv (env : List Binding) : List BodyBinding := env.map fixedBinding
 
 private theorem ordinaryBodyEnv_exports (schemes : List HMCountScheme.Scheme) :
-    ordinaryBodyEnv (schemes.map Binding.exported) = schemes.map BodyBinding.exported := by
+    ordinaryBodyEnv (schemes.map Binding.exported) = schemes.map Binding.exported := by
   induction schemes with
   | nil => rfl
   | cons _ rest ih =>
@@ -633,19 +635,7 @@ def RecursiveArgumentsSupported (env : List Binding) : Prop :=
 /-- Generalized exits promise each supported complete HM/count instance of the
     same runtime term. Unlike RHS assumptions, their HM arguments are not fixed.
     Supporting all arguments matters even for unused quantifier slots. -/
-def BodyBindingAt (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
-    (binding : BodyBinding) (term : Expr) : Prop :=
-  match binding with
-  | .mono β => Runtime.TermAt bound free σ budget β term
-  | .recursive c =>
-      ∀ Δ caller (used : RecursiveHMContract.Use c.fixed Δ c.hm caller),
-        (∀ p ∈ used.inst.premises, p.Holds σ) →
-          Runtime.TermAt bound free σ budget used.bounds term
-  | .exported s =>
-      ∀ Δ found caller (used : HMCountScheme.Use s Δ found caller),
-        (∀ a ∈ used.types, Runtime.Supported a) →
-        (∀ p ∈ used.countInstance.premises, p.Holds σ) →
-        Runtime.TermAt bound free σ budget used.bounds term
+abbrev BodyBindingAt := BindingAt
 
 theorem BodyBindingAt.zero (bound free : Runtime.TypeEnv) (σ : Assign)
     (binding : BodyBinding) (term : Expr) : BodyBindingAt bound free σ 0 binding term := by
@@ -670,14 +660,7 @@ theorem BodyBindingAt.prepend {bound free σ budget binding term next}
       exact fun Δ found caller used arguments premises =>
         Runtime.TermAt.prepend step (safe Δ found caller used arguments premises)
 
-structure BodyEnvAt (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
-    (env : List BodyBinding) where
-  terms : List Expr
-  arity : terms.length = env.length
-  closed : ∀ e ∈ terms, e.varsBelow 0 = true
-  denotes : ∀ i (inside : i < env.length),
-    BodyBindingAt bound free σ budget env[i]
-      (terms[i]'(by rw [arity]; exact inside))
+abbrev BodyEnvAt := EnvAt
 
 def BodyEnvAt.down {bound free σ small large env}
     (e : BodyEnvAt bound free σ large env)
@@ -1024,7 +1007,7 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironment
     (bound free : Runtime.TypeEnv) (σ : Assign)
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
     (budget : Nat) :
-    { e : BodyEnvAt bound free σ budget (g.exports.map BodyBinding.exported) //
+    { e : BodyEnvAt bound free σ budget (g.exports.map Binding.exported) //
       e.terms = Runtime.recursiveTerms g.annotations (g.rhss.map Expr.stripFound) } := by
   refine ⟨{ terms := Runtime.recursiveTerms g.annotations (g.rhss.map Expr.stripFound)
             arity := by simp only [Runtime.recursiveTerms, List.length_map, g.exportCount]
@@ -1060,7 +1043,7 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCaptured
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
     (budget : Nat) (outer : BodyEnvAt bound free σ budget (ordinaryBodyEnv outerEnv)) :
     { e : BodyEnvAt bound free σ budget
-        (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv outerEnv) //
+        (g.exports.map Binding.exported ++ ordinaryBodyEnv outerEnv) //
       e.terms = Runtime.recursiveTerms g.annotations
         (closeOuterRhss (g.rhss.map Expr.stripFound) outer.terms) ++ outer.terms } := by
   let outerRhs := outer.toEnvAt outerArguments
@@ -1087,7 +1070,7 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCaptured
       have exported := List.getElem?_eq_some_iff.mp selected.selection
       have exportEntry : g.exports[i] = selected.rhs.certificate.interface.scheme :=
         exported.choose_spec
-      have exportBindingInside : i < (g.exports.map BodyBinding.exported).length := by
+      have exportBindingInside : i < (g.exports.map Binding.exported).length := by
         simpa only [List.length_map] using groupInside
       have rhsInside : i < (g.rhss.map Expr.stripFound).length := by
         simpa only [List.length_map, g.exportCount] using groupInside
@@ -1096,7 +1079,6 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCaptured
           closedRhss, closeOuterRhss_length] using rhsInside
       rw [List.getElem_append_left exportBindingInside, List.getElem_map, exportEntry,
         List.getElem_append_left recursiveInside]
-      simp only [BodyBindingAt]
       intro Δ found caller used arguments rawPremises
       let f := argument selected.rhs.certificate.implementation.opening.ids
         (SchemeUse.vector used.types)
@@ -1157,7 +1139,7 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCaptured
           closedRhss, closeOuterRhss_length, g.exportCount]
       have exportPosition : g.exports.length ≤ i := by omega
       have recursivePosition : recursive.length ≤ i := by rw [recursiveLength]; exact exportPosition
-      have exportBindingPosition : (g.exports.map BodyBinding.exported).length ≤ i := by
+      have exportBindingPosition : (g.exports.map Binding.exported).length ≤ i := by
         simpa only [List.length_map] using exportPosition
       rw [List.getElem_append_right exportBindingPosition,
         List.getElem_append_right recursivePosition]
@@ -1179,7 +1161,7 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCapturedFixed
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
     (budget : Nat) (outer : BodyEnvAt bound free σ budget (fixedBodyEnv outerEnv)) :
     { e : BodyEnvAt bound free σ budget
-        (g.exports.map BodyBinding.exported ++ fixedBodyEnv outerEnv) //
+        (g.exports.map Binding.exported ++ fixedBodyEnv outerEnv) //
       e.terms = Runtime.recursiveTerms g.annotations
         (closeOuterRhss (g.rhss.map Expr.stripFound) outer.terms) ++ outer.terms } := by
   let outerRhs := outer.toFixedEnvAt
@@ -1206,7 +1188,7 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCapturedFixed
       have exported := List.getElem?_eq_some_iff.mp selected.selection
       have exportEntry : g.exports[i] = selected.rhs.certificate.interface.scheme :=
         exported.choose_spec
-      have exportBindingInside : i < (g.exports.map BodyBinding.exported).length := by
+      have exportBindingInside : i < (g.exports.map Binding.exported).length := by
         simpa only [List.length_map] using groupInside
       have rhsInside : i < (g.rhss.map Expr.stripFound).length := by
         simpa only [List.length_map, g.exportCount] using groupInside
@@ -1215,7 +1197,6 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCapturedFixed
           closedRhss, closeOuterRhss_length] using rhsInside
       rw [List.getElem_append_left exportBindingInside, List.getElem_map, exportEntry,
         List.getElem_append_left recursiveInside]
-      simp only [BodyBindingAt]
       intro Δ found caller used arguments rawPremises
       let f := argument selected.rhs.certificate.implementation.opening.ids
         (SchemeUse.vector used.types)
@@ -1275,7 +1256,7 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCapturedFixed
           closedRhss, closeOuterRhss_length, g.exportCount]
       have exportPosition : g.exports.length ≤ i := by omega
       have recursivePosition : recursive.length ≤ i := by rw [recursiveLength]; exact exportPosition
-      have exportBindingPosition : (g.exports.map BodyBinding.exported).length ≤ i := by
+      have exportBindingPosition : (g.exports.map Binding.exported).length ≤ i := by
         simpa only [List.length_map] using exportPosition
       rw [List.getElem_append_right exportBindingPosition,
         List.getElem_append_right recursivePosition]
@@ -1315,7 +1296,7 @@ def BodyBranchContext.extend : BodyBranchContext → MatchPattern → List BodyB
   | .pair left right, p, env =>
       if p = .named pairCtorName 2 then .mono left :: .mono right :: env else env
   | .nominal ctors typeName args, p, env =>
-      ((NominalBranches.fields? ctors typeName args p).getD []).map BodyBinding.mono ++ env
+      ((NominalBranches.fields? ctors typeName args p).getD []).map Binding.mono ++ env
   | .wildcardOnly _, _, env => env
 
 def BodyBranchContext.Pattern : BodyBranchContext → MatchPattern → Prop
@@ -1934,11 +1915,11 @@ inductive ScopedBodyDerives :
           (annotations[i]'(by omega)) (demands[i]'(by omega)))
       (rhssTyping : ∀ i (inside : i < rhss.length),
         ScopedBodyDerives types slots ids rows Δ
-          (demands.map BodyBinding.mono ++ env) rhss[i] (actuals i))
+          (demands.map Binding.mono ++ env) rhss[i] (actuals i))
       (inclusions : ∀ i (inside : i < rhss.length),
         SemanticSub Δ (actuals i) (demands[i]'(by omega)))
       (bodyTyping : ScopedBodyDerives types slots ids rows Δ
-        (demands.map BodyBinding.mono ++ env) body result) :
+        (demands.map Binding.mono ++ env) body result) :
       ScopedBodyDerives types slots ids rows Δ env
         (.letRec annotations rhss body) result
   | letPinned {env annotation rhs body actual result}
@@ -1997,7 +1978,7 @@ inductive ScopedBodyDerives :
         (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ outerEnv)),
         Members f lc scope g.members) →
       ScopedBodyDerives types slots ids rows Δ
-        (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv outerEnv)
+        (g.exports.map Binding.exported ++ ordinaryBodyEnv outerEnv)
         g.body.stripFound bodyResult →
       ScopedBodyDerives types slots ids rows Δ (ordinaryBodyEnv outerEnv)
         (.letRec g.annotations (g.rhss.map Expr.stripFound) g.body.stripFound) bodyResult
@@ -2011,7 +1992,7 @@ inductive ScopedBodyDerives :
         (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ outerEnv)),
         Members f lc scope g.members) →
       ScopedBodyDerives types slots ids rows Δ
-        (g.exports.map BodyBinding.exported ++ fixedBodyEnv outerEnv)
+        (g.exports.map Binding.exported ++ fixedBodyEnv outerEnv)
         g.body.stripFound bodyResult →
       ScopedBodyDerives types slots ids rows Δ (fixedBodyEnv outerEnv)
         (.letRec g.annotations (g.rhss.map Expr.stripFound) g.body.stripFound) bodyResult
@@ -2526,11 +2507,11 @@ abbrev pair := @ScopedBodyDerives.pair BoundsTy.fvar BoundsTy.bvar
 abbrev pairPartial := @ScopedBodyDerives.pairPartial BoundsTy.fvar BoundsTy.bvar
 abbrev varMono := @ScopedBodyDerives.varMono BoundsTy.fvar BoundsTy.bvar
 abbrev varRecursive {ids rows Δ env i c caller}
-    (lookup : env[i]? = some (BodyBinding.recursive c))
+    (lookup : env[i]? = some (Binding.recursive c))
     (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) :
     BodyDerives ids rows Δ env (.var i) used.bounds := ScopedBodyDerives.varRecursive lookup used
 abbrev varExported {ids rows Δ env i s found caller}
-    (lookup : env[i]? = some (BodyBinding.exported s)) (used : HMCountScheme.Use s Δ found caller) :
+    (lookup : env[i]? = some (Binding.exported s)) (used : HMCountScheme.Use s Δ found caller) :
     BodyDerives ids rows Δ env (.var i) used.bounds := ScopedBodyDerives.varExported lookup used
 abbrev app := @ScopedBodyDerives.app BoundsTy.fvar BoundsTy.bvar
 abbrev subsumption := @ScopedBodyDerives.subsumption BoundsTy.fvar BoundsTy.bvar
@@ -2851,12 +2832,12 @@ inductive RuntimeReady :
   | pairPartial {hleft : ScopedBodyDerives types slots ids rows Δ env left leftTy} :
       RuntimeReady hleft → Runtime.Supported rightTy →
       RuntimeReady (.pairPartial (rightTy := rightTy) hleft)
-  | varMono (lookup : env[i]? = some (BodyBinding.mono β)) :
+  | varMono (lookup : env[i]? = some (Binding.mono β)) :
       Runtime.Supported β → RuntimeReady (.varMono lookup)
-  | varRecursive (lookup : env[i]? = some (BodyBinding.recursive c))
+  | varRecursive (lookup : env[i]? = some (Binding.recursive c))
       (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) :
       Runtime.Supported used.bounds → RuntimeReady (.varRecursive lookup used)
-  | varExported (lookup : env[i]? = some (BodyBinding.exported s))
+  | varExported (lookup : env[i]? = some (Binding.exported s))
       (used : HMCountScheme.Use s Δ found caller) :
       Runtime.Supported used.bounds → (∀ a ∈ used.types, Runtime.Supported a) →
       RuntimeReady (.varExported lookup used)
@@ -2894,11 +2875,11 @@ inductive RuntimeReady :
           (annotations[i]'(by omega)) (demands[i]'(by omega))}
       {rhssTyping : ∀ i (inside : i < rhss.length),
         ScopedBodyDerives types slots ids rows Δ
-          (demands.map BodyBinding.mono ++ env) rhss[i] (actuals i)}
+          (demands.map Binding.mono ++ env) rhss[i] (actuals i)}
       {inclusions : ∀ i (inside : i < rhss.length),
         SemanticSub Δ (actuals i) (demands[i]'(by omega))}
       {bodyTyping : ScopedBodyDerives types slots ids rows Δ
-        (demands.map BodyBinding.mono ++ env) body result} :
+        (demands.map Binding.mono ++ env) body result} :
       (∀ i inside, RuntimeReady (rhssTyping i inside)) →
       (∀ demand ∈ demands, Runtime.Supported demand) → RuntimeReady bodyTyping →
       RuntimeReady (.letRecMonoGroup demands annotationCount demandCount
@@ -2968,7 +2949,7 @@ inductive RuntimeReady :
         (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ outerEnv)),
         Members f lc scope g.members)
       {hbody : ScopedBodyDerives types slots ids rows Δ
-        (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv outerEnv)
+        (g.exports.map Binding.exported ++ ordinaryBodyEnv outerEnv)
         g.body.stripFound result} :
       (∀ offset (inside : offset < g.exports.length),
         ScopedDerives.RuntimeReady (g.members.memberAt offset inside).rhs.certificate.implementation.typing) →
@@ -2983,7 +2964,7 @@ inductive RuntimeReady :
         (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ outerEnv)),
         Members f lc scope g.members)
       {hbody : ScopedBodyDerives types slots ids rows Δ
-        (g.exports.map BodyBinding.exported ++ fixedBodyEnv outerEnv)
+        (g.exports.map Binding.exported ++ fixedBodyEnv outerEnv)
         g.body.stripFound result} :
       (∀ offset (inside : offset < g.exports.length),
         ScopedDerives.RuntimeReady (g.members.memberAt offset inside).rhs.certificate.implementation.typing) →
@@ -3158,7 +3139,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
       | zero => unfold Runtime.TermAt; intro steps v _ before; omega
       | succ budget =>
           let previous := e.down hb hf (by omega : budget ≤ budget + 1)
-          let innerEnv := demands.map BodyBinding.mono
+          let innerEnv := demands.map Binding.mono
           have arity : rhss.length = innerEnv.length := by
             simp only [innerEnv, List.length_map]
             exact demandCount.symm
@@ -4290,7 +4271,7 @@ private theorem checkedMembersExportCountsClosed
 private def checkedGroupBodyCapture
     {output metadata path vectors premises bodyTypes}
     (g : HMDeclaredGroup.Checked output metadata path vectors [] premises bodyTypes []) :
-    BodyCapture (g.exports.map BodyBinding.exported) where
+    BodyCapture (g.exports.map Binding.exported) where
   rhsEnv := g.exports.map Binding.exported
   bodyEnv := ordinaryBodyEnv_exports g.exports
   captured := by simp [RecursiveHMEnvironment.Captured]
@@ -4310,14 +4291,14 @@ private def checkedGroupBodyCapture
 private def BodyCapture.extendGroup {env output metadata path vectors premises bodyTypes}
     (capture : BodyCapture env)
     (g : HMDeclaredGroup.Checked output metadata path vectors [] premises bodyTypes capture.rhsEnv) :
-    BodyCapture (g.exports.map BodyBinding.exported ++ env) where
+    BodyCapture (g.exports.map Binding.exported ++ env) where
   rhsEnv := g.exports.map Binding.exported ++ capture.rhsEnv
   bodyEnv := by
     calc
       ordinaryBodyEnv (g.exports.map Binding.exported ++ capture.rhsEnv) =
           ordinaryBodyEnv (g.exports.map Binding.exported) ++ ordinaryBodyEnv capture.rhsEnv := by
             simp only [ordinaryBodyEnv, List.map_append]
-      _ = g.exports.map BodyBinding.exported ++ env := by
+      _ = g.exports.map Binding.exported ++ env := by
         rw [ordinaryBodyEnv_exports, capture.bodyEnv]
   captured := by
     constructor
@@ -4421,7 +4402,7 @@ private def FixedBodyCapture.extendGroup {env output metadata path vectors premi
     (capture : FixedBodyCapture env)
     (g : HMDeclaredGroup.Checked output metadata path vectors capture.captureIds premises
       bodyTypes capture.rhsEnv) :
-    FixedBodyCapture (g.exports.map BodyBinding.exported ++ env) where
+    FixedBodyCapture (g.exports.map Binding.exported ++ env) where
   captureIds := capture.captureIds
   rhsEnv := g.exports.map Binding.exported ++ capture.rhsEnv
   bodyEnv := by
@@ -4429,7 +4410,7 @@ private def FixedBodyCapture.extendGroup {env output metadata path vectors premi
       fixedBodyEnv (g.exports.map Binding.exported ++ capture.rhsEnv) =
           fixedBodyEnv (g.exports.map Binding.exported) ++ fixedBodyEnv capture.rhsEnv := by
             simp only [fixedBodyEnv, List.map_append]
-      _ = g.exports.map BodyBinding.exported ++ env := by
+      _ = g.exports.map Binding.exported ++ env := by
         rw [capture.bodyEnv]
         simp [fixedBodyEnv, fixedBinding]
   captured := by
@@ -4504,7 +4485,7 @@ private def extendMonoCapture? {types slots env}
 private def extendMonoCaptures? {types slots env}
     (capture : Option (BodyWalkCapture types slots env)) :
     (fields : List BoundsTy) →
-      Option (BodyWalkCapture types slots (fields.map BodyBinding.mono ++ env))
+      Option (BodyWalkCapture types slots (fields.map Binding.mono ++ env))
   | [] => by simpa using capture
   | field :: rest => by
       simpa only [List.map_cons, List.cons_append] using
@@ -6308,7 +6289,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             rw [Expr.atCorePath_append, g.source]
             simp [Expr.atCorePath, bodyEq]
           let result ← walkBodySource sourceOutput metadata types slots ids rows caller Δ
-            (g.exports.map BodyBinding.exported ++ env) (path ++ [CoreStep.letRecBody])
+            (g.exports.map Binding.exported ++ env) (path ++ [CoreStep.letRecBody])
             body schemes (some (.fixed (captured.extendGroup g))) (some ⟨bodySource⟩) expected ctors
           let completed ← finishBody (ids := ids) (rows := rows) (caller := caller)
             (Δ := Δ) (env := env)
@@ -6316,7 +6297,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             path g.originalHM result.bounds rfl
             (by
               have bodyTyping : ScopedBodyDerives types slots ids rows Δ
-                  (g.exports.map BodyBinding.exported ++ fixedBodyEnv captured.rhsEnv)
+                  (g.exports.map Binding.exported ++ fixedBodyEnv captured.rhsEnv)
                   g.body.stripFound result.bounds := by
                 simpa only [bodyEq, captured.bodyEnv] using result.typing
               simpa only [Expr.stripFound, captured.bodyEnv] using
@@ -6328,7 +6309,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               let members ← g.members.runtimeReady
               let bodyReady ← result.runtimeReady
               have bodyTyping : ScopedBodyDerives types slots ids rows Δ
-                  (g.exports.map BodyBinding.exported ++ fixedBodyEnv captured.rhsEnv)
+                  (g.exports.map Binding.exported ++ fixedBodyEnv captured.rhsEnv)
                   g.body.stripFound result.bounds := by
                 simpa only [bodyEq, captured.bodyEnv] using result.typing
               have ready : BodyDerives.RuntimeReady bodyTyping := by
@@ -6362,7 +6343,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               simp [Expr.atCorePath, bodyEq]
             let result ← walkBodySource sourceOutput metadata BoundsTy.fvar BoundsTy.bvar
               ids rows caller Δ
-              (g.exports.map BodyBinding.exported ++ env) (path ++ [CoreStep.letRecBody])
+              (g.exports.map Binding.exported ++ env) (path ++ [CoreStep.letRecBody])
               body schemes (some (.exited (captured.extendGroup g)))
               (some ⟨bodySource⟩) expected ctors
             let completed ← finishBody (ids := ids) (rows := rows) (caller := caller)
@@ -6371,7 +6352,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               path g.originalHM result.bounds rfl
               (by
                 have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
-                    (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv captured.rhsEnv)
+                    (g.exports.map Binding.exported ++ ordinaryBodyEnv captured.rhsEnv)
                     g.body.stripFound result.bounds := by
                   simpa only [bodyEq, captured.bodyEnv] using result.typing
                 simpa only [Expr.stripFound, captured.bodyEnv] using
@@ -6383,7 +6364,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                 let members ← g.members.runtimeReady
                 let bodyReady ← result.runtimeReady
                 have bodyTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ
-                    (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv captured.rhsEnv)
+                    (g.exports.map Binding.exported ++ ordinaryBodyEnv captured.rhsEnv)
                     g.body.stripFound result.bounds := by
                   simpa only [bodyEq, captured.bodyEnv] using result.typing
                 have ready : BodyDerives.RuntimeReady bodyTyping := by
@@ -6664,13 +6645,13 @@ def checkBody {output metadata path vectors premises bodyTypes}
     rw [Expr.atCorePath_append, g.source]
     simp [Expr.atCorePath]
   let body ← walkBodySource output metadata BoundsTy.fvar BoundsTy.bvar ids rows caller Δ
-    (g.exports.map BodyBinding.exported)
+    (g.exports.map Binding.exported)
     (path ++ [.letRecBody]) g.body schemes (some (.exited (checkedGroupBodyCapture g)))
     (some ⟨bodySource⟩) expected ctors
   finishBody path g.originalHM body.bounds rfl
     (by
       have bodyTyping : BodyDerives ids rows Δ
-          (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv [])
+          (g.exports.map Binding.exported ++ ordinaryBodyEnv [])
           g.body.stripFound body.bounds := by
         simpa only [ordinaryBodyEnv, List.map_nil, List.append_nil] using body.typing
       simpa only [Expr.stripFound] using
@@ -6682,7 +6663,7 @@ def checkBody {output metadata path vectors premises bodyTypes}
       let ready ← body.runtimeReady
       pure ⟨by
         have bodyTyping : BodyDerives ids rows Δ
-            (g.exports.map BodyBinding.exported ++ ordinaryBodyEnv [])
+            (g.exports.map Binding.exported ++ ordinaryBodyEnv [])
             g.body.stripFound body.bounds := by
           simpa only [ordinaryBodyEnv, List.map_nil, List.append_nil] using body.typing
         have bodyReady : BodyDerives.RuntimeReady bodyTyping := by
