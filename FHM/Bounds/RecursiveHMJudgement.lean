@@ -2629,8 +2629,74 @@ def ScopedDerives.specializes
     h.specialize outer f outerFinite countTarget countScope typeLC typeTarget
       typeScope countFresh typeFresh
 
+theorem ScopedDerives.RuntimeReady.congr
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List Binding} {e : Expr} {β : BoundsTy}
+    {h h' : ScopedDerives types slots ids rows Δ env e β}
+    (ready : ScopedDerives.RuntimeReady h) : ScopedDerives.RuntimeReady h' := by
+  have same : h = h' := Subsingleton.elim _ _
+  cases same
+  exact ready
+
+/-- Reconciling the free source reader preserves an explicit specialization
+    certificate.  This matters once generalized rules no longer obtain that
+    certificate from the structural transport theorem. -/
+def ScopedDerives.Specializes.sourceFree
+    {types types' slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List Binding} {e : Expr} {β : BoundsTy}
+    {h : ScopedDerives types slots ids rows Δ env e β}
+    (stable : h.Specializes)
+    (agree : ∀ i ∈ e.tyFreeVars, types i = types' i) :
+    (h.sourceFree agree).Specializes := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let original := stable outer f outerFinite countTarget countScope typeLC typeTarget
+    typeScope countFresh typeFresh
+  have mappedAgree : ∀ i ∈ e.tyFreeVars,
+      mapFree f (bounds outer (types i)) = mapFree f (bounds outer (types' i)) := by
+    intro i used
+    rw [agree i used]
+  let typing := original.typing.sourceFree mappedAgree
+  refine ⟨typing, ?_⟩
+  intro ready arguments
+  have reverseAgree : ∀ i ∈ e.tyFreeVars, types' i = types i := by
+    intro i used
+    exact (agree i used).symm
+  have originalReady : ScopedDerives.RuntimeReady h :=
+    (ready.sourceFree reverseAgree).congr
+  exact (original.runtimeReady originalReady arguments).sourceFree mappedAgree
+
+/-- Reconciling the lexical source reader likewise preserves explicit
+    specialization stability and its runtime witness. -/
+def ScopedDerives.Specializes.sourceSlots
+    {types slots slots' : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List Binding} {e : Expr} {β : BoundsTy} {n : Nat}
+    {h : ScopedDerives types slots ids rows Δ env e β}
+    (stable : h.Specializes) (bounded : e.TyBvarBounded n)
+    (agree : ∀ i < n, slots i = slots' i) :
+    (h.sourceSlots bounded agree).Specializes := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let original := stable outer f outerFinite countTarget countScope typeLC typeTarget
+    typeScope countFresh typeFresh
+  have mappedAgree : ∀ i < n,
+      mapFree f (bounds outer (slots i)) = mapFree f (bounds outer (slots' i)) := by
+    intro i inside
+    rw [agree i inside]
+  let typing := original.typing.sourceSlots bounded mappedAgree
+  refine ⟨typing, ?_⟩
+  intro ready arguments
+  have reverseAgree : ∀ i < n, slots' i = slots i := by
+    intro i inside
+    exact (agree i inside).symm
+  have originalReady : ScopedDerives.RuntimeReady h :=
+    (ready.sourceSlots reverseAgree bounded).congr
+  exact (original.runtimeReady originalReady arguments).sourceSlots mappedAgree bounded
+
 #print axioms ScopedDerives.specialize
 #print axioms ScopedDerives.specializes
+#print axioms ScopedDerives.Specializes.sourceFree
+#print axioms ScopedDerives.Specializes.sourceSlots
 
 /-- Identity-slot specialization of the canonical scoped transport. -/
 theorem transportTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)

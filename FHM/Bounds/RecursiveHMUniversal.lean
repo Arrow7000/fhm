@@ -57,6 +57,7 @@ def Certified.sourceFree {s found captures env rhs sourceTypes sourceSlots sourc
   shape := cert.shape
   actualScope := cert.actualScope
   typing := cert.typing.sourceFree agree
+  specializes := cert.specializes.sourceFree agree
   inclusion := cert.inclusion
   typeFresh := cert.typeFresh
   exportTypeFresh := cert.exportTypeFresh
@@ -75,6 +76,7 @@ def Certified.sourceSlots {s found captures env rhs sourceTypes sourceSlots sour
   shape := cert.shape
   actualScope := cert.actualScope
   typing := cert.typing.sourceSlots bounded agree
+  specializes := cert.specializes.sourceSlots bounded agree
   inclusion := cert.inclusion
   typeFresh := cert.typeFresh
   exportTypeFresh := cert.exportTypeFresh

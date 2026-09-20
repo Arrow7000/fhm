@@ -309,11 +309,13 @@ def MemberChecked.certificate {output metadata path index captures premises type
     actualScope := h.implementation.actualScope
     inclusion := h.implementation.inclusion
     typing := ?_
+    specializes := ?_
     typeFresh := ?_
     exportTypeFresh := ?_
     countFresh := ?_
     exportCountFresh := ?_ }⟩
   · simpa only [he, slotsFor] using h.implementation.typing
+  · simpa only [he, slotsFor] using h.implementation.specializes
   · simpa only [he] using h.implementation.typeFresh
   · simpa only [he] using h.implementation.exportTypeFresh
   · simpa only [he] using h.implementation.countFresh
