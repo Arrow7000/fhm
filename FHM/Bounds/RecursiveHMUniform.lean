@@ -616,7 +616,9 @@ private def fixedBinding : Binding → BodyBinding
   | .recursive c => .recursive c
   | .exported s => .exported s
 
-def fixedBodyEnv (env : List Binding) : List BodyBinding := env.map fixedBinding
+def fixedBodyEnv (env : List Binding) : List BodyBinding := env
+
+theorem fixedBodyEnv_eq (env : List Binding) : fixedBodyEnv env = env := rfl
 
 private theorem ordinaryBodyEnv_exports (schemes : List HMCountScheme.Scheme) :
     ordinaryBodyEnv (schemes.map Binding.exported) = schemes.map Binding.exported := by
@@ -638,49 +640,21 @@ def RecursiveArgumentsSupported (env : List Binding) : Prop :=
 abbrev BodyBindingAt := BindingAt
 
 theorem BodyBindingAt.zero (bound free : Runtime.TypeEnv) (σ : Assign)
-    (binding : BodyBinding) (term : Expr) : BodyBindingAt bound free σ 0 binding term := by
-  have vacuous : ∀ β, Runtime.TermAt bound free σ 0 β term := by
-    intro β
-    unfold Runtime.TermAt
-    intro steps value _ before
-    omega
-  cases binding with
-  | mono β => exact vacuous β
-  | recursive c => exact fun _ _ _ _ => vacuous _
-  | exported s => exact fun _ _ _ _ _ _ => vacuous _
+    (binding : BodyBinding) (term : Expr) : BodyBindingAt bound free σ 0 binding term :=
+  BindingAt.zero bound free σ binding term
 
 theorem BodyBindingAt.prepend {bound free σ budget binding term next}
     (step : SmallStep.Step term next) (safe : BodyBindingAt bound free σ budget binding next) :
-    BodyBindingAt bound free σ (budget + 1) binding term := by
-  cases binding with
-  | mono β => exact Runtime.TermAt.prepend step safe
-  | recursive c =>
-      exact fun Δ caller used premises => Runtime.TermAt.prepend step (safe Δ caller used premises)
-  | exported s =>
-      exact fun Δ found caller used arguments premises =>
-        Runtime.TermAt.prepend step (safe Δ found caller used arguments premises)
+    BodyBindingAt bound free σ (budget + 1) binding term :=
+  BindingAt.prepend step safe
 
 abbrev BodyEnvAt := EnvAt
 
 def BodyEnvAt.down {bound free σ small large env}
     (e : BodyEnvAt bound free σ large env)
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
-    (le : small ≤ large) : BodyEnvAt bound free σ small env := by
-  refine ⟨e.terms, e.arity, e.closed, ?_⟩
-  intro i inside
-  have actual := e.denotes i inside
-  cases kind : env[i] with
-  | mono β =>
-      simp only [BodyBindingAt, kind] at actual ⊢
-      exact actual.down hb hf le
-  | recursive c =>
-      simp only [BodyBindingAt, kind] at actual ⊢
-      intro Δ caller used premises
-      exact (actual Δ caller used premises).down hb hf le
-  | exported s =>
-      simp only [BodyBindingAt, kind] at actual ⊢
-      intro Δ found caller used arguments premises
-      exact (actual Δ found caller used arguments premises).down hb hf le
+    (le : small ≤ large) : BodyEnvAt bound free σ small env :=
+  EnvAt.down e hb hf le
 
 def BodyEnvAt.extend {bound free σ budget env}
     (e : BodyEnvAt bound free σ budget env) (binding : BodyBinding) (term : Expr)
@@ -704,7 +678,7 @@ def BodyEnvAt.extend {bound free σ budget env}
 def BodyEnvAt.extendMono {bound free σ budget env}
     (e : BodyEnvAt bound free σ budget env) (β : BoundsTy) (term : Expr)
     (closed : term.varsBelow 0 = true) (safe : Runtime.TermAt bound free σ budget β term) :
-    BodyEnvAt bound free σ budget (.mono β :: env) := e.extend (.mono β) term closed safe
+    BodyEnvAt bound free σ budget (.mono β :: env) := EnvAt.extendMono e β term closed safe
 
 /-- Tie one monomorphic recursive implementation while retaining an arbitrary
     generalized-body environment. This is the body-environment counterpart of
@@ -889,80 +863,37 @@ def BodyEnvAt.tieGroupCaptured {bound free σ innerEnv outerEnv}
 
 theorem BodyEnvAt.varMono {bound free σ budget env i β}
     (e : BodyEnvAt bound free σ budget env) (lookup : env[i]? = some (.mono β)) :
-    Runtime.TermAt bound free σ budget β ((Expr.var i).substN 0 e.terms) := by
-  obtain ⟨inside, entry⟩ := List.getElem?_eq_some_iff.mp lookup
-  rw [Runtime.closing_var e.terms e.closed i (by rw [e.arity]; exact inside)]
-  have meaning := e.denotes i inside
-  simpa only [BodyBindingAt, entry] using meaning
+    Runtime.TermAt bound free σ budget β ((Expr.var i).substN 0 e.terms) :=
+  EnvAt.varMono e lookup
 
 theorem BodyEnvAt.varRecursive {bound free σ budget env i c Δ caller}
     (e : BodyEnvAt bound free σ budget env) (lookup : env[i]? = some (.recursive c))
     (used : RecursiveHMContract.Use c.fixed Δ c.hm caller)
     (premises : ∀ p ∈ Δ, p.Holds σ) :
-    Runtime.TermAt bound free σ budget used.bounds ((Expr.var i).substN 0 e.terms) := by
-  obtain ⟨inside, entry⟩ := List.getElem?_eq_some_iff.mp lookup
-  rw [Runtime.closing_var e.terms e.closed i (by rw [e.arity]; exact inside)]
-  have meaning := e.denotes i inside
-  simp only [BodyBindingAt, entry] at meaning
-  exact meaning Δ caller used (used.usable σ premises)
+    Runtime.TermAt bound free σ budget used.bounds ((Expr.var i).substN 0 e.terms) :=
+  EnvAt.varRecursive e lookup used premises
 
 theorem BodyEnvAt.varExported {bound free σ budget env i s Δ found caller}
     (e : BodyEnvAt bound free σ budget env) (lookup : env[i]? = some (.exported s))
     (used : HMCountScheme.Use s Δ found caller)
     (arguments : ∀ a ∈ used.types, Runtime.Supported a)
     (premises : ∀ p ∈ Δ, p.Holds σ) :
-    Runtime.TermAt bound free σ budget used.bounds ((Expr.var i).substN 0 e.terms) := by
-  obtain ⟨inside, entry⟩ := List.getElem?_eq_some_iff.mp lookup
-  rw [Runtime.closing_var e.terms e.closed i (by rw [e.arity]; exact inside)]
-  have meaning := e.denotes i inside
-  simp only [BodyBindingAt, entry] at meaning
-  exact meaning Δ found caller used arguments (used.usable σ premises)
+    Runtime.TermAt bound free σ budget used.bounds ((Expr.var i).substN 0 e.terms) :=
+  EnvAt.varExported e lookup used arguments premises
 
 /-- The runtime interpretation of a fixed implementation environment is
     definitionally the ordinary recursive-RHS interpretation, with only the
     binding tag changed. -/
 def EnvAt.toFixedBody {bound free σ budget env}
     (e : EnvAt bound free σ budget env) :
-    BodyEnvAt bound free σ budget (fixedBodyEnv env) := by
-  refine ⟨e.terms, ?_, e.closed, ?_⟩
-  · simpa only [fixedBodyEnv, List.length_map] using e.arity
-  · intro i inside
-    have sourceInside : i < env.length := by
-      simpa only [fixedBodyEnv, List.length_map] using inside
-    have meaning := e.denotes i sourceInside
-    cases source : env[i] with
-    | mono β =>
-        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
-          BodyBindingAt, BindingAt] using meaning
-    | recursive c =>
-        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
-          BodyBindingAt, BindingAt] using meaning
-    | exported s =>
-        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
-          BodyBindingAt, BindingAt] using meaning
+    BodyEnvAt bound free σ budget (fixedBodyEnv env) := e
 
 /-- Conversely, fixed body assumptions forget back to the exact ordinary RHS
     environment without needing the all-arguments premise required at a
     generalized group exit. -/
 def BodyEnvAt.toFixedEnvAt {bound free σ budget env}
     (e : BodyEnvAt bound free σ budget (fixedBodyEnv env)) :
-    EnvAt bound free σ budget env := by
-  refine ⟨e.terms, ?_, e.closed, ?_⟩
-  · simpa only [fixedBodyEnv, List.length_map] using e.arity
-  · intro i inside
-    have bodyInside : i < (fixedBodyEnv env).length := by
-      simpa only [fixedBodyEnv, List.length_map] using inside
-    have meaning := e.denotes i bodyInside
-    cases source : env[i] with
-    | mono β =>
-        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
-          BodyBindingAt, BindingAt] using meaning
-    | recursive c =>
-        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
-          BodyBindingAt, BindingAt] using meaning
-    | exported s =>
-        simpa only [fixedBodyEnv, List.getElem_map, source, fixedBinding,
-          BodyBindingAt, BindingAt] using meaning
+    EnvAt bound free σ budget env := e
 
 /-- Forget the generalized body view of an ordinary RHS environment.  A body
     export for a recursive contract is stronger than the fixed in-group
@@ -3276,7 +3207,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
                 rw [realizedTerms]
                 exact List.getElem?_append_left rightInside
               exact Option.some.inj (left.symm.trans (entries.trans right))
-            simp only [opened, BodyEnvAt.extendMono, BodyEnvAt.extend]
+            simp only [opened, BodyEnvAt.extendMono, EnvAt.extendMono]
             simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss] at headEq ⊢
             exact headEq
           rw [openedTerms] at bodySafe
@@ -3351,7 +3282,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
                 rw [realizedTerms]
                 exact List.getElem?_append_left rightInside
               exact Option.some.inj (left.symm.trans (entries.trans right))
-            simp only [opened, BodyEnvAt.extendMono, BodyEnvAt.extend]
+            simp only [opened, BodyEnvAt.extendMono, EnvAt.extendMono]
             simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss] at headEq ⊢
             exact headEq
           rw [openedTerms] at bodySafe
