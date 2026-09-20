@@ -1786,6 +1786,10 @@ theorem localTypes_specialize (owned : List Nat) (rows : Bindings) (args : List 
 inductive ScopedBodyDerives :
     (Nat → BoundsTy) → (Nat → BoundsTy) → List Nat → Bindings →
     List Constraint → List BodyBinding → Expr → BoundsTy → Prop where
+  /-- The recursive-RHS judgment is the common structural core.  Generalized
+      bodies extend it only at genuine generalization boundaries. -/
+  | ordinary (typing : ScopedDerives types slots ids rows Δ env e β) :
+      ScopedBodyDerives types slots ids rows Δ env e β
   | literal {env p} : ScopedBodyDerives types slots ids rows Δ env (.primLit p) (boundInfoOfPrimLit p)
   | primBinOp {env op} : ScopedBodyDerives types slots ids rows Δ env (.primBinOp op) (Typed.primOpBounds op)
   | nil {env elem} : ScopedBodyDerives types slots ids rows Δ env (.ctor nilCtorName) (.list (.lit 0) (.lit 0) elem)
@@ -1936,6 +1940,7 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
     (h : ScopedBodyDerives types slots ids rows Δ env e β) :
     ∀ p, e = .primLit p → β = boundInfoOfPrimLit p := by
   induction h with
+  | ordinary typing => exact typing.primLitBounds
   | literal => intro p source; cases source; rfl
   | subsumption _ sub ih =>
       intro p source
@@ -2014,73 +2019,7 @@ private theorem fixedBodyEnv_pairBranch (env : List Binding) (p : MatchPattern)
 theorem rhsToFixedBody {types slots ids rows Δ env e β}
     (h : ScopedDerives types slots ids rows Δ env e β) :
     ScopedBodyDerives types slots ids rows Δ (fixedBodyEnv env) e β := by
-  induction h with
-  | literal => exact .literal
-  | primBinOp => exact .primBinOp
-  | nil => exact .nil
-  | boolCtor ctor => exact .boolCtor ctor
-  | ctor hn => exact .ctor hn
-  | cons _ _ sub ihh iht => exact .cons ihh iht sub
-  | consPartial _ ih => exact .consPartial ih
-  | pair _ _ ihLeft ihRight => exact .pair ihLeft ihRight
-  | pairPartial _ ih => exact .pairPartial ih
-  | varMono lookup =>
-      exact .varMono (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding])
-  | varRecursive lookup used =>
-      exact .varRecursive
-        (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding]) used
-  | varExported lookup used =>
-      exact .varExported
-        (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding]) used
-  | app _ _ sub ihf iha => exact .app ihf iha sub
-  | lambda annotation _ ih =>
-      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
-        ScopedBodyDerives.lambda annotation ih
-  | letMono annotation _ _ ihr ihb =>
-      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
-        ScopedBodyDerives.letMono annotation ihr ihb
-  | letRecMono annotation _ sub _ ihr ihb =>
-      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
-        ScopedBodyDerives.letRecMono annotation ihr sub ihb
-  | letRecMonoGroup demands annotationCount demandCount annotationsOK rhssTyping inclusions
-      bodyTyping ihRhss ihBody =>
-      refine .letRecMonoGroup demands annotationCount demandCount annotationsOK ?_ inclusions ?_
-      · intro i inside
-        simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using
-          ihRhss i inside
-      · simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using ihBody
-  | matchList _ coverage patterns bodies subs ihs ihb =>
-      refine .match_ (ctx := .list _ _ _) ihs coverage patterns ?_ subs
-      intro i br atIndex
-      simpa only [fixedBodyEnv_branch] using ihb i br atIndex
-  | matchBool _ coverage patterns bodies subs ihs ihb =>
-      refine .match_ (ctx := .bool) ihs coverage patterns ?_
-        (by simpa [BodyBranchContext.refine] using subs)
-      intro i br atIndex
-      simpa [BodyBranchContext.extend, BodyBranchContext.refine] using ihb i br atIndex
-  | matchPair _ coverage patterns bodies subs ihs ihb =>
-      refine .match_ (ctx := .pair _ _) ihs coverage patterns ?_
-        (by simpa [BodyBranchContext.refine] using subs)
-      intro i br atIndex
-      simpa [fixedBodyEnv_pairBranch, BodyBranchContext.refine] using ihb i br atIndex
-  | matchNominal fieldss actuals _ coverage fields bodies subs ihs ihb =>
-      refine .match_ (ctx := .nominal _ _ _) ihs coverage ?_ ?_
-        (by simpa [BodyBranchContext.refine] using subs)
-      · intro br member
-        obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
-        exact ⟨fieldss i, fields i br atIndex⟩
-      · intro i br atIndex
-        have valid := fields i br atIndex
-        have fieldEq : (some (fieldss i)).getD [] = fieldss i := rfl
-        unfold NominalBranches.PatternFields at valid
-        rw [← valid] at fieldEq
-        simpa [fixedBodyEnv, BodyBranchContext.extend, BodyBranchContext.refine,
-          fieldEq, fixedBinding] using ihb i br atIndex
-  | matchOpaque _ patterns bodies subs ihs ihb =>
-      refine .match_ (ctx := .wildcardOnly _) ihs patterns patterns ?_
-        (by simpa [BodyBranchContext.refine] using subs)
-      intro i br atIndex
-      simpa [BodyBranchContext.extend, BodyBranchContext.refine] using ihb i br atIndex
+  simpa only [fixedBodyEnv] using ScopedBodyDerives.ordinary h
 
 #print axioms rhsToFixedBody
 
@@ -2474,6 +2413,7 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
     (h : ScopedBodyDerives types slots ids rows Δ env e β) (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
     ScopedBodyDerives types slots ids rows Δ' env e β := by
   induction h generalizing Δ' with
+  | ordinary typing => exact .ordinary (typing.assuming hp)
   | literal => exact .literal
   | primBinOp => exact .primBinOp
   | nil => exact .nil
@@ -2567,6 +2507,7 @@ theorem BodyBranchContext.extend_length {ctx : BodyBranchContext} {pat env}
 theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
     (h : ScopedBodyDerives types slots ids rows Δ env e β) : e.varsBelow env.length = true := by
   induction h with
+  | ordinary typing => exact typing.varsBelow
   | literal | primBinOp | nil | boolCtor | ctor => rfl
   | cons _ _ _ ihh iht => simp [Expr.varsBelow, ihh, iht]
   | consPartial _ ih => simpa [Expr.varsBelow] using ih
@@ -2747,6 +2688,8 @@ inductive RuntimeReady :
     {types slots : Nat → BoundsTy} → {ids : List Nat} → {rows : Bindings} →
     {Δ : List Constraint} → {env : List BodyBinding} → {e : Expr} → {β : BoundsTy} →
     ScopedBodyDerives types slots ids rows Δ env e β → Prop where
+  | ordinary {typing : ScopedDerives types slots ids rows Δ env e β} :
+      ScopedDerives.RuntimeReady typing → RuntimeReady (.ordinary typing)
   | literal : RuntimeReady (.literal (p := p))
   | primBinOp : RuntimeReady (.primBinOp (op := op))
   | nil : Runtime.Supported elem → RuntimeReady (.nil (elem := elem))
@@ -2903,9 +2846,19 @@ inductive RuntimeReady :
         Runtime.Supported (g.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds) →
       RuntimeReady hbody → RuntimeReady (.letRecFixed g universal hbody)
 
+theorem RuntimeReady.congr
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding} {e : Expr} {β : BoundsTy}
+    {h h' : ScopedBodyDerives types slots ids rows Δ env e β}
+    (ready : RuntimeReady h) : RuntimeReady h' := by
+  have same : h = h' := Subsingleton.elim _ _
+  cases same
+  exact ready
+
 theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBodyDerives types slots ids rows Δ env e β}
     (ready : RuntimeReady h) : Runtime.Supported β := by
   induction ready with
+  | ordinary ready => exact ready.supported
   | literal => cases ‹PrimLitExpr› <;> exact .prim
   | primBinOp => cases ‹PrimBinOp› <;> first | exact .arrow .prim (.arrow .prim .prim) | exact .arrow .prim (.arrow .prim .bool)
   | nil elem => exact .list elem
@@ -2940,6 +2893,9 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
     ∀ budget, (∀ p ∈ Δ, p.Holds σ) → (e : BodyEnvAt bound free σ budget env) →
       Runtime.TermAt bound free σ budget β (expr.substN 0 e.terms) := by
   induction ready with
+  | ordinary ready =>
+      intro budget premises e
+      exact ready.termAt bound free σ hb hf budget premises e
   | subsumption sub inner demand ih =>
       intro budget premises e
       exact (ih budget premises e).of_values
@@ -3544,6 +3500,7 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
     {h : ScopedBodyDerives types slots ids rows Δ env expr β} (ready : RuntimeReady h)
     (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) : RuntimeReady (h.assuming hp) := by
   induction ready generalizing Δ' with
+  | ordinary original => exact .ordinary (original.assuming hp)
   | literal => exact .literal
   | primBinOp => exact .primBinOp
   | nil elem => exact .nil elem
@@ -3620,78 +3577,9 @@ end BodyDerives
 theorem rhsReadyToFixedBody {types slots ids rows Δ env e β}
     {h : ScopedDerives types slots ids rows Δ env e β}
     (ready : ScopedDerives.RuntimeReady h) :
-    BodyDerives.RuntimeReady (rhsToFixedBody h) := by
-  induction ready with
-  | literal => exact .literal
-  | primBinOp => exact .primBinOp
-  | nil supported => exact .nil supported
-  | boolCtor ctor => exact .boolCtor ctor
-  | cons sub _ _ ihh iht => exact .cons sub ihh iht
-  | consPartial _ ih => exact .consPartial ih
-  | pair _ _ ihLeft ihRight => exact .pair ihLeft ihRight
-  | pairPartial _ supported ih => exact .pairPartial ih supported
-  | varMono lookup supported =>
-      exact .varMono
-        (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding]) supported
-  | varRecursive lookup used supported =>
-      exact .varRecursive
-        (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding]) used supported
-  | varExported lookup used supported arguments =>
-      exact .varExported
-        (by simpa [fixedBodyEnv, List.getElem?_map, lookup, fixedBinding]) used supported arguments
-  | app sub _ _ ihf iha => exact .app sub ihf iha
-  | lambda annotation supported _ ih =>
-      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
-        BodyDerives.RuntimeReady.lambda annotation supported ih
-  | letMono annotation _ _ ihr ihb =>
-      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
-        BodyDerives.RuntimeReady.letMono annotation ihr ihb
-  | letRecMono annotation sub _ demand _ ihr ihb =>
-      simpa only [fixedBodyEnv, List.map_cons, fixedBinding] using
-        BodyDerives.RuntimeReady.letRecMono annotation sub ihr demand ihb
-  | letRecMonoGroup annotations rhss body demands rhssReady demandsSupported bodyReady
-      ihRhss ihBody =>
-      rename_i Δ0 env0 result actuals annotationCount demandCount annotationsOK
-        rhssTyping inclusions bodyTyping
-      refine .letRecMonoGroup annotations rhss body demands
-        (annotationCount := annotationCount) (demandCount := demandCount)
-        (annotationsOK := annotationsOK)
-        (rhssTyping := fun i inside => by
-          simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using
-            rhsToFixedBody (rhssTyping i inside))
-        (inclusions := inclusions)
-        (bodyTyping := by
-          simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using
-            rhsToFixedBody bodyTyping)
-        (fun i inside => by
-          simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using
-            ihRhss i inside)
-        demandsSupported
-        (by
-          simpa [fixedBodyEnv, List.map_append, Function.comp_def, fixedBinding] using ihBody)
-  | matchList coverage patterns bodies subs _ _ supported ihs ihb =>
-      refine .match_ (ctx := .list _ _ _) coverage patterns
-        (fun i br atIndex => by
-          simpa only [fixedBodyEnv_branch] using rhsToFixedBody (bodies i br atIndex))
-        subs (by trivial) ihs ?_ supported
-      intro i br atIndex
-      simpa only [fixedBodyEnv_branch] using ihb i br atIndex
-  | matchBool coverage patterns bodies subs _ _ supported ihs ihb =>
-      refine .match_ (ctx := .bool) coverage patterns
-        (fun i br atIndex => by
-          simpa [BodyBranchContext.refine, BodyBranchContext.extend] using
-            rhsToFixedBody (bodies i br atIndex))
-        (by simpa [BodyBranchContext.refine] using subs) (by trivial) ihs ?_ supported
-      intro i br atIndex
-      simpa [BodyBranchContext.refine, BodyBranchContext.extend] using ihb i br atIndex
-  | matchPair coverage patterns bodies subs _ _ supported ihs ihb =>
-      refine .match_ (ctx := .pair _ _) coverage patterns
-        (fun i br atIndex => by
-          simpa [fixedBodyEnv_pairBranch, BodyBranchContext.refine] using
-            rhsToFixedBody (bodies i br atIndex))
-        (by simpa [BodyBranchContext.refine] using subs) (by trivial) ihs ?_ supported
-      intro i br atIndex
-      simpa [fixedBodyEnv_pairBranch, BodyBranchContext.refine] using ihb i br atIndex
+    BodyDerives.RuntimeReady (rhsToFixedBody h) :=
+  (BodyDerives.RuntimeReady.ordinary ready).congr
+
 #print axioms rhsReadyToFixedBody
 
 /-- Runtime readiness is proof-irrelevant once equalities expose the same

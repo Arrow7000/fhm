@@ -201,6 +201,17 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
       (∀ i br, branches[i]? = some br → SemanticSub Δ (actuals i) result) →
       ScopedDerives types slots ids rows Δ env (.match_ scrut branches) result
 
+/-- Semantic interval weakening cannot change a literal's HM primitive type. -/
+theorem ScopedDerives.primLitBounds {types slots ids rows Δ env e β}
+    (h : ScopedDerives types slots ids rows Δ env e β) :
+    ∀ p, e = .primLit p → β = boundInfoOfPrimLit p := by
+  induction h with
+  | literal => intro p source; cases source; rfl
+  | primBinOp | nil | boolCtor | ctor | cons | consPartial | pair | pairPartial |
+      varMono | varRecursive | varExported | app | lambda | letMono | letRecMono |
+      letRecMonoGroup | matchList | matchBool | matchPair | matchNominal | matchOpaque =>
+        intro p source; cases source
+
 /-- Compatibility view: the original API leaves lexical slots unchanged. -/
 abbrev Derives (types : Nat → BoundsTy) := ScopedDerives types BoundsTy.bvar
 
