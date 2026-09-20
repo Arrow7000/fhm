@@ -631,24 +631,9 @@ def RecursiveArgumentsSupported (env : List Binding) : Prop :=
     Supporting all arguments matters even for unused quantifier slots. -/
 abbrev BodyBindingAt := BindingAt
 
-theorem BodyBindingAt.zero (bound free : Runtime.TypeEnv) (σ : Assign)
-    (binding : BodyBinding) (term : Expr) : BodyBindingAt bound free σ 0 binding term :=
-  BindingAt.zero bound free σ binding term
-
-theorem BodyBindingAt.prepend {bound free σ budget binding term next}
-    (step : SmallStep.Step term next) (safe : BodyBindingAt bound free σ budget binding next) :
-    BodyBindingAt bound free σ (budget + 1) binding term :=
-  BindingAt.prepend step safe
-
 abbrev BodyEnvAt := EnvAt
 
-def BodyEnvAt.down {bound free σ small large env}
-    (e : BodyEnvAt bound free σ large env)
-    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
-    (le : small ≤ large) : BodyEnvAt bound free σ small env :=
-  EnvAt.down e hb hf le
-
-def BodyEnvAt.extend {bound free σ budget env}
+def EnvAt.extend {bound free σ budget env}
     (e : BodyEnvAt bound free σ budget env) (binding : BodyBinding) (term : Expr)
     (closed : term.varsBelow 0 = true) (safe : BodyBindingAt bound free σ budget binding term) :
     BodyEnvAt bound free σ budget (binding :: env) where
@@ -666,11 +651,6 @@ def BodyEnvAt.extend {bound free σ budget env}
     | succ i =>
         have small : i < env.length := by simp only [List.length_cons] at inside; omega
         simpa only [List.getElem_cons_succ] using e.denotes i small
-
-def BodyEnvAt.extendMono {bound free σ budget env}
-    (e : BodyEnvAt bound free σ budget env) (β : BoundsTy) (term : Expr)
-    (closed : term.varsBelow 0 = true) (safe : Runtime.TermAt bound free σ budget β term) :
-    BodyEnvAt bound free σ budget (.mono β :: env) := EnvAt.extendMono e β term closed safe
 
 /-- Tie one monomorphic recursive implementation while retaining an arbitrary
     generalized-body environment. This is the body-environment counterpart of
@@ -701,7 +681,7 @@ def BodyEnvAt.tieMono {bound free σ env demand rhs ann}
       refine ⟨{ terms := recursive ++ outer.terms
                 arity := ?_
                 closed := ?_
-                denotes := fun i inside => BodyBindingAt.zero bound free σ _ _ }, rfl⟩
+                denotes := fun i inside => BindingAt.zero bound free σ _ _ }, rfl⟩
       · simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss, outer.arity]
       · intro term member
         exact (List.mem_append.mp member).elim (recursiveClosed term) (outer.closed term)
@@ -751,127 +731,6 @@ def BodyEnvAt.tieMono {bound free σ env demand rhs ann}
             simpa only [List.getElem_cons_succ, List.getElem_append_right,
               show recursive.length = 1 by
                 simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss]] using meaning
-
-/-- Simultaneously tie an arbitrary body-environment prefix while retaining
-    its already realized outer lexical environment.  This is the generalized
-    body counterpart of `EnvAt.tieGroupCaptured`; the caller still has to
-    prove the meaning of every member under the complete cyclic environment. -/
-def BodyEnvAt.tieGroupCaptured {bound free σ innerEnv outerEnv}
-    (annotations : List (Option PolyTy)) (rhss : List Expr)
-    (arity : rhss.length = innerEnv.length)
-    (scope : ∀ rhs ∈ rhss, rhs.varsBelow (rhss.length + outerEnv.length) = true)
-    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
-    (rhsSafe : ∀ budget (e : BodyEnvAt bound free σ budget (innerEnv ++ outerEnv))
-      i (inside : i < innerEnv.length),
-      BodyBindingAt bound free σ budget innerEnv[i]
-        (rhss[i]'(by rw [arity]; exact inside) |>.substN 0 e.terms)) :
-    ∀ budget (outer : BodyEnvAt bound free σ budget outerEnv),
-      { e : BodyEnvAt bound free σ budget (innerEnv ++ outerEnv) //
-        e.terms = Runtime.recursiveTerms annotations (closeOuterRhss rhss outer.terms) ++
-          outer.terms }
-  | 0, outer => by
-      let closedRhss := closeOuterRhss rhss outer.terms
-      let recursive := Runtime.recursiveTerms annotations closedRhss
-      have closedScope : ∀ source ∈ closedRhss,
-          source.varsBelow rhss.length = true := by
-        intro source member
-        obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
-        apply Runtime.closing_scoped outer.terms outer.closed original rhss.length
-        rw [outer.arity]
-        exact scope original originalMember
-      have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true :=
-        Runtime.recursiveTerms_closed (by
-          simpa only [closedRhss, closeOuterRhss_length] using closedScope)
-      refine ⟨{ terms := recursive ++ outer.terms
-                arity := ?_
-                closed := ?_
-                denotes := fun i inside => BodyBindingAt.zero bound free σ _ _ }, rfl⟩
-      · simp only [List.length_append, recursive, Runtime.recursiveTerms, List.length_map,
-          closedRhss, closeOuterRhss_length, outer.arity, arity]
-      · intro term member
-        exact (List.mem_append.mp member).elim (recursiveClosed term) (outer.closed term)
-  | budget + 1, outer => by
-      let previousOuter := outer.down hb hf (by omega : budget ≤ budget + 1)
-      let previous := BodyEnvAt.tieGroupCaptured annotations rhss arity scope hb hf rhsSafe
-        budget previousOuter
-      let closedRhss := closeOuterRhss rhss outer.terms
-      let recursive := Runtime.recursiveTerms annotations closedRhss
-      have closedScope : ∀ source ∈ closedRhss,
-          source.varsBelow rhss.length = true := by
-        intro source member
-        obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
-        apply Runtime.closing_scoped outer.terms outer.closed original rhss.length
-        rw [outer.arity]
-        exact scope original originalMember
-      have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true :=
-        Runtime.recursiveTerms_closed (by
-          simpa only [closedRhss, closeOuterRhss_length] using closedScope)
-      refine ⟨{ terms := recursive ++ outer.terms
-                arity := ?_
-                closed := ?_
-                denotes := ?_ }, rfl⟩
-      · simp only [List.length_append, recursive, Runtime.recursiveTerms, List.length_map,
-          closedRhss, closeOuterRhss_length, outer.arity, arity]
-      · intro term member
-        exact (List.mem_append.mp member).elim (recursiveClosed term) (outer.closed term)
-      · intro i inside
-        by_cases inner : i < innerEnv.length
-        · have rhsInside : i < rhss.length := by rw [arity]; exact inner
-          have safe := rhsSafe budget previous.val i inner
-          have previousTerms : previousOuter.terms = outer.terms := rfl
-          rw [previous.property, previousTerms] at safe
-          have composed := Runtime.closing_compose outer.terms recursive outer.closed
-            recursiveClosed (rhss[i]'rhsInside) 0
-          have recursiveLength : recursive.length = rhss.length := by
-            simp only [recursive, Runtime.recursiveTerms, List.length_map,
-              closedRhss, closeOuterRhss_length]
-          rw [Nat.zero_add, recursiveLength] at composed
-          rw [← composed] at safe
-          have closedInside : i < closedRhss.length := by
-            rw [closeOuterRhss_length]
-            exact rhsInside
-          have recursiveInside : i < recursive.length := by rw [recursiveLength]; exact rhsInside
-          have rhsEntry : closedRhss[i]'closedInside =
-              (rhss[i]'rhsInside).substN rhss.length outer.terms := by
-            simp only [closedRhss, closeOuterRhss, List.getElem_map]
-          have recursiveEntry : recursive[i]'recursiveInside =
-              .letRec annotations closedRhss (closedRhss[i]'closedInside) := by
-            simp only [recursive, Runtime.recursiveTerms, List.getElem_map]
-          rw [List.getElem_append_left inner, List.getElem_append_left recursiveInside]
-          rw [recursiveEntry, rhsEntry]
-          exact BodyBindingAt.prepend SmallStep.Step.letRecUnfold safe
-        · have outerInside : i - innerEnv.length < outerEnv.length := by
-            simp only [List.length_append] at inside
-            omega
-          have meaning := outer.denotes (i - innerEnv.length) outerInside
-          have recursiveLength : recursive.length = innerEnv.length := by
-            simp only [recursive, Runtime.recursiveTerms, List.length_map,
-              closedRhss, closeOuterRhss_length, arity]
-          have envPosition : innerEnv.length ≤ i := by omega
-          have recursivePosition : recursive.length ≤ i := by rw [recursiveLength]; exact envPosition
-          rw [List.getElem_append_right envPosition,
-            List.getElem_append_right recursivePosition]
-          simpa only [recursiveLength] using meaning
-
-theorem BodyEnvAt.varMono {bound free σ budget env i β}
-    (e : BodyEnvAt bound free σ budget env) (lookup : env[i]? = some (.mono β)) :
-    Runtime.TermAt bound free σ budget β ((Expr.var i).substN 0 e.terms) :=
-  EnvAt.varMono e lookup
-
-theorem BodyEnvAt.varRecursive {bound free σ budget env i c Δ caller}
-    (e : BodyEnvAt bound free σ budget env) (lookup : env[i]? = some (.recursive c))
-    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller)
-    (premises : ∀ p ∈ Δ, p.Holds σ) :
-    Runtime.TermAt bound free σ budget used.bounds ((Expr.var i).substN 0 e.terms) :=
-  EnvAt.varRecursive e lookup used premises
-
-theorem BodyEnvAt.varExported {bound free σ budget env i s Δ found caller}
-    (e : BodyEnvAt bound free σ budget env) (lookup : env[i]? = some (.exported s))
-    (used : HMCountScheme.Use s Δ found caller)
-    (arguments : ∀ a ∈ used.types, Runtime.Supported a)
-    (premises : ∀ p ∈ Δ, p.Holds σ) :
-    Runtime.TermAt bound free σ budget used.bounds ((Expr.var i).substN 0 e.terms) :=
-  EnvAt.varExported e lookup used arguments premises
 
 /-- The runtime interpretation of a fixed implementation environment is
     definitionally the ordinary recursive-RHS interpretation, with only the
@@ -947,7 +806,6 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironment
   have rhs := List.getElem?_eq_some_iff.mp (g.memberAtRhs i sourceInside)
   simpa only [Runtime.recursiveTerms, List.getElem_map, rhs.2, Expr.stripFound] using safe
 
-#print axioms BodyEnvAt.varExported
 #print axioms HMDeclaredGroup.Checked.exportEnvironment
 
 /-- Generalized exits of a captured group are realized by the same tied source
@@ -969,7 +827,7 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCaptured
         (g.exports.map Binding.exported ++ ordinaryBodyEnv outerEnv) //
       e.terms = Runtime.recursiveTerms g.annotations
         (closeOuterRhss (g.rhss.map Expr.stripFound) outer.terms) ++ outer.terms } := by
-  let outerRhs := outer.toEnvAt outerArguments
+  let outerRhs := BodyEnvAt.toEnvAt outer outerArguments
   let closedRhss := closeOuterRhss (g.rhss.map Expr.stripFound) outer.terms
   let recursive := Runtime.recursiveTerms g.annotations closedRhss
   have closedScope : ∀ rhs ∈ closedRhss,
@@ -1087,7 +945,7 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCapturedFixed
         (g.exports.map Binding.exported ++ fixedBodyEnv outerEnv) //
       e.terms = Runtime.recursiveTerms g.annotations
         (closeOuterRhss (g.rhss.map Expr.stripFound) outer.terms) ++ outer.terms } := by
-  let outerRhs := outer.toFixedEnvAt
+  let outerRhs := BodyEnvAt.toFixedEnvAt outer
   let closedRhss := closeOuterRhss (g.rhss.map Expr.stripFound) outer.terms
   let recursive := Runtime.recursiveTerms g.annotations closedRhss
   have closedScope : ∀ rhs ∈ closedRhss,
@@ -2967,7 +2825,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
                 (rhssReady i rhsInside).supported
                 (demandsSupported demands[i] (List.getElem_mem demandInside))
                 bound free σ premises)
-          let realized := BodyEnvAt.tieGroupCaptured annotations rhss arity rhsScope hb hf
+          let realized := EnvAt.tieGroupCaptured annotations rhss arity rhsScope hb hf
             rhsSafe budget previous
           let closedRhss := closeOuterRhss rhss previous.terms
           let recursive := Runtime.recursiveTerms annotations closedRhss
@@ -3022,7 +2880,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
       | zero => unfold Runtime.TermAt; intro steps v _ before; omega
       | succ budget =>
           let previous := e.down hb hf (by omega : budget ≤ budget + 1)
-          let outerRhs := previous.toEnvAt outerArguments
+          let outerRhs := BodyEnvAt.toEnvAt previous outerArguments
           have rhsScope : ∀ source ∈ [rhs],
               source.varsBelow ([rhs].length + outerEnv.length) = true := by
             intro source member
@@ -3078,7 +2936,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
                 rw [realizedTerms]
                 exact List.getElem?_append_left rightInside
               exact Option.some.inj (left.symm.trans (entries.trans right))
-            simp only [opened, BodyEnvAt.extendMono, EnvAt.extendMono]
+            simp only [opened, EnvAt.extendMono, EnvAt.extendMono]
             simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss] at headEq ⊢
             exact headEq
           rw [openedTerms] at bodySafe
@@ -3099,7 +2957,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
       | zero => unfold Runtime.TermAt; intro steps v _ before; omega
       | succ budget =>
           let previous := e.down hb hf (by omega : budget ≤ budget + 1)
-          let outerRhs := previous.toEnvAt outerArguments
+          let outerRhs := BodyEnvAt.toEnvAt previous outerArguments
           have rhsScope : ∀ source ∈ [rhs],
               source.varsBelow ([rhs].length + outerEnv.length) = true := by
             intro source member
@@ -3153,7 +3011,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
                 rw [realizedTerms]
                 exact List.getElem?_append_left rightInside
               exact Option.some.inj (left.symm.trans (entries.trans right))
-            simp only [opened, BodyEnvAt.extendMono, EnvAt.extendMono]
+            simp only [opened, EnvAt.extendMono, EnvAt.extendMono]
             simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss] at headEq ⊢
             exact headEq
           rw [openedTerms] at bodySafe
@@ -3183,7 +3041,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
             rcases List.mem_append.mp member with outer | raw
             · exact premises p outer
             · exact rawPremises p raw
-          let opened := previous.extend (.exported s) (rhs.substN 0 e.terms) rhsClosed rhsSafe
+          let opened := EnvAt.extend previous (.exported s) (rhs.substN 0 e.terms) rhsClosed rhsSafe
           have bodySafe := ihb j premises opened
           apply Runtime.TermAt.prepend SmallStep.Step.letReduce
           change Runtime.TermAt bound free σ j _ (Expr.substN 0 (_ :: e.terms) _) at bodySafe
@@ -3220,7 +3078,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
                   simpa only [Expr.substN_of_closed scope] using instanceSafe
                 apply Runtime.TermAt.prepend SmallStep.Step.letRecUnfold
                 simpa only [List.map_cons, List.map_nil, Expr.substN_of_closed scope] using rhsSafe
-          let opened := previous.extend (.exported s) recursiveTerm recursiveClosed recursiveSafe
+          let opened := EnvAt.extend previous (.exported s) recursiveTerm recursiveClosed recursiveSafe
           have bodySafe := ihb j premises opened
           have openedTerms : opened.terms = recursiveTerm :: previous.terms := rfl
           rw [openedTerms] at bodySafe
@@ -3247,8 +3105,9 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           intro j before v len name args pat closedBody list contained applied selected
           obtain ⟨body, original, rfl⟩ := Runtime.firstMatch_unclose e.terms selected
           obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp original.mem
-          obtain ⟨refined, opened, terms⟩ := (e.down hb hf (by omega : j ≤ budget)).listBranch
-            hb hf list contained applied original (patterns _ original.mem)
+          obtain ⟨refined, opened, terms⟩ := BodyEnvAt.listBranch
+            (e.down hb hf (by omega : j ≤ budget)) hb hf list contained applied original
+            (patterns _ original.mem)
           have path : ∀ p ∈ pathΔ ++ RecursiveTyping.branchRefine pat lo hi, p.Holds σ := by
             intro p member
             rcases List.mem_append.mp member with outer | localPath
@@ -3293,8 +3152,9 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           intro j before left right pat closedBody leftMeaning rightMeaning selected
           obtain ⟨body, original, rfl⟩ := Runtime.firstMatch_unclose e.terms selected
           obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp original.mem
-          obtain ⟨opened, terms⟩ := (e.down hb hf (by omega : j ≤ budget)).pairBranch
-            hb hf leftMeaning rightMeaning (patterns _ original.mem)
+          obtain ⟨opened, terms⟩ := BodyEnvAt.pairBranch
+            (e.down hb hf (by omega : j ≤ budget)) hb hf leftMeaning rightMeaning
+            (patterns _ original.mem)
           have path : ∀ p ∈ pathΔ ++ (BodyBranchContext.pair leftTy rightTy).refine pat,
               p.Holds σ := by
             simpa only [BodyBranchContext.refine, List.append_nil] using premises
@@ -3335,7 +3195,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           let recursive := Runtime.recursiveTerms g.annotations closedRhss
           have closedScope : ∀ rhs ∈ closedRhss,
               rhs.varsBelow (g.rhss.map Expr.stripFound).length = true := by
-            let outerRhs := previous.toEnvAt outerArguments
+            let outerRhs := BodyEnvAt.toEnvAt previous outerArguments
             apply closeOuterRhss_scoped outerRhs
             simpa only [ordinaryBodyEnv, List.length_map, Nat.add_comm] using
               g.rhssScopedCaptured
@@ -3370,7 +3230,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           let recursive := Runtime.recursiveTerms g.annotations closedRhss
           have closedScope : ∀ rhs ∈ closedRhss,
               rhs.varsBelow (g.rhss.map Expr.stripFound).length = true := by
-            let outerRhs := previous.toFixedEnvAt
+            let outerRhs := BodyEnvAt.toFixedEnvAt previous
             apply closeOuterRhss_scoped outerRhs
             simpa only [fixedBodyEnv, List.length_map, Nat.add_comm] using
               g.rhssScopedCaptured
