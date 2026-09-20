@@ -277,6 +277,34 @@ def allMembers {output metadata path captures premises typeCaptures env index ve
       .cons (fun _ inst => fromCertified head.certificate.implementation inst f lc scope head.captured fixed)
         (allMembers rest f lc scope fixed)
 
+/-- The proof-level introduction package for one generalized recursive group.
+    Keeping the checked source artifact and its simultaneous universal member
+    evidence together prevents later body rules from accepting one without the
+    other.  This is also the narrow seam through which the concrete executable
+    group checker can later be replaced by an abstract group-introduction
+    interface without changing the body judgment again. -/
+structure GeneralizedGroup (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
+    (captures : List Nat) (premises : List Constraint) (bodyTypes : List Ty)
+    (outerEnv : List Binding) where
+  vectors : List (List Nat)
+  checked : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes outerEnv
+  universal : ∀ caller (f : Nat → BoundsTy)
+    (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (scope : ∀ i, BoundsScoped caller (f i))
+    (_fixed : CapturesFixed f (checked.interfaces.contracts.map Binding.recursive ++ outerEnv)),
+    Members f lc scope checked.members
+
+def GeneralizedGroup.ofChecked
+    {output metadata path vectors captures premises bodyTypes outerEnv}
+    (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes outerEnv)
+    (universal : ∀ caller (f : Nat → BoundsTy)
+      (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+      (scope : ∀ i, BoundsScoped caller (f i))
+      (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ outerEnv)),
+      Members f lc scope g.members) :
+    GeneralizedGroup output metadata path captures premises bodyTypes outerEnv :=
+  ⟨vectors, g, universal⟩
+
 /-- Select universal implementation evidence at the SAME total source/exit
     position used for the RHS certificate and fixed recursive contract. This
     cannot drop a member or select an independent member-local HM map. -/
@@ -1756,31 +1784,25 @@ inductive ScopedBodyDerives :
         ScopedBodyDerives types slots ids rows (Δ ++ ctx.refine br.1) (ctx.extend br.1 env) br.2 (actuals i)) →
       (∀ i br, branches[i]? = some br → SemanticSub (Δ ++ ctx.refine br.1) (actuals i) result) →
       ScopedBodyDerives types slots ids rows Δ env (.match_ scrut branches) result
-  | letRec {output metadata path vectors captures premises bodyTypes outerEnv bodyResult}
-      (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes outerEnv) :
-      (∀ caller (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
-        (scope : ∀ i, BoundsScoped caller (f i))
-        (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ outerEnv)),
-        Members f lc scope g.members) →
+  | letRec {output metadata path captures premises bodyTypes outerEnv bodyResult}
+      (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv) :
       ScopedBodyDerives types slots ids rows Δ
-        (g.exports.map Binding.exported ++ ordinaryBodyEnv outerEnv)
-        g.body.stripFound bodyResult →
+        (group.checked.exports.map Binding.exported ++ ordinaryBodyEnv outerEnv)
+        group.checked.body.stripFound bodyResult →
       ScopedBodyDerives types slots ids rows Δ (ordinaryBodyEnv outerEnv)
-        (.letRec g.annotations (g.rhss.map Expr.stripFound) g.body.stripFound) bodyResult
+        (.letRec group.checked.annotations (group.checked.rhss.map Expr.stripFound)
+          group.checked.body.stripFound) bodyResult
   /-- Introduce a nested generalized group while remaining inside an enclosing
       SCC. The new group's members become exported in its body, but captured
       recursive assumptions retain their fixed contracts. -/
-  | letRecFixed {output metadata path vectors captures premises bodyTypes outerEnv bodyResult}
-      (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes outerEnv) :
-      (∀ caller (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
-        (scope : ∀ i, BoundsScoped caller (f i))
-        (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ outerEnv)),
-        Members f lc scope g.members) →
+  | letRecFixed {output metadata path captures premises bodyTypes outerEnv bodyResult}
+      (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv) :
       ScopedBodyDerives types slots ids rows Δ
-        (g.exports.map Binding.exported ++ fixedBodyEnv outerEnv)
-        g.body.stripFound bodyResult →
+        (group.checked.exports.map Binding.exported ++ fixedBodyEnv outerEnv)
+        group.checked.body.stripFound bodyResult →
       ScopedBodyDerives types slots ids rows Δ (fixedBodyEnv outerEnv)
-        (.letRec g.annotations (g.rhss.map Expr.stripFound) g.body.stripFound) bodyResult
+        (.letRec group.checked.annotations (group.checked.rhss.map Expr.stripFound)
+          group.checked.body.stripFound) bodyResult
 
 /-- Identity-interpreted compatibility view of the same body judgment. -/
 abbrev BodyDerives := ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar
@@ -2242,8 +2264,8 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
       exact .match_ (ihs hp) (coverage.assuming hp) patterns
         (fun i br hb => iharms i br hb (RecursiveTyping.assuming_append hp))
         (fun i br hb => (subs i br hb).assuming (RecursiveTyping.assuming_append hp))
-  | letRec g universal _ ihbody => exact .letRec g universal (ihbody hp)
-  | letRecFixed g universal _ ihbody => exact .letRecFixed g universal (ihbody hp)
+  | letRec group _ ihbody => exact .letRec group (ihbody hp)
+  | letRecFixed group _ ihbody => exact .letRecFixed group (ihbody hp)
 
 private theorem bodyBranches_scoped {depth branches}
     (bodies : ∀ br ∈ branches, br.2.varsBelow (depth + br.1.bindCount) = true) :
@@ -2344,19 +2366,21 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
       intro br member
       obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp member
       simpa only [BodyBranchContext.extend_length (patterns br member)] using ihb i br atIndex
-  | letRec g _ _ ihbody =>
+  | letRec group _ ihbody =>
+      let g := group.checked
       apply Runtime.letRec_scoped
       · intro rhs member
         simpa only [ordinaryBodyEnv, List.length_map, Nat.add_comm] using
           g.rhssScopedCaptured rhs member
-      · simpa only [List.length_append, List.length_map, g.exportCount,
+      · simpa only [List.length_append, List.length_map, group.checked.exportCount,
           ordinaryBodyEnv, Nat.add_comm] using ihbody
-  | letRecFixed g _ _ ihbody =>
+  | letRecFixed group _ ihbody =>
+      let g := group.checked
       apply Runtime.letRec_scoped
       · intro rhs member
         simpa only [fixedBodyEnv, List.length_map, Nat.add_comm] using
           g.rhssScopedCaptured rhs member
-      · simpa only [List.length_append, List.length_map, g.exportCount,
+      · simpa only [List.length_append, List.length_map, group.checked.exportCount,
           fixedBodyEnv, Nat.add_comm] using ihbody
 
 theorem BodyEnvAt.closes {bound free σ budget env types slots ids rows Δ expr β}
@@ -2590,34 +2614,30 @@ inductive RuntimeReady :
       RuntimeReady hs → (∀ i br atIndex, RuntimeReady (bodies i br atIndex)) →
       Runtime.Supported result → RuntimeReady (.match_ hs coverage patterns bodies subs)
   | letRec
-      (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes outerEnv)
-      (universal : ∀ caller (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
-        (scope : ∀ i, BoundsScoped caller (f i))
-        (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ outerEnv)),
-        Members f lc scope g.members)
+      (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
       {hbody : ScopedBodyDerives types slots ids rows Δ
-        (g.exports.map Binding.exported ++ ordinaryBodyEnv outerEnv)
-        g.body.stripFound result} :
-      (∀ offset (inside : offset < g.exports.length),
-        ScopedDerives.RuntimeReady (g.members.memberAt offset inside).rhs.certificate.implementation.typing) →
-      (∀ offset (inside : offset < g.exports.length),
-        Runtime.Supported (g.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds) →
+        (group.checked.exports.map Binding.exported ++ ordinaryBodyEnv outerEnv)
+        group.checked.body.stripFound result} :
+      (∀ offset (inside : offset < group.checked.exports.length),
+        ScopedDerives.RuntimeReady
+          (group.checked.members.memberAt offset inside).rhs.certificate.implementation.typing) →
+      (∀ offset (inside : offset < group.checked.exports.length),
+        Runtime.Supported
+          (group.checked.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds) →
       RecursiveArgumentsSupported outerEnv →
-      RuntimeReady hbody → RuntimeReady (.letRec g universal hbody)
+      RuntimeReady hbody → RuntimeReady (.letRec group hbody)
   | letRecFixed
-      (g : HMDeclaredGroup.Checked output metadata path vectors captures premises bodyTypes outerEnv)
-      (universal : ∀ caller (f : Nat → BoundsTy) (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
-        (scope : ∀ i, BoundsScoped caller (f i))
-        (_fixed : CapturesFixed f (g.interfaces.contracts.map Binding.recursive ++ outerEnv)),
-        Members f lc scope g.members)
+      (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
       {hbody : ScopedBodyDerives types slots ids rows Δ
-        (g.exports.map Binding.exported ++ fixedBodyEnv outerEnv)
-        g.body.stripFound result} :
-      (∀ offset (inside : offset < g.exports.length),
-        ScopedDerives.RuntimeReady (g.members.memberAt offset inside).rhs.certificate.implementation.typing) →
-      (∀ offset (inside : offset < g.exports.length),
-        Runtime.Supported (g.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds) →
-      RuntimeReady hbody → RuntimeReady (.letRecFixed g universal hbody)
+        (group.checked.exports.map Binding.exported ++ fixedBodyEnv outerEnv)
+        group.checked.body.stripFound result} :
+      (∀ offset (inside : offset < group.checked.exports.length),
+        ScopedDerives.RuntimeReady
+          (group.checked.members.memberAt offset inside).rhs.certificate.implementation.typing) →
+      (∀ offset (inside : offset < group.checked.exports.length),
+        Runtime.Supported
+          (group.checked.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds) →
+      RuntimeReady hbody → RuntimeReady (.letRecFixed group hbody)
 
 theorem RuntimeReady.congr
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
@@ -2653,8 +2673,8 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | letExported _ _ _ _ _ _ _ body => exact body
   | letRecExported _ _ _ _ _ _ _ body => exact body
   | match_ _ _ _ _ _ _ _ result => exact result
-  | letRec _ _ _ _ _ _ body => exact body
-  | letRecFixed _ _ _ _ _ body => exact body
+  | letRec _ _ _ _ _ body => exact body
+  | letRecFixed _ _ _ _ body => exact body
 
 /-- Fundamental theorem for the supported generalized-body derivation. Closed
     group introduction discharges recursive assumptions from the actual checked
@@ -3181,7 +3201,8 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           exact branchSafe
       | nominal ctors typeName args => exact False.elim capable
       | wildcardOnly scrutinee => exact False.elim capable
-  | letRec g universal membersReady demandSupport outerArguments bodyReady ihbody =>
+  | letRec group membersReady demandSupport outerArguments bodyReady ihbody =>
+      let g := group.checked
       intro budget premises e
       cases budget with
       | zero => unfold Runtime.TermAt; intro steps v _ before; omega
@@ -3216,7 +3237,8 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
             (.letRec g.annotations closedRhss
               (g.body.stripFound.substN (g.rhss.map Expr.stripFound).length previous.terms))
           exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
-  | letRecFixed g universal membersReady demandSupport bodyReady ihbody =>
+  | letRecFixed group membersReady demandSupport bodyReady ihbody =>
+      let g := group.checked
       intro budget premises e
       cases budget with
       | zero => unfold Runtime.TermAt; intro steps v _ before; omega
@@ -3337,10 +3359,10 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
         (fun i br atIndex => (subs i br atIndex).assuming (RecursiveTyping.assuming_append hp))
         capable (ihs hp)
         (fun i br atIndex => ihb i br atIndex (RecursiveTyping.assuming_append hp)) result
-  | letRec g universal members demand outerArguments _ ihb =>
-      exact .letRec g universal members demand outerArguments (ihb hp)
-  | letRecFixed g universal members demand _ ihb =>
-      exact .letRecFixed g universal members demand (ihb hp)
+  | letRec group members demand outerArguments _ ihb =>
+      exact .letRec group members demand outerArguments (ihb hp)
+  | letRecFixed group members demand _ ihb =>
+      exact .letRecFixed group members demand (ihb hp)
 
 #print axioms RuntimeReady.assuming
 
@@ -5792,6 +5814,8 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           let assembled ← HMDeclaredCoordinates.check sourceOutput metadata path captured.captureIds Δ
             typeCaptures captured.rhsEnv schemes ctors
           let g := assembled.checked
+          let group := GeneralizedGroup.ofChecked g
+            (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
           have sourceEq : Expr.found hm (Expr.letRec annotations rhss body) =
               Expr.found g.originalHM (Expr.letRec g.annotations g.rhss g.body) := by
             exact Option.some.inj (sourceProof.down.symm.trans g.source)
@@ -5815,9 +5839,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                   g.body.stripFound result.bounds := by
                 simpa only [bodyEq, captured.bodyEnv] using result.typing
               simpa only [Expr.stripFound, captured.bodyEnv] using
-                (ScopedBodyDerives.letRecFixed g
-                  (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
-                  bodyTyping))
+                (ScopedBodyDerives.letRecFixed group bodyTyping))
             (memberNodes g.members ++ result.nodes)
             (do
               let members ← g.members.runtimeReady
@@ -5830,8 +5852,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                 simpa only [bodyEq, captured.bodyEnv] using bodyReady.down
               pure ⟨by
                 simpa only [Expr.stripFound, captured.bodyEnv] using
-                  (BodyDerives.RuntimeReady.letRecFixed g
-                    (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
+                  (BodyDerives.RuntimeReady.letRecFixed group
                     (fun offset inside => (members.down offset inside).1)
                     (fun offset inside => (members.down offset inside).2)
                     ready)⟩)
@@ -5845,6 +5866,8 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             let assembled ← HMDeclaredCoordinates.check sourceOutput metadata path [] Δ
               typeCaptures captured.rhsEnv schemes ctors
             let g := assembled.checked
+            let group := GeneralizedGroup.ofChecked g
+              (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
             have sourceEq : Expr.found hm (Expr.letRec annotations rhss body) =
                 Expr.found g.originalHM (Expr.letRec g.annotations g.rhss g.body) := by
               exact Option.some.inj (sourceProof.down.symm.trans g.source)
@@ -5870,9 +5893,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                     g.body.stripFound result.bounds := by
                   simpa only [bodyEq, captured.bodyEnv] using result.typing
                 simpa only [Expr.stripFound, captured.bodyEnv] using
-                  (ScopedBodyDerives.letRec g
-                    (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
-                    bodyTyping))
+                  (ScopedBodyDerives.letRec group bodyTyping))
               (memberNodes g.members ++ result.nodes)
               (do
                 let members ← g.members.runtimeReady
@@ -5885,8 +5906,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                   simpa only [bodyEq, captured.bodyEnv] using bodyReady.down
                 pure ⟨by
                   simpa only [Expr.stripFound, captured.bodyEnv] using
-                    (BodyDerives.RuntimeReady.letRec g
-                      (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
+                    (BodyDerives.RuntimeReady.letRec group
                       (fun offset inside => (members.down offset inside).1)
                       (fun offset inside => (members.down offset inside).2)
                       captured.arguments ready)⟩)
@@ -6162,6 +6182,8 @@ def checkBody {output metadata path vectors premises bodyTypes}
     (g.exports.map Binding.exported)
     (path ++ [.letRecBody]) g.body schemes (some (.exited (checkedGroupBodyCapture g)))
     (some ⟨bodySource⟩) expected ctors
+  let group := GeneralizedGroup.ofChecked g
+    (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
   finishBody path g.originalHM body.bounds rfl
     (by
       have bodyTyping : BodyDerives ids rows Δ
@@ -6169,8 +6191,7 @@ def checkBody {output metadata path vectors premises bodyTypes}
           g.body.stripFound body.bounds := by
         simpa only [ordinaryBodyEnv, List.map_nil, List.append_nil] using body.typing
       simpa only [Expr.stripFound] using
-        BodyDerives.letRec g
-          (fun _ f lc scope fixed => allMembers g.members f lc scope fixed) bodyTyping)
+        BodyDerives.letRec group bodyTyping)
     (memberNodes g.members ++ body.nodes)
     (do
       let members ← g.members.runtimeReady
@@ -6183,8 +6204,7 @@ def checkBody {output metadata path vectors premises bodyTypes}
         have bodyReady : BodyDerives.RuntimeReady bodyTyping := by
           simpa only [ordinaryBodyEnv, List.map_nil, List.append_nil] using ready.down
         simpa only [Expr.stripFound] using
-          (BodyDerives.RuntimeReady.letRec g
-            (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
+          (BodyDerives.RuntimeReady.letRec group
             (fun offset inside => (members.down offset inside).1)
             (fun offset inside => (members.down offset inside).2)
             (by simp [RecursiveArgumentsSupported]) bodyReady)⟩)
