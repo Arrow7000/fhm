@@ -38,6 +38,7 @@ structure Certified (s : HMCountScheme.Scheme) (found : Ty) (captures : List Ty)
   shape : Synth.BoundsTy.toTy actual = found.eraseBounds
   actualScope : BoundsScoped (s.counts.quantified ++ s.counts.captures) actual
   typing : ScopedDerives sourceTypes sourceSlots (s.counts.quantified ++ s.counts.captures) [] s.counts.premises env rhs actual
+  specializes : ScopedDerives.Specializes typing := ScopedDerives.specializes typing
   inclusion : SemanticSub s.counts.premises actual opening.bounds
   typeFresh : ∀ c, .recursive c ∈ env → ∀ i ∈ opening.ids, i ∉ c.template.hm.body.freeVars
   exportTypeFresh : ∀ t, .exported t ∈ env → ∀ i ∈ opening.ids, i ∉ t.hm.body.freeVars
@@ -242,7 +243,7 @@ theorem useScopedInterpreted {s found captures env rhs sourceTypes sourceSlots} 
   let f := argument cert.opening.ids (SchemeUse.vector types)
   have fLC := replacementLC cert.opening.ids (SchemeUse.vector types) (argumentsLC types lc)
   have fScope := replacementScope cert.opening.ids (SchemeUse.vector types) (SchemeUse.vector_scope scope)
-  let specialized := cert.typing.specialize rows f inst.finite caller
+  let specialized := cert.specializes rows f inst.finite caller
     (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2)
     fLC caller fScope (countFresh cert inst) (typeFresh cert _ rows)
   have ha : mapFree f (bounds rows cert.actual) = actual cert counts types := by
@@ -392,7 +393,8 @@ def fromScopedChecked {output path} (node : HMFoundView.AtNode output path)
     (exportCountFresh : ∀ t, .exported t ∈ env → ∀ i ∈ t.counts.captures, i ∉ s.counts.quantified) :
     Certified s (ScopedHMInterpretation.AtNode.view node sourceTypes sourceSlots)
       captures env node.inner.stripFound sourceTypes sourceSlots := by
-  refine ⟨opening, typed.actual, ?_, typed.checked.inScope, typed.derivation, inclusion,
+  refine ⟨opening, typed.actual, ?_, typed.checked.inScope, typed.derivation,
+    ScopedDerives.specializes typed.derivation, inclusion,
     typeFresh, exportTypeFresh, countFresh, exportCountFresh⟩
   rw [← typed.checked.shape]
   exact (FreeAlgebra.shape_erased _).symm

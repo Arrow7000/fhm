@@ -2601,7 +2601,36 @@ def ScopedDerives.specialize
     (ready.counts outer outerFinite countTarget countScope countFresh).types
       f typeLC typeTarget typeScope arguments typeFresh⟩
 
+/-- Closure of one derivation under every lawful enclosing count/HM
+    specialization.  Universal certificates store this property explicitly;
+    the current structural fragment obtains it from `ScopedDerives.specialize`,
+    while generalized rules may supply a stronger construction directly. -/
+def ScopedDerives.Specializes
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List Binding} {e : Expr} {β : BoundsTy}
+    (h : ScopedDerives types slots ids rows Δ env e β) : Prop :=
+  ∀ (outer : Bindings) (f : Nat → BoundsTy)
+    (outerFinite : Finite outer) (countTarget : List Nat)
+    (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+    (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (typeTarget : List Nat)
+    (typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i))
+    (countFresh : CountCapturesFixed outer env)
+    (typeFresh : CapturesFixed f (env.map (mapCountBinding outer))),
+    ScopedDerives.Specialized h outer f outerFinite countTarget countScope
+      typeLC typeTarget typeScope countFresh typeFresh
+
+def ScopedDerives.specializes
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List Binding} {e : Expr} {β : BoundsTy}
+    (h : ScopedDerives types slots ids rows Δ env e β) : h.Specializes :=
+  fun outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+      countFresh typeFresh =>
+    h.specialize outer f outerFinite countTarget countScope typeLC typeTarget
+      typeScope countFresh typeFresh
+
 #print axioms ScopedDerives.specialize
+#print axioms ScopedDerives.specializes
 
 /-- Identity-slot specialization of the canonical scoped transport. -/
 theorem transportTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)

@@ -84,7 +84,7 @@ def fromCertified {s found typeCaptures env rhs sourceTypes sourceSlots}
     | exported s =>
         cases he
         exact fixed.exported ho
-  let specialized := cert.typing.specialize rows f inst.finite caller
+  let specialized := cert.specializes rows f inst.finite caller
     (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2)
     lc caller scope countKeep typeKeep
   have envFixed := RecursiveHMEnvironment.instantiated inst captured
@@ -141,7 +141,7 @@ theorem fromCertified_runtimeReady {s found typeCaptures env rhs sourceTypes sou
     | exported s =>
         cases he
         exact fixed.exported ho
-  let specialized := cert.typing.specialize rows f inst.finite caller
+  let specialized := cert.specializes rows f inst.finite caller
     (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2)
     lc caller scope countKeep typeKeep
   have transportedReady := specialized.runtimeReady ready arguments
