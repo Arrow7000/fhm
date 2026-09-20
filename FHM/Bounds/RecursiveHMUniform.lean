@@ -305,20 +305,6 @@ def GeneralizedGroup.ofChecked
     GeneralizedGroup output metadata path captures premises bodyTypes outerEnv :=
   ⟨vectors, g, universal⟩
 
-/-- Runtime admissibility of every source member in a generalized group.  The
-    static universal certificate and this supported-runtime fragment remain
-    deliberately separate: unsupported nominal meanings may still have a
-    static bounds derivation, but cannot acquire a runtime theorem. -/
-structure GeneralizedGroup.RuntimeReady
-    {output metadata path captures premises bodyTypes outerEnv}
-    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv) where
-  members : ∀ offset (inside : offset < group.checked.exports.length),
-    ScopedDerives.RuntimeReady
-      (group.checked.members.memberAt offset inside).rhs.certificate.implementation.typing
-  demands : ∀ offset (inside : offset < group.checked.exports.length),
-    Runtime.Supported
-      (group.checked.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds
-
 /-- Select universal implementation evidence at the SAME total source/exit
     position used for the RHS certificate and fixed recursive contract. This
     cannot drop a member or select an independent member-local HM map. -/
@@ -819,6 +805,29 @@ def BodyEnvAt.toEnvAt {bound free σ budget env}
         simpa only [ordinaryBodyEnv, List.getElem_map, source, ordinaryBinding,
           BodyBindingAt, BindingAt] using meaning
 
+/-- Runtime admissibility of a generalized group, stated only through the two
+    closing environments consumed by the body fundamental theorem.  Concrete
+    member certificates are one way to construct this witness, but are no
+    longer exposed to the body judgment itself. -/
+structure GeneralizedGroup.RuntimeReady
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv) where
+  ordinary : ∀ (outerArguments : RecursiveArgumentsSupported outerEnv)
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat) (outer : BodyEnvAt bound free σ budget (ordinaryBodyEnv outerEnv)),
+    { e : BodyEnvAt bound free σ budget
+        (group.checked.exports.map Binding.exported ++ ordinaryBodyEnv outerEnv) //
+      e.terms = Runtime.recursiveTerms group.checked.annotations
+        (closeOuterRhss (group.checked.rhss.map Expr.stripFound) outer.terms) ++ outer.terms }
+  fixed : ∀ (bound free : Runtime.TypeEnv) (σ : Assign)
+    (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat) (outer : BodyEnvAt bound free σ budget (fixedBodyEnv outerEnv)),
+    { e : BodyEnvAt bound free σ budget
+        (group.checked.exports.map Binding.exported ++ fixedBodyEnv outerEnv) //
+      e.terms = Runtime.recursiveTerms group.checked.annotations
+        (closeOuterRhss (group.checked.rhss.map Expr.stripFound) outer.terms) ++ outer.terms }
+
 /-- All generalized exports are realized by Core's original source-ordered
     recursive replacements, using the fixed-map member theorem at each use. -/
 def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironment
@@ -1086,6 +1095,25 @@ def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironmentCapturedFixed
       simpa only [List.length_map, recursiveLength] using meaning
 
 #print axioms HMDeclaredGroup.Checked.exportEnvironmentCapturedFixed
+
+/-- Hide concrete per-member readiness behind the two semantic environment
+    realizers needed by generalized group introduction. -/
+def GeneralizedGroup.runtimeReady
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (members : ∀ offset (inside : offset < group.checked.exports.length),
+      ScopedDerives.RuntimeReady
+        (group.checked.members.memberAt offset inside).rhs.certificate.implementation.typing)
+    (demands : ∀ offset (inside : offset < group.checked.exports.length),
+      Runtime.Supported
+        (group.checked.members.memberAt offset inside).rhs.certificate.implementation.opening.bounds) :
+    group.RuntimeReady where
+  ordinary outerArguments bound free σ hb hf budget outer :=
+    group.checked.exportEnvironmentCaptured members demands outerArguments
+      bound free σ hb hf budget outer
+  fixed bound free σ hb hf budget outer :=
+    group.checked.exportEnvironmentCapturedFixed members demands
+      bound free σ hb hf budget outer
 
 /-- One branch path for List refinements and finite nominal coverage. Generalized
     exports remain in the environment behind any newly opened mono fields. -/
@@ -3212,7 +3240,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
       | zero => unfold Runtime.TermAt; intro steps v _ before; omega
       | succ budget =>
           let previous := e.down hb hf (by omega : budget ≤ budget + 1)
-          let realized := g.exportEnvironmentCaptured groupReady.members groupReady.demands outerArguments
+          let realized := groupReady.ordinary outerArguments
             bound free σ hb hf budget previous
           have bodySafe := ihbody budget premises realized.val
           rw [realized.property] at bodySafe
@@ -3248,8 +3276,7 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
       | zero => unfold Runtime.TermAt; intro steps v _ before; omega
       | succ budget =>
           let previous := e.down hb hf (by omega : budget ≤ budget + 1)
-          let realized := g.exportEnvironmentCapturedFixed groupReady.members groupReady.demands
-            bound free σ hb hf budget previous
+          let realized := groupReady.fixed bound free σ hb hf budget previous
           have bodySafe := ihbody budget premises realized.val
           rw [realized.property] at bodySafe
           let closedRhss := closeOuterRhss (g.rhss.map Expr.stripFound) previous.terms
@@ -5857,8 +5884,9 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               pure ⟨by
                 simpa only [Expr.stripFound, captured.bodyEnv] using
                   (BodyDerives.RuntimeReady.letRecFixed group
-                    ⟨(fun offset inside => (members.down offset inside).1),
-                      (fun offset inside => (members.down offset inside).2)⟩
+                    (group.runtimeReady
+                      (fun offset inside => (members.down offset inside).1)
+                      (fun offset inside => (members.down offset inside).2))
                     ready)⟩)
           pure (by simpa only [sourceEq] using completed))
           (exitedCase := fun captured => do
@@ -5911,8 +5939,9 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                 pure ⟨by
                   simpa only [Expr.stripFound, captured.bodyEnv] using
                     (BodyDerives.RuntimeReady.letRec group
-                      ⟨(fun offset inside => (members.down offset inside).1),
-                        (fun offset inside => (members.down offset inside).2)⟩
+                      (group.runtimeReady
+                        (fun offset inside => (members.down offset inside).1)
+                        (fun offset inside => (members.down offset inside).2))
                       captured.arguments ready)⟩)
             pure (by simpa only [sourceEq] using completed)
           match ha : annotations, hr : rhss with
@@ -6209,8 +6238,9 @@ def checkBody {output metadata path vectors premises bodyTypes}
           simpa only [ordinaryBodyEnv, List.map_nil, List.append_nil] using ready.down
         simpa only [Expr.stripFound] using
           (BodyDerives.RuntimeReady.letRec group
-            ⟨(fun offset inside => (members.down offset inside).1),
-              (fun offset inside => (members.down offset inside).2)⟩
+            (group.runtimeReady
+              (fun offset inside => (members.down offset inside).1)
+              (fun offset inside => (members.down offset inside).2))
             (by simp [RecursiveArgumentsSupported]) bodyReady)⟩)
 
 /-- A source-linked closed ROOT recursive program, not a general program-prefix
