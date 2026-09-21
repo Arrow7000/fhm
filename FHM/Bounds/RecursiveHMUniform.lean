@@ -357,6 +357,123 @@ def GeneralizedGroup.ofChecked
     GeneralizedGroup output metadata path captures premises bodyTypes outerEnv :=
   ⟨vectors, g, universal⟩
 
+/-- The exact source environment in which every member certificate was
+    checked.  This is deliberately separate from the generalized exit
+    interface: member proofs remain indexed by the original checked group,
+    rather than by a reconstructed group after an enclosing specialization. -/
+def GeneralizedGroup.internal
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv) :
+    List Binding :=
+  group.checked.interfaces.contracts.map Binding.recursive ++ outerEnv
+
+/-- Generalized group exits are lexical closures.  Their source schemes stay
+    those certified by `checked`; only their ambient count/HM meanings are
+    recorded at the boundary. -/
+def GeneralizedGroup.closedExports
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (outer : Bindings) (f : Nat → BoundsTy) : List Binding :=
+  group.exports.map fun s =>
+    .closure s (HMCountSchemeClosure.interpretedCountCaptures outer s)
+      (HMCountSchemeClosure.interpretedTypeCaptures f s)
+
+/-- Select one source-ordered member without rebuilding or reindexing its
+    checked group. -/
+def GeneralizedGroup.selected
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length) :=
+  group.checked.members.memberAt offset inside
+
+/-- The source-interface projection of one actual closed exit use. -/
+def GeneralizedGroup.sourceExitUse
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller) :=
+  HMCountSchemeClosure.sourceUse used
+
+/-- Count substitution for an exit is one pass: the selected member's own
+    quantified rows are prepended to the ambient rows, so they shadow ambient
+    names and the caller-chosen counts are never interpreted a second time. -/
+def GeneralizedGroup.protectedRows
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (outer : Bindings) : Bindings :=
+  ((group.selected offset inside).rhs.certificate.interface.scheme.counts.quantified.zip
+    (group.sourceExitUse offset inside used).counts) ++ outer
+
+/-- HM substitution for an exit protects the caller-supplied source arguments:
+    fresh opening identities read those arguments unchanged, while every other
+    identity is interpreted by the ambient map. -/
+def GeneralizedGroup.protectedTypes
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (ambient : Nat → BoundsTy) (i : Nat) : BoundsTy :=
+  match (group.selected offset inside).rhs.certificate.implementation.opening.ids.idxOf? i with
+  | none => ambient i
+  | some slot => SchemeUse.vector (group.sourceExitUse offset inside used).types slot
+
+theorem GeneralizedGroup.protectedTypes_opening
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (ambient : Nat → BoundsTy) (i slot : Nat)
+    (located : (group.selected offset inside).rhs.certificate.implementation.opening.ids.idxOf? i = some slot) :
+    group.protectedTypes offset inside used ambient i =
+      SchemeUse.vector (group.sourceExitUse offset inside used).types slot := by
+  simp only [protectedTypes, located]
+
+theorem GeneralizedGroup.protectedTypes_ambient
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (ambient : Nat → BoundsTy) (i : Nat)
+    (absent : i ∉ (group.selected offset inside).rhs.certificate.implementation.opening.ids) :
+    group.protectedTypes offset inside used ambient i = ambient i := by
+  simp only [protectedTypes, List.idxOf?_eq_none_iff.mpr absent]
+
+theorem GeneralizedGroup.protectedTypes_lc
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (ambient : Nat → BoundsTy)
+    (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC) :
+    ∀ i, (Synth.BoundsTy.toTy (group.protectedTypes offset inside used ambient i)).IsLC := by
+  intro i
+  unfold protectedTypes
+  cases (group.selected offset inside).rhs.certificate.implementation.opening.ids.idxOf? i with
+  | none => exact ambientLC i
+  | some slot =>
+      exact RecursiveHMUniversal.argumentsLC (group.sourceExitUse offset inside used).types
+        (group.sourceExitUse offset inside used).typesLC slot
+
 /-- Select universal implementation evidence at the SAME total source/exit
     position used for the RHS certificate and fixed recursive contract. This
     cannot drop a member or select an independent member-local HM map. -/
