@@ -212,7 +212,7 @@ private theorem countScope_mono {source target : List Nat} {c : Count}
   | pred a ha => exact ha h
 
 mutual
-private theorem boundsScope_mono {source target : List Nat} {β : BoundsTy}
+theorem boundsScope_mono {source target : List Nat} {β : BoundsTy}
     (h : BoundsScoped source β) (subset : ∀ i ∈ source, i ∈ target) :
     BoundsScoped target β := by
   cases β with
@@ -259,7 +259,7 @@ private theorem mem_eraseDups {a : Nat} {l : List Nat}
             (List.mem_of_mem_filter (ih _ smaller _ rfl _ tail))
   exact go l.length l rfl a h
 
-private theorem mem_eraseDups_of_mem {a : Nat} {l : List Nat}
+theorem mem_eraseDups_of_mem {a : Nat} {l : List Nat}
     (h : a ∈ l) : a ∈ l.eraseDups := by
   have go : ∀ n, ∀ (l : List Nat), l.length = n → ∀ a, a ∈ l → a ∈ l.eraseDups := by
     intro n
@@ -284,7 +284,7 @@ private theorem mem_eraseDups_of_mem {a : Nat} {l : List Nat}
             exact ih _ smaller _ rfl _ filtered
   exact go l.length l rfl a h
 
-private theorem nodup_eraseDups (l : List Nat) : l.eraseDups.Nodup := by
+theorem nodup_eraseDups (l : List Nat) : l.eraseDups.Nodup := by
   have go : ∀ n, ∀ (l : List Nat), l.length = n → l.eraseDups.Nodup := by
     intro n
     refine Nat.strongRecOn n (motive := fun n =>
@@ -305,7 +305,7 @@ private theorem nodup_eraseDups (l : List Nat) : l.eraseDups.Nodup := by
           exact ih _ smaller _ rfl
   exact go l.length l rfl
 
-private theorem promoted_subset (s : HMCountScheme.Scheme) :
+theorem promoted_subset (s : HMCountScheme.Scheme) :
     ∀ i ∈ s.counts.quantified ++ s.counts.captures,
       i ∈ s.counts.quantified ++ countCaptures s := by
   intro i member

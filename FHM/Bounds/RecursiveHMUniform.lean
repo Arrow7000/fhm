@@ -635,6 +635,102 @@ theorem GeneralizedGroup.protectedTypes_internalFixed
       exact ambientFixed _ member i free
   | closure _ _ _ => trivial
 
+/-- The protected source opening realizes the demand of an actual closed exit.
+    Count rows are first returned to the source interface, while the opening
+    identities read the source arguments and all remaining identities use the
+    ambient interpretation. -/
+theorem GeneralizedGroup.protectedDemand
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (outer : CountSubstitution.Bindings)
+    (ambient : Nat → BoundsTy)
+    (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC)
+    (captures : HMCountSchemeClosure.CapturesAgree
+      (group.selected offset inside).rhs.certificate.interface.scheme
+      outer ambient used) :
+    mapFree (group.protectedTypes offset inside used ambient)
+      (bounds (group.protectedRows offset inside used outer)
+        (group.selected offset inside).rhs.certificate.implementation.opening.bounds) =
+      used.bounds := by
+  let s := (group.selected offset inside).rhs.certificate.interface.scheme
+  let opening := (group.selected offset inside).rhs.certificate.implementation.opening
+  let rows := group.protectedRows offset inside used outer
+  let sourceTypes := (group.sourceExitUse offset inside used).types
+  let sourceCounts := (group.sourceExitUse offset inside used).counts
+  have bodyScope : ScopedScheme.BoundsScoped
+      (s.counts.quantified ++ HMCountSchemeClosure.countCaptures s) s.counts.body :=
+    HMCountSchemeClosure.boundsScope_mono s.countWF.2.2.1
+      (HMCountSchemeClosure.promoted_subset s)
+  have rowsPromoted :
+      bounds rows s.counts.body =
+        bounds ((s.counts.quantified ++ HMCountSchemeClosure.countCaptures s).zip
+          (sourceCounts ++ HMCountSchemeClosure.interpretedCountCaptures outer s))
+          s.counts.body := by
+    simpa only [s, rows, sourceCounts, GeneralizedGroup.protectedRows,
+      HMCountSchemeClosure.interpretedCountCaptures] using
+      HMCountSchemeClosure.bounds_protected outer s.counts.quantified
+        (HMCountSchemeClosure.countCaptures s) sourceCounts
+        (HMCountSchemeClosure.nodup_eraseDups _)
+        (HMCountSchemeClosure.closedUse_sourceCountLength used).symm bodyScope
+  have sourceMap :
+      mapFree (group.protectedTypes offset inside used ambient) (bounds rows s.counts.body) =
+        mapFree ambient (bounds rows s.counts.body) := by
+    apply FreeAlgebra.congrFree
+    intro i member
+    apply group.protectedTypes_sourceAmbient offset inside used ambient i
+    rw [CountSubstitution.bounds_shape, s.shape] at member
+    exact member
+  have sourceLength : sourceTypes.length = opening.ids.length := by
+    rw [opening.arity, (group.sourceExitUse offset inside used).arity]
+  have openingArgs :
+      (fun i => mapFree (group.protectedTypes offset inside used ambient)
+        (bounds rows (SchemeUse.vector (opening.ids.map BoundsTy.fvar) i))) =
+        SchemeUse.vector sourceTypes := by
+    funext i
+    by_cases iInside : i < opening.ids.length
+    · have sourceInside : i < sourceTypes.length := by omega
+      rw [show SchemeUse.vector (opening.ids.map BoundsTy.fvar) i =
+          .fvar opening.ids[i] by simp [SchemeUse.vector, iInside]]
+      simp only [CountSubstitution.bounds, mapFree]
+      rw [group.protectedTypes_openingGetElem offset inside used ambient i iInside]
+      simp [SchemeUse.vector, sourceInside, sourceTypes]
+    · have sourceOutside : i ≥ sourceTypes.length := by omega
+      rw [show SchemeUse.vector (opening.ids.map BoundsTy.fvar) i = .prim .unit by
+        simp [SchemeUse.vector, iInside],
+        show SchemeUse.vector sourceTypes i = .prim .unit by
+          simp [SchemeUse.vector, sourceOutside]]
+      rfl
+  calc
+    mapFree (group.protectedTypes offset inside used ambient) (bounds rows opening.bounds) =
+        mapFree (group.protectedTypes offset inside used ambient)
+          (bounds rows (TypeSubstitution.substitute
+            (SchemeUse.vector (opening.ids.map BoundsTy.fvar)) s.counts.body)) := rfl
+    _ = mapFree (group.protectedTypes offset inside used ambient)
+          (TypeSubstitution.substitute
+            (fun i => bounds rows (SchemeUse.vector (opening.ids.map BoundsTy.fvar) i))
+            (bounds rows s.counts.body)) := by
+      rw [CountTransport.instantiate_commute]
+    _ = TypeSubstitution.substitute
+          (fun i => mapFree (group.protectedTypes offset inside used ambient)
+            (bounds rows (SchemeUse.vector (opening.ids.map BoundsTy.fvar) i)))
+          (mapFree (group.protectedTypes offset inside used ambient) (bounds rows s.counts.body)) := by
+      rw [FreeAlgebra.instantiate_commute _
+        (group.protectedTypes_lc offset inside used ambient ambientLC)]
+    _ = TypeSubstitution.substitute (SchemeUse.vector sourceTypes)
+          (mapFree ambient (bounds rows s.counts.body)) := by rw [openingArgs, sourceMap]
+    _ = TypeSubstitution.substitute (SchemeUse.vector sourceTypes)
+          (mapFree ambient (bounds
+            ((s.counts.quantified ++ HMCountSchemeClosure.countCaptures s).zip
+              (sourceCounts ++ HMCountSchemeClosure.interpretedCountCaptures outer s))
+            s.counts.body)) := by rw [rowsPromoted]
+    _ = used.bounds := by
+      exact (HMCountSchemeClosure.closedUse_bounds used outer ambient ambientLC captures).symm
+
 /-- Select universal implementation evidence at the SAME total source/exit
     position used for the RHS certificate and fixed recursive contract. This
     cannot drop a member or select an independent member-local HM map. -/
