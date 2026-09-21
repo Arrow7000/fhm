@@ -1,6 +1,7 @@
 import FHM.Bounds.RecursiveHMUniform
 import FHM.Bounds.HMDeclaredCoordinates
 import FHM.Bounds.Found
+import FHM.Bounds.RecursiveHMClosedProgram
 
 namespace FHM.Bounds.RecursiveHMUniformTests
 
@@ -93,7 +94,8 @@ private def bodySignature (i : Nat) : PolyTy :=
     second call crosses a local binder and uses the SAME export at Char. -/
 private def bodyCalls (badLocal : Bool := false) (polyLocal : Bool := false)
     (capturedLocal : Bool := false) (forgedRoot : Bool := false)
-    (nested : Bool := false) (nestedPolyArg : Bool := false) : Except String Bool := do
+    (nested : Bool := false) (nestedPolyArg : Bool := false)
+    (closedRoot : Bool := false) : Except String Bool := do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
   let singleton (p : PrimLitExpr) : Expr :=
     .app (.app (.ctor consCtorName) (.primLit p)) (.ctor nilCtorName)
@@ -120,7 +122,9 @@ private def bodyCalls (badLocal : Bool := false) (polyLocal : Bool := false)
   let output := if forgedRoot then
     match a.output with | .found _ inner => .found (.prim .int) inner | e => e
     else a.output
-  let program ← RecursiveHMUniform.checkClosedProgram output metadata a.binderSchemes
+  let program ← if closedRoot then
+    RecursiveHMClosedExit.checkClosedProgram output metadata a.binderSchemes
+  else RecursiveHMUniform.checkClosedProgram output metadata a.binderSchemes
   let result := program.body
   if !result.runtimeSafety?.isSome then
     throw "test: supported recursive Int/Char body report lost its runtime theorem"
@@ -545,7 +549,8 @@ private def unsupportedIntermediate : Except String Bool := do
   pure ((Runtime.supported? result.bounds).isSome && !result.runtimeReady.isSome)
 
 private def bodyMatches (kind : Nat) (onlyNil : Bool := false) (onlyCons : Bool := false)
-    (badDemand : Bool := false) (nestedPolyArm : Bool := false) :
+    (badDemand : Bool := false) (nestedPolyArm : Bool := false)
+    (closedRoot : Bool := false) :
     Except String Bool := do
   let ctors : CtorEnv := (elabDecls preludeDecls).getD []
   let singleton : Expr := .app (.app (.ctor consCtorName) (.primLit (.int 1))) (.ctor nilCtorName)
@@ -569,7 +574,9 @@ private def bodyMatches (kind : Nat) (onlyNil : Bool := false) (onlyCons : Bool 
     | some a => pure a | none => throw "test: generalized match HM inference failed"
   let metadata : Scope.Metadata := { telescopes := [⟨.letRec [] 0, [(⟨"n"⟩, 7)]⟩] }
   let expected := if badDemand then some (BoundsTy.list (.lit 2) (.lit 2) (.prim .int)) else none
-  let program ← checkClosedProgram a.output metadata a.binderSchemes expected
+  let program ← if closedRoot then
+    RecursiveHMClosedExit.checkClosedProgram a.output metadata a.binderSchemes expected
+  else checkClosedProgram a.output metadata a.binderSchemes expected
   if !program.body.runtimeSafety?.isSome then
     throw "test: supported recursive List/Bool match report lost its runtime theorem"
   let exact := match program.body.bounds with
@@ -682,7 +689,7 @@ private def fullMutualSpine : Except String Bool := do
   let metadata : Scope.Metadata := { telescopes :=
     [⟨.letRec [] 0, [(⟨"n"⟩, 7), (⟨"m"⟩, 8)]⟩,
       ⟨.letRec [] 1, [(⟨"p"⟩, 9), (⟨"q"⟩, 10)]⟩] }
-  let program ← checkClosedProgram a.output metadata a.binderSchemes
+  let program ← RecursiveHMClosedExit.checkClosedProgram a.output metadata a.binderSchemes
   if !program.body.runtimeSafety?.isSome then
     throw "test: supported mutual recursive spines lost their runtime theorem"
   let exact := match program.body.bounds with
@@ -932,8 +939,8 @@ def main : IO Unit := do
   | .ok true => IO.println "PASS: an unannotated HM-monomorphic singleton reaches one exact recursive interface with tied-group runtime safety"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "inferred recursive singleton lost its fixed interface, runtime theorem or exact nodes")
-  match bodyCalls with
-  | .ok true => IO.println "PASS: all-member universal introduction checks actual Int/Char body calls and reports every original group/RHS/body occurrence exactly once"
+  match bodyCalls (closedRoot := true) with
+  | .ok true => IO.println "PASS: canonical closed-export checking handles actual Int/Char uses and reports every original group/RHS/body occurrence exactly once"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "generalized body origins, type/count specialization or complete node coverage failed")
   match bodyCalls true with
@@ -982,8 +989,8 @@ def main : IO Unit := do
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "nested application-argument generalization lost bounds or exact source-node coverage")
   for kind in [0, 1, 2] do
-    match bodyMatches kind (onlyNil := kind == 2) with
-    | .ok true => IO.println s!"PASS: generalized body match kind {kind} checks every original arm, coverage and full origins with exact node reports"
+    match bodyMatches kind (onlyNil := kind == 2) (closedRoot := kind == 0) with
+    | .ok true => IO.println s!"PASS: generalized body match kind {kind} checks every original arm, coverage and full origins with exact node reports{if kind == 0 then " through canonical closed exports" else ""}"
     | .error message => throw (IO.userError message)
     | .ok false => throw (IO.userError "generalized body match lost branch refinements, result bounds or original node coverage")
   match bodyMatches 0 (nestedPolyArm := true) with
@@ -1047,7 +1054,7 @@ def main : IO Unit := do
     | .error message => throw (IO.userError message)
     | .ok false => throw (IO.userError "full recursive RHS/body program lost result bounds or exact original-node coverage")
   match fullMutualSpine with
-  | .ok true => IO.println "PASS: mutually recursive full RHS spines retain a shared fixed HM vector across distinct count telescopes and independent Int/Char exit uses"
+  | .ok true => IO.println "PASS: canonical closed-export checking preserves mutual fixed HM vectors across distinct count telescopes and independent Int/Char uses"
   | .error message => throw (IO.userError message)
   | .ok false => throw (IO.userError "full mutual recursive program lost source-member identity, exact bounds or original nodes")
   match deferredRecursiveProgram with
