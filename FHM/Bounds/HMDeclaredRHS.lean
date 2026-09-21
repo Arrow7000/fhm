@@ -96,6 +96,7 @@ def certify {output site d quantified captures premises typeCaptures env}
           exact List.mem_cons_of_mem _ (List.mem_append_left _ (represented original ho))
         exact c.opening.fresh i hi original.template.hm.body
           (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ guarded)) used
+    | recursiveClosure c => cases he
     | exported t => cases he
     | closure _ _ _ => cases he
   · intro t ht i hi used
@@ -103,6 +104,7 @@ def certify {output site d quantified captures premises typeCaptures env}
     cases original with
     | mono β => cases he
     | recursive c => cases he
+    | recursiveClosure c => cases he
     | exported original =>
         cases he
         have guarded : t.hm.body ∈ guardedTypes d typeCaptures := by
@@ -118,6 +120,7 @@ def certify {output site d quantified captures premises typeCaptures env}
     | recursive original =>
         cases he
         exact countFresh original ho i hi
+    | recursiveClosure c => cases he
     | exported t => cases he
     | closure _ _ _ => cases he
   · intro t ht i hi
@@ -125,6 +128,7 @@ def certify {output site d quantified captures premises typeCaptures env}
     cases original with
     | mono β => cases he
     | recursive c => cases he
+    | recursiveClosure c => cases he
     | exported original =>
         cases he
         exact exportCountFresh t ho i hi
