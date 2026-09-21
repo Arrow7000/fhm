@@ -2974,6 +2974,215 @@ def Specializes.ordinaryAppend
 
 #print axioms Specializes.ordinaryAppend
 
+/-- Proof payload for one generalized local.  The base instance family is the
+    typing rule seen at the current scope.  `specialized` is the genuinely
+    stronger clause: after an enclosing count/HM specialization it rebuilds
+    each use with the caller's type arguments left local, rather than blindly
+    mapping those arguments as captured data. -/
+structure LocalIntroduction
+    (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
+    (Δ : List Constraint) (env : List BodyBinding)
+    (s : HMCountScheme.Scheme) (ann : Option PolyTy) (rhs : Expr) where
+  frame : LocalFrame s ids rhs
+  annotation : LocalAnnotationOK s ann
+  instances : ∀ calleeΔ found caller (used : HMCountScheme.Use s calleeΔ found caller),
+    ScopedBodyDerives (localTypes frame.owned types used.types)
+      (localSlots ann slots used.types)
+      (s.counts.quantified ++ s.counts.captures ++ ids)
+      (CountAlgebra.compose (s.counts.quantified.zip used.counts) rows)
+      (Δ ++ used.countInstance.premises) env rhs used.bounds
+  instancesReady : ∀ calleeΔ found caller
+      (used : HMCountScheme.Use s calleeΔ found caller),
+    (∀ a ∈ used.types, Runtime.Supported a) →
+      BodyDerives.RuntimeReady (instances calleeΔ found caller used)
+  countCaptured : ∀ outer, CountCapturesFixed outer env →
+    ∀ i ∈ s.counts.captures, lookup outer i = none
+  typeCaptured : ∀ outer f,
+    CapturesFixed f (env.map (mapCountBinding outer)) →
+    ∀ i ∈ s.hm.body.freeVars, f i = .fvar i
+  specialized : ∀ (outer : Bindings) (f : Nat → BoundsTy)
+      (_outerFinite : Finite outer) (countTarget : List Nat)
+      (_countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+      (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+      (typeTarget : List Nat)
+      (_typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i))
+      (_countFresh : CountCapturesFixed outer env)
+      (_typeFresh : CapturesFixed f (env.map (mapCountBinding outer)))
+      (calleeΔ : List Constraint) (found : Ty) (caller : List Nat)
+      (used : HMCountScheme.Use s calleeΔ found caller),
+    { typing : ScopedBodyDerives
+        (localTypes frame.owned
+          (fun i => mapFree f (bounds outer (types i))) used.types)
+        (localSlots ann
+          (fun i => mapFree f (bounds outer (slots i))) used.types)
+        (s.counts.quantified ++ s.counts.captures ++ ids)
+        (CountAlgebra.compose (s.counts.quantified.zip used.counts)
+          (CountAlgebra.compose outer rows))
+        ((Δ.map (constraint outer)) ++ used.countInstance.premises)
+        ((env.map (mapCountBinding outer)).map (mapBinding f typeLC))
+        rhs used.bounds //
+      (∀ a ∈ used.types, Runtime.Supported a) →
+        BodyDerives.RuntimeReady typing }
+
+def LocalIntroduction.letTyping
+    {types slots ids rows Δ env s ann rhs body result}
+    (payload : LocalIntroduction types slots ids rows Δ env s ann rhs)
+    (scope : rhs.varsBelow env.length = true)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.exported s :: env) body result) :
+    ScopedBodyDerives types slots ids rows Δ env (.letIn ann rhs body) result :=
+  .letExported payload.frame payload.annotation scope payload.instances bodyTyping
+
+def LocalIntroduction.letRuntimeReady
+    {types slots ids rows Δ env s ann rhs body result}
+    (payload : LocalIntroduction types slots ids rows Δ env s ann rhs)
+    (scope : rhs.varsBelow env.length = true)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.exported s :: env) body result}
+    (bodyReady : BodyDerives.RuntimeReady bodyTyping) :
+    BodyDerives.RuntimeReady (payload.letTyping scope bodyTyping) :=
+  .letExported payload.frame payload.annotation scope payload.instances
+    payload.instancesReady bodyReady
+
+private theorem LocalIntroduction.countFreshCons
+    {types slots ids rows Δ env s ann rhs}
+    (payload : LocalIntroduction types slots ids rows Δ env s ann rhs)
+    {outer} (fresh : CountCapturesFixed outer env) :
+    CountCapturesFixed outer (.exported s :: env) := by
+  intro binding member
+  rcases List.mem_cons.mp member with rfl | rest
+  · exact payload.countCaptured outer fresh
+  · exact fresh binding rest
+
+private theorem LocalIntroduction.typeFreshCons
+    {types slots ids rows Δ env s ann rhs}
+    (payload : LocalIntroduction types slots ids rows Δ env s ann rhs)
+    {outer f} (fresh : CapturesFixed f (env.map (mapCountBinding outer))) :
+    CapturesFixed f ((.exported s :: env).map (mapCountBinding outer)) := by
+  intro binding member
+  simp only [List.map_cons, mapCountBinding] at member
+  rcases List.mem_cons.mp member with rfl | rest
+  · exact payload.typeCaptured outer f fresh
+  · exact fresh binding rest
+
+/-- Generalized local introduction preserves the full body-specialization
+    contract when its certificate can rebuild instances under transformed
+    parents and its body already carries the same contract. -/
+def Specializes.letExported
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding}
+    {s : HMCountScheme.Scheme} {ann : Option PolyTy} {rhs body : Expr}
+    {result : BoundsTy}
+    (payload : LocalIntroduction types slots ids rows Δ env s ann rhs)
+    (scope : rhs.varsBelow env.length = true)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.exported s :: env) body result}
+    (bodyStable : Specializes bodyTyping)
+    (bodyReady : BodyDerives.RuntimeReady bodyTyping) :
+    Specializes (payload.letTyping scope bodyTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let movedBody := bodyStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope (payload.countFreshCons countFresh)
+      (payload.typeFreshCons typeFresh)
+  let movedInstances := payload.specialized outer f outerFinite countTarget countScope
+    typeLC typeTarget typeScope countFresh typeFresh
+  have movedBodyTyping : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (.exported s :: ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      body (mapFree f (bounds outer result)) := by
+    simpa only [List.map_cons, mapCountBinding, mapBinding] using movedBody.typing
+  have movedScope : rhs.varsBelow
+      ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)).length = true := by
+    simpa only [List.length_map] using scope
+  let typing := ScopedBodyDerives.letExported payload.frame payload.annotation movedScope
+    (fun calleeΔ found caller used =>
+      (movedInstances calleeΔ found caller used).1) movedBodyTyping
+  refine ⟨typing, ?_⟩
+  intro _ arguments
+  have movedBodyReady : BodyDerives.RuntimeReady movedBodyTyping := by
+    exact BodyDerives.RuntimeReady.congr (h' := movedBodyTyping)
+      (movedBody.runtimeReady bodyReady arguments)
+  exact .letExported payload.frame payload.annotation movedScope
+    (fun calleeΔ found caller used =>
+      (movedInstances calleeΔ found caller used).1)
+    (hbody := movedBodyTyping)
+    (fun calleeΔ found caller used supported =>
+      (movedInstances calleeΔ found caller used).2 supported)
+    movedBodyReady
+
+#print axioms Specializes.letExported
+
+def LocalIntroduction.letRecTyping
+    {types slots ids rows Δ env s ann rhs body result}
+    (payload : LocalIntroduction types slots ids rows Δ env s ann rhs)
+    (scope : rhs.varsBelow 0 = true)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.exported s :: env) body result) :
+    ScopedBodyDerives types slots ids rows Δ env
+      (.letRec [ann] [rhs] body) result :=
+  .letRecExported payload.frame payload.annotation scope payload.instances bodyTyping
+
+def LocalIntroduction.letRecRuntimeReady
+    {types slots ids rows Δ env s ann rhs body result}
+    (payload : LocalIntroduction types slots ids rows Δ env s ann rhs)
+    (scope : rhs.varsBelow 0 = true)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.exported s :: env) body result}
+    (bodyReady : BodyDerives.RuntimeReady bodyTyping) :
+    BodyDerives.RuntimeReady (payload.letRecTyping scope bodyTyping) :=
+  .letRecExported payload.frame payload.annotation scope payload.instances
+    payload.instancesReady bodyReady
+
+/-- The closed singleton-recursive export has the same specialization payload
+    as an ordinary generalized local.  Closure is preserved verbatim; only the
+    surrounding readers, count rows and represented environment are mapped. -/
+def Specializes.letRecExported
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding}
+    {s : HMCountScheme.Scheme} {ann : Option PolyTy} {rhs body : Expr}
+    {result : BoundsTy}
+    (payload : LocalIntroduction types slots ids rows Δ env s ann rhs)
+    (scope : rhs.varsBelow 0 = true)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.exported s :: env) body result}
+    (bodyStable : Specializes bodyTyping)
+    (bodyReady : BodyDerives.RuntimeReady bodyTyping) :
+    Specializes (payload.letRecTyping scope bodyTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let movedBody := bodyStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope (payload.countFreshCons countFresh)
+      (payload.typeFreshCons typeFresh)
+  let movedInstances := payload.specialized outer f outerFinite countTarget countScope
+    typeLC typeTarget typeScope countFresh typeFresh
+  have movedBodyTyping : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (.exported s :: ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      body (mapFree f (bounds outer result)) := by
+    simpa only [List.map_cons, mapCountBinding, mapBinding] using movedBody.typing
+  let typing := ScopedBodyDerives.letRecExported payload.frame payload.annotation scope
+    (fun calleeΔ found caller used =>
+      (movedInstances calleeΔ found caller used).1) movedBodyTyping
+  refine ⟨typing, ?_⟩
+  intro _ arguments
+  have movedBodyReady : BodyDerives.RuntimeReady movedBodyTyping := by
+    exact BodyDerives.RuntimeReady.congr (h' := movedBodyTyping)
+      (movedBody.runtimeReady bodyReady arguments)
+  exact .letRecExported payload.frame payload.annotation scope
+    (fun calleeΔ found caller used =>
+      (movedInstances calleeΔ found caller used).1)
+    (hbody := movedBodyTyping)
+    (fun calleeΔ found caller used supported =>
+      (movedInstances calleeΔ found caller used).2 supported)
+    movedBodyReady
+
+#print axioms Specializes.letRecExported
+
 theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBodyDerives types slots ids rows Δ env e β}
     (ready : RuntimeReady h) : Runtime.Supported β := by
   induction ready with
