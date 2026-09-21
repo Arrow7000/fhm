@@ -141,6 +141,7 @@ roots = [
   "FHM.Bounds.RecursiveHMClosedExportEnvironment", # Use-indexed runtime fixed point for body-visible closed group exits
   "FHM.Bounds.RecursiveHMClosedInternalRealizer", # Top-level observation-budget realization of closed recursive assumptions
   "FHM.Bounds.RecursiveHMClosedRuntimeReady", # Top-level closed-export witness consumed by the body runtime theorem
+  "FHM.Bounds.RecursiveHMClosedProgram", # Canonical root recursive checker through closed lexical exports
   "FHM.Bounds.RecursiveHMSpecializableEnvironment", # Kripke runtime witnesses for nested recursive environments
   "FHM.Bounds.RecursiveHMUniformTests", # Permuted mutual vectors, member-local counts, preserved full caller bounds and closed-template capture guards
   "FHM.Bounds.HMFoundView", # Shared HM interpretation reads exact-node payload views without rewriting artifacts or paths
