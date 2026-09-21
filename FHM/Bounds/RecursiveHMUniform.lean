@@ -5259,6 +5259,70 @@ private def checkedGroupBodyCapture
     subst s
     exact checkedMembersExportCountsClosed g.members t source
 
+/-- The closure boundary of a checked root group is itself a valid exited-body
+    capture.  Root member schemes have no enclosing count telescope, while the
+    identity HM interpretation records every captured free identity as the
+    corresponding scoped free bounds variable. -/
+private def closedGroupBodyCapture
+    {output metadata path premises bodyTypes}
+    (group : GeneralizedGroup output metadata path [] premises bodyTypes [])
+    (rows : Bindings) :
+    BodyCapture (group.closedExports rows BoundsTy.fvar) where
+  rhsEnv := group.closedExports rows BoundsTy.fvar
+  bodyEnv := by
+    unfold ordinaryBodyEnv GeneralizedGroup.closedExports
+    simp only [List.map_map, Function.comp_def]
+    apply List.map_congr_left
+    intro scheme _
+    rfl
+  captured := by
+    refine {
+      mono := ?_
+      recursive := ?_
+      recursiveClosureFixedTypes := ?_
+      recursiveClosureCounts := ?_
+      recursiveClosureTypeCaptures := ?_
+      closureCounts := ?_
+      closureTypes := ?_ }
+    · intro β member
+      simp [GeneralizedGroup.closedExports] at member
+    · intro contract member
+      simp [GeneralizedGroup.closedExports] at member
+    · intro contract member
+      simp [GeneralizedGroup.closedExports] at member
+    · intro contract member
+      simp [GeneralizedGroup.closedExports] at member
+    · intro contract member
+      simp [GeneralizedGroup.closedExports] at member
+    · intro scheme countCaptures typeCaptures member count inside
+      obtain ⟨source, sourceMember, same⟩ := List.mem_map.mp member
+      injection same with schemeEq countEq typeEq
+      subst scheme
+      subst countCaptures
+      subst typeCaptures
+      have sourceClosed : source.counts.captures = [] := by
+        apply checkedMembersExportCountsClosed group.checked.members source
+        simpa only [GeneralizedGroup.exports] using sourceMember
+      simp [HMCountSchemeClosure.interpretedCountCaptures,
+        HMCountSchemeClosure.countCaptures, sourceClosed] at inside
+    · intro scheme countCaptures typeCaptures member β inside
+      obtain ⟨source, sourceMember, same⟩ := List.mem_map.mp member
+      injection same with schemeEq countEq typeEq
+      subst scheme
+      subst countCaptures
+      subst typeCaptures
+      obtain ⟨i, _, rfl⟩ := List.mem_map.mp inside
+      trivial
+  arguments := by
+    intro contract member
+    simp [GeneralizedGroup.closedExports] at member
+  countClosed := by
+    intro contract member
+    simp [GeneralizedGroup.closedExports] at member
+  exportCountClosed := by
+    intro scheme member
+    simp [GeneralizedGroup.closedExports] at member
+
 /-- Enter a checked nested group without losing the exact recursive assumptions
     represented by the surrounding body environment.  The new group's fixed
     contracts precede the captured outer assumptions in the same de Bruijn
@@ -8246,6 +8310,53 @@ def checkBody {output metadata path vectors premises bodyTypes}
               (fun offset inside => (members.down offset inside).2))
             (by simp [RecursiveArgumentsSupported]) bodyReady)⟩)
 
+/-- Proof-parameterized closure-normal root-group checker.  The executable body
+    walk is entirely upstream; the semantic fixed-point construction remains a
+    downstream concern and enters only through `closedReady`.  Keeping that
+    dependency explicit avoids an import cycle while preserving the exact
+    source artifact, node report and optional runtime theorem. -/
+def checkBodyClosed {output metadata path vectors premises bodyTypes}
+    (g : HMDeclaredGroup.Checked output metadata path vectors [] premises bodyTypes [])
+    (ids : List Nat) (rows : Bindings) (caller : List Nat) (Δ : List Constraint)
+    (schemes : BinderSchemeMap)
+    (closedReady :
+      (GeneralizedGroup.ofChecked g
+        (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)).ClosedRuntimeReady
+          rows BoundsTy.fvar)
+    (expected : Option BoundsTy := none) (ctors : CtorEnv := []) :
+    Except String (BodyResult ids rows caller Δ []
+      (.found g.originalHM (.letRec g.annotations g.rhss g.body))) := do
+  let group := GeneralizedGroup.ofChecked g
+    (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
+  have bodySource : output.atCorePath (path ++ [.letRecBody]) = some g.body := by
+    rw [Expr.atCorePath_append, g.source]
+    simp [Expr.atCorePath]
+  let body ← walkBodySource output metadata BoundsTy.fvar BoundsTy.bvar ids rows caller Δ
+    (group.closedExports rows BoundsTy.fvar)
+    (path ++ [.letRecBody]) g.body schemes
+    (some (.exited (closedGroupBodyCapture group rows)))
+    (some ⟨bodySource⟩) expected ctors
+  finishBody path g.originalHM body.bounds rfl
+    (by
+      have bodyTyping : BodyDerives ids rows Δ
+          (group.closedExports rows BoundsTy.fvar ++ ordinaryBodyEnv [])
+          g.body.stripFound body.bounds := by
+        simpa only [ordinaryBodyEnv, List.map_nil, List.append_nil] using body.typing
+      simpa only [Expr.stripFound] using
+        BodyDerives.letRecClosed group bodyTyping)
+    (memberNodes g.members ++ body.nodes)
+    (do
+      let ready ← body.runtimeReady
+      pure ⟨by
+        have bodyTyping : BodyDerives ids rows Δ
+            (group.closedExports rows BoundsTy.fvar ++ ordinaryBodyEnv [])
+            g.body.stripFound body.bounds := by
+          simpa only [ordinaryBodyEnv, List.map_nil, List.append_nil] using body.typing
+        have bodyReady : BodyDerives.RuntimeReady bodyTyping := by
+          simpa only [ordinaryBodyEnv, List.map_nil, List.append_nil] using ready.down
+        simpa only [Expr.stripFound] using
+          (BodyDerives.RuntimeReady.letRecClosed group closedReady bodyReady)⟩)
+
 /-- A source-linked closed ROOT recursive program, not a general program-prefix
     or nested-group adapter. The body certificate is indexed by the exact input
     artifact, while retaining the actual all-member coordinate assembly. -/
@@ -8309,6 +8420,7 @@ def BodyResult.runtimeSafety? {ids rows caller Δ output}
 #print axioms useClosureBodySpine
 #print axioms walkBody
 #print axioms checkBody
+#print axioms checkBodyClosed
 #print axioms checkClosedProgram
 #print axioms checkProgram
 
