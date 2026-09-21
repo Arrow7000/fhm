@@ -257,6 +257,20 @@ structure BodyBranchContext.Specializes {raw : List Binding}
     target.fields pattern = (source.fields pattern).map world.mapBounds
   pattern : ∀ pattern, source.Pattern pattern → target.Pattern pattern
 
+/-- Rebuilding a generalized group over a closed outer environment must retain
+    its source program.  The checked artifacts themselves remain indexed by
+    their respective outer environments; these are precisely the expression
+    equalities needed by a surrounding body derivation. -/
+structure GeneralizedGroup.Reconciles
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    {sourceEnv targetEnv : List Binding}
+    (source : GeneralizedGroup output metadata path captures premises bodyTypes sourceEnv)
+    (target : GeneralizedGroup output metadata path captures premises bodyTypes targetEnv) : Prop where
+  annotations : target.annotations = source.annotations
+  rhss : target.rhss = source.rhss
+  body : target.body = source.body
+
 def ScopedHMAnnotation.ParamOK.specialize
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Delta : List Constraint} {ann : Option Ty} {beta : BoundsTy}
@@ -969,6 +983,124 @@ def letRecExportedClosed
     HMCountSchemeClosure.interpretedCountCaptures_compose,
     HMCountSchemeClosure.interpretedTypeCaptures_map] using bodyClosed.typing
 
+def letRecGroup
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.exports.map Binding.exported ++ ordinaryBodyEnv raw)
+      group.body result)
+    (world : EnvSpecialization raw)
+    (targetGroup : GeneralizedGroup output metadata path captures premises bodyTypes
+      (closeRecursiveEnv world.outer world.types raw))
+    (reconciles : group.Reconciles targetGroup)
+    (targetBody : ScopedBodyDerives
+      (fun i => world.mapBounds (types i)) (fun i => world.mapBounds (slots i)) ids
+      (CountAlgebra.compose world.outer rows) (Delta.map (constraint world.outer))
+      (targetGroup.exports.map Binding.exported ++
+        ordinaryBodyEnv (closeRecursiveEnv world.outer world.types raw))
+      targetGroup.body (world.mapBounds result)) :
+    BodyViewSpecialized .ordinary raw
+      (by
+        simpa only [RawBodyView.env_ordinary] using
+          (ScopedBodyDerives.letRec group bodyTyping)) world := by
+  refine ⟨?_⟩
+  simpa only [RawBodyView.env_ordinary, reconciles.annotations,
+    reconciles.rhss, reconciles.body] using
+      (ScopedBodyDerives.letRec targetGroup targetBody)
+
+def letRecFixed
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.exports.map Binding.exported ++ fixedBodyEnv raw)
+      group.body result)
+    (world : EnvSpecialization raw)
+    (targetGroup : GeneralizedGroup output metadata path captures premises bodyTypes
+      (closeRecursiveEnv world.outer world.types raw))
+    (reconciles : group.Reconciles targetGroup)
+    (targetBody : ScopedBodyDerives
+      (fun i => world.mapBounds (types i)) (fun i => world.mapBounds (slots i)) ids
+      (CountAlgebra.compose world.outer rows) (Delta.map (constraint world.outer))
+      (targetGroup.exports.map Binding.exported ++
+        fixedBodyEnv (closeRecursiveEnv world.outer world.types raw))
+      targetGroup.body (world.mapBounds result)) :
+    BodyViewSpecialized .fixed raw
+      (by
+        simpa only [RawBodyView.env_fixed] using
+          (ScopedBodyDerives.letRecFixed group bodyTyping)) world := by
+  refine ⟨?_⟩
+  simpa only [RawBodyView.env_fixed, reconciles.annotations,
+    reconciles.rhss, reconciles.body] using
+      (ScopedBodyDerives.letRecFixed targetGroup targetBody)
+
+def letRecClosed
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ ordinaryBodyEnv raw)
+      group.body result)
+    (world : EnvSpecialization raw)
+    (targetGroup : GeneralizedGroup output metadata path captures premises bodyTypes
+      (closeRecursiveEnv world.outer world.types raw))
+    (reconciles : group.Reconciles targetGroup)
+    (targetBody : ScopedBodyDerives
+      (fun i => world.mapBounds (types i)) (fun i => world.mapBounds (slots i)) ids
+      (CountAlgebra.compose world.outer rows) (Delta.map (constraint world.outer))
+      (targetGroup.closedExports (CountAlgebra.compose world.outer rows)
+          (fun i => world.mapBounds (types i)) ++
+        ordinaryBodyEnv (closeRecursiveEnv world.outer world.types raw))
+      targetGroup.body (world.mapBounds result)) :
+    BodyViewSpecialized .ordinary raw
+      (by
+        simpa only [RawBodyView.env_ordinary] using
+          (ScopedBodyDerives.letRecClosed group bodyTyping)) world := by
+  refine ⟨?_⟩
+  simpa only [RawBodyView.env_ordinary, reconciles.annotations,
+    reconciles.rhss, reconciles.body] using
+      (ScopedBodyDerives.letRecClosed targetGroup targetBody)
+
+def letRecFixedClosed
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ fixedBodyEnv raw)
+      group.body result)
+    (world : EnvSpecialization raw)
+    (targetGroup : GeneralizedGroup output metadata path captures premises bodyTypes
+      (closeRecursiveEnv world.outer world.types raw))
+    (reconciles : group.Reconciles targetGroup)
+    (targetBody : ScopedBodyDerives
+      (fun i => world.mapBounds (types i)) (fun i => world.mapBounds (slots i)) ids
+      (CountAlgebra.compose world.outer rows) (Delta.map (constraint world.outer))
+      (targetGroup.closedExports (CountAlgebra.compose world.outer rows)
+          (fun i => world.mapBounds (types i)) ++
+        fixedBodyEnv (closeRecursiveEnv world.outer world.types raw))
+      targetGroup.body (world.mapBounds result)) :
+    BodyViewSpecialized .fixed raw
+      (by
+        simpa only [RawBodyView.env_fixed] using
+          (ScopedBodyDerives.letRecFixedClosed group bodyTyping)) world := by
+  refine ⟨?_⟩
+  simpa only [RawBodyView.env_fixed, reconciles.annotations,
+    reconciles.rhss, reconciles.body] using
+      (ScopedBodyDerives.letRecFixedClosed targetGroup targetBody)
+
 def match_
     {view : RawBodyView} {raw : List Binding}
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
@@ -1155,6 +1287,10 @@ end BodyViewSpecialized
 #print axioms BodyViewSpecialized.letRecExported
 #print axioms BodyViewSpecialized.letExportedClosed
 #print axioms BodyViewSpecialized.letRecExportedClosed
+#print axioms BodyViewSpecialized.letRecGroup
+#print axioms BodyViewSpecialized.letRecFixed
+#print axioms BodyViewSpecialized.letRecClosed
+#print axioms BodyViewSpecialized.letRecFixedClosed
 #print axioms BodyViewSpecialized.nil
 #print axioms BodyViewSpecialized.boolCtor
 #print axioms BodyViewSpecialized.ctor
