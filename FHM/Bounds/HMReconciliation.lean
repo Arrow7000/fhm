@@ -174,6 +174,7 @@ def checkRHS {output path node schemes site s captures}
     | recursive c =>
         intro i hi
         exact checked.capturesFixed (represented c hb) hi
+    | recursiveClosure _ => trivial
     | exported t =>
         intro i hi
         exact checked.capturesFixed (exportsRepresented t hb) hi
