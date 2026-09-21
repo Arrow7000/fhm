@@ -587,6 +587,8 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
               pure ⟨by simpa only [Expr.stripFound] using
                 (ScopedDerives.RuntimeReady.varRecursive (types := types) (slots := slots)
                   (ids := ids) (rows := rows) (env := env) (i := i) (c := c) hv used supported.down)⟩)
+      | some (.recursiveClosure _) =>
+          throw "bounds: fixed recursive closure use is not wired in the interpreted RHS walker"
       | some (.exported s) =>
           if s.counts.quantified.isEmpty then
             let found := ScopedHMInterpretation.ty types slots hm
