@@ -2562,6 +2562,18 @@ inductive ScopedBodyDerives :
         group.body bodyResult →
       ScopedBodyDerives types slots ids rows Δ (ordinaryBodyEnv outerEnv)
         (.letRec group.annotations group.rhss group.body) bodyResult
+  /-- The closure-normal static introduction rule for a generalized group.
+      Every body-visible member carries the lexical count/HM interpretation
+      at which the group was introduced; uses must therefore establish the
+      corresponding capture agreement rather than treating promoted captures
+      as fresh caller-chosen parameters. -/
+  | letRecClosed {output metadata path captures premises bodyTypes outerEnv bodyResult}
+      (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv) :
+      ScopedBodyDerives types slots ids rows Δ
+        (group.closedExports rows types ++ ordinaryBodyEnv outerEnv)
+        group.body bodyResult →
+      ScopedBodyDerives types slots ids rows Δ (ordinaryBodyEnv outerEnv)
+        (.letRec group.annotations group.rhss group.body) bodyResult
   /-- Introduce a nested generalized group while remaining inside an enclosing
       SCC. The new group's members become exported in its body, but captured
       recursive assumptions retain their fixed contracts. -/
@@ -2569,6 +2581,16 @@ inductive ScopedBodyDerives :
       (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv) :
       ScopedBodyDerives types slots ids rows Δ
         (group.exports.map Binding.exported ++ fixedBodyEnv outerEnv)
+        group.body bodyResult →
+      ScopedBodyDerives types slots ids rows Δ (fixedBodyEnv outerEnv)
+        (.letRec group.annotations group.rhss group.body) bodyResult
+  /-- Closure-normal introduction while an enclosing SCC is still fixed.  The
+      new group exits are closed, while the captured outer recursive contracts
+      deliberately retain their fixed in-group interpretation. -/
+  | letRecFixedClosed {output metadata path captures premises bodyTypes outerEnv bodyResult}
+      (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv) :
+      ScopedBodyDerives types slots ids rows Δ
+        (group.closedExports rows types ++ fixedBodyEnv outerEnv)
         group.body bodyResult →
       ScopedBodyDerives types slots ids rows Δ (fixedBodyEnv outerEnv)
         (.letRec group.annotations group.rhss group.body) bodyResult
@@ -2592,7 +2614,7 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       varMono | varRecursive | varRecursiveClosure | varExported | varClosure | app | lambda |
       letMono | letRecMono | letRecMonoGroup | letPinned | letRecPinnedMono | letRecInferredMono |
           letExported | letRecExported | letExportedClosed | letRecExportedClosed |
-          match_ | letRec | letRecFixed =>
+          match_ | letRec | letRecClosed | letRecFixed | letRecFixedClosed =>
         intro p source; cases source
 
 /-- Ordinary RHS proofs can be reused for local introduction in mono captured
@@ -3007,7 +3029,9 @@ abbrev letRecPinnedMono := @ScopedBodyDerives.letRecPinnedMono BoundsTy.fvar Bou
 abbrev letRecInferredMono := @ScopedBodyDerives.letRecInferredMono BoundsTy.fvar BoundsTy.bvar
 abbrev match_ := @ScopedBodyDerives.match_ BoundsTy.fvar BoundsTy.bvar
 abbrev letRec := @ScopedBodyDerives.letRec BoundsTy.fvar BoundsTy.bvar
+abbrev letRecClosed := @ScopedBodyDerives.letRecClosed BoundsTy.fvar BoundsTy.bvar
 abbrev letRecFixed := @ScopedBodyDerives.letRecFixed BoundsTy.fvar BoundsTy.bvar
+abbrev letRecFixedClosed := @ScopedBodyDerives.letRecFixedClosed BoundsTy.fvar BoundsTy.bvar
 end BodyDerives
 
 theorem BodyBranchContext.Covers.assuming {ctx : BodyBranchContext} {Δ Δ' branches}
@@ -3109,7 +3133,9 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
         (fun i br hb => iharms i br hb (RecursiveTyping.assuming_append hp))
         (fun i br hb => (subs i br hb).assuming (RecursiveTyping.assuming_append hp))
   | letRec group _ ihbody => exact .letRec group (ihbody hp)
+  | letRecClosed group _ ihbody => exact .letRecClosed group (ihbody hp)
   | letRecFixed group _ ihbody => exact .letRecFixed group (ihbody hp)
+  | letRecFixedClosed group _ ihbody => exact .letRecFixedClosed group (ihbody hp)
 
 private theorem bodyBranches_scoped {depth branches}
     (bodies : ∀ br ∈ branches, br.2.varsBelow (depth + br.1.bindCount) = true) :
@@ -3236,6 +3262,20 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
         simpa only [fixedBodyEnv, List.length_map, Nat.add_comm] using
           group.rhssScoped rhs member
       · simpa only [List.length_append, List.length_map, group.exportCount,
+          fixedBodyEnv, Nat.add_comm] using ihbody
+  | letRecClosed group _ ihbody =>
+      apply Runtime.letRec_scoped
+      · intro rhs member
+        simpa only [ordinaryBodyEnv, List.length_map, Nat.add_comm] using
+          group.rhssScoped rhs member
+      · simpa [GeneralizedGroup.closedExports, List.length_append, group.exportCount,
+          ordinaryBodyEnv, Nat.add_comm] using ihbody
+  | letRecFixedClosed group _ ihbody =>
+      apply Runtime.letRec_scoped
+      · intro rhs member
+        simpa only [fixedBodyEnv, List.length_map, Nat.add_comm] using
+          group.rhssScoped rhs member
+      · simpa [GeneralizedGroup.closedExports, List.length_append, group.exportCount,
           fixedBodyEnv, Nat.add_comm] using ihbody
 
 theorem BodyEnvAt.closes {bound free σ budget env types slots ids rows Δ expr β}
