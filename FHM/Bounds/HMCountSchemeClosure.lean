@@ -768,6 +768,63 @@ theorem substitute_closeTypes (ids : List Nat)
                 apply List.mem_dedup.mpr
                 exact List.mem_append_right _ used))
 
+/-- The mixed variant used when a source call's own HM arguments are already
+    expressed at the current body point.  Promoted lexical identities receive
+    the ambient reader `f`; source-owned bound slots receive `args` verbatim. -/
+theorem substitute_closeTypes_mixed (ids : List Nat)
+    (f : Nat → BoundsTy) (args : List BoundsTy) {β : BoundsTy}
+    (fLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (covers : ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, i ∈ ids) :
+    TypeSubstitution.substitute
+        (SchemeUse.vector (ids.map f ++ args))
+        (closeTypes ids β) =
+      TypeSubstitution.substitute (SchemeUse.vector args)
+        (SchemeSpecialization.mapFree f β) := by
+  induction β using recStrong with
+  | prim p => rfl
+  | fvar i =>
+      have member : i ∈ ids := covers i (by simp [Synth.BoundsTy.toTy, Ty.freeVars])
+      simp only [closeTypes]
+      cases found : ids.idxOf? i with
+      | none => exact False.elim ((List.idxOf?_eq_none_iff.mp found) member)
+      | some slot =>
+          have slotEq : slot = ids.idxOf i := by
+            rw [List.idxOf_eq_getD_idxOf?, found]
+            rfl
+          subst slot
+          simp only [TypeSubstitution.substitute, SchemeSpecialization.mapFree]
+          rw [vector_capture f _ member]
+          exact (FreeAlgebra.instantiate_fixed _ (fLC i)).symm
+  | bvar i =>
+      simp only [closeTypes, SchemeSpecialization.mapFree, TypeSubstitution.substitute]
+      simpa only [List.length_map] using vector_shift (ids.map f) args i
+  | arrow a b iha ihb =>
+      simp only [closeTypes, SchemeSpecialization.mapFree, TypeSubstitution.substitute]
+      rw [iha (fun i member => covers i (by
+        simp [Synth.BoundsTy.toTy, Ty.freeVars, member])),
+        ihb (fun i member => covers i (by
+          simp [Synth.BoundsTy.toTy, Ty.freeVars, member]))]
+  | list lo hi elem ih =>
+      simp only [closeTypes, SchemeSpecialization.mapFree, TypeSubstitution.substitute]
+      rw [ih (fun i member => covers i (by
+        simpa [Synth.BoundsTy.toTy, listTy, Ty.freeVars, TyList.freeVars] using member))]
+  | custom name fields ih =>
+      simp only [closeTypes, SchemeSpecialization.mapFree, TypeSubstitution.substitute]
+      apply congrArg (BoundsTy.custom name)
+      induction fields with
+      | nil => rfl
+      | cons field rest tail =>
+          simp only [closeTypeList, TypeSubstitution.substituteList,
+            SchemeSpecialization.mapFreeList, List.cons.injEq]
+          constructor
+          · exact ih field (by simp) (fun i used => covers i (by
+              simp [Synth.BoundsTy.toTy, Ty.freeVars, TyList.freeVars, used]))
+          · exact tail (fun a member => ih a (List.mem_cons_of_mem _ member))
+              (fun i used => covers i (by
+                simp only [Synth.BoundsTy.toTy, Ty.freeVars] at used ⊢
+                apply List.mem_dedup.mpr
+                exact List.mem_append_right _ used))
+
 theorem substitute_close (s : HMCountScheme.Scheme) (f : Nat → BoundsTy)
     (args : List BoundsTy) :
     TypeSubstitution.substitute (SchemeUse.vector (typeArguments f s args))
@@ -775,6 +832,22 @@ theorem substitute_close (s : HMCountScheme.Scheme) (f : Nat → BoundsTy)
       SchemeSpecialization.mapFree f
         (TypeSubstitution.substitute (SchemeUse.vector args) s.counts.body) := by
   apply substitute_closeTypes (typeCaptures s) f args
+  intro i member
+  apply mem_eraseDups_of_mem
+  simpa only [typeCaptures, s.shape] using member
+
+/-- HM-only closure elimination: source-owned type arguments are already at
+    the consuming body point, while the promoted prefix supplies the lexical
+    free identities. -/
+theorem substitute_close_mixed (s : HMCountScheme.Scheme)
+    (f : Nat → BoundsTy) (args : List BoundsTy)
+    (fLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) :
+    TypeSubstitution.substitute
+        (SchemeUse.vector ((typeCaptures s).map f ++ args))
+        (close s).counts.body =
+      TypeSubstitution.substitute (SchemeUse.vector args)
+        (SchemeSpecialization.mapFree f s.counts.body) := by
+  apply substitute_closeTypes_mixed (typeCaptures s) f args fLC
   intro i member
   apply mem_eraseDups_of_mem
   simpa only [typeCaptures, s.shape] using member
@@ -965,6 +1038,57 @@ theorem bounds_closeTypes (rows : CountSubstitution.Bindings) (ids : List Nat)
           simp only [closeTypeList, CountSubstitution.boundsList, List.cons.injEq]
           exact ⟨ih field (by simp),
             tail (fun a member => ih a (List.mem_cons_of_mem _ member))⟩
+
+/-- Eliminate an HM-capture-closed use when the source count interface is
+    already closed.  The source call's count and HM arguments stay local;
+    only the leading promoted HM capture prefix is read through `f`. -/
+theorem closedUse_bounds_emptyCountCaptures
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller)
+    (countClosed : s.counts.captures = [])
+    (f : Nat → BoundsTy) (fLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (captures : CapturesAgree s [] f u) :
+    u.bounds =
+      TypeSubstitution.substitute
+        (SchemeUse.vector (sourceTypeArguments s u.types))
+        (SchemeSpecialization.mapFree f
+          (CountSubstitution.bounds
+            (s.counts.quantified.zip (sourceCountArguments s u.counts))
+            s.counts.body)) := by
+  let sourceCounts := sourceCountArguments s u.counts
+  let sourceTypes := sourceTypeArguments s u.types
+  change u.bounds =
+    TypeSubstitution.substitute (SchemeUse.vector sourceTypes)
+      (SchemeSpecialization.mapFree f
+        (CountSubstitution.bounds (s.counts.quantified.zip sourceCounts)
+          s.counts.body))
+  have capCounts : captureCountArguments s u.counts = [] := by
+    rw [captures.counts]
+    simp only [interpretedCountCaptures, countCaptures, countClosed,
+      List.eraseDups_nil, List.map_nil]
+  have countsEq : u.counts = sourceCounts := by
+    have split := closedUse_countArguments u
+    rw [capCounts, List.append_nil] at split
+    exact split.symm
+  have capTypes : captureTypeArguments s u.types = (typeCaptures s).map f := by
+    simpa only [interpretedTypeCaptures] using captures.types
+  have typesEq : u.types = (typeCaptures s).map f ++ sourceTypes := by
+    have split := closedUse_typeArguments u
+    calc
+      u.types = captureTypeArguments s u.types ++ sourceTypeArguments s u.types := split.symm
+      _ = (typeCaptures s).map f ++ sourceTypes := by rw [capTypes]
+  unfold HMCountScheme.Use.bounds
+  rw [countsEq, typesEq]
+  simp only [countCaptures, countClosed,
+    List.eraseDups_nil, List.append_nil, close]
+  simp only [TypeSubstitution.combined]
+  rw [bounds_closeTypes]
+  apply substitute_closeTypes_mixed (typeCaptures s) f
+    sourceTypes fLC
+  intro i member
+  apply mem_eraseDups_of_mem
+  rw [CountSubstitution.bounds_shape, s.shape] at member
+  exact member
 
 /-- Full count-first/HM-second instantiation of the lifted interface equals
     specializing the original use in the enclosing environment. -/
