@@ -268,6 +268,28 @@ structure SpecializableEnvFamily (bound free : Runtime.TypeEnv) (sigma : Assign)
   world : ∀ budget, SpecializableEnvAt bound free sigma budget env
   worldTerms : ∀ budget, (world budget).fixed.terms = terms
 
+/-- The empty lexical environment has the same empty runtime syntax at every
+    observation budget. -/
+def SpecializableEnvFamily.empty (bound free : Runtime.TypeEnv) (sigma : Assign) :
+    SpecializableEnvFamily bound free sigma [] where
+  terms := []
+  world := fun budget => SpecializableEnvAt.empty bound free sigma budget
+  worldTerms := fun _ => rfl
+
+/-- Concatenate two Kripke families pointwise.  The shared runtime syntax is
+    the same left-to-right concatenation in every budget and specialization
+    world. -/
+def SpecializableEnvFamily.append
+    {bound free : Runtime.TypeEnv} {sigma : Assign} {left right : List Binding}
+    (head : SpecializableEnvFamily bound free sigma left)
+    (tail : SpecializableEnvFamily bound free sigma right) :
+    SpecializableEnvFamily bound free sigma (left ++ right) where
+  terms := head.terms ++ tail.terms
+  world := fun budget => SpecializableEnvAt.append (head.world budget) (tail.world budget)
+  worldTerms := by
+    intro budget
+    simp only [SpecializableEnvAt.append, EnvAt.append, head.worldTerms, tail.worldTerms]
+
 /-- Package the nested environment theorem at every closed exit use in the
     parallel Kripke family.  This is deliberately distinct from the universal
     `ClosedRuntimeReady` interface: it preserves this family's one lexical
