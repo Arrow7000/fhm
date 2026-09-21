@@ -966,6 +966,238 @@ theorem count_promoted (outer : CountSubstitution.Bindings)
       simp only [CountSubstitution.count]
       rw [ih hscope]
 
+/-- Promoted capture rows agree with a protected source opening.  In contrast
+    to `count_promoted`, the source scheme's quantified arguments are already
+    chosen by the current caller and so shadow `outer` unchanged.  Only the
+    trailing promoted capture rows consult `outer`. -/
+theorem count_protected (outer : CountSubstitution.Bindings)
+    (quantified captures : List Nat) (args : List Count)
+    (capturesNodup : captures.Nodup)
+    (arity : quantified.length = args.length) {c : Count}
+    (hscope : Scope.CountScoped (quantified ++ captures) c) :
+    CountSubstitution.count ((quantified.zip args) ++ outer) c =
+      CountSubstitution.count
+        ((quantified ++ captures).zip
+          (args ++ captures.map (fun i =>
+            CountSubstitution.count outer (.var ⟨.rigid, i⟩)))) c := by
+  let inner := quantified.zip args
+  let captured := captures.zip (captures.map (fun i =>
+    CountSubstitution.count outer (.var ⟨.rigid, i⟩)))
+  have rowsEq :
+      (quantified ++ captures).zip
+          (args ++ captures.map (fun i =>
+            CountSubstitution.count outer (.var ⟨.rigid, i⟩))) =
+        inner ++ captured := by
+    rw [List.zip_append (by simpa only [List.length_map] using arity)]
+  rw [rowsEq]
+  induction c with
+  | lit | inf => rfl
+  | var v =>
+      cases v with
+      | mk kind i =>
+          cases kind with
+          | inferable => cases hscope
+          | rigid =>
+              simp only [CountSubstitution.count, lookup_append]
+              cases found : CountSubstitution.lookup inner i with
+              | some value => rfl
+              | none =>
+                  have absent : i ∉ quantified := by
+                    intro member
+                    have keyMember : i ∈ inner.map Prod.fst := by
+                      simpa only [inner, List.map_fst_zip (Nat.le_of_eq arity)] using member
+                    exact (ScopedScheme.lookup_none_iff.mp found) keyMember
+                  have captureMember : i ∈ captures := by
+                    rcases List.mem_append.mp hscope with quantifiedMember | capturedMember
+                    · exact False.elim (absent quantifiedMember)
+                    · exact capturedMember
+                  have selected := capture_lookup captures capturesNodup outer captureMember
+                  have selected' : CountSubstitution.lookup captured i =
+                      some (CountSubstitution.count outer (.var ⟨.rigid, i⟩)) := by
+                    simpa only [captured] using selected
+                  rw [selected']
+                  rfl
+  | add a b iha ihb | mul a b iha ihb | min a b iha ihb | max a b iha ihb =>
+      simp only [CountSubstitution.count]
+      rw [iha hscope.1, ihb hscope.2]
+  | pred a ih =>
+      simp only [CountSubstitution.count]
+      rw [ih hscope]
+
+/-- The protected-row promotion law lifted from counts to complete bounds. -/
+theorem bounds_protected (outer : CountSubstitution.Bindings)
+    (quantified captures : List Nat) (args : List Count)
+    (capturesNodup : captures.Nodup)
+    (arity : quantified.length = args.length) {β : BoundsTy}
+    (hscope : ScopedScheme.BoundsScoped (quantified ++ captures) β) :
+    CountSubstitution.bounds ((quantified.zip args) ++ outer) β =
+      CountSubstitution.bounds
+        ((quantified ++ captures).zip
+          (args ++ captures.map (fun i =>
+            CountSubstitution.count outer (.var ⟨.rigid, i⟩)))) β := by
+  induction β using recStrong with
+  | prim | fvar | bvar => rfl
+  | arrow a b iha ihb =>
+      simp only [CountSubstitution.bounds]
+      rw [iha hscope.1, ihb hscope.2]
+  | list lo hi elem ih =>
+      simp only [CountSubstitution.bounds]
+      rw [count_protected outer quantified captures args capturesNodup arity hscope.1,
+        count_protected outer quantified captures args capturesNodup arity hscope.2.1,
+        ih hscope.2.2]
+  | custom name fields ih =>
+      simp only [CountSubstitution.bounds]
+      apply congrArg (BoundsTy.custom name)
+      induction fields with
+      | nil => rfl
+      | cons field rest tail =>
+          simp only [CountSubstitution.boundsList, List.cons.injEq]
+          exact ⟨ih field (by simp) hscope.1,
+            tail (fun a member => ih a (List.mem_cons_of_mem _ member)) hscope.2⟩
+
+/-- The protected-row promotion law for source scheme premises. -/
+theorem constraint_protected (outer : CountSubstitution.Bindings)
+    (quantified captures : List Nat) (args : List Count)
+    (capturesNodup : captures.Nodup)
+    (arity : quantified.length = args.length) {c : Constraint}
+    (hscope : ScopedScheme.ConstraintScoped (quantified ++ captures) c) :
+    CountSubstitution.constraint ((quantified.zip args) ++ outer) c =
+      CountSubstitution.constraint
+        ((quantified ++ captures).zip
+          (args ++ captures.map (fun i =>
+            CountSubstitution.count outer (.var ⟨.rigid, i⟩)))) c := by
+  cases c with
+  | mk lhs rhs =>
+      simp only [CountSubstitution.constraint]
+      rw [count_protected outer quantified captures args capturesNodup arity hscope.1,
+        count_protected outer quantified captures args capturesNodup arity hscope.2]
+
+/-- A closed use's actual promoted count vector denotes the source opening
+    protected by its caller-chosen quantified rows and completed by the
+    closure's captured outer rows. -/
+theorem closedUse_count_protected
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller)
+    (outer : CountSubstitution.Bindings) (f : Nat → BoundsTy)
+    (captures : CapturesAgree s outer f u) {c : Count}
+    (hscope : Scope.CountScoped (s.counts.quantified ++ countCaptures s) c) :
+    CountSubstitution.count
+        ((s.counts.quantified.zip (sourceCountArguments s u.counts)) ++ outer) c =
+      CountSubstitution.count ((close s).counts.quantified.zip u.counts) c := by
+  have countsEq : u.counts =
+      sourceCountArguments s u.counts ++ interpretedCountCaptures outer s := by
+    calc
+      u.counts = sourceCountArguments s u.counts ++ captureCountArguments s u.counts :=
+        (closedUse_countArguments u).symm
+      _ = sourceCountArguments s u.counts ++ interpretedCountCaptures outer s := by
+        rw [captures.counts]
+  calc
+    CountSubstitution.count
+        ((s.counts.quantified.zip (sourceCountArguments s u.counts)) ++ outer) c =
+      CountSubstitution.count
+        ((s.counts.quantified ++ countCaptures s).zip
+          (sourceCountArguments s u.counts ++ interpretedCountCaptures outer s)) c := by
+        simpa only [interpretedCountCaptures] using
+          count_protected outer s.counts.quantified (countCaptures s)
+            (sourceCountArguments s u.counts) (nodup_eraseDups _)
+            (closedUse_sourceCountLength u).symm hscope
+    _ = CountSubstitution.count ((close s).counts.quantified.zip u.counts) c := by
+        rw [close_countQuantified]
+        exact congrArg (fun counts => CountSubstitution.count
+          ((s.counts.quantified ++ countCaptures s).zip counts) c) countsEq.symm
+
+/-- `closedUse_count_protected` lifted to complete source bounds. -/
+theorem closedUse_bounds_protected
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller)
+    (outer : CountSubstitution.Bindings) (f : Nat → BoundsTy)
+    (captures : CapturesAgree s outer f u) {β : BoundsTy}
+    (hscope : ScopedScheme.BoundsScoped (s.counts.quantified ++ countCaptures s) β) :
+    CountSubstitution.bounds
+        ((s.counts.quantified.zip (sourceCountArguments s u.counts)) ++ outer) β =
+      CountSubstitution.bounds ((close s).counts.quantified.zip u.counts) β := by
+  have countsEq : u.counts =
+      sourceCountArguments s u.counts ++ interpretedCountCaptures outer s := by
+    calc
+      u.counts = sourceCountArguments s u.counts ++ captureCountArguments s u.counts :=
+        (closedUse_countArguments u).symm
+      _ = sourceCountArguments s u.counts ++ interpretedCountCaptures outer s := by
+        rw [captures.counts]
+  calc
+    CountSubstitution.bounds
+        ((s.counts.quantified.zip (sourceCountArguments s u.counts)) ++ outer) β =
+      CountSubstitution.bounds
+        ((s.counts.quantified ++ countCaptures s).zip
+          (sourceCountArguments s u.counts ++ interpretedCountCaptures outer s)) β := by
+        simpa only [interpretedCountCaptures] using
+          bounds_protected outer s.counts.quantified (countCaptures s)
+            (sourceCountArguments s u.counts) (nodup_eraseDups _)
+            (closedUse_sourceCountLength u).symm hscope
+    _ = CountSubstitution.bounds ((close s).counts.quantified.zip u.counts) β := by
+        rw [close_countQuantified]
+        exact congrArg (fun counts => CountSubstitution.bounds
+          ((s.counts.quantified ++ countCaptures s).zip counts) β) countsEq.symm
+
+/-- `closedUse_count_protected` lifted to source scheme premises. -/
+theorem closedUse_constraint_protected
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller)
+    (outer : CountSubstitution.Bindings) (f : Nat → BoundsTy)
+    (captures : CapturesAgree s outer f u) {c : Constraint}
+    (hscope : ScopedScheme.ConstraintScoped (s.counts.quantified ++ countCaptures s) c) :
+    CountSubstitution.constraint
+        ((s.counts.quantified.zip (sourceCountArguments s u.counts)) ++ outer) c =
+      CountSubstitution.constraint ((close s).counts.quantified.zip u.counts) c := by
+  have countsEq : u.counts =
+      sourceCountArguments s u.counts ++ interpretedCountCaptures outer s := by
+    calc
+      u.counts = sourceCountArguments s u.counts ++ captureCountArguments s u.counts :=
+        (closedUse_countArguments u).symm
+      _ = sourceCountArguments s u.counts ++ interpretedCountCaptures outer s := by
+        rw [captures.counts]
+  calc
+    CountSubstitution.constraint
+        ((s.counts.quantified.zip (sourceCountArguments s u.counts)) ++ outer) c =
+      CountSubstitution.constraint
+        ((s.counts.quantified ++ countCaptures s).zip
+          (sourceCountArguments s u.counts ++ interpretedCountCaptures outer s)) c := by
+        simpa only [interpretedCountCaptures] using
+          constraint_protected outer s.counts.quantified (countCaptures s)
+            (sourceCountArguments s u.counts) (nodup_eraseDups _)
+            (closedUse_sourceCountLength u).symm hscope
+    _ = CountSubstitution.constraint ((close s).counts.quantified.zip u.counts) c := by
+        rw [close_countQuantified]
+        exact congrArg (fun counts => CountSubstitution.constraint
+          ((s.counts.quantified ++ countCaptures s).zip counts) c) countsEq.symm
+
+/-- A usable closed call discharges exactly the source scheme's premises under
+    the same protected opening. -/
+theorem closedUse_usable_protected
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller)
+    (outer : CountSubstitution.Bindings) (f : Nat → BoundsTy)
+    (captures : CapturesAgree s outer f u) :
+    (⟨Δ, s.counts.premises.map (CountSubstitution.constraint
+      ((s.counts.quantified.zip (sourceCountArguments s u.counts)) ++ outer))⟩ :
+      ForallProblem).Valid := by
+  have premisesEq :
+      (close s).counts.premises.map
+          (CountSubstitution.constraint ((close s).counts.quantified.zip u.counts)) =
+        s.counts.premises.map (CountSubstitution.constraint
+          ((s.counts.quantified.zip (sourceCountArguments s u.counts)) ++ outer)) := by
+    simp only [close]
+    apply List.map_congr_left
+    intro c member
+    exact (closedUse_constraint_protected u outer f captures
+      (constraintScope_mono (s.countWF.2.2.2 c member) (promoted_subset s))).symm
+  have usable := u.usable
+  change (⟨Δ,
+    (close s).counts.premises.map
+      (CountSubstitution.constraint ((close s).counts.quantified.zip u.counts))⟩ :
+      ForallProblem).Valid at usable
+  rw [premisesEq] at usable
+  exact usable
+
 /-- The same promotion law for complete bounds types. -/
 theorem bounds_promoted (outer : CountSubstitution.Bindings)
     (quantified captures : List Nat) (args : List Count)
