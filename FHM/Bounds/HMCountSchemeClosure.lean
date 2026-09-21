@@ -1090,6 +1090,49 @@ theorem closedUse_bounds_emptyCountCaptures
   rw [CountSubstitution.bounds_shape, s.shape] at member
   exact member
 
+/-- Eliminate a use of a capture-closed interface back to the source body's
+    lexical interpretation.  The use's promoted count suffix and leading HM
+    prefix are fixed by `CapturesAgree`; only the source scheme's own
+    quantified arguments remain caller-chosen. -/
+theorem closedUse_bounds
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller)
+    (outer : CountSubstitution.Bindings) (f : Nat → BoundsTy)
+    (fLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (captures : CapturesAgree s outer f u) :
+    u.bounds =
+      TypeSubstitution.substitute
+        (SchemeUse.vector (sourceTypeArguments s u.types))
+        (SchemeSpecialization.mapFree f
+          (CountSubstitution.bounds
+            ((s.counts.quantified ++ countCaptures s).zip
+              (sourceCountArguments s u.counts ++
+                interpretedCountCaptures outer s))
+            s.counts.body)) := by
+  let sourceCounts := sourceCountArguments s u.counts
+  let sourceTypes := sourceTypeArguments s u.types
+  change u.bounds =
+    TypeSubstitution.substitute (SchemeUse.vector sourceTypes)
+      (SchemeSpecialization.mapFree f
+        (CountSubstitution.bounds
+          ((s.counts.quantified ++ countCaptures s).zip
+            (sourceCounts ++ interpretedCountCaptures outer s))
+          s.counts.body))
+  have countsEq : u.counts = sourceCounts ++ interpretedCountCaptures outer s := by
+    rw [← closedUse_countArguments u, captures.counts]
+  have typesEq : u.types = (typeCaptures s).map f ++ sourceTypes := by
+    rw [← closedUse_typeArguments u, captures.types]
+    rfl
+  unfold HMCountScheme.Use.bounds
+  rw [countsEq, typesEq]
+  simp only [interpretedCountCaptures, close, TypeSubstitution.combined]
+  rw [bounds_closeTypes]
+  apply substitute_closeTypes_mixed (typeCaptures s) f sourceTypes fLC
+  intro i member
+  apply mem_eraseDups_of_mem
+  rw [CountSubstitution.bounds_shape, s.shape] at member
+  exact member
+
 /-- Full count-first/HM-second instantiation of the lifted interface equals
     specializing the original use in the enclosing environment. -/
 theorem combined_close (s : HMCountScheme.Scheme)
