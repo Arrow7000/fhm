@@ -407,6 +407,36 @@ def sourceTypeArguments (s : HMCountScheme.Scheme)
     (args : List BoundsTy) : List BoundsTy :=
   args.drop (typeCaptures s).length
 
+/-- A use of the lambda-lifted interface is a use of a lexical closure only
+    when its promoted prefix/trailing coordinates equal that closure's stored
+    environment. Without these equalities `close s` would expose ambient
+    captures as fresh caller-chosen quantifiers, which is strictly stronger
+    than ordinary HM let-polymorphism. -/
+structure HasCaptureArguments (s : HMCountScheme.Scheme)
+    (countArgs : List Count) (typeArgs : List BoundsTy)
+    {Δ : List Constraint} {found : Ty} {caller : List Nat}
+    (u : HMCountScheme.Use (close s) Δ found caller) : Prop where
+  counts : captureCountArguments s u.counts = countArgs
+  types : captureTypeArguments s u.types = typeArgs
+
+/-- Captured count meanings at one enclosing count interpretation. -/
+def interpretedCountCaptures (outer : CountSubstitution.Bindings)
+    (s : HMCountScheme.Scheme) : List Count :=
+  (countCaptures s).map (fun i =>
+    CountSubstitution.count outer (.var ⟨.rigid, i⟩))
+
+/-- Captured HM meanings at one enclosing type interpretation. -/
+def interpretedTypeCaptures (f : Nat → BoundsTy)
+    (s : HMCountScheme.Scheme) : List BoundsTy :=
+  (typeCaptures s).map f
+
+abbrev CapturesAgree (s : HMCountScheme.Scheme)
+    (outer : CountSubstitution.Bindings) (f : Nat → BoundsTy)
+    {Δ : List Constraint} {found : Ty} {caller : List Nat}
+    (u : HMCountScheme.Use (close s) Δ found caller) : Prop :=
+  HasCaptureArguments s (interpretedCountCaptures outer s)
+    (interpretedTypeCaptures f s) u
+
 theorem closedUse_countArguments
     {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
     {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller) :
@@ -934,6 +964,27 @@ theorem transportUse_bounds {s : HMCountScheme.Scheme} {Δ : List Constraint} {f
       SchemeSpecialization.mapFree f (CountSubstitution.bounds outer u.bounds) :=
   combined_close s outer f u.counts u.types u.countInstance.arity
 
+/-- `transportUse` does not quantify over the enclosing environment. Its new
+    coordinates carry exactly the enclosing count and HM interpretations, so
+    the transported interface denotes the same lexical closure. -/
+theorem transportUse_capturesAgree
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use s Δ found caller)
+    (outer : CountSubstitution.Bindings) (outerFinite : CountSubstitution.Finite outer)
+    (countTarget : List Nat)
+    (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+    (f : Nat → BoundsTy) (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (typeTarget : List Nat)
+    (typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i)) :
+    CapturesAgree s outer f
+      (transportUse u outer outerFinite countTarget countScope f typeLC
+        typeTarget typeScope) := by
+  constructor
+  · simp [captureCountArguments, transportUse, countArguments,
+      interpretedCountCaptures, u.countInstance.arity]
+  · simp [captureTypeArguments, transportUse, specializedTypeArguments,
+      typeArguments, interpretedTypeCaptures]
+
 #print axioms closeTypes_bvars
 #print axioms closeTypes_scope
 #print axioms closeTypes_noFree
@@ -950,5 +1001,6 @@ theorem transportUse_bounds {s : HMCountScheme.Scheme} {Δ : List Constraint} {f
 #print axioms combined_close
 #print axioms transportUse
 #print axioms transportUse_bounds
+#print axioms transportUse_capturesAgree
 
 end FHM.Bounds.HMCountSchemeClosure
