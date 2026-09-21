@@ -139,6 +139,7 @@ private theorem countFresh {s found captures env rhs sourceTypes sourceSlots} (c
       apply lookup_none
       rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
       exact cert.countFresh c hb i hi
+  | recursiveClosure _ => trivial
   | exported t =>
       intro i hi
       apply lookup_none
@@ -159,6 +160,9 @@ private theorem typeFresh {s found captures env rhs sourceTypes sourceSlots} (ce
       have absent : i ∉ cert.opening.ids := fun present => cert.typeFresh d hb i present hi
       have hnone : cert.opening.ids.idxOf? i = none := List.idxOf?_eq_none_iff.mpr absent
       simp [argument, hnone]
+  | recursiveClosure _ =>
+      cases he
+      trivial
   | exported t =>
       cases he
       intro i hi
