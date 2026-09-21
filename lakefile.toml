@@ -147,6 +147,7 @@ roots = [
   "FHM.Bounds.RecursiveHMSpecializableEnvironment", # Kripke runtime witnesses for nested recursive environments
   "FHM.Bounds.RecursiveHMClosedSpecializableEnvironment", # Specialization algebra for closed group exports in Kripke environments
   "FHM.Bounds.RecursiveHMClosedSpecializableFamily", # Kripke-family extension by a closed recursive group
+  "FHM.Bounds.RecursiveHMPointwiseClosedExport", # Single-budget nested closed-export realization
   "FHM.Bounds.RecursiveHMBodyViewTransport", # Static closing transport shared by fixed and ordinary raw-environment views
   "FHM.Bounds.RecursiveHMUniformTests", # Permuted mutual vectors, member-local counts, preserved full caller bounds and closed-template capture guards
   "FHM.Bounds.HMFoundView", # Shared HM interpretation reads exact-node payload views without rewriting artifacts or paths
