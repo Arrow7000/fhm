@@ -1170,6 +1170,23 @@ theorem closedUse_constraint_protected
         exact congrArg (fun counts => CountSubstitution.constraint
           ((s.counts.quantified ++ countCaptures s).zip counts) c) countsEq.symm
 
+/-- Instantiating a closed scheme's promoted premises is exactly the same as
+    instantiating the source premises under the protected count opening. -/
+theorem closedUse_premises_protected
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller)
+    (outer : CountSubstitution.Bindings) (f : Nat → BoundsTy)
+    (captures : CapturesAgree s outer f u) :
+    (close s).counts.premises.map
+        (CountSubstitution.constraint ((close s).counts.quantified.zip u.counts)) =
+      s.counts.premises.map (CountSubstitution.constraint
+        ((s.counts.quantified.zip (sourceCountArguments s u.counts)) ++ outer)) := by
+  simp only [close]
+  apply List.map_congr_left
+  intro c member
+  exact (closedUse_constraint_protected u outer f captures
+    (constraintScope_mono (s.countWF.2.2.2 c member) (promoted_subset s))).symm
+
 /-- A usable closed call discharges exactly the source scheme's premises under
     the same protected opening. -/
 theorem closedUse_usable_protected
@@ -1180,22 +1197,12 @@ theorem closedUse_usable_protected
     (⟨Δ, s.counts.premises.map (CountSubstitution.constraint
       ((s.counts.quantified.zip (sourceCountArguments s u.counts)) ++ outer))⟩ :
       ForallProblem).Valid := by
-  have premisesEq :
-      (close s).counts.premises.map
-          (CountSubstitution.constraint ((close s).counts.quantified.zip u.counts)) =
-        s.counts.premises.map (CountSubstitution.constraint
-          ((s.counts.quantified.zip (sourceCountArguments s u.counts)) ++ outer)) := by
-    simp only [close]
-    apply List.map_congr_left
-    intro c member
-    exact (closedUse_constraint_protected u outer f captures
-      (constraintScope_mono (s.countWF.2.2.2 c member) (promoted_subset s))).symm
   have usable := u.usable
   change (⟨Δ,
     (close s).counts.premises.map
       (CountSubstitution.constraint ((close s).counts.quantified.zip u.counts))⟩ :
       ForallProblem).Valid at usable
-  rw [premisesEq] at usable
+  rw [closedUse_premises_protected u outer f captures] at usable
   exact usable
 
 /-- The same promotion law for complete bounds types. -/
