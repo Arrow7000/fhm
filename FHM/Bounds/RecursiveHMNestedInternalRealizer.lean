@@ -260,4 +260,134 @@ def GeneralizedGroup.closedInternalEnvironmentNested
           simpa only [closeRecursiveEnv, List.length_map, recursiveLength,
             group.exportCount, contractCount, lexical.specializedTerms] using meaning
 
+/-- A budget-indexed lexical Kripke family whose runtime syntax is independent
+    of the observation budget. -/
+structure SpecializableEnvFamily (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (env : List Binding) where
+  terms : List Expr
+  world : ∀ budget, SpecializableEnvAt bound free sigma budget env
+  worldTerms : ∀ budget, (world budget).fixed.terms = terms
+
+/-- Package the nested environment theorem at every closed exit use in the
+    parallel Kripke family.  This is deliberately distinct from the universal
+    `ClosedRuntimeReady` interface: it preserves this family's one lexical
+    term vector rather than ranging over arbitrary enclosing witnesses. -/
+def GeneralizedGroup.closedInternalRealizerNested
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (outer : Bindings) (outerFinite : Finite outer)
+    (target : List Nat)
+    (outerScope : ∀ row ∈ outer, Scope.CountScoped target row.2)
+    (ambient : Nat → BoundsTy)
+    (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC)
+    (ambientScope : ∀ i, BoundsScoped target (ambient i))
+    (normal : ClosureNormal outerEnv)
+    (sourceReady : ∀ offset (inside : offset < group.exports.length),
+      ScopedDerives.RuntimeReady
+        (group.selected offset inside).rhs.certificate.implementation.typing)
+    (sourceDemandSupported : ∀ offset (inside : offset < group.exports.length),
+      Runtime.Supported
+        (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (ambientSupported : ∀ i, Runtime.Supported (ambient i))
+    (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (lexical : SpecializableEnvFamily bound free sigma outerEnv) :
+    ClosedInternalRealizer group outer target ambient bound free sigma lexical.terms := by
+  refine ⟨?_⟩
+  intro offset inside calleeDelta found caller used capturesAgree arguments budget
+  let rows := group.protectedRows offset inside used outer
+  let types := group.protectedTypes offset inside used ambient
+  let target' := (group.selected offset inside).rhs.certificate.interface.scheme.counts.captures ++
+    caller ++ target
+  have rowsFinite : Finite rows :=
+    group.protectedRows_finite offset inside used outer outerFinite
+  have rowsScoped : ∀ row ∈ rows, Scope.CountScoped target' row.2 :=
+    group.protectedRows_scoped offset inside used outer target outerScope
+  have typesLC : ∀ i, (Synth.BoundsTy.toTy (types i)).IsLC :=
+    group.protectedTypes_lc offset inside used ambient ambientLC
+  have typesScoped : ∀ i, BoundsScoped target' (types i) :=
+    group.protectedTypes_scoped offset inside used ambient target ambientScope
+  have typesSupported : ∀ i, Runtime.Supported (types i) :=
+    group.protectedTypes_supported offset inside used ambient arguments ambientSupported
+  let realized := closedInternalEnvironmentNested group sourceReady sourceDemandSupported
+    normal bound free sigma hb hf rows rowsFinite target' rowsScoped types typesLC typesScoped
+    typesSupported budget (lexical.world budget)
+  refine ⟨realized.val, ?_⟩
+  simpa only [lexical.worldTerms] using realized.property
+
+/-- Fixed-body view of a nested closed group. -/
+def GeneralizedGroup.closedExportEnvironmentNestedFixed
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (outer : Bindings) (outerFinite : Finite outer)
+    (target : List Nat)
+    (outerScope : ∀ row ∈ outer, Scope.CountScoped target row.2)
+    (ambient : Nat → BoundsTy)
+    (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC)
+    (ambientScope : ∀ i, BoundsScoped target (ambient i))
+    (normal : ClosureNormal outerEnv)
+    (sourceReady : ∀ offset (inside : offset < group.exports.length),
+      ScopedDerives.RuntimeReady
+        (group.selected offset inside).rhs.certificate.implementation.typing)
+    (sourceDemandSupported : ∀ offset (inside : offset < group.exports.length),
+      Runtime.Supported
+        (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (ambientSupported : ∀ i, Runtime.Supported (ambient i))
+    (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (lexical : SpecializableEnvFamily bound free sigma outerEnv)
+    (budget : Nat) :
+    { e : BodyEnvAt bound free sigma budget
+        (group.closedExports outer ambient ++ fixedBodyEnv outerEnv) //
+      e.terms = Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss lexical.terms) ++ lexical.terms } := by
+  let internal := closedInternalRealizerNested group outer outerFinite target outerScope
+    ambient ambientLC ambientScope normal sourceReady sourceDemandSupported ambientSupported
+    bound free sigma hb hf lexical
+  let tail := lexical.world budget |>.fixed
+  have tailTerms : tail.terms = lexical.terms := lexical.worldTerms budget
+  let realized := closedExportEnvironmentCaptured group outer outerFinite target outerScope
+    ambient ambientLC ambientScope normal sourceReady sourceDemandSupported ambientSupported
+    bound free sigma hb hf (tail := fixedBodyEnv outerEnv) (by simp [fixedBodyEnv]) tail
+    (by simpa only [tailTerms] using internal)
+  simpa only [tailTerms] using realized
+
+/-- Ordinary exported-body view of the same nested closed group. -/
+def GeneralizedGroup.closedExportEnvironmentNestedOrdinary
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (outer : Bindings) (outerFinite : Finite outer)
+    (target : List Nat)
+    (outerScope : ∀ row ∈ outer, Scope.CountScoped target row.2)
+    (ambient : Nat → BoundsTy)
+    (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC)
+    (ambientScope : ∀ i, BoundsScoped target (ambient i))
+    (normal : ClosureNormal outerEnv)
+    (sourceReady : ∀ offset (inside : offset < group.exports.length),
+      ScopedDerives.RuntimeReady
+        (group.selected offset inside).rhs.certificate.implementation.typing)
+    (sourceDemandSupported : ∀ offset (inside : offset < group.exports.length),
+      Runtime.Supported
+        (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (ambientSupported : ∀ i, Runtime.Supported (ambient i))
+    (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (lexical : SpecializableEnvFamily bound free sigma outerEnv)
+    (budget : Nat) :
+    { e : BodyEnvAt bound free sigma budget
+        (group.closedExports outer ambient ++ ordinaryBodyEnv outerEnv) //
+      e.terms = Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss lexical.terms) ++ lexical.terms } := by
+  let internal := closedInternalRealizerNested group outer outerFinite target outerScope
+    ambient ambientLC ambientScope normal sourceReady sourceDemandSupported ambientSupported
+    bound free sigma hb hf lexical
+  let tail := lexical.world budget |>.ordinary
+  have tailTerms : tail.terms = lexical.terms :=
+    (lexical.world budget).ordinaryTerms.trans (lexical.worldTerms budget)
+  let realized := closedExportEnvironmentCaptured group outer outerFinite target outerScope
+    ambient ambientLC ambientScope normal sourceReady sourceDemandSupported ambientSupported
+    bound free sigma hb hf (tail := ordinaryBodyEnv outerEnv)
+    (by simp [ordinaryBodyEnv]) tail (by simpa only [tailTerms] using internal)
+  simpa only [tailTerms] using realized
+
 end FHM.Bounds.RecursiveHMClosedExit
