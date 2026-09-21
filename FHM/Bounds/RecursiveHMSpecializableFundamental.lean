@@ -67,6 +67,63 @@ structure SpecializableTermAt
 
 namespace SpecializableTermAt
 
+/-- Primitive literals are independent of the closed lexical world. -/
+def literal
+    {bound free : Runtime.TypeEnv} {sigma : Assign} {env : List Binding}
+    {family : SpecializableEnvFamily bound free sigma env} {Delta : List Constraint}
+    (p : PrimLitExpr) :
+    SpecializableTermAt bound free sigma family Delta (.primLit p) (boundInfoOfPrimLit p) where
+  run budget world premises := by
+    apply Runtime.TermAt.value (.primLit _)
+    have stable : closedBound world (boundInfoOfPrimLit p) = boundInfoOfPrimLit p := by
+      cases p <;> rfl
+    rw [stable]
+    exact Runtime.ValueAt.literal bound free sigma budget p
+
+/-- Primitive operators are independent of the closed lexical world. -/
+def primBinOp
+    {bound free : Runtime.TypeEnv} {sigma : Assign} {env : List Binding}
+    {family : SpecializableEnvFamily bound free sigma env} {Delta : List Constraint}
+    (op : PrimBinOp) :
+    SpecializableTermAt bound free sigma family Delta (.primBinOp op)
+      (Typed.primOpBounds op) where
+  run budget world premises := by
+    apply Runtime.TermAt.value (.primBinOp _)
+    have stable : closedBound world (Typed.primOpBounds op) = Typed.primOpBounds op := by
+      cases op <;> rfl
+    rw [stable]
+    exact Runtime.ValueAt.primBinOp bound free sigma budget op
+
+/-- The semantic continuation required below a lambda.  It deliberately
+    ranges over an arbitrary value at the current closed-world interpretation
+    of the parameter rather than pretending that such a value extends the
+    family's source fixed environment. -/
+structure LambdaBody
+    {bound free : Runtime.TypeEnv} {sigma : Assign} {env : List Binding}
+    (family : SpecializableEnvFamily bound free sigma env)
+    (Delta : List Constraint) (param result : BoundsTy) (body : Expr) : Prop where
+  run : ∀ (budget : Nat) (world : EnvSpecialization env)
+    (_premises : ∀ p ∈ Delta.map (constraint world.outer), p.Holds sigma)
+    (arg : Expr),
+    Runtime.ValueAt bound free sigma (budget + 1) (closedBound world param) arg →
+    Runtime.TermAt bound free sigma budget (closedBound world result)
+      (body.substN 0 (arg :: family.terms))
+
+/-- The semantic continuation required after a monomorphic local binding.
+    Like `LambdaBody`, it records the runtime value directly.  A future
+    Kripke induction can construct this from the per-world RHS theorem; no
+    conversion of a source fixed environment is asserted here. -/
+structure MonoLetBody
+    {bound free : Runtime.TypeEnv} {sigma : Assign} {env : List Binding}
+    (family : SpecializableEnvFamily bound free sigma env)
+    (Delta : List Constraint) (actual result : BoundsTy) (body : Expr) : Prop where
+  run : ∀ (budget : Nat) (world : EnvSpecialization env)
+    (_premises : ∀ p ∈ Delta.map (constraint world.outer), p.Holds sigma)
+    (value : Expr),
+    Runtime.ValueAt bound free sigma (budget + 1) (closedBound world actual) value →
+    Runtime.TermAt bound free sigma budget (closedBound world result)
+      (body.substN 0 (value :: family.terms))
+
 /-- Evaluate a family-indexed semantic proof in the canonical base world.
     The result is deliberately expressed at `closedBound identity`; a later
     normalization lemma may identify this bound with the source bound without
