@@ -386,6 +386,75 @@ def specializedTypeArguments (outer : CountSubstitution.Bindings)
     (args : List BoundsTy) : List BoundsTy :=
   typeArguments f s (args.map (CountSubstitution.bounds outer))
 
+/-- Recover the original scheme's quantified-count arguments from a use of its
+    closed interface. -/
+def sourceCountArguments (s : HMCountScheme.Scheme) (args : List Count) : List Count :=
+  args.take s.counts.quantified.length
+
+/-- Recover the explicit arguments corresponding to the source scheme's
+    promoted lexical count captures. -/
+def captureCountArguments (s : HMCountScheme.Scheme) (args : List Count) : List Count :=
+  args.drop s.counts.quantified.length
+
+/-- Recover the explicit leading HM arguments corresponding to promoted free
+    identities in the source scheme. -/
+def captureTypeArguments (s : HMCountScheme.Scheme)
+    (args : List BoundsTy) : List BoundsTy :=
+  args.take (typeCaptures s).length
+
+/-- Recover the original scheme's HM arguments from the tail of a closed use. -/
+def sourceTypeArguments (s : HMCountScheme.Scheme)
+    (args : List BoundsTy) : List BoundsTy :=
+  args.drop (typeCaptures s).length
+
+theorem closedUse_countArguments
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller) :
+    sourceCountArguments s u.counts ++ captureCountArguments s u.counts = u.counts :=
+  List.take_append_drop _ _
+
+theorem closedUse_sourceCountLength
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller) :
+    (sourceCountArguments s u.counts).length = s.counts.quantified.length := by
+  simp only [sourceCountArguments, List.length_take]
+  have total := u.countInstance.arity
+  simp only [close_countQuantified, List.length_append] at total
+  omega
+
+theorem closedUse_captureCountLength
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller) :
+    (captureCountArguments s u.counts).length = (countCaptures s).length := by
+  simp only [captureCountArguments, List.length_drop]
+  have total := u.countInstance.arity
+  simp only [close_countQuantified, List.length_append] at total
+  omega
+
+theorem closedUse_typeArguments
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller) :
+    captureTypeArguments s u.types ++ sourceTypeArguments s u.types = u.types :=
+  List.take_append_drop _ _
+
+theorem closedUse_captureTypeLength
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller) :
+    (captureTypeArguments s u.types).length = (typeCaptures s).length := by
+  simp only [captureTypeArguments, List.length_take]
+  have total := u.arity
+  simp only [close_typeParamCount] at total
+  omega
+
+theorem closedUse_sourceTypeLength
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller) :
+    (sourceTypeArguments s u.types).length = s.hm.paramCount := by
+  simp only [sourceTypeArguments, List.length_drop]
+  have total := u.arity
+  simp only [close_typeParamCount] at total
+  omega
+
 private theorem vector_capture {ids : List Nat}
     (f : Nat → BoundsTy) (tail : List BoundsTy) {i : Nat} (member : i ∈ ids) :
     SchemeUse.vector (ids.map f ++ tail) (ids.idxOf i) = f i := by
@@ -870,6 +939,12 @@ theorem transportUse_bounds {s : HMCountScheme.Scheme} {Δ : List Constraint} {f
 #print axioms closeTypes_noFree
 #print axioms close
 #print axioms close_typeFree
+#print axioms closedUse_countArguments
+#print axioms closedUse_sourceCountLength
+#print axioms closedUse_captureCountLength
+#print axioms closedUse_typeArguments
+#print axioms closedUse_captureTypeLength
+#print axioms closedUse_sourceTypeLength
 #print axioms substitute_closeTypes
 #print axioms substitute_close
 #print axioms combined_close
