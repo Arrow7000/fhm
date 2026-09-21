@@ -2977,6 +2977,25 @@ def Specializes.toTyping
   exact (stable outer f outerFinite countTarget countScope typeLC typeTarget
     typeScope countFresh typeFresh).toTyping
 
+/-- Established path assumptions preserve static specialization.  The validity
+    implication itself is transported through the enclosing finite count map;
+    no new solver result is assumed. -/
+def TypingSpecializes.assuming
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ Δ' : List Constraint} {env : List BodyBinding} {e : Expr} {β : BoundsTy}
+    {h : ScopedBodyDerives types slots ids rows Δ env e β}
+    (stable : TypingSpecializes h)
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    TypingSpecializes (h.assuming hp) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let moved := stable outer f outerFinite countTarget countScope typeLC typeTarget
+    typeScope countFresh typeFresh
+  let mappedValidity := CountSubstitution.valid outer outerFinite hp
+  exact ⟨moved.typing.assuming mappedValidity⟩
+
+#print axioms TypingSpecializes.assuming
+
 def TypingSpecializes.ordinary
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Δ : List Constraint} {env : List Binding} {e : Expr} {β : BoundsTy}
@@ -5088,6 +5107,20 @@ structure ScopedBodyResult (types slots : Nat → BoundsTy)
   nodes : List Typed.NodeResult
   runtimeReady : Option (PLift (BodyDerives.RuntimeReady typing))
 
+/-- Exact deep-certificate destination.  The executable report remains useful
+    on its own for ordinary program checking; universal member certification
+    additionally requires this mandatory static specialization witness.  The
+    optional runtime witness stays in `result` and is intentionally not a gate
+    on static transport. -/
+structure ScopedBodyCertificate (types slots : Nat → BoundsTy)
+    (ids : List Nat) (rows : Bindings) (caller : List Nat)
+    (Δ : List Constraint) (env : List BodyBinding) (e : Expr) where
+  result : ScopedBodyResult types slots ids rows caller Δ env e
+  specializes : BodyDerives.TypingSpecializes result.typing
+
+/-- Identity-reader compatibility view of a deep static certificate. -/
+abbrev BodyCertificate := ScopedBodyCertificate BoundsTy.fvar BoundsTy.bvar
+
 /-- Identity-reader compatibility view used by whole-program checking. -/
 abbrev BodyResult := ScopedBodyResult BoundsTy.fvar BoundsTy.bvar
 
@@ -5107,6 +5140,15 @@ def ScopedBodyResult.assuming {types slots ids rows caller Δ Δ' env e}
   runtimeReady := result.runtimeReady.map (fun ready => ⟨ready.down.assuming hp⟩)
 
 #print axioms ScopedBodyResult.assuming
+
+def ScopedBodyCertificate.assuming {types slots ids rows caller Δ Δ' env e}
+    (cert : ScopedBodyCertificate types slots ids rows caller Δ env e)
+    (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) :
+    ScopedBodyCertificate types slots ids rows caller Δ' env e where
+  result := cert.result.assuming hp
+  specializes := cert.specializes.assuming hp
+
+#print axioms ScopedBodyCertificate.assuming
 
 namespace BodyResult
 /-- Compatibility specialization for callers of the identity-reader result. -/
