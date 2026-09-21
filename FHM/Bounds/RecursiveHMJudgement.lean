@@ -2482,7 +2482,7 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
   | pair _ _ ihLeft ihRight => exact .pair (ihLeft fresh) (ihRight fresh)
   | pairPartial _ ih => exact .pairPartial (ih fresh)
   | varMono hv => exact .varMono (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) hv)
-  | varRecursive hv u =>
+  | @varRecursive _ _ _ env' i c caller hv u =>
       rw [← mapUse_bounds u f hf target scope (fresh.recursive (List.mem_of_getElem? hv))]
       exact .varRecursive (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) hv)
         (mapUse u f hf target scope)
@@ -2661,6 +2661,291 @@ private theorem count_captures_monos {outer env} (h : CountCapturesFixed outer e
   | nil => simpa using h
   | cons field rest ih =>
       simpa only [List.map_cons, List.cons_append] using count_captures_cons ih
+
+/-- The combined specialization boundary for recursive groups.  Raw recursive
+    contracts are closed over the enclosing count/HM interpretation in one
+    step; all other bindings use the ordinary count-first/HM-second map. -/
+def closeRecursiveBinding (outer : Bindings) (f : Nat → BoundsTy) : Binding → Binding
+  | .mono β => .mono (mapFree f (bounds outer β))
+  | .recursive c => .recursiveClosure (RecursiveHMContract.Closed.ofFixed c.fixed outer f)
+  | .recursiveClosure c => .recursiveClosure (closedMapTypes (closedMapCounts c outer) f)
+  | .exported s => .exported s
+  | .closure s countCaptures typeCaptures =>
+      .closure s (countCaptures.map (count outer))
+        ((typeCaptures.map (bounds outer)).map (mapFree f))
+
+def closeRecursiveEnv (outer : Bindings) (f : Nat → BoundsTy) (env : List Binding) : List Binding :=
+  env.map (closeRecursiveBinding outer f)
+
+/-- Only ordinary exported schemes retain source captures across the combined
+    conversion.  Recursive entries are deliberately excluded: their captures
+    are promoted into `Closed.ofFixed` instead of being required to stay fixed. -/
+def CloseRecursiveFresh (outer : Bindings) (f : Nat → BoundsTy) (env : List Binding) : Prop :=
+  ∀ b ∈ env, match b with
+    | .exported s =>
+        (∀ i ∈ s.counts.captures, lookup outer i = none) ∧
+        (∀ i ∈ s.hm.body.freeVars, f i = .fvar i)
+    | _ => True
+
+private theorem closeRecursiveFresh_cons {outer f env β}
+    (h : CloseRecursiveFresh outer f env) : CloseRecursiveFresh outer f (.mono β :: env) := by
+  intro b hb
+  rcases List.mem_cons.mp hb with head | rest
+  · cases head; trivial
+  · exact h b rest
+
+private theorem closeRecursiveFresh_branch {outer f env p lo hi elem}
+    (h : CloseRecursiveFresh outer f env) :
+    CloseRecursiveFresh outer f (branchEnv p lo hi elem env) := by
+  unfold branchEnv
+  split
+  · exact closeRecursiveFresh_cons (closeRecursiveFresh_cons h)
+  · exact h
+
+private theorem closeRecursiveFresh_pairBranch {outer f env p left right}
+    (h : CloseRecursiveFresh outer f env) :
+    CloseRecursiveFresh outer f (pairBranchEnv p left right env) := by
+  unfold pairBranchEnv
+  split
+  · exact closeRecursiveFresh_cons (closeRecursiveFresh_cons h)
+  · exact h
+
+private theorem closeRecursiveFresh_monos {outer f env}
+    (h : CloseRecursiveFresh outer f env) (fields : List BoundsTy) :
+    CloseRecursiveFresh outer f (fields.map Binding.mono ++ env) := by
+  induction fields with
+  | nil => simpa using h
+  | cons field rest ih =>
+      simpa only [List.map_cons, List.cons_append] using closeRecursiveFresh_cons ih
+
+private theorem count_empty (c : Count) : count [] c = c := by
+  induction c with
+  | lit | inf => rfl
+  | var v => cases v with
+    | mk kind i => cases kind <;> rfl
+  | add a b ihA ihB | mul a b ihA ihB | min a b ihA ihB | max a b ihA ihB =>
+      simp only [count, ihA, ihB]
+  | pred a ih => simp only [count, ih]
+
+mutual
+private theorem bounds_empty (β : BoundsTy) : bounds [] β = β := by
+  cases β with
+  | prim | fvar | bvar => rfl
+  | arrow a b => simp only [bounds, bounds_empty a, bounds_empty b]
+  | list lo hi elem => simp only [bounds, count_empty, bounds_empty elem]
+  | custom name args => simp only [bounds, boundsList_empty args]
+
+private theorem boundsList_empty (βs : List BoundsTy) :
+    CountSubstitution.boundsList [] βs = βs := by
+  cases βs with
+  | nil => rfl
+  | cons β βs => simp only [CountSubstitution.boundsList, bounds_empty β, boundsList_empty βs]
+end
+
+private theorem mapFree_identity (β : BoundsTy) :
+    mapFree (fun i => BoundsTy.fvar i) β = β :=
+  SchemeSpecialization.fixed (β := β) (by intro i _; rfl)
+
+private theorem constraint_empty (c : Constraint) : constraint [] c = c := by
+  cases c
+  simp only [constraint, count_empty]
+
+private theorem constraints_empty (Δ : List Constraint) : Δ.map (constraint []) = Δ := by
+  induction Δ with
+  | nil => rfl
+  | cons c rest ih => simp only [List.map_cons, constraint_empty, ih]
+
+private def closedUseCastConstraints
+    {c : RecursiveHMContract.Closed} {Δ Δ' : List Constraint} {found : Ty} {caller : List Nat}
+    (h : Δ = Δ') (u : RecursiveHMContract.Closed.Use c Δ found caller) :
+    RecursiveHMContract.Closed.Use c Δ' found caller := h ▸ u
+
+private theorem closedUseCastConstraints_bounds
+    {c : RecursiveHMContract.Closed} {Δ Δ' : List Constraint} {found : Ty} {caller : List Nat}
+    (h : Δ = Δ') (u : RecursiveHMContract.Closed.Use c Δ found caller) :
+    (closedUseCastConstraints h u).bounds = u.bounds := by
+  cases h
+  rfl
+
+/-- The identity instance of recursive closure conversion.  It closes raw
+    recursive bindings before the surrounding count and HM environments have
+    been transported. -/
+def closeRecursiveIdentityBinding : Binding → Binding
+  | .recursive c => .recursiveClosure
+      (RecursiveHMContract.Closed.ofFixed c.fixed [] (fun i => BoundsTy.fvar i))
+  | b => b
+
+/-- Apply the identity recursive-closure conversion to an environment. -/
+def closeRecursiveIdentityEnv (env : List Binding) : List Binding :=
+  env.map closeRecursiveIdentityBinding
+
+private theorem initialClose_branch (p : MatchPattern) (lo hi : Count) (elem : BoundsTy)
+    (env : List Binding) :
+    (branchEnv p lo hi elem env).map closeRecursiveIdentityBinding =
+      branchEnv p lo hi elem (env.map closeRecursiveIdentityBinding) := by
+  unfold branchEnv
+  split <;> simp [closeRecursiveIdentityBinding]
+
+private theorem initialClose_pairBranch (p : MatchPattern) (left right : BoundsTy)
+    (env : List Binding) :
+    (pairBranchEnv p left right env).map closeRecursiveIdentityBinding =
+      pairBranchEnv p left right (env.map closeRecursiveIdentityBinding) := by
+  unfold pairBranchEnv
+  split <;> simp [closeRecursiveIdentityBinding]
+
+/-- Close the raw recursive assumptions before ordinary specialization.  This
+    is the one structural pass whose recursive-variable case changes the
+    binding representation; its use is justified by `Closed.Use.transport`. -/
+theorem ScopedDerives.closeInitial {types slots ids rows Δ env e β}
+    (h : ScopedDerives types slots ids rows Δ env e β) :
+    ScopedDerives types slots ids rows Δ (env.map closeRecursiveIdentityBinding) e β := by
+  induction h with
+  | literal => exact .literal
+  | primBinOp => exact .primBinOp
+  | nil => exact .nil
+  | boolCtor hn => exact .boolCtor hn
+  | ctor hn => exact .ctor hn
+  | cons _ _ sub ihh iht => exact .cons ihh iht sub
+  | consPartial _ ih => exact .consPartial ih
+  | pair _ _ ihLeft ihRight => exact .pair ihLeft ihRight
+  | pairPartial _ ih => exact .pairPartial ih
+  | varMono hv =>
+      exact .varMono (by
+        simpa [closeRecursiveIdentityBinding] using
+          (congrArg (Option.map closeRecursiveIdentityBinding) hv))
+  | @varRecursive pathΔ ids' rows' env' i c caller hv u =>
+      let moved := RecursiveHMContract.Closed.Use.transport u []
+        (by intro row hr; simp at hr) [] (by intro row hr; simp at hr)
+        (fun i => BoundsTy.fvar i) (by
+          intro i
+          simpa [Synth.BoundsTy.toTy] using (ContainsBvarsUpTo.fvar : (Ty.fvar i).IsLC))
+        [] (by intro i; trivial)
+      have movedBounds : moved.bounds = u.bounds := by
+        dsimp [moved]
+        rw [RecursiveHMContract.Closed.Use.transport_bounds, bounds_empty, mapFree_identity]
+      have lookup : (env'.map closeRecursiveIdentityBinding)[i]? = some
+          (.recursiveClosure (RecursiveHMContract.Closed.ofFixed c.fixed []
+            (fun i => BoundsTy.fvar i))) := by
+        simpa only [List.getElem?_map, Option.map_some, closeRecursiveIdentityBinding] using
+          congrArg (Option.map closeRecursiveIdentityBinding) hv
+      let used := closedUseCastConstraints (constraints_empty pathΔ) moved
+      have usedBounds : used.bounds = u.bounds := by
+        dsimp [used]
+        rw [closedUseCastConstraints_bounds]
+        exact movedBounds
+      rw [← usedBounds]
+      exact ScopedDerives.varRecursiveClosure lookup used
+  | varRecursiveClosure hv u =>
+      exact .varRecursiveClosure (by
+        simpa [closeRecursiveIdentityBinding] using
+          (congrArg (Option.map closeRecursiveIdentityBinding) hv)) u
+  | varExported hv u =>
+      exact .varExported (by
+        simpa [closeRecursiveIdentityBinding] using
+          (congrArg (Option.map closeRecursiveIdentityBinding) hv)) u
+  | varClosure hv u captures =>
+      exact .varClosure (by
+        simpa [closeRecursiveIdentityBinding] using
+          (congrArg (Option.map closeRecursiveIdentityBinding) hv)) u captures
+  | app _ _ sub ihf iha => exact .app ihf iha sub
+  | subsumption _ sub ih => exact .subsumption ih sub
+  | lambda annotation _ ih =>
+      exact .lambda annotation (by simpa [closeRecursiveIdentityBinding] using ih)
+  | letMono annotation _ _ ihr ihb =>
+      exact .letMono annotation ihr (by simpa [closeRecursiveIdentityBinding] using ihb)
+  | letPinned pinned mono _ _ ihr ihb =>
+      exact .letPinned pinned mono ihr (by simpa [closeRecursiveIdentityBinding] using ihb)
+  | letRecPinnedMono pinned mono _ _ ihr ihb =>
+      exact .letRecPinnedMono pinned mono
+        (by simpa [closeRecursiveIdentityBinding] using ihr)
+        (by simpa [closeRecursiveIdentityBinding] using ihb)
+  | letRecInferredMono _ _ ihr ihb =>
+      exact .letRecInferredMono
+        (by simpa [closeRecursiveIdentityBinding] using ihr)
+        (by simpa [closeRecursiveIdentityBinding] using ihb)
+  | letRecMono annotation _ sub _ ihr ihb =>
+      exact .letRecMono annotation
+        (by simpa [closeRecursiveIdentityBinding] using ihr) sub
+        (by simpa [closeRecursiveIdentityBinding] using ihb)
+  | letRecMonoGroup demands annotationCount demandCount annotationsOK rhssTyping inclusions bodyTyping
+      ihRhss ihBody =>
+      exact .letRecMonoGroup demands annotationCount demandCount annotationsOK
+        (fun i inside => by simpa [closeRecursiveIdentityBinding] using ihRhss i inside)
+        inclusions
+        (by simpa [closeRecursiveIdentityBinding] using ihBody)
+  | matchList _ coverage patterns _ subs ihscrut ihbranches =>
+      exact .matchList ihscrut coverage patterns
+        (fun i br hb => by rw [← initialClose_branch]; exact ihbranches i br hb)
+        subs
+  | matchBool _ coverage patterns _ subs ihscrut ihbranches =>
+      exact .matchBool ihscrut coverage patterns
+        (fun i br hb => ihbranches i br hb) subs
+  | matchPair _ coverage patterns _ subs ihscrut ihbranches =>
+      exact .matchPair ihscrut coverage patterns
+        (fun i br hb => by rw [← initialClose_pairBranch]; exact ihbranches i br hb)
+        subs
+  | matchNominal fieldss actuals _ coverage fields bodies subs ihscrut ihbranches =>
+      exact .matchNominal fieldss actuals ihscrut coverage fields
+        (fun i br hb => by simpa [closeRecursiveIdentityBinding] using ihbranches i br hb) subs
+  | matchOpaque _ patterns _ subs ihscrut ihbranches =>
+      exact .matchOpaque ihscrut patterns
+        (fun i br hb => ihbranches i br hb) subs
+
+private theorem initialClosed_specialize (c : Contract) (outer : Bindings)
+    (f : Nat → BoundsTy) :
+    closedMapTypes (closedMapCounts
+      (RecursiveHMContract.Closed.ofFixed c.fixed [] (fun i => BoundsTy.fvar i)) outer) f =
+      RecursiveHMContract.Closed.ofFixed c.fixed outer f := by
+  cases c with
+  | mk template hm fixed =>
+      cases fixed with
+      | mk fixedTypes fixedArity fixedLC fixedShape fixedShapeLC =>
+          simp [closedMapTypes, closedMapCounts, RecursiveHMContract.Closed.ofFixed,
+            HMCountSchemeClosure.interpretedCountCaptures,
+            HMCountSchemeClosure.interpretedTypeCaptures, bounds_empty, mapFree_identity]
+          constructor
+          · intro a ha
+            rw [count_empty]
+          · intro a ha
+            rfl
+
+private theorem initialClose_specialize_binding (outer : Bindings) (f : Nat → BoundsTy)
+    (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) (b : Binding) :
+    mapBinding f lc (mapCountBinding outer (closeRecursiveIdentityBinding b)) =
+      closeRecursiveBinding outer f b := by
+  cases b with
+  | mono β => rfl
+  | recursive c =>
+      simp only [closeRecursiveIdentityBinding, mapCountBinding, mapBinding, closeRecursiveBinding,
+        initialClosed_specialize]
+  | recursiveClosure c => rfl
+  | exported s => rfl
+  | closure s countCaptures typeCaptures => rfl
+
+private theorem initialClose_countFresh {outer f env}
+    (fresh : CloseRecursiveFresh outer f env) :
+    CountCapturesFixed outer (env.map closeRecursiveIdentityBinding) := by
+  intro b member
+  obtain ⟨source, sourceMember, rfl⟩ := List.mem_map.mp member
+  cases source with
+  | mono β => trivial
+  | recursive c => trivial
+  | recursiveClosure c => trivial
+  | exported s => exact (fresh _ sourceMember).1
+  | closure s countCaptures typeCaptures => trivial
+
+private theorem initialClose_typeFresh {outer f env}
+    (fresh : CloseRecursiveFresh outer f env) :
+    CapturesFixed f ((env.map closeRecursiveIdentityBinding).map (mapCountBinding outer)) := by
+  intro b member
+  obtain ⟨middle, middleMember, rfl⟩ := List.mem_map.mp member
+  obtain ⟨source, sourceMember, rfl⟩ := List.mem_map.mp middleMember
+  cases source with
+  | mono β => trivial
+  | recursive c => trivial
+  | recursiveClosure c => trivial
+  | exported s => exact (fresh _ sourceMember).2
+  | closure s countCaptures typeCaptures => trivial
 
 private def mapExportedUseCounts {s : HMCountScheme.Scheme} {Δ found caller}
     (u : HMCountScheme.Use s Δ found caller)
@@ -3319,6 +3604,36 @@ theorem ScopedDerives.RuntimeReady.types (f : Nat → BoundsTy)
         · simpa [pairBranchEnv, hp] using moved
 
 #print axioms ScopedDerives.RuntimeReady.types
+
+/-- Combined count/HM transport for a raw recursive environment. Recursive
+    entries become closure packages at the same time as their lexical captures
+    are interpreted, so this theorem does not impose the old raw-contract
+    capture-fixed side conditions on them. -/
+theorem ScopedDerives.closeRecursive (outer : Bindings) (f : Nat → BoundsTy)
+    (outerFinite : Finite outer) (countTarget : List Nat)
+    (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+    (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (typeTarget : List Nat)
+    (typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i))
+    {types slots ids rows Δ env e β} (h : ScopedDerives types slots ids rows Δ env e β)
+    (fresh : CloseRecursiveFresh outer f env) :
+    ScopedDerives (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids (CountAlgebra.compose outer rows)
+      (Δ.map (constraint outer)) (closeRecursiveEnv outer f env) e
+      (mapFree f (bounds outer β)) := by
+  let initial := h.closeInitial
+  let counted := transportScopedCounts outer outerFinite countTarget countScope initial
+    (initialClose_countFresh fresh)
+  let typed := transportScopedTypes f typeLC typeTarget typeScope counted
+    (initialClose_typeFresh fresh)
+  have envEq : ((env.map closeRecursiveIdentityBinding).map (mapCountBinding outer)).map
+      (mapBinding f typeLC) = closeRecursiveEnv outer f env := by
+    unfold closeRecursiveEnv
+    simp only [List.map_map]
+    apply List.map_congr_left
+    intro binding _
+    exact initialClose_specialize_binding outer f typeLC binding
+  simpa only [initial, counted, typed, envEq] using typed
 
 /-- One lawful count-first, HM-second specialization of a scoped derivation.
     This packages the transported typing derivation together with preservation
