@@ -495,6 +495,51 @@ theorem universalRecursiveRhsRuntime {counts caller}
     exact ((Runtime.Supported.arrow (.list .fvar) (.list .fvar)).counts _).types f arguments
   exact result.termAt specialized demandSupport bound free σ hb hf budget premises e
 
+/-! Focused regressions for the fixed recursive-closure boundary.  These are
+    intentionally smaller than the end-to-end uniform-program fixtures above:
+    they pin the representation change, the capture policy, and the fact that
+    the old HM tail remains fixed inside an SCC. -/
+
+theorem recursiveClosureIdentityRepresentation :
+    closeRecursiveIdentityBinding (.recursive contract) =
+      .recursiveClosure
+        (RecursiveHMContract.Closed.ofFixed contract.fixed [] (fun i => BoundsTy.fvar i)) := by
+  rfl
+
+theorem recursiveClosureCombinedRepresentation (outer : CountSubstitution.Bindings)
+    (f : Nat → BoundsTy) :
+    closeRecursiveBinding outer f (.recursive contract) =
+      .recursiveClosure (RecursiveHMContract.Closed.ofFixed contract.fixed outer f) := by
+  rfl
+
+/-- Raw recursive assumptions are closed by promotion; unlike ordinary
+    exported schemes, they do not need to be capture-free at this boundary. -/
+theorem recursiveClosureRawFresh :
+    CloseRecursiveFresh [] (fun i => BoundsTy.fvar i) [.recursive contract] := by
+  intro b hb
+  simp only [List.mem_singleton] at hb
+  subst b
+  trivial
+
+/-- Runtime readiness survives the identity closure conversion, including the
+    recursive call witness. -/
+theorem recursiveClosureRuntimeReady :
+    ScopedDerives.RuntimeReady
+      (recursiveIdentity.closeRecursive ([] : CountSubstitution.Bindings)
+        (fun i => BoundsTy.fvar i) (by intro row h; cases h) [] (by intro row h; cases h)
+        (by intro i; simpa [Synth.BoundsTy.toTy] using
+          (ContainsBvarsUpTo.fvar : (Ty.fvar i).IsLC)) []
+        (by intro i; trivial) recursiveClosureRawFresh) := by
+  exact RecursiveHMJudgement.RuntimeReady.closeRecursive
+    (outer := ([] : CountSubstitution.Bindings))
+    (f := fun i => BoundsTy.fvar i) (outerFinite := by intro row h; cases h)
+    (countTarget := []) (countScope := by intro row h; cases h)
+    (typeLC := by intro i; simpa [Synth.BoundsTy.toTy] using
+      (ContainsBvarsUpTo.fvar : (Ty.fvar i).IsLC)) (typeTarget := [])
+    (typeScope := by intro i; trivial)
+    (ready := recursiveIdentityReady) (fresh := recursiveClosureRawFresh)
+    (arguments := by intro i; exact Runtime.Supported.fvar)
+
 #print axioms universalRecursiveRhsRuntime
 
 end FHM.Bounds.RecursiveHMJudgementTests
