@@ -153,6 +153,49 @@ theorem closeTypes_scope {ids scope : List Nat} {β : BoundsTy}
           exact ⟨ih a (by simp) h.1,
             tail (fun b member => ih b (List.mem_cons_of_mem _ member)) h.2⟩
 
+/-- Closing every free identity in the source removes the free HM interface
+    entirely. -/
+theorem closeTypes_noFree {ids : List Nat} {β : BoundsTy}
+    (covers : ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, i ∈ ids) :
+    ∀ i, i ∉ (Synth.BoundsTy.toTy (closeTypes ids β)).freeVars := by
+  induction β using recStrong with
+  | prim | bvar => simp [closeTypes, Synth.BoundsTy.toTy, Ty.freeVars]
+  | fvar j =>
+      intro i member
+      have captured := covers j (by simp [Synth.BoundsTy.toTy, Ty.freeVars])
+      cases found : ids.idxOf? j with
+      | none => exact False.elim ((List.idxOf?_eq_none_iff.mp found) captured)
+      | some slot => simp [closeTypes, found, Synth.BoundsTy.toTy, Ty.freeVars] at member
+  | arrow a b iha ihb =>
+      intro i member
+      simp only [closeTypes, Synth.BoundsTy.toTy, Ty.freeVars, List.mem_dedup,
+        List.mem_append] at member
+      rcases member with left | right
+      · exact iha (fun j used => covers j (by
+          simp [Synth.BoundsTy.toTy, Ty.freeVars, used])) i left
+      · exact ihb (fun j used => covers j (by
+          simp [Synth.BoundsTy.toTy, Ty.freeVars, used])) i right
+  | list lo hi elem ih =>
+      intro i member
+      have inside : i ∈ (Synth.BoundsTy.toTy (closeTypes ids elem)).freeVars := by
+        simpa [closeTypes, Synth.BoundsTy.toTy, listTy, Ty.freeVars,
+          TyList.freeVars] using member
+      exact ih (fun j used => covers j (by
+        simpa [Synth.BoundsTy.toTy, listTy, Ty.freeVars, TyList.freeVars] using used)) i inside
+  | custom name fields ih =>
+      intro i member
+      simp only [closeTypes, Synth.BoundsTy.toTy, Ty.freeVars] at member
+      rw [closeTypeList_eq_map] at member
+      rw [mem_TyList_freeVars] at member
+      obtain ⟨closedField, closedMember, used⟩ := member
+      simp only [List.map_map, Function.comp_def] at closedMember
+      obtain ⟨field, fieldMember, rfl⟩ := List.mem_map.mp closedMember
+      exact ih field fieldMember (fun j fieldUsed => covers j (by
+        simp only [Synth.BoundsTy.toTy, Ty.freeVars]
+        rw [mem_TyList_freeVars]
+        exact ⟨Synth.BoundsTy.toTy field, List.mem_map.mpr
+              ⟨field, fieldMember, rfl⟩, fieldUsed⟩)) i used
+
 private theorem countScope_mono {source target : List Nat} {c : Count}
     (h : Scope.CountScoped source c) (subset : ∀ i ∈ source, i ∈ target) :
     Scope.CountScoped target c := by
@@ -309,6 +352,16 @@ def close (s : HMCountScheme.Scheme) : HMCountScheme.Scheme where
 
 @[simp] theorem close_typeParamCount (s : HMCountScheme.Scheme) :
     (close s).hm.paramCount = (typeCaptures s).length + s.hm.paramCount := rfl
+
+theorem close_typeFree (s : HMCountScheme.Scheme) :
+    (close s).hm.body.freeVars = [] := by
+  apply List.eq_nil_iff_forall_not_mem.mpr
+  intro i
+  change i ∉ (Synth.BoundsTy.toTy (closeTypes (typeCaptures s) s.counts.body)).freeVars
+  apply closeTypes_noFree
+  intro j member
+  apply mem_eraseDups_of_mem
+  simpa only [typeCaptures, s.shape] using member
 
 /-- Count arguments for the closed interface.  Existing quantified arguments
     are first transported through the enclosing substitution.  Promoted
@@ -800,12 +853,27 @@ def transportUse {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
     exact congrArg Synth.BoundsTy.toTy
       (combined_close s outer f u.counts u.types u.countInstance.arity)
 
+theorem transportUse_bounds {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use s Δ found caller)
+    (outer : CountSubstitution.Bindings) (outerFinite : CountSubstitution.Finite outer)
+    (countTarget : List Nat)
+    (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+    (f : Nat → BoundsTy) (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (typeTarget : List Nat)
+    (typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i)) :
+    (transportUse u outer outerFinite countTarget countScope f typeLC typeTarget typeScope).bounds =
+      SchemeSpecialization.mapFree f (CountSubstitution.bounds outer u.bounds) :=
+  combined_close s outer f u.counts u.types u.countInstance.arity
+
 #print axioms closeTypes_bvars
 #print axioms closeTypes_scope
+#print axioms closeTypes_noFree
 #print axioms close
+#print axioms close_typeFree
 #print axioms substitute_closeTypes
 #print axioms substitute_close
 #print axioms combined_close
 #print axioms transportUse
+#print axioms transportUse_bounds
 
 end FHM.Bounds.HMCountSchemeClosure
