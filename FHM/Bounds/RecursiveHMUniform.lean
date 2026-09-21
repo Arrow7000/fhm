@@ -3108,6 +3108,22 @@ private theorem bodyTypeFreshMono {f env β}
   · trivial
   · exact fresh binding tail
 
+private theorem bodyCountFreshMonos {outer env}
+    (fresh : CountCapturesFixed outer env) (demands : List BoundsTy) :
+    CountCapturesFixed outer (demands.map Binding.mono ++ env) := by
+  induction demands with
+  | nil => simpa using fresh
+  | cons demand rest ih =>
+      simpa only [List.map_cons, List.cons_append] using bodyCountFreshMono ih
+
+private theorem bodyTypeFreshMonos {f env}
+    (fresh : CapturesFixed f env) (demands : List BoundsTy) :
+    CapturesFixed f (demands.map Binding.mono ++ env) := by
+  induction demands with
+  | nil => simpa using fresh
+  | cons demand rest ih =>
+      simpa only [List.map_cons, List.cons_append] using bodyTypeFreshMono ih
+
 private def specializeParamOK
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Δ : List Constraint} {ann : Option Ty} {β : BoundsTy}
@@ -3479,6 +3495,86 @@ def TypingSpecializes.letRecInferredMono
     simp only [ordinaryBodyEnv_mapCounts, ordinaryBodyEnv_mapTypes]
   exact ⟨envEq ▸ typing⟩
 
+def TypingSpecializes.letRecMonoGroup
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding}
+    {annotations : List (Option PolyTy)} {rhss : List Expr} {body : Expr}
+    {result : BoundsTy} (demands : List BoundsTy) {actuals : Nat → BoundsTy}
+    (annotationCount : annotations.length = rhss.length)
+    (demandCount : demands.length = rhss.length)
+    (annotationsOK : ∀ i (inside : i < rhss.length),
+      ScopedHMAnnotation.BindingOK types slots ids rows Δ
+        (annotations[i]'(by omega)) (demands[i]'(by omega)))
+    {rhssTyping : ∀ i (inside : i < rhss.length),
+      ScopedBodyDerives types slots ids rows Δ
+        (demands.map Binding.mono ++ env) rhss[i] (actuals i)}
+    (inclusions : ∀ i (inside : i < rhss.length),
+      SemanticSub Δ (actuals i) (demands[i]'(by omega)))
+    {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (demands.map Binding.mono ++ env) body result}
+    (rhssStable : ∀ i (inside : i < rhss.length),
+      TypingSpecializes (rhssTyping i inside))
+    (bodyStable : TypingSpecializes bodyTyping) :
+    TypingSpecializes
+      (ScopedBodyDerives.letRecMonoGroup demands annotationCount demandCount
+        annotationsOK rhssTyping inclusions bodyTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let mappedDemands := demands.map (fun demand => mapFree f (bounds outer demand))
+  have mappedCount : mappedDemands.length = rhss.length := by
+    simp only [mappedDemands, List.length_map, demandCount]
+  have recursiveCountFresh := bodyCountFreshMonos countFresh demands
+  have recursiveTypeFresh : CapturesFixed f
+      ((demands.map Binding.mono ++ env).map (mapCountBinding outer)) := by
+    simpa only [List.map_append, List.map_map, Function.comp_def,
+      mapCountBinding] using
+      bodyTypeFreshMonos typeFresh (demands.map (bounds outer))
+  let movedRhss := fun i (inside : i < rhss.length) =>
+    rhssStable i inside outer f outerFinite countTarget countScope typeLC
+      typeTarget typeScope recursiveCountFresh recursiveTypeFresh
+  let movedBody := bodyStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope recursiveCountFresh recursiveTypeFresh
+  have rhssTyping' : ∀ i (inside : i < rhss.length),
+      ScopedBodyDerives
+        (fun i => mapFree f (bounds outer (types i)))
+        (fun i => mapFree f (bounds outer (slots i))) ids
+        (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+        (mappedDemands.map Binding.mono ++
+          ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+        rhss[i] (mapFree f (bounds outer (actuals i))) := by
+    intro i inside
+    simpa only [mappedDemands, List.map_append, List.map_map,
+      Function.comp_def, mapCountBinding, mapBinding] using
+      (movedRhss i inside).typing
+  have bodyTyping' : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (mappedDemands.map Binding.mono ++
+        ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      body (mapFree f (bounds outer result)) := by
+    simpa only [mappedDemands, List.map_append, List.map_map,
+      Function.comp_def, mapCountBinding, mapBinding] using movedBody.typing
+  let movedAnnotations : ∀ i (inside : i < rhss.length),
+      ScopedHMAnnotation.BindingOK
+        (fun i => mapFree f (bounds outer (types i)))
+        (fun i => mapFree f (bounds outer (slots i))) ids
+        (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+        (annotations[i]'(by omega)) (mappedDemands[i]'(by omega)) := by
+    intro i inside
+    simpa only [mappedDemands, List.getElem_map] using
+      specializeBindingOK (annotationsOK i inside) outer outerFinite f
+  let movedInclusions : ∀ i (inside : i < rhss.length),
+      SemanticSub (Δ.map (constraint outer))
+        (mapFree f (bounds outer (actuals i)))
+        (mappedDemands[i]'(by omega)) := by
+    intro i inside
+    simpa only [mappedDemands, List.getElem_map] using
+      SchemeSpecialization.subtype f
+        (CountSubstitution.subtype outer outerFinite (inclusions i inside))
+  exact ⟨ScopedBodyDerives.letRecMonoGroup mappedDemands annotationCount
+    mappedCount movedAnnotations rhssTyping' movedInclusions bodyTyping'⟩
+
 private def specializeBodyBranchContext
     (ctx : BodyBranchContext) (outer : Bindings) (f : Nat → BoundsTy) :
     BodyBranchContext :=
@@ -3699,6 +3795,7 @@ def TypingSpecializes.match_
 #print axioms TypingSpecializes.letRecMono
 #print axioms TypingSpecializes.letRecPinnedMono
 #print axioms TypingSpecializes.letRecInferredMono
+#print axioms TypingSpecializes.letRecMonoGroup
 #print axioms TypingSpecializes.match_
 
 /-- The common recursive-RHS core retains its existing specialization theorem
