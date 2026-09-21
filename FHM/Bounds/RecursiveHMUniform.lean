@@ -3319,6 +3319,373 @@ def TypingSpecializes.letPinned
       mapBinding] using movedBody.typing
   exact ⟨ScopedBodyDerives.letPinned movedPinned mono movedRhs.typing bodyTyping'⟩
 
+def TypingSpecializes.letRecMono
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding}
+    {ann : Option PolyTy} {rhs body : Expr} {actual demand result : BoundsTy}
+    (annotation : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann demand)
+    {rhsTyping : ScopedBodyDerives types slots ids rows Δ
+      (.mono demand :: env) rhs actual}
+    (sub : SemanticSub Δ actual demand)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.mono demand :: env) body result}
+    (rhsStable : TypingSpecializes rhsTyping)
+    (bodyStable : TypingSpecializes bodyTyping) :
+    TypingSpecializes
+      (ScopedBodyDerives.letRecMono annotation rhsTyping sub bodyTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  have recursiveCountFresh := bodyCountFreshMono (β := demand) countFresh
+  have recursiveTypeFresh : CapturesFixed f
+      ((.mono demand :: env).map (mapCountBinding outer)) := by
+    simpa only [List.map_cons, mapCountBinding] using bodyTypeFreshMono typeFresh
+  let movedRhs := rhsStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope recursiveCountFresh recursiveTypeFresh
+  let movedBody := bodyStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope recursiveCountFresh recursiveTypeFresh
+  let movedAnnotation := specializeBindingOK annotation outer outerFinite f
+  let movedSub := SchemeSpecialization.subtype f
+    (CountSubstitution.subtype outer outerFinite sub)
+  have rhsTyping' : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (.mono (mapFree f (bounds outer demand)) ::
+        ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      rhs (mapFree f (bounds outer actual)) := by
+    simpa only [List.map_cons, mapCountBinding, mapBinding] using movedRhs.typing
+  have bodyTyping' : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (.mono (mapFree f (bounds outer demand)) ::
+        ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      body (mapFree f (bounds outer result)) := by
+    simpa only [List.map_cons, mapCountBinding, mapBinding] using movedBody.typing
+  exact ⟨ScopedBodyDerives.letRecMono movedAnnotation rhsTyping' movedSub bodyTyping'⟩
+
+def TypingSpecializes.letRecPinnedMono
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {caller : List Nat} {Δ : List Constraint} {outerEnv : List Binding}
+    {annotation : PolyTy} {rhs body : Expr} {actual result : BoundsTy}
+    (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ
+      annotation.body actual)
+    (mono : annotation.paramCount = 0)
+    (rhsTyping : ScopedDerives types slots ids rows Δ
+      (.mono pinned.demand :: outerEnv) rhs actual)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.mono pinned.demand :: ordinaryBodyEnv outerEnv) body result}
+    (bodyStable : TypingSpecializes bodyTyping) :
+    TypingSpecializes
+      (ScopedBodyDerives.letRecPinnedMono pinned mono rhsTyping bodyTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  have sourceCountFresh : CountCapturesFixed outer outerEnv :=
+    countCapturesFixed_ordinaryPrefix (tail := []) (by simpa using countFresh)
+  have sourceTypeFresh : CapturesFixed f
+      (outerEnv.map (mapCountBinding outer)) :=
+    capturesFixed_ordinaryPrefixMapped (tail := []) (by simpa using typeFresh)
+  let movedPinned := (pinned.counts outer outerFinite countTarget countScope).types
+    f typeTarget typeScope
+  let movedRhs := rhsTyping.specializes outer f outerFinite countTarget countScope
+    typeLC typeTarget typeScope (bodyCountFreshMono sourceCountFresh)
+      (by
+        simpa only [List.map_cons, mapCountBinding] using
+          bodyTypeFreshMono sourceTypeFresh)
+  let movedBody := bodyStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope (bodyCountFreshMono countFresh)
+      (by
+        simpa only [List.map_cons, mapCountBinding] using
+          bodyTypeFreshMono typeFresh)
+  have rhsTyping' : ScopedDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (.mono movedPinned.demand ::
+        ((outerEnv.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      rhs (mapFree f (bounds outer actual)) := by
+    simpa only [movedPinned, ScopedHMAnnotation.Pinned.types,
+      ScopedHMAnnotation.Pinned.counts, List.map_cons, mapCountBinding,
+      mapBinding] using movedRhs.typing
+  have bodyTyping' : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (.mono movedPinned.demand :: ordinaryBodyEnv
+        ((outerEnv.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      body (mapFree f (bounds outer result)) := by
+    simpa only [movedPinned, ScopedHMAnnotation.Pinned.types,
+      ScopedHMAnnotation.Pinned.counts, List.map_cons, mapCountBinding,
+      mapBinding, ordinaryBodyEnv_mapCounts, ordinaryBodyEnv_mapTypes] using
+      movedBody.typing
+  let typing := ScopedBodyDerives.letRecPinnedMono movedPinned mono rhsTyping' bodyTyping'
+  have envEq : ordinaryBodyEnv
+      ((outerEnv.map (mapCountBinding outer)).map (mapBinding f typeLC)) =
+      ((ordinaryBodyEnv outerEnv).map (mapCountBinding outer)).map
+        (mapBinding f typeLC) := by
+    simp only [ordinaryBodyEnv_mapCounts, ordinaryBodyEnv_mapTypes]
+  exact ⟨envEq ▸ typing⟩
+
+def TypingSpecializes.letRecInferredMono
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {outerEnv : List Binding}
+    {rhs body : Expr} {actual result : BoundsTy}
+    (rhsTyping : ScopedDerives types slots ids rows Δ
+      (.mono actual :: outerEnv) rhs actual)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.mono actual :: ordinaryBodyEnv outerEnv) body result}
+    (bodyStable : TypingSpecializes bodyTyping) :
+    TypingSpecializes
+      (ScopedBodyDerives.letRecInferredMono rhsTyping bodyTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  have sourceCountFresh : CountCapturesFixed outer outerEnv :=
+    countCapturesFixed_ordinaryPrefix (tail := []) (by simpa using countFresh)
+  have sourceTypeFresh : CapturesFixed f
+      (outerEnv.map (mapCountBinding outer)) :=
+    capturesFixed_ordinaryPrefixMapped (tail := []) (by simpa using typeFresh)
+  let movedRhs := rhsTyping.specializes outer f outerFinite countTarget countScope
+    typeLC typeTarget typeScope (bodyCountFreshMono sourceCountFresh)
+      (by
+        simpa only [List.map_cons, mapCountBinding] using
+          bodyTypeFreshMono sourceTypeFresh)
+  let movedBody := bodyStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope (bodyCountFreshMono countFresh)
+      (by
+        simpa only [List.map_cons, mapCountBinding] using
+          bodyTypeFreshMono typeFresh)
+  have rhsTyping' : ScopedDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (.mono (mapFree f (bounds outer actual)) ::
+        ((outerEnv.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      rhs (mapFree f (bounds outer actual)) := by
+    simpa only [List.map_cons, mapCountBinding, mapBinding] using movedRhs.typing
+  have bodyTyping' : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (.mono (mapFree f (bounds outer actual)) :: ordinaryBodyEnv
+        ((outerEnv.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      body (mapFree f (bounds outer result)) := by
+    simpa only [List.map_cons, mapCountBinding, mapBinding,
+      ordinaryBodyEnv_mapCounts, ordinaryBodyEnv_mapTypes] using movedBody.typing
+  let typing := ScopedBodyDerives.letRecInferredMono rhsTyping' bodyTyping'
+  have envEq : ordinaryBodyEnv
+      ((outerEnv.map (mapCountBinding outer)).map (mapBinding f typeLC)) =
+      ((ordinaryBodyEnv outerEnv).map (mapCountBinding outer)).map
+        (mapBinding f typeLC) := by
+    simp only [ordinaryBodyEnv_mapCounts, ordinaryBodyEnv_mapTypes]
+  exact ⟨envEq ▸ typing⟩
+
+private def specializeBodyBranchContext
+    (ctx : BodyBranchContext) (outer : Bindings) (f : Nat → BoundsTy) :
+    BodyBranchContext :=
+  match ctx with
+  | .list lo hi elem =>
+      .list (count outer lo) (count outer hi) (mapFree f (bounds outer elem))
+  | .bool => .bool
+  | .pair left right =>
+      .pair (mapFree f (bounds outer left)) (mapFree f (bounds outer right))
+  | .nominal ctors typeName args =>
+      .nominal ctors typeName (mapFreeList f (boundsList outer args))
+  | .wildcardOnly scrutinee =>
+      .wildcardOnly (mapFree f (bounds outer scrutinee))
+
+private theorem bodyBranchContextSpecializeBounds
+    (ctx : BodyBranchContext) (outer : Bindings) (f : Nat → BoundsTy) :
+    (specializeBodyBranchContext ctx outer f).bounds =
+      mapFree f (bounds outer ctx.bounds) := by
+  cases ctx <;> rfl
+
+private theorem bodyBranchContextSpecializeRefine
+    (ctx : BodyBranchContext) (outer : Bindings) (f : Nat → BoundsTy)
+    (pattern : MatchPattern) :
+    (ctx.refine pattern).map (constraint outer) =
+      (specializeBodyBranchContext ctx outer f).refine pattern := by
+  cases ctx with
+  | list lo hi elem => exact RecursiveCountTransport.branchRefine_transport outer pattern lo hi
+  | bool | pair | nominal | wildcardOnly => rfl
+
+private theorem bodyBranchContextSpecializePattern
+    (ctx : BodyBranchContext) (outer : Bindings) (f : Nat → BoundsTy)
+    (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    {pattern : MatchPattern} (valid : ctx.Pattern pattern) :
+    (specializeBodyBranchContext ctx outer f).Pattern pattern := by
+  cases ctx with
+  | list | bool | pair | wildcardOnly => exact valid
+  | nominal ctors typeName args =>
+      obtain ⟨fields, fieldsAt⟩ := valid
+      exact ⟨mapFreeList f (boundsList outer fields),
+        (fieldsAt.counts outer).types f typeLC⟩
+
+private theorem bodyBranchContextSpecializeCovers
+    (ctx : BodyBranchContext) (outer : Bindings) (f : Nat → BoundsTy)
+    (outerFinite : Finite outer) {branches : List (MatchPattern × Expr)}
+    (coverage : ctx.Covers Δ branches) :
+    (specializeBodyBranchContext ctx outer f).Covers
+      (Δ.map (constraint outer)) branches := by
+  cases ctx with
+  | list => exact ListBranches.Covers.transport outer outerFinite coverage
+  | bool | pair | nominal | wildcardOnly => exact coverage
+
+private theorem bodyBranchContextCountFreshExtend
+    (ctx : BodyBranchContext) (pattern : MatchPattern) {outer env}
+    (fresh : CountCapturesFixed outer env) :
+    CountCapturesFixed outer (ctx.extend pattern env) := by
+  cases ctx with
+  | list lo hi elem =>
+      simp only [BodyBranchContext.extend]
+      split
+      · exact bodyCountFreshMono (bodyCountFreshMono fresh)
+      · exact fresh
+  | bool | wildcardOnly => exact fresh
+  | pair left right =>
+      simp only [BodyBranchContext.extend]
+      split
+      · exact bodyCountFreshMono (bodyCountFreshMono fresh)
+      · exact fresh
+  | nominal ctors typeName args =>
+      simp only [BodyBranchContext.extend]
+      induction (NominalBranches.fields? ctors typeName args pattern).getD [] with
+      | nil => simpa using fresh
+      | cons field rest ih =>
+          simpa only [List.map_cons, List.cons_append] using bodyCountFreshMono ih
+
+private theorem bodyBranchContextTypeFreshExtend
+    (ctx : BodyBranchContext) (pattern : MatchPattern) {outer env f}
+    (fresh : CapturesFixed f (env.map (mapCountBinding outer))) :
+    CapturesFixed f ((ctx.extend pattern env).map (mapCountBinding outer)) := by
+  cases ctx with
+  | list lo hi elem =>
+      simp only [BodyBranchContext.extend]
+      split
+      · simpa only [List.map_cons, mapCountBinding] using
+          bodyTypeFreshMono (bodyTypeFreshMono fresh)
+      · exact fresh
+  | bool | wildcardOnly => exact fresh
+  | pair left right =>
+      simp only [BodyBranchContext.extend]
+      split
+      · simpa only [List.map_cons, mapCountBinding] using
+          bodyTypeFreshMono (bodyTypeFreshMono fresh)
+      · exact fresh
+  | nominal ctors typeName args =>
+      simp only [BodyBranchContext.extend, List.map_append]
+      induction (NominalBranches.fields? ctors typeName args pattern).getD [] with
+      | nil => simpa using fresh
+      | cons field rest ih =>
+          simpa only [List.map_cons, List.cons_append, mapCountBinding] using
+            bodyTypeFreshMono ih
+
+private theorem specializeMonoFields (fields : List BoundsTy)
+    (outer : Bindings) (f : Nat → BoundsTy)
+    (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) :
+    ((fields.map Binding.mono).map (mapCountBinding outer)).map
+        (mapBinding f typeLC) =
+      (mapFreeList f (boundsList outer fields)).map Binding.mono := by
+  induction fields with
+  | nil => rfl
+  | cons field rest ih =>
+      simp only [List.map_cons, mapCountBinding, mapBinding, boundsList,
+        mapFreeList, ih]
+
+private theorem bodyBranchContextSpecializeExtend
+    (ctx : BodyBranchContext) (outer : Bindings) (f : Nat → BoundsTy)
+    (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (pattern : MatchPattern) (valid : ctx.Pattern pattern) (env : List BodyBinding) :
+    (((ctx.extend pattern env).map (mapCountBinding outer)).map
+        (mapBinding f typeLC)) =
+      (specializeBodyBranchContext ctx outer f).extend pattern
+        ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)) := by
+  cases ctx with
+  | list lo hi elem =>
+      simp only [BodyBranchContext.extend, specializeBodyBranchContext]
+      split <;> simp_all [mapCountBinding, mapBinding, CountSubstitution.bounds,
+        CountSubstitution.count, SchemeSpecialization.mapFree]
+  | bool | wildcardOnly => rfl
+  | pair left right =>
+      simp only [BodyBranchContext.extend, specializeBodyBranchContext]
+      split <;> simp_all [mapCountBinding, mapBinding, CountSubstitution.bounds,
+        SchemeSpecialization.mapFree]
+  | nominal ctors typeName args =>
+      obtain ⟨fields, fieldsAt⟩ := valid
+      have counted := fieldsAt.counts outer
+      have mapped := counted.types f typeLC
+      unfold NominalBranches.PatternFields at fieldsAt mapped
+      simp only [BodyBranchContext.extend, specializeBodyBranchContext,
+        fieldsAt, Option.getD_some, mapped, List.map_append]
+      congr 1
+      exact specializeMonoFields fields outer f typeLC
+
+def TypingSpecializes.match_
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding} {scrut : Expr}
+    {branches : List (MatchPattern × Expr)} {ctx : BodyBranchContext}
+    {actuals : Nat → BoundsTy} {result : BoundsTy}
+    {scrutTyping : ScopedBodyDerives types slots ids rows Δ env scrut ctx.bounds}
+    (coverage : ctx.Covers Δ branches)
+    (patterns : ∀ br ∈ branches, ctx.Pattern br.1)
+    {bodies : ∀ i br, branches[i]? = some br →
+      ScopedBodyDerives types slots ids rows (Δ ++ ctx.refine br.1)
+        (ctx.extend br.1 env) br.2 (actuals i)}
+    (inclusions : ∀ i br (atIndex : branches[i]? = some br),
+      SemanticSub (Δ ++ ctx.refine br.1) (actuals i) result)
+    (scrutStable : TypingSpecializes scrutTyping)
+    (bodiesStable : ∀ i br (atIndex : branches[i]? = some br),
+      TypingSpecializes (bodies i br atIndex)) :
+    TypingSpecializes
+      (ScopedBodyDerives.match_ scrutTyping coverage patterns bodies inclusions) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let movedCtx := specializeBodyBranchContext ctx outer f
+  let movedScrut := scrutStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope countFresh typeFresh
+  have scrutTyping' : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      ((env.map (mapCountBinding outer)).map (mapBinding f typeLC))
+      scrut movedCtx.bounds := by
+    rw [bodyBranchContextSpecializeBounds]
+    exact movedScrut.typing
+  let movedBodies := fun i br (atIndex : branches[i]? = some br) =>
+    bodiesStable i br atIndex outer f outerFinite countTarget countScope typeLC
+      typeTarget typeScope (bodyBranchContextCountFreshExtend ctx br.1 countFresh)
+        (bodyBranchContextTypeFreshExtend ctx br.1 typeFresh)
+  have bodiesTyping : ∀ i br (atIndex : branches[i]? = some br),
+      ScopedBodyDerives
+        (fun i => mapFree f (bounds outer (types i)))
+        (fun i => mapFree f (bounds outer (slots i))) ids
+        (CountAlgebra.compose outer rows)
+        ((Δ.map (constraint outer)) ++ movedCtx.refine br.1)
+        (movedCtx.extend br.1
+          ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+        br.2 (mapFree f (bounds outer (actuals i))) := by
+    intro i br atIndex
+    have moved := (movedBodies i br atIndex).typing
+    have deltaEq : (Δ ++ ctx.refine br.1).map (constraint outer) =
+        Δ.map (constraint outer) ++ movedCtx.refine br.1 := by
+      rw [List.map_append, bodyBranchContextSpecializeRefine]
+    have envEq := bodyBranchContextSpecializeExtend ctx outer f typeLC br.1
+      (patterns br (List.mem_of_getElem? atIndex)) env
+    rw [← deltaEq, ← envEq]
+    exact moved
+  let movedCoverage := bodyBranchContextSpecializeCovers ctx outer f outerFinite coverage
+  let movedPatterns := fun br member =>
+    bodyBranchContextSpecializePattern ctx outer f typeLC (patterns br member)
+  let movedInclusions := fun i br (atIndex : branches[i]? = some br) => by
+    have moved := SchemeSpecialization.subtype f
+      (CountSubstitution.subtype outer outerFinite (inclusions i br atIndex))
+    have deltaEq : (Δ ++ ctx.refine br.1).map (constraint outer) =
+        Δ.map (constraint outer) ++ movedCtx.refine br.1 := by
+      rw [List.map_append, bodyBranchContextSpecializeRefine]
+    rw [deltaEq] at moved
+    exact moved
+  exact ⟨ScopedBodyDerives.match_ scrutTyping' movedCoverage movedPatterns
+    bodiesTyping movedInclusions⟩
+
 #print axioms TypingSpecializes.app
 #print axioms TypingSpecializes.subsumption
 #print axioms TypingSpecializes.lambda
@@ -3329,6 +3696,10 @@ def TypingSpecializes.letPinned
 #print axioms TypingSpecializes.pair
 #print axioms TypingSpecializes.pairPartial
 #print axioms TypingSpecializes.letPinned
+#print axioms TypingSpecializes.letRecMono
+#print axioms TypingSpecializes.letRecPinnedMono
+#print axioms TypingSpecializes.letRecInferredMono
+#print axioms TypingSpecializes.match_
 
 /-- The common recursive-RHS core retains its existing specialization theorem
     when embedded into the generalized-body judgment. -/
