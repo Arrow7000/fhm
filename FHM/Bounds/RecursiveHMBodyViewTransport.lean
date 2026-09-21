@@ -677,12 +677,89 @@ def literal (view : RawBodyView) (raw : List Binding) (world : EnvSpecialization
   refine ⟨?_⟩
   cases p <;> exact .literal
 
+def nil (view : RawBodyView) (raw : List Binding) (world : EnvSpecialization raw)
+    (elem : BoundsTy) :
+    BodyViewSpecialized view raw
+      (@ScopedBodyDerives.nil types slots ids rows Delta (view.env raw) elem) world := by
+  exact ⟨ScopedBodyDerives.nil⟩
+
+def boolCtor (view : RawBodyView) (raw : List Binding) (world : EnvSpecialization raw)
+    {name : CtorName} (isCtor : BoolBranches.IsCtor name) :
+    BodyViewSpecialized view raw
+      (@ScopedBodyDerives.boolCtor types slots ids rows Delta (view.env raw) name isCtor)
+      world := by
+  exact ⟨ScopedBodyDerives.boolCtor isCtor⟩
+
+def ctor (view : RawBodyView) (raw : List Binding) (world : EnvSpecialization raw)
+    {name : CtorName} {beta : BoundsTy} (notNil : name ≠ nilCtorName) :
+    BodyViewSpecialized view raw
+      (@ScopedBodyDerives.ctor types slots ids rows Delta (view.env raw) name beta notNil)
+      world := by
+  exact ⟨ScopedBodyDerives.ctor notNil⟩
+
 def primBinOp (view : RawBodyView) (raw : List Binding) (world : EnvSpecialization raw)
     (op : PrimBinOp) :
     BodyViewSpecialized view raw
       (@ScopedBodyDerives.primBinOp types slots ids rows Delta (view.env raw) op) world := by
   refine ⟨?_⟩
   cases op <;> exact .primBinOp
+
+def cons
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {head tail : Expr}
+    {headTy elem : BoundsTy} {lo hi : Count}
+    {headTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) head headTy}
+    {tailTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) tail (.list lo hi elem)}
+    (inclusion : SemanticSub Delta headTy elem)
+    (world : EnvSpecialization raw)
+    (headClosed : BodyViewSpecialized view raw headTyping world)
+    (tailClosed : BodyViewSpecialized view raw tailTyping world) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.cons headTyping tailTyping inclusion) world := by
+  refine ⟨ScopedBodyDerives.cons headClosed.typing tailClosed.typing ?_⟩
+  exact SchemeSpecialization.subtype world.types
+    (CountSubstitution.subtype world.outer world.outerFinite inclusion)
+
+def consPartial
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {head : Expr} {headTy : BoundsTy}
+    {headTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) head headTy}
+    (world : EnvSpecialization raw)
+    (headClosed : BodyViewSpecialized view raw headTyping world) :
+    BodyViewSpecialized view raw (ScopedBodyDerives.consPartial headTyping) world := by
+  exact ⟨ScopedBodyDerives.consPartial headClosed.typing⟩
+
+def pair
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {left right : Expr} {leftTy rightTy : BoundsTy}
+    {leftTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) left leftTy}
+    {rightTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) right rightTy}
+    (world : EnvSpecialization raw)
+    (leftClosed : BodyViewSpecialized view raw leftTyping world)
+    (rightClosed : BodyViewSpecialized view raw rightTyping world) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.pair leftTyping rightTyping) world := by
+  exact ⟨ScopedBodyDerives.pair leftClosed.typing rightClosed.typing⟩
+
+def pairPartial
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {left : Expr} {leftTy rightTy : BoundsTy}
+    {leftTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) left leftTy}
+    (world : EnvSpecialization raw)
+    (leftClosed : BodyViewSpecialized view raw leftTyping world) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.pairPartial (rightTy := rightTy) leftTyping) world := by
+  exact ⟨ScopedBodyDerives.pairPartial leftClosed.typing⟩
 
 def app
     {view : RawBodyView} {raw : List Binding}
@@ -726,6 +803,13 @@ end BodyViewSpecialized
 #print axioms BodyViewSpecialized.letRecInferredMono
 #print axioms BodyViewSpecialized.letRecPinnedMono
 #print axioms BodyViewSpecialized.letRecMonoGroup
+#print axioms BodyViewSpecialized.nil
+#print axioms BodyViewSpecialized.boolCtor
+#print axioms BodyViewSpecialized.ctor
+#print axioms BodyViewSpecialized.cons
+#print axioms BodyViewSpecialized.consPartial
+#print axioms BodyViewSpecialized.pair
+#print axioms BodyViewSpecialized.pairPartial
 #print axioms BodyViewSpecialized.app
 #print axioms BodyViewSpecialized.subsumption
 
