@@ -2711,6 +2711,67 @@ theorem RuntimeReady.congr
   cases same
   exact ready
 
+/-- One lawful enclosing count/HM specialization of a generalized-body
+    derivation.  Unlike the structural recursive-RHS fragment, this witness is
+    intentionally packaged rather than derived by a blanket map theorem:
+    generalized locals and nested groups must preserve their captured schemes
+    and fixed outer recursive contracts explicitly. -/
+structure Specialized
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding} {e : Expr} {β : BoundsTy}
+    (h : ScopedBodyDerives types slots ids rows Δ env e β)
+    (outer : Bindings) (f : Nat → BoundsTy)
+    (outerFinite : Finite outer) (countTarget : List Nat)
+    (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+    (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (typeTarget : List Nat)
+    (typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i))
+    (countFresh : CountCapturesFixed outer env)
+    (typeFresh : CapturesFixed f (env.map (mapCountBinding outer))) where
+  typing : ScopedBodyDerives
+    (fun i => mapFree f (bounds outer (types i)))
+    (fun i => mapFree f (bounds outer (slots i))) ids
+    (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+    ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)) e
+    (mapFree f (bounds outer β))
+  runtimeReady : BodyDerives.RuntimeReady h →
+    (∀ i, Runtime.Supported (f i)) → BodyDerives.RuntimeReady typing
+
+/-- Closure of a generalized-body derivation under every lawful enclosing
+    specialization.  Deep universal-RHS certification must provide this exact
+    property; a bare `ScopedBodyDerives` proof is deliberately insufficient. -/
+def Specializes
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding} {e : Expr} {β : BoundsTy}
+    (h : ScopedBodyDerives types slots ids rows Δ env e β) : Prop :=
+  ∀ (outer : Bindings) (f : Nat → BoundsTy)
+    (outerFinite : Finite outer) (countTarget : List Nat)
+    (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+    (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (typeTarget : List Nat)
+    (typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i))
+    (countFresh : CountCapturesFixed outer env)
+    (typeFresh : CapturesFixed f (env.map (mapCountBinding outer))),
+    Specialized h outer f outerFinite countTarget countScope
+      typeLC typeTarget typeScope countFresh typeFresh
+
+/-- The common recursive-RHS core retains its existing specialization theorem
+    when embedded into the generalized-body judgment. -/
+def Specializes.ordinary
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List Binding} {e : Expr} {β : BoundsTy}
+    {h : ScopedDerives types slots ids rows Δ env e β}
+    (stable : ScopedDerives.Specializes h)
+    (ready : ScopedDerives.RuntimeReady h) :
+    Specializes (ScopedBodyDerives.ordinary h) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let specialized := stable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope countFresh typeFresh
+  refine ⟨.ordinary specialized.typing, ?_⟩
+  intro _ arguments
+  exact .ordinary (specialized.runtimeReady ready arguments)
+
 theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBodyDerives types slots ids rows Δ env e β}
     (ready : RuntimeReady h) : Runtime.Supported β := by
   induction ready with
