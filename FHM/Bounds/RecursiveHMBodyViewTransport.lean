@@ -101,6 +101,51 @@ def EnvSpecialization.prependMonos {raw : List Binding}
       simpa only [List.map_cons, List.cons_append] using
         (world.prependMonos rest).consMono demand
 
+structure EnvSpecialization.ExportFresh {raw : List Binding}
+    (world : EnvSpecialization raw) (scheme : HMCountScheme.Scheme) : Prop where
+  counts : ∀ i ∈ scheme.counts.captures, lookup world.outer i = none
+  types : ∀ i ∈ scheme.hm.body.freeVars, world.types i = .fvar i
+
+def EnvSpecialization.consExported {raw : List Binding}
+    (world : EnvSpecialization raw) (scheme : HMCountScheme.Scheme)
+    (fresh : world.ExportFresh scheme) :
+    EnvSpecialization (Binding.exported scheme :: raw) where
+  outer := world.outer
+  types := world.types
+  outerFinite := world.outerFinite
+  countTarget := world.countTarget
+  outerScope := world.outerScope
+  typesLC := world.typesLC
+  typeTarget := world.typeTarget
+  typesScope := world.typesScope
+  fresh := by
+    intro binding member
+    rcases List.mem_cons.mp member with head | tail
+    · subst binding
+      exact ⟨fresh.counts, fresh.types⟩
+    · exact world.fresh binding tail
+  typesSupported := world.typesSupported
+
+def EnvSpecialization.consClosure {raw : List Binding}
+    (world : EnvSpecialization raw) (scheme : HMCountScheme.Scheme)
+    (countCaptures : List Count) (typeCaptures : List BoundsTy) :
+    EnvSpecialization (Binding.closure scheme countCaptures typeCaptures :: raw) where
+  outer := world.outer
+  types := world.types
+  outerFinite := world.outerFinite
+  countTarget := world.countTarget
+  outerScope := world.outerScope
+  typesLC := world.typesLC
+  typeTarget := world.typeTarget
+  typesScope := world.typesScope
+  fresh := by
+    intro binding member
+    rcases List.mem_cons.mp member with head | tail
+    · subst binding
+      trivial
+    · exact world.fresh binding tail
+  typesSupported := world.typesSupported
+
 @[simp] theorem EnvSpecialization.prependMonos_outer {raw : List Binding}
     (world : EnvSpecialization raw) (demands : List BoundsTy) :
     (world.prependMonos demands).outer = world.outer := by
@@ -122,6 +167,19 @@ def EnvSpecialization.prependMonos {raw : List Binding}
 @[simp] theorem RawBodyView.env_consMono (view : RawBodyView)
     (beta : BoundsTy) (raw : List Binding) :
     view.env (Binding.mono beta :: raw) = Binding.mono beta :: view.env raw := by
+  cases view <;> rfl
+
+@[simp] theorem RawBodyView.env_consExported (view : RawBodyView)
+    (scheme : HMCountScheme.Scheme) (raw : List Binding) :
+    view.env (Binding.exported scheme :: raw) =
+      Binding.exported scheme :: view.env raw := by
+  cases view <;> rfl
+
+@[simp] theorem RawBodyView.env_consClosure (view : RawBodyView)
+    (scheme : HMCountScheme.Scheme) (countCaptures : List Count)
+    (typeCaptures : List BoundsTy) (raw : List Binding) :
+    view.env (Binding.closure scheme countCaptures typeCaptures :: raw) =
+      Binding.closure scheme countCaptures typeCaptures :: view.env raw := by
   cases view <;> rfl
 
 @[simp] theorem RawBodyView.env_prependMonos (view : RawBodyView)
@@ -723,6 +781,194 @@ def letRecMonoGroup
       EnvSpecialization.mapBounds, closeRecursiveEnv_prependMonos,
       RawBodyView.env_prependMonos] using bodyClosed.typing
 
+def letExported
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option PolyTy} {rhs body : Expr}
+    {scheme : HMCountScheme.Scheme} {result : BoundsTy}
+    (frame : LocalFrame scheme ids rhs) (annotation : LocalAnnotationOK scheme ann)
+    (scope : rhs.varsBelow (view.env raw).length = true)
+    (rhsTyping : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use scheme calleeDelta found caller),
+      ScopedBodyDerives (localTypes frame.owned types used.types)
+        (localSlots ann slots used.types)
+        (scheme.counts.quantified ++ scheme.counts.captures ++ ids)
+        (CountAlgebra.compose (scheme.counts.quantified.zip used.counts) rows)
+        (Delta ++ used.countInstance.premises) (view.env raw) rhs used.bounds)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.exported scheme :: raw)) body result)
+    (world : EnvSpecialization raw) (fresh : world.ExportFresh scheme)
+    (targetRhs : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use scheme calleeDelta found caller),
+      ScopedBodyDerives
+        (localTypes frame.owned (fun i => world.mapBounds (types i)) used.types)
+        (localSlots ann (fun i => world.mapBounds (slots i)) used.types)
+        (scheme.counts.quantified ++ scheme.counts.captures ++ ids)
+        (CountAlgebra.compose (scheme.counts.quantified.zip used.counts)
+          (CountAlgebra.compose world.outer rows))
+        (Delta.map (constraint world.outer) ++ used.countInstance.premises)
+        (view.env (closeRecursiveEnv world.outer world.types raw)) rhs used.bounds)
+    (bodyClosed : BodyViewSpecialized view (Binding.exported scheme :: raw)
+      bodyTyping (world.consExported scheme fresh)) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.letExported frame annotation scope rhsTyping (by
+        simpa only [RawBodyView.env_consExported] using bodyTyping)) world := by
+  refine ⟨ScopedBodyDerives.letExported frame annotation ?_ targetRhs ?_⟩
+  · simpa only [RawBodyView.env_length, closeRecursiveEnv, List.length_map] using scope
+  · simpa only [EnvSpecialization.consExported, EnvSpecialization.mapBounds,
+      closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+      RawBodyView.env_consExported] using bodyClosed.typing
+
+def letRecExported
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option PolyTy} {rhs body : Expr}
+    {scheme : HMCountScheme.Scheme} {result : BoundsTy}
+    (frame : LocalFrame scheme ids rhs) (annotation : LocalAnnotationOK scheme ann)
+    (scope : rhs.varsBelow 0 = true)
+    (rhsTyping : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use scheme calleeDelta found caller),
+      ScopedBodyDerives (localTypes frame.owned types used.types)
+        (localSlots ann slots used.types)
+        (scheme.counts.quantified ++ scheme.counts.captures ++ ids)
+        (CountAlgebra.compose (scheme.counts.quantified.zip used.counts) rows)
+        (Delta ++ used.countInstance.premises) (view.env raw) rhs used.bounds)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.exported scheme :: raw)) body result)
+    (world : EnvSpecialization raw) (fresh : world.ExportFresh scheme)
+    (targetRhs : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use scheme calleeDelta found caller),
+      ScopedBodyDerives
+        (localTypes frame.owned (fun i => world.mapBounds (types i)) used.types)
+        (localSlots ann (fun i => world.mapBounds (slots i)) used.types)
+        (scheme.counts.quantified ++ scheme.counts.captures ++ ids)
+        (CountAlgebra.compose (scheme.counts.quantified.zip used.counts)
+          (CountAlgebra.compose world.outer rows))
+        (Delta.map (constraint world.outer) ++ used.countInstance.premises)
+        (view.env (closeRecursiveEnv world.outer world.types raw)) rhs used.bounds)
+    (bodyClosed : BodyViewSpecialized view (Binding.exported scheme :: raw)
+      bodyTyping (world.consExported scheme fresh)) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.letRecExported frame annotation scope rhsTyping (by
+        simpa only [RawBodyView.env_consExported] using bodyTyping)) world := by
+  refine ⟨ScopedBodyDerives.letRecExported frame annotation scope targetRhs ?_⟩
+  simpa only [EnvSpecialization.consExported, EnvSpecialization.mapBounds,
+    closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+    RawBodyView.env_consExported] using bodyClosed.typing
+
+def letExportedClosed
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option PolyTy} {rhs body : Expr}
+    {scheme : HMCountScheme.Scheme} {result : BoundsTy}
+    (frame : LocalFrame scheme ids rhs) (annotation : LocalAnnotationOK scheme ann)
+    (scope : rhs.varsBelow (view.env raw).length = true)
+    (rhsTyping : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use (HMCountSchemeClosure.close scheme)
+        calleeDelta found caller),
+      HMCountSchemeClosure.CapturesAgree scheme rows types used →
+      ScopedBodyDerives (closedLocalTypes scheme frame types used.types)
+        (closedLocalSlots scheme ann slots used.types)
+        ((HMCountSchemeClosure.close scheme).counts.quantified ++ ids)
+        (CountAlgebra.compose
+          ((HMCountSchemeClosure.close scheme).counts.quantified.zip used.counts) rows)
+        (Delta ++ used.countInstance.premises) (view.env raw) rhs used.bounds)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.closure scheme
+        (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+        (HMCountSchemeClosure.interpretedTypeCaptures types scheme) :: raw))
+      body result)
+    (world : EnvSpecialization raw)
+    (targetRhs : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use (HMCountSchemeClosure.close scheme)
+        calleeDelta found caller),
+      HMCountSchemeClosure.CapturesAgree scheme
+        (CountAlgebra.compose world.outer rows)
+        (fun i => world.mapBounds (types i)) used →
+      ScopedBodyDerives
+        (closedLocalTypes scheme frame (fun i => world.mapBounds (types i)) used.types)
+        (closedLocalSlots scheme ann (fun i => world.mapBounds (slots i)) used.types)
+        ((HMCountSchemeClosure.close scheme).counts.quantified ++ ids)
+        (CountAlgebra.compose
+          ((HMCountSchemeClosure.close scheme).counts.quantified.zip used.counts)
+          (CountAlgebra.compose world.outer rows))
+        (Delta.map (constraint world.outer) ++ used.countInstance.premises)
+        (view.env (closeRecursiveEnv world.outer world.types raw)) rhs used.bounds)
+    (bodyClosed : BodyViewSpecialized view
+      (Binding.closure scheme
+        (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+        (HMCountSchemeClosure.interpretedTypeCaptures types scheme) :: raw)
+      bodyTyping
+      (world.consClosure scheme
+        (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+        (HMCountSchemeClosure.interpretedTypeCaptures types scheme))) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.letExportedClosed frame annotation scope rhsTyping (by
+        simpa only [RawBodyView.env_consClosure] using bodyTyping)) world := by
+  refine ⟨ScopedBodyDerives.letExportedClosed frame annotation ?_ targetRhs ?_⟩
+  · simpa only [RawBodyView.env_length, closeRecursiveEnv, List.length_map] using scope
+  · simpa only [EnvSpecialization.consClosure, EnvSpecialization.mapBounds,
+      closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+      RawBodyView.env_consClosure,
+      HMCountSchemeClosure.interpretedCountCaptures_compose,
+      HMCountSchemeClosure.interpretedTypeCaptures_map] using bodyClosed.typing
+
+def letRecExportedClosed
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option PolyTy} {rhs body : Expr}
+    {scheme : HMCountScheme.Scheme} {result : BoundsTy}
+    (frame : LocalFrame scheme ids rhs) (annotation : LocalAnnotationOK scheme ann)
+    (scope : rhs.varsBelow 0 = true)
+    (rhsTyping : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use (HMCountSchemeClosure.close scheme)
+        calleeDelta found caller),
+      HMCountSchemeClosure.CapturesAgree scheme rows types used →
+      ScopedBodyDerives (closedLocalTypes scheme frame types used.types)
+        (closedLocalSlots scheme ann slots used.types)
+        ((HMCountSchemeClosure.close scheme).counts.quantified ++ ids)
+        (CountAlgebra.compose
+          ((HMCountSchemeClosure.close scheme).counts.quantified.zip used.counts) rows)
+        (Delta ++ used.countInstance.premises) (view.env raw) rhs used.bounds)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.closure scheme
+        (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+        (HMCountSchemeClosure.interpretedTypeCaptures types scheme) :: raw))
+      body result)
+    (world : EnvSpecialization raw)
+    (targetRhs : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use (HMCountSchemeClosure.close scheme)
+        calleeDelta found caller),
+      HMCountSchemeClosure.CapturesAgree scheme
+        (CountAlgebra.compose world.outer rows)
+        (fun i => world.mapBounds (types i)) used →
+      ScopedBodyDerives
+        (closedLocalTypes scheme frame (fun i => world.mapBounds (types i)) used.types)
+        (closedLocalSlots scheme ann (fun i => world.mapBounds (slots i)) used.types)
+        ((HMCountSchemeClosure.close scheme).counts.quantified ++ ids)
+        (CountAlgebra.compose
+          ((HMCountSchemeClosure.close scheme).counts.quantified.zip used.counts)
+          (CountAlgebra.compose world.outer rows))
+        (Delta.map (constraint world.outer) ++ used.countInstance.premises)
+        (view.env (closeRecursiveEnv world.outer world.types raw)) rhs used.bounds)
+    (bodyClosed : BodyViewSpecialized view
+      (Binding.closure scheme
+        (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+        (HMCountSchemeClosure.interpretedTypeCaptures types scheme) :: raw)
+      bodyTyping
+      (world.consClosure scheme
+        (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+        (HMCountSchemeClosure.interpretedTypeCaptures types scheme))) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.letRecExportedClosed frame annotation scope rhsTyping (by
+        simpa only [RawBodyView.env_consClosure] using bodyTyping)) world := by
+  refine ⟨ScopedBodyDerives.letRecExportedClosed frame annotation scope targetRhs ?_⟩
+  simpa only [EnvSpecialization.consClosure, EnvSpecialization.mapBounds,
+    closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+    RawBodyView.env_consClosure,
+    HMCountSchemeClosure.interpretedCountCaptures_compose,
+    HMCountSchemeClosure.interpretedTypeCaptures_map] using bodyClosed.typing
+
 def match_
     {view : RawBodyView} {raw : List Binding}
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
@@ -905,6 +1151,10 @@ end BodyViewSpecialized
 #print axioms BodyViewSpecialized.letRecInferredMono
 #print axioms BodyViewSpecialized.letRecPinnedMono
 #print axioms BodyViewSpecialized.letRecMonoGroup
+#print axioms BodyViewSpecialized.letExported
+#print axioms BodyViewSpecialized.letRecExported
+#print axioms BodyViewSpecialized.letExportedClosed
+#print axioms BodyViewSpecialized.letRecExportedClosed
 #print axioms BodyViewSpecialized.nil
 #print axioms BodyViewSpecialized.boolCtor
 #print axioms BodyViewSpecialized.ctor
