@@ -7112,6 +7112,47 @@ private def useBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
       | _ => throw "bounds: deferred generalized body spine applies a non-arrow scheme result"
 termination_by (sizeOf e, 0)
 
+/-- The same single-instance spine discipline for a lexical closure.  The
+    promoted prefix/trailing arguments are checked against the values stored by
+    the defining environment before the ordinary application frames are
+    rebuilt. -/
+private def useClosureBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
+    {types slots ids rows caller Δ env e} {spine : RecursiveSpine.Syntax e}
+    (checked : BodySpine sourceOutput types slots ids rows caller Δ env spine)
+    {s : HMCountScheme.Scheme} {countCaptures : List Count}
+    {typeCaptures : List BoundsTy}
+    (lookup : env[spine.index]? = some (.closure s countCaptures typeCaptures))
+    (used : HMCountScheme.Use (HMCountSchemeClosure.close s) Δ spine.headHM caller)
+    (captures : HMCountSchemeClosure.HasCaptureArguments
+      s countCaptures typeCaptures used)
+    (schemes : BinderSchemeMap) (capture : Option (BodyWalkCapture types slots env))
+    (ctors : CtorEnv) :
+    Except String (ScopedBodyResult types slots ids rows caller Δ env e) := do
+  match checked with
+  | .head path i hm =>
+      finishBody path hm used.bounds rfl
+        (by simpa only [Expr.stripFound] using
+          ScopedBodyDerives.varClosure lookup used captures) []
+        (do
+          let supported ← Runtime.supported? used.bounds
+          let arguments ← Runtime.supportedArguments? used.types
+          pure ⟨by simpa only [Expr.stripFound] using
+            (BodyDerives.RuntimeReady.varClosure (ids := ids) (rows := rows)
+              (i := i) lookup used captures supported.down arguments.down)⟩)
+  | .app (arg := arg) path hm previous actual source =>
+      let prior ← useClosureBodySpine sourceOutput metadata previous lookup used captures
+        schemes capture ctors
+      match prior.bounds with
+      | .arrow domain _ =>
+          let checked ← match actual with
+            | some checked => pure checked
+            | none =>
+                walkBodySource sourceOutput metadata types slots ids rows caller Δ env
+                  (path ++ [.appArg]) arg schemes capture source (some domain) ctors
+          appendBody path hm prior checked
+      | _ => throw "bounds: deferred lexical-closure spine applies a non-arrow scheme result"
+termination_by (sizeOf e, 0)
+
 /-- A fixed recursive spine chooses one count instance for the entire call and
     retains the contract's already-fixed HM vector.  Deferred arguments are
     checked against domains from that same instance; no generalized export is
@@ -7643,7 +7684,38 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                     (i := i) hv used supported.down arguments.down)⟩)
           else throw "bounds: count-polymorphic use needs origin-backed arguments"
       | some (.closure s countCaptures typeCaptures) =>
-          throw "bounds: lexical closure use needs origin-backed capture arguments"
+          if countClosed : s.counts.quantified.isEmpty then
+            let hmUse ← BinderBridge.instantiate (HMCountSchemeClosure.close s).hm hm
+            let inferredTypes ← hmUse.args.mapM Typed.shapeTop
+            match ScopedHMAnnotation.equalBoundsList
+                (HMCountSchemeClosure.captureTypeArguments s inferredTypes) typeCaptures with
+            | some capturedTypes =>
+              match checkedUse : HMCountScheme.check (HMCountSchemeClosure.close s) Δ hm
+                  countCaptures inferredTypes caller with
+              | .error error => throw error
+              | .ok used =>
+                  have arguments := HMCountScheme.check_arguments checkedUse
+                  have quantifiedEmpty : s.counts.quantified = [] := by
+                    simpa [List.isEmpty_iff] using countClosed
+                  have captures : HMCountSchemeClosure.HasCaptureArguments
+                      s countCaptures typeCaptures used := by
+                    constructor
+                    · rw [HMCountSchemeClosure.captureCountArguments, arguments.1,
+                        quantifiedEmpty]
+                      rfl
+                    · rw [HMCountSchemeClosure.captureTypeArguments, arguments.2]
+                      exact capturedTypes.down
+                  finishBody path hm used.bounds rfl
+                    (by simpa only [Expr.stripFound] using
+                      ScopedBodyDerives.varClosure hv used captures) []
+                    (do
+                      let supported ← Runtime.supported? used.bounds
+                      let typeArguments ← Runtime.supportedArguments? used.types
+                      pure ⟨by simpa only [Expr.stripFound] using
+                        (BodyDerives.RuntimeReady.varClosure (ids := ids) (rows := rows)
+                          (i := i) hv used captures supported.down typeArguments.down)⟩)
+            | none => throw "bounds: lexical closure HM use disagrees with its stored captures"
+          else throw "bounds: count-polymorphic closure use needs origin-backed arguments"
       | none => throw "bounds: generalized body variable outside binding environment"
   | .found hm (.lambda ann body) =>
       match hm.eraseBounds with
@@ -7807,6 +7879,31 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               let counts ← CountProposal.proposeOrigins s.counts.quantified s.counts.body origins
               let used ← HMCountScheme.check s Δ spine.headHM counts types caller
               return ← useBodySpine sourceOutput metadata checked hv used schemes capture ctors
+          | some (.closure s countCaptures typeCaptures) =>
+              let checked ← walkBodySpineSourced sourceOutput metadata types slots ids rows caller Δ env
+                spine schemes capture spineSource.down ctors
+              let origins := checked.originsRev.reverse
+              let sourceTypes ← StructuralApplication.proposeOrigins
+                s.counts.body origins s.hm.paramCount
+              let sourceCounts ← CountProposal.proposeOrigins
+                s.counts.quantified s.counts.body origins
+              if countLength : sourceCounts.length = s.counts.quantified.length then
+                if typeLength : typeCaptures.length =
+                    (HMCountSchemeClosure.typeCaptures s).length then
+                  match checkedUse : HMCountScheme.check (HMCountSchemeClosure.close s) Δ
+                      spine.headHM (sourceCounts ++ countCaptures)
+                      (typeCaptures ++ sourceTypes) caller with
+                  | .error error => throw error
+                  | .ok used =>
+                      have arguments := HMCountScheme.check_arguments checkedUse
+                      have captures : HMCountSchemeClosure.HasCaptureArguments
+                          s countCaptures typeCaptures used :=
+                        HMCountSchemeClosure.HasCaptureArguments.ofAppended
+                          sourceCounts sourceTypes countLength typeLength arguments.1 arguments.2
+                      return ← useClosureBodySpine sourceOutput metadata checked hv used captures
+                        schemes capture ctors
+                else throw "bounds: lexical closure has a malformed stored HM capture vector"
+              else throw "bounds: lexical closure source count proposal has wrong arity"
           | _ => pure ()
       | none =>
           match RecursiveSpine.Syntax.parse path (.found hm (.app fn arg)) with
@@ -7827,6 +7924,31 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                   let counts ← CountProposal.proposeOrigins s.counts.quantified s.counts.body origins
                   let used ← HMCountScheme.check s Δ spine.headHM counts types caller
                   return ← useBodySpine sourceOutput metadata checked hv used schemes capture ctors
+              | some (.closure s countCaptures typeCaptures) =>
+                  let checked ← walkBodySpine sourceOutput metadata types slots ids rows caller Δ env
+                    spine schemes capture ctors
+                  let origins := checked.originsRev.reverse
+                  let sourceTypes ← StructuralApplication.proposeOrigins
+                    s.counts.body origins s.hm.paramCount
+                  let sourceCounts ← CountProposal.proposeOrigins
+                    s.counts.quantified s.counts.body origins
+                  if countLength : sourceCounts.length = s.counts.quantified.length then
+                    if typeLength : typeCaptures.length =
+                        (HMCountSchemeClosure.typeCaptures s).length then
+                      match checkedUse : HMCountScheme.check (HMCountSchemeClosure.close s) Δ
+                          spine.headHM (sourceCounts ++ countCaptures)
+                          (typeCaptures ++ sourceTypes) caller with
+                      | .error error => throw error
+                      | .ok used =>
+                          have arguments := HMCountScheme.check_arguments checkedUse
+                          have captures : HMCountSchemeClosure.HasCaptureArguments
+                              s countCaptures typeCaptures used :=
+                            HMCountSchemeClosure.HasCaptureArguments.ofAppended
+                              sourceCounts sourceTypes countLength typeLength arguments.1 arguments.2
+                          return ← useClosureBodySpine sourceOutput metadata checked hv used captures
+                            schemes capture ctors
+                    else throw "bounds: lexical closure has a malformed stored HM capture vector"
+                  else throw "bounds: lexical closure source count proposal has wrong arity"
               | _ => pure ()
           | none => pure ()
       let function ← walkBodySource sourceOutput metadata types slots ids rows caller Δ env
@@ -8636,6 +8758,7 @@ def BodyResult.runtimeSafety? {ids rows caller Δ output}
 #print axioms BodyDerives.assuming
 #print axioms body_match_typing
 #print axioms useBodySpine
+#print axioms useClosureBodySpine
 #print axioms walkBody
 #print axioms checkBody
 #print axioms checkClosedProgram

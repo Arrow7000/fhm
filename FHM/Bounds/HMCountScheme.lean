@@ -307,6 +307,21 @@ def check (s : Scheme) (Δ : List Constraint) (found : Ty) (counts : List Count)
     else throw "bounds: supplied HM argument contains an enclosing bound slot"
   else throw "bounds: HM/count specialization has wrong HM arity"
 
+theorem check_arguments {s : Scheme} {Δ : List Constraint} {found : Ty}
+    {counts : List Count} {types : List BoundsTy} {caller : List Nat} {u : Use s Δ found caller}
+    (h : check s Δ found counts types caller = .ok u) :
+    u.counts = counts ∧ u.types = types := by
+  unfold check at h
+  simp only [bind, Except.bind, pure, Except.pure] at h
+  split at h <;> try contradiction
+  split at h <;> try contradiction
+  split at h <;> try contradiction
+  split at h <;> try contradiction
+  split at h <;> try contradiction
+  split at h <;> try contradiction
+  cases h
+  exact ⟨rfl, rfl⟩
+
 #print axioms decode
 #print axioms openFixed
 #print axioms opened_instance
@@ -323,5 +338,6 @@ def check (s : Scheme) (Δ : List Constraint) (found : Ty) (counts : List Count)
 #print axioms Use.hm_instance
 #print axioms Use.subtype
 #print axioms check
+#print axioms check_arguments
 
 end FHM.Bounds.HMCountScheme

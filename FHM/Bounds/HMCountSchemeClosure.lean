@@ -419,6 +419,20 @@ structure HasCaptureArguments (s : HMCountScheme.Scheme)
   counts : captureCountArguments s u.counts = countArgs
   types : captureTypeArguments s u.types = typeArgs
 
+theorem HasCaptureArguments.ofAppended
+    {s : HMCountScheme.Scheme} {countArgs : List Count}
+    {typeArgs : List BoundsTy} {Δ found caller}
+    {u : HMCountScheme.Use (close s) Δ found caller}
+    (sourceCounts : List Count) (sourceTypes : List BoundsTy)
+    (countLength : sourceCounts.length = s.counts.quantified.length)
+    (typeLength : typeArgs.length = (typeCaptures s).length)
+    (counts : u.counts = sourceCounts ++ countArgs)
+    (types : u.types = typeArgs ++ sourceTypes) :
+    HasCaptureArguments s countArgs typeArgs u := by
+  constructor
+  · simp [captureCountArguments, counts, ← countLength]
+  · simp [captureTypeArguments, types, ← typeLength]
+
 /-- Captured count meanings at one enclosing count interpretation. -/
 def interpretedCountCaptures (outer : CountSubstitution.Bindings)
     (s : HMCountScheme.Scheme) : List Count :=
@@ -574,6 +588,106 @@ theorem closedUse_sourceTypeLength
   have total := u.arity
   simp only [close_typeParamCount] at total
   omega
+
+/-- Forget the promoted lexical coordinates of a closed use.  The remaining
+    count arguments form a genuine instance of the source count scheme when
+    its lexical captures are restored to the caller scope.  This projection is
+    proof-only: it does not rerun the executable instantiator. -/
+def sourceCountInstance
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller) :
+    ScopedScheme.Instance s.counts (sourceCountArguments s u.counts)
+      (s.counts.captures ++ caller) := by
+  let args := sourceCountArguments s u.counts
+  have arity : s.counts.quantified.length = args.length :=
+    (closedUse_sourceCountLength u).symm
+  have argsMember : ∀ a ∈ args, a ∈ u.counts := by
+    intro a member
+    exact List.mem_of_mem_take member
+  have argsScoped : ∀ a ∈ args, Scope.CountScoped (s.counts.captures ++ caller) a := by
+    intro a member
+    exact HMInterpretation.count_mono (u.countInstance.argsScoped a (argsMember a member))
+      (fun _ used => List.mem_append_right _ used)
+  have rowsScoped : ∀ row ∈ s.counts.quantified.zip args,
+      Scope.CountScoped (s.counts.captures ++ caller) row.2 := by
+    intro row member
+    exact argsScoped row.2 (List.of_mem_zip member).2
+  have keep : ∀ i ∈ s.counts.quantified ++ s.counts.captures,
+      CountSubstitution.lookup (s.counts.quantified.zip args) i = none →
+        i ∈ s.counts.captures ++ caller := by
+    intro i member absent
+    rcases List.mem_append.mp member with quantified | captured
+    · have keyMember : i ∈ (s.counts.quantified.zip args).map Prod.fst := by
+        rw [List.map_fst_zip (Nat.le_of_eq arity)]
+        exact quantified
+      exact False.elim ((lookup_none_iff.mp absent) keyMember)
+    · exact List.mem_append_left _ captured
+  refine {
+    wf := s.countWF
+    arity := arity
+    finiteArgs := fun a member => u.countInstance.finiteArgs a (argsMember a member)
+    argsScoped := argsScoped
+    capturesScoped := fun i member => List.mem_append_left _ member
+    bodyScoped := bounds_scoped s.countWF.2.2.1 rowsScoped keep
+    premisesScoped := ?_ }
+  intro c member
+  obtain ⟨original, source, rfl⟩ := List.mem_map.mp member
+  have hscope := s.countWF.2.2.2 original source
+  exact ⟨count_scoped hscope.1 rowsScoped keep,
+    count_scoped hscope.2 rowsScoped keep⟩
+
+theorem sourceTypeArguments_lc
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller) :
+    ∀ a ∈ sourceTypeArguments s u.types, (Synth.BoundsTy.toTy a).IsLC := by
+  intro a member
+  exact u.typesLC a (List.mem_of_mem_drop member)
+
+theorem sourceTypeArguments_scoped
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller) :
+    (sourceTypeArguments s u.types).all
+      (boundsScopedBool (s.counts.captures ++ caller)) = true := by
+  apply List.all_eq_true.mpr
+  intro a member
+  apply boundsScopedBool_complete
+  exact boundsScope_mono
+    (boundsScopedBool_sound
+      (List.all_eq_true.mp u.typesScoped a (List.mem_of_mem_drop member)))
+    (fun _ used => List.mem_append_right _ used)
+
+/-- Canonical open-source view of a closed use.  Its caller assumptions are
+    exactly its instantiated source premises, so this object records lawful
+    specialization without claiming that the original closed call site has
+    already discharged the untransported lexical premises. -/
+def sourceUse
+    {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}
+    {caller : List Nat} (u : HMCountScheme.Use (close s) Δ found caller) :
+    let inst := sourceCountInstance u
+    HMCountScheme.Use s inst.premises
+      (Synth.BoundsTy.toTy
+        (TypeSubstitution.combined
+          (s.counts.quantified.zip (sourceCountArguments s u.counts))
+          (SchemeUse.vector (sourceTypeArguments s u.types)) s.counts.body))
+      (s.counts.captures ++ caller) := by
+  let inst := sourceCountInstance u
+  let types := sourceTypeArguments s u.types
+  let β := TypeSubstitution.combined
+    (s.counts.quantified.zip (sourceCountArguments s u.counts))
+    (SchemeUse.vector types) s.counts.body
+  refine {
+    counts := sourceCountArguments s u.counts
+    countInstance := inst
+    usable := ?_
+    types := types
+    arity := closedUse_sourceTypeLength u
+    typesLC := sourceTypeArguments_lc u
+    typesScoped := sourceTypeArguments_scoped u
+    shape := ?_ }
+  · intro σ premises c member
+    exact premises c member
+  · change Synth.BoundsTy.toTy β = (Synth.BoundsTy.toTy β).eraseBounds
+    exact (FreeAlgebra.shape_erased β).symm
 
 private theorem vector_capture {ids : List Nat}
     (f : Nat → BoundsTy) (tail : List BoundsTy) {i : Nat} (member : i ∈ ids) :
@@ -1086,6 +1200,10 @@ theorem transportUse_capturesAgree
 #print axioms closedUse_typeArguments
 #print axioms closedUse_captureTypeLength
 #print axioms closedUse_sourceTypeLength
+#print axioms sourceCountInstance
+#print axioms sourceTypeArguments_lc
+#print axioms sourceTypeArguments_scoped
+#print axioms sourceUse
 #print axioms substitute_closeTypes
 #print axioms substitute_close
 #print axioms combined_close
