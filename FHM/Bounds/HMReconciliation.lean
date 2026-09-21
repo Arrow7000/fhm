@@ -177,6 +177,7 @@ def checkRHS {output path node schemes site s captures}
     | exported t =>
         intro i hi
         exact checked.capturesFixed (exportsRepresented t hb) hi
+    | closure _ _ _ => trivial
   have transported := RecursiveHMJudgement.transportTypes checked.interpretation
     checked.interpretationLC (s.counts.quantified ++ s.counts.captures)
     checked.interpretationScope typing fresh

@@ -430,12 +430,102 @@ def interpretedTypeCaptures (f : Nat → BoundsTy)
     (s : HMCountScheme.Scheme) : List BoundsTy :=
   (typeCaptures s).map f
 
+theorem interpretedCountCaptures_compose
+    (outer inner : CountSubstitution.Bindings) (s : HMCountScheme.Scheme) :
+    interpretedCountCaptures (CountAlgebra.compose outer inner) s =
+      (interpretedCountCaptures inner s).map (CountSubstitution.count outer) := by
+  simp only [interpretedCountCaptures, List.map_map, Function.comp_def,
+    CountAlgebra.count_compose]
+
+theorem interpretedTypeCaptures_map
+    (outer : CountSubstitution.Bindings) (f types : Nat → BoundsTy)
+    (s : HMCountScheme.Scheme) :
+    interpretedTypeCaptures (fun i =>
+      SchemeSpecialization.mapFree f (CountSubstitution.bounds outer (types i))) s =
+      ((interpretedTypeCaptures types s).map (CountSubstitution.bounds outer)).map
+        (SchemeSpecialization.mapFree f) := by
+  simp only [interpretedTypeCaptures, List.map_map, Function.comp_def]
+
 abbrev CapturesAgree (s : HMCountScheme.Scheme)
     (outer : CountSubstitution.Bindings) (f : Nat → BoundsTy)
     {Δ : List Constraint} {found : Ty} {caller : List Nat}
     (u : HMCountScheme.Use (close s) Δ found caller) : Prop :=
   HasCaptureArguments s (interpretedCountCaptures outer s)
     (interpretedTypeCaptures f s) u
+
+private theorem drop_map_local (f : α → β) (n : Nat) (xs : List α) :
+    (xs.map f).drop n = (xs.drop n).map f := by
+  induction n generalizing xs with
+  | zero => rfl
+  | succ n ih => cases xs with
+    | nil => rfl
+    | cons _ rest => exact ih rest
+
+private theorem take_map_local (f : α → β) (n : Nat) (xs : List α) :
+    (xs.map f).take n = (xs.take n).map f := by
+  induction n generalizing xs with
+  | zero => rfl
+  | succ n ih => cases xs with
+    | nil => rfl
+    | cons head rest => simp only [List.map_cons, List.take_succ_cons, ih]
+
+/-- Mapping every supplied argument preserves the boundary between the
+    source-owned arguments and the stored closure environment. -/
+theorem HasCaptureArguments.map
+    {s : HMCountScheme.Scheme} {countArgs : List Count}
+    {typeArgs : List BoundsTy} {Δ found caller}
+    {u : HMCountScheme.Use (close s) Δ found caller}
+    (h : HasCaptureArguments s countArgs typeArgs u)
+    (mapCount : Count → Count) (mapType : BoundsTy → BoundsTy)
+    {Δ' found' caller'}
+    {u' : HMCountScheme.Use (close s) Δ' found' caller'}
+    (counts : u'.counts = u.counts.map mapCount)
+    (types : u'.types = u.types.map mapType) :
+    HasCaptureArguments s (countArgs.map mapCount)
+      (typeArgs.map mapType) u' := by
+  constructor
+  · rw [captureCountArguments, counts, drop_map_local,
+      ← captureCountArguments, h.counts]
+  · rw [captureTypeArguments, types, take_map_local,
+      ← captureTypeArguments, h.types]
+
+theorem HasCaptureArguments.mapTypes
+    {s : HMCountScheme.Scheme} {countArgs : List Count}
+    {typeArgs : List BoundsTy} {Δ found caller}
+    {u : HMCountScheme.Use (close s) Δ found caller}
+    (h : HasCaptureArguments s countArgs typeArgs u)
+    (mapType : BoundsTy → BoundsTy) {Δ' found' caller'}
+    {u' : HMCountScheme.Use (close s) Δ' found' caller'}
+    (counts : u'.counts = u.counts)
+    (types : u'.types = u.types.map mapType) :
+    HasCaptureArguments s countArgs (typeArgs.map mapType) u' := by
+  constructor
+  · rw [captureCountArguments, counts, ← captureCountArguments, h.counts]
+  · rw [captureTypeArguments, types, take_map_local,
+      ← captureTypeArguments, h.types]
+
+theorem HasCaptureArguments.closedTypeFixed
+    {s : HMCountScheme.Scheme} {countArgs : List Count}
+    {typeArgs : List BoundsTy} {Δ found caller}
+    {u : HMCountScheme.Use (close s) Δ found caller}
+    (_h : HasCaptureArguments s countArgs typeArgs u)
+    (f : Nat → BoundsTy) : ∀ i ∈ (close s).hm.body.freeVars,
+      f i = .fvar i := by
+  intro i member
+  rw [close_typeFree] at member
+  cases member
+
+theorem HasCaptureArguments.closedCountFixed
+    {s : HMCountScheme.Scheme} {countArgs : List Count}
+    {typeArgs : List BoundsTy} {Δ found caller}
+    {u : HMCountScheme.Use (close s) Δ found caller}
+    (_h : HasCaptureArguments s countArgs typeArgs u)
+    (outer : CountSubstitution.Bindings) :
+    ∀ i ∈ (close s).counts.captures,
+      CountSubstitution.lookup outer i = none := by
+  intro i member
+  rw [close_countCaptures] at member
+  cases member
 
 theorem closedUse_countArguments
     {s : HMCountScheme.Scheme} {Δ : List Constraint} {found : Ty}

@@ -74,6 +74,7 @@ def fromCertified {s found typeCaptures env rhs sourceTypes sourceSlots}
         apply lookup_none
         rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
         exact cert.exportCountFresh s hb i hi
+    | closure _ _ _ => trivial
   have typeKeep : CapturesFixed f (env.map (mapCountBinding rows)) := by
     intro c hc
     obtain ⟨original, ho, he⟩ := List.mem_map.mp hc
@@ -85,6 +86,9 @@ def fromCertified {s found typeCaptures env rhs sourceTypes sourceSlots}
     | exported s =>
         cases he
         exact fixed.exported ho
+    | closure _ _ _ =>
+        cases he
+        trivial
   let specialized := cert.specializes rows f inst.finite caller
     (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2)
     lc caller scope countKeep typeKeep
@@ -131,6 +135,7 @@ theorem fromCertified_runtimeReady {s found typeCaptures env rhs sourceTypes sou
         apply lookup_none
         rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
         exact cert.exportCountFresh s hb i hi
+    | closure _ _ _ => trivial
   have typeKeep : CapturesFixed f (env.map (mapCountBinding rows)) := by
     intro c hc
     obtain ⟨original, ho, he⟩ := List.mem_map.mp hc
@@ -142,6 +147,9 @@ theorem fromCertified_runtimeReady {s found typeCaptures env rhs sourceTypes sou
     | exported s =>
         cases he
         exact fixed.exported ho
+    | closure _ _ _ =>
+        cases he
+        trivial
   let specialized := cert.specializes rows f inst.finite caller
     (fun row hr => inst.argsScoped row.2 (List.of_mem_zip hr).2)
     lc caller scope countKeep typeKeep
@@ -525,6 +533,7 @@ theorem _root_.FHM.Bounds.HMDeclaredGroup.MemberChecked.exitMapFixed
       have absent : i ∉ checked.certificate.implementation.opening.ids :=
         fun present => checked.certificate.implementation.exportTypeFresh s member i present freeId
       simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+  | closure _ _ _ => trivial
 
 /-- A generalized exit opening leaves the captured outer environment's mono
     types and fixed recursive vectors unchanged.  The group checker records
@@ -548,16 +557,21 @@ theorem _root_.FHM.Bounds.HMDeclaredGroup.Checked.exitMapOuterTypesFixed
           (List.mem_cons_of_mem _ (List.mem_append_right _ member))))) free
     simp only [f, argument, selected.rhs.certificateOpeningIds,
       List.idxOf?_eq_none_iff.mpr absent]
-  constructor
+  refine {
+    mono := ?_
+    recursive := ?_
+    closure := ?_ }
   · intro β member i free
     exact fixesOuter (g.outerMonoRepresented β member) free
   · intro contract member
     have fullMember : Binding.recursive contract ∈
         g.interfaces.contracts.map Binding.recursive ++ outerEnv :=
       List.mem_append_right _ member
-    refine ⟨(selected.rhs.stable.2 contract fullMember).1, ?_⟩
+    refine ⟨(selected.rhs.stable.recursive contract fullMember).1, ?_⟩
     intro β argumentMember i free
     exact fixesOuter (g.outerFixedRepresented contract member β argumentMember) free
+  · intro s counts capturedTypes member β argumentMember i free
+    exact fixesOuter (g.outerClosureRepresented s counts capturedTypes member β argumentMember) free
 
 theorem _root_.FHM.Bounds.HMDeclaredGroup.MemberChecked.exitMapVector
     {output metadata path index captures premises typeCaptures env}
@@ -685,6 +699,7 @@ private def ordinaryBinding : Binding → BodyBinding
   | .mono β => .mono β
   | .recursive c => .exported c.template
   | .exported s => .exported s
+  | .closure s countCaptures typeCaptures => .closure s countCaptures typeCaptures
 
 def ordinaryBodyEnv (env : List Binding) : List BodyBinding := env.map ordinaryBinding
 
@@ -737,6 +752,7 @@ private theorem RecursiveArgumentsSupported.mapCountBinding {env}
         simpa [Contract.mapCounts, RecursiveHMContract.Fixed.mapCounts] using argument)
       exact (supported original source b sourceArgument).counts outer
   | exported s => cases mapped
+  | closure _ _ _ => cases mapped
 
 private theorem RecursiveArgumentsSupported.mapBinding {env}
     (supported : RecursiveArgumentsSupported env) (f : Nat → BoundsTy)
@@ -753,6 +769,7 @@ private theorem RecursiveArgumentsSupported.mapBinding {env}
         simpa [Contract.mapTypes, RecursiveHMContract.Fixed.mapTypes] using argument)
       exact Runtime.Supported.types f arguments (supported original source b sourceArgument)
   | exported s => cases mapped
+  | closure _ _ _ => cases mapped
 
 private theorem countCapturesFixed_ordinaryPrefix {outer env tail}
     (fixed : CountCapturesFixed outer (ordinaryBodyEnv env ++ tail)) :
@@ -958,6 +975,9 @@ def BodyEnvAt.toEnvAt {bound free σ budget env}
           (fun a member => arguments c (by simpa only [source] using List.getElem_mem inside) a member)
           premises
     | exported s =>
+        simpa only [ordinaryBodyEnv, List.getElem_map, source, ordinaryBinding,
+          BodyBindingAt, BindingAt] using meaning
+    | closure s countCaptures typeCaptures =>
         simpa only [ordinaryBodyEnv, List.getElem_map, source, ordinaryBinding,
           BodyBindingAt, BindingAt] using meaning
 
@@ -1903,6 +1923,11 @@ inductive ScopedBodyDerives :
       ScopedBodyDerives types slots ids rows Δ env (.var i) used.bounds
   | varExported {env i s found caller} : env[i]? = some (.exported s) →
       (used : HMCountScheme.Use s Δ found caller) → ScopedBodyDerives types slots ids rows Δ env (.var i) used.bounds
+  | varClosure {env i s countCaptures typeCaptures found caller} :
+      env[i]? = some (.closure s countCaptures typeCaptures) →
+      (used : HMCountScheme.Use (HMCountSchemeClosure.close s) Δ found caller) →
+      HMCountSchemeClosure.HasCaptureArguments s countCaptures typeCaptures used →
+      ScopedBodyDerives types slots ids rows Δ env (.var i) used.bounds
   | app {env f arg domain actual result} :
       ScopedBodyDerives types slots ids rows Δ env f (.arrow domain result) → ScopedBodyDerives types slots ids rows Δ env arg actual →
       SemanticSub Δ actual domain → ScopedBodyDerives types slots ids rows Δ env (.app f arg) result
@@ -1990,6 +2015,7 @@ inductive ScopedBodyDerives :
       (∀ calleeΔ found caller
           (used : HMCountScheme.Use (HMCountSchemeClosure.close s)
             calleeΔ found caller),
+        HMCountSchemeClosure.CapturesAgree s rows types used →
         ScopedBodyDerives (closedLocalTypes s frame types used.types)
           (closedLocalSlots s ann slots used.types)
           ((HMCountSchemeClosure.close s).counts.quantified ++ ids)
@@ -1997,13 +2023,15 @@ inductive ScopedBodyDerives :
             ((HMCountSchemeClosure.close s).counts.quantified.zip used.counts) rows)
           (Δ ++ used.countInstance.premises) env rhs used.bounds) →
       ScopedBodyDerives types slots ids rows Δ
-        (.exported (HMCountSchemeClosure.close s) :: env) body result →
+        (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+          (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result →
       ScopedBodyDerives types slots ids rows Δ env (.letIn ann rhs body) result
   | letRecExportedClosed {env ann rhs body s result} (frame : LocalFrame s ids rhs) :
       LocalAnnotationOK s ann → rhs.varsBelow 0 = true →
       (∀ calleeΔ found caller
           (used : HMCountScheme.Use (HMCountSchemeClosure.close s)
             calleeΔ found caller),
+        HMCountSchemeClosure.CapturesAgree s rows types used →
         ScopedBodyDerives (closedLocalTypes s frame types used.types)
           (closedLocalSlots s ann slots used.types)
           ((HMCountSchemeClosure.close s).counts.quantified ++ ids)
@@ -2011,7 +2039,8 @@ inductive ScopedBodyDerives :
             ((HMCountSchemeClosure.close s).counts.quantified.zip used.counts) rows)
           (Δ ++ used.countInstance.premises) env rhs used.bounds) →
       ScopedBodyDerives types slots ids rows Δ
-        (.exported (HMCountSchemeClosure.close s) :: env) body result →
+        (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+          (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result →
       ScopedBodyDerives types slots ids rows Δ env (.letRec [ann] [rhs] body) result
   | match_ {env scrut branches result} {ctx : BodyBranchContext} {actuals : Nat → BoundsTy} :
       ScopedBodyDerives types slots ids rows Δ env scrut ctx.bounds → ctx.Covers Δ branches →
@@ -2054,7 +2083,7 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       rw [ih p source] at sub
       cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | ctor | cons | consPartial | pair | pairPartial |
-      varMono | varRecursive | varExported | app | lambda |
+      varMono | varRecursive | varExported | varClosure | app | lambda |
       letMono | letRecMono | letRecMonoGroup | letPinned | letRecPinnedMono | letRecInferredMono |
           letExported | letRecExported | letExportedClosed | letRecExportedClosed |
           match_ | letRec | letRecFixed =>
@@ -2075,6 +2104,8 @@ theorem OrdinaryEnv.bodyEnv {env : List Binding} (ordinary : OrdinaryEnv env) :
       | mono β => simpa [ordinaryBodyEnv, ordinaryBinding] using ih tail
       | recursive c => exact False.elim (ordinary c (by simp))
       | exported s => simpa [ordinaryBodyEnv, ordinaryBinding] using ih tail
+      | closure s countCaptures typeCaptures =>
+          simpa [ordinaryBodyEnv, ordinaryBinding] using ih tail
 
 private theorem OrdinaryEnv.consMono {env β} (ordinary : OrdinaryEnv env) :
     OrdinaryEnv (.mono β :: env) := by
@@ -2151,6 +2182,9 @@ theorem rhsToBody {types slots ids rows Δ env e β}
   | varExported lookup used =>
       exact .varExported
         (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) used
+  | varClosure lookup used captures =>
+      exact .varClosure
+        (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) used captures
   | app _ _ sub ihf iha => exact .app ihf iha sub
   | subsumption _ sub ih => exact .subsumption ih sub
   | lambda annotation _ ih =>
@@ -2269,6 +2303,9 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
   | varExported lookup used =>
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
+  | varClosure lookup used captures =>
+      exact .varClosure (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used captures
   | app _ _ sub ihf iha => exact .app ihf iha sub
   | subsumption _ sub ih => exact .subsumption ih sub
   | lambda annotation _ ih =>
@@ -2358,6 +2395,9 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
   | varExported lookup used =>
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
+  | varClosure lookup used captures =>
+      exact .varClosure (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used captures
   | app _ _ sub ihf iha => exact .app (ihf ordinary) (iha ordinary) sub
   | subsumption _ sub ih => exact .subsumption (ih ordinary) sub
   | lambda annotation _ ih =>
@@ -2495,6 +2535,11 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
         ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
           used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
       exact .varExported lookup next
+  | varClosure lookup used captures =>
+      let next : HMCountScheme.Use _ Δ' _ _ :=
+        ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
+          used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
+      exact .varClosure lookup next ⟨captures.counts, captures.types⟩
   | app _ _ sub ihf iha => exact .app (ihf hp) (iha hp) (sub.assuming hp)
   | subsumption _ sub ih => exact .subsumption (ih hp) (sub.assuming hp)
   | lambda param _ ih => exact .lambda (param_assuming param hp) (ih hp)
@@ -2526,13 +2571,13 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
         (ihb hp)
   | letExportedClosed frame annotation scope _ _ ihr ihb =>
       exact .letExportedClosed frame annotation scope
-        (fun calleeΔ found caller used =>
-          ihr calleeΔ found caller used (RecursiveTyping.assuming_append hp))
+        (fun calleeΔ found caller used captures =>
+          ihr calleeΔ found caller used captures (RecursiveTyping.assuming_append hp))
         (ihb hp)
   | letRecExportedClosed frame annotation scope _ _ ihr ihb =>
       exact .letRecExportedClosed frame annotation scope
-        (fun calleeΔ found caller used =>
-          ihr calleeΔ found caller used (RecursiveTyping.assuming_append hp))
+        (fun calleeΔ found caller used captures =>
+          ihr calleeΔ found caller used captures (RecursiveTyping.assuming_append hp))
         (ihb hp)
   | match_ _ coverage patterns _ subs ihs iharms =>
       exact .match_ (ihs hp) (coverage.assuming hp) patterns
@@ -2586,7 +2631,7 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
   | consPartial _ ih => simpa [Expr.varsBelow] using ih
   | pair _ _ ihLeft ihRight => simp [Expr.varsBelow, ihLeft, ihRight]
   | pairPartial _ ih => simpa [Expr.varsBelow] using ih
-  | varMono lookup | varRecursive lookup _ | varExported lookup _ =>
+  | varMono lookup | varRecursive lookup _ | varExported lookup _ | varClosure lookup _ _ =>
       obtain ⟨small, _⟩ := List.getElem?_eq_some_iff.mp lookup
       simpa only [Expr.varsBelow, decide_eq_true_eq] using small
   | app _ _ _ ihf iha => simp [Expr.varsBelow, ihf, iha]
@@ -2801,6 +2846,11 @@ inductive RuntimeReady :
       (used : HMCountScheme.Use s Δ found caller) :
       Runtime.Supported used.bounds → (∀ a ∈ used.types, Runtime.Supported a) →
       RuntimeReady (.varExported lookup used)
+  | varClosure (lookup : env[i]? = some (Binding.closure s countCaptures typeCaptures))
+      (used : HMCountScheme.Use (HMCountSchemeClosure.close s) Δ found caller)
+      (captures : HMCountSchemeClosure.HasCaptureArguments s countCaptures typeCaptures used) :
+      Runtime.Supported used.bounds → (∀ a ∈ used.types, Runtime.Supported a) →
+      RuntimeReady (.varClosure lookup used captures)
   | app {actual : BoundsTy} {hfn : ScopedBodyDerives types slots ids rows Δ env f (.arrow domain result)}
       {ha : ScopedBodyDerives types slots ids rows Δ env arg actual}
       (sub : SemanticSub Δ actual domain) : RuntimeReady hfn → RuntimeReady ha →
@@ -2896,6 +2946,7 @@ inductive RuntimeReady :
       (annotation : LocalAnnotationOK s ann) (scope : rhs.varsBelow env.length = true)
       (instances : ∀ calleeΔ found caller
           (used : HMCountScheme.Use (HMCountSchemeClosure.close s) calleeΔ found caller),
+        HMCountSchemeClosure.CapturesAgree s rows types used →
         ScopedBodyDerives (closedLocalTypes s frame types used.types)
           (closedLocalSlots s ann slots used.types)
           ((HMCountSchemeClosure.close s).counts.quantified ++ ids)
@@ -2903,11 +2954,13 @@ inductive RuntimeReady :
             ((HMCountSchemeClosure.close s).counts.quantified.zip used.counts) rows)
           (Δ ++ used.countInstance.premises) env rhs used.bounds)
       {hbody : ScopedBodyDerives types slots ids rows Δ
-        (.exported (HMCountSchemeClosure.close s) :: env) body result} :
+        (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+          (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result} :
       (∀ calleeΔ found caller
           (used : HMCountScheme.Use (HMCountSchemeClosure.close s) calleeΔ found caller),
+        (captures : HMCountSchemeClosure.CapturesAgree s rows types used) →
         (∀ a ∈ used.types, Runtime.Supported a) →
-          RuntimeReady (instances calleeΔ found caller used)) →
+          RuntimeReady (instances calleeΔ found caller used captures)) →
       RuntimeReady hbody →
         RuntimeReady (.letExportedClosed frame annotation scope instances hbody)
   | letRecExportedClosed
@@ -2915,6 +2968,7 @@ inductive RuntimeReady :
       (annotation : LocalAnnotationOK s ann) (scope : rhs.varsBelow 0 = true)
       (instances : ∀ calleeΔ found caller
           (used : HMCountScheme.Use (HMCountSchemeClosure.close s) calleeΔ found caller),
+        HMCountSchemeClosure.CapturesAgree s rows types used →
         ScopedBodyDerives (closedLocalTypes s frame types used.types)
           (closedLocalSlots s ann slots used.types)
           ((HMCountSchemeClosure.close s).counts.quantified ++ ids)
@@ -2922,11 +2976,13 @@ inductive RuntimeReady :
             ((HMCountSchemeClosure.close s).counts.quantified.zip used.counts) rows)
           (Δ ++ used.countInstance.premises) env rhs used.bounds)
       {hbody : ScopedBodyDerives types slots ids rows Δ
-        (.exported (HMCountSchemeClosure.close s) :: env) body result} :
+        (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+          (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result} :
       (∀ calleeΔ found caller
           (used : HMCountScheme.Use (HMCountSchemeClosure.close s) calleeΔ found caller),
+        (captures : HMCountSchemeClosure.CapturesAgree s rows types used) →
         (∀ a ∈ used.types, Runtime.Supported a) →
-          RuntimeReady (instances calleeΔ found caller used)) →
+          RuntimeReady (instances calleeΔ found caller used captures)) →
       RuntimeReady hbody →
         RuntimeReady (.letRecExportedClosed frame annotation scope instances hbody)
   | match_ {actuals : Nat → BoundsTy} {ctx : BodyBranchContext}
@@ -4153,8 +4209,9 @@ def Specializes.letExported
   refine ⟨typing, ?_⟩
   intro _ arguments
   have movedBodyReady : BodyDerives.RuntimeReady movedBodyTyping := by
-    exact BodyDerives.RuntimeReady.congr (h' := movedBodyTyping)
-      (movedBody.runtimeReady bodyReady arguments)
+    simpa only [HMCountSchemeClosure.interpretedCountCaptures_compose,
+      HMCountSchemeClosure.interpretedTypeCaptures_map] using
+        movedBody.runtimeReady bodyReady arguments
   exact .letExported payload.frame payload.annotation movedScope
     movedInstances
     (hbody := movedBodyTyping)
@@ -4253,8 +4310,9 @@ def Specializes.letRecExported
   refine ⟨typing, ?_⟩
   intro _ arguments
   have movedBodyReady : BodyDerives.RuntimeReady movedBodyTyping := by
-    exact BodyDerives.RuntimeReady.congr (h' := movedBodyTyping)
-      (movedBody.runtimeReady bodyReady arguments)
+    simpa only [HMCountSchemeClosure.interpretedCountCaptures_compose,
+      HMCountSchemeClosure.interpretedTypeCaptures_map] using
+        movedBody.runtimeReady bodyReady arguments
   exact .letRecExported payload.frame payload.annotation scope
     movedInstances
     (hbody := movedBodyTyping)
@@ -4277,6 +4335,7 @@ structure ClosedLocalIntroduction
   annotation : LocalAnnotationOK s ann
   instances : ∀ calleeΔ found caller
       (used : HMCountScheme.Use (HMCountSchemeClosure.close s) calleeΔ found caller),
+    HMCountSchemeClosure.CapturesAgree s rows types used →
     ScopedBodyDerives (closedLocalTypes s frame types used.types)
       (closedLocalSlots s ann slots used.types)
       ((HMCountSchemeClosure.close s).counts.quantified ++ ids)
@@ -4294,6 +4353,8 @@ structure ClosedLocalIntroduction
       (calleeΔ : List Constraint) (found : Ty) (caller : List Nat)
       (used : HMCountScheme.Use (HMCountSchemeClosure.close s)
         calleeΔ found caller),
+    HMCountSchemeClosure.CapturesAgree s (CountAlgebra.compose outer rows)
+      (fun i => mapFree f (bounds outer (types i))) used →
     ScopedBodyDerives
       (closedLocalTypes s frame
         (fun i => mapFree f (bounds outer (types i))) used.types)
@@ -4315,8 +4376,9 @@ structure ClosedLocalIntroduction.RuntimeReady
   instances : ∀ calleeΔ found caller
       (used : HMCountScheme.Use (HMCountSchemeClosure.close s)
         calleeΔ found caller),
+    (captures : HMCountSchemeClosure.CapturesAgree s rows types used) →
     (∀ a ∈ used.types, Runtime.Supported a) →
-      BodyDerives.RuntimeReady (payload.instances calleeΔ found caller used)
+      BodyDerives.RuntimeReady (payload.instances calleeΔ found caller used captures)
   specialized : ∀ (outer : Bindings) (f : Nat → BoundsTy)
       (outerFinite : Finite outer) (countTarget : List Nat)
       (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
@@ -4328,22 +4390,23 @@ structure ClosedLocalIntroduction.RuntimeReady
       (calleeΔ : List Constraint) (found : Ty) (caller : List Nat)
       (used : HMCountScheme.Use (HMCountSchemeClosure.close s)
         calleeΔ found caller),
+    (captures : HMCountSchemeClosure.CapturesAgree s (CountAlgebra.compose outer rows)
+      (fun i => mapFree f (bounds outer (types i))) used) →
     (∀ a ∈ used.types, Runtime.Supported a) →
       BodyDerives.RuntimeReady
         (payload.specialized outer f outerFinite countTarget countScope typeLC
-          typeTarget typeScope countFresh typeFresh calleeΔ found caller used)
+          typeTarget typeScope countFresh typeFresh calleeΔ found caller used captures)
 
 private theorem ClosedLocalIntroduction.countFreshCons
     {types slots ids rows Δ env s ann rhs}
     (payload : ClosedLocalIntroduction types slots ids rows Δ env s ann rhs)
     {outer} (fresh : CountCapturesFixed outer env) :
     CountCapturesFixed outer
-      (.exported (HMCountSchemeClosure.close s) :: env) := by
+      (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+        (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) := by
   intro binding member
   rcases List.mem_cons.mp member with rfl | rest
-  · intro i captured
-    rw [HMCountSchemeClosure.close_countCaptures] at captured
-    simp at captured
+  · trivial
   · exact fresh binding rest
 
 private theorem ClosedLocalIntroduction.typeFreshCons
@@ -4351,14 +4414,13 @@ private theorem ClosedLocalIntroduction.typeFreshCons
     (payload : ClosedLocalIntroduction types slots ids rows Δ env s ann rhs)
     {outer f} (fresh : CapturesFixed f (env.map (mapCountBinding outer))) :
     CapturesFixed f
-      ((.exported (HMCountSchemeClosure.close s) :: env).map
+      ((.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+          (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env).map
         (mapCountBinding outer)) := by
   intro binding member
   simp only [List.map_cons, mapCountBinding] at member
   rcases List.mem_cons.mp member with rfl | rest
-  · intro i captured
-    rw [HMCountSchemeClosure.close_typeFree s] at captured
-    cases captured
+  · trivial
   · exact fresh binding rest
 
 def ClosedLocalIntroduction.letTyping
@@ -4366,7 +4428,8 @@ def ClosedLocalIntroduction.letTyping
     (payload : ClosedLocalIntroduction types slots ids rows Δ env s ann rhs)
     (scope : rhs.varsBelow env.length = true)
     (bodyTyping : ScopedBodyDerives types slots ids rows Δ
-      (.exported (HMCountSchemeClosure.close s) :: env) body result) :
+      (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+        (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result) :
     ScopedBodyDerives types slots ids rows Δ env (.letIn ann rhs body) result :=
   .letExportedClosed payload.frame payload.annotation scope payload.instances bodyTyping
 
@@ -4376,7 +4439,8 @@ def ClosedLocalIntroduction.letRuntimeReady
     (payloadReady : payload.RuntimeReady)
     (scope : rhs.varsBelow env.length = true)
     {bodyTyping : ScopedBodyDerives types slots ids rows Δ
-      (.exported (HMCountSchemeClosure.close s) :: env) body result}
+      (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+        (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result}
     (bodyReady : BodyDerives.RuntimeReady bodyTyping) :
     BodyDerives.RuntimeReady (payload.letTyping scope bodyTyping) :=
   .letExportedClosed payload.frame payload.annotation scope payload.instances
@@ -4390,7 +4454,8 @@ def TypingSpecializes.letExportedClosed
     (payload : ClosedLocalIntroduction types slots ids rows Δ env s ann rhs)
     (scope : rhs.varsBelow env.length = true)
     {bodyTyping : ScopedBodyDerives types slots ids rows Δ
-      (.exported (HMCountSchemeClosure.close s) :: env) body result}
+      (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+        (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result}
     (bodyStable : TypingSpecializes bodyTyping) :
     TypingSpecializes (payload.letTyping scope bodyTyping) := by
   intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
@@ -4404,10 +4469,15 @@ def TypingSpecializes.letExportedClosed
       (fun i => mapFree f (bounds outer (types i)))
       (fun i => mapFree f (bounds outer (slots i))) ids
       (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
-      (.exported (HMCountSchemeClosure.close s) ::
+      (.closure s
+        (HMCountSchemeClosure.interpretedCountCaptures (CountAlgebra.compose outer rows) s)
+        (HMCountSchemeClosure.interpretedTypeCaptures
+          (fun i => mapFree f (bounds outer (types i))) s) ::
         ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
       body (mapFree f (bounds outer result)) := by
-    simpa only [List.map_cons, mapCountBinding, mapBinding] using movedBody.typing
+    simpa only [List.map_cons, mapCountBinding, mapBinding,
+      HMCountSchemeClosure.interpretedCountCaptures_compose,
+      HMCountSchemeClosure.interpretedTypeCaptures_map] using movedBody.typing
   have movedScope : rhs.varsBelow
       ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)).length = true := by
     simpa only [List.length_map] using scope
@@ -4423,7 +4493,8 @@ def Specializes.letExportedClosed
     (payloadReady : payload.RuntimeReady)
     (scope : rhs.varsBelow env.length = true)
     {bodyTyping : ScopedBodyDerives types slots ids rows Δ
-      (.exported (HMCountSchemeClosure.close s) :: env) body result}
+      (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+        (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result}
     (bodyStable : Specializes bodyTyping)
     (bodyReady : BodyDerives.RuntimeReady bodyTyping) :
     Specializes (payload.letTyping scope bodyTyping) := by
@@ -4438,10 +4509,15 @@ def Specializes.letExportedClosed
       (fun i => mapFree f (bounds outer (types i)))
       (fun i => mapFree f (bounds outer (slots i))) ids
       (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
-      (.exported (HMCountSchemeClosure.close s) ::
+      (.closure s
+        (HMCountSchemeClosure.interpretedCountCaptures (CountAlgebra.compose outer rows) s)
+        (HMCountSchemeClosure.interpretedTypeCaptures
+          (fun i => mapFree f (bounds outer (types i))) s) ::
         ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
       body (mapFree f (bounds outer result)) := by
-    simpa only [List.map_cons, mapCountBinding, mapBinding] using movedBody.typing
+    simpa only [List.map_cons, mapCountBinding, mapBinding,
+      HMCountSchemeClosure.interpretedCountCaptures_compose,
+      HMCountSchemeClosure.interpretedTypeCaptures_map] using movedBody.typing
   have movedScope : rhs.varsBelow
       ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)).length = true := by
     simpa only [List.length_map] using scope
@@ -4450,13 +4526,14 @@ def Specializes.letExportedClosed
   refine ⟨typing, ?_⟩
   intro _ arguments
   have movedBodyReady : BodyDerives.RuntimeReady movedBodyTyping := by
-    exact BodyDerives.RuntimeReady.congr (h' := movedBodyTyping)
-      (movedBody.runtimeReady bodyReady arguments)
+    simpa only [HMCountSchemeClosure.interpretedCountCaptures_compose,
+      HMCountSchemeClosure.interpretedTypeCaptures_map] using
+        movedBody.runtimeReady bodyReady arguments
   exact .letExportedClosed payload.frame payload.annotation movedScope
     movedInstances (hbody := movedBodyTyping)
-    (fun calleeΔ found caller used supported =>
+    (fun calleeΔ found caller used captures supported =>
       payloadReady.specialized outer f outerFinite countTarget countScope typeLC
-        typeTarget typeScope countFresh typeFresh calleeΔ found caller used supported)
+        typeTarget typeScope countFresh typeFresh calleeΔ found caller used captures supported)
     movedBodyReady
 
 def ClosedLocalIntroduction.letRecTyping
@@ -4464,7 +4541,8 @@ def ClosedLocalIntroduction.letRecTyping
     (payload : ClosedLocalIntroduction types slots ids rows Δ env s ann rhs)
     (scope : rhs.varsBelow 0 = true)
     (bodyTyping : ScopedBodyDerives types slots ids rows Δ
-      (.exported (HMCountSchemeClosure.close s) :: env) body result) :
+      (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+        (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result) :
     ScopedBodyDerives types slots ids rows Δ env (.letRec [ann] [rhs] body) result :=
   .letRecExportedClosed payload.frame payload.annotation scope payload.instances bodyTyping
 
@@ -4474,7 +4552,8 @@ def ClosedLocalIntroduction.letRecRuntimeReady
     (payloadReady : payload.RuntimeReady)
     (scope : rhs.varsBelow 0 = true)
     {bodyTyping : ScopedBodyDerives types slots ids rows Δ
-      (.exported (HMCountSchemeClosure.close s) :: env) body result}
+      (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+        (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result}
     (bodyReady : BodyDerives.RuntimeReady bodyTyping) :
     BodyDerives.RuntimeReady (payload.letRecTyping scope bodyTyping) :=
   .letRecExportedClosed payload.frame payload.annotation scope payload.instances
@@ -4488,7 +4567,8 @@ def TypingSpecializes.letRecExportedClosed
     (payload : ClosedLocalIntroduction types slots ids rows Δ env s ann rhs)
     (scope : rhs.varsBelow 0 = true)
     {bodyTyping : ScopedBodyDerives types slots ids rows Δ
-      (.exported (HMCountSchemeClosure.close s) :: env) body result}
+      (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+        (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result}
     (bodyStable : TypingSpecializes bodyTyping) :
     TypingSpecializes (payload.letRecTyping scope bodyTyping) := by
   intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
@@ -4502,10 +4582,15 @@ def TypingSpecializes.letRecExportedClosed
       (fun i => mapFree f (bounds outer (types i)))
       (fun i => mapFree f (bounds outer (slots i))) ids
       (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
-      (.exported (HMCountSchemeClosure.close s) ::
+      (.closure s
+        (HMCountSchemeClosure.interpretedCountCaptures (CountAlgebra.compose outer rows) s)
+        (HMCountSchemeClosure.interpretedTypeCaptures
+          (fun i => mapFree f (bounds outer (types i))) s) ::
         ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
       body (mapFree f (bounds outer result)) := by
-    simpa only [List.map_cons, mapCountBinding, mapBinding] using movedBody.typing
+    simpa only [List.map_cons, mapCountBinding, mapBinding,
+      HMCountSchemeClosure.interpretedCountCaptures_compose,
+      HMCountSchemeClosure.interpretedTypeCaptures_map] using movedBody.typing
   exact ⟨ScopedBodyDerives.letRecExportedClosed payload.frame payload.annotation
     scope movedInstances movedBodyTyping⟩
 
@@ -4518,7 +4603,8 @@ def Specializes.letRecExportedClosed
     (payloadReady : payload.RuntimeReady)
     (scope : rhs.varsBelow 0 = true)
     {bodyTyping : ScopedBodyDerives types slots ids rows Δ
-      (.exported (HMCountSchemeClosure.close s) :: env) body result}
+      (.closure s (HMCountSchemeClosure.interpretedCountCaptures rows s)
+        (HMCountSchemeClosure.interpretedTypeCaptures types s) :: env) body result}
     (bodyStable : Specializes bodyTyping)
     (bodyReady : BodyDerives.RuntimeReady bodyTyping) :
     Specializes (payload.letRecTyping scope bodyTyping) := by
@@ -4533,22 +4619,28 @@ def Specializes.letRecExportedClosed
       (fun i => mapFree f (bounds outer (types i)))
       (fun i => mapFree f (bounds outer (slots i))) ids
       (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
-      (.exported (HMCountSchemeClosure.close s) ::
+      (.closure s
+        (HMCountSchemeClosure.interpretedCountCaptures (CountAlgebra.compose outer rows) s)
+        (HMCountSchemeClosure.interpretedTypeCaptures
+          (fun i => mapFree f (bounds outer (types i))) s) ::
         ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
       body (mapFree f (bounds outer result)) := by
-    simpa only [List.map_cons, mapCountBinding, mapBinding] using movedBody.typing
+    simpa only [List.map_cons, mapCountBinding, mapBinding,
+      HMCountSchemeClosure.interpretedCountCaptures_compose,
+      HMCountSchemeClosure.interpretedTypeCaptures_map] using movedBody.typing
   let typing := ScopedBodyDerives.letRecExportedClosed payload.frame payload.annotation
     scope movedInstances movedBodyTyping
   refine ⟨typing, ?_⟩
   intro _ arguments
   have movedBodyReady : BodyDerives.RuntimeReady movedBodyTyping := by
-    exact BodyDerives.RuntimeReady.congr (h' := movedBodyTyping)
-      (movedBody.runtimeReady bodyReady arguments)
+    simpa only [HMCountSchemeClosure.interpretedCountCaptures_compose,
+      HMCountSchemeClosure.interpretedTypeCaptures_map] using
+        movedBody.runtimeReady bodyReady arguments
   exact .letRecExportedClosed payload.frame payload.annotation scope
     movedInstances (hbody := movedBodyTyping)
-    (fun calleeΔ found caller used supported =>
+    (fun calleeΔ found caller used captures supported =>
       payloadReady.specialized outer f outerFinite countTarget countScope typeLC
-        typeTarget typeScope countFresh typeFresh calleeΔ found caller used supported)
+        typeTarget typeScope countFresh typeFresh calleeΔ found caller used captures supported)
     movedBodyReady
 
 #print axioms TypingSpecializes.letExportedClosed
@@ -4569,7 +4661,10 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | consPartial _ head => exact .arrow (.list head) (.list head)
   | pair _ _ left right => exact .pair left right
   | pairPartial _ right left => exact .arrow right (.pair left right)
-  | varMono _ supported | varRecursive _ _ supported | varExported _ _ supported _ => exact supported
+  | varMono _ supported => exact supported
+  | varRecursive _ _ supported => exact supported
+  | varExported _ _ supported _ => exact supported
+  | varClosure _ _ _ supported _ => exact supported
   | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
   | subsumption _ _ demand => exact demand
   | lambda _ param _ result => exact .arrow param result
@@ -4654,6 +4749,9 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
   | varExported lookup used _ arguments =>
       intro budget premises e
       exact e.varExported lookup used arguments premises
+  | varClosure lookup used captures _ arguments =>
+      intro budget premises e
+      exact e.varClosure lookup used captures arguments premises
   | app sub fnReady argReady ihf iha =>
       intro budget premises e
       have fnSupport := fnReady.supported
@@ -5047,14 +5145,18 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
             (by simpa only [Nat.zero_add, e.arity] using scope)
           let previous := e.down hb hf (by omega : j ≤ j + 1)
           have rhsSafe : BodyBindingAt bound free σ j
-              (.exported (HMCountSchemeClosure.close s)) (rhs.substN 0 e.terms) := by
-            intro calleeΔ found caller used arguments rawPremises
-            apply ihr calleeΔ found caller used arguments j ?_ previous
+              (.closure s (HMCountSchemeClosure.interpretedCountCaptures ownEnv s)
+                (HMCountSchemeClosure.interpretedTypeCaptures ownTypes s))
+              (rhs.substN 0 e.terms) := by
+            intro calleeΔ found caller used captures arguments rawPremises
+            apply ihr calleeΔ found caller used captures arguments j ?_ previous
             intro p member
             rcases List.mem_append.mp member with outer | raw
             · exact premises p outer
             · exact rawPremises p raw
-          let opened := EnvAt.extend previous (.exported (HMCountSchemeClosure.close s))
+          let opened := EnvAt.extend previous
+            (.closure s (HMCountSchemeClosure.interpretedCountCaptures ownEnv s)
+              (HMCountSchemeClosure.interpretedTypeCaptures ownTypes s))
             (rhs.substN 0 e.terms) rhsClosed rhsSafe
           have bodySafe := ihb j premises opened
           apply Runtime.TermAt.prepend SmallStep.Step.letReduce
@@ -5076,13 +5178,14 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
               (by intro source member; obtain rfl := List.mem_singleton.mp member; exact rhsAtOne)
               rhsAtOne
           have recursiveSafe : BodyBindingAt bound free σ j
-              (.exported (HMCountSchemeClosure.close s)) recursiveTerm := by
-            intro calleeΔ found localCaller used arguments rawPremises
+              (.closure s (HMCountSchemeClosure.interpretedCountCaptures ownEnv s)
+                (HMCountSchemeClosure.interpretedTypeCaptures ownTypes s)) recursiveTerm := by
+            intro calleeΔ found localCaller used captures arguments rawPremises
             cases j with
             | zero => unfold Runtime.TermAt; intro steps v _ before; omega
             | succ k =>
                 let earlier := previous.down hb hf (by omega : k ≤ k + 1)
-                have instanceSafe := ihr calleeΔ found localCaller used arguments k
+                have instanceSafe := ihr calleeΔ found localCaller used captures arguments k
                   (by
                     intro p member
                     rcases List.mem_append.mp member with outer | raw
@@ -5093,7 +5196,9 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
                   simpa only [Expr.substN_of_closed scope] using instanceSafe
                 apply Runtime.TermAt.prepend SmallStep.Step.letRecUnfold
                 simpa only [List.map_cons, List.map_nil, Expr.substN_of_closed scope] using rhsSafe
-          let opened := EnvAt.extend previous (.exported (HMCountSchemeClosure.close s))
+          let opened := EnvAt.extend previous
+            (.closure s (HMCountSchemeClosure.interpretedCountCaptures ownEnv s)
+              (HMCountSchemeClosure.interpretedTypeCaptures ownTypes s))
             recursiveTerm recursiveClosed recursiveSafe
           have bodySafe := ihb j premises opened
           have openedTerms : opened.terms = recursiveTerm :: previous.terms := rfl
@@ -5312,6 +5417,11 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
         ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
           used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
       exact .varExported lookup next supported arguments
+  | varClosure lookup used captures supported arguments =>
+      let next : HMCountScheme.Use _ Δ' _ _ :=
+        ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
+          used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
+      exact .varClosure lookup next ⟨captures.counts, captures.types⟩ supported arguments
   | app sub _ _ ihf iha => exact .app (sub.assuming hp) (ihf hp) (iha hp)
   | subsumption sub _ demand ih => exact .subsumption (sub.assuming hp) (ih hp) demand
   | lambda annOK param _ ih => exact .lambda (param_assuming annOK hp) param (ih hp)
@@ -5350,17 +5460,19 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
         (ihb hp)
   | letExportedClosed frame annotation scope instances _ _ ihr ihb =>
       exact .letExportedClosed frame annotation scope
-        (fun calleeΔ found caller used =>
-          (instances calleeΔ found caller used).assuming (RecursiveTyping.assuming_append hp))
-        (fun calleeΔ found caller used arguments =>
-          ihr calleeΔ found caller used arguments (RecursiveTyping.assuming_append hp))
+        (fun calleeΔ found caller used captures =>
+          (instances calleeΔ found caller used captures).assuming
+            (RecursiveTyping.assuming_append hp))
+        (fun calleeΔ found caller used captures arguments =>
+          ihr calleeΔ found caller used captures arguments (RecursiveTyping.assuming_append hp))
         (ihb hp)
   | letRecExportedClosed frame annotation scope instances _ _ ihr ihb =>
       exact .letRecExportedClosed frame annotation scope
-        (fun calleeΔ found caller used =>
-          (instances calleeΔ found caller used).assuming (RecursiveTyping.assuming_append hp))
-        (fun calleeΔ found caller used arguments =>
-          ihr calleeΔ found caller used arguments (RecursiveTyping.assuming_append hp))
+        (fun calleeΔ found caller used captures =>
+          (instances calleeΔ found caller used captures).assuming
+            (RecursiveTyping.assuming_append hp))
+        (fun calleeΔ found caller used captures arguments =>
+          ihr calleeΔ found caller used captures arguments (RecursiveTyping.assuming_append hp))
         (ihb hp)
   | match_ coverage patterns bodies subs capable _ _ result ihs ihb =>
       exact .match_ (coverage.assuming hp) patterns
@@ -5471,6 +5583,10 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
   | varExported lookup used supported usedArguments =>
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
+        supported usedArguments
+  | varClosure lookup used captures supported usedArguments =>
+      exact .varClosure (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used captures
         supported usedArguments
   | app sub _ _ ihf iha => exact .app sub (ihf arguments) (iha arguments)
   | subsumption sub sourceReady demandSupport ih =>
@@ -5592,6 +5708,11 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]))
         used supported arguments
+  | varClosure lookup used captures supported arguments =>
+      intro _ tail
+      exact .varClosure (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]))
+        used captures supported arguments
   | app sub _ _ ihf iha =>
       intro ordinary tail
       exact .app sub (ihf ordinary tail) (iha ordinary tail)
@@ -5720,7 +5841,7 @@ def localRhsInstances {s ann rhs found typeCaptures Δ calleeΔ caller useHM}
   have scope := RecursiveHMUniversal.replacementScope cert.opening.ids (SchemeUse.vector used.types)
     (SchemeUse.vector_scope used.typesScoped)
   let specialized := fromCertified cert used.countInstance f lc scope
-    (by simp [RecursiveHMEnvironment.Captured]) (by simp [CapturesFixed])
+    ⟨by simp, by simp, by simp, by simp⟩ (by simp [CapturesFixed])
   have instanceBody := ordinaryRhsToBodyAppend specialized.typing (by simp [OrdinaryEnv]) outer
   have widened := ScopedBodyDerives.subsumption instanceBody specialized.inclusion
   have withParent := widened.assuming (Δ' := Δ ++ used.countInstance.premises)
@@ -5744,12 +5865,14 @@ def recursiveTypeCaptures (env : List Binding) : List Ty :=
     | .mono β => Synth.BoundsTy.toTy β
     | .recursive c => c.template.hm.body
     | .exported s => s.hm.body
+    | .closure s _ _ => s.hm.body
 
 def recursiveFixedTypeCaptures (env : List Binding) : List Ty :=
   env.flatMap fun binding => match binding with
     | .mono β => [Synth.BoundsTy.toTy β]
     | .recursive c => c.fixed.types.map Synth.BoundsTy.toTy
     | .exported _ => []
+    | .closure _ _ typeCaptures => typeCaptures.map Synth.BoundsTy.toTy
 
 private theorem recursiveTypeCaptures_represented {env c}
     (member : Binding.recursive c ∈ env) :
@@ -5771,6 +5894,13 @@ private theorem recursiveFixedTypeCaptures_represented {env c β}
     Synth.BoundsTy.toTy β ∈ recursiveFixedTypeCaptures env := by
   apply List.mem_flatMap.mpr
   exact ⟨.recursive c, member, by
+    simpa using List.mem_map.mpr ⟨β, argument, rfl⟩⟩
+
+private theorem recursiveFixedTypeCaptures_closure {env s counts types β}
+    (member : Binding.closure s counts types ∈ env) (argument : β ∈ types) :
+    Synth.BoundsTy.toTy β ∈ recursiveFixedTypeCaptures env := by
+  apply List.mem_flatMap.mpr
+  exact ⟨.closure s counts types, member, by
     simpa using List.mem_map.mpr ⟨β, argument, rfl⟩⟩
 
 /-- Exact recursive RHS assumptions available at a body point. The root starts
@@ -5818,7 +5948,7 @@ private def BodyWalkCapture.dispatch {env}
 private def emptyBodyCapture : BodyCapture [] where
   rhsEnv := []
   bodyEnv := rfl
-  captured := by simp [RecursiveHMEnvironment.Captured]
+  captured := ⟨by simp, by simp, by simp, by simp⟩
   arguments := by simp [RecursiveArgumentsSupported]
   countClosed := by simp
   exportCountClosed := by simp
@@ -5846,7 +5976,7 @@ private def checkedGroupBodyCapture
     BodyCapture (g.exports.map Binding.exported) where
   rhsEnv := g.exports.map Binding.exported
   bodyEnv := ordinaryBodyEnv_exports g.exports
-  captured := by simp [RecursiveHMEnvironment.Captured]
+  captured := ⟨by simp, by simp, by simp, by simp⟩
   arguments := by simp [RecursiveArgumentsSupported]
   countClosed := by intro c member; simp at member
   exportCountClosed := by
@@ -5873,17 +6003,31 @@ private def BodyCapture.extendGroup {env output metadata path vectors premises b
       _ = g.exports.map Binding.exported ++ env := by
         rw [ordinaryBodyEnv_exports, capture.bodyEnv]
   captured := by
-    constructor
+    refine {
+      mono := ?_
+      recursive := ?_
+      closureCounts := ?_
+      closureTypes := ?_ }
     · intro β member
       rcases List.mem_append.mp member with inner | outer
       · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
         cases impossible
-      · exact capture.captured.1 β outer
+      · exact capture.captured.mono β outer
     · intro contract member β argument
       rcases List.mem_append.mp member with inner | outer
       · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
         cases impossible
-      · exact capture.captured.2 contract outer β argument
+      · exact capture.captured.recursive contract outer β argument
+    · intro s counts types member c hc
+      rcases List.mem_append.mp member with inner | outer
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
+      · exact capture.captured.closureCounts s counts types outer c hc
+    · intro s counts types member β hβ
+      rcases List.mem_append.mp member with inner | outer
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
+      · exact capture.captured.closureTypes s counts types outer β hβ
   arguments := by
     intro contract member β argument
     rcases List.mem_append.mp member with inner | outer
@@ -5912,15 +6056,27 @@ private def BodyCapture.extendMono {env} (capture : BodyCapture env) (β : Bound
     change .mono β :: ordinaryBodyEnv capture.rhsEnv = .mono β :: env
     rw [capture.bodyEnv]
   captured := by
-    constructor
+    refine {
+      mono := ?_
+      recursive := ?_
+      closureCounts := ?_
+      closureTypes := ?_ }
     · intro a member
       rcases List.mem_cons.mp member with head | tail
       · cases head; exact scope
-      · exact capture.captured.1 a tail
+      · exact capture.captured.mono a tail
     · intro c member a argument
       rcases List.mem_cons.mp member with head | tail
       · cases head
-      · exact capture.captured.2 c tail a argument
+      · exact capture.captured.recursive c tail a argument
+    · intro s counts types member c hc
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.closureCounts s counts types tail c hc
+    · intro s counts types member a ha
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.closureTypes s counts types tail a ha
   arguments := by
     intro c member a argument
     rcases List.mem_cons.mp member with head | tail
@@ -5945,15 +6101,27 @@ private def BodyCapture.extendExported {env} (capture : BodyCapture env)
     change .exported s :: ordinaryBodyEnv capture.rhsEnv = .exported s :: env
     rw [capture.bodyEnv]
   captured := by
-    constructor
+    refine {
+      mono := ?_
+      recursive := ?_
+      closureCounts := ?_
+      closureTypes := ?_ }
     · intro β member
       rcases List.mem_cons.mp member with head | tail
       · cases head
-      · exact capture.captured.1 β tail
+      · exact capture.captured.mono β tail
     · intro c member a argument
       rcases List.mem_cons.mp member with head | tail
       · cases head
-      · exact capture.captured.2 c tail a argument
+      · exact capture.captured.recursive c tail a argument
+    · intro source counts types member c hc
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.closureCounts source counts types tail c hc
+    · intro source counts types member β hβ
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.closureTypes source counts types tail β hβ
   arguments := by
     intro c member a argument
     rcases List.mem_cons.mp member with head | tail
@@ -5986,17 +6154,31 @@ private def FixedBodyCapture.extendGroup {env output metadata path vectors premi
         rw [capture.bodyEnv]
         simp [fixedBodyEnv]
   captured := by
-    constructor
+    refine {
+      mono := ?_
+      recursive := ?_
+      closureCounts := ?_
+      closureTypes := ?_ }
     · intro β member
       rcases List.mem_append.mp member with inner | outer
       · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
         cases impossible
-      · exact capture.captured.1 β outer
+      · exact capture.captured.mono β outer
     · intro contract member β argument
       rcases List.mem_append.mp member with inner | outer
       · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
         cases impossible
-      · exact capture.captured.2 contract outer β argument
+      · exact capture.captured.recursive contract outer β argument
+    · intro s counts types member c hc
+      rcases List.mem_append.mp member with inner | outer
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
+      · exact capture.captured.closureCounts s counts types outer c hc
+    · intro s counts types member β hβ
+      rcases List.mem_append.mp member with inner | outer
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
+      · exact capture.captured.closureTypes s counts types outer β hβ
 
 private def FixedBodyCapture.extendMono {env} (capture : FixedBodyCapture env) (β : BoundsTy)
     (scope : BoundsScoped capture.captureIds β) : FixedBodyCapture (.mono β :: env) where
@@ -6006,15 +6188,27 @@ private def FixedBodyCapture.extendMono {env} (capture : FixedBodyCapture env) (
     change .mono β :: fixedBodyEnv capture.rhsEnv = .mono β :: env
     rw [capture.bodyEnv]
   captured := by
-    constructor
+    refine {
+      mono := ?_
+      recursive := ?_
+      closureCounts := ?_
+      closureTypes := ?_ }
     · intro a member
       rcases List.mem_cons.mp member with head | tail
       · cases head; exact scope
-      · exact capture.captured.1 a tail
+      · exact capture.captured.mono a tail
     · intro c member a argument
       rcases List.mem_cons.mp member with head | tail
       · cases head
-      · exact capture.captured.2 c tail a argument
+      · exact capture.captured.recursive c tail a argument
+    · intro s counts types member c hc
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.closureCounts s counts types tail c hc
+    · intro s counts types member a ha
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.closureTypes s counts types tail a ha
 
 private def FixedBodyCapture.extendExported {env} (capture : FixedBodyCapture env)
     (s : HMCountScheme.Scheme) :
@@ -6025,15 +6219,27 @@ private def FixedBodyCapture.extendExported {env} (capture : FixedBodyCapture en
     change .exported s :: fixedBodyEnv capture.rhsEnv = .exported s :: env
     rw [capture.bodyEnv]
   captured := by
-    constructor
+    refine {
+      mono := ?_
+      recursive := ?_
+      closureCounts := ?_
+      closureTypes := ?_ }
     · intro β member
       rcases List.mem_cons.mp member with head | tail
       · cases head
-      · exact capture.captured.1 β tail
+      · exact capture.captured.mono β tail
     · intro c member a argument
       rcases List.mem_cons.mp member with head | tail
       · cases head
-      · exact capture.captured.2 c tail a argument
+      · exact capture.captured.recursive c tail a argument
+    · intro source counts types member c hc
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.closureCounts source counts types tail c hc
+    · intro source counts types member β hβ
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.closureTypes source counts types tail β hβ
 
 private def extendMonoCapture? {types slots env}
     (capture : Option (BodyWalkCapture types slots env)) (β : BoundsTy) :
@@ -6106,6 +6312,8 @@ private theorem declaredLocalArgumentTypesFixed
     (monoRepresented : ∀ β, .mono β ∈ env → Synth.BoundsTy.toTy β ∈ typeCaptures)
     (fixedRepresented : ∀ contract, .recursive contract ∈ env →
       ∀ β ∈ contract.fixed.types, Synth.BoundsTy.toTy β ∈ typeCaptures)
+    (closureRepresented : ∀ s counts types, .closure s counts types ∈ env →
+      ∀ β ∈ types, Synth.BoundsTy.toTy β ∈ typeCaptures)
     (used : HMCountScheme.Use c.interface.scheme calleeΔ useHM caller) :
     RecursiveHMEnvironment.TypesFixed
       (argument c.opening.ids (SchemeUse.vector used.types)) env := by
@@ -6115,14 +6323,20 @@ private theorem declaredLocalArgumentTypesFixed
     exact c.opening.fresh i owned t
       (List.mem_cons_of_mem _ (List.mem_cons_of_mem _
         (List.mem_cons_of_mem _ (List.mem_append_left _ member)))) free
-  constructor
+  refine {
+    mono := ?_
+    recursive := ?_
+    closure := ?_ }
   · intro β member i free
     have absent := fixesCapture (monoRepresented β member) free
     simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
   · intro contract member
-    refine ⟨(stable.2 contract member).1, ?_⟩
+    refine ⟨(stable.recursive contract member).1, ?_⟩
     intro β argMember i free
     have absent := fixesCapture (fixedRepresented contract member β argMember) free
+    simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+  · intro s counts types member β argMember i free
+    have absent := fixesCapture (closureRepresented s counts types member β argMember) free
     simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
 
 /-- Machine-inferred local openings protect the same captured environment as
@@ -6136,6 +6350,8 @@ private theorem inferredLocalArgumentTypesFixed
     (monoRepresented : ∀ β, .mono β ∈ env → Synth.BoundsTy.toTy β ∈ typeCaptures)
     (fixedRepresented : ∀ contract, .recursive contract ∈ env →
       ∀ β ∈ contract.fixed.types, Synth.BoundsTy.toTy β ∈ typeCaptures)
+    (closureRepresented : ∀ source counts types, .closure source counts types ∈ env →
+      ∀ β ∈ types, Synth.BoundsTy.toTy β ∈ typeCaptures)
     (used : HMCountScheme.Use s calleeΔ useHM caller) :
     RecursiveHMEnvironment.TypesFixed
       (argument opening.ids (SchemeUse.vector used.types)) env := by
@@ -6143,14 +6359,20 @@ private theorem inferredLocalArgumentTypesFixed
       (free : i ∈ t.freeVars) : i ∉ opening.ids := by
     intro owned
     exact opening.fresh i owned t (List.mem_cons_of_mem _ member) free
-  constructor
+  refine {
+    mono := ?_
+    recursive := ?_
+    closure := ?_ }
   · intro β member i free
     have absent := fixesCapture (monoRepresented β member) free
     simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
   · intro contract member
-    refine ⟨(identity.2 contract member).1, ?_⟩
+    refine ⟨(identity.recursive contract member).1, ?_⟩
     intro β argMember i free
     have absent := fixesCapture (fixedRepresented contract member β argMember) free
+    simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+  · intro source counts types member β argMember i free
+    have absent := fixesCapture (closureRepresented source counts types member β argMember) free
     simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
 
 /-- A local universal instance may keep a mixed mono/recursive source
@@ -6192,6 +6414,7 @@ def capturedLocalRhsInstances {s ann rhs found typeCaptures env Δ calleeΔ call
         have absent : i ∉ cert.opening.ids :=
           fun present => cert.exportTypeFresh s member i present freeId
         simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
+    | closure _ _ _ => trivial
   let specialized := fromCertified cert used.countInstance f lc scope captured capturesFixed
   have instanceBody := rhsToBodyAppend specialized.typing outer
   have widened := ScopedBodyDerives.subsumption instanceBody specialized.inclusion
@@ -6236,10 +6459,10 @@ theorem localRhsInstances_runtimeReady {s ann rhs found typeCaptures Δ calleeΔ
         simpa only [SchemeUse.vector, atIndex, Option.getD_some] using
           arguments a (List.mem_of_getElem? atIndex)
   let specialized := fromCertified cert used.countInstance f lc scope
-    (by simp [RecursiveHMEnvironment.Captured]) (by simp [CapturesFixed])
+    ⟨by simp, by simp, by simp, by simp⟩ (by simp [CapturesFixed])
   have specializedReady := fromCertified_runtimeReady cert ready used.countInstance f lc scope
     (Runtime.Supported.argument cert.opening.ids _ vectorSupport)
-    (by simp [RecursiveHMEnvironment.Captured]) (by simp [CapturesFixed])
+    ⟨by simp, by simp, by simp, by simp⟩ (by simp [CapturesFixed])
   have bodyReady := ordinaryRhsReadyToBodyAppend specializedReady (by simp [OrdinaryEnv]) outer
   have demandEq : demand cert used.counts f = used.bounds := localRhsDemand cert used
   have demandSupport : Runtime.Supported used.bounds := by
@@ -6307,6 +6530,7 @@ theorem capturedLocalRhsInstances_runtimeReady
         have absent : i ∉ cert.opening.ids :=
           fun present => cert.exportTypeFresh s member i present freeId
         simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
+    | closure _ _ _ => trivial
   let specialized := fromCertified cert used.countInstance f lc scope captured capturesFixed
   have specializedReady := fromCertified_runtimeReady cert ready used.countInstance f lc scope
     fullSupport captured capturesFixed
@@ -6740,6 +6964,11 @@ private def prepareInferredExport {output path env}
         fun c member β argument => List.mem_append_left _
           (List.mem_append_right _
             (recursiveFixedTypeCaptures_represented member argument))
+      let closureRepresented : ∀ s counts types, .closure s counts types ∈ captured.rhsEnv →
+          ∀ β ∈ types, Synth.BoundsTy.toTy β ∈ typeCaptures :=
+        fun s counts types member β argument => List.mem_append_left _
+          (List.mem_append_right _
+            (recursiveFixedTypeCaptures_closure member argument))
       let baseCert := RecursiveHMUniversal.fromScopedChecked node opening typed inclusion.down
         (fun c member i owned free =>
           opening.fresh i owned c.template.hm.body
@@ -6777,7 +7006,7 @@ private def prepareInferredExport {output path env}
       let instanceFixed := fun calleeΔ found caller
           (used : HMCountScheme.Use interface calleeΔ found caller) => by
         have fixed := inferredLocalArgumentTypesFixed opening identityFixed.down
-          monoRepresented fixedRepresented used
+          monoRepresented fixedRepresented closureRepresented used
         simpa only [cert, baseCert, RecursiveHMUniversal.fromScopedChecked] using fixed
       let ready := typed.runtimeReady.map fun sourceReady => ⟨by
         simpa only [cert, baseCert, RecursiveHMUniversal.fromScopedChecked] using sourceReady.down⟩
@@ -7018,6 +7247,7 @@ private def walkGeneralizedHoleLetRec
                           rw [captured.countClosed original originalMember] at inside
                           cases inside
                       | exported s => cases equality
+                      | closure _ _ _ => cases equality
                     exportCountFresh := by
                       intro s member i inside
                       obtain ⟨original, originalMember, equality⟩ := List.mem_map.mp member
@@ -7027,7 +7257,8 @@ private def walkGeneralizedHoleLetRec
                       | exported original =>
                           cases equality
                           rw [captured.exportCountClosed s originalMember] at inside
-                          cases inside }
+                          cases inside
+                      | closure _ _ _ => cases equality }
                 let cert := baseCert.sourceFree
                   (fun _ named => reconciled.sourceIdentity named)
                 let frame := iface.frame rhsInner.stripFound
@@ -7411,6 +7642,8 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                   (BodyDerives.RuntimeReady.varExported (ids := ids) (rows := rows)
                     (i := i) hv used supported.down arguments.down)⟩)
           else throw "bounds: count-polymorphic use needs origin-backed arguments"
+      | some (.closure s countCaptures typeCaptures) =>
+          throw "bounds: lexical closure use needs origin-backed capture arguments"
       | none => throw "bounds: generalized body variable outside binding environment"
   | .found hm (.lambda ann body) =>
       match hm.eraseBounds with
@@ -7785,7 +8018,9 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                               (fun β member => List.mem_append_left _
                                 (recursiveTypeCaptures_mono member))
                               (fun contract member β argument => List.mem_append_right _
-                                (recursiveFixedTypeCaptures_represented member argument)) used
+                                (recursiveFixedTypeCaptures_represented member argument))
+                              (fun source counts types member β argument => List.mem_append_right _
+                                (recursiveFixedTypeCaptures_closure member argument)) used
                             have certFixed : RecursiveHMEnvironment.TypesFixed
                                 (argument cert.opening.ids (SchemeUse.vector used.types))
                                 (captured.rhsEnv.map
@@ -7834,7 +8069,9 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                                     (fun β member => List.mem_append_left _
                                       (recursiveTypeCaptures_mono member))
                                     (fun contract member β argument => List.mem_append_right _
-                                      (recursiveFixedTypeCaptures_represented member argument)) used
+                                      (recursiveFixedTypeCaptures_represented member argument))
+                                    (fun source counts types member β argument => List.mem_append_right _
+                                      (recursiveFixedTypeCaptures_closure member argument)) used
                                   have certFixed : RecursiveHMEnvironment.TypesFixed
                                       (argument cert.opening.ids (SchemeUse.vector used.types))
                                       (captured.rhsEnv.map

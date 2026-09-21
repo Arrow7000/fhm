@@ -1,5 +1,6 @@
 import FHM.Bounds.RecursiveHMContract
 import FHM.Bounds.HMInterpretation
+import FHM.Bounds.HMCountSchemeClosure
 import FHM.Bounds.Runtime
 import FHM.Bounds.NominalBranches
 
@@ -24,6 +25,11 @@ inductive Binding where
   | mono (bounds : BoundsTy)
   | recursive (contract : Contract)
   | exported (scheme : HMCountScheme.Scheme)
+  /-- A lexical generalized value packages its lambda-lifted interface with
+      the fixed count/HM meanings captured at the introduction site. Callers
+      may choose only the source scheme's own quantified arguments. -/
+  | closure (source : HMCountScheme.Scheme)
+      (countCaptures : List Count) (typeCaptures : List BoundsTy)
 
 /-- The HM identities owned by a generalized local.  Only these fresh
     identities may be replaced when one of the local's instances is checked;
@@ -113,6 +119,11 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
       ScopedDerives types slots ids rows Δ env (.var i) u.bounds
   | varExported {env i s found caller} : env[i]? = some (.exported s) →
       (u : HMCountScheme.Use s Δ found caller) →
+      ScopedDerives types slots ids rows Δ env (.var i) u.bounds
+  | varClosure {env i s countCaptures typeCaptures found caller} :
+      env[i]? = some (.closure s countCaptures typeCaptures) →
+      (u : HMCountScheme.Use (HMCountSchemeClosure.close s) Δ found caller) →
+      HMCountSchemeClosure.HasCaptureArguments s countCaptures typeCaptures u →
       ScopedDerives types slots ids rows Δ env (.var i) u.bounds
   | app {env f arg domain actual result} :
       ScopedDerives types slots ids rows Δ env f (.arrow domain result) → ScopedDerives types slots ids rows Δ env arg actual →
@@ -238,7 +249,7 @@ theorem ScopedDerives.primLitBounds {types slots ids rows Δ env e β}
       rw [ih p source] at sub
       cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | ctor | cons | consPartial | pair | pairPartial |
-      varMono | varRecursive | varExported | app | lambda | letMono | letRecMono |
+      varMono | varRecursive | varExported | varClosure | app | lambda | letMono | letRecMono |
       letPinned | letRecPinnedMono | letRecInferredMono | letRecMonoGroup |
       matchList | matchBool | matchPair | matchNominal | matchOpaque =>
         intro p source; cases source
@@ -274,6 +285,7 @@ theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
   | varMono lookup => exact variable_scoped lookup
   | varRecursive lookup _ => exact variable_scoped lookup
   | varExported lookup _ => exact variable_scoped lookup
+  | varClosure lookup _ _ => exact variable_scoped lookup
   | app _ _ _ ihf iha => simp [Expr.varsBelow, ihf, iha]
   | subsumption _ _ ih => exact ih
   | lambda _ _ ih => simpa only [Expr.varsBelow, List.length_cons] using ih
@@ -406,6 +418,7 @@ theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
   | varMono lookup => intro _; exact .varMono lookup
   | varRecursive lookup used => intro _; exact .varRecursive lookup used
   | varExported lookup used => intro _; exact .varExported lookup used
+  | varClosure lookup used captures => intro _; exact .varClosure lookup used captures
   | cons _ _ sub ihh iht =>
       intro agree
       exact .cons (ihh (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
@@ -630,6 +643,7 @@ theorem ScopedDerives.sourceSlots {types slots slots' ids rows Δ env e β n}
   | varMono lookup => exact .varMono lookup
   | varRecursive lookup used => exact .varRecursive lookup used
   | varExported lookup used => exact .varExported lookup used
+  | varClosure lookup used captures => exact .varClosure lookup used captures
   | cons _ _ sub ihh iht =>
       simp only [Expr.TyBvarBounded] at bounded
       exact .cons (ihh bounded.1.2) (iht bounded.2) sub
@@ -731,6 +745,13 @@ def BindingAt (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
         (∀ a ∈ used.types, Runtime.Supported a) →
         (∀ p ∈ used.countInstance.premises, p.Holds σ) →
         Runtime.TermAt bound free σ budget used.bounds term
+  | .closure s countCaptures typeCaptures =>
+      ∀ Δ found caller
+          (used : HMCountScheme.Use (HMCountSchemeClosure.close s) Δ found caller),
+        HMCountSchemeClosure.HasCaptureArguments s countCaptures typeCaptures used →
+        (∀ a ∈ used.types, Runtime.Supported a) →
+        (∀ p ∈ used.countInstance.premises, p.Holds σ) →
+        Runtime.TermAt bound free σ budget used.bounds term
 
 /-- One closing environment for the existing RHS judgment. These are semantic
     proof obligations, not a new typing judgment or executable checker. -/
@@ -754,6 +775,7 @@ theorem BindingAt.zero (bound free : Runtime.TypeEnv) (σ : Assign) (binding : B
   | mono β => exact vacuous β
   | recursive c => exact fun _ _ _ _ => vacuous _
   | exported s => exact fun _ _ _ _ _ _ => vacuous _
+  | closure s countCaptures typeCaptures => exact fun _ _ _ _ _ _ _ => vacuous _
 
 theorem BindingAt.prepend {bound free σ budget binding term next}
     (step : SmallStep.Step term next) (safe : BindingAt bound free σ budget binding next) :
@@ -765,6 +787,10 @@ theorem BindingAt.prepend {bound free σ budget binding term next}
   | exported s =>
       exact fun Δ found caller used arguments premises =>
         Runtime.TermAt.prepend step (safe Δ found caller used arguments premises)
+  | closure s countCaptures typeCaptures =>
+      exact fun Δ found caller used captures arguments premises =>
+        Runtime.TermAt.prepend step
+          (safe Δ found caller used captures arguments premises)
 
 /-- Tie ALL members simultaneously by induction on observation budget. The
     premise checks each actual RHS under a realizing assumption environment;
@@ -816,6 +842,10 @@ def EnvAt.down {bound free σ small large env}
       simp only [BindingAt, kind] at actual ⊢
       intro Δ found caller used arguments premises
       exact (actual Δ found caller used arguments premises).down hb hf le
+  | closure s countCaptures typeCaptures =>
+      simp only [BindingAt, kind] at actual ⊢
+      intro Δ found caller used captures arguments premises
+      exact (actual Δ found caller used captures arguments premises).down hb hf le
 
 /-- Close only the outer variables of every recursive RHS.  The first
     `rhss.length` variables remain protected for the simultaneously tied group. -/
@@ -984,9 +1014,27 @@ theorem EnvAt.varExported {bound free σ budget env i s Δ found caller}
   simp only [BindingAt, entry] at meaning
   exact meaning Δ found caller used arguments (used.usable σ premises)
 
+theorem EnvAt.varClosure {bound free σ budget env i s countCaptures typeCaptures
+    Δ found caller}
+    (e : EnvAt bound free σ budget env)
+    (lookup : env[i]? = some (.closure s countCaptures typeCaptures))
+    (used : HMCountScheme.Use (HMCountSchemeClosure.close s) Δ found caller)
+    (captures : HMCountSchemeClosure.HasCaptureArguments
+      s countCaptures typeCaptures used)
+    (arguments : ∀ a ∈ used.types, Runtime.Supported a)
+    (premises : ∀ p ∈ Δ, p.Holds σ) :
+    Runtime.TermAt bound free σ budget used.bounds
+      ((Expr.var i).substN 0 e.terms) := by
+  obtain ⟨inside, entry⟩ := List.getElem?_eq_some_iff.mp lookup
+  rw [Runtime.closing_var e.terms e.closed i (by rw [e.arity]; exact inside)]
+  have meaning := e.denotes i inside
+  simp only [BindingAt, entry] at meaning
+  exact meaning Δ found caller used captures arguments (used.usable σ premises)
+
 #print axioms EnvAt.varMono
 #print axioms EnvAt.varRecursive
 #print axioms EnvAt.varExported
+#print axioms EnvAt.varClosure
 
 /-- A uniformly realized group gives actual recursive implementation safety,
     not merely safety of an environment lookup. Raw instantiated premises are
@@ -1146,6 +1194,13 @@ inductive RuntimeReady {types slots ids rows} :
       (used : HMCountScheme.Use s Δ found caller) :
       Runtime.Supported used.bounds → (∀ a ∈ used.types, Runtime.Supported a) →
       RuntimeReady (.varExported lookup used)
+  | varClosure
+      (lookup : env[i]? = some (Binding.closure s countCaptures typeCaptures))
+      (used : HMCountScheme.Use (HMCountSchemeClosure.close s) Δ found caller)
+      (captures : HMCountSchemeClosure.HasCaptureArguments
+        s countCaptures typeCaptures used) :
+      Runtime.Supported used.bounds → (∀ a ∈ used.types, Runtime.Supported a) →
+      RuntimeReady (.varClosure lookup used captures)
   | app {hfn : ScopedDerives types slots ids rows Δ env f (.arrow domain result)}
       {ha : ScopedDerives types slots ids rows Δ env arg actual}
       (sub : SemanticSub Δ actual domain) : RuntimeReady hfn → RuntimeReady ha →
@@ -1248,7 +1303,10 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β}
   | consPartial _ head => exact .arrow (.list head) (.list head)
   | pair _ _ left right => exact .pair left right
   | pairPartial _ right left => exact .arrow right (.pair left right)
-  | varMono _ support | varRecursive _ _ support | varExported _ _ support _ => exact support
+  | varMono _ support => exact support
+  | varRecursive _ _ support => exact support
+  | varExported _ _ support _ => exact support
+  | varClosure _ _ _ support _ => exact support
   | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
   | subsumption _ _ demand => exact demand
   | lambda _ param _ result => exact .arrow param result
@@ -1309,6 +1367,9 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
   | varExported lookup used _ arguments =>
       intro budget premises e
       exact e.varExported lookup used arguments premises
+  | varClosure lookup used captures _ arguments =>
+      intro budget premises e
+      exact e.varClosure lookup used captures arguments premises
   | app sub fnReady argReady ihf iha =>
       intro budget premises e
       have fnSupport := fnReady.supported
@@ -1709,6 +1770,7 @@ abbrev pair {types : Nat → BoundsTy} := @ScopedDerives.pair types BoundsTy.bva
 abbrev varMono {types : Nat → BoundsTy} := @ScopedDerives.varMono types BoundsTy.bvar
 abbrev varRecursive {types : Nat → BoundsTy} := @ScopedDerives.varRecursive types BoundsTy.bvar
 abbrev varExported {types : Nat → BoundsTy} := @ScopedDerives.varExported types BoundsTy.bvar
+abbrev varClosure {types : Nat → BoundsTy} := @ScopedDerives.varClosure types BoundsTy.bvar
 abbrev app {types : Nat → BoundsTy} := @ScopedDerives.app types BoundsTy.bvar
 abbrev lambda {types : Nat → BoundsTy} := @ScopedDerives.lambda types BoundsTy.bvar
 abbrev letMono {types : Nat → BoundsTy} := @ScopedDerives.letMono types BoundsTy.bvar
@@ -1767,6 +1829,13 @@ theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
           exact used.usable σ (fun c hc => hp σ hΔ c hc) goal hgoal,
           used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
       exact .varExported hv next
+  | varClosure hv used captures =>
+      let next : HMCountScheme.Use _ Δ' _ _ :=
+        ⟨used.counts, used.countInstance, by
+          intro σ hΔ goal hgoal
+          exact used.usable σ (fun c hc => hp σ hΔ c hc) goal hgoal,
+          used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
+      exact .varClosure hv next ⟨captures.counts, captures.types⟩
   | app _ _ hs ihh iht => exact .app (ihh hp) (iht hp) (hs.assuming hp)
   | subsumption _ sub ih => exact .subsumption (ih hp) (sub.assuming hp)
   | lambda hparam _ ih => exact .lambda (param_assuming hparam hp) (ih hp)
@@ -1833,6 +1902,11 @@ theorem ScopedDerives.RuntimeReady.assuming {types slots ids rows Δ Δ' env e �
         ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
           used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
       exact .varExported lookup next support arguments
+  | varClosure lookup used captures support arguments =>
+      let next : HMCountScheme.Use _ Δ' _ _ :=
+        ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
+          used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
+      exact .varClosure lookup next ⟨captures.counts, captures.types⟩ support arguments
   | app sub _ _ ihf iha => exact .app (sub.assuming hp) (ihf hp) (iha hp)
   | subsumption sub sourceReady demandSupport ih =>
       exact .subsumption (sub.assuming hp) (ih hp) demandSupport
@@ -1893,6 +1967,8 @@ theorem ScopedDerives.RuntimeReady.sourceFree {types types' slots : Nat → Boun
   | varRecursive lookup used supported => intro _; exact .varRecursive lookup used supported
   | varExported lookup used supported arguments =>
       intro _; exact .varExported lookup used supported arguments
+  | varClosure lookup used captures supported arguments =>
+      intro _; exact .varClosure lookup used captures supported arguments
   | cons sub _ _ ihh iht =>
       intro agree
       exact .cons sub (ihh (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
@@ -2035,6 +2111,8 @@ theorem ScopedDerives.RuntimeReady.sourceSlots {types slots slots' : Nat → Bou
   | varRecursive lookup used supported => intro _; exact .varRecursive lookup used supported
   | varExported lookup used supported arguments =>
       intro _; exact .varExported lookup used supported arguments
+  | varClosure lookup used captures supported arguments =>
+      intro _; exact .varClosure lookup used captures supported arguments
   | cons sub _ _ ihh iht =>
       intro bounded
       simp only [Expr.TyBvarBounded] at bounded
@@ -2163,12 +2241,15 @@ def mapBinding (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).I
   | .mono β => .mono (mapFree f β)
   | .recursive c => .recursive (c.mapTypes f hf)
   | .exported s => .exported s
+  | .closure s countCaptures typeCaptures =>
+      .closure s countCaptures (typeCaptures.map (mapFree f))
 
 def CapturesFixed (f : Nat → BoundsTy) (env : List Binding) : Prop :=
   ∀ b ∈ env, match b with
     | .mono _ => True
     | .recursive c => ∀ i ∈ c.template.hm.body.freeVars, f i = .fvar i
     | .exported s => ∀ i ∈ s.hm.body.freeVars, f i = .fvar i
+    | .closure _ _ _ => True
 
 theorem CapturesFixed.recursive {f env c} (h : CapturesFixed f env)
     (member : .recursive c ∈ env) :
@@ -2307,6 +2388,15 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
       exact .varExported
         (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) hv)
         (mapExportedUse u f hf target scope captured)
+  | varClosure hv u captures =>
+      have closed := captures.closedTypeFixed f
+      let next := mapExportedUse u f hf target scope closed
+      rw [← mapExportedUse_bounds u f hf target scope closed]
+      refine .varClosure
+        (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) hv)
+        next ?_
+      exact captures.mapTypes (mapFree f)
+        (by simp [next, mapExportedUse]) (by simp [next, mapExportedUse])
   | app _ _ hs ihf iha =>
       exact .app (ihf fresh) (iha fresh) (SchemeSpecialization.subtype f hs)
   | subsumption _ sub ih =>
@@ -2404,12 +2494,16 @@ def mapCountBinding (outer : Bindings) : Binding → Binding
   | .mono β => .mono (bounds outer β)
   | .recursive c => .recursive (c.mapCounts outer)
   | .exported s => .exported s
+  | .closure s countCaptures typeCaptures =>
+      .closure s (countCaptures.map (count outer))
+        (typeCaptures.map (bounds outer))
 
 def CountCapturesFixed (outer : Bindings) (env : List Binding) : Prop :=
   ∀ b ∈ env, match b with
     | .mono _ => True
     | .recursive c => ∀ i ∈ c.template.counts.captures, lookup outer i = none
     | .exported s => ∀ i ∈ s.counts.captures, lookup outer i = none
+    | .closure _ _ _ => True
 
 theorem CountCapturesFixed.recursive {outer env c} (h : CountCapturesFixed outer env)
     (member : .recursive c ∈ env) :
@@ -2539,6 +2633,15 @@ theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : L
       exact .varExported
         (by simpa [mapCountBinding] using congrArg (Option.map (mapCountBinding outer)) hv)
         (mapExportedUseCounts u outer hf target scope captured)
+  | varClosure hv u captures =>
+      have closed := captures.closedCountFixed outer
+      let next := mapExportedUseCounts u outer hf target scope closed
+      rw [← mapExportedUseCounts_bounds u outer hf target scope closed]
+      refine .varClosure
+        (by simpa [mapCountBinding] using
+          congrArg (Option.map (mapCountBinding outer)) hv)
+        next ?_
+      exact captures.map (count outer) (bounds outer) (by rfl) (by rfl)
   | app _ _ hs ihf iha =>
       exact .app (ihf fresh) (iha fresh) (CountSubstitution.subtype outer hf hs)
   | subsumption _ sub ih =>
@@ -2742,6 +2845,32 @@ theorem ScopedDerives.RuntimeReady.counts (outer : Bindings) (hf : Finite outer)
           obtain ⟨b, hb, rfl⟩ := List.mem_map.mp ha
           exact (arguments b hb).counts outer)
       simpa only [mapExportedUseCounts_bounds used outer hf target scope captured] using moved
+  | @varClosure env' i s countCaptures typeCaptures pathΔ found caller
+      lookup used captures support arguments =>
+      have closed : ∀ j ∈ (HMCountSchemeClosure.close s).counts.captures,
+          CountSubstitution.lookup outer j = none := by
+        intro j member
+        rw [HMCountSchemeClosure.close_countCaptures] at member
+        cases member
+      let next := mapExportedUseCounts used outer hf target scope closed
+      have movedCaptures : HMCountSchemeClosure.HasCaptureArguments s
+          (countCaptures.map (count outer)) (typeCaptures.map (bounds outer)) next :=
+        captures.map (count outer) (bounds outer) (by rfl) (by rfl)
+      have moved := ScopedDerives.RuntimeReady.varClosure
+        (types := fun i => bounds outer (types i))
+        (slots := fun i => bounds outer (slots i))
+        (ids := ids) (rows := CountAlgebra.compose outer rows)
+        (env := env'.map (mapCountBinding outer)) (i := i)
+        (by simpa only [List.getElem?_map, Option.map_some, mapCountBinding]
+          using congrArg (Option.map (mapCountBinding outer)) lookup)
+        next movedCaptures
+        (by simpa only [next, mapExportedUseCounts_bounds used outer hf target scope closed]
+          using support.counts outer)
+        (by
+          intro a ha
+          obtain ⟨b, hb, rfl⟩ := List.mem_map.mp ha
+          exact (arguments b hb).counts outer)
+      simpa only [next, mapExportedUseCounts_bounds used outer hf target scope closed] using moved
   | app sub _ _ ihf iha =>
       exact .app (CountSubstitution.subtype outer hf sub) (ihf fresh) (iha fresh)
   | subsumption sub sourceReady demandSupport ih =>
@@ -2924,6 +3053,32 @@ theorem ScopedDerives.RuntimeReady.types (f : Nat → BoundsTy)
           obtain ⟨b, hb, rfl⟩ := List.mem_map.mp ha
           exact (usedArguments b hb).types f arguments)
       simpa only [mapExportedUse_bounds used f hf target scope captured] using moved
+  | @varClosure env' i s countCaptures typeCaptures pathΔ found caller
+      lookup used captures support usedArguments =>
+      have closed : ∀ j ∈ (HMCountSchemeClosure.close s).hm.body.freeVars,
+          f j = .fvar j := by
+        intro j member
+        rw [HMCountSchemeClosure.close_typeFree] at member
+        cases member
+      let next := mapExportedUse used f hf target scope closed
+      have movedCaptures : HMCountSchemeClosure.HasCaptureArguments s countCaptures
+          (typeCaptures.map (mapFree f)) next :=
+        captures.mapTypes (mapFree f)
+          (by simp [next, mapExportedUse]) (by simp [next, mapExportedUse])
+      have moved := ScopedDerives.RuntimeReady.varClosure
+        (types := fun i => mapFree f (types i))
+        (slots := fun i => mapFree f (slots i))
+        (ids := ids) (rows := rows) (env := env'.map (mapBinding f hf)) (i := i)
+        (by simpa only [List.getElem?_map, Option.map_some, mapBinding]
+          using congrArg (Option.map (mapBinding f hf)) lookup)
+        next movedCaptures
+        (by simpa only [next, mapExportedUse_bounds used f hf target scope closed]
+          using support.types f arguments)
+        (by
+          intro a ha
+          obtain ⟨b, hb, rfl⟩ := List.mem_map.mp ha
+          exact (usedArguments b hb).types f arguments)
+      simpa only [next, mapExportedUse_bounds used f hf target scope closed] using moved
   | app sub _ _ ihf iha =>
       exact .app (SchemeSpecialization.subtype f sub) (ihf fresh) (iha fresh)
   | subsumption sub sourceReady demandSupport ih =>

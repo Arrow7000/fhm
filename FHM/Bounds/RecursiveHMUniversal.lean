@@ -144,6 +144,7 @@ private theorem countFresh {s found captures env rhs sourceTypes sourceSlots} (c
       apply lookup_none
       rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
       exact cert.exportCountFresh t hb i hi
+  | closure _ _ _ => trivial
 
 private theorem typeFresh {s found captures env rhs sourceTypes sourceSlots} (cert : Certified s found captures env rhs sourceTypes sourceSlots)
     (args : Nat → BoundsTy) (rows : Bindings) :
@@ -164,6 +165,9 @@ private theorem typeFresh {s found captures env rhs sourceTypes sourceSlots} (ce
       have absent : i ∉ cert.opening.ids := fun present => cert.exportTypeFresh t hb i present hi
       have hnone : cert.opening.ids.idxOf? i = none := List.idxOf?_eq_none_iff.mpr absent
       simp [argument, hnone]
+  | closure _ _ _ =>
+      cases he
+      trivial
 
 def actual {s found captures env rhs sourceTypes sourceSlots} (cert : Certified s found captures env rhs sourceTypes sourceSlots)
     (counts : List Count) (types : List BoundsTy) : BoundsTy :=

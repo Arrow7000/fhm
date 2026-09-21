@@ -604,6 +604,8 @@ def walkScoped (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Binding
                   (ScopedDerives.RuntimeReady.varExported (types := types) (slots := slots)
                     (ids := ids) (rows := rows) (i := i) hv used supported.down arguments.down)⟩)
           else throw "bounds: count-polymorphic RHS use needs origin-backed arguments"
+      | some (.closure _ _ _) =>
+          throw "bounds: lexical closure use needs origin-backed capture arguments"
   | .found hm (.lambda ann body) =>
       match hm.eraseBounds with
       | .arrow paramHM _ =>

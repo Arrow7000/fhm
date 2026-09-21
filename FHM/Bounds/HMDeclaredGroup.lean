@@ -132,6 +132,7 @@ private def checkRepresentedHead (ts : List Ty) (b : Binding) :
       let h ← checkMemberTy c.template.hm.body ts
       pure ⟨by intro d hd; cases hd; exact h.down⟩
   | .exported _ => pure ⟨by intro c hc; cases hc⟩
+  | .closure _ _ _ => pure ⟨by intro c hc; cases hc⟩
 
 private def checkRepresented (ts : List Ty) (env : List Binding) :
     Except String (PLift (∀ c, .recursive c ∈ env → c.template.hm.body ∈ ts)) := do
@@ -154,6 +155,7 @@ private def checkMonoRepresentedHead (ts : List Ty) (b : Binding) :
       pure ⟨by intro a ha; cases ha; exact h.down⟩
   | .recursive _ => pure ⟨by intro β hβ; cases hβ⟩
   | .exported _ => pure ⟨by intro β hβ; cases hβ⟩
+  | .closure _ _ _ => pure ⟨by intro β hβ; cases hβ⟩
 
 private def checkMonoRepresented (ts : List Ty) (env : List Binding) :
     Except String (PLift (∀ β, .mono β ∈ env → Synth.BoundsTy.toTy β ∈ ts)) := do
@@ -189,6 +191,7 @@ private def checkFixedRepresentedHead (ts : List Ty) (b : Binding) :
       let represented ← loop c.fixed.types
       pure ⟨by intro d hd; cases hd; exact represented.down⟩
   | .exported _ => pure ⟨by intro c hc; cases hc⟩
+  | .closure _ _ _ => pure ⟨by intro c hc; cases hc⟩
 
 private def checkFixedRepresented (ts : List Ty) (env : List Binding) :
     Except String (PLift (∀ c, .recursive c ∈ env →
@@ -204,6 +207,43 @@ private def checkFixedRepresented (ts : List Ty) (env : List Binding) :
         · exact head.down c hb
         · exact tail.down c ht⟩
 
+private def checkClosureRepresentedHead (ts : List Ty) (b : Binding) :
+    Except String (PLift (∀ s counts types, .closure s counts types = b →
+      ∀ β ∈ types, Synth.BoundsTy.toTy β ∈ ts)) := do
+  match b with
+  | .mono _ => pure ⟨by intro s counts types h; cases h⟩
+  | .recursive _ => pure ⟨by intro s counts types h; cases h⟩
+  | .exported _ => pure ⟨by intro s counts types h; cases h⟩
+  | .closure s counts types =>
+      let rec loop (captures : List BoundsTy) :
+          Except String (PLift (∀ β ∈ captures, Synth.BoundsTy.toTy β ∈ ts)) := do
+        match captures with
+        | [] => pure ⟨by simp⟩
+        | β :: rest =>
+            let head ← checkMemberTy (Synth.BoundsTy.toTy β) ts
+            let tail ← loop rest
+            pure ⟨by
+              intro a ha
+              rcases List.mem_cons.mp ha with h | h
+              · cases h; exact head.down
+              · exact tail.down a h⟩
+      let represented ← loop types
+      pure ⟨by intro source storedCounts storedTypes h; cases h; exact represented.down⟩
+
+private def checkClosureRepresented (ts : List Ty) (env : List Binding) :
+    Except String (PLift (∀ s counts types, .closure s counts types ∈ env →
+      ∀ β ∈ types, Synth.BoundsTy.toTy β ∈ ts)) := do
+  match env with
+  | [] => pure ⟨by simp⟩
+  | b :: rest =>
+      let head ← checkClosureRepresentedHead ts b
+      let tail ← checkClosureRepresented ts rest
+      pure ⟨by
+        intro s counts types member
+        rcases List.mem_cons.mp member with hb | ht
+        · exact head.down s counts types hb
+        · exact tail.down s counts types ht⟩
+
 private def checkExportRepresentedHead (ts : List Ty) (b : Binding) :
     Except String (PLift (∀ s, .exported s = b → s.hm.body ∈ ts)) := do
   match b with
@@ -212,6 +252,7 @@ private def checkExportRepresentedHead (ts : List Ty) (b : Binding) :
   | .exported s =>
       let h ← checkMemberTy s.hm.body ts
       pure ⟨by intro t ht; cases ht; exact h.down⟩
+  | .closure _ _ _ => pure ⟨by intro s hs; cases hs⟩
 
 private def checkExportRepresented (ts : List Ty) (env : List Binding) :
     Except String (PLift (∀ s, .exported s ∈ env → s.hm.body ∈ ts)) := do
@@ -238,6 +279,7 @@ private def checkCountFreshHead (q : List Nat) (b : Binding) :
           simpa [List.contains_iff_mem] using List.all_eq_true.mp h i hi⟩
       else .error "bounds: common recursive template captures a member-local count"
   | .exported _ => .ok ⟨by intro c hc; cases hc⟩
+  | .closure _ _ _ => .ok ⟨by intro c hc; cases hc⟩
 
 private def checkCountFresh (q : List Nat) (env : List Binding) :
     Except String (PLift (∀ c, .recursive c ∈ env → ∀ i ∈ c.template.counts.captures, i ∉ q)) := do
@@ -264,6 +306,7 @@ private def checkExportCountFreshHead (q : List Nat) (b : Binding) :
           cases ht
           simpa [List.contains_iff_mem] using List.all_eq_true.mp h i hi⟩
       else .error "bounds: exported scheme captures a member-local count"
+  | .closure _ _ _ => .ok ⟨by intro s hs; cases hs⟩
 
 private def checkExportCountFresh (q : List Nat) (env : List Binding) :
     Except String (PLift (∀ s, .exported s ∈ env → ∀ i ∈ s.counts.captures, i ∉ q)) := do
@@ -474,6 +517,8 @@ structure Checked (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
   outerMonoRepresented : ∀ β, .mono β ∈ outerEnv → Synth.BoundsTy.toTy β ∈ outerTypes
   outerFixedRepresented : ∀ c, .recursive c ∈ outerEnv →
     ∀ β ∈ c.fixed.types, Synth.BoundsTy.toTy β ∈ outerTypes
+  outerClosureRepresented : ∀ s counts types, .closure s counts types ∈ outerEnv →
+    ∀ β ∈ types, Synth.BoundsTy.toTy β ∈ outerTypes
   members : CheckedMembers (interfaces.contracts.map Binding.recursive ++ outerEnv) interfaces
 
 theorem Checked.memberCount {output metadata path vectors captures premises outerTypes outerEnv}
@@ -587,11 +632,13 @@ def checkWith (output : Expr) (metadata : Scope.Metadata) (path : CorePath)
               let agreement ← checkConsistent ps.proposals
               let outerMonoRepresented ← checkMonoRepresented outerTypes outerEnv
               let outerFixedRepresented ← checkFixedRepresented outerTypes outerEnv
+              let outerClosureRepresented ← checkClosureRepresented outerTypes outerEnv
               let commonEnv := ps.contracts.map Binding.recursive ++ outerEnv
               let checked ← checkMembersWith ps commonEnv (fun p => checkRHS p commonEnv)
               pure ⟨hm, anns, rhss, body, hs, hp, ha, hv, ps, hq,
                 (fun i hi => by simpa [List.contains_iff_mem] using List.all_eq_true.mp hc i hi),
-                agreement.down, outerMonoRepresented.down, outerFixedRepresented.down, checked⟩
+                agreement.down, outerMonoRepresented.down, outerFixedRepresented.down,
+                outerClosureRepresented.down, checked⟩
             else throw "bounds: common captures overlap recursive member count telescopes"
           else throw "bounds: recursive member count telescopes overlap"
         else throw "bounds: recursive opaque vector/RHS arity mismatch"

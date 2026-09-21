@@ -239,6 +239,8 @@ private theorem capturedOpaqueEnvironment : RecursiveHMEnvironment.Captured [] [
     have hc : c = contract := by simpa using hc
     subst c
     exact RecursiveHMEnvironment.opaqueVector opening [] β hβ
+  · simp
+  · simp
 
 theorem unchangedCountEnvironment {counts caller} (inst : ScopedScheme.Instance scheme.counts counts caller) :
     [.recursive contract].map (mapCountBinding (scheme.counts.quantified.zip counts)) = [.recursive contract] :=

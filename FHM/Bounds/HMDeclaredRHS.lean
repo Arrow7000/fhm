@@ -97,6 +97,7 @@ def certify {output site d quantified captures premises typeCaptures env}
         exact c.opening.fresh i hi original.template.hm.body
           (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ guarded)) used
     | exported t => cases he
+    | closure _ _ _ => cases he
   · intro t ht i hi used
     obtain ⟨original, ho, he⟩ := List.mem_map.mp ht
     cases original with
@@ -109,6 +110,7 @@ def certify {output site d quantified captures premises typeCaptures env}
           exact List.mem_cons_of_mem _ (List.mem_append_left _ (exportsRepresented t ho))
         exact c.opening.fresh i hi t.hm.body
           (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ guarded)) used
+    | closure _ _ _ => cases he
   · intro b hb i hi
     obtain ⟨original, ho, he⟩ := List.mem_map.mp hb
     cases original with
@@ -117,6 +119,7 @@ def certify {output site d quantified captures premises typeCaptures env}
         cases he
         exact countFresh original ho i hi
     | exported t => cases he
+    | closure _ _ _ => cases he
   · intro t ht i hi
     obtain ⟨original, ho, he⟩ := List.mem_map.mp ht
     cases original with
@@ -125,6 +128,7 @@ def certify {output site d quantified captures premises typeCaptures env}
     | exported original =>
         cases he
         exact exportCountFresh t ho i hi
+    | closure _ _ _ => cases he
 
 /-- Recover the canonical free source reader from the actual reconciled RHS
     proof. Opening and implementation evidence are retained, not reconstructed

@@ -45,6 +45,7 @@ def fromChecked {output path node schemes site s captures env}
         exact checked.opening.fresh i hi d.template.hm.body
           (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (represented d hb))) used
     | exported t => cases he
+    | closure _ _ _ => cases he
   · intro t ht i hi used
     obtain ⟨b, hb, he⟩ := List.mem_map.mp ht
     cases b with
@@ -54,6 +55,7 @@ def fromChecked {output path node schemes site s captures env}
         cases he
         exact checked.opening.fresh i hi t.hm.body
           (List.mem_cons_of_mem _ (List.mem_cons_of_mem _ (exportsRepresented t hb))) used
+    | closure _ _ _ => cases he
   · intro c hc i hi
     obtain ⟨b, hb, he⟩ := List.mem_map.mp hc
     cases b with
@@ -62,6 +64,7 @@ def fromChecked {output path node schemes site s captures env}
         cases he
         exact countFresh d hb i hi
     | exported t => cases he
+    | closure _ _ _ => cases he
   · intro t ht i hi
     obtain ⟨b, hb, he⟩ := List.mem_map.mp ht
     cases b with
@@ -70,6 +73,7 @@ def fromChecked {output path node schemes site s captures env}
     | exported original =>
         cases he
         exact exportCountFresh t hb i hi
+    | closure _ _ _ => cases he
 
 #print axioms fromChecked
 

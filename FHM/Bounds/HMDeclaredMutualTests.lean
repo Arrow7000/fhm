@@ -23,6 +23,7 @@ private def vectors (env : List Binding) : List (List String) :=
     | .mono β => [β.pretty]
     | .recursive c => c.fixed.types.map BoundsTy.pretty
     | .exported s => [s.hm.body.pretty]
+    | .closure s _ _ => [s.hm.body.pretty]
 
 /-- Both real members check against one common fixed HM vector, despite
     distinct count telescopes and genuinely more-general solved RHS payloads. -/
