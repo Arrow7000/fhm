@@ -474,6 +474,167 @@ theorem GeneralizedGroup.protectedTypes_lc
       exact RecursiveHMUniversal.argumentsLC (group.sourceExitUse offset inside used).types
         (group.sourceExitUse offset inside used).typesLC slot
 
+/-- At a declared opening position the protected map reads the corresponding
+    source argument exactly.  Distinct opening identities rule out an earlier
+    slot with the same name; the two arity witnesses rule out `vector`'s
+    fallback value. -/
+theorem GeneralizedGroup.protectedTypes_openingSlot
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (ambient : Nat → BoundsTy) (slot : Nat)
+    (slotInside : slot <
+      (group.selected offset inside).rhs.certificate.implementation.opening.ids.length) :
+    group.protectedTypes offset inside used ambient
+      (group.selected offset inside).rhs.certificate.implementation.opening.ids[slot] =
+      SchemeUse.vector (group.sourceExitUse offset inside used).types slot := by
+  have exactSlot := SchemeSpecialization.argument_slot
+    (group.selected offset inside).rhs.certificate.implementation.opening.ids
+    (SchemeUse.vector (group.sourceExitUse offset inside used).types)
+    (group.selected offset inside).rhs.certificate.implementation.opening.distinct slot slotInside
+  cases located :
+      (group.selected offset inside).rhs.certificate.implementation.opening.ids.idxOf?
+        ((group.selected offset inside).rhs.certificate.implementation.opening.ids[slot]) with
+  | none =>
+      exact False.elim ((List.idxOf?_eq_none_iff.mp located) (List.getElem_mem slotInside))
+  | some position =>
+      rw [group.protectedTypes_opening offset inside used ambient _ position located]
+      simpa only [SchemeSpecialization.argument, located] using exactSlot
+
+/-- The opening-slot equation in list form.  In particular, a declared slot
+    never observes the unit fallback of `SchemeUse.vector`. -/
+theorem GeneralizedGroup.protectedTypes_openingGetElem
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (ambient : Nat → BoundsTy) (slot : Nat)
+    (slotInside : slot <
+      (group.selected offset inside).rhs.certificate.implementation.opening.ids.length) :
+    group.protectedTypes offset inside used ambient
+      (group.selected offset inside).rhs.certificate.implementation.opening.ids[slot] =
+      (group.sourceExitUse offset inside used).types[slot]'(by
+        have sameLength :
+            (group.selected offset inside).rhs.certificate.implementation.opening.ids.length =
+              (group.sourceExitUse offset inside used).types.length :=
+          (group.selected offset inside).rhs.certificate.implementation.opening.arity.trans
+            (group.sourceExitUse offset inside used).arity.symm
+        omega) := by
+  rw [group.protectedTypes_openingSlot offset inside used ambient slot slotInside]
+  have sourceInside : slot < (group.sourceExitUse offset inside used).types.length := by
+    have sameLength :
+        (group.selected offset inside).rhs.certificate.implementation.opening.ids.length =
+          (group.sourceExitUse offset inside used).types.length :=
+      (group.selected offset inside).rhs.certificate.implementation.opening.arity.trans
+        (group.sourceExitUse offset inside used).arity.symm
+    omega
+  simp only [SchemeUse.vector, List.getElem?_eq_getElem sourceInside, Option.getD_some]
+
+/-- The protected map has the combined scope needed by direct recursive
+    closure: source arguments retain their source-call scope, while all
+    fallthrough identities retain the ambient target scope. -/
+theorem GeneralizedGroup.protectedTypes_scoped
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (ambient : Nat → BoundsTy) (target : List Nat)
+    (ambientScope : ∀ i, BoundsScoped target (ambient i)) :
+    ∀ i, BoundsScoped
+      (((group.selected offset inside).rhs.certificate.interface.scheme.counts.captures ++ caller) ++ target)
+      (group.protectedTypes offset inside used ambient i) := by
+  intro i
+  unfold protectedTypes
+  cases located : (group.selected offset inside).rhs.certificate.implementation.opening.ids.idxOf? i with
+  | none =>
+      exact HMInterpretation.scope_mono (ambientScope i)
+        (fun _ member => List.mem_append_right _ member)
+  | some slot =>
+      exact HMInterpretation.scope_mono
+        (SchemeUse.vector_scope (group.sourceExitUse offset inside used).typesScoped slot)
+        (fun _ member => List.mem_append_left _ member)
+
+/-- Opening identities are fresh for the source scheme body, so a protected
+    map falls through to the ambient map on every source free identity. -/
+theorem GeneralizedGroup.protectedTypes_sourceAmbient
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (ambient : Nat → BoundsTy) (i : Nat)
+    (free : i ∈ (group.selected offset inside).rhs.certificate.interface.scheme.hm.body.freeVars) :
+    group.protectedTypes offset inside used ambient i = ambient i := by
+  apply group.protectedTypes_ambient offset inside used ambient i
+  intro present
+  exact (group.selected offset inside).rhs.certificate.implementation.opening.fresh i present
+    (group.selected offset inside).rhs.certificate.interface.scheme.hm.body List.mem_cons_self free
+
+/-- A fixed ambient map therefore remains fixed on every free identity of the
+    source scheme. -/
+theorem GeneralizedGroup.protectedTypes_sourceFixed
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (ambient : Nat → BoundsTy)
+    (ambientFixed : ∀ i ∈
+      (group.selected offset inside).rhs.certificate.interface.scheme.hm.body.freeVars,
+      ambient i = .fvar i) :
+    ∀ i ∈ (group.selected offset inside).rhs.certificate.interface.scheme.hm.body.freeVars,
+      group.protectedTypes offset inside used ambient i = .fvar i := by
+  intro i free
+  rw [group.protectedTypes_sourceAmbient offset inside used ambient i free]
+  exact ambientFixed i free
+
+/-- Member-certificate freshness extends ambient capture fixedness through the
+    protected map.  This is the exact environment premise consumed by the
+    generic member certificate; no exit-specific environment is reconstructed. -/
+theorem GeneralizedGroup.protectedTypes_internalFixed
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (ambient : Nat → BoundsTy) (ambientFixed : CapturesFixed ambient group.internal) :
+    CapturesFixed (group.protectedTypes offset inside used ambient) group.internal := by
+  intro b member
+  cases b with
+  | mono _ => trivial
+  | recursive c =>
+      intro i free
+      have absent : i ∉ (group.selected offset inside).rhs.certificate.implementation.opening.ids :=
+        fun present => (group.selected offset inside).rhs.certificate.implementation.typeFresh
+          c member i present free
+      rw [group.protectedTypes_ambient offset inside used ambient i absent]
+      exact ambientFixed _ member i free
+  | recursiveClosure _ => trivial
+  | exported s =>
+      intro i free
+      have absent : i ∉ (group.selected offset inside).rhs.certificate.implementation.opening.ids :=
+        fun present => (group.selected offset inside).rhs.certificate.implementation.exportTypeFresh
+          s member i present free
+      rw [group.protectedTypes_ambient offset inside used ambient i absent]
+      exact ambientFixed _ member i free
+  | closure _ _ _ => trivial
+
 /-- Select universal implementation evidence at the SAME total source/exit
     position used for the RHS certificate and fixed recursive contract. This
     cannot drop a member or select an independent member-local HM map. -/
@@ -686,6 +847,8 @@ theorem _root_.FHM.Bounds.HMDeclaredGroup.Checked.exitMapOuterTypesFixed
   refine {
     mono := ?_
     recursive := ?_
+    recursiveClosureFixedTypes := ?_
+    recursiveClosureCaptures := ?_
     closure := ?_ }
   · intro β member i free
     exact fixesOuter (g.outerMonoRepresented β member) free
@@ -696,6 +859,10 @@ theorem _root_.FHM.Bounds.HMDeclaredGroup.Checked.exitMapOuterTypesFixed
     refine ⟨(selected.rhs.stable.recursive contract fullMember).1, ?_⟩
     intro β argumentMember i free
     exact fixesOuter (g.outerFixedRepresented contract member β argumentMember) free
+  · intro contract member β argumentMember i free
+    exact fixesOuter (g.outerClosedFixedRepresented contract member β argumentMember) free
+  · intro contract member β argumentMember i free
+    exact fixesOuter (g.outerClosedCaptureRepresented contract member β argumentMember) free
   · intro s counts capturedTypes member β argumentMember i free
     exact fixesOuter (g.outerClosureRepresented s counts capturedTypes member β argumentMember) free
 
@@ -4562,7 +4729,7 @@ def localRhsInstances {s ann rhs found typeCaptures Δ calleeΔ caller useHM}
   have scope := RecursiveHMUniversal.replacementScope cert.opening.ids (SchemeUse.vector used.types)
     (SchemeUse.vector_scope used.typesScoped)
   let specialized := fromCertified cert used.countInstance f lc scope
-    ⟨by simp, by simp, by simp, by simp⟩ (by simp [CapturesFixed])
+    ⟨by simp, by simp, by simp, by simp, by simp, by simp, by simp⟩ (by simp [CapturesFixed])
   have instanceBody := ordinaryRhsToBodyAppend specialized.typing (by simp [OrdinaryEnv]) outer
   have widened := ScopedBodyDerives.subsumption instanceBody specialized.inclusion
   have withParent := widened.assuming (Δ' := Δ ++ used.countInstance.premises)
@@ -4597,6 +4764,11 @@ def recursiveFixedTypeCaptures (env : List Binding) : List Ty :=
     | .exported _ => []
     | .closure _ _ typeCaptures => typeCaptures.map Synth.BoundsTy.toTy
 
+@[irreducible] private def recursiveClosureTypeCaptures (env : List Binding) : List Ty :=
+  env.flatMap fun binding => match binding with
+    | .recursiveClosure c => c.typeCaptures.map Synth.BoundsTy.toTy
+    | _ => []
+
 private theorem recursiveTypeCaptures_represented {env c}
     (member : Binding.recursive c ∈ env) :
     c.template.hm.body ∈ recursiveTypeCaptures env :=
@@ -4625,6 +4797,75 @@ private theorem recursiveFixedTypeCaptures_closure {env s counts types β}
   apply List.mem_flatMap.mpr
   exact ⟨.closure s counts types, member, by
     simpa using List.mem_map.mpr ⟨β, argument, rfl⟩⟩
+
+private theorem recursiveFixedTypeCaptures_recursiveClosureFixed {env c β}
+    (member : Binding.recursiveClosure c ∈ env) (argument : β ∈ c.fixedTypes) :
+    Synth.BoundsTy.toTy β ∈ recursiveFixedTypeCaptures env := by
+  apply List.mem_flatMap.mpr
+  exact ⟨.recursiveClosure c, member, by
+    simpa using List.mem_map.mpr ⟨β, argument, rfl⟩⟩
+
+private theorem recursiveClosureTypeCaptures_represented {env c β}
+    (member : Binding.recursiveClosure c ∈ env) (argument : β ∈ c.typeCaptures) :
+    Synth.BoundsTy.toTy β ∈ recursiveClosureTypeCaptures env := by
+  unfold recursiveClosureTypeCaptures
+  apply List.mem_flatMap.mpr
+  exact ⟨.recursiveClosure c, member, by
+    simpa using List.mem_map.mpr ⟨β, argument, rfl⟩⟩
+
+@[irreducible] private def recursiveGuardTypeCaptures (env : List Binding) : List Ty :=
+  recursiveTypeCaptures env ++ recursiveFixedTypeCaptures env ++
+    recursiveClosureTypeCaptures env
+
+private theorem recursiveGuardTypeCaptures_recursive {env c}
+    (member : Binding.recursive c ∈ env) :
+    c.template.hm.body ∈ recursiveGuardTypeCaptures env := by
+  unfold recursiveGuardTypeCaptures
+  exact List.mem_append_left _
+    (List.mem_append_left _ (recursiveTypeCaptures_represented member))
+
+private theorem recursiveGuardTypeCaptures_mono {env β}
+    (member : Binding.mono β ∈ env) :
+    Synth.BoundsTy.toTy β ∈ recursiveGuardTypeCaptures env := by
+  unfold recursiveGuardTypeCaptures
+  exact List.mem_append_left _
+    (List.mem_append_left _ (recursiveTypeCaptures_mono member))
+
+private theorem recursiveGuardTypeCaptures_exported {env s}
+    (member : Binding.exported s ∈ env) :
+    s.hm.body ∈ recursiveGuardTypeCaptures env := by
+  unfold recursiveGuardTypeCaptures
+  exact List.mem_append_left _
+    (List.mem_append_left _ (recursiveTypeCaptures_exported member))
+
+private theorem recursiveGuardTypeCaptures_fixed {env c β}
+    (member : Binding.recursive c ∈ env) (argument : β ∈ c.fixed.types) :
+    Synth.BoundsTy.toTy β ∈ recursiveGuardTypeCaptures env := by
+  unfold recursiveGuardTypeCaptures
+  exact List.mem_append_left _
+    (List.mem_append_right _ (recursiveFixedTypeCaptures_represented member argument))
+
+private theorem recursiveGuardTypeCaptures_closedFixed {env c β}
+    (member : Binding.recursiveClosure c ∈ env) (argument : β ∈ c.fixedTypes) :
+    Synth.BoundsTy.toTy β ∈ recursiveGuardTypeCaptures env := by
+  unfold recursiveGuardTypeCaptures
+  exact List.mem_append_left _
+    (List.mem_append_right _
+      (recursiveFixedTypeCaptures_recursiveClosureFixed member argument))
+
+private theorem recursiveGuardTypeCaptures_closedCapture {env c β}
+    (member : Binding.recursiveClosure c ∈ env) (argument : β ∈ c.typeCaptures) :
+    Synth.BoundsTy.toTy β ∈ recursiveGuardTypeCaptures env := by
+  unfold recursiveGuardTypeCaptures
+  exact List.mem_append_right _
+    (recursiveClosureTypeCaptures_represented member argument)
+
+private theorem recursiveGuardTypeCaptures_closure {env s counts types β}
+    (member : Binding.closure s counts types ∈ env) (argument : β ∈ types) :
+    Synth.BoundsTy.toTy β ∈ recursiveGuardTypeCaptures env := by
+  unfold recursiveGuardTypeCaptures
+  exact List.mem_append_left _
+    (List.mem_append_right _ (recursiveFixedTypeCaptures_closure member argument))
 
 /-- Exact recursive RHS assumptions available at a body point. The root starts
     with the checked group contracts; closed mono binders may subsequently be
@@ -4671,7 +4912,7 @@ private def BodyWalkCapture.dispatch {env}
 private def emptyBodyCapture : BodyCapture [] where
   rhsEnv := []
   bodyEnv := rfl
-  captured := ⟨by simp, by simp, by simp, by simp⟩
+  captured := ⟨by simp, by simp, by simp, by simp, by simp, by simp, by simp⟩
   arguments := by simp [RecursiveArgumentsSupported]
   countClosed := by simp
   exportCountClosed := by simp
@@ -4699,7 +4940,7 @@ private def checkedGroupBodyCapture
     BodyCapture (g.exports.map Binding.exported) where
   rhsEnv := g.exports.map Binding.exported
   bodyEnv := ordinaryBodyEnv_exports g.exports
-  captured := ⟨by simp, by simp, by simp, by simp⟩
+  captured := ⟨by simp, by simp, by simp, by simp, by simp, by simp, by simp⟩
   arguments := by simp [RecursiveArgumentsSupported]
   countClosed := by intro c member; simp at member
   exportCountClosed := by
@@ -4729,6 +4970,9 @@ private def BodyCapture.extendGroup {env output metadata path vectors premises b
     refine {
       mono := ?_
       recursive := ?_
+      recursiveClosureFixedTypes := ?_
+      recursiveClosureCounts := ?_
+      recursiveClosureTypeCaptures := ?_
       closureCounts := ?_
       closureTypes := ?_ }
     · intro β member
@@ -4741,6 +4985,21 @@ private def BodyCapture.extendGroup {env output metadata path vectors premises b
       · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
         cases impossible
       · exact capture.captured.recursive contract outer β argument
+    · intro contract member β argument
+      rcases List.mem_append.mp member with inner | outer
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
+      · exact capture.captured.recursiveClosureFixedTypes contract outer β argument
+    · intro contract member count argument
+      rcases List.mem_append.mp member with inner | outer
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
+      · exact capture.captured.recursiveClosureCounts contract outer count argument
+    · intro contract member β argument
+      rcases List.mem_append.mp member with inner | outer
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
+      · exact capture.captured.recursiveClosureTypeCaptures contract outer β argument
     · intro s counts types member c hc
       rcases List.mem_append.mp member with inner | outer
       · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
@@ -4782,6 +5041,9 @@ private def BodyCapture.extendMono {env} (capture : BodyCapture env) (β : Bound
     refine {
       mono := ?_
       recursive := ?_
+      recursiveClosureFixedTypes := ?_
+      recursiveClosureCounts := ?_
+      recursiveClosureTypeCaptures := ?_
       closureCounts := ?_
       closureTypes := ?_ }
     · intro a member
@@ -4792,6 +5054,18 @@ private def BodyCapture.extendMono {env} (capture : BodyCapture env) (β : Bound
       rcases List.mem_cons.mp member with head | tail
       · cases head
       · exact capture.captured.recursive c tail a argument
+    · intro c member a argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureFixedTypes c tail a argument
+    · intro c member count argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureCounts c tail count argument
+    · intro c member a argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureTypeCaptures c tail a argument
     · intro s counts types member c hc
       rcases List.mem_cons.mp member with head | tail
       · cases head
@@ -4827,6 +5101,9 @@ private def BodyCapture.extendExported {env} (capture : BodyCapture env)
     refine {
       mono := ?_
       recursive := ?_
+      recursiveClosureFixedTypes := ?_
+      recursiveClosureCounts := ?_
+      recursiveClosureTypeCaptures := ?_
       closureCounts := ?_
       closureTypes := ?_ }
     · intro β member
@@ -4837,6 +5114,18 @@ private def BodyCapture.extendExported {env} (capture : BodyCapture env)
       rcases List.mem_cons.mp member with head | tail
       · cases head
       · exact capture.captured.recursive c tail a argument
+    · intro c member a argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureFixedTypes c tail a argument
+    · intro c member count argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureCounts c tail count argument
+    · intro c member a argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureTypeCaptures c tail a argument
     · intro source counts types member c hc
       rcases List.mem_cons.mp member with head | tail
       · cases head
@@ -4880,6 +5169,9 @@ private def BodyCapture.extendClosure {env} (capture : BodyCapture env)
     refine {
       mono := ?_
       recursive := ?_
+      recursiveClosureFixedTypes := ?_
+      recursiveClosureCounts := ?_
+      recursiveClosureTypeCaptures := ?_
       closureCounts := ?_
       closureTypes := ?_ }
     · intro β member
@@ -4890,6 +5182,18 @@ private def BodyCapture.extendClosure {env} (capture : BodyCapture env)
       rcases List.mem_cons.mp member with head | tail
       · cases head
       · exact capture.captured.recursive c tail β argument
+    · intro c member β argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureFixedTypes c tail β argument
+    · intro c member count argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureCounts c tail count argument
+    · intro c member β argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureTypeCaptures c tail β argument
     · intro source counts types member c inside
       rcases List.mem_cons.mp member with head | tail
       · cases head
@@ -4937,6 +5241,9 @@ private def FixedBodyCapture.extendGroup {env output metadata path vectors premi
     refine {
       mono := ?_
       recursive := ?_
+      recursiveClosureFixedTypes := ?_
+      recursiveClosureCounts := ?_
+      recursiveClosureTypeCaptures := ?_
       closureCounts := ?_
       closureTypes := ?_ }
     · intro β member
@@ -4949,6 +5256,21 @@ private def FixedBodyCapture.extendGroup {env output metadata path vectors premi
       · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
         cases impossible
       · exact capture.captured.recursive contract outer β argument
+    · intro contract member β argument
+      rcases List.mem_append.mp member with inner | outer
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
+      · exact capture.captured.recursiveClosureFixedTypes contract outer β argument
+    · intro contract member count argument
+      rcases List.mem_append.mp member with inner | outer
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
+      · exact capture.captured.recursiveClosureCounts contract outer count argument
+    · intro contract member β argument
+      rcases List.mem_append.mp member with inner | outer
+      · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+        cases impossible
+      · exact capture.captured.recursiveClosureTypeCaptures contract outer β argument
     · intro s counts types member c hc
       rcases List.mem_append.mp member with inner | outer
       · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
@@ -4971,6 +5293,9 @@ private def FixedBodyCapture.extendMono {env} (capture : FixedBodyCapture env) (
     refine {
       mono := ?_
       recursive := ?_
+      recursiveClosureFixedTypes := ?_
+      recursiveClosureCounts := ?_
+      recursiveClosureTypeCaptures := ?_
       closureCounts := ?_
       closureTypes := ?_ }
     · intro a member
@@ -4981,6 +5306,18 @@ private def FixedBodyCapture.extendMono {env} (capture : FixedBodyCapture env) (
       rcases List.mem_cons.mp member with head | tail
       · cases head
       · exact capture.captured.recursive c tail a argument
+    · intro c member a argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureFixedTypes c tail a argument
+    · intro c member count argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureCounts c tail count argument
+    · intro c member a argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureTypeCaptures c tail a argument
     · intro s counts types member c hc
       rcases List.mem_cons.mp member with head | tail
       · cases head
@@ -5002,6 +5339,9 @@ private def FixedBodyCapture.extendExported {env} (capture : FixedBodyCapture en
     refine {
       mono := ?_
       recursive := ?_
+      recursiveClosureFixedTypes := ?_
+      recursiveClosureCounts := ?_
+      recursiveClosureTypeCaptures := ?_
       closureCounts := ?_
       closureTypes := ?_ }
     · intro β member
@@ -5012,6 +5352,18 @@ private def FixedBodyCapture.extendExported {env} (capture : FixedBodyCapture en
       rcases List.mem_cons.mp member with head | tail
       · cases head
       · exact capture.captured.recursive c tail a argument
+    · intro c member a argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureFixedTypes c tail a argument
+    · intro c member count argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureCounts c tail count argument
+    · intro c member a argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursiveClosureTypeCaptures c tail a argument
     · intro source counts types member c hc
       rcases List.mem_cons.mp member with head | tail
       · cases head
@@ -5092,6 +5444,10 @@ private theorem declaredLocalArgumentTypesFixed
     (monoRepresented : ∀ β, .mono β ∈ env → Synth.BoundsTy.toTy β ∈ typeCaptures)
     (fixedRepresented : ∀ contract, .recursive contract ∈ env →
       ∀ β ∈ contract.fixed.types, Synth.BoundsTy.toTy β ∈ typeCaptures)
+    (closedFixedRepresented : ∀ contract, .recursiveClosure contract ∈ env →
+      ∀ β ∈ contract.fixedTypes, Synth.BoundsTy.toTy β ∈ typeCaptures)
+    (closedCaptureRepresented : ∀ contract, .recursiveClosure contract ∈ env →
+      ∀ β ∈ contract.typeCaptures, Synth.BoundsTy.toTy β ∈ typeCaptures)
     (closureRepresented : ∀ s counts types, .closure s counts types ∈ env →
       ∀ β ∈ types, Synth.BoundsTy.toTy β ∈ typeCaptures)
     (used : HMCountScheme.Use c.interface.scheme calleeΔ useHM caller) :
@@ -5106,6 +5462,8 @@ private theorem declaredLocalArgumentTypesFixed
   refine {
     mono := ?_
     recursive := ?_
+    recursiveClosureFixedTypes := ?_
+    recursiveClosureCaptures := ?_
     closure := ?_ }
   · intro β member i free
     have absent := fixesCapture (monoRepresented β member) free
@@ -5114,6 +5472,12 @@ private theorem declaredLocalArgumentTypesFixed
     refine ⟨(stable.recursive contract member).1, ?_⟩
     intro β argMember i free
     have absent := fixesCapture (fixedRepresented contract member β argMember) free
+    simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+  · intro contract member β argMember i free
+    have absent := fixesCapture (closedFixedRepresented contract member β argMember) free
+    simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+  · intro contract member β argMember i free
+    have absent := fixesCapture (closedCaptureRepresented contract member β argMember) free
     simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
   · intro s counts types member β argMember i free
     have absent := fixesCapture (closureRepresented s counts types member β argMember) free
@@ -5130,6 +5494,10 @@ private theorem inferredLocalArgumentTypesFixed
     (monoRepresented : ∀ β, .mono β ∈ env → Synth.BoundsTy.toTy β ∈ typeCaptures)
     (fixedRepresented : ∀ contract, .recursive contract ∈ env →
       ∀ β ∈ contract.fixed.types, Synth.BoundsTy.toTy β ∈ typeCaptures)
+    (closedFixedRepresented : ∀ contract, .recursiveClosure contract ∈ env →
+      ∀ β ∈ contract.fixedTypes, Synth.BoundsTy.toTy β ∈ typeCaptures)
+    (closedCaptureRepresented : ∀ contract, .recursiveClosure contract ∈ env →
+      ∀ β ∈ contract.typeCaptures, Synth.BoundsTy.toTy β ∈ typeCaptures)
     (closureRepresented : ∀ source counts types, .closure source counts types ∈ env →
       ∀ β ∈ types, Synth.BoundsTy.toTy β ∈ typeCaptures)
     (used : HMCountScheme.Use s calleeΔ useHM caller) :
@@ -5142,6 +5510,8 @@ private theorem inferredLocalArgumentTypesFixed
   refine {
     mono := ?_
     recursive := ?_
+    recursiveClosureFixedTypes := ?_
+    recursiveClosureCaptures := ?_
     closure := ?_ }
   · intro β member i free
     have absent := fixesCapture (monoRepresented β member) free
@@ -5150,6 +5520,12 @@ private theorem inferredLocalArgumentTypesFixed
     refine ⟨(identity.recursive contract member).1, ?_⟩
     intro β argMember i free
     have absent := fixesCapture (fixedRepresented contract member β argMember) free
+    simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+  · intro contract member β argMember i free
+    have absent := fixesCapture (closedFixedRepresented contract member β argMember) free
+    simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+  · intro contract member β argMember i free
+    have absent := fixesCapture (closedCaptureRepresented contract member β argMember) free
     simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
   · intro source counts types member β argMember i free
     have absent := fixesCapture (closureRepresented source counts types member β argMember) free
@@ -5240,10 +5616,10 @@ theorem localRhsInstances_runtimeReady {s ann rhs found typeCaptures Δ calleeΔ
         simpa only [SchemeUse.vector, atIndex, Option.getD_some] using
           arguments a (List.mem_of_getElem? atIndex)
   let specialized := fromCertified cert used.countInstance f lc scope
-    ⟨by simp, by simp, by simp, by simp⟩ (by simp [CapturesFixed])
+    ⟨by simp, by simp, by simp, by simp, by simp, by simp, by simp⟩ (by simp [CapturesFixed])
   have specializedReady := fromCertified_runtimeReady cert ready used.countInstance f lc scope
     (Runtime.Supported.argument cert.opening.ids _ vectorSupport)
-    ⟨by simp, by simp, by simp, by simp⟩ (by simp [CapturesFixed])
+    ⟨by simp, by simp, by simp, by simp, by simp, by simp, by simp⟩ (by simp [CapturesFixed])
   have bodyReady := ordinaryRhsReadyToBodyAppend specializedReady (by simp [OrdinaryEnv]) outer
   have demandEq : demand cert used.counts f = used.bounds := localRhsDemand cert used
   have demandSupport : Runtime.Supported used.bounds := by
@@ -5671,43 +6047,57 @@ private def freshLocalTypeIds (output : Expr) (arity : Nat) : List Nat :=
 private def freshGuardedLocalTypeIds (output : Expr) (guards : List Ty) (arity : Nat) : List Nat :=
   freshVars ((output.tyFreeVars ++ guards.flatMap Ty.freeVars).foldl Nat.max 0 + 1) arity
 
-/-- Everything needed to eliminate one machine-inferred, closed local RHS at
-    arbitrary HM instances.  Packaging the dependent fields here also keeps
-    the mutually recursive source walker from re-elaborating the certificate
-    construction at every recursive branch. -/
-private structure InferredExportPrepared {output path env}
-    (node : HMFoundView.AtNode output path) (captured : BodyCapture env) where
-  interface : HMCountScheme.Scheme
-  capturesClosed : interface.counts.captures = []
-  frame : LocalFrame interface [] node.inner.stripFound
-  cert : RecursiveHMUniversal.Certified interface
-    (ScopedHMInterpretation.AtNode.view node BoundsTy.fvar BoundsTy.bvar)
-    (recursiveTypeCaptures captured.rhsEnv ++
-      recursiveFixedTypeCaptures captured.rhsEnv ++
-      node.inner.stripFound.tyFreeVars.map Ty.fvar)
-    captured.rhsEnv node.inner.stripFound BoundsTy.fvar
-    (localSlots none BoundsTy.bvar (frame.owned.map BoundsTy.fvar))
-  owners : cert.opening.ids = frame.owned
-  instanceFixed : ∀ calleeΔ found caller
-    (used : HMCountScheme.Use interface calleeΔ found caller),
-    RecursiveHMEnvironment.TypesFixed
-      (argument cert.opening.ids (SchemeUse.vector used.types)) captured.rhsEnv
-  nodes : List Typed.NodeResult
-  runtimeReady : Option (PLift (ScopedDerives.RuntimeReady cert.typing))
-
-private def prepareInferredExport {output path env}
-    (node : HMFoundView.AtNode output path) (machine : PolyTy)
-    (quantified : List Nat) (captured : BodyCapture env) (schemes : BinderSchemeMap)
-    (ctors : CtorEnv) :
-    Except String (InferredExportPrepared node captured) := do
-  let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
-    recursiveFixedTypeCaptures captured.rhsEnv ++
-    node.inner.stripFound.tyFreeVars.map Ty.fvar
+private def prepareInferredLocated {output path env}
+    (node : HMFoundView.AtNode output path) (quantified : List Nat)
+    (captured : BodyCapture env) (schemes : BinderSchemeMap) (ctors : CtorEnv) :
+    Except String (RecursiveHMWalk.LocatedResult node BoundsTy.fvar BoundsTy.bvar
+      quantified [] quantified [] captured.rhsEnv) := do
   let located ← RecursiveHMWalk.checkLocated node BoundsTy.fvar BoundsTy.bvar
     quantified [] quantified [] captured.rhsEnv schemes none (ctors := ctors)
   unless located.typed.actual.freeInferables.isEmpty do
     throw "bounds: inferred polymorphic export has unresolved count origins"
-  let abstraction ← BinderBridge.abstract machine located.typed.actual typeCaptures
+  pure located
+
+private theorem inferredExport_closedShape {machine : PolyTy} {actual : BoundsTy}
+    {captures : List Ty} (abstraction : BinderBridge.Abstraction machine actual captures)
+    (normal : PLift (machine.body.eraseBounds = machine.body)) :
+    Synth.BoundsTy.toTy (BinderBridge.close abstraction.ids actual) = machine.body :=
+  abstraction.shape.trans normal.down
+
+/-- The syntax-directed phase of checking an inferred export.  This phase is
+    deliberately independent of the recursive-environment certificate: it
+    determines the closed source interface and checks the RHS against its
+    opening before the later closure-specific obligations are assembled. -/
+private structure InferredExportSeed {output path env}
+    (node : HMFoundView.AtNode output path) (captured : BodyCapture env) where
+  typeCaptures : List Ty
+  typeCapturesEq : typeCaptures = recursiveGuardTypeCaptures captured.rhsEnv ++
+    node.inner.stripFound.tyFreeVars.map Ty.fvar
+  interface : HMCountScheme.Scheme
+  capturesClosed : interface.counts.captures = []
+  opening : HMCountScheme.Opening interface
+    (ScopedHMInterpretation.AtNode.view node BoundsTy.fvar BoundsTy.bvar)
+    typeCaptures
+  typed : ScopedHMInterpretation.TypedChecked node BoundsTy.fvar BoundsTy.bvar
+    (interface.counts.quantified ++ interface.counts.captures) []
+    interface.counts.premises captured.rhsEnv
+    (interface.counts.quantified ++ interface.counts.captures)
+  inclusion : SemanticSub interface.counts.premises typed.actual opening.bounds
+  nodes : List Typed.NodeResult
+
+/-- Build the source/interface portion of an inferred export.  Keeping the
+    recursive guard list explicit here makes the later environment proof use
+    exactly the capture representation selected while opening the interface. -/
+private def prepareInferredExportSeed {output path env}
+    (node : HMFoundView.AtNode output path) (machine : PolyTy)
+    (quantified : List Nat) (captured : BodyCapture env) (schemes : BinderSchemeMap)
+    (ctors : CtorEnv) :
+    Except String (InferredExportSeed node captured) := do
+  let typeCaptures := recursiveGuardTypeCaptures captured.rhsEnv ++
+    node.inner.stripFound.tyFreeVars.map Ty.fvar
+  let located ← prepareInferredLocated node quantified captured schemes ctors
+  let abstraction ← BinderBridge.abstract machine located.typed.actual
+    typeCaptures
   let normal ← match BinderBridge.equalTy machine.body.eraseBounds machine.body with
     | some equality => pure equality
     | none => throw "bounds: inferred binder scheme is not bounds-erased"
@@ -5716,7 +6106,7 @@ private def prepareInferredExport {output path env}
     let counts : ScopedScheme.Scheme := ⟨quantified, [], [], countBody⟩
     if countWF : counts.wfBool = true then
       have shape : Synth.BoundsTy.toTy countBody = machine.body :=
-        abstraction.shape.trans normal.down
+        inferredExport_closedShape abstraction normal
       let interface : HMCountScheme.Scheme :=
         ⟨machine, counts, (Ty.bvarsBelow_iff machine.body).mp hmWF,
           ScopedScheme.Scheme.wfBool_sound countWF, shape⟩
@@ -5729,29 +6119,77 @@ private def prepareInferredExport {output path env}
           (interface.counts.quantified ++ interface.counts.captures) := by
         simpa only [interface, counts, List.append_nil] using located.typed
       let inclusion ← Typed.subtype interface.counts.premises typed.actual opening.bounds
-      let represented : ∀ c, .recursive c ∈ captured.rhsEnv →
-          c.template.hm.body ∈ typeCaptures := fun c member =>
-        List.mem_append_left _
-          (List.mem_append_left _ (recursiveTypeCaptures_represented member))
-      let exportsRepresented : ∀ s, .exported s ∈ captured.rhsEnv →
-          s.hm.body ∈ typeCaptures := fun s member =>
-        List.mem_append_left _
-          (List.mem_append_left _ (recursiveTypeCaptures_exported member))
-      let monoRepresented : ∀ β, .mono β ∈ captured.rhsEnv →
-          Synth.BoundsTy.toTy β ∈ typeCaptures := fun β member =>
-        List.mem_append_left _
-          (List.mem_append_left _ (recursiveTypeCaptures_mono member))
-      let fixedRepresented : ∀ c, .recursive c ∈ captured.rhsEnv →
-          ∀ β ∈ c.fixed.types, Synth.BoundsTy.toTy β ∈ typeCaptures :=
-        fun c member β argument => List.mem_append_left _
-          (List.mem_append_right _
-            (recursiveFixedTypeCaptures_represented member argument))
-      let closureRepresented : ∀ s counts types, .closure s counts types ∈ captured.rhsEnv →
-          ∀ β ∈ types, Synth.BoundsTy.toTy β ∈ typeCaptures :=
-        fun s counts types member β argument => List.mem_append_left _
-          (List.mem_append_right _
-            (recursiveFixedTypeCaptures_closure member argument))
-      let baseCert := RecursiveHMUniversal.fromScopedChecked node opening typed inclusion.down
+      pure ⟨typeCaptures, rfl, interface, rfl, opening, typed, inclusion.down, located.nodes⟩
+    else throw "bounds: inferred polymorphic export count scheme is not closed"
+  else throw "bounds: inferred binder scheme has an out-of-scope HM slot"
+
+/-- Everything needed to eliminate one machine-inferred, closed local RHS at
+    arbitrary HM instances.  Packaging the dependent fields here also keeps
+    the mutually recursive source walker from re-elaborating the certificate
+    construction at every recursive branch. -/
+private structure InferredExportPrepared {output path env}
+    (node : HMFoundView.AtNode output path) (captured : BodyCapture env) where
+  typeCaptures : List Ty
+  typeCapturesEq : typeCaptures = recursiveGuardTypeCaptures captured.rhsEnv ++
+    node.inner.stripFound.tyFreeVars.map Ty.fvar
+  interface : HMCountScheme.Scheme
+  capturesClosed : interface.counts.captures = []
+  frame : LocalFrame interface [] node.inner.stripFound
+  cert : RecursiveHMUniversal.Certified interface
+    (ScopedHMInterpretation.AtNode.view node BoundsTy.fvar BoundsTy.bvar)
+    typeCaptures
+    captured.rhsEnv node.inner.stripFound BoundsTy.fvar
+    (localSlots none BoundsTy.bvar (frame.owned.map BoundsTy.fvar))
+  owners : cert.opening.ids = frame.owned
+  instanceFixed : ∀ calleeΔ found caller
+    (used : HMCountScheme.Use interface calleeΔ found caller),
+    RecursiveHMEnvironment.TypesFixed
+      (argument cert.opening.ids (SchemeUse.vector used.types)) captured.rhsEnv
+  nodes : List Typed.NodeResult
+  runtimeReady : Option (PLift (ScopedDerives.RuntimeReady cert.typing))
+
+private def InferredExportSeed.finish {output path env}
+    {node : HMFoundView.AtNode output path} {captured : BodyCapture env}
+    (seed : InferredExportSeed node captured) :
+    Except String (InferredExportPrepared node captured) := do
+  let interface := seed.interface
+  let opening := seed.opening
+  let typed := seed.typed
+  let inclusion := seed.inclusion
+  let nodes := seed.nodes
+  let represented : ∀ c, .recursive c ∈ captured.rhsEnv →
+          c.template.hm.body ∈ seed.typeCaptures := fun c member => by
+        rw [seed.typeCapturesEq]
+        exact List.mem_append_left _ (recursiveGuardTypeCaptures_recursive member)
+  let exportsRepresented : ∀ s, .exported s ∈ captured.rhsEnv →
+          s.hm.body ∈ seed.typeCaptures := fun s member => by
+        rw [seed.typeCapturesEq]
+        exact List.mem_append_left _ (recursiveGuardTypeCaptures_exported member)
+  let monoRepresented : ∀ β, .mono β ∈ captured.rhsEnv →
+          Synth.BoundsTy.toTy β ∈ seed.typeCaptures := fun β member => by
+        rw [seed.typeCapturesEq]
+        exact List.mem_append_left _ (recursiveGuardTypeCaptures_mono member)
+  let fixedRepresented : ∀ c, .recursive c ∈ captured.rhsEnv →
+          ∀ β ∈ c.fixed.types, Synth.BoundsTy.toTy β ∈ seed.typeCaptures :=
+        fun c member β argument => by
+          rw [seed.typeCapturesEq]
+          exact List.mem_append_left _ (recursiveGuardTypeCaptures_fixed member argument)
+  let closedFixedRepresented : ∀ c, .recursiveClosure c ∈ captured.rhsEnv →
+          ∀ β ∈ c.fixedTypes, Synth.BoundsTy.toTy β ∈ seed.typeCaptures :=
+        fun c member β argument => by
+          rw [seed.typeCapturesEq]
+          exact List.mem_append_left _ (recursiveGuardTypeCaptures_closedFixed member argument)
+  let closedCaptureRepresented : ∀ c, .recursiveClosure c ∈ captured.rhsEnv →
+          ∀ β ∈ c.typeCaptures, Synth.BoundsTy.toTy β ∈ seed.typeCaptures :=
+        fun c member β argument => by
+          rw [seed.typeCapturesEq]
+          exact List.mem_append_left _ (recursiveGuardTypeCaptures_closedCapture member argument)
+  let closureRepresented : ∀ s counts types, .closure s counts types ∈ captured.rhsEnv →
+          ∀ β ∈ types, Synth.BoundsTy.toTy β ∈ seed.typeCaptures :=
+        fun s counts types member β argument => by
+          rw [seed.typeCapturesEq]
+          exact List.mem_append_left _ (recursiveGuardTypeCaptures_closure member argument)
+  let baseCert := RecursiveHMUniversal.fromScopedChecked node opening typed inclusion
         (fun c member i owned free =>
           opening.fresh i owned c.template.hm.body
             (List.mem_cons_of_mem _ (represented c member)) free)
@@ -5764,37 +6202,50 @@ private def prepareInferredExport {output path env}
         (fun s member i inside => by
           rw [captured.exportCountClosed s member] at inside
           cases inside)
-      let frame : LocalFrame interface [] node.inner.stripFound :=
+  let frame : LocalFrame interface [] node.inner.stripFound :=
         { owned := opening.ids
           arity := opening.arity
           distinct := opening.distinct
           fresh := by
             intro i owned named
             rcases List.mem_append.mp named with rhsNamed | schemeNamed
-            · exact opening.fresh i owned (Ty.fvar i)
-                (List.mem_cons_of_mem _ (List.mem_append_right _
-                  (List.mem_map.mpr ⟨i, rhsNamed, rfl⟩))) (by simp [Ty.freeVars])
+            · have capturedVar : Ty.fvar i ∈ seed.typeCaptures := by
+                rw [seed.typeCapturesEq]
+                exact List.mem_append_right _ (List.mem_map.mpr ⟨i, rhsNamed, rfl⟩)
+              exact opening.fresh i owned (Ty.fvar i)
+                (List.mem_cons_of_mem _ capturedVar) (by simp [Ty.freeVars])
             · exact opening.fresh i owned interface.hm.body List.mem_cons_self schemeNamed
           countFresh := by simp
-          capturesScoped := by simp [interface, counts] }
-      let cert : RecursiveHMUniversal.Certified interface
+          capturesScoped := by
+            intro i inside
+            rw [seed.capturesClosed] at inside
+            cases inside }
+  let cert : RecursiveHMUniversal.Certified interface
           (ScopedHMInterpretation.AtNode.view node BoundsTy.fvar BoundsTy.bvar)
-          typeCaptures captured.rhsEnv node.inner.stripFound BoundsTy.fvar
+          seed.typeCaptures captured.rhsEnv node.inner.stripFound BoundsTy.fvar
           (localSlots none BoundsTy.bvar (frame.owned.map BoundsTy.fvar)) := by
         simpa only [localSlots] using baseCert
-      have owners : cert.opening.ids = frame.owned := by
+  have owners : cert.opening.ids = frame.owned := by
         simp only [cert, baseCert, RecursiveHMUniversal.fromScopedChecked, frame]
-      let identityFixed ← RecursiveHMEnvironment.checkTypesFixed BoundsTy.fvar captured.rhsEnv
-      let instanceFixed := fun calleeΔ found caller
+  let identityFixed ← RecursiveHMEnvironment.checkTypesFixed BoundsTy.fvar captured.rhsEnv
+  let instanceFixed := fun calleeΔ found caller
           (used : HMCountScheme.Use interface calleeΔ found caller) => by
         have fixed := inferredLocalArgumentTypesFixed opening identityFixed.down
-          monoRepresented fixedRepresented closureRepresented used
+          monoRepresented fixedRepresented closedFixedRepresented closedCaptureRepresented
+          closureRepresented used
         simpa only [cert, baseCert, RecursiveHMUniversal.fromScopedChecked] using fixed
-      let ready := typed.runtimeReady.map fun sourceReady => ⟨by
+  let ready := typed.runtimeReady.map fun sourceReady => ⟨by
         simpa only [cert, baseCert, RecursiveHMUniversal.fromScopedChecked] using sourceReady.down⟩
-      pure ⟨interface, rfl, frame, cert, owners, instanceFixed, located.nodes, ready⟩
-    else throw "bounds: inferred polymorphic export count scheme is not closed"
-  else throw "bounds: inferred binder scheme has an out-of-scope HM slot"
+  pure ⟨seed.typeCaptures, seed.typeCapturesEq, interface, seed.capturesClosed, frame, cert,
+    owners, instanceFixed, nodes, ready⟩
+
+private def prepareInferredExport {output path env}
+    (node : HMFoundView.AtNode output path) (machine : PolyTy)
+    (quantified : List Nat) (captured : BodyCapture env) (schemes : BinderSchemeMap)
+    (ctors : CtorEnv) :
+    Except String (InferredExportPrepared node captured) := do
+  let seed ← prepareInferredExportSeed node machine quantified captured schemes ctors
+  seed.finish
 
 private def descendBodySource {output e child : Expr} {path suffix : CorePath}
     (source : Option (PLift (output.atCorePath path = some e)))
@@ -6007,8 +6458,7 @@ private def walkGeneralizedHoleLetRec
                     (.letRec path 0) :=
                   ⟨annotation, path ++ [.letRecRhs 0],
                     .letRec sourceProof.down rfl rfl, node⟩
-                let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
-                  recursiveFixedTypeCaptures captured.rhsEnv
+                let typeCaptures := recursiveGuardTypeCaptures captured.rhsEnv
                 let initialReconciled ← reconcileGeneralizedHole declaration proposal typeCaptures
                 let initialEnv := captured.rhsEnv.map
                   (mapBinding initialReconciled.interpretation initialReconciled.interpretationLC)
@@ -6875,8 +7325,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                         (fixedCase := fun _ =>
                           throw "bounds: generalized local export inside a fixed recursive implementation is not wired yet")
                         (exitedCase := fun captured => do
-                        let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
-                          recursiveFixedTypeCaptures captured.rhsEnv
+                        let typeCaptures := recursiveGuardTypeCaptures captured.rhsEnv
                         let signatureIds := freshGuardedLocalTypeIds sourceOutput typeCaptures
                           annotation.paramCount
                         let reconciled ← HMDeclaredReconciliation.check declaration quantified []
@@ -6884,10 +7333,10 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                         let stable ← RecursiveHMEnvironment.checkTypesFixed
                           reconciled.interpretation captured.rhsEnv
                         let checked ← HMDeclaredRHS.check reconciled captured.rhsEnv schemes ctors
-                        let represented := fun c member => List.mem_append_left _
-                          (recursiveTypeCaptures_represented member)
-                        let exportsRepresented := fun s member => List.mem_append_left _
-                          (recursiveTypeCaptures_exported member)
+                        let represented := fun c member =>
+                          recursiveGuardTypeCaptures_recursive member
+                        let exportsRepresented := fun s member =>
+                          recursiveGuardTypeCaptures_exported member
                         let countFresh := fun c member i inside => by
                           rw [captured.countClosed c member] at inside
                           cases inside
@@ -6923,12 +7372,15 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                             (used : HMCountScheme.Use reconciled.interface.scheme calleeΔ found localCaller) =>
                           (by
                             have originalFixed := declaredLocalArgumentTypesFixed reconciled stable.down
-                              (fun β member => List.mem_append_left _
-                                (recursiveTypeCaptures_mono member))
-                              (fun contract member β argument => List.mem_append_right _
-                                (recursiveFixedTypeCaptures_represented member argument))
-                              (fun source counts types member β argument => List.mem_append_right _
-                                (recursiveFixedTypeCaptures_closure member argument)) used
+                              (fun β member => recursiveGuardTypeCaptures_mono member)
+                              (fun contract member β argument =>
+                                recursiveGuardTypeCaptures_fixed member argument)
+                              (fun contract member β argument =>
+                                recursiveGuardTypeCaptures_closedFixed member argument)
+                              (fun contract member β argument =>
+                                recursiveGuardTypeCaptures_closedCapture member argument)
+                              (fun source counts types member β argument =>
+                                recursiveGuardTypeCaptures_closure member argument) used
                             have certFixed : RecursiveHMEnvironment.TypesFixed
                                 (argument cert.opening.ids (SchemeUse.vector used.types))
                                 (captured.rhsEnv.map
@@ -6974,12 +7426,15 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                                 rhsScope instances
                                 (fun calleeΔ found localCaller used arguments => by
                                   have originalFixed := declaredLocalArgumentTypesFixed reconciled stable.down
-                                    (fun β member => List.mem_append_left _
-                                      (recursiveTypeCaptures_mono member))
-                                    (fun contract member β argument => List.mem_append_right _
-                                      (recursiveFixedTypeCaptures_represented member argument))
-                                    (fun source counts types member β argument => List.mem_append_right _
-                                      (recursiveFixedTypeCaptures_closure member argument)) used
+                                    (fun β member => recursiveGuardTypeCaptures_mono member)
+                                    (fun contract member β argument =>
+                                      recursiveGuardTypeCaptures_fixed member argument)
+                                    (fun contract member β argument =>
+                                      recursiveGuardTypeCaptures_closedFixed member argument)
+                                    (fun contract member β argument =>
+                                      recursiveGuardTypeCaptures_closedCapture member argument)
+                                    (fun source counts types member β argument =>
+                                      recursiveGuardTypeCaptures_closure member argument) used
                                   have certFixed : RecursiveHMEnvironment.TypesFixed
                                       (argument cert.opening.ids (SchemeUse.vector used.types))
                                       (captured.rhsEnv.map
@@ -7081,8 +7536,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           captured
           (openCase := throw "bounds: nested recursive group lacks a represented lexical environment")
           (fixedCase := fun captured => do
-          let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
-            recursiveFixedTypeCaptures captured.rhsEnv
+          let typeCaptures := recursiveGuardTypeCaptures captured.rhsEnv
           let assembled ← HMDeclaredCoordinates.check sourceOutput metadata path captured.captureIds Δ
             typeCaptures captured.rhsEnv schemes ctors
           let g := assembled.checked
@@ -7134,8 +7588,7 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           let ordinary (_ : Unit) : Except String
               (BodyResult ids rows caller Δ env
                 (.found hm (.letRec annotations rhss body))) := do
-            let typeCaptures := recursiveTypeCaptures captured.rhsEnv ++
-              recursiveFixedTypeCaptures captured.rhsEnv
+            let typeCaptures := recursiveGuardTypeCaptures captured.rhsEnv
             let assembled ← HMDeclaredCoordinates.check sourceOutput metadata path [] Δ
               typeCaptures captured.rhsEnv schemes ctors
             let g := assembled.checked
