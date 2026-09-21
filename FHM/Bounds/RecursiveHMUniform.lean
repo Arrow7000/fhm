@@ -1999,6 +1999,9 @@ theorem rhsToBody {types slots ids rows Δ env e β}
   | letMono annotation _ _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
         ScopedBodyDerives.letMono annotation ihr ihb
+  | letPinned pinned mono _ _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
+        ScopedBodyDerives.letPinned pinned mono ihr ihb
   | letRecMono annotation _ sub _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
         ScopedBodyDerives.letRecMono annotation ihr sub ihb
@@ -2106,6 +2109,9 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
   | letMono annotation _ _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letMono annotation ihr ihb
+  | letPinned pinned mono _ _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        ScopedBodyDerives.letPinned pinned mono ihr ihb
   | letRecMono annotation _ sub _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letRecMono annotation ihr sub ihb
@@ -2188,6 +2194,9 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
   | letMono annotation _ _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letMono annotation (ihr ordinary) (ihb ordinary.consMono)
+  | letPinned pinned mono _ _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        ScopedBodyDerives.letPinned pinned mono (ihr ordinary) (ihb ordinary.consMono)
   | letRecMono annotation _ sub _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letRecMono annotation (ihr ordinary.consMono) sub
@@ -3596,6 +3605,10 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
   | letMono annotation _ _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         BodyDerives.RuntimeReady.letMono annotation (ihr arguments) (ihb arguments.consMono)
+  | letPinned pinned mono _ demand _ ihr ihb =>
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        BodyDerives.RuntimeReady.letPinned pinned mono (ihr arguments) demand
+          (ihb arguments.consMono)
   | letRecMono annotation sub _ demand _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         BodyDerives.RuntimeReady.letRecMono annotation sub (ihr arguments.consMono)
@@ -3712,6 +3725,11 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
       intro ordinary tail
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         BodyDerives.RuntimeReady.letMono annotation (ihr ordinary tail)
+          (ihb ordinary.consMono tail)
+  | letPinned pinned mono _ demand _ ihr ihb =>
+      intro ordinary tail
+      simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
+        BodyDerives.RuntimeReady.letPinned pinned mono (ihr ordinary tail) demand
           (ihb ordinary.consMono tail)
   | letRecMono annotation sub _ demand _ ihr ihb =>
       intro ordinary tail

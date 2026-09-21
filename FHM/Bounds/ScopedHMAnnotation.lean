@@ -194,6 +194,164 @@ inductive PinsList (free slots : Nat → BoundsTy) (ids : List Nat) (rows : Bind
       PinsList free slots ids rows (a :: as) (actual :: actuals) (demand :: demands)
 end
 
+mutual
+theorem Pins.types {free slots ids rows τ actual demand}
+    (h : Pins free slots ids rows τ actual demand) (f : Nat → BoundsTy) :
+    Pins (fun i => SchemeSpecialization.mapFree f (free i))
+      (fun i => SchemeSpecialization.mapFree f (slots i)) ids rows τ
+      (SchemeSpecialization.mapFree f actual) (SchemeSpecialization.mapFree f demand) := by
+  cases h with
+  | prim => exact .prim
+  | fvar => exact .fvar
+  | bvar => exact .bvar
+  | arrow ha hb => exact .arrow (ha.types f) (hb.types f)
+  | bl hlo hhi he => exact .bl hlo hhi (he.types f)
+  | bareList he => exact .bareList (he.types f)
+  | custom hn hs => exact .custom hn (hs.types f)
+
+theorem PinsList.types {free slots ids rows τs actuals demands}
+    (h : PinsList free slots ids rows τs actuals demands) (f : Nat → BoundsTy) :
+    PinsList (fun i => SchemeSpecialization.mapFree f (free i))
+      (fun i => SchemeSpecialization.mapFree f (slots i)) ids rows τs
+      (SchemeSpecialization.mapFreeList f actuals)
+      (SchemeSpecialization.mapFreeList f demands) := by
+  cases h with
+  | nil => exact .nil
+  | cons hh ht => exact .cons (hh.types f) (ht.types f)
+end
+
+theorem PinsCount.counts {ids rows slot actual demand}
+    (h : PinsCount ids rows slot actual demand) (outer : Bindings) :
+    PinsCount ids (CountAlgebra.compose outer rows) slot
+      (count outer actual) (count outer demand) := by
+  cases h
+  · exact .hole
+  · rename_i c hscope
+    have base := @PinsCount.solid ids (CountAlgebra.compose outer rows) c
+      (count outer actual) hscope
+    simpa only [CountAlgebra.count_compose] using base
+
+mutual
+theorem Pins.counts {free slots ids rows τ actual demand}
+    (h : Pins free slots ids rows τ actual demand) (outer : Bindings) :
+    Pins (fun i => bounds outer (free i)) (fun i => bounds outer (slots i)) ids
+      (CountAlgebra.compose outer rows) τ (bounds outer actual) (bounds outer demand) := by
+  cases h with
+  | prim => exact .prim
+  | fvar => exact .fvar
+  | bvar => exact .bvar
+  | arrow ha hb => exact .arrow (ha.counts outer) (hb.counts outer)
+  | bl hlo hhi he => exact .bl (hlo.counts outer) (hhi.counts outer) (he.counts outer)
+  | bareList he => exact .bareList (he.counts outer)
+  | custom hn hs => exact .custom hn (hs.counts outer)
+
+theorem PinsList.counts {free slots ids rows τs actuals demands}
+    (h : PinsList free slots ids rows τs actuals demands) (outer : Bindings) :
+    PinsList (fun i => bounds outer (free i)) (fun i => bounds outer (slots i)) ids
+      (CountAlgebra.compose outer rows) τs
+      (boundsList outer actuals) (boundsList outer demands) := by
+  cases h with
+  | nil => exact .nil
+  | cons hh ht => exact .cons (hh.counts outer) (ht.counts outer)
+end
+
+mutual
+theorem Pins.shape {free slots ids rows τ actual demand}
+    (h : Pins free slots ids rows τ actual demand) :
+    Synth.BoundsTy.toTy demand = ScopedHMInterpretation.ty free slots τ := by
+  cases h with
+  | prim | fvar | bvar => simp only [Synth.BoundsTy.toTy, ScopedHMInterpretation.ty]
+  | arrow ha hb => simp only [Synth.BoundsTy.toTy, ScopedHMInterpretation.ty, ha.shape, hb.shape]
+  | bl _ _ he =>
+      simpa only [Synth.BoundsTy.toTy, ScopedHMInterpretation.ty, listTy] using
+        congrArg listTy he.shape
+  | bareList he =>
+      simpa only [Synth.BoundsTy.toTy, ScopedHMInterpretation.ty,
+        ScopedHMInterpretation.tys, listTy] using congrArg listTy he.shape
+  | custom _ hs =>
+      simpa only [Synth.BoundsTy.toTy, ScopedHMInterpretation.ty] using
+        congrArg (Ty.customTy _) hs.shape
+
+theorem PinsList.shape {free slots ids rows τs actuals demands}
+    (h : PinsList free slots ids rows τs actuals demands) :
+    demands.map Synth.BoundsTy.toTy = ScopedHMInterpretation.tys free slots τs := by
+  cases h with
+  | nil => rfl
+  | cons hh ht => simp only [List.map_cons, ScopedHMInterpretation.tys, hh.shape, ht.shape]
+end
+
+mutual
+theorem Pins.congrFree {free free' slots ids rows τ actual demand}
+    (h : Pins free slots ids rows τ actual demand)
+    (agree : ∀ i ∈ τ.freeVars, free i = free' i) :
+    Pins free' slots ids rows τ actual demand := by
+  cases h with
+  | prim => exact .prim
+  | fvar =>
+      rw [agree _ (by simp [Ty.freeVars])]
+      exact .fvar
+  | bvar => exact .bvar
+  | arrow ha hb =>
+      exact .arrow
+        (ha.congrFree (fun i hi => agree i (by simp [Ty.freeVars, hi])))
+        (hb.congrFree (fun i hi => agree i (by simp [Ty.freeVars, hi])))
+  | bl hlo hhi he =>
+      exact .bl hlo hhi (he.congrFree (fun i hi => agree i (by simp [Ty.freeVars, hi])))
+  | bareList he =>
+      exact .bareList (he.congrFree (fun i hi => agree i
+        (by simp [Ty.freeVars, TyList.freeVars, hi])))
+  | custom hn hs =>
+      exact .custom hn (hs.congrFree (by simpa [Ty.freeVars] using agree))
+
+theorem PinsList.congrFree {free free' slots ids rows τs actuals demands}
+    (h : PinsList free slots ids rows τs actuals demands)
+    (agree : ∀ i ∈ TyList.freeVars τs, free i = free' i) :
+    PinsList free' slots ids rows τs actuals demands := by
+  cases h with
+  | nil => exact .nil
+  | cons hh ht =>
+      exact .cons
+        (hh.congrFree (fun i hi => agree i (by simp [TyList.freeVars, hi])))
+        (ht.congrFree (fun i hi => agree i (by simp [TyList.freeVars, hi])))
+end
+
+mutual
+theorem Pins.congrSlots {free slots slots' ids rows τ actual demand n}
+    (h : Pins free slots ids rows τ actual demand)
+    (bounded : ContainsBvarsUpTo n τ) (agree : ∀ i < n, slots i = slots' i) :
+    Pins free slots' ids rows τ actual demand := by
+  cases h with
+  | prim => exact .prim
+  | fvar => exact .fvar
+  | bvar =>
+      cases bounded with
+      | bvar small => rw [agree _ small]; exact .bvar
+  | arrow ha hb =>
+      cases bounded with
+      | arrow ba bb => exact .arrow (ha.congrSlots ba agree) (hb.congrSlots bb agree)
+  | bl hlo hhi he =>
+      cases bounded with
+      | bl be => exact .bl hlo hhi (he.congrSlots be agree)
+  | bareList he =>
+      cases bounded with
+      | customTy all =>
+          exact .bareList (he.congrSlots (all _ (by simp)) agree)
+  | custom hn hs =>
+      cases bounded with
+      | customTy all => exact .custom hn (hs.congrSlots all agree)
+
+theorem PinsList.congrSlots {free slots slots' ids rows τs actuals demands n}
+    (h : PinsList free slots ids rows τs actuals demands)
+    (bounded : ∀ τ ∈ τs, ContainsBvarsUpTo n τ)
+    (agree : ∀ i < n, slots i = slots' i) :
+    PinsList free slots' ids rows τs actuals demands := by
+  cases h with
+  | nil => exact .nil
+  | cons hh ht =>
+      exact .cons (hh.congrSlots (bounded _ (by simp)) agree)
+        (ht.congrSlots (fun τ member => bounded τ (by simp [member])) agree)
+end
+
 private def pinCount (ids : List Nat) (rows : Bindings) (slot : CountSlot)
     (actual : Count) : Except String (Σ demand, PLift (PinsCount ids rows slot actual demand)) := do
   match slot with
@@ -273,6 +431,124 @@ def Pinned.assuming {free slots ids rows caller Δ Δ' τ actual}
   shape := p.shape
   inScope := p.inScope
   inclusion := p.inclusion.assuming premises
+
+def Pinned.congrFree {free free' slots ids rows caller Δ τ actual}
+    (p : Pinned free slots ids rows caller Δ τ actual)
+    (agree : ∀ i ∈ τ.freeVars, free i = free' i) :
+    Pinned free' slots ids rows caller Δ τ actual where
+  demand := p.demand
+  provenance := p.provenance.congrFree agree
+  finite := p.finite
+  shape := (p.provenance.congrFree agree).shape
+  inScope := p.inScope
+  inclusion := p.inclusion
+
+def Pinned.congrSlots {free slots slots' ids rows caller Δ τ actual n}
+    (p : Pinned free slots ids rows caller Δ τ actual)
+    (bounded : ContainsBvarsUpTo n τ) (agree : ∀ i < n, slots i = slots' i) :
+    Pinned free slots' ids rows caller Δ τ actual where
+  demand := p.demand
+  provenance := p.provenance.congrSlots bounded agree
+  finite := p.finite
+  shape := (p.provenance.congrSlots bounded agree).shape
+  inScope := p.inScope
+  inclusion := p.inclusion
+
+mutual
+private theorem boundsScope_mono {ids target : List Nat} {beta : BoundsTy}
+    (h : BoundsScoped ids beta) (includeIds : ∀ i ∈ ids, i ∈ target) :
+    BoundsScoped target beta := by
+  cases beta with
+  | prim | bvar | fvar => trivial
+  | arrow a b => exact ⟨boundsScope_mono h.1 includeIds, boundsScope_mono h.2 includeIds⟩
+  | list lo hi elem =>
+      exact ⟨countScope_mono h.1 includeIds, countScope_mono h.2.1 includeIds,
+        boundsScope_mono h.2.2 includeIds⟩
+  | custom name args => exact boundsListScope_mono h includeIds
+termination_by sizeOf beta
+
+private theorem boundsListScope_mono {ids target : List Nat} {betas : List BoundsTy}
+    (h : BoundsListScoped ids betas) (includeIds : ∀ i ∈ ids, i ∈ target) :
+    BoundsListScoped target betas := by
+  cases betas with
+  | nil => trivial
+  | cons beta betas =>
+      exact ⟨boundsScope_mono h.1 includeIds, boundsListScope_mono h.2 includeIds⟩
+termination_by sizeOf betas
+
+private theorem countScope_mono {ids target : List Nat} {c : Count}
+    (h : Scope.CountScoped ids c) (includeIds : ∀ i ∈ ids, i ∈ target) :
+    Scope.CountScoped target c := by
+  induction c with
+  | lit | inf => trivial
+  | var v =>
+      cases v with
+      | mk kind i =>
+          cases kind with
+          | rigid => exact includeIds i h
+          | inferable => cases h
+  | add a b ha hb | mul a b ha hb | min a b ha hb | max a b ha hb =>
+      exact ⟨ha h.1, hb h.2⟩
+  | pred a ha => exact ha h
+end
+
+mutual
+private theorem mapFree_inScope {caller target : List Nat} {beta : BoundsTy}
+    (h : BoundsScoped caller beta) (f : Nat → BoundsTy)
+    (scope : ∀ i, BoundsScoped target (f i)) :
+    BoundsScoped (caller ++ target) (SchemeSpecialization.mapFree f beta) := by
+  cases beta with
+  | prim | bvar => trivial
+  | fvar i => exact boundsScope_mono (scope i) (fun _ hi => List.mem_append_right _ hi)
+  | arrow a b => exact ⟨mapFree_inScope h.1 f scope, mapFree_inScope h.2 f scope⟩
+  | list lo hi elem =>
+      exact ⟨countScope_mono h.1 (fun _ hc => List.mem_append_left _ hc),
+        countScope_mono h.2.1 (fun _ hc => List.mem_append_left _ hc),
+        mapFree_inScope h.2.2 f scope⟩
+  | custom name args => exact mapFreeList_inScope h f scope
+termination_by sizeOf beta
+
+private theorem mapFreeList_inScope {caller target : List Nat} {betas : List BoundsTy}
+    (h : BoundsListScoped caller betas) (f : Nat → BoundsTy)
+    (scope : ∀ i, BoundsScoped target (f i)) :
+    BoundsListScoped (caller ++ target) (SchemeSpecialization.mapFreeList f betas) := by
+  cases betas with
+  | nil => trivial
+  | cons beta betas =>
+      exact ⟨mapFree_inScope h.1 f scope, mapFreeList_inScope h.2 f scope⟩
+termination_by sizeOf betas
+end
+
+def Pinned.types {free slots ids rows caller Δ τ actual}
+    (p : Pinned free slots ids rows caller Δ τ actual)
+    (f : Nat → BoundsTy) (target : List Nat)
+    (scope : ∀ i, BoundsScoped target (f i)) :
+    Pinned (fun i => SchemeSpecialization.mapFree f (free i))
+      (fun i => SchemeSpecialization.mapFree f (slots i)) ids rows
+      (caller ++ target) Δ τ (SchemeSpecialization.mapFree f actual) where
+  demand := SchemeSpecialization.mapFree f p.demand
+  provenance := p.provenance.types f
+  finite := p.finite
+  shape := (p.provenance.types f).shape
+  inScope := mapFree_inScope p.inScope f scope
+  inclusion := SchemeSpecialization.subtype f p.inclusion
+
+def Pinned.counts {free slots ids rows caller Δ τ actual}
+    (p : Pinned free slots ids rows caller Δ τ actual)
+    (outer : Bindings) (outerFinite : Finite outer) (target : List Nat)
+    (scope : ∀ row ∈ outer, Scope.CountScoped target row.2) :
+    Pinned (fun i => bounds outer (free i)) (fun i => bounds outer (slots i)) ids
+      (CountAlgebra.compose outer rows) (caller ++ target) (Δ.map (constraint outer)) τ
+      (bounds outer actual) where
+  demand := bounds outer p.demand
+  provenance := p.provenance.counts outer
+  finite := CountAlgebra.finite_compose outerFinite p.finite
+  shape := (p.provenance.counts outer).shape
+  inScope := ScopedScheme.bounds_scoped p.inScope
+    (fun row member => countScope_mono (scope row member)
+      (fun _ hc => List.mem_append_right _ hc))
+    (fun _ member _ => List.mem_append_left _ member)
+  inclusion := CountSubstitution.subtype outer outerFinite p.inclusion
 
 mutual
 /-- Does a carried type contain an endpoint hole that must be filled from an

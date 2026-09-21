@@ -128,6 +128,12 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
       ScopedHMAnnotation.BindingOK types slots ids rows Δ ann actual →
       ScopedDerives types slots ids rows Δ env rhs actual → ScopedDerives types slots ids rows Δ (.mono actual :: env) body result →
       ScopedDerives types slots ids rows Δ env (.letIn ann rhs body) result
+  | letPinned {env annotation rhs body actual result} :
+      (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ annotation.body actual) →
+      annotation.paramCount = 0 →
+      ScopedDerives types slots ids rows Δ env rhs actual →
+      ScopedDerives types slots ids rows Δ (.mono pinned.demand :: env) body result →
+      ScopedDerives types slots ids rows Δ env (.letIn (some annotation) rhs body) result
   /-- A singleton HM-monomorphic recursive binding exposes one public demand.
       Its implementation is checked under that same recursive assumption and
       independently included in it; this is not polymorphic recursion. -/
@@ -216,7 +222,7 @@ theorem ScopedDerives.primLitBounds {types slots ids rows Δ env e β}
       cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | ctor | cons | consPartial | pair | pairPartial |
       varMono | varRecursive | varExported | app | lambda | letMono | letRecMono |
-      letRecMonoGroup | matchList | matchBool | matchPair | matchNominal | matchOpaque =>
+      letPinned | letRecMonoGroup | matchList | matchBool | matchPair | matchNominal | matchOpaque =>
         intro p source; cases source
 
 /-- Compatibility view: the original API leaves lexical slots unchanged. -/
@@ -254,6 +260,9 @@ theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
   | subsumption _ _ ih => exact ih
   | lambda _ _ ih => simpa only [Expr.varsBelow, List.length_cons] using ih
   | letMono _ _ _ ihr ihb =>
+      simp only [Expr.varsBelow, Bool.and_eq_true]
+      exact ⟨ihr, by simpa only [List.length_cons] using ihb⟩
+  | letPinned _ _ _ _ ihr ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
       exact ⟨ihr, by simpa only [List.length_cons] using ihb⟩
   | letRecMono _ _ _ _ ihr ihb =>
@@ -397,6 +406,12 @@ theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
       exact .letMono
         (ScopedHMAnnotation.BindingOK.congrFree annotation
           (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (ihr (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (ihb (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | letPinned pinned mono _ _ ihr ihb =>
+      intro agree
+      exact .letPinned
+        (pinned.congrFree (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) mono
         (ihr (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
         (ihb (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
   | letRecMono annotation _ sub _ ihr ihb =>
@@ -573,6 +588,11 @@ theorem ScopedDerives.sourceSlots {types slots slots' ids rows Δ env e β n}
   | letMono annotation _ _ ihr ihb =>
       have moved := letMono_sourceSlots annotation bounded agree
       exact .letMono moved.1 (ihr moved.2.1) (ihb moved.2.2)
+  | letPinned pinned mono _ _ ihr ihb =>
+      simp only [Expr.TyBvarBounded] at bounded
+      exact .letPinned
+        (pinned.congrSlots (by simpa [mono] using bounded.1) agree) mono
+        (ihr (by simpa [mono] using bounded.2.1)) (ihb bounded.2.2)
   | letRecMono annotation _ sub _ ihr ihb =>
       have moved := letRecMono_sourceSlots annotation bounded agree
       exact .letRecMono moved.1 (ihr moved.2.1) sub (ihb moved.2.2)
@@ -1070,6 +1090,13 @@ inductive RuntimeReady {types slots ids rows} :
       {hrhs : ScopedDerives types slots ids rows Δ env rhs actual}
       {hbody : ScopedDerives types slots ids rows Δ (.mono actual :: env) body result} :
       RuntimeReady hrhs → RuntimeReady hbody → RuntimeReady (.letMono annOK hrhs hbody)
+  | letPinned {annotation : PolyTy} {actual : BoundsTy}
+      (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ annotation.body actual)
+      (mono : annotation.paramCount = 0)
+      {hrhs : ScopedDerives types slots ids rows Δ env rhs actual}
+      {hbody : ScopedDerives types slots ids rows Δ (.mono pinned.demand :: env) body result} :
+      RuntimeReady hrhs → Runtime.Supported pinned.demand → RuntimeReady hbody →
+      RuntimeReady (.letPinned pinned mono hrhs hbody)
   | letRecMono (annOK : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann demand)
       {hrhs : ScopedDerives types slots ids rows Δ (.mono demand :: env) rhs actual}
       (sub : SemanticSub Δ actual demand)
@@ -1143,6 +1170,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β}
   | subsumption _ _ demand => exact demand
   | lambda _ param _ result => exact .arrow param result
   | letMono _ _ _ _ body => exact body
+  | letPinned _ _ _ _ _ _ body => exact body
   | letRecMono _ _ _ _ _ _ body => exact body
   | letRecMonoGroup _ _ _ _ _ _ _ _ bodySupport => exact bodySupport
   | matchList _ _ _ _ _ _ result => exact result
@@ -1231,6 +1259,22 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           have rhsClosed := e.closes (by assumption)
           let opened := (e.down hb hf (by omega : j ≤ j + 1)).extendMono _ _ rhsClosed
             (ihr j premises (e.down hb hf (by omega)))
+          have bodySafe := ihb j premises opened
+          apply Runtime.TermAt.prepend SmallStep.Step.letReduce
+          change Runtime.TermAt bound free σ j _ (Expr.substN 0 (_ :: e.terms) _) at bodySafe
+          rw [Runtime.closing_singleton e.terms e.closed _ rhsClosed]
+          exact bodySafe
+  | letPinned pinned mono rhsReady demandSupport bodyReady ihr ihb =>
+      intro budget premises e
+      cases budget with
+      | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+      | succ j =>
+          have rhsClosed := e.closes (by assumption)
+          have widened := (ihr j premises (e.down hb hf (by omega))).of_values
+            (Runtime.subtype pinned.inclusion rhsReady.supported demandSupport
+              bound free σ premises)
+          let opened := (e.down hb hf (by omega : j ≤ j + 1)).extendMono
+            pinned.demand _ rhsClosed widened
           have bodySafe := ihb j premises opened
           apply Runtime.TermAt.prepend SmallStep.Step.letReduce
           change Runtime.TermAt bound free σ j _ (Expr.substN 0 (_ :: e.terms) _) at bodySafe
@@ -1545,6 +1589,8 @@ theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
   | subsumption _ sub ih => exact .subsumption (ih hp) (sub.assuming hp)
   | lambda hparam _ ih => exact .lambda (param_assuming hparam hp) (ih hp)
   | letMono hbind _ _ ihr ihb => exact .letMono (binding_assuming hbind hp) (ihr hp) (ihb hp)
+  | letPinned pinned mono _ _ ihr ihb =>
+      exact .letPinned (pinned.assuming hp) mono (ihr hp) (ihb hp)
   | letRecMono hbind _ sub _ ihr ihb =>
       exact .letRecMono (binding_assuming hbind hp) (ihr hp) (sub.assuming hp) (ihb hp)
   | letRecMonoGroup demands annotationCount demandCount annotationsOK rhssTyping inclusions bodyTyping
@@ -1608,6 +1654,9 @@ theorem ScopedDerives.RuntimeReady.assuming {types slots ids rows Δ Δ' env e �
       exact .lambda (param_assuming annotation hp) support (ih hp)
   | letMono annotation _ _ ihr ihb =>
       exact .letMono (binding_assuming annotation hp) (ihr hp) (ihb hp)
+  | @letPinned caller pathΔ env rhs body result annotation actual pinned mono hrhs hbody
+      rhsReady demand bodyReady ihr ihb =>
+      exact .letPinned (pinned.assuming hp) mono (ihr hp) demand (ihb hp)
   | letRecMono annotation sub _ demand _ ihr ihb =>
       exact .letRecMono (binding_assuming annotation hp) (sub.assuming hp)
         (ihr hp) demand (ihb hp)
@@ -1687,6 +1736,12 @@ theorem ScopedDerives.RuntimeReady.sourceFree {types types' slots : Nat → Boun
         (ScopedHMAnnotation.BindingOK.congrFree annotation
           (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
         (ihr (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+        (ihb (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | letPinned pinned mono _ demand _ ihr ihb =>
+      intro agree
+      exact .letPinned
+        (pinned.congrFree (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) mono
+        (ihr (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) demand
         (ihb (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
   | letRecMono annotation sub _ demand _ ihr ihb =>
       intro agree
@@ -1799,6 +1854,12 @@ theorem ScopedDerives.RuntimeReady.sourceSlots {types slots slots' : Nat → Bou
       intro bounded
       have moved := letMono_sourceSlots annotation bounded agree
       exact .letMono moved.1 (ihr moved.2.1) (ihb moved.2.2)
+  | letPinned pinned mono _ demand _ ihr ihb =>
+      intro bounded
+      simp only [Expr.TyBvarBounded] at bounded
+      exact .letPinned
+        (pinned.congrSlots (by simpa [mono] using bounded.1) agree) mono
+        (ihr (by simpa [mono] using bounded.2.1)) demand (ihb bounded.2.2)
   | letRecMono annotation sub _ demand _ ihr ihb =>
       intro bounded
       have moved := letRecMono_sourceSlots annotation bounded agree
@@ -2024,6 +2085,10 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
   | letMono hp _ _ ihr ihb =>
       exact .letMono (binding_types hp f) (ihr fresh) (by
         simpa [mapBinding] using ihb (captures_cons fresh))
+  | letPinned pinned mono _ _ ihr ihb =>
+      let movedPinned := pinned.types f target scope
+      refine .letPinned movedPinned mono (ihr fresh) ?_
+      simpa [mapBinding] using ihb (captures_cons fresh)
   | letRecMono hp _ sub _ ihr ihb =>
       refine .letRecMono (binding_types hp f) ?_
         (SchemeSpecialization.subtype f sub) ?_
@@ -2243,6 +2308,10 @@ theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : L
   | letMono hp _ _ ihr ihb =>
       exact .letMono (binding_counts hp outer hf) (ihr fresh)
         (by simpa [mapCountBinding] using ihb (count_captures_cons fresh))
+  | letPinned pinned mono _ _ ihr ihb =>
+      let movedPinned := pinned.counts outer hf target scope
+      refine .letPinned movedPinned mono (ihr fresh) ?_
+      simpa [mapCountBinding] using ihb (count_captures_cons fresh)
   | letRecMono hp _ sub _ ihr ihb =>
       refine .letRecMono (binding_counts hp outer hf) ?_
         (CountSubstitution.subtype outer hf sub) ?_
@@ -2409,6 +2478,15 @@ theorem ScopedDerives.RuntimeReady.counts (outer : Bindings) (hf : Finite outer)
   | letMono annotation _ _ ihr ihb =>
       exact .letMono (binding_counts annotation outer hf) (ihr fresh)
         (by simpa [mapCountBinding] using ihb (count_captures_cons fresh))
+  | @letPinned caller pathΔ env rhs body result annotation actual pinned mono hrhs hbody
+      rhsReady demand bodyReady ihr ihb =>
+      let movedPinned := pinned.counts outer hf target scope
+      refine .letPinned (pinned := movedPinned) (mono := mono)
+        (hbody := by
+          simpa [movedPinned, mapCountBinding] using
+            transportScopedCounts outer hf target scope hbody (count_captures_cons fresh))
+        (ihr fresh) (demand.counts outer) ?_
+      simpa [movedPinned, mapCountBinding] using ihb (count_captures_cons fresh)
   | matchList coverage patterns bodies subs scrutReady branchesReady support ihs ihb =>
       rename_i pathΔ env' scrut lo hi elem branches result actuals hs
       have movedBodies : ∀ i br (atIndex : branches[i]? = some br),
@@ -2557,6 +2635,15 @@ theorem ScopedDerives.RuntimeReady.types (f : Nat → BoundsTy)
   | letMono annotation _ _ ihr ihb =>
       exact .letMono (binding_types annotation f) (ihr fresh)
         (by simpa [mapBinding] using ihb (captures_cons fresh))
+  | @letPinned caller pathΔ env rhs body result annotation actual pinned mono hrhs hbody
+      rhsReady demand bodyReady ihr ihb =>
+      let movedPinned := pinned.types f target scope
+      refine .letPinned (pinned := movedPinned) (mono := mono)
+        (hbody := by
+          simpa [movedPinned, mapBinding] using
+            transportScopedTypes f hf target scope hbody (captures_cons fresh))
+        (ihr fresh) (demand.types f arguments) ?_
+      simpa [movedPinned, mapBinding] using ihb (captures_cons fresh)
   | matchList coverage patterns bodies subs scrutReady branchesReady support ihs ihb =>
       rename_i pathΔ env' scrut lo hi elem branches result actuals hs
       have movedBodies : ∀ i br (atIndex : branches[i]? = some br),
