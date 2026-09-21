@@ -139,6 +139,7 @@ roots = [
   "FHM.Bounds.RecursiveHMClosedExitRuntime", # Runtime readiness and semantic realization of statically closed exits
   "FHM.Bounds.RecursiveHMClosedExports", # Source-order, lookup and closure-normal invariants for body export environments
   "FHM.Bounds.RecursiveHMClosedExportEnvironment", # Use-indexed runtime fixed point for body-visible closed group exits
+  "FHM.Bounds.RecursiveHMClosedInternalRealizer", # Top-level observation-budget realization of closed recursive assumptions
   "FHM.Bounds.RecursiveHMSpecializableEnvironment", # Kripke runtime witnesses for nested recursive environments
   "FHM.Bounds.RecursiveHMUniformTests", # Permuted mutual vectors, member-local counts, preserved full caller bounds and closed-template capture guards
   "FHM.Bounds.HMFoundView", # Shared HM interpretation reads exact-node payload views without rewriting artifacts or paths
