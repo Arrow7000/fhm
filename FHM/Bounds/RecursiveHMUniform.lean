@@ -2858,6 +2858,14 @@ theorem RuntimeReady.congr
   cases same
   exact ready
 
+theorem RuntimeReady.castExpr
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding} {e e' : Expr} {β : BoundsTy}
+    (same : e = e') {h : ScopedBodyDerives types slots ids rows Δ env e β}
+    (ready : RuntimeReady h) : RuntimeReady (same ▸ h) := by
+  cases same
+  exact ready
+
 theorem RuntimeReady.castEnv
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Δ : List Constraint} {env env' : List BodyBinding} {e : Expr} {β : BoundsTy}
@@ -3031,6 +3039,23 @@ def TypingSpecializes.ordinaryAppend
   exact ⟨envEq ▸ ScopedBodyDerives.ordinaryAppend specialized.typing mappedTail⟩
 
 #print axioms TypingSpecializes.ordinaryAppend
+
+theorem TypingSpecializes.congr
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding} {e : Expr} {β : BoundsTy}
+    {h h' : ScopedBodyDerives types slots ids rows Δ env e β}
+    (stable : TypingSpecializes h) : TypingSpecializes h' := by
+  have same : h = h' := Subsingleton.elim _ _
+  cases same
+  exact stable
+
+theorem TypingSpecializes.castExpr
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding} {e e' : Expr} {β : BoundsTy}
+    (same : e = e') {h : ScopedBodyDerives types slots ids rows Δ env e β}
+    (stable : TypingSpecializes h) : TypingSpecializes (same ▸ h) := by
+  cases same
+  exact stable
 
 /-- The common recursive-RHS core retains its existing specialization theorem
     when embedded into the generalized-body judgment. -/
@@ -5160,6 +5185,50 @@ def ScopedBodyCertificate.ofOrdinary
   exact BodyDerives.TypingSpecializes.ordinaryAppend tail source.derivation.specializes
 
 #print axioms ScopedBodyCertificate.ofOrdinary
+
+/-- Exact-node variant used by declared-member certification.  This is the
+    common-judgment half of the deep adapter: it preserves the original found
+    node, report paths, static specialization and any available runtime proof. -/
+def ScopedBodyCertificate.ofLocated
+    {output : Expr} {path : CorePath} (node : HMFoundView.AtNode output path)
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {caller : List Nat} {Δ : List Constraint} {env : List Binding}
+    (located : RecursiveHMWalk.LocatedResult node types slots ids rows caller Δ env)
+    (arguments : RecursiveArgumentsSupported env)
+    (tail : List BodyBinding := []) :
+    ScopedBodyCertificate types slots ids rows caller Δ
+      (ordinaryBodyEnv env ++ tail) (.found node.original node.inner) := by
+  let baseTyping := rhsToBodyAppend located.typed.derivation tail
+  have stripEq : node.inner.stripFound =
+      (Expr.found node.original node.inner).stripFound := by
+    simp only [Expr.stripFound]
+  let typing : ScopedBodyDerives types slots ids rows Δ
+      (ordinaryBodyEnv env ++ tail)
+      (Expr.found node.original node.inner).stripFound located.typed.actual :=
+    stripEq ▸ baseTyping
+  let runtimeReady : Option (PLift (BodyDerives.RuntimeReady typing)) :=
+    located.typed.runtimeReady.map (fun ready => by
+      have sourceReady : ScopedDerives.RuntimeReady located.typed.derivation :=
+        ScopedDerives.RuntimeReady.congr ready.down
+      exact ⟨BodyDerives.RuntimeReady.castExpr stripEq
+        (rhsReadyToBodyAppend sourceReady arguments tail)⟩)
+  let result : ScopedBodyResult types slots ids rows caller Δ
+      (ordinaryBodyEnv env ++ tail) (.found node.original node.inner) :=
+    { hm := node.original
+      bounds := located.typed.actual
+      root := rfl
+      shape := by simpa only [ScopedHMInterpretation.AtNode.view] using
+        located.typed.checked.shape
+      typing := typing
+      inScope := located.typed.checked.inScope
+      nodes := located.nodes
+      runtimeReady := runtimeReady }
+  refine ⟨result, ?_⟩
+  exact BodyDerives.TypingSpecializes.castExpr stripEq
+    (BodyDerives.TypingSpecializes.ordinaryAppend tail
+      located.typed.derivation.specializes)
+
+#print axioms ScopedBodyCertificate.ofLocated
 
 /-- Identity-reader compatibility view used by whole-program checking. -/
 abbrev BodyResult := ScopedBodyResult BoundsTy.fvar BoundsTy.bvar
