@@ -50,6 +50,22 @@ def GeneralizedGroup.closedRuntimeReadyTop
       sourceReady sourceDemandSupported ambientSupported bound free sigma hb hf
       (tail := []) rfl enclosing internal'
     simpa only [ordinaryBodyEnv, List.map_nil, List.append_nil] using realized
+  fixed bound free sigma hb hf budget enclosing := by
+    have enclosingTerms : enclosing.terms = [] := by
+      apply List.eq_nil_of_length_eq_zero
+      simpa only [fixedBodyEnv] using enclosing.arity
+    let internal := closedInternalRealizerTop group outer outerFinite target outerScope
+      ambient ambientLC ambientScope sourceReady sourceDemandSupported ambientSupported
+      bound free sigma hb hf
+    have internal' : ClosedInternalRealizer group outer target ambient bound free sigma
+        enclosing.terms := by
+      rw [enclosingTerms]
+      exact internal
+    have realized := GeneralizedGroup.closedExportEnvironmentCaptured group outer outerFinite target outerScope
+      ambient ambientLC ambientScope (by intro scheme member; simp at member)
+      sourceReady sourceDemandSupported ambientSupported bound free sigma hb hf
+      (tail := []) rfl enclosing internal'
+    simpa only [fixedBodyEnv, List.append_nil] using realized
 
 #print axioms GeneralizedGroup.closedRuntimeReadyTop
 

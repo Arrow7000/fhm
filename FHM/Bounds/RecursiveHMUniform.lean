@@ -1525,6 +1525,14 @@ structure GeneralizedGroup.ClosedRuntimeReady
         (group.closedExports outer ambient ++ ordinaryBodyEnv outerEnv) //
       e.terms = Runtime.recursiveTerms group.annotations
         (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
+  fixed : ∀ (bound free : Runtime.TypeEnv) (σ : Assign)
+    (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat)
+    (enclosing : BodyEnvAt bound free σ budget (fixedBodyEnv outerEnv)),
+    { e : BodyEnvAt bound free σ budget
+        (group.closedExports outer ambient ++ fixedBodyEnv outerEnv) //
+      e.terms = Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
 
 /-- All generalized exports are realized by Core's original source-ordered
     recursive replacements, using the fixed-map member theorem at each use. -/
@@ -3605,6 +3613,13 @@ inductive RuntimeReady :
         group.body result} :
       group.RuntimeReady →
       RuntimeReady hbody → RuntimeReady (.letRecFixed group hbody)
+  | letRecFixedClosed
+      (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+      {hbody : ScopedBodyDerives types slots ids rows Δ
+        (group.closedExports rows types ++ fixedBodyEnv outerEnv)
+        group.body result} :
+      group.ClosedRuntimeReady rows types →
+      RuntimeReady hbody → RuntimeReady (.letRecFixedClosed group hbody)
 
 theorem RuntimeReady.congr
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
@@ -3823,6 +3838,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | letRec _ _ _ _ body => exact body
   | letRecClosed _ _ _ body => exact body
   | letRecFixed _ _ _ body => exact body
+  | letRecFixedClosed _ _ _ body => exact body
 
 /-- Fundamental theorem for the supported generalized-body derivation. Closed
     group introduction discharges recursive assumptions from the actual checked
@@ -4552,6 +4568,40 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
             (.letRec group.annotations closedRhss
               (group.body.substN group.rhss.length previous.terms))
           exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
+  | letRecFixedClosed group groupReady bodyReady ihbody =>
+      intro budget premises e
+      cases budget with
+      | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+      | succ budget =>
+          let previous := e.down hb hf (by omega : budget ≤ budget + 1)
+          let realized := groupReady.fixed bound free σ hb hf budget previous
+          have bodySafe := ihbody budget premises realized.val
+          rw [realized.property] at bodySafe
+          let closedRhss := closeOuterRhss group.rhss previous.terms
+          let recursive := Runtime.recursiveTerms group.annotations closedRhss
+          have closedScope : ∀ rhs ∈ closedRhss,
+              rhs.varsBelow group.rhss.length = true := by
+            let outerRhs := BodyEnvAt.toFixedEnvAt previous
+            apply closeOuterRhss_scoped outerRhs
+            simpa only [fixedBodyEnv, List.length_map, Nat.add_comm] using
+              group.rhssScoped
+          have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+            apply Runtime.recursiveTerms_closed
+            simpa only [closedRhss, closeOuterRhss_length] using closedScope
+          have composed := Runtime.closing_compose previous.terms recursive previous.closed
+            recursiveClosed group.body 0
+          have recursiveLength : recursive.length = group.rhss.length := by
+            simp only [recursive, Runtime.recursiveTerms, List.length_map,
+              closedRhss, closeOuterRhss_length]
+          rw [Nat.zero_add, recursiveLength] at composed
+          rw [← composed] at bodySafe
+          have sameTerms : previous.terms = e.terms := rfl
+          rw [← sameTerms]
+          simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+          change Runtime.TermAt bound free σ (budget + 1) _
+            (.letRec group.annotations closedRhss
+              (group.body.substN group.rhss.length previous.terms))
+          exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
 
 #print axioms RuntimeReady.supported
 #print axioms RuntimeReady.termAt
@@ -4674,6 +4724,8 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
       exact .letRecClosed group groupReady (ihb hp)
   | letRecFixed group groupReady _ ihb =>
       exact .letRecFixed group groupReady (ihb hp)
+  | letRecFixedClosed group groupReady _ ihb =>
+      exact .letRecFixedClosed group groupReady (ihb hp)
 
 #print axioms RuntimeReady.assuming
 
