@@ -1,4 +1,4 @@
-import FHM.Bounds.RecursiveHMClosedInternalRealizer
+import FHM.Bounds.RecursiveHMPointwiseClosedExport
 
 /-! # Runtime readiness of top-level closed generalized groups
 
@@ -66,6 +66,20 @@ def GeneralizedGroup.closedRuntimeReadyTop
       sourceReady sourceDemandSupported ambientSupported bound free sigma hb hf
       (tail := []) rfl enclosing internal'
     simpa only [fixedBodyEnv, List.append_nil] using realized
+  specializable bound free sigma hb hf budget enclosing := by
+    let extended := GeneralizedGroup.extendSpecializableEnvAt group outer outerFinite target outerScope
+      ambient ambientLC ambientScope (by intro scheme member; simp at member)
+      sourceReady sourceDemandSupported ambientSupported
+      (by intro beta member; simp at member)
+      (by intro beta member; simp at member)
+      bound free sigma hb hf budget enclosing
+    refine ⟨extended, ?_⟩
+    exact GeneralizedGroup.extendSpecializableEnvAt_fixed_terms group outer outerFinite target
+      outerScope ambient ambientLC ambientScope (by intro scheme member; simp at member)
+      sourceReady sourceDemandSupported ambientSupported
+      (by intro beta member; simp at member)
+      (by intro beta member; simp at member)
+      bound free sigma hb hf budget enclosing
 
 #print axioms GeneralizedGroup.closedRuntimeReadyTop
 

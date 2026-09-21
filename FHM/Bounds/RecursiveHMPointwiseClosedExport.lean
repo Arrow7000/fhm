@@ -539,4 +539,36 @@ def GeneralizedGroup.extendSpecializableEnvAt
     rw [tailTerms]
     exact fixedRaw.property
 
+theorem GeneralizedGroup.extendSpecializableEnvAt_fixed_terms
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (outer : Bindings) (outerFinite : Finite outer)
+    (target : List Nat) (outerScope : ∀ row ∈ outer, Scope.CountScoped target row.2)
+    (ambient : Nat → BoundsTy)
+    (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC)
+    (ambientScope : ∀ i, BoundsScoped target (ambient i))
+    (normal : ClosureNormal outerEnv)
+    (sourceReady : ∀ offset (inside : offset < group.exports.length),
+      ScopedDerives.RuntimeReady
+        (group.selected offset inside).rhs.certificate.implementation.typing)
+    (sourceDemandSupported : ∀ offset (inside : offset < group.exports.length),
+      Runtime.Supported
+        (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (ambientSupported : ∀ i, Runtime.Supported (ambient i))
+    (ambientCounts : ∀ beta, .mono beta ∈ outerEnv → bounds outer beta = beta)
+    (ambientTypes : ∀ beta, .mono beta ∈ outerEnv →
+      ∀ i ∈ (Synth.BoundsTy.toTy beta).freeVars, ambient i = .fvar i)
+    (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat) (lexical : SpecializableEnvAt bound free sigma budget outerEnv) :
+    (GeneralizedGroup.extendSpecializableEnvAt group outer outerFinite target outerScope ambient ambientLC
+      ambientScope normal sourceReady sourceDemandSupported ambientSupported ambientCounts
+      ambientTypes bound free sigma hb hf budget lexical).fixed.terms =
+      Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss lexical.fixed.terms) ++ lexical.fixed.terms := by
+  unfold GeneralizedGroup.extendSpecializableEnvAt
+  exact (closedExportEnvironmentNestedFixedAt group outer outerFinite target outerScope
+    ambient ambientLC ambientScope normal sourceReady sourceDemandSupported ambientSupported
+    ambientCounts ambientTypes bound free sigma hb hf budget lexical).property
+
 end FHM.Bounds.RecursiveHMClosedExit

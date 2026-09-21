@@ -17,28 +17,6 @@ namespace FHM.Bounds.RecursiveHMUniform
 
 open RecursiveHMJudgement SchemeSpecialization CountSubstitution ScopedScheme
 
-/-- The side conditions under which `ScopedDerives.closeRecursive` transports
-    a source derivation.  Packaging them makes the runtime witness range over
-    exactly the static worlds which can arise below a generalized group. -/
-structure EnvSpecialization (env : List Binding) where
-  outer : Bindings
-  types : Nat → BoundsTy
-  outerFinite : Finite outer
-  countTarget : List Nat
-  outerScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2
-  typesLC : ∀ i, (Synth.BoundsTy.toTy (types i)).IsLC
-  typeTarget : List Nat
-  typesScope : ∀ i, BoundsScoped typeTarget (types i)
-  fresh : CloseRecursiveFresh outer types env
-  typesSupported : ∀ i, Runtime.Supported (types i)
-
-/-- A closing world fixes the monomorphic bindings already present in its
-lexical environment.  This is intentionally separate from
-`CloseRecursiveFresh`: the latter is the broad static transport condition and
-is vacuous on mono bindings. -/
-def MonoStable (env : List Binding) (outer : Bindings) (types : Nat → BoundsTy) : Prop :=
-  ∀ β, .mono β ∈ env → mapFree types (bounds outer β) = β
-
 namespace MonoStable
 
 theorem lookup_append (left right : Bindings) (i : Nat) :
@@ -199,32 +177,7 @@ theorem GeneralizedGroup.protectedMonoTypes
       rw [group.protectedTypes_opening offset inside used ambient i slot located]
       simpa only [f, SchemeSpecialization.argument, located] using fixed
 
-/-- Semantic recursive-specialization worlds strengthen the broad static
-world with mono stability.  Static body-view transport continues to quantify
-over `EnvSpecialization`; only runtime realizers demand this refinement. -/
-structure StableEnvSpecialization (env : List Binding) extends EnvSpecialization env where
-  monoCounts : ∀ β, .mono β ∈ env → bounds outer β = β
-  monoTypes : ∀ β, .mono β ∈ env →
-    ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, types i = .fvar i
-
-theorem StableEnvSpecialization.monoStable {env} (world : StableEnvSpecialization env) :
-    MonoStable env world.outer world.types :=
-  MonoStable.of_parts world.monoCounts world.monoTypes
-
-/-- A single closed term vector, observed through all three environments used
-    by the recursive-body fundamental theorem.  The equalities are essential:
-    merely having three unrelated inhabitants would not justify closing a
-    nested group's source terms once and reusing them in every specialization. -/
-structure SpecializableEnvAt (bound free : Runtime.TypeEnv) (sigma : Assign)
-    (budget : Nat) (env : List Binding) where
-  fixed : BodyEnvAt bound free sigma budget (fixedBodyEnv env)
-  ordinary : BodyEnvAt bound free sigma budget (ordinaryBodyEnv env)
-  ordinaryTerms : ordinary.terms = fixed.terms
-  specialized : ∀ world : StableEnvSpecialization env,
-    EnvAt bound free sigma budget
-      (closeRecursiveEnv world.outer world.types env)
-  specializedTerms : ∀ world, (specialized world).terms = fixed.terms
-
+/- Semantic recursive-specialization world constructors. -/
 namespace EnvAt
 
 /-- Reindex an environment without changing its runtime term vector. -/

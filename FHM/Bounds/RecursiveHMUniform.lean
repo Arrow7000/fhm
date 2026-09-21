@@ -1304,6 +1304,41 @@ abbrev BodyBindingAt := BindingAt
 
 abbrev BodyEnvAt := EnvAt
 
+structure EnvSpecialization (env : List Binding) where
+  outer : Bindings
+  types : Nat → BoundsTy
+  outerFinite : Finite outer
+  countTarget : List Nat
+  outerScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2
+  typesLC : ∀ i, (Synth.BoundsTy.toTy (types i)).IsLC
+  typeTarget : List Nat
+  typesScope : ∀ i, BoundsScoped typeTarget (types i)
+  fresh : CloseRecursiveFresh outer types env
+  typesSupported : ∀ i, Runtime.Supported (types i)
+
+def MonoStable (env : List Binding) (outer : Bindings) (types : Nat → BoundsTy) : Prop :=
+  ∀ β, .mono β ∈ env → mapFree types (bounds outer β) = β
+
+structure StableEnvSpecialization (env : List Binding) extends EnvSpecialization env where
+  monoCounts : ∀ β, .mono β ∈ env → bounds outer β = β
+  monoTypes : ∀ β, .mono β ∈ env →
+    ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, types i = .fvar i
+
+theorem StableEnvSpecialization.monoStable {env} (world : StableEnvSpecialization env) :
+    MonoStable env world.outer world.types := by
+  intro β member
+  rw [world.monoCounts β member]
+  exact SchemeSpecialization.fixed (world.monoTypes β member)
+
+structure SpecializableEnvAt (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (budget : Nat) (env : List Binding) where
+  fixed : BodyEnvAt bound free sigma budget (fixedBodyEnv env)
+  ordinary : BodyEnvAt bound free sigma budget (ordinaryBodyEnv env)
+  ordinaryTerms : ordinary.terms = fixed.terms
+  specialized : ∀ world : StableEnvSpecialization env,
+    EnvAt bound free sigma budget (closeRecursiveEnv world.outer world.types env)
+  specializedTerms : ∀ world, (specialized world).terms = fixed.terms
+
 /-- Restrict an appended generalized-body environment back to its ordinary
     prefix.  De Bruijn lookups in a source derivation only address this prefix;
     the appended body bindings are deliberately invisible to it. -/
@@ -1525,6 +1560,14 @@ structure GeneralizedGroup.ClosedRuntimeReady
         (group.closedExports outer ambient ++ ordinaryBodyEnv outerEnv) //
       e.terms = Runtime.recursiveTerms group.annotations
         (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
+  specializable : ∀ (bound free : Runtime.TypeEnv) (σ : Assign)
+    (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat)
+    (enclosing : SpecializableEnvAt bound free σ budget outerEnv),
+    { e : SpecializableEnvAt bound free σ budget
+        (group.closedExports outer ambient ++ outerEnv) //
+      e.fixed.terms = Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss enclosing.fixed.terms) ++ enclosing.fixed.terms }
   fixed : ∀ (bound free : Runtime.TypeEnv) (σ : Assign)
     (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
     (budget : Nat)
