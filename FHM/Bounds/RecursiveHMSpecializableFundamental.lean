@@ -21,6 +21,29 @@ open RecursiveHMUniform
 def closedBound (world : EnvSpecialization env) (beta : BoundsTy) : BoundsTy :=
   mapFree world.types (bounds world.outer beta)
 
+/-- The canonical no-op interpretation of count and HM variables.  It still
+    closes raw recursive bindings into their closed-contract representation;
+    only the bounds interpretation itself is identity. -/
+def EnvSpecialization.identity (env : List Binding) : EnvSpecialization env where
+  outer := []
+  types := BoundsTy.fvar
+  outerFinite := by intro row member; simp at member
+  countTarget := []
+  outerScope := by intro row member; simp at member
+  typesLC := by
+    intro i
+    simpa [Synth.BoundsTy.toTy] using
+      (ContainsBvarsUpTo.fvar : (Ty.fvar i).IsLC)
+  typeTarget := []
+  typesScope := by intro i; trivial
+  fresh := by
+    intro binding member
+    cases binding with
+    | exported scheme =>
+        exact ⟨by intro i captured; rfl, by intro i free; rfl⟩
+    | mono | recursive | recursiveClosure | closure => trivial
+  typesSupported := by intro i; exact .fvar
+
 /-- The family exposes the same Core substitution in every closed world. -/
 theorem SpecializableEnvFamily.specializedTerms
     {bound free : Runtime.TypeEnv} {sigma : Assign} {env : List Binding}
@@ -43,6 +66,22 @@ structure SpecializableTermAt
       (expr.substN 0 family.terms)
 
 namespace SpecializableTermAt
+
+/-- Evaluate a family-indexed semantic proof in the canonical base world.
+    The result is deliberately expressed at `closedBound identity`; a later
+    normalization lemma may identify this bound with the source bound without
+    changing the semantic interface. -/
+def base
+    {bound free : Runtime.TypeEnv} {sigma : Assign} {env : List Binding}
+    {family : SpecializableEnvFamily bound free sigma env}
+    {Delta : List Constraint} {expr : Expr} {beta : BoundsTy}
+    (safe : SpecializableTermAt bound free sigma family Delta expr beta)
+    (budget : Nat)
+    (premises : ∀ p ∈ Delta.map (constraint ([] : Bindings)), p.Holds sigma) :
+    Runtime.TermAt bound free sigma budget
+      (closedBound (EnvSpecialization.identity env) beta)
+      (expr.substN 0 family.terms) :=
+  safe.run budget (EnvSpecialization.identity env) premises
 
 /-- Semantic subsumption is pointwise in the recursively closed world. -/
 def subsumption
