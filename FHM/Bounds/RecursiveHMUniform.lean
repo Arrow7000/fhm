@@ -412,6 +412,50 @@ def GeneralizedGroup.protectedRows
   ((group.selected offset inside).rhs.certificate.interface.scheme.counts.quantified.zip
     (group.sourceExitUse offset inside used).counts) ++ outer
 
+/-- The protected count interpretation is finite whenever the enclosing one
+    is finite.  Its protected prefix consists exactly of the source use's
+    finite quantified arguments. -/
+theorem GeneralizedGroup.protectedRows_finite
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (outer : CountSubstitution.Bindings) (outerFinite : CountSubstitution.Finite outer) :
+    CountSubstitution.Finite (group.protectedRows offset inside used outer) := by
+  intro row member
+  rcases List.mem_append.mp member with prefixMember | ambient
+  · exact (group.sourceExitUse offset inside used).countInstance.finiteArgs row.2
+      (List.of_mem_zip prefixMember).2
+  · exact outerFinite row ambient
+
+/-- Protected source arguments and ambient rows share the combined target
+    scope used by recursive closure. -/
+theorem GeneralizedGroup.protectedRows_scoped
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (outer : CountSubstitution.Bindings) (target : List Nat)
+    (outerScope : ∀ row ∈ outer, Scope.CountScoped target row.2) :
+    ∀ row ∈ group.protectedRows offset inside used outer,
+      Scope.CountScoped
+        (((group.selected offset inside).rhs.certificate.interface.scheme.counts.captures ++
+          caller) ++ target) row.2 := by
+  intro row member
+  rcases List.mem_append.mp member with prefixMember | ambient
+  · exact HMInterpretation.count_mono
+      ((group.sourceExitUse offset inside used).countInstance.argsScoped row.2
+        (List.of_mem_zip prefixMember).2)
+      (fun _ usedId => List.mem_append_left _ usedId)
+  · exact HMInterpretation.count_mono (outerScope row ambient)
+      (fun _ usedId => List.mem_append_right _ usedId)
+
 /-- HM substitution for an exit protects the caller-supplied source arguments:
     fresh opening identities read those arguments unchanged, while every other
     identity is interpreted by the ambient map. -/
@@ -473,6 +517,38 @@ theorem GeneralizedGroup.protectedTypes_lc
   | some slot =>
       exact RecursiveHMUniversal.argumentsLC (group.sourceExitUse offset inside used).types
         (group.sourceExitUse offset inside used).typesLC slot
+
+/-- Runtime support is preserved by the protected HM opening.  Source-owned
+    slots read supported arguments from the closed use; every other identity
+    falls through to the supported ambient interpretation. -/
+theorem GeneralizedGroup.protectedTypes_supported
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (ambient : Nat → BoundsTy)
+    (arguments : ∀ a ∈ used.types, Runtime.Supported a)
+    (ambientSupported : ∀ i, Runtime.Supported (ambient i)) :
+    ∀ i, Runtime.Supported (group.protectedTypes offset inside used ambient i) := by
+  intro i
+  unfold protectedTypes
+  cases located :
+      (group.selected offset inside).rhs.certificate.implementation.opening.ids.idxOf? i with
+  | none => exact ambientSupported i
+  | some slot =>
+      cases atIndex : (group.sourceExitUse offset inside used).types[slot]? with
+      | none =>
+          simp only [SchemeUse.vector, atIndex, Option.getD_none]
+          exact .prim
+      | some a =>
+          simp only [SchemeUse.vector, atIndex, Option.getD_some]
+          apply arguments a
+          apply List.mem_of_mem_drop
+          simpa only [GeneralizedGroup.sourceExitUse, HMCountSchemeClosure.sourceUse,
+            HMCountSchemeClosure.sourceTypeArguments] using List.mem_of_getElem? atIndex
 
 /-- At a declared opening position the protected map reads the corresponding
     source argument exactly.  Distinct opening identities rule out an earlier
@@ -730,6 +806,38 @@ theorem GeneralizedGroup.protectedDemand
             s.counts.body)) := by rw [rowsPromoted]
     _ = used.bounds := by
       exact (HMCountSchemeClosure.closedUse_bounds used outer ambient ambientLC captures).symm
+
+/-- A supported source demand remains supported at the caller-visible closed
+    exit demand.  Count transport handles the protected rows first; HM
+    transport then uses the protected opening's supported source/ambient map. -/
+theorem GeneralizedGroup.protectedDemand_supported
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (outer : CountSubstitution.Bindings)
+    (ambient : Nat → BoundsTy)
+    (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC)
+    (captures : HMCountSchemeClosure.CapturesAgree
+      (group.selected offset inside).rhs.certificate.interface.scheme
+      outer ambient used)
+    (sourceSupported : Runtime.Supported
+      (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (arguments : ∀ a ∈ used.types, Runtime.Supported a)
+    (ambientSupported : ∀ i, Runtime.Supported (ambient i)) :
+    Runtime.Supported used.bounds := by
+  have transported : Runtime.Supported
+      (mapFree (group.protectedTypes offset inside used ambient)
+        (bounds (group.protectedRows offset inside used outer)
+          (group.selected offset inside).rhs.certificate.implementation.opening.bounds)) :=
+    (sourceSupported.counts (group.protectedRows offset inside used outer)).types
+      (group.protectedTypes offset inside used ambient)
+      (group.protectedTypes_supported offset inside used ambient arguments ambientSupported)
+  rw [group.protectedDemand offset inside used outer ambient ambientLC captures] at transported
+  exact transported
 
 /-- Select universal implementation evidence at the SAME total source/exit
     position used for the RHS certificate and fixed recursive contract. This
