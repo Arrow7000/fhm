@@ -5121,6 +5121,46 @@ structure ScopedBodyCertificate (types slots : Nat → BoundsTy)
 /-- Identity-reader compatibility view of a deep static certificate. -/
 abbrev BodyCertificate := ScopedBodyCertificate BoundsTy.fvar BoundsTy.bvar
 
+private theorem scopedResult_hm_normal
+    {types slots ids rows caller Δ env e}
+    (source : RecursiveHMWalk.ScopedResult types slots ids rows caller Δ env e) :
+    source.originalHM.eraseBounds = source.originalHM := by
+  have root := source.root
+  cases e <;> simp [Typed.rootHM?] at root
+  rename_i ty inner
+  rw [← root]
+  exact Ty.eraseBounds_idem ty
+
+/-- Canonical recursive-HM traversal already carries everything needed for a
+    deep static body certificate.  The adapter changes only the represented
+    environment boundary; unrelated body bindings remain an invisible suffix.
+    Runtime evidence is preserved exactly when fixed recursive arguments are
+    supported. -/
+def ScopedBodyCertificate.ofOrdinary
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {caller : List Nat} {Δ : List Constraint} {env : List Binding} {e : Expr}
+    (source : RecursiveHMWalk.ScopedResult types slots ids rows caller Δ env e)
+    (arguments : RecursiveArgumentsSupported env)
+    (tail : List BodyBinding := []) :
+    ScopedBodyCertificate types slots ids rows caller Δ
+      (ordinaryBodyEnv env ++ tail) e := by
+  let typing := rhsToBodyAppend source.derivation tail
+  let result : ScopedBodyResult types slots ids rows caller Δ
+      (ordinaryBodyEnv env ++ tail) e :=
+    { hm := source.originalHM
+      bounds := source.bounds
+      root := by rw [source.root, scopedResult_hm_normal source]
+      shape := source.shape
+      typing := typing
+      inScope := source.countScope
+      nodes := source.nodes
+      runtimeReady := source.runtimeReady.map (fun ready =>
+        ⟨rhsReadyToBodyAppend ready.down arguments tail⟩) }
+  refine ⟨result, ?_⟩
+  exact BodyDerives.TypingSpecializes.ordinaryAppend tail source.derivation.specializes
+
+#print axioms ScopedBodyCertificate.ofOrdinary
+
 /-- Identity-reader compatibility view used by whole-program checking. -/
 abbrev BodyResult := ScopedBodyResult BoundsTy.fvar BoundsTy.bvar
 
