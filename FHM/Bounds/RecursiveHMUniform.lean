@@ -696,6 +696,36 @@ abbrev BodyBindingAt := BindingAt
 
 abbrev BodyEnvAt := EnvAt
 
+/-- Restrict an appended generalized-body environment back to its ordinary
+    prefix.  De Bruijn lookups in a source derivation only address this prefix;
+    the appended body bindings are deliberately invisible to it. -/
+def BodyEnvAt.prefix {bound free σ budget env tail}
+    (e : BodyEnvAt bound free σ budget (env ++ tail)) :
+    BodyEnvAt bound free σ budget env where
+  terms := e.terms.take env.length
+  arity := by simp [e.arity, List.length_append]
+  closed := by
+    intro term member
+    exact e.closed term (List.mem_of_mem_take member)
+  denotes := by
+    intro i inside
+    have meaning := e.denotes i (by simp only [List.length_append]; omega)
+    simpa only [List.getElem_append_left inside, List.getElem_take] using meaning
+
+private theorem closing_ignores_appended_terms {bound free σ budget env tail} {expr : Expr}
+    (e : BodyEnvAt bound free σ budget (env ++ tail))
+    (scope : expr.varsBelow env.length = true) :
+    expr.substN 0 (e.prefix.terms) = expr.substN 0 e.terms := by
+  have tailClosed : ∀ term ∈ e.terms.drop env.length, term.varsBelow 0 = true := by
+    intro term member
+    exact e.closed term (List.mem_of_mem_drop member)
+  have composed := Expr.substN_substN_append expr 0 e.prefix.terms
+    (e.terms.drop env.length) tailClosed
+  have prefixLength : e.prefix.terms.length = env.length := e.prefix.arity
+  rw [Nat.zero_add, Expr.substN_of_varsBelow _ expr e.prefix.terms.length
+    (by simpa only [prefixLength] using scope)] at composed
+  simpa only [BodyEnvAt.prefix, List.take_append_drop] using composed
+
 def EnvAt.extend {bound free σ budget env}
     (e : BodyEnvAt bound free σ budget env) (binding : BodyBinding) (term : Expr)
     (closed : term.varsBelow 0 = true) (safe : BodyBindingAt bound free σ budget binding term) :
@@ -1745,6 +1775,12 @@ inductive ScopedBodyDerives :
       bodies extend it only at genuine generalization boundaries. -/
   | ordinary (typing : ScopedDerives types slots ids rows Δ env e β) :
       ScopedBodyDerives types slots ids rows Δ env e β
+  /-- Embed the common judgment beneath unrelated generalized-body bindings.
+      The source expression is scoped over the ordinary prefix, so the suffix
+      cannot affect its de Bruijn meaning. -/
+  | ordinaryAppend (typing : ScopedDerives types slots ids rows Δ env e β)
+      (tail : List BodyBinding) :
+      ScopedBodyDerives types slots ids rows Δ (ordinaryBodyEnv env ++ tail) e β
   | literal {env p} : ScopedBodyDerives types slots ids rows Δ env (.primLit p) (boundInfoOfPrimLit p)
   | primBinOp {env op} : ScopedBodyDerives types slots ids rows Δ env (.primBinOp op) (Typed.primOpBounds op)
   | nil {env elem} : ScopedBodyDerives types slots ids rows Δ env (.ctor nilCtorName) (.list (.lit 0) (.lit 0) elem)
@@ -1888,6 +1924,7 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
     ∀ p, e = .primLit p → β = boundInfoOfPrimLit p := by
   induction h with
   | ordinary typing => exact typing.primLitBounds
+  | ordinaryAppend typing tail => exact typing.primLitBounds
   | literal => intro p source; cases source; rfl
   | subsumption _ sub ih =>
       intro p source
@@ -2002,6 +2039,14 @@ theorem rhsToBody {types slots ids rows Δ env e β}
   | letPinned pinned mono _ _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
         ScopedBodyDerives.letPinned pinned mono ihr ihb
+  | letRecPinnedMono pinned mono rhsTyping bodyTyping ihr ihb =>
+      simpa only [List.append_nil] using
+        ScopedBodyDerives.ordinaryAppend
+          (ScopedDerives.letRecPinnedMono pinned mono rhsTyping bodyTyping) []
+  | letRecInferredMono rhsTyping bodyTyping ihr ihb =>
+      simpa only [List.append_nil] using
+        ScopedBodyDerives.ordinaryAppend
+          (ScopedDerives.letRecInferredMono rhsTyping bodyTyping) []
   | letRecMono annotation _ sub _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
         ScopedBodyDerives.letRecMono annotation ihr sub ihb
@@ -2112,6 +2157,10 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
   | letPinned pinned mono _ _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letPinned pinned mono ihr ihb
+  | letRecPinnedMono pinned mono rhsTyping bodyTyping ihr ihb =>
+      exact .ordinaryAppend (.letRecPinnedMono pinned mono rhsTyping bodyTyping) tail
+  | letRecInferredMono rhsTyping bodyTyping ihr ihb =>
+      exact .ordinaryAppend (.letRecInferredMono rhsTyping bodyTyping) tail
   | letRecMono annotation _ sub _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letRecMono annotation ihr sub ihb
@@ -2197,6 +2246,10 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
   | letPinned pinned mono _ _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letPinned pinned mono (ihr ordinary) (ihb ordinary.consMono)
+  | letRecPinnedMono pinned mono rhsTyping bodyTyping ihr ihb =>
+      exact .ordinaryAppend (.letRecPinnedMono pinned mono rhsTyping bodyTyping) tail
+  | letRecInferredMono rhsTyping bodyTyping ihr ihb =>
+      exact .ordinaryAppend (.letRecInferredMono rhsTyping bodyTyping) tail
   | letRecMono annotation _ sub _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.letRecMono annotation (ihr ordinary.consMono) sub
@@ -2296,6 +2349,7 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
     ScopedBodyDerives types slots ids rows Δ' env e β := by
   induction h generalizing Δ' with
   | ordinary typing => exact .ordinary (typing.assuming hp)
+  | ordinaryAppend typing tail => exact .ordinaryAppend (typing.assuming hp) tail
   | literal => exact .literal
   | primBinOp => exact .primBinOp
   | nil => exact .nil
@@ -2390,6 +2444,10 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
     (h : ScopedBodyDerives types slots ids rows Δ env e β) : e.varsBelow env.length = true := by
   induction h with
   | ordinary typing => exact typing.varsBelow
+  | ordinaryAppend typing tail =>
+      exact Expr.varsBelow_mono _ (by
+        simp only [ordinaryBodyEnv, List.length_append, List.length_map]
+        omega) typing.varsBelow
   | literal | primBinOp | nil | boolCtor | ctor => rfl
   | cons _ _ _ ihh iht => simp [Expr.varsBelow, ihh, iht]
   | consPartial _ ih => simpa [Expr.varsBelow] using ih
@@ -2572,6 +2630,10 @@ inductive RuntimeReady :
     ScopedBodyDerives types slots ids rows Δ env e β → Prop where
   | ordinary {typing : ScopedDerives types slots ids rows Δ env e β} :
       ScopedDerives.RuntimeReady typing → RuntimeReady (.ordinary typing)
+  | ordinaryAppend {typing : ScopedDerives types slots ids rows Δ env e β}
+      (tail : List BodyBinding) :
+      ScopedDerives.RuntimeReady typing → RecursiveArgumentsSupported env →
+      RuntimeReady (.ordinaryAppend typing tail)
   | literal : RuntimeReady (.literal (p := p))
   | primBinOp : RuntimeReady (.primBinOp (op := op))
   | nil : Runtime.Supported elem → RuntimeReady (.nil (elem := elem))
@@ -2788,6 +2850,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
     (ready : RuntimeReady h) : Runtime.Supported β := by
   induction ready with
   | ordinary ready => exact ready.supported
+  | ordinaryAppend _ ready _ => exact ready.supported
   | literal => cases ‹PrimLitExpr› <;> exact .prim
   | primBinOp => cases ‹PrimBinOp› <;> first | exact .arrow .prim (.arrow .prim .prim) | exact .arrow .prim (.arrow .prim .bool)
   | nil elem => exact .list elem
@@ -2825,6 +2888,18 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
   | ordinary ready =>
       intro budget premises e
       exact ready.termAt bound free σ hb hf budget premises e
+  | @ordinaryAppend types0 slots0 ids0 rows0 pathΔ sourceEnv sourceExpr sourceTy typing
+      tail ready arguments =>
+      intro budget premises runtimeEnv
+      let prefixEnv := runtimeEnv.prefix
+      let ordinary := BodyEnvAt.toEnvAt prefixEnv arguments
+      have safe := ready.termAt bound free σ hb hf budget premises ordinary
+      have scope : sourceExpr.varsBelow (ordinaryBodyEnv sourceEnv).length = true := by
+        simpa only [ordinaryBodyEnv, List.length_map] using typing.varsBelow
+      change Runtime.TermAt bound free σ budget sourceTy
+        (sourceExpr.substN 0 runtimeEnv.prefix.terms) at safe
+      rw [closing_ignores_appended_terms runtimeEnv scope] at safe
+      exact safe
   | subsumption sub inner demand ih =>
       intro budget premises e
       exact (ih budget premises e).of_values
@@ -3431,6 +3506,8 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
     (hp : (⟨Δ', Δ⟩ : ForallProblem).Valid) : RuntimeReady (h.assuming hp) := by
   induction ready generalizing Δ' with
   | ordinary original => exact .ordinary (original.assuming hp)
+  | ordinaryAppend tail original arguments =>
+      exact .ordinaryAppend tail (original.assuming hp) arguments
   | literal => exact .literal
   | primBinOp => exact .primBinOp
   | nil elem => exact .nil elem
@@ -3609,6 +3686,11 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         BodyDerives.RuntimeReady.letPinned pinned mono (ihr arguments) demand
           (ihb arguments.consMono)
+  | letRecPinnedMono pinned mono rhsReady demand bodyReady ihr ihb =>
+      exact .ordinaryAppend tail (.letRecPinnedMono pinned mono rhsReady demand bodyReady)
+        arguments
+  | letRecInferredMono rhsReady actual bodyReady ihr ihb =>
+      exact .ordinaryAppend tail (.letRecInferredMono rhsReady actual bodyReady) arguments
   | letRecMono annotation sub _ demand _ ihr ihb =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         BodyDerives.RuntimeReady.letRecMono annotation sub (ihr arguments.consMono)
@@ -3731,6 +3813,14 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         BodyDerives.RuntimeReady.letPinned pinned mono (ihr ordinary tail) demand
           (ihb ordinary.consMono tail)
+  | letRecPinnedMono pinned mono rhsReady demand bodyReady ihr ihb =>
+      intro ordinary tail
+      exact .ordinaryAppend tail (.letRecPinnedMono pinned mono rhsReady demand bodyReady)
+        (fun c member => False.elim (ordinary c member))
+  | letRecInferredMono rhsReady actual bodyReady ihr ihb =>
+      intro ordinary tail
+      exact .ordinaryAppend tail (.letRecInferredMono rhsReady actual bodyReady)
+        (fun c member => False.elim (ordinary c member))
   | letRecMono annotation sub _ demand _ ihr ihb =>
       intro ordinary tail
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using

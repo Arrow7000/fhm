@@ -8650,6 +8650,20 @@ private theorem Expr.substN_letRec_eq (anns : List (Option PolyTy)) (bs : List E
           (body.substN (k + bs.length) vs) :=
   rfl
 
+private theorem Expr.substN_match_core (scrut : Expr) (brs : List (MatchPattern × Expr))
+    (k : Nat) (vs : List Expr) :
+    (Expr.match_ scrut brs).substN k vs
+      = Expr.match_ (scrut.substN k vs)
+          (brs.map (fun pb => (pb.1, pb.2.substN (k + pb.1.bindCount) vs))) := by
+  rw [Expr.substN_match_eq, Expr.substN_matchBranches]
+
+private theorem Expr.substN_letRec_core (anns : List (Option PolyTy)) (bs : List Expr)
+    (body : Expr) (k : Nat) (vs : List Expr) :
+    (Expr.letRec anns bs body).substN k vs
+      = Expr.letRec anns (bs.map (·.substN (k + bs.length) vs))
+          (body.substN (k + bs.length) vs) := by
+  rw [Expr.substN_letRec_eq, Expr.substN_letRecBindings]
+
 /-- `substN` is the identity on an expression all of whose free term-vars are below
     the substitution depth `k`: there is nothing in range to replace. -/
 theorem Expr.substN_of_varsBelow (vs : List Expr) :
@@ -8706,6 +8720,96 @@ theorem Expr.substN_of_varsBelow (vs : List Expr) :
 theorem Expr.substN_of_closed {e : Expr} (h : Expr.varsBelow 0 e = true) (k : Nat)
     (vs : List Expr) : e.substN k vs = e :=
   Expr.substN_of_varsBelow vs e k (Expr.varsBelow_mono e (Nat.zero_le k) h)
+
+private theorem Expr.substN_var_lt_core {i k : Nat} (h : i < k) (vs : List Expr) :
+    (Expr.var i).substN k vs = .var i := by
+  simp only [Expr.substN, if_pos h]
+
+private theorem Expr.substN_var_hit_core {i k : Nat} {vs : List Expr} (h1 : ¬ i < k)
+    (h2 : i - k < vs.length) :
+    (Expr.var i).substN k vs = (vs[i - k]).shiftFrom 0 k := by
+  simp only [Expr.substN, if_neg h1]
+  rw [dif_pos h2]
+
+private theorem Expr.substN_var_beyond_core {i k : Nat} {vs : List Expr} (h1 : ¬ i < k)
+    (h2 : ¬ i - k < vs.length) :
+    (Expr.var i).substN k vs = .var (i - vs.length) := by
+  simp only [Expr.substN, if_neg h1]
+  rw [dif_neg h2]
+
+/-- Opening an expression in two stages equals opening it once with the
+    concatenated environment, provided the outer values are closed.  This is
+    core substitution algebra, shared by match compilation and the verified
+    bounds runtime. -/
+theorem Expr.substN_substN_append (e : Expr) (k : Nat) (ws vs : List Expr)
+    (hcl : ∀ v ∈ vs, Expr.varsBelow 0 v = true) :
+    (e.substN (k + ws.length) vs).substN k ws = e.substN k (ws ++ vs) := by
+  induction e using Expr.rec_strong generalizing k with
+  | primLit p => rfl
+  | primBinOp op => rfl
+  | ctor nm => rfl
+  | var i  =>
+    by_cases h1 : i < k
+    · rw [Expr.substN_var_lt_core (by omega : i < k + ws.length),
+        Expr.substN_var_lt_core h1, Expr.substN_var_lt_core h1]
+    · by_cases h2 : i - k < ws.length
+      · rw [Expr.substN_var_lt_core (by omega : i < k + ws.length),
+          Expr.substN_var_hit_core h1 h2,
+          Expr.substN_var_hit_core h1 (by simp only [List.length_append]; omega)]
+        congr 1
+        exact (List.getElem_append_left h2).symm
+      · by_cases h3 : i - (k + ws.length) < vs.length
+        · rw [Expr.substN_var_hit_core (by omega : ¬ i < k + ws.length) h3,
+            Expr.substN_var_hit_core h1 (by simp only [List.length_append]; omega)]
+          have hv : Expr.varsBelow 0 (vs[i - (k + ws.length)]) = true :=
+            hcl _ (List.getElem_mem _)
+          have happ : (ws ++ vs)[i - k]'(by simp only [List.length_append]; omega)
+              = vs[i - (k + ws.length)]'h3 := by
+            rw [List.getElem_append_right (by omega : ws.length ≤ i - k)]
+            congr 1
+            omega
+          rw [happ, Expr.shiftFrom_of_closed hv, Expr.shiftFrom_of_closed hv]
+          exact Expr.substN_of_varsBelow ws _ k
+            (Expr.varsBelow_mono _ (Nat.zero_le k) hv)
+        · rw [Expr.substN_var_beyond_core (by omega : ¬ i < k + ws.length) h3,
+            Expr.substN_var_beyond_core (by omega : ¬ i - vs.length < k) (by omega),
+            Expr.substN_var_beyond_core h1 (by simp only [List.length_append]; omega)]
+          simp only [List.length_append]
+          congr 1
+          omega
+  | lambda ann body ih =>
+    simp only [Expr.substN]
+    rw [show k + ws.length + 1 = (k + 1) + ws.length from by omega, ih (k + 1)]
+  | app f arg ihf iharg =>
+    simp only [Expr.substN, ihf k, iharg k]
+  | letIn ann rhs body ihrhs ihbody =>
+    simp only [Expr.substN]
+    rw [ihrhs k, show k + ws.length + 1 = (k + 1) + ws.length from by omega,
+      ihbody (k + 1)]
+  | match_ scrut branches ihscrut ihbrs =>
+    rw [Expr.substN_match_core, Expr.substN_match_core, Expr.substN_match_core, ihscrut k,
+      List.map_map]
+    congr 1
+    apply List.map_congr_left
+    intro pb hmem
+    obtain ⟨pat, body⟩ := pb
+    simp only [Function.comp_apply]
+    rw [show k + ws.length + pat.bindCount = (k + pat.bindCount) + ws.length from by omega,
+      ihbrs pat body hmem (k + pat.bindCount)]
+  | found ty inner ih => simp only [Expr.substN, ih]
+  | letRec anns bindings body ihbindings ihbody =>
+    rw [Expr.substN_letRec_core, Expr.substN_letRec_core, Expr.substN_letRec_core,
+      List.map_map, List.length_map]
+    congr 1
+    · apply List.map_congr_left
+      intro e hmem
+      simp only [Function.comp_apply]
+      rw [show k + ws.length + bindings.length
+            = (k + bindings.length) + ws.length from by omega,
+        ihbindings e hmem (k + bindings.length)]
+    · rw [show k + ws.length + bindings.length
+            = (k + bindings.length) + ws.length from by omega,
+        ihbody (k + bindings.length)]
 
 /-! ## `varsBelow` ignores type-variable opening
 
