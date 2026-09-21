@@ -306,6 +306,92 @@ def SpecializableEnvAt.down {bound free sigma small large env}
   specialized := fun world => (e.specialized world).down hb hf le
   specializedTerms := e.specializedTerms
 
+/-- Extend every view by the same closed monomorphic term.  Stable worlds fix
+    the new head's bound, so the ordinary `EnvAt.extendMono` witness can be
+    reindexed to the recursively closed environment without changing syntax. -/
+def SpecializableEnvAt.consMono {bound free sigma budget env}
+    (e : SpecializableEnvAt bound free sigma budget env)
+    (beta : BoundsTy) (term : Expr)
+    (closed : term.varsBelow 0 = true)
+    (safe : Runtime.TermAt bound free sigma budget beta term) :
+    SpecializableEnvAt bound free sigma budget (.mono beta :: env) := by
+  let fixed := e.fixed.extendMono beta term closed safe
+  let ordinary := e.ordinary.extendMono beta term closed safe
+  refine
+    { fixed := fixed
+      ordinary := ordinary
+      ordinaryTerms := ?_
+      specialized := ?_
+      specializedTerms := ?_ }
+  · simp only [ordinary, fixed, EnvAt.extendMono, e.ordinaryTerms]
+  · intro world
+    let tailWorld : StableEnvSpecialization env :=
+      { outer := world.outer
+        types := world.types
+        outerFinite := world.outerFinite
+        countTarget := world.countTarget
+        outerScope := world.outerScope
+        typesLC := world.typesLC
+        typeTarget := world.typeTarget
+        typesScope := world.typesScope
+        fresh := by
+          intro binding member
+          exact world.fresh binding (List.mem_cons_of_mem _ member)
+        typesSupported := world.typesSupported
+        monoCounts := fun gamma member =>
+          world.monoCounts gamma (List.mem_cons_of_mem _ member)
+        monoTypes := fun gamma member =>
+          world.monoTypes gamma (List.mem_cons_of_mem _ member) }
+    let extended := (e.specialized tailWorld).extendMono beta term closed safe
+    have stable : mapFree world.types (bounds world.outer beta) = beta :=
+      world.monoStable beta List.mem_cons_self
+    have envEq : .mono beta :: closeRecursiveEnv world.outer world.types env =
+        closeRecursiveEnv world.outer world.types (.mono beta :: env) := by
+      simp only [closeRecursiveEnv, List.map_cons, closeRecursiveBinding, stable]
+    exact EnvAt.castEnv envEq extended
+  · intro world
+    rw [EnvAt.castEnv_terms]
+    simp only [EnvAt.extendMono, fixed, e.specializedTerms]
+
+/-- Extend by a branch's ordered monomorphic fields.  Pairing each demanded
+    bound with its runtime value makes alignment explicit and avoids a partial
+    zip operation. -/
+def SpecializableEnvAt.prependMonos {bound free sigma budget env}
+    (e : SpecializableEnvAt bound free sigma budget env) :
+    (entries : List (BoundsTy × Expr)) →
+    (∀ entry ∈ entries, entry.2.varsBelow 0 = true) →
+    (∀ entry ∈ entries,
+      Runtime.TermAt bound free sigma budget entry.1 entry.2) →
+    SpecializableEnvAt bound free sigma budget
+      (entries.map (fun entry => Binding.mono entry.1) ++ env)
+  | [], _, _ => by simpa using e
+  | entry :: rest, closed, safe => by
+      have restClosed : ∀ item ∈ rest, item.2.varsBelow 0 = true :=
+        fun item member => closed item (List.mem_cons_of_mem entry member)
+      have restSafe : ∀ item ∈ rest,
+          Runtime.TermAt bound free sigma budget item.1 item.2 :=
+        fun item member => safe item (List.mem_cons_of_mem entry member)
+      have tail := e.prependMonos rest restClosed restSafe
+      simpa only [List.map_cons, List.cons_append] using
+        tail.consMono entry.1 entry.2
+          (closed entry List.mem_cons_self) (safe entry List.mem_cons_self)
+
+@[simp] theorem SpecializableEnvAt.prependMonos_fixed_terms
+    {bound free sigma budget env}
+    (e : SpecializableEnvAt bound free sigma budget env)
+    (entries : List (BoundsTy × Expr))
+    (closed : ∀ entry ∈ entries, entry.2.varsBelow 0 = true)
+    (safe : ∀ entry ∈ entries,
+      Runtime.TermAt bound free sigma budget entry.1 entry.2) :
+    (e.prependMonos entries closed safe).fixed.terms =
+      entries.map Prod.snd ++ e.fixed.terms := by
+  induction entries with
+  | nil => rfl
+  | cons entry rest ih =>
+      simp only [SpecializableEnvAt.prependMonos, List.map_cons, List.cons_append,
+        SpecializableEnvAt.consMono, EnvAt.extendMono]
+      exact congrArg (List.cons entry.2) (ih _ _)
+
 /-- Independent specializable environments compose.  Every view uses the
     same left-to-right concatenation of the two canonical term vectors. -/
 def SpecializableEnvAt.append {bound free sigma budget left right}
