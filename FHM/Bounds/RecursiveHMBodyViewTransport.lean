@@ -146,6 +146,59 @@ theorem closeRecursiveEnv_prependMonos {raw : List Binding}
   simp only [List.map_append, List.map_map]
   congr 1
 
+/-- Mono fields opened by one branch pattern, before choosing a fixed or
+    ordinary interpretation of the surrounding raw environment. -/
+def BodyBranchContext.fields : BodyBranchContext → MatchPattern → List BoundsTy
+  | .list lo hi elem, pattern =>
+      if pattern = .named consCtorName 2 then
+        [elem, .list (.pred lo) (.pred hi) elem]
+      else []
+  | .bool, _ => []
+  | .pair left right, pattern =>
+      if pattern = .named pairCtorName 2 then [left, right] else []
+  | .nominal ctors typeName args, pattern =>
+      (NominalBranches.fields? ctors typeName args pattern).getD []
+  | .wildcardOnly _, _ => []
+
+def BodyBranchContext.extendRaw (ctx : BodyBranchContext) (pattern : MatchPattern)
+    (raw : List Binding) : List Binding :=
+  (ctx.fields pattern).map Binding.mono ++ raw
+
+def EnvSpecialization.extendBranch {raw : List Binding}
+    (world : EnvSpecialization raw) (ctx : BodyBranchContext) (pattern : MatchPattern) :
+    EnvSpecialization (ctx.extendRaw pattern raw) :=
+  world.prependMonos (ctx.fields pattern)
+
+theorem BodyBranchContext.extend_eq (ctx : BodyBranchContext) (pattern : MatchPattern)
+    (env : List BodyBinding) :
+    ctx.extend pattern env = (ctx.fields pattern).map Binding.mono ++ env := by
+  cases ctx with
+  | list =>
+      by_cases selected : pattern = .named consCtorName 2 <;>
+        simp [BodyBranchContext.extend, BodyBranchContext.fields, selected]
+  | pair =>
+      by_cases selected : pattern = .named pairCtorName 2 <;>
+        simp [BodyBranchContext.extend, BodyBranchContext.fields, selected]
+  | bool | nominal | wildcardOnly => rfl
+
+theorem RawBodyView.env_extendRaw (view : RawBodyView) (ctx : BodyBranchContext)
+    (pattern : MatchPattern) (raw : List Binding) :
+    view.env (ctx.extendRaw pattern raw) = ctx.extend pattern (view.env raw) := by
+  rw [BodyBranchContext.extendRaw, RawBodyView.env_prependMonos,
+    BodyBranchContext.extend_eq]
+
+/-- Exact laws required to transport one branch context.  Keeping nominal
+    field commutation explicit avoids baking an unproved property of constructor
+    lookup into the generic body induction. -/
+structure BodyBranchContext.Specializes {raw : List Binding}
+    (world : EnvSpecialization raw) (source target : BodyBranchContext) : Prop where
+  bounds : target.bounds = world.mapBounds source.bounds
+  refine : ∀ pattern,
+    target.refine pattern = (source.refine pattern).map (constraint world.outer)
+  fields : ∀ pattern,
+    target.fields pattern = (source.fields pattern).map world.mapBounds
+  pattern : ∀ pattern, source.Pattern pattern → target.Pattern pattern
+
 def ScopedHMAnnotation.ParamOK.specialize
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Delta : List Constraint} {ann : Option Ty} {beta : BoundsTy}
@@ -670,6 +723,55 @@ def letRecMonoGroup
       EnvSpecialization.mapBounds, closeRecursiveEnv_prependMonos,
       RawBodyView.env_prependMonos] using bodyClosed.typing
 
+def match_
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {scrut : Expr}
+    {branches : List (MatchPattern × Expr)} {result : BoundsTy}
+    (ctx target : BodyBranchContext) (world : EnvSpecialization raw)
+    (specializes : BodyBranchContext.Specializes world ctx target)
+    (scrutTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) scrut ctx.bounds)
+    (coverage : ctx.Covers Delta branches)
+    (patterns : ∀ branch ∈ branches, ctx.Pattern branch.1)
+    {actuals : Nat → BoundsTy}
+    (branchTyping : ∀ i branch, branches[i]? = some branch →
+      ScopedBodyDerives types slots ids rows (Delta ++ ctx.refine branch.1)
+        (view.env (ctx.extendRaw branch.1 raw)) branch.2 (actuals i))
+    (inclusions : ∀ i branch, branches[i]? = some branch →
+      SemanticSub (Delta ++ ctx.refine branch.1) (actuals i) result)
+    (scrutClosed : BodyViewSpecialized view raw scrutTyping world)
+    (targetCoverage : target.Covers (Delta.map (constraint world.outer)) branches)
+    (branchesClosed : ∀ i branch (atIndex : branches[i]? = some branch),
+      BodyViewSpecialized view (ctx.extendRaw branch.1 raw)
+        (branchTyping i branch atIndex)
+        (world.extendBranch ctx branch.1)) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.match_ (ctx := ctx) scrutTyping coverage patterns
+        (fun i branch atIndex => by
+          simpa only [RawBodyView.env_extendRaw] using
+            branchTyping i branch atIndex)
+        inclusions) world := by
+  refine ⟨ScopedBodyDerives.match_ (ctx := target)
+    (actuals := fun i => world.mapBounds (actuals i)) ?_ targetCoverage ?_ ?_ ?_⟩
+  · rw [specializes.bounds]
+    exact scrutClosed.typing
+  · intro branch member
+    exact specializes.pattern branch.1 (patterns branch member)
+  · intro i branch atIndex
+    simpa only [EnvSpecialization.extendBranch,
+      EnvSpecialization.prependMonos_outer,
+      EnvSpecialization.prependMonos_types, EnvSpecialization.mapBounds,
+      List.map_append, specializes.refine, BodyBranchContext.extendRaw,
+      closeRecursiveEnv_prependMonos,
+      RawBodyView.env_prependMonos, BodyBranchContext.extend_eq,
+      specializes.fields] using (branchesClosed i branch atIndex).typing
+  · intro i branch atIndex
+    simpa only [List.map_append, specializes.refine] using
+      SchemeSpecialization.subtype world.types
+        (CountSubstitution.subtype world.outer world.outerFinite
+          (inclusions i branch atIndex))
+
 def literal (view : RawBodyView) (raw : List Binding) (world : EnvSpecialization raw)
     (p : PrimLitExpr) :
     BodyViewSpecialized view raw
@@ -810,6 +912,7 @@ end BodyViewSpecialized
 #print axioms BodyViewSpecialized.consPartial
 #print axioms BodyViewSpecialized.pair
 #print axioms BodyViewSpecialized.pairPartial
+#print axioms BodyViewSpecialized.match_
 #print axioms BodyViewSpecialized.app
 #print axioms BodyViewSpecialized.subsumption
 
