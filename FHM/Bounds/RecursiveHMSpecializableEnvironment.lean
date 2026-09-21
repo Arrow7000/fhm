@@ -32,6 +32,185 @@ structure EnvSpecialization (env : List Binding) where
   fresh : CloseRecursiveFresh outer types env
   typesSupported : ∀ i, Runtime.Supported (types i)
 
+/-- A closing world fixes the monomorphic bindings already present in its
+lexical environment.  This is intentionally separate from
+`CloseRecursiveFresh`: the latter is the broad static transport condition and
+is vacuous on mono bindings. -/
+def MonoStable (env : List Binding) (outer : Bindings) (types : Nat → BoundsTy) : Prop :=
+  ∀ β, .mono β ∈ env → mapFree types (bounds outer β) = β
+
+namespace MonoStable
+
+theorem lookup_append (left right : Bindings) (i : Nat) :
+    lookup (left ++ right) i = match lookup left i with
+      | some c => some c
+      | none => lookup right i := by
+  induction left with
+  | nil => rfl
+  | cons head tail ih =>
+      simp only [List.cons_append, lookup]
+      split <;> simp only [*]
+
+mutual
+theorem count_append_fixed (pre outer : Bindings) {ids c}
+    (hs : Scope.CountScoped ids c)
+    (fresh : ∀ i ∈ ids, lookup pre i = none) :
+    count (pre ++ outer) c = count outer c := by
+  induction c with
+  | lit | inf => rfl
+  | var v =>
+      cases v with
+      | mk kind i =>
+          cases kind with
+          | inferable => rfl
+          | rigid =>
+              simp only [count, lookup_append]
+              rw [fresh i hs]
+  | add a b ha hb | mul a b ha hb | min a b ha hb | max a b ha hb =>
+      simp only [count, ha hs.1, hb hs.2]
+  | pred a ha => simp only [count, ha hs]
+
+theorem bounds_append_fixed (pre outer : Bindings) {ids β}
+    (hs : BoundsScoped ids β)
+    (fresh : ∀ i ∈ ids, lookup pre i = none) :
+    bounds (pre ++ outer) β = bounds outer β := by
+  cases β with
+  | prim | fvar | bvar => rfl
+  | arrow a b => simp only [bounds, bounds_append_fixed pre outer hs.1 fresh,
+      bounds_append_fixed pre outer hs.2 fresh]
+  | list lo hi elem => simp only [bounds, count_append_fixed pre outer hs.1 fresh,
+      count_append_fixed pre outer hs.2.1 fresh, bounds_append_fixed pre outer hs.2.2 fresh]
+  | custom name as => exact congrArg (BoundsTy.custom name) (boundsList_append_fixed pre outer hs fresh)
+termination_by sizeOf β
+
+theorem boundsList_append_fixed (pre outer : Bindings) {ids as}
+    (hs : ScopedScheme.BoundsListScoped ids as)
+    (fresh : ∀ i ∈ ids, lookup pre i = none) :
+    boundsList (pre ++ outer) as = boundsList outer as := by
+  cases as with
+  | nil => rfl
+  | cons a as => simp only [boundsList, bounds_append_fixed pre outer hs.1 fresh,
+      boundsList_append_fixed pre outer hs.2 fresh]
+termination_by sizeOf as
+end
+
+mutual
+theorem count_empty (c : Count) : count [] c = c := by
+  induction c with
+  | lit | inf => rfl
+  | var v =>
+      cases v with
+      | mk kind i => cases kind <;> rfl
+  | add a b ha hb | mul a b ha hb | min a b ha hb | max a b ha hb =>
+      simp only [count, ha, hb]
+  | pred a ha => simp only [count, ha]
+
+theorem bounds_empty (β : BoundsTy) : bounds [] β = β := by
+  cases β with
+  | prim | fvar | bvar => rfl
+  | arrow a b => simp only [bounds, bounds_empty a, bounds_empty b]
+  | list lo hi elem => simp only [bounds, count_empty, bounds_empty elem]
+  | custom name as => exact congrArg (BoundsTy.custom name) (boundsList_empty as)
+termination_by sizeOf β
+
+theorem boundsList_empty (as : List BoundsTy) : boundsList [] as = as := by
+  cases as with
+  | nil => rfl
+  | cons a as => simp only [boundsList, bounds_empty a, boundsList_empty as]
+termination_by sizeOf as
+end
+
+theorem empty (outer : Bindings) (types : Nat → BoundsTy) : MonoStable [] outer types := by
+  intro β member
+  simp at member
+
+theorem left {outer types left right}
+    (stable : MonoStable (left ++ right) outer types) : MonoStable left outer types := by
+  intro β member
+  exact stable β (List.mem_append_left right member)
+
+theorem right {outer types left right}
+    (stable : MonoStable (left ++ right) outer types) : MonoStable right outer types := by
+  intro β member
+  exact stable β (List.mem_append_right left member)
+
+theorem of_parts {env outer types}
+    (counts : ∀ β, .mono β ∈ env → bounds outer β = β)
+    (free : ∀ β, .mono β ∈ env →
+      ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, types i = .fvar i) :
+    MonoStable env outer types := by
+  intro β member
+  rw [counts β member]
+  exact SchemeSpecialization.fixed (free β member)
+
+end MonoStable
+
+theorem GeneralizedGroup.protectedMonoCounts
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme) calleeΔ found caller)
+    (outer : Bindings) (ambientCounts : ∀ β, .mono β ∈ outerEnv → bounds outer β = β) :
+    ∀ β, .mono β ∈ outerEnv → bounds (group.protectedRows offset inside used outer) β = β := by
+  intro β member
+  let selected := group.selected offset inside
+  let source := group.sourceExitUse offset inside used
+  have captured : BoundsScoped selected.rhs.certificate.interface.scheme.counts.captures β :=
+    selected.rhs.captured.mono β (List.mem_append_right _ member)
+  have fresh : ∀ i ∈ selected.rhs.certificate.interface.scheme.counts.captures,
+      lookup (selected.rhs.certificate.interface.scheme.counts.quantified.zip source.counts) i = none := by
+    intro i hi
+    apply lookup_none
+    rw [List.map_fst_zip (Nat.le_of_eq source.countInstance.arity)]
+    exact source.countInstance.wf.2.1 i hi
+  calc
+    bounds (group.protectedRows offset inside used outer) β = bounds outer β := by
+      exact MonoStable.bounds_append_fixed _ _ captured fresh
+    _ = β := ambientCounts β member
+
+theorem GeneralizedGroup.protectedMonoTypes
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme) calleeΔ found caller)
+    (ambient : Nat → BoundsTy)
+    (ambientTypes : ∀ β, .mono β ∈ outerEnv →
+      ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, ambient i = .fvar i) :
+    ∀ β, .mono β ∈ outerEnv →
+      ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars,
+        group.protectedTypes offset inside used ambient i = .fvar i := by
+  intro β member i free
+  let selected := group.selected offset inside
+  let source := group.sourceExitUse offset inside used
+  let f := SchemeSpecialization.argument
+    selected.rhs.certificate.implementation.opening.ids (SchemeUse.vector source.types)
+  have fixed : f i = .fvar i :=
+    (group.checked.exitMapOuterTypesFixed offset inside source.types).mono β member i free
+  cases located : selected.rhs.certificate.implementation.opening.ids.idxOf? i with
+  | none =>
+      rw [group.protectedTypes_ambient offset inside used ambient i
+        (List.idxOf?_eq_none_iff.mp located)]
+      exact ambientTypes β member i free
+  | some slot =>
+      rw [group.protectedTypes_opening offset inside used ambient i slot located]
+      simpa only [f, SchemeSpecialization.argument, located] using fixed
+
+/-- Semantic recursive-specialization worlds strengthen the broad static
+world with mono stability.  Static body-view transport continues to quantify
+over `EnvSpecialization`; only runtime realizers demand this refinement. -/
+structure StableEnvSpecialization (env : List Binding) extends EnvSpecialization env where
+  monoCounts : ∀ β, .mono β ∈ env → bounds outer β = β
+  monoTypes : ∀ β, .mono β ∈ env →
+    ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, types i = .fvar i
+
+theorem StableEnvSpecialization.monoStable {env} (world : StableEnvSpecialization env) :
+    MonoStable env world.outer world.types :=
+  MonoStable.of_parts world.monoCounts world.monoTypes
+
 /-- A single closed term vector, observed through all three environments used
     by the recursive-body fundamental theorem.  The equalities are essential:
     merely having three unrelated inhabitants would not justify closing a
@@ -41,7 +220,7 @@ structure SpecializableEnvAt (bound free : Runtime.TypeEnv) (sigma : Assign)
   fixed : BodyEnvAt bound free sigma budget (fixedBodyEnv env)
   ordinary : BodyEnvAt bound free sigma budget (ordinaryBodyEnv env)
   ordinaryTerms : ordinary.terms = fixed.terms
-  specialized : ∀ world : EnvSpecialization env,
+  specialized : ∀ world : StableEnvSpecialization env,
     EnvAt bound free sigma budget
       (closeRecursiveEnv world.outer world.types env)
   specializedTerms : ∀ world, (specialized world).terms = fixed.terms
@@ -149,7 +328,7 @@ def SpecializableEnvAt.append {bound free sigma budget left right}
   · rw [EnvAt.castEnv_terms]
     simp only [ordinary, fixed, EnvAt.append, head.ordinaryTerms, tail.ordinaryTerms]
   · intro world
-    let leftWorld : EnvSpecialization left :=
+    let leftWorld : StableEnvSpecialization left :=
       { outer := world.outer
         types := world.types
         outerFinite := world.outerFinite
@@ -159,8 +338,10 @@ def SpecializableEnvAt.append {bound free sigma budget left right}
         typeTarget := world.typeTarget
         typesScope := world.typesScope
         fresh := CloseRecursiveFresh.left world.fresh
-        typesSupported := world.typesSupported }
-    let rightWorld : EnvSpecialization right :=
+        typesSupported := world.typesSupported
+        monoCounts := fun β h => world.monoCounts β (List.mem_append_left right h)
+        monoTypes := fun β h => world.monoTypes β (List.mem_append_left right h) }
+    let rightWorld : StableEnvSpecialization right :=
       { outer := world.outer
         types := world.types
         outerFinite := world.outerFinite
@@ -170,7 +351,9 @@ def SpecializableEnvAt.append {bound free sigma budget left right}
         typeTarget := world.typeTarget
         typesScope := world.typesScope
         fresh := CloseRecursiveFresh.right world.fresh
-        typesSupported := world.typesSupported }
+        typesSupported := world.typesSupported
+        monoCounts := fun β h => world.monoCounts β (List.mem_append_right left h)
+        monoTypes := fun β h => world.monoTypes β (List.mem_append_right left h) }
     have specializedEq :
         closeRecursiveEnv world.outer world.types left ++
             closeRecursiveEnv world.outer world.types right =

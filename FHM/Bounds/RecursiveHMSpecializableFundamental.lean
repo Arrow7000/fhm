@@ -18,7 +18,7 @@ open RecursiveHMUniform
 /-- The result-bound interpretation selected by a closed world.  This local
     spelling keeps the semantic interface independent of the still-evolving
     static body-view transport module. -/
-def closedBound (world : EnvSpecialization env) (beta : BoundsTy) : BoundsTy :=
+def closedBound (world : StableEnvSpecialization env) (beta : BoundsTy) : BoundsTy :=
   mapFree world.types (bounds world.outer beta)
 
 /-- The canonical no-op interpretation of count and HM variables.  It still
@@ -44,11 +44,16 @@ def EnvSpecialization.identity (env : List Binding) : EnvSpecialization env wher
     | mono | recursive | recursiveClosure | closure => trivial
   typesSupported := by intro i; exact .fvar
 
+def StableEnvSpecialization.identity (env : List Binding) : StableEnvSpecialization env where
+  toEnvSpecialization := EnvSpecialization.identity env
+  monoCounts := fun β _ => MonoStable.bounds_empty β
+  monoTypes := fun β _ i _ => rfl
+
 /-- The family exposes the same Core substitution in every closed world. -/
 theorem SpecializableEnvFamily.specializedTerms
     {bound free : Runtime.TypeEnv} {sigma : Assign} {env : List Binding}
     (family : SpecializableEnvFamily bound free sigma env)
-    (budget : Nat) (world : EnvSpecialization env) :
+    (budget : Nat) (world : StableEnvSpecialization env) :
     ((family.world budget).specialized world).terms = family.terms :=
   ((family.world budget).specializedTerms world).trans (family.worldTerms budget)
 
@@ -60,7 +65,7 @@ structure SpecializableTermAt
     (bound free : Runtime.TypeEnv) (sigma : Assign) {env : List Binding}
     (family : SpecializableEnvFamily bound free sigma env)
     (Delta : List Constraint) (expr : Expr) (beta : BoundsTy) : Prop where
-  run : ∀ (budget : Nat) (world : EnvSpecialization env),
+  run : ∀ (budget : Nat) (world : StableEnvSpecialization env),
     (∀ p ∈ Delta.map (constraint world.outer), p.Holds sigma) →
     Runtime.TermAt bound free sigma budget (closedBound world beta)
       (expr.substN 0 family.terms)
@@ -102,7 +107,7 @@ structure LambdaBody
     {bound free : Runtime.TypeEnv} {sigma : Assign} {env : List Binding}
     (family : SpecializableEnvFamily bound free sigma env)
     (Delta : List Constraint) (param result : BoundsTy) (body : Expr) : Prop where
-  run : ∀ (budget : Nat) (world : EnvSpecialization env)
+  run : ∀ (budget : Nat) (world : StableEnvSpecialization env)
     (_premises : ∀ p ∈ Delta.map (constraint world.outer), p.Holds sigma)
     (arg : Expr),
     Runtime.ValueAt bound free sigma (budget + 1) (closedBound world param) arg →
@@ -117,7 +122,7 @@ structure MonoLetBody
     {bound free : Runtime.TypeEnv} {sigma : Assign} {env : List Binding}
     (family : SpecializableEnvFamily bound free sigma env)
     (Delta : List Constraint) (actual result : BoundsTy) (body : Expr) : Prop where
-  run : ∀ (budget : Nat) (world : EnvSpecialization env)
+  run : ∀ (budget : Nat) (world : StableEnvSpecialization env)
     (_premises : ∀ p ∈ Delta.map (constraint world.outer), p.Holds sigma)
     (value : Expr),
     Runtime.ValueAt bound free sigma (budget + 1) (closedBound world actual) value →
@@ -136,9 +141,9 @@ def base
     (budget : Nat)
     (premises : ∀ p ∈ Delta.map (constraint ([] : Bindings)), p.Holds sigma) :
     Runtime.TermAt bound free sigma budget
-      (closedBound (EnvSpecialization.identity env) beta)
+      (closedBound (StableEnvSpecialization.identity env) beta)
       (expr.substN 0 family.terms) :=
-  safe.run budget (EnvSpecialization.identity env) premises
+  safe.run budget (StableEnvSpecialization.identity env) premises
 
 /-- Semantic subsumption is pointwise in the recursively closed world. -/
 def subsumption
@@ -146,12 +151,12 @@ def subsumption
     {family : SpecializableEnvFamily bound free sigma env}
     {Delta : List Constraint} {expr : Expr} {actual demand : BoundsTy}
     (safe : SpecializableTermAt bound free sigma family Delta expr actual)
-    (inclusion : ∀ world : EnvSpecialization env,
+    (inclusion : ∀ world : StableEnvSpecialization env,
       SemanticSub (Delta.map (constraint world.outer))
         (closedBound world actual) (closedBound world demand))
-    (actualSupported : ∀ world : EnvSpecialization env,
+    (actualSupported : ∀ world : StableEnvSpecialization env,
       Runtime.Supported (closedBound world actual))
-    (demandSupported : ∀ world : EnvSpecialization env,
+    (demandSupported : ∀ world : StableEnvSpecialization env,
       Runtime.Supported (closedBound world demand)) :
     SpecializableTermAt bound free sigma family Delta expr demand where
   run budget world premises :=
@@ -169,12 +174,12 @@ def app
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
     (function : SpecializableTermAt bound free sigma family Delta fn (.arrow domain result))
     (argument : SpecializableTermAt bound free sigma family Delta arg actual)
-    (inclusion : ∀ world : EnvSpecialization env,
+    (inclusion : ∀ world : StableEnvSpecialization env,
       SemanticSub (Delta.map (constraint world.outer))
         (closedBound world actual) (closedBound world domain))
-    (actualSupported : ∀ world : EnvSpecialization env,
+    (actualSupported : ∀ world : StableEnvSpecialization env,
       Runtime.Supported (closedBound world actual))
-    (domainSupported : ∀ world : EnvSpecialization env,
+    (domainSupported : ∀ world : StableEnvSpecialization env,
       Runtime.Supported (closedBound world domain)) :
     SpecializableTermAt bound free sigma family Delta (.app fn arg) result where
   run budget world premises := by

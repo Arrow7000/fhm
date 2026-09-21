@@ -45,7 +45,11 @@ def GeneralizedGroup.closedInternalEnvironmentNested
     (ambient : Nat → BoundsTy)
     (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC)
     (ambientScope : ∀ i, BoundsScoped target (ambient i))
-    (ambientSupported : ∀ i, Runtime.Supported (ambient i)) :
+    (ambientSupported : ∀ i, Runtime.Supported (ambient i))
+    (ambientCounts : ∀ β, .mono β ∈ outerEnv → bounds outer β = β)
+    (ambientTypes : ∀ β, .mono β ∈ outerEnv →
+      ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, ambient i = .fvar i)
+    :
     ∀ budget (lexical : SpecializableEnvAt bound free sigma budget outerEnv),
       { e : EnvAt bound free sigma budget
           (closeRecursiveEnv outer ambient group.internal) //
@@ -165,11 +169,16 @@ def GeneralizedGroup.closedInternalEnvironmentNested
             have nextAmbientSupported : ∀ i, Runtime.Supported (nextAmbient i) :=
               group.protectedTypes_supported member groupInside closedUse.use ambient
                 usedArguments ambientSupported
+            have nextCounts : ∀ β, .mono β ∈ outerEnv → bounds nextOuter β = β :=
+              group.protectedMonoCounts member groupInside closedUse.use outer ambientCounts
+            have nextTypes : ∀ β, .mono β ∈ outerEnv →
+                ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, nextAmbient i = .fvar i :=
+              group.protectedMonoTypes member groupInside closedUse.use ambient ambientTypes
             let previousLexical := lexical.down hb hf (by omega : budget ≤ budget + 1)
             let previous := closedInternalEnvironmentNested group sourceReady
               sourceDemandSupported normal bound free sigma hb hf nextOuter nextFinite nextTarget
               nextOuterScope nextAmbient nextAmbientLC nextAmbientScope nextAmbientSupported
-              budget previousLexical
+              nextCounts nextTypes budget previousLexical
             have safe := GeneralizedGroup.runtimeExitTermAtRaw group member groupInside
               closedUse.use outer outerFinite target outerScope ambient ambientLC ambientScope
               closedUse.captures normal (sourceReady member groupInside)
@@ -224,7 +233,7 @@ def GeneralizedGroup.closedInternalEnvironmentNested
             omega
           have fresh : CloseRecursiveFresh outer ambient group.internal :=
             group.internalCloseRecursiveFresh outer ambient normal
-          let world : EnvSpecialization outerEnv :=
+          let world : StableEnvSpecialization outerEnv :=
             { outer := outer
               types := ambient
               outerFinite := outerFinite
@@ -234,7 +243,9 @@ def GeneralizedGroup.closedInternalEnvironmentNested
               typeTarget := target
               typesScope := ambientScope
               fresh := CloseRecursiveFresh.right fresh
-              typesSupported := ambientSupported }
+              typesSupported := ambientSupported
+              monoCounts := ambientCounts
+              monoTypes := ambientTypes }
           have meaning := (lexical.specialized world).denotes
             (member - group.exports.length) (by
               simpa only [closeRecursiveEnv, List.length_map] using tailInside)
@@ -311,6 +322,9 @@ def GeneralizedGroup.closedInternalRealizerNested
       Runtime.Supported
         (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
     (ambientSupported : ∀ i, Runtime.Supported (ambient i))
+    (ambientCounts : ∀ β, .mono β ∈ outerEnv → bounds outer β = β)
+    (ambientTypes : ∀ β, .mono β ∈ outerEnv →
+      ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, ambient i = .fvar i)
     (bound free : Runtime.TypeEnv) (sigma : Assign)
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
     (lexical : SpecializableEnvFamily bound free sigma outerEnv) :
@@ -331,9 +345,14 @@ def GeneralizedGroup.closedInternalRealizerNested
     group.protectedTypes_scoped offset inside used ambient target ambientScope
   have typesSupported : ∀ i, Runtime.Supported (types i) :=
     group.protectedTypes_supported offset inside used ambient arguments ambientSupported
+  have countsStable : ∀ β, .mono β ∈ outerEnv → bounds rows β = β :=
+    group.protectedMonoCounts offset inside used outer ambientCounts
+  have typesStable : ∀ β, .mono β ∈ outerEnv →
+      ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, types i = .fvar i :=
+    group.protectedMonoTypes offset inside used ambient ambientTypes
   let realized := closedInternalEnvironmentNested group sourceReady sourceDemandSupported
     normal bound free sigma hb hf rows rowsFinite target' rowsScoped types typesLC typesScoped
-    typesSupported budget (lexical.world budget)
+    typesSupported countsStable typesStable budget (lexical.world budget)
   refine ⟨realized.val, ?_⟩
   simpa only [lexical.worldTerms] using realized.property
 
@@ -355,6 +374,9 @@ def GeneralizedGroup.closedExportEnvironmentNestedFixed
       Runtime.Supported
         (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
     (ambientSupported : ∀ i, Runtime.Supported (ambient i))
+    (ambientCounts : ∀ β, .mono β ∈ outerEnv → bounds outer β = β)
+    (ambientTypes : ∀ β, .mono β ∈ outerEnv →
+      ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, ambient i = .fvar i)
     (bound free : Runtime.TypeEnv) (sigma : Assign)
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
     (lexical : SpecializableEnvFamily bound free sigma outerEnv)
@@ -364,7 +386,7 @@ def GeneralizedGroup.closedExportEnvironmentNestedFixed
       e.terms = Runtime.recursiveTerms group.annotations
         (closeOuterRhss group.rhss lexical.terms) ++ lexical.terms } := by
   let internal := closedInternalRealizerNested group outer outerFinite target outerScope
-    ambient ambientLC ambientScope normal sourceReady sourceDemandSupported ambientSupported
+    ambient ambientLC ambientScope normal sourceReady sourceDemandSupported ambientSupported ambientCounts ambientTypes
     bound free sigma hb hf lexical
   let tail := lexical.world budget |>.fixed
   have tailTerms : tail.terms = lexical.terms := lexical.worldTerms budget
@@ -392,6 +414,9 @@ def GeneralizedGroup.closedExportEnvironmentNestedOrdinary
       Runtime.Supported
         (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
     (ambientSupported : ∀ i, Runtime.Supported (ambient i))
+    (ambientCounts : ∀ β, .mono β ∈ outerEnv → bounds outer β = β)
+    (ambientTypes : ∀ β, .mono β ∈ outerEnv →
+      ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, ambient i = .fvar i)
     (bound free : Runtime.TypeEnv) (sigma : Assign)
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
     (lexical : SpecializableEnvFamily bound free sigma outerEnv)
@@ -401,7 +426,7 @@ def GeneralizedGroup.closedExportEnvironmentNestedOrdinary
       e.terms = Runtime.recursiveTerms group.annotations
         (closeOuterRhss group.rhss lexical.terms) ++ lexical.terms } := by
   let internal := closedInternalRealizerNested group outer outerFinite target outerScope
-    ambient ambientLC ambientScope normal sourceReady sourceDemandSupported ambientSupported
+    ambient ambientLC ambientScope normal sourceReady sourceDemandSupported ambientSupported ambientCounts ambientTypes
     bound free sigma hb hf lexical
   let tail := lexical.world budget |>.ordinary
   have tailTerms : tail.terms = lexical.terms :=

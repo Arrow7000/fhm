@@ -89,6 +89,9 @@ def GeneralizedGroup.extendSpecializableEnvFamily
       Runtime.Supported
         (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
     (typesSupported : ∀ i, Runtime.Supported (types i))
+    (rowsCounts : ∀ β, .mono β ∈ outerEnv → bounds rows β = β)
+    (typesStable : ∀ β, .mono β ∈ outerEnv →
+      ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, types i = .fvar i)
     (bound free : Runtime.TypeEnv) (sigma : Assign)
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
     (lexical : SpecializableEnvFamily bound free sigma outerEnv) :
@@ -102,10 +105,10 @@ def GeneralizedGroup.extendSpecializableEnvFamily
       worldTerms := ?_ }
   · intro budget
     let fixedRaw := closedExportEnvironmentNestedFixed group rows rowsFinite target rowsScope
-      types typesLC typesScope normal sourceReady sourceDemandSupported typesSupported
+      types typesLC typesScope normal sourceReady sourceDemandSupported typesSupported rowsCounts typesStable
       bound free sigma hb hf lexical budget
     let ordinaryRaw := closedExportEnvironmentNestedOrdinary group rows rowsFinite target rowsScope
-      types typesLC typesScope normal sourceReady sourceDemandSupported typesSupported
+      types typesLC typesScope normal sourceReady sourceDemandSupported typesSupported rowsCounts typesStable
       bound free sigma hb hf lexical budget
     let fixed : BodyEnvAt bound free sigma budget
         (fixedBodyEnv (group.closedExports rows types ++ outerEnv)) := by
@@ -118,13 +121,13 @@ def GeneralizedGroup.extendSpecializableEnvFamily
         change ordinaryBodyEnv (group.closedExports rows types) ++ ordinaryBodyEnv outerEnv = _
         rw [ordinaryBodyEnv_closedExports]
       exact EnvAt.castEnv envEq.symm ordinaryRaw.val
-    let specialize (world : EnvSpecialization
+    let specialize (world : StableEnvSpecialization
         (group.closedExports rows types ++ outerEnv)) :
         { e : EnvAt bound free sigma budget
             (closeRecursiveEnv world.outer world.types
               (group.closedExports rows types ++ outerEnv)) //
           e.terms = terms } := by
-      let lexicalWorld : EnvSpecialization outerEnv :=
+      let lexicalWorld : StableEnvSpecialization outerEnv :=
         { outer := world.outer
           types := world.types
           outerFinite := world.outerFinite
@@ -134,7 +137,9 @@ def GeneralizedGroup.extendSpecializableEnvFamily
           typeTarget := world.typeTarget
           typesScope := world.typesScope
           fresh := CloseRecursiveFresh.right world.fresh
-          typesSupported := world.typesSupported }
+          typesSupported := world.typesSupported
+          monoCounts := fun β h => world.monoCounts β (List.mem_append_right _ h)
+          monoTypes := fun β h => world.monoTypes β (List.mem_append_right _ h) }
       let composedRows := CountAlgebra.compose world.outer rows
       let composedTypes := fun i => mapFree world.types (bounds world.outer (types i))
       let composedTarget := (target ++ world.countTarget) ++ world.typeTarget
@@ -154,9 +159,18 @@ def GeneralizedGroup.extendSpecializableEnvFamily
         intro i
         exact Runtime.Supported.types world.types world.typesSupported
           (Runtime.Supported.counts world.outer (typesSupported i))
+      have composedCounts : ∀ β, .mono β ∈ outerEnv → bounds composedRows β = β := by
+        intro β member
+        rw [CountAlgebra.bounds_compose, rowsCounts β member]
+        exact world.monoCounts β (List.mem_append_right _ member)
+      have composedStable : ∀ β, .mono β ∈ outerEnv →
+          ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, composedTypes i = .fvar i := by
+        intro β member i free
+        simp only [composedTypes, typesStable β member i free, CountSubstitution.bounds, mapFree]
+        exact world.monoTypes β (List.mem_append_right _ member) i free
       let internal := closedInternalRealizerNested group composedRows composedFinite
         composedTarget composedRowsScope composedTypes composedLC composedScope normal
-        sourceReady sourceDemandSupported composedSupported bound free sigma hb hf lexical
+        sourceReady sourceDemandSupported composedSupported composedCounts composedStable bound free sigma hb hf lexical
       let tail := (lexical.world budget).specialized lexicalWorld
       have tailTerms : tail.terms = lexical.terms :=
         ((lexical.world budget).specializedTerms lexicalWorld).trans
@@ -197,7 +211,7 @@ def GeneralizedGroup.extendSpecializableEnvFamily
       exact (specialize world).property.trans fixedRaw.property.symm
   · intro budget
     exact (closedExportEnvironmentNestedFixed group rows rowsFinite target rowsScope
-      types typesLC typesScope normal sourceReady sourceDemandSupported typesSupported
+      types typesLC typesScope normal sourceReady sourceDemandSupported typesSupported rowsCounts typesStable
       bound free sigma hb hf lexical budget).property
 
 end FHM.Bounds.RecursiveHMClosedExit
