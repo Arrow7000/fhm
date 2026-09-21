@@ -1,6 +1,7 @@
 import FHM.Bounds.RecursiveContract
 import FHM.Bounds.CountTransport
 import FHM.Bounds.RecursiveCountTransport
+import FHM.Bounds.HMCountSchemeClosure
 
 /-! # Recursive assumptions with closed templates and fixed HM arguments
 
@@ -22,6 +23,26 @@ structure Fixed (s : HMCountScheme.Scheme) (found : Ty) where
   typesLC : ∀ a ∈ types, (Synth.BoundsTy.toTy a).IsLC
   shape : Synth.BoundsTy.toTy (opened s types) = found.eraseBounds
   lc : found.eraseBounds.IsLC
+
+/-- A fixed recursive interface after lambda-lifting its lexical captures.
+    Unlike an exported closure, its old HM argument tail remains fixed: this
+    is the representation used for recursive calls *inside* an SCC. -/
+structure Closed where
+  source : HMCountScheme.Scheme
+  fixedTypes : List BoundsTy
+  fixedArity : fixedTypes.length = source.hm.paramCount
+  countCaptures : List Count
+  typeCaptures : List BoundsTy
+
+/-- A use of a capture-closed fixed recursive interface.  The promoted
+    lexical coordinates must agree with the stored closure, while the source
+    scheme's old HM argument tail remains the SCC's fixed vector. -/
+structure Closed.Use (c : Closed) (Δ : List Constraint) (found : Ty)
+    (caller : List Nat) where
+  use : HMCountScheme.Use (HMCountSchemeClosure.close c.source) Δ found caller
+  captures : HMCountSchemeClosure.HasCaptureArguments c.source
+    c.countCaptures c.typeCaptures use
+  fixedTail : HMCountSchemeClosure.sourceTypeArguments c.source use.types = c.fixedTypes
 
 def fromOpaque {s found captures} (o : Opening s found captures) : Fixed s found :=
   ⟨o.ids.map BoundsTy.fvar, by simpa using o.arity, by
@@ -63,6 +84,68 @@ def Use.external {s fixedFound Δ found caller} {c : Fixed s fixedFound}
   ⟨u.counts, u.inst, u.usable, c.types, c.arity, c.typesLC, u.typesScoped, by
     simpa only [TypeSubstitution.combined, TypeSubstitution.shape, bounds_shape, opened] using
       c.shape.trans u.fixedHM⟩
+
+abbrev Closed.Use.bounds {c Δ found caller} (u : Closed.Use c Δ found caller) : BoundsTy :=
+  u.use.bounds
+
+def Closed.sourceUse {c Δ found caller} (u : Closed.Use c Δ found caller) :=
+  HMCountSchemeClosure.sourceUse u.use
+
+theorem Closed.sourceUse_types {c Δ found caller} (u : Closed.Use c Δ found caller) :
+    (Closed.sourceUse u).types = c.fixedTypes := u.fixedTail
+
+/-- Build the closed fixed interface induced by one lawful enclosing
+    count/HM interpretation. -/
+def Closed.ofFixed {s found} (c : Fixed s found) (outer : Bindings)
+    (f : Nat → BoundsTy) : Closed where
+  source := s
+  fixedTypes := (c.types.map (CountSubstitution.bounds outer)).map (mapFree f)
+  fixedArity := by simp only [List.length_map, c.arity]
+  countCaptures := HMCountSchemeClosure.interpretedCountCaptures outer s
+  typeCaptures := HMCountSchemeClosure.interpretedTypeCaptures f s
+
+/-- Transport an ordinary fixed recursive call to its capture-closed fixed
+    interface.  This is still monomorphic recursion: the promoted prefix is
+    fixed by `captures` and the old HM tail by `fixedTail`. -/
+def Closed.Use.transport {s found Δ caller} {c : Fixed s found}
+    (u : RecursiveHMContract.Use c Δ found caller)
+    (outer : Bindings) (outerFinite : Finite outer) (countTarget : List Nat)
+    (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+    (f : Nat → BoundsTy) (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (typeTarget : List Nat)
+    (typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i)) :
+    Closed.Use (Closed.ofFixed c outer f)
+      (Δ.map (CountSubstitution.constraint outer))
+      (Synth.BoundsTy.toTy (mapFree f (CountSubstitution.bounds outer u.bounds)))
+      ((caller ++ countTarget) ++ typeTarget) := by
+  refine ⟨HMCountSchemeClosure.transportUse u.external outer outerFinite countTarget
+    countScope f typeLC typeTarget typeScope,
+    HMCountSchemeClosure.transportUse_capturesAgree u.external outer outerFinite countTarget
+      countScope f typeLC typeTarget typeScope, ?_⟩
+  simp only [Closed.ofFixed, HMCountSchemeClosure.sourceTypeArguments,
+    HMCountSchemeClosure.transportUse, HMCountSchemeClosure.specializedTypeArguments,
+    HMCountSchemeClosure.typeArguments, List.drop_append, List.length_map]
+  have capturesLength : (HMCountSchemeClosure.typeCaptures s).length =
+      ((HMCountSchemeClosure.typeCaptures s).map f).length := by simp
+  have dropped : List.drop (HMCountSchemeClosure.typeCaptures s).length
+      ((HMCountSchemeClosure.typeCaptures s).map f) = [] := by
+    rw [capturesLength]
+    exact List.drop_length
+  rw [dropped]
+  simp only [List.nil_append, Nat.sub_self, List.drop_zero]
+  rfl
+
+theorem Closed.Use.transport_bounds {s found Δ caller} {c : Fixed s found}
+    (u : RecursiveHMContract.Use c Δ found caller)
+    (outer : Bindings) (outerFinite : Finite outer) (countTarget : List Nat)
+    (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+    (f : Nat → BoundsTy) (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (typeTarget : List Nat)
+    (typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i)) :
+    (Closed.Use.transport u outer outerFinite countTarget countScope f typeLC typeTarget typeScope).bounds =
+      mapFree f (CountSubstitution.bounds outer u.bounds) :=
+  HMCountSchemeClosure.transportUse_bounds u.external outer outerFinite countTarget
+    countScope f typeLC typeTarget typeScope
 
 theorem Use.shape {s fixedFound Δ found caller} {c : Fixed s fixedFound}
     (u : Use c Δ found caller) : Synth.BoundsTy.toTy u.bounds = found.eraseBounds := u.external.shape
