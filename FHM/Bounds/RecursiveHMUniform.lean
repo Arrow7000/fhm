@@ -1507,6 +1507,25 @@ structure GeneralizedGroup.RuntimeReady
       e.terms = Runtime.recursiveTerms group.annotations
         (closeOuterRhss group.rhss outer.terms) ++ outer.terms }
 
+/-- Runtime admissibility for the lexical-closure view of a generalized
+    group.  The static count and HM interpretations are fixed where the group
+    is introduced; the witness supplies only the tied Core environment needed
+    by the body fundamental theorem.  Constructing this witness is deliberately
+    separate from the body judgment, since it is where the use-indexed
+    recursive fixed point is discharged. -/
+structure GeneralizedGroup.ClosedRuntimeReady
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (outer : Bindings) (ambient : Nat → BoundsTy) where
+  ordinary : ∀ (bound free : Runtime.TypeEnv) (σ : Assign)
+    (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat)
+    (enclosing : BodyEnvAt bound free σ budget (ordinaryBodyEnv outerEnv)),
+    { e : BodyEnvAt bound free σ budget
+        (group.closedExports outer ambient ++ ordinaryBodyEnv outerEnv) //
+      e.terms = Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
+
 /-- All generalized exports are realized by Core's original source-ordered
     recursive replacements, using the fixed-map member theorem at each use. -/
 def _root_.FHM.Bounds.HMDeclaredGroup.Checked.exportEnvironment
@@ -3572,6 +3591,13 @@ inductive RuntimeReady :
       group.RuntimeReady →
       RecursiveArgumentsSupported outerEnv →
       RuntimeReady hbody → RuntimeReady (.letRec group hbody)
+  | letRecClosed
+      (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+      {hbody : ScopedBodyDerives types slots ids rows Δ
+        (group.closedExports rows types ++ ordinaryBodyEnv outerEnv)
+        group.body result} :
+      group.ClosedRuntimeReady rows types →
+      RuntimeReady hbody → RuntimeReady (.letRecClosed group hbody)
   | letRecFixed
       (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
       {hbody : ScopedBodyDerives types slots ids rows Δ
@@ -3795,6 +3821,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | letRecExportedClosed _ _ _ _ _ _ _ body => exact body
   | match_ _ _ _ _ _ _ _ result => exact result
   | letRec _ _ _ _ body => exact body
+  | letRecClosed _ _ _ body => exact body
   | letRecFixed _ _ _ body => exact body
 
 /-- Fundamental theorem for the supported generalized-body derivation. Closed
@@ -4455,6 +4482,42 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
             (.letRec group.annotations closedRhss
               (group.body.substN group.rhss.length previous.terms))
           exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
+  | letRecClosed group groupReady bodyReady ihbody =>
+      intro budget premises e
+      cases budget with
+      | zero => unfold Runtime.TermAt; intro steps v _ before; omega
+      | succ budget =>
+          let previous := e.down hb hf (by omega : budget ≤ budget + 1)
+          let realized := groupReady.ordinary bound free σ hb hf budget previous
+          have bodySafe := ihbody budget premises realized.val
+          rw [realized.property] at bodySafe
+          let closedRhss := closeOuterRhss group.rhss previous.terms
+          let recursive := Runtime.recursiveTerms group.annotations closedRhss
+          have closedScope : ∀ rhs ∈ closedRhss,
+              rhs.varsBelow group.rhss.length = true := by
+            intro rhs member
+            obtain ⟨source, sourceMember, rfl⟩ := List.mem_map.mp member
+            apply Runtime.closing_scoped previous.terms previous.closed source group.rhss.length
+            rw [previous.arity]
+            simpa only [ordinaryBodyEnv, List.length_map, Nat.add_comm] using
+              group.rhssScoped source sourceMember
+          have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+            apply Runtime.recursiveTerms_closed
+            simpa only [closedRhss, closeOuterRhss_length] using closedScope
+          have composed := Runtime.closing_compose previous.terms recursive previous.closed
+            recursiveClosed group.body 0
+          have recursiveLength : recursive.length = group.rhss.length := by
+            simp only [recursive, Runtime.recursiveTerms, List.length_map,
+              closedRhss, closeOuterRhss_length]
+          rw [Nat.zero_add, recursiveLength] at composed
+          rw [← composed] at bodySafe
+          have sameTerms : previous.terms = e.terms := rfl
+          rw [← sameTerms]
+          simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+          change Runtime.TermAt bound free σ (budget + 1) _
+            (.letRec group.annotations closedRhss
+              (group.body.substN group.rhss.length previous.terms))
+          exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodySafe
   | letRecFixed group groupReady bodyReady ihbody =>
       intro budget premises e
       cases budget with
@@ -4607,6 +4670,8 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
         (fun i br atIndex => ihb i br atIndex (RecursiveTyping.assuming_append hp)) result
   | letRec group groupReady outerArguments _ ihb =>
       exact .letRec group groupReady outerArguments (ihb hp)
+  | letRecClosed group groupReady _ ihb =>
+      exact .letRecClosed group groupReady (ihb hp)
   | letRecFixed group groupReady _ ihb =>
       exact .letRecFixed group groupReady (ihb hp)
 
