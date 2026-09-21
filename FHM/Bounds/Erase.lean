@@ -299,6 +299,145 @@ def eraseExpr : Surface.Expr → Surface.Expr :=
       .match_ es
         (brs.attach.map fun ⟨⟨p, e⟩, h⟩ => (p, ihb p e h)))
 
+theorem eraseOptTy_noBl {input : Option Surface.Ty} {output : Surface.Ty}
+    (h : (eraseOptTy input).1 = some output) :
+    Surface.Ty.DoesntContainBounds output := by
+  cases input with
+  | none => cases h
+  | some ty =>
+      simp only [eraseOptTy, Option.some.injEq] at h
+      cases h
+      exact (eraseTy ty).noBl
+
+theorem eraseOptPolyTy_noBl {input : Option Surface.PolyTy} {output : Surface.PolyTy}
+    (h : (eraseOptPolyTy input).1 = some output) :
+    Surface.PolyTy.DoesntContainBounds output := by
+  cases input with
+  | none => cases h
+  | some scheme =>
+      simp only [eraseOptPolyTy, Option.some.injEq] at h
+      cases h
+      exact .mk (eraseTy scheme.body [] scheme.foralls).noBl
+
+theorem eraseParams_noBl (params : List (ValName × Option Surface.Ty)) :
+    ∀ name ty, (name, some ty) ∈ eraseParams params →
+      Surface.Ty.DoesntContainBounds ty := by
+  intro name ty member
+  obtain ⟨entry, source, equality⟩ := List.mem_map.mp member
+  rcases entry with ⟨sourceName, sourceTy⟩
+  simp only at equality
+  have names : sourceName = name := congrArg Prod.fst equality
+  subst sourceName
+  have types : (eraseOptTy sourceTy).1 = some ty := congrArg Prod.snd equality
+  exact eraseOptTy_noBl types
+
+theorem eraseExpr_noBl (e : Surface.Expr) :
+    Surface.Expr.DoesntContainBounds (eraseExpr e) := by
+  induction e using Surface.Expr.rec_strong with
+  | primLit => simpa only [eraseExpr, Surface.Expr.rec_strong] using
+      Surface.Expr.DoesntContainBounds.primLit
+  | primBinOp => simpa only [eraseExpr, Surface.Expr.rec_strong] using
+      Surface.Expr.DoesntContainBounds.primBinOp
+  | pair a b ihA ihB => simpa only [eraseExpr, Surface.Expr.rec_strong] using
+      Surface.Expr.DoesntContainBounds.pair ihA ihB
+  | cons h t ihH ihT => simpa only [eraseExpr, Surface.Expr.rec_strong] using
+      Surface.Expr.DoesntContainBounds.cons ihH ihT
+  | list items ih =>
+      have result : Surface.Expr.DoesntContainBounds
+          (.list (items.attach.map fun ⟨source, sourceMember⟩ => eraseExpr source)) := by
+        apply Surface.Expr.DoesntContainBounds.list
+        intro item member
+        obtain ⟨attached, _, rfl⟩ := List.mem_map.mp member
+        rcases attached with ⟨source, sourceMember⟩
+        exact ih source sourceMember
+      simpa only [eraseExpr, Surface.Expr.rec_strong] using result
+  | lambda param paramAnn body ihBody =>
+      have result : Surface.Expr.DoesntContainBounds
+          (.lambda param (eraseOptTy paramAnn).1 (eraseExpr body)) := by
+        apply Surface.Expr.DoesntContainBounds.lambda
+        · intro ty equality
+          exact eraseOptTy_noBl equality
+        · exact ihBody
+      simpa only [eraseExpr, Surface.Expr.rec_strong] using result
+  | app fn arg ihFn ihArg => simpa only [eraseExpr, Surface.Expr.rec_strong] using
+      Surface.Expr.DoesntContainBounds.app ihFn ihArg
+  | letIn name tyParams params ann rhs body ihRhs ihBody =>
+      have result : Surface.Expr.DoesntContainBounds
+          (.letIn name tyParams (eraseParams params) (eraseOptPolyTy ann).1
+            (eraseExpr rhs) (eraseExpr body)) := by
+        apply Surface.Expr.DoesntContainBounds.letIn
+        · exact eraseParams_noBl params
+        · intro scheme equality
+          exact eraseOptPolyTy_noBl equality
+        · exact ihRhs
+        · exact ihBody
+      simpa only [eraseExpr, Surface.Expr.rec_strong] using result
+  | letRecIn bindings body ihBindings ihBody =>
+      have result : Surface.Expr.DoesntContainBounds
+          (.letRecIn
+            (bindings.attach.map fun ⟨source, sourceMember⟩ =>
+              let ann' := match source.ann with
+                | some scheme => some (erasePolyTy scheme source.natBinders).1
+                | none => none
+              { source with
+                params := eraseParams source.params
+                ann := ann'
+                natBinders := []
+                rhs := eraseExpr source.rhs })
+            (eraseExpr body)) := by
+        apply Surface.Expr.DoesntContainBounds.letRecIn
+        · intro binding bindingMember name ty paramMember
+          obtain ⟨attached, _, equality⟩ := List.mem_map.mp bindingMember
+          rcases attached with ⟨source, sourceMember⟩
+          have paramsEq : eraseParams source.params = binding.params :=
+            congrArg (fun b : Binding => b.params) equality
+          rw [← paramsEq] at paramMember
+          exact eraseParams_noBl source.params name ty paramMember
+        · intro binding bindingMember scheme annEq
+          obtain ⟨attached, _, equality⟩ := List.mem_map.mp bindingMember
+          rcases attached with ⟨source, sourceMember⟩
+          have sourceAnn :
+              (match source.ann with
+                | some original => some (erasePolyTy original source.natBinders).1
+                | none => none) = binding.ann :=
+            congrArg (fun b : Binding => b.ann) equality
+          rw [← sourceAnn] at annEq
+          cases sourceAnnEq : source.ann with
+          | none => simp [sourceAnnEq] at annEq
+          | some original =>
+              simp [sourceAnnEq] at annEq
+              cases annEq
+              exact .mk (eraseTy original.body source.natBinders original.foralls).noBl
+        · intro binding bindingMember
+          obtain ⟨attached, _, equality⟩ := List.mem_map.mp bindingMember
+          rcases attached with ⟨source, sourceMember⟩
+          have rhsEq : eraseExpr source.rhs = binding.rhs :=
+            congrArg (fun b : Binding => b.rhs) equality
+          rw [← rhsEq]
+          exact ihBindings source sourceMember
+        · exact ihBody
+      simpa only [eraseExpr, Surface.Expr.rec_strong] using result
+  | var => simpa only [eraseExpr, Surface.Expr.rec_strong] using
+      Surface.Expr.DoesntContainBounds.var
+  | ctor => simpa only [eraseExpr, Surface.Expr.rec_strong] using
+      Surface.Expr.DoesntContainBounds.ctor
+  | ife c t f ihC ihT ihF => simpa only [eraseExpr, Surface.Expr.rec_strong] using
+      Surface.Expr.DoesntContainBounds.ife ihC ihT ihF
+  | match_ scrut branches ihScrut ihBranches =>
+      have result : Surface.Expr.DoesntContainBounds
+          (.match_ (eraseExpr scrut)
+            (branches.attach.map fun ⟨⟨pattern, body⟩, member⟩ =>
+              (pattern, eraseExpr body))) := by
+        apply Surface.Expr.DoesntContainBounds.match_ ihScrut
+        intro pattern body member
+        obtain ⟨attached, _, equality⟩ := List.mem_map.mp member
+        rcases attached with ⟨⟨sourcePattern, sourceBody⟩, sourceMember⟩
+        injection equality with patternEq bodyEq
+        subst pattern
+        subst body
+        exact ihBranches sourcePattern sourceBody sourceMember
+      simpa only [eraseExpr, Surface.Expr.rec_strong] using result
+
 /-- Erase one binding, producing its bounds ann in the same package.
 
 When `eraseSchemeAnn` returns `some` (Nat and/or type foralls), leave mono `ann`
@@ -339,6 +478,51 @@ def eraseDataDecl (d : DataDecl) : DataDecl :=
     ctors := d.ctors.map fun (cn, fs) =>
       (cn, fs.map fun t => (eraseTy t).ty) }
 
+theorem eraseBinding_noBl (binding : Binding) :
+    Binding.DoesntContainBounds (eraseBinding binding).binding := by
+  constructor
+  · intro name ty member
+    exact eraseParams_noBl binding.params name ty (by
+      simpa only [eraseBinding] using member)
+  · intro scheme equality
+    cases annEq : binding.ann with
+    | none => simp [eraseBinding, annEq] at equality
+    | some original =>
+        have same : (erasePolyTy original binding.natBinders).1 = scheme := by
+          simpa [eraseBinding, annEq] using equality
+        cases same
+        exact .mk (eraseTy original.body binding.natBinders original.foralls).noBl
+  · simpa only [eraseBinding] using eraseExpr_noBl binding.rhs
+
+theorem eraseDataDecl_noBl (declaration : DataDecl) :
+    DataDecl.DoesntContainBounds (eraseDataDecl declaration) := by
+  constructor
+  intro ctor fields member ty tyMember
+  obtain ⟨source, sourceMember, equality⟩ := List.mem_map.mp (by
+    simpa only [eraseDataDecl] using member)
+  rcases source with ⟨sourceCtor, sourceFields⟩
+  have fieldsEq : sourceFields.map (fun t => (eraseTy t).ty) = fields :=
+    congrArg Prod.snd equality
+  rw [← fieldsEq] at tyMember
+  obtain ⟨sourceTy, _, rfl⟩ := List.mem_map.mp tyMember
+  exact (eraseTy sourceTy).noBl
+
+theorem eraseProgram_noBl (p : Program) :
+    Program.DoesntContainBounds
+      { decls := p.decls.map eraseDataDecl
+        groups := p.groups.map fun group => group.map (fun binding => (eraseBinding binding).binding)
+        body := eraseExpr p.body } := by
+  apply Program.DoesntContainBounds.mk
+  · intro declaration member
+    obtain ⟨source, _, rfl⟩ := List.mem_map.mp member
+    exact eraseDataDecl_noBl source
+  · intro group groupMember binding bindingMember
+    obtain ⟨sourceGroup, _, groupEq⟩ := List.mem_map.mp groupMember
+    rw [← groupEq] at bindingMember
+    obtain ⟨sourceBinding, _, rfl⟩ := List.mem_map.mp bindingMember
+    exact eraseBinding_noBl sourceBinding
+  · exact eraseExpr_noBl p.body
+
 /-- **Deprecated for product path (2026-08-04).**
 
 See `briefs/design-memo-bounds-preserving-elaboration.md`. Replacement: keep BL
@@ -352,8 +536,8 @@ def eraseProgram (p : Program) : ErasedProgram :=
     groups := groups'
     body := eraseExpr p.body
     bodyAnn := none
-    -- prove after shape ✅ (`eraseProgram_noBl`)
-    noBl := by sorry }
+    noBl := by
+      simpa only [decls', groups', List.map_map, Function.comp_def] using eraseProgram_noBl p }
 
 /-! ## Theorems -/
 
