@@ -69,6 +69,7 @@ def fromCertified {s found typeCaptures env rhs sourceTypes sourceSlots}
         apply lookup_none
         rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
         exact cert.countFresh c hb i hi
+    | recursiveClosure _ => trivial
     | exported s =>
         intro i hi
         apply lookup_none
@@ -83,6 +84,9 @@ def fromCertified {s found typeCaptures env rhs sourceTypes sourceSlots}
     | recursive original =>
         cases he
         simpa [Contract.mapCounts] using fixed.recursive ho
+    | recursiveClosure _ =>
+        cases he
+        trivial
     | exported s =>
         cases he
         exact fixed.exported ho
@@ -130,6 +134,7 @@ theorem fromCertified_runtimeReady {s found typeCaptures env rhs sourceTypes sou
         apply lookup_none
         rw [List.map_fst_zip (Nat.le_of_eq inst.arity)]
         exact cert.countFresh c hb i hi
+    | recursiveClosure _ => trivial
     | exported s =>
         intro i hi
         apply lookup_none
@@ -144,6 +149,9 @@ theorem fromCertified_runtimeReady {s found typeCaptures env rhs sourceTypes sou
     | recursive original =>
         cases he
         simpa [Contract.mapCounts] using fixed.recursive ho
+    | recursiveClosure _ =>
+        cases he
+        trivial
     | exported s =>
         cases he
         exact fixed.exported ho
@@ -528,6 +536,7 @@ theorem _root_.FHM.Bounds.HMDeclaredGroup.MemberChecked.exitMapFixed
       have absent : i ∉ checked.certificate.implementation.opening.ids :=
         fun present => checked.certificate.implementation.typeFresh c member i present freeId
       simp only [argument, List.idxOf?_eq_none_iff.mpr absent]
+  | recursiveClosure _ => trivial
   | exported s =>
       intro i freeId
       have absent : i ∉ checked.certificate.implementation.opening.ids :=
@@ -698,6 +707,7 @@ def closedLocalSlots (s : HMCountScheme.Scheme) (ann : Option PolyTy)
 private def ordinaryBinding : Binding → BodyBinding
   | .mono β => .mono β
   | .recursive c => .exported c.template
+  | .recursiveClosure c => .recursiveClosure c
   | .exported s => .exported s
   | .closure s countCaptures typeCaptures => .closure s countCaptures typeCaptures
 
@@ -751,6 +761,7 @@ private theorem RecursiveArgumentsSupported.mapCountBinding {env}
       obtain ⟨b, sourceArgument, rfl⟩ := List.mem_map.mp (by
         simpa [Contract.mapCounts, RecursiveHMContract.Fixed.mapCounts] using argument)
       exact (supported original source b sourceArgument).counts outer
+  | recursiveClosure _ => cases mapped
   | exported s => cases mapped
   | closure _ _ _ => cases mapped
 
@@ -768,6 +779,7 @@ private theorem RecursiveArgumentsSupported.mapBinding {env}
       obtain ⟨b, sourceArgument, rfl⟩ := List.mem_map.mp (by
         simpa [Contract.mapTypes, RecursiveHMContract.Fixed.mapTypes] using argument)
       exact Runtime.Supported.types f arguments (supported original source b sourceArgument)
+  | recursiveClosure _ => cases mapped
   | exported s => cases mapped
   | closure _ _ _ => cases mapped
 
@@ -974,6 +986,9 @@ def BodyEnvAt.toEnvAt {bound free σ budget env}
         exact meaning Δ c.hm caller used.external
           (fun a member => arguments c (by simpa only [source] using List.getElem_mem inside) a member)
           premises
+    | recursiveClosure c =>
+        simpa only [ordinaryBodyEnv, List.getElem_map, source, ordinaryBinding,
+          BodyBindingAt, BindingAt] using meaning
     | exported s =>
         simpa only [ordinaryBodyEnv, List.getElem_map, source, ordinaryBinding,
           BodyBindingAt, BindingAt] using meaning
@@ -1921,6 +1936,9 @@ inductive ScopedBodyDerives :
   | varRecursive {env i c caller} : env[i]? = some (.recursive c) →
       (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) →
       ScopedBodyDerives types slots ids rows Δ env (.var i) used.bounds
+  | varRecursiveClosure {env i c found caller} : env[i]? = some (.recursiveClosure c) →
+      (used : RecursiveHMContract.Closed.Use c Δ found caller) →
+      ScopedBodyDerives types slots ids rows Δ env (.var i) used.bounds
   | varExported {env i s found caller} : env[i]? = some (.exported s) →
       (used : HMCountScheme.Use s Δ found caller) → ScopedBodyDerives types slots ids rows Δ env (.var i) used.bounds
   | varClosure {env i s countCaptures typeCaptures found caller} :
@@ -2083,7 +2101,7 @@ theorem ScopedBodyDerives.primLitBounds {types slots ids rows Δ env e β}
       rw [ih p source] at sub
       cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | ctor | cons | consPartial | pair | pairPartial |
-      varMono | varRecursive | varExported | varClosure | app | lambda |
+      varMono | varRecursive | varRecursiveClosure | varExported | varClosure | app | lambda |
       letMono | letRecMono | letRecMonoGroup | letPinned | letRecPinnedMono | letRecInferredMono |
           letExported | letRecExported | letExportedClosed | letRecExportedClosed |
           match_ | letRec | letRecFixed =>
@@ -2103,6 +2121,7 @@ theorem OrdinaryEnv.bodyEnv {env : List Binding} (ordinary : OrdinaryEnv env) :
       cases binding with
       | mono β => simpa [ordinaryBodyEnv, ordinaryBinding] using ih tail
       | recursive c => exact False.elim (ordinary c (by simp))
+      | recursiveClosure c => simpa [ordinaryBodyEnv, ordinaryBinding] using ih tail
       | exported s => simpa [ordinaryBodyEnv, ordinaryBinding] using ih tail
       | closure s countCaptures typeCaptures =>
           simpa [ordinaryBodyEnv, ordinaryBinding] using ih tail
@@ -2179,6 +2198,9 @@ theorem rhsToBody {types slots ids rows Δ env e β}
   | varRecursive lookup used =>
       exact .varExported
         (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) used.external
+  | varRecursiveClosure lookup used =>
+      exact .varRecursiveClosure
+        (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) used
   | varExported lookup used =>
       exact .varExported
         (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) used
@@ -2300,6 +2322,9 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
   | varRecursive lookup used =>
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used.external
+  | varRecursiveClosure lookup used =>
+      exact .varRecursiveClosure (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
   | varExported lookup used =>
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
@@ -2392,6 +2417,9 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
       exact .varMono (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]))
   | varRecursive lookup used => exact False.elim (ordinary _ (List.mem_of_getElem? lookup))
+  | varRecursiveClosure lookup used =>
+      exact .varRecursiveClosure (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
   | varExported lookup used =>
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
@@ -2530,6 +2558,15 @@ theorem ScopedBodyDerives.assuming {types slots ids rows Δ Δ' env e β}
           exact used.usable σ (fun c hc => hp σ hΔ c hc) goal hgoal,
           used.typesScoped, used.fixedHM⟩
       exact .varRecursive lookup next
+  | varRecursiveClosure lookup used =>
+      let next : HMCountScheme.Use _ Δ' _ _ :=
+        ⟨used.use.counts, used.use.countInstance, by
+          intro σ hΔ goal hgoal
+          exact used.use.usable σ (fun c hc => hp σ hΔ c hc) goal hgoal,
+          used.use.types, used.use.arity, used.use.typesLC, used.use.typesScoped,
+          used.use.shape⟩
+      exact .varRecursiveClosure lookup
+        ⟨next, ⟨used.captures.counts, used.captures.types⟩, used.fixedTail⟩
   | varExported lookup used =>
       let next : HMCountScheme.Use _ Δ' _ _ :=
         ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
@@ -2631,7 +2668,7 @@ theorem ScopedBodyDerives.varsBelow {types slots ids rows Δ env e β}
   | consPartial _ ih => simpa [Expr.varsBelow] using ih
   | pair _ _ ihLeft ihRight => simp [Expr.varsBelow, ihLeft, ihRight]
   | pairPartial _ ih => simpa [Expr.varsBelow] using ih
-  | varMono lookup | varRecursive lookup _ | varExported lookup _ | varClosure lookup _ _ =>
+  | varMono lookup | varRecursive lookup _ | varRecursiveClosure lookup _ | varExported lookup _ | varClosure lookup _ _ =>
       obtain ⟨small, _⟩ := List.getElem?_eq_some_iff.mp lookup
       simpa only [Expr.varsBelow, decide_eq_true_eq] using small
   | app _ _ _ ihf iha => simp [Expr.varsBelow, ihf, iha]
@@ -2842,6 +2879,9 @@ inductive RuntimeReady :
   | varRecursive (lookup : env[i]? = some (Binding.recursive c))
       (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) :
       Runtime.Supported used.bounds → RuntimeReady (.varRecursive lookup used)
+  | varRecursiveClosure (lookup : env[i]? = some (Binding.recursiveClosure c))
+      (used : RecursiveHMContract.Closed.Use c Δ found caller) :
+      Runtime.Supported used.bounds → RuntimeReady (.varRecursiveClosure lookup used)
   | varExported (lookup : env[i]? = some (Binding.exported s))
       (used : HMCountScheme.Use s Δ found caller) :
       Runtime.Supported used.bounds → (∀ a ∈ used.types, Runtime.Supported a) →
@@ -3220,14 +3260,6 @@ theorem TypingSpecializes.castExpr
   cases same
   exact stable
 
-theorem TypingSpecializes.castEnv
-    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
-    {Δ : List Constraint} {env env' : List BodyBinding} {e : Expr} {β : BoundsTy}
-    (same : env = env') {h : ScopedBodyDerives types slots ids rows Δ env e β}
-    (stable : TypingSpecializes h) : TypingSpecializes (same ▸ h) := by
-  cases same
-  exact stable
-
 def TypingSpecializes.app
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Δ : List Constraint} {env : List BodyBinding}
@@ -3394,76 +3426,6 @@ def TypingSpecializes.ofOrdinary
     {typing : ScopedBodyDerives types slots ids rows Δ env e β} :
     TypingSpecializes typing :=
   TypingSpecializes.congr (TypingSpecializes.ordinary source.specializes)
-
-def TypingSpecializes.literal {types slots ids rows Δ env p} :
-    TypingSpecializes
-      (@ScopedBodyDerives.literal types slots ids rows Δ env p) :=
-  TypingSpecializes.ofOrdinary (@ScopedDerives.literal types slots ids rows Δ env p)
-
-def TypingSpecializes.primBinOp {types slots ids rows Δ env op} :
-    TypingSpecializes
-      (@ScopedBodyDerives.primBinOp types slots ids rows Δ env op) :=
-  TypingSpecializes.ofOrdinary (@ScopedDerives.primBinOp types slots ids rows Δ env op)
-
-def TypingSpecializes.nil {types slots ids rows Δ env elem} :
-    TypingSpecializes
-      (@ScopedBodyDerives.nil types slots ids rows Δ env elem) :=
-  TypingSpecializes.ofOrdinary (@ScopedDerives.nil types slots ids rows Δ env elem)
-
-def TypingSpecializes.boolCtor {types slots ids rows Δ env name}
-    (ctor : BoolBranches.IsCtor name) :
-    TypingSpecializes
-      (@ScopedBodyDerives.boolCtor types slots ids rows Δ env name ctor) :=
-  TypingSpecializes.ofOrdinary
-    (@ScopedDerives.boolCtor types slots ids rows Δ env name ctor)
-
-def TypingSpecializes.ctor {types slots ids rows Δ env name β}
-    (notNil : name ≠ nilCtorName) :
-    TypingSpecializes
-      (@ScopedBodyDerives.ctor types slots ids rows Δ env name β notNil) :=
-  TypingSpecializes.ofOrdinary
-    (@ScopedDerives.ctor types slots ids rows Δ env name β notNil)
-
-def TypingSpecializes.varMono {types slots ids rows Δ env i β}
-    (lookup : env[i]? = some (.mono β)) :
-    TypingSpecializes
-      (@ScopedBodyDerives.varMono types slots ids rows Δ env i β lookup) :=
-  TypingSpecializes.ofOrdinary
-    (@ScopedDerives.varMono types slots ids rows Δ env i β lookup)
-
-def TypingSpecializes.varRecursive {types slots ids rows Δ env i caller}
-    {c : Contract} (lookup : env[i]? = some (Binding.recursive c))
-    (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) :
-    TypingSpecializes
-      (ScopedBodyDerives.varRecursive (types := types) (slots := slots) (ids := ids)
-        (rows := rows) lookup used) :=
-  TypingSpecializes.ofOrdinary
-    (ScopedDerives.varRecursive (types := types) (slots := slots) (ids := ids)
-      (rows := rows) lookup used)
-
-def TypingSpecializes.varExported {types slots ids rows Δ env i found caller}
-    {s : HMCountScheme.Scheme}
-    (lookup : env[i]? = some (Binding.exported s))
-    (used : HMCountScheme.Use s Δ found caller) :
-    TypingSpecializes
-      (ScopedBodyDerives.varExported (types := types) (slots := slots) (ids := ids)
-        (rows := rows) lookup used) :=
-  TypingSpecializes.ofOrdinary
-    (ScopedDerives.varExported (types := types) (slots := slots) (ids := ids)
-      (rows := rows) lookup used)
-
-def TypingSpecializes.varClosure {types slots ids rows Δ env i countCaptures
-    typeCaptures found caller} {s : HMCountScheme.Scheme}
-    (lookup : env[i]? = some (Binding.closure s countCaptures typeCaptures))
-    (used : HMCountScheme.Use (HMCountSchemeClosure.close s) Δ found caller)
-    (captures : HMCountSchemeClosure.HasCaptureArguments
-      s countCaptures typeCaptures used) :
-    TypingSpecializes
-      (ScopedBodyDerives.varClosure (types := types) (slots := slots) (ids := ids)
-        (rows := rows) lookup used captures) :=
-  TypingSpecializes.ofOrdinary
-    (ScopedDerives.varClosure (types := types) (slots := slots) (ids := ids)
-      (rows := rows) lookup used captures)
 
 def TypingSpecializes.cons
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
@@ -4741,6 +4703,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBod
   | pairPartial _ right left => exact .arrow right (.pair left right)
   | varMono _ supported => exact supported
   | varRecursive _ _ supported => exact supported
+  | varRecursiveClosure _ _ supported => exact supported
   | varExported _ _ supported _ => exact supported
   | varClosure _ _ _ supported _ => exact supported
   | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
@@ -4824,6 +4787,9 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
   | varRecursive lookup used _ =>
       intro budget premises e
       exact e.varRecursive lookup used premises
+  | varRecursiveClosure lookup used _ =>
+      intro budget premises e
+      exact e.varRecursiveClosure lookup used premises
   | varExported lookup used _ arguments =>
       intro budget premises e
       exact e.varExported lookup used arguments premises
@@ -5490,6 +5456,13 @@ theorem RuntimeReady.assuming {types slots ids rows Δ Δ' env expr β}
         ⟨used.counts, used.inst, fun σ premises => used.usable σ (hp σ premises),
           used.typesScoped, used.fixedHM⟩
       exact .varRecursive lookup next supported
+  | varRecursiveClosure lookup used supported =>
+      let next : HMCountScheme.Use _ Δ' _ _ :=
+        ⟨used.use.counts, used.use.countInstance,
+          (fun σ hΔ => used.use.usable σ (hp σ hΔ)), used.use.types,
+          used.use.arity, used.use.typesLC, used.use.typesScoped, used.use.shape⟩
+      exact .varRecursiveClosure lookup
+        ⟨next, ⟨used.captures.counts, used.captures.types⟩, used.fixedTail⟩ supported
   | varExported lookup used supported arguments =>
       let next : HMCountScheme.Use _ Δ' _ _ :=
         ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
@@ -5658,6 +5631,9 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used.external
         supported (arguments _ (List.mem_of_getElem? lookup))
+  | varRecursiveClosure lookup used supported =>
+      exact .varRecursiveClosure (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used supported
   | varExported lookup used supported usedArguments =>
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
@@ -5781,6 +5757,10 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
   | varRecursive lookup _ _ =>
       intro ordinary _
       exact False.elim (ordinary _ (List.mem_of_getElem? lookup))
+  | varRecursiveClosure lookup used supported =>
+      intro _ tail
+      exact .varRecursiveClosure (body_getElem?_append_left (by
+        simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used supported
   | varExported lookup used supported arguments =>
       intro _ tail
       exact .varExported (body_getElem?_append_left (by
@@ -5942,6 +5922,7 @@ def recursiveTypeCaptures (env : List Binding) : List Ty :=
   env.map fun binding => match binding with
     | .mono β => Synth.BoundsTy.toTy β
     | .recursive c => c.template.hm.body
+    | .recursiveClosure c => c.source.hm.body
     | .exported s => s.hm.body
     | .closure s _ _ => s.hm.body
 
@@ -5949,6 +5930,7 @@ def recursiveFixedTypeCaptures (env : List Binding) : List Ty :=
   env.flatMap fun binding => match binding with
     | .mono β => [Synth.BoundsTy.toTy β]
     | .recursive c => c.fixed.types.map Synth.BoundsTy.toTy
+    | .recursiveClosure c => c.fixedTypes.map Synth.BoundsTy.toTy
     | .exported _ => []
     | .closure _ _ typeCaptures => typeCaptures.map Synth.BoundsTy.toTy
 
@@ -6214,6 +6196,63 @@ private def BodyCapture.extendExported {env} (capture : BodyCapture env)
     intro t member
     rcases List.mem_cons.mp member with head | tail
     · cases head; exact closed
+    · exact capture.exportCountClosed t tail
+
+/-- A generalized local whose lexical HM identities are promoted to explicit
+    closure arguments.  The currently supported exited-local boundary has no
+    captured count identities; its promoted HM arguments are plain free
+    variables and therefore remain closed at the body boundary. -/
+private def BodyCapture.extendClosure {env} (capture : BodyCapture env)
+    (s : HMCountScheme.Scheme) (countClosed : s.counts.captures = []) :
+    BodyCapture
+      (.closure s [] (HMCountSchemeClosure.interpretedTypeCaptures BoundsTy.fvar s) :: env) where
+  rhsEnv := .closure s [] (HMCountSchemeClosure.interpretedTypeCaptures BoundsTy.fvar s) ::
+    capture.rhsEnv
+  bodyEnv := by
+    change .closure s [] (HMCountSchemeClosure.interpretedTypeCaptures BoundsTy.fvar s) ::
+      ordinaryBodyEnv capture.rhsEnv =
+      .closure s [] (HMCountSchemeClosure.interpretedTypeCaptures BoundsTy.fvar s) :: env
+    rw [capture.bodyEnv]
+  captured := by
+    refine {
+      mono := ?_
+      recursive := ?_
+      closureCounts := ?_
+      closureTypes := ?_ }
+    · intro β member
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.mono β tail
+    · intro c member β argument
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+      · exact capture.captured.recursive c tail β argument
+    · intro source counts types member c inside
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+        cases inside
+      · exact capture.captured.closureCounts source counts types tail c inside
+    · intro source counts types member β inside
+      rcases List.mem_cons.mp member with head | tail
+      · cases head
+        simp only [HMCountSchemeClosure.interpretedTypeCaptures] at inside
+        obtain ⟨i, _, rfl⟩ := List.mem_map.mp inside
+        trivial
+      · exact capture.captured.closureTypes source counts types tail β inside
+  arguments := by
+    intro c member β argument
+    rcases List.mem_cons.mp member with head | tail
+    · cases head
+    · exact capture.arguments c tail β argument
+  countClosed := by
+    intro c member
+    rcases List.mem_cons.mp member with head | tail
+    · cases head
+    · exact capture.countClosed c tail
+  exportCountClosed := by
+    intro t member
+    rcases List.mem_cons.mp member with head | tail
+    · cases head
     · exact capture.exportCountClosed t tail
 
 private def FixedBodyCapture.extendGroup {env output metadata path vectors premises bodyTypes}
@@ -6487,6 +6526,7 @@ def capturedLocalRhsInstances {s ann rhs found typeCaptures env Δ calleeΔ call
         have absent : i ∉ cert.opening.ids :=
           fun present => cert.typeFresh c member i present freeId
         simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
+    | recursiveClosure _ => trivial
     | exported s =>
         intro i freeId
         have absent : i ∉ cert.opening.ids :=
@@ -6603,6 +6643,7 @@ theorem capturedLocalRhsInstances_runtimeReady
         have absent : i ∉ cert.opening.ids :=
           fun present => cert.typeFresh c member i present freeId
         simp only [f, argument, List.idxOf?_eq_none_iff.mpr absent]
+    | recursiveClosure _ => trivial
     | exported s =>
         intro i freeId
         have absent : i ∉ cert.opening.ids :=
@@ -6658,7 +6699,6 @@ structure ScopedBodyResult (types slots : Nat → BoundsTy)
   root : Typed.rootHM? e = some hm.eraseBounds
   shape : Synth.BoundsTy.toTy bounds = ScopedHMInterpretation.ty types slots hm
   typing : ScopedBodyDerives types slots ids rows Δ env e.stripFound bounds
-  specializes : BodyDerives.TypingSpecializes typing
   inScope : BoundsScoped caller bounds
   nodes : List Typed.NodeResult
   runtimeReady : Option (PLift (BodyDerives.RuntimeReady typing))
@@ -6708,13 +6748,12 @@ def ScopedBodyCertificate.ofOrdinary
       root := by rw [source.root, scopedResult_hm_normal source]
       shape := source.shape
       typing := typing
-      specializes := BodyDerives.TypingSpecializes.ordinaryAppend tail
-        source.derivation.specializes
       inScope := source.countScope
       nodes := source.nodes
       runtimeReady := source.runtimeReady.map (fun ready =>
         ⟨rhsReadyToBodyAppend ready.down arguments tail⟩) }
-  exact ⟨result, result.specializes⟩
+  refine ⟨result, ?_⟩
+  exact BodyDerives.TypingSpecializes.ordinaryAppend tail source.derivation.specializes
 
 #print axioms ScopedBodyCertificate.ofOrdinary
 
@@ -6752,13 +6791,13 @@ def ScopedBodyCertificate.ofLocated
       shape := by simpa only [ScopedHMInterpretation.AtNode.view] using
         located.typed.checked.shape
       typing := typing
-      specializes := BodyDerives.TypingSpecializes.castExpr stripEq
-        (BodyDerives.TypingSpecializes.ordinaryAppend tail
-          located.typed.derivation.specializes)
       inScope := located.typed.checked.inScope
       nodes := located.nodes
       runtimeReady := runtimeReady }
-  exact ⟨result, result.specializes⟩
+  refine ⟨result, ?_⟩
+  exact BodyDerives.TypingSpecializes.castExpr stripEq
+    (BodyDerives.TypingSpecializes.ordinaryAppend tail
+      located.typed.derivation.specializes)
 
 #print axioms ScopedBodyCertificate.ofLocated
 
@@ -6776,7 +6815,6 @@ def ScopedBodyResult.assuming {types slots ids rows caller Δ Δ' env e}
   root := result.root
   shape := result.shape
   typing := result.typing.assuming hp
-  specializes := result.specializes.assuming hp
   inScope := result.inScope
   nodes := result.nodes
   runtimeReady := result.runtimeReady.map (fun ready => ⟨ready.down.assuming hp⟩)
@@ -6803,7 +6841,6 @@ def assuming {ids rows caller Δ Δ' env e}
   root := result.root
   shape := result.shape
   typing := result.typing.assuming hp
-  specializes := result.specializes.assuming hp
   inScope := result.inScope
   nodes := result.nodes
   runtimeReady := result.runtimeReady.map (fun ready => ⟨ready.down.assuming hp⟩)
@@ -6813,20 +6850,15 @@ private def finishBody {types slots ids rows caller Δ env e}
     (path : CorePath) (hm : Ty) (β : BoundsTy)
     (root : Typed.rootHM? e = some hm.eraseBounds)
     (typing : ScopedBodyDerives types slots ids rows Δ env e.stripFound β)
-    (specializes : ∀ typing' :
-      ScopedBodyDerives types slots ids rows Δ env e.stripFound β,
-      BodyDerives.TypingSpecializes typing')
     (children : List Typed.NodeResult)
-    (ready : ∀ typing' :
-      ScopedBodyDerives types slots ids rows Δ env e.stripFound β,
-      Option (PLift (BodyDerives.RuntimeReady typing'))) :
+    (ready : Option (PLift (BodyDerives.RuntimeReady typing))) :
     Except String (ScopedBodyResult types slots ids rows caller Δ env e) := do
   let shape ← match BinderBridge.equalTy (Synth.BoundsTy.toTy β)
       (ScopedHMInterpretation.ty types slots hm) with
     | some h => pure h | none => throw "bounds: generalized body result disagrees with original found payload"
   if h : boundsScopedBool caller β = true then
-    pure ⟨hm, β, root, shape.down, typing, specializes typing, boundsScopedBool_sound h,
-      ⟨path, hm.eraseBounds, some β⟩ :: children, ready typing⟩
+    pure ⟨hm, β, root, shape.down, typing, boundsScopedBool_sound h,
+      ⟨path, hm.eraseBounds, some β⟩ :: children, ready⟩
   else throw "bounds: generalized body result counts escape caller scope"
 
 private structure BodyBranches (types slots : Nat → BoundsTy)
@@ -6837,8 +6869,6 @@ private structure BodyBranches (types slots : Nat → BoundsTy)
   typing : ∀ i br, branches[i]? = some br →
     ScopedBodyDerives types slots ids rows (Δ ++ ctx.refine br.1)
       (ctx.extend br.1 env) br.2.stripFound (actuals i)
-  specializes : ∀ i br (atIndex : branches[i]? = some br),
-    BodyDerives.TypingSpecializes (typing i br atIndex)
   patterns : ∀ br ∈ branches, ctx.Pattern br.1
   bounds : Option BoundsTy
   inclusions : ∀ i br, branches[i]? = some br →
@@ -6866,16 +6896,6 @@ private def prependBodyBranches {types slots ids rows caller Δ env br branches}
     cases i with
     | zero => simp only [List.getElem?_cons_zero, Option.some.injEq] at h; subst arm; exact head.typing
     | succ i => exact tail.typing i arm (by simpa only [List.getElem?_cons_succ] using h)
-  specializes := by
-    intro i arm atIndex
-    cases i with
-    | zero =>
-        simp only [List.getElem?_cons_zero, Option.some.injEq] at atIndex
-        subst arm
-        exact head.specializes
-    | succ i =>
-        exact tail.specializes i arm
-          (by simpa only [List.getElem?_cons_succ] using atIndex)
   patterns := by
     intro arm h
     rcases List.mem_cons.mp h with rfl | h
@@ -6919,51 +6939,6 @@ private theorem body_match_typing {types slots ids rows caller Δ env branches �
   · intro i arm ha
     rcases RecursiveHMWalk.strip_index ha with ⟨br, hm, rfl⟩
     simpa only [hb] using arms.inclusions i br hm
-
-private theorem body_match_specializes {types slots ids rows caller Δ env branches β}
-    {ctx : BodyBranchContext} {scrut : Expr}
-    {scrutTyping : ScopedBodyDerives types slots ids rows Δ env
-      scrut.stripFound ctx.bounds}
-    (scrutStable : BodyDerives.TypingSpecializes scrutTyping)
-    (arms : BodyBranches types slots ids rows caller Δ env ctx branches)
-    (hb : arms.bounds = some β)
-    (hc : ctx.Covers Δ (Expr.stripFoundBranches branches)) :
-    BodyDerives.TypingSpecializes
-      (body_match_typing scrutTyping arms hb hc) := by
-  have patterns : ∀ arm ∈ Expr.stripFoundBranches branches, ctx.Pattern arm.1 := by
-    intro arm member
-    rw [RecursiveHMWalk.stripBranches] at member
-    rcases List.mem_map.mp member with ⟨br, atSource, rfl⟩
-    exact arms.patterns br atSource
-  have inclusions : ∀ i arm
-      (atIndex : (Expr.stripFoundBranches branches)[i]? = some arm),
-      SemanticSub (Δ ++ ctx.refine arm.1) (arms.actuals i) β := by
-    intro i arm atIndex
-    rcases RecursiveHMWalk.strip_index atIndex with ⟨br, atSource, rfl⟩
-    simpa only [hb] using arms.inclusions i br atSource
-  let bodies : ∀ i arm
-      (atIndex : (Expr.stripFoundBranches branches)[i]? = some arm),
-      ScopedBodyDerives types slots ids rows (Δ ++ ctx.refine arm.1)
-        (ctx.extend arm.1 env) arm.2 (arms.actuals i) := by
-    intro i arm atIndex
-    rcases RecursiveHMWalk.strip_index atIndex with ⟨br, atSource, rfl⟩
-    exact arms.typing i br atSource
-  have stableBodies : ∀ i arm
-      (atIndex : (Expr.stripFoundBranches branches)[i]? = some arm),
-      BodyDerives.TypingSpecializes (bodies i arm atIndex) := by
-    intro i arm atIndex
-    rcases RecursiveHMWalk.strip_index atIndex with ⟨br, atSource, rfl⟩
-    apply BodyDerives.TypingSpecializes.congr
-    exact arms.specializes i br atSource
-  let rawStable := BodyDerives.TypingSpecializes.match_
-    (actuals := arms.actuals) (result := β) (bodies := bodies)
-    hc patterns inclusions scrutStable stableBodies
-  have same : Expr.match_ scrut.stripFound (Expr.stripFoundBranches branches) =
-      (Expr.match_ scrut branches).stripFound := by
-    simp only [Expr.stripFound]
-  let castStable := BodyDerives.TypingSpecializes.castExpr same rawStable
-  exact BodyDerives.TypingSpecializes.congr
-    (h' := body_match_typing scrutTyping arms hb hc) castStable
 
 private def body_match_ready {types slots ids rows caller Δ env branches β}
     {ctx : BodyBranchContext} {scrut : Expr}
@@ -7013,32 +6988,18 @@ private def appendBody {types slots ids rows caller Δ env fn arg}
         | .ok included => pure included
         | .error message =>
             throw s!"bounds: application argument does not meet domain ({message})"
-      let functionTyping : ScopedBodyDerives types slots ids rows Δ env
-          fn.stripFound (.arrow domain result) := by
-        simpa only [hf] using prior.typing
-      let functionStable : BodyDerives.TypingSpecializes functionTyping := by
-        apply BodyDerives.TypingSpecializes.congr
-        simpa only [hf] using prior.specializes
-      let rawTyping := ScopedBodyDerives.app functionTyping actual.typing sub.down
-      let rawStable := BodyDerives.TypingSpecializes.app functionStable
-        actual.specializes sub.down
-      have same : fn.stripFound.app arg.stripFound =
-          (Expr.found hm (Expr.app fn arg)).stripFound := by
-        simp only [Expr.stripFound]
-      let typing := same ▸ rawTyping
-      finishBody (e := .found hm (.app fn arg)) path hm result rfl typing
-        (fun target => BodyDerives.TypingSpecializes.congr (h' := target)
-          (BodyDerives.TypingSpecializes.castExpr same rawStable))
+      finishBody path hm result rfl
+        (by simpa only [Expr.stripFound] using
+          (ScopedBodyDerives.app (by simpa only [hf] using prior.typing) actual.typing sub.down))
         (prior.nodes ++ actual.nodes)
-        (fun target => do
+        (do
           let fn ← prior.runtimeReady
           let arg ← actual.runtimeReady
-          have rawReady : BodyDerives.RuntimeReady rawTyping := by
+          pure ⟨by
+            simp only [Expr.stripFound]
             apply BodyDerives.RuntimeReady.app sub.down
             · simpa only [hf] using fn.down
-            · exact arg.down
-          let castReady := BodyDerives.RuntimeReady.castExpr same rawReady
-          pure ⟨BodyDerives.RuntimeReady.congr (h' := target) castReady⟩)
+            · exact arg.down⟩)
   | _ => throw "bounds: generalized body function is not an arrow"
 
 private def freshLocalTypeIds (output : Expr) (arity : Nat) : List Nat :=
@@ -7249,30 +7210,14 @@ private def useBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata)
     Except String (ScopedBodyResult types slots ids rows caller Δ env e) := do
   match checked with
   | .head path i hm =>
-      let typing : ScopedBodyDerives types slots ids rows Δ env
-          (Expr.found hm (Expr.var i)).stripFound used.bounds := by
-        simpa only [Expr.stripFound] using ScopedBodyDerives.varExported lookup used
-      let source : ScopedDerives types slots ids rows Δ env
-          (Expr.found hm (Expr.var i)).stripFound used.bounds := by
-        simpa only [Expr.stripFound] using ScopedDerives.varExported lookup used
-      let stable : BodyDerives.TypingSpecializes typing :=
-        BodyDerives.TypingSpecializes.ofOrdinary source
-      finishBody (e := .found hm (.var i)) path hm used.bounds rfl typing
-        (fun target => BodyDerives.TypingSpecializes.congr (h' := target) stable) []
-        (fun target => do
+      finishBody path hm used.bounds rfl
+        (by simpa only [Expr.stripFound] using ScopedBodyDerives.varExported lookup used) []
+        (do
           let supported ← Runtime.supported? used.bounds
           let arguments ← Runtime.supportedArguments? used.types
-          let rawTyping := ScopedBodyDerives.varExported lookup used
-          let rawReady : BodyDerives.RuntimeReady rawTyping :=
-            BodyDerives.RuntimeReady.varExported lookup used
-              supported.down arguments.down
-          have same : (Expr.var (RecursiveSpine.Syntax.head path i hm).index) =
-              (Expr.found hm (Expr.var i)).stripFound := by
-            simp only [RecursiveSpine.Syntax.index, Expr.stripFound]
-          let castReady := BodyDerives.RuntimeReady.castExpr same rawReady
-          have ready : BodyDerives.RuntimeReady typing := by
-            exact BodyDerives.RuntimeReady.congr (h' := typing) castReady
-          pure ⟨BodyDerives.RuntimeReady.congr (h' := target) ready⟩)
+          pure ⟨by simpa only [Expr.stripFound] using
+            (BodyDerives.RuntimeReady.varExported (ids := ids) (rows := rows)
+              (i := i) lookup used supported.down arguments.down)⟩)
   | .app (arg := arg) path hm previous actual source =>
       let prior ← useBodySpine sourceOutput metadata previous lookup used schemes capture ctors
       match prior.bounds with
@@ -7304,31 +7249,15 @@ private def useClosureBodySpine (sourceOutput : Expr) (metadata : Scope.Metadata
     Except String (ScopedBodyResult types slots ids rows caller Δ env e) := do
   match checked with
   | .head path i hm =>
-      let typing : ScopedBodyDerives types slots ids rows Δ env
-          (Expr.found hm (Expr.var i)).stripFound used.bounds := by
-        simpa only [Expr.stripFound] using
-          ScopedBodyDerives.varClosure lookup used captures
-      let source : ScopedDerives types slots ids rows Δ env
-          (Expr.found hm (Expr.var i)).stripFound used.bounds := by
-        simpa only [Expr.stripFound] using ScopedDerives.varClosure lookup used captures
-      let stable : BodyDerives.TypingSpecializes typing :=
-        BodyDerives.TypingSpecializes.ofOrdinary source
-      finishBody (e := .found hm (.var i)) path hm used.bounds rfl typing
-        (fun target => BodyDerives.TypingSpecializes.congr (h' := target) stable) []
-        (fun target => do
+      finishBody path hm used.bounds rfl
+        (by simpa only [Expr.stripFound] using
+          ScopedBodyDerives.varClosure lookup used captures) []
+        (do
           let supported ← Runtime.supported? used.bounds
           let arguments ← Runtime.supportedArguments? used.types
-          let rawTyping := ScopedBodyDerives.varClosure lookup used captures
-          let rawReady : BodyDerives.RuntimeReady rawTyping :=
-            BodyDerives.RuntimeReady.varClosure lookup used captures
-              supported.down arguments.down
-          have same : (Expr.var (RecursiveSpine.Syntax.head path i hm).index) =
-              (Expr.found hm (Expr.var i)).stripFound := by
-            simp only [RecursiveSpine.Syntax.index, Expr.stripFound]
-          let castReady := BodyDerives.RuntimeReady.castExpr same rawReady
-          have ready : BodyDerives.RuntimeReady typing := by
-            exact BodyDerives.RuntimeReady.congr (h' := typing) castReady
-          pure ⟨BodyDerives.RuntimeReady.congr (h' := target) ready⟩)
+          pure ⟨by simpa only [Expr.stripFound] using
+            (BodyDerives.RuntimeReady.varClosure (ids := ids) (rows := rows)
+              (i := i) lookup used captures supported.down arguments.down)⟩)
   | .app (arg := arg) path hm previous actual source =>
       let prior ← useClosureBodySpine sourceOutput metadata previous lookup used captures
         schemes capture ctors
@@ -7357,28 +7286,13 @@ private def useRecursiveBodySpine (sourceOutput : Expr) (metadata : Scope.Metada
     Except String (ScopedBodyResult types slots ids rows caller Δ env e) := do
   match checked with
   | .head path i hm =>
-      let typing : ScopedBodyDerives types slots ids rows Δ env
-          (Expr.found hm (Expr.var i)).stripFound used.bounds := by
-        simpa only [Expr.stripFound] using ScopedBodyDerives.varRecursive lookup used
-      let source : ScopedDerives types slots ids rows Δ env
-          (Expr.found hm (Expr.var i)).stripFound used.bounds := by
-        simpa only [Expr.stripFound] using ScopedDerives.varRecursive lookup used
-      let stable : BodyDerives.TypingSpecializes typing :=
-        BodyDerives.TypingSpecializes.ofOrdinary source
-      finishBody (e := .found hm (.var i)) path hm used.bounds rfl typing
-        (fun target => BodyDerives.TypingSpecializes.congr (h' := target) stable) []
-        (fun target => do
+      finishBody path hm used.bounds rfl
+        (by simpa only [Expr.stripFound] using ScopedBodyDerives.varRecursive lookup used) []
+        (do
           let supported ← Runtime.supported? used.bounds
-          let rawTyping := ScopedBodyDerives.varRecursive lookup used
-          let rawReady : BodyDerives.RuntimeReady rawTyping :=
-            BodyDerives.RuntimeReady.varRecursive lookup used supported.down
-          have same : (Expr.var (RecursiveSpine.Syntax.head path i hm).index) =
-              (Expr.found hm (Expr.var i)).stripFound := by
-            simp only [RecursiveSpine.Syntax.index, Expr.stripFound]
-          let castReady := BodyDerives.RuntimeReady.castExpr same rawReady
-          have ready : BodyDerives.RuntimeReady typing := by
-            exact BodyDerives.RuntimeReady.congr (h' := typing) castReady
-          pure ⟨BodyDerives.RuntimeReady.congr (h' := target) ready⟩)
+          pure ⟨by simpa only [Expr.stripFound] using
+            (BodyDerives.RuntimeReady.varRecursive (ids := ids) (rows := rows)
+              (i := i) lookup used supported.down)⟩)
   | .app (arg := arg) path hm previous actual source =>
       let prior ← useRecursiveBodySpine sourceOutput metadata previous lookup used schemes capture ctors
       match prior.bounds with
@@ -7492,6 +7406,7 @@ private def walkGeneralizedHoleLetRec
                           change i ∈ original.template.counts.captures at inside
                           rw [captured.countClosed original originalMember] at inside
                           cases inside
+                      | recursiveClosure c => cases equality
                       | exported s => cases equality
                       | closure _ _ _ => cases equality
                     exportCountFresh := by
@@ -7500,6 +7415,7 @@ private def walkGeneralizedHoleLetRec
                       cases original with
                       | mono β => cases equality
                       | recursive c => cases equality
+                      | recursiveClosure c => cases equality
                       | exported original =>
                           cases equality
                           rw [captured.exportCountClosed s originalMember] at inside
@@ -7818,35 +7734,15 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
     Except String (ScopedBodyResult types slots ids rows caller Δ env e) := do
   match e with
   | .found hm (.primLit p) =>
-      finishBody (e := .found hm (.primLit p)) path hm (boundInfoOfPrimLit p) rfl
-        (by simpa only [Expr.stripFound] using ScopedBodyDerives.literal)
-        (fun target => by
-          simp only [Expr.stripFound] at target ⊢
-          exact BodyDerives.TypingSpecializes.congr
-            (h := @ScopedBodyDerives.literal types slots ids rows Δ env p)
-            (h' := target) BodyDerives.TypingSpecializes.literal) []
-        (fun target => some ⟨by
-          simp only [Expr.stripFound] at target ⊢
-          apply BodyDerives.RuntimeReady.congr
-            (h := @ScopedBodyDerives.literal types slots ids rows Δ env p)
-            (h' := target)
-          simpa only [Expr.stripFound] using
-            (@BodyDerives.RuntimeReady.literal types slots ids rows Δ env p)⟩)
+      finishBody path hm (boundInfoOfPrimLit p) rfl
+        (by simpa only [Expr.stripFound] using ScopedBodyDerives.literal) []
+        (some ⟨by simpa only [Expr.stripFound] using
+          (@BodyDerives.RuntimeReady.literal types slots ids rows Δ env p)⟩)
   | .found hm (.primBinOp op) =>
-      finishBody (e := .found hm (.primBinOp op)) path hm (Typed.primOpBounds op) rfl
-        (by simpa only [Expr.stripFound] using ScopedBodyDerives.primBinOp)
-        (fun target => by
-          simp only [Expr.stripFound] at target ⊢
-          exact BodyDerives.TypingSpecializes.congr
-            (h := @ScopedBodyDerives.primBinOp types slots ids rows Δ env op)
-            (h' := target) BodyDerives.TypingSpecializes.primBinOp) []
-        (fun target => some ⟨by
-          simp only [Expr.stripFound] at target ⊢
-          apply BodyDerives.RuntimeReady.congr
-            (h := @ScopedBodyDerives.primBinOp types slots ids rows Δ env op)
-            (h' := target)
-          simpa only [Expr.stripFound] using
-            (@BodyDerives.RuntimeReady.primBinOp types slots ids rows Δ env op)⟩)
+      finishBody path hm (Typed.primOpBounds op) rfl
+        (by simpa only [Expr.stripFound] using ScopedBodyDerives.primBinOp) []
+        (some ⟨by simpa only [Expr.stripFound] using
+          (@BodyDerives.RuntimeReady.primBinOp types slots ids rows Δ env op)⟩)
   | .found hm (.ctor name) =>
       if hn : name = nilCtorName then
         match hm.eraseBounds with
@@ -7855,117 +7751,60 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               let elem ← match expected with
                 | some (.list _ _ elem) => pure elem
                 | _ => Typed.shapeTop a
-              finishBody (e := .found hm (.ctor name)) path hm
-                (.list (.lit 0) (.lit 0) elem) rfl
-                (by subst name; simpa only [Expr.stripFound] using ScopedBodyDerives.nil)
-                (fun target => by
-                  subst name
-                  simp only [Expr.stripFound] at target ⊢
-                  exact BodyDerives.TypingSpecializes.congr
-                    (h := @ScopedBodyDerives.nil types slots ids rows Δ env elem)
-                    (h' := target)
-                    BodyDerives.TypingSpecializes.nil) []
-                (fun target => do
+              finishBody path hm (.list (.lit 0) (.lit 0) elem) rfl
+                (by subst name; simpa only [Expr.stripFound] using ScopedBodyDerives.nil) []
+                (do
                   let supported ← Runtime.supported? elem
                   pure ⟨by
                     subst name
-                    simp only [Expr.stripFound] at target ⊢
-                    apply BodyDerives.RuntimeReady.congr
-                      (h := @ScopedBodyDerives.nil types slots ids rows Δ env elem)
-                      (h' := target)
                     simpa only [Expr.stripFound] using
                       (@BodyDerives.RuntimeReady.nil types slots ids rows Δ env elem supported.down)⟩)
             else throw "bounds: generalized body Nil has a non-List found payload"
         | _ => throw "bounds: generalized body Nil has a non-List found payload"
       else if hb : BoolBranches.IsCtor name then
-        finishBody (e := .found hm (.ctor name)) path hm (.custom boolTyName []) rfl
-          (by simpa only [Expr.stripFound] using ScopedBodyDerives.boolCtor hb)
-          (fun target => by
-            simp only [Expr.stripFound] at target ⊢
-            exact BodyDerives.TypingSpecializes.congr
-              (h := @ScopedBodyDerives.boolCtor types slots ids rows Δ env name hb)
-              (h' := target)
-              (BodyDerives.TypingSpecializes.boolCtor hb)) []
-          (fun target => some ⟨by
-            simp only [Expr.stripFound] at target ⊢
-            apply BodyDerives.RuntimeReady.congr
-              (h := @ScopedBodyDerives.boolCtor types slots ids rows Δ env name hb)
-              (h' := target)
-            simpa only [Expr.stripFound] using
-              (@BodyDerives.RuntimeReady.boolCtor types slots ids rows Δ env name hb)⟩)
+        finishBody path hm (.custom boolTyName []) rfl
+          (by simpa only [Expr.stripFound] using ScopedBodyDerives.boolCtor hb) []
+          (some ⟨by simpa only [Expr.stripFound] using
+            (@BodyDerives.RuntimeReady.boolCtor types slots ids rows Δ env name hb)⟩)
       else
         let β ← match expected with
           | some β => pure β
           | none => Typed.shapeTop hm.eraseBounds
-        finishBody (e := .found hm (.ctor name)) path hm β rfl
-          (by simpa only [Expr.stripFound] using ScopedBodyDerives.ctor hn)
-          (fun target => by
-            simp only [Expr.stripFound] at target ⊢
-            exact BodyDerives.TypingSpecializes.congr
-              (h := @ScopedBodyDerives.ctor types slots ids rows Δ env name β hn)
-              (h' := target)
-              (BodyDerives.TypingSpecializes.ctor hn)) [] (fun _ => none)
+        finishBody path hm β rfl
+          (by simpa only [Expr.stripFound] using ScopedBodyDerives.ctor hn) [] none
   | .found hm (.var i) =>
       match hv : env[i]? with
       | some (.mono β) =>
-          finishBody (e := .found hm (.var i)) path hm β rfl
-            (by simpa only [Expr.stripFound] using ScopedBodyDerives.varMono hv)
-            (fun target => by
-              simp only [Expr.stripFound] at target ⊢
-              exact BodyDerives.TypingSpecializes.congr
-                (h := @ScopedBodyDerives.varMono types slots ids rows Δ env i β hv)
-                (h' := target)
-                (BodyDerives.TypingSpecializes.varMono hv)) []
-            (fun target => do
+          finishBody path hm β rfl
+            (by simpa only [Expr.stripFound] using ScopedBodyDerives.varMono hv) []
+            (do
               let supported ← Runtime.supported? β
-              pure ⟨by
-                simp only [Expr.stripFound] at target ⊢
-                apply BodyDerives.RuntimeReady.congr
-                  (h := @ScopedBodyDerives.varMono types slots ids rows Δ env i β hv)
-                  (h' := target)
-                simpa only [Expr.stripFound] using
-                  (BodyDerives.RuntimeReady.varMono (ids := ids) (rows := rows)
-                    (i := i) hv supported.down)⟩)
+              pure ⟨by simpa only [Expr.stripFound] using
+                (BodyDerives.RuntimeReady.varMono (ids := ids) (rows := rows) (i := i) hv supported.down)⟩)
       | some (.recursive c) =>
           let used ← RecursiveHMContract.check c.fixed Δ c.hm [] caller
-          finishBody (e := .found hm (.var i)) path hm used.bounds rfl
-            (by simpa only [Expr.stripFound] using ScopedBodyDerives.varRecursive hv used)
-            (fun target => by
-              simp only [Expr.stripFound] at target ⊢
-              exact BodyDerives.TypingSpecializes.congr
-                (h := ScopedBodyDerives.varRecursive hv used) (h' := target)
-                (BodyDerives.TypingSpecializes.varRecursive hv used)) []
-            (fun target => do
+          finishBody path hm used.bounds rfl
+            (by simpa only [Expr.stripFound] using ScopedBodyDerives.varRecursive hv used) []
+            (do
               let supported ← Runtime.supported? used.bounds
-              pure ⟨by
-                simp only [Expr.stripFound] at target ⊢
-                apply BodyDerives.RuntimeReady.congr
-                  (h := ScopedBodyDerives.varRecursive hv used) (h' := target)
-                simpa only [Expr.stripFound] using
-                  (BodyDerives.RuntimeReady.varRecursive (ids := ids) (rows := rows)
-                    (i := i) hv used supported.down)⟩)
+              pure ⟨by simpa only [Expr.stripFound] using
+                (BodyDerives.RuntimeReady.varRecursive (ids := ids) (rows := rows)
+                  (i := i) hv used supported.down)⟩)
+      | some (.recursiveClosure _) =>
+          throw "bounds: fixed recursive closure use is not wired in the generalized body walker"
       | some (.exported s) =>
           if s.counts.quantified.isEmpty then
             let hmUse ← BinderBridge.instantiate s.hm hm
             let types ← hmUse.args.mapM Typed.shapeTop
             let used ← HMCountScheme.check s Δ hm [] types caller
-            finishBody (e := .found hm (.var i)) path hm used.bounds rfl
-              (by simpa only [Expr.stripFound] using ScopedBodyDerives.varExported hv used)
-              (fun target => by
-                simp only [Expr.stripFound] at target ⊢
-                exact BodyDerives.TypingSpecializes.congr
-                  (h := ScopedBodyDerives.varExported hv used) (h' := target)
-                  (BodyDerives.TypingSpecializes.varExported hv used)) []
-              (fun target => do
+            finishBody path hm used.bounds rfl
+              (by simpa only [Expr.stripFound] using ScopedBodyDerives.varExported hv used) []
+              (do
                 let supported ← Runtime.supported? used.bounds
                 let arguments ← Runtime.supportedArguments? used.types
-                pure ⟨by
-                  simp only [Expr.stripFound] at target ⊢
-                  apply BodyDerives.RuntimeReady.congr
-                    (h := ScopedBodyDerives.varExported hv used) (h' := target)
-                  simpa only [Expr.stripFound] using
-                    (BodyDerives.RuntimeReady.varExported (ids := ids) (rows := rows)
-                      (i := i) hv used supported.down arguments.down)⟩)
+                pure ⟨by simpa only [Expr.stripFound] using
+                  (BodyDerives.RuntimeReady.varExported (ids := ids) (rows := rows)
+                    (i := i) hv used supported.down arguments.down)⟩)
           else throw "bounds: count-polymorphic use needs origin-backed arguments"
       | some (.closure s countCaptures typeCaptures) =>
           if countClosed : s.counts.quantified.isEmpty then
@@ -7989,24 +7828,15 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                       rfl
                     · rw [HMCountSchemeClosure.captureTypeArguments, arguments.2]
                       exact capturedTypes.down
-                  finishBody (e := .found hm (.var i)) path hm used.bounds rfl
+                  finishBody path hm used.bounds rfl
                     (by simpa only [Expr.stripFound] using
-                      ScopedBodyDerives.varClosure hv used captures)
-                    (fun target => by
-                      simp only [Expr.stripFound] at target ⊢
-                      exact BodyDerives.TypingSpecializes.congr
-                        (h := ScopedBodyDerives.varClosure hv used captures) (h' := target)
-                        (BodyDerives.TypingSpecializes.varClosure hv used captures)) []
-                    (fun target => do
+                      ScopedBodyDerives.varClosure hv used captures) []
+                    (do
                       let supported ← Runtime.supported? used.bounds
                       let typeArguments ← Runtime.supportedArguments? used.types
-                      pure ⟨by
-                        simp only [Expr.stripFound] at target ⊢
-                        apply BodyDerives.RuntimeReady.congr
-                          (h := ScopedBodyDerives.varClosure hv used captures) (h' := target)
-                        simpa only [Expr.stripFound] using
-                          (BodyDerives.RuntimeReady.varClosure (ids := ids) (rows := rows)
-                            (i := i) hv used captures supported.down typeArguments.down)⟩)
+                      pure ⟨by simpa only [Expr.stripFound] using
+                        (BodyDerives.RuntimeReady.varClosure (ids := ids) (rows := rows)
+                          (i := i) hv used captures supported.down typeArguments.down)⟩)
             | none => throw "bounds: lexical closure HM use disagrees with its stored captures"
           else throw "bounds: count-polymorphic closure use needs origin-backed arguments"
       | none => throw "bounds: generalized body variable outside binding environment"
@@ -8020,28 +7850,14 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             (.mono param.bounds :: env) (path ++ [.lambdaBody]) body schemes
             (extendMonoCapture? capture param.bounds)
             (descendBodySource sourceAt (by simp [Expr.atCorePath])) bodyHint ctors
-          finishBody (e := .found hm (.lambda ann body)) path hm
-            (.arrow param.bounds result.bounds) rfl
+          finishBody path hm (.arrow param.bounds result.bounds) rfl
             (by simpa only [Expr.stripFound] using
-              ScopedBodyDerives.lambda param.obligation result.typing)
-            (fun target => by
-              simp only [Expr.stripFound] at target ⊢
-              exact BodyDerives.TypingSpecializes.congr
-                (h := ScopedBodyDerives.lambda param.obligation result.typing)
-                (h' := target)
-                (BodyDerives.TypingSpecializes.lambda param.obligation result.specializes))
-            result.nodes
-            (fun target => do
+              ScopedBodyDerives.lambda param.obligation result.typing) result.nodes
+            (do
               let supported ← Runtime.supported? param.bounds
               let body ← result.runtimeReady
-              pure ⟨by
-                simp only [Expr.stripFound] at target ⊢
-                apply BodyDerives.RuntimeReady.congr
-                  (h := ScopedBodyDerives.lambda param.obligation result.typing)
-                  (h' := target)
-                simpa only [Expr.stripFound] using
-                  (BodyDerives.RuntimeReady.lambda (ann := ann) param.obligation
-                    supported.down body.down)⟩)
+              pure ⟨by simpa only [Expr.stripFound] using
+                (BodyDerives.RuntimeReady.lambda (ann := ann) param.obligation supported.down body.down)⟩)
       | _ => throw "bounds: generalized body lambda has a non-arrow found payload"
   | .found hm (.app (.found partialHM (.app (.found ctorHM (.ctor name)) head)) tail) =>
       if hn : name = consCtorName then
@@ -8060,42 +7876,19 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
             let _ ← match BinderBridge.equalTy partialHM.eraseBounds (.arrow t.hm.eraseBounds t.hm.eraseBounds) with
               | some h => pure h | none => throw "bounds: generalized body partial Cons payload mismatch"
             let sub ← Typed.subtype Δ h.bounds elem
-            finishBody
-              (e := .found hm
-                (.app (.found partialHM (.app (.found ctorHM (.ctor name)) head)) tail))
-              path hm (.list (.add lo (.lit 1)) (.add hi (.lit 1)) elem) rfl
+            finishBody path hm (.list (.add lo (.lit 1)) (.add hi (.lit 1)) elem) rfl
               (by subst name; simpa only [Expr.stripFound] using
                 ScopedBodyDerives.cons h.typing (by simpa only [ht] using t.typing) sub.down)
-              (fun target => by
-                subst name
-                simp only [Expr.stripFound] at target ⊢
-                let tailTyping : ScopedBodyDerives types slots ids rows Δ env
-                    tail.stripFound (.list lo hi elem) := by
-                  simpa only [ht] using t.typing
-                let tailStable : BodyDerives.TypingSpecializes tailTyping := by
-                  simpa only [ht] using t.specializes
-                let sourceTyping := ScopedBodyDerives.cons h.typing tailTyping sub.down
-                exact BodyDerives.TypingSpecializes.congr
-                  (h := sourceTyping) (h' := target)
-                  (BodyDerives.TypingSpecializes.cons
-                    h.specializes tailStable sub.down))
               (⟨path ++ [.appFun], partialHM.eraseBounds, none⟩ ::
                 ⟨path ++ [.appFun, .appFun], ctorHM.eraseBounds, none⟩ :: h.nodes ++ t.nodes)
-              (fun target => do
+              (do
                 let head ← h.runtimeReady
-                let tailWitness ← t.runtimeReady
+                let tail ← t.runtimeReady
                 pure ⟨by
                   subst name
-                  simp only [Expr.stripFound] at target ⊢
-                  let tailTyping : ScopedBodyDerives types slots ids rows Δ env
-                      tail.stripFound (.list lo hi elem) := by
-                    simpa only [ht] using t.typing
-                  let tailReady : BodyDerives.RuntimeReady tailTyping := by
-                    simpa only [ht] using tailWitness.down
-                  let sourceTyping := ScopedBodyDerives.cons h.typing tailTyping sub.down
-                  exact BodyDerives.RuntimeReady.congr
-                    (h := sourceTyping) (h' := target)
-                    (BodyDerives.RuntimeReady.cons sub.down head.down tailReady)⟩)
+                  simp only [Expr.stripFound]
+                  apply BodyDerives.RuntimeReady.cons sub.down head.down
+                  simpa only [ht] using tail.down⟩)
         | _ => throw "bounds: generalized body Cons tail is not a List"
       else if hp : name = pairCtorName then
         let leftHint := match expected with
@@ -8116,28 +7909,16 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
         let _ ← match BinderBridge.equalTy partialHM.eraseBounds
             (.arrow right.hm.eraseBounds hm.eraseBounds) with
           | some h => pure h | none => throw "bounds: generalized body partial Pair payload mismatch"
-        finishBody
-          (e := .found hm
-            (.app (.found partialHM (.app (.found ctorHM (.ctor name)) head)) tail))
-          path hm (.custom pairTyName [left.bounds, right.bounds]) rfl
+        finishBody path hm (.custom pairTyName [left.bounds, right.bounds]) rfl
           (by subst name; simpa only [Expr.stripFound] using
             ScopedBodyDerives.pair left.typing right.typing)
-          (fun target => by
-            subst name
-            simp only [Expr.stripFound] at target ⊢
-            exact BodyDerives.TypingSpecializes.congr
-              (h := ScopedBodyDerives.pair left.typing right.typing) (h' := target)
-              (BodyDerives.TypingSpecializes.pair left.specializes right.specializes))
           (⟨path ++ [.appFun], partialHM.eraseBounds, none⟩ ::
             ⟨path ++ [.appFun, .appFun], ctorHM.eraseBounds, none⟩ :: left.nodes ++ right.nodes)
-          (fun target => do
+          (do
             let leftReady ← left.runtimeReady
             let rightReady ← right.runtimeReady
             pure ⟨by
               subst name
-              simp only [Expr.stripFound] at target ⊢
-              apply BodyDerives.RuntimeReady.congr
-                (h := ScopedBodyDerives.pair left.typing right.typing) (h' := target)
               simpa only [Expr.stripFound] using
                 BodyDerives.RuntimeReady.pair leftReady.down rightReady.down⟩)
       else
@@ -8158,24 +7939,14 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
           (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
         let result := .arrow (.list (.lit 0) .inf actual.bounds)
           (.list (.lit 1) .inf actual.bounds)
-        finishBody (e := .found hm (.app (.found ctorHM (.ctor name)) arg))
-          path hm result rfl
+        finishBody path hm result rfl
           (by subst name; simpa only [Expr.stripFound] using
             ScopedBodyDerives.consPartial actual.typing)
-          (fun target => by
-            subst name
-            simp only [Expr.stripFound] at target ⊢
-            exact BodyDerives.TypingSpecializes.congr
-              (h := ScopedBodyDerives.consPartial actual.typing) (h' := target)
-              (BodyDerives.TypingSpecializes.consPartial actual.specializes))
           (⟨path ++ [.appFun], ctorHM.eraseBounds, none⟩ :: actual.nodes)
-          (fun target => do
+          (do
             let ready ← actual.runtimeReady
             pure ⟨by
               subst name
-              simp only [Expr.stripFound] at target ⊢
-              apply BodyDerives.RuntimeReady.congr
-                (h := ScopedBodyDerives.consPartial actual.typing) (h' := target)
               simpa only [Expr.stripFound] using
                 BodyDerives.RuntimeReady.consPartial ready.down⟩)
       else if hp : name = pairCtorName then
@@ -8186,28 +7957,15 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
             let right ← Typed.shapeTop rightHM
             let result := .arrow right (.custom pairTyName [actual.bounds, right])
-            finishBody (e := .found hm (.app (.found ctorHM (.ctor name)) arg))
-              path hm result rfl
+            finishBody path hm result rfl
               (by subst name; simpa only [Expr.stripFound] using
                 ScopedBodyDerives.pairPartial (rightTy := right) actual.typing)
-              (fun target => by
-                subst name
-                simp only [Expr.stripFound] at target ⊢
-                exact BodyDerives.TypingSpecializes.congr
-                  (h := ScopedBodyDerives.pairPartial (rightTy := right) actual.typing)
-                  (h' := target)
-                  (BodyDerives.TypingSpecializes.pairPartial
-                    (rightTy := right) actual.specializes))
               (⟨path ++ [.appFun], ctorHM.eraseBounds, none⟩ :: actual.nodes)
-              (fun target => do
+              (do
                 let ready ← actual.runtimeReady
                 let supported ← Runtime.supported? right
                 pure ⟨by
                   subst name
-                  simp only [Expr.stripFound] at target ⊢
-                  apply BodyDerives.RuntimeReady.congr
-                    (h := ScopedBodyDerives.pairPartial (rightTy := right) actual.typing)
-                    (h' := target)
                   simpa only [Expr.stripFound] using
                     BodyDerives.RuntimeReady.pairPartial ready.down supported.down⟩)
         | _ => throw "bounds: partial Pair has a non-arrow generalized result"
@@ -8220,14 +7978,9 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
               (path ++ [.appArg]) arg schemes capture
               (descendBodySource sourceAt (by simp [Expr.atCorePath])) none ctors
             let result ← RecursiveHMWalk.transferCtorOrigin domainHM actual.bounds resultHM
-            let function ← finishBody (e := .found ctorHM (.ctor name))
-              (path ++ [.appFun]) ctorHM
+            let function ← finishBody (path ++ [.appFun]) ctorHM
               (.arrow actual.bounds result) rfl
-              (by simpa only [Expr.stripFound] using ScopedBodyDerives.ctor hn)
-              (fun target => by
-                simp only [Expr.stripFound] at target ⊢
-                exact BodyDerives.TypingSpecializes.congr (h' := target)
-                  (BodyDerives.TypingSpecializes.ctor hn)) [] (fun _ => none)
+              (by simpa only [Expr.stripFound] using ScopedBodyDerives.ctor hn) [] none
             appendBody path hm function actual
         | _ => throw "bounds: applied constructor has a non-arrow generalized HM payload"
   | .found hm (.app fn arg) =>
@@ -8348,30 +8101,17 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                 (.mono pinned.demand :: env) (path ++ [.letBody]) body schemes
                 (extendMonoCapture? capture pinned.demand)
                 (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
-              finishBody (e := .found hm (.letIn (some annotation) rhs body))
-                path hm result.bounds rfl
+              finishBody path hm result.bounds rfl
                 (by simpa only [Expr.stripFound] using
                   (ScopedBodyDerives.letPinned pinned mono actual.typing result.typing))
-                (fun target => by
-                  simp only [Expr.stripFound] at target ⊢
-                  exact BodyDerives.TypingSpecializes.congr
-                    (h := ScopedBodyDerives.letPinned pinned mono actual.typing result.typing)
-                    (h' := target)
-                    (BodyDerives.TypingSpecializes.letPinned pinned mono
-                      actual.specializes result.specializes))
                 (actual.nodes ++ result.nodes)
-                (fun target => do
+                (do
                   let rhsReady ← actual.runtimeReady
                   let demandSupported ← Runtime.supported? pinned.demand
                   let bodyReady ← result.runtimeReady
-                  pure ⟨by
-                    simp only [Expr.stripFound] at target ⊢
-                    apply BodyDerives.RuntimeReady.congr
-                      (h := ScopedBodyDerives.letPinned pinned mono actual.typing result.typing)
-                      (h' := target)
-                    simpa only [Expr.stripFound] using
-                      (BodyDerives.RuntimeReady.letPinned pinned mono rhsReady.down
-                        demandSupported.down bodyReady.down)⟩)
+                  pure ⟨by simpa only [Expr.stripFound] using
+                    (BodyDerives.RuntimeReady.letPinned pinned mono rhsReady.down
+                      demandSupported.down bodyReady.down)⟩)
             else
               let hint ← RecursiveHMAnnotation.scopedBindingHint types slots
                 ids rows caller (some annotation)
@@ -8386,29 +8126,16 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                 (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
                 (extendMonoCapture? capture actual.bounds)
                 (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
-              finishBody (e := .found hm (.letIn (some annotation) rhs body))
-                path hm result.bounds rfl
+              finishBody path hm result.bounds rfl
                 (by simpa only [Expr.stripFound] using
                   (ScopedBodyDerives.letMono obligation.down actual.typing result.typing))
-                (fun target => by
-                  simp only [Expr.stripFound] at target ⊢
-                  exact BodyDerives.TypingSpecializes.congr
-                    (h := ScopedBodyDerives.letMono obligation.down actual.typing result.typing)
-                    (h' := target)
-                    (BodyDerives.TypingSpecializes.letMono obligation.down
-                      actual.specializes result.specializes))
                 (actual.nodes ++ result.nodes)
-                (fun target => do
+                (do
                   let rhsReady ← actual.runtimeReady
                   let bodyReady ← result.runtimeReady
-                  pure ⟨by
-                    simp only [Expr.stripFound] at target ⊢
-                    apply BodyDerives.RuntimeReady.congr
-                      (h := ScopedBodyDerives.letMono obligation.down actual.typing result.typing)
-                      (h' := target)
-                    simpa only [Expr.stripFound] using
-                      (BodyDerives.RuntimeReady.letMono (ann := some annotation)
-                        obligation.down rhsReady.down bodyReady.down)⟩)
+                  pure ⟨by simpa only [Expr.stripFound] using
+                    (BodyDerives.RuntimeReady.letMono (ann := some annotation)
+                      obligation.down rhsReady.down bodyReady.down)⟩)
           else
             let sourceProof ← match sourceAt with
               | some located => pure located
@@ -8620,29 +8347,16 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                   (.mono actual.bounds :: env) (path ++ [.letBody]) body schemes
                   (extendMonoCapture? capture actual.bounds)
                   (descendBodySource sourceAt (by simp [Expr.atCorePath])) expected ctors
-                finishBody (e := .found hm (.letIn none rhs body))
-                  path hm result.bounds rfl
+                finishBody path hm result.bounds rfl
                   (by simpa only [Expr.stripFound] using
                     (ScopedBodyDerives.letMono (by trivial) actual.typing result.typing))
-                  (fun target => by
-                    simp only [Expr.stripFound] at target ⊢
-                    exact BodyDerives.TypingSpecializes.congr
-                      (h := ScopedBodyDerives.letMono (by trivial) actual.typing result.typing)
-                      (h' := target)
-                      (BodyDerives.TypingSpecializes.letMono (by trivial)
-                        actual.specializes result.specializes))
                   (actual.nodes ++ result.nodes)
-                  (fun target => do
+                  (do
                     let rhsReady ← actual.runtimeReady
                     let bodyReady ← result.runtimeReady
-                    pure ⟨by
-                      simp only [Expr.stripFound] at target ⊢
-                      apply BodyDerives.RuntimeReady.congr
-                        (h := ScopedBodyDerives.letMono (by trivial) actual.typing result.typing)
-                        (h' := target)
-                      simpa only [Expr.stripFound] using
-                        (BodyDerives.RuntimeReady.letMono (ann := none) (by trivial)
-                          rhsReady.down bodyReady.down)⟩)
+                    pure ⟨by simpa only [Expr.stripFound] using
+                      (BodyDerives.RuntimeReady.letMono (ann := none) (by trivial)
+                        rhsReady.down bodyReady.down)⟩)
               else
                 match capture with
                 | none =>
@@ -8683,39 +8397,13 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
       match hb : arms.bounds with
       | none => throw "bounds: generalized body match has no result-producing branch"
       | some β =>
-          finishBody (e := .found hm (.match_ scrut branches)) path hm β rfl
+          finishBody path hm β rfl
             (by simpa only [Expr.stripFound] using
               body_match_typing (by simpa only [hin.down] using input.typing) arms hb coverage.down)
-            (fun target => by
-              let scrutTyping : ScopedBodyDerives types slots ids rows Δ env
-                  scrut.stripFound ctx.bounds := by
-                simpa only [hin.down] using input.typing
-              let scrutStable : BodyDerives.TypingSpecializes scrutTyping := by
-                simpa only [hin.down] using input.specializes
-              let sourceTyping := body_match_typing scrutTyping arms hb coverage.down
-              let sourceStable := body_match_specializes scrutStable arms hb coverage.down
-              have same : (Expr.match_ scrut branches).stripFound =
-                  (Expr.found hm (Expr.match_ scrut branches)).stripFound := by
-                simp only [Expr.stripFound]
-              exact BodyDerives.TypingSpecializes.congr (h' := target)
-                (BodyDerives.TypingSpecializes.castExpr same sourceStable))
             (input.nodes ++ arms.nodes)
-            (fun target => by
-              let scrutTyping : ScopedBodyDerives types slots ids rows Δ env
-                  scrut.stripFound ctx.bounds := by
-                simpa only [hin.down] using input.typing
-              let scrutReady : Option
-                  (PLift (BodyDerives.RuntimeReady scrutTyping)) := by
-                simpa only [hin.down] using input.runtimeReady
-              let sourceTyping := body_match_typing scrutTyping arms hb coverage.down
-              let ready := body_match_ready
-                scrutTyping arms hb coverage.down scrutReady
-              have same : (Expr.match_ scrut branches).stripFound =
-                  (Expr.found hm (Expr.match_ scrut branches)).stripFound := by
-                simp only [Expr.stripFound]
-              exact ready.map (fun witness => ⟨BodyDerives.RuntimeReady.congr
-                (h' := target)
-                (BodyDerives.RuntimeReady.castExpr same witness.down)⟩))
+            (by simpa only [Expr.stripFound] using
+              (body_match_ready (by simpa only [hin.down] using input.typing) arms hb coverage.down
+                (by simpa only [hin.down] using input.runtimeReady)))
   | .found hm (.letRec annotations rhss body) =>
       let sourceProof ← match sourceAt with
         | some located => pure located
@@ -8889,33 +8577,11 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                           (.mono pinned.demand :: ordinaryBodyEnv captured.rhsEnv)
                           body.stripFound result.bounds := by
                         simpa only [captured.bodyEnv] using result.typing
-                      finishBody (e := .found hm (.letRec [some annotation] [rhs] body))
-                        path hm result.bounds rfl
+                      finishBody path hm result.bounds rfl
                         (by simpa only [Expr.stripFound, captured.bodyEnv] using
                           (ScopedBodyDerives.letRecPinnedMono pinned mono rhsTyping bodyTyping))
-                        (fun target => by
-                          let bodyStable : BodyDerives.TypingSpecializes bodyTyping := by
-                            simpa only [captured.bodyEnv] using result.specializes
-                          let sourceTyping := ScopedBodyDerives.letRecPinnedMono
-                            pinned mono rhsTyping bodyTyping
-                          let sourceStable := BodyDerives.TypingSpecializes.letRecPinnedMono
-                            pinned mono rhsTyping bodyStable
-                          let finalTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar
-                              ids rows Δ env (.letRec [some annotation] [rhs.stripFound]
-                                body.stripFound) result.bounds := by
-                            exact Eq.mp (congrArg (fun env' =>
-                              ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ env'
-                                (.letRec [some annotation] [rhs.stripFound] body.stripFound)
-                                result.bounds) captured.bodyEnv) sourceTyping
-                          let castStable := BodyDerives.TypingSpecializes.castEnv
-                            captured.bodyEnv sourceStable
-                          let finalStable : BodyDerives.TypingSpecializes finalTyping :=
-                            BodyDerives.TypingSpecializes.congr castStable
-                          simp only [Expr.stripFound, List.map_cons, List.map_nil] at target ⊢
-                          exact BodyDerives.TypingSpecializes.congr
-                            (h := finalTyping) (h' := target) finalStable)
                         (final.nodes ++ result.nodes)
-                        (fun target => do
+                        (do
                           let rhsReady ← final.runtimeReady
                           let demandSupported ← Runtime.supported? pinned.demand
                           let bodyReady ← result.runtimeReady
@@ -8923,26 +8589,9 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                             simpa only [stable.down] using rhsReady.down
                           have bodyReady' : BodyDerives.RuntimeReady bodyTyping := by
                             simpa only [captured.bodyEnv] using bodyReady.down
-                          pure ⟨by
-                            let sourceTyping := ScopedBodyDerives.letRecPinnedMono
-                              pinned mono rhsTyping bodyTyping
-                            let sourceReady := BodyDerives.RuntimeReady.letRecPinnedMono
-                              pinned mono rhsReady' demandSupported.down
-                              captured.arguments bodyReady'
-                            let finalTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar
-                                ids rows Δ env (.letRec [some annotation] [rhs.stripFound]
-                                  body.stripFound) result.bounds := by
-                              exact Eq.mp (congrArg (fun env' =>
-                                ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ env'
-                                  (.letRec [some annotation] [rhs.stripFound] body.stripFound)
-                                  result.bounds) captured.bodyEnv) sourceTyping
-                            let castReady := BodyDerives.RuntimeReady.castEnv
-                              captured.bodyEnv sourceReady
-                            let finalReady : BodyDerives.RuntimeReady finalTyping :=
-                              BodyDerives.RuntimeReady.congr castReady
-                            simp only [Expr.stripFound, List.map_cons, List.map_nil] at target ⊢
-                            exact BodyDerives.RuntimeReady.congr
-                              (h := finalTyping) (h' := target) finalReady⟩)
+                          pure ⟨by simpa only [Expr.stripFound, captured.bodyEnv] using
+                            (BodyDerives.RuntimeReady.letRecPinnedMono pinned mono rhsReady'
+                              demandSupported.down captured.arguments bodyReady')⟩)
                     match pinnedAttempt with
                     | .ok result => .ok result
                     | .error _ =>
@@ -8994,33 +8643,11 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                             (.mono final.bounds :: ordinaryBodyEnv captured.rhsEnv)
                             body.stripFound result.bounds := by
                           simpa only [captured.bodyEnv] using result.typing
-                        finishBody (e := .found hm (.letRec [none] [rhs] body))
-                          path hm result.bounds rfl
+                        finishBody path hm result.bounds rfl
                           (by simpa only [Expr.stripFound, captured.bodyEnv] using
                             (ScopedBodyDerives.letRecInferredMono rhsTyping bodyTyping))
-                          (fun target => by
-                            let bodyStable : BodyDerives.TypingSpecializes bodyTyping := by
-                              simpa only [captured.bodyEnv] using result.specializes
-                            let sourceTyping := ScopedBodyDerives.letRecInferredMono
-                              rhsTyping bodyTyping
-                            let sourceStable := BodyDerives.TypingSpecializes.letRecInferredMono
-                              rhsTyping bodyStable
-                            let finalTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar
-                                ids rows Δ env (.letRec [none] [rhs.stripFound]
-                                  body.stripFound) result.bounds := by
-                              exact Eq.mp (congrArg (fun env' =>
-                                ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ env'
-                                  (.letRec [none] [rhs.stripFound] body.stripFound)
-                                  result.bounds) captured.bodyEnv) sourceTyping
-                            let castStable := BodyDerives.TypingSpecializes.castEnv
-                              captured.bodyEnv sourceStable
-                            let finalStable : BodyDerives.TypingSpecializes finalTyping :=
-                              BodyDerives.TypingSpecializes.congr castStable
-                            simp only [Expr.stripFound, List.map_cons, List.map_nil] at target ⊢
-                            exact BodyDerives.TypingSpecializes.congr
-                              (h := finalTyping) (h' := target) finalStable)
                           (final.nodes ++ result.nodes)
-                          (fun target => do
+                          (do
                             let rhsReady ← final.runtimeReady
                             let actualSupported ← Runtime.supported? final.bounds
                             let bodyReady ← result.runtimeReady
@@ -9028,25 +8655,9 @@ private def walkBodySource (sourceOutput : Expr) (metadata : Scope.Metadata)
                               simpa only [stable.down] using rhsReady.down
                             have bodyReady' : BodyDerives.RuntimeReady bodyTyping := by
                               simpa only [captured.bodyEnv] using bodyReady.down
-                            pure ⟨by
-                              let sourceTyping := ScopedBodyDerives.letRecInferredMono
-                                rhsTyping bodyTyping
-                              let sourceReady := BodyDerives.RuntimeReady.letRecInferredMono
-                                rhsReady' actualSupported.down captured.arguments bodyReady'
-                              let finalTyping : ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar
-                                  ids rows Δ env (.letRec [none] [rhs.stripFound]
-                                    body.stripFound) result.bounds := by
-                                exact Eq.mp (congrArg (fun env' =>
-                                  ScopedBodyDerives BoundsTy.fvar BoundsTy.bvar ids rows Δ env'
-                                    (.letRec [none] [rhs.stripFound] body.stripFound)
-                                    result.bounds) captured.bodyEnv) sourceTyping
-                              let castReady := BodyDerives.RuntimeReady.castEnv
-                                captured.bodyEnv sourceReady
-                              let finalReady : BodyDerives.RuntimeReady finalTyping :=
-                                BodyDerives.RuntimeReady.congr castReady
-                              simp only [Expr.stripFound, List.map_cons, List.map_nil] at target ⊢
-                              exact BodyDerives.RuntimeReady.congr
-                                (h := finalTyping) (h' := target) finalReady⟩)
+                            pure ⟨by simpa only [Expr.stripFound, captured.bodyEnv] using
+                              (BodyDerives.RuntimeReady.letRecInferredMono rhsReady'
+                                actualSupported.down captured.arguments bodyReady')⟩)
                       else throw "bounds: non-unique inferred counts require a generalized escape interface"
                     else fallback
                   else
@@ -9102,9 +8713,8 @@ private def walkBodyBranches (sourceOutput : Expr) (metadata : Scope.Metadata)
     (expected : Option BoundsTy) (ctors : CtorEnv) :
     Except String (BodyBranches types slots ids rows caller Δ env ctx branches) := do
   match branches with
-  | [] => pure ⟨(fun _ => .prim .int), (by intros; contradiction),
-      (by intros; contradiction), (by intros; contradiction), none,
-      (by intros; contradiction), [], some ⟨by intros; contradiction⟩⟩
+  | [] => pure ⟨(fun _ => .prim .int), (by intros; contradiction), (by intros; contradiction),
+      none, (by intros; contradiction), [], some ⟨by intros; contradiction⟩⟩
   | br :: rest =>
       if hp : ctx.Pattern br.1 then
         let headSource := sources 0 br (by simp)
@@ -9185,8 +8795,7 @@ def checkBody {output metadata path vectors premises bodyTypes}
     (some ⟨bodySource⟩) expected ctors
   let group := GeneralizedGroup.ofChecked g
     (fun _ f lc scope fixed => allMembers g.members f lc scope fixed)
-  finishBody (e := .found g.originalHM (.letRec g.annotations g.rhss g.body))
-    path g.originalHM body.bounds rfl
+  finishBody path g.originalHM body.bounds rfl
     (by
       have bodyTyping : BodyDerives ids rows Δ
           (g.exports.map Binding.exported ++ ordinaryBodyEnv [])
