@@ -69,6 +69,77 @@ def EnvSpecialization.mapBounds {raw : List Binding}
     (world : EnvSpecialization raw) (beta : BoundsTy) : BoundsTy :=
   mapFree world.types (bounds world.outer beta)
 
+/-- Extending a static specialization world with a monomorphic binder only
+    adds a vacuous freshness obligation.  This is not a semantic environment
+    constructor and therefore assumes no stability of the binder's runtime
+    denotation. -/
+def EnvSpecialization.consMono {raw : List Binding}
+    (world : EnvSpecialization raw) (beta : BoundsTy) :
+    EnvSpecialization (Binding.mono beta :: raw) where
+  outer := world.outer
+  types := world.types
+  outerFinite := world.outerFinite
+  countTarget := world.countTarget
+  outerScope := world.outerScope
+  typesLC := world.typesLC
+  typeTarget := world.typeTarget
+  typesScope := world.typesScope
+  fresh := by
+    intro binding member
+    rcases List.mem_cons.mp member with head | tail
+    · subst binding
+      trivial
+    · exact world.fresh binding tail
+  typesSupported := world.typesSupported
+
+@[simp] theorem RawBodyView.env_consMono (view : RawBodyView)
+    (beta : BoundsTy) (raw : List Binding) :
+    view.env (Binding.mono beta :: raw) = Binding.mono beta :: view.env raw := by
+  cases view <;> rfl
+
+def ScopedHMAnnotation.ParamOK.specialize
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option Ty} {beta : BoundsTy}
+    (h : ScopedHMAnnotation.ParamOK types slots ids rows Delta ann beta)
+    {raw : List Binding} (world : EnvSpecialization raw) :
+    ScopedHMAnnotation.ParamOK
+      (fun i => world.mapBounds (types i))
+      (fun i => world.mapBounds (slots i)) ids
+      (CountAlgebra.compose world.outer rows)
+      (Delta.map (constraint world.outer)) ann (world.mapBounds beta) := by
+  cases ann with
+  | none => trivial
+  | some annotation => exact (h.counts world.outer world.outerFinite).types world.types
+
+def ScopedHMAnnotation.BindingOK.specialize
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option PolyTy} {beta : BoundsTy}
+    (h : ScopedHMAnnotation.BindingOK types slots ids rows Delta ann beta)
+    {raw : List Binding} (world : EnvSpecialization raw) :
+    ScopedHMAnnotation.BindingOK
+      (fun i => world.mapBounds (types i))
+      (fun i => world.mapBounds (slots i)) ids
+      (CountAlgebra.compose world.outer rows)
+      (Delta.map (constraint world.outer)) ann (world.mapBounds beta) := by
+  cases ann with
+  | none => trivial
+  | some annotation =>
+      exact ⟨h.1, (h.2.counts world.outer world.outerFinite).types world.types⟩
+
+def ScopedHMAnnotation.Pinned.specialize
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {caller : List Nat} {Delta : List Constraint} {annotation : Ty} {actual : BoundsTy}
+    (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Delta annotation actual)
+    {raw : List Binding} (world : EnvSpecialization raw) :
+    ScopedHMAnnotation.Pinned
+      (fun i => world.mapBounds (types i))
+      (fun i => world.mapBounds (slots i)) ids
+      (CountAlgebra.compose world.outer rows)
+      ((caller ++ world.countTarget) ++ world.typeTarget)
+      (Delta.map (constraint world.outer)) annotation (world.mapBounds actual) :=
+  (pinned.counts world.outer world.outerFinite world.countTarget world.outerScope).types
+    world.types world.typeTarget world.typesScope
+
 theorem RawBodyView.lookupMono {view : RawBodyView} {raw : List Binding}
     {i : Nat} {beta : BoundsTy}
     (lookup : raw[i]? = some (Binding.mono beta)) :
@@ -297,6 +368,107 @@ def varClosure
     (ScopedBodyDerives.varClosure
       (RawBodyView.lookupClosedClosure world lookup) closedUsed closedCaptures)
 
+def lambda
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option Ty} {body : Expr}
+    {param result : BoundsTy}
+    (annotation : ScopedHMAnnotation.ParamOK types slots ids rows Delta ann param)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.mono param :: raw)) body result)
+    (world : EnvSpecialization raw)
+    (bodyClosed : BodyViewSpecialized view (Binding.mono param :: raw)
+      bodyTyping (world.consMono param)) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.lambda annotation (by
+        simpa only [RawBodyView.env_consMono] using bodyTyping)) world := by
+  refine ⟨ScopedBodyDerives.lambda
+    (ScopedHMAnnotation.ParamOK.specialize annotation world) ?_⟩
+  simpa only [EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+    closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+    RawBodyView.env_consMono] using bodyClosed.typing
+
+def letMono
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option PolyTy} {rhs body : Expr}
+    {actual result : BoundsTy}
+    (annotation : ScopedHMAnnotation.BindingOK types slots ids rows Delta ann actual)
+    (rhsTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) rhs actual)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.mono actual :: raw)) body result)
+    (world : EnvSpecialization raw)
+    (rhsClosed : BodyViewSpecialized view raw rhsTyping world)
+    (bodyClosed : BodyViewSpecialized view (Binding.mono actual :: raw)
+      bodyTyping (world.consMono actual)) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.letMono annotation rhsTyping (by
+        simpa only [RawBodyView.env_consMono] using bodyTyping)) world := by
+  refine ⟨ScopedBodyDerives.letMono
+    (ScopedHMAnnotation.BindingOK.specialize annotation world)
+    rhsClosed.typing ?_⟩
+  simpa only [EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+    closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+    RawBodyView.env_consMono] using bodyClosed.typing
+
+def letRecMono
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option PolyTy} {rhs body : Expr}
+    {actual demand result : BoundsTy}
+    (annotation : ScopedHMAnnotation.BindingOK types slots ids rows Delta ann demand)
+    (rhsTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.mono demand :: raw)) rhs actual)
+    (inclusion : SemanticSub Delta actual demand)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.mono demand :: raw)) body result)
+    (world : EnvSpecialization raw)
+    (rhsClosed : BodyViewSpecialized view (Binding.mono demand :: raw)
+      rhsTyping (world.consMono demand))
+    (bodyClosed : BodyViewSpecialized view (Binding.mono demand :: raw)
+      bodyTyping (world.consMono demand)) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.letRecMono annotation
+        (by simpa only [RawBodyView.env_consMono] using rhsTyping) inclusion
+        (by simpa only [RawBodyView.env_consMono] using bodyTyping)) world := by
+  refine ⟨ScopedBodyDerives.letRecMono
+    (ScopedHMAnnotation.BindingOK.specialize annotation world) ?_
+    (SchemeSpecialization.subtype world.types
+      (CountSubstitution.subtype world.outer world.outerFinite inclusion)) ?_⟩
+  · simpa only [EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+      closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+      RawBodyView.env_consMono] using rhsClosed.typing
+  · simpa only [EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+      closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+      RawBodyView.env_consMono] using bodyClosed.typing
+
+def letPinned
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids caller : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {annotation : PolyTy} {rhs body : Expr}
+    {actual result : BoundsTy}
+    (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Delta
+      annotation.body actual)
+    (mono : annotation.paramCount = 0)
+    (rhsTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) rhs actual)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.mono pinned.demand :: raw)) body result)
+    (world : EnvSpecialization raw)
+    (rhsClosed : BodyViewSpecialized view raw rhsTyping world)
+    (bodyClosed : BodyViewSpecialized view (Binding.mono pinned.demand :: raw)
+      bodyTyping (world.consMono pinned.demand)) :
+    BodyViewSpecialized view raw
+      (ScopedBodyDerives.letPinned pinned mono rhsTyping (by
+        simpa only [RawBodyView.env_consMono] using bodyTyping)) world := by
+  let closedPinned := ScopedHMAnnotation.Pinned.specialize pinned world
+  refine ⟨ScopedBodyDerives.letPinned closedPinned mono rhsClosed.typing ?_⟩
+  simpa only [closedPinned, ScopedHMAnnotation.Pinned.specialize,
+    EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+    closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+    RawBodyView.env_consMono] using bodyClosed.typing
+
 def literal (view : RawBodyView) (raw : List Binding) (world : EnvSpecialization raw)
     (p : PrimLitExpr) :
     BodyViewSpecialized view raw
@@ -346,6 +518,10 @@ end BodyViewSpecialized
 #print axioms BodyViewSpecialized.varRecursiveOrdinary
 #print axioms BodyViewSpecialized.varExported
 #print axioms BodyViewSpecialized.varClosure
+#print axioms BodyViewSpecialized.lambda
+#print axioms BodyViewSpecialized.letMono
+#print axioms BodyViewSpecialized.letRecMono
+#print axioms BodyViewSpecialized.letPinned
 #print axioms BodyViewSpecialized.app
 #print axioms BodyViewSpecialized.subsumption
 
