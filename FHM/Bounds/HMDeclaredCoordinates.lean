@@ -22,6 +22,9 @@ private def bindingIds : Binding → List Nat
   | .mono β => (Synth.BoundsTy.toTy β).freeVars
   | .recursive c => c.hm.freeVars ++ c.template.hm.body.freeVars ++
       c.fixed.types.flatMap (fun β => (Synth.BoundsTy.toTy β).freeVars)
+  | .recursiveClosure c => c.source.hm.body.freeVars ++
+      c.fixedTypes.flatMap (fun β => (Synth.BoundsTy.toTy β).freeVars) ++
+      c.typeCaptures.flatMap (fun β => (Synth.BoundsTy.toTy β).freeVars)
   | .exported s => s.hm.body.freeVars
   | .closure s _ types =>
       s.hm.body.freeVars ++ types.flatMap (fun β => (Synth.BoundsTy.toTy β).freeVars)
