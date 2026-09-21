@@ -670,6 +670,23 @@ private def ordinaryBinding : Binding → BodyBinding
 
 def ordinaryBodyEnv (env : List Binding) : List BodyBinding := env.map ordinaryBinding
 
+private theorem ordinaryBodyEnv_mapCounts (outer : Bindings) (env : List Binding) :
+    ordinaryBodyEnv (env.map (mapCountBinding outer)) =
+      (ordinaryBodyEnv env).map (mapCountBinding outer) := by
+  simp only [ordinaryBodyEnv, List.map_map]
+  apply List.map_congr_left
+  intro binding _
+  cases binding <;> rfl
+
+private theorem ordinaryBodyEnv_mapTypes (f : Nat → BoundsTy)
+    (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) (env : List Binding) :
+    ordinaryBodyEnv (env.map (mapBinding f lc)) =
+      (ordinaryBodyEnv env).map (mapBinding f lc) := by
+  simp only [ordinaryBodyEnv, List.map_map]
+  apply List.map_congr_left
+  intro binding _
+  cases binding <;> rfl
+
 /-- Enter an implementation without crossing a generalization boundary.
     The common binding language already records fixed recursive contracts, so
     this boundary is definitionally the original environment. -/
@@ -688,6 +705,62 @@ private theorem ordinaryBodyEnv_exports (schemes : List HMCountScheme.Scheme) :
     This is independent of whether a particular RHS happens to use that slot. -/
 def RecursiveArgumentsSupported (env : List Binding) : Prop :=
   ∀ c, .recursive c ∈ env → ∀ a ∈ c.fixed.types, Runtime.Supported a
+
+private theorem RecursiveArgumentsSupported.mapCountBinding {env}
+    (supported : RecursiveArgumentsSupported env) (outer : Bindings) :
+    RecursiveArgumentsSupported (env.map (mapCountBinding outer)) := by
+  intro c member a argument
+  obtain ⟨binding, source, mapped⟩ := List.mem_map.mp member
+  cases binding with
+  | mono β => cases mapped
+  | recursive original =>
+      cases mapped
+      obtain ⟨b, sourceArgument, rfl⟩ := List.mem_map.mp (by
+        simpa [Contract.mapCounts, RecursiveHMContract.Fixed.mapCounts] using argument)
+      exact (supported original source b sourceArgument).counts outer
+  | exported s => cases mapped
+
+private theorem RecursiveArgumentsSupported.mapBinding {env}
+    (supported : RecursiveArgumentsSupported env) (f : Nat → BoundsTy)
+    (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (arguments : ∀ i, Runtime.Supported (f i)) :
+    RecursiveArgumentsSupported (env.map (mapBinding f lc)) := by
+  intro c member a argument
+  obtain ⟨binding, source, mapped⟩ := List.mem_map.mp member
+  cases binding with
+  | mono β => cases mapped
+  | recursive original =>
+      cases mapped
+      obtain ⟨b, sourceArgument, rfl⟩ := List.mem_map.mp (by
+        simpa [Contract.mapTypes, RecursiveHMContract.Fixed.mapTypes] using argument)
+      exact Runtime.Supported.types f arguments (supported original source b sourceArgument)
+  | exported s => cases mapped
+
+private theorem countCapturesFixed_ordinaryPrefix {outer env tail}
+    (fixed : CountCapturesFixed outer (ordinaryBodyEnv env ++ tail)) :
+    CountCapturesFixed outer env := by
+  intro binding member
+  have ordinaryMember : ordinaryBinding binding ∈ ordinaryBodyEnv env ++ tail :=
+    List.mem_append_left _ (List.mem_map_of_mem (f := ordinaryBinding) member)
+  have kept := fixed (ordinaryBinding binding) ordinaryMember
+  cases binding <;> simpa [ordinaryBinding] using kept
+
+private theorem capturesFixed_ordinaryPrefixMapped {outer env tail f}
+    (fixed : CapturesFixed f
+      ((ordinaryBodyEnv env ++ tail).map (mapCountBinding outer))) :
+    CapturesFixed f (env.map (mapCountBinding outer)) := by
+  intro mappedBinding mappedMember
+  obtain ⟨binding, member, rfl⟩ := List.mem_map.mp mappedMember
+  have commutes : ordinaryBinding (mapCountBinding outer binding) =
+      mapCountBinding outer (ordinaryBinding binding) := by
+    cases binding <;> rfl
+  have ordinaryMember : mapCountBinding outer (ordinaryBinding binding) ∈
+      (ordinaryBodyEnv env ++ tail).map (mapCountBinding outer) := by
+    apply List.mem_map_of_mem
+    exact List.mem_append_left _ (List.mem_map_of_mem (f := ordinaryBinding) member)
+  rw [← commutes] at ordinaryMember
+  have kept := fixed (ordinaryBinding (mapCountBinding outer binding)) ordinaryMember
+  cases binding <;> simpa [ordinaryBinding, mapCountBinding, Contract.mapCounts] using kept
 
 /-- Generalized exits promise each supported complete HM/count instance of the
     same runtime term. Unlike RHS assumptions, their HM arguments are not fixed.
@@ -2785,6 +2858,15 @@ theorem RuntimeReady.congr
   cases same
   exact ready
 
+theorem RuntimeReady.castEnv
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env env' : List BodyBinding} {e : Expr} {β : BoundsTy}
+    {h : ScopedBodyDerives types slots ids rows Δ env e β}
+    (same : env = env') (ready : RuntimeReady h) :
+    RuntimeReady (same ▸ h) := by
+  cases same
+  exact ready
+
 /-- One lawful enclosing count/HM specialization of a generalized-body
     derivation.  Unlike the structural recursive-RHS fragment, this witness is
     intentionally packaged rather than derived by a blanket map theorem:
@@ -2845,6 +2927,52 @@ def Specializes.ordinary
   refine ⟨.ordinary specialized.typing, ?_⟩
   intro _ arguments
   exact .ordinary (specialized.runtimeReady ready arguments)
+
+/-- Appending generalized-body bindings that the source term cannot address
+    preserves the canonical derivation's full specialization contract.  Both
+    count and HM transports commute with the ordinary-environment embedding;
+    recursive argument support is transported in the same order. -/
+def Specializes.ordinaryAppend
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List Binding} {e : Expr} {β : BoundsTy}
+    {h : ScopedDerives types slots ids rows Δ env e β}
+    (tail : List BodyBinding) (stable : ScopedDerives.Specializes h)
+    (ready : ScopedDerives.RuntimeReady h)
+    (sourceArguments : RecursiveArgumentsSupported env) :
+    Specializes (ScopedBodyDerives.ordinaryAppend h tail) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  have sourceCountFresh := countCapturesFixed_ordinaryPrefix countFresh
+  have sourceTypeFresh := capturesFixed_ordinaryPrefixMapped typeFresh
+  let specialized := stable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope sourceCountFresh sourceTypeFresh
+  let mappedTail := (tail.map (mapCountBinding outer)).map (mapBinding f typeLC)
+  have envEq :
+      ordinaryBodyEnv
+          ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)) ++ mappedTail =
+        (((ordinaryBodyEnv env ++ tail).map (mapCountBinding outer)).map
+          (mapBinding f typeLC)) := by
+    simp only [List.map_append, mappedTail, ordinaryBodyEnv_mapCounts,
+      ordinaryBodyEnv_mapTypes]
+  let rawTyping := ScopedBodyDerives.ordinaryAppend specialized.typing mappedTail
+  let typing : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (((ordinaryBodyEnv env ++ tail).map (mapCountBinding outer)).map
+        (mapBinding f typeLC)) e (mapFree f (bounds outer β)) :=
+    envEq ▸ rawTyping
+  refine ⟨typing, ?_⟩
+  intro _ arguments
+  have countedArguments := sourceArguments.mapCountBinding outer
+  have mappedArguments := countedArguments.mapBinding f typeLC arguments
+  have moved : BodyDerives.RuntimeReady
+      (ScopedBodyDerives.ordinaryAppend specialized.typing mappedTail) :=
+    .ordinaryAppend mappedTail (specialized.runtimeReady ready arguments)
+      mappedArguments
+  exact BodyDerives.RuntimeReady.congr (moved.castEnv envEq)
+
+#print axioms Specializes.ordinaryAppend
 
 theorem RuntimeReady.supported {types slots ids rows Δ env e β} {h : ScopedBodyDerives types slots ids rows Δ env e β}
     (ready : RuntimeReady h) : Runtime.Supported β := by
@@ -4295,22 +4423,6 @@ private def extendBranchCapture? {types slots env}
         have unchanged : (BodyBranchContext.list lo hi elem).extend pattern env = env := by
           simp [BodyBranchContext.extend, isCons]
         unchanged.symm ▸ capture
-
-private theorem RecursiveArgumentsSupported.mapBinding {env}
-    (supported : RecursiveArgumentsSupported env) (f : Nat → BoundsTy)
-    (lc : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
-    (arguments : ∀ i, Runtime.Supported (f i)) :
-    RecursiveArgumentsSupported (env.map (mapBinding f lc)) := by
-  intro c member a argument
-  obtain ⟨binding, source, mapped⟩ := List.mem_map.mp member
-  cases binding with
-  | mono β => cases mapped
-  | recursive original =>
-      cases mapped
-      obtain ⟨b, sourceArgument, rfl⟩ := List.mem_map.mp (by
-        simpa [Contract.mapTypes, RecursiveHMContract.Fixed.mapTypes] using argument)
-      exact Runtime.Supported.types f arguments (supported original source b sourceArgument)
-  | exported s => cases mapped
 
 /-- Every type named by the captured environment was placed among the local
     opening guards. Consequently arbitrary later instances of the local scheme
