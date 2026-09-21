@@ -117,6 +117,7 @@ roots = [
   "FHM.Bounds.CountApplication", # RHS-certified contract calls require actual argument bounds and inclusion
   "FHM.Bounds.CountProposal", # Untrusted direct count proposals; no inversion or captured-coordinate guessing
   "FHM.Bounds.HMCountScheme", # Closed HM/count templates and checked opaque group openings
+  "FHM.Bounds.HMCountSchemeClosure", # Lambda-lift captured count/HM coordinates into explicit scheme parameters
   "FHM.Bounds.HMCountSchemeTests", # Slot/capture/vacuous-forall and caller-count insertion regressions
   "FHM.Bounds.RecursiveContract", # Declared recursive count assumptions with one fixed HM monotype
   "FHM.Bounds.RecursiveHMContract", # Closed templates and fixed HM vectors; capture-safe count-only assumptions
