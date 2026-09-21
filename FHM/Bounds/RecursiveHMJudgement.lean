@@ -2891,6 +2891,166 @@ theorem ScopedDerives.closeInitial {types slots ids rows Δ env e β}
       exact .matchOpaque ihscrut patterns
         (fun i br hb => ihbranches i br hb) subs
 
+open ScopedDerives
+
+/-- Transport runtime metadata across two proof terms for the same scoped
+    judgement.  This is deliberately narrower than a semantic transport: it
+    only removes proof-term identity from the `RuntimeReady` index. -/
+theorem ScopedDerives.RuntimeReady.cast {types slots ids rows Δ env e β}
+    {h h' : ScopedDerives types slots ids rows Δ env e β}
+    (same : h = h') (ready : ScopedDerives.RuntimeReady h) : ScopedDerives.RuntimeReady h' := by
+  cases same
+  exact ready
+
+theorem ScopedDerives.RuntimeReady.castResult {types slots ids rows Δ env e β β'}
+    {h : ScopedDerives types slots ids rows Δ env e β}
+    {h' : ScopedDerives types slots ids rows Δ env e β'}
+    (same : β = β') (ready : ScopedDerives.RuntimeReady h) : ScopedDerives.RuntimeReady h' := by
+  subst β'
+  exact ScopedDerives.RuntimeReady.cast (Subsingleton.elim _ _) ready
+
+theorem ScopedDerives.RuntimeReady.castEnv {types slots ids rows Δ env env' e β}
+    {h : ScopedDerives types slots ids rows Δ env e β}
+    {h' : ScopedDerives types slots ids rows Δ env' e β}
+    (same : env = env') (ready : ScopedDerives.RuntimeReady h) : ScopedDerives.RuntimeReady h' := by
+  subst env'
+  exact ScopedDerives.RuntimeReady.cast (Subsingleton.elim _ _) ready
+
+/-- Runtime readiness follows the structural identity closure conversion.
+    The only representation-changing case is a raw recursive use, whose
+    closed use is supplied by `Closed.Use.transport` just as in
+    `ScopedDerives.closeInitial`. -/
+theorem ScopedDerives.RuntimeReady.closeInitial {types slots ids rows Δ env e β}
+    {h : ScopedDerives types slots ids rows Δ env e β} (ready : ScopedDerives.RuntimeReady h) :
+    ScopedDerives.RuntimeReady h.closeInitial := by
+  induction ready with
+  | literal => exact RuntimeReady.cast (Subsingleton.elim _ _) .literal
+  | primBinOp => exact RuntimeReady.cast (Subsingleton.elim _ _) .primBinOp
+  | nil support => exact RuntimeReady.cast (Subsingleton.elim _ _) (.nil support)
+  | boolCtor nameOK => exact RuntimeReady.cast (Subsingleton.elim _ _) (.boolCtor nameOK)
+  | cons sub _ _ ihh iht =>
+      exact RuntimeReady.cast (Subsingleton.elim _ _) (.cons sub ihh iht)
+  | consPartial _ ih => exact RuntimeReady.cast (Subsingleton.elim _ _) (.consPartial ih)
+  | pair _ _ ihLeft ihRight =>
+      exact RuntimeReady.cast (Subsingleton.elim _ _) (.pair ihLeft ihRight)
+  | pairPartial _ support ih =>
+      exact RuntimeReady.cast (Subsingleton.elim _ _) (.pairPartial ih support)
+  | varMono lookup support =>
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      exact .varMono (by
+        simpa [closeRecursiveIdentityBinding] using
+          (congrArg (Option.map closeRecursiveIdentityBinding) lookup)) support
+  | @varRecursive env' i c pathΔ caller lookup u support =>
+      let moved := RecursiveHMContract.Closed.Use.transport u []
+        (by intro row hr; simp at hr) [] (by intro row hr; simp at hr)
+        (fun i => BoundsTy.fvar i) (by
+          intro i
+          simpa [Synth.BoundsTy.toTy] using (ContainsBvarsUpTo.fvar : (Ty.fvar i).IsLC))
+        [] (by intro i; trivial)
+      have movedBounds : moved.bounds = u.bounds := by
+        dsimp [moved]
+        rw [RecursiveHMContract.Closed.Use.transport_bounds, bounds_empty, mapFree_identity]
+      have closedLookup : (env'.map closeRecursiveIdentityBinding)[i]? = some
+          (.recursiveClosure (RecursiveHMContract.Closed.ofFixed c.fixed []
+            (fun i => BoundsTy.fvar i))) := by
+        simpa only [List.getElem?_map, Option.map_some, closeRecursiveIdentityBinding] using
+          congrArg (Option.map closeRecursiveIdentityBinding) lookup
+      let used := closedUseCastConstraints (constraints_empty pathΔ) moved
+      have usedBounds : used.bounds = u.bounds := by
+        dsimp [used]
+        rw [closedUseCastConstraints_bounds]
+        exact movedBounds
+      have closedSupport : Runtime.Supported used.bounds := by
+        rw [usedBounds]
+        exact support
+      exact RuntimeReady.castResult usedBounds
+        (.varRecursiveClosure closedLookup used closedSupport)
+  | varRecursiveClosure lookup used support =>
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      exact .varRecursiveClosure (by
+        simpa [closeRecursiveIdentityBinding] using
+          (congrArg (Option.map closeRecursiveIdentityBinding) lookup)) used support
+  | varExported lookup used support usedArguments =>
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      exact .varExported (by
+        simpa [closeRecursiveIdentityBinding] using
+          (congrArg (Option.map closeRecursiveIdentityBinding) lookup)) used support usedArguments
+  | varClosure lookup used captures support usedArguments =>
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      exact .varClosure (by
+        simpa [closeRecursiveIdentityBinding] using
+          (congrArg (Option.map closeRecursiveIdentityBinding) lookup)) used captures support usedArguments
+  | app sub _ _ ihf iha =>
+      exact RuntimeReady.cast (Subsingleton.elim _ _) (.app sub ihf iha)
+  | subsumption sub _ support ih =>
+      exact RuntimeReady.cast (Subsingleton.elim _ _) (.subsumption sub ih support)
+  | lambda annotation support _ ih =>
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      exact .lambda annotation support (by
+        simpa [closeRecursiveIdentityBinding] using ih)
+  | letMono annotation _ _ ihr ihb =>
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      exact .letMono annotation ihr (by simpa [closeRecursiveIdentityBinding] using ihb)
+  | letPinned pinned mono rhsReady demandSupport bodyReady ihr ihb =>
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      exact .letPinned pinned mono ihr demandSupport (by
+        simpa [closeRecursiveIdentityBinding] using ihb)
+  | letRecPinnedMono pinned mono rhsReady demandSupport bodyReady ihr ihb =>
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      exact .letRecPinnedMono pinned mono
+        (by simpa [closeRecursiveIdentityBinding] using ihr) demandSupport
+        (by simpa [closeRecursiveIdentityBinding] using ihb)
+  | letRecInferredMono rhsReady actualSupport bodyReady ihr ihb =>
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      exact .letRecInferredMono
+        (by simpa [closeRecursiveIdentityBinding] using ihr) actualSupport
+        (by simpa [closeRecursiveIdentityBinding] using ihb)
+  | letRecMono annotation sub rhsReady demandSupport bodyReady ihr ihb =>
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      exact .letRecMono annotation sub
+        (by simpa [closeRecursiveIdentityBinding] using ihr) demandSupport
+        (by simpa [closeRecursiveIdentityBinding] using ihb)
+  | letRecMonoGroup annotations rhss body demands rhssReady demandsSupported bodyReady
+      ihRhss ihBody =>
+      rename_i Δ' env' result actuals annotationCount demandCount annotationsOK
+        rhssTyping inclusions bodyTyping
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      refine .letRecMonoGroup annotations rhss body demands
+        (annotationCount := annotationCount) (demandCount := demandCount)
+        (annotationsOK := annotationsOK)
+        (rhssTyping := fun i inside => by
+          simpa [closeRecursiveIdentityBinding] using (rhssTyping i inside).closeInitial)
+        (inclusions := inclusions)
+        (bodyTyping := by
+          simpa [closeRecursiveIdentityBinding] using bodyTyping.closeInitial)
+        ?_ demandsSupported ?_
+      · intro i inside
+        simpa [closeRecursiveIdentityBinding] using ihRhss i inside
+      · simpa [closeRecursiveIdentityBinding] using ihBody
+  | matchList coverage patterns bodies subs scrutReady branchesReady resultSupport ihs ihb =>
+      rename_i pathΔ env' scrut lo hi elem branches result actuals hs
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      refine .matchList coverage patterns ?_ subs ihs ?_ resultSupport
+      · intro i br atIndex
+        rw [← initialClose_branch]
+        exact (bodies i br atIndex).closeInitial
+      · intro i br atIndex
+        exact RuntimeReady.castEnv (initialClose_branch br.1 lo hi elem env') (ihb i br atIndex)
+  | matchBool coverage patterns bodies subs scrutReady branchesReady resultSupport ihs ihb =>
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      exact .matchBool coverage patterns (fun i br atIndex =>
+        (bodies i br atIndex).closeInitial) subs ihs
+        (fun i br atIndex => RuntimeReady.cast (Subsingleton.elim _ _) (ihb i br atIndex)) resultSupport
+  | matchPair coverage patterns bodies subs scrutReady branchesReady resultSupport ihs ihb =>
+      rename_i pathΔ env' scrut left right branches result actuals hs
+      apply RuntimeReady.cast (Subsingleton.elim _ _)
+      refine .matchPair coverage patterns ?_ subs ihs ?_ resultSupport
+      · intro i br atIndex
+        rw [← initialClose_pairBranch]
+        exact (bodies i br atIndex).closeInitial
+      · intro i br atIndex
+        exact RuntimeReady.castEnv (initialClose_pairBranch br.1 left right env') (ihb i br atIndex)
+
 private theorem initialClosed_specialize (c : Contract) (outer : Bindings)
     (f : Nat → BoundsTy) :
     closedMapTypes (closedMapCounts
@@ -3634,6 +3794,39 @@ theorem ScopedDerives.closeRecursive (outer : Bindings) (f : Nat → BoundsTy)
     intro binding _
     exact initialClose_specialize_binding outer f typeLC binding
   simpa only [initial, counted, typed, envEq] using typed
+
+/-- Runtime readiness follows the same count-first, HM-second closure
+    conversion as `ScopedDerives.closeRecursive`.  The only additional input
+    is runtime meaning for the enclosing HM arguments. -/
+theorem RuntimeReady.closeRecursive (outer : Bindings) (f : Nat → BoundsTy)
+    (outerFinite : Finite outer) (countTarget : List Nat)
+    (countScope : ∀ row ∈ outer, Scope.CountScoped countTarget row.2)
+    (typeLC : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (typeTarget : List Nat)
+    (typeScope : ∀ i, ScopedScheme.BoundsScoped typeTarget (f i))
+    {types slots ids rows Δ env e β} {h : ScopedDerives types slots ids rows Δ env e β}
+    (ready : ScopedDerives.RuntimeReady h) (fresh : CloseRecursiveFresh outer f env)
+    (arguments : ∀ i, Runtime.Supported (f i)) :
+    ScopedDerives.RuntimeReady (h.closeRecursive outer f outerFinite countTarget countScope
+      typeLC typeTarget typeScope fresh) := by
+  let initial := h.closeInitial
+  let counted := transportScopedCounts outer outerFinite countTarget countScope initial
+    (initialClose_countFresh fresh)
+  let typed := transportScopedTypes f typeLC typeTarget typeScope counted
+    (initialClose_typeFresh fresh)
+  have envEq : ((env.map closeRecursiveIdentityBinding).map (mapCountBinding outer)).map
+      (mapBinding f typeLC) = closeRecursiveEnv outer f env := by
+    unfold closeRecursiveEnv
+    simp only [List.map_map]
+    apply List.map_congr_left
+    intro binding _
+    exact initialClose_specialize_binding outer f typeLC binding
+  have initialReady : ScopedDerives.RuntimeReady initial := ready.closeInitial
+  have countedReady : ScopedDerives.RuntimeReady counted := initialReady.counts outer outerFinite countTarget
+    countScope (initialClose_countFresh fresh)
+  have typedReady : ScopedDerives.RuntimeReady typed := countedReady.types f typeLC typeTarget typeScope
+    arguments (initialClose_typeFresh fresh)
+  exact ScopedDerives.RuntimeReady.castEnv envEq typedReady
 
 /-- One lawful count-first, HM-second specialization of a scoped derivation.
     This packages the transported typing derivation together with preservation
