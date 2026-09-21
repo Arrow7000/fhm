@@ -24,6 +24,9 @@ structure Contract where
 inductive Binding where
   | mono (bounds : BoundsTy)
   | recursive (contract : Contract)
+  /-- Fixed recursive use with explicitly stored lexical captures.  Unlike an
+      exported closure, this retains a fixed source-HM tail. -/
+  | recursiveClosure (contract : RecursiveHMContract.Closed)
   | exported (scheme : HMCountScheme.Scheme)
   /-- A lexical generalized value packages its lambda-lifted interface with
       the fixed count/HM meanings captured at the introduction site. Callers
@@ -116,6 +119,9 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
   | varMono {env i β} : env[i]? = some (.mono β) → ScopedDerives types slots ids rows Δ env (.var i) β
   | varRecursive {env i c caller} : env[i]? = some (.recursive c) →
       (u : RecursiveHMContract.Use c.fixed Δ c.hm caller) →
+      ScopedDerives types slots ids rows Δ env (.var i) u.bounds
+  | varRecursiveClosure {env i c found caller} : env[i]? = some (.recursiveClosure c) →
+      (u : RecursiveHMContract.Closed.Use c Δ found caller) →
       ScopedDerives types slots ids rows Δ env (.var i) u.bounds
   | varExported {env i s found caller} : env[i]? = some (.exported s) →
       (u : HMCountScheme.Use s Δ found caller) →
@@ -249,7 +255,7 @@ theorem ScopedDerives.primLitBounds {types slots ids rows Δ env e β}
       rw [ih p source] at sub
       cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | ctor | cons | consPartial | pair | pairPartial |
-      varMono | varRecursive | varExported | varClosure | app | lambda | letMono | letRecMono |
+      varMono | varRecursive | varRecursiveClosure | varExported | varClosure | app | lambda | letMono | letRecMono |
       letPinned | letRecPinnedMono | letRecInferredMono | letRecMonoGroup |
       matchList | matchBool | matchPair | matchNominal | matchOpaque =>
         intro p source; cases source
@@ -284,6 +290,7 @@ theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
   | pairPartial _ ih => simpa [Expr.varsBelow] using ih
   | varMono lookup => exact variable_scoped lookup
   | varRecursive lookup _ => exact variable_scoped lookup
+  | varRecursiveClosure lookup _ => exact variable_scoped lookup
   | varExported lookup _ => exact variable_scoped lookup
   | varClosure lookup _ _ => exact variable_scoped lookup
   | app _ _ _ ihf iha => simp [Expr.varsBelow, ihf, iha]
@@ -417,6 +424,7 @@ theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
         (ihRight (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
   | varMono lookup => intro _; exact .varMono lookup
   | varRecursive lookup used => intro _; exact .varRecursive lookup used
+  | varRecursiveClosure lookup used => intro _; exact .varRecursiveClosure lookup used
   | varExported lookup used => intro _; exact .varExported lookup used
   | varClosure lookup used captures => intro _; exact .varClosure lookup used captures
   | cons _ _ sub ihh iht =>
@@ -642,6 +650,7 @@ theorem ScopedDerives.sourceSlots {types slots slots' ids rows Δ env e β n}
       exact .pair (ihLeft bounded.1.2) (ihRight bounded.2)
   | varMono lookup => exact .varMono lookup
   | varRecursive lookup used => exact .varRecursive lookup used
+  | varRecursiveClosure lookup used => exact .varRecursiveClosure lookup used
   | varExported lookup used => exact .varExported lookup used
   | varClosure lookup used captures => exact .varClosure lookup used captures
   | cons _ _ sub ihh iht =>
@@ -740,6 +749,10 @@ def BindingAt (bound free : Runtime.TypeEnv) (σ : Assign) (budget : Nat)
       ∀ Δ caller (used : RecursiveHMContract.Use c.fixed Δ c.hm caller),
         (∀ p ∈ used.inst.premises, p.Holds σ) →
           Runtime.TermAt bound free σ budget used.bounds term
+  | .recursiveClosure c =>
+      ∀ Δ found caller (used : RecursiveHMContract.Closed.Use c Δ found caller),
+        (∀ p ∈ used.use.countInstance.premises, p.Holds σ) →
+          Runtime.TermAt bound free σ budget used.bounds term
   | .exported s =>
       ∀ Δ found caller (used : HMCountScheme.Use s Δ found caller),
         (∀ a ∈ used.types, Runtime.Supported a) →
@@ -774,6 +787,7 @@ theorem BindingAt.zero (bound free : Runtime.TypeEnv) (σ : Assign) (binding : B
   cases binding with
   | mono β => exact vacuous β
   | recursive c => exact fun _ _ _ _ => vacuous _
+  | recursiveClosure c => exact fun _ _ _ _ _ => vacuous _
   | exported s => exact fun _ _ _ _ _ _ => vacuous _
   | closure s countCaptures typeCaptures => exact fun _ _ _ _ _ _ _ => vacuous _
 
@@ -784,6 +798,9 @@ theorem BindingAt.prepend {bound free σ budget binding term next}
   | mono β => exact Runtime.TermAt.prepend step safe
   | recursive c =>
       exact fun Δ caller used premises => Runtime.TermAt.prepend step (safe Δ caller used premises)
+  | recursiveClosure c =>
+      exact fun Δ found caller used premises =>
+        Runtime.TermAt.prepend step (safe Δ found caller used premises)
   | exported s =>
       exact fun Δ found caller used arguments premises =>
         Runtime.TermAt.prepend step (safe Δ found caller used arguments premises)
@@ -838,6 +855,10 @@ def EnvAt.down {bound free σ small large env}
       simp only [BindingAt, kind] at actual ⊢
       intro Δ caller used premises
       exact (actual Δ caller used premises).down hb hf le
+  | recursiveClosure c =>
+      simp only [BindingAt, kind] at actual ⊢
+      intro Δ found caller used premises
+      exact (actual Δ found caller used premises).down hb hf le
   | exported s =>
       simp only [BindingAt, kind] at actual ⊢
       intro Δ found caller used arguments premises
@@ -1001,6 +1022,17 @@ theorem EnvAt.varRecursive {bound free σ budget env i c Δ caller}
   have meaning := e.denotes i inside
   simp only [BindingAt, entry] at meaning
   exact meaning Δ caller used (used.usable σ premises)
+
+theorem EnvAt.varRecursiveClosure {bound free σ budget env i c Δ found caller}
+    (e : EnvAt bound free σ budget env) (lookup : env[i]? = some (.recursiveClosure c))
+    (used : RecursiveHMContract.Closed.Use c Δ found caller)
+    (premises : ∀ p ∈ Δ, p.Holds σ) :
+    Runtime.TermAt bound free σ budget used.bounds ((Expr.var i).substN 0 e.terms) := by
+  obtain ⟨inside, entry⟩ := List.getElem?_eq_some_iff.mp lookup
+  rw [Runtime.closing_var e.terms e.closed i (by rw [e.arity]; exact inside)]
+  have meaning := e.denotes i inside
+  simp only [BindingAt, entry] at meaning
+  exact meaning Δ found caller used (used.use.usable σ premises)
 
 theorem EnvAt.varExported {bound free σ budget env i s Δ found caller}
     (e : EnvAt bound free σ budget env) (lookup : env[i]? = some (.exported s))
@@ -1190,6 +1222,9 @@ inductive RuntimeReady {types slots ids rows} :
   | varRecursive (lookup : env[i]? = some (Binding.recursive c))
       (used : RecursiveHMContract.Use c.fixed Δ c.hm caller) :
       Runtime.Supported used.bounds → RuntimeReady (.varRecursive lookup used)
+  | varRecursiveClosure (lookup : env[i]? = some (Binding.recursiveClosure c))
+      (used : RecursiveHMContract.Closed.Use c Δ found caller) :
+      Runtime.Supported used.bounds → RuntimeReady (.varRecursiveClosure lookup used)
   | varExported (lookup : env[i]? = some (Binding.exported s))
       (used : HMCountScheme.Use s Δ found caller) :
       Runtime.Supported used.bounds → (∀ a ∈ used.types, Runtime.Supported a) →
@@ -1305,6 +1340,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β}
   | pairPartial _ right left => exact .arrow right (.pair left right)
   | varMono _ support => exact support
   | varRecursive _ _ support => exact support
+  | varRecursiveClosure _ _ support => exact support
   | varExported _ _ support _ => exact support
   | varClosure _ _ _ support _ => exact support
   | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
@@ -1364,6 +1400,9 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
   | varRecursive lookup used _ =>
       intro budget premises e
       exact e.varRecursive lookup used premises
+  | varRecursiveClosure lookup used _ =>
+      intro budget premises e
+      exact e.varRecursiveClosure lookup used premises
   | varExported lookup used _ arguments =>
       intro budget premises e
       exact e.varExported lookup used arguments premises
@@ -1822,6 +1861,14 @@ theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
           exact used.usable σ (fun c hc => hp σ hΔ c hc) goal hgoal,
           used.typesScoped, used.fixedHM⟩
       exact .varRecursive hv next
+  | varRecursiveClosure hv used =>
+      let next : HMCountScheme.Use _ Δ' _ _ :=
+        ⟨used.use.counts, used.use.countInstance, by
+          intro σ hΔ goal hgoal
+          exact used.use.usable σ (fun c hc => hp σ hΔ c hc) goal hgoal,
+          used.use.types, used.use.arity, used.use.typesLC, used.use.typesScoped, used.use.shape⟩
+      exact .varRecursiveClosure hv ⟨next, ⟨used.captures.counts, used.captures.types⟩,
+        used.fixedTail⟩
   | varExported hv used =>
       let next : HMCountScheme.Use _ Δ' _ _ :=
         ⟨used.counts, used.countInstance, by
@@ -1897,6 +1944,12 @@ theorem ScopedDerives.RuntimeReady.assuming {types slots ids rows Δ Δ' env e �
         ⟨used.counts, used.inst, fun σ premises => used.usable σ (hp σ premises),
           used.typesScoped, used.fixedHM⟩
       exact .varRecursive lookup next support
+  | varRecursiveClosure lookup used support =>
+      let next : HMCountScheme.Use _ Δ' _ _ :=
+        ⟨used.use.counts, used.use.countInstance, (fun σ hΔ => used.use.usable σ (hp σ hΔ)),
+          used.use.types, used.use.arity, used.use.typesLC, used.use.typesScoped, used.use.shape⟩
+      exact .varRecursiveClosure lookup
+        ⟨next, ⟨used.captures.counts, used.captures.types⟩, used.fixedTail⟩ support
   | varExported lookup used support arguments =>
       let next : HMCountScheme.Use _ Δ' _ _ :=
         ⟨used.counts, used.countInstance, (fun σ hΔ => used.usable σ (hp σ hΔ)),
@@ -1965,6 +2018,8 @@ theorem ScopedDerives.RuntimeReady.sourceFree {types types' slots : Nat → Boun
   | boolCtor ctor => intro _; exact .boolCtor ctor
   | varMono lookup supported => intro _; exact .varMono lookup supported
   | varRecursive lookup used supported => intro _; exact .varRecursive lookup used supported
+  | varRecursiveClosure lookup used supported =>
+      intro _; exact .varRecursiveClosure lookup used supported
   | varExported lookup used supported arguments =>
       intro _; exact .varExported lookup used supported arguments
   | varClosure lookup used captures supported arguments =>
@@ -2109,6 +2164,8 @@ theorem ScopedDerives.RuntimeReady.sourceSlots {types slots slots' : Nat → Bou
   | boolCtor ctor => intro _; exact .boolCtor ctor
   | varMono lookup supported => intro _; exact .varMono lookup supported
   | varRecursive lookup used supported => intro _; exact .varRecursive lookup used supported
+  | varRecursiveClosure lookup used supported =>
+      intro _; exact .varRecursiveClosure lookup used supported
   | varExported lookup used supported arguments =>
       intro _; exact .varExported lookup used supported arguments
   | varClosure lookup used captures supported arguments =>
@@ -2237,9 +2294,18 @@ def Contract.mapTypes (c : Contract) (f : Nat → BoundsTy)
   ⟨c.template, Synth.BoundsTy.toTy (HMCountScheme.opened c.template (c.fixed.types.map (mapFree f))),
     c.fixed.mapTypes f hf⟩
 
+def closedMapTypes (c : RecursiveHMContract.Closed)
+    (f : Nat → BoundsTy) : RecursiveHMContract.Closed where
+  source := c.source
+  fixedTypes := c.fixedTypes.map (mapFree f)
+  fixedArity := by simpa only [List.length_map] using c.fixedArity
+  countCaptures := c.countCaptures
+  typeCaptures := c.typeCaptures.map (mapFree f)
+
 def mapBinding (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC) : Binding → Binding
   | .mono β => .mono (mapFree f β)
   | .recursive c => .recursive (c.mapTypes f hf)
+  | .recursiveClosure c => .recursiveClosure (closedMapTypes c f)
   | .exported s => .exported s
   | .closure s countCaptures typeCaptures =>
       .closure s countCaptures (typeCaptures.map (mapFree f))
@@ -2248,6 +2314,7 @@ def CapturesFixed (f : Nat → BoundsTy) (env : List Binding) : Prop :=
   ∀ b ∈ env, match b with
     | .mono _ => True
     | .recursive c => ∀ i ∈ c.template.hm.body.freeVars, f i = .fvar i
+    | .recursiveClosure _ => True
     | .exported s => ∀ i ∈ s.hm.body.freeVars, f i = .fvar i
     | .closure _ _ _ => True
 
@@ -2346,6 +2413,43 @@ private theorem mapExportedUse_bounds {s : HMCountScheme.Scheme} {Δ found calle
     (mapExportedUse u f hf target scope captured).bounds = mapFree f u.bounds :=
   (RecursiveHMContract.map_combined s u.types _ f hf captured).symm
 
+private theorem sourceTypeArguments_map (s : HMCountScheme.Scheme)
+    (xs : List BoundsTy) (f : BoundsTy → BoundsTy) :
+    HMCountSchemeClosure.sourceTypeArguments s (xs.map f) =
+      (HMCountSchemeClosure.sourceTypeArguments s xs).map f := by
+  simp [HMCountSchemeClosure.sourceTypeArguments]
+
+private def mapClosedUse {c : RecursiveHMContract.Closed} {Δ found caller}
+    (u : RecursiveHMContract.Closed.Use c Δ found caller)
+    (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (target : List Nat) (scope : ∀ i, ScopedScheme.BoundsScoped target (f i)) :
+    RecursiveHMContract.Closed.Use (closedMapTypes c f) Δ
+      (Synth.BoundsTy.toTy (mapFree f u.bounds)) (caller ++ target) := by
+  have closed : ∀ i ∈ (HMCountSchemeClosure.close c.source).hm.body.freeVars,
+      f i = .fvar i := by
+    intro i member
+    rw [HMCountSchemeClosure.close_typeFree] at member
+    cases member
+  let next := mapExportedUse u.use f hf target scope closed
+  refine ⟨next, ?_, ?_⟩
+  · exact u.captures.mapTypes (mapFree f)
+      (by simp [next, mapExportedUse]) (by simp [next, mapExportedUse])
+  · rw [show next.types = u.use.types.map (mapFree f) by rfl,
+      sourceTypeArguments_map]
+    exact congrArg (List.map (mapFree f)) u.fixedTail
+
+private theorem mapClosedUse_bounds {c : RecursiveHMContract.Closed} {Δ found caller}
+    (u : RecursiveHMContract.Closed.Use c Δ found caller)
+    (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy.toTy (f i)).IsLC)
+    (target : List Nat) (scope : ∀ i, ScopedScheme.BoundsScoped target (f i)) :
+    (mapClosedUse u f hf target scope).bounds = mapFree f u.bounds := by
+  have closed : ∀ i ∈ (HMCountSchemeClosure.close c.source).hm.body.freeVars,
+      f i = .fvar i := by
+    intro i member
+    rw [HMCountSchemeClosure.close_typeFree] at member
+    cases member
+  exact mapExportedUse_bounds u.use f hf target scope closed
+
 private theorem param_types {types slots ids rows Δ ann β}
     (h : ScopedHMAnnotation.ParamOK types slots ids rows Δ ann β) (f : Nat → BoundsTy) :
     ScopedHMAnnotation.ParamOK (fun i => mapFree f (types i)) (fun i => mapFree f (slots i)) ids rows Δ ann (mapFree f β) := by
@@ -2382,6 +2486,11 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
       rw [← mapUse_bounds u f hf target scope (fresh.recursive (List.mem_of_getElem? hv))]
       exact .varRecursive (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) hv)
         (mapUse u f hf target scope)
+  | varRecursiveClosure hv u =>
+      rw [← mapClosedUse_bounds u f hf target scope]
+      exact .varRecursiveClosure
+        (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) hv)
+        (mapClosedUse u f hf target scope)
   | varExported hv u =>
       have captured := fresh.exported (List.mem_of_getElem? hv)
       rw [← mapExportedUse_bounds u f hf target scope captured]
@@ -2490,9 +2599,18 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
 def Contract.mapCounts (c : Contract) (outer : Bindings) : Contract :=
   ⟨c.template, c.hm, c.fixed.mapCounts outer⟩
 
+def closedMapCounts (c : RecursiveHMContract.Closed)
+    (outer : Bindings) : RecursiveHMContract.Closed where
+  source := c.source
+  fixedTypes := c.fixedTypes.map (bounds outer)
+  fixedArity := by simpa only [List.length_map] using c.fixedArity
+  countCaptures := c.countCaptures.map (count outer)
+  typeCaptures := c.typeCaptures.map (bounds outer)
+
 def mapCountBinding (outer : Bindings) : Binding → Binding
   | .mono β => .mono (bounds outer β)
   | .recursive c => .recursive (c.mapCounts outer)
+  | .recursiveClosure c => .recursiveClosure (closedMapCounts c outer)
   | .exported s => .exported s
   | .closure s countCaptures typeCaptures =>
       .closure s (countCaptures.map (count outer))
@@ -2502,6 +2620,7 @@ def CountCapturesFixed (outer : Bindings) (env : List Binding) : Prop :=
   ∀ b ∈ env, match b with
     | .mono _ => True
     | .recursive c => ∀ i ∈ c.template.counts.captures, lookup outer i = none
+    | .recursiveClosure _ => True
     | .exported s => ∀ i ∈ s.counts.captures, lookup outer i = none
     | .closure _ _ _ => True
 
@@ -2584,6 +2703,36 @@ private theorem mapExportedUseCounts_bounds {s : HMCountScheme.Scheme} {Δ found
   funext i
   exact CountTransport.vector_mapped outer u.types i
 
+private def mapClosedUseCounts {c : RecursiveHMContract.Closed} {Δ found caller}
+    (u : RecursiveHMContract.Closed.Use c Δ found caller)
+    (outer : Bindings) (hf : Finite outer) (target : List Nat)
+    (scope : ∀ row ∈ outer, Scope.CountScoped target row.2) :
+    RecursiveHMContract.Closed.Use (closedMapCounts c outer)
+      (Δ.map (constraint outer)) found (caller ++ target) := by
+  have closed : ∀ i ∈ (HMCountSchemeClosure.close c.source).counts.captures,
+      lookup outer i = none := by
+    intro i member
+    rw [HMCountSchemeClosure.close_countCaptures] at member
+    cases member
+  let next := mapExportedUseCounts u.use outer hf target scope closed
+  refine ⟨next, ?_, ?_⟩
+  · exact u.captures.map (count outer) (bounds outer) (by rfl) (by rfl)
+  · rw [show next.types = u.use.types.map (bounds outer) by rfl,
+      sourceTypeArguments_map]
+    exact congrArg (List.map (bounds outer)) u.fixedTail
+
+private theorem mapClosedUseCounts_bounds {c : RecursiveHMContract.Closed} {Δ found caller}
+    (u : RecursiveHMContract.Closed.Use c Δ found caller)
+    (outer : Bindings) (hf : Finite outer) (target : List Nat)
+    (scope : ∀ row ∈ outer, Scope.CountScoped target row.2) :
+    (mapClosedUseCounts u outer hf target scope).bounds = bounds outer u.bounds := by
+  have closed : ∀ i ∈ (HMCountSchemeClosure.close c.source).counts.captures,
+      lookup outer i = none := by
+    intro i member
+    rw [HMCountSchemeClosure.close_countCaptures] at member
+    cases member
+  exact mapExportedUseCounts_bounds u.use outer hf target scope closed
+
 private theorem param_counts {types slots ids rows Δ ann β}
     (h : ScopedHMAnnotation.ParamOK types slots ids rows Δ ann β) (outer : Bindings) (hf : Finite outer) :
     ScopedHMAnnotation.ParamOK (fun i => bounds outer (types i)) (fun i => bounds outer (slots i)) ids (CountAlgebra.compose outer rows)
@@ -2627,6 +2776,11 @@ theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : L
         simpa only [List.getElem?_map, mapCountBinding, Option.map_some] using
           congrArg (Option.map (mapCountBinding outer)) hv)
         (u.mapCounts outer hf target scope captured)
+  | varRecursiveClosure hv u =>
+      rw [← mapClosedUseCounts_bounds u outer hf target scope]
+      exact .varRecursiveClosure
+        (by simpa [mapCountBinding] using congrArg (Option.map (mapCountBinding outer)) hv)
+        (mapClosedUseCounts u outer hf target scope)
   | varExported hv u =>
       have captured := fresh.exported (List.mem_of_getElem? hv)
       rw [← mapExportedUseCounts_bounds u outer hf target scope captured]
@@ -2818,6 +2972,17 @@ theorem ScopedDerives.RuntimeReady.counts (outer : Bindings) (hf : Finite outer)
   | varMono lookup support =>
       exact .varMono (by simpa [mapCountBinding] using congrArg (Option.map (mapCountBinding outer)) lookup)
         (support.counts outer)
+  | @varRecursiveClosure env' i c pathΔ found caller lookup used support =>
+      have moved := ScopedDerives.RuntimeReady.varRecursiveClosure
+        (types := fun i => bounds outer (types i)) (slots := fun i => bounds outer (slots i))
+        (ids := ids) (rows := CountAlgebra.compose outer rows)
+        (env := env'.map (mapCountBinding outer)) (i := i) (c := closedMapCounts c outer)
+        (by simpa only [List.getElem?_map, Option.map_some, mapCountBinding]
+          using congrArg (Option.map (mapCountBinding outer)) lookup)
+        (mapClosedUseCounts used outer hf target scope)
+        (by simpa only [mapClosedUseCounts_bounds used outer hf target scope]
+          using support.counts outer)
+      simpa only [mapClosedUseCounts_bounds used outer hf target scope] using moved
   | @varRecursive env' i c pathΔ caller lookup used support =>
       have captured := fresh.recursive (List.mem_of_getElem? lookup)
       have moved := ScopedDerives.RuntimeReady.varRecursive
@@ -3028,6 +3193,17 @@ theorem ScopedDerives.RuntimeReady.types (f : Nat → BoundsTy)
   | varMono lookup support =>
       exact .varMono (by simpa [mapBinding] using congrArg (Option.map (mapBinding f hf)) lookup)
         (support.types f arguments)
+  | @varRecursiveClosure env' i c pathΔ found caller lookup used support =>
+      have moved := ScopedDerives.RuntimeReady.varRecursiveClosure
+        (types := fun i => mapFree f (types i)) (slots := fun i => mapFree f (slots i))
+        (ids := ids) (rows := rows) (env := env'.map (mapBinding f hf)) (i := i)
+        (c := closedMapTypes c f)
+        (by simpa only [List.getElem?_map, Option.map_some, mapBinding]
+          using congrArg (Option.map (mapBinding f hf)) lookup)
+        (mapClosedUse used f hf target scope)
+        (by simpa only [mapClosedUse_bounds used f hf target scope]
+          using support.types f arguments)
+      simpa only [mapClosedUse_bounds used f hf target scope] using moved
   | @varRecursive env' i c pathΔ caller lookup used support =>
       have captured := fresh.recursive (List.mem_of_getElem? lookup)
       have moved := ScopedDerives.RuntimeReady.varRecursive
