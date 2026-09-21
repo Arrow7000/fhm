@@ -117,6 +117,9 @@ inductive ScopedDerives (types slots : Nat → BoundsTy) : List Nat → Bindings
   | app {env f arg domain actual result} :
       ScopedDerives types slots ids rows Δ env f (.arrow domain result) → ScopedDerives types slots ids rows Δ env arg actual →
       SemanticSub Δ actual domain → ScopedDerives types slots ids rows Δ env (.app f arg) result
+  | subsumption {env e actual demand} :
+      ScopedDerives types slots ids rows Δ env e actual → SemanticSub Δ actual demand →
+      ScopedDerives types slots ids rows Δ env e demand
   | lambda {env ann body param result} :
       ScopedHMAnnotation.ParamOK types slots ids rows Δ ann param →
       ScopedDerives types slots ids rows Δ (.mono param :: env) body result →
@@ -207,6 +210,10 @@ theorem ScopedDerives.primLitBounds {types slots ids rows Δ env e β}
     ∀ p, e = .primLit p → β = boundInfoOfPrimLit p := by
   induction h with
   | literal => intro p source; cases source; rfl
+  | subsumption _ sub ih =>
+      intro p source
+      rw [ih p source] at sub
+      cases p <;> cases sub <;> rfl
   | primBinOp | nil | boolCtor | ctor | cons | consPartial | pair | pairPartial |
       varMono | varRecursive | varExported | app | lambda | letMono | letRecMono |
       letRecMonoGroup | matchList | matchBool | matchPair | matchNominal | matchOpaque =>
@@ -244,6 +251,7 @@ theorem ScopedDerives.varsBelow {types slots ids rows Δ env e β}
   | varRecursive lookup _ => exact variable_scoped lookup
   | varExported lookup _ => exact variable_scoped lookup
   | app _ _ _ ihf iha => simp [Expr.varsBelow, ihf, iha]
+  | subsumption _ _ ih => exact ih
   | lambda _ _ ih => simpa only [Expr.varsBelow, List.length_cons] using ih
   | letMono _ _ _ ihr ihb =>
       simp only [Expr.varsBelow, Bool.and_eq_true]
@@ -375,6 +383,9 @@ theorem ScopedDerives.sourceFree {types types' slots ids rows Δ env e β}
       intro agree
       exact .app (ihf (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
         (iha (fun i hi => agree i (by simp [Expr.tyFreeVars, hi]))) sub
+  | subsumption _ sub ih =>
+      intro agree
+      exact .subsumption (ih agree) sub
   | lambda annotation _ ih =>
       intro agree
       exact .lambda
@@ -555,6 +566,7 @@ theorem ScopedDerives.sourceSlots {types slots slots' ids rows Δ env e β n}
       exact .pairPartial (ih bounded.2)
   | app _ _ sub ihf iha =>
       exact .app (ihf bounded.1) (iha bounded.2) sub
+  | subsumption _ sub ih => exact .subsumption (ih bounded) sub
   | lambda annotation _ ih =>
       exact .lambda (ScopedHMAnnotation.ParamOK.congrSlots annotation bounded.1 agree)
         (ih bounded.2)
@@ -1047,6 +1059,10 @@ inductive RuntimeReady {types slots ids rows} :
       {ha : ScopedDerives types slots ids rows Δ env arg actual}
       (sub : SemanticSub Δ actual domain) : RuntimeReady hfn → RuntimeReady ha →
       RuntimeReady (.app hfn ha sub)
+  | subsumption {actual demand : BoundsTy}
+      {h : ScopedDerives types slots ids rows Δ env e actual}
+      (sub : SemanticSub Δ actual demand) :
+      RuntimeReady h → Runtime.Supported demand → RuntimeReady (.subsumption h sub)
   | lambda {param : BoundsTy} (annOK : ScopedHMAnnotation.ParamOK types slots ids rows Δ ann param)
       {hbody : ScopedDerives types slots ids rows Δ (.mono param :: env) body result} :
       Runtime.Supported param → RuntimeReady hbody → RuntimeReady (.lambda annOK hbody)
@@ -1124,6 +1140,7 @@ theorem RuntimeReady.supported {types slots ids rows Δ env e β}
   | pairPartial _ right left => exact .arrow right (.pair left right)
   | varMono _ support | varRecursive _ _ support | varExported _ _ support _ => exact support
   | app _ _ _ fn _ => cases fn with | arrow _ result => exact result
+  | subsumption _ _ demand => exact demand
   | lambda _ param _ result => exact .arrow param result
   | letMono _ _ _ _ body => exact body
   | letRecMono _ _ _ _ _ _ body => exact body
@@ -1188,6 +1205,10 @@ theorem RuntimeReady.termAt {types slots ids rows Δ env expr β}
           exact Runtime.TermAt.app hb hf (ihf budget premises e)
             ((iha budget premises e).of_values
               (Runtime.subtype sub argReady.supported domainSupport bound free σ premises))
+  | subsumption sub sourceReady demandSupport ih =>
+      intro budget premises e
+      exact (ih budget premises e).of_values
+        (Runtime.subtype sub sourceReady.supported demandSupport bound free σ premises)
   | lambda annOK _ bodyReady ih =>
       intro budget premises e
       apply Runtime.TermAt.value (.lambda _ _)
@@ -1521,6 +1542,7 @@ theorem ScopedDerives.assuming {types slots ids rows Δ Δ' env e β}
           used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
       exact .varExported hv next
   | app _ _ hs ihh iht => exact .app (ihh hp) (iht hp) (hs.assuming hp)
+  | subsumption _ sub ih => exact .subsumption (ih hp) (sub.assuming hp)
   | lambda hparam _ ih => exact .lambda (param_assuming hparam hp) (ih hp)
   | letMono hbind _ _ ihr ihb => exact .letMono (binding_assuming hbind hp) (ihr hp) (ihb hp)
   | letRecMono hbind _ sub _ ihr ihb =>
@@ -1580,6 +1602,8 @@ theorem ScopedDerives.RuntimeReady.assuming {types slots ids rows Δ Δ' env e �
           used.types, used.arity, used.typesLC, used.typesScoped, used.shape⟩
       exact .varExported lookup next support arguments
   | app sub _ _ ihf iha => exact .app (sub.assuming hp) (ihf hp) (iha hp)
+  | subsumption sub sourceReady demandSupport ih =>
+      exact .subsumption (sub.assuming hp) (ih hp) demandSupport
   | lambda annotation support _ ih =>
       exact .lambda (param_assuming annotation hp) support (ih hp)
   | letMono annotation _ _ ihr ihb =>
@@ -1648,6 +1672,9 @@ theorem ScopedDerives.RuntimeReady.sourceFree {types types' slots : Nat → Boun
       intro agree
       exact .app sub (ihf (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
         (iha (fun i hi => agree i (by simp [Expr.tyFreeVars, hi])))
+  | subsumption sub sourceReady demandSupport ih =>
+      intro agree
+      exact .subsumption sub (ih agree) demandSupport
   | lambda annotation supported _ ih =>
       intro agree
       exact .lambda
@@ -1761,6 +1788,9 @@ theorem ScopedDerives.RuntimeReady.sourceSlots {types slots slots' : Nat → Bou
   | app sub _ _ ihf iha =>
       intro bounded
       exact .app sub (ihf bounded.1) (iha bounded.2)
+  | subsumption sub sourceReady demandSupport ih =>
+      intro bounded
+      exact .subsumption sub (ih bounded) demandSupport
   | lambda annotation supported _ ih =>
       intro bounded
       exact .lambda (ScopedHMAnnotation.ParamOK.congrSlots annotation bounded.1 agree)
@@ -1986,6 +2016,8 @@ theorem transportScopedTypes (f : Nat → BoundsTy) (hf : ∀ i, (Synth.BoundsTy
         (mapExportedUse u f hf target scope captured)
   | app _ _ hs ihf iha =>
       exact .app (ihf fresh) (iha fresh) (SchemeSpecialization.subtype f hs)
+  | subsumption _ sub ih =>
+      exact .subsumption (ih fresh) (SchemeSpecialization.subtype f sub)
   | lambda hp _ ih =>
       exact .lambda (param_types hp f) (by
         simpa [mapBinding] using ih (captures_cons fresh))
@@ -2203,6 +2235,8 @@ theorem transportScopedCounts (outer : Bindings) (hf : Finite outer) (target : L
         (mapExportedUseCounts u outer hf target scope captured)
   | app _ _ hs ihf iha =>
       exact .app (ihf fresh) (iha fresh) (CountSubstitution.subtype outer hf hs)
+  | subsumption _ sub ih =>
+      exact .subsumption (ih fresh) (CountSubstitution.subtype outer hf sub)
   | lambda hp _ ih =>
       exact .lambda (param_counts hp outer hf) (by
         simpa [mapCountBinding] using ih (count_captures_cons fresh))
@@ -2366,6 +2400,9 @@ theorem ScopedDerives.RuntimeReady.counts (outer : Bindings) (hf : Finite outer)
       simpa only [mapExportedUseCounts_bounds used outer hf target scope captured] using moved
   | app sub _ _ ihf iha =>
       exact .app (CountSubstitution.subtype outer hf sub) (ihf fresh) (iha fresh)
+  | subsumption sub sourceReady demandSupport ih =>
+      exact .subsumption (CountSubstitution.subtype outer hf sub) (ih fresh)
+        (demandSupport.counts outer)
   | lambda annotation support _ ih =>
       exact .lambda (param_counts annotation outer hf) (support.counts outer)
         (by simpa [mapCountBinding] using ih (count_captures_cons fresh))
@@ -2511,6 +2548,9 @@ theorem ScopedDerives.RuntimeReady.types (f : Nat → BoundsTy)
       simpa only [mapExportedUse_bounds used f hf target scope captured] using moved
   | app sub _ _ ihf iha =>
       exact .app (SchemeSpecialization.subtype f sub) (ihf fresh) (iha fresh)
+  | subsumption sub sourceReady demandSupport ih =>
+      exact .subsumption (SchemeSpecialization.subtype f sub) (ih fresh)
+        (demandSupport.types f arguments)
   | lambda annotation support _ ih =>
       exact .lambda (param_types annotation f) (support.types f arguments)
         (by simpa [mapBinding] using ih (captures_cons fresh))

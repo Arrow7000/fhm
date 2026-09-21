@@ -1992,6 +1992,7 @@ theorem rhsToBody {types slots ids rows Δ env e β}
       exact .varExported
         (by simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding]) used
   | app _ _ sub ihf iha => exact .app ihf iha sub
+  | subsumption _ sub ih => exact .subsumption ih sub
   | lambda annotation _ ih =>
       simpa only [ordinaryBodyEnv, List.map_cons, ordinaryBinding] using
         ScopedBodyDerives.lambda annotation ih
@@ -2098,6 +2099,7 @@ theorem rhsToBodyAppend {types slots ids rows Δ env e β}
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
   | app _ _ sub ihf iha => exact .app ihf iha sub
+  | subsumption _ sub ih => exact .subsumption ih sub
   | lambda annotation _ ih =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.lambda annotation ih
@@ -2179,6 +2181,7 @@ theorem ordinaryRhsToBodyAppend {types slots ids rows Δ env e β}
       exact .varExported (body_getElem?_append_left (by
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
   | app _ _ sub ihf iha => exact .app (ihf ordinary) (iha ordinary) sub
+  | subsumption _ sub ih => exact .subsumption (ih ordinary) sub
   | lambda annotation _ ih =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         ScopedBodyDerives.lambda annotation (ih ordinary.consMono)
@@ -3585,6 +3588,8 @@ theorem rhsReadyToBodyAppend {types slots ids rows Δ env e β}
         simpa [ordinaryBodyEnv, List.getElem?_map, lookup, ordinaryBinding])) used
         supported usedArguments
   | app sub _ _ ihf iha => exact .app sub (ihf arguments) (iha arguments)
+  | subsumption sub sourceReady demandSupport ih =>
+      exact .subsumption sub (ih arguments) demandSupport
   | lambda annotation supported _ ih =>
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
         BodyDerives.RuntimeReady.lambda annotation supported (ih arguments.consMono)
@@ -3696,6 +3701,9 @@ theorem ordinaryRhsReadyToBodyAppend {types slots ids rows Δ env e β}
   | app sub _ _ ihf iha =>
       intro ordinary tail
       exact .app sub (ihf ordinary tail) (iha ordinary tail)
+  | subsumption sub sourceReady demandSupport ih =>
+      intro ordinary tail
+      exact .subsumption sub (ih ordinary tail) demandSupport
   | lambda annotation supported _ ih =>
       intro ordinary tail
       simpa only [ordinaryBodyEnv, List.map_cons, List.cons_append, ordinaryBinding] using
