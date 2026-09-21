@@ -3057,6 +3057,279 @@ theorem TypingSpecializes.castExpr
   cases same
   exact stable
 
+def TypingSpecializes.app
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding}
+    {fn arg : Expr} {domain actual result : BoundsTy}
+    {functionTyping : ScopedBodyDerives types slots ids rows Δ env fn
+      (.arrow domain result)}
+    {argumentTyping : ScopedBodyDerives types slots ids rows Δ env arg actual}
+    (functionStable : TypingSpecializes functionTyping)
+    (argumentStable : TypingSpecializes argumentTyping)
+    (sub : SemanticSub Δ actual domain) :
+    TypingSpecializes (ScopedBodyDerives.app functionTyping argumentTyping sub) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let movedFunction := functionStable outer f outerFinite countTarget countScope
+    typeLC typeTarget typeScope countFresh typeFresh
+  let movedArgument := argumentStable outer f outerFinite countTarget countScope
+    typeLC typeTarget typeScope countFresh typeFresh
+  let movedSub := SchemeSpecialization.subtype f
+    (CountSubstitution.subtype outer outerFinite sub)
+  exact ⟨ScopedBodyDerives.app movedFunction.typing movedArgument.typing movedSub⟩
+
+def TypingSpecializes.subsumption
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding} {e : Expr}
+    {actual demand : BoundsTy}
+    {typing : ScopedBodyDerives types slots ids rows Δ env e actual}
+    (stable : TypingSpecializes typing) (sub : SemanticSub Δ actual demand) :
+    TypingSpecializes (ScopedBodyDerives.subsumption typing sub) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let moved := stable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope countFresh typeFresh
+  let movedSub := SchemeSpecialization.subtype f
+    (CountSubstitution.subtype outer outerFinite sub)
+  exact ⟨ScopedBodyDerives.subsumption moved.typing movedSub⟩
+
+private theorem bodyCountFreshMono {outer env β}
+    (fresh : CountCapturesFixed outer env) :
+    CountCapturesFixed outer (.mono β :: env) := by
+  intro binding member
+  rcases List.mem_cons.mp member with rfl | tail
+  · trivial
+  · exact fresh binding tail
+
+private theorem bodyTypeFreshMono {f env β}
+    (fresh : CapturesFixed f env) : CapturesFixed f (.mono β :: env) := by
+  intro binding member
+  rcases List.mem_cons.mp member with rfl | tail
+  · trivial
+  · exact fresh binding tail
+
+private def specializeParamOK
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {ann : Option Ty} {β : BoundsTy}
+    (annotation : ScopedHMAnnotation.ParamOK types slots ids rows Δ ann β)
+    (outer : Bindings) (outerFinite : Finite outer)
+    (f : Nat → BoundsTy) :
+    ScopedHMAnnotation.ParamOK
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer)) ann
+      (mapFree f (bounds outer β)) := by
+  cases ann with
+  | none => trivial
+  | some _ => exact (annotation.counts outer outerFinite).types f
+
+private def specializeBindingOK
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {ann : Option PolyTy} {β : BoundsTy}
+    (annotation : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann β)
+    (outer : Bindings) (outerFinite : Finite outer)
+    (f : Nat → BoundsTy) :
+    ScopedHMAnnotation.BindingOK
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer)) ann
+      (mapFree f (bounds outer β)) := by
+  cases ann with
+  | none => trivial
+  | some _ => exact ⟨annotation.1, (annotation.2.counts outer outerFinite).types f⟩
+
+def TypingSpecializes.lambda
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding}
+    {ann : Option Ty} {body : Expr} {param result : BoundsTy}
+    (annotation : ScopedHMAnnotation.ParamOK types slots ids rows Δ ann param)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.mono param :: env) body result}
+    (bodyStable : TypingSpecializes bodyTyping) :
+    TypingSpecializes (ScopedBodyDerives.lambda annotation bodyTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let movedBody := bodyStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope (bodyCountFreshMono countFresh)
+      (by
+        simpa only [List.map_cons, mapCountBinding] using
+          bodyTypeFreshMono typeFresh)
+  let movedAnnotation := specializeParamOK annotation outer outerFinite f
+  have bodyTyping' : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (.mono (mapFree f (bounds outer param)) ::
+        ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      body (mapFree f (bounds outer result)) := by
+    simpa only [List.map_cons, mapCountBinding, mapBinding] using movedBody.typing
+  exact ⟨ScopedBodyDerives.lambda movedAnnotation bodyTyping'⟩
+
+def TypingSpecializes.letMono
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding}
+    {ann : Option PolyTy} {rhs body : Expr} {actual result : BoundsTy}
+    (annotation : ScopedHMAnnotation.BindingOK types slots ids rows Δ ann actual)
+    {rhsTyping : ScopedBodyDerives types slots ids rows Δ env rhs actual}
+    {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.mono actual :: env) body result}
+    (rhsStable : TypingSpecializes rhsTyping)
+    (bodyStable : TypingSpecializes bodyTyping) :
+    TypingSpecializes (ScopedBodyDerives.letMono annotation rhsTyping bodyTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let movedRhs := rhsStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope countFresh typeFresh
+  let movedBody := bodyStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope (bodyCountFreshMono countFresh)
+      (by
+        simpa only [List.map_cons, mapCountBinding] using
+          bodyTypeFreshMono typeFresh)
+  let movedAnnotation := specializeBindingOK annotation outer outerFinite f
+  have bodyTyping' : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (.mono (mapFree f (bounds outer actual)) ::
+        ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      body (mapFree f (bounds outer result)) := by
+    simpa only [List.map_cons, mapCountBinding, mapBinding] using movedBody.typing
+  exact ⟨ScopedBodyDerives.letMono movedAnnotation movedRhs.typing bodyTyping'⟩
+
+/-- Any common recursive-HM derivation can discharge the static certificate for
+    an extensionally equal generalized-body proof.  This is the leaf/ordinary
+    escape hatch; it does not manufacture common derivations for generalized
+    introduction rules. -/
+def TypingSpecializes.ofOrdinary
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List Binding} {e : Expr} {β : BoundsTy}
+    (source : ScopedDerives types slots ids rows Δ env e β)
+    {typing : ScopedBodyDerives types slots ids rows Δ env e β} :
+    TypingSpecializes typing :=
+  TypingSpecializes.congr (TypingSpecializes.ordinary source.specializes)
+
+def TypingSpecializes.cons
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding}
+    {head tail : Expr} {headTy elem : BoundsTy} {lo hi : Count}
+    {headTyping : ScopedBodyDerives types slots ids rows Δ env head headTy}
+    {tailTyping : ScopedBodyDerives types slots ids rows Δ env tail (.list lo hi elem)}
+    (headStable : TypingSpecializes headTyping)
+    (tailStable : TypingSpecializes tailTyping)
+    (sub : SemanticSub Δ headTy elem) :
+    TypingSpecializes (ScopedBodyDerives.cons headTyping tailTyping sub) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let movedHead := headStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope countFresh typeFresh
+  let movedTail := tailStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope countFresh typeFresh
+  let movedSub := SchemeSpecialization.subtype f
+    (CountSubstitution.subtype outer outerFinite sub)
+  exact ⟨by
+    simpa only [CountSubstitution.bounds, SchemeSpecialization.mapFree] using
+      ScopedBodyDerives.cons movedHead.typing movedTail.typing movedSub⟩
+
+def TypingSpecializes.consPartial
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding}
+    {head : Expr} {headTy : BoundsTy}
+    {headTyping : ScopedBodyDerives types slots ids rows Δ env head headTy}
+    (headStable : TypingSpecializes headTyping) :
+    TypingSpecializes (ScopedBodyDerives.consPartial headTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let movedHead := headStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope countFresh typeFresh
+  exact ⟨by
+    simpa only [CountSubstitution.bounds, SchemeSpecialization.mapFree] using
+      ScopedBodyDerives.consPartial movedHead.typing⟩
+
+def TypingSpecializes.pair
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding}
+    {left right : Expr} {leftTy rightTy : BoundsTy}
+    {leftTyping : ScopedBodyDerives types slots ids rows Δ env left leftTy}
+    {rightTyping : ScopedBodyDerives types slots ids rows Δ env right rightTy}
+    (leftStable : TypingSpecializes leftTyping)
+    (rightStable : TypingSpecializes rightTyping) :
+    TypingSpecializes (ScopedBodyDerives.pair leftTyping rightTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let movedLeft := leftStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope countFresh typeFresh
+  let movedRight := rightStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope countFresh typeFresh
+  exact ⟨by
+    simpa only [CountSubstitution.bounds, CountSubstitution.boundsList,
+      SchemeSpecialization.mapFree, SchemeSpecialization.mapFreeList] using
+      ScopedBodyDerives.pair movedLeft.typing movedRight.typing⟩
+
+def TypingSpecializes.pairPartial
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Δ : List Constraint} {env : List BodyBinding}
+    {left : Expr} {leftTy rightTy : BoundsTy}
+    {leftTyping : ScopedBodyDerives types slots ids rows Δ env left leftTy}
+    (leftStable : TypingSpecializes leftTyping) :
+    TypingSpecializes (ScopedBodyDerives.pairPartial (rightTy := rightTy) leftTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let movedLeft := leftStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope countFresh typeFresh
+  exact ⟨by
+    simpa only [CountSubstitution.bounds, CountSubstitution.boundsList,
+      SchemeSpecialization.mapFree, SchemeSpecialization.mapFreeList] using
+      ScopedBodyDerives.pairPartial
+        (rightTy := mapFree f (bounds outer rightTy)) movedLeft.typing⟩
+
+def TypingSpecializes.letPinned
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {caller : List Nat} {Δ : List Constraint} {env : List BodyBinding}
+    {annotation : PolyTy} {rhs body : Expr} {actual result : BoundsTy}
+    (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Δ
+      annotation.body actual)
+    (mono : annotation.paramCount = 0)
+    {rhsTyping : ScopedBodyDerives types slots ids rows Δ env rhs actual}
+    {bodyTyping : ScopedBodyDerives types slots ids rows Δ
+      (.mono pinned.demand :: env) body result}
+    (rhsStable : TypingSpecializes rhsTyping)
+    (bodyStable : TypingSpecializes bodyTyping) :
+    TypingSpecializes
+      (ScopedBodyDerives.letPinned pinned mono rhsTyping bodyTyping) := by
+  intro outer f outerFinite countTarget countScope typeLC typeTarget typeScope
+    countFresh typeFresh
+  let movedRhs := rhsStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope countFresh typeFresh
+  let movedBody := bodyStable outer f outerFinite countTarget countScope typeLC
+    typeTarget typeScope (bodyCountFreshMono countFresh)
+      (by
+        simpa only [List.map_cons, mapCountBinding] using
+          bodyTypeFreshMono typeFresh)
+  let movedPinned := (pinned.counts outer outerFinite countTarget countScope).types
+    f typeTarget typeScope
+  have bodyTyping' : ScopedBodyDerives
+      (fun i => mapFree f (bounds outer (types i)))
+      (fun i => mapFree f (bounds outer (slots i))) ids
+      (CountAlgebra.compose outer rows) (Δ.map (constraint outer))
+      (.mono movedPinned.demand ::
+        ((env.map (mapCountBinding outer)).map (mapBinding f typeLC)))
+      body (mapFree f (bounds outer result)) := by
+    simpa only [movedPinned, ScopedHMAnnotation.Pinned.types,
+      ScopedHMAnnotation.Pinned.counts, List.map_cons, mapCountBinding,
+      mapBinding] using movedBody.typing
+  exact ⟨ScopedBodyDerives.letPinned movedPinned mono movedRhs.typing bodyTyping'⟩
+
+#print axioms TypingSpecializes.app
+#print axioms TypingSpecializes.subsumption
+#print axioms TypingSpecializes.lambda
+#print axioms TypingSpecializes.letMono
+#print axioms TypingSpecializes.ofOrdinary
+#print axioms TypingSpecializes.cons
+#print axioms TypingSpecializes.consPartial
+#print axioms TypingSpecializes.pair
+#print axioms TypingSpecializes.pairPartial
+#print axioms TypingSpecializes.letPinned
+
 /-- The common recursive-RHS core retains its existing specialization theorem
     when embedded into the generalized-body judgment. -/
 def Specializes.ordinary
