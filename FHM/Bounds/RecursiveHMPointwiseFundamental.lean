@@ -263,22 +263,6 @@ private def letRecClosed_typing_view
       (.letRec group.annotations group.rhss group.body) result :=
   (RawBodyView.env_ordinary raw).symm ▸ ScopedBodyDerives.letRecClosed group bodyTyping
 
-private def letRecClosed_ready_view
-    {raw : List Binding} {types slots : Nat → BoundsTy}
-    {ids : List Nat} {rows : Bindings} {Delta : List Constraint} {result : BoundsTy}
-    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
-    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
-    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
-    (groupReady : group.ClosedRuntimeReady rows types)
-    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
-      (group.closedExports rows types ++ ordinaryBodyEnv raw) group.body result}
-    (bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping) :
-    RecursiveHMUniform.BodyDerives.RuntimeReady
-      (letRecClosed_typing_view group (bodyTyping := bodyTyping)) := by
-  exact RecursiveHMUniform.BodyDerives.RuntimeReady.castEnv
-    (RawBodyView.env_ordinary raw).symm
-    (RecursiveHMUniform.BodyDerives.RuntimeReady.letRecClosed group groupReady bodyReady)
-
 private def letRecFixedClosed_typing_view
     {raw : List Binding} {types slots : Nat → BoundsTy}
     {ids : List Nat} {rows : Bindings} {Delta : List Constraint} {result : BoundsTy}
@@ -290,22 +274,6 @@ private def letRecFixedClosed_typing_view
     ScopedBodyDerives types slots ids rows Delta (RawBodyView.fixed.env raw)
       (.letRec group.annotations group.rhss group.body) result :=
   (RawBodyView.env_fixed raw).symm ▸ ScopedBodyDerives.letRecFixedClosed group bodyTyping
-
-private def letRecFixedClosed_ready_view
-    {raw : List Binding} {types slots : Nat → BoundsTy}
-    {ids : List Nat} {rows : Bindings} {Delta : List Constraint} {result : BoundsTy}
-    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
-    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
-    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
-    (groupReady : group.ClosedRuntimeReady rows types)
-    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
-      (group.closedExports rows types ++ fixedBodyEnv raw) group.body result}
-    (bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping) :
-    RecursiveHMUniform.BodyDerives.RuntimeReady
-      (letRecFixedClosed_typing_view group (bodyTyping := bodyTyping)) := by
-  exact RecursiveHMUniform.BodyDerives.RuntimeReady.castEnv
-    (RawBodyView.env_fixed raw).symm
-    (RecursiveHMUniform.BodyDerives.RuntimeReady.letRecFixedClosed group groupReady bodyReady)
 
 private theorem scoped_termAt
     {view : RawBodyView} {raw : List Binding}
@@ -329,6 +297,24 @@ private theorem scoped_termAt
     (RawBodyView.Coherent.closed_env_eq view world.outer world.types raw) current
   have safe := closedReady.termAt bound free sigma hb hf budget premises closedCurrent
   simpa only [closedCurrent, EnvAt.castEnv_terms] using safe
+
+def ordinary
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {expr : Expr} {beta : BoundsTy}
+    {typing : ScopedDerives types slots ids rows Delta (view.env raw) expr beta}
+    {ready : RecursiveHMJudgement.ScopedDerives.RuntimeReady typing}
+    {world : EnvSpecialization raw}
+    (coherent : RawBodyView.Coherent view raw) :
+    Pointwise (RecursiveHMUniform.BodyDerives.RuntimeReady.ordinary ready) world where
+  coherent := coherent
+  run bound free sigma hb hf budget premises current := by
+    let rawTyping : ScopedDerives types slots ids rows Delta raw expr beta :=
+      coherent.env_eq ▸ typing
+    have rawReady : RecursiveHMJudgement.ScopedDerives.RuntimeReady rawTyping :=
+      RecursiveHMJudgement.ScopedDerives.RuntimeReady.castEnv coherent.env_eq ready
+    exact scoped_termAt (view := view) rawReady world bound free sigma hb hf budget
+      premises current
 
 private def ordinaryAppend_typing_view
     {sourceEnv tailRaw : List Binding}
@@ -1820,10 +1806,12 @@ def letRecClosed
     {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
     {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
     (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
-    (groupReady : group.ClosedRuntimeReady rows types)
     {bodyTyping : ScopedBodyDerives types slots ids rows Delta
       (group.closedExports rows types ++ ordinaryBodyEnv raw) group.body result}
     {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {sourceReady : RecursiveHMUniform.BodyDerives.RuntimeReady
+      (letRecClosed_typing_view group (bodyTyping := bodyTyping))}
+    (groupReady : group.ClosedPointwiseReady rows types)
     {world : EnvSpecialization raw}
     (outerCoherent : RawBodyView.Coherent .ordinary raw)
     (bodySafe : Pointwise (view := .ordinary)
@@ -1835,7 +1823,7 @@ def letRecClosed
     Pointwise (view := .ordinary) (raw := raw) (types := types) (slots := slots)
       (ids := ids) (rows := rows) (Delta := Delta)
       (expr := .letRec group.annotations group.rhss group.body) (beta := result)
-      (letRecClosed_ready_view group groupReady bodyReady) world where
+      sourceReady world where
   coherent := outerCoherent
   run bound free sigma hb hf observation pathPremises current := by
     cases observation with
@@ -1910,10 +1898,12 @@ def letRecFixedClosed
     {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
     {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
     (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
-    (groupReady : group.ClosedRuntimeReady rows types)
     {bodyTyping : ScopedBodyDerives types slots ids rows Delta
       (group.closedExports rows types ++ fixedBodyEnv raw) group.body result}
     {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {sourceReady : RecursiveHMUniform.BodyDerives.RuntimeReady
+      (letRecFixedClosed_typing_view group (bodyTyping := bodyTyping))}
+    (groupReady : group.ClosedPointwiseReady rows types)
     {world : EnvSpecialization raw}
     (bodySafe : Pointwise (view := .fixed)
       (raw := group.closedExports rows types ++ raw)
@@ -1924,7 +1914,7 @@ def letRecFixedClosed
     Pointwise (view := .fixed) (raw := raw) (types := types) (slots := slots)
       (ids := ids) (rows := rows) (Delta := Delta)
       (expr := .letRec group.annotations group.rhss group.body) (beta := result)
-      (letRecFixedClosed_ready_view group groupReady bodyReady) world where
+      sourceReady world where
   coherent := trivial
   run bound free sigma hb hf observation pathPremises current := by
     cases observation with
@@ -2033,6 +2023,36 @@ def subsumption
           (CountSubstitution.subtype world.outer world.outerFinite sub))
         (supported_map world ready.supported) (supported_map world demandSupported)
         bound free sigma premises)
+
+/-! ## Exact readiness-constructor coverage
+
+The definitions above cover the closure-normal checker fragment as follows.
+
+* `ordinary`, literals and primitive operators, supported list/bool/pair
+  constructors, coherent variables, application, subsumption, lambda, and
+  monomorphic/pinned lets are direct structural cases.
+* `ordinaryAppend` is covered only with an explicit raw-tail decomposition;
+  this is the evidence that permits both the static world and runtime terms to
+  be restricted to the ordinary prefix.
+* `letRecMono`, `letRecMonoGroup`, `letRecInferredMono`, and
+  `letRecPinnedMono` use the pointwise fixed-point construction.
+* `match_` covers exactly the contexts admitted by `RuntimeCapable`: List,
+  Bool, and Pair. Nominal and wildcard-only runtime relations remain absent.
+* `letExportedClosed` and `letRecExportedClosed` require an explicit
+  `ClosedLocalTarget.Ready` for the current world. Source readiness alone
+  cannot reconstruct arbitrary target uses.
+* `letRecClosed` and `letRecFixedClosed` require only
+  `GeneralizedGroup.ClosedPointwiseReady` semantically, plus the already-built
+  source `RuntimeReady` proof used as the index of `Pointwise`.
+
+The legacy unclosed generalized-local cases (`letExported`,
+`letRecExported`) and unclosed generalized-group cases (`letRec`,
+`letRecFixed`) are deliberately not adapters for the closure-normal checker.
+Consequently there is intentionally no blanket
+`BodyDerives.RuntimeReady → Pointwise` theorem: checker-facing induction must
+carry the raw-tail witness, target-indexed closed-local readiness, and narrow
+closed-group readiness at the corresponding constructors.
+-/
 
 end Pointwise
 end PointwiseFundamental
