@@ -390,6 +390,137 @@ def GeneralizedGroup.closedExportEnvironmentBasedAt
     (tail := closeRecursiveEnv base.outer base.types outerEnv)
     (by simp only [closeRecursiveEnv, List.length_map]) lexical internal
 
+/-- Package the two closed-world callbacks needed by the pointwise body
+    theorem for an arbitrary lexical tail.  An observation world is composed
+    with the static rows and types at which the group was introduced, then the
+    existing base-indexed export realizer ties the recursive terms. -/
+def GeneralizedGroup.closedPointwiseReady
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (rows : Bindings) (rowsFinite : Finite rows)
+    (target : List Nat)
+    (rowsScope : ∀ row ∈ rows, Scope.CountScoped target row.2)
+    (types : Nat → BoundsTy)
+    (typesLC : ∀ i, (Synth.BoundsTy.toTy (types i)).IsLC)
+    (typesScope : ∀ i, BoundsScoped target (types i))
+    (tailFresh : CloseRecursiveFresh rows types outerEnv)
+    (tailStable : closeRecursiveEnv rows types outerEnv = outerEnv)
+    (sourceReady : ∀ offset (inside : offset < group.exports.length),
+      ScopedDerives.RuntimeReady
+        (group.selected offset inside).rhs.certificate.implementation.typing)
+    (sourceDemandSupported : ∀ offset (inside : offset < group.exports.length),
+      Runtime.Supported
+        (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (typesSupported : ∀ i, Runtime.Supported (types i)) :
+    group.ClosedPointwiseReady rows types where
+  ordinaryPointwise world bound free sigma hb hf budget enclosing := by
+    let composedRows := CountAlgebra.compose world.outer rows
+    let composedTypes := fun i => mapFree world.types (bounds world.outer (types i))
+    let composed : EnvSpecialization outerEnv :=
+      { outer := composedRows
+        types := composedTypes
+        outerFinite := CountAlgebra.finite_compose world.outerFinite rowsFinite
+        countTarget := target ++ world.countTarget
+        outerScope := composedRowsScopedAt rowsScope world.outerScope
+        typesLC := composedTypesLCAt typesLC world.typesLC
+        typeTarget := (target ++ world.countTarget) ++ world.typeTarget
+        typesScope := composedTypesScopedAt typesScope world.outerScope world.typesScope
+        fresh := by
+          intro binding member
+          cases binding with
+          | mono beta => trivial
+          | recursive contract => trivial
+          | recursiveClosure contract => trivial
+          | closure scheme countCaptures typeCaptures => trivial
+          | exported scheme =>
+              have staticFresh := tailFresh (.exported scheme) member
+              have worldFresh := world.fresh (.exported scheme) member
+              constructor
+              · intro i captured
+                rw [CountAlgebra.lookup_compose, staticFresh.1 i captured,
+                  worldFresh.1 i captured]
+              · intro i free
+                simp only [composedTypes, staticFresh.2 i free,
+                  CountSubstitution.bounds, mapFree]
+                exact worldFresh.2 i free
+        typesSupported := by
+          intro i
+          exact Runtime.Supported.types world.types world.typesSupported
+            (Runtime.Supported.counts world.outer (typesSupported i)) }
+    have composedTailEq :
+        closeRecursiveEnv composed.outer composed.types outerEnv =
+          closeRecursiveEnv world.outer world.types outerEnv := by
+      change closeRecursiveEnv composedRows composedTypes outerEnv = _
+      rw [← closeRecursiveEnv_compose, tailStable]
+    let lexicalWorld := EnvAt.castEnv
+      (ordinaryBodyEnv_closeRecursiveEnv world.outer world.types outerEnv) enclosing
+    let lexical := EnvAt.castEnv composedTailEq.symm lexicalWorld
+    have realized := GeneralizedGroup.closedExportEnvironmentBasedAt group sourceReady
+      sourceDemandSupported bound free sigma hb hf composed budget lexical
+    have resultEnvEq :
+        group.closedExports composed.outer composed.types ++
+            closeRecursiveEnv composed.outer composed.types outerEnv =
+          group.closedExports (CountAlgebra.compose world.outer rows)
+              (fun i => mapFree world.types (bounds world.outer (types i))) ++
+            ordinaryBodyEnv (closeRecursiveEnv world.outer world.types outerEnv) := by
+      simp only [composed, composedRows, composedTypes]
+      rw [composedTailEq, ordinaryBodyEnv_closeRecursiveEnv]
+    refine ⟨EnvAt.castEnv resultEnvEq realized.val, ?_⟩
+    rw [EnvAt.castEnv_terms]
+    simpa only [lexical, lexicalWorld, EnvAt.castEnv_terms] using realized.property
+  fixedPointwise world bound free sigma hb hf budget enclosing := by
+    let composedRows := CountAlgebra.compose world.outer rows
+    let composedTypes := fun i => mapFree world.types (bounds world.outer (types i))
+    let composed : EnvSpecialization outerEnv :=
+      { outer := composedRows
+        types := composedTypes
+        outerFinite := CountAlgebra.finite_compose world.outerFinite rowsFinite
+        countTarget := target ++ world.countTarget
+        outerScope := composedRowsScopedAt rowsScope world.outerScope
+        typesLC := composedTypesLCAt typesLC world.typesLC
+        typeTarget := (target ++ world.countTarget) ++ world.typeTarget
+        typesScope := composedTypesScopedAt typesScope world.outerScope world.typesScope
+        fresh := by
+          intro binding member
+          cases binding with
+          | mono beta => trivial
+          | recursive contract => trivial
+          | recursiveClosure contract => trivial
+          | closure scheme countCaptures typeCaptures => trivial
+          | exported scheme =>
+              have staticFresh := tailFresh (.exported scheme) member
+              have worldFresh := world.fresh (.exported scheme) member
+              constructor
+              · intro i captured
+                rw [CountAlgebra.lookup_compose, staticFresh.1 i captured,
+                  worldFresh.1 i captured]
+              · intro i free
+                simp only [composedTypes, staticFresh.2 i free,
+                  CountSubstitution.bounds, mapFree]
+                exact worldFresh.2 i free
+        typesSupported := by
+          intro i
+          exact Runtime.Supported.types world.types world.typesSupported
+            (Runtime.Supported.counts world.outer (typesSupported i)) }
+    have composedTailEq :
+        closeRecursiveEnv composed.outer composed.types outerEnv =
+          closeRecursiveEnv world.outer world.types outerEnv := by
+      change closeRecursiveEnv composedRows composedTypes outerEnv = _
+      rw [← closeRecursiveEnv_compose, tailStable]
+    let lexical := EnvAt.castEnv composedTailEq.symm enclosing
+    have realized := GeneralizedGroup.closedExportEnvironmentBasedAt group sourceReady
+      sourceDemandSupported bound free sigma hb hf composed budget lexical
+    have resultEnvEq :
+        group.closedExports composed.outer composed.types ++
+            closeRecursiveEnv composed.outer composed.types outerEnv =
+          group.closedExports (CountAlgebra.compose world.outer rows)
+              (fun i => mapFree world.types (bounds world.outer (types i))) ++
+            fixedBodyEnv (closeRecursiveEnv world.outer world.types outerEnv) := by
+      simp only [fixedBodyEnv, composed, composedRows, composedTypes, composedTailEq]
+    refine ⟨EnvAt.castEnv resultEnvEq realized.val, ?_⟩
+    rw [EnvAt.castEnv_terms]
+    simpa only [lexical, EnvAt.castEnv_terms] using realized.property
+
 /-- Extend an already base-closed lexical environment by the corresponding
     closed generalized exports.  Later stable worlds are composed with the
     arbitrary base world, so every view retains one canonical Core term
@@ -812,6 +943,7 @@ theorem GeneralizedGroup.extendSpecializableEnvAt_fixed_terms
     ambientCounts ambientTypes bound free sigma hb hf budget lexical).property
 
 #print axioms GeneralizedGroup.closedExportEnvironmentBasedAt
+#print axioms GeneralizedGroup.closedPointwiseReady
 #print axioms GeneralizedGroup.extendSpecializableEnvAtBase
 #print axioms GeneralizedGroup.extendSpecializableEnvAtBase_fixed_terms
 
