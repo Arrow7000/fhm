@@ -27,7 +27,7 @@ open RecursiveHMUniform
     The promotion theorem identifies the former with the protected source
     premises, allowing the same transported implementation proof to run
     before `assuming` discharges them. -/
-theorem GeneralizedGroup.runtimeExitTermAtRaw
+theorem GeneralizedGroup.runtimeExitTermAtRawOfFresh
     {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
     (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
     (offset : Nat) (inside : offset < group.exports.length)
@@ -44,7 +44,10 @@ theorem GeneralizedGroup.runtimeExitTermAtRaw
     (capturesAgree : HMCountSchemeClosure.CapturesAgree
       (group.selected offset inside).rhs.certificate.interface.scheme
       outer ambient used)
-    (normal : ClosureNormal outerEnv)
+    (fresh : CloseRecursiveFresh
+      (group.protectedRows offset inside used outer)
+      (group.protectedTypes offset inside used ambient)
+      group.internal)
     (sourceReady : ScopedDerives.RuntimeReady
       (group.selected offset inside).rhs.certificate.implementation.typing)
     (sourceDemandSupported : Runtime.Supported
@@ -76,8 +79,6 @@ theorem GeneralizedGroup.runtimeExitTermAtRaw
     group.protectedTypes_lc offset inside used ambient ambientLC
   have typesScoped : ∀ i, BoundsScoped target' (protectedTypes i) :=
     group.protectedTypes_scoped offset inside used ambient target ambientScope
-  have fresh : CloseRecursiveFresh protectedRows protectedTypes group.internal :=
-    group.internalCloseRecursiveFresh protectedRows protectedTypes normal
   have typeSupport : ∀ i, Runtime.Supported (protectedTypes i) :=
     group.protectedTypes_supported offset inside used ambient arguments ambientSupported
   let closed := cert.typing.closeRecursive protectedRows protectedTypes
@@ -117,6 +118,56 @@ theorem GeneralizedGroup.runtimeExitTermAtRaw
   simpa only [demandEq] using
     Runtime.subtype mapped closedReady.supported transportedTargetSupported
       bound free σ sourcePremises
+
+/-- Closure-normal compatibility wrapper for the canonical closed-program
+    path.  Base-indexed local semantics use `runtimeExitTermAtRawOfFresh`
+    directly, because their lexical tail may already contain closed exports. -/
+theorem GeneralizedGroup.runtimeExitTermAtRaw
+    {output metadata path captures premises bodyTypes outerEnv calleeΔ found caller}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (offset : Nat) (inside : offset < group.exports.length)
+    (used : HMCountScheme.Use
+      (HMCountSchemeClosure.close
+        (group.selected offset inside).rhs.certificate.interface.scheme)
+      calleeΔ found caller)
+    (outer : Bindings) (outerFinite : Finite outer)
+    (target : List Nat)
+    (outerScope : ∀ row ∈ outer, Scope.CountScoped target row.2)
+    (ambient : Nat → BoundsTy)
+    (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC)
+    (ambientScope : ∀ i, BoundsScoped target (ambient i))
+    (capturesAgree : HMCountSchemeClosure.CapturesAgree
+      (group.selected offset inside).rhs.certificate.interface.scheme
+      outer ambient used)
+    (normal : ClosureNormal outerEnv)
+    (sourceReady : ScopedDerives.RuntimeReady
+      (group.selected offset inside).rhs.certificate.implementation.typing)
+    (sourceDemandSupported : Runtime.Supported
+      (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (arguments : ∀ a ∈ used.types, Runtime.Supported a)
+    (ambientSupported : ∀ i, Runtime.Supported (ambient i))
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat)
+    (rawPremises : ∀ p ∈ used.countInstance.premises, p.Holds σ)
+    (e : EnvAt bound free σ budget
+      (closeRecursiveEnv
+        (group.protectedRows offset inside used outer)
+        (group.protectedTypes offset inside used ambient)
+        group.internal)) :
+    Runtime.TermAt bound free σ budget used.bounds
+      ((group.selected offset inside).member.declaration.node.inner.stripFound.substN
+        0 e.terms) := by
+  apply GeneralizedGroup.runtimeExitTermAtRawOfFresh group offset inside used outer outerFinite target
+    outerScope ambient ambientLC ambientScope capturesAgree
+  · exact group.internalCloseRecursiveFresh _ _ normal
+  · exact sourceReady
+  · exact sourceDemandSupported
+  · exact arguments
+  · exact ambientSupported
+  · exact hb
+  · exact hf
+  · exact rawPremises
 
 /-- The genuinely recursive premise left after closing one generalized exit.
     A closed use determines protected count and HM maps, so the internal

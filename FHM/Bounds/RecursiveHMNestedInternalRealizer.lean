@@ -36,13 +36,13 @@ def GeneralizedGroup.closedInternalEnvironmentBased
     (sourceDemandSupported : ∀ offset (inside : offset < group.exports.length),
       Runtime.Supported
         (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
-    (normal : ClosureNormal outerEnv)
     (bound free : Runtime.TypeEnv) (sigma : Assign)
     (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
     (outer : Bindings) (outerFinite : Finite outer)
     (target : List Nat)
     (outerScope : ∀ row ∈ outer, Scope.CountScoped target row.2)
     (ambient : Nat → BoundsTy)
+    (tailFresh : CloseRecursiveFresh outer ambient outerEnv)
     (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC)
     (ambientScope : ∀ i, BoundsScoped target (ambient i))
     (ambientSupported : ∀ i, Runtime.Supported (ambient i))
@@ -166,8 +166,11 @@ def GeneralizedGroup.closedInternalEnvironmentBased
             have nextAmbientSupported : ∀ i, Runtime.Supported (nextAmbient i) :=
               group.protectedTypes_supported member groupInside closedUse.use ambient
                 usedArguments ambientSupported
-            have fresh : CloseRecursiveFresh outer ambient group.internal :=
-              group.internalCloseRecursiveFresh outer ambient normal
+            have nextTailFresh : CloseRecursiveFresh nextOuter nextAmbient outerEnv :=
+              group.protectedCloseRecursiveFreshTail member groupInside closedUse.use
+                outer ambient tailFresh
+            have nextInternalFresh : CloseRecursiveFresh nextOuter nextAmbient group.internal :=
+              group.internalCloseRecursiveFreshOfTail nextOuter nextAmbient nextTailFresh
             let base : EnvSpecialization outerEnv :=
               { outer := outer
                 types := ambient
@@ -177,7 +180,7 @@ def GeneralizedGroup.closedInternalEnvironmentBased
                 typesLC := ambientLC
                 typeTarget := target
                 typesScope := ambientScope
-                fresh := CloseRecursiveFresh.right fresh
+                fresh := tailFresh
                 typesSupported := ambientSupported }
             have tailEq : closeRecursiveEnv nextOuter nextAmbient outerEnv =
                 closeRecursiveEnv outer ambient outerEnv := by
@@ -185,12 +188,12 @@ def GeneralizedGroup.closedInternalEnvironmentBased
             let previousLexical := EnvAt.castEnv tailEq.symm
               (lexical.down hb hf (by omega : budget ≤ budget + 1))
             let previous := closedInternalEnvironmentBased group sourceReady
-              sourceDemandSupported normal bound free sigma hb hf nextOuter nextFinite nextTarget
-              nextOuterScope nextAmbient nextAmbientLC nextAmbientScope nextAmbientSupported
+              sourceDemandSupported bound free sigma hb hf nextOuter nextFinite nextTarget
+              nextOuterScope nextAmbient nextTailFresh nextAmbientLC nextAmbientScope nextAmbientSupported
               budget previousLexical
-            have safe := GeneralizedGroup.runtimeExitTermAtRaw group member groupInside
+            have safe := GeneralizedGroup.runtimeExitTermAtRawOfFresh group member groupInside
               closedUse.use outer outerFinite target outerScope ambient ambientLC ambientScope
-              closedUse.captures normal (sourceReady member groupInside)
+              closedUse.captures nextInternalFresh (sourceReady member groupInside)
               (sourceDemandSupported member groupInside) usedArguments ambientSupported
               bound free sigma hb hf budget rawPremises previous.val
             rw [previous.property] at safe
@@ -298,6 +301,8 @@ def GeneralizedGroup.closedInternalEnvironmentNested
         (closeOuterRhss group.rhss lexical.fixed.terms) ++ lexical.fixed.terms } := by
   have fresh : CloseRecursiveFresh outer ambient group.internal :=
     group.internalCloseRecursiveFresh outer ambient normal
+  have tailFresh : CloseRecursiveFresh outer ambient outerEnv :=
+    CloseRecursiveFresh.right fresh
   let world : StableEnvSpecialization outerEnv :=
     { outer := outer
       types := ambient
@@ -307,12 +312,12 @@ def GeneralizedGroup.closedInternalEnvironmentNested
       typesLC := ambientLC
       typeTarget := target
       typesScope := ambientScope
-      fresh := CloseRecursiveFresh.right fresh
+      fresh := tailFresh
       typesSupported := ambientSupported
       monoCounts := ambientCounts
       monoTypes := ambientTypes }
-  let realized := closedInternalEnvironmentBased group sourceReady sourceDemandSupported normal
-    bound free sigma hb hf outer outerFinite target outerScope ambient ambientLC ambientScope
+  let realized := closedInternalEnvironmentBased group sourceReady sourceDemandSupported
+    bound free sigma hb hf outer outerFinite target outerScope ambient tailFresh ambientLC ambientScope
     ambientSupported budget (lexical.specialized world)
   refine ⟨realized.val, ?_⟩
   simpa only [lexical.specializedTerms] using realized.property
