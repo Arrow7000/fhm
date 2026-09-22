@@ -1,5 +1,6 @@
 import FHM.Bounds.RecursiveHMPointwiseClosedExport
 import FHM.Bounds.RecursiveHMBodyViewTransport
+import FHM.Bounds.RecursiveHMClosedLocalTargetReady
 
 /-! # Pointwise fundamental theorem for recursively closed body worlds
 
@@ -77,6 +78,18 @@ private theorem closes_source
       (view.env raw).length := by
     simp only [RawBodyView.env, closeRecursiveEnv, List.length_map]
   simpa only [Nat.zero_add, current.arity, sameLength] using source.varsBelow
+
+private theorem coherent_tail_closure
+    {view : RawBodyView} {raw : List Binding} {scheme : HMCountScheme.Scheme}
+    {countCaptures : List Count} {typeCaptures : List BoundsTy}
+    (coherent : RawBodyView.Coherent view
+      (Binding.closure scheme countCaptures typeCaptures :: raw)) :
+    RawBodyView.Coherent view raw := by
+  cases view with
+  | fixed => trivial
+  | ordinary =>
+      intro contract member
+      exact coherent contract (List.mem_cons_of_mem _ member)
 
 private def runtimeBranchSpecialization
     {raw : List Binding} (world : EnvSpecialization raw)
@@ -1285,6 +1298,205 @@ def letRecPinnedMono
         change Runtime.TermAt bound free sigma (budget + 1) _
           (.letRec [some annotation] closedRhss (body.substN 1 previous.terms))
         exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodyAt
+
+def letExportedClosed
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option PolyTy} {rhs body : Expr}
+    {scheme : HMCountScheme.Scheme} {result : BoundsTy}
+    (frame : LocalFrame scheme ids rhs) (annotation : LocalAnnotationOK scheme ann)
+    (scope : rhs.varsBelow (view.env raw).length = true)
+    (instances : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use (HMCountSchemeClosure.close scheme)
+        calleeDelta found caller),
+      HMCountSchemeClosure.CapturesAgree scheme rows types used →
+      ScopedBodyDerives (closedLocalTypes scheme frame types used.types)
+        (closedLocalSlots scheme ann slots used.types)
+        ((HMCountSchemeClosure.close scheme).counts.quantified ++ ids)
+        (CountAlgebra.compose
+          ((HMCountSchemeClosure.close scheme).counts.quantified.zip used.counts) rows)
+        (Delta ++ used.countInstance.premises) (view.env raw) rhs used.bounds)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.closure scheme
+        (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+        (HMCountSchemeClosure.interpretedTypeCaptures types scheme) :: raw)) body result}
+    (instancesReady : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use (HMCountSchemeClosure.close scheme)
+        calleeDelta found caller)
+      (captures : HMCountSchemeClosure.CapturesAgree scheme rows types used),
+      (∀ a ∈ used.types, Runtime.Supported a) →
+        RecursiveHMUniform.BodyDerives.RuntimeReady
+          (instances calleeDelta found caller used captures))
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {world : EnvSpecialization raw}
+    (target : ClosedLocalTarget.Ready view raw types slots ids rows Delta rhs
+      scheme frame ann world)
+    (bodySafe : Pointwise bodyReady
+      (world.consClosure scheme
+        (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+        (HMCountSchemeClosure.interpretedTypeCaptures types scheme))) :
+    Pointwise
+      (RecursiveHMUniform.BodyDerives.RuntimeReady.letExportedClosed frame annotation scope
+        instances instancesReady
+        (by simpa only [RawBodyView.env_consClosure] using bodyReady)) world where
+  coherent := coherent_tail_closure bodySafe.coherent
+  run bound free sigma hb hf observation premises current := by
+    cases observation with
+    | zero => unfold Runtime.TermAt; intro steps value _ before; omega
+    | succ budget =>
+        let previous := current.down hb hf (by omega : budget ≤ budget + 1)
+        have rhsClosed : (rhs.substN 0 current.terms).varsBelow 0 = true := by
+          apply Runtime.closing_scoped current.terms current.closed rhs 0
+          simpa only [Nat.zero_add, current.arity, RawBodyView.env_length,
+            closeRecursiveEnv, List.length_map] using scope
+        let targetClosure := Binding.closure scheme
+          (HMCountSchemeClosure.interpretedCountCaptures
+            (CountAlgebra.compose world.outer rows) scheme)
+          (HMCountSchemeClosure.interpretedTypeCaptures
+            (fun i => world.mapBounds (types i)) scheme)
+        have rhsSafe0 := target.letBindingAt bound free sigma hb hf budget premises previous
+        have sameTerms : previous.terms = current.terms := rfl
+        have rhsSafe : BodyBindingAt bound free sigma budget targetClosure
+            (rhs.substN 0 current.terms) := by
+          simpa only [targetClosure, sameTerms] using rhsSafe0
+        let opened := EnvAt.extend previous targetClosure (rhs.substN 0 current.terms)
+          rhsClosed rhsSafe
+        have innerEnvEq :
+            targetClosure :: view.env (closeRecursiveEnv world.outer world.types raw) =
+              view.env (closeRecursiveEnv
+                (world.consClosure scheme
+                  (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+                  (HMCountSchemeClosure.interpretedTypeCaptures types scheme)).outer
+                (world.consClosure scheme
+                  (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+                  (HMCountSchemeClosure.interpretedTypeCaptures types scheme)).types
+                (Binding.closure scheme
+                  (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+                  (HMCountSchemeClosure.interpretedTypeCaptures types scheme) :: raw)) := by
+          simp only [targetClosure, EnvSpecialization.consClosure,
+            EnvSpecialization.mapBounds, closeRecursiveEnv, List.map_cons,
+            closeRecursiveBinding, RawBodyView.env_consClosure,
+            HMCountSchemeClosure.interpretedCountCaptures_compose,
+            HMCountSchemeClosure.interpretedTypeCaptures_map]
+        let bodyCurrent := EnvAt.castEnv innerEnvEq opened
+        have bodyAt0 := bodySafe.run bound free sigma hb hf budget premises bodyCurrent
+        have bodyAt : Runtime.TermAt bound free sigma budget (world.mapBounds result)
+            (body.substN 0 opened.terms) := by
+          simpa only [EnvSpecialization.consClosure, EnvSpecialization.mapBounds,
+            bodyCurrent, EnvAt.castEnv_terms] using bodyAt0
+        apply Runtime.TermAt.prepend SmallStep.Step.letReduce
+        change Runtime.TermAt bound free sigma budget _
+          (Expr.substN 0 (_ :: current.terms) body) at bodyAt
+        rw [Runtime.closing_singleton current.terms current.closed _ rhsClosed]
+        exact bodyAt
+
+def letRecExportedClosed
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option PolyTy} {rhs body : Expr}
+    {scheme : HMCountScheme.Scheme} {result : BoundsTy}
+    (frame : LocalFrame scheme ids rhs) (annotation : LocalAnnotationOK scheme ann)
+    (scope : rhs.varsBelow 0 = true)
+    (instances : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use (HMCountSchemeClosure.close scheme)
+        calleeDelta found caller),
+      HMCountSchemeClosure.CapturesAgree scheme rows types used →
+      ScopedBodyDerives (closedLocalTypes scheme frame types used.types)
+        (closedLocalSlots scheme ann slots used.types)
+        ((HMCountSchemeClosure.close scheme).counts.quantified ++ ids)
+        (CountAlgebra.compose
+          ((HMCountSchemeClosure.close scheme).counts.quantified.zip used.counts) rows)
+        (Delta ++ used.countInstance.premises) (view.env raw) rhs used.bounds)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.closure scheme
+        (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+        (HMCountSchemeClosure.interpretedTypeCaptures types scheme) :: raw)) body result}
+    (instancesReady : ∀ calleeDelta found caller
+      (used : HMCountScheme.Use (HMCountSchemeClosure.close scheme)
+        calleeDelta found caller)
+      (captures : HMCountSchemeClosure.CapturesAgree scheme rows types used),
+      (∀ a ∈ used.types, Runtime.Supported a) →
+        RecursiveHMUniform.BodyDerives.RuntimeReady
+          (instances calleeDelta found caller used captures))
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {world : EnvSpecialization raw}
+    (target : ClosedLocalTarget.Ready view raw types slots ids rows Delta rhs
+      scheme frame ann world)
+    (bodySafe : Pointwise bodyReady
+      (world.consClosure scheme
+        (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+        (HMCountSchemeClosure.interpretedTypeCaptures types scheme))) :
+    Pointwise
+      (RecursiveHMUniform.BodyDerives.RuntimeReady.letRecExportedClosed frame annotation scope
+        instances instancesReady
+        (by simpa only [RawBodyView.env_consClosure] using bodyReady)) world where
+  coherent := coherent_tail_closure bodySafe.coherent
+  run bound free sigma hb hf observation premises current := by
+    cases observation with
+    | zero => unfold Runtime.TermAt; intro steps value _ before; omega
+    | succ budget =>
+        let previous := current.down hb hf (by omega : budget ≤ budget + 1)
+        let recursiveTerm : Expr := .letRec [ann] [rhs] rhs
+        have rhsAtOne : rhs.varsBelow 1 = true :=
+          Expr.varsBelow_mono rhs (Nat.zero_le 1) scope
+        have recursiveClosed : recursiveTerm.varsBelow 0 = true := by
+          exact Runtime.letRec_closed
+            (by intro source member; obtain rfl := List.mem_singleton.mp member; exact rhsAtOne)
+            rhsAtOne
+        let targetClosure := Binding.closure scheme
+          (HMCountSchemeClosure.interpretedCountCaptures
+            (CountAlgebra.compose world.outer rows) scheme)
+          (HMCountSchemeClosure.interpretedTypeCaptures
+            (fun i => world.mapBounds (types i)) scheme)
+        have recursiveSafe : BodyBindingAt bound free sigma budget targetClosure recursiveTerm := by
+          apply target.bindingAt bound free sigma hb hf budget premises previous
+          intro calleeDelta found caller used rhsAt
+          cases budget with
+          | zero => unfold Runtime.TermAt; intro steps value _ before; omega
+          | succ innerBudget =>
+              have rhsSafe : Runtime.TermAt bound free sigma innerBudget used.bounds rhs := by
+                have lowered := rhsAt.down hb hf (by omega : innerBudget ≤ innerBudget + 1)
+                simpa only [Expr.substN_of_closed scope] using lowered
+              apply Runtime.TermAt.prepend SmallStep.Step.letRecUnfold
+              simpa only [List.map_cons, List.map_nil, Expr.substN_of_closed scope] using rhsSafe
+        let opened := EnvAt.extend previous targetClosure recursiveTerm recursiveClosed recursiveSafe
+        have innerEnvEq :
+            targetClosure :: view.env (closeRecursiveEnv world.outer world.types raw) =
+              view.env (closeRecursiveEnv
+                (world.consClosure scheme
+                  (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+                  (HMCountSchemeClosure.interpretedTypeCaptures types scheme)).outer
+                (world.consClosure scheme
+                  (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+                  (HMCountSchemeClosure.interpretedTypeCaptures types scheme)).types
+                (Binding.closure scheme
+                  (HMCountSchemeClosure.interpretedCountCaptures rows scheme)
+                  (HMCountSchemeClosure.interpretedTypeCaptures types scheme) :: raw)) := by
+          simp only [targetClosure, EnvSpecialization.consClosure,
+            EnvSpecialization.mapBounds, closeRecursiveEnv, List.map_cons,
+            closeRecursiveBinding, RawBodyView.env_consClosure,
+            HMCountSchemeClosure.interpretedCountCaptures_compose,
+            HMCountSchemeClosure.interpretedTypeCaptures_map]
+        let bodyCurrent := EnvAt.castEnv innerEnvEq opened
+        have bodyAt0 := bodySafe.run bound free sigma hb hf budget premises bodyCurrent
+        have bodyAt : Runtime.TermAt bound free sigma budget (world.mapBounds result)
+            (body.substN 0 opened.terms) := by
+          simpa only [EnvSpecialization.consClosure, EnvSpecialization.mapBounds,
+            bodyCurrent, EnvAt.castEnv_terms] using bodyAt0
+        have openedTerms : opened.terms = recursiveTerm :: previous.terms := rfl
+        rw [openedTerms] at bodyAt
+        have composed := Runtime.closing_singleton previous.terms previous.closed recursiveTerm
+          recursiveClosed body
+        rw [← composed] at bodyAt
+        have sameTerms : previous.terms = current.terms := rfl
+        rw [sameTerms] at bodyAt
+        have rhsOuter : rhs.substN 1 current.terms = rhs :=
+          Expr.substN_of_varsBelow current.terms rhs 1 rhsAtOne
+        change Runtime.TermAt bound free sigma (budget + 1) _
+          (.letRec [ann] [rhs.substN 1 current.terms] (body.substN 1 current.terms))
+        rw [rhsOuter]
+        apply Runtime.TermAt.prepend SmallStep.Step.letRecUnfold
+        simpa only [List.map_cons, List.map_nil, recursiveTerm] using bodyAt
 
 def match_
     {view : RawBodyView} {raw : List Binding}
