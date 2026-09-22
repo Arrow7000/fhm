@@ -20,6 +20,61 @@ inductive RawBodyView where
   | ordinary
   deriving DecidableEq
 
+/-- A raw environment is compatible with the selected body view. Fixed views
+    retain raw recursive assumptions. Ordinary views are coherent only after
+    those assumptions have exited the lexical environment. -/
+def RawBodyView.Coherent : RawBodyView → List Binding → Prop
+  | .fixed, _ => True
+  | .ordinary, raw => ∀ contract, Binding.recursive contract ∉ raw
+
+namespace RawBodyView.Coherent
+
+theorem consMono {view raw} {beta : BoundsTy}
+    (coherent : RawBodyView.Coherent view raw) :
+    RawBodyView.Coherent view (Binding.mono beta :: raw) := by
+  cases view with
+  | fixed => trivial
+  | ordinary =>
+      intro contract member
+      rcases List.mem_cons.mp member with impossible | tail
+      · cases impossible
+      · exact coherent contract tail
+
+theorem tailMono {view raw} {beta : BoundsTy}
+    (coherent : RawBodyView.Coherent view (Binding.mono beta :: raw)) :
+    RawBodyView.Coherent view raw := by
+  cases view with
+  | fixed => trivial
+  | ordinary =>
+      intro contract member
+      exact coherent contract (List.mem_cons_of_mem _ member)
+
+theorem prependMonos {view raw} (demands : List BoundsTy)
+    (coherent : RawBodyView.Coherent view raw) :
+    RawBodyView.Coherent view (demands.map Binding.mono ++ raw) := by
+  induction demands with
+  | nil => simpa using coherent
+  | cons demand rest ih =>
+      simpa only [List.map_cons, List.cons_append] using consMono ih
+
+theorem closedExports_append
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (outer : Bindings) (types : Nat → BoundsTy) {view raw}
+    (coherent : RawBodyView.Coherent view raw) :
+    RawBodyView.Coherent view (group.closedExports outer types ++ raw) := by
+  cases view with
+  | fixed => trivial
+  | ordinary =>
+      intro contract member
+      rcases List.mem_append.mp member with head | tail
+      · unfold GeneralizedGroup.closedExports at head
+        obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp head
+        cases impossible
+      · exact coherent contract tail
+
+end RawBodyView.Coherent
+
 def RawBodyView.binding : RawBodyView → Binding → BodyBinding
   | .fixed, binding => binding
   | .ordinary, .mono beta => .mono beta
@@ -34,6 +89,50 @@ def RawBodyView.binding : RawBodyView → Binding → BodyBinding
     function behind `ordinaryBodyEnv` in variable cases. -/
 def RawBodyView.env (view : RawBodyView) (raw : List Binding) : List BodyBinding :=
   raw.map view.binding
+
+namespace RawBodyView.Coherent
+
+theorem env_eq {view raw} (coherent : RawBodyView.Coherent view raw) :
+    view.env raw = raw := by
+  cases view with
+  | fixed =>
+      induction raw with
+      | nil => rfl
+      | cons binding tail ih =>
+          cases binding <;>
+            simp only [RawBodyView.env, List.map_cons, RawBodyView.binding] at ih ⊢ <;>
+            exact congrArg (List.cons _) (ih trivial)
+  | ordinary =>
+      induction raw with
+      | nil => rfl
+      | cons binding tail ih =>
+          have tailCoherent : RawBodyView.Coherent .ordinary tail := by
+            intro contract member
+            exact coherent contract (List.mem_cons_of_mem binding member)
+          cases binding with
+          | recursive contract =>
+              exact False.elim (coherent contract (by simp))
+          | mono | recursiveClosure | exported | closure =>
+              simp only [RawBodyView.env, List.map_cons, RawBodyView.binding]
+              exact congrArg (List.cons _) (ih tailCoherent)
+
+theorem closeRecursive
+    (view : RawBodyView) (outer : Bindings) (types : Nat → BoundsTy) (raw : List Binding) :
+    RawBodyView.Coherent view (closeRecursiveEnv outer types raw) := by
+  cases view with
+  | fixed => trivial
+  | ordinary =>
+      intro contract member
+      unfold closeRecursiveEnv at member
+      obtain ⟨source, _, impossible⟩ := List.mem_map.mp member
+      cases source <;> cases impossible
+
+theorem closed_env_eq
+    (view : RawBodyView) (outer : Bindings) (types : Nat → BoundsTy) (raw : List Binding) :
+    view.env (closeRecursiveEnv outer types raw) = closeRecursiveEnv outer types raw :=
+  (closeRecursive view outer types raw).env_eq
+
+end RawBodyView.Coherent
 
 @[simp] theorem RawBodyView.env_fixed (raw : List Binding) :
     RawBodyView.fixed.env raw = fixedBodyEnv raw := by

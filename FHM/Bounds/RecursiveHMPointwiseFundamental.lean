@@ -27,6 +27,7 @@ structure Pointwise
     {source : ScopedBodyDerives types slots ids rows Delta (view.env raw) expr beta}
     (ready : RecursiveHMUniform.BodyDerives.RuntimeReady source)
     (world : EnvSpecialization raw) : Prop where
+  coherent : RawBodyView.Coherent view raw
   run : ∀ (bound free : Runtime.TypeEnv) (sigma : Assign),
     Runtime.TypeEnv.Downward bound → Runtime.TypeEnv.Downward free →
     ∀ budget,
@@ -77,12 +78,37 @@ private theorem closes_source
     simp only [RawBodyView.env, closeRecursiveEnv, List.length_map]
   simpa only [Nat.zero_add, current.arity, sameLength] using source.varsBelow
 
+private theorem scoped_termAt
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {expr : Expr} {beta : BoundsTy}
+    {source : ScopedDerives types slots ids rows Delta raw expr beta}
+    (ready : RecursiveHMJudgement.ScopedDerives.RuntimeReady source)
+    (world : EnvSpecialization raw)
+    (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat)
+    (premises : ∀ p ∈ Delta.map (constraint world.outer), p.Holds sigma)
+    (current : BodyEnvAt bound free sigma budget
+      (view.env (closeRecursiveEnv world.outer world.types raw))) :
+    Runtime.TermAt bound free sigma budget (world.mapBounds beta)
+      (expr.substN 0 current.terms) := by
+  let closedReady := RecursiveHMJudgement.RuntimeReady.closeRecursive
+    world.outer world.types world.outerFinite world.countTarget world.outerScope
+    world.typesLC world.typeTarget world.typesScope ready world.fresh world.typesSupported
+  let closedCurrent := EnvAt.castEnv
+    (RawBodyView.Coherent.closed_env_eq view world.outer world.types raw) current
+  have safe := closedReady.termAt bound free sigma hb hf budget premises closedCurrent
+  simpa only [closedCurrent, EnvAt.castEnv_terms] using safe
+
 def literal
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Delta : List Constraint} (view : RawBodyView) (raw : List Binding)
-    (world : EnvSpecialization raw) (p : PrimLitExpr) :
+    (world : EnvSpecialization raw) (coherent : RawBodyView.Coherent view raw)
+    (p : PrimLitExpr) :
     Pointwise (@RecursiveHMUniform.BodyDerives.RuntimeReady.literal types slots ids rows Delta (view.env raw) p)
       world where
+  coherent := coherent
   run bound free sigma _ _ budget _ _ :=
     by
       have stable : world.mapBounds (boundInfoOfPrimLit p) = boundInfoOfPrimLit p := by
@@ -94,9 +120,11 @@ def literal
 def primBinOp
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Delta : List Constraint} (view : RawBodyView) (raw : List Binding)
-    (world : EnvSpecialization raw) (op : PrimBinOp) :
+    (world : EnvSpecialization raw) (coherent : RawBodyView.Coherent view raw)
+    (op : PrimBinOp) :
     Pointwise (@RecursiveHMUniform.BodyDerives.RuntimeReady.primBinOp types slots ids rows Delta
       (view.env raw) op) world where
+  coherent := coherent
   run bound free sigma _ _ budget _ _ :=
     by
       have stable : world.mapBounds (Typed.primOpBounds op) = Typed.primOpBounds op := by
@@ -108,10 +136,12 @@ def primBinOp
 def nil
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Delta : List Constraint} (view : RawBodyView) (raw : List Binding)
-    (world : EnvSpecialization raw) (elem : BoundsTy)
+    (world : EnvSpecialization raw) (coherent : RawBodyView.Coherent view raw)
+    (elem : BoundsTy)
     (supported : Runtime.Supported elem) :
     Pointwise (@RecursiveHMUniform.BodyDerives.RuntimeReady.nil types slots ids rows Delta
       (view.env raw) elem supported) world where
+  coherent := coherent
   run bound free sigma _ _ budget _ _ := by
     exact Runtime.TermAt.value (.ctor _)
       (Runtime.ValueAt.nil bound free sigma budget (world.mapBounds elem))
@@ -119,10 +149,12 @@ def nil
 def boolCtor
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Delta : List Constraint} (view : RawBodyView) (raw : List Binding)
-    (world : EnvSpecialization raw) {name : CtorName}
+    (world : EnvSpecialization raw) (coherent : RawBodyView.Coherent view raw)
+    {name : CtorName}
     (isCtor : BoolBranches.IsCtor name) :
     Pointwise (@RecursiveHMUniform.BodyDerives.RuntimeReady.boolCtor types slots ids rows Delta
       (view.env raw) name isCtor) world where
+  coherent := coherent
   run bound free sigma _ _ budget _ _ :=
     Runtime.TermAt.value (.ctor _) (Runtime.ValueAt.bool bound free sigma budget _ isCtor)
 
@@ -140,6 +172,7 @@ def cons
     {world : EnvSpecialization raw}
     (headSafe : Pointwise headReady world) (tailSafe : Pointwise tailReady world) :
     Pointwise (RecursiveHMUniform.BodyDerives.RuntimeReady.cons sub headReady tailReady) world where
+  coherent := headSafe.coherent
   run bound free sigma hb hf budget premises current := by
     have mappedSub := SchemeSpecialization.subtype world.types
       (CountSubstitution.subtype world.outer world.outerFinite sub)
@@ -160,6 +193,7 @@ def consPartial
     {headReady : RecursiveHMUniform.BodyDerives.RuntimeReady headTyping}
     {world : EnvSpecialization raw} (headSafe : Pointwise headReady world) :
     Pointwise (RecursiveHMUniform.BodyDerives.RuntimeReady.consPartial headReady) world where
+  coherent := headSafe.coherent
   run bound free sigma hb hf budget premises current :=
     Runtime.TermAt.consPartial hb hf
       (headSafe.run bound free sigma hb hf budget premises current)
@@ -175,6 +209,7 @@ def pair
     {world : EnvSpecialization raw}
     (leftSafe : Pointwise leftReady world) (rightSafe : Pointwise rightReady world) :
     Pointwise (RecursiveHMUniform.BodyDerives.RuntimeReady.pair leftReady rightReady) world where
+  coherent := leftSafe.coherent
   run bound free sigma hb hf budget premises current :=
     Runtime.TermAt.pair hb hf
       (leftSafe.run bound free sigma hb hf budget premises current)
@@ -189,6 +224,7 @@ def pairPartial
     (rightSupported : Runtime.Supported rightTy)
     {world : EnvSpecialization raw} (leftSafe : Pointwise leftReady world) :
     Pointwise (RecursiveHMUniform.BodyDerives.RuntimeReady.pairPartial leftReady rightSupported) world where
+  coherent := leftSafe.coherent
   run bound free sigma hb hf budget premises current :=
     Runtime.TermAt.pairPartial hb hf
       (leftSafe.run bound free sigma hb hf budget premises current)
@@ -198,12 +234,114 @@ def varMono
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Delta : List Constraint} {i : Nat} {beta : BoundsTy}
     (lookup : raw[i]? = some (Binding.mono beta))
-    (supported : Runtime.Supported beta) (world : EnvSpecialization raw) :
+    (supported : Runtime.Supported beta) (world : EnvSpecialization raw)
+    (coherent : RawBodyView.Coherent view raw) :
     Pointwise
       (@RecursiveHMUniform.BodyDerives.RuntimeReady.varMono types slots ids rows Delta (view.env raw)
         i beta (RawBodyView.lookupMono lookup) supported) world where
+  coherent := coherent
   run _ _ _ _ _ _ _ current :=
     current.varMono (RawBodyView.lookupClosedMono world lookup)
+
+def varRecursiveFixed
+    {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {i : Nat} {contract : Contract} {caller : List Nat}
+    (lookup : raw[i]? = some (Binding.recursive contract))
+    (used : RecursiveHMContract.Use contract.fixed Delta contract.hm caller)
+    (supported : Runtime.Supported used.bounds) (world : EnvSpecialization raw) :
+    Pointwise
+      (@RecursiveHMUniform.BodyDerives.RuntimeReady.varRecursive types slots ids rows
+        (RawBodyView.fixed.env raw) i contract Delta caller
+        (RawBodyView.lookupRecursiveFixed lookup) used supported) world where
+  coherent := trivial
+  run bound free sigma hb hf budget premises current := by
+    let sourceReady : RecursiveHMJudgement.ScopedDerives.RuntimeReady
+        (@RecursiveHMJudgement.ScopedDerives.varRecursive types slots Delta ids rows
+          raw i contract caller lookup used) :=
+      @RecursiveHMJudgement.ScopedDerives.RuntimeReady.varRecursive types slots ids rows
+        raw i contract Delta caller lookup used supported
+    exact scoped_termAt sourceReady world bound free sigma hb hf budget premises current
+
+def varRecursiveClosure
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {i : Nat} {contract : RecursiveHMContract.Closed}
+    {found : Ty} {caller : List Nat}
+    (lookup : (view.env raw)[i]? = some (Binding.recursiveClosure contract))
+    (used : RecursiveHMContract.Closed.Use contract Delta found caller)
+    (supported : Runtime.Supported used.bounds) (world : EnvSpecialization raw)
+    (coherent : RawBodyView.Coherent view raw) :
+    Pointwise
+      (@RecursiveHMUniform.BodyDerives.RuntimeReady.varRecursiveClosure types slots ids rows
+        (view.env raw) i contract Delta found caller lookup used supported) world where
+  coherent := coherent
+  run bound free sigma hb hf budget premises current := by
+    have rawLookup : raw[i]? = some (Binding.recursiveClosure contract) := by
+      rw [← coherent.env_eq]
+      exact lookup
+    let sourceReady : RecursiveHMJudgement.ScopedDerives.RuntimeReady
+        (@RecursiveHMJudgement.ScopedDerives.varRecursiveClosure types slots Delta ids rows
+          raw i contract found caller rawLookup used) :=
+      @RecursiveHMJudgement.ScopedDerives.RuntimeReady.varRecursiveClosure
+        types slots ids rows raw i contract Delta found caller rawLookup used supported
+    exact scoped_termAt sourceReady world bound free sigma hb hf budget premises current
+
+def varExported
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {i : Nat} {scheme : HMCountScheme.Scheme}
+    {found : Ty} {caller : List Nat}
+    (lookup : (view.env raw)[i]? = some (Binding.exported scheme))
+    (used : HMCountScheme.Use scheme Delta found caller)
+    (supported : Runtime.Supported used.bounds)
+    (arguments : ∀ a ∈ used.types, Runtime.Supported a)
+    (world : EnvSpecialization raw) (coherent : RawBodyView.Coherent view raw) :
+    Pointwise
+      (@RecursiveHMUniform.BodyDerives.RuntimeReady.varExported types slots ids rows
+        (view.env raw) i scheme Delta found caller lookup used supported arguments) world where
+  coherent := coherent
+  run bound free sigma hb hf budget premises current := by
+    have rawLookup : raw[i]? = some (Binding.exported scheme) := by
+      rw [← coherent.env_eq]
+      exact lookup
+    let sourceReady : RecursiveHMJudgement.ScopedDerives.RuntimeReady
+        (@RecursiveHMJudgement.ScopedDerives.varExported types slots Delta ids rows raw
+          i scheme found caller rawLookup used) :=
+      @RecursiveHMJudgement.ScopedDerives.RuntimeReady.varExported
+        types slots ids rows raw i scheme Delta found caller rawLookup used supported arguments
+    exact scoped_termAt sourceReady world bound free sigma hb hf budget premises current
+
+def varClosure
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {i : Nat} {scheme : HMCountScheme.Scheme}
+    {countCaptures : List Count} {typeCaptures : List BoundsTy}
+    {found : Ty} {caller : List Nat}
+    (lookup : (view.env raw)[i]? =
+      some (Binding.closure scheme countCaptures typeCaptures))
+    (used : HMCountScheme.Use (HMCountSchemeClosure.close scheme) Delta found caller)
+    (captures : HMCountSchemeClosure.HasCaptureArguments scheme
+      countCaptures typeCaptures used)
+    (supported : Runtime.Supported used.bounds)
+    (arguments : ∀ a ∈ used.types, Runtime.Supported a)
+    (world : EnvSpecialization raw) (coherent : RawBodyView.Coherent view raw) :
+    Pointwise
+      (@RecursiveHMUniform.BodyDerives.RuntimeReady.varClosure types slots ids rows
+        (view.env raw) i scheme countCaptures typeCaptures Delta found caller
+        lookup used captures supported arguments) world where
+  coherent := coherent
+  run bound free sigma hb hf budget premises current := by
+    have rawLookup : raw[i]? = some (Binding.closure scheme countCaptures typeCaptures) := by
+      rw [← coherent.env_eq]
+      exact lookup
+    let sourceReady : RecursiveHMJudgement.ScopedDerives.RuntimeReady
+        (@RecursiveHMJudgement.ScopedDerives.varClosure types slots Delta ids rows raw
+          i scheme countCaptures typeCaptures found caller rawLookup used captures) :=
+      @RecursiveHMJudgement.ScopedDerives.RuntimeReady.varClosure
+        types slots ids rows raw i scheme countCaptures typeCaptures Delta found caller
+        rawLookup used captures supported arguments
+    exact scoped_termAt sourceReady world bound free sigma hb hf budget premises current
 
 def lambda
     {view : RawBodyView} {raw : List Binding}
@@ -220,6 +358,7 @@ def lambda
     Pointwise
       (RecursiveHMUniform.BodyDerives.RuntimeReady.lambda annotation paramSupported
         (by simpa only [RawBodyView.env_consMono] using bodyReady)) world where
+  coherent := bodySafe.coherent.tailMono
   run bound free sigma hb hf budget premises current := by
     apply Runtime.TermAt.value (.lambda _ _)
     apply Runtime.ValueAt.lambda
@@ -264,6 +403,7 @@ def letMono
     Pointwise
       (RecursiveHMUniform.BodyDerives.RuntimeReady.letMono annotation rhsReady
         (by simpa only [RawBodyView.env_consMono] using bodyReady)) world where
+  coherent := rhsSafe.coherent
   run bound free sigma hb hf observation premises current := by
     cases observation with
     | zero => unfold Runtime.TermAt; intro steps value _ before; omega
@@ -310,6 +450,7 @@ def letPinned
     Pointwise
       (RecursiveHMUniform.BodyDerives.RuntimeReady.letPinned pinned mono rhsReady
         demandSupported (by simpa only [RawBodyView.env_consMono] using bodyReady)) world where
+  coherent := rhsSafe.coherent
   run bound free sigma hb hf observation premises current := by
     cases observation with
     | zero => unfold Runtime.TermAt; intro steps value _ before; omega
@@ -355,6 +496,7 @@ def app
     {world : EnvSpecialization raw}
     (fnSafe : Pointwise fnReady world) (argSafe : Pointwise argReady world) :
     Pointwise (RecursiveHMUniform.BodyDerives.RuntimeReady.app sub fnReady argReady) world where
+  coherent := fnSafe.coherent
   run bound free sigma hb hf budget premises current := by
     have mappedSub := SchemeSpecialization.subtype world.types
       (CountSubstitution.subtype world.outer world.outerFinite sub)
@@ -377,6 +519,7 @@ def subsumption
     (demandSupported : Runtime.Supported demand)
     {world : EnvSpecialization raw} (safe : Pointwise ready world) :
     Pointwise (RecursiveHMUniform.BodyDerives.RuntimeReady.subsumption sub ready demandSupported) world where
+  coherent := safe.coherent
   run bound free sigma hb hf budget premises current :=
     (safe.run bound free sigma hb hf budget premises current).of_values
       (Runtime.subtype
