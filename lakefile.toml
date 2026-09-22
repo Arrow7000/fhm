@@ -146,6 +146,7 @@ roots = [
   "FHM.Bounds.RecursiveHMClosedProgram", # Canonical root recursive checker through closed lexical exports
   "FHM.Bounds.RecursiveHMSpecializableEnvironment", # Kripke runtime witnesses for nested recursive environments
   "FHM.Bounds.RecursiveHMSpecializableRebase", # Stable-world rebasing for nested Kripke environments
+  "FHM.Bounds.RecursiveHMProtectedTailRebase", # Protected exit count-prefix rebasing for lexical tails
   "FHM.Bounds.RecursiveHMClosedSpecializableEnvironment", # Specialization algebra for closed group exports in Kripke environments
   "FHM.Bounds.RecursiveHMClosedSpecializableFamily", # Kripke-family extension by a closed recursive group
   "FHM.Bounds.RecursiveHMPointwiseClosedExport", # Single-budget nested closed-export realization
