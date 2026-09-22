@@ -91,6 +91,39 @@ private theorem coherent_tail_closure
       intro contract member
       exact coherent contract (List.mem_cons_of_mem _ member)
 
+private def EnvSpecialization.leftOfAppend
+    {left right : List Binding} (world : EnvSpecialization (left ++ right)) :
+    EnvSpecialization left where
+  outer := world.outer
+  types := world.types
+  outerFinite := world.outerFinite
+  countTarget := world.countTarget
+  outerScope := world.outerScope
+  typesLC := world.typesLC
+  typeTarget := world.typeTarget
+  typesScope := world.typesScope
+  fresh := by
+    intro binding member
+    exact world.fresh binding (List.mem_append_left right member)
+  typesSupported := world.typesSupported
+
+private theorem closing_ignores_tail
+    {bound free : Runtime.TypeEnv} {sigma : Assign} {budget : Nat}
+    {env tail : List BodyBinding} {expr : Expr}
+    (current : BodyEnvAt bound free sigma budget (env ++ tail))
+    (scope : expr.varsBelow env.length = true) :
+    expr.substN 0 current.prefix.terms = expr.substN 0 current.terms := by
+  have tailClosed : ∀ term ∈ current.terms.drop env.length,
+      term.varsBelow 0 = true := by
+    intro term member
+    exact current.closed term (List.mem_of_mem_drop member)
+  have composed := Expr.substN_substN_append expr 0 current.prefix.terms
+    (current.terms.drop env.length) tailClosed
+  have prefixLength : current.prefix.terms.length = env.length := current.prefix.arity
+  rw [Nat.zero_add, Expr.substN_of_varsBelow _ expr current.prefix.terms.length
+    (by simpa only [prefixLength] using scope)] at composed
+  simpa only [BodyEnvAt.prefix, List.take_append_drop] using composed
+
 private def runtimeBranchSpecialization
     {raw : List Binding} (world : EnvSpecialization raw)
     (ctx : BodyBranchContext) (capable : ctx.RuntimeCapable) :
@@ -296,6 +329,87 @@ private theorem scoped_termAt
     (RawBodyView.Coherent.closed_env_eq view world.outer world.types raw) current
   have safe := closedReady.termAt bound free sigma hb hf budget premises closedCurrent
   simpa only [closedCurrent, EnvAt.castEnv_terms] using safe
+
+private def ordinaryAppend_typing_view
+    {sourceEnv tailRaw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {expr : Expr} {beta : BoundsTy}
+    (typing : ScopedDerives types slots ids rows Delta sourceEnv expr beta)
+    (tail : List BodyBinding)
+    (tailEq : tail = RawBodyView.ordinary.env tailRaw) :
+    ScopedBodyDerives types slots ids rows Delta
+      (RawBodyView.ordinary.env (sourceEnv ++ tailRaw)) expr beta := by
+  rw [RawBodyView.env_append, RawBodyView.env_ordinary, ← tailEq]
+  exact ScopedBodyDerives.ordinaryAppend typing tail
+
+private def ordinaryAppend_ready_view
+    {sourceEnv tailRaw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {expr : Expr} {beta : BoundsTy}
+    {typing : ScopedDerives types slots ids rows Delta sourceEnv expr beta}
+    (tail : List BodyBinding)
+    (tailEq : tail = RawBodyView.ordinary.env tailRaw)
+    (ready : RecursiveHMJudgement.ScopedDerives.RuntimeReady typing)
+    (arguments : RecursiveArgumentsSupported sourceEnv) :
+    RecursiveHMUniform.BodyDerives.RuntimeReady
+      (ordinaryAppend_typing_view typing tail tailEq) := by
+  let ready0 := RecursiveHMUniform.BodyDerives.RuntimeReady.ordinaryAppend
+    tail ready arguments
+  have envEq : ordinaryBodyEnv sourceEnv ++ tail =
+      RawBodyView.ordinary.env (sourceEnv ++ tailRaw) := by
+    simp only [RawBodyView.env_append, RawBodyView.env_ordinary, ← tailEq]
+  exact RecursiveHMUniform.BodyDerives.RuntimeReady.congr
+    (RecursiveHMUniform.BodyDerives.RuntimeReady.castEnv envEq ready0)
+
+def ordinaryAppend
+    {sourceEnv tailRaw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {expr : Expr} {beta : BoundsTy}
+    {typing : ScopedDerives types slots ids rows Delta sourceEnv expr beta}
+    (tail : List BodyBinding)
+    (tailEq : tail = RawBodyView.ordinary.env tailRaw)
+    {ready : RecursiveHMJudgement.ScopedDerives.RuntimeReady typing}
+    (arguments : RecursiveArgumentsSupported sourceEnv)
+    {world : EnvSpecialization (sourceEnv ++ tailRaw)}
+    (coherent : RawBodyView.Coherent .ordinary (sourceEnv ++ tailRaw)) :
+    Pointwise
+      (ordinaryAppend_ready_view tail tailEq ready arguments)
+      world where
+  coherent := coherent
+  run bound free sigma hb hf budget premises current := by
+    let sourceWorld := EnvSpecialization.leftOfAppend world
+    let closedTail := RawBodyView.ordinary.env
+      (closeRecursiveEnv world.outer world.types tailRaw)
+    have envEq :
+        RawBodyView.ordinary.env
+            (closeRecursiveEnv world.outer world.types (sourceEnv ++ tailRaw)) =
+          ordinaryBodyEnv
+              (closeRecursiveEnv sourceWorld.outer sourceWorld.types sourceEnv) ++
+            closedTail := by
+      simp only [sourceWorld, EnvSpecialization.leftOfAppend, closedTail,
+        closeRecursiveEnv, List.map_append, RawBodyView.env_append,
+        RawBodyView.env_ordinary]
+    let runtimeEnv := EnvAt.castEnv envEq current
+    let prefixEnv := RecursiveHMUniform.BodyEnvAt.prefix runtimeEnv
+    let sourceCurrent := EnvAt.castEnv
+      (RawBodyView.env_ordinary
+        (closeRecursiveEnv sourceWorld.outer sourceWorld.types sourceEnv)).symm prefixEnv
+    have sourcePremises :
+        ∀ p ∈ Delta.map (constraint sourceWorld.outer), p.Holds sigma := by
+      simpa only [sourceWorld, EnvSpecialization.leftOfAppend] using premises
+    have safe0 := scoped_termAt (view := .ordinary) ready sourceWorld bound free sigma
+      hb hf budget sourcePremises sourceCurrent
+    have safe : Runtime.TermAt bound free sigma budget (world.mapBounds beta)
+        (expr.substN 0 prefixEnv.terms) := by
+      simpa only [sourceWorld, EnvSpecialization.leftOfAppend,
+        EnvSpecialization.mapBounds, sourceCurrent, EnvAt.castEnv_terms] using safe0
+    have scope : expr.varsBelow
+        (ordinaryBodyEnv
+          (closeRecursiveEnv sourceWorld.outer sourceWorld.types sourceEnv)).length = true := by
+      simpa only [ordinaryBodyEnv, List.length_map, closeRecursiveEnv,
+        sourceWorld, EnvSpecialization.leftOfAppend] using typing.varsBelow
+    rw [closing_ignores_tail runtimeEnv scope] at safe
+    simpa only [runtimeEnv, EnvAt.castEnv_terms] using safe
 
 def literal
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
