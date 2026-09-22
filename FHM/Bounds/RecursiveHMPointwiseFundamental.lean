@@ -61,6 +61,22 @@ private theorem supported_map {raw : List Binding} (world : EnvSpecialization ra
     Runtime.Supported (world.mapBounds beta) :=
   (supported.counts world.outer).types world.types world.typesSupported
 
+private theorem closes_source
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {expr : Expr} {beta : BoundsTy}
+    (source : ScopedBodyDerives types slots ids rows Delta (view.env raw) expr beta)
+    {world : EnvSpecialization raw}
+    {bound free : Runtime.TypeEnv} {sigma : Assign} {budget : Nat}
+    (current : BodyEnvAt bound free sigma budget
+      (view.env (closeRecursiveEnv world.outer world.types raw))) :
+    (expr.substN 0 current.terms).varsBelow 0 = true := by
+  apply Runtime.closing_scoped current.terms current.closed expr 0
+  have sameLength : (view.env (closeRecursiveEnv world.outer world.types raw)).length =
+      (view.env raw).length := by
+    simp only [RawBodyView.env, closeRecursiveEnv, List.length_map]
+  simpa only [Nat.zero_add, current.arity, sameLength] using source.varsBelow
+
 def literal
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
     {Delta : List Constraint} (view : RawBodyView) (raw : List Binding)
@@ -188,6 +204,143 @@ def varMono
         i beta (RawBodyView.lookupMono lookup) supported) world where
   run _ _ _ _ _ _ _ current :=
     current.varMono (RawBodyView.lookupClosedMono world lookup)
+
+def lambda
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option Ty} {body : Expr}
+    {param result : BoundsTy}
+    (annotation : ScopedHMAnnotation.ParamOK types slots ids rows Delta ann param)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.mono param :: raw)) body result}
+    (paramSupported : Runtime.Supported param)
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {world : EnvSpecialization raw}
+    (bodySafe : Pointwise bodyReady (world.consMono param)) :
+    Pointwise
+      (RecursiveHMUniform.BodyDerives.RuntimeReady.lambda annotation paramSupported
+        (by simpa only [RawBodyView.env_consMono] using bodyReady)) world where
+  run bound free sigma hb hf budget premises current := by
+    apply Runtime.TermAt.value (.lambda _ _)
+    apply Runtime.ValueAt.lambda
+    · exact closes_source
+        (ScopedBodyDerives.lambda annotation (by
+          simpa only [RawBodyView.env_consMono] using bodyTyping)) current
+    · intro j before arg argument
+      have facts := argument
+      rw [Runtime.ValueAt.eq_def] at facts
+      let opened := (current.down hb hf (by omega : j ≤ budget)).extendMono
+        (world.mapBounds param) arg facts.2.1
+        (Runtime.TermAt.value facts.1 (argument.down hb hf (by omega)))
+      have envEq :
+          Binding.mono (world.mapBounds param) ::
+              view.env (closeRecursiveEnv world.outer world.types raw) =
+            view.env (closeRecursiveEnv (world.consMono param).outer
+              (world.consMono param).types (Binding.mono param :: raw)) := by
+        simp only [EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+          closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+          RawBodyView.env_consMono]
+      let childCurrent := EnvAt.castEnv envEq opened
+      have bodyAt := bodySafe.run bound free sigma hb hf j premises childCurrent
+      rw [show childCurrent.terms = arg :: current.terms by
+        simp only [childCurrent, EnvAt.castEnv_terms, opened, EnvAt.extendMono, EnvAt.down]] at bodyAt
+      rw [Runtime.closing_singleton current.terms current.closed arg facts.2.1]
+      exact bodyAt
+
+def letMono
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option PolyTy} {rhs body : Expr}
+    {actual result : BoundsTy}
+    (annotation : ScopedHMAnnotation.BindingOK types slots ids rows Delta ann actual)
+    {rhsTyping : ScopedBodyDerives types slots ids rows Delta (view.env raw) rhs actual}
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.mono actual :: raw)) body result}
+    {rhsReady : RecursiveHMUniform.BodyDerives.RuntimeReady rhsTyping}
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {world : EnvSpecialization raw}
+    (rhsSafe : Pointwise rhsReady world)
+    (bodySafe : Pointwise bodyReady (world.consMono actual)) :
+    Pointwise
+      (RecursiveHMUniform.BodyDerives.RuntimeReady.letMono annotation rhsReady
+        (by simpa only [RawBodyView.env_consMono] using bodyReady)) world where
+  run bound free sigma hb hf observation premises current := by
+    cases observation with
+    | zero => unfold Runtime.TermAt; intro steps value _ before; omega
+    | succ budget =>
+        have rhsClosed := closes_source rhsTyping current
+        let previous := current.down hb hf (by omega : budget ≤ budget + 1)
+        let opened := previous.extendMono (world.mapBounds actual)
+          (rhs.substN 0 current.terms) rhsClosed
+          (rhsSafe.run bound free sigma hb hf budget premises previous)
+        have envEq :
+            Binding.mono (world.mapBounds actual) ::
+                view.env (closeRecursiveEnv world.outer world.types raw) =
+              view.env (closeRecursiveEnv (world.consMono actual).outer
+                (world.consMono actual).types (Binding.mono actual :: raw)) := by
+          simp only [EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+            closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+            RawBodyView.env_consMono]
+        let childCurrent := EnvAt.castEnv envEq opened
+        have bodyAt := bodySafe.run bound free sigma hb hf budget premises childCurrent
+        rw [show childCurrent.terms = rhs.substN 0 current.terms :: current.terms by
+          simp only [childCurrent, EnvAt.castEnv_terms, opened, EnvAt.extendMono,
+            previous, EnvAt.down]] at bodyAt
+        apply Runtime.TermAt.prepend SmallStep.Step.letReduce
+        rw [Runtime.closing_singleton current.terms current.closed _ rhsClosed]
+        exact bodyAt
+
+def letPinned
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids caller : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {annotation : PolyTy} {rhs body : Expr}
+    {actual result : BoundsTy}
+    (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Delta
+      annotation.body actual)
+    (mono : annotation.paramCount = 0)
+    {rhsTyping : ScopedBodyDerives types slots ids rows Delta (view.env raw) rhs actual}
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.mono pinned.demand :: raw)) body result}
+    {rhsReady : RecursiveHMUniform.BodyDerives.RuntimeReady rhsTyping}
+    (demandSupported : Runtime.Supported pinned.demand)
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {world : EnvSpecialization raw}
+    (rhsSafe : Pointwise rhsReady world)
+    (bodySafe : Pointwise bodyReady (world.consMono pinned.demand)) :
+    Pointwise
+      (RecursiveHMUniform.BodyDerives.RuntimeReady.letPinned pinned mono rhsReady
+        demandSupported (by simpa only [RawBodyView.env_consMono] using bodyReady)) world where
+  run bound free sigma hb hf observation premises current := by
+    cases observation with
+    | zero => unfold Runtime.TermAt; intro steps value _ before; omega
+    | succ budget =>
+        have rhsClosed := closes_source rhsTyping current
+        let previous := current.down hb hf (by omega : budget ≤ budget + 1)
+        have mappedSub := SchemeSpecialization.subtype world.types
+          (CountSubstitution.subtype world.outer world.outerFinite pinned.inclusion)
+        have rhsAt := rhsSafe.run bound free sigma hb hf budget premises previous
+        have widened := rhsAt.of_values
+          (Runtime.subtype mappedSub (supported_map world rhsReady.supported)
+            (supported_map world demandSupported) bound free sigma premises)
+        let opened := previous.extendMono (world.mapBounds pinned.demand)
+          (rhs.substN 0 current.terms) rhsClosed widened
+        have envEq :
+            Binding.mono (world.mapBounds pinned.demand) ::
+                view.env (closeRecursiveEnv world.outer world.types raw) =
+              view.env (closeRecursiveEnv (world.consMono pinned.demand).outer
+                (world.consMono pinned.demand).types
+                (Binding.mono pinned.demand :: raw)) := by
+          simp only [EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+            closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+            RawBodyView.env_consMono]
+        let childCurrent := EnvAt.castEnv envEq opened
+        have bodyAt := bodySafe.run bound free sigma hb hf budget premises childCurrent
+        rw [show childCurrent.terms = rhs.substN 0 current.terms :: current.terms by
+          simp only [childCurrent, EnvAt.castEnv_terms, opened, EnvAt.extendMono,
+            previous, EnvAt.down]] at bodyAt
+        apply Runtime.TermAt.prepend SmallStep.Step.letReduce
+        rw [Runtime.closing_singleton current.terms current.closed _ rhsClosed]
+        exact bodyAt
 
 def app
     {view : RawBodyView} {raw : List Binding}
