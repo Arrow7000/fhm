@@ -5308,6 +5308,10 @@ private theorem recursiveGuardTypeCaptures_closure {env s counts types β}
 structure BodyCapture (env : List BodyBinding) where
   rhsEnv : List Binding
   bodyEnv : ordinaryBodyEnv rhsEnv = env
+  /-- Exited body captures never retain a raw fixed recursive assumption.
+      Recording this invariant makes their ordinary body view semantically
+      coherent, rather than relying on the private constructor graph. -/
+  ordinary : OrdinaryEnv rhsEnv
   captured : RecursiveHMEnvironment.Captured [] rhsEnv
   arguments : RecursiveArgumentsSupported rhsEnv
   countClosed : ∀ c, .recursive c ∈ rhsEnv → c.template.counts.captures = []
@@ -5347,6 +5351,7 @@ private def BodyWalkCapture.dispatch {env}
 private def emptyBodyCapture : BodyCapture [] where
   rhsEnv := []
   bodyEnv := rfl
+  ordinary := by simp [OrdinaryEnv]
   captured := ⟨by simp, by simp, by simp, by simp, by simp, by simp, by simp⟩
   arguments := by simp [RecursiveArgumentsSupported]
   countClosed := by simp
@@ -5375,6 +5380,7 @@ private def checkedGroupBodyCapture
     BodyCapture (g.exports.map Binding.exported) where
   rhsEnv := g.exports.map Binding.exported
   bodyEnv := ordinaryBodyEnv_exports g.exports
+  ordinary := by intro contract member; simp at member
   captured := ⟨by simp, by simp, by simp, by simp, by simp, by simp, by simp⟩
   arguments := by simp [RecursiveArgumentsSupported]
   countClosed := by intro c member; simp at member
@@ -5401,6 +5407,9 @@ private def closedGroupBodyCapture
     apply List.map_congr_left
     intro scheme _
     rfl
+  ordinary := by
+    intro contract member
+    simp [GeneralizedGroup.closedExports] at member
   captured := by
     refine {
       mono := ?_
@@ -5465,6 +5474,12 @@ private def BodyCapture.extendGroup {env output metadata path vectors premises b
             simp only [ordinaryBodyEnv, List.map_append]
       _ = g.exports.map Binding.exported ++ env := by
         rw [ordinaryBodyEnv_exports, capture.bodyEnv]
+  ordinary := by
+    intro contract member
+    rcases List.mem_append.mp member with inner | outer
+    · obtain ⟨scheme, _, impossible⟩ := List.mem_map.mp inner
+      cases impossible
+    · exact capture.ordinary contract outer
   captured := by
     refine {
       mono := ?_
@@ -5536,6 +5551,7 @@ private def BodyCapture.extendMono {env} (capture : BodyCapture env) (β : Bound
   bodyEnv := by
     change .mono β :: ordinaryBodyEnv capture.rhsEnv = .mono β :: env
     rw [capture.bodyEnv]
+  ordinary := capture.ordinary.consMono
   captured := by
     refine {
       mono := ?_
@@ -5596,6 +5612,11 @@ private def BodyCapture.extendExported {env} (capture : BodyCapture env)
   bodyEnv := by
     change .exported s :: ordinaryBodyEnv capture.rhsEnv = .exported s :: env
     rw [capture.bodyEnv]
+  ordinary := by
+    intro contract member
+    rcases List.mem_cons.mp member with head | tail
+    · cases head
+    · exact capture.ordinary contract tail
   captured := by
     refine {
       mono := ?_
@@ -5664,6 +5685,11 @@ private def BodyCapture.extendClosure {env} (capture : BodyCapture env)
       ordinaryBodyEnv capture.rhsEnv =
       .closure s [] (HMCountSchemeClosure.interpretedTypeCaptures BoundsTy.fvar s) :: env
     rw [capture.bodyEnv]
+  ordinary := by
+    intro contract member
+    rcases List.mem_cons.mp member with head | tail
+    · cases head
+    · exact capture.ordinary contract tail
   captured := by
     refine {
       mono := ?_

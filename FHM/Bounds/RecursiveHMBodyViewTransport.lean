@@ -29,6 +29,13 @@ def RawBodyView.Coherent : RawBodyView → List Binding → Prop
 
 namespace RawBodyView.Coherent
 
+/-- The executable body walk records the same no-fixed-recursion invariant as
+    `OrdinaryEnv`.  This bridge lets pointwise proofs consume that checker
+    invariant without reopening the capture implementation. -/
+theorem ofOrdinaryEnv {raw : List Binding} (ordinary : OrdinaryEnv raw) :
+    RawBodyView.Coherent .ordinary raw :=
+  ordinary
+
 theorem consMono {view raw} {beta : BoundsTy}
     (coherent : RawBodyView.Coherent view raw) :
     RawBodyView.Coherent view (Binding.mono beta :: raw) := by
