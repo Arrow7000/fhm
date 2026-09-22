@@ -82,6 +82,68 @@ structure GeneralizedGroup.ClosedInternalRealizerAt
       e.terms = Runtime.recursiveTerms group.annotations
         (closeOuterRhss group.rhss outerTerms) ++ outerTerms }
 
+/-- Build the use-indexed internal environment from one broad specialization
+    world and one already-closed lexical environment.  The lexical terms are
+    weakened to the requested observation budget and reindexed across each
+    protected call; `closeRecursiveEnv_protected_tail` proves that this cast
+    changes only the type index, never the runtime vector. -/
+def GeneralizedGroup.closedInternalRealizerBasedAt
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (normal : ClosureNormal outerEnv)
+    (sourceReady : ∀ offset (inside : offset < group.exports.length),
+      ScopedDerives.RuntimeReady
+        (group.selected offset inside).rhs.certificate.implementation.typing)
+    (sourceDemandSupported : ∀ offset (inside : offset < group.exports.length),
+      Runtime.Supported
+        (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (base : EnvSpecialization outerEnv)
+    {maximum : Nat}
+    (lexical : EnvAt bound free sigma maximum
+      (closeRecursiveEnv base.outer base.types outerEnv))
+    (budget : Nat) (within : budget ≤ maximum) :
+    ClosedInternalRealizerAt group base.outer
+      (base.countTarget ++ base.typeTarget) base.types bound free sigma budget lexical.terms := by
+  have outerScope : ∀ row ∈ base.outer,
+      Scope.CountScoped (base.countTarget ++ base.typeTarget) row.2 := by
+    intro row member
+    exact HMInterpretation.count_mono (base.outerScope row member)
+      (fun _ h => List.mem_append_left _ h)
+  have typesScope : ∀ i,
+      BoundsScoped (base.countTarget ++ base.typeTarget) (base.types i) := by
+    intro i
+    exact HMInterpretation.scope_mono (base.typesScope i)
+      (fun _ h => List.mem_append_right _ h)
+  refine ⟨?_⟩
+  intro offset inside calleeDelta found caller used capturesAgree arguments
+  let rows := group.protectedRows offset inside used base.outer
+  let types := group.protectedTypes offset inside used base.types
+  let target' := (group.selected offset inside).rhs.certificate.interface.scheme.counts.captures ++
+    caller ++ (base.countTarget ++ base.typeTarget)
+  have rowsFinite : Finite rows :=
+    group.protectedRows_finite offset inside used base.outer base.outerFinite
+  have rowsScoped : ∀ row ∈ rows, Scope.CountScoped target' row.2 :=
+    group.protectedRows_scoped offset inside used base.outer
+      (base.countTarget ++ base.typeTarget) outerScope
+  have typesLC : ∀ i, (Synth.BoundsTy.toTy (types i)).IsLC :=
+    group.protectedTypes_lc offset inside used base.types base.typesLC
+  have typesScoped : ∀ i, BoundsScoped target' (types i) :=
+    group.protectedTypes_scoped offset inside used base.types
+      (base.countTarget ++ base.typeTarget) typesScope
+  have typesSupported : ∀ i, Runtime.Supported (types i) :=
+    group.protectedTypes_supported offset inside used base.types arguments base.typesSupported
+  have tailEq : closeRecursiveEnv rows types outerEnv =
+      closeRecursiveEnv base.outer base.types outerEnv := by
+    exact group.closeRecursiveEnv_protected_tail offset inside used base
+  let lexicalAt := EnvAt.castEnv tailEq.symm (lexical.down hb hf within)
+  let realized := closedInternalEnvironmentBased group sourceReady sourceDemandSupported normal
+    bound free sigma hb hf rows rowsFinite target' rowsScoped types typesLC typesScoped
+    typesSupported budget lexicalAt
+  refine ⟨realized.val, ?_⟩
+  simpa only [lexicalAt, EnvAt.castEnv_terms, EnvAt.down] using realized.property
+
 /-- Restrict one current-budget lexical witness to any smaller observation and
     realize the nested group's protected internal environment there. -/
 def GeneralizedGroup.closedInternalRealizerNestedAt

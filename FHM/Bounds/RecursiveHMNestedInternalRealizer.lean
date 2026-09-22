@@ -1,5 +1,5 @@
 import FHM.Bounds.RecursiveHMClosedInternalRealizer
-import FHM.Bounds.RecursiveHMSpecializableEnvironment
+import FHM.Bounds.RecursiveHMProtectedTailRebase
 
 /-! # Nested realization of closed recursive assumptions -/
 
@@ -24,10 +24,10 @@ private theorem closedUseArgumentsSupported
     rw [← used.fixedTail]
     exact fixed
 
-/-- The generalized-world budget recursion above an arbitrary specializable
-    lexical tail.  Weakening the lexical witness preserves its exact terms,
-    so all protected worlds close the source RHSs over the same Core values. -/
-def GeneralizedGroup.closedInternalEnvironmentNested
+/-- The generalized-world budget recursion above one already-closed lexical
+    tail. Protected recursive uses leave that tail unchanged, so the same
+    semantic environment can be weakened and reindexed at recursive calls. -/
+def GeneralizedGroup.closedInternalEnvironmentBased
     {output metadata path captures premises bodyTypes outerEnv}
     (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
     (sourceReady : ∀ offset (inside : offset < group.exports.length),
@@ -46,57 +46,54 @@ def GeneralizedGroup.closedInternalEnvironmentNested
     (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC)
     (ambientScope : ∀ i, BoundsScoped target (ambient i))
     (ambientSupported : ∀ i, Runtime.Supported (ambient i))
-    (ambientCounts : ∀ β, .mono β ∈ outerEnv → bounds outer β = β)
-    (ambientTypes : ∀ β, .mono β ∈ outerEnv →
-      ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, ambient i = .fvar i)
     :
-    ∀ budget (lexical : SpecializableEnvAt bound free sigma budget outerEnv),
+    ∀ budget (lexical : EnvAt bound free sigma budget
+        (closeRecursiveEnv outer ambient outerEnv)),
       { e : EnvAt bound free sigma budget
           (closeRecursiveEnv outer ambient group.internal) //
         e.terms = Runtime.recursiveTerms group.annotations
-          (closeOuterRhss group.rhss lexical.fixed.terms) ++ lexical.fixed.terms }
+          (closeOuterRhss group.rhss lexical.terms) ++ lexical.terms }
   | 0, lexical => by
-      let closedRhss := closeOuterRhss group.rhss lexical.fixed.terms
+      let closedRhss := closeOuterRhss group.rhss lexical.terms
       let recursive := Runtime.recursiveTerms group.annotations closedRhss
       have closedScope : ∀ rhs ∈ closedRhss, rhs.varsBelow group.rhss.length = true := by
-        apply closeOuterRhss_scoped lexical.fixed
-        simpa only [fixedBodyEnv] using group.rhssScoped
+        apply closeOuterRhss_scoped lexical
+        simpa only [closeRecursiveEnv, List.length_map] using group.rhssScoped
       have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true :=
         Runtime.recursiveTerms_closed (by
           simpa only [closedRhss, closeOuterRhss_length] using closedScope)
-      refine ⟨{ terms := recursive ++ lexical.fixed.terms
+      refine ⟨{ terms := recursive ++ lexical.terms
                 arity := ?_
                 closed := ?_
                 denotes := fun _ _ => BindingAt.zero bound free sigma _ _ }, rfl⟩
       · simp only [List.length_append, recursive, Runtime.recursiveTerms, List.length_map,
           closedRhss, closeOuterRhss_length, closeRecursiveEnv, GeneralizedGroup.internal,
-          List.map_append, List.length_map, group.checked.memberCount, lexical.fixed.arity,
-          fixedBodyEnv]
+          List.map_append, List.length_map, group.checked.memberCount, lexical.arity]
         simp only [GeneralizedGroup.rhss, List.length_map]
       · intro term member
-        exact (List.mem_append.mp member).elim (recursiveClosed term) (lexical.fixed.closed term)
+        exact (List.mem_append.mp member).elim (recursiveClosed term) (lexical.closed term)
   | budget + 1, lexical => by
-      let closedRhss := closeOuterRhss group.rhss lexical.fixed.terms
+      let closedRhss := closeOuterRhss group.rhss lexical.terms
       let recursive := Runtime.recursiveTerms group.annotations closedRhss
       have closedScope : ∀ rhs ∈ closedRhss, rhs.varsBelow group.rhss.length = true := by
-        apply closeOuterRhss_scoped lexical.fixed
-        simpa only [fixedBodyEnv] using group.rhssScoped
+        apply closeOuterRhss_scoped lexical
+        simpa only [closeRecursiveEnv, List.length_map] using group.rhssScoped
       have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true :=
         Runtime.recursiveTerms_closed (by
           simpa only [closedRhss, closeOuterRhss_length] using closedScope)
       have recursiveLength : recursive.length = group.rhss.length := by
         simp only [recursive, Runtime.recursiveTerms, List.length_map,
           closedRhss, closeOuterRhss_length]
-      refine ⟨{ terms := recursive ++ lexical.fixed.terms
+      refine ⟨{ terms := recursive ++ lexical.terms
                 arity := ?_
                 closed := ?_
                 denotes := ?_ }, rfl⟩
       · simp only [List.length_append, recursiveLength, closeRecursiveEnv,
           GeneralizedGroup.internal, List.map_append, List.length_map,
-          group.checked.memberCount, lexical.fixed.arity, fixedBodyEnv]
+          group.checked.memberCount, lexical.arity]
         simp only [GeneralizedGroup.rhss, List.length_map]
       · intro term member
-        exact (List.mem_append.mp member).elim (recursiveClosed term) (lexical.fixed.closed term)
+        exact (List.mem_append.mp member).elim (recursiveClosed term) (lexical.closed term)
       · intro member memberInside
         by_cases groupInside : member < group.exports.length
         · let selected := group.selected member groupInside
@@ -169,16 +166,28 @@ def GeneralizedGroup.closedInternalEnvironmentNested
             have nextAmbientSupported : ∀ i, Runtime.Supported (nextAmbient i) :=
               group.protectedTypes_supported member groupInside closedUse.use ambient
                 usedArguments ambientSupported
-            have nextCounts : ∀ β, .mono β ∈ outerEnv → bounds nextOuter β = β :=
-              group.protectedMonoCounts member groupInside closedUse.use outer ambientCounts
-            have nextTypes : ∀ β, .mono β ∈ outerEnv →
-                ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, nextAmbient i = .fvar i :=
-              group.protectedMonoTypes member groupInside closedUse.use ambient ambientTypes
-            let previousLexical := lexical.down hb hf (by omega : budget ≤ budget + 1)
-            let previous := closedInternalEnvironmentNested group sourceReady
+            have fresh : CloseRecursiveFresh outer ambient group.internal :=
+              group.internalCloseRecursiveFresh outer ambient normal
+            let base : EnvSpecialization outerEnv :=
+              { outer := outer
+                types := ambient
+                outerFinite := outerFinite
+                countTarget := target
+                outerScope := outerScope
+                typesLC := ambientLC
+                typeTarget := target
+                typesScope := ambientScope
+                fresh := CloseRecursiveFresh.right fresh
+                typesSupported := ambientSupported }
+            have tailEq : closeRecursiveEnv nextOuter nextAmbient outerEnv =
+                closeRecursiveEnv outer ambient outerEnv := by
+              exact group.closeRecursiveEnv_protected_tail member groupInside closedUse.use base
+            let previousLexical := EnvAt.castEnv tailEq.symm
+              (lexical.down hb hf (by omega : budget ≤ budget + 1))
+            let previous := closedInternalEnvironmentBased group sourceReady
               sourceDemandSupported normal bound free sigma hb hf nextOuter nextFinite nextTarget
               nextOuterScope nextAmbient nextAmbientLC nextAmbientScope nextAmbientSupported
-              nextCounts nextTypes budget previousLexical
+              budget previousLexical
             have safe := GeneralizedGroup.runtimeExitTermAtRaw group member groupInside
               closedUse.use outer outerFinite target outerScope ambient ambientLC ambientScope
               closedUse.captures normal (sourceReady member groupInside)
@@ -196,13 +205,14 @@ def GeneralizedGroup.closedInternalEnvironmentNested
             have rhsEq : group.rhss[member] =
                 selected.member.declaration.node.inner.stripFound :=
               (List.getElem?_eq_some_iff.mp rhsLookup).choose_spec
-            have previousOuterTerms : previousLexical.fixed.terms = lexical.fixed.terms := rfl
+            have previousOuterTerms : previousLexical.terms = lexical.terms := by
+              simp only [previousLexical, EnvAt.castEnv_terms, EnvAt.down]
             have safe' : Runtime.TermAt bound free sigma budget closedUse.use.bounds
                 ((group.rhss[member]'rhsInside).substN 0
-                  (recursive ++ lexical.fixed.terms)) := by
+                  (recursive ++ lexical.terms)) := by
               simpa only [recursive, closedRhss, rhsEq, previousOuterTerms] using safe
-            have composed := Runtime.closing_compose lexical.fixed.terms recursive
-              lexical.fixed.closed recursiveClosed (group.rhss[member]'rhsInside) 0
+            have composed := Runtime.closing_compose lexical.terms recursive
+              lexical.closed recursiveClosed (group.rhss[member]'rhsInside) 0
             rw [Nat.zero_add, recursiveLength] at composed
             rw [← composed] at safe'
             have closedInside : member < closedRhss.length := by
@@ -213,7 +223,7 @@ def GeneralizedGroup.closedInternalEnvironmentNested
               exact rhsInside
             have rhsEntry : closedRhss[member]'closedInside =
                 (group.rhss[member]'rhsInside).substN group.rhss.length
-                  lexical.fixed.terms := by
+                  lexical.terms := by
               simp only [closedRhss, closeOuterRhss, List.getElem_map]
             have recursiveEntry : recursive[member]'recursiveInside =
                 .letRec group.annotations closedRhss (closedRhss[member]'closedInside) := by
@@ -231,22 +241,7 @@ def GeneralizedGroup.closedInternalEnvironmentNested
             simp only [closeRecursiveEnv, GeneralizedGroup.internal, List.map_append,
               List.length_append, List.length_map, contractCount] at memberInside
             omega
-          have fresh : CloseRecursiveFresh outer ambient group.internal :=
-            group.internalCloseRecursiveFresh outer ambient normal
-          let world : StableEnvSpecialization outerEnv :=
-            { outer := outer
-              types := ambient
-              outerFinite := outerFinite
-              countTarget := target
-              outerScope := outerScope
-              typesLC := ambientLC
-              typeTarget := target
-              typesScope := ambientScope
-              fresh := CloseRecursiveFresh.right fresh
-              typesSupported := ambientSupported
-              monoCounts := ambientCounts
-              monoTypes := ambientTypes }
-          have meaning := (lexical.specialized world).denotes
+          have meaning := lexical.denotes
             (member - group.exports.length) (by
               simpa only [closeRecursiveEnv, List.length_map] using tailInside)
           have contractCount : group.checked.interfaces.contracts.length =
@@ -269,7 +264,58 @@ def GeneralizedGroup.closedInternalEnvironmentNested
           rw [List.getElem_append_right mappedBindingPosition,
             List.getElem_append_right recursivePosition]
           simpa only [closeRecursiveEnv, List.length_map, recursiveLength,
-            group.exportCount, contractCount, lexical.specializedTerms] using meaning
+            group.exportCount, contractCount] using meaning
+
+/-- Compatibility packaging over a universally specializable lexical tail.
+    The proof itself only consumes the already-closed environment at the
+    current world. -/
+def GeneralizedGroup.closedInternalEnvironmentNested
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (sourceReady : ∀ offset (inside : offset < group.exports.length),
+      ScopedDerives.RuntimeReady
+        (group.selected offset inside).rhs.certificate.implementation.typing)
+    (sourceDemandSupported : ∀ offset (inside : offset < group.exports.length),
+      Runtime.Supported
+        (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (normal : ClosureNormal outerEnv)
+    (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (outer : Bindings) (outerFinite : Finite outer)
+    (target : List Nat)
+    (outerScope : ∀ row ∈ outer, Scope.CountScoped target row.2)
+    (ambient : Nat → BoundsTy)
+    (ambientLC : ∀ i, (Synth.BoundsTy.toTy (ambient i)).IsLC)
+    (ambientScope : ∀ i, BoundsScoped target (ambient i))
+    (ambientSupported : ∀ i, Runtime.Supported (ambient i))
+    (ambientCounts : ∀ β, .mono β ∈ outerEnv → bounds outer β = β)
+    (ambientTypes : ∀ β, .mono β ∈ outerEnv →
+      ∀ i ∈ (Synth.BoundsTy.toTy β).freeVars, ambient i = .fvar i)
+    (budget : Nat) (lexical : SpecializableEnvAt bound free sigma budget outerEnv) :
+    { e : EnvAt bound free sigma budget
+        (closeRecursiveEnv outer ambient group.internal) //
+      e.terms = Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss lexical.fixed.terms) ++ lexical.fixed.terms } := by
+  have fresh : CloseRecursiveFresh outer ambient group.internal :=
+    group.internalCloseRecursiveFresh outer ambient normal
+  let world : StableEnvSpecialization outerEnv :=
+    { outer := outer
+      types := ambient
+      outerFinite := outerFinite
+      countTarget := target
+      outerScope := outerScope
+      typesLC := ambientLC
+      typeTarget := target
+      typesScope := ambientScope
+      fresh := CloseRecursiveFresh.right fresh
+      typesSupported := ambientSupported
+      monoCounts := ambientCounts
+      monoTypes := ambientTypes }
+  let realized := closedInternalEnvironmentBased group sourceReady sourceDemandSupported normal
+    bound free sigma hb hf outer outerFinite target outerScope ambient ambientLC ambientScope
+    ambientSupported budget (lexical.specialized world)
+  refine ⟨realized.val, ?_⟩
+  simpa only [lexical.specializedTerms] using realized.property
 
 /-- A budget-indexed lexical Kripke family whose runtime syntax is independent
     of the observation budget. -/
