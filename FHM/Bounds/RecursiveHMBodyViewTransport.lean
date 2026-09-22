@@ -200,6 +200,53 @@ def EnvSpecialization.prependMonos {raw : List Binding}
       simpa only [List.map_cons, List.cons_append] using
         (world.prependMonos rest).consMono demand
 
+/-- Extend a static world across the lexical closures introduced by one
+    generalized group.  Closed exports add no freshness obligations; later
+    closing composes their stored introduction interpretation with this world. -/
+def EnvSpecialization.prependClosedExports
+    {raw : List Binding}
+    {output metadata path captures premises bodyTypes}
+    (world : EnvSpecialization raw)
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (rows : Bindings) (types : Nat → BoundsTy) :
+    EnvSpecialization (group.closedExports rows types ++ raw) where
+  outer := world.outer
+  types := world.types
+  outerFinite := world.outerFinite
+  countTarget := world.countTarget
+  outerScope := world.outerScope
+  typesLC := world.typesLC
+  typeTarget := world.typeTarget
+  typesScope := world.typesScope
+  fresh := by
+    intro binding member
+    rcases List.mem_append.mp member with head | tail
+    · unfold GeneralizedGroup.closedExports at head
+      obtain ⟨scheme, _, rfl⟩ := List.mem_map.mp head
+      trivial
+    · exact world.fresh binding tail
+  typesSupported := world.typesSupported
+
+theorem EnvSpecialization.closeRecursiveEnv_prependClosedExports
+    {raw : List Binding}
+    {output metadata path captures premises bodyTypes}
+    (world : EnvSpecialization raw)
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (rows : Bindings) (types : Nat → BoundsTy) :
+    closeRecursiveEnv (world.prependClosedExports group rows types).outer
+        (world.prependClosedExports group rows types).types
+        (group.closedExports rows types ++ raw) =
+      group.closedExports (CountAlgebra.compose world.outer rows)
+          (fun i => world.mapBounds (types i)) ++
+        closeRecursiveEnv world.outer world.types raw := by
+  simp only [EnvSpecialization.prependClosedExports, closeRecursiveEnv, List.map_append]
+  rw [show List.map (closeRecursiveBinding world.outer world.types)
+        (group.closedExports rows types) =
+      group.closedExports (CountAlgebra.compose world.outer rows)
+        (fun i => world.mapBounds (types i)) by
+    simpa only [closeRecursiveEnv, EnvSpecialization.mapBounds] using
+      group.closeRecursiveEnv_closedExports rows types world.outer world.types]
+
 structure EnvSpecialization.ExportFresh {raw : List Binding}
     (world : EnvSpecialization raw) (scheme : HMCountScheme.Scheme) : Prop where
   counts : ∀ i ∈ scheme.counts.captures, lookup world.outer i = none

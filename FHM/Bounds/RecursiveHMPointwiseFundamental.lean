@@ -78,6 +78,133 @@ private theorem closes_source
     simp only [RawBodyView.env, closeRecursiveEnv, List.length_map]
   simpa only [Nat.zero_add, current.arity, sameLength] using source.varsBelow
 
+private theorem ordinary_closed_group_body_env
+    {output metadata path captures premises bodyTypes raw}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (rows : Bindings) (types : Nat → BoundsTy) :
+    RawBodyView.ordinary.env (group.closedExports rows types ++ raw) =
+      group.closedExports rows types ++ ordinaryBodyEnv raw := by
+  rw [RawBodyView.env_append, RawBodyView.env_ordinary,
+    RawBodyView.env_ordinary, GeneralizedGroup.ordinaryBodyEnv_closedExports]
+
+private theorem fixed_closed_group_body_env
+    {output metadata path captures premises bodyTypes raw}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (rows : Bindings) (types : Nat → BoundsTy) :
+    RawBodyView.fixed.env (group.closedExports rows types ++ raw) =
+      group.closedExports rows types ++ fixedBodyEnv raw := by
+  simp only [RawBodyView.env_fixed, fixedBodyEnv]
+
+private def ordinary_closed_group_body_typing
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint} {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ ordinaryBodyEnv raw) group.body result} :
+    ScopedBodyDerives types slots ids rows Delta
+      (RawBodyView.ordinary.env (group.closedExports rows types ++ raw))
+      group.body result :=
+  (ordinary_closed_group_body_env group rows types).symm ▸ bodyTyping
+
+private def ordinary_closed_group_body_ready
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint} {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ ordinaryBodyEnv raw) group.body result}
+    (bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping) :
+    RecursiveHMUniform.BodyDerives.RuntimeReady
+      (ordinary_closed_group_body_typing group (bodyTyping := bodyTyping)) := by
+  exact RecursiveHMUniform.BodyDerives.RuntimeReady.castEnv
+    (ordinary_closed_group_body_env group rows types).symm bodyReady
+
+private def fixed_closed_group_body_typing
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint} {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ fixedBodyEnv raw) group.body result} :
+    ScopedBodyDerives types slots ids rows Delta
+      (RawBodyView.fixed.env (group.closedExports rows types ++ raw))
+      group.body result :=
+  (fixed_closed_group_body_env group rows types).symm ▸ bodyTyping
+
+private def fixed_closed_group_body_ready
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint} {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ fixedBodyEnv raw) group.body result}
+    (bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping) :
+    RecursiveHMUniform.BodyDerives.RuntimeReady
+      (fixed_closed_group_body_typing group (bodyTyping := bodyTyping)) := by
+  exact RecursiveHMUniform.BodyDerives.RuntimeReady.castEnv
+    (fixed_closed_group_body_env group rows types).symm bodyReady
+
+private def letRecClosed_typing_view
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint} {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ ordinaryBodyEnv raw) group.body result} :
+    ScopedBodyDerives types slots ids rows Delta (RawBodyView.ordinary.env raw)
+      (.letRec group.annotations group.rhss group.body) result :=
+  (RawBodyView.env_ordinary raw).symm ▸ ScopedBodyDerives.letRecClosed group bodyTyping
+
+private def letRecClosed_ready_view
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint} {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (groupReady : group.ClosedRuntimeReady rows types)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ ordinaryBodyEnv raw) group.body result}
+    (bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping) :
+    RecursiveHMUniform.BodyDerives.RuntimeReady
+      (letRecClosed_typing_view group (bodyTyping := bodyTyping)) := by
+  exact RecursiveHMUniform.BodyDerives.RuntimeReady.castEnv
+    (RawBodyView.env_ordinary raw).symm
+    (RecursiveHMUniform.BodyDerives.RuntimeReady.letRecClosed group groupReady bodyReady)
+
+private def letRecFixedClosed_typing_view
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint} {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ fixedBodyEnv raw) group.body result} :
+    ScopedBodyDerives types slots ids rows Delta (RawBodyView.fixed.env raw)
+      (.letRec group.annotations group.rhss group.body) result :=
+  (RawBodyView.env_fixed raw).symm ▸ ScopedBodyDerives.letRecFixedClosed group bodyTyping
+
+private def letRecFixedClosed_ready_view
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint} {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (groupReady : group.ClosedRuntimeReady rows types)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ fixedBodyEnv raw) group.body result}
+    (bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping) :
+    RecursiveHMUniform.BodyDerives.RuntimeReady
+      (letRecFixedClosed_typing_view group (bodyTyping := bodyTyping)) := by
+  exact RecursiveHMUniform.BodyDerives.RuntimeReady.castEnv
+    (RawBodyView.env_fixed raw).symm
+    (RecursiveHMUniform.BodyDerives.RuntimeReady.letRecFixedClosed group groupReady bodyReady)
+
 private theorem scoped_termAt
     {view : RawBodyView} {raw : List Binding}
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
@@ -483,6 +610,182 @@ def letPinned
         rw [Runtime.closing_singleton current.terms current.closed _ rhsClosed]
         exact bodyAt
 
+def letRecClosed
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (groupReady : group.ClosedRuntimeReady rows types)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ ordinaryBodyEnv raw) group.body result}
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {world : EnvSpecialization raw}
+    (outerCoherent : RawBodyView.Coherent .ordinary raw)
+    (bodySafe : Pointwise (view := .ordinary)
+      (raw := group.closedExports rows types ++ raw)
+      (types := types) (slots := slots) (ids := ids) (rows := rows)
+      (Delta := Delta) (expr := group.body) (beta := result)
+      (ordinary_closed_group_body_ready group bodyReady)
+      (world.prependClosedExports group rows types)) :
+    Pointwise (view := .ordinary) (raw := raw) (types := types) (slots := slots)
+      (ids := ids) (rows := rows) (Delta := Delta)
+      (expr := .letRec group.annotations group.rhss group.body) (beta := result)
+      (letRecClosed_ready_view group groupReady bodyReady) world where
+  coherent := outerCoherent
+  run bound free sigma hb hf observation pathPremises current := by
+    cases observation with
+    | zero => unfold Runtime.TermAt; intro steps value _ before; omega
+    | succ budget =>
+        let previous := current.down hb hf (by omega : budget ≤ budget + 1)
+        let previousOrdinary := EnvAt.castEnv
+          (RawBodyView.env_ordinary (closeRecursiveEnv world.outer world.types raw)) previous
+        let realized := groupReady.ordinaryPointwise world bound free sigma hb hf budget
+          previousOrdinary
+        let bodyWorld := world.prependClosedExports group rows types
+        have realizedEnvEq :
+            group.closedExports (CountAlgebra.compose world.outer rows)
+                  (fun i => world.mapBounds (types i)) ++
+                ordinaryBodyEnv (closeRecursiveEnv world.outer world.types raw) =
+              RawBodyView.ordinary.env
+                (closeRecursiveEnv bodyWorld.outer bodyWorld.types
+                  (group.closedExports rows types ++ raw)) := by
+          calc
+            _ = group.closedExports (CountAlgebra.compose world.outer rows)
+                    (fun i => world.mapBounds (types i)) ++
+                  closeRecursiveEnv world.outer world.types raw := by
+                rw [ordinaryBodyEnv_closeRecursiveEnv]
+            _ = closeRecursiveEnv bodyWorld.outer bodyWorld.types
+                  (group.closedExports rows types ++ raw) :=
+              (world.closeRecursiveEnv_prependClosedExports group rows types).symm
+            _ = _ := (RawBodyView.Coherent.closed_env_eq .ordinary
+              bodyWorld.outer bodyWorld.types
+              (group.closedExports rows types ++ raw)).symm
+        let bodyCurrent := EnvAt.castEnv realizedEnvEq realized.val
+        have bodyAt := bodySafe.run bound free sigma hb hf budget pathPremises bodyCurrent
+        have bodyTerms : bodyCurrent.terms =
+            Runtime.recursiveTerms group.annotations
+                (closeOuterRhss group.rhss previous.terms) ++ previous.terms := by
+          simp only [bodyCurrent, EnvAt.castEnv_terms, realized]
+          simpa only [previousOrdinary, EnvAt.castEnv_terms] using
+            (groupReady.ordinaryPointwise world bound free sigma hb hf budget
+              previousOrdinary).property
+        rw [bodyTerms] at bodyAt
+        let closedRhss := closeOuterRhss group.rhss previous.terms
+        let recursive := Runtime.recursiveTerms group.annotations closedRhss
+        have closedScope : ∀ rhs ∈ closedRhss,
+            rhs.varsBelow group.rhss.length = true := by
+          intro rhs member
+          obtain ⟨source, sourceMember, rfl⟩ := List.mem_map.mp member
+          apply Runtime.closing_scoped previous.terms previous.closed source group.rhss.length
+          rw [previous.arity]
+          simpa only [RawBodyView.env_length, closeRecursiveEnv, List.length_map,
+            Nat.add_comm] using group.rhssScoped source sourceMember
+        have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+          apply Runtime.recursiveTerms_closed
+          simpa only [closedRhss, closeOuterRhss_length] using closedScope
+        have composed := Runtime.closing_compose previous.terms recursive previous.closed
+          recursiveClosed group.body 0
+        have recursiveLength : recursive.length = group.rhss.length := by
+          simp only [recursive, Runtime.recursiveTerms, List.length_map,
+            closedRhss, closeOuterRhss_length]
+        rw [Nat.zero_add, recursiveLength] at composed
+        rw [← composed] at bodyAt
+        have sameTerms : previous.terms = current.terms := rfl
+        rw [← sameTerms]
+        simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+        change Runtime.TermAt bound free sigma (budget + 1) _
+          (.letRec group.annotations closedRhss
+            (group.body.substN group.rhss.length previous.terms))
+        exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodyAt
+
+def letRecFixedClosed
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    (groupReady : group.ClosedRuntimeReady rows types)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ fixedBodyEnv raw) group.body result}
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {world : EnvSpecialization raw}
+    (bodySafe : Pointwise (view := .fixed)
+      (raw := group.closedExports rows types ++ raw)
+      (types := types) (slots := slots) (ids := ids) (rows := rows)
+      (Delta := Delta) (expr := group.body) (beta := result)
+      (fixed_closed_group_body_ready group bodyReady)
+      (world.prependClosedExports group rows types)) :
+    Pointwise (view := .fixed) (raw := raw) (types := types) (slots := slots)
+      (ids := ids) (rows := rows) (Delta := Delta)
+      (expr := .letRec group.annotations group.rhss group.body) (beta := result)
+      (letRecFixedClosed_ready_view group groupReady bodyReady) world where
+  coherent := trivial
+  run bound free sigma hb hf observation pathPremises current := by
+    cases observation with
+    | zero => unfold Runtime.TermAt; intro steps value _ before; omega
+    | succ budget =>
+        let previous := current.down hb hf (by omega : budget ≤ budget + 1)
+        let previousFixed := EnvAt.castEnv
+          (RawBodyView.env_fixed (closeRecursiveEnv world.outer world.types raw)) previous
+        let realized := groupReady.fixedPointwise world bound free sigma hb hf budget previousFixed
+        let bodyWorld := world.prependClosedExports group rows types
+        have realizedEnvEq :
+            group.closedExports (CountAlgebra.compose world.outer rows)
+                  (fun i => world.mapBounds (types i)) ++
+                fixedBodyEnv (closeRecursiveEnv world.outer world.types raw) =
+              RawBodyView.fixed.env
+                (closeRecursiveEnv bodyWorld.outer bodyWorld.types
+                  (group.closedExports rows types ++ raw)) := by
+          calc
+            _ = group.closedExports (CountAlgebra.compose world.outer rows)
+                    (fun i => world.mapBounds (types i)) ++
+                  closeRecursiveEnv world.outer world.types raw := rfl
+            _ = closeRecursiveEnv bodyWorld.outer bodyWorld.types
+                  (group.closedExports rows types ++ raw) :=
+              (world.closeRecursiveEnv_prependClosedExports group rows types).symm
+            _ = _ := (RawBodyView.Coherent.closed_env_eq .fixed
+              bodyWorld.outer bodyWorld.types
+              (group.closedExports rows types ++ raw)).symm
+        let bodyCurrent := EnvAt.castEnv realizedEnvEq realized.val
+        have bodyAt := bodySafe.run bound free sigma hb hf budget pathPremises bodyCurrent
+        have bodyTerms : bodyCurrent.terms =
+            Runtime.recursiveTerms group.annotations
+                (closeOuterRhss group.rhss previous.terms) ++ previous.terms := by
+          simp only [bodyCurrent, EnvAt.castEnv_terms, realized]
+          simpa only [previousFixed, EnvAt.castEnv_terms] using
+            (groupReady.fixedPointwise world bound free sigma hb hf budget previousFixed).property
+        rw [bodyTerms] at bodyAt
+        let closedRhss := closeOuterRhss group.rhss previous.terms
+        let recursive := Runtime.recursiveTerms group.annotations closedRhss
+        have closedScope : ∀ rhs ∈ closedRhss,
+            rhs.varsBelow group.rhss.length = true := by
+          intro rhs member
+          obtain ⟨source, sourceMember, rfl⟩ := List.mem_map.mp member
+          apply Runtime.closing_scoped previous.terms previous.closed source group.rhss.length
+          rw [previous.arity]
+          simpa only [RawBodyView.env_length, closeRecursiveEnv, List.length_map,
+            Nat.add_comm] using group.rhssScoped source sourceMember
+        have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+          apply Runtime.recursiveTerms_closed
+          simpa only [closedRhss, closeOuterRhss_length] using closedScope
+        have composed := Runtime.closing_compose previous.terms recursive previous.closed
+          recursiveClosed group.body 0
+        have recursiveLength : recursive.length = group.rhss.length := by
+          simp only [recursive, Runtime.recursiveTerms, List.length_map,
+            closedRhss, closeOuterRhss_length]
+        rw [Nat.zero_add, recursiveLength] at composed
+        rw [← composed] at bodyAt
+        have sameTerms : previous.terms = current.terms := rfl
+        rw [← sameTerms]
+        simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+        change Runtime.TermAt bound free sigma (budget + 1) _
+          (.letRec group.annotations closedRhss
+            (group.body.substN group.rhss.length previous.terms))
+        exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodyAt
+
 def app
     {view : RawBodyView} {raw : List Binding}
     {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
@@ -533,5 +836,7 @@ end PointwiseFundamental
 
 #print axioms PointwiseFundamental.Pointwise.termAt
 #print axioms PointwiseFundamental.Pointwise.app
+#print axioms PointwiseFundamental.Pointwise.letRecClosed
+#print axioms PointwiseFundamental.Pointwise.letRecFixedClosed
 
 end FHM.Bounds.RecursiveHMClosedExit
