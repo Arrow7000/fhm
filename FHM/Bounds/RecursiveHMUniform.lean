@@ -1542,24 +1542,14 @@ structure GeneralizedGroup.RuntimeReady
       e.terms = Runtime.recursiveTerms group.annotations
         (closeOuterRhss group.rhss outer.terms) ++ outer.terms }
 
-/-- Runtime admissibility for the lexical-closure view of a generalized
-    group.  The static count and HM interpretations are fixed where the group
-    is introduced; the witness supplies only the tied Core environment needed
-    by the body fundamental theorem.  Constructing this witness is deliberately
-    separate from the body judgment, since it is where the use-indexed
-    recursive fixed point is discharged. -/
-structure GeneralizedGroup.ClosedRuntimeReady
+/-- The closed-world callbacks needed by the pointwise body fundamental
+    theorem.  This deliberately omits the legacy unclosed views and the
+    specialization-packaging callback: clients which only descend through an
+    enclosing specialization world should not have to manufacture them. -/
+structure GeneralizedGroup.ClosedPointwiseReady
     {output metadata path captures premises bodyTypes outerEnv}
     (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
     (outer : Bindings) (ambient : Nat → BoundsTy) where
-  ordinary : ∀ (bound free : Runtime.TypeEnv) (σ : Assign)
-    (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
-    (budget : Nat)
-    (enclosing : BodyEnvAt bound free σ budget (ordinaryBodyEnv outerEnv)),
-    { e : BodyEnvAt bound free σ budget
-        (group.closedExports outer ambient ++ ordinaryBodyEnv outerEnv) //
-      e.terms = Runtime.recursiveTerms group.annotations
-        (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
   /-- Realize the ordinary body view after an enclosing static world has
       specialized the lexical tail.  The group's captured introduction world
       is specialized by that outer world, while the tail is closed only once,
@@ -1574,6 +1564,39 @@ structure GeneralizedGroup.ClosedRuntimeReady
         (group.closedExports (CountAlgebra.compose world.outer outer)
             (fun i => mapFree world.types (bounds world.outer (ambient i))) ++
           ordinaryBodyEnv (closeRecursiveEnv world.outer world.types outerEnv)) //
+      e.terms = Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
+  /-- Fixed-view counterpart of `ordinaryPointwise`.  Raw recursive
+      assumptions in the enclosing SCC remain fixed, but are closed at the
+      enclosing specialization world before the nested group is tied. -/
+  fixedPointwise : ∀ (world : EnvSpecialization outerEnv)
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat)
+    (enclosing : BodyEnvAt bound free σ budget
+      (fixedBodyEnv (closeRecursiveEnv world.outer world.types outerEnv))),
+    { e : BodyEnvAt bound free σ budget
+        (group.closedExports (CountAlgebra.compose world.outer outer)
+            (fun i => mapFree world.types (bounds world.outer (ambient i))) ++
+          fixedBodyEnv (closeRecursiveEnv world.outer world.types outerEnv)) //
+      e.terms = Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
+
+/-- Runtime admissibility for every view of the lexical closure of a
+    generalized group.  The pointwise fragment is inherited explicitly so
+    closed-world clients can depend on `ClosedPointwiseReady` alone, while
+    existing root and legacy clients retain the full interface. -/
+structure GeneralizedGroup.ClosedRuntimeReady
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (outer : Bindings) (ambient : Nat → BoundsTy)
+    extends group.ClosedPointwiseReady outer ambient where
+  ordinary : ∀ (bound free : Runtime.TypeEnv) (σ : Assign)
+    (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat)
+    (enclosing : BodyEnvAt bound free σ budget (ordinaryBodyEnv outerEnv)),
+    { e : BodyEnvAt bound free σ budget
+        (group.closedExports outer ambient ++ ordinaryBodyEnv outerEnv) //
       e.terms = Runtime.recursiveTerms group.annotations
         (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
   specializable : ∀ (bound free : Runtime.TypeEnv) (σ : Assign)
@@ -1592,21 +1615,16 @@ structure GeneralizedGroup.ClosedRuntimeReady
         (group.closedExports outer ambient ++ fixedBodyEnv outerEnv) //
       e.terms = Runtime.recursiveTerms group.annotations
         (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
-  /-- Fixed-view counterpart of `ordinaryPointwise`.  Raw recursive
-      assumptions in the enclosing SCC remain fixed, but are closed at the
-      enclosing specialization world before the nested group is tied. -/
-  fixedPointwise : ∀ (world : EnvSpecialization outerEnv)
-    (bound free : Runtime.TypeEnv) (σ : Assign)
-    (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
-    (budget : Nat)
-    (enclosing : BodyEnvAt bound free σ budget
-      (fixedBodyEnv (closeRecursiveEnv world.outer world.types outerEnv))),
-    { e : BodyEnvAt bound free σ budget
-        (group.closedExports (CountAlgebra.compose world.outer outer)
-            (fun i => mapFree world.types (bounds world.outer (ambient i))) ++
-          fixedBodyEnv (closeRecursiveEnv world.outer world.types outerEnv)) //
-      e.terms = Runtime.recursiveTerms group.annotations
-        (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
+
+/-- Forget the legacy/root callbacks and retain exactly the closed-world
+    pointwise interface. -/
+def GeneralizedGroup.ClosedRuntimeReady.pointwise
+    {output metadata path captures premises bodyTypes outerEnv}
+    {group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv}
+    {outer : Bindings} {ambient : Nat → BoundsTy}
+    (ready : group.ClosedRuntimeReady outer ambient) :
+    group.ClosedPointwiseReady outer ambient :=
+  ready.toClosedPointwiseReady
 
 /-- All generalized exports are realized by Core's original source-ordered
     recursive replacements, using the fixed-map member theorem at each use. -/
