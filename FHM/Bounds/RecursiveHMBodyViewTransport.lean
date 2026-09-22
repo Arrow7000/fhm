@@ -57,6 +57,16 @@ theorem prependMonos {view raw} (demands : List BoundsTy)
   | cons demand rest ih =>
       simpa only [List.map_cons, List.cons_append] using consMono ih
 
+theorem tailPrependMonos {view raw} (demands : List BoundsTy)
+    (coherent : RawBodyView.Coherent view (demands.map Binding.mono ++ raw)) :
+    RawBodyView.Coherent view raw := by
+  induction demands with
+  | nil => simpa using coherent
+  | cons demand rest ih =>
+      apply ih
+      exact tailMono (by
+        simpa only [List.map_cons, List.cons_append] using coherent)
+
 theorem closedExports_append
     {output metadata path captures premises bodyTypes outerEnv}
     (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)

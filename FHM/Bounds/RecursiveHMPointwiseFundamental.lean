@@ -610,6 +610,236 @@ def letPinned
         rw [Runtime.closing_singleton current.terms current.closed _ rhsClosed]
         exact bodyAt
 
+def letRecMono
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {ann : Option PolyTy} {rhs body : Expr}
+    {actual demand result : BoundsTy}
+    (annotation : ScopedHMAnnotation.BindingOK types slots ids rows Delta ann demand)
+    {rhsTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.mono demand :: raw)) rhs actual}
+    (sub : SemanticSub Delta actual demand)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (Binding.mono demand :: raw)) body result}
+    {rhsReady : RecursiveHMUniform.BodyDerives.RuntimeReady rhsTyping}
+    (demandSupported : Runtime.Supported demand)
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {world : EnvSpecialization raw}
+    (rhsSafe : Pointwise rhsReady (world.consMono demand))
+    (bodySafe : Pointwise bodyReady (world.consMono demand)) :
+    Pointwise
+      (RecursiveHMUniform.BodyDerives.RuntimeReady.letRecMono annotation sub
+        (by simpa only [RawBodyView.env_consMono] using rhsReady)
+        demandSupported
+        (by simpa only [RawBodyView.env_consMono] using bodyReady)) world where
+  coherent := bodySafe.coherent.tailMono
+  run bound free sigma hb hf observation premises current := by
+    cases observation with
+    | zero => unfold Runtime.TermAt; intro steps value _ before; omega
+    | succ budget =>
+        let previous := current.down hb hf (by omega : budget ≤ budget + 1)
+        have rhsScope : rhs.varsBelow
+            (1 + (view.env (closeRecursiveEnv world.outer world.types raw)).length) = true := by
+          simpa only [RawBodyView.env_length, closeRecursiveEnv, List.length_map,
+            List.length_cons, Nat.add_comm] using rhsTyping.varsBelow
+        have innerEnvEq :
+            Binding.mono (world.mapBounds demand) ::
+                view.env (closeRecursiveEnv world.outer world.types raw) =
+              view.env (closeRecursiveEnv (world.consMono demand).outer
+                (world.consMono demand).types (Binding.mono demand :: raw)) := by
+          simp only [EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+            closeRecursiveEnv, List.map_cons, closeRecursiveBinding,
+            RawBodyView.env_consMono]
+        have mappedSub := SchemeSpecialization.subtype world.types
+          (CountSubstitution.subtype world.outer world.outerFinite sub)
+        let rhsAt : ∀ innerBudget
+            (assumptions : BodyEnvAt bound free sigma innerBudget
+              (Binding.mono (world.mapBounds demand) ::
+                view.env (closeRecursiveEnv world.outer world.types raw))),
+            Runtime.TermAt bound free sigma innerBudget (world.mapBounds demand)
+              (rhs.substN 0 assumptions.terms) :=
+          fun innerBudget assumptions => by
+            let childCurrent := EnvAt.castEnv innerEnvEq assumptions
+            have safe := rhsSafe.run bound free sigma hb hf innerBudget premises childCurrent
+            have widened := safe.of_values
+              (Runtime.subtype mappedSub (supported_map world rhsReady.supported)
+                (supported_map world demandSupported) bound free sigma premises)
+            simpa only [childCurrent, EnvAt.castEnv_terms] using widened
+        let realized := BodyEnvAt.tieMono (ann := ann) rhsScope hb hf rhsAt budget previous
+        let closedRhss := closeOuterRhss [rhs] previous.terms
+        let recursive := Runtime.recursiveTerms [ann] closedRhss
+        have realizedTerms : realized.val.terms = recursive ++ previous.terms := by
+          simpa only [recursive, closedRhss] using realized.property
+        let bodyCurrent := EnvAt.castEnv innerEnvEq realized.val
+        have bodyAt := bodySafe.run bound free sigma hb hf budget premises bodyCurrent
+        rw [show bodyCurrent.terms = recursive ++ previous.terms by
+          simpa only [bodyCurrent, EnvAt.castEnv_terms] using realizedTerms] at bodyAt
+        have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+          apply Runtime.recursiveTerms_closed
+          intro source member
+          obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
+          have originalEq : original = rhs := List.mem_singleton.mp originalMember
+          subst original
+          apply Runtime.closing_scoped previous.terms previous.closed rhs 1
+          rw [previous.arity]
+          simpa only [Nat.add_comm] using rhsScope
+        have composed := Runtime.closing_compose previous.terms recursive previous.closed
+          recursiveClosed body 0
+        rw [Nat.zero_add, show recursive.length = 1 by
+          simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss]] at composed
+        rw [← composed] at bodyAt
+        have sameTerms : previous.terms = current.terms := rfl
+        rw [← sameTerms]
+        simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+        change Runtime.TermAt bound free sigma (budget + 1) _
+          (.letRec [ann] closedRhss (body.substN 1 previous.terms))
+        exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodyAt
+
+def letRecMonoGroup
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} (annotations : List (Option PolyTy))
+    (rhss : List Expr) (body : Expr) (demands : List BoundsTy) {result : BoundsTy}
+    {actuals : Nat → BoundsTy}
+    {annotationCount : annotations.length = rhss.length}
+    {demandCount : demands.length = rhss.length}
+    {annotationsOK : ∀ i (inside : i < rhss.length),
+      ScopedHMAnnotation.BindingOK types slots ids rows Delta
+        (annotations[i]'(by omega)) (demands[i]'(by omega))}
+    {rhssTyping : ∀ i (inside : i < rhss.length),
+      ScopedBodyDerives types slots ids rows Delta
+        (view.env (demands.map Binding.mono ++ raw)) rhss[i] (actuals i)}
+    {inclusions : ∀ i (inside : i < rhss.length),
+      SemanticSub Delta (actuals i) (demands[i]'(by omega))}
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env (demands.map Binding.mono ++ raw)) body result}
+    {rhssReady : ∀ i inside,
+      RecursiveHMUniform.BodyDerives.RuntimeReady (rhssTyping i inside)}
+    (demandsSupported : ∀ demand ∈ demands, Runtime.Supported demand)
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {world : EnvSpecialization raw}
+    (rhssSafe : ∀ i inside,
+      Pointwise (rhssReady i inside) (world.prependMonos demands))
+    (bodySafe : Pointwise bodyReady (world.prependMonos demands)) :
+    Pointwise
+      (@RecursiveHMUniform.BodyDerives.RuntimeReady.letRecMonoGroup
+        types slots ids rows Delta (view.env raw) annotations rhss body demands
+        result actuals annotationCount demandCount annotationsOK
+        (fun i _inside => by simpa only [RawBodyView.env_prependMonos] using
+          rhssTyping i _inside)
+        inclusions
+        (by simpa only [RawBodyView.env_prependMonos] using bodyTyping)
+        (fun i inside => by
+          simpa only [RawBodyView.env_prependMonos] using rhssReady i inside)
+        demandsSupported
+        (by simpa only [RawBodyView.env_prependMonos] using bodyReady)) world where
+  coherent := bodySafe.coherent.tailPrependMonos demands
+  run bound free sigma hb hf observation premises current := by
+    cases observation with
+    | zero => unfold Runtime.TermAt; intro steps value _ before; omega
+    | succ budget =>
+        let previous := current.down hb hf (by omega : budget ≤ budget + 1)
+        let mappedDemands := demands.map world.mapBounds
+        let innerEnv := mappedDemands.map Binding.mono
+        have arity : rhss.length = innerEnv.length := by
+          simp only [innerEnv, mappedDemands, List.length_map]
+          exact demandCount.symm
+        have rhsScope : ∀ source ∈ rhss,
+            source.varsBelow
+              (rhss.length + (view.env
+                (closeRecursiveEnv world.outer world.types raw)).length) = true := by
+          intro source member
+          obtain ⟨i, inside, rfl⟩ := List.mem_iff_getElem.mp member
+          have scopeFact := (rhssTyping i inside).varsBelow
+          simpa only [RawBodyView.env_length, closeRecursiveEnv, List.length_map,
+            List.length_append, demandCount] using scopeFact
+        have innerEnvEq :
+            innerEnv ++ view.env (closeRecursiveEnv world.outer world.types raw) =
+              view.env (closeRecursiveEnv (world.prependMonos demands).outer
+                (world.prependMonos demands).types
+                (demands.map Binding.mono ++ raw)) := by
+          simp only [innerEnv, mappedDemands, EnvSpecialization.prependMonos_outer,
+            EnvSpecialization.prependMonos_types,
+            closeRecursiveEnv_prependMonos, RawBodyView.env_prependMonos]
+        let rhsAt : ∀ innerBudget
+            (assumptions : BodyEnvAt bound free sigma innerBudget
+              (innerEnv ++ view.env
+                (closeRecursiveEnv world.outer world.types raw)))
+            i (inside : i < innerEnv.length),
+            BodyBindingAt bound free sigma innerBudget innerEnv[i]
+              ((rhss[i]'(by rw [arity]; exact inside)).substN 0 assumptions.terms) :=
+          fun innerBudget assumptions i inside => by
+            have rhsInside : i < rhss.length := by rw [arity]; exact inside
+            have demandInside : i < demands.length := by
+              rw [demandCount]
+              exact rhsInside
+            let childCurrent := EnvAt.castEnv innerEnvEq assumptions
+            have childPremises :
+                ∀ p ∈ Delta.map (constraint (world.prependMonos demands).outer),
+                  p.Holds sigma := by
+              simpa only [EnvSpecialization.prependMonos_outer] using premises
+            have safe0 := (rhssSafe i rhsInside).run bound free sigma hb hf innerBudget
+              childPremises childCurrent
+            have safe : Runtime.TermAt bound free sigma innerBudget
+                (world.mapBounds (actuals i))
+                (rhss[i].substN 0 childCurrent.terms) := by
+              simpa only [EnvSpecialization.prependMonos_outer,
+                EnvSpecialization.prependMonos_types, EnvSpecialization.mapBounds] using safe0
+            have mappedSub := SchemeSpecialization.subtype world.types
+              (CountSubstitution.subtype world.outer world.outerFinite
+                (inclusions i rhsInside))
+            have widened := safe.of_values
+              (Runtime.subtype mappedSub
+                (supported_map world (rhssReady i rhsInside).supported)
+                (supported_map world
+                  (demandsSupported demands[i] (List.getElem_mem demandInside)))
+                bound free sigma premises)
+            simp only [BodyBindingAt, innerEnv, mappedDemands, List.getElem_map]
+            simpa only [childCurrent, EnvAt.castEnv_terms,
+              EnvSpecialization.prependMonos_outer,
+              EnvSpecialization.prependMonos_types, EnvSpecialization.mapBounds] using widened
+        let realized := EnvAt.tieGroupCaptured annotations rhss arity rhsScope hb hf
+          rhsAt budget previous
+        let closedRhss := closeOuterRhss rhss previous.terms
+        let recursive := Runtime.recursiveTerms annotations closedRhss
+        have realizedTerms : realized.val.terms = recursive ++ previous.terms := by
+          simpa only [recursive, closedRhss] using realized.property
+        let bodyCurrent := EnvAt.castEnv innerEnvEq realized.val
+        have childPremises :
+            ∀ p ∈ Delta.map (constraint (world.prependMonos demands).outer),
+              p.Holds sigma := by
+          simpa only [EnvSpecialization.prependMonos_outer] using premises
+        have bodyAt0 := bodySafe.run bound free sigma hb hf budget childPremises bodyCurrent
+        have bodyAt : Runtime.TermAt bound free sigma budget (world.mapBounds result)
+            (body.substN 0 bodyCurrent.terms) := by
+          simpa only [EnvSpecialization.prependMonos_outer,
+            EnvSpecialization.prependMonos_types, EnvSpecialization.mapBounds] using bodyAt0
+        rw [show bodyCurrent.terms = recursive ++ previous.terms by
+          simpa only [bodyCurrent, EnvAt.castEnv_terms] using realizedTerms] at bodyAt
+        have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+          apply Runtime.recursiveTerms_closed
+          have closedScope : ∀ source ∈ closedRhss,
+              source.varsBelow rhss.length = true := by
+            intro source member
+            obtain ⟨original, originalMember, rfl⟩ := List.mem_map.mp member
+            apply Runtime.closing_scoped previous.terms previous.closed original rhss.length
+            rw [previous.arity]
+            exact rhsScope original originalMember
+          simpa only [closedRhss, closeOuterRhss_length] using closedScope
+        have recursiveLength : recursive.length = rhss.length := by
+          simp only [recursive, Runtime.recursiveTerms, List.length_map,
+            closedRhss, closeOuterRhss_length]
+        have composed := Runtime.closing_compose previous.terms recursive previous.closed
+          recursiveClosed body 0
+        rw [Nat.zero_add, recursiveLength] at composed
+        rw [← composed] at bodyAt
+        have sameTerms : previous.terms = current.terms := rfl
+        rw [← sameTerms]
+        simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+        change Runtime.TermAt bound free sigma (budget + 1) _
+          (.letRec annotations closedRhss (body.substN rhss.length previous.terms))
+        exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodyAt
+
 def letRecClosed
     {raw : List Binding} {types slots : Nat → BoundsTy}
     {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
