@@ -1560,6 +1560,22 @@ structure GeneralizedGroup.ClosedRuntimeReady
         (group.closedExports outer ambient ++ ordinaryBodyEnv outerEnv) //
       e.terms = Runtime.recursiveTerms group.annotations
         (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
+  /-- Realize the ordinary body view after an enclosing static world has
+      specialized the lexical tail.  The group's captured introduction world
+      is specialized by that outer world, while the tail is closed only once,
+      at the outer world itself. -/
+  ordinaryPointwise : ∀ (world : EnvSpecialization outerEnv)
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat)
+    (enclosing : BodyEnvAt bound free σ budget
+      (ordinaryBodyEnv (closeRecursiveEnv world.outer world.types outerEnv))),
+    { e : BodyEnvAt bound free σ budget
+        (group.closedExports (CountAlgebra.compose world.outer outer)
+            (fun i => mapFree world.types (bounds world.outer (ambient i))) ++
+          ordinaryBodyEnv (closeRecursiveEnv world.outer world.types outerEnv)) //
+      e.terms = Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
   specializable : ∀ (bound free : Runtime.TypeEnv) (σ : Assign)
     (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
     (budget : Nat)
@@ -1574,6 +1590,21 @@ structure GeneralizedGroup.ClosedRuntimeReady
     (enclosing : BodyEnvAt bound free σ budget (fixedBodyEnv outerEnv)),
     { e : BodyEnvAt bound free σ budget
         (group.closedExports outer ambient ++ fixedBodyEnv outerEnv) //
+      e.terms = Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
+  /-- Fixed-view counterpart of `ordinaryPointwise`.  Raw recursive
+      assumptions in the enclosing SCC remain fixed, but are closed at the
+      enclosing specialization world before the nested group is tied. -/
+  fixedPointwise : ∀ (world : EnvSpecialization outerEnv)
+    (bound free : Runtime.TypeEnv) (σ : Assign)
+    (_hb : Runtime.TypeEnv.Downward bound) (_hf : Runtime.TypeEnv.Downward free)
+    (budget : Nat)
+    (enclosing : BodyEnvAt bound free σ budget
+      (fixedBodyEnv (closeRecursiveEnv world.outer world.types outerEnv))),
+    { e : BodyEnvAt bound free σ budget
+        (group.closedExports (CountAlgebra.compose world.outer outer)
+            (fun i => mapFree world.types (bounds world.outer (ambient i))) ++
+          fixedBodyEnv (closeRecursiveEnv world.outer world.types outerEnv)) //
       e.terms = Runtime.recursiveTerms group.annotations
         (closeOuterRhss group.rhss enclosing.terms) ++ enclosing.terms }
 
