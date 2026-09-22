@@ -2055,6 +2055,261 @@ closed-group readiness at the corresponding constructors.
 -/
 
 end Pointwise
+
+/-- Checker-facing closure-normal capability: one source readiness proof is
+    sound in every lawful closing world for its raw environment.  External
+    boundary evidence is assembled into the world-indexed `Pointwise` proof,
+    rather than hidden behind a false theorem about arbitrary `RuntimeReady`.
+-/
+structure AllWorlds
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {expr : Expr} {beta : BoundsTy}
+    {source : ScopedBodyDerives types slots ids rows Delta (view.env raw) expr beta}
+    (ready : RecursiveHMUniform.BodyDerives.RuntimeReady source) : Prop where
+  pointwise : ∀ world : EnvSpecialization raw, Pointwise ready world
+
+namespace AllWorlds
+
+/-- The extra checker artifact required by a capture-closed local at every
+    enclosing specialization. -/
+abbrev ClosedLocalReadyFamily
+    (view : RawBodyView) (raw : List Binding)
+    (types slots : Nat → BoundsTy) (ids : List Nat) (rows : Bindings)
+    (Delta : List Constraint) (rhs : Expr) (scheme : HMCountScheme.Scheme)
+    (frame : LocalFrame scheme ids rhs) (ann : Option PolyTy) : Prop :=
+  ∀ world : EnvSpecialization raw,
+    ClosedLocalTarget.Ready view raw types slots ids rows Delta rhs scheme frame ann world
+
+/-- Introduce an all-worlds capability from a world-indexed assembly.  The
+    function can only construct results through the sound `Pointwise` API, so
+    this remains a proof interface rather than an unchecked escape hatch. -/
+def of
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {expr : Expr} {beta : BoundsTy}
+    {source : ScopedBodyDerives types slots ids rows Delta (view.env raw) expr beta}
+    {ready : RecursiveHMUniform.BodyDerives.RuntimeReady source}
+    (build : ∀ world : EnvSpecialization raw, Pointwise ready world) :
+    AllWorlds ready :=
+  ⟨build⟩
+
+def ordinary
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {expr : Expr} {beta : BoundsTy}
+    {typing : ScopedDerives types slots ids rows Delta (view.env raw) expr beta}
+    {ready : RecursiveHMJudgement.ScopedDerives.RuntimeReady typing}
+    (coherent : RawBodyView.Coherent view raw) :
+    AllWorlds (RecursiveHMUniform.BodyDerives.RuntimeReady.ordinary ready) :=
+  of fun _ => Pointwise.ordinary (typing := typing) (ready := ready) coherent
+
+def literal
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} (view : RawBodyView) (raw : List Binding)
+    (coherent : RawBodyView.Coherent view raw) (p : PrimLitExpr) :
+    AllWorlds
+      (@RecursiveHMUniform.BodyDerives.RuntimeReady.literal types slots ids rows Delta
+        (view.env raw) p) :=
+  of fun world => Pointwise.literal view raw world coherent p
+
+def primBinOp
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} (view : RawBodyView) (raw : List Binding)
+    (coherent : RawBodyView.Coherent view raw) (op : PrimBinOp) :
+    AllWorlds
+      (@RecursiveHMUniform.BodyDerives.RuntimeReady.primBinOp types slots ids rows Delta
+        (view.env raw) op) :=
+  of fun world => Pointwise.primBinOp view raw world coherent op
+
+def nil
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} (view : RawBodyView) (raw : List Binding)
+    (coherent : RawBodyView.Coherent view raw) (elem : BoundsTy)
+    (supported : Runtime.Supported elem) :
+    AllWorlds
+      (@RecursiveHMUniform.BodyDerives.RuntimeReady.nil types slots ids rows Delta
+        (view.env raw) elem supported) :=
+  of fun world => Pointwise.nil view raw world coherent elem supported
+
+def boolCtor
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} (view : RawBodyView) (raw : List Binding)
+    (coherent : RawBodyView.Coherent view raw) {name : CtorName}
+    (isCtor : BoolBranches.IsCtor name) :
+    AllWorlds
+      (@RecursiveHMUniform.BodyDerives.RuntimeReady.boolCtor types slots ids rows Delta
+        (view.env raw) name isCtor) :=
+  of fun world => Pointwise.boolCtor view raw world coherent isCtor
+
+def ordinaryAppend
+    {sourceEnv tailRaw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {expr : Expr} {beta : BoundsTy}
+    {typing : ScopedDerives types slots ids rows Delta sourceEnv expr beta}
+    (tail : List BodyBinding)
+    (tailEq : tail = RawBodyView.ordinary.env tailRaw)
+    {ready : RecursiveHMJudgement.ScopedDerives.RuntimeReady typing}
+    (arguments : RecursiveArgumentsSupported sourceEnv)
+    (coherent : RawBodyView.Coherent .ordinary (sourceEnv ++ tailRaw)) :
+    AllWorlds (Pointwise.ordinaryAppend_ready_view tail tailEq ready arguments) :=
+  of fun _world => Pointwise.ordinaryAppend (ready := ready) tail tailEq arguments coherent
+
+def letRecClosed
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ ordinaryBodyEnv raw) group.body result}
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {sourceReady : RecursiveHMUniform.BodyDerives.RuntimeReady
+      (Pointwise.letRecClosed_typing_view group (bodyTyping := bodyTyping))}
+    (groupReady : group.ClosedPointwiseReady rows types)
+    (outerCoherent : RawBodyView.Coherent .ordinary raw)
+    (bodySafe : AllWorlds
+      (Pointwise.ordinary_closed_group_body_ready group bodyReady)) :
+    AllWorlds sourceReady :=
+  of fun world => Pointwise.letRecClosed group groupReady outerCoherent
+    (bodyTyping := bodyTyping) (bodyReady := bodyReady)
+    (bodySafe.pointwise (world.prependClosedExports group rows types))
+
+def letRecFixedClosed
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {result : BoundsTy}
+    {output : Expr} {metadata : Scope.Metadata} {path : CorePath}
+    {captures : List Nat} {premises : List Constraint} {bodyTypes : List Ty}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (group.closedExports rows types ++ fixedBodyEnv raw) group.body result}
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {sourceReady : RecursiveHMUniform.BodyDerives.RuntimeReady
+      (Pointwise.letRecFixedClosed_typing_view group (bodyTyping := bodyTyping))}
+    (groupReady : group.ClosedPointwiseReady rows types)
+    (bodySafe : AllWorlds
+      (Pointwise.fixed_closed_group_body_ready group bodyReady)) :
+    AllWorlds sourceReady :=
+  of fun world => Pointwise.letRecFixedClosed group groupReady
+    (bodyTyping := bodyTyping) (bodyReady := bodyReady)
+    (bodySafe.pointwise (world.prependClosedExports group rows types))
+
+/-- Same-environment structural composition.  This covers constructors such
+    as `cons`, `pair`, `app`, and `subsumption`: the checker supplies the
+    corresponding `Pointwise` constructor as `build`. -/
+def map
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint}
+    {childExpr parentExpr : Expr} {childTy parentTy : BoundsTy}
+    {childSource : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) childExpr childTy}
+    {parentSource : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) parentExpr parentTy}
+    {childReady : RecursiveHMUniform.BodyDerives.RuntimeReady childSource}
+    {parentReady : RecursiveHMUniform.BodyDerives.RuntimeReady parentSource}
+    (child : AllWorlds childReady)
+    (build : ∀ world : EnvSpecialization raw,
+      Pointwise childReady world → Pointwise parentReady world) :
+    AllWorlds parentReady :=
+  ⟨fun world => build world (child.pointwise world)⟩
+
+/-- Binary same-environment structural composition. -/
+def map₂
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint}
+    {leftExpr rightExpr parentExpr : Expr}
+    {leftTy rightTy parentTy : BoundsTy}
+    {leftSource : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) leftExpr leftTy}
+    {rightSource : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) rightExpr rightTy}
+    {parentSource : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) parentExpr parentTy}
+    {leftReady : RecursiveHMUniform.BodyDerives.RuntimeReady leftSource}
+    {rightReady : RecursiveHMUniform.BodyDerives.RuntimeReady rightSource}
+    {parentReady : RecursiveHMUniform.BodyDerives.RuntimeReady parentSource}
+    (left : AllWorlds leftReady) (right : AllWorlds rightReady)
+    (build : ∀ world : EnvSpecialization raw,
+      Pointwise leftReady world → Pointwise rightReady world →
+        Pointwise parentReady world) :
+    AllWorlds parentReady :=
+  ⟨fun world => build world (left.pointwise world) (right.pointwise world)⟩
+
+/-- Composition beneath a binder or branch.  `extend` is the static-world
+    operation (`consMono`, `prependMonos`, `extendBranch`, `consClosure`, ...)
+    corresponding to the source constructor. -/
+def descend
+    {parentView childView : RawBodyView}
+    {parentRaw childRaw : List Binding}
+    {parentTypes parentSlots childTypes childSlots : Nat → BoundsTy}
+    {parentIds childIds : List Nat} {parentRows childRows : Bindings}
+    {parentDelta childDelta : List Constraint}
+    {parentExpr childExpr : Expr} {parentTy childTy : BoundsTy}
+    {parentSource : ScopedBodyDerives parentTypes parentSlots parentIds parentRows
+      parentDelta (parentView.env parentRaw) parentExpr parentTy}
+    {childSource : ScopedBodyDerives childTypes childSlots childIds childRows
+      childDelta (childView.env childRaw) childExpr childTy}
+    {parentReady : RecursiveHMUniform.BodyDerives.RuntimeReady parentSource}
+    {childReady : RecursiveHMUniform.BodyDerives.RuntimeReady childSource}
+    (extend : EnvSpecialization parentRaw → EnvSpecialization childRaw)
+    (child : AllWorlds childReady)
+    (build : ∀ world : EnvSpecialization parentRaw,
+      Pointwise childReady (extend world) → Pointwise parentReady world) :
+    AllWorlds parentReady :=
+  ⟨fun world => build world (child.pointwise (extend world))⟩
+
+/-- A parent plus a descended child, used by nonrecursive lets and similar
+    constructors whose RHS stays in the current world while the body enters an
+    extended world. -/
+def currentAndDescend
+    {parentView currentView childView : RawBodyView}
+    {parentRaw currentRaw childRaw : List Binding}
+    {parentTypes parentSlots currentTypes currentSlots childTypes childSlots : Nat → BoundsTy}
+    {parentIds currentIds childIds : List Nat}
+    {parentRows currentRows childRows : Bindings}
+    {parentDelta currentDelta childDelta : List Constraint}
+    {parentExpr currentExpr childExpr : Expr}
+    {parentTy currentTy childTy : BoundsTy}
+    {parentSource : ScopedBodyDerives parentTypes parentSlots parentIds parentRows
+      parentDelta (parentView.env parentRaw) parentExpr parentTy}
+    {currentSource : ScopedBodyDerives currentTypes currentSlots currentIds currentRows
+      currentDelta (currentView.env currentRaw) currentExpr currentTy}
+    {childSource : ScopedBodyDerives childTypes childSlots childIds childRows
+      childDelta (childView.env childRaw) childExpr childTy}
+    {parentReady : RecursiveHMUniform.BodyDerives.RuntimeReady parentSource}
+    {currentReady : RecursiveHMUniform.BodyDerives.RuntimeReady currentSource}
+    {childReady : RecursiveHMUniform.BodyDerives.RuntimeReady childSource}
+    (same : EnvSpecialization parentRaw → EnvSpecialization currentRaw)
+    (extend : EnvSpecialization parentRaw → EnvSpecialization childRaw)
+    (current : AllWorlds currentReady) (child : AllWorlds childReady)
+    (build : ∀ world : EnvSpecialization parentRaw,
+      Pointwise currentReady (same world) →
+      Pointwise childReady (extend world) → Pointwise parentReady world) :
+    AllWorlds parentReady :=
+  ⟨fun world => build world (current.pointwise (same world))
+    (child.pointwise (extend world))⟩
+
+/-! The generic constructors above deliberately consume only already-proved
+`Pointwise` constructors.  Canonical checker assembly uses them as follows:
+
+* leaves and variables: `AllWorlds.of`;
+* same-world unary/binary syntax: `map` / `map₂`;
+* lambda, recursive mono bodies, match branches, and closed exports:
+  `descend` with the corresponding `EnvSpecialization` extension;
+* ordinary and pinned lets: `currentAndDescend`;
+* `ordinaryAppend`, closed locals, and closed groups: `of`, supplying the
+  explicit raw-tail, `ClosedLocalTarget.Ready`, or `ClosedPointwiseReady`
+  family demanded by their `Pointwise` constructor.
+
+Nothing here has a constructor for legacy unclosed exported locals or
+unclosed generalized groups.
+-/
+
+end AllWorlds
 end PointwiseFundamental
 
 #print axioms PointwiseFundamental.Pointwise.termAt
