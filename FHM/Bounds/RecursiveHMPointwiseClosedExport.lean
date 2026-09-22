@@ -1,5 +1,6 @@
 import FHM.Bounds.RecursiveHMNestedInternalRealizer
 import FHM.Bounds.RecursiveHMClosedSpecializableEnvironment
+import FHM.Bounds.RecursiveHMSpecializableRebase
 
 /-! # Pointwise nested closed-export realization
 
@@ -325,6 +326,168 @@ def GeneralizedGroup.closedExportEnvironmentCapturedAt
         List.getElem_append_right recursivePosition]
       simpa only [GeneralizedGroup.closedExports, List.length_map, recursiveLength] using meaning
 
+/-- Closed exports are already ordinary body bindings. -/
+theorem GeneralizedGroup.ordinaryBodyEnv_closedExports
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (outer : Bindings) (types : Nat → BoundsTy) :
+    ordinaryBodyEnv (group.closedExports outer types) =
+      group.closedExports outer types := by
+  unfold GeneralizedGroup.closedExports ordinaryBodyEnv
+  induction group.exports with
+  | nil => rfl
+  | cons scheme rest ih =>
+      simp only [List.map_cons]
+      exact congrArg (List.cons _) ih
+
+/-- Tie a generalized group's exports above one lexical environment that is
+    already closed at `base`.  This is the base-indexed bridge used by the
+    fundamental induction: protected recursive calls reuse the same lexical
+    term vector, while their binding index is justified by the checked
+    protected-tail equality. -/
+def GeneralizedGroup.closedExportEnvironmentBasedAt
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (normal : ClosureNormal outerEnv)
+    (sourceReady : ∀ offset (inside : offset < group.exports.length),
+      ScopedDerives.RuntimeReady
+        (group.selected offset inside).rhs.certificate.implementation.typing)
+    (sourceDemandSupported : ∀ offset (inside : offset < group.exports.length),
+      Runtime.Supported
+        (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (base : EnvSpecialization outerEnv) (budget : Nat)
+    (lexical : EnvAt bound free sigma budget
+      (closeRecursiveEnv base.outer base.types outerEnv)) :
+    { e : EnvAt bound free sigma budget
+        (group.closedExports base.outer base.types ++
+          closeRecursiveEnv base.outer base.types outerEnv) //
+      e.terms = Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss lexical.terms) ++ lexical.terms } := by
+  let target := base.countTarget ++ base.typeTarget
+  have outerScope : ∀ row ∈ base.outer, Scope.CountScoped target row.2 := by
+    intro row member
+    exact HMInterpretation.count_mono (base.outerScope row member)
+      (fun _ h => List.mem_append_left _ h)
+  have typesScope : ∀ i, BoundsScoped target (base.types i) := by
+    intro i
+    exact HMInterpretation.scope_mono (base.typesScope i)
+      (fun _ h => List.mem_append_right _ h)
+  let internal := closedInternalRealizerBasedAt group normal sourceReady
+    sourceDemandSupported bound free sigma hb hf base lexical
+    (budget - 1) (Nat.sub_le budget 1)
+  exact closedExportEnvironmentCapturedAt group base.outer base.outerFinite target
+    outerScope base.types base.typesLC typesScope normal sourceReady
+    sourceDemandSupported base.typesSupported bound free sigma hb hf
+    (tail := closeRecursiveEnv base.outer base.types outerEnv)
+    (by simp only [closeRecursiveEnv, List.length_map]) lexical internal
+
+/-- Extend an already base-closed lexical environment by the corresponding
+    closed generalized exports.  Later stable worlds are composed with the
+    arbitrary base world, so every view retains one canonical Core term
+    vector. -/
+def GeneralizedGroup.extendSpecializableEnvAtBase
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (normal : ClosureNormal outerEnv)
+    (sourceReady : ∀ offset (inside : offset < group.exports.length),
+      ScopedDerives.RuntimeReady
+        (group.selected offset inside).rhs.certificate.implementation.typing)
+    (sourceDemandSupported : ∀ offset (inside : offset < group.exports.length),
+      Runtime.Supported
+        (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (base : EnvSpecialization outerEnv) (budget : Nat)
+    (lexical : SpecializableEnvAt bound free sigma budget
+      (closeRecursiveEnv base.outer base.types outerEnv)) :
+    SpecializableEnvAt bound free sigma budget
+      (group.closedExports base.outer base.types ++
+        closeRecursiveEnv base.outer base.types outerEnv) := by
+  let fixedRaw := GeneralizedGroup.closedExportEnvironmentBasedAt group normal sourceReady
+    sourceDemandSupported bound free sigma hb hf base budget lexical.fixed
+  have ordinaryEq :
+      ordinaryBodyEnv
+          (group.closedExports base.outer base.types ++
+            closeRecursiveEnv base.outer base.types outerEnv) =
+        group.closedExports base.outer base.types ++
+          closeRecursiveEnv base.outer base.types outerEnv := by
+    rw [ordinaryBodyEnv, List.map_append]
+    change ordinaryBodyEnv (group.closedExports base.outer base.types) ++
+        ordinaryBodyEnv (closeRecursiveEnv base.outer base.types outerEnv) = _
+    rw [GeneralizedGroup.ordinaryBodyEnv_closedExports group,
+      ordinaryBodyEnv_closeRecursiveEnv]
+  refine
+    { fixed := fixedRaw.val
+      ordinary := EnvAt.castEnv ordinaryEq.symm fixedRaw.val
+      ordinaryTerms := ?_
+      specialized := ?_
+      specializedTerms := ?_ }
+  · rw [EnvAt.castEnv_terms]
+  · intro world
+    let tailWorld := world.right
+    let composed := base.compose tailWorld
+    let lexicalWorld : EnvAt bound free sigma budget
+        (closeRecursiveEnv composed.outer composed.types outerEnv) :=
+      EnvAt.castEnv (base.closeRecursiveEnv_compose tailWorld).symm
+        (lexical.specialized tailWorld)
+    let realized := GeneralizedGroup.closedExportEnvironmentBasedAt group normal sourceReady
+      sourceDemandSupported bound free sigma hb hf composed budget lexicalWorld
+    have envEq :
+        group.closedExports composed.outer composed.types ++
+            closeRecursiveEnv composed.outer composed.types outerEnv =
+          closeRecursiveEnv world.outer world.types
+            (group.closedExports base.outer base.types ++
+              closeRecursiveEnv base.outer base.types outerEnv) := by
+      calc
+        _ = closeRecursiveEnv world.outer world.types
+              (group.closedExports base.outer base.types) ++
+            closeRecursiveEnv world.outer world.types
+              (closeRecursiveEnv base.outer base.types outerEnv) := by
+          rw [GeneralizedGroup.closeRecursiveEnv_closedExports,
+            base.closeRecursiveEnv_compose tailWorld]
+          rfl
+        _ = _ := by simp only [closeRecursiveEnv, List.map_append]
+    exact EnvAt.castEnv envEq realized.val
+  · intro world
+    rw [EnvAt.castEnv_terms]
+    let tailWorld := world.right
+    let composed := base.compose tailWorld
+    let lexicalWorld : EnvAt bound free sigma budget
+        (closeRecursiveEnv composed.outer composed.types outerEnv) :=
+      EnvAt.castEnv (base.closeRecursiveEnv_compose tailWorld).symm
+        (lexical.specialized tailWorld)
+    change Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss lexicalWorld.terms) ++ lexicalWorld.terms =
+      fixedRaw.val.terms
+    simp only [lexicalWorld, EnvAt.castEnv_terms,
+      lexical.specializedTerms tailWorld]
+    exact fixedRaw.property
+
+theorem GeneralizedGroup.extendSpecializableEnvAtBase_fixed_terms
+    {output metadata path captures premises bodyTypes outerEnv}
+    (group : GeneralizedGroup output metadata path captures premises bodyTypes outerEnv)
+    (normal : ClosureNormal outerEnv)
+    (sourceReady : ∀ offset (inside : offset < group.exports.length),
+      ScopedDerives.RuntimeReady
+        (group.selected offset inside).rhs.certificate.implementation.typing)
+    (sourceDemandSupported : ∀ offset (inside : offset < group.exports.length),
+      Runtime.Supported
+        (group.selected offset inside).rhs.certificate.implementation.opening.bounds)
+    (bound free : Runtime.TypeEnv) (sigma : Assign)
+    (hb : Runtime.TypeEnv.Downward bound) (hf : Runtime.TypeEnv.Downward free)
+    (base : EnvSpecialization outerEnv) (budget : Nat)
+    (lexical : SpecializableEnvAt bound free sigma budget
+      (closeRecursiveEnv base.outer base.types outerEnv)) :
+    (GeneralizedGroup.extendSpecializableEnvAtBase group normal sourceReady sourceDemandSupported
+      bound free sigma hb hf base budget lexical).fixed.terms =
+      Runtime.recursiveTerms group.annotations
+        (closeOuterRhss group.rhss lexical.fixed.terms) ++ lexical.fixed.terms := by
+  unfold GeneralizedGroup.extendSpecializableEnvAtBase
+  exact (GeneralizedGroup.closedExportEnvironmentBasedAt group normal sourceReady
+    sourceDemandSupported bound free sigma hb hf base budget lexical.fixed).property
+
 /-- Fixed body view of a nested closed group at one observation budget. -/
 def GeneralizedGroup.closedExportEnvironmentNestedFixedAt
     {output metadata path captures premises bodyTypes outerEnv}
@@ -632,5 +795,9 @@ theorem GeneralizedGroup.extendSpecializableEnvAt_fixed_terms
   exact (closedExportEnvironmentNestedFixedAt group outer outerFinite target outerScope
     ambient ambientLC ambientScope normal sourceReady sourceDemandSupported ambientSupported
     ambientCounts ambientTypes bound free sigma hb hf budget lexical).property
+
+#print axioms GeneralizedGroup.closedExportEnvironmentBasedAt
+#print axioms GeneralizedGroup.extendSpecializableEnvAtBase
+#print axioms GeneralizedGroup.extendSpecializableEnvAtBase_fixed_terms
 
 end FHM.Bounds.RecursiveHMClosedExit

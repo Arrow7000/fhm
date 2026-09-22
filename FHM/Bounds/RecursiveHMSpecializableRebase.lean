@@ -99,7 +99,9 @@ theorem closeRecursiveEnv_compose
   intro binding _
   exact closeRecursiveBinding_compose outer inner f g binding
 
-private theorem closeRecursiveEnv_ordinary
+/-- A recursively closed environment contains no raw recursive assumptions,
+    so its ordinary body view is definitionally unchanged. -/
+theorem ordinaryBodyEnv_closeRecursiveEnv
     (outer : Bindings) (types : Nat → BoundsTy) (env : List Binding) :
     ordinaryBodyEnv (closeRecursiveEnv outer types env) =
       closeRecursiveEnv outer types env := by
@@ -253,7 +255,7 @@ def SpecializableEnvAt.rebase {bound free sigma budget env}
   let canonical := lexical.specialized base
   refine
     { fixed := canonical
-      ordinary := EnvAt.castEnv (closeRecursiveEnv_ordinary _ _ _).symm canonical
+      ordinary := EnvAt.castEnv (ordinaryBodyEnv_closeRecursiveEnv _ _ _).symm canonical
       ordinaryTerms := ?_
       specialized := ?_
       specializedTerms := ?_ }

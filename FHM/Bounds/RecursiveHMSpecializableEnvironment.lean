@@ -232,6 +232,26 @@ theorem CloseRecursiveFresh.right {outer types left right}
   intro binding member
   exact fresh binding (List.mem_append_right left member)
 
+/-- Restrict a stable specialization world on an appended environment to its
+    right-hand lexical tail. -/
+def StableEnvSpecialization.right {left right : List Binding}
+    (world : StableEnvSpecialization (left ++ right)) :
+    StableEnvSpecialization right where
+  outer := world.outer
+  types := world.types
+  outerFinite := world.outerFinite
+  countTarget := world.countTarget
+  outerScope := world.outerScope
+  typesLC := world.typesLC
+  typeTarget := world.typeTarget
+  typesScope := world.typesScope
+  fresh := CloseRecursiveFresh.right world.fresh
+  typesSupported := world.typesSupported
+  monoCounts := fun beta member =>
+    world.monoCounts beta (List.mem_append_right left member)
+  monoTypes := fun beta member =>
+    world.monoTypes beta (List.mem_append_right left member)
+
 /-- The empty lexical environment is specializable in every lawful world. -/
 def SpecializableEnvAt.empty (bound free : Runtime.TypeEnv) (sigma : Assign)
     (budget : Nat) : SpecializableEnvAt bound free sigma budget [] := by
