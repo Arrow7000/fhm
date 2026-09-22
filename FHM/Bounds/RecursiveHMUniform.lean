@@ -5335,6 +5335,53 @@ structure BodyCapture (env : List BodyBinding) where
   countClosed : ∀ c, .recursive c ∈ rhsEnv → c.template.counts.captures = []
   exportCountClosed : ∀ s, .exported s ∈ rhsEnv → s.counts.captures = []
 
+private theorem closedMapTypes_fvar (contract : RecursiveHMContract.Closed) :
+    closedMapTypes contract BoundsTy.fvar = contract := by
+  cases contract with
+  | mk source fixedTypes fixedArity countCaptures typeCaptures =>
+      have fixedEq : fixedTypes.map (mapFree BoundsTy.fvar) = fixedTypes := by
+        conv_rhs => rw [← List.map_id fixedTypes]
+        apply List.map_congr_left
+        intro beta _
+        exact HMInterpretation.identity beta
+      have capturesEq : typeCaptures.map (mapFree BoundsTy.fvar) = typeCaptures := by
+        conv_rhs => rw [← List.map_id typeCaptures]
+        apply List.map_congr_left
+        intro beta _
+        exact HMInterpretation.identity beta
+      simp only [closedMapTypes, fixedEq, capturesEq]
+
+/-- On an exited canonical body, the current count rows may interpret the
+    enclosing bounds, but the HM reader is the identity.  Consequently the
+    combined recursive closure agrees with count transport on every ordinary
+    captured binding. -/
+private theorem closeRecursiveEnv_fvar_eq_mapCountBinding
+    {env : List Binding} (ordinary : OrdinaryEnv env) (rows : Bindings) :
+    closeRecursiveEnv rows BoundsTy.fvar env = env.map (mapCountBinding rows) := by
+  unfold closeRecursiveEnv
+  apply List.map_congr_left
+  intro binding member
+  cases binding with
+  | mono beta => simp [closeRecursiveBinding, mapCountBinding, HMInterpretation.identity]
+  | recursive contract => exact False.elim (ordinary contract member)
+  | recursiveClosure contract =>
+      exact congrArg Binding.recursiveClosure
+        (closedMapTypes_fvar (closedMapCounts contract rows))
+  | exported scheme => rfl
+  | closure scheme countCaptures typeCaptures =>
+      simp [closeRecursiveBinding, mapCountBinding, HMInterpretation.identity]
+
+/-- The static rows used by the canonical exited-body checker leave its raw
+    RHS environment unchanged.  `BodyCapture` is indexed by the identity HM
+    reader; count closure is inert because every captured bound is scoped over
+    the empty count telescope, and raw recursive assumptions have already been
+    eliminated. -/
+theorem BodyCapture.closeRecursiveEnv_fvar {env : List BodyBinding}
+    (capture : BodyCapture env) (rows : Bindings) :
+    closeRecursiveEnv rows BoundsTy.fvar capture.rhsEnv = capture.rhsEnv := by
+  rw [closeRecursiveEnv_fvar_eq_mapCountBinding capture.ordinary]
+  exact RecursiveHMEnvironment.fixed rows capture.captured (by simp)
+
 /-- The same exact RHS environment before crossing the enclosing SCC's
     generalization boundary. Unlike `BodyCapture`, recursive entries are
     represented by fixed contracts in the body judgment. -/
