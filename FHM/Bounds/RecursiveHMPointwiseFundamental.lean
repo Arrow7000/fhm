@@ -78,6 +78,62 @@ private theorem closes_source
     simp only [RawBodyView.env, closeRecursiveEnv, List.length_map]
   simpa only [Nat.zero_add, current.arity, sameLength] using source.varsBelow
 
+private def runtimeBranchSpecialization
+    {raw : List Binding} (world : EnvSpecialization raw)
+    (ctx : BodyBranchContext) (capable : ctx.RuntimeCapable) :
+    { target : BodyBranchContext // BodyBranchContext.Specializes world ctx target } := by
+  cases ctx with
+  | list lo hi elem =>
+      let target := BodyBranchContext.list (CountSubstitution.count world.outer lo)
+        (CountSubstitution.count world.outer hi) (world.mapBounds elem)
+      refine ⟨target, ?_⟩
+      refine { bounds := ?_, refine := ?_, fields := ?_, pattern := ?_ }
+      · simp [target, BodyBranchContext.bounds, EnvSpecialization.mapBounds,
+          CountSubstitution.bounds, SchemeSpecialization.mapFree]
+      · intro pattern
+        simpa [target, BodyBranchContext.refine] using
+          (RecursiveCountTransport.branchRefine_transport world.outer pattern lo hi).symm
+      · intro pattern
+        by_cases selected : pattern = .named consCtorName 2 <;>
+          simp [target, BodyBranchContext.fields, selected, EnvSpecialization.mapBounds,
+            CountSubstitution.bounds, CountSubstitution.count, SchemeSpecialization.mapFree]
+      · intro pattern valid
+        exact valid
+  | bool =>
+      refine ⟨.bool, ?_⟩
+      refine { bounds := ?_, refine := ?_, fields := ?_, pattern := ?_ }
+      · rfl
+      · intro pattern; rfl
+      · intro pattern; rfl
+      · intro pattern valid; exact valid
+  | pair left right =>
+      let target := BodyBranchContext.pair (world.mapBounds left) (world.mapBounds right)
+      refine ⟨target, ?_⟩
+      refine { bounds := ?_, refine := ?_, fields := ?_, pattern := ?_ }
+      · simp [target, BodyBranchContext.bounds, EnvSpecialization.mapBounds,
+          CountSubstitution.bounds, CountSubstitution.boundsList,
+          SchemeSpecialization.mapFree, SchemeSpecialization.mapFreeList]
+      · intro pattern; rfl
+      · intro pattern
+        by_cases selected : pattern = .named pairCtorName 2 <;>
+          simp [target, BodyBranchContext.fields, selected]
+      · intro pattern valid; exact valid
+  | nominal => exact False.elim capable
+  | wildcardOnly => exact False.elim capable
+
+private theorem branch_current_env_eq
+    {view : RawBodyView} {raw : List Binding} {world : EnvSpecialization raw}
+    {source target : BodyBranchContext}
+    (specializes : BodyBranchContext.Specializes world source target)
+    (pattern : MatchPattern) :
+    target.extend pattern (view.env (closeRecursiveEnv world.outer world.types raw)) =
+      view.env (closeRecursiveEnv (world.extendBranch source pattern).outer
+        (world.extendBranch source pattern).types (source.extendRaw pattern raw)) := by
+  simp only [BodyBranchContext.extend_eq, BodyBranchContext.extendRaw,
+    EnvSpecialization.extendBranch, EnvSpecialization.prependMonos_outer,
+    EnvSpecialization.prependMonos_types, closeRecursiveEnv_prependMonos,
+    RawBodyView.env_prependMonos, specializes.fields]
+
 private theorem ordinary_closed_group_body_env
     {output metadata path captures premises bodyTypes raw}
     (group : GeneralizedGroup output metadata path captures premises bodyTypes raw)
@@ -1229,6 +1285,207 @@ def letRecPinnedMono
         change Runtime.TermAt bound free sigma (budget + 1) _
           (.letRec [some annotation] closedRhss (body.substN 1 previous.terms))
         exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodyAt
+
+def match_
+    {view : RawBodyView} {raw : List Binding}
+    {types slots : Nat → BoundsTy} {ids : List Nat} {rows : Bindings}
+    {Delta : List Constraint} {scrut : Expr}
+    {branches : List (MatchPattern × Expr)} {result : BoundsTy}
+    {ctx : BodyBranchContext} {actuals : Nat → BoundsTy}
+    {scrutTyping : ScopedBodyDerives types slots ids rows Delta
+      (view.env raw) scrut ctx.bounds}
+    (coverage : ctx.Covers Delta branches)
+    (patterns : ∀ branch ∈ branches, ctx.Pattern branch.1)
+    {branchTyping : ∀ i branch, branches[i]? = some branch →
+      ScopedBodyDerives types slots ids rows (Delta ++ ctx.refine branch.1)
+        (view.env (ctx.extendRaw branch.1 raw)) branch.2 (actuals i)}
+    (inclusions : ∀ i branch, branches[i]? = some branch →
+      SemanticSub (Delta ++ ctx.refine branch.1) (actuals i) result)
+    (capable : ctx.RuntimeCapable)
+    {scrutReady : RecursiveHMUniform.BodyDerives.RuntimeReady scrutTyping}
+    {branchReady : ∀ i branch (atIndex : branches[i]? = some branch),
+      RecursiveHMUniform.BodyDerives.RuntimeReady (branchTyping i branch atIndex)}
+    (resultSupported : Runtime.Supported result)
+    {world : EnvSpecialization raw}
+    (scrutSafe : Pointwise scrutReady world)
+    (branchesSafe : ∀ i branch (atIndex : branches[i]? = some branch),
+      Pointwise (branchReady i branch atIndex)
+        (world.extendBranch ctx branch.1)) :
+    Pointwise
+      (@RecursiveHMUniform.BodyDerives.RuntimeReady.match_
+        types slots ids rows Delta (view.env raw) scrut branches result actuals ctx
+        scrutTyping coverage patterns
+        (fun i branch atIndex => by
+          simpa only [RawBodyView.env_extendRaw] using branchTyping i branch atIndex)
+        inclusions capable scrutReady
+        (fun i branch atIndex => by
+          simpa only [RawBodyView.env_extendRaw] using branchReady i branch atIndex)
+        resultSupported) world where
+  coherent := scrutSafe.coherent
+  run bound free sigma hb hf budget premises current := by
+    let targetPack := runtimeBranchSpecialization world ctx capable
+    let target := targetPack.val
+    have specializes : BodyBranchContext.Specializes world ctx target := targetPack.property
+    have targetCoverage : target.Covers (Delta.map (constraint world.outer)) branches := by
+      cases ctx with
+      | list lo hi elem =>
+          simpa only [target, targetPack, runtimeBranchSpecialization] using
+            coverage.transport world.outer world.outerFinite
+      | bool => simpa only [target, targetPack, runtimeBranchSpecialization] using coverage
+      | pair left right =>
+          simpa only [target, targetPack, runtimeBranchSpecialization] using coverage
+      | nominal => exact False.elim capable
+      | wildcardOnly => exact False.elim capable
+    have scrutAt0 := scrutSafe.run bound free sigma hb hf budget premises current
+    have scrutAt : Runtime.TermAt bound free sigma budget target.bounds
+        (scrut.substN 0 current.terms) := by
+      rw [specializes.bounds]
+      exact scrutAt0
+    let branchAt : ∀ i (branch : MatchPattern × Expr)
+        (atIndex : branches[i]? = some branch) (observation : Nat)
+        (path : ∀ p ∈ Delta.map (constraint world.outer) ++ target.refine branch.1,
+          p.Holds sigma)
+        (opened : BodyEnvAt bound free sigma observation
+          (target.extend branch.1
+            (view.env (closeRecursiveEnv world.outer world.types raw)))),
+        Runtime.TermAt bound free sigma observation (world.mapBounds result)
+          (branch.2.substN 0 opened.terms) :=
+      fun i branch atIndex observation path opened => by
+        let branchWorld := world.extendBranch ctx branch.1
+        let branchCurrent := EnvAt.castEnv
+          (branch_current_env_eq specializes branch.1) opened
+        have branchPremises :
+            ∀ p ∈ (Delta ++ ctx.refine branch.1).map
+                (constraint branchWorld.outer), p.Holds sigma := by
+          simpa only [branchWorld, EnvSpecialization.extendBranch,
+            EnvSpecialization.prependMonos_outer, List.map_append,
+            specializes.refine] using path
+        have safe0 := (branchesSafe i branch atIndex).run bound free sigma hb hf
+          observation branchPremises branchCurrent
+        have safe : Runtime.TermAt bound free sigma observation
+            (world.mapBounds (actuals i)) (branch.2.substN 0 opened.terms) := by
+          simpa only [branchWorld, EnvSpecialization.extendBranch,
+            EnvSpecialization.prependMonos_outer,
+            EnvSpecialization.prependMonos_types, EnvSpecialization.mapBounds,
+            branchCurrent, EnvAt.castEnv_terms] using safe0
+        have mappedSub := SchemeSpecialization.subtype world.types
+          (CountSubstitution.subtype world.outer world.outerFinite
+            (inclusions i branch atIndex))
+        have targetSub : SemanticSub
+            (Delta.map (constraint world.outer) ++ target.refine branch.1)
+            (world.mapBounds (actuals i)) (world.mapBounds result) := by
+          simpa only [List.map_append, specializes.refine] using mappedSub
+        exact safe.of_values
+          (Runtime.subtype targetSub
+            (supported_map world (branchReady i branch atIndex).supported)
+            (supported_map world resultSupported) bound free sigma path)
+    rw [Runtime.closing_match]
+    cases ctx with
+    | list lo hi elem =>
+        let targetCtx := BodyBranchContext.list (CountSubstitution.count world.outer lo)
+          (CountSubstitution.count world.outer hi) (world.mapBounds elem)
+        have targetEq : target = targetCtx := by
+          rfl
+        subst target
+        apply Runtime.TermAt.matchList scrutAt
+          (Runtime.listCoverage_close targetCoverage current.terms) premises
+        intro observation before value len name args pattern closedBody list contained applied selected
+        obtain ⟨body, original, rfl⟩ := Runtime.firstMatch_unclose current.terms selected
+        obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp original.mem
+        obtain ⟨refined, opened, terms⟩ := BodyEnvAt.listBranch
+          (current.down hb hf (by omega : observation ≤ budget)) hb hf list contained applied
+          original (patterns _ original.mem)
+        have path : ∀ p ∈ Delta.map (constraint world.outer) ++
+            targetCtx.refine pattern, p.Holds sigma := by
+          intro p member
+          rcases List.mem_append.mp member with outer | localPath
+          · exact premises p outer
+          · exact refined p localPath
+        have safe := branchAt i (pattern, body) atIndex observation path opened
+        rw [terms] at safe
+        have targetPattern : targetCtx.Pattern pattern := patterns _ original.mem
+        have contentsLength : (args.take pattern.bindCount).length = pattern.bindCount := by
+          have arity := opened.arity
+          rw [terms, List.length_append] at arity
+          rw [BodyBranchContext.extend_length targetPattern] at arity
+          change (args.take pattern.bindCount).length + current.terms.length =
+            (view.env (closeRecursiveEnv world.outer world.types raw)).length +
+              pattern.bindCount at arity
+          rw [current.arity] at arity
+          omega
+        have contentsClosed : ∀ term ∈ args.take pattern.bindCount,
+            term.varsBelow 0 = true := by
+          intro term member
+          exact opened.closed term (by rw [terms]; exact List.mem_append_left _ member)
+        have closing := Runtime.closing_compose current.terms
+          (args.take pattern.bindCount) current.closed contentsClosed body 0
+        simp only [Nat.zero_add, contentsLength] at closing
+        rw [closing]
+        exact safe
+    | bool =>
+        have targetEq : target = BodyBranchContext.bool := by rfl
+        subst target
+        apply Runtime.TermAt.matchBool scrutAt
+          (Runtime.boolCoverage_close targetCoverage current.terms)
+        intro observation before name pattern closedBody nameOK selected
+        obtain ⟨body, original, rfl⟩ := Runtime.firstMatch_unclose current.terms selected
+        obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp original.mem
+        have zero : pattern.bindCount = 0 := by
+          rcases patterns _ original.mem with rfl | rfl | rfl <;> rfl
+        simp only [zero, List.take_zero]
+        have bodyClosed : (body.substN 0 current.terms).varsBelow 0 = true := by
+          apply Runtime.closing_scoped current.terms current.closed body 0
+          have scope := (branchTyping i (pattern, body) atIndex).varsBelow
+          simpa only [Nat.zero_add, current.arity, BodyBranchContext.extendRaw,
+            BodyBranchContext.fields, List.nil_append, RawBodyView.env_length,
+            closeRecursiveEnv, List.length_map] using scope
+        rw [Expr.substN_of_closed bodyClosed]
+        have path : ∀ p ∈ Delta.map (constraint world.outer) ++
+            (BodyBranchContext.bool).refine pattern, p.Holds sigma := by
+          simpa only [BodyBranchContext.refine, List.append_nil] using premises
+        exact branchAt i (pattern, body) atIndex observation path
+          (current.down hb hf (by omega))
+    | pair left right =>
+        let targetCtx := BodyBranchContext.pair (world.mapBounds left) (world.mapBounds right)
+        have targetEq : target = targetCtx := by rfl
+        subst target
+        apply Runtime.TermAt.matchPair scrutAt
+          (Runtime.pairCoverage_close targetCoverage current.terms)
+        intro observation before leftValue rightValue pattern closedBody leftMeaning
+          rightMeaning selected
+        obtain ⟨body, original, rfl⟩ := Runtime.firstMatch_unclose current.terms selected
+        obtain ⟨i, atIndex⟩ := List.mem_iff_getElem?.mp original.mem
+        obtain ⟨opened, terms⟩ := BodyEnvAt.pairBranch
+          (current.down hb hf (by omega : observation ≤ budget)) hb hf leftMeaning rightMeaning
+          (patterns _ original.mem)
+        have path : ∀ p ∈ Delta.map (constraint world.outer) ++
+            targetCtx.refine pattern, p.Holds sigma := by
+          simpa only [targetCtx, BodyBranchContext.refine, List.append_nil] using premises
+        have safe := branchAt i (pattern, body) atIndex observation path opened
+        rw [terms] at safe
+        have targetPattern : targetCtx.Pattern pattern := patterns _ original.mem
+        have contentsLength : ([leftValue, rightValue].take pattern.bindCount).length =
+            pattern.bindCount := by
+          have arity := opened.arity
+          rw [terms, List.length_append] at arity
+          rw [BodyBranchContext.extend_length targetPattern] at arity
+          change ([leftValue, rightValue].take pattern.bindCount).length +
+              current.terms.length =
+            (view.env (closeRecursiveEnv world.outer world.types raw)).length +
+              pattern.bindCount at arity
+          rw [current.arity] at arity
+          omega
+        have contentsClosed : ∀ term ∈ [leftValue, rightValue].take pattern.bindCount,
+            term.varsBelow 0 = true := by
+          intro term member
+          exact opened.closed term (by rw [terms]; exact List.mem_append_left _ member)
+        have closing := Runtime.closing_compose current.terms
+          ([leftValue, rightValue].take pattern.bindCount) current.closed contentsClosed body 0
+        simp only [Nat.zero_add, contentsLength] at closing
+        rw [closing]
+        exact safe
+    | nominal => exact False.elim capable
+    | wildcardOnly => exact False.elim capable
 
 def letRecClosed
     {raw : List Binding} {types slots : Nat → BoundsTy}
