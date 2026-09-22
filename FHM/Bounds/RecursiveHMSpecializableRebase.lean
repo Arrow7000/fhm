@@ -109,6 +109,76 @@ private theorem closeRecursiveEnv_ordinary
   intro binding _
   cases binding <;> rfl
 
+/-- Compose an arbitrary static specialization world with a later stable
+    specialization of the environment it closes.  Stability is required only
+    of the later world: the result is a static transport world, so captured
+    monomorphic bindings in the original environment need not be fixed by the
+    base substitution. -/
+def EnvSpecialization.compose {env : List Binding}
+    (base : EnvSpecialization env)
+    (later : StableEnvSpecialization
+      (closeRecursiveEnv base.outer base.types env)) :
+    EnvSpecialization env where
+  outer := CountAlgebra.compose later.outer base.outer
+  types := fun i => mapFree later.types (bounds later.outer (base.types i))
+  outerFinite := CountAlgebra.finite_compose later.outerFinite base.outerFinite
+  countTarget := base.countTarget ++ later.countTarget
+  outerScope := rebaseRowsScoped base.outerScope later.outerScope
+  typesLC := rebaseTypesLC base.typesLC later.typesLC
+  typeTarget := (base.typeTarget ++ later.countTarget) ++ later.typeTarget
+  typesScope := rebaseTypesScoped base.typesScope later.outerScope later.typesScope
+  fresh := by
+    intro binding member
+    cases binding with
+    | mono beta => trivial
+    | recursive contract => trivial
+    | recursiveClosure contract => trivial
+    | closure scheme countCaptures typeCaptures => trivial
+    | exported scheme =>
+        have baseFresh := base.fresh (.exported scheme) member
+        have closedMember : .exported scheme ∈
+            closeRecursiveEnv base.outer base.types env := by
+          exact List.mem_map_of_mem
+            (f := closeRecursiveBinding base.outer base.types) member
+        have laterFresh := later.fresh (.exported scheme) closedMember
+        constructor
+        · intro i captured
+          rw [CountAlgebra.lookup_compose, baseFresh.1 i captured,
+            laterFresh.1 i captured]
+        · intro i free
+          simp only [baseFresh.2 i free, CountSubstitution.bounds, mapFree]
+          exact laterFresh.2 i free
+  typesSupported := by
+    intro i
+    exact Runtime.Supported.types later.types later.typesSupported
+      (Runtime.Supported.counts later.outer (base.typesSupported i))
+
+@[simp] theorem EnvSpecialization.compose_outer {env : List Binding}
+    (base : EnvSpecialization env)
+    (later : StableEnvSpecialization
+      (closeRecursiveEnv base.outer base.types env)) :
+    (base.compose later).outer = CountAlgebra.compose later.outer base.outer := rfl
+
+@[simp] theorem EnvSpecialization.compose_types {env : List Binding}
+    (base : EnvSpecialization env)
+    (later : StableEnvSpecialization
+      (closeRecursiveEnv base.outer base.types env)) :
+    (base.compose later).types i =
+      mapFree later.types (bounds later.outer (base.types i)) := rfl
+
+/-- The composed broad world closes the source environment to exactly the
+    same bindings as closing first at `base` and then at `later`. -/
+@[simp] theorem EnvSpecialization.closeRecursiveEnv_compose {env : List Binding}
+    (base : EnvSpecialization env)
+    (later : StableEnvSpecialization
+      (closeRecursiveEnv base.outer base.types env)) :
+    closeRecursiveEnv (base.compose later).outer (base.compose later).types env =
+      closeRecursiveEnv later.outer later.types
+        (closeRecursiveEnv base.outer base.types env) := by
+  exact (FHM.Bounds.RecursiveHMUniform.closeRecursiveEnv_compose
+    later.outer base.outer
+    later.types base.types env).symm
+
 private def StableEnvSpecialization.compose
     {env : List Binding} (base : StableEnvSpecialization env)
     (later : StableEnvSpecialization
@@ -206,6 +276,8 @@ def SpecializableEnvAt.rebase {bound free sigma budget env}
   exact lexical.specializedTerms base
 
 #print axioms closeRecursiveEnv_compose
+#print axioms EnvSpecialization.compose
+#print axioms EnvSpecialization.closeRecursiveEnv_compose
 #print axioms SpecializableEnvAt.rebase
 #print axioms SpecializableEnvAt.rebase_fixed_terms
 
