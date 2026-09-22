@@ -840,6 +840,396 @@ def letRecMonoGroup
           (.letRec annotations closedRhss (body.substN rhss.length previous.terms))
         exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodyAt
 
+private def letRecInferredMono_body_typing_view
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {body : Expr} {actual result : BoundsTy}
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (RawBodyView.ordinary.env (Binding.mono actual :: raw)) body result} :
+    ScopedBodyDerives types slots ids rows Delta
+      (Binding.mono actual :: ordinaryBodyEnv raw) body result := by
+  simpa only [RawBodyView.env_ordinary, RawBodyView.env_consMono] using bodyTyping
+
+private def letRecInferredMono_typing_view
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {rhs body : Expr} {actual result : BoundsTy}
+    (rhsTyping : ScopedDerives types slots ids rows Delta
+      (Binding.mono actual :: raw) rhs actual)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (RawBodyView.ordinary.env (Binding.mono actual :: raw)) body result) :
+    ScopedBodyDerives types slots ids rows Delta (RawBodyView.ordinary.env raw)
+      (.letRec [none] [rhs] body) result := by
+  exact (RawBodyView.env_ordinary raw).symm ▸
+    ScopedBodyDerives.letRecInferredMono rhsTyping
+      (letRecInferredMono_body_typing_view (bodyTyping := bodyTyping))
+
+private def letRecInferredMono_ready_view
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {rhs body : Expr} {actual result : BoundsTy}
+    {rhsTyping : ScopedDerives types slots ids rows Delta
+      (Binding.mono actual :: raw) rhs actual}
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (RawBodyView.ordinary.env (Binding.mono actual :: raw)) body result}
+    (rhsReady : RecursiveHMJudgement.ScopedDerives.RuntimeReady rhsTyping)
+    (actualSupported : Runtime.Supported actual)
+    (outerArguments : RecursiveArgumentsSupported raw)
+    (bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping) :
+    RecursiveHMUniform.BodyDerives.RuntimeReady
+      (letRecInferredMono_typing_view rhsTyping bodyTyping) := by
+  have bodyReadyView : RecursiveHMUniform.BodyDerives.RuntimeReady
+      (letRecInferredMono_body_typing_view (bodyTyping := bodyTyping)) := by
+    exact RecursiveHMUniform.BodyDerives.RuntimeReady.congr
+      (RecursiveHMUniform.BodyDerives.RuntimeReady.castEnv
+        (by
+          simp only [RawBodyView.env_ordinary, RawBodyView.env_consMono] :
+            RawBodyView.ordinary.env (Binding.mono actual :: raw) =
+              Binding.mono actual :: ordinaryBodyEnv raw)
+        bodyReady)
+  let ready := @RecursiveHMUniform.BodyDerives.RuntimeReady.letRecInferredMono
+    types slots ids rows Delta raw rhs body result actual rhsTyping
+    (letRecInferredMono_body_typing_view (bodyTyping := bodyTyping))
+    rhsReady actualSupported outerArguments bodyReadyView
+  exact RecursiveHMUniform.BodyDerives.RuntimeReady.congr
+    (RecursiveHMUniform.BodyDerives.RuntimeReady.castEnv
+      (RawBodyView.env_ordinary raw).symm ready)
+
+def letRecInferredMono
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {rhs body : Expr} {actual result : BoundsTy}
+    {rhsTyping : ScopedDerives types slots ids rows Delta
+      (Binding.mono actual :: raw) rhs actual}
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (RawBodyView.ordinary.env (Binding.mono actual :: raw)) body result}
+    {rhsReady : RecursiveHMJudgement.ScopedDerives.RuntimeReady rhsTyping}
+    (actualSupported : Runtime.Supported actual)
+    (outerArguments : RecursiveArgumentsSupported raw)
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {world : EnvSpecialization raw}
+    (bodySafe : Pointwise bodyReady (world.consMono actual)) :
+    Pointwise
+      (letRecInferredMono_ready_view rhsReady actualSupported outerArguments bodyReady) world where
+  coherent := bodySafe.coherent.tailMono
+  run bound free sigma hb hf observation premises current := by
+    cases observation with
+    | zero => unfold Runtime.TermAt; intro steps value _ before; omega
+    | succ budget =>
+        let previous := current.down hb hf (by omega : budget ≤ budget + 1)
+        have closedArguments : RecursiveArgumentsSupported
+            (closeRecursiveEnv world.outer world.types raw) := by
+          intro contract member
+          unfold closeRecursiveEnv at member
+          obtain ⟨binding, _, impossible⟩ := List.mem_map.mp member
+          cases binding <;> cases impossible
+        let previousOrdinary := EnvAt.castEnv
+          (RawBodyView.env_ordinary (closeRecursiveEnv world.outer world.types raw)) previous
+        let outerRhs := BodyEnvAt.toEnvAt previousOrdinary closedArguments
+        have rhsScope : ∀ source ∈ [rhs],
+            source.varsBelow
+              ([rhs].length + (closeRecursiveEnv world.outer world.types raw).length) = true := by
+          intro source member
+          obtain rfl := List.mem_singleton.mp member
+          simpa only [List.length_singleton, List.length_cons, closeRecursiveEnv,
+            List.length_map, Nat.add_comm] using rhsTyping.varsBelow
+        let mappedActual := world.mapBounds actual
+        have innerEnvEq :
+            [Binding.mono mappedActual] ++ closeRecursiveEnv world.outer world.types raw =
+              closeRecursiveEnv (world.consMono actual).outer
+                (world.consMono actual).types (Binding.mono actual :: raw) := by
+          simp only [mappedActual, EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+            closeRecursiveEnv, List.map_cons, closeRecursiveBinding, List.singleton_append]
+        let rhsAt : ∀ innerBudget
+            (assumptions : EnvAt bound free sigma innerBudget
+              ([Binding.mono mappedActual] ++
+                closeRecursiveEnv world.outer world.types raw))
+            i (inside : i < [Binding.mono mappedActual].length),
+            BindingAt bound free sigma innerBudget [Binding.mono mappedActual][i]
+              (([rhs][i]'(by simpa using inside)).substN 0 assumptions.terms) :=
+          fun innerBudget assumptions i inside => by
+            have index : i = 0 := by simpa using inside
+            subst i
+            simp only [List.getElem_cons_zero, BindingAt]
+            let childCurrent := EnvAt.castEnv innerEnvEq assumptions
+            let bodyCurrent := EnvAt.toFixedBody childCurrent
+            let fixedCurrent := EnvAt.castEnv
+              (RawBodyView.env_fixed
+                (closeRecursiveEnv (world.consMono actual).outer
+                  (world.consMono actual).types (Binding.mono actual :: raw))).symm
+              bodyCurrent
+            have childPremises :
+                ∀ p ∈ Delta.map (constraint (world.consMono actual).outer),
+                  p.Holds sigma := by
+              simpa only [EnvSpecialization.consMono] using premises
+            have safe0 := scoped_termAt (view := .fixed) rhsReady
+              (world.consMono actual) bound free sigma hb hf innerBudget childPremises fixedCurrent
+            simpa only [mappedActual, EnvSpecialization.consMono,
+              EnvSpecialization.mapBounds, childCurrent, EnvAt.castEnv_terms,
+              bodyCurrent, EnvAt.toFixedBody, fixedCurrent] using safe0
+        let realized := EnvAt.tieGroupCaptured [none] [rhs] rfl rhsScope hb hf
+          rhsAt budget outerRhs
+        let closedRhss := closeOuterRhss [rhs] previous.terms
+        let recursive := Runtime.recursiveTerms [none] closedRhss
+        have outerTerms : outerRhs.terms = previous.terms := by
+          simp only [outerRhs, BodyEnvAt.toEnvAt, previousOrdinary, EnvAt.castEnv_terms]
+        have realizedTerms : realized.val.terms = recursive ++ previous.terms := by
+          simpa only [recursive, closedRhss, outerTerms] using realized.property
+        have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+          apply Runtime.recursiveTerms_closed
+          have closedScope := closeOuterRhss_scoped outerRhs rhsScope
+          simpa only [closedRhss, outerTerms, closeOuterRhss_length] using closedScope
+        have recursiveLength : recursive.length = 1 := by
+          simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss]
+        have realizedNonempty : 0 < realized.val.terms.length := by
+          rw [realized.val.arity]
+          simp
+        let recursiveTerm := realized.val.terms[0]'realizedNonempty
+        have recursiveTermClosed : recursiveTerm.varsBelow 0 = true :=
+          realized.val.closed recursiveTerm (List.getElem_mem _)
+        have recursiveSafe : Runtime.TermAt bound free sigma budget mappedActual recursiveTerm := by
+          have meaning := realized.val.denotes 0 (by simp)
+          simpa only [List.getElem_append_left
+            (by simp : 0 < [Binding.mono mappedActual].length),
+            List.getElem_cons_zero, BindingAt, recursiveTerm] using meaning
+        let opened := previous.extendMono mappedActual recursiveTerm
+          recursiveTermClosed recursiveSafe
+        have childPremises :
+            ∀ p ∈ Delta.map (constraint (world.consMono actual).outer), p.Holds sigma := by
+          simpa only [EnvSpecialization.consMono] using premises
+        have bodyAt0 := bodySafe.run bound free sigma hb hf budget childPremises opened
+        have bodyAt : Runtime.TermAt bound free sigma budget (world.mapBounds result)
+            (body.substN 0 opened.terms) := by
+          simpa only [EnvSpecialization.consMono, EnvSpecialization.mapBounds] using bodyAt0
+        have openedTerms : opened.terms = recursive ++ previous.terms := by
+          have headEq : recursiveTerm = recursive[0]'(by rw [recursiveLength]; omega) := by
+            have left := List.getElem?_eq_getElem realizedNonempty
+            have rightInside : 0 < recursive.length := by rw [recursiveLength]; omega
+            have right := List.getElem?_eq_getElem rightInside
+            have entries : realized.val.terms[0]? = recursive[0]? := by
+              rw [realizedTerms]
+              exact List.getElem?_append_left rightInside
+            exact Option.some.inj (left.symm.trans (entries.trans right))
+          simp only [opened, EnvAt.extendMono, EnvAt.extendMono]
+          simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss] at headEq ⊢
+          exact headEq
+        rw [openedTerms] at bodyAt
+        have composed := Runtime.closing_compose previous.terms recursive previous.closed
+          recursiveClosed body 0
+        rw [Nat.zero_add, recursiveLength] at composed
+        rw [← composed] at bodyAt
+        have sameTerms : previous.terms = current.terms := rfl
+        rw [← sameTerms]
+        simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+        change Runtime.TermAt bound free sigma (budget + 1) _
+          (.letRec [none] closedRhss (body.substN 1 previous.terms))
+        exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodyAt
+
+private def letRecPinnedMono_body_typing_view
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids caller : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {annotation : PolyTy} {body : Expr} {actual result : BoundsTy}
+    (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Delta
+      annotation.body actual)
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (RawBodyView.ordinary.env (Binding.mono pinned.demand :: raw)) body result} :
+    ScopedBodyDerives types slots ids rows Delta
+      (Binding.mono pinned.demand :: ordinaryBodyEnv raw) body result := by
+  simpa only [RawBodyView.env_ordinary, RawBodyView.env_consMono] using bodyTyping
+
+private def letRecPinnedMono_typing_view
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids caller : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {annotation : PolyTy} {rhs body : Expr} {actual result : BoundsTy}
+    (pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Delta
+      annotation.body actual)
+    (mono : annotation.paramCount = 0)
+    (rhsTyping : ScopedDerives types slots ids rows Delta
+      (Binding.mono pinned.demand :: raw) rhs actual)
+    (bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (RawBodyView.ordinary.env (Binding.mono pinned.demand :: raw)) body result) :
+    ScopedBodyDerives types slots ids rows Delta (RawBodyView.ordinary.env raw)
+      (.letRec [some annotation] [rhs] body) result := by
+  exact (RawBodyView.env_ordinary raw).symm ▸
+    ScopedBodyDerives.letRecPinnedMono pinned mono rhsTyping
+      (letRecPinnedMono_body_typing_view pinned (bodyTyping := bodyTyping))
+
+private def letRecPinnedMono_ready_view
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids caller : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {annotation : PolyTy} {rhs body : Expr} {actual result : BoundsTy}
+    {pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Delta
+      annotation.body actual}
+    {mono : annotation.paramCount = 0}
+    {rhsTyping : ScopedDerives types slots ids rows Delta
+      (Binding.mono pinned.demand :: raw) rhs actual}
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (RawBodyView.ordinary.env (Binding.mono pinned.demand :: raw)) body result}
+    (rhsReady : RecursiveHMJudgement.ScopedDerives.RuntimeReady rhsTyping)
+    (demandSupported : Runtime.Supported pinned.demand)
+    (outerArguments : RecursiveArgumentsSupported raw)
+    (bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping) :
+    RecursiveHMUniform.BodyDerives.RuntimeReady
+      (letRecPinnedMono_typing_view pinned mono rhsTyping bodyTyping) := by
+  have bodyReadyView : RecursiveHMUniform.BodyDerives.RuntimeReady
+      (letRecPinnedMono_body_typing_view pinned (bodyTyping := bodyTyping)) := by
+    exact RecursiveHMUniform.BodyDerives.RuntimeReady.congr
+      (RecursiveHMUniform.BodyDerives.RuntimeReady.castEnv
+        (by
+          simp only [RawBodyView.env_ordinary, RawBodyView.env_consMono] :
+            RawBodyView.ordinary.env (Binding.mono pinned.demand :: raw) =
+              Binding.mono pinned.demand :: ordinaryBodyEnv raw)
+        bodyReady)
+  let ready := @RecursiveHMUniform.BodyDerives.RuntimeReady.letRecPinnedMono
+    types slots ids rows caller Delta raw rhs body result annotation actual pinned mono
+    rhsTyping (letRecPinnedMono_body_typing_view pinned (bodyTyping := bodyTyping))
+    rhsReady demandSupported outerArguments bodyReadyView
+  exact RecursiveHMUniform.BodyDerives.RuntimeReady.congr
+    (RecursiveHMUniform.BodyDerives.RuntimeReady.castEnv
+      (RawBodyView.env_ordinary raw).symm ready)
+
+def letRecPinnedMono
+    {raw : List Binding} {types slots : Nat → BoundsTy}
+    {ids caller : List Nat} {rows : Bindings} {Delta : List Constraint}
+    {annotation : PolyTy} {rhs body : Expr} {actual result : BoundsTy}
+    {pinned : ScopedHMAnnotation.Pinned types slots ids rows caller Delta
+      annotation.body actual}
+    {mono : annotation.paramCount = 0}
+    {rhsTyping : ScopedDerives types slots ids rows Delta
+      (Binding.mono pinned.demand :: raw) rhs actual}
+    {bodyTyping : ScopedBodyDerives types slots ids rows Delta
+      (RawBodyView.ordinary.env (Binding.mono pinned.demand :: raw)) body result}
+    {rhsReady : RecursiveHMJudgement.ScopedDerives.RuntimeReady rhsTyping}
+    (demandSupported : Runtime.Supported pinned.demand)
+    (outerArguments : RecursiveArgumentsSupported raw)
+    {bodyReady : RecursiveHMUniform.BodyDerives.RuntimeReady bodyTyping}
+    {world : EnvSpecialization raw}
+    (bodySafe : Pointwise bodyReady (world.consMono pinned.demand)) :
+    Pointwise
+      (letRecPinnedMono_ready_view (mono := mono) rhsReady demandSupported
+        outerArguments bodyReady) world where
+  coherent := bodySafe.coherent.tailMono
+  run bound free sigma hb hf observation premises current := by
+    cases observation with
+    | zero => unfold Runtime.TermAt; intro steps value _ before; omega
+    | succ budget =>
+        let previous := current.down hb hf (by omega : budget ≤ budget + 1)
+        have closedArguments : RecursiveArgumentsSupported
+            (closeRecursiveEnv world.outer world.types raw) := by
+          intro contract member
+          unfold closeRecursiveEnv at member
+          obtain ⟨binding, _, impossible⟩ := List.mem_map.mp member
+          cases binding <;> cases impossible
+        let previousOrdinary := EnvAt.castEnv
+          (RawBodyView.env_ordinary (closeRecursiveEnv world.outer world.types raw)) previous
+        let outerRhs := BodyEnvAt.toEnvAt previousOrdinary closedArguments
+        have rhsScope : ∀ source ∈ [rhs],
+            source.varsBelow
+              ([rhs].length + (closeRecursiveEnv world.outer world.types raw).length) = true := by
+          intro source member
+          obtain rfl := List.mem_singleton.mp member
+          simpa only [List.length_singleton, List.length_cons, closeRecursiveEnv,
+            List.length_map, Nat.add_comm] using rhsTyping.varsBelow
+        let mappedDemand := world.mapBounds pinned.demand
+        have innerEnvEq :
+            [Binding.mono mappedDemand] ++ closeRecursiveEnv world.outer world.types raw =
+              closeRecursiveEnv (world.consMono pinned.demand).outer
+                (world.consMono pinned.demand).types (Binding.mono pinned.demand :: raw) := by
+          simp only [mappedDemand, EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+            closeRecursiveEnv, List.map_cons, closeRecursiveBinding, List.singleton_append]
+        let rhsAt : ∀ innerBudget
+            (assumptions : EnvAt bound free sigma innerBudget
+              ([Binding.mono mappedDemand] ++ closeRecursiveEnv world.outer world.types raw))
+            i (inside : i < [Binding.mono mappedDemand].length),
+            BindingAt bound free sigma innerBudget [Binding.mono mappedDemand][i]
+              (([rhs][i]'(by simpa using inside)).substN 0 assumptions.terms) :=
+          fun innerBudget assumptions i inside => by
+            have index : i = 0 := by simpa using inside
+            subst i
+            simp only [List.getElem_cons_zero, BindingAt]
+            let childCurrent := EnvAt.castEnv innerEnvEq assumptions
+            let bodyCurrent := EnvAt.toFixedBody childCurrent
+            let fixedCurrent := EnvAt.castEnv
+              (RawBodyView.env_fixed
+                (closeRecursiveEnv (world.consMono pinned.demand).outer
+                  (world.consMono pinned.demand).types
+                  (Binding.mono pinned.demand :: raw))).symm bodyCurrent
+            have childPremises :
+                ∀ p ∈ Delta.map (constraint (world.consMono pinned.demand).outer),
+                  p.Holds sigma := by
+              simpa only [EnvSpecialization.consMono] using premises
+            have safe0 := scoped_termAt (view := .fixed) rhsReady
+              (world.consMono pinned.demand) bound free sigma hb hf innerBudget
+              childPremises fixedCurrent
+            have safe : Runtime.TermAt bound free sigma innerBudget
+                (world.mapBounds actual) (rhs.substN 0 assumptions.terms) := by
+              simpa only [EnvSpecialization.consMono, EnvSpecialization.mapBounds,
+                childCurrent, EnvAt.castEnv_terms, bodyCurrent, EnvAt.toFixedBody,
+                fixedCurrent] using safe0
+            have mappedSub := SchemeSpecialization.subtype world.types
+              (CountSubstitution.subtype world.outer world.outerFinite pinned.inclusion)
+            exact safe.of_values
+              (Runtime.subtype mappedSub (supported_map world rhsReady.supported)
+                (supported_map world demandSupported) bound free sigma premises)
+        let realized := EnvAt.tieGroupCaptured [some annotation] [rhs] rfl rhsScope hb hf
+          rhsAt budget outerRhs
+        let closedRhss := closeOuterRhss [rhs] previous.terms
+        let recursive := Runtime.recursiveTerms [some annotation] closedRhss
+        have outerTerms : outerRhs.terms = previous.terms := by
+          simp only [outerRhs, BodyEnvAt.toEnvAt, previousOrdinary, EnvAt.castEnv_terms]
+        have realizedTerms : realized.val.terms = recursive ++ previous.terms := by
+          simpa only [recursive, closedRhss, outerTerms] using realized.property
+        have recursiveClosed : ∀ term ∈ recursive, term.varsBelow 0 = true := by
+          apply Runtime.recursiveTerms_closed
+          have closedScope := closeOuterRhss_scoped outerRhs rhsScope
+          simpa only [closedRhss, outerTerms, closeOuterRhss_length] using closedScope
+        have recursiveLength : recursive.length = 1 := by
+          simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss]
+        have realizedNonempty : 0 < realized.val.terms.length := by
+          rw [realized.val.arity]
+          simp
+        let recursiveTerm := realized.val.terms[0]'realizedNonempty
+        have recursiveTermClosed : recursiveTerm.varsBelow 0 = true :=
+          realized.val.closed recursiveTerm (List.getElem_mem _)
+        have recursiveSafe : Runtime.TermAt bound free sigma budget mappedDemand recursiveTerm := by
+          have meaning := realized.val.denotes 0 (by simp)
+          simpa only [List.getElem_append_left
+            (by simp : 0 < [Binding.mono mappedDemand].length),
+            List.getElem_cons_zero, BindingAt, recursiveTerm] using meaning
+        let opened := previous.extendMono mappedDemand recursiveTerm
+          recursiveTermClosed recursiveSafe
+        have childPremises :
+            ∀ p ∈ Delta.map (constraint (world.consMono pinned.demand).outer),
+              p.Holds sigma := by
+          simpa only [EnvSpecialization.consMono] using premises
+        have bodyAt0 := bodySafe.run bound free sigma hb hf budget childPremises opened
+        have bodyAt : Runtime.TermAt bound free sigma budget (world.mapBounds result)
+            (body.substN 0 opened.terms) := by
+          simpa only [EnvSpecialization.consMono, EnvSpecialization.mapBounds] using bodyAt0
+        have openedTerms : opened.terms = recursive ++ previous.terms := by
+          have headEq : recursiveTerm = recursive[0]'(by rw [recursiveLength]; omega) := by
+            have left := List.getElem?_eq_getElem realizedNonempty
+            have rightInside : 0 < recursive.length := by rw [recursiveLength]; omega
+            have right := List.getElem?_eq_getElem rightInside
+            have entries : realized.val.terms[0]? = recursive[0]? := by
+              rw [realizedTerms]
+              exact List.getElem?_append_left rightInside
+            exact Option.some.inj (left.symm.trans (entries.trans right))
+          simp only [opened, EnvAt.extendMono, EnvAt.extendMono]
+          simp [recursive, closedRhss, Runtime.recursiveTerms, closeOuterRhss] at headEq ⊢
+          exact headEq
+        rw [openedTerms] at bodyAt
+        have composed := Runtime.closing_compose previous.terms recursive previous.closed
+          recursiveClosed body 0
+        rw [Nat.zero_add, recursiveLength] at composed
+        rw [← composed] at bodyAt
+        have sameTerms : previous.terms = current.terms := rfl
+        rw [← sameTerms]
+        simp only [Expr.substN, RecGroup.substN_eq_map, Nat.zero_add]
+        change Runtime.TermAt bound free sigma (budget + 1) _
+          (.letRec [some annotation] closedRhss (body.substN 1 previous.terms))
+        exact Runtime.TermAt.prepend SmallStep.Step.letRecUnfold bodyAt
+
 def letRecClosed
     {raw : List Binding} {types slots : Nat → BoundsTy}
     {ids : List Nat} {rows : Bindings} {Delta : List Constraint}
