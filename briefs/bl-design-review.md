@@ -59,6 +59,8 @@ let xs : List Int = [1, 2, 3]
 xs
 ```
 
+ok so actually maybe here we should interpret the `List Int` as more like `BL _ _ Int`, i.e. as a BL with inferable bounds slots. like, if we had a `\(xs : List Int) -> ...` then sure, there is nothing to infer, and we should just interpret that as a list as loosely boundaried as possible. but when the `List` is an annotation on a concrete, already existent, list whose bounds can be inferred, i think we should do that instead.
+
 ### A02 — The sugar applies recursively, not only at the outermost type.
 
 **Status:** ACCEPT.
@@ -68,6 +70,8 @@ xs
 let xss : List (List Int) = [[1], [2, 3]]
 xss
 ```
+
+yes but same comment applies as at A01
 
 ### A03 — Explicit intervals remain visible through arrows.
 
@@ -148,6 +152,8 @@ type BoundedBuffer {lo hi : Nat} a =
 such as `{lo hi : Nat | lo <= hi}`, or is inhabitation simply impossible at
 call sites where the interval is inconsistent?
 
+hmm yeah im not sure how we could require this... or rather, how we could satisfy this requirement. or perhaps rather, how this requirement travels up. should it be fully implicit everywhere? i feel like that's a recipe for surprising behaviour. where sometimes the checker can carry a proof of ≤ through and sometimes not, and if we can't thread those requirements through explicitly or assert those requirements explicitly in the places where we require them, would result in confusing and seemingly inconsistent behaviour with no obvious way for the user to fix things.
+
 ### B04 — Arbitrary supported arithmetic may occur in fields.
 
 **Status:** ACCEPT.
@@ -210,6 +216,8 @@ type PhantomSize {n : Nat} a =
 the runtime representation does not determine it. Construction must still
 choose a unique n from context or annotation; otherwise inference rejects it.
 
+mm yeah good question. yeah i think it makes sense to allow it. and in that case actually the existence of a bound variable comes without any ≤ obligations/proofs attached, either implicit or explicit. so i think assigining one `PhantomSize` to another only works if the `n`s match up exactly under all circumstances. which i think makes sense.
+
 ### B10 — A count parameter may occur only under another nominal type.
 
 **Status:** ACCEPT.
@@ -219,6 +227,14 @@ type Box a = Box a
 type NestedChunk {n : Nat} a =
   NestedChunk (Box (BL n n a))
 ```
+
+sorry not sure what this means? does it mean we couldn't have something like
+
+```
+type Bla {n : Nat} a = Bla (BL n n a)
+```
+
+? and if so, why not?
 
 ### B11 — Recursive uniform datatype with bounded payloads.
 
@@ -257,6 +273,8 @@ unambiguous namespaces, or rejected for readability. Semantically there is
 no need to confuse the count n with the type n.
 **Question B13:** allow shadowing across kinds, or require globally distinct
 parameter names within a declaration? Recommendation: require distinct names.
+
+hm yeah. technically we could probably support this but yeah probably nicer to not allow this at the user-facing level. but either way, internally we shouldn't rely on bounds vars and type vars being distinct.
 
 ### B14 — An undeclared count in a field is rejected.
 
@@ -307,6 +325,8 @@ type Vec {n : Nat} a where
 coverage interacts with impossible indices, and constructor result types are
 no longer uniform. This is dependent/GADT-style pattern matching.
 
+yeah i don't think we should ever need to support this. not in scope.
+
 ### C03 — Existentially hiding a count index is also deferred.
 
 **Status:** REJECT FOR NOW.
@@ -318,6 +338,8 @@ type SomeChunk a where
 
 **Why rejected:** opening Pack introduces a fresh existential count and requires
 escape checks. This is useful, but materially beyond rank-1 count schemas.
+
+yup, out of scope.
 
 ### C04 — Constructor equations refining an existing index are deferred.
 
@@ -331,6 +353,8 @@ type Parity {n : Nat} =
 
 **Why rejected:** branch typing needs local arithmetic equalities and existential
 constructor variables. Ordinary uniform declarations do not need either.
+
+indeed, out of scope.
 
 ## D. NOMINAL INVARIANCE, SUBTYPING, JOINS AND MEETS
 
@@ -382,6 +406,8 @@ type Box a = Box a
 
 We do not infer `Box (BL 1 3 Int)` merely because Box happens to store a.
 
+hmm. ok actually i disagree with this one. i don't see why we couldn't join/meet things here? this is better than if `Box` itself were to expose bounds vars, because `a` being instantiated as a BL means we can see the bounds directly, so we should always be able to treat bounds covariantly or contravariantly as appropriate. i think. no?
+
 ### D05 — Unwrap first, and naked BL joining works normally.
 
 **Status:** ACCEPT.
@@ -407,6 +433,8 @@ Treating arbitrary custom parameters covariantly would be unsound here.
 **Current gap:** current custom SemanticSub and join recurse covariantly through
 custom arguments. This must change before generic nominal runtime safety.
 
+yes, but... is it possible to actually remember whether a given typevar is in covariant or contravariant position, which therefore allows us to treat BLs with correct variance? idk if this would break other stuff tho.
+
 ### D07 — Mixed positive and negative occurrence remains invariant.
 
 **Status:** ACCEPT AS A DECLARATION.
@@ -427,6 +455,8 @@ type covariant Box a = Box a
 **Why deferred:** variance must be checked against every field occurrence and
 then threaded through semantic subtyping, join/meet and runtime transport.
 Invariance is a complete sound baseline.
+
+uhhh yeah not sure if we ever want this. either way not relevant for now.
 
 ### D09 — Count indices require exact equality even when a larger interval would contain both
 
@@ -451,6 +481,8 @@ let forgetExact : {n : Nat, a} Chunk n a -> Box (BL n n a) =
 
 Nominal invariance does not prevent explicit, checked conversions.
 
+yes
+
 ## E. TRANSPARENT TYPE ALIASES
 
 ### E01 — A simple bounds alias expands transparently.
@@ -464,6 +496,8 @@ let head : {a} NonEmpty a -> a = ...
 
 HOVER QUESTION: recommendation is to display the alias when helpful but also
 expose its expansion, e.g. `NonEmpty Int (= BL 1 inf Int)`.
+
+i think just expose the expansion for now. otherwise it's not clear that/whether for the given type wrapper bounds are to be treated `*`variantly or not.
 
 ### E02 — Alias count parameters may occur in arbitrary expressions.
 
@@ -564,6 +598,8 @@ type PolyMapper =
 
 **Why rejected:** the field itself has a forall. Current HM is rank-1.
 
+yes exactly
+
 ## F. CONSTRUCTOR INFERENCE
 
 ### F01 — A constructor argument uniquely determines its count index.
@@ -652,6 +688,8 @@ Double [1, 2, 3, 4, 5, 6]
 ```fhm
 Double [1, 2, 3, 4, 5]
 ```
+
+ye exactly.
 
 ## G. FUNCTION APPLICATION AND BIDIRECTIONALITY
 
