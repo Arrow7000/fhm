@@ -5,7 +5,6 @@ import FHM.Pretty
 import FHM.Unverified.EvaluateUnsafe
 import FHM.Unverified.HMDisplay
 import FHM.Unverified.HMArtifacts
-import FHM.Unverified.HMFrontend
 import FHM.Unverified.HMReport
 import Lean.Data.Json
 
@@ -183,12 +182,6 @@ def checkPipeline (src : String) :
         }
     | .ok parsed => pure parsed
 
-  if FHM.Unverified.HMFrontend.programContainsBounds p then
-    return .error {
-      stage := .parse
-      message := FHM.Unverified.HMFrontend.unsupportedMessage
-    }
-
   let (ctors, _) ← match lowerProgram p with
     | none =>
         -- Prefer a concrete free-name message when possible (editor path has spans).
@@ -232,9 +225,9 @@ def checkPipeline (src : String) :
         let binding := (p.groups.flatMap id).find? (fun b => b.name == name)
         let ann := binding.bind (fun b => finalizeAnn b.tyParams b.params b.ann)
         let names := FHM.Unverified.HMArtifacts.displayNames ann
-        { name, hm := hm.eraseBounds
+        { name, hm
           synthPretty? := some (FHM.Unverified.HMDisplay.scheme {} names hm) }
-      programHm := bodyσ.eraseBounds
+      programHm := bodyσ
       programSynthPretty? := some (FHM.Unverified.HMDisplay.scheme {} [] bodyσ) }
 
   if !(checkExhaustive ctors p.term) then

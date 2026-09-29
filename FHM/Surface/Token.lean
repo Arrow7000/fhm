@@ -12,7 +12,6 @@ inductive Keyword
   | «then»
   | «else»
   | «type»
-  | «inf»
   deriving Repr, DecidableEq, BEq, Inhabited
 
 /-- Builtin binary / cons operator tokens (not punctuation). -/
@@ -38,9 +37,6 @@ inductive Punct
   | arrow
   | backslash
   | underscore
-  | star
-  /-- `∞` — count infinity (same meaning as keyword `inf`). -/
-  | infty
   deriving Repr, DecidableEq, BEq, Inhabited
 
 /-- Lexical tokens. Whitespace is skipped (positions still tracked). -/
@@ -102,8 +98,7 @@ def keywordEntries : List (String × Keyword) := [
   ("if", .«if»),
   ("then", .«then»),
   ("else", .«else»),
-  ("type", .«type»),
-  ("inf", .«inf»)
+  ("type", .«type»)
 ]
 
 def keywordOf (s : String) : Option Keyword :=
@@ -140,13 +135,11 @@ def Punct.surface : Punct → String
   | .arrow => "->"
   | .backslash => "\\"
   | .underscore => "_"
-  | .star => "*"
-  | .infty => "∞"
 
 /-- All punctuation surface spellings (longest first for TextMate). -/
 def punctSurfaces : List String :=
   [Punct.arrow, .lparen, .rparen, .lbrace, .rbrace, .lbrack, .rbrack,
-   .comma, .colon, .eq, .pipe, .backslash, .underscore, .star, .infty].map (·.surface)
+   .comma, .colon, .eq, .pipe, .backslash, .underscore].map (·.surface)
 
 def mkTok (tok : Token) (sl sc el ec : Nat) : TokenWithSource :=
   { token := tok, startLine := sl, startCol := sc, endLine := el, endCol := ec }

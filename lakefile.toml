@@ -28,7 +28,6 @@ name = "FHMUnverified"
 roots = [
   "FHM.Unverified.HMArtifacts",
   "FHM.Unverified.HMDisplay",
-  "FHM.Unverified.HMFrontend",
   "FHM.Unverified.HMReport",
   "FHM.Unverified.Surface.Lex",
   "FHM.Unverified.Surface.Parse",

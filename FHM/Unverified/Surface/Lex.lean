@@ -158,12 +158,6 @@ partial def lex (input : String) : Except LexError (Array TokenWithSource) :=
         | '_' =>
           go rest line (col + 1)
             (acc.push (mkTok (.punct .underscore) line col line (col + 1)))
-        | '*' =>
-          go rest line (col + 1)
-            (acc.push (mkTok (.punct .star) line col line (col + 1)))
-        | '∞' =>
-          go rest line (col + 1)
-            (acc.push (mkTok (.punct .infty) line col line (col + 1)))
         | '\'' =>
           match takeCharLit rest line (col + 1) line col with
           | .error e => .error e
@@ -214,9 +208,9 @@ private def expectToks (input : String) (expected : Array Token) : Bool :=
 #guard expectToks "+" #[.op .plus]
 #guard expectToks "-" #[.op .minus]
 #guard expectToks "<" #[.op .lt]
-#guard expectToks "*" #[.punct .star]
-#guard expectToks "inf" #[.keyword .«inf»]
-#guard expectToks "∞" #[.punct .infty]
+#guard (match lex "*" with | .error (.unexpectedChar '*' 1 1) => true | _ => false)
+#guard expectToks "inf" #[.ident "inf" false]
+#guard (match lex "∞" with | .error (.unexpectedChar '∞' 1 1) => true | _ => false)
 
 #guard expectToks "= | : \\ _ ( ) [ ] { } ," #[
   .punct .eq, .punct .pipe, .punct .colon, .punct .backslash, .punct .underscore,

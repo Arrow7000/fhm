@@ -34,7 +34,6 @@ def prettyAux (ctx : Context) (prec : Nat) : Ty → String
   | .bvar n => ctx.boundNames[n]?.getD (alphaName n)
   | .fvar n => freeName ctx n
   | .arrow a b => prettyParenIf (prec ≥ 1) (prettyAux ctx 1 a ++ " → " ++ prettyAux ctx 0 b)
-  | .bl _ _ e => prettyParenIf (prec ≥ 2) ("List " ++ prettyAux ctx 2 e)
   | .customTy (.mk "Pair") [a, b] => "(" ++ prettyAux ctx 0 a ++ ", " ++ prettyAux ctx 0 b ++ ")"
   | .customTy (.mk name) [] => name
   | .customTy (.mk name) args =>
@@ -46,7 +45,7 @@ def prettyArgs (ctx : Context) : List Ty → List String
 end
 
 def pretty (ctx : Context) (ty : Ty) : String :=
-  prettyAux { ctx with freeIds := (ctx.freeIds ++ ty.freeVars).eraseDups } 0 ty.eraseBounds
+  prettyAux { ctx with freeIds := (ctx.freeIds ++ ty.freeVars).eraseDups } 0 ty
 
 def scheme (ctx : Context) (names : List String) (sig : PolyTy) : String :=
   let reserved := ctx.boundNames ++ ctx.aliases.map (·.2)
@@ -92,7 +91,7 @@ def scopes (typed : TypedLowered) (locations : Locations) : List Scope :=
     let path ← rhsPath typed display.site
     let rootTy ← foundTyAtCorePath typed.inference.output path
     let candidates := match declaredScheme typed display.site with
-      | some sig => matchNames display.names rootTy.eraseBounds sig.body.eraseBounds
+      | some sig => matchNames display.names rootTy sig.body
       | none => []
     let aliases := candidates.filter fun (n, name) => candidates.all fun (m, other) =>
       (m != n || other == name) && (other != name || m == n)

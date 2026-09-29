@@ -45,22 +45,6 @@ def prettyPrimLit : PrimLitExpr → String
 
 /-! ## Types -/
 
-/-- Minimal count pretty for Core `Ty.bl` (no Z3). -/
-def FHM.Bounds.Count.prettyCore : FHM.Bounds.Count → String
-  | .lit n => toString n
-  | .inf => "inf"
-  | .var ⟨.rigid, i⟩ => "n" ++ toString i
-  | .var ⟨.inferable, i⟩ => "?n" ++ toString i
-  | .add a b => "(" ++ a.prettyCore ++ " + " ++ b.prettyCore ++ ")"
-  | .mul a b => "(" ++ a.prettyCore ++ " * " ++ b.prettyCore ++ ")"
-  | .pred a => "pred(" ++ a.prettyCore ++ ")"
-  | .min a b => "min(" ++ a.prettyCore ++ ", " ++ b.prettyCore ++ ")"
-  | .max a b => "max(" ++ a.prettyCore ++ ", " ++ b.prettyCore ++ ")"
-
-def FHM.Bounds.CountSlot.pretty : FHM.Bounds.CountSlot → String
-  | .hole => "_"
-  | .solid c => c.prettyCore
-
 mutual
 
 /-- `prec` controls parenthesization: `0` = top, `1` = left of an arrow (wrap
@@ -71,9 +55,6 @@ def Ty.prettyAux (prec : Nat) : Ty → String
   | .bvar n        => prettyTyVarName n
   | .fvar n        => "?" ++ prettyTyVarName n
   | .arrow a b     => prettyParenIf (prec ≥ 1) (Ty.prettyAux 1 a ++ " → " ++ Ty.prettyAux 0 b)
-  | .bl lo hi e    =>
-      prettyParenIf (prec ≥ 2)
-        ("BL " ++ lo.pretty ++ " " ++ hi.pretty ++ " " ++ Ty.prettyAux 2 e)
   | .customTy (.mk "Pair") [a, b] =>
       "(" ++ Ty.prettyAux 0 a ++ ", " ++ Ty.prettyAux 0 b ++ ")"
   | .customTy (.mk s) []   => s
@@ -256,46 +237,6 @@ def Surface.prettyPrimLit : Surface.PrimLitExpr → String
 
 /-! ## Surface types -/
 
-/-- Precedence: `+` (1) < `*` (2) < FP app (3) < atom (4).
-Left-assoc +/*: left keeps op prec; right is tighter so `a+(b+c)` keeps parens.
-FP apps take atom args so compounds parenthesize. -/
-def Surface.Count.prettyAux (prec : Nat) : Surface.Count → String
-  | .lit n => toString n
-  | .inf => "∞"
-  | .var n => prettyValName n
-  | .add a b =>
-      prettyParenIf (prec > 1)
-        (Surface.Count.prettyAux 1 a ++ " + " ++ Surface.Count.prettyAux 2 b)
-  | .mul a b =>
-      prettyParenIf (prec > 2)
-        (Surface.Count.prettyAux 2 a ++ " * " ++ Surface.Count.prettyAux 3 b)
-  | .min a b =>
-      prettyParenIf (prec > 3)
-        ("min " ++ Surface.Count.prettyAux 4 a ++ " " ++ Surface.Count.prettyAux 4 b)
-  | .max a b =>
-      prettyParenIf (prec > 3)
-        ("max " ++ Surface.Count.prettyAux 4 a ++ " " ++ Surface.Count.prettyAux 4 b)
-  | .pred a =>
-      prettyParenIf (prec > 3)
-        ("pred " ++ Surface.Count.prettyAux 4 a)
-
-def Surface.Count.pretty (c : Surface.Count) : String := Surface.Count.prettyAux 0 c
-
-def Surface.CountSlot.pretty : Surface.CountSlot → String
-  | .hole => "_"
-  | .solid c => Surface.Count.pretty c
-
-#guard Surface.Count.pretty .inf == "∞"
-#guard Surface.Count.pretty (.add (.lit 1) (.lit 2)) == "1 + 2"
-#guard Surface.Count.pretty (.add (.lit 1) (.add (.lit 2) (.lit 3))) == "1 + (2 + 3)"
-#guard Surface.Count.pretty (.mul (.add (.lit 1) (.lit 2)) (.lit 3)) == "(1 + 2) * 3"
-#guard Surface.Count.pretty (.min (.add (.lit 1) (.lit 2)) (.lit 3)) == "min (1 + 2) 3"
-#guard Surface.Count.pretty (.pred (.lit 5)) == "pred 5"
-#guard Surface.Count.pretty (.pred (.add (.lit 1) (.lit 2))) == "pred (1 + 2)"
-#guard Surface.Count.pretty (.var (.mk "n")) == "n"
-#guard Surface.CountSlot.pretty .hole == "_"
-#guard Surface.CountSlot.pretty (.solid .inf) == "∞"
-
 mutual
 
 def Surface.Ty.prettyAux (prec : Nat) : Surface.Ty → String
@@ -305,10 +246,6 @@ def Surface.Ty.prettyAux (prec : Nat) : Surface.Ty → String
   | .arrow a b     => prettyParenIf (prec ≥ 1) (Surface.Ty.prettyAux 1 a ++ " → " ++ Surface.Ty.prettyAux 0 b)
   | .customTy (.mk s) []   => s
   | .customTy (.mk s) args => prettyParenIf (prec ≥ 2) (s ++ " " ++ String.intercalate " " (Surface.Ty.prettyArgs args))
-  | .bl lo hi e =>
-      prettyParenIf (prec ≥ 2)
-        ("BL " ++ Surface.CountSlot.pretty lo ++ " " ++ Surface.CountSlot.pretty hi ++ " " ++
-          Surface.Ty.prettyAux 2 e)
 
 def Surface.Ty.prettyArgs : List Surface.Ty → List String
   | []      => []
@@ -340,27 +277,14 @@ def Surface.prettyValueParams (params : List (ValName × Option Surface.Ty)) : S
   | [] => ""
   | ps => " " ++ String.intercalate " " (ps.map fun (x, a) => Surface.prettyValueParam x a)
 
-/-- Pretty `{n : Nat, a} body` — Nat sidecar + type foralls (not on PolyTy). -/
-def Surface.prettySchemeAnn (nats : List ValName) (σ : Surface.PolyTy) : String :=
-  let body := σ.body.pretty
-  match nats, σ.foralls with
-  | [], [] => body
-  | ns, fs =>
-      let natPart :=
-        if ns.isEmpty then none
-        else some ("(" ++ String.intercalate " " (ns.map prettyValName) ++ " : Nat)")
-      let tyPart :=
-        if fs.isEmpty then none
-        else some (String.intercalate " " (fs.map prettyValName))
-      let binders := natPart.toList ++ tyPart.toList
-      if binders.isEmpty then body
-      else "∀ " ++ String.intercalate " " binders ++ ". " ++ body
+/-- Pretty a type scheme annotation. -/
+def Surface.prettySchemeAnn (σ : Surface.PolyTy) : String :=
+  σ.pretty
 
 /-- Binding name with optional `{tyParams}`, value `params`, and `: ann`. -/
 def Surface.prettyBindingHead (name : ValName) (tyParams : List ValName)
-    (params : List (ValName × Option Surface.Ty)) (ann : Option Surface.PolyTy)
-    (natBinders : List ValName := []) : String :=
-  let annPretty := ann.map (Surface.prettySchemeAnn natBinders)
+    (params : List (ValName × Option Surface.Ty)) (ann : Option Surface.PolyTy) : String :=
+  let annPretty := ann.map Surface.prettySchemeAnn
   if tyParams.isEmpty && params.isEmpty then
     match annPretty with
     | none => prettyValName name
@@ -446,7 +370,7 @@ def Surface.Expr.prettyBranches : List (Surface.Pattern × Surface.Expr) → Str
 def Surface.Expr.prettyRecGroup : List Surface.Binding → String
   | [] => ""
   | b :: rest =>
-      Surface.prettyBindingHead b.name b.tyParams b.params b.ann b.natBinders
+      Surface.prettyBindingHead b.name b.tyParams b.params b.ann
         ++ " = " ++ Surface.Expr.prettyAux 0 b.rhs
         ++ (match rest with | [] => "" | _ :: _ => " and ")
         ++ Surface.Expr.prettyRecGroup rest

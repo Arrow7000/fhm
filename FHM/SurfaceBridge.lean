@@ -81,68 +81,40 @@ def tvarIndex : List ValName → ValName → Option Nat
   | [], _ => none
   | x :: xs, n => if x = n then some 0 else (tvarIndex xs n).map (· + 1)
 
-/-! ## Surface counts → kernel counts (for `Ty.bl`)
-
-`nats` is the enclosing Nat-binder telescope (index 0 = outermost), same as
-erase. Unbound names map to rigid 0 as a temporary scaffold (scheme wiring later).
--/
-
-def lowerCountSolid (nats : List ValName := []) : Surface.Count → FHM.Bounds.Count
-  | .lit n => .lit n
-  | .inf => .inf
-  | .var n =>
-      match nats.findIdx? (· == n) with
-      | some i => .var ⟨.rigid, i⟩
-      | none => .var ⟨.rigid, 0⟩
-  | .add a b => .add (lowerCountSolid nats a) (lowerCountSolid nats b)
-  | .mul a b => .mul (lowerCountSolid nats a) (lowerCountSolid nats b)
-  | .pred a => .pred (lowerCountSolid nats a)
-  | .min a b => .min (lowerCountSolid nats a) (lowerCountSolid nats b)
-  | .max a b => .max (lowerCountSolid nats a) (lowerCountSolid nats b)
-
-def lowerCountSlot (nats : List ValName := []) : Surface.CountSlot → FHM.Bounds.CountSlot
-  | .hole => .hole
-  | .solid c => .solid (lowerCountSolid nats c)
-
 mutual
-/-- Lower a surface type against a kind env and a tyvar scope.
-`nats` resolves named count vars in `BL` intervals (default empty). -/
-def lowerTy (ke : KindEnv) (tvs : List ValName) : Surface.Ty → (nats : List ValName := []) → Option Ty
-  | .prim .unit, _ => some (.prim .unit)
-  | .prim .int, _  => some (.prim .int)
-  | .prim .nat, _  => some (.prim .nat)
-  | .prim .char, _ => some (.prim .char)
-  | .prim .bool, _ =>
+/-- Lower a surface type against a kind env and a tyvar scope. -/
+def lowerTy (ke : KindEnv) (tvs : List ValName) : Surface.Ty → Option Ty
+  | .prim .unit => some (.prim .unit)
+  | .prim .int  => some (.prim .int)
+  | .prim .nat  => some (.prim .nat)
+  | .prim .char => some (.prim .char)
+  | .prim .bool =>
       if LookupList.get? ke nBool = some 0 then some (.customTy nBool []) else none
-  | .arrow a b, nats =>
-      match lowerTy ke tvs a nats, lowerTy ke tvs b nats with
+  | .arrow a b =>
+      match lowerTy ke tvs a, lowerTy ke tvs b with
       | some a', some b' => some (.arrow a' b')
       | _, _ => none
-  | .pair a b, nats =>
-      match lowerTy ke tvs a nats, lowerTy ke tvs b nats with
+  | .pair a b =>
+      match lowerTy ke tvs a, lowerTy ke tvs b with
       | some a', some b' =>
           if LookupList.get? ke nPair = some 2 then some (.customTy nPair [a', b']) else none
       | _, _ => none
-  | .tvar name, _ =>
+  | .tvar name =>
       match tvarIndex tvs name with
       | some i => some (.bvar i)
       | none => none
-  | .customTy T args, nats =>
-      match lowerTyList ke tvs args nats with
+  | .customTy T args =>
+      match lowerTyList ke tvs args with
       | some args' =>
           if LookupList.get? ke T = some args'.length then some (.customTy T args') else none
-      | none => none
-  | .bl lo hi e, nats =>
-      match lowerTy ke tvs e nats with
-      | some e' => some (.bl (lowerCountSlot nats lo) (lowerCountSlot nats hi) e')
       | none => none
 /-- Pointwise lowering of a type-argument list (mutual to make termination
     structural, mirroring `Decls.TyList.wellKindedB`). -/
 def lowerTyList (ke : KindEnv) (tvs : List ValName) :
-    List Surface.Ty → (nats : List ValName := []) → Option (List Ty)
-  | [], _ => some []
-  | t :: ts, nats =>
-      match lowerTy ke tvs t nats, lowerTyList ke tvs ts nats with
+    List Surface.Ty → Option (List Ty)
+  | [] => some []
+  | t :: ts =>
+      match lowerTy ke tvs t, lowerTyList ke tvs ts with
       | some t', some ts' => some (t' :: ts')
       | _, _ => none
 end
@@ -251,13 +223,6 @@ theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} 
       · rename_i hg; simp only [Option.some.injEq] at h; subst h
         exact .customTy hg (lowerTyList_wellKinded hargs)
       · cases h
-  | bl lo hi e =>
-    simp only [lowerTy] at h
-    cases he : lowerTy ke tvs e with
-    | none => simp [he] at h
-    | some e' =>
-      simp only [he, Option.some.injEq] at h; subst h
-      exact .bl (lowerTy_wellKinded he)
 end
 
 -- Adversarial `#guard`s (per the house lesson: eval the executable side on
@@ -278,11 +243,6 @@ private def keDemo : KindEnv := [(nBool, 0), (nPair, 2), (nList, 1), (.mk "Maybe
 #guard (lowerTy keDemo [] (.customTy (.mk "Nope") [])).isNone
 -- wrong arity fails (List is unary)
 #guard (lowerTy keDemo [] (.customTy nList [])).isNone
--- BL lowers to Core `Ty.bl` (intervals preserved)
-#guard match lowerTy keDemo [] (.bl (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int)) with
-  | some (.bl (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int)) => true | _ => false
-#guard match lowerTy keDemo [] (.bl .hole (.solid (.lit 1)) (.prim .int)) with
-  | some (.bl .hole (.solid (.lit 1)) (.prim .int)) => true | _ => false
 -- pair without a Pair declaration fails
 #guard (lowerTy [] [] (.pair (.prim .int) (.prim .int))).isNone
 -- pair with the prelude present desugars to customTy Pair
@@ -656,7 +616,6 @@ private theorem Ty.WellKinded.weaken {ke ke' : KindEnv} {pc : Nat} {ty : Ty}
   | customTy hget hargs =>
     exact .customTy (LookupList.get?_append_left ke ke' _ hget)
       (fun arg ha => Ty.WellKinded.weaken (hargs arg ha))
-  | bl he => exact .bl (Ty.WellKinded.weaken he)
 
 private theorem DataDecls.kindEnv_append (pre user : List DataDecl) :
     DataDecls.kindEnv (pre ++ user) = DataDecls.kindEnv pre ++ DataDecls.kindEnv user := by
@@ -899,11 +858,6 @@ theorem Ty.WellKinded_openWith {ke : KindEnv} {Vs : List Ty} {n : Nat} {ty : Ty}
       intro arg harg
       obtain ⟨arg0, harg0, rfl⟩ := List.mem_map.mp harg
       exact ih arg0 harg0 (hargs arg0 harg0) hn
-  | bl lo hi e ih =>
-    cases hty with
-    | bl he =>
-      simp only [Ty.openWith, Ty.instantiate]
-      exact .bl (ih he hn)
 
 /-- Inversion: well-kinded `customTy` pins the kind-env arity. -/
 theorem Ty.WellKinded.customTy_inv {ke : KindEnv} {pc : Nat} {T : TyName} {args : List Ty}
@@ -4808,7 +4762,7 @@ theorem dTreeExhaustiveB_sound {ctors : CtorEnv} {octx : OccCtx} {t : DTree}
       | none => simp [hg] at hB
       | some ty =>
         match ty with
-        | .prim _ | .arrow _ _ | .bvar _ | .fvar _ | .bl _ _ _ => simp [hg] at hB
+        | .prim _ | .arrow _ _ | .bvar _ | .fvar _ => simp [hg] at hB
         | .customTy T tyArgs =>
           simp only [hg] at hB
           have casesOk : dTreeCasesOk ctors T cases = true := by
@@ -7289,8 +7243,6 @@ private theorem InstantiatesBy.containsBvarsUpTo_length {tyArgs : List Ty} :
         (InstantiatesBy.containsBvarsUpTo_length hb)
   | _, _, .customTy hforall =>
       .customTy (InstantiatesBy_forall₂_containsBvarsUpTo hforall)
-  | _, _, .bl he =>
-      .bl (InstantiatesBy.containsBvarsUpTo_length he)
 
 private theorem InstantiatesBy_forall₂_containsBvarsUpTo {tyArgs : List Ty} :
     ∀ {tys instTys : List Ty}, List.Forall₂ (InstantiatesBy tyArgs) tys instTys →
@@ -8533,15 +8485,6 @@ theorem lowerTy_isSome_appendTyScope {ke : KindEnv} {tvs tvs' : List ValName}
           (lowerTyList_length_of_some hlowered).trans (lowerTyList_length_of_some hargs).symm
         simp only [lowerTy, hlowered, hg, hlen, ↓reduceIte, Option.isSome_some]
       · simp at h
-  | bl lo hi e ih =>
-    intro h
-    simp only [lowerTy] at h
-    cases he : lowerTy ke tvs e with
-    | none => simp [he] at h
-    | some e' =>
-      have he' := ih (Option.isSome_iff_exists.mpr ⟨e', he⟩)
-      obtain ⟨e'', he''⟩ := Option.isSome_iff_exists.mp he'
-      simp only [lowerTy, he'', Option.isSome_some]
 
 theorem lowerTy_isSome_appendTyScopeMid {ke : KindEnv} {A tvs' B : List ValName}
     {τ : Surface.Ty} (h : (lowerTy ke (A ++ B) τ).isSome) :
@@ -8618,15 +8561,6 @@ theorem lowerTy_isSome_appendTyScopeMid {ke : KindEnv} {A tvs' B : List ValName}
           (lowerTyList_length_of_some hlowered).trans (lowerTyList_length_of_some hargs).symm
         simp only [lowerTy, hlowered, hg, hlen, ↓reduceIte, Option.isSome_some]
       · simp at h
-  | bl lo hi e ih =>
-    intro h
-    simp only [lowerTy] at h
-    cases he : lowerTy ke (A ++ B) e with
-    | none => simp [he] at h
-    | some e' =>
-      have he' := ih (Option.isSome_iff_exists.mpr ⟨e', he⟩)
-      obtain ⟨e'', he''⟩ := Option.isSome_iff_exists.mp he'
-      simp only [lowerTy, he'', Option.isSome_some]
 
 private theorem wrapCoreParams_isSome_invariant {ke : KindEnv} {tvs : List ValName}
     {params : List (ValName × Option Surface.Ty)} {e e' : Expr}
@@ -12634,15 +12568,14 @@ The declarative `SurfaceWT` corollary (below) closes the spec/impl loop under
 Approach A / 1a: strong open `SurfaceWTExpr` + coverage ⇒ the concrete `lower`
 output typechecks, then reuse `surface_type_safe`. -/
 
-/-- Path R residual: well-typed surface programs lower to Core whose erased
-    runtime term is HM-typed against `ctors.eraseBounds`, match-exhaustive, and
-    non-stuck. Bounds and source annotations are static and do not enter
-    `SmallStep.Step`. -/
+/-- Well-typed surface programs lower to Core whose erased runtime term is
+    HM-typed, match-exhaustive, and non-stuck. Source annotations and `.found`
+    metadata are static and do not enter `SmallStep.Step`. -/
 theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     (hlow : lower ctors s = some c)
     (htc : (typecheck ctors c).isSome)
     (hcov : SurfaceCovers ctors s) :
-    ∃ τ, TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ (c.erase) τ ∧
+    ∃ τ, TypeOfHM ⟨[], ctors⟩ (c.erase) τ ∧
       AllMatchesExhaustive ctors (c.erase) ∧
       ∀ e', Relation.ReflTransGen Step (c.erase) e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
@@ -12660,10 +12593,9 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
       (fun y hy => by simp [hclosed] at hy)
       (fun p hp hc => by simp [hclosed] at hc)
   have hSτ : S.onTy τ = τ := Ty.substFvars_eq_self_of_no_key (fun p hp => helim.2 p hp)
-  -- Typing: `Infer.sound` yields residual `TypeOfHM` at `(S.onCtx ⟨[], ctors⟩)`
-  -- which is `⟨[], ctors.eraseBounds⟩` (empty env, substituted ctors erased).
-  have hty : TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ (c.erase) (Ty.eraseBounds τ) := by
-    simpa [Subst.onCtx, Subst.onEnv, Ctx.eraseBounds, Env.eraseBounds, hSτ] using
+  -- Typing: `Infer.sound` yields runtime `TypeOfHM` at `S.onCtx ⟨[], ctors⟩`.
+  have hty : TypeOfHM ⟨[], ctors⟩ (c.erase) τ := by
+    simpa [Subst.onCtx, Subst.onEnv, hSτ] using
       Infer.sound hInf CtxWF.empty CtxBelow.empty
         [] (by simp) (by simp [hclosed]) (by simp)
   -- Exhaustiveness: coverage survives `lower` and `erase`.
@@ -12674,17 +12606,17 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   have hsafe : ∀ e', Relation.ReflTransGen Step (c.erase) e' →
       IsValue e' ∨ ∃ e'', Step e' e'' := by
     intro e' hrtc
-    exact (TypeOfHM.type_safety_star (ctors := CtorEnv.eraseBounds ctors) hty
-      (Expr.erase_idem c) (SmallStep.AllMatchesExhaustive.eraseCtorBounds hexh) e' hrtc).2
-  exact ⟨Ty.eraseBounds τ, hty, hexh, hsafe⟩
+    exact (TypeOfHM.type_safety_star (ctors := ctors) hty
+      (Expr.erase_idem c) hexh e' hrtc).2
+  exact ⟨τ, hty, hexh, hsafe⟩
 
-/-- **Well-typed surface programs don't go wrong** (program-level, Path R residual).
+/-- **Well-typed surface programs don't go wrong** (program-level).
     Composes decl elaboration with `surface_type_safe` on the desugared term. -/
 theorem program_type_safe {p : Surface.Program} {ctors : CtorEnv} {c : Expr}
     (hlow : lowerProgram p = some (ctors, c))
     (htc : (typecheck ctors c).isSome)
     (hcov : SurfaceCovers ctors p.term) :
-    ∃ τ, TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ (c.erase) τ ∧
+    ∃ τ, TypeOfHM ⟨[], ctors⟩ (c.erase) τ ∧
       AllMatchesExhaustive ctors (c.erase) ∧
       ∀ e', Relation.ReflTransGen Step (c.erase) e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by

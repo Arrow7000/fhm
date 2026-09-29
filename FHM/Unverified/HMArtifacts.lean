@@ -179,16 +179,16 @@ def declaredScheme (typed : TypedLowered) (site : SurfaceBinderSite) : Option Po
 
 def binderType (typed : TypedLowered) (site : SurfaceBinderSite) : Option String :=
   match typed.inferredBinderSchemes.find? (fun p => p.1 == site) with
-  | some (_, scheme) => some scheme.eraseBounds.pretty
+  | some (_, scheme) => some scheme.pretty
   | none =>
       match declaredScheme typed site with
-      | some scheme => some scheme.eraseBounds.pretty
+      | some scheme => some scheme.pretty
       | none => do
           match site with
           | .patCapture _ _ _ =>
               let (_, types) ← typed.patternBinderTypes.find? (fun p => p.1 == site)
               let (_, ty) ← types.head?
-              pure ty.eraseBounds.pretty
+              pure ty.pretty
           | _ =>
               let (_, target) ← typed.lowering.binderTargets.find? (fun p => p.1 == site)
               let sites ← match target with
@@ -196,6 +196,6 @@ def binderType (typed : TypedLowered) (site : SurfaceBinderSite) : Option String
                 | .absent _ => none
               let .lambda path ← sites.head? | none
               let .arrow domain _ ← foundTyAtCorePath typed.inference.output path | none
-              pure domain.eraseBounds.pretty
+              pure domain.pretty
 
 end FHM.Unverified.HMArtifacts

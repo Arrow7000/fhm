@@ -9,22 +9,22 @@ let a newcomer read ONE file and come away knowing exactly what this language's
 type system guarantees, what those guarantees *mean* in plain terms, and
 precisely how far the machine-checking currently reaches.
 
-**Status (erasure-on-`Step`, D2 recursion).** Type safety, *inference
+**Status (type-erased runtime, D2 recursion).** Type safety, *inference
 soundness*, and principality of successful inference are closed and
-axiom-clean: `Infer.sound` / `Infer.sourceSound` and their branch/group families
-(coherence of the source checker with the erased machine relation `TypeOfHM`,
-via `e.erase`) depend on nothing but `propext`, `Classical.choice`, `Quot.sound`.
+axiom-clean: `Infer.sourceSound` and its branch/group families type the annotated
+source, while whole-expression `Infer.sound` derives typing for the erased runtime
+term. They depend on nothing but `propext`, `Classical.choice`, `Quot.sound`.
 The `TypeOfHM` / `Step` dynamics metatheory (substitution lemma, canonical forms,
 `progress`, `preservation`, `type_safety(_star)`) is likewise proved, on erased
 terms, in `FHM.InferW`. What changed by design (see
 `briefs/design-memo-erasure-migration.md` §3.5): the *elaborated* stack —
 `TypeOfElabHM` and the `eOut` index — is deleted. The runnable term is always the
-erased source `c.erase`; `Infer.sourceSound` now projects the same derivation
-directly onto the bounds-blind annotated source `c.eraseBounds`. The replacement
-D2 principality spine factors declarative types through successful inference via
-`AgreesHM`. Relational and executable completeness are now closed as well:
-for found-free sources, `principalType` and `typecheck` succeed exactly when the
-bounds-blind annotated source has a `TypeOfHM` derivation.
+erased source `c.erase`; `Infer.sourceSound` types the annotated source directly,
+while `Infer.sound` derives the runnable erased typing. The D2 principality spine
+factors every declarative type through a successful inferred type by an LC
+residual substitution. Relational and executable completeness are now closed as
+well: for found-free sources, `principalType` and `typecheck` succeed exactly
+when the annotated source has a `TypeOfHM` derivation.
 
 So: do not read this file as "everything below is proved". Read section 6's
 `#print axioms` output, which is the actual, unfakeable status report.
@@ -75,16 +75,15 @@ well-typed and is a value or can step again — "never gets stuck" formalised. -
 #check @program_type_safe
 #check @TypeOfHM.type_safety_star
 
-/-! ### Type inference is sound: coherent with the erased machine relation
+/-! ### Type inference is sound: source typing first, runtime erasure second
 
 `Infer` (Algorithm-W-style) is the executable inferer. **Soundness**
-(`Infer.sound`) is the erasure-on-`Step` coherence theorem: after the inferred
-substitution, `TypeOfHM` types the ERASED SOURCE term (`e.erase`) at the erased
-inferred type — one typing relation, one soundness theorem. The runnable term is
-always `c.erase`; no elaborated output exists. **Principality** is now proved by
-the D2 spine directly against the annotated, bounds-blind source
-`e.eraseBounds`: every declarative type factors through a successful inferred
-type via an LC residual substitution, modulo `AgreesHM`. Producer completeness
+`Infer.sourceSound` types the annotated source after the inferred substitution;
+`Infer.sound` then erases annotations and `.found` metadata and types the
+runnable `e.erase` at the same inferred type. There is one typing relation and
+no elaborated output language. **Principality** is proved by the D2 spine
+directly against the annotated source: every declarative type factors through a
+successful inferred type via an LC residual substitution. Producer completeness
 constructs relational derivations from declarative typings, and executable
 completeness proves that the concrete worker realizes them. -/
 #check @Infer.sound
@@ -427,7 +426,7 @@ example (ctors : CtorEnv) :
     exact .arrow .prim .prim
   · simpa [RecSpecs.ceilingOK, RecSpecs.CeilingRel, PolyTy.genGroup,
       Ty.genFilter, Ty.closeOver] using
-        (PolyTy.Generalizes.refl (PolyTy.eraseBounds σ))
+        (PolyTy.Generalizes.refl σ)
   · intro Xs _ i hi
     have hi0 : i = 0 := by
       simp only [binds, List.length_cons, List.length_nil] at hi; omega
@@ -467,12 +466,11 @@ downstream that only needs one of the two conjuncts can project it out
 without re-deriving it. -/
 
 /-- Erased-term well-typedness (closed): the type-passing-free `TypeOfHM` of the
-    runnable (erased) term, judged against the BOUNDS-erased ctor env (Path R:
-    `Infer.sound` still concludes at `eraseBounds` until the bounds layer is gone).
-    `erase` happens in `elaborateSafe`, before `WellTyped` is applied, so `e` here
-    is already in the image of `Expr.erase`. -/
+    runnable term under its actual constructor environment. `erase` happens in
+    `elaborateSafe`, before `WellTyped` is applied, so `e` here is already in the
+    image of `Expr.erase`. -/
 def WellTyped (ctors : CtorEnv) (e : Expr) : Prop :=
-  ∃ τ, TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ (e.erase) τ
+  ∃ τ, TypeOfHM ⟨[], ctors⟩ (e.erase) τ
 
 /-- A passport: an ERASED term that passed BOTH independent checks (well-typed,
     exhaustive) and is in fact erased (`e.erase = e`, so the step-4 dynamics
@@ -517,22 +515,20 @@ abbrev Running (ctors : CtorEnv) :=
 def Running.toSafe {ctors : CtorEnv} (r : Running ctors) : Safe ctors :=
   ⟨r.val, r.property.1, r.property.2.1, r.property.2.2.1⟩
 
-/-- Progress for a closed, exhaustive `WellTyped` term: it is a value or steps.
-    Lifts `TypeOfHM.progress` through the ctor-erase + erase-image
-    exhaustiveness bridge (`AllMatchesExhaustive.eraseCtorBounds`). -/
+/-- Progress for a closed, exhaustive `WellTyped` term: it is a value or steps. -/
 theorem WellTyped.progress {ctors : CtorEnv} {e : Expr}
     (hwt : WellTyped ctors e) (h_erased : e.erase = e) (hexh : AllMatchesExhaustive ctors e) :
     IsValue e ∨ ∃ e', Step e e' := by
   obtain ⟨τ, hty⟩ := hwt
-  have hty0 : TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ e τ := by simpa [h_erased] using hty
-  exact TypeOfHM.progress hty0 rfl (SmallStep.AllMatchesExhaustive.eraseCtorBounds hexh) h_erased
+  have hty0 : TypeOfHM ⟨[], ctors⟩ e τ := by simpa [h_erased] using hty
+  exact TypeOfHM.progress hty0 rfl hexh h_erased
 
 /-- Preservation for `WellTyped`: a step of an erased term preserves
     well-typedness (the step's target is itself erased, via `Step.preserves_erased`). -/
 theorem WellTyped.preservation {ctors : CtorEnv} {e e' : Expr}
     (hwt : WellTyped ctors e) (h_erased : e.erase = e) (hstep : Step e e') : WellTyped ctors e' := by
   obtain ⟨τ, hty⟩ := hwt
-  have hty0 : TypeOfHM ⟨[], CtorEnv.eraseBounds ctors⟩ e τ := by simpa [h_erased] using hty
+  have hty0 : TypeOfHM ⟨[], ctors⟩ e τ := by simpa [h_erased] using hty
   have hty' := TypeOfHM.preservation hstep hty0 h_erased
   have he' : e'.erase = e' := SmallStep.Step.preserves_erased h_erased hstep
   exact ⟨τ, by simpa [he'] using hty'⟩
@@ -647,13 +643,9 @@ The clean baseline is `{propext, Classical.choice, Quot.sound}`, the three
 standard classical axioms mathlib itself depends on. Not every theorem needs
 all three; a strict subset (e.g. `[propext, Quot.sound]`) is just as clean.
 
-**Where `sorryAx` still appears, and why.** The seven `Bounds/*` sorries (the
-HM/`--bl` gate) are outside this file's imports. Inside its transitive closure,
-the old operational-bridge gaps are closed: the erased-dynamics lemmas
-(`Step.preserves_erased`, `AllMatchesExhaustive.erase`/`eraseCtorBounds`) and
-the whole `TypeOfHM`/`Step` metatheory live proved and axiom-clean in
-`FHM.InferW`, so `runSafe` / `elaborateSafe` no longer inherit any `sorryAx`
-from a residual bridge.
+The runtime-erasure bridge and the whole `TypeOfHM`/`Step` metatheory live
+proved and axiom-clean in `FHM.Core` and `FHM.InferW`, so `runSafe` and
+`elaborateSafe` do not inherit any `sorryAx` from their operational bridge.
 
 Inference soundness, successful-inference principality, and both relational and
 executable completeness are closed; the guards below show all proof families
@@ -664,11 +656,11 @@ axiom-clean. -/
 #print axioms TypeOfHM.preservation         -- expect {propext, Classical.choice, Quot.sound}
 #print axioms TypeOfHM.type_safety_star     -- expect {propext, Classical.choice, Quot.sound}
 
--- Closed and clean: erasure-on-`Step` inference soundness.
+-- Closed and clean: source and runtime inference soundness.
 #print axioms Infer.sound                -- expect {propext, Classical.choice, Quot.sound}
 #print axioms Infer.sourceSound          -- expect {propext, Classical.choice, Quot.sound}
-#print axioms InferBranches.sound        -- expect {propext, Classical.choice, Quot.sound}
-#print axioms InferRecGroup.sound        -- expect {propext, Classical.choice, Quot.sound}
+#print axioms InferBranches.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
+#print axioms InferRecGroup.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
 
 -- Closed and clean: D2 principality of successful inference.
 #print axioms Infer.principal             -- expect {propext, Classical.choice, Quot.sound}

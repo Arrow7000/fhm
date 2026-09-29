@@ -1,11 +1,6 @@
 import FHM.Core
 
 namespace Surface
-
-
-
-
-
 inductive PrimTy
   | unit
   | int
@@ -13,43 +8,6 @@ inductive PrimTy
   | bool
   | char
   deriving DecidableEq, Repr
-
-/-! ## Bound counts in surface types
-
-Surface counts are **syntax**, not the Bounds kernel `Count` (no rigid/inferable
-indices here). Erase maps into `FHM.Bounds.Count` + `BoundsAnnTy`.
-
-Hygienic split (mirrors `AnnoCount`):
-* `Count` — solid arithmetic + named vars (no hole)
-* `CountSlot` — whole lo/hi atom: `_` or solid `Count`
-
-`Count.var` is in scope under a Nat-binder **sidecar** telescope
-(`BoundsSchemeAnn.natBinders` after erase; Binding-level list at parse — not
-on `PolyTy`). Erase resolves names → kernel rigid indices against that telescope.
--/
-
-/-- Solid surface count — ground arithmetic + named vars matching Kernel ops
-(`lit`/`inf`/`var`/`add`/`mul`/`pred`/`min`/`max`). No holes. -/
-inductive Count where
-  | lit (n : Nat)
-  | inf
-  /-- Named count var (scheme Nat binder). Erase → `Count.var ⟨.rigid, i⟩`. -/
-  | var (n : ValName)
-  | add (a b : Count)
-  | mul (a b : Count)
-  | pred (a : Count)
-  | min (a b : Count)
-  | max (a b : Count)
-  deriving DecidableEq, Repr
-
-/-- Bound slot in `BL lo hi elem`: hole (`_`) or solid count. -/
-inductive CountSlot where
-  | hole
-  | solid (c : Count)
-  deriving DecidableEq, Repr
-
-instance : Coe Count CountSlot where
-  coe := .solid
 
 inductive Ty
   | prim : PrimTy → Ty
@@ -59,12 +17,10 @@ inductive Ty
   | tvar : ValName → Ty
   /-- A custom type with its type params -/
   | customTy : TyName → List Ty → Ty
-  /-- Bounded list type `BL lo hi elem` (refines `List elem` after erase). -/
-  | bl (lo hi : CountSlot) (elem : Ty)
   deriving Repr
 
 /--
-Strong induction for `Ty` with a useful IH on `customTy` / `bl`:
+Strong induction for `Ty` with a useful IH on `customTy`:
 `(∀ t ∈ tys, motive t)` instead of a bare motive on the list.
 -/
 @[elab_as_elim]
@@ -73,24 +29,21 @@ def Ty.rec_strong.{u} {motive : Ty → Sort u}
     (pair     : ∀ a b, motive a → motive b → motive (.pair a b))
     (arrow    : ∀ a b, motive a → motive b → motive (.arrow a b))
     (tvar     : ∀ n, motive (.tvar n))
-    (customTy : ∀ nm tys, (∀ t ∈ tys, motive t) → motive (.customTy nm tys))
-    (bl       : ∀ lo hi e, motive e → motive (.bl lo hi e)) :
+    (customTy : ∀ nm tys, (∀ t ∈ tys, motive t) → motive (.customTy nm tys)) :
     (ty : Ty) → motive ty
   | .prim p          => prim p
   | .pair a b        =>
       pair a b
-        (Ty.rec_strong prim pair arrow tvar customTy bl a)
-        (Ty.rec_strong prim pair arrow tvar customTy bl b)
+        (Ty.rec_strong prim pair arrow tvar customTy a)
+        (Ty.rec_strong prim pair arrow tvar customTy b)
   | .arrow a b       =>
       arrow a b
-        (Ty.rec_strong prim pair arrow tvar customTy bl a)
-        (Ty.rec_strong prim pair arrow tvar customTy bl b)
+        (Ty.rec_strong prim pair arrow tvar customTy a)
+        (Ty.rec_strong prim pair arrow tvar customTy b)
   | .tvar n          => tvar n
   | .customTy nm tys =>
       customTy nm tys
-        (fun t _ht => Ty.rec_strong prim pair arrow tvar customTy bl t)
-  | .bl lo hi e      =>
-      bl lo hi e (Ty.rec_strong prim pair arrow tvar customTy bl e)
+        (fun t _ht => Ty.rec_strong prim pair arrow tvar customTy t)
 termination_by ty => sizeOf ty
 decreasing_by
   all_goals simp_wf
@@ -98,27 +51,10 @@ decreasing_by
     | omega
     | (have := List.sizeOf_lt_of_mem _ht; omega)
 
-/-- No `bl` constructors (post-erase invariant for the HM lower stack). -/
-inductive Ty.DoesntContainBounds : Ty → Prop where
-  | prim {p} : DoesntContainBounds (.prim p)
-  | tvar {n} : DoesntContainBounds (.tvar n)
-  | pair {a b} :
-      DoesntContainBounds a → DoesntContainBounds b → DoesntContainBounds (.pair a b)
-  | arrow {a b} :
-      DoesntContainBounds a → DoesntContainBounds b → DoesntContainBounds (.arrow a b)
-  | customTy {nm tys} :
-      (∀ t ∈ tys, DoesntContainBounds t) → DoesntContainBounds (.customTy nm tys)
-
-/-- Scheme as today: `{a b} body`. Nat binders are **not** on `PolyTy` —
-they ride a Bounds sidecar (`BoundsSchemeAnn` / Binding-level telescope at
-parse), same dual-stack move as `BoundsAnnTy` beside erased HM types. -/
+/-- Rank-1 type scheme: `{a b} body`. -/
 structure PolyTy where
   foralls : List ValName
   body : Ty
-
-/-- No `bl` in a scheme body. -/
-inductive PolyTy.DoesntContainBounds : PolyTy → Prop where
-  | mk {σ} : Ty.DoesntContainBounds σ.body → PolyTy.DoesntContainBounds σ
 
 /-- Surface algebraic data declaration: named type params, named ctors,
     positional field types (no field names in this slice). -/
@@ -127,12 +63,6 @@ structure DataDecl where
   params : List ValName
   ctors  : List (CtorName × List Ty)
   deriving Repr
-
-/-- No `bl` in any ctor field type. -/
-inductive DataDecl.DoesntContainBounds : DataDecl → Prop where
-  | mk {d} :
-      (∀ c fs, (c, fs) ∈ d.ctors → ∀ t ∈ fs, Ty.DoesntContainBounds t) →
-      DataDecl.DoesntContainBounds d
 
 
 /-- Primitive literals -/
@@ -159,18 +89,13 @@ inductive Pattern
 
 
 /-- A value binding as written: optional `{tyParams}`, value `params`, optional
-    `: ann`, Nat-binder sidecar, and `rhs`. Sugar is erased in lowering (→ Core `λ`).
-
-`natBinders` is the Bounds sidecar for `{n : Nat,…}` (not on `PolyTy`). Empty =
-pure HM ascription. -/
+    `: ann`, and `rhs`. Sugar is erased in lowering (→ Core `λ`). -/
 structure Binding' (expr : Type) where
   name : ValName
   tyParams : List ValName := []
   params : List (ValName × Option Ty) := []
   ann  : Option PolyTy
   rhs  : expr
-  /-- Nat binders from `: {n : Nat, a} …` — sidecar beside `ann`. -/
-  natBinders : List ValName := []
 
 
 /-- An expression in our language -/
@@ -315,49 +240,6 @@ decreasing_by
 
 abbrev Binding := Binding' Expr
 
-/-- No `bl` in type annotations of a surface expression. -/
-inductive Expr.DoesntContainBounds : Expr → Prop where
-  | primLit {p} : DoesntContainBounds (.primLit p)
-  | primBinOp {op} : DoesntContainBounds (.primBinOp op)
-  | pair {a b} :
-      DoesntContainBounds a → DoesntContainBounds b → DoesntContainBounds (.pair a b)
-  | cons {h t} :
-      DoesntContainBounds h → DoesntContainBounds t → DoesntContainBounds (.cons h t)
-  | list {items} :
-      (∀ e ∈ items, DoesntContainBounds e) → DoesntContainBounds (.list items)
-  | lambda {param paramAnn body} :
-      (∀ t, paramAnn = some t → Ty.DoesntContainBounds t) →
-      DoesntContainBounds body →
-      DoesntContainBounds (.lambda param paramAnn body)
-  | app {f a} :
-      DoesntContainBounds f → DoesntContainBounds a → DoesntContainBounds (.app f a)
-  | letIn {name tyParams params ann rhs body} :
-      (∀ n t, (n, some t) ∈ params → Ty.DoesntContainBounds t) →
-      (∀ σ, ann = some σ → PolyTy.DoesntContainBounds σ) →
-      DoesntContainBounds rhs → DoesntContainBounds body →
-      DoesntContainBounds (.letIn name tyParams params ann rhs body)
-  | letRecIn {bindings body} :
-      (∀ b ∈ bindings, ∀ n t, (n, some t) ∈ b.params → Ty.DoesntContainBounds t) →
-      (∀ b ∈ bindings, ∀ σ, b.ann = some σ → PolyTy.DoesntContainBounds σ) →
-      (∀ b ∈ bindings, DoesntContainBounds b.rhs) →
-      DoesntContainBounds body →
-      DoesntContainBounds (.letRecIn bindings body)
-  | var {n} : DoesntContainBounds (.var n)
-  | ctor {n} : DoesntContainBounds (.ctor n)
-  | ife {c t f} :
-      DoesntContainBounds c → DoesntContainBounds t → DoesntContainBounds f →
-      DoesntContainBounds (.ife c t f)
-  | match_ {s brs} :
-      DoesntContainBounds s →
-      (∀ p e, (p, e) ∈ brs → DoesntContainBounds e) →
-      DoesntContainBounds (.match_ s brs)
-
-/-- No `bl` in binder params / ann / rhs. -/
-structure Binding.DoesntContainBounds (b : Binding) : Prop where
-  params : ∀ n t, (n, some t) ∈ b.params → Ty.DoesntContainBounds t
-  ann : ∀ σ, b.ann = some σ → PolyTy.DoesntContainBounds σ
-  rhs : Expr.DoesntContainBounds b.rhs
-
 /-- A surface program: user data declarations, mutual-binding groups
     (author-supplied, or from `SurfaceBridge.Program.ofFlat` / `sccGroups`),
     and a body. Each nonempty group desugars to `letRecIn` (including size 1 —
@@ -366,14 +248,6 @@ structure Program where
   decls  : List DataDecl
   groups : List (List Binding)
   body   : Expr
-
-/-- No `bl` anywhere in decls / groups / body. -/
-inductive Program.DoesntContainBounds : Program → Prop where
-  | mk {p} :
-      (∀ d ∈ p.decls, DataDecl.DoesntContainBounds d) →
-      (∀ g ∈ p.groups, ∀ b ∈ g, Binding.DoesntContainBounds b) →
-      Expr.DoesntContainBounds p.body →
-      Program.DoesntContainBounds p
 
 /-- Nest groups outermost-first as `letRecIn`, then `body`.
     Empty groups are skipped; nonempty → always `letRecIn` (incl. size 1). -/

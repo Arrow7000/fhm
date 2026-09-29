@@ -138,7 +138,6 @@ def applyTyArgs (head : Ty) (args : List Ty) : Except String Ty :=
     | .tvar _ => .error "type variable cannot take arguments"
     | .arrow _ _ => .error "function type cannot take arguments"
     | .pair _ _ => .error "pair type cannot take arguments"
-    | .bl _ _ _ => .error "bounded list type cannot take arguments"
 
 theorem applyTyArgs_empty (t : Ty) : applyTyArgs t [] = .ok t := by
   simp [applyTyArgs]
@@ -328,142 +327,18 @@ def spanOfConsumed (startPos stopPos : Nat) : P Span := do
 
 /-! ## Type grammar
 
-* `count`  — bound slot: `CountSlot` = `_` | solid `Count`
-  (`Nat`, `inf`/`∞`, FP `pred`/`min`/`max`, infix `+`/`*`; vars → slice 7)
-* `tyAtom` — `()`, names, `(ty)`, `(ty, ty)`, `BL lo hi elem`
+* `tyAtom` — `()`, names, `(ty)`, `(ty, ty)`
 * `tyApp`  — juxtaposition (`Maybe Int`); only `customTy` may take args
 * `ty`     — right-assoc `tyApp -> ty`
-* `polyTy` — `{n : Nat, a} ty` / `{a} ty` / bare `ty` (+ Nat sidecar)
-
-`BL` is not a lexer keyword: an upper ident spelling `BL` is parsed as a
-bounded list former (then two counts + elem atom). Elem is `tyAtom` so
-applied customs / nested BL / arrows need parens — matches Pretty prec.
+* `polyTy` — `{a b} ty` / bare `ty`
 -/
 
 instance : Inhabited Ty := ⟨.prim .unit⟩
 instance : Inhabited PolyTy := ⟨⟨[], .prim .unit⟩⟩
-instance : Inhabited Count := ⟨.lit 0⟩
-instance : Inhabited CountSlot := ⟨.hole⟩
-
-/-- Standalone types know their declared Nat names. Expression annotations
-    retain names for the construction-time lexical resolver instead: the parser
-    does not know which enclosing declaration binds them. -/
-inductive CountContext where
-  | declared (names : List String)
-  | lexical
-
-def CountContext.permits : CountContext → String → Bool
-  | .declared names, name => names.contains name
-  | .lexical, _ => true
-
-def CountContext.extend : CountContext → List String → CountContext
-  | .declared names, localNames => .declared (localNames ++ names)
-  | .lexical, _ => .lexical
-
-mutual
-/-- Bound-slot count atom, under a declared or lexically deferred context. -/
-partial def countAtom (nats : CountContext) : P Count :=
-  withErrorMessage "expected count atom" do
-    skipComments
-    first (combine := preferErr) [
-      do
-        let _ ← keyword .«inf»
-        return .inf,
-      do
-        let _ ← punct .infty
-        return .inf,
-      do
-        let n ← intLitTok
-        if n < 0 then
-          throwUnexpectedWithMessage none "count literal must be non-negative"
-        return .lit n.toNat,
-      do
-        let (tok, name) ← lowerIdentTok
-        if nats.permits name then
-          return .var (.mk name)
-        else
-          throwUnexpectedWithMessage (some tok)
-            s!"unexpected count ident `{name}` (vars need Nat binders)",
-      do
-        let _ ← punct .lparen
-        skipComments
-        let c ← countExpr nats
-        skipComments
-        let _ ← punct .rparen
-        return c
-    ]
-
-partial def countApp (nats : CountContext) : P Count :=
-  withErrorMessage "expected count" do
-    skipComments
-    first (combine := preferErr) [
-      do
-        let (tok, name) ← lowerIdentTok
-        if name == "pred" then
-          skipComments
-          return .pred (← countAtom nats)
-        else if name == "min" then
-          skipComments
-          let a ← countAtom nats
-          skipComments
-          let b ← countAtom nats
-          return .min a b
-        else if name == "max" then
-          skipComments
-          let a ← countAtom nats
-          skipComments
-          let b ← countAtom nats
-          return .max a b
-        else if nats.permits name then
-          return .var (.mk name)
-        else
-          -- Attach `tok` so the squiggle is on `n`, not the following `*`.
-          throwUnexpectedWithMessage (some tok)
-            s!"unexpected count ident `{name}` (vars need Nat binders)",
-      countAtom nats
-    ]
-
-partial def countMul (nats : CountContext) : P Count := do
-  let a ← countApp nats
-  let rec go (left : Count) : P Count := do
-    skipComments
-    match ← option? (withBacktracking (punct .star)) with
-    | none => return left
-    | some _ =>
-        skipComments
-        go (.mul left (← countApp nats))
-  go a
-
-partial def countExpr (nats : CountContext) : P Count := do
-  let a ← countMul nats
-  let rec go (left : Count) : P Count := do
-    skipComments
-    match ← option? (withBacktracking (do
-        let op ← binOpTok
-        unless op == .plus do throwUnexpected
-        pure ())) with
-    | none => return left
-    | some _ =>
-        skipComments
-        go (.add left (← countMul nats))
-  go a
-end
-
-/-- Bound-slot for BL lo/hi: `_` or solid count. -/
-def count (nats : CountContext := .declared []) : P CountSlot :=
-  withErrorMessage "expected count (expression, inf/∞, or _)" do
-    skipComments
-    first (combine := preferErr) [
-      do
-        let _ ← punct .underscore
-        return .hole,
-      do
-        return .solid (← countExpr nats)
-    ]
 
 mutual
 
-partial def tyAtom (nats : CountContext) : P Ty :=
+partial def tyAtom : P Ty :=
   withErrorMessage "expected type atom" do
     skipComments
     first (combine := preferErr) [
@@ -477,12 +352,12 @@ partial def tyAtom (nats : CountContext) : P Ty :=
       do
         let _ ← punct .lparen
         skipComments
-        let a ← ty nats
+        let a ← ty
         skipComments
         match ← option? (punct .comma) with
         | some _ =>
           skipComments
-          let b ← ty nats
+          let b ← ty
           skipComments
           let _ ← punct .rparen
           return .pair a b
@@ -507,34 +382,33 @@ partial def tyAtom (nats : CountContext) : P Ty :=
 /-- One or more atoms; fold juxtaposition onto a *bare* customTy head only.
     Already-applied heads (`(Tree a)`), tvars, and prims do not absorb trailing
     atoms — so ctor fields like `Node (Tree a) a` stay two fields. -/
-partial def tyApp (nats : CountContext) : P Ty :=
+partial def tyApp : P Ty :=
   withErrorMessage "expected type" do
-    let head ← tyAtom nats
+    let head ← tyAtom
     match head with
     | .customTy name [] =>
-        let args ← takeMany (withBacktracking (tyAtom nats))
+        let args ← takeMany (withBacktracking tyAtom)
         return .customTy name args.toList
     | _ =>
         return head
 
 /-- Right-associative arrows: `A -> B -> C` ≡ `A -> (B -> C)`. -/
-partial def ty (nats : CountContext := .declared []) : P Ty :=
+partial def ty : P Ty :=
   withErrorMessage "expected type" do
-    let left ← tyApp nats
+    let left ← tyApp
     skipComments
     match ← option? (punct .arrow) with
     | some _ =>
       skipComments
-      let right ← ty nats
+      let right ← ty
       return .arrow left right
     | none => return left
 
 end
 
-/-- Scheme: `{n m : Nat, a b} body`, `{a b} body`, or bare `ty`.
-Returns `(poly, natBinders, binderSpans)`. Nat binders emit `.count`; type
-foralls emit `.param` (both scoped over the scheme extent). -/
-partial def polyTy (captured : CountContext := .declared []) : P (PolyTy × List ValName × List BinderSpan) :=
+/-- Scheme: `{a b} body` or bare `ty`. Type foralls emit `.param` binders
+scoped over the complete scheme. -/
+partial def polyTy : P (PolyTy × List BinderSpan) :=
   withErrorMessage "expected type scheme" do
     skipComments
     match ← option? (withBacktracking (punct .lbrace)) with
@@ -545,46 +419,29 @@ partial def polyTy (captured : CountContext := .declared []) : P (PolyTy × List
         skipComments
         anyIdentTok)
       skipComments
-      -- Optional `: Nat` → those names are count binders; then `,` type binders.
-      let natAndTyToks ← (do
-        match ← option? (withBacktracking (do
-            let _ ← punct .colon
-            skipComments
-            let nm ← upperIdent
-            unless nm == "Nat" do
-              throwUnexpectedWithMessage none "expected Nat after count binders"
-            pure ())) with
-        | some _ =>
-            throwUnexpectedWithMessage none
-              "Nat/count binders are not part of the Hindley--Milner language"
-        | none =>
-            -- No `: Nat` — all type foralls (legacy `{a b}`).
-            pure ([], firstToks.toList) : P (List (Tok × String) × List (Tok × String)))
-      let natToks := natAndTyToks.1
-      let tyToks := natAndTyToks.2
+      -- A colon here was the retired `{n : Nat, ...}` count-binder syntax.
+      match ← option? (withBacktracking (punct .colon)) with
+      | some _ =>
+          throwUnexpectedWithMessage none
+            "Nat/count binders are not part of the Hindley--Milner language"
+      | none => pure ()
+      let tyToks := firstToks.toList
       skipComments
       let _ ← punct .rbrace
       skipComments
-      let natNames := natToks.map (·.2)
       let tyNames := tyToks.map (·.2)
       let startBody ← getPosition
-      let body ← ty (captured.extend natNames)
+      let body ← ty
       let stopBody ← getPosition
       let bodySpan ← spanOfConsumed startBody stopBody
       let polySpan := Span.union (Span.ofTok lb) bodySpan
-      let bsNats := natToks.map fun (t, n) =>
-        ({ name := n, kind := .count, span := Span.ofTok t, scope? := some polySpan } :
-          BinderSpan)
       let bsTys := tyToks.map fun (t, n) =>
         ({ name := n, kind := .param, span := Span.ofTok t, scope? := some polySpan } :
           BinderSpan)
-      return (
-        { foralls := tyNames.map ValName.mk, body },
-        natNames.map ValName.mk,
-        bsNats ++ bsTys)
+      return ({ foralls := tyNames.map ValName.mk, body }, bsTys)
     | none =>
-      let body ← ty captured
-      return ({ foralls := [], body }, [], [])
+      let body ← ty
+      return ({ foralls := [], body }, [])
 
 /-! ## Expression helpers -/
 
@@ -592,11 +449,11 @@ instance : Inhabited Expr := ⟨.primLit .unit⟩
 instance : Inhabited Pattern := ⟨.wildcard⟩
 instance : Inhabited ValName := ⟨.mk ""⟩
 instance : Inhabited (Nat × ValName × List ValName × List (ValName × Option Ty) ×
-    Option PolyTy × List ValName × Expr) :=
-  ⟨(0, default, [], [], none, [], default)⟩
+    Option PolyTy × Expr) :=
+  ⟨(0, default, [], [], none, default)⟩
 instance : Inhabited (Nat × ValName × List ValName × List (ValName × Option Ty) ×
-    Option PolyTy × List ValName × Expr × SpannedExpr) :=
-  ⟨(0, default, [], [], none, [], default, default)⟩
+    Option PolyTy × Expr × SpannedExpr) :=
+  ⟨(0, default, [], [], none, default, default)⟩
 instance : Inhabited (Pattern × Expr) := ⟨(default, default)⟩
 instance : Inhabited (Pattern × Expr × SpannedExpr) := ⟨(default, default, default)⟩
 instance : Inhabited (Expr × List BinderSpan × SpannedExpr) :=
@@ -667,7 +524,7 @@ def valueParam : P ((ValName × Option Ty) × List BinderSpan) :=
             skipComments
             let _ ← punct .colon
             skipComments
-            let t ← ty .lexical
+            let t ← ty
             skipComments
             let _ ← punct .rparen
             return ((.mk "_", some t), []),
@@ -676,7 +533,7 @@ def valueParam : P ((ValName × Option Ty) × List BinderSpan) :=
             skipComments
             let _ ← punct .colon
             skipComments
-            let t ← ty .lexical
+            let t ← ty
             skipComments
             let _ ← punct .rparen
             return ((.mk name, some t), [mkBinder .param tok name])
@@ -711,7 +568,7 @@ def lambdaBinder : P (Pattern × Option Ty × List BinderSpan × Span) :=
             skipComments
             let _ ← punct .colon
             skipComments
-            let τ ← ty .lexical
+            let τ ← ty
             skipComments
             let t1 ← punct .rparen
             return (.wildcard, some τ, [], Span.union (Span.ofTok t0) (Span.ofTok t1)),
@@ -720,7 +577,7 @@ def lambdaBinder : P (Pattern × Option Ty × List BinderSpan × Span) :=
             skipComments
             let _ ← punct .colon
             skipComments
-            let τ ← ty .lexical
+            let τ ← ty
             skipComments
             let t1 ← punct .rparen
             return (.name (.mk name), some τ, [mkBinder .param tok name],
@@ -989,19 +846,7 @@ partial def infixExpr : PE :=
     let (left, bsL, sL) ← appExpr
     skipComments
     match ← option? (withBacktracking binOpTokFull) with
-    | none =>
-      -- `*` is a count punct (bounds), not a value binop — reject explicitly so
-      -- the squiggle sits on `*` with a clear message (not a parent `let`).
-      -- Soft-peek only (must not fail at EOF after a bare atom).
-      match ← option? (withBacktracking do
-          let t ← nextTok
-          match t.token with
-          | .punct .star => pure t
-          | _ => throwUnexpected) with
-      | some t =>
-          throwUnexpectedWithMessage (some t)
-            "value-level `*` is not supported (use + / - / < / ::, or bounds counts)"
-      | none => return (left, bsL, sL)
+    | none => return (left, bsL, sL)
     | some (opTok, op) =>
       skipComments
       let (right, bsR, sR) ← infixRhs
@@ -1019,7 +864,7 @@ partial def infixExpr : PE :=
     strictly right of it. -/
 partial def letBinding (indentCol : Nat) :
     P ((Nat × ValName × List ValName × List (ValName × Option Ty) × Option PolyTy ×
-        List ValName × Expr × SpannedExpr) × List BinderSpan) :=
+        Expr × SpannedExpr) × List BinderSpan) :=
   withErrorMessage "expected let binding" do
     skipComments
     let (tok, name) ← lowerIdentTok
@@ -1030,15 +875,13 @@ partial def letBinding (indentCol : Nat) :
     skipComments
     let (params, bsParams) ← valueParams
     skipComments
-    -- Once `:` is seen, commit to `polyTy`. Expression annotations preserve
-    -- count names for lexical resolution; unbound names become scope problems
-    -- in lowering, not guesses about Nat binders made here.
+    -- Once `:` is seen, commit to `polyTy`.
     let annRaw ←
       match ← option? (withBacktracking (punct .colon)) with
       | none => pure none
       | some _ =>
           skipComments
-          some <$> polyTy .lexical
+          some <$> polyTy
     skipComments
     let eqTok ← punct .eq
     skipComments
@@ -1047,11 +890,11 @@ partial def letBinding (indentCol : Nat) :
     if t.startLine > eqTok.startLine then
       colGt indentCol
     let (rhs, bsRhs, sRhs) ← expr
-    let (annPoly, natBinders, bsAnn) :=
+    let (annPoly, bsAnn) :=
       match annRaw with
-      | some (σ, nats, bs) => (some σ, nats, bs)
-      | none => (none, [], [])
-    return ((blockCol, .mk name, tyParams, params, annPoly, natBinders, rhs, sRhs),
+      | some (σ, bs) => (some σ, bs)
+      | none => (none, [])
+    return ((blockCol, .mk name, tyParams, params, annPoly, rhs, sRhs),
       bsName ++ bsTyParams ++ bsParams ++ bsAnn ++ bsRhs)
 
 /-- A local `let` block is SCC-sorted when it contains recursive references.
@@ -1066,19 +909,19 @@ partial def letExpr : PE :=
   withErrorMessage "expected let expression" do
     skipComments
     let letTok ← keyword .«let»
-    let ((blockCol, n0, tyPs0, ps0, ann0, nats0, rhs0, s0), bs0) ← letBinding letTok.startCol
+    let ((blockCol, n0, tyPs0, ps0, ann0, rhs0, s0), bs0) ← letBinding letTok.startCol
     let rest ← takeMany (withBacktracking do
       colEq blockCol
-      pbMap (fun (_, n, tyPs, ps, ann, nats, rhs, s) => (n, tyPs, ps, ann, nats, rhs, s))
+      pbMap (fun (_, n, tyPs, ps, ann, rhs, s) => (n, tyPs, ps, ann, rhs, s))
         (letBinding blockCol))
     skipComments
     let _ ← keyword .«in»
     skipComments
     let (body, bsBody, sBody) ← expr
-    let parsed := (n0, tyPs0, ps0, ann0, nats0, rhs0, s0) :: rest.toList.map (·.1)
+    let parsed := (n0, tyPs0, ps0, ann0, rhs0, s0) :: rest.toList.map (·.1)
     let bindsWithSpans : List (Binding × SpannedExpr) :=
-      parsed.map fun (n, tyPs, ps, ann, nats, rhs, sRhs) =>
-      (({ name := n, tyParams := tyPs, params := ps, ann, rhs, natBinders := nats } : Binding),
+      parsed.map fun (n, tyPs, ps, ann, rhs, sRhs) =>
+      (({ name := n, tyParams := tyPs, params := ps, ann, rhs } : Binding),
         sRhs)
     let binds : List Binding := bindsWithSpans.map (·.1)
     let bsRest := concatBinders rest
@@ -1090,11 +933,8 @@ partial def letExpr : PE :=
           let acc := accPair.1
           let accS := accPair.2
           let sp := Span.union sRhs.span accS.span
-          if b.natBinders.isEmpty then
-            (Expr.letIn b.name b.tyParams b.params b.ann b.rhs acc,
-              SpannedExpr.letIn sp sRhs accS)
-          else
-            (Expr.letRecIn [b] acc, SpannedExpr.letRecIn sp [sRhs] accS))
+          (Expr.letIn b.name b.tyParams b.params b.ann b.rhs acc,
+            SpannedExpr.letIn sp sRhs accS))
         (body, sBody)
     let (e, s) :=
       match SurfaceBridge.sccGroups binds with
@@ -1116,7 +956,7 @@ partial def letExpr : PE :=
             | [] => (acc, accS)
             | [b] =>
               let sRhs := rhsSpan b
-              if b.natBinders.isEmpty && !(SurfaceBridge.Binding.refersTo b b.name) then
+              if !(SurfaceBridge.Binding.refersTo b b.name) then
                 (Expr.letIn b.name b.tyParams b.params b.ann b.rhs acc,
                   SpannedExpr.letIn sp sRhs accS)
               else
@@ -1243,7 +1083,7 @@ def ctorField : P Ty :=
         skipComments
         let _ ← punct .rparen
         return t,
-      tyApp (.declared [])
+      tyApp
     ]
 
 def dataCtor : P ((CtorName × List Ty) × List BinderSpan) :=
@@ -1290,9 +1130,9 @@ def topLet : P ((Binding × SpannedExpr) × List BinderSpan) :=
   withErrorMessage "expected top-level let" do
     skipComments
     let letTok ← keyword .«let»
-    let ((_, name, tyParams, params, ann, natBinders, rhs, sRhs), bs) ←
+    let ((_, name, tyParams, params, ann, rhs, sRhs), bs) ←
       letBinding letTok.startCol
-    return (({ name, tyParams, params, ann, rhs, natBinders }, sRhs), bs)
+    return (({ name, tyParams, params, ann, rhs }, sRhs), bs)
 
 /-- One top-level `type` / `let` item. Soft-fails only when the next token is
 **not** `type`/`let` (so `takeMany` can stop). Once the keyword is seen, the
@@ -1386,12 +1226,7 @@ def parseTy (src : String) : Except ParseError Ty :=
   runLexParse ty src
 
 def parsePolyTy (src : String) : Except ParseError PolyTy :=
-  (runLexParse (polyTy (.declared [])) src).map (·.1)
-
-/-- Parse scheme + Nat-binder sidecar. -/
-def parsePolyTyWithNats (src : String) :
-    Except ParseError (PolyTy × List ValName) :=
-  (runLexParse (polyTy (.declared [])) src).map fun (σ, nats, _) => (σ, nats)
+  (runLexParse polyTy src).map (·.1)
 
 def parseExpr (src : String) : Except ParseError Expr :=
   (runLexParse expr src).map (·.1)
@@ -1482,29 +1317,27 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
   | _ => false)
 #guard (match parsePolyTy "{}" with | .error _ => true | _ => false)
 
-#guard !(parsePolyTyWithNats "{n : Nat, a} a -> a").isOk
+#guard !(parsePolyTy "{n : Nat, a} a -> a").isOk
 
 -- lex errors surface as ParseError
 #guard (match parseTy "\t" with
   | .error { msg := "tab character", line := 1, col := 1, endLine := 1, endCol := 2 } => true
   | _ => false)
 
--- Parse diagnostics: string / value-`*` must not soft-fail to parent `let`
+-- Parse diagnostics: string / unsupported `*` must not soft-fail to parent `let`.
 #guard (match parseProgramWithSpans "let y = \"bla\"\ny\n" with
   | .error e =>
       (e.msg.splitOn "string").length > 1 && e.line == 1 && e.col == 9 && e.endCol == 14
   | .ok _ => false)
 #guard (match parseProgramWithSpans "let y = 3 * 4\ny\n" with
   | .error e =>
-      (e.msg.splitOn "`*`").length > 1 && e.line == 1 && e.col == 11 && e.endCol == 12
+      e.line == 1 && e.col == 11 && e.endCol == 12
   | .ok _ => false)
 #guard (match parseProgramWithSpans "let xs = [3 * 4]\nxs\n" with
   | .error e =>
-      (e.msg.splitOn "`*`").length > 1 && e.col == 13
+      e.col == 13
   | .ok _ => false)
--- Standalone schemes still require Nat declarations. Program annotations
--- preserve count names instead; construction-time scope resolution rejects
--- their unbound counts independently of bounds-blind HM inference.
+-- Retired bounds/count syntax is rejected at the parser boundary.
 #guard !(parseProgramWithSpans
   "let f : BL 0 1 Int = []\nf\n").isOk
 #guard !(parseExpr "\\(xs : BL 0 1 Int) -> xs").isOk
@@ -1730,10 +1563,10 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
       (flat.length == 2) &&
         flat.any (fun b => match b with
           | { name := .mk "x", tyParams := [], params := [], ann := none,
-              rhs := .primLit (.int 1), natBinders := [] } => true | _ => false) &&
+              rhs := .primLit (.int 1) } => true | _ => false) &&
         flat.any (fun b => match b with
           | { name := .mk "y", tyParams := [], params := [], ann := none,
-              rhs := .primLit (.int 2), natBinders := [] } => true | _ => false)
+              rhs := .primLit (.int 2) } => true | _ => false)
     | _ => false
   | _ => false)
 
@@ -1742,8 +1575,7 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
     match p.groups, p.body with
     | [[{ name := .mk "f", tyParams := [], params := [],
           ann := some ⟨[], .arrow (.prim .int) (.prim .int)⟩,
-          rhs := .lambda (.name (.mk "x")) none (.var (.mk "x")),
-          natBinders := [] }]],
+          rhs := .lambda (.name (.mk "x")) none (.var (.mk "x")) }]],
       .primLit .unit => true
     | _, _ => false
   | _ => false)
@@ -1754,7 +1586,7 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
     | [[{ name := .mk "f", tyParams := [.mk "a"],
           params := [(.mk "x", some (.tvar (.mk "a")))],
           ann := some ⟨[], .tvar (.mk "a")⟩,
-          rhs := .var (.mk "x"), natBinders := [] }]], .var (.mk "f") => true
+          rhs := .var (.mk "x") }]], .var (.mk "f") => true
     | _, _ => false
   | _ => false)
 

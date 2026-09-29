@@ -8,7 +8,6 @@ private def sameTy : Ty → Ty → Bool
   | .bvar a, .bvar b => decide (a = b)
   | .fvar a, .fvar b => decide (a = b)
   | .customTy a as, .customTy b bs => decide (a = b) && sameTys as bs
-  | .bl lo hi a, .bl lo' hi' b => decide (lo = lo') && decide (hi = hi') && sameTy a b
   | _, _ => false
 
 private def sameTys : List Ty → List Ty → Bool

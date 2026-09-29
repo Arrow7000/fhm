@@ -1,5 +1,4 @@
 import FHM.Unverified.EditorSupport
-import FHM.Unverified.HMFrontend
 import Lean.Data.Json
 
 /-!
@@ -31,24 +30,6 @@ def diagnoseUsage : String :=
    with path: read that file\n\
    without: read source from stdin"
 
-/-- Reject retired bounds syntax before the still-transitional parser can hand
-it to the Path-R HM stack.  Parse errors remain owned by `diagnosePayload`. -/
-def diagnosePayloadHM (src : String) : Lean.Json :=
-  match Surface.Parse.parseProgramWithSpans src with
-  | .ok (program, _, _) =>
-      if FHM.Unverified.HMFrontend.programContainsBounds program then
-        let diagnostic : HoverDiag := {
-          message := FHM.Unverified.HMFrontend.unsupportedMessage
-        }
-        Lean.Json.mkObj [
-          ("version", Lean.Json.num 3),
-          ("diagnostics", Lean.Json.arr #[diagnostic.toJson]),
-          ("symbols", Lean.Json.arr #[])
-        ]
-      else
-        diagnosePayload src
-  | .error _ => diagnosePayload src
-
 def runDiagnose (args : List String) : IO UInt32 := do
   let src ← match args with
     | [] =>
@@ -66,7 +47,7 @@ def runDiagnose (args : List String) : IO UInt32 := do
     | _ =>
       IO.eprintln diagnoseUsage
       return 2
-  let payload := diagnosePayloadHM src
+  let payload := diagnosePayload src
   IO.println payload.pretty
   let hasDiags :=
     match payload.getObjVal? "diagnostics" with
