@@ -261,11 +261,12 @@ and recursive-rule phases.
   equality, `Unifies`, and standard MGU factorization.
 - Restate soundness, completeness, principality, progress, preservation, and surface
   safety directly over the inferred context, term, and type.
-- Delete `RecSpecs.PolyTyped` and the old source path that made annotations available
-  as schemes inside an SCC. Retain annotations only as checks/ceilings on the single
-  solved monotype for each SCC member. `RecSpec.poly` remains the declarative
-  descriptor for an annotated member's post-group export scheme; `RecSpec.init`, the
-  source inferer, produces only `.mono` witnesses for recursive RHS checking.
+- Delete `RecSpecs.PolyTyped`, `InferRecGroup.consPoly`, and the old source path that
+  made annotations available as schemes inside an SCC. Retain annotations only as
+  checks/ceilings on the single solved monotype for each SCC member. `RecSpec.poly`
+  remains the declarative descriptor for an annotated member's post-group export
+  scheme; `RecSpec.init`, the source inferer, produces only `.mono` witnesses for
+  recursive RHS checking.
 - Mine `b016fcf`/`be9cc14` for direct-HM proof shapes without replacing the mature
   surface/compiler stack.
 
