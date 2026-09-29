@@ -80,14 +80,7 @@ async function refreshDiagnostics(doc) {
 
   try {
     const raw = await new Promise((resolve, reject) => {
-      const boundsMode = cfg.get("boundsMode", "auto");
-      const modeArg =
-        boundsMode === "bl"
-          ? "--bl"
-          : boundsMode === "hm"
-          ? "--hm"
-          : "--auto";
-      const child = spawn(bin, ["diagnose", modeArg], {
+      const child = spawn(bin, ["diagnose"], {
         stdio: ["pipe", "pipe", "pipe"],
       });
       running.set(key, child);

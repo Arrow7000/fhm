@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Reproducible HM-only editor audit. No evaluation, Bounds checks, or Z3 calls.
 import assert from "node:assert/strict";
-import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
@@ -18,11 +17,28 @@ const expectedRejects = new Set([
   "polyrec-nested.fhm",
   "polyrec-unannotated-must-fail.fhm",
 ]);
+// This is deliberately an explicit language-contract manifest. Bounds experiments
+// used to share scratch/ and were accidentally treated as HM acceptance tests merely
+// because they had the same extension.
+const files = [
+  "hm-hover.fhm",
+  "hm-recursion-boundary.fhm",
+  "live.fhm",
+  "polyrec-generalize-after-scc.fhm",
+  "polyrec-groups-nested.fhm",
+  "polyrec-head-binder-scoped-must-fail.fhm",
+  "polyrec-inner-poly-calls.fhm",
+  "polyrec-inner-poly-unannotated-must-fail.fhm",
+  "polyrec-mixed-conflict-must-fail.fhm",
+  "polyrec-mixed-fixed-instantiation.fhm",
+  "polyrec-mixed-group.fhm",
+  "polyrec-nested.fhm",
+  "polyrec-ordinary-recursion.fhm",
+  "polyrec-unannotated-must-fail.fhm",
+];
 let failures = 0;
 let accepted = 0;
 let rejected = 0;
-const files = fs.readdirSync(path.join(root, "scratch"))
-  .filter(name => name.endsWith(".fhm")).sort();
 for (const file of files) {
   try {
     const response = spawnSync(binary, ["diagnose", path.join(root, "scratch", file)], {

@@ -3,7 +3,6 @@ import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Pretty
 import FHM.Unverified.EvaluateUnsafe
-import FHM.Bounds.Erase
 
 /-!
 # Damas--Milner recursion smoke-test driver
@@ -11,7 +10,7 @@ import FHM.Bounds.Erase
 This is an executable specification of the recursion boundary on the erased
 branch. It deliberately drives the current API directly:
 
-`parse -> erase surface annotations -> lower -> infer -> exhaustiveness ->
+`parse -> lower -> infer -> exhaustiveness ->
 erase Core annotations -> evaluate`.
 
 The negative cases assert rejection specifically at inference. In particular,
@@ -21,7 +20,6 @@ annotation enables polymorphic use inside an SCC.
 
 open Surface.Parse
 open SurfaceBridge
-open FHM.Bounds.Erase
 
 inductive Stage where
   | parse
@@ -53,7 +51,7 @@ def checkPipelineDM (src : String) : Except PipelineError CheckedProgram := do
     | .error e =>
         throw ⟨.parse, s!"{e.msg} (line {e.line}, col {e.col})"⟩
     | .ok p => pure p
-  let program := (eraseProgram parsed).toProgram
+  let program := parsed
   let (ctors, core) <- match lowerProgram program with
     | none => throw ⟨.lower,
         "lowering failed (unbound name, bad declaration, or rejected sugar)"⟩

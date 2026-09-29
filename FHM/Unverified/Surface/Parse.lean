@@ -489,17 +489,13 @@ partial def tyAtom (nats : CountContext) : P Ty :=
         | none =>
           let _ ← punct .rparen
           return a,
-      -- `BL lo hi elem` (upper ident, not a keyword) or prim / customTy
+      -- Primitive / nominal type. `BL` is reserved as a retired bounds spelling
+      -- so old programs fail explicitly instead of becoming a nominal type.
       do
         let name ← upperIdent
         if name == "BL" then
-          skipComments
-          let lo ← count nats
-          skipComments
-          let hi ← count nats
-          skipComments
-          let elem ← tyAtom nats
-          return .bl lo hi elem
+          throwUnexpectedWithMessage none
+            "bounded-list types are not part of the Hindley--Milner language"
         else
           return tyOfUpperName name,
       -- lower name → tvar
@@ -550,7 +546,7 @@ partial def polyTy (captured : CountContext := .declared []) : P (PolyTy × List
         anyIdentTok)
       skipComments
       -- Optional `: Nat` → those names are count binders; then `,` type binders.
-      let (natToks, tyToks) ← do
+      let natAndTyToks ← (do
         match ← option? (withBacktracking (do
             let _ ← punct .colon
             skipComments
@@ -559,19 +555,13 @@ partial def polyTy (captured : CountContext := .declared []) : P (PolyTy × List
               throwUnexpectedWithMessage none "expected Nat after count binders"
             pure ())) with
         | some _ =>
-            skipComments
-            match ← option? (withBacktracking (punct .comma)) with
-            | some _ =>
-                skipComments
-                let tyToks ← takeMany1 (withBacktracking do
-                  skipComments
-                  anyIdentTok)
-                pure (firstToks.toList, tyToks.toList)
-            | none =>
-                pure (firstToks.toList, [])
+            throwUnexpectedWithMessage none
+              "Nat/count binders are not part of the Hindley--Milner language"
         | none =>
             -- No `: Nat` — all type foralls (legacy `{a b}`).
-            pure ([], firstToks.toList)
+            pure ([], firstToks.toList) : P (List (Tok × String) × List (Tok × String)))
+      let natToks := natAndTyToks.1
+      let tyToks := natAndTyToks.2
       skipComments
       let _ ← punct .rbrace
       skipComments
@@ -1475,36 +1465,11 @@ def parseProgram (src : String) : Except ParseError Program :=
 def parseTyEq (src : String) (expected : Ty) : Bool :=
   reprStr (parseTy src) == reprStr (Except.ok (ε := ParseError) expected)
 
--- P4a-parse: `BL lo hi elem` + bound `_`
-#guard parseTyEq "BL 0 5 Int" (.bl (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int))
-#guard parseTyEq "BL _ 5 a" (.bl .hole (.solid (.lit 5)) (.tvar (.mk "a")))
-#guard parseTyEq "BL 0 1 (Maybe Int)"
-  (.bl (.solid (.lit 0)) (.solid (.lit 1)) (.customTy (.mk "Maybe") [.prim .int]))
-#guard parseTyEq "BL 0 0 (BL 1 2 Int)"
-  (.bl (.solid (.lit 0)) (.solid (.lit 0)) (.bl (.solid (.lit 1)) (.solid (.lit 2)) (.prim .int)))
-#guard parseTyEq "BL 0 5 Int -> Bool"
-  (.arrow (.bl (.solid (.lit 0)) (.solid (.lit 5)) (.prim .int)) (.prim .bool))
-#guard parseTyEq "BL 0 5 (Int -> Bool)"
-  (.bl (.solid (.lit 0)) (.solid (.lit 5)) (.arrow (.prim .int) (.prim .bool)))
--- slice 3: ground count ops + inf/∞
-#guard parseTyEq "BL 0 (1 + 2) Int" (.bl (.solid (.lit 0)) (.solid (.add (.lit 1) (.lit 2))) (.prim .int))
-#guard parseTyEq "BL 0 (1 * 2 + 3) Int"
-  (.bl (.solid (.lit 0)) (.solid (.add (.mul (.lit 1) (.lit 2)) (.lit 3))) (.prim .int))
-#guard parseTyEq "BL 0 (min 3 5) Int" (.bl (.solid (.lit 0)) (.solid (.min (.lit 3) (.lit 5))) (.prim .int))
-#guard parseTyEq "BL 0 (pred 5) Int" (.bl (.solid (.lit 0)) (.solid (.pred (.lit 5))) (.prim .int))
-#guard parseTyEq "BL 0 inf Int" (.bl (.solid (.lit 0)) (.solid .inf) (.prim .int))
-#guard parseTyEq "BL 0 ∞ Int" (.bl (.solid (.lit 0)) (.solid .inf) (.prim .int))
-#guard parseTyEq "BL 0 (min (1 + 2) 3) Int"
-  (.bl (.solid (.lit 0)) (.solid (.min (.add (.lit 1) (.lit 2)) (.lit 3))) (.prim .int))
--- incomplete / wrong BL forms
+-- Bounds syntax is retired rather than reinterpreted as a nominal `BL` type.
 #guard !(parseTy "BL").isOk
 #guard !(parseTy "BL 0").isOk
 #guard !(parseTy "BL 0 5").isOk
-#guard !(parseTy "BL -1 5 Int").isOk
--- count vars still need Nat binders (see polyTyWithNats guards below)
-#guard !(parseTy "BL n m Int").isOk
--- nested hole forbidden
-#guard !(parseTy "BL (_ + 1) 5 Int").isOk
+#guard !(parseTy "BL 0 5 Int").isOk
 
 #guard (match parsePolyTy "{a} a -> a" with
   | .ok ⟨[.mk "a"], .arrow (.tvar (.mk "a")) (.tvar (.mk "a"))⟩ => true
@@ -1517,17 +1482,7 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
   | _ => false)
 #guard (match parsePolyTy "{}" with | .error _ => true | _ => false)
 
--- Nat binders sidecar: `{n : Nat, a} BL n n a`
-#guard (match parsePolyTyWithNats "{n : Nat, a} BL n n a" with
-  | .ok (⟨[.mk "a"], .bl (.solid (.var (.mk "n"))) (.solid (.var (.mk "n"))) (.tvar (.mk "a"))⟩,
-         [.mk "n"]) => true
-  | _ => false)
-#guard (match parsePolyTyWithNats "{n m : Nat} BL n m Int" with
-  | .ok (⟨[], .bl (.solid (.var (.mk "n"))) (.solid (.var (.mk "m"))) (.prim .int)⟩,
-         [.mk "n", .mk "m"]) => true
-  | _ => false)
--- count vars still rejected outside Nat binders
-#guard !(parseTy "BL n m Int").isOk
+#guard !(parsePolyTyWithNats "{n : Nat, a} a -> a").isOk
 
 -- lex errors surface as ParseError
 #guard (match parseTy "\t" with
@@ -1550,19 +1505,9 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
 -- Standalone schemes still require Nat declarations. Program annotations
 -- preserve count names instead; construction-time scope resolution rejects
 -- their unbound counts independently of bounds-blind HM inference.
-#guard (match parsePolyTyWithNats "{n m} BL (n * m) (n * m) Int" with
-  | .error e =>
-      (e.msg.splitOn "Nat binder").length > 1
-  | .ok _ => false)
-#guard (parseProgramWithSpans
-  "let f : {n m} BL (n * m) (n * m) Int = \\x -> x\nf\n").isOk
-#guard (parseExpr "\\(xs : BL n n Int) -> xs").isOk
-#guard (parseExpr "\\(xs : BL n n Int) -> let ys : BL n n Int = xs in ys").isOk
-#guard (parseExpr "\\(xs : BL (pred n) (max n m) Int) -> xs").isOk
-#guard (match parsePolyTyWithNats "{n m : Nat} BL (min n m) (max n m) Int" with
-  | .ok (⟨[], .bl (.solid (.min (.var ⟨"n"⟩) (.var ⟨"m"⟩)))
-      (.solid (.max (.var ⟨"n"⟩) (.var ⟨"m"⟩))) (.prim .int)⟩, [⟨"n"⟩, ⟨"m"⟩]) => true
-  | _ => false)
+#guard !(parseProgramWithSpans
+  "let f : BL 0 1 Int = []\nf\n").isOk
+#guard !(parseExpr "\\(xs : BL 0 1 Int) -> xs").isOk
 
 /-! ### Expression checks -/
 
@@ -1813,22 +1758,7 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
     | _, _ => false
   | _ => false)
 
--- Nat binders on top-level binding sidecar
-#guard (match parseProgram "let id : {n : Nat, a} BL n n a -> BL n n a = \\x -> x\nid" with
-  | .ok p =>
-    match p.groups with
-    | [[{ natBinders := [.mk "n"],
-          ann := some ⟨[.mk "a"], .arrow (.bl (.solid (.var (.mk "n"))) (.solid (.var (.mk "n"))) (.tvar (.mk "a")))
-            (.bl (.solid (.var (.mk "n"))) (.solid (.var (.mk "n"))) (.tvar (.mk "a")))⟩, .. }]] => true
-    | _ => false
-  | _ => false)
-
--- Nat binders are `.count`; type foralls stay `.param` (hover must not confuse them)
-#guard (match parseProgramWithBinders "let id : {n : Nat, a} BL n n a -> BL n n a = \\x -> x\nid" with
-  | .ok (_, bs) =>
-      (bs.find? (·.name == "n")).map (·.kind) == some .count &&
-      (bs.find? (·.name == "a")).map (·.kind) == some .param
-  | _ => false)
+#guard !(parseProgram "let id : {n : Nat, a} a -> a = \\x -> x\nid").isOk
 
 -- newline RHS indented past `let` (not past the binder name)
 #guard (parseProgram "let map : {a} a -> a =\n  \\x -> x\nmap").isOk

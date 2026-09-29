@@ -319,69 +319,6 @@ def maybeUseSrc : String :=
         hasSub s.type_ "type variable" && hasSub s.type_ "scheme"
     | none => false)
 
--- E3b. `{n : Nat, a}` — `n` is count, not the next type forall
-def natSchemeHover : String :=
-  "let id : {n : Nat, a} BL n n a -> BL n n a =\n" ++
-  "  \\xs -> xs\nid\n"
-
-#guard (match hoverSyms natSchemeHover with
-  | none => false
-  | some syms =>
-    match symbolAtUseSite syms 1 11 "n",
-          symbolAtUseSite syms 1 20 "a" with
-    | some n, some a =>
-        n.name == "n" && n.kind == "count" && hasSub n.type_ "count" &&
-        a.name == "a" && a.kind == "param" && hasSub a.type_ "type variable"
-    | _, _ => false)
-
--- E3b2. HM presents the erased shape, not an unchecked Bounds claim.
-#guard (match hoverSyms natSchemeHover with
-  | none => false
-  | some syms =>
-    match syms.find? (fun s => s.name == "id" && s.kind == "val") with
-    | some id =>
-        hasSub id.type_ "List" && !hasSub id.type_ "BL" && !hasSub id.type_ "Nat"
-    | none => false)
-
--- E3c. Multiple tops with `{n : Nat, …}`: erase must not zero `natBinders` for
--- the hover walk (regression: unconsumed `.count` at head blocks later `.val`).
-def natMultiTop : String :=
-  "let id : {n : Nat, a} BL n n a -> BL n n a =\n" ++
-  "  \\xs -> xs\n" ++
-  "let id2 : {m : Nat, b} BL m m b -> BL m m b =\n" ++
-  "  \\ys -> ys\n" ++
-  "id\n"
-
-#guard (match hoverSyms natMultiTop with
-  | none => false
-  | some syms =>
-    let id2Vals := syms.filter fun s => s.name == "id2" && s.kind == "val"
-    match symbolAt syms 3 5, symbolAt syms 3 12, id2Vals.length with
-    | some id2, some m, 1 =>
-        id2.kind == "val" && m.kind == "count" && hasSub m.type_ "count" &&
-        -- proper def (not leftover): val scope extends past the name line
-        id2.scope.endLine > id2.span.startLine
-    | _, _, _ => false)
-
--- E3d. `{n : Nat, …}` after a concrete head value-parameter.
-def natAfterHeaderParams : String :=
-  "let f (x : Int) : {n : Nat, b} BL n n b -> BL n n b =\n" ++
-  "  \\y -> y\n" ++
-  "f\n"
-
-#guard (match hoverSyms natAfterHeaderParams with
-  | none => false
-  | some syms =>
-    let x? := syms.find? (fun s => s.name == "x" && s.kind == "param" && s.span.startLine == 1)
-    let n? := syms.find? (fun s => s.name == "n" && s.kind == "count")
-    match x?, n? with
-    | some x, some n =>
-        hasSub x.type_ "Int" &&
-        hasSub n.type_ "count" &&
-        -- syntax locations retain source order
-        x.span.startCol < n.span.startCol
-    | _, _ => false)
-
 -- E4. Several annotated lets: later λ params must not get empty/stolen types
 -- (regression: takeFirstKind .val reshuffled earlier λ/pats ahead of scheme binders)
 def multiLetParams : String :=
@@ -441,125 +378,15 @@ def sccOrderSrc : String :=
         | none => false
     | _, _, _, _, _ => false)
 
-/-! ## Bounds blindness: HM checks element types, not length claims. -/
-
-/-- Helper: parse + full hover report (symbols + bounds diags). -/
+/-- Helper: parse + full HM hover report. -/
 def hoverReport (src : String) : Option HoverReport :=
   match parseProgramWithSpans src with
   | .error _ => none
   | .ok (p, bs, sp) => some (collectHover src p bs sp)
 
-/-- Explicit canonical Bounds-mode report. HM tests above and below continue to
-exercise Path R through `hoverReport`; the editor's auto mode selects this path
-for a parsed program containing `BL`. -/
-def hoverReportBL (src : String) : Option HoverReport :=
-  match parseProgramWithSpans src with
-  | .error _ => none
-  | .ok (p, bs, sp) => some (collectHoverBL src p bs sp)
-
--- E6. Impossible length ascription is irrelevant to HM element typing.
-def holeFailSrc : String :=
-  "let xs : BL _ 0 Int = [1, 2]\nxs\n"
-
-#guard (match hoverReport holeFailSrc with
-  | none => false
-  | some r =>
-      r.diagnostics.isEmpty && r.programTy == "List Int" &&
-      (r.symbols.any fun s => s.name == "xs" && s.kind == "val" && s.type_ == "List Int"))
-
--- E6b. Happy-path BL: no diagnostics.
-def holeOkSrc : String :=
-  "let xs : BL _ 5 Int = [1, 2]\nxs\n"
-
-#guard (match hoverReport holeOkSrc with
-  | none => false
-  | some r => r.diagnostics.isEmpty &&
-      (r.symbols.any fun s => s.name == "xs" && s.kind == "val"))
-
--- E6c. HM inference does not perform Bounds-specific coverage checking.
-def nilOnlyFailSrc : String :=
-  "let xs : BL 2 2 Int = [1, 2]\n" ++
-  "let bad =\n" ++
-  "  match xs with\n" ++
-  "  | [] -> 0\n" ++
-  "bad\n"
-
-#guard (match hoverReport nilOnlyFailSrc with
-  | none => false
-  | some r =>
-      r.diagnostics.isEmpty && r.programTy == "Int")
-
--- E6c1. Likewise for a body-level match. Runtime exhaustiveness is separate.
-def nilOnlyBodySrc : String :=
-  "let xs : BL 2 2 Int = [1, 2]\n" ++
-  "match xs with\n" ++
-  "| [] -> 0\n"
-
-#guard (match hoverReport nilOnlyBodySrc with
-  | none => false
-  | some r =>
-      r.diagnostics.isEmpty && r.programTy == "Int")
-
--- E6c2. Bounds multi-model escape is not an HM diagnostic.
-def r3MidFailSrc : String :=
-  "let f : {x : Nat} BL x (2 * x) Int -> BL x (2 * x) Int =\n" ++
-  "  \\xs -> xs\n" ++
-  "let e : BL 10 10 Int =\n" ++
-  "  [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]\n" ++
-  "let bad = f e\n" ++
-  "bad\n"
-
-#guard (match hoverReport r3MidFailSrc with
-  | none => false
-  | some r =>
-      r.diagnostics.isEmpty && r.programTy == "List Int")
-
--- E6d. Length demands do not constrain HM inference.
-def synthFailSrc : String :=
-  "let xs : BL 0 0 Int = [1, 2]\nxs\n"
-
-#guard (match hoverReport synthFailSrc with
-  | none => false
-  | some r =>
-      r.diagnostics.isEmpty && r.programTy == "List Int")
-
-/-! ## Canonical Bounds editor mode -/
-
-def namedBoundsHoverSrc : String :=
-  "let id : {n : Nat, a} BL n n a -> BL n n a =\n" ++
-  "  \\xs -> xs\n" ++
-  "id [1]\n"
-
--- Declared source names survive the checker's locally opened/reindexed type
--- and count variables at the binding, lambda parameter, and expression node.
-#guard (match hoverReportBL namedBoundsHoverSrc with
-  | none => false
-  | some r =>
-      r.diagnostics.isEmpty &&
-      (r.symbols.any fun s => s.name == "id" && s.kind == "val" &&
-        s.type_ == "∀ a. BL n n a → BL n n a") &&
-      (r.symbols.any fun s => s.name == "xs" && s.kind == "param" &&
-        s.type_ == "BL n n a") &&
-      !(r.symbols.any fun s => hasSub s.type_ "?k" || hasSub s.type_ "?t"))
-
--- Whitespace inside an authored expression resolves to the smallest enclosing
--- expression artifact, so hover is not restricted to identifiers/binders.
-#guard (match hoverReportBL namedBoundsHoverSrc with
-  | none => false
-  | some r =>
-      match symbolAt r.symbols 3 3 with -- space in `id [1]`
-      | some s => s.kind == "expr" && hasSub s.type_ "BL" && hasSub s.type_ "Int"
-      | none => false)
-
--- Bounds rejection remains a real build guard and retains useful symbols for
--- the editor instead of dropping the successfully inferred HM/provenance data.
-#guard (match hoverReportBL synthFailSrc with
-  | none => false
-  | some r =>
-      (!r.diagnostics.isEmpty) &&
-      (r.diagnostics.any fun d => hasSub d.message "bounds") &&
-      (r.symbols.any fun s => s.name == "xs" && s.kind == "val" &&
-        s.type_ == "BL 0 0 Int"))
+-- Removed bounds syntax is rejected before the HM editor pipeline runs.
+#guard !(parseProgramWithSpans "let xs : BL 1 1 Int = [1]\nxs\n").isOk
+#guard !(parseProgramWithSpans "let id : {n : Nat, a} a -> a = \\x -> x\nid\n").isOk
 
 /-! ## HM / lower diagnostics (must not collapse to file-top (1,1)) -/
 

@@ -1,8 +1,8 @@
 # Operational, unverified code
 
 This directory contains the production code outside the verified language
-metatheory: parsing and lexing, editor/provenance plumbing, CLI entry points,
-the unbounded evaluator, Z3 output parsing, and the experimental BL pretty-printer.
+metatheory: parsing and lexing, editor/provenance plumbing, CLI entry points, and
+the unbounded evaluator.
 Some supporting modules here are total; they live alongside the operational
 pipeline whose behavior is not established by the headline HM theorems.
 
@@ -21,8 +21,7 @@ imports only the token module, not the partial lexer.
 The default `lake build` target remains the verified `FHM` library and does not
 import these modules. Operational builds remain available through
 `lake build FHMUnverified`, `lake build FHMEditorTests`, `lake build fhm`, and
-`lake build fhm_grammar`. The optional Bounds and Z3 targets include operational
-plumbing; their existing behavior and proof statements are unchanged.
+`lake build fhm_grammar`.
 
 Run `bash scripts/check-unverified-boundary.sh` to check that all production
 partial declarations remain here and that the default library's local import

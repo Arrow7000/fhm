@@ -17,18 +17,14 @@ def usage : String :=
   "usage: fhm <command> [options]\n\
    commands:\n\
      diagnose [path]          editor diagnostics + hover symbols (stdin if no path)\n\
-     run [--json] [--bl] [path]  parse, typecheck, evaluate\n\
+     run [--json] [path]      parse, typecheck, evaluate\n\
    default (no command): same as run\n\
-   \n\
-   options:\n\
-     --bl   allow BL syntax (HM mode rejects it)\n\
    \n\
    examples:\n\
      fhm scratch/live.fhm\n\
-     fhm --bl scratch/bl-live.fhm\n\
      fhm --json < program.fhm\n\
      fhm diagnose < program.fhm\n\
-     fhm run --json --bl < program.fhm"
+     fhm run --json < program.fhm"
 
 def main (args : List String) : IO UInt32 := do
   match args with

@@ -3,13 +3,10 @@ import FHM.SurfaceBridge
 import FHM.InferW
 import FHM.Pretty
 import FHM.Unverified.EvaluateUnsafe
-import FHM.Unverified.BoundsFrontend
 import FHM.Unverified.HMDisplay
 import FHM.Unverified.HMArtifacts
-import FHM.Bounds.Erase
-import FHM.Bounds.Ann
-import FHM.Bounds.Report
-import FHM.Bounds.RecursiveFound
+import FHM.Unverified.HMFrontend
+import FHM.Unverified.HMReport
 import Lean.Data.Json
 
 /-!
@@ -17,68 +14,40 @@ import Lean.Data.Json
 
 Read a `.fhm` source file (or stdin) and run:
 
-`parse → lower → inferFound → HM report → exh → erase → evaluateUnsafe`
+`parse → lower → inferFound → HM report → exhaustiveness → erase → evaluateUnsafe`
 
-Default HM admits carried `BL` annotations under Path R: inference ignores
-bounds, reports the erased `List` shape, and performs no bounds validation.
-`--bl` checks the same provenance-rich inferred artifact with the canonical
-proof-producing bounds checker. HM mode keeps surface `checkExhaustive`;
-BL match coverage is part of its bounds derivation.
-
-HM display types come from the producer's actual group-exit binder schemes.
-BL display retains authored surface annotations and adds the checked body
-bounds; display assembly is not an acceptance authority.
+Display types come from the producer's actual group-exit binder schemes.
 
 ## CLI
 
 ```
-blt [--json] [--bl] [path]
-blt run [--json] [--bl] [path]
+fhm [--json] [path]
+fhm run [--json] [path]
 ```
 
-- No path, human mode: default `scratch/live.fhm` (watch-live).
+- No path, human output: default `scratch/live.fhm` (watch-live).
 - No path, `--json`: read source from stdin (web playground).
 - With path: read that file (human or JSON).
-- `--bl`: allow BL syntax; erase + report + bounds check.
 -/
 
 open Surface.Parse
 open SurfaceBridge
-open FHM.Bounds (ProgramBoundsAnns BoundBinding BoundsTy)
-open FHM.Bounds.Erase
-open FHM.Unverified.BoundsFrontend
-open FHM.Bounds.Report
-
-/- Deprecated erased-annotation display plumbing. These helpers are operational
-only; canonical `--bl` acceptance consumes `TypedLowered` directly. -/
-def legacyBinderEnvFromGroups (groups : List (List Surface.Binding)) : List ValName :=
-  groups.reverse.flatMap (·.map (·.name))
-
-def legacyProgramBoundsAnns (binderEnv : List ValName)
-    (ep : FHM.Bounds.Erase.ErasedProgram) : ProgramBoundsAnns :=
-  let surface := ep.toSurfaceAnns
-  { binderAnns := binderEnv.map fun name =>
-      (surface.byName.find? fun ⟨other, _⟩ => other = name).map (·.2)
-    bodyAnn := surface.bodyAnn }
+open FHM.Unverified.HMReport
 
 /-- Which pipeline stage rejected the program. -/
 inductive PipelineStage
   | parse
-  | bounds
   | lower
   | typecheck
   | exhaustiveness
-  | elaborate
   | eval
   deriving Repr, DecidableEq
 
 def PipelineStage.tag : PipelineStage → String
   | .parse => "parse"
-  | .bounds => "bounds"
   | .lower => "lower"
   | .typecheck => "typecheck"
   | .exhaustiveness => "exhaustiveness"
-  | .elaborate => "elaborate"
   | .eval => "eval"
 
 /-! ## ANSI colour (TTY + no `NO_COLOR`) -/
@@ -154,28 +123,19 @@ structure PipelineErr where
   deriving Repr
 
 structure CheckedProgram where
-  /-- Unified display types (ascription wins when present). -/
+  /-- Inferred HM types rendered with source type-variable names when possible. -/
   report : ProgramReport
   checkNs : Nat
   elaborated : Expr
-  mode : Mode := .default
-  /-- Legacy BL erase package; HM neither constructs nor needs its proof. -/
-  erased : Option ErasedProgram := none
-  /-- De Bruijn projection of erase anns (Check spine only). -/
-  boundsAnns : ProgramBoundsAnns := {}
-  /-- Names for `ofLower` (0 = innermost). From `binderEnvFromGroups` post-infer. -/
-  binderEnv : List ValName := []
 
 structure PipelineOk where
   report : ProgramReport
   checkNs : Nat
   evalNs : Nat
   resultPretty : String
-  mode : Mode := .default
 
 structure LiveArgs where
   json : Bool := false
-  bl : Bool := false
   path : Option String := none
 
 /-- Read actual group-exit schemes by logical binder identity. Empty surface
@@ -206,9 +166,9 @@ private def foundTopBindingTypes (groups : List (List Surface.Binding))
           pure (here ++ later)
   go groups []
 
-/-- Parse → provenance-aware lower → found inference → optional verified bounds
-checking → erased execution. HM and BL consume the same inferred artifact. -/
-def checkPipeline (mode : Mode) (src : String) :
+/-- Parse → provenance-aware lower → found inference → exhaustiveness →
+fully erased execution. -/
+def checkPipeline (src : String) :
     IO (Except PipelineErr CheckedProgram) := do
   let tCheck0 ← IO.monoNanosNow
   let (p, binders, sp) ← match parseProgramWithSpans src with
@@ -223,9 +183,11 @@ def checkPipeline (mode : Mode) (src : String) :
         }
     | .ok parsed => pure parsed
 
-  -- Presentation-only compatibility: acceptance never consumes this erased
-  -- package. Core inference itself owns Path R erasure in both modes.
-  let ep := if mode == .hm then none else some (eraseProgram p)
+  if FHM.Unverified.HMFrontend.programContainsBounds p then
+    return .error {
+      stage := .parse
+      message := FHM.Unverified.HMFrontend.unsupportedMessage
+    }
 
   let (ctors, _) ← match lowerProgram p with
     | none =>
@@ -257,45 +219,26 @@ def checkPipeline (mode : Mode) (src : String) :
     | some typed => pure typed
   let τ := typed.inference.ty
   let found := typed.inference
-  let checkedBodyBounds ←
-    if mode == .bl then
-      match FHM.Bounds.RecursiveFound.synthNodes typed with
-      | .error msg => return .error { stage := .bounds, message := msg }
-      | .ok (result, _) => pure (some result.bounds)
-    else
-      pure none
   let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
-  -- Slice 2: Core body env order (0 = innermost) from the same groups Infer used.
-  let binderEnv := legacyBinderEnvFromGroups p.groups
-  let boundsAnns := (ep.map (legacyProgramBoundsAnns binderEnv)).getD {}
   let bindings ← match foundTopBindingTypes p.groups lowered.expr found.binderSchemes with
     | some bindings => pure bindings
     | none => return .error {
         stage := .typecheck
         message := "internal inference artifact error: missing top-level binder scheme"
       }
-  let report0 :=
-    if mode == .bl then
-      match ep with
-      | some erased => assembleFromBindings bindings bodyσ erased
-      | none => { programHm := bodyσ }
-    else
-      { bindings := bindings.map fun (name, hm) =>
-          let binding := (p.groups.flatMap id).find? (fun b => b.name == name)
-          let ann := binding.bind (fun b => finalizeAnn b.tyParams b.params b.ann)
-          let names := FHM.Unverified.HMArtifacts.displayNames ann
-          { name, hm := hm.eraseBounds
-            synthPretty? := some (FHM.Unverified.HMDisplay.scheme {} names hm) }
-        programHm := bodyσ.eraseBounds
-        programSynthPretty? := some (FHM.Unverified.HMDisplay.scheme {} [] bodyσ) }
-  let report := match checkedBodyBounds with
-    | some β => report0.enrichFromSynth binderEnv [] (some β.pretty)
-    | none => report0
+  let report : ProgramReport :=
+    { bindings := bindings.map fun (name, hm) =>
+        let binding := (p.groups.flatMap id).find? (fun b => b.name == name)
+        let ann := binding.bind (fun b => finalizeAnn b.tyParams b.params b.ann)
+        let names := FHM.Unverified.HMArtifacts.displayNames ann
+        { name, hm := hm.eraseBounds
+          synthPretty? := some (FHM.Unverified.HMDisplay.scheme {} names hm) }
+      programHm := bodyσ.eraseBounds
+      programSynthPretty? := some (FHM.Unverified.HMDisplay.scheme {} [] bodyσ) }
 
-  if mode != .bl then
-    if !(checkExhaustive ctors p.term) then
-      return .error { stage := .exhaustiveness, message := "match not exhaustive" }
+  if !(checkExhaustive ctors p.term) then
+    return .error { stage := .exhaustiveness, message := "match not exhaustive" }
 
   let e := found.output.erase
 
@@ -303,10 +246,6 @@ def checkPipeline (mode : Mode) (src : String) :
     report := report
     checkNs := tCheck1 - tCheck0
     elaborated := e
-    mode := mode
-    erased := ep
-    boundsAnns := boundsAnns
-    binderEnv := binderEnv
   }
 
 /-- Evaluate an already-checked program (timed). -/
@@ -322,7 +261,6 @@ def evalCheckedIO (c : CheckedProgram) : IO (Except PipelineErr PipelineOk) := d
         checkNs := c.checkNs
         evalNs := tEval1 - tEval0
         resultPretty := v.pretty
-        mode := c.mode
       }
 
 def PipelineOk.toJson (r : PipelineOk) : Lean.Json :=
@@ -334,7 +272,6 @@ def PipelineOk.toJson (r : PipelineOk) : Lean.Json :=
   Lean.Json.mkObj [
     ("version", Lean.Json.num 1),
     ("ok", Lean.Json.bool true),
-    ("mode", Lean.Json.str (if r.mode == .bl then "bl" else "hm")),
     ("bindings", Lean.Json.arr binds.toArray),
     ("programTy", Lean.Json.str r.report.programPretty),
     ("result", Lean.Json.str r.resultPretty),
@@ -356,7 +293,7 @@ def PipelineErr.toJson (e : PipelineErr) : Lean.Json :=
     ("endCol", Lean.Json.num e.endCol)
   ]
 
-/-- Parse CLI: optional `--json`, `--bl`, optional path. -/
+/-- Parse CLI: optional `--json` and one optional path. -/
 def parseArgs (args : List String) : Except String LiveArgs :=
   let rec go (as : List String) (acc : LiveArgs) : Except String LiveArgs :=
     match as with
@@ -364,20 +301,16 @@ def parseArgs (args : List String) : Except String LiveArgs :=
     | "--json" :: rest =>
         if acc.json then .error "duplicate --json"
         else go rest { acc with json := true }
-    | "--bl" :: rest =>
-        if acc.bl then .error "duplicate --bl"
-        else go rest { acc with bl := true }
     | "-h" :: _ | "--help" :: _ =>
-        .error "usage: blt [--json] [--bl] [path]\n\
+        .error "usage: fhm run [--json] [path]\n\
   no path (human): scratch/live.fhm\n\
   no path (--json): read stdin\n\
-  path: read that file\n\
-  --bl: allow BL syntax (erase + run; bounds check later)"
+  path: read that file"
     | flag :: rest =>
         if flag.startsWith "-" then
-          .error s!"unknown flag: {flag}\nusage: blt [--json] [--bl] [path]"
+          .error s!"unknown flag: {flag}\nusage: fhm run [--json] [path]"
         else if acc.path.isSome then
-          .error "usage: blt [--json] [--bl] [path]"
+          .error "usage: fhm run [--json] [path]"
         else
           go rest { acc with path := some flag }
   go args {}
@@ -389,8 +322,6 @@ def runLive (args : List String) : IO UInt32 := do
         return 2
     | .ok x => pure x
 
-  let mode : Mode := if liveArgs.bl then .bl else .default
-
   let src ← match liveArgs.path, liveArgs.json with
     | some path, _ => IO.FS.readFile path
     | none, true =>
@@ -398,7 +329,7 @@ def runLive (args : List String) : IO UInt32 := do
         stdin.readToEnd
     | none, false => IO.FS.readFile "scratch/live.fhm"
 
-  match ← checkPipeline mode src with
+  match ← checkPipeline src with
   | .error e =>
       if liveArgs.json then
         IO.println e.toJson.pretty

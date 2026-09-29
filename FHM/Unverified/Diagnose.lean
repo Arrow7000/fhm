@@ -1,4 +1,5 @@
 import FHM.Unverified.EditorSupport
+import FHM.Unverified.HMFrontend
 import Lean.Data.Json
 
 /-!
@@ -26,30 +27,46 @@ Line/col are 1-based half-open spans (same as `ParseError` / the lexer).
 open Lean
 
 def diagnoseUsage : String :=
-  "usage: fhm diagnose [--hm|--bl|--auto] [path]\n\
-   --hm: Path-R HM checking (default; count claims are unchecked)\n\
-   --bl: canonical Bounds checking\n\
-   --auto: use Bounds checking when the program contains BL\n\
+  "usage: fhm diagnose [path]\n\
    with path: read that file\n\
    without: read source from stdin"
 
+/-- Reject retired bounds syntax before the still-transitional parser can hand
+it to the Path-R HM stack.  Parse errors remain owned by `diagnosePayload`. -/
+def diagnosePayloadHM (src : String) : Lean.Json :=
+  match Surface.Parse.parseProgramWithSpans src with
+  | .ok (program, _, _) =>
+      if FHM.Unverified.HMFrontend.programContainsBounds program then
+        let diagnostic : HoverDiag := {
+          message := FHM.Unverified.HMFrontend.unsupportedMessage
+        }
+        Lean.Json.mkObj [
+          ("version", Lean.Json.num 3),
+          ("diagnostics", Lean.Json.arr #[diagnostic.toJson]),
+          ("symbols", Lean.Json.arr #[])
+        ]
+      else
+        diagnosePayload src
+  | .error _ => diagnosePayload src
+
 def runDiagnose (args : List String) : IO UInt32 := do
-  let (mode, paths) := match args with
-    | "--hm" :: rest => ("hm", rest)
-    | "--bl" :: rest => ("bl", rest)
-    | "--auto" :: rest => ("auto", rest)
-    | rest => ("hm", rest)
-  let src ← match paths with
+  let src ← match args with
     | [] =>
       let stdin ← IO.getStdin
       stdin.readToEnd
-    | [path] => IO.FS.readFile path
+    | ["-h"] | ["--help"] =>
+      IO.eprintln diagnoseUsage
+      return 0
+    | [path] =>
+      if path.startsWith "-" then
+        IO.eprintln diagnoseUsage
+        return 2
+      else
+        IO.FS.readFile path
     | _ =>
       IO.eprintln diagnoseUsage
       return 2
-  let payload := if mode == "bl" then diagnosePayloadMode true src
-    else if mode == "auto" then diagnosePayloadAuto src
-    else diagnosePayload src
+  let payload := diagnosePayloadHM src
   IO.println payload.pretty
   let hasDiags :=
     match payload.getObjVal? "diagnostics" with

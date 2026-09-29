@@ -101,9 +101,8 @@ test("mutual recursion retains both member occurrence types", () => {
   run(source, "0");
 });
 
-test("Path R editor erases BL to List without bounds diagnostics", () => {
-  // Deliberately impossible bounds: diagnose is HM-only, not the BL checker.
-  const source = "let xs : BL 5 5 Int = [1, 2]\nxs\n";
+test("editor reports ordinary List annotations directly", () => {
+  const source = "let xs : List Int = [1, 2]\nxs\n";
   const payload = diagnose(source);
   hover(payload, source, 1, "xs", "List Int");
   assert.equal(payload.programTy, "List Int");

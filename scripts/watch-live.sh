@@ -4,7 +4,6 @@
 # Usage:
 #   scripts/watch-live.sh                       # watches scratch/live.fhm
 #   scripts/watch-live.sh path/to/foo.fhm
-#   scripts/watch-live.sh --bl scratch/bl-live.fhm
 #
 # Rebuilds fhm at startup (and when a pipeline Lean source changes) if
 # the binary is missing or stale. Saving the .fhm file only re-runs the exe —
@@ -20,32 +19,23 @@ if [[ -t 1 ]]; then
   export FORCE_COLOR=1
 fi
 
-BL=0
 FILE=""
 for arg in "$@"; do
   case "$arg" in
-    --bl)
-      if [[ "$BL" -eq 1 ]]; then
-        echo "error: duplicate --bl" >&2
-        exit 2
-      fi
-      BL=1
-      ;;
     -h|--help)
-      echo "usage: scripts/watch-live.sh [--bl] [path]"
+      echo "usage: scripts/watch-live.sh [path]"
       echo "  no path: scratch/live.fhm"
-      echo "  --bl:    pass --bl to fhm (allow BL syntax)"
       exit 0
       ;;
     -*)
       echo "error: unknown flag: $arg" >&2
-      echo "usage: scripts/watch-live.sh [--bl] [path]" >&2
+      echo "usage: scripts/watch-live.sh [path]" >&2
       exit 2
       ;;
     *)
       if [[ -n "$FILE" ]]; then
         echo "error: unexpected extra argument: $arg" >&2
-        echo "usage: scripts/watch-live.sh [--bl] [path]" >&2
+        echo "usage: scripts/watch-live.sh [path]" >&2
         exit 2
       fi
       FILE="$arg"
@@ -55,10 +45,6 @@ done
 FILE="${FILE:-scratch/live.fhm}"
 
 BIN=".lake/build/bin/fhm"
-FHM_ARGS=()
-if [[ "$BL" -eq 1 ]]; then
-  FHM_ARGS+=(--bl)
-fi
 
 # Lean sources that actually feed `fhm` (not scratch modules under FHM/).
 PIPELINE_SRCS=(
@@ -69,7 +55,6 @@ PIPELINE_SRCS=(
   FHM/Core.lean
   FHM/SurfaceLang.lean
   FHM/Surface
-  FHM/Bounds
   lakefile.toml
 )
 
@@ -97,15 +82,11 @@ ensure_built() {
 run_once() {
   ensure_built
   clear 2>/dev/null || true
-  if [[ "$BL" -eq 1 ]]; then
-    echo "═══ $FILE (--bl) ═══ $(date '+%H:%M:%S')"
-  else
-    echo "═══ $FILE ═══ $(date '+%H:%M:%S')"
-  fi
+  echo "═══ $FILE ═══ $(date '+%H:%M:%S')"
   echo
   # Don't abort the watch loop on pipeline failure (exit 1).
   set +e
-  "$BIN" "${FHM_ARGS[@]}" "$FILE"
+  "$BIN" "$FILE"
   local code=$?
   set -e
   # echo
@@ -117,15 +98,8 @@ run_once() {
   fi
 }
 
-if [[ "$BL" -eq 1 ]]; then
-  echo "watching $FILE (--bl) — save to re-run (Ctrl-C to stop)"
-else
-  echo "watching $FILE — save to re-run (Ctrl-C to stop)"
-fi
+echo "watching $FILE — save to re-run (Ctrl-C to stop)"
 run_once
-
-# Serialize FHM_ARGS for the entr subshell (empty or `--bl`).
-FHM_ARGS_STR="${FHM_ARGS[*]-}"
 
 if command -v entr >/dev/null 2>&1; then
   # Watch the .fhm file and pipeline Lean sources only (not all of FHM/).
@@ -136,7 +110,6 @@ if command -v entr >/dev/null 2>&1; then
     cd '$ROOT'
     BIN='$BIN'
     FILE='$FILE'
-    FHM_ARGS_STR='$FHM_ARGS_STR'
     needs_rebuild() {
       if [[ ! -x \"\$BIN\" ]]; then return 0; fi
       local newest
@@ -147,8 +120,7 @@ if command -v entr >/dev/null 2>&1; then
       echo 'building fhm…'
       lake build fhm
     fi
-    # shellcheck disable=SC2086
-    \"\$BIN\" \$FHM_ARGS_STR \"\$FILE\"
+    \"\$BIN\" \"\$FILE\"
     echo
     echo \"(exit \$?)\"
   "

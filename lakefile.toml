@@ -28,205 +28,38 @@ name = "FHMUnverified"
 roots = [
   "FHM.Unverified.HMArtifacts",
   "FHM.Unverified.HMDisplay",
-  "FHM.Unverified.BoundsFrontend",
+  "FHM.Unverified.HMFrontend",
+  "FHM.Unverified.HMReport",
   "FHM.Unverified.Surface.Lex",
   "FHM.Unverified.Surface.Parse",
   "FHM.Unverified.Surface.Provenance",
-  "FHM.Unverified.Surface.CountScope",
   "FHM.Unverified.EvaluateUnsafe",
 ]
 
 [[lean_lib]]
 name = "FHMEditor"
-# Hover/diagnose helpers — built with `fhm`, not default `lake build`.
+# Hover/diagnose helpers -- built with `fhm`, not default `lake build`.
 roots = ["FHM.Unverified.EditorSupport"]
 
 [[lean_lib]]
 name = "FHMEditorTests"
-# Span-hover canaries — `lake build FHMEditorTests`.
+# Span-hover canaries -- `lake build FHMEditorTests`.
 roots = ["FHM.Unverified.EditorSupportTests"]
 
 [[lean_lib]]
 name = "FHMCli"
-# Unified CLI modules — `lake build fhm`.
-# Live `--bl` invokes the canonical proof-producing checker; operational mode
-# selection lives under Unverified and Erase remains temporarily for display.
+# Unified HM CLI modules -- `lake build fhm`.
 roots = ["FHM.Unverified.Cli", "FHM.Unverified.Live", "FHM.Unverified.Diagnose", "FHM.Unverified.PipelineShared"]
 
 [[lean_exe]]
 name = "fhm"
 root = "FHM.Unverified.Cli"
-# Unified CLI: `fhm diagnose` + `fhm run` (formerly fhm_diagnose / fhm_live).
-# Build with `lake build fhm`, scripts/watch-live.sh, or editor tooling.
+# `fhm diagnose` and `fhm run`; build with `lake build fhm`.
 
 [[lean_exe]]
 name = "fhm_grammar"
 root = "FHM.Unverified.GrammarExport"
-# Emits TextMate JSON from Surface.Token tables. `scripts/gen-fhm-tmgrammar.sh`
-
-[[lean_lib]]
-name = "FHMBounds"
-# Optional: bounds layer (kernel + Core-attached typing). Not in default FHM.
-# Build with `lake build FHMBounds` (Z3 for oracles; Core for Typing).
-roots = [
-  "FHM.Bounds.Kernel",
-  "FHM.Bounds.Ann",       # Z3-free AnnoCount / BoundsAnnTy / ProgramBoundsAnns
-  "FHM.Bounds.Report",    # Display ProgramReport (assemble after erase+infer)
-  "FHM.Bounds.Oracle",
-  "FHM.Bounds.Commit",
-  "FHM.Bounds.Typing",
-  "FHM.Bounds.Semantic",  # Solver-independent subtype specification and bridge
-  "FHM.Bounds.SemanticTests", # Solver-free variance/containment regressions
-  "FHM.Bounds.Runtime", # Existing-step runtime meaning, subtype inclusion and observable safety
-  "FHM.Bounds.NominalBranches", # Declaration-indexed generic ADT match fields and coverage
-  "FHM.Bounds.BranchMerge", # Proved structural upper/lower branch candidates with contravariant arrow domains
-  "FHM.Bounds.BranchMergeTests", # Solver-free interval, higher-order variance and shape boundary regressions
-  "FHM.Bounds.ListBranches", # Semantic finite-length List coverage and proved Nil/Cons/tail refinements
-  "FHM.Bounds.ListBranchesTests", # Coverage arity/path conditions and predecessor reconstruction regressions
-  "FHM.Bounds.BoolBranches", # Solver-independent full/wildcard Bool constructor coverage
-  "FHM.Bounds.PairBranches", # Solver-independent single-constructor Pair coverage and arity
-  "FHM.Bounds.Scheme",    # Count-scheme executable/declarative correspondence
-  "FHM.Bounds.SchemeTests", # Count scope, arity and finite-argument regressions
-  "FHM.Bounds.CountSubstitution", # Capture-preserving semantic count substitution
-  "FHM.Bounds.CountSubstitutionTests", # Capture, simultaneous substitution and premise regressions
-  "FHM.Bounds.ScopedScheme", # Quantified stable identities with explicit lexical captures
-  "FHM.Bounds.ScopedSchemeTests", # Caller scope, capture and independent-use regressions
-  "FHM.Bounds.ScopedAnnotation", # Scope-checked carried annotation demands with HM shape proofs
-  "FHM.Bounds.ScopedAnnotationTests", # Nested demands, holes, namespaces and declaration regressions
-  "FHM.Bounds.TypeSubstitution", # Capture-safe HM bound-slot/count specialization proofs
-  "FHM.Bounds.TypeSubstitutionTests", # Free HM captures and caller-count substitution order
-  "FHM.Bounds.BinderBridge", # Certified inferred-slot abstraction and found instantiation
-  "FHM.Bounds.BinderBridgeTests", # Repeated slots, captured identities and Core-site regression tests
-  "FHM.Bounds.Scope",     # Static count identity and HM-blind renaming contracts
-  "FHM.Unverified.Surface.CountScopeTests", # Construction-time telescope regressions
-  "FHM.Bounds.Typed",     # Proof-carrying found-driven initial bounds fragment
-  "FHM.Bounds.TypedTests", # Initial typed traversal and provenance regressions
-  "FHM.Bounds.Generalization", # Fresh HM substitution and universal RHS bounds typing
-  "FHM.Bounds.GeneralizationTests", # Full caller bounds, annotation/capture and namespace regressions
-  "FHM.Bounds.SchemeSpecialization", # Exact simultaneous RHS/closed-scheme typing correspondence
-  "FHM.Bounds.SchemeSpecializationTests", # Caller identity collisions and certified specialization regressions
-  "FHM.Bounds.FreeAlgebra", # LC-safe free substitution, bound-slot commutation and congruence
-  "FHM.Bounds.SchemeUse", # Executable certified RHS use with actual bounds arguments and caller scope
-  "FHM.Bounds.SchemeUseTests", # Exact bounds, repeated slots, caller collisions and invalid use regressions
-  "FHM.Bounds.SchemeTyping", # Scheme-aware bounds judgement with universal RHS introduction
-  "FHM.Bounds.SchemeTransport", # Capture-safe mixed scheme environment transport and reparameterization
-  "FHM.Bounds.CountTransport", # Finite count substitution of mixed derivations; caller bounds protected
-  "FHM.Bounds.CountTransportTests", # Nested universality, caller count collisions and finite-boundary proofs
-  "FHM.Bounds.CountContract", # Checked count/HM uses require universal RHS certificates and discharged premises
-  "FHM.Bounds.CountContractTests", # Certified implementations, caller collisions, scope and premise discharge
-  "FHM.Bounds.CountApplication", # RHS-certified contract calls require actual argument bounds and inclusion
-  "FHM.Bounds.CountProposal", # Untrusted direct count proposals; no inversion or captured-coordinate guessing
-  "FHM.Bounds.HMCountScheme", # Closed HM/count templates and checked opaque group openings
-  "FHM.Bounds.HMCountSchemeClosure", # Lambda-lift captured count/HM coordinates into explicit scheme parameters
-  "FHM.Bounds.HMCountSchemeTests", # Slot/capture/vacuous-forall and caller-count insertion regressions
-  "FHM.Bounds.RecursiveContract", # Declared recursive count assumptions with one fixed HM monotype
-  "FHM.Bounds.RecursiveHMContract", # Closed templates and fixed HM vectors; capture-safe count-only assumptions
-  "FHM.Bounds.HMInterpretation", # Proof-side source HM interpretation; complete caller types stay count-separated
-  "FHM.Bounds.RecursiveHMJudgement", # Whole-RHS HM transport interprets source annotations and fixed recursive vectors
-  "FHM.Bounds.RecursiveHMJudgementTests", # Kernel-checked annotated/recursive RHS specialization over full caller bounds
-  "FHM.Bounds.ScopedHMJudgementTests", # Unchanged lexical annotations and both-interface RHS specialization
-  "FHM.Bounds.ScopedHMWalkTests", # Real annotated-forall original-node checking and fixed-HM recursion
-  "FHM.Bounds.ScopedHMUniversalTests", # Real lexical forall RHS certificates specialize counts then full caller types
-  "FHM.Bounds.RecursiveHMEmbedding", # Existing checked RHSs embed with exact bounds and unchanged source terms
-  "FHM.Bounds.RecursiveHMUniversal", # Joint full-HM/finite-count RHS derivations and independently proved contract inclusion
-  "FHM.Bounds.RecursiveHMSigned", # Exact written signature agreement backed by joint universal RHS certificates
-  "FHM.Bounds.RecursiveHMEnvironment", # Captured fixed-vector proofs reconcile member count instantiation with the group environment
-  "FHM.Bounds.RecursiveHMCaller", # Original signed RHS evidence, caller HM shape and discharged premises in one actual-bound package
-  "FHM.Bounds.RecursiveHMCallerTests", # Real automatic groups specialize at multiple caller types without assuming unmet contract premises
-  "FHM.Bounds.RecursiveHMUniform", # All ordered RHSs universally specialize through one full group HM map and one common environment
-  "FHM.Bounds.RecursiveHMClosureFresh", # Closure-normal captured environments satisfy combined recursive specialization freshness
-  "FHM.Bounds.RecursiveHMClosedExit", # Static count/HM closure of one generalized recursive-group exit
-  "FHM.Bounds.RecursiveHMClosedExitRuntime", # Runtime readiness and semantic realization of statically closed exits
-  "FHM.Bounds.RecursiveHMClosedExports", # Source-order, lookup and closure-normal invariants for body export environments
-  "FHM.Bounds.RecursiveHMClosedExportEnvironment", # Use-indexed runtime fixed point for body-visible closed group exits
-  "FHM.Bounds.RecursiveHMClosedInternalRealizer", # Top-level observation-budget realization of closed recursive assumptions
-  "FHM.Bounds.RecursiveHMNestedInternalRealizer", # Nested realization over specializable lexical tails
-  "FHM.Bounds.RecursiveHMSpecializableFundamental", # Family-indexed semantic target for the parallel specializable body theorem
-  "FHM.Bounds.RecursiveHMClosedRuntimeReady", # Top-level closed-export witness consumed by the body runtime theorem
-  "FHM.Bounds.RecursiveHMClosedProgram", # Canonical root recursive checker through closed lexical exports
-  "FHM.Bounds.RecursiveHMSpecializableEnvironment", # Kripke runtime witnesses for nested recursive environments
-  "FHM.Bounds.RecursiveHMSpecializableRebase", # Stable-world rebasing for nested Kripke environments
-  "FHM.Bounds.RecursiveHMProtectedTailRebase", # Protected exit count-prefix rebasing for lexical tails
-  "FHM.Bounds.RecursiveHMClosedSpecializableEnvironment", # Specialization algebra for closed group exports in Kripke environments
-  "FHM.Bounds.RecursiveHMClosedSpecializableFamily", # Kripke-family extension by a closed recursive group
-  "FHM.Bounds.RecursiveHMPointwiseClosedExport", # Single-budget nested closed-export realization
-  "FHM.Bounds.RecursiveHMBodyViewTransport", # Static closing transport shared by fixed and ordinary raw-environment views
-  "FHM.Bounds.RecursiveHMClosedLocalTargetReady", # Target-use-indexed runtime evidence for capture-closed lexical locals
-  "FHM.Bounds.RecursiveHMClosedLocalProtected", # Protected target-use maps for canonical capture-closed local RHS certificates
-  "FHM.Bounds.RecursiveHMPointwiseFundamental", # Single-world runtime invariant for the specializable body fundamental theorem
-  "FHM.Bounds.RecursiveHMUniformTests", # Permuted mutual vectors, member-local counts, preserved full caller bounds and closed-template capture guards
-  "FHM.Bounds.HMFoundView", # Shared HM interpretation reads exact-node payload views without rewriting artifacts or paths
-  "FHM.Bounds.HMFoundViewTests", # More-general payload specialization, exact Core sites and explicit count scope
-  "FHM.Bounds.HMReconciliation", # Machine binder identities reconcile with fresh source signatures without rewriting found trees
-  "FHM.Bounds.HMReconciliationTests", # More-general RHSs, exact machine sites, fresh/vacuous source slots and rejection boundaries
-  "FHM.Bounds.RecursiveHMReconciled", # Real checked RHSs retain their source interpretation in full universal HM/count certificates
-  "FHM.Bounds.HMDeclaredReconciliation", # Exact source annotations, capture-protected solved RHS specialization without fake machine facts
-  "FHM.Bounds.HMDeclaredReconciliationTests", # Real narrower ceilings, capture/rigid protection and exact source-site rejection
-  "FHM.Bounds.HMDeclaredRHS", # Actual original source-site RHS checking and universally signed explicit-environment certificates
-  "FHM.Bounds.HMDeclaredRHSTests", # Real annotated and more-general recursive RHSs through actual checking and universal signed original-node use
-  "FHM.Bounds.HMDeclaredMutualTests", # Both more-general mutual members, shared opaque HM vector, distinct count telescopes and caller-count insertion
-  "FHM.Bounds.HMDeclaredGroup", # Ordered actual universal RHS acceptance with shared HM proposals and one checked common recursive environment
-  "FHM.Bounds.HMDeclaredGroupTests", # Three real members, distinct arities, source count independence and fail-closed whole-family assembly
-  "FHM.Bounds.HMDeclaredCoordinates", # Deterministic checked opaque slot alignment without reinference or per-call HM polymorphism
-  "FHM.Bounds.HMDeclaredCoordinatesTests", # Actual automatic groups, permuted and vacuous slots, captured identities and invalid contracts
-  "FHM.Bounds.RecursiveHMAnnotation", # Executable count-first/full-HM source annotation and parameter obligations
-  "FHM.Bounds.RecursiveHMAnnotationTests", # Named HM identities, count namespace collisions, scope and actual-inclusion failures
-  "FHM.Bounds.RecursiveHMWalk", # Interpreted original-node traversal constructs actual RHS proofs and fixed-HM recursive calls
-  "FHM.Bounds.RecursiveHMWalkTests", # Exact-node coverage, annotated/local/app/List traversal and fixed-vector self/mutual recursion
-  "FHM.Bounds.ScopedHMInterpretation", # Simultaneous lexical bound/free HM readers and full-type/count transport groundwork
-  "FHM.Bounds.ScopedHMFoundView", # Exact-node lexical views sit above the pure reader, avoiding a typing/artifact dependency cycle
-  "FHM.Bounds.ScopedHMAnnotation", # Proof-carrying lexical annotation obligations transport both source HM interfaces
-  "FHM.Bounds.ScopedHMAnnotationTests", # Count-first lexical-slot annotation checking, scope and false nested-bound claims
-  "FHM.Bounds.ScopedHMInterpretationTests", # Protected caller types, bound/free namespaces and original declared-forall artifacts
-  "FHM.Bounds.RecursiveHMContractTests", # Fixed HM/count calls, caller-count collisions and assumption specialization
-  "FHM.Bounds.RecursiveTyping", # Simultaneous group rule requires universal RHS and annotation obligations
-  "FHM.Bounds.RecursiveVariable", # Fixed-HM recursive assumption uses and origin-backed count calls
-  "FHM.Bounds.RecursiveSpine", # One count proposal vector, every curried domain and intermediate found payload checked
-  "FHM.Bounds.RecursiveSpineTests", # Multi-origin proposals, partial calls, premise/scope/fixed-HM checks and exact-node reports
-  "FHM.Bounds.RecursiveCountTransport", # Caller count transport protects callee telescopes and fixed captures
-  "FHM.Bounds.RecursiveCountTransportTests", # Symbolic recursive RHS universality, protected counts and capture boundaries
-  "FHM.Bounds.RecursiveWalk", # Found-driven symbolic RHS checking under fixed-HM recursive assumptions
-  "FHM.Bounds.RecursiveMatchTests", # Typed List coverage, paths, common contract results and arrow-domain safety
-  "FHM.Bounds.RecursiveBoolTests", # Typed Bool constructor coverage, conditionals and nested occurrence reports
-  "FHM.Bounds.RecursiveRHS", # Checked symbolic RHSs supply universal typing/annotation/contract premises
-  "FHM.Bounds.RecursiveRHSTests", # Actual recursive artifacts, universal certificates and bad contract rejection
-  "FHM.Bounds.RecursiveGroup", # Whole-group acceptance discharges every universal RHS obligation and checks body
-  "FHM.Bounds.RecursiveGroupTests", # Actual self/mutual groups, body origins, invalid members and exact-site reports
-  "FHM.Bounds.RecursiveFound", # Opt-in group acceptance and per-occurrence source-provenance reports
-  "FHM.Unverified.RecursiveBoundsTests", # Actual parsed .fhm contracts and fail-closed artifact boundaries
-  "FHM.Bounds.RecursiveContractTests", # Fixed HM/count boundary, conditional calls and formal group obligations
-  "FHM.Bounds.CountApplicationTests", # Real declaration certificates, origin bounds and rejected contract calls
-  "FHM.Bounds.CountAlgebra", # Finite composition of simultaneous source-count interpretations
-  "FHM.Bounds.InterpretedAnnotation", # Scoped symbolic annotation demands without source rewriting
-  "FHM.Bounds.ScopedTyping", # Interpreted annotation obligations, count transport and erased-typing bridge
-  "FHM.Bounds.ScopedWalk", # Found-driven monomorphic RHS checker for scoped symbolic annotations
-  "FHM.Bounds.ScopedDeclaration", # Exact-site typed RHS checking constructs count-contract certificates
-  "FHM.Bounds.ScopedDeclarationTests", # Actual inferred symbolic RHSs, obligations, scope and interpretations
-  "FHM.Bounds.SchemeTransportTests", # Nested universal lets, mixed RHSs, caller collisions and count isolation
-  "FHM.Bounds.SchemeTypingTests", # Formal independent polymorphic uses and captured-interface regressions
-  "FHM.Bounds.SchemeVariable", # Certified scheme-aware variable rule with exact found shape
-  "FHM.Bounds.SchemeVariableTests", # Mono/poly separation, shadowing, exact bounds and invalid variable use
-  "FHM.Bounds.SchemeApplication", # Origin-backed application at a sole generalized domain slot
-  "FHM.Bounds.SchemeApplicationTests", # Exact Nil/Cons origins, captures and application payload checks
-  "FHM.Bounds.SchemeWalk", # Found-driven traversal with certified mixed-environment generalization
-  "FHM.Bounds.StructuralApplication", # Origin-backed proposals with exact instantiation and semantic inclusion
-  "FHM.Bounds.StructuralApplicationTests", # Structural origins, multiple/repeated slots, variance and scope
-  "FHM.Bounds.SchemeFound", # Opt-in inference/provenance adapter; existing launch route unchanged
-  "FHM.Bounds.SchemeWalkTests", # Real HM artifacts, mixed lets, exact List origins and provenance joins
-  "FHM.Bounds.Escape",    # R3 escape classification (uniqueOnly at pack)
-  "FHM.Bounds.Check",     # Live ascription checks (uses Synth)
-  "FHM.Bounds.Synth",     # Slice 4: origin HasBounds synthesizer
-  "FHM.Bounds.Found",     # Root `.found` → provenance/hover → bounds slice
-  "FHM.Bounds.Erase",     # P4b surface BL → List + BoundsAnnTy
-  "FHM.Bounds.Pipeline",  # P4c mode / ofLower / prepare (shapes)
-  "FHM.Bounds.Examples",  # P3.5c Core demos
-]
-
-[[lean_lib]]
-name = "FHMZ3"
-# Optional: Z3 subprocess oracle + BLSketch bound layer.
-# Build with `lake build FHMZ3` (requires `z3` on PATH for runtime / #eval).
-roots = ["FHM.Z3", "FHM.Unverified.Z3.Parse", "FHM.BLSketch", "FHM.Unverified.BLSketch.Pretty"]
+# Emits TextMate JSON from Surface.Token tables.
 
 [[require]]
 name = "mathlib"

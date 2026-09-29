@@ -10,8 +10,7 @@ lake env lean --run scratch/PolyRecTest.lean
 The driver uses the current pipeline directly:
 
 ```text
-parse -> erase surface bounds -> lower -> infer -> exhaustiveness
-      -> erase Core annotations -> evaluate
+parse -> lower -> infer -> exhaustiveness -> erase Core annotations -> evaluate
 ```
 
 Successful programs must reach a specific value. Negative programs must get as

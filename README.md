@@ -5,8 +5,9 @@ A formalisation of a language with a Hindley-Milner type system, plus a concrete
 - type annotations on let bindings and lambda variables (not part of core HM)
 - annotations can reference [type variables quantified in outer scopes](https://www.microsoft.com/en-us/research/publication/lexically-scoped-type-variables/)
 - nested pattern matching (with wildcards)
-- mutually recursive let bindings with optional type annotations on each (unannotated bindings are assumed to be monomorphic and generalised after typechecking the recursive block); dependency grouping uses a verified Kosaraju SCC pass plus Kahn ordering on the condensation
-- when recursive bindings have annotations they may be polymorphic – which enables fully polymorphic recursion, including _mixed_ groups where some members are annotated and others aren't
+- mutually recursive let bindings with optional type annotations on each; every member
+  has one monotype inside its dependency SCC and is generalised only after the SCC
+  exits; grouping uses a verified Kosaraju pass plus Kahn ordering on the condensation
 - algebraic data declarations (`type Maybe a = Just a | Nothing`, …)
 - primitive arithmetic and comparison ops (`+`, `-`, `<`), as ordinary curried functions – a partial application is a value; a saturated one δ-reduces on literals
 
@@ -14,7 +15,7 @@ There's a full lexer and parser for an Elm-flavoured concrete syntax, and a live
 
 ## Architecture
 
-Production `partial def` implementations live under [`FHM/Unverified/`](./FHM/Unverified/README.md). The default `lake build` keeps those operational modules outside the verified import closure; CLI, editor, and Z3 targets opt into them. Run `bash scripts/check-unverified-boundary.sh` to check that boundary.
+Production `partial def` implementations live under [`FHM/Unverified/`](./FHM/Unverified/README.md). The default `lake build` keeps those operational modules outside the verified import closure; the CLI and editor targets opt into them. Run `bash scripts/check-unverified-boundary.sh` to check that boundary.
 
 A high-level overview of the pipeline:
 
@@ -111,22 +112,13 @@ A single entry point that re-exports the main theorems with plain-English glosse
 The formal evaluator is fuelled. For actually running programs – including naive recursion that blows past any fixed fuel – there's an unbounded evaluator. The unified `fhm` CLI (see `FHM/Unverified/Cli.lean`) exposes:
 
 - `fhm` / `fhm run` — parse, lower, infer (print binding and body types), exhaustiveness, evaluate (`Live.lean`; `--json` for machine output)
-- `fhm diagnose [--hm|--bl|--auto]` — diagnostics + hover symbols as JSON for editors (`Diagnose.lean` / `EditorSupport.lean`)
+- `fhm diagnose [path]` — diagnostics + hover symbols as JSON for editors (`Diagnose.lean` / `EditorSupport.lean`)
 
-The default batch CLI path is HM-only: it consumes `inferFound`, reads
+The batch CLI consumes `inferFound`, reads
 validated declarations or inferred group-exit schemes by binder identity, and
-joins occurrence/expression types through the separate provenance map. Carried
-`BL` annotations display as their HM `List` shape; no length checking runs here.
-`fhm diagnose --bl` instead joins canonical proof-producing per-node Bounds
-reports to those source IDs. `--auto` selects that mode when the parsed program
-contains `BL`; this is the default in the VS Code and web editors, and VS Code's
-`fhm.boundsMode` setting can force either interpretation.
-`fhm run --bl` consumes the same provenance-rich inference artifact and routes
-acceptance through the canonical proof-producing bounds checker. Its supported
-fragment includes checked recursive List/Bool programs, lexical captures,
-generalized declarations and nested groups. Annotation-hole escape inference,
-unannotated recursive exports and parameterized nominal runtime meanings remain
-explicit follow-up boundaries.
+joins occurrence/expression types through the separate provenance map. There is one
+HM language mode. The retired `BL` and Nat/count-binder syntax is rejected by the
+front end rather than erased into ordinary lists.
 
 An annotation is a ceiling on the binding's exported scheme, not necessarily
 an expected type pushed into an otherwise unconstrained RHS. Definition hovers
@@ -158,16 +150,10 @@ Pair `fhm run` with `scripts/watch-live.sh` and a `.fhm` file (see `scratch/live
 
 ### [`Pretty.lean`](./FHM/Pretty.lean), [`Examples.lean`](./FHM/Examples.lean)
 
-`Pretty.lean` prints Core and Surface terms readably, and `Examples.lean` collects runnable `#eval` demos – let-polymorphism, mixed polymorphic recursion, surface→eval walks, and various ill-typed programs that should be rejected.
-
-### [`Bounds/`](./FHM/Bounds/) + [`BLSketch.lean`](./FHM/BLSketch.lean) + [`Z3/`](./FHM/Z3/) (optional)
-
-Separate lake targets (`FHMBounds`, `FHMZ3`; not in the default build): bounded-list types with count/index schemes, Z3-backed bound oracles, and a Core-attached typing layer (`BoundInfo`, `BoundCovers`, erase/synth/check). `fhm run --bl` enables BL surface syntax and runs the bounds pipeline alongside HM inference. `BLSketch.lean` retains the original standalone sketch and soundness proofs.
-
-<!-- Agents: Jul 2026 BL work was in temporary clone /Users/aron/dev/blt then merged back.
-     For Cursor/Grok chat search about that arc, use blt workspace transcripts:
-     ~/.cursor/projects/Users-aron-dev-blt/agent-transcripts/
-     Living plan: briefs/design-memo-bounds-layer-on-core.md (memo + git are canonical). -->
+`Pretty.lean` prints Core and Surface terms readably, and `Examples.lean` collects
+runnable `#eval` demos: ordinary let polymorphism, monomorphic recursive SCCs,
+polymorphism after SCC exit, surface-to-evaluation walks, and ill-typed programs that
+must be rejected.
 
 ### Proven theorems
 
