@@ -195,7 +195,7 @@ def binderType (typed : TypedLowered) (site : SurfaceBinderSite) : Option String
                 | .present sites => some sites
                 | .absent _ => none
               let .lambda path ← sites.head? | none
-              let .arrow domain _ ← foundTyAtCorePath typed.inference.output path | none
+              let .arrow domain _ ← nodeTyAtCorePath typed.inference.nodeTypes path | none
               pure domain.pretty
 
 end FHM.Unverified.HMArtifacts

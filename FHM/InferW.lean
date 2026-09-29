@@ -62,6 +62,50 @@ structure InferredBinderScheme where
 
 abbrev InferredBinderSchemes := List InferredBinderScheme
 
+/-- Internal node-type fact. `tyDepth` is needed only while inference is nested
+    beneath annotated RHSs: it makes closing a temporary skolem block respect
+    any intervening source scheme binders. The public artifact drops this
+    bookkeeping and exposes an ordinary `NodeTypeMap`. -/
+structure InferredNodeType where
+  path : CorePath
+  ty : Ty
+  tyDepth : Nat
+
+abbrev InferredNodeTypes := List InferredNodeType
+
+namespace InferredNodeTypes
+
+def root (ty : Ty) : InferredNodeTypes :=
+  [{ path := [], ty, tyDepth := 0 }]
+
+def below (step : CoreStep) (types : InferredNodeTypes) : InferredNodeTypes :=
+  types.map fun fact => { fact with path := step :: fact.path }
+
+def onSubst (S : Subst) (types : InferredNodeTypes) : InferredNodeTypes :=
+  types.map fun fact => { fact with ty := S.onTy fact.ty }
+
+def underTyBinders (count : Nat) (types : InferredNodeTypes) : InferredNodeTypes :=
+  types.map fun fact => { fact with tyDepth := fact.tyDepth + count }
+
+/-- Account for the scheme binders contributed by the enclosing recursive
+    member. Facts have already been path-prefixed with `letRecRhs`. -/
+def underRecRhsBinders (anns : List (Option PolyTy))
+    (types : InferredNodeTypes) : InferredNodeTypes :=
+  types.map fun fact =>
+    match fact.path with
+    | .letRecRhs member :: _ =>
+        { fact with tyDepth := fact.tyDepth + RecAnn.params (anns[member]?.getD none) }
+    | _ => fact
+
+def closeTyVars (Xs : List Nat) (types : InferredNodeTypes) : InferredNodeTypes :=
+  types.map fun fact =>
+    { fact with ty := Ty.closeVarsFrom fact.tyDepth Xs fact.ty }
+
+def toMap (types : InferredNodeTypes) : NodeTypeMap :=
+  types.map fun fact => (fact.path, fact.ty)
+
+end InferredNodeTypes
+
 namespace InferredBinderSchemes
 
 def below (step : CoreStep) (schemes : InferredBinderSchemes) : InferredBinderSchemes :=
@@ -1493,11 +1537,6 @@ theorem Expr.substTyFvars_tyBvarBounded {S : List (Nat × Ty)} (hS : ∀ p ∈ S
     simp only [Prod.mk.injEq] at heq
     obtain ⟨_, rfl⟩ := heq
     exact ihbr p' b' hmem (Expr.TyBvarBounded.BranchList_iff.mp hb.2 p' b' hmem)
-  | found ty inner ih =>
-    intro d hb
-    rw [Expr.substTyFvars_found]
-    simp only [Expr.TyBvarBounded] at hb ⊢
-    exact ⟨ContainsBvarsUpTo.substFvars hS hb.1, ih hb.2⟩
   | letRec anns bindings body ihbs ihb =>
     intro d hb
     obtain ⟨hsch, hrg, hbody⟩ := hb
@@ -3932,17 +3971,6 @@ theorem Expr.mem_tyFreeVars_substTyFvars {S : List (Nat × Ty)} {w : Nat} :
       rcases ihbr p0 b0 hpb0 hwpb with hh | hh
       · exact Or.inl (Or.inr (Expr.mem_branchListTyFreeVars_of hpb0 hh))
       · exact Or.inr hh
-  | found ty inner ih =>
-    intro h
-    rw [Expr.substTyFvars_found] at h
-    simp only [Expr.tyFreeVars, List.mem_append] at h ⊢
-    rcases h with h | h
-    · rcases Ty.mem_freeVars_substFvars h with hh | hh
-      · exact Or.inl (Or.inl hh)
-      · exact Or.inr hh
-    · rcases ih h with hh | hh
-      · exact Or.inl (Or.inr hh)
-      · exact Or.inr hh
   | letRec anns bindings body ihbs ihb =>
     intro h
     rw [Expr.substTyFvars_letRec] at h
@@ -6085,10 +6113,6 @@ theorem TypeOfHM.rec_strong
       (hf : TypeOfHM ctx f (.arrow argTy retTy)) (hinput : TypeOfHM ctx input argTy),
       motive ctx f (.arrow argTy retTy) hf → motive ctx input argTy hinput →
       motive ctx (.app f input) retTy (.app hf hinput))
-    (found : ∀ {ctx : Ctx} {ty : Ty} {inner : Expr}
-      (hinner : TypeOfHM ctx inner ty),
-      motive ctx inner ty hinner →
-      motive ctx (.found ty inner) ty (.found hinner))
     (letIn : ∀ {ann : Option PolyTy} {ctx : Ctx} {boundExpr : Expr} {bodyCtx : Ctx} {body : Expr}
       {bodyTy : Ty} {M : PolyTy} {L : List Nat}
       (hwf : M.WF) (hann : ann.Pins M)
@@ -6148,7 +6172,6 @@ theorem TypeOfHM.rec_strong
   | primBinOpCharLt htrue hfalse ihtrue ihfalse => exact primBinOpCharLt htrue hfalse ihtrue ihfalse
   | lambda hpc hann heq hbody ihbody => exact lambda hpc hann heq hbody ihbody
   | app hf hinput ihf ihinput => exact app hf hinput ihf ihinput
-  | found hinner ihinner => exact found hinner ihinner
   | letIn hwf hann hcofin heq hbody ihcofin ihbody =>
       exact letIn hwf hann hcofin heq hbody ihcofin ihbody
   | var hlook hlc hinst => exact var hlook hlc hinst
@@ -6407,9 +6430,6 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
     simp only [Expr.substTyFvar]
     simp only [Ty.substFvar] at ihf
     exact .app ihf ihinput
-  | found hinner ihinner =>
-    simp only [Expr.substTyFvar]
-    exact .found ihinner
   | lambda hpc hann heq hbody ihbody =>
     subst heq
     expose_names
@@ -6742,7 +6762,6 @@ theorem TypeOfHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
   | _, _, _, .lambda hpc _ _ hbody => .arrow hpc (TypeOfHM.regular hbody)
   | _, _, _, .app hf _ => by
     have := TypeOfHM.regular hf; cases this with | arrow _ hret => exact hret
-  | _, _, _, .found hinner => TypeOfHM.regular hinner
   | _, _, _, .letIn _ _ _ _ hbody => TypeOfHM.regular hbody
   | _, _, _, .var _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
   | _, _, _, .ctor _ htyargs hinst => InstantiatesBy.preserves_bvars htyargs hinst
@@ -6850,8 +6869,6 @@ theorem TypeOfHM.varsBelow {ctx : Ctx} {e : Expr} {τ : Ty}
   | app hf hinput ihf ihinput =>
     simp only [Expr.varsBelow, Bool.and_eq_true]
     exact ⟨ihf, ihinput⟩
-  | found hinner ihinner =>
-    simpa only [Expr.varsBelow] using ihinner
   | letIn hwf hann hcofin heq hbody ihcofin ihbody =>
     expose_names
     subst heq
@@ -7476,7 +7493,6 @@ theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : Po
     | primBinOpIntLt _ _ ihtrue ihfalse => intro ep heq; exact .primBinOpIntLt (ihtrue ep heq) (ihfalse ep heq)
     | primBinOpCharLt _ _ ihtrue ihfalse => intro ep heq; exact .primBinOpCharLt (ihtrue ep heq) (ihfalse ep heq)
     | app hf hinput ihf ihinput => intro ep heq; exact .app (ihf ep heq) (ihinput ep heq)
-    | found hinner ihinner => intro ep heq; exact .found (ihinner ep heq)
     | @lambda paramTy ann bodyCtx ctx body bodyTy hpc hann heqctx hbody ihbody =>
       intro ep heq
       refine TypeOfHM.lambda hpc hann rfl ?_
@@ -7609,10 +7625,6 @@ theorem TypeOfHM.weaken_env
     intro env_pre' hctx
     simp only [Expr.shiftFrom]
     exact .app (ihf env_pre' hctx) (ihinput env_pre' hctx)
-  | found hinner ihinner =>
-    intro env_pre' hctx
-    simp only [Expr.shiftFrom]
-    exact .found (ihinner env_pre' hctx)
   | ctor hlook htyargs hinst =>
     intro env_pre' _
     exact .ctor hlook htyargs hinst
@@ -7736,28 +7748,13 @@ private theorem List.forall₂_of_getElem {α β : Type*} {R : α → β → Pro
 /-! ### `TypeOfHM`/`Step` dynamics metatheory
 
 The substitution-semantics metatheory for `TypeOfHM` on the image of
-`Expr.erase`: source annotations and inference markers are absent, so the
+`Expr.erase`: source annotations are absent, so the
 cofinite scoped-annotation opening cases are vacuous at runtime. -/
 
 /-- Decoration-blind "value types at scheme `M`": `v` inhabits every instance
     of `M`, stated with declarative existential instantiation. -/
 def HasSchemeHM (ctx : Ctx) (v : Expr) (M : PolyTy) : Prop :=
   ∀ τ : Ty, Instantiates M τ → TypeOfHM ctx v τ
-
-/-- Erasure is the runtime boundary: its image contains no inference markers. -/
-private theorem Expr.erase_ne_found (e : Expr) (ty : Ty) (inner : Expr) :
-    e.erase ≠ .found ty inner := by
-  induction e using Expr.rec_strong with
-  | primLit _ => simp [Expr.erase]
-  | primBinOp _ => simp [Expr.erase]
-  | lambda _ _ _ => simp [Expr.erase]
-  | app _ _ _ _ => simp [Expr.erase]
-  | letIn _ _ _ _ _ => simp [Expr.erase]
-  | var _ => simp [Expr.erase]
-  | ctor _ => simp [Expr.erase]
-  | match_ _ _ _ _ => simp [Expr.erase]
-  | found _ _ ih => simpa [Expr.erase] using ih
-  | letRec _ _ _ _ _ => simp [Expr.erase]
 
 /-- Substituting `vs` (each typed at every instance of its scheme `Ms[j]`) for a
     block of `Ms`-typed binders preserves `TypeOfHM`. The theorem is restricted
@@ -7796,7 +7793,6 @@ theorem TypeOfHM.subst_lemma_many
         cases hfalse with
         | ctor hlookF hlcF hinstF =>
           exact .primBinOpCharLt (.ctor hlookT hlcT hinstT) (.ctor hlookF hlcF hinstF)
-    | found hinner => exact absurd h_erased (Expr.erase_ne_found _ _ _)
     | lambda hpc hann heq hbody =>
       subst heq
       expose_names
@@ -8348,7 +8344,6 @@ private lemma TypeOfHM.ctor_chain_has_customTy_form
   | letIn _ _ _ _ _ => cases h_chain
   | var _          => cases h_chain
   | match_ _ _ _ _ => cases h_chain
-  | found _ _ _ => cases h_chain
   | letRec _ _ _ _ _ => cases h_chain
 
 /-- A value of arrow type is a λ, a ctor chain, a bare primop, or a one-argument-
@@ -8476,7 +8471,6 @@ theorem TypeOfHM.ctor_chain_inversion {ctx : Ctx} {e : Expr} {τ : Ty}
   | letIn _ _ _ _ _ => cases h_chain
   | var _ => cases h_chain
   | match_ _ _ _ _ => cases h_chain
-  | found _ _ _ => cases h_chain
   | letRec _ _ _ _ _ => cases h_chain
 
 /-- Progress: a closed, well-typed term is a value or takes a step. -/
@@ -8506,9 +8500,6 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
     | ctor _ _ _ => exact .inl (.ctor _)
     | lambda _ _ _ _ => exact .inl (.lambda _ _)
     | var h_lookup _ _ => rw [h_closed] at h_lookup; simp at h_lookup
-    | found hinner =>
-      change (Expr.found τ _).erase = Expr.found τ _ at h_erased
-      exact False.elim ((Expr.erase_ne_found _ _ _) h_erased)
     | @app _ f _ _ arg h_f h_arg =>
       cases h_exh with
       | app h_exh_f h_exh_arg =>
@@ -8583,7 +8574,6 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
                   cases h
                   exact ⟨nm, [], .base nm⟩)
                 (fun _ _ _ _ => by intro h; cases h)
-                (fun _ _ ih h => by cases h)
                 (fun _ _ _ _ _ => by intro h; cases h)
                 scrut hchain) with ⟨name, args, hcat⟩
             have hcover : ∃ pat body, (pat, body) ∈ branches ∧
@@ -8750,8 +8740,6 @@ theorem SmallStep.AllMatchesExhaustive.erase {ctors : CtorEnv} {e : Expr}
     cases h with | app hf ha => simp only [Expr.erase_app]; exact .app (ihf hf) (iharg ha)
   | letIn ann rhs body ihr ihb =>
     cases h with | letIn hr hb => simp only [Expr.erase_letIn]; exact .letIn (ihr hr) (ihb hb)
-  | found ty inner ih =>
-    cases h with | found hinner => simpa [Expr.erase] using ih hinner
   | match_ scrut branches ihs ihbr =>
     have hbodies : ∀ {brs : List (MatchPattern × Expr)},
         (∀ pat e, (pat, e) ∈ brs → AllMatchesExhaustive ctors e →
@@ -8841,9 +8829,6 @@ theorem SmallStep.Step.preserves_erased {e e' : Expr}
         congr 1
         · exact ihr threshold n h_re
         · exact ihb (threshold + 1) n h_bd
-    | found ty inner ih =>
-        intro threshold n h_erased
-        exact absurd h_erased (Expr.erase_ne_found _ _ _)
     | match_ scrut branches ihs ihbs =>
         intro threshold n h_erased
         have h_m : Expr.match_ scrut.erase (branches.map fun pe => (pe.1, pe.2.erase))
@@ -8951,9 +8936,6 @@ theorem SmallStep.Step.preserves_erased {e e' : Expr}
         congr 1
         · exact ihr k vs h_re hvs
         · exact ihb (k + 1) vs h_bd hvs
-    | found ty inner ih =>
-        intro k vs h_erased hvs
-        exact absurd h_erased (Expr.erase_ne_found _ _ _)
     | match_ scrut branches ihs ihbs =>
         intro k vs h_erased hvs
         have h_m : Expr.match_ scrut.erase (branches.map fun pe => (pe.1, pe.2.erase))
@@ -9340,10 +9322,6 @@ theorem Expr.shiftFrom_tyBvarBounded (n : Nat) {e : Expr} :
     simp only [Expr.TyBvarBounded] at hb
     simp only [Expr.shiftFrom, Expr.TyBvarBounded]
     exact ⟨ihf t d hb.1, iharg t d hb.2⟩
-  | found ty inner ih =>
-    intro t d hb
-    simp only [Expr.TyBvarBounded] at hb ⊢
-    exact ⟨hb.1, ih t d hb.2⟩
   | letIn ann rhs body ihr ihb =>
     intro t d hb
     cases ann with
@@ -12368,27 +12346,27 @@ def inferredLetRecSchemes : Nat → List (Option PolyTy) → List PolyTy → Inf
 
 /-! ### The `infer` function (Algorithm W)
 
-`inferFoundCore`/`inferFoundBranchesCore` mirror `Infer`/`InferBranches` exactly,
-building the `Infer` derivation and a source-shaped, `found`-annotated Core term
-alongside the output (soundness by construction);
+`inferWithTypesCore`/`inferBranchesWithTypesCore` mirror `Infer`/`InferBranches` exactly,
+building the `Infer` derivation and a path-keyed node-type side table alongside
+the output (soundness by construction);
 recursion is structural on the expression / branch list. The `match_` case reads
 the type name + arity off the first branch's constructor (branches are nonempty).
 The public `infer` erases the derivation. -/
 mutual
-def inferFoundCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
-    Option { r : Nat × Subst × Ty × Expr × InferredBinderSchemes //
+def inferWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
+    Option { r : Nat × Subst × Ty × InferredNodeTypes × InferredBinderSchemes //
       Infer Φ ctx e r.1 r.2.1 r.2.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match e with
-  | .primLit .unit => some ⟨(Φ, [], .prim .unit, .found (.prim .unit) (.primLit .unit), []), .primLitUnit, by simp⟩
-  | .primLit (.int n) => some ⟨(Φ, [], .prim .int, .found (.prim .int) (.primLit (.int n)), []), .primLitInt, by simp⟩
-  | .primLit (.nat n) => some ⟨(Φ, [], .prim .nat, .found (.prim .nat) (.primLit (.nat n)), []), .primLitNat, by simp⟩
-  | .primLit (.char c) => some ⟨(Φ, [], .prim .char, .found (.prim .char) (.primLit (.char c)), []), .primLitChar, by simp⟩
+  | .primLit .unit => some ⟨(Φ, [], .prim .unit, .root (.prim .unit), []), .primLitUnit, by simp⟩
+  | .primLit (.int n) => some ⟨(Φ, [], .prim .int, .root (.prim .int), []), .primLitInt, by simp⟩
+  | .primLit (.nat n) => some ⟨(Φ, [], .prim .nat, .root (.prim .nat), []), .primLitNat, by simp⟩
+  | .primLit (.char c) => some ⟨(Φ, [], .prim .char, .root (.prim .char), []), .primLitChar, by simp⟩
   | .primBinOp .intAdd =>
       let ty := .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))
-      some ⟨(Φ, [], ty, .found ty (.primBinOp .intAdd), []), .primBinOpIntAdd, by simp⟩
+      some ⟨(Φ, [], ty, .root ty, []), .primBinOpIntAdd, by simp⟩
   | .primBinOp .intSub =>
       let ty := .arrow (.prim .int) (.arrow (.prim .int) (.prim .int))
-      some ⟨(Φ, [], ty, .found ty (.primBinOp .intSub), []), .primBinOpIntSub, by simp⟩
+      some ⟨(Φ, [], ty, .root ty, []), .primBinOpIntSub, by simp⟩
   | .primBinOp .intLt =>
       match hT : LookupList.get? ctx.ctors ⟨"True"⟩ with
       | none => none
@@ -12399,7 +12377,7 @@ def inferFoundCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
           if htc : tc.isBoolCtor = true then
             if hfc : fc.isBoolCtor = true then
               let ty := .arrow (.prim .int) (.arrow (.prim .int) (.customTy ⟨"Bool"⟩ []))
-              some ⟨(Φ, [], ty, .found ty (.primBinOp .intLt), []),
+              some ⟨(Φ, [], ty, .root ty, []),
                     .primBinOpIntLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc), by simp⟩
             else none
           else none
@@ -12413,43 +12391,44 @@ def inferFoundCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
           if htc : tc.isBoolCtor = true then
             if hfc : fc.isBoolCtor = true then
               let ty := .arrow (.prim .char) (.arrow (.prim .char) (.customTy ⟨"Bool"⟩ []))
-              some ⟨(Φ, [], ty, .found ty (.primBinOp .charLt), []),
+              some ⟨(Φ, [], ty, .root ty, []),
                     .primBinOpCharLt hT (Ctor.isBoolCtor_iff.mp htc) hF (Ctor.isBoolCtor_iff.mp hfc), by simp⟩
             else none
           else none
   | .lambda none body =>
-      match inferFoundCore K (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } body with
+      match inferWithTypesCore K (Φ + 1) { ctx with env := PolyTy.mkTrivial (.fvar Φ) :: ctx.env } body with
       | none => none
-      | some ⟨(Φ', S, τb, bodyOut, bodySchemes), hbody, hav⟩ =>
+      | some ⟨(Φ', S, τb, bodyTypes, bodySchemes), hbody, hav⟩ =>
         let ty := .arrow (S.onTy (.fvar Φ)) τb
-        some ⟨(Φ', S, ty, .found ty (.lambda none bodyOut),
+        some ⟨(Φ', S, ty, .root ty ++ bodyTypes.below .lambdaBody,
             bodySchemes.below .lambdaBody), .lambda .none hbody, hav⟩
   | .lambda (some T) body =>
       if hT : Ty.bvarsBelow 0 T = true then
-        match inferFoundCore K Φ { ctx with env := PolyTy.mkTrivial T :: ctx.env } body with
+        match inferWithTypesCore K Φ { ctx with env := PolyTy.mkTrivial T :: ctx.env } body with
         | none => none
-        | some ⟨(Φ', S, τb, bodyOut, bodySchemes), hbody, hav⟩ =>
+        | some ⟨(Φ', S, τb, bodyTypes, bodySchemes), hbody, hav⟩ =>
           let ty := .arrow (S.onTy T) τb
-          some ⟨(Φ', S, ty, .found ty (.lambda (some T) bodyOut),
+          some ⟨(Φ', S, ty, .root ty ++ bodyTypes.below .lambdaBody,
               bodySchemes.below .lambdaBody),
             .lambda (.some T ((Ty.bvarsBelow_iff T).mp hT)) hbody, hav⟩
       else none
   | .app f arg =>
-      match inferFoundCore K Φ ctx f with
+      match inferWithTypesCore K Φ ctx f with
       | none => none
-      | some ⟨(Φ₁, S₁, τf, fOut, fSchemes), hf, hav₁⟩ =>
-        match inferFoundCore K Φ₁ (S₁.onCtx ctx) arg with
+      | some ⟨(Φ₁, S₁, τf, fTypes, fSchemes), hf, hav₁⟩ =>
+        match inferWithTypesCore K Φ₁ (S₁.onCtx ctx) arg with
         | none => none
-        | some ⟨(Φ₂, S₂, τa, argOut, argSchemes), harg, hav₂⟩ =>
+        | some ⟨(Φ₂, S₂, τa, argTypes, argSchemes), harg, hav₂⟩ =>
           match unifyCoreK K (S₂.onTy τf) (.arrow τa (.fvar Φ₂)) with
           | none => none
           | some ⟨S₃, h₃, hav₃⟩ =>
             let ty := S₃.onTy (.fvar Φ₂)
-            let fFinal := fOut.substFoundTys (S₂ ++ S₃)
-            let argFinal := argOut.substFoundTys S₃
+            let nodeTypes := .root ty ++
+              (fTypes.onSubst (S₂ ++ S₃)).below .appFun ++
+              (argTypes.onSubst S₃).below .appArg
             let schemes := (fSchemes.onSubst (S₂ ++ S₃)).below .appFun ++
               (argSchemes.onSubst S₃).below .appArg
-            some ⟨(Φ₂ + 1, S₁ ++ S₂ ++ S₃, ty, .found ty (.app fFinal argFinal), schemes), .app hf harg h₃, by
+            some ⟨(Φ₂ + 1, S₁ ++ S₂ ++ S₃, ty, nodeTypes, schemes), .app hf harg h₃, by
               intro p hp; rcases List.mem_append.mp hp with h | h
               · rcases List.mem_append.mp h with h | h
                 · exact hav₁ p h
@@ -12460,33 +12439,34 @@ def inferFoundCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
       | none => none
       | some polyTy =>
         let ty := polyTy.openVars (freshVars Φ polyTy.paramCount)
-        some ⟨(Φ + polyTy.paramCount, [], ty, .found ty (.var i), []), .var h, by simp⟩
+        some ⟨(Φ + polyTy.paramCount, [], ty, .root ty, []), .var h, by simp⟩
   | .ctor name =>
       match h : LookupList.get? ctx.ctors name with
       | none => none
       | some ctorr =>
         let ty := ctorr.toTy.openVars (freshVars Φ ctorr.paramCount)
-        some ⟨(Φ + ctorr.paramCount, [], ty, .found ty (.ctor name), []),
+        some ⟨(Φ + ctorr.paramCount, [], ty, .root ty, []),
           .ctor h, by simp⟩
   | .letIn ann rhs body =>
       match ann with
       | none =>
-        match inferFoundCore K Φ ctx rhs with
+        match inferWithTypesCore K Φ ctx rhs with
         | none => none
-        | some ⟨(Φ₁, S₁, τ₁, rhsOut, rhsSchemes), hrhs, hav₁⟩ =>
-        match inferFoundCore K Φ₁
+        | some ⟨(Φ₁, S₁, τ₁, rhsTypes, rhsSchemes), hrhs, hav₁⟩ =>
+        match inferWithTypesCore K Φ₁
             { (S₁.onCtx ctx) with
               env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
             body with
         | none => none
-        | some ⟨(Φ₂, S₂, τ₂, bodyOut, bodySchemes), hbody, hav₂⟩ =>
+        | some ⟨(Φ₂, S₂, τ₂, bodyTypes, bodySchemes), hbody, hav₂⟩ =>
           let binderScheme := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁
           let binderFact : InferredBinderScheme :=
             { site := .letIn [], scheme := S₂.onPolyTy binderScheme, tyDepth := 0 }
           let schemes := binderFact ::
             (rhsSchemes.onSubst S₂).below .letRhs ++ bodySchemes.below .letBody
-          some ⟨(Φ₂, S₁ ++ S₂, τ₂,
-              .found τ₂ (.letIn none (rhsOut.substFoundTys S₂) bodyOut), schemes),
+          let nodeTypes := .root τ₂ ++
+            (rhsTypes.onSubst S₂).below .letRhs ++ bodyTypes.below .letBody
+          some ⟨(Φ₂, S₁ ++ S₂, τ₂, nodeTypes, schemes),
             .letIn hrhs hbody, by
             intro p hp; rcases List.mem_append.mp hp with h | h
             · exact hav₁ p h
@@ -12499,10 +12479,10 @@ def inferFoundCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
         -- type the body under `σ` at the outer rigid set `K`. `σ` may carry outer
         -- scoped type variables — no closedness requirement.
         if hσwf : Ty.bvarsBelow σ.paramCount σ.body then
-          match inferFoundCore (K ++ freshVars Φ σ.paramCount) (Φ + σ.paramCount) ctx
+          match inferWithTypesCore (K ++ freshVars Φ σ.paramCount) (Φ + σ.paramCount) ctx
               (rhs.openTyVars (freshVars Φ σ.paramCount)) with
           | none => none
-          | some ⟨(Φ₁, S₁, τ₁, rhsOut, rhsSchemes), hrhs, hav₁⟩ =>
+          | some ⟨(Φ₁, S₁, τ₁, rhsTypes, rhsSchemes), hrhs, hav₁⟩ =>
             match unifyCoreK (K ++ freshVars Φ σ.paramCount) τ₁
                 (σ.openVars (freshVars Φ σ.paramCount)) with
             | none => none
@@ -12510,22 +12490,24 @@ def inferFoundCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
               if hesc1 : (∀ y ∈ freshVars Φ σ.paramCount, y ∉ (S₁ ++ Schk).map Prod.fst) then
                 if hesc2 : (∀ y ∈ freshVars Φ σ.paramCount,
                     y ∉ (Schk.onCtx (S₁.onCtx ctx)).env.freeVars) then
-                  match inferFoundCore K Φ₁
+                  match inferWithTypesCore K Φ₁
                       { (Schk.onCtx (S₁.onCtx ctx)) with
                         env := σ :: (Schk.onCtx (S₁.onCtx ctx)).env }
                       body with
                   | none => none
-                  | some ⟨(Φ₂, S₂, τ₂, bodyOut, bodySchemes), hbody, hav₂⟩ =>
+                  | some ⟨(Φ₂, S₂, τ₂, bodyTypes, bodySchemes), hbody, hav₂⟩ =>
                     let Ys := freshVars Φ σ.paramCount
-                    let rhsFinal :=
-                      ((rhsOut.substFoundTys Schk).closeTyVars Ys).substFoundTys S₂
+                    let rhsFinalTypes :=
+                      (((rhsTypes.onSubst Schk).closeTyVars Ys).onSubst S₂)
+                        |>.underTyBinders σ.paramCount
+                        |>.below .letRhs
                     let rhsFinalSchemes :=
                       (((rhsSchemes.onSubst Schk).closeTyVars Ys).onSubst S₂)
                         |>.underTyBinders σ.paramCount
                         |>.below .letRhs
                     let schemes := rhsFinalSchemes ++ bodySchemes.below .letBody
-                    some ⟨(Φ₂, S₁ ++ Schk ++ S₂, τ₂,
-                        .found τ₂ (.letIn (some σ) rhsFinal bodyOut), schemes),
+                    let nodeTypes := .root τ₂ ++ rhsFinalTypes ++ bodyTypes.below .letBody
+                    some ⟨(Φ₂, S₁ ++ Schk ++ S₂, τ₂, nodeTypes, schemes),
                       .letInAnn (PolyTy.wf_iff_bvarsBelow.mp hσwf) (Nat.le_refl Φ)
                         hrhs hSchk hesc1 hesc2 hbody, by
                       intro p hp; rcases List.mem_append.mp hp with h | h
@@ -12537,36 +12519,34 @@ def inferFoundCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
               else none
         else none
   | .match_ scrut branches =>
-      match inferFoundCore K Φ ctx scrut with
+      match inferWithTypesCore K Φ ctx scrut with
       | none => none
-      | some ⟨(Φ₁, S₁, τs, scrutOut, scrutSchemes), hscrut, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, τs, scrutTypes, scrutSchemes), hscrut, hav₁⟩ =>
         match hh : branches.head? with
         | none => none
         | some _ =>
-          match inferFoundBranchesCore K (Φ₁ + 1) (S₁.onCtx ctx) τs (.fvar Φ₁) 0 branches with
+          match inferBranchesWithTypesCore K (Φ₁ + 1) (S₁.onCtx ctx) τs (.fvar Φ₁) 0 branches with
           | none => none
-          | some ⟨(Φ₂, S₂, branchesOut, branchSchemes), hbranches, hav₂⟩ =>
+          | some ⟨(Φ₂, S₂, branchTypes, branchSchemes), hbranches, hav₂⟩ =>
             let ty := S₂.onTy (.fvar Φ₁)
             let schemes := (scrutSchemes.onSubst S₂).below .matchScrut ++ branchSchemes
-            some ⟨(Φ₂, S₁ ++ S₂, ty,
-                    .found ty (.match_ (scrutOut.substFoundTys S₂) branchesOut), schemes),
+            let nodeTypes := .root ty ++
+              (scrutTypes.onSubst S₂).below .matchScrut ++ branchTypes
+            some ⟨(Φ₂, S₁ ++ S₂, ty, nodeTypes, schemes),
                   .match_ hscrut (by intro hc; rw [hc] at hh; simp at hh) hbranches, by
                   intro p hp; rcases List.mem_append.mp hp with h | h
                   · exact hav₁ p h
                   · exact hav₂ p h⟩
-  -- Inference consumes source terms only.  `found` is an internal output marker,
-  -- so callers must lower/strip it before invoking Algorithm W.
-  | .found _ _ => none
   | .letRec anns bindings body =>
       -- S1 solves the monomorphic recursion group.  `G` is chosen once here,
       -- before the sequential annotation constraints; Sc may constrain the
       -- group, but is never allowed to alter this generalisation frontier.
       if hwf : (∀ a ∈ anns, ∀ σ, a = some σ → Ty.bvarsBelow σ.paramCount σ.body = true) then
-        match inferFoundRecGroupCore K (Φ + bindings.length)
+        match inferRecGroupWithTypesCore K (Φ + bindings.length)
             { ctx with env := (RecSpec.init Φ anns).map (RecSpec.rhsEntry [] []) ++ ctx.env }
             0 bindings (RecSpec.init Φ anns) with
         | none => none
-        | some ⟨(Φ₁, S₁, bindingsOut, bindingSchemes), hgroup, hav₁⟩ =>
+        | some ⟨(Φ₁, S₁, bindingTypes, bindingSchemes), hgroup, hav₁⟩ =>
           let specs1 := (RecSpec.init Φ anns).map (RecSpec.onSubst S₁)
           let G := genGroupVars (RecGroup.rigidVars anns bindings) (S₁.onCtx ctx).env
                      (RecSpecs.monoTys specs1)
@@ -12595,22 +12575,23 @@ def inferFoundCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
                   let specsC := specs1.map (RecSpec.onSubst Sc)
                   have hceiling : RecSpecs.ceilingOK G anns specsC :=
                     hSc.ceilingOK hspecsLC hspecsBelow hrigidBelow
-                  match inferFoundCore K Φ₁
+                  match inferWithTypesCore K Φ₁
                       { (Sc.onCtx (S₁.onCtx ctx)) with
                         env := RecSpecs.ceilingSchemes G anns specsC ++
                           (Sc.onCtx (S₁.onCtx ctx)).env }
                       body with
                   | none => none
-                  | some ⟨(Φ₂, S₂, τ₂, bodyOut, bodySchemes), hbody, hav₂⟩ =>
+                  | some ⟨(Φ₂, S₂, τ₂, bodyTypes, bodySchemes), hbody, hav₂⟩ =>
                     let ceilingSchemes := RecSpecs.ceilingSchemes G anns specsC
                     let groupSchemes := inferredLetRecSchemes 0 anns
                       (ceilingSchemes.map S₂.onPolyTy)
                     let schemes := groupSchemes ++
                       (bindingSchemes.underRecRhsBinders anns).onSubst (Sc ++ S₂) ++
                       bodySchemes.below .letRecBody
-                    some ⟨(Φ₂, S₁ ++ Sc ++ S₂, τ₂,
-                        .found τ₂ (.letRec anns
-                          (bindingsOut.map (Expr.substFoundTys (Sc ++ S₂))) bodyOut), schemes),
+                    let nodeTypes := .root τ₂ ++
+                      ((bindingTypes.underRecRhsBinders anns).onSubst (Sc ++ S₂)) ++
+                      bodyTypes.below .letRecBody
+                    some ⟨(Φ₂, S₁ ++ Sc ++ S₂, τ₂, nodeTypes, schemes),
                       .letRec (fun σ hσ => PolyTy.wf_iff_bvarsBelow.mp (hwf (some σ) hσ σ rfl))
                         hgroup rfl rfl hSc rfl hceiling hbody, by
                       intro p hp
@@ -12627,27 +12608,29 @@ termination_by e.size
 decreasing_by
   all_goals (try simp only [Expr.size, Expr.size_openTyVars]; omega)
 
-def inferFoundBranchesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) (ρ : Ty)
+def inferBranchesWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) (ρ : Ty)
     (branchIndex : Nat) (branches : List (MatchPattern × Expr)) :
-    Option { r : Nat × Subst × List (MatchPattern × Expr) × InferredBinderSchemes //
+    Option { r : Nat × Subst × InferredNodeTypes × InferredBinderSchemes //
       InferBranches Φ ctx scrutTy ρ branches r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match branches with
   | [] => some ⟨(Φ, [], [], []), .nil, by simp⟩
   | (.wildcard, body) :: rest =>
-      match inferFoundCore K Φ ctx body with
+      match inferWithTypesCore K Φ ctx body with
       | none => none
-      | some ⟨(Φ₁, S₁, τb, bodyOut, bodySchemes), hbody, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, τb, bodyTypes, bodySchemes), hbody, hav₁⟩ =>
         match unifyCoreK K τb (S₁.onTy ρ) with
         | none => none
         | some ⟨S₂, huni, hav₂⟩ =>
-          match inferFoundBranchesCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx))
+          match inferBranchesWithTypesCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx))
               (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) (branchIndex + 1) rest with
           | none => none
-          | some ⟨(Φ₂, S₃, restOut, restSchemes), hrest, hav₃⟩ =>
+          | some ⟨(Φ₂, S₃, restTypes, restSchemes), hrest, hav₃⟩ =>
             let schemes := (bodySchemes.onSubst (S₂ ++ S₃)).below
               (.matchBranch branchIndex) ++ restSchemes
+            let nodeTypes := (bodyTypes.onSubst (S₂ ++ S₃)).below
+              (.matchBranch branchIndex) ++ restTypes
             some ⟨(Φ₂, S₁ ++ S₂ ++ S₃,
-                (.wildcard, bodyOut.substFoundTys (S₂ ++ S₃)) :: restOut, schemes),
+                nodeTypes, schemes),
                 .consWild hbody huni hrest, by
               intro p hp; rcases List.mem_append.mp hp with h | h
               · rcases List.mem_append.mp h with h | h
@@ -12663,27 +12646,28 @@ def inferFoundBranchesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (scrutTy : Ty) 
               (.customTy ctorr.tyName ((freshVars Φ ctorr.paramCount).map (Ty.fvar ·))) with
           | none => none
           | some ⟨S₀, huni0, hav0⟩ =>
-            match inferFoundCore K (Φ + ctorr.paramCount)
+            match inferWithTypesCore K (Φ + ctorr.paramCount)
                 { (S₀.onCtx ctx) with
                   env := (ctorr.contents.map (Ty.openWith
                       (((freshVars Φ ctorr.paramCount).map (Ty.fvar ·)).map S₀.onTy))).map PolyTy.mkTrivial
                     ++ (S₀.onCtx ctx).env }
                 body with
             | none => none
-            | some ⟨(Φ₁, S₁, τb, bodyOut, bodySchemes), hbody, hav₁⟩ =>
+            | some ⟨(Φ₁, S₁, τb, bodyTypes, bodySchemes), hbody, hav₁⟩ =>
               match unifyCoreK K τb (S₁.onTy (S₀.onTy ρ)) with
               | none => none
               | some ⟨S₂, huni, hav₂⟩ =>
-                match inferFoundBranchesCore K Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))
+                match inferBranchesWithTypesCore K Φ₁ (S₂.onCtx (S₁.onCtx (S₀.onCtx ctx)))
                     (S₂.onTy (S₁.onTy (S₀.onTy scrutTy))) (S₂.onTy (S₁.onTy (S₀.onTy ρ)))
                     (branchIndex + 1) rest with
                 | none => none
-                | some ⟨(Φ₂, S₃, restOut, restSchemes), hrest, hav₃⟩ =>
+                | some ⟨(Φ₂, S₃, restTypes, restSchemes), hrest, hav₃⟩ =>
                   let schemes := (bodySchemes.onSubst (S₂ ++ S₃)).below
                     (.matchBranch branchIndex) ++ restSchemes
+                  let nodeTypes := (bodyTypes.onSubst (S₂ ++ S₃)).below
+                    (.matchBranch branchIndex) ++ restTypes
                   some ⟨(Φ₂, S₀ ++ S₁ ++ S₂ ++ S₃,
-                      (.named c n, bodyOut.substFoundTys (S₂ ++ S₃)) :: restOut,
-                      schemes),
+                      nodeTypes, schemes),
                       .cons hget hcont huni0 hbody huni hrest, by
                     intro p hp
                     rcases List.mem_append.mp hp with h | h
@@ -12698,31 +12682,33 @@ termination_by Expr.sizeBranches branches
 decreasing_by
   all_goals (try simp only [Expr.sizeBranches]; omega)
 
-/-- Thread inference and found-metadata production through a recursion group (DM monomorphic
+/-- Thread inference and node-type production through a recursion group (DM monomorphic
     recursion): each member is `mono τ`, inferred and unified against `S₁.onTy τ`,
     threading the remaining specs via `RecSpec.onSubst`. (`RecSpec.init` emits only
     `.mono`; a `.poly` spec here is unreachable and falls through to `none`.) -/
-def inferFoundRecGroupCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (memberIndex : Nat)
+def inferRecGroupWithTypesCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (memberIndex : Nat)
     (bindings : List Expr) (specs : List RecSpec) :
-    Option { r : Nat × Subst × List Expr × InferredBinderSchemes //
+    Option { r : Nat × Subst × InferredNodeTypes × InferredBinderSchemes //
       InferRecGroup Φ ctx bindings specs r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
   match bindings, specs with
   | [], [] => some ⟨(Φ, [], [], []), .nil, by simp⟩
   | e :: rest, .mono τ :: specs' =>
-      match inferFoundCore K Φ ctx e with
+      match inferWithTypesCore K Φ ctx e with
       | none => none
-      | some ⟨(Φ₁, S₁, τ', eOut, eSchemes), he, hav₁⟩ =>
+      | some ⟨(Φ₁, S₁, τ', eTypes, eSchemes), he, hav₁⟩ =>
         match unifyCoreK K τ' (S₁.onTy τ) with
         | none => none
         | some ⟨S₂, huni, hav₂⟩ =>
-          match inferFoundRecGroupCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx)) (memberIndex + 1) rest
+          match inferRecGroupWithTypesCore K Φ₁ (S₂.onCtx (S₁.onCtx ctx)) (memberIndex + 1) rest
               (specs'.map (RecSpec.onSubst (S₁ ++ S₂))) with
           | none => none
-          | some ⟨(Φ₂, S₃, restOut, restSchemes), hrest, hav₃⟩ =>
+          | some ⟨(Φ₂, S₃, restTypes, restSchemes), hrest, hav₃⟩ =>
             let schemes := (eSchemes.onSubst (S₂ ++ S₃)).below (.letRecRhs memberIndex) ++
               restSchemes
+            let nodeTypes := (eTypes.onSubst (S₂ ++ S₃)).below (.letRecRhs memberIndex) ++
+              restTypes
             some ⟨(Φ₂, S₁ ++ S₂ ++ S₃,
-                eOut.substFoundTys (S₂ ++ S₃) :: restOut, schemes), .consMono he huni hrest, by
+                nodeTypes, schemes), .consMono he huni hrest, by
               intro p hp; rcases List.mem_append.mp hp with h | h
               · rcases List.mem_append.mp h with h | h
                 · exact hav₁ p h
@@ -12734,22 +12720,22 @@ decreasing_by
   all_goals (try simp only [Expr.sizeRecGroup, Expr.size_openTyVars]; omega)
 end
 
-/-- Compatibility projection of the authoritative found-producing worker. No
+/-- Compatibility projection of the authoritative metadata-producing worker. No
     inference is repeated and existing proof-facing callers keep their API. -/
 def inferCore (K : List Nat) (Φ : Nat) (ctx : Ctx) (e : Expr) :
     Option { r : Nat × Subst × Ty //
       Infer Φ ctx e r.1 r.2.1 r.2.2 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
-  match inferFoundCore K Φ ctx e with
+  match inferWithTypesCore K Φ ctx e with
   | none => none
-  | some ⟨(Φ', S, ty, _output, _schemes), hInfer, hAvoid⟩ =>
+  | some ⟨(Φ', S, ty, _nodeTypes, _schemes), hInfer, hAvoid⟩ =>
       some ⟨(Φ', S, ty), hInfer, hAvoid⟩
 
 /-- Public inference output with the discovered type at every logical Core node. -/
-structure FoundResult where
+structure InferenceResult where
   frontier : Nat
   subst : Subst
   ty : Ty
-  output : Expr
+  nodeTypes : NodeTypeMap
   binderSchemes : BinderSchemeMap
 
 /-- The executable type inferer, refining `Infer`. Runs from the empty rigid set
@@ -12757,9 +12743,6 @@ structure FoundResult where
     extend it internally with their skolem block. -/
 def infer (Φ : Nat) (ctx : Ctx) (e : Expr) : Option (Nat × Subst × Ty) :=
   (inferCore [] Φ ctx e).map (·.1)
-
-/-- Lightweight `Repr` for found-annotated output terms used by sanity checks. -/
-instance : Repr Expr := ⟨fun _ _ => Std.Format.text "‹found-output-term›"⟩
 
 /-- `infer` soundness: a returned `(Φ', S, τ)` is a genuine `Infer` derivation
     (immediate — `inferCore` carries it). -/
@@ -12843,15 +12826,15 @@ def Expr.freshFloor (e : Expr) : Nat := tyVarCeil e.tyFreeVars
 theorem Expr.lt_freshFloor {e : Expr} {y : Nat} (h : y ∈ e.tyFreeVars) :
     y < e.freshFloor := lt_tyVarCeil h
 
-/-- Safe top-level found-producing inference. As with `principalType`, source
+/-- Safe top-level metadata-producing inference. As with `principalType`, source
     annotation fvars are made rigid and the fresh frontier is seeded above them;
     this freshness is also what makes annotated-RHS open/close shape-preserving. -/
-def inferFound (ctors : CtorEnv) (e : Expr) : Option FoundResult :=
-  (inferFoundCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e).map fun r =>
+def inferWithTypes (ctors : CtorEnv) (e : Expr) : Option InferenceResult :=
+  (inferWithTypesCore e.tyFreeVars e.freshFloor ⟨[], ctors⟩ e).map fun r =>
     { frontier := r.1.1
       subst := r.1.2.1
       ty := r.1.2.2.1
-      output := r.1.2.2.2.1
+      nodeTypes := r.1.2.2.2.1.toMap
       binderSchemes := r.1.2.2.2.2.toMap }
 
 /-- The principal *monotype* of a program: run Algorithm W from the empty
@@ -13074,7 +13057,7 @@ set_option maxRecDepth 100_000 in
 /-- `λx. x` has principal monotype `α → α` (computed, not postulated). -/
 theorem polyId_principalType : principalType [] polyId = some (.arrow (.fvar 0) (.fvar 0)) := by
   show (inferCore [] 0 ⟨[], []⟩ (Expr.lambda none (Expr.var 0))).map (·.val.2.2) = _
-  simp only [inferCore, inferFoundCore, List.getElem?_cons_zero]
+  simp only [inferCore, inferWithTypesCore, List.getElem?_cons_zero]
   with_unfolding_all rfl
 
 /-- `typecheck` succeeds, produces a genuine residual declarative type (Path R
@@ -13194,7 +13177,7 @@ set_option maxRecDepth 100_000 in
     and the frontier `idid.freshFloor = 0`, so the residual variable is `3`. -/
 theorem idid_principalType : principalType [] idid = some (.arrow (.fvar 3) (.fvar 3)) := by
   simp only [principalType, idid]
-  simp only [inferCore, inferFoundCore, Expr.openTyVars, Expr.openTyVarsAux, freshVars, List.range,
+  simp only [inferCore, inferWithTypesCore, Expr.openTyVars, Expr.openTyVarsAux, freshVars, List.range,
     List.range.loop, List.map, PolyTy.openVars, List.getElem?_cons_zero, Option.map_none]
   unfold unifyCoreK
   unfold unifyCoreK
@@ -13311,7 +13294,7 @@ theorem matchWild_principalType :
   show (inferCore [] 0 ⟨[], []⟩
       (Expr.lambda none ((Expr.var 0).match_
         [(MatchPattern.wildcard, Expr.primLit (.int 0))]))).map (·.val.2.2) = _
-  simp only [inferCore, inferFoundCore, inferFoundBranchesCore,
+  simp only [inferCore, inferWithTypesCore, inferBranchesWithTypesCore,
     List.getElem?_cons_zero]
   unfold unifyCoreK
   with_unfolding_all rfl

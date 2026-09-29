@@ -2,8 +2,8 @@ import FHM.Core
 
 /-! # Logical paths through Core expressions
 
-Paths describe the ordinary Core skeleton. Inference metadata (`Expr.found`) is
-transparent: adding or removing found wrappers never changes a path.
+Paths describe the ordinary Core expression skeleton. Inference metadata is
+kept separately and keyed by these paths.
 -/
 
 /-- One edge from a Core expression to an immediate logical child. -/
@@ -28,7 +28,7 @@ inductive CoreStep where
   | letRecBody
   deriving Repr, DecidableEq, BEq
 
-/-- A root-relative path in the `.found`-transparent Core skeleton. -/
+/-- A root-relative path in the Core expression skeleton. -/
 abbrev CorePath := List CoreStep
 
 namespace CorePath
@@ -39,12 +39,9 @@ def below (step : CoreStep) (paths : List CorePath) : List CorePath :=
 
 end CorePath
 
-/-- Look up a logical Core node. A nonempty path passes transparently through
-    any `.found` wrapper; an empty path returns the node including its wrapper,
-    when present, so callers can inspect the discovered type. -/
+/-- Look up a Core node by its root-relative path. -/
 def Expr.atCorePath : Expr → CorePath → Option Expr
   | e, [] => some e
-  | .found _ inner, path => inner.atCorePath path
   | .lambda _ body, .lambdaBody :: rest => body.atCorePath rest
   | .app f _, .appFun :: rest => f.atCorePath rest
   | .app _ input, .appArg :: rest => input.atCorePath rest
@@ -71,9 +68,7 @@ decreasing_by
        simp only [Prod.mk.sizeOf_spec] at hsz
        omega)
 
-/-- Source-relative descent composes with an already located logical node.
-    Empty paths retain `.found` payloads; nonempty descent remains transparent.
-    This lets runtime member proofs identify an actual original group RHS. -/
+/-- Source-relative descent composes with an already located Core node. -/
 theorem Expr.atCorePath_append (e : Expr) : ∀ basePath suffix,
     e.atCorePath (basePath ++ suffix) = (e.atCorePath basePath).bind (fun node => node.atCorePath suffix) := by
   induction e using Expr.rec_strong with
@@ -97,11 +92,6 @@ theorem Expr.atCorePath_append (e : Expr) : ∀ basePath suffix,
       cases basePath with
       | nil => simp only [List.nil_append, Expr.atCorePath, Option.bind_some]
       | cons step rest => cases step <;> simp [Expr.atCorePath, ihr, ihb]
-  | found ty inner ih =>
-      intro basePath suffix
-      cases basePath with
-      | nil => simp only [List.nil_append, Expr.atCorePath, Option.bind_some]
-      | cons step rest => simpa only [List.cons_append, Expr.atCorePath] using ih (step :: rest) suffix
   | match_ scrut branches ihs ihb =>
       intro basePath suffix
       cases basePath with
@@ -155,6 +145,23 @@ def below (step : CoreStep) : CoreBinderSite → CoreBinderSite
 
 end CoreBinderSite
 
+/-- Inferred monotypes for expression nodes, keyed by stable source-relative
+    Core paths instead of stored inside `Expr`. Association-list form preserves
+    inference construction order. -/
+abbrev NodeTypeMap := List (CorePath × Ty)
+
+namespace NodeTypeMap
+
+/-- Rebase every node key below one immediate Core edge. -/
+def below (step : CoreStep) (types : NodeTypeMap) : NodeTypeMap :=
+  types.map fun (path, ty) => (step :: path, ty)
+
+/-- Transform every inferred monotype without changing its node key. -/
+def mapTys (f : Ty → Ty) (types : NodeTypeMap) : NodeTypeMap :=
+  types.map fun (path, ty) => (path, f ty)
+
+end NodeTypeMap
+
 /-- Schemes inferred for binder-producing Core positions. Association-list form
     preserves construction order and does not pretend paths survive rewrites. -/
 abbrev BinderSchemeMap := List (CoreBinderSite × PolyTy)
@@ -171,21 +178,3 @@ def mapTys (f : Ty → Ty) (schemes : BinderSchemeMap) : BinderSchemeMap :=
   schemes.map fun (site, scheme) => (site, { scheme with body := f scheme.body })
 
 end BinderSchemeMap
-
-private def foundPathDemo : Expr :=
-  .found (.prim .int)
-    (.app
-      (.found (.arrow (.prim .int) (.prim .int)) (.var 0))
-      (.found (.prim .int) (.primLit (.int 1))))
-
-#guard match foundPathDemo.atCorePath [] with
-  | some (.found (.prim .int) (.app _ _)) => true
-  | _ => false
-
-#guard match foundPathDemo.atCorePath [.appFun] with
-  | some (.found (.arrow (.prim .int) (.prim .int)) (.var 0)) => true
-  | _ => false
-
-#guard match foundPathDemo.atCorePath [.appArg] with
-  | some (.found (.prim .int) (.primLit (.int 1))) => true
-  | _ => false

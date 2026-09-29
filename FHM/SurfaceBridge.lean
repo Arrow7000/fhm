@@ -10501,7 +10501,6 @@ def Expr.EmptyVarTyArgs : Expr → Prop
   | .letIn _ rhs body => Expr.EmptyVarTyArgs rhs ∧ Expr.EmptyVarTyArgs body
   | .match_ scrut brs =>
       Expr.EmptyVarTyArgs scrut ∧ Expr.EmptyVarTyArgs.BranchList brs
-  | .found _ inner => Expr.EmptyVarTyArgs inner
   | .letRec _ bindings body =>
       (∀ e ∈ bindings, Expr.EmptyVarTyArgs e) ∧ Expr.EmptyVarTyArgs body
 def Expr.EmptyVarTyArgs.BranchList : List (MatchPattern × Expr) → Prop
@@ -10559,12 +10558,6 @@ theorem Expr.openTyVarsAux_emptyVarTyArgs (Xs : List Nat) :
     obtain ⟨⟨p', e'⟩, hmem, heq⟩ := List.mem_map.mp hp
     cases heq
     exact ihbs p' e' hmem d (h.2 p' e' hmem)
-  | found ty inner ih =>
-    intro d h
-    rw [Expr.EmptyVarTyArgs] at h
-    simp only [Expr.openTyVarsAux]
-    rw [Expr.EmptyVarTyArgs]
-    exact ih d h
   | letRec anns bindings body ihbs ihb =>
     intro d h
     simp only [Expr.EmptyVarTyArgs, Expr.openTyVarsAux] at h ⊢
@@ -10631,12 +10624,6 @@ theorem Expr.shiftFrom_emptyVarTyArgs {e : Expr} :
     subst hp_eq
     rw [he_eq]
     exact ihbr p body hmem (t + p.bindCount) n (h.2 p body hmem)
-  | found ty inner ih =>
-    intro t n h
-    rw [Expr.EmptyVarTyArgs] at h
-    simp only [Expr.shiftFrom]
-    rw [Expr.EmptyVarTyArgs]
-    exact ih t n h
   | letRec anns bindings body ihbs ihb =>
     intro t n h
     simp only [Expr.EmptyVarTyArgs, Expr.shiftFrom, RecGroup.shiftFrom_eq_map] at h ⊢
@@ -10976,11 +10963,6 @@ theorem TypeOfHM_tyBvarBounded_of_emptyVarTyArgs {ctx : Ctx} {e : Expr} {τ : Ty
     intro t ht
     have := hann t ht
     simpa [this] using hpc
-  | found hinner ih =>
-    intro he
-    rw [Expr.EmptyVarTyArgs] at he
-    change ContainsBvarsUpTo 0 _ ∧ Expr.TyBvarBounded 0 _
-    exact ⟨TypeOfHM.regular hinner, ih he⟩
   | letIn hwf hann _ _ _ ihgen ihbody =>
     expose_names
     intro he; simp only [Expr.EmptyVarTyArgs] at he
@@ -11692,9 +11674,6 @@ theorem Expr.tyFreeVars_shiftFrom (e : Expr) (threshold n : Nat)
     cases heq'
     exact ihbr pb.1 pb.2 hpb (threshold + pb.1.bindCount)
       (mem_of_branchList_tyFreeVars_nil branches h.2 pb.1 pb.2 hpb)
-  | found ty inner ih =>
-    simp only [Expr.shiftFrom, Expr.tyFreeVars, List.append_eq_nil_iff] at h ⊢
-    exact ⟨h.1, ih threshold h.2⟩
   | letRec anns bindings body ihbind ihbody =>
     have heq : (Expr.letRec anns bindings body).shiftFrom threshold n =
         .letRec anns ((Expr.letRec anns bindings body).shiftFrom threshold n).letRecBindingsOf
@@ -12569,8 +12548,8 @@ Approach A / 1a: strong open `SurfaceWTExpr` + coverage ⇒ the concrete `lower`
 output typechecks, then reuse `surface_type_safe`. -/
 
 /-- Well-typed surface programs lower to Core whose erased runtime term is
-    HM-typed, match-exhaustive, and non-stuck. Source annotations and `.found`
-    metadata are static and do not enter `SmallStep.Step`. -/
+    HM-typed, match-exhaustive, and non-stuck. Source annotations are static and
+    do not enter `SmallStep.Step`. -/
 theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
     (hlow : lower ctors s = some c)
     (htc : (typecheck ctors c).isSome)

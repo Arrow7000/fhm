@@ -61,15 +61,9 @@ private def letInferenceJoin : Bool :=
           let schemeOk := match typed.inferredBinderSchemes with
             | [(.letIn 0, ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)] => true
             | _ => false
-          let stripOk := match typed.inference.output.stripFound, lowering.expr with
-            | .letIn none (.lambda none (.var 0))
-                (.app (.var 0) (.primLit (.int 7))),
-              .letIn none (.lambda none (.var 0))
-                (.app (.var 0) (.primLit (.int 7))) => true
-            | _, _ => false
           schemeOk && typed.sourceTypes.length == 5 &&
             typed.sourceTypes.all (fun (_, targets) => targets.length == 1) &&
-            typed.sourceTypesTotal && stripOk
+            typed.nodeTypesTotal && typed.sourceTypesTotal
       | none => false
 
 private def expressionHoverUsesProvenance : Bool :=
@@ -78,7 +72,7 @@ private def expressionHoverUsesProvenance : Bool :=
   | some lowering =>
       match inferWithProvenance demoCtors lowering with
       | some typed =>
-          match typed.hoverAt? 1 20 with
+          typed.nodeTypesTotal && match typed.hoverAt? 1 20 with
           | some ⟨⟨4, ⟨1, 20, 1, 21⟩⟩, [([.letBody, .appArg], .prim .int)]⟩ => true
           | _ => false
       | none => false
@@ -118,7 +112,7 @@ private def recBinderJoin : Bool :=
          (.letRecParam 0 0 0, .present [.lambda [.letRecRhs 0]])] &&
       match inferWithProvenance demoCtors lowering with
       | some typed =>
-          match typed.inferredBinderSchemes with
+          typed.nodeTypesTotal && match typed.inferredBinderSchemes with
           | [(.letRec 0 0, ⟨1, .arrow (.bvar 0) (.bvar 0)⟩)] => true
           | _ => false
       | none => false
@@ -136,10 +130,11 @@ private def patCompFormsHaveTotalProvenance : Bool :=
       lowerWithProvenance demoCtors matchSurface matchSpanned with
   | some ifLowering, some matchLowering =>
       ifLowering.provenanceTotal && matchLowering.provenanceTotal &&
-        toString (repr ifLowering.expr) ==
-          toString (repr ((lower demoCtors ifSurface).getD (.ctor ⟨"bad"⟩))) &&
-        toString (repr matchLowering.expr) ==
-          toString (repr ((lower demoCtors matchSurface).getD (.ctor ⟨"bad"⟩)))
+        match inferWithProvenance demoCtors ifLowering,
+            inferWithProvenance demoCtors matchLowering with
+        | some ifTyped, some matchTyped =>
+            ifTyped.nodeTypesTotal && matchTyped.nodeTypesTotal
+        | _, _ => false
   | _, _ => false
 
 private def duplicatedArmAndCapturesAreCoalesced : Bool :=
@@ -167,7 +162,7 @@ private def duplicatedArmAndCapturesAreCoalesced : Bool :=
         match inferWithProvenance demoCtors lowering with
         | none => false
         | some typed =>
-            typed.sourceTypesTotal && typed.patternBinderTypesTotal &&
+            typed.nodeTypesTotal && typed.sourceTypesTotal && typed.patternBinderTypesTotal &&
               typed.patternBinderTypes.length == 2 &&
               typed.patternBinderTypes.all fun (site, types) =>
                 match site with
@@ -219,7 +214,7 @@ private def nestedPatCompTraceRebases : Bool :=
         ([.lambdaBody], ⟨⟨1, span 7 24⟩,
           .generated (.patternCompilation .scrutineeLet)⟩) &&
         match inferWithProvenance demoCtors lowering with
-        | some typed => typed.sourceTypesTotal
+        | some typed => typed.nodeTypesTotal && typed.sourceTypesTotal
         | none => false
 
 private def parserMirrorFeedsProvenance : Bool :=

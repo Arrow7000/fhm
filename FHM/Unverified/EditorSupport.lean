@@ -12,7 +12,7 @@ import Lean.Data.Json
 /-!
 # Editor support helpers
 
-`fhm diagnose` consumes found-producing HM inference and separate provenance.
+`fhm diagnose` consumes path-keyed HM inference metadata and separate provenance.
 Binding definitions use inferred schemes or validated declarations. Source
 locations, name recovery, and JSON presentation remain unverified.
 -/
@@ -337,7 +337,7 @@ def collectHover (src : String) (p : Surface.Program) (binders : List BinderSpan
           match SurfaceBridge.Provenance.inferWithProvenance ctors lowered with
           | none => fail (locateTypecheckFail ctors ke p binders sp)
           | some typed =>
-            if !lowered.provenanceTotal || !typed.sourceTypesTotal ||
+            if !lowered.provenanceTotal || !typed.nodeTypesTotal || !typed.sourceTypesTotal ||
                 !typed.patternBinderTypesTotal then
               fail (diagAtSpan "internal inferred provenance coverage failure" (some scope))
             else

@@ -23,7 +23,7 @@ erased source `c.erase`; `Infer.sourceSound` types the annotated source directly
 while `Infer.sound` derives the runnable erased typing. The D2 principality spine
 factors every declarative type through a successful inferred type by an LC
 residual substitution. Relational and executable completeness are now closed as
-well: for found-free sources, `principalType` and `typecheck` succeed exactly
+well: for source expressions, `principalType` and `typecheck` succeed exactly
 when the annotated source has a `TypeOfHM` derivation.
 
 So: do not read this file as "everything below is proved". Read section 6's
@@ -79,7 +79,7 @@ well-typed and is a value or can step again — "never gets stuck" formalised. -
 
 `Infer` (Algorithm-W-style) is the executable inferer. **Soundness**
 `Infer.sourceSound` types the annotated source after the inferred substitution;
-`Infer.sound` then erases annotations and `.found` metadata and types the
+`Infer.sound` then erases annotations and types the
 runnable `e.erase` at the same inferred type. There is one typing relation and
 no elaborated output language. **Principality** is proved by the D2 spine
 directly against the annotated source: every declarative type factors through a

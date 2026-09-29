@@ -89,7 +89,7 @@ def rhsPath (typed : TypedLowered) (site : SurfaceBinderSite) : Option CorePath 
 def scopes (typed : TypedLowered) (locations : Locations) : List Scope :=
   locations.displays.filterMap fun display => do
     let path ← rhsPath typed display.site
-    let rootTy ← foundTyAtCorePath typed.inference.output path
+    let rootTy ← nodeTyAtCorePath typed.inference.nodeTypes path
     let candidates := match declaredScheme typed display.site with
       | some sig => matchNames display.names rootTy sig.body
       | none => []
@@ -134,7 +134,7 @@ def binderType (typed : TypedLowered) (scopes : List Scope) (locations : Locatio
               pure (pretty (context scopes path ty) ty)
           | _, .present sites =>
               let .lambda path ← sites.head? | none
-              let .arrow ty _ ← foundTyAtCorePath typed.inference.output path | none
+              let .arrow ty _ ← nodeTyAtCorePath typed.inference.nodeTypes path | none
               pure (pretty (context scopes path ty) ty)
           | _, _ => none
 

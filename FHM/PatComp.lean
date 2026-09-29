@@ -1562,7 +1562,6 @@ end
 structure TracedLowering where
   expr : Expr
   trace : EmissionTrace
-  deriving Repr
 
 /-- The ordinary verified lowering and its administrative construction trace.
     The trace is relative to the whole outer scrutinee `letIn`. -/
@@ -1863,7 +1862,6 @@ theorem varsBelow_getCtorArgs {n : Nat} {v : Expr} {c : CtorName}
   | var i => simp [getCtorArgs] at hget
   | letIn ann rhs body _ _ => simp [getCtorArgs] at hget
   | match_ s brs _ _ => simp [getCtorArgs] at hget
-  | found ty inner _ => simp [getCtorArgs] at hget
   | letRec anns bs body _ _ => simp [getCtorArgs] at hget
 
 /-- A ctor chain is itself a value. -/
@@ -1903,7 +1901,6 @@ theorem isValue_getCtorArgs {v : Expr} {c : CtorName} {args : List Expr}
   | var i => simp [getCtorArgs] at hget
   | letIn ann rhs body _ _ => simp [getCtorArgs] at hget
   | match_ s brs _ _ => simp [getCtorArgs] at hget
-  | found ty inner _ => simp [getCtorArgs] at hget
   | letRec anns bs body _ _ => simp [getCtorArgs] at hget
 
 /-- `getCtorArgs` soundness towards the declarative decomposition used by
@@ -1929,7 +1926,6 @@ theorem getCtorArgs_ctorAppliedTo {v : Expr} {c : CtorName} {args : List Expr}
   | var i => simp [getCtorArgs] at hget
   | letIn ann rhs body _ _ => simp [getCtorArgs] at hget
   | match_ s brs _ _ => simp [getCtorArgs] at hget
-  | found ty inner _ => simp [getCtorArgs] at hget
   | letRec anns bs body _ _ => simp [getCtorArgs] at hget
 
 /-- A ctor chain always decomposes via `getCtorArgs` (Core's version of this
@@ -1949,7 +1945,6 @@ private theorem getCtorArgs_of_isCtorChain {v : Expr} (h : IsCtorChain v) :
   | var i  => cases h
   | letIn ann rhs body _ _ => cases h
   | match_ s brs _ _ => cases h
-  | found ty inner _ => cases h
   | letRec anns bs body _ _ => cases h
 
 /-- Fetched sub-values of a closed value are closed values. -/
@@ -2080,9 +2075,6 @@ private theorem Expr.varsBelow_instTyAux (Ts : List Ty) :
       simp only [BranchListClosed.varsBelow]
       rw [ihbrs p b List.mem_cons_self (n + p.bindCount) d,
         ihtl (fun p' b' hm => ihbrs p' b' (List.mem_cons_of_mem _ hm))]
-  | found ty inner ih =>
-    intro n d
-    simp only [Expr.instTyAux, Expr.varsBelow, ih]
   | letRec anns bindings body ihbindings ihbody =>
     intro n d
     rw [Expr.instTyAux_letRec_eq]
@@ -2148,7 +2140,6 @@ theorem Expr.substN_nil (e : Expr) (k : Nat) : e.substN k [] = e := by
     intro pb hmem
     obtain ⟨pat, body⟩ := pb
     simp only [ihbrs pat body hmem]
-  | found ty inner ih => simp only [Expr.substN, ih]
   | letRec anns bindings body ihbindings ihbody =>
     rw [Expr.substN_letRec, ihbody]
     congr 1
@@ -2185,7 +2176,6 @@ theorem Expr.substN_shiftFrom_cancel (e : Expr) (k : Nat) (vs : List Expr) :
     intro pb hmem
     obtain ⟨pat, body⟩ := pb
     simp only [Function.comp_apply, ihbrs pat body hmem]
-  | found ty inner ih => simp only [Expr.shiftFrom, Expr.substN, ih]
   | letRec anns bindings body ihbindings ihbody =>
     rw [Expr.shiftFrom_letRec, Expr.substN_letRec, List.map_map, List.length_map,
       ihbody]

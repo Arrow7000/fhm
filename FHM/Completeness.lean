@@ -7209,8 +7209,8 @@ theorems in this section expose its expression-level and whole-program
 consequences. Factorisation is stated with ordinary structural equality.
 
 The declarative source term is `e`, with source annotations still present. The
-executable program is `e.erase` (annotations
-and `.found` metadata removed).  `Infer.sourceSound` and `Infer.sound` supply
+executable program is `e.erase` (annotations removed).
+`Infer.sourceSound` and `Infer.sound` supply
 the two corresponding soundness projections. -/
 
 /-- Principality of a given inference derivation, projected from the mutual D2
@@ -7295,8 +7295,7 @@ theorem typecheck_principal {ctors : CtorEnv} {e : Expr} {σ : PolyTy}
 
 The principality spine above starts from an existing `Infer` derivation.  The
 remaining completeness direction constructs such a derivation from a
-declarative typing.  It is intentionally restricted to `Expr.FoundFree` source
-terms: `.found` nodes are inferred output metadata and have no `Infer` rule.
+declarative typing over the plain Core expression language.
 
 As in the principality spine, the induction carries an ambient specialization
 and an LC residual.  This richer invariant is needed to thread Algorithm W's
@@ -7307,7 +7306,6 @@ corollaries will hide it. -/
     declarative typing under an LC specialization is realized by an `Infer`
     derivation whose result factors the declarative type up to `Eq`. -/
 def Infer.CompleteAt (e : Expr) : Prop :=
-  e.FoundFree →
   ∀ {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {τ₀ : Ty} (K : List Nat),
     CtxWF ctx → CtxBelow Φ ctx → (∀ p ∈ S₀, p.2.IsLC) →
     (∀ k ∈ K, k < Φ) → (∀ y ∈ e.tyFreeVars, y ∈ K) →
@@ -8069,7 +8067,7 @@ theorem Infer.exists_var_residual {Φ k : Nat} {S₀ : Subst} {K : List Nat}
 
 /-- Producer completeness for primitive literals. -/
 theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) := by
-  intro _ Φ ctx S₀ τ₀ K _ _ hS₀ _ _ hKfix hty
+  intro Φ ctx S₀ τ₀ K _ _ hS₀ _ _ hKfix hty
   cases p with
   | unit =>
     cases hty with
@@ -8111,7 +8109,7 @@ theorem Infer.complete_prim {p : PrimLitExpr} : Infer.CompleteAt (.primLit p) :=
 /-- Producer completeness for primitive operators. -/
 theorem Infer.complete_primBinOp {op : PrimBinOp} :
     Infer.CompleteAt (.primBinOp op) := by
-  intro _ Φ ctx S₀ τ₀ K _ _ hS₀ _ _ hKfix hty
+  intro Φ ctx S₀ τ₀ K _ _ hS₀ _ _ hKfix hty
   cases op with
   | intAdd =>
     cases hty with
@@ -8170,7 +8168,7 @@ theorem Infer.complete_primBinOp {op : PrimBinOp} :
     any declarative instantiation of the looked-up scheme while inference uses
     its canonical fresh-variable opening. -/
 theorem Infer.complete_var {i : Nat} : Infer.CompleteAt (.var i) := by
-  intro _ Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ _ hKfix hty
+  intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ _ hKfix hty
   cases hty with
   | var hlook hlc hinst =>
     rename_i polyTy instArgs
@@ -8200,7 +8198,7 @@ theorem Infer.complete_var {i : Nat} : Infer.CompleteAt (.var i) := by
 
 /-- Producer completeness for data constructors. -/
 theorem Infer.complete_ctor {name : CtorName} : Infer.CompleteAt (.ctor name) := by
-  intro _ Φ ctx S₀ τ₀ K _ _ hS₀ hKΦ _ hKfix hty
+  intro Φ ctx S₀ τ₀ K _ _ hS₀ hKΦ _ hKfix hty
   cases hty with
   | ctor hlook hlc hinst =>
     rename_i ctorE tyArgs
@@ -8236,7 +8234,7 @@ theorem Infer.complete_ctor {name : CtorName} : Infer.CompleteAt (.ctor name) :=
     parameter variable realized through the residual passed to the body IH. -/
 theorem Infer.complete_lambda_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
     {S₀ : Subst} {paramTy bodyTy : Ty} {K : List Nat}
-    (ih : Infer.CompleteAt body) (hbodyFF : body.FoundFree)
+    (ih : Infer.CompleteAt body)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
     (hparamLC : paramTy.IsLC) (hKΦ : ∀ k ∈ K, k < Φ)
     (hbodyK : ∀ y ∈ body.tyFreeVars, y ∈ K)
@@ -8370,7 +8368,7 @@ theorem Infer.complete_lambda_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
     simpa [hctxEq] using hbodyty
   have hKΦ' : ∀ k ∈ K, k < Φ + 1 := by intro k hk; have hlt := hKΦ k hk; omega
   obtain ⟨Φ', S, τb, R₁, hInferBody, hAgreeBody, hAgreeTy, hR₁lc, hR₁K, hSK⟩ :=
-    @ih hbodyFF (Φ + 1) bodyCtx S₀' ( bodyTy) K
+    @ih (Φ + 1) bodyCtx S₀' ( bodyTy) K
       hbodyCtxWF hbodyCtxBelow hS₀' hKΦ' hbodyK hS₀'Kfix hbodyty
   refine ⟨Φ', S, .arrow (S.onTy (Ty.fvar Φ)) τb, R₁,
     ?_, ?_, ?_, ?_, ?_, ?_⟩
@@ -8399,7 +8397,7 @@ theorem Infer.complete_lambda_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
     rigid under `K`, so the body IH can reuse the ambient specialization. -/
 theorem Infer.complete_lambda_ann_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
     {S₀ : Subst} {T bodyTy : Ty} {K : List Nat}
-    (ih : Infer.CompleteAt body) (hbodyFF : body.FoundFree)
+    (ih : Infer.CompleteAt body)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
     (hTlc : T.IsLC) (hKΦ : ∀ k ∈ K, k < Φ)
     (hTK : ∀ y ∈ T.freeVars, y ∈ K) (hbodyK : ∀ y ∈ body.tyFreeVars, y ∈ K)
@@ -8436,7 +8434,7 @@ theorem Infer.complete_lambda_ann_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
       ( bodyTy) := by
     simpa [hctxEq] using hbodyty
   obtain ⟨Φ', S, τb, R₁, hInferBody, hAgreeBody, hAgreeTy, hR₁lc, hR₁K, hSK⟩ :=
-    @ih hbodyFF Φ bodyCtx S₀ ( bodyTy) K
+    @ih Φ bodyCtx S₀ ( bodyTy) K
       hbodyCtxWF hbodyCtxBelow hS₀ hKΦ hbodyK hKfix hbodyty
   have hST : Eq ((S ++ R₁).onTy T) T := by
     have hbT : Ty.BelowFvars Φ T := Ty.BelowFvars.of_freeVars_lt (fun v hv => hKΦ v (hTK v hv))
@@ -8462,10 +8460,7 @@ theorem Infer.complete_lambda_ann_aux {body : Expr} {Φ : Nat} {ctx : Ctx}
 /-- Producer completeness for lambdas. -/
 theorem Infer.complete_lambda {ann : Option Ty} {body : Expr}
     (ih : Infer.CompleteAt body) : Infer.CompleteAt (.lambda ann body) := by
-  intro hff Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
-  have hbodyFF : body.FoundFree := by
-    cases hff with
-    | lambda h => exact h
+  intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
   cases ann with
   | none =>
     cases hty with
@@ -8474,7 +8469,7 @@ theorem Infer.complete_lambda {ann : Option Ty} {body : Expr}
       subst heq
       exact complete_lambda_aux (body := body) (Φ := Φ) (ctx := ctx) (S₀ := S₀)
         (paramTy := pt) (bodyTy := bt) (K := K)
-        ih hbodyFF hwf hbelow hS₀ hpc hKΦ (fun y hy => hKtv y (by simpa [Expr.tyFreeVars] using hy))
+        ih hwf hbelow hS₀ hpc hKΦ (fun y hy => hKtv y (by simpa [Expr.tyFreeVars] using hy))
         hKfix hbody
   | some T =>
     cases hty with
@@ -8487,7 +8482,7 @@ theorem Infer.complete_lambda {ann : Option Ty} {body : Expr}
       obtain ⟨Φ', S, τ, R, hInfer, hAgree, hAgreeTy, hRlc, hRK, hSK⟩ :=
         complete_lambda_ann_aux (body := body) (Φ := Φ) (ctx := ctx) (S₀ := S₀)
           (T := T) (bodyTy := bt) (K := K)
-          ih hbodyFF hwf hbelow hS₀ hTlc hKΦ
+          ih hwf hbelow hS₀ hTlc hKΦ
           (fun y hy => hKtv y (by simp [Expr.tyFreeVars]; exact Or.inl hy))
           (fun y hy => hKtv y (by simp [Expr.tyFreeVars]; exact Or.inr hy))
           hKfix hbody
@@ -8582,7 +8577,6 @@ lemma exists_app_unifier {A τa τ₀ argTy : Ty} {Φ₂ : Nat} {R₂ : Subst} {
 theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     {argTy τ₀ : Ty} {K : List Nat}
     (ihf : Infer.CompleteAt f) (iharg : Infer.CompleteAt arg)
-    (hff_f : f.FoundFree) (hff_arg : arg.FoundFree)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
     (hKΦ : ∀ k ∈ K, k < Φ)
     (hKf : ∀ y ∈ f.tyFreeVars, y ∈ K) (hKa : ∀ y ∈ arg.tyFreeVars, y ∈ K)
@@ -8597,7 +8591,7 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       (∀ p ∈ S, p.1 ∉ K) := by
   obtain ⟨Φ₁, S₁, τf, R₁, hInferF, hAgreeF, hAgreeFty, hR₁lc, hR₁K, hS₁K⟩ :=
-    ihf hff_f K hwf hbelow hS₀ hKΦ hKf hKfix hf
+    ihf K hwf hbelow hS₀ hKΦ hKf hKfix hf
   have hΦf : ∀ y ∈ f.tyFreeVars, y < Φ := fun y hy => hKΦ y (hKf y hy)
   have hfle : Φ ≤ Φ₁ := Infer.frontier_le hInferF
   have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := (Infer.lc hInferF hwf).2
@@ -8614,7 +8608,7 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
   have harg' : TypeOfHM (R₁.onCtx (S₁.onCtx ctx)) arg argTy := by
     rwa [← hctxBridge] at harg
   obtain ⟨Φ₂, S₂, τa, R₂, hInferArg, hAgreeArg, hAgreeArgty, hR₂lc, hR₂K, hS₂K⟩ :=
-    iharg hff_arg K hctxWF₁ hctxBelow₁ hR₁lc hKΦ₁ hKa hR₁K harg'
+    iharg K hctxWF₁ hctxBelow₁ hR₁lc hKΦ₁ hKa hR₁K harg'
   have hargle : Φ₁ ≤ Φ₂ := Infer.frontier_le hInferArg
   have hKΦ₂ : ∀ k ∈ K, k < Φ₂ := fun k hk => lt_of_lt_of_le (hKΦ₁ k hk) hargle
   have hS₂lc : ∀ p ∈ S₂, p.2.IsLC := (Infer.lc hInferArg hctxWF₁).2
@@ -8677,11 +8671,7 @@ theorem Infer.complete_app_aux {f arg : Expr} {Φ : Nat} {ctx : Ctx} {S₀ : Sub
 theorem Infer.complete_app {f arg : Expr}
     (ihf : Infer.CompleteAt f) (iharg : Infer.CompleteAt arg) :
     Infer.CompleteAt (.app f arg) := by
-  intro hff Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
-  have hff_f : f.FoundFree := by
-    cases hff with | app hf _ => exact hf
-  have hff_arg : arg.FoundFree := by
-    cases hff with | app _ ha => exact ha
+  intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
   cases hty with
   | app hf harg_ty =>
     rename_i argTy
@@ -8689,7 +8679,7 @@ theorem Infer.complete_app {f arg : Expr}
       hKtv y (by simpa [Expr.tyFreeVars] using (Or.inl hy))
     have hKa : ∀ y ∈ arg.tyFreeVars, y ∈ K := fun y hy =>
       hKtv y (by simpa [Expr.tyFreeVars] using (Or.inr hy))
-    exact Infer.complete_app_aux ihf iharg hff_f hff_arg hwf hbelow hS₀ hKΦ hKf hKa hKfix hf harg_ty
+    exact Infer.complete_app_aux ihf iharg hwf hbelow hS₀ hKΦ hKf hKa hKfix hf harg_ty
 
 /-! ### Let producer completeness -/
 
@@ -8773,7 +8763,6 @@ private theorem genScheme_generalizes_of_agrees
 theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     {rhs body : Expr} {M : PolyTy} {L : List Nat} {τ₀ : Ty} {K : List Nat}
     (iha : Infer.CompleteAt rhs) (ihb : Infer.CompleteAt body)
-    (hRhsFF : rhs.FoundFree) (hBodyFF : body.FoundFree)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
     (hKΦ : ∀ k ∈ K, k < Φ) (hKrhs : ∀ y ∈ rhs.tyFreeVars, y ∈ K)
     (hKbody : ∀ y ∈ body.tyFreeVars, y ∈ K)
@@ -8805,7 +8794,7 @@ theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
   have hXrange : ∀ x ∈ Xs, x ∉ List.range Φ := fun x hx hc =>
     hXavoid x hx (by simp only [List.mem_append]; tauto)
   obtain ⟨Φ₁, S₁, τ₁, R₁, hInferRhs, hAgreeRhs, hAgreeRhsTy, hR₁lc, hR₁K, hS₁K⟩ :=
-    iha hRhsFF K hwf hbelow hS₀ hKΦ hKrhs hKfix (hcofin Xs hXfresh)
+    iha K hwf hbelow hS₀ hKΦ hKrhs hKfix (hcofin Xs hXfresh)
   have hΦrhs : ∀ y ∈ rhs.tyFreeVars, y < Φ := fun y hy => hKΦ y (hKrhs y hy)
   have hfle : Φ ≤ Φ₁ := Infer.frontier_le hInferRhs
   obtain ⟨hτ₁_lc, hS₁lc⟩ := Infer.lc hInferRhs hwf
@@ -8847,7 +8836,7 @@ theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     · exact hτ₁_bel.closeOver
     · exact hctxBelow₁ M hM
   obtain ⟨Φ₂, S₂, τ₂, R₂, hInferBody, hAgreeBody, hAgreeTyBody, hR₂lc, hR₂K, hS₂K⟩ :=
-    ihb hBodyFF K hctxWF₁' hctxBelow₁' hR₁lc hKΦ₁ hKbody hR₁K hbody_alg
+    ihb K hctxWF₁' hctxBelow₁' hR₁lc hKΦ₁ hKbody hR₁K hbody_alg
   refine ⟨Φ₂, S₁ ++ S₂, τ₂, R₂, ?_, ?_, ?_, ?_, ?_, ?_⟩
   · exact .letIn hInferRhs hInferBody
   · simpa [List.append_assoc] using
@@ -8865,7 +8854,6 @@ theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
 theorem Infer.complete_letIn_ann_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     {rhs body : Expr} {σ : PolyTy} {L : List Nat} {τ₀ : Ty} {K : List Nat}
     (iha : ∀ Ys, Infer.CompleteAt (rhs.openTyVars Ys)) (ihb : Infer.CompleteAt body)
-    (hRhsFF : rhs.FoundFree) (hBodyFF : body.FoundFree)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
     (hKΦ : ∀ k ∈ K, k < Φ)
     (hKrhs : ∀ y ∈ rhs.tyFreeVars, y ∈ K) (hKbody : ∀ y ∈ body.tyFreeVars, y ∈ K)
@@ -8955,7 +8943,7 @@ theorem Infer.complete_letIn_ann_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
   have htyrhs : TypeOfHM (S₀.onCtx ctx) (rhs.openTyVars Ys)
       ( (σ.openVars Ys)) := hcofin Ys hYfresh
   obtain ⟨Φ₁, S₁, τ₁, R₁, hInferRhs, hAgreeRhs, hAgreeRhsTy, hR₁lc, hR₁K, hS₁K⟩ :=
-    iha Ys (hRhsFF.openTyVars Ys) (K ++ Ys) hwf hbelowN hS₀ hKΦN hKrhsOpen hKfixN htyrhs
+    iha Ys (K ++ Ys) hwf hbelowN hS₀ hKΦN hKrhsOpen hKfixN htyrhs
   have hfle : N + σ.paramCount ≤ Φ₁ := Infer.frontier_le hInferRhs
   have hKΦ₁ : ∀ k ∈ K, k < Φ₁ := fun k hk => lt_of_lt_of_le (hKΦ k hk) (by omega)
   have hΦrhs : ∀ y ∈ (rhs.openTyVars Ys).tyFreeVars, y < N + σ.paramCount :=
@@ -9067,7 +9055,7 @@ theorem Infer.complete_letIn_ann_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     rw [hbodyctx, hctx_tail, hhead]
     exact hbody
   obtain ⟨Φ₂, S₂, τ₂, R₂, hInferBody, hAgreeBody, hAgreeTyBody, hR₂lc, hR₂K, hS₂K⟩ :=
-    ihb hBodyFF K hctxWF₁' hctxBelow₁' hVlc hKΦ₁ hKbody (fun k hk => hVK k (List.mem_append_left _ hk)) hbody_alg
+    ihb K hctxWF₁' hctxBelow₁' hVlc hKΦ₁ hKbody (fun k hk => hVK k (List.mem_append_left _ hk)) hbody_alg
   have hAgree : Subst.AgreesBelow Φ S₀ (((S₁ ++ Schk) ++ S₂) ++ R₂) :=
     @Subst.AgreesBelow.trans_append Φ Φ₁ S₀ (S₁ ++ Schk) V S₂ R₂
       (by omega) hAgreeΦ hS₁_bel_all hAgreeBody
@@ -9092,11 +9080,7 @@ theorem Infer.complete_letIn {ann : Option PolyTy} {rhs body : Expr}
     (ihao : ∀ Ys, Infer.CompleteAt (rhs.openTyVars Ys))
     (ihb : Infer.CompleteAt body) :
     Infer.CompleteAt (.letIn ann rhs body) := by
-  intro hff Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
-  have hRhsFF : rhs.FoundFree := by
-    cases hff with | letIn hr _ => exact hr
-  have hBodyFF : body.FoundFree := by
-    cases hff with | letIn _ hb => exact hb
+  intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
   cases hty with
   | letIn hMwf hann hcofin hbodyCtx_eq hbody =>
     rename_i bodyCtx M L
@@ -9114,7 +9098,7 @@ theorem Infer.complete_letIn {ann : Option PolyTy} {rhs body : Expr}
         intro Xs hf
         simpa [Expr.openBoundTyVars] using hcofin Xs hf
       obtain ⟨Φ', S, τ, R, hInfer, hAgree, hAgreeTy, hRlc, hRK, hSK⟩ :=
-        Infer.complete_letIn_aux iha ihb hRhsFF hBodyFF hwf hbelow hS₀ hKΦ hKrhs hKbody hKfix hMwf hcofin' hbody
+        Infer.complete_letIn_aux iha ihb hwf hbelow hS₀ hKΦ hKrhs hKbody hKfix hMwf hcofin' hbody
       refine ⟨Φ', S, τ, R, hInfer, hAgree, ?_, hRlc, hRK, hSK⟩
       exact hAgreeTy
     | some σ =>
@@ -9138,7 +9122,7 @@ theorem Infer.complete_letIn {ann : Option PolyTy} {rhs body : Expr}
             ( (σ.openVars Xs)) := by
         intro Xs hf
         simpa [Expr.openBoundTyVars] using hcofin Xs hf
-      exact Infer.complete_letIn_ann_aux ihao ihb hRhsFF hBodyFF hwf hbelow hS₀ hKΦ hKrhs hKbody hKσ hKfix hσwf hcofin_aux hbody
+      exact Infer.complete_letIn_ann_aux ihao ihb hwf hbelow hS₀ hKΦ hKrhs hKbody hKσ hKfix hσwf hcofin_aux hbody
 
 /-! ### Match producer completeness -/
 
@@ -9441,7 +9425,6 @@ private theorem List.zip_mem_of_getElem? {α β : Type _} {l : List α} {r : Lis
 theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
     ∀ {Φ : Nat} {ctx : Ctx} {scrutTy : Ty} {ρ : Ty} {R : Subst} (K : List Nat),
     (∀ br ∈ branches, Infer.CompleteAt br.2) →
-    (∀ br ∈ branches, br.2.FoundFree) →
     CtxWF ctx → CtxBelow Φ ctx →
     scrutTy.IsLC → Ty.BelowFvars Φ scrutTy →
     ρ.IsLC → Ty.BelowFvars Φ ρ →
@@ -9461,7 +9444,7 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
       (∀ p ∈ S, p.1 ∉ K) := by
   induction branches with
   | nil =>
-    intro Φ ctx scrutTy ρ R K hcompl hffBranches hwf hbelow hscrutLC hscrutB hρLC hρB hR hKΦ hKbr hKfix hbrs
+    intro Φ ctx scrutTy ρ R K hcompl hwf hbelow hscrutLC hscrutB hρLC hρB hR hKΦ hKbr hKfix hbrs
     refine ⟨Φ, [], R, .nil, ?_, ?_, ?_, ?_⟩
     · intro v hv
       rw [List.nil_append]
@@ -9469,7 +9452,7 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
     · exact hKfix
     · intro p hp; simp at hp
   | cons br rest ih =>
-    intro Φ ctx scrutTy ρ R K hcompl hffBranches hwf hbelow hscrutLC hscrutB hρLC hρB hR hKΦ hKbr hKfix hbrs
+    intro Φ ctx scrutTy ρ R K hcompl hwf hbelow hscrutLC hscrutB hρLC hρB hR hKΦ hKbr hKfix hbrs
     rcases br with ⟨pat, body⟩
     cases pat with
     | named c n =>
@@ -9587,7 +9570,7 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
           have := hKΦ k hk
           omega
         obtain ⟨Φ₁, S₁, τb, R₁, hInferBody, hAgree₁, hAgreeTy₁, hR₁lc, hR₁K, hS₁K⟩ :=
-          hcomplBody (hffBranches (MatchPattern.named c n, body) (List.mem_cons_self ..)) K hbodyWF hbodyBelow hR₀lc hKΦbody hKbody hR₀K hbodyAlg
+          hcomplBody K hbodyWF hbodyBelow hR₀lc hKΦbody hKbody hR₀K hbodyAlg
         have hle0 : Φ + ctor.paramCount ≤ Φ₁ := Infer.frontier_le hInferBody
         obtain ⟨hτb_lc, hS₁lc⟩ := Infer.lc hInferBody hbodyWF
         have hS₀ρbel : Ty.BelowFvars (Φ + ctor.paramCount) (S₀.onTy ρ) :=
@@ -9687,7 +9670,7 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
           rw [← hctxEq, ← hscrutEq', ← hρEq'] at h
           exact h
         obtain ⟨Φ₂, S₃, R₃, hInferRest, hAgree₃, hR₃lc, hR₃K, hS₃K⟩ :=
-          ih K hcomplRest (fun br hbr => hffBranches br (List.mem_cons_of_mem _ hbr)) hctx1WF hctx1below hscrut1_lc hscrut1_bel hρ1_lc hρ1_bel
+          ih K hcomplRest hctx1WF hctx1below hscrut1_lc hscrut1_bel hρ1_lc hρ1_bel
             hR₂lc hKΦ₁ hKrest hR₂K hbrsRest'
         have hAgree₂₃ : Subst.AgreesBelow Φ₁ R₁ ((S₂ ++ S₃) ++ R₃) :=
           @Subst.AgreesBelow.trans_append Φ₁ Φ₁ R₁ S₂ R₂ S₃ R₃
@@ -9734,7 +9717,7 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
       cases hbrsHead with
       | wildcard hbodyDecl =>
         obtain ⟨Φ₁, S₁, τb, R₁, hInferBody, hAgree₁, hAgreeTy₁, hR₁lc, hR₁K, hS₁K⟩ :=
-          hcomplBody (hffBranches (MatchPattern.wildcard, body) (List.mem_cons_self ..)) K hwf hbelow hR hKΦ hKbody hKfix hbodyDecl
+          hcomplBody K hwf hbelow hR hKΦ hKbody hKfix hbodyDecl
         have hfle : Φ ≤ Φ₁ := Infer.frontier_le hInferBody
         obtain ⟨hτb_lc, hS₁lc⟩ := Infer.lc hInferBody hwf
         have hΦbody : ∀ y ∈ body.tyFreeVars, y < Φ := fun y hy => hKΦ y (hKbody y hy)
@@ -9812,7 +9795,7 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
           rw [← hctxEq, ← hscrutEq', ← hρEq'] at h
           exact h
         obtain ⟨Φ₂, S₃, R₃, hInferRest, hAgree₃, hR₃lc, hR₃K, hS₃K⟩ :=
-          ih K hcomplRest (fun br hbr => hffBranches br (List.mem_cons_of_mem _ hbr)) hctx1WF hctx1below hscrut1_lc hscrut1_bel hρ1_lc hρ1_bel
+          ih K hcomplRest hctx1WF hctx1below hscrut1_lc hscrut1_bel hρ1_lc hρ1_bel
             hR₂lc hKΦ₁ hKrest hR₂K hbrsRest'
         have hAgree₂₃ : Subst.AgreesBelow Φ₁ R₁ ((S₂ ++ S₃) ++ R₃) :=
           @Subst.AgreesBelow.trans_append Φ₁ Φ₁ R₁ S₂ R₂ S₃ R₃
@@ -9837,9 +9820,8 @@ theorem InferBranches.complete {branches : List (MatchPattern × Expr)} :
 theorem Infer.complete_match_aux {scrut : Expr} {branches : List (MatchPattern × Expr)}
     {Φ : Nat} {ctx : Ctx} {S₀ : Subst} {scrutTy : Ty} {τ₀ : Ty}
     {K : List Nat}
-    (ihscrut : Infer.CompleteAt scrut) (hScrutFF : scrut.FoundFree)
+    (ihscrut : Infer.CompleteAt scrut)
     (ihbranches : ∀ br ∈ branches, Infer.CompleteAt br.2)
-    (hBranchesFF : ∀ br ∈ branches, br.2.FoundFree)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx) (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
     (hKΦ : ∀ k ∈ K, k < Φ) (hKscrut : ∀ y ∈ scrut.tyFreeVars, y ∈ K)
     (hKbr : ∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars branches, y ∈ K)
@@ -9856,7 +9838,7 @@ theorem Infer.complete_match_aux {scrut : Expr} {branches : List (MatchPattern �
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       (∀ p ∈ S, p.1 ∉ K) := by
   obtain ⟨Φ₁, S₁, τs, R₁, hInferScrut, hAgreeScrut, hAgreeScrutTy, hR₁lc, hR₁K, hS₁K⟩ :=
-    ihscrut hScrutFF K hwf hbelow hS₀ hKΦ hKscrut hKfix hscrut_decl
+    ihscrut K hwf hbelow hS₀ hKΦ hKscrut hKfix hscrut_decl
   have hΦscrut : ∀ y ∈ scrut.tyFreeVars, y < Φ := fun y hy => hKΦ y (hKscrut y hy)
   have hfle : Φ ≤ Φ₁ := Infer.frontier_le hInferScrut
   have hS₁lc : ∀ p ∈ S₁, p.2.IsLC := (Infer.lc hInferScrut hwf).2
@@ -9929,7 +9911,7 @@ theorem Infer.complete_match_aux {scrut : Expr} {branches : List (MatchPattern �
         exact TypeOfMatchBranch.wildcard hbody'
   obtain ⟨Φ₂, S₂, R₂, hInferBrs, hAgreeBrs, hR₂lc, hR₂K, hS₂K⟩ :=
     @InferBranches.complete branches (Φ₁ + 1) (S₁.onCtx ctx) τs (.fvar Φ₁) R₁' K
-      ihbranches hBranchesFF hctxWF₁ hctxBelow₁' hτs_lc hτs_bel' hρlc hρbel hR₁'lc hKΦ₁' hKbr hR₁'K hbrs'
+      ihbranches hctxWF₁ hctxBelow₁' hτs_lc hτs_bel' hρlc hρbel hR₁'lc hKΦ₁' hKbr hR₁'K hbrs'
   have hAgreeBrs₁ : Subst.AgreesBelow Φ₁ R₁ (S₂ ++ R₂) := by
     intro v hv
     exact Eq.trans (Eq.symm (hR₁'agreeR₁ v hv)) (hAgreeBrs v (Nat.lt_succ_of_lt hv))
@@ -9957,7 +9939,7 @@ theorem Infer.complete_match {scrut : Expr} {branches : List (MatchPattern × Ex
     (ihscrut : Infer.CompleteAt scrut)
     (ihbranches : ∀ br ∈ branches, Infer.CompleteAt br.2) :
     Infer.CompleteAt (.match_ scrut branches) := by
-  intro hff Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
+  intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
   cases hty with
   | match_ hscrut_ty hbrs_ne hbrs =>
     rename_i scrutTy
@@ -9972,9 +9954,7 @@ theorem Infer.complete_match {scrut : Expr} {branches : List (MatchPattern × Ex
         (br.1, br.2) scrutTy τ₀ := by
       intro br hbr
       exact hbrs (br.1, br.2) (by simpa only [Prod.eta] using hbr)
-    exact Infer.complete_match_aux ihscrut
-      (by cases hff with | match_ hs _ => exact hs) ihbranches
-      (by cases hff with | match_ _ hb => exact hb) hwf hbelow hS₀ hKΦ hKscrut hKbr hKfix
+    exact Infer.complete_match_aux ihscrut ihbranches hwf hbelow hS₀ hKΦ hKscrut hKbr hKfix
       hscrut_ty hne' hbrs_decl
 
 /-! ### Recursive-group producer completeness (D2 monomorphic tier) -/
@@ -9991,7 +9971,6 @@ theorem InferRecGroup.complete_mono
     {Φ : Nat} {ctx : Ctx} {bindings : List Expr} {specs : List RecSpec}
     {S₀ : Subst} {K : List Nat}
     (ih : ∀ e ∈ bindings, Infer.CompleteAt e)
-    (hff : ∀ e ∈ bindings, e.FoundFree)
     (hlen : bindings.length = specs.length)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
@@ -10028,9 +10007,6 @@ theorem InferRecGroup.complete_mono
       obtain ⟨τ, hs⟩ := hspecMono s List.mem_cons_self
       subst s
       have hrest_len : rest.length = ss.length := by simpa using hlen
-      have hheadFF : e.FoundFree := hff e List.mem_cons_self
-      have hrestFF : ∀ e' ∈ rest, e'.FoundFree := fun e' he' =>
-        hff e' (List.mem_cons_of_mem _ he')
       have hheadIH : Infer.CompleteAt e := ih e List.mem_cons_self
       have hrestIH : ∀ e' ∈ rest, Infer.CompleteAt e' := fun e' he' =>
         ih e' (List.mem_cons_of_mem _ he')
@@ -10048,7 +10024,7 @@ theorem InferRecGroup.complete_mono
         hdecl (e, .mono τ) (by simp) τ rfl
       obtain ⟨Φ₁, S₁, τe, R₁, hInferE, hAgreeE, hAgreeTy,
           hR₁lc, hR₁K, hS₁K⟩ :=
-        hheadIH hheadFF K hwf hbelow hS₀ hKΦ hKe hKfix hheadDecl
+        hheadIH K hwf hbelow hS₀ hKΦ hKe hKfix hheadDecl
       have hΦ₁ : Φ ≤ Φ₁ := Infer.frontier_le hInferE
       have hKΦ₁ : ∀ k ∈ K, k < Φ₁ := fun k hk =>
         lt_of_lt_of_le (hKΦ k hk) hΦ₁
@@ -10149,7 +10125,7 @@ theorem InferRecGroup.complete_mono
       obtain ⟨Φ₂, S₃, R₃, hRest, hAgreeRest, hR₃lc, hR₃K, hS₃K⟩ :=
         ihrec (Φ := Φ₁) (ctx := S₂.onCtx (S₁.onCtx ctx))
           (specs := ss.map (RecSpec.onSubst (S₁ ++ S₂))) (S₀ := R₂)
-          hrestIH hrestFF (by simpa using hrest_len) hctxWF hctxBelow hR₂lc hKΦ₁ hKrest hR₂K
+          hrestIH (by simpa using hrest_len) hctxWF hctxBelow hR₂lc hKΦ₁ hKrest hR₂K
           hssLC hssBelow hssMono hdeclTail
       have hS₁₂Below : ∀ p ∈ S₁ ++ S₂, Ty.BelowFvars Φ₁ p.2 := by
         intro p hp
@@ -10177,17 +10153,11 @@ theorem Infer.complete_letRec {anns : List (Option PolyTy)} {bindings : List Exp
     (ihbindings : ∀ e ∈ bindings, Infer.CompleteAt e)
     (ihbody : Infer.CompleteAt body) :
     Infer.CompleteAt (.letRec anns bindings body) := by
-  intro hff Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKe hKfix hty
+  intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKe hKfix hty
   cases hty with
   | letRec hwfD hlenD hlinkD hlcD hmonoD hceilingD hbodyCtxD hbodyD =>
       rename_i dspecs τsD Gdecl L
       subst hbodyCtxD
-      have hbindingsFF : ∀ e ∈ bindings, e.FoundFree := by
-        cases hff with
-        | letRec hbs _ => exact hbs
-      have hbodyFF : body.FoundFree := by
-        cases hff with
-        | letRec _ hb => exact hb
       have hKgrp : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K :=
         fun y hy => hKe y (by
           simp only [Expr.tyFreeVars, List.mem_append]
@@ -10420,7 +10390,7 @@ theorem Infer.complete_letRec {anns : List (Option PolyTy)} {bindings : List Exp
         InferRecGroup.complete_mono (Φ := Φ + bindings.length)
           (ctx := groupCtx) (bindings := bindings)
           (specs := RecSpec.init Φ anns) (S₀ := R₀) (K := K)
-          ihbindings hbindingsFF (by simpa [RecSpec.init_length, hlen_ab])
+          ihbindings (by simpa [RecSpec.init_length, hlen_ab])
           hctxgWF hctxgBelow hR₀lc hKΦg hKgrp hR₀K hinitLC hinitB hinitMono hMonoMem
       have hAgreeTier : Subst.AgreesBelow Φ S₀ (S₁ ++ Rg) := by
         intro v hv
@@ -10824,7 +10794,7 @@ theorem Infer.complete_letRec {anns : List (Option PolyTy)} {bindings : List Exp
             (Subst.onCtx_below hS₁_bel (le_trans (by omega) hgle) hbelow) M hM
       obtain ⟨Φ₂, S₂, τ₂, Rb, hbodyInfer, hAgreeB, htyB,
           hRblc, hRbK, hS₂K⟩ :=
-        ihbody hbodyFF K hwfB hbelowB hRglc hKΦ₁ hKbody hRgK (by
+        ihbody K hwfB hbelowB hRglc hKΦ₁ hKbody hRgK (by
           simpa [bodyCtx] using hbodyAlg)
       have hRgSc : Subst.AgreesBelow Φ₁ Rg (Sc ++ Rg) := by
         intro v hv
@@ -10896,14 +10866,13 @@ theorem Infer.complete (e : Expr) : Infer.CompleteAt e := by
         | primBinOp op => exact Infer.complete_primBinOp
         | var i => exact Infer.complete_var
         | ctor name => exact Infer.complete_ctor
-        | found ty inner =>
-            intro hff
-            cases hff
         | lambda ann body =>
             have hbody : body.size < n := by
               simp only [Expr.size] at hsize
               omega
-            exact Infer.complete_lambda (ih body hbody)
+            intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
+            exact Infer.complete_lambda (ih body hbody) K hwf hbelow hS₀
+              hKΦ hKtv hKfix hty
         | app f arg =>
             have hf : f.size < n := by
               simp only [Expr.size] at hsize
@@ -10911,7 +10880,9 @@ theorem Infer.complete (e : Expr) : Infer.CompleteAt e := by
             have harg : arg.size < n := by
               simp only [Expr.size] at hsize
               omega
-            exact Infer.complete_app (ih f hf) (ih arg harg)
+            intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
+            exact Infer.complete_app (ih f hf) (ih arg harg) K hwf hbelow hS₀
+              hKΦ hKtv hKfix hty
         | letIn ann rhs body =>
             have hrhs : rhs.size < n := by
               simp only [Expr.size] at hsize
@@ -10919,11 +10890,12 @@ theorem Infer.complete (e : Expr) : Infer.CompleteAt e := by
             have hbody : body.size < n := by
               simp only [Expr.size] at hsize
               omega
+            intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
             exact Infer.complete_letIn (ih rhs hrhs)
-              (fun Ys => ih (rhs.openTyVars Ys) (by
-                rw [Expr.size_openTyVars]
-                exact hrhs))
-              (ih body hbody)
+                (fun Ys => ih (rhs.openTyVars Ys) (by
+                  rw [Expr.size_openTyVars]
+                  exact hrhs))
+                (ih body hbody) K hwf hbelow hS₀ hKΦ hKtv hKfix hty
         | match_ scrut branches =>
             have hscrut : scrut.size < n := by
               simp only [Expr.size] at hsize
@@ -10933,8 +10905,10 @@ theorem Infer.complete (e : Expr) : Infer.CompleteAt e := by
               have hle := Expr.size_le_sizeBranches_of_mem hbr
               simp only [Expr.size] at hsize
               omega
+            intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
             exact Infer.complete_match (ih scrut hscrut)
-              (fun br hbr => ih br.2 (hbranches br hbr))
+                (fun br hbr => ih br.2 (hbranches br hbr)) K hwf hbelow hS₀
+                hKΦ hKtv hKfix hty
         | letRec anns bindings body =>
             have hbody : body.size < n := by
               simp only [Expr.size] at hsize
@@ -10944,10 +10918,12 @@ theorem Infer.complete (e : Expr) : Infer.CompleteAt e := by
               have hle := Expr.size_le_sizeRecGroup_of_mem hb
               simp only [Expr.size] at hsize
               omega
+            intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
             exact Infer.complete_letRec
-              (fun b hb => ih b (hbindings b hb))
-              (ih body hbody)
-  exact upto (e.size + 1) e (by omega)
+                (fun b hb => ih b (hbindings b hb))
+                (ih body hbody) K hwf hbelow hS₀ hKΦ hKtv hKfix hty
+  intro Φ ctx S₀ τ₀ K hwf hbelow hS₀ hKΦ hKtv hKfix hty
+  exact upto (e.size + 1) e (by omega) K hwf hbelow hS₀ hKΦ hKtv hKfix hty
 
 /-- A relational annotated-let derivation leaves the executable worker's
     canonical skolem block rigid, even when the relation chose a later seed.
@@ -11053,8 +11029,8 @@ def InferCoreComplete (e : Expr) : Prop :=
   ∀ {Φ : Nat} {ctx : Ctx} {Φ' : Nat} {S : Subst} {τ : Ty} (K : List Nat),
     CtxWF ctx → CtxBelow Φ ctx → (∀ k ∈ K, k < Φ) →
     (∀ y ∈ e.tyFreeVars, y ∈ K) → (∀ p ∈ S, p.1 ∉ K) →
-    e.FoundFree → Infer Φ ctx e Φ' S τ →
-    (inferFoundCore K Φ ctx e).isSome
+    Infer Φ ctx e Φ' S τ →
+    (inferWithTypesCore K Φ ctx e).isSome
 
 /-- Synchronize two relational inference runs for the same source expression.
     The first run supplies a declarative typing; principality of the second
@@ -11079,17 +11055,17 @@ theorem Infer.sync {e : Expr} {K : List Nat} {ctx : Ctx}
 
 theorem inferCore_complete_prim {p : PrimLitExpr} :
     InferCoreComplete (.primLit p) := by
-  intro Φ ctx Φ' S τ K _ _ _ _ _ _ h
-  cases h <;> simp only [inferFoundCore, Option.isSome_some]
+  intro Φ ctx Φ' S τ K _ _ _ _ _ h
+  cases h <;> simp only [inferWithTypesCore, Option.isSome_some]
 
 theorem inferCore_complete_primBinOp {op : PrimBinOp} :
     InferCoreComplete (.primBinOp op) := by
-  intro Φ ctx Φ' S τ K _ _ _ _ _ _ h
+  intro Φ ctx Φ' S τ K _ _ _ _ _ h
   cases h with
-  | primBinOpIntAdd => simp only [inferFoundCore, Option.isSome_some]
-  | primBinOpIntSub => simp only [inferFoundCore, Option.isSome_some]
+  | primBinOpIntAdd => simp only [inferWithTypesCore, Option.isSome_some]
+  | primBinOpIntSub => simp only [inferWithTypesCore, Option.isSome_some]
   | primBinOpIntLt hlookT hbT hlookF hbF =>
-      rw [inferFoundCore]
+      rw [inferWithTypesCore]
       split
       next heqT => rw [hlookT] at heqT; simp at heqT
       next tc heqT =>
@@ -11104,7 +11080,7 @@ theorem inferCore_complete_primBinOp {op : PrimBinOp} :
             dif_pos (Ctor.isBoolCtor_iff.mpr hbF)]
           rfl
   | primBinOpCharLt hlookT hbT hlookF hbF =>
-      rw [inferFoundCore]
+      rw [inferWithTypesCore]
       split
       next heqT => rw [hlookT] at heqT; simp at heqT
       next tc heqT =>
@@ -11120,20 +11096,20 @@ theorem inferCore_complete_primBinOp {op : PrimBinOp} :
           rfl
 
 theorem inferCore_complete_var {i : Nat} : InferCoreComplete (.var i) := by
-  intro Φ ctx Φ' S τ K _ _ _ _ _ _ h
+  intro Φ ctx Φ' S τ K _ _ _ _ _ h
   cases h with
   | var hlook =>
-      rw [inferFoundCore]
+      rw [inferWithTypesCore]
       split
       · rename_i heq; rw [heq] at hlook; simp at hlook
       · rfl
 
 theorem inferCore_complete_ctor {name : CtorName} :
     InferCoreComplete (.ctor name) := by
-  intro Φ ctx Φ' S τ K _ _ _ _ _ _ h
+  intro Φ ctx Φ' S τ K _ _ _ _ _ h
   cases h with
   | ctor hlook =>
-      rw [inferFoundCore]
+      rw [inferWithTypesCore]
       split
       · rename_i heq; rw [heq] at hlook; simp at hlook
       · rfl
@@ -11158,17 +11134,16 @@ private theorem CtxBelow.cons_fvar {Φ : Nat} {ctx : Ctx}
 
 theorem inferCore_complete_lambda {ann : Option Ty} {body : Expr}
     (ih : InferCoreComplete body) : InferCoreComplete (.lambda ann body) := by
-  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
   cases h with
   | lambda hseed hbody =>
       cases hseed
       case none =>
           simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at hKe
           have hsome := ih K hwf.cons_fvar hbelow.cons_fvar
-            (fun k hk => by have := hKΦ k hk; omega) hKe hSK
-            (by cases hff with | lambda hb => exact hb) hbody
+            (fun k hk => by have := hKΦ k hk; omega) hKe hSK hbody
           obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hsome
-          rw [inferFoundCore, hout]
+          rw [inferWithTypesCore, hout]
           rcases out with ⟨⟨Φo, So, τo, eout, schemes⟩, houtrel, houtavoid⟩
           rfl
       case some hcl =>
@@ -11188,10 +11163,9 @@ theorem inferCore_complete_lambda {ann : Option Ty} {body : Expr}
                 (fun v hv => hKΦ v (hKe v (.inl hv)))
             · exact hbelow M hM
           have hsome := ih K hwf' hbelow' hKΦ
-            (fun y hy => hKe y (.inr hy)) hSK
-            (by cases hff with | lambda hb => exact hb) hbody
+            (fun y hy => hKe y (.inr hy)) hSK hbody
           obtain ⟨out, hout⟩ := Option.isSome_iff_exists.mp hsome
-          rw [inferFoundCore,
+          rw [inferWithTypesCore,
             dif_pos ((Ty.bvarsBelow_iff paramTy).mpr hcl), hout]
           rcases out with ⟨⟨Φo, So, τo, eout, schemes⟩, houtrel, houtavoid⟩
           rfl
@@ -11199,15 +11173,13 @@ theorem inferCore_complete_lambda {ann : Option Ty} {body : Expr}
 theorem inferCore_complete_app {f arg : Expr}
     (ihf : InferCoreComplete f) (iharg : InferCoreComplete arg) :
     InferCoreComplete (.app f arg) := by
-  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
   have happ := Infer.sourceSound h hwf hbelow K hKΦ hKe hSK
   cases h with
   | @app _ _ _ _ Φ₁ Φ₂ S₁ S₂ S₃ τf τa hf harg huni =>
       simp only [Expr.tyFreeVars, List.mem_append] at hKe
       have hKef : ∀ y ∈ f.tyFreeVars, y ∈ K := fun y hy => hKe y (.inl hy)
       have hKea : ∀ y ∈ arg.tyFreeVars, y ∈ K := fun y hy => hKe y (.inr hy)
-      have hff_f : f.FoundFree := by cases hff with | app hf _ => exact hf
-      have hff_arg : arg.FoundFree := by cases hff with | app _ ha => exact ha
       have hKfixS : ∀ k ∈ K, (S₁ ++ S₂ ++ S₃).onTy (.fvar k) = .fvar k :=
         fun k hk => Ty.substFvars_eq_self_of_no_key (fun p hp heq => by
           simp only [Ty.freeVars, List.mem_singleton] at heq
@@ -11223,7 +11195,7 @@ theorem inferCore_complete_app {f arg : Expr}
       have hSlc : ∀ p ∈ S₁ ++ S₂ ++ S₃, p.2.IsLC :=
         (Infer.lc (Infer.app hf harg huni) hwf).2
 
-      have hsf := ihf K hwf hbelow hKΦ hKef hSK₁ hff_f hf
+      have hsf := ihf K hwf hbelow hKΦ hKef hSK₁ hf
       obtain ⟨outf, hef⟩ := Option.isSome_iff_exists.mp hsf
       rcases outf with ⟨⟨Φ₁', S₁', τf', fOut, fSchemes⟩, hf', havf⟩
       obtain ⟨R_f, hR_flc, hTypef, hR_fK, hAgreef⟩ :=
@@ -11244,8 +11216,8 @@ theorem inferCore_complete_app {f arg : Expr}
         rw [hctxeq]
         exact hargty
       obtain ⟨_, _, _, _, hinfa, _, _, hR_alc₀, hR_aK₀, hSaK⟩ :=
-        (Infer.complete arg) hff_arg K hwf₁ hbelow₁ hR_flc hKΦ₁ hKea hR_fK hargty'
-      have hsa := iharg K hwf₁ hbelow₁ hKΦ₁ hKea hSaK hff_arg hinfa
+        (Infer.complete arg) K hwf₁ hbelow₁ hR_flc hKΦ₁ hKea hR_fK hargty'
+      have hsa := iharg K hwf₁ hbelow₁ hKΦ₁ hKea hSaK hinfa
       obtain ⟨outa, hea⟩ := Option.isSome_iff_exists.mp hsa
       rcases outa with ⟨⟨Φ₂', S₂', τa', argOut, argSchemes⟩, harg', hava⟩
       obtain ⟨R_a, hR_alc, hTypea, hR_aK, hAgreea⟩ :=
@@ -11284,16 +11256,14 @@ theorem inferCore_complete_app {f arg : Expr}
           (.arrow hτaLC ContainsBvarsUpTo.fvar) hUlc hUni hUK
       obtain ⟨out₃, he₃⟩ := Option.isSome_iff_exists.mp huniSome
       rcases out₃ with ⟨S₃', h₃, hav₃⟩
-      rw [inferFoundCore, hef]
+      rw [inferWithTypesCore, hef]
       simp only [hea, he₃]
       rfl
 
 theorem inferCore_complete_letIn_none {rhs body : Expr}
     (iha : InferCoreComplete rhs) (ihb : InferCoreComplete body) :
     InferCoreComplete (.letIn none rhs body) := by
-  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
-  have hRhsFF : rhs.FoundFree := by cases hff with | letIn hr _ => exact hr
-  have hBodyFF : body.FoundFree := by cases hff with | letIn _ hb => exact hb
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
   have hSlc : ∀ p ∈ S, p.2.IsLC := (Infer.lc h hwf).2
   have hlet := Infer.sourceSound h hwf hbelow K hKΦ hKe hSK
   simp only [  Option.map_none] at hlet
@@ -11335,7 +11305,7 @@ theorem inferCore_complete_letIn_none {rhs body : Expr}
         have hcofin' : TypeOfHM ((S₁d ++ S₂d).onCtx ctx)
             rhs (M.openVars Xs) := by
           simpa [Expr.openBoundTyVars] using hcofin Xs hXfresh
-        have hsr := iha K hwf hbelow hKΦ hKrhs hSK₁ hRhsFF hrhs
+        have hsr := iha K hwf hbelow hKΦ hKrhs hSK₁ hrhs
         obtain ⟨outr, herhs⟩ := Option.isSome_iff_exists.mp hsr
         rcases outr with
           ⟨⟨Φ₁', S₁', τ₁', rhsOut, rhsSchemes⟩, hrhs', hav₁⟩
@@ -11396,14 +11366,14 @@ theorem inferCore_complete_letIn_none {rhs body : Expr}
             body ( τ) := by
           simpa [ctx₁, Subst.onCtx,  Subst.onEnv,  List.map_cons] using hbodyAlg
         obtain ⟨_, _, _, _, hinfb, _, _, _, _, hSbK⟩ :=
-          (Infer.complete body) hBodyFF K hwfBody hbelowBody hR₁lc hKΦ₁
+          (Infer.complete body) K hwfBody hbelowBody hR₁lc hKΦ₁
             hKbody hR₁K hbodyAlg'
-        have hsb := ihb K hwfBody hbelowBody hKΦ₁ hKbody hSbK hBodyFF hinfb
+        have hsb := ihb K hwfBody hbelowBody hKΦ₁ hKbody hSbK hinfb
         obtain ⟨outb, hebody⟩ := Option.isSome_iff_exists.mp hsb
         rcases outb with
           ⟨⟨Φ₂', S₂', τ₂', bodyOut, bodySchemes⟩, hbody', hav₂⟩
         simp only [ctx₁] at hebody
-        rw [inferFoundCore, herhs]
+        rw [inferWithTypesCore, herhs]
         simp only [hebody]
         rfl
 
@@ -11411,9 +11381,7 @@ theorem inferCore_complete_letIn_some {σ : PolyTy} {rhs body : Expr}
     (ihao : ∀ Ys, InferCoreComplete (rhs.openTyVars Ys))
     (ihb : InferCoreComplete body) :
     InferCoreComplete (.letIn (some σ) rhs body) := by
-  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
-  have hRhsFF : rhs.FoundFree := by cases hff with | letIn hr _ => exact hr
-  have hBodyFF : body.FoundFree := by cases hff with | letIn _ hb => exact hb
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
   have hSlc : ∀ p ∈ S, p.2.IsLC := (Infer.lc h hwf).2
   obtain ⟨hAdom, hBenv⟩ :=
     Infer.letInAnn_block_fresh h hbelow (fun y hy => hKΦ y (hKe y hy))
@@ -11475,10 +11443,10 @@ theorem inferCore_complete_letIn_some {σ : PolyTy} {rhs body : Expr}
           (σ :=  σ) (L := L) (Ys := Ys)
           (by simpa [Ys] using (freshVars_length Φ σ.paramCount)) hcofin'
       obtain ⟨_, _, _, _, Drhs, _, _, _, _, hSrhsK⟩ :=
-        (Infer.complete (rhs.openTyVars Ys)) (hRhsFF.openTyVars Ys)
+        (Infer.complete (rhs.openTyVars Ys))
           (K ++ Ys) hwf hbelowN hSlc hKΦ' hKe' hKfix' htyYs
       have hrhsSome := ihao Ys (K ++ Ys) hwf hbelowN hKΦ' hKe' hSrhsK
-        (hRhsFF.openTyVars Ys) Drhs
+        Drhs
       obtain ⟨rhsResult, herhs⟩ := Option.isSome_iff_exists.mp hrhsSome
       rcases rhsResult with
         ⟨⟨Φ₁, S₁, τ₁, rhsOut, rhsSchemes⟩, hrhs, hav₁⟩
@@ -11616,16 +11584,16 @@ theorem inferCore_complete_letIn_some {σ : PolyTy} {rhs body : Expr}
         rw [hbodyctx, hctxTail, hhead]
         exact hbodyD
       obtain ⟨_, _, _, _, Dbody, _, _, _, _, hSbodyK⟩ :=
-        (Infer.complete body) hBodyFF K hbodyWF hbodyBelow hVlc
+        (Infer.complete body) K hbodyWF hbodyBelow hVlc
           (fun k hk => by have := hKΦ k hk; omega) hKbody
           (fun k hk => hVK k (List.mem_append_left _ hk)) hbodyAlg
       have hbodySome := ihb K hbodyWF hbodyBelow
-        (fun k hk => by have := hKΦ k hk; omega) hKbody hSbodyK hBodyFF Dbody
+        (fun k hk => by have := hKΦ k hk; omega) hKbody hSbodyK Dbody
       obtain ⟨bodyResult, hebody⟩ := Option.isSome_iff_exists.mp hbodySome
       rcases bodyResult with
         ⟨⟨Φ₂, S₂, τ₂, bodyOut, bodySchemes⟩, hbody, hav₂⟩
       simp only [Ys, bodyCtx] at herhs heuni hebody hesc1 hesc2
-      rw [inferFoundCore, dif_pos (PolyTy.wf_iff_bvarsBelow.mpr hσwf)]
+      rw [inferWithTypesCore, dif_pos (PolyTy.wf_iff_bvarsBelow.mpr hσwf)]
       simp only [herhs, heuni]
       rw [dif_pos hesc1, dif_pos hesc2]
       simp only [hebody]
@@ -11640,7 +11608,7 @@ theorem inferCore_complete_letIn {ann : Option PolyTy} {rhs body : Expr}
   | none => exact inferCore_complete_letIn_none iha ihb
   | some σ => exact inferCore_complete_letIn_some ihao ihb
 
-/-- Function-completeness for the found-producing branch worker.  The branch
+/-- Function-completeness for the type-metadata-producing branch worker. The branch
     index affects provenance only, so completeness is uniform in its starting
     value. -/
 def InferBranchesCoreComplete (branches : List (MatchPattern × Expr)) : Prop :=
@@ -11651,27 +11619,22 @@ def InferBranchesCoreComplete (branches : List (MatchPattern × Expr)) : Prop :=
     (∀ k ∈ K, k < Φ) →
     (∀ y ∈ Expr.tyFreeVars.BranchList.tyFreeVars branches, y ∈ K) →
     (∀ p ∈ S, p.1 ∉ K) →
-    (∀ br ∈ branches, br.2.FoundFree) →
     InferBranches Φ ctx scrutTy ρ branches Φ' S →
-    (inferFoundBranchesCore K Φ ctx scrutTy ρ branchIndex branches).isSome
+    (inferBranchesWithTypesCore K Φ ctx scrutTy ρ branchIndex branches).isSome
 
-theorem inferFoundBranchesCore_complete : ∀ (branches : List (MatchPattern × Expr)),
+theorem inferBranchesWithTypesCore_complete : ∀ (branches : List (MatchPattern × Expr)),
     (∀ br ∈ branches, InferCoreComplete br.2) →
     InferBranchesCoreComplete branches := by
   intro branches
   induction branches with
   | nil =>
-      intro _ Φ ctx scrutTy ρ Φ' S K branchIndex _ _ _ _ _ _ _ _ _ _ _
-      simp [inferFoundBranchesCore]
+      intro _ Φ ctx scrutTy ρ Φ' S K branchIndex _ _ _ _ _ _ _ _ _ _
+      simp [inferBranchesWithTypesCore]
   | cons head rest ih =>
       intro ihbr
       obtain ⟨pat, body⟩ := head
       intro Φ ctx scrutTy ρ Φ' S K branchIndex hwf hbelow hscrutLC hbscrut
-        hρLC hbρ hKΦ hKbr hSK hff h
-      have hbodyFF : body.FoundFree :=
-        hff (pat, body) (List.mem_cons_self ..)
-      have hrestFF : ∀ br ∈ rest, br.2.FoundFree :=
-        fun br hbr => hff br (List.mem_cons_of_mem _ hbr)
+        hρLC hbρ hKΦ hKbr hSK h
       have hKbody : ∀ y ∈ body.tyFreeVars, y ∈ K := fun y hy => hKbr y (by
         simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]
         exact Or.inl hy)
@@ -11841,11 +11804,11 @@ theorem inferFoundBranchesCore_complete : ∀ (branches : List (MatchPattern × 
             have hKΦbody : ∀ k ∈ K, k < Φ + ctor.paramCount :=
               fun k hk => by have := hKΦ k hk; omega
             obtain ⟨_, _, _, _, hbodyRel, _, _, _, _, hSbK⟩ :=
-              (Infer.complete body) hbodyFF K hbodyWF hbodyBelow hR₀lc
+              (Infer.complete body) K hbodyWF hbodyBelow hR₀lc
                 hKΦbody hKbody hR₀K hbodyAlg
             have hbodySome :=
               (ihbr (.named c n, body) (List.mem_cons_self ..)) K hbodyWF
-                hbodyBelow hKΦbody hKbody hSbK hbodyFF hbodyRel
+                hbodyBelow hKΦbody hKbody hSbK hbodyRel
             obtain ⟨bodyResult, hebody⟩ := Option.isSome_iff_exists.mp hbodySome
             rcases bodyResult with
               ⟨⟨Φ₁, S₁, τb, bodyOut, bodySchemes⟩, hbodyActual, hav1⟩
@@ -11967,17 +11930,17 @@ theorem inferFoundBranchesCore_complete : ∀ (branches : List (MatchPattern × 
               exact ht
             obtain ⟨_, _, _, hrestRel, _, _, _, hSrestK⟩ :=
               InferBranches.complete K (fun br _ => Infer.complete br.2)
-                hrestFF hwf' hbelow' hscrutLC' hbscrut' hρ' hbρ' hR₂lc
+                hwf' hbelow' hscrutLC' hbscrut' hρ' hbρ' hR₂lc
                 hKΦ₁ hKrest hR₂K hrestDecl
             have hrestSome := ih
               (fun br hbr => ihbr br (List.mem_cons_of_mem _ hbr)) K
               (branchIndex + 1) hwf' hbelow' hscrutLC' hbscrut' hρ' hbρ'
-              hKΦ₁ hKrest hSrestK hrestFF hrestRel
+              hKΦ₁ hKrest hSrestK hrestRel
             obtain ⟨restResult, herest⟩ := Option.isSome_iff_exists.mp hrestSome
             rcases restResult with
               ⟨⟨Φ₂, S₃, restOut, restSchemes⟩, hrestActual, hav3⟩
             simp only [branchCtx, taS₀, ta0] at hebody
-            rw [inferFoundBranchesCore]
+            rw [inferBranchesWithTypesCore]
             split
             · rename_i hnone
               rw [hlook] at hnone
@@ -11992,11 +11955,11 @@ theorem inferFoundBranchesCore_complete : ∀ (branches : List (MatchPattern × 
           cases hhead with
           | wildcard hbodyDecl =>
             obtain ⟨_, _, _, _, hbodyRel, _, _, _, _, hSbK⟩ :=
-              (Infer.complete body) hbodyFF K hwf hbelow hSlc hKΦ hKbody
+              (Infer.complete body) K hwf hbelow hSlc hKΦ hKbody
                 hKfixS hbodyDecl
             have hbodySome :=
               (ihbr (.wildcard, body) (List.mem_cons_self ..)) K hwf hbelow
-                hKΦ hKbody hSbK hbodyFF hbodyRel
+                hKΦ hKbody hSbK hbodyRel
             obtain ⟨bodyResult, hebody⟩ := Option.isSome_iff_exists.mp hbodySome
             rcases bodyResult with
               ⟨⟨Φ₁, S₁, τb, bodyOut, bodySchemes⟩, hbodyActual, hav1⟩
@@ -12083,16 +12046,16 @@ theorem inferFoundBranchesCore_complete : ∀ (branches : List (MatchPattern × 
               exact ht
             obtain ⟨_, _, _, hrestRel, _, _, _, hSrestK⟩ :=
               InferBranches.complete K (fun br _ => Infer.complete br.2)
-                hrestFF hwf' hbelow' hscrutLC' hbscrut' hρ' hbρ' hR₂lc
+                hwf' hbelow' hscrutLC' hbscrut' hρ' hbρ' hR₂lc
                 hKΦ₁ hKrest hR₂K hrestDecl
             have hrestSome := ih
               (fun br hbr => ihbr br (List.mem_cons_of_mem _ hbr)) K
               (branchIndex + 1) hwf' hbelow' hscrutLC' hbscrut' hρ' hbρ'
-              hKΦ₁ hKrest hSrestK hrestFF hrestRel
+              hKΦ₁ hKrest hSrestK hrestRel
             obtain ⟨restResult, herest⟩ := Option.isSome_iff_exists.mp hrestSome
             rcases restResult with
               ⟨⟨Φ₂, S₃, restOut, restSchemes⟩, hrestActual, hav3⟩
-            rw [inferFoundBranchesCore]
+            rw [inferBranchesWithTypesCore]
             simp only [hebody, heuni, herest, Option.isSome_some]
 
 /-- Executable completeness for matches.  The scrutinee worker fixes the
@@ -12104,11 +12067,7 @@ theorem inferCore_complete_match {scrut : Expr}
     (ihscrut : InferCoreComplete scrut)
     (ihbranches : ∀ br ∈ branches, InferCoreComplete br.2) :
     InferCoreComplete (.match_ scrut branches) := by
-  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
-  have hScrutFF : scrut.FoundFree := by
-    cases hff with | match_ hs _ => exact hs
-  have hBranchesFF : ∀ br ∈ branches, br.2.FoundFree := by
-    cases hff with | match_ _ hb => exact hb
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
   simp only [Expr.tyFreeVars, List.mem_append] at hKe
   have hKscrut : ∀ y ∈ scrut.tyFreeVars, y ∈ K :=
     fun y hy => hKe y (.inl hy)
@@ -12147,7 +12106,7 @@ theorem inferCore_complete_match {scrut : Expr}
           TypeOfMatchBranch.regular
             (hbranchesDecl b0 (List.mem_cons_self ..))
         have hscrutSome := ihscrut K hwf hbelow hKΦ hKscrut hSK₁
-          hScrutFF hscrutD
+          hscrutD
         obtain ⟨scrutResult, hescrut⟩ :=
           Option.isSome_iff_exists.mp hscrutSome
         rcases scrutResult with
@@ -12204,28 +12163,27 @@ theorem inferCore_complete_match {scrut : Expr}
         obtain ⟨_, _, _, hbranchesRel, _, _, _, hSbranchesK⟩ :=
           @InferBranches.complete (b0 :: rest) (Φ₁ + 1) (S₁.onCtx ctx)
             τs (.fvar Φ₁) R₁' K
-            (fun br _ => Infer.complete br.2) hBranchesFF hwf₁
+            (fun br _ => Infer.complete br.2) hwf₁
             hbelowBranches hτsLC hτsBel' ContainsBvarsUpTo.fvar
             (.fvar (by omega)) hR₁'lc hKΦBranches hKbr hR₁'K hbranchesAlg
-        have hbranchesSome := inferFoundBranchesCore_complete (b0 :: rest)
+        have hbranchesSome := inferBranchesWithTypesCore_complete (b0 :: rest)
           ihbranches K 0 hwf₁ hbelowBranches hτsLC hτsBel'
           ContainsBvarsUpTo.fvar (.fvar (by omega)) hKΦBranches hKbr
-          hSbranchesK hBranchesFF hbranchesRel
+          hSbranchesK hbranchesRel
         obtain ⟨branchesResult, hebranches⟩ :=
           Option.isSome_iff_exists.mp hbranchesSome
         rcases branchesResult with
           ⟨⟨Φ₂, S₂, branchesOut, branchSchemes⟩, hbranchesActual, hav2⟩
-        rw [inferFoundCore, hescrut]
+        rw [inferWithTypesCore, hescrut]
         simp only [List.head?_cons, hebranches, Option.isSome_some]
 /-- Executable producer completeness for an all-monomorphic recursion-group
-thread.  Besides success of the concrete found-producing worker, the result
+thread. Besides success of the concrete metadata-producing worker, the result
 carries the residual needed by the outer `letRec` ceiling phase. -/
-theorem inferFoundRecGroupCore_complete_mono
+theorem inferRecGroupWithTypesCore_complete_mono
     {Φ : Nat} {ctx : Ctx} {bindings : List Expr} {specs : List RecSpec}
     {S₀ : Subst} {K : List Nat} (memberIndex : Nat)
     (ihRel : ∀ e ∈ bindings, Infer.CompleteAt e)
     (ihExec : ∀ e ∈ bindings, InferCoreComplete e)
-    (hff : ∀ e ∈ bindings, e.FoundFree)
     (hlen : bindings.length = specs.length)
     (hwf : CtxWF ctx) (hbelow : CtxBelow Φ ctx)
     (hS₀ : ∀ p ∈ S₀, p.2.IsLC)
@@ -12239,7 +12197,7 @@ theorem inferFoundRecGroupCore_complete_mono
       TypeOfHM (S₀.onCtx ctx) p.1
         ( (S₀.onTy τ))) :
     ∃ out R,
-      inferFoundRecGroupCore K Φ ctx memberIndex bindings specs = some out ∧
+      inferRecGroupWithTypesCore K Φ ctx memberIndex bindings specs = some out ∧
       Subst.AgreesBelow Φ S₀ (out.1.2.1 ++ R) ∧
       (∀ p ∈ R, p.2.IsLC) ∧
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) := by
@@ -12248,11 +12206,11 @@ theorem inferFoundRecGroupCore_complete_mono
   | nil =>
     cases specs with
     | nil =>
-      let out : { r : Nat × Subst × List Expr × InferredBinderSchemes //
+      let out : { r : Nat × Subst × InferredNodeTypes × InferredBinderSchemes //
           InferRecGroup Φ ctx [] [] r.1 r.2.1 ∧ (∀ p ∈ r.2.1, p.1 ∉ K) } :=
         ⟨(Φ, [], [], []), .nil, by simp⟩
       refine ⟨out, S₀, ?_, ?_, hS₀, hKfix⟩
-      · simp [out, inferFoundRecGroupCore]
+      · simp [out, inferRecGroupWithTypesCore]
       · intro v hv
         exact Eq.refl _
     | cons s ss => simp at hlen
@@ -12263,9 +12221,6 @@ theorem inferFoundRecGroupCore_complete_mono
       obtain ⟨τ, hs⟩ := hspecMono s List.mem_cons_self
       subst s
       have hrest_len : rest.length = ss.length := by simpa using hlen
-      have hheadFF : e.FoundFree := hff e List.mem_cons_self
-      have hrestFF : ∀ e' ∈ rest, e'.FoundFree := fun e' he' =>
-        hff e' (List.mem_cons_of_mem _ he')
       have hheadRel : Infer.CompleteAt e := ihRel e List.mem_cons_self
       have hrestRel : ∀ e' ∈ rest, Infer.CompleteAt e' := fun e' he' =>
         ihRel e' (List.mem_cons_of_mem _ he')
@@ -12285,10 +12240,10 @@ theorem inferFoundRecGroupCore_complete_mono
           ( (S₀.onTy τ)) :=
         hdecl (e, .mono τ) (by simp) τ rfl
       obtain ⟨_, _, _, _, hSeed, _, _, _, _, hSeedK⟩ :=
-        hheadRel hheadFF K hwf hbelow hS₀ hKΦ hKe hKfix hheadDecl
-      have hHeadSome := hheadExec K hwf hbelow hKΦ hKe hSeedK hheadFF hSeed
+        hheadRel K hwf hbelow hS₀ hKΦ hKe hKfix hheadDecl
+      have hHeadSome := hheadExec K hwf hbelow hKΦ hKe hSeedK hSeed
       obtain ⟨outE, heinfer⟩ := Option.isSome_iff_exists.mp hHeadSome
-      obtain ⟨⟨Φ₁, S₁, τe, eOut, eSchemes⟩, hInferE, hS₁K⟩ := outE
+      obtain ⟨⟨Φ₁, S₁, τe, eNodeTypes, eSchemes⟩, hInferE, hS₁K⟩ := outE
       obtain ⟨R₁, hR₁lc, hAgreeTy, hR₁K, hAgreeE⟩ :=
         Infer.complete' hInferE hwf hbelow hS₀ K hKΦ hKe hKfix hheadDecl
       have hΦ₁ : Φ ≤ Φ₁ := Infer.frontier_le hInferE
@@ -12393,10 +12348,10 @@ theorem inferFoundRecGroupCore_complete_mono
       obtain ⟨outRest, R₃, herest, hAgreeRest, hR₃lc, hR₃K⟩ :=
         ihrec (Φ := Φ₁) (ctx := S₂.onCtx (S₁.onCtx ctx))
           (specs := ss.map (RecSpec.onSubst (S₁ ++ S₂))) (S₀ := R₂)
-          (memberIndex := memberIndex + 1) hrestRel hrestExec hrestFF
+          (memberIndex := memberIndex + 1) hrestRel hrestExec
           (by simpa using hrest_len) hctxWF hctxBelow hR₂lc hKΦ₁ hKrest hR₂K
           hssLC hssBelow hssMono hdeclTail
-      obtain ⟨⟨Φ₂, S₃, restOut, restSchemes⟩, hRest, hS₃K⟩ := outRest
+      obtain ⟨⟨Φ₂, S₃, restNodeTypes, restSchemes⟩, hRest, hS₃K⟩ := outRest
       have hS₁₂Below : ∀ p ∈ S₁ ++ S₂, Ty.BelowFvars Φ₁ p.2 := by
         intro p hp
         rcases List.mem_append.mp hp with hp | hp
@@ -12405,11 +12360,12 @@ theorem inferFoundRecGroupCore_complete_mono
       have hAgree : Subst.AgreesBelow Φ S₀ (((S₁ ++ S₂) ++ S₃) ++ R₃) :=
         @Subst.AgreesBelow.trans_append Φ Φ₁ S₀ (S₁ ++ S₂) R₂ S₃ R₃
           hΦ₁ hAgreeHead hS₁₂Below hAgreeRest
-      let out : { r : Nat × Subst × List Expr × InferredBinderSchemes //
+      let out : { r : Nat × Subst × InferredNodeTypes × InferredBinderSchemes //
           InferRecGroup Φ ctx (e :: rest) (.mono τ :: ss) r.1 r.2.1 ∧
             (∀ p ∈ r.2.1, p.1 ∉ K) } :=
         ⟨(Φ₂, S₁ ++ S₂ ++ S₃,
-            eOut.substFoundTys (S₂ ++ S₃) :: restOut,
+            (eNodeTypes.onSubst (S₂ ++ S₃)).below (.letRecRhs memberIndex) ++
+              restNodeTypes,
             (eSchemes.onSubst (S₂ ++ S₃)).below (.letRecRhs memberIndex) ++ restSchemes),
           .consMono hInferE hS₂uni hRest, by
             intro p hp
@@ -12419,7 +12375,7 @@ theorem inferFoundRecGroupCore_complete_mono
             · exact hS₂K p hp
             · exact hS₃K p hp⟩
       refine ⟨out, R₃, ?_, ?_, hR₃lc, hR₃K⟩
-      · simp only [inferFoundRecGroupCore, heinfer, heuni, herest]
+      · simp only [inferRecGroupWithTypesCore, heinfer, heuni, herest]
         rfl
       · simpa [out, List.append_assoc] using hAgree
 
@@ -12432,7 +12388,7 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)}
     (ihbindings : ∀ e ∈ bindings, InferCoreComplete e)
     (ihbody : InferCoreComplete body) :
     InferCoreComplete (.letRec anns bindings body) := by
-  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
   let S₀ : Subst := S
   let τ₀ : Ty :=  τ
   have hS₀ : ∀ p ∈ S₀, p.2.IsLC := by
@@ -12450,12 +12406,6 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)}
   | letRec hwfD hlenD hlinkD hlcD hmonoD hceilingD hbodyCtxD hbodyD =>
       rename_i dspecs τsD Gdecl L
       subst hbodyCtxD
-      have hbindingsFF : ∀ e ∈ bindings, e.FoundFree := by
-        cases hff with
-        | letRec hbs _ => exact hbs
-      have hbodyFF : body.FoundFree := by
-        cases hff with
-        | letRec _ hb => exact hb
       have hKgrp : ∀ y ∈ Expr.tyFreeVars.RecGroup.tyFreeVars bindings, y ∈ K :=
         fun y hy => hKe y (by
           simp only [Expr.tyFreeVars, List.mem_append]
@@ -12685,12 +12635,12 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)}
       have hKΦg : ∀ k ∈ K, k < Φ + bindings.length := fun k hk => by
         have := hKΦ k hk
         omega
-      -- Follow the actual found-producing recursion-group worker.
+      -- Follow the actual metadata-producing recursion-group worker.
       obtain ⟨groupOut, Rg, hegroup, hAgreeGroup, hRglc, hRgK⟩ :=
-        inferFoundRecGroupCore_complete_mono (Φ := Φ + bindings.length)
+        inferRecGroupWithTypesCore_complete_mono (Φ := Φ + bindings.length)
           (ctx := groupCtx) (bindings := bindings)
           (specs := RecSpec.init Φ anns) (S₀ := R₀) (K := K)
-          0 (fun e _ => Infer.complete e) ihbindings hbindingsFF
+          0 (fun e _ => Infer.complete e) ihbindings
           (by simpa [RecSpec.init_length, hlen_ab])
           hctxgWF hctxgBelow hR₀lc hKΦg hKgrp hR₀K hinitLC hinitB hinitMono hMonoMem
       obtain ⟨⟨Φ₁, S₁, bindingsOut, bindingSchemes⟩, hgroup, hS₁K⟩ := groupOut
@@ -13175,10 +13125,10 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)}
         · exact Subst.onCtx_below hSc_bel (le_refl _)
             (Subst.onCtx_below hS₁_bel (le_trans (by omega) hgle) hbelow) M hM
       obtain ⟨_, _, _, _, hbodySeed, _, _, _, _, hSbodyK⟩ :=
-        (Infer.complete body) hbodyFF K hwfB hbelowB hRglc hKΦ₁ hKbody hRgK (by
+        (Infer.complete body) K hwfB hbelowB hRglc hKΦ₁ hKbody hRgK (by
           simpa [bodyCtx] using hbodyAlg)
       have hbodySome := ihbody K hwfB hbelowB hKΦ₁ hKbody hSbodyK
-        hbodyFF hbodySeed
+        hbodySeed
       obtain ⟨bodyOut, hebody⟩ := Option.isSome_iff_exists.mp hbodySome
       obtain ⟨⟨Φ₂, S₂, τ₂, bodyExpr, bodySchemes⟩, hbodyInfer, hS₂K⟩ := bodyOut
       have hannsWFB : ∀ a ∈ anns, ∀ σ, a = some σ →
@@ -13215,7 +13165,7 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)}
           (fun s hs => hspecs1LC s (by simpa [hspecs1] using hs)) =
             some ⟨Sc, hSc, hScKWorker⟩ := by
         simpa [hspecs1, hG] using heceiling
-      have hebodyRaw : inferFoundCore K Φ₁
+      have hebodyRaw : inferWithTypesCore K Φ₁
           { (Sc.onCtx (S₁.onCtx ctx)) with
             env := RecSpecs.ceilingSchemes
                 (genGroupVars (RecGroup.rigidVars anns bindings)
@@ -13228,7 +13178,7 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)}
           body = some ⟨(Φ₂, S₂, τ₂, bodyExpr, bodySchemes),
             hbodyInfer, hS₂K⟩ := by
         simpa [bodyCtx, hspecs1, hG, hspecsC] using hebody
-      rw [inferFoundCore, dif_pos hannsWFB, hegroup]
+      rw [inferWithTypesCore, dif_pos hannsWFB, hegroup]
       simp only
       rw [dif_pos hspecsLCBRaw, dif_pos hspecsBelowBRaw,
         dif_pos hrigidBelowB, heceilingRaw]
@@ -13236,7 +13186,7 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)}
       rw [hebodyRaw]
       rfl
 
-/-- The concrete found-producing inference worker accepts every well-scoped
+/-- The concrete metadata-producing inference worker accepts every well-scoped
     relational inference derivation for a source expression.  As for
     `Infer.complete`, the size induction is needed because annotated `let`
     opens the annotation binders in its RHS without changing expression size. -/
@@ -13254,17 +13204,14 @@ theorem inferCore_complete (e : Expr) : InferCoreComplete e := by
         | primBinOp op => exact inferCore_complete_primBinOp
         | var i => exact inferCore_complete_var
         | ctor name => exact inferCore_complete_ctor
-        | found ty inner =>
-            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
-            cases hff
         | lambda ann body =>
             have hbody : body.size < n := by
               simp only [Expr.size] at hsize
               omega
             have ihbody : InferCoreComplete body := ih body hbody
-            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
             exact inferCore_complete_lambda (ann := ann) (body := body) ihbody
-              K hwf hbelow hKΦ hKe hSK hff h
+              K hwf hbelow hKΦ hKe hSK h
         | app f arg =>
             have hf : f.size < n := by
               simp only [Expr.size] at hsize
@@ -13274,9 +13221,9 @@ theorem inferCore_complete (e : Expr) : InferCoreComplete e := by
               omega
             have ihf : InferCoreComplete f := ih f hf
             have iharg : InferCoreComplete arg := ih arg harg
-            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
             exact inferCore_complete_app (f := f) (arg := arg) ihf iharg
-              K hwf hbelow hKΦ hKe hSK hff h
+              K hwf hbelow hKΦ hKe hSK h
         | letIn ann rhs body =>
             have hrhs : rhs.size < n := by
               simp only [Expr.size] at hsize
@@ -13290,9 +13237,9 @@ theorem inferCore_complete (e : Expr) : InferCoreComplete e := by
                   rw [Expr.size_openTyVars]
                   exact hrhs)
             have ihbody : InferCoreComplete body := ih body hbody
-            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
             exact inferCore_complete_letIn (ann := ann) (rhs := rhs)
-              (body := body) ihrhs ihopened ihbody K hwf hbelow hKΦ hKe hSK hff h
+              (body := body) ihrhs ihopened ihbody K hwf hbelow hKΦ hKe hSK h
         | match_ scrut branches =>
             have hscrut : scrut.size < n := by
               simp only [Expr.size] at hsize
@@ -13305,9 +13252,9 @@ theorem inferCore_complete (e : Expr) : InferCoreComplete e := by
             have ihscrut : InferCoreComplete scrut := ih scrut hscrut
             have ihbr : ∀ br ∈ branches, InferCoreComplete br.2 :=
               fun br hbr => ih br.2 (hbranches br hbr)
-            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
             exact inferCore_complete_match (scrut := scrut)
-              (branches := branches) ihscrut ihbr K hwf hbelow hKΦ hKe hSK hff h
+              (branches := branches) ihscrut ihbr K hwf hbelow hKΦ hKe hSK h
         | letRec anns bindings body =>
             have hbody : body.size < n := by
               simp only [Expr.size] at hsize
@@ -13320,60 +13267,57 @@ theorem inferCore_complete (e : Expr) : InferCoreComplete e := by
             have ihbs : ∀ b ∈ bindings, InferCoreComplete b :=
               fun b hb => ih b (hbindings b hb)
             have ihbody : InferCoreComplete body := ih body hbody
-            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
+            intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
             exact inferCore_complete_letRec (anns := anns)
               (bindings := bindings) (body := body) ihbs ihbody
-              K hwf hbelow hKΦ hKe hSK hff h
-  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK hff h
-  exact upto (e.size + 1) e (by omega) K hwf hbelow hKΦ hKe hSK hff h
+              K hwf hbelow hKΦ hKe hSK h
+  intro Φ ctx Φ' S τ K hwf hbelow hKΦ hKe hSK h
+  exact upto (e.size + 1) e (by omega) K hwf hbelow hKΦ hKe hSK h
 
 /-! ## 8. Public executable-completeness capstones -/
 
-/-- Every declaratively typeable, found-free annotated source is accepted by
+/-- Every declaratively typeable annotated source is accepted by
     the public principal-monotype checker. Source annotations remain part of
     the language accepted by inference. -/
 theorem principalType_complete {ctors : CtorEnv} {e : Expr} {τ : Ty}
-    (hff : e.FoundFree)
     (hty : TypeOfHM ⟨[], ctors⟩ e τ) :
     (principalType ctors e).isSome := by
+  have hcomplete : Infer.CompleteAt e := Infer.complete e
+  unfold Infer.CompleteAt at hcomplete
   obtain ⟨Φ', S, τ', R, hInfer, _hAgree, _hty, _hRlc, _hRK, hSK⟩ :=
-    (Infer.complete e) hff e.tyFreeVars CtxWF.empty CtxBelow.empty
-      (S₀ := []) (τ₀ := τ) (by simp)
+    @hcomplete e.freshFloor ⟨[], ctors⟩ [] τ e.tyFreeVars
+      CtxWF.empty CtxBelow.empty (by simp)
       (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) (by simp) (by
         simpa [Subst.onCtx, Subst.onEnv] using hty)
   have hsome := inferCore_complete e e.tyFreeVars CtxWF.empty CtxBelow.empty
-    (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) hSK hff hInfer
+    (fun k hk => Expr.lt_freshFloor hk) (fun y hy => hy) hSK hInfer
   obtain ⟨result, hresult⟩ := Option.isSome_iff_exists.mp hsome
   rcases result with
-    ⟨⟨Φr, Sr, τr, output, schemes⟩, hResultInfer, hResultAvoid⟩
+    ⟨⟨Φr, Sr, τr, nodeTypes, schemes⟩, hResultInfer, hResultAvoid⟩
   rw [principalType, inferCore, hresult]
   rfl
 
-/-- Whole-program type checking accepts every declaratively typeable,
-    found-free annotated source. -/
+/-- Whole-program type checking accepts every declaratively typeable annotated source. -/
 theorem typecheck_complete {ctors : CtorEnv} {e : Expr} {τ : Ty}
-    (hff : e.FoundFree)
     (hty : TypeOfHM ⟨[], ctors⟩ e τ) :
     (typecheck ctors e).isSome := by
-  simpa [typecheck] using principalType_complete hff hty
+  simpa [typecheck] using principalType_complete hty
 
 /-- On source expressions, executable principal-type acceptance is exactly
     declarative HM typeability. -/
 theorem principalType_accepts_iff {ctors : CtorEnv} {e : Expr}
-    (hff : e.FoundFree) :
-    (principalType ctors e).isSome ↔
+    : (principalType ctors e).isSome ↔
       ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
   constructor
   · intro hsome
     obtain ⟨τ, hτ⟩ := Option.isSome_iff_exists.mp hsome
     exact ⟨τ, principalType_source_sound hτ⟩
   · rintro ⟨τ, hτ⟩
-    exact principalType_complete hff hτ
+    exact principalType_complete hτ
 
-/-- The public whole-program checker succeeds exactly on found-free annotated
-    sources that are declaratively HM-typeable. -/
+/-- The public whole-program checker succeeds exactly on annotated sources that
+    are declaratively HM-typeable. -/
 theorem typecheck_accepts_iff {ctors : CtorEnv} {e : Expr}
-    (hff : e.FoundFree) :
-    (typecheck ctors e).isSome ↔
+    : (typecheck ctors e).isSome ↔
       ∃ τ, TypeOfHM ⟨[], ctors⟩ e τ := by
-  simpa [typecheck] using principalType_accepts_iff (ctors := ctors) hff
+  simpa [typecheck] using principalType_accepts_iff (ctors := ctors) (e := e)

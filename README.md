@@ -114,9 +114,9 @@ The formal evaluator is fuelled. For actually running programs – including nai
 - `fhm` / `fhm run` — parse, lower, infer (print binding and body types), exhaustiveness, evaluate (`Live.lean`; `--json` for machine output)
 - `fhm diagnose [path]` — diagnostics + hover symbols as JSON for editors (`Diagnose.lean` / `EditorSupport.lean`)
 
-The batch CLI consumes `inferFound`, reads
+The batch CLI consumes `inferWithTypes`, reads
 validated declarations or inferred group-exit schemes by binder identity, and
-joins occurrence/expression types through the separate provenance map. There is one
+joins its path-indexed `NodeTypeMap` with the separate provenance map. There is one
 HM language mode. The retired `BL` and Nat/count-binder syntax is rejected by the
 front end rather than erased into ordinary lists.
 

@@ -185,7 +185,6 @@ structure Lowered where
   sourceTargets : SourceTargetMap
   coreOrigins : CoreOriginMap
   binderTargets : BinderTargetMap
-  deriving Repr
 
 namespace Lowered
 
@@ -227,7 +226,6 @@ def combineAuthored (source : SourceNode) (expr : Expr) (parts : List Lowered)
 
 mutual
 def logicalCorePaths : Expr → List CorePath
-  | .found _ inner => logicalCorePaths inner
   | .primLit _ | .primBinOp _ | .var _ | .ctor _ => [[]]
   | .lambda _ body => [] :: (logicalCorePaths body).map (.lambdaBody :: ·)
   | .app fn arg => [] ::
@@ -593,11 +591,8 @@ def lowerWithProvenance (ctors : CtorEnv) (surface : Surface.Expr)
   -- to `sourceTargetsTotal` instead of letting both sides omit the same node.
   pure { lowered with sourceNodes := identified.nodes }
 
-def foundTyAtCorePath (e : Expr) (path : CorePath) : Option Ty := do
-  let node ← e.atCorePath path
-  match node with
-  | .found ty _ => some ty
-  | _ => none
+def nodeTyAtCorePath (types : NodeTypeMap) (path : CorePath) : Option Ty :=
+  (types.find? fun pair => pair.1 == path).map (·.2)
 
 abbrev SourceTypeMap := List (SourceId × List (CorePath × Ty))
 abbrev InferredSurfaceBinderSchemes := List (SurfaceBinderSite × PolyTy)
@@ -607,7 +602,7 @@ structure TypedLowered where
   /-- The declaration environment shared by lowering and HM inference. -/
   ctors : CtorEnv
   lowering : Lowered
-  inference : FoundResult
+  inference : InferenceResult
   sourceTypes : SourceTypeMap
   inferredBinderSchemes : InferredSurfaceBinderSchemes
   patternBinderTypes : PatternBinderTypeMap
@@ -643,6 +638,12 @@ def TypedLowered.sourceTypesTotal (r : TypedLowered) : Bool :=
             paths.length == types.length &&
               (paths.zip types).all fun (path, typedPath, _ty) => path == typedPath
 
+/-- Inference emits exactly one monotype for every logical Core expression.
+    This validates both totality and path uniqueness before editor consumers
+    join source provenance against the side map. -/
+def TypedLowered.nodeTypesTotal (r : TypedLowered) : Bool :=
+  exactlyOnce (logicalCorePaths r.lowering.expr) (r.inference.nodeTypes.map Prod.fst)
+
 def patternBinderTargets (targets : BinderTargetMap) : BinderTargetMap :=
   targets.filter fun (surface, _target) =>
     match surface with
@@ -656,7 +657,7 @@ def captureRhsPaths : BinderOriginTarget → List CorePath
       | _ => []
 
 /-- Pattern-binder monotypes are total over the structural capture domain:
-    every surviving capture let has a `.found` RHS type and eliminated captures
+    every surviving capture let has an inferred RHS type and eliminated captures
     have an explicit empty result. -/
 def TypedLowered.patternBinderTypesTotal (r : TypedLowered) : Bool :=
   let targets := patternBinderTargets r.lowering.binderTargets
@@ -667,10 +668,10 @@ def TypedLowered.patternBinderTypesTotal (r : TypedLowered) : Bool :=
       site == typedSite && paths.length == types.length &&
         (paths.zip types).all fun (path, typedPath, _ty) => path == typedPath
 
-def typesAtTarget (output : Expr) : OriginTarget → List (CorePath × Ty)
+def typesAtTarget (nodeTypes : NodeTypeMap) : OriginTarget → List (CorePath × Ty)
   | .absent _ => []
   | .present paths => paths.filterMap fun path =>
-      (foundTyAtCorePath output path).map fun ty => (path, ty)
+      (nodeTyAtCorePath nodeTypes path).map fun ty => (path, ty)
 
 def joinBinderSchemes (targets : BinderTargetMap) (schemes : BinderSchemeMap) :
     InferredSurfaceBinderSchemes :=
@@ -687,14 +688,14 @@ def joinBinderSchemes (targets : BinderTargetMap) (schemes : BinderSchemeMap) :
             | some pair => [(surface, pair.2)]
             | none => []
 
-def patternBinderTypesAt (output : Expr) (targets : BinderTargetMap) : PatternBinderTypeMap :=
+def patternBinderTypesAt (nodeTypes : NodeTypeMap) (targets : BinderTargetMap) : PatternBinderTypeMap :=
   targets.filterMap fun (surface, target) =>
     match surface, target with
     | .patCapture _ _ _, .present sites =>
         let types := sites.flatMap fun
           | .patCapture paths _ => paths.filterMap fun path =>
               let rhsPath := path ++ [.letRhs]
-              (foundTyAtCorePath output rhsPath).map fun ty => (rhsPath, ty)
+              (nodeTyAtCorePath nodeTypes rhsPath).map fun ty => (rhsPath, ty)
           | _ => []
         some (surface, types)
     | .patCapture _ _ _, .absent _ => some (surface, [])
@@ -703,14 +704,14 @@ def patternBinderTypesAt (output : Expr) (targets : BinderTargetMap) : PatternBi
 /-- Infer exactly the lowered Core term, then join types and inferred schemes by
     the paths emitted during lowering. No Surface/Core structural zip occurs. -/
 def inferWithProvenance (ctors : CtorEnv) (lowering : Lowered) : Option TypedLowered := do
-  let inference ← inferFound ctors lowering.expr
+  let inference ← inferWithTypes ctors lowering.expr
   pure {
     ctors
     lowering
     inference
     sourceTypes := lowering.sourceTargets.map fun (id, target) =>
-      (id, typesAtTarget inference.output target)
+      (id, typesAtTarget inference.nodeTypes target)
     inferredBinderSchemes := joinBinderSchemes lowering.binderTargets inference.binderSchemes
-    patternBinderTypes := patternBinderTypesAt inference.output lowering.binderTargets }
+    patternBinderTypes := patternBinderTypesAt inference.nodeTypes lowering.binderTargets }
 
 end SurfaceBridge.Provenance

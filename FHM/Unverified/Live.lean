@@ -13,7 +13,7 @@ import Lean.Data.Json
 
 Read a `.fhm` source file (or stdin) and run:
 
-`parse → lower → inferFound → HM report → exhaustiveness → erase → evaluateUnsafe`
+`parse → lower → HM inference → report → exhaustiveness → erase → evaluateUnsafe`
 
 Display types come from the producer's actual group-exit binder schemes.
 
@@ -125,7 +125,7 @@ structure CheckedProgram where
   /-- Inferred HM types rendered with source type-variable names when possible. -/
   report : ProgramReport
   checkNs : Nat
-  elaborated : Expr
+  runtimeExpr : Expr
 
 structure PipelineOk where
   report : ProgramReport
@@ -139,9 +139,8 @@ structure LiveArgs where
 
 /-- Read actual group-exit schemes by logical binder identity. Empty surface
 groups emit no Core node; every nonempty top-level group emits one `letRec`.
-Neither inferred RHS monotypes nor the deleted elaboration wrapper spine are
-used to reconstruct generalisation. -/
-private def foundTopBindingTypes (groups : List (List Surface.Binding))
+Inferred RHS monotypes are not used to reconstruct generalisation. -/
+private def topBindingTypes (groups : List (List Surface.Binding))
     (core : Expr) (schemes : BinderSchemeMap) : Option (List (ValName × PolyTy)) :=
   let rec go (groups : List (List Surface.Binding)) (path : CorePath) :
       Option (List (ValName × PolyTy)) := do
@@ -165,7 +164,7 @@ private def foundTopBindingTypes (groups : List (List Surface.Binding))
           pure (here ++ later)
   go groups []
 
-/-- Parse → provenance-aware lower → found inference → exhaustiveness →
+/-- Parse → provenance-aware lower → path-keyed HM inference → exhaustiveness →
 fully erased execution. -/
 def checkPipeline (src : String) :
     IO (Except PipelineErr CheckedProgram) := do
@@ -211,10 +210,10 @@ def checkPipeline (src : String) :
     | none => return .error { stage := .typecheck, message := "typechecking failed" }
     | some typed => pure typed
   let τ := typed.inference.ty
-  let found := typed.inference
+  let inference := typed.inference
   let tCheck1 ← IO.monoNanosNow
   let bodyσ := genScheme [] [] τ
-  let bindings ← match foundTopBindingTypes p.groups lowered.expr found.binderSchemes with
+  let bindings ← match topBindingTypes p.groups lowered.expr inference.binderSchemes with
     | some bindings => pure bindings
     | none => return .error {
         stage := .typecheck
@@ -233,18 +232,18 @@ def checkPipeline (src : String) :
   if !(checkExhaustive ctors p.term) then
     return .error { stage := .exhaustiveness, message := "match not exhaustive" }
 
-  let e := found.output.erase
+  let e := lowered.expr.erase
 
   return .ok {
     report := report
     checkNs := tCheck1 - tCheck0
-    elaborated := e
+    runtimeExpr := e
   }
 
 /-- Evaluate an already-checked program (timed). -/
 def evalCheckedIO (c : CheckedProgram) : IO (Except PipelineErr PipelineOk) := do
   let tEval0 ← IO.monoNanosNow
-  match SmallStep.evaluateUnsafe c.elaborated with
+  match SmallStep.evaluateUnsafe c.runtimeExpr with
   | none =>
       return .error { stage := .eval, message := "stuck (diverged or no step)" }
   | some v =>

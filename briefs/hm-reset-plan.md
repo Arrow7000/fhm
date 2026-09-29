@@ -1,6 +1,6 @@
 # Plan: return FHM to an erased Hindley--Milner language
 
-**Status:** investigation and recommendation, 2026-09-29
+**Status:** implemented, 2026-09-29
 
 **Branch:** `hm-reset-investigation`
 
@@ -117,19 +117,20 @@ the same genuine recursive cycle may instantiate that annotated function at diff
 types. That matches the tempting “one type in `g`, another in `h`” intuition, but is
 not the simpler all-members-monomorphic SCC policy selected here.
 
-### The present Path R state
+### The pre-reset Path R state
 
-The current implementation is already type-erased and Damas--Milner at runtime and at
-recursive SCCs:
+The pre-reset implementation was already type-erased and Damas--Milner at runtime and
+at recursive SCCs:
 
 - `RecSpec.init` gives every recursive member a monotype;
 - `Infer.letRec`, the executable inferer, and `TypeOfHM.letRec` all enforce a single
   in-SCC instance;
 - annotations act as export ceilings/checks rather than enabling in-SCC scheme use;
 - body and later-SCC environments contain generalized schemes;
-- `Expr.erase` removes annotations and `.found`; `Step` never inspects a type.
+- `Expr.erase` removes annotations; `Step` never inspects a type. Before Gate C,
+  `.found` was also removed here, but inferred node types now live outside syntax.
 
-The current recursive smoke matrix confirms this boundary: ordinary mutual recursion,
+The recursive smoke matrix confirms this boundary: ordinary mutual recursion,
 post-SCC polymorphism, and fixed-instantiation annotated groups pass; annotated and
 unannotated in-SCC multi-instantiation fail.
 
@@ -145,22 +146,26 @@ Baseline verification on 2026-09-29:
 - `node scripts/scratch-hm-audit.mjs`: 37/37 fixtures behaved as expected;
 - `node scripts/hm-editor-smoke.mjs`: 10/10 checks passed.
 
+Final Gate C verification on the same date additionally covered the metadata-specific
+`NodeTypeMapTest` and provenance suites, the 1,643-job CLI/editor/grammar build, both
+safe exhaustive hover sweeps, the VS Code lifecycle regression, the browser
+playground, and the verified/unverified boundary check.
+
 ## Expression type metadata after BL
 
-The current `.found Ty Expr` node is chiefly the internal carrier for per-expression
-monotypes. It powers arbitrary-expression hover, lambda/pattern binder fallback types,
-and the BL walkers. It does **not** own generalized binder schemes: inference already
-emits those in a separate `BinderSchemeMap`. The editor also does not consume the
-decorated tree directly. `inferWithProvenance` first joins its payloads into
-source/path type tables, and `HMDisplay` reads those tables.
+Before Gate C, the `.found Ty Expr` node was chiefly the internal carrier for per-expression
+monotypes. It powered arbitrary-expression hover, lambda/pattern binder fallback
+types, and the BL walkers. It did **not** own generalized binder schemes: inference
+already emitted those in a separate `BinderSchemeMap`. The editor also did not
+consume the decorated tree directly. `inferWithProvenance` first joined its payloads
+into source/path type tables, and `HMDisplay` read those tables.
 
-Once BL is gone, keep that observable behavior but remove `.found` from `Expr`:
+Gate C kept that observable behavior while removing `.found` from `Expr`:
 
-- inference returns `NodeTypeMap := List (CorePath × Ty)` alongside its root type and
-  `BinderSchemeMap`;
+- `inferWithTypes` returns an `InferenceResult` containing
+  `NodeTypeMap := List (CorePath × Ty)`, the root type, and `BinderSchemeMap`;
 - recursive inference rebases child maps under path components and applies final
-  substitutions/skolem closing to their types, exactly as it currently transforms
-  `.found` payloads;
+  substitutions/skolem closing to their types;
 - lowering continues to own `SourceId → CorePath` provenance;
 - hover joins the two maps once per check;
 - evaluation consumes the unchanged source Core term after ordinary annotation
@@ -170,8 +175,10 @@ This is the smallest conventional design for this repository. A separate typed A
 would also be clean, but would duplicate the Core tree and require another family of
 shape/erasure traversals. Re-inferring only the hovered subexpression is unattractive:
 it must reconstruct its lexical environment, scoped variables, expected type, and
-recursive-group constraints. The metadata-table migration should remain separate
-from BL deletion so hover parity can be tested independently.
+recursive-group constraints. The metadata-table migration remained separate from BL
+deletion so hover parity could be tested independently. `TypedLowered.nodeTypesTotal`
+now checks exact one-to-one coverage of the logical Core paths before editor
+artifacts are exposed.
 
 ## Why not revert to `be9cc14`
 
@@ -218,7 +225,7 @@ requirement and should not disappear in the middle of the bounds proof rewrite.
 Use three meaningful integration gates. Focused modules may be red inside a campaign;
 the whole repository need only be green at the gate.
 
-### Gate A -- user-facing HM-only language and product
+### Gate A -- user-facing HM-only language and product (complete)
 
 This folds the old contract-freeze, bounds-product, and surface-language phases into
 one deletion campaign.
@@ -242,7 +249,7 @@ Gate A is complete when no user program or tool mode can request or construct bo
 and the verified target, CLI, editor, grammar generator, HM fixture suite, recursion
 matrix, hover sweep, and verified/unverified boundary check are all green.
 
-### Gate B -- direct HM Core, Algorithm W, and recursive rule
+### Gate B -- direct HM Core, Algorithm W, and recursive rule (complete)
 
 This is one bounded red-to-green proof campaign, combining the old Core-purification
 and recursive-rule phases.
@@ -254,9 +261,11 @@ and recursive-rule phases.
   equality, `Unifies`, and standard MGU factorization.
 - Restate soundness, completeness, principality, progress, preservation, and surface
   safety directly over the inferred context, term, and type.
-- At the same time delete stale `RecSpec.poly`, `RecSpecs.PolyTyped`,
-  `InferRecGroup.consPoly`, and their proof branches. Retain annotations only as
-  checks/ceilings on the single solved monotype for each SCC member.
+- Delete `RecSpecs.PolyTyped` and the old source path that made annotations available
+  as schemes inside an SCC. Retain annotations only as checks/ceilings on the single
+  solved monotype for each SCC member. `RecSpec.poly` remains the declarative
+  descriptor for an annotated member's post-group export scheme; `RecSpec.init`, the
+  source inferer, produces only `.mono` witnesses for recursive RHS checking.
 - Mine `b016fcf`/`be9cc14` for direct-HM proof shapes without replacing the mature
   surface/compiler stack.
 
@@ -267,7 +276,7 @@ immediately afterward.
 Gate B requires direct, axiom-clean HM soundness, completeness, principality, and
 runtime/surface safety, plus the unchanged recursion polarity matrix.
 
-### Gate C -- expression metadata and final audit
+### Gate C -- expression metadata and final audit (complete)
 
 Keep the `.found` migration separate because it changes observable editor metadata
 and needs a precise hover-parity gate.
@@ -313,7 +322,7 @@ Add focused checks for:
 
 ## Expected end state
 
-The repository keeps its mature language front end and verified compiler/tooling
+The repository now keeps its mature language front end and verified compiler/tooling
 pipeline, but its trusted static core again says exactly what the language is:
 ordinary erased rank-1 Hindley--Milner with monomorphic recursive SCCs and
 generalization at group exit. Bounds survives only in git history and in the preserved

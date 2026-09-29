@@ -276,10 +276,6 @@ inductive Expr
   /-- A type constructor -/
   | ctor (name : CtorName)
   | match_ (scrutinee : Expr) (branches : List (MatchPattern × Expr))
-  /-- A type discovered by inference for an expression. Structural and typing
-      traversals can inspect or pass through it, but runtime evaluation must
-      first remove it with `stripFound`/`erase`; `Step` has no `.found` rule. -/
-  | found (ty : Ty) (inner : Expr)
   /-- A (mutually) recursive binding group with **per-binding optional scheme
       annotations** (mirroring `letIn`'s `ann`). The `bindings` (the RHSs
       `e₀ … e_{n-1}`) AND `body` are all in scope of the `n = bindings.length`
@@ -294,69 +290,6 @@ inductive Expr
       monomorphic within the group. The all-`none` and all-`some` groups are
       exactly the historical `letRec` / `letRecAnn` nodes. -/
   | letRec (anns : List (Option PolyTy)) (bindings : List Expr) (body : Expr)
-
-mutual
-/-- Remove all inference-discovered type wrappers from an expression. -/
-def Expr.stripFound : Expr → Expr
-  | .primLit p => .primLit p
-  | .primBinOp op => .primBinOp op
-  | .lambda ann body => .lambda ann body.stripFound
-  | .app f input => .app f.stripFound input.stripFound
-  | .letIn ann bindingExpr body => .letIn ann bindingExpr.stripFound body.stripFound
-  | .var i => .var i
-  | .ctor name => .ctor name
-  | .match_ scrutinee branches =>
-      .match_ scrutinee.stripFound (Expr.stripFoundBranches branches)
-  | .found _ inner => inner.stripFound
-  | .letRec anns bindings body =>
-      .letRec anns (bindings.map Expr.stripFound) body.stripFound
-
-def Expr.stripFoundBranches : List (MatchPattern × Expr) → List (MatchPattern × Expr)
-  | [] => []
-  | (pat, body) :: rest => (pat, body.stripFound) :: Expr.stripFoundBranches rest
-end
-
-mutual
-/-- Transform only the types carried by inference-produced `found` wrappers.
-    In particular, source-written annotations are left byte-for-byte unchanged. -/
-def Expr.mapFoundTys (f : Ty → Ty) : Expr → Expr
-  | .primLit p => .primLit p
-  | .primBinOp op => .primBinOp op
-  | .lambda ann body => .lambda ann (body.mapFoundTys f)
-  | .app fn arg => .app (fn.mapFoundTys f) (arg.mapFoundTys f)
-  | .letIn ann rhs body => .letIn ann (rhs.mapFoundTys f) (body.mapFoundTys f)
-  | .var i => .var i
-  | .ctor name => .ctor name
-  | .match_ scrut branches =>
-      .match_ (scrut.mapFoundTys f) (Expr.mapFoundTysBranches f branches)
-  | .found ty inner => .found (f ty) (inner.mapFoundTys f)
-  | .letRec anns bindings body =>
-      .letRec anns (bindings.map (Expr.mapFoundTys f)) (body.mapFoundTys f)
-
-def Expr.mapFoundTysBranches (f : Ty → Ty) :
-    List (MatchPattern × Expr) → List (MatchPattern × Expr)
-  | [] => []
-  | (pat, body) :: rest =>
-      (pat, body.mapFoundTys f) :: Expr.mapFoundTysBranches f rest
-end
-
-/-- Expressions which contain no inference-discovered type wrappers. -/
-inductive Expr.FoundFree : Expr → Prop
-  | primLit : FoundFree (.primLit p)
-  | primBinOp : FoundFree (.primBinOp op)
-  | lambda : FoundFree body → FoundFree (.lambda ann body)
-  | app : FoundFree f → FoundFree input → FoundFree (.app f input)
-  | letIn : FoundFree bindingExpr → FoundFree body → FoundFree (.letIn ann bindingExpr body)
-  | var : FoundFree (.var i)
-  | ctor : FoundFree (.ctor name)
-  | match_ :
-      FoundFree scrutinee →
-      (∀ branch ∈ branches, FoundFree branch.2) →
-      FoundFree (.match_ scrutinee branches)
-  | letRec :
-      (∀ binding ∈ bindings, FoundFree binding) →
-      FoundFree body →
-      FoundFree (.letRec anns bindings body)
 
 /-- Build `[.bvar start, .bvar (start+1), ..., .bvar (start+count-1)]`. -/
 def Ty.bvarRangeFrom (start : Nat) : Nat → List Ty
@@ -643,7 +576,6 @@ def Expr.rec_strong.{u} {motive : Expr → Sort u}
                     motive scrutinee →
                     (∀ pat e, (pat, e) ∈ branches → motive e) →
                     motive (.match_ scrutinee branches))
-    (found      : ∀ ty inner, motive inner → motive (.found ty inner))
     (letRec     : ∀ anns bindings body,
                     (∀ e ∈ bindings, motive e) →
                     motive body →
@@ -653,30 +585,27 @@ def Expr.rec_strong.{u} {motive : Expr → Sort u}
   | .primBinOp op       => primBinOp op
   | .lambda paramAnn body        =>
       lambda paramAnn body
-        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ found letRec body)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec body)
   | .app f input        =>
       app f input
-        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ found letRec f)
-        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ found letRec input)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec f)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec input)
   | .letIn ann be body      =>
       letIn ann be body
-        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ found letRec be)
-        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ found letRec body)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec be)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec body)
   | .var n => var n
   | .ctor nm            => ctor nm
   | .match_ scrutinee branches =>
       match_ scrutinee branches
-        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ found letRec scrutinee)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec scrutinee)
         (fun _pat e _hb =>
-          Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ found letRec e)
-  | .found ty inner =>
-      found ty inner
-        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ found letRec inner)
+          Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec e)
   | .letRec anns bindings body =>
       letRec anns bindings body
         (fun e _hb =>
-          Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ found letRec e)
-        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ found letRec body)
+          Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec e)
+        (Expr.rec_strong primLit primBinOp lambda app letIn var ctor match_ letRec body)
 termination_by e => sizeOf e
 decreasing_by
   all_goals simp_wf
@@ -685,130 +614,6 @@ decreasing_by
     | (have h := List.sizeOf_lt_of_mem _hb
        simp only [Prod.mk.sizeOf_spec] at h
        omega)
-
-/-- Applying a function to inferred payloads cannot alter the underlying source
-    expression recovered by `stripFound`. -/
-@[simp] theorem Expr.stripFound_mapFoundTys (f : Ty → Ty) :
-    ∀ (e : Expr), (e.mapFoundTys f).stripFound = e.stripFound := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit | primBinOp | var | ctor => simp [Expr.mapFoundTys, Expr.stripFound]
-  | lambda ann body ih => simp [Expr.mapFoundTys, Expr.stripFound, ih]
-  | app fn arg ihFn ihArg => simp [Expr.mapFoundTys, Expr.stripFound, ihFn, ihArg]
-  | letIn ann rhs body ihRhs ihBody =>
-      simp [Expr.mapFoundTys, Expr.stripFound, ihRhs, ihBody]
-  | match_ scrut branches ihScrut ihBranches =>
-      simp only [Expr.mapFoundTys, Expr.stripFound, ihScrut, Expr.match_.injEq, true_and]
-      induction branches with
-      | nil => simp [Expr.mapFoundTysBranches, Expr.stripFoundBranches]
-      | cons head rest ihRest =>
-          obtain ⟨pat, body⟩ := head
-          simp only [Expr.mapFoundTysBranches, Expr.stripFoundBranches, List.cons.injEq,
-            Prod.mk.injEq, true_and]
-          exact ⟨ihBranches pat body List.mem_cons_self,
-            ihRest (fun p b h => ihBranches p b (List.mem_cons_of_mem _ h))⟩
-  | found ty inner ih => simpa [Expr.mapFoundTys, Expr.stripFound] using ih
-  | letRec anns bindings body ihBindings ihBody =>
-      simp only [Expr.mapFoundTys, Expr.stripFound, Expr.letRec.injEq, ihBody]
-      refine ⟨True.intro, ?_, True.intro⟩
-      rw [List.map_map]
-      apply List.map_congr_left
-      intro binding hBinding
-      exact ihBindings binding hBinding
-
-/-- Stripping a source expression which is already free of inferred wrappers is
-    the identity. -/
-theorem Expr.FoundFree.stripFound_eq {e : Expr} (h : e.FoundFree) :
-    e.stripFound = e := by
-  revert h
-  induction e using Expr.rec_strong with
-  | primLit | primBinOp | var | ctor => intro _; simp [Expr.stripFound]
-  | lambda ann body ih =>
-    intro h
-    cases h with
-    | lambda hbody => simp [Expr.stripFound, ih hbody]
-  | app fn arg ihfn iharg =>
-    intro h
-    cases h with
-    | app hfn harg => simp [Expr.stripFound, ihfn hfn, iharg harg]
-  | letIn ann rhs body ihrhs ihbody =>
-    intro h
-    cases h with
-    | letIn hrhs hbody => simp [Expr.stripFound, ihrhs hrhs, ihbody hbody]
-  | match_ scrut branches ihscrut ihbranches =>
-    intro h
-    cases h with
-    | match_ hscrut hbranches =>
-      simp only [Expr.stripFound, ihscrut hscrut, Expr.match_.injEq, true_and]
-      induction branches with
-      | nil => simp [Expr.stripFoundBranches]
-      | cons head rest ihRest =>
-        obtain ⟨pat, body⟩ := head
-        simp only [Expr.stripFoundBranches, List.cons.injEq, Prod.mk.injEq, true_and]
-        exact ⟨ihbranches pat body List.mem_cons_self (hbranches (pat, body) List.mem_cons_self),
-          ihRest (fun p b hmem => ihbranches p b (List.mem_cons_of_mem _ hmem))
-            (fun branch hmem => hbranches branch (List.mem_cons_of_mem _ hmem))⟩
-  | found _ _ _ => intro h; cases h
-  | letRec anns bindings body ihbindings ihbody =>
-    intro h
-    cases h with
-    | letRec hbindings hbody =>
-      simp only [Expr.stripFound, Expr.letRec.injEq, ihbody hbody]
-      refine ⟨True.intro, ?_, True.intro⟩
-      refine (List.map_congr_left ?_).trans (List.map_id _)
-      intro binding hmem
-      exact ihbindings binding hmem (hbindings binding hmem)
-
-/-- Strip all inferred wrappers from a branch list whose bodies are source
-    expressions. -/
-theorem Expr.stripFoundBranches_eq_self_of_foundFree
-    {branches : List (MatchPattern × Expr)}
-    (h : ∀ branch ∈ branches, branch.2.FoundFree) :
-    Expr.stripFoundBranches branches = branches := by
-  induction branches with
-  | nil => simp [Expr.stripFoundBranches]
-  | cons branch rest ih =>
-    obtain ⟨pat, body⟩ := branch
-    simp only [Expr.stripFoundBranches, List.cons.injEq, Prod.mk.injEq, true_and]
-    exact ⟨(h (pat, body) List.mem_cons_self).stripFound_eq,
-      ih (fun branch hmem => h branch (List.mem_cons_of_mem _ hmem))⟩
-
-/-- The normalization `stripFound` always returns a source expression. -/
-theorem Expr.stripFound_foundFree (e : Expr) : e.stripFound.FoundFree := by
-  induction e using Expr.rec_strong with
-  | primLit => simp only [Expr.stripFound]; exact .primLit
-  | primBinOp => simp only [Expr.stripFound]; exact .primBinOp
-  | var => simp only [Expr.stripFound]; exact .var
-  | ctor => simp only [Expr.stripFound]; exact .ctor
-  | lambda _ _ ih => simp only [Expr.stripFound]; exact .lambda ih
-  | app _ _ ihf iha => simp only [Expr.stripFound]; exact .app ihf iha
-  | letIn _ _ _ ihr ihb => simp only [Expr.stripFound]; exact .letIn ihr ihb
-  | found _ _ ih => simpa [Expr.stripFound] using ih
-  | match_ scrut branches ihscrut ihbranches =>
-    simp only [Expr.stripFound]
-    refine .match_ ihscrut ?_
-    induction branches with
-    | nil =>
-      intro branch hmem
-      simp only [Expr.stripFoundBranches] at hmem
-      cases hmem
-    | cons head rest ihRest =>
-      obtain ⟨pat, body⟩ := head
-      intro branch hmem
-      simp only [Expr.stripFoundBranches, List.mem_cons] at hmem
-      rcases hmem with h | h
-      · subst h
-        exact ihbranches pat body List.mem_cons_self
-      · exact ihRest (fun p b hb => ihbranches p b (List.mem_cons_of_mem _ hb)) branch h
-  | letRec anns bindings body ihbindings ihbody =>
-    simp only [Expr.stripFound]
-    refine .letRec ?_ ihbody
-    intro binding hmem
-    rcases List.mem_map.mp hmem with ⟨e, he, rfl⟩
-    exact ihbindings e he
-
-
-
 
 mutual
 
@@ -925,7 +730,6 @@ def Expr.shiftFrom (threshold : Nat) (n : Nat) : Expr → Expr
   | .match_ scrut branches =>
       .match_ (scrut.shiftFrom threshold n)
         (BranchList.shiftFrom threshold n branches)
-  | .found ty inner => .found ty (inner.shiftFrom threshold n)
   | .letRec anns bindings body =>
       -- anns are types, untouched by term-var shifting; the `bindings.length`
       -- group binders are in scope in every RHS and the body
@@ -1036,7 +840,6 @@ def Expr.instTyAux (d : Nat) (Ts : List Ty) : Expr → Expr
   | .ctor c             => .ctor c
   | .match_ scrut branches =>
       .match_ (scrut.instTyAux d Ts) (BranchList.instTyAux d Ts branches)
-  | .found ty inner => .found (ty.openTyFrom d Ts) (inner.instTyAux d Ts)
   | .letRec anns bindings body =>
       -- Each PRESENT annotation `σⱼ` introduces `σⱼ.paramCount` inner type binders
       -- over BOTH its own `σⱼ.body` and binding `j`, so both are SHIELDED at
@@ -1189,9 +992,6 @@ theorem Expr.instTyAux_nil : ∀ (e : Expr) (d : Nat), e.instTyAux d [] = e := b
     apply List.map_congr_left
     rintro ⟨p, b⟩ hpb
     simp only [ihbs p b hpb d, id_eq]
-  | found ty inner ih =>
-    intro d
-    simp [Expr.instTyAux, Ty.openTyFrom_nil, ih]
   | letRec anns bindings body ihbs ihb =>
     intro d
     simp only [Expr.instTyAux, Expr.letRec.injEq]
@@ -1236,7 +1036,6 @@ def Expr.substN (k : Nat) (vs : List Expr) : Expr → Expr
   | .ctor n            => .ctor n
   | .match_ scrut branches =>
       .match_ (scrut.substN k vs) (BranchList.substN k vs branches)
-  | .found ty inner => .found ty (inner.substN k vs)
   | .letRec anns bindings body =>
       -- anns are types, untouched by term-var substitution; the `bindings.length`
       -- group binders are in scope in every RHS and the body
@@ -1528,7 +1327,6 @@ private theorem isValue_isCtorChain_correct (e : Expr) :
       | var a => simp [isValue, isCtorChain] at hv
       | letIn a b c => simp [isValue, isCtorChain] at hv
       | match_ a b => simp [isValue, isCtorChain] at hv
-      | found ty inner => simp [isValue, isCtorChain] at hv
       | letRec a b c => simp [isValue, isCtorChain] at hv
       | ctor c =>
         have ha : isValue arg = true := by simpa only [isValue, isCtorChain, Bool.true_and] using hv
@@ -1551,7 +1349,6 @@ private theorem isValue_isCtorChain_correct (e : Expr) :
   | var _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
   | letIn _ _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
   | match_ _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
-  | found _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
   | letRec _ _ _ _ _ => exact ⟨⟨nofun, nofun⟩, ⟨nofun, nofun⟩⟩
 
 theorem isValue_iff_IsValue {e : Expr} : isValue e = true ↔ IsValue e :=
@@ -1576,7 +1373,6 @@ private theorem CtorAppliedTo_of_getCtorArgs {e name args}
       simp [hf] at h
       obtain ⟨rfl, rfl⟩ := h
       exact .step (ih hf)
-  | found _ _ _ => simp [getCtorArgs] at h
   | _ => simp [getCtorArgs] at h
 
 private theorem getCtorArgs_of_CtorAppliedTo {e name args}
@@ -1599,7 +1395,6 @@ private theorem CtorAppliedTo_of_IsCtorChain :
     | app hf _ =>
       obtain ⟨name, args, hca⟩ := ihf hf
       exact ⟨name, args ++ [v], .step hca⟩
-  | found _ _ _ => intro h; cases h
   | primLit p => intro h; cases h
   | primBinOp op => intro h; cases h
   | lambda a b _ => intro h; cases h
@@ -1662,7 +1457,6 @@ private theorem isCtorChain_imp_isValue {e : Expr}
   | var a => simp [isCtorChain] at h
   | letIn a b c => simp [isCtorChain] at h
   | match_ a b => simp [isCtorChain] at h
-  | found ty inner => simp [isCtorChain] at h
   | letRec a b c => simp [isCtorChain] at h
 
 private theorem isValue_step_none {e : Expr} (hv : isValue e = true) :
@@ -1675,7 +1469,6 @@ private theorem isValue_step_none {e : Expr} (hv : isValue e = true) :
   | var _ => simp [isValue] at hv
   | letIn _ _ _ => simp [isValue] at hv
   | match_ _ _ => simp [isValue] at hv
-  | found _ _ => simp [isValue] at hv
   | letRec _ _ _ => simp [isValue] at hv
   | app f arg =>
     cases f with
@@ -1687,7 +1480,6 @@ private theorem isValue_step_none {e : Expr} (hv : isValue e = true) :
     | var _ => simp [isValue, isCtorChain] at hv
     | letIn _ _ _ => simp [isValue, isCtorChain] at hv
     | match_ _ _ => simp [isValue, isCtorChain] at hv
-    | found _ _ => simp [isValue, isCtorChain] at hv
     | letRec _ _ _ => simp [isValue, isCtorChain] at hv
     | ctor c =>
       have ha : isValue arg = true := by simpa only [isValue, isCtorChain, Bool.true_and] using hv
@@ -1705,7 +1497,6 @@ private theorem isValue_step_none {e : Expr} (hv : isValue e = true) :
       | var _ => simp [isCtorChain] at hv'
       | letIn _ _ _ => simp [isCtorChain] at hv'
       | match_ _ _ => simp [isCtorChain] at hv'
-      | found _ _ => simp [isCtorChain] at hv'
       | letRec _ _ _ => simp [isCtorChain] at hv'
 
 private theorem step_some_not_isValue {e e' : Expr}
@@ -1771,7 +1562,6 @@ theorem step_sound {e e' : Expr} (h : step e = some e') : Step e e' := by
       | .none => simp [hscrut] at h
       | .some scrut' =>
         simp [hscrut] at h; subst h; exact .matchScrut (ihscrut hscrut)
-  | found _ _ _ => simp [step] at h
   | letRec anns bindings body _ _ =>
     simp only [step, Option.some.injEq] at h
     subst h
@@ -1863,9 +1653,6 @@ inductive Expr.WellScopedUnder : Nat → Expr → Prop
       Expr.WellScopedUnder n scrut →
       Expr.BranchListWellScoped n branches →
       Expr.WellScopedUnder n (.match_ scrut branches)
-  | found {n ty inner} :
-      Expr.WellScopedUnder n inner →
-      Expr.WellScopedUnder n (.found ty inner)
   | letRec  {n anns bindings body} :
       (∀ e ∈ bindings, Expr.WellScopedUnder (n + bindings.length) e) →
       Expr.WellScopedUnder (n + bindings.length) body →
@@ -1998,9 +1785,6 @@ inductive AllMatchesExhaustive : CtorEnv → Expr → Prop where
   | letIn :
     AllMatchesExhaustive ctors rhs → AllMatchesExhaustive ctors body →
     AllMatchesExhaustive ctors (.letIn ann rhs body)
-  | found :
-    AllMatchesExhaustive ctors inner →
-    AllMatchesExhaustive ctors (.found ty inner)
   /-- Exhaustiveness for match: every constructor in the ctor env whose type
       matches `tyName` has a corresponding branch. The `tyName` is existentially
       quantified — the caller picks it (typically from the typing derivation) —
@@ -2140,16 +1924,6 @@ def Ty.substFvars : List (Nat × Ty) → Ty → Ty
   | []              , ty => ty
   | (Z, U) :: rest  , ty => Ty.substFvars rest (Ty.substFvar Z U ty)
 
-/-- Apply a free-type substitution to inference-produced payloads only. Source
-    annotations are intentionally outside this operation. -/
-def Expr.substFoundTys (S : List (Nat × Ty)) (e : Expr) : Expr :=
-  e.mapFoundTys (Ty.substFvars S)
-
-@[simp] theorem Expr.stripFound_substFoundTys (S : List (Nat × Ty)) (e : Expr) :
-    (e.substFoundTys S).stripFound = e.stripFound := by
-  unfold Expr.substFoundTys
-  exact Expr.stripFound_mapFoundTys (Ty.substFvars S) e
-
 /-- Open a scheme body's bvars with named fvars: `.bvar i ↦ .fvar (Xs.get i)`. -/
 def Ty.openVars (Xs : List Nat) (ty : Ty) : Ty :=
   ty.instantiate (fun i => (Xs[i]?).elim (.bvar i) .fvar)
@@ -2193,7 +1967,6 @@ def Expr.substTyFvar (Z : Nat) (U : Ty) : Expr → Expr
   | .ctor c             => .ctor c
   | .match_ scrut branches =>
       .match_ (scrut.substTyFvar Z U) (BranchList.substTyFvar Z U branches)
-  | .found ty inner => .found (Ty.substFvar Z U ty) (inner.substTyFvar Z U)
   | .letRec anns bindings body =>
       -- anns are kept type annotations: push `[Z ↦ U]` through them too. Free
       -- type variables are global names, so no shield-depth bookkeeping needed.
@@ -2288,7 +2061,6 @@ def Expr.openTyVarsAux (d : Nat) (Xs : List Nat) : Expr → Expr
   | .ctor c             => .ctor c
   | .match_ scrut branches =>
       .match_ (scrut.openTyVarsAux d Xs) (BranchList.openTyVarsAux d Xs branches)
-  | .found ty inner => .found (Ty.openVarsFrom d Xs ty) (inner.openTyVarsAux d Xs)
   | .letRec anns bindings body =>
       -- Each PRESENT annotation `σⱼ` introduces `σⱼ.paramCount` inner type binders
       -- over BOTH its own `σⱼ.body` and binding `j` (the binding is scheme-relative
@@ -2316,122 +2088,6 @@ def RecGroup.openTyVarsAux (d : Nat) (Xs : List Nat) :
       e.openTyVarsAux (d + RecAnn.params a) Xs :: RecGroup.openTyVarsAux d Xs as rest
 end
 
-/-- Opening scoped type variables only rewrites type annotations, so it cannot
-    introduce an inference-produced `found` wrapper. -/
-theorem Expr.FoundFree.openTyVarsAux {e : Expr} (h : e.FoundFree)
-    (d : Nat) (Xs : List Nat) : (e.openTyVarsAux d Xs).FoundFree := by
-  revert h d Xs
-  induction e using Expr.rec_strong with
-  | primLit p =>
-    intro _ _ _
-    simp only [Expr.openTyVarsAux]
-    exact .primLit
-  | primBinOp op =>
-    intro _ _ _
-    simp only [Expr.openTyVarsAux]
-    exact .primBinOp
-  | var i =>
-    intro _ _ _
-    simp only [Expr.openTyVarsAux]
-    exact .var
-  | ctor name =>
-    intro _ _ _
-    simp only [Expr.openTyVarsAux]
-    exact .ctor
-  | lambda ann body ih =>
-    intro h d Xs
-    cases h with
-    | lambda hbody =>
-      simp only [Expr.openTyVarsAux]
-      exact .lambda (ih hbody d Xs)
-  | app f arg ihf iharg =>
-    intro h d Xs
-    cases h with
-    | app hf ha =>
-      simp only [Expr.openTyVarsAux]
-      exact .app (ihf hf d Xs) (iharg ha d Xs)
-  | letIn ann rhs body ihrhs ihbody =>
-    intro h d Xs
-    cases h with
-    | letIn hrhs hbody =>
-      cases ann with
-      | none =>
-        simp only [Expr.openTyVarsAux]
-        exact .letIn (ihrhs hrhs d Xs) (ihbody hbody d Xs)
-      | some σ =>
-        simp only [Expr.openTyVarsAux]
-        exact .letIn (ihrhs hrhs (d + σ.paramCount) Xs) (ihbody hbody d Xs)
-  | match_ scrut branches ihscrut ihbranches =>
-    intro h d Xs
-    cases h with
-    | match_ hscrut hbranches =>
-      simp only [Expr.openTyVarsAux]
-      refine .match_ (ihscrut hscrut d Xs) ?_
-      clear hscrut ihscrut
-      revert ihbranches hbranches
-      induction branches with
-      | nil =>
-        intro _ _ branch hmem
-        simp only [BranchList.openTyVarsAux] at hmem
-        cases hmem
-      | cons head rest ih =>
-        obtain ⟨pat, body⟩ := head
-        intro ihbranches hbranches branch hmem
-        simp only [BranchList.openTyVarsAux, List.mem_cons] at hmem
-        rcases hmem with hmem | hmem
-        · subst branch
-          exact ihbranches pat body List.mem_cons_self
-            (hbranches (pat, body) List.mem_cons_self) d Xs
-        · exact ih
-            (fun p b hmem => ihbranches p b (List.mem_cons_of_mem _ hmem))
-            (fun branch hmem => hbranches branch (List.mem_cons_of_mem _ hmem))
-            branch hmem
-  | found ty inner ih =>
-    intro h _ _
-    cases h
-  | letRec anns bindings body ihbindings ihbody =>
-    intro h d Xs
-    cases h with
-    | letRec hbindings hbody =>
-      simp only [Expr.openTyVarsAux]
-      refine .letRec ?_ (ihbody hbody d Xs)
-      have hrec : ∀ (anns : List (Option PolyTy)) (bindings : List Expr),
-          (∀ binding ∈ bindings, ∀ d Xs, binding.FoundFree →
-            (binding.openTyVarsAux d Xs).FoundFree) →
-          (∀ binding ∈ bindings, binding.FoundFree) →
-          ∀ binding ∈ RecGroup.openTyVarsAux d Xs anns bindings, binding.FoundFree := by
-        intro anns bindings
-        induction bindings generalizing anns with
-        | nil =>
-          intro _ _ binding hmem
-          simp only [RecGroup.openTyVarsAux] at hmem
-          cases hmem
-        | cons binding rest ih =>
-          intro hopen hfound
-          cases anns with
-          | nil =>
-            intro binding' hmem
-            simp only [RecGroup.openTyVarsAux, List.mem_cons] at hmem
-            rcases hmem with hmem | hmem
-            · subst binding'
-              exact hopen binding List.mem_cons_self d Xs
-                (hfound binding List.mem_cons_self)
-            · exact ih []
-                (fun e he d' Xs' hff => hopen e (List.mem_cons_of_mem _ he) d' Xs' hff)
-                (fun e he => hfound e (List.mem_cons_of_mem _ he)) binding' hmem
-          | cons ann anns =>
-            intro binding' hmem
-            simp only [RecGroup.openTyVarsAux, List.mem_cons] at hmem
-            rcases hmem with hmem | hmem
-            · subst binding'
-              exact hopen binding List.mem_cons_self (d + RecAnn.params ann) Xs
-                (hfound binding List.mem_cons_self)
-            · exact ih anns
-                (fun e he d' Xs' hff => hopen e (List.mem_cons_of_mem _ he) d' Xs' hff)
-                (fun e he => hfound e (List.mem_cons_of_mem _ he)) binding' hmem
-      exact hrec anns bindings
-        (fun binding hmem d' Xs' hff => ihbindings binding hmem hff d' Xs') hbindings
-
 mutual
 /-- Close a named scoped type-variable block throughout an expression. The
     binder-depth bookkeeping exactly mirrors `Expr.openTyVarsAux`. -/
@@ -2451,8 +2107,6 @@ def Expr.closeTyVarsAux (d : Nat) (Xs : List Nat) : Expr → Expr
   | .ctor name => .ctor name
   | .match_ scrut branches =>
       .match_ (scrut.closeTyVarsAux d Xs) (BranchList.closeTyVarsAux d Xs branches)
-  | .found ty inner =>
-      .found (Ty.closeVarsFrom d Xs ty) (inner.closeTyVarsAux d Xs)
   | .letRec anns bindings body =>
       .letRec (RecGroup.closeAnns d Xs anns)
         (RecGroup.closeTyVarsAux d Xs anns bindings)
@@ -2601,9 +2255,6 @@ theorem Expr.instTyAux_fvar_eq_openTyVarsAux (Xs : List Nat) :
         Prod.mk.injEq, true_and]
       exact ⟨ihbs p b List.mem_cons_self d,
         ihtl (fun p' b' hm => ihbs p' b' (List.mem_cons_of_mem _ hm))⟩
-  | found ty inner ih =>
-    intro d
-    simp [Expr.instTyAux, Expr.openTyVarsAux, Ty.openTyFrom_fvar_eq_openVarsFrom, ih d]
   | letRec anns bindings body ihbs ihb =>
     intro d
     simp only [Expr.instTyAux, Expr.openTyVarsAux, RecGroup.instTyAux_eq_zip,
@@ -2658,12 +2309,6 @@ private theorem List.mem_zip_map_right_ex {α β γ : Type _} {g : β → γ} :
     the term-level analogue of `PolyTy.openVars`. -/
 def Expr.openTyVars (Xs : List Nat) (e : Expr) : Expr := e.openTyVarsAux 0 Xs
 
-/-- Top-level scoped-type-variable opening preserves the absence of inferred
-    `found` wrappers. -/
-theorem Expr.FoundFree.openTyVars {e : Expr} (h : e.FoundFree) (Xs : List Nat) :
-    (e.openTyVars Xs).FoundFree := by
-  exact h.openTyVarsAux 0 Xs
-
 /-- Top-level coincidence (`d = 0`): type-beta at fresh `fvar`s is scoped opening. -/
 theorem Expr.instTy_fvar_eq_openTyVars (Xs : List Nat) (e : Expr) :
     e.instTy (Xs.map Ty.fvar) = e.openTyVars Xs :=
@@ -2680,10 +2325,9 @@ def Expr.openBoundTyVars : Option PolyTy → List Nat → Expr → Expr
 
 /-! ### Type erasure (`erase`)
 
-The uniform erasure of the erasure-on-`Step` migration
-(`briefs/design-memo-erasure-migration.md` §3.1): drop all source annotations
-and inference markers — `lambda (some t)` → `lambda none`, `letIn (some σ)` →
-`letIn none`, `letRec anns` → `letRec (all none)`, and `.found _ e` → `e`.
+Type erasure drops all source annotations:
+`lambda (some t)` → `lambda none`, `letIn (some σ)` →
+`letIn none`, and `letRec anns` → `letRec (all none)`.
 Structural elsewhere. `erase e` is the term the machine (`SmallStep.Step`) runs,
 typed by `TypeOfHM`; inference soundness against it is `Infer.sound`. -/
 def Expr.erase : Expr → Expr
@@ -2696,7 +2340,6 @@ def Expr.erase : Expr → Expr
   | .ctor c             => .ctor c
   | .match_ scrut branches =>
       .match_ scrut.erase (branches.map fun pe => (pe.1, pe.2.erase))
-  | .found _ inner => inner.erase
   | .letRec _ bindings body =>
       .letRec (bindings.map (fun _ => none)) (bindings.map Expr.erase) body.erase
 termination_by e => sizeOf e
@@ -2822,9 +2465,6 @@ theorem Expr.erase_openTyVarsAux (Xs : List Nat) :
       simp only [Expr.openTyVarsAux, Expr.erase_match, ihs Xs d]
       congr 1
       exact BranchList.erase_openTyVarsAux d Xs branches (fun pb hpb => ihbs pb.1 pb.2 hpb Xs d)
-  | found ty inner ih =>
-      intro d
-      simp [Expr.openTyVarsAux, Expr.erase, ih Xs d]
   | letRec anns bindings body ihbs ihb =>
       intro d
       simp only [Expr.openTyVarsAux, Expr.erase_letRec, ihb Xs d]
@@ -2905,9 +2545,6 @@ theorem Expr.openTyVarsAux_eq_self_of_erase_image (e : Expr) :
       congr 1
       exact BranchList.openTyVarsAux_eq_self_of_erase_image d Xs branches
         (fun pb hpb => ihbs pb.1 pb.2 hpb d Xs)
-  | found ty inner ih =>
-      intro d Xs
-      simpa [Expr.erase] using ih d Xs
   | letRec anns bindings body ihbs ihb =>
       intro d Xs
       simp only [Expr.openTyVarsAux, Expr.erase_letRec, ihb d Xs]
@@ -2938,7 +2575,6 @@ theorem Expr.erase_idem (e : Expr) : e.erase.erase = e.erase := by
       exact List.map_congr_left (fun pe hpe => by
         cases pe with
         | mk p b => simp [ihbs p b hpe])
-  | found _ _ ih => simpa [Expr.erase] using ih
   | letRec anns bindings body ihbs ihb =>
       simp only [Expr.erase_letRec, ihb]
       congr 1
@@ -3285,10 +2921,6 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     TypeOfHM ctx input argTy →
     TypeOfHM ctx (.app f input) retTy
 
-  /-- A found wrapper records the type already established for its inner term. -/
-  | found :
-    TypeOfHM ctx inner ty →
-    TypeOfHM ctx (.found ty inner) ty
 
   /-- Cofinite let-generalisation; see `GeneralisesTo`. -/
   | letIn {M : PolyTy} {L : List Nat} :
@@ -3404,9 +3036,6 @@ private theorem TypeOfHM.weaken_scheme_for_erasure
     | app _ _ ihf ihinput =>
         intro ep heq
         exact .app (ihf ep heq) (ihinput ep heq)
-    | found _ ihinner =>
-        intro ep heq
-        exact .found (ihinner ep heq)
     | lambda hpc hann heqctx hbody ihbody =>
         expose_names
         intro ep heq
@@ -3588,7 +3217,6 @@ theorem TypeOfHM.erase_preserves_typing {ctx : Ctx} {e : Expr} {τ : Ty}
       exact TypeOfHM.lambda hpc (by simp [Option.Pins]) rfl ihbody
   | app _ _ ihf ihinput =>
       simpa only [Expr.erase] using (TypeOfHM.app ihf ihinput)
-  | found _ ihinner => simpa only [Expr.erase] using ihinner
   | letIn hwf _ _ _ _ ihcofin ihbody =>
       expose_names
       subst bodyCtx
@@ -3896,9 +3524,6 @@ theorem Expr.substTyFvar_openTyVarsAux
       simp only [BranchList.openTyVarsAux, BranchList.substTyFvar]
       rw [ih_branches pat body List.mem_cons_self d,
           ih_tl (fun pat' body' hm => ih_branches pat' body' (List.mem_cons_of_mem _ hm))]
-  | found ty inner ih =>
-    intro d
-    simp [Expr.openTyVarsAux, Expr.substTyFvar, Ty.substFvar_openVarsFrom h_lc h_Z, ih d]
   | letRec anns bindings body ih_bindings ih_body =>
     intro d
     simp only [Expr.openTyVarsAux, Expr.substTyFvar]
@@ -3986,9 +3611,6 @@ theorem Expr.shiftFrom_openTyVarsAux {Xs : List Nat} (n : Nat) :
       simp only [BranchList.openTyVarsAux, BranchList.shiftFrom]
       rw [ih_branches pat body List.mem_cons_self d (k + pat.bindCount),
           ih_tl (fun pat' body' hm => ih_branches pat' body' (List.mem_cons_of_mem _ hm))]
-  | found ty inner ih =>
-    intro d k
-    simp [Expr.openTyVarsAux, Expr.shiftFrom, ih d k]
   | letRec anns bindings body ih_bindings ih_body =>
     intro d k
     simp only [Expr.openTyVarsAux, Expr.shiftFrom, RecGroup.openTyVarsAux_length]
@@ -5447,7 +5069,6 @@ def Expr.tyFreeVars : Expr → List Nat
   | .var _             => []
   | .ctor _             => []
   | .match_ scrut branches => scrut.tyFreeVars ++ BranchList.tyFreeVars branches
-  | .found ty inner => ty.freeVars ++ inner.tyFreeVars
   | .letRec anns bindings body =>
       -- kept annotations contribute the free type vars in their bodies (scoped vars).
       AnnList.tyFreeVars anns ++ RecGroup.tyFreeVars bindings ++ body.tyFreeVars
@@ -5507,9 +5128,6 @@ theorem Expr.substTyFvar_eq_self_of_not_mem_tyFreeVars {Z : Nat} {U : Ty} {e : E
       simp only [BranchList.substTyFvar, List.cons.injEq, Prod.mk.injEq, true_and]
       refine ⟨ihbranches pat body List.mem_cons_self hbranches.1, ?_⟩
       exact ihtl (fun p e hp => ihbranches p e (List.mem_cons_of_mem _ hp)) hbranches.2
-  | found ty inner ih =>
-    simp only [Expr.tyFreeVars, List.mem_append, not_or] at h
-    simp [Expr.substTyFvar, Ty.substFvar_fresh h.1, ih h.2]
   | letRec anns bindings body ih_bindings ih_body =>
     simp only [Expr.tyFreeVars, List.mem_append, not_or] at h
     obtain ⟨⟨hanns, hbindings⟩, hbody⟩ := h
@@ -5586,15 +5204,6 @@ theorem Expr.substTyFvars_var {σ : List (Nat × Ty)} {n : Nat} :
   | cons hd tl ih =>
     obtain ⟨Z, U⟩ := hd
     simpa [Expr.substTyFvars, Expr.substTyFvar] using ih
-
-theorem Expr.substTyFvars_found {σ : List (Nat × Ty)} {ty : Ty} {inner : Expr} :
-    Expr.substTyFvars σ (.found ty inner)
-      = .found (Ty.substFvars σ ty) (inner.substTyFvars σ) := by
-  induction σ generalizing ty inner with
-  | nil => rfl
-  | cons hd tl ih =>
-    obtain ⟨Z, U⟩ := hd
-    simp only [Expr.substTyFvars, Expr.substTyFvar, Ty.substFvars, ih]
 
 theorem Expr.substTyFvars_lambda {σ : List (Nat × Ty)} {ann : Option Ty} {body : Expr} :
     Expr.substTyFvars σ (.lambda ann body)
@@ -5830,16 +5439,6 @@ theorem Expr.substTyFvars_zip_openTyVarsAux {Ys Xs : List Nat}
     rw [ihbranches p b hpb d (fun y hy hc => hfresh y hy (by
       simp only [Expr.tyFreeVars, List.mem_append]
       exact .inr (Expr.mem_branchList_tyFreeVars hpb hc)))]
-  | found ty inner ih =>
-    intro d hfresh
-    simp only [Expr.openTyVarsAux, Expr.substTyFvars_found, Expr.found.injEq]
-    refine ⟨?_, ih d (fun y hy hc => hfresh y hy (by
-      simp only [Expr.tyFreeVars, List.mem_append]
-      exact .inr hc))⟩
-    exact Ty.substFvars_zip_openVarsFrom h_len h_Ys_nodup
-      (fun y hy hc => hfresh y hy (by
-        simp only [Expr.tyFreeVars, List.mem_append]
-        exact .inl hc)) h_Ys_Xs
   | letRec anns bindings body ih_bindings ih_body =>
     intro d hfresh
     simp only [Expr.openTyVarsAux, Expr.substTyFvars_letRec, Expr.letRec.injEq]
@@ -5941,16 +5540,6 @@ theorem Expr.substTyFvars_zip_openTyVarsAux_concrete {Ys : List Nat} {Vs : List 
     rw [ihbranches p b hpb d (fun y hy hc => hfresh y hy (by
       simp only [Expr.tyFreeVars, List.mem_append]
       exact .inr (Expr.mem_branchList_tyFreeVars hpb hc)))]
-  | found ty inner ih =>
-    intro d hfresh
-    simp only [Expr.openTyVarsAux, Expr.instTyAux, Expr.substTyFvars_found, Expr.found.injEq]
-    refine ⟨?_, ih d (fun y hy hc => hfresh y hy (by
-      simp only [Expr.tyFreeVars, List.mem_append]
-      exact .inr hc))⟩
-    exact Ty.substFvars_zip_openVarsFrom_concrete h_len h_Ys_nodup
-      (fun y hy hc => hfresh y hy (by
-        simp only [Expr.tyFreeVars, List.mem_append]
-        exact .inl hc)) h_Ys_Vs h_Vs_lc
   | letRec anns bindings body ih_bindings ih_body =>
     intro d hfresh
     simp only [Expr.openTyVarsAux, Expr.instTyAux, Expr.substTyFvars_letRec, Expr.letRec.injEq]
@@ -5992,7 +5581,6 @@ def Expr.size : Expr → Nat
   | .var _ => 1
   | .ctor _             => 1
   | .match_ scrut branches => 1 + scrut.size + Expr.sizeBranches branches
-  | .found _ inner => 1 + inner.size
   | .letRec _ bindings body  => 1 + Expr.sizeRecGroup bindings + body.size
 def Expr.sizeBranches : List (MatchPattern × Expr) → Nat
   | []                  => 0
@@ -6034,10 +5622,6 @@ theorem Expr.size_openTyVarsAux {Xs : List Nat} :
       simp only [BranchList.openTyVarsAux, Expr.sizeBranches]
       rw [ihbs pat body List.mem_cons_self d,
           ihtl (fun p e hm => ihbs p e (List.mem_cons_of_mem _ hm))]
-  | found _ inner ih =>
-    intro d
-    simp only [Expr.openTyVarsAux, Expr.size]
-    rw [ih d]
   | letRec anns bindings body ih_bindings ih_body =>
     intro d
     simp only [Expr.openTyVarsAux, Expr.size]
@@ -6241,16 +5825,6 @@ theorem Expr.tyFreeVars_openTyVarsAux {Xs : List Nat} :
             · exact .inl (.inr h)
             · exact .inr h
       rcases hbr with h | h
-      · exact .inl (.inr h)
-      · exact .inr h
-  | found ty inner ih =>
-    intro d z hz
-    simp only [Expr.openTyVarsAux, Expr.tyFreeVars, List.mem_append] at hz ⊢
-    rcases hz with hz | hz
-    · rcases Ty.freeVars_openVarsFrom_subset z hz with h | h
-      · exact .inl (.inl h)
-      · exact .inr h
-    · rcases ih d z hz with h | h
       · exact .inl (.inr h)
       · exact .inr h
   | letRec anns bindings body ih_bindings ih_body =>
@@ -6578,7 +6152,6 @@ def Expr.TyBvarBounded (n : Nat) : Expr → Prop
   | .ctor _             => True
   | .match_ scrut branches =>
       scrut.TyBvarBounded n ∧ Expr.TyBvarBounded.BranchList n branches
-  | .found ty inner => ContainsBvarsUpTo n ty ∧ inner.TyBvarBounded n
   | .letRec anns bindings body =>
       -- Depth-aware (mirrors `letIn (some σ)`): each present scheme body may
       -- reference the ambient `n` enclosing type binders in addition to its own
@@ -6667,9 +6240,6 @@ theorem Expr.TyBvarBounded.mono : ∀ {n m : Nat} {e : Expr},
     intro h hnm
     simp only [Expr.TyBvarBounded, Expr.TyBvarBounded.BranchList_iff] at h ⊢
     exact ⟨ihs h.1 hnm, fun p b hmem => ihbs p b hmem (h.2 p b hmem) hnm⟩
-  | found ty inner ih =>
-    intro h hnm
-    exact ⟨h.1.mono hnm, ih h.2 hnm⟩
   | letRec anns bindings body ihbs ihb =>
     intro h hnm
     simp only [Expr.TyBvarBounded] at h ⊢
@@ -6763,10 +6333,6 @@ theorem Expr.tyBvarBounded_of_openTyVarsAux (Xs : List Nat) :
       Expr.TyBvarBounded.BranchList_iff] at h ⊢
     exact ⟨ihs d h.1, fun p b hmem =>
       ihbs p b hmem d (h.2 p (b.openTyVarsAux d Xs) (List.mem_map_of_mem hmem))⟩
-  | found ty inner ih =>
-    intro d h
-    simp only [Expr.openTyVarsAux, Expr.TyBvarBounded] at h ⊢
-    exact ⟨Ty.containsBvars_of_openVarsFrom d Xs h.1, ih d h.2⟩
   | letRec anns bindings body ihbs ihb =>
     intro d h
     simp only [Expr.openTyVarsAux, Expr.TyBvarBounded] at h ⊢
@@ -6865,11 +6431,6 @@ theorem Expr.openTyVarsAux_instTyAux (Ys : List Nat) (Ts : List Ty) :
     rintro ⟨p, b⟩ hpb
     simp only [Function.comp_def]
     exact congrArg (Prod.mk p) (ihbs p b hpb d d' (hbs p b hpb))
-  | found ty inner ih =>
-    intro d d' h
-    simp only [Expr.TyBvarBounded] at h
-    simp only [Expr.instTyAux, Expr.openTyVarsAux, Expr.found.injEq]
-    exact ⟨Ty.openVarsFrom_openTyFrom d' d Ys Ts h.1, ih d d' h.2⟩
   | letRec anns bindings body ihbs ihb =>
     intro d d' h
     simp only [Expr.TyBvarBounded] at h
@@ -7124,11 +6685,6 @@ theorem Expr.openTyVarsAux_eq_self_of_tyBvarBounded (Xs : List Nat) :
     rintro ⟨p, b⟩ hpb
     simp only [id_eq]
     rw [ihbs p b hpb d (hbs p b hpb)]
-  | found ty inner ih =>
-    intro d h
-    simp only [Expr.TyBvarBounded] at h
-    simp only [Expr.openTyVarsAux, Expr.found.injEq]
-    exact ⟨Ty.openVarsFrom_eq_self_of_bvars h.1, ih d h.2⟩
   | letRec anns bindings body ihbs ihb =>
     intro d h
     simp only [Expr.openTyVarsAux, Expr.TyBvarBounded] at h ⊢
@@ -7342,10 +6898,6 @@ theorem AllMatchesExhaustive.shiftFrom {ctors : CtorEnv} :
           obtain ⟨pat, body, hmem, hcov⟩ := h_cover2 ctorName ctor hlook htyName
           exact ⟨pat, body.shiftFrom (threshold + pat.bindCount) n,
             BranchList.mem_shiftFrom_of_mem hmem, hcov⟩)
-  | found ty inner ih =>
-    intro h threshold n
-    cases h with
-    | found hinner => exact .found (ih hinner threshold n)
   | letRec anns bindings body ih_bindings ih_body =>
     intro h threshold n; cases h with
     | letRec hbindings hbody =>
@@ -7419,10 +6971,6 @@ theorem AllMatchesExhaustive.instTyAux {ctors : CtorEnv} (Ts : List Ty) :
         refine ⟨pat, body.instTyAux d Ts, ?_, hcov⟩
         rw [BranchList.instTyAux_eq_map]
         exact List.mem_map_of_mem hmem
-  | found ty inner ih =>
-    intro d h
-    cases h with
-    | found hinner => exact .found (ih d hinner)
   | letRec anns bindings body ihbs ihb =>
     intro d h
     cases h with
@@ -7504,10 +7052,6 @@ theorem AllMatchesExhaustive.substN {ctors : CtorEnv} {vs : List Expr}
           obtain ⟨pat, body, hmem, hcov⟩ := h_cover2 ctorName ctor hlook htyName
           exact ⟨pat, body.substN (k + pat.bindCount) vs,
             BranchList.mem_substN_of_mem hmem, hcov⟩)
-  | found ty inner ih =>
-    intro h k
-    cases h with
-    | found hinner => exact .found (ih hinner k)
   | letRec anns bindings body ih_bindings ih_body =>
     intro h k; cases h with
     | letRec hbindings hbody =>
@@ -7584,10 +7128,6 @@ theorem AllMatchesExhaustive.substTyFvar {ctors : CtorEnv} (Z : Nat) (U : Ty) :
       · intro ctorName ctor hlook htyn
         obtain ⟨pat, body, hmem, hcov⟩ := hcover ctorName ctor hlook htyn
         exact ⟨pat, body.substTyFvar Z U, BranchList.mem_substTyFvar_of_mem hmem, hcov⟩
-  | found ty inner ih =>
-    intro h
-    cases h with
-    | found hinner => exact .found (ih hinner)
   | letRec anns bindings body ihbs ihb =>
     intro h
     cases h with
@@ -7722,7 +7262,6 @@ def Expr.varsBelow (n : Nat) : Expr → Bool
   | .letIn _ rhs body => Expr.varsBelow n rhs && Expr.varsBelow (n + 1) body
   | .match_ scrut branches =>
       Expr.varsBelow n scrut && BranchListClosed.varsBelow n branches
-  | .found _ inner => Expr.varsBelow n inner
   | .letRec _ bindings body =>
       RecGroupClosed.varsBelow (n + bindings.length) bindings
         && Expr.varsBelow (n + bindings.length) body
@@ -7788,9 +7327,6 @@ theorem Expr.varsBelow_mono (e : Expr) :
         refine ⟨hmono pat body List.mem_cons_self _ _ (by omega) hh.1, ?_⟩
         exact ih (fun p e hmem => hmono p e (List.mem_cons_of_mem _ hmem)) hh.2
     exact key branches ihbrs h2
-  | found ty inner ih =>
-    intro m n hmn h
-    exact ih hmn h
   | letRec anns bindings body ihbindings ihbody =>
     intro m n hmn h
     simp only [Expr.varsBelow, Bool.and_eq_true] at h ⊢
@@ -8009,9 +7545,6 @@ theorem Expr.shiftFrom_of_varsBelow (n : Nat) :
     have := ihbrs pat body hmem (t + pat.bindCount)
       (BranchListClosed.varsBelow_of_mem hbrs pat body hmem)
     simp only [this]
-  | found ty inner ih =>
-    intro t h
-    simp [Expr.shiftFrom, ih t h]
   | letRec anns bindings body ihbindings ihbody =>
     intro t h
     simp only [Expr.varsBelow, Bool.and_eq_true] at h
@@ -8158,9 +7691,6 @@ theorem Expr.substN_of_varsBelow (vs : List Expr) :
     have := ihbrs pat body hmem (k + pat.bindCount)
       (BranchListClosed.varsBelow_of_mem hbrs pat body hmem)
     simp only [this]
-  | found ty inner ih =>
-    intro k h
-    simp [Expr.substN, ih k h]
   | letRec anns bindings body ihbindings ihbody =>
     intro k h
     simp only [Expr.varsBelow, Bool.and_eq_true] at h
@@ -8252,7 +7782,6 @@ theorem Expr.substN_substN_append (e : Expr) (k : Nat) (ws vs : List Expr)
     simp only [Function.comp_apply]
     rw [show k + ws.length + pat.bindCount = (k + pat.bindCount) + ws.length from by omega,
       ihbrs pat body hmem (k + pat.bindCount)]
-  | found ty inner ih => simp only [Expr.substN, ih]
   | letRec anns bindings body ihbindings ihbody =>
     rw [Expr.substN_letRec_core, Expr.substN_letRec_core, Expr.substN_letRec_core,
       List.map_map, List.length_map]
@@ -8315,9 +7844,6 @@ theorem Expr.varsBelow_openTyVarsAux (Xs : List Nat) :
           hb pat body List.mem_cons_self (n + pat.bindCount) d]
         rw [ih (fun p b hm => hb p b (List.mem_cons_of_mem _ hm))]
     exact key branches ihbrs
-  | found ty inner ih =>
-    intro n d
-    simp [Expr.openTyVarsAux, Expr.varsBelow, ih n d]
   | letRec anns bindings body ihbindings ihbody =>
     intro n d
     simp only [Expr.openTyVarsAux, Expr.varsBelow, ihbody]
