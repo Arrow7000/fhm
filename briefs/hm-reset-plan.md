@@ -208,109 +208,83 @@ and metatheory together.
 
 ## Implementation sequence
 
-Each phase ends with a green build and the HM semantic matrix. Avoid mixing the
-recursive-policy change with the bounds removal until ordinary HM has a direct,
-bounds-free statement again.
+The original investigation split the work into seven phases (0--6), each targeting a
+fully green tree. That is too much process for this deletion campaign. In particular,
+`Core`, `InferW`, and `Completeness` form one tightly coupled Path-R proof cluster;
+separating direct-HM restoration from recursive-rule cleanup would repair many of the
+same proofs twice. Conversely, `.found` has an independent, observable hover-parity
+requirement and should not disappear in the middle of the bounds proof rewrite.
 
-### Phase 0 -- freeze the HM contract
+Use three meaningful integration gates. Focused modules may be red inside a campaign;
+the whole repository need only be green at the gate.
 
-- Turn the existing recursion fixtures into the permanent language-boundary suite.
-- Add a positive fixture for scoped type variables in an ordinary annotation.
-- Preserve negative fixtures for every form of in-SCC multi-instantiation.
-- Keep head-binder annotation sugar explicitly unsupported; do not use its current
-  negative fixture as evidence about the recursive typing boundary.
-- Record current theorem signatures/axioms and current CLI/editor outputs.
+### Gate A -- user-facing HM-only language and product
 
-Gate: current `lake build`, HM audit, recursion matrix, and editor smoke all remain
-green before structural deletion begins.
+This folds the old contract-freeze, bounds-product, and surface-language phases into
+one deletion campaign.
 
-### Phase 1 -- remove the bounds product and proof forest
+- Freeze an explicit HM fixture manifest instead of letting the audit discover every
+  `.fhm` file in `scratch/`.
+- Preserve the recursion boundary suite, including ordinary scoped annotations and
+  every negative in-SCC multi-instantiation case. Keep head-binder sugar explicitly
+  unsupported for reasons independent of recursion.
+- Remove `--bl`/`--auto`, bounds result fields, bounds reports and diagnostics, bounds
+  hover assembly, and bounds editor configuration.
+- Delete surface counts, count slots/holes, `BL` syntax, Nat binders, their parser and
+  lowering paths, and count-driven binding classification.
+- Remove bounds-only build targets, tests, scripts, examples, experiments, and proof
+  modules as their last importers disappear.
+- It is acceptable for unreachable internal bounds compatibility definitions to
+  remain briefly inside the Core proof cluster until Gate B. Do not invent new
+  compatibility modules merely to manufacture a smaller checkpoint.
 
-- Remove `FHM/Bounds/**`, bounds-only tests, `FHM/BLSketch.lean`, quantitative/count
-  experiments, and bounds-only scratch programs.
-- Remove the bounds and Z3 targets/dependencies from `lakefile.toml` when no remaining
-  HM component imports them.
-- Remove `--bl`/`--auto` modes, bounds reports, bounds diagnostics, and bounds hover
-  assembly from the CLI/editor/web surfaces.
-- Remove or rewrite bounds-only documentation; retain this plan and the git history as
-  the archaeology record.
+Gate A is complete when no user program or tool mode can request or construct bounds,
+and the verified target, CLI, editor, grammar generator, HM fixture suite, recursion
+matrix, hover sweep, and verified/unverified boundary check are all green.
 
-Transitional rule: it is acceptable for the shared Core type to retain unreachable
-`Ty.bl`/`eraseBounds` compatibility code during this phase if that is needed to keep
-the verified HM target green. Do not add new compatibility abstractions.
+### Gate B -- direct HM Core, Algorithm W, and recursive rule
 
-### Phase 2 -- make the surface language plain HM
+This is one bounded red-to-green proof campaign, combining the old Core-purification
+and recursive-rule phases.
 
-- Delete surface `Count`, `CountSlot`, `Ty.bl`, count holes, Nat binders, and their
-  lexer/parser/finalization/lowering paths.
-- Simplify binding classification so count binders can no longer force an otherwise
-  non-recursive local binding through `letRec`.
-- Remove BL pretty-printing and syntax highlighting.
-- Retain ordinary explicit schemes and scoped type-variable syntax.
+- Remove `Ty.bl` and the final Core import of the bounds kernel.
+- Delete all `eraseBounds` operations and bounds-projection statements on types,
+  schemes, expressions, environments, constructors, and contexts.
+- Replace `AgreesHM`/`FactorsHM` and bounds-blind unification with ordinary structural
+  equality, `Unifies`, and standard MGU factorization.
+- Restate soundness, completeness, principality, progress, preservation, and surface
+  safety directly over the inferred context, term, and type.
+- At the same time delete stale `RecSpec.poly`, `RecSpecs.PolyTyped`,
+  `InferRecGroup.consPoly`, and their proof branches. Retain annotations only as
+  checks/ceilings on the single solved monotype for each SCC member.
+- Mine `b016fcf`/`be9cc14` for direct-HM proof shapes without replacing the mature
+  surface/compiler stack.
 
-Gate: no parsed/lowered program can construct a bounds-bearing Core type; all HM
-surface, declaration, SCC, coverage, provenance, and editor tests pass.
+Keeping these edits together avoids temporarily adapting the enormous Path-R proof
+family to a bounds-free but still two-regime recursive representation that is deleted
+immediately afterward.
 
-### Phase 3 -- purify Core and Algorithm W
+Gate B requires direct, axiom-clean HM soundness, completeness, principality, and
+runtime/surface safety, plus the unchanged recursion polarity matrix.
 
-This is the main proof checkpoint and should be treated as one bounded campaign.
+### Gate C -- expression metadata and final audit
 
-- Remove `Ty.bl` and the Core import of `FHM.Bounds.Kernel`.
-- Delete every `eraseBounds` operation on types, schemes, expressions, environments,
-  constructors, and contexts.
-- Replace `AgreesHM`/`FactorsHM` and BL/List special unification with ordinary
-  structural equality, `Unifies`, and standard MGU factorization.
-- Restate `Infer.sound`, completeness, principality, and the surface headlines
-  directly over the inferred context, term, and type, with no bounds projection.
-- Simplify the proof families by mining the corresponding statements/proof shapes at
-  `b016fcf`/`be9cc14`; do not copy the old product architecture wholesale.
-- Remove now-dead residual transport and erase-commutation lemmas.
+Keep the `.found` migration separate because it changes observable editor metadata
+and needs a precise hover-parity gate.
 
-Gate: direct (not “up to bounds erasure”) soundness, completeness, principality,
-progress, preservation, and surface safety; no project-specific axioms.
+- Define `NodeTypeMap := List (CorePath × Ty)` with final-substitution types.
+- Return it and `BinderSchemeMap` alongside the root inference result without
+  constructing a second expression.
+- Join source provenance directly to the node map and preserve expression, parameter,
+  pattern-binder, and declaration hover behavior.
+- Remove `.found`, `FoundFree`, `stripFound`, found-type opening/closing/substitution
+  helpers, and their cases from semantic inductions.
+- Finish repository cleanup here: remove stale bounds prose/settings/fixtures,
+  correct obsolete polymorphic-recursion claims, and run the forbidden-symbol audit.
 
-### Phase 4 -- move inferred expression types out of Core
-
-- Define a final-substitution `NodeTypeMap` keyed by the existing `.found`-transparent
-  `CorePath` vocabulary.
-- Make the inference worker return that map and `BinderSchemeMap` beside the root
-  type, without constructing a second expression.
-- Join source provenance directly against the type map; preserve arbitrary-expression,
-  parameter, pattern-binder, and declaration hover behavior.
-- Remove `.found`, `FoundFree`, `stripFound`, found-type substitution/closing helpers,
-  and their cases from Core, inference, completeness, lowering, paths, pretty-printing,
-  and pattern compilation.
-- State and prove the required map domain/final-substitution coherence contracts rather
-  than making editor metadata part of the term induction principles.
-
-Gate: identical successful-program hover results, one inference pass, unchanged root
-type/scheme results, and no `.found` constructor anywhere in the semantic Core.
-
-### Phase 5 -- collapse recursive typing to its actual DM rule
-
-Do this after Phase 4 so failures cannot be confused with bounds blindness or the
-expression-metadata migration.
-
-- Delete stale `RecSpec.poly`, `RecSpecs.PolyTyped`, `InferRecGroup.consPoly`, and
-  related comments/helpers that describe the abandoned in-block-polymorphic regime.
-- Keep per-member annotations only as compile-time checks/ceilings.
-- State one obvious recursive-group rule: all RHS environments contain only the
-  group's monotypes; the body environment contains the generalized/validated schemes.
-- Preserve the already-separated expression-type and binder-scheme metadata.
-
-Gate: the full recursion matrix still has the same polarity, and the declarative,
-relational, and executable rules visibly implement the same policy.
-
-### Phase 6 -- repository cleanup and final audit
-
-- Delete dead bounds briefs, scripts, editor settings, fixtures, and generated grammar
-  entries; remove empty dependencies and targets.
-- Correct stale claims that the language supports polymorphic recursion.
-- Run a repository-wide forbidden-symbol audit for `BL`, bounds/count constructs,
-  `eraseBounds`, `AgreesHM`, `FactorsHM`, and bounds/Z3 imports (allowing only this
-  historical plan if desired).
-- Re-run fresh builds, theorem axiom audits, CLI/editor tests, parser/lowering tests,
-  recursion tests, and pattern/declaration tests.
+Gate C requires hover parity, one inference pass, unchanged root types and binder
+schemes, no `.found` in semantic Core, and no bounds symbols or imports outside the
+explicitly preserved historical design notes.
 
 ## Verification gates
 
