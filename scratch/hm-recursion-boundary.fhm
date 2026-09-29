@@ -1,0 +1,66 @@
+-- Executable guide to the intended Hindley--Milner recursion boundary.
+--
+-- Run the active examples with:
+--   .lake/build/bin/fhm run scratch/hm-recursion-boundary.fhm
+--
+-- The rejected examples at the bottom are commented out so this file itself runs.
+-- Copy either block into a separate file (or uncomment it after commenting out the
+-- active program) to see the inference failure.
+
+-- ACCEPTED 1: one recursive SCC, one monotype while its RHS is checked.
+-- The annotation is polymorphic at the SCC boundary, but the recursive call uses
+-- `polyId` at the same monotype as the current invocation.
+let polyId : {a} a -> a =
+  \x -> if True then x else polyId x
+
+-- `polyId`'s SCC has now exited, so these later functions (separate downstream
+-- SCCs) may instantiate its generalized scheme independently. This is the
+-- accepted `f` used at Int in `g` and at Bool in `h` shape: it works because
+-- neither dependency points back to `polyId`.
+let laterG =
+  \n -> polyId n
+
+let laterH =
+  \b -> polyId b
+
+-- ACCEPTED 2: a genuinely mutual SCC. Every in-SCC call uses the same element
+-- type. The annotation does not make `fixedF` polymorphic inside the SCC; it merely
+-- checks the scheme exported after the SCC has been solved.
+let fixedF : {a} Int -> a -> List a =
+  \n x -> if n < 1 then Cons x Nil else fixedG (n - 1) x
+
+let fixedG =
+  \n x -> Cons x (fixedF n x)
+
+(laterG 41, (laterH True, fixedF 2 5))
+
+-- REJECTED 1: one function in the mutual SCC uses the explicitly polymorphic
+-- `badF` at two types. The `{a}` annotation does NOT make `badF` independently
+-- instantiable at recursive call sites.
+--
+-- let badF : {a} Int -> a -> Int =
+--   \n x -> if n < 1 then 1 else badG (n - 1)
+--
+-- let badG =
+--   \n -> badF n n + badF n [n]
+--
+-- (badF 2 5, badF 2 True)
+
+-- REJECTED 2: the restriction is per SCC, not per function body. Here `splitG`
+-- uses `splitF` only at Int and `splitH` uses it only at Bool, but all three are
+-- mutually dependent. Therefore both calls must share `splitF`'s one in-SCC
+-- monotype, and the SCC is rejected even though neither caller alone contains two
+-- differently typed uses.
+--
+-- let splitF : {a} Int -> a -> a =
+--   \n x ->
+--     if n < 1 then x
+--     else let i = splitG (n - 1) in let b = splitH (n - 1) in x
+--
+-- let splitG =
+--   \n -> splitF n 0
+--
+-- let splitH =
+--   \n -> splitF n True
+--
+-- (splitG 2, splitH 2)

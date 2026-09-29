@@ -28,8 +28,9 @@ intended core:
 It is not the right repository base. Reverting to it would throw away valuable later
 work that is independent of bounds: the real surface parser and lowering relation,
 datatype declarations, verified SCC analysis, verified pattern compilation and
-coverage, primitive operations, the CLI/editor pipeline, source provenance, `.found`
-type artifacts, and the later erased progress/preservation/completeness tower.
+coverage, primitive operations, the CLI/editor pipeline, source provenance,
+expression-level type hover, and the later erased progress/preservation/completeness
+tower.
 
 The current tree already implements the desired recursive-language boundary. Its
 problem is not its runtime or its live recursive inference policy; its problem is that
@@ -48,14 +49,17 @@ the statements and proofs of otherwise ordinary HM results.
 4. A type annotation checks or constrains the one monotype assigned to a recursive
    member. It does not allow the member to be instantiated at different types inside
    its own SCC.
-5. Scoped type variables in annotations remain a language feature. In particular,
-   opening a recursive member's annotation once at rigid variables is compatible with
-   rule 3; repeated in-SCC instantiation is not.
+5. Scoped type variables in supported explicit annotations remain a language feature.
+   Surface head-binder annotation sugar is excluded until partial annotation holes
+   have a representation and checking story.
 6. All type information is compile-time-only. Evaluation runs `Expr.erase` output (or
    an equivalent annotation-free term) using the existing substitution semantics.
    There is no type-passing operational semantics and no type-directed runtime step.
-7. `.found` remains a static inference/tooling artifact. It is stripped before
-   evaluation and is not an elaboration language.
+7. Expression-level hover remains a product requirement, but inferred expression
+   types live in an inference-result table keyed by `CorePath`, not in the Core
+   expression grammar. Lowering provenance joins `SourceId`/spans to those paths;
+   generalized binder schemes remain a separate result. Runtime terms contain none
+   of this metadata.
 
 The semantic slogan is: **monomorphic inside an SCC; generalized after the SCC;
 erased at runtime**.
@@ -87,16 +91,31 @@ group is generalized are polymorphic.
 ### Why type passing appeared
 
 The costly migration was not required by mutual recursion or scoped annotations by
-themselves. It was driven by the stronger goal of annotation-directed polymorphic
+themselves. It was motivated by the stronger goal of annotation-directed polymorphic
 recursion inside an SCC, especially nested recursive annotations that referred to an
-enclosing scoped type variable. That combination required schemes/instantiations to
-remain represented through substitution and led to the elaboration/type-passing
-machinery.
+enclosing scoped type variable. The FHM formalization chose to preserve explicit
+instantiations through substitution using elaboration and term-level type passing.
 
-There were designs and spikes suggesting that some narrower annotated polymorphic
-recursion could be erased safely, but there is no clean pre-type-passing repository
-checkpoint containing that feature. More importantly, it is outside the reset
-contract above.
+That choice was not a semantic necessity. OCaml, F#, and Haskell accept explicitly
+annotated polymorphic recursion while erasing ordinary parametric type arguments
+before runtime. A different FHM metatheory could also check such programs and then
+erase them. What the reset rejects is the static and proof complexity of doing so,
+not erasure compatibility in principle. There is no clean pre-type-passing repository
+checkpoint containing the full feature, and it is outside the reset contract above.
+
+### External recursion precedent
+
+Standard ML is the closest established precedent for the chosen rule: recursive uses
+within the declaration share a monotype even in the presence of explicit scoped type
+variables. OCaml without an explicitly universal annotation behaves similarly, but
+`'a.` annotations enable polymorphic recursion. F#, Haskell/GHC, and explicitly
+universal OCaml are more permissive than this reset.
+
+Elm is a notable middle ground and does **not** implement the uniform per-SCC rule:
+an annotated function's direct self-reference is monomorphic, but other members of
+the same genuine recursive cycle may instantiate that annotated function at different
+types. That matches the tempting “one type in `g`, another in `h`” intuition, but is
+not the simpler all-members-monomorphic SCC policy selected here.
 
 ### The present Path R state
 
@@ -114,17 +133,45 @@ The current recursive smoke matrix confirms this boundary: ordinary mutual recur
 post-SCC polymorphism, and fixed-instantiation annotated groups pass; annotated and
 unannotated in-SCC multi-instantiation fail.
 
-The remaining recursive defect is narrower: surface head-binder scoped-variable sugar
-currently lowers correctly but fails during inference because the recursive member's
-declared scheme is not opened once for its monomorphic RHS check. This is a missing DM
-feature, not a reason to restore polymorphic recursion or type passing.
+Surface head-binder annotation sugar remains deliberately unsupported. It cannot be
+fully lowered into the present Core annotation shapes until partial annotation holes
+such as `Int -> _ -> (_, Bool) -> Int` have a defined representation and checking
+story. It is not part of this reset.
 
 Baseline verification on 2026-09-29:
 
 - `lake build`: 726 jobs, success (warnings only);
 - `lake env lean --run scratch/PolyRecTest.lean`: 11/11 cases matched the DM contract;
-- `node scripts/scratch-hm-audit.mjs`: 36/36 fixtures behaved as expected;
+- `node scripts/scratch-hm-audit.mjs`: 37/37 fixtures behaved as expected;
 - `node scripts/hm-editor-smoke.mjs`: 10/10 checks passed.
+
+## Expression type metadata after BL
+
+The current `.found Ty Expr` node is chiefly the internal carrier for per-expression
+monotypes. It powers arbitrary-expression hover, lambda/pattern binder fallback types,
+and the BL walkers. It does **not** own generalized binder schemes: inference already
+emits those in a separate `BinderSchemeMap`. The editor also does not consume the
+decorated tree directly. `inferWithProvenance` first joins its payloads into
+source/path type tables, and `HMDisplay` reads those tables.
+
+Once BL is gone, keep that observable behavior but remove `.found` from `Expr`:
+
+- inference returns `NodeTypeMap := List (CorePath × Ty)` alongside its root type and
+  `BinderSchemeMap`;
+- recursive inference rebases child maps under path components and applies final
+  substitutions/skolem closing to their types, exactly as it currently transforms
+  `.found` payloads;
+- lowering continues to own `SourceId → CorePath` provenance;
+- hover joins the two maps once per check;
+- evaluation consumes the unchanged source Core term after ordinary annotation
+  erasure.
+
+This is the smallest conventional design for this repository. A separate typed AST
+would also be clean, but would duplicate the Core tree and require another family of
+shape/erasure traversals. Re-inferring only the hovered subexpression is unattractive:
+it must reconstruct its lexical environment, scoped variables, expected type, and
+recursive-group constraints. The metadata-table migration should remain separate
+from BL deletion so hover parity can be tested independently.
 
 ## Why not revert to `be9cc14`
 
@@ -136,7 +183,7 @@ Compared with the present repository it lacks, among other things:
 - dependency SCC computation and its verification;
 - verified pattern compilation, exhaustiveness, and surface safety bridges;
 - the production CLI/evaluator/editor support;
-- source spans, provenance, stable Core paths, `.found`, and rich hover support;
+- source spans, provenance, stable Core paths, and rich hover support;
 - later primitives and language examples;
 - the current headline theorem packaging and the restored completeness spine.
 
@@ -169,9 +216,9 @@ bounds-free statement again.
 
 - Turn the existing recursion fixtures into the permanent language-boundary suite.
 - Add a positive fixture for scoped type variables in an ordinary annotation.
-- Add a positive recursive-head-binder fixture that uses one fixed in-SCC instance;
-  initially mark it as the one expected failure.
 - Preserve negative fixtures for every form of in-SCC multi-instantiation.
+- Keep head-binder annotation sugar explicitly unsupported; do not use its current
+  negative fixture as evidence about the recursive typing boundary.
 - Record current theorem signatures/axioms and current CLI/editor outputs.
 
 Gate: current `lake build`, HM audit, recursion matrix, and editor smoke all remain
@@ -222,32 +269,37 @@ This is the main proof checkpoint and should be treated as one bounded campaign.
 Gate: direct (not “up to bounds erasure”) soundness, completeness, principality,
 progress, preservation, and surface safety; no project-specific axioms.
 
-### Phase 4 -- collapse recursive typing to its actual DM rule
+### Phase 4 -- move inferred expression types out of Core
 
-Do this after Phase 3 so failures cannot be confused with bounds blindness.
+- Define a final-substitution `NodeTypeMap` keyed by the existing `.found`-transparent
+  `CorePath` vocabulary.
+- Make the inference worker return that map and `BinderSchemeMap` beside the root
+  type, without constructing a second expression.
+- Join source provenance directly against the type map; preserve arbitrary-expression,
+  parameter, pattern-binder, and declaration hover behavior.
+- Remove `.found`, `FoundFree`, `stripFound`, found-type substitution/closing helpers,
+  and their cases from Core, inference, completeness, lowering, paths, pretty-printing,
+  and pattern compilation.
+- State and prove the required map domain/final-substitution coherence contracts rather
+  than making editor metadata part of the term induction principles.
+
+Gate: identical successful-program hover results, one inference pass, unchanged root
+type/scheme results, and no `.found` constructor anywhere in the semantic Core.
+
+### Phase 5 -- collapse recursive typing to its actual DM rule
+
+Do this after Phase 4 so failures cannot be confused with bounds blindness or the
+expression-metadata migration.
 
 - Delete stale `RecSpec.poly`, `RecSpecs.PolyTyped`, `InferRecGroup.consPoly`, and
   related comments/helpers that describe the abandoned in-block-polymorphic regime.
 - Keep per-member annotations only as compile-time checks/ceilings.
 - State one obvious recursive-group rule: all RHS environments contain only the
   group's monotypes; the body environment contains the generalized/validated schemes.
-- Keep `.found` scheme/type metadata required by hover, but ensure it does not affect
-  runtime syntax or reduction.
+- Preserve the already-separated expression-type and binder-scheme metadata.
 
 Gate: the full recursion matrix still has the same polarity, and the declarative,
 relational, and executable rules visibly implement the same policy.
-
-### Phase 5 -- finish scoped annotation support without polymorphic recursion
-
-- Implement the parked “declared-mono opening” narrowly: open an annotated recursive
-  member's scheme once at rigid variables and check its RHS at that monotype.
-- Make siblings see only that same fixed monotype.
-- Reject escape and every attempt to instantiate the member at a second in-SCC type.
-- Turn the recursive head-binder fixture positive; keep all genuine polymorphic
-  recursion fixtures negative.
-
-This preserves scoped annotation variables while staying entirely compatible with
-type erasure.
 
 ### Phase 6 -- repository cleanup and final audit
 
@@ -279,7 +331,8 @@ Add focused checks for:
 - self and mutual recursion at one monotype;
 - generalization after SCC exit, including two different body instantiations;
 - rejection of annotated and unannotated in-SCC multi-instantiation;
-- scoped variables in lambda, let, nested, and recursive-head annotations;
+- scoped variables in supported lambda, let, and nested explicit annotations;
+- deliberate rejection of unsupported head-binder annotation sugar;
 - annotation erasure and evaluation independence;
 - full soundness/completeness/principality theorem signatures with no residual
   bounds relation.
