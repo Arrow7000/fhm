@@ -42,9 +42,8 @@ a handful of standard algebraic types:
 * `Tree a`/`Forest a` — `Node a (Forest a)`; `FNil`, `FCons (Tree a) (Forest a)`
   (mutually recursive types — the natural home for a mutually recursive map).
 * `Seq a`           — `SNil`, `SCons a (Seq (List a))`: a NON-REGULAR (nested)
-  type — the recursive occurrence is at `List a`, not `a`. Functions folding a
-  `Seq` need *polymorphic recursion* (each call one `List`-layer deeper), which
-  is inferable only with an annotation — the mixed-`letRec` showcases below. -/
+  type. Its natural fold needs polymorphic recursion and is therefore a useful
+  rejection example for this language's monomorphic-within-group rule. -/
 
 /-- The demo declaration group, in `DataDecl` form (one entry per type, its
     constructors bundled). Fed to the verified `elabDecls` to produce `demoCtors`. -/
@@ -249,7 +248,7 @@ These are the programs that expose the classic landmines — over-eager
 generalization, escaping skolems, occurs-check loops, and rigid scoped type
 variables. The verified checker should accept exactly the sound ones and reject
 the rest. Each rejection below corresponds to a genuinely *untypeable* program
-(no `TypeOfHM` derivation exists for the bounds-erased source), not merely an
+(no `TypeOfHM` derivation exists for the source), not merely an
 algorithmic giving-up. -/
 
 -- λx. x x   :  ill-typed   (occurs check: a = a → b has no finite solution)
@@ -336,9 +335,8 @@ algorithmic giving-up. -/
 /-! ## Recursion (`letRec`)
 
 Recursive binding groups. `n = 1` is self-recursion (coincides with `fix`); `n > 1`
-is mutual recursion, now typed at genuinely polymorphic, *shared* types. The earlier
-disjoint-slice rule under-typed mutual groups (it severed the cross-binding sharing);
-the shared-monotype rule infers their principal types. -/
+is mutual recursion. Members share monotypes while their SCC is checked; those
+types are generalized only when the body is checked. -/
 
 -- let rec f = λx. x in f  :  ∀ a. a → a
 -- (a non-recursive binding placed in a letRec — still sound, generalised as usual)
@@ -350,8 +348,8 @@ the shared-monotype rule infers their principal types. -/
 #eval showType (.letRec [none] [.lambda none (.app (.var 1) (.var 0))] (.var 0))
 
 -- let rec f = g and g = f in f  :  ∀ a. a
--- (mutual recursion: `f`/`g` share one polymorphic type — the exact program the
---  disjoint-slice predecessor could NOT type polymorphically)
+-- (mutual recursion: `f` and `g` share one monotype in the group, which is
+--  generalized for the body)
 #eval showType (.letRec [none, none] [.var 1, .var 0] (.var 0))
 
 -- let rec f = λx. g x and g = λx. f x in f  :  ∀ a b. a → b
@@ -437,9 +435,8 @@ at its *own* monotype — exactly the monomorphic recursion `letRec` provides. -
 --                          | Nil      => Nil
 --                          | Cons h t => Cons (f h) (map f t)
 -- in map
--- (the headline example: a polymorphic recursive function. The recursive `map f t`
---  pins `map` at its shared monotype inside the group; the body then sees the fully
---  generalised `∀ a b. (a → b) → List a → List b`)
+-- (`map` recurses monomorphically inside the group; the body then sees the fully
+--  generalized `∀ a b. (a → b) → List a → List b`)
 #eval showTypeP (.letRec [none]
   [.lambda none (.lambda none (.match_ (.var 0)
     [ (.named (.mk "Nil") 0, .ctor (.mk "Nil"))
@@ -504,9 +501,9 @@ generalised. So a polymorphic self-application in the body must be accepted. -/
 #eval showType (.letRec [none] [.lambda none (.var 0)] (.app (.var 0) (.var 0)))
 
 
-/-! ### Annotated polymorphic recursion referencing an OUTER scoped type variable
+/-! ### A recursive annotation referencing an outer scoped type variable
 
-The witness for nested annotated-recursion support: an annotated `letRec` member
+This witnesses nested annotated-recursion support: an annotated `letRec` member
 whose scheme body mentions a type variable bound by an *enclosing* scope. Here the
 group binding `loop`'s annotation `a → a` refers to the outer `let`'s `∀ a`, i.e. a
 `bvar` past `loop`'s own (zero) parameters. This was previously *rejected* —
@@ -522,20 +519,18 @@ the enclosing skolem and closes it back, so the whole thing infers `∀ a. a →
   (.var 0))
 
 
-/-! ### Mixed annotated/unannotated recursion (the fused rule end-to-end)
+/-! ### Mixed annotated/unannotated recursion
 
-The fused `letRec` node carries per-binding `Option PolyTy` annotations, so ONE
-group can mix both regimes: annotated members are checked at their declared
-schemes (polymorphic recursion allowed), unannotated members at shared monotypes
-that are generalised only for the body. These witnesses are ported from the
-retired `SpikeLetRecMixed.lean`, upgraded from declarative derivations to
-executable `typecheck` runs. -/
+The `letRec` node carries per-binding optional annotations, so one group can mix
+annotated and inferred members. Every member remains monomorphic while the SCC
+is checked. An annotation constrains the eventual exported scheme; it does not
+make in-group uses polymorphic. -/
 
 /-- `∀a. a → a`. -/
 private def selfSig : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
 
-/-- `f`'s RHS: `λx. let _ = f () in x` — the recursive call instantiates `f`'s
-    OWN scheme at `unit`: polymorphic recursion (needs the annotated regime). -/
+/-- `f`'s RHS uses `f` at `Unit` inside its own SCC. This pins the in-group
+    monotype and makes a differently instantiated body use fail. -/
 private def fRhs : Expr :=
   .lambda none (.letIn none (.app (.var 1) (.primLit .unit)) (.var 1))
 
@@ -546,10 +541,8 @@ private def gRhs : Expr := .lambda none (.app (.var 1) (.var 0))
 -- let rec (f : ∀ a. a → a) = λx. let _ = f () in x
 --     and g                = λx. f x
 -- in g 0   :   Int
--- (The mixed POSITIVE witness under the old FUSED rule: `f` poly-recurses at
---  `unit` — the annotated regime; `g` cross-calls `f` at its own shared monotype.
---  Under the DM cut this is REJECTED: `f`'s in-group use at `unit` is polymorphic
---  recursion, which the cut forbids. This is the cut doing its job.)
+-- The annotation does not make `f` polymorphic inside the group, so this is
+-- rejected: its use at `Unit` conflicts with the eventual use of `g` at `Int`.
 #eval showType (.letRec [some selfSig, none] [fRhs, gRhs]
   (.app (.var 1) (.primLit (.int 0))))
 #guard (typecheck [] (.letRec [some selfSig, none] [fRhs, gRhs]
@@ -562,11 +555,8 @@ private def gRhs : Expr := .lambda none (.app (.var 1) (.var 0))
   (.app (.var 1) (.primLit (.int 0))))).isSome = false
 
 -- let rec (f : ∀ a. a → a) = λx. g x and g = λx. f x in f   :   ∀ a. a → a
--- (the old "skolem-leak" negative witness is now a POSITIVE under the DM cut:
---  annotated members are checked at a fresh MONOTYPE, not a skolem, so there is
---  no skolem to leak into the unannotated sibling's monotype. The mutual
---  recursion `f = λx. g x`, `g = λx. f x` is ordinary monomorphic recursion at
---  `α → β`, generalised for the body.)
+-- Both cross-calls agree at one monotype inside the group, so the group can be
+-- generalized for the body and checked against `f`'s annotation.
 #eval showType (.letRec [some selfSig, none]
   [.lambda none (.app (.var 2) (.var 0)), .lambda none (.app (.var 1) (.var 0))]
   (.var 0))
@@ -575,13 +565,11 @@ private def gRhs : Expr := .lambda none (.app (.var 1) (.var 0))
   (.var 0))).isSome = true
 
 
-/-! ### Pushing the fused rule: nested data, three-member mixed groups
+/-! ### Rejection boundary: non-regular data and mixed groups
 
-The heavy-duty showcases. `Seq a` is NON-REGULAR (`SCons a (Seq (List a))`), so
-any fold over it must call itself one `List`-layer deeper — *polymorphic
-recursion*, which is undecidable to infer and only typeable through an
-annotation. Mixing that annotated member with plain unannotated helpers in ONE
-group is exactly what the fused rule buys us. -/
+`Seq a` is non-regular (`SCons a (Seq (List a))`), so its natural fold calls
+itself one `List` layer deeper. That requires in-group polymorphic recursion,
+which this language rejects even when the binding has an annotation. -/
 
 /-- `slen`'s declared scheme: `∀ a. Seq a → Peano`. -/
 private def slenSig : PolyTy :=
@@ -604,37 +592,33 @@ private def bumpRhs : Expr := .lambda none (.app (.ctor ⟨"Succ"⟩) (.var 0))
 --                                             | SNil       => Zero
 --                                             | SCons x xs => bump (slen xs)
 --     and bump                        = λn. Succ n
--- in slen   :   ill-typed  (under the DM cut)
+-- in slen   :   ill-typed
 -- (polymorphic recursion over a NESTED datatype: the recursive call `slen xs`
 --  instantiates `slen` at `Seq (List a) ≠ Seq a`, which is in-group poly-rec —
---  exactly what the cut forbids. The annotation is now a CEILING, not a
+--  exactly what the monomorphic-within-group rule forbids. The annotation is a ceiling, not a
 --  polymorphic-recursion enabler.)
 #eval showTypeP (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0))
 #guard (typecheck demoCtors
   (.letRec [some slenSig, none] [slenRhs, bumpRhs] (.var 0))).isSome = false
 
 -- …and WITHOUT the annotation the same program is REJECTED: monomorphic `slen`
--- forces `a = List a` at the recursive call (no finite type). Poly-recursion
--- over non-regular data is exactly what annotations exist to unlock.
+-- forces `a = List a` at the recursive call (no finite type). Adding an
+-- annotation does not unlock polymorphic recursion, as the previous guard shows.
 #eval showTypeP (.letRec [none, none] [slenRhs, bumpRhs] (.var 0))
 #guard (typecheck demoCtors
   (.letRec [none, none] [slenRhs, bumpRhs] (.var 0))).isSome = false
 
-/-! A THREE-member mixed group exercising everything at once: an annotated
-member that polymorphically recurses at a concrete type, an unannotated member
-that instantiates the annotated sibling AT ITS OWN POOL VARIABLE, a second
-unannotated member self-recursing over `Forest` with its OWN pool slice (the
-per-binding `genFilter` slicing of one shared pool), and a body composing the
-generalised members. -/
+/-! A three-member negative example: one member attempts polymorphic recursion,
+another tries to use it at a different in-group type, and a third recurses
+monomorphically over `Forest`. The first two constraints make the SCC fail. -/
 
 -- let rec (poly : ∀ a. a → a) = λx. let _ = poly Zero in x     (poly-rec at Peano)
 --     and dup   = λt. FCons (poly t) (FCons t FNil)            (uses poly at pool var)
 --     and sizeF = λts. match ts with | FNil       => Zero      (own pool slice)
 --                                    | FCons h tl => Succ (sizeF tl)
--- in λt. sizeF (dup t)   :   ill-typed  (under the DM cut)
--- (The in-group call `poly Zero` is polymorphic recursion — the cut rejects it.
---  Same for `dup`'s use of `poly` at its own pool variable while `poly`'s
---  in-group monotype is pinned by `poly Zero`.)
+-- in λt. sizeF (dup t)   :   ill-typed
+-- (`poly Zero` pins the in-group monotype. `dup` then tries to use `poly` at a
+--  different type, so the SCC is rejected.)
 #eval showTypeP (.letRec [some selfSig, none, none]
   [ .lambda none (.letIn none (.app (.var 1) (.ctor ⟨"Zero"⟩)) (.var 1))
   , .lambda none (.app (.app (.ctor ⟨"FCons"⟩) (.app (.var 1) (.var 0)))
@@ -652,10 +636,10 @@ generalised members. -/
       , (.named ⟨"FCons"⟩ 2, .app (.ctor ⟨"Succ"⟩) (.app (.var 5) (.var 1))) ]) ]
   (.lambda none (.app (.var 3) (.app (.var 2) (.var 0)))))).isSome = false
 
-/-! Mono-visibility, documented: annotating `f` does NOT unlock polymorphic use
+/-! Monomorphic in-group visibility: annotating `f` does not unlock polymorphic use
 of its unannotated sibling `h` *inside the group* — `h` is monomorphic there
 (same contract as an ordinary unannotated `let` binding inside its own RHS).
-Annotate `h` too and the same program is accepted. -/
+Annotating `h` too still does not make its in-group uses polymorphic. -/
 
 /-- `λx. let _ = h 0 in let _ = h () in x` — uses the sibling at `Int` AND `Unit`. -/
 private def fUsesHTwice : Expr :=
@@ -670,10 +654,9 @@ private def fUsesHTwice : Expr :=
 #guard (typecheck [] (.letRec [some selfSig, none]
   [fUsesHTwice, .lambda none (.var 0)] (.var 0))).isSome = false
 
--- …annotating `h` as well does NOT rescue it under the DM cut: both members are
+-- …annotating `h` as well does not rescue it: both members are
 -- now MONOMORPHIC inside the group, so `h 0` and `h ()` still clash (Int vs Unit).
--- (Under the old fused rule the annotations put `h` in the polymorphic regime and
---  this was accepted; the cut removes that regime.)   :   ill-typed
+-- : ill-typed
 #eval showType (.letRec [some selfSig, some selfSig]
   [fUsesHTwice, .lambda none (.var 0)] (.var 0))
 #guard (typecheck [] (.letRec [some selfSig, some selfSig]
@@ -682,13 +665,12 @@ private def fUsesHTwice : Expr :=
 
 /-! ### Adversarial: where `letRec` is *supposed* to say no
 
-Monomorphic recursion is the whole point: a binding is NOT generalised *within its
-own group*. These are the programs whose acceptance would mean we'd silently slipped
-into unsound polymorphic recursion (or an occurs-check loop). All correctly rejected. -/
+Bindings are not generalized within their own group. These programs require
+in-group polymorphic recursion or an infinite type, so all are correctly rejected. -/
 
 -- let rec f = λx. let a = f 0 in let b = f () in x in f   :  ill-typed
 -- (polymorphic recursion: `f` is used at both `Int → _` and `Unit → _` inside its own
---  group, where it is monomorphic. HM (rightly) refuses — no annotation, no poly-rec)
+--  group, where it is monomorphic. An annotation would not change that rule.)
 #eval showType (.letRec [none]
   [.lambda none
     (.letIn none (.app (.var 1) (.primLit (.int 0)))

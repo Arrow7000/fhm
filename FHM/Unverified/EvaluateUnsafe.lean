@@ -122,8 +122,8 @@ partial def evaluateUnsafe : Expr → Option Expr
     `Option` (still `partial` — divergence is allowed).
 
 `ctx.env = []` is baked into the `TypeOfHM ⟨[], ctors⟩` hypothesis (same
-shape as `type_safety` / `type_safety_star`); `h_erased` is the erasedness the
-step-4 dynamics needs. -/
+shape as `type_safety` / `type_safety_star`); `h_erased` supplies the runtime
+erasedness invariant. -/
 partial def evaluateUnsafeTyped {ctors : CtorEnv} {τ : Ty} (e : Expr)
     (h_ty : TypeOfHM ⟨[], ctors⟩ e τ)
     (h_erased : e.erase = e)

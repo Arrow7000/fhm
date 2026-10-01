@@ -540,7 +540,7 @@ def afterSccSrc : String :=
   | some r => !r.diagnostics.isEmpty
   | none => false)
 
--- Named annotation binders survive presentation, both for a D2 recursive
+-- Named annotation binders survive presentation, both for a recursive
 -- binding's synthesized variables and for genuine nested-let skolems.
 def namedSignatureSrc : String :=
   "let keep : {element} element -> element = \\x -> x\nkeep\n"

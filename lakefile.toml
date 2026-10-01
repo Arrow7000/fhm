@@ -13,6 +13,7 @@ roots = [
   "FHM.Surface.Token",
   "FHM.Surface.Span",
   "FHM.PatComp",
+  "FHM.PatComp.Trace",
   "FHM.Pretty",
   "FHM.InferW",
   "FHM.Completeness",
@@ -48,7 +49,7 @@ roots = ["FHM.Unverified.EditorSupportTests"]
 [[lean_lib]]
 name = "FHMCli"
 # Unified HM CLI modules -- `lake build fhm`.
-roots = ["FHM.Unverified.Cli", "FHM.Unverified.Live", "FHM.Unverified.Diagnose", "FHM.Unverified.PipelineShared"]
+roots = ["FHM.Unverified.Cli", "FHM.Unverified.Live", "FHM.Unverified.Diagnose"]
 
 [[lean_exe]]
 name = "fhm"

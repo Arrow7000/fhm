@@ -7,27 +7,18 @@ import FHM.Scc.Kosaraju
 
 /-! # The surface → Core bridge
 
-This module is the **front end**: it lowers `Surface.Expr`/`Surface.Ty` into Core
-and states the campaign's headline payoff — *a well-typed, exhaustive surface
-program elaborates to a Core program that is type-safe and never gets stuck*.
+This module is the verified front end. It lowers surface types, declarations,
+expressions, and whole programs to Core; groups flat bindings into dependency
+SCCs; checks pattern coverage; and connects successful lowering to Core typing
+and type safety.
 
-**Status: expression headline + DataDecl + Program groups + freeNames + sccGroups
-(+ `Program.ofFlat`) + executable exhaustiveness (`dTreeExhaustiveB` /
-`matchExhaustiveB` / `checkExhaustive` with Bool→Prop soundness).**
-`sccGroups` (Kosaraju SCCs + Kahn condensation topo) feeds `Program.groups`;
-`ValidBindingGroups` is the non-det spec (`sccGroups_sound` / `_complete` proved).
-See `briefs/next-agent-brief-surface-bridge-followups.md`.
-
-## Design decisions this skeleton bakes in (settled with Aron)
+## Design
 
 1. **Spec/impl separation, `Infer`-style.** `Lowers` is the declarative
-   relation (the spec); `lower` is the executable function. Bridged by
-   soundness (`lower s = some c → Lowers … s c`) and completeness (a valid
-   lowering exists ⟹ `lower` produces one). **`Lowers` is kept NON-deterministic
-   at the `match` case** (many behaviourally-equivalent Core renderings of one
-   surface match); the deterministic parts (names, sugar) stay one-to-one. The
-   `lower`-soundness obligation for the match case *is* the already-proven
-   compilation-correctness theorem (`PatComp.lowerMatch_adequate_of_typed`).
+   relation; `lower` is the executable function. Soundness and completeness
+   connect them. `Lowers` pins the same deterministic match tree produced by
+   `lowerMatch`; behavioral adequacy is proved separately by
+   `PatComp.lowerMatch_adequate_of_typed`.
 
 2. **The payoff is a TWO-hop composition over the executable pipeline.** The
    runtime object is the lowered term `c = lower s`: `typecheck`/`Lowers` speak
@@ -39,8 +30,8 @@ See `briefs/next-agent-brief-surface-bridge-followups.md`.
 
 3. **Exhaustiveness is a separate, mandatory conjunct.** `type_safety` requires
    `AllMatchesExhaustive` on the runtime term, which typechecking never gives.
-   The scope we need is exactly `lower_exhaustive` below (surface coverage ⇒ the
-   emitted matches are exhaustive) — NOT a general standalone `checkExhaustive`. -/
+   `lower_exhaustive` transports surface coverage to emitted Core matches, and
+   `checkExhaustive` is its executable, sound front-end check. -/
 
 open SmallStep
 open PatComp
@@ -61,7 +52,7 @@ def nPair : TyName := .mk "Pair"
 def nList : TyName := .mk "List"
 
 
-/-! ## 2. `Surface.Ty → Core.Ty` lowering (plan item 2)
+/-! ## 2. `Surface.Ty → Core.Ty` lowering
 
 Named tyvars resolve to de Bruijn `bvar`s against the scope `tvs` (position =
 index, head = 0, matching `Decls`' param convention). Type applications are
@@ -159,12 +150,12 @@ theorem lowerTyList_wellKinded {ke : KindEnv} {tvs : List ValName}
         · exact lowerTy_wellKinded ht
         · exact lowerTyList_wellKinded hts c hc
 
-/-- **Kind-check soundness of `Surface.Ty` lowering** (plan item 2's payoff): a
+/-- **Kind-check soundness of `Surface.Ty` lowering:** a
     successful `lowerTy` produces a well-kinded Core type at arity `tvs.length`.
     So the front-end annotation kind-check is correct — the produced type never
     references an undeclared type name, a wrong arity, or an out-of-scope tyvar.
-    (Proof: mutual induction on `lowerTy`/`lowerTyList`; `tvar` via
-    `tvarIndex_lt`. DELEGABLE proof of a concrete, `#guard`-tested function.) -/
+    The proof is by mutual induction on `lowerTy`/`lowerTyList`, with the
+    variable case supplied by `tvarIndex_lt`. -/
 theorem lowerTy_wellKinded {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} {c : Ty}
     (h : lowerTy ke tvs s = some c) : Ty.WellKinded ke tvs.length c := by
   cases s with
@@ -253,7 +244,7 @@ private def keDemo : KindEnv := [(nBool, 0), (nPair, 2), (nList, 1), (.mk "Maybe
   | some (.customTy (.mk "List") [.bvar 0]) => true | _ => false
 
 
-/-! ## 2b. Surface `DataDecl` lowering (plan item 1)
+/-! ## 2b. Surface `DataDecl` lowering
 
 Named params → `paramCount` + de Bruijn field types via `lowerTy`. An ambient
 `KindEnv` (`ke₀`, typically the prelude) is prepended so user fields may mention
@@ -897,16 +888,10 @@ def patVarsList : List Surface.Pattern → List ValName
   | p :: ps => patVars p ++ patVarsList ps
 end
 
-/-! ### Free value-names (C0 — dependency analysis for future SCC)
+/-! ### Free value names and binding dependencies
 
-Executable free-name collection under a bound-name scope. Reuses `patVars` for
-pattern binders. This is **not** Infer’s job: Infer never sees a flat binding
-list (surface already has `letRecIn`). Top-level SCC will use these free names
-to build a dependency graph among `Binding`s, then emit `Program.groups`.
-
-Future (not yet): collapse surface `letIn`/`letRecIn` into a single `letBlock`
-and run this analysis in lowering so authors don’t declare SCCs by hand — still
-one language layer, one desugar, no extra IR. -/
+Executable free-name collection under a bound-name scope. It reuses `patVars`
+for pattern binders and feeds the dependency graph used by `sccGroups`. -/
 
 mutual
 /-- Value names occurring free in `e` relative to `bound` (shadowing). -/
@@ -991,7 +976,7 @@ def bindingDepEdges (binds : List Surface.Binding) : List (ValName × ValName) :
   { name := .mk "g", ann := none, rhs := .var (.mk "f") }]).contains ((.mk "f", .mk "f"))
 
 
-/-! ### C1 — SCC groups (Kosaraju + condensation topo)
+/-! ### SCC groups (Kosaraju + condensation topological order)
 
 Non-deterministic spec `ValidBindingGroups`: partition into SCCs of the
 dependency graph, topo-ordered so callees are outer. Executable `sccGroups`
@@ -4297,7 +4282,7 @@ sugar `pair`/`cons`/`list` desugaring to `Pair`/`Cons`/`Nil`). The bridge lemma
 `MatchPatternsCover` / `SurfaceCovers` are the exhaustiveness side: at each
 `match`, patterns must cover the scrutinee's ADT type `T` (every ctor of `T` has
 a testing branch, or a trailing irrefutable catch-all). The type `T` is carried
-in the `SurfaceCovers.match_` witness — the proof of O5 instantiates it from
+in the `SurfaceCovers.match_` witness; the lowering proof instantiates it from
 scrutinee typing after `typecheck`. -/
 
 /-- **Surface pattern well-formedness**, defined as `GPatWF` of the *normalised*
@@ -4386,7 +4371,7 @@ def MatchExhaustive (ctors : CtorEnv) (T : TyName) (tyArgs : List Ty)
   DTreeExhaustive ctors [([], .customTy T tyArgs)] (compile [[]] (initMatrix ps))
 
 /-- Every `match` in `s` is exhaustive (and subexpressions recurse). At `match_`
-    the witness carries the scrutinee's ADT type `(T, tyArgs)` — O5 instantiates it
+    the witness carries the scrutinee's ADT type `(T, tyArgs)` and the lowering proof instantiates it
     from the lowered scrutinee's typing. -/
 inductive SurfaceCovers (ctors : CtorEnv) : Surface.Expr → Prop where
   | primLit {p} : SurfaceCovers ctors (.primLit p)
@@ -5800,17 +5785,9 @@ theorem lowerExpr_eq_of_LowersExpr_of_NoMatch {ctors : CtorEnv} {ke : KindEnv}
   LowersExpr_unique_of_NoMatch ctors ke tvs vs s c₀ c hnm hL (lowerExpr_LowersExpr s hlow)
 
 
-/-! ## 7. Surface well-typedness — DEFINED via the relation (no `Surface.TypeOf`)
+/-! ## 7. Structural surface well-typedness
 
-Approach A / **option 1a**: closed well-typedness is inhabited open inductive
-`SurfaceWTExpr`. Former weak meaning was
-`∃ c, Lowers s c ∧ (typecheck ctors c).isSome` — archaeology:
-
-```
--- old: def SurfaceWT ctors s := ∃ c, Lowers ctors s c ∧ (typecheck ctors c).isSome
-```
-
-The strong carrier requires open branch typings at `match_` / `ife`, so the
+`SurfaceWTExpr` carries open branch typings at `match_` and `ife`, so the
 executable `lower` output is typeable via `TypeOfHM_lowerMatch` without a
 side-channel on the compiled tree shape. -/
 
@@ -5922,7 +5899,7 @@ theorem wrapCoreParams_TypeOfHM {ctors : CtorEnv} {ke : KindEnv} {tvs : List Val
     letRhsTyScope tyParams params (none : Option Surface.PolyTy) tvs = tvs := by
   simp [letRhsTyScope, letAnnTyPrefix, finalizeAnn_none]
 
-/-- Strong open surface well-typedness (Approach A / 1a).
+/-- Strong open surface well-typedness.
     At `match_`, ingredients are typed openly — not “the compiled tree typechecks”.
     Match-free fragments use `of_lowers` (unique Lowers + TypeOfHM). Match-capable
     forms recurse so induction reaches nested matches. -/
@@ -6061,20 +6038,11 @@ inductive SurfaceWTExpr (ctors : CtorEnv) (ke : KindEnv) :
       (hbody : SurfaceWTExpr ctors ke tvs (binds.map (·.name) ++ vs)
           (τs.map PolyTy.mkTrivial ++ Γ) body τ) :
       SurfaceWTExpr ctors ke tvs vs Γ (.letRecIn binds body) τ
-  /-- Annotated / mixed / poly-recursion `letRecIn`. Surface analogue of Core
-      `TypeOfHM.letRec` + `RecSpecs.MonoTypedInit` (the all-mono pivot of commit
-      78cf9a1): EVERY member — annotated or not — is checked MONOMORPHICALLY
-      at the per-member witness monotype `τs[i]` (`coreParamsToArrows paramTys τret
-      = renameG G Xs τs[i]` after wrap), with `specs` serving only the body
-      context (`RecSpecs.bodyScheme` puts annotated members at their declared
-      schemes). The OLD scheme-relative half (`hτbinds_poly`/`hpoly`, checking an
-      annotated member's RHS at `σ.openVars Ys`) is DELETED (this restatement,
-      2026-08-26): it mirrored the pre-pivot `TypeOfHM.letRec` rule that the D2
-      spine proved FALSE, and the scheme-relative surface premises could not be
-      discharged against the all-mono rule (an annotated member is never
-      available at its scheme while the group's RHSs are checked — cf.
-      `TypeOfHM_of_lowerExpr_of_SurfaceWTExpr`'s `letRecInAnn` case, now built
-      exactly like its all-mono `letRecIn` sibling).
+  /-- Annotated or mixed `letRecIn`. Every member—annotated or not—is checked
+      monomorphically at its per-member witness `τs[i]`. `specs` controls only
+      the body context, where generalized and declared schemes become visible.
+      Thus annotations constrain exported types but do not enable polymorphic
+      uses while the recursive group itself is checked.
 
       @TODO(ann-open-tvs): same `tvs = []` metatheory caveat as `letInAnn` (see
       that ctor). Not a surface compile ban; blocks structural `letRecInAnn` under
@@ -6198,7 +6166,7 @@ theorem SurfaceWT_of_match_scrut {ctors : CtorEnv}
   | of_lowers hnm _ _ => cases hnm
 
 
-/-! ### Emit typing (Approach A rung 2 infrastructure)
+/-! ### Typing emitted decision trees
 
 Parallel to `DTreeExhaustive` / `emit_DTreeExhaustive`: a syntactic typing
 layer showing `emit` of a well-formed compiled tree is `TypeOfHM`. -/
@@ -6447,7 +6415,7 @@ private theorem EmitTyCtx.agrees_lookup {ctors : CtorEnv} {ectx : EmitTyCtx ctor
       Option.some.inj (hτ'.symm.trans hτ)
     simpa [hτs] using hlc
 
-/-- `emitCases` as a `List.map` (local copy — private below §O5). -/
+/-- `emitCases` as a `List.map`. -/
 private theorem emitCases_eq_map' (env : List Occ) (bodies : Nat → Expr) (occ : Occ) :
     ∀ (cases : List (CtorName × Nat × DTree)),
       emitCases env bodies occ cases
@@ -6512,7 +6480,7 @@ private theorem mem_cases_of_mem_emitCases (env : List Occ) (bodies : Nat → Ex
   obtain ⟨⟨rfl, rfl⟩, rfl⟩ := (Prod.mk.injEq _ _ _ _).mp heq
   exact ⟨t', hx, rfl⟩
 
-/-- **(Typing A-core, FROZEN).** Emitting a `DTreeTypeable` tree yields a
+/-- Emitting a `DTreeTypeable` tree yields a
     `TypeOfHM` term at `τres`. Mirror of `emit_DTreeExhaustive`. -/
 theorem emit_DTreeTypeable {ctors : CtorEnv} {Γ_outer : Env} {ectx : EmitTyCtx ctors}
     {t : DTree} {bodies : Nat → Expr} {τres : Ty}
@@ -7866,29 +7834,8 @@ private theorem compile_typeable_aux {ctors : CtorEnv} {Γ_outer : Env} {bodies 
                 exact defaultRow_body_inv hlook0 hs (hbody r hr))
             simpa [hdef] using hd
 
-/-- **(Typing A compile, FROZEN).** Thread branch typings through `compile` on
-    `initMatrix`, producing `DTreeTypeable` (which carries leaf body `TypeOfHM`).
-
-    **Do not change this statement.** Root `EmitTyCtx.agrees` holds from `hlc`
-    (`Γ = [mkTrivial τscrut] ++ Γ`, `occEnv = [[]]`, `octx = [([], τscrut)]`).
-
-    **Proof plan for subagent:**
-    1. Likely need an auxiliary `compile_typeable_aux` by induction on
-       `compile` (mirror `PatComp.compile_ctorSwitches_aux`), threading:
-       * `EmitTyCtx.agrees ectx Γ_outer`
-       * matrix rows well-formed (`GPatWFList` / `patBindTys` surviving
-         `specialize` / `defaultRow` / `pop`)
-       * for each row `r` with action `act`, body typing under captures
-         reconstructed from `octx` equals `branchBodyEnv` / `patBindTys` of the
-         original clause (or a generalized open-body invariant)
-    2. At `compile` leaf: build `DTreeTypeable.leaf` from `hbodies` via `bodyFn`
-       (acts are row indices `< pats.length`).
-    3. At switch: use `MatchExhaustive` = `DTreeExhaustive` structure for
-       coverage/`htyped`; extend `Γ`/`occEnv`/`octx` as in `DTreeTypeable.switch*`.
-    4. Top theorem = aux at `occs = [[]]`, `M = initMatrix pats`.
-
-    Prefer `composer-2.5-fast`; bump if compile induction / `patBindTys` gets
-    nasty. Escape hatch: report obstruction, leave sorry — do not change A/B/C. -/
+/-- Thread branch typings through `compile` on `initMatrix`, producing a
+    `DTreeTypeable` tree whose leaves carry the corresponding body typings. -/
 private theorem initMatrix_captured_empty :
     ∀ (ps : List Surface.Pattern) (k : Nat), ∀ r ∈ initMatrix ps k, r.captured = []
   | [], _, r, hr => by cases hr
@@ -7912,11 +7859,11 @@ private theorem initMatrix_mem_inv {ps : List Surface.Pattern} {k : Nat} {r : Ro
       refine ⟨p, List.mem_cons_of_mem _ hp, hcap, hpats, i + 1, by omega, ?_⟩
       simpa [List.getElem?_cons_succ] using hget
 
-/-- **(Typing A compile).** Thread branch typings through `compile` on
+/-- Thread branch typings through `compile` on
     `initMatrix`, producing `DTreeTypeable` (which carries leaf body `TypeOfHM`).
 
-    **Premise note (2026-07-13, strengthened):** root arity follows from global
-    `CtorEnv.arityConsistent` + `get? (kindEnvOfCtors ctors) T = some tyArgs.length`.
+    Root arity follows from global `CtorEnv.arityConsistent` together with
+    `get? (kindEnvOfCtors ctors) T = some tyArgs.length`.
     Nested field occurrences (foreign / differently-parameterized ADTs under
     `OccCtx.extend`) need the same facts globally, plus `CtorEnv.fieldsKinded` and
     `Ty.WellKinded ke 0` of column types (so `WellKinded_openWith` kinds field
@@ -7994,11 +7941,10 @@ theorem compile_initMatrix_typeable {ctors : CtorEnv} {Γ : Env} {pats : List Su
       simpa [henv, hact'] using hbody_i)
 
 
-/-! ### Approach A lemma ladder (1a)
+/-! ### Typing executable match lowering
 
-Strategy: typecheck what `lower` builds (`lowerMatch` of open ingredients), using
-open typing from strong `SurfaceWTExpr` (defined in §7). Coverage (`SurfaceCovers`)
-remains on the closed transfer / corollary. -/
+The following lemmas type what `lower` builds from the open ingredients carried
+by `SurfaceWTExpr`. Coverage remains a separate closed property. -/
 
 /-- **Rung 1.** Executable match lowering is exactly `lowerMatch` of lowered parts. -/
 theorem lowerExpr_match_decomp {ke : KindEnv} {tvs vs : List ValName}
@@ -9912,7 +9858,7 @@ private theorem TyBvarBounded_BranchList_append_wildcard (n : Nat) :
       dsimp [Expr.TyBvarBounded.BranchList, List.cons_append]
       exact And.intro hb ((ih e).mpr (And.intro hrest he))
 
-/-! ### Frozen: surface-lowered terms are `TyBvarBounded tvs.length`
+/-! ### Surface-lowered terms are `TyBvarBounded tvs.length`
 
 Needed so the `letInAnn` ladder can collapse
 `openBoundTyVars (some σ) Xs rhs = rhs.openTyVars Xs` to `rhs` via
@@ -10482,526 +10428,67 @@ theorem lowerExpr_isSome_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     obtain ⟨_, hf⟩ := Option.isSome_iff_exists.mp ihf
     simp [hc, ht, hf]
 
-/-! ### `TyBvarBounded 0` from surface lowering + `TypeOfHM`
+/-! ### Annotation well-scopedness from declarative typing -/
 
-`TypeOfHM.var` ignores stored `tyArgs`, so typing alone does not imply
-`TyBvarBounded 0`. Surface `lowerExpr` always emits `var _ []`, which closes the
-gap. Used by poly `letInAnn` to collapse `openBoundTyVars` without mono-shrink. -/
-
-mutual
-/-- Every `var` node carries an empty decoration list. After the erasure
-    migration dropped `tyArgs` from `Expr.var`, this holds *vacuously* of every
-    term; kept as a predicate so the lowering-closedness statements below are
-    unchanged. -/
-def Expr.EmptyVarTyArgs : Expr → Prop
-  | .primLit _ | .primBinOp _ | .ctor _ => True
-  | .var _ => True
-  | .lambda _ body => Expr.EmptyVarTyArgs body
-  | .app f arg => Expr.EmptyVarTyArgs f ∧ Expr.EmptyVarTyArgs arg
-  | .letIn _ rhs body => Expr.EmptyVarTyArgs rhs ∧ Expr.EmptyVarTyArgs body
-  | .match_ scrut brs =>
-      Expr.EmptyVarTyArgs scrut ∧ Expr.EmptyVarTyArgs.BranchList brs
-  | .letRec _ bindings body =>
-      (∀ e ∈ bindings, Expr.EmptyVarTyArgs e) ∧ Expr.EmptyVarTyArgs body
-def Expr.EmptyVarTyArgs.BranchList : List (MatchPattern × Expr) → Prop
-  | [] => True
-  | (_, body) :: rest => Expr.EmptyVarTyArgs body ∧ Expr.EmptyVarTyArgs.BranchList rest
-end
-
-theorem Expr.EmptyVarTyArgs.BranchList_iff {brs : List (MatchPattern × Expr)} :
-    Expr.EmptyVarTyArgs.BranchList brs ↔
-      ∀ p b, (p, b) ∈ brs → Expr.EmptyVarTyArgs b := by
-  induction brs with
-  | nil => simp [Expr.EmptyVarTyArgs.BranchList]
-  | cons hd tl ih =>
-    obtain ⟨p, b⟩ := hd
-    simp only [Expr.EmptyVarTyArgs.BranchList, ih, List.mem_cons, Prod.mk.injEq]
-    constructor
-    · intro ⟨hb, hrest⟩ p' b' h
-      rcases h with ⟨rfl, rfl⟩ | h
-      · exact hb
-      · exact hrest p' b' h
-    · intro h
-      exact ⟨h p b (Or.inl ⟨rfl, rfl⟩), fun p' b' hmem => h p' b' (Or.inr hmem)⟩
-
-theorem Expr.openTyVarsAux_emptyVarTyArgs (Xs : List Nat) :
-    ∀ (e : Expr) (d : Nat), Expr.EmptyVarTyArgs e →
-      Expr.EmptyVarTyArgs (e.openTyVarsAux d Xs) := by
-  intro e
-  induction e using Expr.rec_strong with
-  | primLit | primBinOp | ctor => intro _ _; trivial
-  | var n =>
-    intro d _; trivial
-  | lambda ann body ih =>
-    intro d h
-    simp only [Expr.EmptyVarTyArgs, Expr.openTyVarsAux] at h ⊢
-    exact ih d h
-  | app f arg ihf iharg =>
-    intro d h
-    simp only [Expr.EmptyVarTyArgs, Expr.openTyVarsAux] at h ⊢
-    exact ⟨ihf d h.1, iharg d h.2⟩
-  | letIn ann rhs body ihr ihb =>
-    intro d h
-    cases ann with
-    | none =>
-      simp only [Expr.EmptyVarTyArgs, Expr.openTyVarsAux] at h ⊢
-      exact ⟨ihr d h.1, ihb d h.2⟩
-    | some σ =>
-      simp only [Expr.EmptyVarTyArgs, Expr.openTyVarsAux] at h ⊢
-      exact ⟨ihr (d + σ.paramCount) h.1, ihb d h.2⟩
-  | match_ scrut branches ihs ihbs =>
-    intro d h
-    simp only [Expr.EmptyVarTyArgs, Expr.openTyVarsAux,
-      BranchList.openTyVarsAux_eq_map, Expr.EmptyVarTyArgs.BranchList_iff] at h ⊢
-    refine ⟨ihs d h.1, ?_⟩
-    intro p e hp
-    obtain ⟨⟨p', e'⟩, hmem, heq⟩ := List.mem_map.mp hp
-    cases heq
-    exact ihbs p' e' hmem d (h.2 p' e' hmem)
-  | letRec anns bindings body ihbs ihb =>
-    intro d h
-    simp only [Expr.EmptyVarTyArgs, Expr.openTyVarsAux] at h ⊢
-    refine ⟨?_, ihb d h.2⟩
-    have aux : ∀ (as : List (Option PolyTy)) (bs : List Expr),
-        (∀ e ∈ bs, Expr.EmptyVarTyArgs e) →
-        (∀ e ∈ bs, ∀ d', Expr.EmptyVarTyArgs e →
-          Expr.EmptyVarTyArgs (e.openTyVarsAux d' Xs)) →
-        ∀ e ∈ RecGroup.openTyVarsAux d Xs as bs, Expr.EmptyVarTyArgs e := by
-      intro as bs hbs ihmem
-      induction bs generalizing as with
-      | nil => intro e he; cases he
-      | cons hd tl ih =>
-        intro e he
-        cases as with
-        | nil =>
-          simp only [RecGroup.openTyVarsAux, List.mem_cons] at he
-          rcases he with rfl | he
-          · exact ihmem hd List.mem_cons_self d (hbs hd List.mem_cons_self)
-          · exact ih [] (fun e' he' => hbs e' (List.mem_cons_of_mem _ he'))
-              (fun e' he' => ihmem e' (List.mem_cons_of_mem _ he')) e he
-        | cons a as =>
-          simp only [RecGroup.openTyVarsAux, List.mem_cons] at he
-          rcases he with rfl | he
-          · exact ihmem hd List.mem_cons_self (d + RecAnn.params a)
-              (hbs hd List.mem_cons_self)
-          · exact ih as (fun e' he' => hbs e' (List.mem_cons_of_mem _ he'))
-              (fun e' he' => ihmem e' (List.mem_cons_of_mem _ he')) e he
-    exact aux anns bindings h.1 (fun e he d' he' => ihbs e he d' he')
-
-theorem Expr.openTyVars_emptyVarTyArgs (Xs : List Nat) {e : Expr}
-    (h : Expr.EmptyVarTyArgs e) : Expr.EmptyVarTyArgs (e.openTyVars Xs) :=
-  Expr.openTyVarsAux_emptyVarTyArgs Xs e 0 h
-
-theorem Expr.shiftFrom_emptyVarTyArgs {e : Expr} :
-    ∀ (t n : Nat), Expr.EmptyVarTyArgs e → Expr.EmptyVarTyArgs (e.shiftFrom t n) := by
-  induction e using Expr.rec_strong with
-  | primLit | primBinOp | ctor => intro _ _ _; trivial
-  | var i =>
-    intro t nn h
-    simp only [Expr.shiftFrom]
-    split <;> simp [Expr.EmptyVarTyArgs]
-  | lambda ann body ih =>
-    intro t n h
-    simp only [Expr.EmptyVarTyArgs, Expr.shiftFrom] at h ⊢
-    exact ih (t + 1) n h
-  | app f arg ihf iharg =>
-    intro t n h
-    simp only [Expr.EmptyVarTyArgs, Expr.shiftFrom] at h ⊢
-    exact ⟨ihf t n h.1, iharg t n h.2⟩
-  | letIn ann rhs body ihr ihb =>
-    intro t n h
-    simp only [Expr.EmptyVarTyArgs, Expr.shiftFrom] at h ⊢
-    exact ⟨ihr t n h.1, ihb (t + 1) n h.2⟩
-  | match_ scrut branches ihs ihbr =>
-    intro t n h
-    simp only [Expr.EmptyVarTyArgs] at h
-    simp only [Expr.shiftFrom, Expr.EmptyVarTyArgs]
-    refine ⟨ihs t n h.1, ?_⟩
-    rw [Expr.EmptyVarTyArgs.BranchList_iff] at h ⊢
-    intro p e hp
-    obtain ⟨pat, body, hmem, heq⟩ := BranchList.mem_shiftFrom (by simpa using hp)
-    obtain ⟨hp_eq, he_eq⟩ := Prod.mk.inj heq
-    subst hp_eq
-    rw [he_eq]
-    exact ihbr p body hmem (t + p.bindCount) n (h.2 p body hmem)
-  | letRec anns bindings body ihbs ihb =>
-    intro t n h
-    simp only [Expr.EmptyVarTyArgs, Expr.shiftFrom, RecGroup.shiftFrom_eq_map] at h ⊢
-    refine ⟨?_, ihb (t + bindings.length) n h.2⟩
-    intro e he
-    obtain ⟨e0, he0, rfl⟩ := List.mem_map.mp he
-    exact ihbs e0 he0 (t + bindings.length) n (h.1 e0 he0)
-
-private theorem EmptyVarTyArgs_BranchList_append_wildcard :
-    ∀ (cs : List (MatchPattern × Expr)) (e : Expr),
-      Expr.EmptyVarTyArgs.BranchList (cs ++ [(.wildcard, e)]) ↔
-        Expr.EmptyVarTyArgs.BranchList cs ∧ Expr.EmptyVarTyArgs e := by
-  intro cs; induction cs with
-  | nil =>
-    intro e
-    simp [Expr.EmptyVarTyArgs.BranchList]
-  | cons hd tl ih =>
-    obtain ⟨p, b⟩ := hd
-    intro e
-    simp only [List.cons_append, Expr.EmptyVarTyArgs.BranchList, ih e]
-    exact ⟨fun ⟨hb, ⟨hrest, he⟩⟩ => ⟨⟨hb, hrest⟩, he⟩,
-      fun ⟨⟨hb, hrest⟩, he⟩ => ⟨hb, ⟨hrest, he⟩⟩⟩
-
-private theorem emitLets_emptyVarTyArgs (env : List Occ) (binds : List Occ)
-    (body : Expr) (hb : Expr.EmptyVarTyArgs body) :
-    Expr.EmptyVarTyArgs (emitLets env binds body) := by
-  unfold emitLets
-  have hshift : Expr.EmptyVarTyArgs (body.shiftFrom binds.length env.length) :=
-    Expr.shiftFrom_emptyVarTyArgs binds.length env.length hb
-  suffices ∀ rest depth,
-      Expr.EmptyVarTyArgs (emitLets.go env binds body rest depth) from this _ _
-  intro rest; induction rest with
-  | nil => intro depth; exact hshift
-  | cons _ rest ih =>
-    intro depth
-    simp only [emitLets.go, Expr.EmptyVarTyArgs]
-    exact And.intro (by simp) (ih (depth + 1))
-
-private theorem resolveOcc_emptyVarTyArgs (env : List Occ) (occ : Occ) :
-    Expr.EmptyVarTyArgs (resolveOcc env occ) := by
-  simp only [resolveOcc, Expr.EmptyVarTyArgs]
-
-mutual
-private theorem emit_emptyVarTyArgs (env : List Occ) (bodies : Nat → Expr)
-    (t : DTree) (hb : ∀ i, Expr.EmptyVarTyArgs (bodies i)) :
-    Expr.EmptyVarTyArgs (emit env bodies t) := by
-  match t with
-  | .fail =>
-    simp only [emit, Expr.EmptyVarTyArgs, Expr.EmptyVarTyArgs.BranchList]
-    exact ⟨trivial, trivial⟩
-  | .leaf act binds =>
-    simp only [emit]
-    exact emitLets_emptyVarTyArgs env binds (bodies act) (hb act)
-  | .switch occ cases dflt =>
-    match dflt with
-    | .fail =>
-      simp only [emit, Expr.EmptyVarTyArgs, List.append_nil]
-      exact ⟨resolveOcc_emptyVarTyArgs env occ,
-        emitCases_emptyVarTyArgs env bodies occ cases hb⟩
-    | .leaf act binds =>
-      simp only [emit, Expr.EmptyVarTyArgs]
-      refine ⟨resolveOcc_emptyVarTyArgs env occ, ?_⟩
-      exact (EmptyVarTyArgs_BranchList_append_wildcard _ _).mpr
-        ⟨emitCases_emptyVarTyArgs env bodies occ cases hb,
-          emit_emptyVarTyArgs env bodies (.leaf act binds) hb⟩
-    | .switch occ' cases' dflt' =>
-      simp only [emit, Expr.EmptyVarTyArgs]
-      refine ⟨resolveOcc_emptyVarTyArgs env occ, ?_⟩
-      exact (EmptyVarTyArgs_BranchList_append_wildcard _ _).mpr
-        ⟨emitCases_emptyVarTyArgs env bodies occ cases hb,
-          emit_emptyVarTyArgs env bodies (.switch occ' cases' dflt') hb⟩
-
-private theorem emitCases_emptyVarTyArgs (env : List Occ) (bodies : Nat → Expr)
-    (occ : Occ) (cases : List (CtorName × Nat × DTree))
-    (hb : ∀ i, Expr.EmptyVarTyArgs (bodies i)) :
-    Expr.EmptyVarTyArgs.BranchList (emitCases env bodies occ cases) := by
-  match cases with
-  | [] => simp only [emitCases, Expr.EmptyVarTyArgs.BranchList]
-  | (_c, a, t) :: rest =>
-    simp only [emitCases, Expr.EmptyVarTyArgs.BranchList]
-    exact ⟨emit_emptyVarTyArgs (subOccs occ a ++ env) bodies t hb,
-      emitCases_emptyVarTyArgs env bodies occ rest hb⟩
-end
-
-theorem lowerMatch_emptyVarTyArgs (scrut : Expr) (pats : List Surface.Pattern)
-    (bodies : Nat → Expr)
-    (hs : Expr.EmptyVarTyArgs scrut) (hb : ∀ i, Expr.EmptyVarTyArgs (bodies i)) :
-    Expr.EmptyVarTyArgs (lowerMatch scrut pats bodies) := by
-  simp only [lowerMatch, Expr.EmptyVarTyArgs]
-  exact ⟨hs, emit_emptyVarTyArgs [[]] bodies (compile [[]] (initMatrix pats)) hb⟩
-
-private theorem wrapCoreParams_emptyVarTyArgs {ke : KindEnv} {tvs : List ValName}
-    {params : List (ValName × Option Surface.Ty)} {e e' : Expr}
-    (hwrap : wrapCoreParams ke tvs params e = some e')
-    (he : Expr.EmptyVarTyArgs e) : Expr.EmptyVarTyArgs e' := by
-  induction params generalizing e e' with
-  | nil =>
-    simp only [wrapCoreParams, Option.some.injEq] at hwrap; subst hwrap; exact he
-  | cons p rest ih =>
-    simp only [wrapCoreParams] at hwrap
-    cases hwr : wrapCoreParams ke tvs rest e with
-    | none => simp [hwr] at hwrap
-    | some erest =>
-      cases hann : lowerAnn ke tvs p.2 with
-      | none => simp [hwr, hann] at hwrap
-      | some ann' =>
-        simp only [hwr, hann, Option.some.injEq] at hwrap; subst hwrap
-        simp only [Expr.EmptyVarTyArgs]
-        exact ih hwr he
-
-/-- `mkList` of EmptyVarTyArgs-elements is EmptyVarTyArgs. -/
-private theorem mkList_emptyVarTyArgs_of {items' : List Expr}
-    (h : ∀ e ∈ items', Expr.EmptyVarTyArgs e) :
-    Expr.EmptyVarTyArgs (mkList items') := by
-  induction items' with
-  | nil => simp [mkList, Expr.EmptyVarTyArgs]
-  | cons hd tl ih =>
-    simp only [mkList, Expr.EmptyVarTyArgs]
-    exact ⟨⟨trivial, h hd List.mem_cons_self⟩,
-      ih fun e he => h e (List.mem_cons_of_mem _ he)⟩
-
-mutual
-private theorem lowerExpr_emptyVarTyArgs {ke : KindEnv} {tvs vs : List ValName} :
-    ∀ {s : Surface.Expr} {c : Expr},
-      lowerExpr ke tvs vs s = some c → Expr.EmptyVarTyArgs c := by
-  intro s c h
-  match s with
-  | .primLit (.bool _) =>
-    simp only [lowerExpr, Option.some.injEq] at h; subst h; simp [Expr.EmptyVarTyArgs]
-  | .primLit .unit | .primLit (.int _) | .primLit (.nat _) | .primLit (.char _) =>
-    simp only [lowerExpr, Option.some.injEq] at h; subst h; simp [Expr.EmptyVarTyArgs]
-  | .primBinOp _ =>
-    simp only [lowerExpr, Option.some.injEq] at h; subst h; simp [Expr.EmptyVarTyArgs]
-  | .var name =>
-    simp only [lowerExpr] at h
-    cases hi : tvarIndex vs name with
-    | none => simp [hi] at h
-    | some i =>
-      simp only [hi, Option.some.injEq] at h; subst h; simp [Expr.EmptyVarTyArgs]
-  | .ctor _ =>
-    simp only [lowerExpr, Option.some.injEq] at h; subst h; simp [Expr.EmptyVarTyArgs]
-  | .lambda param pann body =>
-    simp only [lowerExpr] at h
-    cases hann : lowerAnn ke tvs pann with
-    | none => simp [hann] at h
-    | some ann' =>
-      match param with
-      | .name x =>
-        cases hb : lowerExpr ke tvs (x :: vs) body with
-        | none => simp [hann, hb] at h
-        | some b' =>
-          simp only [hann, hb, Option.some.injEq] at h; subst h
-          simp only [Expr.EmptyVarTyArgs]
-          exact lowerExpr_emptyVarTyArgs hb
-      | .wildcard =>
-        cases hb : lowerExpr ke tvs (.mk "_" :: vs) body with
-        | none => simp [hann, hb] at h
-        | some b' =>
-          simp only [hann, hb, Option.some.injEq] at h; subst h
-          simp only [Expr.EmptyVarTyArgs]
-          exact lowerExpr_emptyVarTyArgs hb
-      | .pair _ _ | .ctor _ _ | .cons _ _ | .list _ =>
-        simp only [hann] at h
-        cases h
-  | .app f x =>
-    simp only [lowerExpr] at h
-    cases hf : lowerExpr ke tvs vs f with
-    | none => simp [hf] at h
-    | some fL =>
-      cases hx : lowerExpr ke tvs vs x with
-      | none => simp [hf, hx] at h
-      | some xL =>
-        simp only [hf, hx, Option.some.injEq] at h; subst h
-        simp only [Expr.EmptyVarTyArgs]
-        exact ⟨lowerExpr_emptyVarTyArgs hf, lowerExpr_emptyVarTyArgs hx⟩
-  | .pair a b =>
-    simp only [lowerExpr] at h
-    cases ha : lowerExpr ke tvs vs a with
-    | none => simp [ha] at h
-    | some aL =>
-      cases hb : lowerExpr ke tvs vs b with
-      | none => simp [ha, hb] at h
-      | some bL =>
-        simp only [ha, hb, Option.some.injEq] at h; subst h
-        simp only [Expr.EmptyVarTyArgs]
-        exact ⟨⟨trivial, lowerExpr_emptyVarTyArgs ha⟩, lowerExpr_emptyVarTyArgs hb⟩
-  | .cons hd tl =>
-    simp only [lowerExpr] at h
-    cases ha : lowerExpr ke tvs vs hd with
-    | none => simp [ha] at h
-    | some hL =>
-      cases hb : lowerExpr ke tvs vs tl with
-      | none => simp [ha, hb] at h
-      | some tL =>
-        simp only [ha, hb, Option.some.injEq] at h; subst h
-        simp only [Expr.EmptyVarTyArgs]
-        exact ⟨⟨trivial, lowerExpr_emptyVarTyArgs ha⟩, lowerExpr_emptyVarTyArgs hb⟩
-  | .list items =>
-    simp only [lowerExpr] at h
-    cases hi : lowerExprList ke tvs vs items with
-    | none => simp [hi] at h
-    | some items' =>
-      simp only [hi, Option.some.injEq] at h; subst h
-      have ⟨hlen, hget⟩ := lowerExprList_length_get hi
-      refine mkList_emptyVarTyArgs_of ?_
-      intro e he
-      obtain ⟨i, hi', rfl⟩ := List.mem_iff_getElem.mp he
-      have hiS : i < items.length := by omega
-      have hmem : items[i]'hiS ∈ items := List.getElem_mem hiS
-      obtain ⟨_, hlowi⟩ := hget i hiS
-      exact lowerExpr_emptyVarTyArgs hlowi
-  | .letIn name tyParams params ann rhs body =>
-    obtain ⟨ann', rhsCore, rhsL, bodyL, hann, hrL, hwrap, hbL, rfl⟩ :=
-      lowerExpr_letIn_decomp h
-    simp only [Expr.EmptyVarTyArgs]
-    exact ⟨wrapCoreParams_emptyVarTyArgs hwrap (lowerExpr_emptyVarTyArgs hrL),
-           lowerExpr_emptyVarTyArgs hbL⟩
-  | .letRecIn binds body =>
-    obtain ⟨annsL, bindings', bodyL, hannL, hbindsL, hbL, rfl⟩ :=
-      lowerExpr_letRecIn_decomp h
-    simp only [Expr.EmptyVarTyArgs]
-    refine ⟨?_, lowerExpr_emptyVarTyArgs hbL⟩
-    intro e he
-    obtain ⟨i, hi, rfl⟩ := List.mem_iff_getElem.mp he
-    have hiB : i < binds.length := by
-      simpa [lowerRecBinds_length hbindsL] using hi
-    obtain ⟨rhsCore, hr, hwrap⟩ := lowerRecBinds_get hbindsL i hiB
-    exact wrapCoreParams_emptyVarTyArgs hwrap (lowerExpr_emptyVarTyArgs hr)
-  | .ife c t f =>
-    simp only [lowerExpr] at h
-    cases hc : lowerExpr ke tvs vs c with
-    | none => simp [hc] at h
-    | some c' =>
-      cases ht : lowerExpr ke tvs vs t with
-      | none => simp [hc, ht] at h
-      | some t' =>
-        cases hf : lowerExpr ke tvs vs f with
-        | none => simp [hc, ht, hf] at h
-        | some f' =>
-          simp only [hc, ht, hf, Option.some.injEq] at h; subst h
-          exact lowerMatch_emptyVarTyArgs c' _ _ (lowerExpr_emptyVarTyArgs hc) fun i => by
-            match i with
-            | 0 => simpa [List.getD] using lowerExpr_emptyVarTyArgs ht
-            | 1 => simpa [List.getD] using lowerExpr_emptyVarTyArgs hf
-            | n + 2 => simp [List.getD, Expr.EmptyVarTyArgs]
-  | .match_ scrut brs =>
-    obtain ⟨scrut', bodies', hsL, hbL, rfl⟩ := lowerExpr_match_decomp h
-    exact lowerMatch_emptyVarTyArgs scrut' _ (bodyFn bodies')
-      (lowerExpr_emptyVarTyArgs hsL) fun i => by
-      have hlen := lowerBranches_length hbL
-      by_cases hi : i < bodies'.length
-      · have he := lowerBranches_emptyVarTyArgs hbL (bodies'[i]) (List.getElem_mem hi)
-        simpa [bodyFn, matchBodyDefault, List.getD_eq_getElem?_getD,
-          List.getElem?_eq_getElem hi] using he
-      · simp [bodyFn, matchBodyDefault, List.getD, List.getElem?_eq_none (Nat.not_lt.mp hi),
-          Expr.EmptyVarTyArgs]
-termination_by s => lowerExprSize s
-decreasing_by
-  all_goals first
-    | exact lowerExprSize_pair_left _ _
-    | exact lowerExprSize_pair_right _ _
-    | exact lowerExprSize_cons_head _ _
-    | exact lowerExprSize_cons_tail _ _
-    | exact lowerExprSize_app_fn _ _
-    | exact lowerExprSize_app_arg _ _
-    | exact lowerExprSize_lambda_body _ _ _
-    | exact lowerExprSize_letIn_rhs _ _ _ _ _ _
-    | exact lowerExprSize_letIn_body _ _ _ _ _ _
-    | exact lowerExprSize_letRecIn_body _ _
-    | exact lowerExprSize_letRecIn_bind_rhs (by assumption)
-    | exact lowerExprSize_letRecIn_bind_rhs_get (by assumption)
-    | exact lowerExprSize_letRecIn_bind_rhs_get ‹_›
-    | exact lowerExprSize_ife_cond _ _ _
-    | exact lowerExprSize_ife_thn _ _ _
-    | exact lowerExprSize_ife_else _ _ _
-    | exact lowerExprSize_match_scrut
-    | exact lowerExprSize_match_branches
-    | exact lowerExprSize_match_branch (by assumption)
-    | exact lowerExprSize_list_mem (by assumption)
-
-private theorem lowerBranches_emptyVarTyArgs {ke : KindEnv} {tvs vs : List ValName} :
-    ∀ {brs : List (Surface.Pattern × Surface.Expr)} {bodies : List Expr},
-      lowerBranches ke tvs vs brs = some bodies →
-      ∀ e ∈ bodies, Expr.EmptyVarTyArgs e := by
-  intro brs bodies h e he
-  match brs with
-  | [] =>
-    simp only [lowerBranches, Option.some.injEq] at h; subst h; cases he
-  | (p, b) :: rest =>
-    simp only [lowerBranches] at h
-    cases hb : lowerExpr ke tvs (patVars p ++ vs) b with
-    | none => simp [hb] at h
-    | some b' =>
-      cases hrest : lowerBranches ke tvs vs rest with
-      | none => simp [hb, hrest] at h
-      | some rest' =>
-        simp only [hb, hrest, Option.some.injEq] at h; subst h
-        simp only [List.mem_cons] at he
-        rcases he with rfl | he
-        · exact lowerExpr_emptyVarTyArgs hb
-        · exact lowerBranches_emptyVarTyArgs hrest e he
-termination_by brs => lowerBranchesSize brs
-decreasing_by
-  all_goals first
-    | exact lowerBranchesSize_lt_cons
-    | exact lowerBranchesSize_pos_branch List.mem_cons_self
-end
-
-/-- Extract branch-body `TyBvarBounded 0` from `TypeOfHM.BranchMotive` under the
-    empty-var motive (mirrors `TypeOfElabHM.branchMotive_tyBvarBounded`). -/
-private theorem TypeOfHM.branchMotive_tyBvarBounded_of_emptyVarTyArgs
+/-- Extract branch-body annotation boundedness from the strong induction motive. -/
+private theorem TypeOfHM.BranchMotive.tyBvarBounded
     {ctx : Ctx} {p : MatchPattern} {b : Expr} {scrutTy resultTy : Ty}
     (h : TypeOfHM.BranchMotive
-      (fun _ e _ _ => Expr.EmptyVarTyArgs e → e.TyBvarBounded 0) ctx (p, b) scrutTy resultTy)
-    (he : Expr.EmptyVarTyArgs b) : b.TyBvarBounded 0 := by
+      (fun _ e _ _ => e.TyBvarBounded 0) ctx (p, b) scrutTy resultTy) :
+    b.TyBvarBounded 0 := by
   rcases h with
     ⟨_, _, _, _, _, _, _, _, _, _, _, _, ih⟩ | ⟨_, _, ih⟩
-  · exact ih he
-  · exact ih he
+  · exact ih
+  · exact ih
 
-/-- `TypeOfHM` + empty var decorations ⇒ `TyBvarBounded 0` (port of
-    `TypeOfElabHM.tyBvarBounded`; decorations are the only gap). -/
-theorem TypeOfHM_tyBvarBounded_of_emptyVarTyArgs {ctx : Ctx} {e : Expr} {τ : Ty}
-    (h : TypeOfHM ctx e τ) : Expr.EmptyVarTyArgs e → e.TyBvarBounded 0 := by
+/-- Every annotation in a declaratively well-typed expression is locally
+    well-scoped. This follows directly from the annotation premises of
+    `TypeOfHM`; term variables carry no type decorations. -/
+theorem TypeOfHM.tyBvarBounded {ctx : Ctx} {e : Expr} {τ : Ty}
+    (h : TypeOfHM ctx e τ) : e.TyBvarBounded 0 := by
   induction h using TypeOfHM.rec_strong with
-  | primLitUnit | primLitInt | primLitNat | primLitChar => intro _; trivial
-  | primBinOpIntAdd | primBinOpIntSub => intro _; trivial
-  | primBinOpIntLt | primBinOpCharLt => intro _; trivial
-  | app _ _ ihf iha =>
-    intro he; simp only [Expr.EmptyVarTyArgs] at he
-    exact ⟨ihf he.1, iha he.2⟩
-  | var _ _ _ => intro _; trivial
-  | ctor => intro _; trivial
+  | primLitUnit | primLitInt | primLitNat | primLitChar => trivial
+  | primBinOpIntAdd | primBinOpIntSub => trivial
+  | primBinOpIntLt | primBinOpCharLt => trivial
+  | app _ _ ihf iha => exact ⟨ihf, iha⟩
+  | var _ _ _ => trivial
+  | ctor => trivial
   | lambda hpc hann _ _ ih =>
-    intro he; simp only [Expr.EmptyVarTyArgs] at he
-    refine ⟨?_, ih he⟩
+    refine ⟨?_, ih⟩
     intro t ht
     have := hann t ht
     simpa [this] using hpc
   | letIn hwf hann _ _ _ ihgen ihbody =>
     expose_names
-    intro he; simp only [Expr.EmptyVarTyArgs] at he
     cases hann_ann : ann with
     | none =>
       simp only [Expr.TyBvarBounded]
-      refine ⟨?_, ihbody he.2⟩
+      refine ⟨?_, ihbody⟩
       obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L M.paramCount
       have := ihgen Xs ⟨hXlen, hXnodup, hXavoid⟩
       rw [hann_ann] at this
-      simpa only [Expr.openBoundTyVars] using this he.1
+      simpa only [Expr.openBoundTyVars] using this
     | some σ =>
       have hMσ : M = σ := hann σ hann_ann
       subst hMσ
       simp only [Expr.TyBvarBounded]
-      refine ⟨by simpa using hwf, ?_, ihbody he.2⟩
+      refine ⟨by simpa using hwf, ?_, ihbody⟩
       obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L M.paramCount
       have hc := ihgen Xs ⟨hXlen, hXnodup, hXavoid⟩
       rw [hann_ann] at hc
       simp only [Expr.openBoundTyVars] at hc
-      have heOpen := Expr.openTyVars_emptyVarTyArgs Xs he.1
-      have hb0 := hc heOpen
       have := Expr.tyBvarBounded_of_openTyVarsAux Xs boundExpr 0
-        (by simpa only [Expr.openTyVars] using hb0)
+        (by simpa only [Expr.openTyVars] using hc)
       simpa only [Nat.zero_add, hXlen] using this
   | match_ _ _ _ ihscrut ihbrs =>
     expose_names
-    intro he; simp only [Expr.EmptyVarTyArgs] at he
-    refine ⟨ihscrut he.1, ?_⟩
-    have hbr := he.2
-    rw [Expr.EmptyVarTyArgs.BranchList_iff] at hbr
+    refine ⟨ihscrut, ?_⟩
     rw [Expr.TyBvarBounded.BranchList_iff]
     intro p b hmem
-    exact TypeOfHM.branchMotive_tyBvarBounded_of_emptyVarTyArgs (ihbrs (p, b) hmem)
-      (hbr p b hmem)
+    exact TypeOfHM.BranchMotive.tyBvarBounded (ihbrs (p, b) hmem)
   | letRec hwf hlen hlink hlc hmono hceiling heq hbody ihmono ihbody =>
     expose_names
-    intro he; simp only [Expr.EmptyVarTyArgs] at he
-    refine ⟨?_, ?_, ihbody he.2⟩
+    refine ⟨?_, ?_, ihbody⟩
     · intro σ hσ
       rw [← hwf.anns_eq] at hσ
       obtain ⟨s, hs, hsa⟩ := List.mem_map.mp hσ
@@ -11014,49 +10501,14 @@ theorem TypeOfHM_tyBvarBounded_of_emptyVarTyArgs {ctx : Ctx} {e : Expr} {τ : Ty
       have hlen' : bindings.length = (specs.map RecSpec.ann).length := by
         simpa [List.length_map] using hwf.length
       obtain ⟨i, hi, heq, hann⟩ := List.mem_zip_getElem hlen' hp
-      have he_e : Expr.EmptyVarTyArgs e := by
-        simpa [heq] using he.1 (bindings[i]'hi) (List.getElem_mem hi)
-      have hiS : i < specs.length := by
-        have hls : bindings.length = specs.length := hwf.length
-        omega
       have hiT : i < τs.length := by
         rwa [hlen] at hi
       obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L G.length
       have hfresh : FreshNames L G.length Xs := ⟨hXlen, hXnodup, hXavoid⟩
-      cases hspec : specs[i]'hiS with
-      | mono τ =>
-        have hann' : annO = none := by
-          simp [hann.symm, List.getElem_map, hspec, RecSpec.ann]
-        simp only [hann', RecAnn.params, Nat.add_zero]
-        have hmem : (e, RecSpec.mono τ) ∈ bindings.zip specs := by
-          simpa [heq, hspec] using List.getElem_mem_zip hi hiS
-        have hmemτ : (e, τ) ∈ bindings.zip τs := by
-          -- the mono-link pins the witness to the spec monotype
-          have hpair : (specs[i]'hiS, τs[i]'hiT) ∈ specs.zip τs := by
-            simpa using List.getElem_mem_zip hiS hiT
-          have hτs : τs[i]'hiT = τ :=
-            hlink (specs[i]'hiS, τs[i]'hiT) hpair τ (by simpa using hspec)
-          simpa [heq, hτs] using List.getElem_mem_zip hi hiT
-        simpa [heq] using ihmono Xs hfresh (e, τ) hmemτ he_e
-      | poly σ =>
-        have hann' : annO = some σ := by
-          simp [hann.symm, List.getElem_map, hspec, RecSpec.ann]
-        simp only [hann', RecAnn.params]
-        have hmem : (e, RecSpec.poly σ) ∈ bindings.zip specs := by
-          simpa [heq, hspec] using List.getElem_mem_zip hi hiS
-        -- the pivot rule types the annotated member at its witness monotype too
-        have hmemτ : (e, τs[i]'hiT) ∈ bindings.zip τs := by
-          simpa [heq] using List.getElem_mem_zip hi hiT
-        have hc := ihmono Xs hfresh (e, τs[i]'hiT) hmemτ he_e
-        have hmono' : e.TyBvarBounded (0 + σ.paramCount) :=
-          Expr.TyBvarBounded.mono hc (by omega)
-        simpa [heq, Nat.zero_add] using hmono'
-
-theorem TyBvarBounded_zero_of_lowerExpr_of_TypeOfHM {ke : KindEnv}
-    {tvs vs : List ValName} {s : Surface.Expr} {c : Expr} {ctx : Ctx} {τ : Ty}
-    (hlow : lowerExpr ke tvs vs s = some c) (hT : TypeOfHM ctx c τ) :
-    c.TyBvarBounded 0 :=
-  TypeOfHM_tyBvarBounded_of_emptyVarTyArgs hT (lowerExpr_emptyVarTyArgs hlow)
+      have hmemτ : (e, τs[i]'hiT) ∈ bindings.zip τs := by
+        simpa [heq] using List.getElem_mem_zip hi hiT
+      have hb0 := ihmono Xs hfresh (e, τs[i]'hiT) hmemτ
+      exact Expr.TyBvarBounded.mono hb0 (Nat.zero_le _)
 
 /-- **Rung 3.** Open transfer: `SurfaceWTExpr` + `lowerExpr` ⇒ `TypeOfHM` at same `τ`. -/
 theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
@@ -11233,14 +10685,9 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       wrapCoreParams_TypeOfHM hLL hwrap hTyR
     have hTyOpen : TypeOfHM ⟨Γ, ctors⟩ rhsL (σ.openVars Xs) :=
       (hτbinds Xs hfresh) ▸ hTyW
-    -- Wrapped RHS is a lowerExpr subterm of the let, so empty var-tyargs + TypeOfHM
-    -- give `TyBvarBounded 0`, collapsing `openBoundTyVars`.
-    have hempty : Expr.EmptyVarTyArgs rhsL := by
-      have h := lowerExpr_emptyVarTyArgs hlow
-      simp only [Expr.EmptyVarTyArgs] at h
-      exact h.1
-    have hb0 : rhsL.TyBvarBounded 0 :=
-      TypeOfHM_tyBvarBounded_of_emptyVarTyArgs hTyOpen hempty
+    -- Declarative typing bounds every embedded annotation, so opening the
+    -- enclosing scheme variables is a no-op on this already lowered RHS.
+    have hb0 : rhsL.TyBvarBounded 0 := TypeOfHM.tyBvarBounded hTyOpen
     simp only [Expr.openBoundTyVars, Expr.openTyVars]
     rwa [Expr.openTyVarsAux_eq_self_of_tyBvarBounded Xs rhsL 0 hb0]
   | letRecIn =>
@@ -11367,8 +10814,8 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     have anns_eq : annsL = anns' := Option.some.inj (hannL.symm.trans hann)
     have hwf : RecSpecs.WF annsL bindings' specs G :=
       ⟨anns_eq ▸ hanns_eq, hlenB.trans hlen, hnodup, hmono_lc, hpoly_wf⟩
-    -- All-mono construction with the surface annotation-ceiling premise.
-    -- identical in shape to the `letRecIn` sibling, per the 78cf9a1 cut.
+    -- All-monomorphic construction with the surface annotation-ceiling premise,
+    -- identical in shape to the `letRecIn` sibling.
     refine TypeOfHM.letRec (specs := specs) (τs := τs) (G := G) (L := L)
       hwf ?_ ?_ ?_ ?_ (by simpa [anns_eq] using hceiling) rfl ?_
     · -- the witness list aligns with the members
@@ -11473,11 +10920,7 @@ residual typing of the erased term. For a closed program the frontier seed is
 `c.freshFloor` and the rigid set is empty. -/
 
 
-/-! ## 9. The obligations the seam creates (proof bodies — delegable)
-
-These are the ONLY genuinely-new proof obligations behind the headline; the rest
-of the payoff is `infer_sound`/`Infer.sound` + `type_safety_star`, discharged
-inline in `surface_type_safe`. -/
+/-! ## 9. Lowering invariants used by the safety theorem -/
 
 /-- `lowerTy` never emits free type variables (only `.bvar`/`.prim`/`.customTy`/`.arrow`). -/
 theorem lowerTy_freeVars {ke : KindEnv} {tvs : List ValName} {s : Surface.Ty} {c : Ty}
@@ -11995,7 +11438,7 @@ theorem lowerRecBinds_tyFreeVars {ke : KindEnv} {tvs recScope : List ValName} :
 
 end
 
-/-- **(O2) Lowered programs are type-closed.** A `lower` output has no free type
+/-- **Lowered programs are type-closed.** A `lower` output has no free type
     variables, so inference's rigid seed is empty and the frontier machinery
     disappears. Provable once `lower` is defined (it emits `bvar`-indexed types
     from the kind-checker; no `fvar`s). -/
@@ -12004,7 +11447,7 @@ theorem lower_tyClosed {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
   simp only [lower] at h
   exact lowerExpr_tyFreeVars h
 
-/-- **(O3) Typechecking ⇒ inference succeeds (recovering the runtime term).**
+/-- **Typechecking ⇒ inference succeeds (recovering the runtime term).**
     For a type-closed `c`, `typecheck` and `infer` run the *same* `inferCore`
     call (`principalType` seeds `c.tyFreeVars = []`, matching `infer`'s empty
     rigid set), so a successful `typecheck` yields the inferred `(Φ', S, τ)`.
@@ -12019,7 +11462,7 @@ theorem infer_of_typecheck {ctors : CtorEnv} {c : Expr}
   · simp [hcore] at htc
   · exact ⟨Φ', S, τ, by simp⟩
 
-/-! ### O5 helpers
+/-! ### Exhaustiveness-transfer helpers
 
 Transport across erasure is mechanical (`AllMatchesExhaustive.erase` in Core;
 `lower_exhaustive` via induction on the coverage derivation — no semantic
@@ -12428,7 +11871,7 @@ private theorem AllMatchesExhaustive.openTyVars {ctors : CtorEnv} (Xs : List Nat
   rw [← Expr.instTy_fvar_eq_openTyVars]
   exact AllMatchesExhaustive.instTy _ h
 
-/-! ## 9b. Whole-program pipeline (plan item 7)
+/-! ## 9b. Whole-program pipeline
 
 `Surface.Program` = user `DataDecl`s + binding `groups` + body.
 Groups desugar to nested `letRecIn` (`Program.term`); prelude is merged in;
@@ -12537,15 +11980,15 @@ example : ∀ ctors, SurfaceCovers ctors pMaybeId.term := fun _ =>
   .app (.ctor) (.primLit)
 
 
-/-! ## 10. THE HEADLINE
+/-! ## 10. Surface-program type safety
 
 A well-typed, exhaustive surface program elaborates to a Core term that is
 type-safe and never gets stuck. Stated over the executable pipeline (`lower`
 succeeds, `typecheck` succeeds, patterns cover) — the object that actually runs.
 
-The declarative `SurfaceWT` corollary (below) closes the spec/impl loop under
-Approach A / 1a: strong open `SurfaceWTExpr` + coverage ⇒ the concrete `lower`
-output typechecks, then reuse `surface_type_safe`. -/
+The declarative `SurfaceWT` corollary closes the specification/implementation
+loop: structural surface typing plus coverage implies that the concrete `lower`
+output typechecks, after which `surface_type_safe` applies. -/
 
 /-- Well-typed surface programs lower to Core whose erased runtime term is
     HM-typed, match-exhaustive, and non-stuck. Source annotations are static and
@@ -12558,9 +12001,9 @@ theorem surface_type_safe {ctors : CtorEnv} {s : Surface.Expr} {c : Expr}
       AllMatchesExhaustive ctors (c.erase) ∧
       ∀ e', Relation.ReflTransGen Step (c.erase) e' →
         (IsValue e' ∨ ∃ e'', Step e' e'') := by
-  -- O2: the lowered term is type-closed, so inference's rigid seed is empty.
+  -- The lowered term is type-closed, so inference's rigid seed is empty.
   have hclosed : c.tyFreeVars = [] := lower_tyClosed hlow
-  -- O3: `typecheck` and `infer` run the same `inferCore` call, so a successful
+  -- `typecheck` and `infer` run the same `inferCore` call, so a successful
   -- `typecheck` recovers the inferred `(Φ', S, τ)` from `infer`.
   obtain ⟨Φ', S, τ, hinfer⟩ := infer_of_typecheck hclosed htc
   -- `infer` is sound: the returned tuple is a genuine `Infer` derivation.

@@ -9,22 +9,15 @@ let a newcomer read ONE file and come away knowing exactly what this language's
 type system guarantees, what those guarantees *mean* in plain terms, and
 precisely how far the machine-checking currently reaches.
 
-**Status (type-erased runtime, D2 recursion).** Type safety, *inference
-soundness*, and principality of successful inference are closed and
-axiom-clean: `Infer.sourceSound` and its branch/group families type the annotated
-source, while whole-expression `Infer.sound` derives typing for the erased runtime
-term. They depend on nothing but `propext`, `Classical.choice`, `Quot.sound`.
-The `TypeOfHM` / `Step` dynamics metatheory (substitution lemma, canonical forms,
-`progress`, `preservation`, `type_safety(_star)`) is likewise proved, on erased
-terms, in `FHM.InferW`. What changed by design (see
-`briefs/design-memo-erasure-migration.md` §3.5): the *elaborated* stack —
-`TypeOfElabHM` and the `eOut` index — is deleted. The runnable term is always the
-erased source `c.erase`; `Infer.sourceSound` types the annotated source directly,
-while `Infer.sound` derives the runnable erased typing. The D2 principality spine
-factors every declarative type through a successful inferred type by an LC
-residual substitution. Relational and executable completeness are now closed as
-well: for source expressions, `principalType` and `typecheck` succeed exactly
-when the annotated source has a `TypeOfHM` derivation.
+**Status.** Type safety, inference soundness, principality, and completeness are
+closed and axiom-clean. `Infer.sourceSound` and its branch/group families type
+the annotated Core source, while `Infer.sound` derives typing for the erased
+runtime term. The `TypeOfHM` / `Step` metatheory includes substitution,
+canonical forms, progress, preservation, and one- and many-step type safety.
+Principality factors every declarative type through a successfully inferred
+type by a locally closed residual substitution. Relational and executable
+completeness show that `principalType` and `typecheck` succeed exactly when the
+source has a `TypeOfHM` derivation.
 
 So: do not read this file as "everything below is proved". Read section 6's
 `#print axioms` output, which is the actual, unfakeable status report.
@@ -36,8 +29,8 @@ adds a handful of small inversion lemmas, witnesses that the type system's
 `SurfaceWTExpr` relation is genuinely inhabited (not vacuously true), and wires
 up a *composable, proof-carrying* safe pipeline (`elaborateSafe` / `runSafe`).
 
-Standalone-compilable: `lake env lean FHM/Headlines.lean`. Not added to
-`lakefile.toml`.
+This module is part of the default verified build and can also be checked alone
+with `lake env lean FHM/Headlines.lean`.
 
 ## The six sections
 
@@ -57,11 +50,11 @@ namespace Headlines
 
 /-! ## 1. Doc-narrated headline re-exports
 
-No new proofs in this section — just naming the campaign's headline theorems,
+No new proofs in this section—just naming the repository's headline theorems,
 with a one-line plain-English gloss, plus a `#check` of each so THIS FILE FAILS
 TO COMPILE if any of these names ever disappear or change shape. -/
 
-/-! ### Type safety (the campaign's central payoff)
+/-! ### Type safety
 
 **"A well-typed, exhaustive program never gets stuck."** Two headlines say this
 at two levels: `surface_type_safe` at the level of a bare surface *expression*
@@ -77,11 +70,12 @@ well-typed and is a value or can step again — "never gets stuck" formalised. -
 
 /-! ### Type inference is sound: source typing first, runtime erasure second
 
-`Infer` (Algorithm-W-style) is the executable inferer. **Soundness**
+`Infer` is the Algorithm-W-style inference relation; `inferCore` is its
+proof-carrying executable implementation. **Soundness**
 `Infer.sourceSound` types the annotated source after the inferred substitution;
 `Infer.sound` then erases annotations and types the
 runnable `e.erase` at the same inferred type. There is one typing relation and
-no elaborated output language. **Principality** is proved by the D2 spine
+no second typed output language. **Principality** is proved
 directly against the annotated source: every declarative type factors through a
 successful inferred type via an LC residual substitution. Producer completeness
 constructs relational derivations from declarative typings, and executable
@@ -190,9 +184,8 @@ theorem TypeOfHM_letIn_inv {ctx : Ctx} {ann : Option PolyTy} {boundExpr body : E
     `.pair` surface term has TWO derivation paths through `SurfaceWTExpr` — the
     dedicated `pair` rule, or the generic `of_lowers` catch-all (since `.pair`
     has no `match`, it's `SurfaceExprNoMatch`). Both agree on the resulting
-    type; this is exactly the non-uniqueness `Approach A / 1a` accepts (kept
-    for match-free ANY expr, restricted to true leaves is future cosmetics,
-    item 5). -/
+    type. The relation intentionally permits this harmless overlap for
+    match-free expressions. -/
 theorem SurfaceWTExpr_pair_inv {ctors : CtorEnv} {ke : KindEnv} {tvs vs : List ValName}
     {Γ : Env} {a b : Surface.Expr} {τ : Ty}
     (h : SurfaceWTExpr ctors ke tvs vs Γ (.pair a b) τ) :
@@ -301,13 +294,11 @@ example (ctors : CtorEnv) :
 
 /-! ### Annotated polymorphic `letRecIn`
 
-The stronger D2 ceiling deliberately removed the old witness for
-`let rec (id : ∀a. a→a) = λx. x in id`: it had used `G = []`, which cannot
-justify the polymorphic annotation.  The current structural surface constructor
-also cannot express the corrected `G = [β]` derivation, because its fixed RHS
-result type is required to equal every cofinite renaming of `β`.  This is a
-surface-relation expressiveness gap, not an HM/Core restriction; the closed
-monomorphic annotated witness below continues to exercise `letRecInAnn`. -/
+The current structural surface constructor cannot directly witness
+`let rec (id : ∀a. a→a) = λx. x in id`: its fixed RHS result type must agree
+with every cofinite renaming of the generalized variable. This is a limitation
+of the structural surface relation, not of Core HM inference. The closed
+monomorphic witness below exercises `letRecInAnn`. -/
 
 /-! ### Packing B — annotated mono + head binders
 
@@ -465,7 +456,7 @@ type — a `Safe` term is a passport that carries evidence of both, so anything
 downstream that only needs one of the two conjuncts can project it out
 without re-deriving it. -/
 
-/-- Erased-term well-typedness (closed): the type-passing-free `TypeOfHM` of the
+/-- Erased-term well-typedness (closed): the `TypeOfHM` judgment for the
     runnable term under its actual constructor environment. `erase` happens in
     `elaborateSafe`, before `WellTyped` is applied, so `e` here is already in the
     image of `Expr.erase`. -/
@@ -473,7 +464,7 @@ def WellTyped (ctors : CtorEnv) (e : Expr) : Prop :=
   ∃ τ, TypeOfHM ⟨[], ctors⟩ (e.erase) τ
 
 /-- A passport: an ERASED term that passed BOTH independent checks (well-typed,
-    exhaustive) and is in fact erased (`e.erase = e`, so the step-4 dynamics
+    exhaustive) and is in fact erased (`e.erase = e`, so the runtime dynamics
     applies). Anything holding a `Safe ctors` can invoke `type_safety` on it. -/
 abbrev Safe (ctors : CtorEnv) :=
   { e : Expr // e.erase = e ∧ WellTyped ctors e ∧ AllMatchesExhaustive ctors e }
@@ -619,8 +610,7 @@ private def runSafeStr (p : Surface.Program) (fuel : Nat := 100) : String :=
     | .inr r => "still running: " ++ toString r.val
 
 #eval! runSafeStr sHeadlineAnnId
--- TODO(let-params): restore when SurfaceBridge sorries discharged
--- #guard runSafeStr sHeadlineAnnId = "41"
+#guard runSafeStr sHeadlineAnnId = "41"
 
 -- The same program, starved of fuel: `elaborateSafe` still accepts it (it IS
 -- safe), but `runSafe` can't finish in zero steps, so it lands in `.inr`
@@ -628,8 +618,7 @@ private def runSafeStr (p : Surface.Program) (fuel : Nat := 100) : String :=
 #eval! runSafeStr sHeadlineAnnId 0
 
 #eval! runSafeStr sHeadlineNonExhaustive
--- TODO(let-params): restore when SurfaceBridge sorries discharged
--- #guard (elaborateSafe sHeadlineNonExhaustive).isSome = false
+#guard (elaborateSafe sHeadlineNonExhaustive).isSome = false
 
 
 /-! ## 6. Living axiom-budget guard
@@ -662,7 +651,7 @@ axiom-clean. -/
 #print axioms InferBranches.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
 #print axioms InferRecGroup.sourceSound  -- expect {propext, Classical.choice, Quot.sound}
 
--- Closed and clean: D2 principality of successful inference.
+-- Closed and clean: principality of successful inference.
 #print axioms Infer.principal             -- expect {propext, Classical.choice, Quot.sound}
 #print axioms Infer.complete'             -- expect {propext, Classical.choice, Quot.sound}
 #print axioms principalType_source_sound  -- expect {propext, Classical.choice, Quot.sound}

@@ -1,4 +1,5 @@
 import FHM.CorePath
+import FHM.PatComp.Trace
 import FHM.Surface.Span
 import FHM.SurfaceBridge
 

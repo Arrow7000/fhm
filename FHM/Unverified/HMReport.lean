@@ -3,9 +3,8 @@ import FHM.Pretty
 /-!
 # Hindley--Milner program reports
 
-Presentation-only report values shared by the HM live pipeline.  They contain
-the inferred schemes and optional rendered names, with no bounds-sidecar state
-or checker authority.
+Presentation-only report values shared by the HM live pipeline. They contain
+inferred schemes and optional rendered names, but no checker authority.
 -/
 
 namespace FHM.Unverified.HMReport

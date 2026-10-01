@@ -287,8 +287,7 @@ inductive Expr
       through the group's gen-var pool and generalised only for the `body`
       (Damas–Milner monomorphic recursion). An ANNOTATED member (`some σ`) is
       checked against its declared scheme, but recursive uses remain
-      monomorphic within the group. The all-`none` and all-`some` groups are
-      exactly the historical `letRec` / `letRecAnn` nodes. -/
+      monomorphic within the group. -/
   | letRec (anns : List (Option PolyTy)) (bindings : List Expr) (body : Expr)
 
 /-- Build `[.bvar start, .bvar (start+1), ..., .bvar (start+count-1)]`. -/
@@ -1988,9 +1987,7 @@ def Expr.substTyFvars : List (Nat × Ty) → Expr → Expr
   | []             , e => e
   | (Z, U) :: rest , e => Expr.substTyFvars rest (Expr.substTyFvar Z U e)
 
-/-- Iterated `PolyTy.substFvar` (left-to-right), mirroring `Expr.substTyFvars`.
-    Used to push a block of type-fvar substitutions through a kept `letRecAnn`
-    scheme. -/
+/-- Iterated `PolyTy.substFvar` (left-to-right), mirroring `Expr.substTyFvars`. -/
 def PolyTy.substFvars : List (Nat × Ty) → PolyTy → PolyTy
   | []             , σ => σ
   | (Z, U) :: rest , σ => PolyTy.substFvars rest (PolyTy.substFvar Z U σ)
@@ -2738,8 +2735,7 @@ def RecSpec.substFreshened (Z : Nat) (U : Ty) (G W : List Nat) : RecSpec → Rec
   | .poly σ => .poly (PolyTy.substFvar Z U σ)
 
 /-- Pin a spec's monotype at the pool opening `G ↦ Xs` (schemes are untouched).
-    The **mono-group trick** for the fused rule's preservation rewrap: re-deriving
-    the node with `specs.map (openAt G Xs)` at the EMPTY pool makes the body env
+    Re-deriving the group with `specs.map (openAt G Xs)` at the empty pool makes the body env
     coincide with the RHS env, so the rule's own cofinite premises supply the
     re-wrapped member's typing directly. -/
 def RecSpec.openAt (G Xs : List Nat) : RecSpec → RecSpec
@@ -2837,9 +2833,8 @@ structure RecSpecs.WF (anns : List (Option PolyTy)) (bindings : List Expr)
   mono_lc : ∀ τ, RecSpec.mono τ ∈ specs → τ.IsLC
   poly_wf : ∀ σ, RecSpec.poly σ ∈ specs → σ.WF
 
-/-- **Cofinite monomorphic-recursion premise (ALL members)** — the declarative
-    twin of the algorithm's all-mono `RecSpec.init` cut (commit 78cf9a1): there
-    is ONE monotype per member (the rule's `τs`, aligned with `specs` by its
+/-- **Cofinite monomorphic-recursion premise for all members.** There is one
+    monotype per member (the rule's `τs`, aligned with `specs` by its
     `hlen`/`hlink`/`hlc` premises), and at every sufficiently-fresh shared pool
     opening `G ↦ Xs` (the SAME `Xs` for the whole group — what keeps mutual
     monotype-sharing linked) each member's RHS types at its opened monotype
@@ -2871,7 +2866,7 @@ directly, without an elaborated term language. -/
 
 mutual
 
-/-- Decoration-blind declarative Hindley–Milner typing (the source-level spec). -/
+/-- Declarative Hindley–Milner typing for annotated Core source. -/
 inductive TypeOfHM : Ctx → Expr → Ty → Prop
   | primLitUnit :
     TypeOfHM ctx (.primLit .unit) (.prim .unit)
@@ -2952,8 +2947,7 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     (∀ branch ∈ branches, TypeOfMatchBranch ctx branch scrutTy resultTy) →
     TypeOfHM ctx (.match_ scrutinee branches) resultTy
 
-  /-- Recursive group (the **monomorphic-recursion** rule, aligned with the
-      algorithm's all-mono `RecSpec.init` cut of commit 78cf9a1): EVERY member's
+  /-- Recursive group with **monomorphic recursion**. Every member's
       RHS is checked MONOMORPHICALLY at the all-mono-rendered group context
       (`RecSpecs.MonoTypedInit` over the per-member monotypes `τs`), at the
       cofinite shared-pool openings `G ↦ Xs`. An annotated member is never
@@ -2980,9 +2974,8 @@ inductive TypeOfHM : Ctx → Expr → Ty → Prop
     TypeOfHM ctx (.letRec anns bindings body) ρ
 
 
-/-- Match-branch typing for the declarative `TypeOfHM` (mirrors
-    `TypeOfElabMatchBranch`, sharing `BranchCtorSpec`; the scrutinee's `tyArgs`
-    are an existential witness). -/
+/-- Match-branch typing for the declarative `TypeOfHM`. `BranchCtorSpec` carries
+    the scrutinee's existential type-argument witness. -/
 inductive TypeOfMatchBranch :
   (ctx : Ctx) → (MatchPattern × Expr) → (scrutTy : Ty) → (resultTy : Ty) → Prop
   | mk {ctor : Ctor} {ctx : Ctx} {c : CtorName} {n : Nat} {tyArgs instContents : List Ty} :
@@ -5566,7 +5559,7 @@ theorem Expr.substTyFvars_zip_openTyVars_concrete {Ys : List Nat} {Vs : List Ty}
   exact Expr.substTyFvars_zip_openTyVarsAux_concrete h_len h_Ys_nodup h_Ys_Vs h_Vs_lc e 0 h_Ys_e
 
 /-! ### Annotation-free structural size (a well-founded measure for derivation
-    recursion). The D2 algorithm infers the bound expression *opened* at skolems
+    recursion). Annotated-let inference checks the bound expression *opened* at skolems
     (`rhs.openTyVars Ys`), which is not a structural subterm of the `let`, so the
     default term measure no longer decreases for the `Infer`-recursive metatheory.
     `Expr.size` ignores type annotations, so `openTyVars` preserves it
@@ -6521,7 +6514,7 @@ Subject reduction: a well-typed term that takes a step stays well-typed at the
 same type. The reduction cases reuse the substitution lemmas; the `matchReduce`
 case is the substantial one — it lines up the scrutinee's constructor-chain
 typing (`ctor_chain_inversion`) with the matched branch's typing
-(`TypeOfElabMatchBranch`), proving that the two type-argument lists agree on the
+    (`TypeOfMatchBranch`), proving that the two type-argument lists agree on the
 relevant bvar indices so the field instantiations coincide. -/
 
 /-- `bvarRangeFrom` reads back its definition pointwise. -/
@@ -7095,7 +7088,7 @@ private theorem AllBranchBodiesExhaustive.substTyFvar {ctors : CtorEnv} {Z : Nat
         (ih_tl (fun p e hm hae => ih p e (List.mem_cons_of_mem _ hm) hae) hrest)
 
 /-- Single-step `substTyFvar` preserves match-exhaustiveness: it only rewrites
-    type annotations / var tyArgs, never match patterns or the ctor env. -/
+    type annotations, never match patterns or the constructor environment. -/
 theorem AllMatchesExhaustive.substTyFvar {ctors : CtorEnv} (Z : Nat) (U : Ty) :
     ∀ {e : Expr}, AllMatchesExhaustive ctors e →
       AllMatchesExhaustive ctors (e.substTyFvar Z U) := by
@@ -7240,7 +7233,7 @@ end SmallStep
 /-! ## Term-level closedness: `Expr.varsBelow`
 
 Core has `Ty.isClosed` for types but no term-level free-variable
-machinery. The verified pattern-compilation campaign needs this:
+machinery. Verified pattern compilation needs this:
 captured scrutinee sub-values are closed, so `substN`/`shiftFrom`
 leave them untouched as they are pushed through emitted nested matches.
 `Expr.varsBelow n e` = every free term-var of `e` is `< n`;
@@ -7799,7 +7792,7 @@ theorem Expr.substN_substN_append (e : Expr) (k : Nat) (ws vs : List Expr)
 /-! ## `varsBelow` ignores type-variable opening
 
 `Expr.openTyVarsAux` (hence `openTyVars`/`openBoundTyVars`) only rewrites type
-annotations and `var` `tyArgs`; it never touches a term-var's de Bruijn index or
+annotations; it never touches a term variable's de Bruijn index or
 the binder skeleton, so it leaves `varsBelow` unchanged. This is what lets the
 typing lemma reflect the cofinite premises (which type the *opened* bound
 expressions) back to the stored terms. -/

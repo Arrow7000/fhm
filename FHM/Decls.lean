@@ -1,6 +1,6 @@
 import FHM.Core
 
-/-! # Type declarations → `CtorEnv`  (well-formedness SPEC)
+/-! # Verified type-declaration elaboration
 
 The surface language lets users declare algebraic data types (`type Maybe a =
 Just a | Nothing`). After name resolution they arrive here as `DataDecl`s — with
@@ -13,16 +13,15 @@ Core theorem is `∀ ctors`, so a well-formed declaration group is simply a
 well-formed `CtorEnv` the existing metatheory already covers. This module is the
 front-end that *produces* such an env.
 
-This file contains ONLY the declarative spec — the `DataDecl` AST and the
-predicates that say what a *well-formed* declaration group is. The decidable
-checker and the elaborator into `CtorEnv` are deliberately **not here yet** (see
-the "Deferred" note at the bottom); they will be written against this spec.
+This file contains the declarative specification—the `DataDecl` AST and the
+predicates for well-formed declaration groups—together with a decidable checker
+and a verified elaborator into `CtorEnv`.
 
 ## The two passes (why the spec is shaped this way)
 
 Types may reference each other out of order and mutually (`type Tree a = Node a
 (Forest a)` / `type Forest a = …`). So well-formedness is stated in two stages,
-mirroring how the checker will run:
+mirroring how the checker runs:
 
 1. **Collect** a `KindEnv` — every declared type name with its arity
    (`DataDecls.kindEnv`). This is a pure "names first" pass.

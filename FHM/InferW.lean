@@ -5,21 +5,6 @@ import FHM.CorePath
 -- them firing as simp lemmas, so re-grant the attribute here.
 attribute [simp] Ty.openVars_arrow Ty.openVars_customTy
 
-/-! ## Scaffolding for the algorithmic phase
-
-Not used yet. Once we move from the declarative relation to algorithmic
-inference, `.fvar`s stop being abstract/rigid type variables and become
-*unification variables*, each pointing at an entry in a unification context. -/
-
-/-- Either a constrained (`conc`) or unconstrained (`unspec`) unification var. -/
-inductive TyMaybe where
-  | unspec
-  | conc (ty : Ty)
-
-/-- The unification-var context. Each `.fvar` references an item in this list. -/
-abbrev FvarCtx := List TyMaybe
-
-
 /-! ## Algorithmic phase, step 1: substitution algebra
 
 The declarative `TypeOfHM` treats `.fvar`s as rigid/abstract type variables.
@@ -517,21 +502,18 @@ theorem UnifyRelList.lc : {ts₁ ts₂ : List Ty} → {S : Subst} → UnifyRelLi
 end
 
 
-/-! ## Algorithmic phase, step 2: the inference relation (Algorithm W, relational)
+/-! ## The Algorithm W inference relation
 
 `Infer Φ ctx e Φ' S τ` is Algorithm W phrased as a *relation* (no function /
-termination obligation yet — that is stage 3). It reads: starting with the
+termination obligation in the relation itself). It reads: starting with the
 fresh-variable frontier `Φ` (every unification var in play is `< Φ`), expression
 `e` infers type `τ` under the most-general substitution `S`, allocating fresh
 vars up to the new frontier `Φ'`. `.fvar`s are the unification variables;
 composition of the threaded substitutions is `++`.
 
-This covers the full language and is connected directly to the annotated
-bounds-blind `TypeOfHM` source judgment by `Infer.sourceSound`, and to the
-runnable erased term by `Infer.sound`.
-
-The plan: prove `Infer.sound` (algo type ⟹ declarative type, iterating
-`typ_subst_preservation` and using `UnifyRel.isMGU`), then completeness. -/
+This covers the full language and is connected to the declarative `TypeOfHM`
+source judgment by `Infer.sourceSound`, and to the runnable erased term by
+`Infer.sound`. Principality and completeness are proved in `FHM.Completeness`. -/
 
 /-- The `k` fresh unification-var names starting at frontier `Φ`. -/
 def freshVars (Φ k : Nat) : List Nat := (List.range k).map (Φ + ·)
@@ -622,9 +604,9 @@ theorem genGroupVars_nodup {rigid : List Nat} {env : Env} {τs : List Ty} :
     (genGroupVars rigid env τs).Nodup :=
   Ty.freeVarsList_nodup.filter _
 
-/-! ### Algorithmic `RecSpec` helpers (the fused `letRec` rule's internals).
+/-! ### Algorithmic `RecSpec` helpers
 
-The fused inference rule threads a `List RecSpec` (Core's per-binding datum:
+The recursive inference rule threads a `List RecSpec` (Core's per-binding datum:
 `mono τ` for an unannotated member's solved monotype, `poly σ` for an annotated
 member's declared scheme). These small helpers are the algorithmic counterparts
 of Core's `RecSpec.rhsEntry`/`bodyScheme`: build the initial specs positionally
@@ -632,8 +614,7 @@ from the stored `anns`, thread a substitution through the mono members (schemes
 stay RIGID), and project out the mono monotypes for the shared gen-var pool. -/
 
 /-- Thread a substitution through a spec: an unannotated member's solved monotype
-    moves under `S`; an annotated member's declared scheme threads RIGID (exactly
-    like the old `InferRecGroupAnn` treated its `schemes`). -/
+    moves under `S`; an annotated member's declared scheme remains rigid. -/
 def RecSpec.onSubst (S : Subst) : RecSpec → RecSpec
   | .mono τ => .mono (S.onTy τ)
   | .poly σ => .poly σ
@@ -992,16 +973,15 @@ def RecSpecs.ceilingSchemes (G : List Nat) (anns : List (Option PolyTy)) (specs 
 
 /-! ### Sequential recursive-annotation constraints
 
-The old fused `letRec` worker checks all ceilings only after inferring the
-whole group.  The next worker phase instead needs a small, certified
-constraint pass: an annotation is compared with the *current* monotype, and
+The recursive-group worker uses a small, certified constraint pass: an
+annotation is compared with the *current* monotype, and
 only the non-pool part of that comparison is committed to later members.  The
 pool is deliberately fixed: equations over a generalisation variable are
 useful for checking this annotation, but must not rewrite the rest of the
 group.
 
-This relation is deliberately independent of `Infer` for now.  It is the
-contract which the subsequent `Infer.letRec` integration will consume. -/
+The relation is stated separately so its fixed-pool invariant can be reused by
+the relational and executable inference proofs. -/
 
 /-- Discard bindings whose domain is in the fixed generalisation pool. -/
 def Subst.dropDomains (G : List Nat) (S : Subst) : Subst :=
@@ -1295,7 +1275,7 @@ inductive Infer : Nat → Ctx → Expr → Nat → Subst → Ty → Prop
         env := genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁ :: (S₁.onCtx ctx).env }
       body Φ₂ S₂ τ₂ →
     Infer Φ ctx (.letIn none rhs body) Φ₂ (S₁ ++ S₂) τ₂
-  /-- Annotated `let` (scoped type variables, D2 ordering). The bound scheme is
+  /-- Annotated `let` with scoped type variables. The bound scheme is
       the annotation `σ` (`σ.WF`; it MAY carry free type vars — outer scoped
       vars). Allocate `σ`'s skolems `Ys = freshVars Φ σ.paramCount` **first**, then
       infer the bound expression already opened at `Ys` (`rhs.openTyVars Ys`,
@@ -1401,16 +1381,6 @@ inductive InferRecGroup : Nat → Ctx → List Expr → List RecSpec → Nat →
     InferRecGroup Φ ctx (e :: rest) (.mono τ :: specs) Φ₂ (S₁ ++ S₂ ++ S₃)
 end
 
-
-/-! ### `NoRecAnn` RETIRED (Phase A).
-
-The whole `NoRecAnn` preservation family (`closeTyVarsAux`/`closeTyVars`/
-`letRecElab(Nest)_noRecAnn`/`substTyFvar(s)_noRecAnn`/`substTyFvar_tyBvarBounded`)
-is gone: the fused `letRec` node subsumes `letRecAnn` and `open`/`close` descend
-into scheme-annotation bodies symmetrically, so no static opening path needs a
-`letRecAnn`-free witness. The `substTyFvars`-preserves-`TyBvarBounded` fact
-survives (fused, below); its old `substTyFvar` single-step sibling was only
-scaffolding for it and is deleted. -/
 
 /-- A scheme's body is preserved by `PolyTy.substFvars` (only the body is rewritten). -/
 theorem PolyTy.body_substFvars {S : List (Nat × Ty)} {σ : PolyTy} :
@@ -1582,10 +1552,6 @@ decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeRecGroup]; omega)
 end
 
-/-! DELETED: `InferRecGroup.bindingsOut_length` (referenced the removed elaborated-output
-    index `bindingsOut`; its only consumer `InferRecGroup.eOut_tyBvarBounded` was deleted
-    in the `eOut`-drop pass). -/
-
 /-- An `InferRecGroup` derivation has matching binding/target lengths. -/
 theorem InferRecGroup.length_eq {Φ ctx bindings specs Φ' S}
     (h : InferRecGroup Φ ctx bindings specs Φ' S) : bindings.length = specs.length := by
@@ -1596,15 +1562,13 @@ theorem InferRecGroup.length_eq {Φ ctx bindings specs Φ' S}
     | cons _ _ hrest =>
       have := ih hrest; simp only [List.length_cons, List.length_map] at this ⊢; omega
 
-/-! ### Scoped-variable regime (replaces the old closed-annotation invariants)
+/-! ### Scoped-variable invariants
 
-The closed-regime invariants `Infer.tyFreeVars_eq_nil` and the provisional
-`Infer.openTyVarsAux_eq_self` are gone. With D2 the bound expression is inferred
-*already opened* at the rigid skolems, so an accepted term's annotation free vars
-are no longer empty — they are the in-scope skolems. Soundness now threads an
-ambient rigid-skolem set `K` (the substitution provably avoids `K`, via the escape
-discipline), and the cofinite premise is recovered by renaming `K` to fresh names
-through `Expr.substTyFvars_zip_openTyVars` (the Core bridge). -/
+An annotated bound expression is inferred after opening it at rigid skolems, so
+its annotation free variables are the in-scope skolems rather than necessarily
+being empty. Soundness threads an ambient rigid-skolem set `K`; substitutions
+avoid `K`, and the cofinite premise is recovered by renaming `K` to fresh names
+through `Expr.substTyFvars_zip_openTyVars`. -/
 
 /-- A context is well-formed when every scheme in its env is well-formed. -/
 def CtxWF (ctx : Ctx) : Prop := ∀ M ∈ ctx.env, M.WF
@@ -3228,10 +3192,10 @@ end
 
 `Infer.dom_below` extends the frontier discipline to the substitution **domain**
 (`∀ p ∈ S, p.1 < Φ'`, via `UnifyRel.dom_mem` + `Infer.belowFvars`).
-`Infer.eOut_avoid` is the corresponding avoid-form locality theorem: a variable
+`Infer.range_avoid` is the corresponding avoid-form locality theorem: a variable
 below the input frontier that avoids both the context env and the source's
 annotation free vars cannot appear in the inferred type or substitution range.
-The historical theorem name is retained for API stability. Together with
+Together with
 idempotency (`Infer.eliminates`, M3), this yields the prefix-fix corollary (M4)
 used by soundness. -/
 
@@ -3644,11 +3608,9 @@ theorem Expr.mem_annList_tyFreeVars_ex {anns : List (Option PolyTy)} {y : Nat}
       · obtain ⟨σ, h1, h2⟩ := ih h
         exact ⟨σ, List.mem_cons_of_mem _ h1, h2⟩
 
-/-- Every free type var of the mixed Λ-outside nest comes from the stored anns, a
-    member spec (its monotype / scheme body), a raw binding, or the body —
-    shifting and closing introduce no new type vars, and the poly projections'
-    `bvarRange` tyArgs are fvar-free. The fused nest's inner `.letRec anns …` node
-    carries the full `anns` at every level, hence the anns disjunct. -/
+/-- Every free type variable of a recursive group comes from its annotations,
+    a member spec, a raw binding, or the body. Shifting and closing introduce no
+    new free variables. -/
 theorem Subst.notMemOnTy {S : Subst} {w : Nat} {τ : Ty}
     (hS : ∀ p ∈ S, w ∉ p.2.freeVars) (hτ : w ∉ τ.freeVars) : w ∉ (S.onTy τ).freeVars := by
   intro hc
@@ -3770,10 +3732,8 @@ private theorem AnnList.mem_tyFreeVars_substFvars {S : List (Nat × Ty)} {w : Na
         · exact .inl (.inr hh)
         · exact .inr hh
 
-/-- A free type var of `e.substTyFvars S` comes from `e` or one of the image types.
-    (Re-based off `NoRecAnn`: `substTyFvars` rewrites `letRecAnn` schemes by
-    `PolyTy.substFvars` and recurses into bindings/body, so the membership split holds
-    unconditionally.) Uses the public `substTyFvars_*` distribution lemmas. -/
+/-- A free type var of `e.substTyFvars S` comes from `e` or one of the image
+    types. Uses the public `substTyFvars_*` distribution lemmas. -/
 theorem Expr.mem_tyFreeVars_substTyFvars {S : List (Nat × Ty)} {w : Nat} :
     ∀ {e : Expr}, w ∈ (e.substTyFvars S).tyFreeVars →
       w ∈ e.tyFreeVars ∨ ∃ p ∈ S, w ∈ p.2.freeVars := by
@@ -3891,9 +3851,8 @@ theorem Expr.notMem_tyFreeVars_substTyFvars {S : List (Nat × Ty)} {e : Expr} {w
 mutual
 /-- **Locality (avoid form).** A var below the input frontier that avoids the
     context env and the source annotation free vars also avoids the inferred
-    substitution range and result type. The historical `eOut_avoid` name is kept
-    for API stability after removal of the elaborated-output index. -/
-theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
+    substitution range and result type. -/
+theorem Infer.range_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ e.tyFreeVars →
     (∀ p ∈ S, w ∉ p.2.freeVars) ∧ w ∉ τ.freeVars := by
   cases h with
@@ -3924,7 +3883,7 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     cases hseed with
     | none =>
       simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append] at hwe
-      obtain ⟨hbS, hbτ⟩ := Infer.eOut_avoid hbody (w := w) (by omega)
+      obtain ⟨hbS, hbτ⟩ := Infer.range_avoid hbody (w := w) (by omega)
         (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
             · intro hc; simp only [PolyTy.mkTrivial, Ty.freeVars, List.mem_singleton] at hc; omega
             · exact hctx M hM)
@@ -3938,7 +3897,7 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       · exact hbS p hp hvp
     | some T hT =>
       simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or] at hwe
-      obtain ⟨hbS, hbτ⟩ := Infer.eOut_avoid hbody (w := w) hwΦ
+      obtain ⟨hbS, hbτ⟩ := Infer.range_avoid hbody (w := w) hwΦ
         (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
             · simpa only [PolyTy.mkTrivial] using hwe.1
             · exact hctx M hM)
@@ -3950,10 +3909,10 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     intro w hwΦ hctx hwe
     expose_names
     simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
-    obtain ⟨hfS, hfτ⟩ := Infer.eOut_avoid hf (w := w) hwΦ hctx hwe.1
+    obtain ⟨hfS, hfτ⟩ := Infer.range_avoid hf (w := w) hwΦ hctx hwe.1
     have hfle := Infer.frontier_le hf
     have hargle := Infer.frontier_le harg
-    obtain ⟨haS, haτ⟩ := Infer.eOut_avoid harg (w := w) (by omega)
+    obtain ⟨haS, haτ⟩ := Infer.range_avoid harg (w := w) (by omega)
       (Subst.onCtx_avoid hctx hfS) hwe.2
     have hS₃ : ∀ p ∈ S₃, w ∉ p.2.freeVars := by
       intro p hp hwp
@@ -3977,11 +3936,11 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     intro w hwΦ hctx hwe
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append, not_or] at hwe
-    obtain ⟨hrS, hrτ⟩ := Infer.eOut_avoid hrhs (w := w) hwΦ hctx hwe.1
+    obtain ⟨hrS, hrτ⟩ := Infer.range_avoid hrhs (w := w) hwΦ hctx hwe.1
     have hrle := Infer.frontier_le hrhs
     have hMbody : w ∉ (genScheme rhs.tyFreeVars (S₁.onCtx ctx).env τ₁).body.freeVars :=
       fun hc => hrτ (Ty.freeVars_closeOver_subset hc)
-    obtain ⟨hbS, hbτ⟩ := Infer.eOut_avoid hbody (w := w) (by omega)
+    obtain ⟨hbS, hbτ⟩ := Infer.range_avoid hbody (w := w) (by omega)
       (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
           · exact hMbody
           · exact Subst.onCtx_avoid hctx hrS M hM)
@@ -3996,7 +3955,7 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or] at hwe
     have hrle := Infer.frontier_le hrhs
-    obtain ⟨hrS, hrτ⟩ := Infer.eOut_avoid hrhs (w := w) (by omega) hctx (by
+    obtain ⟨hrS, hrτ⟩ := Infer.range_avoid hrhs (w := w) (by omega) hctx (by
       intro hc
       rcases Expr.tyFreeVars_openTyVars hc with h | h
       · exact hwe.1.2 h
@@ -4011,7 +3970,7 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       rcases UnifyRel.range_mem huni p hp w hwp with h | h
       · exact hrτ h
       · exact hσopen h
-    obtain ⟨hbS, hbτ⟩ := Infer.eOut_avoid hbody (w := w) (by omega)
+    obtain ⟨hbS, hbτ⟩ := Infer.range_avoid hbody (w := w) (by omega)
       (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
           · exact hwe.1.1
           · exact Subst.onCtx_avoid (Subst.onCtx_avoid hctx hrS) hSchk M hM)
@@ -4025,9 +3984,9 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
   | match_ hscrut hne hbr =>
     intro w hwΦ hctx hwe
     simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
-    obtain ⟨hsS, hsτ⟩ := Infer.eOut_avoid hscrut (w := w) hwΦ hctx hwe.1
+    obtain ⟨hsS, hsτ⟩ := Infer.range_avoid hscrut (w := w) hwΦ hctx hwe.1
     have hle1 := Infer.frontier_le hscrut
-    obtain ⟨hbrS, hbrρ⟩ := InferBranches.eOut_avoid hbr (w := w) (by omega)
+    obtain ⟨hbrS, hbrρ⟩ := InferBranches.range_avoid hbr (w := w) (by omega)
       (Subst.onCtx_avoid hctx hsS) hsτ
       (by intro hc; simp only [Ty.freeVars, List.mem_singleton] at hc; omega) hwe.2
     refine ⟨?_, hbrρ⟩
@@ -4067,7 +4026,7 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         exact hspecs_init s hs
       · exact hctx M hM2
     have hS₁ : ∀ p ∈ S₁, w ∉ p.2.freeVars :=
-      InferRecGroup.eOut_avoid hgroup (w := w) (by omega)
+      InferRecGroup.range_avoid hgroup (w := w) (by omega)
         hctxGroup (fun s hs => hspecs_init s hs) hwbind
     have hwrigid : w ∉ RecGroup.rigidVars anns bindings := by
       simp only [RecGroup.rigidVars, List.mem_append, not_or]
@@ -4106,7 +4065,7 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
             have hws : w ∈ s.freeVars := RecSpec.mem_bodyScheme_freeVars hc
             exact hspecsC_avoid s hps hws
       · exact Subst.onCtx_avoid (Subst.onCtx_avoid hctx hS₁) hSc_avoid M hM2
-    obtain ⟨hbS, hbτ⟩ := Infer.eOut_avoid hbody (w := w) (by omega) hbodyCtx hwbody
+    obtain ⟨hbS, hbτ⟩ := Infer.range_avoid hbody (w := w) (by omega) hbodyCtx hwbody
     refine ⟨?_, hbτ⟩
     intro p hp
     rw [List.mem_append, List.mem_append] at hp
@@ -4117,7 +4076,7 @@ theorem Infer.eOut_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
 termination_by e.size
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
-theorem InferBranches.eOut_avoid {Φ ctx scrutTy ρ brs Φ' S}
+theorem InferBranches.range_avoid {Φ ctx scrutTy ρ brs Φ' S}
     (h : InferBranches Φ ctx scrutTy ρ brs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ scrutTy.freeVars →
     w ∉ ρ.freeVars → w ∉ Expr.tyFreeVars.BranchList.tyFreeVars brs →
@@ -4148,7 +4107,7 @@ theorem InferBranches.eOut_avoid {Φ ctx scrutTy ρ brs Φ' S}
       · simp only [Ty.freeVars, List.mem_singleton] at h; have := freshVars_ge x hx; omega
       · exact hS₀ p hp hvp
     have hle0 := Infer.frontier_le hbody
-    obtain ⟨hbS, hbτ⟩ := Infer.eOut_avoid hbody (w := w) (by omega)
+    obtain ⟨hbS, hbτ⟩ := Infer.range_avoid hbody (w := w) (by omega)
       (by intro M hM; rcases List.mem_append.mp hM with hM | hM
           · obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hM
             obtain ⟨c, hc, rfl⟩ := List.mem_map.mp ht
@@ -4161,7 +4120,7 @@ theorem InferBranches.eOut_avoid {Φ ctx scrutTy ρ brs Φ' S}
       rcases UnifyRel.range_mem huni p hp w hwp with h | h
       · exact hbτ h
       · exact Subst.notMemOnTy hbS (Subst.notMemOnTy hS₀ hρ) h
-    obtain ⟨hrS, hrρ⟩ := InferBranches.eOut_avoid hrest (w := w) (by omega)
+    obtain ⟨hrS, hrρ⟩ := InferBranches.range_avoid hrest (w := w) (by omega)
       (Subst.onCtx_avoid (Subst.onCtx_avoid (Subst.onCtx_avoid hctx hS₀) hbS) hS₂)
       (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS (Subst.notMemOnTy hS₀ hscrut)))
       (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS (Subst.notMemOnTy hS₀ hρ)))
@@ -4179,13 +4138,13 @@ theorem InferBranches.eOut_avoid {Φ ctx scrutTy ρ brs Φ' S}
     expose_names
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
     have hle1 := Infer.frontier_le hbody
-    obtain ⟨hbS, hbτ⟩ := Infer.eOut_avoid hbody (w := w) hwΦ hctx hbrs.1
+    obtain ⟨hbS, hbτ⟩ := Infer.range_avoid hbody (w := w) hwΦ hctx hbrs.1
     have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
       intro p hp hwp
       rcases UnifyRel.range_mem huni p hp w hwp with h | h
       · exact hbτ h
       · exact Subst.notMemOnTy hbS hρ h
-    obtain ⟨hrS, hrρ⟩ := InferBranches.eOut_avoid hrest (w := w) (by omega)
+    obtain ⟨hrS, hrρ⟩ := InferBranches.range_avoid hrest (w := w) (by omega)
       (Subst.onCtx_avoid (Subst.onCtx_avoid hctx hbS) hS₂)
       (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS hscrut))
       (Subst.notMemOnTy hS₂ (Subst.notMemOnTy hbS hρ))
@@ -4200,10 +4159,10 @@ theorem InferBranches.eOut_avoid {Φ ctx scrutTy ρ brs Φ' S}
 termination_by Expr.sizeBranches brs
 decreasing_by
   all_goals (try subst_vars; try simp only [Expr.sizeBranches]; omega)
-/-- Fused `InferRecGroup` locality (avoid form): a var below the input frontier
+/-- `InferRecGroup` locality (avoid form): a var below the input frontier
     that avoids the context, specs, and binding annotation vars is absent from
-    the substitution range. The historical name is retained for API stability. -/
-theorem InferRecGroup.eOut_avoid {Φ ctx bindings specs Φ' S}
+    the substitution range. -/
+theorem InferRecGroup.range_avoid {Φ ctx bindings specs Φ' S}
     (h : InferRecGroup Φ ctx bindings specs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) →
     (∀ s ∈ specs, w ∉ s.freeVars) → w ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings →
@@ -4215,7 +4174,7 @@ theorem InferRecGroup.eOut_avoid {Φ ctx bindings specs Φ' S}
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
     have hle1 := Infer.frontier_le he
-    obtain ⟨heS, heτ⟩ := Infer.eOut_avoid he (w := w) hwΦ hctx hbinds.1
+    obtain ⟨heS, heτ⟩ := Infer.range_avoid he (w := w) hwΦ hctx hbinds.1
     have hτA : w ∉ τ.freeVars := hspecs (.mono τ) List.mem_cons_self
     have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
       intro p hp hwp
@@ -4223,7 +4182,7 @@ theorem InferRecGroup.eOut_avoid {Φ ctx bindings specs Φ' S}
       · exact heτ h
       · exact Subst.notMemOnTy heS hτA h
     have hrS : ∀ p ∈ S₃, w ∉ p.2.freeVars :=
-      InferRecGroup.eOut_avoid hrest (w := w) (by omega)
+      InferRecGroup.range_avoid hrest (w := w) (by omega)
         (Subst.onCtx_avoid (Subst.onCtx_avoid hctx heS) hS₂)
         (by intro s' hs'
             obtain ⟨s, hs, rfl⟩ := List.mem_map.mp hs'
@@ -4246,7 +4205,7 @@ end
 `S` is idempotent: a domain var never survives in any `S`-image, and `S` reduces
 its own result type. Composed from the single-MGU `UnifyRel.eliminates` by the
 cross-disjointness argument: for `S = A ++ B`, `dom(A) ∩ range(B) = ∅` (the later
-`B` is inferred in a world avoiding `dom(A)`), discharged via `Infer.eOut_avoid`. -/
+`B` is inferred in a world avoiding `dom(A)`), discharged via `Infer.range_avoid`. -/
 
 /-- Compose idempotency across a substitution append, given the earlier domain
     avoids the later range. -/
@@ -4444,14 +4403,14 @@ theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
       (fun y hy => lt_of_lt_of_le (hΦa y hy) hfle) hSa
     have ha_dom := Infer.dom_below harg hctx1 (fun y hy => lt_of_lt_of_le (hΦa y hy) hfle)
     have hcross12 : ∀ p ∈ S₁, ∀ q ∈ S₂, p.1 ∉ q.2.freeVars := fun p hp q hq =>
-      (Infer.eOut_avoid harg (w := p.1) (hf_dom p hp)
+      (Infer.range_avoid harg (w := p.1) (hf_dom p hp)
         (Subst.eliminates_onCtx (hfE p hp)) (hSa1 p hp)).1 q hq
     have h12E := Subst.eliminates_append hfE haE hcross12
     have hcross123 : ∀ p ∈ S₁ ++ S₂, ∀ q ∈ S₃, p.1 ∉ q.2.freeVars := by
       intro p hp q hq hwq
       have hrm := UnifyRel.range_mem huni q hq p.1 hwq
       rcases List.mem_append.mp hp with hpS₁ | hpS₂
-      · have havoid := Infer.eOut_avoid harg (w := p.1) (hf_dom p hpS₁)
+      · have havoid := Infer.range_avoid harg (w := p.1) (hf_dom p hpS₁)
           (Subst.eliminates_onCtx (hfE p hpS₁)) (hSa1 p hpS₁)
         rcases hrm with h | h
         · rcases Subst.mem_freeVars_onTy h with h' | ⟨r, hr, hvr⟩
@@ -4515,11 +4474,11 @@ theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
       · exact fun hc => hrR p hp (Ty.freeVars_closeOver_subset hc)
       · exact Subst.eliminates_onCtx (hrE p hp) M hM
     have hcross : ∀ p ∈ S₁, ∀ q ∈ S₂, p.1 ∉ q.2.freeVars := fun p hp q hq =>
-      (Infer.eOut_avoid hbody (w := p.1) (hr_dom p hp) (hbavoid p hp) (hSb1 p hp)).1 q hq
+      (Infer.range_avoid hbody (w := p.1) (hr_dom p hp) (hbavoid p hp) (hSb1 p hp)).1 q hq
     refine ⟨Subst.eliminates_append hrE hbE hcross, ?_⟩
     intro p hp
     rcases List.mem_append.mp hp with hpS₁ | hpS₂
-    · exact (Infer.eOut_avoid hbody (w := p.1) (hr_dom p hpS₁) (hbavoid p hpS₁) (hSb1 p hpS₁)).2
+    · exact (Infer.range_avoid hbody (w := p.1) (hr_dom p hpS₁) (hbavoid p hpS₁) (hSb1 p hpS₁)).2
     · exact hbR p hpS₂
   | letInAnn hσwf hΦN hrhs huni hesc1 _hesc2 hbody =>
     expose_names
@@ -4592,11 +4551,11 @@ theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
         · exact Subst.onCtx_avoid (Subst.eliminates_onCtx (hrE p hpS₁)) (cross1 p hpS₁) M hM
         · exact Subst.eliminates_onCtx (UnifyRel.eliminates huni p hpSchk) M hM
     have cross2 : ∀ p ∈ S₁ ++ Schk, ∀ q ∈ S₂, p.1 ∉ q.2.freeVars := fun p hp q hq =>
-      (Infer.eOut_avoid hbody (w := p.1) (hdomall p hp) (hbodyctx p hp) (hSbody p hp)).1 q hq
+      (Infer.range_avoid hbody (w := p.1) (hdomall p hp) (hbodyctx p hp) (hSbody p hp)).1 q hq
     refine ⟨Subst.eliminates_append hE1Schk hbE cross2, ?_⟩
     intro p hp
     rcases List.mem_append.mp hp with hp1Schk | hpS₂
-    · exact (Infer.eOut_avoid hbody (w := p.1) (hdomall p hp1Schk)
+    · exact (Infer.range_avoid hbody (w := p.1) (hdomall p hp1Schk)
         (hbodyctx p hp1Schk) (hSbody p hp1Schk)).2
     · exact hbR p hpS₂
   | match_ hscrut hne hbr =>
@@ -4620,14 +4579,14 @@ theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
     have hbrE := InferBranches.eliminates hbr hbrctx (hs_τbel.mono (by omega)) (.fvar (by omega))
       (fun y hy => by have := hΦbr y hy; omega) hSbr
     have hcross : ∀ p ∈ S₁, ∀ q ∈ S₂, p.1 ∉ q.2.freeVars := fun p hp q hq =>
-      (InferBranches.eOut_avoid hbr (w := p.1) (by have := hs_dom p hp; omega)
+      (InferBranches.range_avoid hbr (w := p.1) (by have := hs_dom p hp; omega)
         (Subst.eliminates_onCtx (hsE p hp)) (hsR p hp)
         (by intro hc; simp only [Ty.freeVars, List.mem_singleton] at hc; have := hs_dom p hp; omega)
         (hSs1br p hp)).1 q hq
     refine ⟨Subst.eliminates_append hsE hbrE hcross, ?_⟩
     intro p hp
     rcases List.mem_append.mp hp with hpS₁ | hpS₂
-    · exact (InferBranches.eOut_avoid hbr (w := p.1) (by have := hs_dom p hpS₁; omega)
+    · exact (InferBranches.range_avoid hbr (w := p.1) (by have := hs_dom p hpS₁; omega)
         (Subst.eliminates_onCtx (hsE p hpS₁)) (hsR p hpS₁)
         (by intro hc; simp only [Ty.freeVars, List.mem_singleton] at hc; have := hs_dom p hpS₁; omega)
         (hSs1br p hpS₁)).2
@@ -4798,11 +4757,11 @@ theorem Infer.eliminates {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ)
         rw [Subst.onCtx_append] at hm
         exact hm hM2
     have hcross : ∀ p ∈ S₁ ++ Sc, ∀ q ∈ S₂, p.1 ∉ q.2.freeVars := fun p hp q hq =>
-      (Infer.eOut_avoid hbody (w := p.1) (hS₁Scdom p hp) (hpbodyCtx p hp) (hS₁Scbody p hp)).1 q hq
+      (Infer.range_avoid hbody (w := p.1) (hS₁Scdom p hp) (hpbodyCtx p hp) (hS₁Scbody p hp)).1 q hq
     refine ⟨Subst.eliminates_append hS₁ScE hbE hcross, ?_⟩
     intro p hp
     rcases List.mem_append.mp hp with hpS₁ | hpS₂
-    · exact (Infer.eOut_avoid hbody (w := p.1) (hS₁Scdom p hpS₁)
+    · exact (Infer.range_avoid hbody (w := p.1) (hS₁Scdom p hpS₁)
         (hpbodyCtx p hpS₁) (hS₁Scbody p hpS₁)).2
     · exact hbR p hpS₂
 termination_by e.size
@@ -4865,7 +4824,7 @@ theorem InferBranches.eliminates {Φ ctx scrutTy ρ brs Φ' S}
         exact UnifyRel.eliminates huni0 p hp (Ty.fvar x)
       · exact Subst.eliminates_onCtx (UnifyRel.eliminates huni0 p hp) M hM
     have heOutBody : ∀ p ∈ S₀, (∀ q ∈ S₁, p.1 ∉ q.2.freeVars) ∧ p.1 ∉ τb.freeVars := fun p hp =>
-      Infer.eOut_avoid hbody (w := p.1) (hS₀dom p hp) (hbranchAvoid p hp) (by
+      Infer.range_avoid hbody (w := p.1) (hS₀dom p hp) (hbranchAvoid p hp) (by
         intro hc; exact hSe p (by simp only [List.mem_append]; tauto) (by
           simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hc))
     -- E01
@@ -4913,7 +4872,7 @@ theorem InferBranches.eliminates {Φ ctx scrutTy ρ brs Φ' S}
           · have := hS₀dom p hpS₀; omega
           · exact hb_dom p hpS₁
         · exact hS₂dom p hpS₂
-      refine (InferBranches.eOut_avoid hrest (w := p.1) hpdom
+      refine (InferBranches.range_avoid hrest (w := p.1) hpdom
         (honCtx3 ▸ Subst.eliminates_onCtx (hE012 p hp))
         (happ3 scrutTy ▸ hE012 p hp scrutTy)
         (happ3 ρ ▸ hE012 p hp ρ) (hSrestAll p hp)).1 q hq
@@ -4964,7 +4923,7 @@ theorem InferBranches.eliminates {Φ ctx scrutTy ρ brs Φ' S}
         rcases List.mem_append.mp hp with hpS₁ | hpS₂
         · exact hb_dom p hpS₁
         · exact hS₂dom p hpS₂
-      refine (InferBranches.eOut_avoid hrest (w := p.1) hpdom
+      refine (InferBranches.range_avoid hrest (w := p.1) hpdom
         (honCtx2 ▸ Subst.eliminates_onCtx (hE12 p hp))
         (happ2 scrutTy ▸ hE12 p hp scrutTy)
         (happ2 ρ ▸ hE12 p hp ρ) (hSrestAll p hp)).1 q hq
@@ -5043,7 +5002,7 @@ theorem InferRecGroup.eliminates {Φ ctx bindings specs Φ' S}
         cases s with
         | mono τ0 => exact hE1S₂ p hp τ0
         | poly σ0 => exact hSsch p (List.mem_append_left _ hp) σ0 (List.mem_cons_of_mem _ hs)
-      exact (InferRecGroup.eOut_avoid hrest (w := p.1) hpdom hpctx hptg (hSrestAll p hp)) q hq
+      exact (InferRecGroup.range_avoid hrest (w := p.1) hpdom hpctx hptg (hSrestAll p hp)) q hq
     exact Subst.eliminates_append hE1S₂ hrestE cross_S₁S₂_S₃
 termination_by Expr.sizeRecGroup bindings
 decreasing_by
@@ -5052,11 +5011,7 @@ decreasing_by
 end
 
 
-/-! ### M4: prefix-fix corollary
-
-DELETED: `Infer.eOut_substTyFvars_eq` (conclusion referenced the removed
-elaborated-output `eOut`; its only consumers were the deleted `sound_elab`
-family). -/
+/-! ### Prefix-fix corollary -/
 
 theorem List.zip_map_left_eq {α β γ : Type _} (f : α → γ) :
     ∀ (l : List α) (r : List β), (l.map f).zip r = (l.zip r).map (fun ab => (f ab.1, ab.2)) := by
@@ -5293,13 +5248,13 @@ theorem Ty.substFvars_closeOver {S : Subst} {gs : List Nat}
 
 /-! ### Domain-locality (avoid form): `Infer.dom_avoid`
 
-The substitution-**domain** twin of `Infer.eOut_avoid`: a var below the input
+The substitution-**domain** twin of `Infer.range_avoid`: a var below the input
 frontier that avoids the context env and the term's annotation free vars is not
-**bound** by the inferred substitution. (`eOut_avoid` only handles the range;
+**bound** by the inferred substitution. (`range_avoid` only handles the range;
 `dom_below` only bounds the domain from above.) The honest soundness `let`/`letRec`
 cases need this to show the body substitution leaves the *generalised* variables
-untouched. Proof mirrors `eOut_avoid`, using `UnifyRel.dom_mem` (the unifier's
-domain lies in the unified types' free vars) where `eOut_avoid` uses
+untouched. Proof mirrors `range_avoid`, using `UnifyRel.dom_mem` (the unifier's
+domain lies in the unified types' free vars) where `range_avoid` uses
 `range_mem`. -/
 mutual
 theorem Infer.dom_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
@@ -5339,9 +5294,9 @@ theorem Infer.dom_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
     have hfle := Infer.frontier_le hf
     have hargle := Infer.frontier_le harg
-    obtain ⟨hfS, hfτ⟩ := Infer.eOut_avoid hf (w := w) hwΦ hctx hwe.1
+    obtain ⟨hfS, hfτ⟩ := Infer.range_avoid hf (w := w) hwΦ hctx hwe.1
     have hfdom := Infer.dom_avoid hf hwΦ hctx hwe.1
-    obtain ⟨haS, haτ⟩ := Infer.eOut_avoid harg (w := w) (by omega)
+    obtain ⟨haS, haτ⟩ := Infer.range_avoid harg (w := w) (by omega)
       (Subst.onCtx_avoid hctx hfS) hwe.2
     have hadom := Infer.dom_avoid harg (by omega) (Subst.onCtx_avoid hctx hfS) hwe.2
     intro hc; simp only [List.map_append, List.mem_append] at hc
@@ -5361,7 +5316,7 @@ theorem Infer.dom_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_none, List.nil_append, List.mem_append, not_or] at hwe
     have hrle := Infer.frontier_le hrhs
-    obtain ⟨hrS, hrτ⟩ := Infer.eOut_avoid hrhs (w := w) hwΦ hctx hwe.1
+    obtain ⟨hrS, hrτ⟩ := Infer.range_avoid hrhs (w := w) hwΦ hctx hwe.1
     have hrdom := Infer.dom_avoid hrhs hwΦ hctx hwe.1
     have hbdom := Infer.dom_avoid hbody (by omega)
       (by intro M hM; rcases List.mem_cons.mp hM with rfl | hM
@@ -5377,7 +5332,7 @@ theorem Infer.dom_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     expose_names
     simp only [Expr.tyFreeVars, Option.elim_some, List.mem_append, not_or] at hwe
     have hrle := Infer.frontier_le hrhs
-    obtain ⟨hrS, hrτ⟩ := Infer.eOut_avoid hrhs (w := w) (by omega) hctx (by
+    obtain ⟨hrS, hrτ⟩ := Infer.range_avoid hrhs (w := w) (by omega) hctx (by
       intro hc; rcases Expr.tyFreeVars_openTyVars hc with h | h
       · exact hwe.1.2 h
       · have := freshVars_ge w h; omega)
@@ -5412,7 +5367,7 @@ theorem Infer.dom_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
   | match_ hscrut hne hbr =>
     intro w hwΦ hctx hwe
     simp only [Expr.tyFreeVars, List.mem_append, not_or] at hwe
-    obtain ⟨hsS, hsτ⟩ := Infer.eOut_avoid hscrut (w := w) hwΦ hctx hwe.1
+    obtain ⟨hsS, hsτ⟩ := Infer.range_avoid hscrut (w := w) hwΦ hctx hwe.1
     have hsdom := Infer.dom_avoid hscrut hwΦ hctx hwe.1
     have hle1 := Infer.frontier_le hscrut
     have hbrdom := InferBranches.dom_avoid hbr (w := w) (by omega)
@@ -5454,7 +5409,7 @@ theorem Infer.dom_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         exact hspecs_init s hs
       · exact hctx M hM2
     have hS₁ : ∀ p ∈ S₁, w ∉ p.2.freeVars :=
-      InferRecGroup.eOut_avoid hgroup (w := w) (by omega)
+      InferRecGroup.range_avoid hgroup (w := w) (by omega)
       hctxGroup (fun s hs => hspecs_init s hs) hwbind
     have hwrigid : w ∉ RecGroup.rigidVars anns bindings := by
       simp only [RecGroup.rigidVars, List.mem_append, not_or]
@@ -5536,7 +5491,7 @@ theorem InferBranches.dom_avoid {Φ ctx scrutTy ρ brs Φ' S}
       · simp only [Ty.freeVars, List.mem_singleton] at h; have := freshVars_ge x hx; omega
       · exact hS₀ p hp hvp
     have hle0 := Infer.frontier_le hbody
-    obtain ⟨hbS, hbτ⟩ := Infer.eOut_avoid hbody (w := w) (by omega)
+    obtain ⟨hbS, hbτ⟩ := Infer.range_avoid hbody (w := w) (by omega)
       (by intro M hM; rcases List.mem_append.mp hM with hM | hM
           · obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hM; obtain ⟨c, hc, rfl⟩ := List.mem_map.mp ht
             simpa only [PolyTy.mkTrivial] using Ty.not_mem_freeVars_openWith hta ((ctor.closed c hc).not_mem_freeVars w)
@@ -5574,7 +5529,7 @@ theorem InferBranches.dom_avoid {Φ ctx scrutTy ρ brs Φ' S}
     expose_names
     simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append, not_or] at hbrs
     have hle1 := Infer.frontier_le hbody
-    obtain ⟨hbS, hbτ⟩ := Infer.eOut_avoid hbody (w := w) hwΦ hctx hbrs.1
+    obtain ⟨hbS, hbτ⟩ := Infer.range_avoid hbody (w := w) hwΦ hctx hbrs.1
     have hbdom := Infer.dom_avoid hbody hwΦ hctx hbrs.1
     have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
       intro p hp hwp
@@ -5615,7 +5570,7 @@ theorem InferRecGroup.dom_avoid {Φ ctx bindings specs Φ' S}
     expose_names
     simp only [Expr.tyFreeVars.RecGroup.tyFreeVars, List.mem_append, not_or] at hbinds
     have hle1 := Infer.frontier_le he
-    obtain ⟨heS, heτ⟩ := Infer.eOut_avoid he (w := w) hwΦ hctx hbinds.1
+    obtain ⟨heS, heτ⟩ := Infer.range_avoid he (w := w) hwΦ hctx hbinds.1
     have hτA : w ∉ τ.freeVars := hspecs (.mono τ) List.mem_cons_self
     have hS₂ : ∀ p ∈ S₂, w ∉ p.2.freeVars := by
       intro p hp hwp
@@ -5690,21 +5645,7 @@ theorem RecSpec.freeVars_onSubst_mem_onEnv {T : Subst} {env : Env} {s : RecSpec}
     exact Ty.mem_freeVars_onTy_of_not_dom hyM
       (fun p hp hpeq => hpoly_dom σ rfl p hp (by rw [hpeq]; exact hy))
 
-/-! ### Path R residual soundness (`Infer.sound_elab` family) — DELETED
-
-`Infer.sound_elab` / `InferBranches.sound_elab` / `InferRecGroup.sound_elab`
-concluded on the removed elaborated outputs (`TypeOfElabHM … (eOut.substTyFvars S)…`,
-`… brsOut …`, `… bindingsOut …`). With the `eOut` index gone they are unstateable;
-the surviving coherence theorem is `Infer.sound` (erased-input `TypeOfHM`, below).
-The dedicated erased-`letRec`-soundness lemmas in this block are likewise deleted. -/
-/-! DELETED: `Infer.sound_closed` (conclusion referenced the removed elaborated
-    output `eOut`; it was a thin wrapper over the deleted `Infer.sound_elab`). -/
-
-
-/-! ## Algorithmic phase, step 2b: completeness (principality) scaffolding
-
-Foundations for `Infer.complete`, independent of how the residual-substitution
-obstruction is resolved. -/
+/-! ## Principality foundations -/
 
 /-! ### Completeness foundations: substitution agreement
 
@@ -5778,16 +5719,12 @@ inducting on `e` with `Expr.rec_strong`); `Infer.completeAt`/`Infer.complete`
 then just compose them. Keeping the universally-quantified `Φ ctx S₀ τ₀` inside
 the predicate means each case lemma is independently stated and verifiable. -/
 
-/-! ### `TypeOfHM` metatheory (direct induction port from `TypeOfElabHM`)
+/-! ### `TypeOfHM` metatheory
 
-The forward "sandwich" bridge is dead (elaboration changes term structure for
-polymorphic `let`, so no same-skeleton `TypeOfElabHM` typing exists — `toElab` is
-false). Instead we port the standard HM metatheory directly. Mirrors the
-`TypeOfElabHM` proofs; the `var` case is *simpler* (existential instantiation
-witness, no `length = paramCount` premise). -/
+The standard HM metatheory is proved directly over `TypeOfHM`; variable uses
+carry an existential instantiation witness. -/
 
-/-- Branch disjunction motive for `TypeOfHM.rec_strong` (mirrors
-    `TypeOfElabHM.BranchMotive`). -/
+/-- Branch disjunction motive for `TypeOfHM.rec_strong`. -/
 abbrev TypeOfHM.BranchMotive
     (motive : (ctx : Ctx) → (e : Expr) → (τ : Ty) → TypeOfHM ctx e τ → Prop)
     (ctx : Ctx) (branch : MatchPattern × Expr) (scrutTy : Ty)
@@ -5806,7 +5743,7 @@ abbrev TypeOfHM.BranchMotive
     ∃ hbody : TypeOfHM ctx branch.2 resultTy,
       motive ctx branch.2 resultTy hbody)
 
-/-- Strong induction principle for `TypeOfHM` (mirrors `TypeOfElabHM.rec_strong`),
+/-- Strong induction principle for `TypeOfHM`,
     packaged with a single motive so the metatheory never touches the mutual
     recursor / `motive_2` directly. -/
 @[elab_as_elim]
@@ -5921,9 +5858,8 @@ theorem TypeOfHM.rec_strong
   | wildcard hbodyT ih =>
       exact Or.inr ⟨rfl, hbodyT, ih⟩
 
-/-! Local copies of Core-private auxiliary lemmas (needed by the `letRec`/`letRecAnn`
-    cases of `typ_subst_preservation_uniform`; cf. the `SpikeLetRecAnn` precedent of
-    copying Core-private helpers into the consuming file). -/
+/-! Local copies of Core-private auxiliary lemmas needed by the recursive-group
+case of `typ_subst_preservation_uniform`. -/
 
 private theorem Ty.freeVars_subset_freeVarsList {V : Ty} {Vs : List Ty}
     (h : V ∈ Vs) : ∀ x ∈ V.freeVars, x ∈ Ty.freeVarsList Vs := by
@@ -5990,7 +5926,7 @@ private theorem List.mem_zip_map_right {α β γ : Type _} {g : β → γ}
       | inr h' => exact Or.inr (ih h')
 
 /-- Single-fvar `substTyFvar` is the one-element iterated `substTyFvars` (defeq).
-    Lets the `match_`/`letRec`/`letRecAnn` cases use the *public*
+    Lets the `match_` and `letRec` cases use the public
     `Expr.substTyFvars_*` structural lemmas instead of the Core-private single-fvar
     list helpers. -/
 private theorem Expr.substTyFvar_eq_substTyFvars_single {Z : Nat} {U : Ty} {e : Expr} :
@@ -6141,14 +6077,10 @@ theorem PolyTy.Generalizes.onSubst {A B : PolyTy} {S : Subst}
       have hrest := ih hstep hBwf' (fun p hp => hS p (List.mem_cons_of_mem _ hp))
       simpa [Subst.onPolyTy, Subst.onTy, Ty.substFvars] using hrest
 
-/-- **Single-fvar substitution preservation for `TypeOfHM`** (uniform over the whole
-    env). Direct induction port of `TypeOfElabHM.typ_subst_preservation_uniform`; the
-    `var`/`ctor` cases are simpler (existential instantiation witness, no length
-    premise). All auxiliary lemmas (`Ty.renameG_*`, `PolyTy.genGroup_*`,
-    `InstantiatesBy.substFvar`, …) are relation-agnostic and reused verbatim.
-    The `match_`/`letRec`/`letRecAnn` cases bridge the Core-private single-fvar
-    list helpers via `Expr.substTyFvar Z U e ≡ Expr.substTyFvars [(Z, U)] e` (defeq)
-    + the public `Expr.substTyFvars_match/_letRec/_letRecAnn`. -/
+/-- **Single-fvar substitution preservation for `TypeOfHM`**, uniform over the
+    whole environment. The match and recursive-group cases use
+    `Expr.substTyFvar Z U e ≡ Expr.substTyFvars [(Z, U)] e` together with the
+    public structural distribution lemmas. -/
 theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.IsLC)
     {ctx : Ctx} {e : Expr} {τ : Ty} (h : TypeOfHM ctx e τ) :
     TypeOfHM ⟨ctx.env.substFvar Z U, ctx.ctors⟩ (e.substTyFvar Z U) (Ty.substFvar Z U τ) := by
@@ -6244,12 +6176,10 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
       · subst hpat
         exact TypeOfMatchBranch.wildcard hbodyIH
   | letRec hwf hlen hlink hlc hmono hceiling heq hbody ihmono ihbody =>
-    -- Fused-node port of Core's `TypeOfElabHM.typ_subst_preservation_uniform`
-    -- `letRec` case: pool freshening `G ↦ W`, monotypes transported by
+    -- Recursive-group case: pool freshening `G ↦ W`, monotypes transported by
     -- `renameG_substFvar_comm`/`renameG_renameG`/`genGroup_renameG`, schemes
     -- substituted pointwise, the env transport split pointwise by `RecSpec`.
-    -- (That old annotated-member transport is GONE: the pivot rule types every member
-    -- monomorphically at the witnesses `τs`, transported in ONE uniform branch.)
+    -- Every member is transported uniformly at its monomorphic witness `τs`.
     subst heq
     expose_names
     rw [Expr.substTyFvar_eq_substTyFvars_single, Expr.substTyFvars_letRec]
@@ -6433,9 +6363,8 @@ theorem TypeOfHM.onSubstFvar {ctx : Ctx} {e : Expr} {τ : Ty} (Z : Nat) (U : Ty)
     TypeOfHM (Subst.onCtx [(Z, U)] ctx) (e.substTyFvar Z U) (Subst.onTy [(Z, U)] τ) :=
   TypeOfHM.typ_subst_preservation_uniform hU h
 
-/-- **Substitution preservation for `TypeOfHM`** (whole substitution). Direct
-    induction port (via `onSubstFvar` + `induction S`), mirroring
-    `TypeOfElabHM.onSubst`. No `CtxWF` needed. -/
+/-- **Substitution preservation for `TypeOfHM`** over a whole substitution,
+    obtained by iterating `onSubstFvar`. No `CtxWF` premise is needed. -/
 theorem TypeOfHM.onSubst {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
     (h_lc : ∀ p ∈ S, p.2.IsLC) (h : TypeOfHM ctx e τ) :
     TypeOfHM (S.onCtx ctx) (e.substTyFvars S) (S.onTy τ) := by
@@ -6458,10 +6387,9 @@ theorem TypeOfHM.onSubst_fixed {ctx : Ctx} {e : Expr} {τ : Ty} (S : Subst)
   have key := TypeOfHM.onSubst S h_lc h
   rwa [h_fix] at key
 
-/-- **Iterated fixed-env substitution preservation for `TypeOfHM`.** When the
-    substitution keys avoid the context env's free vars, the env is unchanged;
-    only the term and type are substituted. Direct port of
-    `TypeOfElabHM.typ_substs_preservation` (via the single-fvar uniform lemma). -/
+/-- **Iterated fixed-environment substitution preservation for `TypeOfHM`.**
+    When substitution keys avoid the environment's free variables, only the
+    term and result type change. -/
 theorem TypeOfHM.typ_substs_preservation {ctx : Ctx} {e : Expr}
     (pairs : List (Nat × Ty))
     (h_fresh : ∀ p ∈ pairs, p.1 ∉ ctx.env.freeVars)
@@ -6480,9 +6408,9 @@ theorem TypeOfHM.typ_substs_preservation {ctx : Ctx} {e : Expr}
     exact ih (fun p hp => h_fresh p (List.mem_cons_of_mem _ hp))
              (fun p hp => h_lc p (List.mem_cons_of_mem _ hp)) hstep
 
-/-! Regularity for `TypeOfHM`: a declaratively-typed term has a locally-closed type.
-    Direct port of `TypeOfElabHM.regular`; `var`/`ctor` via `InstantiatesBy.preserves_bvars`
-    on the (existential) LC instantiation witness. -/
+/-! Regularity for `TypeOfHM`: a declaratively typed term has a locally closed
+    type. The variable and constructor cases use the existential locally closed
+    instantiation witness. -/
 mutual
 theorem TypeOfHM.regular : {ctx : Ctx} → {e : Expr} → {τ : Ty} →
     TypeOfHM ctx e τ → τ.IsLC
@@ -6516,9 +6444,8 @@ end
 
 `TypeOfHM` maintains the invariant that a well-typed expression is
 `varsBelow ctx.env.length`: the `var` rule forces an in-range context lookup, and
-every binder rule extends the env by exactly the amount `varsBelow`'s bookkeeping
-expects. Direct port of `TypeOfElabHM.varsBelow` / `TypeOfElabHM.closed`; the
-`var` case differs only in that `tyArgs` is ignored. -/
+every binder rule extends the environment by exactly the amount required by
+`varsBelow`'s bookkeeping. -/
 
 /-- Every left element of a length-matched pair of lists occurs in their zip. -/
 private theorem mem_zip_of_mem_left {α β : Type _} :
@@ -6578,8 +6505,7 @@ private theorem branchList_varsBelow_of_motive {ctx : Ctx} {scrutTy resultTy : T
     exact ⟨branchMotive_varsBelow (hbrs (pat, body) List.mem_cons_self),
       ih (fun br hbr => hbrs br (List.mem_cons_of_mem _ hbr))⟩
 
-/-- **Well-typed ⇒ all free term-vars below the context length.** By induction on
-    the (decoration-blind declarative) typing derivation. -/
+/-- **Well-typed ⇒ all free term variables are below the context length.** -/
 theorem TypeOfHM.varsBelow {ctx : Ctx} {e : Expr} {τ : Ty}
     (h : TypeOfHM ctx e τ) : Expr.varsBelow ctx.env.length e = true := by
   induction h using TypeOfHM.rec_strong with
@@ -6638,15 +6564,14 @@ theorem TypeOfHM.closed {ctors : CtorEnv} {e : Expr} {τ : Ty}
     (h : TypeOfHM ⟨[], ctors⟩ e τ) : Expr.varsBelow 0 e = true :=
   TypeOfHM.varsBelow h
 
-/-! ### Cofinite `GeneralisesTo` instantiation (moved from `CekMachine.lean`)
+/-! ### Cofinite `GeneralisesTo` instantiation
 
 The `TypeOfHM`/`Step` dynamics instantiates a cofinite `let`/`letRec` scheme
 premise ("the bound value types at every opening of `M`") at a single type `τ`.
 `Ty.substFvars_zip_openVars_eq` is the type-side round-trip (substituting the
 zipped fresh names back recovers the `InstantiatesBy` instance), and the two
-`GeneralisesTo_inst*` lemmas package it against `TypeOfHM`. These are the
-decoration-blind analogues of the CEK leaf's same-named lemmas, restated for
-the image of `Expr.erase` (not `IsErased`). -/
+`GeneralisesTo_inst*` lemmas package it against `TypeOfHM` for terms in the
+image of `Expr.erase`. -/
 
 /-- Scheme `σ` instantiates to monotype `τ` (the declarative `TypeOfHM.var`
     instantiation: some locally-closed args, no length constraint). -/
@@ -7205,10 +7130,8 @@ body used is still available. (`PolyTy.Generalizes`, the relation used here and
 by `Infer.letRec`'s ceiling premise, is defined earlier, before `Infer`.) -/
 
 /-- Replacing a context scheme `M` by a more general `M'` preserves `TypeOfHM`.
-    Direct port of `TypeOfElabHM.weaken_scheme`; the weakened-position `var` case
-    (which would be unprovable for `TypeOfElabHM`, since the stored `tyArgs` instantiate
-    the OLD scheme) **dissolves** here: `TypeOfHM.var`'s instantiation witness is existential, so
-    `hgen` supplies a fresh witness for `M'` while the term keeps its decoration. -/
+    In the weakened-position variable case, `TypeOfHM.var`'s existential
+    instantiation witness is supplied by `hgen`. -/
 theorem TypeOfHM.weaken_scheme {ctors : CtorEnv} {env_post env : Env} {M M' : PolyTy}
     {e : Expr} {τ : Ty}
     (hgen : M'.Generalizes M)
@@ -7328,10 +7251,9 @@ theorem TypeOfHM.weaken_schemes {ctors : CtorEnv} {env : Env} {e : Expr} {τ : T
   have hfin := H hgen [] (by simpa using h)
   simpa using hfin
 
-/-- Inserting an environment segment and shifting term de Bruijn indices preserves
-    `TypeOfHM`. Direct port of `TypeOfElabHM.weaken_env`: cofinite `letIn`/`letRec`
-    re-instantiate under the grown env; `var` remaps lookup (existential `instArgs`
-    unchanged). No env-freshness side condition. -/
+/-- Inserting an environment segment and shifting term de Bruijn indices
+    preserves `TypeOfHM`. Cofinite `letIn`/`letRec` premises are re-instantiated
+    under the grown environment; variable lookup is remapped. -/
 theorem TypeOfHM.weaken_env
     {ctors : CtorEnv} {env_pre env_extra env : Env} {e : Expr} {τ : Ty}
     (h : TypeOfHM ⟨env_pre ++ env, ctors⟩ e τ) :
@@ -7486,7 +7408,7 @@ The substitution-semantics metatheory for `TypeOfHM` on the image of
 `Expr.erase`: source annotations are absent, so the
 cofinite scoped-annotation opening cases are vacuous at runtime. -/
 
-/-- Decoration-blind "value types at scheme `M`": `v` inhabits every instance
+/-- A value has scheme `M` when it inhabits every instance
     of `M`, stated with declarative existential instantiation. -/
 def HasSchemeHM (ctx : Ctx) (v : Expr) (M : PolyTy) : Prop :=
   ∀ τ : Ty, Instantiates M τ → TypeOfHM ctx v τ
@@ -7829,8 +7751,7 @@ private theorem mem_zip_mono_link
     ambient context. The rewrap erases the annotations (the rule's all-mono
     reification forces all-`none` anns), which is exactly the shape
     preservation's `letRecUnfold` needs (its subject is erased anyway).
-    Decoration-blind port of `TypeOfElabHM.rec_rewrap_typed` (the fused
-    mono-group trick). -/
+    The rewrapping uses an all-monomorphic group at an empty generalization pool. -/
 theorem TypeOfHM.rec_rewrap_typed
     {ctors : CtorEnv} {env : Env} {anns : List (Option PolyTy)} {bindings : List Expr}
     {specs : List RecSpec} {τs : List Ty} {G L : List Nat}
@@ -7928,10 +7849,8 @@ theorem TypeOfHM.rec_rewrap_typed
     simpa [List.map_map, Function.comp_def, List.map_const', hlen] using
       (RecSpecs.ceilingOK_allNone [] (τs.map (Ty.renameG G Xs)))
 
-/-- Each re-wrapped member `letRec anns bindings e` inhabits every instance of
-    its generalised body scheme `genGroup G τ` (`HasSchemeHM`). Decoration-blind
-    port of `TypeOfElabHM.rewrap_hasScheme_mono`; needed by preservation's
-    `letRecUnfold` case. -/
+/-- Each re-wrapped member inhabits every instance of its generalized body
+    scheme `genGroup G τ`; needed by preservation's `letRecUnfold` case. -/
 theorem TypeOfHM.rewrap_hasSchemeHM_mono
     {ctors : CtorEnv} {env : Env} {anns : List (Option PolyTy)} {bindings : List Expr}
     {specs : List RecSpec} {τs : List Ty} {G L : List Nat}
@@ -8026,12 +7945,10 @@ theorem TypeOfHM.rewrap_hasSchemeHM_mono
   rw [hfix, hty] at hsub
   exact hsub
 
-/-! ### Canonical forms + progress (checkpoint 3)
+/-! ### Canonical forms and progress
 
-The `TypeOfHM` analogues of `TypeOfElabHM`'s value-inversion lemmas: a *value*
-of a given type has a particular syntactic shape, and a closed well-typed term
-is a value or takes a step. These only invert the value constructors, so they
-are nearly verbatim ports. -/
+A value of a given type has the corresponding syntactic shape, and a closed
+well-typed term is either a value or can take a step. -/
 
 /-- A well-typed constructor chain has a `wrapArrows … (customTy …)` type: a
     prefix of arrows ending in a `customTy`. -/
@@ -8370,7 +8287,7 @@ theorem TypeOfHM.progress {ctx : Ctx} {e : Expr} {τ : Ty}
         · exact .inr ⟨_, .matchScrut hscrut⟩
     | letRec _ _ _ _ _ => exact .inr ⟨_, .letRecUnfold⟩
 
-/-! ### Preservation + type safety (checkpoint 4)
+/-! ### Preservation and type safety
 
 The `TypeOfHM`/`Step` subject-reduction tower, stated for erased terms (`h_erased`)
 per the memo §7 restriction. -/
@@ -9033,9 +8950,8 @@ theorem TypeOfHM.type_safety_star {ctors : CtorEnv} {e : Expr} {τ : Ty}
   obtain ⟨h_ty', h_erased', h_exh'⟩ := TypeOfHM.preservation_star h_rtc h_ty h_erased h_exh
   exact ⟨h_ty', TypeOfHM.progress h_ty' rfl h_exh' h_erased'⟩
 
-/-- Term-var shifting preserves `TyBvarBounded` (it only renames term `bvar`s, never
-    touching type annotations). (Re-based off `NoRecAnn`: shifting recurses through
-    `letRecAnn` schemes/bindings without touching their type bvars.) -/
+/-- Term-variable shifting preserves `TyBvarBounded`: it renames term variables
+    without changing type annotations. -/
 theorem Expr.shiftFrom_tyBvarBounded (n : Nat) {e : Expr} :
     ∀ (t d : Nat), e.TyBvarBounded d → (e.shiftFrom t n).TyBvarBounded d := by
   induction e using Expr.rec_strong with
@@ -9307,7 +9223,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
           List.mem_map.mpr ⟨M₀, hM₀, rfl⟩, Ty.mem_freeVars_onTy_of_not_dom hgM hg_S₁dom⟩)
       have hg_rigid : g ∉ rhs.tyFreeVars := by
         simp only [genV] at hg; exact genVars_not_mem_rigid hg
-      exact (Infer.eOut_avoid hrhs (w := g) hlt hg_ctxenv hg_rigid).2 (hgenV_τ₁ g hg)
+      exact (Infer.range_avoid hrhs (w := g) hlt hg_ctxenv hg_rigid).2 (hgenV_τ₁ g hg)
     have hgenV_body : ∀ g ∈ genV, g ∉ body.tyFreeVars :=
       fun g hg hc => by have := hKΦ g (hKe g (.inr hc)); have := hgenV_ge g hg; omega
     have hbodyCtxAvoid : ∀ g ∈ genV,
@@ -9324,7 +9240,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         (List.mem_map.mpr ⟨p, hp, rfl⟩)
     have hS₂genVran : ∀ p ∈ S₂, ∀ u ∈ p.2.freeVars, u ∉ genV := by
       intro p hp u hu hc
-      exact (Infer.eOut_avoid hbody (w := u) (hgenV_lt u hc) (hbodyCtxAvoid u hc)
+      exact (Infer.range_avoid hbody (w := u) (hgenV_lt u hc) (hbodyCtxAvoid u hc)
         (hgenV_body u hc)).1 p hp hu
     have hSτ₁ : (S₁ ++ S₂).onTy τ₁ = S₂.onTy τ₁ := by rw [Subst.onTy_append, hS₁τ₁]
     have hschemebody : S₂.onTy (Ty.closeOver genV τ₁) =
@@ -9491,7 +9407,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         (List.mem_map.mpr ⟨p, hp, rfl⟩)
     have hS₂Ysran : ∀ p ∈ S₂, ∀ u ∈ p.2.freeVars, u ∉ Ys := by
       intro p hp u hu hc
-      exact (Infer.eOut_avoid hbody (w := u) (hYs_lt u hc) (hYs_bodyCtx u hc)
+      exact (Infer.range_avoid hbody (w := u) (hYs_lt u hc) (hYs_bodyCtx u hc)
         (hYs_body u hc)).1 p hp hu
     have hSYs : ∀ p ∈ S₁ ++ Schk ++ S₂, p.1 ∉ Ys := by
       intro p hp
@@ -10230,7 +10146,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         have hbindsG_avoid : g ∉ Expr.tyFreeVars.RecGroup.tyFreeVars bindings := by
           intro hc
           exact (genGroupVars_spec hg).2.2 (List.mem_append_right _ (hRecGroup_sub bindings g hc))
-        have hgrp_avoid := InferRecGroup.eOut_avoid hgroup (w := g) (by omega)
+        have hgrp_avoid := InferRecGroup.range_avoid hgroup (w := g) (by omega)
           hctxG_avoid hspecsG_avoid hbindsG_avoid
         exact hgrp_avoid p hp hgp
     have hG_body : ∀ g ∈ G, g ∉ body.tyFreeVars := fun g hg hc =>
@@ -10262,7 +10178,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     have hS₂_dom_G : ∀ g ∈ G, g ∉ S₂.map Prod.fst := fun g hg =>
       Infer.dom_avoid hbody (w := g) (hG_below g hg) (hG_bodyCtx_env g hg) (hG_body g hg)
     have hS₂_ran_G : ∀ g ∈ G, ∀ p ∈ S₂, g ∉ p.2.freeVars := fun g hg =>
-      (Infer.eOut_avoid hbody (w := g) (hG_below g hg) (hG_bodyCtx_env g hg) (hG_body g hg)).1
+      (Infer.range_avoid hbody (w := g) (hG_below g hg) (hG_bodyCtx_env g hg) (hG_body g hg)).1
     have hS₂_domG : ∀ p ∈ S₂, p.1 ∉ G := fun p hp hc =>
       hS₂_dom_G p.1 hc (List.mem_map.mpr ⟨p, hp, rfl⟩)
     have hS₂_ranG : ∀ p ∈ S₂, ∀ u ∈ p.2.freeVars, u ∉ G := fun p hp u hu hc =>
@@ -11811,7 +11727,7 @@ theorem RecCeilingConstraints.ceilingOK {K rigid G : List Nat} {Φ : Nat}
 
 /-- Emit scheme facts for the genuinely generalized members of a recursion
     group. Annotated members are declarations, not inference-produced schemes,
-    so this checkpoint deliberately omits them. -/
+    so they are omitted. -/
 def inferredLetRecSchemes : Nat → List (Option PolyTy) → List PolyTy → InferredBinderSchemes
   | _, [], _ => []
   | _, _, [] => []
@@ -12234,10 +12150,10 @@ theorem infer_sound {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {�
     subst h
     exact hr.1
 
-/-! ### Sanity checks: the algorithm actually runs
+/-! ### Executable sanity checks
 
-The first time the algorithm is executed (guards against an operationally-wrong
-but provable relation). `unify` and `infer` reduce only under the compiler
+These guard against an operationally wrong but provable relation. `unify` and
+`infer` reduce only under the compiler
 (`#eval`), since both rest on well-founded recursion. -/
 
 -- `unify (α → α) (Int → β) = [α ↦ Int, β ↦ Int]`
@@ -12539,8 +12455,8 @@ theorem polyId_principalType : principalType [] polyId = some (.arrow (.fvar 0) 
   simp only [inferCore, inferWithTypesCore, List.getElem?_cons_zero]
   with_unfolding_all rfl
 
-/-- `typecheck` succeeds, produces a genuine residual declarative type (Path R
-    soundness), and that type is principal. -/
+/-- `typecheck` succeeds, produces a genuine declarative type, and that type is
+    principal. -/
 theorem polyId_headlines_fire :
     ∃ σ τ, typecheck [] polyId = some σ ∧ σ = genScheme [] [] τ ∧
       TypeOfHM ⟨[], []⟩ polyId τ ∧
@@ -12576,8 +12492,8 @@ theorem appFiveFive_untypeable : ¬ ∃ τ, TypeOfHM ⟨[], []⟩ appFiveFive.er
   | app hf hx =>
     cases hf
 
-/-- The algorithm rejects `5 5`. Honest route without the deleted completeness
-    campaign: if `typecheck` succeeded, `typecheck_sound` would give a declarative
+/-- The algorithm rejects `5 5`: if `typecheck` succeeded, `typecheck_sound`
+    would give a declarative
     typing of the erased term — contradicting `appFiveFive_untypeable`. -/
 theorem appFiveFive_rejected : ¬ (typecheck [] appFiveFive).isSome := by
   rintro h
@@ -12585,8 +12501,7 @@ theorem appFiveFive_rejected : ¬ (typecheck [] appFiveFive).isSome := by
   rcases typecheck_sound hσ with ⟨τ, hty, -⟩
   exact appFiveFive_untypeable ⟨τ, hty⟩
 
-/-! ### Open programs — a free top-level annotation var is a RIGID scoped constant
-    (the soundness fix this session). -/
+/-! ### Open programs: a free top-level annotation variable is rigid -/
 
 /-- `λ(x : α). x`, with `α` free at the top level. -/
 def openId : Expr := .lambda (some (.fvar 5)) (.var 0)
@@ -12612,9 +12527,9 @@ theorem openMisuse_untypeable : ¬ ∃ τ, TypeOfHM ⟨[], []⟩ openMisuse τ :
       rw [hpin] at hx
       cases hx
 
--- The algorithm rejects `openMisuse` too, but that rejection was a corollary of
--- the deleted completeness campaign (and note the fully *erased* term `(λx. x) 5`
--- IS ordinary well-typed HM, so no soundness-only route recovers it).
+-- The algorithm rejects `openMisuse` too by completeness. The fully erased term
+-- `(λx. x) 5` is ordinary well-typed HM; the rejection concerns the rigid source
+-- annotation, so soundness alone cannot establish it.
 
 /-! ### A polymorphic program — let-generalization + double instantiation -/
 
@@ -12662,8 +12577,8 @@ theorem idid_principalType : principalType [] idid = some (.arrow (.fvar 3) (.fv
   unfold unifyCoreK
   with_unfolding_all rfl
 
-/-- `idid_typeable` at the computed principal variable `4` (the `var` rule is
-    decoration-blind, so the stored `tyArgs` need not match `instArgs`). -/
+/-- `idid_typeable` at the computed principal variable `3`. Each `var` rule
+    supplies the appropriate existential instantiation witness. -/
 theorem idid_typeable_fvar3 : TypeOfHM ⟨[], []⟩ idid (.arrow (.fvar 3) (.fvar 3)) := by
   apply TypeOfHM.letIn (M := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩) (L := [])
   · show ContainsBvarsUpTo 1 (Ty.arrow (Ty.bvar 0) (Ty.bvar 0))
@@ -12736,7 +12651,7 @@ theorem idid_headlines_fire :
                         subst hτ
                         exact ⟨[(3, _)], rfl⟩
 
-/-! ### Progress / preservation fire on a concrete erased program -/
+/-! ### Progress and preservation on a concrete program -/
 
 /-- `(λx. x) 5` — already annotation-free; beta-reduces to `5`. -/
 def appIdFive : Expr := .app (.lambda none (.var 0)) (.primLit (.int 5))
@@ -12746,11 +12661,6 @@ theorem appIdFive_typeable : TypeOfHM ⟨[], []⟩ appIdFive (.prim .int) :=
     (TypeOfHM.lambda .prim (fun _ h => Option.noConfusion h) rfl
       (TypeOfHM.var (instArgs := []) rfl (by intro t ht; cases ht) .prim))
     TypeOfHM.primLitInt
-
--- (The progress/preservation capstone examples referenced the now-removed type-erasure
--- layer — `Expr.eraseTyAnnots` / `typecheck_progress` / `typecheck_preservation` no longer
--- exist; whole-program safety is the literal `TypeOfHM.type_safety` chain in `Core`.
--- These two examples are dropped accordingly.)
 
 /-! ### Core v2: an all-wildcard match has a principal type (the match-fix witness) -/
 
@@ -12817,7 +12727,7 @@ recursive-binding inference fires end-to-end at the principal type. -/
     (both unannotated) returning `f`. -/
 def mutualRec : Expr := .letRec [none, none] [.var 1, .var 0] (.var 0)
 
-/-- The all-`none` mutual group types at its principal monotype under the fused
+/-- The all-`none` mutual group types at its principal monotype under
     `TypeOfHM.letRec`: `specs = [.mono (fvar 100), .mono (fvar 100)]`, witnesses
     `τs = [fvar 100, fvar 100]`, pool `[100]`. Inside the group both members sit
     at the opened shared monotype `fvar X`; the body sees them generalised to

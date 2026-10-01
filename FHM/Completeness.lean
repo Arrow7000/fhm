@@ -1872,7 +1872,7 @@ decreasing_by
 end
 
 
-/-! ## 4. Principality of a given inference (the D2 spine)
+/-! ## 4. Principality of a given inference
 
 `Infer.Principal h hwf hbelow` says: whenever the source program `e` (including
 its annotations) is declaratively HM-typeable at some type, the given inference
@@ -1901,38 +1901,11 @@ def Infer.Principal {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {�
       τe = R.onTy τ ∧ (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       Subst.AgreesBelow Φ S₀ (S ++ R)
 
-/-- Principality for a `match_` branch-list thread: given the declarative
-    per-branch typings at the ambient
-    specialization `S₀`, the threaded result type is principal.
-
-    **UNSOUNDNESS FIX 2026-08-26** (restatement authorised; see the deviation
-    note below): the previous statement concluded with the *pure*
-    `Subst.AgreesBelow Φ S₀ (S ++ R)` — demanded at every `v < Φ`, which for
-    the `match_` caller (`Φ = Φ₁ + 1`) includes `v = Φ₁`, the running result
-    variable `.fvar Φ₁` itself. At `v = Φ₁` nothing links the ambient action to
-    the unifier-applied output (counterexample: `match (var 0) [wildcard
-    primLitInt]` — the only declarative data is the branch's
-    `Eq (.fvar 1) (.prim .int)`, which no premise forces), so the old
-    statement was FALSE. The restatement:
-      * replaces the free `Eq ρe (R.onTy ρ)` conjunct with the
-        output-form `Eq ρe (R.onTy (S.onTy ρ))` — the match node's output
-        type IS `S₂.onTy (.fvar Φ₁)` (old match-aux STEP 5's `τ₀ = R₂.onTy
-        (S₂.onTy (.fvar Φ₁))`, recovered as a first-class conjunct);
-      * adds the two IMAGE premises `Eq ρe (S₀.onTy ρ)` and
-        `Eq scruT₀ (S₀.onTy scrutTy)` — each is REFLEXIVE at the
-        top-level dodge call from COMPLETE-MATCH (`S₀ = U`, `ρe = U.onTy ρ`,
-        `scruT₀ = U.onTy scrutTy`), and inside each `cons`/`consWild` step they
-        are re-derived at the next residual from the body IH's `AgreesBelow`
-        plus the `greatest_K_factors` factoring (old complete's `key_full`/`hUni`
-        steps, now Eq-flavoured);
-      * states LC/below-ness on the ALGORITHMIC types (`scrutTy`, `ρ`) instead
-        of the declarative ones, and drops the scrutinee-term premise `s`
-        entirely: the branch premises are transportable between worlds only by
-        CONTEXT rewriting (`Subst.onCtx_congr`), keeping `scruT₀`/`ρe`
-        unchanged — a changed *declarative* scrutinee/result type is not
-        re-constructible from a `TypeOfMatchBranch` up to `Eq` (the `mk`
-        rule's `scrut_eq` is structural), so `s`/`scruT₀`-below-ness premises
-        would be un-provided by COMPLETE-MATCH. -/
+/-- Principality for a `match_` branch-list thread. Given declarative branch
+    typings at the ambient specialization, the residual agrees below the input
+    frontier and maps the algorithm's substituted result type to the
+    declarative result. The explicit scrutinee/result image premises preserve
+    the structural equalities required by `TypeOfMatchBranch`. -/
 def InferBranches.Principal {Φ : Nat} {ctx : Ctx} {scrutTy : Ty} {ρ : Ty}
     {brs : List (MatchPattern × Expr)} {Φ' : Nat} {S : Subst}
     (_h : InferBranches Φ ctx scrutTy ρ brs Φ' S) (hne : brs ≠ []) : Prop :=
@@ -1952,39 +1925,12 @@ def InferBranches.Principal {Φ : Nat} {ctx : Ctx} {scrutTy : Ty} {ρ : Ty}
       (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       ρe = R.onTy (S.onTy ρ)
 
-/-- Principality for a recursive-group thread — **ADOPTED STATEMENT** (2026-08-26,
-    design pass, supersedes the interim restatement of commit `874553b`): given
-    the declarative DM-cut group premises at the ambient context and per-member
-    binding terms — the mono members' RHSs at the `R₀`-transported
-    monotypes `(R₀.onTy τ)`, the annotated members'
-    RHSs opened at fresh `Ys` against their schemes `σ.openVars Ys` (a poly spec
-    is rigid under `R₀`) — an LC residual `R` fixing `K` exists, agreeing with
-    `S₀` below the pre-block frontier `Φ₀`.
-
-    Deviation notes (all documented at this site):
-    * **`Φ₀`/`hle` (pre-block frontier, 2026-08-26)**: the D2 port revealed that
-      `hAgree`/the conclusion CANNOT range over the group's own frontier `Φ`
-      (the `Infer.letRec` call runs the tier at `Φ + bindings.length` over the
-      init block `fvar (Φ+j)`): the caller's ambient `S₀` fixes `K` only, so its
-      action on the block is unconstrained, while `COMPLETE-LETREC` must
-      construct `R₀` sending the block onto the declarative opened witnesses
-      (`exists_recgroup_residual`) — the block link makes the mono premise
-      manufacturable, and `Φ₀`-restricted agreement is exactly what the
-      `letRec` node's `Infer.Principal` conclusion consumes. Inside the tier the
-      `Φ₀`-agreement is composed from the member IHs' full-frontier agreements
-      by restriction (`frontier_le`); `hle : Φ₀ ≤ Φ` carries the inclusion.
-    * **`hKsch` added**: the poly head's scheme-relative RHS typing needs the
-      scheme's body free vars fixed by the residual, so they must sit in `K`
-      (the poly premise quantifies over `σ.openVars Ys`, whose free vars are
-      `σ.body.freeVars ∪ Ys`). Vacuous over the all-mono `RecSpec.init` specs of
-      the top-level call from COMPLETE-LETREC.
-    * No declarative `dspecs`/`annsE`/`Xs`/linking-equation premises: the
-      per-member image typings are carried directly over `bindings.zip specs`
-      (the pre-check's recommendation; cf.
-      briefs/completeness-spine-pivot.md).
-    * The `R₀` residual is a PREMISE (the ambient specialization the declarative
-      premises sit at), not an output; the output residual `R` is the
-      composition-partner of `S` in `AgreesBelow Φ₀ S₀ (S ++ R)`. -/
+/-- Principality for a recursive-group inference thread. The input residual
+    `R₀` transports the declarative member typings into the group's ambient
+    context; the output residual factors the inferred substitution and agrees
+    with `S₀` below the pre-block frontier `Φ₀`. Current
+    `InferRecGroup` derivations contain only monomorphic specs, so the
+    scheme-relative premises are vacuous but retained in this general helper. -/
 def InferRecGroup.Principal {Φ₀ Φ : Nat} {ctx : Ctx} {bindings : List Expr}
     {specs : List RecSpec} {Φ' : Nat} {S : Subst}
     (_h : InferRecGroup Φ ctx bindings specs Φ' S) (hle : Φ₀ ≤ Φ) : Prop :=
@@ -2008,20 +1954,17 @@ def InferRecGroup.Principal {Φ₀ Φ : Nat} {ctx : Ctx} {bindings : List Expr}
     ∃ R : Subst, (∀ p ∈ R, p.2.IsLC) ∧ (∀ k ∈ K, R.onTy (.fvar k) = .fvar k) ∧
       Subst.AgreesBelow Φ₀ S₀ (S ++ R) ∧ Subst.AgreesBelow Φ R₀ (S ++ R)
 
-/-! ### Helper lemmas for the D2 spine (branch tier)
+/-! ### Helper lemmas for branch principality
 
-The branch tier's `cons` case needs a direct-HM version of the old
-`customTy_factor_dodge` (ffc544f): given the branch's own MGU `S₀` (from a
+The branch tier's `cons` case needs a constructor-type factoring lemma. Given
+the branch's own MGU `S₀` (from a
 *given* `InferBranches.cons` derivation), the ambient residual `R` factors
 through it via a fresh `R₀` that (i) reconciles `R` and `R₀ ∘ S₀` below `Φ`
 (the `Subst.AgreesBelow Φ R (S₀ ++ R₀)` working conjunct of
 `InferBranches.Principal`), and (ii) sends the S₀-applied fresh block
-onto the declarative `tyArgs` — exactly the clause
-`branchBindings`'s documentation mentions. The witness is the same
-three-zone dodge `fresh ↦ Ws ++ R ++ Ws ↦ tyArgs` as the old unifier-dodge,
-with the old structural "`R.onTy scrutTy` = customTy" link replaced by the
-Eq image premise `hscrutImg` (reflexive at the top-level call from
-COMPLETE-MATCH). -/
+onto the declarative `tyArgs`. The witness uses disjoint fresh zones for the
+ambient residual and constructor arguments; `hscrutImg` supplies the required
+image equality. -/
 
 /-- A `nil` branch-list derivation is fully determined: the output frontier is
     the input frontier and the output substitution is empty. (Extracted as a
@@ -2246,18 +2189,9 @@ theorem customTy_factor_dodge {Φ : Nat} {scrutTy : Ty} {R S₀ : Subst}
 
 /-! ### Recursion-group residual bridge
 
-The theorems below re-instantiate the old (ffc544f / caac62d) fused `letRec`
-completeness machinery directly for the current HM source relation.
-
-`exists_recgroup_residual` is the purely-structural block residual (verbatim
-port of the caac62d theorem of the same name; it no longer exists in the
-current InferW.lean). The old fused residual-setup bridge
-(caac62d 14150–14370) was DELETED with the superseded `InferRecGroup.Principal`
-restatement (2026-08-26): the ADOPTED statement needs no declarative
-`dspecs`/`Xs`/linking package — the `R₀`-transported member typings are
-premises, so the bridge's construction work moved into the SPINE-GROUP cases. -/
-
--- [letrec-agent]
+`exists_recgroup_residual` constructs the structural residual that maps the
+algorithm's fresh recursive block to the declarative monotype witnesses. The
+principality proof then consumes member typings already transported by `R₀`. -/
 
 /-! ### Recursive-ceiling solver factoring
 
@@ -2790,9 +2724,8 @@ private theorem Ty.mem_freeVarsList_of_mem {t : Ty} {tys : List Ty} {x : Nat}
     | head _ => exact .inl hx
     | tail _ ht' => exact .inr (ih ht')
 
-/-- A scheme generalising its body-type's closed-over form generalises any scheme
-    whose body is an opening of that closed form (erase world port of caac62d's
-    `genGroup_generalizes`; used by the COMPLETE-LETREC body lift). -/
+/-- A scheme generalizing its body's closed-over form generalizes any scheme
+    whose body is an opening of that closed form. -/
 private theorem genGroup_generalizes {Ginf : List Nat} {τ₁ : Ty} {R : Subst} {M : PolyTy}
     {Xs : List Nat}
     (hτ₁ : τ₁.IsLC) (hR : ∀ p ∈ R, p.2.IsLC) (hMwf : M.WF)
@@ -2803,7 +2736,7 @@ private theorem genGroup_generalizes {Ginf : List Nat} {τ₁ : Ty} {R : Subst} 
     (R.onPolyTy (PolyTy.genGroup Ginf τ₁)).Generalizes M :=
   closeOver_generalizes (g := Ty.genFilter Ginf τ₁) hτ₁ hR hMwf hXnodup hXlen hXMbody htyr hXM''
 
-/-- The `renameG`-flavoured group generalisation (verbatim port of caac62d): the
+/-- Group generalization under `renameG`: the
     inferred per-binding scheme `R.onPolyTy (genGroup Ginf τinf)` is at least as
     general as the declarative `genGroup G τdecl`, given the connection
     `R.onTy τinf = renameG G Xsfull τdecl` on a fresh shared opening `Xsfull` of
@@ -3411,7 +3344,7 @@ private theorem RecCeilingConstraints.step_absorbed
   exact hUdom.symm.trans
     ((UnifyRel.binding_satisfies hfull U hUuniFull p hpfull).trans hUrange)
 
-/-- **Erase-level body retype** (port of caac62d's `letRecFused_body_retype`): the
+/-- **Recursive body retyping:** the
     `R₁`-transported algorithmic body schemes (ceilingSchemes) generalise the
     declarative `bodyCtx` schemes, so the declarative body typing transports to
     the `R₁`-transported algorithmic body context. `hconn` is the per-position
@@ -3796,8 +3729,7 @@ private theorem letRecFused_body_retype
 
 /-- From the cofinite "types at every fresh opening of `σ`" premise, extract a
     typing at one *specific* opening `Ys` (any list of the right length): pick a
-    generic fresh `Xs`, type at `σ.openVars Xs`, then rename `Xs → Ys`. (Erase
-    world port of caac62d's `typeOfHM_at_block`.) -/
+    generic fresh `Xs`, type at `σ.openVars Xs`, then rename `Xs → Ys`. -/
 private theorem typeOfHM_at_block {ctx : Ctx} {rhs : Expr} {σ : PolyTy} {L Ys : List Nat}
     (hYlen : Ys.length = σ.paramCount)
     (hcofin : ∀ Xs : List Nat, FreshNames L σ.paramCount Xs →
@@ -3886,8 +3818,7 @@ private theorem Subst.onTy_zip_fvar_get :
     agreeing with `S₀` below the frontier `Φ`) that sends the group's fresh
     monotype-var block `[Φ, Φ+n)` to the chosen declarative opened monotypes
     `vs`. A proxy-block `[Φ,Φ+n) ↦ [W,W+n)` (fresh `W`) shields the block from
-    `S₀`, then a `[W,W+n) ↦ vs` block realises the targets. (Verbatim port of
-    the caac62d theorem; purely structural.) -/
+    `S₀`, then a `[W,W+n) ↦ vs` block realizes the targets. -/
 theorem exists_recgroup_residual {Φ n : Nat} {S₀ : Subst} {vs : List Ty} {K : List Nat}
     (hn : vs.length = n)
     (hS₀ : ∀ p ∈ S₀, p.2.IsLC) (hvs : ∀ t ∈ vs, t.IsLC)
@@ -3963,7 +3894,7 @@ theorem exists_recgroup_residual {Φ n : Nat} {S₀ : Subst} {vs : List Ty} {K :
       rw [← hmem]
       exact List.getElem_mem _
 
-/-- **D2 spine** (simultaneous, by size induction over the three mutually
+/-- Simultaneous principality proof by size induction over the three mutually
     recursive derivation relations). -/
 theorem Infer.principals_mut (n : Nat) :
     (∀ {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat} {S : Subst} {τ : Ty},
@@ -3989,7 +3920,7 @@ theorem Infer.principals_mut (n : Nat) :
       exact absurd hn (Nat.not_lt_zero _)
   | succ n ih =>
     refine ⟨?_, ?_, ?_⟩
-    · -- Infer tier (D2 spine; one handler per constructor)
+    · -- Expression inference, one case per constructor.
       intro Φ ctx e Φ' S τ h _hn hwf hbelow
       cases h with
       | primLitUnit =>
@@ -4948,7 +4879,6 @@ theorem Infer.principals_mut (n : Nat) :
             · simpa [List.append_assoc] using hAgree
       | @letIn Φ ctx rhs body Φ₁ Φ₂ S₁ S₂ τ₁ τ₂ hrhs hbody =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
-          -- [letin-agent]
           cases hty with
           | letIn hwfM hann hcofin heq hbodyD =>
             subst heq
@@ -5106,7 +5036,6 @@ theorem Infer.principals_mut (n : Nat) :
             refine ⟨R₂, hR₂, by simpa [Eq] using htyb₂, hR₂K, hAgree⟩
       | @letInAnn Φ N ctx σ rhs body Φ₁ Φ₂ S₁ Schk S₂ τ₁ τ₂ hσwf hN hrhs huni _hesc1 _hesc2 hbody =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
-          -- [letinann-agent]
           cases hty with
           | letIn hwfM hann hcofin heq hbodyD =>
             subst heq
@@ -5433,7 +5362,6 @@ theorem Infer.principals_mut (n : Nat) :
             · simpa [List.append_assoc] using hAgree
       | @match_ Φ ctx scrut branches Φ₁ Φ₂ S₁ S₂ τs hscrut hne hbr =>
         exact fun hwf hbelow S₀ τe K hS₀ hKΦ hKe hKfix hty => by
-          -- [match-agent]
           cases hty with
           | match_ hscrutD hneD hbrD =>
             rename_i scruT₀
@@ -6214,7 +6142,6 @@ theorem Infer.principals_mut (n : Nat) :
       | cons hlook hn h₀ hinfbody h₂ hrest =>
         rename_i c nbr body rest ctor Φ₁ S₀ S₁ S₂ S₃ τb
         exact fun hwf hbelow S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKe hKfix hIMGρ hIMGscru hbrs => by
-          -- [match-agent]
           -- brs = (.named c nbr, body) :: rest; constructor data: `c nbr body rest ctor Φ₁ S₀ S₁ S₂ S₃ τb`
           -- with hlook : get? ctx.ctors c = some ctor, h₀ : UnifyRel scrutTy (customTy ctor fresh) S₀,
           --   hinfbody : Infer (Φ + ctor.paramCount) bodyCtx body Φ₁ S₁ τb,
@@ -6469,7 +6396,6 @@ theorem Infer.principals_mut (n : Nat) :
       | consWild hinfbody h₂ hrest =>
         rename_i body rest Φ₁ S₁ S₂ S₃ τb
         exact fun hwf hbelow S₀amb scruT₀ ρe K hS₀amb hscruLC hscrutLC hρLC hbscrut hbρ hKΦ hKe hKfix hIMGρ hIMGscru hbrs => by
-          -- [match-agent]
           -- brs = (.wildcard, body) :: rest; constructor data:
           --   hinfbody : Infer Φ ctx body Φ₁ S₁ τb, h₂ : UnifyRel τb (S₁.onTy ρ) S₂,
           --   hrest : InferBranches Φ₁ (S₂.onCtx (S₁.onCtx ctx)) (S₂.onTy (S₁.onTy scrutTy)) (S₂.onTy (S₁.onTy ρ)) rest Φ₂ S₃
@@ -6782,8 +6708,8 @@ executable program is `e.erase` (annotations removed).
 `Infer.sourceSound` and `Infer.sound` supply
 the two corresponding soundness projections. -/
 
-/-- Principality of a given inference derivation, projected from the mutual D2
-    spine. Every declarative type factors through the inferred monotype. -/
+/-- Principality of a given inference derivation, projected from the mutual
+    proof. Every declarative type factors through the inferred monotype. -/
 theorem Infer.principal {Φ : Nat} {ctx : Ctx} {e : Expr} {Φ' : Nat}
     {S : Subst} {τ : Ty} (h : Infer Φ ctx e Φ' S τ) : Infer.Principal h := by
   intro hwf hbelow
@@ -8419,7 +8345,7 @@ theorem Infer.complete_letIn_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     · exact hS₁K p hp
     · exact hS₂K p hp
 
-/-- Producer completeness for an annotated let in D2's skolem-first order. -/
+/-- Producer completeness for an annotated let in skolem-first order. -/
 theorem Infer.complete_letIn_ann_aux {Φ : Nat} {ctx : Ctx} {S₀ : Subst}
     {rhs body : Expr} {σ : PolyTy} {L : List Nat} {τ₀ : Ty} {K : List Nat}
     (iha : ∀ Ys, Infer.CompleteAt (rhs.openTyVars Ys)) (ihb : Infer.CompleteAt body)
@@ -9526,11 +9452,11 @@ theorem Infer.complete_match {scrut : Expr} {branches : List (MatchPattern × Ex
     exact Infer.complete_match_aux ihscrut ihbranches hwf hbelow hS₀ hKΦ hKscrut hKbr hKfix
       hscrut_ty hne' hbrs_decl
 
-/-! ### Recursive-group producer completeness (D2 monomorphic tier) -/
+/-! ### Recursive-group producer completeness -/
 
 /-- Producer completeness for an all-monomorphic recursive-group thread.
 
-    This is deliberately the D2 tier only: every input spec is a `.mono`, so
+    Every input spec is a `.mono`, so
     no skolem/opened-RHS case is hidden here.  The declarative member premise
     is stated at the current ambient specialization; the returned residual is
     what transports that premise through each W/unification step.  This is the
@@ -12605,7 +12531,7 @@ theorem inferCore_complete_letRec {anns : List (Option PolyTy)}
             intro hc
             exact (hGspec g hgG).2.2
               (List.mem_append_right _ ((mem_recGroup_tyFreeVars).mp hc))
-          have hgroupRange := InferRecGroup.eOut_avoid hgroup (w := g)
+          have hgroupRange := InferRecGroup.range_avoid hgroup (w := g)
             (by omega) hctxAvoid hspecAvoid hbindingsAvoid
           exact hgroupRange p hp hgp
       obtain ⟨ceilingOut, heceiling, hfac⟩ :=

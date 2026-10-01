@@ -10,7 +10,7 @@ In particular, Lean `partial def` permits executable recursion without a
 termination proof. It is not a transparent logical definition on which the
 verified progress, preservation, completeness, or principality proofs depend.
 Moving code here makes that boundary explicit; it does not prove the parser,
-editor pipeline, solver subprocess protocol, or unbounded evaluator correct.
+editor pipeline, or unbounded evaluator correct.
 
 The total token vocabulary, character classes, spelling tables, and token/span
 lookup helpers live in `FHM/Surface/Token.lean`. They retain the `Surface.Lex`

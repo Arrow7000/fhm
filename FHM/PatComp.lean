@@ -1,15 +1,11 @@
-import FHM.CorePath
 import FHM.SurfaceLang
 import FHM.InferW
 
-/-! # Verified pattern-match compilation (definitions + executable pipeline)
+/-! # Verified pattern-match compilation
 
-This module is the "Option B" campaign (see
-`briefs/design-memo-verified-pattern-compilation.md` and
-`briefs/next-agent-brief-verified-pattern-compilation.md`): compile the surface
-language's **nested** patterns into Core's **flat, single-level** `match_`, with
-a machine-checked proof that the compiled code selects the same branch and
-binds the same values as the surface match — for every well-typed scrutinee.
+This module compiles the surface language's **nested** patterns into Core's
+**flat, single-level** `match_`. Its correctness proofs show that compiled code
+selects the same branch and binds the same values as the surface specification.
 
 This file contains the full **definition layer** and the executable pipeline:
 
@@ -31,9 +27,10 @@ This file contains the full **definition layer** and the executable pipeline:
   erased Core result. Leaves re-bind their captures with `letIn`s so the
   body sees capture `j` at de Bruijn index `j` ("leaf-lets" design).
 
-No theorems yet beyond what termination requires; the proof campaign (H1
-algorithm correctness, H2 adequacy against `SmallStep.Step`) is stated and
-scheduled in the design memo. Nothing here touches Core.
+`compile_correct_surface` proves decision-tree correctness against `firstMatch`.
+`lowerMatch_adequate_of_typed` connects emitted Core code to `SmallStep.Step`.
+The coverage bridge in `FHM.SurfaceBridge` establishes that exhaustive surface
+matches lower to Core terms satisfying `AllMatchesExhaustive`.
 
 Value convention: a "value" throughout is a Core `Expr` that `SmallStep.isValue`
 accepts; ctor data is decomposed with `SmallStep.getCtorArgs` (name + args in
@@ -74,7 +71,7 @@ def fetch : Expr → Occ → Option Expr
 
 /-! ## The surface-side spec: `matchPat` and `firstMatch`
 
-THE trusted artefact of the whole campaign. Everything else — the matrix
+These functions are the trusted surface specification. Everything else—the matrix
 algorithm, the decision tree, the emitted Core — is proven against these two
 little functions. They are deliberately direct structural recursions over
 `Surface.Pattern`, readable by inspection. -/
@@ -182,8 +179,8 @@ end
 mutual
 
 /-- `matchPat`'s twin over generic patterns (the form `matrixSem` builds on).
-    The factoring `matchPat v p = matchG v (norm p)` is a theorem of the
-    campaign, NOT a definition — the spec stays surface-level. -/
+    The factoring `matchPat v p = matchG v (norm p)` is a theorem rather than
+    a definition, so the specification stays surface-level. -/
 def matchG (v : Expr) : GPat → Option (List Expr)
   | .gbind => some [v]
   | .gwild => some []
@@ -313,8 +310,8 @@ theorem matchG_gctor_iff {v : Expr} {c : CtorName} {pats : List GPat}
 
 /-! ### Factoring: the surface spec runs through `norm`
 
-`matchPat` (the trusted spec) and `matchG ∘ norm` agree ON THE NOSE, so the
-matrix campaign only ever reasons about `matchG`. The mutual induction mirrors
+`matchPat` (the trusted spec) and `matchG ∘ norm` agree exactly, so the matrix
+proofs only need to reason about `matchG`. The mutual induction mirrors
 the `matchPat`/`matchPats`/`matchListPat` recursion structure exactly. -/
 
 private theorem normList_length : ∀ ps : List Surface.Pattern,
@@ -522,7 +519,7 @@ mutual
 /-- The tree interpreter: the Core-side denotation carrier. Returns the
     selected branch and captured values, like `firstMatch`/`matrixSem`. A
     non-ctor value at a switched occurrence falls to the default (mirroring
-    Core's leading-wildcard rule; under the typing hypotheses of the campaign
+    Core's leading-wildcard rule; under the typing hypotheses used below
     this case never arises, since switches only test ADT-typed occurrences). -/
 def evalDTree (root : Expr) : DTree → Option (Nat × List Expr)
   | .fail => none
@@ -828,8 +825,8 @@ decreasing_by
 
 /-! ### H1: compiler correctness
 
-`evalDTree ∘ compile` against `matrixSem` — the irreducible heart of the
-campaign. First a plumbing layer (occurrence/fetch algebra, width and
+`evalDTree ∘ compile` against `matrixSem` is the main compiler-correctness
+theorem. First comes a plumbing layer (occurrence/fetch algebra, width and
 captured-occurrence preservation, `evalSwitch` as a `find?`), then Maranget's
 S/D equations in capture-aware form, then the main functional induction and
 the hypothesis-free surface headline. -/
@@ -1414,8 +1411,8 @@ sees capture `j` at de Bruijn index `j` exactly — the innermost let is capture
 0. Body vars ≥ (number of captures) are outer-context references and are
 shifted past the match/let binders introduced by the tree. -/
 
-/-- The var currently holding the value at `occ`. (Garbage if `occ ∉ env`;
-    the emit invariant of the campaign proves every emitted occurrence is
+/-- The variable currently holding the value at `occ`. (Garbage if `occ ∉ env`;
+    the emitter invariant proves every emitted occurrence is
     bound.) -/
 def resolveOcc (env : List Occ) (occ : Occ) : Expr :=
   .var (env.idxOf occ)
@@ -1472,127 +1469,11 @@ def lowerMatch (scrut : Expr) (pats : List Surface.Pattern) (bodies : Nat → Ex
   .letIn none scrut (emit [[]] bodies (compile [[]] (initMatrix pats)))
 
 
-/-! ## Construction trace for tooling
+/-! ## Exhaustiveness: internal totality layer
 
-The verified compiler deliberately knows nothing about source spans or editor
-protocols.  It does, however, uniquely know where its administrative Core was
-emitted and where a source arm was copied.  This trace exposes exactly that
-information without asking a later pass to reverse-engineer the decision tree.
--/
-
-/-- Why a logical Core node was introduced by pattern compilation.  Source
-    ownership is attached by the surface provenance layer. -/
-inductive GeneratedNode where
-  | scrutineeLet
-  | decisionMatch (occ : Occ)
-  | decisionScrutinee (occ : Occ)
-  | captureLet (act capture : Nat) (occ : Occ)
-  | captureRhs (act capture : Nat) (occ : Occ)
-  | failureMatch
-  | failureSentinel
-  deriving Repr, DecidableEq, BEq
-
-/-- A source arm can occur at several leaf roots, and one source capture can
-    consequently be represented by several administrative `letIn`s. -/
-structure EmissionTrace where
-  generated : List (CorePath × GeneratedNode)
-  armBodyRoots : List (Nat × CorePath)
-  captureLets : List (Nat × Nat × CorePath)
-  deriving Repr, DecidableEq, BEq
-
-namespace EmissionTrace
-
-def empty : EmissionTrace := ⟨[], [], []⟩
-
-def append (a b : EmissionTrace) : EmissionTrace :=
-  { generated := a.generated ++ b.generated
-    armBodyRoots := a.armBodyRoots ++ b.armBodyRoots
-    captureLets := a.captureLets ++ b.captureLets }
-
-def belowPath (pre : CorePath) (trace : EmissionTrace) : EmissionTrace :=
-  { generated := trace.generated.map fun (path, node) => (pre ++ path, node)
-    armBodyRoots := trace.armBodyRoots.map fun (act, path) => (act, pre ++ path)
-    captureLets := trace.captureLets.map fun (act, capture, path) =>
-      (act, capture, pre ++ path) }
-
-end EmissionTrace
-
-/-- Trace the administrative wrappers introduced by `emitLets`.  The outermost
-    let re-binds the last capture, while capture zero is innermost. -/
-def traceEmitLets (act : Nat) (binds : List Occ) : EmissionTrace :=
-  let indexed := binds.reverse.mapIdx fun depth occ =>
-    let capture := binds.length - 1 - depth
-    let path : CorePath := List.replicate depth .letBody
-    (path, capture, occ)
-  { generated := indexed.flatMap fun (path, capture, occ) =>
-      [(path, .captureLet act capture occ),
-       (path ++ [.letRhs], .captureRhs act capture occ)]
-    armBodyRoots := [(act, List.replicate binds.length .letBody)]
-    captureLets := indexed.map fun (path, capture, _occ) => (act, capture, path) }
-
-mutual
-
-/-- Trace `emit` using paths relative to the emitted tree root. -/
-def traceEmit : DTree → EmissionTrace
-  | .fail =>
-      { generated := [([], .failureMatch), ([.matchScrut], .failureSentinel)]
-        armBodyRoots := []
-        captureLets := [] }
-  | .leaf act binds => traceEmitLets act binds
-  | .switch occ cases dflt =>
-      let named := traceEmitCases 0 cases
-      let default := match dflt with
-        | .fail => EmissionTrace.empty
-        | d => (traceEmit d).belowPath [.matchBranch cases.length]
-      { generated :=
-          [([], .decisionMatch occ), ([.matchScrut], .decisionScrutinee occ)] ++
-            named.generated ++ default.generated
-        armBodyRoots := named.armBodyRoots ++ default.armBodyRoots
-        captureLets := named.captureLets ++ default.captureLets }
-
-def traceEmitCases (index : Nat) : List (CtorName × Nat × DTree) → EmissionTrace
-  | [] => EmissionTrace.empty
-  | (_, _, tree) :: rest =>
-      ((traceEmit tree).belowPath [.matchBranch index]).append
-        (traceEmitCases (index + 1) rest)
-
-end
-
-/-- Core expression plus its compiler-owned construction trace. -/
-structure TracedLowering where
-  expr : Expr
-  trace : EmissionTrace
-
-/-- The ordinary verified lowering and its administrative construction trace.
-    The trace is relative to the whole outer scrutinee `letIn`. -/
-def lowerMatchTrace (scrut : Expr) (pats : List Surface.Pattern)
-    (bodies : Nat → Expr) : TracedLowering :=
-  let tree := compile [[]] (initMatrix pats)
-  let emittedTrace := (traceEmit tree).belowPath [.letBody]
-  { expr := .letIn none scrut (emit [[]] bodies tree)
-    trace := {
-      generated := [([], .scrutineeLet)] ++
-        emittedTrace.generated
-      armBodyRoots := emittedTrace.armBodyRoots
-      captureLets := emittedTrace.captureLets } }
-
-/-- Instrumentation is observationally transparent to the verified lowering. -/
-theorem lowerMatchTrace_expr (scrut : Expr) (pats : List Surface.Pattern)
-    (bodies : Nat → Expr) :
-    (lowerMatchTrace scrut pats bodies).expr = lowerMatch scrut pats bodies := rfl
-
-
-/-! ## Exhaustiveness — internal totality layer (plan step 7, partial)
-
-The behavioural theorem (H1+H2) is done. The remaining **(X)** exhaustiveness
-corollary splits into an INTERNAL part (here: pointwise totality
-equivalences, immediate from H1) and an INTEGRATION part (surface matrix
-covers all ctors of `T` ⇒ emitted term satisfies Core's
-`AllMatchesExhaustive` ⇒ feeds `progress`; needs the `CtorEnv` + scrutinee
-typing — deferred to bridge integration). A structural `DTree.NoFail`
-predicate and its forward-to-totality lemma belong with that integration
-slice (they connect to `AllMatchesExhaustive`'s recursive body-exhaustiveness
-check and need the ctor-chain `CtorSwitches` hypothesis anyway). -/
+This section derives pointwise totality equivalences from compiler correctness.
+`FHM.SurfaceBridge` supplies the constructor-environment and scrutinee-typing
+integration needed to establish Core's `AllMatchesExhaustive` predicate. -/
 
 /-- `compile`'s tree is total on a value iff the matrix semantics is: by H1
     the two are equal, so totality agrees. Pointwise in the scrutinee. -/
@@ -1604,10 +1485,8 @@ theorem compile_total_iff (root : Expr) (occs : List Occ) (M : Matrix) (vals : L
   rw [compile_correct root occs M vals hw hv hc]
 
 /-- Surface-level totality: the compiled tree selects a branch on `v` iff the
-    surface spec does. This is the pointwise exhaustiveness equivalence; the
-    "for all well-typed `v`" lift is integration (needs the scrutinee's ADT
-    type to prune non-ctor values, where a non-exhaustive match correctly
-    refutes). -/
+    surface specification does. The bridge lifts this equivalence to all
+    well-typed values of the scrutinee ADT. -/
 theorem compile_surface_total_iff (v : Expr) (ps : List Surface.Pattern) :
     (evalDTree v (compile [[]] (initMatrix ps))).isSome ↔ (firstMatch v ps).isSome := by
   rw [compile_correct_surface]
