@@ -1191,8 +1191,7 @@ theorem RecCeilingConstraints.fixes_pool {K rigid G Φ anns specs S}
   intro g hg
   change Ty.substFvars S (.fvar g) = .fvar g
   apply Ty.substFvars_eq_self_of_no_key
-  intro p hp
-  intro heq
+  intro p hp heq
   have hpEq : p.1 = g := by simpa [Ty.freeVars] using heq
   exact (h.dom_avoids p hp).2.2 (hpEq ▸ hg)
 
@@ -1238,8 +1237,7 @@ theorem RecCeilingConstraints.fixes_annotations {K rigid G Φ anns specs S}
     ∀ σ, some σ ∈ anns → S.onPolyTy σ = σ := by
   intro σ hσ
   apply Subst.onPolyTy_eq_self_of_dom_avoids
-  intro p hp
-  intro hfv
+  intro p hp hfv
   exact (h.dom_avoids p hp).2.1 (h.annotation_fv_rigid σ hσ p.1 hfv)
 
 /-! Algorithm W as a type-directed inference relation over the source `Expr`.
@@ -5506,7 +5504,7 @@ theorem Infer.dom_avoid {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
     · exact hbdom hc
 termination_by e.size
 decreasing_by
-  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars, Expr.sizeRecGroup]; omega)
+  all_goals (try subst_vars; try simp only [Expr.size, Expr.size_openTyVars]; omega)
 theorem InferBranches.dom_avoid {Φ ctx scrutTy ρ brs Φ' S}
     (h : InferBranches Φ ctx scrutTy ρ brs Φ' S) :
     ∀ {w : Nat}, w < Φ → (∀ M ∈ ctx.env, w ∉ M.body.freeVars) → w ∉ scrutTy.freeVars →
@@ -6262,7 +6260,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
       hWavoid w hw (by simp [List.mem_append, hc])
     have hGW : ∀ g ∈ G, g ∉ W := fun g hg hc => hWG g hc hg
     have hZW : Z ∉ W := fun hc =>
-      hWavoid Z hc (by simp [List.mem_append, List.mem_singleton])
+      hWavoid Z hc (by simp [List.mem_append])
     have hUW : ∀ u ∈ U.freeVars, u ∉ W := fun u hu hc =>
       hWavoid u hc (by simp [List.mem_append, hu])
     have hWfree : ∀ τ, RecSpec.mono τ ∈ specs → ∀ w ∈ W, w ∉ τ.freeVars :=
@@ -6344,7 +6342,7 @@ theorem TypeOfHM.typ_subst_preservation_uniform {Z : Nat} {U : Ty} (h_U_lc : U.I
           = Env.substFvar Z U ((τs.map RecSpec.mono).map (RecSpec.rhsEntry G Xs)) := by
         dsimp [τs']
         simp only [List.map_map, Function.comp_def, RecSpec.rhsEntry, PolyTy.mkTrivial,
-          Ty.renameG_nil_pool, Env.substFvar]
+          Env.substFvar]
         apply List.map_congr_left
         intro t ht
         rw [key t ht]
@@ -7836,9 +7834,9 @@ private theorem mem_zip_mono_link
 theorem TypeOfHM.rec_rewrap_typed
     {ctors : CtorEnv} {env : Env} {anns : List (Option PolyTy)} {bindings : List Expr}
     {specs : List RecSpec} {τs : List Ty} {G L : List Nat}
-    (hwf : RecSpecs.WF anns bindings specs G)
+    (_hwf : RecSpecs.WF anns bindings specs G)
     (hlen : bindings.length = τs.length)
-    (hlink : ∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ)
+    (_hlink : ∀ p ∈ specs.zip τs, ∀ τ, p.1 = .mono τ → p.2 = τ)
     (hlc : ∀ t ∈ τs, t.IsLC)
     (hmono : RecSpecs.MonoTypedInit TypeOfHM ⟨env, ctors⟩ bindings τs G L)
     {Xs : List Nat} (hXs : FreshNames L G.length Xs)
@@ -7863,8 +7861,7 @@ theorem TypeOfHM.rec_rewrap_typed
      List.nodup_nil, ?_, ?_⟩
     (by rw [List.length_map]; exact hlen) ?hlink ?hlc ?mono ?ceiling
     (by
-      simp only [RecSpecs.bodyCtx, RecSpecs.rhsCtx, RecSpec.bodyScheme, PolyTy.genGroup_nil,
-        RecSpec.rhsEntry, List.map_map, Function.comp_apply]
+      simp only [RecSpecs.bodyCtx, RecSpecs.rhsCtx, List.map_map]
       congr 1
       congr 1
       apply List.map_congr_left
@@ -7923,8 +7920,7 @@ theorem TypeOfHM.rec_rewrap_typed
     have hctx : (RecSpecs.rhsCtx ⟨env, ctors⟩
           ((τs.map (Ty.renameG G Xs)).map RecSpec.mono) [] Zs)
         = RecSpecs.rhsCtx ⟨env, ctors⟩ (τs.map RecSpec.mono) G Xs := by
-      simp only [RecSpecs.rhsCtx, List.map_map, RecSpec.rhsEntry, PolyTy.mkTrivial,
-        Function.comp_apply]
+      simp only [RecSpecs.rhsCtx, List.map_map]
       rfl
     rw [hctx]
     exact hmono Xs hXs (a, t₀) hab
@@ -8537,7 +8533,7 @@ theorem SmallStep.Step.preserves_erased {e e' : Expr}
         simp [Expr.shiftFrom, Expr.erase]
     | var i =>
         intro threshold n h_erased
-        simp only [Expr.erase, Expr.shiftFrom]
+        simp only [Expr.shiftFrom]
         split <;> simp [Expr.erase_var]
     | lambda ann body ih =>
         intro threshold n h_erased
@@ -8637,7 +8633,7 @@ theorem SmallStep.Step.preserves_erased {e e' : Expr}
         simp [Expr.substN, Expr.erase]
     | var i =>
         intro k vs h_erased hvs
-        simp only [Expr.substN, Expr.erase]
+        simp only [Expr.substN]
         split
         · simp [Expr.erase_var]
         · split
@@ -9190,7 +9186,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       refine TypeOfHM.lambda
         ((Subst.onTy_lc (Infer.lc hbody hbodyWF).2 hcl))
         (fun T hT => by
-          simp only [Option.map_some, Option.some.injEq] at hT
+          simp only [Option.some.injEq] at hT
           -- hT : erase paramTy = T; goal: erase (S.onTy paramTy) = T
           rwa [hSparam]) rfl ?_
       simpa only [Subst.onCtx, Subst.onEnv, List.map_cons]
@@ -10030,7 +10026,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
           simp only [Subst.onCtx, Subst.onEnv, List.map_append]
         rw [hS₂onCtx]
         rw [← Subst.onCtx_append]
-        simp only [id, Subst.onEnv, List.map_append, id, List.map_map,
+        simp only [Subst.onEnv, List.map_append, List.map_map,
           specsE]
         congr 1
         · congr 1
@@ -10044,14 +10040,13 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
               rw [hsj₀]
               exact ⟨_, rfl⟩
             obtain ⟨τc, rfl⟩ := hs₀mono
-            simp [RecSpec.rhsEntry, RecSpec.onSubst, id, Subst.onPolyTy,
-              Ty.renameG, Ty.substFvars, id_eq, PolyTy.mkTrivial,
-              id]
-          · simp only [id, Subst.onCtx, Subst.onEnv, id, List.map_map,
+            simp [RecSpec.rhsEntry, RecSpec.onSubst, Subst.onPolyTy,
+              Ty.renameG, Ty.substFvars, PolyTy.mkTrivial]
+          · simp only [Subst.onCtx, Subst.onEnv, List.map_map,
               ctx']
             apply List.map_congr_left
             intro M hM
-            simp [Subst.onPolyTy, Subst.onTy_append, id]
+            simp [Subst.onPolyTy, Subst.onTy_append]
       have hlen_e' : j < specsE.length := by
         dsimp [τsE] at hlen_t'
         rwa [List.length_map] at hlen_t'
@@ -10082,11 +10077,11 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
       intro Z U τ u hZ hτ
       induction τ using Ty.rec_strong with
       | fvar m =>
-        simp only [Ty.substFvar, Ty.freeVars, List.mem_singleton] at hτ ⊢
+        simp only [Ty.freeVars, List.mem_singleton] at hτ ⊢
         subst hτ
-        simp [hZ, Ty.freeVars]
-      | prim p => simp [Ty.substFvar, Ty.freeVars] at hτ
-      | bvar i => simp [Ty.substFvar, Ty.freeVars] at hτ
+        simp [Ty.substFvar, hZ, Ty.freeVars]
+        | prim p => simp [Ty.freeVars] at hτ
+        | bvar i => simp [Ty.freeVars] at hτ
       | arrow a b iha ihb =>
         simp only [Ty.substFvar, Ty.freeVars, List.mem_dedup, List.mem_append] at hτ ⊢
         rcases hτ with hτ | hτ
@@ -10137,9 +10132,9 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         | none =>
           simp only [Ty.freeVars, List.mem_singleton] at hτ
           subst hτ
-          simpa [Ty.closeOver, h_idx, Ty.freeVars]
-      | prim p => simp [Ty.closeOver, Ty.freeVars] at hτ
-      | bvar i => simp [Ty.closeOver, Ty.freeVars] at hτ
+          simp [Ty.freeVars]
+      | prim p => simp [Ty.freeVars] at hτ
+      | bvar i => simp [Ty.freeVars] at hτ
       | arrow a b iha ihb =>
         simp only [Ty.closeOver, Ty.freeVars, List.mem_dedup, List.mem_append] at hτ ⊢
         rcases hτ with hτ | hτ
@@ -10327,14 +10322,13 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         simp only [Subst.onCtx, Subst.onEnv, List.map_append]
       rw [hS₂onCtx]
       rw [← Subst.onCtx_append, ← Subst.onCtx_append]
-      simp only [id, Subst.onEnv, List.map_append, id, List.map_map]
+      simp only [Subst.onEnv, List.map_append]
       congr 1
       congr 1
-      all_goals try rfl
-      · simp only [Subst.onCtx, Subst.onEnv, id, List.map_map]
+      · simp only [Subst.onCtx, Subst.onEnv, List.map_map]
         apply List.map_congr_left
         intro M hM
-        simp [Subst.onPolyTy, Subst.onTy_append, id]
+        simp [Subst.onPolyTy, Subst.onTy_append]
     have hbody_pack : TypeOfHM
         ⟨(S₂.onEnv (RecSpecs.ceilingSchemes G anns specsC))
           ++ (((S₁ ++ Sc ++ S₂).onCtx ctx)).env,
@@ -10386,7 +10380,7 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
             | none => RecSpec.bodyScheme G p.2))) := by
       rw [show RecSpecs.ceilingSchemes G anns specsC
           = (anns.zip specsC).map (fun p => match p.1 with | some σ => σ | none => RecSpec.bodyScheme G p.2) from rfl]
-      simp only [Subst.onEnv, id, List.map_map]
+      simp only [Subst.onEnv, List.map_map]
       rfl
     have hbody_specs : specsR.map (RecSpec.bodyScheme G)
         = (S₂.onEnv (RecSpecs.ceilingSchemes G anns specsC)) := by
@@ -10411,9 +10405,8 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         | none =>
           obtain ⟨τc, hτc⟩ := hspecsC_mono s (List.of_mem_zip hp).2
           rw [hτc]
-          simp [RecSpec.bodyScheme, id, RecSpec.onSubst,
-            Subst.onPolyTy_genGroup (G := G) (S := S₂) hS₂_domG hS₂_ranG,
-            id_eq]
+          simp [RecSpec.bodyScheme, RecSpec.onSubst,
+            Subst.onPolyTy_genGroup (G := G) (S := S₂) hS₂_domG hS₂_ranG]
     have hbody_lift : TypeOfHM (RecSpecs.bodyCtx ctx' specsR G)
         body τ := by
       simpa [RecSpecs.bodyCtx, ctx', hbody_specs] using hbody_pack
@@ -10523,7 +10516,6 @@ theorem Infer.sourceSound {Φ ctx e Φ' S τ} (h : Infer Φ ctx e Φ' S τ) :
         rw [ha] at hspecRj
         have he : specsE[j]'hjE = RecSpec.mono t := hspecRj.symm.trans hfst
         rw [← hpeq']
-        simp only [Prod.snd]
         rw [hτj, he]
       | some σ =>
         rw [ha] at hspecRj
@@ -10712,15 +10704,8 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
               ++ ((S₀ ++ S₁ ++ S₂ ++ S₃).onCtx ctx).env }
           body
           (((S₀ ++ S₁ ++ S₂ ++ S₃).onTy ρ)) := by
-        have key := h2
-        rw [hbb123] at key
-        simp only [id, id_eq, id_eq]
-          at key
-        have henv := congrArg Ctx.env hctx_pack
-        have hctors := congrArg Ctx.ctors hctx_pack
-        simp only [id] at henv hctors
-        rw [henv, hctors, hτ_pack] at key
-        exact key
+        rw [hbb123] at h2
+        simpa only [hctx_pack, hτ_pack] using h2
       have hlook' :
           LookupList.get? ((S₀ ++ S₁ ++ S₂ ++ S₃).onCtx ctx).ctors c =
             some ctor := by
@@ -10747,7 +10732,7 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
         (instContents := instContents)
         ⟨hlook', hscrut',
           by simp [taFull, ta0, List.length_map, freshVars_length],
-          by simp [List.length_map, hn],
+          by simp [hn],
           hfields'⟩
         rfl hbody_final
     · -- rest source branches
@@ -10807,7 +10792,6 @@ theorem InferBranches.sourceSound {Φ ctx scrutTy ρ brs Φ' S}
           hSe p (List.mem_append_left _ (List.mem_append_left _ hp))
             (by simp only [Expr.tyFreeVars.BranchList.tyFreeVars, List.mem_append]; exact Or.inl hc)))
         hbodyfixS2 h0
-      simp only [id] at h1
       have huni_eq := huni.unifies
       have h1ρ : TypeOfHM ((S₁ ++ S₂).onCtx ctx) body
           ((S₂.onTy (S₁.onTy ρ))) := by
@@ -11553,7 +11537,7 @@ def solveRecCeilingConstraints (K rigid G : List Nat) (Φ : Nat)
           let hτlc : τ.IsLC := hspecsLC (.mono τ) List.mem_cons_self
           let hopenlc : (σ.openVars Ys).IsLC :=
             PolyTy.openVars_isLC (hannsWF σ List.mem_cons_self)
-              (by simpa [Ys] using (freshVars_length Φ σ.paramCount).le)
+              (by simp [Ys])
           let hstepLC : ∀ p ∈ step, p.2.IsLC := by
             intro p hp
             have hpfull : p ∈ full := (Subst.mem_dropDomains.mp hp).1
