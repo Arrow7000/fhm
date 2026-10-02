@@ -858,7 +858,13 @@ partial def infixExpr : PE :=
         let (e, s) := applyBinOpSpanned opTok op left sL right sR
         return (e, bsL ++ bsR, s)
 
-/-- One `let` binding: `name [{tyParams}] [params] [: polyTy] = expr`.
+/-- One `let` binding: `name [: polyTy] = expr`.
+
+The grammar still recognizes type/value head binders far enough to give a
+specific diagnostic, but deliberately rejects them. Partial head annotations
+need real type holes before this sugar can be supported coherently; write an
+explicit lambda in the RHS meanwhile.
+
     Returns binder column. `indentCol` is the column of the introducing `let`
     (or of the first binder, for sibling bindings): a newline RHS must start
     strictly right of it. -/
@@ -874,6 +880,9 @@ partial def letBinding (indentCol : Nat) :
     let (tyParams, bsTyParams) ← tyParamBinders
     skipComments
     let (params, bsParams) ← valueParams
+    if !tyParams.isEmpty || !params.isEmpty then
+      throwUnexpectedWithMessage (some tok)
+        "let head binders are not supported; write an explicit lambda in the RHS"
     skipComments
     -- Once `:` is seen, commit to `polyTy`.
     let annRaw ←
@@ -1062,7 +1071,7 @@ end
 
 * `ctorField` — `(name : ty)` (name discarded) or bare `tyApp`
 * `typeDecl` — `type T a = C ty | D (n : ty) ty`
-* `topLet` — `let name [{tyParams}] [params] [: scheme] = expr` (no `in`)
+* `topLet` — `let name [: scheme] = expr` (no `in`); head binders are rejected
 * `program` — interleaved type/let decls, optional body (default `()`)
 -/
 
@@ -1464,26 +1473,12 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
   | .ok (.letIn (.mk "x") [] [] (some ⟨[], .prim .int⟩) (.primLit (.int 1)) (.var (.mk "x"))) => true
   | _ => false)
 
--- let with typed / bare value params, return-type sugar, and tyParams
-#guard (parseExpr "let f (x : Int) = x in f").isOk
-#guard (match parseExpr "let f (x : Int) = x in f" with
-  | .ok (.letIn (.mk "f") [] [(.mk "x", some (.prim .int))] none (.var (.mk "x")) (.var (.mk "f"))) => true
-  | _ => false)
-#guard (parseExpr "let f a b = a in f").isOk
-#guard (match parseExpr "let f a b = a in f" with
-  | .ok (.letIn (.mk "f") [] [(.mk "a", none), (.mk "b", none)] none (.var (.mk "a")) (.var (.mk "f"))) => true
-  | _ => false)
-#guard (parseExpr "let f (x : Int) : Int = x in f").isOk
-#guard (match parseExpr "let f (x : Int) : Int = x in f" with
-  | .ok (.letIn (.mk "f") [] [(.mk "x", some (.prim .int))]
-      (some ⟨[], .prim .int⟩) (.var (.mk "x")) (.var (.mk "f"))) => true
-  | _ => false)
-#guard (parseExpr "let f {a} (x : a) : a = x in f").isOk
-#guard (match parseExpr "let f {a} (x : a) : a = x in f" with
-  | .ok (.letIn (.mk "f") [.mk "a"] [(.mk "x", some (.tvar (.mk "a")))]
-      (some ⟨[], .tvar (.mk "a")⟩)
-      (.var (.mk "x")) (.var (.mk "f"))) => true
-  | _ => false)
+-- Let head-binder sugar remains deliberately unsupported until annotations
+-- have real type holes; explicit RHS lambdas are the supported spelling.
+#guard !(parseExpr "let f (x : Int) = x in f").isOk
+#guard !(parseExpr "let f a b = a in f").isOk
+#guard !(parseExpr "let f (x : Int) : Int = x in f").isOk
+#guard !(parseExpr "let f {a} (x : a) : a = x in f").isOk
 
 -- typed lambda binder `(n : ty)`
 #guard (parseExpr "\\(n : Int) -> n").isOk
@@ -1580,15 +1575,7 @@ def parseTyEq (src : String) (expected : Ty) : Bool :=
     | _, _ => false
   | _ => false)
 
-#guard (match parseProgram "let f {a} (x : a) : a = x\nf" with
-  | .ok p =>
-    match p.groups, p.body with
-    | [[{ name := .mk "f", tyParams := [.mk "a"],
-          params := [(.mk "x", some (.tvar (.mk "a")))],
-          ann := some ⟨[], .tvar (.mk "a")⟩,
-          rhs := .var (.mk "x") }]], .var (.mk "f") => true
-    | _, _ => false
-  | _ => false)
+#guard !(parseProgram "let f {a} (x : a) : a = x\nf").isOk
 
 #guard !(parseProgram "let id : {n : Nat, a} a -> a = \\x -> x\nid").isOk
 

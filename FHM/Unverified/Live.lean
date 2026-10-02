@@ -138,7 +138,8 @@ structure LiveArgs where
   path : Option String := none
 
 /-- Read actual group-exit schemes by logical binder identity. Empty surface
-groups emit no Core node; every nonempty top-level group emits one `letRec`.
+groups emit no Core node; every nonempty top-level group emits one `let` or
+`letRec` wrapper according to whether its SCC is recursive.
 Inferred RHS monotypes are not used to reconstruct generalisation. -/
 private def topBindingTypes (groups : List (List Surface.Binding))
     (core : Expr) (schemes : BinderSchemeMap) : Option (List (ValName × PolyTy)) :=
@@ -147,8 +148,28 @@ private def topBindingTypes (groups : List (List Surface.Binding))
     match groups with
     | [] => pure []
     | group :: rest =>
-        if group.isEmpty then go rest path
-        else
+        match group with
+        | [] => go rest path
+        | [binding] =>
+          if binding.refersTo binding.name then
+            let declared := match core.atCorePath path with
+              | some (.letRec anns _ _) => anns[0]?.getD none
+              | _ => none
+            let inferred := (schemes.find? fun (site, _) =>
+              site == .letRec path 0).map (·.2)
+            let scheme ← declared.orElse (fun _ => inferred)
+            let later ← go rest (path ++ [.letRecBody])
+            pure ((binding.name, scheme) :: later)
+          else
+            let declared := match core.atCorePath path with
+              | some (.letIn ann _ _) => ann
+              | _ => none
+            let inferred := (schemes.find? fun (site, _) =>
+              site == .letIn path).map (·.2)
+            let scheme ← declared.orElse (fun _ => inferred)
+            let later ← go rest (path ++ [.letBody])
+            pure ((binding.name, scheme) :: later)
+        | _ =>
           let here ← group.zipIdx.mapM fun (binding, member) => do
             -- Declared members are validated by inference but intentionally
             -- absent from the inferred-scheme map. Read their actual lowered

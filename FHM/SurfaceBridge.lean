@@ -867,77 +867,31 @@ The recursive lowering. It threads three scopes: `ke` (kinds, for annotations),
 sugar expands `pair`/`cons`/`list`/`bool`/`ife`/pattern-λ; and `match` is
 compiled by the verified `PatComp.lowerMatch`. Deterministic everywhere.
 
-v1 scoping choices (documented, refine later): a `PolyTy` annotation binds
-exactly its own `foralls` (`lowerPoly`); a λ-param monotype annotation is lowered
-under the ambient `tvs` (empty at top level); complex pattern-λs (a λ whose
-parameter is a non-trivial pattern) are deferred (`none`). -/
-
-mutual
-/-- The names a pattern binds, in **pre-order** (left-to-right, depth-first) —
-    exactly the capture order of `matchPat`/`firstMatch`, so binding `j` lands at
-    de Bruijn `j` in the compiled body. -/
-def patVars : Surface.Pattern → List ValName
-  | .name n     => [n]
-  | .wildcard   => []
-  | .ctor _ ps  => patVarsList ps
-  | .pair a b   => patVars a ++ patVars b
-  | .cons h t   => patVars h ++ patVars t
-  | .list items => patVarsList items
-def patVarsList : List Surface.Pattern → List ValName
-  | []      => []
-  | p :: ps => patVars p ++ patVarsList ps
-end
+A `PolyTy` annotation binds its own `foralls` in front of the ambient `tvs`;
+this is the locally-nameless representation of lexically scoped type variables
+in nested annotations. A λ-param monotype annotation is lowered directly under
+the ambient `tvs` (empty at top level). Complex pattern-λs (a λ whose parameter
+is a non-trivial pattern) are deferred (`none`). -/
 
 /-! ### Free value names and binding dependencies
 
-Executable free-name collection under a bound-name scope. It reuses `patVars`
-for pattern binders and feeds the dependency graph used by `sccGroups`. -/
+The syntax-level traversals live in `SurfaceLang`, since `Program.term` also
+uses them to distinguish acyclic from self-recursive singleton SCCs. These
+aliases preserve the bridge-facing API used by the dependency proofs. -/
 
-mutual
-/-- Value names occurring free in `e` relative to `bound` (shadowing). -/
-def freeNames (bound : List ValName) : Surface.Expr → List ValName
-  | .primLit _ => []
-  | .primBinOp _ => []
-  | .ctor _ => []
-  | .var n => if n ∈ bound then [] else [n]
-  | .pair a b => freeNames bound a ++ freeNames bound b
-  | .cons h t => freeNames bound h ++ freeNames bound t
-  | .list xs => freeNamesList bound xs
-  | .app f x => freeNames bound f ++ freeNames bound x
-  | .lambda p _ann body => freeNames (patVars p ++ bound) body
-  | .letIn n _tyParams params _ann rhs body =>
-      freeNames (params.map (·.1) ++ bound) rhs ++ freeNames (n :: bound) body
-  | .letRecIn binds body =>
-      let bound' := binds.map (·.name) ++ bound
-      freeNamesBinds bound' binds ++ freeNames bound' body
-  | .ife c t f =>
-      freeNames bound c ++ freeNames bound t ++ freeNames bound f
-  | .match_ s brs => freeNames bound s ++ freeNamesBranches bound brs
-
-def freeNamesList (bound : List ValName) : List Surface.Expr → List ValName
-  | [] => []
-  | e :: es => freeNames bound e ++ freeNamesList bound es
-
-def freeNamesBinds (bound : List ValName) :
-    List Surface.Binding → List ValName
-  | [] => []
-  | b :: rest =>
-      freeNames (b.params.map (·.1) ++ bound) b.rhs ++ freeNamesBinds bound rest
-
-def freeNamesBranches (bound : List ValName) :
-    List (Surface.Pattern × Surface.Expr) → List ValName
-  | [] => []
-  | (p, e) :: rest =>
-      freeNames (patVars p ++ bound) e ++ freeNamesBranches bound rest
-end
+abbrev patVars := Surface.patVars
+abbrev patVarsList := Surface.patVarsList
+abbrev freeNames := Surface.freeNames
+abbrev freeNamesList := Surface.freeNamesList
+abbrev freeNamesBinds := Surface.freeNamesBinds
+abbrev freeNamesBranches := Surface.freeNamesBranches
 
 /-- Deduped free names (stable order of first occurrence). -/
 def freeNamesD (bound : List ValName) (e : Surface.Expr) : List ValName :=
   (freeNames bound e).eraseDups
 
 /-- Does binding `b`'s RHS freely mention value name `n`? (top-level / empty scope) -/
-def Binding.refersTo (b : Surface.Binding) (n : ValName) : Bool :=
-  n ∈ freeNames (b.params.map (·.1)) b.rhs
+abbrev Binding.refersTo := Surface.Binding.refersTo
 
 /-- Dependency edges among a flat binding list: `(src, dst)` means `src`'s RHS
     mentions `dst` (including self-loops for recursive singles). -/
@@ -1222,13 +1176,14 @@ theorem bindSucc_mem {binds : List Surface.Binding} {i j : Nat} :
         by_cases href : b'.name ∈ freeNames (b.params.map (·.1)) b.rhs
         · simp only [href, if_true] at hj
           obtain rfl := Option.some.inj hj
-          exact ⟨b, b', rfl, hbj, by simpa [Binding.refersTo] using href⟩
+          exact ⟨b, b', rfl, hbj,
+            by simpa [Binding.refersTo, Surface.Binding.refersTo, decide_eq_true_eq] using href⟩
         · simp [href] at hj
     · intro ⟨b, b', hb, hj, hrt⟩
       obtain ⟨rfl⟩ := hb
       refine ⟨j, (List.getElem?_eq_some_iff.mp hj).1, ?_⟩
       have href : b'.name ∈ freeNames (b.params.map (·.1)) b.rhs := by
-        simpa [Binding.refersTo] using hrt
+        simpa [Binding.refersTo, Surface.Binding.refersTo, decide_eq_true_eq] using hrt
       simp [hj, href]
 
 theorem DepEdge_of_bindSucc {binds : List Surface.Binding} {i j : Nat}
@@ -3437,15 +3392,35 @@ def lowerAnn (ke : KindEnv) (tvs : List ValName) : Option Surface.Ty → Option 
   | none   => some none
   | some τ => (lowerTy ke tvs τ).map some
 
-/-- Lower a surface scheme to a Core scheme: `foralls` become the `paramCount`
-    binders (after `eraseDups`), and the body is kind-checked in that scope. -/
+/-- Lower a surface scheme inside an ambient named type-variable scope. The
+    scheme's own `foralls` are innermost, so they precede `tvs`; only those own
+    binders contribute to `paramCount`. Ambient names therefore lower to bvars
+    beyond the scheme's own binder block and are opened by the enclosing term. -/
+def lowerPolyIn (ke : KindEnv) (tvs : List ValName) (σ : Surface.PolyTy) : Option PolyTy :=
+  let fs := σ.foralls.eraseDups
+  (lowerTy ke (fs ++ tvs) σ.body).map (fun b => ⟨fs.length, b⟩)
+
+/-- Closed-scope specialization used by declarations and compatibility lemmas. -/
 def lowerPoly (ke : KindEnv) (σ : Surface.PolyTy) : Option PolyTy :=
   let fs := σ.foralls.eraseDups
   (lowerTy ke fs σ.body).map (fun b => ⟨fs.length, b⟩)
 
+def lowerPolyAnnIn (ke : KindEnv) (tvs : List ValName) :
+    Option Surface.PolyTy → Option (Option PolyTy)
+  | none   => some none
+  | some σ => (lowerPolyIn ke tvs σ).map some
+
 def lowerPolyAnn (ke : KindEnv) : Option Surface.PolyTy → Option (Option PolyTy)
   | none   => some none
   | some σ => (lowerPoly ke σ).map some
+
+def lowerAnnListIn (ke : KindEnv) (tvs : List ValName) :
+    List (Option Surface.PolyTy) → Option (List (Option PolyTy))
+  | []      => some []
+  | a :: as =>
+    match lowerPolyAnnIn ke tvs a, lowerAnnListIn ke tvs as with
+    | some a', some as' => some (a' :: as')
+    | _, _              => none
 
 def lowerAnnList (ke : KindEnv) : List (Option Surface.PolyTy) → Option (List (Option PolyTy))
   | []      => some []
@@ -3453,6 +3428,21 @@ def lowerAnnList (ke : KindEnv) : List (Option Surface.PolyTy) → Option (List 
     match lowerPolyAnn ke a, lowerAnnList ke as with
     | some a', some as' => some (a' :: as')
     | _, _              => none
+
+@[simp] theorem lowerPolyIn_nil (ke : KindEnv) (σ : Surface.PolyTy) :
+    lowerPolyIn ke [] σ = lowerPoly ke σ := by
+  simp [lowerPolyIn, lowerPoly]
+
+@[simp] theorem lowerPolyAnnIn_nil (ke : KindEnv) (ann : Option Surface.PolyTy) :
+    lowerPolyAnnIn ke [] ann = lowerPolyAnn ke ann := by
+  cases ann <;> simp [lowerPolyAnnIn, lowerPolyAnn]
+
+@[simp] theorem lowerAnnListIn_nil (ke : KindEnv) (anns : List (Option Surface.PolyTy)) :
+    lowerAnnListIn ke [] anns = lowerAnnList ke anns := by
+  induction anns with
+  | nil => rfl
+  | cons ann anns ih =>
+    simp only [lowerAnnListIn, lowerAnnList, lowerPolyAnnIn_nil, ih]
 
 /-! ## Let-binding scheme sugar (parse / lower)
 
@@ -4063,6 +4053,40 @@ private theorem lowerPolyAnn_some_paramCount {ke : KindEnv} {tyParams : List Val
       rw [← hσeq, lowerPoly_paramCount hσ]
       simp [letAnnTyPrefix, finalizeAnn_foralls_merge hF]
 
+private theorem lowerPolyAnnIn_finalizeAnn_none {ke : KindEnv} {tvs : List ValName}
+    {tyParams : List ValName} {params : List (ValName × Option Surface.Ty)}
+    {ann : Option Surface.PolyTy}
+    (h : lowerPolyAnnIn ke tvs (finalizeAnn tyParams params ann) = some none) :
+    finalizeAnn tyParams params ann = none := by
+  cases hF : finalizeAnn tyParams params ann with
+  | none => rfl
+  | some σ =>
+    simp only [lowerPolyAnnIn, hF] at h
+    cases hσ : lowerPolyIn ke tvs σ with
+    | none => simp [hσ] at h
+    | some σ' => simp [hσ, Option.map_some] at h
+
+private theorem lowerPolyAnnIn_some_paramCount {ke : KindEnv} {tvs : List ValName}
+    {tyParams : List ValName} {params : List (ValName × Option Surface.Ty)}
+    {ann : Option Surface.PolyTy} {σ : PolyTy}
+    (h : lowerPolyAnnIn ke tvs (finalizeAnn tyParams params ann) = some (some σ)) :
+    σ.paramCount =
+      (letAnnTyPrefix tyParams (finalizeAnn tyParams params ann)).length := by
+  cases hF : finalizeAnn tyParams params ann with
+  | none => simp [lowerPolyAnnIn, hF] at h
+  | some σs =>
+    simp only [lowerPolyAnnIn, hF] at h
+    cases hσ : lowerPolyIn ke tvs σs with
+    | none => simp [hσ] at h
+    | some σ' =>
+      have hσeq : σ' = σ := by
+        have : some (some σ') = some (some σ) := by simpa [hσ, Option.map_some] using h
+        exact Option.some.inj (Option.some.inj this)
+      rw [← hσeq]
+      simp only [lowerPolyIn] at hσ
+      obtain ⟨b, hb, rfl⟩ := Option.map_eq_some_iff.mp hσ
+      simp [letAnnTyPrefix, finalizeAnn_foralls_merge hF]
+
 private theorem letIn_lowerTyScope_length {ke : KindEnv} {tyParams : List ValName}
     {params : List (ValName × Option Surface.Ty)} {ann : Option Surface.PolyTy}
     {ann' : Option PolyTy} {tvs : List ValName}
@@ -4153,7 +4177,7 @@ def lowerExpr (ke : KindEnv) (tvs vs : List ValName) : Surface.Expr → Option E
     | _, _             => none
   | .letIn name tyParams params ann rhs body =>
     let annF := finalizeAnn tyParams params ann
-    match lowerPolyAnn ke annF with
+    match lowerPolyAnnIn ke tvs annF with
     | none      => none
     | some ann' =>
       let tvs' := letAnnTyPrefix tyParams annF ++ tvs
@@ -4168,7 +4192,7 @@ def lowerExpr (ke : KindEnv) (tvs vs : List ValName) : Surface.Expr → Option E
           | none => none
   | .letRecIn binds body =>
     let recScope := binds.map (·.name) ++ vs
-    match lowerAnnList ke (binds.map fun b => finalizeAnn b.tyParams b.params b.ann),
+    match lowerAnnListIn ke tvs (binds.map fun b => finalizeAnn b.tyParams b.params b.ann),
           lowerRecBinds ke tvs recScope binds,
           lowerExpr ke tvs recScope body with
     | some anns', some bindings', some body' => some (.letRec anns' bindings' body')
@@ -5116,7 +5140,7 @@ inductive LowersExpr (ctors : CtorEnv) (ke : KindEnv) :
       lower body under the bound name. Supports nonempty `params` (head binders).
       Partial head anns are out of scope — see `LowersExpr` @TODO(partial-head-ann). -/
   | letIn {vs name tyParams params ann ann' rhs rhsCore rhs' body body'} :
-      lowerPolyAnn ke (finalizeAnn tyParams params ann) = some ann' →
+      lowerPolyAnnIn ke tvs (finalizeAnn tyParams params ann) = some ann' →
       LowersExpr ctors ke
         (letAnnTyPrefix tyParams (finalizeAnn tyParams params ann) ++ tvs)
         (paramTermScope params vs) rhs rhsCore →
@@ -5130,7 +5154,7 @@ inductive LowersExpr (ctors : CtorEnv) (ke : KindEnv) :
   /-- Rec group: lower each binding's finalized ann + RHS (via `LowersRecBinds`),
       then the body under all group names. Head binders again via wrap on each RHS. -/
   | letRecIn {vs binds anns' bindings' body body'} :
-      lowerAnnList ke (binds.map fun b =>
+      lowerAnnListIn ke tvs (binds.map fun b =>
         finalizeAnn b.tyParams b.params b.ann) = some anns' →
       LowersRecBinds ctors ke tvs (binds.map (·.name) ++ vs) binds bindings' →
       LowersExpr ctors ke tvs (binds.map (·.name) ++ vs) body body' →
@@ -5437,7 +5461,7 @@ theorem lowerExpr_LowersExpr {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValNam
         exact .app (lowerExpr_LowersExpr f hf) (lowerExpr_LowersExpr x hx)
   | .letIn name tyParams params ann rhs body =>
     simp only [lowerExpr] at h
-    cases hann : lowerPolyAnn ke (finalizeAnn tyParams params ann) with
+    cases hann : lowerPolyAnnIn ke tvs (finalizeAnn tyParams params ann) with
     | none => simp [hann] at h
     | some ann' =>
       cases hr : lowerExpr ke
@@ -5458,7 +5482,7 @@ theorem lowerExpr_LowersExpr {ctors : CtorEnv} {ke : KindEnv} {tvs : List ValNam
               (lowerExpr_LowersExpr body hb)
   | .letRecIn binds body =>
     simp only [lowerExpr] at h
-    cases hann : lowerAnnList ke
+    cases hann : lowerAnnListIn ke tvs
         (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) with
     | none => simp [hann] at h
     | some anns' =>
@@ -7972,12 +7996,12 @@ theorem lowerExpr_letRecIn_decomp {ke : KindEnv} {tvs vs : List ValName}
     {binds : List Surface.Binding} {body : Surface.Expr} {c : Expr}
     (hlow : lowerExpr ke tvs vs (.letRecIn binds body) = some c) :
     ∃ anns' bindings' body',
-      lowerAnnList ke (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) = some anns' ∧
+      lowerAnnListIn ke tvs (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) = some anns' ∧
       lowerRecBinds ke tvs (binds.map (·.name) ++ vs) binds = some bindings' ∧
       lowerExpr ke tvs (binds.map (·.name) ++ vs) body = some body' ∧
       c = Expr.letRec anns' bindings' body' := by
   simp only [lowerExpr] at hlow
-  cases hann : lowerAnnList ke (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) with
+  cases hann : lowerAnnListIn ke tvs (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) with
   | none => simp [hann] at hlow
   | some anns' =>
     cases hbinds : lowerRecBinds ke tvs (binds.map (·.name) ++ vs) binds with
@@ -7996,14 +8020,14 @@ theorem lowerExpr_letIn_decomp {ke : KindEnv} {tvs vs : List ValName}
     {rhs body : Surface.Expr} {c : Expr}
     (hlow : lowerExpr ke tvs vs (.letIn name tyParams params ann rhs body) = some c) :
     ∃ ann' rhsCore rhs' body',
-      lowerPolyAnn ke (finalizeAnn tyParams params ann) = some ann' ∧
+      lowerPolyAnnIn ke tvs (finalizeAnn tyParams params ann) = some ann' ∧
       lowerExpr ke (letRhsTyScope tyParams params ann tvs)
         (letRhsTermScope params vs) rhs = some rhsCore ∧
       wrapCoreParams ke (letRhsTyScope tyParams params ann tvs) params rhsCore = some rhs' ∧
       lowerExpr ke tvs (name :: vs) body = some body' ∧
       c = Expr.letIn ann' rhs' body' := by
   simp only [lowerExpr] at hlow
-  cases hann : lowerPolyAnn ke (finalizeAnn tyParams params ann) with
+  cases hann : lowerPolyAnnIn ke tvs (finalizeAnn tyParams params ann) with
   | none => simp [hann] at hlow
   | some ann' =>
     cases hr : lowerExpr ke (letAnnTyPrefix tyParams (finalizeAnn tyParams params ann) ++ tvs)
@@ -8562,6 +8586,94 @@ private theorem lowerAnn_isSome_appendTyScopeMid {ke : KindEnv} {A tvs' B : List
       obtain ⟨t'', ht''⟩ := Option.isSome_iff_exists.mp ht'
       simp only [ht'', Option.map, Option.isSome_some]
 
+private theorem lowerPolyAnnIn_isSome_appendTyScope {ke : KindEnv}
+    {tvs tvs' : List ValName} {ann : Option Surface.PolyTy}
+    (h : (lowerPolyAnnIn ke tvs ann).isSome) :
+    (lowerPolyAnnIn ke (tvs' ++ tvs) ann).isSome := by
+  cases ann with
+  | none => simp [lowerPolyAnnIn]
+  | some σ =>
+    simp only [lowerPolyAnnIn, lowerPolyIn] at h ⊢
+    cases ht : lowerTy ke (σ.foralls.eraseDups ++ tvs) σ.body with
+    | none => simp [ht] at h
+    | some t =>
+      have ht' := lowerTy_isSome_appendTyScopeMid
+        (A := σ.foralls.eraseDups) (tvs' := tvs') (B := tvs)
+        (Option.isSome_iff_exists.mpr ⟨t, ht⟩)
+      obtain ⟨t', ht'⟩ := Option.isSome_iff_exists.mp ht'
+      rw [show σ.foralls.eraseDups ++ (tvs' ++ tvs) =
+          σ.foralls.eraseDups ++ tvs' ++ tvs by simp only [List.append_assoc], ht']
+      rfl
+
+private theorem lowerPolyAnnIn_isSome_appendTyScopeMid {ke : KindEnv}
+    {A tvs' B : List ValName} {ann : Option Surface.PolyTy}
+    (h : (lowerPolyAnnIn ke (A ++ B) ann).isSome) :
+    (lowerPolyAnnIn ke (A ++ tvs' ++ B) ann).isSome := by
+  cases ann with
+  | none => simp [lowerPolyAnnIn]
+  | some σ =>
+    simp only [lowerPolyAnnIn, lowerPolyIn] at h ⊢
+    cases ht : lowerTy ke (σ.foralls.eraseDups ++ (A ++ B)) σ.body with
+    | none => simp [ht] at h
+    | some t =>
+      have htAt : lowerTy ke ((σ.foralls.eraseDups ++ A) ++ B) σ.body = some t := by
+        simpa only [List.append_assoc] using ht
+      have ht' := lowerTy_isSome_appendTyScopeMid
+        (A := σ.foralls.eraseDups ++ A) (tvs' := tvs') (B := B)
+        (Option.isSome_iff_exists.mpr ⟨t, htAt⟩)
+      obtain ⟨t', ht'⟩ := Option.isSome_iff_exists.mp ht'
+      have htGoal : lowerTy ke (σ.foralls.eraseDups ++ (A ++ tvs' ++ B)) σ.body = some t' := by
+        simpa only [List.append_assoc] using ht'
+      rw [htGoal]
+      rfl
+
+private theorem lowerAnnListIn_isSome_appendTyScope {ke : KindEnv}
+    {tvs tvs' : List ValName} {anns : List (Option Surface.PolyTy)}
+    (h : (lowerAnnListIn ke tvs anns).isSome) :
+    (lowerAnnListIn ke (tvs' ++ tvs) anns).isSome := by
+  induction anns with
+  | nil => simp [lowerAnnListIn]
+  | cons ann anns ih =>
+    simp only [lowerAnnListIn] at h ⊢
+    cases ha : lowerPolyAnnIn ke tvs ann with
+    | none => simp [ha] at h
+    | some ann' =>
+      cases has : lowerAnnListIn ke tvs anns with
+      | none => simp [ha, has] at h
+      | some anns' =>
+        have ha' := lowerPolyAnnIn_isSome_appendTyScope (tvs' := tvs')
+          (Option.isSome_iff_exists.mpr ⟨ann', ha⟩)
+        have has' := ih (Option.isSome_iff_exists.mpr ⟨anns', has⟩)
+        obtain ⟨_, ha''⟩ := Option.isSome_iff_exists.mp ha'
+        obtain ⟨_, has''⟩ := Option.isSome_iff_exists.mp has'
+        simp [ha'', has'']
+
+private theorem lowerAnnListIn_isSome_appendTyScopeMid {ke : KindEnv}
+    {A tvs' B : List ValName} {anns : List (Option Surface.PolyTy)}
+    (h : (lowerAnnListIn ke (A ++ B) anns).isSome) :
+    (lowerAnnListIn ke (A ++ tvs' ++ B) anns).isSome := by
+  induction anns with
+  | nil => simp [lowerAnnListIn]
+  | cons ann anns ih =>
+    simp only [lowerAnnListIn] at h ⊢
+    cases ha : lowerPolyAnnIn ke (A ++ B) ann with
+    | none => simp [ha] at h
+    | some ann' =>
+      cases has : lowerAnnListIn ke (A ++ B) anns with
+      | none => simp [ha, has] at h
+      | some anns' =>
+        have ha' := lowerPolyAnnIn_isSome_appendTyScopeMid
+          (A := A) (tvs' := tvs') (B := B)
+          (Option.isSome_iff_exists.mpr ⟨ann', ha⟩)
+        have has' := ih (Option.isSome_iff_exists.mpr ⟨anns', has⟩)
+        obtain ⟨ann'', ha''⟩ := Option.isSome_iff_exists.mp ha'
+        obtain ⟨anns'', has''⟩ := Option.isSome_iff_exists.mp has'
+        have haGoal : lowerPolyAnnIn ke (A ++ (tvs' ++ B)) ann = some ann'' := by
+          simpa only [List.append_assoc] using ha''
+        have hasGoal : lowerAnnListIn ke (A ++ (tvs' ++ B)) anns = some anns'' := by
+          simpa only [List.append_assoc] using has''
+        simp [haGoal, hasGoal]
+
 private theorem wrapCoreParams_isSome_appendTyScope {ke : KindEnv} {tvs tvs' : List ValName}
     {params : List (ValName × Option Surface.Ty)} {e : Expr}
     (h : (wrapCoreParams ke tvs params e).isSome) :
@@ -8869,9 +8981,13 @@ theorem lowerExpr_isSome_appendTyScopeMid {ke : KindEnv} {A tvs' B vs : List Val
         simp only [lowerExpr, hf'', hx'', Option.isSome_some]
   | .letIn name tyParams params ann rhs body =>
     simp only [lowerExpr] at h
-    cases hann : lowerPolyAnn ke (finalizeAnn tyParams params ann) with
+    cases hann : lowerPolyAnnIn ke (A ++ B) (finalizeAnn tyParams params ann) with
     | none => simp [hann, Option.isSome_none] at h
     | some ann' =>
+      have hannExt := lowerPolyAnnIn_isSome_appendTyScopeMid
+        (A := A) (tvs' := tvs') (B := B)
+        (Option.isSome_iff_exists.mpr ⟨ann', hann⟩)
+      obtain ⟨annExt, hannExt⟩ := Option.isSome_iff_exists.mp hannExt
       set Alet := letAnnTyPrefix tyParams (finalizeAnn tyParams params ann) with hAlet
       set tvsInner := Alet ++ (A ++ B) with htvsInner
       cases hr : lowerExpr ke tvsInner (paramTermScope params vs) rhs with
@@ -8909,13 +9025,18 @@ theorem lowerExpr_isSome_appendTyScopeMid {ke : KindEnv} {A tvs' B vs : List Val
               wrapCoreParams_isSome_invariant (e := rhsCore) (e' := rhsCore')
                 (Option.isSome_iff_exists.mpr ⟨rhs'', hwrapOnCore⟩)
             obtain ⟨w, hw⟩ := Option.isSome_iff_exists.mp hwrapGoal
-            simp only [lowerExpr, hann, ← hAlet, hrGoal, hw, hbW, Option.isSome_some]
+            simp only [lowerExpr, hannExt, ← hAlet, hrGoal, hw, hbW, Option.isSome_some]
   | .letRecIn binds body =>
     let recScope := binds.map (·.name) ++ vs
     simp only [lowerExpr] at h
-    cases hann : lowerAnnList ke (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) with
+    cases hann : lowerAnnListIn ke (A ++ B)
+        (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) with
     | none => simp [hann] at h
     | some anns' =>
+      have hannExt := lowerAnnListIn_isSome_appendTyScopeMid
+        (A := A) (tvs' := tvs') (B := B)
+        (Option.isSome_iff_exists.mpr ⟨anns', hann⟩)
+      obtain ⟨annsExt, hannExt⟩ := Option.isSome_iff_exists.mp hannExt
       cases hbinds : lowerRecBinds ke (A ++ B) recScope binds with
       | none =>
         simp [hann, hbinds, recScope, Option.isSome_none] at h
@@ -8949,7 +9070,7 @@ theorem lowerExpr_isSome_appendTyScopeMid {ke : KindEnv} {A tvs' B vs : List Val
           have hb' := lowerExpr_isSome_appendTyScopeMid (A := A) (tvs' := tvs') (B := B) (vs := recScope)
             (e := body) (Option.isSome_iff_exists.mpr ⟨body', hb⟩)
           obtain ⟨body'', hb''⟩ := Option.isSome_iff_exists.mp hb'
-          simp only [lowerExpr, hann, recScope, hbinds'', hb'', Option.isSome_some]
+          simp only [lowerExpr, hannExt, recScope, hbinds'', hb'', Option.isSome_some]
   | .ife c t f =>
     simp only [lowerExpr] at h
     cases hc : lowerExpr ke (A ++ B) vs c with
@@ -9113,9 +9234,12 @@ theorem lowerExpr_isSome_appendTyScope {ke : KindEnv} {tvs vs tvs' : List ValNam
         simp only [lowerExpr, hf'', hx'', Option.isSome_some]
   | .letIn name tyParams params ann rhs body =>
     simp only [lowerExpr] at h
-    cases hann : lowerPolyAnn ke (finalizeAnn tyParams params ann) with
+    cases hann : lowerPolyAnnIn ke tvs (finalizeAnn tyParams params ann) with
     | none => simp [hann, Option.isSome_none] at h
     | some ann' =>
+      have hannExt := lowerPolyAnnIn_isSome_appendTyScope (tvs' := tvs')
+        (Option.isSome_iff_exists.mpr ⟨ann', hann⟩)
+      obtain ⟨annExt, hannExt⟩ := Option.isSome_iff_exists.mp hannExt
       set Alet := letAnnTyPrefix tyParams (finalizeAnn tyParams params ann) with hAlet
       set tvsInner := Alet ++ tvs with htvsInner
       cases hr : lowerExpr ke tvsInner (paramTermScope params vs) rhs with
@@ -9149,13 +9273,17 @@ theorem lowerExpr_isSome_appendTyScope {ke : KindEnv} {tvs vs tvs' : List ValNam
               wrapCoreParams_isSome_invariant (e := rhsCore) (e' := rhsCore')
                 (Option.isSome_iff_exists.mpr ⟨rhs'', hwrapOnCore⟩)
             obtain ⟨w, hw⟩ := Option.isSome_iff_exists.mp hwrapGoal
-            simp only [lowerExpr, hann, ← hAlet, hrGoal, hw, hb'', Option.isSome_some]
+            simp only [lowerExpr, hannExt, ← hAlet, hrGoal, hw, hb'', Option.isSome_some]
   | .letRecIn binds body =>
     let recScope := binds.map (·.name) ++ vs
     simp only [lowerExpr] at h
-    cases hann : lowerAnnList ke (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) with
+    cases hann : lowerAnnListIn ke tvs
+        (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) with
     | none => simp [hann] at h
     | some anns' =>
+      have hannExt := lowerAnnListIn_isSome_appendTyScope (tvs' := tvs')
+        (Option.isSome_iff_exists.mpr ⟨anns', hann⟩)
+      obtain ⟨annsExt, hannExt⟩ := Option.isSome_iff_exists.mp hannExt
       cases hbinds : lowerRecBinds ke tvs recScope binds with
       | none =>
         simp [hann, hbinds, recScope, Option.isSome_none] at h
@@ -9186,7 +9314,7 @@ theorem lowerExpr_isSome_appendTyScope {ke : KindEnv} {tvs vs tvs' : List ValNam
           have hb' := lowerExpr_isSome_appendTyScope (tvs' := tvs') (vs := recScope) (e := body)
             (Option.isSome_iff_exists.mpr ⟨body', hb⟩)
           obtain ⟨body'', hb''⟩ := Option.isSome_iff_exists.mp hb'
-          simp only [lowerExpr, hann, recScope, hbinds'', hb'', Option.isSome_some]
+          simp only [lowerExpr, hannExt, recScope, hbinds'', hb'', Option.isSome_some]
   | .ife c t f =>
     simp only [lowerExpr] at h
     cases hc : lowerExpr ke tvs vs c with
@@ -9500,6 +9628,19 @@ private theorem lowerAnnList_finalizeAnn_none
     simp only [List.map_cons, List.length_cons, List.replicate_succ, lowerAnnList,
       finalizeAnn_none, lowerPolyAnn, hhd, htl]
 
+private theorem lowerAnnListIn_finalizeAnn_none
+    {ke : KindEnv} {tvs : List ValName} {binds : List Surface.Binding}
+    (h : ∀ b ∈ binds, b.ann = none) :
+    lowerAnnListIn ke tvs (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) =
+      some (List.replicate binds.length none) := by
+  induction binds with
+  | nil => simp [lowerAnnListIn]
+  | cons hd tl ih =>
+    have hhd : hd.ann = none := h hd List.mem_cons_self
+    have htl := ih fun b hb => h b (List.mem_cons_of_mem _ hb)
+    simp only [List.map_cons, List.length_cons, List.replicate_succ, lowerAnnListIn,
+      finalizeAnn_none, lowerPolyAnnIn, hhd, htl]
+
 private theorem lowerAnnList_finalizeAnn_nil_nil {ke : KindEnv} {binds : List Surface.Binding}
     {anns' : List (Option PolyTy)}
     (h : lowerAnnList ke (binds.map (·.ann)) = some anns') :
@@ -9705,6 +9846,74 @@ theorem lowerPolyAnn_containsBvars {ke : KindEnv} {tvs : List ValName}
     exact ContainsBvarsUpTo.mono (m := σ.paramCount) (n := tvs.length + σ.paramCount)
       (Nat.le_add_left σ.paramCount tvs.length) hwf
 
+theorem lowerPolyAnnIn_containsBvars {ke : KindEnv} {tvs : List ValName}
+    {ann : Option Surface.PolyTy} {ann' : Option PolyTy}
+    (h : lowerPolyAnnIn ke tvs ann = some ann') :
+    ∀ σ, ann' = some σ → ContainsBvarsUpTo (tvs.length + σ.paramCount) σ.body := by
+  rintro σ ht
+  cases ann with
+  | none =>
+    simp only [lowerPolyAnnIn, Option.some.injEq] at h
+    subst h
+    cases ht
+  | some σs =>
+    simp only [lowerPolyAnnIn] at h
+    obtain ⟨σ', hσ, rfl⟩ := Option.map_eq_some_iff.mp h
+    obtain ⟨rfl⟩ := ht
+    simp only [lowerPolyIn] at hσ
+    obtain ⟨b, hb, hEq⟩ := Option.map_eq_some_iff.mp hσ
+    cases hEq
+    have hwk := Ty.WellKinded.toContainsBvars (lowerTy_wellKinded hb)
+    simpa [List.length_append, Nat.add_comm] using hwk
+
+private theorem lowerAnnListIn_length {ke : KindEnv} {tvs : List ValName}
+    {as : List (Option Surface.PolyTy)} {as' : List (Option PolyTy)}
+    (h : lowerAnnListIn ke tvs as = some as') : as'.length = as.length := by
+  induction as generalizing as' with
+  | nil =>
+    simp only [lowerAnnListIn, Option.some.injEq] at h
+    subst h
+    rfl
+  | cons a as ih =>
+    simp only [lowerAnnListIn] at h
+    cases ha : lowerPolyAnnIn ke tvs a with
+    | none => simp [ha] at h
+    | some a' =>
+      cases has : lowerAnnListIn ke tvs as with
+      | none => simp [ha, has] at h
+      | some as'' =>
+        simp only [ha, has, Option.some.injEq] at h
+        subst h
+        simp [ih has]
+
+private theorem lowerAnnListIn_containsBvars {ke : KindEnv} {tvs : List ValName} :
+    ∀ {as : List (Option Surface.PolyTy)} {as' : List (Option PolyTy)},
+      lowerAnnListIn ke tvs as = some as' →
+      ∀ σ, some σ ∈ as' → ContainsBvarsUpTo (tvs.length + σ.paramCount) σ.body := by
+  intro as
+  induction as with
+  | nil =>
+    intro as' h
+    simp only [lowerAnnListIn, Option.some.injEq] at h
+    subst h
+    simp
+  | cons a as ih =>
+    intro as' h
+    simp only [lowerAnnListIn] at h
+    cases ha : lowerPolyAnnIn ke tvs a with
+    | none => simp [ha] at h
+    | some a' =>
+      cases has : lowerAnnListIn ke tvs as with
+      | none => simp [ha, has] at h
+      | some as'' =>
+        simp only [ha, has, Option.some.injEq] at h
+        subst h
+        intro σ hσ
+        simp only [List.mem_cons] at hσ
+        rcases hσ with hσ | hσ
+        · exact lowerPolyAnnIn_containsBvars ha σ hσ.symm
+        · exact ih has σ hσ
+
 private theorem lowerAnnList_length {ke : KindEnv}
     {as : List (Option Surface.PolyTy)} {as' : List (Option PolyTy)}
     (h : lowerAnnList ke as = some as') : as'.length = as.length := by
@@ -9766,6 +9975,38 @@ private theorem lowerAnnList_getElem_ann {ke : KindEnv} {binds : List Surface.Bi
           have himain := ih (anns' := rest') (i := i') hrest hi'
           have hget : anns'[i' + 1] = rest'[i'] := by simp [heq, List.getElem_cons_succ]
           exact himain.trans (congrArg some hget.symm)
+
+private theorem lowerAnnListIn_getElem_ann {ke : KindEnv} {tvs : List ValName}
+    {binds : List Surface.Binding} {anns' : List (Option PolyTy)} {i : Nat}
+    (hann : lowerAnnListIn ke tvs
+      (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) = some anns')
+    (hi : i < binds.length) :
+    lowerPolyAnnIn ke tvs
+        (finalizeAnn (binds[i]'hi).tyParams (binds[i]'hi).params (binds[i]'hi).ann) =
+      some (anns'[i]'(by
+        have hlen := lowerAnnListIn_length hann
+        rw [List.length_map] at hlen
+        exact hlen.symm ▸ hi)) := by
+  induction binds generalizing anns' i with
+  | nil => cases hi
+  | cons b rest ih =>
+    simp only [lowerAnnListIn, List.map_cons] at hann
+    cases hb : lowerPolyAnnIn ke tvs (finalizeAnn b.tyParams b.params b.ann) with
+    | none => simp [hb] at hann
+    | some a' =>
+      cases hrest : lowerAnnListIn ke tvs
+          (rest.map fun b => finalizeAnn b.tyParams b.params b.ann) with
+      | none => simp [hb, hrest] at hann
+      | some rest' =>
+        have heq : anns' = a' :: rest' := by
+          apply Option.some.inj
+          rw [← hann, hb, hrest]
+        match i with
+        | 0 => simp only [List.getElem_cons_zero, heq, hb]
+        | i' + 1 =>
+          have hi' : i' < rest.length := Nat.lt_of_succ_lt_succ hi
+          have himain := ih (anns' := rest') (i := i') hrest hi'
+          simpa [heq, List.getElem_cons_succ] using himain
 
 theorem lowerAnnList_containsBvars {ke : KindEnv} {tvs : List ValName} :
     ∀ {as : List (Option Surface.PolyTy)} {as' : List (Option PolyTy)},
@@ -10033,7 +10274,7 @@ theorem lowerExpr_tyBvarBounded {ke : KindEnv} {tvs vs : List ValName} :
         exact ⟨lowerExpr_tyBvarBounded hf, lowerExpr_tyBvarBounded hx⟩
   | .letIn name tyParams params ann rhs body =>
     simp only [lowerExpr] at h
-    cases hann : lowerPolyAnn ke (finalizeAnn tyParams params ann) with
+    cases hann : lowerPolyAnnIn ke tvs (finalizeAnn tyParams params ann) with
     | none => simp [hann] at h
     | some ann' =>
       set tvs' := letAnnTyPrefix tyParams (finalizeAnn tyParams params ann) ++ tvs with htvs'
@@ -10053,7 +10294,7 @@ theorem lowerExpr_tyBvarBounded {ke : KindEnv} {tvs vs : List ValName} :
             | none =>
               simp only [Expr.TyBvarBounded]
               refine ⟨?_, lowerExpr_tyBvarBounded hb⟩
-              have hF := lowerPolyAnn_finalizeAnn_none hann
+              have hF := lowerPolyAnnIn_finalizeAnn_none hann
               have hscopeEq : tvs' = tvs := by
                 simp [htvs', letAnnTyPrefix, hF]
               have hr' : lowerExpr ke tvs (paramTermScope params vs) rhs = some rhsCore := by
@@ -10063,15 +10304,16 @@ theorem lowerExpr_tyBvarBounded {ke : KindEnv} {tvs vs : List ValName} :
               exact wrapCoreParams_tyBvarBounded hwrap' (lowerExpr_tyBvarBounded hr')
             | some σ =>
               simp only [Expr.TyBvarBounded]
-              refine ⟨lowerPolyAnn_containsBvars hann σ rfl, ?_, lowerExpr_tyBvarBounded hb⟩
-              have hpc := lowerPolyAnn_some_paramCount hann
+              refine ⟨lowerPolyAnnIn_containsBvars hann σ rfl, ?_, lowerExpr_tyBvarBounded hb⟩
+              have hpc := lowerPolyAnnIn_some_paramCount hann
               have hlen : tvs'.length = tvs.length + σ.paramCount := by
                 simp [htvs', hpc, List.length_append, Nat.add_comm]
               have hrhs := wrapCoreParams_tyBvarBounded hwrap (lowerExpr_tyBvarBounded hr)
               rwa [hlen] at hrhs
   | .letRecIn binds body =>
     simp only [lowerExpr] at h
-    cases hann : lowerAnnList ke (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) with
+    cases hann : lowerAnnListIn ke tvs
+        (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) with
     | none => simp [hann] at h
     | some anns' =>
       cases hbinds : lowerRecBinds ke tvs (binds.map (·.name) ++ vs) binds with
@@ -10086,32 +10328,32 @@ theorem lowerExpr_tyBvarBounded {ke : KindEnv} {tvs vs : List ValName} :
           cases hEq
           simp only [Expr.TyBvarBounded]
           refine ⟨?_, ?_, lowerExpr_tyBvarBounded hb⟩
-          · intro σ hσ; exact lowerAnnList_containsBvars hann σ hσ
+          · intro σ hσ; exact lowerAnnListIn_containsBvars hann σ hσ
           · exact Expr.TyBvarBounded.RecGroup_of_zip
               (by
                 have h1 := lowerRecBinds_length hbinds
-                have h2 := lowerAnnList_length hann
+                have h2 := lowerAnnListIn_length hann
                 rw [h1, h2, List.length_map])
               (by
                 intro p hp
                 have h1 := lowerRecBinds_length hbinds
-                have h2 := lowerAnnList_length hann
+                have h2 := lowerAnnListIn_length hann
                 obtain ⟨i, hi, hb_eq, hann_eq⟩ :=
                   List.mem_zip_getElem (by rw [h1, h2, List.length_map]) hp
                 have hiB : i < binds.length := Nat.lt_of_lt_of_eq hi h1
                 obtain ⟨rhsCore, hr, hwrap⟩ := lowerRecBinds_get hbinds i hiB
                 rw [← hb_eq]
-                have hann_i := lowerAnnList_getElem_ann hann hiB
+                have hann_i := lowerAnnListIn_getElem_ann hann hiB
                 cases hp2 : p.2 with
                 | none =>
                   have hann_none :
-                      lowerPolyAnn ke (finalizeAnn binds[i].tyParams binds[i].params binds[i].ann) =
+                      lowerPolyAnnIn ke tvs (finalizeAnn binds[i].tyParams binds[i].params binds[i].ann) =
                         some none :=
                     Eq.mp (congrArg
-                      (fun a => lowerPolyAnn ke
+                      (fun a => lowerPolyAnnIn ke tvs
                         (finalizeAnn binds[i].tyParams binds[i].params binds[i].ann) = some a)
                       (hann_eq.trans hp2)) hann_i
-                  have hF := lowerPolyAnn_finalizeAnn_none hann_none
+                  have hF := lowerPolyAnnIn_finalizeAnn_none hann_none
                   have hscopeEq : bindingLowerTyScope binds[i] tvs = tvs := by
                     simp [bindingLowerTyScope, letAnnTyPrefix, hF]
                   have hrhs := wrapCoreParams_tyBvarBounded hwrap (lowerExpr_tyBvarBounded hr)
@@ -10121,13 +10363,13 @@ theorem lowerExpr_tyBvarBounded {ke : KindEnv} {tvs vs : List ValName} :
                 | some σ =>
                   have hrhs := wrapCoreParams_tyBvarBounded hwrap (lowerExpr_tyBvarBounded hr)
                   have hann_i' :
-                      lowerPolyAnn ke (finalizeAnn binds[i].tyParams binds[i].params binds[i].ann) =
+                      lowerPolyAnnIn ke tvs (finalizeAnn binds[i].tyParams binds[i].params binds[i].ann) =
                         some (some σ) :=
                     Eq.mp (congrArg
-                      (fun a => lowerPolyAnn ke
+                      (fun a => lowerPolyAnnIn ke tvs
                         (finalizeAnn binds[i].tyParams binds[i].params binds[i].ann) = some a)
                       (hann_eq.trans hp2)) hann_i
-                  have hpc := lowerPolyAnn_some_paramCount hann_i'
+                  have hpc := lowerPolyAnnIn_some_paramCount hann_i'
                   have hlen : (bindingLowerTyScope binds[i] tvs).length =
                       tvs.length + RecAnn.params (some σ) := by
                     simp [bindingLowerTyScope, RecAnn.params, hpc, List.length_append, Nat.add_comm]
@@ -10335,7 +10577,7 @@ theorem lowerExpr_isSome_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
         obtain ⟨rhs', hwrap⟩ := Option.isSome_iff_exists.mp hwrap_some
         have hr' : lowerExpr ke tvs' (paramTermScope params vs') rhs = some rhsCore := by
           simpa [letRhsTyScope_none, letRhsTermScope] using hr
-        simp only [lowerExpr, finalizeAnn_none, lowerPolyAnn, letAnnTyPrefix_none]
+        simp only [lowerExpr, finalizeAnn_none, lowerPolyAnnIn, letAnnTyPrefix_none]
         rw [List.nil_append]
         simp [hr', hwrap, hb]
       | some σ =>
@@ -10361,12 +10603,15 @@ theorem lowerExpr_isSome_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
             (letAnnTyPrefix tyParams (finalizeAnn tyParams params (some σs)) ++ [])
           params rhsCore = some rhs' := by
       simpa [letRhsTyScope] using hwrap
-    simp only [lowerExpr, hσeq, hr', hwrap', hb, Option.isSome_some]
+    have hσeqIn :
+        lowerPolyAnnIn ke [] (finalizeAnn tyParams params (some σs)) = some (some σ) := by
+      simpa only [lowerPolyAnnIn_nil] using hσeq
+    simp only [lowerExpr, hσeqIn, hr', hwrap', hb, Option.isSome_some]
   | letRecIn =>
     rename_i tvs' vs' Γ binds τs τrets paramTysList ΓRhsList body τ hlen hrets hparamLen hΓRhsLen
       hann hLL hτbinds hrhs hbody hrhs_ih hbody_ih
     simp only [lowerExpr]
-    have hann' := @lowerAnnList_finalizeAnn_none ke binds hann
+    have hann' := @lowerAnnListIn_finalizeAnn_none ke tvs' binds hann
     obtain ⟨bodyCore, hb⟩ := Option.isSome_iff_exists.mp hbody_ih
     have hbinds_forall : ∀ (i : Nat) (hi : i < binds.length),
         ∃ rhsCore,
@@ -10394,18 +10639,22 @@ theorem lowerExpr_isSome_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       htvs hann hlen hparamLen hΓRhsLen hretsLen hanns_eq hnodup hmono_lc hpoly_wf
       hτs_len hτs_link hτs_lc hceiling hLL hτbinds hmono hbody
       hmono_ih hbody_ih
+    subst htvs
     simp only [lowerExpr]
+    have hannIn : lowerAnnListIn ke []
+        (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) = some anns' := by
+      simpa only [lowerAnnListIn_nil] using hann
     obtain ⟨bodyCore, hb⟩ := Option.isSome_iff_exists.mp hbody_ih
     have hbinds_forall : ∀ (i : Nat) (hi : i < binds.length),
         ∃ rhsCore,
-          lowerExpr ke (bindingLowerTyScope (binds[i]'hi) tvs')
+          lowerExpr ke (bindingLowerTyScope (binds[i]'hi) [])
               (paramTermScope (binds[i]'hi).params (binds.map (·.name) ++ vs'))
               (binds[i]'hi).rhs = some rhsCore ∧
-          (wrapCoreParams ke (bindingLowerTyScope (binds[i]'hi) tvs')
+          (wrapCoreParams ke (bindingLowerTyScope (binds[i]'hi) [])
               (binds[i]'hi).params rhsCore).isSome := by
       intro i hi
-      have hscope : bindingLowerTyScope (binds[i]'hi) tvs' =
-          letRhsTyScope (binds[i]'hi).tyParams (binds[i]'hi).params (binds[i]'hi).ann tvs' := by
+      have hscope : bindingLowerTyScope (binds[i]'hi) [] =
+          letRhsTyScope (binds[i]'hi).tyParams (binds[i]'hi).params (binds[i]'hi).ann [] := by
         simp [bindingLowerTyScope, letRhsTyScope]
       obtain ⟨Xs, hXlen, hXnodup, hXavoid⟩ := exists_fresh_names L G.length
       have hfresh : FreshNames L G.length Xs := ⟨hXlen, hXnodup, hXavoid⟩
@@ -10415,7 +10664,7 @@ theorem lowerExpr_isSome_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
       · simpa [hscope] using wrapCoreParams_isSome_of_LowerLetParams (hLL Xs hfresh i hi) c
     obtain ⟨_, hbinds'⟩ := Option.isSome_iff_exists.mp
       (lowerRecBinds_isSome_of_forall hbinds_forall)
-    simp [hann, hbinds', hb]
+    simp [hannIn, hbinds', hb]
   | match_ _ _ _ _ _ _ ihs ihbrs =>
     simp only [lowerExpr]
     obtain ⟨_, hs⟩ := Option.isSome_iff_exists.mp ihs
@@ -10657,9 +10906,11 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     obtain ⟨ann', rhsCore, rhsL, bodyL, hann, hrL, hwrap, hbL, rfl⟩ :=
       lowerExpr_letIn_decomp hlow
     have hann_none : ann' = none := by
-      have : lowerPolyAnn ke (finalizeAnn tyParams params (none : Option Surface.PolyTy)) =
+      have : lowerPolyAnnIn ke tvs'
+          (finalizeAnn tyParams params (none : Option Surface.PolyTy)) =
           some none := by
-        rw [finalizeAnn_none]; rfl
+        rw [finalizeAnn_none]
+        rfl
       exact Option.some.inj (hann.symm.trans this)
     subst hann_none
     have hTyR := hrhs_ih hrL
@@ -10675,7 +10926,10 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     subst htvs
     obtain ⟨ann', rhsCore, rhsL, bodyL, hann, hrL, hwrap, hbL, rfl⟩ :=
       lowerExpr_letIn_decomp hlow
-    have hannσ : ann' = some σ := Option.some.inj (hann.symm.trans hσeq)
+    have hσeqIn : lowerPolyAnnIn ke []
+        (finalizeAnn tyParams params (some σs)) = some (some σ) := by
+      simpa only [lowerPolyAnnIn_nil] using hσeq
+    have hannσ : ann' = some σ := Option.some.inj (hann.symm.trans hσeqIn)
     subst hannσ
     have hpins : (some σ).Pins σ := fun _ ha => Option.some.inj ha
     refine TypeOfHM.letIn (M := σ) (L := L) hσwf hpins ?_ rfl (hbody_ih hbL)
@@ -10696,7 +10950,7 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     obtain ⟨annsL, bindings', bodyL, hannL, hbindsL, hbL, hc⟩ :=
       lowerExpr_letRecIn_decomp (binds := binds) (body := body) hlow
     subst hc
-    have hann' := @lowerAnnList_finalizeAnn_none ke binds hann
+    have hann' := @lowerAnnListIn_finalizeAnn_none ke tvs' binds hann
     have anns_eq : annsL = List.replicate binds.length (none : Option PolyTy) :=
       Option.some.inj (hannL.symm.trans hann')
     have hlenB := lowerRecBinds_length hbindsL
@@ -10811,7 +11065,10 @@ theorem TypeOfHM_of_lowerExpr_of_SurfaceWTExpr {ctors : CtorEnv} {ke : KindEnv}
     subst hc
     have hlenB := lowerRecBinds_length hbindsL
     have hgetB := lowerRecBinds_get hbindsL
-    have anns_eq : annsL = anns' := Option.some.inj (hannL.symm.trans hann)
+    have hannIn : lowerAnnListIn ke []
+        (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) = some anns' := by
+      simpa only [lowerAnnListIn_nil] using hann
+    have anns_eq : annsL = anns' := Option.some.inj (hannL.symm.trans hannIn)
     have hwf : RecSpecs.WF annsL bindings' specs G :=
       ⟨anns_eq ▸ hanns_eq, hlenB.trans hlen, hnodup, hmono_lc, hpoly_wf⟩
     -- All-monomorphic construction with the surface annotation-ceiling premise,
@@ -10956,6 +11213,22 @@ theorem lowerPolyAnn_freeVars {ke : KindEnv} {ann : Option Surface.PolyTy}
     obtain ⟨σ', hσ, rfl⟩ := Option.map_eq_some_iff.mp h
     simp [lowerPoly_freeVars hσ]
 
+theorem lowerPolyAnnIn_freeVars {ke : KindEnv} {tvs : List ValName}
+    {ann : Option Surface.PolyTy} {ann' : Option PolyTy}
+    (h : lowerPolyAnnIn ke tvs ann = some ann') :
+    ann'.elim [] (fun σ => σ.body.freeVars) = [] := by
+  cases ann with
+  | none =>
+    simp only [lowerPolyAnnIn, Option.some.injEq] at h
+    subst h
+    rfl
+  | some σ =>
+    simp only [lowerPolyAnnIn] at h
+    obtain ⟨σ', hσ, rfl⟩ := Option.map_eq_some_iff.mp h
+    simp only [lowerPolyIn] at hσ
+    obtain ⟨b, hb, rfl⟩ := Option.map_eq_some_iff.mp hσ
+    simp [lowerTy_freeVars hb]
+
 theorem lowerAnnList_freeVars {ke : KindEnv} :
     ∀ {as : List (Option Surface.PolyTy)} {as' : List (Option PolyTy)},
       lowerAnnList ke as = some as' →
@@ -10973,6 +11246,27 @@ theorem lowerAnnList_freeVars {ke : KindEnv} :
         simp only [ha, has, Option.some.injEq] at h; subst h
         simp only [Expr.tyFreeVars.AnnList.tyFreeVars, lowerPolyAnn_freeVars ha,
           lowerAnnList_freeVars has, List.nil_append]
+
+theorem lowerAnnListIn_freeVars {ke : KindEnv} {tvs : List ValName} :
+    ∀ {as : List (Option Surface.PolyTy)} {as' : List (Option PolyTy)},
+      lowerAnnListIn ke tvs as = some as' →
+      Expr.tyFreeVars.AnnList.tyFreeVars as' = []
+  | [], as', h => by
+    simp only [lowerAnnListIn, Option.some.injEq] at h
+    subst h
+    rfl
+  | a :: as, as', h => by
+    simp only [lowerAnnListIn] at h
+    cases ha : lowerPolyAnnIn ke tvs a with
+    | none => simp [ha] at h
+    | some a' =>
+      cases has : lowerAnnListIn ke tvs as with
+      | none => simp [ha, has] at h
+      | some as'' =>
+        simp only [ha, has, Option.some.injEq] at h
+        subst h
+        simp only [Expr.tyFreeVars.AnnList.tyFreeVars, lowerPolyAnnIn_freeVars ha,
+          lowerAnnListIn_freeVars has, List.nil_append]
 
 theorem wrapCoreParams_tyFreeVars {ke : KindEnv} {tvs : List ValName}
     {params : List (ValName × Option Surface.Ty)} {e e' : Expr}
@@ -11284,7 +11578,7 @@ theorem lowerExpr_tyFreeVars {ke : KindEnv} {tvs vs : List ValName} :
           List.nil_append]
   | .letIn name tyParams params ann rhs body =>
     simp only [lowerExpr] at h
-    cases hann : lowerPolyAnn ke (finalizeAnn tyParams params ann) with
+    cases hann : lowerPolyAnnIn ke tvs (finalizeAnn tyParams params ann) with
     | none => simp [hann] at h
     | some ann' =>
       set tvs' := letAnnTyPrefix tyParams (finalizeAnn tyParams params ann) ++ tvs with htvs'
@@ -11300,12 +11594,13 @@ theorem lowerExpr_tyFreeVars {ke : KindEnv} {tvs vs : List ValName} :
             have hEq : some (Expr.letIn ann' rhs' body') = some c := by
               simpa [hann, hr, hwrap, hb] using h
             cases hEq
-            simp only [Expr.tyFreeVars, lowerPolyAnn_freeVars hann,
+            simp only [Expr.tyFreeVars, lowerPolyAnnIn_freeVars hann,
               wrapCoreParams_tyFreeVars hwrap (lowerExpr_tyFreeVars hr),
               lowerExpr_tyFreeVars hb, List.nil_append]
   | .letRecIn binds body =>
     simp only [lowerExpr] at h
-    cases hann : lowerAnnList ke (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) with
+    cases hann : lowerAnnListIn ke tvs
+        (binds.map fun b => finalizeAnn b.tyParams b.params b.ann) with
     | none => simp [hann] at h
     | some anns' =>
       cases hbinds : lowerRecBinds ke tvs (binds.map (·.name) ++ vs) binds with
@@ -11317,7 +11612,7 @@ theorem lowerExpr_tyFreeVars {ke : KindEnv} {tvs vs : List ValName} :
           have hEq : some (Expr.letRec anns' bindings' body') = some c := by
             simpa [hann, hbinds, hb] using h
           cases hEq
-          simp only [Expr.tyFreeVars, lowerAnnList_freeVars hann,
+          simp only [Expr.tyFreeVars, lowerAnnListIn_freeVars hann,
             lowerExpr_tyFreeVars hb, List.nil_append, List.append_nil]
           exact lowerRecBinds_tyFreeVars hbinds
   | .var name =>
@@ -11874,8 +12169,9 @@ private theorem AllMatchesExhaustive.openTyVars {ctors : CtorEnv} (Xs : List Nat
 /-! ## 9b. Whole-program pipeline
 
 `Surface.Program` = user `DataDecl`s + binding `groups` + body.
-Groups desugar to nested `letRecIn` (`Program.term`); prelude is merged in;
-then reuse expression `lower`/`surface_type_safe`. Flat bindings
+Acyclic singleton groups desugar to `letIn`; recursive SCCs desugar to
+`letRecIn` (`Program.term`). The prelude is merged in; then reuse expression
+`lower`/`surface_type_safe`. Flat bindings
 go through `Program.ofFlat` → `sccGroups` → the same desugarer. -/
 
 theorem desugarGroups_nil (body : Surface.Expr) :
@@ -11945,17 +12241,44 @@ private def pMaybeId : Surface.Program :=
 private def pClashBool : Surface.Program :=
   ⟨[⟨.mk "Bool", [], [(.mk "Nope", [])]⟩], [], .primLit (.int 0)⟩
 
--- Simple top-level binding group: `let rec x = 1 in x`
-private def pLetRecOne : Surface.Program :=
+-- Simple acyclic top-level binding group: `let x = 1 in x`
+private def pLetOne : Surface.Program :=
   ⟨[], [[{ name := .mk "x", ann := none, rhs := .primLit (.int 1) }]],
    .var (.mk "x")⟩
 
--- Two nested singleton groups: `let rec x = 1 in let rec y = x in y`
-private def pLetRecTwo : Surface.Program :=
+-- Two nested acyclic singleton groups: `let x = 1 in let y = x in y`
+private def pLetTwo : Surface.Program :=
   ⟨[],
    [[{ name := .mk "x", ann := none, rhs := .primLit (.int 1) }],
     [{ name := .mk "y", ann := none, rhs := .var (.mk "x") }]],
    .var (.mk "y")⟩
+
+/-- A top-level signature scopes its type variable through RHS annotations,
+    including annotations nested under an inner `let`. -/
+private def pScopedSingleton : Surface.Program :=
+  let a : ValName := .mk "a"
+  let x : ValName := .mk "x"
+  let y : ValName := .mk "y"
+  let id : ValName := .mk "id"
+  ⟨[],
+   [[{ name := id
+       ann := some ⟨[a], .arrow (.tvar a) (.tvar a)⟩
+       rhs := .lambda (.name x) (some (.tvar a))
+         (.letIn y [] [] (some ⟨[], .tvar a⟩) (.var x) (.var y)) }]],
+   .app (.var id) (.primLit (.int 1))⟩
+
+/-- Scoped variables are rigid: the annotation cannot be specialized to make
+    integer addition fit a claimed `∀ a. a → a`. -/
+private def pScopedRigidReject : Surface.Program :=
+  let a : ValName := .mk "a"
+  let x : ValName := .mk "x"
+  let bad : ValName := .mk "bad"
+  ⟨[],
+   [[{ name := bad
+       ann := some ⟨[a], .arrow (.tvar a) (.tvar a)⟩
+       rhs := .lambda (.name x) (some (.tvar a))
+         (.app (.app (.primBinOp .intAdd) (.var x)) (.primLit (.int 1))) }]],
+   .app (.var bad) (.primLit (.int 1))⟩
 
 -- redeclaring Bool clashes with prelude
 #guard (lowerProgram pClashBool).isNone
@@ -11973,6 +12296,20 @@ private def pLetRecTwo : Surface.Program :=
 #guard match Surface.desugarGroups [[]] (.primLit (.int 0)) with
   | .primLit (.int 0) => true
   | _ => false
+#guard match pLetOne.term with
+  | .letIn (.mk "x") [] [] none (.primLit (.int 1)) (.var (.mk "x")) => true
+  | _ => false
+#guard match Surface.desugarGroups
+    [[{ name := .mk "loop", ann := none, rhs := .var (.mk "loop") }]]
+    (.var (.mk "loop")) with
+  | .letRecIn [_] (.var (.mk "loop")) => true
+  | _ => false
+#guard match lowerProgram pScopedSingleton with
+  | some (ctors, core) => (typecheck ctors core).isSome
+  | none => false
+#guard match lowerProgram pScopedRigidReject with
+  | some (ctors, core) => (typecheck ctors core).isNone
+  | none => false
 #guard (Program.ofFlat [] [bA, { name := .mk "a", ann := none, rhs := .primLit (.int 0) }]
   (.primLit (.int 0))).isNone
 -- SurfaceCovers is inhabited for the Maybe term (no matches → trivial coverage)

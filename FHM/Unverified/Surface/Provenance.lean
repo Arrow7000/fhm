@@ -477,7 +477,7 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
         [fn'.belowPath [.appFun], arg'.belowPath [.appArg]])
   | .letIn name tyParams params ann rhs body, .letIn source srhs sbody => do
       let annF := finalizeAnn tyParams params ann
-      let ann' ← lowerPolyAnn ke annF
+      let ann' ← lowerPolyAnnIn ke tvs annF
       let tvs' := letAnnTyPrefix tyParams annF ++ tvs
       let rhsCore ← lowerIdentifiedExpr ke tvs' (paramTermScope params vs) rhs srhs
       let rhs' ← wrapParamsWithProvenance ke tvs' source
@@ -489,7 +489,7 @@ def lowerIdentifiedExpr (ke : KindEnv) (tvs vs : List ValName) :
   | .letRecIn binds body, .letRecIn source srhss sbody => do
       let recScope := binds.map (fun b => b.name) ++ vs
       let anns' ← binds.mapM fun b =>
-        lowerPolyAnn ke (finalizeAnn b.tyParams b.params b.ann)
+        lowerPolyAnnIn ke tvs (finalizeAnn b.tyParams b.params b.ann)
       let bindings' ← lowerIdentifiedRecBinds ke tvs recScope source 0 binds srhss
       let body' ← lowerIdentifiedExpr ke tvs recScope body sbody
       let bindingExprs := bindings'.map fun r => r.expr

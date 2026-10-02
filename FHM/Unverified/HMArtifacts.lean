@@ -134,15 +134,21 @@ partial def collectArms (bs : List BinderSpan) (owner : SourceNode) (arm : Nat) 
 end
 
 /-- Recreate just the parser-side wrappers used by `Program.term`. The RHS
-    sidecars are already SCC-aligned by the parser. Synthetic wrappers receive
-    no occurrence hover; their IDs still identify group-exit schemes. -/
+    sidecars are already SCC-aligned by the parser. Acyclic singleton SCCs use
+    `let`; recursive SCCs use `let rec`. Synthetic wrappers receive no
+    occurrence hover; their IDs still identify group-exit schemes. -/
 def programSpanned (p : Surface.Program) (sp : SpannedProgram) (scope : Span) : Option SpannedExpr :=
   let rec go : List (List Surface.Binding) → List (List SpannedExpr) → Option SpannedExpr
     | [], [] => some sp.body
     | g :: gs, rhs :: rhss => do
         if g.length != rhs.length then none else do
           let body ← go gs rhss
-          pure (if g.isEmpty then body else .letRecIn scope rhs body)
+          pure (match g, rhs with
+            | [], [] => body
+            | [b], [r] =>
+                if b.refersTo b.name then .letRecIn scope [r] body
+                else .letIn scope r body
+            | _, _ => .letRecIn scope rhs body)
     | _, _ => none
   go p.groups sp.groups
 
@@ -152,9 +158,12 @@ def programWrapperIds : List (List Surface.Binding) → IdentifiedExpr → List 
   | [], _ => []
   | group :: rest, tree =>
       if group.isEmpty then programWrapperIds rest tree
-      else match tree with
-        | .letRecIn owner _ body => owner.id :: programWrapperIds rest body
-        | _ => []
+      else match group, tree with
+        | [b], .letIn owner _ body =>
+            if b.refersTo b.name then []
+            else owner.id :: programWrapperIds rest body
+        | _, .letRecIn owner _ body => owner.id :: programWrapperIds rest body
+        | _, _ => []
 
 /-- Authored schemes are carried declarations, deliberately absent from the
     inferred-scheme map. They have nevertheless passed the HM ceiling check. -/

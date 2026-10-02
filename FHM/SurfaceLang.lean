@@ -240,21 +240,87 @@ decreasing_by
 
 abbrev Binding := Binding' Expr
 
-/-- A surface program: user data declarations, mutual-binding groups
+/-! ### Free value names
+
+This syntax-level operation lives here because both dependency analysis and
+the meaning of an already-grouped `Program` need to distinguish an acyclic
+singleton from a genuinely self-recursive singleton. -/
+
+mutual
+/-- The names a pattern binds, in pre-order (left-to-right, depth-first). -/
+def patVars : Pattern → List ValName
+  | .name n     => [n]
+  | .wildcard   => []
+  | .ctor _ ps  => patVarsList ps
+  | .pair a b   => patVars a ++ patVars b
+  | .cons h t   => patVars h ++ patVars t
+  | .list items => patVarsList items
+def patVarsList : List Pattern → List ValName
+  | []      => []
+  | p :: ps => patVars p ++ patVarsList ps
+end
+
+mutual
+/-- Value names occurring free in `e` relative to `bound` (shadowing). -/
+def freeNames (bound : List ValName) : Expr → List ValName
+  | .primLit _ => []
+  | .primBinOp _ => []
+  | .ctor _ => []
+  | .var n => if n ∈ bound then [] else [n]
+  | .pair a b => freeNames bound a ++ freeNames bound b
+  | .cons h t => freeNames bound h ++ freeNames bound t
+  | .list xs => freeNamesList bound xs
+  | .app f x => freeNames bound f ++ freeNames bound x
+  | .lambda p _ann body => freeNames (patVars p ++ bound) body
+  | .letIn n _tyParams params _ann rhs body =>
+      freeNames (params.map (·.1) ++ bound) rhs ++ freeNames (n :: bound) body
+  | .letRecIn binds body =>
+      let bound' := binds.map (·.name) ++ bound
+      freeNamesBinds bound' binds ++ freeNames bound' body
+  | .ife c t f =>
+      freeNames bound c ++ freeNames bound t ++ freeNames bound f
+  | .match_ s brs => freeNames bound s ++ freeNamesBranches bound brs
+
+def freeNamesList (bound : List ValName) : List Expr → List ValName
+  | [] => []
+  | e :: es => freeNames bound e ++ freeNamesList bound es
+
+def freeNamesBinds (bound : List ValName) : List Binding → List ValName
+  | [] => []
+  | b :: rest =>
+      freeNames (b.params.map (·.1) ++ bound) b.rhs ++ freeNamesBinds bound rest
+
+def freeNamesBranches (bound : List ValName) :
+    List (Pattern × Expr) → List ValName
+  | [] => []
+  | (p, e) :: rest =>
+      freeNames (patVars p ++ bound) e ++ freeNamesBranches bound rest
+end
+
+/-- Does binding `b`'s RHS freely mention value name `n`? -/
+def Binding.refersTo (b : Binding) (n : ValName) : Bool :=
+  n ∈ freeNames (b.params.map (·.1)) b.rhs
+
+/-- A surface program: user data declarations, dependency SCCs
     (author-supplied, or from `SurfaceBridge.Program.ofFlat` / `sccGroups`),
-    and a body. Each nonempty group desugars to `letRecIn` (including size 1 —
-    self-recursion works). -/
+    and a body. Acyclic singleton SCCs are ordinary `let`; cyclic SCCs are
+    `let rec`. -/
 structure Program where
   decls  : List DataDecl
   groups : List (List Binding)
   body   : Expr
 
-/-- Nest groups outermost-first as `letRecIn`, then `body`.
-    Empty groups are skipped; nonempty → always `letRecIn` (incl. size 1). -/
+/-- Nest SCCs outermost-first around `body`. Empty groups are skipped;
+    acyclic singletons become ordinary `let`, while self-recursive singletons
+    and multi-member SCCs become `let rec`. -/
 def desugarGroups (groups : List (List Binding)) (body : Expr) : Expr :=
   groups.foldr (fun g acc =>
-    if g.isEmpty then acc
-    else .letRecIn g acc) body
+    match g with
+    | [] => acc
+    | [b] =>
+        if b.refersTo b.name then .letRecIn [b] acc
+        else .letIn b.name b.tyParams b.params b.ann b.rhs acc
+    | _ => .letRecIn g acc) body
 
 /-- The expression a program lowers: group nesting around `body`. -/
 def Program.term (p : Program) : Expr :=

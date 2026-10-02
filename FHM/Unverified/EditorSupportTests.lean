@@ -353,7 +353,7 @@ def sccOrderSrc : String :=
   "  \\f m -> match m with | Nothing -> Nothing | Just x -> Just (f x)\n" ++
   "let treeMap : {a b} (a -> b) -> Tree a -> Tree b =\n" ++
   "  \\f t -> match t with | Leaf -> Leaf | Node x l r -> Node (f x) (treeMap f l) (treeMap f r)\n" ++
-  "let addInts (a : Int) : Int -> Int = \\b -> a + b\n" ++
+  "let addInts : Int -> Int -> Int = \\a b -> a + b\n" ++
   "addInts 1 2\n"
 
 #guard (match hoverSyms sccOrderSrc with
@@ -536,9 +536,7 @@ def afterSccSrc : String :=
   | none => false)
 
 -- Keep the existing scoped-head-sugar limitation visible.
-#guard (match hoverReport "let id {a} (x : a) : a = x\nid\n" with
-  | some r => !r.diagnostics.isEmpty
-  | none => false)
+#guard (hoverReport "let id {a} (x : a) : a = x\nid\n").isNone
 
 -- Named annotation binders survive presentation, both for a recursive
 -- binding's synthesized variables and for genuine nested-let skolems.
@@ -563,13 +561,14 @@ def namedSignatureSrc : String :=
       (r.symbols.any fun s => s.name == "xs" && s.kind == "param" && s.type_ == "List input")
   | none => false)
 
--- A less-general ceiling must not merge two independently inferred variables
--- merely because both corresponding declared domains use the same name.
+-- An ordinary annotated `let` checks its RHS at the declared scheme, so both
+-- lambda parameters reflect the authored `item` type. (The former distinction
+-- was an artifact of routing every top-level singleton through `letRec`.)
 #guard (match hoverReport "let f : {item} item -> item -> item = \\x y -> y\nf\n" with
   | some r => r.diagnostics.isEmpty &&
       (match r.symbols.find? (fun s => s.name == "x" && s.kind == "param"),
              r.symbols.find? (fun s => s.name == "y" && s.kind == "param") with
-       | some x, some y => x.type_ != y.type_ && !hasSub x.type_ "?" && !hasSub y.type_ "?"
+       | some x, some y => x.type_ == "item" && y.type_ == "item"
        | _, _ => false)
   | none => false)
 
