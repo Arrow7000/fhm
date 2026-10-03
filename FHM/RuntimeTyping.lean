@@ -845,6 +845,74 @@ theorem RunHasScheme.ofMonoRecMember {ctx : Ctx}
     rw [hXsDef] at hx
     exact Ty.mem_of_mem_genFilter hx
 
+/-- Runtime typing produces a locally closed result type. -/
+theorem RunWT.regular {ctx : Ctx} {e : Expr} {ty : Ty}
+    (h : RunWT ctx e ty) : ty.IsLC := by
+  induction h using RunWT.rec
+    (motive_2 := fun _ _ _ resultTy _ => resultTy.IsLC) with
+  | primLitUnit => exact .prim
+  | primLitInt => exact .prim
+  | primLitNat => exact .prim
+  | primLitChar => exact .prim
+  | primBinOpIntAdd => exact .arrow .prim (.arrow .prim .prim)
+  | primBinOpIntSub => exact .arrow .prim (.arrow .prim .prim)
+  | primBinOpIntLt _ _ _ _ => exact .arrow .prim (.arrow .prim (.customTy (by simp)))
+  | primBinOpCharLt _ _ _ _ => exact .arrow .prim (.arrow .prim (.customTy (by simp)))
+  | lambda hparam _ ihbody => exact .arrow hparam ihbody
+  | app _ _ ihfn _ =>
+      cases ihfn with
+      | arrow _ hresult => exact hresult
+  | letIn _ _ _ _ ihbody => exact ihbody
+  | var _ hlc hinst => exact InstantiatesBy.preserves_bvars hlc hinst
+  | ctor _ hlc hinst => exact InstantiatesBy.preserves_bvars hlc hinst
+  | match_ _ hne _ _ ihbranches =>
+      obtain ⟨hd, tl, rfl⟩ := List.exists_cons_of_ne_nil hne
+      exact ihbranches hd (List.mem_cons_self ..)
+  | letRec _ _ _ _ _ _ ihbody => exact ihbody
+  | mk _ _ ihbody => exact ihbody
+  | wildcard _ ihbody => exact ihbody
+
+/-- A term typed at a monotype inhabits its trivial scheme. -/
+theorem RunHasScheme.ofTrivial {ctx : Ctx} {value : Expr} {ty : Ty}
+    (h : RunWT ctx value ty) :
+    RunHasScheme ctx value (PolyTy.mkTrivial ty) := by
+  intro args result _ hinst
+  have heq := InstantiatesBy.eq_openWith_range hinst h.regular
+  have hresult : result = ty := by
+    simpa [PolyTy.mkTrivial, Ty.openWith_nil] using heq
+  rw [hresult]
+  exact h
+
+/-- A cofinally checked let-bound expression inhabits every production
+`InstantiatesBy` instance of its generalized scheme. -/
+theorem RunHasScheme.ofGeneralisesTo {ctx : Ctx} {rhs : Expr}
+    {scheme : PolyTy} {avoid : List Nat}
+    (hwf : scheme.WF)
+    (hgen : GeneralisesTo RunWT ctx rhs scheme avoid) :
+    RunHasScheme ctx rhs scheme := by
+  intro args ty hlc hinst
+  let exactArgs := exactInstArgs scheme.paramCount args
+  have hargs : Ty.AreLC scheme.paramCount exactArgs :=
+    exactInstArgs_areLC hlc
+  have hrealise := exactInstArgs_realise hwf hinst
+  rw [hrealise]
+  obtain ⟨Xs, hXsLen, hXsNodup, hXsAvoid⟩ :=
+    exists_fresh_names
+      (avoid ++ ctx.env.freeVars ++ scheme.body.freeVars ++
+        Ty.freeVarsList exactArgs)
+      scheme.paramCount
+  have hXs : FreshNames avoid scheme.paramCount Xs :=
+    ⟨hXsLen, hXsNodup, fun x hx hmem =>
+      hXsAvoid x hx (by simp [List.mem_append, hmem])⟩
+  apply RunWT.instantiate_opening hargs hXsLen hXsNodup
+    (htyped := hgen Xs hXs)
+  · intro x hx hmem
+    exact hXsAvoid x hx (by simp [List.mem_append, hmem])
+  · intro x hx hmem
+    exact hXsAvoid x hx (by simp [List.mem_append, hmem])
+  · intro x hx hmem
+    exact hXsAvoid x hx (by simp [List.mem_append, hmem])
+
 private theorem RunHasScheme.ofRecMember {ctx : Ctx}
     {bindings : List Expr} {specs : List RecSpec} {G avoid : List Nat}
     (hwf : RecSpecsWF bindings specs G)
