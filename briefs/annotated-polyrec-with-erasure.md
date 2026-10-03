@@ -1,6 +1,6 @@
 # Annotated in-block polymorphism with erased execution
 
-**Status:** implementation in progress on `annotated-polyrec-erased`, 2026-10-02
+**Status:** mixed erased-runtime spike complete on `annotated-polyrec-erased`, 2026-10-03
 
 **Current implementation baseline:** the production checker still gives every
 member one monotype while an SCC is checked. The branch above is implementing the
@@ -27,8 +27,10 @@ The mixed runtime rule is now fixed in
 [`FHM/AnnotatedPolyRecHybrid.lean`](../FHM/AnnotatedPolyRecHybrid.lean): annotated
 members carry proof-only schemes, while unannotated members carry shared monotypes
 inside the SCC and `genGroup` schemes in the enclosing body. A concrete mixed group
-is typed under that rule with no specs in its runtime syntax. Its remaining spike
-gate is the corresponding mixed recursive-rewrapping/preservation theorem.
+is typed under that rule with no specs in its runtime syntax. The mixed hard gate is
+also complete: the module proves type substitution with shared-pool freshening,
+rewrapping at every exported scheme instance for both `.poly` and `.mono` members,
+simultaneous term substitution, and preservation of erased recursive unfolding.
 
 ## Executive summary
 
@@ -631,11 +633,13 @@ The active implementation deliberately begins without altering `Expr` or `Step`.
    [`FHM/AnnotatedPolyRecErasure.lean`](../FHM/AnnotatedPolyRecErasure.lean). Include only variables, functions, application,
    `let`, and `let rec`. Define annotated `SourceWT`, annotation-free `RunWT`, full
    erasure, and the nested `forall a. ... c ...` witness.
-3. **Prove the hard bridge first.** **Done for fully annotated recursive groups;
-   mixed rule and witness done, mixed preservation pending.** Before touching production FHM, prove
+3. **Prove the hard bridge first.** **Done for fully annotated and mixed recursive
+   groups.** Before touching production FHM, prove
    `SourceWT e τ -> RunWT (erase e) τ` for the nested scoped polymorphic-recursive
-   example and prove preservation of its unfolding step. **Next:** generalize the
-   proof-only group witness to the selected annotated/unannotated hybrid rule.
+   example and prove preservation of its unfolding step. The hybrid spike now proves
+   the harder selected rule: complete annotations remain polymorphic inside the SCC,
+   ordinary members share monotypes there and are generalized only outside it, and
+   both kinds can be substituted during type-free unfolding.
 4. **Audit theorem boundaries.** **Done.** Algorithm-W completeness and principality
    remain about source `TypeOfHM`; operational soundness crosses by erasure into
    proof-only `RunWT`. No completeness theorem is claimed for arbitrary `RunWT`.
@@ -729,8 +733,7 @@ complete annotated member: checked and recursively available at that scheme
 all members: erased at runtime
 ```
 
-The implementation order remains intentionally proof-first: generalize the completed
-all-annotated unfolding proof to the mixed proof witness, then port the mixed source
+The proof-first spike gate is now complete. The next phase is to port the mixed source
 rule and focused checker, then rebuild the production erasure/safety boundary around
 `RunWT`. Head-binder sugar and partial annotations remain out of scope; they still
 require a separately designed type-hole story.
