@@ -909,6 +909,155 @@ private theorem recursiveValuesHaveSchemes {ctx : Ctx}
               exact hmembers pair (by simp [hpair])
   exact go bindings specs hwf.length hall
 
+/-! ### Term-environment transport
+
+Operational substitution inserts erased values under binders.  The following
+weakening theorem accounts for that insertion by shifting free de Bruijn
+indices; types, schemes, and constructor declarations are unchanged.
+-/
+
+theorem RunWT.weakenEnv {ctors : CtorEnv} {envPre envExtra env : Env}
+    {e : Expr} {ty : Ty}
+    (h : RunWT ⟨envPre ++ env, ctors⟩ e ty) :
+    RunWT ⟨envPre ++ envExtra ++ env, ctors⟩
+      (e.shiftFrom envPre.length envExtra.length) ty := by
+  suffices H : ∀ {ctx' : Ctx} {e' : Expr} {ty' : Ty}, RunWT ctx' e' ty' →
+      ∀ pre : Env, ctx'.env = pre ++ env →
+        RunWT ⟨pre ++ envExtra ++ env, ctx'.ctors⟩
+          (e'.shiftFrom pre.length envExtra.length) ty' by
+    exact H h envPre rfl
+  intro ctx' e' ty' hd
+  induction hd using RunWT.rec
+    (motive_2 := fun ctx branch scrutTy resultTy _ =>
+      ∀ pre : Env, ctx.env = pre ++ env →
+        RunWTMatchBranch ⟨pre ++ envExtra ++ env, ctx.ctors⟩
+          (branch.1, branch.2.shiftFrom (pre.length + branch.1.bindCount)
+            envExtra.length) scrutTy resultTy) with
+  | primLitUnit => intro _ _; exact .primLitUnit
+  | primLitInt => intro _ _; exact .primLitInt
+  | primLitNat => intro _ _; exact .primLitNat
+  | primLitChar => intro _ _; exact .primLitChar
+  | primBinOpIntAdd => intro _ _; exact .primBinOpIntAdd
+  | primBinOpIntSub => intro _ _; exact .primBinOpIntSub
+  | primBinOpIntLt _ _ ihtrue ihfalse =>
+      intro pre hctx
+      exact .primBinOpIntLt (ihtrue pre hctx) (ihfalse pre hctx)
+  | primBinOpCharLt _ _ ihtrue ihfalse =>
+      intro pre hctx
+      exact .primBinOpCharLt (ihtrue pre hctx) (ihfalse pre hctx)
+  | lambda hparam _ ihbody =>
+      intro pre hctx
+      expose_names
+      simp only [Expr.shiftFrom]
+      have hb := ihbody (PolyTy.mkTrivial paramTy :: pre) (by rw [hctx, List.cons_append])
+      exact RunWT.lambda hparam (by
+        simpa only [List.cons_append, List.length_cons] using hb)
+  | app _ _ ihfn iharg =>
+      intro pre hctx
+      simp only [Expr.shiftFrom]
+      exact .app (ihfn pre hctx) (iharg pre hctx)
+  | letIn hwf hgen _ ihgen ihbody =>
+      intro pre hctx
+      expose_names
+      simp only [Expr.shiftFrom]
+      apply RunWT.letIn (scheme := scheme) (avoid := avoid) hwf
+      · intro names hfresh
+        exact ihgen names hfresh pre hctx
+      · have hb := ihbody (scheme :: pre) (by rw [hctx, List.cons_append])
+        simpa only [List.cons_append, List.length_cons] using hb
+  | var hlookup hlc hinst =>
+      intro pre hctx
+      expose_names
+      rw [hctx] at hlookup
+      simp only [Expr.shiftFrom]
+      by_cases hlt : index < pre.length
+      · rw [if_pos hlt]
+        refine .var ?_ hlc hinst
+        rw [List.getElem?_append_left
+          (by simp only [List.length_append]; omega : index < (pre ++ envExtra).length),
+          List.getElem?_append_left hlt]
+        rwa [List.getElem?_append_left hlt] at hlookup
+      · rw [if_neg hlt]
+        refine .var ?_ hlc hinst
+        rw [List.getElem?_append_right
+          (by simp only [List.length_append]; omega :
+            (pre ++ envExtra).length ≤ index + envExtra.length)]
+        rw [show index + envExtra.length - (pre ++ envExtra).length =
+          index - pre.length by simp only [List.length_append]; omega]
+        rwa [List.getElem?_append_right (by omega)] at hlookup
+  | ctor hlookup hlc hinst =>
+      intro _ _
+      exact .ctor hlookup hlc hinst
+  | match_ _ hne _ ihscrut ihbranches =>
+      intro pre hctx
+      simp only [Expr.shiftFrom]
+      refine .match_ (ihscrut pre hctx) ?_ ?_
+      · intro hnil
+        obtain ⟨⟨p, b⟩, rest, hb⟩ := List.exists_cons_of_ne_nil hne
+        have hm := BranchList.mem_shiftFrom_of_mem
+          (threshold := pre.length) (n := envExtra.length)
+          (hb ▸ List.mem_cons_self (a := (p, b)))
+        rw [hnil] at hm
+        exact List.not_mem_nil hm
+      · intro branch' hm'
+        obtain ⟨pat, body, hm, rfl⟩ := BranchList.mem_shiftFrom hm'
+        exact ihbranches (pat, body) hm pre hctx
+  | @letRec bindings ctx body resultTy specs G avoid hwf hmono hpoly _
+      ihmono ihpoly ihbody =>
+      intro pre hctx
+      simp only [Expr.shiftFrom, RecGroup.shiftFrom_eq_map]
+      have hwf' : RecSpecsWF
+          (bindings.map
+            (Expr.shiftFrom (pre.length + bindings.length) envExtra.length))
+          specs G :=
+        { hwf with length := by simpa using hwf.length }
+      have hann :
+          (bindings.map
+            (Expr.shiftFrom (pre.length + bindings.length) envExtra.length)).map
+              (fun _ => (none : Option PolyTy)) =
+            bindings.map (fun _ => (none : Option PolyTy)) := by
+        simp only [List.map_map, Function.comp_def]
+      rw [← hann]
+      apply RunWT.letRec (specs := specs) (G := G) (avoid := avoid) hwf'
+      · intro Xs hXs pair hpair τ hτ
+        rw [List.zip_map_left] at hpair
+        obtain ⟨oldPair, holdPair, rfl⟩ := List.mem_map.mp hpair
+        have ht := ihmono Xs hXs oldPair holdPair τ hτ
+          (specs.map (RecSpec.rhsEntry G Xs) ++ pre) (by
+            simp only [RecSpecs.rhsCtx, hctx, List.append_assoc])
+        simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at ht
+        rw [← hwf.length, Nat.add_comm bindings.length pre.length] at ht
+        simpa only [RecSpecs.rhsCtx, List.append_assoc] using ht
+      · intro Xs hXs pair hpair scheme hscheme Ys hYs
+        rw [List.zip_map_left] at hpair
+        obtain ⟨oldPair, holdPair, rfl⟩ := List.mem_map.mp hpair
+        have ht := ihpoly Xs hXs oldPair holdPair scheme hscheme Ys hYs
+          (specs.map (RecSpec.rhsEntry G Xs) ++ pre) (by
+            simp only [RecSpecs.rhsCtx, hctx, List.append_assoc])
+        simp only [RecSpecs.rhsCtx, List.length_append, List.length_map] at ht
+        rw [← hwf.length, Nat.add_comm bindings.length pre.length] at ht
+        simpa only [RecSpecs.rhsCtx, List.append_assoc] using ht
+      · have hb := ihbody (specs.map (RecSpec.bodyScheme G) ++ pre) (by
+          simp only [RecSpecs.bodyCtx, hctx, List.append_assoc])
+        simp only [RecSpecs.bodyCtx, List.length_append, List.length_map] at hb
+        rw [← hwf.length, Nat.add_comm bindings.length pre.length] at hb
+        simpa only [RecSpecs.bodyCtx, List.append_assoc] using hb
+  | mk hspec _ ihbody =>
+      expose_names
+      have hb := ihbody (instContents.map PolyTy.mkTrivial ++ pre) (by
+        rw [h_2, List.append_assoc])
+      simp only [List.length_append, List.length_map] at hb
+      have hlen : instContents.length = n := by
+        have := List.Forall₂.length_eq hspec.fields
+        simpa [hspec.bind_count] using this.symm
+      rw [hlen, Nat.add_comm n pre.length] at hb
+      exact RunWTMatchBranch.mk hspec (by
+        simpa only [List.append_assoc] using hb)
+  | wildcard _ ihbody =>
+      expose_names
+      simpa only [MatchPattern.bindCount, Nat.add_zero] using
+        (RunWTMatchBranch.wildcard (ihbody pre h_2))
+
 
 /-! ## A real-Core erased polymorphic-recursion witness -/
 
