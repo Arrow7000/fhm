@@ -493,6 +493,132 @@ theorem RunWT.substFvar {ctx : Ctx} {e : Expr} {ty U : Ty} {Z : Nat}
   | wildcard _ ihbody => exact .wildcard ihbody
 
 
+/-! ## Recursive rewrapping and scheme inhabitants
+
+The operational `letRecUnfold` step substitutes each recursively wrapped
+member for the corresponding body variable.  The wrapper is an ordinary
+erased `letRec`: its typing derivation remembers the mixed recursive specs,
+but its `Expr` contains only `none` annotations.
+
+At a fixed opening `G ↦ Xs` of the ordinary HM members' shared pool, we can
+freeze that opening into the monomorphic specs and re-derive the group with an
+empty pool.  This turns an RHS typing premise into a typing for the recursively
+wrapped member without adding any runtime type construct.
+-/
+
+private theorem PolyTy.genGroup_nil_runtime {ty : Ty} :
+    PolyTy.genGroup [] ty = PolyTy.mkTrivial ty := by
+  have hclose : Ty.closeOver [] ty = ty :=
+    Ty.closeOver_eq_self_of_fresh (by simp)
+  simp [PolyTy.genGroup, Ty.genFilter, hclose, PolyTy.mkTrivial]
+
+private theorem map_rhsEntry_openAt_runtime (G Xs Zs : List Nat)
+    (specs : List RecSpec) :
+    (specs.map (RecSpec.openAt G Xs)).map (RecSpec.rhsEntry [] Zs) =
+      specs.map (RecSpec.rhsEntry G Xs) := by
+  rw [List.map_map]
+  apply List.map_congr_left
+  intro spec _
+  cases spec with
+  | mono ty => rfl
+  | poly scheme => rfl
+
+private theorem map_bodyScheme_openAt_runtime (G Xs : List Nat)
+    (specs : List RecSpec) :
+    (specs.map (RecSpec.openAt G Xs)).map (RecSpec.bodyScheme []) =
+      specs.map (RecSpec.rhsEntry G Xs) := by
+  rw [List.map_map]
+  apply List.map_congr_left
+  intro spec _
+  cases spec with
+  | mono ty => exact PolyTy.genGroup_nil_runtime
+  | poly scheme => rfl
+
+private theorem specs_wf_openAt_runtime {bindings : List Expr}
+    {specs : List RecSpec} {G Xs : List Nat}
+    (hwf : RecSpecsWF bindings specs G) :
+    RecSpecsWF bindings (specs.map (RecSpec.openAt G Xs)) [] := by
+  refine ⟨by simpa using hwf.length, by simp, ?_, ?_⟩
+  · intro ty hty
+    obtain ⟨spec, hspec, heq⟩ := List.mem_map.mp hty
+    cases spec with
+    | mono original =>
+        simp only [RecSpec.openAt, RecSpec.mono.injEq] at heq
+        subst ty
+        exact Ty.renameG_isLC_runtime (hwf.mono_lc original hspec)
+    | poly scheme => exact RecSpec.noConfusion heq
+  · intro scheme hscheme
+    obtain ⟨spec, hspec, heq⟩ := List.mem_map.mp hscheme
+    cases spec with
+    | mono ty => exact RecSpec.noConfusion heq
+    | poly original =>
+        simp only [RecSpec.openAt, RecSpec.poly.injEq] at heq
+        subst scheme
+        exact hwf.poly_wf original hspec
+
+/-- Re-wrap one recursive member at a fixed shared-pool opening. -/
+theorem RunWT.rec_rewrap_at {ctx : Ctx} {bindings : List Expr}
+    {specs : List RecSpec} {G avoid Xs : List Nat}
+    (hwf : RecSpecsWF bindings specs G)
+    (hmono : MonoTyped RunWT ctx bindings specs G avoid)
+    (hpoly : PolyTyped RunWT ctx bindings specs G avoid)
+    (hXs : FreshNames avoid G.length Xs)
+    {rhs : Expr} {ty : Ty}
+    (hrhs : RunWT (RecSpecs.rhsCtx ctx specs G Xs) rhs ty) :
+    RunWT ctx (.letRec (bindings.map (fun _ => none)) bindings rhs) ty := by
+  let openedSpecs := specs.map (RecSpec.openAt G Xs)
+  apply RunWT.letRec (specs := openedSpecs) (G := [])
+    (avoid := avoid ++ Xs)
+  · exact specs_wf_openAt_runtime hwf
+  · intro Zs hZs pair hpair openedTy hopened
+    have hZsNil : Zs = [] := List.length_eq_zero_iff.mp hZs.length
+    subst Zs
+    obtain ⟨rhs0, spec0, hold, rfl⟩ := mem_zip_map_right_runtime hpair
+    cases spec0 with
+    | mono original =>
+        simp only [RecSpec.openAt, RecSpec.mono.injEq] at hopened
+        subst openedTy
+        have ht := hmono Xs hXs (rhs0, .mono original) hold original rfl
+        have hctx :
+            RecSpecs.rhsCtx ctx openedSpecs [] [] =
+              RecSpecs.rhsCtx ctx specs G Xs := by
+          unfold RecSpecs.rhsCtx openedSpecs
+          rw [map_rhsEntry_openAt_runtime]
+        rw [hctx]
+        simpa [Ty.renameG] using ht
+    | poly scheme => exact RecSpec.noConfusion hopened
+  · intro Zs hZs pair hpair scheme hopened Ys hYs
+    have hZsNil : Zs = [] := List.length_eq_zero_iff.mp hZs.length
+    subst Zs
+    obtain ⟨rhs0, spec0, hold, rfl⟩ := mem_zip_map_right_runtime hpair
+    cases spec0 with
+    | mono original => exact RecSpec.noConfusion hopened
+    | poly original =>
+        simp only [RecSpec.openAt, RecSpec.poly.injEq] at hopened
+        subst scheme
+        have hYs' : FreshNames (avoid ++ Xs) original.paramCount Ys := by
+          simpa using hYs
+        have ht := hpoly Xs hXs (rhs0, .poly original) hold original rfl Ys hYs'
+        have hctx :
+            RecSpecs.rhsCtx ctx openedSpecs [] [] =
+              RecSpecs.rhsCtx ctx specs G Xs := by
+          unfold RecSpecs.rhsCtx openedSpecs
+          rw [map_rhsEntry_openAt_runtime]
+        rw [hctx]
+        exact ht
+  · rw [show RecSpecs.bodyCtx ctx openedSpecs [] =
+        RecSpecs.rhsCtx ctx specs G Xs by
+      unfold RecSpecs.bodyCtx RecSpecs.rhsCtx openedSpecs
+      rw [map_bodyScheme_openAt_runtime]]
+    exact hrhs
+
+/-- An erased value inhabits a scheme when it has every locally-closed
+`InstantiatesBy` instance accepted by the production variable rule. -/
+def RunHasScheme (ctx : Ctx) (value : Expr) (scheme : PolyTy) : Prop :=
+  ∀ args ty, (∀ arg ∈ args, arg.IsLC) →
+    scheme.InstantiatesTo args ty → RunWT ctx value ty
+
+
 /-! ## A real-Core erased polymorphic-recursion witness -/
 
 def polyId : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
