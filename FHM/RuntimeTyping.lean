@@ -1222,6 +1222,22 @@ theorem RunWT.substMany {ctors : CtorEnv} {envPre env : Env}
         (RunWTMatchBranch.wildcard (ihbody pre h_2 h_3))
 
 
+/-- Subject reduction for the recursive-group unfolding rule. Each RHS is
+substituted as an erased self-wrapped value at its exported scheme. -/
+theorem RunWT.letRecUnfold_preservation {ctx : Ctx}
+    {anns : List (Option PolyTy)} {bindings : List Expr} {body : Expr}
+    {ty : Ty}
+    (h : RunWT ctx (.letRec anns bindings body) ty) :
+    RunWT ctx
+      (body.substN 0
+        (bindings.map (fun rhs => .letRec anns bindings rhs))) ty := by
+  cases h with
+  | letRec hwf hmono hpoly hbody =>
+      have hvalues := recursiveValuesHaveSchemes hwf hmono hpoly
+      have hsubst := RunWT.substMany (envPre := []) hvalues hbody
+      simpa [RecSpecs.bodyCtx, List.nil_append, RecSpec.bodyScheme] using hsubst
+
+
 /-! ## A real-Core erased polymorphic-recursion witness -/
 
 def polyId : PolyTy := ⟨1, .arrow (.bvar 0) (.bvar 0)⟩
@@ -1299,7 +1315,29 @@ theorem erased_polySelf_typed :
       (.arrow (.prim .unit) (.prim .unit)) := by
   exact .letRec polySelf_specs_wf polySelf_mono polySelf_poly polySelf_body
 
+theorem erased_polySelf_steps :
+    SmallStep.Step
+      (.letRec (polySelfBindings.map (fun _ => none))
+        polySelfBindings (.var 0))
+      ((Expr.var 0).substN 0
+        (polySelfBindings.map (fun rhs =>
+          .letRec (polySelfBindings.map (fun _ => none))
+            polySelfBindings rhs))) := by
+  exact .letRecUnfold
+
+theorem erased_polySelf_unfolded_typed :
+    RunWT ⟨[], []⟩
+      ((Expr.var 0).substN 0
+        (polySelfBindings.map (fun rhs =>
+          .letRec (polySelfBindings.map (fun _ => none))
+            polySelfBindings rhs)))
+      (.arrow (.prim .unit) (.prim .unit)) := by
+  exact RunWT.letRecUnfold_preservation erased_polySelf_typed
+
 #print axioms RunWT.substFvar
+#print axioms RunWT.substMany
+#print axioms RunWT.letRecUnfold_preservation
 #print axioms erased_polySelf_typed
+#print axioms erased_polySelf_unfolded_typed
 
 end RuntimeTyping
