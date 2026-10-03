@@ -845,6 +845,70 @@ theorem RunHasScheme.ofMonoRecMember {ctx : Ctx}
     rw [hXsDef] at hx
     exact Ty.mem_of_mem_genFilter hx
 
+private theorem RunHasScheme.ofRecMember {ctx : Ctx}
+    {bindings : List Expr} {specs : List RecSpec} {G avoid : List Nat}
+    (hwf : RecSpecsWF bindings specs G)
+    (hmono : MonoTyped RunWT ctx bindings specs G avoid)
+    (hpoly : PolyTyped RunWT ctx bindings specs G avoid)
+    {rhs : Expr} {spec : RecSpec}
+    (hmember : (rhs, spec) ∈ bindings.zip specs) :
+    RunHasScheme ctx
+      (.letRec (bindings.map (fun _ => none)) bindings rhs)
+      (spec.bodyScheme G) := by
+  cases spec with
+  | mono ty =>
+      simpa [RecSpec.bodyScheme] using
+        RunHasScheme.ofMonoRecMember hwf hmono hpoly hmember
+  | poly scheme =>
+      simpa [RecSpec.bodyScheme] using
+        RunHasScheme.ofPolyRecMember hwf hmono hpoly hmember
+
+/-- Every recursively wrapped RHS inhabits the scheme exported for its slot.
+This is exactly the replacement list used by `Step.letRecUnfold`. -/
+private theorem recursiveValuesHaveSchemes {ctx : Ctx}
+    {bindings : List Expr} {specs : List RecSpec} {G avoid : List Nat}
+    (hwf : RecSpecsWF bindings specs G)
+    (hmono : MonoTyped RunWT ctx bindings specs G avoid)
+    (hpoly : PolyTyped RunWT ctx bindings specs G avoid) :
+    List.Forall₂ (RunHasScheme ctx)
+      (bindings.map (fun rhs =>
+        .letRec (bindings.map (fun _ => none)) bindings rhs))
+      (specs.map (RecSpec.bodyScheme G)) := by
+  have hall : ∀ pair ∈ bindings.zip specs,
+      RunHasScheme ctx
+        (.letRec (bindings.map (fun _ => none)) bindings pair.1)
+        (pair.2.bodyScheme G) := by
+    intro pair hpair
+    exact RunHasScheme.ofRecMember hwf hmono hpoly hpair
+  have go : ∀ (bs : List Expr) (ss : List RecSpec),
+      bs.length = ss.length →
+      (∀ pair ∈ bs.zip ss,
+        RunHasScheme ctx
+          (.letRec (bindings.map (fun _ => none)) bindings pair.1)
+          (pair.2.bodyScheme G)) →
+      List.Forall₂ (RunHasScheme ctx)
+        (bs.map (fun rhs =>
+          .letRec (bindings.map (fun _ => none)) bindings rhs))
+        (ss.map (RecSpec.bodyScheme G)) := by
+    intro bs
+    induction bs with
+    | nil =>
+        intro ss hlen _
+        cases ss with
+        | nil => exact .nil
+        | cons _ _ => simp at hlen
+    | cons rhs rest ih =>
+        intro ss hlen hmembers
+        cases ss with
+        | nil => simp at hlen
+        | cons spec specs =>
+            refine .cons ?_ ?_
+            · exact hmembers (rhs, spec) (by simp)
+            · apply ih specs (by simpa using hlen)
+              intro pair hpair
+              exact hmembers pair (by simp [hpair])
+  exact go bindings specs hwf.length hall
+
 
 /-! ## A real-Core erased polymorphic-recursion witness -/
 
